@@ -2243,14 +2243,14 @@ pub mod drift {
     // ) -> Result<()> {
     //     handle_update_perp_market_config(ctx, market_config)
     // }
-  
-    // pub fn transfer_fee_and_pnl_pool<'c: 'info, 'info>(
-    //   ctx: Context<'_, '_, 'c, 'info, TransferFeeAndPnlPool<'info>>,
-    //   amount: u64,
-    //   direction: TransferFeeAndPnlPoolDirection,
-    // ) -> Result<()> {
-    //   handle_transfer_fee_and_pnl_pool(ctx, amount, direction)
-    // }
+
+    pub fn transfer_fee_and_pnl_pool<'c: 'info, 'info>(
+        ctx: Context<'_, '_, 'c, 'info, TransferFeeAndPnlPool<'info>>,
+        amount: u64,
+        direction: TransferFeeAndPnlPoolDirection,
+    ) -> Result<()> {
+        handle_transfer_fee_and_pnl_pool(ctx, amount, direction)
+    }
 }
 
 #[cfg(not(feature = "no-entrypoint"))]

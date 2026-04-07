@@ -72,7 +72,6 @@ mod get_margin_ratio {
             (MARGIN_PRECISION / 10 + MARGIN_PRECISION / 20) / 2
         );
         assert_eq!(margin_ratio_maintenance, MARGIN_PRECISION / 20);
-
     }
 }
 

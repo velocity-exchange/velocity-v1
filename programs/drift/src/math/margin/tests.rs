@@ -4846,8 +4846,7 @@ mod meets_place_order_margin_requirement_with_isolated {
     use crate::state::spot_market::{SpotBalanceType, SpotMarket};
     use crate::state::spot_market_map::SpotMarketMap;
     use crate::state::user::{
-        MarketType, Order, OrderStatus, OrderType, PerpPosition, PositionFlag, SpotPosition,
-        User,
+        MarketType, Order, OrderStatus, OrderType, PerpPosition, PositionFlag, SpotPosition, User,
     };
     use crate::test_utils::get_pyth_price;
     use crate::test_utils::*;
@@ -4900,8 +4899,7 @@ mod meets_place_order_margin_requirement_with_isolated {
             ..PerpMarket::default()
         };
         create_anchor_account_info!(sol_perp_market, PerpMarket, sol_perp_market_account_info);
-        let perp_market_map =
-            PerpMarketMap::load_one(&sol_perp_market_account_info, true).unwrap();
+        let perp_market_map = PerpMarketMap::load_one(&sol_perp_market_account_info, true).unwrap();
 
         let mut usdc_spot_market = SpotMarket {
             market_index: 0,
@@ -4915,11 +4913,7 @@ mod meets_place_order_margin_requirement_with_isolated {
             historical_oracle_data: HistoricalOracleData::default_quote_oracle(),
             ..SpotMarket::default()
         };
-        create_anchor_account_info!(
-            usdc_spot_market,
-            SpotMarket,
-            usdc_spot_market_account_info
-        );
+        create_anchor_account_info!(usdc_spot_market, SpotMarket, usdc_spot_market_account_info);
         let spot_market_account_infos = Vec::from([&usdc_spot_market_account_info]);
         let spot_market_map =
             SpotMarketMap::load_multiple(spot_market_account_infos, true).unwrap();
@@ -5015,8 +5009,7 @@ mod meets_place_order_margin_requirement_with_isolated {
             ..PerpMarket::default()
         };
         create_anchor_account_info!(sol_perp_market, PerpMarket, sol_perp_market_account_info);
-        let perp_market_map =
-            PerpMarketMap::load_one(&sol_perp_market_account_info, true).unwrap();
+        let perp_market_map = PerpMarketMap::load_one(&sol_perp_market_account_info, true).unwrap();
 
         let mut usdc_spot_market = SpotMarket {
             market_index: 0,
@@ -5030,11 +5023,7 @@ mod meets_place_order_margin_requirement_with_isolated {
             historical_oracle_data: HistoricalOracleData::default_quote_oracle(),
             ..SpotMarket::default()
         };
-        create_anchor_account_info!(
-            usdc_spot_market,
-            SpotMarket,
-            usdc_spot_market_account_info
-        );
+        create_anchor_account_info!(usdc_spot_market, SpotMarket, usdc_spot_market_account_info);
         let spot_market_account_infos = Vec::from([&usdc_spot_market_account_info]);
         let spot_market_map =
             SpotMarketMap::load_multiple(spot_market_account_infos, true).unwrap();
@@ -5108,8 +5097,7 @@ mod meets_place_order_margin_requirement_with_isolated {
             ..PerpMarket::default()
         };
         create_anchor_account_info!(sol_perp_market, PerpMarket, sol_perp_market_account_info);
-        let perp_market_map =
-            PerpMarketMap::load_one(&sol_perp_market_account_info, true).unwrap();
+        let perp_market_map = PerpMarketMap::load_one(&sol_perp_market_account_info, true).unwrap();
 
         let mut usdc_spot_market = SpotMarket {
             market_index: 0,
@@ -5123,11 +5111,7 @@ mod meets_place_order_margin_requirement_with_isolated {
             historical_oracle_data: HistoricalOracleData::default_quote_oracle(),
             ..SpotMarket::default()
         };
-        create_anchor_account_info!(
-            usdc_spot_market,
-            SpotMarket,
-            usdc_spot_market_account_info
-        );
+        create_anchor_account_info!(usdc_spot_market, SpotMarket, usdc_spot_market_account_info);
         let spot_market_account_infos = Vec::from([&usdc_spot_market_account_info]);
         let spot_market_map =
             SpotMarketMap::load_multiple(spot_market_account_infos, true).unwrap();
@@ -5208,8 +5192,7 @@ mod meets_place_order_margin_requirement_with_isolated {
             ..PerpMarket::default()
         };
         create_anchor_account_info!(sol_perp_market, PerpMarket, sol_perp_market_account_info);
-        let perp_market_map =
-            PerpMarketMap::load_one(&sol_perp_market_account_info, true).unwrap();
+        let perp_market_map = PerpMarketMap::load_one(&sol_perp_market_account_info, true).unwrap();
 
         let mut usdc_spot_market = SpotMarket {
             market_index: 0,
@@ -5223,11 +5206,7 @@ mod meets_place_order_margin_requirement_with_isolated {
             historical_oracle_data: HistoricalOracleData::default_quote_oracle(),
             ..SpotMarket::default()
         };
-        create_anchor_account_info!(
-            usdc_spot_market,
-            SpotMarket,
-            usdc_spot_market_account_info
-        );
+        create_anchor_account_info!(usdc_spot_market, SpotMarket, usdc_spot_market_account_info);
         let spot_market_account_infos = Vec::from([&usdc_spot_market_account_info]);
         let spot_market_map =
             SpotMarketMap::load_multiple(spot_market_account_infos, true).unwrap();
@@ -5307,8 +5286,7 @@ mod meets_place_order_margin_requirement_with_isolated {
             ..PerpMarket::default()
         };
         create_anchor_account_info!(sol_perp_market, PerpMarket, sol_perp_market_account_info);
-        let perp_market_map =
-            PerpMarketMap::load_one(&sol_perp_market_account_info, true).unwrap();
+        let perp_market_map = PerpMarketMap::load_one(&sol_perp_market_account_info, true).unwrap();
 
         let mut usdc_spot_market = SpotMarket {
             market_index: 0,
@@ -5322,11 +5300,7 @@ mod meets_place_order_margin_requirement_with_isolated {
             historical_oracle_data: HistoricalOracleData::default_quote_oracle(),
             ..SpotMarket::default()
         };
-        create_anchor_account_info!(
-            usdc_spot_market,
-            SpotMarket,
-            usdc_spot_market_account_info
-        );
+        create_anchor_account_info!(usdc_spot_market, SpotMarket, usdc_spot_market_account_info);
         let spot_market_account_infos = Vec::from([&usdc_spot_market_account_info]);
         let spot_market_map =
             SpotMarketMap::load_multiple(spot_market_account_infos, true).unwrap();
@@ -5405,8 +5379,7 @@ mod meets_place_order_margin_requirement_with_isolated {
             ..PerpMarket::default()
         };
         create_anchor_account_info!(sol_perp_market, PerpMarket, sol_perp_market_account_info);
-        let perp_market_map =
-            PerpMarketMap::load_one(&sol_perp_market_account_info, true).unwrap();
+        let perp_market_map = PerpMarketMap::load_one(&sol_perp_market_account_info, true).unwrap();
 
         let mut usdc_spot_market = SpotMarket {
             market_index: 0,
@@ -5420,11 +5393,7 @@ mod meets_place_order_margin_requirement_with_isolated {
             historical_oracle_data: HistoricalOracleData::default_quote_oracle(),
             ..SpotMarket::default()
         };
-        create_anchor_account_info!(
-            usdc_spot_market,
-            SpotMarket,
-            usdc_spot_market_account_info
-        );
+        create_anchor_account_info!(usdc_spot_market, SpotMarket, usdc_spot_market_account_info);
         let spot_market_account_infos = Vec::from([&usdc_spot_market_account_info]);
         let spot_market_map =
             SpotMarketMap::load_multiple(spot_market_account_infos, true).unwrap();
@@ -5503,8 +5472,7 @@ mod meets_place_order_margin_requirement_with_isolated {
             ..PerpMarket::default()
         };
         create_anchor_account_info!(sol_perp_market, PerpMarket, sol_perp_market_account_info);
-        let perp_market_map =
-            PerpMarketMap::load_one(&sol_perp_market_account_info, true).unwrap();
+        let perp_market_map = PerpMarketMap::load_one(&sol_perp_market_account_info, true).unwrap();
 
         let mut usdc_spot_market = SpotMarket {
             market_index: 0,
@@ -5518,11 +5486,7 @@ mod meets_place_order_margin_requirement_with_isolated {
             historical_oracle_data: HistoricalOracleData::default_quote_oracle(),
             ..SpotMarket::default()
         };
-        create_anchor_account_info!(
-            usdc_spot_market,
-            SpotMarket,
-            usdc_spot_market_account_info
-        );
+        create_anchor_account_info!(usdc_spot_market, SpotMarket, usdc_spot_market_account_info);
         let spot_market_account_infos = Vec::from([&usdc_spot_market_account_info]);
         let spot_market_map =
             SpotMarketMap::load_multiple(spot_market_account_infos, true).unwrap();
@@ -5602,8 +5566,7 @@ mod meets_place_order_margin_requirement_with_isolated {
             ..PerpMarket::default()
         };
         create_anchor_account_info!(sol_perp_market, PerpMarket, sol_perp_market_account_info);
-        let perp_market_map =
-            PerpMarketMap::load_one(&sol_perp_market_account_info, true).unwrap();
+        let perp_market_map = PerpMarketMap::load_one(&sol_perp_market_account_info, true).unwrap();
 
         let mut usdc_spot_market = SpotMarket {
             market_index: 0,
@@ -5617,11 +5580,7 @@ mod meets_place_order_margin_requirement_with_isolated {
             historical_oracle_data: HistoricalOracleData::default_quote_oracle(),
             ..SpotMarket::default()
         };
-        create_anchor_account_info!(
-            usdc_spot_market,
-            SpotMarket,
-            usdc_spot_market_account_info
-        );
+        create_anchor_account_info!(usdc_spot_market, SpotMarket, usdc_spot_market_account_info);
         let spot_market_account_infos = Vec::from([&usdc_spot_market_account_info]);
         let spot_market_map =
             SpotMarketMap::load_multiple(spot_market_account_infos, true).unwrap();
@@ -5761,11 +5720,7 @@ mod meets_place_order_margin_requirement_with_isolated {
             historical_oracle_data: HistoricalOracleData::default_quote_oracle(),
             ..SpotMarket::default()
         };
-        create_anchor_account_info!(
-            usdc_spot_market,
-            SpotMarket,
-            usdc_spot_market_account_info
-        );
+        create_anchor_account_info!(usdc_spot_market, SpotMarket, usdc_spot_market_account_info);
         let spot_market_account_infos = Vec::from([&usdc_spot_market_account_info]);
         let spot_market_map =
             SpotMarketMap::load_multiple(spot_market_account_infos, true).unwrap();
@@ -5937,11 +5892,7 @@ mod meets_place_order_margin_requirement_with_isolated {
             historical_oracle_data: HistoricalOracleData::default_quote_oracle(),
             ..SpotMarket::default()
         };
-        create_anchor_account_info!(
-            usdc_spot_market,
-            SpotMarket,
-            usdc_spot_market_account_info
-        );
+        create_anchor_account_info!(usdc_spot_market, SpotMarket, usdc_spot_market_account_info);
         let spot_market_account_infos = Vec::from([&usdc_spot_market_account_info]);
         let spot_market_map =
             SpotMarketMap::load_multiple(spot_market_account_infos, true).unwrap();
@@ -6123,11 +6074,7 @@ mod meets_place_order_margin_requirement_with_isolated {
             historical_oracle_data: HistoricalOracleData::default_quote_oracle(),
             ..SpotMarket::default()
         };
-        create_anchor_account_info!(
-            usdc_spot_market,
-            SpotMarket,
-            usdc_spot_market_account_info
-        );
+        create_anchor_account_info!(usdc_spot_market, SpotMarket, usdc_spot_market_account_info);
         let spot_market_account_infos = Vec::from([&usdc_spot_market_account_info]);
         let spot_market_map =
             SpotMarketMap::load_multiple(spot_market_account_infos, true).unwrap();
@@ -6169,7 +6116,7 @@ mod meets_place_order_margin_requirement_with_isolated {
             quote_asset_amount: -1000 * QUOTE_PRECISION_I64, // Entry at $1000
             position_flag: PositionFlag::IsolatedPosition as u8,
             isolated_position_scaled_balance: 110 * SPOT_BALANCE_PRECISION_U64, // $110 isolated collateral
-            open_orders: 1,                    // Has an open order
+            open_orders: 1,                                                     // Has an open order
             open_bids: BASE_PRECISION_I64 / 2, // Order to buy 0.5 ETH more
             ..PerpPosition::default()
         };
@@ -6279,8 +6226,7 @@ mod meets_place_order_margin_requirement_with_isolated {
             ..PerpMarket::default()
         };
         create_anchor_account_info!(eth_perp_market, PerpMarket, eth_perp_market_account_info);
-        let perp_market_map =
-            PerpMarketMap::load_one(&eth_perp_market_account_info, true).unwrap();
+        let perp_market_map = PerpMarketMap::load_one(&eth_perp_market_account_info, true).unwrap();
 
         let mut usdc_spot_market = SpotMarket {
             market_index: 0,
@@ -6294,11 +6240,7 @@ mod meets_place_order_margin_requirement_with_isolated {
             historical_oracle_data: HistoricalOracleData::default_quote_oracle(),
             ..SpotMarket::default()
         };
-        create_anchor_account_info!(
-            usdc_spot_market,
-            SpotMarket,
-            usdc_spot_market_account_info
-        );
+        create_anchor_account_info!(usdc_spot_market, SpotMarket, usdc_spot_market_account_info);
         let spot_market_account_infos = Vec::from([&usdc_spot_market_account_info]);
         let spot_market_map =
             SpotMarketMap::load_multiple(spot_market_account_infos, true).unwrap();
@@ -6458,11 +6400,7 @@ mod meets_place_order_margin_requirement_with_isolated {
             historical_oracle_data: HistoricalOracleData::default_quote_oracle(),
             ..SpotMarket::default()
         };
-        create_anchor_account_info!(
-            usdc_spot_market,
-            SpotMarket,
-            usdc_spot_market_account_info
-        );
+        create_anchor_account_info!(usdc_spot_market, SpotMarket, usdc_spot_market_account_info);
         let spot_market_account_infos = Vec::from([&usdc_spot_market_account_info]);
         let spot_market_map =
             SpotMarketMap::load_multiple(spot_market_account_infos, true).unwrap();
@@ -6619,11 +6557,7 @@ mod meets_place_order_margin_requirement_with_isolated {
             historical_oracle_data: HistoricalOracleData::default_quote_oracle(),
             ..SpotMarket::default()
         };
-        create_anchor_account_info!(
-            usdc_spot_market,
-            SpotMarket,
-            usdc_spot_market_account_info
-        );
+        create_anchor_account_info!(usdc_spot_market, SpotMarket, usdc_spot_market_account_info);
         let spot_market_account_infos = Vec::from([&usdc_spot_market_account_info]);
         let spot_market_map =
             SpotMarketMap::load_multiple(spot_market_account_infos, true).unwrap();
@@ -6707,8 +6641,7 @@ mod meets_place_order_margin_requirement_with_isolated {
             ..PerpMarket::default()
         };
         create_anchor_account_info!(eth_perp_market, PerpMarket, eth_perp_market_account_info);
-        let perp_market_map =
-            PerpMarketMap::load_one(&eth_perp_market_account_info, true).unwrap();
+        let perp_market_map = PerpMarketMap::load_one(&eth_perp_market_account_info, true).unwrap();
 
         let mut usdc_spot_market = SpotMarket {
             market_index: 0,
@@ -6722,11 +6655,7 @@ mod meets_place_order_margin_requirement_with_isolated {
             historical_oracle_data: HistoricalOracleData::default_quote_oracle(),
             ..SpotMarket::default()
         };
-        create_anchor_account_info!(
-            usdc_spot_market,
-            SpotMarket,
-            usdc_spot_market_account_info
-        );
+        create_anchor_account_info!(usdc_spot_market, SpotMarket, usdc_spot_market_account_info);
         let spot_market_account_infos = Vec::from([&usdc_spot_market_account_info]);
         let spot_market_map =
             SpotMarketMap::load_multiple(spot_market_account_infos, true).unwrap();
@@ -6808,8 +6737,7 @@ mod meets_place_order_margin_requirement_with_isolated {
             ..PerpMarket::default()
         };
         create_anchor_account_info!(eth_perp_market, PerpMarket, eth_perp_market_account_info);
-        let perp_market_map =
-            PerpMarketMap::load_one(&eth_perp_market_account_info, true).unwrap();
+        let perp_market_map = PerpMarketMap::load_one(&eth_perp_market_account_info, true).unwrap();
 
         let mut usdc_spot_market = SpotMarket {
             market_index: 0,
@@ -6823,11 +6751,7 @@ mod meets_place_order_margin_requirement_with_isolated {
             historical_oracle_data: HistoricalOracleData::default_quote_oracle(),
             ..SpotMarket::default()
         };
-        create_anchor_account_info!(
-            usdc_spot_market,
-            SpotMarket,
-            usdc_spot_market_account_info
-        );
+        create_anchor_account_info!(usdc_spot_market, SpotMarket, usdc_spot_market_account_info);
         let spot_market_account_infos = Vec::from([&usdc_spot_market_account_info]);
         let spot_market_map =
             SpotMarketMap::load_multiple(spot_market_account_infos, true).unwrap();
@@ -6957,11 +6881,7 @@ mod meets_place_order_margin_requirement_with_isolated {
             historical_oracle_data: HistoricalOracleData::default_quote_oracle(),
             ..SpotMarket::default()
         };
-        create_anchor_account_info!(
-            usdc_spot_market,
-            SpotMarket,
-            usdc_spot_market_account_info
-        );
+        create_anchor_account_info!(usdc_spot_market, SpotMarket, usdc_spot_market_account_info);
         let spot_market_account_infos = Vec::from([&usdc_spot_market_account_info]);
         let spot_market_map =
             SpotMarketMap::load_multiple(spot_market_account_infos, true).unwrap();
@@ -7098,11 +7018,7 @@ mod meets_place_order_margin_requirement_with_isolated {
             historical_oracle_data: HistoricalOracleData::default_quote_oracle(),
             ..SpotMarket::default()
         };
-        create_anchor_account_info!(
-            usdc_spot_market,
-            SpotMarket,
-            usdc_spot_market_account_info
-        );
+        create_anchor_account_info!(usdc_spot_market, SpotMarket, usdc_spot_market_account_info);
         let spot_market_account_infos = Vec::from([&usdc_spot_market_account_info]);
         let spot_market_map =
             SpotMarketMap::load_multiple(spot_market_account_infos, true).unwrap();
@@ -7166,8 +7082,7 @@ mod fill_perp_order_margin_requirement_with_isolated {
         SPOT_BALANCE_PRECISION_U64, SPOT_CUMULATIVE_INTEREST_PRECISION, SPOT_WEIGHT_PRECISION,
     };
     use crate::math::margin::{
-        calculate_margin_requirement_and_total_collateral_and_liability_info,
-        MarginRequirementType,
+        calculate_margin_requirement_and_total_collateral_and_liability_info, MarginRequirementType,
     };
     use crate::state::margin_calculation::{MarginContext, MarginTypeConfig};
     use crate::state::oracle::{HistoricalOracleData, OracleSource};
@@ -7270,11 +7185,7 @@ mod fill_perp_order_margin_requirement_with_isolated {
             historical_oracle_data: HistoricalOracleData::default_quote_oracle(),
             ..SpotMarket::default()
         };
-        create_anchor_account_info!(
-            usdc_spot_market,
-            SpotMarket,
-            usdc_spot_market_account_info
-        );
+        create_anchor_account_info!(usdc_spot_market, SpotMarket, usdc_spot_market_account_info);
         let spot_market_map =
             SpotMarketMap::load_multiple(vec![&usdc_spot_market_account_info], true).unwrap();
 
@@ -7321,15 +7232,14 @@ mod fill_perp_order_margin_requirement_with_isolated {
                 .fuel_perp_delta(0, BASE_PRECISION_I64)
                 .fuel_numerator(&user, NOW);
 
-            let calculation =
-                calculate_margin_requirement_and_total_collateral_and_liability_info(
-                    &user,
-                    &perp_market_map,
-                    &spot_market_map,
-                    &mut oracle_map,
-                    context,
-                )
-                .unwrap();
+            let calculation = calculate_margin_requirement_and_total_collateral_and_liability_info(
+                &user,
+                &perp_market_map,
+                &spot_market_map,
+                &mut oracle_map,
+                context,
+            )
+            .unwrap();
 
             assert!(
             calculation.meets_margin_requirement(),
@@ -7376,15 +7286,14 @@ mod fill_perp_order_margin_requirement_with_isolated {
                 .fuel_perp_delta(0, 9 * BASE_PRECISION_I64)
                 .fuel_numerator(&user, NOW);
 
-            let calculation =
-                calculate_margin_requirement_and_total_collateral_and_liability_info(
-                    &user,
-                    &perp_market_map,
-                    &spot_market_map,
-                    &mut oracle_map,
-                    context,
-                )
-                .unwrap();
+            let calculation = calculate_margin_requirement_and_total_collateral_and_liability_info(
+                &user,
+                &perp_market_map,
+                &spot_market_map,
+                &mut oracle_map,
+                context,
+            )
+            .unwrap();
 
             assert!(
             !calculation.meets_margin_requirement(),
@@ -7431,15 +7340,14 @@ mod fill_perp_order_margin_requirement_with_isolated {
                 .fuel_perp_delta(0, BASE_PRECISION_I64)
                 .fuel_numerator(&user, NOW);
 
-            let calculation =
-                calculate_margin_requirement_and_total_collateral_and_liability_info(
-                    &user,
-                    &perp_market_map,
-                    &spot_market_map,
-                    &mut oracle_map,
-                    context,
-                )
-                .unwrap();
+            let calculation = calculate_margin_requirement_and_total_collateral_and_liability_info(
+                &user,
+                &perp_market_map,
+                &spot_market_map,
+                &mut oracle_map,
+                context,
+            )
+            .unwrap();
 
             assert!(
                 !calculation.meets_margin_requirement(),
@@ -7492,15 +7400,14 @@ mod fill_perp_order_margin_requirement_with_isolated {
                 .fuel_perp_delta(0, BASE_PRECISION_I64)
                 .fuel_numerator(&user, NOW);
 
-            let calculation =
-                calculate_margin_requirement_and_total_collateral_and_liability_info(
-                    &user,
-                    &perp_market_map,
-                    &spot_market_map,
-                    &mut oracle_map,
-                    context,
-                )
-                .unwrap();
+            let calculation = calculate_margin_requirement_and_total_collateral_and_liability_info(
+                &user,
+                &perp_market_map,
+                &spot_market_map,
+                &mut oracle_map,
+                context,
+            )
+            .unwrap();
 
             assert!(
                 !calculation.meets_margin_requirement(),
@@ -7555,15 +7462,14 @@ mod fill_perp_order_margin_requirement_with_isolated {
                 .fuel_perp_delta(0, BASE_PRECISION_I64)
                 .fuel_numerator(&user, NOW);
 
-            let calculation =
-                calculate_margin_requirement_and_total_collateral_and_liability_info(
-                    &user,
-                    &perp_market_map,
-                    &spot_market_map,
-                    &mut oracle_map,
-                    context,
-                )
-                .unwrap();
+            let calculation = calculate_margin_requirement_and_total_collateral_and_liability_info(
+                &user,
+                &perp_market_map,
+                &spot_market_map,
+                &mut oracle_map,
+                context,
+            )
+            .unwrap();
 
             assert!(
                 !calculation.meets_margin_requirement(),
@@ -7612,15 +7518,14 @@ mod fill_perp_order_margin_requirement_with_isolated {
                 .fuel_perp_delta(0, -BASE_PRECISION_I64)
                 .fuel_numerator(&user, NOW);
 
-            let calculation =
-                calculate_margin_requirement_and_total_collateral_and_liability_info(
-                    &user,
-                    &perp_market_map,
-                    &spot_market_map,
-                    &mut oracle_map,
-                    context,
-                )
-                .unwrap();
+            let calculation = calculate_margin_requirement_and_total_collateral_and_liability_info(
+                &user,
+                &perp_market_map,
+                &spot_market_map,
+                &mut oracle_map,
+                context,
+            )
+            .unwrap();
 
             assert!(
                 calculation.meets_margin_requirement(),
@@ -7667,15 +7572,14 @@ mod fill_perp_order_margin_requirement_with_isolated {
                 .fuel_perp_delta(0, -BASE_PRECISION_I64)
                 .fuel_numerator(&user, NOW);
 
-            let calculation =
-                calculate_margin_requirement_and_total_collateral_and_liability_info(
-                    &user,
-                    &perp_market_map,
-                    &spot_market_map,
-                    &mut oracle_map,
-                    context,
-                )
-                .unwrap();
+            let calculation = calculate_margin_requirement_and_total_collateral_and_liability_info(
+                &user,
+                &perp_market_map,
+                &spot_market_map,
+                &mut oracle_map,
+                context,
+            )
+            .unwrap();
 
             assert!(
                 !calculation.meets_margin_requirement(),
@@ -7730,15 +7634,14 @@ mod fill_perp_order_margin_requirement_with_isolated {
                 .fuel_perp_delta(0, -BASE_PRECISION_I64)
                 .fuel_numerator(&user, NOW);
 
-            let calculation =
-                calculate_margin_requirement_and_total_collateral_and_liability_info(
-                    &user,
-                    &perp_market_map,
-                    &spot_market_map,
-                    &mut oracle_map,
-                    context,
-                )
-                .unwrap();
+            let calculation = calculate_margin_requirement_and_total_collateral_and_liability_info(
+                &user,
+                &perp_market_map,
+                &spot_market_map,
+                &mut oracle_map,
+                context,
+            )
+            .unwrap();
 
             assert!(
                 !calculation.meets_margin_requirement(),
@@ -7783,15 +7686,14 @@ mod fill_perp_order_margin_requirement_with_isolated {
                 .fuel_perp_delta(0, BASE_PRECISION_I64)
                 .fuel_numerator(&user, NOW);
 
-            let calculation =
-                calculate_margin_requirement_and_total_collateral_and_liability_info(
-                    &user,
-                    &perp_market_map,
-                    &spot_market_map,
-                    &mut oracle_map,
-                    context,
-                )
-                .unwrap();
+            let calculation = calculate_margin_requirement_and_total_collateral_and_liability_info(
+                &user,
+                &perp_market_map,
+                &spot_market_map,
+                &mut oracle_map,
+                context,
+            )
+            .unwrap();
 
             assert!(
             calculation.meets_margin_requirement(),
@@ -7834,15 +7736,14 @@ mod fill_perp_order_margin_requirement_with_isolated {
                 .fuel_perp_delta(0, BASE_PRECISION_I64)
                 .fuel_numerator(&user, NOW);
 
-            let calculation =
-                calculate_margin_requirement_and_total_collateral_and_liability_info(
-                    &user,
-                    &perp_market_map,
-                    &spot_market_map,
-                    &mut oracle_map,
-                    context,
-                )
-                .unwrap();
+            let calculation = calculate_margin_requirement_and_total_collateral_and_liability_info(
+                &user,
+                &perp_market_map,
+                &spot_market_map,
+                &mut oracle_map,
+                context,
+            )
+            .unwrap();
 
             assert!(
                 !calculation.meets_margin_requirement(),
@@ -7885,15 +7786,14 @@ mod fill_perp_order_margin_requirement_with_isolated {
                 .fuel_perp_delta(0, BASE_PRECISION_I64)
                 .fuel_numerator(&user, NOW);
 
-            let calculation =
-                calculate_margin_requirement_and_total_collateral_and_liability_info(
-                    &user,
-                    &perp_market_map,
-                    &spot_market_map,
-                    &mut oracle_map,
-                    context,
-                )
-                .unwrap();
+            let calculation = calculate_margin_requirement_and_total_collateral_and_liability_info(
+                &user,
+                &perp_market_map,
+                &spot_market_map,
+                &mut oracle_map,
+                context,
+            )
+            .unwrap();
 
             assert!(
                 !calculation.meets_margin_requirement(),
@@ -7944,15 +7844,14 @@ mod fill_perp_order_margin_requirement_with_isolated {
                 .fuel_perp_delta(0, BASE_PRECISION_I64)
                 .fuel_numerator(&user, NOW);
 
-            let calculation =
-                calculate_margin_requirement_and_total_collateral_and_liability_info(
-                    &user,
-                    &perp_market_map,
-                    &spot_market_map,
-                    &mut oracle_map,
-                    context,
-                )
-                .unwrap();
+            let calculation = calculate_margin_requirement_and_total_collateral_and_liability_info(
+                &user,
+                &perp_market_map,
+                &spot_market_map,
+                &mut oracle_map,
+                context,
+            )
+            .unwrap();
 
             assert!(
                 !calculation.meets_margin_requirement(),
@@ -7997,15 +7896,14 @@ mod fill_perp_order_margin_requirement_with_isolated {
                 .fuel_perp_delta(0, -BASE_PRECISION_I64)
                 .fuel_numerator(&user, NOW);
 
-            let calculation =
-                calculate_margin_requirement_and_total_collateral_and_liability_info(
-                    &user,
-                    &perp_market_map,
-                    &spot_market_map,
-                    &mut oracle_map,
-                    context,
-                )
-                .unwrap();
+            let calculation = calculate_margin_requirement_and_total_collateral_and_liability_info(
+                &user,
+                &perp_market_map,
+                &spot_market_map,
+                &mut oracle_map,
+                context,
+            )
+            .unwrap();
 
             assert!(
                 calculation.meets_margin_requirement(),
@@ -8048,15 +7946,14 @@ mod fill_perp_order_margin_requirement_with_isolated {
                 .fuel_perp_delta(0, -BASE_PRECISION_I64)
                 .fuel_numerator(&user, NOW);
 
-            let calculation =
-                calculate_margin_requirement_and_total_collateral_and_liability_info(
-                    &user,
-                    &perp_market_map,
-                    &spot_market_map,
-                    &mut oracle_map,
-                    context,
-                )
-                .unwrap();
+            let calculation = calculate_margin_requirement_and_total_collateral_and_liability_info(
+                &user,
+                &perp_market_map,
+                &spot_market_map,
+                &mut oracle_map,
+                context,
+            )
+            .unwrap();
 
             assert!(
                 !calculation.meets_margin_requirement(),
@@ -8107,15 +8004,14 @@ mod fill_perp_order_margin_requirement_with_isolated {
                 .fuel_perp_delta(0, -BASE_PRECISION_I64)
                 .fuel_numerator(&user, NOW);
 
-            let calculation =
-                calculate_margin_requirement_and_total_collateral_and_liability_info(
-                    &user,
-                    &perp_market_map,
-                    &spot_market_map,
-                    &mut oracle_map,
-                    context,
-                )
-                .unwrap();
+            let calculation = calculate_margin_requirement_and_total_collateral_and_liability_info(
+                &user,
+                &perp_market_map,
+                &spot_market_map,
+                &mut oracle_map,
+                context,
+            )
+            .unwrap();
 
             assert!(
                 !calculation.meets_margin_requirement(),
@@ -8124,4 +8020,3 @@ mod fill_perp_order_margin_requirement_with_isolated {
         });
     }
 }
-

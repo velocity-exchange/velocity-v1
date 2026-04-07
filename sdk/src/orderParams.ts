@@ -2,7 +2,6 @@ import {
 	DefaultOrderParams,
 	OptionalOrderParams,
 	OrderParams,
-	OrderParamsBitFlag,
 	OrderTriggerCondition,
 	OrderType,
 } from './types';

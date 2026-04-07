@@ -239,7 +239,6 @@ pub fn get_token_mint<'a>(
     }
 }
 
-
 pub fn get_revenue_share_escrow_account<'a>(
     account_info_iter: &mut Peekable<Iter<'a, AccountInfo<'a>>>,
     expected_authority: &Pubkey,

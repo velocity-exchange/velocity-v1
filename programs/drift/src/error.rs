@@ -584,8 +584,6 @@ pub enum ErrorCode {
     InvalidSignedMsgOrderParam,
     #[msg("Place and take order success condition failed")]
     PlaceAndTakeOrderSuccessConditionFailed,
-    #[msg("Invalid High Leverage Mode Config")]
-    InvalidHighLeverageModeConfig,
     #[msg("Invalid RFQ User Account")]
     InvalidRFQUserAccount,
     #[msg("RFQUserAccount should be mutable")]
@@ -632,8 +630,6 @@ pub enum ErrorCode {
     InvalidTransferPerpPosition,
     #[msg("Invalid SignedMsgUserOrders resize")]
     InvalidSignedMsgUserOrdersResize,
-    #[msg("Could not deserialize high leverage mode config")]
-    CouldNotDeserializeHighLeverageModeConfig,
     #[msg("Invalid If Rebalance Config")]
     InvalidIfRebalanceConfig,
     #[msg("Invalid If Rebalance Swap")]

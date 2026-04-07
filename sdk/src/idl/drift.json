@@ -1908,37 +1908,6 @@
       "args": []
     },
     {
-      "name": "enableUserHighLeverageMode",
-      "accounts": [
-        {
-          "name": "state",
-          "isMut": false,
-          "isSigner": false
-        },
-        {
-          "name": "user",
-          "isMut": true,
-          "isSigner": false
-        },
-        {
-          "name": "authority",
-          "isMut": false,
-          "isSigner": true
-        },
-        {
-          "name": "highLeverageModeConfig",
-          "isMut": true,
-          "isSigner": false
-        }
-      ],
-      "args": [
-        {
-          "name": "subAccountId",
-          "type": "u16"
-        }
-      ]
-    },
-    {
       "name": "fillPerpOrder",
       "accounts": [
         {
@@ -2173,37 +2142,6 @@
         }
       ],
       "args": []
-    },
-    {
-      "name": "disableUserHighLeverageMode",
-      "accounts": [
-        {
-          "name": "state",
-          "isMut": false,
-          "isSigner": false
-        },
-        {
-          "name": "authority",
-          "isMut": false,
-          "isSigner": true
-        },
-        {
-          "name": "user",
-          "isMut": true,
-          "isSigner": false
-        },
-        {
-          "name": "highLeverageModeConfig",
-          "isMut": true,
-          "isSigner": false
-        }
-      ],
-      "args": [
-        {
-          "name": "disableMaintenance",
-          "type": "bool"
-        }
-      ]
     },
     {
       "name": "updateUserStatsReferrerStatus",
@@ -5421,36 +5359,6 @@
       ]
     },
     {
-      "name": "updatePerpMarketHighLeverageMarginRatio",
-      "accounts": [
-        {
-          "name": "admin",
-          "isMut": false,
-          "isSigner": true
-        },
-        {
-          "name": "state",
-          "isMut": false,
-          "isSigner": false
-        },
-        {
-          "name": "perpMarket",
-          "isMut": true,
-          "isSigner": false
-        }
-      ],
-      "args": [
-        {
-          "name": "marginRatioInitial",
-          "type": "u16"
-        },
-        {
-          "name": "marginRatioMaintenance",
-          "type": "u16"
-        }
-      ]
-    },
-    {
       "name": "updatePerpMarketFundingPeriod",
       "accounts": [
         {
@@ -7383,78 +7291,6 @@
         {
           "name": "pythMessage",
           "type": "bytes"
-        }
-      ]
-    },
-    {
-      "name": "initializeHighLeverageModeConfig",
-      "accounts": [
-        {
-          "name": "admin",
-          "isMut": true,
-          "isSigner": true
-        },
-        {
-          "name": "highLeverageModeConfig",
-          "isMut": true,
-          "isSigner": false
-        },
-        {
-          "name": "state",
-          "isMut": false,
-          "isSigner": false
-        },
-        {
-          "name": "rent",
-          "isMut": false,
-          "isSigner": false
-        },
-        {
-          "name": "systemProgram",
-          "isMut": false,
-          "isSigner": false
-        }
-      ],
-      "args": [
-        {
-          "name": "maxUsers",
-          "type": "u32"
-        }
-      ]
-    },
-    {
-      "name": "updateHighLeverageModeConfig",
-      "accounts": [
-        {
-          "name": "admin",
-          "isMut": true,
-          "isSigner": true
-        },
-        {
-          "name": "highLeverageModeConfig",
-          "isMut": true,
-          "isSigner": false
-        },
-        {
-          "name": "state",
-          "isMut": false,
-          "isSigner": false
-        }
-      ],
-      "args": [
-        {
-          "name": "maxUsers",
-          "type": "u32"
-        },
-        {
-          "name": "reduceOnly",
-          "type": "bool"
-        },
-        {
-          "name": "currentUsers",
-          "type": {
-            "option": "u32"
-          }
         }
       ]
     },
@@ -9640,48 +9476,6 @@
       }
     },
     {
-      "name": "HighLeverageModeConfig",
-      "type": {
-        "kind": "struct",
-        "fields": [
-          {
-            "name": "maxUsers",
-            "type": "u32"
-          },
-          {
-            "name": "currentUsers",
-            "type": "u32"
-          },
-          {
-            "name": "reduceOnly",
-            "type": "u8"
-          },
-          {
-            "name": "padding1",
-            "type": {
-              "array": [
-                "u8",
-                3
-              ]
-            }
-          },
-          {
-            "name": "currentMaintenanceUsers",
-            "type": "u32"
-          },
-          {
-            "name": "padding2",
-            "type": {
-              "array": [
-                "u8",
-                24
-              ]
-            }
-          }
-        ]
-      }
-    },
-    {
       "name": "IfRebalanceConfig",
       "type": {
         "kind": "struct",
@@ -10620,14 +10414,6 @@
           {
             "name": "poolId",
             "type": "u8"
-          },
-          {
-            "name": "highLeverageMarginRatioInitial",
-            "type": "u16"
-          },
-          {
-            "name": "highLeverageMarginRatioMaintenance",
-            "type": "u16"
           },
           {
             "name": "protectedMakerLimitPriceDivisor",
@@ -15816,9 +15602,6 @@
         "variants": [
           {
             "name": "ImmediateOrCancel"
-          },
-          {
-            "name": "UpdateHighLeverageMode"
           }
         ]
       }
@@ -16452,12 +16235,6 @@
         "variants": [
           {
             "name": "Default"
-          },
-          {
-            "name": "HighLeverage"
-          },
-          {
-            "name": "HighLeverageMaintenance"
           }
         ]
       }
@@ -19841,11 +19618,6 @@
       "msg": "Place and take order success condition failed"
     },
     {
-      "code": 6290,
-      "name": "InvalidHighLeverageModeConfig",
-      "msg": "Invalid High Leverage Mode Config"
-    },
-    {
       "code": 6291,
       "name": "InvalidRFQUserAccount",
       "msg": "Invalid RFQ User Account"
@@ -19959,11 +19731,6 @@
       "code": 6313,
       "name": "InvalidSignedMsgUserOrdersResize",
       "msg": "Invalid SignedMsgUserOrders resize"
-    },
-    {
-      "code": 6314,
-      "name": "CouldNotDeserializeHighLeverageModeConfig",
-      "msg": "Could not deserialize high leverage mode config"
     },
     {
       "code": 6315,

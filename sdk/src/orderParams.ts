@@ -78,7 +78,3 @@ export function getOrderParams(
 		overridingParams
 	);
 }
-
-export function isUpdateHighLeverageMode(bitFlags: number): boolean {
-	return (bitFlags & OrderParamsBitFlag.UpdateHighLeverageMode) !== 0;
-}

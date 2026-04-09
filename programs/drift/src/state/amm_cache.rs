@@ -24,7 +24,6 @@ pub const AMM_POSITIONS_CACHE: &str = "amm_cache_seed";
 
 #[account]
 #[derive(Debug)]
-#[repr(C)]
 pub struct AmmCache {
     pub bump: u8,
     _padding: [u8; 3],

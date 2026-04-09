@@ -65,7 +65,7 @@ pub struct VerifiedMessage {
 }
 
 fn slice_eq(a: &[u8], b: &[u8]) -> bool {
-    a.len() == b.len() && sol_memcmp(a, b, a.len()) == 0
+    a.len() == b.len() && unsafe { sol_memcmp(a, b, a.len()) } == 0
 }
 
 pub fn deserialize_into_verified_message(

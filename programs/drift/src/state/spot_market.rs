@@ -1,10 +1,10 @@
 use std::fmt;
 use std::fmt::{Display, Formatter};
 
+use anchor_lang::prelude::borsh::{BorshDeserialize, BorshSerialize};
 use anchor_lang::prelude::*;
 use anchor_spl::token::spl_token;
 use anchor_spl::token_2022::spl_token_2022;
-use borsh::{BorshDeserialize, BorshSerialize};
 
 use crate::error::{DriftResult, ErrorCode};
 use crate::math::casting::Cast;
@@ -283,11 +283,11 @@ impl Default for SpotMarket {
 }
 
 impl Size for SpotMarket {
-    const SIZE: usize = 776;
+    const SIZE: usize = 808;
 }
 
 impl MarketIndexOffset for SpotMarket {
-    const MARKET_INDEX_OFFSET: usize = 684;
+    const MARKET_INDEX_OFFSET: usize = 708;
 }
 
 impl SpotMarket {
@@ -633,7 +633,7 @@ impl SpotMarket {
     }
 }
 
-#[derive(Clone, Copy, BorshSerialize, BorshDeserialize, PartialEq, Eq, Debug, Default)]
+#[derive(Clone, Copy, AnchorSerialize, AnchorDeserialize, PartialEq, Eq, Debug, Default)]
 pub enum SpotBalanceType {
     #[default]
     Deposit,
@@ -663,7 +663,7 @@ pub trait SpotBalance {
     fn update_balance_type(&mut self, balance_type: SpotBalanceType) -> DriftResult;
 }
 
-#[derive(Clone, Copy, BorshSerialize, BorshDeserialize, PartialEq, Debug, Eq, Default)]
+#[derive(Clone, Copy, AnchorSerialize, AnchorDeserialize, PartialEq, Debug, Eq, Default)]
 pub enum SpotFulfillmentConfigStatus {
     #[default]
     Enabled,
@@ -671,7 +671,7 @@ pub enum SpotFulfillmentConfigStatus {
 }
 
 #[derive(
-    Clone, Copy, BorshSerialize, BorshDeserialize, PartialEq, Debug, Eq, PartialOrd, Ord, Default,
+    Clone, Copy, AnchorSerialize, AnchorDeserialize, PartialEq, Debug, Eq, PartialOrd, Ord, Default,
 )]
 pub enum AssetTier {
     /// full priviledge
@@ -709,6 +709,7 @@ impl InsuranceFund {
 }
 
 #[derive(Clone, Copy, BorshSerialize, BorshDeserialize, PartialEq, Debug, Eq)]
+#[borsh(use_discriminant = true)]
 pub enum TokenProgramFlag {
     Token2022 = 0b00000001,
     TransferHook = 0b00000010,

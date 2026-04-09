@@ -112,7 +112,7 @@ pub fn handle_initialize_lp_pool(
 }
 
 pub fn handle_initialize_constituent<'info>(
-    ctx: Context<'_, '_, '_, 'info, InitializeConstituent<'info>>,
+    ctx: Context<'info, InitializeConstituent<'info>>,
     spot_market_index: u16,
     decimals: u8,
     max_weight_deviation: i64,
@@ -622,7 +622,7 @@ pub fn handle_update_constituent_correlation_data<'info>(
 }
 
 pub fn handle_begin_lp_swap<'c: 'info, 'info>(
-    ctx: Context<'_, '_, 'c, 'info, LPTakerSwap<'info>>,
+    ctx: Context<'info, LPTakerSwap<'info>>,
     in_market_index: u16,
     out_market_index: u16,
     amount_in: u64,
@@ -728,9 +728,9 @@ pub fn handle_begin_lp_swap<'c: 'info, 'info>(
             found_end = true;
 
             // must be the SwapEnd instruction
-            let discriminator = crate::instruction::EndLpSwap::discriminator();
+            let discriminator = crate::instruction::EndLpSwap::DISCRIMINATOR;
             validate!(
-                ix.data[0..8] == discriminator,
+                &ix.data[0..8] == discriminator,
                 ErrorCode::InvalidSwap,
                 "last drift ix must be end of swap"
             )?;
@@ -824,9 +824,7 @@ pub fn handle_begin_lp_swap<'c: 'info, 'info>(
     Ok(())
 }
 
-pub fn handle_end_lp_swap<'c: 'info, 'info>(
-    ctx: Context<'_, '_, 'c, 'info, LPTakerSwap<'info>>,
-) -> Result<()> {
+pub fn handle_end_lp_swap<'c: 'info, 'info>(ctx: Context<'info, LPTakerSwap<'info>>) -> Result<()> {
     let signer_in_token_account = &ctx.accounts.signer_in_token_account;
     let signer_out_token_account = &ctx.accounts.signer_out_token_account;
 
@@ -917,7 +915,7 @@ pub fn handle_update_perp_market_lp_pool_status(
 }
 
 pub fn handle_update_initial_amm_cache_info<'c: 'info, 'info>(
-    ctx: Context<'_, '_, 'c, 'info, UpdateInitialAmmCacheInfo<'info>>,
+    ctx: Context<'info, UpdateInitialAmmCacheInfo<'info>>,
 ) -> Result<()> {
     let amm_cache = &mut ctx.accounts.amm_cache;
     let slot = Clock::get()?.slot;
@@ -968,7 +966,7 @@ pub struct OverrideAmmCacheParams {
 }
 
 pub fn handle_override_amm_cache_info<'c: 'info, 'info>(
-    ctx: Context<'_, '_, 'c, 'info, UpdateInitialAmmCacheInfo<'info>>,
+    ctx: Context<'info, UpdateInitialAmmCacheInfo<'info>>,
     market_index: u16,
     override_params: OverrideAmmCacheParams,
 ) -> Result<()> {

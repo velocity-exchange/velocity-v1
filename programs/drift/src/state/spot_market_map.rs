@@ -183,7 +183,7 @@ impl<'a> SpotMarketMap<'a> {
         let mut spot_market_map: SpotMarketMap =
             SpotMarketMap(BTreeMap::new(), writable_spot_markets.clone());
 
-        let spot_market_discriminator: [u8; 8] = SpotMarket::discriminator();
+        let spot_market_discriminator: &[u8] = SpotMarket::DISCRIMINATOR;
         while let Some(account_info) = account_info_iter.peek() {
             let data = account_info
                 .try_borrow_data()
@@ -194,8 +194,8 @@ impl<'a> SpotMarketMap<'a> {
                 break;
             }
 
-            let account_discriminator = array_ref![data, 0, 8];
-            if account_discriminator != &spot_market_discriminator {
+            let account_discriminator = &data[..8];
+            if account_discriminator != spot_market_discriminator {
                 break;
             }
 
@@ -247,7 +247,7 @@ impl<'a> SpotMarketMap<'a> {
         let mut writable_markets = SpotMarketSet::new();
         let mut map = BTreeMap::new();
 
-        let spot_market_discriminator: [u8; 8] = SpotMarket::discriminator();
+        let spot_market_discriminator: &[u8] = SpotMarket::DISCRIMINATOR;
         let data = account_info
             .try_borrow_data()
             .or(Err(ErrorCode::CouldNotLoadSpotMarketData))?;
@@ -257,8 +257,8 @@ impl<'a> SpotMarketMap<'a> {
             return Err(ErrorCode::CouldNotLoadSpotMarketData);
         }
 
-        let account_discriminator = array_ref![data, 0, 8];
-        if account_discriminator != &spot_market_discriminator {
+        let account_discriminator = &data[..8];
+        if account_discriminator != spot_market_discriminator {
             return Err(ErrorCode::CouldNotLoadSpotMarketData);
         }
 
@@ -299,7 +299,7 @@ impl<'a> SpotMarketMap<'a> {
 
         let account_info_iter = account_info.into_iter();
         for account_info in account_info_iter {
-            let spot_market_discriminator: [u8; 8] = SpotMarket::discriminator();
+            let spot_market_discriminator: &[u8] = SpotMarket::DISCRIMINATOR;
             let data = account_info
                 .try_borrow_data()
                 .or(Err(ErrorCode::CouldNotLoadSpotMarketData))?;
@@ -309,8 +309,8 @@ impl<'a> SpotMarketMap<'a> {
                 return Err(ErrorCode::CouldNotLoadSpotMarketData);
             }
 
-            let account_discriminator = array_ref![data, 0, 8];
-            if account_discriminator != &spot_market_discriminator {
+            let account_discriminator = &data[..8];
+            if account_discriminator != spot_market_discriminator {
                 return Err(ErrorCode::CouldNotLoadSpotMarketData);
             }
 

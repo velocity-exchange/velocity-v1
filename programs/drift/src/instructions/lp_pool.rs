@@ -59,7 +59,7 @@ use crate::state::lp_pool::{
 };
 
 pub fn handle_update_constituent_target_base<'c: 'info, 'info>(
-    ctx: Context<'_, '_, 'c, 'info, UpdateConstituentTargetBase<'info>>,
+    ctx: Context<'info, UpdateConstituentTargetBase<'info>>,
 ) -> Result<()> {
     let slot = Clock::get()?.slot;
 
@@ -152,7 +152,7 @@ pub fn handle_update_constituent_target_base<'c: 'info, 'info>(
 }
 
 pub fn handle_update_lp_pool_aum<'c: 'info, 'info>(
-    ctx: Context<'_, '_, 'c, 'info, UpdateLPPoolAum<'info>>,
+    ctx: Context<'info, UpdateLPPoolAum<'info>>,
 ) -> Result<()> {
     let mut lp_pool = ctx.accounts.lp_pool.load_mut()?;
     let state = &ctx.accounts.state;
@@ -239,7 +239,7 @@ pub fn handle_update_lp_pool_aum<'c: 'info, 'info>(
     fill_not_paused(&ctx.accounts.state)
 )]
 pub fn handle_lp_pool_swap<'c: 'info, 'info>(
-    ctx: Context<'_, '_, 'c, 'info, LPPoolSwap<'info>>,
+    ctx: Context<'info, LPPoolSwap<'info>>,
     in_market_index: u16,
     out_market_index: u16,
     in_amount: u64,
@@ -519,7 +519,7 @@ pub fn handle_lp_pool_swap<'c: 'info, 'info>(
 }
 
 pub fn handle_view_lp_pool_swap_fees<'c: 'info, 'info>(
-    ctx: Context<'_, '_, 'c, 'info, ViewLPPoolSwapFees<'info>>,
+    ctx: Context<'info, ViewLPPoolSwapFees<'info>>,
     in_market_index: u16,
     out_market_index: u16,
     in_amount: u64,
@@ -621,7 +621,7 @@ pub fn handle_view_lp_pool_swap_fees<'c: 'info, 'info>(
     fill_not_paused(&ctx.accounts.state)
 )]
 pub fn handle_lp_pool_add_liquidity<'c: 'info, 'info>(
-    ctx: Context<'_, '_, 'c, 'info, LPPoolAddLiquidity<'info>>,
+    ctx: Context<'info, LPPoolAddLiquidity<'info>>,
     in_market_index: u16,
     in_amount: u128,
     min_mint_amount: u64,
@@ -880,7 +880,7 @@ pub fn handle_lp_pool_add_liquidity<'c: 'info, 'info>(
 }
 
 pub fn handle_view_lp_pool_add_liquidity_fees<'c: 'info, 'info>(
-    ctx: Context<'_, '_, 'c, 'info, ViewLPPoolAddLiquidityFees<'info>>,
+    ctx: Context<'info, ViewLPPoolAddLiquidityFees<'info>>,
     in_market_index: u16,
     in_amount: u128,
 ) -> Result<()> {
@@ -982,7 +982,7 @@ pub fn handle_view_lp_pool_add_liquidity_fees<'c: 'info, 'info>(
     fill_not_paused(&ctx.accounts.state)
 )]
 pub fn handle_lp_pool_remove_liquidity<'c: 'info, 'info>(
-    ctx: Context<'_, '_, 'c, 'info, LPPoolRemoveLiquidity<'info>>,
+    ctx: Context<'info, LPPoolRemoveLiquidity<'info>>,
     out_market_index: u16,
     lp_to_burn: u64,
     min_amount_out: u128,
@@ -1281,7 +1281,7 @@ pub fn handle_lp_pool_remove_liquidity<'c: 'info, 'info>(
     fill_not_paused(&ctx.accounts.state)
 )]
 pub fn handle_view_lp_pool_remove_liquidity_fees<'c: 'info, 'info>(
-    ctx: Context<'_, '_, 'c, 'info, ViewLPPoolRemoveLiquidityFees<'info>>,
+    ctx: Context<'info, ViewLPPoolRemoveLiquidityFees<'info>>,
     out_market_index: u16,
     lp_to_burn: u64,
 ) -> Result<()> {
@@ -1378,7 +1378,7 @@ pub fn handle_view_lp_pool_remove_liquidity_fees<'c: 'info, 'info>(
 }
 
 pub fn handle_update_constituent_oracle_info<'c: 'info, 'info>(
-    ctx: Context<'_, '_, 'c, 'info, UpdateConstituentOracleInfo<'info>>,
+    ctx: Context<'info, UpdateConstituentOracleInfo<'info>>,
 ) -> Result<()> {
     let clock = Clock::get()?;
     let mut constituent = ctx.accounts.constituent.load_mut()?;
@@ -1402,7 +1402,7 @@ pub fn handle_update_constituent_oracle_info<'c: 'info, 'info>(
 }
 
 pub fn handle_deposit_to_program_vault<'c: 'info, 'info>(
-    ctx: Context<'_, '_, 'c, 'info, DepositProgramVault<'info>>,
+    ctx: Context<'info, DepositProgramVault<'info>>,
     amount: u64,
 ) -> Result<()> {
     let clock = Clock::get()?;
@@ -1532,7 +1532,7 @@ pub fn handle_deposit_to_program_vault<'c: 'info, 'info>(
 }
 
 pub fn handle_withdraw_from_program_vault<'c: 'info, 'info>(
-    ctx: Context<'_, '_, 'c, 'info, WithdrawProgramVault<'info>>,
+    ctx: Context<'info, WithdrawProgramVault<'info>>,
     amount: u64,
 ) -> Result<()> {
     let state = &ctx.accounts.state;

@@ -1199,7 +1199,6 @@ impl HasLen for AmmConstituentMappingFixed {
 
 #[account]
 #[derive(Debug)]
-#[repr(C)]
 pub struct AmmConstituentMapping {
     pub lp_pool: Pubkey,
     pub bump: u8,
@@ -1265,7 +1264,6 @@ impl HasLen for ConstituentTargetBaseFixed {
 
 #[account]
 #[derive(Debug)]
-#[repr(C)]
 pub struct ConstituentTargetBase {
     pub lp_pool: Pubkey,
     pub bump: u8,
@@ -1548,7 +1546,6 @@ impl HasLen for ConstituentCorrelationsFixed {
 
 #[account]
 #[derive(Debug)]
-#[repr(C)]
 pub struct ConstituentCorrelations {
     pub lp_pool: Pubkey,
     pub bump: u8,

@@ -95,7 +95,7 @@ impl<'a> PerpMarketMap<'a> {
     ) -> DriftResult<PerpMarketMap<'a>> {
         let mut perp_market_map: PerpMarketMap = PerpMarketMap(BTreeMap::new());
 
-        let market_discriminator: [u8; 8] = PerpMarket::discriminator();
+        let market_discriminator: &[u8] = PerpMarket::DISCRIMINATOR;
         while let Some(account_info) = account_info_iter.peek() {
             let data = account_info
                 .try_borrow_data()
@@ -106,8 +106,8 @@ impl<'a> PerpMarketMap<'a> {
                 break;
             }
 
-            let account_discriminator = array_ref![data, 0, 8];
-            if account_discriminator != &market_discriminator {
+            let account_discriminator = &data[..8];
+            if account_discriminator != market_discriminator {
                 break;
             }
 
@@ -154,9 +154,9 @@ impl<'a> PerpMarketMap<'a> {
             return Err(ErrorCode::CouldNotLoadMarketData);
         }
 
-        let market_discriminator: [u8; 8] = PerpMarket::discriminator();
-        let account_discriminator = array_ref![data, 0, 8];
-        if account_discriminator != &market_discriminator {
+        let market_discriminator: &[u8] = PerpMarket::DISCRIMINATOR;
+        let account_discriminator = &data[..8];
+        if account_discriminator != market_discriminator {
             return Err(ErrorCode::CouldNotLoadMarketData);
         }
 
@@ -197,9 +197,9 @@ impl<'a> PerpMarketMap<'a> {
                 return Err(ErrorCode::CouldNotLoadMarketData);
             }
 
-            let market_discriminator: [u8; 8] = PerpMarket::discriminator();
-            let account_discriminator = array_ref![data, 0, 8];
-            if account_discriminator != &market_discriminator {
+            let market_discriminator: &[u8] = PerpMarket::DISCRIMINATOR;
+            let account_discriminator = &data[..8];
+            if account_discriminator != market_discriminator {
                 return Err(ErrorCode::CouldNotLoadMarketData);
             }
 

@@ -53,7 +53,7 @@ pub fn get_account_bytes<T: bytemuck::Pod>(account: &mut T) -> BytesMut {
 
 pub fn get_anchor_account_bytes<T: ZeroCopy + Owner>(account: &mut T) -> BytesMut {
     let mut bytes = BytesMut::new();
-    bytes.extend_from_slice(&T::discriminator());
+    bytes.extend_from_slice(&T::DISCRIMINATOR);
     let data = bytemuck::bytes_of_mut(account);
     bytes.extend_from_slice(data);
     bytes
@@ -66,7 +66,7 @@ pub fn create_account_info<'a>(
     bytes: &'a mut [u8],
     owner: &'a Pubkey,
 ) -> AccountInfo<'a> {
-    AccountInfo::new(key, false, is_writable, lamports, bytes, owner, false, 0)
+    AccountInfo::new(key, false, is_writable, lamports, bytes, owner, false)
 }
 
 pub fn get_pyth_price(price: i64, expo: i32) -> PythLazerOracle {

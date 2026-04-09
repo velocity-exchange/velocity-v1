@@ -456,7 +456,7 @@ mod get_max_fill_amounts {
     use crate::state::user::{Order, SpotPosition, User};
     use crate::test_utils::get_orders;
     use crate::LAMPORTS_PER_SOL_U64;
-    use anchor_spl::token::spl_token::solana_program::native_token::LAMPORTS_PER_SOL;
+    const LAMPORTS_PER_SOL: u64 = 1_000_000_000;
 
     #[test]
     fn fully_collateralized_selling_base() {

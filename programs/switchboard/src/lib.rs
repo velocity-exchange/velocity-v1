@@ -62,8 +62,8 @@ pub struct AggregatorRound {
 #[derive(Copy, Clone, Debug, AnchorSerialize, AnchorDeserialize, Eq, PartialEq)]
 #[repr(u8)]
 pub enum AggregatorResolutionMode {
-    ModeRoundResolution = 0,
-    ModeSlidingResolution = 1,
+    ModeRoundResolution,
+    ModeSlidingResolution,
 }
 
 #[account(zero_copy(unsafe))]
@@ -151,7 +151,7 @@ mod tests {
         bytes: &'a mut [u8],
         owner: &'a Pubkey,
     ) -> AccountInfo<'a> {
-        AccountInfo::new(key, false, is_writable, lamports, bytes, owner, false, 0)
+        AccountInfo::new(key, false, is_writable, lamports, bytes, owner, false)
     }
 
     #[test]

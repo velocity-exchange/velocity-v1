@@ -37,7 +37,7 @@ use crate::state::oracle::{
 };
 use crate::state::spot_market::{AssetTier, SpotBalance, SpotBalanceType};
 use crate::state::traits::{MarketIndexOffset, Size};
-use borsh::{BorshDeserialize, BorshSerialize};
+use anchor_lang::prelude::borsh::{BorshDeserialize, BorshSerialize};
 
 use crate::state::paused_operations::PerpOperation;
 use drift_macros::assert_no_slop;
@@ -69,7 +69,7 @@ impl LpStatus {
     }
 }
 
-#[derive(Clone, Copy, BorshSerialize, BorshDeserialize, PartialEq, Debug, Eq, Default)]
+#[derive(Clone, Copy, AnchorSerialize, AnchorDeserialize, PartialEq, Debug, Eq, Default)]
 pub enum ContractType {
     #[default]
     Perpetual,
@@ -78,7 +78,7 @@ pub enum ContractType {
 }
 
 #[derive(
-    Clone, Copy, BorshSerialize, BorshDeserialize, PartialEq, Debug, Eq, PartialOrd, Ord, Default,
+    Clone, Copy, AnchorSerialize, AnchorDeserialize, PartialEq, Debug, Eq, PartialOrd, Ord, Default,
 )]
 pub enum ContractTier {
     /// max insurance capped at A level
@@ -273,11 +273,11 @@ impl Default for PerpMarket {
 }
 
 impl Size for PerpMarket {
-    const SIZE: usize = 1216;
+    const SIZE: usize = 1240;
 }
 
 impl MarketIndexOffset for PerpMarket {
-    const MARKET_INDEX_OFFSET: usize = 1160;
+    const MARKET_INDEX_OFFSET: usize = 1176;
 }
 
 impl PerpMarket {
@@ -1531,11 +1531,11 @@ impl AMM {
         let oracle_exponent: i32;
 
         if oracle_source.is_pyth_pull_oracle() {
-            let price_message =
-                pyth_solana_receiver_sdk::price_update::PriceUpdateV2::try_deserialize(
-                    &mut pyth_price_data,
-                )
-                .or(Err(crate::error::ErrorCode::UnableToLoadOracle))?;
+            let price_message: crate::state::oracle::InlinePriceUpdateV2 = {
+                let data = &pyth_price_data[8..]; // skip discriminator
+                borsh::BorshDeserialize::try_from_slice(data)
+                    .or(Err(crate::error::ErrorCode::UnableToLoadOracle))?
+            };
             oracle_price = price_message.price_message.price;
             oracle_twap = price_message.price_message.ema_price;
             oracle_exponent = price_message.price_message.exponent;

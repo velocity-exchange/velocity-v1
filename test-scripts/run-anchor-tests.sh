@@ -97,6 +97,7 @@ test_files=(
   userOrderId.ts
   perpMarketConfig.ts
   # whitelist.ts
+  transferFeeAndPnlPool.ts
 )
 
 

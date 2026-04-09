@@ -247,6 +247,8 @@ pub struct PerpMarket {
     /// precision: 10
     pub fuel_boost_maker: u8,
     pub pool_id: u8,
+    /// Deprecated: formerly high_leverage_margin_ratio_initial and high_leverage_margin_ratio_maintenance
+    pub padding_former_hlm: [u8; 4],
     pub protected_maker_limit_price_divisor: u8,
     pub protected_maker_dynamic_divisor: u8,
     pub lp_fee_transfer_scalar: u8,
@@ -294,6 +296,7 @@ impl Default for PerpMarket {
             fuel_boost_taker: 0,
             fuel_boost_maker: 0,
             pool_id: 0,
+            padding_former_hlm: [0; 4],
             protected_maker_limit_price_divisor: 0,
             protected_maker_dynamic_divisor: 0,
             lp_fee_transfer_scalar: 0,

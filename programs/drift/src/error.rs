@@ -584,6 +584,9 @@ pub enum ErrorCode {
     InvalidSignedMsgOrderParam,
     #[msg("Place and take order success condition failed")]
     PlaceAndTakeOrderSuccessConditionFailed,
+    /// Deprecated: kept to preserve error code ordering
+    #[msg("Deprecated")]
+    DeprecatedHighLeverageModeConfig,
     #[msg("Invalid RFQ User Account")]
     InvalidRFQUserAccount,
     #[msg("RFQUserAccount should be mutable")]
@@ -630,6 +633,9 @@ pub enum ErrorCode {
     InvalidTransferPerpPosition,
     #[msg("Invalid SignedMsgUserOrders resize")]
     InvalidSignedMsgUserOrdersResize,
+    /// Deprecated: kept to preserve error code ordering
+    #[msg("Deprecated")]
+    DeprecatedCouldNotDeserializeHighLeverageModeConfig,
     #[msg("Invalid If Rebalance Config")]
     InvalidIfRebalanceConfig,
     #[msg("Invalid If Rebalance Swap")]

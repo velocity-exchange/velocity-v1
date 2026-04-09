@@ -18,7 +18,9 @@ use crate::math::oracle::{is_oracle_valid_for_action, DriftAction};
 use crate::math::safe_math::SafeMath;
 use crate::math::spot_balance::{get_strict_token_value, get_token_value};
 use crate::msg;
-use crate::state::margin_calculation::{MarginCalculation, MarginContext, MarketIdentifier};
+use crate::state::margin_calculation::{
+    MarginCalculation, MarginContext, MarginTypeConfig, MarketIdentifier,
+};
 use crate::state::oracle::{OraclePriceData, StrictOraclePrice};
 use crate::state::oracle_map::OracleMap;
 use crate::state::perp_market::{ContractTier, MarketStatus, PerpMarket};
@@ -569,17 +571,14 @@ pub fn calculate_margin_requirement_and_total_collateral_and_liability_info(
                 margin_ratio_override.max(perp_position_custom_margin_ratio);
         }
 
-        let perp_position_user_high_leverage_mode =
-            user.is_high_leverage_mode(position_margin_type);
-
         let (perp_margin_requirement, weighted_pnl, worst_case_liability_value, base_asset_value) =
             calculate_perp_position_value_and_pnl(
                 market_position,
                 market,
                 oracle_price_data,
                 &strict_quote_price,
-                context.margin_type,
-                user_custom_margin_ratio.max(perp_position_custom_margin_ratio),
+                position_margin_type,
+                perp_user_custom_margin_ratio.max(perp_position_custom_margin_ratio),
             )?;
 
         calculation.update_fuel_perp_bonus(

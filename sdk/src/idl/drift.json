@@ -3777,112 +3777,6 @@
       ]
     },
     {
-      "name": "updatePythPullOracle",
-      "accounts": [
-        {
-          "name": "keeper",
-          "isMut": true,
-          "isSigner": true
-        },
-        {
-          "name": "pythSolanaReceiver",
-          "isMut": false,
-          "isSigner": false
-        },
-        {
-          "name": "encodedVaa",
-          "isMut": false,
-          "isSigner": false
-        },
-        {
-          "name": "priceFeed",
-          "isMut": true,
-          "isSigner": false
-        }
-      ],
-      "args": [
-        {
-          "name": "feedId",
-          "type": {
-            "array": [
-              "u8",
-              32
-            ]
-          }
-        },
-        {
-          "name": "params",
-          "type": "bytes"
-        }
-      ]
-    },
-    {
-      "name": "postPythPullOracleUpdateAtomic",
-      "accounts": [
-        {
-          "name": "keeper",
-          "isMut": true,
-          "isSigner": true
-        },
-        {
-          "name": "pythSolanaReceiver",
-          "isMut": false,
-          "isSigner": false
-        },
-        {
-          "name": "guardianSet",
-          "isMut": false,
-          "isSigner": false
-        },
-        {
-          "name": "priceFeed",
-          "isMut": true,
-          "isSigner": false
-        }
-      ],
-      "args": [
-        {
-          "name": "feedId",
-          "type": {
-            "array": [
-              "u8",
-              32
-            ]
-          }
-        },
-        {
-          "name": "params",
-          "type": "bytes"
-        }
-      ]
-    },
-    {
-      "name": "postMultiPythPullOracleUpdatesAtomic",
-      "accounts": [
-        {
-          "name": "keeper",
-          "isMut": true,
-          "isSigner": true
-        },
-        {
-          "name": "pythSolanaReceiver",
-          "isMut": false,
-          "isSigner": false
-        },
-        {
-          "name": "guardianSet",
-          "isMut": false,
-          "isSigner": false
-        }
-      ],
-      "args": [
-        {
-          "name": "params",
-          "type": "bytes"
-        }
-      ]
-    },
-    {
       "name": "pauseSpotMarketDepositWithdraw",
       "accounts": [
         {
@@ -7192,47 +7086,6 @@
       ]
     },
     {
-      "name": "initializePythPullOracle",
-      "accounts": [
-        {
-          "name": "admin",
-          "isMut": true,
-          "isSigner": true
-        },
-        {
-          "name": "pythSolanaReceiver",
-          "isMut": false,
-          "isSigner": false
-        },
-        {
-          "name": "priceFeed",
-          "isMut": true,
-          "isSigner": false
-        },
-        {
-          "name": "systemProgram",
-          "isMut": false,
-          "isSigner": false
-        },
-        {
-          "name": "state",
-          "isMut": false,
-          "isSigner": false
-        }
-      ],
-      "args": [
-        {
-          "name": "feedId",
-          "type": {
-            "array": [
-              "u8",
-              32
-            ]
-          }
-        }
-      ]
-    },
-    {
       "name": "initializePythLazerOracle",
       "accounts": [
         {
@@ -10416,6 +10269,18 @@
             "type": "u8"
           },
           {
+            "name": "paddingFormerHlm",
+            "docs": [
+              "Deprecated: formerly high_leverage_margin_ratio_initial and high_leverage_margin_ratio_maintenance"
+            ],
+            "type": {
+              "array": [
+                "u8",
+                4
+              ]
+            }
+          },
+          {
             "name": "protectedMakerLimitPriceDivisor",
             "type": "u8"
           },
@@ -11529,10 +11394,8 @@
             "type": "bool"
           },
           {
-            "name": "marginMode",
-            "type": {
-              "defined": "MarginMode"
-            }
+            "name": "paddingFormerMarginMode",
+            "type": "u8"
           },
           {
             "name": "poolId",
@@ -16229,17 +16092,6 @@
       }
     },
     {
-      "name": "MarginMode",
-      "type": {
-        "kind": "enum",
-        "variants": [
-          {
-            "name": "Default"
-          }
-        ]
-      }
-    },
-    {
       "name": "FuelOverflowStatus",
       "type": {
         "kind": "enum",
@@ -17521,6 +17373,56 @@
         {
           "name": "transferAmount",
           "type": "u64",
+          "index": false
+        }
+      ]
+    },
+    {
+      "name": "AdminWithdrawFromInsuranceFundRecord",
+      "fields": [
+        {
+          "name": "ts",
+          "type": "i64",
+          "index": false
+        },
+        {
+          "name": "marketIndex",
+          "type": "u16",
+          "index": false
+        },
+        {
+          "name": "admin",
+          "type": "publicKey",
+          "index": false
+        },
+        {
+          "name": "amount",
+          "type": "u64",
+          "index": false
+        },
+        {
+          "name": "sharesBurned",
+          "type": "u128",
+          "index": false
+        },
+        {
+          "name": "insuranceFundVaultAmountBefore",
+          "type": "u64",
+          "index": false
+        },
+        {
+          "name": "protocolSharesBefore",
+          "type": "u128",
+          "index": false
+        },
+        {
+          "name": "protocolSharesAfter",
+          "type": "u128",
+          "index": false
+        },
+        {
+          "name": "recipientTokenAccount",
+          "type": "publicKey",
           "index": false
         }
       ]
@@ -19618,6 +19520,11 @@
       "msg": "Place and take order success condition failed"
     },
     {
+      "code": 6290,
+      "name": "DeprecatedHighLeverageModeConfig",
+      "msg": "Deprecated"
+    },
+    {
       "code": 6291,
       "name": "InvalidRFQUserAccount",
       "msg": "Invalid RFQ User Account"
@@ -19731,6 +19638,11 @@
       "code": 6313,
       "name": "InvalidSignedMsgUserOrdersResize",
       "msg": "Invalid SignedMsgUserOrders resize"
+    },
+    {
+      "code": 6314,
+      "name": "DeprecatedCouldNotDeserializeHighLeverageModeConfig",
+      "msg": "Deprecated"
     },
     {
       "code": 6315,
@@ -19901,6 +19813,14 @@
       "code": 6348,
       "name": "InvalidPerpMarketConfig",
       "msg": "Invalid perp market config"
+    },
+    {
+      "code": 6349,
+      "name": "InvalidInsuranceFundWithdrawalRecipient",
+      "msg": "Insurance fund withdrawal recipient must be the designated treasury address"
     }
-  ]
+  ],
+  "metadata": {
+    "address": "dRiftyHA39MWEi3m9aunc5MzRF1JYuBsbn6VPcn33UH"
+  }
 }

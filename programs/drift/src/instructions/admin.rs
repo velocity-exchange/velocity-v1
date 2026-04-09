@@ -993,6 +993,7 @@ pub fn handle_initialize_perp_market(
         fuel_boost_taker: 1,
         fuel_boost_maker: 1,
         pool_id: 0,
+        padding_former_hlm: [0; 4],
         protected_maker_limit_price_divisor: 0,
         protected_maker_dynamic_divisor: 0,
         lp_fee_transfer_scalar: 1,

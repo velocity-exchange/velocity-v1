@@ -414,7 +414,6 @@ mod calculate_fee_for_taker_and_maker {
         assert_eq!(referrer_reward, 0);
         assert_eq!(referee_discount, 0);
 
-        // test HLM
         let FillFees {
             user_fee: taker_fee,
             maker_rebate,

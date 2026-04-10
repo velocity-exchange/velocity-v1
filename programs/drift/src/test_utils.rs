@@ -51,12 +51,63 @@ pub fn get_account_bytes<T: bytemuck::Pod>(account: &mut T) -> BytesMut {
     bytes
 }
 
-pub fn get_anchor_account_bytes<T: ZeroCopy + Owner>(account: &mut T) -> BytesMut {
-    let mut bytes = BytesMut::new();
-    bytes.extend_from_slice(&T::DISCRIMINATOR);
-    let data = bytemuck::bytes_of_mut(account);
-    bytes.extend_from_slice(data);
-    bytes
+/// Returns account bytes where the struct data (at offset 8 from the disc) is
+/// properly aligned for bytemuck::from_bytes. Allocates a 16-byte-aligned buffer
+/// with an 8-byte prefix so that bytes[8..] is 16-byte aligned.
+pub fn get_anchor_account_bytes<T: ZeroCopy + Owner>(account: &mut T) -> AlignedAccountBytes {
+    let disc = T::DISCRIMINATOR;
+    let struct_bytes = bytemuck::bytes_of_mut(account);
+    let struct_align = std::mem::align_of::<T>();
+    let disc_len = disc.len();
+    let data_len = disc_len + struct_bytes.len();
+
+    // Allocate: we need (ptr + disc_len) to be struct_align-aligned.
+    // Over-allocate with struct_align*2 alignment and struct_align extra bytes,
+    // then find the right offset within the allocation.
+    let alloc_align = struct_align.max(16);
+    let alloc_size = data_len + alloc_align;
+    let layout = std::alloc::Layout::from_size_align(alloc_size, alloc_align).unwrap();
+    let base = unsafe { std::alloc::alloc_zeroed(layout) };
+    assert!(!base.is_null());
+
+    // Find offset where (base + offset + disc_len) % struct_align == 0
+    let base_addr = base as usize;
+    let remainder = (base_addr + disc_len) % struct_align;
+    let offset = if remainder == 0 { 0 } else { struct_align - remainder };
+    let data_ptr = unsafe { base.add(offset) };
+
+    unsafe {
+        std::ptr::copy_nonoverlapping(disc.as_ptr(), data_ptr, disc_len);
+        std::ptr::copy_nonoverlapping(struct_bytes.as_ptr(), data_ptr.add(disc_len), struct_bytes.len());
+    }
+
+    AlignedAccountBytes { base, data_ptr, data_len, layout }
+}
+
+pub struct AlignedAccountBytes {
+    base: *mut u8,
+    data_ptr: *mut u8,
+    data_len: usize,
+    layout: std::alloc::Layout,
+}
+
+impl std::ops::Deref for AlignedAccountBytes {
+    type Target = [u8];
+    fn deref(&self) -> &[u8] {
+        unsafe { std::slice::from_raw_parts(self.data_ptr, self.data_len) }
+    }
+}
+
+impl std::ops::DerefMut for AlignedAccountBytes {
+    fn deref_mut(&mut self) -> &mut [u8] {
+        unsafe { std::slice::from_raw_parts_mut(self.data_ptr, self.data_len) }
+    }
+}
+
+impl Drop for AlignedAccountBytes {
+    fn drop(&mut self) {
+        unsafe { std::alloc::dealloc(self.base, self.layout) }
+    }
 }
 
 pub fn create_account_info<'a>(

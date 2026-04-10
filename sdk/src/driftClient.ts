@@ -5895,34 +5895,7 @@ export class DriftClient {
 			authority?: PublicKey;
 		}
 	): Promise<TransactionInstruction> {
-<<<<<<< HEAD
 		throw new Error(SPOT_DLOB_TRADING_DISABLED_MSG);
-=======
-		orderParams = getOrderParams(orderParams, { marketType: MarketType.SPOT });
-		const userAccountPublicKey = await this.getUserAccountPublicKey(
-			subAccountId
-		);
-		const authority = overrides?.authority ?? this.wallet.publicKey;
-
-		const remainingAccounts = this.getRemainingAccounts({
-			userAccounts: [this.getUserAccount(subAccountId)],
-			useMarketLastSlotCache: true,
-			readableSpotMarketIndexes: [
-				orderParams.marketIndex,
-				QUOTE_SPOT_MARKET_INDEX,
-			],
-		});
-
-		return await (this.program.instruction as any).placeSpotOrder(orderParams, {
-			accounts: {
-				state: await this.getStatePublicKey(),
-				user: userAccountPublicKey,
-				userStats: this.getUserStatsAccountPublicKey(),
-				authority,
-			},
-			remainingAccounts,
-		});
->>>>>>> 1bff97c44 (chore(sdk): bump @coral-xyz/anchor to 0.32.1, fix tsc compile)
 	}
 
 	public async fillSpotOrder(

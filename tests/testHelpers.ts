@@ -1270,7 +1270,7 @@ export async function getPerpMarketDecoded(
 		perpMarketPublicKey
 	);
 	const perpMarketAccount: PerpMarketAccount =
-		driftClient.program.coder.accounts.decode('PerpMarket', accountInfo!.data);
+		driftClient.program.coder.accounts.decode('perpMarket', accountInfo!.data);
 	return perpMarketAccount;
 }
 

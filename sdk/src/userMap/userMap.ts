@@ -485,11 +485,11 @@ export class UserMap implements UserMapInterface {
 						const currAccountWithSlot = this.getWithSlot(key);
 						if (currAccountWithSlot) {
 							if (slot >= currAccountWithSlot.slot) {
-								const userAccount = this.decode('User', buffer);
+								const userAccount = this.decode('user', buffer);
 								this.updateUserAccount(key, userAccount, slot);
 							}
 						} else {
-							const userAccount = this.decode('User', buffer);
+							const userAccount = this.decode('user', buffer);
 							await this.addPubkey(new PublicKey(key), userAccount, slot);
 						}
 					})()
@@ -591,7 +591,7 @@ export class UserMap implements UserMapInterface {
 						const buffer = Buffer.from(accountInfo.data);
 						programAccountBufferMap.set(publicKeyString, buffer);
 
-						const decodedUser = this.decode('User', buffer);
+						const decodedUser = this.decode('user', buffer);
 
 						const currAccountWithSlot = this.getWithSlot(publicKeyString);
 						if (

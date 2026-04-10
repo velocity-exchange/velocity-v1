@@ -81,9 +81,10 @@ export class PollingInsuranceFundStakeAccountSubscriber
 					return;
 				}
 
-				const account = (
-					this.program.account as any
-				).user.coder.accounts.decode('InsuranceFundStake', buffer);
+				const account = this.program.coder.accounts.decode(
+					'insuranceFundStake',
+					buffer
+				);
 				this.insuranceFundStakeAccountAndSlot = { data: account, slot };
 				this.eventEmitter.emit('insuranceFundStakeAccountUpdate', account);
 				this.eventEmitter.emit('update');

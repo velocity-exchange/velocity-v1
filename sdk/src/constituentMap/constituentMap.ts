@@ -169,11 +169,11 @@ export class ConstituentMap implements ConstituentMapInterface {
 
 					if (currAccountWithSlot) {
 						if (slot >= currAccountWithSlot.slot) {
-							const constituentAcc = this.decode('Constituent', buffer);
+							const constituentAcc = this.decode('constituent', buffer);
 							this.updateConstituentAccount(key, constituentAcc, slot);
 						}
 					} else {
-						const constituentAcc = this.decode('Constituent', buffer);
+						const constituentAcc = this.decode('constituent', buffer);
 						this.updateConstituentAccount(key, constituentAcc, slot);
 					}
 				}

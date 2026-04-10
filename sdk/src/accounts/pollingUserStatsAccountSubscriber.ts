@@ -74,9 +74,10 @@ export class PollingUserStatsAccountSubscriber
 					return;
 				}
 
-				const account = (
-					this.program.account as any
-				).userStats.coder.accounts.decodeUnchecked('UserStats', buffer);
+				const account = this.program.coder.accounts.decodeUnchecked(
+					'userStats',
+					buffer
+				);
 				this.userStats = { data: account, slot };
 				this.eventEmitter.emit('userStatsAccountUpdate', account);
 				this.eventEmitter.emit('update');

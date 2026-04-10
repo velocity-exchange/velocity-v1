@@ -318,7 +318,7 @@ export class UserStatsMap {
 						if (!this.has(publicKeyString)) {
 							const buffer = Buffer.from(accountInfo.data);
 							const decodedUserStats = this.decode(
-								'UserStats',
+								'userStats',
 								buffer
 							) as UserStatsAccount;
 							programAccountBufferMap.add(

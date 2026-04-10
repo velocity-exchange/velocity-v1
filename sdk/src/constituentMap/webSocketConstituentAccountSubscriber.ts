@@ -48,7 +48,7 @@ export class WebSocketConstituentAccountSubscriber
 		this.constituentDataAccountSubscriber =
 			new WebSocketProgramAccountSubscriber<ConstituentAccount>(
 				'LpPoolConstituent',
-				'Constituent',
+				'constituent',
 				this.program,
 				(this.program.account as any).constituent.coder.accounts.decode.bind(
 					(this.program.account as any).constituent.coder.accounts

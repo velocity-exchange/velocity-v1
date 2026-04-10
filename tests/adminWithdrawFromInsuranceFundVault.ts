@@ -108,7 +108,7 @@ describe('admin withdraw from insurance fund vault', () => {
 			'base64'
 		);
 		const prodSpotMarket = chProgram.coder.accounts.decode(
-			'SpotMarket',
+			'spotMarket',
 			prodSpotMarketData
 		);
 

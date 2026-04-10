@@ -202,7 +202,7 @@ export class WebSocketDriftClientAccountSubscriberV2
 			this.perpMarketAllAccountsSubscriber =
 				new WebSocketProgramAccountsSubscriberV2<PerpMarketAccount>(
 					'PerpMarketAccountsSubscriber',
-					'PerpMarket',
+					'perpMarket',
 					this.program,
 					(
 						this.program.account as any
@@ -220,7 +220,7 @@ export class WebSocketDriftClientAccountSubscriberV2
 			this.spotMarketAllAccountsSubscriber =
 				new WebSocketProgramAccountsSubscriberV2<SpotMarketAccount>(
 					'SpotMarketAccountsSubscriber',
-					'SpotMarket',
+					'spotMarket',
 					this.program,
 					(
 						this.program.account as any

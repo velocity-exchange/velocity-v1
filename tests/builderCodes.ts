@@ -349,7 +349,7 @@ describe('builder codes', () => {
 
 		const builderAcc: RevenueShareAccount =
 			builderClient.program.account.revenueShare.coder.accounts.decodeUnchecked(
-				'RevenueShare',
+				'revenueShare',
 				builderAccountInfo.data
 			);
 		assert(
@@ -392,7 +392,7 @@ describe('builder codes', () => {
 
 		const revShareEscrow: RevenueShareEscrowAccount =
 			builderClient.program.coder.accounts.decodeUnchecked(
-				'RevenueShareEscrow',
+				'revenueShareEscrow',
 				accountInfo.data
 			);
 		assert(
@@ -442,7 +442,7 @@ describe('builder codes', () => {
 
 		const revShareEscrow: RevenueShareEscrowAccount =
 			builderClient.program.coder.accounts.decodeUnchecked(
-				'RevenueShareEscrow',
+				'revenueShareEscrow',
 				accountInfo.data
 			);
 		assert(
@@ -477,7 +477,7 @@ describe('builder codes', () => {
 
 		let revShareEscrow: RevenueShareEscrowAccount =
 			userClient.program.coder.accounts.decodeUnchecked(
-				'RevenueShareEscrow',
+				'revenueShareEscrow',
 				accountInfo.data
 			);
 		const addedBuilder = revShareEscrow.approvedBuilders.find(
@@ -512,7 +512,7 @@ describe('builder codes', () => {
 		);
 
 		revShareEscrow = userClient.program.coder.accounts.decodeUnchecked(
-			'RevenueShareEscrow',
+			'revenueShareEscrow',
 			accountInfo.data
 		);
 		const updatedBuilder = revShareEscrow.approvedBuilders.find(
@@ -543,7 +543,7 @@ describe('builder codes', () => {
 		);
 
 		revShareEscrow = userClient.program.coder.accounts.decodeUnchecked(
-			'RevenueShareEscrow',
+			'revenueShareEscrow',
 			accountInfo.data
 		);
 		const removedBuilder = revShareEscrow.approvedBuilders.find(
@@ -1257,7 +1257,7 @@ describe('builder codes', () => {
 			);
 		const builderAccBefore: RevenueShareAccount =
 			builderClient.program.account.revenueShare.coder.accounts.decodeUnchecked(
-				'RevenueShare',
+				'revenueShare',
 				builderAccountInfoBefore.data
 			);
 
@@ -1416,7 +1416,7 @@ describe('builder codes', () => {
 			);
 		const builderAccAfter: RevenueShareAccount =
 			builderClient.program.account.revenueShare.coder.accounts.decodeUnchecked(
-				'RevenueShare',
+				'revenueShare',
 				builderAccountInfoAfter.data
 			);
 		assert(

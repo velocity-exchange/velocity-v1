@@ -7794,11 +7794,11 @@ export class DriftClient {
 			prefix,
 			delegateSigner
 				? this.program.coder.types.encode(
-						'SignedMsgOrderParamsDelegateMessage',
+						'signedMsgOrderParamsDelegateMessage',
 						withBuilderDefaults as SignedMsgOrderParamsDelegateMessage
 				  )
 				: this.program.coder.types.encode(
-						'SignedMsgOrderParamsMessage',
+						'signedMsgOrderParamsMessage',
 						withBuilderDefaults as SignedMsgOrderParamsMessage
 				  ),
 		]);
@@ -7816,8 +7816,8 @@ export class DriftClient {
 		delegateSigner?: boolean
 	): SignedMsgOrderParamsMessage | SignedMsgOrderParamsDelegateMessage {
 		const decodeStr = delegateSigner
-			? 'SignedMsgOrderParamsDelegateMessage'
-			: 'SignedMsgOrderParamsMessage';
+			? 'signedMsgOrderParamsDelegateMessage'
+			: 'signedMsgOrderParamsMessage';
 		return this.program.coder.types.decode(
 			decodeStr,
 			Buffer.concat([

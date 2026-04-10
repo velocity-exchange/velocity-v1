@@ -185,7 +185,7 @@ export class OrderSubscriber {
 					return;
 				}
 
-				userAccount = this.decodeFn('User', buffer) as UserAccount;
+				userAccount = this.decodeFn('user', buffer) as UserAccount;
 			} else if (dataType === 'buffer') {
 				const buffer: Buffer = data as Buffer;
 				const newLastActiveSlot = new BN(
@@ -200,7 +200,7 @@ export class OrderSubscriber {
 					return;
 				}
 
-				userAccount = this.decodeFn('User', data as Buffer) as UserAccount;
+				userAccount = this.decodeFn('user', data as Buffer) as UserAccount;
 			} else {
 				userAccount = data as UserAccount;
 			}

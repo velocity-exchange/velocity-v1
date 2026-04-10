@@ -23,7 +23,7 @@ export class PrelaunchOracleClient implements OracleClient {
 		const prelaunchOracle = (
 			this.program.account as any
 		).prelaunchOracle.coder.accounts.decodeUnchecked(
-			'PrelaunchOracle',
+			'prelaunchOracle',
 			buffer
 		) as PrelaunchOracle;
 

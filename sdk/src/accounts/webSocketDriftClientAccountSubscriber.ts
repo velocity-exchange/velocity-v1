@@ -237,7 +237,7 @@ export class WebSocketDriftClientAccountSubscriber
 					.filter((accountInfo) => !!accountInfo)
 					.map((accountInfo) => {
 						const perpMarket = this.program.coder.accounts.decode(
-							'PerpMarket',
+							'perpMarket',
 							accountInfo.data
 						);
 						return [perpMarket.marketIndex, perpMarket];
@@ -262,7 +262,7 @@ export class WebSocketDriftClientAccountSubscriber
 					.filter((accountInfo) => !!accountInfo)
 					.map((accountInfo) => {
 						const spotMarket = this.program.coder.accounts.decode(
-							'SpotMarket',
+							'spotMarket',
 							accountInfo.data
 						);
 						return [spotMarket.marketIndex, spotMarket];

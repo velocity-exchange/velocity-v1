@@ -81,7 +81,7 @@ export class SignedMsgUserOrdersAccountSubscriber {
 			this.subscriber =
 				new WebSocketProgramAccountSubscriber<SignedMsgUserOrdersAccount>(
 					'SingedMsgUserOrdersAccountMap',
-					'SignedMsgUserOrders',
+					'signedMsgUserOrders',
 					this.driftClient.program,
 					this.decodeFn,
 					{
@@ -180,7 +180,7 @@ export class SignedMsgUserOrdersAccountSubscriber {
 
 		const signedMsgUserOrdersAccount =
 			dataType === 'buffer'
-				? this.decodeFn('SignedMsgUserOrders', data as Buffer)
+				? this.decodeFn('signedMsgUserOrders', data as Buffer)
 				: (data as SignedMsgUserOrdersAccount);
 
 		const key = signedMsgUserOrdersAccount.authorityPubkey.toBase58();

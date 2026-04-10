@@ -12133,6 +12133,10 @@ export type Drift = {
 			name: 'transferProtocolIfSharesToRevenuePoolRecord';
 			discriminator: [209, 118, 142, 167, 130, 46, 164, 151];
 		},
+		{
+			name: 'signedMsgOrderParamsExport';
+			discriminator: [141, 81, 104, 63, 186, 109, 87, 251];
+		},
 	];
 	errors: [
 		{
@@ -19737,6 +19741,154 @@ export type Drift = {
 			};
 		},
 		{
+			name: 'signedMsgOrderParamsDelegateMessage';
+			type: {
+				kind: 'struct';
+				fields: [
+					{
+						name: 'signedMsgOrderParams';
+						type: {
+							defined: {
+								name: 'orderParams';
+							};
+						};
+					},
+					{
+						name: 'takerPubkey';
+						type: 'pubkey';
+					},
+					{
+						name: 'slot';
+						type: 'u64';
+					},
+					{
+						name: 'uuid';
+						type: {
+							array: ['u8', 8];
+						};
+					},
+					{
+						name: 'takeProfitOrderParams';
+						type: {
+							option: {
+								defined: {
+									name: 'signedMsgTriggerOrderParams';
+								};
+							};
+						};
+					},
+					{
+						name: 'stopLossOrderParams';
+						type: {
+							option: {
+								defined: {
+									name: 'signedMsgTriggerOrderParams';
+								};
+							};
+						};
+					},
+					{
+						name: 'maxMarginRatio';
+						type: {
+							option: 'u16';
+						};
+					},
+					{
+						name: 'builderIdx';
+						type: {
+							option: 'u8';
+						};
+					},
+					{
+						name: 'builderFeeTenthBps';
+						type: {
+							option: 'u16';
+						};
+					},
+					{
+						name: 'isolatedPositionDeposit';
+						type: {
+							option: 'u64';
+						};
+					},
+				];
+			};
+		},
+		{
+			name: 'signedMsgOrderParamsMessage';
+			type: {
+				kind: 'struct';
+				fields: [
+					{
+						name: 'signedMsgOrderParams';
+						type: {
+							defined: {
+								name: 'orderParams';
+							};
+						};
+					},
+					{
+						name: 'subAccountId';
+						type: 'u16';
+					},
+					{
+						name: 'slot';
+						type: 'u64';
+					},
+					{
+						name: 'uuid';
+						type: {
+							array: ['u8', 8];
+						};
+					},
+					{
+						name: 'takeProfitOrderParams';
+						type: {
+							option: {
+								defined: {
+									name: 'signedMsgTriggerOrderParams';
+								};
+							};
+						};
+					},
+					{
+						name: 'stopLossOrderParams';
+						type: {
+							option: {
+								defined: {
+									name: 'signedMsgTriggerOrderParams';
+								};
+							};
+						};
+					},
+					{
+						name: 'maxMarginRatio';
+						type: {
+							option: 'u16';
+						};
+					},
+					{
+						name: 'builderIdx';
+						type: {
+							option: 'u8';
+						};
+					},
+					{
+						name: 'builderFeeTenthBps';
+						type: {
+							option: 'u16';
+						};
+					},
+					{
+						name: 'isolatedPositionDeposit';
+						type: {
+							option: 'u64';
+						};
+					},
+				];
+			};
+		},
+		{
 			name: 'signedMsgOrderRecord';
 			type: {
 				kind: 'struct';
@@ -19774,6 +19926,22 @@ export type Drift = {
 					{
 						name: 'ts';
 						type: 'i64';
+					},
+				];
+			};
+		},
+		{
+			name: 'signedMsgTriggerOrderParams';
+			type: {
+				kind: 'struct';
+				fields: [
+					{
+						name: 'triggerPrice';
+						type: 'u64';
+					},
+					{
+						name: 'baseAssetAmount';
+						type: 'u64';
 					},
 				];
 			};
@@ -21409,6 +21577,33 @@ export type Drift = {
 					{
 						name: 'tooVolatileRatio';
 						type: 'i64';
+					},
+				];
+			};
+		},
+		{
+			name: 'signedMsgOrderParamsExport';
+			docs: [
+				'unusued placeholder event to force include signed msg types into drift IDL',
+			];
+			type: {
+				kind: 'struct';
+				fields: [
+					{
+						name: 'a';
+						type: {
+							defined: {
+								name: 'signedMsgOrderParamsMessage';
+							};
+						};
+					},
+					{
+						name: 'b';
+						type: {
+							defined: {
+								name: 'signedMsgOrderParamsDelegateMessage';
+							};
+						};
 					},
 				];
 			};

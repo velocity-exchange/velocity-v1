@@ -32,7 +32,7 @@ export class AuctionSubscriber {
 		if (!this.subscriber) {
 			this.subscriber = new WebSocketProgramAccountSubscriber<UserAccount>(
 				'AuctionSubscriber',
-				'User',
+				'user',
 				this.driftClient.program,
 				(
 					this.driftClient.program.account as any

@@ -44,7 +44,7 @@ export async function fetchUserAccountsUsingKeys(
 			return undefined;
 		}
 		return (program.account as any).user.coder.accounts.decodeUnchecked(
-			'User',
+			'user',
 			accountInfo.data
 		) as UserAccount;
 	});
@@ -66,7 +66,7 @@ export async function fetchUserStatsAccount(
 
 	return accountInfo
 		? ((program.account as any).user.coder.accounts.decodeUnchecked(
-				'UserStats',
+				'userStats',
 				accountInfo.data
 		  ) as UserStatsAccount)
 		: undefined;
@@ -86,7 +86,7 @@ export async function fetchRevenueShareAccount(
 	);
 	if (!accountInfo) return null;
 	return (program.account as any).revenueShare.coder.accounts.decode(
-		'RevenueShare',
+		'revenueShare',
 		accountInfo.data
 	) as RevenueShareAccount;
 }
@@ -108,7 +108,7 @@ export async function fetchRevenueShareEscrowAccount(
 	const escrowAccount = (
 		program.account as any
 	).revenueShareEscrow.coder.accounts.decode(
-		'RevenueShareEscrow',
+		'revenueShareEscrow',
 		escrow.data
 	) as RevenueShareEscrowAccount;
 

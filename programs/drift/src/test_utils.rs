@@ -73,15 +73,28 @@ pub fn get_anchor_account_bytes<T: ZeroCopy + Owner>(account: &mut T) -> Aligned
     // Find offset where (base + offset + disc_len) % struct_align == 0
     let base_addr = base as usize;
     let remainder = (base_addr + disc_len) % struct_align;
-    let offset = if remainder == 0 { 0 } else { struct_align - remainder };
+    let offset = if remainder == 0 {
+        0
+    } else {
+        struct_align - remainder
+    };
     let data_ptr = unsafe { base.add(offset) };
 
     unsafe {
         std::ptr::copy_nonoverlapping(disc.as_ptr(), data_ptr, disc_len);
-        std::ptr::copy_nonoverlapping(struct_bytes.as_ptr(), data_ptr.add(disc_len), struct_bytes.len());
+        std::ptr::copy_nonoverlapping(
+            struct_bytes.as_ptr(),
+            data_ptr.add(disc_len),
+            struct_bytes.len(),
+        );
     }
 
-    AlignedAccountBytes { base, data_ptr, data_len, layout }
+    AlignedAccountBytes {
+        base,
+        data_ptr,
+        data_len,
+        layout,
+    }
 }
 
 pub struct AlignedAccountBytes {
@@ -109,8 +122,6 @@ impl Drop for AlignedAccountBytes {
         unsafe { std::alloc::dealloc(self.base, self.layout) }
     }
 }
-
-
 
 pub fn create_account_info<'a>(
     key: &'a Pubkey,

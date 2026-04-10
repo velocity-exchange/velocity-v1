@@ -65,7 +65,6 @@ mod size {
     }
 }
 
-
 mod market_index_offset {
     use crate::create_anchor_account_info;
     use crate::state::perp_market::PerpMarket;

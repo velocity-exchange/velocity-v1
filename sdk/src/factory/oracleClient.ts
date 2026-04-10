@@ -4,7 +4,8 @@ import { OracleClient } from '../oracles/types';
 import { PythClient } from '../oracles/pythClient';
 // import { SwitchboardClient } from '../oracles/switchboardClient';
 import { QuoteAssetOracleClient } from '../oracles/quoteAssetOracleClient';
-import { BN, Program } from '@coral-xyz/anchor';
+import { BN } from '@coral-xyz/anchor';
+import { DriftProgram } from '../config';
 import { PrelaunchOracleClient } from '../oracles/prelaunchOracleClient';
 import { SwitchboardClient } from '../oracles/switchboardClient';
 import { PythPullClient } from '../oracles/pythPullClient';
@@ -14,7 +15,7 @@ import { PythLazerClient } from '../oracles/pythLazerClient';
 export function getOracleClient(
 	oracleSource: OracleSource,
 	connection: Connection,
-	program: Program
+	program: DriftProgram
 ): OracleClient {
 	if (isVariant(oracleSource, 'pyth')) {
 		return new PythClient(connection);

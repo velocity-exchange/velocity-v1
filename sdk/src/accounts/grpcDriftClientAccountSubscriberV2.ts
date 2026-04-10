@@ -1,9 +1,8 @@
 import StrictEventEmitter from 'strict-event-emitter-types';
 import { EventEmitter } from 'events';
 import { OracleInfo, OraclePriceData } from '../oracles/types';
-import { Program } from '@coral-xyz/anchor';
 import { PublicKey } from '@solana/web3.js';
-import { findAllMarketAndOracles } from '../config';
+import { findAllMarketAndOracles, DriftProgram } from '../config';
 import {
 	getDriftStateAccountPublicKey,
 	getPerpMarketPublicKey,
@@ -51,7 +50,7 @@ export class grpcDriftClientAccountSubscriberV2
 	>;
 	public isSubscribed: boolean;
 	public isSubscribing: boolean;
-	public program: Program;
+	public program: DriftProgram;
 	public perpMarketIndexes: number[];
 	public spotMarketIndexes: number[];
 	public shouldFindAllMarketsAndOracles: boolean;
@@ -76,7 +75,7 @@ export class grpcDriftClientAccountSubscriberV2
 
 	constructor(
 		grpcConfigs: GrpcConfigs,
-		program: Program,
+		program: DriftProgram,
 		perpMarketIndexes: number[],
 		spotMarketIndexes: number[],
 		oracleInfos: OracleInfo[],

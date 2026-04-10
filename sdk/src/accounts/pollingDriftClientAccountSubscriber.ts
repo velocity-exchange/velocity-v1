@@ -7,7 +7,6 @@ import {
 	NotSubscribedError,
 	OraclesToPoll,
 } from './types';
-import { Program } from '@coral-xyz/anchor';
 import StrictEventEmitter from 'strict-event-emitter-types';
 import { EventEmitter } from 'events';
 import {
@@ -28,7 +27,7 @@ import { PublicKey } from '@solana/web3.js';
 import { OracleInfo, OraclePriceData } from '../oracles/types';
 import { OracleClientCache } from '../oracles/oracleClientCache';
 import { QUOTE_ORACLE_PRICE_DATA } from '../oracles/quoteAssetOracleClient';
-import { findAllMarketAndOracles } from '../config';
+import { findAllMarketAndOracles, DriftProgram } from '../config';
 import { getOracleId } from '../oracles/oracleId';
 
 const ORACLE_DEFAULT_ID = getOracleId(
@@ -40,7 +39,7 @@ export class PollingDriftClientAccountSubscriber
 	implements DriftClientAccountSubscriber
 {
 	isSubscribed: boolean;
-	program: Program;
+	program: DriftProgram;
 	perpMarketIndexes: number[];
 	spotMarketIndexes: number[];
 	oracleInfos: OracleInfo[];
@@ -71,7 +70,7 @@ export class PollingDriftClientAccountSubscriber
 	private subscriptionPromiseResolver: (val: boolean) => void;
 
 	public constructor(
-		program: Program,
+		program: DriftProgram,
 		accountLoader: BulkAccountLoader,
 		perpMarketIndexes: number[],
 		spotMarketIndexes: number[],

@@ -73,10 +73,11 @@ export class OrderSubscriber {
 		if (config.fastDecode ?? true) {
 			this.decodeFn = (name, data) => decodeUser(data);
 		} else {
-			this.decodeFn =
-				this.driftClient.program.account.user.coder.accounts.decodeUnchecked.bind(
-					this.driftClient.program.account.user.coder.accounts
-				);
+			this.decodeFn = (
+				this.driftClient.program.account as any
+			).user.coder.accounts.decodeUnchecked.bind(
+				(this.driftClient.program.account as any).user.coder.accounts
+			);
 		}
 		this.eventEmitter = new EventEmitter();
 		this.fetchAllNonIdleUsers = config.fetchAllNonIdleUsers;

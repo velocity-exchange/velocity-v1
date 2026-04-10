@@ -60,10 +60,11 @@ export class UserStatsMap {
 			type: 'default',
 		};
 
-		this.decode =
-			this.driftClient.program.account.userStats.coder.accounts.decodeUnchecked.bind(
-				this.driftClient.program.account.userStats.coder.accounts
-			);
+		this.decode = (
+			this.driftClient.program.account as any
+		).userStats.coder.accounts.decodeUnchecked.bind(
+			(this.driftClient.program.account as any).userStats.coder.accounts
+		);
 	}
 
 	public async subscribe(authorities: PublicKey[]) {

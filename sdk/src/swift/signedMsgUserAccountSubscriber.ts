@@ -64,8 +64,11 @@ export class SignedMsgUserOrdersAccountSubscriber {
 		this.driftClient = driftClient;
 		this.decodeFn =
 			decodeFn ??
-			this.driftClient.program.account.signedMsgUserOrders.coder.accounts.decodeUnchecked.bind(
-				this.driftClient.program.account.signedMsgUserOrders.coder.accounts
+			(
+				this.driftClient.program.account as any
+			).signedMsgUserOrders.coder.accounts.decodeUnchecked.bind(
+				(this.driftClient.program.account as any).signedMsgUserOrders.coder
+					.accounts
 			);
 		this.resyncIntervalMs = resyncIntervalMs;
 		this.eventEmitter = new EventEmitter();

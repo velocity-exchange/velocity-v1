@@ -133,10 +133,11 @@ export class UserMap implements UserMapInterface {
 		if (config.fastDecode ?? true) {
 			decodeFn = (name, buffer) => decodeUser(buffer);
 		} else {
-			decodeFn =
-				this.driftClient.program.account.user.coder.accounts.decodeUnchecked.bind(
-					this.driftClient.program.account.user.coder.accounts
-				);
+			decodeFn = (
+				this.driftClient.program.account as any
+			).user.coder.accounts.decodeUnchecked.bind(
+				(this.driftClient.program.account as any).user.coder.accounts
+			);
 		}
 		this.decode = decodeFn;
 

@@ -119,10 +119,9 @@ export class ConstituentMap implements ConstituentMapInterface {
 	}
 
 	private decode(name: string, buffer: Buffer): ConstituentAccount {
-		return this.driftClient.program.account.constituent.coder.accounts.decodeUnchecked(
-			name,
-			buffer
-		);
+		return (
+			this.driftClient.program.account as any
+		).constituent.coder.accounts.decodeUnchecked(name, buffer);
 	}
 
 	public async sync(): Promise<void> {

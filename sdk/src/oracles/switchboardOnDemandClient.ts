@@ -6,7 +6,7 @@ import { PRICE_PRECISION_EXP } from '../constants/numericConstants';
 import {
 	BorshAccountsCoder as BorshAccountsCoder30,
 	Idl as Idl30,
-} from '@coral-xyz/anchor-30';
+} from '@coral-xyz/anchor-29';
 
 const SB_PRECISION_EXP = new BN(18);
 const SB_PRECISION = new BN(10).pow(SB_PRECISION_EXP.sub(PRICE_PRECISION_EXP));
@@ -34,7 +34,9 @@ export class SwitchboardOnDemandClient implements OracleClient {
 
 	public constructor(connection: Connection) {
 		this.connection = connection;
-		this.coder = new BorshAccountsCoder30(switchboardOnDemandIdl as Idl30);
+		this.coder = new BorshAccountsCoder30(
+			switchboardOnDemandIdl as unknown as Idl30
+		);
 	}
 
 	public async getOraclePriceData(

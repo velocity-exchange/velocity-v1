@@ -232,7 +232,7 @@ pub fn update_funding_rate(
         // low periodicity => quickly updating/settled funding rates => lower funding rate payment per interval
         let price_spread = mid_price_twap.cast::<i64>()?.safe_sub(oracle_price_twap)?;
 
-        // add offset 1/FUNDING_RATE_OFFSET_DENOMINATOR*365. if FUNDING_RATE_OFFSET_DENOMINATOR = 5000 => 10.95% annualized rate
+        // add offset 1/FUNDING_RATE_OFFSET_DENOMINATOR*365. if FUNDING_RATE_OFFSET_DENOMINATOR = 3333 => 10.95% annualized rate
         // clamp when |price_spread| <= 0.05% to floor 10.95% annualized rate
         let funding_rate_offset = oracle_price_twap
             .abs()

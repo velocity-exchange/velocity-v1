@@ -1445,7 +1445,7 @@ impl PerpPosition {
 }
 
 #[zero_copy(unsafe)]
-#[derive(AnchorSerialize, AnchorDeserialize, PartialEq, Debug, Eq)]
+#[derive(BorshSerialize, BorshDeserialize, PartialEq, Debug, Eq)]
 #[repr(C)]
 pub struct Order {
     /// The slot the order was placed

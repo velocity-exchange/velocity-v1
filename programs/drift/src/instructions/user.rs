@@ -4124,7 +4124,7 @@ pub struct InitializeUserStats<'info> {
 pub struct InitializeSignedMsgUserOrders<'info> {
     #[account(
         init,
-        seeds = [SIGNED_MSG_PDA_SEED.as_ref(), authority.key().as_ref()],
+        seeds = [SIGNED_MSG_PDA_SEED.as_bytes(), authority.key().as_ref()],
         space = SignedMsgUserOrders::space(num_orders as usize),
         bump,
         payer = payer
@@ -4143,7 +4143,7 @@ pub struct InitializeSignedMsgUserOrders<'info> {
 pub struct ResizeSignedMsgUserOrders<'info> {
     #[account(
         mut,
-        seeds = [SIGNED_MSG_PDA_SEED.as_ref(), authority.key().as_ref()],
+        seeds = [SIGNED_MSG_PDA_SEED.as_bytes(), authority.key().as_ref()],
         bump,
         realloc = SignedMsgUserOrders::space(num_orders as usize),
         realloc::payer = payer,
@@ -4165,7 +4165,7 @@ pub struct ResizeSignedMsgUserOrders<'info> {
 #[instruction(delegates: Vec<Pubkey>)]
 pub struct InitializeSignedMsgWsDelegates<'info> {
     #[account(
-        seeds = [SIGNED_MSG_WS_PDA_SEED.as_ref(), authority.key().as_ref()],
+        seeds = [SIGNED_MSG_WS_PDA_SEED.as_bytes(), authority.key().as_ref()],
         bump,
         init,
         space = 8 + 4 + delegates.len() * 32,
@@ -4183,7 +4183,7 @@ pub struct InitializeSignedMsgWsDelegates<'info> {
 pub struct ChangeSignedMsgWsDelegateStatus<'info> {
     #[account(
         mut,
-        seeds = [SIGNED_MSG_WS_PDA_SEED.as_ref(), authority.key().as_ref()],
+        seeds = [SIGNED_MSG_WS_PDA_SEED.as_bytes(), authority.key().as_ref()],
         bump,
         realloc = SignedMsgWsDelegates::space(&signed_msg_ws_delegates, add),
         realloc::payer = authority,
@@ -4633,7 +4633,7 @@ pub struct PlaceAndMakeSignedMsg<'info> {
     )]
     pub taker_stats: AccountLoader<'info, UserStats>,
     #[account(
-        seeds = [SIGNED_MSG_PDA_SEED.as_ref(), taker.load()?.authority.as_ref()],
+        seeds = [SIGNED_MSG_PDA_SEED.as_bytes(), taker.load()?.authority.as_ref()],
         bump,
     )]
     /// CHECK: checked in SignedMsgUserOrdersZeroCopy checks
@@ -4708,7 +4708,7 @@ pub struct DeleteSignedMsgUserOrders<'info> {
     #[account(
         mut,
         close = authority,
-        seeds = [SIGNED_MSG_PDA_SEED.as_ref(), authority.key().as_ref()],
+        seeds = [SIGNED_MSG_PDA_SEED.as_bytes(), authority.key().as_ref()],
         bump,
     )]
     pub signed_msg_user_orders: Box<Account<'info, SignedMsgUserOrders>>,
@@ -4803,7 +4803,7 @@ pub struct UpdateUserProtectedMakerMode<'info> {
 pub struct InitializeRevenueShare<'info> {
     #[account(
         init,
-        seeds = [REVENUE_SHARE_PDA_SEED.as_ref(), authority.key().as_ref()],
+        seeds = [REVENUE_SHARE_PDA_SEED.as_bytes(), authority.key().as_ref()],
         space = RevenueShare::space(),
         bump,
         payer = payer
@@ -4822,7 +4822,7 @@ pub struct InitializeRevenueShare<'info> {
 pub struct InitializeRevenueShareEscrow<'info> {
     #[account(
         init,
-        seeds = [REVENUE_SHARE_ESCROW_PDA_SEED.as_ref(), authority.key().as_ref()],
+        seeds = [REVENUE_SHARE_ESCROW_PDA_SEED.as_bytes(), authority.key().as_ref()],
         space = RevenueShareEscrow::space(num_orders as usize, 1),
         bump,
         payer = payer
@@ -4846,7 +4846,7 @@ pub struct InitializeRevenueShareEscrow<'info> {
 pub struct MigrateReferrer<'info> {
     #[account(
         mut,
-        seeds = [REVENUE_SHARE_ESCROW_PDA_SEED.as_ref(), authority.key().as_ref()],
+        seeds = [REVENUE_SHARE_ESCROW_PDA_SEED.as_bytes(), authority.key().as_ref()],
         bump,
     )]
     pub escrow: Box<Account<'info, RevenueShareEscrow>>,
@@ -4866,7 +4866,7 @@ pub struct MigrateReferrer<'info> {
 pub struct ResizeRevenueShareEscrowOrders<'info> {
     #[account(
         mut,
-        seeds = [REVENUE_SHARE_ESCROW_PDA_SEED.as_ref(), authority.key().as_ref()],
+        seeds = [REVENUE_SHARE_ESCROW_PDA_SEED.as_bytes(), authority.key().as_ref()],
         bump,
         realloc = RevenueShareEscrow::space(num_orders as usize, escrow.approved_builders.len()),
         realloc::payer = payer,
@@ -4886,7 +4886,7 @@ pub struct ResizeRevenueShareEscrowOrders<'info> {
 pub struct ChangeApprovedBuilder<'info> {
     #[account(
         mut,
-        seeds = [REVENUE_SHARE_ESCROW_PDA_SEED.as_ref(), authority.key().as_ref()],
+        seeds = [REVENUE_SHARE_ESCROW_PDA_SEED.as_bytes(), authority.key().as_ref()],
         bump,
         // revoking a builder does not remove the slot to avoid unintended reuse
         realloc = RevenueShareEscrow::space(escrow.orders.len(), if add { escrow.approved_builders.len() + 1 } else { escrow.approved_builders.len() }),

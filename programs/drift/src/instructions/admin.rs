@@ -5517,7 +5517,7 @@ pub struct InitializeAmmCache<'info> {
     pub state: Box<Account<'info, State>>,
     #[account(
         init,
-        seeds = [AMM_POSITIONS_CACHE.as_ref()],
+        seeds = [AMM_POSITIONS_CACHE.as_bytes()],
         space = AmmCache::init_space(),
         bump,
         payer = admin
@@ -5537,7 +5537,7 @@ pub struct AddMarketToAmmCache<'info> {
     pub state: Box<Account<'info, State>>,
     #[account(
         mut,
-        seeds = [AMM_POSITIONS_CACHE.as_ref()],
+        seeds = [AMM_POSITIONS_CACHE.as_bytes()],
         bump,
         realloc = AmmCache::space(amm_cache.cache.len() + 1),
         realloc::payer = admin,
@@ -5559,7 +5559,7 @@ pub struct DeleteAmmCache<'info> {
     pub state: Box<Account<'info, State>>,
     #[account(
         mut,
-        seeds = [AMM_POSITIONS_CACHE.as_ref()],
+        seeds = [AMM_POSITIONS_CACHE.as_bytes()],
         bump,
         close = admin,
     )]
@@ -5814,7 +5814,7 @@ pub struct AdminUpdatePerpMarketOracle<'info> {
     pub old_oracle: AccountInfo<'info>,
     #[account(
         mut,
-        seeds = [AMM_POSITIONS_CACHE.as_ref()],
+        seeds = [AMM_POSITIONS_CACHE.as_bytes()],
         bump = amm_cache.bump,
     )]
     pub amm_cache: Box<Account<'info, AmmCache>>,

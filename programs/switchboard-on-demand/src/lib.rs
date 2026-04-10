@@ -15,7 +15,7 @@ pub mod switchboard_on_demand {}
 pub const SB_ON_DEMAND_PRECISION: u32 = 18;
 
 #[repr(C)]
-#[derive(Clone, Copy, Debug, bytemuck::Pod, bytemuck::Zeroable)]
+#[derive(Clone, Copy, Debug, bytemuck::Pod, bytemuck::Zeroable, AnchorSerialize)]
 pub struct CompactResult {
     pub std_dev: f32,
     pub mean: f32,
@@ -23,20 +23,20 @@ pub struct CompactResult {
 }
 
 #[repr(C)]
-#[derive(Clone, Copy, Debug, bytemuck::Pod, bytemuck::Zeroable)]
+#[derive(Clone, Copy, Debug, bytemuck::Pod, bytemuck::Zeroable, AnchorSerialize)]
 pub struct CurrentResult {
-    /// The median value of the submissions needed for quorom size
-    pub value: i128,
-    /// The standard deviation of the submissions needed for quorom size
-    pub std_dev: i128,
-    /// The mean of the submissions needed for quorom size
-    pub mean: i128,
-    /// The range of the submissions needed for quorom size
-    pub range: i128,
-    /// The minimum value of the submissions needed for quorom size
-    pub min_value: i128,
-    /// The maximum value of the submissions needed for quorom size
-    pub max_value: i128,
+    /// The median value of the submissions needed for quorum size
+    value: [u8; 16],
+    /// The standard deviation of the submissions needed for quorum size
+    std_dev: [u8; 16],
+    /// The mean of the submissions needed for quorum size
+    mean: [u8; 16],
+    /// The range of the submissions needed for quorum size
+    range: [u8; 16],
+    /// The minimum value of the submissions needed for quorum size
+    min_value: [u8; 16],
+    /// The maximum value of the submissions needed for quorum size
+    max_value: [u8; 16],
     /// The number of samples used to calculate this result
     pub num_samples: u8,
     /// The index of the submission that was used to calculate this result
@@ -50,52 +50,52 @@ pub struct CurrentResult {
     pub max_slot: u64,
 }
 impl CurrentResult {
-    /// The median value of the submissions needed for quorom size
+    /// The median value of the submissions needed for quorum size
     pub fn value(&self) -> Option<i128> {
         if self.slot == 0 {
             return None;
         }
-        Some(self.value)
+        Some(i128::from_le_bytes(self.value))
     }
 
-    /// The standard deviation of the submissions needed for quorom size
+    /// The standard deviation of the submissions needed for quorum size
     pub fn std_dev(&self) -> Option<i128> {
         if self.slot == 0 {
             return None;
         }
-        Some(self.std_dev)
+        Some(i128::from_le_bytes(self.std_dev))
     }
 
-    /// The mean of the submissions needed for quorom size
+    /// The mean of the submissions needed for quorum size
     pub fn mean(&self) -> Option<i128> {
         if self.slot == 0 {
             return None;
         }
-        Some(self.mean)
+        Some(i128::from_le_bytes(self.mean))
     }
 
-    /// The range of the submissions needed for quorom size
+    /// The range of the submissions needed for quorum size
     pub fn range(&self) -> Option<i128> {
         if self.slot == 0 {
             return None;
         }
-        Some(self.range)
+        Some(i128::from_le_bytes(self.range))
     }
 
-    /// The minimum value of the submissions needed for quorom size
+    /// The minimum value of the submissions needed for quorum size
     pub fn min_value(&self) -> Option<i128> {
         if self.slot == 0 {
             return None;
         }
-        Some(self.min_value)
+        Some(i128::from_le_bytes(self.min_value))
     }
 
-    /// The maximum value of the submissions needed for quorom size
+    /// The maximum value of the submissions needed for quorum size
     pub fn max_value(&self) -> Option<i128> {
         if self.slot == 0 {
             return None;
         }
-        Some(self.max_value)
+        Some(i128::from_le_bytes(self.max_value))
     }
 
     pub fn result_slot(&self) -> Option<u64> {
@@ -121,7 +121,7 @@ impl CurrentResult {
 }
 
 #[repr(C)]
-#[derive(Clone, Copy, Debug, bytemuck::Pod, bytemuck::Zeroable)]
+#[derive(Clone, Copy, Debug, bytemuck::Pod, bytemuck::Zeroable, AnchorSerialize)]
 pub struct OracleSubmission {
     /// The public key of the oracle that submitted this value.
     pub oracle: Pubkey,
@@ -130,7 +130,7 @@ pub struct OracleSubmission {
     /// The slot at which this value was landed on chain.
     pub landed_at: u64,
     /// The value that was submitted.
-    pub value: i128,
+    value: [u8; 16],
 }
 
 impl OracleSubmission {
@@ -139,7 +139,7 @@ impl OracleSubmission {
     }
 
     pub fn value(&self) -> i128 {
-        self.value
+        i128::from_le_bytes(self.value)
     }
 }
 
@@ -180,36 +180,34 @@ pub struct PullFeedAccountData {
 }
 
 impl PullFeedAccountData {
-    pub fn discriminator() -> [u8; 8] {
-        [196, 27, 108, 196, 10, 215, 219, 40]
-    }
+    pub const DISCRIMINATOR: &[u8] = &[196, 27, 108, 196, 10, 215, 219, 40];
 
-    /// The median value of the submissions needed for quorom size
+    /// The median value of the submissions needed for quorum size
     pub fn median_value(&self) -> Option<i128> {
         self.result.value()
     }
 
-    /// The standard deviation of the submissions needed for quorom size
+    /// The standard deviation of the submissions needed for quorum size
     pub fn std_dev(&self) -> Option<i128> {
         self.result.std_dev()
     }
 
-    /// The mean of the submissions needed for quorom size
+    /// The mean of the submissions needed for quorum size
     pub fn mean(&self) -> Option<i128> {
         self.result.mean()
     }
 
-    /// The range of the submissions needed for quorom size
+    /// The range of the submissions needed for quorum size
     pub fn range(&self) -> Option<i128> {
         self.result.range()
     }
 
-    /// The minimum value of the submissions needed for quorom size
+    /// The minimum value of the submissions needed for quorum size
     pub fn min_value(&self) -> Option<i128> {
         self.result.min_value()
     }
 
-    /// The maximum value of the submissions needed for quorom size
+    /// The maximum value of the submissions needed for quorum size
     pub fn max_value(&self) -> Option<i128> {
         self.result.max_value()
     }

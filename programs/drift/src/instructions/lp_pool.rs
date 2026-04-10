@@ -1881,14 +1881,14 @@ pub struct LPPoolSwap<'info> {
 
     #[account(
         mut,
-        seeds = [CONSTITUENT_PDA_SEED.as_ref(), lp_pool.key().as_ref(), in_market_index.to_le_bytes().as_ref()],
+        seeds = [CONSTITUENT_PDA_SEED.as_bytes(), lp_pool.key().as_ref(), in_market_index.to_le_bytes().as_ref()],
         bump=in_constituent.load()?.bump,
         constraint = in_constituent.load()?.mint.eq(&constituent_in_token_account.mint)
     )]
     pub in_constituent: AccountLoader<'info, Constituent>,
     #[account(
         mut,
-        seeds = [CONSTITUENT_PDA_SEED.as_ref(), lp_pool.key().as_ref(), out_market_index.to_le_bytes().as_ref()],
+        seeds = [CONSTITUENT_PDA_SEED.as_bytes(), lp_pool.key().as_ref(), out_market_index.to_le_bytes().as_ref()],
         bump=out_constituent.load()?.bump,
         constraint = out_constituent.load()?.mint.eq(&constituent_out_token_account.mint)
     )]
@@ -1938,14 +1938,14 @@ pub struct ViewLPPoolSwapFees<'info> {
 
     #[account(
         mut,
-        seeds = [CONSTITUENT_PDA_SEED.as_ref(), lp_pool.key().as_ref(), in_market_index.to_le_bytes().as_ref()],
+        seeds = [CONSTITUENT_PDA_SEED.as_bytes(), lp_pool.key().as_ref(), in_market_index.to_le_bytes().as_ref()],
         bump=in_constituent.load()?.bump,
         constraint = in_constituent.load()?.mint.eq(&constituent_in_token_account.mint)
     )]
     pub in_constituent: AccountLoader<'info, Constituent>,
     #[account(
         mut,
-        seeds = [CONSTITUENT_PDA_SEED.as_ref(), lp_pool.key().as_ref(), out_market_index.to_le_bytes().as_ref()],
+        seeds = [CONSTITUENT_PDA_SEED.as_bytes(), lp_pool.key().as_ref(), out_market_index.to_le_bytes().as_ref()],
         bump=out_constituent.load()?.bump,
         constraint = out_constituent.load()?.mint.eq(&constituent_out_token_account.mint)
     )]
@@ -1969,7 +1969,7 @@ pub struct LPPoolAddLiquidity<'info> {
     pub in_market_mint: Box<InterfaceAccount<'info, Mint>>,
     #[account(
         mut,
-        seeds = [CONSTITUENT_PDA_SEED.as_ref(), lp_pool.key().as_ref(), in_market_index.to_le_bytes().as_ref()],
+        seeds = [CONSTITUENT_PDA_SEED.as_bytes(), lp_pool.key().as_ref(), in_market_index.to_le_bytes().as_ref()],
         bump,
         constraint =
             in_constituent.load()?.mint.eq(&constituent_in_token_account.mint)
@@ -2005,7 +2005,7 @@ pub struct LPPoolAddLiquidity<'info> {
 
     #[account(
         mut,
-        seeds = [LP_POOL_TOKEN_VAULT_PDA_SEED.as_ref(), lp_pool.key().as_ref()],
+        seeds = [LP_POOL_TOKEN_VAULT_PDA_SEED.as_bytes(), lp_pool.key().as_ref()],
         bump,
     )]
     pub lp_pool_token_vault: Box<InterfaceAccount<'info, TokenAccount>>,
@@ -2023,7 +2023,7 @@ pub struct ViewLPPoolAddLiquidityFees<'info> {
     pub authority: Signer<'info>,
     pub in_market_mint: Box<InterfaceAccount<'info, Mint>>,
     #[account(
-        seeds = [CONSTITUENT_PDA_SEED.as_ref(), lp_pool.key().as_ref(), in_market_index.to_le_bytes().as_ref()],
+        seeds = [CONSTITUENT_PDA_SEED.as_bytes(), lp_pool.key().as_ref(), in_market_index.to_le_bytes().as_ref()],
         bump,
     )]
     pub in_constituent: AccountLoader<'info, Constituent>,
@@ -2053,7 +2053,7 @@ pub struct LPPoolRemoveLiquidity<'info> {
     pub out_market_mint: Box<InterfaceAccount<'info, Mint>>,
     #[account(
         mut,
-        seeds = [CONSTITUENT_PDA_SEED.as_ref(), lp_pool.key().as_ref(), out_market_index.to_le_bytes().as_ref()],
+        seeds = [CONSTITUENT_PDA_SEED.as_bytes(), lp_pool.key().as_ref(), out_market_index.to_le_bytes().as_ref()],
         bump,
         constraint =
             out_constituent.load()?.mint.eq(&constituent_out_token_account.mint)
@@ -2093,7 +2093,7 @@ pub struct LPPoolRemoveLiquidity<'info> {
 
     #[account(
         mut,
-        seeds = [LP_POOL_TOKEN_VAULT_PDA_SEED.as_ref(), lp_pool.key().as_ref()],
+        seeds = [LP_POOL_TOKEN_VAULT_PDA_SEED.as_bytes(), lp_pool.key().as_ref()],
         bump,
     )]
     pub lp_pool_token_vault: Box<InterfaceAccount<'info, TokenAccount>>,
@@ -2101,7 +2101,7 @@ pub struct LPPoolRemoveLiquidity<'info> {
     pub token_program: Interface<'info, TokenInterface>,
 
     #[account(
-        seeds = [AMM_POSITIONS_CACHE.as_ref()],
+        seeds = [AMM_POSITIONS_CACHE.as_bytes()],
         bump,
     )]
     /// CHECK: checked in AmmCacheZeroCopy checks
@@ -2118,7 +2118,7 @@ pub struct ViewLPPoolRemoveLiquidityFees<'info> {
     pub authority: Signer<'info>,
     pub out_market_mint: Box<InterfaceAccount<'info, Mint>>,
     #[account(
-        seeds = [CONSTITUENT_PDA_SEED.as_ref(), lp_pool.key().as_ref(), in_market_index.to_le_bytes().as_ref()],
+        seeds = [CONSTITUENT_PDA_SEED.as_bytes(), lp_pool.key().as_ref(), in_market_index.to_le_bytes().as_ref()],
         bump,
     )]
     pub out_constituent: AccountLoader<'info, Constituent>,

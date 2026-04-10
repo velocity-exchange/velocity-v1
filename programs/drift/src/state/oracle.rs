@@ -595,7 +595,7 @@ pub fn get_sb_on_demand_price(
         pull_feed_account_info.latest_submissions();
     let average_price = latest_oracle_submssions
         .iter()
-        .map(|submission| submission.value)
+        .map(|submission| submission.value())
         .sum::<i128>()
         / latest_oracle_submssions.len() as i128;
 

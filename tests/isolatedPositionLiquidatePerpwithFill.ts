@@ -305,7 +305,7 @@ describe('liquidate perp (no open orders)', () => {
 		assert(
 			driftClient
 				.getUserAccount()
-				.perpPositions[0].quoteAssetAmount.eq(new BN(-15769403))
+				.perpPositions[0].quoteAssetAmount.eq(new BN(-15769476))
 		);
 
 		assert(

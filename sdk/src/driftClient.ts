@@ -197,7 +197,6 @@ import {
 	MAX_TX_BYTE_SIZE,
 } from './tx/utils';
 import pythSolanaReceiverIdl from './idl/pyth_solana_receiver.json';
-import { asV0Tx, PullFeed, AnchorUtils } from '@switchboard-xyz/on-demand';
 import { grpcDriftClientAccountSubscriber } from './accounts/grpcDriftClientAccountSubscriber';
 import nacl from 'tweetnacl';
 import { Slothash } from './slot/SlothashSubscriber';
@@ -11086,12 +11085,9 @@ export class DriftClient {
 	}
 
 	public async getSwitchboardOnDemandProgram(): Promise<Program30<Idl30>> {
-		if (this.sbOnDemandProgram === undefined) {
-			this.sbOnDemandProgram = await AnchorUtils.loadProgramFromConnection(
-				this.connection
-			);
-		}
-		return this.sbOnDemandProgram;
+		throw new Error(
+			'Switchboard on-demand support has been removed from the SDK'
+		);
 	}
 
 	public async postPythPullOracleUpdateAtomic(
@@ -11360,84 +11356,34 @@ export class DriftClient {
 	}
 
 	public async getPostManySwitchboardOnDemandUpdatesAtomicIxs(
-		feeds: PublicKey[],
-		recentSlothash?: Slothash,
-		numSignatures = 3
+		_feeds: PublicKey[],
+		_recentSlothash?: Slothash,
+		_numSignatures = 3
 	): Promise<TransactionInstruction[] | undefined> {
-		const program = await this.getSwitchboardOnDemandProgram();
-		const [pullIxs, _luts, _rawResponse] =
-			await PullFeed.fetchUpdateManyLightIx(program, {
-				feeds,
-				numSignatures,
-				recentSlothashes: recentSlothash
-					? [[new BN(recentSlothash.slot), recentSlothash.hash]]
-					: undefined,
-				chain: 'solana',
-				network: this.env,
-			});
-		if (!pullIxs) {
-			return undefined;
-		}
-		return pullIxs;
+		throw new Error(
+			'Switchboard on-demand support has been removed from the SDK'
+		);
 	}
 
 	// @deprecated use getPostManySwitchboardOnDemandUpdatesAtomicIxs instead. This function no longer returns the required ixs due to upstream sdk changes.
 	public async getPostSwitchboardOnDemandUpdateAtomicIx(
-		feed: PublicKey,
-		recentSlothash?: Slothash,
-		numSignatures = 3
+		_feed: PublicKey,
+		_recentSlothash?: Slothash,
+		_numSignatures = 3
 	): Promise<TransactionInstruction | undefined> {
-		const program = await this.getSwitchboardOnDemandProgram();
-		const feedAccount = new PullFeed(program, feed);
-		if (!this.sbProgramFeedConfigs) {
-			this.sbProgramFeedConfigs = new Map();
-		}
-		if (!this.sbProgramFeedConfigs.has(feedAccount.pubkey.toString())) {
-			const feedConfig = await feedAccount.loadConfigs();
-			this.sbProgramFeedConfigs.set(feed.toString(), feedConfig);
-		}
-		const [pullIx, _responses, success] = await PullFeed.fetchUpdateManyIx(
-			program,
-			{
-				feeds: [feed],
-				numSignatures,
-				recentSlothashes: recentSlothash
-					? [[new BN(recentSlothash.slot), recentSlothash.hash]]
-					: undefined,
-			}
+		throw new Error(
+			'Switchboard on-demand support has been removed from the SDK'
 		);
-		if (!success) {
-			return undefined;
-		}
-		return pullIx[0];
 	}
 
 	public async postSwitchboardOnDemandUpdate(
-		feed: PublicKey,
-		recentSlothash?: Slothash,
-		numSignatures = 3
+		_feed: PublicKey,
+		_recentSlothash?: Slothash,
+		_numSignatures = 3
 	): Promise<TransactionSignature> {
-		const pullIx = await this.getPostSwitchboardOnDemandUpdateAtomicIx(
-			feed,
-			recentSlothash,
-			numSignatures
+		throw new Error(
+			'Switchboard on-demand support has been removed from the SDK'
 		);
-		if (!pullIx) {
-			return undefined;
-		}
-		const tx = await asV0Tx({
-			connection: this.connection,
-			ixs: [pullIx],
-			payer: this.wallet.publicKey,
-			computeUnitLimitMultiple: 1.3,
-			lookupTables: await this.fetchAllLookupTableAccounts(),
-		});
-		const { txSig } = await this.sendTransaction(tx, [], {
-			commitment: 'processed',
-			skipPreflight: true,
-			maxRetries: 0,
-		});
-		return txSig;
 	}
 
 	private async getBuildEncodedVaaIxs(

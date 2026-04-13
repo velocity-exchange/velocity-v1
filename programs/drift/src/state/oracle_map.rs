@@ -1,8 +1,6 @@
 use crate::error::ErrorCode::UnableToLoadOracle;
 use crate::error::{DriftResult, ErrorCode};
-use crate::ids::{
-    drift_oracle_receiver_program, pyth_program, switchboard_on_demand, switchboard_program,
-};
+use crate::ids::{drift_oracle_receiver_program, pyth_program};
 use crate::math::constants::PRICE_PRECISION_I64;
 use crate::math::oracle::{oracle_validity, LogMode, OracleValidity};
 use crate::msg;
@@ -25,11 +23,9 @@ use crate::validate;
 
 pub(crate) type OracleIdentifier = (Pubkey, OracleSource);
 
-const EXTERNAL_ORACLE_PROGRAM_IDS: [Pubkey; 4] = [
+const EXTERNAL_ORACLE_PROGRAM_IDS: [Pubkey; 2] = [
     pyth_program::id(),
     drift_oracle_receiver_program::id(),
-    switchboard_program::id(),
-    switchboard_on_demand::id(),
 ];
 
 pub struct OracleMap<'a> {

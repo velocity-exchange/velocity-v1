@@ -23,10 +23,8 @@ use crate::validate;
 
 pub(crate) type OracleIdentifier = (Pubkey, OracleSource);
 
-const EXTERNAL_ORACLE_PROGRAM_IDS: [Pubkey; 2] = [
-    pyth_program::id(),
-    drift_oracle_receiver_program::id(),
-];
+const EXTERNAL_ORACLE_PROGRAM_IDS: [Pubkey; 2] =
+    [pyth_program::id(), drift_oracle_receiver_program::id()];
 
 pub struct OracleMap<'a> {
     oracles: BTreeMap<Pubkey, AccountInfo<'a>>,

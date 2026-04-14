@@ -116,6 +116,7 @@ impl HistoricalIndexData {
 pub enum OracleSource {
     #[default]
     Pyth,
+    DeprecatedOracleSource1,
     QuoteAsset,
     Pyth1K,
     Pyth1M,
@@ -125,6 +126,7 @@ pub enum OracleSource {
     Pyth1KPull,
     Pyth1MPull,
     PythStableCoinPull,
+    DeprecatedOracleSource11,
     PythLazer,
     PythLazer1K,
     PythLazer1M,
@@ -175,19 +177,21 @@ impl TryFrom<u8> for OracleSource {
     fn try_from(v: u8) -> DriftResult<Self> {
         match v {
             0 => Ok(OracleSource::Pyth),
-            1 => Ok(OracleSource::QuoteAsset),
-            2 => Ok(OracleSource::Pyth1K),
-            3 => Ok(OracleSource::Pyth1M),
-            4 => Ok(OracleSource::PythStableCoin),
-            5 => Ok(OracleSource::Prelaunch),
-            6 => Ok(OracleSource::PythPull),
-            7 => Ok(OracleSource::Pyth1KPull),
-            8 => Ok(OracleSource::Pyth1MPull),
-            9 => Ok(OracleSource::PythStableCoinPull),
-            10 => Ok(OracleSource::PythLazer),
-            11 => Ok(OracleSource::PythLazer1K),
-            12 => Ok(OracleSource::PythLazer1M),
-            13 => Ok(OracleSource::PythLazerStableCoin),
+            1 => Err(ErrorCode::InvalidOracle),
+            2 => Ok(OracleSource::QuoteAsset),
+            3 => Ok(OracleSource::Pyth1K),
+            4 => Ok(OracleSource::Pyth1M),
+            5 => Ok(OracleSource::PythStableCoin),
+            6 => Ok(OracleSource::Prelaunch),
+            7 => Ok(OracleSource::PythPull),
+            8 => Ok(OracleSource::Pyth1KPull),
+            9 => Ok(OracleSource::Pyth1MPull),
+            10 => Ok(OracleSource::PythStableCoinPull),
+            11 => Err(ErrorCode::InvalidOracle),
+            12 => Ok(OracleSource::PythLazer),
+            13 => Ok(OracleSource::PythLazer1K),
+            14 => Ok(OracleSource::PythLazer1M),
+            15 => Ok(OracleSource::PythLazerStableCoin),
             _ => Err(ErrorCode::InvalidOracle),
         }
     }
@@ -197,19 +201,21 @@ impl From<OracleSource> for u8 {
     fn from(src: OracleSource) -> u8 {
         match src {
             OracleSource::Pyth => 0,
-            OracleSource::QuoteAsset => 1,
-            OracleSource::Pyth1K => 2,
-            OracleSource::Pyth1M => 3,
-            OracleSource::PythStableCoin => 4,
-            OracleSource::Prelaunch => 5,
-            OracleSource::PythPull => 6,
-            OracleSource::Pyth1KPull => 7,
-            OracleSource::Pyth1MPull => 8,
-            OracleSource::PythStableCoinPull => 9,
-            OracleSource::PythLazer => 10,
-            OracleSource::PythLazer1K => 11,
-            OracleSource::PythLazer1M => 12,
-            OracleSource::PythLazerStableCoin => 13,
+            OracleSource::DeprecatedOracleSource1 => 1,
+            OracleSource::QuoteAsset => 2,
+            OracleSource::Pyth1K => 3,
+            OracleSource::Pyth1M => 4,
+            OracleSource::PythStableCoin => 5,
+            OracleSource::Prelaunch => 6,
+            OracleSource::PythPull => 7,
+            OracleSource::Pyth1KPull => 8,
+            OracleSource::Pyth1MPull => 9,
+            OracleSource::PythStableCoinPull => 10,
+            OracleSource::DeprecatedOracleSource11 => 11,
+            OracleSource::PythLazer => 12,
+            OracleSource::PythLazer1K => 13,
+            OracleSource::PythLazer1M => 14,
+            OracleSource::PythLazerStableCoin => 15,
         }
     }
 }
@@ -364,6 +370,9 @@ pub fn get_oracle_price(
         OracleSource::Pyth1M => get_pyth_price(price_oracle, clock_slot, oracle_source),
         OracleSource::PythStableCoin => {
             get_pyth_stable_coin_price(price_oracle, clock_slot, oracle_source)
+        }
+        OracleSource::DeprecatedOracleSource1 | OracleSource::DeprecatedOracleSource11 => {
+            Err(ErrorCode::InvalidOracle)
         }
         OracleSource::QuoteAsset => Ok(OraclePriceData {
             price: PRICE_PRECISION_I64,

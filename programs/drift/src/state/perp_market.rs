@@ -32,8 +32,7 @@ use crate::math::stats;
 use num_integer::Roots;
 
 use crate::state::oracle::{
-    get_prelaunch_price, get_sb_on_demand_price, get_switchboard_price, HistoricalOracleData,
-    MMOraclePriceData, OraclePriceData, OracleSource,
+    get_prelaunch_price, HistoricalOracleData, MMOraclePriceData, OraclePriceData, OracleSource,
 };
 use crate::state::spot_market::{AssetTier, SpotBalance, SpotBalanceType};
 use crate::state::traits::{MarketIndexOffset, Size};
@@ -1483,10 +1482,6 @@ impl AMM {
             OracleSource::Pyth1M => Ok(Some(
                 self.get_pyth_twap(price_oracle, &OracleSource::Pyth1M)?,
             )),
-            OracleSource::Switchboard => Ok(Some(get_switchboard_price(price_oracle, slot)?.price)),
-            OracleSource::SwitchboardOnDemand => {
-                Ok(Some(get_sb_on_demand_price(price_oracle, slot)?.price))
-            }
             OracleSource::QuoteAsset => {
                 msg!("Can't get oracle twap for quote asset");
                 Err(ErrorCode::DefaultError)

@@ -116,7 +116,6 @@ impl HistoricalIndexData {
 pub enum OracleSource {
     #[default]
     Pyth,
-    Switchboard,
     QuoteAsset,
     Pyth1K,
     Pyth1M,
@@ -126,7 +125,6 @@ pub enum OracleSource {
     Pyth1KPull,
     Pyth1MPull,
     PythStableCoinPull,
-    SwitchboardOnDemand,
     PythLazer,
     PythLazer1K,
     PythLazer1M,
@@ -177,21 +175,19 @@ impl TryFrom<u8> for OracleSource {
     fn try_from(v: u8) -> DriftResult<Self> {
         match v {
             0 => Ok(OracleSource::Pyth),
-            1 => Ok(OracleSource::Switchboard),
-            2 => Ok(OracleSource::QuoteAsset),
-            3 => Ok(OracleSource::Pyth1K),
-            4 => Ok(OracleSource::Pyth1M),
-            5 => Ok(OracleSource::PythStableCoin),
-            6 => Ok(OracleSource::Prelaunch),
-            7 => Ok(OracleSource::PythPull),
-            8 => Ok(OracleSource::Pyth1KPull),
-            9 => Ok(OracleSource::Pyth1MPull),
-            10 => Ok(OracleSource::PythStableCoinPull),
-            11 => Ok(OracleSource::SwitchboardOnDemand),
-            12 => Ok(OracleSource::PythLazer),
-            13 => Ok(OracleSource::PythLazer1K),
-            14 => Ok(OracleSource::PythLazer1M),
-            15 => Ok(OracleSource::PythLazerStableCoin),
+            1 => Ok(OracleSource::QuoteAsset),
+            2 => Ok(OracleSource::Pyth1K),
+            3 => Ok(OracleSource::Pyth1M),
+            4 => Ok(OracleSource::PythStableCoin),
+            5 => Ok(OracleSource::Prelaunch),
+            6 => Ok(OracleSource::PythPull),
+            7 => Ok(OracleSource::Pyth1KPull),
+            8 => Ok(OracleSource::Pyth1MPull),
+            9 => Ok(OracleSource::PythStableCoinPull),
+            10 => Ok(OracleSource::PythLazer),
+            11 => Ok(OracleSource::PythLazer1K),
+            12 => Ok(OracleSource::PythLazer1M),
+            13 => Ok(OracleSource::PythLazerStableCoin),
             _ => Err(ErrorCode::InvalidOracle),
         }
     }
@@ -201,21 +197,19 @@ impl From<OracleSource> for u8 {
     fn from(src: OracleSource) -> u8 {
         match src {
             OracleSource::Pyth => 0,
-            OracleSource::Switchboard => 1,
-            OracleSource::QuoteAsset => 2,
-            OracleSource::Pyth1K => 3,
-            OracleSource::Pyth1M => 4,
-            OracleSource::PythStableCoin => 5,
-            OracleSource::Prelaunch => 6,
-            OracleSource::PythPull => 7,
-            OracleSource::Pyth1KPull => 8,
-            OracleSource::Pyth1MPull => 9,
-            OracleSource::PythStableCoinPull => 10,
-            OracleSource::SwitchboardOnDemand => 11,
-            OracleSource::PythLazer => 12,
-            OracleSource::PythLazer1K => 13,
-            OracleSource::PythLazer1M => 14,
-            OracleSource::PythLazerStableCoin => 15,
+            OracleSource::QuoteAsset => 1,
+            OracleSource::Pyth1K => 2,
+            OracleSource::Pyth1M => 3,
+            OracleSource::PythStableCoin => 4,
+            OracleSource::Prelaunch => 5,
+            OracleSource::PythPull => 6,
+            OracleSource::Pyth1KPull => 7,
+            OracleSource::Pyth1MPull => 8,
+            OracleSource::PythStableCoinPull => 9,
+            OracleSource::PythLazer => 10,
+            OracleSource::PythLazer1K => 11,
+            OracleSource::PythLazer1M => 12,
+            OracleSource::PythLazerStableCoin => 13,
         }
     }
 }
@@ -371,8 +365,6 @@ pub fn get_oracle_price(
         OracleSource::PythStableCoin => {
             get_pyth_stable_coin_price(price_oracle, clock_slot, oracle_source)
         }
-        OracleSource::Switchboard => get_switchboard_price(price_oracle, clock_slot),
-        OracleSource::SwitchboardOnDemand => get_sb_on_demand_price(price_oracle, clock_slot),
         OracleSource::QuoteAsset => Ok(OraclePriceData {
             price: PRICE_PRECISION_I64,
             confidence: 1,
@@ -512,22 +504,6 @@ pub fn get_pyth_stable_coin_price(
     }
 
     Ok(oracle_price_data)
-}
-
-pub fn get_switchboard_price(
-    _price_oracle: &AccountInfo,
-    _clock_slot: u64,
-) -> DriftResult<OraclePriceData> {
-    msg!("Switchboard oracles are no longer supported");
-    Err(ErrorCode::InvalidOracle)
-}
-
-pub fn get_sb_on_demand_price(
-    _price_oracle: &AccountInfo,
-    _clock_slot: u64,
-) -> DriftResult<OraclePriceData> {
-    msg!("Switchboard on-demand oracles are no longer supported");
-    Err(ErrorCode::InvalidOracle)
 }
 
 pub fn get_prelaunch_price(price_oracle: &AccountInfo, slot: u64) -> DriftResult<OraclePriceData> {

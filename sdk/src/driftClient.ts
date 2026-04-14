@@ -20,7 +20,6 @@ import {
 	Program,
 	ProgramAccount,
 } from '@coral-xyz/anchor';
-import { Idl as Idl30, Program as Program30 } from '@coral-xyz/anchor-30';
 import bs58 from 'bs58';
 import {
 	ASSOCIATED_TOKEN_PROGRAM_ID,
@@ -213,7 +212,6 @@ import {
 import pythSolanaReceiverIdl from './idl/pyth_solana_receiver.json';
 import { grpcDriftClientAccountSubscriber } from './accounts/grpcDriftClientAccountSubscriber';
 import nacl from 'tweetnacl';
-import { Slothash } from './slot/SlothashSubscriber';
 import { getOracleId } from './oracles/oracleId';
 import { SignedMsgOrderParams } from './types';
 import { TakerInfo } from './types';
@@ -303,9 +301,6 @@ export class DriftClient {
 
 	receiverProgram?: Program<PythSolanaReceiver>;
 	wormholeProgram?: Program<WormholeCoreBridgeSolana>;
-	sbOnDemandProgramdId: PublicKey;
-	sbOnDemandProgram?: Program30<Idl30>;
-	sbProgramFeedConfigs?: Map<string, any>;
 
 	public get isSubscribed() {
 		return this._isSubscribed && this.accountSubscriber.isSubscribed;
@@ -566,7 +561,6 @@ export class DriftClient {
 				txHandler: this.txHandler,
 			});
 
-		this.sbOnDemandProgramdId = configs[this.env].SB_ON_DEMAND_PID;
 	}
 
 	public getUserMapKey(subAccountId: number, authority: PublicKey): string {
@@ -11098,12 +11092,6 @@ export class DriftClient {
 		return this.receiverProgram;
 	}
 
-	public async getSwitchboardOnDemandProgram(): Promise<Program30<Idl30>> {
-		throw new Error(
-			'Switchboard on-demand support has been removed from the SDK'
-		);
-	}
-
 	public async postPythPullOracleUpdateAtomic(
 		vaaString: string,
 		feedId: string
@@ -11367,37 +11355,6 @@ export class DriftClient {
 			}
 		);
 		return [verifyIx, ix];
-	}
-
-	public async getPostManySwitchboardOnDemandUpdatesAtomicIxs(
-		_feeds: PublicKey[],
-		_recentSlothash?: Slothash,
-		_numSignatures = 3
-	): Promise<TransactionInstruction[] | undefined> {
-		throw new Error(
-			'Switchboard on-demand support has been removed from the SDK'
-		);
-	}
-
-	// @deprecated use getPostManySwitchboardOnDemandUpdatesAtomicIxs instead. This function no longer returns the required ixs due to upstream sdk changes.
-	public async getPostSwitchboardOnDemandUpdateAtomicIx(
-		_feed: PublicKey,
-		_recentSlothash?: Slothash,
-		_numSignatures = 3
-	): Promise<TransactionInstruction | undefined> {
-		throw new Error(
-			'Switchboard on-demand support has been removed from the SDK'
-		);
-	}
-
-	public async postSwitchboardOnDemandUpdate(
-		_feed: PublicKey,
-		_recentSlothash?: Slothash,
-		_numSignatures = 3
-	): Promise<TransactionSignature> {
-		throw new Error(
-			'Switchboard on-demand support has been removed from the SDK'
-		);
 	}
 
 	private async getBuildEncodedVaaIxs(

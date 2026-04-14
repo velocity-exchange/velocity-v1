@@ -17,6 +17,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Breaking
 
+- program: remove switchboard oracle support
 - program: remove prediction markets [#13](https://github.com/drift-labs/protocol-v2-shadow/pull/13)
 - program: remove pyth pull update instruction, callers must migrate to supported oracles (eg: pyth lazer) [#7](https://github.com/drift-labs/protocol-v2-shadow/pull/7)
 - program: remove deprecated MarketStatus variants (FundingPaused, AmmPaused, FillPaused, WithdrawPaused) and extract MarketStatus into its own module [#5](https://github.com/drift-labs/protocol-v2-shadow/pull/5)

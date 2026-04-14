@@ -560,7 +560,6 @@ export class DriftClient {
 				opts: this.opts,
 				txHandler: this.txHandler,
 			});
-
 	}
 
 	public getUserMapKey(subAccountId: number, authority: PublicKey): string {

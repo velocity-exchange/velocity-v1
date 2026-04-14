@@ -807,7 +807,7 @@ pub fn handle_initialize_perp_market(
             )?;
             (oracle_price, oracle_delay, QUOTE_PRECISION_I64)
         }
-        OracleSource::DeprecatedOracleSource1 | OracleSource::DeprecatedOracleSource11 => {
+        OracleSource::DeprecatedSwitchboard | OracleSource::DeprecatedSwitchboardOnDemand => {
             return Err(ErrorCode::InvalidOracle.into());
         }
         OracleSource::QuoteAsset => {

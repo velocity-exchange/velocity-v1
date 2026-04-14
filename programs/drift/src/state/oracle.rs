@@ -116,7 +116,8 @@ impl HistoricalIndexData {
 pub enum OracleSource {
     #[default]
     Pyth,
-    DeprecatedOracleSource1,
+    /// @deprecated Preserves the legacy switchboard discriminant.
+    DeprecatedSwitchboard,
     QuoteAsset,
     Pyth1K,
     Pyth1M,
@@ -126,7 +127,8 @@ pub enum OracleSource {
     Pyth1KPull,
     Pyth1MPull,
     PythStableCoinPull,
-    DeprecatedOracleSource11,
+    /// @deprecated Preserves the legacy switchboard-on-demand discriminant.
+    DeprecatedSwitchboardOnDemand,
     PythLazer,
     PythLazer1K,
     PythLazer1M,
@@ -205,7 +207,7 @@ impl From<OracleSource> for u8 {
     fn from(src: OracleSource) -> u8 {
         match src {
             OracleSource::Pyth => 0,
-            OracleSource::DeprecatedOracleSource1 => 1,
+            OracleSource::DeprecatedSwitchboard => 1,
             OracleSource::QuoteAsset => 2,
             OracleSource::Pyth1K => 3,
             OracleSource::Pyth1M => 4,
@@ -215,7 +217,7 @@ impl From<OracleSource> for u8 {
             OracleSource::Pyth1KPull => 8,
             OracleSource::Pyth1MPull => 9,
             OracleSource::PythStableCoinPull => 10,
-            OracleSource::DeprecatedOracleSource11 => 11,
+            OracleSource::DeprecatedSwitchboardOnDemand => 11,
             OracleSource::PythLazer => 12,
             OracleSource::PythLazer1K => 13,
             OracleSource::PythLazer1M => 14,
@@ -375,7 +377,7 @@ pub fn get_oracle_price(
         OracleSource::PythStableCoin => {
             get_pyth_stable_coin_price(price_oracle, clock_slot, oracle_source)
         }
-        OracleSource::DeprecatedOracleSource1 | OracleSource::DeprecatedOracleSource11 => {
+        OracleSource::DeprecatedSwitchboard | OracleSource::DeprecatedSwitchboardOnDemand => {
             Err(ErrorCode::InvalidOracle)
         }
         OracleSource::QuoteAsset => Ok(OraclePriceData {

@@ -1482,7 +1482,7 @@ impl AMM {
             OracleSource::Pyth1M => Ok(Some(
                 self.get_pyth_twap(price_oracle, &OracleSource::Pyth1M)?,
             )),
-            OracleSource::DeprecatedOracleSource1 | OracleSource::DeprecatedOracleSource11 => {
+            OracleSource::DeprecatedSwitchboard | OracleSource::DeprecatedSwitchboardOnDemand => {
                 Err(ErrorCode::InvalidOracle)
             }
             OracleSource::QuoteAsset => {

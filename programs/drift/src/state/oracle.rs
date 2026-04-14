@@ -134,6 +134,28 @@ pub enum OracleSource {
 }
 
 impl OracleSource {
+    pub fn from_u8(v: u8) -> Option<Self> {
+        match v {
+            0 => Some(OracleSource::Pyth),
+            1 => None,
+            2 => Some(OracleSource::QuoteAsset),
+            3 => Some(OracleSource::Pyth1K),
+            4 => Some(OracleSource::Pyth1M),
+            5 => Some(OracleSource::PythStableCoin),
+            6 => Some(OracleSource::Prelaunch),
+            7 => Some(OracleSource::PythPull),
+            8 => Some(OracleSource::Pyth1KPull),
+            9 => Some(OracleSource::Pyth1MPull),
+            10 => Some(OracleSource::PythStableCoinPull),
+            11 => None,
+            12 => Some(OracleSource::PythLazer),
+            13 => Some(OracleSource::PythLazer1K),
+            14 => Some(OracleSource::PythLazer1M),
+            15 => Some(OracleSource::PythLazerStableCoin),
+            _ => None,
+        }
+    }
+
     pub fn is_pyth_pull_oracle(&self) -> bool {
         matches!(
             self,
@@ -175,25 +197,7 @@ impl TryFrom<u8> for OracleSource {
     type Error = ErrorCode;
 
     fn try_from(v: u8) -> DriftResult<Self> {
-        match v {
-            0 => Ok(OracleSource::Pyth),
-            1 => Err(ErrorCode::InvalidOracle),
-            2 => Ok(OracleSource::QuoteAsset),
-            3 => Ok(OracleSource::Pyth1K),
-            4 => Ok(OracleSource::Pyth1M),
-            5 => Ok(OracleSource::PythStableCoin),
-            6 => Ok(OracleSource::Prelaunch),
-            7 => Ok(OracleSource::PythPull),
-            8 => Ok(OracleSource::Pyth1KPull),
-            9 => Ok(OracleSource::Pyth1MPull),
-            10 => Ok(OracleSource::PythStableCoinPull),
-            11 => Err(ErrorCode::InvalidOracle),
-            12 => Ok(OracleSource::PythLazer),
-            13 => Ok(OracleSource::PythLazer1K),
-            14 => Ok(OracleSource::PythLazer1M),
-            15 => Ok(OracleSource::PythLazerStableCoin),
-            _ => Err(ErrorCode::InvalidOracle),
-        }
+        OracleSource::from_u8(v).ok_or(ErrorCode::InvalidOracle)
     }
 }
 

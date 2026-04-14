@@ -126,6 +126,14 @@ fn oracle_map_diff_oracle_source() {
 }
 
 #[test]
+fn removed_oracle_source_slots_return_none() {
+    assert_eq!(OracleSource::from_u8(1), None);
+    assert_eq!(OracleSource::from_u8(11), None);
+    assert_eq!(OracleSource::from_u8(2), Some(OracleSource::QuoteAsset));
+    assert_eq!(OracleSource::from_u8(12), Some(OracleSource::PythLazer));
+}
+
+#[test]
 fn use_mm_oracle() {
     let slot = 303030303;
     let mut oracle_price_data = OraclePriceData {

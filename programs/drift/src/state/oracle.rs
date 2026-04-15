@@ -123,9 +123,13 @@ pub enum OracleSource {
     Pyth1M,
     PythStableCoin,
     Prelaunch,
+    /// @deprecated Preserves the legacy Pyth pull discriminant.
     PythPull,
+    /// @deprecated Preserves the legacy Pyth 1K pull discriminant.
     Pyth1KPull,
+    /// @deprecated Preserves the legacy Pyth 1M pull discriminant.
     Pyth1MPull,
+    /// @deprecated Preserves the legacy Pyth stablecoin pull discriminant.
     PythStableCoinPull,
     /// @deprecated Preserves the legacy switchboard-on-demand discriminant.
     DeprecatedSwitchboardOnDemand,
@@ -145,10 +149,10 @@ impl OracleSource {
             4 => Some(OracleSource::Pyth1M),
             5 => Some(OracleSource::PythStableCoin),
             6 => Some(OracleSource::Prelaunch),
-            7 => Some(OracleSource::PythPull),
-            8 => Some(OracleSource::Pyth1KPull),
-            9 => Some(OracleSource::Pyth1MPull),
-            10 => Some(OracleSource::PythStableCoinPull),
+            7 => None,
+            8 => None,
+            9 => None,
+            10 => None,
             11 => None,
             12 => Some(OracleSource::PythLazer),
             13 => Some(OracleSource::PythLazer1K),
@@ -156,16 +160,6 @@ impl OracleSource {
             15 => Some(OracleSource::PythLazerStableCoin),
             _ => None,
         }
-    }
-
-    pub fn is_pyth_pull_oracle(&self) -> bool {
-        matches!(
-            self,
-            OracleSource::PythPull
-                | OracleSource::Pyth1KPull
-                | OracleSource::Pyth1MPull
-                | OracleSource::PythStableCoinPull
-        )
     }
 
     pub fn is_pyth_push_oracle(&self) -> bool {
@@ -181,13 +175,11 @@ impl OracleSource {
     pub fn get_pyth_multiple(&self) -> u128 {
         match self {
             OracleSource::Pyth
-            | OracleSource::PythPull
             | OracleSource::PythLazer
             | OracleSource::PythStableCoin
-            | OracleSource::PythStableCoinPull
             | OracleSource::PythLazerStableCoin => 1,
-            OracleSource::Pyth1K | OracleSource::Pyth1KPull | OracleSource::PythLazer1K => 1000,
-            OracleSource::Pyth1M | OracleSource::Pyth1MPull | OracleSource::PythLazer1M => 1000000,
+            OracleSource::Pyth1K | OracleSource::PythLazer1K => 1000,
+            OracleSource::Pyth1M | OracleSource::PythLazer1M => 1000000,
             _ => {
                 panic!("Calling get_pyth_multiple on non-pyth oracle source");
             }
@@ -388,12 +380,10 @@ pub fn get_oracle_price(
             sequence_id: None,
         }),
         OracleSource::Prelaunch => get_prelaunch_price(price_oracle, clock_slot),
-        OracleSource::PythPull => get_pyth_price(price_oracle, clock_slot, oracle_source),
-        OracleSource::Pyth1KPull => get_pyth_price(price_oracle, clock_slot, oracle_source),
-        OracleSource::Pyth1MPull => get_pyth_price(price_oracle, clock_slot, oracle_source),
-        OracleSource::PythStableCoinPull => {
-            get_pyth_stable_coin_price(price_oracle, clock_slot, oracle_source)
-        }
+        OracleSource::PythPull
+        | OracleSource::Pyth1KPull
+        | OracleSource::Pyth1MPull
+        | OracleSource::PythStableCoinPull => Err(ErrorCode::InvalidOracle),
         OracleSource::PythLazer => get_pyth_price(price_oracle, clock_slot, oracle_source),
         OracleSource::PythLazer1K => get_pyth_price(price_oracle, clock_slot, oracle_source),
         OracleSource::PythLazer1M => get_pyth_price(price_oracle, clock_slot, oracle_source),
@@ -420,24 +410,7 @@ pub fn get_pyth_price(
     let published_slot: u64;
     let sequence_id: Option<u64>;
 
-    // TODO: remove these branches for pull and push once we can
-    if oracle_source.is_pyth_pull_oracle() {
-        let price_message = pyth_solana_receiver_sdk::price_update::PriceUpdateV2::try_deserialize(
-            &mut pyth_price_data,
-        )
-        .unwrap();
-        oracle_price = price_message.price_message.price;
-        oracle_conf = price_message.price_message.conf;
-        oracle_precision = 10_u128.pow(price_message.price_message.exponent.unsigned_abs());
-        published_slot = price_message.posted_slot;
-        sequence_id = Some(
-            price_message
-                .price_message
-                .publish_time
-                .max(0)
-                .cast::<u64>()?,
-        );
-    } else if oracle_source.is_pyth_push_oracle() {
+    if oracle_source.is_pyth_push_oracle() {
         let price_data = pyth_client::cast::<pyth_client::Price>(pyth_price_data);
         oracle_price = price_data.agg.price;
         oracle_conf = price_data.agg.conf;
@@ -456,13 +429,21 @@ pub fn get_pyth_price(
         oracle_precision = 10_u128.pow(price_data.expo.unsigned_abs());
         published_slot = price_data.valid_slot;
         sequence_id = None;
-    } else {
+    } else if matches!(
+        oracle_source,
+        OracleSource::PythLazer
+            | OracleSource::PythLazer1K
+            | OracleSource::PythLazer1M
+            | OracleSource::PythLazerStableCoin
+    ) {
         let price_data = PythLazerOracle::try_deserialize(&mut pyth_price_data).unwrap();
         oracle_price = price_data.price;
         oracle_conf = price_data.conf;
         oracle_precision = 10_u128.pow(price_data.exponent.unsigned_abs());
         published_slot = price_data.posted_slot;
         sequence_id = Some(price_data.publish_time.max(0).cast::<u64>()?);
+    } else {
+        return Err(ErrorCode::InvalidOracle);
     }
 
     if oracle_precision <= multiple {

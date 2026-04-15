@@ -2,9 +2,9 @@ use solana_program::pubkey::Pubkey;
 use std::str::FromStr;
 
 use crate::create_account_info;
+use crate::error::ErrorCode;
 use crate::math::constants::{AMM_RESERVE_PRECISION, PRICE_PRECISION_I64, PRICE_PRECISION_U64};
 use crate::state::oracle::{get_oracle_price, HistoricalOracleData, OraclePriceData, OracleSource};
-use crate::state::oracle_map::OracleMap;
 use crate::state::perp_market::{PerpMarket, AMM};
 use crate::state::state::State;
 use crate::test_utils::*;
@@ -62,72 +62,53 @@ fn pyth_1m() {
 }
 
 #[test]
-fn pyth_pull_1m() {
+fn pyth_pull_oracles_are_rejected() {
+    let mut oracle_price = get_hardcoded_pyth_price(8394, 10);
     let oracle_price_key =
-        Pubkey::from_str("DBE3N8uNjhKPRHfANdwGvCZghWXyLPdqdSbEW2XFwBiX").unwrap();
-    let oracle_market_str = String::from("IvEjY51+9M206svkAq6RZcKrffzb5QRNJ/KEEG+IqQv93vpfv/YMoAFysCEhfKP+aJIqGar5kBCcudhOmtAEtNICWtb1KTFEGbZFBQAAAAAABQIAAAAAAAD2////xXhYZgAAAADFeFhmAAAAAJMfBQAAAAAAnwEAAAAAAAAFMwYQAAAAAAA=");
-    let mut decoded_bytes = base64::decode(oracle_market_str).unwrap();
-    let oracle_market_bytes = decoded_bytes.as_mut_slice();
-    let mut lamports = 0;
-    let pyth_program = crate::ids::drift_oracle_receiver_program::id();
-    let bonk_market_account_info = create_account_info(
+        Pubkey::from_str("8ihFLu5FimgTQ1Unh4dVyEHUGodJ5gJQCrQf4KUVB9bN").unwrap();
+    let pyth_program = crate::ids::pyth_program::id();
+    create_account_info!(
+        oracle_price,
         &oracle_price_key,
-        true,
-        &mut lamports,
-        oracle_market_bytes,
         &pyth_program,
+        oracle_account_info
     );
 
-    let oracle_price_data = get_oracle_price(
-        &OracleSource::Pyth1MPull,
-        &bonk_market_account_info,
-        234919073,
-    )
-    .unwrap();
-    assert_eq!(oracle_price_data.price, 34552600);
+    assert_eq!(
+        get_oracle_price(&OracleSource::PythPull, &oracle_account_info, 0).unwrap_err(),
+        ErrorCode::InvalidOracle
+    );
+    assert_eq!(
+        get_oracle_price(&OracleSource::Pyth1KPull, &oracle_account_info, 0).unwrap_err(),
+        ErrorCode::InvalidOracle
+    );
+    assert_eq!(
+        get_oracle_price(&OracleSource::Pyth1MPull, &oracle_account_info, 0).unwrap_err(),
+        ErrorCode::InvalidOracle
+    );
+    assert_eq!(
+        get_oracle_price(&OracleSource::PythStableCoinPull, &oracle_account_info, 0).unwrap_err(),
+        ErrorCode::InvalidOracle
+    );
 
     let amm = AMM {
-        oracle_source: OracleSource::Pyth1MPull,
+        oracle_source: OracleSource::PythPull,
         ..AMM::default()
     };
 
-    let twap = amm.get_oracle_twap(&bonk_market_account_info, 0).unwrap();
-    assert_eq!(twap, Some(33576300));
-}
-
-#[test]
-fn oracle_map_diff_oracle_source() {
-    let oracle_price_key =
-        Pubkey::from_str("DBE3N8uNjhKPRHfANdwGvCZghWXyLPdqdSbEW2XFwBiX").unwrap();
-    let oracle_market_str = String::from("IvEjY51+9M206svkAq6RZcKrffzb5QRNJ/KEEG+IqQv93vpfv/YMoAFysCEhfKP+aJIqGar5kBCcudhOmtAEtNICWtb1KTFEGbZFBQAAAAAABQIAAAAAAAD2////xXhYZgAAAADFeFhmAAAAAJMfBQAAAAAAnwEAAAAAAAAFMwYQAAAAAAA=");
-    let mut decoded_bytes = base64::decode(oracle_market_str).unwrap();
-    let oracle_market_bytes = decoded_bytes.as_mut_slice();
-    let mut lamports = 0;
-    let pyth_program = crate::ids::drift_oracle_receiver_program::id();
-    let bonk_market_account_info = create_account_info(
-        &oracle_price_key,
-        true,
-        &mut lamports,
-        oracle_market_bytes,
-        &pyth_program,
+    assert_eq!(
+        amm.get_oracle_twap(&oracle_account_info, 0),
+        Err(ErrorCode::InvalidOracle)
     );
-
-    let mut oracle_map = OracleMap::load_one(&bonk_market_account_info, 0, None).unwrap();
-
-    let oracle_price_data = oracle_map
-        .get_price_data(&(oracle_price_key, OracleSource::Pyth1MPull))
-        .unwrap();
-    assert_eq!(oracle_price_data.price, 34552600);
-
-    let oracle_price_data = oracle_map
-        .get_price_data(&(oracle_price_key, OracleSource::PythPull))
-        .unwrap();
-    assert_eq!(oracle_price_data.price, 34);
 }
 
 #[test]
 fn removed_oracle_source_slots_return_none() {
     assert_eq!(OracleSource::from_u8(1), None);
+    assert_eq!(OracleSource::from_u8(7), None);
+    assert_eq!(OracleSource::from_u8(8), None);
+    assert_eq!(OracleSource::from_u8(9), None);
+    assert_eq!(OracleSource::from_u8(10), None);
     assert_eq!(OracleSource::from_u8(11), None);
     assert_eq!(OracleSource::from_u8(2), Some(OracleSource::QuoteAsset));
     assert_eq!(OracleSource::from_u8(12), Some(OracleSource::PythLazer));

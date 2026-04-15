@@ -33,7 +33,6 @@ type DriftConfig = {
 	MARKET_LOOKUP_TABLE: string;
 	MARKET_LOOKUP_TABLES: string[];
 	SERUM_LOOKUP_TABLE?: string;
-	PYTH_PULL_ORACLE_LOOKUP_TABLE?: string;
 	SB_ON_DEMAND_PID: PublicKey;
 };
 

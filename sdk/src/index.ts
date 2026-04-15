@@ -47,9 +47,6 @@ export * from './assert/assert';
 export {
 	PythLazerSubscriber,
 	PythLazerPriceFeedArray,
-	PriceUpdateAccount,
-	PythSolanaReceiver,
-	WormholeCoreBridgeSolana,
 } from './pyth';
 export * from './testClient';
 export * from './user';
@@ -110,7 +107,6 @@ export * from './phoenix/phoenixFulfillmentConfigMap';
 export * from './openbook/openbookV2Subscriber';
 export * from './openbook/openbookV2FulfillmentConfigMap';
 export * from './oracles/pythClient';
-export * from './oracles/pythPullClient';
 export * from './oracles/pythLazerClient';
 export * from './oracles/oracleId';
 export * from './oracles/utils';
@@ -129,7 +125,6 @@ export * from './util/computeUnits';
 export * from './util/digest';
 export * from './util/tps';
 export * from './util/promiseTimeout';
-export * from './util/pythOracleUtils';
 export * from './math/spotBalance';
 export * from './driftClientConfig';
 export * from './dlob/DLOB';

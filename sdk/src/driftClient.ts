@@ -117,7 +117,6 @@ import {
 	getPhoenixFulfillmentConfigPublicKey,
 	getProtectedMakerModeConfigPublicKey,
 	getPythLazerOraclePublicKey,
-	getPythPullOraclePublicKey,
 	getReferrerNamePublicKeySync,
 	getSerumFulfillmentConfigPublicKey,
 	getSerumSignerPublicKey,
@@ -175,7 +174,6 @@ import { User } from './user';
 import { UserSubscriptionConfig } from './userConfig';
 import {
 	configs,
-	DRIFT_ORACLE_RECEIVER_ID,
 	DEFAULT_CONFIRMATION_OPTS,
 	DRIFT_PROGRAM_ID,
 	DriftEnv,
@@ -198,18 +196,14 @@ import { TransactionParamProcessor } from './tx/txParamProcessor';
 import {
 	isOracleTooDivergent,
 	isOracleValid,
-	trimVaaSignatures,
 } from './math/oracles';
 import { TxHandler } from './tx/txHandler';
-import { parseAccumulatorUpdateData } from '@pythnetwork/price-service-sdk';
-import { getFeedIdUint8Array, trimFeedId } from './util/pythOracleUtils';
 import { createMinimalEd25519VerifyIx } from './util/ed25519Utils';
 import {
 	createNativeInstructionDiscriminatorBuffer,
 	isVersionedTransaction,
 	MAX_TX_BYTE_SIZE,
 } from './tx/utils';
-import pythSolanaReceiverIdl from './idl/pyth_solana_receiver.json';
 import { grpcDriftClientAccountSubscriber } from './accounts/grpcDriftClientAccountSubscriber';
 import nacl from 'tweetnacl';
 import { getOracleId } from './oracles/oracleId';
@@ -227,15 +221,6 @@ import {
 } from './math/builder';
 import { TitanClient, SwapMode as TitanSwapMode } from './titan/titanClient';
 import { UnifiedSwapClient } from './swap/UnifiedSwapClient';
-import {
-	DEFAULT_RECEIVER_PROGRAM_ID,
-	WORMHOLE_CORE_BRIDGE_SOLANA_IDL,
-	DEFAULT_WORMHOLE_PROGRAM_ID,
-	getGuardianSetPda,
-	WormholeCoreBridgeSolana,
-	PythSolanaReceiver,
-} from './pyth';
-
 /**
  * Union type for swap clients (Titan and Jupiter) - Legacy type
  * @deprecated Use UnifiedSwapClient class instead
@@ -298,9 +283,6 @@ export class DriftClient {
 	enableMetricsEvents?: boolean;
 
 	txHandler: TxHandler;
-
-	receiverProgram?: Program<PythSolanaReceiver>;
-	wormholeProgram?: Program<WormholeCoreBridgeSolana>;
 
 	public get isSubscribed() {
 		return this._isSubscribed && this.accountSubscriber.isSubscribed;
@@ -11080,231 +11062,6 @@ export class DriftClient {
 		return undefined;
 	}
 
-	public getReceiverProgram(): Program<PythSolanaReceiver> {
-		if (this.receiverProgram === undefined) {
-			this.receiverProgram = new Program(
-				pythSolanaReceiverIdl as PythSolanaReceiver,
-				DEFAULT_RECEIVER_PROGRAM_ID,
-				this.provider
-			);
-		}
-		return this.receiverProgram;
-	}
-
-	public async postPythPullOracleUpdateAtomic(
-		vaaString: string,
-		feedId: string
-	): Promise<TransactionSignature> {
-		const postIxs = await this.getPostPythPullOracleUpdateAtomicIxs(
-			vaaString,
-			feedId
-		);
-		const tx = await this.buildTransaction(postIxs);
-		const { txSig } = await this.sendTransaction(tx, [], this.opts);
-
-		return txSig;
-	}
-
-	public async postMultiPythPullOracleUpdatesAtomic(
-		vaaString: string,
-		feedIds: string[]
-	): Promise<TransactionSignature> {
-		const postIxs = await this.getPostPythPullOracleUpdateAtomicIxs(
-			vaaString,
-			feedIds
-		);
-		const tx = await this.buildTransaction(postIxs);
-		const { txSig } = await this.sendTransaction(tx, [], this.opts);
-
-		return txSig;
-	}
-
-	public async getPostPythPullOracleUpdateAtomicIxs(
-		vaaString: string,
-		feedIds: string | string[],
-		numSignatures = 2
-	): Promise<TransactionInstruction[]> {
-		const accumulatorUpdateData = parseAccumulatorUpdateData(
-			Buffer.from(vaaString, 'base64')
-		);
-		const guardianSetIndex = accumulatorUpdateData.vaa.readUInt32BE(1);
-		const guardianSet = getGuardianSetPda(
-			guardianSetIndex,
-			DEFAULT_WORMHOLE_PROGRAM_ID
-		);
-
-		const trimmedVaa = trimVaaSignatures(
-			accumulatorUpdateData.vaa,
-			numSignatures
-		);
-
-		const postIxs: TransactionInstruction[] = [];
-		if (accumulatorUpdateData.updates.length > 1) {
-			const encodedParams = this.getReceiverProgram().coder.types.encode(
-				'PostMultiUpdatesAtomicParams',
-				{
-					vaa: trimmedVaa,
-					merklePriceUpdates: accumulatorUpdateData.updates,
-				}
-			);
-			const feedIdsToUse: string[] =
-				typeof feedIds === 'string' ? [feedIds] : feedIds;
-			const pubkeys = feedIdsToUse.map((feedId) => {
-				return getPythPullOraclePublicKey(
-					this.program.programId,
-					getFeedIdUint8Array(feedId)
-				);
-			});
-
-			const remainingAccounts: Array<AccountMeta> = pubkeys.map((pubkey) => {
-				return {
-					pubkey,
-					isSigner: false,
-					isWritable: true,
-				};
-			});
-			postIxs.push(
-				this.program.instruction.postMultiPythPullOracleUpdatesAtomic(
-					encodedParams,
-					{
-						accounts: {
-							keeper: this.wallet.publicKey,
-							pythSolanaReceiver: DRIFT_ORACLE_RECEIVER_ID,
-							guardianSet,
-						},
-						remainingAccounts,
-					}
-				)
-			);
-		} else {
-			let feedIdToUse = typeof feedIds === 'string' ? feedIds : feedIds[0];
-			feedIdToUse = trimFeedId(feedIdToUse);
-			postIxs.push(
-				await this.getSinglePostPythPullOracleAtomicIx(
-					{
-						vaa: trimmedVaa,
-						merklePriceUpdate: accumulatorUpdateData.updates[0],
-					},
-					feedIdToUse,
-					guardianSet
-				)
-			);
-		}
-		return postIxs;
-	}
-
-	private async getSinglePostPythPullOracleAtomicIx(
-		params: {
-			vaa: Buffer;
-			merklePriceUpdate: {
-				message: Buffer;
-				proof: number[][];
-			};
-		},
-		feedId: string,
-		guardianSet: PublicKey
-	): Promise<TransactionInstruction> {
-		const feedIdBuffer = getFeedIdUint8Array(feedId);
-		const receiverProgram = this.getReceiverProgram();
-
-		const encodedParams = receiverProgram.coder.types.encode(
-			'PostUpdateAtomicParams',
-			params
-		);
-
-		return this.program.instruction.postPythPullOracleUpdateAtomic(
-			feedIdBuffer,
-			encodedParams,
-			{
-				accounts: {
-					keeper: this.wallet.publicKey,
-					pythSolanaReceiver: DRIFT_ORACLE_RECEIVER_ID,
-					guardianSet,
-					priceFeed: getPythPullOraclePublicKey(
-						this.program.programId,
-						feedIdBuffer
-					),
-				},
-			}
-		);
-	}
-
-	public async updatePythPullOracle(
-		vaaString: string,
-		feedId: string
-	): Promise<TransactionSignature> {
-		feedId = trimFeedId(feedId);
-		const accumulatorUpdateData = parseAccumulatorUpdateData(
-			Buffer.from(vaaString, 'base64')
-		);
-		const guardianSetIndex = accumulatorUpdateData.vaa.readUInt32BE(1);
-		const guardianSet = getGuardianSetPda(
-			guardianSetIndex,
-			DEFAULT_WORMHOLE_PROGRAM_ID
-		);
-
-		const [postIxs, encodedVaaAddress] = await this.getBuildEncodedVaaIxs(
-			accumulatorUpdateData.vaa,
-			guardianSet
-		);
-
-		for (const update of accumulatorUpdateData.updates) {
-			postIxs.push(
-				await this.getUpdatePythPullOracleIxs(
-					{
-						merklePriceUpdate: update,
-					},
-					feedId,
-					encodedVaaAddress.publicKey
-				)
-			);
-		}
-
-		const tx = await this.buildTransaction(postIxs);
-		const { txSig } = await this.sendTransaction(
-			tx,
-			[encodedVaaAddress],
-			this.opts
-		);
-
-		return txSig;
-	}
-
-	public async getUpdatePythPullOracleIxs(
-		params: {
-			merklePriceUpdate: {
-				message: Buffer;
-				proof: number[][];
-			};
-		},
-		feedId: string,
-		encodedVaaAddress: PublicKey
-	): Promise<TransactionInstruction> {
-		const feedIdBuffer = getFeedIdUint8Array(feedId);
-		const receiverProgram = this.getReceiverProgram();
-
-		const encodedParams = receiverProgram.coder.types.encode(
-			'PostUpdateParams',
-			params
-		);
-
-		return this.program.instruction.updatePythPullOracle(
-			feedIdBuffer,
-			encodedParams,
-			{
-				accounts: {
-					keeper: this.wallet.publicKey,
-					pythSolanaReceiver: DRIFT_ORACLE_RECEIVER_ID,
-					encodedVaa: encodedVaaAddress,
-					priceFeed: getPythPullOraclePublicKey(
-						this.program.programId,
-						feedIdBuffer
-					),
-				},
-			}
-		);
-	}
-
 	public async postPythLazerOracleUpdate(
 		feedIds: number[],
 		pythMessageHex: string
@@ -11354,77 +11111,6 @@ export class DriftClient {
 			}
 		);
 		return [verifyIx, ix];
-	}
-
-	private async getBuildEncodedVaaIxs(
-		vaa: Buffer,
-		guardianSet: PublicKey
-	): Promise<[TransactionInstruction[], Keypair]> {
-		const postIxs: TransactionInstruction[] = [];
-
-		if (this.wormholeProgram === undefined) {
-			this.wormholeProgram = new Program(
-				WORMHOLE_CORE_BRIDGE_SOLANA_IDL,
-				DEFAULT_WORMHOLE_PROGRAM_ID,
-				this.provider
-			);
-		}
-
-		const encodedVaaKeypair = new Keypair();
-		postIxs.push(
-			await this.wormholeProgram.account.encodedVaa.createInstruction(
-				encodedVaaKeypair,
-				vaa.length + 46
-			)
-		);
-
-		// Why do we need this too?
-		postIxs.push(
-			await this.wormholeProgram.methods
-				.initEncodedVaa()
-				.accounts({
-					encodedVaa: encodedVaaKeypair.publicKey,
-				})
-				.instruction()
-		);
-
-		// Split the write into two ixs
-		postIxs.push(
-			await this.wormholeProgram.methods
-				.writeEncodedVaa({
-					index: 0,
-					data: vaa.subarray(0, 755),
-				})
-				.accounts({
-					draftVaa: encodedVaaKeypair.publicKey,
-				})
-				.instruction()
-		);
-
-		postIxs.push(
-			await this.wormholeProgram.methods
-				.writeEncodedVaa({
-					index: 755,
-					data: vaa.subarray(755),
-				})
-				.accounts({
-					draftVaa: encodedVaaKeypair.publicKey,
-				})
-				.instruction()
-		);
-
-		// Verify
-		postIxs.push(
-			await this.wormholeProgram.methods
-				.verifyEncodedVaaV1()
-				.accounts({
-					guardianSet,
-					draftVaa: encodedVaaKeypair.publicKey,
-				})
-				.instruction()
-		);
-
-		return [postIxs, encodedVaaKeypair];
 	}
 
 	public async fetchProtectedMakerModeConfig(): Promise<ProtectedMakerModeConfig> {

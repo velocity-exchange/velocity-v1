@@ -5,7 +5,6 @@ import { PythClient } from '../oracles/pythClient';
 import { QuoteAssetOracleClient } from '../oracles/quoteAssetOracleClient';
 import { BN, Program } from '@coral-xyz/anchor';
 import { PrelaunchOracleClient } from '../oracles/prelaunchOracleClient';
-import { PythPullClient } from '../oracles/pythPullClient';
 import { PythLazerClient } from '../oracles/pythLazerClient';
 
 export function getOracleClient(
@@ -17,32 +16,16 @@ export function getOracleClient(
 		return new PythClient(connection);
 	}
 
-	if (isVariant(oracleSource, 'pythPull')) {
-		return new PythPullClient(connection);
-	}
-
 	if (isVariant(oracleSource, 'pyth1K')) {
 		return new PythClient(connection, new BN(1000));
-	}
-
-	if (isVariant(oracleSource, 'pyth1KPull')) {
-		return new PythPullClient(connection, new BN(1000));
 	}
 
 	if (isVariant(oracleSource, 'pyth1M')) {
 		return new PythClient(connection, new BN(1000000));
 	}
 
-	if (isVariant(oracleSource, 'pyth1MPull')) {
-		return new PythPullClient(connection, new BN(1000000));
-	}
-
 	if (isVariant(oracleSource, 'pythStableCoin')) {
 		return new PythClient(connection, undefined, true);
-	}
-
-	if (isVariant(oracleSource, 'pythStableCoinPull')) {
-		return new PythPullClient(connection, undefined, true);
 	}
 
 	if (isVariant(oracleSource, 'prelaunch')) {
@@ -51,6 +34,15 @@ export function getOracleClient(
 
 	if (isVariant(oracleSource, 'quoteAsset')) {
 		return new QuoteAssetOracleClient();
+	}
+
+	if (
+		isVariant(oracleSource, 'pythPull') ||
+		isVariant(oracleSource, 'pyth1KPull') ||
+		isVariant(oracleSource, 'pyth1MPull') ||
+		isVariant(oracleSource, 'pythStableCoinPull')
+	) {
+		throw new Error('Pyth pull oracle support has been removed from the SDK');
 	}
 
 	if (

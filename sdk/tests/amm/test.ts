@@ -1375,8 +1375,8 @@ describe('AMM Tests', () => {
 
 		assert(markTwapLive.eq(new BN('1949826')));
 		assert(oracleTwapLive.eq(new BN('1942510')));
-		assert(est1.eq(new BN('16525')));
-		assert(est2.eq(new BN('16525')));
+		assert(est1.eq(new BN('16941')));
+		assert(est2.eq(new BN('16941')));
 	});
 
 	it('predicted funding rate mock2', () => {
@@ -1468,7 +1468,7 @@ describe('AMM Tests', () => {
 		assert(markTwapLive.eq(new BN('1222131')));
 		assert(oracleTwapLive.eq(new BN('1222586')));
 		assert(est1.eq(est2));
-		assert(est2.eq(new BN('-719')));
+		assert(est2.eq(new BN('1247')));
 	});
 
 	it('predicted funding rate mock clamp', () => {

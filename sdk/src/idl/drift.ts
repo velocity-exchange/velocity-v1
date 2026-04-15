@@ -2362,59 +2362,6 @@ export type Drift = {
 			];
 		},
 		{
-			name: 'fillSpotOrder';
-			discriminator: [212, 206, 130, 173, 21, 34, 199, 40];
-			accounts: [
-				{
-					name: 'state';
-				},
-				{
-					name: 'authority';
-					signer: true;
-				},
-				{
-					name: 'filler';
-					writable: true;
-				},
-				{
-					name: 'fillerStats';
-					writable: true;
-				},
-				{
-					name: 'user';
-					writable: true;
-				},
-				{
-					name: 'userStats';
-					writable: true;
-				},
-			];
-			args: [
-				{
-					name: 'orderId';
-					type: {
-						option: 'u32';
-					};
-				},
-				{
-					name: 'fulfillmentType';
-					type: {
-						option: {
-							defined: {
-								name: 'spotFulfillmentType';
-							};
-						};
-					};
-				},
-				{
-					name: 'makerOrderId';
-					type: {
-						option: 'u32';
-					};
-				},
-			];
-		},
-		{
 			name: 'forceCancelOrders';
 			discriminator: [64, 181, 196, 63, 222, 72, 64, 232];
 			accounts: [
@@ -3635,25 +3582,6 @@ export type Drift = {
 					type: 'u16';
 				},
 			];
-		},
-		{
-			name: 'initializePredictionMarket';
-			discriminator: [248, 70, 198, 224, 224, 105, 125, 195];
-			accounts: [
-				{
-					name: 'admin';
-					signer: true;
-					relations: ['state'];
-				},
-				{
-					name: 'state';
-				},
-				{
-					name: 'perpMarket';
-					writable: true;
-				},
-			];
-			args: [];
 		},
 		{
 			name: 'initializePrelaunchOracle';
@@ -5868,59 +5796,6 @@ export type Drift = {
 			];
 		},
 		{
-			name: 'placeAndMakeSpotOrder';
-			discriminator: [149, 158, 85, 66, 239, 9, 243, 98];
-			accounts: [
-				{
-					name: 'state';
-				},
-				{
-					name: 'user';
-					writable: true;
-				},
-				{
-					name: 'userStats';
-					writable: true;
-				},
-				{
-					name: 'taker';
-					writable: true;
-				},
-				{
-					name: 'takerStats';
-					writable: true;
-				},
-				{
-					name: 'authority';
-					signer: true;
-				},
-			];
-			args: [
-				{
-					name: 'params';
-					type: {
-						defined: {
-							name: 'orderParams';
-						};
-					};
-				},
-				{
-					name: 'takerOrderId';
-					type: 'u32';
-				},
-				{
-					name: 'fulfillmentType';
-					type: {
-						option: {
-							defined: {
-								name: 'spotFulfillmentType';
-							};
-						};
-					};
-				},
-			];
-		},
-		{
 			name: 'placeAndTakePerpOrder';
 			discriminator: [213, 51, 1, 187, 108, 220, 230, 224];
 			accounts: [
@@ -5951,53 +5826,6 @@ export type Drift = {
 				},
 				{
 					name: 'successCondition';
-					type: {
-						option: 'u32';
-					};
-				},
-			];
-		},
-		{
-			name: 'placeAndTakeSpotOrder';
-			discriminator: [191, 3, 138, 71, 114, 198, 202, 100];
-			accounts: [
-				{
-					name: 'state';
-				},
-				{
-					name: 'user';
-					writable: true;
-				},
-				{
-					name: 'userStats';
-					writable: true;
-				},
-				{
-					name: 'authority';
-					signer: true;
-				},
-			];
-			args: [
-				{
-					name: 'params';
-					type: {
-						defined: {
-							name: 'orderParams';
-						};
-					};
-				},
-				{
-					name: 'fulfillmentType';
-					type: {
-						option: {
-							defined: {
-								name: 'spotFulfillmentType';
-							};
-						};
-					};
-				},
-				{
-					name: 'makerOrderId';
 					type: {
 						option: 'u32';
 					};
@@ -6140,33 +5968,6 @@ export type Drift = {
 				{
 					name: 'isDelegateSigner';
 					type: 'bool';
-				},
-			];
-		},
-		{
-			name: 'placeSpotOrder';
-			discriminator: [45, 79, 81, 160, 248, 90, 91, 220];
-			accounts: [
-				{
-					name: 'state';
-				},
-				{
-					name: 'user';
-					writable: true;
-				},
-				{
-					name: 'authority';
-					signer: true;
-				},
-			];
-			args: [
-				{
-					name: 'params';
-					type: {
-						defined: {
-							name: 'orderParams';
-						};
-					};
 				},
 			];
 		},
@@ -13561,8 +13362,8 @@ export type Drift = {
 		},
 		{
 			code: 6284;
-			name: 'invalidPredictionMarketOrder';
-			msg: 'Invalid prediction market order';
+			name: 'depreciatedPredictionMarketOrder';
+			msg: 'deprecated';
 		},
 		{
 			code: 6285;
@@ -13888,6 +13689,11 @@ export type Drift = {
 			code: 6349;
 			name: 'invalidInsuranceFundWithdrawalRecipient';
 			msg: 'Insurance fund withdrawal recipient must be the designated treasury address';
+		},
+		{
+			code: 6350;
+			name: 'spotDlobTradingDisabled';
+			msg: 'Spot DLOB trading is disabled';
 		},
 	];
 	types: [
@@ -15238,10 +15044,10 @@ export type Drift = {
 						name: 'perpetual';
 					},
 					{
-						name: 'future';
+						name: 'deprecatedFuture';
 					},
 					{
-						name: 'prediction';
+						name: 'deprecatedPrediction';
 					},
 				];
 			};
@@ -17288,18 +17094,6 @@ export type Drift = {
 					},
 					{
 						name: 'active';
-					},
-					{
-						name: 'fundingPaused';
-					},
-					{
-						name: 'ammPaused';
-					},
-					{
-						name: 'fillPaused';
-					},
-					{
-						name: 'withdrawPaused';
 					},
 					{
 						name: 'reduceOnly';

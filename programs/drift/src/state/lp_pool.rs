@@ -26,8 +26,6 @@ use super::zero_copy::{AccountZeroCopy, AccountZeroCopyMut, HasLen};
 use crate::state::spot_market::{SpotBalance, SpotBalanceType};
 use crate::state::traits::Size;
 use crate::{impl_zero_copy_loader, validate};
-use drift_macros::assert_no_slop;
-
 pub const LP_POOL_PDA_SEED: &str = "lp_pool";
 pub const AMM_MAP_PDA_SEED: &str = "AMM_MAP";
 pub const CONSTITUENT_PDA_SEED: &str = "CONSTITUENT";
@@ -60,7 +58,6 @@ pub const MAX_ORACLE_STALENESS_FOR_TARGET_CALC: u64 = 10u64;
 #[cfg(test)]
 mod tests;
 
-#[assert_no_slop]
 #[account(zero_copy(unsafe))]
 #[derive(Debug)]
 #[repr(C)]

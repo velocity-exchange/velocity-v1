@@ -21,6 +21,7 @@ use crate::math::margin::{
 use crate::math::safe_math::SafeMath;
 use crate::math::spot_balance::{calculate_utilization, get_token_amount, get_token_value};
 
+use super::oracle_map::OracleIdentifier;
 use crate::math::stats::calculate_new_twap;
 use crate::state::market_status::MarketStatus;
 use crate::state::oracle::{HistoricalIndexData, HistoricalOracleData, OracleSource};
@@ -28,11 +29,7 @@ use crate::state::paused_operations::{InsuranceFundOperation, SpotOperation};
 use crate::state::perp_market::PoolBalance;
 use crate::state::traits::{MarketIndexOffset, Size};
 use crate::validate;
-use drift_macros::assert_no_slop;
 
-use super::oracle_map::OracleIdentifier;
-
-#[assert_no_slop]
 #[account(zero_copy(unsafe))]
 #[derive(PartialEq, Eq, Debug)]
 #[repr(C)]

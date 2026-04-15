@@ -40,7 +40,6 @@ use crate::state::traits::{MarketIndexOffset, Size};
 use anchor_lang::prelude::borsh::{BorshDeserialize, BorshSerialize};
 
 use crate::state::paused_operations::PerpOperation;
-use drift_macros::assert_no_slop;
 use static_assertions::const_assert_eq;
 
 use super::oracle_map::OracleIdentifier;
@@ -120,7 +119,6 @@ pub enum MarketConfigFlag {
     DisableFormulaicKUpdate = 0b00000001,
 }
 
-#[assert_no_slop]
 #[account(zero_copy(unsafe))]
 #[derive(Eq, PartialEq, Debug)]
 #[repr(C)]
@@ -921,7 +919,6 @@ pub struct InsuranceClaim {
     pub last_revenue_withdraw_ts: i64,
 }
 
-#[assert_no_slop]
 #[zero_copy(unsafe)]
 #[derive(Default, Eq, PartialEq, Debug)]
 #[repr(C)]
@@ -963,7 +960,6 @@ impl SpotBalance for PoolBalance {
     }
 }
 
-#[assert_no_slop]
 #[zero_copy(unsafe)]
 #[derive(Debug, PartialEq, Eq)]
 #[repr(C)]

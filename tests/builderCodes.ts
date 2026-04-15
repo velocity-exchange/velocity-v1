@@ -354,7 +354,7 @@ describe('builder codes', () => {
 			);
 		assert(
 			builderAcc.authority.toBase58() ===
-			builderClient.wallet.publicKey.toBase58()
+				builderClient.wallet.publicKey.toBase58()
 		);
 		assert(builderAcc.totalBuilderRewards.toNumber() === 0);
 		assert(builderAcc.totalReferrerRewards.toNumber() === 0);
@@ -397,7 +397,7 @@ describe('builder codes', () => {
 			);
 		assert(
 			revShareEscrow.authority.toBase58() ===
-			userClient.wallet.publicKey.toBase58()
+				userClient.wallet.publicKey.toBase58()
 		);
 		// assert(
 		// 	revShareEscrow.referrer.toBase58() ===
@@ -447,7 +447,7 @@ describe('builder codes', () => {
 			);
 		assert(
 			revShareEscrow.authority.toBase58() ===
-			userClient.wallet.publicKey.toBase58()
+				userClient.wallet.publicKey.toBase58()
 		);
 		// assert(
 		// 	revShareEscrow.referrer.toBase58() ===
@@ -885,7 +885,8 @@ describe('builder codes', () => {
 			10_000;
 		assert(
 			Math.round(builderFeePaidBps) === builderFeeBps / 10,
-			`builderFeePaidBps ${builderFeePaidBps} !== builderFeeBps ${builderFeeBps / 10
+			`builderFeePaidBps ${builderFeePaidBps} !== builderFeeBps ${
+				builderFeeBps / 10
 			}`
 		);
 
@@ -1420,7 +1421,7 @@ describe('builder codes', () => {
 			);
 		assert(
 			builderAccAfter.authority.toBase58() ===
-			builderClient.wallet.publicKey.toBase58()
+				builderClient.wallet.publicKey.toBase58()
 		);
 
 		const builderFeeChange = builderAccAfter.totalBuilderRewards.sub(

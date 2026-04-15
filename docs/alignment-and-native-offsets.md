@@ -46,19 +46,41 @@ types appear **before** any `PoolBalance` fields, eliminating the gap.
 
 ### 3. Regression guards
 
-**Compile-time — `#[assert_no_slop]`**
+**Compile-time — `static_assertions::const_assert_eq!`**
 
-The `drift_macros::assert_no_slop` proc-macro emits a `const_assert_eq!` that checks
-`sizeof(Struct) == sum(sizeof(each declared field))`.  It fires at **compile time** if the
-compiler adds any implicit internal or tail padding.  Applied to:
+`drift_macros::assert_no_slop` cannot be used more than once per module: the macro emits
+module-level constants named `STRUCT_SIZE` and `FIELD_SIZES`, so a second use in the same file
+causes a duplicate-definition compile error.  `perp_market.rs` defines `PerpMarket`, `PoolBalance`,
+and `AMM` in the same module, which rules out the attribute macro for all three simultaneously.
 
-- `AMM` (existing)
-- `PerpMarket`, `PoolBalance` (added during this fix)
-- `SpotMarket` (added during this fix)
-- `LPPool` (added during this fix)
+Use `static_assertions::const_assert_eq!` directly instead — it generates anonymous `const` items
+and can appear any number of times in one module:
 
-If you change field types, add fields, or reorder fields in any of these structs and the compiler
-would insert implicit padding, the build fails immediately — no need to run tests.
+```rust
+use static_assertions::const_assert_eq;
+use std::mem::size_of;
+
+// PerpMarket::SIZE == 1240, so sizeof == 1232
+const_assert_eq!(size_of::<PerpMarket>(), 1232);
+// PoolBalance: u128 (16) + u16 (2) + [u8;14] padding == 32
+const_assert_eq!(size_of::<PoolBalance>(), 32);
+// AMM has no standalone SIZE constant.  Derive the correct value by running:
+//   cargo test -p drift -- amm_zero_copy_offsets --nocapture
+// or by checking `size_of::<PerpMarket>() - offset_of!(PerpMarket, amm)
+//   - size_of::<PoolBalance>() - <remaining PerpMarket fields>`.
+// Update the literal whenever AMM fields change.
+const_assert_eq!(size_of::<AMM>(), /* run cargo test to derive */ 0);
+```
+
+Place these assertions immediately after the struct definitions they guard.  If you change field
+types, add fields, or reorder fields and the compiler inserts implicit padding, the build fails
+immediately — no need to run tests.
+
+> **Note:** `traits/tests.rs` already contains `size` tests that assert
+> `size_of::<PerpMarket>() + 8 == PerpMarket::SIZE` (and the same for `SpotMarket`).  Those cover
+> the most important structs at test time.  The `const_assert_eq!` guards above add a
+> compile-time layer for the embedded types (`PoolBalance`, `AMM`) that have no standalone `SIZE`
+> constant and are therefore not covered by the existing tests.
 
 **Test-time — `traits/tests.rs`**
 

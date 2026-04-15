@@ -199,7 +199,7 @@ impl<'a> SpotMarketMap<'a> {
                 break;
             }
 
-            let market_index = u16::from_le_bytes(*array_ref![data, 708, 2]);
+            let market_index = u16::from_le_bytes(*array_ref![data, 700, 2]);
 
             if spot_market_map.0.contains_key(&market_index) {
                 msg!("Can not include same market index twice {}", market_index);
@@ -208,9 +208,11 @@ impl<'a> SpotMarketMap<'a> {
 
             let account_info = account_info_iter.next().safe_unwrap()?;
             let is_writable = account_info.is_writable;
-            let account_loader: AccountLoader<SpotMarket> =
-                AccountLoader::try_from(account_info)
-                    .or(Err(ErrorCode::InvalidSpotMarketAccount))?;
+            let account_loader: AccountLoader<SpotMarket> = AccountLoader::try_from(account_info)
+                .map_err(|e| {
+                msg!("{:?}", e);
+                ErrorCode::InvalidSpotMarketAccount
+            })?;
 
             if writable_spot_markets.contains(&market_index) && !is_writable {
                 return Err(ErrorCode::SpotMarketWrongMutability);
@@ -262,7 +264,7 @@ impl<'a> SpotMarketMap<'a> {
             return Err(ErrorCode::CouldNotLoadSpotMarketData);
         }
 
-        let market_index = u16::from_le_bytes(*array_ref![data, 708, 2]);
+        let market_index = u16::from_le_bytes(*array_ref![data, 700, 2]);
 
         let is_writable = account_info.is_writable;
         let account_loader: AccountLoader<SpotMarket> =
@@ -314,7 +316,7 @@ impl<'a> SpotMarketMap<'a> {
                 return Err(ErrorCode::CouldNotLoadSpotMarketData);
             }
 
-            let market_index = u16::from_le_bytes(*array_ref![data, 708, 2]);
+            let market_index = u16::from_le_bytes(*array_ref![data, 700, 2]);
 
             let is_writable = account_info.is_writable;
             let account_loader: AccountLoader<SpotMarket> =

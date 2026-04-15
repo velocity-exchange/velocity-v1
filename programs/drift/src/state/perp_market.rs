@@ -120,6 +120,7 @@ pub enum MarketConfigFlag {
     DisableFormulaicKUpdate = 0b00000001,
 }
 
+#[assert_no_slop]
 #[account(zero_copy(unsafe))]
 #[derive(Eq, PartialEq, Debug)]
 #[repr(C)]
@@ -219,7 +220,7 @@ pub struct PerpMarket {
     pub last_fill_price: u64,
     pub lp_pool_id: u8,
     pub market_config: u8,
-    pub padding: [u8; 22],
+    pub padding: [u8; 30],
 }
 
 impl Default for PerpMarket {
@@ -267,7 +268,7 @@ impl Default for PerpMarket {
             last_fill_price: 0,
             lp_pool_id: 0,
             market_config: 0,
-            padding: [0; 22],
+            padding: [0; 30],
         }
     }
 }
@@ -277,6 +278,13 @@ impl Size for PerpMarket {
 }
 
 impl MarketIndexOffset for PerpMarket {
+    // PoolBalance padding was widened from [u8;6] to [u8;14] so that
+    // sizeof(PoolBalance) == 32 on both x86_64 and SBF (u128 is 16 bytes with
+    // 8-byte alignment on SBF, so explicit padding avoids tail-padding divergence).
+    // PerpMarket padding was widened from [u8;22] to [u8;30] so the total
+    // declared content is 1232 bytes (a multiple of 16), making sizeof(PerpMarket)
+    // == 1232 on both architectures.  market_index is at struct byte 1168,
+    // account byte 1176 on both.
     const MARKET_INDEX_OFFSET: usize = 1176;
 }
 
@@ -913,6 +921,7 @@ pub struct InsuranceClaim {
     pub last_revenue_withdraw_ts: i64,
 }
 
+#[assert_no_slop]
 #[zero_copy(unsafe)]
 #[derive(Default, Eq, PartialEq, Debug)]
 #[repr(C)]
@@ -923,7 +932,7 @@ pub struct PoolBalance {
     pub scaled_balance: u128,
     /// The spot market the pool is for
     pub market_index: u16,
-    pub padding: [u8; 6],
+    pub padding: [u8; 14],
 }
 
 impl SpotBalance for PoolBalance {

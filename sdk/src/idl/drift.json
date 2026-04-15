@@ -24904,7 +24904,7 @@
             "type": {
               "array": [
                 "u8",
-                162
+                170
               ]
             }
           }
@@ -26810,7 +26810,7 @@
             "type": {
               "array": [
                 "u8",
-                174
+                182
               ]
             }
           }
@@ -29001,7 +29001,7 @@
             "type": {
               "array": [
                 "u8",
-                22
+                30
               ]
             }
           }
@@ -29239,7 +29239,7 @@
             "type": {
               "array": [
                 "u8",
-                6
+                14
               ]
             }
           }
@@ -29501,7 +29501,7 @@
             "type": {
               "array": [
                 "u8",
-                18
+                24
               ]
             }
           }
@@ -30490,46 +30490,6 @@
             }
           },
           {
-            "name": "historical_oracle_data",
-            "type": {
-              "defined": {
-                "name": "HistoricalOracleData"
-              }
-            }
-          },
-          {
-            "name": "historical_index_data",
-            "type": {
-              "defined": {
-                "name": "HistoricalIndexData"
-              }
-            }
-          },
-          {
-            "name": "revenue_pool",
-            "docs": [
-              "Revenue the protocol has collected in this markets token",
-              "e.g. for SOL-PERP, funds can be settled in usdc and will flow into the USDC revenue pool"
-            ],
-            "type": {
-              "defined": {
-                "name": "PoolBalance"
-              }
-            }
-          },
-          {
-            "name": "spot_fee_pool",
-            "docs": [
-              "The fees collected from swaps between this market and the quote market",
-              "Is settled to the quote markets revenue pool"
-            ],
-            "type": {
-              "defined": {
-                "name": "PoolBalance"
-              }
-            }
-          },
-          {
             "name": "insurance_fund",
             "docs": [
               "Details on the insurance fund covering bankruptcies in this markets token",
@@ -30600,6 +30560,46 @@
               "preicision: QUOTE_PRECISION"
             ],
             "type": "u128"
+          },
+          {
+            "name": "revenue_pool",
+            "docs": [
+              "Revenue the protocol has collected in this markets token",
+              "e.g. for SOL-PERP, funds can be settled in usdc and will flow into the USDC revenue pool"
+            ],
+            "type": {
+              "defined": {
+                "name": "PoolBalance"
+              }
+            }
+          },
+          {
+            "name": "spot_fee_pool",
+            "docs": [
+              "The fees collected from swaps between this market and the quote market",
+              "Is settled to the quote markets revenue pool"
+            ],
+            "type": {
+              "defined": {
+                "name": "PoolBalance"
+              }
+            }
+          },
+          {
+            "name": "historical_oracle_data",
+            "type": {
+              "defined": {
+                "name": "HistoricalOracleData"
+              }
+            }
+          },
+          {
+            "name": "historical_index_data",
+            "type": {
+              "defined": {
+                "name": "HistoricalIndexData"
+              }
+            }
           },
           {
             "name": "withdraw_guard_threshold",
@@ -30958,7 +30958,7 @@
             "type": {
               "array": [
                 "u8",
-                40
+                56
               ]
             }
           }

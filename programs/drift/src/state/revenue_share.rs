@@ -34,12 +34,12 @@ pub struct RevenueShare {
     pub authority: Pubkey,
     pub total_referrer_rewards: u64,
     pub total_builder_rewards: u64,
-    pub padding: [u8; 18],
+    pub padding: [u8; 24],
 }
 
 impl RevenueShare {
     pub fn space() -> usize {
-        8 + 32 + 8 + 8 + 18
+        8 + std::mem::size_of::<RevenueShare>()
     }
 }
 

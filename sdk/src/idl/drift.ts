@@ -15008,7 +15008,7 @@ export type Drift = {
 					{
 						name: 'padding';
 						type: {
-							array: ['u8', 162];
+							array: ['u8', 170];
 						};
 					},
 				];
@@ -16729,7 +16729,7 @@ export type Drift = {
 					{
 						name: 'padding';
 						type: {
-							array: ['u8', 174];
+							array: ['u8', 182];
 						};
 					},
 				];
@@ -18785,7 +18785,7 @@ export type Drift = {
 					{
 						name: 'padding';
 						type: {
-							array: ['u8', 22];
+							array: ['u8', 30];
 						};
 					},
 				];
@@ -19008,7 +19008,7 @@ export type Drift = {
 					{
 						name: 'padding';
 						type: {
-							array: ['u8', 6];
+							array: ['u8', 14];
 						};
 					},
 				];
@@ -19253,7 +19253,7 @@ export type Drift = {
 					{
 						name: 'padding';
 						type: {
-							array: ['u8', 18];
+							array: ['u8', 24];
 						};
 					},
 				];
@@ -20175,46 +20175,6 @@ export type Drift = {
 						};
 					},
 					{
-						name: 'historicalOracleData';
-						type: {
-							defined: {
-								name: 'historicalOracleData';
-							};
-						};
-					},
-					{
-						name: 'historicalIndexData';
-						type: {
-							defined: {
-								name: 'historicalIndexData';
-							};
-						};
-					},
-					{
-						name: 'revenuePool';
-						docs: [
-							'Revenue the protocol has collected in this markets token',
-							'e.g. for SOL-PERP, funds can be settled in usdc and will flow into the USDC revenue pool',
-						];
-						type: {
-							defined: {
-								name: 'poolBalance';
-							};
-						};
-					},
-					{
-						name: 'spotFeePool';
-						docs: [
-							'The fees collected from swaps between this market and the quote market',
-							'Is settled to the quote markets revenue pool',
-						];
-						type: {
-							defined: {
-								name: 'poolBalance';
-							};
-						};
-					},
-					{
 						name: 'insuranceFund';
 						docs: [
 							'Details on the insurance fund covering bankruptcies in this markets token',
@@ -20285,6 +20245,46 @@ export type Drift = {
 							'preicision: QUOTE_PRECISION',
 						];
 						type: 'u128';
+					},
+					{
+						name: 'revenuePool';
+						docs: [
+							'Revenue the protocol has collected in this markets token',
+							'e.g. for SOL-PERP, funds can be settled in usdc and will flow into the USDC revenue pool',
+						];
+						type: {
+							defined: {
+								name: 'poolBalance';
+							};
+						};
+					},
+					{
+						name: 'spotFeePool';
+						docs: [
+							'The fees collected from swaps between this market and the quote market',
+							'Is settled to the quote markets revenue pool',
+						];
+						type: {
+							defined: {
+								name: 'poolBalance';
+							};
+						};
+					},
+					{
+						name: 'historicalOracleData';
+						type: {
+							defined: {
+								name: 'historicalOracleData';
+							};
+						};
+					},
+					{
+						name: 'historicalIndexData';
+						type: {
+							defined: {
+								name: 'historicalIndexData';
+							};
+						};
 					},
 					{
 						name: 'withdrawGuardThreshold';
@@ -20621,7 +20621,7 @@ export type Drift = {
 					{
 						name: 'padding';
 						type: {
-							array: ['u8', 40];
+							array: ['u8', 56];
 						};
 					},
 				];

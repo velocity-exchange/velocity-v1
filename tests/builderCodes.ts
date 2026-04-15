@@ -354,7 +354,7 @@ describe('builder codes', () => {
 			);
 		assert(
 			builderAcc.authority.toBase58() ===
-				builderClient.wallet.publicKey.toBase58()
+			builderClient.wallet.publicKey.toBase58()
 		);
 		assert(builderAcc.totalBuilderRewards.toNumber() === 0);
 		assert(builderAcc.totalReferrerRewards.toNumber() === 0);
@@ -397,7 +397,7 @@ describe('builder codes', () => {
 			);
 		assert(
 			revShareEscrow.authority.toBase58() ===
-				userClient.wallet.publicKey.toBase58()
+			userClient.wallet.publicKey.toBase58()
 		);
 		// assert(
 		// 	revShareEscrow.referrer.toBase58() ===
@@ -447,7 +447,7 @@ describe('builder codes', () => {
 			);
 		assert(
 			revShareEscrow.authority.toBase58() ===
-				userClient.wallet.publicKey.toBase58()
+			userClient.wallet.publicKey.toBase58()
 		);
 		// assert(
 		// 	revShareEscrow.referrer.toBase58() ===
@@ -655,7 +655,7 @@ describe('builder codes', () => {
 		);
 		const events = parseLogs(builderClient.program, logs);
 		const orderActionRecords = events.filter(
-			(e) => e.name === 'OrderActionRecord'
+			(e) => e.name === 'orderActionRecord'
 		);
 		assert(orderActionRecords.length > 0);
 		const fillEvent = orderActionRecords[orderActionRecords.length - 1];
@@ -855,7 +855,7 @@ describe('builder codes', () => {
 		);
 		const events = parseLogs(builderClient.program, logs);
 		const orderActionRecords = events.filter(
-			(e) => e.name === 'OrderActionRecord'
+			(e) => e.name === 'orderActionRecord'
 		);
 		assert(orderActionRecords.length > 0);
 		const fillEvent = orderActionRecords[orderActionRecords.length - 1];
@@ -885,8 +885,7 @@ describe('builder codes', () => {
 			10_000;
 		assert(
 			Math.round(builderFeePaidBps) === builderFeeBps / 10,
-			`builderFeePaidBps ${builderFeePaidBps} !== builderFeeBps ${
-				builderFeeBps / 10
+			`builderFeePaidBps ${builderFeePaidBps} !== builderFeeBps ${builderFeeBps / 10
 			}`
 		);
 
@@ -952,7 +951,7 @@ describe('builder codes', () => {
 		);
 		const settleEvents = parseLogs(builderClient.program, settleLogs);
 		const builderSettleEvents = settleEvents
-			.filter((e) => e.name === 'RevenueShareSettleRecord')
+			.filter((e) => e.name === 'revenueShareSettleRecord')
 			.map((e) => e.data) as RevenueShareSettleRecord[];
 
 		assert(builderSettleEvents.length === 1);
@@ -1155,7 +1154,7 @@ describe('builder codes', () => {
 			fillTxA
 		);
 		const eventsA = parseLogs(builderClient.program, logsA);
-		const fillEventA = eventsA.find((e) => e.name === 'OrderActionRecord');
+		const fillEventA = eventsA.find((e) => e.name === 'orderActionRecord');
 		assert(fillEventA !== undefined);
 		const builderFeeA = fillEventA.data['builderFee'] as BN;
 		// const referrerRewardA = new BN(fillEventA.data['referrerReward'] as number);
@@ -1179,7 +1178,7 @@ describe('builder codes', () => {
 			fillTxB
 		);
 		const eventsB = parseLogs(builderClient.program, logsB);
-		const fillEventB = eventsB.find((e) => e.name === 'OrderActionRecord');
+		const fillEventB = eventsB.find((e) => e.name === 'orderActionRecord');
 		assert(fillEventB !== undefined);
 		const builderFeeB = fillEventB.data['builderFee'] as BN;
 		// const referrerRewardB = new BN(fillEventB.data['referrerReward'] as number);
@@ -1338,7 +1337,7 @@ describe('builder codes', () => {
 			fillTxA
 		);
 		const eventsA = parseLogs(builderClient.program, logsA);
-		const fillEventA = eventsA.filter((e) => e.name === 'OrderActionRecord');
+		const fillEventA = eventsA.filter((e) => e.name === 'orderActionRecord');
 		assert(fillEventA !== undefined);
 		const builderFeeA = fillEventA.reduce(
 			(sum, e) => sum.add(e.data['builderFee'] as BN),
@@ -1421,7 +1420,7 @@ describe('builder codes', () => {
 			);
 		assert(
 			builderAccAfter.authority.toBase58() ===
-				builderClient.wallet.publicKey.toBase58()
+			builderClient.wallet.publicKey.toBase58()
 		);
 
 		const builderFeeChange = builderAccAfter.totalBuilderRewards.sub(
@@ -1523,7 +1522,7 @@ describe('builder codes', () => {
 	// 		fillTxA
 	// 	);
 	// 	const eventsA = parseLogs(builderClient.program, logsA);
-	// 	const fillsA = eventsA.filter((e) => e.name === 'OrderActionRecord');
+	// 	const fillsA = eventsA.filter((e) => e.name === 'orderActionRecord');
 	// 	const fillAReferrerReward = fillsA[0]['data']['referrerReward'] as number;
 	// 	assert(fillsA.length > 0);
 	// 	// debug: fillsA[0]['data']
@@ -1552,7 +1551,7 @@ describe('builder codes', () => {
 	// 		fillTxB
 	// 	);
 	// 	const eventsB = parseLogs(builderClient.program, logsB);
-	// 	const fillsB = eventsB.filter((e) => e.name === 'OrderActionRecord');
+	// 	const fillsB = eventsB.filter((e) => e.name === 'orderActionRecord');
 	// 	assert(fillsB.length > 0);
 	// 	const fillBReferrerReward = fillsB[0]['data']['referrerReward'] as number;
 	// 	// debug: fillsB[0]['data']

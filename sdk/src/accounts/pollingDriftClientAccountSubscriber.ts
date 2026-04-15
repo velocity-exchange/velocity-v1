@@ -22,7 +22,7 @@ import {
 	getSpotMarketPublicKey,
 } from '../addresses/pda';
 import { BulkAccountLoader } from './bulkAccountLoader';
-import { capitalize, findDelistedPerpMarketsAndOracles } from './utils';
+import { findDelistedPerpMarketsAndOracles } from './utils';
 import { PublicKey } from '@solana/web3.js';
 import { OracleInfo, OraclePriceData } from '../oracles/types';
 import { OracleClientCache } from '../oracles/oracleClientCache';

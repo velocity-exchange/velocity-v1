@@ -362,7 +362,6 @@ export class User {
 			settledPnl: ZERO,
 			lpShares: ZERO,
 			lastQuoteAssetAmountPerLp: ZERO,
-			perLpBase: 0,
 			maxMarginRatio: 0,
 			isolatedPositionScaledBalance: ZERO,
 			positionFlag: 0,

@@ -26,6 +26,7 @@ use super::zero_copy::{AccountZeroCopy, AccountZeroCopyMut, HasLen};
 use crate::state::spot_market::{SpotBalance, SpotBalanceType};
 use crate::state::traits::Size;
 use crate::{impl_zero_copy_loader, validate};
+use drift_macros::assert_no_slop;
 
 pub const LP_POOL_PDA_SEED: &str = "lp_pool";
 pub const AMM_MAP_PDA_SEED: &str = "AMM_MAP";
@@ -59,6 +60,7 @@ pub const MAX_ORACLE_STALENESS_FOR_TARGET_CALC: u64 = 10u64;
 #[cfg(test)]
 mod tests;
 
+#[assert_no_slop]
 #[account(zero_copy(unsafe))]
 #[derive(Debug)]
 #[repr(C)]
@@ -127,7 +129,7 @@ pub struct LPPool {
 
     pub lp_pool_id: u8,
 
-    pub padding: [u8; 174],
+    pub padding: [u8; 182],
 }
 
 impl Default for LPPool {
@@ -159,7 +161,7 @@ impl Default for LPPool {
             target_oracle_delay_fee_bps_per_10_slots: 0,
             target_position_delay_fee_bps_per_10_slots: 0,
             lp_pool_id: 0,
-            padding: [0u8; 174],
+            padding: [0u8; 182],
         }
     }
 }
@@ -980,7 +982,7 @@ pub struct Constituent {
     // Status
     pub status: u8,
     pub paused_operations: u8,
-    pub _padding: [u8; 162],
+    pub _padding: [u8; 170],
 }
 
 impl Default for Constituent {
@@ -1018,13 +1020,13 @@ impl Default for Constituent {
             xi: 0,
             status: 0,
             paused_operations: 0,
-            _padding: [0; 162],
+            _padding: [0; 170],
         }
     }
 }
 
 impl Size for Constituent {
-    const SIZE: usize = 480;
+    const SIZE: usize = 488;
 }
 
 #[derive(BitFlags, Clone, Copy, PartialEq, Debug, Eq)]

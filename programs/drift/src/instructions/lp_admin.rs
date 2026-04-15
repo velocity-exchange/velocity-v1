@@ -82,7 +82,7 @@ pub fn handle_initialize_lp_pool(
         target_oracle_delay_fee_bps_per_10_slots: 0,
         target_position_delay_fee_bps_per_10_slots: 0,
         lp_pool_id,
-        padding: [0u8; 174],
+        padding: [0u8; 182],
         whitelist_mint,
     };
 

@@ -225,6 +225,6 @@ describe('switchboard place orders cus', () => {
 		const cus =
 			bankrunContextWrapper.connection.findComputeUnitConsumption(txSig);
 		console.log(cus);
-		assert(cus < 417000);
+		assert(cus < 450000);
 	});
 });

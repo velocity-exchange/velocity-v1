@@ -356,7 +356,7 @@ pub fn handle_initialize_spot_market(
         fuel_boost_insurance: 0,
         token_program_flag: token_program,
         pool_id: 0,
-        padding: [0; 40],
+        padding: [0; 56],
         insurance_fund: InsuranceFund {
             vault: ctx.accounts.insurance_fund_vault.key(),
             unstaking_period: THIRTEEN_DAY,
@@ -1017,7 +1017,7 @@ pub fn handle_initialize_perp_market(
         last_fill_price: 0,
         lp_pool_id,
         market_config: 0,
-        padding: [0; 22],
+        padding: [0; 30],
         amm: AMM {
             oracle: *ctx.accounts.oracle.key,
             oracle_source,
@@ -4875,7 +4875,8 @@ pub fn handle_update_mm_oracle_native(accounts: &[AccountInfo], data: &[u8]) -> 
     );
 
     let mut perp_market = accounts[0].data.borrow_mut();
-    let perp_market_sequence_id = u64::from_le_bytes(perp_market[936..944].try_into().unwrap());
+    // Account offsets verified via offset_of!(AMM, field) + 8 discriminator bytes.
+    let perp_market_sequence_id = u64::from_le_bytes(perp_market[944..952].try_into().unwrap());
     let incoming_sequence_id = u64::from_le_bytes(data[8..16].try_into().unwrap());
 
     if &data[0..8] == &[0u8; 8] {
@@ -4887,9 +4888,9 @@ pub fn handle_update_mm_oracle_native(accounts: &[AccountInfo], data: &[u8]) -> 
         let clock_account = &accounts[2];
         let clock_data = clock_account.data.borrow();
 
-        perp_market[832..840].copy_from_slice(&clock_data[0..8]);
-        perp_market[912..920].copy_from_slice(&data[0..8]);
-        perp_market[936..944].copy_from_slice(&data[8..16]);
+        perp_market[840..848].copy_from_slice(&clock_data[0..8]); // mm_oracle_slot
+        perp_market[920..928].copy_from_slice(&data[0..8]); // mm_oracle_price
+        perp_market[944..952].copy_from_slice(&data[8..16]); // mm_oracle_sequence_id
     }
 
     Ok(())
@@ -4908,7 +4909,7 @@ pub fn handle_update_amm_spread_adjustment_native(
         amm_spread_adjust_wallet::id()
     );
     let mut perp_market = accounts[0].data.borrow_mut();
-    perp_market[934..935].copy_from_slice(&[data[0]]);
+    perp_market[942..943].copy_from_slice(&[data[0]]); // amm_spread_adjustment
 
     Ok(())
 }

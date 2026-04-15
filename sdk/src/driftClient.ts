@@ -13,13 +13,7 @@
  * Instruction → on-chain handler mapping: see ARCHITECTURE.md § SDK↔Instruction Mapping.
  */
 import * as anchor from '@coral-xyz/anchor';
-import {
-	AnchorProvider,
-	BN,
-	Idl,
-	Program,
-	ProgramAccount,
-} from '@coral-xyz/anchor';
+import { AnchorProvider, BN, Program, ProgramAccount } from '@coral-xyz/anchor';
 import { Idl as Idl30, Program as Program30 } from '@coral-xyz/anchor-29';
 import bs58 from 'bs58';
 import {
@@ -182,7 +176,6 @@ import {
 	configs,
 	DRIFT_ORACLE_RECEIVER_ID,
 	DEFAULT_CONFIRMATION_OPTS,
-	DRIFT_PROGRAM_ID,
 	DriftEnv,
 	DriftProgram,
 	PYTH_LAZER_STORAGE_ACCOUNT_KEY,

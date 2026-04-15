@@ -193,10 +193,7 @@ import { getMarinadeDepositIx, getMarinadeFinanceProgram } from './marinade';
 import { getOrderParams } from './orderParams';
 import { numberToSafeBN } from './math/utils';
 import { TransactionParamProcessor } from './tx/txParamProcessor';
-import {
-	isOracleTooDivergent,
-	isOracleValid,
-} from './math/oracles';
+import { isOracleTooDivergent, isOracleValid } from './math/oracles';
 import { TxHandler } from './tx/txHandler';
 import { createMinimalEd25519VerifyIx } from './util/ed25519Utils';
 import {

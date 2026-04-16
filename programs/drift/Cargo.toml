@@ -30,8 +30,6 @@ solana-program = "3"
 borsh = "1"
 pyth-client = "0.2.2"
 pyth_lazer = { path = "../pyth-lazer", features = ["no-entrypoint"] }
-pythnet-sdk = { git = "https://github.com/drift-labs/pyth-crosschain", rev = "e43b2765edf680a52f1649ae57024d63ef645443" }
-pyth-solana-receiver-sdk = { git = "https://github.com/drift-labs/pyth-crosschain", rev = "e43b2765edf680a52f1649ae57024d63ef645443" }
 bytemuck = { version = "1.4.0" }
 hex = "0.4.3"
 num-traits = "0.2"
@@ -45,9 +43,7 @@ phoenix-v1 = { git = "https://github.com/drift-labs/phoenix-v1", rev = "fcf37149
 solana-security-txt = "1.1.0"
 static_assertions = "1.1.0"
 drift-macros = { git = "https://github.com/drift-labs/drift-macros.git", rev = "c57d87" }
-switchboard = { path = "../switchboard", features = ["no-entrypoint"] }
 openbook-v2-light = { path = "../openbook_v2", features = ["no-entrypoint"] }
-switchboard-on-demand = { path = "../switchboard-on-demand", features = ["no-entrypoint"] }
 byteorder = "1.4.3"
 
 [dev-dependencies]

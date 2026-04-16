@@ -110,7 +110,8 @@ async function makeMockUser(
 	mockUser.driftClient.getOraclePriceDataAndSlot = getMockOracle;
 	mockUser.driftClient.getOracleDataForPerpMarket = getOracleDataForPerpMarket;
 	mockUser.driftClient.getOracleDataForSpotMarket = getOracleDataForSpotMarket;
-	mockUser.driftClient.getMMOracleDataForPerpMarket = getMMOracleDataForPerpMarket;
+	mockUser.driftClient.getMMOracleDataForPerpMarket =
+		getMMOracleDataForPerpMarket;
 	return mockUser;
 }
 

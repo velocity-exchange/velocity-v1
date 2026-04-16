@@ -17367,7 +17367,7 @@ export type Drift = {
 						name: 'pyth';
 					},
 					{
-						name: 'switchboard';
+						name: 'deprecatedSwitchboard';
 					},
 					{
 						name: 'quoteAsset';
@@ -17397,7 +17397,7 @@ export type Drift = {
 						name: 'pythStableCoinPull';
 					},
 					{
-						name: 'switchboardOnDemand';
+						name: 'deprecatedSwitchboardOnDemand';
 					},
 					{
 						name: 'pythLazer';

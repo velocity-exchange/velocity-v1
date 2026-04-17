@@ -1,5 +1,6 @@
 use anchor_lang::prelude::{AccountInfo, Pubkey};
 use anchor_lang::{Owner, ZeroCopy};
+use base64;
 use bytes::BytesMut;
 
 use crate::state::pyth_lazer_oracle::PythLazerOracle;
@@ -51,9 +52,8 @@ pub fn get_account_bytes<T: bytemuck::Pod>(account: &mut T) -> BytesMut {
     bytes
 }
 
-/// Returns account bytes where the struct data (at offset 8 from the disc) is
-/// properly aligned for bytemuck::from_bytes. Allocates a 16-byte-aligned buffer
-/// with an 8-byte prefix so that bytes[8..] is 16-byte aligned.
+/// Serializes `account` into a buffer where `bytes[disc_len..]` is aligned to `align_of::<T>()`,
+/// satisfying `AccountLoader::try_from`'s alignment requirement on Rust ≥ 1.77.
 pub fn get_anchor_account_bytes<T: ZeroCopy + Owner>(account: &mut T) -> AlignedAccountBytes {
     let disc = T::DISCRIMINATOR;
     let struct_bytes = bytemuck::bytes_of_mut(account);
@@ -61,16 +61,12 @@ pub fn get_anchor_account_bytes<T: ZeroCopy + Owner>(account: &mut T) -> Aligned
     let disc_len = disc.len();
     let data_len = disc_len + struct_bytes.len();
 
-    // Allocate: we need (ptr + disc_len) to be struct_align-aligned.
-    // Over-allocate with struct_align*2 alignment and struct_align extra bytes,
-    // then find the right offset within the allocation.
     let alloc_align = struct_align.max(16);
     let alloc_size = data_len + alloc_align;
     let layout = std::alloc::Layout::from_size_align(alloc_size, alloc_align).unwrap();
     let base = unsafe { std::alloc::alloc_zeroed(layout) };
     assert!(!base.is_null());
 
-    // Find offset where (base + offset + disc_len) % struct_align == 0
     let base_addr = base as usize;
     let remainder = (base_addr + disc_len) % struct_align;
     let offset = if remainder == 0 {
@@ -121,6 +117,24 @@ impl Drop for AlignedAccountBytes {
     fn drop(&mut self) {
         unsafe { std::alloc::dealloc(self.base, self.layout) }
     }
+}
+
+/// Decodes a base64 Anchor account blob into an aligned buffer ready for `AccountLoader::try_from`.
+///
+/// # Safety
+/// Decoded bytes must be a valid `T` preceded by an 8-byte discriminator.
+pub unsafe fn aligned_account_bytes_from_b64<T: ZeroCopy + Owner>(
+    b64: &str,
+) -> AlignedAccountBytes {
+    let decoded = base64::decode(b64).unwrap();
+    let disc_len = 8;
+    assert!(
+        decoded.len() >= disc_len + std::mem::size_of::<T>(),
+        "decoded b64 blob too short for {}",
+        std::any::type_name::<T>()
+    );
+    let mut account: T = std::ptr::read_unaligned(decoded[disc_len..].as_ptr() as *const T);
+    get_anchor_account_bytes(&mut account)
 }
 
 pub fn create_account_info<'a>(

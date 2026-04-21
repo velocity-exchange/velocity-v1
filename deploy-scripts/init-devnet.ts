@@ -1,9 +1,11 @@
 /**
  * Devnet initialization runbook for the drift program.
  *
- * Run AFTER `anchor deploy` has published the drift program to devnet.
- * Executes phases A–G from .claude/plans/drift-devnet-deployment.md:
+ * Run AFTER `anchor deploy` has published the drift and token_faucet programs
+ * to devnet. Executes phases 0 + A–G from
+ * .claude/plans/drift-devnet-deployment.md:
  *
+ *   0) create USDT SPL mint + initialize token_faucet for distribution
  *   A) global state + amm cache
  *   B) USDT spot market at index 0
  *   C) Pyth Lazer SOL/USD oracle
@@ -13,13 +15,22 @@
  *   G) ProtectedMakerModeConfig
  *
  * Idempotent: every phase checks whether its destination PDA already exists on
- * chain and skips if so. Safe to re-run after partial failure.
+ * chain and skips if so. Safe to re-run after partial failure. Phase 0 reuses
+ * the mint recorded in the receipt on re-runs.
  *
  * Required env:
  *   DEVNET_ADMIN        path to admin keypair file (becomes State.admin — immutable)
- *   USDT_MINT           devnet USDT SPL mint pubkey (6 decimals)
  *   SOL_LAZER_FEED_ID   Pyth Lazer u32 feed id for SOL/USD
  * Optional env:
+ *   USDT_MINT           existing devnet USDT SPL mint (6 decimals). If unset, a
+ *                       fresh mint is created in Phase 0 and persisted to the
+ *                       receipt; subsequent runs reuse it.
+ *   USDT_MINT_KEYPAIR   path to keypair for the USDT mint (vanity address).
+ *                       If unset, a random keypair is generated and saved next
+ *                       to the receipt as usdt-mint.json.
+ *   USDT_INITIAL_SUPPLY amount (whole tokens) to mint to admin before the
+ *                       faucet takes over mint authority. Default 10_000_000.
+ *   TOKEN_FAUCET_PROGRAM_ID  defaults to V4v1mQiAdLz4qwckEb45WqHYceYizoib39cDBHSWfaB.
  *   RPC_URL             default https://api.devnet.solana.com
  *   LP_POOL_ID          default 1 (id 0 is the sentinel "not in a pool")
  *   LP_MAX_AUM          default 1_000_000 USDT (in QUOTE_PRECISION units)
@@ -30,8 +41,23 @@
 import fs from 'fs';
 import path from 'path';
 import readline from 'readline';
-import { Connection, Keypair, PublicKey } from '@solana/web3.js';
-import { BN } from '@coral-xyz/anchor';
+import {
+	Connection,
+	Keypair,
+	PublicKey,
+	SystemProgram,
+	SYSVAR_RENT_PUBKEY,
+	Transaction,
+} from '@solana/web3.js';
+import { BN, AnchorProvider, Program, Idl } from '@coral-xyz/anchor';
+import {
+	TOKEN_PROGRAM_ID,
+	createMint,
+	getAssociatedTokenAddress,
+	createAssociatedTokenAccountInstruction,
+	createMintToInstruction,
+} from '@solana/spl-token';
+import tokenFaucetIdl from '../sdk/src/idl/token_faucet.json';
 import {
 	AdminClient,
 	AMM_RESERVE_PRECISION,
@@ -66,6 +92,15 @@ type Receipt = {
 	programId: string;
 	admin: string;
 	usdtMint: string;
+	usdtMintKeypairPath?: string;
+	usdtMintCreateTxSig?: string;
+	usdtInitialSupplyTxSig?: string;
+	tokenFaucet?: {
+		programId: string;
+		faucetConfig: string;
+		mintAuthority: string;
+		initTxSig?: string;
+	};
 	state?: { pubkey: string; txSig?: string };
 	ammCache?: { pubkey: string; txSig?: string };
 	spotMarkets: Record<number, { pubkey: string; txSig?: string }>;
@@ -83,6 +118,30 @@ type Receipt = {
 	startedAt: string;
 	finishedAt?: string;
 };
+
+const TOKEN_FAUCET_DEFAULT_PROGRAM_ID =
+	'V4v1mQiAdLz4qwckEb45WqHYceYizoib39cDBHSWfaB';
+const USDT_DECIMALS = 6;
+
+function getFaucetConfigPda(
+	programId: PublicKey,
+	mint: PublicKey
+): PublicKey {
+	return PublicKey.findProgramAddressSync(
+		[Buffer.from('faucet_config'), mint.toBuffer()],
+		programId
+	)[0];
+}
+
+function getFaucetMintAuthorityPda(
+	programId: PublicKey,
+	mint: PublicKey
+): PublicKey {
+	return PublicKey.findProgramAddressSync(
+		[Buffer.from('mint_authority'), mint.toBuffer()],
+		programId
+	)[0];
+}
 
 function requireEnv(name: string): string {
 	const v = process.env[name];
@@ -142,10 +201,18 @@ async function assertMint(connection: Connection, mint: PublicKey, label: string
 	}
 }
 
+function tryLoadExistingReceipt(receiptPath: string): Receipt | null {
+	try {
+		const raw = fs.readFileSync(receiptPath, 'utf8');
+		return JSON.parse(raw) as Receipt;
+	} catch {
+		return null;
+	}
+}
+
 async function main() {
 	const rpcUrl = process.env.RPC_URL ?? 'https://api.devnet.solana.com';
 	const adminPath = requireEnv('DEVNET_ADMIN');
-	const usdtMint = new PublicKey(requireEnv('USDT_MINT'));
 	const solLazerFeedId = Number(requireEnv('SOL_LAZER_FEED_ID'));
 	if (!Number.isFinite(solLazerFeedId) || solLazerFeedId < 0) {
 		throw new Error('SOL_LAZER_FEED_ID must be a non-negative integer');
@@ -159,16 +226,41 @@ async function main() {
 	);
 	const receiptPath =
 		process.env.RECEIPT_PATH ?? 'deploy-scripts/out/devnet-deployment.json';
+	const absReceiptPath = path.resolve(process.cwd(), receiptPath);
+	fs.mkdirSync(path.dirname(absReceiptPath), { recursive: true });
 
 	const connection = new Connection(rpcUrl, 'confirmed');
 	const keypair = loadKeypair(adminPath);
 	const wallet = new Wallet(keypair);
 	const programId = new PublicKey(DRIFT_PROGRAM_ID);
+	const tokenFaucetProgramId = new PublicKey(
+		process.env.TOKEN_FAUCET_PROGRAM_ID ?? TOKEN_FAUCET_DEFAULT_PROGRAM_ID
+	);
+
+	// Resolve the USDT mint up-front: env > prior receipt > will be created in Phase 0.
+	const existingReceipt = tryLoadExistingReceipt(absReceiptPath);
+	let usdtMint: PublicKey | null = null;
+	let usdtMintKeypair: Keypair | null = null;
+	const usdtMintKeypairPath =
+		process.env.USDT_MINT_KEYPAIR ??
+		path.join(path.dirname(absReceiptPath), 'usdt-mint.json');
+	if (process.env.USDT_MINT) {
+		usdtMint = new PublicKey(process.env.USDT_MINT);
+	} else if (existingReceipt?.usdtMint) {
+		usdtMint = new PublicKey(existingReceipt.usdtMint);
+	} else if (fs.existsSync(usdtMintKeypairPath)) {
+		usdtMintKeypair = loadKeypair(usdtMintKeypairPath);
+		usdtMint = usdtMintKeypair.publicKey;
+	}
+	const willCreateUsdt = usdtMint === null;
 
 	console.log(`drift program: ${programId.toBase58()}`);
+	console.log(`faucet prog:   ${tokenFaucetProgramId.toBase58()}`);
 	console.log(`rpc:           ${rpcUrl}`);
 	console.log(`admin:         ${keypair.publicKey.toBase58()}`);
-	console.log(`usdt mint:     ${usdtMint.toBase58()}`);
+	console.log(
+		`usdt mint:     ${usdtMint ? usdtMint.toBase58() : '(will create in Phase 0)'}`
+	);
 	console.log(`sol lazer fid: ${solLazerFeedId}`);
 	console.log(`lp pool id:    ${lpPoolId}`);
 
@@ -180,18 +272,35 @@ async function main() {
 			`drift program ${programId.toBase58()} is not deployed/executable on ${rpcUrl}. Run \`anchor deploy\` first.`
 		);
 	}
-	await assertMint(connection, usdtMint, 'USDT mint');
+	const faucetInfo = await connection.getAccountInfo(
+		tokenFaucetProgramId,
+		'confirmed'
+	);
+	if (!faucetInfo || !faucetInfo.executable) {
+		throw new Error(
+			`token_faucet program ${tokenFaucetProgramId.toBase58()} is not deployed/executable on ${rpcUrl}. Run \`anchor deploy\` for it first.`
+		);
+	}
+	if (usdtMint) await assertMint(connection, usdtMint, 'USDT mint');
 	const adminLamports = await connection.getBalance(
 		keypair.publicKey,
 		'confirmed'
 	);
 	const adminSol = adminLamports / 1e9;
 
+	const usdtInitialSupplyWhole = new BN(
+		process.env.USDT_INITIAL_SUPPLY ?? '10000000'
+	);
+
 	await confirm('Proceed with this configuration?', [
 		`cluster:        ${rpcUrl}`,
 		`drift program:  ${programId.toBase58()} (executable ✓)`,
+		`faucet program: ${tokenFaucetProgramId.toBase58()} (executable ✓)`,
 		`admin:          ${keypair.publicKey.toBase58()} (${adminSol.toFixed(4)} SOL)`,
-		`USDT mint:      ${usdtMint.toBase58()} (token mint ✓)`,
+		`USDT mint:      ${
+			usdtMint ? `${usdtMint.toBase58()}${willCreateUsdt ? ' (to be created)' : ' (token mint ✓)'}` : '(to be created)'
+		}`,
+		`USDT supply:    ${usdtInitialSupplyWhole.toString()} tokens pre-mint to admin (before faucet takes authority)`,
 		`SOL Lazer feed: ${solLazerFeedId}`,
 		`LP pool id:     ${lpPoolId}`,
 		`LP max AUM:     ${lpMaxAum.toString()} (raw, QUOTE_PRECISION units)`,
@@ -205,13 +314,175 @@ async function main() {
 		cluster: rpcUrl,
 		programId: programId.toBase58(),
 		admin: keypair.publicKey.toBase58(),
-		usdtMint: usdtMint.toBase58(),
+		usdtMint: usdtMint ? usdtMint.toBase58() : '',
 		spotMarkets: {},
 		pythLazerOracles: {},
 		perpMarkets: {},
 		constituents: {},
 		startedAt: new Date().toISOString(),
 	};
+
+	// === Phase 0: dUSDT SPL mint + token_faucet distribution wiring ===
+	// "dUSDT" is the on-chain ticker for the devnet quote token (controlled by us
+	// via the token_faucet). Internal identifiers stay `usdt*` for brevity.
+	await confirm(
+		'Begin Phase 0 — create dUSDT SPL mint + initialize token_faucet?',
+		[
+			willCreateUsdt
+				? `A fresh 6-decimal dUSDT mint will be created; keypair saved to ${usdtMintKeypairPath}`
+				: `Using existing mint ${usdtMint!.toBase58()}`,
+			`Admin will receive ${usdtInitialSupplyWhole.toString()} dUSDT (pre-faucet), then mint authority is transferred to the token_faucet PDA.`,
+			'After Phase 0 anyone can call token_faucet.mint_to_user to receive devnet dUSDT.',
+		]
+	);
+
+	if (willCreateUsdt) {
+		if (!usdtMintKeypair) {
+			if (fs.existsSync(usdtMintKeypairPath)) {
+				usdtMintKeypair = loadKeypair(usdtMintKeypairPath);
+			} else {
+				usdtMintKeypair = Keypair.generate();
+				fs.writeFileSync(
+					usdtMintKeypairPath,
+					JSON.stringify(Array.from(usdtMintKeypair.secretKey))
+				);
+				console.log(`saved USDT mint keypair: ${usdtMintKeypairPath}`);
+			}
+		}
+		const existing = await connection.getAccountInfo(
+			usdtMintKeypair.publicKey,
+			'confirmed'
+		);
+		if (existing) {
+			logStep(
+				'dUSDT mint already on chain',
+				usdtMintKeypair.publicKey.toBase58()
+			);
+		} else {
+			logStep('create dUSDT SPL mint (6 decimals)');
+			const mintPk = await createMint(
+				connection,
+				keypair,
+				keypair.publicKey, // initial mint authority = admin (needed to pre-mint + initialize faucet)
+				null, // no freeze authority
+				USDT_DECIMALS,
+				usdtMintKeypair
+			);
+			console.log(`  mint: ${mintPk.toBase58()}`);
+		}
+		usdtMint = usdtMintKeypair.publicKey;
+		receipt.usdtMint = usdtMint.toBase58();
+		receipt.usdtMintKeypairPath = usdtMintKeypairPath;
+	}
+
+	// Pre-mint initial supply to admin (so admin can seed vaults / test wallets
+	// without going through the faucet). Safe to re-run: creates the ATA if
+	// needed and mints only when current authority is still the admin.
+	{
+		const adminAta = await getAssociatedTokenAddress(
+			usdtMint!,
+			keypair.publicKey
+		);
+		const ataInfo = await connection.getAccountInfo(adminAta, 'confirmed');
+		const mintInfo = await connection.getParsedAccountInfo(
+			usdtMint!,
+			'confirmed'
+		);
+		const mintAuthority =
+			(mintInfo.value?.data as any)?.parsed?.info?.mintAuthority ?? null;
+		const adminIsAuthority =
+			mintAuthority === keypair.publicKey.toBase58();
+		if (adminIsAuthority && usdtInitialSupplyWhole.gtn(0)) {
+			const amount = usdtInitialSupplyWhole.mul(
+				new BN(10).pow(new BN(USDT_DECIMALS))
+			);
+			const tx = new Transaction();
+			if (!ataInfo) {
+				tx.add(
+					createAssociatedTokenAccountInstruction(
+						keypair.publicKey,
+						adminAta,
+						keypair.publicKey,
+						usdtMint!
+					)
+				);
+			}
+			tx.add(
+				createMintToInstruction(
+					usdtMint!,
+					adminAta,
+					keypair.publicKey,
+					BigInt(amount.toString())
+				)
+			);
+			logStep(
+				`mint ${usdtInitialSupplyWhole.toString()} dUSDT to admin ATA`,
+				adminAta.toBase58()
+			);
+			const sig = await connection.sendTransaction(tx, [keypair]);
+			await connection.confirmTransaction(sig, 'confirmed');
+			receipt.usdtInitialSupplyTxSig = sig;
+		} else {
+			logStep(
+				'skip admin pre-mint',
+				adminIsAuthority
+					? 'USDT_INITIAL_SUPPLY is 0'
+					: 'admin is no longer mint authority (already transferred to faucet)'
+			);
+		}
+	}
+
+	// Initialize the token_faucet over the USDT mint. This SetAuthorities the
+	// mint to the faucet's `mint_authority` PDA so anyone can call mint_to_user.
+	{
+		const faucetConfigPk = getFaucetConfigPda(tokenFaucetProgramId, usdtMint!);
+		const faucetMintAuthorityPk = getFaucetMintAuthorityPda(
+			tokenFaucetProgramId,
+			usdtMint!
+		);
+		receipt.tokenFaucet = {
+			programId: tokenFaucetProgramId.toBase58(),
+			faucetConfig: faucetConfigPk.toBase58(),
+			mintAuthority: faucetMintAuthorityPk.toBase58(),
+		};
+		if (await pdaExists(connection, faucetConfigPk)) {
+			logStep(
+				'token_faucet already initialized for this mint',
+				faucetConfigPk.toBase58()
+			);
+		} else {
+			logStep('token_faucet.initialize (transfers mint authority to faucet PDA)');
+			const provider = new AnchorProvider(connection, wallet as any, {
+				commitment: 'confirmed',
+			});
+			// Anchor 1.0 Program(idl, provider). IDL must carry the program address;
+			// override the address field on a clone so we honor $TOKEN_FAUCET_PROGRAM_ID.
+			const idlWithAddress = {
+				...(tokenFaucetIdl as any),
+				address: tokenFaucetProgramId.toBase58(),
+			} as Idl;
+			const faucetProgram = new Program(idlWithAddress, provider);
+			const sig = await (faucetProgram.methods as any)
+				.initialize()
+				.accounts({
+					faucetConfig: faucetConfigPk,
+					admin: keypair.publicKey,
+					mintAccount: usdtMint!,
+					rent: SYSVAR_RENT_PUBKEY,
+					systemProgram: SystemProgram.programId,
+					tokenProgram: TOKEN_PROGRAM_ID,
+				})
+				.rpc();
+			receipt.tokenFaucet.initTxSig = sig;
+		}
+	}
+
+	// Persist an intermediate receipt before Phase A so the mint/faucet are
+	// recorded even if a later phase fails.
+	fs.writeFileSync(absReceiptPath, JSON.stringify(receipt, null, 2));
+
+	if (!usdtMint) throw new Error('usdtMint not resolved after Phase 0');
+	const quoteMint: PublicKey = usdtMint;
 
 	const client = new AdminClient({
 		connection,
@@ -226,7 +497,7 @@ async function main() {
 	});
 
 	await confirm('Begin Phase A — global State + AmmCache?', [
-		`State PDA will be derived; quote_asset_mint = ${usdtMint.toBase58()}`,
+		`State PDA will be derived; quote_asset_mint = ${quoteMint.toBase58()}`,
 		'AmmCache pre-allocates room for 16 perp markets (required before any perp init).',
 	]);
 	// === Phase A.1: global State ===
@@ -236,7 +507,7 @@ async function main() {
 		receipt.state = { pubkey: statePk.toBase58() };
 	} else {
 		logStep('initialize (global state)');
-		const [txSig] = await client.initialize(usdtMint, false);
+		const [txSig] = await client.initialize(quoteMint, false);
 		receipt.state = { pubkey: statePk.toBase58(), txSig };
 	}
 
@@ -255,20 +526,20 @@ async function main() {
 		receipt.ammCache = { pubkey: ammCachePk.toBase58(), txSig };
 	}
 
-	await confirm('Begin Phase B — USDT spot market at index 0?', [
-		`mint = ${usdtMint.toBase58()}`,
-		'oracleSource = QUOTE_ASSET, assetTier = COLLATERAL, name = "USDT"',
+	await confirm('Begin Phase B — dUSDT spot market at index 0?', [
+		`mint = ${quoteMint.toBase58()}`,
+		'oracleSource = QUOTE_ASSET, assetTier = COLLATERAL, name = "dUSDT"',
 		'Creates spot_market_vault and insurance_fund_vault owned by drift_signer.',
 	]);
-	// === Phase B: USDT spot market at index 0 ===
+	// === Phase B: dUSDT spot market at index 0 ===
 	const spot0Pk = await getSpotMarketPublicKey(programId, 0);
 	if (await pdaExists(connection, spot0Pk)) {
-		logStep('Spot market 0 (USDT) already initialized', spot0Pk.toBase58());
+		logStep('Spot market 0 (dUSDT) already initialized', spot0Pk.toBase58());
 		receipt.spotMarkets[0] = { pubkey: spot0Pk.toBase58() };
 	} else {
-		logStep('initializeSpotMarket USDT @ index 0');
+		logStep('initializeSpotMarket dUSDT @ index 0');
 		const txSig = await client.initializeSpotMarket(
-			usdtMint,
+			quoteMint,
 			SPOT_MARKET_RATE_PRECISION.divn(2).toNumber(), // optimalUtilization 50%
 			SPOT_MARKET_RATE_PRECISION.toNumber(), // optimalRate 100%
 			SPOT_MARKET_RATE_PRECISION.toNumber(), // maxRate 100%
@@ -288,7 +559,7 @@ async function main() {
 			new BN(1), // orderTickSize
 			new BN(1), // orderStepSize
 			0, // ifTotalFactor
-			'USDT',
+			'dUSDT',
 			0 // marketIndex
 		);
 		receipt.spotMarkets[0] = { pubkey: spot0Pk.toBase58(), txSig };
@@ -428,7 +699,7 @@ async function main() {
 		};
 	}
 
-	// === Phase F.2: USDT constituent (spot index 0) ===
+	// === Phase F.2: dUSDT constituent (spot index 0) ===
 	const constituent0Pk = getConstituentPublicKey(programId, lpPoolPk, 0);
 	if (await pdaExists(connection, constituent0Pk)) {
 		logStep(
@@ -437,7 +708,7 @@ async function main() {
 		);
 		receipt.constituents[0] = { pubkey: constituent0Pk.toBase58() };
 	} else {
-		logStep(`initializeConstituent pool=${lpPoolId} spot=0 (USDT)`);
+		logStep(`initializeConstituent pool=${lpPoolId} spot=0 (dUSDT)`);
 		// param shape mirrors tests/lpPool.ts:392-404 (first constituent = USDT quote).
 		const params: InitializeConstituentParams = {
 			spotMarketIndex: 0,
@@ -479,10 +750,8 @@ async function main() {
 
 	// === Persist receipt ===
 	receipt.finishedAt = new Date().toISOString();
-	const outPath = path.resolve(process.cwd(), receiptPath);
-	fs.mkdirSync(path.dirname(outPath), { recursive: true });
-	fs.writeFileSync(outPath, JSON.stringify(receipt, null, 2));
-	console.log(`\nreceipt written: ${outPath}`);
+	fs.writeFileSync(absReceiptPath, JSON.stringify(receipt, null, 2));
+	console.log(`\nreceipt written: ${absReceiptPath}`);
 
 	await client.unsubscribe();
 }

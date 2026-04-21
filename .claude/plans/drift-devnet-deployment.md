@@ -1,8 +1,40 @@
 # Drift v2 Devnet Deployment Plan
 
+## At a glance
+
+End-to-end flow, in order. Every step past build/deploy is driven by `deploy-scripts/init-devnet.ts`.
+
+| # | Step | How |
+|---|---|---|
+| 1 | **Build** `drift` + `token_faucet` | `bash deploy-scripts/build-devnet.sh` |
+| 2 | **Deploy** both programs to devnet | `anchor deploy --program-name drift` / `--program-name token_faucet` |
+| 3 | **Sync IDL** into SDK | `cp target/idl/drift.json sdk/src/idl/drift.json` |
+| 4 | **Init** — run once (idempotent) | `bash deploy-scripts/init-devnet.sh` |
+
+What the init script does, phase by phase:
+
+| Phase | What | Key call(s) |
+|---|---|---|
+| 0 | Create **dUSDT** mint, pre-mint to admin, wire `token_faucet` (transfers mint authority to faucet PDA) | `createMint` → `token_faucet.initialize` |
+| A | Global state + AMM cache | `initialize(usdtMint)` → `initializeAmmCache` |
+| B | **dUSDT spot market @ index 0** (quote) | `initializeSpotMarket(..., QUOTE_ASSET)` |
+| C | **Pyth Lazer SOL/USD oracle** PDA | `initializePythLazerOracle(solFeedId)` |
+| D | **SOL-PERP @ index 0** | `initializePerpMarket(...)` |
+| E | IF shares transfer config (global) | `initializeProtocolIfSharesTransferConfig` |
+| F | LP pool id=1 + dUSDT constituent | `initializeLpPool` → `initializeConstituent` |
+| G | Protected-maker-mode config (global) | `initializeProtectedMakerModeConfig` |
+
+Required env: `$DEVNET_ADMIN`, `$SOL_LAZER_FEED_ID`. Optional: `$USDT_MINT*`, `$USDT_INITIAL_SUPPLY`, `$TOKEN_FAUCET_PROGRAM_ID`.
+
+Outputs: `deploy-scripts/out/devnet-deployment.json` (PDAs + tx sigs + SDK config), `deploy-scripts/out/usdt-mint.json` (mint keypair — preserve for re-runs).
+
+Distribution: any wallet calls `token_faucet.mint_to_user` to self-serve dUSDT (see `sdk/src/tokenFaucet.ts`).
+
+---
+
 ## Context
 
-Deploy the Drift Protocol v2 program to **Solana devnet** as a fresh, minimum-viable instance and then layer on LP pools, insurance-fund staking config, and admin governance (protected maker mode, IF rebalance). Quote asset will be **USDT** (not USDC), and all price oracles will use **Pyth Lazer**. Scope at launch: USDT spot (index 0) + one SOL‑PERP perp (index 0). Everything else (additional spot/perps, DEX fulfillment, referrer claims) is left for later — but the one‑time admin plumbing for IF, LP and governance is included so users can immediately stake IF, LP pools can accept constituents, and maker/rebalancer configs are in place.
+Deploy the Drift Protocol v2 program to **Solana devnet** as a fresh, minimum-viable instance and then layer on LP pools, insurance-fund staking config, and admin governance (protected maker mode, IF rebalance). The devnet quote asset is **dUSDT** — a drift-controlled 6-decimal SPL mint created during Phase 0 of the init script and distributed via the `token_faucet` program (we own the mint authority via a faucet PDA, so anyone can self-serve test tokens). Internal identifiers (`USDT_MINT`, `usdtMint`, etc.) still spell the token "USDT" for brevity; on-chain ticker / spot market name is **dUSDT**. All price oracles use **Pyth Lazer**. Scope at launch: dUSDT spot (index 0) + one SOL‑PERP perp (index 0). Everything else (additional spot/perps, DEX fulfillment, referrer claims) is left for later — but the one‑time admin plumbing for IF, LP and governance is included so users can immediately stake IF, LP pools can accept constituents, and maker/rebalancer configs are in place.
 
 Deliverable: a sequenced runbook + a deploy script (`deploy-scripts/init-devnet.ts`) that the admin wallet runs once after `anchor deploy`, producing a live, tradable devnet protocol.
 
@@ -10,8 +42,8 @@ Deliverable: a sequenced runbook + a deploy script (`deploy-scripts/init-devnet.
 
 - Toolchain: `rustup default stable-x86_64-apple-darwin` (Anchor 1.0 branch, never native aarch64 — zero-copy alignment).
 - `bun` for SDK (`cd sdk && bun install && bun run build`).
-- A funded devnet admin wallet (path via `$DEVNET_ADMIN`); this key becomes `State.admin` **immutably**.
-- A devnet **USDT mint** (6 decimals, standard SPL). If no canonical devnet USDT exists, create one with `spl-token create-token --decimals 6` and mint a starting supply to the admin for seeding vaults/tests.
+- A funded devnet admin wallet (path via `$DEVNET_ADMIN`); this key becomes `State.admin` **immutably** and is the initial mint authority for the dUSDT mint until Phase 0 transfers authority to the `token_faucet` PDA.
+- **No pre-existing quote mint required.** Phase 0 of `init-devnet.ts` creates a fresh 6-decimal SPL mint we control (ticker `dUSDT`), pre-mints an initial supply to the admin, then initializes `token_faucet` for that mint so anyone can self-serve devnet dUSDT via `token_faucet.mint_to_user`. Override via `$USDT_MINT` only if you want to reuse a pre-existing mint instead.
 - Pyth Lazer SOL/USD feed ID (u32) — fetch from Pyth Lazer devnet feed registry at deploy time; not hardcoded in this repo.
 - `Token Program` and `Token-2022` are already on devnet (nothing to do).
 
@@ -21,19 +53,29 @@ Deliverable: a sequenced runbook + a deploy script (`deploy-scripts/init-devnet.
 |---|---|---|---|
 | `drift` | `programs/drift/` | yes | Core protocol. Program ID is declared: `dRiftyHA39MWEi3m9aunc5MzRF1JYuBsbn6VPcn33UH` (`programs/drift/src/lib.rs:70-73`). |
 | `openbook_v2` | `programs/openbook_v2/` | skip | Only needed if enabling OpenBook V2 spot fulfillment (not in scope). |
-| `token_faucet` | `programs/token_faucet/` | optional | Convenience for test USDT distribution on devnet. Skip unless needed. |
+| `token_faucet` | `programs/token_faucet/` | **yes** | Distributes the devnet dUSDT mint to test wallets. Program ID `V4v1mQiAdLz4qwckEb45WqHYceYizoib39cDBHSWfaB` (non-mainnet). Phase 0 of the init script transfers dUSDT mint authority to the `mint_authority` PDA owned by this program so any wallet can call `mint_to_user`. |
 
 `programs/pyth-lazer/` is **not a deployable program** — it's a Rust library crate (`crate-type = ["lib"]`, no Anchor entrypoint) providing Lazer message types and signature-verification utilities that the drift program links against. The actual Pyth Lazer verifier program is deployed and maintained by Pyth Labs on devnet/mainnet; we consume it, we do not deploy it. No action needed for this crate at deploy time beyond it being compiled into the drift program.
 
-Build: `bash deploy-scripts/build-devnet.sh` (runs `anchor build -- --no-default-features --features no-entrypoint`, which omits the `mainnet-beta` gate — see `programs/drift/Cargo.toml:12-23`).
+Build: `bash deploy-scripts/build-devnet.sh` (builds `drift` with `--no-default-features --features no-entrypoint` to omit the `mainnet-beta` gate — see `programs/drift/Cargo.toml:12-23` — and `token_faucet` with default features).
 
-Deploy (fresh, not upgrade): `anchor deploy --program-name drift --provider.cluster devnet --provider.wallet $DEVNET_ADMIN`. The existing `deploy-scripts/deploy-devnet.sh` uses `anchor upgrade` — only use that for subsequent upgrades.
+Deploy (fresh, not upgrade): run `anchor deploy --program-name drift` and `anchor deploy --program-name token_faucet` against `--provider.cluster devnet --provider.wallet $DEVNET_ADMIN`. The existing `deploy-scripts/deploy-devnet.sh` uses `anchor upgrade` — only use that for subsequent upgrades.
 
 After deploy: `anchor build -- --features anchor-test && cp target/idl/drift.json sdk/src/idl/drift.json` so the init script sees the latest IDL.
 
 ## Initialization sequence
 
 Write the runbook as `deploy-scripts/init-devnet.ts` using `@drift-labs/sdk` `AdminClient`. All calls are admin-signed.
+
+### Phase 0 — Mint dUSDT and wire token_faucet for distribution
+
+0. **Create the dUSDT SPL mint.** Use `@solana/spl-token`'s `createMint(connection, admin, mintAuthority=admin, freezeAuthority=null, decimals=6, mintKeypair)`. The mint keypair is generated and persisted to `deploy-scripts/out/usdt-mint.json` (override via `$USDT_MINT_KEYPAIR`); set `$USDT_MINT` to skip creation and reuse a pre-existing mint. Idempotent: if the mint account already exists at the keypair's pubkey, creation is skipped.
+
+0.1. **Pre-mint admin supply.** Mint `$USDT_INITIAL_SUPPLY` (default `10_000_000` whole tokens) to the admin's dUSDT ATA so the admin can seed vaults and test wallets without going through the faucet. Skipped on re-run once mint authority has been transferred to the faucet PDA.
+
+0.2. **Initialize `token_faucet` for the mint.** Call `token_faucet.initialize` (program id `V4v1mQiAdLz4qwckEb45WqHYceYizoib39cDBHSWfaB`, override via `$TOKEN_FAUCET_PROGRAM_ID`). The handler creates a `FaucetConfig` PDA `[b"faucet_config", mint]` and SetAuthorities the mint to its `mint_authority` PDA `[b"mint_authority", mint]` (`programs/token_faucet/src/lib.rs:17-40`). After this step, any wallet can call `token_faucet.mint_to_user(amount)` with their ATA to receive devnet dUSDT — see `sdk/src/tokenFaucet.ts` for a TS client. Idempotent: skipped if `FaucetConfig` PDA already exists.
+
+The receipt records `usdtMint` (the dUSDT mint), `usdtMintKeypairPath`, `tokenFaucet.{programId, faucetConfig, mintAuthority, initTxSig}`, and pre-mint tx sig. An intermediate receipt is written immediately after Phase 0 so the mint isn't lost if a later phase fails.
 
 ### Phase A — Global state (one‑time, must be first)
 
@@ -43,15 +85,15 @@ Write the runbook as `deploy-scripts/init-devnet.ts` using `@drift-labs/sdk` `Ad
 
 3. **`AdminClient.initializeAmmCache()`** — `sdk/src/adminClient.ts:703`. Creates `AmmCache` PDA pre‑allocated for up to 16 perp markets. **Required before any `initializePerpMarket` call.**
 
-### Phase B — Quote spot market (USDT @ index 0)
+### Phase B — Quote spot market (dUSDT @ index 0)
 
 4. **`AdminClient.initializeSpotMarket(...)`** — `sdk/src/adminClient.ts:136`. Must be index 0. Required values:
-   - `mint` = devnet USDT mint.
+   - `mint` = dUSDT mint created in Phase 0.
    - `oracle` = `PublicKey.default()`.
    - `oracleSource` = `OracleSource.QUOTE_ASSET`.
    - Weights: `initialAssetWeight=SPOT_WEIGHT_PRECISION`, `maintenanceAssetWeight=SPOT_WEIGHT_PRECISION`, `initialLiabilityWeight=SPOT_WEIGHT_PRECISION`, `maintenanceLiabilityWeight=SPOT_WEIGHT_PRECISION`.
    - Rates: `optimalUtilization=SPOT_MARKET_RATE_PRECISION/2`, `optimalRate=SPOT_MARKET_RATE_PRECISION`, `maxRate=SPOT_MARKET_RATE_PRECISION`.
-   - `assetTier=COLLATERAL`, `name="USDT"`.
+   - `assetTier=COLLATERAL`, `name="dUSDT"`.
 
    Creates the `SpotMarket` PDA, the `spot_market_vault`, and the `insurance_fund_vault` (both token accounts owned by `drift_signer`). Template parameters lifted from `tests/testHelpers.ts:1145` (`initializeQuoteSpotMarket`).
 
@@ -84,21 +126,21 @@ Write the runbook as `deploy-scripts/init-devnet.ts` using `@drift-labs/sdk` `Ad
 
 8. **`AdminClient.initializeLpPool(lpPoolId=1, minMintFee, maxAum, maxSettleQuoteAmountPerMarket, lpTokenMintKeypair)`** — `sdk/src/adminClient.ts:5262-5281`. Creates the `LPPool`, `AmmConstituentMapping`, and `ConstituentTargetBase` PDAs, plus a 6‑decimal LP token mint with authority = LP pool PDA. Handler: `programs/drift/src/instructions/lp_admin.rs:35-111`. Use `lpPoolId=1`; id `0` is the sentinel used by perp markets that are *not* in a pool.
 
-9. **`AdminClient.initializeConstituent(lpPoolId=1, { spotMarketIndex: 0, ... })`** — `sdk/src/adminClient.ts:5355-5414`. Adds USDT (index 0) as the first constituent. Handler: `programs/drift/src/instructions/lp_admin.rs:114-211`. Set modest `swapFees`, `maxWeightDeviation`, and initial target weight 100% until more constituents are added. Creates the constituent's token vault owned by `drift_signer`.
+9. **`AdminClient.initializeConstituent(lpPoolId=1, { spotMarketIndex: 0, ... })`** — `sdk/src/adminClient.ts:5355-5414`. Adds dUSDT (index 0) as the first constituent. Handler: `programs/drift/src/instructions/lp_admin.rs:114-211`. Set modest `swapFees`, `maxWeightDeviation`, and initial target weight 100% until more constituents are added. Creates the constituent's token vault owned by `drift_signer`.
 
-   *Further constituents (SOL spot, etc.) are added later with the same call.* No perp‑constituent init instruction exists — perps participate via `lpPoolId` set on the perp market.
+   *Further constituents (SOL spot, etc.) are added later with the same call.* No perp‑constituent init instruction exists — perps participate via `lpPoolId` set on the perp market. The constituent's vault holds dUSDT issued by our own mint.
 
 ### Phase G — Governance / maker / rebalancer configs
 
 10. **`AdminClient.initializeProtectedMakerModeConfig(maxUsers)`** — `sdk/src/adminClient.ts:4767-4803`. Admin one‑time, global. Creates `ProtectedMakerModeConfig` PDA `[b"protected_maker_mode_config"]` (struct at `programs/drift/src/instructions/admin.rs:6000-6020`). Pick a generous `maxUsers` (e.g., 200) for devnet.
 
-11. **`AdminClient.initializeIfRebalanceConfig(params)`** — `sdk/src/adminClient.ts:4597-4627`. Per `(in_market_index, out_market_index)` pair. For devnet launch we only have USDT (index 0) so skip unless/until a second spot market is added; keep the helper stubbed and document in the script how to invoke once SOL spot lands.
+11. **`AdminClient.initializeIfRebalanceConfig(params)`** — `sdk/src/adminClient.ts:4597-4627`. Per `(in_market_index, out_market_index)` pair. For devnet launch we only have dUSDT (index 0) so skip unless/until a second spot market is added; keep the helper stubbed and document in the script how to invoke once SOL spot lands.
 
 *Referrer names are user‑invoked (`programs/drift/src/instructions/user.rs:292-325`) — no admin setup.*
 
-## Necessary code changes for USDT quote asset support
+## Necessary code changes for dUSDT quote asset support
 
-Switching the deployment from the repo's current devnet **USDC @ spot market 0** assumptions to **USDT @ spot market 0** is not just an init-script concern. The on-chain program already accepts an arbitrary quote mint in `initialize`, so the core quote-asset switch does **not** require new protocol logic by itself, but the SDK and deployment config must be updated so clients/keepers resolve the correct mint, oracle PDAs, and market metadata.
+Switching the deployment from the repo's current devnet **USDC @ spot market 0** assumptions to **dUSDT @ spot market 0** is not just an init-script concern. The on-chain program already accepts an arbitrary quote mint in `initialize`, so the core quote-asset switch does **not** require new protocol logic by itself, but the SDK and deployment config must be updated so clients/keepers resolve the correct mint, oracle PDAs, and market metadata. Because we own the dUSDT mint via `token_faucet`, no upstream registry coordination is required — the mint pubkey is whatever Phase 0 emits.
 
 ### Program changes
 
@@ -117,9 +159,9 @@ Switching the deployment from the repo's current devnet **USDC @ spot market 0**
    - If it is a parallel/custom devnet instance, create a dedicated config path (preferred) so existing devnet users do not silently switch to the new markets.
 
 2. **Update quote spot market metadata for market index 0.**
-   - In the deployment-specific spot-market config, change market 0 from `USDC` to `USDT`.
-   - Set `mint` to the deployed USDT mint.
-   - Set `symbol/name` to `USDT`.
+   - In the deployment-specific spot-market config, change market 0 from `USDC` to `dUSDT`.
+   - Set `mint` to the dUSDT mint emitted by Phase 0 of the init script.
+   - Set `symbol/name` to `dUSDT`.
    - Set the quote market's oracle metadata to match the actual on-chain initialization. If market 0 is initialized with `OracleSource.QUOTE_ASSET`, the SDK config should reflect that rather than continuing to point at the old devnet stablecoin oracle account.
 
 3. **Update perp market oracle addresses to the newly derived Lazer PDAs.**
@@ -128,28 +170,29 @@ Switching the deployment from the repo's current devnet **USDC @ spot market 0**
    - The init script should write the resolved PDA(s) into an artifact that the SDK config can consume.
 
 4. **Make the quote-mint config naming generic where practical.**
-   - `sdk/src/config.ts` currently exposes `USDC_MINT_ADDRESS`, which becomes misleading once devnet quote collateral is USDT.
+   - `sdk/src/config.ts` currently exposes `USDC_MINT_ADDRESS`, which becomes misleading once devnet quote collateral is dUSDT.
    - Preferred change: introduce `QUOTE_MINT_ADDRESS` (or equivalent) and migrate quote-aware consumers to use that field.
    - If renaming is too disruptive immediately, add a deployment-specific override and leave a compatibility alias, but document that the field is semantically "quote mint", not necessarily USDC.
 
 5. **Update scripts/tests/helpers that assume "devnet quote == USDC".**
    - Any script that reads `getConfig().USDC_MINT_ADDRESS`, `DevnetSpotMarkets[0]`, or hardcodes canonical devnet USDC should be switched to the deployment-specific quote market config.
-   - Operator-facing env vars in the new deployment scripts may remain `USDT_MINT`, but if this is expected to generalize later, prefer a neutral name like `QUOTE_MINT`.
+   - Operator-facing env vars in the new deployment scripts remain `USDT_MINT` / `USDT_MINT_KEYPAIR` / `USDT_INITIAL_SUPPLY` for brevity (the on-chain ticker is `dUSDT`); if this is expected to generalize later, prefer neutral names like `QUOTE_MINT`.
 
 6. **Emit a generated deployment artifact for downstream consumers.**
    - `deploy-scripts/init-devnet.ts` should not only write a receipt of tx signatures/PDAs; it should also write the exact market/oracle config needed by keepers, bots, and SDK consumers.
-   - Minimum contents: `programId`, `quoteMint`, `spotMarket0`, `perpMarket0`, `pythLazerOraclePubkeys`, and any LP pool ids created during init.
+   - Minimum contents: `programId`, `usdtMint` (the dUSDT mint), `tokenFaucet.{programId, faucetConfig, mintAuthority}`, `spotMarket0`, `perpMarket0`, `pythLazerOraclePubkeys`, and any LP pool ids created during init.
    - This avoids hand-copying PDAs from logs into `sdk/src/constants/*.ts`.
 
 ## Files to create / modify
 
 | Path | Action | Purpose |
 |---|---|---|
-| `deploy-scripts/init-devnet.ts` | **create** | TypeScript runbook executing Phases A–G above via `AdminClient`. Idempotency: wrap each step in a `try/catch` that checks for "already initialized" (`adminClient.ts:107-109` pattern) and skips. Writes a JSON receipt (`deploy-scripts/out/devnet-deployment.json`) with every created PDA + tx signature. |
-| `deploy-scripts/init-devnet.sh` | **create** | Thin shell wrapper: `bun run deploy-scripts/init-devnet.ts`. |
-| `deploy-scripts/README.md` | **create (short)** | Minimal operator runbook pointing at build → deploy → init scripts, env vars (`$DEVNET_ADMIN`, `$USDT_MINT`, `$SOL_LAZER_FEED_ID`), and the receipt path. Kept short per user preference. |
+| `deploy-scripts/init-devnet.ts` | **create** | TypeScript runbook executing Phases 0 + A–G above via `AdminClient` and (Phase 0) `@solana/spl-token` + raw `token_faucet` Anchor program calls. Idempotency: every PDA / mint creation step checks on-chain state and skips if already present. Writes a JSON receipt (`deploy-scripts/out/devnet-deployment.json`) with every created PDA + tx signature; also persists the dUSDT mint keypair to `deploy-scripts/out/usdt-mint.json` (override path with `$USDT_MINT_KEYPAIR`). |
+| `deploy-scripts/init-devnet.sh` | **create** | Thin shell wrapper: `bun run deploy-scripts/init-devnet.ts`. Requires `$DEVNET_ADMIN` and `$SOL_LAZER_FEED_ID`; mint env vars are optional. |
+| `deploy-scripts/build-devnet.sh` | **modify** | Build both `drift` (with `--no-default-features --features no-entrypoint`) and `token_faucet` so both `.so`s are ready to deploy. |
+| `deploy-scripts/README.md` | **create (short)** | Minimal operator runbook pointing at build → deploy → init scripts, env vars (`$DEVNET_ADMIN`, `$SOL_LAZER_FEED_ID`, optional `$USDT_MINT*`/`$USDT_INITIAL_SUPPLY`/`$TOKEN_FAUCET_PROGRAM_ID`), distribution flow, and the receipt path. Kept short per user preference. |
 | `sdk/src/config.ts` | **modify** | Add a deployment-specific config/override path for the new devnet instance and stop relying on the existing devnet USDC assumptions. |
-| `sdk/src/constants/spotMarkets.ts` | **modify** | Define the quote spot market for the new deployment as **USDT @ index 0** with the correct mint/oracle metadata. |
+| `sdk/src/constants/spotMarkets.ts` | **modify** | Define the quote spot market for the new deployment as **dUSDT @ index 0** with the correct mint/oracle metadata. |
 | `sdk/src/constants/perpMarkets.ts` | **modify** | Point `SOL-PERP` at the newly created `PythLazerOracle` PDA for this deployment instead of the current shared-devnet oracle pubkey. |
 
 No quote-asset-specific program (Rust) changes should be necessary. SDK/config changes are required. If `ProtocolIfSharesTransferConfig` remains in scope, that specific instruction surface may require a program/IDL change before this runbook can execute end-to-end.
@@ -166,11 +209,12 @@ No quote-asset-specific program (Rust) changes should be necessary. SDK/config c
 
 1. **Programs on chain**: `solana program show dRiftyHA39MWEi3m9aunc5MzRF1JYuBsbn6VPcn33UH --url devnet` returns a valid program.
 2. **State account**: `AdminClient.getStateAccount()` returns `admin == $DEVNET_ADMIN`, `number_of_spot_markets == 1`, `number_of_markets == 1`.
-3. **Spot market**: fetch `SpotMarket[0]`, assert `mint == usdtMint`, `oracle_source == QUOTE_ASSET`, and the spot vault/IF vault are Token accounts owned by `drift_signer`.
+3. **Spot market**: fetch `SpotMarket[0]`, assert `mint == dUSDT mint`, `oracle_source == QUOTE_ASSET`, name decodes to `"dUSDT"`, and the spot vault/IF vault are Token accounts owned by `drift_signer`.
 4. **Perp market**: fetch `PerpMarket[0]`, assert `amm.oracle == <lazer PDA>` and `oracle_source == PYTH_LAZER`; `AmmCache` has a non‑zero slot at index 0.
 5. **LP**: `LPPool` PDA for id `1` exists; `Constituent` for (pool=1, spot=0) exists; the LP token mint's authority is the LP pool PDA.
 6. **Governance PDAs**: `ProtectedMakerModeConfig` and `ProtocolIfSharesTransferConfig` fetchable (non-null, correct owner = drift program).
-7. **End-to-end smoke**:
+7. **dUSDT mint + faucet**: confirm the dUSDT mint exists with `decimals == 6` and current `mint_authority == tokenFaucet.mintAuthority` PDA recorded in the receipt. Calling `token_faucet.mint_to_user` from a fresh wallet should top up its dUSDT ATA without touching admin keys.
+8. **End-to-end smoke**:
    - Run `ts-mocha -t 300000 ./tests/admin.ts` against the devnet config (points at the deployed program) to exercise the same init sequence in a known-good way; skip if the test infra doesn't support a remote cluster, in which case run locally against the same built `drift.so`.
-   - Have a second test wallet call `DriftClient.initializeUserAccount()`, `deposit(usdtAmount, 0)`, then `placePerpOrder({ marketIndex: 0, baseAssetAmount: ..., ... })` with a keeper loop to fill. Observing a filled order on devnet is the real green light.
-8. **Rollback**: The initial program deploy retains the buffer; if Phase A..G errors, the program is still upgradable via `deploy-scripts/deploy-devnet.sh`. State/market accounts, once created, **cannot be cleanly deleted** — ensure USDT mint, admin wallet, and Lazer feed id are correct *before* running Phase A.
+   - Have a second test wallet pull dUSDT via the faucet, call `DriftClient.initializeUserAccount()`, `deposit(dUsdtAmount, 0)`, then `placePerpOrder({ marketIndex: 0, baseAssetAmount: ..., ... })` with a keeper loop to fill. Observing a filled order on devnet is the real green light.
+9. **Rollback**: The initial program deploy retains the buffer; if Phase 0/A..G errors, the programs are still upgradable via `deploy-scripts/deploy-devnet.sh`. State/market accounts, once created, **cannot be cleanly deleted** — ensure the admin wallet and Lazer feed id are correct *before* running Phase A. Phase 0 itself is restartable: as long as the dUSDT mint keypair is preserved at `usdt-mint.json`, re-runs reuse the same mint and skip already-completed sub-steps.

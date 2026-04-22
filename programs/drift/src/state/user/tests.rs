@@ -2074,7 +2074,7 @@ mod get_limit_price {
         let long_order_small = Order {
             direction: PositionDirection::Long,
             order_type: OrderType::Limit,
-            oracle_price_offset: (PRICE_PRECISION_U64 / 10) as i32,
+            oracle_price_offset: (PRICE_PRECISION_U64 / 10) as i64,
             ..Order::default()
         };
 
@@ -2110,7 +2110,7 @@ mod get_limit_price {
         let long_order_small = Order {
             direction: PositionDirection::Long,
             order_type: OrderType::Limit,
-            oracle_price_offset: (PRICE_PRECISION_U64 / 100) as i32,
+            oracle_price_offset: (PRICE_PRECISION_U64 / 100) as i64,
             ..Order::default()
         };
 

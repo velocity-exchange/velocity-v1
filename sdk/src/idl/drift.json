@@ -21163,7 +21163,7 @@
           {
             "name": "oracle_price_offset",
             "type": {
-              "option": "i32"
+              "option": "i64"
             }
           },
           {
@@ -21478,7 +21478,7 @@
               "If set, the order limit price is the oracle price + this offset",
               "precision: PRICE_PRECISION"
             ],
-            "type": "i32"
+            "type": "i64"
           },
           {
             "name": "order_id",
@@ -22123,7 +22123,7 @@
           {
             "name": "oracle_price_offset",
             "type": {
-              "option": "i32"
+              "option": "i64"
             }
           },
           {

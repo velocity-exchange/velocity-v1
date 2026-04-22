@@ -365,7 +365,7 @@ export class DLOB {
 			isOneOfVariant(order.orderType, ['market', 'triggerMarket', 'oracle'])
 		) {
 			type = 'market';
-		} else if (order.oraclePriceOffset !== 0) {
+		} else if (!order.oraclePriceOffset.eq(ZERO)) {
 			type = isProtectedMaker ? 'protectedFloatingLimit' : 'floatingLimit';
 		} else {
 			const isResting = isRestingLimitOrder(order, slot);

@@ -17195,7 +17195,7 @@ export type Drift = {
 					{
 						name: 'oraclePriceOffset';
 						type: {
-							option: 'i32';
+							option: 'i64';
 						};
 					},
 					{
@@ -17498,7 +17498,7 @@ export type Drift = {
 							'If set, the order limit price is the oracle price + this offset',
 							'precision: PRICE_PRECISION',
 						];
-						type: 'i32';
+						type: 'i64';
 					},
 					{
 						name: 'orderId';
@@ -18090,7 +18090,7 @@ export type Drift = {
 					{
 						name: 'oraclePriceOffset';
 						type: {
-							option: 'i32';
+							option: 'i64';
 						};
 					},
 					{

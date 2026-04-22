@@ -8158,7 +8158,7 @@ export class DriftClient {
 		orderId: number,
 		newBaseAmount?: BN,
 		newLimitPrice?: BN,
-		newOraclePriceOffset?: number
+		newOraclePriceOffset?: BN
 	): Promise<TransactionSignature> {
 		return this.modifyOrder({
 			orderId,
@@ -8181,7 +8181,7 @@ export class DriftClient {
 		userOrderId: number,
 		newBaseAmount?: BN,
 		newLimitPrice?: BN,
-		newOraclePriceOffset?: number
+		newOraclePriceOffset?: BN
 	): Promise<TransactionSignature> {
 		return this.modifyOrderByUserOrderId({
 			userOrderId,
@@ -8215,7 +8215,7 @@ export class DriftClient {
 			newDirection?: PositionDirection;
 			newBaseAmount?: BN;
 			newLimitPrice?: BN;
-			newOraclePriceOffset?: number;
+			newOraclePriceOffset?: BN;
 			newTriggerPrice?: BN;
 			newTriggerCondition?: OrderTriggerCondition;
 			auctionDuration?: number;
@@ -8269,7 +8269,7 @@ export class DriftClient {
 			newDirection?: PositionDirection;
 			newBaseAmount?: BN;
 			newLimitPrice?: BN;
-			newOraclePriceOffset?: number;
+			newOraclePriceOffset?: BN;
 			newTriggerPrice?: BN;
 			newTriggerCondition?: OrderTriggerCondition;
 			auctionDuration?: number;
@@ -8358,7 +8358,7 @@ export class DriftClient {
 			newDirection?: PositionDirection;
 			newBaseAmount?: BN;
 			newLimitPrice?: BN;
-			newOraclePriceOffset?: number;
+			newOraclePriceOffset?: BN;
 			newTriggerPrice?: BN;
 			newTriggerCondition?: OrderTriggerCondition;
 			auctionDuration?: number;
@@ -8406,7 +8406,7 @@ export class DriftClient {
 			newDirection?: PositionDirection;
 			newBaseAmount?: BN;
 			newLimitPrice?: BN;
-			newOraclePriceOffset?: number;
+			newOraclePriceOffset?: BN;
 			newTriggerPrice?: BN;
 			newTriggerCondition?: OrderTriggerCondition;
 			auctionDuration?: number;

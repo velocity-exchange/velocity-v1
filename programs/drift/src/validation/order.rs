@@ -408,7 +408,7 @@ fn validate_oracle_auction_params(order: &Order) -> DriftResult {
             }
 
             if order.has_oracle_price_offset()
-                && order.auction_end_price > order.oracle_price_offset.cast()?
+                && order.auction_end_price > order.oracle_price_offset
             {
                 msg!(
                     "Auction end price offset ({}) was greater than oracle price offset ({})",
@@ -429,7 +429,7 @@ fn validate_oracle_auction_params(order: &Order) -> DriftResult {
             }
 
             if order.has_oracle_price_offset()
-                && order.auction_end_price < order.oracle_price_offset.cast()?
+                && order.auction_end_price < order.oracle_price_offset
             {
                 msg!(
                     "Auction end price offset ({}) was less than oracle price offset ({})",

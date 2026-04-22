@@ -63,7 +63,7 @@ pub enum UserStatus {
 
 // implement SIZE const for User
 impl Size for User {
-    const SIZE: usize = 4376;
+    const SIZE: usize = 4632;
 }
 
 #[account(zero_copy(unsafe))]
@@ -1478,7 +1478,7 @@ pub struct Order {
     pub max_ts: i64,
     /// If set, the order limit price is the oracle price + this offset
     /// precision: PRICE_PRECISION
-    pub oracle_price_offset: i32,
+    pub oracle_price_offset: i64,
     /// The id for the order. Each users has their own order id space
     pub order_id: u32,
     /// The perp/spot market index
@@ -1510,7 +1510,7 @@ pub struct Order {
     /// Bitflags for further classification
     /// 0: is_signed_message
     pub bit_flags: u8,
-    pub padding: [u8; 1],
+    pub padding: [u8; 5],
 }
 
 #[derive(Clone, Copy, AnchorSerialize, AnchorDeserialize, PartialEq, Eq, Debug)]
@@ -1550,7 +1550,7 @@ impl Order {
             })?;
 
             let mut limit_price = oracle_price
-                .safe_add(self.oracle_price_offset.cast()?)?
+                .safe_add(self.oracle_price_offset)?
                 .max(tick_size.cast()?)
                 .cast::<u64>()?;
 
@@ -1829,7 +1829,7 @@ impl Default for Order {
             max_ts: 0,
             posted_slot_tail: 0,
             bit_flags: 0,
-            padding: [0; 1],
+            padding: [0; 5],
         }
     }
 }

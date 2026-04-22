@@ -171,9 +171,9 @@ export function getLimitPrice<T extends MarketTypeStr>(
 	let limitPrice;
 	if (hasAuctionPrice(order, slot)) {
 		limitPrice = getAuctionPrice(order, slot, oraclePriceData.price);
-	} else if (order.oraclePriceOffset !== 0) {
+	} else if (!order.oraclePriceOffset.eq(ZERO)) {
 		limitPrice = BN.max(
-			oraclePriceData.price.add(new BN(order.oraclePriceOffset)),
+			oraclePriceData.price.add(order.oraclePriceOffset),
 			ONE
 		);
 	} else if (order.price.eq(ZERO)) {
@@ -227,7 +227,7 @@ export function applyProtectedMakerParams(
 export function hasLimitPrice(order: Order, slot: number): boolean {
 	return (
 		order.price.gt(ZERO) ||
-		order.oraclePriceOffset != 0 ||
+		!order.oraclePriceOffset.eq(ZERO) ||
 		!isAuctionComplete(order, slot)
 	);
 }

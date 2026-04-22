@@ -556,7 +556,7 @@ describe('place and make signedMsg order', () => {
 			immediateOrCancel: true,
 			direction: takerOrderParams.direction,
 			postOnly: false,
-			oraclePriceOffset: takerOrderParams.oraclePriceOffset ?? 0,
+			oraclePriceOffset: takerOrderParams.oraclePriceOffset ?? ZERO,
 			// Rest are not required for DLOB
 			price: ZERO,
 			maxTs: ZERO,
@@ -749,7 +749,7 @@ describe('place and make signedMsg order', () => {
 			immediateOrCancel: true,
 			direction: takerOrderParams.direction,
 			postOnly: false,
-			oraclePriceOffset: takerOrderParams.oraclePriceOffset ?? 0,
+			oraclePriceOffset: takerOrderParams.oraclePriceOffset ?? ZERO,
 			// Rest are not required for DLOB
 			price: ZERO,
 			maxTs: ZERO,

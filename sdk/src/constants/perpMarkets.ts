@@ -23,8 +23,7 @@ export const DevnetPerpMarkets: PerpMarketConfig[] = [
 		symbol: 'SOL-PERP',
 		baseAssetSymbol: 'SOL',
 		marketIndex: 0,
-		// TODO: replace with PythLazerOracle PDA emitted by deploy-scripts/init-devnet.ts
-		oracle: PublicKey.default,
+		oracle: new PublicKey('3m6i4RFWEDw2Ft4tFHPJtYgmpPe21k56M3FHeWYrgGBz'),
 		launchTs: 1655751353000,
 		oracleSource: OracleSource.PYTH_LAZER,
 		pythFeedId:

@@ -218,3 +218,27 @@ No quote-asset-specific program (Rust) changes should be necessary. SDK/config c
    - Run `ts-mocha -t 300000 ./tests/admin.ts` against the devnet config (points at the deployed program) to exercise the same init sequence in a known-good way; skip if the test infra doesn't support a remote cluster, in which case run locally against the same built `drift.so`.
    - Have a second test wallet pull dUSDT via the faucet, call `DriftClient.initializeUserAccount()`, `deposit(dUsdtAmount, 0)`, then `placePerpOrder({ marketIndex: 0, baseAssetAmount: ..., ... })` with a keeper loop to fill. Observing a filled order on devnet is the real green light.
 9. **Rollback**: The initial program deploy retains the buffer; if Phase 0/A..G errors, the programs are still upgradable via `deploy-scripts/deploy-devnet.sh`. State/market accounts, once created, **cannot be cleanly deleted** — ensure the admin wallet and Lazer feed id are correct *before* running Phase A. Phase 0 itself is restartable: as long as the dUSDT mint keypair is preserved at `usdt-mint.json`, re-runs reuse the same mint and skip already-completed sub-steps.
+
+## Current devnet deployment
+
+As of 2026-04-22 the devnet stack is fully initialized. Authoritative values live in `deploy-scripts/out/devnet-deployment.json` (gitignored — keypairs + local-only metadata); the pubkeys are duplicated here for quick reference.
+
+| Account | Pubkey |
+|---|---|
+| drift program | `dRiftyHA39MWEi3m9aunc5MzRF1JYuBsbn6VPcn33UH` |
+| token_faucet program | `V4v1mQiAdLz4qwckEb45WqHYceYizoib39cDBHSWfaB` |
+| admin (State.admin, immutable) | `HL7uposJAPpecWFZQRMXe26ryKauCDYJN56MHqjq6Ypi` |
+| dUSDT mint (6 dec) | `8FfvSRKMZRDHrCBy142XMUXrKEkXnxDQ4YmJv7xbAw8Q` |
+| token_faucet config PDA | `A5pgLYFVj2oNeZX3Bqi8jCnxNkLPzUNJCnNVisqcuth7` |
+| token_faucet mint authority PDA | `DgqYwE7MdWhTFWwN1heNsbuZE5AxxzozQvNFe6tpJFqB` |
+| State | `5zpq7DvB6UdFFvpmBPspGPNfUGoBRRCE2HHg5u3gxcsN` |
+| AmmCache | `BhCDG7fVRrrBj4nUxhPUzLK4LyrS8YGd7Ty7cvLBEq8G` |
+| SpotMarket 0 (dUSDT) | `6gMq3mRCKf8aP3ttTyYhuijVZ2LGi14oDsBbkgubfLB3` |
+| PythLazerOracle (feed 6, SOL/USD) | `3m6i4RFWEDw2Ft4tFHPJtYgmpPe21k56M3FHeWYrgGBz` |
+| PerpMarket 0 (SOL-PERP) | `8UJgxaiQx5nTrdDgph5FiahMmzduuLTLf5WmsPegYA6W` |
+| ProtocolIfSharesTransferConfig | `39V44DZCvm4e2J1fWU7yszNAdYhCoLHWBfCwuXiBomYk` |
+| LP pool (id=1) | `ELgW8UwFRAUc7YpRMzJiuVVwSFmPHMW9knY6hBx9vRxa` |
+| Constituent (pool=1, spot=0) | `CB87ZvrM3onYtg1uh27p6VLLyhW7sBkC9npY8xaKJoGk` |
+| ProtectedMakerModeConfig | `cid3w4yZ1MRduxa7ZhZduSan6FtujeKNTmLyY9nuD2s` |
+
+SDK constants have been patched to match (`sdk/src/config.ts` `QUOTE_MINT_ADDRESS`, `sdk/src/constants/spotMarkets.ts` `DevnetSpotMarkets[0].mint`, `sdk/src/constants/perpMarkets.ts` `DevnetPerpMarkets[0].oracle`).

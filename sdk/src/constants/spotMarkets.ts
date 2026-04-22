@@ -44,8 +44,7 @@ export const DevnetSpotMarkets: SpotMarketConfig[] = [
 		// QUOTE_ASSET source — oracle is PublicKey.default; no Pyth feed.
 		oracle: PublicKey.default,
 		oracleSource: OracleSource.QUOTE_ASSET,
-		// TODO: replace with devnet USDT mint emitted by deploy-scripts/init-devnet.ts
-		mint: PublicKey.default,
+		mint: new PublicKey('8FfvSRKMZRDHrCBy142XMUXrKEkXnxDQ4YmJv7xbAw8Q'),
 		precision: new BN(10).pow(SIX),
 		precisionExp: SIX,
 	},

@@ -82,3 +82,10 @@ solana program show dRiftyHA39MWEi3m9aunc5MzRF1JYuBsbn6VPcn33UH --url devnet
 Then inspect the receipt for every PDA and cross-check with `solana account <pubkey> --url devnet`.
 
 End-to-end smoke: use a second wallet to call `DriftClient.initializeUserAccount()` → `deposit(usdtAmount, 0)` → `placePerpOrder({ marketIndex: 0, ... })` and observe a keeper fill.
+
+## Operational notes (learned on first deploy)
+
+- **Use a private RPC for `solana program` writes.** The public `api.devnet.solana.com` rate-limits the ~1200 chunked writes an upgrade requires and fails partway through with `Data writes to account failed: Custom error: Max retries exceeded`, leaving an orphan buffer that locks ~38 SOL. Pass a private RPC via `anchor upgrade --provider.cluster <url>` (or edit `deploy-devnet.sh` similarly). `RPC_URL` covers the init script. Drift has a Triton pool at `https://drift-drift-a827.devnet.rpcpool.com/<token>` — see user memory `reference_drift_devnet_rpc.md`.
+- **If a buffer is orphaned, reclaim the SOL** with `solana program show --buffers --buffer-authority <admin>` then `solana program close <buffer> --keypair <admin>` — rent is refunded to the admin wallet.
+- **`anchor build` for the drift keypair mismatch:** the checked-in `target/deploy/drift-keypair.json` is a placeholder, so `anchor build` fails with "Program ID mismatch" on a clean checkout. Pass `--ignore-keys` — the deployed program id is hard-coded in source and the local keypair is unused for upgrade.
+- **`bun` strict type-only re-exports:** `bun run deploy-scripts/init-devnet.ts` fails if the SDK re-exports a type without the `type` keyword (e.g. `export { PythLazerPriceFeedArray }`). This was fixed in `sdk/src/index.ts` and `sdk/src/pyth/index.ts`; keep an eye on it when adding new SDK exports.

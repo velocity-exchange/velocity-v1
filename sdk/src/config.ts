@@ -67,8 +67,7 @@ export const configs: { [key in DriftEnv]: DriftConfig } = {
 		PYTH_ORACLE_MAPPING_ADDRESS: 'BmA9Z6FjioHJPpjT39QazZyhDRUdZy2ezwx4GiDdE2u2',
 		DRIFT_PROGRAM_ID,
 		JIT_PROXY_PROGRAM_ID: 'J1TnP8zvVxbtF5KFp5xRmWuvG9McnhzmBd9XGfCyuxFP',
-		// TODO: replace with devnet USDT mint emitted by deploy-scripts/init-devnet.ts
-		QUOTE_MINT_ADDRESS: '11111111111111111111111111111111',
+		QUOTE_MINT_ADDRESS: '8FfvSRKMZRDHrCBy142XMUXrKEkXnxDQ4YmJv7xbAw8Q',
 		SERUM_V3: 'DESVgJVGajEgKGXhb6XmqDHGz3VjdgP7rEVESBgxmroY',
 		PHOENIX: 'PhoeNiXZ8ByJGLkxNfZRnkUfjvmuYqLR89jjFHGqdXY',
 		OPENBOOK: 'opnb2LAfJYbRMAHHvqjCwQxanZn7ReEHp1k81EohpZb',

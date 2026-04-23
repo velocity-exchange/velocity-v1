@@ -16,6 +16,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Breaking
 
+- program, sdk: widen `oracle_price_offset` / `oraclePriceOffset` from `i32` to `i64`; `Order.oraclePriceOffset` and `OrderParams.oraclePriceOffset` are now `BN` in the SDK [#20](https://github.com/drift-labs/protocol-v2-shadow/pull/20)
 - program: remove HLM [#2](https://github.com/drift-labs/protocol-v2-shadow/pull/2)
 - program: remove switchboard oracle support [#14](https://github.com/drift-labs/protocol-v2-shadow/pull/14)
 - program: remove prediction markets [#13](https://github.com/drift-labs/protocol-v2-shadow/pull/13)

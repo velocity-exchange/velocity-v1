@@ -148,8 +148,8 @@ export function decodeUser(buffer: Buffer): UserAccount {
 	const orders: Order[] = [];
 	for (let i = 0; i < 32; i++) {
 		// skip order if it's not open
-		if (buffer.readUint8(offset + 82) !== 1) {
-			offset += 96;
+		if (buffer.readUint8(offset + 86) !== 1) {
+			offset += 104;
 			continue;
 		}
 
@@ -171,8 +171,8 @@ export function decodeUser(buffer: Buffer): UserAccount {
 		offset += 8;
 		const maxTs = readSignedBigInt64LE(buffer, offset);
 		offset += 8;
-		const oraclePriceOffset = new BN(buffer.readInt32LE(offset));
-		offset += 4;
+		const oraclePriceOffset = readSignedBigInt64LE(buffer, offset);
+		offset += 8;
 		const orderId = buffer.readUInt32LE(offset);
 		offset += 4;
 		const marketIndex = buffer.readUInt16LE(offset);
@@ -250,7 +250,7 @@ export function decodeUser(buffer: Buffer): UserAccount {
 		offset += 1;
 		const bitFlags = buffer.readUint8(offset);
 		offset += 1;
-		offset += 1; // padding
+		offset += 5; // padding
 		orders.push({
 			slot,
 			price,

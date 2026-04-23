@@ -46,7 +46,7 @@ import { grpcSubscription } from './grpcSubscription';
 import StrictEventEmitter from 'strict-event-emitter-types';
 import { EventEmitter } from 'events';
 
-const MAX_USER_ACCOUNT_SIZE_BYTES = 4376;
+const MAX_USER_ACCOUNT_SIZE_BYTES = 4632;
 
 export interface UserMapInterface {
 	eventEmitter: StrictEventEmitter<EventEmitter, UserEvents>;

@@ -99,8 +99,7 @@ impl OrderParams {
                     let est_ask = oracle_price.safe_add(ask_premium)?.cast()?;
 
                     let crosses = if is_oracle_offset_oracle {
-                        oracle_price_offset
-                            > (est_ask as i64).safe_sub(oracle_price)?
+                        oracle_price_offset > (est_ask as i64).safe_sub(oracle_price)?
                     } else {
                         self.price > est_ask
                     };
@@ -141,8 +140,7 @@ impl OrderParams {
                     let est_bid = oracle_price.safe_sub(bid_discount)?.cast()?;
 
                     let crosses = if is_oracle_offset_oracle {
-                        oracle_price_offset
-                            < (est_bid as i64).safe_sub(oracle_price)?
+                        oracle_price_offset < (est_bid as i64).safe_sub(oracle_price)?
                     } else {
                         self.price < est_bid
                     };

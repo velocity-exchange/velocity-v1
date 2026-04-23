@@ -242,3 +242,92 @@ As of 2026-04-22 the devnet stack is fully initialized. Authoritative values liv
 | ProtectedMakerModeConfig | `cid3w4yZ1MRduxa7ZhZduSan6FtujeKNTmLyY9nuD2s` |
 
 SDK constants have been patched to match (`sdk/src/config.ts` `QUOTE_MINT_ADDRESS`, `sdk/src/constants/spotMarkets.ts` `DevnetSpotMarkets[0].mint`, `sdk/src/constants/perpMarkets.ts` `DevnetPerpMarkets[0].oracle`).
+
+## Re-deployment under a fresh program id (in progress 2026-04-23)
+
+### Why
+
+The "deploy" we ran on 2026-04-22 was actually an `anchor upgrade` against the long-lived devnet program id `dRiftyHA39MWEi3m9aunc5MzRF1JYuBsbn6VPcn33UH`. That id has held drift bytecode since well before the Anchor 1.0 migration commit (`fc922b0d8`), which changed zero-copy struct layouts (alignment padding, derive ordering, possibly field order). All `State` / `PerpMarket` / `SpotMarket` / `AmmCache` / `User` / `UserStats` / IF accounts created under the previous bytecode are now decoded with the new layout and must be considered corrupt.
+
+The init script we ran is idempotent and short-circuits when accounts already exist, so the only on-chain object actually freshly created on 2026-04-22 was the new dUSDT mint + token_faucet wiring. Every other PDA in the table above is a legacy account being mis-decoded.
+
+User-owned accounts (`User`, `UserStats`, IF stakes from prior testers) cannot be deleted by us. Any in-place wipe of admin-owned accounts still leaves those user accounts borked, with no admin recourse. So we relocate to a new program id and treat every account under the old id as garbage.
+
+### New program id
+
+Random keypair generated via `solana-keygen new` (vanity grind abandoned — not worth the wait for a devnet-only id). Keypair stored at `deploy-scripts/out/devnet-program-keypair.json` — gitignored, treated as the program-upgrade authority for the new devnet program.
+
+**Pubkey:** `FGXfSBCXqSTkBX6zTQyPo8JbC11pn5DGKYm9MSbLC7P2`
+
+### Files to swap (program id only)
+
+Mainnet remains untouched — `declare_id!` is already feature-gated.
+
+| Path | Edit |
+|---|---|
+| `programs/drift/src/lib.rs:73` | `#[cfg(not(feature = "mainnet-beta"))] declare_id!("FGXfSBCXqSTkBX6zTQyPo8JbC11pn5DGKYm9MSbLC7P2");` (leave the `mainnet-beta` arm alone) |
+| `Anchor.toml:21` | `drift = "FGXfSBCXqSTkBX6zTQyPo8JbC11pn5DGKYm9MSbLC7P2"` under `[programs.devnet]` (or whichever section is active) |
+| `sdk/src/config.ts` | `configs.devnet.DRIFT_PROGRAM_ID = "FGXfSBCXqSTkBX6zTQyPo8JbC11pn5DGKYm9MSbLC7P2"` |
+| `deploy-scripts/deploy-devnet.sh` | `--program-id FGXfSBCXqSTkBX6zTQyPo8JbC11pn5DGKYm9MSbLC7P2` |
+| `sdk/src/idl/drift.{json,ts}`, `target/idl/drift.json`, `target/types/drift.ts` | regenerate via `anchor build -- --features anchor-test && cp target/idl/drift.json sdk/src/idl/drift.json` |
+
+Test-fixture references to the old id (under `programs/drift/src/**/tests.rs` and `sdk/tests/events/parseLogsForCuUsage.ts`) can stay — they're string literals in test data, not live references.
+
+### Runbook
+
+1. **Generate keypair** → `deploy-scripts/out/devnet-program-keypair.json`. Pubkey recorded above.
+2. **Swap source** per the table above.
+3. **Build**: `bash deploy-scripts/build-devnet.sh` (likely needs `--ignore-keys` again — the local placeholder keypair won't match the new id either, but the deployed id is whatever we pass on the CLI).
+4. **Deploy fresh**: `anchor deploy --provider.cluster <triton-rpc> --provider.wallet <admin> --program-name drift --program-keypair deploy-scripts/out/devnet-program-keypair.json` — this is an *initial* deploy, not an upgrade. token_faucet is unchanged and stays at `V4v1mQi…` (no redeploy needed; its mint authority PDA depends on the dUSDT mint, not on drift's program id).
+5. **Sync IDL** into the SDK.
+6. **Re-init**: move aside `deploy-scripts/out/devnet-deployment.json` (so the init script writes a fresh receipt), then run phases 0+A–G. Decisions before the run:
+    - **Reuse the existing dUSDT mint** (`8FfvSRKMZRDHrCBy142XMUXrKEkXnxDQ4YmJv7xbAw8Q`)? Yes — set `dUSDT_MINT` to it. The mint is owned by SPL Token, not by drift, so it's untouched by the program swap; reusing it preserves the 10M pre-mint and any test-wallet balances.
+    - **token_faucet wiring**: already correct for that mint; init Phase 0 will detect it's initialized and skip.
+    - All other PDAs (`State`, `AmmCache`, `SpotMarket[0]`, `PythLazerOracle`, `PerpMarket[0]`, `ProtocolIfSharesTransferConfig`, LP pool/constituent, `ProtectedMakerModeConfig`) re-derive against the new program id, so they're fresh and the init script will create them.
+7. **Repatch SDK constants** from the new receipt:
+    - `sdk/src/config.ts` → `configs.devnet.QUOTE_MINT_ADDRESS` (unchanged if reusing mint), `DRIFT_PROGRAM_ID` (NEW)
+    - `sdk/src/constants/spotMarkets.ts` → `DevnetSpotMarkets[0].mint` (unchanged if reusing mint)
+    - `sdk/src/constants/perpMarkets.ts` → `DevnetPerpMarkets[0].oracle` ← new `PythLazerOracle` PDA from the receipt
+8. **Tear down old program** to recover rent and remove the source-of-confusion:
+    - `solana program show dRiftyHA39MWEi3m9aunc5MzRF1JYuBsbn6VPcn33UH --url <rpc>` to confirm upgrade authority is the admin
+    - `solana program close dRiftyHA39MWEi3m9aunc5MzRF1JYuBsbn6VPcn33UH --keypair <admin> --bypass-warning`
+    - Rent (~38 SOL) refunds to the admin. **Irreversible** — confirm with the user before running.
+    - Borked legacy PDAs become unowned/unreachable garbage; they're dust on devnet.
+9. **Verify** per the existing checklist (state.admin, market shapes, faucet authority, smoke trade).
+
+### Cost / risk
+
+- Buffer rent again: ~38 SOL temporarily during deploy, refunded once the program is finalized. Admin wallet currently has ~40 SOL — should be sufficient; top up via faucet or user-forwarding if not.
+- Risk window: between step 4 and step 7, SDK constants point at a program that doesn't have a `State` yet. Anything reading `DevnetSpotMarkets[0]` against the new id will fail until step 6 finishes. Acceptable since only we are using the devnet.
+
+### Re-deployment receipt (2026-04-23)
+
+Drift program `FGXfSBCXqSTkBX6zTQyPo8JbC11pn5DGKYm9MSbLC7P2` deployed at slot 457460050 (tx via Triton RPC). Init phases 0+A,B,C,F,G ran cleanly under the new id. Two phases skipped this round:
+
+- **Phase D (SOL-PERP)** skipped via `SKIP_PHASE_D=1`. The freshly created `PythLazerOracle` PDA had no price posted, so `initializePerpMarket` failed `InvalidOracle (6035)` — "Multiple larger than oracle precision". Unblock by cranking the new oracle once with a Pyth Lazer publisher signature, then re-run with `SKIP_PHASE_D` unset.
+- **Phase E (`ProtocolIfSharesTransferConfig`)** skipped via `SKIP_PHASE_E=1`. The instruction is currently commented out in `programs/drift/src/lib.rs:1717-1721`, so it isn't in the IDL. Re-enable by uncommenting + rebuilding + re-upgrading the program if/when devnet needs IF share transfers.
+
+Two adjustments were also made to `init-devnet.ts` while running:
+- Switched the program-id source from `DRIFT_PROGRAM_ID` to the new `DRIFT_DEVNET_PROGRAM_ID` constant in `sdk/src/config.ts` (so devnet doesn't piggyback the mainnet id).
+- `initializeConstituent` reads spot market 0 via the websocket subscriber cache. The main `AdminClient` was constructed with `spotMarketIndexes: []` (markets didn't exist at startup). Phase F.2 now spins up a transient `AdminClient` with `spotMarketIndexes: [0]` for that single call.
+
+| Account | Pubkey |
+|---|---|
+| drift program (devnet) | `FGXfSBCXqSTkBX6zTQyPo8JbC11pn5DGKYm9MSbLC7P2` |
+| token_faucet program | `V4v1mQiAdLz4qwckEb45WqHYceYizoib39cDBHSWfaB` |
+| admin (State.admin, immutable) | `HL7uposJAPpecWFZQRMXe26ryKauCDYJN56MHqjq6Ypi` |
+| dUSDT mint (6 dec, **reused** from prior deploy) | `8FfvSRKMZRDHrCBy142XMUXrKEkXnxDQ4YmJv7xbAw8Q` |
+| token_faucet config PDA (unchanged) | `A5pgLYFVj2oNeZX3Bqi8jCnxNkLPzUNJCnNVisqcuth7` |
+| token_faucet mint authority PDA (unchanged) | `DgqYwE7MdWhTFWwN1heNsbuZE5AxxzozQvNFe6tpJFqB` |
+| State | `F5yjMkHa2wAXagYifsjZp8WvjvKGNshRAcWd684agqcp` |
+| AmmCache | `4TqNgTNPS26vhDxp94eVR4iD9QSaEvbVELJUVqoqd22c` |
+| SpotMarket 0 (dUSDT) | `H4UqRQuYXBbfPyiADFsWwRhajS7Jpwu3zyYwFn47GXC4` |
+| PythLazerOracle (feed 6, SOL/USD) | `57ZE6W8mGWPQokUHjyfTAexvVLK8xuMbWn9HGg6fG7oW` |
+| PerpMarket 0 (SOL-PERP) | **NOT INITIALIZED** (Phase D skipped); derived PDA is `AnT1Xu3RG9GyuGzhsxKQqYgLRupSbTNkangaLqeLziSg` |
+| ProtocolIfSharesTransferConfig | **NOT INITIALIZED** (Phase E skipped); derived PDA is `6ShCZHgnucuaHEQ4MZjzbVqTvubamc9sjMwQhzXDLZFA` |
+| LP pool (id=1) | `GLybnswR5113ZU2XHomrEjZn8N8oYUhYaLgEcmmXvwGv` |
+| LP pool mint | `GLMY6Wq1KYdViKhoLV2okMf3yrfzrvaRhLVNZ4m2AjJo` |
+| Constituent (pool=1, spot=0) | `7wVMDLArAzW6bMtr8dg9LgR9htjZrusQXD2AwyLGbL9J` |
+| ProtectedMakerModeConfig | `FHGkB8K79obtnuKpe2hfsEbmRtaK1RnxM1odJbWmoQ8C` |
+
+SDK constants patched: `sdk/src/config.ts` adds `DRIFT_DEVNET_PROGRAM_ID` and points `configs.devnet.DRIFT_PROGRAM_ID` at it; `sdk/src/constants/perpMarkets.ts` `DevnetPerpMarkets[0].oracle` updated to the new Lazer PDA. `QUOTE_MINT_ADDRESS` and `DevnetSpotMarkets[0].mint` are unchanged (mint reused).

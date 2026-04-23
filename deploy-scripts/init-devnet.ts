@@ -64,7 +64,7 @@ import {
 	AssetTier,
 	BASE_PRECISION,
 	ContractTier,
-	DRIFT_PROGRAM_ID,
+	DRIFT_DEVNET_PROGRAM_ID,
 	OracleSource,
 	PEG_PRECISION,
 	PERCENTAGE_PRECISION,
@@ -232,7 +232,7 @@ async function main() {
 	const connection = new Connection(rpcUrl, 'confirmed');
 	const keypair = loadKeypair(adminPath);
 	const wallet = new Wallet(keypair);
-	const programId = new PublicKey(DRIFT_PROGRAM_ID);
+	const programId = new PublicKey(DRIFT_DEVNET_PROGRAM_ID);
 	const tokenFaucetProgramId = new PublicKey(
 		process.env.TOKEN_FAUCET_PROGRAM_ID ?? TOKEN_FAUCET_DEFAULT_PROGRAM_ID
 	);
@@ -587,15 +587,22 @@ async function main() {
 		};
 	}
 
+	const skipPhaseD = process.env.SKIP_PHASE_D === '1';
 	await confirm('Begin Phase D — SOL-PERP at index 0?', [
 		`oracle = ${lazerPk.toBase58()} (PythLazerOracle PDA)`,
 		'AMM seed reserves = 1000 * AMM_RESERVE_PRECISION (placeholder; tune pre-mainnet).',
 		'marginRatioInitial = 20%, marginRatioMaintenance = 5%, contractTier = SPECULATIVE.',
 		'lpPoolId = 0 (not in a pool yet).',
+		skipPhaseD ? '*** SKIP_PHASE_D=1 set — phase will be SKIPPED ***' : '',
 	]);
 	// === Phase D: SOL-PERP at index 0 ===
 	const perp0Pk = await getPerpMarketPublicKey(programId, 0);
-	if (await pdaExists(connection, perp0Pk)) {
+	if (skipPhaseD) {
+		logStep(
+			'Perp market 0 (SOL-PERP) SKIPPED via SKIP_PHASE_D=1',
+			perp0Pk.toBase58()
+		);
+	} else if (await pdaExists(connection, perp0Pk)) {
 		logStep('Perp market 0 (SOL-PERP) already initialized', perp0Pk.toBase58());
 		receipt.perpMarkets[0] = { pubkey: perp0Pk.toBase58() };
 	} else {
@@ -633,12 +640,19 @@ async function main() {
 		await client.fetchAccounts();
 	}
 
+	const skipPhaseE = process.env.SKIP_PHASE_E === '1';
 	await confirm('Begin Phase E — ProtocolIfSharesTransferConfig?', [
 		'Global one-time PDA that gates IF share transfers.',
+		skipPhaseE ? '*** SKIP_PHASE_E=1 set — phase will be SKIPPED ***' : '',
 	]);
 	// === Phase E: ProtocolIfSharesTransferConfig ===
 	const ifCfgPk = getProtocolIfSharesTransferConfigPublicKey(programId);
-	if (await pdaExists(connection, ifCfgPk)) {
+	if (skipPhaseE) {
+		logStep(
+			'ProtocolIfSharesTransferConfig SKIPPED via SKIP_PHASE_E=1',
+			ifCfgPk.toBase58()
+		);
+	} else if (await pdaExists(connection, ifCfgPk)) {
 		logStep(
 			'ProtocolIfSharesTransferConfig already initialized',
 			ifCfgPk.toBase58()
@@ -708,6 +722,23 @@ async function main() {
 		);
 		receipt.constituents[0] = { pubkey: constituent0Pk.toBase58() };
 	} else {
+		// initializeConstituent reads spot market 0 from the websocket cache;
+		// the initial subscribe used spotMarketIndexes=[] (markets didn't exist
+		// yet) and the subscriber map is built at construction. Spin up a
+		// fresh AdminClient with [0] for this call only.
+		await client.unsubscribe();
+		const constituentClient = new AdminClient({
+			connection,
+			wallet,
+			programID: programId,
+			env: 'devnet',
+			accountSubscription: { type: 'websocket', commitment: 'confirmed' },
+			perpMarketIndexes: [],
+			spotMarketIndexes: [0],
+			oracleInfos: [],
+			skipLoadUsers: true,
+		});
+		await constituentClient.subscribe();
 		logStep(`initializeConstituent pool=${lpPoolId} spot=0 (dUSDT)`);
 		// param shape mirrors tests/lpPool.ts:392-404 (first constituent = USDT quote).
 		const params: InitializeConstituentParams = {
@@ -723,8 +754,13 @@ async function main() {
 			volatility: ZERO,
 			constituentCorrelations: [], // no prior constituents to correlate against
 		};
-		const txSig = await client.initializeConstituent(lpPoolId, params);
+		const txSig = await constituentClient.initializeConstituent(
+			lpPoolId,
+			params
+		);
 		receipt.constituents[0] = { pubkey: constituent0Pk.toBase58(), txSig };
+		await constituentClient.unsubscribe();
+		await client.subscribe();
 	}
 
 	await confirm('Begin Phase G — ProtectedMakerModeConfig?', [

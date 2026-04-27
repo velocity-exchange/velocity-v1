@@ -225,7 +225,9 @@ jobs:
         yarn-lint,
         check-for-sdk-changes,
       ]
-    if: ${{ github.ref == 'refs/heads/master' && needs.check-for-sdk-changes.outputs.sdk == 'true' }}
+    # SDK npm publish disabled for now. Re-enable with:
+    # if: ${{ github.ref == 'refs/heads/master' && needs.check-for-sdk-changes.outputs.sdk == 'true' }}
+    if: ${{ false }}
     defaults:
       run:
         working-directory: ./sdk

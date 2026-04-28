@@ -94,12 +94,29 @@ pub fn calculate_margin(
     _calc_margin(user, &perp_map, &spot_map, &mut oracle_map, context)
 }
 
-/// Compute the oracle price for a single owned oracle account.
+/// Compute the oracle price for a single oracle account.
+///
+/// Borrows the account fields directly so callers don't need to construct an
+/// `OwnedAccount`. `lamports` are not read by the oracle path; an internal
+/// stack slot is used.
+#[allow(deprecated)]
 pub fn oracle_price(
     source: &OracleSource,
-    account: &mut (Pubkey, OwnedAccount),
+    pubkey: &Pubkey,
+    owner: &Pubkey,
+    data: &mut [u8],
     slot: u64,
 ) -> DriftResult<OraclePriceData> {
-    let info = account_info_from(account);
+    let mut lamports = 0u64;
+    let info = AccountInfo {
+        key: pubkey,
+        lamports: Rc::new(RefCell::new(&mut lamports)),
+        data: Rc::new(RefCell::new(data)),
+        owner,
+        _unused: 0,
+        is_signer: false,
+        is_writable: false,
+        executable: false,
+    };
     _get_oracle_price(source, &info, slot)
 }

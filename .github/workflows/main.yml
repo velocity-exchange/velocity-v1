@@ -226,6 +226,8 @@ jobs:
         check-for-sdk-changes,
       ]
     if: ${{ (github.ref == 'refs/heads/master' || github.ref == 'refs/heads/devnet' || github.ref == 'refs/heads/next') && needs.check-for-sdk-changes.outputs.sdk == 'true' }}
+    permissions:
+      contents: write
     defaults:
       run:
         working-directory: ./sdk
@@ -246,20 +248,44 @@ jobs:
           VERSION=$(node -e "console.log(require('./package.json').version);")
           [[ "$VERSION" == *beta* ]] && npm version prerelease --preid=beta || npm version preminor --preid=beta
           echo "PACKAGE_VERSION=$(node -e "console.log(require('./package.json').version);")" >> $GITHUB_ENV
-      - name: Git commit
+      - name: Commit version bump (signed via GitHub API)
         id: git-commit
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          git config user.name "GitHub Actions"
-          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
-          git add ..
-          git commit -a -m "sdk: release v$PACKAGE_VERSION"
+          set -euo pipefail
           BRANCH="${GITHUB_REF#refs/heads/}"
-          git pull --rebase origin "$BRANCH"
-          git push origin "HEAD:$BRANCH" || {
-            echo "Push failed. Retrying after pulling latest changes..."
-            git pull --rebase origin "$BRANCH"
-            git push origin "HEAD:$BRANCH"
+          PKG_B64=$(base64 -w0 package.json)
+
+          commit_via_api() {
+            git fetch origin "$BRANCH"
+            local oid
+            oid=$(git rev-parse "origin/$BRANCH")
+            gh api graphql \
+              -f query='
+                mutation($repo: String!, $branch: String!, $msg: String!, $oid: GitObjectID!, $pkg: Base64String!) {
+                  createCommitOnBranch(input: {
+                    branch: { repositoryNameWithOwner: $repo, branchName: $branch },
+                    message: { headline: $msg },
+                    expectedHeadOid: $oid,
+                    fileChanges: { additions: [{ path: "sdk/package.json", contents: $pkg }] }
+                  }) {
+                    commit { oid }
+                  }
+                }' \
+              -f repo="$GITHUB_REPOSITORY" \
+              -f branch="$BRANCH" \
+              -f msg="sdk: release v$PACKAGE_VERSION" \
+              -f oid="$oid" \
+              -f pkg="$PKG_B64"
           }
+
+          commit_via_api || {
+            echo "Commit failed (likely stale OID). Retrying after refresh..."
+            sleep 2
+            commit_via_api
+          }
+
           echo "version=$PACKAGE_VERSION" >> $GITHUB_OUTPUT
       - name: Publish to npm
         run: |

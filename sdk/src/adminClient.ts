@@ -24,7 +24,6 @@ import {
 	MarketStatus,
 	ContractTier,
 	AssetTier,
-	SpotFulfillmentConfigStatus,
 	IfRebalanceConfigParams,
 	TxParams,
 	AddAmmConstituentMappingDatum,
@@ -43,9 +42,6 @@ import {
 	getSpotMarketVaultPublicKey,
 	getPerpMarketPublicKey,
 	getInsuranceFundVaultPublicKey,
-	getSerumOpenOrdersPublicKey,
-	getSerumFulfillmentConfigPublicKey,
-	getPhoenixFulfillmentConfigPublicKey,
 	getProtocolIfSharesTransferConfigPublicKey,
 	getPrelaunchOraclePublicKey,
 	getOpenbookV2FulfillmentConfigPublicKey,
@@ -87,7 +83,6 @@ import {
 } from './constants/numericConstants';
 import { calculateTargetPriceTrade } from './math/trade';
 import { calculateAmmReservesAfterSwap, getSwapDirection } from './math/amm';
-import { PROGRAM_ID as PHOENIX_PROGRAM_ID } from '@ellipsis-labs/phoenix-sdk';
 import { FUEL_RESET_LOG_ACCOUNT } from './constants/txConstants';
 import { JupiterClient, QuoteResponse } from './jupiter/jupiterClient';
 import { SwapMode } from './swap/UnifiedSwapClient';
@@ -331,134 +326,6 @@ export class AdminClient extends DriftClient {
 					insuranceFundVault: insuranceFundVaultPublicKey,
 					driftSigner: this.getSignerPublicKey(),
 					tokenProgram: TOKEN_PROGRAM_ID,
-				},
-			}
-		);
-	}
-
-	public async initializeSerumFulfillmentConfig(
-		marketIndex: number,
-		serumMarket: PublicKey,
-		serumProgram: PublicKey
-	): Promise<TransactionSignature> {
-		const initializeIx = await this.getInitializeSerumFulfillmentConfigIx(
-			marketIndex,
-			serumMarket,
-			serumProgram
-		);
-
-		const tx = await this.buildTransaction(initializeIx);
-
-		const { txSig } = await this.sendTransaction(tx, [], this.opts);
-
-		return txSig;
-	}
-
-	public async getInitializeSerumFulfillmentConfigIx(
-		marketIndex: number,
-		serumMarket: PublicKey,
-		serumProgram: PublicKey
-	): Promise<TransactionInstruction> {
-		const serumOpenOrders = getSerumOpenOrdersPublicKey(
-			this.program.programId,
-			serumMarket
-		);
-
-		const serumFulfillmentConfig = getSerumFulfillmentConfigPublicKey(
-			this.program.programId,
-			serumMarket
-		);
-
-		return await this.program.instruction.initializeSerumFulfillmentConfig(
-			marketIndex,
-			{
-				accounts: {
-					admin: this.isSubscribed
-						? this.getStateAccount().admin
-						: this.wallet.publicKey,
-					state: await this.getStatePublicKey(),
-					baseSpotMarket: this.getSpotMarketAccount(marketIndex).pubkey,
-					quoteSpotMarket: this.getQuoteSpotMarketAccount().pubkey,
-					driftSigner: this.getSignerPublicKey(),
-					serumProgram,
-					serumMarket,
-					serumOpenOrders,
-					rent: SYSVAR_RENT_PUBKEY,
-					systemProgram: anchor.web3.SystemProgram.programId,
-					serumFulfillmentConfig,
-				},
-			}
-		);
-	}
-
-	public async deleteSerumFulfillmentConfig(
-		serumMarket: PublicKey
-	): Promise<TransactionSignature> {
-		const deleteIx = await this.getDeleteSerumFulfillmentConfigIx(serumMarket);
-		const tx = await this.buildTransaction(deleteIx);
-		const { txSig } = await this.sendTransaction(tx, [], this.opts);
-		return txSig;
-	}
-
-	public async getDeleteSerumFulfillmentConfigIx(
-		serumMarket: PublicKey
-	): Promise<TransactionInstruction> {
-		const serumFulfillmentConfig = getSerumFulfillmentConfigPublicKey(
-			this.program.programId,
-			serumMarket
-		);
-		return await this.program.instruction.deleteSerumFulfillmentConfig({
-			accounts: {
-				admin: this.isSubscribed
-					? this.getStateAccount().admin
-					: this.wallet.publicKey,
-				state: await this.getStatePublicKey(),
-				serumFulfillmentConfig,
-			},
-		});
-	}
-
-	public async initializePhoenixFulfillmentConfig(
-		marketIndex: number,
-		phoenixMarket: PublicKey
-	): Promise<TransactionSignature> {
-		const initializeIx = await this.getInitializePhoenixFulfillmentConfigIx(
-			marketIndex,
-			phoenixMarket
-		);
-
-		const tx = await this.buildTransaction(initializeIx);
-
-		const { txSig } = await this.sendTransaction(tx, [], this.opts);
-
-		return txSig;
-	}
-
-	public async getInitializePhoenixFulfillmentConfigIx(
-		marketIndex: number,
-		phoenixMarket: PublicKey
-	): Promise<TransactionInstruction> {
-		const phoenixFulfillmentConfig = getPhoenixFulfillmentConfigPublicKey(
-			this.program.programId,
-			phoenixMarket
-		);
-
-		return await this.program.instruction.initializePhoenixFulfillmentConfig(
-			marketIndex,
-			{
-				accounts: {
-					admin: this.isSubscribed
-						? this.getStateAccount().admin
-						: this.wallet.publicKey,
-					state: await this.getStatePublicKey(),
-					baseSpotMarket: this.getSpotMarketAccount(marketIndex).pubkey,
-					quoteSpotMarket: this.getQuoteSpotMarketAccount().pubkey,
-					driftSigner: this.getSignerPublicKey(),
-					phoenixMarket: phoenixMarket,
-					phoenixProgram: PHOENIX_PROGRAM_ID,
-					rent: SYSVAR_RENT_PUBKEY,
-					systemProgram: anchor.web3.SystemProgram.programId,
-					phoenixFulfillmentConfig,
 				},
 			}
 		);
@@ -2984,85 +2851,6 @@ export class AdminClient extends DriftClient {
 						this.program.programId,
 						spotMarketIndex
 					),
-				},
-			}
-		);
-	}
-
-	public async updateSerumFulfillmentConfigStatus(
-		serumFulfillmentConfig: PublicKey,
-		status: SpotFulfillmentConfigStatus
-	): Promise<TransactionSignature> {
-		const updateSerumFulfillmentConfigStatusIx =
-			await this.getUpdateSerumFulfillmentConfigStatusIx(
-				serumFulfillmentConfig,
-				status
-			);
-
-		const tx = await this.buildTransaction(
-			updateSerumFulfillmentConfigStatusIx
-		);
-
-		const { txSig } = await this.sendTransaction(tx, [], this.opts);
-
-		return txSig;
-	}
-
-	public async getUpdateSerumFulfillmentConfigStatusIx(
-		serumFulfillmentConfig: PublicKey,
-		status: SpotFulfillmentConfigStatus
-	): Promise<TransactionInstruction> {
-		return await this.program.instruction.updateSerumFulfillmentConfigStatus(
-			status,
-			{
-				accounts: {
-					admin: this.isSubscribed
-						? this.getStateAccount().admin
-						: this.wallet.publicKey,
-					state: await this.getStatePublicKey(),
-					serumFulfillmentConfig,
-				},
-			}
-		);
-	}
-
-	public async updatePhoenixFulfillmentConfigStatus(
-		phoenixFulfillmentConfig: PublicKey,
-		status: SpotFulfillmentConfigStatus
-	): Promise<TransactionSignature> {
-		const updatePhoenixFulfillmentConfigStatusIx =
-			await this.program.instruction.phoenixFulfillmentConfigStatus(status, {
-				accounts: {
-					admin: this.isSubscribed
-						? this.getStateAccount().admin
-						: this.wallet.publicKey,
-					state: await this.getStatePublicKey(),
-					phoenixFulfillmentConfig,
-				},
-			});
-
-		const tx = await this.buildTransaction(
-			updatePhoenixFulfillmentConfigStatusIx
-		);
-
-		const { txSig } = await this.sendTransaction(tx, [], this.opts);
-
-		return txSig;
-	}
-
-	public async getUpdatePhoenixFulfillmentConfigStatusIx(
-		phoenixFulfillmentConfig: PublicKey,
-		status: SpotFulfillmentConfigStatus
-	): Promise<TransactionInstruction> {
-		return await this.program.instruction.phoenixFulfillmentConfigStatus(
-			status,
-			{
-				accounts: {
-					admin: this.isSubscribed
-						? this.getStateAccount().admin
-						: this.wallet.publicKey,
-					state: await this.getStatePublicKey(),
-					phoenixFulfillmentConfig,
 				},
 			}
 		);

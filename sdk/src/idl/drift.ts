@@ -5,7 +5,7 @@
  * IDL can be found at `target/idl/drift.json`.
  */
 export type Drift = {
-  "address": "FGXfSBCXqSTkBX6zTQyPo8JbC11pn5DGKYm9MSbLC7P2",
+  "address": "dRiftyHA39MWEi3m9aunc5MzRF1JYuBsbn6VPcn33UH",
   "metadata": {
     "name": "drift",
     "version": "2.162.0",
@@ -1654,34 +1654,6 @@ export type Drift = {
           "type": "u16"
         }
       ]
-    },
-    {
-      "name": "deleteSerumFulfillmentConfig",
-      "discriminator": [
-        30,
-        143,
-        88,
-        48,
-        249,
-        103,
-        154,
-        255
-      ],
-      "accounts": [
-        {
-          "name": "state"
-        },
-        {
-          "name": "serumFulfillmentConfig",
-          "writable": true
-        },
-        {
-          "name": "admin",
-          "writable": true,
-          "signer": true
-        }
-      ],
-      "args": []
     },
     {
       "name": "deleteSignedMsgUserOrders",
@@ -4204,156 +4176,6 @@ export type Drift = {
       ]
     },
     {
-      "name": "initializePhoenixFulfillmentConfig",
-      "discriminator": [
-        135,
-        132,
-        110,
-        107,
-        185,
-        160,
-        169,
-        154
-      ],
-      "accounts": [
-        {
-          "name": "baseSpotMarket",
-          "pda": {
-            "seeds": [
-              {
-                "kind": "const",
-                "value": [
-                  115,
-                  112,
-                  111,
-                  116,
-                  95,
-                  109,
-                  97,
-                  114,
-                  107,
-                  101,
-                  116
-                ]
-              },
-              {
-                "kind": "arg",
-                "path": "marketIndex"
-              }
-            ]
-          }
-        },
-        {
-          "name": "quoteSpotMarket",
-          "pda": {
-            "seeds": [
-              {
-                "kind": "const",
-                "value": [
-                  115,
-                  112,
-                  111,
-                  116,
-                  95,
-                  109,
-                  97,
-                  114,
-                  107,
-                  101,
-                  116
-                ]
-              },
-              {
-                "kind": "const",
-                "value": [
-                  0,
-                  0
-                ]
-              }
-            ]
-          }
-        },
-        {
-          "name": "state",
-          "writable": true
-        },
-        {
-          "name": "phoenixProgram"
-        },
-        {
-          "name": "phoenixMarket"
-        },
-        {
-          "name": "driftSigner"
-        },
-        {
-          "name": "phoenixFulfillmentConfig",
-          "writable": true,
-          "pda": {
-            "seeds": [
-              {
-                "kind": "const",
-                "value": [
-                  112,
-                  104,
-                  111,
-                  101,
-                  110,
-                  105,
-                  120,
-                  95,
-                  102,
-                  117,
-                  108,
-                  102,
-                  105,
-                  108,
-                  108,
-                  109,
-                  101,
-                  110,
-                  116,
-                  95,
-                  99,
-                  111,
-                  110,
-                  102,
-                  105,
-                  103
-                ]
-              },
-              {
-                "kind": "account",
-                "path": "phoenixMarket"
-              }
-            ]
-          }
-        },
-        {
-          "name": "admin",
-          "writable": true,
-          "signer": true,
-          "relations": [
-            "state"
-          ]
-        },
-        {
-          "name": "rent",
-          "address": "SysvarRent111111111111111111111111111111111"
-        },
-        {
-          "name": "systemProgram",
-          "address": "11111111111111111111111111111111"
-        }
-      ],
-      "args": [
-        {
-          "name": "marketIndex",
-          "type": "u16"
-        }
-      ]
-    },
-    {
       "name": "initializePrelaunchOracle",
       "discriminator": [
         169,
@@ -4783,188 +4605,6 @@ export type Drift = {
       "args": [
         {
           "name": "numOrders",
-          "type": "u16"
-        }
-      ]
-    },
-    {
-      "name": "initializeSerumFulfillmentConfig",
-      "discriminator": [
-        193,
-        211,
-        132,
-        172,
-        70,
-        171,
-        7,
-        94
-      ],
-      "accounts": [
-        {
-          "name": "baseSpotMarket",
-          "pda": {
-            "seeds": [
-              {
-                "kind": "const",
-                "value": [
-                  115,
-                  112,
-                  111,
-                  116,
-                  95,
-                  109,
-                  97,
-                  114,
-                  107,
-                  101,
-                  116
-                ]
-              },
-              {
-                "kind": "arg",
-                "path": "marketIndex"
-              }
-            ]
-          }
-        },
-        {
-          "name": "quoteSpotMarket",
-          "pda": {
-            "seeds": [
-              {
-                "kind": "const",
-                "value": [
-                  115,
-                  112,
-                  111,
-                  116,
-                  95,
-                  109,
-                  97,
-                  114,
-                  107,
-                  101,
-                  116
-                ]
-              },
-              {
-                "kind": "const",
-                "value": [
-                  0,
-                  0
-                ]
-              }
-            ]
-          }
-        },
-        {
-          "name": "state",
-          "writable": true
-        },
-        {
-          "name": "serumProgram"
-        },
-        {
-          "name": "serumMarket"
-        },
-        {
-          "name": "serumOpenOrders",
-          "writable": true,
-          "pda": {
-            "seeds": [
-              {
-                "kind": "const",
-                "value": [
-                  115,
-                  101,
-                  114,
-                  117,
-                  109,
-                  95,
-                  111,
-                  112,
-                  101,
-                  110,
-                  95,
-                  111,
-                  114,
-                  100,
-                  101,
-                  114,
-                  115
-                ]
-              },
-              {
-                "kind": "account",
-                "path": "serumMarket"
-              }
-            ]
-          }
-        },
-        {
-          "name": "driftSigner"
-        },
-        {
-          "name": "serumFulfillmentConfig",
-          "writable": true,
-          "pda": {
-            "seeds": [
-              {
-                "kind": "const",
-                "value": [
-                  115,
-                  101,
-                  114,
-                  117,
-                  109,
-                  95,
-                  102,
-                  117,
-                  108,
-                  102,
-                  105,
-                  108,
-                  108,
-                  109,
-                  101,
-                  110,
-                  116,
-                  95,
-                  99,
-                  111,
-                  110,
-                  102,
-                  105,
-                  103
-                ]
-              },
-              {
-                "kind": "account",
-                "path": "serumMarket"
-              }
-            ]
-          }
-        },
-        {
-          "name": "admin",
-          "writable": true,
-          "signer": true,
-          "relations": [
-            "state"
-          ]
-        },
-        {
-          "name": "rent",
-          "address": "SysvarRent111111111111111111111111111111111"
-        },
-        {
-          "name": "systemProgram",
-          "address": "11111111111111111111111111111111"
-        }
-      ],
-      "args": [
-        {
-          "name": "marketIndex",
           "type": "u16"
         }
       ]
@@ -6878,46 +6518,6 @@ export type Drift = {
         }
       ],
       "args": []
-    },
-    {
-      "name": "phoenixFulfillmentConfigStatus",
-      "discriminator": [
-        96,
-        31,
-        113,
-        32,
-        12,
-        203,
-        7,
-        154
-      ],
-      "accounts": [
-        {
-          "name": "state"
-        },
-        {
-          "name": "phoenixFulfillmentConfig",
-          "writable": true
-        },
-        {
-          "name": "admin",
-          "writable": true,
-          "signer": true,
-          "relations": [
-            "state"
-          ]
-        }
-      ],
-      "args": [
-        {
-          "name": "status",
-          "type": {
-            "defined": {
-              "name": "spotFulfillmentConfigStatus"
-            }
-          }
-        }
-      ]
     },
     {
       "name": "placeAndMakePerpOrder",
@@ -12630,43 +12230,6 @@ export type Drift = {
       ]
     },
     {
-      "name": "updateSerumFulfillmentConfigStatus",
-      "discriminator": [
-        171,
-        109,
-        240,
-        251,
-        95,
-        1,
-        149,
-        89
-      ],
-      "accounts": [
-        {
-          "name": "state"
-        },
-        {
-          "name": "serumFulfillmentConfig",
-          "writable": true
-        },
-        {
-          "name": "admin",
-          "writable": true,
-          "signer": true
-        }
-      ],
-      "args": [
-        {
-          "name": "status",
-          "type": {
-            "defined": {
-              "name": "spotFulfillmentConfigStatus"
-            }
-          }
-        }
-      ]
-    },
-    {
       "name": "updateSpotAuctionDuration",
       "discriminator": [
         182,
@@ -15064,19 +14627,6 @@ export type Drift = {
       ]
     },
     {
-      "name": "phoenixV1FulfillmentConfig",
-      "discriminator": [
-        233,
-        45,
-        62,
-        40,
-        35,
-        129,
-        48,
-        72
-      ]
-    },
-    {
       "name": "prelaunchOracle",
       "discriminator": [
         92,
@@ -15152,19 +14702,6 @@ export type Drift = {
         177,
         173,
         252
-      ]
-    },
-    {
-      "name": "serumV3FulfillmentConfig",
-      "discriminator": [
-        65,
-        160,
-        197,
-        112,
-        239,
-        168,
-        103,
-        185
       ]
     },
     {
@@ -22793,71 +22330,6 @@ export type Drift = {
       }
     },
     {
-      "name": "phoenixV1FulfillmentConfig",
-      "serialization": "bytemuckunsafe",
-      "repr": {
-        "kind": "c"
-      },
-      "type": {
-        "kind": "struct",
-        "fields": [
-          {
-            "name": "pubkey",
-            "type": "pubkey"
-          },
-          {
-            "name": "phoenixProgramId",
-            "type": "pubkey"
-          },
-          {
-            "name": "phoenixLogAuthority",
-            "type": "pubkey"
-          },
-          {
-            "name": "phoenixMarket",
-            "type": "pubkey"
-          },
-          {
-            "name": "phoenixBaseVault",
-            "type": "pubkey"
-          },
-          {
-            "name": "phoenixQuoteVault",
-            "type": "pubkey"
-          },
-          {
-            "name": "marketIndex",
-            "type": "u16"
-          },
-          {
-            "name": "fulfillmentType",
-            "type": {
-              "defined": {
-                "name": "spotFulfillmentType"
-              }
-            }
-          },
-          {
-            "name": "status",
-            "type": {
-              "defined": {
-                "name": "spotFulfillmentConfigStatus"
-              }
-            }
-          },
-          {
-            "name": "padding",
-            "type": {
-              "array": [
-                "u8",
-                4
-              ]
-            }
-          }
-        ]
-      }
-    },
-    {
       "name": "poolBalance",
       "serialization": "bytemuckunsafe",
       "repr": {
@@ -23470,91 +22942,6 @@ export type Drift = {
             ],
             "type": {
               "option": "i64"
-            }
-          }
-        ]
-      }
-    },
-    {
-      "name": "serumV3FulfillmentConfig",
-      "serialization": "bytemuckunsafe",
-      "repr": {
-        "kind": "c"
-      },
-      "type": {
-        "kind": "struct",
-        "fields": [
-          {
-            "name": "pubkey",
-            "type": "pubkey"
-          },
-          {
-            "name": "serumProgramId",
-            "type": "pubkey"
-          },
-          {
-            "name": "serumMarket",
-            "type": "pubkey"
-          },
-          {
-            "name": "serumRequestQueue",
-            "type": "pubkey"
-          },
-          {
-            "name": "serumEventQueue",
-            "type": "pubkey"
-          },
-          {
-            "name": "serumBids",
-            "type": "pubkey"
-          },
-          {
-            "name": "serumAsks",
-            "type": "pubkey"
-          },
-          {
-            "name": "serumBaseVault",
-            "type": "pubkey"
-          },
-          {
-            "name": "serumQuoteVault",
-            "type": "pubkey"
-          },
-          {
-            "name": "serumOpenOrders",
-            "type": "pubkey"
-          },
-          {
-            "name": "serumSignerNonce",
-            "type": "u64"
-          },
-          {
-            "name": "marketIndex",
-            "type": "u16"
-          },
-          {
-            "name": "fulfillmentType",
-            "type": {
-              "defined": {
-                "name": "spotFulfillmentType"
-              }
-            }
-          },
-          {
-            "name": "status",
-            "type": {
-              "defined": {
-                "name": "spotFulfillmentConfigStatus"
-              }
-            }
-          },
-          {
-            "name": "padding",
-            "type": {
-              "array": [
-                "u8",
-                4
-              ]
             }
           }
         ]

@@ -44,10 +44,8 @@
 	"dependencies": {
 		"@coral-xyz/anchor": "npm:@coral-xyz/anchor@0.32.1",
 		"@coral-xyz/anchor-29": "npm:@coral-xyz/anchor@0.29.0",
-		"@ellipsis-labs/phoenix-sdk": "1.4.5",
 		"@msgpack/msgpack": "^3.1.2",
 		"@openbook-dex/openbook-v2": "0.2.10",
-		"@project-serum/serum": "0.13.65",
 		"@pythnetwork/client": "2.5.3",
 		"@pythnetwork/price-service-sdk": "1.7.1",
 		"@pythnetwork/pyth-lazer-sdk": "6.0.0",
@@ -71,6 +69,7 @@
 		"helius-laserstream": "0.1.8"
 	},
 	"devDependencies": {
+		"@project-serum/serum": "0.13.65",
 		"@types/big.js": "6.2.2",
 		"@types/bn.js": "5.1.6",
 		"@types/bs58": "4.0.4",

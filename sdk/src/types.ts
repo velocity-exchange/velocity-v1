@@ -1569,35 +1569,6 @@ export type InsuranceFundStake = {
 	lastWithdrawRequestTs: BN;
 };
 
-export type SerumV3FulfillmentConfigAccount = {
-	fulfillmentType: SpotFulfillmentType;
-	status: SpotFulfillmentStatus;
-	pubkey: PublicKey;
-	marketIndex: number;
-	serumProgramId: PublicKey;
-	serumMarket: PublicKey;
-	serumRequestQueue: PublicKey;
-	serumEventQueue: PublicKey;
-	serumBids: PublicKey;
-	serumAsks: PublicKey;
-	serumBaseVault: PublicKey;
-	serumQuoteVault: PublicKey;
-	serumOpenOrders: PublicKey;
-	serumSignerNonce: BN;
-};
-
-export type PhoenixV1FulfillmentConfigAccount = {
-	pubkey: PublicKey;
-	phoenixProgramId: PublicKey;
-	phoenixLogAuthority: PublicKey;
-	phoenixMarket: PublicKey;
-	phoenixBaseVault: PublicKey;
-	phoenixQuoteVault: PublicKey;
-	marketIndex: number;
-	fulfillmentType: SpotFulfillmentType;
-	status: SpotFulfillmentStatus;
-};
-
 export type OpenbookV2FulfillmentConfigAccount = {
 	pubkey: PublicKey;
 	openbookV2ProgramId: PublicKey;

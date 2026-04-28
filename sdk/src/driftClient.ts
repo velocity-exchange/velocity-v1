@@ -49,13 +49,11 @@ import {
 	OrderType,
 	PerpMarketAccount,
 	PerpMarketExtendedInfo,
-	PhoenixV1FulfillmentConfigAccount,
 	PlaceAndTakeOrderSuccessCondition,
 	PositionDirection,
 	ReferrerInfo,
 	ReferrerNameAccount,
 	ScaleOrderParams,
-	SerumV3FulfillmentConfigAccount,
 	SettlePnlMode,
 	SignedTxData,
 	SpotBalanceType,
@@ -112,12 +110,9 @@ import {
 	getInsuranceFundStakeAccountPublicKey,
 	getOpenbookV2FulfillmentConfigPublicKey,
 	getPerpMarketPublicKey,
-	getPhoenixFulfillmentConfigPublicKey,
 	getProtectedMakerModeConfigPublicKey,
 	getPythLazerOraclePublicKey,
 	getReferrerNamePublicKeySync,
-	getSerumFulfillmentConfigPublicKey,
-	getSerumSignerPublicKey,
 	getSpotMarketPublicKey,
 	getSignedMsgUserAccountPublicKey,
 	getUserAccountPublicKey,
@@ -711,54 +706,6 @@ export class DriftClient {
 		return this.accountSubscriber.getOraclePriceDataAndSlot(
 			getOracleId(oraclePublicKey, oracleSource)
 		);
-	}
-
-	public async getSerumV3FulfillmentConfig(
-		serumMarket: PublicKey
-	): Promise<SerumV3FulfillmentConfigAccount> {
-		const address = await getSerumFulfillmentConfigPublicKey(
-			this.program.programId,
-			serumMarket
-		);
-		return (await (this.program.account as any).serumV3FulfillmentConfig.fetch(
-			address
-		)) as SerumV3FulfillmentConfigAccount;
-	}
-
-	public async getSerumV3FulfillmentConfigs(): Promise<
-		SerumV3FulfillmentConfigAccount[]
-	> {
-		const accounts = await (
-			this.program.account as any
-		).serumV3FulfillmentConfig.all();
-		return accounts.map(
-			(account) => account.account
-		) as SerumV3FulfillmentConfigAccount[];
-	}
-
-	public async getPhoenixV1FulfillmentConfig(
-		phoenixMarket: PublicKey
-	): Promise<PhoenixV1FulfillmentConfigAccount> {
-		const address = await getPhoenixFulfillmentConfigPublicKey(
-			this.program.programId,
-			phoenixMarket
-		);
-		return (await (
-			this.program.account as any
-		).phoenixV1FulfillmentConfig.fetch(
-			address
-		)) as PhoenixV1FulfillmentConfigAccount;
-	}
-
-	public async getPhoenixV1FulfillmentConfigs(): Promise<
-		PhoenixV1FulfillmentConfigAccount[]
-	> {
-		const accounts = await (
-			this.program.account as any
-		).phoenixV1FulfillmentConfig.all();
-		return accounts.map(
-			(account) => account.account
-		) as PhoenixV1FulfillmentConfigAccount[];
 	}
 
 	public async getOpenbookV2FulfillmentConfig(
@@ -5866,10 +5813,7 @@ export class DriftClient {
 		_userAccountPublicKey: PublicKey,
 		_user: UserAccount,
 		_order?: Pick<Order, 'marketIndex' | 'orderId'>,
-		_fulfillmentConfig?:
-			| SerumV3FulfillmentConfigAccount
-			| PhoenixV1FulfillmentConfigAccount
-			| OpenbookV2FulfillmentConfigAccount,
+		_fulfillmentConfig?: OpenbookV2FulfillmentConfigAccount,
 		_makerInfo?: MakerInfo | MakerInfo[],
 		_referrerInfo?: ReferrerInfo,
 		_txParams?: TxParams
@@ -5881,10 +5825,7 @@ export class DriftClient {
 		_userAccountPublicKey: PublicKey,
 		_userAccount: UserAccount,
 		_order?: Pick<Order, 'marketIndex' | 'orderId'>,
-		_fulfillmentConfig?:
-			| SerumV3FulfillmentConfigAccount
-			| PhoenixV1FulfillmentConfigAccount
-			| OpenbookV2FulfillmentConfigAccount,
+		_fulfillmentConfig?: OpenbookV2FulfillmentConfigAccount,
 		_makerInfo?: MakerInfo | MakerInfo[],
 		_referrerInfo?: ReferrerInfo,
 		_fillerPublicKey?: PublicKey
@@ -5895,25 +5836,10 @@ export class DriftClient {
 	addSpotFulfillmentAccounts(
 		marketIndex: number,
 		remainingAccounts: AccountMeta[],
-		fulfillmentConfig?:
-			| SerumV3FulfillmentConfigAccount
-			| PhoenixV1FulfillmentConfigAccount
-			| OpenbookV2FulfillmentConfigAccount
+		fulfillmentConfig?: OpenbookV2FulfillmentConfigAccount
 	): void {
 		if (fulfillmentConfig) {
-			if ('serumProgramId' in fulfillmentConfig) {
-				this.addSerumRemainingAccounts(
-					marketIndex,
-					remainingAccounts,
-					fulfillmentConfig
-				);
-			} else if ('phoenixProgramId' in fulfillmentConfig) {
-				this.addPhoenixRemainingAccounts(
-					marketIndex,
-					remainingAccounts,
-					fulfillmentConfig
-				);
-			} else if ('openbookV2ProgramId' in fulfillmentConfig) {
+			if ('openbookV2ProgramId' in fulfillmentConfig) {
 				this.addOpenbookRemainingAccounts(
 					marketIndex,
 					remainingAccounts,
@@ -5934,154 +5860,6 @@ export class DriftClient {
 				isSigner: false,
 			});
 		}
-	}
-
-	addSerumRemainingAccounts(
-		marketIndex: number,
-		remainingAccounts: AccountMeta[],
-		fulfillmentConfig: SerumV3FulfillmentConfigAccount
-	): void {
-		remainingAccounts.push({
-			pubkey: fulfillmentConfig.pubkey,
-			isWritable: false,
-			isSigner: false,
-		});
-		remainingAccounts.push({
-			pubkey: fulfillmentConfig.serumProgramId,
-			isWritable: false,
-			isSigner: false,
-		});
-		remainingAccounts.push({
-			pubkey: fulfillmentConfig.serumMarket,
-			isWritable: true,
-			isSigner: false,
-		});
-		remainingAccounts.push({
-			pubkey: fulfillmentConfig.serumRequestQueue,
-			isWritable: true,
-			isSigner: false,
-		});
-		remainingAccounts.push({
-			pubkey: fulfillmentConfig.serumEventQueue,
-			isWritable: true,
-			isSigner: false,
-		});
-		remainingAccounts.push({
-			pubkey: fulfillmentConfig.serumBids,
-			isWritable: true,
-			isSigner: false,
-		});
-		remainingAccounts.push({
-			pubkey: fulfillmentConfig.serumAsks,
-			isWritable: true,
-			isSigner: false,
-		});
-		remainingAccounts.push({
-			pubkey: fulfillmentConfig.serumBaseVault,
-			isWritable: true,
-			isSigner: false,
-		});
-		remainingAccounts.push({
-			pubkey: fulfillmentConfig.serumQuoteVault,
-			isWritable: true,
-			isSigner: false,
-		});
-		remainingAccounts.push({
-			pubkey: fulfillmentConfig.serumOpenOrders,
-			isWritable: true,
-			isSigner: false,
-		});
-		remainingAccounts.push({
-			pubkey: getSerumSignerPublicKey(
-				fulfillmentConfig.serumProgramId,
-				fulfillmentConfig.serumMarket,
-				fulfillmentConfig.serumSignerNonce
-			),
-			isWritable: false,
-			isSigner: false,
-		});
-		remainingAccounts.push({
-			pubkey: this.getSignerPublicKey(),
-			isWritable: false,
-			isSigner: false,
-		});
-		remainingAccounts.push({
-			pubkey: TOKEN_PROGRAM_ID,
-			isWritable: false,
-			isSigner: false,
-		});
-		remainingAccounts.push({
-			pubkey: this.getSpotMarketAccount(marketIndex).vault,
-			isWritable: true,
-			isSigner: false,
-		});
-		remainingAccounts.push({
-			pubkey: this.getQuoteSpotMarketAccount().vault,
-			isWritable: true,
-			isSigner: false,
-		});
-		remainingAccounts.push({
-			pubkey: this.getStateAccount().srmVault,
-			isWritable: false,
-			isSigner: false,
-		});
-	}
-
-	addPhoenixRemainingAccounts(
-		marketIndex: number,
-		remainingAccounts: AccountMeta[],
-		fulfillmentConfig: PhoenixV1FulfillmentConfigAccount
-	): void {
-		remainingAccounts.push({
-			pubkey: fulfillmentConfig.pubkey,
-			isWritable: false,
-			isSigner: false,
-		});
-		remainingAccounts.push({
-			pubkey: fulfillmentConfig.phoenixProgramId,
-			isWritable: false,
-			isSigner: false,
-		});
-		remainingAccounts.push({
-			pubkey: fulfillmentConfig.phoenixLogAuthority,
-			isWritable: false,
-			isSigner: false,
-		});
-		remainingAccounts.push({
-			pubkey: fulfillmentConfig.phoenixMarket,
-			isWritable: true,
-			isSigner: false,
-		});
-		remainingAccounts.push({
-			pubkey: this.getSignerPublicKey(),
-			isWritable: false,
-			isSigner: false,
-		});
-		remainingAccounts.push({
-			pubkey: fulfillmentConfig.phoenixBaseVault,
-			isWritable: true,
-			isSigner: false,
-		});
-		remainingAccounts.push({
-			pubkey: fulfillmentConfig.phoenixQuoteVault,
-			isWritable: true,
-			isSigner: false,
-		});
-		remainingAccounts.push({
-			pubkey: this.getSpotMarketAccount(marketIndex).vault,
-			isWritable: true,
-			isSigner: false,
-		});
-		remainingAccounts.push({
-			pubkey: this.getQuoteSpotMarketAccount().vault,
-			isWritable: true,
-			isSigner: false,
-		});
-		remainingAccounts.push({
-			pubkey: TOKEN_PROGRAM_ID,
-			isWritable: false,
-			isSigner: false,
-		});
 	}
 
 	addOpenbookRemainingAccounts(
@@ -8063,7 +7841,7 @@ export class DriftClient {
 
 	public async preparePlaceAndTakeSpotOrder(
 		_orderParams: OptionalOrderParams,
-		_fulfillmentConfig?: SerumV3FulfillmentConfigAccount,
+		_fulfillmentConfig?: unknown,
 		_makerInfo?: MakerInfo,
 		_referrerInfo?: ReferrerInfo,
 		_txParams?: TxParams,
@@ -8074,7 +7852,7 @@ export class DriftClient {
 
 	public async placeAndTakeSpotOrder(
 		_orderParams: OptionalOrderParams,
-		_fulfillmentConfig?: SerumV3FulfillmentConfigAccount,
+		_fulfillmentConfig?: unknown,
 		_makerInfo?: MakerInfo,
 		_referrerInfo?: ReferrerInfo,
 		_txParams?: TxParams,
@@ -8084,7 +7862,7 @@ export class DriftClient {
 	}
 	public async getPlaceAndTakeSpotOrderIx(
 		_orderParams: OptionalOrderParams,
-		_fulfillmentConfig?: SerumV3FulfillmentConfigAccount,
+		_fulfillmentConfig?: unknown,
 		_makerInfo?: MakerInfo,
 		_referrerInfo?: ReferrerInfo,
 		_subAccountId?: number
@@ -8095,7 +7873,7 @@ export class DriftClient {
 	public async placeAndMakeSpotOrder(
 		_orderParams: OptionalOrderParams,
 		_takerInfo: TakerInfo,
-		_fulfillmentConfig?: SerumV3FulfillmentConfigAccount,
+		_fulfillmentConfig?: unknown,
 		_referrerInfo?: ReferrerInfo,
 		_txParams?: TxParams,
 		_subAccountId?: number
@@ -8106,7 +7884,7 @@ export class DriftClient {
 	public async getPlaceAndMakeSpotOrderIx(
 		_orderParams: OptionalOrderParams,
 		_takerInfo: TakerInfo,
-		_fulfillmentConfig?: SerumV3FulfillmentConfigAccount,
+		_fulfillmentConfig?: unknown,
 		_referrerInfo?: ReferrerInfo,
 		_subAccountId?: number
 	): Promise<TransactionInstruction> {

@@ -2,6 +2,7 @@
 # Runs the devnet init runbook. Required env:
 #   DEVNET_ADMIN       path to admin keypair json
 #   SOL_LAZER_FEED_ID  pyth lazer u32 feed id for SOL/USD
+#   USDT_LAZER_FEED_ID pyth lazer u32 feed id for USDT/USD (Phase B.1)
 # Optional:
 #   USDT_MINT                 reuse an existing USDT mint instead of creating one
 #   USDT_MINT_KEYPAIR         keypair file for the USDT mint (vanity address)
@@ -13,6 +14,7 @@ set -eu
 
 : "${DEVNET_ADMIN:?DEVNET_ADMIN must be set}"
 : "${SOL_LAZER_FEED_ID:?SOL_LAZER_FEED_ID must be set}"
+: "${USDT_LAZER_FEED_ID:?USDT_LAZER_FEED_ID must be set}"
 
 script_dir="$(cd "$(dirname "$0")" && pwd)"
 repo_root="$(cd "$script_dir/.." && pwd)"

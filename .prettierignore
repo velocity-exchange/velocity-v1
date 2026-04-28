@@ -1,1 +1,4 @@
 **/node_modules/**
+
+# Generated IDL types — produced by anchor build, not hand-edited
+sdk/src/idl/

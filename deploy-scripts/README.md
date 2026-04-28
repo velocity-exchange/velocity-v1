@@ -18,6 +18,7 @@ Devnet deployment scripts for the drift program. The devnet quote token is **dUS
    ```
    DEVNET_ADMIN=/path/to/admin.json \
    SOL_LAZER_FEED_ID=<u32 feed id> \
+   USDT_LAZER_FEED_ID=<u32 feed id> \
    bash deploy-scripts/init-devnet.sh
    ```
    Phase 0 creates a fresh 6-decimal dUSDT SPL mint, pre-mints `USDT_INITIAL_SUPPLY` (default 10M) to the admin ATA, then initializes the `token_faucet` for that mint — transferring mint authority to the faucet PDA so anyone can call `mint_to_user` for devnet dUSDT. The mint keypair is saved to `deploy-scripts/out/usdt-mint.json` (override via `USDT_MINT_KEYPAIR`); the resolved mint pubkey is persisted to the receipt. Re-runs reuse the same mint. To skip mint creation and reuse an existing mint, set `dUSDT_MINT=<pubkey>`.
@@ -37,6 +38,7 @@ After Phase 0 the `token_faucet` program owns the dUSDT mint authority. Any wall
 Required:
 - `DEVNET_ADMIN` — path to admin keypair file; becomes `State.admin` **immutably** and the initial dUSDT mint authority (until Phase 0 hands it to the faucet PDA).
 - `SOL_LAZER_FEED_ID` — Pyth Lazer u32 feed id for SOL/USD.
+- `USDT_LAZER_FEED_ID` — Pyth Lazer u32 feed id for USDT/USD. `initialize_spot_market` mandates `oracle = Pubkey::default` for the quote market, so Phase B initializes spot 0 with that and Phase B.1 swaps it to a real PythLazer PDA via `update_spot_market_oracle` with `OracleSource::PythLazerStableCoin` (matches mainnet posture). Without this swap, SDK tooling that always includes the spot oracle in `remaining_accounts` breaks `OracleMap::load`'s peek-and-break walk on a System-Program-owned zero pubkey.
 
 Optional:
 - `USDT_MINT` — reuse an existing dUSDT SPL mint (6 decimals) instead of creating one.

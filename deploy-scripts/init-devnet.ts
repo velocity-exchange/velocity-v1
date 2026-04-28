@@ -8,6 +8,7 @@
  *   0) create USDT SPL mint + initialize token_faucet for distribution
  *   A) global state + amm cache
  *   B) USDT spot market at index 0
+ *   B.1) Pyth Lazer USDT/USD oracle + repoint spot 0 to PythLazerStableCoin
  *   C) Pyth Lazer SOL/USD oracle
  *   D) SOL-PERP at index 0
  *   E) ProtocolIfSharesTransferConfig
@@ -21,6 +22,10 @@
  * Required env:
  *   DEVNET_ADMIN        path to admin keypair file (becomes State.admin — immutable)
  *   SOL_LAZER_FEED_ID   Pyth Lazer u32 feed id for SOL/USD
+ *   USDT_LAZER_FEED_ID  Pyth Lazer u32 feed id for USDT/USD (used by Phase B.1
+ *                       to give the quote spot market a real oracle —
+ *                       initialize_spot_market mandates oracle = Pubkey::default
+ *                       at init time, so we swap via update_spot_market_oracle).
  * Optional env:
  *   USDT_MINT           existing devnet USDT SPL mint (6 decimals). If unset, a
  *                       fresh mint is created in Phase 0 and persisted to the
@@ -217,6 +222,10 @@ async function main() {
 	if (!Number.isFinite(solLazerFeedId) || solLazerFeedId < 0) {
 		throw new Error('SOL_LAZER_FEED_ID must be a non-negative integer');
 	}
+	const usdtLazerFeedId = Number(requireEnv('USDT_LAZER_FEED_ID'));
+	if (!Number.isFinite(usdtLazerFeedId) || usdtLazerFeedId < 0) {
+		throw new Error('USDT_LAZER_FEED_ID must be a non-negative integer');
+	}
 	const lpPoolId = Number(process.env.LP_POOL_ID ?? 1);
 	const lpMaxAum = new BN(process.env.LP_MAX_AUM ?? '1000000').mul(
 		QUOTE_PRECISION
@@ -262,6 +271,7 @@ async function main() {
 		`usdt mint:     ${usdtMint ? usdtMint.toBase58() : '(will create in Phase 0)'}`
 	);
 	console.log(`sol lazer fid: ${solLazerFeedId}`);
+	console.log(`usdt lazer fid: ${usdtLazerFeedId}`);
 	console.log(`lp pool id:    ${lpPoolId}`);
 
 	// === Pre-flight: verify program + mint are live, show admin balance ===
@@ -302,6 +312,7 @@ async function main() {
 		}`,
 		`USDT supply:    ${usdtInitialSupplyWhole.toString()} tokens pre-mint to admin (before faucet takes authority)`,
 		`SOL Lazer feed: ${solLazerFeedId}`,
+		`USDT Lazer feed: ${usdtLazerFeedId}`,
 		`LP pool id:     ${lpPoolId}`,
 		`LP max AUM:     ${lpMaxAum.toString()} (raw, QUOTE_PRECISION units)`,
 		`PMM max users:  ${protectedMakerMaxUsers}`,
@@ -564,6 +575,60 @@ async function main() {
 		);
 		receipt.spotMarkets[0] = { pubkey: spot0Pk.toBase58(), txSig };
 		await client.fetchAccounts();
+	}
+
+	await confirm(
+		'Begin Phase B.1 — repoint dUSDT spot oracle to a PythLazer stable-coin feed?',
+		[
+			`feed id = ${usdtLazerFeedId}`,
+			'initialize_spot_market mandates oracle = Pubkey::default for the quote market,',
+			'so we initialize a PythLazerOracle PDA and swap via update_spot_market_oracle',
+			'to OracleSource::PythLazerStableCoin (matches mainnet posture).',
+			'Skipped if spot 0 already has a non-default oracle.',
+		]
+	);
+	// === Phase B.1: dUSDT lazer oracle + repoint spot 0 ===
+	const usdtLazerPk = getPythLazerOraclePublicKey(programId, usdtLazerFeedId);
+	const usdtLazerInfo = await connection.getAccountInfo(usdtLazerPk);
+	if (!usdtLazerInfo) {
+		logStep(`initializePythLazerOracle feed=${usdtLazerFeedId} (USDT/USD)`);
+		const initSig = await client.initializePythLazerOracle(usdtLazerFeedId);
+		receipt.pythLazerOracles[usdtLazerFeedId] = {
+			pubkey: usdtLazerPk.toBase58(),
+			txSig: initSig,
+		};
+	} else {
+		logStep(
+			`Pyth Lazer USDT oracle (feed ${usdtLazerFeedId}) already initialized`,
+			usdtLazerPk.toBase58()
+		);
+		receipt.pythLazerOracles[usdtLazerFeedId] = {
+			pubkey: usdtLazerPk.toBase58(),
+		};
+	}
+	const spot0Account = await client.program.account.spotMarket.fetch(spot0Pk);
+	const spot0OraclePk = new PublicKey(spot0Account.oracle as PublicKey);
+	if (spot0OraclePk.equals(PublicKey.default)) {
+		logStep(
+			'updateSpotMarketOracle dUSDT @ index 0 -> PythLazerStableCoin',
+			usdtLazerPk.toBase58()
+		);
+		const swapSig = await client.updateSpotMarketOracle(
+			0,
+			usdtLazerPk,
+			OracleSource.PYTH_LAZER_STABLE_COIN,
+			false
+		);
+		receipt.spotMarkets[0] = {
+			...(receipt.spotMarkets[0] ?? { pubkey: spot0Pk.toBase58() }),
+			oracleSwapTxSig: swapSig,
+			oracle: usdtLazerPk.toBase58(),
+		} as any;
+		await client.fetchAccounts();
+	} else {
+		logStep(
+			`Spot 0 oracle already non-default (${spot0OraclePk.toBase58()}); skipping swap`
+		);
 	}
 
 	await confirm('Begin Phase C — Pyth Lazer SOL/USD oracle?', [

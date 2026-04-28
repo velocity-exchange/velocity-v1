@@ -2,9 +2,9 @@ name: main
 
 on:
   push:
-    branches: [master]
+    branches: [master, devnet, next]
   pull_request:
-    branches: [master, devnet]
+    branches: [master, devnet, next]
 
 defaults:
   run:
@@ -225,7 +225,7 @@ jobs:
         yarn-lint,
         check-for-sdk-changes,
       ]
-    if: ${{ github.ref == 'refs/heads/master' && needs.check-for-sdk-changes.outputs.sdk == 'true' }}
+    if: ${{ (github.ref == 'refs/heads/master' || github.ref == 'refs/heads/devnet' || github.ref == 'refs/heads/next') && needs.check-for-sdk-changes.outputs.sdk == 'true' }}
     defaults:
       run:
         working-directory: ./sdk
@@ -253,11 +253,12 @@ jobs:
           git config user.email 41898282+github-actions[bot]@users.noreply.github.com
           git add ..
           git commit -a -m "sdk: release v$PACKAGE_VERSION"
-          git pull --rebase origin master
-          git push origin HEAD || {
+          BRANCH="${GITHUB_REF#refs/heads/}"
+          git pull --rebase origin "$BRANCH"
+          git push origin "HEAD:$BRANCH" || {
             echo "Push failed. Retrying after pulling latest changes..."
-            git pull --rebase origin master
-            git push origin HEAD
+            git pull --rebase origin "$BRANCH"
+            git push origin "HEAD:$BRANCH"
           }
           echo "version=$PACKAGE_VERSION" >> $GITHUB_OUTPUT
       - name: Publish to npm

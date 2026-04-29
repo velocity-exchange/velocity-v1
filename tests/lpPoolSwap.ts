@@ -27,7 +27,6 @@ import {
 	getConstituentPublicKey,
 	ConstituentAccount,
 	ZERO,
-	getSerumSignerPublicKey,
 	BN_MAX,
 	isVariant,
 	ConstituentStatus,
@@ -54,7 +53,12 @@ import { TestBulkAccountLoader } from '../sdk/src/accounts/testBulkAccountLoader
 import { BankrunContextWrapper } from '../sdk/src/bankrun/bankrunConnection';
 import dotenv from 'dotenv';
 import { DexInstructions, Market, OpenOrders } from '@project-serum/serum';
-import { listMarket, SERUM, makePlaceOrderTransaction } from './serumHelper';
+import {
+	getSerumMarketVaults,
+	listMarket,
+	makePlaceOrderTransaction,
+	SERUM,
+} from './serumHelper';
 import { NATIVE_MINT } from '@solana/spl-token';
 import {
 	CustomBorshAccountsCoder,
@@ -728,19 +732,6 @@ describe('LP Pool', () => {
 		serumMarket = await Market.load(
 			bankrunContextWrapper.connection.toConnection(),
 			serumMarketPublicKey,
-			{ commitment: 'confirmed' },
-			SERUM
-		);
-
-		await adminClient.initializeSerumFulfillmentConfig(
-			2,
-			serumMarketPublicKey,
-			SERUM
-		);
-
-		serumMarket = await Market.load(
-			bankrunContextWrapper.connection.toConnection(),
-			serumMarketPublicKey,
 			{ commitment: 'recent' },
 			SERUM
 		);
@@ -875,24 +866,17 @@ describe('LP Pool', () => {
 			}
 		);
 
-		const serumConfig = await adminClient.getSerumV3FulfillmentConfig(
-			serumMarket.publicKey
-		);
+		const { baseVault, quoteVault, vaultSigner } =
+			getSerumMarketVaults(serumMarket);
 		const settleFundsIx = DexInstructions.settleFunds({
 			market: serumMarket.publicKey,
 			openOrders: openOrdersAccount,
 			owner: adminClient.wallet.publicKey,
-			// @ts-ignore
-			baseVault: serumConfig.serumBaseVault,
-			// @ts-ignore
-			quoteVault: serumConfig.serumQuoteVault,
+			baseVault,
+			quoteVault,
 			baseWallet: adminSolAccount,
 			quoteWallet: userUSDCAccount.publicKey,
-			vaultSigner: getSerumSignerPublicKey(
-				serumMarket.programId,
-				serumMarket.publicKey,
-				serumConfig.serumSignerNonce
-			),
+			vaultSigner,
 			programId: serumMarket.programId,
 		});
 

@@ -9,7 +9,12 @@ import {
 	PublicKey,
 	Transaction,
 } from '@solana/web3.js';
-import { listMarket, makePlaceOrderTransaction, SERUM } from './serumHelper';
+import {
+	getSerumMarketVaults,
+	listMarket,
+	makePlaceOrderTransaction,
+	SERUM,
+} from './serumHelper';
 
 import {
 	BN,
@@ -17,7 +22,6 @@ import {
 	EventSubscriber,
 	OracleSource,
 	OracleInfo,
-	getSerumSignerPublicKey,
 	PERCENTAGE_PRECISION,
 } from '../sdk/src';
 
@@ -71,8 +75,6 @@ describe('spot swap', () => {
 	let marketIndexes: number[];
 	let spotMarketIndexes: number[];
 	let oracleInfos: OracleInfo[];
-
-	const solSpotMarketIndex = 1;
 
 	let takerKeypair: Keypair;
 
@@ -219,33 +221,12 @@ describe('spot swap', () => {
 			feeRateBps: 0,
 		});
 
-		console.log('\n\n\n\n\n here \n\n\n\n\n');
-
-		await Market.load(
-			bankrunContextWrapper.connection.toConnection(),
-			serumMarketPublicKey,
-			{ commitment: 'confirmed' },
-			SERUM
-		);
-
-		console.log('\n\n\n\n\n here \n\n\n\n\n');
-
-		await makerDriftClient.initializeSerumFulfillmentConfig(
-			solSpotMarketIndex,
-			serumMarketPublicKey,
-			SERUM
-		);
-
-		console.log('\n\n\n\n\n here \n\n\n\n\n');
-
 		const market = await Market.load(
 			bankrunContextWrapper.connection.toConnection(),
 			serumMarketPublicKey,
 			{ commitment: 'recent' },
 			SERUM
 		);
-
-		console.log('\n\n\n\n\n here \n\n\n\n\n');
 
 		const openOrdersAccount = new Account();
 		const createOpenOrdersIx = await OpenOrders.makeCreateAccountTransaction(
@@ -332,24 +313,16 @@ describe('spot swap', () => {
 			}
 		);
 
-		const serumConfig = await takerDriftClient.getSerumV3FulfillmentConfig(
-			market.publicKey
-		);
+		const { baseVault, quoteVault, vaultSigner } = getSerumMarketVaults(market);
 		const settleFundsIx = DexInstructions.settleFunds({
 			market: market.publicKey,
 			openOrders: takerOpenOrders,
 			owner: takerDriftClient.wallet.publicKey,
-			// @ts-ignore
-			baseVault: serumConfig.serumBaseVault,
-			// @ts-ignore
-			quoteVault: serumConfig.serumQuoteVault,
+			baseVault,
+			quoteVault,
 			baseWallet: takerWSOL,
 			quoteWallet: takerUSDC,
-			vaultSigner: getSerumSignerPublicKey(
-				market.programId,
-				market.publicKey,
-				serumConfig.serumSignerNonce
-			),
+			vaultSigner,
 			programId: market.programId,
 		});
 

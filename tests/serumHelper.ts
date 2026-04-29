@@ -16,11 +16,29 @@ import {
 	OpenOrders,
 } from '@project-serum/serum';
 import { BN } from '@coral-xyz/anchor';
-import { WRAPPED_SOL_MINT } from '../sdk/src';
+import { getSerumSignerPublicKey, WRAPPED_SOL_MINT } from '../sdk/src';
 
 export const SERUM = new PublicKey(
 	'srmqPvymJeFKQ4zGQed1GFppgkRHL9kaELCbyksJtPX'
 );
+
+export function getSerumMarketVaults(market: Market): {
+	baseVault: PublicKey;
+	quoteVault: PublicKey;
+	vaultSigner: PublicKey;
+} {
+	// @ts-ignore — _decoded is private but exposes Serum's market metadata
+	const baseVault = market._decoded.baseVault as PublicKey;
+	// @ts-ignore
+	const quoteVault = market._decoded.quoteVault as PublicKey;
+	const vaultSigner = getSerumSignerPublicKey(
+		market.programId,
+		market.publicKey,
+		// @ts-ignore
+		market._decoded.vaultSignerNonce
+	);
+	return { baseVault, quoteVault, vaultSigner };
+}
 
 export async function listMarket({
 	context,

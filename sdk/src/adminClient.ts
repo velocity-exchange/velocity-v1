@@ -5632,7 +5632,7 @@ export class AdminClient extends DriftClient {
 			reduceOnly,
 			userAccountPublicKey,
 		}: {
-			lpPoolId: number;
+			lpPoolId?: number;
 			outMarketIndex: number;
 			inMarketIndex: number;
 			amountIn: BN;

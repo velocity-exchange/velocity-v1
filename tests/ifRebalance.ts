@@ -10,7 +10,12 @@ import {
 	PublicKey,
 	Transaction,
 } from '@solana/web3.js';
-import { listMarket, makePlaceOrderTransaction, SERUM } from './serumHelper';
+import {
+	getSerumMarketVaults,
+	listMarket,
+	makePlaceOrderTransaction,
+	SERUM,
+} from './serumHelper';
 
 import {
 	BN,
@@ -18,7 +23,6 @@ import {
 	EventSubscriber,
 	OracleSource,
 	OracleInfo,
-	getSerumSignerPublicKey,
 	QUOTE_PRECISION,
 	unstakeSharesToAmount,
 	getIfRebalanceConfigPublicKey,
@@ -356,22 +360,16 @@ describe('spot swap', () => {
 			}
 		);
 
+		const { baseVault, quoteVault, vaultSigner } = getSerumMarketVaults(market);
 		const settleFundsIx = DexInstructions.settleFunds({
 			market: market.publicKey,
 			openOrders: takerOpenOrders,
 			owner: takerDriftClient.wallet.publicKey,
-			// @ts-ignore
-			baseVault: market._decoded.baseVault,
-			// @ts-ignore
-			quoteVault: market._decoded.quoteVault,
+			baseVault,
+			quoteVault,
 			baseWallet: takerWSOL,
 			quoteWallet: takerUSDC,
-			vaultSigner: getSerumSignerPublicKey(
-				market.programId,
-				market.publicKey,
-				// @ts-ignore
-				market._decoded.vaultSignerNonce
-			),
+			vaultSigner,
 			programId: market.programId,
 		});
 

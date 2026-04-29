@@ -35,7 +35,7 @@ test_files=(
   depositIntoSpotMarketVault.ts
   driftClient.ts
   # fillSpot.ts # spot DLOB disabled
-  # ifRebalance.ts # uses deleted SerumV3 fulfillment config; needs migration to OpenBook V2 fixture
+  ifRebalance.ts
   adminWithdrawFromInsuranceFundVault.ts
   insuranceFundStake.ts
   isolatedPositionDriftClient.ts
@@ -47,8 +47,9 @@ test_files=(
   liquidatePerpPnlForDeposit.ts
   liquidateSpot.ts
   liquidateSpotSocialLoss.ts
+  liquidateSpotWithSwap.ts
   lpPool.ts
-  # lpPoolSwap.ts # uses deleted SerumV3 fulfillment config; needs migration to OpenBook V2 fixture
+  lpPoolSwap.ts
   marketOrder.ts
   marketOrderBaseAssetAmount.ts
   maxDeposit.ts
@@ -80,7 +81,7 @@ test_files=(
   spotDepositWithdraw22.ts
   spotDepositWithdraw22TransferHooks.ts
   spotMarketPoolIds.ts
-  # spotSwap.ts # uses deleted SerumV3 fulfillment config; needs migration to OpenBook V2 fixture
+  spotSwap.ts
   spotSwap22.ts
   stopLimits.ts
   subaccounts.ts

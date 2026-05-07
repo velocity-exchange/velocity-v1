@@ -12,7 +12,8 @@ import { CustomBorshCoder } from '../decode/customCoder';
 import driftIDL from '../idl/drift.json';
 import type { Drift } from '../idl/drift';
 import type { UserAccount } from '../types';
-import { fetchAccount } from './rpc';
+import type { DriftProgram } from '../config';
+import { fetchAccount } from '../accounts/fetch';
 import type { BN } from '@coral-xyz/anchor';
 import { buildDepositInstruction } from './instructions/deposit';
 import { buildWithdrawInstruction } from './instructions/withdraw';
@@ -87,7 +88,7 @@ export class DriftCore {
 	}
 
 	static async buildDepositInstruction(args: {
-		program: any;
+		program: DriftProgram;
 		marketIndex: number;
 		amount: BN;
 		reduceOnly: boolean;
@@ -105,7 +106,7 @@ export class DriftCore {
 	}
 
 	static async buildWithdrawInstruction(args: {
-		program: any;
+		program: DriftProgram;
 		marketIndex: number;
 		amount: BN;
 		reduceOnly: boolean;
@@ -124,7 +125,7 @@ export class DriftCore {
 	}
 
 	static async buildPlaceOrdersInstruction(args: {
-		program: any;
+		program: DriftProgram;
 		formattedParams: any[];
 		state: PublicKey;
 		user: PublicKey;
@@ -136,7 +137,7 @@ export class DriftCore {
 	}
 
 	static async buildCancelOrdersInstruction(args: {
-		program: any;
+		program: DriftProgram;
 		marketType: any;
 		marketIndex: number | null;
 		direction: any;
@@ -150,7 +151,7 @@ export class DriftCore {
 	}
 
 	static async buildFillPerpOrderInstruction(args: {
-		program: any;
+		program: DriftProgram;
 		orderId: number | null;
 		state: PublicKey;
 		filler: PublicKey;
@@ -164,7 +165,7 @@ export class DriftCore {
 	}
 
 	static async buildTriggerOrderInstruction(args: {
-		program: any;
+		program: DriftProgram;
 		orderId: number;
 		state: PublicKey;
 		filler: PublicKey;
@@ -176,7 +177,7 @@ export class DriftCore {
 	}
 
 	static async buildSettlePnlInstruction(args: {
-		program: any;
+		program: DriftProgram;
 		marketIndex: number;
 		state: PublicKey;
 		authority: PublicKey;
@@ -188,7 +189,7 @@ export class DriftCore {
 	}
 
 	static async buildLiquidatePerpInstruction(args: {
-		program: any;
+		program: DriftProgram;
 		marketIndex: number;
 		maxBaseAssetAmount: any;
 		limitPrice: any | null;
@@ -204,7 +205,7 @@ export class DriftCore {
 	}
 
 	static async buildPlacePerpOrderInstruction(args: {
-		program: any;
+		program: DriftProgram;
 		orderParams: any;
 		state: PublicKey;
 		user: PublicKey;
@@ -216,7 +217,7 @@ export class DriftCore {
 	}
 
 	static async buildPlaceAndTakePerpOrderInstruction(args: {
-		program: any;
+		program: DriftProgram;
 		orderParams: any;
 		optionalParams: number | null;
 		state: PublicKey;
@@ -229,7 +230,7 @@ export class DriftCore {
 	}
 
 	static async buildPlaceAndMakePerpOrderInstruction(args: {
-		program: any;
+		program: DriftProgram;
 		orderParams: any;
 		takerOrderId: number;
 		state: PublicKey;
@@ -244,7 +245,7 @@ export class DriftCore {
 	}
 
 	static async buildCancelOrderInstruction(args: {
-		program: any;
+		program: DriftProgram;
 		orderId: number | null;
 		state: PublicKey;
 		user: PublicKey;
@@ -255,7 +256,7 @@ export class DriftCore {
 	}
 
 	static async buildCancelOrderByUserIdInstruction(args: {
-		program: any;
+		program: DriftProgram;
 		userOrderId: number;
 		state: PublicKey;
 		user: PublicKey;
@@ -267,7 +268,7 @@ export class DriftCore {
 	}
 
 	static async buildCancelOrdersByIdsInstruction(args: {
-		program: any;
+		program: DriftProgram;
 		orderIds: number[] | undefined;
 		state: PublicKey;
 		user: PublicKey;
@@ -278,7 +279,7 @@ export class DriftCore {
 	}
 
 	static async buildModifyOrderInstruction(args: {
-		program: any;
+		program: DriftProgram;
 		orderId: number;
 		modifyParams: any;
 		state: PublicKey;
@@ -291,7 +292,7 @@ export class DriftCore {
 	}
 
 	static async buildModifyOrderByUserIdInstruction(args: {
-		program: any;
+		program: DriftProgram;
 		userOrderId: number;
 		modifyParams: any;
 		state: PublicKey;
@@ -304,7 +305,7 @@ export class DriftCore {
 	}
 
 	static async buildUpdateFundingRateInstruction(args: {
-		program: any;
+		program: DriftProgram;
 		perpMarketIndex: number;
 		state: PublicKey;
 		perpMarket: PublicKey;

@@ -1,4 +1,3 @@
-export * from './rpc';
 export * from './DriftCore';
 export * from './remainingAccounts';
 export * from './signedMsg';

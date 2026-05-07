@@ -1,7 +1,8 @@
 import type { PublicKey, TransactionInstruction } from '@solana/web3.js';
+import type { DriftProgram } from '../../config';
 
 export async function buildUpdateFundingRateInstruction(args: {
-	program: any;
+	program: DriftProgram;
 	perpMarketIndex: number;
 	state: PublicKey;
 	perpMarket: PublicKey;

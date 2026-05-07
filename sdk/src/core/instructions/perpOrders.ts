@@ -3,9 +3,10 @@ import type {
 	PublicKey,
 	TransactionInstruction,
 } from '@solana/web3.js';
+import type { DriftProgram } from '../../config';
 
 export async function buildPlacePerpOrderInstruction(args: {
-	program: any;
+	program: DriftProgram;
 	orderParams: any;
 	state: PublicKey;
 	user: PublicKey;
@@ -28,7 +29,7 @@ export async function buildPlacePerpOrderInstruction(args: {
 }
 
 export async function buildPlaceAndTakePerpOrderInstruction(args: {
-	program: any;
+	program: DriftProgram;
 	orderParams: any;
 	optionalParams: number | null;
 	state: PublicKey;
@@ -53,7 +54,7 @@ export async function buildPlaceAndTakePerpOrderInstruction(args: {
 }
 
 export async function buildPlaceAndMakePerpOrderInstruction(args: {
-	program: any;
+	program: DriftProgram;
 	orderParams: any;
 	takerOrderId: number;
 	state: PublicKey;
@@ -82,7 +83,7 @@ export async function buildPlaceAndMakePerpOrderInstruction(args: {
 }
 
 export async function buildCancelOrderInstruction(args: {
-	program: any;
+	program: DriftProgram;
 	orderId: number | null;
 	state: PublicKey;
 	user: PublicKey;
@@ -100,7 +101,7 @@ export async function buildCancelOrderInstruction(args: {
 }
 
 export async function buildCancelOrderByUserIdInstruction(args: {
-	program: any;
+	program: DriftProgram;
 	userOrderId: number;
 	state: PublicKey;
 	user: PublicKey;
@@ -123,7 +124,7 @@ export async function buildCancelOrderByUserIdInstruction(args: {
 }
 
 export async function buildCancelOrdersByIdsInstruction(args: {
-	program: any;
+	program: DriftProgram;
 	orderIds: number[] | undefined;
 	state: PublicKey;
 	user: PublicKey;
@@ -141,7 +142,7 @@ export async function buildCancelOrdersByIdsInstruction(args: {
 }
 
 export async function buildModifyOrderInstruction(args: {
-	program: any;
+	program: DriftProgram;
 	orderId: number;
 	modifyParams: any;
 	state: PublicKey;
@@ -166,7 +167,7 @@ export async function buildModifyOrderInstruction(args: {
 }
 
 export async function buildModifyOrderByUserIdInstruction(args: {
-	program: any;
+	program: DriftProgram;
 	userOrderId: number;
 	modifyParams: any;
 	state: PublicKey;

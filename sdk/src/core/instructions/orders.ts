@@ -3,9 +3,10 @@ import type {
 	PublicKey,
 	TransactionInstruction,
 } from '@solana/web3.js';
+import type { DriftProgram } from '../../config';
 
 export async function buildPlaceOrdersInstruction(args: {
-	program: any;
+	program: DriftProgram;
 	formattedParams: any[];
 	state: PublicKey;
 	user: PublicKey;
@@ -28,7 +29,7 @@ export async function buildPlaceOrdersInstruction(args: {
 }
 
 export async function buildCancelOrdersInstruction(args: {
-	program: any;
+	program: DriftProgram;
 	marketType: any;
 	marketIndex: number | null;
 	direction: any;

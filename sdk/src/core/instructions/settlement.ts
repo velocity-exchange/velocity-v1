@@ -3,9 +3,10 @@ import type {
 	PublicKey,
 	TransactionInstruction,
 } from '@solana/web3.js';
+import type { DriftProgram } from '../../config';
 
 export async function buildSettlePnlInstruction(args: {
-	program: any;
+	program: DriftProgram;
 	marketIndex: number;
 	state: PublicKey;
 	authority: PublicKey;

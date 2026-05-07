@@ -3,9 +3,10 @@ import type {
 	PublicKey,
 	TransactionInstruction,
 } from '@solana/web3.js';
+import type { DriftProgram } from '../../config';
 
 export async function buildTriggerOrderInstruction(args: {
-	program: any;
+	program: DriftProgram;
 	orderId: number;
 	state: PublicKey;
 	filler: PublicKey;

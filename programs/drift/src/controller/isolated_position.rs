@@ -107,6 +107,15 @@ pub fn deposit_into_isolated_perp_position<'c: 'info, 'info>(
 
     drop(spot_market);
 
+    // Reconcile the collateral-usage circuit breaker after the isolated deposit
+    // mutates the perp position's isolated_position_scaled_balance.
+    crate::controller::collateral_usage_breaker::reconcile_user_collateral_usage_with_perp_map(
+        spot_market_map,
+        Some(perp_market_map),
+        user,
+        now,
+    )?;
+
     if user.is_isolated_margin_being_liquidated(perp_market_index)? {
         // try to update liquidation status if user is was already being liq'd
         let is_being_liquidated = is_isolated_margin_being_liquidated(
@@ -412,6 +421,15 @@ pub fn withdraw_from_isolated_perp_position<'c: 'info, 'info>(
             true,
         )?;
     }
+
+    // Reconcile the breaker BEFORE the margin check so that any counter
+    // adjustments and discount factors are reflected in the requirement.
+    crate::controller::collateral_usage_breaker::reconcile_user_collateral_usage_with_perp_map(
+        spot_market_map,
+        Some(perp_market_map),
+        user,
+        now,
+    )?;
 
     user.meets_withdraw_margin_requirement_and_increment_fuel_bonus(
         &perp_market_map,

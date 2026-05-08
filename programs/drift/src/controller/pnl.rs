@@ -104,6 +104,7 @@ pub fn settle_pnl(
                 perp_market_map,
                 spot_market_map,
                 oracle_map,
+                now,
             )?,
         };
 
@@ -413,7 +414,13 @@ pub fn settle_expired_position(
         && user.perp_positions[position_index].quote_asset_amount > 0;
 
     // cannot settle pnl this way on a user who is in liquidation territory
-    if !meets_maintenance_margin_requirement(user, perp_market_map, spot_market_map, oracle_map)?
+    if !meets_maintenance_margin_requirement(
+        user,
+        perp_market_map,
+        spot_market_map,
+        oracle_map,
+        clock.unix_timestamp,
+    )?
         && !can_skip_margin_calc
     {
         return Err(ErrorCode::InsufficientCollateralForSettlingPNL);

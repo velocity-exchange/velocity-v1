@@ -730,6 +730,8 @@ pub enum ErrorCode {
     InvalidInsuranceFundWithdrawalRecipient,
     #[msg("Spot DLOB trading is disabled")]
     SpotDlobTradingDisabled,
+    #[msg("Invalid collateral usage circuit breaker parameters")]
+    InvalidCircuitBreakerParams,
 }
 
 #[macro_export]

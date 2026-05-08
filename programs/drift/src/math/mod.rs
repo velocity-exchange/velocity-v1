@@ -14,6 +14,7 @@ pub mod bankruptcy;
 pub mod bn;
 pub mod casting;
 pub mod ceil_div;
+pub mod circuit_breaker;
 pub mod constants;
 pub mod cp_curve;
 pub mod fees;

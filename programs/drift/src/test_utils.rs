@@ -121,19 +121,28 @@ impl Drop for AlignedAccountBytes {
 
 /// Decodes a base64 Anchor account blob into an aligned buffer ready for `AccountLoader::try_from`.
 ///
+/// Tolerates blobs captured before fields were appended to `T` by zero-extending
+/// the decoded bytes to `size_of::<T>()`. Newly-appended fields therefore deserialize
+/// to their `Default` (zero) values, which is what we want for legacy fixtures.
+///
 /// # Safety
-/// Decoded bytes must be a valid `T` preceded by an 8-byte discriminator.
+/// Decoded bytes must be a valid `T` preceded by an 8-byte discriminator (modulo
+/// zero-extension at the tail).
 pub unsafe fn aligned_account_bytes_from_b64<T: ZeroCopy + Owner>(
     b64: &str,
 ) -> AlignedAccountBytes {
     let decoded = base64::decode(b64).unwrap();
     let disc_len = 8;
-    assert!(
-        decoded.len() >= disc_len + std::mem::size_of::<T>(),
-        "decoded b64 blob too short for {}",
-        std::any::type_name::<T>()
-    );
-    let mut account: T = std::ptr::read_unaligned(decoded[disc_len..].as_ptr() as *const T);
+    let needed = disc_len + std::mem::size_of::<T>();
+    let mut buf = if decoded.len() < needed {
+        let mut extended = decoded;
+        extended.resize(needed, 0);
+        extended
+    } else {
+        decoded
+    };
+    let mut account: T = std::ptr::read_unaligned(buf[disc_len..].as_ptr() as *const T);
+    let _ = &mut buf; // suppress unused-mut warnings on the noop path
     get_anchor_account_bytes(&mut account)
 }
 

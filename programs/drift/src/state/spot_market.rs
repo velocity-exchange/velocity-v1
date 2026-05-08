@@ -208,6 +208,30 @@ pub struct SpotMarket {
     pub token_program_flag: u8,
     pub pool_id: u8,
     pub padding: [u8; 56],
+    // === Collateral usage circuit breaker (appended; SpotMarket SIZE: 808 → 856) ===
+    /// Sum of `scaled_balance` across users currently using this market as collateral
+    /// (i.e., depositors that also have an open liability somewhere on their account).
+    /// VammHedger users are excluded from this counter.
+    /// precision: SPOT_BALANCE_PRECISION
+    pub collateral_usage: u64,
+    /// EMA of `collateral_usage` over `collateral_usage_circuit_breaker_twap_period`.
+    /// While this is 0, the breaker is in bootstrap and never trips (static gates carry
+    /// the defense). Once non-zero, threshold = twap × trigger_ratio_bps / 10_000.
+    /// precision: SPOT_BALANCE_PRECISION
+    pub collateral_usage_twap: u64,
+    /// Last time the collateral-usage TWAP was updated (unix seconds).
+    pub collateral_usage_circuit_breaker_last_twap_ts: i64,
+    /// TWAP lookback window in seconds. Setting to 0 disables the breaker for this market
+    /// — which is the cold-admin-only opt-out path.
+    pub collateral_usage_circuit_breaker_twap_period: u32,
+    /// Per-position warmup duration in seconds. New positions stamped while the breaker is
+    /// in breach ramp linearly from 0 to full asset weight over this window.
+    pub collateral_usage_circuit_breaker_warmup_seconds: u32,
+    /// Multiplier in SPOT_WEIGHT_PRECISION units (10_000 = 1.0×) above which `collateral_usage`
+    /// is considered "in breach" relative to its TWAP. Default 20_000 = 2.0×.
+    pub collateral_usage_circuit_breaker_trigger_ratio_bps: u16,
+    /// Reserved for future breaker-related fields. Keeps SpotMarket content a multiple of 16.
+    pub collateral_usage_circuit_breaker_padding: [u8; 14],
 }
 
 impl Default for SpotMarket {
@@ -277,12 +301,24 @@ impl Default for SpotMarket {
             token_program_flag: 0,
             pool_id: 0,
             padding: [0; 56],
+            // Breaker: on by default for every new spot market. Cold admin can disable per
+            // market post-init by setting twap_period = 0.
+            collateral_usage: 0,
+            collateral_usage_twap: 0,
+            collateral_usage_circuit_breaker_last_twap_ts: 0,
+            collateral_usage_circuit_breaker_twap_period:
+                crate::math::constants::DEFAULT_COLLATERAL_USAGE_CIRCUIT_BREAKER_TWAP_PERIOD,
+            collateral_usage_circuit_breaker_warmup_seconds:
+                crate::math::constants::DEFAULT_COLLATERAL_USAGE_CIRCUIT_BREAKER_WARMUP_SECONDS,
+            collateral_usage_circuit_breaker_trigger_ratio_bps:
+                crate::math::constants::DEFAULT_COLLATERAL_USAGE_CIRCUIT_BREAKER_TRIGGER_RATIO_BPS,
+            collateral_usage_circuit_breaker_padding: [0; 14],
         }
     }
 }
 
 impl Size for SpotMarket {
-    const SIZE: usize = 808;
+    const SIZE: usize = 856;
 }
 
 impl MarketIndexOffset for SpotMarket {
@@ -291,9 +327,12 @@ impl MarketIndexOffset for SpotMarket {
     // This ensures revenue_pool is at a 16-byte-aligned offset (384), eliminating
     // the implicit 8-byte gap that #[repr(C)] inserted on x86_64.  Combined with
     // PoolBalance padding widened to [u8;14] (sizeof == 32 on both platforms) and
-    // SpotMarket padding widened to [u8;56] (total content == 800, a multiple of
-    // 16), sizeof(SpotMarket) is 800 on both architectures.  market_index is at
-    // struct byte 692, account byte 700 on both.
+    // SpotMarket padding [u8;56] (the legacy reserve, kept untouched), sizeof of
+    // the original layout was 800. The collateral-usage circuit breaker fields are
+    // appended *after* `padding: [u8; 56]` and add 48 more bytes (8+8+8+4+4+2+14),
+    // bringing total content to 848 (a multiple of 16) and sizeof(SpotMarket) to
+    // 848 on both architectures (SIZE = 848 + 8 = 856 with the 8-byte Anchor
+    // discriminator). market_index is unchanged at struct byte 692 / account byte 700.
     const MARKET_INDEX_OFFSET: usize = 700;
 }
 
@@ -597,6 +636,120 @@ impl SpotMarket {
 
     pub fn has_transfer_hook(&self) -> bool {
         self.token_program_flag & TokenProgramFlag::TransferHook as u8 != 0
+    }
+
+    // ────────────────────────────────────────────────────────────────────────
+    // Collateral usage circuit breaker — market-side helpers.
+    //
+    // These do not depend on `User`; orchestration that needs user state
+    // (e.g. VammHedger exemption, has_any_liability) lives in
+    // `controller/collateral_usage_breaker.rs`.
+    // ────────────────────────────────────────────────────────────────────────
+
+    /// Threshold (in `scaled_balance` units) above which `collateral_usage` is
+    /// considered "in breach." Returns `u64::MAX` (effectively infinite) when the
+    /// breaker is disabled (twap_period == 0 OR trigger_ratio_bps == 0) or in
+    /// bootstrap (twap == 0). See `math::circuit_breaker` for the rationale.
+    pub fn collateral_usage_threshold_amount(&self) -> u64 {
+        crate::math::circuit_breaker::collateral_usage_threshold_amount(
+            self.collateral_usage_twap,
+            self.collateral_usage_circuit_breaker_twap_period,
+            self.collateral_usage_circuit_breaker_trigger_ratio_bps,
+        )
+    }
+
+    /// Status helper: true iff `collateral_usage` strictly exceeds the threshold.
+    /// Not used in stamping logic — the stamping path operates on the *delta* split
+    /// against the threshold, not on a boolean trigger state.
+    pub fn is_collateral_usage_circuit_breaker_triggered(&self) -> bool {
+        self.collateral_usage > self.collateral_usage_threshold_amount()
+    }
+
+    /// Tick the collateral-usage TWAP at `now` using the canonical
+    /// `calculate_new_twap` helper. Updates `_last_twap_ts`.
+    /// Reuses the same EMA shape as `deposit_token_twap` etc. so behavior is
+    /// already familiar to operators / monitoring.
+    pub fn update_collateral_usage_twap(&mut self, now: i64) -> DriftResult<()> {
+        let period = self.collateral_usage_circuit_breaker_twap_period as i64;
+        if period == 0 {
+            // Breaker disabled → don't touch TWAP. Re-enabling resets baseline.
+            return Ok(());
+        }
+
+        let new_twap = calculate_new_twap(
+            self.collateral_usage.cast::<i64>()?,
+            now,
+            self.collateral_usage_twap.cast::<i64>()?,
+            self.collateral_usage_circuit_breaker_last_twap_ts,
+            period,
+        )?;
+
+        self.collateral_usage_twap = new_twap.max(0).cast::<u64>()?;
+        self.collateral_usage_circuit_breaker_last_twap_ts = now;
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+mod collateral_usage_breaker_tests {
+    use super::*;
+    use crate::math::constants::{
+        DEFAULT_COLLATERAL_USAGE_CIRCUIT_BREAKER_TRIGGER_RATIO_BPS,
+        DEFAULT_COLLATERAL_USAGE_CIRCUIT_BREAKER_TWAP_PERIOD,
+        DEFAULT_COLLATERAL_USAGE_CIRCUIT_BREAKER_WARMUP_SECONDS,
+    };
+
+    #[test]
+    fn default_has_breaker_on() {
+        let market = SpotMarket::default();
+        assert_eq!(
+            market.collateral_usage_circuit_breaker_twap_period,
+            DEFAULT_COLLATERAL_USAGE_CIRCUIT_BREAKER_TWAP_PERIOD
+        );
+        assert_eq!(
+            market.collateral_usage_circuit_breaker_warmup_seconds,
+            DEFAULT_COLLATERAL_USAGE_CIRCUIT_BREAKER_WARMUP_SECONDS
+        );
+        assert_eq!(
+            market.collateral_usage_circuit_breaker_trigger_ratio_bps,
+            DEFAULT_COLLATERAL_USAGE_CIRCUIT_BREAKER_TRIGGER_RATIO_BPS
+        );
+    }
+
+    #[test]
+    fn threshold_bootstrap_returns_max() {
+        // Fresh market: twap == 0 → threshold returns u64::MAX so first user
+        // doesn't trip the breaker.
+        let market = SpotMarket::default();
+        assert_eq!(market.collateral_usage_twap, 0);
+        assert_eq!(market.collateral_usage_threshold_amount(), u64::MAX);
+        assert!(!market.is_collateral_usage_circuit_breaker_triggered());
+    }
+
+    #[test]
+    fn threshold_with_baseline_2x() {
+        // twap == 100, ratio == 2.0× → threshold == 200.
+        let mut market = SpotMarket::default();
+        market.collateral_usage_twap = 100;
+        assert_eq!(market.collateral_usage_threshold_amount(), 200);
+    }
+
+    #[test]
+    fn breaker_disabled_returns_max_threshold() {
+        let mut market = SpotMarket::default();
+        market.collateral_usage_circuit_breaker_twap_period = 0;
+        market.collateral_usage_twap = 100;
+        assert_eq!(market.collateral_usage_threshold_amount(), u64::MAX);
+    }
+
+    #[test]
+    fn triggered_iff_above_threshold() {
+        let mut market = SpotMarket::default();
+        market.collateral_usage_twap = 100;
+        market.collateral_usage = 199;
+        assert!(!market.is_collateral_usage_circuit_breaker_triggered());
+        market.collateral_usage = 201;
+        assert!(market.is_collateral_usage_circuit_breaker_triggered());
     }
 }
 

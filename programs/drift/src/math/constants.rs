@@ -123,6 +123,7 @@ pub const FIVE_MINUTE: i128 = (60 * 5) as i128;
 pub const ONE_HOUR: i64 = 3600;
 pub const ONE_HOUR_I128: i128 = ONE_HOUR as i128;
 pub const TWENTY_FOUR_HOUR: i64 = 3600 * 24;
+pub const FORTY_EIGHT_HOUR: i64 = TWENTY_FOUR_HOUR * 2;
 pub const THIRTEEN_DAY: i64 = TWENTY_FOUR_HOUR * 13; // IF unstake default
 pub const EPOCH_DURATION: i64 = TWENTY_FOUR_HOUR * 28;
 pub const THIRTY_DAY: i64 = TWENTY_FOUR_HOUR * 30;
@@ -219,6 +220,17 @@ pub const AUCTION_DERIVE_PRICE_FRACTION: i64 = 200;
 
 // WITHDRAWS
 pub const SPOT_MARKET_TOKEN_TWAP_WINDOW: i64 = TWENTY_FOUR_HOUR;
+
+// COLLATERAL USAGE CIRCUIT BREAKER
+/// Default TWAP lookback for the per-market collateral-usage breaker. Longer windows
+/// resist false trips from intraday volatility but react more slowly to abrupt anomalies.
+pub const DEFAULT_COLLATERAL_USAGE_CIRCUIT_BREAKER_TWAP_PERIOD: u32 = TWENTY_FOUR_HOUR as u32;
+/// Default per-position warmup duration when the breaker is triggered.
+pub const DEFAULT_COLLATERAL_USAGE_CIRCUIT_BREAKER_WARMUP_SECONDS: u32 = FORTY_EIGHT_HOUR as u32;
+/// Default trigger ratio in SPOT_WEIGHT_PRECISION units. 20_000 = 2.0× TWAP.
+pub const DEFAULT_COLLATERAL_USAGE_CIRCUIT_BREAKER_TRIGGER_RATIO_BPS: u16 = 20_000;
+/// Maximum admin-settable warmup duration. Prevents pathological multi-year ramps.
+pub const MAX_COLLATERAL_USAGE_CIRCUIT_BREAKER_WARMUP_SECONDS: u32 = (THIRTY_DAY) as u32;
 
 // FUEL
 pub const FUEL_WINDOW_U128: u128 = EPOCH_DURATION as u128;

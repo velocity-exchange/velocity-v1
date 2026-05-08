@@ -1,5 +1,5 @@
 {
-  "address": "vELoC1audYbSYVRXn1vPaV8Axoa9oU6BYmNGZZBDZ1P",
+  "address": "dRiftyHA39MWEi3m9aunc5MzRF1JYuBsbn6VPcn33UH",
   "metadata": {
     "name": "drift",
     "version": "2.162.0",
@@ -12887,6 +12887,54 @@
       ]
     },
     {
+      "name": "update_spot_market_collateral_usage_circuit_breaker_params",
+      "docs": [
+        "Cold-admin only. Tunes the per-market collateral-usage circuit breaker.",
+        "`twap_period == 0` disables the breaker for this market;",
+        "`trigger_ratio_bps` must be 0 (disable) or >= SPOT_WEIGHT_PRECISION (1.0×)."
+      ],
+      "discriminator": [
+        168,
+        46,
+        195,
+        47,
+        142,
+        231,
+        106,
+        63
+      ],
+      "accounts": [
+        {
+          "name": "admin",
+          "signer": true,
+          "relations": [
+            "state"
+          ]
+        },
+        {
+          "name": "state"
+        },
+        {
+          "name": "spot_market",
+          "writable": true
+        }
+      ],
+      "args": [
+        {
+          "name": "twap_period",
+          "type": "u32"
+        },
+        {
+          "name": "warmup_seconds",
+          "type": "u32"
+        },
+        {
+          "name": "trigger_ratio_bps",
+          "type": "u16"
+        }
+      ]
+    },
+    {
       "name": "update_spot_market_cumulative_interest",
       "discriminator": [
         39,
@@ -17444,6 +17492,11 @@
       "code": 6350,
       "name": "SpotDlobTradingDisabled",
       "msg": "Spot DLOB trading is disabled"
+    },
+    {
+      "code": 6351,
+      "name": "InvalidCircuitBreakerParams",
+      "msg": "Invalid collateral usage circuit breaker parameters"
     }
   ],
   "types": [
@@ -22852,6 +22905,19 @@
           {
             "name": "position_flag",
             "type": "u8"
+          },
+          {
+            "name": "isolated_collateral_usage_contribution",
+            "docs": [
+              "Amount of `isolated_position_scaled_balance` currently contributing to",
+              "`spot_market[quote_spot_market_index].collateral_usage`. Mirrors",
+              "`SpotPosition::collateral_usage_contribution` for the isolated case.",
+              "Isolated positions do NOT receive a per-position warmup discount in v1",
+              "(PerpPosition has no warmup_*_ts fields); they only feed the counter so",
+              "trigger detection on the quote spot market accounts for them.",
+              "precision: SPOT_BALANCE_PRECISION"
+            ],
+            "type": "u64"
           }
         ]
       }
@@ -24673,6 +24739,69 @@
                 56
               ]
             }
+          },
+          {
+            "name": "collateral_usage",
+            "docs": [
+              "Sum of `scaled_balance` across users currently using this market as collateral",
+              "(i.e., depositors that also have an open liability somewhere on their account).",
+              "VammHedger users are excluded from this counter.",
+              "precision: SPOT_BALANCE_PRECISION"
+            ],
+            "type": "u64"
+          },
+          {
+            "name": "collateral_usage_twap",
+            "docs": [
+              "EMA of `collateral_usage` over `collateral_usage_circuit_breaker_twap_period`.",
+              "While this is 0, the breaker is in bootstrap and never trips (static gates carry",
+              "the defense). Once non-zero, threshold = twap × trigger_ratio_bps / 10_000.",
+              "precision: SPOT_BALANCE_PRECISION"
+            ],
+            "type": "u64"
+          },
+          {
+            "name": "collateral_usage_circuit_breaker_last_twap_ts",
+            "docs": [
+              "Last time the collateral-usage TWAP was updated (unix seconds)."
+            ],
+            "type": "i64"
+          },
+          {
+            "name": "collateral_usage_circuit_breaker_twap_period",
+            "docs": [
+              "TWAP lookback window in seconds. Setting to 0 disables the breaker for this market",
+              "— which is the cold-admin-only opt-out path."
+            ],
+            "type": "u32"
+          },
+          {
+            "name": "collateral_usage_circuit_breaker_warmup_seconds",
+            "docs": [
+              "Per-position warmup duration in seconds. New positions stamped while the breaker is",
+              "in breach ramp linearly from 0 to full asset weight over this window."
+            ],
+            "type": "u32"
+          },
+          {
+            "name": "collateral_usage_circuit_breaker_trigger_ratio_bps",
+            "docs": [
+              "Multiplier in SPOT_WEIGHT_PRECISION units (10_000 = 1.0×) above which `collateral_usage`",
+              "is considered \"in breach\" relative to its TWAP. Default 20_000 = 2.0×."
+            ],
+            "type": "u16"
+          },
+          {
+            "name": "collateral_usage_circuit_breaker_padding",
+            "docs": [
+              "Reserved for future breaker-related fields. Keeps SpotMarket content a multiple of 16."
+            ],
+            "type": {
+              "array": [
+                "u8",
+                14
+              ]
+            }
           }
         ]
       }
@@ -24790,13 +24919,49 @@
             "type": "u8"
           },
           {
-            "name": "padding",
+            "name": "collateral_usage_alignment_padding",
+            "docs": [
+              "4 bytes of explicit alignment padding for the i64/u64 fields that follow."
+            ],
             "type": {
               "array": [
                 "u8",
                 4
               ]
             }
+          },
+          {
+            "name": "collateral_usage_contribution",
+            "docs": [
+              "The amount of `scaled_balance` this position currently contributes to its",
+              "spot market's `collateral_usage` counter. Always equals the value that was",
+              "added to the market counter when this position was last reconciled, so the",
+              "reconciler can compute exact deltas without consulting old position state.",
+              "`0` ⇔ this position is not currently counted (owner exempt, no liability,",
+              "not a deposit, or zero balance).",
+              "precision: SPOT_BALANCE_PRECISION"
+            ],
+            "type": "u64"
+          },
+          {
+            "name": "warmup_start_ts",
+            "docs": [
+              "Collateral usage circuit breaker — start of the per-position warmup ramp.",
+              "`0` ⇔ no warmup stamp (either the breaker was disabled at the time of count,",
+              "or the position is not currently counted). When non-zero, the position's",
+              "effective asset weight interpolates linearly between `warmup_start_ts`",
+              "(factor 0) and `warmup_end_ts` (factor 1)."
+            ],
+            "type": "i64"
+          },
+          {
+            "name": "warmup_end_ts",
+            "docs": [
+              "Collateral usage circuit breaker — end of the per-position warmup ramp.",
+              "`0` ⇔ no warmup stamp. When non-zero, the position is at full asset weight",
+              "once `now >= warmup_end_ts`."
+            ],
+            "type": "i64"
           }
         ]
       }

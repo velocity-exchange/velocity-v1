@@ -6,6 +6,7 @@
 //! `funding.rs` / `pnl.rs` / `repeg.rs` = market maintenance operations run by keeper cranks.
 
 pub mod amm;
+pub mod collateral_usage_breaker;
 pub mod funding;
 pub mod insurance;
 pub mod isolated_position;

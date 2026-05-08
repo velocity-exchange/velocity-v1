@@ -181,7 +181,9 @@ describe('surge pricing', () => {
 			const accountInfo = await bankrunContextWrapper.connection.getAccountInfo(
 				userAccount
 			);
-			const baseLamports = 31347840;
+			// Bumped after the collateral-usage circuit breaker grew User SIZE from
+			// 4376 to 4632; rent-exempt floor for the User account rose accordingly.
+			const baseLamports = 33129600;
 			console.log('expected fee', expectedFee.toNumber());
 			if (i === 4) {
 				// assert(expectedFee.toNumber() === LAMPORTS_PER_SOL / 100);

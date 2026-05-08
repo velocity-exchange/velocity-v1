@@ -771,6 +771,18 @@ pub fn handle_deposit<'c: 'info, 'info>(
     }
 
     drop(spot_market);
+
+    // Reconcile the collateral-usage circuit breaker counters/stamps for every
+    // spot market the user holds a position in (subject to the writable set
+    // for this instruction). A deposit can pay off a borrow and flip the
+    // user's overall liability state, which requires un-counting their other
+    // deposits — this single call handles the whole user.
+    controller::collateral_usage_breaker::reconcile_user_collateral_usage(
+        &spot_market_map,
+        user,
+        now,
+    )?;
+
     if user.is_cross_margin_being_liquidated() {
         // try to update liquidation status if user is was already being liq'd
         let is_being_liquidated = is_cross_margin_being_liquidated(
@@ -952,6 +964,15 @@ pub fn handle_withdraw<'c: 'info, 'info>(
         amount
     };
 
+    // Reconcile collateral-usage circuit breaker BEFORE the margin check so that
+    // any new stamps / counter updates (including the user gaining a new borrow
+    // liability via this withdraw) are reflected when meets-margin is computed.
+    controller::collateral_usage_breaker::reconcile_user_collateral_usage(
+        &spot_market_map,
+        user,
+        now,
+    )?;
+
     user.meets_withdraw_margin_requirement_and_increment_fuel_bonus(
         &perp_market_map,
         &spot_market_map,
@@ -1128,6 +1149,13 @@ pub fn handle_transfer_deposit<'c: 'info, 'info>(
         )?;
     }
 
+    // Reconcile from_user's collateral-usage breaker before the margin check.
+    controller::collateral_usage_breaker::reconcile_user_collateral_usage(
+        &spot_market_map,
+        from_user,
+        now,
+    )?;
+
     from_user.meets_withdraw_margin_requirement_and_increment_fuel_bonus(
         &perp_market_map,
         &spot_market_map,
@@ -1250,6 +1278,14 @@ pub fn handle_transfer_deposit<'c: 'info, 'info>(
     }
 
     to_user.update_last_active_slot(slot);
+
+    // Reconcile to_user's collateral-usage breaker after the deposit lands. Their
+    // balance just grew so contribution / counter / stamps may need adjustment.
+    controller::collateral_usage_breaker::reconcile_user_collateral_usage(
+        &spot_market_map,
+        to_user,
+        now,
+    )?;
 
     let spot_market = spot_market_map.get_ref(&market_index)?;
     math::spot_withdraw::validate_spot_market_vault_amount(
@@ -3157,7 +3193,13 @@ pub fn handle_update_user_pool_id<'c: 'info, 'info>(
     user.pool_id = pool_id;
 
     // will throw if user has deposits/positions in other pools
-    meets_initial_margin_requirement(&user, &perp_market_map, &spot_market_map, &mut oracle_map)?;
+    meets_initial_margin_requirement(
+        &user,
+        &perp_market_map,
+        &spot_market_map,
+        &mut oracle_map,
+        Clock::get()?.unix_timestamp,
+    )?;
 
     Ok(())
 }

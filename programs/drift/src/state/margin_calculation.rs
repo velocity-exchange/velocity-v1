@@ -37,6 +37,12 @@ pub struct MarginContext {
     pub fuel_perp_delta: Option<(u16, i64)>,
     pub fuel_spot_deltas: [(u16, i128); 2],
     pub margin_ratio_override: Option<u32>,
+    /// Current unix timestamp; required for the collateral-usage circuit breaker
+    /// discount factor to apply correctly. When `0`, the breaker discount is
+    /// bypassed (treated as "no time context" — caller didn't supply one).
+    /// Production instruction handlers always have a real `now` and should set
+    /// this; unit-test fixtures often leave it at 0.
+    pub now: i64,
 }
 
 #[derive(PartialEq, Eq, Copy, Clone, Debug, AnchorSerialize, AnchorDeserialize)]
@@ -74,6 +80,7 @@ impl MarginContext {
             fuel_perp_delta: None,
             fuel_spot_deltas: [(0, 0); 2],
             margin_ratio_override: None,
+            now: 0,
         }
     }
 
@@ -89,7 +96,16 @@ impl MarginContext {
             fuel_perp_delta: None,
             fuel_spot_deltas: [(0, 0); 2],
             margin_ratio_override: None,
+            now: 0,
         }
+    }
+
+    /// Set the current unix timestamp on this context. Required for the
+    /// collateral-usage circuit breaker discount to apply during margin
+    /// calculation. Production callers should always set this.
+    pub fn now(mut self, now: i64) -> Self {
+        self.now = now;
+        self
     }
 
     pub fn strict(mut self, strict: bool) -> Self {
@@ -152,6 +168,7 @@ impl MarginContext {
             fuel_perp_delta: None,
             fuel_spot_deltas: [(0, 0); 2],
             margin_ratio_override: None,
+            now: 0,
         }
     }
 

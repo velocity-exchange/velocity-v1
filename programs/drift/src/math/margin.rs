@@ -1,3 +1,5 @@
+use anchor_lang::prelude::*;
+
 use crate::error::DriftResult;
 use crate::error::ErrorCode;
 use crate::math::constants::{
@@ -227,8 +229,16 @@ pub fn calculate_margin_requirement_and_total_collateral_and_liability_info(
     perp_market_map: &PerpMarketMap,
     spot_market_map: &SpotMarketMap,
     oracle_map: &mut OracleMap,
-    context: MarginContext,
+    mut context: MarginContext,
 ) -> DriftResult<MarginCalculation> {
+    // Fall back to the current Clock if the caller did not supply `now` on the
+    // context. Production paths always have a Clock; unit tests do not, in which
+    // case `now` stays 0 and the breaker discount is bypassed (full weight).
+    if context.now == 0 {
+        if let Ok(clock) = Clock::get() {
+            context.now = clock.unix_timestamp;
+        }
+    }
     let mut calculation = MarginCalculation::new(context);
     let cross_margin_requirement_type = context
         .margin_type_config
@@ -380,6 +390,13 @@ pub fn calculate_margin_requirement_and_total_collateral_and_liability_info(
                     &spot_market,
                     strict_oracle_price.current,
                     spot_user_custom_margin_ratio,
+                )?
+                .apply_collateral_usage_circuit_breaker_discount(
+                    spot_position,
+                    &spot_market,
+                    user.is_collateral_usage_circuit_breaker_exempt(),
+                    user.has_any_liability(),
+                    context.now,
                 )?;
 
             if worst_case_token_amount == 0 {
@@ -775,13 +792,14 @@ pub fn meets_initial_margin_requirement(
     perp_market_map: &PerpMarketMap,
     spot_market_map: &SpotMarketMap,
     oracle_map: &mut OracleMap,
+    now: i64,
 ) -> DriftResult<bool> {
     calculate_margin_requirement_and_total_collateral_and_liability_info(
         user,
         perp_market_map,
         spot_market_map,
         oracle_map,
-        MarginContext::standard(MarginRequirementType::Initial),
+        MarginContext::standard(MarginRequirementType::Initial).now(now),
     )
     .map(|calc| calc.meets_margin_requirement())
 }
@@ -791,13 +809,16 @@ pub fn meets_settle_pnl_maintenance_margin_requirement(
     perp_market_map: &PerpMarketMap,
     spot_market_map: &SpotMarketMap,
     oracle_map: &mut OracleMap,
+    now: i64,
 ) -> DriftResult<bool> {
     calculate_margin_requirement_and_total_collateral_and_liability_info(
         user,
         perp_market_map,
         spot_market_map,
         oracle_map,
-        MarginContext::standard(MarginRequirementType::Maintenance).strict(true),
+        MarginContext::standard(MarginRequirementType::Maintenance)
+            .strict(true)
+            .now(now),
     )
     .map(|calc| calc.meets_margin_requirement())
 }
@@ -807,13 +828,14 @@ pub fn meets_maintenance_margin_requirement(
     perp_market_map: &PerpMarketMap,
     spot_market_map: &SpotMarketMap,
     oracle_map: &mut OracleMap,
+    now: i64,
 ) -> DriftResult<bool> {
     calculate_margin_requirement_and_total_collateral_and_liability_info(
         user,
         perp_market_map,
         spot_market_map,
         oracle_map,
-        MarginContext::standard(MarginRequirementType::Maintenance),
+        MarginContext::standard(MarginRequirementType::Maintenance).now(now),
     )
     .map(|calc| calc.meets_margin_requirement())
 }

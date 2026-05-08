@@ -578,7 +578,7 @@ pub fn liquidate_perp(
     }
 
     let liquidator_meets_initial_margin_requirement =
-        meets_initial_margin_requirement(liquidator, perp_market_map, spot_market_map, oracle_map)?;
+        meets_initial_margin_requirement(liquidator, perp_market_map, spot_market_map, oracle_map, now)?;
 
     validate!(
         liquidator_meets_initial_margin_requirement,
@@ -2779,7 +2779,7 @@ pub fn liquidate_borrow_for_perp_pnl(
     }
 
     let liquidator_meets_initial_margin_requirement =
-        meets_initial_margin_requirement(liquidator, perp_market_map, spot_market_map, oracle_map)?;
+        meets_initial_margin_requirement(liquidator, perp_market_map, spot_market_map, oracle_map, now)?;
 
     validate!(
         liquidator_meets_initial_margin_requirement,
@@ -3274,7 +3274,7 @@ pub fn liquidate_perp_pnl_for_deposit(
     }
 
     let liquidator_meets_initial_margin_requirement =
-        meets_initial_margin_requirement(liquidator, perp_market_map, spot_market_map, oracle_map)?;
+        meets_initial_margin_requirement(liquidator, perp_market_map, spot_market_map, oracle_map, now)?;
 
     validate!(
         liquidator_meets_initial_margin_requirement,

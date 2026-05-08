@@ -1093,6 +1093,7 @@ pub fn handle_settle_multiple_pnls<'c: 'info, 'info>(
         &perp_market_map,
         &spot_market_map,
         &mut oracle_map,
+        clock.unix_timestamp,
     )?;
 
     for market_index in market_indexes.iter() {

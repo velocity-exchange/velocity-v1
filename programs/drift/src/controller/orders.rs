@@ -3371,7 +3371,7 @@ pub fn trigger_order(
     // If order increases risk and user is below initial margin, cancel it
     if is_risk_increasing && !user.orders[order_index].reduce_only {
         let meets_initial_margin_requirement =
-            meets_initial_margin_requirement(user, perp_market_map, spot_market_map, oracle_map)?;
+            meets_initial_margin_requirement(user, perp_market_map, spot_market_map, oracle_map, now)?;
 
         if !meets_initial_margin_requirement {
             cancel_order(

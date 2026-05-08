@@ -69,7 +69,13 @@ pub enum SpecialUserStatus {
 
 // implement SIZE const for User
 impl Size for User {
-    const SIZE: usize = 4376;
+    // Per SpotPosition we replaced [u8;4] (4 bytes) with
+    //   [u8;4] alignment + u64 contribution + i64 start_ts + i64 end_ts  = 4+8+8+8 = 28 bytes,
+    //   so each SpotPosition grows by 24 bytes (28 − 4), and 8 positions add 192 bytes.
+    // Per PerpPosition we appended one u64 (isolated_collateral_usage_contribution),
+    //   adding 8 bytes per PerpPosition; 8 positions add 64 bytes.
+    // 4376 + 192 + 64 = 4632.  (4632 − 8) % 16 == 0  ✓  (4624 / 16 = 289)
+    const SIZE: usize = 4632;
 }
 
 #[account(zero_copy(unsafe))]
@@ -181,6 +187,32 @@ impl User {
 
     pub fn remove_user_status(&mut self, status: UserStatus) {
         self.status &= !(status as u8);
+    }
+
+    /// Whether this user is exempted from the collateral usage circuit breaker.
+    /// Set via `handle_update_special_user_status` (cold-admin only).
+    pub fn is_collateral_usage_circuit_breaker_exempt(&self) -> bool {
+        self.special_user_status & SpecialUserStatus::VammHedger as u8 != 0
+    }
+
+    /// True iff the user has any liability that puts protocol funds at risk —
+    /// any non-zero borrow spot position, any non-empty perp position (open
+    /// position, unsettled PnL, isolated balance, being-liquidated state, or
+    /// open order). Used by the collateral usage circuit breaker to decide
+    /// whether deposit positions should count as actively-collateralizing.
+    pub fn has_any_liability(&self) -> bool {
+        let has_spot_borrow = self
+            .spot_positions
+            .iter()
+            .any(|p| p.balance_type == SpotBalanceType::Borrow && p.scaled_balance != 0);
+        if has_spot_borrow {
+            return true;
+        }
+        let has_spot_open_order = self.spot_positions.iter().any(|p| p.has_open_order());
+        if has_spot_open_order {
+            return true;
+        }
+        self.perp_positions.iter().any(|p| !p.is_available())
     }
 
     pub fn get_spot_position_index(&self, market_index: u16) -> DriftResult<usize> {
@@ -918,7 +950,26 @@ pub struct SpotPosition {
     pub balance_type: SpotBalanceType,
     /// Number of open orders
     pub open_orders: u8,
-    pub padding: [u8; 4],
+    /// 4 bytes of explicit alignment padding for the i64/u64 fields that follow.
+    pub collateral_usage_alignment_padding: [u8; 4],
+    /// The amount of `scaled_balance` this position currently contributes to its
+    /// spot market's `collateral_usage` counter. Always equals the value that was
+    /// added to the market counter when this position was last reconciled, so the
+    /// reconciler can compute exact deltas without consulting old position state.
+    /// `0` ⇔ this position is not currently counted (owner exempt, no liability,
+    /// not a deposit, or zero balance).
+    /// precision: SPOT_BALANCE_PRECISION
+    pub collateral_usage_contribution: u64,
+    /// Collateral usage circuit breaker — start of the per-position warmup ramp.
+    /// `0` ⇔ no warmup stamp (either the breaker was disabled at the time of count,
+    /// or the position is not currently counted). When non-zero, the position's
+    /// effective asset weight interpolates linearly between `warmup_start_ts`
+    /// (factor 0) and `warmup_end_ts` (factor 1).
+    pub warmup_start_ts: i64,
+    /// Collateral usage circuit breaker — end of the per-position warmup ramp.
+    /// `0` ⇔ no warmup stamp. When non-zero, the position is at full asset weight
+    /// once `now >= warmup_end_ts`.
+    pub warmup_end_ts: i64,
 }
 
 impl SpotBalance for SpotPosition {
@@ -970,6 +1021,46 @@ impl OrderFillSimulation {
 
     pub fn risk_increasing(&self, after: Self) -> bool {
         after.free_collateral_contribution < self.free_collateral_contribution
+    }
+
+    /// Apply the collateral-usage circuit breaker discount factor to the
+    /// asset side of this simulation. Liability side (negative weighted
+    /// value) is untouched — the breaker discounts what counts as
+    /// collateral, not what counts as debt.
+    ///
+    /// Uses the hypothetical-stamp variant so that the discount engages
+    /// even when the position hasn't been reconciled yet (e.g. when the
+    /// caller's writable spot-market set didn't include this market in an
+    /// earlier instruction). This protects against the "deposit in market A,
+    /// borrow in market B without making A writable" attack.
+    pub fn apply_collateral_usage_circuit_breaker_discount(
+        mut self,
+        position: &SpotPosition,
+        spot_market: &SpotMarket,
+        user_is_exempt: bool,
+        user_has_liability: bool,
+        now: i64,
+    ) -> DriftResult<Self> {
+        if self.weighted_token_value <= 0 {
+            return Ok(self);
+        }
+        let factor = position.collateral_usage_weight_discount_factor_with_hypothetical_stamp(
+            spot_market,
+            user_is_exempt,
+            user_has_liability,
+            now,
+        );
+        if factor >= SPOT_WEIGHT_PRECISION {
+            return Ok(self);
+        }
+        self.weighted_token_value = self
+            .weighted_token_value
+            .safe_mul(factor.cast()?)?
+            .safe_div(SPOT_WEIGHT_PRECISION_I128)?;
+        self.free_collateral_contribution = self
+            .weighted_token_value
+            .safe_add(self.orders_value)?;
+        Ok(self)
     }
 
     pub fn apply_user_custom_margin_ratio(
@@ -1152,6 +1243,198 @@ impl SpotPosition {
     pub fn is_borrow(&self) -> bool {
         self.scaled_balance > 0 && self.balance_type == SpotBalanceType::Borrow
     }
+
+    // ────────────────────────────────────────────────────────────────────────
+    // Collateral usage circuit breaker — position-side helpers.
+    // ────────────────────────────────────────────────────────────────────────
+
+    /// Returns the SPOT_WEIGHT_PRECISION-scaled discount factor for this position
+    /// (10_000 = no discount, 0 = zero weight). Returns full weight when the
+    /// market's breaker is disabled or when this position has no warmup stamp
+    /// and could not legitimately be stamped given the user's current state.
+    ///
+    /// **Important:** prefer
+    /// [`Self::collateral_usage_weight_discount_factor_with_hypothetical_stamp`]
+    /// from production margin paths. That variant accepts `&User` and
+    /// conservatively applies a hypothetical stamp when the breaker would have
+    /// fired against this position but couldn't persist (e.g. because cross-market
+    /// reconciliation hasn't run yet because the market wasn't writable in some
+    /// earlier instruction). This lower-level variant is suitable when the
+    /// caller already controls the persisted state — for example, post-reconcile.
+    pub fn collateral_usage_weight_discount_factor(
+        &self,
+        spot_market: &SpotMarket,
+        now: i64,
+    ) -> u32 {
+        if spot_market.collateral_usage_circuit_breaker_twap_period == 0 {
+            return crate::math::constants::SPOT_WEIGHT_PRECISION;
+        }
+        crate::math::circuit_breaker::warmup_factor_bps(
+            self.warmup_start_ts,
+            self.warmup_end_ts,
+            now,
+        )
+    }
+
+    /// Like [`Self::collateral_usage_weight_discount_factor`] but conservatively
+    /// applies a hypothetical stamp when this position *should* be counted but
+    /// hasn't been reconciled yet (e.g. a fresh deposit that sits in a market
+    /// not in the writable set of an earlier instruction).
+    ///
+    /// The hypothetical stamp simulates "what if we counted this position now,
+    /// would it land below or above the threshold?" — and returns a factor that
+    /// reflects only the below-threshold portion. The actual `(start, end)`
+    /// stamps are written back during the next [`reconcile_user_collateral_usage`]
+    /// pass over a writable market.
+    ///
+    /// Required for the hack-mitigation guarantee: an attacker who deposits a
+    /// fake-token collateral in market A and immediately borrows on market B
+    /// without making A writable cannot evade the breaker — the borrow's margin
+    /// check applies the hypothetical-stamp factor to A's position, which (when
+    /// the hypothetical contribution would push A's `collateral_usage` past the
+    /// threshold) yields a discounted weight that fails the margin check.
+    pub fn collateral_usage_weight_discount_factor_with_hypothetical_stamp(
+        &self,
+        spot_market: &SpotMarket,
+        user_is_exempt: bool,
+        user_has_liability: bool,
+        now: i64,
+    ) -> u32 {
+        use crate::math::constants::SPOT_WEIGHT_PRECISION;
+        if spot_market.collateral_usage_circuit_breaker_twap_period == 0 {
+            return SPOT_WEIGHT_PRECISION;
+        }
+
+        // 1. If the position is already stamped (with or without warmup), use the
+        //    persisted factor — that reflects the correct ramp from the original
+        //    stamping moment.
+        if self.warmup_start_ts != 0 {
+            return crate::math::circuit_breaker::warmup_factor_bps(
+                self.warmup_start_ts,
+                self.warmup_end_ts,
+                now,
+            );
+        }
+
+        // 2. Position not stamped. Decide whether it WOULD be stamped if the
+        //    breaker were applied right now.
+        let would_be_counted = !user_is_exempt
+            && user_has_liability
+            && self.balance_type == SpotBalanceType::Deposit
+            && self.scaled_balance > 0;
+        if !would_be_counted {
+            return SPOT_WEIGHT_PRECISION;
+        }
+
+        // 3. Compute the hypothetical post-stamp `collateral_usage` — i.e. add
+        //    this position's not-yet-counted scaled_balance to the persisted
+        //    counter. (`collateral_usage_contribution` is what we already counted;
+        //    `scaled_balance - collateral_usage_contribution` is the un-reconciled
+        //    delta this position would add when reconciled.)
+        let pending_contribution = self
+            .scaled_balance
+            .saturating_sub(self.collateral_usage_contribution);
+        if pending_contribution == 0 {
+            // Already fully counted; nothing pending. (Reachable when the user is
+            // exempt or has no liability — handled by the would_be_counted check
+            // above — but defensive here.)
+            return SPOT_WEIGHT_PRECISION;
+        }
+        let pre_market_usage = spot_market.collateral_usage;
+        let hypothetical_post_market_usage = pre_market_usage.saturating_add(pending_contribution);
+
+        // 4. Apply the partial-trigger split against the threshold computed from
+        //    the persisted TWAP. (TWAP doesn't depend on this position's stamp,
+        //    so the persisted threshold is correct.)
+        let threshold = spot_market.collateral_usage_threshold_amount();
+        if hypothetical_post_market_usage <= threshold {
+            // Even hypothetically, no breach → full weight.
+            return SPOT_WEIGHT_PRECISION;
+        }
+        let (delta_below, _delta_above) = crate::math::circuit_breaker::split_delta_at_threshold(
+            pre_market_usage,
+            pending_contribution,
+            threshold,
+        );
+
+        // 5. Effective collateral at "now": the already-counted portion at full
+        //    weight + the below-threshold portion of the pending delta at full
+        //    weight + the above-threshold portion at zero weight.
+        let pre_effective = self.collateral_usage_contribution;
+        let post_effective = pre_effective.saturating_add(delta_below);
+
+        if self.scaled_balance == 0 {
+            return SPOT_WEIGHT_PRECISION;
+        }
+        let factor = (post_effective as u128)
+            .saturating_mul(SPOT_WEIGHT_PRECISION as u128)
+            / (self.scaled_balance as u128);
+        if factor >= SPOT_WEIGHT_PRECISION as u128 {
+            SPOT_WEIGHT_PRECISION
+        } else {
+            factor as u32
+        }
+    }
+
+    /// Apply the two-timestamp blending formula on a deposit increase, given the
+    /// caller-computed split of the delta into below/above-threshold portions.
+    /// Writes the new `(warmup_start_ts, warmup_end_ts)` pair back into self.
+    ///
+    /// Algorithm: see docs on `math::circuit_breaker::rebase_warmup_for_increase`.
+    /// In short: compute pre_factor from the existing (start, end), derive
+    /// post_effective_at_now = pre_factor * pre_balance + delta_below_threshold,
+    /// solve R = post_effective_at_now / new_balance, choose new_end =
+    /// max(now + W, old_end) when delta_above > 0 else old_end, and finally
+    /// new_start = now - R * (new_end - now) / (1 - R).
+    pub fn rebase_collateral_usage_warmup_for_increase(
+        &mut self,
+        spot_market: &SpotMarket,
+        pre_balance: u64,
+        new_balance: u64,
+        delta_below_threshold: u64,
+        delta_above_threshold: u64,
+        now: i64,
+    ) -> DriftResult<()> {
+        // If the breaker is disabled for this market, leave timestamps alone but
+        // also clear any stale stamps the market may carry (e.g. if admin just
+        // disabled the breaker after a triggered episode). Cleared stamps mean
+        // full weight via collateral_usage_weight_discount_factor.
+        if spot_market.collateral_usage_circuit_breaker_twap_period == 0 {
+            self.warmup_start_ts = 0;
+            self.warmup_end_ts = 0;
+            return Ok(());
+        }
+
+        let warmup_seconds = spot_market.collateral_usage_circuit_breaker_warmup_seconds;
+        let decision = crate::math::circuit_breaker::rebase_warmup_for_increase(
+            self.warmup_start_ts,
+            self.warmup_end_ts,
+            pre_balance,
+            new_balance,
+            delta_below_threshold,
+            delta_above_threshold,
+            warmup_seconds,
+            now,
+        )?;
+
+        match decision {
+            crate::math::circuit_breaker::RebaseDecision::Clear => {
+                self.warmup_start_ts = 0;
+                self.warmup_end_ts = 0;
+            }
+            crate::math::circuit_breaker::RebaseDecision::Set { start, end } => {
+                self.warmup_start_ts = start;
+                self.warmup_end_ts = end;
+            }
+        }
+        Ok(())
+    }
+
+    /// Clear the collateral-usage warmup stamp on this position.
+    pub fn clear_collateral_usage_warmup(&mut self) {
+        self.warmup_start_ts = 0;
+        self.warmup_end_ts = 0;
+    }
 }
 
 #[zero_copy(unsafe)]
@@ -1204,6 +1487,14 @@ pub struct PerpPosition {
     /// The number of open orders
     pub open_orders: u8,
     pub position_flag: u8,
+    /// Amount of `isolated_position_scaled_balance` currently contributing to
+    /// `spot_market[quote_spot_market_index].collateral_usage`. Mirrors
+    /// `SpotPosition::collateral_usage_contribution` for the isolated case.
+    /// Isolated positions do NOT receive a per-position warmup discount in v1
+    /// (PerpPosition has no warmup_*_ts fields); they only feed the counter so
+    /// trigger detection on the quote spot market accounts for them.
+    /// precision: SPOT_BALANCE_PRECISION
+    pub isolated_collateral_usage_contribution: u64,
 }
 
 impl PerpPosition {

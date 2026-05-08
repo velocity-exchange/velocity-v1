@@ -1304,6 +1304,23 @@ pub mod drift {
         handle_update_spot_market_max_token_deposits(ctx, max_token_deposits)
     }
 
+    /// Cold-admin only. Tunes the per-market collateral-usage circuit breaker.
+    /// `twap_period == 0` disables the breaker for this market;
+    /// `trigger_ratio_bps` must be 0 (disable) or >= SPOT_WEIGHT_PRECISION (1.0×).
+    pub fn update_spot_market_collateral_usage_circuit_breaker_params(
+        ctx: Context<AdminUpdateSpotMarket>,
+        twap_period: u32,
+        warmup_seconds: u32,
+        trigger_ratio_bps: u16,
+    ) -> Result<()> {
+        handle_update_spot_market_collateral_usage_circuit_breaker_params(
+            ctx,
+            twap_period,
+            warmup_seconds,
+            trigger_ratio_bps,
+        )
+    }
+
     pub fn update_spot_market_max_token_borrows(
         ctx: Context<AdminUpdateSpotMarket>,
         max_token_borrows_fraction: u16,

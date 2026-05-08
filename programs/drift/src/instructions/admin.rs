@@ -370,6 +370,18 @@ pub fn handle_initialize_spot_market(
         token_program_flag: token_program,
         pool_id: 0,
         padding: [0; 56],
+        // Collateral usage circuit breaker — on by default for every new market.
+        // Cold admin can disable via handle_update_spot_market_collateral_usage_circuit_breaker_params(twap_period=0).
+        collateral_usage: 0,
+        collateral_usage_twap: 0,
+        collateral_usage_circuit_breaker_last_twap_ts: now as i64,
+        collateral_usage_circuit_breaker_twap_period:
+            crate::math::constants::DEFAULT_COLLATERAL_USAGE_CIRCUIT_BREAKER_TWAP_PERIOD,
+        collateral_usage_circuit_breaker_warmup_seconds:
+            crate::math::constants::DEFAULT_COLLATERAL_USAGE_CIRCUIT_BREAKER_WARMUP_SECONDS,
+        collateral_usage_circuit_breaker_trigger_ratio_bps:
+            crate::math::constants::DEFAULT_COLLATERAL_USAGE_CIRCUIT_BREAKER_TRIGGER_RATIO_BPS,
+        collateral_usage_circuit_breaker_padding: [0; 14],
         insurance_fund: InsuranceFund {
             vault: ctx.accounts.insurance_fund_vault.key(),
             unstaking_period: THIRTEEN_DAY,
@@ -3112,6 +3124,58 @@ pub fn handle_update_spot_market_borrow_rate(
         );
         spot_market.min_borrow_rate = min_borrow_rate
     }
+
+    Ok(())
+}
+
+#[access_control(
+    spot_market_valid(&ctx.accounts.spot_market)
+)]
+pub fn handle_update_spot_market_collateral_usage_circuit_breaker_params(
+    ctx: Context<AdminUpdateSpotMarket>,
+    twap_period: u32,
+    warmup_seconds: u32,
+    trigger_ratio_bps: u16,
+) -> Result<()> {
+    use crate::math::constants::{
+        MAX_COLLATERAL_USAGE_CIRCUIT_BREAKER_WARMUP_SECONDS, SPOT_WEIGHT_PRECISION,
+    };
+
+    // Cold-admin only — the surrounding access_control already enforces this on
+    // AdminUpdateSpotMarket via the standard admin signer guard. We additionally
+    // guard against pathological parameter values that would either (a) trip the
+    // breaker on every event or (b) lock new borrowers out for years.
+    validate!(
+        // 0 means "disable the breaker"; otherwise must be at least 1.0× (= SPOT_WEIGHT_PRECISION).
+        trigger_ratio_bps == 0 || trigger_ratio_bps as u32 >= SPOT_WEIGHT_PRECISION,
+        ErrorCode::InvalidCircuitBreakerParams,
+        "trigger_ratio_bps must be 0 (disabled) or >= SPOT_WEIGHT_PRECISION (1.0×); got {}",
+        trigger_ratio_bps
+    )?;
+    validate!(
+        warmup_seconds <= MAX_COLLATERAL_USAGE_CIRCUIT_BREAKER_WARMUP_SECONDS,
+        ErrorCode::InvalidCircuitBreakerParams,
+        "warmup_seconds {} exceeds MAX_COLLATERAL_USAGE_CIRCUIT_BREAKER_WARMUP_SECONDS {}",
+        warmup_seconds,
+        MAX_COLLATERAL_USAGE_CIRCUIT_BREAKER_WARMUP_SECONDS
+    )?;
+
+    let spot_market = &mut load_mut!(ctx.accounts.spot_market)?;
+
+    msg!(
+        "spot_market {} circuit_breaker: twap_period {} -> {}, warmup_seconds {} -> {}, trigger_ratio_bps {} -> {}",
+        spot_market.market_index,
+        spot_market.collateral_usage_circuit_breaker_twap_period,
+        twap_period,
+        spot_market.collateral_usage_circuit_breaker_warmup_seconds,
+        warmup_seconds,
+        spot_market.collateral_usage_circuit_breaker_trigger_ratio_bps,
+        trigger_ratio_bps,
+    );
+
+    spot_market.collateral_usage_circuit_breaker_twap_period = twap_period;
+    spot_market.collateral_usage_circuit_breaker_warmup_seconds = warmup_seconds;
+    spot_market.collateral_usage_circuit_breaker_trigger_ratio_bps = trigger_ratio_bps;
 
     Ok(())
 }

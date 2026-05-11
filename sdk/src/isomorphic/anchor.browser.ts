@@ -4,6 +4,13 @@ import * as web3 from '@solana/web3.js';
 
 export class BN extends BNJS {}
 
+export {
+	BorshAccountsCoder,
+	BorshEventCoder,
+	BorshInstructionCoder,
+	BorshCoder,
+} from '@anchor-lang/core';
+
 export const utils = {
 	bytes: {
 		utf8: {

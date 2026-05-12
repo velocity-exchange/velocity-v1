@@ -6,6 +6,8 @@ set -eu
 resolve_drift_devnet_program_id DRIFT_DEVNET_PROGRAM_ID
 resolve_upgrade_keypair UPGRADE_KEYPAIR
 
+confirm_program_id "$DRIFT_DEVNET_PROGRAM_ID" "anchor upgrade"
+
 anchor upgrade \
 	--program-id "$DRIFT_DEVNET_PROGRAM_ID" \
 	--provider.cluster devnet \

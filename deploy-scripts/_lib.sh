@@ -29,9 +29,14 @@ drift_devnet_program_id() {
 resolve_drift_devnet_program_id() {
 	# Resolve the devnet program id into the named variable.
 	# Env override wins; otherwise read from Anchor.toml.
+	# Sets DRIFT_DEVNET_PROGRAM_ID_ENV=1 when the env value was used (for
+	# confirm_program_id's source reporting).
 	_var="$1"
 	eval "_cur=\${$_var:-}"
-	if [ -z "$_cur" ]; then
+	DRIFT_DEVNET_PROGRAM_ID_ENV=""
+	if [ -n "$_cur" ]; then
+		DRIFT_DEVNET_PROGRAM_ID_ENV=1
+	else
 		_cur="$(drift_devnet_program_id)"
 	fi
 	if [ -z "$_cur" ]; then
@@ -51,4 +56,33 @@ resolve_upgrade_keypair() {
 		echo "Set DRIFT_DEVNET_UPGRADE_KEYPAIR (recommended), or both SOLANA_PATH and DEVNET_ADMIN" >&2
 		exit 1
 	fi
+}
+
+# Print the resolved program id + its source, then prompt for confirmation
+# unless NON_INTERACTIVE=1 / YES=1. Call AFTER resolve_drift_devnet_program_id.
+#
+# Usage: confirm_program_id <id> <action-description>
+confirm_program_id() {
+	_pid="$1"
+	_action="${2:-on-chain action}"
+	if [ -n "${DRIFT_DEVNET_PROGRAM_ID_ENV:-}" ]; then
+		_src="DRIFT_DEVNET_PROGRAM_ID env override"
+	else
+		_src="$repo_root/Anchor.toml [programs.devnet].drift"
+	fi
+	echo ""
+	echo "=== devnet $_action ==="
+	echo "  program id : $_pid"
+	echo "  source     : $_src"
+	echo ""
+	if [ "${NON_INTERACTIVE:-}" = "1" ] || [ "${YES:-}" = "1" ]; then
+		echo "  (NON_INTERACTIVE/YES set — proceeding without prompt)"
+		return 0
+	fi
+	printf "Proceed against this program id? [y/N] "
+	read _ans
+	case "$_ans" in
+		y|Y|yes|YES) ;;
+		*) echo "aborted." >&2; exit 1 ;;
+	esac
 }

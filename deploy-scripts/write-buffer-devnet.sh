@@ -42,6 +42,8 @@ if [ -n "$PROGRAM_KEYPAIR" ] && [ -f "$PROGRAM_KEYPAIR" ]; then
 	fi
 fi
 
+confirm_program_id "$DRIFT_DEVNET_PROGRAM_ID" "write-buffer for upcoming deploy"
+
 mkdir -p "$(dirname "$BUFFER_ACCOUNT_KEYPAIR")"
 if [ ! -f "$BUFFER_ACCOUNT_KEYPAIR" ]; then
 	solana-keygen new --no-bip39-passphrase -s -o "$BUFFER_ACCOUNT_KEYPAIR"

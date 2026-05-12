@@ -43,6 +43,8 @@ fi
 
 resolve_upgrade_keypair UPGRADE_KEYPAIR
 
+confirm_program_id "$DRIFT_DEVNET_PROGRAM_ID" "first-time program deploy from buffer"
+
 solana program deploy "$PROGRAM_SO" \
 	-u "$SOLANA_RPC" \
 	--buffer "$BUFFER_ACCOUNT_KEYPAIR" \

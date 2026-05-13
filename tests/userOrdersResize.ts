@@ -3,15 +3,16 @@ import { assert } from 'chai';
 
 import { Program } from '@coral-xyz/anchor';
 
-import { Keypair } from '@solana/web3.js';
+import { AccountInfo, Keypair, LAMPORTS_PER_SOL, PublicKey } from '@solana/web3.js';
 
 import {
 	BN,
 	PRICE_PRECISION,
 	TestClient,
 	User,
-	Wallet,
 	OracleSource,
+	PYTH_LAZER_STORAGE_ACCOUNT_KEY,
+	PTYH_LAZER_PROGRAM_ID,
 } from '../sdk/src';
 
 import {
@@ -26,7 +27,16 @@ import { startAnchor } from 'solana-bankrun';
 import { TestBulkAccountLoader } from '../sdk/src/accounts/testBulkAccountLoader';
 import { BankrunContextWrapper } from '../sdk/src/bankrun/bankrunConnection';
 import dotenv from 'dotenv';
+import { PYTH_STORAGE_DATA } from './pythLazerData';
 dotenv.config();
+
+const PYTH_STORAGE_ACCOUNT_INFO: AccountInfo<Buffer> = {
+	executable: false,
+	lamports: LAMPORTS_PER_SOL,
+	owner: new PublicKey(PTYH_LAZER_PROGRAM_ID),
+	rentEpoch: 0,
+	data: Buffer.from(PYTH_STORAGE_DATA, 'base64'),
+};
 
 // User layout: [8B disc][1296B header][orders_len * 96B Order]
 const USER_FIXED_LEN = 8 + 1296;
@@ -66,7 +76,16 @@ describe('resize user orders', () => {
 	let oracleInfos: { publicKey: anchor.web3.PublicKey; source: OracleSource }[];
 
 	before(async () => {
-		const context = await startAnchor('', [], []);
+		const context = await startAnchor(
+			'',
+			[],
+			[
+				{
+					address: PYTH_LAZER_STORAGE_ACCOUNT_KEY,
+					info: PYTH_STORAGE_ACCOUNT_INFO,
+				},
+			]
+		);
 
 		// @ts-ignore
 		bankrunContextWrapper = new BankrunContextWrapper(context);

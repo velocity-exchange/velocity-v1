@@ -17,12 +17,10 @@ import { ZERO } from '../constants/numericConstants';
 
 // Layout constants for the dynamic-orders User account.
 // account = [8B disc][User header (1296B)][orders_len * Order (96B each)]
+// orders_len: u32 lives at offset 1292 inside the header (account offset 1300).
 const USER_DISC_LEN = 8;
 const USER_FIXED_SIZE = 1296;
 const ORDER_SIZE = 96;
-// orders_len: u32 lives at offset 1292 inside the User header → account offset 1300.
-const USER_ORDERS_LEN_OFFSET = USER_DISC_LEN + 1292;
-// orders tail starts immediately after the User header.
 const USER_ORDERS_TAIL_OFFSET = USER_DISC_LEN + USER_FIXED_SIZE;
 
 function readUnsignedBigInt64LE(buffer: Buffer, offset: number): BN {

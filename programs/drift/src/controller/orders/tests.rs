@@ -227,20 +227,20 @@ pub mod fill_order_protected_maker {
             ..User::default()
         };
         let user_orders = get_orders(Order {
-                market_index: 0,
-                order_id: 1,
-                status: OrderStatus::Open,
-                order_type: OrderType::Market,
-                direction: PositionDirection::Long,
-                market_type: MarketType::Perp,
-                base_asset_amount: BASE_PRECISION_U64,
-                slot: clock.slot - 1, // fresh
-                auction_start_price: 0,
-                auction_end_price: 100 * PRICE_PRECISION_I64 + (100 * PRICE_PRECISION_I64) / 1000,
-                auction_duration: 1,
-                price: 100 * PRICE_PRECISION_U64 + (100 * PRICE_PRECISION_U64) / 1000, // 10 bps higher than maker order price
-                ..Order::default()
-            });
+            market_index: 0,
+            order_id: 1,
+            status: OrderStatus::Open,
+            order_type: OrderType::Market,
+            direction: PositionDirection::Long,
+            market_type: MarketType::Perp,
+            base_asset_amount: BASE_PRECISION_U64,
+            slot: clock.slot - 1, // fresh
+            auction_start_price: 0,
+            auction_end_price: 100 * PRICE_PRECISION_I64 + (100 * PRICE_PRECISION_I64) / 1000,
+            auction_duration: 1,
+            price: 100 * PRICE_PRECISION_U64 + (100 * PRICE_PRECISION_U64) / 1000, // 10 bps higher than maker order price
+            ..Order::default()
+        });
         create_anchor_user_account_info!(user, user_orders, user_account_info);
         let user_account_loader: AccountLoader<User> =
             AccountLoader::try_from(&user_account_info).unwrap();
@@ -276,18 +276,18 @@ pub mod fill_order_protected_maker {
             ..User::default()
         };
         let maker_orders = get_orders(Order {
-                market_index: 0,
-                order_id: maker_order_id,
-                status: OrderStatus::Open,
-                order_type: OrderType::Limit,
-                market_type: MarketType::Perp,
-                direction: PositionDirection::Short,
-                base_asset_amount: BASE_PRECISION_U64,
-                slot: clock.slot - 3,
-                price: 100 * PRICE_PRECISION_U64,
-                post_only: true,
-                ..Order::default()
-            });
+            market_index: 0,
+            order_id: maker_order_id,
+            status: OrderStatus::Open,
+            order_type: OrderType::Limit,
+            market_type: MarketType::Perp,
+            direction: PositionDirection::Short,
+            base_asset_amount: BASE_PRECISION_U64,
+            slot: clock.slot - 3,
+            price: 100 * PRICE_PRECISION_U64,
+            post_only: true,
+            ..Order::default()
+        });
         create_anchor_user_account_info!(maker, maker_orders, &maker_key, maker_account_info);
         let makers_and_referrers = UserMap::load_one(&maker_account_info).unwrap();
 
@@ -365,20 +365,20 @@ pub mod fill_order_protected_maker {
             ..User::default()
         };
         let user_orders = get_orders(Order {
-                market_index: 0,
-                order_id: 1,
-                status: OrderStatus::Open,
-                order_type: OrderType::Market,
-                direction: PositionDirection::Long,
-                market_type: MarketType::Perp,
-                base_asset_amount: BASE_PRECISION_U64,
-                slot: clock.slot - 1, // fresh
-                auction_start_price: 0,
-                auction_end_price: 100 * PRICE_PRECISION_I64 + (100 * PRICE_PRECISION_I64) / 1000,
-                auction_duration: 1,
-                price: 100 * PRICE_PRECISION_U64 + (100 * PRICE_PRECISION_U64) / 1000, // 10 bps higher than maker order price
-                ..Order::default()
-            });
+            market_index: 0,
+            order_id: 1,
+            status: OrderStatus::Open,
+            order_type: OrderType::Market,
+            direction: PositionDirection::Long,
+            market_type: MarketType::Perp,
+            base_asset_amount: BASE_PRECISION_U64,
+            slot: clock.slot - 1, // fresh
+            auction_start_price: 0,
+            auction_end_price: 100 * PRICE_PRECISION_I64 + (100 * PRICE_PRECISION_I64) / 1000,
+            auction_duration: 1,
+            price: 100 * PRICE_PRECISION_U64 + (100 * PRICE_PRECISION_U64) / 1000, // 10 bps higher than maker order price
+            ..Order::default()
+        });
 
         create_anchor_user_account_info!(user, user_orders, user_account_info);
         let user_account_loader: AccountLoader<User> =
@@ -402,18 +402,18 @@ pub mod fill_order_protected_maker {
             ..User::default()
         };
         let maker_orders = get_orders(Order {
-                market_index: 0,
-                order_id: maker_order_id,
-                status: OrderStatus::Open,
-                order_type: OrderType::Limit,
-                market_type: MarketType::Perp,
-                direction: PositionDirection::Short,
-                base_asset_amount: BASE_PRECISION_U64,
-                slot: clock.slot - 3,
-                price: 100 * PRICE_PRECISION_U64,
-                post_only: true,
-                ..Order::default()
-            });
+            market_index: 0,
+            order_id: maker_order_id,
+            status: OrderStatus::Open,
+            order_type: OrderType::Limit,
+            market_type: MarketType::Perp,
+            direction: PositionDirection::Short,
+            base_asset_amount: BASE_PRECISION_U64,
+            slot: clock.slot - 3,
+            price: 100 * PRICE_PRECISION_U64,
+            post_only: true,
+            ..Order::default()
+        });
         create_anchor_user_account_info!(maker, maker_orders, &maker_key, maker_account_info);
         let makers_and_referrers = UserMap::load_one(&maker_account_info).unwrap();
 
@@ -3516,14 +3516,14 @@ pub mod fulfill_order {
             ..User::default()
         };
         let maker_orders = get_orders(Order {
-                market_index: 0,
-                post_only: true,
-                order_type: OrderType::Limit,
-                direction: PositionDirection::Short,
-                base_asset_amount: BASE_PRECISION_U64 / 2,
-                price: 100_010_000 * PRICE_PRECISION_U64 / 1_000_000, // .01 worse than amm
-                ..Order::default()
-            });
+            market_index: 0,
+            post_only: true,
+            order_type: OrderType::Limit,
+            direction: PositionDirection::Short,
+            base_asset_amount: BASE_PRECISION_U64 / 2,
+            price: 100_010_000 * PRICE_PRECISION_U64 / 1_000_000, // .01 worse than amm
+            ..Order::default()
+        });
         create_anchor_user_account_info!(maker, maker_orders, maker_account_info);
         let makers_and_referrers = UserMap::load_one(&maker_account_info).unwrap();
 
@@ -3768,25 +3768,25 @@ pub mod fulfill_order {
             ..User::default()
         };
         let maker_orders = get_orders!(
-                Order {
-                    market_index: 0,
-                    post_only: true,
-                    order_type: OrderType::Limit,
-                    direction: PositionDirection::Short,
-                    base_asset_amount: BASE_PRECISION_U64 / 2,
-                    price: 90 * PRICE_PRECISION_U64,
-                    ..Order::default()
-                },
-                Order {
-                    market_index: 0,
-                    post_only: true,
-                    order_type: OrderType::Limit,
-                    direction: PositionDirection::Short,
-                    base_asset_amount: BASE_PRECISION_U64 / 2,
-                    price: 95 * PRICE_PRECISION_U64, // .01 worse than amm
-                    ..Order::default()
-                }
-            );
+            Order {
+                market_index: 0,
+                post_only: true,
+                order_type: OrderType::Limit,
+                direction: PositionDirection::Short,
+                base_asset_amount: BASE_PRECISION_U64 / 2,
+                price: 90 * PRICE_PRECISION_U64,
+                ..Order::default()
+            },
+            Order {
+                market_index: 0,
+                post_only: true,
+                order_type: OrderType::Limit,
+                direction: PositionDirection::Short,
+                base_asset_amount: BASE_PRECISION_U64 / 2,
+                price: 95 * PRICE_PRECISION_U64, // .01 worse than amm
+                ..Order::default()
+            }
+        );
         create_anchor_user_account_info!(maker, maker_orders, maker_account_info);
         let makers_and_referrers = UserMap::load_one(&maker_account_info).unwrap();
 
@@ -3991,14 +3991,14 @@ pub mod fulfill_order {
             ..User::default()
         };
         let maker_orders = get_orders(Order {
-                market_index: 0,
-                post_only: true,
-                order_type: OrderType::Limit,
-                direction: PositionDirection::Short,
-                base_asset_amount: BASE_PRECISION_U64 / 2,
-                price: 100_010_000 * PRICE_PRECISION_U64 / 1_000_000, // .01 worse than amm
-                ..Order::default()
-            });
+            market_index: 0,
+            post_only: true,
+            order_type: OrderType::Limit,
+            direction: PositionDirection::Short,
+            base_asset_amount: BASE_PRECISION_U64 / 2,
+            price: 100_010_000 * PRICE_PRECISION_U64 / 1_000_000, // .01 worse than amm
+            ..Order::default()
+        });
         create_anchor_user_account_info!(maker, maker_orders, maker_account_info);
         let makers_and_referrers = UserMap::load_one(&maker_account_info).unwrap();
 
@@ -4218,14 +4218,14 @@ pub mod fulfill_order {
             ..User::default()
         };
         let maker_orders = get_orders(Order {
-                market_index: 0,
-                post_only: true,
-                order_type: OrderType::Limit,
-                direction: PositionDirection::Short,
-                base_asset_amount: BASE_PRECISION_U64 / 2,
-                price: 100 * PRICE_PRECISION_U64,
-                ..Order::default()
-            });
+            market_index: 0,
+            post_only: true,
+            order_type: OrderType::Limit,
+            direction: PositionDirection::Short,
+            base_asset_amount: BASE_PRECISION_U64 / 2,
+            price: 100 * PRICE_PRECISION_U64,
+            ..Order::default()
+        });
         create_anchor_user_account_info!(maker, maker_orders, maker_account_info);
         let makers_and_referrers = UserMap::load_one(&maker_account_info).unwrap();
 
@@ -4616,14 +4616,14 @@ pub mod fulfill_order {
             ..User::default()
         };
         let maker_orders = get_orders!(Order {
-                market_index: 0,
-                post_only: true,
-                order_type: OrderType::Limit,
-                direction: PositionDirection::Short,
-                base_asset_amount: 2 * BASE_PRECISION_U64,
-                price: 100 * PRICE_PRECISION_U64, // .01 worse than amm
-                ..Order::default()
-            });
+            market_index: 0,
+            post_only: true,
+            order_type: OrderType::Limit,
+            direction: PositionDirection::Short,
+            base_asset_amount: 2 * BASE_PRECISION_U64,
+            price: 100 * PRICE_PRECISION_U64, // .01 worse than amm
+            ..Order::default()
+        });
         create_anchor_user_account_info!(maker, maker_orders, maker_account_info);
         let makers_and_referrers = UserMap::load_one(&maker_account_info).unwrap();
 
@@ -4822,14 +4822,14 @@ pub mod fulfill_order {
             ..User::default()
         };
         let maker_orders = get_orders!(Order {
-                market_index: 0,
-                post_only: true,
-                order_type: OrderType::Limit,
-                direction: PositionDirection::Short,
-                base_asset_amount: BASE_PRECISION_U64,
-                price: 95 * PRICE_PRECISION_U64, // .01 worse than amm
-                ..Order::default()
-            });
+            market_index: 0,
+            post_only: true,
+            order_type: OrderType::Limit,
+            direction: PositionDirection::Short,
+            base_asset_amount: BASE_PRECISION_U64,
+            price: 95 * PRICE_PRECISION_U64, // .01 worse than amm
+            ..Order::default()
+        });
         create_anchor_user_account_info!(maker, maker_orders, maker_account_info);
         let makers_and_referrers = UserMap::load_one(&maker_account_info).unwrap();
 
@@ -5361,19 +5361,19 @@ pub mod fulfill_order {
             ..User::default()
         };
         let taker_orders = get_orders(Order {
-                market_index: 0,
-                status: OrderStatus::Open,
-                order_type: OrderType::Market,
-                direction: PositionDirection::Long,
-                base_asset_amount: BASE_PRECISION_U64,
-                slot: 0,
-                auction_start_price: 0,
-                auction_end_price: 100 * PRICE_PRECISION_I64,
-                auction_duration: 0,
-                price: 150 * PRICE_PRECISION_U64,
-                order_id: 1,
-                ..Order::default()
-            });
+            market_index: 0,
+            status: OrderStatus::Open,
+            order_type: OrderType::Market,
+            direction: PositionDirection::Long,
+            base_asset_amount: BASE_PRECISION_U64,
+            slot: 0,
+            auction_start_price: 0,
+            auction_end_price: 100 * PRICE_PRECISION_I64,
+            auction_duration: 0,
+            price: 150 * PRICE_PRECISION_U64,
+            order_id: 1,
+            ..Order::default()
+        });
         create_anchor_user_account_info!(taker, taker_orders, user_account_info);
         let user_account_loader: AccountLoader<User> =
             AccountLoader::try_from(&user_account_info).unwrap();
@@ -6046,14 +6046,14 @@ pub mod fulfill_order {
             ..User::default()
         };
         let maker_orders = get_orders(Order {
-                market_index: 0,
-                post_only: true,
-                order_type: OrderType::Limit,
-                direction: PositionDirection::Short,
-                base_asset_amount: BASE_PRECISION_U64 / 2,
-                price: 100_010_000 * PRICE_PRECISION_U64 / 1_000_000, // .01 worse than amm
-                ..Order::default()
-            });
+            market_index: 0,
+            post_only: true,
+            order_type: OrderType::Limit,
+            direction: PositionDirection::Short,
+            base_asset_amount: BASE_PRECISION_U64 / 2,
+            price: 100_010_000 * PRICE_PRECISION_U64 / 1_000_000, // .01 worse than amm
+            ..Order::default()
+        });
         create_anchor_user_account_info!(maker, maker_orders, &maker_key, maker_account_info);
         let makers_and_referrers = UserMap::load_one(&maker_account_info).unwrap();
 
@@ -6434,19 +6434,19 @@ pub mod fill_order {
             ..User::default()
         };
         let user_orders = get_orders(Order {
-                market_index: 0,
-                order_id: 1,
-                status: OrderStatus::Open,
-                order_type: OrderType::Market,
-                direction: PositionDirection::Long,
-                base_asset_amount: BASE_PRECISION_U64,
-                slot: 0,
-                auction_start_price: 0,
-                auction_end_price: 50 * PRICE_PRECISION_I64,
-                auction_duration: 5,
-                price: 50 * PRICE_PRECISION_U64,
-                ..Order::default()
-            });
+            market_index: 0,
+            order_id: 1,
+            status: OrderStatus::Open,
+            order_type: OrderType::Market,
+            direction: PositionDirection::Long,
+            base_asset_amount: BASE_PRECISION_U64,
+            slot: 0,
+            auction_start_price: 0,
+            auction_end_price: 50 * PRICE_PRECISION_I64,
+            auction_duration: 5,
+            price: 50 * PRICE_PRECISION_U64,
+            ..Order::default()
+        });
         create_anchor_user_account_info!(user, user_orders, user_account_info);
         let user_account_loader: AccountLoader<User> =
             AccountLoader::try_from(&user_account_info).unwrap();
@@ -6475,17 +6475,17 @@ pub mod fill_order {
             ..User::default()
         };
         let maker_orders = get_orders(Order {
-                market_index: 0,
-                order_id: 1,
-                status: OrderStatus::Open,
-                order_type: OrderType::Limit,
-                direction: PositionDirection::Short,
-                base_asset_amount: BASE_PRECISION_U64,
-                slot: 0,
-                price: 50 * PRICE_PRECISION_U64,
-                post_only: true,
-                ..Order::default()
-            });
+            market_index: 0,
+            order_id: 1,
+            status: OrderStatus::Open,
+            order_type: OrderType::Limit,
+            direction: PositionDirection::Short,
+            base_asset_amount: BASE_PRECISION_U64,
+            slot: 0,
+            price: 50 * PRICE_PRECISION_U64,
+            post_only: true,
+            ..Order::default()
+        });
         create_anchor_user_account_info!(maker, maker_orders, &maker_key, maker_account_info);
         let makers_and_referrers = UserMap::load_one(&maker_account_info).unwrap();
 
@@ -6635,20 +6635,20 @@ pub mod fill_order {
             ..User::default()
         };
         let user_orders = get_orders(Order {
-                market_index: 0,
-                order_id: 1,
-                status: OrderStatus::Open,
-                order_type: OrderType::Market,
-                direction: PositionDirection::Long,
-                market_type: MarketType::Perp,
-                base_asset_amount: BASE_PRECISION_U64,
-                slot: 0,
-                auction_start_price: 0,
-                auction_end_price: 100 * PRICE_PRECISION_I64,
-                auction_duration: 5,
-                price: 100 * PRICE_PRECISION_U64,
-                ..Order::default()
-            });
+            market_index: 0,
+            order_id: 1,
+            status: OrderStatus::Open,
+            order_type: OrderType::Market,
+            direction: PositionDirection::Long,
+            market_type: MarketType::Perp,
+            base_asset_amount: BASE_PRECISION_U64,
+            slot: 0,
+            auction_start_price: 0,
+            auction_end_price: 100 * PRICE_PRECISION_I64,
+            auction_duration: 5,
+            price: 100 * PRICE_PRECISION_U64,
+            ..Order::default()
+        });
         create_anchor_user_account_info!(user, user_orders, user_account_info);
         let user_account_loader: AccountLoader<User> =
             AccountLoader::try_from(&user_account_info).unwrap();
@@ -6678,18 +6678,18 @@ pub mod fill_order {
             ..User::default()
         };
         let maker_orders = get_orders(Order {
-                market_index: 0,
-                order_id: maker_order_id,
-                status: OrderStatus::Open,
-                order_type: OrderType::Limit,
-                market_type: MarketType::Perp,
-                direction: PositionDirection::Short,
-                base_asset_amount: BASE_PRECISION_U64,
-                slot: 0,
-                price: 100 * PRICE_PRECISION_U64,
-                post_only: true,
-                ..Order::default()
-            });
+            market_index: 0,
+            order_id: maker_order_id,
+            status: OrderStatus::Open,
+            order_type: OrderType::Limit,
+            market_type: MarketType::Perp,
+            direction: PositionDirection::Short,
+            base_asset_amount: BASE_PRECISION_U64,
+            slot: 0,
+            price: 100 * PRICE_PRECISION_U64,
+            post_only: true,
+            ..Order::default()
+        });
         create_anchor_user_account_info!(maker, maker_orders, &maker_key, maker_account_info);
         let makers_and_referrers = UserMap::load_one(&maker_account_info).unwrap();
 
@@ -6801,20 +6801,20 @@ pub mod fill_order {
             ..User::default()
         };
         let user_orders = get_orders(Order {
-                market_index: 0,
-                order_id: 1,
-                status: OrderStatus::Open,
-                order_type: OrderType::Market,
-                direction: PositionDirection::Long,
-                base_asset_amount: BASE_PRECISION_U64,
-                slot: 0,
-                auction_start_price: 0,
-                auction_end_price: 102 * PRICE_PRECISION_I64,
-                auction_duration: 5,
-                price: 102 * PRICE_PRECISION_U64,
-                max_ts: 10,
-                ..Order::default()
-            });
+            market_index: 0,
+            order_id: 1,
+            status: OrderStatus::Open,
+            order_type: OrderType::Market,
+            direction: PositionDirection::Long,
+            base_asset_amount: BASE_PRECISION_U64,
+            slot: 0,
+            auction_start_price: 0,
+            auction_end_price: 102 * PRICE_PRECISION_I64,
+            auction_duration: 5,
+            price: 102 * PRICE_PRECISION_U64,
+            max_ts: 10,
+            ..Order::default()
+        });
         create_anchor_user_account_info!(user, user_orders, user_account_info);
         let user_account_loader: AccountLoader<User> =
             AccountLoader::try_from(&user_account_info).unwrap();
@@ -6977,19 +6977,19 @@ pub mod fill_order {
             ..User::default()
         };
         let user_orders = get_orders(Order {
-                market_index: 0,
-                order_id: 1,
-                status: OrderStatus::Open,
-                order_type: OrderType::Market,
-                direction: PositionDirection::Long,
-                base_asset_amount: BASE_PRECISION_U64,
-                slot: 0,
-                auction_start_price: 0,
-                auction_end_price: 102 * PRICE_PRECISION_I64,
-                auction_duration: 5,
-                price: 102 * PRICE_PRECISION_U64,
-                ..Order::default()
-            });
+            market_index: 0,
+            order_id: 1,
+            status: OrderStatus::Open,
+            order_type: OrderType::Market,
+            direction: PositionDirection::Long,
+            base_asset_amount: BASE_PRECISION_U64,
+            slot: 0,
+            auction_start_price: 0,
+            auction_end_price: 102 * PRICE_PRECISION_I64,
+            auction_duration: 5,
+            price: 102 * PRICE_PRECISION_U64,
+            ..Order::default()
+        });
         create_anchor_user_account_info!(user, user_orders, user_account_info);
         let user_account_loader: AccountLoader<User> =
             AccountLoader::try_from(&user_account_info).unwrap();
@@ -8312,7 +8312,12 @@ pub mod get_maker_orders_info {
         );
         let first_maker_key =
             Pubkey::from_str("My11111111111111111111111111111111111111113").unwrap();
-        create_anchor_user_account_info!(first_maker, first_maker_orders, &first_maker_key, first_maker_account_info);
+        create_anchor_user_account_info!(
+            first_maker,
+            first_maker_orders,
+            &first_maker_key,
+            first_maker_account_info
+        );
 
         let mut second_maker = User {
             perp_positions: get_positions(PerpPosition {
@@ -8354,7 +8359,12 @@ pub mod get_maker_orders_info {
         );
         let second_maker_key =
             Pubkey::from_str("My11111111111111111111111111111111111111112").unwrap();
-        create_anchor_user_account_info!(second_maker, second_maker_orders, &second_maker_key, second_maker_account_info);
+        create_anchor_user_account_info!(
+            second_maker,
+            second_maker_orders,
+            &second_maker_key,
+            second_maker_account_info
+        );
 
         let mut makers_and_referrers = UserMap::load_one(&first_maker_account_info).unwrap();
         makers_and_referrers
@@ -8557,7 +8567,12 @@ pub mod get_maker_orders_info {
         );
         let first_maker_key =
             Pubkey::from_str("My11111111111111111111111111111111111111113").unwrap();
-        create_anchor_user_account_info!(first_maker, first_maker_orders, &first_maker_key, first_maker_account_info);
+        create_anchor_user_account_info!(
+            first_maker,
+            first_maker_orders,
+            &first_maker_key,
+            first_maker_account_info
+        );
 
         let makers_and_referrers = UserMap::load_one(&first_maker_account_info).unwrap();
 
@@ -8736,7 +8751,12 @@ pub mod get_maker_orders_info {
         }; 32];
         let first_maker_key =
             Pubkey::from_str("My11111111111111111111111111111111111111113").unwrap();
-        create_anchor_user_account_info!(first_maker, first_maker_orders, &first_maker_key, first_maker_account_info);
+        create_anchor_user_account_info!(
+            first_maker,
+            first_maker_orders,
+            &first_maker_key,
+            first_maker_account_info
+        );
 
         let mut second_maker = User {
             perp_positions: get_positions(PerpPosition {
@@ -8765,7 +8785,12 @@ pub mod get_maker_orders_info {
         }; 32];
         let second_maker_key =
             Pubkey::from_str("My11111111111111111111111111111111111111112").unwrap();
-        create_anchor_user_account_info!(second_maker, second_maker_orders, &second_maker_key, second_maker_account_info);
+        create_anchor_user_account_info!(
+            second_maker,
+            second_maker_orders,
+            &second_maker_key,
+            second_maker_account_info
+        );
 
         let mut makers_and_referrers = UserMap::load_one(&first_maker_account_info).unwrap();
         makers_and_referrers

@@ -344,7 +344,9 @@ export function decodeUser(buffer: Buffer): UserAccount {
 	offset = USER_ORDERS_TAIL_OFFSET;
 
 	const orders: Order[] = [];
-	const cap = Math.floor((buffer.length - USER_ORDERS_TAIL_OFFSET) / ORDER_SIZE);
+	const cap = Math.floor(
+		(buffer.length - USER_ORDERS_TAIL_OFFSET) / ORDER_SIZE
+	);
 	const effectiveLen = Math.min(ordersLen, cap);
 	for (let i = 0; i < effectiveLen; i++) {
 		const o = decodeOrderAt(buffer, offset);

@@ -158,10 +158,9 @@ export class grpcMultiUserAccountSubscriber {
 						'Must subscribe before fetching account updates'
 					);
 				}
-				const info =
-					await parent.program.provider.connection.getAccountInfo(
-						userAccountPublicKey
-					);
+				const info = await parent.program.provider.connection.getAccountInfo(
+					userAccountPublicKey
+				);
 				if (info) {
 					this.updateData(decodeUser(info.data), 0);
 				}

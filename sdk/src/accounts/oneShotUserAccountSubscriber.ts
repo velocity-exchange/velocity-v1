@@ -57,10 +57,7 @@ export class OneShotUserAccountSubscriber
 					this.userAccountPublicKey,
 					this.commitment
 				);
-			if (
-				info.value &&
-				info.context.slot > (this.user?.slot ?? 0)
-			) {
+			if (info.value && info.context.slot > (this.user?.slot ?? 0)) {
 				this.user = {
 					data: decodeUser(info.value.data),
 					slot: info.context.slot,

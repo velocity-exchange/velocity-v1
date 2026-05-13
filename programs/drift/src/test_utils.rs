@@ -189,7 +189,11 @@ pub fn get_anchor_user_account_bytes(
         let tail_ptr = data_ptr.add(disc_len + user_bytes.len());
         for (i, o) in orders.iter().enumerate() {
             let o_bytes = bytemuck::bytes_of(o);
-            std::ptr::copy_nonoverlapping(o_bytes.as_ptr(), tail_ptr.add(i * order_size), order_size);
+            std::ptr::copy_nonoverlapping(
+                o_bytes.as_ptr(),
+                tail_ptr.add(i * order_size),
+                order_size,
+            );
         }
     }
 
@@ -211,10 +215,8 @@ macro_rules! create_anchor_user_account_info {
         let mut __lamports = 0;
         let mut __user_val = $user;
         let __orders_val = $orders;
-        let mut __data = $crate::test_utils::get_anchor_user_account_bytes(
-            &mut __user_val,
-            &__orders_val[..],
-        );
+        let mut __data =
+            $crate::test_utils::get_anchor_user_account_bytes(&mut __user_val, &__orders_val[..]);
         let __owner = <$crate::state::user::User as anchor_lang::Owner>::owner();
         let $name = $crate::test_utils::create_account_info(
             &__key,
@@ -228,10 +230,8 @@ macro_rules! create_anchor_user_account_info {
         let mut __lamports = 0;
         let mut __user_val = $user;
         let __orders_val = $orders;
-        let mut __data = $crate::test_utils::get_anchor_user_account_bytes(
-            &mut __user_val,
-            &__orders_val[..],
-        );
+        let mut __data =
+            $crate::test_utils::get_anchor_user_account_bytes(&mut __user_val, &__orders_val[..]);
         let __owner = <$crate::state::user::User as anchor_lang::Owner>::owner();
         let $name = $crate::test_utils::create_account_info(
             $pubkey,

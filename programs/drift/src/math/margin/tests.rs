@@ -6976,7 +6976,7 @@ mod fill_perp_order_margin_requirement_with_isolated {
             };
 
             let user = User {
-                    perp_positions,
+                perp_positions,
                 spot_positions,
                 ..User::default()
             };
@@ -7029,7 +7029,7 @@ mod fill_perp_order_margin_requirement_with_isolated {
             };
 
             let user = User {
-                    perp_positions,
+                perp_positions,
                 spot_positions,
                 ..User::default()
             };
@@ -7082,7 +7082,7 @@ mod fill_perp_order_margin_requirement_with_isolated {
             };
 
             let user = User {
-                    perp_positions,
+                perp_positions,
                 spot_positions,
                 ..User::default()
             };
@@ -7141,7 +7141,7 @@ mod fill_perp_order_margin_requirement_with_isolated {
             };
 
             let user = User {
-                    perp_positions,
+                perp_positions,
                 spot_positions,
                 ..User::default()
             };
@@ -7202,7 +7202,7 @@ mod fill_perp_order_margin_requirement_with_isolated {
             };
 
             let user = User {
-                    perp_positions,
+                perp_positions,
                 spot_positions,
                 ..User::default()
             };
@@ -7257,7 +7257,7 @@ mod fill_perp_order_margin_requirement_with_isolated {
             };
 
             let user = User {
-                    perp_positions,
+                perp_positions,
                 spot_positions,
                 ..User::default()
             };
@@ -7310,7 +7310,7 @@ mod fill_perp_order_margin_requirement_with_isolated {
             };
 
             let user = User {
-                    perp_positions,
+                perp_positions,
                 spot_positions,
                 ..User::default()
             };
@@ -7371,7 +7371,7 @@ mod fill_perp_order_margin_requirement_with_isolated {
             };
 
             let user = User {
-                    perp_positions,
+                perp_positions,
                 spot_positions,
                 ..User::default()
             };
@@ -7424,7 +7424,7 @@ mod fill_perp_order_margin_requirement_with_isolated {
             };
 
             let user = User {
-                    perp_positions,
+                perp_positions,
                 spot_positions,
                 ..User::default()
             };
@@ -7473,7 +7473,7 @@ mod fill_perp_order_margin_requirement_with_isolated {
             };
 
             let user = User {
-                    perp_positions,
+                perp_positions,
                 spot_positions,
                 ..User::default()
             };
@@ -7522,7 +7522,7 @@ mod fill_perp_order_margin_requirement_with_isolated {
             };
 
             let user = User {
-                    perp_positions,
+                perp_positions,
                 spot_positions,
                 ..User::default()
             };
@@ -7579,7 +7579,7 @@ mod fill_perp_order_margin_requirement_with_isolated {
             };
 
             let user = User {
-                    perp_positions,
+                perp_positions,
                 spot_positions,
                 ..User::default()
             };
@@ -7630,7 +7630,7 @@ mod fill_perp_order_margin_requirement_with_isolated {
             };
 
             let user = User {
-                    perp_positions,
+                perp_positions,
                 spot_positions,
                 ..User::default()
             };
@@ -7679,7 +7679,7 @@ mod fill_perp_order_margin_requirement_with_isolated {
             };
 
             let user = User {
-                    perp_positions,
+                perp_positions,
                 spot_positions,
                 ..User::default()
             };
@@ -7736,7 +7736,7 @@ mod fill_perp_order_margin_requirement_with_isolated {
             };
 
             let user = User {
-                    perp_positions,
+                perp_positions,
                 spot_positions,
                 ..User::default()
             };

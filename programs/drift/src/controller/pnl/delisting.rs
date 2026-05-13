@@ -729,7 +729,7 @@ pub mod delisting_test {
                 auction_end_price: 100 * PRICE_PRECISION_I64,
                 auction_duration: 0,
                 ..Order::default()
-            })
+            }),
         );
         let mut taker = taker_data.view();
 
@@ -952,7 +952,7 @@ pub mod delisting_test {
                 auction_end_price: 100 * PRICE_PRECISION_I64,
                 auction_duration: 0,
                 ..Order::default()
-            })
+            }),
         );
         let mut taker = taker_data.view();
 
@@ -1178,7 +1178,7 @@ pub mod delisting_test {
                 auction_end_price: 100 * PRICE_PRECISION_I64,
                 auction_duration: 0,
                 ..Order::default()
-            })
+            }),
         );
         let mut taker = taker_data.view();
 
@@ -1389,7 +1389,8 @@ pub mod delisting_test {
                     open_bids: BASE_PRECISION_I64,
                     base_asset_amount: (BASE_PRECISION_I64 * 2000),
                     quote_entry_amount: -(QUOTE_PRECISION_I64 * 20 * 2000 + QUOTE_PRECISION_I64), //longs have $19 cost basis,
-                    quote_break_even_amount: -(QUOTE_PRECISION_I64 * 20 * 2000 + QUOTE_PRECISION_I64), //longs have $19 cost basis,
+                    quote_break_even_amount: -(QUOTE_PRECISION_I64 * 20 * 2000
+                        + QUOTE_PRECISION_I64), //longs have $19 cost basis,
                     quote_asset_amount: -(QUOTE_PRECISION_I64 * 20 * 2000 + QUOTE_PRECISION_I64), //longs have $19 cost basis,
                     ..PerpPosition::default()
                 }),
@@ -1412,7 +1413,7 @@ pub mod delisting_test {
                 auction_end_price: 100 * PRICE_PRECISION_I64,
                 auction_duration: 0,
                 ..Order::default()
-            })
+            }),
         );
         let mut longer = longer_data.view();
 
@@ -1445,7 +1446,7 @@ pub mod delisting_test {
                 base_asset_amount: BASE_PRECISION_U64 / 2,
                 price: 100 * PRICE_PRECISION_U64,
                 ..Order::default()
-            })
+            }),
         );
         let mut shorter = shorter_data.view();
 
@@ -1845,7 +1846,7 @@ pub mod delisting_test {
                 auction_end_price: 100 * PRICE_PRECISION_I64,
                 auction_duration: 0,
                 ..Order::default()
-            })
+            }),
         );
         let mut longer = longer_data.view();
 
@@ -1878,7 +1879,7 @@ pub mod delisting_test {
                 base_asset_amount: BASE_PRECISION_U64 / 2,
                 price: 100 * PRICE_PRECISION_U64,
                 ..Order::default()
-            })
+            }),
         );
         let mut shorter = shorter_data.view();
 
@@ -2237,7 +2238,7 @@ pub mod delisting_test {
                 auction_end_price: 100 * PRICE_PRECISION_I64,
                 auction_duration: 0,
                 ..Order::default()
-            })
+            }),
         );
         let mut longer = longer_data.view();
 
@@ -2270,7 +2271,7 @@ pub mod delisting_test {
                 base_asset_amount: BASE_PRECISION_U64 / 2,
                 price: 100 * PRICE_PRECISION_U64,
                 ..Order::default()
-            })
+            }),
         );
         let mut shorter = shorter_data.view();
         shorter.spot_positions[1] = SpotPosition {

@@ -2675,7 +2675,12 @@ pub mod liquidate_perp_with_fill {
             ..User::default()
         };
 
-        create_anchor_user_account_info!(user, &[crate::state::user::Order::default(); 32], &user_key, user_account_info);
+        create_anchor_user_account_info!(
+            user,
+            &[crate::state::user::Order::default(); 32],
+            &user_key,
+            user_account_info
+        );
         let user_account_loader: AccountLoader<User> =
             AccountLoader::try_from(&user_account_info).unwrap();
 
@@ -2691,7 +2696,12 @@ pub mod liquidate_perp_with_fill {
             ..User::default()
         };
 
-        create_anchor_user_account_info!(liquidator, &[crate::state::user::Order::default(); 32], &liquidator_key, liquidator_account_info);
+        create_anchor_user_account_info!(
+            liquidator,
+            &[crate::state::user::Order::default(); 32],
+            &liquidator_key,
+            liquidator_account_info
+        );
         let liquidator_account_loader: AccountLoader<User> =
             AccountLoader::try_from(&liquidator_account_info).unwrap();
 
@@ -2717,16 +2727,16 @@ pub mod liquidate_perp_with_fill {
         let maker_key = Pubkey::new_unique();
         let maker_authority = Pubkey::new_unique();
         let maker_orders = get_orders(Order {
-                status: OrderStatus::Open,
-                market_index: 0,
-                post_only: true,
-                order_type: OrderType::Limit,
-                direction: PositionDirection::Long,
-                base_asset_amount: BASE_PRECISION_U64 / 2,
-                price: 100 * PRICE_PRECISION_U64,
-                slot: slot - 1,
-                ..Order::default()
-            });
+            status: OrderStatus::Open,
+            market_index: 0,
+            post_only: true,
+            order_type: OrderType::Limit,
+            direction: PositionDirection::Long,
+            base_asset_amount: BASE_PRECISION_U64 / 2,
+            price: 100 * PRICE_PRECISION_U64,
+            slot: slot - 1,
+            ..Order::default()
+        });
         let mut maker = User {
             authority: maker_authority,
             perp_positions: get_positions(PerpPosition {
@@ -2884,7 +2894,12 @@ pub mod liquidate_perp_with_fill {
             ..User::default()
         };
 
-        create_anchor_user_account_info!(user, &[crate::state::user::Order::default(); 32], &user_key, user_account_info);
+        create_anchor_user_account_info!(
+            user,
+            &[crate::state::user::Order::default(); 32],
+            &user_key,
+            user_account_info
+        );
         let user_account_loader: AccountLoader<User> =
             AccountLoader::try_from(&user_account_info).unwrap();
 
@@ -2900,7 +2915,12 @@ pub mod liquidate_perp_with_fill {
             ..User::default()
         };
 
-        create_anchor_user_account_info!(liquidator, &[crate::state::user::Order::default(); 32], &liquidator_key, liquidator_account_info);
+        create_anchor_user_account_info!(
+            liquidator,
+            &[crate::state::user::Order::default(); 32],
+            &liquidator_key,
+            liquidator_account_info
+        );
         let liquidator_account_loader: AccountLoader<User> =
             AccountLoader::try_from(&liquidator_account_info).unwrap();
 
@@ -2926,16 +2946,16 @@ pub mod liquidate_perp_with_fill {
         let maker_key = Pubkey::new_unique();
         let maker_authority = Pubkey::new_unique();
         let maker_orders = get_orders(Order {
-                status: OrderStatus::Open,
-                market_index: 0,
-                post_only: true,
-                order_type: OrderType::Limit,
-                direction: PositionDirection::Short,
-                base_asset_amount: BASE_PRECISION_U64 / 2,
-                price: 100 * PRICE_PRECISION_U64,
-                slot: slot - 1,
-                ..Order::default()
-            });
+            status: OrderStatus::Open,
+            market_index: 0,
+            post_only: true,
+            order_type: OrderType::Limit,
+            direction: PositionDirection::Short,
+            base_asset_amount: BASE_PRECISION_U64 / 2,
+            price: 100 * PRICE_PRECISION_U64,
+            slot: slot - 1,
+            ..Order::default()
+        });
         let mut maker = User {
             authority: maker_authority,
             perp_positions: get_positions(PerpPosition {
@@ -3097,7 +3117,12 @@ pub mod liquidate_perp_with_fill {
             ..User::default()
         };
 
-        create_anchor_user_account_info!(user, &[crate::state::user::Order::default(); 32], &user_key, user_account_info);
+        create_anchor_user_account_info!(
+            user,
+            &[crate::state::user::Order::default(); 32],
+            &user_key,
+            user_account_info
+        );
         let user_account_loader: AccountLoader<User> =
             AccountLoader::try_from(&user_account_info).unwrap();
 
@@ -3113,7 +3138,12 @@ pub mod liquidate_perp_with_fill {
             ..User::default()
         };
 
-        create_anchor_user_account_info!(liquidator, &[crate::state::user::Order::default(); 32], &liquidator_key, liquidator_account_info);
+        create_anchor_user_account_info!(
+            liquidator,
+            &[crate::state::user::Order::default(); 32],
+            &liquidator_key,
+            liquidator_account_info
+        );
         let liquidator_account_loader: AccountLoader<User> =
             AccountLoader::try_from(&liquidator_account_info).unwrap();
 
@@ -3267,7 +3297,12 @@ pub mod liquidate_perp_with_fill {
             ..User::default()
         };
 
-        create_anchor_user_account_info!(user, &[crate::state::user::Order::default(); 32], &user_key, user_account_info);
+        create_anchor_user_account_info!(
+            user,
+            &[crate::state::user::Order::default(); 32],
+            &user_key,
+            user_account_info
+        );
         let user_account_loader: AccountLoader<User> =
             AccountLoader::try_from(&user_account_info).unwrap();
 
@@ -3283,7 +3318,12 @@ pub mod liquidate_perp_with_fill {
             ..User::default()
         };
 
-        create_anchor_user_account_info!(liquidator, &[crate::state::user::Order::default(); 32], &liquidator_key, liquidator_account_info);
+        create_anchor_user_account_info!(
+            liquidator,
+            &[crate::state::user::Order::default(); 32],
+            &liquidator_key,
+            liquidator_account_info
+        );
         let liquidator_account_loader: AccountLoader<User> =
             AccountLoader::try_from(&liquidator_account_info).unwrap();
 

@@ -1210,10 +1210,8 @@ pub fn fill_perp_order(
 
     let should_expire_order = should_expire_order(user, order_index, now)?;
 
-    let position_index = get_position_index(
-        &user.perp_positions,
-        user.order(order_index).market_index,
-    )?;
+    let position_index =
+        get_position_index(&user.perp_positions, user.order(order_index).market_index)?;
     let existing_base_asset_amount = user.perp_positions[position_index].base_asset_amount;
     let should_cancel_reduce_only = should_cancel_reduce_only_order(
         &user.order(order_index),
@@ -2994,9 +2992,7 @@ pub fn fulfill_perp_order_with_match(
     }
 
     let taker_order_direction = taker.order(taker_order_index).direction;
-    let taker_order_update_bids_asks = taker
-        .order(taker_order_index)
-        .update_open_bids_and_asks();
+    let taker_order_update_bids_asks = taker.order(taker_order_index).update_open_bids_and_asks();
     decrease_open_bids_and_asks(
         &mut taker.perp_positions[taker_position_index],
         &taker_order_direction,
@@ -3011,9 +3007,7 @@ pub fn fulfill_perp_order_with_match(
     )?;
 
     let maker_order_direction = maker.order(maker_order_index).direction;
-    let maker_order_update_bids_asks = maker
-        .order(maker_order_index)
-        .update_open_bids_and_asks();
+    let maker_order_update_bids_asks = maker.order(maker_order_index).update_open_bids_and_asks();
     decrease_open_bids_and_asks(
         &mut maker.perp_positions[maker_position_index],
         &maker_order_direction,
@@ -3173,9 +3167,7 @@ fn cancel_reduce_only_trigger_orders(
             continue;
         }
 
-        if !user.order(order_index).must_be_triggered()
-            || user.order(order_index).triggered()
-        {
+        if !user.order(order_index).must_be_triggered() || user.order(order_index).triggered() {
             continue;
         }
 
@@ -3224,12 +3216,8 @@ pub fn trigger_order(
         .position(|order| order.order_id == order_id && order.status == OrderStatus::Open)
         .ok_or_else(print_error!(ErrorCode::OrderDoesNotExist))?;
 
-    let (order_status, market_index, market_type) = get_struct_values!(
-        user.order(order_index),
-        status,
-        market_index,
-        market_type
-    );
+    let (order_status, market_index, market_type) =
+        get_struct_values!(user.order(order_index), status, market_index, market_type);
 
     validate!(
         order_status == OrderStatus::Open,
@@ -3306,8 +3294,7 @@ pub fn trigger_order(
 
     let trigger_price =
         perp_market.get_trigger_price(oracle_price, now, state.use_median_trigger_price())?;
-    let can_trigger =
-        order_satisfies_trigger_condition(&user.order(order_index), trigger_price)?;
+    let can_trigger = order_satisfies_trigger_condition(&user.order(order_index), trigger_price)?;
 
     validate!(
         can_trigger,

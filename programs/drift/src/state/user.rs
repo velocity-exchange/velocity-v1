@@ -882,12 +882,17 @@ impl User {
 // bytemuck. Loading goes through [`UserLoader`] rather than
 // `AccountLoader::load*`, which would only see the fixed portion.
 
-/// Runtime zero-copy view of a User account.
+/// Runtime view over an on-chain User account: the fixed [`User`] header
+/// plus its dynamic-length tail of `Order` slots, both backed by `RefMut`s
+/// into the account's data region.
 ///
-/// Holds a `RefMut` of the fixed header plus the opaque trailing bytes that
-/// back the orders region. Fixed-header fields are reachable through
-/// `Deref<Target = User>`; the orders region is accessed through methods
-/// (`get_order`, `iter_orders`, `set_order`, …) that decode bytes on demand.
+/// Header fields (`authority`, `perp_positions`, …) are reachable through
+/// `Deref<Target = User>` so callers can write `user.next_order_id += 1`
+/// transparently. The orders tail is held as opaque bytes and decoded on
+/// demand by the methods below.
+///
+/// Obtain one via [`UserLoader::load_user`] / [`UserLoader::load_user_mut`]
+/// (typically through the `load_user!` / `load_user_mut!` macros).
 pub struct UserView<'a> {
     fixed: RefMut<'a, User>,
     orders: RefMut<'a, [u8]>,
@@ -910,12 +915,21 @@ impl<'a> UserView<'a> {
     const ORDER_SIZE: usize = std::mem::size_of::<Order>();
 
     /// Number of provisioned order slots in this account.
+    ///
+    /// Equal to `User.orders_len` reinterpreted as `usize`. The orders tail
+    /// region has exactly this many `Order`-sized chunks; indices past this
+    /// point may exist in the underlying byte buffer (allocated capacity)
+    /// but are not considered initialized and must not be read.
     pub fn orders_len(&self) -> usize {
         self.fixed.orders_len as usize
     }
 
-    /// Set the number of provisioned order slots. Used by the resize handler
-    /// after Anchor's declarative `realloc` has grown the account region.
+    /// Set the number of provisioned order slots.
+    ///
+    /// Caller is responsible for ensuring `new_len <= MAX_USER_ORDERS` and
+    /// that the underlying account data already has room for `new_len`
+    /// slots (Anchor's declarative `realloc` in [`ResizeUserOrders`] grows
+    /// the account first; this method just publishes the new length).
     pub fn set_orders_len(&mut self, new_len: u32) {
         self.fixed.orders_len = new_len;
     }
@@ -930,81 +944,69 @@ impl<'a> UserView<'a> {
         &mut self.orders[start..start + Self::ORDER_SIZE]
     }
 
-    /// Borrow order at `index`. Panics on out-of-bounds (matches the previous
-    /// `user.orders[i]` semantics).
+    /// Borrow the order at slot `index`.
+    ///
+    /// Panics on out-of-bounds — same contract as the historical
+    /// `user.orders[i]` array access. Callers iterating over the full slot
+    /// range should bound `index` with [`orders_len`](Self::orders_len)
+    /// (or just use [`iter_orders`](Self::iter_orders)).
     pub fn order(&self, index: usize) -> &Order {
         bytemuck::from_bytes::<Order>(self.order_slice(index))
     }
 
-    /// Mutable borrow of order at `index`.
+    /// Mutable counterpart of [`order`](Self::order); same out-of-bounds
+    /// contract.
     pub fn order_mut(&mut self, index: usize) -> &mut Order {
         bytemuck::from_bytes_mut::<Order>(self.order_slice_mut(index))
     }
 
-    /// Replace the order at `index`.
+    /// Overwrite the order at slot `index` with `order`. Equivalent to
+    /// `*self.order_mut(index) = order`.
     pub fn set_order(&mut self, index: usize, order: Order) {
         *self.order_mut(index) = order;
     }
 
-    /// Iterate immutably over all orders in the account.
+    /// Iterate immutably over every provisioned slot, in slot order.
+    ///
+    /// Yields exactly [`orders_len`](Self::orders_len) items. Empty slots
+    /// (status `Init`) are included; filter with `Order::is_available()`
+    /// if needed.
     pub fn iter_orders(&self) -> impl Iterator<Item = &Order> + '_ {
         let len = self.orders_len();
         (0..len).map(move |i| self.order(i))
     }
 
-    /// Iterate mutably over all orders in the account.
-    pub fn iter_orders_mut(&mut self) -> impl Iterator<Item = &mut Order> + '_ {
-        let len = self.orders_len();
-        let size = Self::ORDER_SIZE;
-        self.orders[..len * size]
-            .chunks_exact_mut(size)
-            .map(|chunk| bytemuck::from_bytes_mut::<Order>(chunk))
-    }
-
-    /// Find the first available (unused) order slot.
+    /// Index of the first slot with status `Init` (available for a new
+    /// order), if any. `None` means the account is at capacity and must be
+    /// resized via the `resize_user_orders` instruction before placing
+    /// another order.
     pub fn first_available_slot(&self) -> Option<usize> {
         self.iter_orders().position(|o| o.is_available())
     }
 
-    /// Lookup an Open order by `order_id` and return its slot index.
+    /// Slot index of the Open order whose `order_id` matches.
+    /// Returns [`ErrorCode::OrderDoesNotExist`] if no Open order is found.
     pub fn find_order_index(&self, order_id: u32) -> DriftResult<usize> {
         self.iter_orders()
             .position(|o| o.order_id == order_id && o.status == OrderStatus::Open)
             .ok_or(ErrorCode::OrderDoesNotExist)
     }
 
-    /// Lookup an Open order by the user-supplied `user_order_id`.
+    /// Slot index of the Open order whose user-supplied `user_order_id`
+    /// matches. Returns [`ErrorCode::OrderDoesNotExist`] if no Open order
+    /// is found.
     pub fn find_order_index_by_user_order_id(&self, user_order_id: u8) -> DriftResult<usize> {
         self.iter_orders()
             .position(|o| o.user_order_id == user_order_id && o.status == OrderStatus::Open)
             .ok_or(ErrorCode::OrderDoesNotExist)
     }
 
-    /// Find an Open order by `order_id`, returning a reference to it.
+    /// Reference to the Open order with the matching `order_id`, or `None`
+    /// if no such order exists. Use [`find_order_index`](Self::find_order_index)
+    /// when the caller needs the slot index instead of the order itself.
     pub fn find_order(&self, order_id: u32) -> Option<&Order> {
         self.iter_orders()
             .find(|o| o.order_id == order_id && o.status == OrderStatus::Open)
-    }
-
-    /// True if there is at least one available slot for a new order.
-    pub fn has_room_for_new_order(&self) -> bool {
-        self.iter_orders().any(|o| o.is_available())
-    }
-
-    /// Bytemuck-cast the orders tail as a typed mutable slice. Use sparingly —
-    /// most callers should prefer `iter_orders_mut`/`order_mut`. Held only
-    /// for short windows because it locks the whole tail mutably.
-    pub fn orders_as_mut_slice(&mut self) -> &mut [Order] {
-        let len = self.orders_len();
-        let bytes = &mut self.orders[..len * Self::ORDER_SIZE];
-        bytemuck::cast_slice_mut::<u8, Order>(bytes)
-    }
-
-    /// Bytemuck-cast the orders tail as a typed immutable slice.
-    pub fn orders_as_slice(&self) -> &[Order] {
-        let len = self.orders_len();
-        let bytes = &self.orders[..len * Self::ORDER_SIZE];
-        bytemuck::cast_slice::<u8, Order>(bytes)
     }
 }
 

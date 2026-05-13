@@ -23,63 +23,63 @@ use super::{
     perp_market_map::PerpMarketMap,
     spot_market::{AssetTier, SpotBalanceType, SpotMarket},
     spot_market_map::SpotMarketMap,
-    user::{MarketType, User},
+    user::{MarketType, UserFixed},
 };
 
 pub trait LiquidatePerpMode {
-    fn user_is_being_liquidated(&self, user: &User) -> DriftResult<bool>;
+    fn user_is_being_liquidated(&self, user: &UserFixed) -> DriftResult<bool>;
 
     fn meets_margin_requirements(
         &self,
         margin_calculation: &MarginCalculation,
     ) -> DriftResult<bool>;
 
-    fn enter_liquidation(&self, user: &mut User, slot: u64) -> DriftResult<u16>;
+    fn enter_liquidation(&self, user: &mut UserFixed, slot: u64) -> DriftResult<u16>;
 
     fn can_exit_liquidation(&self, margin_calculation: &MarginCalculation) -> DriftResult<bool>;
 
-    fn exit_liquidation(&self, user: &mut User) -> DriftResult<()>;
+    fn exit_liquidation(&self, user: &mut UserFixed) -> DriftResult<()>;
 
     fn get_cancel_orders_params(&self) -> (Option<MarketType>, Option<u16>);
 
     fn calculate_max_pct_to_liquidate(
         &self,
-        user: &User,
+        user: &UserFixed,
         margin_shortage: u128,
         slot: u64,
         initial_pct_to_liquidate: u128,
         liquidation_duration: u128,
     ) -> DriftResult<u128>;
 
-    fn increment_free_margin(&self, user: &mut User, amount: u64) -> DriftResult<()>;
+    fn increment_free_margin(&self, user: &mut UserFixed, amount: u64) -> DriftResult<()>;
 
-    fn is_user_bankrupt(&self, user: &User) -> DriftResult<bool>;
+    fn is_user_bankrupt(&self, user: &UserFixed) -> DriftResult<bool>;
 
-    fn should_user_enter_bankruptcy(&self, user: &User) -> DriftResult<bool>;
+    fn should_user_enter_bankruptcy(&self, user: &UserFixed) -> DriftResult<bool>;
 
-    fn enter_bankruptcy(&self, user: &mut User) -> DriftResult<()>;
+    fn enter_bankruptcy(&self, user: &mut UserFixed) -> DriftResult<()>;
 
-    fn exit_bankruptcy(&self, user: &mut User) -> DriftResult<()>;
+    fn exit_bankruptcy(&self, user: &mut UserFixed) -> DriftResult<()>;
 
     fn get_event_fields(
         &self,
         margin_calculation: &MarginCalculation,
     ) -> DriftResult<(u128, i128, u8)>;
 
-    fn validate_spot_position(&self, user: &User, asset_market_index: u16) -> DriftResult<()>;
+    fn validate_spot_position(&self, user: &UserFixed, asset_market_index: u16) -> DriftResult<()>;
 
-    fn get_spot_token_amount(&self, user: &User, spot_market: &SpotMarket) -> DriftResult<u128>;
+    fn get_spot_token_amount(&self, user: &UserFixed, spot_market: &SpotMarket) -> DriftResult<u128>;
 
     fn calculate_user_safest_position_tiers(
         &self,
-        user: &User,
+        user: &UserFixed,
         perp_market_map: &PerpMarketMap,
         spot_market_map: &SpotMarketMap,
     ) -> DriftResult<(AssetTier, ContractTier)>;
 
     fn decrease_spot_token_amount(
         &self,
-        user: &mut User,
+        user: &mut UserFixed,
         token_amount: u128,
         spot_market: &mut SpotMarket,
         cumulative_deposit_delta: Option<u128>,
@@ -89,7 +89,7 @@ pub trait LiquidatePerpMode {
 }
 
 pub fn get_perp_liquidation_mode(
-    user: &User,
+    user: &UserFixed,
     market_index: u16,
 ) -> DriftResult<Box<dyn LiquidatePerpMode>> {
     // When user has no position in the market, use cross-margin mode so liquidate_perp
@@ -119,7 +119,7 @@ impl CrossMarginLiquidatePerpMode {
 }
 
 impl LiquidatePerpMode for CrossMarginLiquidatePerpMode {
-    fn user_is_being_liquidated(&self, user: &User) -> DriftResult<bool> {
+    fn user_is_being_liquidated(&self, user: &UserFixed) -> DriftResult<bool> {
         Ok(user.is_cross_margin_being_liquidated())
     }
 
@@ -130,7 +130,7 @@ impl LiquidatePerpMode for CrossMarginLiquidatePerpMode {
         Ok(margin_calculation.meets_cross_margin_requirement())
     }
 
-    fn enter_liquidation(&self, user: &mut User, slot: u64) -> DriftResult<u16> {
+    fn enter_liquidation(&self, user: &mut UserFixed, slot: u64) -> DriftResult<u16> {
         user.enter_cross_margin_liquidation(slot)
     }
 
@@ -138,7 +138,7 @@ impl LiquidatePerpMode for CrossMarginLiquidatePerpMode {
         Ok(margin_calculation.can_exit_cross_margin_liquidation()?)
     }
 
-    fn exit_liquidation(&self, user: &mut User) -> DriftResult<()> {
+    fn exit_liquidation(&self, user: &mut UserFixed) -> DriftResult<()> {
         Ok(user.exit_cross_margin_liquidation())
     }
 
@@ -148,7 +148,7 @@ impl LiquidatePerpMode for CrossMarginLiquidatePerpMode {
 
     fn calculate_max_pct_to_liquidate(
         &self,
-        user: &User,
+        user: &UserFixed,
         margin_shortage: u128,
         slot: u64,
         initial_pct_to_liquidate: u128,
@@ -163,23 +163,23 @@ impl LiquidatePerpMode for CrossMarginLiquidatePerpMode {
         )
     }
 
-    fn increment_free_margin(&self, user: &mut User, amount: u64) -> DriftResult<()> {
+    fn increment_free_margin(&self, user: &mut UserFixed, amount: u64) -> DriftResult<()> {
         user.increment_margin_freed(amount)
     }
 
-    fn is_user_bankrupt(&self, user: &User) -> DriftResult<bool> {
+    fn is_user_bankrupt(&self, user: &UserFixed) -> DriftResult<bool> {
         Ok(user.is_cross_margin_bankrupt())
     }
 
-    fn should_user_enter_bankruptcy(&self, user: &User) -> DriftResult<bool> {
+    fn should_user_enter_bankruptcy(&self, user: &UserFixed) -> DriftResult<bool> {
         Ok(is_cross_margin_bankrupt(user))
     }
 
-    fn enter_bankruptcy(&self, user: &mut User) -> DriftResult<()> {
+    fn enter_bankruptcy(&self, user: &mut UserFixed) -> DriftResult<()> {
         Ok(user.enter_cross_margin_bankruptcy())
     }
 
-    fn exit_bankruptcy(&self, user: &mut User) -> DriftResult<()> {
+    fn exit_bankruptcy(&self, user: &mut UserFixed) -> DriftResult<()> {
         Ok(user.exit_cross_margin_bankruptcy())
     }
 
@@ -194,7 +194,7 @@ impl LiquidatePerpMode for CrossMarginLiquidatePerpMode {
         ))
     }
 
-    fn validate_spot_position(&self, user: &User, asset_market_index: u16) -> DriftResult<()> {
+    fn validate_spot_position(&self, user: &UserFixed, asset_market_index: u16) -> DriftResult<()> {
         if user.get_spot_position(asset_market_index).is_err() {
             msg!(
                 "User does not have a spot balance for asset market {}",
@@ -207,7 +207,7 @@ impl LiquidatePerpMode for CrossMarginLiquidatePerpMode {
         Ok(())
     }
 
-    fn get_spot_token_amount(&self, user: &User, spot_market: &SpotMarket) -> DriftResult<u128> {
+    fn get_spot_token_amount(&self, user: &UserFixed, spot_market: &SpotMarket) -> DriftResult<u128> {
         let spot_position = user.get_spot_position(spot_market.market_index)?;
 
         validate!(
@@ -230,7 +230,7 @@ impl LiquidatePerpMode for CrossMarginLiquidatePerpMode {
 
     fn calculate_user_safest_position_tiers(
         &self,
-        user: &User,
+        user: &UserFixed,
         perp_market_map: &PerpMarketMap,
         spot_market_map: &SpotMarketMap,
     ) -> DriftResult<(AssetTier, ContractTier)> {
@@ -239,7 +239,7 @@ impl LiquidatePerpMode for CrossMarginLiquidatePerpMode {
 
     fn decrease_spot_token_amount(
         &self,
-        user: &mut User,
+        user: &mut UserFixed,
         token_amount: u128,
         spot_market: &mut SpotMarket,
         cumulative_deposit_delta: Option<u128>,
@@ -274,7 +274,7 @@ impl IsolatedMarginLiquidatePerpMode {
 }
 
 impl LiquidatePerpMode for IsolatedMarginLiquidatePerpMode {
-    fn user_is_being_liquidated(&self, user: &User) -> DriftResult<bool> {
+    fn user_is_being_liquidated(&self, user: &UserFixed) -> DriftResult<bool> {
         user.is_isolated_margin_being_liquidated(self.market_index)
     }
 
@@ -289,11 +289,11 @@ impl LiquidatePerpMode for IsolatedMarginLiquidatePerpMode {
         margin_calculation.can_exit_isolated_margin_liquidation(self.market_index)
     }
 
-    fn enter_liquidation(&self, user: &mut User, slot: u64) -> DriftResult<u16> {
+    fn enter_liquidation(&self, user: &mut UserFixed, slot: u64) -> DriftResult<u16> {
         user.enter_isolated_margin_liquidation(self.market_index, slot)
     }
 
-    fn exit_liquidation(&self, user: &mut User) -> DriftResult<()> {
+    fn exit_liquidation(&self, user: &mut UserFixed) -> DriftResult<()> {
         user.exit_isolated_margin_liquidation(self.market_index)
     }
 
@@ -303,7 +303,7 @@ impl LiquidatePerpMode for IsolatedMarginLiquidatePerpMode {
 
     fn calculate_max_pct_to_liquidate(
         &self,
-        _user: &User,
+        _user: &UserFixed,
         _margin_shortage: u128,
         _slot: u64,
         _initial_pct_to_liquidate: u128,
@@ -312,23 +312,23 @@ impl LiquidatePerpMode for IsolatedMarginLiquidatePerpMode {
         Ok(LIQUIDATION_PCT_PRECISION)
     }
 
-    fn increment_free_margin(&self, _user: &mut User, _amount: u64) -> DriftResult<()> {
+    fn increment_free_margin(&self, _user: &mut UserFixed, _amount: u64) -> DriftResult<()> {
         Ok(())
     }
 
-    fn is_user_bankrupt(&self, user: &User) -> DriftResult<bool> {
+    fn is_user_bankrupt(&self, user: &UserFixed) -> DriftResult<bool> {
         user.is_isolated_margin_bankrupt(self.market_index)
     }
 
-    fn should_user_enter_bankruptcy(&self, user: &User) -> DriftResult<bool> {
+    fn should_user_enter_bankruptcy(&self, user: &UserFixed) -> DriftResult<bool> {
         is_isolated_margin_bankrupt(user, self.market_index)
     }
 
-    fn enter_bankruptcy(&self, user: &mut User) -> DriftResult<()> {
+    fn enter_bankruptcy(&self, user: &mut UserFixed) -> DriftResult<()> {
         user.enter_isolated_margin_bankruptcy(self.market_index)
     }
 
-    fn exit_bankruptcy(&self, user: &mut User) -> DriftResult<()> {
+    fn exit_bankruptcy(&self, user: &mut UserFixed) -> DriftResult<()> {
         user.exit_isolated_margin_bankruptcy(self.market_index)
     }
 
@@ -347,7 +347,7 @@ impl LiquidatePerpMode for IsolatedMarginLiquidatePerpMode {
         ))
     }
 
-    fn validate_spot_position(&self, _user: &User, asset_market_index: u16) -> DriftResult<()> {
+    fn validate_spot_position(&self, _user: &UserFixed, asset_market_index: u16) -> DriftResult<()> {
         validate!(
             asset_market_index == QUOTE_SPOT_MARKET_INDEX,
             ErrorCode::CouldNotFindSpotPosition,
@@ -355,7 +355,7 @@ impl LiquidatePerpMode for IsolatedMarginLiquidatePerpMode {
         )
     }
 
-    fn get_spot_token_amount(&self, user: &User, spot_market: &SpotMarket) -> DriftResult<u128> {
+    fn get_spot_token_amount(&self, user: &UserFixed, spot_market: &SpotMarket) -> DriftResult<u128> {
         let isolated_perp_position = user.get_isolated_perp_position(self.market_index)?;
 
         let token_amount = isolated_perp_position.get_isolated_token_amount(spot_market)?;
@@ -372,7 +372,7 @@ impl LiquidatePerpMode for IsolatedMarginLiquidatePerpMode {
 
     fn calculate_user_safest_position_tiers(
         &self,
-        _user: &User,
+        _user: &UserFixed,
         perp_market_map: &PerpMarketMap,
         _spot_market_map: &SpotMarketMap,
     ) -> DriftResult<(AssetTier, ContractTier)> {
@@ -383,7 +383,7 @@ impl LiquidatePerpMode for IsolatedMarginLiquidatePerpMode {
 
     fn decrease_spot_token_amount(
         &self,
-        user: &mut User,
+        user: &mut UserFixed,
         token_amount: u128,
         spot_market: &mut SpotMarket,
         _cumulative_deposit_delta: Option<u128>,

@@ -1,11 +1,11 @@
 use crate::error::DriftResult;
 use crate::state::spot_market::SpotBalanceType;
-use crate::state::user::User;
+use crate::state::user::UserFixed;
 
 #[cfg(test)]
 mod tests;
 
-pub fn is_cross_margin_bankrupt(user: &User) -> bool {
+pub fn is_cross_margin_bankrupt(user: &UserFixed) -> bool {
     // user is bankrupt iff they have spot liabilities, no spot assets, and no perp exposure
 
     let mut has_liability = false;
@@ -40,7 +40,7 @@ pub fn is_cross_margin_bankrupt(user: &User) -> bool {
     has_liability
 }
 
-pub fn is_isolated_margin_bankrupt(user: &User, market_index: u16) -> DriftResult<bool> {
+pub fn is_isolated_margin_bankrupt(user: &UserFixed, market_index: u16) -> DriftResult<bool> {
     let perp_position = user.get_isolated_perp_position(market_index)?;
 
     if perp_position.isolated_position_scaled_balance > 0 {

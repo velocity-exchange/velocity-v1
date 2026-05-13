@@ -15,7 +15,7 @@ use crate::math::constants::{
 };
 use crate::state::protected_maker_mode_config::ProtectedMakerParams;
 use crate::state::user::OrderBitFlag;
-use crate::{load, math, FeeTier};
+use crate::{load_user, math, FeeTier};
 
 use crate::math::margin::{
     calculate_margin_requirement_and_total_collateral_and_liability_info, MarginRequirementType,
@@ -35,6 +35,7 @@ use crate::state::spot_market::SpotMarket;
 use crate::state::spot_market_map::SpotMarketMap;
 use crate::state::user::{
     MarketType, Order, OrderFillSimulation, OrderStatus, OrderTriggerCondition, PerpPosition, User,
+    UserFixed,
 };
 use crate::state::user_map::UserMap;
 use crate::validate;
@@ -354,8 +355,12 @@ pub fn get_position_delta_for_fill(
 }
 
 #[inline(always)]
-pub fn should_expire_order(user: &User, user_order_index: usize, now: i64) -> DriftResult<bool> {
-    let order = &user.orders[user_order_index];
+pub fn should_expire_order(
+    user: &User<'_>,
+    user_order_index: usize,
+    now: i64,
+) -> DriftResult<bool> {
+    let order = &user.get_order(user_order_index);
     if order.status != OrderStatus::Open || order.max_ts == 0 || order.must_be_triggered() {
         return Ok(false);
     }
@@ -666,13 +671,13 @@ pub fn calculate_fill_price(
 }
 
 pub fn get_max_fill_amounts(
-    user: &User,
+    user: &User<'_>,
     user_order_index: usize,
     base_market: &SpotMarket,
     quote_market: &SpotMarket,
     is_leaving_drift: bool,
 ) -> DriftResult<(Option<u64>, Option<u64>)> {
-    let direction: PositionDirection = user.orders[user_order_index].direction;
+    let direction: PositionDirection = user.get_order(user_order_index).direction;
     match direction {
         PositionDirection::Long => {
             let max_quote = get_max_fill_amounts_for_market(user, quote_market, is_leaving_drift)?
@@ -691,7 +696,7 @@ pub fn get_max_fill_amounts(
 }
 
 fn get_max_fill_amounts_for_market(
-    user: &User,
+    user: &UserFixed,
     market: &SpotMarket,
     is_leaving_drift: bool,
 ) -> DriftResult<u128> {
@@ -701,7 +706,7 @@ fn get_max_fill_amounts_for_market(
 }
 
 pub fn find_maker_orders(
-    user: &User,
+    user: &User<'_>,
     direction: &PositionDirection,
     market_type: &MarketType,
     market_index: u16,
@@ -712,7 +717,7 @@ pub fn find_maker_orders(
 ) -> DriftResult<Vec<(usize, u64)>> {
     let mut orders: Vec<(usize, u64)> = Vec::with_capacity(32);
 
-    for (order_index, order) in user.orders.iter().enumerate() {
+    for (order_index, order) in user.iter_orders().enumerate() {
         if order.status != OrderStatus::Open {
             continue;
         }
@@ -745,7 +750,7 @@ pub fn find_maker_orders(
 }
 
 pub fn calculate_max_perp_order_size(
-    user: &User,
+    user: &UserFixed,
     position_index: usize,
     market_index: u16,
     direction: PositionDirection,
@@ -905,7 +910,7 @@ pub fn calculate_max_perp_order_size(
 
 #[allow(clippy::unwrap_used)]
 pub fn calculate_max_spot_order_size(
-    user: &User,
+    user: &UserFixed,
     market_index: u16,
     direction: PositionDirection,
     perp_market_map: &PerpMarketMap,
@@ -1220,9 +1225,9 @@ pub fn find_bids_and_asks_from_users(
     };
 
     for account_loader in users.0.values() {
-        let user = load!(account_loader)?;
+        let user = load_user!(account_loader)?;
 
-        for (_, order) in user.orders.iter().enumerate() {
+        for (_, order) in user.iter_orders().enumerate() {
             if order.status != OrderStatus::Open {
                 continue;
             }

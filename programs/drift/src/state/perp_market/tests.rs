@@ -263,7 +263,7 @@ mod amm_can_fill_order_tests {
     use crate::state::paused_operations::PerpOperation;
     use crate::state::perp_market::{PerpMarket, AMM};
     use crate::state::state::{State, ValidityGuardRails};
-    use crate::state::user::{Order, OrderStatus, User, UserStats};
+    use crate::state::user::{Order, OrderStatus, User, UserFixed, UserStats};
     use crate::PRICE_PRECISION_I64;
 
     fn base_state() -> State {

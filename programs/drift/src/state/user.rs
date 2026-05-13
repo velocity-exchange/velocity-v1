@@ -7,6 +7,7 @@ use crate::math::constants::{
     QUOTE_PRECISION_U64, QUOTE_SPOT_MARKET_INDEX, SPOT_WEIGHT_PRECISION,
     SPOT_WEIGHT_PRECISION_I128, THIRTY_DAY,
 };
+use crate::math::safe_unwrap::SafeUnwrap;
 use crate::math::margin::MarginRequirementType;
 use crate::math::orders::{
     apply_protected_maker_limit_price_offset, standardize_base_asset_amount, standardize_price,
@@ -30,9 +31,11 @@ use crate::{get_then_update_id, ID};
 use anchor_lang::prelude::borsh::{BorshDeserialize, BorshSerialize};
 use anchor_lang::prelude::*;
 use bytemuck::{Pod, Zeroable};
+use static_assertions::const_assert_eq;
+use std::cell::{Ref, RefMut};
 use std::cmp::max;
 use std::fmt;
-use std::ops::Neg;
+use std::ops::{Deref, DerefMut, Neg};
 use std::panic::Location;
 
 use crate::math::margin::{
@@ -67,15 +70,29 @@ pub enum SpecialUserStatus {
     VammHedger = 0b00000001,
 }
 
-// implement SIZE const for User
-impl Size for User {
-    const SIZE: usize = 4376;
+/// Default number of order slots provisioned at User init.
+pub const DEFAULT_USER_ORDERS: usize = 8;
+/// Maximum number of order slots a User account can grow to via `resize_user_orders`.
+pub const MAX_USER_ORDERS: usize = 128;
+
+// implement SIZE const for UserFixed
+//
+// SIZE is the *minimum* on-chain size (8-byte discriminator + fixed header,
+// orders_len=0). Actual rented size is `UserFixed::space(orders_len)`.
+// AccountLoader only checks `data.len() >= 8 + size_of::<UserFixed>()`, so
+// variable-length tails pass through unchanged.
+impl Size for UserFixed {
+    const SIZE: usize = UserFixed::MIN_SIZE;
 }
 
+/// On-chain fixed header of a User account. The trailing variable region
+/// (`[Order; orders_len]`) lives in the same account's data and is accessed
+/// through the [`User`] wrapper produced by [`UserLoader::load_user`] /
+/// [`UserLoader::load_user_mut`].
 #[account(zero_copy(unsafe))]
 #[derive(Default, Eq, PartialEq, Debug)]
 #[repr(C)]
-pub struct User {
+pub struct UserFixed {
     /// The owner/authority of the account
     pub authority: Pubkey,
     /// An addresses that can control the account on the authority's behalf. Has limited power, cant withdraw
@@ -86,8 +103,6 @@ pub struct User {
     pub spot_positions: [SpotPosition; 8],
     /// The user's perp positions
     pub perp_positions: [PerpPosition; 8],
-    /// The user's orders
-    pub orders: [Order; 32],
     /// The last time the user added perp lp positions
     pub last_add_perp_lp_shares_ts: i64,
     /// The total values of deposits the user has made
@@ -143,10 +158,39 @@ pub struct User {
     pub last_fuel_bonus_update_ts: u32,
     /// Whether the user is a special user (vamm hedger, etc)
     pub special_user_status: u8,
-    pub padding: [u8; 11],
+    pub padding: [u8; 7],
+    /// Number of dynamically-sized Order slots that follow this fixed header in
+    /// the account's data region. Grow-only via the `resize_user_orders` ix,
+    /// capped at [`MAX_USER_ORDERS`].
+    pub orders_len: u32,
 }
 
-impl User {
+// SAFETY: Order is #[repr(C)] of all-scalar fields totaling 96 bytes with no
+// implicit padding; safe to cast raw bytes to a typed slice via bytemuck.
+unsafe impl Pod for Order {}
+unsafe impl Zeroable for Order {}
+
+// NB: `#[zero_copy(unsafe)]` already provides `Pod for UserFixed`.
+
+const_assert_eq!(std::mem::size_of::<UserFixed>(), 1296);
+const_assert_eq!(std::mem::size_of::<UserFixed>() % 16, 0);
+const_assert_eq!(std::mem::size_of::<Order>(), 96);
+
+impl UserFixed {
+    /// Discriminator (8B) + fixed header. Lower bound for any valid User account.
+    pub const MIN_SIZE: usize = 8 + std::mem::size_of::<UserFixed>();
+
+    /// Rented size at default capacity (`DEFAULT_USER_ORDERS` slots).
+    pub const DEFAULT_SIZE: usize = Self::space(DEFAULT_USER_ORDERS);
+
+    /// Upper bound at `MAX_USER_ORDERS` slots.
+    pub const MAX_SIZE: usize = Self::space(MAX_USER_ORDERS);
+
+    /// Account size in bytes for a User holding exactly `num_orders` slots.
+    pub const fn space(num_orders: usize) -> usize {
+        Self::MIN_SIZE + num_orders * std::mem::size_of::<Order>()
+    }
+
     pub fn is_being_liquidated(&self) -> bool {
         self.is_cross_margin_being_liquidated() || self.has_isolated_margin_being_liquidated()
     }
@@ -310,28 +354,6 @@ impl User {
         )?;
 
         Ok(&self.perp_positions[position_index])
-    }
-
-    pub fn get_order_index(&self, order_id: u32) -> DriftResult<usize> {
-        self.orders
-            .iter()
-            .position(|order| order.order_id == order_id && order.status == OrderStatus::Open)
-            .ok_or(ErrorCode::OrderDoesNotExist)
-    }
-
-    pub fn get_order_index_by_user_order_id(&self, user_order_id: u8) -> DriftResult<usize> {
-        self.orders
-            .iter()
-            .position(|order| {
-                order.user_order_id == user_order_id && order.status == OrderStatus::Open
-            })
-            .ok_or(ErrorCode::OrderDoesNotExist)
-    }
-
-    pub fn get_order(&self, order_id: u32) -> Option<&Order> {
-        self.orders
-            .iter()
-            .find(|order| order.order_id == order_id && order.status == OrderStatus::Open)
     }
 
     pub fn get_last_order_id(&self) -> u32 {
@@ -585,16 +607,6 @@ impl User {
         }
 
         Ok(())
-    }
-
-    pub fn has_room_for_new_order(&self) -> bool {
-        for order in self.orders.iter() {
-            if order.is_available() {
-                return true;
-            }
-        }
-
-        false
     }
 
     pub fn get_fuel_bonus_numerator(&self, now: i64) -> DriftResult<i64> {
@@ -856,6 +868,206 @@ impl User {
         perp_position.max_margin_ratio = margin_ratio;
 
         Ok(())
+    }
+}
+
+// --- Dynamic-length orders region ---------------------------------------
+//
+// The User account is laid out as:
+//
+//   [8B discriminator][UserFixed header][orders_len * Order ...]
+//
+// `orders_len` lives inside `UserFixed`; the variable tail is held as opaque
+// bytes inside the runtime [`User`] wrapper and decoded on demand via
+// bytemuck. Loading goes through [`UserLoader`] rather than
+// `AccountLoader::load*`, which would only see the fixed portion.
+
+/// Runtime zero-copy view of a User account.
+///
+/// Holds a `RefMut` of the fixed header plus the opaque trailing bytes that
+/// back the orders region. Fixed-header fields are reachable through
+/// `Deref<Target = UserFixed>`; the orders region is accessed through methods
+/// (`get_order`, `iter_orders`, `set_order`, …) that decode bytes on demand.
+pub struct User<'a> {
+    fixed: RefMut<'a, UserFixed>,
+    orders: RefMut<'a, [u8]>,
+}
+
+impl<'a> Deref for User<'a> {
+    type Target = UserFixed;
+    fn deref(&self) -> &UserFixed {
+        &self.fixed
+    }
+}
+
+impl<'a> DerefMut for User<'a> {
+    fn deref_mut(&mut self) -> &mut UserFixed {
+        &mut self.fixed
+    }
+}
+
+impl<'a> User<'a> {
+    const ORDER_SIZE: usize = std::mem::size_of::<Order>();
+
+    /// Number of provisioned order slots in this account.
+    pub fn orders_len(&self) -> usize {
+        self.fixed.orders_len as usize
+    }
+
+    /// Set the number of provisioned order slots. Used by the resize handler
+    /// after Anchor's declarative `realloc` has grown the account region.
+    pub fn set_orders_len(&mut self, new_len: u32) {
+        self.fixed.orders_len = new_len;
+    }
+
+    fn order_slice(&self, i: usize) -> &[u8] {
+        let start = i * Self::ORDER_SIZE;
+        &self.orders[start..start + Self::ORDER_SIZE]
+    }
+
+    fn order_slice_mut(&mut self, i: usize) -> &mut [u8] {
+        let start = i * Self::ORDER_SIZE;
+        &mut self.orders[start..start + Self::ORDER_SIZE]
+    }
+
+    /// Borrow order at `index`. Panics on out-of-bounds (matches the previous
+    /// `user.get_order(i)` semantics).
+    pub fn get_order(&self, index: usize) -> &Order {
+        bytemuck::from_bytes::<Order>(self.order_slice(index))
+    }
+
+    /// Mutable borrow of order at `index`.
+    pub fn get_order_mut(&mut self, index: usize) -> &mut Order {
+        bytemuck::from_bytes_mut::<Order>(self.order_slice_mut(index))
+    }
+
+    /// Replace the order at `index`.
+    pub fn set_order(&mut self, index: usize, order: Order) {
+        *self.get_order_mut(index) = order;
+    }
+
+    /// Iterate immutably over all orders in the account.
+    pub fn iter_orders(&self) -> impl Iterator<Item = &Order> + '_ {
+        let len = self.orders_len();
+        (0..len).map(move |i| self.get_order(i))
+    }
+
+    /// Iterate mutably over all orders in the account.
+    pub fn iter_orders_mut(&mut self) -> impl Iterator<Item = &mut Order> + '_ {
+        let len = self.orders_len();
+        let size = Self::ORDER_SIZE;
+        self.orders[..len * size]
+            .chunks_exact_mut(size)
+            .map(|chunk| bytemuck::from_bytes_mut::<Order>(chunk))
+    }
+
+    /// Find the first available (unused) order slot.
+    pub fn first_available_slot(&self) -> Option<usize> {
+        self.iter_orders().position(|o| o.is_available())
+    }
+
+    /// Lookup an Open order by `order_id` and return its slot index.
+    pub fn get_order_index(&self, order_id: u32) -> DriftResult<usize> {
+        self.iter_orders()
+            .position(|o| o.order_id == order_id && o.status == OrderStatus::Open)
+            .ok_or(ErrorCode::OrderDoesNotExist)
+    }
+
+    /// Lookup an Open order by the user-supplied `user_order_id`.
+    pub fn get_order_index_by_user_order_id(&self, user_order_id: u8) -> DriftResult<usize> {
+        self.iter_orders()
+            .position(|o| o.user_order_id == user_order_id && o.status == OrderStatus::Open)
+            .ok_or(ErrorCode::OrderDoesNotExist)
+    }
+
+    /// Find an Open order by `order_id`, returning a reference to it.
+    pub fn find_order(&self, order_id: u32) -> Option<&Order> {
+        self.iter_orders()
+            .find(|o| o.order_id == order_id && o.status == OrderStatus::Open)
+    }
+
+    /// True if there is at least one available slot for a new order.
+    pub fn has_room_for_new_order(&self) -> bool {
+        self.iter_orders().any(|o| o.is_available())
+    }
+
+    /// Bytemuck-cast the orders tail as a typed mutable slice. Use sparingly —
+    /// most callers should prefer `iter_orders_mut`/`get_order_mut`. Held only
+    /// for short windows because it locks the whole tail mutably.
+    pub fn orders_as_mut_slice(&mut self) -> &mut [Order] {
+        let len = self.orders_len();
+        let bytes = &mut self.orders[..len * Self::ORDER_SIZE];
+        bytemuck::cast_slice_mut::<u8, Order>(bytes)
+    }
+
+    /// Bytemuck-cast the orders tail as a typed immutable slice.
+    pub fn orders_as_slice(&self) -> &[Order] {
+        let len = self.orders_len();
+        let bytes = &self.orders[..len * Self::ORDER_SIZE];
+        bytemuck::cast_slice::<u8, Order>(bytes)
+    }
+}
+
+/// Manual loader trait used in place of `AccountLoader::load*` for User
+/// accounts — `AccountLoader::load*` only sees `UserFixed`, while this trait
+/// also exposes the trailing orders region as opaque bytes for on-demand
+/// decoding via [`User`].
+///
+/// Implemented on `AccountLoader<'info, UserFixed>` so the returned `RefMut`s
+/// borrow from `&self` (the AccountLoader stored in `ctx.accounts`) and
+/// remain valid through the handler.
+pub trait UserLoader<'info> {
+    fn load_user<'a>(&'a self) -> DriftResult<User<'a>>;
+    fn load_user_mut<'a>(&'a self) -> DriftResult<User<'a>>;
+}
+
+fn load_user_view_from_ai<'a>(ai: &'a AccountInfo<'_>) -> DriftResult<User<'a>> {
+    validate!(
+        ai.owner == &ID,
+        ErrorCode::DefaultError,
+        "invalid user owner"
+    )?;
+    let data = ai.try_borrow_mut_data().safe_unwrap()?;
+    let (discriminator, rest) = RefMut::map_split(data, |d| d.split_at_mut(8));
+    validate!(
+        discriminator.as_ref() == UserFixed::DISCRIMINATOR,
+        ErrorCode::DefaultError,
+        "invalid user discriminator"
+    )?;
+    let (fixed_bytes, tail_bytes) =
+        RefMut::map_split(rest, |d| d.split_at_mut(std::mem::size_of::<UserFixed>()));
+    let fixed = RefMut::map(fixed_bytes, |b| bytemuck::from_bytes_mut::<UserFixed>(b));
+    let len = fixed.orders_len as usize;
+    let order_size = std::mem::size_of::<Order>();
+    let cap = tail_bytes.len() / order_size;
+    validate!(
+        len <= cap,
+        ErrorCode::DefaultError,
+        "orders_len {} exceeds account capacity {}",
+        len,
+        cap
+    )?;
+    Ok(User {
+        fixed,
+        orders: tail_bytes,
+    })
+}
+
+impl<'info> UserLoader<'info> for AccountLoader<'info, UserFixed> {
+    fn load_user<'a>(&'a self) -> DriftResult<User<'a>> {
+        load_user_view_from_ai(self.as_ref())
+    }
+    fn load_user_mut<'a>(&'a self) -> DriftResult<User<'a>> {
+        load_user_view_from_ai(self.as_ref())
+    }
+}
+
+impl<'info> UserLoader<'info> for AccountInfo<'info> {
+    fn load_user<'a>(&'a self) -> DriftResult<User<'a>> {
+        load_user_view_from_ai(self)
+    }
+    fn load_user_mut<'a>(&'a self) -> DriftResult<User<'a>> {
+        load_user_view_from_ai(self)
     }
 }
 
@@ -2030,7 +2242,7 @@ impl UserStats {
 
     pub fn update_fuel_bonus(
         &mut self,
-        user: &mut User,
+        user: &mut UserFixed,
         fuel_deposits: u32,
         fuel_borrows: u32,
         fuel_positions: u32,

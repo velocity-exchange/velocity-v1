@@ -730,6 +730,8 @@ pub enum ErrorCode {
     InvalidInsuranceFundWithdrawalRecipient,
     #[msg("Spot DLOB trading is disabled")]
     SpotDlobTradingDisabled,
+    #[msg("Invalid user orders resize (must grow and stay within MAX_USER_ORDERS)")]
+    InvalidUserOrdersResize,
 }
 
 #[macro_export]

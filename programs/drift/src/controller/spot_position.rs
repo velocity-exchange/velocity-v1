@@ -13,7 +13,7 @@ use crate::safe_increment;
 use crate::state::market_status::MarketStatus;
 use crate::state::paused_operations::SpotOperation;
 use crate::state::spot_market::{AssetTier, SpotBalance, SpotBalanceType, SpotMarket};
-use crate::state::user::{SpotPosition, User};
+use crate::state::user::{SpotPosition, UserFixed};
 
 use crate::validate;
 
@@ -113,7 +113,7 @@ pub fn update_spot_balances_and_cumulative_deposits_with_limits(
     token_amount: u128,
     update_direction: &SpotBalanceType,
     spot_market: &mut SpotMarket,
-    user: &mut User,
+    user: &mut UserFixed,
 ) -> DriftResult {
     let spot_position_index = user.force_get_spot_position_index(spot_market.market_index)?;
 

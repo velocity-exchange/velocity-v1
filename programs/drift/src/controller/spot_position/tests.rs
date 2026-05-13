@@ -6,7 +6,7 @@ mod update_spot_position_balance {
         LAMPORTS_PER_SOL_I64, SPOT_BALANCE_PRECISION, SPOT_BALANCE_PRECISION_U64,
     };
     use crate::state::spot_market::{SpotBalanceType, SpotMarket};
-    use crate::state::user::{SpotPosition, User};
+    use crate::state::user::{SpotPosition, User, UserFixed};
 
     #[test]
     fn deposit() {
@@ -105,7 +105,7 @@ mod update_spot_position_balance {
             ..SpotPosition::default()
         };
 
-        let mut user2 = User {
+        let mut user2 = UserFixed {
             spot_positions,
             ..User::default()
         };

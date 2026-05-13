@@ -22,7 +22,7 @@ use crate::state::perp_market_map::PerpMarketMap;
 use crate::state::pyth_lazer_oracle::PythLazerOracle;
 use crate::state::spot_market::{SpotBalanceType, SpotMarket};
 use crate::state::spot_market_map::SpotMarketMap;
-use crate::state::user::{PerpPosition, PositionFlag, SpotPosition, User, UserStats};
+use crate::state::user::{PerpPosition, PositionFlag, SpotPosition, User, UserFixed, UserStats};
 use crate::test_utils::{get_positions, get_pyth_price, get_spot_positions};
 use crate::{create_anchor_account_info, PRICE_PRECISION_I64};
 
@@ -100,7 +100,7 @@ fn can_transfer_to_isolated_when_cross_still_meets_after_withdraw() {
     let transfer_amount = 100 * 1_000_000_u128; // 100 USDC (6 decimals)
     let cross_after = 400 * SPOT_BALANCE_PRECISION_U64;
 
-    let mut user = User {
+    let mut user = UserFixed {
         spot_positions: get_spot_positions(SpotPosition {
             market_index: 0,
             balance_type: SpotBalanceType::Deposit,
@@ -223,7 +223,7 @@ fn cannot_transfer_to_isolated_when_cross_would_fail_after_withdraw() {
     let cross_after = 60 * SPOT_BALANCE_PRECISION_U64;
     let transfer_amount = 50 * 1_000_000_u128;
 
-    let mut user = User {
+    let mut user = UserFixed {
         spot_positions: get_spot_positions(SpotPosition {
             market_index: 0,
             balance_type: SpotBalanceType::Deposit,
@@ -347,7 +347,7 @@ fn can_transfer_from_isolated_when_isolated_still_meets_after_withdraw() {
     // transferring from isolated to cross, so we're checking current state.
     let isolated_collateral = 200 * SPOT_BALANCE_PRECISION_U64;
 
-    let mut user = User {
+    let mut user = UserFixed {
         spot_positions: [SpotPosition::default(); 8],
         perp_positions: get_positions(PerpPosition {
             market_index: 0,
@@ -459,7 +459,7 @@ fn cannot_transfer_from_isolated_when_isolated_would_fail() {
     // Isolated collateral only $30 (e.g. after moving most to cross) -> fails Initial.
     let isolated_collateral = 30 * SPOT_BALANCE_PRECISION_U64;
 
-    let mut user = User {
+    let mut user = UserFixed {
         spot_positions: [SpotPosition::default(); 8],
         perp_positions: get_positions(PerpPosition {
             market_index: 0,

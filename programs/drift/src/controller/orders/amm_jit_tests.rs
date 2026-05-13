@@ -101,7 +101,7 @@ pub mod amm_jit {
     use crate::state::perp_market_map::PerpMarketMap;
     use crate::state::spot_market::{SpotBalanceType, SpotMarket};
     use crate::state::spot_market_map::SpotMarketMap;
-    use crate::state::user::{OrderStatus, OrderType, SpotPosition, User, UserStats};
+    use crate::state::user::{OrderStatus, OrderType, SpotPosition, User, UserFixed, UserStats};
     use crate::state::user_map::{UserMap, UserStatsMap};
     use crate::test_utils::{get_orders, get_positions, get_pyth_price, get_spot_positions};
 
@@ -253,7 +253,7 @@ pub mod amm_jit {
         let spot_market_map = SpotMarketMap::load_one(&spot_market_account_info, true).unwrap();
 
         // taker wants to go long (would improve balance)
-        let mut taker = User {
+        let mut taker = UserFixed {
             orders: get_orders(Order {
                 market_index: 0,
                 status: OrderStatus::Open,
@@ -285,7 +285,7 @@ pub mod amm_jit {
         let maker_key = Pubkey::from_str("My11111111111111111111111111111111111111113").unwrap();
         let maker_authority =
             Pubkey::from_str("J83w4HKfqxwcq3BEMMkPFSppX3gqekLyLJBexebFVkix").unwrap();
-        let mut maker = User {
+        let mut maker = UserFixed {
             authority: maker_authority,
             orders: get_orders(Order {
                 market_index: 0,
@@ -336,7 +336,7 @@ pub mod amm_jit {
             .can_skip_auction_duration(&taker_stats, false)
             .unwrap();
         let is_amm_available = get_amm_is_available(
-            &taker.orders[order_index],
+            &taker.get_order(order_index),
             min_auction_duration,
             &market,
             &mut oracle_map,
@@ -452,7 +452,7 @@ pub mod amm_jit {
         let spot_market_map = SpotMarketMap::load_one(&spot_market_account_info, true).unwrap();
 
         // taker wants to go long (would improve balance)
-        let mut taker = User {
+        let mut taker = UserFixed {
             orders: get_orders(Order {
                 market_index: 0,
                 status: OrderStatus::Open,
@@ -484,7 +484,7 @@ pub mod amm_jit {
         let maker_key = Pubkey::from_str("My11111111111111111111111111111111111111113").unwrap();
         let maker_authority =
             Pubkey::from_str("J83w4HKfqxwcq3BEMMkPFSppX3gqekLyLJBexebFVkix").unwrap();
-        let mut maker = User {
+        let mut maker = UserFixed {
             authority: maker_authority,
             orders: get_orders(Order {
                 market_index: 0,
@@ -541,7 +541,7 @@ pub mod amm_jit {
             .can_skip_auction_duration(&taker_stats, false)
             .unwrap();
         let is_amm_available = get_amm_is_available(
-            &taker.orders[order_index],
+            &taker.get_order(order_index),
             min_auction_duration,
             &market,
             &mut oracle_map,
@@ -668,7 +668,7 @@ pub mod amm_jit {
         let spot_market_map = SpotMarketMap::load_one(&spot_market_account_info, true).unwrap();
 
         // taker wants to go long (would improve balance)
-        let mut taker = User {
+        let mut taker = UserFixed {
             orders: get_orders(Order {
                 market_index: 0,
                 status: OrderStatus::Open,
@@ -700,7 +700,7 @@ pub mod amm_jit {
         let maker_key = Pubkey::from_str("My11111111111111111111111111111111111111113").unwrap();
         let maker_authority =
             Pubkey::from_str("J83w4HKfqxwcq3BEMMkPFSppX3gqekLyLJBexebFVkix").unwrap();
-        let mut maker = User {
+        let mut maker = UserFixed {
             authority: maker_authority,
             orders: get_orders(Order {
                 market_index: 0,
@@ -757,7 +757,7 @@ pub mod amm_jit {
             .can_skip_auction_duration(&taker_stats, false)
             .unwrap();
         let is_amm_available = get_amm_is_available(
-            &taker.orders[order_index],
+            &taker.get_order(order_index),
             min_auction_duration,
             &market,
             &mut oracle_map,
@@ -881,7 +881,7 @@ pub mod amm_jit {
 
         // taker wants to go long (would improve balance)
         let taker_mul: i64 = 20;
-        let mut taker = User {
+        let mut taker = UserFixed {
             orders: get_orders(Order {
                 market_index: 0,
                 status: OrderStatus::Open,
@@ -913,7 +913,7 @@ pub mod amm_jit {
         let maker_key = Pubkey::from_str("My11111111111111111111111111111111111111113").unwrap();
         let maker_authority =
             Pubkey::from_str("J83w4HKfqxwcq3BEMMkPFSppX3gqekLyLJBexebFVkix").unwrap();
-        let mut maker = User {
+        let mut maker = UserFixed {
             authority: maker_authority,
             orders: get_orders(Order {
                 market_index: 0,
@@ -969,7 +969,7 @@ pub mod amm_jit {
             .can_skip_auction_duration(&taker_stats, false)
             .unwrap();
         let is_amm_available = get_amm_is_available(
-            &taker.orders[order_index],
+            &taker.get_order(order_index),
             min_auction_duration,
             &market,
             &mut oracle_map,
@@ -1102,7 +1102,7 @@ pub mod amm_jit {
         create_anchor_account_info!(spot_market, SpotMarket, spot_market_account_info);
         let spot_market_map = SpotMarketMap::load_one(&spot_market_account_info, true).unwrap();
 
-        let mut taker = User {
+        let mut taker = UserFixed {
             orders: get_orders(Order {
                 market_index: 0,
                 status: OrderStatus::Open,
@@ -1133,7 +1133,7 @@ pub mod amm_jit {
         let maker_key = Pubkey::from_str("My11111111111111111111111111111111111111113").unwrap();
         let maker_authority =
             Pubkey::from_str("J83w4HKfqxwcq3BEMMkPFSppX3gqekLyLJBexebFVkix").unwrap();
-        let mut maker = User {
+        let mut maker = UserFixed {
             authority: maker_authority,
             orders: get_orders(Order {
                 market_index: 0,
@@ -1184,7 +1184,7 @@ pub mod amm_jit {
             .can_skip_auction_duration(&taker_stats, false)
             .unwrap();
         let is_amm_available = get_amm_is_available(
-            &taker.orders[order_index],
+            &taker.get_order(order_index),
             min_auction_duration,
             &market,
             &mut oracle_map,
@@ -1224,7 +1224,7 @@ pub mod amm_jit {
 
         let taker_position = &taker.perp_positions[0];
         assert_eq!(taker_position.base_asset_amount, -BASE_PRECISION_I64);
-        assert!(taker.orders[0].is_available());
+        assert!(taker.get_order(0).is_available());
 
         let maker = makers_and_referrers.get_ref_mut(&maker_key).unwrap();
         let maker_position = &maker.perp_positions[0];
@@ -1319,7 +1319,7 @@ pub mod amm_jit {
         let spot_market_map = SpotMarketMap::load_one(&spot_market_account_info, true).unwrap();
 
         // taker wants to go long (would improve balance)
-        let mut taker = User {
+        let mut taker = UserFixed {
             orders: get_orders(Order {
                 market_index: 0,
                 status: OrderStatus::Open,
@@ -1350,7 +1350,7 @@ pub mod amm_jit {
         let maker_key = Pubkey::from_str("My11111111111111111111111111111111111111113").unwrap();
         let maker_authority =
             Pubkey::from_str("J83w4HKfqxwcq3BEMMkPFSppX3gqekLyLJBexebFVkix").unwrap();
-        let mut maker = User {
+        let mut maker = UserFixed {
             authority: maker_authority,
             orders: get_orders(Order {
                 market_index: 0,
@@ -1407,7 +1407,7 @@ pub mod amm_jit {
             .can_skip_auction_duration(&taker_stats, false)
             .unwrap();
         let is_amm_available = get_amm_is_available(
-            &taker.orders[order_index],
+            &taker.get_order(order_index),
             min_auction_duration,
             &market,
             &mut oracle_map,
@@ -1540,7 +1540,7 @@ pub mod amm_jit {
         let spot_market_map = SpotMarketMap::load_one(&spot_market_account_info, true).unwrap();
 
         // taker wants to go long (would improve balance)
-        let mut taker = User {
+        let mut taker = UserFixed {
             orders: get_orders(Order {
                 market_index: 0,
                 status: OrderStatus::Open,
@@ -1571,7 +1571,7 @@ pub mod amm_jit {
         let maker_key = Pubkey::from_str("My11111111111111111111111111111111111111113").unwrap();
         let maker_authority =
             Pubkey::from_str("J83w4HKfqxwcq3BEMMkPFSppX3gqekLyLJBexebFVkix").unwrap();
-        let mut maker = User {
+        let mut maker = UserFixed {
             authority: maker_authority,
             orders: get_orders(Order {
                 market_index: 0,
@@ -1745,7 +1745,7 @@ pub mod amm_jit {
         let spot_market_map = SpotMarketMap::load_one(&spot_market_account_info, true).unwrap();
 
         // taker wants to go long (would improve balance)
-        let mut taker = User {
+        let mut taker = UserFixed {
             orders: get_orders(Order {
                 market_index: 0,
                 status: OrderStatus::Open,
@@ -1776,7 +1776,7 @@ pub mod amm_jit {
         let maker_key = Pubkey::from_str("My11111111111111111111111111111111111111113").unwrap();
         let maker_authority =
             Pubkey::from_str("J83w4HKfqxwcq3BEMMkPFSppX3gqekLyLJBexebFVkix").unwrap();
-        let mut maker = User {
+        let mut maker = UserFixed {
             authority: maker_authority,
             orders: get_orders(Order {
                 market_index: 0,
@@ -1829,7 +1829,7 @@ pub mod amm_jit {
             .can_skip_auction_duration(&taker_stats, false)
             .unwrap();
         let is_amm_available = get_amm_is_available(
-            &taker.orders[order_index],
+            &taker.get_order(order_index),
             min_auction_duration,
             &market,
             &mut oracle_map,
@@ -1944,7 +1944,7 @@ pub mod amm_jit {
         let spot_market_map = SpotMarketMap::load_one(&spot_market_account_info, true).unwrap();
 
         // taker wants to go long (would improve balance)
-        let mut taker = User {
+        let mut taker = UserFixed {
             orders: get_orders(Order {
                 market_index: 0,
                 status: OrderStatus::Open,
@@ -1975,7 +1975,7 @@ pub mod amm_jit {
         let maker_key = Pubkey::from_str("My11111111111111111111111111111111111111113").unwrap();
         let maker_authority =
             Pubkey::from_str("J83w4HKfqxwcq3BEMMkPFSppX3gqekLyLJBexebFVkix").unwrap();
-        let mut maker = User {
+        let mut maker = UserFixed {
             authority: maker_authority,
             orders: get_orders(Order {
                 market_index: 0,
@@ -2031,7 +2031,7 @@ pub mod amm_jit {
             .can_skip_auction_duration(&taker_stats, false)
             .unwrap();
         let is_amm_available = get_amm_is_available(
-            &taker.orders[order_index],
+            &taker.get_order(order_index),
             min_auction_duration,
             &market,
             &mut oracle_map,
@@ -2159,7 +2159,7 @@ pub mod amm_jit {
         let spot_market_map = SpotMarketMap::load_one(&spot_market_account_info, true).unwrap();
 
         // taker wants to go long (would improve balance)
-        let mut taker = User {
+        let mut taker = UserFixed {
             orders: get_orders(Order {
                 market_index: 0,
                 status: OrderStatus::Open,
@@ -2190,7 +2190,7 @@ pub mod amm_jit {
         let maker_key = Pubkey::from_str("My11111111111111111111111111111111111111113").unwrap();
         let maker_authority =
             Pubkey::from_str("J83w4HKfqxwcq3BEMMkPFSppX3gqekLyLJBexebFVkix").unwrap();
-        let mut maker = User {
+        let mut maker = UserFixed {
             authority: maker_authority,
             orders: get_orders(Order {
                 market_index: 0,
@@ -2246,7 +2246,7 @@ pub mod amm_jit {
             .can_skip_auction_duration(&taker_stats, false)
             .unwrap();
         let is_amm_available = get_amm_is_available(
-            &taker.orders[order_index],
+            &taker.get_order(order_index),
             min_auction_duration,
             &market,
             &mut oracle_map,
@@ -2382,7 +2382,7 @@ pub mod amm_jit {
 
         // taker wants to go long (would improve balance)
         let auction_duration = 50;
-        let mut taker = User {
+        let mut taker = UserFixed {
             orders: get_orders(Order {
                 market_index: 0,
                 status: OrderStatus::Open,
@@ -2410,8 +2410,8 @@ pub mod amm_jit {
 
         let auction_start_price = 95062500_i64;
         let auction_end_price = 132154089_i64;
-        taker.orders[0].auction_start_price = auction_start_price;
-        taker.orders[0].auction_end_price = auction_end_price;
+        taker.get_order(0).auction_start_price = auction_start_price;
+        taker.get_order(0).auction_end_price = auction_end_price;
         println!("start stop {} {}", auction_start_price, auction_end_price);
 
         let mut filler = User::default();
@@ -2450,7 +2450,7 @@ pub mod amm_jit {
 
             // compute auction price
             let is_complete = crate::math::auction::is_auction_complete(
-                taker.orders[0].slot,
+                taker.get_order(0).slot,
                 auction_duration,
                 slot,
             )
@@ -2460,7 +2460,7 @@ pub mod amm_jit {
             }
 
             let auction_price =
-                crate::math::auction::calculate_auction_price(&taker.orders[0], slot, 1, None)
+                crate::math::auction::calculate_auction_price(&taker.get_order(0), slot, 1, None)
                     .unwrap();
             let baa = market.amm.order_step_size * 4;
 
@@ -2473,7 +2473,7 @@ pub mod amm_jit {
             };
             println!("mark: {} bid ask: {} {}", mark, bid, ask);
 
-            let mut maker = User {
+            let mut maker = UserFixed {
                 authority: maker_authority,
                 orders: get_orders(Order {
                     market_index: 0,
@@ -2660,7 +2660,7 @@ pub mod amm_jit {
 
         // taker wants to go long (would improve balance)
         let auction_duration = 50;
-        let mut taker = User {
+        let mut taker = UserFixed {
             orders: get_orders(Order {
                 market_index: 0,
                 status: OrderStatus::Open,
@@ -2690,8 +2690,8 @@ pub mod amm_jit {
 
         let auction_start_price = 105062500;
         let auction_end_price = 79550209;
-        taker.orders[0].auction_start_price = auction_start_price;
-        taker.orders[0].auction_end_price = auction_end_price;
+        taker.get_order(0).auction_start_price = auction_start_price;
+        taker.get_order(0).auction_end_price = auction_end_price;
         println!("start stop {} {}", auction_start_price, auction_end_price);
 
         let mut filler = User::default();
@@ -2730,7 +2730,7 @@ pub mod amm_jit {
 
             // compute auction price
             let is_complete = crate::math::auction::is_auction_complete(
-                taker.orders[0].slot,
+                taker.get_order(0).slot,
                 auction_duration,
                 slot,
             )
@@ -2741,7 +2741,7 @@ pub mod amm_jit {
             }
 
             let auction_price =
-                crate::math::auction::calculate_auction_price(&taker.orders[0], slot, 1, None)
+                crate::math::auction::calculate_auction_price(&taker.get_order(0), slot, 1, None)
                     .unwrap();
             let baa = 1000 * 4;
 
@@ -2754,7 +2754,7 @@ pub mod amm_jit {
             };
             println!("mark: {} bid ask: {} {}", mark, bid, ask);
 
-            let mut maker = User {
+            let mut maker = UserFixed {
                 authority: maker_authority,
                 orders: get_orders(Order {
                     market_index: 0,
@@ -2790,7 +2790,7 @@ pub mod amm_jit {
                 .can_skip_auction_duration(&taker_stats, false)
                 .unwrap();
             let is_amm_available = get_amm_is_available(
-                &taker.orders[order_index],
+                &taker.get_order(order_index),
                 min_auction_duration,
                 &market,
                 &mut oracle_map,
@@ -2941,7 +2941,7 @@ pub mod amm_jit {
         let spot_market_map = SpotMarketMap::load_one(&spot_market_account_info, true).unwrap();
 
         // taker wants to go long (would improve balance)
-        let mut taker = User {
+        let mut taker = UserFixed {
             orders: get_orders(Order {
                 market_index: 0,
                 status: OrderStatus::Open,
@@ -2973,7 +2973,7 @@ pub mod amm_jit {
         let maker_key = Pubkey::from_str("My11111111111111111111111111111111111111113").unwrap();
         let maker_authority =
             Pubkey::from_str("J83w4HKfqxwcq3BEMMkPFSppX3gqekLyLJBexebFVkix").unwrap();
-        let mut maker = User {
+        let mut maker = UserFixed {
             authority: maker_authority,
             orders: get_orders(Order {
                 market_index: 0,
@@ -3035,7 +3035,7 @@ pub mod amm_jit {
             .can_skip_auction_duration(&taker_stats, false)
             .unwrap();
         let is_amm_available = get_amm_is_available(
-            &taker.orders[order_index],
+            &taker.get_order(order_index),
             min_auction_duration,
             &market,
             &mut oracle_map,

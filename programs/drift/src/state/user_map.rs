@@ -2,7 +2,7 @@ use crate::error::{DriftResult, ErrorCode};
 use crate::math::safe_unwrap::SafeUnwrap;
 use crate::msg;
 use crate::state::traits::Size;
-use crate::state::user::{User, UserStats};
+use crate::state::user::{User, UserFixed, UserLoader, UserStats};
 use crate::validate;
 use anchor_lang::prelude::AccountLoader;
 use anchor_lang::Discriminator;
@@ -16,12 +16,12 @@ use std::iter::Peekable;
 use std::panic::Location;
 use std::slice::Iter;
 
-pub struct UserMap<'a>(pub BTreeMap<Pubkey, AccountLoader<'a, User>>);
+pub struct UserMap<'a>(pub BTreeMap<Pubkey, AccountLoader<'a, UserFixed>>);
 
 impl<'a> UserMap<'a> {
     #[track_caller]
     #[inline(always)]
-    pub fn get_ref(&self, user: &Pubkey) -> DriftResult<Ref<User>> {
+    pub fn get_ref(&self, user: &Pubkey) -> DriftResult<User> {
         let loader = match self.0.get(user) {
             Some(loader) => loader,
             None => {
@@ -36,7 +36,7 @@ impl<'a> UserMap<'a> {
             }
         };
 
-        match loader.load() {
+        match loader.load_user() {
             Ok(user) => Ok(user),
             Err(e) => {
                 let caller = Location::caller();
@@ -54,7 +54,7 @@ impl<'a> UserMap<'a> {
 
     #[track_caller]
     #[inline(always)]
-    pub fn get_ref_mut(&self, user: &Pubkey) -> DriftResult<RefMut<User>> {
+    pub fn get_ref_mut(&self, user: &Pubkey) -> DriftResult<User> {
         let loader = match self.0.get(user) {
             Some(loader) => loader,
             None => {
@@ -69,7 +69,7 @@ impl<'a> UserMap<'a> {
             }
         };
 
-        match loader.load_mut() {
+        match loader.load_user_mut() {
             Ok(user) => Ok(user),
             Err(e) => {
                 let caller = Location::caller();
@@ -85,7 +85,7 @@ impl<'a> UserMap<'a> {
         }
     }
 
-    pub fn insert(&mut self, user: Pubkey, account_loader: AccountLoader<'a, User>) -> DriftResult {
+    pub fn insert(&mut self, user: Pubkey, account_loader: AccountLoader<'a, UserFixed>) -> DriftResult {
         validate!(
             !self.0.contains_key(&user),
             ErrorCode::InvalidUserAccount,
@@ -108,7 +108,7 @@ impl<'a> UserMap<'a> {
     pub fn load_one<'b: 'a>(account_info: &'b AccountInfo<'a>) -> DriftResult<UserMap<'a>> {
         let mut user_map = UserMap(BTreeMap::new());
 
-        let user_discriminator: &[u8] = User::DISCRIMINATOR;
+        let user_discriminator: &[u8] = UserFixed::DISCRIMINATOR;
 
         let user_key = account_info.key;
 
@@ -116,7 +116,7 @@ impl<'a> UserMap<'a> {
             .try_borrow_data()
             .or(Err(ErrorCode::CouldNotLoadUserData))?;
 
-        let expected_data_len = User::SIZE;
+        let expected_data_len = UserFixed::SIZE;
         if data.len() < expected_data_len {
             return Err(ErrorCode::CouldNotLoadUserData);
         }
@@ -131,7 +131,7 @@ impl<'a> UserMap<'a> {
             return Err(ErrorCode::UserWrongMutability);
         }
 
-        let user_account_loader: AccountLoader<User> =
+        let user_account_loader: AccountLoader<UserFixed> =
             AccountLoader::try_from(account_info).or(Err(ErrorCode::InvalidUserAccount))?;
 
         user_map.insert(*user_key, user_account_loader)?;
@@ -280,7 +280,7 @@ pub fn load_user_maps<'a: 'b, 'b>(
     let mut user_map = UserMap::empty();
     let mut user_stats_map = UserStatsMap::empty();
 
-    let user_discriminator: &[u8] = User::DISCRIMINATOR;
+    let user_discriminator: &[u8] = UserFixed::DISCRIMINATOR;
     let user_stats_discriminator: &[u8] = UserStats::DISCRIMINATOR;
     while let Some(user_account_info) = account_info_iter.peek() {
         let user_key = user_account_info.key;
@@ -289,7 +289,7 @@ pub fn load_user_maps<'a: 'b, 'b>(
             .try_borrow_data()
             .or(Err(ErrorCode::CouldNotLoadUserData))?;
 
-        let expected_data_len = User::SIZE;
+        let expected_data_len = UserFixed::SIZE;
         if data.len() < expected_data_len {
             break;
         }
@@ -306,7 +306,7 @@ pub fn load_user_maps<'a: 'b, 'b>(
             return Err(ErrorCode::UserWrongMutability);
         }
 
-        let user_account_loader: AccountLoader<User> =
+        let user_account_loader: AccountLoader<UserFixed> =
             AccountLoader::try_from(user_account_info).or(Err(ErrorCode::InvalidUserAccount))?;
 
         user_map.0.insert(*user_key, user_account_loader);
@@ -362,7 +362,7 @@ pub fn load_user_map<'a: 'b, 'b>(
 ) -> DriftResult<UserMap<'b>> {
     let mut user_map = UserMap::empty();
 
-    let user_discriminator: &[u8] = User::DISCRIMINATOR;
+    let user_discriminator: &[u8] = UserFixed::DISCRIMINATOR;
     let user_stats_discriminator: &[u8] = UserStats::DISCRIMINATOR;
     while let Some(user_account_info) = account_info_iter.peek() {
         let user_key = user_account_info.key;
@@ -371,7 +371,7 @@ pub fn load_user_map<'a: 'b, 'b>(
             .try_borrow_data()
             .or(Err(ErrorCode::CouldNotLoadUserData))?;
 
-        let expected_user_data_len = User::SIZE;
+        let expected_user_data_len = UserFixed::SIZE;
         let expected_user_stats_len = UserStats::SIZE;
         if data.len() < expected_user_data_len && data.len() < expected_user_stats_len {
             break;
@@ -396,7 +396,7 @@ pub fn load_user_map<'a: 'b, 'b>(
             return Err(ErrorCode::UserWrongMutability);
         }
 
-        let user_account_loader: AccountLoader<User> =
+        let user_account_loader: AccountLoader<UserFixed> =
             AccountLoader::try_from(user_account_info).or(Err(ErrorCode::InvalidUserAccount))?;
 
         user_map.0.insert(*user_key, user_account_loader);

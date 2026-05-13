@@ -96,7 +96,7 @@ pub mod fuel_scoring {
     use crate::state::perp_market_map::PerpMarketMap;
     use crate::state::spot_market::{SpotBalanceType, SpotMarket};
     use crate::state::spot_market_map::SpotMarketMap;
-    use crate::state::user::{OrderStatus, OrderType, SpotPosition, User, UserStats};
+    use crate::state::user::{OrderStatus, OrderType, SpotPosition, User, UserFixed, UserStats};
     use crate::state::user_map::{UserMap, UserStatsMap};
     use crate::test_utils::{get_orders, get_positions, get_pyth_price, get_spot_positions};
     use crate::FUEL_START_TS;
@@ -188,7 +188,7 @@ pub mod fuel_scoring {
         let spot_market_map = SpotMarketMap::load_one(&spot_market_account_info, true).unwrap();
 
         // taker wants to go long (would improve balance)
-        let mut taker = User {
+        let mut taker = UserFixed {
             orders: get_orders(Order {
                 market_index: 0,
                 status: OrderStatus::Open,
@@ -220,7 +220,7 @@ pub mod fuel_scoring {
         let maker_key = Pubkey::from_str("My11111111111111111111111111111111111111113").unwrap();
         let maker_authority =
             Pubkey::from_str("J83w4HKfqxwcq3BEMMkPFSppX3gqekLyLJBexebFVkix").unwrap();
-        let mut maker = User {
+        let mut maker = UserFixed {
             authority: maker_authority,
             orders: get_orders(Order {
                 market_index: 0,
@@ -273,7 +273,7 @@ pub mod fuel_scoring {
             .can_skip_auction_duration(&taker_stats, false)
             .unwrap();
         let is_amm_available = get_amm_is_available(
-            &taker.orders[order_index],
+            &taker.get_order(order_index),
             min_auction_duration,
             &market,
             &mut oracle_map,
@@ -502,7 +502,7 @@ pub mod fuel_scoring {
             SpotMarketMap::load_multiple(spot_market_account_infos, true).unwrap();
 
         // taker wants to go long (would improve balance)
-        let mut taker = User {
+        let mut taker = UserFixed {
             orders: get_orders(Order {
                 market_index: 0,
                 status: OrderStatus::Open,
@@ -543,7 +543,7 @@ pub mod fuel_scoring {
         let maker_key = Pubkey::from_str("My11111111111111111111111111111111111111113").unwrap();
         let maker_authority =
             Pubkey::from_str("J83w4HKfqxwcq3BEMMkPFSppX3gqekLyLJBexebFVkix").unwrap();
-        let mut maker = User {
+        let mut maker = UserFixed {
             authority: maker_authority,
             orders: get_orders(Order {
                 market_index: 0,
@@ -742,7 +742,7 @@ pub mod fuel_scoring {
         let spot_market_map = SpotMarketMap::load_one(&spot_market_account_info, true).unwrap();
 
         // taker wants to go long (would improve balance)
-        let mut taker = User {
+        let mut taker = UserFixed {
             orders: get_orders(Order {
                 market_index: 0,
                 status: OrderStatus::Open,
@@ -775,7 +775,7 @@ pub mod fuel_scoring {
         let maker_key = Pubkey::from_str("My11111111111111111111111111111111111111113").unwrap();
         let maker_authority =
             Pubkey::from_str("J83w4HKfqxwcq3BEMMkPFSppX3gqekLyLJBexebFVkix").unwrap();
-        let mut maker = User {
+        let mut maker = UserFixed {
             authority: maker_authority,
             orders: get_orders(Order {
                 market_index: 0,

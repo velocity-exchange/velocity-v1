@@ -75,6 +75,38 @@ macro_rules! load {
     }};
 }
 
+/// Load a User account with its dynamic-length orders tail. Goes through the
+/// `UserLoader` trait (implemented on `AccountLoader<User>` and `AccountInfo`)
+/// rather than `AccountLoader::load`, which only sees the fixed header.
+/// Returns a `UserZeroCopy` view exposing both fixed-header fields (via
+/// `Deref<Target = User>`) and a typed `&[Order]` slice over the tail.
+#[macro_export]
+macro_rules! load_user {
+    ($account_loader:expr) => {{
+        use $crate::state::user::UserLoader;
+        ($account_loader).load_user().map_err(|e| {
+            msg!("e {:?}", e);
+            let error_code = ErrorCode::UnableToLoadAccountLoader;
+            msg!("Error {} thrown at {}:{}", error_code, file!(), line!());
+            error_code
+        })
+    }};
+}
+
+/// Mutable counterpart to [`load_user!`]. Returns a `UserZeroCopyMut` view.
+#[macro_export]
+macro_rules! load_user_mut {
+    ($account_loader:expr) => {{
+        use $crate::state::user::UserLoader;
+        ($account_loader).load_user_mut().map_err(|e| {
+            msg!("e {:?}", e);
+            let error_code = ErrorCode::UnableToLoadAccountLoader;
+            msg!("Error {} thrown at {}:{}", error_code, file!(), line!());
+            error_code
+        })
+    }};
+}
+
 #[macro_export]
 macro_rules! safe_increment {
     ($struct:expr, $value:expr) => {{

@@ -33,7 +33,7 @@ use crate::state::pyth_lazer_oracle::PythLazerOracle;
 use crate::state::spot_market::{InsuranceFund, SpotBalanceType, SpotMarket};
 use crate::state::spot_market_map::SpotMarketMap;
 use crate::state::user::PositionFlag;
-use crate::state::user::{Order, PerpPosition, SpotPosition, User};
+use crate::state::user::{Order, PerpPosition, SpotPosition, User, UserFixed};
 use crate::test_utils::*;
 use crate::test_utils::{get_pyth_price, get_spot_positions};
 
@@ -151,7 +151,7 @@ fn test_daily_withdraw_limits() {
         scaled_balance: SPOT_BALANCE_PRECISION_U64,
         ..SpotPosition::default()
     };
-    let mut user = User {
+    let mut user = UserFixed {
         orders: [Order::default(); 32],
         perp_positions: [PerpPosition::default(); 8],
         spot_positions,
@@ -259,7 +259,7 @@ fn test_daily_withdraw_limits() {
     assert_eq!(spot_market.deposit_token_twap, 99999755926);
 
     // tiny whale who will grow
-    let mut whale = User {
+    let mut whale = UserFixed {
         total_deposits: 50 * 100 * QUOTE_PRECISION_U64,
         total_withdraws: 0,
         spot_positions: get_spot_positions(SpotPosition {
@@ -471,7 +471,7 @@ fn test_check_withdraw_limits() {
         scaled_balance: SPOT_BALANCE_PRECISION_U64,
         ..SpotPosition::default()
     };
-    let user = User {
+    let user = UserFixed {
         orders: [Order::default(); 32],
         perp_positions: [PerpPosition::default(); 8],
         spot_positions,
@@ -701,7 +701,7 @@ fn test_check_withdraw_limits_above_optimal_utilization() {
         scaled_balance: SPOT_BALANCE_PRECISION_U64,
         ..SpotPosition::default()
     };
-    let user = User {
+    let user = UserFixed {
         orders: [Order::default(); 32],
         perp_positions: [PerpPosition::default(); 8],
         spot_positions,
@@ -817,7 +817,7 @@ fn check_fee_collection() {
         scaled_balance: SPOT_BALANCE_PRECISION_U64,
         ..SpotPosition::default()
     };
-    let mut user = User {
+    let mut user = UserFixed {
         orders: [Order::default(); 32],
         perp_positions: [PerpPosition::default(); 8],
         spot_positions,
@@ -1183,7 +1183,7 @@ fn check_fee_collection_larger_nums() {
         scaled_balance: SPOT_BALANCE_PRECISION_U64,
         ..SpotPosition::default()
     };
-    let mut user = User {
+    let mut user = UserFixed {
         orders: [Order::default(); 32],
         perp_positions: [PerpPosition::default(); 8],
         spot_positions,
@@ -1601,7 +1601,7 @@ fn attempt_borrow_with_massive_upnl() {
         ..SpotPosition::default()
     };
 
-    let user = User {
+    let user = UserFixed {
         orders: [Order::default(); 32],
         perp_positions: get_positions(PerpPosition {
             market_index: 0,

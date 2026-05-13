@@ -74,7 +74,7 @@ use crate::state::state::{
     ExchangeStatus, FeeStructure, LpPoolFeatureBitFlags, OracleGuardRails, State,
 };
 use crate::state::traits::Size;
-use crate::state::user::{SpecialUserStatus, User, UserStats};
+use crate::state::user::{SpecialUserStatus, User, UserFixed, UserStats};
 use crate::validate;
 use crate::validation::fee_structure::validate_fee_structure;
 use crate::validation::margin::{validate_margin, validate_margin_weights};
@@ -5840,7 +5840,7 @@ pub struct InitUserFuel<'info> {
     pub admin: Signer<'info>, // todo
     pub state: Box<Account<'info, State>>,
     #[account(mut)]
-    pub user: AccountLoader<'info, User>,
+    pub user: AccountLoader<'info, UserFixed>,
     #[account(mut)]
     pub user_stats: AccountLoader<'info, UserStats>,
 }
@@ -6074,7 +6074,7 @@ pub struct UpdateProtectedMakerModeConfig<'info> {
 pub struct AdminDeposit<'info> {
     pub state: Box<Account<'info, State>>,
     #[account(mut)]
-    pub user: AccountLoader<'info, User>,
+    pub user: AccountLoader<'info, UserFixed>,
     #[account(
         mut,
         constraint = admin.key() == admin_hot_wallet::id() || admin.key() == state.admin
@@ -6185,5 +6185,5 @@ pub struct UpdateSpecialUserStatus<'info> {
     pub admin: Signer<'info>,
     pub state: Box<Account<'info, State>>,
     #[account(mut)]
-    pub user: AccountLoader<'info, User>,
+    pub user: AccountLoader<'info, UserFixed>,
 }

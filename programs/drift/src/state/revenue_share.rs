@@ -494,7 +494,7 @@ impl<'a> RevenueShareEscrowZeroCopyMut<'a> {
     /// Marks any [`RevenueShareOrder`]s as Complete if there is no longer a corresponding
     /// open order in the user's account. This is used to lazily reconcile state when
     /// in place_order and settle_pnl instead of requiring explicit updates on cancels.
-    pub fn revoke_completed_orders(&mut self, user: &User) -> DriftResult<()> {
+    pub fn revoke_completed_orders(&mut self, user: &User<'_>) -> DriftResult<()> {
         for i in 0..self.orders_len() {
             if let Ok(rev_share_order) = self.get_order_mut(i) {
                 if rev_share_order.is_referral_order() {
@@ -504,7 +504,7 @@ impl<'a> RevenueShareEscrowZeroCopyMut<'a> {
                     continue;
                 }
                 if rev_share_order.is_open() && !rev_share_order.is_completed() {
-                    let user_order = user.orders[rev_share_order.user_order_index as usize];
+                    let user_order = user.get_order(rev_share_order.user_order_index as usize);
                     let still_open = user_order.status == OrderStatus::Open
                         && user_order.order_id == rev_share_order.order_id;
                     if !still_open {

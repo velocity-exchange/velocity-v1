@@ -109,6 +109,13 @@ pub mod drift {
         handle_resize_signed_msg_user_orders(ctx, num_orders)
     }
 
+    pub fn resize_user_orders<'c: 'info, 'info>(
+        ctx: Context<'info, ResizeUserOrders<'info>>,
+        new_orders_len: u16,
+    ) -> Result<()> {
+        handle_resize_user_orders(ctx, new_orders_len)
+    }
+
     pub fn initialize_signed_msg_ws_delegates<'c: 'info, 'info>(
         ctx: Context<'info, InitializeSignedMsgWsDelegates<'info>>,
         delegates: Vec<Pubkey>,

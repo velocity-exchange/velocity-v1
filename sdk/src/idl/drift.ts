@@ -6427,6 +6427,36 @@ export type Drift = {
 			];
 		},
 		{
+			name: 'resizeUserOrders';
+			discriminator: [232, 92, 251, 170, 144, 117, 188, 217];
+			accounts: [
+				{
+					name: 'user';
+					writable: true;
+				},
+				{
+					name: 'authority';
+					signer: true;
+					relations: ['user'];
+				},
+				{
+					name: 'payer';
+					writable: true;
+					signer: true;
+				},
+				{
+					name: 'systemProgram';
+					address: '11111111111111111111111111111111';
+				},
+			];
+			args: [
+				{
+					name: 'newOrdersLen';
+					type: 'u16';
+				},
+			];
+		},
+		{
 			name: 'resizeSignedMsgUserOrders';
 			discriminator: [137, 10, 87, 150, 18, 115, 79, 168];
 			accounts: [

@@ -1230,6 +1230,39 @@ export class DriftClient {
 		return [signedMsgUserAccountPublicKey, initializeUserAccountIx];
 	}
 
+	public async resizeUserOrders(
+		newOrdersLen: number,
+		subAccountId?: number,
+		txParams?: TxParams
+	): Promise<TransactionSignature> {
+		const ix = await this.getResizeUserOrdersInstruction(
+			newOrdersLen,
+			subAccountId
+		);
+		const tx = await this.buildTransaction([ix], txParams);
+		const { txSig } = await this.sendTransaction(tx, [], this.opts);
+		return txSig;
+	}
+
+	async getResizeUserOrdersInstruction(
+		newOrdersLen: number,
+		subAccountId?: number
+	): Promise<TransactionInstruction> {
+		const userAccountPublicKey = await getUserAccountPublicKey(
+			this.program.programId,
+			this.wallet.publicKey,
+			subAccountId ?? this.activeSubAccountId
+		);
+		return await this.program.instruction.resizeUserOrders(newOrdersLen, {
+			accounts: {
+				user: userAccountPublicKey,
+				authority: this.wallet.publicKey,
+				payer: this.wallet.publicKey,
+				systemProgram: SystemProgram.programId,
+			},
+		});
+	}
+
 	public async resizeSignedMsgUserOrders(
 		authority: PublicKey,
 		numOrders: number,

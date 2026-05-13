@@ -1,5 +1,5 @@
 {
-  "address": "vELoC1audYbSYVRXn1vPaV8Axoa9oU6BYmNGZZBDZ1P",
+  "address": "dRiftyHA39MWEi3m9aunc5MzRF1JYuBsbn6VPcn33UH",
   "metadata": {
     "name": "drift",
     "version": "2.162.0",
@@ -7970,6 +7970,47 @@
       "args": [
         {
           "name": "num_orders",
+          "type": "u16"
+        }
+      ]
+    },
+    {
+      "name": "resize_user_orders",
+      "discriminator": [
+        232,
+        92,
+        251,
+        170,
+        144,
+        117,
+        188,
+        217
+      ],
+      "accounts": [
+        {
+          "name": "user",
+          "writable": true
+        },
+        {
+          "name": "authority",
+          "signer": true,
+          "relations": [
+            "user"
+          ]
+        },
+        {
+          "name": "payer",
+          "writable": true,
+          "signer": true
+        },
+        {
+          "name": "system_program",
+          "address": "11111111111111111111111111111111"
+        }
+      ],
+      "args": [
+        {
+          "name": "new_orders_len",
           "type": "u16"
         }
       ]
@@ -17444,6 +17485,11 @@
       "code": 6350,
       "name": "SpotDlobTradingDisabled",
       "msg": "Spot DLOB trading is disabled"
+    },
+    {
+      "code": 6351,
+      "name": "InvalidUserOrdersResize",
+      "msg": "Invalid user orders resize (must grow and stay within MAX_USER_ORDERS)"
     }
   ],
   "types": [
@@ -25193,6 +25239,12 @@
     },
     {
       "name": "User",
+      "docs": [
+        "On-chain fixed header of a User account. The trailing variable region",
+        "(`[Order; orders_len]`) lives in the same account's data and is accessed",
+        "through the [`User`] wrapper produced by [`UserLoader::load_user`] /",
+        "[`UserLoader::load_user_mut`]."
+      ],
       "serialization": "bytemuckunsafe",
       "repr": {
         "kind": "c"
@@ -25255,22 +25307,6 @@
                   }
                 },
                 8
-              ]
-            }
-          },
-          {
-            "name": "orders",
-            "docs": [
-              "The user's orders"
-            ],
-            "type": {
-              "array": [
-                {
-                  "defined": {
-                    "name": "Order"
-                  }
-                },
-                32
               ]
             }
           },
@@ -25456,9 +25492,18 @@
             "type": {
               "array": [
                 "u8",
-                11
+                7
               ]
             }
+          },
+          {
+            "name": "orders_len",
+            "docs": [
+              "Number of dynamically-sized Order slots that follow this fixed header in",
+              "the account's data region. Grow-only via the `resize_user_orders` ix,",
+              "capped at [`MAX_USER_ORDERS`]."
+            ],
+            "type": "u32"
           }
         ]
       }

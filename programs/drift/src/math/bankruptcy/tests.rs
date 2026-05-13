@@ -1,12 +1,12 @@
 use crate::math::bankruptcy::is_cross_margin_bankrupt;
 use crate::math::bankruptcy::is_isolated_margin_bankrupt;
 use crate::state::spot_market::SpotBalanceType;
-use crate::state::user::{PerpPosition, PositionFlag, SpotPosition, UserFixed};
+use crate::state::user::{PerpPosition, PositionFlag, SpotPosition, User};
 use crate::test_utils::{get_positions, get_spot_positions};
 
 #[test]
 fn user_has_position_with_base() {
-    let user = UserFixed {
+    let user = User {
         perp_positions: get_positions(PerpPosition {
             base_asset_amount: 1,
             ..PerpPosition::default()
@@ -20,7 +20,7 @@ fn user_has_position_with_base() {
 
 #[test]
 fn user_has_position_with_positive_quote() {
-    let user = UserFixed {
+    let user = User {
         perp_positions: get_positions(PerpPosition {
             quote_asset_amount: 1,
             ..PerpPosition::default()
@@ -34,7 +34,7 @@ fn user_has_position_with_positive_quote() {
 
 #[test]
 fn user_with_deposit() {
-    let user = UserFixed {
+    let user = User {
         spot_positions: get_spot_positions(SpotPosition {
             balance_type: SpotBalanceType::Deposit,
             scaled_balance: 1,
@@ -49,7 +49,7 @@ fn user_with_deposit() {
 
 #[test]
 fn user_has_position_with_negative_quote() {
-    let user = UserFixed {
+    let user = User {
         perp_positions: get_positions(PerpPosition {
             quote_asset_amount: -1,
             ..PerpPosition::default()
@@ -63,7 +63,7 @@ fn user_has_position_with_negative_quote() {
 
 #[test]
 fn user_with_borrow() {
-    let user = UserFixed {
+    let user = User {
         spot_positions: get_spot_positions(SpotPosition {
             balance_type: SpotBalanceType::Borrow,
             scaled_balance: 1,
@@ -85,7 +85,7 @@ fn user_with_empty_position_and_balances() {
 
 #[test]
 fn user_with_isolated_position() {
-    let user = UserFixed {
+    let user = User {
         perp_positions: get_positions(PerpPosition {
             position_flag: PositionFlag::IsolatedPosition as u8,
             ..PerpPosition::default()

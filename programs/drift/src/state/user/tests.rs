@@ -11,12 +11,12 @@ mod get_claimable_pnl {
     use crate::state::oracle::OracleSource;
     use crate::state::perp_market::{PerpMarket, PoolBalance, AMM};
     use crate::state::spot_market::{SpotBalance, SpotMarket};
-    use crate::state::user::{PerpPosition, User, UserFixed};
+    use crate::state::user::{PerpPosition, User};
     use crate::test_utils::get_positions;
 
     #[test]
     fn long_negative_unrealized_pnl() {
-        let user = UserFixed {
+        let user = User {
             perp_positions: get_positions(PerpPosition {
                 base_asset_amount: BASE_PRECISION_I64,
                 quote_asset_amount: -100 * QUOTE_PRECISION_I64,
@@ -35,7 +35,7 @@ mod get_claimable_pnl {
 
     #[test]
     fn long_positive_unrealized_pnl_more_than_max_pnl_to_settle() {
-        let user = UserFixed {
+        let user = User {
             perp_positions: get_positions(PerpPosition {
                 base_asset_amount: BASE_PRECISION_I64,
                 quote_asset_amount: -50 * QUOTE_PRECISION_I64,
@@ -53,7 +53,7 @@ mod get_claimable_pnl {
 
     #[test]
     fn long_positive_unrealized_pnl_more_than_max_pnl_and_pool_excess_to_settle() {
-        let user = UserFixed {
+        let user = User {
             perp_positions: get_positions(PerpPosition {
                 base_asset_amount: BASE_PRECISION_I64,
                 quote_asset_amount: -50 * QUOTE_PRECISION_I64,
@@ -81,7 +81,7 @@ mod get_claimable_pnl {
 
     #[test]
     fn long_positive_unrealized_pnl_less_than_max_pnl_to_settle() {
-        let user = UserFixed {
+        let user = User {
             perp_positions: get_positions(PerpPosition {
                 base_asset_amount: BASE_PRECISION_I64,
                 quote_asset_amount: -50 * QUOTE_PRECISION_I64,
@@ -99,7 +99,7 @@ mod get_claimable_pnl {
 
     #[test]
     fn long_positive_unrealized_pnl_less_than_max_pnl_and_pool_excess_to_settle() {
-        let user = UserFixed {
+        let user = User {
             perp_positions: get_positions(PerpPosition {
                 base_asset_amount: BASE_PRECISION_I64,
                 quote_asset_amount: -50 * QUOTE_PRECISION_I64,
@@ -117,7 +117,7 @@ mod get_claimable_pnl {
 
     #[test]
     fn long_no_negative_pnl_if_already_settled_to_oracle() {
-        let user = UserFixed {
+        let user = User {
             perp_positions: get_positions(PerpPosition {
                 base_asset_amount: BASE_PRECISION_I64,
                 quote_asset_amount: -150 * QUOTE_PRECISION_I64,
@@ -136,7 +136,7 @@ mod get_claimable_pnl {
 
     #[test]
     fn short_negative_unrealized_pnl() {
-        let user = UserFixed {
+        let user = User {
             perp_positions: get_positions(PerpPosition {
                 base_asset_amount: -BASE_PRECISION_I64,
                 quote_asset_amount: 100 * QUOTE_PRECISION_I64,
@@ -155,7 +155,7 @@ mod get_claimable_pnl {
 
     #[test]
     fn short_positive_unrealized_pnl_more_than_max_pnl_to_settle() {
-        let user = UserFixed {
+        let user = User {
             perp_positions: get_positions(PerpPosition {
                 base_asset_amount: -BASE_PRECISION_I64,
                 quote_asset_amount: 150 * QUOTE_PRECISION_I64,
@@ -173,7 +173,7 @@ mod get_claimable_pnl {
 
     #[test]
     fn short_positive_unrealized_pnl_less_than_max_pnl_to_settle() {
-        let user = UserFixed {
+        let user = User {
             perp_positions: get_positions(PerpPosition {
                 base_asset_amount: -BASE_PRECISION_I64,
                 quote_asset_amount: 150 * QUOTE_PRECISION_I64,
@@ -192,7 +192,7 @@ mod get_claimable_pnl {
 
     #[test]
     fn short_no_negative_pnl_if_already_settled_to_oracle() {
-        let user = UserFixed {
+        let user = User {
             perp_positions: get_positions(PerpPosition {
                 base_asset_amount: -BASE_PRECISION_I64,
                 quote_asset_amount: 150 * QUOTE_PRECISION_I64,
@@ -244,7 +244,7 @@ mod get_claimable_pnl {
             ..PerpMarket::default()
         };
 
-        let user1 = UserFixed {
+        let user1 = User {
             perp_positions: get_positions(PerpPosition {
                 base_asset_amount: -BASE_PRECISION_I64,
                 quote_asset_amount: 150 * QUOTE_PRECISION_I64,
@@ -255,7 +255,7 @@ mod get_claimable_pnl {
             ..User::default()
         };
 
-        let user2 = UserFixed {
+        let user2 = User {
             perp_positions: get_positions(PerpPosition {
                 base_asset_amount: BASE_PRECISION_I64,
                 quote_asset_amount: -150 * QUOTE_PRECISION_I64,
@@ -266,7 +266,7 @@ mod get_claimable_pnl {
             ..User::default()
         };
 
-        let user3 = UserFixed {
+        let user3 = User {
             perp_positions: get_positions(PerpPosition {
                 base_asset_amount: BASE_PRECISION_I64,
                 quote_asset_amount: -100 * QUOTE_PRECISION_I64,
@@ -350,7 +350,7 @@ mod get_claimable_pnl {
             ..PerpMarket::default()
         };
 
-        let user1 = UserFixed {
+        let user1 = User {
             perp_positions: get_positions(PerpPosition {
                 base_asset_amount: -BASE_PRECISION_I64,
                 quote_asset_amount: 150 * QUOTE_PRECISION_I64,
@@ -361,7 +361,7 @@ mod get_claimable_pnl {
             ..User::default()
         };
 
-        let user2 = UserFixed {
+        let user2 = User {
             perp_positions: get_positions(PerpPosition {
                 base_asset_amount: BASE_PRECISION_I64,
                 quote_asset_amount: -149 * QUOTE_PRECISION_I64,
@@ -372,7 +372,7 @@ mod get_claimable_pnl {
             ..User::default()
         };
 
-        let user3 = UserFixed {
+        let user3 = User {
             perp_positions: get_positions(PerpPosition {
                 base_asset_amount: BASE_PRECISION_I64,
                 quote_asset_amount: -100 * QUOTE_PRECISION_I64,
@@ -501,7 +501,7 @@ mod get_claimable_pnl {
             ..PerpMarket::default()
         };
 
-        let user1 = UserFixed {
+        let user1 = User {
             perp_positions: get_positions(PerpPosition {
                 base_asset_amount: -BASE_PRECISION_I64,
                 quote_asset_amount: 150 * QUOTE_PRECISION_I64,
@@ -512,7 +512,7 @@ mod get_claimable_pnl {
             ..User::default()
         };
 
-        let user2 = UserFixed {
+        let user2 = User {
             perp_positions: get_positions(PerpPosition {
                 base_asset_amount: BASE_PRECISION_I64,
                 quote_asset_amount: -150 * QUOTE_PRECISION_I64,
@@ -523,7 +523,7 @@ mod get_claimable_pnl {
             ..User::default()
         };
 
-        let user3 = UserFixed {
+        let user3 = User {
             perp_positions: get_positions(PerpPosition {
                 base_asset_amount: BASE_PRECISION_I64,
                 quote_asset_amount: -100 * QUOTE_PRECISION_I64,
@@ -1635,7 +1635,7 @@ mod get_base_asset_amount_unfilled {
 }
 
 mod open_orders {
-    use crate::state::user::{User, UserFixed};
+    use crate::state::user::{User, UserView};
 
     #[test]
     fn test() {
@@ -1672,7 +1672,7 @@ mod open_orders {
 }
 
 mod update_user_status {
-    use crate::state::user::{User, UserFixed, UserStatus};
+    use crate::state::user::{User, UserStatus};
 
     #[test]
     fn test() {
@@ -1690,7 +1690,7 @@ mod update_user_status {
         assert!(user.is_cross_margin_being_liquidated());
         assert!(user.is_cross_margin_bankrupt());
 
-        let mut user = UserFixed {
+        let mut user = User {
             status: UserStatus::ReduceOnly as u8,
             ..User::default()
         };
@@ -2182,7 +2182,7 @@ mod update_referrer_status {
 }
 
 mod next_liquidation_id {
-    use crate::state::user::{PerpPosition, PositionFlag, User, UserFixed};
+    use crate::state::user::{PerpPosition, PositionFlag, User};
 
     #[test]
     fn test() {
@@ -2230,7 +2230,7 @@ mod next_liquidation_id {
 }
 
 mod force_get_isolated_perp_position_mut {
-    use crate::state::user::{PerpPosition, PositionFlag, User, UserFixed};
+    use crate::state::user::{PerpPosition, PositionFlag, User};
 
     #[test]
     fn test() {
@@ -2402,7 +2402,7 @@ pub mod meets_withdraw_margin_requirement_and_increment_fuel_bonus {
         )
         .unwrap();
 
-        let mut user = UserFixed {
+        let mut user = User {
             orders: get_orders(Order {
                 market_index: 0,
                 status: OrderStatus::Open,
@@ -2449,7 +2449,7 @@ pub mod meets_withdraw_margin_requirement_and_increment_fuel_bonus {
             ..PerpPosition::default()
         };
 
-        let mut liquidator = UserFixed {
+        let mut liquidator = User {
             spot_positions: get_spot_positions(SpotPosition {
                 market_index: 0,
                 balance_type: SpotBalanceType::Deposit,
@@ -2684,7 +2684,7 @@ mod update_open_bids_and_asks {
 }
 
 mod force_get_user_perp_position_mut {
-    use crate::state::user::{PerpPosition, User, UserFixed};
+    use crate::state::user::{PerpPosition, User};
 
     #[test]
     fn test() {

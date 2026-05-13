@@ -2,11 +2,11 @@ use crate::error::{DriftResult, ErrorCode};
 use crate::math::constants::THIRTEEN_DAY;
 use crate::msg;
 use crate::state::spot_market::SpotBalanceType;
-use crate::state::user::{UserStats, User};
+use crate::state::user::{User, UserStats, UserView};
 use crate::{validate, State};
 
 pub fn validate_user_deletion(
-    user: &User<'_>,
+    user: &UserView<'_>,
     user_stats: &UserStats,
     state: &State,
     now: i64,
@@ -71,7 +71,7 @@ pub fn validate_user_deletion(
     Ok(())
 }
 
-pub fn validate_user_is_idle(user: &User<'_>, slot: u64, accelerated: bool) -> DriftResult {
+pub fn validate_user_is_idle(user: &UserView<'_>, slot: u64, accelerated: bool) -> DriftResult {
     let slots_since_last_active = slot.saturating_sub(user.last_active_slot);
 
     let slots_before_idle = if accelerated {

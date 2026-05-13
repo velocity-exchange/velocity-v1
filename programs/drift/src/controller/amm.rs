@@ -31,7 +31,7 @@ use crate::state::oracle::OraclePriceData;
 use crate::state::paused_operations::PerpOperation;
 use crate::state::perp_market::{MarketConfigFlag, PerpMarket, AMM};
 use crate::state::spot_market::{SpotBalance, SpotBalanceType, SpotMarket};
-use crate::state::user::UserFixed;
+use crate::state::user::User;
 use crate::validate;
 
 #[cfg(test)]
@@ -710,7 +710,7 @@ pub fn update_pool_balances(
 pub fn update_pnl_pool_and_user_balance(
     market: &mut PerpMarket,
     quote_spot_market: &mut SpotMarket,
-    user: &mut UserFixed,
+    user: &mut User,
     unrealized_pnl_with_fee: i128,
 ) -> DriftResult<i128> {
     let pnl_to_settle_with_user = if unrealized_pnl_with_fee > 0 {

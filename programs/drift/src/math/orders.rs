@@ -34,8 +34,7 @@ use crate::state::perp_market_map::PerpMarketMap;
 use crate::state::spot_market::SpotMarket;
 use crate::state::spot_market_map::SpotMarketMap;
 use crate::state::user::{
-    MarketType, Order, OrderFillSimulation, OrderStatus, OrderTriggerCondition, PerpPosition, User,
-    UserFixed,
+    MarketType, Order, OrderFillSimulation, OrderStatus, OrderTriggerCondition, PerpPosition, User, UserView,
 };
 use crate::state::user_map::UserMap;
 use crate::validate;
@@ -356,7 +355,7 @@ pub fn get_position_delta_for_fill(
 
 #[inline(always)]
 pub fn should_expire_order(
-    user: &User<'_>,
+    user: &UserView<'_>,
     user_order_index: usize,
     now: i64,
 ) -> DriftResult<bool> {
@@ -671,7 +670,7 @@ pub fn calculate_fill_price(
 }
 
 pub fn get_max_fill_amounts(
-    user: &User<'_>,
+    user: &UserView<'_>,
     user_order_index: usize,
     base_market: &SpotMarket,
     quote_market: &SpotMarket,
@@ -696,7 +695,7 @@ pub fn get_max_fill_amounts(
 }
 
 fn get_max_fill_amounts_for_market(
-    user: &UserFixed,
+    user: &User,
     market: &SpotMarket,
     is_leaving_drift: bool,
 ) -> DriftResult<u128> {
@@ -706,7 +705,7 @@ fn get_max_fill_amounts_for_market(
 }
 
 pub fn find_maker_orders(
-    user: &User<'_>,
+    user: &UserView<'_>,
     direction: &PositionDirection,
     market_type: &MarketType,
     market_index: u16,
@@ -750,7 +749,7 @@ pub fn find_maker_orders(
 }
 
 pub fn calculate_max_perp_order_size(
-    user: &UserFixed,
+    user: &User,
     position_index: usize,
     market_index: u16,
     direction: PositionDirection,
@@ -910,7 +909,7 @@ pub fn calculate_max_perp_order_size(
 
 #[allow(clippy::unwrap_used)]
 pub fn calculate_max_spot_order_size(
-    user: &UserFixed,
+    user: &User,
     market_index: u16,
     direction: PositionDirection,
     perp_market_map: &PerpMarketMap,

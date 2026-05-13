@@ -74,7 +74,7 @@ fn build_infos<'a>(entries: &'a mut [(Pubkey, OwnedAccount)]) -> Vec<AccountInfo
 
 /// Compute margin info for `user` against the owned market/oracle data in `accounts`.
 pub fn calculate_margin(
-    user: &UserFixed,
+    user: &User,
     accounts: &mut DriftAccounts,
     context: MarginContext,
 ) -> DriftResult<MarginCalculation> {

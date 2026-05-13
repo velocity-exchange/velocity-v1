@@ -17,7 +17,7 @@ use crate::math::safe_math::SafeMath;
 use crate::math_error;
 use crate::safe_increment;
 use crate::state::perp_market::PerpMarket;
-use crate::state::user::{PerpPosition, PerpPositions, UserFixed};
+use crate::state::user::{PerpPosition, PerpPositions, User};
 use crate::validate;
 
 #[cfg(test)]
@@ -392,7 +392,7 @@ pub fn update_position_with_base_asset_amount(
     base_asset_amount: u64,
     direction: PositionDirection,
     market: &mut PerpMarket,
-    user: &mut UserFixed,
+    user: &mut User,
     position_index: usize,
     fill_price: Option<u64>,
 ) -> DriftResult<(u64, i64, i64)> {
@@ -526,7 +526,11 @@ pub fn update_quote_break_even_amount(
     Ok(())
 }
 
-pub fn update_settled_pnl(user: &mut UserFixed, position_index: usize, delta: i64) -> DriftResult<()> {
+pub fn update_settled_pnl(
+    user: &mut User,
+    position_index: usize,
+    delta: i64,
+) -> DriftResult<()> {
     update_user_settled_pnl(user, delta)?;
     update_position_settled_pnl(&mut user.perp_positions[position_index], delta)?;
     Ok(())
@@ -538,7 +542,7 @@ pub fn update_position_settled_pnl(position: &mut PerpPosition, delta: i64) -> D
     Ok(())
 }
 
-pub fn update_user_settled_pnl(user: &mut UserFixed, delta: i64) -> DriftResult<()> {
+pub fn update_user_settled_pnl(user: &mut User, delta: i64) -> DriftResult<()> {
     safe_increment!(user.settled_perp_pnl, delta);
     Ok(())
 }

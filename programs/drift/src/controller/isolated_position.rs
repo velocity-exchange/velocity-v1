@@ -15,7 +15,7 @@ use crate::state::perp_market_map::PerpMarketMap;
 use crate::state::spot_market::SpotBalanceType;
 use crate::state::spot_market_map::SpotMarketMap;
 use crate::state::state::State;
-use crate::state::user::{UserFixed, UserStats};
+use crate::state::user::{User, UserStats, UserView};
 use crate::validate;
 use anchor_lang::prelude::*;
 
@@ -26,7 +26,7 @@ mod tests;
 
 pub fn deposit_into_isolated_perp_position<'c: 'info, 'info>(
     user_key: Pubkey,
-    user: &mut UserFixed,
+    user: &mut User,
     perp_market_map: &PerpMarketMap,
     spot_market_map: &SpotMarketMap,
     oracle_map: &mut OracleMap,
@@ -157,7 +157,7 @@ pub fn deposit_into_isolated_perp_position<'c: 'info, 'info>(
 }
 
 pub fn transfer_isolated_perp_position_deposit<'c: 'info, 'info>(
-    user: &mut UserFixed,
+    user: &mut User,
     user_stats: Option<&mut UserStats>,
     perp_market_map: &PerpMarketMap,
     spot_market_map: &SpotMarketMap,
@@ -346,7 +346,7 @@ pub fn transfer_isolated_perp_position_deposit<'c: 'info, 'info>(
 
 pub fn withdraw_from_isolated_perp_position<'c: 'info, 'info>(
     user_key: Pubkey,
-    user: &mut UserFixed,
+    user: &mut User,
     user_stats: &mut UserStats,
     perp_market_map: &PerpMarketMap,
     spot_market_map: &SpotMarketMap,

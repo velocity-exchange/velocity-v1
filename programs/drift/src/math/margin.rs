@@ -28,7 +28,7 @@ use crate::state::perp_market::{ContractTier, PerpMarket};
 use crate::state::perp_market_map::PerpMarketMap;
 use crate::state::spot_market::{AssetTier, SpotBalanceType};
 use crate::state::spot_market_map::SpotMarketMap;
-use crate::state::user::{MarketType, OrderFillSimulation, PerpPosition, UserFixed};
+use crate::state::user::{MarketType, OrderFillSimulation, PerpPosition, User};
 use num_integer::Roots;
 use std::cmp::{max, min, Ordering};
 
@@ -196,7 +196,7 @@ pub fn calculate_perp_position_value_and_pnl(
 }
 
 pub fn calculate_user_safest_position_tiers(
-    user: &UserFixed,
+    user: &User,
     perp_market_map: &PerpMarketMap,
     spot_market_map: &SpotMarketMap,
 ) -> DriftResult<(AssetTier, ContractTier)> {
@@ -223,7 +223,7 @@ pub fn calculate_user_safest_position_tiers(
 }
 
 pub fn calculate_margin_requirement_and_total_collateral_and_liability_info(
-    user: &UserFixed,
+    user: &User,
     perp_market_map: &PerpMarketMap,
     spot_market_map: &SpotMarketMap,
     oracle_map: &mut OracleMap,
@@ -689,7 +689,7 @@ pub fn calculate_margin_requirement_and_total_collateral_and_liability_info(
 }
 
 pub fn validate_any_isolated_tier_requirements(
-    user: &UserFixed,
+    user: &User,
     calculation: &MarginCalculation,
 ) -> DriftResult {
     if calculation.with_perp_isolated_liability && !user.is_reduce_only() {
@@ -728,7 +728,7 @@ pub fn validate_any_isolated_tier_requirements(
 }
 
 pub fn meets_place_order_margin_requirement(
-    user: &UserFixed,
+    user: &User,
     perp_market_map: &PerpMarketMap,
     spot_market_map: &SpotMarketMap,
     oracle_map: &mut OracleMap,
@@ -771,7 +771,7 @@ pub fn meets_place_order_margin_requirement(
 }
 
 pub fn meets_initial_margin_requirement(
-    user: &UserFixed,
+    user: &User,
     perp_market_map: &PerpMarketMap,
     spot_market_map: &SpotMarketMap,
     oracle_map: &mut OracleMap,
@@ -787,7 +787,7 @@ pub fn meets_initial_margin_requirement(
 }
 
 pub fn meets_settle_pnl_maintenance_margin_requirement(
-    user: &UserFixed,
+    user: &User,
     perp_market_map: &PerpMarketMap,
     spot_market_map: &SpotMarketMap,
     oracle_map: &mut OracleMap,
@@ -803,7 +803,7 @@ pub fn meets_settle_pnl_maintenance_margin_requirement(
 }
 
 pub fn meets_maintenance_margin_requirement(
-    user: &UserFixed,
+    user: &User,
     perp_market_map: &PerpMarketMap,
     spot_market_map: &SpotMarketMap,
     oracle_map: &mut OracleMap,
@@ -820,7 +820,7 @@ pub fn meets_maintenance_margin_requirement(
 
 pub fn calculate_max_withdrawable_amount(
     market_index: u16,
-    user: &UserFixed,
+    user: &User,
     perp_market_map: &PerpMarketMap,
     spot_market_map: &SpotMarketMap,
     oracle_map: &mut OracleMap,
@@ -877,7 +877,7 @@ pub fn calculate_max_withdrawable_amount(
 }
 
 pub fn validate_spot_margin_trading(
-    user: &UserFixed,
+    user: &User,
     perp_market_map: &PerpMarketMap,
     spot_market_map: &SpotMarketMap,
     oracle_map: &mut OracleMap,
@@ -945,7 +945,7 @@ pub fn validate_spot_margin_trading(
 }
 
 pub fn calculate_user_equity(
-    user: &UserFixed,
+    user: &User,
     perp_market_map: &PerpMarketMap,
     spot_market_map: &SpotMarketMap,
     oracle_map: &mut OracleMap,

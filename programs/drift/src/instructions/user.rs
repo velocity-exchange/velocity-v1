@@ -104,7 +104,8 @@ use crate::state::traits::Size;
 use crate::state::user::OrderStatus;
 use crate::state::user::ReferrerStatus;
 use crate::state::user::{
-    FuelOverflow, FuelOverflowProvider, MarketType, OrderType, ReferrerName, User, UserFixed, UserStats,
+    FuelOverflow, FuelOverflowProvider, MarketType, OrderType, ReferrerName, User,
+    UserStats,
 };
 use crate::state::user::{Order, SpecialUserStatus};
 use crate::state::user_map::load_user_maps;
@@ -112,8 +113,8 @@ use crate::validate;
 use crate::validation::position::validate_perp_position_with_perp_market;
 use crate::validation::user::validate_user_deletion;
 use crate::validation::whitelist::validate_whitelist_token;
-use crate::{controller, math};
 use crate::ExchangeStatus;
+use crate::{controller, math};
 use anchor_lang::prelude::borsh::BorshDeserialize;
 use solana_program::sysvar::instructions;
 use solana_program::sysvar::instructions::ID as IX_ID;
@@ -1008,7 +1009,9 @@ pub fn handle_withdraw<'c: 'info, 'info>(
 
     let is_borrow = user
         .get_spot_position(market_index)
-        .map_or(false, |pos: &crate::state::user::SpotPosition| pos.is_borrow());
+        .map_or(false, |pos: &crate::state::user::SpotPosition| {
+            pos.is_borrow()
+        });
     let deposit_explanation = if is_borrow {
         DepositExplanation::Borrow
     } else {
@@ -4342,11 +4345,11 @@ pub struct InitializeUser<'info> {
     #[account(
         init,
         seeds = [b"user", authority.key.as_ref(), sub_account_id.to_le_bytes().as_ref()],
-        space = UserFixed::DEFAULT_SIZE,
+        space = User::DEFAULT_SIZE,
         bump,
         payer = payer
     )]
-    pub user: AccountLoader<'info, UserFixed>,
+    pub user: AccountLoader<'info, User>,
     #[account(
         mut,
         has_one = authority
@@ -4418,7 +4421,7 @@ pub struct ResizeSignedMsgUserOrders<'info> {
     #[account(
         has_one = authority
     )]
-    pub user: AccountLoader<'info, UserFixed>,
+    pub user: AccountLoader<'info, User>,
     #[account(mut)]
     pub payer: Signer<'info>,
     pub system_program: Program<'info, System>,
@@ -4430,11 +4433,11 @@ pub struct ResizeUserOrders<'info> {
     #[account(
         mut,
         has_one = authority,
-        realloc = UserFixed::space(new_orders_len as usize),
+        realloc = User::space(new_orders_len as usize),
         realloc::payer = payer,
         realloc::zero = false,
     )]
-    pub user: AccountLoader<'info, UserFixed>,
+    pub user: AccountLoader<'info, User>,
     pub authority: Signer<'info>,
     #[account(mut)]
     pub payer: Signer<'info>,
@@ -4548,7 +4551,7 @@ pub struct InitializeReferrerName<'info> {
         mut,
         constraint = can_sign_for_user(&user, &authority)?
     )]
-    pub user: AccountLoader<'info, UserFixed>,
+    pub user: AccountLoader<'info, User>,
     #[account(
         mut,
         constraint = is_stats_for_user(&user, &user_stats)?
@@ -4566,7 +4569,7 @@ pub struct InitializeReferrerName<'info> {
 pub struct Deposit<'info> {
     pub state: Box<Account<'info, State>>,
     #[account(mut)]
-    pub user: AccountLoader<'info, UserFixed>,
+    pub user: AccountLoader<'info, User>,
     #[account(
         mut,
         constraint = is_stats_for_user(&user, &user_stats)?
@@ -4618,7 +4621,7 @@ pub struct Withdraw<'info> {
         mut,
         has_one = authority,
     )]
-    pub user: AccountLoader<'info, UserFixed>,
+    pub user: AccountLoader<'info, User>,
     #[account(
         mut,
         has_one = authority
@@ -4651,12 +4654,12 @@ pub struct TransferDeposit<'info> {
         mut,
         has_one = authority,
     )]
-    pub from_user: AccountLoader<'info, UserFixed>,
+    pub from_user: AccountLoader<'info, User>,
     #[account(
         mut,
         has_one = authority,
     )]
-    pub to_user: AccountLoader<'info, UserFixed>,
+    pub to_user: AccountLoader<'info, User>,
     #[account(
         mut,
         has_one = authority
@@ -4683,12 +4686,12 @@ pub struct TransferPools<'info> {
         mut,
         has_one = authority,
     )]
-    pub from_user: AccountLoader<'info, UserFixed>,
+    pub from_user: AccountLoader<'info, User>,
     #[account(
         mut,
         has_one = authority,
     )]
-    pub to_user: AccountLoader<'info, UserFixed>,
+    pub to_user: AccountLoader<'info, User>,
     #[account(
         mut,
         has_one = authority
@@ -4733,12 +4736,12 @@ pub struct TransferPerpPosition<'info> {
         mut,
         constraint = can_sign_for_user(&from_user, &authority)? && is_stats_for_user(&from_user, &user_stats)?
     )]
-    pub from_user: AccountLoader<'info, UserFixed>,
+    pub from_user: AccountLoader<'info, User>,
     #[account(
         mut,
         constraint = can_sign_for_user(&to_user, &authority)? && is_stats_for_user(&to_user, &user_stats)?
     )]
-    pub to_user: AccountLoader<'info, UserFixed>,
+    pub to_user: AccountLoader<'info, User>,
     #[account(mut)]
     pub user_stats: AccountLoader<'info, UserStats>,
     pub authority: Signer<'info>,
@@ -4752,7 +4755,7 @@ pub struct PlaceOrder<'info> {
         mut,
         constraint = can_sign_for_user(&user, &authority)?
     )]
-    pub user: AccountLoader<'info, UserFixed>,
+    pub user: AccountLoader<'info, User>,
     pub authority: Signer<'info>,
 }
 
@@ -4763,7 +4766,7 @@ pub struct CancelOrder<'info> {
         mut,
         constraint = can_sign_for_user(&user, &authority)?
     )]
-    pub user: AccountLoader<'info, UserFixed>,
+    pub user: AccountLoader<'info, User>,
     pub authority: Signer<'info>,
 }
 
@@ -4775,7 +4778,7 @@ pub struct DepositIsolatedPerpPosition<'info> {
         mut,
         constraint = can_sign_for_user(&user, &authority)?
     )]
-    pub user: AccountLoader<'info, UserFixed>,
+    pub user: AccountLoader<'info, User>,
     #[account(
         mut,
         constraint = is_stats_for_user(&user, &user_stats)?
@@ -4804,7 +4807,7 @@ pub struct TransferIsolatedPerpPositionDeposit<'info> {
         mut,
         constraint = can_sign_for_user(&user, &authority)?
     )]
-    pub user: AccountLoader<'info, UserFixed>,
+    pub user: AccountLoader<'info, User>,
     #[account(
         mut,
         constraint = is_stats_for_user(&user, &user_stats)?
@@ -4827,7 +4830,7 @@ pub struct WithdrawIsolatedPerpPosition<'info> {
         mut,
         has_one = authority,
     )]
-    pub user: AccountLoader<'info, UserFixed>,
+    pub user: AccountLoader<'info, User>,
     #[account(
         mut,
         has_one = authority
@@ -4860,7 +4863,7 @@ pub struct PlaceAndTake<'info> {
         mut,
         constraint = can_sign_for_user(&user, &authority)?
     )]
-    pub user: AccountLoader<'info, UserFixed>,
+    pub user: AccountLoader<'info, User>,
     #[account(
         mut,
         constraint = is_stats_for_user(&user, &user_stats)?
@@ -4876,14 +4879,14 @@ pub struct PlaceAndMake<'info> {
         mut,
         constraint = can_sign_for_user(&user, &authority)?
     )]
-    pub user: AccountLoader<'info, UserFixed>,
+    pub user: AccountLoader<'info, User>,
     #[account(
         mut,
         constraint = is_stats_for_user(&user, &user_stats)?
     )]
     pub user_stats: AccountLoader<'info, UserStats>,
     #[account(mut)]
-    pub taker: AccountLoader<'info, UserFixed>,
+    pub taker: AccountLoader<'info, User>,
     #[account(
         mut,
         constraint = is_stats_for_user(&taker, &taker_stats)?
@@ -4899,14 +4902,14 @@ pub struct PlaceAndMakeSignedMsg<'info> {
         mut,
         constraint = can_sign_for_user(&user, &authority)?
     )]
-    pub user: AccountLoader<'info, UserFixed>,
+    pub user: AccountLoader<'info, User>,
     #[account(
         mut,
         constraint = is_stats_for_user(&user, &user_stats)?
     )]
     pub user_stats: AccountLoader<'info, UserStats>,
     #[account(mut)]
-    pub taker: AccountLoader<'info, UserFixed>,
+    pub taker: AccountLoader<'info, User>,
     #[account(
         mut,
         constraint = is_stats_for_user(&taker, &taker_stats)?
@@ -4925,7 +4928,7 @@ pub struct PlaceAndMakeSignedMsg<'info> {
 pub struct PlaceAndMatchRFQOrders<'info> {
     pub state: Box<Account<'info, State>>,
     #[account(mut)]
-    pub user: AccountLoader<'info, UserFixed>,
+    pub user: AccountLoader<'info, User>,
     #[account(
         mut,
         constraint = is_stats_for_user(&user, &user_stats)?
@@ -4950,7 +4953,7 @@ pub struct UpdateUser<'info> {
         seeds = [b"user", authority.key.as_ref(), sub_account_id.to_le_bytes().as_ref()],
         bump,
     )]
-    pub user: AccountLoader<'info, UserFixed>,
+    pub user: AccountLoader<'info, User>,
     pub authority: Signer<'info>,
 }
 
@@ -4960,7 +4963,7 @@ pub struct UpdateUserPerpPositionCustomMarginRatio<'info> {
         mut,
         constraint = can_sign_for_user(&user, &authority)?
     )]
-    pub user: AccountLoader<'info, UserFixed>,
+    pub user: AccountLoader<'info, User>,
     pub authority: Signer<'info>,
 }
 
@@ -4971,7 +4974,7 @@ pub struct DeleteUser<'info> {
         has_one = authority,
         close = authority
     )]
-    pub user: AccountLoader<'info, UserFixed>,
+    pub user: AccountLoader<'info, User>,
     #[account(
         mut,
         has_one = authority
@@ -5003,7 +5006,7 @@ pub struct ReclaimRent<'info> {
         mut,
         has_one = authority,
     )]
-    pub user: AccountLoader<'info, UserFixed>,
+    pub user: AccountLoader<'info, User>,
     #[account(
         mut,
         has_one = authority
@@ -5022,7 +5025,7 @@ pub struct Swap<'info> {
         mut,
         constraint = can_sign_for_user(&user, &authority)?
     )]
-    pub user: AccountLoader<'info, UserFixed>,
+    pub user: AccountLoader<'info, User>,
     #[account(
         mut,
         constraint = is_stats_for_user(&user, &user_stats)?
@@ -5072,7 +5075,7 @@ pub struct UpdateUserProtectedMakerMode<'info> {
         mut,
         constraint = can_sign_for_user(&user, &authority)?
     )]
-    pub user: AccountLoader<'info, UserFixed>,
+    pub user: AccountLoader<'info, User>,
     pub authority: Signer<'info>,
     #[account(mut)]
     pub protected_maker_mode_config: AccountLoader<'info, ProtectedMakerModeConfig>,
@@ -5187,7 +5190,7 @@ pub struct SpecialTransferPerpPositionToVamm<'info> {
         mut,
         constraint = can_sign_for_user(&user, &authority)?
     )]
-    pub user: AccountLoader<'info, UserFixed>,
+    pub user: AccountLoader<'info, User>,
     pub authority: Signer<'info>,
     pub state: Box<Account<'info, State>>,
 }

@@ -207,7 +207,7 @@ pub mod fill_order_protected_maker {
         create_anchor_account_info!(spot_market, SpotMarket, spot_market_account_info);
         let spot_market_map = SpotMarketMap::load_one(&spot_market_account_info, true).unwrap();
 
-        let mut user = UserFixed {
+        let mut user = User {
             next_order_id: 10000000,
             // next_order_id: 2,
             authority: Pubkey::from_str("My11111111111111111111111111111111111111111").unwrap(), // different authority than filler
@@ -241,7 +241,7 @@ pub mod fill_order_protected_maker {
             ..User::default()
         };
         create_anchor_account_info!(user, User, user_account_info);
-        let user_account_loader: AccountLoader<UserFixed> =
+        let user_account_loader: AccountLoader<User> =
             AccountLoader::try_from(&user_account_info).unwrap();
 
         let mut taker_stats = UserStats {
@@ -257,7 +257,7 @@ pub mod fill_order_protected_maker {
         let maker_authority =
             Pubkey::from_str("J83w4HKfqxwcq3BEMMkPFSppX3gqekLyLJBexebFVkix").unwrap();
         let maker_order_id = 1;
-        let mut maker = UserFixed {
+        let mut maker = User {
             status: UserStatus::ProtectedMakerOrders as u8,
             authority: maker_authority,
             orders: get_orders(Order {
@@ -299,7 +299,7 @@ pub mod fill_order_protected_maker {
 
         let filler_key = Pubkey::from_str("My11111111111111111111111111111111111111111").unwrap();
         create_anchor_account_info!(User::default(), &filler_key, User, user_account_info);
-        let filler_account_loader: AccountLoader<UserFixed> =
+        let filler_account_loader: AccountLoader<User> =
             AccountLoader::try_from(&user_account_info).unwrap();
 
         create_anchor_account_info!(UserStats::default(), UserStats, filler_stats_account_info);
@@ -345,7 +345,7 @@ pub mod fill_order_protected_maker {
         let user_stats_account_loader: AccountLoader<UserStats> =
             AccountLoader::try_from(&user_stats_account_info).unwrap();
 
-        let mut user = UserFixed {
+        let mut user = User {
             // next_order_id: 10000000,
             next_order_id: 3000 - 2,
             authority: Pubkey::from_str("My11111111111111111111111111111111111111111").unwrap(), // different authority than filler
@@ -380,10 +380,10 @@ pub mod fill_order_protected_maker {
         };
 
         create_anchor_account_info!(user, User, user_account_info);
-        let user_account_loader: AccountLoader<UserFixed> =
+        let user_account_loader: AccountLoader<User> =
             AccountLoader::try_from(&user_account_info).unwrap();
 
-        let mut maker = UserFixed {
+        let mut maker = User {
             status: UserStatus::ProtectedMakerOrders as u8,
             authority: maker_authority,
             orders: get_orders(Order {
@@ -458,7 +458,7 @@ pub mod fulfill_order_with_maker_order {
     };
     use crate::math::oracle::OracleValidity;
     use crate::state::perp_market::{PerpMarket, AMM};
-    use crate::state::user::{Order, OrderType, PerpPosition, User, UserFixed, UserStats};
+    use crate::state::user::{Order, OrderType, PerpPosition, User, UserStats};
 
     use crate::create_anchor_account_info;
     use crate::state::pyth_lazer_oracle::PythLazerOracle;
@@ -470,7 +470,7 @@ pub mod fulfill_order_with_maker_order {
 
     #[test]
     fn long_taker_order_fulfilled_start_of_auction() {
-        let mut taker = UserFixed {
+        let mut taker = User {
             orders: get_orders(Order {
                 market_index: 0,
                 order_type: OrderType::Market,
@@ -491,7 +491,7 @@ pub mod fulfill_order_with_maker_order {
             ..User::default()
         };
 
-        let mut maker = UserFixed {
+        let mut maker = User {
             orders: get_orders(Order {
                 market_index: 0,
                 post_only: true,
@@ -522,7 +522,8 @@ pub mod fulfill_order_with_maker_order {
         let mut taker_stats = UserStats::default();
         let mut maker_stats = UserStats::default();
 
-        let taker_limit_price = taker.get_order(0)
+        let taker_limit_price = taker
+            .get_order(0)
             .get_limit_price(None, None, slot, market.amm.order_tick_size, None)
             .unwrap();
 
@@ -595,7 +596,7 @@ pub mod fulfill_order_with_maker_order {
 
     #[test]
     fn long_taker_order_fulfilled_middle_of_auction() {
-        let mut taker = UserFixed {
+        let mut taker = User {
             orders: get_orders(Order {
                 market_index: 0,
                 order_type: OrderType::Market,
@@ -616,7 +617,7 @@ pub mod fulfill_order_with_maker_order {
             ..User::default()
         };
 
-        let mut maker = UserFixed {
+        let mut maker = User {
             orders: get_orders(Order {
                 market_index: 0,
                 post_only: true,
@@ -647,7 +648,8 @@ pub mod fulfill_order_with_maker_order {
         let mut taker_stats = UserStats::default();
         let mut maker_stats = UserStats::default();
 
-        let taker_limit_price = taker.get_order(0)
+        let taker_limit_price = taker
+            .get_order(0)
             .get_limit_price(None, None, slot, market.amm.order_tick_size, None)
             .unwrap();
 
@@ -720,7 +722,7 @@ pub mod fulfill_order_with_maker_order {
 
     #[test]
     fn short_taker_order_fulfilled_start_of_auction() {
-        let mut taker = UserFixed {
+        let mut taker = User {
             orders: get_orders(Order {
                 market_index: 0,
                 order_type: OrderType::Market,
@@ -741,7 +743,7 @@ pub mod fulfill_order_with_maker_order {
             ..User::default()
         };
 
-        let mut maker = UserFixed {
+        let mut maker = User {
             orders: get_orders(Order {
                 market_index: 0,
                 post_only: true,
@@ -772,7 +774,8 @@ pub mod fulfill_order_with_maker_order {
         let mut taker_stats = UserStats::default();
         let mut maker_stats = UserStats::default();
 
-        let taker_limit_price = taker.get_order(0)
+        let taker_limit_price = taker
+            .get_order(0)
             .get_limit_price(None, None, slot, market.amm.order_tick_size, None)
             .unwrap();
 
@@ -845,7 +848,7 @@ pub mod fulfill_order_with_maker_order {
 
     #[test]
     fn short_taker_order_fulfilled_middle_of_auction() {
-        let mut taker = UserFixed {
+        let mut taker = User {
             orders: get_orders(Order {
                 market_index: 0,
                 order_type: OrderType::Market,
@@ -866,7 +869,7 @@ pub mod fulfill_order_with_maker_order {
             ..User::default()
         };
 
-        let mut maker = UserFixed {
+        let mut maker = User {
             orders: get_orders(Order {
                 market_index: 0,
                 post_only: true,
@@ -897,7 +900,8 @@ pub mod fulfill_order_with_maker_order {
         let mut taker_stats = UserStats::default();
         let mut maker_stats = UserStats::default();
 
-        let taker_limit_price = taker.get_order(0)
+        let taker_limit_price = taker
+            .get_order(0)
             .get_limit_price(None, None, slot, market.amm.order_tick_size, None)
             .unwrap();
 
@@ -970,7 +974,7 @@ pub mod fulfill_order_with_maker_order {
 
     #[test]
     fn long_taker_order_auction_price_does_not_satisfy_maker() {
-        let mut taker = UserFixed {
+        let mut taker = User {
             orders: get_orders(Order {
                 market_index: 0,
                 order_type: OrderType::Market,
@@ -991,7 +995,7 @@ pub mod fulfill_order_with_maker_order {
             ..User::default()
         };
 
-        let mut maker = UserFixed {
+        let mut maker = User {
             orders: get_orders(Order {
                 market_index: 0,
                 post_only: true,
@@ -1022,7 +1026,8 @@ pub mod fulfill_order_with_maker_order {
         let mut taker_stats = UserStats::default();
         let mut maker_stats = UserStats::default();
 
-        let taker_limit_price = taker.get_order(0)
+        let taker_limit_price = taker
+            .get_order(0)
             .get_limit_price(None, None, slot, market.amm.order_tick_size, None)
             .unwrap();
 
@@ -1061,7 +1066,7 @@ pub mod fulfill_order_with_maker_order {
 
     #[test]
     fn short_taker_order_auction_price_does_not_satisfy_maker() {
-        let mut taker = UserFixed {
+        let mut taker = User {
             orders: get_orders(Order {
                 market_index: 0,
                 order_type: OrderType::Market,
@@ -1081,7 +1086,7 @@ pub mod fulfill_order_with_maker_order {
             ..User::default()
         };
 
-        let mut maker = UserFixed {
+        let mut maker = User {
             orders: get_orders(Order {
                 market_index: 0,
                 post_only: true,
@@ -1112,7 +1117,8 @@ pub mod fulfill_order_with_maker_order {
         let mut taker_stats = UserStats::default();
         let mut maker_stats = UserStats::default();
 
-        let taker_limit_price = taker.get_order(0)
+        let taker_limit_price = taker
+            .get_order(0)
             .get_limit_price(None, None, slot, market.amm.order_tick_size, None)
             .unwrap();
 
@@ -1152,7 +1158,7 @@ pub mod fulfill_order_with_maker_order {
 
     #[test]
     fn maker_taker_same_direction() {
-        let mut taker = UserFixed {
+        let mut taker = User {
             orders: get_orders(Order {
                 market_index: 0,
                 order_type: OrderType::Market,
@@ -1173,7 +1179,7 @@ pub mod fulfill_order_with_maker_order {
             ..User::default()
         };
 
-        let mut maker = UserFixed {
+        let mut maker = User {
             orders: get_orders(Order {
                 market_index: 0,
                 post_only: true,
@@ -1204,7 +1210,8 @@ pub mod fulfill_order_with_maker_order {
         let mut taker_stats = UserStats::default();
         let mut maker_stats = UserStats::default();
 
-        let taker_limit_price = taker.get_order(0)
+        let taker_limit_price = taker
+            .get_order(0)
             .get_limit_price(None, None, slot, market.amm.order_tick_size, None)
             .unwrap();
 
@@ -1244,7 +1251,7 @@ pub mod fulfill_order_with_maker_order {
 
     #[test]
     fn maker_taker_different_market_index() {
-        let mut taker = UserFixed {
+        let mut taker = User {
             orders: get_orders(Order {
                 market_index: 1,
                 order_type: OrderType::Market,
@@ -1264,7 +1271,7 @@ pub mod fulfill_order_with_maker_order {
             ..User::default()
         };
 
-        let mut maker = UserFixed {
+        let mut maker = User {
             orders: get_orders(Order {
                 market_index: 0,
                 post_only: true,
@@ -1296,7 +1303,8 @@ pub mod fulfill_order_with_maker_order {
         let mut taker_stats = UserStats::default();
         let mut maker_stats = UserStats::default();
 
-        let taker_limit_price = taker.get_order(0)
+        let taker_limit_price = taker
+            .get_order(0)
             .get_limit_price(None, None, slot, market.amm.order_tick_size, None)
             .unwrap();
 
@@ -1336,7 +1344,7 @@ pub mod fulfill_order_with_maker_order {
 
     #[test]
     fn long_taker_order_bigger_than_maker() {
-        let mut taker = UserFixed {
+        let mut taker = User {
             orders: get_orders(Order {
                 market_index: 0,
                 order_type: OrderType::Market,
@@ -1357,7 +1365,7 @@ pub mod fulfill_order_with_maker_order {
             ..User::default()
         };
 
-        let mut maker = UserFixed {
+        let mut maker = User {
             orders: get_orders(Order {
                 market_index: 0,
                 post_only: true,
@@ -1388,7 +1396,8 @@ pub mod fulfill_order_with_maker_order {
         let mut taker_stats = UserStats::default();
         let mut maker_stats = UserStats::default();
 
-        let taker_limit_price = taker.get_order(0)
+        let taker_limit_price = taker
+            .get_order(0)
             .get_limit_price(None, None, slot, market.amm.order_tick_size, None)
             .unwrap();
 
@@ -1448,7 +1457,7 @@ pub mod fulfill_order_with_maker_order {
 
     #[test]
     fn long_taker_order_smaller_than_maker() {
-        let mut taker = UserFixed {
+        let mut taker = User {
             orders: get_orders(Order {
                 market_index: 0,
                 order_type: OrderType::Market,
@@ -1469,7 +1478,7 @@ pub mod fulfill_order_with_maker_order {
             ..User::default()
         };
 
-        let mut maker = UserFixed {
+        let mut maker = User {
             orders: get_orders(Order {
                 market_index: 0,
                 post_only: true,
@@ -1500,7 +1509,8 @@ pub mod fulfill_order_with_maker_order {
         let mut taker_stats = UserStats::default();
         let mut maker_stats = UserStats::default();
 
-        let taker_limit_price = taker.get_order(0)
+        let taker_limit_price = taker
+            .get_order(0)
             .get_limit_price(None, None, slot, market.amm.order_tick_size, None)
             .unwrap();
 
@@ -1560,7 +1570,7 @@ pub mod fulfill_order_with_maker_order {
 
     #[test]
     fn double_dutch_auction() {
-        let mut taker = UserFixed {
+        let mut taker = User {
             orders: get_orders(Order {
                 market_index: 0,
                 order_type: OrderType::Market,
@@ -1581,7 +1591,7 @@ pub mod fulfill_order_with_maker_order {
             ..User::default()
         };
 
-        let mut maker = UserFixed {
+        let mut maker = User {
             orders: get_orders(Order {
                 market_index: 0,
                 post_only: true,
@@ -1615,11 +1625,13 @@ pub mod fulfill_order_with_maker_order {
         let mut taker_stats = UserStats::default();
         let mut maker_stats = UserStats::default();
 
-        let taker_limit_price = taker.get_order(0)
+        let taker_limit_price = taker
+            .get_order(0)
             .get_limit_price(None, None, slot, market.amm.order_tick_size, None)
             .unwrap();
 
-        let maker_price = taker.get_order(0)
+        let maker_price = taker
+            .get_order(0)
             .force_get_limit_price(None, None, slot, market.amm.order_tick_size, None)
             .unwrap();
 
@@ -1690,7 +1702,7 @@ pub mod fulfill_order_with_maker_order {
 
     #[test]
     fn taker_bid_crosses_maker_ask() {
-        let mut maker = UserFixed {
+        let mut maker = User {
             orders: get_orders(Order {
                 market_index: 0,
                 post_only: true,
@@ -1710,7 +1722,7 @@ pub mod fulfill_order_with_maker_order {
             ..User::default()
         };
 
-        let mut taker = UserFixed {
+        let mut taker = User {
             orders: get_orders(Order {
                 market_index: 0,
                 order_type: OrderType::Limit,
@@ -1739,7 +1751,8 @@ pub mod fulfill_order_with_maker_order {
         let mut taker_stats = UserStats::default();
         let mut maker_stats = UserStats::default();
 
-        let taker_limit_price = taker.get_order(0)
+        let taker_limit_price = taker
+            .get_order(0)
             .get_limit_price(None, None, slot, market.amm.order_tick_size, None)
             .unwrap();
 
@@ -1812,7 +1825,7 @@ pub mod fulfill_order_with_maker_order {
 
     #[test]
     fn taker_ask_crosses_maker_bid() {
-        let mut maker = UserFixed {
+        let mut maker = User {
             orders: get_orders(Order {
                 market_index: 0,
                 post_only: true,
@@ -1832,7 +1845,7 @@ pub mod fulfill_order_with_maker_order {
             ..User::default()
         };
 
-        let mut taker = UserFixed {
+        let mut taker = User {
             orders: get_orders(Order {
                 market_index: 0,
                 order_type: OrderType::Limit,
@@ -1862,7 +1875,8 @@ pub mod fulfill_order_with_maker_order {
         let mut taker_stats = UserStats::default();
         let mut maker_stats = UserStats::default();
 
-        let taker_limit_price = taker.get_order(0)
+        let taker_limit_price = taker
+            .get_order(0)
             .get_limit_price(None, None, slot, market.amm.order_tick_size, None)
             .unwrap();
 
@@ -1935,7 +1949,7 @@ pub mod fulfill_order_with_maker_order {
 
     #[test]
     fn fallback_price_doesnt_cross_maker() {
-        let mut taker = UserFixed {
+        let mut taker = User {
             orders: get_orders(Order {
                 market_index: 0,
                 order_type: OrderType::Market,
@@ -1955,7 +1969,7 @@ pub mod fulfill_order_with_maker_order {
             ..User::default()
         };
 
-        let mut maker = UserFixed {
+        let mut maker = User {
             orders: get_orders(Order {
                 market_index: 0,
                 post_only: true,
@@ -2009,7 +2023,8 @@ pub mod fulfill_order_with_maker_order {
         let mut taker_stats = UserStats::default();
         let mut maker_stats = UserStats::default();
 
-        let taker_limit_price = taker.get_order(0)
+        let taker_limit_price = taker
+            .get_order(0)
             .get_limit_price(None, None, slot, market.amm.order_tick_size, None)
             .unwrap();
 
@@ -2049,7 +2064,7 @@ pub mod fulfill_order_with_maker_order {
 
     #[test]
     fn fallback_price_crosses_maker() {
-        let mut taker = UserFixed {
+        let mut taker = User {
             orders: get_orders(Order {
                 market_index: 0,
                 order_type: OrderType::Market,
@@ -2069,7 +2084,7 @@ pub mod fulfill_order_with_maker_order {
             ..User::default()
         };
 
-        let mut maker = UserFixed {
+        let mut maker = User {
             orders: get_orders(Order {
                 market_index: 0,
                 post_only: true,
@@ -2131,7 +2146,8 @@ pub mod fulfill_order_with_maker_order {
         let mut taker_stats = UserStats::default();
         let mut maker_stats = UserStats::default();
 
-        let taker_limit_price = taker.get_order(0)
+        let taker_limit_price = taker
+            .get_order(0)
             .get_limit_price(None, None, slot, market.amm.order_tick_size, None)
             .unwrap();
 
@@ -2174,7 +2190,7 @@ pub mod fulfill_order_with_maker_order {
         let now = 50000_i64;
         let slot = 50000_u64;
 
-        let mut maker = UserFixed {
+        let mut maker = User {
             orders: get_orders(Order {
                 market_index: 0,
                 post_only: true,
@@ -2194,7 +2210,7 @@ pub mod fulfill_order_with_maker_order {
             ..User::default()
         };
 
-        let mut taker = UserFixed {
+        let mut taker = User {
             orders: get_orders(Order {
                 market_index: 0,
                 order_type: OrderType::Oracle,
@@ -2261,7 +2277,8 @@ pub mod fulfill_order_with_maker_order {
         let oracle_price = 100 * PRICE_PRECISION_I64;
 
         let valid_oracle_price = Some(oracle_price);
-        let taker_limit_price = taker.get_order(0)
+        let taker_limit_price = taker
+            .get_order(0)
             .get_limit_price(
                 valid_oracle_price,
                 None,
@@ -2343,7 +2360,7 @@ pub mod fulfill_order_with_maker_order {
         let now = 11_i64;
         let slot = 11_u64;
 
-        let mut maker = UserFixed {
+        let mut maker = User {
             orders: get_orders(Order {
                 market_index: 0,
                 post_only: true,
@@ -2363,7 +2380,7 @@ pub mod fulfill_order_with_maker_order {
             ..User::default()
         };
 
-        let mut taker = UserFixed {
+        let mut taker = User {
             orders: get_orders(Order {
                 market_index: 0,
                 order_type: OrderType::Oracle,
@@ -2395,7 +2412,8 @@ pub mod fulfill_order_with_maker_order {
         );
         let mut oracle_map = OracleMap::load_one(&oracle_account_info, slot, None).unwrap();
 
-        let taker_price = taker.get_order(0)
+        let taker_price = taker
+            .get_order(0)
             .get_limit_price(
                 Some(
                     oracle_map
@@ -2498,7 +2516,7 @@ pub mod fulfill_order_with_maker_order {
         let now = 5_i64;
         let slot = 5_u64;
 
-        let mut maker = UserFixed {
+        let mut maker = User {
             orders: get_orders(Order {
                 market_index: 0,
                 post_only: true,
@@ -2518,7 +2536,7 @@ pub mod fulfill_order_with_maker_order {
             ..User::default()
         };
 
-        let mut taker = UserFixed {
+        let mut taker = User {
             orders: get_orders(Order {
                 market_index: 0,
                 order_type: OrderType::Oracle,
@@ -2569,7 +2587,8 @@ pub mod fulfill_order_with_maker_order {
                 .unwrap()
                 .price,
         );
-        let taker_limit_price = taker.get_order(0)
+        let taker_limit_price = taker
+            .get_order(0)
             .get_limit_price(
                 valid_oracle_price,
                 None,
@@ -2651,7 +2670,7 @@ pub mod fulfill_order_with_maker_order {
         let now = 11_i64;
         let slot = 11_u64;
 
-        let mut maker = UserFixed {
+        let mut maker = User {
             orders: get_orders(Order {
                 market_index: 0,
                 post_only: true,
@@ -2671,7 +2690,7 @@ pub mod fulfill_order_with_maker_order {
             ..User::default()
         };
 
-        let mut taker = UserFixed {
+        let mut taker = User {
             orders: get_orders(Order {
                 market_index: 0,
                 order_type: OrderType::Oracle,
@@ -2707,7 +2726,8 @@ pub mod fulfill_order_with_maker_order {
         market.amm.oracle = oracle_price_key;
         market.amm.oracle_source = crate::state::oracle::OracleSource::PythLazer;
 
-        let taker_price = taker.get_order(0)
+        let taker_price = taker
+            .get_order(0)
             .get_limit_price(
                 Some(
                     oracle_map
@@ -2802,7 +2822,7 @@ pub mod fulfill_order_with_maker_order {
 
     #[test]
     fn limit_auction_crosses_maker_bid() {
-        let mut maker = UserFixed {
+        let mut maker = User {
             orders: get_orders(Order {
                 market_index: 0,
                 post_only: true,
@@ -2822,7 +2842,7 @@ pub mod fulfill_order_with_maker_order {
             ..User::default()
         };
 
-        let mut taker = UserFixed {
+        let mut taker = User {
             orders: get_orders(Order {
                 market_index: 0,
                 order_type: OrderType::Limit,
@@ -2849,7 +2869,8 @@ pub mod fulfill_order_with_maker_order {
         let slot = 5_u64;
 
         assert_eq!(
-            taker.get_order(0)
+            taker
+                .get_order(0)
                 .get_limit_price(None, None, slot, market.amm.order_tick_size, None)
                 .unwrap(),
             Some(55000000)
@@ -2862,7 +2883,8 @@ pub mod fulfill_order_with_maker_order {
         let mut taker_stats = UserStats::default();
         let mut maker_stats = UserStats::default();
 
-        let taker_limit_price = taker.get_order(0)
+        let taker_limit_price = taker
+            .get_order(0)
             .get_limit_price(None, None, slot, market.amm.order_tick_size, None)
             .unwrap();
 
@@ -2935,7 +2957,7 @@ pub mod fulfill_order_with_maker_order {
 
     #[test]
     fn limit_auction_crosses_maker_ask() {
-        let mut maker = UserFixed {
+        let mut maker = User {
             orders: get_orders(Order {
                 market_index: 0,
                 post_only: true,
@@ -2955,7 +2977,7 @@ pub mod fulfill_order_with_maker_order {
             ..User::default()
         };
 
-        let mut taker = UserFixed {
+        let mut taker = User {
             orders: get_orders(Order {
                 market_index: 0,
                 order_type: OrderType::Limit,
@@ -2982,7 +3004,8 @@ pub mod fulfill_order_with_maker_order {
         let slot = 5_u64;
 
         assert_eq!(
-            taker.get_order(0)
+            taker
+                .get_order(0)
                 .get_limit_price(None, None, slot, market.amm.order_tick_size, None)
                 .unwrap(),
             Some(100000000)
@@ -2994,7 +3017,8 @@ pub mod fulfill_order_with_maker_order {
         let mut taker_stats = UserStats::default();
         let mut maker_stats = UserStats::default();
 
-        let taker_limit_price = taker.get_order(0)
+        let taker_limit_price = taker
+            .get_order(0)
             .get_limit_price(None, None, slot, market.amm.order_tick_size, None)
             .unwrap();
 
@@ -3093,7 +3117,7 @@ pub mod fulfill_order {
     use crate::state::spot_market::{SpotBalanceType, SpotMarket};
     use crate::state::spot_market_map::SpotMarketMap;
     use crate::state::state::{OracleGuardRails, State, ValidityGuardRails};
-    use crate::state::user::{OrderStatus, OrderType, SpotPosition, User, UserFixed, UserStats};
+    use crate::state::user::{OrderStatus, OrderType, SpotPosition, User, UserStats};
     use crate::state::user_map::{UserMap, UserStatsMap};
     use crate::test_utils::{get_orders, get_positions, get_pyth_price, get_spot_positions};
     use crate::PERCENTAGE_PRECISION_U64;
@@ -3311,7 +3335,7 @@ pub mod fulfill_order {
         create_anchor_account_info!(spot_market, SpotMarket, spot_market_account_info);
         let spot_market_map = SpotMarketMap::load_one(&spot_market_account_info, true).unwrap();
 
-        let mut taker = UserFixed {
+        let mut taker = User {
             orders: get_orders(Order {
                 market_index: 0,
                 status: OrderStatus::Open,
@@ -3343,7 +3367,7 @@ pub mod fulfill_order {
         let maker_key = Pubkey::default();
         let maker_authority =
             Pubkey::from_str("J83w4HKfqxwcq3BEMMkPFSppX3gqekLyLJBexebFVkix").unwrap();
-        let mut maker = UserFixed {
+        let mut maker = User {
             authority: maker_authority,
             orders: get_orders(Order {
                 market_index: 0,
@@ -3559,7 +3583,7 @@ pub mod fulfill_order {
         create_anchor_account_info!(spot_market, SpotMarket, spot_market_account_info);
         let spot_market_map = SpotMarketMap::load_one(&spot_market_account_info, true).unwrap();
 
-        let mut taker = UserFixed {
+        let mut taker = User {
             orders: get_orders(Order {
                 market_index: 0,
                 status: OrderStatus::Open,
@@ -3591,7 +3615,7 @@ pub mod fulfill_order {
         let maker_key = Pubkey::default();
         let maker_authority =
             Pubkey::from_str("J83w4HKfqxwcq3BEMMkPFSppX3gqekLyLJBexebFVkix").unwrap();
-        let mut maker = UserFixed {
+        let mut maker = User {
             authority: maker_authority,
             orders: get_orders!(
                 Order {
@@ -3778,7 +3802,7 @@ pub mod fulfill_order {
         create_anchor_account_info!(spot_market, SpotMarket, spot_market_account_info);
         let spot_market_map = SpotMarketMap::load_one(&spot_market_account_info, true).unwrap();
 
-        let mut taker = UserFixed {
+        let mut taker = User {
             orders: get_orders(Order {
                 market_index: 0,
                 status: OrderStatus::Open,
@@ -3810,7 +3834,7 @@ pub mod fulfill_order {
         let maker_key = Pubkey::default();
         let maker_authority =
             Pubkey::from_str("J83w4HKfqxwcq3BEMMkPFSppX3gqekLyLJBexebFVkix").unwrap();
-        let mut maker = UserFixed {
+        let mut maker = User {
             authority: maker_authority,
             orders: get_orders(Order {
                 market_index: 0,
@@ -4002,7 +4026,7 @@ pub mod fulfill_order {
 
         let mut oracle_map = get_oracle_map();
 
-        let mut taker = UserFixed {
+        let mut taker = User {
             orders: get_orders(Order {
                 market_index: 0,
                 status: OrderStatus::Open,
@@ -4033,7 +4057,7 @@ pub mod fulfill_order {
         let maker_key = Pubkey::default();
         let maker_authority =
             Pubkey::from_str("J83w4HKfqxwcq3BEMMkPFSppX3gqekLyLJBexebFVkix").unwrap();
-        let mut maker = UserFixed {
+        let mut maker = User {
             authority: maker_authority,
             orders: get_orders(Order {
                 market_index: 0,
@@ -4222,7 +4246,7 @@ pub mod fulfill_order {
         create_anchor_account_info!(spot_market, SpotMarket, spot_market_account_info);
         let spot_market_map = SpotMarketMap::load_one(&spot_market_account_info, true).unwrap();
 
-        let mut taker = UserFixed {
+        let mut taker = User {
             orders: get_orders(Order {
                 market_index: 0,
                 status: OrderStatus::Open,
@@ -4392,7 +4416,7 @@ pub mod fulfill_order {
         create_anchor_account_info!(spot_market, SpotMarket, spot_market_account_info);
         let spot_market_map = SpotMarketMap::load_one(&spot_market_account_info, true).unwrap();
 
-        let mut taker = UserFixed {
+        let mut taker = User {
             orders: get_orders(Order {
                 market_index: 0,
                 status: OrderStatus::Open,
@@ -4424,7 +4448,7 @@ pub mod fulfill_order {
         let maker_key = Pubkey::default();
         let maker_authority =
             Pubkey::from_str("J83w4HKfqxwcq3BEMMkPFSppX3gqekLyLJBexebFVkix").unwrap();
-        let mut maker = UserFixed {
+        let mut maker = User {
             authority: maker_authority,
             orders: get_orders!(Order {
                 market_index: 0,
@@ -4595,7 +4619,7 @@ pub mod fulfill_order {
         create_anchor_account_info!(spot_market, SpotMarket, spot_market_account_info);
         let spot_market_map = SpotMarketMap::load_one(&spot_market_account_info, true).unwrap();
 
-        let mut taker = UserFixed {
+        let mut taker = User {
             orders: get_orders(Order {
                 market_index: 0,
                 status: OrderStatus::Open,
@@ -4627,7 +4651,7 @@ pub mod fulfill_order {
         let maker_key = Pubkey::default();
         let maker_authority =
             Pubkey::from_str("J83w4HKfqxwcq3BEMMkPFSppX3gqekLyLJBexebFVkix").unwrap();
-        let mut maker = UserFixed {
+        let mut maker = User {
             authority: maker_authority,
             orders: get_orders!(Order {
                 market_index: 0,
@@ -4786,7 +4810,7 @@ pub mod fulfill_order {
         create_anchor_account_info!(spot_market, SpotMarket, spot_market_account_info);
         let spot_market_map = SpotMarketMap::load_one(&spot_market_account_info, true).unwrap();
 
-        let mut taker = UserFixed {
+        let mut taker = User {
             orders: get_orders(Order {
                 market_index: 0,
                 status: OrderStatus::Open,
@@ -4968,7 +4992,7 @@ pub mod fulfill_order {
         create_anchor_account_info!(spot_market, SpotMarket, spot_market_account_info);
         let spot_market_map = SpotMarketMap::load_one(&spot_market_account_info, true).unwrap();
 
-        let mut taker = UserFixed {
+        let mut taker = User {
             orders: get_orders(Order {
                 market_index: 0,
                 status: OrderStatus::Open,
@@ -5158,7 +5182,7 @@ pub mod fulfill_order {
         create_anchor_account_info!(spot_market, SpotMarket, spot_market_account_info);
         let spot_market_map = SpotMarketMap::load_one(&spot_market_account_info, true).unwrap();
 
-        let mut taker = UserFixed {
+        let mut taker = User {
             orders: get_orders(Order {
                 market_index: 0,
                 status: OrderStatus::Open,
@@ -5188,7 +5212,7 @@ pub mod fulfill_order {
             ..User::default()
         };
         create_anchor_account_info!(taker, User, user_account_info);
-        let user_account_loader: AccountLoader<UserFixed> =
+        let user_account_loader: AccountLoader<User> =
             AccountLoader::try_from(&user_account_info).unwrap();
         create_anchor_account_info!(UserStats::default(), UserStats, user_stats_account_info);
         let user_stats_account_loader: AccountLoader<UserStats> =
@@ -5196,7 +5220,7 @@ pub mod fulfill_order {
 
         let filler_key = Pubkey::from_str("My11111111111111111111111111111111111111111").unwrap();
         create_anchor_account_info!(User::default(), &filler_key, User, user_account_info);
-        let filler_account_loader: AccountLoader<UserFixed> =
+        let filler_account_loader: AccountLoader<User> =
             AccountLoader::try_from(&user_account_info).unwrap();
 
         create_anchor_account_info!(UserStats::default(), UserStats, filler_stats_account_info);
@@ -5325,7 +5349,7 @@ pub mod fulfill_order {
     //     create_anchor_account_info!(spot_market, SpotMarket, spot_market_account_info);
     //     let spot_market_map = SpotMarketMap::load_one(&spot_market_account_info, true).unwrap();
     //
-    //     let mut taker = UserFixed {
+    //     let mut taker = User {
     //         orders: get_orders(Order {
     //             market_index: 0,
     //             status: OrderStatus::Open,
@@ -5353,7 +5377,7 @@ pub mod fulfill_order {
     //         ..User::default()
     //     };
     //
-    //     let _maker = UserFixed {
+    //     let _maker = User {
     //         orders: get_orders(Order {
     //             market_index: 0,
     //             post_only: true,
@@ -5530,7 +5554,7 @@ pub mod fulfill_order {
             ..PerpPosition::default()
         };
 
-        let mut taker = UserFixed {
+        let mut taker = User {
             orders: taker_orders,
             perp_positions: taker_positions,
             spot_positions: get_spot_positions(SpotPosition {
@@ -5580,7 +5604,7 @@ pub mod fulfill_order {
             ..PerpPosition::default()
         };
 
-        let mut maker = UserFixed {
+        let mut maker = User {
             authority: maker_authority,
             orders: maker_orders,
             perp_positions: maker_positions,
@@ -5801,7 +5825,7 @@ pub mod fulfill_order {
         create_anchor_account_info!(spot_market, SpotMarket, spot_market_account_info);
         let spot_market_map = SpotMarketMap::load_one(&spot_market_account_info, true).unwrap();
 
-        let mut taker = UserFixed {
+        let mut taker = User {
             orders: get_orders(Order {
                 market_index: 0,
                 status: OrderStatus::Open,
@@ -5833,7 +5857,7 @@ pub mod fulfill_order {
         let maker_key = Pubkey::new_unique();
         let maker_authority =
             Pubkey::from_str("J83w4HKfqxwcq3BEMMkPFSppX3gqekLyLJBexebFVkix").unwrap();
-        let mut maker = UserFixed {
+        let mut maker = User {
             authority: maker_authority,
             orders: get_orders(Order {
                 market_index: 0,
@@ -6014,7 +6038,7 @@ pub mod fulfill_order {
         create_anchor_account_info!(spot_market, SpotMarket, spot_market_account_info);
         let spot_market_map = SpotMarketMap::load_one(&spot_market_account_info, true).unwrap();
 
-        let mut taker = UserFixed {
+        let mut taker = User {
             orders: get_orders(Order {
                 market_index: 0,
                 status: OrderStatus::Open,
@@ -6127,7 +6151,9 @@ pub mod fill_order {
     use crate::state::spot_market::{SpotBalanceType, SpotMarket};
     use crate::state::spot_market_map::SpotMarketMap;
     use crate::state::state::State;
-    use crate::state::user::{MarketType, OrderStatus, OrderType, SpotPosition, User, UserFixed, UserStats};
+    use crate::state::user::{
+        MarketType, OrderStatus, OrderType, SpotPosition, User, UserStats,
+    };
     use crate::test_utils::{get_orders, get_positions, get_pyth_price, get_spot_positions};
     use crate::QUOTE_PRECISION_I64;
 
@@ -6216,7 +6242,7 @@ pub mod fill_order {
         create_anchor_account_info!(spot_market, SpotMarket, spot_market_account_info);
         let spot_market_map = SpotMarketMap::load_one(&spot_market_account_info, true).unwrap();
 
-        let mut user = UserFixed {
+        let mut user = User {
             authority: Pubkey::from_str("My11111111111111111111111111111111111111111").unwrap(), // different authority than filler
             orders: get_orders(Order {
                 market_index: 0,
@@ -6247,7 +6273,7 @@ pub mod fill_order {
             ..User::default()
         };
         create_anchor_account_info!(user, User, user_account_info);
-        let user_account_loader: AccountLoader<UserFixed> =
+        let user_account_loader: AccountLoader<User> =
             AccountLoader::try_from(&user_account_info).unwrap();
 
         create_anchor_account_info!(UserStats::default(), UserStats, user_stats_account_info);
@@ -6257,7 +6283,7 @@ pub mod fill_order {
         let maker_key = Pubkey::from_str("My11111111111111111111111111111111111111113").unwrap();
         let maker_authority =
             Pubkey::from_str("J83w4HKfqxwcq3BEMMkPFSppX3gqekLyLJBexebFVkix").unwrap();
-        let mut maker = UserFixed {
+        let mut maker = User {
             authority: maker_authority,
             orders: get_orders(Order {
                 market_index: 0,
@@ -6297,7 +6323,7 @@ pub mod fill_order {
 
         let filler_key = Pubkey::from_str("My11111111111111111111111111111111111111111").unwrap();
         create_anchor_account_info!(User::default(), &filler_key, User, user_account_info);
-        let filler_account_loader: AccountLoader<UserFixed> =
+        let filler_account_loader: AccountLoader<User> =
             AccountLoader::try_from(&user_account_info).unwrap();
 
         create_anchor_account_info!(UserStats::default(), UserStats, filler_stats_account_info);
@@ -6417,7 +6443,7 @@ pub mod fill_order {
         create_anchor_account_info!(spot_market, SpotMarket, spot_market_account_info);
         let spot_market_map = SpotMarketMap::load_one(&spot_market_account_info, true).unwrap();
 
-        let mut user = UserFixed {
+        let mut user = User {
             authority: Pubkey::from_str("My11111111111111111111111111111111111111111").unwrap(), // different authority than filler
             orders: get_orders(Order {
                 market_index: 0,
@@ -6449,7 +6475,7 @@ pub mod fill_order {
             ..User::default()
         };
         create_anchor_account_info!(user, User, user_account_info);
-        let user_account_loader: AccountLoader<UserFixed> =
+        let user_account_loader: AccountLoader<User> =
             AccountLoader::try_from(&user_account_info).unwrap();
 
         create_anchor_account_info!(UserStats::default(), UserStats, user_stats_account_info);
@@ -6460,7 +6486,7 @@ pub mod fill_order {
         let maker_authority =
             Pubkey::from_str("J83w4HKfqxwcq3BEMMkPFSppX3gqekLyLJBexebFVkix").unwrap();
         let maker_order_id = 1;
-        let mut maker = UserFixed {
+        let mut maker = User {
             authority: maker_authority,
             orders: get_orders(Order {
                 market_index: 0,
@@ -6501,7 +6527,7 @@ pub mod fill_order {
 
         let filler_key = Pubkey::from_str("My11111111111111111111111111111111111111111").unwrap();
         create_anchor_account_info!(User::default(), &filler_key, User, user_account_info);
-        let filler_account_loader: AccountLoader<UserFixed> =
+        let filler_account_loader: AccountLoader<User> =
             AccountLoader::try_from(&user_account_info).unwrap();
 
         create_anchor_account_info!(UserStats::default(), UserStats, filler_stats_account_info);
@@ -6583,7 +6609,7 @@ pub mod fill_order {
 
         let mut oracle_map = get_oracle_map();
 
-        let mut user = UserFixed {
+        let mut user = User {
             authority: Pubkey::from_str("My11111111111111111111111111111111111111111").unwrap(),
             orders: get_orders(Order {
                 market_index: 0,
@@ -6615,7 +6641,7 @@ pub mod fill_order {
             ..User::default()
         };
         create_anchor_account_info!(user, User, user_account_info);
-        let user_account_loader: AccountLoader<UserFixed> =
+        let user_account_loader: AccountLoader<User> =
             AccountLoader::try_from(&user_account_info).unwrap();
 
         create_anchor_account_info!(UserStats::default(), UserStats, user_stats_account_info);
@@ -6624,7 +6650,7 @@ pub mod fill_order {
 
         let filler_key = Pubkey::from_str("My11111111111111111111111111111111111111111").unwrap();
         create_anchor_account_info!(User::default(), &filler_key, User, user_account_info);
-        let filler_account_loader: AccountLoader<UserFixed> =
+        let filler_account_loader: AccountLoader<User> =
             AccountLoader::try_from(&user_account_info).unwrap();
 
         create_anchor_account_info!(UserStats::default(), UserStats, filler_stats_account_info);
@@ -6757,7 +6783,7 @@ pub mod fill_order {
         create_anchor_account_info!(spot_market, SpotMarket, spot_market_account_info);
         let spot_market_map = SpotMarketMap::load_one(&spot_market_account_info, true).unwrap();
 
-        let mut user = UserFixed {
+        let mut user = User {
             orders: get_orders(Order {
                 market_index: 0,
                 order_id: 1,
@@ -6787,7 +6813,7 @@ pub mod fill_order {
             ..User::default()
         };
         create_anchor_account_info!(user, User, user_account_info);
-        let user_account_loader: AccountLoader<UserFixed> =
+        let user_account_loader: AccountLoader<User> =
             AccountLoader::try_from(&user_account_info).unwrap();
 
         create_anchor_account_info!(UserStats::default(), UserStats, user_stats_account_info);
@@ -6796,7 +6822,7 @@ pub mod fill_order {
 
         let filler_key = Pubkey::from_str("My11111111111111111111111111111111111111111").unwrap();
         create_anchor_account_info!(User::default(), &filler_key, User, user_account_info);
-        let filler_account_loader: AccountLoader<UserFixed> =
+        let filler_account_loader: AccountLoader<User> =
             AccountLoader::try_from(&user_account_info).unwrap();
 
         create_anchor_account_info!(UserStats::default(), UserStats, filler_stats_account_info);
@@ -6853,7 +6879,9 @@ pub mod force_cancel_orders {
     use crate::state::spot_market::{SpotBalanceType, SpotMarket};
     use crate::state::spot_market_map::SpotMarketMap;
     use crate::state::state::State;
-    use crate::state::user::{MarketType, OrderStatus, OrderType, SpotPosition, User, UserFixed, UserStats};
+    use crate::state::user::{
+        MarketType, OrderStatus, OrderType, SpotPosition, User, UserStats,
+    };
     use crate::test_utils::{get_positions, get_pyth_price, get_spot_positions};
 
     use super::*;
@@ -7012,7 +7040,7 @@ pub mod force_cancel_orders {
             ..Order::default()
         };
 
-        let mut user = UserFixed {
+        let mut user = User {
             authority: Pubkey::from_str("My11111111111111111111111111111111111111111").unwrap(), // different authority than filler
             orders,
             perp_positions: get_positions(PerpPosition {
@@ -7035,7 +7063,7 @@ pub mod force_cancel_orders {
             ..User::default()
         };
         create_anchor_account_info!(user, User, user_account_info);
-        let user_account_loader: AccountLoader<UserFixed> =
+        let user_account_loader: AccountLoader<User> =
             AccountLoader::try_from(&user_account_info).unwrap();
 
         create_anchor_account_info!(UserStats::default(), UserStats, user_stats_account_info);
@@ -7044,7 +7072,7 @@ pub mod force_cancel_orders {
 
         let filler_key = Pubkey::from_str("My11111111111111111111111111111111111111111").unwrap();
         create_anchor_account_info!(User::default(), &filler_key, User, user_account_info);
-        let filler_account_loader: AccountLoader<UserFixed> =
+        let filler_account_loader: AccountLoader<User> =
             AccountLoader::try_from(&user_account_info).unwrap();
 
         create_anchor_account_info!(UserStats::default(), UserStats, filler_stats_account_info);
@@ -7099,7 +7127,7 @@ pub mod cancel_reduce_only_trigger_orders {
     use crate::state::pyth_lazer_oracle::PythLazerOracle;
     use crate::state::spot_market::{SpotBalanceType, SpotMarket};
     use crate::state::spot_market_map::SpotMarketMap;
-    use crate::state::user::{MarketType, OrderStatus, OrderType, SpotPosition, User, UserFixed};
+    use crate::state::user::{MarketType, OrderStatus, OrderType, SpotPosition, User};
     use crate::test_utils::{get_positions, get_pyth_price, get_spot_positions};
 
     use super::*;
@@ -7254,7 +7282,7 @@ pub mod cancel_reduce_only_trigger_orders {
             ..Order::default()
         };
 
-        let mut user = UserFixed {
+        let mut user = User {
             authority: Pubkey::from_str("My11111111111111111111111111111111111111111").unwrap(), // different authority than filler
             orders,
             perp_positions: get_positions(PerpPosition {
@@ -7361,7 +7389,7 @@ pub mod get_maker_orders_info {
     use crate::state::pyth_lazer_oracle::PythLazerOracle;
     use crate::state::spot_market::{SpotBalanceType, SpotMarket};
     use crate::state::spot_market_map::SpotMarketMap;
-    use crate::state::user::{OrderStatus, OrderType, SpotPosition, User, UserFixed};
+    use crate::state::user::{OrderStatus, OrderType, SpotPosition, User};
     use crate::state::user_map::UserMap;
     use crate::test_utils::{get_orders, get_positions, get_pyth_price, get_spot_positions};
     use crate::{create_anchor_account_info, get_orders, QUOTE_PRECISION_I64};
@@ -7452,7 +7480,7 @@ pub mod get_maker_orders_info {
         let taker_key = Pubkey::default();
         let taker_authority =
             Pubkey::from_str("My11111111111111111111111111111111111111111").unwrap();
-        let user = UserFixed {
+        let user = User {
             authority: taker_authority,
             orders: get_orders(Order {
                 market_index: 0,
@@ -7509,7 +7537,7 @@ pub mod get_maker_orders_info {
             ..Order::default()
         };
 
-        let mut maker = UserFixed {
+        let mut maker = User {
             orders: maker_orders,
             perp_positions: get_positions(PerpPosition {
                 market_index: 0,
@@ -7642,7 +7670,7 @@ pub mod get_maker_orders_info {
         let taker_key = Pubkey::default();
         let taker_authority =
             Pubkey::from_str("My11111111111111111111111111111111111111111").unwrap();
-        let user = UserFixed {
+        let user = User {
             authority: taker_authority,
             orders: get_orders(Order {
                 market_index: 0,
@@ -7700,7 +7728,7 @@ pub mod get_maker_orders_info {
             ..Order::default()
         };
 
-        let mut maker = UserFixed {
+        let mut maker = User {
             orders: maker_orders,
             perp_positions: get_positions(PerpPosition {
                 market_index: 0,
@@ -7833,7 +7861,7 @@ pub mod get_maker_orders_info {
         let taker_key = Pubkey::default();
         let taker_authority =
             Pubkey::from_str("My11111111111111111111111111111111111111111").unwrap();
-        let user = UserFixed {
+        let user = User {
             authority: taker_authority,
             orders: get_orders(Order {
                 market_index: 0,
@@ -7879,7 +7907,7 @@ pub mod get_maker_orders_info {
             ..Order::default()
         };
 
-        let mut maker = UserFixed {
+        let mut maker = User {
             orders: maker_orders,
             perp_positions: get_positions(PerpPosition {
                 market_index: 0,
@@ -8010,7 +8038,7 @@ pub mod get_maker_orders_info {
         let taker_key = Pubkey::default();
         let taker_authority =
             Pubkey::from_str("My11111111111111111111111111111111111111111").unwrap();
-        let user = UserFixed {
+        let user = User {
             authority: taker_authority,
             orders: get_orders(Order {
                 market_index: 0,
@@ -8042,7 +8070,7 @@ pub mod get_maker_orders_info {
             ..User::default()
         };
 
-        let mut first_maker = UserFixed {
+        let mut first_maker = User {
             orders: get_orders!(
                 Order {
                     market_index: 0,
@@ -8089,7 +8117,7 @@ pub mod get_maker_orders_info {
             first_maker_account_info
         );
 
-        let mut second_maker = UserFixed {
+        let mut second_maker = User {
             orders: get_orders!(
                 Order {
                     market_index: 0,
@@ -8261,7 +8289,7 @@ pub mod get_maker_orders_info {
         let taker_key = Pubkey::default();
         let taker_authority =
             Pubkey::from_str("My11111111111111111111111111111111111111111").unwrap();
-        let user = UserFixed {
+        let user = User {
             authority: taker_authority,
             orders: get_orders(Order {
                 market_index: 0,
@@ -8293,7 +8321,7 @@ pub mod get_maker_orders_info {
             ..User::default()
         };
 
-        let mut first_maker = UserFixed {
+        let mut first_maker = User {
             orders: get_orders!(
                 Order {
                     market_index: 0,
@@ -8454,7 +8482,7 @@ pub mod get_maker_orders_info {
         let taker_key = Pubkey::default();
         let taker_authority =
             Pubkey::from_str("My11111111111111111111111111111111111111111").unwrap();
-        let user = UserFixed {
+        let user = User {
             authority: taker_authority,
             orders: get_orders(Order {
                 market_index: 0,
@@ -8486,7 +8514,7 @@ pub mod get_maker_orders_info {
             ..User::default()
         };
 
-        let mut first_maker = UserFixed {
+        let mut first_maker = User {
             orders: [Order {
                 market_index: 0,
                 order_id: 1,
@@ -8520,7 +8548,7 @@ pub mod get_maker_orders_info {
             first_maker_account_info
         );
 
-        let mut second_maker = UserFixed {
+        let mut second_maker = User {
             orders: [Order {
                 market_index: 0,
                 order_id: 1,

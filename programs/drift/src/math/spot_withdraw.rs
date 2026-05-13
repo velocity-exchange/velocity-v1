@@ -6,7 +6,7 @@ use crate::math::safe_math::SafeMath;
 
 use crate::math::spot_balance::get_token_amount;
 use crate::state::spot_market::{SpotBalance, SpotBalanceType, SpotMarket};
-use crate::state::user::UserFixed;
+use crate::state::user::User;
 use crate::validate;
 
 use super::constants::SPOT_UTILIZATION_PRECISION;
@@ -64,7 +64,7 @@ pub fn calculate_max_borrow_token_amount(
 
 pub fn check_user_exception_to_withdraw_limits(
     spot_market: &SpotMarket,
-    user: Option<&UserFixed>,
+    user: Option<&User>,
     token_amount_withdrawn: Option<u128>,
 ) -> DriftResult<bool> {
     // allow a smaller user in a market to bypass and withdraw their principal
@@ -147,7 +147,7 @@ pub fn calculate_token_utilization_limits(
 
 pub fn check_withdraw_limits(
     spot_market: &SpotMarket,
-    user: Option<&UserFixed>,
+    user: Option<&User>,
     token_amount_withdrawn: Option<u128>,
 ) -> DriftResult<bool> {
     // calculates min/max deposit/borrow amounts permitted for immediate withdraw

@@ -21,7 +21,7 @@ use crate::state::perp_market::PerpMarket;
 use crate::state::perp_market_map::PerpMarketMap;
 use crate::state::spot_market::{SpotBalanceType, SpotMarket};
 use crate::state::spot_market_map::SpotMarketMap;
-use crate::state::user::{OrderType, UserFixed};
+use crate::state::user::{OrderType, User};
 use crate::{validate, MarketType, OrderParams, PositionDirection};
 
 pub const LIQUIDATION_FEE_ADJUST_GRACE_PERIOD_SLOTS: u64 = 1_500; // ~10 minutes
@@ -197,7 +197,7 @@ pub fn calculate_asset_transfer_for_liability_transfer(
 }
 
 pub fn is_cross_margin_being_liquidated(
-    user: &UserFixed,
+    user: &User,
     market_map: &PerpMarketMap,
     spot_market_map: &SpotMarketMap,
     oracle_map: &mut OracleMap,
@@ -217,7 +217,7 @@ pub fn is_cross_margin_being_liquidated(
 }
 
 pub fn validate_user_not_being_liquidated(
-    user: &mut UserFixed,
+    user: &mut User,
     market_map: &PerpMarketMap,
     spot_market_map: &SpotMarketMap,
     oracle_map: &mut OracleMap,
@@ -262,7 +262,7 @@ pub fn validate_user_not_being_liquidated(
 }
 
 pub fn is_isolated_margin_being_liquidated(
-    user: &UserFixed,
+    user: &User,
     market_map: &PerpMarketMap,
     spot_market_map: &SpotMarketMap,
     oracle_map: &mut OracleMap,
@@ -366,7 +366,7 @@ pub fn validate_transfer_satisfies_limit_price(
 }
 
 pub fn calculate_max_pct_to_liquidate(
-    user: &UserFixed,
+    user: &User,
     margin_shortage: u128,
     slot: u64,
     initial_pct_to_liquidate: u128,

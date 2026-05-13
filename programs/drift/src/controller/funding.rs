@@ -27,10 +27,10 @@ use crate::state::oracle_map::OracleMap;
 use crate::state::perp_market::{PerpMarket, AMM};
 use crate::state::perp_market_map::PerpMarketMap;
 use crate::state::state::OracleGuardRails;
-use crate::state::user::UserFixed;
+use crate::state::user::User;
 
 pub fn settle_funding_payment(
-    user: &mut UserFixed,
+    user: &mut User,
     user_key: &Pubkey,
     market: &mut PerpMarket,
     now: UnixTimestamp,
@@ -90,7 +90,7 @@ pub fn settle_funding_payment(
 }
 
 pub fn settle_funding_payments(
-    user: &mut UserFixed,
+    user: &mut User,
     user_key: &Pubkey,
     perp_market_map: &PerpMarketMap,
     now: UnixTimestamp,

@@ -101,7 +101,7 @@ pub mod amm_jit {
     use crate::state::perp_market_map::PerpMarketMap;
     use crate::state::spot_market::{SpotBalanceType, SpotMarket};
     use crate::state::spot_market_map::SpotMarketMap;
-    use crate::state::user::{OrderStatus, OrderType, SpotPosition, User, UserFixed, UserStats};
+    use crate::state::user::{OrderStatus, OrderType, SpotPosition, User, UserStats};
     use crate::state::user_map::{UserMap, UserStatsMap};
     use crate::test_utils::{get_orders, get_positions, get_pyth_price, get_spot_positions};
 
@@ -253,7 +253,7 @@ pub mod amm_jit {
         let spot_market_map = SpotMarketMap::load_one(&spot_market_account_info, true).unwrap();
 
         // taker wants to go long (would improve balance)
-        let mut taker = UserFixed {
+        let mut taker = User {
             orders: get_orders(Order {
                 market_index: 0,
                 status: OrderStatus::Open,
@@ -285,7 +285,7 @@ pub mod amm_jit {
         let maker_key = Pubkey::from_str("My11111111111111111111111111111111111111113").unwrap();
         let maker_authority =
             Pubkey::from_str("J83w4HKfqxwcq3BEMMkPFSppX3gqekLyLJBexebFVkix").unwrap();
-        let mut maker = UserFixed {
+        let mut maker = User {
             authority: maker_authority,
             orders: get_orders(Order {
                 market_index: 0,
@@ -452,7 +452,7 @@ pub mod amm_jit {
         let spot_market_map = SpotMarketMap::load_one(&spot_market_account_info, true).unwrap();
 
         // taker wants to go long (would improve balance)
-        let mut taker = UserFixed {
+        let mut taker = User {
             orders: get_orders(Order {
                 market_index: 0,
                 status: OrderStatus::Open,
@@ -484,7 +484,7 @@ pub mod amm_jit {
         let maker_key = Pubkey::from_str("My11111111111111111111111111111111111111113").unwrap();
         let maker_authority =
             Pubkey::from_str("J83w4HKfqxwcq3BEMMkPFSppX3gqekLyLJBexebFVkix").unwrap();
-        let mut maker = UserFixed {
+        let mut maker = User {
             authority: maker_authority,
             orders: get_orders(Order {
                 market_index: 0,
@@ -668,7 +668,7 @@ pub mod amm_jit {
         let spot_market_map = SpotMarketMap::load_one(&spot_market_account_info, true).unwrap();
 
         // taker wants to go long (would improve balance)
-        let mut taker = UserFixed {
+        let mut taker = User {
             orders: get_orders(Order {
                 market_index: 0,
                 status: OrderStatus::Open,
@@ -700,7 +700,7 @@ pub mod amm_jit {
         let maker_key = Pubkey::from_str("My11111111111111111111111111111111111111113").unwrap();
         let maker_authority =
             Pubkey::from_str("J83w4HKfqxwcq3BEMMkPFSppX3gqekLyLJBexebFVkix").unwrap();
-        let mut maker = UserFixed {
+        let mut maker = User {
             authority: maker_authority,
             orders: get_orders(Order {
                 market_index: 0,
@@ -881,7 +881,7 @@ pub mod amm_jit {
 
         // taker wants to go long (would improve balance)
         let taker_mul: i64 = 20;
-        let mut taker = UserFixed {
+        let mut taker = User {
             orders: get_orders(Order {
                 market_index: 0,
                 status: OrderStatus::Open,
@@ -913,7 +913,7 @@ pub mod amm_jit {
         let maker_key = Pubkey::from_str("My11111111111111111111111111111111111111113").unwrap();
         let maker_authority =
             Pubkey::from_str("J83w4HKfqxwcq3BEMMkPFSppX3gqekLyLJBexebFVkix").unwrap();
-        let mut maker = UserFixed {
+        let mut maker = User {
             authority: maker_authority,
             orders: get_orders(Order {
                 market_index: 0,
@@ -1102,7 +1102,7 @@ pub mod amm_jit {
         create_anchor_account_info!(spot_market, SpotMarket, spot_market_account_info);
         let spot_market_map = SpotMarketMap::load_one(&spot_market_account_info, true).unwrap();
 
-        let mut taker = UserFixed {
+        let mut taker = User {
             orders: get_orders(Order {
                 market_index: 0,
                 status: OrderStatus::Open,
@@ -1133,7 +1133,7 @@ pub mod amm_jit {
         let maker_key = Pubkey::from_str("My11111111111111111111111111111111111111113").unwrap();
         let maker_authority =
             Pubkey::from_str("J83w4HKfqxwcq3BEMMkPFSppX3gqekLyLJBexebFVkix").unwrap();
-        let mut maker = UserFixed {
+        let mut maker = User {
             authority: maker_authority,
             orders: get_orders(Order {
                 market_index: 0,
@@ -1319,7 +1319,7 @@ pub mod amm_jit {
         let spot_market_map = SpotMarketMap::load_one(&spot_market_account_info, true).unwrap();
 
         // taker wants to go long (would improve balance)
-        let mut taker = UserFixed {
+        let mut taker = User {
             orders: get_orders(Order {
                 market_index: 0,
                 status: OrderStatus::Open,
@@ -1350,7 +1350,7 @@ pub mod amm_jit {
         let maker_key = Pubkey::from_str("My11111111111111111111111111111111111111113").unwrap();
         let maker_authority =
             Pubkey::from_str("J83w4HKfqxwcq3BEMMkPFSppX3gqekLyLJBexebFVkix").unwrap();
-        let mut maker = UserFixed {
+        let mut maker = User {
             authority: maker_authority,
             orders: get_orders(Order {
                 market_index: 0,
@@ -1540,7 +1540,7 @@ pub mod amm_jit {
         let spot_market_map = SpotMarketMap::load_one(&spot_market_account_info, true).unwrap();
 
         // taker wants to go long (would improve balance)
-        let mut taker = UserFixed {
+        let mut taker = User {
             orders: get_orders(Order {
                 market_index: 0,
                 status: OrderStatus::Open,
@@ -1571,7 +1571,7 @@ pub mod amm_jit {
         let maker_key = Pubkey::from_str("My11111111111111111111111111111111111111113").unwrap();
         let maker_authority =
             Pubkey::from_str("J83w4HKfqxwcq3BEMMkPFSppX3gqekLyLJBexebFVkix").unwrap();
-        let mut maker = UserFixed {
+        let mut maker = User {
             authority: maker_authority,
             orders: get_orders(Order {
                 market_index: 0,
@@ -1745,7 +1745,7 @@ pub mod amm_jit {
         let spot_market_map = SpotMarketMap::load_one(&spot_market_account_info, true).unwrap();
 
         // taker wants to go long (would improve balance)
-        let mut taker = UserFixed {
+        let mut taker = User {
             orders: get_orders(Order {
                 market_index: 0,
                 status: OrderStatus::Open,
@@ -1776,7 +1776,7 @@ pub mod amm_jit {
         let maker_key = Pubkey::from_str("My11111111111111111111111111111111111111113").unwrap();
         let maker_authority =
             Pubkey::from_str("J83w4HKfqxwcq3BEMMkPFSppX3gqekLyLJBexebFVkix").unwrap();
-        let mut maker = UserFixed {
+        let mut maker = User {
             authority: maker_authority,
             orders: get_orders(Order {
                 market_index: 0,
@@ -1944,7 +1944,7 @@ pub mod amm_jit {
         let spot_market_map = SpotMarketMap::load_one(&spot_market_account_info, true).unwrap();
 
         // taker wants to go long (would improve balance)
-        let mut taker = UserFixed {
+        let mut taker = User {
             orders: get_orders(Order {
                 market_index: 0,
                 status: OrderStatus::Open,
@@ -1975,7 +1975,7 @@ pub mod amm_jit {
         let maker_key = Pubkey::from_str("My11111111111111111111111111111111111111113").unwrap();
         let maker_authority =
             Pubkey::from_str("J83w4HKfqxwcq3BEMMkPFSppX3gqekLyLJBexebFVkix").unwrap();
-        let mut maker = UserFixed {
+        let mut maker = User {
             authority: maker_authority,
             orders: get_orders(Order {
                 market_index: 0,
@@ -2159,7 +2159,7 @@ pub mod amm_jit {
         let spot_market_map = SpotMarketMap::load_one(&spot_market_account_info, true).unwrap();
 
         // taker wants to go long (would improve balance)
-        let mut taker = UserFixed {
+        let mut taker = User {
             orders: get_orders(Order {
                 market_index: 0,
                 status: OrderStatus::Open,
@@ -2190,7 +2190,7 @@ pub mod amm_jit {
         let maker_key = Pubkey::from_str("My11111111111111111111111111111111111111113").unwrap();
         let maker_authority =
             Pubkey::from_str("J83w4HKfqxwcq3BEMMkPFSppX3gqekLyLJBexebFVkix").unwrap();
-        let mut maker = UserFixed {
+        let mut maker = User {
             authority: maker_authority,
             orders: get_orders(Order {
                 market_index: 0,
@@ -2382,7 +2382,7 @@ pub mod amm_jit {
 
         // taker wants to go long (would improve balance)
         let auction_duration = 50;
-        let mut taker = UserFixed {
+        let mut taker = User {
             orders: get_orders(Order {
                 market_index: 0,
                 status: OrderStatus::Open,
@@ -2473,7 +2473,7 @@ pub mod amm_jit {
             };
             println!("mark: {} bid ask: {} {}", mark, bid, ask);
 
-            let mut maker = UserFixed {
+            let mut maker = User {
                 authority: maker_authority,
                 orders: get_orders(Order {
                     market_index: 0,
@@ -2660,7 +2660,7 @@ pub mod amm_jit {
 
         // taker wants to go long (would improve balance)
         let auction_duration = 50;
-        let mut taker = UserFixed {
+        let mut taker = User {
             orders: get_orders(Order {
                 market_index: 0,
                 status: OrderStatus::Open,
@@ -2754,7 +2754,7 @@ pub mod amm_jit {
             };
             println!("mark: {} bid ask: {} {}", mark, bid, ask);
 
-            let mut maker = UserFixed {
+            let mut maker = User {
                 authority: maker_authority,
                 orders: get_orders(Order {
                     market_index: 0,
@@ -2941,7 +2941,7 @@ pub mod amm_jit {
         let spot_market_map = SpotMarketMap::load_one(&spot_market_account_info, true).unwrap();
 
         // taker wants to go long (would improve balance)
-        let mut taker = UserFixed {
+        let mut taker = User {
             orders: get_orders(Order {
                 market_index: 0,
                 status: OrderStatus::Open,
@@ -2973,7 +2973,7 @@ pub mod amm_jit {
         let maker_key = Pubkey::from_str("My11111111111111111111111111111111111111113").unwrap();
         let maker_authority =
             Pubkey::from_str("J83w4HKfqxwcq3BEMMkPFSppX3gqekLyLJBexebFVkix").unwrap();
-        let mut maker = UserFixed {
+        let mut maker = User {
             authority: maker_authority,
             orders: get_orders(Order {
                 market_index: 0,

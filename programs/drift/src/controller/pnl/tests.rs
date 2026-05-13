@@ -23,7 +23,7 @@ use crate::state::pyth_lazer_oracle::PythLazerOracle;
 use crate::state::spot_market::{SpotBalanceType, SpotMarket};
 use crate::state::spot_market_map::SpotMarketMap;
 use crate::state::state::{OracleGuardRails, State, ValidityGuardRails};
-use crate::state::user::{PerpPosition, PositionFlag, SpotPosition, User, UserFixed};
+use crate::state::user::{PerpPosition, PositionFlag, SpotPosition, User};
 use crate::test_utils::{get_positions, get_pyth_price, get_spot_positions};
 use crate::{create_anchor_account_info, SettlePnlMode, PRICE_PRECISION_I64};
 use anchor_lang::prelude::Clock;
@@ -115,7 +115,7 @@ pub fn user_no_position() {
     create_anchor_account_info!(spot_market, SpotMarket, spot_market_account_info);
     let spot_market_map = SpotMarketMap::load_one(&spot_market_account_info, true).unwrap();
 
-    let mut user = UserFixed {
+    let mut user = User {
         perp_positions: [PerpPosition::default(); 8],
         spot_positions: get_spot_positions(SpotPosition {
             market_index: 0,
@@ -236,7 +236,7 @@ pub fn user_does_not_meet_maintenance_requirement() {
     create_anchor_account_info!(spot_market, SpotMarket, spot_market_account_info);
     let spot_market_map = SpotMarketMap::load_one(&spot_market_account_info, true).unwrap();
 
-    let mut user = UserFixed {
+    let mut user = User {
         perp_positions: get_positions(PerpPosition {
             market_index: 0,
             quote_asset_amount: -120 * QUOTE_PRECISION_I64,
@@ -364,7 +364,7 @@ pub fn user_does_not_meet_strict_maintenance_requirement() {
     create_anchor_account_info!(spot_market, SpotMarket, spot_market_account_info);
     let spot_market_map = SpotMarketMap::load_one(&spot_market_account_info, true).unwrap();
 
-    let mut user = UserFixed {
+    let mut user = User {
         perp_positions: get_positions(PerpPosition {
             market_index: 0,
             quote_asset_amount: -51 * QUOTE_PRECISION_I64,
@@ -504,7 +504,7 @@ pub fn user_unsettled_negative_pnl() {
     create_anchor_account_info!(spot_market, SpotMarket, spot_market_account_info);
     let spot_market_map = SpotMarketMap::load_one(&spot_market_account_info, true).unwrap();
 
-    let mut user = UserFixed {
+    let mut user = User {
         perp_positions: get_positions(PerpPosition {
             market_index: 0,
             quote_asset_amount: -50 * QUOTE_PRECISION_I64,
@@ -640,7 +640,7 @@ pub fn user_unsettled_positive_pnl_more_than_pool() {
     create_anchor_account_info!(spot_market, SpotMarket, spot_market_account_info);
     let spot_market_map = SpotMarketMap::load_one(&spot_market_account_info, true).unwrap();
 
-    let mut user = UserFixed {
+    let mut user = User {
         perp_positions: get_positions(PerpPosition {
             market_index: 0,
             quote_asset_amount: 100 * QUOTE_PRECISION_I64,
@@ -776,7 +776,7 @@ pub fn user_unsettled_positive_pnl_less_than_pool() {
     create_anchor_account_info!(spot_market, SpotMarket, spot_market_account_info);
     let spot_market_map = SpotMarketMap::load_one(&spot_market_account_info, true).unwrap();
 
-    let mut user = UserFixed {
+    let mut user = User {
         perp_positions: get_positions(PerpPosition {
             market_index: 0,
             quote_asset_amount: 25 * QUOTE_PRECISION_I64,
@@ -915,7 +915,7 @@ pub fn market_fee_pool_receives_portion() {
     create_anchor_account_info!(spot_market, SpotMarket, spot_market_account_info);
     let spot_market_map = SpotMarketMap::load_one(&spot_market_account_info, true).unwrap();
 
-    let mut user = UserFixed {
+    let mut user = User {
         perp_positions: get_positions(PerpPosition {
             market_index: 0,
             quote_asset_amount: -100 * QUOTE_PRECISION_I64,
@@ -1059,7 +1059,7 @@ pub fn market_fee_pool_pays_back_to_pnl_pool() {
     create_anchor_account_info!(spot_market, SpotMarket, spot_market_account_info);
     let spot_market_map = SpotMarketMap::load_one(&spot_market_account_info, true).unwrap();
 
-    let mut user = UserFixed {
+    let mut user = User {
         perp_positions: get_positions(PerpPosition {
             market_index: 0,
             quote_asset_amount: -100 * QUOTE_PRECISION_I64,
@@ -1196,7 +1196,7 @@ pub fn user_long_positive_unrealized_pnl_up_to_max_positive_pnl() {
     create_anchor_account_info!(spot_market, SpotMarket, spot_market_account_info);
     let spot_market_map = SpotMarketMap::load_one(&spot_market_account_info, true).unwrap();
 
-    let mut user = UserFixed {
+    let mut user = User {
         perp_positions: get_positions(PerpPosition {
             market_index: 0,
             base_asset_amount: BASE_PRECISION_I64,
@@ -1334,7 +1334,7 @@ pub fn user_long_positive_unrealized_pnl_up_to_max_positive_pnl_price_breached()
     create_anchor_account_info!(spot_market, SpotMarket, spot_market_account_info);
     let spot_market_map = SpotMarketMap::load_one(&spot_market_account_info, true).unwrap();
 
-    let mut user = UserFixed {
+    let mut user = User {
         perp_positions: get_positions(PerpPosition {
             market_index: 0,
             base_asset_amount: BASE_PRECISION_I64,
@@ -1469,7 +1469,7 @@ pub fn user_long_negative_unrealized_pnl() {
     create_anchor_account_info!(spot_market, SpotMarket, spot_market_account_info);
     let spot_market_map = SpotMarketMap::load_one(&spot_market_account_info, true).unwrap();
 
-    let mut user = UserFixed {
+    let mut user = User {
         perp_positions: get_positions(PerpPosition {
             market_index: 0,
             base_asset_amount: BASE_PRECISION_I64,
@@ -1607,7 +1607,7 @@ pub fn user_short_positive_unrealized_pnl_up_to_max_positive_pnl() {
     create_anchor_account_info!(spot_market, SpotMarket, spot_market_account_info);
     let spot_market_map = SpotMarketMap::load_one(&spot_market_account_info, true).unwrap();
 
-    let mut user = UserFixed {
+    let mut user = User {
         perp_positions: get_positions(PerpPosition {
             market_index: 0,
             base_asset_amount: -BASE_PRECISION_I64,
@@ -1745,7 +1745,7 @@ pub fn user_short_negative_unrealized_pnl() {
     create_anchor_account_info!(spot_market, SpotMarket, spot_market_account_info);
     let spot_market_map = SpotMarketMap::load_one(&spot_market_account_info, true).unwrap();
 
-    let mut user = UserFixed {
+    let mut user = User {
         perp_positions: get_positions(PerpPosition {
             market_index: 0,
             base_asset_amount: -BASE_PRECISION_I64,
@@ -1882,7 +1882,7 @@ pub fn user_invalid_oracle_position() {
     create_anchor_account_info!(spot_market, SpotMarket, spot_market_account_info);
     let spot_market_map = SpotMarketMap::load_one(&spot_market_account_info, true).unwrap();
 
-    let mut user = UserFixed {
+    let mut user = User {
         perp_positions: get_positions(PerpPosition {
             market_index: 0,
             base_asset_amount: -BASE_PRECISION_I64,
@@ -2203,7 +2203,7 @@ pub fn isolated_perp_position_negative_pnl() {
     create_anchor_account_info!(spot_market, SpotMarket, spot_market_account_info);
     let spot_market_map = SpotMarketMap::load_one(&spot_market_account_info, true).unwrap();
 
-    let mut user = UserFixed {
+    let mut user = User {
         perp_positions: get_positions(PerpPosition {
             market_index: 0,
             quote_asset_amount: -50 * QUOTE_PRECISION_I64,
@@ -2337,7 +2337,7 @@ pub fn isolated_perp_position_user_unsettled_positive_pnl_less_than_pool() {
     create_anchor_account_info!(spot_market, SpotMarket, spot_market_account_info);
     let spot_market_map = SpotMarketMap::load_one(&spot_market_account_info, true).unwrap();
 
-    let mut user = UserFixed {
+    let mut user = User {
         perp_positions: get_positions(PerpPosition {
             market_index: 0,
             quote_asset_amount: 25 * QUOTE_PRECISION_I64,

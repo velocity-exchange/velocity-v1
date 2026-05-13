@@ -19,7 +19,7 @@ use crate::state::perp_market::PerpMarket;
 use crate::state::perp_market_map::PerpMarketMap;
 use crate::state::state::State;
 use crate::state::user::PerpPosition;
-use crate::state::user::UserFixed;
+use crate::state::user::User;
 use crate::validate;
 use anchor_lang::prelude::Account;
 
@@ -194,7 +194,7 @@ pub fn settle_lp_position(
 }
 
 pub fn settle_lp(
-    user: &mut UserFixed,
+    user: &mut User,
     user_key: &Pubkey,
     market: &mut PerpMarket,
     now: i64,
@@ -225,7 +225,7 @@ pub fn settle_lp(
 // settling the lp can take on a new position which requires funding
 // to be up-to-date
 pub fn settle_funding_payment_then_lp(
-    user: &mut UserFixed,
+    user: &mut User,
     user_key: &Pubkey,
     market: &mut PerpMarket,
     now: i64,

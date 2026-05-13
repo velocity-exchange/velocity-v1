@@ -73,9 +73,7 @@ use crate::state::perp_market_map::PerpMarketMap;
 use crate::state::spot_market::SpotBalanceType;
 use crate::state::spot_market_map::SpotMarketMap;
 use crate::state::state::State;
-use crate::state::user::{
-    MarketType, Order, OrderStatus, OrderType, User, UserFixed, UserStats,
-};
+use crate::state::user::{MarketType, Order, OrderStatus, OrderType, User, UserStats, UserView};
 use crate::state::user_map::{UserMap, UserStatsMap};
 use crate::validate;
 use crate::{get_then_update_id, load_mut};
@@ -87,7 +85,7 @@ pub fn liquidate_perp(
     market_index: u16,
     liquidator_max_base_asset_amount: u64,
     limit_price: Option<u64>,
-    user: &mut User<'_>,
+    user: &mut UserView<'_>,
     user_key: &Pubkey,
     user_stats: &mut UserStats,
     liquidator: &mut User,
@@ -734,10 +732,10 @@ pub fn liquidate_perp(
 
 pub fn liquidate_perp_with_fill(
     market_index: u16,
-    user_loader: &AccountLoader<UserFixed>,
+    user_loader: &AccountLoader<User>,
     user_key: &Pubkey,
     user_stats_loader: &AccountLoader<UserStats>,
-    liquidator_loader: &AccountLoader<UserFixed>,
+    liquidator_loader: &AccountLoader<User>,
     liquidator_key: &Pubkey,
     liquidator_stats_loader: &AccountLoader<UserStats>,
     makers_and_referrer: &UserMap,
@@ -1201,7 +1199,7 @@ pub fn liquidate_spot(
     liability_market_index: u16,
     liquidator_max_liability_transfer: u128,
     limit_price: Option<u64>,
-    user: &mut User<'_>,
+    user: &mut UserView<'_>,
     user_key: &Pubkey,
     user_stats: &mut UserStats,
     liquidator: &mut User,
@@ -1787,7 +1785,7 @@ pub fn liquidate_spot_with_swap_begin(
     asset_market_index: u16,
     liability_market_index: u16,
     swap_amount_in: u64,
-    user: &mut User<'_>,
+    user: &mut UserView<'_>,
     user_key: &Pubkey,
     user_stats: &mut UserStats,
     liquidator: &mut User,
@@ -2179,7 +2177,7 @@ pub fn liquidate_spot_with_swap_begin(
 pub fn liquidate_spot_with_swap_end(
     asset_market_index: u16,
     liability_market_index: u16,
-    user: &mut User<'_>,
+    user: &mut UserView<'_>,
     user_key: &Pubkey,
     user_stats: &mut UserStats,
     _liquidator: &mut User,
@@ -2341,7 +2339,7 @@ pub fn liquidate_borrow_for_perp_pnl(
     liability_market_index: u16,
     liquidator_max_liability_transfer: u128,
     limit_price: Option<u64>,
-    user: &mut User<'_>,
+    user: &mut UserView<'_>,
     user_key: &Pubkey,
     liquidator: &mut User,
     liquidator_key: &Pubkey,
@@ -2824,7 +2822,7 @@ pub fn liquidate_perp_pnl_for_deposit(
     asset_market_index: u16,
     liquidator_max_pnl_transfer: u128,
     limit_price: Option<u64>,
-    user: &mut User<'_>,
+    user: &mut UserView<'_>,
     user_key: &Pubkey,
     liquidator: &mut User,
     liquidator_key: &Pubkey,
@@ -3319,7 +3317,7 @@ pub fn liquidate_perp_pnl_for_deposit(
 
 pub fn resolve_perp_bankruptcy(
     market_index: u16,
-    user: &mut User<'_>,
+    user: &mut UserView<'_>,
     user_key: &Pubkey,
     liquidator: &mut User,
     liquidator_key: &Pubkey,
@@ -3547,7 +3545,7 @@ pub fn resolve_perp_bankruptcy(
 
 pub fn resolve_spot_bankruptcy(
     market_index: u16,
-    user: &mut User<'_>,
+    user: &mut UserView<'_>,
     user_key: &Pubkey,
     liquidator: &mut User,
     liquidator_key: &Pubkey,
@@ -3700,7 +3698,7 @@ pub fn resolve_spot_bankruptcy(
 }
 
 pub fn calculate_margin_freed(
-    user: &User<'_>,
+    user: &UserView<'_>,
     perp_market_map: &PerpMarketMap,
     spot_market_map: &SpotMarketMap,
     oracle_map: &mut OracleMap,
@@ -3731,7 +3729,7 @@ pub fn calculate_margin_freed(
 }
 
 pub fn set_user_status_to_being_liquidated(
-    user: &mut User<'_>,
+    user: &mut UserView<'_>,
     perp_market_map: &PerpMarketMap,
     spot_market_map: &SpotMarketMap,
     oracle_map: &mut OracleMap,

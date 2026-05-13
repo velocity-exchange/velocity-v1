@@ -19,7 +19,7 @@ pub mod deposit_into_isolated_perp_position {
     use crate::state::pyth_lazer_oracle::PythLazerOracle;
     use crate::state::spot_market::SpotMarket;
     use crate::state::spot_market_map::SpotMarketMap;
-    use crate::state::user::{PerpPosition, PositionFlag, User, UserFixed};
+    use crate::state::user::{PerpPosition, PositionFlag, User};
     use crate::test_utils::get_pyth_price;
     use crate::{create_anchor_account_info, PRICE_PRECISION_I64};
 
@@ -228,7 +228,9 @@ pub mod transfer_isolated_perp_position_deposit {
     use crate::state::pyth_lazer_oracle::PythLazerOracle;
     use crate::state::spot_market::SpotMarket;
     use crate::state::spot_market_map::SpotMarketMap;
-    use crate::state::user::{PerpPosition, PositionFlag, SpotPosition, User, UserFixed, UserStats};
+    use crate::state::user::{
+        PerpPosition, PositionFlag, SpotPosition, User, UserStats,
+    };
     use crate::test_utils::get_pyth_price;
     use crate::{
         create_anchor_account_info, PRICE_PRECISION_I64, QUOTE_PRECISION_I64,
@@ -828,7 +830,7 @@ pub mod withdraw_from_isolated_perp_position {
     use crate::state::pyth_lazer_oracle::PythLazerOracle;
     use crate::state::spot_market::SpotMarket;
     use crate::state::spot_market_map::SpotMarketMap;
-    use crate::state::user::{PerpPosition, PositionFlag, User, UserFixed, UserStats};
+    use crate::state::user::{PerpPosition, PositionFlag, User, UserStats};
     use crate::test_utils::get_pyth_price;
     use crate::{
         create_anchor_account_info, PRICE_PRECISION_I64, SPOT_BALANCE_PRECISION,

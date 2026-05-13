@@ -16,7 +16,7 @@ use crate::state::perp_market_map::{MarketSet, PerpMarketMap};
 use crate::state::spot_market_map::SpotMarketMap;
 use crate::state::state::OracleGuardRails;
 use crate::state::traits::Size;
-use crate::state::user::{User, UserFixed, UserStats};
+use crate::state::user::{User, UserStats, UserView};
 use crate::{validate, OracleSource};
 use anchor_lang::accounts::account::Account;
 use anchor_lang::prelude::{AccountInfo, Interface, Pubkey};
@@ -83,7 +83,7 @@ pub fn update_prelaunch_oracle(
 
 pub fn get_maker_and_maker_stats<'a>(
     account_info_iter: &mut Peekable<Iter<'a, AccountInfo<'a>>>,
-) -> DriftResult<(AccountLoader<'a, UserFixed>, AccountLoader<'a, UserStats>)> {
+) -> DriftResult<(AccountLoader<'a, User>, AccountLoader<'a, UserStats>)> {
     let maker_account_info =
         next_account_info(account_info_iter).or(Err(ErrorCode::MakerNotFound))?;
 
@@ -92,7 +92,7 @@ pub fn get_maker_and_maker_stats<'a>(
         ErrorCode::MakerMustBeWritable
     )?;
 
-    let maker: AccountLoader<UserFixed> =
+    let maker: AccountLoader<User> =
         AccountLoader::try_from(maker_account_info).or(Err(ErrorCode::CouldNotDeserializeMaker))?;
 
     let maker_stats_account_info =
@@ -114,7 +114,7 @@ pub fn get_maker_and_maker_stats<'a>(
 pub fn get_referrer_and_referrer_stats<'a>(
     account_info_iter: &mut Peekable<Iter<'a, AccountInfo<'a>>>,
 ) -> DriftResult<(
-    Option<AccountLoader<'a, UserFixed>>,
+    Option<AccountLoader<'a, User>>,
     Option<AccountLoader<'a, UserStats>>,
 )> {
     let referrer_account_info = account_info_iter.peek();
@@ -129,11 +129,11 @@ pub fn get_referrer_and_referrer_stats<'a>(
         ErrorCode::CouldNotDeserializeReferrer
     })?;
 
-    if data.len() < UserFixed::SIZE {
+    if data.len() < User::SIZE {
         return Ok((None, None));
     }
 
-    let user_discriminator: &[u8] = UserFixed::DISCRIMINATOR;
+    let user_discriminator: &[u8] = User::DISCRIMINATOR;
     let account_discriminator = &data[..8];
     if account_discriminator != user_discriminator {
         return Ok((None, None));
@@ -146,7 +146,7 @@ pub fn get_referrer_and_referrer_stats<'a>(
         ErrorCode::ReferrerMustBeWritable
     )?;
 
-    let referrer: AccountLoader<UserFixed> = AccountLoader::try_from(referrer_account_info)
+    let referrer: AccountLoader<User> = AccountLoader::try_from(referrer_account_info)
         .or(Err(ErrorCode::CouldNotDeserializeReferrer))?;
 
     let referrer_stats_account_info = account_info_iter.peek();

@@ -12,10 +12,13 @@ use crate::state::market_status::MarketStatus;
 use crate::state::perp_market::PerpMarket;
 use crate::state::spot_market::SpotMarket;
 use crate::state::state::{ExchangeStatus, State};
-use crate::state::user::{User, UserFixed, UserStats};
+use crate::state::user::{User, UserStats, UserView};
 use crate::validate;
 
-pub fn can_sign_for_user(user: &AccountLoader<UserFixed>, signer: &Signer) -> anchor_lang::Result<bool> {
+pub fn can_sign_for_user(
+    user: &AccountLoader<User>,
+    signer: &Signer,
+) -> anchor_lang::Result<bool> {
     user.load().map(|user| {
         user.authority.eq(signer.key)
             || (user.delegate.eq(signer.key) && !user.delegate.eq(&Pubkey::default()))
@@ -23,7 +26,7 @@ pub fn can_sign_for_user(user: &AccountLoader<UserFixed>, signer: &Signer) -> an
 }
 
 pub fn is_stats_for_user(
-    user: &AccountLoader<UserFixed>,
+    user: &AccountLoader<User>,
     user_stats: &AccountLoader<UserStats>,
 ) -> anchor_lang::Result<bool> {
     let user = user.load()?;

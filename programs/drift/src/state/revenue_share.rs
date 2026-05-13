@@ -9,7 +9,7 @@ use prelude::AccountInfo;
 use crate::error::{DriftResult, ErrorCode};
 use crate::math::casting::Cast;
 use crate::math::safe_unwrap::SafeUnwrap;
-use crate::state::user::{MarketType, OrderStatus, User};
+use crate::state::user::{MarketType, OrderStatus, User, UserView};
 use crate::validate;
 use crate::{msg, ID};
 
@@ -494,7 +494,7 @@ impl<'a> RevenueShareEscrowZeroCopyMut<'a> {
     /// Marks any [`RevenueShareOrder`]s as Complete if there is no longer a corresponding
     /// open order in the user's account. This is used to lazily reconcile state when
     /// in place_order and settle_pnl instead of requiring explicit updates on cancels.
-    pub fn revoke_completed_orders(&mut self, user: &User<'_>) -> DriftResult<()> {
+    pub fn revoke_completed_orders(&mut self, user: &UserView<'_>) -> DriftResult<()> {
         for i in 0..self.orders_len() {
             if let Ok(rev_share_order) = self.get_order_mut(i) {
                 if rev_share_order.is_referral_order() {

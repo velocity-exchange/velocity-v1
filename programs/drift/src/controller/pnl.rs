@@ -33,7 +33,7 @@ use crate::state::settle_pnl_mode::SettlePnlMode;
 use crate::state::spot_market::{SpotBalance, SpotBalanceType};
 use crate::state::spot_market_map::SpotMarketMap;
 use crate::state::state::State;
-use crate::state::user::{MarketType, Order, OrderStatus, OrderType, User};
+use crate::state::user::{MarketType, Order, OrderStatus, OrderType, User, UserView};
 use crate::validate;
 use anchor_lang::prelude::Pubkey;
 use anchor_lang::prelude::*;
@@ -47,7 +47,7 @@ mod delisting;
 
 pub fn settle_pnl(
     market_index: u16,
-    user: &mut User<'_>,
+    user: &mut UserView<'_>,
     authority: &Pubkey,
     user_key: &Pubkey,
     perp_market_map: &PerpMarketMap,
@@ -391,7 +391,7 @@ pub fn settle_pnl(
 
 pub fn settle_expired_position(
     perp_market_index: u16,
-    user: &mut User<'_>,
+    user: &mut UserView<'_>,
     user_key: &Pubkey,
     perp_market_map: &PerpMarketMap,
     spot_market_map: &SpotMarketMap,

@@ -3,7 +3,7 @@ use crate::math::safe_unwrap::SafeUnwrap;
 use crate::msg;
 use crate::state::revenue_share::RevenueShare;
 use crate::state::traits::Size;
-use crate::state::user::{User, UserFixed, UserLoader};
+use crate::state::user::{User, UserLoader, UserView};
 use crate::validate;
 use anchor_lang::prelude::AccountLoader;
 use anchor_lang::Discriminator;
@@ -17,7 +17,7 @@ use std::panic::Location;
 use std::slice::Iter;
 
 pub struct RevenueShareEntry<'a> {
-    pub user: Option<AccountLoader<'a, UserFixed>>,
+    pub user: Option<AccountLoader<'a, User>>,
     pub revenue_share: Option<AccountLoader<'a, RevenueShare>>,
 }
 
@@ -40,7 +40,7 @@ impl<'a> RevenueShareMap<'a> {
     pub fn insert_user(
         &mut self,
         authority: Pubkey,
-        user_loader: AccountLoader<'a, UserFixed>,
+        user_loader: AccountLoader<'a, User>,
     ) -> DriftResult {
         let entry = self.0.entry(authority).or_default();
         validate!(
@@ -71,7 +71,7 @@ impl<'a> RevenueShareMap<'a> {
 
     #[track_caller]
     #[inline(always)]
-    pub fn get_user_ref_mut(&self, authority: &Pubkey) -> DriftResult<User<'_>> {
+    pub fn get_user_ref_mut(&self, authority: &Pubkey) -> DriftResult<UserView<'_>> {
         let loader = match self.0.get(authority).and_then(|e| e.user.as_ref()) {
             Some(loader) => loader,
             None => {
@@ -144,7 +144,7 @@ pub fn load_revenue_share_map<'a: 'b, 'b>(
 ) -> DriftResult<RevenueShareMap<'b>> {
     let mut revenue_share_map = RevenueShareMap::empty();
 
-    let user_discriminator: &[u8] = UserFixed::DISCRIMINATOR;
+    let user_discriminator: &[u8] = User::DISCRIMINATOR;
     let rev_share_discriminator: &[u8] = RevenueShare::DISCRIMINATOR;
 
     while let Some(account_info) = account_info_iter.peek() {
@@ -169,14 +169,14 @@ pub fn load_revenue_share_map<'a: 'b, 'b>(
             let data = user_account_info
                 .try_borrow_data()
                 .or(Err(ErrorCode::CouldNotLoadUserData))?;
-            let expected_data_len = UserFixed::SIZE;
+            let expected_data_len = User::SIZE;
             if data.len() < expected_data_len {
                 return Err(ErrorCode::CouldNotLoadUserData);
             }
             let authority_slice = array_ref![data, 8, 32];
             let authority = Pubkey::from(*authority_slice);
 
-            let user_account_loader: AccountLoader<UserFixed> =
+            let user_account_loader: AccountLoader<User> =
                 AccountLoader::try_from(user_account_info)
                     .or(Err(ErrorCode::InvalidUserAccount))?;
 

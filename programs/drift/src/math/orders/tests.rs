@@ -327,12 +327,12 @@ mod order_breaches_oracle_price_limits {
 
 mod should_expire_order {
     use crate::math::orders::should_expire_order;
-    use crate::state::user::{Order, OrderStatus, OrderType, UserFixed};
+    use crate::state::user::{Order, OrderStatus, OrderType, User};
     use crate::test_utils::get_orders;
 
     #[test]
     fn max_ts_is_zero() {
-        let user = UserFixed {
+        let user = User {
             orders: get_orders(Order {
                 status: OrderStatus::Open,
                 order_type: OrderType::Limit,
@@ -351,7 +351,7 @@ mod should_expire_order {
 
     #[test]
     fn max_ts_is_greater_than_now() {
-        let user = UserFixed {
+        let user = User {
             orders: get_orders(Order {
                 status: OrderStatus::Open,
                 order_type: OrderType::Limit,
@@ -370,7 +370,7 @@ mod should_expire_order {
 
     #[test]
     fn max_ts_is_less_than_now() {
-        let user = UserFixed {
+        let user = User {
             orders: get_orders(Order {
                 status: OrderStatus::Open,
                 order_type: OrderType::Limit,
@@ -389,7 +389,7 @@ mod should_expire_order {
 
     #[test]
     fn order_is_not_open() {
-        let user = UserFixed {
+        let user = User {
             orders: get_orders(Order {
                 status: OrderStatus::Init,
                 order_type: OrderType::Limit,
@@ -408,7 +408,7 @@ mod should_expire_order {
 
     #[test]
     fn order_is_trigger_market_order() {
-        let user = UserFixed {
+        let user = User {
             orders: get_orders(Order {
                 status: OrderStatus::Open,
                 order_type: OrderType::TriggerMarket,
@@ -427,7 +427,7 @@ mod should_expire_order {
 
     #[test]
     fn order_is_trigger_limit_order() {
-        let user = UserFixed {
+        let user = User {
             orders: get_orders(Order {
                 status: OrderStatus::Open,
                 order_type: OrderType::TriggerLimit,
@@ -453,7 +453,7 @@ mod get_max_fill_amounts {
     };
     use crate::math::orders::get_max_fill_amounts;
     use crate::state::spot_market::{SpotBalanceType, SpotMarket};
-    use crate::state::user::{Order, SpotPosition, UserFixed};
+    use crate::state::user::{Order, SpotPosition, User};
     use crate::test_utils::get_orders;
     use crate::LAMPORTS_PER_SOL_U64;
     const LAMPORTS_PER_SOL: u64 = 1_000_000_000;
@@ -483,7 +483,7 @@ mod get_max_fill_amounts {
             ..SpotPosition::default()
         };
 
-        let user = UserFixed {
+        let user = User {
             spot_positions,
             orders: get_orders(Order {
                 direction: PositionDirection::Short,
@@ -521,7 +521,7 @@ mod get_max_fill_amounts {
             ..SpotPosition::default()
         };
 
-        let user = UserFixed {
+        let user = User {
             spot_positions,
             orders: get_orders(Order {
                 direction: PositionDirection::Short,
@@ -562,7 +562,7 @@ mod get_max_fill_amounts {
             ..SpotPosition::default()
         };
 
-        let user = UserFixed {
+        let user = User {
             spot_positions,
             orders: get_orders(Order {
                 direction: PositionDirection::Short,
@@ -604,7 +604,7 @@ mod get_max_fill_amounts {
             ..SpotPosition::default()
         };
 
-        let user = UserFixed {
+        let user = User {
             spot_positions,
             orders: get_orders(Order {
                 direction: PositionDirection::Long,
@@ -642,7 +642,7 @@ mod get_max_fill_amounts {
             ..SpotPosition::default()
         };
 
-        let user = UserFixed {
+        let user = User {
             spot_positions,
             orders: get_orders(Order {
                 direction: PositionDirection::Long,
@@ -684,7 +684,7 @@ mod get_max_fill_amounts {
             ..SpotPosition::default()
         };
 
-        let user = UserFixed {
+        let user = User {
             spot_positions,
             orders: get_orders(Order {
                 direction: PositionDirection::Long,
@@ -737,7 +737,7 @@ mod find_maker_orders {
 
     #[test]
     fn no_limit_orders() {
-        let user = UserFixed {
+        let user = User {
             orders: [Order {
                 status: OrderStatus::Open,
                 order_type: OrderType::Market,
@@ -772,7 +772,7 @@ mod find_maker_orders {
 
     #[test]
     fn no_triggered_trigger_limit_orders() {
-        let user = UserFixed {
+        let user = User {
             orders: [Order {
                 status: OrderStatus::Open,
                 order_type: OrderType::TriggerLimit,
@@ -808,7 +808,7 @@ mod find_maker_orders {
 
     #[test]
     fn wrong_direction() {
-        let user = UserFixed {
+        let user = User {
             orders: [Order {
                 status: OrderStatus::Open,
                 order_type: OrderType::Limit,
@@ -844,7 +844,7 @@ mod find_maker_orders {
 
     #[test]
     fn wrong_market_index() {
-        let user = UserFixed {
+        let user = User {
             orders: [Order {
                 status: OrderStatus::Open,
                 order_type: OrderType::Limit,
@@ -880,7 +880,7 @@ mod find_maker_orders {
 
     #[test]
     fn wrong_market_type() {
-        let user = UserFixed {
+        let user = User {
             orders: [Order {
                 status: OrderStatus::Open,
                 order_type: OrderType::Limit,
@@ -927,7 +927,7 @@ mod find_maker_orders {
             ..Order::default()
         };
 
-        let user = UserFixed {
+        let user = User {
             orders,
             ..User::default()
         };
@@ -968,7 +968,7 @@ mod find_maker_orders {
             }
         }
 
-        let user = UserFixed {
+        let user = User {
             orders,
             ..User::default()
         };
@@ -1014,7 +1014,7 @@ mod find_maker_orders {
             }
         }
 
-        let user = UserFixed {
+        let user = User {
             orders,
             ..User::default()
         };
@@ -1067,7 +1067,7 @@ mod calculate_max_spot_order_size {
     use crate::state::pyth_lazer_oracle::PythLazerOracle;
     use crate::state::spot_market::{SpotBalanceType, SpotMarket};
     use crate::state::spot_market_map::SpotMarketMap;
-    use crate::state::user::{Order, PerpPosition, SpotPosition, UserFixed};
+    use crate::state::user::{Order, PerpPosition, SpotPosition, User};
     use crate::test_utils::get_pyth_price;
     use crate::MARGIN_PRECISION;
     use crate::{
@@ -1142,7 +1142,7 @@ mod calculate_max_spot_order_size {
             balance_type: SpotBalanceType::Deposit,
             ..SpotPosition::default()
         };
-        let mut user = UserFixed {
+        let mut user = User {
             orders: [Order::default(); 32],
             perp_positions: [PerpPosition::default(); 8],
             spot_positions,
@@ -1249,7 +1249,7 @@ mod calculate_max_spot_order_size {
             scaled_balance: 500 * SPOT_BALANCE_PRECISION_U64,
             ..SpotPosition::default()
         };
-        let mut user = UserFixed {
+        let mut user = User {
             orders: [Order::default(); 32],
             perp_positions: [PerpPosition::default(); 8],
             spot_positions,
@@ -1355,7 +1355,7 @@ mod calculate_max_spot_order_size {
             balance_type: SpotBalanceType::Deposit,
             ..SpotPosition::default()
         };
-        let mut user = UserFixed {
+        let mut user = User {
             orders: [Order::default(); 32],
             perp_positions: [PerpPosition::default(); 8],
             spot_positions,
@@ -1462,7 +1462,7 @@ mod calculate_max_spot_order_size {
             scaled_balance: 500 * SPOT_BALANCE_PRECISION_U64,
             ..SpotPosition::default()
         };
-        let user = UserFixed {
+        let user = User {
             orders: [Order::default(); 32],
             perp_positions: [PerpPosition::default(); 8],
             spot_positions,
@@ -1550,7 +1550,7 @@ mod calculate_max_spot_order_size {
             balance_type: SpotBalanceType::Deposit,
             ..SpotPosition::default()
         };
-        let mut user = UserFixed {
+        let mut user = User {
             orders: [Order::default(); 32],
             perp_positions: [PerpPosition::default(); 8],
             spot_positions,
@@ -1657,7 +1657,7 @@ mod calculate_max_spot_order_size {
             balance_type: SpotBalanceType::Deposit,
             ..SpotPosition::default()
         };
-        let mut user = UserFixed {
+        let mut user = User {
             orders: [Order::default(); 32],
             perp_positions: [PerpPosition::default(); 8],
             spot_positions,
@@ -1765,7 +1765,7 @@ mod calculate_max_spot_order_size {
             balance_type: SpotBalanceType::Deposit,
             ..SpotPosition::default()
         };
-        let mut user = UserFixed {
+        let mut user = User {
             orders: [Order::default(); 32],
             perp_positions: [PerpPosition::default(); 8],
             spot_positions,
@@ -1872,7 +1872,7 @@ mod calculate_max_spot_order_size {
             balance_type: SpotBalanceType::Deposit,
             ..SpotPosition::default()
         };
-        let mut user = UserFixed {
+        let mut user = User {
             orders: [Order::default(); 32],
             perp_positions: [PerpPosition::default(); 8],
             spot_positions,
@@ -1934,7 +1934,7 @@ mod calculate_max_perp_order_size {
     use crate::state::pyth_lazer_oracle::PythLazerOracle;
     use crate::state::spot_market::{SpotBalanceType, SpotMarket};
     use crate::state::spot_market_map::SpotMarketMap;
-    use crate::state::user::{Order, PerpPosition, SpotPosition, UserFixed};
+    use crate::state::user::{Order, PerpPosition, SpotPosition, User};
     use crate::test_utils::get_pyth_price;
     use crate::test_utils::*;
     use crate::{
@@ -2023,7 +2023,7 @@ mod calculate_max_perp_order_size {
             scaled_balance: 10000 * SPOT_BALANCE_PRECISION_U64,
             ..SpotPosition::default()
         };
-        let mut user = UserFixed {
+        let mut user = User {
             orders: [Order::default(); 32],
             perp_positions: get_positions(PerpPosition {
                 market_index: 0,
@@ -2145,7 +2145,7 @@ mod calculate_max_perp_order_size {
             scaled_balance: 10000 * SPOT_BALANCE_PRECISION_U64,
             ..SpotPosition::default()
         };
-        let user = UserFixed {
+        let user = User {
             orders: [Order::default(); 32],
             perp_positions: get_positions(PerpPosition {
                 market_index: 0,
@@ -2250,7 +2250,7 @@ mod calculate_max_perp_order_size {
             scaled_balance: 10000 * SPOT_BALANCE_PRECISION_U64,
             ..SpotPosition::default()
         };
-        let mut user = UserFixed {
+        let mut user = User {
             orders: [Order::default(); 32],
             perp_positions: get_positions(PerpPosition {
                 market_index: 0,
@@ -2372,7 +2372,7 @@ mod calculate_max_perp_order_size {
             scaled_balance: 10000 * SPOT_BALANCE_PRECISION_U64,
             ..SpotPosition::default()
         };
-        let user = UserFixed {
+        let user = User {
             orders: [Order::default(); 32],
             perp_positions: get_positions(PerpPosition {
                 market_index: 0,
@@ -2477,7 +2477,7 @@ mod calculate_max_perp_order_size {
             scaled_balance: 10000 * SPOT_BALANCE_PRECISION_U64,
             ..SpotPosition::default()
         };
-        let mut user = UserFixed {
+        let mut user = User {
             orders: [Order::default(); 32],
             perp_positions: get_positions(PerpPosition {
                 market_index: 0,
@@ -2600,7 +2600,7 @@ mod calculate_max_perp_order_size {
             scaled_balance: 10000 * SPOT_BALANCE_PRECISION_U64,
             ..SpotPosition::default()
         };
-        let mut user = UserFixed {
+        let mut user = User {
             orders: [Order::default(); 32],
             perp_positions: get_positions(PerpPosition {
                 market_index: 0,
@@ -2724,7 +2724,7 @@ mod calculate_max_perp_order_size {
             scaled_balance: 10000 * SPOT_BALANCE_PRECISION_U64,
             ..SpotPosition::default()
         };
-        let mut user = UserFixed {
+        let mut user = User {
             orders: [Order::default(); 32],
             perp_positions: get_positions(PerpPosition {
                 market_index: 0,
@@ -2847,7 +2847,7 @@ mod calculate_max_perp_order_size {
             scaled_balance: 10000 * SPOT_BALANCE_PRECISION_U64,
             ..SpotPosition::default()
         };
-        let mut user = UserFixed {
+        let mut user = User {
             orders: [Order::default(); 32],
             perp_positions: get_positions(PerpPosition {
                 market_index: 0,
@@ -2970,7 +2970,7 @@ mod calculate_max_perp_order_size {
             scaled_balance: 10000 * SPOT_BALANCE_PRECISION_U64,
             ..SpotPosition::default()
         };
-        let mut user = UserFixed {
+        let mut user = User {
             orders: [Order::default(); 32],
             perp_positions: get_positions(PerpPosition {
                 market_index: 0,
@@ -3094,7 +3094,7 @@ mod calculate_max_perp_order_size {
             scaled_balance: 10000 * SPOT_BALANCE_PRECISION_U64,
             ..SpotPosition::default()
         };
-        let mut user = UserFixed {
+        let mut user = User {
             orders: [Order::default(); 32],
             perp_positions: get_positions(PerpPosition {
                 market_index: 0,
@@ -3368,7 +3368,7 @@ mod calculate_max_perp_order_size {
         let user_account_info =
             create_account_info(&user_key, true, &mut lamports, user_bytes, &owner);
 
-        let user_account_loader: AccountLoader<UserFixed> =
+        let user_account_loader: AccountLoader<User> =
             AccountLoader::try_from(&user_account_info).unwrap();
 
         let mut user = user_account_loader.load_mut().unwrap();
@@ -3948,7 +3948,7 @@ pub mod find_bids_and_asks_from_users {
     use crate::math::orders::{find_bids_and_asks_from_users, Level};
     use crate::state::oracle::OraclePriceData;
     use crate::state::perp_market::PerpMarket;
-    use crate::state::user::{Order, OrderStatus, OrderType, PerpPosition, UserFixed};
+    use crate::state::user::{Order, OrderStatus, OrderType, PerpPosition, User};
     use crate::state::user_map::UserMap;
     use crate::test_utils::get_positions;
     use crate::MarketType;
@@ -3991,7 +3991,7 @@ pub mod find_bids_and_asks_from_users {
             };
         }
 
-        let mut maker = UserFixed {
+        let mut maker = User {
             perp_positions: get_positions(PerpPosition {
                 market_index: 0,
                 open_orders: 32,
@@ -4067,7 +4067,7 @@ pub mod find_bids_and_asks_from_users {
             };
         }
 
-        let mut maker = UserFixed {
+        let mut maker = User {
             perp_positions: get_positions(PerpPosition {
                 market_index: 0,
                 open_orders: 32,
@@ -4360,7 +4360,7 @@ pub mod calculate_limit_price_with_buffer {
 mod select_margin_type_for_perp_maker {
     use crate::math::margin::MarginRequirementType;
     use crate::math::orders::select_margin_type_for_perp_maker;
-    use crate::state::user::{PerpPosition, UserFixed};
+    use crate::state::user::{PerpPosition, User};
     use crate::test_utils::get_positions;
 
     #[test]
@@ -4370,7 +4370,7 @@ mod select_margin_type_for_perp_maker {
         // Long reduced position to 0
         let position_before = -100;
         let base_asset_amount_filled = 100;
-        let user = UserFixed {
+        let user = User {
             perp_positions: get_positions(PerpPosition {
                 market_index,
                 base_asset_amount: position_before + base_asset_amount_filled,
@@ -4386,7 +4386,7 @@ mod select_margin_type_for_perp_maker {
         // Short reduced position to 0
         let position_before = 100;
         let base_asset_amount_filled = -100;
-        let user = UserFixed {
+        let user = User {
             perp_positions: get_positions(PerpPosition {
                 market_index,
                 base_asset_amount: position_before + base_asset_amount_filled,
@@ -4402,7 +4402,7 @@ mod select_margin_type_for_perp_maker {
         // Long flipped short long
         let position_before = -80;
         let base_asset_amount_filled = 100;
-        let user = UserFixed {
+        let user = User {
             perp_positions: get_positions(PerpPosition {
                 market_index,
                 base_asset_amount: position_before + base_asset_amount_filled,
@@ -4418,7 +4418,7 @@ mod select_margin_type_for_perp_maker {
         // Short flipped long short
         let position_before = 80;
         let base_asset_amount_filled = -100;
-        let user = UserFixed {
+        let user = User {
             perp_positions: get_positions(PerpPosition {
                 market_index,
                 base_asset_amount: position_before + base_asset_amount_filled,
@@ -4434,7 +4434,7 @@ mod select_margin_type_for_perp_maker {
         // Long reduced short
         let position_before = -100;
         let base_asset_amount_filled = 50;
-        let user = UserFixed {
+        let user = User {
             perp_positions: get_positions(PerpPosition {
                 market_index,
                 base_asset_amount: position_before + base_asset_amount_filled,
@@ -4450,7 +4450,7 @@ mod select_margin_type_for_perp_maker {
         // Short reduced long
         let position_before = 100;
         let base_asset_amount_filled = -50;
-        let user = UserFixed {
+        let user = User {
             perp_positions: get_positions(PerpPosition {
                 market_index,
                 base_asset_amount: position_before + base_asset_amount_filled,

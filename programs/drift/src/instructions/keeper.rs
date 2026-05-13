@@ -87,7 +87,7 @@ use crate::state::spot_market_map::{
 };
 use crate::state::state::State;
 use crate::state::user::{
-    MarketType, OrderStatus, OrderTriggerCondition, OrderType, User, UserFixed, UserStats,
+    MarketType, OrderStatus, OrderTriggerCondition, OrderType, User, UserStats, UserView,
 };
 use crate::state::user_map::{load_user_map, load_user_maps};
 use crate::state::zero_copy::AccountZeroCopyMut;
@@ -548,7 +548,7 @@ pub fn handle_place_signed_msg_taker_order<'c: 'info, 'info>(
 
 pub fn place_signed_msg_taker_order<'c: 'info, 'info>(
     taker_key: Pubkey,
-    taker: &mut User<'_>,
+    taker: &mut UserView<'_>,
     taker_stats: &mut RefMut<UserStats>,
     signed_msg_account: &mut SignedMsgUserOrdersZeroCopyMut,
     taker_order_params_message_bytes: Vec<u8>,
@@ -3495,14 +3495,14 @@ pub struct FillOrder<'info> {
         mut,
         constraint = can_sign_for_user(&filler, &authority)?
     )]
-    pub filler: AccountLoader<'info, UserFixed>,
+    pub filler: AccountLoader<'info, User>,
     #[account(
         mut,
         constraint = is_stats_for_user(&filler, &filler_stats)?
     )]
     pub filler_stats: AccountLoader<'info, UserStats>,
     #[account(mut)]
-    pub user: AccountLoader<'info, UserFixed>,
+    pub user: AccountLoader<'info, User>,
     #[account(
         mut,
         constraint = is_stats_for_user(&user, &user_stats)?
@@ -3518,7 +3518,7 @@ pub struct RevertFill<'info> {
         mut,
         constraint = can_sign_for_user(&filler, &authority)?
     )]
-    pub filler: AccountLoader<'info, UserFixed>,
+    pub filler: AccountLoader<'info, User>,
     #[account(
         mut,
         constraint = is_stats_for_user(&filler, &filler_stats)?
@@ -3534,9 +3534,9 @@ pub struct TriggerOrder<'info> {
         mut,
         constraint = can_sign_for_user(&filler, &authority)?
     )]
-    pub filler: AccountLoader<'info, UserFixed>,
+    pub filler: AccountLoader<'info, User>,
     #[account(mut)]
-    pub user: AccountLoader<'info, UserFixed>,
+    pub user: AccountLoader<'info, User>,
 }
 
 #[derive(Accounts)]
@@ -3547,9 +3547,9 @@ pub struct ForceCancelOrder<'info> {
         mut,
         constraint = can_sign_for_user(&filler, &authority)?
     )]
-    pub filler: AccountLoader<'info, UserFixed>,
+    pub filler: AccountLoader<'info, User>,
     #[account(mut)]
-    pub user: AccountLoader<'info, UserFixed>,
+    pub user: AccountLoader<'info, User>,
 }
 
 #[derive(Accounts)]
@@ -3560,9 +3560,9 @@ pub struct UpdateUserIdle<'info> {
         mut,
         constraint = can_sign_for_user(&filler, &authority)?
     )]
-    pub filler: AccountLoader<'info, UserFixed>,
+    pub filler: AccountLoader<'info, User>,
     #[account(mut)]
-    pub user: AccountLoader<'info, UserFixed>,
+    pub user: AccountLoader<'info, User>,
 }
 
 #[derive(Accounts)]
@@ -3570,7 +3570,7 @@ pub struct LogUserBalances<'info> {
     pub state: Box<Account<'info, State>>,
     pub authority: Signer<'info>,
     #[account(mut)]
-    pub user: AccountLoader<'info, UserFixed>,
+    pub user: AccountLoader<'info, User>,
 }
 
 #[derive(Accounts)]
@@ -3578,7 +3578,7 @@ pub struct UpdateUserFuelBonus<'info> {
     pub state: Box<Account<'info, State>>,
     pub authority: Signer<'info>,
     #[account(mut)]
-    pub user: AccountLoader<'info, UserFixed>,
+    pub user: AccountLoader<'info, User>,
     #[account(
         mut,
         constraint = is_stats_for_user(&user, &user_stats)?
@@ -3598,7 +3598,7 @@ pub struct UpdateUserStatsReferrerInfo<'info> {
 pub struct SettlePNL<'info> {
     pub state: Box<Account<'info, State>>,
     #[account(mut)]
-    pub user: AccountLoader<'info, UserFixed>,
+    pub user: AccountLoader<'info, User>,
     pub authority: Signer<'info>,
     #[account(
         seeds = [b"spot_market_vault".as_ref(), 0_u16.to_le_bytes().as_ref()],
@@ -3611,7 +3611,7 @@ pub struct SettlePNL<'info> {
 pub struct PlaceSignedMsgTakerOrder<'info> {
     pub state: Box<Account<'info, State>>,
     #[account(mut)]
-    pub user: AccountLoader<'info, UserFixed>,
+    pub user: AccountLoader<'info, User>,
     #[account(
         mut,
         constraint = is_stats_for_user(&user, &user_stats)?
@@ -3637,14 +3637,14 @@ pub struct PlaceSignedMsgTakerOrder<'info> {
 pub struct SettleFunding<'info> {
     pub state: Box<Account<'info, State>>,
     #[account(mut)]
-    pub user: AccountLoader<'info, UserFixed>,
+    pub user: AccountLoader<'info, User>,
 }
 
 #[derive(Accounts)]
 pub struct SettleLP<'info> {
     pub state: Box<Account<'info, State>>,
     #[account(mut)]
-    pub user: AccountLoader<'info, UserFixed>,
+    pub user: AccountLoader<'info, User>,
 }
 
 #[derive(Accounts)]
@@ -3655,14 +3655,14 @@ pub struct LiquidatePerp<'info> {
         mut,
         constraint = can_sign_for_user(&liquidator, &authority)?
     )]
-    pub liquidator: AccountLoader<'info, UserFixed>,
+    pub liquidator: AccountLoader<'info, User>,
     #[account(
         mut,
         constraint = is_stats_for_user(&liquidator, &liquidator_stats)?
     )]
     pub liquidator_stats: AccountLoader<'info, UserStats>,
     #[account(mut)]
-    pub user: AccountLoader<'info, UserFixed>,
+    pub user: AccountLoader<'info, User>,
     #[account(
         mut,
         constraint = is_stats_for_user(&user, &user_stats)?
@@ -3678,14 +3678,14 @@ pub struct LiquidateSpot<'info> {
         mut,
         constraint = can_sign_for_user(&liquidator, &authority)?
     )]
-    pub liquidator: AccountLoader<'info, UserFixed>,
+    pub liquidator: AccountLoader<'info, User>,
     #[account(
         mut,
         constraint = is_stats_for_user(&liquidator, &liquidator_stats)?
     )]
     pub liquidator_stats: AccountLoader<'info, UserStats>,
     #[account(mut)]
-    pub user: AccountLoader<'info, UserFixed>,
+    pub user: AccountLoader<'info, User>,
     #[account(
         mut,
         constraint = is_stats_for_user(&user, &user_stats)?
@@ -3701,14 +3701,14 @@ pub struct LiquidateBorrowForPerpPnl<'info> {
         mut,
         constraint = can_sign_for_user(&liquidator, &authority)?
     )]
-    pub liquidator: AccountLoader<'info, UserFixed>,
+    pub liquidator: AccountLoader<'info, User>,
     #[account(
         mut,
         constraint = is_stats_for_user(&liquidator, &liquidator_stats)?
     )]
     pub liquidator_stats: AccountLoader<'info, UserStats>,
     #[account(mut)]
-    pub user: AccountLoader<'info, UserFixed>,
+    pub user: AccountLoader<'info, User>,
     #[account(
         mut,
         constraint = is_stats_for_user(&user, &user_stats)?
@@ -3724,14 +3724,14 @@ pub struct LiquidatePerpPnlForDeposit<'info> {
         mut,
         constraint = can_sign_for_user(&liquidator, &authority)?
     )]
-    pub liquidator: AccountLoader<'info, UserFixed>,
+    pub liquidator: AccountLoader<'info, User>,
     #[account(
         mut,
         constraint = is_stats_for_user(&liquidator, &liquidator_stats)?
     )]
     pub liquidator_stats: AccountLoader<'info, UserStats>,
     #[account(mut)]
-    pub user: AccountLoader<'info, UserFixed>,
+    pub user: AccountLoader<'info, User>,
     #[account(
         mut,
         constraint = is_stats_for_user(&user, &user_stats)?
@@ -3743,7 +3743,7 @@ pub struct LiquidatePerpPnlForDeposit<'info> {
 pub struct SetUserStatusToBeingLiquidated<'info> {
     pub state: Box<Account<'info, State>>,
     #[account(mut)]
-    pub user: AccountLoader<'info, UserFixed>,
+    pub user: AccountLoader<'info, User>,
     pub authority: Signer<'info>,
 }
 
@@ -3756,14 +3756,14 @@ pub struct LiquidateSpotWithSwap<'info> {
         mut,
         constraint = can_sign_for_user(&liquidator, &authority)?
     )]
-    pub liquidator: AccountLoader<'info, UserFixed>,
+    pub liquidator: AccountLoader<'info, User>,
     #[account(
         mut,
         constraint = is_stats_for_user(&liquidator, &liquidator_stats)?
     )]
     pub liquidator_stats: AccountLoader<'info, UserStats>,
     #[account(mut)]
-    pub user: AccountLoader<'info, UserFixed>,
+    pub user: AccountLoader<'info, User>,
     #[account(
         mut,
         constraint = is_stats_for_user(&user, &user_stats)?
@@ -3814,14 +3814,14 @@ pub struct ResolveBankruptcy<'info> {
         mut,
         constraint = can_sign_for_user(&liquidator, &authority)?
     )]
-    pub liquidator: AccountLoader<'info, UserFixed>,
+    pub liquidator: AccountLoader<'info, User>,
     #[account(
         mut,
         constraint = is_stats_for_user(&liquidator, &liquidator_stats)?
     )]
     pub liquidator_stats: AccountLoader<'info, UserStats>,
     #[account(mut)]
-    pub user: AccountLoader<'info, UserFixed>,
+    pub user: AccountLoader<'info, User>,
     #[account(
         mut,
         constraint = is_stats_for_user(&user, &user_stats)?
@@ -4008,7 +4008,7 @@ pub struct ForceDeleteUser<'info> {
         has_one = authority,
         close = authority
     )]
-    pub user: AccountLoader<'info, UserFixed>,
+    pub user: AccountLoader<'info, User>,
     #[account(
         mut,
         has_one = authority

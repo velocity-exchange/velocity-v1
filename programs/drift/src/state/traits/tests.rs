@@ -6,7 +6,7 @@ mod size {
     use crate::state::spot_market::SpotMarket;
     use crate::state::state::State;
     use crate::state::traits::Size;
-    use crate::state::user::{User, UserFixed, UserStats};
+    use crate::state::user::{User, UserStats, UserView};
 
     #[test]
     fn order_action_records() {
@@ -45,10 +45,13 @@ mod size {
 
     #[test]
     fn user() {
-        let expected_size = std::mem::size_of::<UserFixed>() + 8;
-        let actual_size = UserFixed::SIZE;
+        let expected_size = std::mem::size_of::<User>() + 8;
+        let actual_size = User::SIZE;
         assert_eq!(actual_size, expected_size);
-        assert_eq!(actual_size, 1304, "expected fixed-header User account size to be 1304");
+        assert_eq!(
+            actual_size, 1304,
+            "expected fixed-header User account size to be 1304"
+        );
     }
 
     #[test]

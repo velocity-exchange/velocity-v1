@@ -13,7 +13,7 @@ use crate::math::spot_balance::get_strict_token_value;
 use crate::state::oracle::StrictOraclePrice;
 use crate::state::perp_market::PerpMarket;
 use crate::state::spot_market::SpotMarket;
-use crate::state::user::{PerpPosition, UserFixed};
+use crate::state::user::{PerpPosition, User};
 use crate::{validate, MarketType};
 use anchor_lang::{prelude::*, solana_program::msg};
 
@@ -124,7 +124,7 @@ impl MarginContext {
         self
     }
 
-    pub fn fuel_numerator(mut self, user: &UserFixed, now: i64) -> Self {
+    pub fn fuel_numerator(mut self, user: &User, now: i64) -> Self {
         self.fuel_bonus_numerator = user.get_fuel_bonus_numerator(now).unwrap();
         self
     }

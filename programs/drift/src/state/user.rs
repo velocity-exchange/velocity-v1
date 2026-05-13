@@ -7,7 +7,6 @@ use crate::math::constants::{
     QUOTE_PRECISION_U64, QUOTE_SPOT_MARKET_INDEX, SPOT_WEIGHT_PRECISION,
     SPOT_WEIGHT_PRECISION_I128, THIRTY_DAY,
 };
-use crate::math::safe_unwrap::SafeUnwrap;
 use crate::math::margin::MarginRequirementType;
 use crate::math::orders::{
     apply_protected_maker_limit_price_offset, standardize_base_asset_amount, standardize_price,
@@ -16,6 +15,7 @@ use crate::math::position::{
     calculate_base_asset_value_and_pnl_with_oracle_price, calculate_perp_liability_value,
 };
 use crate::math::safe_math::SafeMath;
+use crate::math::safe_unwrap::SafeUnwrap;
 use crate::math::spot_balance::{
     get_signed_token_amount, get_strict_token_value, get_token_amount, get_token_value,
 };
@@ -75,14 +75,14 @@ pub const DEFAULT_USER_ORDERS: usize = 8;
 /// Maximum number of order slots a User account can grow to via `resize_user_orders`.
 pub const MAX_USER_ORDERS: usize = 128;
 
-// implement SIZE const for UserFixed
+// implement SIZE const for User
 //
 // SIZE is the *minimum* on-chain size (8-byte discriminator + fixed header,
-// orders_len=0). Actual rented size is `UserFixed::space(orders_len)`.
-// AccountLoader only checks `data.len() >= 8 + size_of::<UserFixed>()`, so
+// orders_len=0). Actual rented size is `User::space(orders_len)`.
+// AccountLoader only checks `data.len() >= 8 + size_of::<User>()`, so
 // variable-length tails pass through unchanged.
-impl Size for UserFixed {
-    const SIZE: usize = UserFixed::MIN_SIZE;
+impl Size for User {
+    const SIZE: usize = User::MIN_SIZE;
 }
 
 /// On-chain fixed header of a User account. The trailing variable region
@@ -92,7 +92,7 @@ impl Size for UserFixed {
 #[account(zero_copy(unsafe))]
 #[derive(Default, Eq, PartialEq, Debug)]
 #[repr(C)]
-pub struct UserFixed {
+pub struct User {
     /// The owner/authority of the account
     pub authority: Pubkey,
     /// An addresses that can control the account on the authority's behalf. Has limited power, cant withdraw
@@ -170,15 +170,15 @@ pub struct UserFixed {
 unsafe impl Pod for Order {}
 unsafe impl Zeroable for Order {}
 
-// NB: `#[zero_copy(unsafe)]` already provides `Pod for UserFixed`.
+// NB: `#[zero_copy(unsafe)]` already provides `Pod for User`.
 
-const_assert_eq!(std::mem::size_of::<UserFixed>(), 1296);
-const_assert_eq!(std::mem::size_of::<UserFixed>() % 16, 0);
+const_assert_eq!(std::mem::size_of::<User>(), 1296);
+const_assert_eq!(std::mem::size_of::<User>() % 16, 0);
 const_assert_eq!(std::mem::size_of::<Order>(), 96);
 
-impl UserFixed {
+impl User {
     /// Discriminator (8B) + fixed header. Lower bound for any valid User account.
-    pub const MIN_SIZE: usize = 8 + std::mem::size_of::<UserFixed>();
+    pub const MIN_SIZE: usize = 8 + std::mem::size_of::<User>();
 
     /// Rented size at default capacity (`DEFAULT_USER_ORDERS` slots).
     pub const DEFAULT_SIZE: usize = Self::space(DEFAULT_USER_ORDERS);
@@ -875,9 +875,9 @@ impl UserFixed {
 //
 // The User account is laid out as:
 //
-//   [8B discriminator][UserFixed header][orders_len * Order ...]
+//   [8B discriminator][User header][orders_len * Order ...]
 //
-// `orders_len` lives inside `UserFixed`; the variable tail is held as opaque
+// `orders_len` lives inside `User`; the variable tail is held as opaque
 // bytes inside the runtime [`User`] wrapper and decoded on demand via
 // bytemuck. Loading goes through [`UserLoader`] rather than
 // `AccountLoader::load*`, which would only see the fixed portion.
@@ -886,27 +886,27 @@ impl UserFixed {
 ///
 /// Holds a `RefMut` of the fixed header plus the opaque trailing bytes that
 /// back the orders region. Fixed-header fields are reachable through
-/// `Deref<Target = UserFixed>`; the orders region is accessed through methods
+/// `Deref<Target = User>`; the orders region is accessed through methods
 /// (`get_order`, `iter_orders`, `set_order`, …) that decode bytes on demand.
-pub struct User<'a> {
-    fixed: RefMut<'a, UserFixed>,
+pub struct UserView<'a> {
+    fixed: RefMut<'a, User>,
     orders: RefMut<'a, [u8]>,
 }
 
-impl<'a> Deref for User<'a> {
-    type Target = UserFixed;
-    fn deref(&self) -> &UserFixed {
+impl<'a> Deref for UserView<'a> {
+    type Target = User;
+    fn deref(&self) -> &User {
         &self.fixed
     }
 }
 
-impl<'a> DerefMut for User<'a> {
-    fn deref_mut(&mut self) -> &mut UserFixed {
+impl<'a> DerefMut for UserView<'a> {
+    fn deref_mut(&mut self) -> &mut User {
         &mut self.fixed
     }
 }
 
-impl<'a> User<'a> {
+impl<'a> UserView<'a> {
     const ORDER_SIZE: usize = std::mem::size_of::<Order>();
 
     /// Number of provisioned order slots in this account.
@@ -1009,19 +1009,19 @@ impl<'a> User<'a> {
 }
 
 /// Manual loader trait used in place of `AccountLoader::load*` for User
-/// accounts — `AccountLoader::load*` only sees `UserFixed`, while this trait
+/// accounts — `AccountLoader::load*` only sees `User`, while this trait
 /// also exposes the trailing orders region as opaque bytes for on-demand
 /// decoding via [`User`].
 ///
-/// Implemented on `AccountLoader<'info, UserFixed>` so the returned `RefMut`s
+/// Implemented on `AccountLoader<'info, User>` so the returned `RefMut`s
 /// borrow from `&self` (the AccountLoader stored in `ctx.accounts`) and
 /// remain valid through the handler.
 pub trait UserLoader<'info> {
-    fn load_user<'a>(&'a self) -> DriftResult<User<'a>>;
-    fn load_user_mut<'a>(&'a self) -> DriftResult<User<'a>>;
+    fn load_user<'a>(&'a self) -> DriftResult<UserView<'a>>;
+    fn load_user_mut<'a>(&'a self) -> DriftResult<UserView<'a>>;
 }
 
-fn load_user_view_from_ai<'a>(ai: &'a AccountInfo<'_>) -> DriftResult<User<'a>> {
+fn load_user_view_from_ai<'a>(ai: &'a AccountInfo<'_>) -> DriftResult<UserView<'a>> {
     validate!(
         ai.owner == &ID,
         ErrorCode::DefaultError,
@@ -1030,13 +1030,13 @@ fn load_user_view_from_ai<'a>(ai: &'a AccountInfo<'_>) -> DriftResult<User<'a>> 
     let data = ai.try_borrow_mut_data().safe_unwrap()?;
     let (discriminator, rest) = RefMut::map_split(data, |d| d.split_at_mut(8));
     validate!(
-        discriminator.as_ref() == UserFixed::DISCRIMINATOR,
+        discriminator.as_ref() == User::DISCRIMINATOR,
         ErrorCode::DefaultError,
         "invalid user discriminator"
     )?;
     let (fixed_bytes, tail_bytes) =
-        RefMut::map_split(rest, |d| d.split_at_mut(std::mem::size_of::<UserFixed>()));
-    let fixed = RefMut::map(fixed_bytes, |b| bytemuck::from_bytes_mut::<UserFixed>(b));
+        RefMut::map_split(rest, |d| d.split_at_mut(std::mem::size_of::<User>()));
+    let fixed = RefMut::map(fixed_bytes, |b| bytemuck::from_bytes_mut::<User>(b));
     let len = fixed.orders_len as usize;
     let order_size = std::mem::size_of::<Order>();
     let cap = tail_bytes.len() / order_size;
@@ -1047,26 +1047,26 @@ fn load_user_view_from_ai<'a>(ai: &'a AccountInfo<'_>) -> DriftResult<User<'a>> 
         len,
         cap
     )?;
-    Ok(User {
+    Ok(UserView {
         fixed,
         orders: tail_bytes,
     })
 }
 
-impl<'info> UserLoader<'info> for AccountLoader<'info, UserFixed> {
-    fn load_user<'a>(&'a self) -> DriftResult<User<'a>> {
+impl<'info> UserLoader<'info> for AccountLoader<'info, User> {
+    fn load_user<'a>(&'a self) -> DriftResult<UserView<'a>> {
         load_user_view_from_ai(self.as_ref())
     }
-    fn load_user_mut<'a>(&'a self) -> DriftResult<User<'a>> {
+    fn load_user_mut<'a>(&'a self) -> DriftResult<UserView<'a>> {
         load_user_view_from_ai(self.as_ref())
     }
 }
 
 impl<'info> UserLoader<'info> for AccountInfo<'info> {
-    fn load_user<'a>(&'a self) -> DriftResult<User<'a>> {
+    fn load_user<'a>(&'a self) -> DriftResult<UserView<'a>> {
         load_user_view_from_ai(self)
     }
-    fn load_user_mut<'a>(&'a self) -> DriftResult<User<'a>> {
+    fn load_user_mut<'a>(&'a self) -> DriftResult<UserView<'a>> {
         load_user_view_from_ai(self)
     }
 }
@@ -2242,7 +2242,7 @@ impl UserStats {
 
     pub fn update_fuel_bonus(
         &mut self,
-        user: &mut UserFixed,
+        user: &mut User,
         fuel_deposits: u32,
         fuel_borrows: u32,
         fuel_positions: u32,

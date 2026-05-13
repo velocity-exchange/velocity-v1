@@ -884,7 +884,7 @@ mod calculate_spot_if_fee {
 
 mod calculate_max_pct_to_liquidate {
     use crate::math::liquidation::calculate_max_pct_to_liquidate;
-    use crate::state::user::UserFixed;
+    use crate::state::user::User;
     use crate::{LIQUIDATION_PCT_PRECISION, QUOTE_PRECISION};
 
     #[test]

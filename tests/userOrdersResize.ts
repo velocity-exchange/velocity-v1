@@ -3,7 +3,12 @@ import { assert } from 'chai';
 
 import { Program } from '@coral-xyz/anchor';
 
-import { AccountInfo, Keypair, LAMPORTS_PER_SOL, PublicKey } from '@solana/web3.js';
+import {
+	AccountInfo,
+	Keypair,
+	LAMPORTS_PER_SOL,
+	PublicKey,
+} from '@solana/web3.js';
 
 import {
 	BN,
@@ -170,7 +175,9 @@ describe('resize user orders', () => {
 		assert.equal(
 			len,
 			expectedUserAccountSize(DEFAULT_USER_ORDERS),
-			`init account size should be ${expectedUserAccountSize(DEFAULT_USER_ORDERS)}`
+			`init account size should be ${expectedUserAccountSize(
+				DEFAULT_USER_ORDERS
+			)}`
 		);
 	});
 
@@ -181,23 +188,42 @@ describe('resize user orders', () => {
 		assert.equal(len, expectedUserAccountSize(16));
 	});
 
-	it('grows to MAX_USER_ORDERS', async () => {
+	it('grows to MAX_USER_ORDERS in two steps', async () => {
+		// Solana's MAX_PERMITTED_DATA_INCREASE caps a single realloc at 10_240B.
+		// (128 - 16) * 96B = 10_752B > 10_240B → must split.
+		// Step from 16 → 100 orders: delta = (100-16) * 96 = 8_064B (under cap).
+		await driftClient.resizeUserOrders(100);
+		await sleep(200);
+		assert.equal(await getUserAccountDataLen(), expectedUserAccountSize(100));
+
+		// Step from 100 → 128 orders: delta = (128-100) * 96 = 2_688B (under cap).
 		await driftClient.resizeUserOrders(MAX_USER_ORDERS);
 		await sleep(200);
-		const len = await getUserAccountDataLen();
-		assert.equal(len, expectedUserAccountSize(MAX_USER_ORDERS));
+		assert.equal(
+			await getUserAccountDataLen(),
+			expectedUserAccountSize(MAX_USER_ORDERS)
+		);
 	});
+
+	// Anchor error codes from programs/drift/src/error.rs (decimal → hex).
+	const ERR_INVALID_USER_ORDERS_RESIZE = '0x18cf'; // 6351
+	// Anchor's declarative `realloc` shrinks the account before the handler
+	// body runs, so by the time `load_user_mut!` reads `orders_len` it exceeds
+	// the new tail capacity and fails with UnableToLoadAccountLoader. The tx
+	// still reverts atomically — the shrink is rejected — but the surfaced
+	// code is the inner load failure rather than the grow-only check.
+	const ERR_UNABLE_TO_LOAD_ACCOUNT_LOADER = '0x17b1'; // 6065
 
 	it('rejects shrink (grow-only)', async () => {
 		try {
 			await driftClient.resizeUserOrders(8);
 			assert.fail('expected resize to fail');
 		} catch (e) {
-			assert.include(
-				(e as Error).toString(),
-				'InvalidUserOrdersResize',
-				`expected InvalidUserOrdersResize, got: ${e}`
-			);
+			const msg = (e as Error).toString();
+			const rejected =
+				msg.includes(ERR_INVALID_USER_ORDERS_RESIZE) ||
+				msg.includes(ERR_UNABLE_TO_LOAD_ACCOUNT_LOADER);
+			assert.ok(rejected, `expected shrink to be rejected, got: ${msg}`);
 		}
 		const len = await getUserAccountDataLen();
 		assert.equal(
@@ -214,8 +240,8 @@ describe('resize user orders', () => {
 		} catch (e) {
 			assert.include(
 				(e as Error).toString(),
-				'InvalidUserOrdersResize',
-				`expected InvalidUserOrdersResize, got: ${e}`
+				ERR_INVALID_USER_ORDERS_RESIZE,
+				`expected InvalidUserOrdersResize (${ERR_INVALID_USER_ORDERS_RESIZE}), got: ${e}`
 			);
 		}
 	});

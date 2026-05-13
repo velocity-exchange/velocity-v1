@@ -41,9 +41,9 @@ type DriftConfig = {
 
 export type DriftEnv = 'devnet' | 'mainnet-beta';
 
-export const DRIFT_PROGRAM_ID = 'dRiftyHA39MWEi3m9aunc5MzRF1JYuBsbn6VPcn33UH';
-export const DRIFT_DEVNET_PROGRAM_ID =
-	'vELoC1audYbSYVRXn1vPaV8Axoa9oU6BYmNGZZBDZ1P';
+export const DRIFT_PROGRAM_ID = 'vELoC1audYbSYVRXn1vPaV8Axoa9oU6BYmNGZZBDZ1P';
+/** @deprecated alias for {@link DRIFT_PROGRAM_ID}; kept so existing imports keep compiling. */
+export const DRIFT_DEVNET_PROGRAM_ID = DRIFT_PROGRAM_ID;
 export const DRIFT_ORACLE_RECEIVER_ID =
 	'G6EoTTTgpkNBtVXo96EQp2m6uwwVh2Kt6YidjkmQqoha';
 export const PTYH_LAZER_PROGRAM_ID =

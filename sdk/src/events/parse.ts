@@ -1,7 +1,7 @@
 import { Program, Event } from '../isomorphic/anchor';
 import { CuUsageEvent } from './types';
 
-const driftProgramId = 'dRiftyHA39MWEi3m9aunc5MzRF1JYuBsbn6VPcn33UH';
+const driftProgramId = 'vELoC1audYbSYVRXn1vPaV8Axoa9oU6BYmNGZZBDZ1P';
 const PROGRAM_LOG = 'Program log: ';
 const PROGRAM_INSTRUCTION = 'Program log: Instruction: ';
 const PROGRAM_DATA = 'Program data: ';

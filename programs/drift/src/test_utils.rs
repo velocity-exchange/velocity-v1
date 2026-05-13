@@ -147,6 +147,102 @@ pub fn create_account_info<'a>(
     AccountInfo::new(key, false, is_writable, lamports, bytes, owner, false)
 }
 
+/// Variant of [`get_anchor_account_bytes`] for the dynamic-tail [`User`] account:
+/// produces `[discriminator][User header][orders...]` in an aligned buffer suitable
+/// for `AccountLoader::try_from` followed by `load_user!` / `load_user_mut!`.
+pub fn get_anchor_user_account_bytes(
+    user: &mut crate::state::user::User,
+    orders: &[Order],
+) -> AlignedAccountBytes {
+    use anchor_lang::Discriminator;
+    user.orders_len = orders.len() as u32;
+    let disc = <crate::state::user::User as Discriminator>::DISCRIMINATOR;
+    let user_bytes = bytemuck::bytes_of_mut(user);
+    let user_align = std::mem::align_of::<crate::state::user::User>();
+    let order_size = std::mem::size_of::<Order>();
+    let disc_len = disc.len();
+    let tail_len = orders.len() * order_size;
+    let data_len = disc_len + user_bytes.len() + tail_len;
+
+    let alloc_align = user_align.max(16);
+    let alloc_size = data_len + alloc_align;
+    let layout = std::alloc::Layout::from_size_align(alloc_size, alloc_align).unwrap();
+    let base = unsafe { std::alloc::alloc_zeroed(layout) };
+    assert!(!base.is_null());
+
+    let base_addr = base as usize;
+    let remainder = (base_addr + disc_len) % user_align;
+    let offset = if remainder == 0 {
+        0
+    } else {
+        user_align - remainder
+    };
+    let data_ptr = unsafe { base.add(offset) };
+
+    unsafe {
+        std::ptr::copy_nonoverlapping(disc.as_ptr(), data_ptr, disc_len);
+        std::ptr::copy_nonoverlapping(
+            user_bytes.as_ptr(),
+            data_ptr.add(disc_len),
+            user_bytes.len(),
+        );
+        let tail_ptr = data_ptr.add(disc_len + user_bytes.len());
+        for (i, o) in orders.iter().enumerate() {
+            let o_bytes = bytemuck::bytes_of(o);
+            std::ptr::copy_nonoverlapping(o_bytes.as_ptr(), tail_ptr.add(i * order_size), order_size);
+        }
+    }
+
+    AlignedAccountBytes {
+        base,
+        data_ptr,
+        data_len,
+        layout,
+    }
+}
+
+/// `create_anchor_account_info!` analog for the dynamic-tail [`User`] account.
+/// Takes a User value and an orders slice expression, and binds an `AccountInfo`
+/// over a `[discriminator][User header][orders...]` aligned buffer.
+#[macro_export]
+macro_rules! create_anchor_user_account_info {
+    ($user:expr, $orders:expr, $name:ident) => {
+        let __key = anchor_lang::prelude::Pubkey::default();
+        let mut __lamports = 0;
+        let mut __user_val = $user;
+        let __orders_val = $orders;
+        let mut __data = $crate::test_utils::get_anchor_user_account_bytes(
+            &mut __user_val,
+            &__orders_val[..],
+        );
+        let __owner = <$crate::state::user::User as anchor_lang::Owner>::owner();
+        let $name = $crate::test_utils::create_account_info(
+            &__key,
+            true,
+            &mut __lamports,
+            &mut __data[..],
+            &__owner,
+        );
+    };
+    ($user:expr, $orders:expr, $pubkey:expr, $name:ident) => {
+        let mut __lamports = 0;
+        let mut __user_val = $user;
+        let __orders_val = $orders;
+        let mut __data = $crate::test_utils::get_anchor_user_account_bytes(
+            &mut __user_val,
+            &__orders_val[..],
+        );
+        let __owner = <$crate::state::user::User as anchor_lang::Owner>::owner();
+        let $name = $crate::test_utils::create_account_info(
+            $pubkey,
+            true,
+            &mut __lamports,
+            &mut __data[..],
+            &__owner,
+        );
+    };
+}
+
 pub fn get_pyth_price(price: i64, expo: i32) -> PythLazerOracle {
     let mut pyth_price = PythLazerOracle::default();
     let price = price * 10_i64.pow(expo as u32);

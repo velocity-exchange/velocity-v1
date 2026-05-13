@@ -1073,6 +1073,84 @@ impl<'info> UserLoader<'info> for AccountInfo<'info> {
     }
 }
 
+/// Test-only owner of a User + orders tail, suitable for handing a
+/// `UserView<'_>` to functions that no longer take `&mut User`.
+///
+/// Tests previously wrote `User { orders: get_orders(...), perp_positions: ..., ..Default::default() }`
+/// and passed `&mut user` directly. Now they should write:
+///
+/// ```ignore
+/// let mut user = TestUser::new(
+///     User { perp_positions: get_positions(...), ..User::default() },
+///     &get_orders(Order { ... }),
+/// );
+/// let mut view = user.view();
+/// some_fn(&mut view, ...);
+/// ```
+#[cfg(any(test, feature = "anchor-test"))]
+pub struct TestUser {
+    fixed: std::cell::RefCell<User>,
+    orders_bytes: std::cell::RefCell<Vec<u8>>,
+}
+
+#[cfg(any(test, feature = "anchor-test"))]
+impl TestUser {
+    pub fn new(mut user: User, orders: &[Order]) -> Self {
+        user.orders_len = orders.len() as u32;
+        let order_size = std::mem::size_of::<Order>();
+        let mut bytes = vec![0u8; orders.len() * order_size];
+        for (i, o) in orders.iter().enumerate() {
+            bytes[i * order_size..(i + 1) * order_size].copy_from_slice(bytemuck::bytes_of(o));
+        }
+        Self {
+            fixed: std::cell::RefCell::new(user),
+            orders_bytes: std::cell::RefCell::new(bytes),
+        }
+    }
+
+    /// Build a TestUser with `DEFAULT_USER_ORDERS` empty slots and the given
+    /// header. Convenience for tests that don't pre-populate orders.
+    pub fn from_header(user: User) -> Self {
+        Self::new(user, &[Order::default(); DEFAULT_USER_ORDERS])
+    }
+
+    /// Borrow a fresh `UserView<'_>` over this TestUser's data.
+    ///
+    /// Each call re-borrows the underlying RefCells, so callers can drop the
+    /// returned view and call `view()` again — but two simultaneous mutable
+    /// views are not allowed.
+    pub fn view(&self) -> UserView<'_> {
+        UserView {
+            fixed: self.fixed.borrow_mut(),
+            orders: std::cell::RefMut::map(self.orders_bytes.borrow_mut(), |v| v.as_mut_slice()),
+        }
+    }
+
+    pub fn into_inner(self) -> (User, Vec<u8>) {
+        (self.fixed.into_inner(), self.orders_bytes.into_inner())
+    }
+}
+
+/// Serialize a User + orders into the on-chain account-data byte layout:
+/// `[8B discriminator][User header][orders_len * Order ...]`.
+///
+/// Produced bytes are aligned for `AccountLoader::try_from` (Rust ≥ 1.77
+/// 16-byte u128 alignment) and `load_user!` macros, so tests can build a real
+/// `AccountInfo` over this buffer.
+#[cfg(any(test, feature = "anchor-test"))]
+pub fn build_user_account_bytes(mut user: User, orders: &[Order]) -> Vec<u8> {
+    use anchor_lang::Discriminator;
+    user.orders_len = orders.len() as u32;
+    let order_size = std::mem::size_of::<Order>();
+    let mut out = Vec::with_capacity(8 + std::mem::size_of::<User>() + orders.len() * order_size);
+    out.extend_from_slice(<User as Discriminator>::DISCRIMINATOR);
+    out.extend_from_slice(bytemuck::bytes_of(&user));
+    for o in orders {
+        out.extend_from_slice(bytemuck::bytes_of(o));
+    }
+    out
+}
+
 pub fn derive_user_account(authority: &Pubkey, sub_account_id: u16) -> Pubkey {
     let (account_drift_pda, _seed) = Pubkey::find_program_address(
         &[

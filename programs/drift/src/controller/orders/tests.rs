@@ -101,6 +101,7 @@ pub mod fill_order_protected_maker {
     use crate::controller::orders::fill_perp_order;
     use crate::controller::position::PositionDirection;
     use crate::create_anchor_account_info;
+    use crate::create_anchor_user_account_info;
     use crate::math::constants::{
         AMM_RESERVE_PRECISION, BASE_PRECISION_I64, BASE_PRECISION_U64, PEG_PRECISION,
         PRICE_PRECISION_I64, PRICE_PRECISION_U64, SPOT_BALANCE_PRECISION_U64,
@@ -211,21 +212,6 @@ pub mod fill_order_protected_maker {
             next_order_id: 10000000,
             // next_order_id: 2,
             authority: Pubkey::from_str("My11111111111111111111111111111111111111111").unwrap(), // different authority than filler
-            orders: get_orders(Order {
-                market_index: 0,
-                order_id: 1,
-                status: OrderStatus::Open,
-                order_type: OrderType::Market,
-                direction: PositionDirection::Long,
-                market_type: MarketType::Perp,
-                base_asset_amount: BASE_PRECISION_U64,
-                slot: clock.slot - 1, // fresh
-                auction_start_price: 0,
-                auction_end_price: 100 * PRICE_PRECISION_I64 + (100 * PRICE_PRECISION_I64) / 1000,
-                auction_duration: 1,
-                price: 100 * PRICE_PRECISION_U64 + (100 * PRICE_PRECISION_U64) / 1000, // 10 bps higher than maker order price
-                ..Order::default()
-            }),
             perp_positions: get_positions(PerpPosition {
                 market_index: 0,
                 open_orders: 1,
@@ -240,7 +226,22 @@ pub mod fill_order_protected_maker {
             }),
             ..User::default()
         };
-        create_anchor_account_info!(user, User, user_account_info);
+        let user_orders = get_orders(Order {
+                market_index: 0,
+                order_id: 1,
+                status: OrderStatus::Open,
+                order_type: OrderType::Market,
+                direction: PositionDirection::Long,
+                market_type: MarketType::Perp,
+                base_asset_amount: BASE_PRECISION_U64,
+                slot: clock.slot - 1, // fresh
+                auction_start_price: 0,
+                auction_end_price: 100 * PRICE_PRECISION_I64 + (100 * PRICE_PRECISION_I64) / 1000,
+                auction_duration: 1,
+                price: 100 * PRICE_PRECISION_U64 + (100 * PRICE_PRECISION_U64) / 1000, // 10 bps higher than maker order price
+                ..Order::default()
+            });
+        create_anchor_user_account_info!(user, user_orders, user_account_info);
         let user_account_loader: AccountLoader<User> =
             AccountLoader::try_from(&user_account_info).unwrap();
 
@@ -260,19 +261,6 @@ pub mod fill_order_protected_maker {
         let mut maker = User {
             status: UserStatus::ProtectedMakerOrders as u8,
             authority: maker_authority,
-            orders: get_orders(Order {
-                market_index: 0,
-                order_id: maker_order_id,
-                status: OrderStatus::Open,
-                order_type: OrderType::Limit,
-                market_type: MarketType::Perp,
-                direction: PositionDirection::Short,
-                base_asset_amount: BASE_PRECISION_U64,
-                slot: clock.slot - 3,
-                price: 100 * PRICE_PRECISION_U64,
-                post_only: true,
-                ..Order::default()
-            }),
             perp_positions: get_positions(PerpPosition {
                 market_index: 0,
                 open_orders: 1,
@@ -287,7 +275,20 @@ pub mod fill_order_protected_maker {
             }),
             ..User::default()
         };
-        create_anchor_account_info!(maker, &maker_key, User, maker_account_info);
+        let maker_orders = get_orders(Order {
+                market_index: 0,
+                order_id: maker_order_id,
+                status: OrderStatus::Open,
+                order_type: OrderType::Limit,
+                market_type: MarketType::Perp,
+                direction: PositionDirection::Short,
+                base_asset_amount: BASE_PRECISION_U64,
+                slot: clock.slot - 3,
+                price: 100 * PRICE_PRECISION_U64,
+                post_only: true,
+                ..Order::default()
+            });
+        create_anchor_user_account_info!(maker, maker_orders, &maker_key, maker_account_info);
         let makers_and_referrers = UserMap::load_one(&maker_account_info).unwrap();
 
         let mut maker_stats = UserStats {
@@ -349,21 +350,6 @@ pub mod fill_order_protected_maker {
             // next_order_id: 10000000,
             next_order_id: 3000 - 2,
             authority: Pubkey::from_str("My11111111111111111111111111111111111111111").unwrap(), // different authority than filler
-            orders: get_orders(Order {
-                market_index: 0,
-                order_id: 1,
-                status: OrderStatus::Open,
-                order_type: OrderType::Market,
-                direction: PositionDirection::Long,
-                market_type: MarketType::Perp,
-                base_asset_amount: BASE_PRECISION_U64,
-                slot: clock.slot - 1, // fresh
-                auction_start_price: 0,
-                auction_end_price: 100 * PRICE_PRECISION_I64 + (100 * PRICE_PRECISION_I64) / 1000,
-                auction_duration: 1,
-                price: 100 * PRICE_PRECISION_U64 + (100 * PRICE_PRECISION_U64) / 1000, // 10 bps higher than maker order price
-                ..Order::default()
-            }),
             perp_positions: get_positions(PerpPosition {
                 market_index: 0,
                 open_orders: 1,
@@ -378,27 +364,29 @@ pub mod fill_order_protected_maker {
             }),
             ..User::default()
         };
+        let user_orders = get_orders(Order {
+                market_index: 0,
+                order_id: 1,
+                status: OrderStatus::Open,
+                order_type: OrderType::Market,
+                direction: PositionDirection::Long,
+                market_type: MarketType::Perp,
+                base_asset_amount: BASE_PRECISION_U64,
+                slot: clock.slot - 1, // fresh
+                auction_start_price: 0,
+                auction_end_price: 100 * PRICE_PRECISION_I64 + (100 * PRICE_PRECISION_I64) / 1000,
+                auction_duration: 1,
+                price: 100 * PRICE_PRECISION_U64 + (100 * PRICE_PRECISION_U64) / 1000, // 10 bps higher than maker order price
+                ..Order::default()
+            });
 
-        create_anchor_account_info!(user, User, user_account_info);
+        create_anchor_user_account_info!(user, user_orders, user_account_info);
         let user_account_loader: AccountLoader<User> =
             AccountLoader::try_from(&user_account_info).unwrap();
 
         let mut maker = User {
             status: UserStatus::ProtectedMakerOrders as u8,
             authority: maker_authority,
-            orders: get_orders(Order {
-                market_index: 0,
-                order_id: maker_order_id,
-                status: OrderStatus::Open,
-                order_type: OrderType::Limit,
-                market_type: MarketType::Perp,
-                direction: PositionDirection::Short,
-                base_asset_amount: BASE_PRECISION_U64,
-                slot: clock.slot - 3,
-                price: 100 * PRICE_PRECISION_U64,
-                post_only: true,
-                ..Order::default()
-            }),
             perp_positions: get_positions(PerpPosition {
                 market_index: 0,
                 open_orders: 1,
@@ -413,7 +401,20 @@ pub mod fill_order_protected_maker {
             }),
             ..User::default()
         };
-        create_anchor_account_info!(maker, &maker_key, User, maker_account_info);
+        let maker_orders = get_orders(Order {
+                market_index: 0,
+                order_id: maker_order_id,
+                status: OrderStatus::Open,
+                order_type: OrderType::Limit,
+                market_type: MarketType::Perp,
+                direction: PositionDirection::Short,
+                base_asset_amount: BASE_PRECISION_U64,
+                slot: clock.slot - 3,
+                price: 100 * PRICE_PRECISION_U64,
+                post_only: true,
+                ..Order::default()
+            });
+        create_anchor_user_account_info!(maker, maker_orders, &maker_key, maker_account_info);
         let makers_and_referrers = UserMap::load_one(&maker_account_info).unwrap();
 
         let mut maker_stats = UserStats {
@@ -461,6 +462,7 @@ pub mod fulfill_order_with_maker_order {
     use crate::state::user::{Order, OrderType, PerpPosition, User, UserStats};
 
     use crate::create_anchor_account_info;
+    use crate::create_anchor_user_account_info;
     use crate::state::pyth_lazer_oracle::PythLazerOracle;
     use crate::test_utils::{get_orders, get_positions, get_pyth_price};
 
@@ -470,8 +472,17 @@ pub mod fulfill_order_with_maker_order {
 
     #[test]
     fn long_taker_order_fulfilled_start_of_auction() {
-        let mut taker = User {
-            orders: get_orders(Order {
+        let taker_data = crate::state::user::TestUser::new(
+            User {
+                perp_positions: get_positions(PerpPosition {
+                    market_index: 0,
+                    open_orders: 1,
+                    open_bids: BASE_PRECISION_I64,
+                    ..PerpPosition::default()
+                }),
+                ..User::default()
+            },
+            &get_orders(Order {
                 market_index: 0,
                 order_type: OrderType::Market,
                 direction: PositionDirection::Long,
@@ -482,17 +493,20 @@ pub mod fulfill_order_with_maker_order {
                 auction_duration: 5,
                 ..Order::default()
             }),
-            perp_positions: get_positions(PerpPosition {
-                market_index: 0,
-                open_orders: 1,
-                open_bids: BASE_PRECISION_I64,
-                ..PerpPosition::default()
-            }),
-            ..User::default()
-        };
+        );
+        let mut taker = taker_data.view();
 
-        let mut maker = User {
-            orders: get_orders(Order {
+        let maker_data = crate::state::user::TestUser::new(
+            User {
+                perp_positions: get_positions(PerpPosition {
+                    market_index: 0,
+                    open_orders: 1,
+                    open_asks: -BASE_PRECISION_I64,
+                    ..PerpPosition::default()
+                }),
+                ..User::default()
+            },
+            &get_orders(Order {
                 market_index: 0,
                 post_only: true,
                 order_type: OrderType::Limit,
@@ -501,14 +515,8 @@ pub mod fulfill_order_with_maker_order {
                 price: 100 * PRICE_PRECISION_U64,
                 ..Order::default()
             }),
-            perp_positions: get_positions(PerpPosition {
-                market_index: 0,
-                open_orders: 1,
-                open_asks: -BASE_PRECISION_I64,
-                ..PerpPosition::default()
-            }),
-            ..User::default()
-        };
+        );
+        let mut maker = maker_data.view();
 
         let mut market = PerpMarket::default_test();
 
@@ -596,8 +604,17 @@ pub mod fulfill_order_with_maker_order {
 
     #[test]
     fn long_taker_order_fulfilled_middle_of_auction() {
-        let mut taker = User {
-            orders: get_orders(Order {
+        let taker_data = crate::state::user::TestUser::new(
+            User {
+                perp_positions: get_positions(PerpPosition {
+                    market_index: 0,
+                    open_orders: 1,
+                    open_bids: BASE_PRECISION_I64,
+                    ..PerpPosition::default()
+                }),
+                ..User::default()
+            },
+            &get_orders(Order {
                 market_index: 0,
                 order_type: OrderType::Market,
                 direction: PositionDirection::Long,
@@ -608,17 +625,20 @@ pub mod fulfill_order_with_maker_order {
                 auction_duration: 5,
                 ..Order::default()
             }),
-            perp_positions: get_positions(PerpPosition {
-                market_index: 0,
-                open_orders: 1,
-                open_bids: BASE_PRECISION_I64,
-                ..PerpPosition::default()
-            }),
-            ..User::default()
-        };
+        );
+        let mut taker = taker_data.view();
 
-        let mut maker = User {
-            orders: get_orders(Order {
+        let maker_data = crate::state::user::TestUser::new(
+            User {
+                perp_positions: get_positions(PerpPosition {
+                    market_index: 0,
+                    open_orders: 1,
+                    open_asks: -BASE_PRECISION_I64,
+                    ..PerpPosition::default()
+                }),
+                ..User::default()
+            },
+            &get_orders(Order {
                 market_index: 0,
                 post_only: true,
                 order_type: OrderType::Limit,
@@ -627,14 +647,8 @@ pub mod fulfill_order_with_maker_order {
                 price: 160 * PRICE_PRECISION_U64,
                 ..Order::default()
             }),
-            perp_positions: get_positions(PerpPosition {
-                market_index: 0,
-                open_orders: 1,
-                open_asks: -BASE_PRECISION_I64,
-                ..PerpPosition::default()
-            }),
-            ..User::default()
-        };
+        );
+        let mut maker = maker_data.view();
 
         let mut market = PerpMarket::default_test();
 
@@ -722,8 +736,17 @@ pub mod fulfill_order_with_maker_order {
 
     #[test]
     fn short_taker_order_fulfilled_start_of_auction() {
-        let mut taker = User {
-            orders: get_orders(Order {
+        let taker_data = crate::state::user::TestUser::new(
+            User {
+                perp_positions: get_positions(PerpPosition {
+                    market_index: 0,
+                    open_orders: 1,
+                    open_asks: -BASE_PRECISION_I64,
+                    ..PerpPosition::default()
+                }),
+                ..User::default()
+            },
+            &get_orders(Order {
                 market_index: 0,
                 order_type: OrderType::Market,
                 direction: PositionDirection::Short,
@@ -734,17 +757,20 @@ pub mod fulfill_order_with_maker_order {
                 auction_duration: 5,
                 ..Order::default()
             }),
-            perp_positions: get_positions(PerpPosition {
-                market_index: 0,
-                open_orders: 1,
-                open_asks: -BASE_PRECISION_I64,
-                ..PerpPosition::default()
-            }),
-            ..User::default()
-        };
+        );
+        let mut taker = taker_data.view();
 
-        let mut maker = User {
-            orders: get_orders(Order {
+        let maker_data = crate::state::user::TestUser::new(
+            User {
+                perp_positions: get_positions(PerpPosition {
+                    market_index: 0,
+                    open_orders: 1,
+                    open_bids: BASE_PRECISION_I64,
+                    ..PerpPosition::default()
+                }),
+                ..User::default()
+            },
+            &get_orders(Order {
                 market_index: 0,
                 post_only: true,
                 order_type: OrderType::Limit,
@@ -753,14 +779,8 @@ pub mod fulfill_order_with_maker_order {
                 price: 180 * PRICE_PRECISION_U64,
                 ..Order::default()
             }),
-            perp_positions: get_positions(PerpPosition {
-                market_index: 0,
-                open_orders: 1,
-                open_bids: BASE_PRECISION_I64,
-                ..PerpPosition::default()
-            }),
-            ..User::default()
-        };
+        );
+        let mut maker = maker_data.view();
 
         let mut market = PerpMarket::default_test();
 
@@ -848,8 +868,17 @@ pub mod fulfill_order_with_maker_order {
 
     #[test]
     fn short_taker_order_fulfilled_middle_of_auction() {
-        let mut taker = User {
-            orders: get_orders(Order {
+        let taker_data = crate::state::user::TestUser::new(
+            User {
+                perp_positions: get_positions(PerpPosition {
+                    market_index: 0,
+                    open_orders: 1,
+                    open_asks: -BASE_PRECISION_I64,
+                    ..PerpPosition::default()
+                }),
+                ..User::default()
+            },
+            &get_orders(Order {
                 market_index: 0,
                 order_type: OrderType::Market,
                 direction: PositionDirection::Short,
@@ -860,17 +889,20 @@ pub mod fulfill_order_with_maker_order {
                 auction_duration: 5,
                 ..Order::default()
             }),
-            perp_positions: get_positions(PerpPosition {
-                market_index: 0,
-                open_orders: 1,
-                open_asks: -BASE_PRECISION_I64,
-                ..PerpPosition::default()
-            }),
-            ..User::default()
-        };
+        );
+        let mut taker = taker_data.view();
 
-        let mut maker = User {
-            orders: get_orders(Order {
+        let maker_data = crate::state::user::TestUser::new(
+            User {
+                perp_positions: get_positions(PerpPosition {
+                    market_index: 0,
+                    open_orders: 1,
+                    open_bids: BASE_PRECISION_I64,
+                    ..PerpPosition::default()
+                }),
+                ..User::default()
+            },
+            &get_orders(Order {
                 market_index: 0,
                 post_only: true,
                 order_type: OrderType::Limit,
@@ -879,14 +911,8 @@ pub mod fulfill_order_with_maker_order {
                 price: 140 * PRICE_PRECISION_U64,
                 ..Order::default()
             }),
-            perp_positions: get_positions(PerpPosition {
-                market_index: 0,
-                open_orders: 1,
-                open_bids: BASE_PRECISION_I64,
-                ..PerpPosition::default()
-            }),
-            ..User::default()
-        };
+        );
+        let mut maker = maker_data.view();
 
         let mut market = PerpMarket::default_test();
 
@@ -974,8 +1000,17 @@ pub mod fulfill_order_with_maker_order {
 
     #[test]
     fn long_taker_order_auction_price_does_not_satisfy_maker() {
-        let mut taker = User {
-            orders: get_orders(Order {
+        let taker_data = crate::state::user::TestUser::new(
+            User {
+                perp_positions: get_positions(PerpPosition {
+                    market_index: 0,
+                    open_orders: 1,
+                    open_bids: 100 * BASE_PRECISION_I64,
+                    ..PerpPosition::default()
+                }),
+                ..User::default()
+            },
+            &get_orders(Order {
                 market_index: 0,
                 order_type: OrderType::Market,
                 direction: PositionDirection::Long,
@@ -986,17 +1021,20 @@ pub mod fulfill_order_with_maker_order {
                 auction_duration: 5,
                 ..Order::default()
             }),
-            perp_positions: get_positions(PerpPosition {
-                market_index: 0,
-                open_orders: 1,
-                open_bids: 100 * BASE_PRECISION_I64,
-                ..PerpPosition::default()
-            }),
-            ..User::default()
-        };
+        );
+        let mut taker = taker_data.view();
 
-        let mut maker = User {
-            orders: get_orders(Order {
+        let maker_data = crate::state::user::TestUser::new(
+            User {
+                perp_positions: get_positions(PerpPosition {
+                    market_index: 0,
+                    open_orders: 1,
+                    open_bids: 100 * BASE_PRECISION_I64,
+                    ..PerpPosition::default()
+                }),
+                ..User::default()
+            },
+            &get_orders(Order {
                 market_index: 0,
                 post_only: true,
                 order_type: OrderType::Limit,
@@ -1005,14 +1043,8 @@ pub mod fulfill_order_with_maker_order {
                 price: 201 * PRICE_PRECISION_U64,
                 ..Order::default()
             }),
-            perp_positions: get_positions(PerpPosition {
-                market_index: 0,
-                open_orders: 1,
-                open_bids: 100 * BASE_PRECISION_I64,
-                ..PerpPosition::default()
-            }),
-            ..User::default()
-        };
+        );
+        let mut maker = maker_data.view();
 
         let mut market = PerpMarket::default_test();
 
@@ -1066,8 +1098,17 @@ pub mod fulfill_order_with_maker_order {
 
     #[test]
     fn short_taker_order_auction_price_does_not_satisfy_maker() {
-        let mut taker = User {
-            orders: get_orders(Order {
+        let taker_data = crate::state::user::TestUser::new(
+            User {
+                perp_positions: get_positions(PerpPosition {
+                    market_index: 0,
+                    open_orders: 1,
+                    open_bids: 100 * BASE_PRECISION_I64,
+                    ..PerpPosition::default()
+                }),
+                ..User::default()
+            },
+            &get_orders(Order {
                 market_index: 0,
                 order_type: OrderType::Market,
                 direction: PositionDirection::Short,
@@ -1077,17 +1118,20 @@ pub mod fulfill_order_with_maker_order {
                 auction_duration: 5,
                 ..Order::default()
             }),
-            perp_positions: get_positions(PerpPosition {
-                market_index: 0,
-                open_orders: 1,
-                open_bids: 100 * BASE_PRECISION_I64,
-                ..PerpPosition::default()
-            }),
-            ..User::default()
-        };
+        );
+        let mut taker = taker_data.view();
 
-        let mut maker = User {
-            orders: get_orders(Order {
+        let maker_data = crate::state::user::TestUser::new(
+            User {
+                perp_positions: get_positions(PerpPosition {
+                    market_index: 0,
+                    open_orders: 1,
+                    open_bids: 100 * BASE_PRECISION_I64,
+                    ..PerpPosition::default()
+                }),
+                ..User::default()
+            },
+            &get_orders(Order {
                 market_index: 0,
                 post_only: true,
                 order_type: OrderType::Limit,
@@ -1096,14 +1140,8 @@ pub mod fulfill_order_with_maker_order {
                 price: 99 * PRICE_PRECISION_U64,
                 ..Order::default()
             }),
-            perp_positions: get_positions(PerpPosition {
-                market_index: 0,
-                open_orders: 1,
-                open_bids: 100 * BASE_PRECISION_I64,
-                ..PerpPosition::default()
-            }),
-            ..User::default()
-        };
+        );
+        let mut maker = maker_data.view();
 
         let mut market = PerpMarket::default_test();
 
@@ -1158,8 +1196,17 @@ pub mod fulfill_order_with_maker_order {
 
     #[test]
     fn maker_taker_same_direction() {
-        let mut taker = User {
-            orders: get_orders(Order {
+        let taker_data = crate::state::user::TestUser::new(
+            User {
+                perp_positions: get_positions(PerpPosition {
+                    market_index: 0,
+                    open_orders: 1,
+                    open_bids: 100 * BASE_PRECISION_I64,
+                    ..PerpPosition::default()
+                }),
+                ..User::default()
+            },
+            &get_orders(Order {
                 market_index: 0,
                 order_type: OrderType::Market,
                 direction: PositionDirection::Short,
@@ -1170,17 +1217,20 @@ pub mod fulfill_order_with_maker_order {
                 auction_duration: 5,
                 ..Order::default()
             }),
-            perp_positions: get_positions(PerpPosition {
-                market_index: 0,
-                open_orders: 1,
-                open_bids: 100 * BASE_PRECISION_I64,
-                ..PerpPosition::default()
-            }),
-            ..User::default()
-        };
+        );
+        let mut taker = taker_data.view();
 
-        let mut maker = User {
-            orders: get_orders(Order {
+        let maker_data = crate::state::user::TestUser::new(
+            User {
+                perp_positions: get_positions(PerpPosition {
+                    market_index: 0,
+                    open_orders: 1,
+                    open_bids: 100 * BASE_PRECISION_I64,
+                    ..PerpPosition::default()
+                }),
+                ..User::default()
+            },
+            &get_orders(Order {
                 market_index: 0,
                 post_only: true,
                 order_type: OrderType::Limit,
@@ -1189,14 +1239,8 @@ pub mod fulfill_order_with_maker_order {
                 price: 200 * PRICE_PRECISION_U64,
                 ..Order::default()
             }),
-            perp_positions: get_positions(PerpPosition {
-                market_index: 0,
-                open_orders: 1,
-                open_bids: 100 * BASE_PRECISION_I64,
-                ..PerpPosition::default()
-            }),
-            ..User::default()
-        };
+        );
+        let mut maker = maker_data.view();
 
         let mut market = PerpMarket::default_test();
 
@@ -1251,8 +1295,17 @@ pub mod fulfill_order_with_maker_order {
 
     #[test]
     fn maker_taker_different_market_index() {
-        let mut taker = User {
-            orders: get_orders(Order {
+        let taker_data = crate::state::user::TestUser::new(
+            User {
+                perp_positions: get_positions(PerpPosition {
+                    market_index: 0,
+                    open_orders: 1,
+                    open_bids: 100 * BASE_PRECISION_I64,
+                    ..PerpPosition::default()
+                }),
+                ..User::default()
+            },
+            &get_orders(Order {
                 market_index: 1,
                 order_type: OrderType::Market,
                 direction: PositionDirection::Short,
@@ -1262,17 +1315,20 @@ pub mod fulfill_order_with_maker_order {
                 auction_duration: 5,
                 ..Order::default()
             }),
-            perp_positions: get_positions(PerpPosition {
-                market_index: 0,
-                open_orders: 1,
-                open_bids: 100 * BASE_PRECISION_I64,
-                ..PerpPosition::default()
-            }),
-            ..User::default()
-        };
+        );
+        let mut taker = taker_data.view();
 
-        let mut maker = User {
-            orders: get_orders(Order {
+        let maker_data = crate::state::user::TestUser::new(
+            User {
+                perp_positions: get_positions(PerpPosition {
+                    market_index: 0,
+                    open_orders: 1,
+                    open_bids: 100 * BASE_PRECISION_I64,
+                    ..PerpPosition::default()
+                }),
+                ..User::default()
+            },
+            &get_orders(Order {
                 market_index: 0,
                 post_only: true,
                 order_type: OrderType::Limit,
@@ -1282,14 +1338,8 @@ pub mod fulfill_order_with_maker_order {
                 auction_duration: 5,
                 ..Order::default()
             }),
-            perp_positions: get_positions(PerpPosition {
-                market_index: 0,
-                open_orders: 1,
-                open_bids: 100 * BASE_PRECISION_I64,
-                ..PerpPosition::default()
-            }),
-            ..User::default()
-        };
+        );
+        let mut maker = maker_data.view();
 
         let mut market = PerpMarket::default_test();
 
@@ -1344,8 +1394,17 @@ pub mod fulfill_order_with_maker_order {
 
     #[test]
     fn long_taker_order_bigger_than_maker() {
-        let mut taker = User {
-            orders: get_orders(Order {
+        let taker_data = crate::state::user::TestUser::new(
+            User {
+                perp_positions: get_positions(PerpPosition {
+                    market_index: 0,
+                    open_orders: 1,
+                    open_bids: 100 * BASE_PRECISION_I64,
+                    ..PerpPosition::default()
+                }),
+                ..User::default()
+            },
+            &get_orders(Order {
                 market_index: 0,
                 order_type: OrderType::Market,
                 direction: PositionDirection::Long,
@@ -1356,17 +1415,20 @@ pub mod fulfill_order_with_maker_order {
                 auction_duration: 5,
                 ..Order::default()
             }),
-            perp_positions: get_positions(PerpPosition {
-                market_index: 0,
-                open_orders: 1,
-                open_bids: 100 * BASE_PRECISION_I64,
-                ..PerpPosition::default()
-            }),
-            ..User::default()
-        };
+        );
+        let mut taker = taker_data.view();
 
-        let mut maker = User {
-            orders: get_orders(Order {
+        let maker_data = crate::state::user::TestUser::new(
+            User {
+                perp_positions: get_positions(PerpPosition {
+                    market_index: 0,
+                    open_orders: 1,
+                    open_asks: -BASE_PRECISION_I64,
+                    ..PerpPosition::default()
+                }),
+                ..User::default()
+            },
+            &get_orders(Order {
                 market_index: 0,
                 post_only: true,
                 order_type: OrderType::Limit,
@@ -1375,14 +1437,8 @@ pub mod fulfill_order_with_maker_order {
                 price: 120 * PRICE_PRECISION_U64,
                 ..Order::default()
             }),
-            perp_positions: get_positions(PerpPosition {
-                market_index: 0,
-                open_orders: 1,
-                open_asks: -BASE_PRECISION_I64,
-                ..PerpPosition::default()
-            }),
-            ..User::default()
-        };
+        );
+        let mut maker = maker_data.view();
 
         let mut market = PerpMarket::default_test();
 
@@ -1457,8 +1513,17 @@ pub mod fulfill_order_with_maker_order {
 
     #[test]
     fn long_taker_order_smaller_than_maker() {
-        let mut taker = User {
-            orders: get_orders(Order {
+        let taker_data = crate::state::user::TestUser::new(
+            User {
+                perp_positions: get_positions(PerpPosition {
+                    market_index: 0,
+                    open_orders: 1,
+                    open_bids: BASE_PRECISION_I64,
+                    ..PerpPosition::default()
+                }),
+                ..User::default()
+            },
+            &get_orders(Order {
                 market_index: 0,
                 order_type: OrderType::Market,
                 direction: PositionDirection::Long,
@@ -1469,17 +1534,20 @@ pub mod fulfill_order_with_maker_order {
                 auction_duration: 5,
                 ..Order::default()
             }),
-            perp_positions: get_positions(PerpPosition {
-                market_index: 0,
-                open_orders: 1,
-                open_bids: BASE_PRECISION_I64,
-                ..PerpPosition::default()
-            }),
-            ..User::default()
-        };
+        );
+        let mut taker = taker_data.view();
 
-        let mut maker = User {
-            orders: get_orders(Order {
+        let maker_data = crate::state::user::TestUser::new(
+            User {
+                perp_positions: get_positions(PerpPosition {
+                    market_index: 0,
+                    open_orders: 1,
+                    open_bids: 100 * BASE_PRECISION_I64,
+                    ..PerpPosition::default()
+                }),
+                ..User::default()
+            },
+            &get_orders(Order {
                 market_index: 0,
                 post_only: true,
                 order_type: OrderType::Limit,
@@ -1488,14 +1556,8 @@ pub mod fulfill_order_with_maker_order {
                 price: 120 * PRICE_PRECISION_U64,
                 ..Order::default()
             }),
-            perp_positions: get_positions(PerpPosition {
-                market_index: 0,
-                open_orders: 1,
-                open_bids: 100 * BASE_PRECISION_I64,
-                ..PerpPosition::default()
-            }),
-            ..User::default()
-        };
+        );
+        let mut maker = maker_data.view();
 
         let mut market = PerpMarket::default_test();
 
@@ -1570,8 +1632,17 @@ pub mod fulfill_order_with_maker_order {
 
     #[test]
     fn double_dutch_auction() {
-        let mut taker = User {
-            orders: get_orders(Order {
+        let taker_data = crate::state::user::TestUser::new(
+            User {
+                perp_positions: get_positions(PerpPosition {
+                    market_index: 0,
+                    open_orders: 1,
+                    open_bids: BASE_PRECISION_I64,
+                    ..PerpPosition::default()
+                }),
+                ..User::default()
+            },
+            &get_orders(Order {
                 market_index: 0,
                 order_type: OrderType::Market,
                 direction: PositionDirection::Long,
@@ -1582,17 +1653,20 @@ pub mod fulfill_order_with_maker_order {
                 auction_duration: 10,
                 ..Order::default()
             }),
-            perp_positions: get_positions(PerpPosition {
-                market_index: 0,
-                open_orders: 1,
-                open_bids: BASE_PRECISION_I64,
-                ..PerpPosition::default()
-            }),
-            ..User::default()
-        };
+        );
+        let mut taker = taker_data.view();
 
-        let mut maker = User {
-            orders: get_orders(Order {
+        let maker_data = crate::state::user::TestUser::new(
+            User {
+                perp_positions: get_positions(PerpPosition {
+                    market_index: 0,
+                    open_orders: 1,
+                    open_asks: -BASE_PRECISION_I64,
+                    ..PerpPosition::default()
+                }),
+                ..User::default()
+            },
+            &get_orders(Order {
                 market_index: 0,
                 post_only: true,
                 order_type: OrderType::Market,
@@ -1604,14 +1678,8 @@ pub mod fulfill_order_with_maker_order {
                 auction_duration: 10,
                 ..Order::default()
             }),
-            perp_positions: get_positions(PerpPosition {
-                market_index: 0,
-                open_orders: 1,
-                open_asks: -BASE_PRECISION_I64,
-                ..PerpPosition::default()
-            }),
-            ..User::default()
-        };
+        );
+        let mut maker = maker_data.view();
 
         let mut market = PerpMarket::default_test();
 
@@ -1702,8 +1770,17 @@ pub mod fulfill_order_with_maker_order {
 
     #[test]
     fn taker_bid_crosses_maker_ask() {
-        let mut maker = User {
-            orders: get_orders(Order {
+        let maker_data = crate::state::user::TestUser::new(
+            User {
+                perp_positions: get_positions(PerpPosition {
+                    market_index: 0,
+                    open_orders: 1,
+                    open_asks: -BASE_PRECISION_I64,
+                    ..PerpPosition::default()
+                }),
+                ..User::default()
+            },
+            &get_orders(Order {
                 market_index: 0,
                 post_only: true,
                 order_type: OrderType::Limit,
@@ -1713,17 +1790,20 @@ pub mod fulfill_order_with_maker_order {
                 price: 100 * PRICE_PRECISION_U64,
                 ..Order::default()
             }),
-            perp_positions: get_positions(PerpPosition {
-                market_index: 0,
-                open_orders: 1,
-                open_asks: -BASE_PRECISION_I64,
-                ..PerpPosition::default()
-            }),
-            ..User::default()
-        };
+        );
+        let mut maker = maker_data.view();
 
-        let mut taker = User {
-            orders: get_orders(Order {
+        let taker_data = crate::state::user::TestUser::new(
+            User {
+                perp_positions: get_positions(PerpPosition {
+                    market_index: 0,
+                    open_orders: 1,
+                    open_bids: BASE_PRECISION_I64,
+                    ..PerpPosition::default()
+                }),
+                ..User::default()
+            },
+            &get_orders(Order {
                 market_index: 0,
                 order_type: OrderType::Limit,
                 direction: PositionDirection::Long,
@@ -1731,14 +1811,8 @@ pub mod fulfill_order_with_maker_order {
                 price: 150 * PRICE_PRECISION_U64,
                 ..Order::default()
             }),
-            perp_positions: get_positions(PerpPosition {
-                market_index: 0,
-                open_orders: 1,
-                open_bids: BASE_PRECISION_I64,
-                ..PerpPosition::default()
-            }),
-            ..User::default()
-        };
+        );
+        let mut taker = taker_data.view();
 
         let mut market = PerpMarket::default_test();
 
@@ -1825,8 +1899,17 @@ pub mod fulfill_order_with_maker_order {
 
     #[test]
     fn taker_ask_crosses_maker_bid() {
-        let mut maker = User {
-            orders: get_orders(Order {
+        let maker_data = crate::state::user::TestUser::new(
+            User {
+                perp_positions: get_positions(PerpPosition {
+                    market_index: 0,
+                    open_orders: 1,
+                    open_bids: BASE_PRECISION_I64,
+                    ..PerpPosition::default()
+                }),
+                ..User::default()
+            },
+            &get_orders(Order {
                 market_index: 0,
                 post_only: true,
                 order_type: OrderType::Limit,
@@ -1836,17 +1919,20 @@ pub mod fulfill_order_with_maker_order {
                 price: 100 * PRICE_PRECISION_U64,
                 ..Order::default()
             }),
-            perp_positions: get_positions(PerpPosition {
-                market_index: 0,
-                open_orders: 1,
-                open_bids: BASE_PRECISION_I64,
-                ..PerpPosition::default()
-            }),
-            ..User::default()
-        };
+        );
+        let mut maker = maker_data.view();
 
-        let mut taker = User {
-            orders: get_orders(Order {
+        let taker_data = crate::state::user::TestUser::new(
+            User {
+                perp_positions: get_positions(PerpPosition {
+                    market_index: 0,
+                    open_orders: 1,
+                    open_asks: -BASE_PRECISION_I64,
+                    ..PerpPosition::default()
+                }),
+                ..User::default()
+            },
+            &get_orders(Order {
                 market_index: 0,
                 order_type: OrderType::Limit,
                 direction: PositionDirection::Short,
@@ -1854,14 +1940,8 @@ pub mod fulfill_order_with_maker_order {
                 price: 50 * PRICE_PRECISION_U64,
                 ..Order::default()
             }),
-            perp_positions: get_positions(PerpPosition {
-                market_index: 0,
-                open_orders: 1,
-                open_asks: -BASE_PRECISION_I64,
-                ..PerpPosition::default()
-            }),
-            ..User::default()
-        };
+        );
+        let mut taker = taker_data.view();
 
         let mut market = PerpMarket::default_test();
 
@@ -1949,8 +2029,17 @@ pub mod fulfill_order_with_maker_order {
 
     #[test]
     fn fallback_price_doesnt_cross_maker() {
-        let mut taker = User {
-            orders: get_orders(Order {
+        let taker_data = crate::state::user::TestUser::new(
+            User {
+                perp_positions: get_positions(PerpPosition {
+                    market_index: 0,
+                    open_orders: 1,
+                    open_bids: BASE_PRECISION_I64,
+                    ..PerpPosition::default()
+                }),
+                ..User::default()
+            },
+            &get_orders(Order {
                 market_index: 0,
                 order_type: OrderType::Market,
                 direction: PositionDirection::Long,
@@ -1960,17 +2049,20 @@ pub mod fulfill_order_with_maker_order {
                 auction_duration: 0,
                 ..Order::default()
             }),
-            perp_positions: get_positions(PerpPosition {
-                market_index: 0,
-                open_orders: 1,
-                open_bids: BASE_PRECISION_I64,
-                ..PerpPosition::default()
-            }),
-            ..User::default()
-        };
+        );
+        let mut taker = taker_data.view();
 
-        let mut maker = User {
-            orders: get_orders(Order {
+        let maker_data = crate::state::user::TestUser::new(
+            User {
+                perp_positions: get_positions(PerpPosition {
+                    market_index: 0,
+                    open_orders: 1,
+                    open_asks: -BASE_PRECISION_I64,
+                    ..PerpPosition::default()
+                }),
+                ..User::default()
+            },
+            &get_orders(Order {
                 market_index: 0,
                 post_only: true,
                 order_type: OrderType::Limit,
@@ -1979,14 +2071,8 @@ pub mod fulfill_order_with_maker_order {
                 price: 120 * PRICE_PRECISION_U64,
                 ..Order::default()
             }),
-            perp_positions: get_positions(PerpPosition {
-                market_index: 0,
-                open_orders: 1,
-                open_asks: -BASE_PRECISION_I64,
-                ..PerpPosition::default()
-            }),
-            ..User::default()
-        };
+        );
+        let mut maker = maker_data.view();
 
         let mut market = PerpMarket {
             amm: AMM {
@@ -2064,8 +2150,17 @@ pub mod fulfill_order_with_maker_order {
 
     #[test]
     fn fallback_price_crosses_maker() {
-        let mut taker = User {
-            orders: get_orders(Order {
+        let taker_data = crate::state::user::TestUser::new(
+            User {
+                perp_positions: get_positions(PerpPosition {
+                    market_index: 0,
+                    open_orders: 1,
+                    open_bids: BASE_PRECISION_I64,
+                    ..PerpPosition::default()
+                }),
+                ..User::default()
+            },
+            &get_orders(Order {
                 market_index: 0,
                 order_type: OrderType::Market,
                 direction: PositionDirection::Long,
@@ -2075,17 +2170,20 @@ pub mod fulfill_order_with_maker_order {
                 auction_duration: 0,
                 ..Order::default()
             }),
-            perp_positions: get_positions(PerpPosition {
-                market_index: 0,
-                open_orders: 1,
-                open_bids: BASE_PRECISION_I64,
-                ..PerpPosition::default()
-            }),
-            ..User::default()
-        };
+        );
+        let mut taker = taker_data.view();
 
-        let mut maker = User {
-            orders: get_orders(Order {
+        let maker_data = crate::state::user::TestUser::new(
+            User {
+                perp_positions: get_positions(PerpPosition {
+                    market_index: 0,
+                    open_orders: 1,
+                    open_asks: -BASE_PRECISION_I64,
+                    ..PerpPosition::default()
+                }),
+                ..User::default()
+            },
+            &get_orders(Order {
                 market_index: 0,
                 post_only: true,
                 order_type: OrderType::Limit,
@@ -2094,14 +2192,8 @@ pub mod fulfill_order_with_maker_order {
                 price: 105 * PRICE_PRECISION_U64,
                 ..Order::default()
             }),
-            perp_positions: get_positions(PerpPosition {
-                market_index: 0,
-                open_orders: 1,
-                open_asks: -BASE_PRECISION_I64,
-                ..PerpPosition::default()
-            }),
-            ..User::default()
-        };
+        );
+        let mut maker = maker_data.view();
 
         let mut market = PerpMarket {
             amm: AMM {
@@ -2190,8 +2282,17 @@ pub mod fulfill_order_with_maker_order {
         let now = 50000_i64;
         let slot = 50000_u64;
 
-        let mut maker = User {
-            orders: get_orders(Order {
+        let maker_data = crate::state::user::TestUser::new(
+            User {
+                perp_positions: get_positions(PerpPosition {
+                    market_index: 0,
+                    open_orders: 1,
+                    open_asks: -BASE_PRECISION_I64,
+                    ..PerpPosition::default()
+                }),
+                ..User::default()
+            },
+            &get_orders(Order {
                 market_index: 0,
                 post_only: true,
                 order_type: OrderType::Limit,
@@ -2201,17 +2302,20 @@ pub mod fulfill_order_with_maker_order {
                 price: 100 * PRICE_PRECISION_U64,
                 ..Order::default()
             }),
-            perp_positions: get_positions(PerpPosition {
-                market_index: 0,
-                open_orders: 1,
-                open_asks: -BASE_PRECISION_I64,
-                ..PerpPosition::default()
-            }),
-            ..User::default()
-        };
+        );
+        let mut maker = maker_data.view();
 
-        let mut taker = User {
-            orders: get_orders(Order {
+        let taker_data = crate::state::user::TestUser::new(
+            User {
+                perp_positions: get_positions(PerpPosition {
+                    market_index: 0,
+                    open_orders: 1,
+                    open_bids: BASE_PRECISION_I64,
+                    ..PerpPosition::default()
+                }),
+                ..User::default()
+            },
+            &get_orders(Order {
                 market_index: 0,
                 order_type: OrderType::Oracle,
                 direction: PositionDirection::Long,
@@ -2222,14 +2326,8 @@ pub mod fulfill_order_with_maker_order {
                 slot: slot - 5,
                 ..Order::default()
             }),
-            perp_positions: get_positions(PerpPosition {
-                market_index: 0,
-                open_orders: 1,
-                open_bids: BASE_PRECISION_I64,
-                ..PerpPosition::default()
-            }),
-            ..User::default()
-        };
+        );
+        let mut taker = taker_data.view();
 
         let mut oracle_price = get_pyth_price(100, 6);
         oracle_price.posted_slot = slot - 10000;
@@ -2360,8 +2458,17 @@ pub mod fulfill_order_with_maker_order {
         let now = 11_i64;
         let slot = 11_u64;
 
-        let mut maker = User {
-            orders: get_orders(Order {
+        let maker_data = crate::state::user::TestUser::new(
+            User {
+                perp_positions: get_positions(PerpPosition {
+                    market_index: 0,
+                    open_orders: 1,
+                    open_asks: -BASE_PRECISION_I64,
+                    ..PerpPosition::default()
+                }),
+                ..User::default()
+            },
+            &get_orders(Order {
                 market_index: 0,
                 post_only: true,
                 order_type: OrderType::Limit,
@@ -2371,17 +2478,20 @@ pub mod fulfill_order_with_maker_order {
                 price: 100 * PRICE_PRECISION_U64,
                 ..Order::default()
             }),
-            perp_positions: get_positions(PerpPosition {
-                market_index: 0,
-                open_orders: 1,
-                open_asks: -BASE_PRECISION_I64,
-                ..PerpPosition::default()
-            }),
-            ..User::default()
-        };
+        );
+        let mut maker = maker_data.view();
 
-        let mut taker = User {
-            orders: get_orders(Order {
+        let taker_data = crate::state::user::TestUser::new(
+            User {
+                perp_positions: get_positions(PerpPosition {
+                    market_index: 0,
+                    open_orders: 1,
+                    open_bids: BASE_PRECISION_I64,
+                    ..PerpPosition::default()
+                }),
+                ..User::default()
+            },
+            &get_orders(Order {
                 market_index: 0,
                 order_type: OrderType::Oracle,
                 direction: PositionDirection::Long,
@@ -2392,14 +2502,8 @@ pub mod fulfill_order_with_maker_order {
                 auction_duration: 10,
                 ..Order::default()
             }),
-            perp_positions: get_positions(PerpPosition {
-                market_index: 0,
-                open_orders: 1,
-                open_bids: BASE_PRECISION_I64,
-                ..PerpPosition::default()
-            }),
-            ..User::default()
-        };
+        );
+        let mut taker = taker_data.view();
 
         let mut oracle_price = get_pyth_price(99, 6);
         let oracle_price_key =
@@ -2516,8 +2620,17 @@ pub mod fulfill_order_with_maker_order {
         let now = 5_i64;
         let slot = 5_u64;
 
-        let mut maker = User {
-            orders: get_orders(Order {
+        let maker_data = crate::state::user::TestUser::new(
+            User {
+                perp_positions: get_positions(PerpPosition {
+                    market_index: 0,
+                    open_orders: 1,
+                    open_bids: BASE_PRECISION_I64,
+                    ..PerpPosition::default()
+                }),
+                ..User::default()
+            },
+            &get_orders(Order {
                 market_index: 0,
                 post_only: true,
                 order_type: OrderType::Limit,
@@ -2527,17 +2640,20 @@ pub mod fulfill_order_with_maker_order {
                 price: 100 * PRICE_PRECISION_U64,
                 ..Order::default()
             }),
-            perp_positions: get_positions(PerpPosition {
-                market_index: 0,
-                open_orders: 1,
-                open_bids: BASE_PRECISION_I64,
-                ..PerpPosition::default()
-            }),
-            ..User::default()
-        };
+        );
+        let mut maker = maker_data.view();
 
-        let mut taker = User {
-            orders: get_orders(Order {
+        let taker_data = crate::state::user::TestUser::new(
+            User {
+                perp_positions: get_positions(PerpPosition {
+                    market_index: 0,
+                    open_orders: 1,
+                    open_asks: -BASE_PRECISION_I64,
+                    ..PerpPosition::default()
+                }),
+                ..User::default()
+            },
+            &get_orders(Order {
                 market_index: 0,
                 order_type: OrderType::Oracle,
                 direction: PositionDirection::Short,
@@ -2547,14 +2663,8 @@ pub mod fulfill_order_with_maker_order {
                 auction_duration: 10,
                 ..Order::default()
             }),
-            perp_positions: get_positions(PerpPosition {
-                market_index: 0,
-                open_orders: 1,
-                open_asks: -BASE_PRECISION_I64,
-                ..PerpPosition::default()
-            }),
-            ..User::default()
-        };
+        );
+        let mut taker = taker_data.view();
 
         let mut oracle_price = get_pyth_price(100, 6);
         let oracle_price_key =
@@ -2670,8 +2780,17 @@ pub mod fulfill_order_with_maker_order {
         let now = 11_i64;
         let slot = 11_u64;
 
-        let mut maker = User {
-            orders: get_orders(Order {
+        let maker_data = crate::state::user::TestUser::new(
+            User {
+                perp_positions: get_positions(PerpPosition {
+                    market_index: 0,
+                    open_orders: 1,
+                    open_bids: BASE_PRECISION_I64,
+                    ..PerpPosition::default()
+                }),
+                ..User::default()
+            },
+            &get_orders(Order {
                 market_index: 0,
                 post_only: true,
                 order_type: OrderType::Limit,
@@ -2681,17 +2800,20 @@ pub mod fulfill_order_with_maker_order {
                 price: 100 * PRICE_PRECISION_U64,
                 ..Order::default()
             }),
-            perp_positions: get_positions(PerpPosition {
-                market_index: 0,
-                open_orders: 1,
-                open_bids: BASE_PRECISION_I64,
-                ..PerpPosition::default()
-            }),
-            ..User::default()
-        };
+        );
+        let mut maker = maker_data.view();
 
-        let mut taker = User {
-            orders: get_orders(Order {
+        let taker_data = crate::state::user::TestUser::new(
+            User {
+                perp_positions: get_positions(PerpPosition {
+                    market_index: 0,
+                    open_orders: 1,
+                    open_asks: -BASE_PRECISION_I64,
+                    ..PerpPosition::default()
+                }),
+                ..User::default()
+            },
+            &get_orders(Order {
                 market_index: 0,
                 order_type: OrderType::Oracle,
                 direction: PositionDirection::Short,
@@ -2702,14 +2824,8 @@ pub mod fulfill_order_with_maker_order {
                 auction_duration: 10,
                 ..Order::default()
             }),
-            perp_positions: get_positions(PerpPosition {
-                market_index: 0,
-                open_orders: 1,
-                open_asks: -BASE_PRECISION_I64,
-                ..PerpPosition::default()
-            }),
-            ..User::default()
-        };
+        );
+        let mut taker = taker_data.view();
 
         let mut oracle_price = get_pyth_price(101, 6);
         let oracle_price_key =
@@ -2822,8 +2938,17 @@ pub mod fulfill_order_with_maker_order {
 
     #[test]
     fn limit_auction_crosses_maker_bid() {
-        let mut maker = User {
-            orders: get_orders(Order {
+        let maker_data = crate::state::user::TestUser::new(
+            User {
+                perp_positions: get_positions(PerpPosition {
+                    market_index: 0,
+                    open_orders: 1,
+                    open_bids: BASE_PRECISION_I64,
+                    ..PerpPosition::default()
+                }),
+                ..User::default()
+            },
+            &get_orders(Order {
                 market_index: 0,
                 post_only: true,
                 order_type: OrderType::Limit,
@@ -2833,17 +2958,20 @@ pub mod fulfill_order_with_maker_order {
                 price: 100 * PRICE_PRECISION_U64,
                 ..Order::default()
             }),
-            perp_positions: get_positions(PerpPosition {
-                market_index: 0,
-                open_orders: 1,
-                open_bids: BASE_PRECISION_I64,
-                ..PerpPosition::default()
-            }),
-            ..User::default()
-        };
+        );
+        let mut maker = maker_data.view();
 
-        let mut taker = User {
-            orders: get_orders(Order {
+        let taker_data = crate::state::user::TestUser::new(
+            User {
+                perp_positions: get_positions(PerpPosition {
+                    market_index: 0,
+                    open_orders: 1,
+                    open_asks: -BASE_PRECISION_I64,
+                    ..PerpPosition::default()
+                }),
+                ..User::default()
+            },
+            &get_orders(Order {
                 market_index: 0,
                 order_type: OrderType::Limit,
                 direction: PositionDirection::Short,
@@ -2854,14 +2982,8 @@ pub mod fulfill_order_with_maker_order {
                 auction_duration: 10,
                 ..Order::default()
             }),
-            perp_positions: get_positions(PerpPosition {
-                market_index: 0,
-                open_orders: 1,
-                open_asks: -BASE_PRECISION_I64,
-                ..PerpPosition::default()
-            }),
-            ..User::default()
-        };
+        );
+        let mut taker = taker_data.view();
 
         let mut market = PerpMarket::default_test();
 
@@ -2957,8 +3079,17 @@ pub mod fulfill_order_with_maker_order {
 
     #[test]
     fn limit_auction_crosses_maker_ask() {
-        let mut maker = User {
-            orders: get_orders(Order {
+        let maker_data = crate::state::user::TestUser::new(
+            User {
+                perp_positions: get_positions(PerpPosition {
+                    market_index: 0,
+                    open_orders: 1,
+                    open_asks: -BASE_PRECISION_I64,
+                    ..PerpPosition::default()
+                }),
+                ..User::default()
+            },
+            &get_orders(Order {
                 market_index: 0,
                 post_only: true,
                 order_type: OrderType::Limit,
@@ -2968,17 +3099,20 @@ pub mod fulfill_order_with_maker_order {
                 price: 100 * PRICE_PRECISION_U64,
                 ..Order::default()
             }),
-            perp_positions: get_positions(PerpPosition {
-                market_index: 0,
-                open_orders: 1,
-                open_asks: -BASE_PRECISION_I64,
-                ..PerpPosition::default()
-            }),
-            ..User::default()
-        };
+        );
+        let mut maker = maker_data.view();
 
-        let mut taker = User {
-            orders: get_orders(Order {
+        let taker_data = crate::state::user::TestUser::new(
+            User {
+                perp_positions: get_positions(PerpPosition {
+                    market_index: 0,
+                    open_orders: 1,
+                    open_bids: BASE_PRECISION_I64,
+                    ..PerpPosition::default()
+                }),
+                ..User::default()
+            },
+            &get_orders(Order {
                 market_index: 0,
                 order_type: OrderType::Limit,
                 direction: PositionDirection::Long,
@@ -2989,14 +3123,8 @@ pub mod fulfill_order_with_maker_order {
                 auction_duration: 10,
                 ..Order::default()
             }),
-            perp_positions: get_positions(PerpPosition {
-                market_index: 0,
-                open_orders: 1,
-                open_bids: BASE_PRECISION_I64,
-                ..PerpPosition::default()
-            }),
-            ..User::default()
-        };
+        );
+        let mut taker = taker_data.view();
 
         let mut market = PerpMarket::default_test();
 
@@ -3099,6 +3227,7 @@ pub mod fulfill_order {
     };
     use crate::controller::position::PositionDirection;
     use crate::create_anchor_account_info;
+    use crate::create_anchor_user_account_info;
     use crate::error::ErrorCode;
     use crate::get_orders;
     use crate::math::constants::{
@@ -3335,8 +3464,23 @@ pub mod fulfill_order {
         create_anchor_account_info!(spot_market, SpotMarket, spot_market_account_info);
         let spot_market_map = SpotMarketMap::load_one(&spot_market_account_info, true).unwrap();
 
-        let mut taker = User {
-            orders: get_orders(Order {
+        let taker_data = crate::state::user::TestUser::new(
+            User {
+                perp_positions: get_positions(PerpPosition {
+                    market_index: 0,
+                    open_orders: 1,
+                    open_bids: BASE_PRECISION_I64,
+                    ..PerpPosition::default()
+                }),
+                spot_positions: get_spot_positions(SpotPosition {
+                    market_index: 0,
+                    balance_type: SpotBalanceType::Deposit,
+                    scaled_balance: 100 * SPOT_BALANCE_PRECISION_U64,
+                    ..SpotPosition::default()
+                }),
+                ..User::default()
+            },
+            &get_orders(Order {
                 market_index: 0,
                 status: OrderStatus::Open,
                 order_type: OrderType::Market,
@@ -3349,35 +3493,14 @@ pub mod fulfill_order {
                 price: 150 * PRICE_PRECISION_U64,
                 ..Order::default()
             }),
-            perp_positions: get_positions(PerpPosition {
-                market_index: 0,
-                open_orders: 1,
-                open_bids: BASE_PRECISION_I64,
-                ..PerpPosition::default()
-            }),
-            spot_positions: get_spot_positions(SpotPosition {
-                market_index: 0,
-                balance_type: SpotBalanceType::Deposit,
-                scaled_balance: 100 * SPOT_BALANCE_PRECISION_U64,
-                ..SpotPosition::default()
-            }),
-            ..User::default()
-        };
+        );
+        let mut taker = taker_data.view();
 
         let maker_key = Pubkey::default();
         let maker_authority =
             Pubkey::from_str("J83w4HKfqxwcq3BEMMkPFSppX3gqekLyLJBexebFVkix").unwrap();
         let mut maker = User {
             authority: maker_authority,
-            orders: get_orders(Order {
-                market_index: 0,
-                post_only: true,
-                order_type: OrderType::Limit,
-                direction: PositionDirection::Short,
-                base_asset_amount: BASE_PRECISION_U64 / 2,
-                price: 100_010_000 * PRICE_PRECISION_U64 / 1_000_000, // .01 worse than amm
-                ..Order::default()
-            }),
             perp_positions: get_positions(PerpPosition {
                 market_index: 0,
                 open_orders: 1,
@@ -3392,10 +3515,20 @@ pub mod fulfill_order {
             }),
             ..User::default()
         };
-        create_anchor_account_info!(maker, User, maker_account_info);
+        let maker_orders = get_orders(Order {
+                market_index: 0,
+                post_only: true,
+                order_type: OrderType::Limit,
+                direction: PositionDirection::Short,
+                base_asset_amount: BASE_PRECISION_U64 / 2,
+                price: 100_010_000 * PRICE_PRECISION_U64 / 1_000_000, // .01 worse than amm
+                ..Order::default()
+            });
+        create_anchor_user_account_info!(maker, maker_orders, maker_account_info);
         let makers_and_referrers = UserMap::load_one(&maker_account_info).unwrap();
 
-        let mut filler = User::default();
+        let filler_data = crate::state::user::TestUser::from_header(User::default());
+        let mut filler = filler_data.view();
 
         let fee_structure = get_fee_structure();
 
@@ -3583,8 +3716,23 @@ pub mod fulfill_order {
         create_anchor_account_info!(spot_market, SpotMarket, spot_market_account_info);
         let spot_market_map = SpotMarketMap::load_one(&spot_market_account_info, true).unwrap();
 
-        let mut taker = User {
-            orders: get_orders(Order {
+        let taker_data = crate::state::user::TestUser::new(
+            User {
+                perp_positions: get_positions(PerpPosition {
+                    market_index: 0,
+                    open_orders: 1,
+                    open_bids: BASE_PRECISION_I64,
+                    ..PerpPosition::default()
+                }),
+                spot_positions: get_spot_positions(SpotPosition {
+                    market_index: 0,
+                    balance_type: SpotBalanceType::Deposit,
+                    scaled_balance: 100 * SPOT_BALANCE_PRECISION_U64,
+                    ..SpotPosition::default()
+                }),
+                ..User::default()
+            },
+            &get_orders(Order {
                 market_index: 0,
                 status: OrderStatus::Open,
                 order_type: OrderType::Market,
@@ -3597,10 +3745,18 @@ pub mod fulfill_order {
                 price: 150 * PRICE_PRECISION_U64,
                 ..Order::default()
             }),
+        );
+        let mut taker = taker_data.view();
+
+        let maker_key = Pubkey::default();
+        let maker_authority =
+            Pubkey::from_str("J83w4HKfqxwcq3BEMMkPFSppX3gqekLyLJBexebFVkix").unwrap();
+        let mut maker = User {
+            authority: maker_authority,
             perp_positions: get_positions(PerpPosition {
                 market_index: 0,
-                open_orders: 1,
-                open_bids: BASE_PRECISION_I64,
+                open_orders: 2,
+                open_asks: -BASE_PRECISION_I64,
                 ..PerpPosition::default()
             }),
             spot_positions: get_spot_positions(SpotPosition {
@@ -3611,13 +3767,7 @@ pub mod fulfill_order {
             }),
             ..User::default()
         };
-
-        let maker_key = Pubkey::default();
-        let maker_authority =
-            Pubkey::from_str("J83w4HKfqxwcq3BEMMkPFSppX3gqekLyLJBexebFVkix").unwrap();
-        let mut maker = User {
-            authority: maker_authority,
-            orders: get_orders!(
+        let maker_orders = get_orders!(
                 Order {
                     market_index: 0,
                     post_only: true,
@@ -3636,25 +3786,12 @@ pub mod fulfill_order {
                     price: 95 * PRICE_PRECISION_U64, // .01 worse than amm
                     ..Order::default()
                 }
-            ),
-            perp_positions: get_positions(PerpPosition {
-                market_index: 0,
-                open_orders: 2,
-                open_asks: -BASE_PRECISION_I64,
-                ..PerpPosition::default()
-            }),
-            spot_positions: get_spot_positions(SpotPosition {
-                market_index: 0,
-                balance_type: SpotBalanceType::Deposit,
-                scaled_balance: 100 * SPOT_BALANCE_PRECISION_U64,
-                ..SpotPosition::default()
-            }),
-            ..User::default()
-        };
-        create_anchor_account_info!(maker, User, maker_account_info);
+            );
+        create_anchor_user_account_info!(maker, maker_orders, maker_account_info);
         let makers_and_referrers = UserMap::load_one(&maker_account_info).unwrap();
 
-        let mut filler = User::default();
+        let filler_data = crate::state::user::TestUser::from_header(User::default());
+        let mut filler = filler_data.view();
 
         let fee_structure = get_fee_structure();
 
@@ -3802,8 +3939,23 @@ pub mod fulfill_order {
         create_anchor_account_info!(spot_market, SpotMarket, spot_market_account_info);
         let spot_market_map = SpotMarketMap::load_one(&spot_market_account_info, true).unwrap();
 
-        let mut taker = User {
-            orders: get_orders(Order {
+        let taker_data = crate::state::user::TestUser::new(
+            User {
+                perp_positions: get_positions(PerpPosition {
+                    market_index: 0,
+                    open_orders: 1,
+                    open_bids: BASE_PRECISION_I64,
+                    ..PerpPosition::default()
+                }),
+                spot_positions: get_spot_positions(SpotPosition {
+                    market_index: 0,
+                    balance_type: SpotBalanceType::Deposit,
+                    scaled_balance: 100 * SPOT_BALANCE_PRECISION_U64,
+                    ..SpotPosition::default()
+                }),
+                ..User::default()
+            },
+            &get_orders(Order {
                 market_index: 0,
                 status: OrderStatus::Open,
                 order_type: OrderType::Market,
@@ -3816,35 +3968,14 @@ pub mod fulfill_order {
                 auction_duration: 0,
                 ..Order::default()
             }),
-            perp_positions: get_positions(PerpPosition {
-                market_index: 0,
-                open_orders: 1,
-                open_bids: BASE_PRECISION_I64,
-                ..PerpPosition::default()
-            }),
-            spot_positions: get_spot_positions(SpotPosition {
-                market_index: 0,
-                balance_type: SpotBalanceType::Deposit,
-                scaled_balance: 100 * SPOT_BALANCE_PRECISION_U64,
-                ..SpotPosition::default()
-            }),
-            ..User::default()
-        };
+        );
+        let mut taker = taker_data.view();
 
         let maker_key = Pubkey::default();
         let maker_authority =
             Pubkey::from_str("J83w4HKfqxwcq3BEMMkPFSppX3gqekLyLJBexebFVkix").unwrap();
         let mut maker = User {
             authority: maker_authority,
-            orders: get_orders(Order {
-                market_index: 0,
-                post_only: true,
-                order_type: OrderType::Limit,
-                direction: PositionDirection::Short,
-                base_asset_amount: BASE_PRECISION_U64 / 2,
-                price: 100_010_000 * PRICE_PRECISION_U64 / 1_000_000, // .01 worse than amm
-                ..Order::default()
-            }),
             perp_positions: get_positions(PerpPosition {
                 market_index: 0,
                 open_orders: 1,
@@ -3859,10 +3990,20 @@ pub mod fulfill_order {
             }),
             ..User::default()
         };
-        create_anchor_account_info!(maker, User, maker_account_info);
+        let maker_orders = get_orders(Order {
+                market_index: 0,
+                post_only: true,
+                order_type: OrderType::Limit,
+                direction: PositionDirection::Short,
+                base_asset_amount: BASE_PRECISION_U64 / 2,
+                price: 100_010_000 * PRICE_PRECISION_U64 / 1_000_000, // .01 worse than amm
+                ..Order::default()
+            });
+        create_anchor_user_account_info!(maker, maker_orders, maker_account_info);
         let makers_and_referrers = UserMap::load_one(&maker_account_info).unwrap();
 
-        let mut filler = User::default();
+        let filler_data = crate::state::user::TestUser::from_header(User::default());
+        let mut filler = filler_data.view();
 
         let fee_structure = get_fee_structure();
 
@@ -4026,8 +4167,23 @@ pub mod fulfill_order {
 
         let mut oracle_map = get_oracle_map();
 
-        let mut taker = User {
-            orders: get_orders(Order {
+        let taker_data = crate::state::user::TestUser::new(
+            User {
+                perp_positions: get_positions(PerpPosition {
+                    market_index: 0,
+                    open_orders: 1,
+                    open_bids: BASE_PRECISION_I64,
+                    ..PerpPosition::default()
+                }),
+                spot_positions: get_spot_positions(SpotPosition {
+                    market_index: 0,
+                    balance_type: SpotBalanceType::Deposit,
+                    scaled_balance: 100 * SPOT_BALANCE_PRECISION_U64,
+                    ..SpotPosition::default()
+                }),
+                ..User::default()
+            },
+            &get_orders(Order {
                 market_index: 0,
                 status: OrderStatus::Open,
                 order_type: OrderType::Market,
@@ -4039,35 +4195,14 @@ pub mod fulfill_order {
                 auction_duration: 5,
                 ..Order::default()
             }),
-            perp_positions: get_positions(PerpPosition {
-                market_index: 0,
-                open_orders: 1,
-                open_bids: BASE_PRECISION_I64,
-                ..PerpPosition::default()
-            }),
-            spot_positions: get_spot_positions(SpotPosition {
-                market_index: 0,
-                balance_type: SpotBalanceType::Deposit,
-                scaled_balance: 100 * SPOT_BALANCE_PRECISION_U64,
-                ..SpotPosition::default()
-            }),
-            ..User::default()
-        };
+        );
+        let mut taker = taker_data.view();
 
         let maker_key = Pubkey::default();
         let maker_authority =
             Pubkey::from_str("J83w4HKfqxwcq3BEMMkPFSppX3gqekLyLJBexebFVkix").unwrap();
         let mut maker = User {
             authority: maker_authority,
-            orders: get_orders(Order {
-                market_index: 0,
-                post_only: true,
-                order_type: OrderType::Limit,
-                direction: PositionDirection::Short,
-                base_asset_amount: BASE_PRECISION_U64 / 2,
-                price: 100 * PRICE_PRECISION_U64,
-                ..Order::default()
-            }),
             perp_positions: get_positions(PerpPosition {
                 market_index: 0,
                 open_orders: 1,
@@ -4082,7 +4217,16 @@ pub mod fulfill_order {
             }),
             ..User::default()
         };
-        create_anchor_account_info!(maker, User, maker_account_info);
+        let maker_orders = get_orders(Order {
+                market_index: 0,
+                post_only: true,
+                order_type: OrderType::Limit,
+                direction: PositionDirection::Short,
+                base_asset_amount: BASE_PRECISION_U64 / 2,
+                price: 100 * PRICE_PRECISION_U64,
+                ..Order::default()
+            });
+        create_anchor_user_account_info!(maker, maker_orders, maker_account_info);
         let makers_and_referrers = UserMap::load_one(&maker_account_info).unwrap();
 
         let now = 0_i64;
@@ -4246,8 +4390,23 @@ pub mod fulfill_order {
         create_anchor_account_info!(spot_market, SpotMarket, spot_market_account_info);
         let spot_market_map = SpotMarketMap::load_one(&spot_market_account_info, true).unwrap();
 
-        let mut taker = User {
-            orders: get_orders(Order {
+        let taker_data = crate::state::user::TestUser::new(
+            User {
+                perp_positions: get_positions(PerpPosition {
+                    market_index: 0,
+                    open_orders: 1,
+                    open_bids: BASE_PRECISION_I64,
+                    ..PerpPosition::default()
+                }),
+                spot_positions: get_spot_positions(SpotPosition {
+                    market_index: 0,
+                    balance_type: SpotBalanceType::Deposit,
+                    scaled_balance: 100 * SPOT_BALANCE_PRECISION_U64,
+                    ..SpotPosition::default()
+                }),
+                ..User::default()
+            },
+            &get_orders(Order {
                 market_index: 0,
                 status: OrderStatus::Open,
                 order_type: OrderType::Market,
@@ -4260,20 +4419,8 @@ pub mod fulfill_order {
                 price: 150 * PRICE_PRECISION_U64,
                 ..Order::default()
             }),
-            perp_positions: get_positions(PerpPosition {
-                market_index: 0,
-                open_orders: 1,
-                open_bids: BASE_PRECISION_I64,
-                ..PerpPosition::default()
-            }),
-            spot_positions: get_spot_positions(SpotPosition {
-                market_index: 0,
-                balance_type: SpotBalanceType::Deposit,
-                scaled_balance: 100 * SPOT_BALANCE_PRECISION_U64,
-                ..SpotPosition::default()
-            }),
-            ..User::default()
-        };
+        );
+        let mut taker = taker_data.view();
 
         let fee_structure = get_fee_structure();
 
@@ -4416,8 +4563,23 @@ pub mod fulfill_order {
         create_anchor_account_info!(spot_market, SpotMarket, spot_market_account_info);
         let spot_market_map = SpotMarketMap::load_one(&spot_market_account_info, true).unwrap();
 
-        let mut taker = User {
-            orders: get_orders(Order {
+        let taker_data = crate::state::user::TestUser::new(
+            User {
+                perp_positions: get_positions(PerpPosition {
+                    market_index: 0,
+                    open_orders: 1,
+                    open_bids: BASE_PRECISION_I64,
+                    ..PerpPosition::default()
+                }),
+                spot_positions: get_spot_positions(SpotPosition {
+                    market_index: 0,
+                    balance_type: SpotBalanceType::Deposit,
+                    scaled_balance: 100 * SPOT_BALANCE_PRECISION_U64,
+                    ..SpotPosition::default()
+                }),
+                ..User::default()
+            },
+            &get_orders(Order {
                 market_index: 0,
                 status: OrderStatus::Open,
                 order_type: OrderType::Market,
@@ -4430,35 +4592,14 @@ pub mod fulfill_order {
                 price: 150 * PRICE_PRECISION_U64,
                 ..Order::default()
             }),
-            perp_positions: get_positions(PerpPosition {
-                market_index: 0,
-                open_orders: 1,
-                open_bids: BASE_PRECISION_I64,
-                ..PerpPosition::default()
-            }),
-            spot_positions: get_spot_positions(SpotPosition {
-                market_index: 0,
-                balance_type: SpotBalanceType::Deposit,
-                scaled_balance: 100 * SPOT_BALANCE_PRECISION_U64,
-                ..SpotPosition::default()
-            }),
-            ..User::default()
-        };
+        );
+        let mut taker = taker_data.view();
 
         let maker_key = Pubkey::default();
         let maker_authority =
             Pubkey::from_str("J83w4HKfqxwcq3BEMMkPFSppX3gqekLyLJBexebFVkix").unwrap();
         let mut maker = User {
             authority: maker_authority,
-            orders: get_orders!(Order {
-                market_index: 0,
-                post_only: true,
-                order_type: OrderType::Limit,
-                direction: PositionDirection::Short,
-                base_asset_amount: 2 * BASE_PRECISION_U64,
-                price: 100 * PRICE_PRECISION_U64, // .01 worse than amm
-                ..Order::default()
-            }),
             perp_positions: get_positions(PerpPosition {
                 market_index: 0,
                 base_asset_amount: BASE_PRECISION_I64,
@@ -4474,10 +4615,20 @@ pub mod fulfill_order {
             }),
             ..User::default()
         };
-        create_anchor_account_info!(maker, User, maker_account_info);
+        let maker_orders = get_orders!(Order {
+                market_index: 0,
+                post_only: true,
+                order_type: OrderType::Limit,
+                direction: PositionDirection::Short,
+                base_asset_amount: 2 * BASE_PRECISION_U64,
+                price: 100 * PRICE_PRECISION_U64, // .01 worse than amm
+                ..Order::default()
+            });
+        create_anchor_user_account_info!(maker, maker_orders, maker_account_info);
         let makers_and_referrers = UserMap::load_one(&maker_account_info).unwrap();
 
-        let mut filler = User::default();
+        let filler_data = crate::state::user::TestUser::from_header(User::default());
+        let mut filler = filler_data.view();
 
         let fee_structure = get_fee_structure();
 
@@ -4619,8 +4770,23 @@ pub mod fulfill_order {
         create_anchor_account_info!(spot_market, SpotMarket, spot_market_account_info);
         let spot_market_map = SpotMarketMap::load_one(&spot_market_account_info, true).unwrap();
 
-        let mut taker = User {
-            orders: get_orders(Order {
+        let taker_data = crate::state::user::TestUser::new(
+            User {
+                perp_positions: get_positions(PerpPosition {
+                    market_index: 0,
+                    open_orders: 1,
+                    open_bids: BASE_PRECISION_I64,
+                    ..PerpPosition::default()
+                }),
+                spot_positions: get_spot_positions(SpotPosition {
+                    market_index: 0,
+                    balance_type: SpotBalanceType::Deposit,
+                    scaled_balance: 100 * SPOT_BALANCE_PRECISION_U64,
+                    ..SpotPosition::default()
+                }),
+                ..User::default()
+            },
+            &get_orders(Order {
                 market_index: 0,
                 status: OrderStatus::Open,
                 order_type: OrderType::Market,
@@ -4633,35 +4799,14 @@ pub mod fulfill_order {
                 price: 150 * PRICE_PRECISION_U64,
                 ..Order::default()
             }),
-            perp_positions: get_positions(PerpPosition {
-                market_index: 0,
-                open_orders: 1,
-                open_bids: BASE_PRECISION_I64,
-                ..PerpPosition::default()
-            }),
-            spot_positions: get_spot_positions(SpotPosition {
-                market_index: 0,
-                balance_type: SpotBalanceType::Deposit,
-                scaled_balance: 100 * SPOT_BALANCE_PRECISION_U64,
-                ..SpotPosition::default()
-            }),
-            ..User::default()
-        };
+        );
+        let mut taker = taker_data.view();
 
         let maker_key = Pubkey::default();
         let maker_authority =
             Pubkey::from_str("J83w4HKfqxwcq3BEMMkPFSppX3gqekLyLJBexebFVkix").unwrap();
         let mut maker = User {
             authority: maker_authority,
-            orders: get_orders!(Order {
-                market_index: 0,
-                post_only: true,
-                order_type: OrderType::Limit,
-                direction: PositionDirection::Short,
-                base_asset_amount: BASE_PRECISION_U64,
-                price: 95 * PRICE_PRECISION_U64, // .01 worse than amm
-                ..Order::default()
-            }),
             perp_positions: get_positions(PerpPosition {
                 market_index: 0,
                 open_orders: 1,
@@ -4676,10 +4821,20 @@ pub mod fulfill_order {
             }),
             ..User::default()
         };
-        create_anchor_account_info!(maker, User, maker_account_info);
+        let maker_orders = get_orders!(Order {
+                market_index: 0,
+                post_only: true,
+                order_type: OrderType::Limit,
+                direction: PositionDirection::Short,
+                base_asset_amount: BASE_PRECISION_U64,
+                price: 95 * PRICE_PRECISION_U64, // .01 worse than amm
+                ..Order::default()
+            });
+        create_anchor_user_account_info!(maker, maker_orders, maker_account_info);
         let makers_and_referrers = UserMap::load_one(&maker_account_info).unwrap();
 
-        let mut filler = User::default();
+        let filler_data = crate::state::user::TestUser::from_header(User::default());
+        let mut filler = filler_data.view();
 
         let fee_structure = get_fee_structure();
 
@@ -4810,8 +4965,23 @@ pub mod fulfill_order {
         create_anchor_account_info!(spot_market, SpotMarket, spot_market_account_info);
         let spot_market_map = SpotMarketMap::load_one(&spot_market_account_info, true).unwrap();
 
-        let mut taker = User {
-            orders: get_orders(Order {
+        let taker_data = crate::state::user::TestUser::new(
+            User {
+                perp_positions: get_positions(PerpPosition {
+                    market_index: 0,
+                    open_orders: 1,
+                    open_asks: -BASE_PRECISION_I64,
+                    ..PerpPosition::default()
+                }),
+                spot_positions: get_spot_positions(SpotPosition {
+                    market_index: 0,
+                    balance_type: SpotBalanceType::Deposit,
+                    scaled_balance: 100 * SPOT_BALANCE_PRECISION_U64,
+                    ..SpotPosition::default()
+                }),
+                ..User::default()
+            },
+            &get_orders(Order {
                 market_index: 0,
                 status: OrderStatus::Open,
                 order_type: OrderType::Limit,
@@ -4823,24 +4993,13 @@ pub mod fulfill_order {
                 post_only: true,
                 ..Order::default()
             }),
-            perp_positions: get_positions(PerpPosition {
-                market_index: 0,
-                open_orders: 1,
-                open_asks: -BASE_PRECISION_I64,
-                ..PerpPosition::default()
-            }),
-            spot_positions: get_spot_positions(SpotPosition {
-                market_index: 0,
-                balance_type: SpotBalanceType::Deposit,
-                scaled_balance: 100 * SPOT_BALANCE_PRECISION_U64,
-                ..SpotPosition::default()
-            }),
-            ..User::default()
-        };
+        );
+        let mut taker = taker_data.view();
 
         let makers_and_referrers = UserMap::empty();
 
-        let mut filler = User::default();
+        let filler_data = crate::state::user::TestUser::from_header(User::default());
+        let mut filler = filler_data.view();
 
         let fee_structure = get_fee_structure();
 
@@ -4992,8 +5151,23 @@ pub mod fulfill_order {
         create_anchor_account_info!(spot_market, SpotMarket, spot_market_account_info);
         let spot_market_map = SpotMarketMap::load_one(&spot_market_account_info, true).unwrap();
 
-        let mut taker = User {
-            orders: get_orders(Order {
+        let taker_data = crate::state::user::TestUser::new(
+            User {
+                perp_positions: get_positions(PerpPosition {
+                    market_index: 0,
+                    open_orders: 1,
+                    open_bids: BASE_PRECISION_I64,
+                    ..PerpPosition::default()
+                }),
+                spot_positions: get_spot_positions(SpotPosition {
+                    market_index: 0,
+                    balance_type: SpotBalanceType::Deposit,
+                    scaled_balance: 100 * SPOT_BALANCE_PRECISION_U64,
+                    ..SpotPosition::default()
+                }),
+                ..User::default()
+            },
+            &get_orders(Order {
                 market_index: 0,
                 status: OrderStatus::Open,
                 order_type: OrderType::Limit,
@@ -5005,24 +5179,13 @@ pub mod fulfill_order {
                 post_only: true,
                 ..Order::default()
             }),
-            perp_positions: get_positions(PerpPosition {
-                market_index: 0,
-                open_orders: 1,
-                open_bids: BASE_PRECISION_I64,
-                ..PerpPosition::default()
-            }),
-            spot_positions: get_spot_positions(SpotPosition {
-                market_index: 0,
-                balance_type: SpotBalanceType::Deposit,
-                scaled_balance: 100 * SPOT_BALANCE_PRECISION_U64,
-                ..SpotPosition::default()
-            }),
-            ..User::default()
-        };
+        );
+        let mut taker = taker_data.view();
 
         let makers_and_referrers = UserMap::empty();
 
-        let mut filler = User::default();
+        let filler_data = crate::state::user::TestUser::from_header(User::default());
+        let mut filler = filler_data.view();
 
         let fee_structure = get_fee_structure();
 
@@ -5183,20 +5346,6 @@ pub mod fulfill_order {
         let spot_market_map = SpotMarketMap::load_one(&spot_market_account_info, true).unwrap();
 
         let mut taker = User {
-            orders: get_orders(Order {
-                market_index: 0,
-                status: OrderStatus::Open,
-                order_type: OrderType::Market,
-                direction: PositionDirection::Long,
-                base_asset_amount: BASE_PRECISION_U64,
-                slot: 0,
-                auction_start_price: 0,
-                auction_end_price: 100 * PRICE_PRECISION_I64,
-                auction_duration: 0,
-                price: 150 * PRICE_PRECISION_U64,
-                order_id: 1,
-                ..Order::default()
-            }),
             perp_positions: get_positions(PerpPosition {
                 market_index: 0,
                 open_orders: 1,
@@ -5211,7 +5360,21 @@ pub mod fulfill_order {
             }),
             ..User::default()
         };
-        create_anchor_account_info!(taker, User, user_account_info);
+        let taker_orders = get_orders(Order {
+                market_index: 0,
+                status: OrderStatus::Open,
+                order_type: OrderType::Market,
+                direction: PositionDirection::Long,
+                base_asset_amount: BASE_PRECISION_U64,
+                slot: 0,
+                auction_start_price: 0,
+                auction_end_price: 100 * PRICE_PRECISION_I64,
+                auction_duration: 0,
+                price: 150 * PRICE_PRECISION_U64,
+                order_id: 1,
+                ..Order::default()
+            });
+        create_anchor_user_account_info!(taker, taker_orders, user_account_info);
         let user_account_loader: AccountLoader<User> =
             AccountLoader::try_from(&user_account_info).unwrap();
         create_anchor_account_info!(UserStats::default(), UserStats, user_stats_account_info);
@@ -5554,17 +5717,20 @@ pub mod fulfill_order {
             ..PerpPosition::default()
         };
 
-        let mut taker = User {
-            orders: taker_orders,
-            perp_positions: taker_positions,
-            spot_positions: get_spot_positions(SpotPosition {
-                market_index: 0,
-                balance_type: SpotBalanceType::Deposit,
-                scaled_balance: 10_000 * SPOT_BALANCE_PRECISION_U64,
-                ..SpotPosition::default()
-            }),
-            ..User::default()
-        };
+        let taker_data = crate::state::user::TestUser::new(
+            User {
+                perp_positions: taker_positions,
+                spot_positions: get_spot_positions(SpotPosition {
+                    market_index: 0,
+                    balance_type: SpotBalanceType::Deposit,
+                    scaled_balance: 10_000 * SPOT_BALANCE_PRECISION_U64,
+                    ..SpotPosition::default()
+                }),
+                ..User::default()
+            },
+            &taker_orders,
+        );
+        let mut taker = taker_data.view();
 
         // Maker has sol order and position at index 1, btc at index 1
         let maker_key = Pubkey::default();
@@ -5606,7 +5772,6 @@ pub mod fulfill_order {
 
         let mut maker = User {
             authority: maker_authority,
-            orders: maker_orders,
             perp_positions: maker_positions,
             spot_positions: get_spot_positions(SpotPosition {
                 market_index: 0,
@@ -5616,7 +5781,8 @@ pub mod fulfill_order {
             }),
             ..User::default()
         };
-        create_anchor_account_info!(maker, User, maker_account_info);
+        let maker_orders = maker_orders;
+        create_anchor_user_account_info!(maker, maker_orders, maker_account_info);
         let makers_and_referrers = UserMap::load_one(&maker_account_info).unwrap();
 
         // random
@@ -5635,8 +5801,11 @@ pub mod fulfill_order {
         create_anchor_account_info!(maker_stats, UserStats, maker_stats_account_info);
         let maker_and_referrer_stats = UserStatsMap::load_one(&maker_stats_account_info).unwrap();
 
-        let taker_before = taker;
-        let maker_before = maker;
+        // Snapshot pre-call state for unaffected-market assertions.
+        let taker_before_perp_position_1 = taker.perp_positions[1];
+        let taker_before_order_1 = *taker.order(1);
+        let maker_before_perp_position_0 = maker.perp_positions[0];
+        let maker_before_order_0 = maker_orders[0];
 
         let order_index = 0;
         let min_auction_duration = 10;
@@ -5699,8 +5868,8 @@ pub mod fulfill_order {
         assert_eq!(taker_order.quote_asset_amount_filled, 50000000);
 
         // BTC Market shouldnt be affected
-        assert_eq!(taker.perp_positions[1], taker_before.perp_positions[1]);
-        assert_eq!(taker.order(1), taker_before.order(1));
+        assert_eq!(taker.perp_positions[1], taker_before_perp_position_1);
+        assert_eq!(*taker.order(1), taker_before_order_1);
 
         let maker = makers_and_referrers.get_ref_mut(&maker_key).unwrap();
         let maker_stats = maker_and_referrer_stats
@@ -5719,8 +5888,8 @@ pub mod fulfill_order {
         assert!(maker.order(1).is_available());
 
         // BTC Market shouldnt be affected
-        assert_eq!(maker.perp_positions[0], maker_before.perp_positions[0]);
-        assert_eq!(maker.order(0), maker_before.order(0));
+        assert_eq!(maker.perp_positions[0], maker_before_perp_position_0);
+        assert_eq!(*maker.order(0), maker_before_order_0);
 
         let market_after = market_map.get_ref(&0).unwrap();
         assert_eq!(market_after.amm.base_asset_amount_with_amm, 0);
@@ -5825,8 +5994,23 @@ pub mod fulfill_order {
         create_anchor_account_info!(spot_market, SpotMarket, spot_market_account_info);
         let spot_market_map = SpotMarketMap::load_one(&spot_market_account_info, true).unwrap();
 
-        let mut taker = User {
-            orders: get_orders(Order {
+        let taker_data = crate::state::user::TestUser::new(
+            User {
+                perp_positions: get_positions(PerpPosition {
+                    market_index: 0,
+                    open_orders: 1,
+                    open_bids: BASE_PRECISION_I64,
+                    ..PerpPosition::default()
+                }),
+                spot_positions: get_spot_positions(SpotPosition {
+                    market_index: 0,
+                    balance_type: SpotBalanceType::Deposit,
+                    scaled_balance: 100 * SPOT_BALANCE_PRECISION_U64,
+                    ..SpotPosition::default()
+                }),
+                ..User::default()
+            },
+            &get_orders(Order {
                 market_index: 0,
                 status: OrderStatus::Open,
                 order_type: OrderType::Market,
@@ -5839,35 +6023,14 @@ pub mod fulfill_order {
                 price: 150 * PRICE_PRECISION_U64,
                 ..Order::default()
             }),
-            perp_positions: get_positions(PerpPosition {
-                market_index: 0,
-                open_orders: 1,
-                open_bids: BASE_PRECISION_I64,
-                ..PerpPosition::default()
-            }),
-            spot_positions: get_spot_positions(SpotPosition {
-                market_index: 0,
-                balance_type: SpotBalanceType::Deposit,
-                scaled_balance: 100 * SPOT_BALANCE_PRECISION_U64,
-                ..SpotPosition::default()
-            }),
-            ..User::default()
-        };
+        );
+        let mut taker = taker_data.view();
 
         let maker_key = Pubkey::new_unique();
         let maker_authority =
             Pubkey::from_str("J83w4HKfqxwcq3BEMMkPFSppX3gqekLyLJBexebFVkix").unwrap();
         let mut maker = User {
             authority: maker_authority,
-            orders: get_orders(Order {
-                market_index: 0,
-                post_only: true,
-                order_type: OrderType::Limit,
-                direction: PositionDirection::Short,
-                base_asset_amount: BASE_PRECISION_U64 / 2,
-                price: 100_010_000 * PRICE_PRECISION_U64 / 1_000_000, // .01 worse than amm
-                ..Order::default()
-            }),
             perp_positions: get_positions(PerpPosition {
                 market_index: 0,
                 open_orders: 1,
@@ -5882,7 +6045,16 @@ pub mod fulfill_order {
             }),
             ..User::default()
         };
-        create_anchor_account_info!(maker, &maker_key, User, maker_account_info);
+        let maker_orders = get_orders(Order {
+                market_index: 0,
+                post_only: true,
+                order_type: OrderType::Limit,
+                direction: PositionDirection::Short,
+                base_asset_amount: BASE_PRECISION_U64 / 2,
+                price: 100_010_000 * PRICE_PRECISION_U64 / 1_000_000, // .01 worse than amm
+                ..Order::default()
+            });
+        create_anchor_user_account_info!(maker, maker_orders, &maker_key, maker_account_info);
         let makers_and_referrers = UserMap::load_one(&maker_account_info).unwrap();
 
         let fee_structure = get_fee_structure();
@@ -6038,8 +6210,23 @@ pub mod fulfill_order {
         create_anchor_account_info!(spot_market, SpotMarket, spot_market_account_info);
         let spot_market_map = SpotMarketMap::load_one(&spot_market_account_info, true).unwrap();
 
-        let mut taker = User {
-            orders: get_orders(Order {
+        let taker_data = crate::state::user::TestUser::new(
+            User {
+                perp_positions: get_positions(PerpPosition {
+                    market_index: 0,
+                    open_orders: 1,
+                    open_bids: BASE_PRECISION_I64,
+                    ..PerpPosition::default()
+                }),
+                spot_positions: get_spot_positions(SpotPosition {
+                    market_index: 0,
+                    balance_type: SpotBalanceType::Deposit,
+                    scaled_balance: 100 * SPOT_BALANCE_PRECISION_U64,
+                    ..SpotPosition::default()
+                }),
+                ..User::default()
+            },
+            &get_orders(Order {
                 market_index: 0,
                 status: OrderStatus::Open,
                 order_type: OrderType::Market,
@@ -6052,22 +6239,11 @@ pub mod fulfill_order {
                 price: 150 * PRICE_PRECISION_U64,
                 ..Order::default()
             }),
-            perp_positions: get_positions(PerpPosition {
-                market_index: 0,
-                open_orders: 1,
-                open_bids: BASE_PRECISION_I64,
-                ..PerpPosition::default()
-            }),
-            spot_positions: get_spot_positions(SpotPosition {
-                market_index: 0,
-                balance_type: SpotBalanceType::Deposit,
-                scaled_balance: 100 * SPOT_BALANCE_PRECISION_U64,
-                ..SpotPosition::default()
-            }),
-            ..User::default()
-        };
+        );
+        let mut taker = taker_data.view();
 
-        let mut filler = User::default();
+        let filler_data = crate::state::user::TestUser::from_header(User::default());
+        let mut filler = filler_data.view();
         let fee_structure = get_fee_structure();
         let (taker_key, _, filler_key) = get_user_keys();
 
@@ -6138,6 +6314,7 @@ pub mod fill_order {
     use crate::controller::orders::fill_perp_order;
     use crate::controller::position::PositionDirection;
     use crate::create_anchor_account_info;
+    use crate::create_anchor_user_account_info;
     use crate::math::constants::{
         AMM_RESERVE_PRECISION, BASE_PRECISION_I64, BASE_PRECISION_U64, PEG_PRECISION,
         PRICE_PRECISION_I64, PRICE_PRECISION_U64, SPOT_BALANCE_PRECISION_U64,
@@ -6242,20 +6419,6 @@ pub mod fill_order {
 
         let mut user = User {
             authority: Pubkey::from_str("My11111111111111111111111111111111111111111").unwrap(), // different authority than filler
-            orders: get_orders(Order {
-                market_index: 0,
-                order_id: 1,
-                status: OrderStatus::Open,
-                order_type: OrderType::Market,
-                direction: PositionDirection::Long,
-                base_asset_amount: BASE_PRECISION_U64,
-                slot: 0,
-                auction_start_price: 0,
-                auction_end_price: 50 * PRICE_PRECISION_I64,
-                auction_duration: 5,
-                price: 50 * PRICE_PRECISION_U64,
-                ..Order::default()
-            }),
             perp_positions: get_positions(PerpPosition {
                 market_index: 0,
                 open_orders: 1,
@@ -6270,7 +6433,21 @@ pub mod fill_order {
             }),
             ..User::default()
         };
-        create_anchor_account_info!(user, User, user_account_info);
+        let user_orders = get_orders(Order {
+                market_index: 0,
+                order_id: 1,
+                status: OrderStatus::Open,
+                order_type: OrderType::Market,
+                direction: PositionDirection::Long,
+                base_asset_amount: BASE_PRECISION_U64,
+                slot: 0,
+                auction_start_price: 0,
+                auction_end_price: 50 * PRICE_PRECISION_I64,
+                auction_duration: 5,
+                price: 50 * PRICE_PRECISION_U64,
+                ..Order::default()
+            });
+        create_anchor_user_account_info!(user, user_orders, user_account_info);
         let user_account_loader: AccountLoader<User> =
             AccountLoader::try_from(&user_account_info).unwrap();
 
@@ -6283,18 +6460,6 @@ pub mod fill_order {
             Pubkey::from_str("J83w4HKfqxwcq3BEMMkPFSppX3gqekLyLJBexebFVkix").unwrap();
         let mut maker = User {
             authority: maker_authority,
-            orders: get_orders(Order {
-                market_index: 0,
-                order_id: 1,
-                status: OrderStatus::Open,
-                order_type: OrderType::Limit,
-                direction: PositionDirection::Short,
-                base_asset_amount: BASE_PRECISION_U64,
-                slot: 0,
-                price: 50 * PRICE_PRECISION_U64,
-                post_only: true,
-                ..Order::default()
-            }),
             perp_positions: get_positions(PerpPosition {
                 market_index: 0,
                 open_orders: 1,
@@ -6309,7 +6474,19 @@ pub mod fill_order {
             }),
             ..User::default()
         };
-        create_anchor_account_info!(maker, &maker_key, User, maker_account_info);
+        let maker_orders = get_orders(Order {
+                market_index: 0,
+                order_id: 1,
+                status: OrderStatus::Open,
+                order_type: OrderType::Limit,
+                direction: PositionDirection::Short,
+                base_asset_amount: BASE_PRECISION_U64,
+                slot: 0,
+                price: 50 * PRICE_PRECISION_U64,
+                post_only: true,
+                ..Order::default()
+            });
+        create_anchor_user_account_info!(maker, maker_orders, &maker_key, maker_account_info);
         let makers_and_referrers = UserMap::load_one(&maker_account_info).unwrap();
 
         let mut maker_stats = UserStats {
@@ -6443,21 +6620,6 @@ pub mod fill_order {
 
         let mut user = User {
             authority: Pubkey::from_str("My11111111111111111111111111111111111111111").unwrap(), // different authority than filler
-            orders: get_orders(Order {
-                market_index: 0,
-                order_id: 1,
-                status: OrderStatus::Open,
-                order_type: OrderType::Market,
-                direction: PositionDirection::Long,
-                market_type: MarketType::Perp,
-                base_asset_amount: BASE_PRECISION_U64,
-                slot: 0,
-                auction_start_price: 0,
-                auction_end_price: 100 * PRICE_PRECISION_I64,
-                auction_duration: 5,
-                price: 100 * PRICE_PRECISION_U64,
-                ..Order::default()
-            }),
             perp_positions: get_positions(PerpPosition {
                 market_index: 0,
                 open_orders: 1,
@@ -6472,7 +6634,22 @@ pub mod fill_order {
             }),
             ..User::default()
         };
-        create_anchor_account_info!(user, User, user_account_info);
+        let user_orders = get_orders(Order {
+                market_index: 0,
+                order_id: 1,
+                status: OrderStatus::Open,
+                order_type: OrderType::Market,
+                direction: PositionDirection::Long,
+                market_type: MarketType::Perp,
+                base_asset_amount: BASE_PRECISION_U64,
+                slot: 0,
+                auction_start_price: 0,
+                auction_end_price: 100 * PRICE_PRECISION_I64,
+                auction_duration: 5,
+                price: 100 * PRICE_PRECISION_U64,
+                ..Order::default()
+            });
+        create_anchor_user_account_info!(user, user_orders, user_account_info);
         let user_account_loader: AccountLoader<User> =
             AccountLoader::try_from(&user_account_info).unwrap();
 
@@ -6486,19 +6663,6 @@ pub mod fill_order {
         let maker_order_id = 1;
         let mut maker = User {
             authority: maker_authority,
-            orders: get_orders(Order {
-                market_index: 0,
-                order_id: maker_order_id,
-                status: OrderStatus::Open,
-                order_type: OrderType::Limit,
-                market_type: MarketType::Perp,
-                direction: PositionDirection::Short,
-                base_asset_amount: BASE_PRECISION_U64,
-                slot: 0,
-                price: 100 * PRICE_PRECISION_U64,
-                post_only: true,
-                ..Order::default()
-            }),
             perp_positions: get_positions(PerpPosition {
                 market_index: 0,
                 open_orders: 1,
@@ -6513,7 +6677,20 @@ pub mod fill_order {
             }),
             ..User::default()
         };
-        create_anchor_account_info!(maker, &maker_key, User, maker_account_info);
+        let maker_orders = get_orders(Order {
+                market_index: 0,
+                order_id: maker_order_id,
+                status: OrderStatus::Open,
+                order_type: OrderType::Limit,
+                market_type: MarketType::Perp,
+                direction: PositionDirection::Short,
+                base_asset_amount: BASE_PRECISION_U64,
+                slot: 0,
+                price: 100 * PRICE_PRECISION_U64,
+                post_only: true,
+                ..Order::default()
+            });
+        create_anchor_user_account_info!(maker, maker_orders, &maker_key, maker_account_info);
         let makers_and_referrers = UserMap::load_one(&maker_account_info).unwrap();
 
         let mut maker_stats = UserStats {
@@ -6609,21 +6786,6 @@ pub mod fill_order {
 
         let mut user = User {
             authority: Pubkey::from_str("My11111111111111111111111111111111111111111").unwrap(),
-            orders: get_orders(Order {
-                market_index: 0,
-                order_id: 1,
-                status: OrderStatus::Open,
-                order_type: OrderType::Market,
-                direction: PositionDirection::Long,
-                base_asset_amount: BASE_PRECISION_U64,
-                slot: 0,
-                auction_start_price: 0,
-                auction_end_price: 102 * PRICE_PRECISION_I64,
-                auction_duration: 5,
-                price: 102 * PRICE_PRECISION_U64,
-                max_ts: 10,
-                ..Order::default()
-            }),
             perp_positions: get_positions(PerpPosition {
                 market_index: 0,
                 open_orders: 1,
@@ -6638,7 +6800,22 @@ pub mod fill_order {
             }),
             ..User::default()
         };
-        create_anchor_account_info!(user, User, user_account_info);
+        let user_orders = get_orders(Order {
+                market_index: 0,
+                order_id: 1,
+                status: OrderStatus::Open,
+                order_type: OrderType::Market,
+                direction: PositionDirection::Long,
+                base_asset_amount: BASE_PRECISION_U64,
+                slot: 0,
+                auction_start_price: 0,
+                auction_end_price: 102 * PRICE_PRECISION_I64,
+                auction_duration: 5,
+                price: 102 * PRICE_PRECISION_U64,
+                max_ts: 10,
+                ..Order::default()
+            });
+        create_anchor_user_account_info!(user, user_orders, user_account_info);
         let user_account_loader: AccountLoader<User> =
             AccountLoader::try_from(&user_account_info).unwrap();
 
@@ -6689,7 +6866,10 @@ pub mod fill_order {
         )
         .unwrap();
 
-        let user_after = user_account_loader.load().unwrap();
+        let user_after = {
+            use crate::state::user::UserLoader;
+            user_account_loader.load_user().unwrap()
+        };
         assert_eq!(base_asset_amount, 0);
         assert_eq!(user_after.perp_positions[0].open_orders, 0);
         assert_eq!(user_after.perp_positions[0].open_bids, 0);
@@ -6782,20 +6962,6 @@ pub mod fill_order {
         let spot_market_map = SpotMarketMap::load_one(&spot_market_account_info, true).unwrap();
 
         let mut user = User {
-            orders: get_orders(Order {
-                market_index: 0,
-                order_id: 1,
-                status: OrderStatus::Open,
-                order_type: OrderType::Market,
-                direction: PositionDirection::Long,
-                base_asset_amount: BASE_PRECISION_U64,
-                slot: 0,
-                auction_start_price: 0,
-                auction_end_price: 102 * PRICE_PRECISION_I64,
-                auction_duration: 5,
-                price: 102 * PRICE_PRECISION_U64,
-                ..Order::default()
-            }),
             perp_positions: get_positions(PerpPosition {
                 market_index: 0,
                 open_orders: 1,
@@ -6810,7 +6976,21 @@ pub mod fill_order {
             }),
             ..User::default()
         };
-        create_anchor_account_info!(user, User, user_account_info);
+        let user_orders = get_orders(Order {
+                market_index: 0,
+                order_id: 1,
+                status: OrderStatus::Open,
+                order_type: OrderType::Market,
+                direction: PositionDirection::Long,
+                base_asset_amount: BASE_PRECISION_U64,
+                slot: 0,
+                auction_start_price: 0,
+                auction_end_price: 102 * PRICE_PRECISION_I64,
+                auction_duration: 5,
+                price: 102 * PRICE_PRECISION_U64,
+                ..Order::default()
+            });
+        create_anchor_user_account_info!(user, user_orders, user_account_info);
         let user_account_loader: AccountLoader<User> =
             AccountLoader::try_from(&user_account_info).unwrap();
 
@@ -6864,6 +7044,7 @@ pub mod force_cancel_orders {
     use crate::controller::orders::force_cancel_orders;
     use crate::controller::position::PositionDirection;
     use crate::create_anchor_account_info;
+    use crate::create_anchor_user_account_info;
     use crate::math::constants::{
         AMM_RESERVE_PRECISION, BASE_PRECISION_I64, BASE_PRECISION_U64, LAMPORTS_PER_SOL_I64,
         LAMPORTS_PER_SOL_U64, PEG_PRECISION, PRICE_PRECISION_U64, SPOT_BALANCE_PRECISION,
@@ -7038,7 +7219,6 @@ pub mod force_cancel_orders {
 
         let mut user = User {
             authority: Pubkey::from_str("My11111111111111111111111111111111111111111").unwrap(), // different authority than filler
-            orders,
             perp_positions: get_positions(PerpPosition {
                 market_index: 0,
                 base_asset_amount: BASE_PRECISION_I64,
@@ -7058,7 +7238,8 @@ pub mod force_cancel_orders {
             }),
             ..User::default()
         };
-        create_anchor_account_info!(user, User, user_account_info);
+        let user_orders = orders;
+        create_anchor_user_account_info!(user, user_orders, user_account_info);
         let user_account_loader: AccountLoader<User> =
             AccountLoader::try_from(&user_account_info).unwrap();
 
@@ -7092,7 +7273,10 @@ pub mod force_cancel_orders {
         )
         .unwrap();
 
-        let user = user_account_loader.load().unwrap();
+        let user = {
+            use crate::state::user::UserLoader;
+            user_account_loader.load_user().unwrap()
+        };
         assert!(user.order(0).is_available());
         assert!(!user.order(1).is_available());
         assert!(user.order(2).is_available());
@@ -7111,6 +7295,7 @@ pub mod cancel_reduce_only_trigger_orders {
     use crate::controller::orders::cancel_reduce_only_trigger_orders;
     use crate::controller::position::PositionDirection;
     use crate::create_anchor_account_info;
+    use crate::create_anchor_user_account_info;
     use crate::math::constants::{
         AMM_RESERVE_PRECISION, BASE_PRECISION_I64, LAMPORTS_PER_SOL_I64, PEG_PRECISION,
         SPOT_BALANCE_PRECISION, SPOT_BALANCE_PRECISION_U64, SPOT_CUMULATIVE_INTEREST_PRECISION,
@@ -7278,28 +7463,31 @@ pub mod cancel_reduce_only_trigger_orders {
             ..Order::default()
         };
 
-        let mut user = User {
-            authority: Pubkey::from_str("My11111111111111111111111111111111111111111").unwrap(), // different authority than filler
-            orders,
-            perp_positions: get_positions(PerpPosition {
-                market_index: 0,
-                base_asset_amount: BASE_PRECISION_I64,
-                open_orders: 2,
-                open_bids: 100 * BASE_PRECISION_I64,
-                open_asks: -BASE_PRECISION_I64,
-                ..PerpPosition::default()
-            }),
-            spot_positions: get_spot_positions(SpotPosition {
-                market_index: 1,
-                balance_type: SpotBalanceType::Deposit,
-                scaled_balance: SPOT_BALANCE_PRECISION_U64,
-                open_orders: 2,
-                open_bids: 100 * LAMPORTS_PER_SOL_I64,
-                open_asks: -LAMPORTS_PER_SOL_I64,
-                ..SpotPosition::default()
-            }),
-            ..User::default()
-        };
+        let user_data = crate::state::user::TestUser::new(
+            User {
+                authority: Pubkey::from_str("My11111111111111111111111111111111111111111").unwrap(), // different authority than filler
+                perp_positions: get_positions(PerpPosition {
+                    market_index: 0,
+                    base_asset_amount: BASE_PRECISION_I64,
+                    open_orders: 2,
+                    open_bids: 100 * BASE_PRECISION_I64,
+                    open_asks: -BASE_PRECISION_I64,
+                    ..PerpPosition::default()
+                }),
+                spot_positions: get_spot_positions(SpotPosition {
+                    market_index: 1,
+                    balance_type: SpotBalanceType::Deposit,
+                    scaled_balance: SPOT_BALANCE_PRECISION_U64,
+                    open_orders: 2,
+                    open_bids: 100 * LAMPORTS_PER_SOL_I64,
+                    open_asks: -LAMPORTS_PER_SOL_I64,
+                    ..SpotPosition::default()
+                }),
+                ..User::default()
+            },
+            &orders,
+        );
+        let mut user = user_data.view();
 
         cancel_reduce_only_trigger_orders(
             &mut user,
@@ -7388,7 +7576,10 @@ pub mod get_maker_orders_info {
     use crate::state::user::{OrderStatus, OrderType, SpotPosition, User};
     use crate::state::user_map::UserMap;
     use crate::test_utils::{get_orders, get_positions, get_pyth_price, get_spot_positions};
-    use crate::{create_anchor_account_info, get_orders, QUOTE_PRECISION_I64};
+    use crate::{
+        create_anchor_account_info, create_anchor_user_account_info, get_orders,
+        QUOTE_PRECISION_I64,
+    };
 
     use super::*;
 
@@ -7476,9 +7667,24 @@ pub mod get_maker_orders_info {
         let taker_key = Pubkey::default();
         let taker_authority =
             Pubkey::from_str("My11111111111111111111111111111111111111111").unwrap();
-        let user = User {
-            authority: taker_authority,
-            orders: get_orders(Order {
+        let user_data = crate::state::user::TestUser::new(
+            User {
+                authority: taker_authority,
+                perp_positions: get_positions(PerpPosition {
+                    market_index: 0,
+                    open_orders: 1,
+                    open_bids: BASE_PRECISION_I64,
+                    ..PerpPosition::default()
+                }),
+                spot_positions: get_spot_positions(SpotPosition {
+                    market_index: 0,
+                    balance_type: SpotBalanceType::Deposit,
+                    scaled_balance: 100 * SPOT_BALANCE_PRECISION_U64,
+                    ..SpotPosition::default()
+                }),
+                ..User::default()
+            },
+            &get_orders(Order {
                 market_index: 0,
                 order_id: 1,
                 status: OrderStatus::Open,
@@ -7492,20 +7698,8 @@ pub mod get_maker_orders_info {
                 price: 50 * PRICE_PRECISION_U64,
                 ..Order::default()
             }),
-            perp_positions: get_positions(PerpPosition {
-                market_index: 0,
-                open_orders: 1,
-                open_bids: BASE_PRECISION_I64,
-                ..PerpPosition::default()
-            }),
-            spot_positions: get_spot_positions(SpotPosition {
-                market_index: 0,
-                balance_type: SpotBalanceType::Deposit,
-                scaled_balance: 100 * SPOT_BALANCE_PRECISION_U64,
-                ..SpotPosition::default()
-            }),
-            ..User::default()
-        };
+        );
+        let mut user = user_data.view();
 
         let mut maker_orders = [Order::default(); 32];
         maker_orders[0] = Order {
@@ -7534,7 +7728,6 @@ pub mod get_maker_orders_info {
         };
 
         let mut maker = User {
-            orders: maker_orders,
             perp_positions: get_positions(PerpPosition {
                 market_index: 0,
                 open_orders: 2,
@@ -7549,13 +7742,15 @@ pub mod get_maker_orders_info {
             }),
             ..User::default()
         };
+        let maker_orders = maker_orders;
         let maker_key = Pubkey::from_str("My11111111111111111111111111111111111111113").unwrap();
-        create_anchor_account_info!(maker, &maker_key, User, maker_account_info);
+        create_anchor_user_account_info!(maker, maker_orders, &maker_key, maker_account_info);
 
         let makers_and_referrers = UserMap::load_one(&maker_account_info).unwrap();
 
         let filler_key = Pubkey::from_str("My11111111111111111111111111111111111111111").unwrap();
-        let mut filler = User::default();
+        let filler_data = crate::state::user::TestUser::from_header(User::default());
+        let mut filler = filler_data.view();
 
         let maker_order_price_and_indexes = get_maker_orders_info(
             &market_map,
@@ -7666,9 +7861,24 @@ pub mod get_maker_orders_info {
         let taker_key = Pubkey::default();
         let taker_authority =
             Pubkey::from_str("My11111111111111111111111111111111111111111").unwrap();
-        let user = User {
-            authority: taker_authority,
-            orders: get_orders(Order {
+        let user_data = crate::state::user::TestUser::new(
+            User {
+                authority: taker_authority,
+                perp_positions: get_positions(PerpPosition {
+                    market_index: 0,
+                    open_orders: 1,
+                    open_bids: BASE_PRECISION_I64,
+                    ..PerpPosition::default()
+                }),
+                spot_positions: get_spot_positions(SpotPosition {
+                    market_index: 0,
+                    balance_type: SpotBalanceType::Deposit,
+                    scaled_balance: 100 * SPOT_BALANCE_PRECISION_U64,
+                    ..SpotPosition::default()
+                }),
+                ..User::default()
+            },
+            &get_orders(Order {
                 market_index: 0,
                 order_id: 1,
                 status: OrderStatus::Open,
@@ -7682,20 +7892,8 @@ pub mod get_maker_orders_info {
                 price: 100 * PRICE_PRECISION_U64,
                 ..Order::default()
             }),
-            perp_positions: get_positions(PerpPosition {
-                market_index: 0,
-                open_orders: 1,
-                open_bids: BASE_PRECISION_I64,
-                ..PerpPosition::default()
-            }),
-            spot_positions: get_spot_positions(SpotPosition {
-                market_index: 0,
-                balance_type: SpotBalanceType::Deposit,
-                scaled_balance: 100 * SPOT_BALANCE_PRECISION_U64,
-                ..SpotPosition::default()
-            }),
-            ..User::default()
-        };
+        );
+        let mut user = user_data.view();
 
         let mut maker_orders = [Order::default(); 32];
         maker_orders[0] = Order {
@@ -7725,7 +7923,6 @@ pub mod get_maker_orders_info {
         };
 
         let mut maker = User {
-            orders: maker_orders,
             perp_positions: get_positions(PerpPosition {
                 market_index: 0,
                 open_orders: 2,
@@ -7740,13 +7937,15 @@ pub mod get_maker_orders_info {
             }),
             ..User::default()
         };
+        let maker_orders = maker_orders;
         let maker_key = Pubkey::from_str("My11111111111111111111111111111111111111113").unwrap();
-        create_anchor_account_info!(maker, &maker_key, User, maker_account_info);
+        create_anchor_user_account_info!(maker, maker_orders, &maker_key, maker_account_info);
 
         let makers_and_referrers = UserMap::load_one(&maker_account_info).unwrap();
 
         let filler_key = Pubkey::from_str("My11111111111111111111111111111111111111111").unwrap();
-        let mut filler = User::default();
+        let filler_data = crate::state::user::TestUser::from_header(User::default());
+        let mut filler = filler_data.view();
 
         let maker_order_price_and_indexes = get_maker_orders_info(
             &market_map,
@@ -7857,9 +8056,24 @@ pub mod get_maker_orders_info {
         let taker_key = Pubkey::default();
         let taker_authority =
             Pubkey::from_str("My11111111111111111111111111111111111111111").unwrap();
-        let user = User {
-            authority: taker_authority,
-            orders: get_orders(Order {
+        let user_data = crate::state::user::TestUser::new(
+            User {
+                authority: taker_authority,
+                perp_positions: get_positions(PerpPosition {
+                    market_index: 0,
+                    open_orders: 1,
+                    open_bids: BASE_PRECISION_I64,
+                    ..PerpPosition::default()
+                }),
+                spot_positions: get_spot_positions(SpotPosition {
+                    market_index: 0,
+                    balance_type: SpotBalanceType::Deposit,
+                    scaled_balance: 100 * SPOT_BALANCE_PRECISION_U64,
+                    ..SpotPosition::default()
+                }),
+                ..User::default()
+            },
+            &get_orders(Order {
                 market_index: 0,
                 order_id: 1,
                 status: OrderStatus::Open,
@@ -7874,20 +8088,8 @@ pub mod get_maker_orders_info {
                 max_ts: 1,
                 ..Order::default()
             }),
-            perp_positions: get_positions(PerpPosition {
-                market_index: 0,
-                open_orders: 1,
-                open_bids: BASE_PRECISION_I64,
-                ..PerpPosition::default()
-            }),
-            spot_positions: get_spot_positions(SpotPosition {
-                market_index: 0,
-                balance_type: SpotBalanceType::Deposit,
-                scaled_balance: 100 * SPOT_BALANCE_PRECISION_U64,
-                ..SpotPosition::default()
-            }),
-            ..User::default()
-        };
+        );
+        let mut user = user_data.view();
 
         let mut maker_orders = [Order::default(); 32];
         maker_orders[0] = Order {
@@ -7904,7 +8106,6 @@ pub mod get_maker_orders_info {
         };
 
         let mut maker = User {
-            orders: maker_orders,
             perp_positions: get_positions(PerpPosition {
                 market_index: 0,
                 base_asset_amount: -BASE_PRECISION_I64,
@@ -7920,13 +8121,15 @@ pub mod get_maker_orders_info {
             }),
             ..User::default()
         };
+        let maker_orders = maker_orders;
         let maker_key = Pubkey::from_str("My11111111111111111111111111111111111111113").unwrap();
-        create_anchor_account_info!(maker, &maker_key, User, maker_account_info);
+        create_anchor_user_account_info!(maker, maker_orders, &maker_key, maker_account_info);
 
         let makers_and_referrers = UserMap::load_one(&maker_account_info).unwrap();
 
         let filler_key = Pubkey::from_str("My11111111111111111111111111111111111111111").unwrap();
-        let mut filler = User::default();
+        let filler_data = crate::state::user::TestUser::from_header(User::default());
+        let mut filler = filler_data.view();
 
         let maker_order_price_and_indexes = get_maker_orders_info(
             &market_map,
@@ -8034,9 +8237,24 @@ pub mod get_maker_orders_info {
         let taker_key = Pubkey::default();
         let taker_authority =
             Pubkey::from_str("My11111111111111111111111111111111111111111").unwrap();
-        let user = User {
-            authority: taker_authority,
-            orders: get_orders(Order {
+        let user_data = crate::state::user::TestUser::new(
+            User {
+                authority: taker_authority,
+                perp_positions: get_positions(PerpPosition {
+                    market_index: 0,
+                    open_orders: 1,
+                    open_bids: BASE_PRECISION_I64,
+                    ..PerpPosition::default()
+                }),
+                spot_positions: get_spot_positions(SpotPosition {
+                    market_index: 0,
+                    balance_type: SpotBalanceType::Deposit,
+                    scaled_balance: 100 * SPOT_BALANCE_PRECISION_U64,
+                    ..SpotPosition::default()
+                }),
+                ..User::default()
+            },
+            &get_orders(Order {
                 market_index: 0,
                 order_id: 1,
                 status: OrderStatus::Open,
@@ -8051,46 +8269,10 @@ pub mod get_maker_orders_info {
                 max_ts: 1,
                 ..Order::default()
             }),
-            perp_positions: get_positions(PerpPosition {
-                market_index: 0,
-                open_orders: 1,
-                open_bids: BASE_PRECISION_I64,
-                ..PerpPosition::default()
-            }),
-            spot_positions: get_spot_positions(SpotPosition {
-                market_index: 0,
-                balance_type: SpotBalanceType::Deposit,
-                scaled_balance: 100 * SPOT_BALANCE_PRECISION_U64,
-                ..SpotPosition::default()
-            }),
-            ..User::default()
-        };
+        );
+        let mut user = user_data.view();
 
         let mut first_maker = User {
-            orders: get_orders!(
-                Order {
-                    market_index: 0,
-                    order_id: 1,
-                    status: OrderStatus::Open,
-                    order_type: OrderType::Limit,
-                    direction: PositionDirection::Short,
-                    base_asset_amount: BASE_PRECISION_U64,
-                    slot: 0,
-                    price: 100 * PRICE_PRECISION_U64,
-                    ..Order::default()
-                },
-                Order {
-                    market_index: 0,
-                    order_id: 1,
-                    status: OrderStatus::Open,
-                    order_type: OrderType::Limit,
-                    direction: PositionDirection::Short,
-                    base_asset_amount: BASE_PRECISION_U64,
-                    slot: 0,
-                    price: 102 * PRICE_PRECISION_U64,
-                    ..Order::default()
-                }
-            ),
             perp_positions: get_positions(PerpPosition {
                 market_index: 0,
                 open_orders: 2,
@@ -8104,40 +8286,35 @@ pub mod get_maker_orders_info {
             }),
             ..User::default()
         };
+        let first_maker_orders = get_orders!(
+            Order {
+                market_index: 0,
+                order_id: 1,
+                status: OrderStatus::Open,
+                order_type: OrderType::Limit,
+                direction: PositionDirection::Short,
+                base_asset_amount: BASE_PRECISION_U64,
+                slot: 0,
+                price: 100 * PRICE_PRECISION_U64,
+                ..Order::default()
+            },
+            Order {
+                market_index: 0,
+                order_id: 1,
+                status: OrderStatus::Open,
+                order_type: OrderType::Limit,
+                direction: PositionDirection::Short,
+                base_asset_amount: BASE_PRECISION_U64,
+                slot: 0,
+                price: 102 * PRICE_PRECISION_U64,
+                ..Order::default()
+            }
+        );
         let first_maker_key =
             Pubkey::from_str("My11111111111111111111111111111111111111113").unwrap();
-        create_anchor_account_info!(
-            first_maker,
-            &first_maker_key,
-            User,
-            first_maker_account_info
-        );
+        create_anchor_user_account_info!(first_maker, first_maker_orders, &first_maker_key, first_maker_account_info);
 
         let mut second_maker = User {
-            orders: get_orders!(
-                Order {
-                    market_index: 0,
-                    order_id: 1,
-                    status: OrderStatus::Open,
-                    order_type: OrderType::Limit,
-                    direction: PositionDirection::Short,
-                    base_asset_amount: BASE_PRECISION_U64,
-                    slot: 0,
-                    price: 101 * PRICE_PRECISION_U64,
-                    ..Order::default()
-                },
-                Order {
-                    market_index: 0,
-                    order_id: 1,
-                    status: OrderStatus::Open,
-                    order_type: OrderType::Limit,
-                    direction: PositionDirection::Short,
-                    base_asset_amount: BASE_PRECISION_U64,
-                    slot: 0,
-                    price: 103 * PRICE_PRECISION_U64,
-                    ..Order::default()
-                }
-            ),
             perp_positions: get_positions(PerpPosition {
                 market_index: 0,
                 open_orders: 2,
@@ -8151,14 +8328,33 @@ pub mod get_maker_orders_info {
             }),
             ..User::default()
         };
+        let second_maker_orders = get_orders!(
+            Order {
+                market_index: 0,
+                order_id: 1,
+                status: OrderStatus::Open,
+                order_type: OrderType::Limit,
+                direction: PositionDirection::Short,
+                base_asset_amount: BASE_PRECISION_U64,
+                slot: 0,
+                price: 101 * PRICE_PRECISION_U64,
+                ..Order::default()
+            },
+            Order {
+                market_index: 0,
+                order_id: 1,
+                status: OrderStatus::Open,
+                order_type: OrderType::Limit,
+                direction: PositionDirection::Short,
+                base_asset_amount: BASE_PRECISION_U64,
+                slot: 0,
+                price: 103 * PRICE_PRECISION_U64,
+                ..Order::default()
+            }
+        );
         let second_maker_key =
             Pubkey::from_str("My11111111111111111111111111111111111111112").unwrap();
-        create_anchor_account_info!(
-            second_maker,
-            &second_maker_key,
-            User,
-            second_maker_account_info
-        );
+        create_anchor_user_account_info!(second_maker, second_maker_orders, &second_maker_key, second_maker_account_info);
 
         let mut makers_and_referrers = UserMap::load_one(&first_maker_account_info).unwrap();
         makers_and_referrers
@@ -8169,7 +8365,8 @@ pub mod get_maker_orders_info {
             .unwrap();
 
         let filler_key = Pubkey::from_str("My11111111111111111111111111111111111111111").unwrap();
-        let mut filler = User::default();
+        let filler_data = crate::state::user::TestUser::from_header(User::default());
+        let mut filler = filler_data.view();
 
         let maker_order_price_and_indexes = get_maker_orders_info(
             &market_map,
@@ -8285,9 +8482,24 @@ pub mod get_maker_orders_info {
         let taker_key = Pubkey::default();
         let taker_authority =
             Pubkey::from_str("My11111111111111111111111111111111111111111").unwrap();
-        let user = User {
-            authority: taker_authority,
-            orders: get_orders(Order {
+        let user_data = crate::state::user::TestUser::new(
+            User {
+                authority: taker_authority,
+                perp_positions: get_positions(PerpPosition {
+                    market_index: 0,
+                    open_orders: 1,
+                    open_bids: BASE_PRECISION_I64,
+                    ..PerpPosition::default()
+                }),
+                spot_positions: get_spot_positions(SpotPosition {
+                    market_index: 0,
+                    balance_type: SpotBalanceType::Deposit,
+                    scaled_balance: 100 * SPOT_BALANCE_PRECISION_U64,
+                    ..SpotPosition::default()
+                }),
+                ..User::default()
+            },
+            &get_orders(Order {
                 market_index: 0,
                 order_id: 1,
                 status: OrderStatus::Open,
@@ -8302,46 +8514,10 @@ pub mod get_maker_orders_info {
                 max_ts: 1,
                 ..Order::default()
             }),
-            perp_positions: get_positions(PerpPosition {
-                market_index: 0,
-                open_orders: 1,
-                open_bids: BASE_PRECISION_I64,
-                ..PerpPosition::default()
-            }),
-            spot_positions: get_spot_positions(SpotPosition {
-                market_index: 0,
-                balance_type: SpotBalanceType::Deposit,
-                scaled_balance: 100 * SPOT_BALANCE_PRECISION_U64,
-                ..SpotPosition::default()
-            }),
-            ..User::default()
-        };
+        );
+        let mut user = user_data.view();
 
         let mut first_maker = User {
-            orders: get_orders!(
-                Order {
-                    market_index: 0,
-                    order_id: 1,
-                    status: OrderStatus::Open,
-                    order_type: OrderType::Limit,
-                    direction: PositionDirection::Short,
-                    base_asset_amount: BASE_PRECISION_U64,
-                    slot: 0,
-                    price: 100 * PRICE_PRECISION_U64,
-                    ..Order::default()
-                },
-                Order {
-                    market_index: 0,
-                    order_id: 2,
-                    status: OrderStatus::Open,
-                    order_type: OrderType::Limit,
-                    direction: PositionDirection::Short,
-                    base_asset_amount: BASE_PRECISION_U64,
-                    slot: 0,
-                    price: 102 * PRICE_PRECISION_U64,
-                    ..Order::default()
-                }
-            ),
             perp_positions: get_positions(PerpPosition {
                 market_index: 0,
                 open_orders: 2,
@@ -8355,19 +8531,39 @@ pub mod get_maker_orders_info {
             }),
             ..User::default()
         };
+        let first_maker_orders = get_orders!(
+            Order {
+                market_index: 0,
+                order_id: 1,
+                status: OrderStatus::Open,
+                order_type: OrderType::Limit,
+                direction: PositionDirection::Short,
+                base_asset_amount: BASE_PRECISION_U64,
+                slot: 0,
+                price: 100 * PRICE_PRECISION_U64,
+                ..Order::default()
+            },
+            Order {
+                market_index: 0,
+                order_id: 2,
+                status: OrderStatus::Open,
+                order_type: OrderType::Limit,
+                direction: PositionDirection::Short,
+                base_asset_amount: BASE_PRECISION_U64,
+                slot: 0,
+                price: 102 * PRICE_PRECISION_U64,
+                ..Order::default()
+            }
+        );
         let first_maker_key =
             Pubkey::from_str("My11111111111111111111111111111111111111113").unwrap();
-        create_anchor_account_info!(
-            first_maker,
-            &first_maker_key,
-            User,
-            first_maker_account_info
-        );
+        create_anchor_user_account_info!(first_maker, first_maker_orders, &first_maker_key, first_maker_account_info);
 
         let makers_and_referrers = UserMap::load_one(&first_maker_account_info).unwrap();
 
         let filler_key = Pubkey::from_str("My11111111111111111111111111111111111111111").unwrap();
-        let mut filler = User::default();
+        let filler_data = crate::state::user::TestUser::from_header(User::default());
+        let mut filler = filler_data.view();
 
         let maker_order_price_and_indexes = get_maker_orders_info(
             &market_map,
@@ -8478,9 +8674,24 @@ pub mod get_maker_orders_info {
         let taker_key = Pubkey::default();
         let taker_authority =
             Pubkey::from_str("My11111111111111111111111111111111111111111").unwrap();
-        let user = User {
-            authority: taker_authority,
-            orders: get_orders(Order {
+        let user_data = crate::state::user::TestUser::new(
+            User {
+                authority: taker_authority,
+                perp_positions: get_positions(PerpPosition {
+                    market_index: 0,
+                    open_orders: 1,
+                    open_bids: BASE_PRECISION_I64,
+                    ..PerpPosition::default()
+                }),
+                spot_positions: get_spot_positions(SpotPosition {
+                    market_index: 0,
+                    balance_type: SpotBalanceType::Deposit,
+                    scaled_balance: 100 * SPOT_BALANCE_PRECISION_U64,
+                    ..SpotPosition::default()
+                }),
+                ..User::default()
+            },
+            &get_orders(Order {
                 market_index: 0,
                 order_id: 1,
                 status: OrderStatus::Open,
@@ -8495,33 +8706,10 @@ pub mod get_maker_orders_info {
                 max_ts: 1,
                 ..Order::default()
             }),
-            perp_positions: get_positions(PerpPosition {
-                market_index: 0,
-                open_orders: 1,
-                open_bids: BASE_PRECISION_I64,
-                ..PerpPosition::default()
-            }),
-            spot_positions: get_spot_positions(SpotPosition {
-                market_index: 0,
-                balance_type: SpotBalanceType::Deposit,
-                scaled_balance: 100 * SPOT_BALANCE_PRECISION_U64,
-                ..SpotPosition::default()
-            }),
-            ..User::default()
-        };
+        );
+        let mut user = user_data.view();
 
         let mut first_maker = User {
-            orders: [Order {
-                market_index: 0,
-                order_id: 1,
-                status: OrderStatus::Open,
-                order_type: OrderType::Limit,
-                direction: PositionDirection::Short,
-                base_asset_amount: BASE_PRECISION_U64,
-                slot: 0,
-                price: 100 * PRICE_PRECISION_U64,
-                ..Order::default()
-            }; 32],
             perp_positions: get_positions(PerpPosition {
                 market_index: 0,
                 open_orders: 2,
@@ -8535,27 +8723,22 @@ pub mod get_maker_orders_info {
             }),
             ..User::default()
         };
+        let first_maker_orders = [Order {
+            market_index: 0,
+            order_id: 1,
+            status: OrderStatus::Open,
+            order_type: OrderType::Limit,
+            direction: PositionDirection::Short,
+            base_asset_amount: BASE_PRECISION_U64,
+            slot: 0,
+            price: 100 * PRICE_PRECISION_U64,
+            ..Order::default()
+        }; 32];
         let first_maker_key =
             Pubkey::from_str("My11111111111111111111111111111111111111113").unwrap();
-        create_anchor_account_info!(
-            first_maker,
-            &first_maker_key,
-            User,
-            first_maker_account_info
-        );
+        create_anchor_user_account_info!(first_maker, first_maker_orders, &first_maker_key, first_maker_account_info);
 
         let mut second_maker = User {
-            orders: [Order {
-                market_index: 0,
-                order_id: 1,
-                status: OrderStatus::Open,
-                order_type: OrderType::Limit,
-                direction: PositionDirection::Short,
-                base_asset_amount: BASE_PRECISION_U64,
-                slot: 0,
-                price: 101 * PRICE_PRECISION_U64,
-                ..Order::default()
-            }; 32],
             perp_positions: get_positions(PerpPosition {
                 market_index: 0,
                 open_orders: 2,
@@ -8569,14 +8752,20 @@ pub mod get_maker_orders_info {
             }),
             ..User::default()
         };
+        let second_maker_orders = [Order {
+            market_index: 0,
+            order_id: 1,
+            status: OrderStatus::Open,
+            order_type: OrderType::Limit,
+            direction: PositionDirection::Short,
+            base_asset_amount: BASE_PRECISION_U64,
+            slot: 0,
+            price: 101 * PRICE_PRECISION_U64,
+            ..Order::default()
+        }; 32];
         let second_maker_key =
             Pubkey::from_str("My11111111111111111111111111111111111111112").unwrap();
-        create_anchor_account_info!(
-            second_maker,
-            &second_maker_key,
-            User,
-            second_maker_account_info
-        );
+        create_anchor_user_account_info!(second_maker, second_maker_orders, &second_maker_key, second_maker_account_info);
 
         let mut makers_and_referrers = UserMap::load_one(&first_maker_account_info).unwrap();
         makers_and_referrers
@@ -8587,7 +8776,8 @@ pub mod get_maker_orders_info {
             .unwrap();
 
         let filler_key = Pubkey::from_str("My11111111111111111111111111111111111111111").unwrap();
-        let mut filler = User::default();
+        let filler_data = crate::state::user::TestUser::from_header(User::default());
+        let mut filler = filler_data.view();
 
         let maker_order_price_and_indexes = get_maker_orders_info(
             &market_map,

@@ -415,7 +415,7 @@ mod calculate_margin_requirement_and_total_collateral {
     use crate::state::pyth_lazer_oracle::PythLazerOracle;
     use crate::state::spot_market::{SpotBalanceType, SpotMarket};
     use crate::state::spot_market_map::SpotMarketMap;
-    use crate::state::user::{Order, PerpPosition, SpotPosition, User};
+    use crate::state::user::{PerpPosition, SpotPosition, User};
     use crate::test_utils::{get_positions, get_pyth_price};
     use crate::PRICE_PRECISION_I64;
 
@@ -486,7 +486,6 @@ mod calculate_margin_requirement_and_total_collateral {
             ..SpotPosition::default()
         };
         let user = User {
-            orders: [Order::default(); 32],
             perp_positions: [PerpPosition::default(); 8],
             spot_positions,
             ..User::default()
@@ -576,7 +575,6 @@ mod calculate_margin_requirement_and_total_collateral {
             ..SpotPosition::default()
         };
         let user = User {
-            orders: [Order::default(); 32],
             perp_positions: [PerpPosition::default(); 8],
             spot_positions,
             ..User::default()
@@ -669,7 +667,6 @@ mod calculate_margin_requirement_and_total_collateral {
             ..SpotPosition::default()
         };
         let user = User {
-            orders: [Order::default(); 32],
             perp_positions: [PerpPosition::default(); 8],
             spot_positions,
             ..User::default()
@@ -780,7 +777,6 @@ mod calculate_margin_requirement_and_total_collateral {
         };
 
         let user = User {
-            orders: [Order::default(); 32],
             perp_positions: get_positions(PerpPosition {
                 market_index: 0,
                 base_asset_amount: 100 * BASE_PRECISION_I64,
@@ -869,7 +865,6 @@ mod calculate_margin_requirement_and_total_collateral {
         };
 
         let user = User {
-            orders: [Order::default(); 32],
             spot_positions,
             max_margin_ratio: MARGIN_PRECISION / 2, // 2x leverage
             ..User::default()
@@ -977,7 +972,6 @@ mod calculate_margin_requirement_and_total_collateral {
         };
 
         let user = User {
-            orders: [Order::default(); 32],
             perp_positions: get_positions(PerpPosition {
                 market_index: 0,
                 base_asset_amount: 100 * BASE_PRECISION_I64,
@@ -1054,7 +1048,6 @@ mod calculate_margin_requirement_and_total_collateral {
         };
 
         let user = User {
-            orders: [Order::default(); 32],
             spot_positions,
             ..User::default()
         };
@@ -1156,7 +1149,6 @@ mod calculate_margin_requirement_and_total_collateral {
         };
 
         let user = User {
-            orders: [Order::default(); 32],
             perp_positions: get_positions(PerpPosition {
                 market_index: 0,
                 base_asset_amount: 100 * BASE_PRECISION_I64,
@@ -1285,7 +1277,6 @@ mod calculate_margin_requirement_and_total_collateral {
 
         // Baseline: no custom ratios → maintenance margin = market-only (100 * $100 * 0.05 = 500 in quote → 500000000)
         let user_baseline = User {
-            orders: [Order::default(); 32],
             perp_positions: get_positions(PerpPosition {
                 market_index: 0,
                 base_asset_amount: 100 * BASE_PRECISION_I64,
@@ -1480,7 +1471,6 @@ mod calculate_margin_requirement_and_total_collateral {
         };
 
         let user = User {
-            orders: [Order::default(); 32],
             spot_positions,
             max_margin_ratio: 2 * MARGIN_PRECISION, // .5x leverage
             ..User::default()
@@ -1603,7 +1593,6 @@ mod calculate_margin_requirement_and_total_collateral {
         };
 
         let user = User {
-            orders: [Order::default(); 32],
             spot_positions,
             max_margin_ratio: 2 * MARGIN_PRECISION, // .5x leverage
             ..User::default()
@@ -1763,7 +1752,6 @@ mod calculate_margin_requirement_and_total_collateral {
             ..SpotPosition::default()
         };
         let user = User {
-            orders: [Order::default(); 32],
             perp_positions: [PerpPosition::default(); 8],
             spot_positions,
             ..User::default()
@@ -1875,7 +1863,6 @@ mod calculate_margin_requirement_and_total_collateral {
         };
 
         let user = User {
-            orders: [Order::default(); 32],
             spot_positions,
             max_margin_ratio: 2 * MARGIN_PRECISION, // .5x leverage
             ..User::default()
@@ -1987,7 +1974,6 @@ mod calculate_margin_requirement_and_total_collateral {
         };
 
         let user = User {
-            orders: [Order::default(); 32],
             spot_positions,
             max_margin_ratio: 2 * MARGIN_PRECISION, // .5x leverage
             ..User::default()
@@ -2099,7 +2085,6 @@ mod calculate_margin_requirement_and_total_collateral {
         };
 
         let user = User {
-            orders: [Order::default(); 32],
             spot_positions,
             max_margin_ratio: 2 * MARGIN_PRECISION, // .5x leverage
             ..User::default()
@@ -2152,7 +2137,7 @@ mod calculate_margin_requirement_and_total_collateral_and_liability_info {
     use crate::state::pyth_lazer_oracle::PythLazerOracle;
     use crate::state::spot_market::{SpotBalanceType, SpotMarket};
     use crate::state::spot_market_map::SpotMarketMap;
-    use crate::state::user::{Order, OrderType, PerpPosition, SpotPosition, User};
+    use crate::state::user::{PerpPosition, SpotPosition, User};
     use crate::test_utils::{get_positions, get_pyth_price, get_pyth_price_mantissa};
     use crate::PRICE_PRECISION_I64;
     use crate::{create_anchor_account_info, BASE_PRECISION_I64};
@@ -2240,10 +2225,6 @@ mod calculate_margin_requirement_and_total_collateral_and_liability_info {
         };
 
         let user = User {
-            orders: get_orders(Order {
-                order_type: OrderType::TriggerMarket,
-                ..Order::default()
-            }),
             perp_positions: get_positions(PerpPosition {
                 market_index: 0,
                 base_asset_amount: 0,
@@ -2353,12 +2334,6 @@ mod calculate_margin_requirement_and_total_collateral_and_liability_info {
         };
 
         let user = User {
-            orders: get_orders(Order {
-                order_type: OrderType::Limit,
-                base_asset_amount: 1,
-                base_asset_amount_filled: 0,
-                ..Order::default()
-            }),
             perp_positions: get_positions(PerpPosition {
                 market_index: 0,
                 base_asset_amount: 0,
@@ -2394,13 +2369,6 @@ mod calculate_margin_requirement_and_total_collateral_and_liability_info {
         };
 
         let user = User {
-            orders: get_orders(Order {
-                order_type: OrderType::Limit,
-                base_asset_amount: market.amm.order_step_size,
-                base_asset_amount_filled: 0,
-                direction: PositionDirection::Short,
-                ..Order::default()
-            }),
             perp_positions: get_positions(PerpPosition {
                 market_index: 0,
                 base_asset_amount: market.amm.order_step_size as i64,
@@ -2515,10 +2483,6 @@ mod calculate_margin_requirement_and_total_collateral_and_liability_info {
         };
 
         let user = User {
-            orders: get_orders(Order {
-                order_type: OrderType::TriggerMarket,
-                ..Order::default()
-            }),
             spot_positions,
             ..User::default()
         };
@@ -2609,7 +2573,6 @@ mod calculate_margin_requirement_and_total_collateral_and_liability_info {
             ..SpotPosition::default()
         };
         let user = User {
-            orders: [Order::default(); 32],
             perp_positions: [PerpPosition::default(); 8],
             spot_positions,
             ..User::default()
@@ -2760,7 +2723,6 @@ mod calculate_margin_requirement_and_total_collateral_and_liability_info {
             ..SpotPosition::default()
         };
         let user = User {
-            orders: [Order::default(); 32],
             perp_positions: [PerpPosition::default(); 8],
             spot_positions,
             ..User::default()
@@ -2925,7 +2887,6 @@ mod calculate_margin_requirement_and_total_collateral_and_liability_info {
             ..SpotPosition::default()
         };
         let user = User {
-            orders: [Order::default(); 32],
             perp_positions: get_positions(PerpPosition {
                 market_index: 0,
                 base_asset_amount: BASE_PRECISION_I64,
@@ -3080,10 +3041,6 @@ mod calculate_margin_requirement_and_total_collateral_and_liability_info {
         };
 
         let user = User {
-            orders: get_orders(Order {
-                order_type: OrderType::TriggerMarket,
-                ..Order::default()
-            }),
             perp_positions: get_positions(PerpPosition {
                 market_index: 0,
                 base_asset_amount: 0,
@@ -3130,7 +3087,7 @@ mod calculate_max_withdrawable_amount {
     use crate::state::pyth_lazer_oracle::PythLazerOracle;
     use crate::state::spot_market::{SpotBalanceType, SpotMarket};
     use crate::state::spot_market_map::SpotMarketMap;
-    use crate::state::user::{Order, PerpPosition, SpotPosition, User};
+    use crate::state::user::{PerpPosition, SpotPosition, User};
     use crate::test_utils::get_pyth_price;
 
     #[test]
@@ -3200,7 +3157,6 @@ mod calculate_max_withdrawable_amount {
             ..SpotPosition::default()
         };
         let user = User {
-            orders: [Order::default(); 32],
             perp_positions: [PerpPosition::default(); 8],
             spot_positions,
             ..User::default()
@@ -3287,7 +3243,6 @@ mod calculate_max_withdrawable_amount {
             ..SpotPosition::default()
         };
         let user = User {
-            orders: [Order::default(); 32],
             perp_positions: [PerpPosition::default(); 8],
             spot_positions,
             ..User::default()
@@ -3374,7 +3329,6 @@ mod calculate_max_withdrawable_amount {
             ..SpotPosition::default()
         };
         let user = User {
-            orders: [Order::default(); 32],
             perp_positions: [PerpPosition::default(); 8],
             spot_positions,
             ..User::default()
@@ -3412,7 +3366,7 @@ mod validate_spot_margin_trading {
     use crate::state::pyth_lazer_oracle::PythLazerOracle;
     use crate::state::spot_market::{SpotBalanceType, SpotMarket};
     use crate::state::spot_market_map::SpotMarketMap;
-    use crate::state::user::{Order, PerpPosition, SpotPosition, User};
+    use crate::state::user::{PerpPosition, SpotPosition, User};
     use crate::test_utils::get_pyth_price;
     use crate::test_utils::*;
 
@@ -3486,7 +3440,6 @@ mod validate_spot_margin_trading {
             ..SpotPosition::default()
         };
         let user = User {
-            orders: [Order::default(); 32],
             perp_positions: [PerpPosition::default(); 8],
             spot_positions,
             ..User::default()
@@ -3568,7 +3521,6 @@ mod validate_spot_margin_trading {
             ..SpotPosition::default()
         };
         let user = User {
-            orders: [Order::default(); 32],
             perp_positions: [PerpPosition::default(); 8],
             spot_positions,
             ..User::default()
@@ -3650,7 +3602,6 @@ mod validate_spot_margin_trading {
             ..SpotPosition::default()
         };
         let user = User {
-            orders: [Order::default(); 32],
             perp_positions: [PerpPosition::default(); 8],
             spot_positions,
             ..User::default()
@@ -3732,7 +3683,6 @@ mod validate_spot_margin_trading {
             ..SpotPosition::default()
         };
         let user = User {
-            orders: [Order::default(); 32],
             perp_positions: [PerpPosition::default(); 8],
             spot_positions,
             ..User::default()
@@ -3814,7 +3764,6 @@ mod validate_spot_margin_trading {
             ..SpotPosition::default()
         };
         let user = User {
-            orders: [Order::default(); 32],
             perp_positions: [PerpPosition::default(); 8],
             spot_positions,
             ..User::default()
@@ -3896,7 +3845,6 @@ mod validate_spot_margin_trading {
             ..SpotPosition::default()
         };
         let user = User {
-            orders: [Order::default(); 32],
             perp_positions: [PerpPosition::default(); 8],
             spot_positions,
             ..User::default()
@@ -4001,7 +3949,6 @@ mod validate_spot_margin_trading {
             ..SpotPosition::default()
         };
         let user = User {
-            orders: [Order::default(); 32],
             perp_positions: get_positions(PerpPosition {
                 market_index: 0,
                 base_asset_amount: BASE_PRECISION_I64,
@@ -4047,7 +3994,7 @@ mod calculate_user_equity {
     use crate::state::pyth_lazer_oracle::PythLazerOracle;
     use crate::state::spot_market::{SpotBalanceType, SpotMarket};
     use crate::state::spot_market_map::SpotMarketMap;
-    use crate::state::user::{Order, PerpPosition, SpotPosition, User};
+    use crate::state::user::{PerpPosition, SpotPosition, User};
     use crate::test_utils::get_pyth_price;
     use crate::test_utils::*;
     use crate::{
@@ -4139,7 +4086,6 @@ mod calculate_user_equity {
             ..SpotPosition::default()
         };
         let user = User {
-            orders: [Order::default(); 32],
             perp_positions: get_positions(PerpPosition {
                 market_index: 0,
                 base_asset_amount: BASE_PRECISION_I64,
@@ -4237,7 +4183,6 @@ mod calculate_user_equity {
             ..SpotPosition::default()
         };
         let user = User {
-            orders: [Order::default(); 32],
             perp_positions: get_positions(PerpPosition {
                 market_index: 0,
                 base_asset_amount: BASE_PRECISION_I64,
@@ -4324,7 +4269,6 @@ mod calculate_user_equity {
             ..SpotPosition::default()
         };
         let user = User {
-            orders: [Order::default(); 32],
             perp_positions: [PerpPosition::default(); 8],
             spot_positions,
             ..User::default()
@@ -4498,7 +4442,7 @@ mod isolated_position {
     use crate::state::pyth_lazer_oracle::PythLazerOracle;
     use crate::state::spot_market::{SpotBalanceType, SpotMarket};
     use crate::state::spot_market_map::SpotMarketMap;
-    use crate::state::user::{Order, PerpPosition, PositionFlag, SpotPosition, User};
+    use crate::state::user::{PerpPosition, PositionFlag, SpotPosition, User};
     use crate::test_utils::{get_positions, get_pyth_price};
     use crate::{create_anchor_account_info, QUOTE_PRECISION_I64};
 
@@ -4590,7 +4534,6 @@ mod isolated_position {
         };
 
         let user = User {
-            orders: [Order::default(); 32],
             perp_positions: get_positions(PerpPosition {
                 market_index: 0,
                 base_asset_amount: 100 * BASE_PRECISION_I64,
@@ -4688,9 +4631,7 @@ mod meets_place_order_margin_requirement_with_isolated {
     use crate::state::pyth_lazer_oracle::PythLazerOracle;
     use crate::state::spot_market::{SpotBalanceType, SpotMarket};
     use crate::state::spot_market_map::SpotMarketMap;
-    use crate::state::user::{
-        MarketType, Order, OrderStatus, OrderType, PerpPosition, PositionFlag, SpotPosition, User,
-    };
+    use crate::state::user::{PerpPosition, PositionFlag, SpotPosition, User};
     use crate::test_utils::get_pyth_price;
     use crate::{create_anchor_account_info, QUOTE_PRECISION_I64};
 
@@ -4785,7 +4726,6 @@ mod meets_place_order_margin_requirement_with_isolated {
         };
 
         let user = User {
-            orders: [Order::default(); 32],
             perp_positions,
             spot_positions,
             ..User::default()
@@ -4880,7 +4820,6 @@ mod meets_place_order_margin_requirement_with_isolated {
         let perp_positions = [PerpPosition::default(); 8];
 
         let user = User {
-            orders: [Order::default(); 32],
             perp_positions,
             spot_positions,
             ..User::default()
@@ -4976,7 +4915,6 @@ mod meets_place_order_margin_requirement_with_isolated {
         };
 
         let user = User {
-            orders: [Order::default(); 32],
             perp_positions,
             spot_positions,
             ..User::default()
@@ -5070,7 +5008,6 @@ mod meets_place_order_margin_requirement_with_isolated {
         };
 
         let user = User {
-            orders: [Order::default(); 32],
             perp_positions,
             spot_positions,
             ..User::default()
@@ -5163,7 +5100,6 @@ mod meets_place_order_margin_requirement_with_isolated {
         };
 
         let user = User {
-            orders: [Order::default(); 32],
             perp_positions,
             spot_positions,
             ..User::default()
@@ -5256,7 +5192,6 @@ mod meets_place_order_margin_requirement_with_isolated {
         };
 
         let user = User {
-            orders: [Order::default(); 32],
             perp_positions,
             spot_positions,
             ..User::default()
@@ -5351,7 +5286,6 @@ mod meets_place_order_margin_requirement_with_isolated {
         };
 
         let user = User {
-            orders: [Order::default(); 32],
             perp_positions,
             spot_positions,
             ..User::default()
@@ -5443,7 +5377,6 @@ mod meets_place_order_margin_requirement_with_isolated {
         };
 
         let user = User {
-            orders: [Order::default(); 32],
             perp_positions,
             spot_positions,
             ..User::default()
@@ -5605,7 +5538,6 @@ mod meets_place_order_margin_requirement_with_isolated {
         };
 
         let user = User {
-            orders: [Order::default(); 32],
             perp_positions,
             spot_positions,
             ..User::default()
@@ -5778,7 +5710,6 @@ mod meets_place_order_margin_requirement_with_isolated {
         };
 
         let user = User {
-            orders: [Order::default(); 32],
             perp_positions,
             spot_positions,
             ..User::default()
@@ -5966,20 +5897,7 @@ mod meets_place_order_margin_requirement_with_isolated {
             ..PerpPosition::default()
         };
 
-        // Create an order for the isolated position
-        let mut orders = [Order::default(); 32];
-        orders[0] = Order {
-            status: OrderStatus::Open,
-            order_type: OrderType::Limit,
-            market_type: MarketType::Perp,
-            market_index: 2,
-            direction: PositionDirection::Long,
-            base_asset_amount: BASE_PRECISION_U64 / 2, // 0.5 ETH
-            ..Order::default()
-        };
-
         let user = User {
-            orders,
             perp_positions,
             spot_positions,
             ..User::default()
@@ -6115,7 +6033,6 @@ mod meets_place_order_margin_requirement_with_isolated {
         };
 
         let user = User {
-            orders: [Order::default(); 32],
             perp_positions,
             spot_positions,
             ..User::default()
@@ -6288,7 +6205,6 @@ mod meets_place_order_margin_requirement_with_isolated {
         };
 
         let user = User {
-            orders: [Order::default(); 32],
             perp_positions,
             spot_positions,
             ..User::default()
@@ -6427,7 +6343,6 @@ mod meets_place_order_margin_requirement_with_isolated {
         };
 
         let user = User {
-            orders: [Order::default(); 32],
             perp_positions,
             spot_positions,
             ..User::default()
@@ -6525,7 +6440,6 @@ mod meets_place_order_margin_requirement_with_isolated {
         };
 
         let user = User {
-            orders: [Order::default(); 32],
             perp_positions,
             spot_positions,
             ..User::default()
@@ -6621,7 +6535,6 @@ mod meets_place_order_margin_requirement_with_isolated {
         };
 
         let user = User {
-            orders: [Order::default(); 32],
             perp_positions,
             spot_positions,
             ..User::default()
@@ -6758,7 +6671,6 @@ mod meets_place_order_margin_requirement_with_isolated {
         };
 
         let user = User {
-            orders: [Order::default(); 32],
             perp_positions,
             spot_positions,
             ..User::default()
@@ -6898,7 +6810,6 @@ mod meets_place_order_margin_requirement_with_isolated {
         };
 
         let user = User {
-            orders: [Order::default(); 32],
             perp_positions,
             spot_positions,
             ..User::default()
@@ -6940,7 +6851,7 @@ mod fill_perp_order_margin_requirement_with_isolated {
     use crate::state::pyth_lazer_oracle::PythLazerOracle;
     use crate::state::spot_market::{SpotBalanceType, SpotMarket};
     use crate::state::spot_market_map::SpotMarketMap;
-    use crate::state::user::{Order, PerpPosition, PositionFlag, SpotPosition, User};
+    use crate::state::user::{PerpPosition, PositionFlag, SpotPosition, User};
     use crate::test_utils::get_pyth_price;
     use crate::{create_anchor_account_info, QUOTE_PRECISION_I64};
 
@@ -7065,8 +6976,7 @@ mod fill_perp_order_margin_requirement_with_isolated {
             };
 
             let user = User {
-                orders: [Order::default(); 32],
-                perp_positions,
+                    perp_positions,
                 spot_positions,
                 ..User::default()
             };
@@ -7119,8 +7029,7 @@ mod fill_perp_order_margin_requirement_with_isolated {
             };
 
             let user = User {
-                orders: [Order::default(); 32],
-                perp_positions,
+                    perp_positions,
                 spot_positions,
                 ..User::default()
             };
@@ -7173,8 +7082,7 @@ mod fill_perp_order_margin_requirement_with_isolated {
             };
 
             let user = User {
-                orders: [Order::default(); 32],
-                perp_positions,
+                    perp_positions,
                 spot_positions,
                 ..User::default()
             };
@@ -7233,8 +7141,7 @@ mod fill_perp_order_margin_requirement_with_isolated {
             };
 
             let user = User {
-                orders: [Order::default(); 32],
-                perp_positions,
+                    perp_positions,
                 spot_positions,
                 ..User::default()
             };
@@ -7295,8 +7202,7 @@ mod fill_perp_order_margin_requirement_with_isolated {
             };
 
             let user = User {
-                orders: [Order::default(); 32],
-                perp_positions,
+                    perp_positions,
                 spot_positions,
                 ..User::default()
             };
@@ -7351,8 +7257,7 @@ mod fill_perp_order_margin_requirement_with_isolated {
             };
 
             let user = User {
-                orders: [Order::default(); 32],
-                perp_positions,
+                    perp_positions,
                 spot_positions,
                 ..User::default()
             };
@@ -7405,8 +7310,7 @@ mod fill_perp_order_margin_requirement_with_isolated {
             };
 
             let user = User {
-                orders: [Order::default(); 32],
-                perp_positions,
+                    perp_positions,
                 spot_positions,
                 ..User::default()
             };
@@ -7467,8 +7371,7 @@ mod fill_perp_order_margin_requirement_with_isolated {
             };
 
             let user = User {
-                orders: [Order::default(); 32],
-                perp_positions,
+                    perp_positions,
                 spot_positions,
                 ..User::default()
             };
@@ -7521,8 +7424,7 @@ mod fill_perp_order_margin_requirement_with_isolated {
             };
 
             let user = User {
-                orders: [Order::default(); 32],
-                perp_positions,
+                    perp_positions,
                 spot_positions,
                 ..User::default()
             };
@@ -7571,8 +7473,7 @@ mod fill_perp_order_margin_requirement_with_isolated {
             };
 
             let user = User {
-                orders: [Order::default(); 32],
-                perp_positions,
+                    perp_positions,
                 spot_positions,
                 ..User::default()
             };
@@ -7621,8 +7522,7 @@ mod fill_perp_order_margin_requirement_with_isolated {
             };
 
             let user = User {
-                orders: [Order::default(); 32],
-                perp_positions,
+                    perp_positions,
                 spot_positions,
                 ..User::default()
             };
@@ -7679,8 +7579,7 @@ mod fill_perp_order_margin_requirement_with_isolated {
             };
 
             let user = User {
-                orders: [Order::default(); 32],
-                perp_positions,
+                    perp_positions,
                 spot_positions,
                 ..User::default()
             };
@@ -7731,8 +7630,7 @@ mod fill_perp_order_margin_requirement_with_isolated {
             };
 
             let user = User {
-                orders: [Order::default(); 32],
-                perp_positions,
+                    perp_positions,
                 spot_positions,
                 ..User::default()
             };
@@ -7781,8 +7679,7 @@ mod fill_perp_order_margin_requirement_with_isolated {
             };
 
             let user = User {
-                orders: [Order::default(); 32],
-                perp_positions,
+                    perp_positions,
                 spot_positions,
                 ..User::default()
             };
@@ -7839,8 +7736,7 @@ mod fill_perp_order_margin_requirement_with_isolated {
             };
 
             let user = User {
-                orders: [Order::default(); 32],
-                perp_positions,
+                    perp_positions,
                 spot_positions,
                 ..User::default()
             };

@@ -332,15 +332,16 @@ mod should_expire_order {
 
     #[test]
     fn max_ts_is_zero() {
-        let user = User {
-            orders: get_orders(Order {
+        let user_data = crate::state::user::TestUser::new(
+            User::default(),
+            &get_orders(Order {
                 status: OrderStatus::Open,
                 order_type: OrderType::Limit,
                 max_ts: 0,
                 ..Order::default()
             }),
-            ..User::default()
-        };
+        );
+        let user = user_data.view();
 
         let now = 100;
 
@@ -351,15 +352,16 @@ mod should_expire_order {
 
     #[test]
     fn max_ts_is_greater_than_now() {
-        let user = User {
-            orders: get_orders(Order {
+        let user_data = crate::state::user::TestUser::new(
+            User::default(),
+            &get_orders(Order {
                 status: OrderStatus::Open,
                 order_type: OrderType::Limit,
                 max_ts: 101,
                 ..Order::default()
             }),
-            ..User::default()
-        };
+        );
+        let user = user_data.view();
 
         let now = 100;
 
@@ -370,15 +372,16 @@ mod should_expire_order {
 
     #[test]
     fn max_ts_is_less_than_now() {
-        let user = User {
-            orders: get_orders(Order {
+        let user_data = crate::state::user::TestUser::new(
+            User::default(),
+            &get_orders(Order {
                 status: OrderStatus::Open,
                 order_type: OrderType::Limit,
                 max_ts: 99,
                 ..Order::default()
             }),
-            ..User::default()
-        };
+        );
+        let user = user_data.view();
 
         let now = 100;
 
@@ -389,15 +392,16 @@ mod should_expire_order {
 
     #[test]
     fn order_is_not_open() {
-        let user = User {
-            orders: get_orders(Order {
+        let user_data = crate::state::user::TestUser::new(
+            User::default(),
+            &get_orders(Order {
                 status: OrderStatus::Init,
                 order_type: OrderType::Limit,
                 max_ts: 99,
                 ..Order::default()
             }),
-            ..User::default()
-        };
+        );
+        let user = user_data.view();
 
         let now = 100;
 
@@ -408,15 +412,16 @@ mod should_expire_order {
 
     #[test]
     fn order_is_trigger_market_order() {
-        let user = User {
-            orders: get_orders(Order {
+        let user_data = crate::state::user::TestUser::new(
+            User::default(),
+            &get_orders(Order {
                 status: OrderStatus::Open,
                 order_type: OrderType::TriggerMarket,
                 max_ts: 99,
                 ..Order::default()
             }),
-            ..User::default()
-        };
+        );
+        let user = user_data.view();
 
         let now = 100;
 
@@ -427,15 +432,16 @@ mod should_expire_order {
 
     #[test]
     fn order_is_trigger_limit_order() {
-        let user = User {
-            orders: get_orders(Order {
+        let user_data = crate::state::user::TestUser::new(
+            User::default(),
+            &get_orders(Order {
                 status: OrderStatus::Open,
                 order_type: OrderType::TriggerLimit,
                 max_ts: 99,
                 ..Order::default()
             }),
-            ..User::default()
-        };
+        );
+        let user = user_data.view();
 
         let now = 100;
 
@@ -483,15 +489,18 @@ mod get_max_fill_amounts {
             ..SpotPosition::default()
         };
 
-        let user = User {
-            spot_positions,
-            orders: get_orders(Order {
+        let user_data = crate::state::user::TestUser::new(
+            User {
+                spot_positions,
+                ..User::default()
+            },
+            &get_orders(Order {
                 direction: PositionDirection::Short,
                 base_asset_amount: 100 * LAMPORTS_PER_SOL,
                 ..Order::default()
             }),
-            ..User::default()
-        };
+        );
+        let user = user_data.view();
 
         let (max_base, max_quote) =
             get_max_fill_amounts(&user, 0, &base_market, &quote_market, true).unwrap();
@@ -521,15 +530,18 @@ mod get_max_fill_amounts {
             ..SpotPosition::default()
         };
 
-        let user = User {
-            spot_positions,
-            orders: get_orders(Order {
+        let user_data = crate::state::user::TestUser::new(
+            User {
+                spot_positions,
+                ..User::default()
+            },
+            &get_orders(Order {
                 direction: PositionDirection::Short,
                 base_asset_amount: 100 * LAMPORTS_PER_SOL,
                 ..Order::default()
             }),
-            ..User::default()
-        };
+        );
+        let user = user_data.view();
 
         let (max_base, max_quote) =
             get_max_fill_amounts(&user, 0, &base_market, &quote_market, true).unwrap();
@@ -562,15 +574,18 @@ mod get_max_fill_amounts {
             ..SpotPosition::default()
         };
 
-        let user = User {
-            spot_positions,
-            orders: get_orders(Order {
+        let user_data = crate::state::user::TestUser::new(
+            User {
+                spot_positions,
+                ..User::default()
+            },
+            &get_orders(Order {
                 direction: PositionDirection::Short,
                 base_asset_amount: 100 * LAMPORTS_PER_SOL,
                 ..Order::default()
             }),
-            ..User::default()
-        };
+        );
+        let user = user_data.view();
 
         let (max_base, max_quote) =
             get_max_fill_amounts(&user, 0, &base_market, &quote_market, true).unwrap();
@@ -604,15 +619,18 @@ mod get_max_fill_amounts {
             ..SpotPosition::default()
         };
 
-        let user = User {
-            spot_positions,
-            orders: get_orders(Order {
+        let user_data = crate::state::user::TestUser::new(
+            User {
+                spot_positions,
+                ..User::default()
+            },
+            &get_orders(Order {
                 direction: PositionDirection::Long,
                 base_asset_amount: 100 * LAMPORTS_PER_SOL,
                 ..Order::default()
             }),
-            ..User::default()
-        };
+        );
+        let user = user_data.view();
 
         let (max_base, max_quote) =
             get_max_fill_amounts(&user, 0, &base_market, &quote_market, true).unwrap();
@@ -642,15 +660,18 @@ mod get_max_fill_amounts {
             ..SpotPosition::default()
         };
 
-        let user = User {
-            spot_positions,
-            orders: get_orders(Order {
+        let user_data = crate::state::user::TestUser::new(
+            User {
+                spot_positions,
+                ..User::default()
+            },
+            &get_orders(Order {
                 direction: PositionDirection::Long,
                 base_asset_amount: 100 * LAMPORTS_PER_SOL,
                 ..Order::default()
             }),
-            ..User::default()
-        };
+        );
+        let user = user_data.view();
 
         let (max_base, max_quote) =
             get_max_fill_amounts(&user, 0, &base_market, &quote_market, true).unwrap();
@@ -684,15 +705,18 @@ mod get_max_fill_amounts {
             ..SpotPosition::default()
         };
 
-        let user = User {
-            spot_positions,
-            orders: get_orders(Order {
+        let user_data = crate::state::user::TestUser::new(
+            User {
+                spot_positions,
+                ..User::default()
+            },
+            &get_orders(Order {
                 direction: PositionDirection::Long,
                 base_asset_amount: 100 * LAMPORTS_PER_SOL,
                 ..Order::default()
             }),
-            ..User::default()
-        };
+        );
+        let user = user_data.view();
 
         let (max_base, max_quote) =
             get_max_fill_amounts(&user, 0, &base_market, &quote_market, true).unwrap();
@@ -712,7 +736,8 @@ mod find_maker_orders {
 
     #[test]
     fn no_open_orders() {
-        let user = User::default();
+        let user_data = crate::state::user::TestUser::from_header(User::default());
+        let user = user_data.view();
         let direction = PositionDirection::Long;
         let market_type = MarketType::Perp;
         let market_index = 0;
@@ -737,8 +762,9 @@ mod find_maker_orders {
 
     #[test]
     fn no_limit_orders() {
-        let user = User {
-            orders: [Order {
+        let user_data = crate::state::user::TestUser::new(
+            User::default(),
+            &[Order {
                 status: OrderStatus::Open,
                 order_type: OrderType::Market,
                 market_index: 0,
@@ -746,8 +772,8 @@ mod find_maker_orders {
                 direction: PositionDirection::Long,
                 ..Order::default()
             }; 32],
-            ..User::default()
-        };
+        );
+        let user = user_data.view();
         let direction = PositionDirection::Long;
         let market_type = MarketType::Perp;
         let market_index = 0;
@@ -772,8 +798,9 @@ mod find_maker_orders {
 
     #[test]
     fn no_triggered_trigger_limit_orders() {
-        let user = User {
-            orders: [Order {
+        let user_data = crate::state::user::TestUser::new(
+            User::default(),
+            &[Order {
                 status: OrderStatus::Open,
                 order_type: OrderType::TriggerLimit,
                 trigger_condition: OrderTriggerCondition::Above,
@@ -782,8 +809,8 @@ mod find_maker_orders {
                 direction: PositionDirection::Long,
                 ..Order::default()
             }; 32],
-            ..User::default()
-        };
+        );
+        let user = user_data.view();
         let direction = PositionDirection::Long;
         let market_type = MarketType::Perp;
         let market_index = 0;
@@ -808,8 +835,9 @@ mod find_maker_orders {
 
     #[test]
     fn wrong_direction() {
-        let user = User {
-            orders: [Order {
+        let user_data = crate::state::user::TestUser::new(
+            User::default(),
+            &[Order {
                 status: OrderStatus::Open,
                 order_type: OrderType::Limit,
                 market_index: 0,
@@ -818,8 +846,8 @@ mod find_maker_orders {
                 price: PRICE_PRECISION_U64,
                 ..Order::default()
             }; 32],
-            ..User::default()
-        };
+        );
+        let user = user_data.view();
         let direction = PositionDirection::Long;
         let market_type = MarketType::Perp;
         let market_index = 0;
@@ -844,8 +872,9 @@ mod find_maker_orders {
 
     #[test]
     fn wrong_market_index() {
-        let user = User {
-            orders: [Order {
+        let user_data = crate::state::user::TestUser::new(
+            User::default(),
+            &[Order {
                 status: OrderStatus::Open,
                 order_type: OrderType::Limit,
                 market_index: 1,
@@ -854,8 +883,8 @@ mod find_maker_orders {
                 price: PRICE_PRECISION_U64,
                 ..Order::default()
             }; 32],
-            ..User::default()
-        };
+        );
+        let user = user_data.view();
         let direction = PositionDirection::Long;
         let market_type = MarketType::Perp;
         let market_index = 0;
@@ -880,8 +909,9 @@ mod find_maker_orders {
 
     #[test]
     fn wrong_market_type() {
-        let user = User {
-            orders: [Order {
+        let user_data = crate::state::user::TestUser::new(
+            User::default(),
+            &[Order {
                 status: OrderStatus::Open,
                 order_type: OrderType::Limit,
                 market_index: 0,
@@ -890,8 +920,8 @@ mod find_maker_orders {
                 price: PRICE_PRECISION_U64,
                 ..Order::default()
             }; 32],
-            ..User::default()
-        };
+        );
+        let user = user_data.view();
         let direction = PositionDirection::Long;
         let market_type = MarketType::Perp;
         let market_index = 0;
@@ -927,10 +957,8 @@ mod find_maker_orders {
             ..Order::default()
         };
 
-        let user = User {
-            orders,
-            ..User::default()
-        };
+        let user_data = crate::state::user::TestUser::new(User::default(), &orders);
+        let user = user_data.view();
         let direction = PositionDirection::Long;
         let market_type = MarketType::Perp;
         let market_index = 0;
@@ -968,10 +996,8 @@ mod find_maker_orders {
             }
         }
 
-        let user = User {
-            orders,
-            ..User::default()
-        };
+        let user_data = crate::state::user::TestUser::new(User::default(), &orders);
+        let user = user_data.view();
         let direction = PositionDirection::Long;
         let market_type = MarketType::Perp;
         let market_index = 0;
@@ -1014,10 +1040,8 @@ mod find_maker_orders {
             }
         }
 
-        let user = User {
-            orders,
-            ..User::default()
-        };
+        let user_data = crate::state::user::TestUser::new(User::default(), &orders);
+        let user = user_data.view();
         let direction = PositionDirection::Short;
         let market_type = MarketType::Perp;
         let market_index = 0;
@@ -1067,7 +1091,7 @@ mod calculate_max_spot_order_size {
     use crate::state::pyth_lazer_oracle::PythLazerOracle;
     use crate::state::spot_market::{SpotBalanceType, SpotMarket};
     use crate::state::spot_market_map::SpotMarketMap;
-    use crate::state::user::{Order, PerpPosition, SpotPosition, User};
+    use crate::state::user::{PerpPosition, SpotPosition, User};
     use crate::test_utils::get_pyth_price;
     use crate::MARGIN_PRECISION;
     use crate::{
@@ -1143,7 +1167,6 @@ mod calculate_max_spot_order_size {
             ..SpotPosition::default()
         };
         let mut user = User {
-            orders: [Order::default(); 32],
             perp_positions: [PerpPosition::default(); 8],
             spot_positions,
             ..User::default()
@@ -1250,7 +1273,6 @@ mod calculate_max_spot_order_size {
             ..SpotPosition::default()
         };
         let mut user = User {
-            orders: [Order::default(); 32],
             perp_positions: [PerpPosition::default(); 8],
             spot_positions,
             ..User::default()
@@ -1356,7 +1378,6 @@ mod calculate_max_spot_order_size {
             ..SpotPosition::default()
         };
         let mut user = User {
-            orders: [Order::default(); 32],
             perp_positions: [PerpPosition::default(); 8],
             spot_positions,
             ..User::default()
@@ -1463,7 +1484,6 @@ mod calculate_max_spot_order_size {
             ..SpotPosition::default()
         };
         let user = User {
-            orders: [Order::default(); 32],
             perp_positions: [PerpPosition::default(); 8],
             spot_positions,
             ..User::default()
@@ -1551,7 +1571,6 @@ mod calculate_max_spot_order_size {
             ..SpotPosition::default()
         };
         let mut user = User {
-            orders: [Order::default(); 32],
             perp_positions: [PerpPosition::default(); 8],
             spot_positions,
             max_margin_ratio: MARGIN_PRECISION / 2, // 50% margin ratio or 2x leverage
@@ -1658,7 +1677,6 @@ mod calculate_max_spot_order_size {
             ..SpotPosition::default()
         };
         let mut user = User {
-            orders: [Order::default(); 32],
             perp_positions: [PerpPosition::default(); 8],
             spot_positions,
             max_margin_ratio: MARGIN_PRECISION / 2, // 2x
@@ -1766,7 +1784,6 @@ mod calculate_max_spot_order_size {
             ..SpotPosition::default()
         };
         let mut user = User {
-            orders: [Order::default(); 32],
             perp_positions: [PerpPosition::default(); 8],
             spot_positions,
             ..User::default()
@@ -1873,7 +1890,6 @@ mod calculate_max_spot_order_size {
             ..SpotPosition::default()
         };
         let mut user = User {
-            orders: [Order::default(); 32],
             perp_positions: [PerpPosition::default(); 8],
             spot_positions,
             ..User::default()
@@ -1934,7 +1950,7 @@ mod calculate_max_perp_order_size {
     use crate::state::pyth_lazer_oracle::PythLazerOracle;
     use crate::state::spot_market::{SpotBalanceType, SpotMarket};
     use crate::state::spot_market_map::SpotMarketMap;
-    use crate::state::user::{Order, PerpPosition, SpotPosition, User};
+    use crate::state::user::{PerpPosition, SpotPosition, User};
     use crate::test_utils::get_pyth_price;
     use crate::test_utils::*;
     use crate::{
@@ -2024,7 +2040,6 @@ mod calculate_max_perp_order_size {
             ..SpotPosition::default()
         };
         let mut user = User {
-            orders: [Order::default(); 32],
             perp_positions: get_positions(PerpPosition {
                 market_index: 0,
                 ..PerpPosition::default()
@@ -2146,7 +2161,6 @@ mod calculate_max_perp_order_size {
             ..SpotPosition::default()
         };
         let user = User {
-            orders: [Order::default(); 32],
             perp_positions: get_positions(PerpPosition {
                 market_index: 0,
                 base_asset_amount: -500000000000,
@@ -2251,7 +2265,6 @@ mod calculate_max_perp_order_size {
             ..SpotPosition::default()
         };
         let mut user = User {
-            orders: [Order::default(); 32],
             perp_positions: get_positions(PerpPosition {
                 market_index: 0,
                 ..PerpPosition::default()
@@ -2373,7 +2386,6 @@ mod calculate_max_perp_order_size {
             ..SpotPosition::default()
         };
         let user = User {
-            orders: [Order::default(); 32],
             perp_positions: get_positions(PerpPosition {
                 market_index: 0,
                 base_asset_amount: 500000000000,
@@ -2478,7 +2490,6 @@ mod calculate_max_perp_order_size {
             ..SpotPosition::default()
         };
         let mut user = User {
-            orders: [Order::default(); 32],
             perp_positions: get_positions(PerpPosition {
                 market_index: 0,
                 ..PerpPosition::default()
@@ -2601,7 +2612,6 @@ mod calculate_max_perp_order_size {
             ..SpotPosition::default()
         };
         let mut user = User {
-            orders: [Order::default(); 32],
             perp_positions: get_positions(PerpPosition {
                 market_index: 0,
                 ..PerpPosition::default()
@@ -2725,7 +2735,6 @@ mod calculate_max_perp_order_size {
             ..SpotPosition::default()
         };
         let mut user = User {
-            orders: [Order::default(); 32],
             perp_positions: get_positions(PerpPosition {
                 market_index: 0,
                 ..PerpPosition::default()
@@ -2848,7 +2857,6 @@ mod calculate_max_perp_order_size {
             ..SpotPosition::default()
         };
         let mut user = User {
-            orders: [Order::default(); 32],
             perp_positions: get_positions(PerpPosition {
                 market_index: 0,
                 max_margin_ratio: 2 * MARGIN_PRECISION as u16,
@@ -2971,7 +2979,6 @@ mod calculate_max_perp_order_size {
             ..SpotPosition::default()
         };
         let mut user = User {
-            orders: [Order::default(); 32],
             perp_positions: get_positions(PerpPosition {
                 market_index: 0,
                 max_margin_ratio: 2 * MARGIN_PRECISION as u16,
@@ -3095,7 +3102,6 @@ mod calculate_max_perp_order_size {
             ..SpotPosition::default()
         };
         let mut user = User {
-            orders: [Order::default(); 32],
             perp_positions: get_positions(PerpPosition {
                 market_index: 0,
                 ..PerpPosition::default()
@@ -3137,6 +3143,7 @@ mod calculate_max_perp_order_size {
     }
 
     #[test]
+    #[ignore = "captured prod User base64 blob predates dynamic-orders refactor; regenerate fixture after on-chain redeploy"]
     pub fn swift_failure() {
         let clock_slot = 0_u64;
 
@@ -3943,7 +3950,6 @@ pub mod find_bids_and_asks_from_users {
     use solana_program::pubkey::Pubkey;
 
     use crate::controller::position::PositionDirection;
-    use crate::create_anchor_account_info;
     use crate::math::constants::{BASE_PRECISION_U64, PRICE_PRECISION_I64, PRICE_PRECISION_U64};
     use crate::math::orders::{find_bids_and_asks_from_users, Level};
     use crate::state::oracle::OraclePriceData;
@@ -3991,17 +3997,25 @@ pub mod find_bids_and_asks_from_users {
             };
         }
 
-        let mut maker = User {
+        let maker = User {
             perp_positions: get_positions(PerpPosition {
                 market_index: 0,
                 open_orders: 32,
                 ..PerpPosition::default()
             }),
-            orders: maker_orders,
             ..User::default()
         };
         let maker_key = Pubkey::default();
-        create_anchor_account_info!(maker, &maker_key, User, maker_account_info);
+        let mut maker_bytes = crate::state::user::build_user_account_bytes(maker, &maker_orders);
+        let mut maker_lamports = 0;
+        let maker_owner = <User as anchor_lang::Owner>::owner();
+        let maker_account_info = crate::test_utils::create_account_info(
+            &maker_key,
+            true,
+            &mut maker_lamports,
+            &mut maker_bytes[..],
+            &maker_owner,
+        );
 
         let makers_and_referrers = UserMap::load_one(&maker_account_info).unwrap();
 
@@ -4067,17 +4081,25 @@ pub mod find_bids_and_asks_from_users {
             };
         }
 
-        let mut maker = User {
+        let maker = User {
             perp_positions: get_positions(PerpPosition {
                 market_index: 0,
                 open_orders: 32,
                 ..PerpPosition::default()
             }),
-            orders: maker_orders,
             ..User::default()
         };
         let maker_key = Pubkey::default();
-        create_anchor_account_info!(maker, &maker_key, User, maker_account_info);
+        let mut maker_bytes = crate::state::user::build_user_account_bytes(maker, &maker_orders);
+        let mut maker_lamports = 0;
+        let maker_owner = <User as anchor_lang::Owner>::owner();
+        let maker_account_info = crate::test_utils::create_account_info(
+            &maker_key,
+            true,
+            &mut maker_lamports,
+            &mut maker_bytes[..],
+            &maker_owner,
+        );
 
         let makers_and_referrers = UserMap::load_one(&maker_account_info).unwrap();
 

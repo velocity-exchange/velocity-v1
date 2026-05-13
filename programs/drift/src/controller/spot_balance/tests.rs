@@ -33,7 +33,7 @@ use crate::state::pyth_lazer_oracle::PythLazerOracle;
 use crate::state::spot_market::{InsuranceFund, SpotBalanceType, SpotMarket};
 use crate::state::spot_market_map::SpotMarketMap;
 use crate::state::user::PositionFlag;
-use crate::state::user::{Order, PerpPosition, SpotPosition, User};
+use crate::state::user::{PerpPosition, SpotPosition, User};
 use crate::test_utils::*;
 use crate::test_utils::{get_pyth_price, get_spot_positions};
 
@@ -152,7 +152,6 @@ fn test_daily_withdraw_limits() {
         ..SpotPosition::default()
     };
     let mut user = User {
-        orders: [Order::default(); 32],
         perp_positions: [PerpPosition::default(); 8],
         spot_positions,
         ..User::default()
@@ -472,7 +471,6 @@ fn test_check_withdraw_limits() {
         ..SpotPosition::default()
     };
     let user = User {
-        orders: [Order::default(); 32],
         perp_positions: [PerpPosition::default(); 8],
         spot_positions,
         ..User::default()
@@ -702,7 +700,6 @@ fn test_check_withdraw_limits_above_optimal_utilization() {
         ..SpotPosition::default()
     };
     let user = User {
-        orders: [Order::default(); 32],
         perp_positions: [PerpPosition::default(); 8],
         spot_positions,
         ..User::default()
@@ -818,7 +815,6 @@ fn check_fee_collection() {
         ..SpotPosition::default()
     };
     let mut user = User {
-        orders: [Order::default(); 32],
         perp_positions: [PerpPosition::default(); 8],
         spot_positions,
         ..User::default()
@@ -1184,7 +1180,6 @@ fn check_fee_collection_larger_nums() {
         ..SpotPosition::default()
     };
     let mut user = User {
-        orders: [Order::default(); 32],
         perp_positions: [PerpPosition::default(); 8],
         spot_positions,
         ..User::default()
@@ -1602,7 +1597,6 @@ fn attempt_borrow_with_massive_upnl() {
     };
 
     let user = User {
-        orders: [Order::default(); 32],
         perp_positions: get_positions(PerpPosition {
             market_index: 0,
             base_asset_amount: 1000 * BASE_PRECISION_I64,

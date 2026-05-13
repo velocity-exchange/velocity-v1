@@ -700,8 +700,25 @@ pub mod delisting_test {
         let spot_market_map = SpotMarketMap::load_one(&spot_market_account_info, true).unwrap();
 
         // taker wants to go long (would improve balance)
-        let mut taker = User {
-            orders: get_orders(Order {
+        let taker_data = crate::state::user::TestUser::new(
+            User {
+                perp_positions: get_positions(PerpPosition {
+                    market_index: 0,
+                    open_orders: 1,
+                    open_bids: BASE_PRECISION_I64,
+                    base_asset_amount: (BASE_PRECISION_I64 / 2),
+                    quote_asset_amount: -(QUOTE_PRECISION_I64 * 10),
+                    ..PerpPosition::default()
+                }),
+                spot_positions: get_spot_positions(SpotPosition {
+                    market_index: 0,
+                    balance_type: SpotBalanceType::Deposit,
+                    scaled_balance: 100 * SPOT_BALANCE_PRECISION_U64,
+                    ..SpotPosition::default()
+                }),
+                ..User::default()
+            },
+            &get_orders(Order {
                 market_index: 0,
                 status: OrderStatus::Open,
                 order_type: OrderType::Market,
@@ -712,23 +729,9 @@ pub mod delisting_test {
                 auction_end_price: 100 * PRICE_PRECISION_I64,
                 auction_duration: 0,
                 ..Order::default()
-            }),
-            perp_positions: get_positions(PerpPosition {
-                market_index: 0,
-                open_orders: 1,
-                open_bids: BASE_PRECISION_I64,
-                base_asset_amount: (BASE_PRECISION_I64 / 2),
-                quote_asset_amount: -(QUOTE_PRECISION_I64 * 10),
-                ..PerpPosition::default()
-            }),
-            spot_positions: get_spot_positions(SpotPosition {
-                market_index: 0,
-                balance_type: SpotBalanceType::Deposit,
-                scaled_balance: 100 * SPOT_BALANCE_PRECISION_U64,
-                ..SpotPosition::default()
-            }),
-            ..User::default()
-        };
+            })
+        );
+        let mut taker = taker_data.view();
 
         let (taker_key, _maker_key, _filler_key) = get_user_keys();
 
@@ -920,8 +923,25 @@ pub mod delisting_test {
         let spot_market_map = SpotMarketMap::load_one(&spot_market_account_info, true).unwrap();
 
         // taker wants to go long (would improve balance)
-        let mut taker = User {
-            orders: get_orders(Order {
+        let taker_data = crate::state::user::TestUser::new(
+            User {
+                perp_positions: get_positions(PerpPosition {
+                    market_index: 0,
+                    open_orders: 1,
+                    open_bids: BASE_PRECISION_I64,
+                    base_asset_amount: (BASE_PRECISION_I64 / 2),
+                    quote_asset_amount: (QUOTE_PRECISION_I64 * 10),
+                    ..PerpPosition::default()
+                }),
+                spot_positions: get_spot_positions(SpotPosition {
+                    market_index: 0,
+                    balance_type: SpotBalanceType::Deposit,
+                    scaled_balance: 100 * SPOT_BALANCE_PRECISION_U64,
+                    ..SpotPosition::default()
+                }),
+                ..User::default()
+            },
+            &get_orders(Order {
                 market_index: 0,
                 status: OrderStatus::Open,
                 order_type: OrderType::Market,
@@ -932,23 +952,9 @@ pub mod delisting_test {
                 auction_end_price: 100 * PRICE_PRECISION_I64,
                 auction_duration: 0,
                 ..Order::default()
-            }),
-            perp_positions: get_positions(PerpPosition {
-                market_index: 0,
-                open_orders: 1,
-                open_bids: BASE_PRECISION_I64,
-                base_asset_amount: (BASE_PRECISION_I64 / 2),
-                quote_asset_amount: (QUOTE_PRECISION_I64 * 10),
-                ..PerpPosition::default()
-            }),
-            spot_positions: get_spot_positions(SpotPosition {
-                market_index: 0,
-                balance_type: SpotBalanceType::Deposit,
-                scaled_balance: 100 * SPOT_BALANCE_PRECISION_U64,
-                ..SpotPosition::default()
-            }),
-            ..User::default()
-        };
+            })
+        );
+        let mut taker = taker_data.view();
 
         let (taker_key, _maker_key, _filler_key) = get_user_keys();
 
@@ -1143,8 +1149,25 @@ pub mod delisting_test {
         let spot_market_map = SpotMarketMap::load_one(&spot_market_account_info, true).unwrap();
 
         // taker wants to go long (would improve balance)
-        let mut taker = User {
-            orders: get_orders(Order {
+        let taker_data = crate::state::user::TestUser::new(
+            User {
+                perp_positions: get_positions(PerpPosition {
+                    market_index: 0,
+                    open_orders: 1,
+                    open_bids: BASE_PRECISION_I64,
+                    base_asset_amount: (BASE_PRECISION_I64 * 2000),
+                    quote_asset_amount: (QUOTE_PRECISION_I64 * 20 * 2000), //longs have -$20 cost basis,
+                    ..PerpPosition::default()
+                }),
+                spot_positions: get_spot_positions(SpotPosition {
+                    market_index: 0,
+                    balance_type: SpotBalanceType::Deposit,
+                    scaled_balance: 100 * SPOT_BALANCE_PRECISION_U64,
+                    ..SpotPosition::default()
+                }),
+                ..User::default()
+            },
+            &get_orders(Order {
                 market_index: 0,
                 status: OrderStatus::Open,
                 order_type: OrderType::Market,
@@ -1155,23 +1178,9 @@ pub mod delisting_test {
                 auction_end_price: 100 * PRICE_PRECISION_I64,
                 auction_duration: 0,
                 ..Order::default()
-            }),
-            perp_positions: get_positions(PerpPosition {
-                market_index: 0,
-                open_orders: 1,
-                open_bids: BASE_PRECISION_I64,
-                base_asset_amount: (BASE_PRECISION_I64 * 2000),
-                quote_asset_amount: (QUOTE_PRECISION_I64 * 20 * 2000), //longs have -$20 cost basis,
-                ..PerpPosition::default()
-            }),
-            spot_positions: get_spot_positions(SpotPosition {
-                market_index: 0,
-                balance_type: SpotBalanceType::Deposit,
-                scaled_balance: 100 * SPOT_BALANCE_PRECISION_U64,
-                ..SpotPosition::default()
-            }),
-            ..User::default()
-        };
+            })
+        );
+        let mut taker = taker_data.view();
 
         let (taker_key, _maker_key, _filler_key) = get_user_keys();
 
@@ -1372,8 +1381,27 @@ pub mod delisting_test {
             SpotMarketMap::load_multiple(spot_market_account_infos, true).unwrap();
 
         // taker wants to go long (would improve balance)
-        let mut longer = User {
-            orders: get_orders(Order {
+        let longer_data = crate::state::user::TestUser::new(
+            User {
+                perp_positions: get_positions(PerpPosition {
+                    market_index: 0,
+                    open_orders: 1,
+                    open_bids: BASE_PRECISION_I64,
+                    base_asset_amount: (BASE_PRECISION_I64 * 2000),
+                    quote_entry_amount: -(QUOTE_PRECISION_I64 * 20 * 2000 + QUOTE_PRECISION_I64), //longs have $19 cost basis,
+                    quote_break_even_amount: -(QUOTE_PRECISION_I64 * 20 * 2000 + QUOTE_PRECISION_I64), //longs have $19 cost basis,
+                    quote_asset_amount: -(QUOTE_PRECISION_I64 * 20 * 2000 + QUOTE_PRECISION_I64), //longs have $19 cost basis,
+                    ..PerpPosition::default()
+                }),
+                spot_positions: get_spot_positions(SpotPosition {
+                    market_index: 0,
+                    balance_type: SpotBalanceType::Deposit,
+                    scaled_balance: 20000 * SPOT_BALANCE_PRECISION_U64,
+                    ..SpotPosition::default()
+                }),
+                ..User::default()
+            },
+            &get_orders(Order {
                 market_index: 0,
                 status: OrderStatus::Open,
                 order_type: OrderType::Market,
@@ -1384,28 +1412,31 @@ pub mod delisting_test {
                 auction_end_price: 100 * PRICE_PRECISION_I64,
                 auction_duration: 0,
                 ..Order::default()
-            }),
-            perp_positions: get_positions(PerpPosition {
-                market_index: 0,
-                open_orders: 1,
-                open_bids: BASE_PRECISION_I64,
-                base_asset_amount: (BASE_PRECISION_I64 * 2000),
-                quote_entry_amount: -(QUOTE_PRECISION_I64 * 20 * 2000 + QUOTE_PRECISION_I64), //longs have $19 cost basis,
-                quote_break_even_amount: -(QUOTE_PRECISION_I64 * 20 * 2000 + QUOTE_PRECISION_I64), //longs have $19 cost basis,
-                quote_asset_amount: -(QUOTE_PRECISION_I64 * 20 * 2000 + QUOTE_PRECISION_I64), //longs have $19 cost basis,
-                ..PerpPosition::default()
-            }),
-            spot_positions: get_spot_positions(SpotPosition {
-                market_index: 0,
-                balance_type: SpotBalanceType::Deposit,
-                scaled_balance: 20000 * SPOT_BALANCE_PRECISION_U64,
-                ..SpotPosition::default()
-            }),
-            ..User::default()
-        };
+            })
+        );
+        let mut longer = longer_data.view();
 
-        let mut shorter = User {
-            orders: get_orders(Order {
+        let shorter_data = crate::state::user::TestUser::new(
+            User {
+                perp_positions: get_positions(PerpPosition {
+                    market_index: 0,
+                    open_orders: 1,
+                    open_asks: -BASE_PRECISION_I64 / 2,
+                    base_asset_amount: -(BASE_PRECISION_I64 * 1000),
+                    quote_entry_amount: (QUOTE_PRECISION_I64 * 20 * 1000), //shorts have $20 cost basis,
+                    quote_break_even_amount: (QUOTE_PRECISION_I64 * 20 * 1000), //shorts have $20 cost basis,
+                    quote_asset_amount: (QUOTE_PRECISION_I64 * 20 * 1000), //shorts have $20 cost basis,
+                    ..PerpPosition::default()
+                }),
+                spot_positions: get_spot_positions(SpotPosition {
+                    market_index: 0,
+                    balance_type: SpotBalanceType::Deposit,
+                    scaled_balance: 200000 * SPOT_BALANCE_PRECISION_U64,
+                    ..SpotPosition::default()
+                }),
+                ..User::default()
+            },
+            &get_orders(Order {
                 market_index: 0,
                 post_only: true,
                 status: OrderStatus::Open,
@@ -1414,25 +1445,9 @@ pub mod delisting_test {
                 base_asset_amount: BASE_PRECISION_U64 / 2,
                 price: 100 * PRICE_PRECISION_U64,
                 ..Order::default()
-            }),
-            perp_positions: get_positions(PerpPosition {
-                market_index: 0,
-                open_orders: 1,
-                open_asks: -BASE_PRECISION_I64 / 2,
-                base_asset_amount: -(BASE_PRECISION_I64 * 1000),
-                quote_entry_amount: (QUOTE_PRECISION_I64 * 20 * 1000), //shorts have $20 cost basis,
-                quote_break_even_amount: (QUOTE_PRECISION_I64 * 20 * 1000), //shorts have $20 cost basis,
-                quote_asset_amount: (QUOTE_PRECISION_I64 * 20 * 1000), //shorts have $20 cost basis,
-                ..PerpPosition::default()
-            }),
-            spot_positions: get_spot_positions(SpotPosition {
-                market_index: 0,
-                balance_type: SpotBalanceType::Deposit,
-                scaled_balance: 200000 * SPOT_BALANCE_PRECISION_U64,
-                ..SpotPosition::default()
-            }),
-            ..User::default()
-        };
+            })
+        );
+        let mut shorter = shorter_data.view();
 
         shorter.spot_positions[1] = SpotPosition {
             market_index: 1,
@@ -1442,7 +1457,7 @@ pub mod delisting_test {
         };
 
         // just has unsettled quote
-        let mut liq = User {
+        let liq_data = crate::state::user::TestUser::from_header(User {
             perp_positions: get_positions(PerpPosition {
                 market_index: 0,
                 open_orders: 0,
@@ -1453,7 +1468,8 @@ pub mod delisting_test {
                 ..PerpPosition::default()
             }),
             ..User::default()
-        };
+        });
+        let mut liq = liq_data.view();
 
         let (taker_key, maker_key, liq_key) = get_user_keys();
 
@@ -1798,8 +1814,27 @@ pub mod delisting_test {
             SpotMarketMap::load_multiple(spot_market_account_infos, true).unwrap();
 
         // taker wants to go long (would improve balance)
-        let mut longer = User {
-            orders: get_orders(Order {
+        let longer_data = crate::state::user::TestUser::new(
+            User {
+                perp_positions: get_positions(PerpPosition {
+                    market_index: 0,
+                    open_orders: 1,
+                    open_bids: BASE_PRECISION_I64,
+                    base_asset_amount: (BASE_PRECISION_I64 * 200),
+                    quote_entry_amount: (QUOTE_PRECISION_I64 * 2000), //longs have -$1 cost basis,
+                    quote_break_even_amount: (QUOTE_PRECISION_I64 * 2000), //longs have -$1 cost basis,
+                    quote_asset_amount: (QUOTE_PRECISION_I64 * 2000), //longs have -$1 cost basis,
+                    ..PerpPosition::default()
+                }),
+                spot_positions: get_spot_positions(SpotPosition {
+                    market_index: 0,
+                    balance_type: SpotBalanceType::Deposit,
+                    scaled_balance: 20000 * SPOT_BALANCE_PRECISION_U64,
+                    ..SpotPosition::default()
+                }),
+                ..User::default()
+            },
+            &get_orders(Order {
                 market_index: 0,
                 status: OrderStatus::Open,
                 order_type: OrderType::Market,
@@ -1810,28 +1845,31 @@ pub mod delisting_test {
                 auction_end_price: 100 * PRICE_PRECISION_I64,
                 auction_duration: 0,
                 ..Order::default()
-            }),
-            perp_positions: get_positions(PerpPosition {
-                market_index: 0,
-                open_orders: 1,
-                open_bids: BASE_PRECISION_I64,
-                base_asset_amount: (BASE_PRECISION_I64 * 200),
-                quote_entry_amount: (QUOTE_PRECISION_I64 * 2000), //longs have -$1 cost basis,
-                quote_break_even_amount: (QUOTE_PRECISION_I64 * 2000), //longs have -$1 cost basis,
-                quote_asset_amount: (QUOTE_PRECISION_I64 * 2000), //longs have -$1 cost basis,
-                ..PerpPosition::default()
-            }),
-            spot_positions: get_spot_positions(SpotPosition {
-                market_index: 0,
-                balance_type: SpotBalanceType::Deposit,
-                scaled_balance: 20000 * SPOT_BALANCE_PRECISION_U64,
-                ..SpotPosition::default()
-            }),
-            ..User::default()
-        };
+            })
+        );
+        let mut longer = longer_data.view();
 
-        let mut shorter = User {
-            orders: get_orders(Order {
+        let shorter_data = crate::state::user::TestUser::new(
+            User {
+                perp_positions: get_positions(PerpPosition {
+                    market_index: 0,
+                    open_orders: 1,
+                    open_asks: -BASE_PRECISION_I64 / 2,
+                    base_asset_amount: -(BASE_PRECISION_I64 * 1000),
+                    quote_entry_amount: (QUOTE_PRECISION_I64 * 97 * 1000), //shorts have $20 cost basis,
+                    quote_break_even_amount: (QUOTE_PRECISION_I64 * 97 * 1000), //shorts have $20 cost basis,
+                    quote_asset_amount: (QUOTE_PRECISION_I64 * 97 * 1000), //shorts have $20 cost basis,
+                    ..PerpPosition::default()
+                }),
+                spot_positions: get_spot_positions(SpotPosition {
+                    market_index: 0,
+                    balance_type: SpotBalanceType::Deposit,
+                    scaled_balance: 20000 * SPOT_BALANCE_PRECISION_U64,
+                    ..SpotPosition::default()
+                }),
+                ..User::default()
+            },
+            &get_orders(Order {
                 market_index: 0,
                 post_only: true,
                 status: OrderStatus::Open,
@@ -1840,25 +1878,9 @@ pub mod delisting_test {
                 base_asset_amount: BASE_PRECISION_U64 / 2,
                 price: 100 * PRICE_PRECISION_U64,
                 ..Order::default()
-            }),
-            perp_positions: get_positions(PerpPosition {
-                market_index: 0,
-                open_orders: 1,
-                open_asks: -BASE_PRECISION_I64 / 2,
-                base_asset_amount: -(BASE_PRECISION_I64 * 1000),
-                quote_entry_amount: (QUOTE_PRECISION_I64 * 97 * 1000), //shorts have $20 cost basis,
-                quote_break_even_amount: (QUOTE_PRECISION_I64 * 97 * 1000), //shorts have $20 cost basis,
-                quote_asset_amount: (QUOTE_PRECISION_I64 * 97 * 1000), //shorts have $20 cost basis,
-                ..PerpPosition::default()
-            }),
-            spot_positions: get_spot_positions(SpotPosition {
-                market_index: 0,
-                balance_type: SpotBalanceType::Deposit,
-                scaled_balance: 20000 * SPOT_BALANCE_PRECISION_U64,
-                ..SpotPosition::default()
-            }),
-            ..User::default()
-        };
+            })
+        );
+        let mut shorter = shorter_data.view();
 
         shorter.spot_positions[1] = SpotPosition {
             market_index: 1,
@@ -2184,8 +2206,27 @@ pub mod delisting_test {
             SpotMarketMap::load_multiple(spot_market_account_infos, true).unwrap();
 
         // taker wants to go long (would improve balance)
-        let mut longer = User {
-            orders: get_orders(Order {
+        let longer_data = crate::state::user::TestUser::new(
+            User {
+                perp_positions: get_positions(PerpPosition {
+                    market_index: 0,
+                    open_orders: 1,
+                    open_bids: BASE_PRECISION_I64,
+                    base_asset_amount: (BASE_PRECISION_I64 * 200),
+                    quote_entry_amount: (QUOTE_PRECISION_I64 * 200), //longs have -$1 cost basis,
+                    quote_break_even_amount: (QUOTE_PRECISION_I64 * 200), //longs have -$1 cost basis,
+                    quote_asset_amount: (QUOTE_PRECISION_I64 * 200), //longs have -$1 cost basis,
+                    ..PerpPosition::default()
+                }),
+                spot_positions: get_spot_positions(SpotPosition {
+                    market_index: 0,
+                    balance_type: SpotBalanceType::Deposit,
+                    scaled_balance: 20000 * SPOT_BALANCE_PRECISION_U64,
+                    ..SpotPosition::default()
+                }),
+                ..User::default()
+            },
+            &get_orders(Order {
                 market_index: 0,
                 status: OrderStatus::Open,
                 order_type: OrderType::Market,
@@ -2196,28 +2237,31 @@ pub mod delisting_test {
                 auction_end_price: 100 * PRICE_PRECISION_I64,
                 auction_duration: 0,
                 ..Order::default()
-            }),
-            perp_positions: get_positions(PerpPosition {
-                market_index: 0,
-                open_orders: 1,
-                open_bids: BASE_PRECISION_I64,
-                base_asset_amount: (BASE_PRECISION_I64 * 200),
-                quote_entry_amount: (QUOTE_PRECISION_I64 * 200), //longs have -$1 cost basis,
-                quote_break_even_amount: (QUOTE_PRECISION_I64 * 200), //longs have -$1 cost basis,
-                quote_asset_amount: (QUOTE_PRECISION_I64 * 200), //longs have -$1 cost basis,
-                ..PerpPosition::default()
-            }),
-            spot_positions: get_spot_positions(SpotPosition {
-                market_index: 0,
-                balance_type: SpotBalanceType::Deposit,
-                scaled_balance: 20000 * SPOT_BALANCE_PRECISION_U64,
-                ..SpotPosition::default()
-            }),
-            ..User::default()
-        };
+            })
+        );
+        let mut longer = longer_data.view();
 
-        let mut shorter = User {
-            orders: get_orders(Order {
+        let shorter_data = crate::state::user::TestUser::new(
+            User {
+                perp_positions: get_positions(PerpPosition {
+                    market_index: 0,
+                    open_orders: 1,
+                    open_asks: -BASE_PRECISION_I64 / 2,
+                    base_asset_amount: -(BASE_PRECISION_I64 * 1000),
+                    quote_entry_amount: (QUOTE_PRECISION_I64 * 97 * 1000), //shorts have $20 cost basis,
+                    quote_break_even_amount: (QUOTE_PRECISION_I64 * 97 * 1000), //shorts have $20 cost basis,
+                    quote_asset_amount: (QUOTE_PRECISION_I64 * 97 * 1000), //shorts have $20 cost basis,
+                    ..PerpPosition::default()
+                }),
+                spot_positions: get_spot_positions(SpotPosition {
+                    market_index: 0,
+                    balance_type: SpotBalanceType::Deposit,
+                    scaled_balance: 20000 * SPOT_BALANCE_PRECISION_U64,
+                    ..SpotPosition::default()
+                }),
+                ..User::default()
+            },
+            &get_orders(Order {
                 market_index: 0,
                 post_only: true,
                 status: OrderStatus::Open,
@@ -2226,25 +2270,9 @@ pub mod delisting_test {
                 base_asset_amount: BASE_PRECISION_U64 / 2,
                 price: 100 * PRICE_PRECISION_U64,
                 ..Order::default()
-            }),
-            perp_positions: get_positions(PerpPosition {
-                market_index: 0,
-                open_orders: 1,
-                open_asks: -BASE_PRECISION_I64 / 2,
-                base_asset_amount: -(BASE_PRECISION_I64 * 1000),
-                quote_entry_amount: (QUOTE_PRECISION_I64 * 97 * 1000), //shorts have $20 cost basis,
-                quote_break_even_amount: (QUOTE_PRECISION_I64 * 97 * 1000), //shorts have $20 cost basis,
-                quote_asset_amount: (QUOTE_PRECISION_I64 * 97 * 1000), //shorts have $20 cost basis,
-                ..PerpPosition::default()
-            }),
-            spot_positions: get_spot_positions(SpotPosition {
-                market_index: 0,
-                balance_type: SpotBalanceType::Deposit,
-                scaled_balance: 20000 * SPOT_BALANCE_PRECISION_U64,
-                ..SpotPosition::default()
-            }),
-            ..User::default()
-        };
+            })
+        );
+        let mut shorter = shorter_data.view();
         shorter.spot_positions[1] = SpotPosition {
             market_index: 1,
             balance_type: SpotBalanceType::Borrow,
@@ -2252,7 +2280,7 @@ pub mod delisting_test {
             ..SpotPosition::default()
         };
 
-        let mut liquidator = User {
+        let liquidator_data = crate::state::user::TestUser::from_header(User {
             spot_positions: get_spot_positions(SpotPosition {
                 market_index: 0,
                 balance_type: SpotBalanceType::Deposit,
@@ -2260,7 +2288,8 @@ pub mod delisting_test {
                 ..SpotPosition::default()
             }),
             ..User::default()
-        };
+        });
+        let mut liquidator = liquidator_data.view();
 
         // let mut filler = User::default();
 

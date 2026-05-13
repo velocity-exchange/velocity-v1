@@ -253,8 +253,23 @@ pub mod amm_jit {
         let spot_market_map = SpotMarketMap::load_one(&spot_market_account_info, true).unwrap();
 
         // taker wants to go long (would improve balance)
-        let mut taker = User {
-            orders: get_orders(Order {
+        let taker_data = crate::state::user::TestUser::new(
+            User {
+                perp_positions: get_positions(PerpPosition {
+                    market_index: 0,
+                    open_orders: 1,
+                    open_bids: BASE_PRECISION_I64,
+                    ..PerpPosition::default()
+                }),
+                spot_positions: get_spot_positions(SpotPosition {
+                    market_index: 0,
+                    balance_type: SpotBalanceType::Deposit,
+                    scaled_balance: 100 * SPOT_BALANCE_PRECISION_U64,
+                    ..SpotPosition::default()
+                }),
+                ..User::default()
+            },
+            &get_orders(Order {
                 market_index: 0,
                 status: OrderStatus::Open,
                 order_type: OrderType::Market,
@@ -267,35 +282,23 @@ pub mod amm_jit {
                 auction_duration: 0,
                 ..Order::default()
             }),
-            perp_positions: get_positions(PerpPosition {
-                market_index: 0,
-                open_orders: 1,
-                open_bids: BASE_PRECISION_I64,
-                ..PerpPosition::default()
-            }),
-            spot_positions: get_spot_positions(SpotPosition {
-                market_index: 0,
-                balance_type: SpotBalanceType::Deposit,
-                scaled_balance: 100 * SPOT_BALANCE_PRECISION_U64,
-                ..SpotPosition::default()
-            }),
-            ..User::default()
-        };
+        );
+        let mut taker = taker_data.view();
 
         let maker_key = Pubkey::from_str("My11111111111111111111111111111111111111113").unwrap();
         let maker_authority =
             Pubkey::from_str("J83w4HKfqxwcq3BEMMkPFSppX3gqekLyLJBexebFVkix").unwrap();
-        let mut maker = User {
+        let maker_orders = get_orders(Order {
+            market_index: 0,
+            post_only: true,
+            order_type: OrderType::Limit,
+            direction: PositionDirection::Short,
+            base_asset_amount: BASE_PRECISION_U64 / 2,
+            price: 100 * PRICE_PRECISION_U64,
+            ..Order::default()
+        });
+        let maker = User {
             authority: maker_authority,
-            orders: get_orders(Order {
-                market_index: 0,
-                post_only: true,
-                order_type: OrderType::Limit,
-                direction: PositionDirection::Short,
-                base_asset_amount: BASE_PRECISION_U64 / 2,
-                price: 100 * PRICE_PRECISION_U64,
-                ..Order::default()
-            }),
             perp_positions: get_positions(PerpPosition {
                 market_index: 0,
                 open_orders: 1,
@@ -310,10 +313,20 @@ pub mod amm_jit {
             }),
             ..User::default()
         };
-        create_anchor_account_info!(maker, &maker_key, User, maker_account_info);
+        let mut maker_bytes = crate::state::user::build_user_account_bytes(maker, &maker_orders);
+        let mut maker_lamports = 0;
+        let maker_owner = <User as anchor_lang::Owner>::owner();
+        let maker_account_info = crate::test_utils::create_account_info(
+            &maker_key,
+            true,
+            &mut maker_lamports,
+            &mut maker_bytes[..],
+            &maker_owner,
+        );
         let makers_and_referrers = UserMap::load_one(&maker_account_info).unwrap();
 
-        let mut filler = User::default();
+        let filler_data = crate::state::user::TestUser::from_header(User::default());
+        let mut filler = filler_data.view();
 
         let fee_structure = get_fee_structure();
 
@@ -452,8 +465,23 @@ pub mod amm_jit {
         let spot_market_map = SpotMarketMap::load_one(&spot_market_account_info, true).unwrap();
 
         // taker wants to go long (would improve balance)
-        let mut taker = User {
-            orders: get_orders(Order {
+        let taker_data = crate::state::user::TestUser::new(
+            User {
+                perp_positions: get_positions(PerpPosition {
+                    market_index: 0,
+                    open_orders: 1,
+                    open_bids: BASE_PRECISION_I64 / 2 + BASE_PRECISION_I64 * 2,
+                    ..PerpPosition::default()
+                }),
+                spot_positions: get_spot_positions(SpotPosition {
+                    market_index: 0,
+                    balance_type: SpotBalanceType::Deposit,
+                    scaled_balance: 1000 * SPOT_BALANCE_PRECISION_U64,
+                    ..SpotPosition::default()
+                }),
+                ..User::default()
+            },
+            &get_orders(Order {
                 market_index: 0,
                 status: OrderStatus::Open,
                 order_type: OrderType::Market,
@@ -466,35 +494,23 @@ pub mod amm_jit {
                 auction_duration: 10,
                 ..Order::default()
             }),
-            perp_positions: get_positions(PerpPosition {
-                market_index: 0,
-                open_orders: 1,
-                open_bids: BASE_PRECISION_I64 / 2 + BASE_PRECISION_I64 * 2,
-                ..PerpPosition::default()
-            }),
-            spot_positions: get_spot_positions(SpotPosition {
-                market_index: 0,
-                balance_type: SpotBalanceType::Deposit,
-                scaled_balance: 1000 * SPOT_BALANCE_PRECISION_U64,
-                ..SpotPosition::default()
-            }),
-            ..User::default()
-        };
+        );
+        let mut taker = taker_data.view();
 
         let maker_key = Pubkey::from_str("My11111111111111111111111111111111111111113").unwrap();
         let maker_authority =
             Pubkey::from_str("J83w4HKfqxwcq3BEMMkPFSppX3gqekLyLJBexebFVkix").unwrap();
-        let mut maker = User {
+        let maker_orders = get_orders(Order {
+            market_index: 0,
+            post_only: true,
+            order_type: OrderType::Limit,
+            direction: PositionDirection::Short,
+            base_asset_amount: BASE_PRECISION_U64 + BASE_PRECISION_U64 / 2, // maker wants full = amm wants BASE_PERCISION
+            price: 99 * PRICE_PRECISION_U64,
+            ..Order::default()
+        });
+        let maker = User {
             authority: maker_authority,
-            orders: get_orders(Order {
-                market_index: 0,
-                post_only: true,
-                order_type: OrderType::Limit,
-                direction: PositionDirection::Short,
-                base_asset_amount: BASE_PRECISION_U64 + BASE_PRECISION_U64 / 2, // maker wants full = amm wants BASE_PERCISION
-                price: 99 * PRICE_PRECISION_U64,
-                ..Order::default()
-            }),
             perp_positions: get_positions(PerpPosition {
                 market_index: 0,
                 open_orders: 1,
@@ -509,10 +525,20 @@ pub mod amm_jit {
             }),
             ..User::default()
         };
-        create_anchor_account_info!(maker, &maker_key, User, maker_account_info);
+        let mut maker_bytes = crate::state::user::build_user_account_bytes(maker, &maker_orders);
+        let mut maker_lamports = 0;
+        let maker_owner = <User as anchor_lang::Owner>::owner();
+        let maker_account_info = crate::test_utils::create_account_info(
+            &maker_key,
+            true,
+            &mut maker_lamports,
+            &mut maker_bytes[..],
+            &maker_owner,
+        );
         let makers_and_referrers = UserMap::load_one(&maker_account_info).unwrap();
 
-        let mut filler = User::default();
+        let filler_data = crate::state::user::TestUser::from_header(User::default());
+        let mut filler = filler_data.view();
 
         let fee_structure = get_fee_structure();
 
@@ -668,8 +694,23 @@ pub mod amm_jit {
         let spot_market_map = SpotMarketMap::load_one(&spot_market_account_info, true).unwrap();
 
         // taker wants to go long (would improve balance)
-        let mut taker = User {
-            orders: get_orders(Order {
+        let taker_data = crate::state::user::TestUser::new(
+            User {
+                perp_positions: get_positions(PerpPosition {
+                    market_index: 0,
+                    open_orders: 1,
+                    open_bids: BASE_PRECISION_I64 * 2,
+                    ..PerpPosition::default()
+                }),
+                spot_positions: get_spot_positions(SpotPosition {
+                    market_index: 0,
+                    balance_type: SpotBalanceType::Deposit,
+                    scaled_balance: 100 * SPOT_BALANCE_PRECISION_U64,
+                    ..SpotPosition::default()
+                }),
+                ..User::default()
+            },
+            &get_orders(Order {
                 market_index: 0,
                 status: OrderStatus::Open,
                 order_type: OrderType::Market,
@@ -682,35 +723,23 @@ pub mod amm_jit {
                 auction_duration: 0,
                 ..Order::default()
             }),
-            perp_positions: get_positions(PerpPosition {
-                market_index: 0,
-                open_orders: 1,
-                open_bids: BASE_PRECISION_I64 * 2,
-                ..PerpPosition::default()
-            }),
-            spot_positions: get_spot_positions(SpotPosition {
-                market_index: 0,
-                balance_type: SpotBalanceType::Deposit,
-                scaled_balance: 100 * SPOT_BALANCE_PRECISION_U64,
-                ..SpotPosition::default()
-            }),
-            ..User::default()
-        };
+        );
+        let mut taker = taker_data.view();
 
         let maker_key = Pubkey::from_str("My11111111111111111111111111111111111111113").unwrap();
         let maker_authority =
             Pubkey::from_str("J83w4HKfqxwcq3BEMMkPFSppX3gqekLyLJBexebFVkix").unwrap();
-        let mut maker = User {
+        let maker_orders = get_orders(Order {
+            market_index: 0,
+            post_only: true,
+            order_type: OrderType::Limit,
+            direction: PositionDirection::Short,
+            base_asset_amount: BASE_PRECISION_U64 * 2, // maker wants full = amm wants BASE_PERCISION
+            price: 99 * PRICE_PRECISION_U64,
+            ..Order::default()
+        });
+        let maker = User {
             authority: maker_authority,
-            orders: get_orders(Order {
-                market_index: 0,
-                post_only: true,
-                order_type: OrderType::Limit,
-                direction: PositionDirection::Short,
-                base_asset_amount: BASE_PRECISION_U64 * 2, // maker wants full = amm wants BASE_PERCISION
-                price: 99 * PRICE_PRECISION_U64,
-                ..Order::default()
-            }),
             perp_positions: get_positions(PerpPosition {
                 market_index: 0,
                 open_orders: 1,
@@ -725,10 +754,20 @@ pub mod amm_jit {
             }),
             ..User::default()
         };
-        create_anchor_account_info!(maker, &maker_key, User, maker_account_info);
+        let mut maker_bytes = crate::state::user::build_user_account_bytes(maker, &maker_orders);
+        let mut maker_lamports = 0;
+        let maker_owner = <User as anchor_lang::Owner>::owner();
+        let maker_account_info = crate::test_utils::create_account_info(
+            &maker_key,
+            true,
+            &mut maker_lamports,
+            &mut maker_bytes[..],
+            &maker_owner,
+        );
         let makers_and_referrers = UserMap::load_one(&maker_account_info).unwrap();
 
-        let mut filler = User::default();
+        let filler_data = crate::state::user::TestUser::from_header(User::default());
+        let mut filler = filler_data.view();
 
         let fee_structure = get_fee_structure();
 
@@ -881,8 +920,23 @@ pub mod amm_jit {
 
         // taker wants to go long (would improve balance)
         let taker_mul: i64 = 20;
-        let mut taker = User {
-            orders: get_orders(Order {
+        let taker_data = crate::state::user::TestUser::new(
+            User {
+                perp_positions: get_positions(PerpPosition {
+                    market_index: 0,
+                    open_orders: 1,
+                    open_asks: -BASE_PRECISION_I64 * taker_mul,
+                    ..PerpPosition::default()
+                }),
+                spot_positions: get_spot_positions(SpotPosition {
+                    market_index: 0,
+                    balance_type: SpotBalanceType::Deposit,
+                    scaled_balance: 100 * SPOT_BALANCE_PRECISION_U64 * taker_mul as u64,
+                    ..SpotPosition::default()
+                }),
+                ..User::default()
+            },
+            &get_orders(Order {
                 market_index: 0,
                 status: OrderStatus::Open,
                 order_type: OrderType::Market,
@@ -895,35 +949,23 @@ pub mod amm_jit {
                 auction_duration: 0,
                 ..Order::default()
             }),
-            perp_positions: get_positions(PerpPosition {
-                market_index: 0,
-                open_orders: 1,
-                open_asks: -BASE_PRECISION_I64 * taker_mul,
-                ..PerpPosition::default()
-            }),
-            spot_positions: get_spot_positions(SpotPosition {
-                market_index: 0,
-                balance_type: SpotBalanceType::Deposit,
-                scaled_balance: 100 * SPOT_BALANCE_PRECISION_U64 * taker_mul as u64,
-                ..SpotPosition::default()
-            }),
-            ..User::default()
-        };
+        );
+        let mut taker = taker_data.view();
 
         let maker_key = Pubkey::from_str("My11111111111111111111111111111111111111113").unwrap();
         let maker_authority =
             Pubkey::from_str("J83w4HKfqxwcq3BEMMkPFSppX3gqekLyLJBexebFVkix").unwrap();
-        let mut maker = User {
+        let maker_orders = get_orders(Order {
+            market_index: 0,
+            post_only: true,
+            order_type: OrderType::Limit,
+            direction: PositionDirection::Long,
+            base_asset_amount: BASE_PRECISION_U64 * taker_mul as u64, // maker wants full = amm wants BASE_PERCISION
+            price: 100 * PRICE_PRECISION_U64,
+            ..Order::default()
+        });
+        let maker = User {
             authority: maker_authority,
-            orders: get_orders(Order {
-                market_index: 0,
-                post_only: true,
-                order_type: OrderType::Limit,
-                direction: PositionDirection::Long,
-                base_asset_amount: BASE_PRECISION_U64 * taker_mul as u64, // maker wants full = amm wants BASE_PERCISION
-                price: 100 * PRICE_PRECISION_U64,
-                ..Order::default()
-            }),
             perp_positions: get_positions(PerpPosition {
                 market_index: 0,
                 open_orders: 1,
@@ -938,10 +980,20 @@ pub mod amm_jit {
             }),
             ..User::default()
         };
-        create_anchor_account_info!(maker, &maker_key, User, maker_account_info);
+        let mut maker_bytes = crate::state::user::build_user_account_bytes(maker, &maker_orders);
+        let mut maker_lamports = 0;
+        let maker_owner = <User as anchor_lang::Owner>::owner();
+        let maker_account_info = crate::test_utils::create_account_info(
+            &maker_key,
+            true,
+            &mut maker_lamports,
+            &mut maker_bytes[..],
+            &maker_owner,
+        );
         let makers_and_referrers = UserMap::load_one(&maker_account_info).unwrap();
 
-        let mut filler = User::default();
+        let filler_data = crate::state::user::TestUser::from_header(User::default());
+        let mut filler = filler_data.view();
 
         let fee_structure = get_fee_structure();
 
@@ -1102,8 +1154,23 @@ pub mod amm_jit {
         create_anchor_account_info!(spot_market, SpotMarket, spot_market_account_info);
         let spot_market_map = SpotMarketMap::load_one(&spot_market_account_info, true).unwrap();
 
-        let mut taker = User {
-            orders: get_orders(Order {
+        let taker_data = crate::state::user::TestUser::new(
+            User {
+                perp_positions: get_positions(PerpPosition {
+                    market_index: 0,
+                    open_orders: 1,
+                    open_asks: -BASE_PRECISION_I64,
+                    ..PerpPosition::default()
+                }),
+                spot_positions: get_spot_positions(SpotPosition {
+                    market_index: 0,
+                    balance_type: SpotBalanceType::Deposit,
+                    scaled_balance: 100 * SPOT_BALANCE_PRECISION_U64,
+                    ..SpotPosition::default()
+                }),
+                ..User::default()
+            },
+            &get_orders(Order {
                 market_index: 0,
                 status: OrderStatus::Open,
                 order_type: OrderType::Market,
@@ -1115,35 +1182,23 @@ pub mod amm_jit {
                 auction_duration: 0,
                 ..Order::default()
             }),
-            perp_positions: get_positions(PerpPosition {
-                market_index: 0,
-                open_orders: 1,
-                open_asks: -BASE_PRECISION_I64,
-                ..PerpPosition::default()
-            }),
-            spot_positions: get_spot_positions(SpotPosition {
-                market_index: 0,
-                balance_type: SpotBalanceType::Deposit,
-                scaled_balance: 100 * SPOT_BALANCE_PRECISION_U64,
-                ..SpotPosition::default()
-            }),
-            ..User::default()
-        };
+        );
+        let mut taker = taker_data.view();
 
         let maker_key = Pubkey::from_str("My11111111111111111111111111111111111111113").unwrap();
         let maker_authority =
             Pubkey::from_str("J83w4HKfqxwcq3BEMMkPFSppX3gqekLyLJBexebFVkix").unwrap();
-        let mut maker = User {
+        let maker_orders = get_orders(Order {
+            market_index: 0,
+            post_only: true,
+            order_type: OrderType::Limit,
+            direction: PositionDirection::Long,
+            base_asset_amount: BASE_PRECISION_U64 / 2,
+            price: 100 * PRICE_PRECISION_U64,
+            ..Order::default()
+        });
+        let maker = User {
             authority: maker_authority,
-            orders: get_orders(Order {
-                market_index: 0,
-                post_only: true,
-                order_type: OrderType::Limit,
-                direction: PositionDirection::Long,
-                base_asset_amount: BASE_PRECISION_U64 / 2,
-                price: 100 * PRICE_PRECISION_U64,
-                ..Order::default()
-            }),
             perp_positions: get_positions(PerpPosition {
                 market_index: 0,
                 open_orders: 1,
@@ -1158,10 +1213,20 @@ pub mod amm_jit {
             }),
             ..User::default()
         };
-        create_anchor_account_info!(maker, &maker_key, User, maker_account_info);
+        let mut maker_bytes = crate::state::user::build_user_account_bytes(maker, &maker_orders);
+        let mut maker_lamports = 0;
+        let maker_owner = <User as anchor_lang::Owner>::owner();
+        let maker_account_info = crate::test_utils::create_account_info(
+            &maker_key,
+            true,
+            &mut maker_lamports,
+            &mut maker_bytes[..],
+            &maker_owner,
+        );
         let makers_and_referrers = UserMap::load_one(&maker_account_info).unwrap();
 
-        let mut filler = User::default();
+        let filler_data = crate::state::user::TestUser::from_header(User::default());
+        let mut filler = filler_data.view();
 
         let fee_structure = get_fee_structure();
 
@@ -1319,8 +1384,23 @@ pub mod amm_jit {
         let spot_market_map = SpotMarketMap::load_one(&spot_market_account_info, true).unwrap();
 
         // taker wants to go long (would improve balance)
-        let mut taker = User {
-            orders: get_orders(Order {
+        let taker_data = crate::state::user::TestUser::new(
+            User {
+                perp_positions: get_positions(PerpPosition {
+                    market_index: 0,
+                    open_orders: 1,
+                    open_asks: -BASE_PRECISION_I64,
+                    ..PerpPosition::default()
+                }),
+                spot_positions: get_spot_positions(SpotPosition {
+                    market_index: 0,
+                    balance_type: SpotBalanceType::Deposit,
+                    scaled_balance: 100 * SPOT_BALANCE_PRECISION_U64,
+                    ..SpotPosition::default()
+                }),
+                ..User::default()
+            },
+            &get_orders(Order {
                 market_index: 0,
                 status: OrderStatus::Open,
                 order_type: OrderType::Market,
@@ -1332,35 +1412,23 @@ pub mod amm_jit {
                 auction_duration: 0,
                 ..Order::default()
             }),
-            perp_positions: get_positions(PerpPosition {
-                market_index: 0,
-                open_orders: 1,
-                open_asks: -BASE_PRECISION_I64,
-                ..PerpPosition::default()
-            }),
-            spot_positions: get_spot_positions(SpotPosition {
-                market_index: 0,
-                balance_type: SpotBalanceType::Deposit,
-                scaled_balance: 100 * SPOT_BALANCE_PRECISION_U64,
-                ..SpotPosition::default()
-            }),
-            ..User::default()
-        };
+        );
+        let mut taker = taker_data.view();
 
         let maker_key = Pubkey::from_str("My11111111111111111111111111111111111111113").unwrap();
         let maker_authority =
             Pubkey::from_str("J83w4HKfqxwcq3BEMMkPFSppX3gqekLyLJBexebFVkix").unwrap();
-        let mut maker = User {
+        let maker_orders = get_orders(Order {
+            market_index: 0,
+            post_only: true,
+            order_type: OrderType::Limit,
+            direction: PositionDirection::Long,
+            base_asset_amount: BASE_PRECISION_U64 / 2,
+            price: 100 * PRICE_PRECISION_U64,
+            ..Order::default()
+        });
+        let maker = User {
             authority: maker_authority,
-            orders: get_orders(Order {
-                market_index: 0,
-                post_only: true,
-                order_type: OrderType::Limit,
-                direction: PositionDirection::Long,
-                base_asset_amount: BASE_PRECISION_U64 / 2,
-                price: 100 * PRICE_PRECISION_U64,
-                ..Order::default()
-            }),
             perp_positions: get_positions(PerpPosition {
                 market_index: 0,
                 open_orders: 1,
@@ -1376,10 +1444,20 @@ pub mod amm_jit {
             ..User::default()
         };
 
-        create_anchor_account_info!(maker, &maker_key, User, maker_account_info);
+        let mut maker_bytes = crate::state::user::build_user_account_bytes(maker, &maker_orders);
+        let mut maker_lamports = 0;
+        let maker_owner = <User as anchor_lang::Owner>::owner();
+        let maker_account_info = crate::test_utils::create_account_info(
+            &maker_key,
+            true,
+            &mut maker_lamports,
+            &mut maker_bytes[..],
+            &maker_owner,
+        );
         let makers_and_referrers = UserMap::load_one(&maker_account_info).unwrap();
 
-        let mut filler = User::default();
+        let filler_data = crate::state::user::TestUser::from_header(User::default());
+        let mut filler = filler_data.view();
 
         let fee_structure = get_fee_structure();
 
@@ -1540,8 +1618,23 @@ pub mod amm_jit {
         let spot_market_map = SpotMarketMap::load_one(&spot_market_account_info, true).unwrap();
 
         // taker wants to go long (would improve balance)
-        let mut taker = User {
-            orders: get_orders(Order {
+        let taker_data = crate::state::user::TestUser::new(
+            User {
+                perp_positions: get_positions(PerpPosition {
+                    market_index: 0,
+                    open_orders: 1,
+                    open_asks: -BASE_PRECISION_I64,
+                    ..PerpPosition::default()
+                }),
+                spot_positions: get_spot_positions(SpotPosition {
+                    market_index: 0,
+                    balance_type: SpotBalanceType::Deposit,
+                    scaled_balance: 100 * SPOT_BALANCE_PRECISION_U64,
+                    ..SpotPosition::default()
+                }),
+                ..User::default()
+            },
+            &get_orders(Order {
                 market_index: 0,
                 status: OrderStatus::Open,
                 order_type: OrderType::Market,
@@ -1553,35 +1646,23 @@ pub mod amm_jit {
                 auction_duration: 0,
                 ..Order::default()
             }),
-            perp_positions: get_positions(PerpPosition {
-                market_index: 0,
-                open_orders: 1,
-                open_asks: -BASE_PRECISION_I64,
-                ..PerpPosition::default()
-            }),
-            spot_positions: get_spot_positions(SpotPosition {
-                market_index: 0,
-                balance_type: SpotBalanceType::Deposit,
-                scaled_balance: 100 * SPOT_BALANCE_PRECISION_U64,
-                ..SpotPosition::default()
-            }),
-            ..User::default()
-        };
+        );
+        let mut taker = taker_data.view();
 
         let maker_key = Pubkey::from_str("My11111111111111111111111111111111111111113").unwrap();
         let maker_authority =
             Pubkey::from_str("J83w4HKfqxwcq3BEMMkPFSppX3gqekLyLJBexebFVkix").unwrap();
-        let mut maker = User {
+        let maker_orders = get_orders(Order {
+            market_index: 0,
+            post_only: true,
+            order_type: OrderType::Limit,
+            direction: PositionDirection::Long,
+            base_asset_amount: BASE_PRECISION_U64 / 2,
+            price: 100 * PRICE_PRECISION_U64,
+            ..Order::default()
+        });
+        let maker = User {
             authority: maker_authority,
-            orders: get_orders(Order {
-                market_index: 0,
-                post_only: true,
-                order_type: OrderType::Limit,
-                direction: PositionDirection::Long,
-                base_asset_amount: BASE_PRECISION_U64 / 2,
-                price: 100 * PRICE_PRECISION_U64,
-                ..Order::default()
-            }),
             perp_positions: get_positions(PerpPosition {
                 market_index: 0,
                 open_orders: 1,
@@ -1597,10 +1678,20 @@ pub mod amm_jit {
             ..User::default()
         };
 
-        create_anchor_account_info!(maker, &maker_key, User, maker_account_info);
+        let mut maker_bytes = crate::state::user::build_user_account_bytes(maker, &maker_orders);
+        let mut maker_lamports = 0;
+        let maker_owner = <User as anchor_lang::Owner>::owner();
+        let maker_account_info = crate::test_utils::create_account_info(
+            &maker_key,
+            true,
+            &mut maker_lamports,
+            &mut maker_bytes[..],
+            &maker_owner,
+        );
         let makers_and_referrers = UserMap::load_one(&maker_account_info).unwrap();
 
-        let mut filler = User::default();
+        let filler_data = crate::state::user::TestUser::from_header(User::default());
+        let mut filler = filler_data.view();
 
         let fee_structure = get_fee_structure();
 
@@ -1745,8 +1836,23 @@ pub mod amm_jit {
         let spot_market_map = SpotMarketMap::load_one(&spot_market_account_info, true).unwrap();
 
         // taker wants to go long (would improve balance)
-        let mut taker = User {
-            orders: get_orders(Order {
+        let taker_data = crate::state::user::TestUser::new(
+            User {
+                perp_positions: get_positions(PerpPosition {
+                    market_index: 0,
+                    open_orders: 1,
+                    open_bids: BASE_PRECISION_I64,
+                    ..PerpPosition::default()
+                }),
+                spot_positions: get_spot_positions(SpotPosition {
+                    market_index: 0,
+                    balance_type: SpotBalanceType::Deposit,
+                    scaled_balance: 100 * SPOT_BALANCE_PRECISION_U64,
+                    ..SpotPosition::default()
+                }),
+                ..User::default()
+            },
+            &get_orders(Order {
                 market_index: 0,
                 status: OrderStatus::Open,
                 order_type: OrderType::Market,
@@ -1758,35 +1864,23 @@ pub mod amm_jit {
                 auction_duration: 0,
                 ..Order::default()
             }),
-            perp_positions: get_positions(PerpPosition {
-                market_index: 0,
-                open_orders: 1,
-                open_bids: BASE_PRECISION_I64,
-                ..PerpPosition::default()
-            }),
-            spot_positions: get_spot_positions(SpotPosition {
-                market_index: 0,
-                balance_type: SpotBalanceType::Deposit,
-                scaled_balance: 100 * SPOT_BALANCE_PRECISION_U64,
-                ..SpotPosition::default()
-            }),
-            ..User::default()
-        };
+        );
+        let mut taker = taker_data.view();
 
         let maker_key = Pubkey::from_str("My11111111111111111111111111111111111111113").unwrap();
         let maker_authority =
             Pubkey::from_str("J83w4HKfqxwcq3BEMMkPFSppX3gqekLyLJBexebFVkix").unwrap();
-        let mut maker = User {
+        let maker_orders = get_orders(Order {
+            market_index: 0,
+            post_only: true,
+            order_type: OrderType::Limit,
+            direction: PositionDirection::Short,
+            base_asset_amount: BASE_PRECISION_U64 / 2,
+            price: 100 * PRICE_PRECISION_U64,
+            ..Order::default()
+        });
+        let maker = User {
             authority: maker_authority,
-            orders: get_orders(Order {
-                market_index: 0,
-                post_only: true,
-                order_type: OrderType::Limit,
-                direction: PositionDirection::Short,
-                base_asset_amount: BASE_PRECISION_U64 / 2,
-                price: 100 * PRICE_PRECISION_U64,
-                ..Order::default()
-            }),
             perp_positions: get_positions(PerpPosition {
                 market_index: 0,
                 open_orders: 1,
@@ -1801,10 +1895,20 @@ pub mod amm_jit {
             }),
             ..User::default()
         };
-        create_anchor_account_info!(maker, &maker_key, User, maker_account_info);
+        let mut maker_bytes = crate::state::user::build_user_account_bytes(maker, &maker_orders);
+        let mut maker_lamports = 0;
+        let maker_owner = <User as anchor_lang::Owner>::owner();
+        let maker_account_info = crate::test_utils::create_account_info(
+            &maker_key,
+            true,
+            &mut maker_lamports,
+            &mut maker_bytes[..],
+            &maker_owner,
+        );
         let makers_and_referrers = UserMap::load_one(&maker_account_info).unwrap();
 
-        let mut filler = User::default();
+        let filler_data = crate::state::user::TestUser::from_header(User::default());
+        let mut filler = filler_data.view();
 
         let fee_structure = get_fee_structure();
 
@@ -1944,8 +2048,23 @@ pub mod amm_jit {
         let spot_market_map = SpotMarketMap::load_one(&spot_market_account_info, true).unwrap();
 
         // taker wants to go long (would improve balance)
-        let mut taker = User {
-            orders: get_orders(Order {
+        let taker_data = crate::state::user::TestUser::new(
+            User {
+                perp_positions: get_positions(PerpPosition {
+                    market_index: 0,
+                    open_orders: 1,
+                    open_bids: BASE_PRECISION_I64,
+                    ..PerpPosition::default()
+                }),
+                spot_positions: get_spot_positions(SpotPosition {
+                    market_index: 0,
+                    balance_type: SpotBalanceType::Deposit,
+                    scaled_balance: 100 * SPOT_BALANCE_PRECISION_U64,
+                    ..SpotPosition::default()
+                }),
+                ..User::default()
+            },
+            &get_orders(Order {
                 market_index: 0,
                 status: OrderStatus::Open,
                 order_type: OrderType::Market,
@@ -1957,35 +2076,23 @@ pub mod amm_jit {
                 auction_duration: 50, // !! amm will bid before the ask spread price
                 ..Order::default()
             }),
-            perp_positions: get_positions(PerpPosition {
-                market_index: 0,
-                open_orders: 1,
-                open_bids: BASE_PRECISION_I64,
-                ..PerpPosition::default()
-            }),
-            spot_positions: get_spot_positions(SpotPosition {
-                market_index: 0,
-                balance_type: SpotBalanceType::Deposit,
-                scaled_balance: 100 * SPOT_BALANCE_PRECISION_U64,
-                ..SpotPosition::default()
-            }),
-            ..User::default()
-        };
+        );
+        let mut taker = taker_data.view();
 
         let maker_key = Pubkey::from_str("My11111111111111111111111111111111111111113").unwrap();
         let maker_authority =
             Pubkey::from_str("J83w4HKfqxwcq3BEMMkPFSppX3gqekLyLJBexebFVkix").unwrap();
-        let mut maker = User {
+        let maker_orders = get_orders(Order {
+            market_index: 0,
+            post_only: true,
+            order_type: OrderType::Limit,
+            direction: PositionDirection::Short,
+            base_asset_amount: BASE_PRECISION_U64 / 2,
+            price: 10 * PRICE_PRECISION_U64,
+            ..Order::default()
+        });
+        let maker = User {
             authority: maker_authority,
-            orders: get_orders(Order {
-                market_index: 0,
-                post_only: true,
-                order_type: OrderType::Limit,
-                direction: PositionDirection::Short,
-                base_asset_amount: BASE_PRECISION_U64 / 2,
-                price: 10 * PRICE_PRECISION_U64,
-                ..Order::default()
-            }),
             perp_positions: get_positions(PerpPosition {
                 market_index: 0,
                 open_orders: 1,
@@ -2000,10 +2107,20 @@ pub mod amm_jit {
             }),
             ..User::default()
         };
-        create_anchor_account_info!(maker, &maker_key, User, maker_account_info);
+        let mut maker_bytes = crate::state::user::build_user_account_bytes(maker, &maker_orders);
+        let mut maker_lamports = 0;
+        let maker_owner = <User as anchor_lang::Owner>::owner();
+        let maker_account_info = crate::test_utils::create_account_info(
+            &maker_key,
+            true,
+            &mut maker_lamports,
+            &mut maker_bytes[..],
+            &maker_owner,
+        );
         let makers_and_referrers = UserMap::load_one(&maker_account_info).unwrap();
 
-        let mut filler = User::default();
+        let filler_data = crate::state::user::TestUser::from_header(User::default());
+        let mut filler = filler_data.view();
 
         let fee_structure = get_fee_structure();
 
@@ -2159,8 +2276,23 @@ pub mod amm_jit {
         let spot_market_map = SpotMarketMap::load_one(&spot_market_account_info, true).unwrap();
 
         // taker wants to go long (would improve balance)
-        let mut taker = User {
-            orders: get_orders(Order {
+        let taker_data = crate::state::user::TestUser::new(
+            User {
+                perp_positions: get_positions(PerpPosition {
+                    market_index: 0,
+                    open_orders: 1,
+                    open_asks: -BASE_PRECISION_I64,
+                    ..PerpPosition::default()
+                }),
+                spot_positions: get_spot_positions(SpotPosition {
+                    market_index: 0,
+                    balance_type: SpotBalanceType::Deposit,
+                    scaled_balance: 100 * SPOT_BALANCE_PRECISION_U64,
+                    ..SpotPosition::default()
+                }),
+                ..User::default()
+            },
+            &get_orders(Order {
                 market_index: 0,
                 status: OrderStatus::Open,
                 order_type: OrderType::Market,
@@ -2172,35 +2304,23 @@ pub mod amm_jit {
                 auction_duration: 50, // !! amm will bid before the ask spread price
                 ..Order::default()
             }),
-            perp_positions: get_positions(PerpPosition {
-                market_index: 0,
-                open_orders: 1,
-                open_asks: -BASE_PRECISION_I64,
-                ..PerpPosition::default()
-            }),
-            spot_positions: get_spot_positions(SpotPosition {
-                market_index: 0,
-                balance_type: SpotBalanceType::Deposit,
-                scaled_balance: 100 * SPOT_BALANCE_PRECISION_U64,
-                ..SpotPosition::default()
-            }),
-            ..User::default()
-        };
+        );
+        let mut taker = taker_data.view();
 
         let maker_key = Pubkey::from_str("My11111111111111111111111111111111111111113").unwrap();
         let maker_authority =
             Pubkey::from_str("J83w4HKfqxwcq3BEMMkPFSppX3gqekLyLJBexebFVkix").unwrap();
-        let mut maker = User {
+        let maker_orders = get_orders(Order {
+            market_index: 0,
+            post_only: true,
+            order_type: OrderType::Limit,
+            direction: PositionDirection::Long,
+            base_asset_amount: BASE_PRECISION_U64 / 2,
+            price: 200 * PRICE_PRECISION_U64,
+            ..Order::default()
+        });
+        let maker = User {
             authority: maker_authority,
-            orders: get_orders(Order {
-                market_index: 0,
-                post_only: true,
-                order_type: OrderType::Limit,
-                direction: PositionDirection::Long,
-                base_asset_amount: BASE_PRECISION_U64 / 2,
-                price: 200 * PRICE_PRECISION_U64,
-                ..Order::default()
-            }),
             perp_positions: get_positions(PerpPosition {
                 market_index: 0,
                 open_orders: 1,
@@ -2215,10 +2335,20 @@ pub mod amm_jit {
             }),
             ..User::default()
         };
-        create_anchor_account_info!(maker, &maker_key, User, maker_account_info);
+        let mut maker_bytes = crate::state::user::build_user_account_bytes(maker, &maker_orders);
+        let mut maker_lamports = 0;
+        let maker_owner = <User as anchor_lang::Owner>::owner();
+        let maker_account_info = crate::test_utils::create_account_info(
+            &maker_key,
+            true,
+            &mut maker_lamports,
+            &mut maker_bytes[..],
+            &maker_owner,
+        );
         let makers_and_referrers = UserMap::load_one(&maker_account_info).unwrap();
 
-        let mut filler = User::default();
+        let filler_data = crate::state::user::TestUser::from_header(User::default());
+        let mut filler = filler_data.view();
 
         let fee_structure = get_fee_structure();
 
@@ -2382,8 +2512,23 @@ pub mod amm_jit {
 
         // taker wants to go long (would improve balance)
         let auction_duration = 50;
-        let mut taker = User {
-            orders: get_orders(Order {
+        let taker_data = crate::state::user::TestUser::new(
+            User {
+                perp_positions: get_positions(PerpPosition {
+                    market_index: 0,
+                    open_orders: 1,
+                    open_bids: -100 * BASE_PRECISION_I64,
+                    ..PerpPosition::default()
+                }),
+                spot_positions: get_spot_positions(SpotPosition {
+                    market_index: 0,
+                    balance_type: SpotBalanceType::Deposit,
+                    scaled_balance: 100 * 100 * SPOT_BALANCE_PRECISION_U64,
+                    ..SpotPosition::default()
+                }),
+                ..User::default()
+            },
+            &get_orders(Order {
                 market_index: 0,
                 status: OrderStatus::Open,
                 order_type: OrderType::Market,
@@ -2393,28 +2538,17 @@ pub mod amm_jit {
                 auction_duration,
                 ..Order::default()
             }),
-            perp_positions: get_positions(PerpPosition {
-                market_index: 0,
-                open_orders: 1,
-                open_bids: -100 * BASE_PRECISION_I64,
-                ..PerpPosition::default()
-            }),
-            spot_positions: get_spot_positions(SpotPosition {
-                market_index: 0,
-                balance_type: SpotBalanceType::Deposit,
-                scaled_balance: 100 * 100 * SPOT_BALANCE_PRECISION_U64,
-                ..SpotPosition::default()
-            }),
-            ..User::default()
-        };
+        );
+        let mut taker = taker_data.view();
 
         let auction_start_price = 95062500_i64;
         let auction_end_price = 132154089_i64;
-        taker.order(0).auction_start_price = auction_start_price;
-        taker.order(0).auction_end_price = auction_end_price;
+        taker.order_mut(0).auction_start_price = auction_start_price;
+        taker.order_mut(0).auction_end_price = auction_end_price;
         println!("start stop {} {}", auction_start_price, auction_end_price);
 
-        let mut filler = User::default();
+        let filler_data = crate::state::user::TestUser::from_header(User::default());
+        let mut filler = filler_data.view();
 
         let fee_structure = get_fee_structure();
 
@@ -2473,17 +2607,17 @@ pub mod amm_jit {
             };
             println!("mark: {} bid ask: {} {}", mark, bid, ask);
 
-            let mut maker = User {
+            let maker_orders = get_orders(Order {
+                market_index: 0,
+                post_only: true,
+                order_type: OrderType::Limit,
+                direction: PositionDirection::Short,
+                base_asset_amount: baa,
+                price: auction_price,
+                ..Order::default()
+            });
+            let maker = User {
                 authority: maker_authority,
-                orders: get_orders(Order {
-                    market_index: 0,
-                    post_only: true,
-                    order_type: OrderType::Limit,
-                    direction: PositionDirection::Short,
-                    base_asset_amount: baa,
-                    price: auction_price,
-                    ..Order::default()
-                }),
                 perp_positions: get_positions(PerpPosition {
                     market_index: 0,
                     open_orders: 1,
@@ -2498,7 +2632,17 @@ pub mod amm_jit {
                 }),
                 ..User::default()
             };
-            create_anchor_account_info!(maker, &maker_key, User, maker_account_info);
+            let mut maker_bytes =
+                crate::state::user::build_user_account_bytes(maker, &maker_orders);
+            let mut maker_lamports = 0;
+            let maker_owner = <User as anchor_lang::Owner>::owner();
+            let maker_account_info = crate::test_utils::create_account_info(
+                &maker_key,
+                true,
+                &mut maker_lamports,
+                &mut maker_bytes[..],
+                &maker_owner,
+            );
             let makers_and_referrers = UserMap::load_one(&maker_account_info).unwrap();
 
             let order_index = 0;
@@ -2660,8 +2804,23 @@ pub mod amm_jit {
 
         // taker wants to go long (would improve balance)
         let auction_duration = 50;
-        let mut taker = User {
-            orders: get_orders(Order {
+        let taker_data = crate::state::user::TestUser::new(
+            User {
+                perp_positions: get_positions(PerpPosition {
+                    market_index: 0,
+                    open_orders: 1,
+                    open_asks: -100 * BASE_PRECISION_I64,
+                    ..PerpPosition::default()
+                }),
+                spot_positions: get_spot_positions(SpotPosition {
+                    market_index: 0,
+                    balance_type: SpotBalanceType::Deposit,
+                    scaled_balance: 100 * 100 * SPOT_BALANCE_PRECISION_U64,
+                    ..SpotPosition::default()
+                }),
+                ..User::default()
+            },
+            &get_orders(Order {
                 market_index: 0,
                 status: OrderStatus::Open,
                 order_type: OrderType::Market,
@@ -2673,28 +2832,17 @@ pub mod amm_jit {
                 auction_start_price: 200 * PRICE_PRECISION as i64,
                 ..Order::default()
             }),
-            perp_positions: get_positions(PerpPosition {
-                market_index: 0,
-                open_orders: 1,
-                open_asks: -100 * BASE_PRECISION_I64,
-                ..PerpPosition::default()
-            }),
-            spot_positions: get_spot_positions(SpotPosition {
-                market_index: 0,
-                balance_type: SpotBalanceType::Deposit,
-                scaled_balance: 100 * 100 * SPOT_BALANCE_PRECISION_U64,
-                ..SpotPosition::default()
-            }),
-            ..User::default()
-        };
+        );
+        let mut taker = taker_data.view();
 
         let auction_start_price = 105062500;
         let auction_end_price = 79550209;
-        taker.order(0).auction_start_price = auction_start_price;
-        taker.order(0).auction_end_price = auction_end_price;
+        taker.order_mut(0).auction_start_price = auction_start_price;
+        taker.order_mut(0).auction_end_price = auction_end_price;
         println!("start stop {} {}", auction_start_price, auction_end_price);
 
-        let mut filler = User::default();
+        let filler_data = crate::state::user::TestUser::from_header(User::default());
+        let mut filler = filler_data.view();
         let fee_structure = get_fee_structure();
 
         let (taker_key, _, filler_key) = get_user_keys();
@@ -2754,17 +2902,17 @@ pub mod amm_jit {
             };
             println!("mark: {} bid ask: {} {}", mark, bid, ask);
 
-            let mut maker = User {
+            let maker_orders = get_orders(Order {
+                market_index: 0,
+                post_only: true,
+                order_type: OrderType::Limit,
+                direction: PositionDirection::Long,
+                base_asset_amount: baa as u64,
+                price: auction_price,
+                ..Order::default()
+            });
+            let maker = User {
                 authority: maker_authority,
-                orders: get_orders(Order {
-                    market_index: 0,
-                    post_only: true,
-                    order_type: OrderType::Limit,
-                    direction: PositionDirection::Long,
-                    base_asset_amount: baa as u64,
-                    price: auction_price,
-                    ..Order::default()
-                }),
                 perp_positions: get_positions(PerpPosition {
                     market_index: 0,
                     open_orders: 1,
@@ -2779,7 +2927,17 @@ pub mod amm_jit {
                 }),
                 ..User::default()
             };
-            create_anchor_account_info!(maker, &maker_key, User, maker_account_info);
+            let mut maker_bytes =
+                crate::state::user::build_user_account_bytes(maker, &maker_orders);
+            let mut maker_lamports = 0;
+            let maker_owner = <User as anchor_lang::Owner>::owner();
+            let maker_account_info = crate::test_utils::create_account_info(
+                &maker_key,
+                true,
+                &mut maker_lamports,
+                &mut maker_bytes[..],
+                &maker_owner,
+            );
             let makers_and_referrers = UserMap::load_one(&maker_account_info).unwrap();
 
             // fulfill with match
@@ -2941,8 +3099,24 @@ pub mod amm_jit {
         let spot_market_map = SpotMarketMap::load_one(&spot_market_account_info, true).unwrap();
 
         // taker wants to go long (would improve balance)
-        let mut taker = User {
-            orders: get_orders(Order {
+        let taker_data = crate::state::user::TestUser::new(
+            User {
+                perp_positions: get_positions(PerpPosition {
+                    market_index: 0,
+                    open_orders: 1,
+                    open_bids: BASE_PRECISION_I64,
+                    ..PerpPosition::default()
+                }),
+                spot_positions: get_spot_positions(SpotPosition {
+                    market_index: 0,
+                    balance_type: SpotBalanceType::Deposit,
+                    scaled_balance: 100 * SPOT_BALANCE_PRECISION_U64,
+                    ..SpotPosition::default()
+                }),
+                next_order_id: 1,
+                ..User::default()
+            },
+            &get_orders(Order {
                 market_index: 0,
                 status: OrderStatus::Open,
                 order_type: OrderType::Market,
@@ -2954,36 +3128,23 @@ pub mod amm_jit {
                 auction_duration: 0, // expired auction
                 ..Order::default()
             }),
-            perp_positions: get_positions(PerpPosition {
-                market_index: 0,
-                open_orders: 1,
-                open_bids: BASE_PRECISION_I64,
-                ..PerpPosition::default()
-            }),
-            spot_positions: get_spot_positions(SpotPosition {
-                market_index: 0,
-                balance_type: SpotBalanceType::Deposit,
-                scaled_balance: 100 * SPOT_BALANCE_PRECISION_U64,
-                ..SpotPosition::default()
-            }),
-            next_order_id: 1,
-            ..User::default()
-        };
+        );
+        let mut taker = taker_data.view();
 
         let maker_key = Pubkey::from_str("My11111111111111111111111111111111111111113").unwrap();
         let maker_authority =
             Pubkey::from_str("J83w4HKfqxwcq3BEMMkPFSppX3gqekLyLJBexebFVkix").unwrap();
-        let mut maker = User {
+        let maker_orders = get_orders(Order {
+            market_index: 0,
+            post_only: true,
+            order_type: OrderType::Limit,
+            direction: PositionDirection::Short,
+            base_asset_amount: BASE_PRECISION_U64 / 2,
+            price: 10 * PRICE_PRECISION_U64,
+            ..Order::default()
+        });
+        let maker = User {
             authority: maker_authority,
-            orders: get_orders(Order {
-                market_index: 0,
-                post_only: true,
-                order_type: OrderType::Limit,
-                direction: PositionDirection::Short,
-                base_asset_amount: BASE_PRECISION_U64 / 2,
-                price: 10 * PRICE_PRECISION_U64,
-                ..Order::default()
-            }),
             perp_positions: get_positions(PerpPosition {
                 market_index: 0,
                 open_orders: 1,
@@ -2998,10 +3159,20 @@ pub mod amm_jit {
             }),
             ..User::default()
         };
-        create_anchor_account_info!(maker, &maker_key, User, maker_account_info);
+        let mut maker_bytes = crate::state::user::build_user_account_bytes(maker, &maker_orders);
+        let mut maker_lamports = 0;
+        let maker_owner = <User as anchor_lang::Owner>::owner();
+        let maker_account_info = crate::test_utils::create_account_info(
+            &maker_key,
+            true,
+            &mut maker_lamports,
+            &mut maker_bytes[..],
+            &maker_owner,
+        );
         let makers_and_referrers = UserMap::load_one(&maker_account_info).unwrap();
 
-        let mut filler = User::default();
+        let filler_data = crate::state::user::TestUser::from_header(User::default());
+        let mut filler = filler_data.view();
 
         let fee_structure = get_fee_structure();
 

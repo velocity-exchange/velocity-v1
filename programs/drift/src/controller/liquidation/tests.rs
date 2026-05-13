@@ -102,8 +102,7 @@ pub mod liquidate_perp {
         };
         create_anchor_account_info!(spot_market, SpotMarket, spot_market_account_info);
         let spot_market_map = SpotMarketMap::load_one(&spot_market_account_info, true).unwrap();
-        let mut user = User {
-            orders: [Order::default(); 32],
+        let user_data = crate::state::user::TestUser::from_header(User {
             perp_positions: [PerpPosition::default(); 8],
             spot_positions: get_spot_positions(SpotPosition {
                 market_index: 0,
@@ -113,7 +112,8 @@ pub mod liquidate_perp {
             }),
             status: UserStatus::BeingLiquidated as u8,
             ..User::default()
-        };
+        });
+        let mut user = user_data.view();
         let mut liquidator = User {
             spot_positions: get_spot_positions(SpotPosition {
                 market_index: 0,
@@ -218,8 +218,23 @@ pub mod liquidate_perp {
         create_anchor_account_info!(spot_market, SpotMarket, spot_market_account_info);
         let spot_market_map = SpotMarketMap::load_one(&spot_market_account_info, true).unwrap();
 
-        let mut user = User {
-            orders: get_orders(Order {
+        let user_data = crate::state::user::TestUser::new(
+            User {
+                perp_positions: get_positions(PerpPosition {
+                    market_index: 0,
+                    base_asset_amount: BASE_PRECISION_I64,
+                    quote_asset_amount: -150 * QUOTE_PRECISION_I64,
+                    quote_entry_amount: -150 * QUOTE_PRECISION_I64,
+                    quote_break_even_amount: -150 * QUOTE_PRECISION_I64,
+                    open_orders: 1,
+                    open_bids: BASE_PRECISION_I64,
+                    ..PerpPosition::default()
+                }),
+                spot_positions: [SpotPosition::default(); 8],
+
+                ..User::default()
+            },
+            &get_orders(Order {
                 market_index: 0,
                 status: OrderStatus::Open,
                 order_type: OrderType::Limit,
@@ -228,20 +243,8 @@ pub mod liquidate_perp {
                 slot: 0,
                 ..Order::default()
             }),
-            perp_positions: get_positions(PerpPosition {
-                market_index: 0,
-                base_asset_amount: BASE_PRECISION_I64,
-                quote_asset_amount: -150 * QUOTE_PRECISION_I64,
-                quote_entry_amount: -150 * QUOTE_PRECISION_I64,
-                quote_break_even_amount: -150 * QUOTE_PRECISION_I64,
-                open_orders: 1,
-                open_bids: BASE_PRECISION_I64,
-                ..PerpPosition::default()
-            }),
-            spot_positions: [SpotPosition::default(); 8],
-
-            ..User::default()
-        };
+        );
+        let mut user = user_data.view();
 
         let mut liquidator = User {
             spot_positions: get_spot_positions(SpotPosition {
@@ -368,8 +371,23 @@ pub mod liquidate_perp {
         create_anchor_account_info!(spot_market, SpotMarket, spot_market_account_info);
         let spot_market_map = SpotMarketMap::load_one(&spot_market_account_info, true).unwrap();
 
-        let mut user = User {
-            orders: get_orders(Order {
+        let user_data = crate::state::user::TestUser::new(
+            User {
+                perp_positions: get_positions(PerpPosition {
+                    market_index: 0,
+                    base_asset_amount: -BASE_PRECISION_I64,
+                    quote_asset_amount: 50 * QUOTE_PRECISION_I64,
+                    quote_entry_amount: 50 * QUOTE_PRECISION_I64,
+                    quote_break_even_amount: 50 * QUOTE_PRECISION_I64,
+                    open_orders: 1,
+                    open_asks: -BASE_PRECISION_I64,
+                    ..PerpPosition::default()
+                }),
+                spot_positions: [SpotPosition::default(); 8],
+
+                ..User::default()
+            },
+            &get_orders(Order {
                 market_index: 0,
                 status: OrderStatus::Open,
                 order_type: OrderType::Limit,
@@ -378,20 +396,8 @@ pub mod liquidate_perp {
                 slot: 0,
                 ..Order::default()
             }),
-            perp_positions: get_positions(PerpPosition {
-                market_index: 0,
-                base_asset_amount: -BASE_PRECISION_I64,
-                quote_asset_amount: 50 * QUOTE_PRECISION_I64,
-                quote_entry_amount: 50 * QUOTE_PRECISION_I64,
-                quote_break_even_amount: 50 * QUOTE_PRECISION_I64,
-                open_orders: 1,
-                open_asks: -BASE_PRECISION_I64,
-                ..PerpPosition::default()
-            }),
-            spot_positions: [SpotPosition::default(); 8],
-
-            ..User::default()
-        };
+        );
+        let mut user = user_data.view();
 
         let mut liquidator = User {
             spot_positions: get_spot_positions(SpotPosition {
@@ -514,8 +520,25 @@ pub mod liquidate_perp {
         create_anchor_account_info!(spot_market, SpotMarket, spot_market_account_info);
         let spot_market_map = SpotMarketMap::load_one(&spot_market_account_info, true).unwrap();
 
-        let mut user = User {
-            orders: get_orders(Order {
+        let user_data = crate::state::user::TestUser::new(
+            User {
+                perp_positions: get_positions(PerpPosition {
+                    market_index: 0,
+                    base_asset_amount: BASE_PRECISION_I64,
+                    quote_asset_amount: 100 * QUOTE_PRECISION_I64,
+                    open_orders: 1,
+                    open_bids: 1000 * BASE_PRECISION_I64,
+                    ..PerpPosition::default()
+                }),
+                spot_positions: get_spot_positions(SpotPosition {
+                    market_index: 0,
+                    balance_type: SpotBalanceType::Deposit,
+                    scaled_balance: 50 * SPOT_BALANCE_PRECISION_U64,
+                    ..SpotPosition::default()
+                }),
+                ..User::default()
+            },
+            &get_orders(Order {
                 market_index: 0,
                 status: OrderStatus::Open,
                 order_type: OrderType::Limit,
@@ -524,22 +547,8 @@ pub mod liquidate_perp {
                 slot: 0,
                 ..Order::default()
             }),
-            perp_positions: get_positions(PerpPosition {
-                market_index: 0,
-                base_asset_amount: BASE_PRECISION_I64,
-                quote_asset_amount: 100 * QUOTE_PRECISION_I64,
-                open_orders: 1,
-                open_bids: 1000 * BASE_PRECISION_I64,
-                ..PerpPosition::default()
-            }),
-            spot_positions: get_spot_positions(SpotPosition {
-                market_index: 0,
-                balance_type: SpotBalanceType::Deposit,
-                scaled_balance: 50 * SPOT_BALANCE_PRECISION_U64,
-                ..SpotPosition::default()
-            }),
-            ..User::default()
-        };
+        );
+        let mut user = user_data.view();
 
         let mut liquidator = User {
             spot_positions: get_spot_positions(SpotPosition {
@@ -652,8 +661,23 @@ pub mod liquidate_perp {
         create_anchor_account_info!(spot_market, SpotMarket, spot_market_account_info);
         let spot_market_map = SpotMarketMap::load_one(&spot_market_account_info, true).unwrap();
 
-        let mut user = User {
-            orders: get_orders(Order {
+        let user_data = crate::state::user::TestUser::new(
+            User {
+                perp_positions: get_positions(PerpPosition {
+                    market_index: 0,
+                    base_asset_amount: BASE_PRECISION_I64,
+                    quote_asset_amount: -150 * QUOTE_PRECISION_I64,
+                    quote_entry_amount: -150 * QUOTE_PRECISION_I64,
+                    quote_break_even_amount: -150 * QUOTE_PRECISION_I64,
+                    open_orders: 1,
+                    open_bids: BASE_PRECISION_I64,
+                    ..PerpPosition::default()
+                }),
+                spot_positions: [SpotPosition::default(); 8],
+
+                ..User::default()
+            },
+            &get_orders(Order {
                 market_index: 0,
                 status: OrderStatus::Open,
                 order_type: OrderType::Limit,
@@ -662,20 +686,8 @@ pub mod liquidate_perp {
                 slot: 0,
                 ..Order::default()
             }),
-            perp_positions: get_positions(PerpPosition {
-                market_index: 0,
-                base_asset_amount: BASE_PRECISION_I64,
-                quote_asset_amount: -150 * QUOTE_PRECISION_I64,
-                quote_entry_amount: -150 * QUOTE_PRECISION_I64,
-                quote_break_even_amount: -150 * QUOTE_PRECISION_I64,
-                open_orders: 1,
-                open_bids: BASE_PRECISION_I64,
-                ..PerpPosition::default()
-            }),
-            spot_positions: [SpotPosition::default(); 8],
-
-            ..User::default()
-        };
+        );
+        let mut user = user_data.view();
 
         let mut liquidator = User {
             spot_positions: get_spot_positions(SpotPosition {
@@ -798,8 +810,28 @@ pub mod liquidate_perp {
         create_anchor_account_info!(spot_market, SpotMarket, spot_market_account_info);
         let spot_market_map = SpotMarketMap::load_one(&spot_market_account_info, true).unwrap();
 
-        let mut user = User {
-            orders: get_orders(Order {
+        let user_data = crate::state::user::TestUser::new(
+            User {
+                perp_positions: get_positions(PerpPosition {
+                    market_index: 0,
+                    base_asset_amount: 2 * BASE_PRECISION_I64,
+                    quote_asset_amount: -200 * QUOTE_PRECISION_I64,
+                    quote_entry_amount: -200 * QUOTE_PRECISION_I64,
+                    quote_break_even_amount: -200 * QUOTE_PRECISION_I64,
+                    open_orders: 1,
+                    open_bids: BASE_PRECISION_I64,
+                    ..PerpPosition::default()
+                }),
+                spot_positions: get_spot_positions(SpotPosition {
+                    market_index: 0,
+                    balance_type: SpotBalanceType::Deposit,
+                    scaled_balance: 5 * SPOT_BALANCE_PRECISION_U64,
+                    ..SpotPosition::default()
+                }),
+
+                ..User::default()
+            },
+            &get_orders(Order {
                 market_index: 0,
                 status: OrderStatus::Open,
                 order_type: OrderType::Limit,
@@ -808,25 +840,8 @@ pub mod liquidate_perp {
                 slot: 0,
                 ..Order::default()
             }),
-            perp_positions: get_positions(PerpPosition {
-                market_index: 0,
-                base_asset_amount: 2 * BASE_PRECISION_I64,
-                quote_asset_amount: -200 * QUOTE_PRECISION_I64,
-                quote_entry_amount: -200 * QUOTE_PRECISION_I64,
-                quote_break_even_amount: -200 * QUOTE_PRECISION_I64,
-                open_orders: 1,
-                open_bids: BASE_PRECISION_I64,
-                ..PerpPosition::default()
-            }),
-            spot_positions: get_spot_positions(SpotPosition {
-                market_index: 0,
-                balance_type: SpotBalanceType::Deposit,
-                scaled_balance: 5 * SPOT_BALANCE_PRECISION_U64,
-                ..SpotPosition::default()
-            }),
-
-            ..User::default()
-        };
+        );
+        let mut user = user_data.view();
 
         let mut liquidator = User {
             spot_positions: get_spot_positions(SpotPosition {
@@ -984,8 +999,28 @@ pub mod liquidate_perp {
         create_anchor_account_info!(spot_market, SpotMarket, spot_market_account_info);
         let spot_market_map = SpotMarketMap::load_one(&spot_market_account_info, true).unwrap();
 
-        let mut user = User {
-            orders: get_orders(Order {
+        let user_data = crate::state::user::TestUser::new(
+            User {
+                perp_positions: get_positions(PerpPosition {
+                    market_index: 0,
+                    base_asset_amount: BASE_PRECISION_I64 * 10000,
+                    quote_asset_amount: -150 * QUOTE_PRECISION_I64 * 10000,
+                    quote_entry_amount: -150 * QUOTE_PRECISION_I64 * 10000,
+                    quote_break_even_amount: -150 * QUOTE_PRECISION_I64 * 10000,
+                    open_orders: 1,
+                    open_bids: BASE_PRECISION_I64,
+                    ..PerpPosition::default()
+                }),
+                spot_positions: get_spot_positions(SpotPosition {
+                    market_index: 0,
+                    balance_type: SpotBalanceType::Deposit,
+                    scaled_balance: 150 * 10000 * SPOT_BALANCE_PRECISION_U64,
+                    ..SpotPosition::default()
+                }),
+
+                ..User::default()
+            },
+            &get_orders(Order {
                 market_index: 0,
                 status: OrderStatus::Open,
                 order_type: OrderType::Limit,
@@ -994,25 +1029,8 @@ pub mod liquidate_perp {
                 slot: 0,
                 ..Order::default()
             }),
-            perp_positions: get_positions(PerpPosition {
-                market_index: 0,
-                base_asset_amount: BASE_PRECISION_I64 * 10000,
-                quote_asset_amount: -150 * QUOTE_PRECISION_I64 * 10000,
-                quote_entry_amount: -150 * QUOTE_PRECISION_I64 * 10000,
-                quote_break_even_amount: -150 * QUOTE_PRECISION_I64 * 10000,
-                open_orders: 1,
-                open_bids: BASE_PRECISION_I64,
-                ..PerpPosition::default()
-            }),
-            spot_positions: get_spot_positions(SpotPosition {
-                market_index: 0,
-                balance_type: SpotBalanceType::Deposit,
-                scaled_balance: 150 * 10000 * SPOT_BALANCE_PRECISION_U64,
-                ..SpotPosition::default()
-            }),
-
-            ..User::default()
-        };
+        );
+        let mut user = user_data.view();
 
         let MarginCalculation {
             margin_requirement: margin_req,
@@ -1183,8 +1201,23 @@ pub mod liquidate_perp {
         create_anchor_account_info!(spot_market, SpotMarket, spot_market_account_info);
         let spot_market_map = SpotMarketMap::load_one(&spot_market_account_info, true).unwrap();
 
-        let mut user = User {
-            orders: get_orders(Order {
+        let user_data = crate::state::user::TestUser::new(
+            User {
+                perp_positions: get_positions(PerpPosition {
+                    market_index: 0,
+                    base_asset_amount: BASE_PRECISION_I64,
+                    quote_asset_amount: -150 * QUOTE_PRECISION_I64,
+                    quote_entry_amount: -150 * QUOTE_PRECISION_I64,
+                    quote_break_even_amount: -150 * QUOTE_PRECISION_I64,
+                    open_orders: 1,
+                    open_bids: BASE_PRECISION_I64,
+                    ..PerpPosition::default()
+                }),
+                spot_positions: [SpotPosition::default(); 8],
+
+                ..User::default()
+            },
+            &get_orders(Order {
                 market_index: 0,
                 status: OrderStatus::Open,
                 order_type: OrderType::Limit,
@@ -1193,20 +1226,8 @@ pub mod liquidate_perp {
                 slot: 0,
                 ..Order::default()
             }),
-            perp_positions: get_positions(PerpPosition {
-                market_index: 0,
-                base_asset_amount: BASE_PRECISION_I64,
-                quote_asset_amount: -150 * QUOTE_PRECISION_I64,
-                quote_entry_amount: -150 * QUOTE_PRECISION_I64,
-                quote_break_even_amount: -150 * QUOTE_PRECISION_I64,
-                open_orders: 1,
-                open_bids: BASE_PRECISION_I64,
-                ..PerpPosition::default()
-            }),
-            spot_positions: [SpotPosition::default(); 8],
-
-            ..User::default()
-        };
+        );
+        let mut user = user_data.view();
 
         let mut liquidator = User {
             spot_positions: get_spot_positions(SpotPosition {
@@ -1315,8 +1336,23 @@ pub mod liquidate_perp {
         create_anchor_account_info!(spot_market, SpotMarket, spot_market_account_info);
         let spot_market_map = SpotMarketMap::load_one(&spot_market_account_info, true).unwrap();
 
-        let mut user = User {
-            orders: get_orders(Order {
+        let user_data = crate::state::user::TestUser::new(
+            User {
+                perp_positions: get_positions(PerpPosition {
+                    market_index: 0,
+                    base_asset_amount: -BASE_PRECISION_I64,
+                    quote_asset_amount: 50 * QUOTE_PRECISION_I64,
+                    quote_entry_amount: 50 * QUOTE_PRECISION_I64,
+                    quote_break_even_amount: 50 * QUOTE_PRECISION_I64,
+                    open_orders: 1,
+                    open_asks: -BASE_PRECISION_I64,
+                    ..PerpPosition::default()
+                }),
+                spot_positions: [SpotPosition::default(); 8],
+
+                ..User::default()
+            },
+            &get_orders(Order {
                 market_index: 0,
                 status: OrderStatus::Open,
                 order_type: OrderType::Limit,
@@ -1325,20 +1361,8 @@ pub mod liquidate_perp {
                 slot: 0,
                 ..Order::default()
             }),
-            perp_positions: get_positions(PerpPosition {
-                market_index: 0,
-                base_asset_amount: -BASE_PRECISION_I64,
-                quote_asset_amount: 50 * QUOTE_PRECISION_I64,
-                quote_entry_amount: 50 * QUOTE_PRECISION_I64,
-                quote_break_even_amount: 50 * QUOTE_PRECISION_I64,
-                open_orders: 1,
-                open_asks: -BASE_PRECISION_I64,
-                ..PerpPosition::default()
-            }),
-            spot_positions: [SpotPosition::default(); 8],
-
-            ..User::default()
-        };
+        );
+        let mut user = user_data.view();
 
         let mut liquidator = User {
             spot_positions: get_spot_positions(SpotPosition {
@@ -1447,7 +1471,7 @@ pub mod liquidate_perp {
         create_anchor_account_info!(spot_market, SpotMarket, spot_market_account_info);
         let spot_market_map = SpotMarketMap::load_one(&spot_market_account_info, true).unwrap();
 
-        let mut user = User {
+        let user_data = crate::state::user::TestUser::from_header(User {
             spot_positions: get_spot_positions(SpotPosition {
                 market_index: 0,
                 balance_type: SpotBalanceType::Deposit,
@@ -1463,7 +1487,8 @@ pub mod liquidate_perp {
                 ..PerpPosition::default()
             }),
             ..User::default()
-        };
+        });
+        let mut user = user_data.view();
 
         let mut liquidator = User {
             spot_positions: get_spot_positions(SpotPosition {
@@ -1590,8 +1615,28 @@ pub mod liquidate_perp {
         create_anchor_account_info!(spot_market, SpotMarket, spot_market_account_info);
         let spot_market_map = SpotMarketMap::load_one(&spot_market_account_info, true).unwrap();
 
-        let mut user = User {
-            orders: get_orders(Order {
+        let user_data = crate::state::user::TestUser::new(
+            User {
+                perp_positions: get_positions(PerpPosition {
+                    market_index: 0,
+                    base_asset_amount: 20 * BASE_PRECISION_I64,
+                    quote_asset_amount: -2000 * QUOTE_PRECISION_I64,
+                    quote_entry_amount: -2000 * QUOTE_PRECISION_I64,
+                    quote_break_even_amount: -2000 * QUOTE_PRECISION_I64,
+                    open_orders: 1,
+                    open_bids: 10 * BASE_PRECISION_I64,
+                    ..PerpPosition::default()
+                }),
+                spot_positions: get_spot_positions(SpotPosition {
+                    market_index: 0,
+                    balance_type: SpotBalanceType::Deposit,
+                    scaled_balance: 50 * SPOT_BALANCE_PRECISION_U64,
+                    ..SpotPosition::default()
+                }),
+
+                ..User::default()
+            },
+            &get_orders(Order {
                 market_index: 0,
                 status: OrderStatus::Open,
                 order_type: OrderType::Limit,
@@ -1600,25 +1645,8 @@ pub mod liquidate_perp {
                 slot: 0,
                 ..Order::default()
             }),
-            perp_positions: get_positions(PerpPosition {
-                market_index: 0,
-                base_asset_amount: 20 * BASE_PRECISION_I64,
-                quote_asset_amount: -2000 * QUOTE_PRECISION_I64,
-                quote_entry_amount: -2000 * QUOTE_PRECISION_I64,
-                quote_break_even_amount: -2000 * QUOTE_PRECISION_I64,
-                open_orders: 1,
-                open_bids: 10 * BASE_PRECISION_I64,
-                ..PerpPosition::default()
-            }),
-            spot_positions: get_spot_positions(SpotPosition {
-                market_index: 0,
-                balance_type: SpotBalanceType::Deposit,
-                scaled_balance: 50 * SPOT_BALANCE_PRECISION_U64,
-                ..SpotPosition::default()
-            }),
-
-            ..User::default()
-        };
+        );
+        let mut user = user_data.view();
 
         let mut liquidator = User {
             spot_positions: get_spot_positions(SpotPosition {
@@ -1867,8 +1895,28 @@ pub mod liquidate_perp {
         create_anchor_account_info!(spot_market, SpotMarket, spot_market_account_info);
         let spot_market_map = SpotMarketMap::load_one(&spot_market_account_info, true).unwrap();
 
-        let mut user = User {
-            orders: get_orders(Order {
+        let user_data = crate::state::user::TestUser::new(
+            User {
+                perp_positions: get_positions(PerpPosition {
+                    market_index: 0,
+                    base_asset_amount: 2 * BASE_PRECISION_I64,
+                    quote_asset_amount: -200 * QUOTE_PRECISION_I64,
+                    quote_entry_amount: -200 * QUOTE_PRECISION_I64,
+                    quote_break_even_amount: -200 * QUOTE_PRECISION_I64,
+                    open_orders: 1,
+                    open_bids: BASE_PRECISION_I64,
+                    ..PerpPosition::default()
+                }),
+                spot_positions: get_spot_positions(SpotPosition {
+                    market_index: 0,
+                    balance_type: SpotBalanceType::Deposit,
+                    scaled_balance: 5 * SPOT_BALANCE_PRECISION_U64,
+                    ..SpotPosition::default()
+                }),
+
+                ..User::default()
+            },
+            &get_orders(Order {
                 market_index: 0,
                 status: OrderStatus::Open,
                 order_type: OrderType::Limit,
@@ -1877,25 +1925,8 @@ pub mod liquidate_perp {
                 slot: 0,
                 ..Order::default()
             }),
-            perp_positions: get_positions(PerpPosition {
-                market_index: 0,
-                base_asset_amount: 2 * BASE_PRECISION_I64,
-                quote_asset_amount: -200 * QUOTE_PRECISION_I64,
-                quote_entry_amount: -200 * QUOTE_PRECISION_I64,
-                quote_break_even_amount: -200 * QUOTE_PRECISION_I64,
-                open_orders: 1,
-                open_bids: BASE_PRECISION_I64,
-                ..PerpPosition::default()
-            }),
-            spot_positions: get_spot_positions(SpotPosition {
-                market_index: 0,
-                balance_type: SpotBalanceType::Deposit,
-                scaled_balance: 5 * SPOT_BALANCE_PRECISION_U64,
-                ..SpotPosition::default()
-            }),
-
-            ..User::default()
-        };
+        );
+        let mut user = user_data.view();
 
         let mut liquidator = User {
             spot_positions: get_spot_positions(SpotPosition {
@@ -2004,7 +2035,7 @@ pub mod liquidate_perp {
         create_anchor_account_info!(spot_market, SpotMarket, spot_market_account_info);
         let spot_market_map = SpotMarketMap::load_one(&spot_market_account_info, true).unwrap();
 
-        let mut user = User {
+        let user_data = crate::state::user::TestUser::from_header(User {
             perp_positions: get_positions(PerpPosition {
                 market_index: 0,
                 base_asset_amount: BASE_PRECISION_I64,
@@ -2020,7 +2051,8 @@ pub mod liquidate_perp {
                 ..SpotPosition::default()
             }),
             ..User::default()
-        };
+        });
+        let mut user = user_data.view();
 
         let mut liquidator = User {
             spot_positions: get_spot_positions(SpotPosition {
@@ -2132,7 +2164,7 @@ pub mod liquidate_perp {
         create_anchor_account_info!(spot_market, SpotMarket, spot_market_account_info);
         let spot_market_map = SpotMarketMap::load_one(&spot_market_account_info, true).unwrap();
 
-        let mut user = User {
+        let user_data = crate::state::user::TestUser::from_header(User {
             perp_positions: get_positions(PerpPosition {
                 market_index: 0,
                 base_asset_amount: -BASE_PRECISION_I64,
@@ -2148,7 +2180,8 @@ pub mod liquidate_perp {
                 ..SpotPosition::default()
             }),
             ..User::default()
-        };
+        });
+        let mut user = user_data.view();
 
         let mut liquidator = User {
             spot_positions: get_spot_positions(SpotPosition {
@@ -2260,7 +2293,7 @@ pub mod liquidate_perp {
         create_anchor_account_info!(spot_market, SpotMarket, spot_market_account_info);
         let spot_market_map = SpotMarketMap::load_one(&spot_market_account_info, true).unwrap();
 
-        let mut user = User {
+        let user_data = crate::state::user::TestUser::from_header(User {
             perp_positions: get_positions(PerpPosition {
                 market_index: 0,
                 base_asset_amount: -299400000000,
@@ -2276,7 +2309,8 @@ pub mod liquidate_perp {
                 ..SpotPosition::default()
             }),
             ..User::default()
-        };
+        });
+        let mut user = user_data.view();
 
         let mut liquidator = User {
             spot_positions: get_spot_positions(SpotPosition {
@@ -2440,11 +2474,12 @@ pub mod liquidate_perp {
             position_flag: PositionFlag::IsolatedPosition as u8,
             ..PerpPosition::default()
         };
-        let mut user = User {
+        let user_data = crate::state::user::TestUser::from_header(User {
             perp_positions,
             spot_positions,
             ..User::default()
-        };
+        });
+        let mut user = user_data.view();
 
         let mut liquidator = User {
             spot_positions: get_spot_positions(SpotPosition {
@@ -2527,6 +2562,7 @@ pub mod liquidate_perp_with_fill {
     use crate::controller::liquidation::liquidate_perp_with_fill;
     use crate::controller::position::PositionDirection;
     use crate::create_anchor_account_info;
+    use crate::create_anchor_user_account_info;
 
     use crate::math::constants::{
         AMM_RESERVE_PRECISION, BASE_PRECISION_I64, BASE_PRECISION_U64, LIQUIDATION_FEE_PRECISION,
@@ -2639,7 +2675,7 @@ pub mod liquidate_perp_with_fill {
             ..User::default()
         };
 
-        create_anchor_account_info!(user, &user_key, User, user_account_info);
+        create_anchor_user_account_info!(user, &[crate::state::user::Order::default(); 32], &user_key, user_account_info);
         let user_account_loader: AccountLoader<User> =
             AccountLoader::try_from(&user_account_info).unwrap();
 
@@ -2655,7 +2691,7 @@ pub mod liquidate_perp_with_fill {
             ..User::default()
         };
 
-        create_anchor_account_info!(liquidator, &liquidator_key, User, liquidator_account_info);
+        create_anchor_user_account_info!(liquidator, &[crate::state::user::Order::default(); 32], &liquidator_key, liquidator_account_info);
         let liquidator_account_loader: AccountLoader<User> =
             AccountLoader::try_from(&liquidator_account_info).unwrap();
 
@@ -2680,9 +2716,7 @@ pub mod liquidate_perp_with_fill {
 
         let maker_key = Pubkey::new_unique();
         let maker_authority = Pubkey::new_unique();
-        let mut maker = User {
-            authority: maker_authority,
-            orders: get_orders(Order {
+        let maker_orders = get_orders(Order {
                 status: OrderStatus::Open,
                 market_index: 0,
                 post_only: true,
@@ -2692,7 +2726,9 @@ pub mod liquidate_perp_with_fill {
                 price: 100 * PRICE_PRECISION_U64,
                 slot: slot - 1,
                 ..Order::default()
-            }),
+            });
+        let mut maker = User {
+            authority: maker_authority,
             perp_positions: get_positions(PerpPosition {
                 market_index: 0,
                 open_orders: 1,
@@ -2707,7 +2743,7 @@ pub mod liquidate_perp_with_fill {
             }),
             ..User::default()
         };
-        create_anchor_account_info!(maker, &maker_key, User, maker_account_info);
+        create_anchor_user_account_info!(maker, &maker_orders, &maker_key, maker_account_info);
         let makers_and_referrers = UserMap::load_one(&maker_account_info).unwrap();
 
         let mut maker_stats = UserStats {
@@ -2848,7 +2884,7 @@ pub mod liquidate_perp_with_fill {
             ..User::default()
         };
 
-        create_anchor_account_info!(user, &user_key, User, user_account_info);
+        create_anchor_user_account_info!(user, &[crate::state::user::Order::default(); 32], &user_key, user_account_info);
         let user_account_loader: AccountLoader<User> =
             AccountLoader::try_from(&user_account_info).unwrap();
 
@@ -2864,7 +2900,7 @@ pub mod liquidate_perp_with_fill {
             ..User::default()
         };
 
-        create_anchor_account_info!(liquidator, &liquidator_key, User, liquidator_account_info);
+        create_anchor_user_account_info!(liquidator, &[crate::state::user::Order::default(); 32], &liquidator_key, liquidator_account_info);
         let liquidator_account_loader: AccountLoader<User> =
             AccountLoader::try_from(&liquidator_account_info).unwrap();
 
@@ -2889,9 +2925,7 @@ pub mod liquidate_perp_with_fill {
 
         let maker_key = Pubkey::new_unique();
         let maker_authority = Pubkey::new_unique();
-        let mut maker = User {
-            authority: maker_authority,
-            orders: get_orders(Order {
+        let maker_orders = get_orders(Order {
                 status: OrderStatus::Open,
                 market_index: 0,
                 post_only: true,
@@ -2901,7 +2935,9 @@ pub mod liquidate_perp_with_fill {
                 price: 100 * PRICE_PRECISION_U64,
                 slot: slot - 1,
                 ..Order::default()
-            }),
+            });
+        let mut maker = User {
+            authority: maker_authority,
             perp_positions: get_positions(PerpPosition {
                 market_index: 0,
                 open_orders: 1,
@@ -2916,7 +2952,7 @@ pub mod liquidate_perp_with_fill {
             }),
             ..User::default()
         };
-        create_anchor_account_info!(maker, &maker_key, User, maker_account_info);
+        create_anchor_user_account_info!(maker, &maker_orders, &maker_key, maker_account_info);
         let makers_and_referrers = UserMap::load_one(&maker_account_info).unwrap();
 
         let mut maker_stats = UserStats {
@@ -3061,7 +3097,7 @@ pub mod liquidate_perp_with_fill {
             ..User::default()
         };
 
-        create_anchor_account_info!(user, &user_key, User, user_account_info);
+        create_anchor_user_account_info!(user, &[crate::state::user::Order::default(); 32], &user_key, user_account_info);
         let user_account_loader: AccountLoader<User> =
             AccountLoader::try_from(&user_account_info).unwrap();
 
@@ -3077,7 +3113,7 @@ pub mod liquidate_perp_with_fill {
             ..User::default()
         };
 
-        create_anchor_account_info!(liquidator, &liquidator_key, User, liquidator_account_info);
+        create_anchor_user_account_info!(liquidator, &[crate::state::user::Order::default(); 32], &liquidator_key, liquidator_account_info);
         let liquidator_account_loader: AccountLoader<User> =
             AccountLoader::try_from(&liquidator_account_info).unwrap();
 
@@ -3231,7 +3267,7 @@ pub mod liquidate_perp_with_fill {
             ..User::default()
         };
 
-        create_anchor_account_info!(user, &user_key, User, user_account_info);
+        create_anchor_user_account_info!(user, &[crate::state::user::Order::default(); 32], &user_key, user_account_info);
         let user_account_loader: AccountLoader<User> =
             AccountLoader::try_from(&user_account_info).unwrap();
 
@@ -3247,7 +3283,7 @@ pub mod liquidate_perp_with_fill {
             ..User::default()
         };
 
-        create_anchor_account_info!(liquidator, &liquidator_key, User, liquidator_account_info);
+        create_anchor_user_account_info!(liquidator, &[crate::state::user::Order::default(); 32], &liquidator_key, liquidator_account_info);
         let liquidator_account_loader: AccountLoader<User> =
             AccountLoader::try_from(&liquidator_account_info).unwrap();
 
@@ -3335,7 +3371,7 @@ pub mod liquidate_spot {
     use crate::state::spot_market::{SpotBalanceType, SpotMarket};
     use crate::state::spot_market_map::SpotMarketMap;
     use crate::state::user::UserStats;
-    use crate::state::user::{Order, PerpPosition, SpotPosition, User};
+    use crate::state::user::{PerpPosition, SpotPosition, User};
     use crate::test_utils::{get_pyth_price, get_spot_positions};
     use crate::QUOTE_PRECISION_I64;
 
@@ -3416,12 +3452,12 @@ pub mod liquidate_spot {
             scaled_balance: SPOT_BALANCE_PRECISION_U64,
             ..SpotPosition::default()
         };
-        let mut user = User {
-            orders: [Order::default(); 32],
+        let user_data = crate::state::user::TestUser::from_header(User {
             perp_positions: [PerpPosition::default(); 8],
             spot_positions,
             ..User::default()
-        };
+        });
+        let mut user = user_data.view();
 
         let mut liquidator = User {
             spot_positions: get_spot_positions(SpotPosition {
@@ -3558,12 +3594,12 @@ pub mod liquidate_spot {
             scaled_balance: SPOT_BALANCE_PRECISION_U64,
             ..SpotPosition::default()
         };
-        let mut user = User {
-            orders: [Order::default(); 32],
+        let user_data = crate::state::user::TestUser::from_header(User {
             perp_positions: [PerpPosition::default(); 8],
             spot_positions: spot_market,
             ..User::default()
-        };
+        });
+        let mut user = user_data.view();
 
         let mut liquidator = User {
             spot_positions: get_spot_positions(SpotPosition {
@@ -3732,12 +3768,12 @@ pub mod liquidate_spot {
             scaled_balance: SPOT_BALANCE_PRECISION_U64,
             ..SpotPosition::default()
         };
-        let mut user = User {
-            orders: [Order::default(); 32],
+        let user_data = crate::state::user::TestUser::from_header(User {
             perp_positions: [PerpPosition::default(); 8],
             spot_positions,
             ..User::default()
-        };
+        });
+        let mut user = user_data.view();
 
         let mut liquidator = User {
             spot_positions: get_spot_positions(SpotPosition {
@@ -3952,12 +3988,12 @@ pub mod liquidate_spot {
             scaled_balance: SPOT_BALANCE_PRECISION_U64,
             ..SpotPosition::default()
         };
-        let mut user = User {
-            orders: [Order::default(); 32],
+        let user_data = crate::state::user::TestUser::from_header(User {
             perp_positions: [PerpPosition::default(); 8],
             spot_positions,
             ..User::default()
-        };
+        });
+        let mut user = user_data.view();
 
         let mut liquidator = User {
             spot_positions: get_spot_positions(SpotPosition {
@@ -4078,12 +4114,12 @@ pub mod liquidate_spot {
             scaled_balance: SPOT_BALANCE_PRECISION_U64,
             ..SpotPosition::default()
         };
-        let mut user = User {
-            orders: [Order::default(); 32],
+        let user_data = crate::state::user::TestUser::from_header(User {
             perp_positions: [PerpPosition::default(); 8],
             spot_positions,
             ..User::default()
-        };
+        });
+        let mut user = user_data.view();
 
         let mut liquidator = User {
             spot_positions: get_spot_positions(SpotPosition {
@@ -4205,12 +4241,12 @@ pub mod liquidate_spot {
             scaled_balance: SPOT_BALANCE_PRECISION_U64 / 50,
             ..SpotPosition::default()
         };
-        let mut user = User {
-            orders: [Order::default(); 32],
+        let user_data = crate::state::user::TestUser::from_header(User {
             perp_positions: [PerpPosition::default(); 8],
             spot_positions,
             ..User::default()
-        };
+        });
+        let mut user = user_data.view();
 
         let mut liquidator = User {
             spot_positions: get_spot_positions(SpotPosition {
@@ -4336,12 +4372,12 @@ pub mod liquidate_spot {
             scaled_balance: 10 * SPOT_BALANCE_PRECISION_U64,
             ..SpotPosition::default()
         };
-        let mut user = User {
-            orders: [Order::default(); 32],
+        let user_data = crate::state::user::TestUser::from_header(User {
             perp_positions: [PerpPosition::default(); 8],
             spot_positions,
             ..User::default()
-        };
+        });
+        let mut user = user_data.view();
 
         let mut liquidator = User {
             spot_positions: get_spot_positions(SpotPosition {
@@ -4583,12 +4619,12 @@ pub mod liquidate_spot {
             scaled_balance: 105 * SPOT_BALANCE_PRECISION_U64,
             ..SpotPosition::default()
         };
-        let mut user = User {
-            orders: [Order::default(); 32],
+        let user_data = crate::state::user::TestUser::from_header(User {
             perp_positions: [PerpPosition::default(); 8],
             spot_positions,
             ..User::default()
-        };
+        });
+        let mut user = user_data.view();
 
         let mut liquidator = User {
             spot_positions: get_spot_positions(SpotPosition {
@@ -4686,7 +4722,7 @@ pub mod liquidate_borrow_for_perp_pnl {
     use crate::state::pyth_lazer_oracle::PythLazerOracle;
     use crate::state::spot_market::{SpotBalanceType, SpotMarket};
     use crate::state::spot_market_map::SpotMarketMap;
-    use crate::state::user::{Order, PerpPosition, SpotPosition, User};
+    use crate::state::user::{PerpPosition, SpotPosition, User};
     use crate::test_utils::{get_positions, get_pyth_price, get_spot_positions};
 
     #[test]
@@ -4789,8 +4825,7 @@ pub mod liquidate_borrow_for_perp_pnl {
             scaled_balance: SPOT_BALANCE_PRECISION_U64,
             ..SpotPosition::default()
         };
-        let mut user = User {
-            orders: [Order::default(); 32],
+        let user_data = crate::state::user::TestUser::from_header(User {
             perp_positions: get_positions(PerpPosition {
                 market_index: 0,
                 quote_asset_amount: 100 * QUOTE_PRECISION_I64,
@@ -4798,7 +4833,8 @@ pub mod liquidate_borrow_for_perp_pnl {
             }),
             spot_positions,
             ..User::default()
-        };
+        });
+        let mut user = user_data.view();
 
         let mut liquidator = User {
             spot_positions: get_spot_positions(SpotPosition {
@@ -4945,8 +4981,7 @@ pub mod liquidate_borrow_for_perp_pnl {
             scaled_balance: SPOT_BALANCE_PRECISION_U64,
             ..SpotPosition::default()
         };
-        let mut user = User {
-            orders: [Order::default(); 32],
+        let user_data = crate::state::user::TestUser::from_header(User {
             perp_positions: get_positions(PerpPosition {
                 market_index: 0,
                 quote_asset_amount: 105 * QUOTE_PRECISION_I64,
@@ -4954,7 +4989,8 @@ pub mod liquidate_borrow_for_perp_pnl {
             }),
             spot_positions,
             ..User::default()
-        };
+        });
+        let mut user = user_data.view();
 
         let mut liquidator = User {
             spot_positions: get_spot_positions(SpotPosition {
@@ -5146,8 +5182,7 @@ pub mod liquidate_borrow_for_perp_pnl {
             scaled_balance: SPOT_BALANCE_PRECISION_U64,
             ..SpotPosition::default()
         };
-        let mut user = User {
-            orders: [Order::default(); 32],
+        let user_data = crate::state::user::TestUser::from_header(User {
             perp_positions: get_positions(PerpPosition {
                 market_index: 0,
                 quote_asset_amount: 80 * QUOTE_PRECISION_I64,
@@ -5155,7 +5190,8 @@ pub mod liquidate_borrow_for_perp_pnl {
             }),
             spot_positions,
             ..User::default()
-        };
+        });
+        let mut user = user_data.view();
 
         let mut liquidator = User {
             spot_positions: get_spot_positions(SpotPosition {
@@ -5301,8 +5337,7 @@ pub mod liquidate_borrow_for_perp_pnl {
             scaled_balance: SPOT_BALANCE_PRECISION_U64,
             ..SpotPosition::default()
         };
-        let mut user = User {
-            orders: [Order::default(); 32],
+        let user_data = crate::state::user::TestUser::from_header(User {
             perp_positions: get_positions(PerpPosition {
                 market_index: 0,
                 quote_asset_amount: 100 * QUOTE_PRECISION_I64,
@@ -5310,7 +5345,8 @@ pub mod liquidate_borrow_for_perp_pnl {
             }),
             spot_positions,
             ..User::default()
-        };
+        });
+        let mut user = user_data.view();
 
         let mut liquidator = User {
             spot_positions: get_spot_positions(SpotPosition {
@@ -5448,8 +5484,7 @@ pub mod liquidate_borrow_for_perp_pnl {
             scaled_balance: SPOT_BALANCE_PRECISION_U64,
             ..SpotPosition::default()
         };
-        let mut user = User {
-            orders: [Order::default(); 32],
+        let user_data = crate::state::user::TestUser::from_header(User {
             perp_positions: get_positions(PerpPosition {
                 market_index: 0,
                 quote_asset_amount: 100 * QUOTE_PRECISION_I64,
@@ -5457,7 +5492,8 @@ pub mod liquidate_borrow_for_perp_pnl {
             }),
             spot_positions,
             ..User::default()
-        };
+        });
+        let mut user = user_data.view();
 
         let mut liquidator = User {
             spot_positions: get_spot_positions(SpotPosition {
@@ -5596,8 +5632,7 @@ pub mod liquidate_borrow_for_perp_pnl {
             scaled_balance: SPOT_BALANCE_PRECISION_U64 / 50,
             ..SpotPosition::default()
         };
-        let mut user = User {
-            orders: [Order::default(); 32],
+        let user_data = crate::state::user::TestUser::from_header(User {
             perp_positions: get_positions(PerpPosition {
                 market_index: 0,
                 quote_asset_amount: 107 * QUOTE_PRECISION_I64 / 50,
@@ -5605,7 +5640,8 @@ pub mod liquidate_borrow_for_perp_pnl {
             }),
             spot_positions,
             ..User::default()
-        };
+        });
+        let mut user = user_data.view();
 
         let mut liquidator = User {
             spot_positions: get_spot_positions(SpotPosition {
@@ -5753,8 +5789,7 @@ pub mod liquidate_borrow_for_perp_pnl {
             scaled_balance: 10 * SPOT_BALANCE_PRECISION_U64,
             ..SpotPosition::default()
         };
-        let mut user = User {
-            orders: [Order::default(); 32],
+        let user_data = crate::state::user::TestUser::from_header(User {
             perp_positions: get_positions(PerpPosition {
                 market_index: 0,
                 quote_asset_amount: 1050 * QUOTE_PRECISION_I64,
@@ -5762,7 +5797,8 @@ pub mod liquidate_borrow_for_perp_pnl {
             }),
             spot_positions,
             ..User::default()
-        };
+        });
+        let mut user = user_data.view();
 
         let mut liquidator = User {
             spot_positions: get_spot_positions(SpotPosition {
@@ -5923,7 +5959,7 @@ pub mod liquidate_perp_pnl_for_deposit {
     use crate::state::spot_market::{AssetTier, SpotBalanceType, SpotMarket};
     use crate::state::spot_market_map::SpotMarketMap;
     use crate::state::user::UserStats;
-    use crate::state::user::{Order, PerpPosition, SpotPosition, User, UserStatus};
+    use crate::state::user::{PerpPosition, SpotPosition, User, UserStatus};
     use crate::test_utils::{get_positions, get_pyth_price, get_spot_positions};
     #[test]
     pub fn successful_liquidation_liquidator_max_pnl_transfer() {
@@ -6025,8 +6061,7 @@ pub mod liquidate_perp_pnl_for_deposit {
             scaled_balance: SPOT_BALANCE_PRECISION_U64,
             ..SpotPosition::default()
         };
-        let mut user = User {
-            orders: [Order::default(); 32],
+        let user_data = crate::state::user::TestUser::from_header(User {
             perp_positions: get_positions(PerpPosition {
                 market_index: 0,
                 quote_asset_amount: -100 * QUOTE_PRECISION_I64,
@@ -6034,7 +6069,8 @@ pub mod liquidate_perp_pnl_for_deposit {
             }),
             spot_positions,
             ..User::default()
-        };
+        });
+        let mut user = user_data.view();
 
         let mut liquidator = User {
             spot_positions: get_spot_positions(SpotPosition {
@@ -6181,8 +6217,7 @@ pub mod liquidate_perp_pnl_for_deposit {
             scaled_balance: SPOT_BALANCE_PRECISION_U64,
             ..SpotPosition::default()
         };
-        let mut user = User {
-            orders: [Order::default(); 32],
+        let user_data = crate::state::user::TestUser::from_header(User {
             perp_positions: get_positions(PerpPosition {
                 market_index: 0,
                 quote_asset_amount: -91 * QUOTE_PRECISION_I64,
@@ -6190,7 +6225,8 @@ pub mod liquidate_perp_pnl_for_deposit {
             }),
             spot_positions,
             ..User::default()
-        };
+        });
+        let mut user = user_data.view();
 
         let mut liquidator = User {
             spot_positions: get_spot_positions(SpotPosition {
@@ -6339,8 +6375,7 @@ pub mod liquidate_perp_pnl_for_deposit {
             scaled_balance: SPOT_BALANCE_PRECISION_U64,
             ..SpotPosition::default()
         };
-        let mut user = User {
-            orders: [Order::default(); 32],
+        let user_data = crate::state::user::TestUser::from_header(User {
             perp_positions: get_positions(PerpPosition {
                 market_index: 0,
                 quote_asset_amount: -150 * QUOTE_PRECISION_I64,
@@ -6348,7 +6383,8 @@ pub mod liquidate_perp_pnl_for_deposit {
             }),
             spot_positions,
             ..User::default()
-        };
+        });
+        let mut user = user_data.view();
 
         let mut liquidator = User {
             spot_positions: get_spot_positions(SpotPosition {
@@ -6494,8 +6530,7 @@ pub mod liquidate_perp_pnl_for_deposit {
             scaled_balance: SPOT_BALANCE_PRECISION_U64,
             ..SpotPosition::default()
         };
-        let mut user = User {
-            orders: [Order::default(); 32],
+        let user_data = crate::state::user::TestUser::from_header(User {
             perp_positions: get_positions(PerpPosition {
                 market_index: 0,
                 quote_asset_amount: -100 * QUOTE_PRECISION_I64,
@@ -6503,7 +6538,8 @@ pub mod liquidate_perp_pnl_for_deposit {
             }),
             spot_positions,
             ..User::default()
-        };
+        });
+        let mut user = user_data.view();
 
         let mut liquidator = User {
             spot_positions: get_spot_positions(SpotPosition {
@@ -6641,8 +6677,7 @@ pub mod liquidate_perp_pnl_for_deposit {
             scaled_balance: SPOT_BALANCE_PRECISION_U64,
             ..SpotPosition::default()
         };
-        let mut user = User {
-            orders: [Order::default(); 32],
+        let user_data = crate::state::user::TestUser::from_header(User {
             perp_positions: get_positions(PerpPosition {
                 market_index: 0,
                 quote_asset_amount: -100 * QUOTE_PRECISION_I64,
@@ -6650,7 +6685,8 @@ pub mod liquidate_perp_pnl_for_deposit {
             }),
             spot_positions,
             ..User::default()
-        };
+        });
+        let mut user = user_data.view();
 
         let mut liquidator = User {
             spot_positions: get_spot_positions(SpotPosition {
@@ -6789,8 +6825,7 @@ pub mod liquidate_perp_pnl_for_deposit {
             scaled_balance: SPOT_BALANCE_PRECISION_U64 / 50,
             ..SpotPosition::default()
         };
-        let mut user = User {
-            orders: [Order::default(); 32],
+        let user_data = crate::state::user::TestUser::from_header(User {
             perp_positions: get_positions(PerpPosition {
                 market_index: 0,
                 quote_asset_amount: -91 * QUOTE_PRECISION_I64 / 50,
@@ -6798,7 +6833,8 @@ pub mod liquidate_perp_pnl_for_deposit {
             }),
             spot_positions,
             ..User::default()
-        };
+        });
+        let mut user = user_data.view();
 
         let mut liquidator = User {
             spot_positions: get_spot_positions(SpotPosition {
@@ -6945,8 +6981,7 @@ pub mod liquidate_perp_pnl_for_deposit {
             scaled_balance: 10 * SPOT_BALANCE_PRECISION_U64,
             ..SpotPosition::default()
         };
-        let mut user = User {
-            orders: [Order::default(); 32],
+        let user_data = crate::state::user::TestUser::from_header(User {
             perp_positions: get_positions(PerpPosition {
                 market_index: 0,
                 quote_asset_amount: -950 * QUOTE_PRECISION_I64,
@@ -6954,7 +6989,8 @@ pub mod liquidate_perp_pnl_for_deposit {
             }),
             spot_positions,
             ..User::default()
-        };
+        });
+        let mut user = user_data.view();
 
         let mut liquidator = User {
             spot_positions: get_spot_positions(SpotPosition {
@@ -7187,8 +7223,7 @@ pub mod liquidate_perp_pnl_for_deposit {
             scaled_balance: SPOT_BALANCE_PRECISION_U64,
             ..SpotPosition::default()
         };
-        let mut user = User {
-            orders: [Order::default(); 32],
+        let user_data = crate::state::user::TestUser::from_header(User {
             perp_positions: get_positions(PerpPosition {
                 market_index: 0,
                 quote_asset_amount: -100 * QUOTE_PRECISION_I64,
@@ -7196,7 +7231,8 @@ pub mod liquidate_perp_pnl_for_deposit {
             }),
             spot_positions,
             ..User::default()
-        };
+        });
+        let mut user = user_data.view();
 
         let mut liquidator = User {
             spot_positions: get_spot_positions(SpotPosition {
@@ -7454,8 +7490,7 @@ pub mod liquidate_perp_pnl_for_deposit {
             scaled_balance: SPOT_BALANCE_PRECISION_U64 / 1000,
             ..SpotPosition::default()
         };
-        let mut user = User {
-            orders: [Order::default(); 32],
+        let user_data = crate::state::user::TestUser::from_header(User {
             perp_positions: get_positions(PerpPosition {
                 market_index: 0,
                 quote_asset_amount: -100 * QUOTE_PRECISION_I64,
@@ -7463,7 +7498,8 @@ pub mod liquidate_perp_pnl_for_deposit {
             }),
             spot_positions,
             ..User::default()
-        };
+        });
+        let mut user = user_data.view();
 
         user.perp_positions[1] = PerpPosition {
             market_index: 1,
@@ -7654,8 +7690,24 @@ pub mod resolve_perp_bankruptcy {
         create_anchor_account_info!(spot_market, SpotMarket, spot_market_account_info);
         let spot_market_map = SpotMarketMap::load_one(&spot_market_account_info, true).unwrap();
 
-        let mut user = User {
-            orders: get_orders(Order {
+        let user_data = crate::state::user::TestUser::new(
+            User {
+                perp_positions: get_positions(PerpPosition {
+                    market_index: 0,
+                    base_asset_amount: 0,
+                    quote_asset_amount: -100 * QUOTE_PRECISION_I64,
+                    quote_entry_amount: -100 * QUOTE_PRECISION_I64,
+                    quote_break_even_amount: -100 * QUOTE_PRECISION_I64,
+                    open_orders: 1,
+                    open_bids: BASE_PRECISION_I64,
+                    ..PerpPosition::default()
+                }),
+                spot_positions: [SpotPosition::default(); 8],
+                status: UserStatus::Bankrupt as u8,
+                next_liquidation_id: 2,
+                ..User::default()
+            },
+            &get_orders(Order {
                 market_index: 0,
                 status: OrderStatus::Open,
                 order_type: OrderType::Limit,
@@ -7664,21 +7716,8 @@ pub mod resolve_perp_bankruptcy {
                 slot: 0,
                 ..Order::default()
             }),
-            perp_positions: get_positions(PerpPosition {
-                market_index: 0,
-                base_asset_amount: 0,
-                quote_asset_amount: -100 * QUOTE_PRECISION_I64,
-                quote_entry_amount: -100 * QUOTE_PRECISION_I64,
-                quote_break_even_amount: -100 * QUOTE_PRECISION_I64,
-                open_orders: 1,
-                open_bids: BASE_PRECISION_I64,
-                ..PerpPosition::default()
-            }),
-            spot_positions: [SpotPosition::default(); 8],
-            status: UserStatus::Bankrupt as u8,
-            next_liquidation_id: 2,
-            ..User::default()
-        };
+        );
+        let mut user = user_data.view();
 
         let mut liquidator = User {
             spot_positions: get_spot_positions(SpotPosition {
@@ -7693,7 +7732,7 @@ pub mod resolve_perp_bankruptcy {
         let user_key = Pubkey::default();
         let liquidator_key = Pubkey::default();
 
-        let mut expected_user = user;
+        let mut expected_user: User = *user;
         expected_user.status = 0;
         expected_user.perp_positions[0].quote_asset_amount = 0;
         expected_user.total_social_loss = 100000000;
@@ -7719,11 +7758,10 @@ pub mod resolve_perp_bankruptcy {
         )
         .unwrap();
 
-        assert_eq!(expected_user, user);
+        assert_eq!(expected_user, *user);
         assert_eq!(expected_market, market_map.get_ref(&0).unwrap().clone());
 
         let mut affected_long_user = User {
-            orders: [Order::default(); 32],
             perp_positions: get_positions(PerpPosition {
                 market_index: 0,
                 base_asset_amount: 5 * BASE_PRECISION_I64,
@@ -7761,7 +7799,6 @@ pub mod resolve_perp_bankruptcy {
         assert_eq!(expected_affected_long_user, affected_long_user);
 
         let mut affected_short_user = User {
-            orders: [Order::default(); 32],
             perp_positions: get_positions(PerpPosition {
                 market_index: 0,
                 base_asset_amount: -5 * BASE_PRECISION_I64,
@@ -7865,8 +7902,24 @@ pub mod resolve_perp_bankruptcy {
         create_anchor_account_info!(spot_market, SpotMarket, spot_market_account_info);
         let spot_market_map = SpotMarketMap::load_one(&spot_market_account_info, true).unwrap();
 
-        let mut user = User {
-            orders: get_orders(Order {
+        let user_data = crate::state::user::TestUser::new(
+            User {
+                perp_positions: get_positions(PerpPosition {
+                    market_index: 0,
+                    base_asset_amount: 0,
+                    quote_asset_amount: -100 * QUOTE_PRECISION_I64,
+                    quote_entry_amount: -100 * QUOTE_PRECISION_I64,
+                    quote_break_even_amount: -100 * QUOTE_PRECISION_I64,
+                    open_orders: 1,
+                    open_bids: BASE_PRECISION_I64,
+                    ..PerpPosition::default()
+                }),
+                spot_positions: [SpotPosition::default(); 8],
+                status: UserStatus::Bankrupt as u8,
+                next_liquidation_id: 2,
+                ..User::default()
+            },
+            &get_orders(Order {
                 market_index: 0,
                 status: OrderStatus::Open,
                 order_type: OrderType::Limit,
@@ -7875,21 +7928,8 @@ pub mod resolve_perp_bankruptcy {
                 slot: 0,
                 ..Order::default()
             }),
-            perp_positions: get_positions(PerpPosition {
-                market_index: 0,
-                base_asset_amount: 0,
-                quote_asset_amount: -100 * QUOTE_PRECISION_I64,
-                quote_entry_amount: -100 * QUOTE_PRECISION_I64,
-                quote_break_even_amount: -100 * QUOTE_PRECISION_I64,
-                open_orders: 1,
-                open_bids: BASE_PRECISION_I64,
-                ..PerpPosition::default()
-            }),
-            spot_positions: [SpotPosition::default(); 8],
-            status: UserStatus::Bankrupt as u8,
-            next_liquidation_id: 2,
-            ..User::default()
-        };
+        );
+        let mut user = user_data.view();
 
         let mut liquidator = User {
             spot_positions: get_spot_positions(SpotPosition {
@@ -7904,7 +7944,7 @@ pub mod resolve_perp_bankruptcy {
         let user_key = Pubkey::default();
         let liquidator_key = Pubkey::default();
 
-        let mut expected_user = user;
+        let mut expected_user: User = *user;
         expected_user.status = 0;
         expected_user.perp_positions[0].quote_asset_amount = 0;
         expected_user.total_social_loss = 100000000;
@@ -7932,11 +7972,10 @@ pub mod resolve_perp_bankruptcy {
         .unwrap();
 
         assert_eq!(user.total_social_loss, 100000000);
-        assert_eq!(expected_user, user);
+        assert_eq!(expected_user, *user);
         assert_eq!(expected_market, market_map.get_ref(&0).unwrap().clone());
 
         let mut affected_long_user = User {
-            orders: [Order::default(); 32],
             perp_positions: get_positions(PerpPosition {
                 market_index: 0,
                 base_asset_amount: 5 * BASE_PRECISION_I64,
@@ -7974,7 +8013,6 @@ pub mod resolve_perp_bankruptcy {
         assert_eq!(expected_affected_long_user, affected_long_user);
 
         let mut affected_short_user = User {
-            orders: [Order::default(); 32],
             perp_positions: get_positions(PerpPosition {
                 market_index: 0,
                 base_asset_amount: -5 * BASE_PRECISION_I64,
@@ -8104,8 +8142,20 @@ pub mod resolve_spot_bankruptcy {
         create_anchor_account_info!(spot_market, SpotMarket, spot_market_account_info);
         let spot_market_map = SpotMarketMap::load_one(&spot_market_account_info, true).unwrap();
 
-        let mut user = User {
-            orders: get_orders(Order {
+        let user_data = crate::state::user::TestUser::new(
+            User {
+                perp_positions: [PerpPosition::default(); 8],
+                spot_positions: get_spot_positions(SpotPosition {
+                    market_index: 0,
+                    scaled_balance: 100 * SPOT_BALANCE_PRECISION_U64,
+                    balance_type: SpotBalanceType::Borrow,
+                    ..SpotPosition::default()
+                }),
+                status: UserStatus::Bankrupt as u8,
+                next_liquidation_id: 2,
+                ..User::default()
+            },
+            &get_orders(Order {
                 market_index: 0,
                 status: OrderStatus::Open,
                 order_type: OrderType::Limit,
@@ -8114,17 +8164,8 @@ pub mod resolve_spot_bankruptcy {
                 slot: 0,
                 ..Order::default()
             }),
-            perp_positions: [PerpPosition::default(); 8],
-            spot_positions: get_spot_positions(SpotPosition {
-                market_index: 0,
-                scaled_balance: 100 * SPOT_BALANCE_PRECISION_U64,
-                balance_type: SpotBalanceType::Borrow,
-                ..SpotPosition::default()
-            }),
-            status: UserStatus::Bankrupt as u8,
-            next_liquidation_id: 2,
-            ..User::default()
-        };
+        );
+        let mut user = user_data.view();
 
         let mut liquidator = User {
             spot_positions: get_spot_positions(SpotPosition {
@@ -8139,7 +8180,7 @@ pub mod resolve_spot_bankruptcy {
         let user_key = Pubkey::default();
         let liquidator_key = Pubkey::default();
 
-        let mut expected_user = user;
+        let mut expected_user: User = *user;
         expected_user.status = 0;
         expected_user.spot_positions[0].scaled_balance = 0;
         expected_user.spot_positions[0].cumulative_deposits = 100 * QUOTE_PRECISION_I64;
@@ -8166,7 +8207,7 @@ pub mod resolve_spot_bankruptcy {
         )
         .unwrap();
 
-        assert_eq!(expected_user, user);
+        assert_eq!(expected_user, *user);
         assert_eq!(expected_spot_market, *spot_market_map.get_ref(&0).unwrap());
 
         let spot_market = spot_market_map.get_ref_mut(&0).unwrap();
@@ -8274,8 +8315,28 @@ pub mod set_user_status_to_being_liquidated {
         create_anchor_account_info!(spot_market, SpotMarket, spot_market_account_info);
         let spot_market_map = SpotMarketMap::load_one(&spot_market_account_info, true).unwrap();
 
-        let mut user = User {
-            orders: get_orders(Order {
+        let user_data = crate::state::user::TestUser::new(
+            User {
+                perp_positions: get_positions(PerpPosition {
+                    market_index: 0,
+                    base_asset_amount: BASE_PRECISION_I64,
+                    quote_asset_amount: 100 * QUOTE_PRECISION_I64,
+                    quote_entry_amount: 100 * QUOTE_PRECISION_I64,
+                    quote_break_even_amount: 100 * QUOTE_PRECISION_I64,
+                    open_orders: 1,
+                    open_bids: BASE_PRECISION_I64,
+                    ..PerpPosition::default()
+                }),
+                spot_positions: get_spot_positions(SpotPosition {
+                    market_index: 0,
+                    scaled_balance: 1000000000000,
+                    cumulative_deposits: 100000000000,
+                    balance_type: SpotBalanceType::Deposit,
+                    ..SpotPosition::default()
+                }),
+                ..User::default()
+            },
+            &get_orders(Order {
                 market_index: 0,
                 status: OrderStatus::Open,
                 order_type: OrderType::Limit,
@@ -8284,25 +8345,8 @@ pub mod set_user_status_to_being_liquidated {
                 slot: 0,
                 ..Order::default()
             }),
-            perp_positions: get_positions(PerpPosition {
-                market_index: 0,
-                base_asset_amount: BASE_PRECISION_I64,
-                quote_asset_amount: 100 * QUOTE_PRECISION_I64,
-                quote_entry_amount: 100 * QUOTE_PRECISION_I64,
-                quote_break_even_amount: 100 * QUOTE_PRECISION_I64,
-                open_orders: 1,
-                open_bids: BASE_PRECISION_I64,
-                ..PerpPosition::default()
-            }),
-            spot_positions: get_spot_positions(SpotPosition {
-                market_index: 0,
-                scaled_balance: 1000000000000,
-                cumulative_deposits: 100000000000,
-                balance_type: SpotBalanceType::Deposit,
-                ..SpotPosition::default()
-            }),
-            ..User::default()
-        };
+        );
+        let mut user = user_data.view();
 
         let state = State {
             liquidation_margin_buffer_ratio: DEFAULT_LIQUIDATION_MARGIN_BUFFER_RATIO,
@@ -8338,12 +8382,12 @@ pub mod set_user_status_to_being_liquidated {
         );
         let mut oracle_map = OracleMap::load_one(&oracle_account_info, slot, None).unwrap();
 
-        let mut user = User {
-            orders: [Order::default(); 32],
+        let user_data = crate::state::user::TestUser::from_header(User {
             perp_positions: [PerpPosition::default(); 8],
             spot_positions: [SpotPosition::default(); 8],
             ..User::default()
-        };
+        });
+        let mut user = user_data.view();
 
         user.add_user_status(UserStatus::Bankrupt);
         let state = State {
@@ -8448,8 +8492,21 @@ pub mod set_user_status_to_being_liquidated {
         create_anchor_account_info!(spot_market, SpotMarket, spot_market_account_info);
         let spot_market_map = SpotMarketMap::load_one(&spot_market_account_info, true).unwrap();
 
-        let mut user = User {
-            orders: get_orders(Order {
+        let user_data = crate::state::user::TestUser::new(
+            User {
+                perp_positions: get_positions(PerpPosition {
+                    market_index: 0,
+                    base_asset_amount: BASE_PRECISION_I64,
+                    quote_asset_amount: -150 * QUOTE_PRECISION_I64,
+                    quote_entry_amount: -150 * QUOTE_PRECISION_I64,
+                    quote_break_even_amount: -150 * QUOTE_PRECISION_I64,
+                    open_orders: 1,
+                    open_bids: BASE_PRECISION_I64,
+                    ..PerpPosition::default()
+                }),
+                ..User::default()
+            },
+            &get_orders(Order {
                 market_index: 0,
                 status: OrderStatus::Open,
                 order_type: OrderType::Limit,
@@ -8458,18 +8515,8 @@ pub mod set_user_status_to_being_liquidated {
                 slot: 0,
                 ..Order::default()
             }),
-            perp_positions: get_positions(PerpPosition {
-                market_index: 0,
-                base_asset_amount: BASE_PRECISION_I64,
-                quote_asset_amount: -150 * QUOTE_PRECISION_I64,
-                quote_entry_amount: -150 * QUOTE_PRECISION_I64,
-                quote_break_even_amount: -150 * QUOTE_PRECISION_I64,
-                open_orders: 1,
-                open_bids: BASE_PRECISION_I64,
-                ..PerpPosition::default()
-            }),
-            ..User::default()
-        };
+        );
+        let mut user = user_data.view();
 
         let state = State {
             liquidation_margin_buffer_ratio: DEFAULT_LIQUIDATION_MARGIN_BUFFER_RATIO,
@@ -8516,7 +8563,7 @@ pub mod liquidate_spot_with_swap {
     use crate::state::spot_market::{SpotBalanceType, SpotMarket};
     use crate::state::spot_market_map::SpotMarketMap;
     use crate::state::user::UserStats;
-    use crate::state::user::{Order, PerpPosition, SpotPosition, User};
+    use crate::state::user::{PerpPosition, SpotPosition, User};
     use crate::test_utils::{get_pyth_price, get_spot_positions};
     use crate::QUOTE_PRECISION_I64;
 
@@ -8601,12 +8648,12 @@ pub mod liquidate_spot_with_swap {
             scaled_balance: SPOT_BALANCE_PRECISION_U64,
             ..SpotPosition::default()
         };
-        let mut user = User {
-            orders: [Order::default(); 32],
+        let user_data = crate::state::user::TestUser::from_header(User {
             perp_positions: [PerpPosition::default(); 8],
             spot_positions,
             ..User::default()
-        };
+        });
+        let mut user = user_data.view();
 
         let mut liquidator = User {
             spot_positions: get_spot_positions(SpotPosition {
@@ -8860,7 +8907,10 @@ mod liquidate_dust_spot_market {
         let user_account_loader: AccountLoader<User> =
             AccountLoader::try_from(&user_account_info).unwrap();
 
-        let mut user = user_account_loader.load_mut().unwrap();
+        let mut user = {
+            use crate::state::user::UserLoader;
+            user_account_loader.load_user_mut().unwrap()
+        };
 
         let mut user_stats = UserStats::default();
 
@@ -8996,8 +9046,24 @@ pub mod liquidate_isolated_perp {
         create_anchor_account_info!(spot_market, SpotMarket, spot_market_account_info);
         let spot_market_map = SpotMarketMap::load_one(&spot_market_account_info, true).unwrap();
 
-        let mut user = User {
-            orders: get_orders(Order {
+        let user_data = crate::state::user::TestUser::new(
+            User {
+                perp_positions: get_positions(PerpPosition {
+                    market_index: 0,
+                    base_asset_amount: BASE_PRECISION_I64,
+                    quote_asset_amount: -150 * QUOTE_PRECISION_I64,
+                    quote_entry_amount: -150 * QUOTE_PRECISION_I64,
+                    quote_break_even_amount: -150 * QUOTE_PRECISION_I64,
+                    open_orders: 1,
+                    open_bids: BASE_PRECISION_I64,
+                    position_flag: PositionFlag::IsolatedPosition as u8,
+                    ..PerpPosition::default()
+                }),
+                spot_positions: [SpotPosition::default(); 8],
+
+                ..User::default()
+            },
+            &get_orders(Order {
                 market_index: 0,
                 status: OrderStatus::Open,
                 order_type: OrderType::Limit,
@@ -9006,21 +9072,8 @@ pub mod liquidate_isolated_perp {
                 slot: 0,
                 ..Order::default()
             }),
-            perp_positions: get_positions(PerpPosition {
-                market_index: 0,
-                base_asset_amount: BASE_PRECISION_I64,
-                quote_asset_amount: -150 * QUOTE_PRECISION_I64,
-                quote_entry_amount: -150 * QUOTE_PRECISION_I64,
-                quote_break_even_amount: -150 * QUOTE_PRECISION_I64,
-                open_orders: 1,
-                open_bids: BASE_PRECISION_I64,
-                position_flag: PositionFlag::IsolatedPosition as u8,
-                ..PerpPosition::default()
-            }),
-            spot_positions: [SpotPosition::default(); 8],
-
-            ..User::default()
-        };
+        );
+        let mut user = user_data.view();
 
         let mut liquidator = User {
             spot_positions: get_spot_positions(SpotPosition {
@@ -9147,8 +9200,24 @@ pub mod liquidate_isolated_perp {
         create_anchor_account_info!(spot_market, SpotMarket, spot_market_account_info);
         let spot_market_map = SpotMarketMap::load_one(&spot_market_account_info, true).unwrap();
 
-        let mut user = User {
-            orders: get_orders(Order {
+        let user_data = crate::state::user::TestUser::new(
+            User {
+                perp_positions: get_positions(PerpPosition {
+                    market_index: 0,
+                    base_asset_amount: -BASE_PRECISION_I64,
+                    quote_asset_amount: 50 * QUOTE_PRECISION_I64,
+                    quote_entry_amount: 50 * QUOTE_PRECISION_I64,
+                    quote_break_even_amount: 50 * QUOTE_PRECISION_I64,
+                    open_orders: 1,
+                    open_asks: -BASE_PRECISION_I64,
+                    position_flag: PositionFlag::IsolatedPosition as u8,
+                    ..PerpPosition::default()
+                }),
+                spot_positions: [SpotPosition::default(); 8],
+
+                ..User::default()
+            },
+            &get_orders(Order {
                 market_index: 0,
                 status: OrderStatus::Open,
                 order_type: OrderType::Limit,
@@ -9157,21 +9226,8 @@ pub mod liquidate_isolated_perp {
                 slot: 0,
                 ..Order::default()
             }),
-            perp_positions: get_positions(PerpPosition {
-                market_index: 0,
-                base_asset_amount: -BASE_PRECISION_I64,
-                quote_asset_amount: 50 * QUOTE_PRECISION_I64,
-                quote_entry_amount: 50 * QUOTE_PRECISION_I64,
-                quote_break_even_amount: 50 * QUOTE_PRECISION_I64,
-                open_orders: 1,
-                open_asks: -BASE_PRECISION_I64,
-                position_flag: PositionFlag::IsolatedPosition as u8,
-                ..PerpPosition::default()
-            }),
-            spot_positions: [SpotPosition::default(); 8],
-
-            ..User::default()
-        };
+        );
+        let mut user = user_data.view();
 
         let mut liquidator = User {
             spot_positions: get_spot_positions(SpotPosition {
@@ -9295,8 +9351,24 @@ pub mod liquidate_isolated_perp {
         create_anchor_account_info!(spot_market, SpotMarket, spot_market_account_info);
         let spot_market_map = SpotMarketMap::load_one(&spot_market_account_info, true).unwrap();
 
-        let mut user = User {
-            orders: get_orders(Order {
+        let user_data = crate::state::user::TestUser::new(
+            User {
+                perp_positions: get_positions(PerpPosition {
+                    market_index: 0,
+                    base_asset_amount: 2 * BASE_PRECISION_I64,
+                    quote_asset_amount: -200 * QUOTE_PRECISION_I64,
+                    quote_entry_amount: -200 * QUOTE_PRECISION_I64,
+                    quote_break_even_amount: -200 * QUOTE_PRECISION_I64,
+                    open_orders: 1,
+                    open_bids: BASE_PRECISION_I64,
+                    position_flag: PositionFlag::IsolatedPosition as u8,
+                    isolated_position_scaled_balance: 5 * SPOT_BALANCE_PRECISION_U64,
+                    ..PerpPosition::default()
+                }),
+
+                ..User::default()
+            },
+            &get_orders(Order {
                 market_index: 0,
                 status: OrderStatus::Open,
                 order_type: OrderType::Limit,
@@ -9305,21 +9377,8 @@ pub mod liquidate_isolated_perp {
                 slot: 0,
                 ..Order::default()
             }),
-            perp_positions: get_positions(PerpPosition {
-                market_index: 0,
-                base_asset_amount: 2 * BASE_PRECISION_I64,
-                quote_asset_amount: -200 * QUOTE_PRECISION_I64,
-                quote_entry_amount: -200 * QUOTE_PRECISION_I64,
-                quote_break_even_amount: -200 * QUOTE_PRECISION_I64,
-                open_orders: 1,
-                open_bids: BASE_PRECISION_I64,
-                position_flag: PositionFlag::IsolatedPosition as u8,
-                isolated_position_scaled_balance: 5 * SPOT_BALANCE_PRECISION_U64,
-                ..PerpPosition::default()
-            }),
-
-            ..User::default()
-        };
+        );
+        let mut user = user_data.view();
 
         let mut liquidator = User {
             spot_positions: get_spot_positions(SpotPosition {
@@ -9477,8 +9536,23 @@ pub mod liquidate_isolated_perp {
         create_anchor_account_info!(spot_market, SpotMarket, spot_market_account_info);
         let spot_market_map = SpotMarketMap::load_one(&spot_market_account_info, true).unwrap();
 
-        let mut user = User {
-            orders: get_orders(Order {
+        let user_data = crate::state::user::TestUser::new(
+            User {
+                perp_positions: get_positions(PerpPosition {
+                    market_index: 0,
+                    base_asset_amount: 20 * BASE_PRECISION_I64,
+                    quote_asset_amount: -2000 * QUOTE_PRECISION_I64,
+                    quote_entry_amount: -2000 * QUOTE_PRECISION_I64,
+                    quote_break_even_amount: -2000 * QUOTE_PRECISION_I64,
+                    open_orders: 1,
+                    open_bids: 10 * BASE_PRECISION_I64,
+                    position_flag: PositionFlag::IsolatedPosition as u8,
+                    isolated_position_scaled_balance: 50 * SPOT_BALANCE_PRECISION_U64,
+                    ..PerpPosition::default()
+                }),
+                ..User::default()
+            },
+            &get_orders(Order {
                 market_index: 0,
                 status: OrderStatus::Open,
                 order_type: OrderType::Limit,
@@ -9487,20 +9561,8 @@ pub mod liquidate_isolated_perp {
                 slot: 0,
                 ..Order::default()
             }),
-            perp_positions: get_positions(PerpPosition {
-                market_index: 0,
-                base_asset_amount: 20 * BASE_PRECISION_I64,
-                quote_asset_amount: -2000 * QUOTE_PRECISION_I64,
-                quote_entry_amount: -2000 * QUOTE_PRECISION_I64,
-                quote_break_even_amount: -2000 * QUOTE_PRECISION_I64,
-                open_orders: 1,
-                open_bids: 10 * BASE_PRECISION_I64,
-                position_flag: PositionFlag::IsolatedPosition as u8,
-                isolated_position_scaled_balance: 50 * SPOT_BALANCE_PRECISION_U64,
-                ..PerpPosition::default()
-            }),
-            ..User::default()
-        };
+        );
+        let mut user = user_data.view();
 
         let mut liquidator = User {
             spot_positions: get_spot_positions(SpotPosition {
@@ -9611,7 +9673,7 @@ pub mod liquidate_isolated_perp {
         create_anchor_account_info!(spot_market, SpotMarket, spot_market_account_info);
         let spot_market_map = SpotMarketMap::load_one(&spot_market_account_info, true).unwrap();
 
-        let mut user = User {
+        let user_data = crate::state::user::TestUser::from_header(User {
             perp_positions: get_positions(PerpPosition {
                 market_index: 0,
                 base_asset_amount: -BASE_PRECISION_I64,
@@ -9623,7 +9685,8 @@ pub mod liquidate_isolated_perp {
                 ..PerpPosition::default()
             }),
             ..User::default()
-        };
+        });
+        let mut user = user_data.view();
 
         let mut liquidator = User {
             spot_positions: get_spot_positions(SpotPosition {
@@ -9735,7 +9798,7 @@ pub mod liquidate_isolated_perp {
         create_anchor_account_info!(spot_market, SpotMarket, spot_market_account_info);
         let spot_market_map = SpotMarketMap::load_one(&spot_market_account_info, true).unwrap();
 
-        let mut user = User {
+        let user_data = crate::state::user::TestUser::from_header(User {
             perp_positions: get_positions(PerpPosition {
                 market_index: 0,
                 base_asset_amount: -299400000000,
@@ -9747,7 +9810,8 @@ pub mod liquidate_isolated_perp {
                 ..PerpPosition::default()
             }),
             ..User::default()
-        };
+        });
+        let mut user = user_data.view();
 
         let mut liquidator = User {
             spot_positions: get_spot_positions(SpotPosition {
@@ -9882,8 +9946,29 @@ pub mod liquidate_isolated_perp {
         )
         .unwrap();
 
-        let mut user = User {
-            orders: get_orders(Order {
+        let user_data = crate::state::user::TestUser::new(
+            User {
+                perp_positions: get_positions(PerpPosition {
+                    market_index: 0,
+                    base_asset_amount: BASE_PRECISION_I64,
+                    quote_asset_amount: -150 * QUOTE_PRECISION_I64,
+                    quote_entry_amount: -150 * QUOTE_PRECISION_I64,
+                    quote_break_even_amount: -150 * QUOTE_PRECISION_I64,
+                    open_orders: 1,
+                    open_bids: BASE_PRECISION_I64,
+                    position_flag: PositionFlag::IsolatedPosition as u8,
+                    ..PerpPosition::default()
+                }),
+                spot_positions: get_spot_positions(SpotPosition {
+                    market_index: 0,
+                    balance_type: SpotBalanceType::Deposit,
+                    scaled_balance: 100 * SPOT_BALANCE_PRECISION_U64,
+                    ..SpotPosition::default()
+                }),
+
+                ..User::default()
+            },
+            &get_orders(Order {
                 market_index: 0,
                 status: OrderStatus::Open,
                 order_type: OrderType::Limit,
@@ -9892,26 +9977,8 @@ pub mod liquidate_isolated_perp {
                 slot: 0,
                 ..Order::default()
             }),
-            perp_positions: get_positions(PerpPosition {
-                market_index: 0,
-                base_asset_amount: BASE_PRECISION_I64,
-                quote_asset_amount: -150 * QUOTE_PRECISION_I64,
-                quote_entry_amount: -150 * QUOTE_PRECISION_I64,
-                quote_break_even_amount: -150 * QUOTE_PRECISION_I64,
-                open_orders: 1,
-                open_bids: BASE_PRECISION_I64,
-                position_flag: PositionFlag::IsolatedPosition as u8,
-                ..PerpPosition::default()
-            }),
-            spot_positions: get_spot_positions(SpotPosition {
-                market_index: 0,
-                balance_type: SpotBalanceType::Deposit,
-                scaled_balance: 100 * SPOT_BALANCE_PRECISION_U64,
-                ..SpotPosition::default()
-            }),
-
-            ..User::default()
-        };
+        );
+        let mut user = user_data.view();
 
         user.spot_positions[1] = SpotPosition {
             market_index: 1,
@@ -10069,7 +10136,7 @@ pub mod liquidate_isolated_perp_pnl_for_deposit {
     use crate::state::perp_market_map::PerpMarketMap;
     use crate::state::spot_market::{SpotBalanceType, SpotMarket};
     use crate::state::spot_market_map::SpotMarketMap;
-    use crate::state::user::{Order, PerpPosition, PositionFlag, SpotPosition, User};
+    use crate::state::user::{PerpPosition, PositionFlag, SpotPosition, User};
     use crate::test_utils::{get_positions, get_pyth_price, get_spot_positions};
 
     #[test]
@@ -10166,8 +10233,7 @@ pub mod liquidate_isolated_perp_pnl_for_deposit {
             SpotMarketMap::load_multiple(spot_market_account_infos, true).unwrap();
 
         let mut spot_positions = [SpotPosition::default(); 8];
-        let mut user = User {
-            orders: [Order::default(); 32],
+        let user_data = crate::state::user::TestUser::from_header(User {
             perp_positions: get_positions(PerpPosition {
                 market_index: 0,
                 quote_asset_amount: -100 * QUOTE_PRECISION_I64,
@@ -10177,7 +10243,8 @@ pub mod liquidate_isolated_perp_pnl_for_deposit {
             }),
             spot_positions,
             ..User::default()
-        };
+        });
+        let mut user = user_data.view();
 
         let mut liquidator = User {
             spot_positions: get_spot_positions(SpotPosition {
@@ -10322,8 +10389,7 @@ pub mod liquidate_isolated_perp_pnl_for_deposit {
             SpotMarketMap::load_multiple(spot_market_account_infos, true).unwrap();
 
         let mut spot_positions = [SpotPosition::default(); 8];
-        let mut user = User {
-            orders: [Order::default(); 32],
+        let user_data = crate::state::user::TestUser::from_header(User {
             perp_positions: get_positions(PerpPosition {
                 market_index: 0,
                 quote_asset_amount: -91 * QUOTE_PRECISION_I64,
@@ -10333,7 +10399,8 @@ pub mod liquidate_isolated_perp_pnl_for_deposit {
             }),
             spot_positions,
             ..User::default()
-        };
+        });
+        let mut user = user_data.view();
 
         let mut liquidator = User {
             spot_positions: get_spot_positions(SpotPosition {
@@ -10445,7 +10512,7 @@ mod liquidation_mode {
     use crate::state::spot_market::{SpotBalanceType, SpotMarket};
     use crate::state::spot_market_map::SpotMarketMap;
     use crate::state::user::PositionFlag;
-    use crate::state::user::{Order, PerpPosition, SpotPosition, User, UserStatus};
+    use crate::state::user::{PerpPosition, SpotPosition, User, UserStatus};
     use crate::test_utils::get_pyth_price;
 
     #[test]
@@ -10571,7 +10638,6 @@ mod liquidation_mode {
             ..PerpPosition::default()
         };
         let user_isolated_position_being_liquidated = User {
-            orders: [Order::default(); 32],
             perp_positions,
             spot_positions,
             ..User::default()
@@ -10625,7 +10691,6 @@ mod liquidation_mode {
             ..PerpPosition::default()
         };
         let user_cross_margin_being_liquidated = User {
-            orders: [Order::default(); 32],
             perp_positions,
             spot_positions,
             ..User::default()
@@ -10658,12 +10723,13 @@ mod liquidation_mode {
     #[test]
     pub fn get_perp_liquidation_mode_returns_cross_margin_when_no_position() {
         let perp_positions = [PerpPosition::default(); 8];
-        let mut user = User {
+        let user_data = crate::state::user::TestUser::from_header(User {
             perp_positions,
             spot_positions: [SpotPosition::default(); 8],
             status: UserStatus::BeingLiquidated as u8,
             ..User::default()
-        };
+        });
+        let mut user = user_data.view();
 
         // Before fix: would error here with UserHasNoPositionInMarket (get_perp_position fails when no position)
         let mode = get_perp_liquidation_mode(&user, 0).unwrap();

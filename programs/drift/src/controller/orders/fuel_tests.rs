@@ -188,8 +188,23 @@ pub mod fuel_scoring {
         let spot_market_map = SpotMarketMap::load_one(&spot_market_account_info, true).unwrap();
 
         // taker wants to go long (would improve balance)
-        let mut taker = User {
-            orders: get_orders(Order {
+        let taker_data = crate::state::user::TestUser::new(
+            User {
+                perp_positions: get_positions(PerpPosition {
+                    market_index: 0,
+                    open_orders: 1,
+                    open_bids: BASE_PRECISION_I64,
+                    ..PerpPosition::default()
+                }),
+                spot_positions: get_spot_positions(SpotPosition {
+                    market_index: 0,
+                    balance_type: SpotBalanceType::Deposit,
+                    scaled_balance: 100 * SPOT_BALANCE_PRECISION_U64,
+                    ..SpotPosition::default()
+                }),
+                ..User::default()
+            },
+            &get_orders(Order {
                 market_index: 0,
                 status: OrderStatus::Open,
                 order_type: OrderType::Market,
@@ -202,35 +217,23 @@ pub mod fuel_scoring {
                 auction_duration: 0,
                 ..Order::default()
             }),
-            perp_positions: get_positions(PerpPosition {
-                market_index: 0,
-                open_orders: 1,
-                open_bids: BASE_PRECISION_I64,
-                ..PerpPosition::default()
-            }),
-            spot_positions: get_spot_positions(SpotPosition {
-                market_index: 0,
-                balance_type: SpotBalanceType::Deposit,
-                scaled_balance: 100 * SPOT_BALANCE_PRECISION_U64,
-                ..SpotPosition::default()
-            }),
-            ..User::default()
-        };
+        );
+        let mut taker = taker_data.view();
 
         let maker_key = Pubkey::from_str("My11111111111111111111111111111111111111113").unwrap();
         let maker_authority =
             Pubkey::from_str("J83w4HKfqxwcq3BEMMkPFSppX3gqekLyLJBexebFVkix").unwrap();
-        let mut maker = User {
+        let maker_orders = get_orders(Order {
+            market_index: 0,
+            post_only: true,
+            order_type: OrderType::Limit,
+            direction: PositionDirection::Short,
+            base_asset_amount: BASE_PRECISION_U64 / 2,
+            price: 100 * PRICE_PRECISION_U64,
+            ..Order::default()
+        });
+        let maker = User {
             authority: maker_authority,
-            orders: get_orders(Order {
-                market_index: 0,
-                post_only: true,
-                order_type: OrderType::Limit,
-                direction: PositionDirection::Short,
-                base_asset_amount: BASE_PRECISION_U64 / 2,
-                price: 100 * PRICE_PRECISION_U64,
-                ..Order::default()
-            }),
             perp_positions: get_positions(PerpPosition {
                 market_index: 0,
                 open_orders: 1,
@@ -245,10 +248,20 @@ pub mod fuel_scoring {
             }),
             ..User::default()
         };
-        create_anchor_account_info!(maker, &maker_key, User, maker_account_info);
+        let mut maker_bytes = crate::state::user::build_user_account_bytes(maker, &maker_orders);
+        let mut maker_lamports = 0;
+        let maker_owner = <User as anchor_lang::Owner>::owner();
+        let maker_account_info = crate::test_utils::create_account_info(
+            &maker_key,
+            true,
+            &mut maker_lamports,
+            &mut maker_bytes[..],
+            &maker_owner,
+        );
         let makers_and_referrers = UserMap::load_one(&maker_account_info).unwrap();
 
-        let mut filler = User::default();
+        let filler_data = crate::state::user::TestUser::from_header(User::default());
+        let mut filler = filler_data.view();
 
         let fee_structure = get_fee_structure();
 
@@ -318,8 +331,7 @@ pub mod fuel_scoring {
             market.amm.base_asset_amount_with_amm
         );
         assert_ne!(taker.get_perp_position(0).unwrap().base_asset_amount, 0);
-        let maker_after: std::cell::RefMut<User> =
-            makers_and_referrers.get_ref_mut(&maker_key).unwrap();
+        let maker_after = makers_and_referrers.get_ref_mut(&maker_key).unwrap();
         let maker_stats_after = if maker.authority == taker.authority {
             None
         } else {
@@ -503,19 +515,6 @@ pub mod fuel_scoring {
 
         // taker wants to go long (would improve balance)
         let mut taker = User {
-            orders: get_orders(Order {
-                market_index: 0,
-                status: OrderStatus::Open,
-                order_type: OrderType::Market,
-                direction: PositionDirection::Long,
-                base_asset_amount: BASE_PRECISION_U64,
-                slot: 0,
-                auction_start_price: 100 * PRICE_PRECISION_I64,
-                auction_end_price: 100 * PRICE_PRECISION_I64,
-                price: 100 * PRICE_PRECISION_U64 + 500000,
-                auction_duration: 0,
-                ..Order::default()
-            }),
             perp_positions: get_positions(PerpPosition {
                 market_index: 0,
                 open_orders: 1,
@@ -545,15 +544,6 @@ pub mod fuel_scoring {
             Pubkey::from_str("J83w4HKfqxwcq3BEMMkPFSppX3gqekLyLJBexebFVkix").unwrap();
         let mut maker = User {
             authority: maker_authority,
-            orders: get_orders(Order {
-                market_index: 0,
-                post_only: true,
-                order_type: OrderType::Limit,
-                direction: PositionDirection::Short,
-                base_asset_amount: BASE_PRECISION_U64 / 2,
-                price: 100 * PRICE_PRECISION_U64,
-                ..Order::default()
-            }),
             perp_positions: get_positions(PerpPosition {
                 market_index: 0,
                 open_orders: 1,
@@ -593,8 +583,7 @@ pub mod fuel_scoring {
         assert_eq!(taker.get_perp_position(0).unwrap().base_asset_amount, 0);
         now += 86400; // one day
 
-        let maker_after: std::cell::RefMut<User> =
-            makers_and_referrers.get_ref_mut(&maker_key).unwrap();
+        let maker_after = makers_and_referrers.get_ref_mut(&maker_key).unwrap();
         let _maker_stats_after = if maker.authority == taker.authority {
             None
         } else {
@@ -743,19 +732,6 @@ pub mod fuel_scoring {
 
         // taker wants to go long (would improve balance)
         let mut taker = User {
-            orders: get_orders(Order {
-                market_index: 0,
-                status: OrderStatus::Open,
-                order_type: OrderType::Market,
-                direction: PositionDirection::Long,
-                base_asset_amount: BASE_PRECISION_U64,
-                slot: 0,
-                auction_start_price: 100 * PRICE_PRECISION_I64,
-                auction_end_price: 100 * PRICE_PRECISION_I64,
-                price: 100 * PRICE_PRECISION_U64 + 500000,
-                auction_duration: 0,
-                ..Order::default()
-            }),
             perp_positions: get_positions(PerpPosition {
                 market_index: 0,
                 open_orders: 1,
@@ -777,15 +753,6 @@ pub mod fuel_scoring {
             Pubkey::from_str("J83w4HKfqxwcq3BEMMkPFSppX3gqekLyLJBexebFVkix").unwrap();
         let mut maker = User {
             authority: maker_authority,
-            orders: get_orders(Order {
-                market_index: 0,
-                post_only: true,
-                order_type: OrderType::Limit,
-                direction: PositionDirection::Short,
-                base_asset_amount: BASE_PRECISION_U64 / 2,
-                price: 100 * PRICE_PRECISION_U64,
-                ..Order::default()
-            }),
             perp_positions: get_positions(PerpPosition {
                 market_index: 0,
                 open_orders: 1,
@@ -824,8 +791,7 @@ pub mod fuel_scoring {
         assert_eq!(taker.get_perp_position(0).unwrap().base_asset_amount, 0);
         now += 86400; // one day
 
-        let maker_after: std::cell::RefMut<User> =
-            makers_and_referrers.get_ref_mut(&maker_key).unwrap();
+        let maker_after = makers_and_referrers.get_ref_mut(&maker_key).unwrap();
         let _maker_stats_after = if maker.authority == taker.authority {
             None
         } else {

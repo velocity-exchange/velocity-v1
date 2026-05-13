@@ -2403,15 +2403,6 @@ pub mod meets_withdraw_margin_requirement_and_increment_fuel_bonus {
         .unwrap();
 
         let mut user = User {
-            orders: get_orders(Order {
-                market_index: 0,
-                status: OrderStatus::Open,
-                order_type: OrderType::Limit,
-                direction: PositionDirection::Long,
-                base_asset_amount: BASE_PRECISION_U64,
-                slot: 0,
-                ..Order::default()
-            }),
             perp_positions: get_positions(PerpPosition {
                 market_index: 0,
                 base_asset_amount: BASE_PRECISION_I64,

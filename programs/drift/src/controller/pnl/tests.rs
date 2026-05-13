@@ -115,7 +115,7 @@ pub fn user_no_position() {
     create_anchor_account_info!(spot_market, SpotMarket, spot_market_account_info);
     let spot_market_map = SpotMarketMap::load_one(&spot_market_account_info, true).unwrap();
 
-    let mut user = User {
+    let user_data = crate::state::user::TestUser::from_header(User {
         perp_positions: [PerpPosition::default(); 8],
         spot_positions: get_spot_positions(SpotPosition {
             market_index: 0,
@@ -124,7 +124,8 @@ pub fn user_no_position() {
             ..SpotPosition::default()
         }),
         ..User::default()
-    };
+    });
+    let mut user = user_data.view();
 
     let user_key = Pubkey::default();
     let authority = Pubkey::default();
@@ -236,7 +237,7 @@ pub fn user_does_not_meet_maintenance_requirement() {
     create_anchor_account_info!(spot_market, SpotMarket, spot_market_account_info);
     let spot_market_map = SpotMarketMap::load_one(&spot_market_account_info, true).unwrap();
 
-    let mut user = User {
+    let user_data = crate::state::user::TestUser::from_header(User {
         perp_positions: get_positions(PerpPosition {
             market_index: 0,
             quote_asset_amount: -120 * QUOTE_PRECISION_I64,
@@ -249,7 +250,8 @@ pub fn user_does_not_meet_maintenance_requirement() {
             ..SpotPosition::default()
         }),
         ..User::default()
-    };
+    });
+    let mut user = user_data.view();
 
     let user_key = Pubkey::default();
     let authority = Pubkey::default();
@@ -364,7 +366,7 @@ pub fn user_does_not_meet_strict_maintenance_requirement() {
     create_anchor_account_info!(spot_market, SpotMarket, spot_market_account_info);
     let spot_market_map = SpotMarketMap::load_one(&spot_market_account_info, true).unwrap();
 
-    let mut user = User {
+    let user_data = crate::state::user::TestUser::from_header(User {
         perp_positions: get_positions(PerpPosition {
             market_index: 0,
             quote_asset_amount: -51 * QUOTE_PRECISION_I64,
@@ -377,7 +379,8 @@ pub fn user_does_not_meet_strict_maintenance_requirement() {
             ..SpotPosition::default()
         }),
         ..User::default()
-    };
+    });
+    let mut user = user_data.view();
 
     let user_key = Pubkey::default();
     let authority = Pubkey::default();
@@ -504,7 +507,7 @@ pub fn user_unsettled_negative_pnl() {
     create_anchor_account_info!(spot_market, SpotMarket, spot_market_account_info);
     let spot_market_map = SpotMarketMap::load_one(&spot_market_account_info, true).unwrap();
 
-    let mut user = User {
+    let user_data = crate::state::user::TestUser::from_header(User {
         perp_positions: get_positions(PerpPosition {
             market_index: 0,
             quote_asset_amount: -50 * QUOTE_PRECISION_I64,
@@ -517,12 +520,13 @@ pub fn user_unsettled_negative_pnl() {
             ..SpotPosition::default()
         }),
         ..User::default()
-    };
+    });
+    let mut user = user_data.view();
 
     let user_key = Pubkey::default();
     let authority = Pubkey::default();
 
-    let mut expected_user = user;
+    let mut expected_user: User = *user;
     expected_user.perp_positions[0].quote_asset_amount = 0;
     expected_user.settled_perp_pnl = -50 * QUOTE_PRECISION_I64;
     expected_user.perp_positions[0].settled_pnl = -50 * QUOTE_PRECISION_I64;
@@ -548,7 +552,7 @@ pub fn user_unsettled_negative_pnl() {
     )
     .unwrap();
 
-    assert_eq!(expected_user, user);
+    assert_eq!(expected_user, *user);
     assert_eq!(expected_market, *market_map.get_ref(&0).unwrap());
 }
 
@@ -640,7 +644,7 @@ pub fn user_unsettled_positive_pnl_more_than_pool() {
     create_anchor_account_info!(spot_market, SpotMarket, spot_market_account_info);
     let spot_market_map = SpotMarketMap::load_one(&spot_market_account_info, true).unwrap();
 
-    let mut user = User {
+    let user_data = crate::state::user::TestUser::from_header(User {
         perp_positions: get_positions(PerpPosition {
             market_index: 0,
             quote_asset_amount: 100 * QUOTE_PRECISION_I64,
@@ -653,12 +657,13 @@ pub fn user_unsettled_positive_pnl_more_than_pool() {
             ..SpotPosition::default()
         }),
         ..User::default()
-    };
+    });
+    let mut user = user_data.view();
 
     let user_key = Pubkey::default();
     let authority = Pubkey::default();
 
-    let mut expected_user = user;
+    let mut expected_user: User = *user;
     expected_user.perp_positions[0].quote_asset_amount = 50 * QUOTE_PRECISION_I64;
     expected_user.settled_perp_pnl = 50 * QUOTE_PRECISION_I64;
     expected_user.perp_positions[0].settled_pnl = 50 * QUOTE_PRECISION_I64;
@@ -683,7 +688,7 @@ pub fn user_unsettled_positive_pnl_more_than_pool() {
     )
     .unwrap();
 
-    assert_eq!(expected_user, user);
+    assert_eq!(expected_user, *user);
     assert_eq!(expected_market, *market_map.get_ref(&0).unwrap());
 }
 
@@ -776,7 +781,7 @@ pub fn user_unsettled_positive_pnl_less_than_pool() {
     create_anchor_account_info!(spot_market, SpotMarket, spot_market_account_info);
     let spot_market_map = SpotMarketMap::load_one(&spot_market_account_info, true).unwrap();
 
-    let mut user = User {
+    let user_data = crate::state::user::TestUser::from_header(User {
         perp_positions: get_positions(PerpPosition {
             market_index: 0,
             quote_asset_amount: 25 * QUOTE_PRECISION_I64,
@@ -789,12 +794,13 @@ pub fn user_unsettled_positive_pnl_less_than_pool() {
             ..SpotPosition::default()
         }),
         ..User::default()
-    };
+    });
+    let mut user = user_data.view();
 
     let user_key = Pubkey::default();
     let authority = Pubkey::default();
 
-    let mut expected_user = user;
+    let mut expected_user: User = *user;
     expected_user.perp_positions[0].quote_asset_amount = 0;
     expected_user.settled_perp_pnl = 25 * QUOTE_PRECISION_I64;
     expected_user.perp_positions[0].settled_pnl = 25 * QUOTE_PRECISION_I64;
@@ -820,7 +826,7 @@ pub fn user_unsettled_positive_pnl_less_than_pool() {
     )
     .unwrap();
 
-    assert_eq!(expected_user, user);
+    assert_eq!(expected_user, *user);
     assert_eq!(expected_market, *market_map.get_ref(&0).unwrap());
 }
 
@@ -915,7 +921,7 @@ pub fn market_fee_pool_receives_portion() {
     create_anchor_account_info!(spot_market, SpotMarket, spot_market_account_info);
     let spot_market_map = SpotMarketMap::load_one(&spot_market_account_info, true).unwrap();
 
-    let mut user = User {
+    let user_data = crate::state::user::TestUser::from_header(User {
         perp_positions: get_positions(PerpPosition {
             market_index: 0,
             quote_asset_amount: -100 * QUOTE_PRECISION_I64,
@@ -928,12 +934,13 @@ pub fn market_fee_pool_receives_portion() {
             ..SpotPosition::default()
         }),
         ..User::default()
-    };
+    });
+    let mut user = user_data.view();
 
     let user_key = Pubkey::default();
     let authority = Pubkey::default();
 
-    let mut expected_user = user;
+    let mut expected_user: User = *user;
     expected_user.perp_positions[0].quote_asset_amount = 0;
     expected_user.settled_perp_pnl = -100 * QUOTE_PRECISION_I64;
     expected_user.perp_positions[0].settled_pnl = -100 * QUOTE_PRECISION_I64;
@@ -960,7 +967,7 @@ pub fn market_fee_pool_receives_portion() {
     )
     .unwrap();
 
-    assert_eq!(expected_user, user);
+    assert_eq!(expected_user, *user);
     assert_eq!(expected_market, *market_map.get_ref(&0).unwrap());
 }
 
@@ -1059,7 +1066,7 @@ pub fn market_fee_pool_pays_back_to_pnl_pool() {
     create_anchor_account_info!(spot_market, SpotMarket, spot_market_account_info);
     let spot_market_map = SpotMarketMap::load_one(&spot_market_account_info, true).unwrap();
 
-    let mut user = User {
+    let user_data = crate::state::user::TestUser::from_header(User {
         perp_positions: get_positions(PerpPosition {
             market_index: 0,
             quote_asset_amount: -100 * QUOTE_PRECISION_I64,
@@ -1072,12 +1079,13 @@ pub fn market_fee_pool_pays_back_to_pnl_pool() {
             ..SpotPosition::default()
         }),
         ..User::default()
-    };
+    });
+    let mut user = user_data.view();
 
     let user_key = Pubkey::default();
     let authority = Pubkey::default();
 
-    let mut expected_user = user;
+    let mut expected_user: User = *user;
     expected_user.perp_positions[0].quote_asset_amount = 0;
     expected_user.settled_perp_pnl = -100 * QUOTE_PRECISION_I64;
     expected_user.perp_positions[0].settled_pnl = -100 * QUOTE_PRECISION_I64;
@@ -1104,7 +1112,7 @@ pub fn market_fee_pool_pays_back_to_pnl_pool() {
     )
     .unwrap();
 
-    assert_eq!(expected_user, user);
+    assert_eq!(expected_user, *user);
     assert_eq!(expected_market, *market_map.get_ref(&0).unwrap());
 }
 
@@ -1196,7 +1204,7 @@ pub fn user_long_positive_unrealized_pnl_up_to_max_positive_pnl() {
     create_anchor_account_info!(spot_market, SpotMarket, spot_market_account_info);
     let spot_market_map = SpotMarketMap::load_one(&spot_market_account_info, true).unwrap();
 
-    let mut user = User {
+    let user_data = crate::state::user::TestUser::from_header(User {
         perp_positions: get_positions(PerpPosition {
             market_index: 0,
             base_asset_amount: BASE_PRECISION_I64,
@@ -1212,12 +1220,13 @@ pub fn user_long_positive_unrealized_pnl_up_to_max_positive_pnl() {
             ..SpotPosition::default()
         }),
         ..User::default()
-    };
+    });
+    let mut user = user_data.view();
 
     let user_key = Pubkey::default();
     let authority = Pubkey::default();
 
-    let mut expected_user = user;
+    let mut expected_user: User = *user;
     expected_user.perp_positions[0].quote_asset_amount = -100 * QUOTE_PRECISION_I64;
     expected_user.settled_perp_pnl = 50 * QUOTE_PRECISION_I64;
     expected_user.perp_positions[0].settled_pnl = 50 * QUOTE_PRECISION_I64;
@@ -1242,7 +1251,7 @@ pub fn user_long_positive_unrealized_pnl_up_to_max_positive_pnl() {
     )
     .unwrap();
 
-    assert_eq!(expected_user, user);
+    assert_eq!(expected_user, *user);
     assert_eq!(expected_market, *market_map.get_ref(&0).unwrap());
 }
 
@@ -1334,7 +1343,7 @@ pub fn user_long_positive_unrealized_pnl_up_to_max_positive_pnl_price_breached()
     create_anchor_account_info!(spot_market, SpotMarket, spot_market_account_info);
     let spot_market_map = SpotMarketMap::load_one(&spot_market_account_info, true).unwrap();
 
-    let mut user = User {
+    let user_data = crate::state::user::TestUser::from_header(User {
         perp_positions: get_positions(PerpPosition {
             market_index: 0,
             base_asset_amount: BASE_PRECISION_I64,
@@ -1350,12 +1359,13 @@ pub fn user_long_positive_unrealized_pnl_up_to_max_positive_pnl_price_breached()
             ..SpotPosition::default()
         }),
         ..User::default()
-    };
+    });
+    let mut user = user_data.view();
 
     let user_key = Pubkey::default();
     let authority = Pubkey::default();
 
-    let mut expected_user = user;
+    let mut expected_user: User = *user;
     expected_user.perp_positions[0].quote_asset_amount = -100 * QUOTE_PRECISION_I64;
     expected_user.perp_positions[0].settled_pnl = 50 * QUOTE_PRECISION_I64;
     expected_user.spot_positions[0].scaled_balance = 150 * SPOT_BALANCE_PRECISION_U64;
@@ -1469,7 +1479,7 @@ pub fn user_long_negative_unrealized_pnl() {
     create_anchor_account_info!(spot_market, SpotMarket, spot_market_account_info);
     let spot_market_map = SpotMarketMap::load_one(&spot_market_account_info, true).unwrap();
 
-    let mut user = User {
+    let user_data = crate::state::user::TestUser::from_header(User {
         perp_positions: get_positions(PerpPosition {
             market_index: 0,
             base_asset_amount: BASE_PRECISION_I64,
@@ -1485,12 +1495,13 @@ pub fn user_long_negative_unrealized_pnl() {
             ..SpotPosition::default()
         }),
         ..User::default()
-    };
+    });
+    let mut user = user_data.view();
 
     let user_key = Pubkey::default();
     let authority = Pubkey::default();
 
-    let mut expected_user = user;
+    let mut expected_user: User = *user;
     expected_user.perp_positions[0].quote_asset_amount = -50 * QUOTE_PRECISION_I64;
     expected_user.settled_perp_pnl = -50 * QUOTE_PRECISION_I64;
     expected_user.perp_positions[0].settled_pnl = -50 * QUOTE_PRECISION_I64;
@@ -1515,7 +1526,7 @@ pub fn user_long_negative_unrealized_pnl() {
     )
     .unwrap();
 
-    assert_eq!(expected_user, user);
+    assert_eq!(expected_user, *user);
     assert_eq!(expected_market, *market_map.get_ref(&0).unwrap());
 }
 
@@ -1607,7 +1618,7 @@ pub fn user_short_positive_unrealized_pnl_up_to_max_positive_pnl() {
     create_anchor_account_info!(spot_market, SpotMarket, spot_market_account_info);
     let spot_market_map = SpotMarketMap::load_one(&spot_market_account_info, true).unwrap();
 
-    let mut user = User {
+    let user_data = crate::state::user::TestUser::from_header(User {
         perp_positions: get_positions(PerpPosition {
             market_index: 0,
             base_asset_amount: -BASE_PRECISION_I64,
@@ -1623,12 +1634,13 @@ pub fn user_short_positive_unrealized_pnl_up_to_max_positive_pnl() {
             ..SpotPosition::default()
         }),
         ..User::default()
-    };
+    });
+    let mut user = user_data.view();
 
     let user_key = Pubkey::default();
     let authority = Pubkey::default();
 
-    let mut expected_user = user;
+    let mut expected_user: User = *user;
     expected_user.perp_positions[0].quote_asset_amount = 50 * QUOTE_PRECISION_I64;
     expected_user.settled_perp_pnl = 50 * QUOTE_PRECISION_I64;
     expected_user.perp_positions[0].settled_pnl = 50 * QUOTE_PRECISION_I64;
@@ -1653,7 +1665,7 @@ pub fn user_short_positive_unrealized_pnl_up_to_max_positive_pnl() {
     )
     .unwrap();
 
-    assert_eq!(expected_user, user);
+    assert_eq!(expected_user, *user);
     assert_eq!(expected_market, *market_map.get_ref(&0).unwrap());
 }
 
@@ -1745,7 +1757,7 @@ pub fn user_short_negative_unrealized_pnl() {
     create_anchor_account_info!(spot_market, SpotMarket, spot_market_account_info);
     let spot_market_map = SpotMarketMap::load_one(&spot_market_account_info, true).unwrap();
 
-    let mut user = User {
+    let user_data = crate::state::user::TestUser::from_header(User {
         perp_positions: get_positions(PerpPosition {
             market_index: 0,
             base_asset_amount: -BASE_PRECISION_I64,
@@ -1761,12 +1773,13 @@ pub fn user_short_negative_unrealized_pnl() {
             ..SpotPosition::default()
         }),
         ..User::default()
-    };
+    });
+    let mut user = user_data.view();
 
     let user_key = Pubkey::default();
     let authority = Pubkey::default();
 
-    let mut expected_user = user;
+    let mut expected_user: User = *user;
     expected_user.perp_positions[0].quote_asset_amount = 100 * QUOTE_PRECISION_I64;
     expected_user.settled_perp_pnl = -50 * QUOTE_PRECISION_I64;
     expected_user.perp_positions[0].settled_pnl = -50 * QUOTE_PRECISION_I64;
@@ -1791,7 +1804,7 @@ pub fn user_short_negative_unrealized_pnl() {
     )
     .unwrap();
 
-    assert_eq!(expected_user, user);
+    assert_eq!(expected_user, *user);
     assert_eq!(expected_market, *market_map.get_ref(&0).unwrap());
 }
 
@@ -1882,7 +1895,7 @@ pub fn user_invalid_oracle_position() {
     create_anchor_account_info!(spot_market, SpotMarket, spot_market_account_info);
     let spot_market_map = SpotMarketMap::load_one(&spot_market_account_info, true).unwrap();
 
-    let mut user = User {
+    let user_data = crate::state::user::TestUser::from_header(User {
         perp_positions: get_positions(PerpPosition {
             market_index: 0,
             base_asset_amount: -BASE_PRECISION_I64,
@@ -1898,7 +1911,8 @@ pub fn user_invalid_oracle_position() {
             ..SpotPosition::default()
         }),
         ..User::default()
-    };
+    });
+    let mut user = user_data.view();
 
     let user_key = Pubkey::default();
     let authority = Pubkey::default();
@@ -2203,7 +2217,7 @@ pub fn isolated_perp_position_negative_pnl() {
     create_anchor_account_info!(spot_market, SpotMarket, spot_market_account_info);
     let spot_market_map = SpotMarketMap::load_one(&spot_market_account_info, true).unwrap();
 
-    let mut user = User {
+    let user_data = crate::state::user::TestUser::from_header(User {
         perp_positions: get_positions(PerpPosition {
             market_index: 0,
             quote_asset_amount: -50 * QUOTE_PRECISION_I64,
@@ -2212,12 +2226,13 @@ pub fn isolated_perp_position_negative_pnl() {
             ..PerpPosition::default()
         }),
         ..User::default()
-    };
+    });
+    let mut user = user_data.view();
 
     let user_key = Pubkey::default();
     let authority = Pubkey::default();
 
-    let mut expected_user = user;
+    let mut expected_user: User = *user;
     expected_user.perp_positions[0].quote_asset_amount = 0;
     expected_user.settled_perp_pnl = -50 * QUOTE_PRECISION_I64;
     expected_user.perp_positions[0].settled_pnl = -50 * QUOTE_PRECISION_I64;
@@ -2244,7 +2259,7 @@ pub fn isolated_perp_position_negative_pnl() {
     )
     .unwrap();
 
-    assert_eq!(expected_user, user);
+    assert_eq!(expected_user, *user);
     assert_eq!(expected_market, *market_map.get_ref(&0).unwrap());
 }
 
@@ -2337,7 +2352,7 @@ pub fn isolated_perp_position_user_unsettled_positive_pnl_less_than_pool() {
     create_anchor_account_info!(spot_market, SpotMarket, spot_market_account_info);
     let spot_market_map = SpotMarketMap::load_one(&spot_market_account_info, true).unwrap();
 
-    let mut user = User {
+    let user_data = crate::state::user::TestUser::from_header(User {
         perp_positions: get_positions(PerpPosition {
             market_index: 0,
             quote_asset_amount: 25 * QUOTE_PRECISION_I64,
@@ -2346,12 +2361,13 @@ pub fn isolated_perp_position_user_unsettled_positive_pnl_less_than_pool() {
             ..PerpPosition::default()
         }),
         ..User::default()
-    };
+    });
+    let mut user = user_data.view();
 
     let user_key = Pubkey::default();
     let authority = Pubkey::default();
 
-    let mut expected_user = user;
+    let mut expected_user: User = *user;
     expected_user.perp_positions[0].quote_asset_amount = 0;
     expected_user.settled_perp_pnl = 25 * QUOTE_PRECISION_I64;
     expected_user.perp_positions[0].settled_pnl = 25 * QUOTE_PRECISION_I64;
@@ -2378,6 +2394,6 @@ pub fn isolated_perp_position_user_unsettled_positive_pnl_less_than_pool() {
     )
     .unwrap();
 
-    assert_eq!(expected_user, user);
+    assert_eq!(expected_user, *user);
     assert_eq!(expected_market, *market_map.get_ref(&0).unwrap());
 }

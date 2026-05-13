@@ -104,8 +104,7 @@ use crate::state::traits::Size;
 use crate::state::user::OrderStatus;
 use crate::state::user::ReferrerStatus;
 use crate::state::user::{
-    FuelOverflow, FuelOverflowProvider, MarketType, OrderType, ReferrerName, User,
-    UserStats,
+    FuelOverflow, FuelOverflowProvider, MarketType, OrderType, ReferrerName, User, UserStats,
 };
 use crate::state::user::{Order, SpecialUserStatus};
 use crate::state::user_map::load_user_maps;

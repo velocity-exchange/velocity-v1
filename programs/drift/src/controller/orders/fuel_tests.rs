@@ -273,7 +273,7 @@ pub mod fuel_scoring {
             .can_skip_auction_duration(&taker_stats, false)
             .unwrap();
         let is_amm_available = get_amm_is_available(
-            &taker.get_order(order_index),
+            &taker.order(order_index),
             min_auction_duration,
             &market,
             &mut oracle_map,

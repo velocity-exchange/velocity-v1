@@ -526,11 +526,7 @@ pub fn update_quote_break_even_amount(
     Ok(())
 }
 
-pub fn update_settled_pnl(
-    user: &mut User,
-    position_index: usize,
-    delta: i64,
-) -> DriftResult<()> {
+pub fn update_settled_pnl(user: &mut User, position_index: usize, delta: i64) -> DriftResult<()> {
     update_user_settled_pnl(user, delta)?;
     update_position_settled_pnl(&mut user.perp_positions[position_index], delta)?;
     Ok(())

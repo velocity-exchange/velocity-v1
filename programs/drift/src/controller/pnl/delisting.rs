@@ -1510,9 +1510,9 @@ pub mod delisting_test {
 
         // do short close
         {
-            assert_eq!(shorter.get_order(0).order_id, 0);
-            assert_eq!(shorter.get_order(0).status, OrderStatus::Open);
-            assert_eq!(shorter.get_order(0).base_asset_amount, 500000000);
+            assert_eq!(shorter.order(0).order_id, 0);
+            assert_eq!(shorter.order(0).status, OrderStatus::Open);
+            assert_eq!(shorter.order(0).base_asset_amount, 500000000);
 
             cancel_order(
                 0,
@@ -1994,9 +1994,9 @@ pub mod delisting_test {
 
         // do short close
         // {
-        //     assert_eq!(shorter.get_order(0).order_id, 0);
-        //     assert_eq!(shorter.get_order(0).status, OrderStatus::Open);
-        //     assert_eq!(shorter.get_order(0).base_asset_amount, 5000000000000);
+        //     assert_eq!(shorter.order(0).order_id, 0);
+        //     assert_eq!(shorter.order(0).status, OrderStatus::Open);
+        //     assert_eq!(shorter.order(0).base_asset_amount, 5000000000000);
 
         //     cancel_order(
         //         0,
@@ -2316,9 +2316,9 @@ pub mod delisting_test {
 
         // do short liquidation
         {
-            assert_eq!(shorter.get_order(0).order_id, 0);
-            assert_eq!(shorter.get_order(0).status, OrderStatus::Open);
-            assert_eq!(shorter.get_order(0).base_asset_amount, 500000000);
+            assert_eq!(shorter.order(0).order_id, 0);
+            assert_eq!(shorter.order(0).status, OrderStatus::Open);
+            assert_eq!(shorter.order(0).base_asset_amount, 500000000);
 
             cancel_order(
                 0,

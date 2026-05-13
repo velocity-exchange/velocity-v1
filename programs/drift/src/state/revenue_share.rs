@@ -504,7 +504,7 @@ impl<'a> RevenueShareEscrowZeroCopyMut<'a> {
                     continue;
                 }
                 if rev_share_order.is_open() && !rev_share_order.is_completed() {
-                    let user_order = user.get_order(rev_share_order.user_order_index as usize);
+                    let user_order = user.order(rev_share_order.user_order_index as usize);
                     let still_open = user_order.status == OrderStatus::Open
                         && user_order.order_id == rev_share_order.order_id;
                     if !still_open {

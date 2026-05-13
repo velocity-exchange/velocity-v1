@@ -34,7 +34,8 @@ use crate::state::perp_market_map::PerpMarketMap;
 use crate::state::spot_market::SpotMarket;
 use crate::state::spot_market_map::SpotMarketMap;
 use crate::state::user::{
-    MarketType, Order, OrderFillSimulation, OrderStatus, OrderTriggerCondition, PerpPosition, User, UserView,
+    MarketType, Order, OrderFillSimulation, OrderStatus, OrderTriggerCondition, PerpPosition, User,
+    UserView,
 };
 use crate::state::user_map::UserMap;
 use crate::validate;
@@ -359,7 +360,7 @@ pub fn should_expire_order(
     user_order_index: usize,
     now: i64,
 ) -> DriftResult<bool> {
-    let order = &user.get_order(user_order_index);
+    let order = &user.order(user_order_index);
     if order.status != OrderStatus::Open || order.max_ts == 0 || order.must_be_triggered() {
         return Ok(false);
     }
@@ -676,7 +677,7 @@ pub fn get_max_fill_amounts(
     quote_market: &SpotMarket,
     is_leaving_drift: bool,
 ) -> DriftResult<(Option<u64>, Option<u64>)> {
-    let direction: PositionDirection = user.get_order(user_order_index).direction;
+    let direction: PositionDirection = user.order(user_order_index).direction;
     match direction {
         PositionDirection::Long => {
             let max_quote = get_max_fill_amounts_for_market(user, quote_market, is_leaving_drift)?

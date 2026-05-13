@@ -931,25 +931,25 @@ impl<'a> UserView<'a> {
     }
 
     /// Borrow order at `index`. Panics on out-of-bounds (matches the previous
-    /// `user.get_order(i)` semantics).
-    pub fn get_order(&self, index: usize) -> &Order {
+    /// `user.orders[i]` semantics).
+    pub fn order(&self, index: usize) -> &Order {
         bytemuck::from_bytes::<Order>(self.order_slice(index))
     }
 
     /// Mutable borrow of order at `index`.
-    pub fn get_order_mut(&mut self, index: usize) -> &mut Order {
+    pub fn order_mut(&mut self, index: usize) -> &mut Order {
         bytemuck::from_bytes_mut::<Order>(self.order_slice_mut(index))
     }
 
     /// Replace the order at `index`.
     pub fn set_order(&mut self, index: usize, order: Order) {
-        *self.get_order_mut(index) = order;
+        *self.order_mut(index) = order;
     }
 
     /// Iterate immutably over all orders in the account.
     pub fn iter_orders(&self) -> impl Iterator<Item = &Order> + '_ {
         let len = self.orders_len();
-        (0..len).map(move |i| self.get_order(i))
+        (0..len).map(move |i| self.order(i))
     }
 
     /// Iterate mutably over all orders in the account.
@@ -967,14 +967,14 @@ impl<'a> UserView<'a> {
     }
 
     /// Lookup an Open order by `order_id` and return its slot index.
-    pub fn get_order_index(&self, order_id: u32) -> DriftResult<usize> {
+    pub fn find_order_index(&self, order_id: u32) -> DriftResult<usize> {
         self.iter_orders()
             .position(|o| o.order_id == order_id && o.status == OrderStatus::Open)
             .ok_or(ErrorCode::OrderDoesNotExist)
     }
 
     /// Lookup an Open order by the user-supplied `user_order_id`.
-    pub fn get_order_index_by_user_order_id(&self, user_order_id: u8) -> DriftResult<usize> {
+    pub fn find_order_index_by_user_order_id(&self, user_order_id: u8) -> DriftResult<usize> {
         self.iter_orders()
             .position(|o| o.user_order_id == user_order_id && o.status == OrderStatus::Open)
             .ok_or(ErrorCode::OrderDoesNotExist)
@@ -992,7 +992,7 @@ impl<'a> UserView<'a> {
     }
 
     /// Bytemuck-cast the orders tail as a typed mutable slice. Use sparingly —
-    /// most callers should prefer `iter_orders_mut`/`get_order_mut`. Held only
+    /// most callers should prefer `iter_orders_mut`/`order_mut`. Held only
     /// for short windows because it locks the whole tail mutably.
     pub fn orders_as_mut_slice(&mut self) -> &mut [Order] {
         let len = self.orders_len();

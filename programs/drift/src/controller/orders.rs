@@ -373,7 +373,7 @@ pub fn place_perp_order(
 
     if force_reduce_only {
         validate_order_for_force_reduce_only(
-            &user.get_order(new_order_index),
+            &user.order(new_order_index),
             user.perp_positions[position_index].base_asset_amount,
         )?;
     }
@@ -439,7 +439,7 @@ pub fn place_perp_order(
     let order_record = OrderRecord {
         ts: now,
         user: user_key,
-        order: *user.get_order(new_order_index),
+        order: *user.order(new_order_index),
     };
     emit_stack::<_, { OrderRecord::SIZE }>(order_record)?;
 
@@ -536,31 +536,31 @@ pub fn cancel_orders(
         .map(|position| position.market_index)
         .collect::<Vec<u16>>();
     for order_index in 0..user.orders_len() {
-        if user.get_order(order_index).status != OrderStatus::Open {
+        if user.order(order_index).status != OrderStatus::Open {
             continue;
         }
 
         if let (Some(market_type), Some(market_index)) = (market_type, market_index) {
-            if user.get_order(order_index).market_type != market_type {
+            if user.order(order_index).market_type != market_type {
                 continue;
             }
 
-            if user.get_order(order_index).market_index != market_index {
+            if user.order(order_index).market_index != market_index {
                 continue;
             }
         } else if skip_isolated_positions
-            && isolated_position_market_indexes.contains(&user.get_order(order_index).market_index)
+            && isolated_position_market_indexes.contains(&user.order(order_index).market_index)
         {
             continue;
         }
 
         if let Some(direction) = direction {
-            if user.get_order(order_index).direction != direction {
+            if user.order(order_index).direction != direction {
                 continue;
             }
         }
 
-        canceled_order_ids.push(user.get_order(order_index).order_id);
+        canceled_order_ids.push(user.order(order_index).order_id);
         cancel_order(
             order_index,
             user,
@@ -592,7 +592,7 @@ pub fn cancel_order_by_order_id(
 ) -> DriftResult {
     let user_key = user.key();
     let user = &mut load_user_mut!(user)?;
-    let order_index = match user.get_order_index(order_id) {
+    let order_index = match user.find_order_index(order_id) {
         Ok(order_index) => order_index,
         Err(_) => {
             msg!("could not find order id {}", order_id);
@@ -676,7 +676,7 @@ pub fn cancel_order(
     skip_log: bool,
 ) -> DriftResult {
     let (order_status, order_market_index, order_direction, order_market_type) = get_struct_values!(
-        user.get_order(order_index),
+        user.order(order_index),
         status,
         market_index,
         direction,
@@ -695,7 +695,7 @@ pub fn cancel_order(
 
     if !skip_log {
         let (taker, taker_order, maker, maker_order) =
-            get_taker_and_maker_for_order_record(user_key, &user.get_order(order_index));
+            get_taker_and_maker_for_order_record(user_key, &user.order(order_index));
 
         let mut bit_flags = 0;
         if is_perp_order {
@@ -737,17 +737,17 @@ pub fn cancel_order(
         emit_stack::<_, { OrderActionRecord::SIZE }>(order_action_record)?;
     }
 
-    let order_has_auction = user.get_order(order_index).has_auction();
+    let order_has_auction = user.order(order_index).has_auction();
     user.decrement_open_orders(order_has_auction);
     if is_perp_order {
         // Decrement open orders for existing position
         let position_index = get_position_index(&user.perp_positions, order_market_index)?;
 
         // only decrease open/bids ask if it's not a trigger order or if it's been triggered
-        let update_open_bids_and_asks = user.get_order(order_index).update_open_bids_and_asks();
+        let update_open_bids_and_asks = user.order(order_index).update_open_bids_and_asks();
         if update_open_bids_and_asks {
             let base_asset_amount_unfilled = user
-                .get_order(order_index)
+                .order(order_index)
                 .get_base_asset_amount_unfilled(None)?;
             position::decrease_open_bids_and_asks(
                 &mut user.perp_positions[position_index],
@@ -758,15 +758,15 @@ pub fn cancel_order(
         }
 
         user.perp_positions[position_index].open_orders -= 1;
-        user.get_order_mut(order_index).status = OrderStatus::Canceled;
+        user.order_mut(order_index).status = OrderStatus::Canceled;
     } else {
         let spot_position_index = user.get_spot_position_index(order_market_index)?;
 
         // only decrease open/bids ask if it's not a trigger order or if it's been triggered
-        let update_open_bids_and_asks = user.get_order(order_index).update_open_bids_and_asks();
+        let update_open_bids_and_asks = user.order(order_index).update_open_bids_and_asks();
         if update_open_bids_and_asks {
             let base_asset_amount_unfilled = user
-                .get_order(order_index)
+                .order(order_index)
                 .get_base_asset_amount_unfilled(None)?;
             decrease_spot_open_bids_and_asks(
                 &mut user.spot_positions[spot_position_index],
@@ -776,7 +776,7 @@ pub fn cancel_order(
             )?;
         }
         user.spot_positions[spot_position_index].open_orders -= 1;
-        user.get_order_mut(order_index).status = OrderStatus::Canceled;
+        user.order_mut(order_index).status = OrderStatus::Canceled;
     }
 
     Ok(())
@@ -810,7 +810,7 @@ pub fn modify_order(
 
     let order_index = match order_id {
         ModifyOrderId::UserOrderId(user_order_id) => {
-            match user.get_order_index_by_user_order_id(user_order_id) {
+            match user.find_order_index_by_user_order_id(user_order_id) {
                 Ok(order_index) => order_index,
                 Err(e) => {
                     msg!("User order id {} not found", user_order_id);
@@ -822,7 +822,7 @@ pub fn modify_order(
                 }
             }
         }
-        ModifyOrderId::OrderId(order_id) => match user.get_order_index(order_id) {
+        ModifyOrderId::OrderId(order_id) => match user.find_order_index(order_id) {
             Ok(order_index) => order_index,
             Err(e) => {
                 msg!("Order id {} not found", order_id);
@@ -835,7 +835,7 @@ pub fn modify_order(
         },
     };
 
-    let existing_order = *user.get_order(order_index);
+    let existing_order = *user.order(order_index);
 
     cancel_order(
         order_index,
@@ -999,7 +999,7 @@ pub fn fill_perp_order(
         .ok_or_else(print_error!(ErrorCode::OrderDoesNotExist))?;
 
     let (order_status, market_index, order_market_type, order_reduce_only) = get_struct_values!(
-        user.get_order(order_index),
+        user.order(order_index),
         status,
         market_index,
         market_type,
@@ -1040,7 +1040,7 @@ pub fn fill_perp_order(
     )?;
 
     validate!(
-        !user.get_order(order_index).must_be_triggered() || user.get_order(order_index).triggered(),
+        !user.order(order_index).must_be_triggered() || user.order(order_index).triggered(),
         ErrorCode::OrderMustBeTriggeredFirst,
         "Order must be triggered first"
     )?;
@@ -1104,7 +1104,7 @@ pub fn fill_perp_order(
 
         user_can_skip_duration = user.can_skip_auction_duration(user_stats, order_reduce_only)?;
         amm_is_available &= market.amm_can_fill_order(
-            &user.get_order(order_index),
+            &user.order(order_index),
             slot,
             fill_mode,
             state,
@@ -1166,7 +1166,7 @@ pub fn fill_perp_order(
         oracle_map,
         makers_and_referrer,
         &user_key,
-        &user.get_order(order_index),
+        &user.order(order_index),
         &mut filler.as_mut(),
         &filler_key,
         state.perp_fee_structure.flat_filler_fee,
@@ -1212,11 +1212,11 @@ pub fn fill_perp_order(
 
     let position_index = get_position_index(
         &user.perp_positions,
-        user.get_order(order_index).market_index,
+        user.order(order_index).market_index,
     )?;
     let existing_base_asset_amount = user.perp_positions[position_index].base_asset_amount;
     let should_cancel_reduce_only = should_cancel_reduce_only_order(
-        &user.get_order(order_index),
+        &user.order(order_index),
         existing_base_asset_amount,
         perp_market_map
             .get_ref_mut(&market_index)?
@@ -1308,7 +1308,7 @@ pub fn fill_perp_order(
 
     let base_asset_amount_after = user.perp_positions[position_index].base_asset_amount;
     let should_cancel_reduce_only = should_cancel_reduce_only_order(
-        &user.get_order(order_index),
+        &user.order(order_index),
         base_asset_amount_after,
         perp_market_map
             .get_ref_mut(&market_index)?
@@ -1528,7 +1528,7 @@ fn get_maker_orders_info(
             let maker_order_index = *maker_order_index;
             let maker_order_price = *maker_order_price;
 
-            let maker_order = &maker.get_order(maker_order_index);
+            let maker_order = &maker.order(maker_order_index);
             if !is_maker_for_taker(maker_order, taker_order, slot)? {
                 continue;
             }
@@ -1556,10 +1556,10 @@ fn get_maker_orders_info(
             let should_expire_order = should_expire_order(&maker, maker_order_index, now)?;
 
             let existing_base_asset_amount = maker
-                .get_perp_position(maker.get_order(maker_order_index).market_index)?
+                .get_perp_position(maker.order(maker_order_index).market_index)?
                 .base_asset_amount;
             let should_cancel_reduce_only_order = should_cancel_reduce_only_order(
-                &maker.get_order(maker_order_index),
+                &maker.order(maker_order_index),
                 existing_base_asset_amount,
                 step_size,
             )?;
@@ -1570,7 +1570,7 @@ fn get_maker_orders_info(
             {
                 let filler_reward = {
                     let mut market = perp_market_map
-                        .get_ref_mut(&maker.get_order(maker_order_index).market_index)?;
+                        .get_ref_mut(&maker.order(maker_order_index).market_index)?;
                     pay_keeper_flat_reward_for_perps(
                         &mut maker,
                         filler.as_deref_mut(),
@@ -1763,7 +1763,7 @@ fn fulfill_perp_order(
     rev_share_escrow: &mut Option<&mut RevenueShareEscrowZeroCopyMut>,
     builder_referral_feature_enabled: bool,
 ) -> DriftResult<(u64, u64)> {
-    let market_index = user.get_order(user_order_index).market_index;
+    let market_index = user.order(user_order_index).market_index;
 
     let user_order_position_decreasing =
         determine_if_user_order_is_position_decreasing(user, market_index, user_order_index)?;
@@ -1771,7 +1771,7 @@ fn fulfill_perp_order(
 
     let perp_market = perp_market_map.get_ref(&market_index)?;
     let limit_price = fill_mode.get_limit_price(
-        &user.get_order(user_order_index),
+        &user.order(user_order_index),
         valid_oracle_price,
         slot,
         perp_market.amm.order_tick_size,
@@ -1782,7 +1782,7 @@ fn fulfill_perp_order(
     let fulfillment_methods = {
         let market = perp_market_map.get_ref(&market_index)?;
         determine_perp_fulfillment_methods(
-            &user.get_order(user_order_index),
+            &user.order(user_order_index),
             maker_orders_info,
             &market.amm,
             reserve_price_before,
@@ -1799,13 +1799,13 @@ fn fulfill_perp_order(
     let mut base_asset_amount = 0_u64;
     let mut quote_asset_amount = 0_u64;
     let mut maker_fills: BTreeMap<Pubkey, (i64, bool)> = BTreeMap::new();
-    let maker_direction = user.get_order(user_order_index).direction.opposite();
+    let maker_direction = user.order(user_order_index).direction.opposite();
     for fulfillment_method in fulfillment_methods.iter() {
-        if user.get_order(user_order_index).status != OrderStatus::Open {
+        if user.order(user_order_index).status != OrderStatus::Open {
             break;
         }
         let mut market = perp_market_map.get_ref_mut(&market_index)?;
-        let user_order_direction: PositionDirection = user.get_order(user_order_index).direction;
+        let user_order_direction: PositionDirection = user.order(user_order_index).direction;
 
         let (fill_base_asset_amount, fill_quote_asset_amount) = match fulfillment_method {
             PerpFulfillmentMethod::AMM(maker_price) => {
@@ -2178,11 +2178,11 @@ fn determine_if_user_order_is_position_decreasing(
     order_index: usize,
 ) -> DriftResult<bool> {
     let position_index = get_position_index(&user.perp_positions, market_index)?;
-    let order_direction = user.get_order(order_index).direction;
+    let order_direction = user.order(order_index).direction;
     let position_base_asset_amount_before = user.perp_positions[position_index].base_asset_amount;
     is_order_position_reducing(
         &order_direction,
-        user.get_order(order_index)
+        user.order(order_index)
             .get_base_asset_amount_unfilled(Some(position_base_asset_amount_before))?,
         position_base_asset_amount_before.cast()?,
     )
@@ -2224,7 +2224,7 @@ pub fn fulfill_perp_order_with_amm(
         None => {
             let fee_tier = determine_user_fee_tier(user_stats, fee_structure, &MarketType::Perp)?;
             let (base_asset_amount, limit_price) = calculate_base_asset_amount_for_amm_to_fulfill(
-                &user.get_order(order_index),
+                &user.order(order_index),
                 market,
                 limit_price,
                 override_fill_price,
@@ -2232,7 +2232,7 @@ pub fn fulfill_perp_order_with_amm(
                 &fee_tier,
             )?;
 
-            let fill_price = if user.get_order(order_index).post_only {
+            let fill_price = if user.order(order_index).post_only {
                 limit_price
             } else {
                 None
@@ -2243,7 +2243,7 @@ pub fn fulfill_perp_order_with_amm(
     };
 
     // if user position is less than min order size, step size is the threshold
-    let amm_size_threshold = if !user.get_order(order_index).reduce_only
+    let amm_size_threshold = if !user.order(order_index).reduce_only
         && existing_base_asset_amount.unsigned_abs() > market.amm.min_order_size
     {
         market.amm.min_order_size
@@ -2265,13 +2265,13 @@ pub fn fulfill_perp_order_with_amm(
     }
 
     let (order_post_only, order_slot, order_direction, order_id) = get_struct_values!(
-        user.get_order(order_index),
+        user.order(order_index),
         post_only,
         slot,
         direction,
         order_id
     );
-    let user_order_has_builder = user.get_order(order_index).is_has_builder();
+    let user_order_has_builder = user.order(order_index).is_has_builder();
     if user_order_has_builder && rev_share_escrow.is_none() {
         msg!("Order has builder but no escrow account included, in the future this will fail.");
     }
@@ -2455,7 +2455,7 @@ pub fn fulfill_perp_order_with_amm(
     }
 
     let is_filled = update_order_after_fill(
-        user.get_order_mut(order_index),
+        user.order_mut(order_index),
         base_asset_amount,
         quote_asset_amount,
     )?;
@@ -2467,7 +2467,7 @@ pub fn fulfill_perp_order_with_amm(
         }
     }
 
-    let update_open_bids_and_asks = user.get_order(order_index).update_open_bids_and_asks();
+    let update_open_bids_and_asks = user.order(order_index).update_open_bids_and_asks();
     decrease_open_bids_and_asks(
         &mut user.perp_positions[position_index],
         &order_direction,
@@ -2476,7 +2476,7 @@ pub fn fulfill_perp_order_with_amm(
     )?;
 
     let (taker, taker_order, maker, maker_order) =
-        get_taker_and_maker_for_order_record(user_key, &user.get_order(order_index));
+        get_taker_and_maker_for_order_record(user_key, &user.order(order_index));
 
     let fill_record_id = get_then_update_id!(market, next_fill_record_id);
     let order_action_explanation = match (override_base_asset_amount, override_fill_price) {
@@ -2487,7 +2487,7 @@ pub fn fulfill_perp_order_with_amm(
     let mut order_action_bit_flags: u8 = 0;
     order_action_bit_flags = set_order_bit_flag(
         order_action_bit_flags,
-        user.get_order(order_index).is_signed_msg(),
+        user.order(order_index).is_signed_msg(),
         OrderBitFlag::SignedMessage,
     );
 
@@ -2563,13 +2563,13 @@ pub fn fulfill_perp_order_with_amm(
 
     // Cant reset order until after its logged
     if user
-        .get_order(order_index)
+        .order(order_index)
         .get_base_asset_amount_unfilled(None)?
         == 0
     {
-        let order_has_auction = user.get_order(order_index).has_auction();
+        let order_has_auction = user.order(order_index).has_auction();
         user.decrement_open_orders(order_has_auction);
-        user.get_order_mut(order_index).status = OrderStatus::Filled;
+        user.order_mut(order_index).status = OrderStatus::Filled;
         let market_position = &mut user.perp_positions[position_index];
         market_position.open_orders -= 1;
     }
@@ -2635,15 +2635,15 @@ pub fn fulfill_perp_order_with_match(
     builder_referral_feature_enabled: bool,
 ) -> DriftResult<(u64, u64, u64)> {
     if !are_orders_same_market_but_different_sides(
-        &maker.get_order(maker_order_index),
-        &taker.get_order(taker_order_index),
+        &maker.order(maker_order_index),
+        &taker.order(taker_order_index),
     ) {
         return Ok((0_u64, 0_u64, 0_u64));
     }
 
     let oracle_price = oracle_map.get_price_data(&market.oracle_id())?.price;
-    let taker_direction: PositionDirection = taker.get_order(taker_order_index).direction;
-    let taker_order_has_builder = taker.get_order(taker_order_index).is_has_builder();
+    let taker_direction: PositionDirection = taker.order(taker_order_index).direction;
+    let taker_order_has_builder = taker.order(taker_order_index).is_has_builder();
     if taker_order_has_builder && rev_share_escrow.is_none() {
         msg!("Order has builder but no escrow account included, in the future this will fail.");
     }
@@ -2657,7 +2657,7 @@ pub fn fulfill_perp_order_with_match(
             &taker_direction,
             amm_available_liquidity,
             oracle_price,
-            taker.get_order(taker_order_index).seconds_til_expiry(now),
+            taker.order(taker_order_index).seconds_til_expiry(now),
         )?
     };
 
@@ -2665,10 +2665,10 @@ pub fn fulfill_perp_order_with_match(
         .get_perp_position(market.market_index)?
         .base_asset_amount;
     let taker_base_asset_amount = taker
-        .get_order(taker_order_index)
+        .order(taker_order_index)
         .get_base_asset_amount_unfilled(Some(taker_existing_position))?;
 
-    let maker_direction = maker.get_order(maker_order_index).direction;
+    let maker_direction = maker.order(maker_order_index).direction;
     let (maker_existing_position, maker_existing_position_params_for_order_action) = {
         let maker_position = maker.get_perp_position(market.market_index)?;
 
@@ -2678,7 +2678,7 @@ pub fn fulfill_perp_order_with_match(
         )
     };
     let maker_base_asset_amount = maker
-        .get_order(maker_order_index)
+        .order(maker_order_index)
         .get_base_asset_amount_unfilled(Some(maker_existing_position))?;
 
     let orders_cross = do_orders_cross(maker_direction, maker_price, taker_price);
@@ -2724,7 +2724,7 @@ pub fn fulfill_perp_order_with_match(
         base_asset_amount,
         taker_base_asset_amount,
         maker_base_asset_amount,
-        taker.get_order(taker_order_index).has_limit_price(slot)?,
+        taker.order(taker_order_index).has_limit_price(slot)?,
     )?;
 
     if jit_base_asset_amount > 0 {
@@ -2769,7 +2769,7 @@ pub fn fulfill_perp_order_with_match(
     };
 
     let taker_base_asset_amount = taker
-        .get_order(taker_order_index)
+        .order(taker_order_index)
         .get_base_asset_amount_unfilled(Some(taker_existing_position))?;
 
     let (base_asset_amount_fulfilled_by_maker, quote_asset_amount) =
@@ -2805,13 +2805,13 @@ pub fn fulfill_perp_order_with_match(
 
     let maker_position_index = get_position_index(
         &maker.perp_positions,
-        maker.get_order(maker_order_index).market_index,
+        maker.order(maker_order_index).market_index,
     )?;
 
     let maker_position_delta = get_position_delta_for_fill(
         base_asset_amount_fulfilled_by_maker,
         quote_asset_amount,
-        maker.get_order(maker_order_index).direction,
+        maker.order(maker_order_index).direction,
     )?;
 
     update_position_and_market(
@@ -2829,13 +2829,13 @@ pub fn fulfill_perp_order_with_match(
 
     let taker_position_index = get_position_index(
         &taker.perp_positions,
-        taker.get_order(taker_order_index).market_index,
+        taker.order(taker_order_index).market_index,
     )?;
 
     let taker_position_delta = get_position_delta_for_fill(
         base_asset_amount_fulfilled_by_maker,
         quote_asset_amount,
-        taker.get_order(taker_order_index).direction,
+        taker.order(taker_order_index).direction,
     )?;
 
     update_position_and_market(
@@ -2858,7 +2858,7 @@ pub fn fulfill_perp_order_with_match(
         get_builder_escrow_info(
             rev_share_escrow,
             taker.sub_account_id,
-            taker.get_order(taker_order_index).order_id,
+            taker.order(taker_order_index).order_id,
             market.market_index,
             builder_referral_feature_enabled,
         );
@@ -2883,7 +2883,7 @@ pub fn fulfill_perp_order_with_match(
         maker_stats,
         quote_asset_amount,
         fee_structure,
-        taker.get_order(taker_order_index).slot,
+        taker.order(taker_order_index).slot,
         slot,
         filler_multiplier,
         reward_referrer,
@@ -2980,7 +2980,7 @@ pub fn fulfill_perp_order_with_match(
     }
 
     let is_filled = update_order_after_fill(
-        taker.get_order_mut(taker_order_index),
+        taker.order_mut(taker_order_index),
         base_asset_amount_fulfilled_by_maker,
         quote_asset_amount,
     )?;
@@ -2993,9 +2993,9 @@ pub fn fulfill_perp_order_with_match(
         }
     }
 
-    let taker_order_direction = taker.get_order(taker_order_index).direction;
+    let taker_order_direction = taker.order(taker_order_index).direction;
     let taker_order_update_bids_asks = taker
-        .get_order(taker_order_index)
+        .order(taker_order_index)
         .update_open_bids_and_asks();
     decrease_open_bids_and_asks(
         &mut taker.perp_positions[taker_position_index],
@@ -3005,14 +3005,14 @@ pub fn fulfill_perp_order_with_match(
     )?;
 
     update_order_after_fill(
-        maker.get_order_mut(maker_order_index),
+        maker.order_mut(maker_order_index),
         base_asset_amount_fulfilled_by_maker,
         quote_asset_amount,
     )?;
 
-    let maker_order_direction = maker.get_order(maker_order_index).direction;
+    let maker_order_direction = maker.order(maker_order_index).direction;
     let maker_order_update_bids_asks = maker
-        .get_order(maker_order_index)
+        .order(maker_order_index)
         .update_open_bids_and_asks();
     decrease_open_bids_and_asks(
         &mut maker.perp_positions[maker_position_index],
@@ -3024,7 +3024,7 @@ pub fn fulfill_perp_order_with_match(
     let fill_record_id = get_then_update_id!(market, next_fill_record_id);
     let order_action_explanation = if is_liquidation {
         OrderActionExplanation::Liquidation
-    } else if maker.get_order(maker_order_index).is_jit_maker() {
+    } else if maker.order(maker_order_index).is_jit_maker() {
         OrderActionExplanation::OrderFilledWithMatchJit
     } else {
         OrderActionExplanation::OrderFilledWithMatch
@@ -3032,7 +3032,7 @@ pub fn fulfill_perp_order_with_match(
     let mut order_action_bit_flags = 0;
     order_action_bit_flags = set_order_bit_flag(
         order_action_bit_flags,
-        taker.get_order(taker_order_index).is_signed_msg(),
+        taker.order(taker_order_index).is_signed_msg(),
         OrderBitFlag::SignedMessage,
     );
 
@@ -3072,9 +3072,9 @@ pub fn fulfill_perp_order_with_match(
         None,
         None,
         Some(*taker_key),
-        Some(*taker.get_order(taker_order_index)),
+        Some(*taker.order(taker_order_index)),
         Some(*maker_key),
-        Some(*maker.get_order(maker_order_index)),
+        Some(*maker.order(maker_order_index)),
         oracle_map.get_price_data(&market.oracle_id())?.price,
         order_action_bit_flags,
         taker_existing_quote_entry_amount,
@@ -3088,25 +3088,25 @@ pub fn fulfill_perp_order_with_match(
     emit_stack::<_, { OrderActionRecord::SIZE }>(order_action_record)?;
 
     if taker
-        .get_order(taker_order_index)
+        .order(taker_order_index)
         .get_base_asset_amount_unfilled(None)?
         == 0
     {
-        let has_auction = taker.get_order(taker_order_index).has_auction();
+        let has_auction = taker.order(taker_order_index).has_auction();
         taker.decrement_open_orders(has_auction);
-        taker.get_order_mut(taker_order_index).status = OrderStatus::Filled;
+        taker.order_mut(taker_order_index).status = OrderStatus::Filled;
         let market_position = &mut taker.perp_positions[taker_position_index];
         market_position.open_orders -= 1;
     }
 
     if maker
-        .get_order(maker_order_index)
+        .order(maker_order_index)
         .get_base_asset_amount_unfilled(None)?
         == 0
     {
-        let has_auction = maker.get_order(maker_order_index).has_auction();
+        let has_auction = maker.order(maker_order_index).has_auction();
         maker.decrement_open_orders(has_auction);
-        maker.get_order_mut(maker_order_index).status = OrderStatus::Filled;
+        maker.order_mut(maker_order_index).status = OrderStatus::Filled;
         let market_position = &mut maker.perp_positions[maker_position_index];
         market_position.open_orders -= 1;
     }
@@ -3161,25 +3161,25 @@ fn cancel_reduce_only_trigger_orders(
     perp_market_index: u16,
 ) -> DriftResult {
     for order_index in 0..user.orders_len() {
-        if user.get_order(order_index).status != OrderStatus::Open {
+        if user.order(order_index).status != OrderStatus::Open {
             continue;
         }
 
-        if user.get_order(order_index).market_type != MarketType::Perp {
+        if user.order(order_index).market_type != MarketType::Perp {
             continue;
         }
 
-        if user.get_order(order_index).market_index != perp_market_index {
+        if user.order(order_index).market_index != perp_market_index {
             continue;
         }
 
-        if !user.get_order(order_index).must_be_triggered()
-            || user.get_order(order_index).triggered()
+        if !user.order(order_index).must_be_triggered()
+            || user.order(order_index).triggered()
         {
             continue;
         }
 
-        if !user.get_order(order_index).reduce_only {
+        if !user.order(order_index).reduce_only {
             continue;
         }
 
@@ -3225,7 +3225,7 @@ pub fn trigger_order(
         .ok_or_else(print_error!(ErrorCode::OrderDoesNotExist))?;
 
     let (order_status, market_index, market_type) = get_struct_values!(
-        user.get_order(order_index),
+        user.order(order_index),
         status,
         market_index,
         market_type
@@ -3238,12 +3238,12 @@ pub fn trigger_order(
     )?;
 
     validate!(
-        user.get_order(order_index).must_be_triggered(),
+        user.order(order_index).must_be_triggered(),
         ErrorCode::OrderNotTriggerable,
         "Order is not triggerable"
     )?;
 
-    if user.get_order(order_index).triggered() {
+    if user.order(order_index).triggered() {
         msg!("Order is already triggered");
         return Ok(());
     }
@@ -3307,15 +3307,15 @@ pub fn trigger_order(
     let trigger_price =
         perp_market.get_trigger_price(oracle_price, now, state.use_median_trigger_price())?;
     let can_trigger =
-        order_satisfies_trigger_condition(&user.get_order(order_index), trigger_price)?;
+        order_satisfies_trigger_condition(&user.order(order_index), trigger_price)?;
 
     validate!(
         can_trigger,
         ErrorCode::OrderDidNotSatisfyTriggerCondition,
         "Order did not satisfy trigger condition. trigger_price: {} oracle_price: {} trigger_condition: {:?}",
         trigger_price,
-        &user.get_order(order_index).trigger_price,
-        &user.get_order(order_index).trigger_condition
+        &user.order(order_index).trigger_price,
+        &user.order(order_index).trigger_condition
     )?;
 
     let (_, worst_case_liability_value_before) = user
@@ -3325,20 +3325,20 @@ pub fn trigger_order(
     let mut bit_flags = 0;
     {
         update_trigger_order_params(
-            user.get_order_mut(order_index),
+            user.order_mut(order_index),
             oracle_price_data,
             slot,
             20,
             Some(&perp_market),
         )?;
 
-        if user.get_order(order_index).has_auction() {
+        if user.order(order_index).has_auction() {
             user.increment_open_auctions();
         }
 
-        let direction = user.get_order(order_index).direction;
-        let base_asset_amount = user.get_order(order_index).base_asset_amount;
-        let update_open_bids_and_asks = user.get_order(order_index).update_open_bids_and_asks();
+        let direction = user.order(order_index).direction;
+        let base_asset_amount = user.order(order_index).base_asset_amount;
+        let update_open_bids_and_asks = user.order(order_index).update_open_bids_and_asks();
 
         let user_position = user.get_perp_position_mut(market_index)?;
         increase_open_bids_and_asks(
@@ -3383,7 +3383,7 @@ pub fn trigger_order(
         None,
         None,
         Some(user_key),
-        Some(*user.get_order(order_index)),
+        Some(*user.order(order_index)),
         None,
         None,
         oracle_price,
@@ -3407,7 +3407,7 @@ pub fn trigger_order(
     drop(perp_market);
 
     // If order increases risk and user is below initial margin, cancel it
-    if is_risk_increasing && !user.get_order(order_index).reduce_only {
+    if is_risk_increasing && !user.order(order_index).reduce_only {
         let meets_initial_margin_requirement =
             meets_initial_margin_requirement(user, perp_market_map, spot_market_map, oracle_map)?;
 
@@ -3526,12 +3526,12 @@ pub fn force_cancel_orders(
     let mut total_fee = 0_u64;
 
     for order_index in 0..user.orders_len() {
-        if user.get_order(order_index).status != OrderStatus::Open {
+        if user.order(order_index).status != OrderStatus::Open {
             continue;
         }
 
-        let market_index = user.get_order(order_index).market_index;
-        let market_type = user.get_order(order_index).market_type;
+        let market_index = user.order(order_index).market_index;
+        let market_type = user.order(order_index).market_type;
 
         let fee = match market_type {
             MarketType::Spot => {
@@ -3541,8 +3541,8 @@ pub fn force_cancel_orders(
                     .get_signed_token_amount(&spot_market)?
                     .cast::<i64>()?;
                 let is_position_reducing = is_order_position_reducing(
-                    &user.get_order(order_index).direction,
-                    user.get_order(order_index)
+                    &user.order(order_index).direction,
+                    user.order(order_index)
                         .get_base_asset_amount_unfilled(Some(token_amount))?,
                     token_amount,
                 )?;
@@ -3559,8 +3559,8 @@ pub fn force_cancel_orders(
             MarketType::Perp => {
                 let base_asset_amount = user.get_perp_position(market_index)?.base_asset_amount;
                 let is_position_reducing = is_order_position_reducing(
-                    &user.get_order(order_index).direction,
-                    user.get_order(order_index)
+                    &user.order(order_index).direction,
+                    user.order(order_index)
                         .get_base_asset_amount_unfilled(Some(base_asset_amount))?,
                     base_asset_amount,
                 )?;
@@ -3615,7 +3615,10 @@ pub fn force_cancel_orders(
     Ok(())
 }
 
-pub fn can_reward_user_with_perp_pnl(user: &mut Option<&mut UserView<'_>>, market_index: u16) -> bool {
+pub fn can_reward_user_with_perp_pnl(
+    user: &mut Option<&mut UserView<'_>>,
+    market_index: u16,
+) -> bool {
     match user.as_mut() {
         Some(user) => user.force_get_perp_position_mut(market_index).is_ok(),
         None => false,

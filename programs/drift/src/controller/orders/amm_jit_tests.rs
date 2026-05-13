@@ -336,7 +336,7 @@ pub mod amm_jit {
             .can_skip_auction_duration(&taker_stats, false)
             .unwrap();
         let is_amm_available = get_amm_is_available(
-            &taker.get_order(order_index),
+            &taker.order(order_index),
             min_auction_duration,
             &market,
             &mut oracle_map,
@@ -541,7 +541,7 @@ pub mod amm_jit {
             .can_skip_auction_duration(&taker_stats, false)
             .unwrap();
         let is_amm_available = get_amm_is_available(
-            &taker.get_order(order_index),
+            &taker.order(order_index),
             min_auction_duration,
             &market,
             &mut oracle_map,
@@ -757,7 +757,7 @@ pub mod amm_jit {
             .can_skip_auction_duration(&taker_stats, false)
             .unwrap();
         let is_amm_available = get_amm_is_available(
-            &taker.get_order(order_index),
+            &taker.order(order_index),
             min_auction_duration,
             &market,
             &mut oracle_map,
@@ -969,7 +969,7 @@ pub mod amm_jit {
             .can_skip_auction_duration(&taker_stats, false)
             .unwrap();
         let is_amm_available = get_amm_is_available(
-            &taker.get_order(order_index),
+            &taker.order(order_index),
             min_auction_duration,
             &market,
             &mut oracle_map,
@@ -1184,7 +1184,7 @@ pub mod amm_jit {
             .can_skip_auction_duration(&taker_stats, false)
             .unwrap();
         let is_amm_available = get_amm_is_available(
-            &taker.get_order(order_index),
+            &taker.order(order_index),
             min_auction_duration,
             &market,
             &mut oracle_map,
@@ -1224,7 +1224,7 @@ pub mod amm_jit {
 
         let taker_position = &taker.perp_positions[0];
         assert_eq!(taker_position.base_asset_amount, -BASE_PRECISION_I64);
-        assert!(taker.get_order(0).is_available());
+        assert!(taker.order(0).is_available());
 
         let maker = makers_and_referrers.get_ref_mut(&maker_key).unwrap();
         let maker_position = &maker.perp_positions[0];
@@ -1407,7 +1407,7 @@ pub mod amm_jit {
             .can_skip_auction_duration(&taker_stats, false)
             .unwrap();
         let is_amm_available = get_amm_is_available(
-            &taker.get_order(order_index),
+            &taker.order(order_index),
             min_auction_duration,
             &market,
             &mut oracle_map,
@@ -1829,7 +1829,7 @@ pub mod amm_jit {
             .can_skip_auction_duration(&taker_stats, false)
             .unwrap();
         let is_amm_available = get_amm_is_available(
-            &taker.get_order(order_index),
+            &taker.order(order_index),
             min_auction_duration,
             &market,
             &mut oracle_map,
@@ -2031,7 +2031,7 @@ pub mod amm_jit {
             .can_skip_auction_duration(&taker_stats, false)
             .unwrap();
         let is_amm_available = get_amm_is_available(
-            &taker.get_order(order_index),
+            &taker.order(order_index),
             min_auction_duration,
             &market,
             &mut oracle_map,
@@ -2246,7 +2246,7 @@ pub mod amm_jit {
             .can_skip_auction_duration(&taker_stats, false)
             .unwrap();
         let is_amm_available = get_amm_is_available(
-            &taker.get_order(order_index),
+            &taker.order(order_index),
             min_auction_duration,
             &market,
             &mut oracle_map,
@@ -2410,8 +2410,8 @@ pub mod amm_jit {
 
         let auction_start_price = 95062500_i64;
         let auction_end_price = 132154089_i64;
-        taker.get_order(0).auction_start_price = auction_start_price;
-        taker.get_order(0).auction_end_price = auction_end_price;
+        taker.order(0).auction_start_price = auction_start_price;
+        taker.order(0).auction_end_price = auction_end_price;
         println!("start stop {} {}", auction_start_price, auction_end_price);
 
         let mut filler = User::default();
@@ -2450,7 +2450,7 @@ pub mod amm_jit {
 
             // compute auction price
             let is_complete = crate::math::auction::is_auction_complete(
-                taker.get_order(0).slot,
+                taker.order(0).slot,
                 auction_duration,
                 slot,
             )
@@ -2460,7 +2460,7 @@ pub mod amm_jit {
             }
 
             let auction_price =
-                crate::math::auction::calculate_auction_price(&taker.get_order(0), slot, 1, None)
+                crate::math::auction::calculate_auction_price(&taker.order(0), slot, 1, None)
                     .unwrap();
             let baa = market.amm.order_step_size * 4;
 
@@ -2690,8 +2690,8 @@ pub mod amm_jit {
 
         let auction_start_price = 105062500;
         let auction_end_price = 79550209;
-        taker.get_order(0).auction_start_price = auction_start_price;
-        taker.get_order(0).auction_end_price = auction_end_price;
+        taker.order(0).auction_start_price = auction_start_price;
+        taker.order(0).auction_end_price = auction_end_price;
         println!("start stop {} {}", auction_start_price, auction_end_price);
 
         let mut filler = User::default();
@@ -2730,7 +2730,7 @@ pub mod amm_jit {
 
             // compute auction price
             let is_complete = crate::math::auction::is_auction_complete(
-                taker.get_order(0).slot,
+                taker.order(0).slot,
                 auction_duration,
                 slot,
             )
@@ -2741,7 +2741,7 @@ pub mod amm_jit {
             }
 
             let auction_price =
-                crate::math::auction::calculate_auction_price(&taker.get_order(0), slot, 1, None)
+                crate::math::auction::calculate_auction_price(&taker.order(0), slot, 1, None)
                     .unwrap();
             let baa = 1000 * 4;
 
@@ -2790,7 +2790,7 @@ pub mod amm_jit {
                 .can_skip_auction_duration(&taker_stats, false)
                 .unwrap();
             let is_amm_available = get_amm_is_available(
-                &taker.get_order(order_index),
+                &taker.order(order_index),
                 min_auction_duration,
                 &market,
                 &mut oracle_map,
@@ -3035,7 +3035,7 @@ pub mod amm_jit {
             .can_skip_auction_duration(&taker_stats, false)
             .unwrap();
         let is_amm_available = get_amm_is_available(
-            &taker.get_order(order_index),
+            &taker.order(order_index),
             min_auction_duration,
             &market,
             &mut oracle_map,

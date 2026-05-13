@@ -1097,7 +1097,7 @@ pub fn liquidate_perp_with_fill(
 
     let mut user = load_user_mut!(user_loader)?;
 
-    if let Ok(order_index) = user.get_order_index(order_id) {
+    if let Ok(order_index) = user.find_order_index(order_id) {
         cancel_order(
             order_index,
             &mut user,

@@ -85,11 +85,7 @@ impl<'a> UserMap<'a> {
         }
     }
 
-    pub fn insert(
-        &mut self,
-        user: Pubkey,
-        account_loader: AccountLoader<'a, User>,
-    ) -> DriftResult {
+    pub fn insert(&mut self, user: Pubkey, account_loader: AccountLoader<'a, User>) -> DriftResult {
         validate!(
             !self.0.contains_key(&user),
             ErrorCode::InvalidUserAccount,

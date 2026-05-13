@@ -68,11 +68,7 @@ pub trait LiquidatePerpMode {
 
     fn validate_spot_position(&self, user: &User, asset_market_index: u16) -> DriftResult<()>;
 
-    fn get_spot_token_amount(
-        &self,
-        user: &User,
-        spot_market: &SpotMarket,
-    ) -> DriftResult<u128>;
+    fn get_spot_token_amount(&self, user: &User, spot_market: &SpotMarket) -> DriftResult<u128>;
 
     fn calculate_user_safest_position_tiers(
         &self,
@@ -211,11 +207,7 @@ impl LiquidatePerpMode for CrossMarginLiquidatePerpMode {
         Ok(())
     }
 
-    fn get_spot_token_amount(
-        &self,
-        user: &User,
-        spot_market: &SpotMarket,
-    ) -> DriftResult<u128> {
+    fn get_spot_token_amount(&self, user: &User, spot_market: &SpotMarket) -> DriftResult<u128> {
         let spot_position = user.get_spot_position(spot_market.market_index)?;
 
         validate!(
@@ -355,11 +347,7 @@ impl LiquidatePerpMode for IsolatedMarginLiquidatePerpMode {
         ))
     }
 
-    fn validate_spot_position(
-        &self,
-        _user: &User,
-        asset_market_index: u16,
-    ) -> DriftResult<()> {
+    fn validate_spot_position(&self, _user: &User, asset_market_index: u16) -> DriftResult<()> {
         validate!(
             asset_market_index == QUOTE_SPOT_MARKET_INDEX,
             ErrorCode::CouldNotFindSpotPosition,
@@ -367,11 +355,7 @@ impl LiquidatePerpMode for IsolatedMarginLiquidatePerpMode {
         )
     }
 
-    fn get_spot_token_amount(
-        &self,
-        user: &User,
-        spot_market: &SpotMarket,
-    ) -> DriftResult<u128> {
+    fn get_spot_token_amount(&self, user: &User, spot_market: &SpotMarket) -> DriftResult<u128> {
         let isolated_perp_position = user.get_isolated_perp_position(self.market_index)?;
 
         let token_amount = isolated_perp_position.get_isolated_token_amount(spot_market)?;

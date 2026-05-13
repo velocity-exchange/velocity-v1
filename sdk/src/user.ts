@@ -15,6 +15,7 @@ import { PublicKey } from '@solana/web3.js';
 import { EventEmitter } from 'events';
 import StrictEventEmitter from 'strict-event-emitter-types';
 import { DriftClient } from './driftClient';
+import { decodeUser } from './decode/user';
 import {
 	HealthComponent,
 	HealthComponents,
@@ -154,11 +155,7 @@ export class User {
 				config.driftClient.connection,
 				config.userAccountPublicKey,
 				config.accountSubscription.accountLoader,
-				(
-					this.driftClient.program.account as any
-				).user.coder.accounts.decodeUnchecked.bind(
-					(this.driftClient.program.account as any).user.coder.accounts
-				)
+				(_name: string, buffer: Buffer) => decodeUser(buffer)
 			);
 		} else if (config.accountSubscription?.type === 'custom') {
 			this.accountSubscriber = config.accountSubscription.userAccountSubscriber;

@@ -10,6 +10,7 @@ import { EventEmitter } from 'events';
 import { Context, PublicKey } from '@solana/web3.js';
 import { WebSocketProgramAccountSubscriber } from './webSocketProgramAccountSubscriber';
 import { UserAccount } from '../types';
+import { decodeUser } from '../decode/user';
 
 export class WebSocketProgramUserAccountSubscriber
 	implements UserAccountSubscriber
@@ -66,10 +67,12 @@ export class WebSocketProgramUserAccountSubscriber
 			);
 		}
 
-		const account = await (this.program.account as any).user.fetch(
+		const info = await this.program.provider.connection.getAccountInfo(
 			this.userAccountPublicKey
 		);
-		this.updateData(account as UserAccount, 0);
+		if (info) {
+			this.updateData(decodeUser(info.data), 0);
+		}
 	}
 
 	updateData(userAccount: UserAccount, slot: number): void {

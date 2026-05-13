@@ -3,6 +3,7 @@ import { UserAccount } from '../types';
 import { BasicUserAccountSubscriber } from './basicUserAccountSubscriber';
 import { UserAccountSubscriber } from './types';
 import { DriftProgram } from '../config';
+import { decodeUser } from '../decode/user';
 
 /**
  * Simple implementation of UserAccountSubscriber. It will fetch the UserAccount
@@ -49,13 +50,20 @@ export class OneShotUserAccountSubscriber
 
 	async fetch(): Promise<void> {
 		try {
-			const dataAndContext = await (
-				this.program.account as any
-			).user.fetchAndContext(this.userAccountPublicKey, this.commitment);
-			if (dataAndContext.context.slot > (this.user?.slot ?? 0)) {
+			// Anchor's `.fetchAndContext` uses the IDL decoder which doesn't see
+			// the dynamic orders tail. Fetch raw bytes and decode via decodeUser.
+			const info =
+				await this.program.provider.connection.getAccountInfoAndContext(
+					this.userAccountPublicKey,
+					this.commitment
+				);
+			if (
+				info.value &&
+				info.context.slot > (this.user?.slot ?? 0)
+			) {
 				this.user = {
-					data: dataAndContext.data as UserAccount,
-					slot: dataAndContext.context.slot,
+					data: decodeUser(info.value.data),
+					slot: info.context.slot,
 				};
 			}
 		} catch (e) {

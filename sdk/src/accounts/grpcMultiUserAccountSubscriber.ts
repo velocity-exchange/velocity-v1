@@ -12,6 +12,7 @@ import { Context, PublicKey } from '@solana/web3.js';
 import { UserAccount } from '../types';
 import { DriftProgram } from '../config';
 import { grpcMultiAccountSubscriber } from './grpcMultiAccountSubscriber';
+import { decodeUser } from '../decode/user';
 
 export class grpcMultiUserAccountSubscriber {
 	private program: DriftProgram;
@@ -157,10 +158,13 @@ export class grpcMultiUserAccountSubscriber {
 						'Must subscribe before fetching account updates'
 					);
 				}
-				const account = (await (parent.program.account as any).user.fetch(
-					userAccountPublicKey
-				)) as UserAccount;
-				this.updateData(account, 0);
+				const info =
+					await parent.program.provider.connection.getAccountInfo(
+						userAccountPublicKey
+					);
+				if (info) {
+					this.updateData(decodeUser(info.data), 0);
+				}
 			},
 
 			updateData(userAccount: UserAccount, slot: number): void {

@@ -12,6 +12,7 @@ import { EventEmitter } from 'events';
 import { Commitment, PublicKey } from '@solana/web3.js';
 import { WebSocketAccountSubscriber } from './webSocketAccountSubscriber';
 import { UserAccount } from '../types';
+import { decodeUser } from '../decode/user';
 
 export class WebSocketUserAccountSubscriber implements UserAccountSubscriber {
 	isSubscribed: boolean;
@@ -46,7 +47,7 @@ export class WebSocketUserAccountSubscriber implements UserAccountSubscriber {
 			'user',
 			this.program,
 			this.userAccountPublicKey,
-			undefined,
+			(buffer: Buffer) => decodeUser(buffer) as UserAccount,
 			this.resubOpts,
 			this.commitment
 		);

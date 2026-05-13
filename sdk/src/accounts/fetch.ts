@@ -12,6 +12,7 @@ import {
 	getUserStatsAccountPublicKey,
 } from '../addresses/pda';
 import { DriftProgram } from '../config';
+import { decodeUser } from '../decode/user';
 
 export async function fetchUserAccounts(
 	connection: Connection,
@@ -43,10 +44,10 @@ export async function fetchUserAccountsUsingKeys(
 		if (!accountInfo) {
 			return undefined;
 		}
-		return (program.account as any).user.coder.accounts.decodeUnchecked(
-			'user',
-			accountInfo.data
-		) as UserAccount;
+		// Anchor's IDL decoder only knows the fixed header — the dynamic orders
+		// tail is invisible to it. Use the hand-rolled decoder so consumers get
+		// the full account including orders.
+		return decodeUser(accountInfo.data);
 	});
 }
 

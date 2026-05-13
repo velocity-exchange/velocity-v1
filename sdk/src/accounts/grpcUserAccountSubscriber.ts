@@ -4,6 +4,7 @@ import { UserAccount } from '../types';
 import { WebSocketUserAccountSubscriber } from './webSocketUserAccountSubscriber';
 import { grpcAccountSubscriber } from './grpcAccountSubscriber';
 import { DriftProgram } from '../config';
+import { decodeUser } from '../decode/user';
 
 export class grpcUserAccountSubscriber extends WebSocketUserAccountSubscriber {
 	private grpcConfigs: GrpcConfigs;
@@ -28,7 +29,7 @@ export class grpcUserAccountSubscriber extends WebSocketUserAccountSubscriber {
 			'user',
 			this.program,
 			this.userAccountPublicKey,
-			undefined,
+			(buffer: Buffer) => decodeUser(buffer) as UserAccount,
 			this.resubOpts
 		);
 

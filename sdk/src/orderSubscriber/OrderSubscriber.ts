@@ -70,15 +70,9 @@ export class OrderSubscriber {
 				decoded: config.decodeData,
 			});
 		}
-		if (config.fastDecode ?? true) {
-			this.decodeFn = (name, data) => decodeUser(data);
-		} else {
-			this.decodeFn = (
-				this.driftClient.program.account as any
-			).user.coder.accounts.decodeUnchecked.bind(
-				(this.driftClient.program.account as any).user.coder.accounts
-			);
-		}
+		// The dynamic-orders refactor moved orders out of the IDL schema —
+		// Anchor's IDL decoder can no longer see them. Always use decodeUser.
+		this.decodeFn = (_name, data) => decodeUser(data);
 		this.eventEmitter = new EventEmitter();
 		this.fetchAllNonIdleUsers = config.fetchAllNonIdleUsers;
 	}

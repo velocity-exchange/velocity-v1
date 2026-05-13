@@ -77,6 +77,7 @@ import {
 	AmmCache,
 } from './types';
 import { DriftCore } from './core/DriftCore';
+import { decodeUser } from './decode/user';
 
 /** Client-side guardrail; mirrors on-chain `ErrorCode::SpotDlobTradingDisabled`. */
 const SPOT_DLOB_TRADING_DISABLED_MSG =
@@ -2117,69 +2118,98 @@ export class DriftClient {
 		return ix;
 	}
 
+	/**
+	 * Fetch one User account by pubkey, decoded via {@link decodeUser}.
+	 * Throws if the account does not exist (matches Anchor's `.fetch` contract).
+	 *
+	 * Anchor's IDL-backed `.fetch()` only sees the fixed header and would
+	 * silently drop the dynamic orders tail.
+	 */
+	private async fetchUserAccount(publicKey: PublicKey): Promise<UserAccount> {
+		const info = await this.program.provider.connection.getAccountInfo(
+			publicKey
+		);
+		if (!info) {
+			throw new Error(`User account ${publicKey.toBase58()} does not exist`);
+		}
+		return decodeUser(info.data);
+	}
+
+	/**
+	 * Fetch User accounts via `getProgramAccounts`, decoding the dynamic
+	 * orders tail with {@link decodeUser}. Anchor's IDL-backed `.all()` only
+	 * sees the fixed header and would silently drop orders.
+	 */
+	private async getProgramAccountsAsUsers(
+		filters?: { memcmp: { offset: number; bytes: string } }[]
+	): Promise<ProgramAccount<UserAccount>[]> {
+		// User discriminator filter — same value the IDL decoder checks.
+		const discBytes = Buffer.from([159, 117, 95, 227, 239, 151, 58, 236]);
+		const allFilters = [
+			{ memcmp: { offset: 0, bytes: bs58.encode(discBytes) } },
+			...(filters ?? []),
+		];
+		const results = await this.program.provider.connection.getProgramAccounts(
+			this.program.programId,
+			{ filters: allFilters }
+		);
+		return results.map(({ pubkey, account }) => ({
+			publicKey: pubkey,
+			account: decodeUser(account.data),
+		}));
+	}
+
 	public async fetchAllUserAccounts(
 		includeIdle = true
 	): Promise<ProgramAccount<UserAccount>[]> {
-		let filters = undefined;
-		if (!includeIdle) {
-			filters = [getNonIdleUserFilter()];
-		}
-		return (await (this.program.account as any).user.all(
-			filters
-		)) as ProgramAccount<UserAccount>[];
+		const filters = includeIdle ? undefined : [getNonIdleUserFilter()];
+		return this.getProgramAccountsAsUsers(filters);
 	}
 
 	public async getUserAccountsForDelegate(
 		delegate: PublicKey
 	): Promise<UserAccount[]> {
-		const programAccounts = await (this.program.account as any).user.all([
+		const programAccounts = await this.getProgramAccountsAsUsers([
 			{
 				memcmp: {
 					offset: 40,
-					/** data to match, as base-58 encoded string and limited to less than 129 bytes */
 					bytes: bs58.encode(delegate.toBuffer()),
 				},
 			},
 		]);
 
 		return programAccounts
-			.map((programAccount) => programAccount.account as UserAccount)
+			.map((programAccount) => programAccount.account)
 			.sort((a, b) => a.subAccountId - b.subAccountId);
 	}
 
 	public async getUserAccountsAndAddressesForAuthority(
 		authority: PublicKey
 	): Promise<ProgramAccount<UserAccount>[]> {
-		const programAccounts = await (this.program.account as any).user.all([
+		return this.getProgramAccountsAsUsers([
 			{
 				memcmp: {
 					offset: 8,
-					/** data to match, as base-58 encoded string and limited to less than 129 bytes */
 					bytes: bs58.encode(authority.toBuffer()),
 				},
 			},
 		]);
-
-		return programAccounts.map(
-			(programAccount) => programAccount as ProgramAccount<UserAccount>
-		);
 	}
 
 	public async getUserAccountsForAuthority(
 		authority: PublicKey
 	): Promise<UserAccount[]> {
-		const programAccounts = await (this.program.account as any).user.all([
+		const programAccounts = await this.getProgramAccountsAsUsers([
 			{
 				memcmp: {
 					offset: 8,
-					/** data to match, as base-58 encoded string and limited to less than 129 bytes */
 					bytes: bs58.encode(authority.toBuffer()),
 				},
 			},
 		]);
 
 		return programAccounts
-			.map((programAccount) => programAccount.account as UserAccount)
+			.map((programAccount) => programAccount.account)
 			.sort((a, b) => a.subAccountId - b.subAccountId);
 	}
 
@@ -3868,9 +3898,7 @@ export class DriftClient {
 				fromSubAccountId
 			);
 
-			const fromUserAccount = (await (this.program.account as any).user.fetch(
-				userAccountPublicKey
-			)) as UserAccount;
+			const fromUserAccount = await this.fetchUserAccount(userAccountPublicKey);
 			remainingAccounts = this.getRemainingAccounts({
 				userAccounts: [fromUserAccount],
 				useMarketLastSlotCache: true,
@@ -4458,9 +4486,9 @@ export class DriftClient {
 		settleeUserAccountPublicKey: PublicKey,
 		marketIndex: number
 	): Promise<TransactionInstruction> {
-		const settleeUserAccount = (await (this.program.account as any).user.fetch(
+		const settleeUserAccount = await this.fetchUserAccount(
 			settleeUserAccountPublicKey
-		)) as UserAccount;
+		);
 
 		const remainingAccounts = this.getRemainingAccounts({
 			userAccounts: [settleeUserAccount],
@@ -4523,9 +4551,7 @@ export class DriftClient {
 		userAccountPublicKey: PublicKey,
 		sharesToBurn?: BN
 	): Promise<TransactionInstruction> {
-		const userAccount = (await (this.program.account as any).user.fetch(
-			userAccountPublicKey
-		)) as UserAccount;
+		const userAccount = await this.fetchUserAccount(userAccountPublicKey);
 
 		const remainingAccounts = this.getRemainingAccounts({
 			userAccounts: [userAccount],
@@ -7008,9 +7034,7 @@ export class DriftClient {
 	public async getLogUserBalancesIx(
 		userAccountPublicKey: PublicKey
 	): Promise<TransactionInstruction> {
-		const userAccount = (await (this.program.account as any).user.fetch(
-			userAccountPublicKey
-		)) as UserAccount;
+		const userAccount = await this.fetchUserAccount(userAccountPublicKey);
 		const remainingAccounts = this.getRemainingAccounts({
 			userAccounts: [userAccount],
 		});
@@ -9814,9 +9838,7 @@ export class DriftClient {
 	public async getSettleFundingPaymentIx(
 		userAccountPublicKey: PublicKey
 	): Promise<TransactionInstruction> {
-		const userAccount = (await (this.program.account as any).user.fetch(
-			userAccountPublicKey
-		)) as UserAccount;
+		const userAccount = await this.fetchUserAccount(userAccountPublicKey);
 
 		const writablePerpMarketIndexes = [];
 		for (const position of userAccount.perpPositions) {

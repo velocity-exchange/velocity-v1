@@ -8,6 +8,7 @@ import { ConfirmOptions, Context, PublicKey } from '@solana/web3.js';
 import { WebSocketProgramAccountSubscriber } from '../accounts/webSocketProgramAccountSubscriber';
 import { GrpcConfigs, ResubOpts } from '../accounts/types';
 import { grpcProgramAccountSubscriber } from '../accounts/grpcProgramAccountSubscriber';
+import { decodeUser } from '../decode/user';
 
 export class AuctionSubscriberGrpc {
 	private driftClient: DriftClient;
@@ -39,11 +40,7 @@ export class AuctionSubscriberGrpc {
 				'AuctionSubscriber',
 				'user',
 				this.driftClient.program,
-				(
-					this.driftClient.program.account as any
-				).user.coder.accounts.decode.bind(
-					(this.driftClient.program.account as any).user.coder.accounts
-				),
+				(_name: string, buffer: Buffer) => decodeUser(buffer),
 				{
 					filters: [getUserFilter(), getUserWithAuctionFilter()],
 				},

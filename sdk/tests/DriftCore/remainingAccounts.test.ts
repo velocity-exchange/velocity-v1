@@ -59,9 +59,12 @@ describe('VelocityCore.remainingAccounts', () => {
 			mustIncludeSpotMarketIndexes: new Set<number>(),
 		};
 
-		const metas = VelocityCore.remainingAccounts.getRemainingAccounts(ctx as any, {
-			userAccounts: [user],
-		});
+		const metas = VelocityCore.remainingAccounts.getRemainingAccounts(
+			ctx as any,
+			{
+				userAccounts: [user],
+			}
+		);
 
 		const keys = new Set(metas.map((m) => m.pubkey.toBase58()));
 		expect(keys.has(perpMarket0.pubkey.toBase58())).toBe(true);

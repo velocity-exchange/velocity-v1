@@ -31,7 +31,7 @@ import { TransactionParamProcessor } from './txParamProcessor';
 import bs58 from 'bs58';
 import {
 	BaseTxParams,
-	DriftClientMetricsEvents,
+	VelocityClientMetricsEvents,
 	IWallet,
 	MappedRecord,
 	SignedTxData,
@@ -99,7 +99,9 @@ export class TxHandler {
 	private confirmationOptions: ConfirmOptions;
 
 	private preSignedCb?: () => void;
-	private onSignedCb?: (txSigs: DriftClientMetricsEvents['txSigned']) => void;
+	private onSignedCb?: (
+		txSigs: VelocityClientMetricsEvents['txSigned']
+	) => void;
 
 	private blockhashCommitment: Commitment =
 		DEFAULT_CONFIRMATION_OPTS.commitment;
@@ -111,7 +113,7 @@ export class TxHandler {
 		confirmationOptions: ConfirmOptions;
 		opts?: {
 			returnBlockHeightsWithSignedTxCallbackData?: boolean;
-			onSignedCb?: (txSigs: DriftClientMetricsEvents['txSigned']) => void;
+			onSignedCb?: (txSigs: VelocityClientMetricsEvents['txSigned']) => void;
 			preSignedCb?: () => void;
 		};
 		config?: TxHandlerConfig;

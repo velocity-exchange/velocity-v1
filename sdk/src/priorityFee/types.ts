@@ -58,7 +58,7 @@ export type PriorityFeeSubscriberMapConfig = {
 	/// drift market type and associated market index to query
 	driftMarkets?: DriftMarketInfo[];
 	/// url for drift cached priority fee endpoint
-	velocityPriorityFeeEndpoint: string;
+	velocityPriorityFeeEndpoint?: string;
 	/** @deprecated Use `velocityPriorityFeeEndpoint` instead. `driftPriorityFeeEndpoint` will be removed in a future major. */
-	driftPriorityFeeEndpoint: string;
+	driftPriorityFeeEndpoint?: string;
 };

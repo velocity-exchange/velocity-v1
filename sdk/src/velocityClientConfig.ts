@@ -26,12 +26,12 @@ import {
 import { Coder, Program } from './isomorphic/anchor';
 import { WebSocketAccountSubscriber } from './accounts/webSocketAccountSubscriber';
 import { WebSocketAccountSubscriberV2 } from './accounts/webSocketAccountSubscriberV2';
-import { grpcDriftClientAccountSubscriberV2 } from './accounts/grpcVelocityClientAccountSubscriberV2';
-import { grpcDriftClientAccountSubscriber } from './accounts/grpcVelocityClientAccountSubscriber';
+import { grpcVelocityClientAccountSubscriberV2 } from './accounts/grpcVelocityClientAccountSubscriberV2';
+import { grpcVelocityClientAccountSubscriber } from './accounts/grpcVelocityClientAccountSubscriber';
 import { grpcMultiUserAccountSubscriber } from './accounts/grpcMultiUserAccountSubscriber';
 import { WebSocketProgramAccountSubscriber } from './accounts/webSocketProgramAccountSubscriber';
-import { WebSocketDriftClientAccountSubscriber } from './accounts/webSocketVelocityClientAccountSubscriber';
-import { WebSocketDriftClientAccountSubscriberV2 } from './accounts/webSocketVelocityClientAccountSubscriberV2';
+import { WebSocketVelocityClientAccountSubscriber } from './accounts/webSocketVelocityClientAccountSubscriber';
+import { WebSocketVelocityClientAccountSubscriberV2 } from './accounts/webSocketVelocityClientAccountSubscriberV2';
 
 export type VelocityClientConfig = {
 	connection: Connection;
@@ -73,6 +73,18 @@ export type VelocityClientSubscriptionConfig =
 			grpcConfigs: GrpcConfigs;
 			resubTimeoutMs?: number;
 			logResubMessages?: boolean;
+			velocityClientAccountSubscriber?: new (
+				grpcConfigs: GrpcConfigs,
+				program: Program,
+				perpMarketIndexes: number[],
+				spotMarketIndexes: number[],
+				oracleInfos: OracleInfo[],
+				shouldFindAllMarketsAndOracles: boolean,
+				delistedMarketSetting: DelistedMarketSetting
+			) =>
+				| grpcVelocityClientAccountSubscriberV2
+				| grpcVelocityClientAccountSubscriber;
+			/** @deprecated Use `velocityClientAccountSubscriber` instead. `driftClientAccountSubscriber` will be removed in a future major. */
 			driftClientAccountSubscriber?: new (
 				grpcConfigs: GrpcConfigs,
 				program: Program,
@@ -82,8 +94,8 @@ export type VelocityClientSubscriptionConfig =
 				shouldFindAllMarketsAndOracles: boolean,
 				delistedMarketSetting: DelistedMarketSetting
 			) =>
-				| grpcDriftClientAccountSubscriberV2
-				| grpcDriftClientAccountSubscriber;
+				| grpcVelocityClientAccountSubscriberV2
+				| grpcVelocityClientAccountSubscriber;
 			grpcMultiUserAccountSubscriber?: grpcMultiUserAccountSubscriber;
 	  }
 	| {
@@ -101,6 +113,17 @@ export type VelocityClientSubscriptionConfig =
 				commitment?: Commitment
 			) => WebSocketAccountSubscriberV2<any> | WebSocketAccountSubscriber<any>;
 			/** If you use V2 here, whatever you pass for perpMarketAccountSubscriber will be ignored and it will use v2 under the hood regardless */
+			velocityClientAccountSubscriber?: new (
+				program: Program,
+				perpMarketIndexes: number[],
+				spotMarketIndexes: number[],
+				oracleInfos: OracleInfo[],
+				shouldFindAllMarketsAndOracles: boolean,
+				delistedMarketSetting: DelistedMarketSetting
+			) =>
+				| WebSocketVelocityClientAccountSubscriber
+				| WebSocketVelocityClientAccountSubscriberV2;
+			/** @deprecated Use `velocityClientAccountSubscriber` instead. `driftClientAccountSubscriber` will be removed in a future major. */
 			driftClientAccountSubscriber?: new (
 				program: Program,
 				perpMarketIndexes: number[],
@@ -109,8 +132,8 @@ export type VelocityClientSubscriptionConfig =
 				shouldFindAllMarketsAndOracles: boolean,
 				delistedMarketSetting: DelistedMarketSetting
 			) =>
-				| WebSocketDriftClientAccountSubscriber
-				| WebSocketDriftClientAccountSubscriberV2;
+				| WebSocketVelocityClientAccountSubscriber
+				| WebSocketVelocityClientAccountSubscriberV2;
 	  }
 	| {
 			type: 'polling';

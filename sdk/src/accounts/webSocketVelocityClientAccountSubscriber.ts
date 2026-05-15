@@ -55,7 +55,7 @@ async function ensureAccountFetched<T>(
 	}
 }
 
-export class WebSocketDriftClientAccountSubscriber
+export class WebSocketVelocityClientAccountSubscriber
 	implements VelocityClientAccountSubscriber
 {
 	isSubscribed: boolean;
@@ -710,3 +710,10 @@ export class WebSocketDriftClientAccountSubscriber
 		return this.getOraclePriceDataAndSlot(oracleId);
 	}
 }
+
+/** @deprecated Use `WebSocketVelocityClientAccountSubscriber` instead. `WebSocketDriftClientAccountSubscriber` will be removed in a future major. */
+export const WebSocketDriftClientAccountSubscriber =
+	WebSocketVelocityClientAccountSubscriber;
+/** @deprecated Use `WebSocketVelocityClientAccountSubscriber` instead. `WebSocketDriftClientAccountSubscriber` will be removed in a future major. */
+export type WebSocketDriftClientAccountSubscriber =
+	WebSocketVelocityClientAccountSubscriber;

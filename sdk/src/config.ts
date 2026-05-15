@@ -132,12 +132,24 @@ export const initialize = (props: {
 	env: VelocityEnv;
 	overrideEnv?: Partial<DriftConfig>;
 }): DriftConfig => {
+	const override = props.overrideEnv ?? {};
+
 	//@ts-ignore
-	if (props.env === 'master')
-		return { ...configs['devnet'], ...(props.overrideEnv ?? {}) };
+	const base = props.env === 'master' ? configs['devnet'] : configs[props.env];
+	const merged: DriftConfig = { ...base, ...override };
 
-	currentConfig = { ...configs[props.env], ...(props.overrideEnv ?? {}) };
+	const overrodeVelocity = 'VELOCITY_PROGRAM_ID' in override;
+	const overrodeDrift = 'DRIFT_PROGRAM_ID' in override;
+	if (overrodeVelocity && !overrodeDrift) {
+		merged.DRIFT_PROGRAM_ID = merged.VELOCITY_PROGRAM_ID;
+	} else if (overrodeDrift && !overrodeVelocity) {
+		merged.VELOCITY_PROGRAM_ID = merged.DRIFT_PROGRAM_ID;
+	}
 
+	//@ts-ignore
+	if (props.env === 'master') return merged;
+
+	currentConfig = merged;
 	return currentConfig;
 };
 

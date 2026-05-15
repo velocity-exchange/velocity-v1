@@ -155,8 +155,8 @@ import { getSignedTokenAmount, getTokenAmount } from './math/spotBalance';
 import { decodeName, DEFAULT_USER_NAME, encodeName } from './userName';
 import { MMOraclePriceData, OraclePriceData } from './oracles/types';
 import { VelocityClientConfig } from './velocityClientConfig';
-import { PollingDriftClientAccountSubscriber } from './accounts/pollingVelocityClientAccountSubscriber';
-import { WebSocketDriftClientAccountSubscriber } from './accounts/webSocketVelocityClientAccountSubscriber';
+import { PollingVelocityClientAccountSubscriber } from './accounts/pollingVelocityClientAccountSubscriber';
+import { WebSocketVelocityClientAccountSubscriber } from './accounts/webSocketVelocityClientAccountSubscriber';
 import { RetryTxSender } from './tx/retryTxSender';
 import { User } from './user';
 import { UserSubscriptionConfig } from './userConfig';
@@ -190,7 +190,7 @@ import {
 	isVersionedTransaction,
 	MAX_TX_BYTE_SIZE,
 } from './tx/utils';
-import { grpcDriftClientAccountSubscriber } from './accounts/grpcVelocityClientAccountSubscriber';
+import { grpcVelocityClientAccountSubscriber } from './accounts/grpcVelocityClientAccountSubscriber';
 import nacl from 'tweetnacl';
 import { getOracleId } from './oracles/oracleId';
 import { SignedMsgOrderParams } from './types';
@@ -216,7 +216,7 @@ type RemainingAccountParams =
 
 /**
  * # VelocityClient
- * This class is the main way to interact with Drift Protocol. It allows you to subscribe to the various accounts where the Market's state is stored, as well as: opening positions, liquidating, settling funding, depositing & withdrawing, and more.
+ * This class is the main way to interact with Velocity Exchange. It allows you to subscribe to the various accounts where the Market's state is stored, as well as: opening positions, liquidating, settling funding, depositing & withdrawing, and more.
  */
 export class VelocityClient {
 	connection: Connection;
@@ -459,7 +459,7 @@ export class VelocityClient {
 			config.spotMarketIndexes === undefined &&
 			config.oracleInfos === undefined;
 		if (config.accountSubscription?.type === 'polling') {
-			this.accountSubscriber = new PollingDriftClientAccountSubscriber(
+			this.accountSubscriber = new PollingVelocityClientAccountSubscriber(
 				this.program,
 				config.accountSubscription.accountLoader,
 				config.perpMarketIndexes ?? [],
@@ -470,8 +470,9 @@ export class VelocityClient {
 			);
 		} else if (config.accountSubscription?.type === 'grpc') {
 			const accountSubscriberClass: any =
+				config.accountSubscription?.velocityClientAccountSubscriber ??
 				config.accountSubscription?.driftClientAccountSubscriber ??
-				grpcDriftClientAccountSubscriber;
+				grpcVelocityClientAccountSubscriber;
 			this.accountSubscriber = new accountSubscriberClass(
 				config.accountSubscription.grpcConfigs,
 				this.program as any,
@@ -487,8 +488,9 @@ export class VelocityClient {
 			);
 		} else {
 			const accountSubscriberClass: any =
+				config.accountSubscription?.velocityClientAccountSubscriber ??
 				config.accountSubscription?.driftClientAccountSubscriber ??
-				WebSocketDriftClientAccountSubscriber;
+				WebSocketVelocityClientAccountSubscriber;
 			this.accountSubscriber = new accountSubscriberClass(
 				this.program as any,
 				config.perpMarketIndexes ?? [],
@@ -9097,7 +9099,10 @@ export class VelocityClient {
 		});
 	}
 
-	public triggerEvent(eventName: keyof VelocityClientAccountEvents, data?: any) {
+	public triggerEvent(
+		eventName: keyof VelocityClientAccountEvents,
+		data?: any
+	) {
 		this.eventEmitter.emit(eventName, data);
 	}
 

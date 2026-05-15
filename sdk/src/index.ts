@@ -1,5 +1,5 @@
 /**
- * @module @drift-labs/sdk
+ * @module @velocity-exchange/sdk
  * Main package barrel — re-exports all public SDK types, classes, and utilities.
  *
  * Primary entry points:

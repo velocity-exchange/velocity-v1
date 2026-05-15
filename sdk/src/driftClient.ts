@@ -32,7 +32,7 @@ import {
 	resolveExtraAccountMeta,
 } from '@solana/spl-token';
 import {
-	DriftClientMetricsEvents,
+	VelocityClientMetricsEvents,
 	isVariant,
 	IWallet,
 	MakerInfo,
@@ -235,7 +235,7 @@ export class DriftClient {
 	eventEmitter: StrictEventEmitter<EventEmitter, VelocityClientAccountEvents>;
 	metricsEventEmitter: StrictEventEmitter<
 		EventEmitter,
-		DriftClientMetricsEvents
+		VelocityClientMetricsEvents
 	>;
 	_isSubscribed = false;
 	txSender: TxSender;

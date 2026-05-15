@@ -15,8 +15,8 @@ import {
 	Wallet,
 	ZERO,
 } from '../src';
-import { DriftClient } from '../src/driftClient';
-import { DriftClientConfig } from '../src/driftClientConfig';
+import { DriftClient } from '../src/velocityClient';
+import { DriftClientConfig } from '../src/velocityClientConfig';
 
 function isStatusOpen(status: any) {
 	return !!status && 'open' in status;

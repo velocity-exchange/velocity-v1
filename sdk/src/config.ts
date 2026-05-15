@@ -31,6 +31,8 @@ export interface VelocityConfig {
 	ENV: VelocityEnv;
 	PYTH_ORACLE_MAPPING_ADDRESS: string;
 	VELOCITY_PROGRAM_ID: string;
+	/** @deprecated Use `VELOCITY_PROGRAM_ID` instead. Kept on the config shape so existing callers reading this field continue to work; will be removed in a future major. */
+	DRIFT_PROGRAM_ID: string;
 	JIT_PROXY_PROGRAM_ID?: string;
 	DRIFT_ORACLE_RECEIVER_ID: string;
 	QUOTE_MINT_ADDRESS: string;
@@ -43,11 +45,8 @@ export interface VelocityConfig {
 	SB_ON_DEMAND_PID: PublicKey;
 }
 
-/** @deprecated Use `VelocityConfig` instead. Reads from `VELOCITY_PROGRAM_ID` going forward; `DRIFT_PROGRAM_ID` is kept for backwards compatibility. `DriftConfig` will be removed in a future major. */
-export interface DriftConfig extends VelocityConfig {
-	/** @deprecated Use `VELOCITY_PROGRAM_ID` instead. */
-	DRIFT_PROGRAM_ID: string;
-}
+/** @deprecated Use `VelocityConfig` instead. `DriftConfig` will be removed in a future major. */
+export type DriftConfig = VelocityConfig;
 
 export const VELOCITY_PROGRAM_ID = 'dRiftyHA39MWEi3m9aunc5MzRF1JYuBsbn6VPcn33UH';
 
@@ -75,7 +74,7 @@ export const DEFAULT_CONFIRMATION_OPTS: ConfirmOptions = {
 	commitment: 'confirmed',
 };
 
-export const configs: { [key in VelocityEnv]: DriftConfig } = {
+export const configs: { [key in VelocityEnv]: VelocityConfig } = {
 	devnet: {
 		ENV: 'devnet',
 		PYTH_ORACLE_MAPPING_ADDRESS: 'BmA9Z6FjioHJPpjT39QazZyhDRUdZy2ezwx4GiDdE2u2',
@@ -117,9 +116,9 @@ export const configs: { [key in VelocityEnv]: DriftConfig } = {
 	},
 };
 
-let currentConfig: DriftConfig = configs.devnet;
+let currentConfig: VelocityConfig = configs.devnet;
 
-export const getConfig = (): DriftConfig => currentConfig;
+export const getConfig = (): VelocityConfig => currentConfig;
 
 /**
  * Allows customization of the SDK's environment and endpoints. You can pass individual settings to override the settings with your own presets.
@@ -130,13 +129,13 @@ export const getConfig = (): DriftConfig => currentConfig;
  */
 export const initialize = (props: {
 	env: VelocityEnv;
-	overrideEnv?: Partial<DriftConfig>;
-}): DriftConfig => {
+	overrideEnv?: Partial<VelocityConfig>;
+}): VelocityConfig => {
 	const override = props.overrideEnv ?? {};
 
 	//@ts-ignore
 	const base = props.env === 'master' ? configs['devnet'] : configs[props.env];
-	const merged: DriftConfig = { ...base, ...override };
+	const merged: VelocityConfig = { ...base, ...override };
 
 	const overrodeVelocity = 'VELOCITY_PROGRAM_ID' in override;
 	const overrodeDrift = 'DRIFT_PROGRAM_ID' in override;

@@ -96,14 +96,14 @@ export class PriorityFeeSubscriberMap {
 
 /** Example usage:
 async function main() {
-    const driftMarkets: DriftMarketInfo[] = [
+    const driftMarkets: VelocityMarketInfo[] = [
         { marketType: 'perp', marketIndex: 0 },
         { marketType: 'perp', marketIndex: 1 },
         { marketType: 'spot', marketIndex: 2 }
     ];
 
     const subscriber = new PriorityFeeSubscriberMap({
-        driftPriorityFeeEndpoint: 'https://dlob.drift.trade',
+        velocityPriorityFeeEndpoint: 'https://dlob.drift.trade',
         frequencyMs: 5000,
         driftMarkets
     });

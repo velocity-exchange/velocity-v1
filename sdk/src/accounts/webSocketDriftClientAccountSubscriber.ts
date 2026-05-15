@@ -2,8 +2,8 @@ import {
 	AccountSubscriber,
 	DataAndSlot,
 	DelistedMarketSetting,
-	DriftClientAccountEvents,
-	DriftClientAccountSubscriber,
+	VelocityClientAccountEvents,
+	VelocityClientAccountSubscriber,
 	NotSubscribedError,
 	ResubOpts,
 } from './types';
@@ -56,7 +56,7 @@ async function ensureAccountFetched<T>(
 }
 
 export class WebSocketDriftClientAccountSubscriber
-	implements DriftClientAccountSubscriber
+	implements VelocityClientAccountSubscriber
 {
 	isSubscribed: boolean;
 	program: VelocityProgram;
@@ -69,7 +69,7 @@ export class WebSocketDriftClientAccountSubscriber
 	resubOpts?: ResubOpts;
 	shouldFindAllMarketsAndOracles: boolean;
 
-	eventEmitter: StrictEventEmitter<EventEmitter, DriftClientAccountEvents>;
+	eventEmitter: StrictEventEmitter<EventEmitter, VelocityClientAccountEvents>;
 	stateAccountSubscriber?: AccountSubscriber<StateAccount>;
 	perpMarketAccountSubscribers = new Map<
 		number,

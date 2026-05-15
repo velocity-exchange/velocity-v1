@@ -2,8 +2,8 @@ import {
 	AccountToPoll,
 	DataAndSlot,
 	DelistedMarketSetting,
-	DriftClientAccountEvents,
-	DriftClientAccountSubscriber,
+	VelocityClientAccountEvents,
+	VelocityClientAccountSubscriber,
 	NotSubscribedError,
 	OraclesToPoll,
 } from './types';
@@ -36,7 +36,7 @@ const ORACLE_DEFAULT_ID = getOracleId(
 );
 
 export class PollingDriftClientAccountSubscriber
-	implements DriftClientAccountSubscriber
+	implements VelocityClientAccountSubscriber
 {
 	isSubscribed: boolean;
 	program: VelocityProgram;
@@ -47,7 +47,7 @@ export class PollingDriftClientAccountSubscriber
 
 	shouldFindAllMarketsAndOracles: boolean;
 
-	eventEmitter: StrictEventEmitter<EventEmitter, DriftClientAccountEvents>;
+	eventEmitter: StrictEventEmitter<EventEmitter, VelocityClientAccountEvents>;
 
 	accountLoader: BulkAccountLoader;
 	accountsToPoll = new Map<string, AccountToPoll>();

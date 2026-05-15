@@ -49,7 +49,7 @@ const ORACLE_DEFAULT_ID = getOracleId(
 	OracleSource.QUOTE_ASSET
 );
 
-export class WebSocketDriftClientAccountSubscriberV2
+export class WebSocketVelocityClientAccountSubscriberV2
 	implements VelocityClientAccountSubscriber
 {
 	isSubscribed: boolean;
@@ -130,14 +130,14 @@ export class WebSocketDriftClientAccountSubscriberV2
 			const startTime = performance.now();
 			if (this.isSubscribed) {
 				console.log(
-					`[PROFILING] WebSocketDriftClientAccountSubscriberV2.subscribe() skipped - already subscribed`
+					`[PROFILING] WebSocketVelocityClientAccountSubscriberV2.subscribe() skipped - already subscribed`
 				);
 				return true;
 			}
 
 			if (this.isSubscribing) {
 				console.log(
-					`[PROFILING] WebSocketDriftClientAccountSubscriberV2.subscribe() waiting for existing subscription`
+					`[PROFILING] WebSocketVelocityClientAccountSubscriberV2.subscribe() waiting for existing subscription`
 				);
 				return await this.subscriptionPromise;
 			}
@@ -340,7 +340,7 @@ export class WebSocketDriftClientAccountSubscriberV2
 
 			const totalDuration = performance.now() - startTime;
 			console.log(
-				`[PROFILING] WebSocketDriftClientAccountSubscriberV2.subscribe() completed in ${totalDuration.toFixed(
+				`[PROFILING] WebSocketVelocityClientAccountSubscriberV2.subscribe() completed in ${totalDuration.toFixed(
 					2
 				)}ms`
 			);
@@ -746,3 +746,10 @@ export class WebSocketDriftClientAccountSubscriberV2
 		return this.getOraclePriceDataAndSlot(oracleId);
 	}
 }
+
+/** @deprecated Use `WebSocketVelocityClientAccountSubscriberV2` instead. `WebSocketDriftClientAccountSubscriberV2` will be removed in a future major. */
+export const WebSocketDriftClientAccountSubscriberV2 =
+	WebSocketVelocityClientAccountSubscriberV2;
+/** @deprecated Use `WebSocketVelocityClientAccountSubscriberV2` instead. `WebSocketDriftClientAccountSubscriberV2` will be removed in a future major. */
+export type WebSocketDriftClientAccountSubscriberV2 =
+	WebSocketVelocityClientAccountSubscriberV2;

@@ -35,7 +35,7 @@ const ORACLE_DEFAULT_ID = getOracleId(
 	OracleSource.QUOTE_ASSET
 );
 
-export class PollingDriftClientAccountSubscriber
+export class PollingVelocityClientAccountSubscriber
 	implements VelocityClientAccountSubscriber
 {
 	isSubscribed: boolean;
@@ -643,3 +643,10 @@ export class PollingDriftClientAccountSubscriber
 		this.accountLoader.updatePollingFrequency(pollingFrequency);
 	}
 }
+
+/** @deprecated Use `PollingVelocityClientAccountSubscriber` instead. `PollingDriftClientAccountSubscriber` will be removed in a future major. */
+export const PollingDriftClientAccountSubscriber =
+	PollingVelocityClientAccountSubscriber;
+/** @deprecated Use `PollingVelocityClientAccountSubscriber` instead. `PollingDriftClientAccountSubscriber` will be removed in a future major. */
+export type PollingDriftClientAccountSubscriber =
+	PollingVelocityClientAccountSubscriber;

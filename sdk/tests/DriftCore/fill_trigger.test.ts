@@ -1,6 +1,6 @@
 import { describe, expect, test } from 'bun:test';
 import { Keypair } from '@solana/web3.js';
-import { DriftCore } from '../../src/core/DriftCore';
+import { DriftCore } from '../../src/core/VelocityCore';
 
 describe('DriftCore fill/trigger builders', () => {
 	test('buildFillPerpOrderInstruction wires accounts + args', async () => {

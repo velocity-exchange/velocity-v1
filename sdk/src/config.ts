@@ -119,7 +119,7 @@ export const configs: { [key in VelocityEnv]: DriftConfig } = {
 
 let currentConfig: VelocityConfig = configs.devnet;
 
-export const getConfig = (): VelocityConfig => currentConfig;
+export const getConfig = (): DriftConfig => currentConfig as DriftConfig;
 
 /**
  * Allows customization of the SDK's environment and endpoints. You can pass individual settings to override the settings with your own presets.
@@ -130,7 +130,7 @@ export const getConfig = (): VelocityConfig => currentConfig;
  */
 export const initialize = (props: {
 	env: VelocityEnv;
-	overrideEnv?: Partial<VelocityConfig>;
+	overrideEnv?: Partial<DriftConfig>;
 }): VelocityConfig => {
 	//@ts-ignore
 	if (props.env === 'master')

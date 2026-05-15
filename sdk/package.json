@@ -1,5 +1,5 @@
 {
-	"name": "@drift-labs/sdk",
+	"name": "@velocity-exchange/sdk",
 	"version": "2.163.0-beta.13",
 	"main": "lib/node/index.js",
 	"types": "lib/node/index.d.ts",

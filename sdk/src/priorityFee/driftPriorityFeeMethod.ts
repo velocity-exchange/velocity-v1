@@ -1,10 +1,13 @@
 import fetch from 'node-fetch';
 import { HeliusPriorityLevel } from './heliusPriorityFeeMethod';
 
-export type DriftMarketInfo = {
+export type VelocityMarketInfo = {
 	marketType: string;
 	marketIndex: number;
 };
+
+/** @deprecated Use `VelocityMarketInfo` instead. `DriftMarketInfo` will be removed in a future major. */
+export type DriftMarketInfo = VelocityMarketInfo;
 
 export type DriftPriorityFeeLevels = {
 	[key in HeliusPriorityLevel]: number;

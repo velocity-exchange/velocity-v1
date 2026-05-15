@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'bun:test';
-import { DriftCore } from '../../src/core/DriftCore';
+import { DriftCore } from '../../src/core/VelocityCore';
 import { userAccountBufferStrings } from '../decode/userAccountBufferStrings';
 
 describe('DriftCore decoding', () => {

@@ -72,7 +72,7 @@ import {
 	ConstituentTargetBaseAccount,
 	AmmCache,
 } from './types';
-import { DriftCore } from './core/DriftCore';
+import { VelocityCore } from './core/VelocityCore';
 
 /** Client-side guardrail; mirrors on-chain `ErrorCode::SpotDlobTradingDisabled`. */
 const SPOT_DLOB_TRADING_DISABLED_MSG =
@@ -330,7 +330,7 @@ export class VelocityClient {
 			this.opts
 		);
 		this.program = new Program<Drift>(
-			DriftCore.defaultIdl() as unknown as Drift,
+			VelocityCore.defaultIdl() as unknown as Drift,
 			this.provider,
 			config.coder
 		);
@@ -769,7 +769,7 @@ export class VelocityClient {
 			this.opts
 		);
 		const newProgram = new Program<Drift>(
-			DriftCore.defaultIdl() as unknown as Drift,
+			VelocityCore.defaultIdl() as unknown as Drift,
 			newProvider
 		);
 
@@ -2464,7 +2464,7 @@ export class VelocityClient {
 		});
 	}
 	getRemainingAccounts(params: RemainingAccountParams): AccountMeta[] {
-		return DriftCore.remainingAccounts.getRemainingAccounts(this, params);
+		return VelocityCore.remainingAccounts.getRemainingAccounts(this, params);
 	}
 
 	addPerpMarketToRemainingAccountMaps(
@@ -2904,7 +2904,7 @@ export class VelocityClient {
 
 		const authority = overrides?.authority ?? this.wallet.publicKey;
 		const tokenProgram = this.getTokenProgramForSpotMarket(spotMarketAccount);
-		return await DriftCore.buildDepositInstruction({
+		return await VelocityCore.buildDepositInstruction({
 			program: this.program,
 			marketIndex,
 			amount,
@@ -3601,7 +3601,7 @@ export class VelocityClient {
 
 		const tokenProgram = this.getTokenProgramForSpotMarket(spotMarketAccount);
 
-		return await DriftCore.buildWithdrawInstruction({
+		return await VelocityCore.buildWithdrawInstruction({
 			program: this.program,
 			marketIndex,
 			amount,
@@ -4543,7 +4543,7 @@ export class VelocityClient {
 				: undefined,
 		});
 
-		return await DriftCore.buildPlacePerpOrderInstruction({
+		return await VelocityCore.buildPlacePerpOrderInstruction({
 			program: this.program,
 			orderParams,
 			state: await this.getStatePublicKey(),
@@ -4725,7 +4725,7 @@ export class VelocityClient {
 			useMarketLastSlotCache: true,
 		});
 
-		return await DriftCore.buildCancelOrderInstruction({
+		return await VelocityCore.buildCancelOrderInstruction({
 			program: this.program,
 			orderId: orderId ?? null,
 			state: await this.getStatePublicKey(),
@@ -4765,7 +4765,7 @@ export class VelocityClient {
 			useMarketLastSlotCache: true,
 		});
 
-		return await DriftCore.buildCancelOrderByUserIdInstruction({
+		return await VelocityCore.buildCancelOrderByUserIdInstruction({
 			program: this.program,
 			userOrderId,
 			state: await this.getStatePublicKey(),
@@ -4839,7 +4839,7 @@ export class VelocityClient {
 
 		const authority = overrides?.authority ?? this.wallet.publicKey;
 
-		return await DriftCore.buildCancelOrdersByIdsInstruction({
+		return await VelocityCore.buildCancelOrdersByIdsInstruction({
 			program: this.program,
 			orderIds,
 			state: await this.getStatePublicKey(),
@@ -4898,7 +4898,7 @@ export class VelocityClient {
 			useMarketLastSlotCache: true,
 		});
 
-		return await DriftCore.buildCancelOrdersInstruction({
+		return await VelocityCore.buildCancelOrdersInstruction({
 			program: this.program,
 			marketType: marketType ?? null,
 			marketIndex: marketIndex ?? null,
@@ -5032,7 +5032,7 @@ export class VelocityClient {
 		const formattedParams = params.map((item) => getOrderParams(item));
 		const authority = overrides?.authority ?? this.wallet.publicKey;
 
-		return await DriftCore.buildPlaceOrdersInstruction({
+		return await VelocityCore.buildPlaceOrdersInstruction({
 			program: this.program,
 			formattedParams,
 			state: await this.getStatePublicKey(),
@@ -5338,7 +5338,7 @@ export class VelocityClient {
 		}
 
 		const orderId = isSignedMsg ? null : order.orderId;
-		return await DriftCore.buildFillPerpOrderInstruction({
+		return await VelocityCore.buildFillPerpOrderInstruction({
 			program: this.program,
 			orderId,
 			state: await this.getStatePublicKey(),
@@ -6198,7 +6198,7 @@ export class VelocityClient {
 		);
 
 		const orderId = order.orderId;
-		return await DriftCore.buildTriggerOrderInstruction({
+		return await VelocityCore.buildTriggerOrderInstruction({
 			program: this.program,
 			orderId,
 			state: await this.getStatePublicKey(),
@@ -6757,7 +6757,7 @@ export class VelocityClient {
 
 		const authority = overrides?.authority ?? this.wallet.publicKey;
 
-		return await DriftCore.buildPlaceAndTakePerpOrderInstruction({
+		return await VelocityCore.buildPlaceAndTakePerpOrderInstruction({
 			program: this.program,
 			orderParams,
 			optionalParams,
@@ -6838,7 +6838,7 @@ export class VelocityClient {
 				isSigner: false,
 			});
 		}
-		return await DriftCore.buildPlaceAndMakePerpOrderInstruction({
+		return await VelocityCore.buildPlaceAndMakePerpOrderInstruction({
 			program: this.program,
 			orderParams,
 			takerOrderId,
@@ -6912,7 +6912,7 @@ export class VelocityClient {
 			| SignedMsgOrderParamsDelegateMessage,
 		delegateSigner?: boolean
 	): Buffer {
-		return DriftCore.signedMsg.encodeSignedMsgOrderParamsMessage({
+		return VelocityCore.signedMsg.encodeSignedMsgOrderParamsMessage({
 			coderTypes: this.program.coder.types as any,
 			orderParamsMessage,
 			delegateSigner,
@@ -6929,7 +6929,7 @@ export class VelocityClient {
 		encodedMessage: Buffer,
 		delegateSigner?: boolean
 	): SignedMsgOrderParamsMessage | SignedMsgOrderParamsDelegateMessage {
-		return DriftCore.signedMsg.decodeSignedMsgOrderParamsMessage({
+		return VelocityCore.signedMsg.decodeSignedMsgOrderParamsMessage({
 			coderTypes: this.program.coder.types as any,
 			encodedMessage,
 			delegateSigner,
@@ -7464,7 +7464,7 @@ export class VelocityClient {
 			overrides?.authority ??
 			overrides?.user?.getUserAccount().authority ??
 			this.wallet.publicKey;
-		return await DriftCore.buildModifyOrderInstruction({
+		return await VelocityCore.buildModifyOrderInstruction({
 			program: this.program,
 			orderId,
 			modifyParams: orderParams,
@@ -7586,7 +7586,7 @@ export class VelocityClient {
 			maxTs: maxTs || null,
 		};
 
-		return await DriftCore.buildModifyOrderByUserIdInstruction({
+		return await VelocityCore.buildModifyOrderByUserIdInstruction({
 			program: this.program,
 			userOrderId,
 			modifyParams: orderParams,
@@ -7802,7 +7802,7 @@ export class VelocityClient {
 			}
 		}
 
-		return await DriftCore.buildSettlePnlInstruction({
+		return await VelocityCore.buildSettlePnlInstruction({
 			program: this.program,
 			marketIndex,
 			state: await this.getStatePublicKey(),
@@ -8105,7 +8105,7 @@ export class VelocityClient {
 			writablePerpMarketIndexes: [marketIndex],
 		});
 
-		return await DriftCore.buildLiquidatePerpInstruction({
+		return await VelocityCore.buildLiquidatePerpInstruction({
 			program: this.program,
 			marketIndex,
 			maxBaseAssetAmount,
@@ -8964,7 +8964,7 @@ export class VelocityClient {
 			this.program.programId,
 			perpMarketIndex
 		);
-		return await DriftCore.buildUpdateFundingRateInstruction({
+		return await VelocityCore.buildUpdateFundingRateInstruction({
 			program: this.program,
 			perpMarketIndex,
 			state: await this.getStatePublicKey(),

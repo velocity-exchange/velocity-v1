@@ -1,6 +1,6 @@
 import { describe, expect, test } from 'bun:test';
 import { Keypair } from '@solana/web3.js';
-import { DriftCore } from '../../src/core/DriftCore';
+import { DriftCore } from '../../src/core/VelocityCore';
 import { BN } from '../../src/isomorphic/anchor';
 import type { UserAccount } from '../../src/types';
 

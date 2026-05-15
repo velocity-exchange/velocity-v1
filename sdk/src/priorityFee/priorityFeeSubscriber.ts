@@ -14,7 +14,7 @@ import {
 	fetchHeliusPriorityFee,
 } from './heliusPriorityFeeMethod';
 import {
-	fetchDriftPriorityFee,
+	fetchVelocityPriorityFee,
 	VelocityMarketInfo,
 } from './velocityPriorityFeeMethod';
 
@@ -146,7 +146,7 @@ export class PriorityFeeSubscriber {
 		if (!this.driftMarkets) {
 			return;
 		}
-		const sample = await fetchDriftPriorityFee(
+		const sample = await fetchVelocityPriorityFee(
 			this.velocityPriorityFeeEndpoint!,
 			this.driftMarkets.map((m) => m.marketType),
 			this.driftMarkets.map((m) => m.marketIndex)

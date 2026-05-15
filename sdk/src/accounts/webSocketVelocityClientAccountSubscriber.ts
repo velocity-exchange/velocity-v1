@@ -11,7 +11,7 @@ import { PerpMarketAccount, SpotMarketAccount, StateAccount } from '../types';
 import StrictEventEmitter from 'strict-event-emitter-types';
 import { EventEmitter } from 'events';
 import {
-	getDriftStateAccountPublicKey,
+	getVelocityStateAccountPublicKey,
 	getPerpMarketPublicKey,
 	getPerpMarketPublicKeySync,
 	getSpotMarketPublicKey,
@@ -185,7 +185,7 @@ export class WebSocketVelocityClientAccountSubscriber
 			);
 		}
 
-		const statePublicKey = await getDriftStateAccountPublicKey(
+		const statePublicKey = await getVelocityStateAccountPublicKey(
 			this.program.programId
 		);
 

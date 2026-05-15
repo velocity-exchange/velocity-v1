@@ -42,9 +42,12 @@ export async function fetchBSolMetrics() {
 	return await fetch('https://stake.solblaze.org/api/v1/stats');
 }
 
-export async function fetchBSolDriftEmissions() {
+export async function fetchBSolVelocityEmissions() {
 	return await fetch('https://stake.solblaze.org/api/v1/drift_emissions');
 }
+
+/** @deprecated Use `fetchBSolVelocityEmissions` instead. `fetchBSolDriftEmissions` will be removed in a future major. */
+export const fetchBSolDriftEmissions = fetchBSolVelocityEmissions;
 
 export async function findBestSuperStakeIxs({
 	marketIndex,

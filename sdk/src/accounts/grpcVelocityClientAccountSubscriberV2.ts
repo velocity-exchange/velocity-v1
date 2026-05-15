@@ -4,7 +4,7 @@ import { OracleInfo, OraclePriceData } from '../oracles/types';
 import { PublicKey } from '@solana/web3.js';
 import { findAllMarketAndOracles, VelocityProgram } from '../config';
 import {
-	getDriftStateAccountPublicKey,
+	getVelocityStateAccountPublicKey,
 	getPerpMarketPublicKey,
 	getPerpMarketPublicKeySync,
 	getSpotMarketPublicKey,
@@ -271,7 +271,7 @@ export class grpcVelocityClientAccountSubscriberV2
 			);
 		}
 
-		const statePublicKey = await getDriftStateAccountPublicKey(
+		const statePublicKey = await getVelocityStateAccountPublicKey(
 			this.program.programId
 		);
 

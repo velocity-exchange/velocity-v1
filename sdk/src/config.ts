@@ -34,6 +34,8 @@ export interface VelocityConfig {
 	/** @deprecated Use `VELOCITY_PROGRAM_ID` instead. Kept on the config shape so existing callers reading this field continue to work; will be removed in a future major. */
 	DRIFT_PROGRAM_ID: string;
 	JIT_PROXY_PROGRAM_ID?: string;
+	VELOCITY_ORACLE_RECEIVER_ID: string;
+	/** @deprecated Use `VELOCITY_ORACLE_RECEIVER_ID` instead. Kept on the config shape so existing callers reading this field continue to work; will be removed in a future major. */
 	DRIFT_ORACLE_RECEIVER_ID: string;
 	QUOTE_MINT_ADDRESS: string;
 	V2_ALPHA_TICKET_MINT_ADDRESS: string;
@@ -53,10 +55,17 @@ export const VELOCITY_PROGRAM_ID = 'dRiftyHA39MWEi3m9aunc5MzRF1JYuBsbn6VPcn33UH'
 /** @deprecated Use `VELOCITY_PROGRAM_ID` instead. `DRIFT_PROGRAM_ID` will be removed in a future major. */
 export const DRIFT_PROGRAM_ID = VELOCITY_PROGRAM_ID;
 
-export const DRIFT_DEVNET_PROGRAM_ID =
+export const VELOCITY_DEVNET_PROGRAM_ID =
 	'vELoC1audYbSYVRXn1vPaV8Axoa9oU6BYmNGZZBDZ1P';
-export const DRIFT_ORACLE_RECEIVER_ID =
+
+/** @deprecated Use `VELOCITY_DEVNET_PROGRAM_ID` instead. `DRIFT_DEVNET_PROGRAM_ID` will be removed in a future major. */
+export const DRIFT_DEVNET_PROGRAM_ID = VELOCITY_DEVNET_PROGRAM_ID;
+
+export const VELOCITY_ORACLE_RECEIVER_ID =
 	'G6EoTTTgpkNBtVXo96EQp2m6uwwVh2Kt6YidjkmQqoha';
+
+/** @deprecated Use `VELOCITY_ORACLE_RECEIVER_ID` instead. `DRIFT_ORACLE_RECEIVER_ID` will be removed in a future major. */
+export const DRIFT_ORACLE_RECEIVER_ID = VELOCITY_ORACLE_RECEIVER_ID;
 export const PTYH_LAZER_PROGRAM_ID =
 	'pytd2yyk641x7ak7mkaasSJVXh6YYZnC7wTmtgAyxPt';
 export const SB_ON_DEMAND_DEVNET_PID = new PublicKey(
@@ -78,9 +87,9 @@ export const configs: { [key in VelocityEnv]: VelocityConfig } = {
 	devnet: {
 		ENV: 'devnet',
 		PYTH_ORACLE_MAPPING_ADDRESS: 'BmA9Z6FjioHJPpjT39QazZyhDRUdZy2ezwx4GiDdE2u2',
-		VELOCITY_PROGRAM_ID: DRIFT_DEVNET_PROGRAM_ID,
+		VELOCITY_PROGRAM_ID: VELOCITY_DEVNET_PROGRAM_ID,
 		/** @deprecated Read `VELOCITY_PROGRAM_ID` instead. */
-		DRIFT_PROGRAM_ID: DRIFT_DEVNET_PROGRAM_ID,
+		DRIFT_PROGRAM_ID: VELOCITY_DEVNET_PROGRAM_ID,
 		JIT_PROXY_PROGRAM_ID: 'J1TnP8zvVxbtF5KFp5xRmWuvG9McnhzmBd9XGfCyuxFP',
 		QUOTE_MINT_ADDRESS: '8FfvSRKMZRDHrCBy142XMUXrKEkXnxDQ4YmJv7xbAw8Q',
 		V2_ALPHA_TICKET_MINT_ADDRESS:
@@ -90,7 +99,9 @@ export const configs: { [key in VelocityEnv]: VelocityConfig } = {
 		/** @deprecated use MARKET_LOOKUP_TABLES */
 		MARKET_LOOKUP_TABLE: 'FaMS3U4uBojvGn5FSDEPimddcXsCfwkKsFgMVVnDdxGb',
 		MARKET_LOOKUP_TABLES: ['FaMS3U4uBojvGn5FSDEPimddcXsCfwkKsFgMVVnDdxGb'],
-		DRIFT_ORACLE_RECEIVER_ID,
+		VELOCITY_ORACLE_RECEIVER_ID,
+		/** @deprecated Read `VELOCITY_ORACLE_RECEIVER_ID` instead. */
+		DRIFT_ORACLE_RECEIVER_ID: VELOCITY_ORACLE_RECEIVER_ID,
 		SB_ON_DEMAND_PID: SB_ON_DEMAND_DEVNET_PID,
 	},
 	'mainnet-beta': {
@@ -111,7 +122,9 @@ export const configs: { [key in VelocityEnv]: VelocityConfig } = {
 			'Fpys8GRa5RBWfyeN7AaDUwFGD1zkDCA4z3t4CJLV8dfL',
 			'EiWSskK5HXnBTptiS5DH6gpAJRVNQ3cAhTKBGaiaysAb',
 		],
-		DRIFT_ORACLE_RECEIVER_ID,
+		VELOCITY_ORACLE_RECEIVER_ID,
+		/** @deprecated Read `VELOCITY_ORACLE_RECEIVER_ID` instead. */
+		DRIFT_ORACLE_RECEIVER_ID: VELOCITY_ORACLE_RECEIVER_ID,
 		SB_ON_DEMAND_PID: SB_ON_DEMAND_MAINNET_PID,
 	},
 };
@@ -143,6 +156,15 @@ export const initialize = (props: {
 		merged.DRIFT_PROGRAM_ID = merged.VELOCITY_PROGRAM_ID;
 	} else if (overrodeDrift && !overrodeVelocity) {
 		merged.VELOCITY_PROGRAM_ID = merged.DRIFT_PROGRAM_ID;
+	}
+
+	const overrodeVelocityOracleReceiver =
+		'VELOCITY_ORACLE_RECEIVER_ID' in override;
+	const overrodeDriftOracleReceiver = 'DRIFT_ORACLE_RECEIVER_ID' in override;
+	if (overrodeVelocityOracleReceiver && !overrodeDriftOracleReceiver) {
+		merged.DRIFT_ORACLE_RECEIVER_ID = merged.VELOCITY_ORACLE_RECEIVER_ID;
+	} else if (overrodeDriftOracleReceiver && !overrodeVelocityOracleReceiver) {
+		merged.VELOCITY_ORACLE_RECEIVER_ID = merged.DRIFT_ORACLE_RECEIVER_ID;
 	}
 
 	//@ts-ignore

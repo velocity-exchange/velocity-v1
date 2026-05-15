@@ -2,7 +2,7 @@ import { WebSocketVelocityClientAccountSubscriber } from './webSocketVelocityCli
 import { OracleInfo, OraclePriceData } from '../oracles/types';
 import { findAllMarketAndOracles, VelocityProgram } from '../config';
 import {
-	getDriftStateAccountPublicKey,
+	getVelocityStateAccountPublicKey,
 	getPerpMarketPublicKey,
 	getSpotMarketPublicKey,
 } from '../addresses/pda';
@@ -71,7 +71,7 @@ export class grpcVelocityClientAccountSubscriber extends WebSocketVelocityClient
 			);
 		}
 
-		const statePublicKey = await getDriftStateAccountPublicKey(
+		const statePublicKey = await getVelocityStateAccountPublicKey(
 			this.program.programId
 		);
 

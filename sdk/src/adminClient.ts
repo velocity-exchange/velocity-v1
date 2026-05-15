@@ -37,7 +37,7 @@ import { DEFAULT_MARKET_NAME, encodeName } from './userName';
 import { BN } from './isomorphic/anchor';
 import * as anchor from './isomorphic/anchor';
 import {
-	getDriftStateAccountPublicKeyAndNonce,
+	getVelocityStateAccountPublicKeyAndNonce,
 	getSpotMarketPublicKey,
 	getSpotMarketVaultPublicKey,
 	getPerpMarketPublicKey,
@@ -56,7 +56,7 @@ import {
 	getConstituentVaultPublicKey,
 	getAmmCachePublicKey,
 	getLpPoolTokenVaultPublicKey,
-	getDriftSignerPublicKey,
+	getVelocitySignerPublicKey,
 	getConstituentCorrelationsPublicKey,
 } from './addresses/pda';
 import { squareRootBN } from './math/utils';
@@ -95,9 +95,8 @@ export class AdminClient extends VelocityClient {
 			throw new Error('Clearing house already initialized');
 		}
 
-		const [driftStatePublicKey] = await getDriftStateAccountPublicKeyAndNonce(
-			this.program.programId
-		);
+		const [driftStatePublicKey] =
+			await getVelocityStateAccountPublicKeyAndNonce(this.program.programId);
 
 		const initializeIx = await this.program.instruction.initialize({
 			accounts: {
@@ -5574,7 +5573,7 @@ export class AdminClient extends VelocityClient {
 					spotMarketVault: withdrawSpotMarket.vault,
 					tokenProgram: withdrawTokenProgram,
 					mint: withdrawSpotMarket.mint,
-					driftSigner: getDriftSignerPublicKey(this.program.programId),
+					driftSigner: getVelocitySignerPublicKey(this.program.programId),
 					oracle: withdrawSpotMarket.oracle,
 				},
 			}

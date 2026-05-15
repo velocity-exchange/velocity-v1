@@ -24,7 +24,7 @@ export type VelocityPriorityFeeResponse = VelocityPriorityFeeLevels[];
 /** @deprecated Use `VelocityPriorityFeeResponse` instead. `DriftPriorityFeeResponse` will be removed in a future major. */
 export type DriftPriorityFeeResponse = VelocityPriorityFeeResponse;
 
-export async function fetchDriftPriorityFee(
+export async function fetchVelocityPriorityFee(
 	url: string,
 	marketTypes: string[],
 	marketIndexes: number[]
@@ -49,3 +49,6 @@ export async function fetchDriftPriorityFee(
 
 	return [];
 }
+
+/** @deprecated Use `fetchVelocityPriorityFee` instead. `fetchDriftPriorityFee` will be removed in a future major. */
+export const fetchDriftPriorityFee = fetchVelocityPriorityFee;

@@ -43,6 +43,8 @@ export type PriorityFeeSubscriberConfig = {
 	/// url for helius rpc, required if using priorityFeeMethod.HELIUS
 	heliusRpcUrl?: string;
 	/// url for drift cached priority fee endpoint, required if using priorityFeeMethod.DRIFT
+	velocityPriorityFeeEndpoint?: string;
+	/** @deprecated Use `velocityPriorityFeeEndpoint` instead. `driftPriorityFeeEndpoint` will be removed in a future major. */
 	driftPriorityFeeEndpoint?: string;
 	/// clamp any returned priority fee value to this value.
 	maxFeeMicroLamports?: number;
@@ -56,5 +58,7 @@ export type PriorityFeeSubscriberMapConfig = {
 	/// drift market type and associated market index to query
 	driftMarkets?: DriftMarketInfo[];
 	/// url for drift cached priority fee endpoint
+	velocityPriorityFeeEndpoint: string;
+	/** @deprecated Use `velocityPriorityFeeEndpoint` instead. `driftPriorityFeeEndpoint` will be removed in a future major. */
 	driftPriorityFeeEndpoint: string;
 };

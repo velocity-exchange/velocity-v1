@@ -31,7 +31,11 @@ export class PriorityFeeSubscriber {
 	maxFeeMicroLamports?: number;
 	priorityFeeMultiplier?: number;
 
-	driftPriorityFeeEndpoint?: string;
+	velocityPriorityFeeEndpoint?: string;
+	/** @deprecated Use `velocityPriorityFeeEndpoint` instead. `driftPriorityFeeEndpoint` will be removed in a future major. */
+	public get driftPriorityFeeEndpoint(): string | undefined {
+		return this.velocityPriorityFeeEndpoint;
+	}
 	heliusRpcUrl?: string;
 	lastHeliusSample?: HeliusPriorityFeeLevels;
 
@@ -75,7 +79,8 @@ export class PriorityFeeSubscriber {
 					this.heliusRpcUrl = config.heliusRpcUrl;
 				}
 			} else if (this.priorityFeeMethod === PriorityFeeMethod.DRIFT) {
-				this.driftPriorityFeeEndpoint = config.driftPriorityFeeEndpoint;
+				this.velocityPriorityFeeEndpoint =
+					config.velocityPriorityFeeEndpoint ?? config.driftPriorityFeeEndpoint;
 			}
 		}
 
@@ -142,7 +147,7 @@ export class PriorityFeeSubscriber {
 			return;
 		}
 		const sample = await fetchDriftPriorityFee(
-			this.driftPriorityFeeEndpoint!,
+			this.velocityPriorityFeeEndpoint!,
 			this.driftMarkets.map((m) => m.marketType),
 			this.driftMarkets.map((m) => m.marketIndex)
 		);

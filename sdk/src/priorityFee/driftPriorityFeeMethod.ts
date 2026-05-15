@@ -16,12 +16,12 @@ export type VelocityPriorityFeeLevels = {
 	marketIndex: number;
 };
 
-/** @deprecated Use `VelocityPriorityFeeLevels` instead. */
+/** @deprecated Use `VelocityPriorityFeeLevels` instead. `DriftPriorityFeeLevels` will be removed in a future major. */
 export type DriftPriorityFeeLevels = VelocityPriorityFeeLevels;
 
 export type VelocityPriorityFeeResponse = VelocityPriorityFeeLevels[];
 
-/** @deprecated Use `VelocityPriorityFeeResponse` instead. */
+/** @deprecated Use `VelocityPriorityFeeResponse` instead. `DriftPriorityFeeResponse` will be removed in a future major. */
 export type DriftPriorityFeeResponse = VelocityPriorityFeeResponse;
 
 export async function fetchDriftPriorityFee(

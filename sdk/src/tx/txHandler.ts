@@ -7,7 +7,7 @@
  * `priorityFeeCalculator.ts` — computes dynamic priority fees from recent fee estimates.
  * `txParamProcessor.ts` — resolves CU limits and priority fees before send.
  *
- * Transaction sender is injected via DriftClientConfig; swap implementations to tune
+ * Transaction sender is injected via VelocityClientConfig; swap implementations to tune
  * confirmation strategy without changing instruction-building code.
  */
 import {

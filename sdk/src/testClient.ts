@@ -2,10 +2,10 @@ import { AdminClient } from './adminClient';
 import { ConfirmOptions, Signer, Transaction } from '@solana/web3.js';
 import { TxSigAndSlot } from './tx/types';
 import { PollingDriftClientAccountSubscriber } from './accounts/pollingDriftClientAccountSubscriber';
-import { DriftClientConfig } from './driftClientConfig';
+import { VelocityClientConfig } from './driftClientConfig';
 
 export class TestClient extends AdminClient {
-	public constructor(config: DriftClientConfig) {
+	public constructor(config: VelocityClientConfig) {
 		config.txVersion = 'legacy';
 		if (config.accountSubscription.type !== 'polling') {
 			throw new Error('Test client must be polling');

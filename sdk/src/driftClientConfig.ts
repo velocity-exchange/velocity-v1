@@ -1,5 +1,5 @@
 /**
- * DriftClientConfig — configuration types for constructing a {@link DriftClient}.
+ * VelocityClientConfig — configuration types for constructing a {@link VelocityClient}.
  *
  * Key options: RPC connection, wallet/keypair, account subscription mode
  * (WebSocket vs polling), oracle client selection, transaction sender config,
@@ -33,12 +33,12 @@ import { WebSocketProgramAccountSubscriber } from './accounts/webSocketProgramAc
 import { WebSocketDriftClientAccountSubscriber } from './accounts/webSocketDriftClientAccountSubscriber';
 import { WebSocketDriftClientAccountSubscriberV2 } from './accounts/webSocketDriftClientAccountSubscriberV2';
 
-export type DriftClientConfig = {
+export type VelocityClientConfig = {
 	connection: Connection;
 	wallet: IWallet;
 	env?: VelocityEnv;
 	programID?: PublicKey;
-	accountSubscription?: DriftClientSubscriptionConfig;
+	accountSubscription?: VelocityClientSubscriptionConfig;
 	opts?: ConfirmOptions;
 	txSender?: TxSender;
 	txHandler?: TxHandler;
@@ -64,7 +64,10 @@ export type DriftClientConfig = {
 	coder?: Coder;
 };
 
-export type DriftClientSubscriptionConfig =
+/** @deprecated Use `VelocityClientConfig` instead. `DriftClientConfig` will be removed in a future major. */
+export type DriftClientConfig = VelocityClientConfig;
+
+export type VelocityClientSubscriptionConfig =
 	| {
 			type: 'grpc';
 			grpcConfigs: GrpcConfigs;
@@ -113,3 +116,6 @@ export type DriftClientSubscriptionConfig =
 			type: 'polling';
 			accountLoader: BulkAccountLoader;
 	  };
+
+/** @deprecated Use `VelocityClientSubscriptionConfig` instead. `DriftClientSubscriptionConfig` will be removed in a future major. */
+export type DriftClientSubscriptionConfig = VelocityClientSubscriptionConfig;

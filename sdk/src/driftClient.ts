@@ -154,7 +154,7 @@ import {
 import { getSignedTokenAmount, getTokenAmount } from './math/spotBalance';
 import { decodeName, DEFAULT_USER_NAME, encodeName } from './userName';
 import { MMOraclePriceData, OraclePriceData } from './oracles/types';
-import { DriftClientConfig } from './driftClientConfig';
+import { VelocityClientConfig } from './driftClientConfig';
 import { PollingDriftClientAccountSubscriber } from './accounts/pollingDriftClientAccountSubscriber';
 import { WebSocketDriftClientAccountSubscriber } from './accounts/webSocketDriftClientAccountSubscriber';
 import { RetryTxSender } from './tx/retryTxSender';
@@ -310,7 +310,7 @@ export class DriftClient {
 		this._isSubscribed = val;
 	}
 
-	public constructor(config: DriftClientConfig) {
+	public constructor(config: VelocityClientConfig) {
 		this.connection = config.connection;
 		this.wallet = config.wallet;
 		this.env = config.env ?? 'mainnet-beta';

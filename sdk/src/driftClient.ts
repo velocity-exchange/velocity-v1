@@ -163,8 +163,8 @@ import { UserSubscriptionConfig } from './userConfig';
 import {
 	configs,
 	DEFAULT_CONFIRMATION_OPTS,
-	DriftEnv,
-	DriftProgram,
+	VelocityEnv,
+	VelocityProgram,
 	PYTH_LAZER_STORAGE_ACCOUNT_KEY,
 } from './config';
 import { Drift } from './idl/drift';
@@ -221,9 +221,9 @@ type RemainingAccountParams =
 export class DriftClient {
 	connection: Connection;
 	wallet: IWallet;
-	public program: DriftProgram;
+	public program: VelocityProgram;
 	provider: AnchorProvider;
-	env: DriftEnv;
+	env: VelocityEnv;
 	opts?: ConfirmOptions;
 	useHotWalletAdmin?: boolean;
 	users = new Map<string, User>();

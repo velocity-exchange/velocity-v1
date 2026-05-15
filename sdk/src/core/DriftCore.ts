@@ -12,7 +12,7 @@ import { CustomBorshCoder } from '../decode/customCoder';
 import driftIDL from '../idl/drift.json';
 import type { Drift } from '../idl/drift';
 import type { UserAccount } from '../types';
-import type { DriftProgram } from '../config';
+import type { VelocityProgram } from '../config';
 import { fetchAccount } from '../accounts/fetch';
 import type { BN } from '@coral-xyz/anchor';
 import { buildDepositInstruction } from './instructions/deposit';
@@ -88,7 +88,7 @@ export class DriftCore {
 	}
 
 	static async buildDepositInstruction(args: {
-		program: DriftProgram;
+		program: VelocityProgram;
 		marketIndex: number;
 		amount: BN;
 		reduceOnly: boolean;
@@ -106,7 +106,7 @@ export class DriftCore {
 	}
 
 	static async buildWithdrawInstruction(args: {
-		program: DriftProgram;
+		program: VelocityProgram;
 		marketIndex: number;
 		amount: BN;
 		reduceOnly: boolean;
@@ -125,7 +125,7 @@ export class DriftCore {
 	}
 
 	static async buildPlaceOrdersInstruction(args: {
-		program: DriftProgram;
+		program: VelocityProgram;
 		formattedParams: any[];
 		state: PublicKey;
 		user: PublicKey;
@@ -137,7 +137,7 @@ export class DriftCore {
 	}
 
 	static async buildCancelOrdersInstruction(args: {
-		program: DriftProgram;
+		program: VelocityProgram;
 		marketType: any;
 		marketIndex: number | null;
 		direction: any;
@@ -151,7 +151,7 @@ export class DriftCore {
 	}
 
 	static async buildFillPerpOrderInstruction(args: {
-		program: DriftProgram;
+		program: VelocityProgram;
 		orderId: number | null;
 		state: PublicKey;
 		filler: PublicKey;
@@ -165,7 +165,7 @@ export class DriftCore {
 	}
 
 	static async buildTriggerOrderInstruction(args: {
-		program: DriftProgram;
+		program: VelocityProgram;
 		orderId: number;
 		state: PublicKey;
 		filler: PublicKey;
@@ -177,7 +177,7 @@ export class DriftCore {
 	}
 
 	static async buildSettlePnlInstruction(args: {
-		program: DriftProgram;
+		program: VelocityProgram;
 		marketIndex: number;
 		state: PublicKey;
 		authority: PublicKey;
@@ -189,7 +189,7 @@ export class DriftCore {
 	}
 
 	static async buildLiquidatePerpInstruction(args: {
-		program: DriftProgram;
+		program: VelocityProgram;
 		marketIndex: number;
 		maxBaseAssetAmount: any;
 		limitPrice: any | null;
@@ -205,7 +205,7 @@ export class DriftCore {
 	}
 
 	static async buildPlacePerpOrderInstruction(args: {
-		program: DriftProgram;
+		program: VelocityProgram;
 		orderParams: any;
 		state: PublicKey;
 		user: PublicKey;
@@ -217,7 +217,7 @@ export class DriftCore {
 	}
 
 	static async buildPlaceAndTakePerpOrderInstruction(args: {
-		program: DriftProgram;
+		program: VelocityProgram;
 		orderParams: any;
 		optionalParams: number | null;
 		state: PublicKey;
@@ -230,7 +230,7 @@ export class DriftCore {
 	}
 
 	static async buildPlaceAndMakePerpOrderInstruction(args: {
-		program: DriftProgram;
+		program: VelocityProgram;
 		orderParams: any;
 		takerOrderId: number;
 		state: PublicKey;
@@ -245,7 +245,7 @@ export class DriftCore {
 	}
 
 	static async buildCancelOrderInstruction(args: {
-		program: DriftProgram;
+		program: VelocityProgram;
 		orderId: number | null;
 		state: PublicKey;
 		user: PublicKey;
@@ -256,7 +256,7 @@ export class DriftCore {
 	}
 
 	static async buildCancelOrderByUserIdInstruction(args: {
-		program: DriftProgram;
+		program: VelocityProgram;
 		userOrderId: number;
 		state: PublicKey;
 		user: PublicKey;
@@ -268,7 +268,7 @@ export class DriftCore {
 	}
 
 	static async buildCancelOrdersByIdsInstruction(args: {
-		program: DriftProgram;
+		program: VelocityProgram;
 		orderIds: number[] | undefined;
 		state: PublicKey;
 		user: PublicKey;
@@ -279,7 +279,7 @@ export class DriftCore {
 	}
 
 	static async buildModifyOrderInstruction(args: {
-		program: DriftProgram;
+		program: VelocityProgram;
 		orderId: number;
 		modifyParams: any;
 		state: PublicKey;
@@ -292,7 +292,7 @@ export class DriftCore {
 	}
 
 	static async buildModifyOrderByUserIdInstruction(args: {
-		program: DriftProgram;
+		program: VelocityProgram;
 		userOrderId: number;
 		modifyParams: any;
 		state: PublicKey;
@@ -305,7 +305,7 @@ export class DriftCore {
 	}
 
 	static async buildUpdateFundingRateInstruction(args: {
-		program: DriftProgram;
+		program: VelocityProgram;
 		perpMarketIndex: number;
 		state: PublicKey;
 		perpMarket: PublicKey;

@@ -31,7 +31,7 @@ import {
 import { OracleInfo, OraclePriceData } from '../oracles/types';
 import { OracleClientCache } from '../oracles/oracleClientCache';
 import { QUOTE_ORACLE_PRICE_DATA } from '../oracles/quoteAssetOracleClient';
-import { DriftProgram, findAllMarketAndOracles } from '../config';
+import { VelocityProgram, findAllMarketAndOracles } from '../config';
 import { findDelistedPerpMarketsAndOracles } from './utils';
 import {
 	getOracleId,
@@ -53,7 +53,7 @@ export class WebSocketDriftClientAccountSubscriberV2
 	implements DriftClientAccountSubscriber
 {
 	isSubscribed: boolean;
-	program: DriftProgram;
+	program: VelocityProgram;
 	commitment?: Commitment;
 	perpMarketIndexes: number[];
 	spotMarketIndexes: number[];
@@ -96,7 +96,7 @@ export class WebSocketDriftClientAccountSubscriberV2
 		string;
 
 	public constructor(
-		program: DriftProgram,
+		program: VelocityProgram,
 		perpMarketIndexes: number[],
 		spotMarketIndexes: number[],
 		oracleInfos: OracleInfo[],

@@ -23,7 +23,7 @@ import { OracleInfo, OraclePriceData } from '../oracles/types';
 import { OracleClientCache } from '../oracles/oracleClientCache';
 import * as Buffer from 'buffer';
 import { QUOTE_ORACLE_PRICE_DATA } from '../oracles/quoteAssetOracleClient';
-import { findAllMarketAndOracles, DriftProgram } from '../config';
+import { findAllMarketAndOracles, VelocityProgram } from '../config';
 import { findDelistedPerpMarketsAndOracles } from './utils';
 import { getOracleId } from '../oracles/oracleId';
 import { OracleSource } from '../types';
@@ -59,7 +59,7 @@ export class WebSocketDriftClientAccountSubscriber
 	implements DriftClientAccountSubscriber
 {
 	isSubscribed: boolean;
-	program: DriftProgram;
+	program: VelocityProgram;
 	commitment?: Commitment;
 	perpMarketIndexes: number[];
 	spotMarketIndexes: number[];
@@ -91,7 +91,7 @@ export class WebSocketDriftClientAccountSubscriber
 	initialOraclePriceData: Map<string, OraclePriceData>;
 	customPerpMarketAccountSubscriber?: new (
 		accountName: string,
-		program: DriftProgram,
+		program: VelocityProgram,
 		accountPublicKey: PublicKey,
 		decodeBuffer?: (buffer: Buffer) => any,
 		resubOpts?: ResubOpts,
@@ -99,7 +99,7 @@ export class WebSocketDriftClientAccountSubscriber
 	) => AccountSubscriber<any>;
 	customOracleAccountSubscriber?: new (
 		accountName: string,
-		program: DriftProgram,
+		program: VelocityProgram,
 		accountPublicKey: PublicKey,
 		decodeBuffer?: (buffer: Buffer) => any,
 		resubOpts?: ResubOpts,
@@ -111,7 +111,7 @@ export class WebSocketDriftClientAccountSubscriber
 	protected subscriptionPromiseResolver: (val: boolean) => void;
 
 	public constructor(
-		program: DriftProgram,
+		program: VelocityProgram,
 		perpMarketIndexes: number[],
 		spotMarketIndexes: number[],
 		oracleInfos: OracleInfo[],
@@ -121,7 +121,7 @@ export class WebSocketDriftClientAccountSubscriber
 		commitment?: Commitment,
 		customPerpMarketAccountSubscriber?: new (
 			accountName: string,
-			program: DriftProgram,
+			program: VelocityProgram,
 			accountPublicKey: PublicKey,
 			decodeBuffer?: (buffer: Buffer) => any,
 			resubOpts?: ResubOpts,
@@ -129,7 +129,7 @@ export class WebSocketDriftClientAccountSubscriber
 		) => WebSocketAccountSubscriberV2<any> | WebSocketAccountSubscriber<any>,
 		customOracleAccountSubscriber?: new (
 			accountName: string,
-			program: DriftProgram,
+			program: VelocityProgram,
 			accountPublicKey: PublicKey,
 			decodeBuffer?: (buffer: Buffer) => any,
 			resubOpts?: ResubOpts,

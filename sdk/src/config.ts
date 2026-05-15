@@ -17,12 +17,20 @@ import { Program, ProgramAccount } from './isomorphic/anchor';
 import { getOracleId } from './oracles/oracleId';
 import { Drift } from './idl/drift';
 
-export type DriftProgram = Program<Drift>;
+export type VelocityProgram = Program<Drift>;
 
-type DriftConfig = {
-	ENV: DriftEnv;
+/** @deprecated Use `VelocityProgram` instead. `DriftProgram` will be removed in a future major. */
+export type DriftProgram = VelocityProgram;
+
+export type VelocityEnv = 'devnet' | 'mainnet-beta';
+
+/** @deprecated Use `VelocityEnv` instead. `DriftEnv` will be removed in a future major. */
+export type DriftEnv = VelocityEnv;
+
+export interface VelocityConfig {
+	ENV: VelocityEnv;
 	PYTH_ORACLE_MAPPING_ADDRESS: string;
-	DRIFT_PROGRAM_ID: string;
+	VELOCITY_PROGRAM_ID: string;
 	JIT_PROXY_PROGRAM_ID?: string;
 	DRIFT_ORACLE_RECEIVER_ID: string;
 	QUOTE_MINT_ADDRESS: string;
@@ -33,11 +41,19 @@ type DriftConfig = {
 	MARKET_LOOKUP_TABLE: string;
 	MARKET_LOOKUP_TABLES: string[];
 	SB_ON_DEMAND_PID: PublicKey;
-};
+}
 
-export type DriftEnv = 'devnet' | 'mainnet-beta';
+/** @deprecated Use `VelocityConfig` instead. Reads from `VELOCITY_PROGRAM_ID` going forward; `DRIFT_PROGRAM_ID` is kept for backwards compatibility. `DriftConfig` will be removed in a future major. */
+export interface DriftConfig extends VelocityConfig {
+	/** @deprecated Use `VELOCITY_PROGRAM_ID` instead. */
+	DRIFT_PROGRAM_ID: string;
+}
 
-export const DRIFT_PROGRAM_ID = 'dRiftyHA39MWEi3m9aunc5MzRF1JYuBsbn6VPcn33UH';
+export const VELOCITY_PROGRAM_ID = 'dRiftyHA39MWEi3m9aunc5MzRF1JYuBsbn6VPcn33UH';
+
+/** @deprecated Use `VELOCITY_PROGRAM_ID` instead. `DRIFT_PROGRAM_ID` will be removed in a future major. */
+export const DRIFT_PROGRAM_ID = VELOCITY_PROGRAM_ID;
+
 export const DRIFT_DEVNET_PROGRAM_ID =
 	'vELoC1audYbSYVRXn1vPaV8Axoa9oU6BYmNGZZBDZ1P';
 export const DRIFT_ORACLE_RECEIVER_ID =
@@ -59,10 +75,12 @@ export const DEFAULT_CONFIRMATION_OPTS: ConfirmOptions = {
 	commitment: 'confirmed',
 };
 
-export const configs: { [key in DriftEnv]: DriftConfig } = {
+export const configs: { [key in VelocityEnv]: DriftConfig } = {
 	devnet: {
 		ENV: 'devnet',
 		PYTH_ORACLE_MAPPING_ADDRESS: 'BmA9Z6FjioHJPpjT39QazZyhDRUdZy2ezwx4GiDdE2u2',
+		VELOCITY_PROGRAM_ID: DRIFT_DEVNET_PROGRAM_ID,
+		/** @deprecated Read `VELOCITY_PROGRAM_ID` instead. */
 		DRIFT_PROGRAM_ID: DRIFT_DEVNET_PROGRAM_ID,
 		JIT_PROXY_PROGRAM_ID: 'J1TnP8zvVxbtF5KFp5xRmWuvG9McnhzmBd9XGfCyuxFP',
 		QUOTE_MINT_ADDRESS: '8FfvSRKMZRDHrCBy142XMUXrKEkXnxDQ4YmJv7xbAw8Q',
@@ -79,7 +97,9 @@ export const configs: { [key in DriftEnv]: DriftConfig } = {
 	'mainnet-beta': {
 		ENV: 'mainnet-beta',
 		PYTH_ORACLE_MAPPING_ADDRESS: 'AHtgzX45WTKfkPG53L6WYhGEXwQkN1BVknET3sVsLL8J',
-		DRIFT_PROGRAM_ID,
+		VELOCITY_PROGRAM_ID,
+		/** @deprecated Read `VELOCITY_PROGRAM_ID` instead. */
+		DRIFT_PROGRAM_ID: VELOCITY_PROGRAM_ID,
 		JIT_PROXY_PROGRAM_ID: 'J1TnP8zvVxbtF5KFp5xRmWuvG9McnhzmBd9XGfCyuxFP',
 		QUOTE_MINT_ADDRESS: 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v',
 		V2_ALPHA_TICKET_MINT_ADDRESS:
@@ -97,9 +117,9 @@ export const configs: { [key in DriftEnv]: DriftConfig } = {
 	},
 };
 
-let currentConfig: DriftConfig = configs.devnet;
+let currentConfig: VelocityConfig = configs.devnet;
 
-export const getConfig = (): DriftConfig => currentConfig;
+export const getConfig = (): VelocityConfig => currentConfig;
 
 /**
  * Allows customization of the SDK's environment and endpoints. You can pass individual settings to override the settings with your own presets.
@@ -109,9 +129,9 @@ export const getConfig = (): DriftConfig => currentConfig;
  * @returns
  */
 export const initialize = (props: {
-	env: DriftEnv;
-	overrideEnv?: Partial<DriftConfig>;
-}): DriftConfig => {
+	env: VelocityEnv;
+	overrideEnv?: Partial<VelocityConfig>;
+}): VelocityConfig => {
 	//@ts-ignore
 	if (props.env === 'master')
 		return { ...configs['devnet'], ...(props.overrideEnv ?? {}) };
@@ -122,7 +142,7 @@ export const initialize = (props: {
 };
 
 export function getMarketsAndOraclesForSubscription(
-	env: DriftEnv,
+	env: VelocityEnv,
 	perpMarkets?: PerpMarketConfig[],
 	spotMarkets?: SpotMarketConfig[]
 ): {
@@ -162,7 +182,7 @@ export function getMarketsAndOraclesForSubscription(
 	};
 }
 
-export async function findAllMarketAndOracles(program: DriftProgram): Promise<{
+export async function findAllMarketAndOracles(program: VelocityProgram): Promise<{
 	perpMarketIndexes: number[];
 	perpMarketAccounts: PerpMarketAccount[];
 	spotMarketIndexes: number[];

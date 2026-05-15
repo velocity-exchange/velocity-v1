@@ -15,14 +15,14 @@ import {
 } from './heliusPriorityFeeMethod';
 import {
 	fetchDriftPriorityFee,
-	DriftMarketInfo,
+	VelocityMarketInfo,
 } from './velocityPriorityFeeMethod';
 
 export class PriorityFeeSubscriber {
 	connection: Connection;
 	frequencyMs: number;
 	addresses: string[];
-	driftMarkets?: DriftMarketInfo[];
+	driftMarkets?: VelocityMarketInfo[];
 	customStrategy?: PriorityFeeStrategy;
 	averageStrategy = new AverageOverSlotsStrategy();
 	maxStrategy = new MaxOverSlotsStrategy();
@@ -250,7 +250,7 @@ export class PriorityFeeSubscriber {
 		this.addresses = addresses.map((k) => k.toBase58());
 	}
 
-	public updateMarketTypeAndIndex(driftMarkets: DriftMarketInfo[]) {
+	public updateMarketTypeAndIndex(driftMarkets: VelocityMarketInfo[]) {
 		this.driftMarkets = driftMarkets;
 	}
 }

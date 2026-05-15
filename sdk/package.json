@@ -33,7 +33,9 @@
 	"keywords": [
 		"drift-labs",
 		"drift",
-		"perps"
+		"perps",
+		"velocity",
+		"velocity-exchange"
 	],
 	"license": "Apache-2.0",
 	"directories": {

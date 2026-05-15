@@ -131,8 +131,8 @@ import {
 import {
 	DataAndSlot,
 	DelistedMarketSetting,
-	DriftClientAccountEvents,
-	DriftClientAccountSubscriber,
+	VelocityClientAccountEvents,
+	VelocityClientAccountSubscriber,
 } from './accounts/types';
 import { TxSender, TxSigAndSlot } from './tx/types';
 import {
@@ -231,8 +231,8 @@ export class DriftClient {
 	activeSubAccountId: number;
 	userAccountSubscriptionConfig: UserSubscriptionConfig;
 	userStatsAccountSubscriptionConfig: UserStatsSubscriptionConfig;
-	accountSubscriber: DriftClientAccountSubscriber;
-	eventEmitter: StrictEventEmitter<EventEmitter, DriftClientAccountEvents>;
+	accountSubscriber: VelocityClientAccountSubscriber;
+	eventEmitter: StrictEventEmitter<EventEmitter, VelocityClientAccountEvents>;
 	metricsEventEmitter: StrictEventEmitter<
 		EventEmitter,
 		DriftClientMetricsEvents
@@ -9097,7 +9097,7 @@ export class DriftClient {
 		});
 	}
 
-	public triggerEvent(eventName: keyof DriftClientAccountEvents, data?: any) {
+	public triggerEvent(eventName: keyof VelocityClientAccountEvents, data?: any) {
 		this.eventEmitter.emit(eventName, data);
 	}
 

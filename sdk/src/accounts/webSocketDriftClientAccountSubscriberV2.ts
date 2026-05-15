@@ -2,8 +2,8 @@ import {
 	AccountSubscriber,
 	DataAndSlot,
 	DelistedMarketSetting,
-	DriftClientAccountEvents,
-	DriftClientAccountSubscriber,
+	VelocityClientAccountEvents,
+	VelocityClientAccountSubscriber,
 	NotSubscribedError,
 	ResubOpts,
 } from './types';
@@ -50,7 +50,7 @@ const ORACLE_DEFAULT_ID = getOracleId(
 );
 
 export class WebSocketDriftClientAccountSubscriberV2
-	implements DriftClientAccountSubscriber
+	implements VelocityClientAccountSubscriber
 {
 	isSubscribed: boolean;
 	program: VelocityProgram;
@@ -64,7 +64,7 @@ export class WebSocketDriftClientAccountSubscriberV2
 	shouldFindAllMarketsAndOracles: boolean;
 	skipInitialData: boolean = true;
 
-	eventEmitter: StrictEventEmitter<EventEmitter, DriftClientAccountEvents>;
+	eventEmitter: StrictEventEmitter<EventEmitter, VelocityClientAccountEvents>;
 	stateAccountSubscriber?: WebSocketAccountSubscriberV2<StateAccount>;
 	perpMarketAllAccountsSubscriber: WebSocketProgramAccountsSubscriberV2<PerpMarketAccount>;
 	perpMarketAccountLatestData = new Map<

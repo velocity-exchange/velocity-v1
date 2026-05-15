@@ -14,8 +14,8 @@ import {
 	AccountSubscriber,
 	DataAndSlot,
 	DelistedMarketSetting,
-	DriftClientAccountEvents,
-	DriftClientAccountSubscriber,
+	VelocityClientAccountEvents,
+	VelocityClientAccountSubscriber,
 	NotSubscribedError,
 	GrpcConfigs,
 	ResubOpts,
@@ -31,7 +31,7 @@ import { OracleClientCache } from '../oracles/oracleClientCache';
 import { findDelistedPerpMarketsAndOracles } from './utils';
 
 export class grpcDriftClientAccountSubscriberV2
-	implements DriftClientAccountSubscriber
+	implements VelocityClientAccountSubscriber
 {
 	private grpcConfigs: GrpcConfigs;
 	private perpMarketsSubscriber?: grpcMultiAccountSubscriber<PerpMarketAccount>;
@@ -46,7 +46,7 @@ export class grpcDriftClientAccountSubscriberV2
 
 	public eventEmitter: StrictEventEmitter<
 		EventEmitter,
-		DriftClientAccountEvents
+		VelocityClientAccountEvents
 	>;
 	public isSubscribed: boolean;
 	public isSubscribing: boolean;

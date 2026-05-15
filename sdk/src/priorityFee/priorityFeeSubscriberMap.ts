@@ -1,5 +1,5 @@
 import {
-	DriftMarketInfo,
+	VelocityMarketInfo,
 	VelocityPriorityFeeLevels,
 	VelocityPriorityFeeResponse,
 	fetchDriftPriorityFee,
@@ -16,7 +16,7 @@ export class PriorityFeeSubscriberMap {
 	frequencyMs: number;
 	intervalId?: ReturnType<typeof setTimeout>;
 
-	driftMarkets?: DriftMarketInfo[];
+	driftMarkets?: VelocityMarketInfo[];
 	velocityPriorityFeeEndpoint?: string;
 	/** @deprecated Use `velocityPriorityFeeEndpoint` instead. `driftPriorityFeeEndpoint` will be removed in a future major. */
 	public get driftPriorityFeeEndpoint(): string | undefined {
@@ -82,7 +82,7 @@ export class PriorityFeeSubscriberMap {
 		}
 	}
 
-	public updateMarketTypeAndIndex(driftMarkets: DriftMarketInfo[]) {
+	public updateMarketTypeAndIndex(driftMarkets: VelocityMarketInfo[]) {
 		this.driftMarkets = driftMarkets;
 	}
 

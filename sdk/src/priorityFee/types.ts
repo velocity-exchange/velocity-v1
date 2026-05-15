@@ -2,7 +2,7 @@ import { Connection, PublicKey } from '@solana/web3.js';
 import { SolanaPriorityFeeResponse } from './solanaPriorityFeeMethod';
 import { HeliusPriorityFeeResponse } from './heliusPriorityFeeMethod';
 import {
-	DriftMarketInfo,
+	VelocityMarketInfo,
 	VelocityPriorityFeeResponse,
 } from './velocityPriorityFeeMethod';
 
@@ -33,7 +33,7 @@ export type PriorityFeeSubscriberConfig = {
 	/// addresses you plan to write lock, used to determine priority fees
 	addresses?: PublicKey[];
 	/// drift market type and index, optionally provide at initialization time if using priorityFeeMethod.DRIFT
-	driftMarkets?: DriftMarketInfo[];
+	driftMarkets?: VelocityMarketInfo[];
 	/// custom strategy to calculate priority fees, defaults to AVERAGE
 	customStrategy?: PriorityFeeStrategy;
 	/// method for fetching priority fee samples
@@ -56,7 +56,7 @@ export type PriorityFeeSubscriberMapConfig = {
 	/// frequency to make RPC calls to update priority fee samples, in milliseconds
 	frequencyMs?: number;
 	/// drift market type and associated market index to query
-	driftMarkets?: DriftMarketInfo[];
+	driftMarkets?: VelocityMarketInfo[];
 	/// url for drift cached priority fee endpoint
 	velocityPriorityFeeEndpoint?: string;
 	/** @deprecated Use `velocityPriorityFeeEndpoint` instead. `driftPriorityFeeEndpoint` will be removed in a future major. */

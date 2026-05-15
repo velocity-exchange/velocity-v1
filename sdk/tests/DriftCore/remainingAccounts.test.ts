@@ -1,10 +1,10 @@
 import { describe, expect, test } from 'bun:test';
 import { Keypair } from '@solana/web3.js';
-import { DriftCore } from '../../src/core/VelocityCore';
+import { VelocityCore } from '../../src/core/VelocityCore';
 import { BN } from '../../src/isomorphic/anchor';
 import type { UserAccount } from '../../src/types';
 
-describe('DriftCore.remainingAccounts', () => {
+describe('VelocityCore.remainingAccounts', () => {
 	test('includes spot/perp + oracle accounts based on user positions', () => {
 		const spotMarket0 = {
 			marketIndex: 0,
@@ -59,7 +59,7 @@ describe('DriftCore.remainingAccounts', () => {
 			mustIncludeSpotMarketIndexes: new Set<number>(),
 		};
 
-		const metas = DriftCore.remainingAccounts.getRemainingAccounts(ctx as any, {
+		const metas = VelocityCore.remainingAccounts.getRemainingAccounts(ctx as any, {
 			userAccounts: [user],
 		});
 

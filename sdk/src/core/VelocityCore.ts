@@ -329,9 +329,3 @@ export class VelocityCore {
 		return [];
 	}
 }
-
-/** @deprecated Use `VelocityCore` instead. `DriftCore` will be removed in a future major. */
-export const DriftCore = VelocityCore;
-
-/** @deprecated Use `VelocityCore` instead. `DriftCore` will be removed in a future major. */
-export type DriftCore = VelocityCore;

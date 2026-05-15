@@ -3,7 +3,7 @@ import { SolanaPriorityFeeResponse } from './solanaPriorityFeeMethod';
 import { HeliusPriorityFeeResponse } from './heliusPriorityFeeMethod';
 import {
 	DriftMarketInfo,
-	DriftPriorityFeeResponse,
+	VelocityPriorityFeeResponse,
 } from './driftPriorityFeeMethod';
 
 export const DEFAULT_PRIORITY_FEE_MAP_FREQUENCY_MS = 10_000;
@@ -15,7 +15,7 @@ export interface PriorityFeeStrategy {
 		samples:
 			| SolanaPriorityFeeResponse[]
 			| HeliusPriorityFeeResponse
-			| DriftPriorityFeeResponse
+			| VelocityPriorityFeeResponse
 	): number;
 }
 

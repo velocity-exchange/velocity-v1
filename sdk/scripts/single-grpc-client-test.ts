@@ -1,7 +1,7 @@
-import { DriftClient } from '../src/driftClient';
-import { grpcDriftClientAccountSubscriberV2 } from '../src/accounts/grpcDriftClientAccountSubscriberV2';
+import { DriftClient } from '../src/velocityClient';
+import { grpcDriftClientAccountSubscriberV2 } from '../src/accounts/grpcVelocityClientAccountSubscriberV2';
 import { Connection, Keypair, PublicKey } from '@solana/web3.js';
-import { DriftClientConfig } from '../src/driftClientConfig';
+import { DriftClientConfig } from '../src/velocityClientConfig';
 import {
 	DRIFT_PROGRAM_ID,
 	PerpMarketAccount,

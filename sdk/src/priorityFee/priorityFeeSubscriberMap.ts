@@ -28,8 +28,14 @@ export class PriorityFeeSubscriberMap {
 		this.frequencyMs = config.frequencyMs;
 		this.frequencyMs =
 			config.frequencyMs ?? DEFAULT_PRIORITY_FEE_MAP_FREQUENCY_MS;
-		this.velocityPriorityFeeEndpoint =
-			config.velocityPriorityFeeEndpoint ?? config.driftPriorityFeeEndpoint!;
+		const endpoint =
+			config.velocityPriorityFeeEndpoint ?? config.driftPriorityFeeEndpoint;
+		if (!endpoint) {
+			throw new Error(
+				'PriorityFeeSubscriberMap: velocityPriorityFeeEndpoint (or deprecated driftPriorityFeeEndpoint) must be provided'
+			);
+		}
+		this.velocityPriorityFeeEndpoint = endpoint;
 		this.driftMarkets = config.driftMarkets;
 		this.feesMap = new Map<string, Map<number, VelocityPriorityFeeLevels>>();
 		this.feesMap.set('perp', new Map<number, VelocityPriorityFeeLevels>());

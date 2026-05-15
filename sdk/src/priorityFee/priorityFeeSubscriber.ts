@@ -16,7 +16,7 @@ import {
 import {
 	fetchDriftPriorityFee,
 	DriftMarketInfo,
-} from './driftPriorityFeeMethod';
+} from './velocityPriorityFeeMethod';
 
 export class PriorityFeeSubscriber {
 	connection: Connection;

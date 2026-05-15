@@ -4,7 +4,7 @@ import { GrpcConfigs, ResubOpts } from '../accounts/types';
 import { SignedMsgUserOrdersAccount } from '../types';
 import { getSignedMsgUserOrdersFilter } from '../memcmp';
 import { SignedMsgUserOrdersAccountSubscriber } from './signedMsgUserAccountSubscriber';
-import { VelocityClient } from '../driftClient';
+import { VelocityClient } from '../velocityClient';
 
 export class grpcSignedMsgUserOrdersAccountSubscriber extends SignedMsgUserOrdersAccountSubscriber {
 	private grpcConfigs: GrpcConfigs;

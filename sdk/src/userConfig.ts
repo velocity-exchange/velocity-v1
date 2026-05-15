@@ -1,4 +1,4 @@
-import { VelocityClient } from './driftClient';
+import { VelocityClient } from './velocityClient';
 import { Commitment, PublicKey } from '@solana/web3.js';
 import { BulkAccountLoader } from './accounts/bulkAccountLoader';
 import { GrpcConfigs, UserAccountSubscriber } from './accounts/types';

@@ -1,5 +1,5 @@
 import { Commitment, Connection, MemcmpFilter } from '@solana/web3.js';
-import { VelocityClient } from '../driftClient';
+import { VelocityClient } from '../velocityClient';
 import { GrpcConfigs } from '../accounts/types';
 
 // passed into UserMap.getUniqueAuthorities to filter users

@@ -1,6 +1,6 @@
 import { BN } from '../isomorphic/anchor';
 import { User } from '../user';
-import { VelocityClient } from '../driftClient';
+import { VelocityClient } from '../velocityClient';
 import {
 	UserAccount,
 	OrderRecord,

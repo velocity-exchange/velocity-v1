@@ -5,7 +5,7 @@ import {
 	TransactionInstruction,
 } from '@solana/web3.js';
 import { JupiterClient, QuoteResponse } from '../jupiter/jupiterClient';
-import { VelocityClient } from '../driftClient';
+import { VelocityClient } from '../velocityClient';
 import { getMarinadeFinanceProgram, getMarinadeMSolPrice } from '../marinade';
 import { BN } from '../isomorphic/anchor';
 import { User } from '../user';

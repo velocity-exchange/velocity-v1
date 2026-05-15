@@ -154,9 +154,9 @@ import {
 import { getSignedTokenAmount, getTokenAmount } from './math/spotBalance';
 import { decodeName, DEFAULT_USER_NAME, encodeName } from './userName';
 import { MMOraclePriceData, OraclePriceData } from './oracles/types';
-import { VelocityClientConfig } from './driftClientConfig';
-import { PollingDriftClientAccountSubscriber } from './accounts/pollingDriftClientAccountSubscriber';
-import { WebSocketDriftClientAccountSubscriber } from './accounts/webSocketDriftClientAccountSubscriber';
+import { VelocityClientConfig } from './velocityClientConfig';
+import { PollingDriftClientAccountSubscriber } from './accounts/pollingVelocityClientAccountSubscriber';
+import { WebSocketDriftClientAccountSubscriber } from './accounts/webSocketVelocityClientAccountSubscriber';
 import { RetryTxSender } from './tx/retryTxSender';
 import { User } from './user';
 import { UserSubscriptionConfig } from './userConfig';
@@ -190,7 +190,7 @@ import {
 	isVersionedTransaction,
 	MAX_TX_BYTE_SIZE,
 } from './tx/utils';
-import { grpcDriftClientAccountSubscriber } from './accounts/grpcDriftClientAccountSubscriber';
+import { grpcDriftClientAccountSubscriber } from './accounts/grpcVelocityClientAccountSubscriber';
 import nacl from 'tweetnacl';
 import { getOracleId } from './oracles/oracleId';
 import { SignedMsgOrderParams } from './types';

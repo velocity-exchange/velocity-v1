@@ -1,5 +1,5 @@
 import { GrpcConfigs } from '../accounts/types';
-import { VelocityClient } from '../driftClient';
+import { VelocityClient } from '../velocityClient';
 import { UserAccount } from '../types';
 import { ConfirmOptions, PublicKey } from '@solana/web3.js';
 

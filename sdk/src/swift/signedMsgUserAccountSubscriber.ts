@@ -3,7 +3,7 @@ import { WebSocketProgramAccountSubscriber } from '../accounts/webSocketProgramA
 import { SignedMsgOrderId, SignedMsgUserOrdersAccount } from '../types';
 import { Commitment, Context, PublicKey } from '@solana/web3.js';
 import { ResubOpts } from '../accounts/types';
-import { VelocityClient } from '../driftClient';
+import { VelocityClient } from '../velocityClient';
 import StrictEventEmitter from 'strict-event-emitter-types';
 import { EventEmitter } from 'events';
 

@@ -3,7 +3,7 @@ import {
 	VelocityPriorityFeeLevels,
 	VelocityPriorityFeeResponse,
 	fetchDriftPriorityFee,
-} from './driftPriorityFeeMethod';
+} from './velocityPriorityFeeMethod';
 import {
 	DEFAULT_PRIORITY_FEE_MAP_FREQUENCY_MS,
 	PriorityFeeSubscriberMapConfig,

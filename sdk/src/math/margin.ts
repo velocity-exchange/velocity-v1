@@ -19,7 +19,7 @@ import { BN } from '../isomorphic/anchor';
 import { OraclePriceData } from '../oracles/types';
 import { calculateMarketMarginRatio } from './market';
 import { calculateScaledInitialAssetWeight } from './spotBalance';
-import { VelocityClient } from '../driftClient';
+import { VelocityClient } from '../velocityClient';
 import { OneShotUserAccountSubscriber } from '../accounts/oneShotUserAccountSubscriber';
 import {
 	PerpMarketAccount,

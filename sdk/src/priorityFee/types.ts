@@ -4,7 +4,7 @@ import { HeliusPriorityFeeResponse } from './heliusPriorityFeeMethod';
 import {
 	DriftMarketInfo,
 	VelocityPriorityFeeResponse,
-} from './driftPriorityFeeMethod';
+} from './velocityPriorityFeeMethod';
 
 export const DEFAULT_PRIORITY_FEE_MAP_FREQUENCY_MS = 10_000;
 

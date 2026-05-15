@@ -1,4 +1,4 @@
-import { VelocityClient } from '../driftClient';
+import { VelocityClient } from '../velocityClient';
 import { UserAccount } from '../types';
 import {
 	getNonIdleUserFilter,

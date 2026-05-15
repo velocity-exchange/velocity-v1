@@ -14,7 +14,7 @@
 import { PublicKey } from '@solana/web3.js';
 import { EventEmitter } from 'events';
 import StrictEventEmitter from 'strict-event-emitter-types';
-import { VelocityClient } from './driftClient';
+import { VelocityClient } from './velocityClient';
 import {
 	HealthComponent,
 	HealthComponents,

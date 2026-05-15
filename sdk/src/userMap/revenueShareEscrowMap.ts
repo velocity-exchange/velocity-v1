@@ -1,5 +1,5 @@
 import { PublicKey, RpcResponseAndContext } from '@solana/web3.js';
-import { VelocityClient } from '../driftClient';
+import { VelocityClient } from '../velocityClient';
 import { RevenueShareEscrowAccount } from '../types';
 import { getRevenueShareEscrowAccountPublicKey } from '../addresses/pda';
 import { getRevenueShareEscrowFilter } from '../memcmp';

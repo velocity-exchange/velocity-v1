@@ -2,7 +2,7 @@ import {
 	DevnetPerpMarkets,
 	MainnetPerpMarkets,
 } from '../constants/perpMarkets';
-import { VelocityClient } from '../driftClient';
+import { VelocityClient } from '../velocityClient';
 import { VelocityEnv } from '../config';
 import {
 	getUserAccountPublicKey,

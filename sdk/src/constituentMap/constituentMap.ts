@@ -9,7 +9,7 @@ import { ConstituentAccountSubscriber, DataAndSlot } from '../accounts/types';
 import { ConstituentAccount } from '../types';
 import { PollingConstituentAccountSubscriber } from './pollingConstituentAccountSubscriber';
 import { WebSocketConstituentAccountSubscriber } from './webSocketConstituentAccountSubscriber';
-import { VelocityClient } from '../driftClient';
+import { VelocityClient } from '../velocityClient';
 import { getConstituentFilter, getConstituentLpPoolFilter } from '../memcmp';
 import { ZSTDDecoder } from 'zstddec';
 import { getLpPoolPublicKey } from '../addresses/pda';

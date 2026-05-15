@@ -21,7 +21,7 @@ import {
 } from '../constants/numericConstants';
 import { decodeName } from '../userName';
 import { DLOBNode, DLOBNodeType, TriggerOrderNode } from './DLOBNode';
-import { VelocityClient } from '../driftClient';
+import { VelocityClient } from '../velocityClient';
 import {
 	calculateOrderBaseAssetAmount,
 	getLimitPrice,

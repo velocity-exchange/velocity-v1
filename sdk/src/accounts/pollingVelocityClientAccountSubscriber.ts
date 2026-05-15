@@ -17,7 +17,7 @@ import {
 	OracleSource,
 } from '../types';
 import {
-	getDriftStateAccountPublicKey,
+	getVelocityStateAccountPublicKey,
 	getPerpMarketPublicKey,
 	getSpotMarketPublicKey,
 } from '../addresses/pda';
@@ -144,7 +144,7 @@ export class PollingVelocityClientAccountSubscriber
 			return;
 		}
 
-		const statePublicKey = await getDriftStateAccountPublicKey(
+		const statePublicKey = await getVelocityStateAccountPublicKey(
 			this.program.programId
 		);
 

@@ -103,8 +103,8 @@ import { TokenFaucet } from './tokenFaucet';
 import { EventEmitter } from 'events';
 import StrictEventEmitter from 'strict-event-emitter-types';
 import {
-	getDriftSignerPublicKey,
-	getDriftStateAccountPublicKey,
+	getVelocitySignerPublicKey,
+	getVelocityStateAccountPublicKey,
 	getInsuranceFundStakeAccountPublicKey,
 	getPerpMarketPublicKey,
 	getPythLazerOraclePublicKey,
@@ -599,7 +599,7 @@ export class VelocityClient {
 		if (this.statePublicKey) {
 			return this.statePublicKey;
 		}
-		this.statePublicKey = await getDriftStateAccountPublicKey(
+		this.statePublicKey = await getVelocityStateAccountPublicKey(
 			this.program.programId
 		);
 		return this.statePublicKey;
@@ -610,7 +610,7 @@ export class VelocityClient {
 		if (this.signerPublicKey) {
 			return this.signerPublicKey;
 		}
-		this.signerPublicKey = getDriftSignerPublicKey(this.program.programId);
+		this.signerPublicKey = getVelocitySignerPublicKey(this.program.programId);
 		return this.signerPublicKey;
 	}
 

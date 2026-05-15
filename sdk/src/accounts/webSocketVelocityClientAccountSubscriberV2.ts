@@ -16,7 +16,7 @@ import {
 import StrictEventEmitter from 'strict-event-emitter-types';
 import { EventEmitter } from 'events';
 import {
-	getDriftStateAccountPublicKey,
+	getVelocityStateAccountPublicKey,
 	getPerpMarketPublicKey,
 	getSpotMarketPublicKey,
 } from '../addresses/pda';
@@ -283,7 +283,7 @@ export class WebSocketVelocityClientAccountSubscriberV2
 				),
 				// State account subscription
 				(async () => {
-					const statePublicKey = await getDriftStateAccountPublicKey(
+					const statePublicKey = await getVelocityStateAccountPublicKey(
 						this.program.programId
 					);
 					this.stateAccountSubscriber = new WebSocketAccountSubscriberV2(

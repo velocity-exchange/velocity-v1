@@ -2,7 +2,7 @@ import {
 	VelocityMarketInfo,
 	VelocityPriorityFeeLevels,
 	VelocityPriorityFeeResponse,
-	fetchDriftPriorityFee,
+	fetchVelocityPriorityFee,
 } from './velocityPriorityFeeMethod';
 import {
 	DEFAULT_PRIORITY_FEE_MAP_FREQUENCY_MS,
@@ -71,7 +71,7 @@ export class PriorityFeeSubscriberMap {
 			if (!this.driftMarkets) {
 				return;
 			}
-			const fees = await fetchDriftPriorityFee(
+			const fees = await fetchVelocityPriorityFee(
 				this.velocityPriorityFeeEndpoint!,
 				this.driftMarkets.map((m) => m.marketType),
 				this.driftMarkets.map((m) => m.marketIndex)

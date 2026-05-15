@@ -9,20 +9,26 @@ export type VelocityMarketInfo = {
 /** @deprecated Use `VelocityMarketInfo` instead. `DriftMarketInfo` will be removed in a future major. */
 export type DriftMarketInfo = VelocityMarketInfo;
 
-export type DriftPriorityFeeLevels = {
+export type VelocityPriorityFeeLevels = {
 	[key in HeliusPriorityLevel]: number;
 } & {
 	marketType: 'perp' | 'spot';
 	marketIndex: number;
 };
 
-export type DriftPriorityFeeResponse = DriftPriorityFeeLevels[];
+/** @deprecated Use `VelocityPriorityFeeLevels` instead. */
+export type DriftPriorityFeeLevels = VelocityPriorityFeeLevels;
+
+export type VelocityPriorityFeeResponse = VelocityPriorityFeeLevels[];
+
+/** @deprecated Use `VelocityPriorityFeeResponse` instead. */
+export type DriftPriorityFeeResponse = VelocityPriorityFeeResponse;
 
 export async function fetchDriftPriorityFee(
 	url: string,
 	marketTypes: string[],
 	marketIndexes: number[]
-): Promise<DriftPriorityFeeResponse> {
+): Promise<VelocityPriorityFeeResponse> {
 	try {
 		const response = await fetch(
 			`${url}/batchPriorityFees?marketType=${marketTypes.join(

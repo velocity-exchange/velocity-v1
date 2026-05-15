@@ -1,7 +1,7 @@
 import {
 	DriftMarketInfo,
-	DriftPriorityFeeLevels,
-	DriftPriorityFeeResponse,
+	VelocityPriorityFeeLevels,
+	VelocityPriorityFeeResponse,
 	fetchDriftPriorityFee,
 } from './driftPriorityFeeMethod';
 import {
@@ -18,7 +18,7 @@ export class PriorityFeeSubscriberMap {
 
 	driftMarkets?: DriftMarketInfo[];
 	driftPriorityFeeEndpoint?: string;
-	feesMap: Map<string, Map<number, DriftPriorityFeeLevels>>; // marketType -> marketIndex -> priority fee
+	feesMap: Map<string, Map<number, VelocityPriorityFeeLevels>>; // marketType -> marketIndex -> priority fee
 
 	public constructor(config: PriorityFeeSubscriberMapConfig) {
 		this.frequencyMs = config.frequencyMs;
@@ -26,13 +26,15 @@ export class PriorityFeeSubscriberMap {
 			config.frequencyMs ?? DEFAULT_PRIORITY_FEE_MAP_FREQUENCY_MS;
 		this.driftPriorityFeeEndpoint = config.driftPriorityFeeEndpoint;
 		this.driftMarkets = config.driftMarkets;
-		this.feesMap = new Map<string, Map<number, DriftPriorityFeeLevels>>();
-		this.feesMap.set('perp', new Map<number, DriftPriorityFeeLevels>());
-		this.feesMap.set('spot', new Map<number, DriftPriorityFeeLevels>());
+		this.feesMap = new Map<string, Map<number, VelocityPriorityFeeLevels>>();
+		this.feesMap.set('perp', new Map<number, VelocityPriorityFeeLevels>());
+		this.feesMap.set('spot', new Map<number, VelocityPriorityFeeLevels>());
 	}
 
-	private updateFeesMap(driftPriorityFeeResponse: DriftPriorityFeeResponse) {
-		driftPriorityFeeResponse.forEach((fee: DriftPriorityFeeLevels) => {
+	private updateFeesMap(
+		velocityPriorityFeeResponse: VelocityPriorityFeeResponse
+	) {
+		velocityPriorityFeeResponse.forEach((fee: VelocityPriorityFeeLevels) => {
 			this.feesMap.get(fee.marketType)!.set(fee.marketIndex, fee);
 		});
 	}
@@ -76,7 +78,7 @@ export class PriorityFeeSubscriberMap {
 	public getPriorityFees(
 		marketType: string,
 		marketIndex: number
-	): DriftPriorityFeeLevels | undefined {
+	): VelocityPriorityFeeLevels | undefined {
 		return this.feesMap.get(marketType)?.get(marketIndex);
 	}
 }

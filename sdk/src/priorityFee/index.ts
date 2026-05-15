@@ -12,5 +12,5 @@ export * from './priorityFeeSubscriber';
 export * from './priorityFeeSubscriberMap';
 export * from './solanaPriorityFeeMethod';
 export * from './heliusPriorityFeeMethod';
-export * from './driftPriorityFeeMethod';
+export * from './velocityPriorityFeeMethod';
 export * from './types';

@@ -1,4 +1,4 @@
-import { WebSocketDriftClientAccountSubscriber } from './webSocketDriftClientAccountSubscriber';
+import { WebSocketDriftClientAccountSubscriber } from './webSocketVelocityClientAccountSubscriber';
 import { OracleInfo, OraclePriceData } from '../oracles/types';
 import { findAllMarketAndOracles, VelocityProgram } from '../config';
 import {

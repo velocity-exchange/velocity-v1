@@ -26,12 +26,12 @@ import {
 import { Coder, Program } from './isomorphic/anchor';
 import { WebSocketAccountSubscriber } from './accounts/webSocketAccountSubscriber';
 import { WebSocketAccountSubscriberV2 } from './accounts/webSocketAccountSubscriberV2';
-import { grpcDriftClientAccountSubscriberV2 } from './accounts/grpcDriftClientAccountSubscriberV2';
-import { grpcDriftClientAccountSubscriber } from './accounts/grpcDriftClientAccountSubscriber';
+import { grpcDriftClientAccountSubscriberV2 } from './accounts/grpcVelocityClientAccountSubscriberV2';
+import { grpcDriftClientAccountSubscriber } from './accounts/grpcVelocityClientAccountSubscriber';
 import { grpcMultiUserAccountSubscriber } from './accounts/grpcMultiUserAccountSubscriber';
 import { WebSocketProgramAccountSubscriber } from './accounts/webSocketProgramAccountSubscriber';
-import { WebSocketDriftClientAccountSubscriber } from './accounts/webSocketDriftClientAccountSubscriber';
-import { WebSocketDriftClientAccountSubscriberV2 } from './accounts/webSocketDriftClientAccountSubscriberV2';
+import { WebSocketDriftClientAccountSubscriber } from './accounts/webSocketVelocityClientAccountSubscriber';
+import { WebSocketDriftClientAccountSubscriberV2 } from './accounts/webSocketVelocityClientAccountSubscriberV2';
 
 export type VelocityClientConfig = {
 	connection: Connection;

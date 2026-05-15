@@ -1,4 +1,4 @@
-import { VelocityClient } from '../driftClient';
+import { VelocityClient } from '../velocityClient';
 import { getUserStatsAccountPublicKey } from '../addresses/pda';
 import {
 	OrderRecord,

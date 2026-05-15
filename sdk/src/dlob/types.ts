@@ -1,5 +1,5 @@
 import { DLOB } from './DLOB';
-import { VelocityClient } from '../driftClient';
+import { VelocityClient } from '../velocityClient';
 
 export type DLOBSubscriptionConfig = {
 	driftClient: VelocityClient;

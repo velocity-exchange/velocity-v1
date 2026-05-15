@@ -7,7 +7,7 @@ import {
 	DLOBSubscriptionConfig,
 	SlotSource,
 } from './types';
-import { VelocityClient } from '../driftClient';
+import { VelocityClient } from '../velocityClient';
 import { isVariant, MarketType } from '../types';
 import {
 	DEFAULT_TOP_OF_BOOK_QUOTE_AMOUNTS,

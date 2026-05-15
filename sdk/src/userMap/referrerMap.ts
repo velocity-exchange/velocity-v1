@@ -3,7 +3,7 @@ import {
 	PublicKey,
 	RpcResponseAndContext,
 } from '@solana/web3.js';
-import { VelocityClient } from '../driftClient';
+import { VelocityClient } from '../velocityClient';
 import { ReferrerInfo } from '../types';
 import {
 	getUserAccountPublicKeySync,

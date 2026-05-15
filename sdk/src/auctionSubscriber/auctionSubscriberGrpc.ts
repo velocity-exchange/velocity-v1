@@ -1,5 +1,5 @@
 import { AuctionSubscriberConfig, AuctionSubscriberEvents } from './types';
-import { VelocityClient } from '../driftClient';
+import { VelocityClient } from '../velocityClient';
 import { getUserFilter, getUserWithAuctionFilter } from '../memcmp';
 import StrictEventEmitter from 'strict-event-emitter-types';
 import { EventEmitter } from 'events';

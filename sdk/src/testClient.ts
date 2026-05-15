@@ -1,8 +1,8 @@
 import { AdminClient } from './adminClient';
 import { ConfirmOptions, Signer, Transaction } from '@solana/web3.js';
 import { TxSigAndSlot } from './tx/types';
-import { PollingDriftClientAccountSubscriber } from './accounts/pollingDriftClientAccountSubscriber';
-import { VelocityClientConfig } from './driftClientConfig';
+import { PollingDriftClientAccountSubscriber } from './accounts/pollingVelocityClientAccountSubscriber';
+import { VelocityClientConfig } from './velocityClientConfig';
 
 export class TestClient extends AdminClient {
 	public constructor(config: VelocityClientConfig) {

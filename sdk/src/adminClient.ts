@@ -68,7 +68,7 @@ import {
 	MINT_SIZE,
 	TOKEN_PROGRAM_ID,
 } from '@solana/spl-token';
-import { VelocityClient } from './driftClient';
+import { VelocityClient } from './velocityClient';
 import {
 	PEG_PRECISION,
 	QUOTE_SPOT_MARKET_INDEX,

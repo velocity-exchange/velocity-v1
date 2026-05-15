@@ -3,7 +3,7 @@ import {
 	MainnetPerpMarkets,
 } from '../constants/perpMarkets';
 import { DriftClient } from '../driftClient';
-import { DriftEnv } from '../config';
+import { VelocityEnv } from '../config';
 import {
 	getUserAccountPublicKey,
 	getUserStatsAccountPublicKey,
@@ -30,7 +30,7 @@ export interface AccountGetter {
 export type SwiftOrderSubscriberConfig = {
 	driftClient: DriftClient;
 	userAccountGetter?: AccountGetter;
-	driftEnv: DriftEnv;
+	driftEnv: VelocityEnv;
 	endpoint?: string;
 	marketIndexes: number[];
 	/**

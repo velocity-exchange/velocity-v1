@@ -15,7 +15,7 @@ import {
 import { IWallet, TxParams, UserAccount } from './types';
 import { OracleInfo } from './oracles/types';
 import { BulkAccountLoader } from './accounts/bulkAccountLoader';
-import { DriftEnv } from './config';
+import { VelocityEnv } from './config';
 import { TxSender } from './tx/types';
 import { TxHandler, TxHandlerConfig } from './tx/txHandler';
 import {
@@ -36,7 +36,7 @@ import { WebSocketDriftClientAccountSubscriberV2 } from './accounts/webSocketDri
 export type DriftClientConfig = {
 	connection: Connection;
 	wallet: IWallet;
-	env?: DriftEnv;
+	env?: VelocityEnv;
 	programID?: PublicKey;
 	accountSubscription?: DriftClientSubscriptionConfig;
 	opts?: ConfirmOptions;

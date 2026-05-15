@@ -2,7 +2,7 @@ import StrictEventEmitter from 'strict-event-emitter-types';
 import { EventEmitter } from 'events';
 import { OracleInfo, OraclePriceData } from '../oracles/types';
 import { PublicKey } from '@solana/web3.js';
-import { findAllMarketAndOracles, DriftProgram } from '../config';
+import { findAllMarketAndOracles, VelocityProgram } from '../config';
 import {
 	getDriftStateAccountPublicKey,
 	getPerpMarketPublicKey,
@@ -50,7 +50,7 @@ export class grpcDriftClientAccountSubscriberV2
 	>;
 	public isSubscribed: boolean;
 	public isSubscribing: boolean;
-	public program: DriftProgram;
+	public program: VelocityProgram;
 	public perpMarketIndexes: number[];
 	public spotMarketIndexes: number[];
 	public shouldFindAllMarketsAndOracles: boolean;
@@ -75,7 +75,7 @@ export class grpcDriftClientAccountSubscriberV2
 
 	constructor(
 		grpcConfigs: GrpcConfigs,
-		program: DriftProgram,
+		program: VelocityProgram,
 		perpMarketIndexes: number[],
 		spotMarketIndexes: number[],
 		oracleInfos: OracleInfo[],

@@ -39,7 +39,7 @@ import {
 import * as remainingAccounts from './remainingAccounts';
 import * as signedMsg from './signedMsg';
 
-export type DriftCoreContext = {
+export type VelocityCoreContext = {
 	/** Drift program id. */
 	programId: PublicKey;
 
@@ -47,14 +47,17 @@ export type DriftCoreContext = {
 	idl?: Drift;
 };
 
+/** @deprecated Use `VelocityCoreContext` instead. `DriftCoreContext` will be removed in a future major. */
+export type DriftCoreContext = VelocityCoreContext;
+
 /**
- * DriftCore is the minimal, core SDK surface:
+ * VelocityCore is the minimal, core SDK surface:
  * - No subscriptions / polling / websockets.
  * - Pure helpers for PDAs, decoding, constants, and instruction building.
  *
  * Transaction/instruction builders will be progressively moved here from `VelocityClient`.
  */
-export class DriftCore {
+export class VelocityCore {
 	/** Re-export PDA helpers (pure). */
 	static readonly pdas = pdas;
 
@@ -69,7 +72,7 @@ export class DriftCore {
 		return driftIDL as unknown as Drift;
 	}
 
-	static coder(idl: Drift = DriftCore.defaultIdl()): CustomBorshCoder {
+	static coder(idl: Drift = VelocityCore.defaultIdl()): CustomBorshCoder {
 		return new CustomBorshCoder(idl as any);
 	}
 
@@ -84,7 +87,7 @@ export class DriftCore {
 		userAccountPublicKey: PublicKey
 	): Promise<UserAccount | null> {
 		const data = await fetchAccount(connection, userAccountPublicKey);
-		return data ? DriftCore.decodeUserAccount(data) : null;
+		return data ? VelocityCore.decodeUserAccount(data) : null;
 	}
 
 	static async buildDepositInstruction(args: {
@@ -320,7 +323,15 @@ export class DriftCore {
 	 * In follow-up refactors, VelocityClient methods like `getDepositInstruction`,
 	 * `getPlaceOrdersIx`, etc. will be moved here as pure builders.
 	 */
-	static buildInstructions(_ctx: DriftCoreContext): TransactionInstruction[] {
+	static buildInstructions(
+		_ctx: VelocityCoreContext
+	): TransactionInstruction[] {
 		return [];
 	}
 }
+
+/** @deprecated Use `VelocityCore` instead. `DriftCore` will be removed in a future major. */
+export const DriftCore = VelocityCore;
+
+/** @deprecated Use `VelocityCore` instead. `DriftCore` will be removed in a future major. */
+export type DriftCore = VelocityCore;

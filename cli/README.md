@@ -1,6 +1,6 @@
 ## Installation
 ```shell
-yarn &&
+bun install &&
 tsc &&
 npm link &&
 drift config init

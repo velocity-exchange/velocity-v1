@@ -38,9 +38,9 @@ rustup default stable-x86_64-apple-darwin
 # build v2
 anchor build
 # install packages
-yarn
+bun install
 # build sdk
-cd sdk/ && yarn && yarn build && cd ..
+cd sdk/ && bun install && bun run build && cd ..
 ```
 
 ## Running Rust Test

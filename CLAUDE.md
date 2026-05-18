@@ -105,7 +105,7 @@ cd sdk/ && bun run test:ci      # CI subset
 **Lint/format:**
 ```bash
 cargo fmt                        # Rust
-cd sdk/ && yarn prettify:fix     # SDK (TypeScript)
+cd sdk/ && bun run prettify:fix  # SDK (TypeScript)
 ```
 
 **Always run `cargo fmt` and `cargo clippy -p drift` before declaring Rust work complete.** CI runs `cargo fmt -- --check` and `cargo clippy -p drift` (see `.github/workflows/main.yml`) and will fail the PR otherwise. The equivalent SDK gate is `cd sdk/ && yarn prettify` + `yarn lint`. Do not hand off a change until those commands are clean.

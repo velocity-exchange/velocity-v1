@@ -12,8 +12,8 @@
 	},
 	"scripts": {
 		"lint": "eslint './**/*.{ts,tsx}' --quiet --format unix",
-		"build": "yarn clean && tsc -p tsconfig.json && tsc -p tsconfig.browser.json && node scripts/postbuild.js",
-		"build:browser": "yarn clean && tsc -p tsconfig.json && tsc -p tsconfig.browser.json && node scripts/postbuild.js --force-env browser",
+		"build": "bun run clean && tsc -p tsconfig.json && tsc -p tsconfig.browser.json && node scripts/postbuild.js",
+		"build:browser": "bun run clean && tsc -p tsconfig.json && tsc -p tsconfig.browser.json && node scripts/postbuild.js --force-env browser",
 		"build:minify": "node build-browser.js",
 		"clean": "rm -rf lib",
 		"test": "mocha -r ts-node/register tests/**/*.ts --ignore 'tests/dlob/**/*.ts'",

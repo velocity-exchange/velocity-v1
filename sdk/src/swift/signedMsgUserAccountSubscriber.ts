@@ -3,7 +3,7 @@ import { WebSocketProgramAccountSubscriber } from '../accounts/webSocketProgramA
 import { SignedMsgOrderId, SignedMsgUserOrdersAccount } from '../types';
 import { Commitment, Context, PublicKey } from '@solana/web3.js';
 import { ResubOpts } from '../accounts/types';
-import { DriftClient } from '../driftClient';
+import { VelocityClient } from '../driftClient';
 import StrictEventEmitter from 'strict-event-emitter-types';
 import { EventEmitter } from 'events';
 
@@ -22,7 +22,7 @@ export interface SignedMsgUserOrdersAccountSubscriberEvents {
 }
 
 export class SignedMsgUserOrdersAccountSubscriber {
-	protected driftClient: DriftClient;
+	protected driftClient: VelocityClient;
 	protected commitment: Commitment;
 	protected resubOpts?: ResubOpts;
 	protected resyncTimeoutId?: ReturnType<typeof setTimeout>;
@@ -53,7 +53,7 @@ export class SignedMsgUserOrdersAccountSubscriber {
 		decodeFn,
 		resyncIntervalMs,
 	}: {
-		driftClient: DriftClient;
+		driftClient: VelocityClient;
 		commitment?: Commitment;
 		resubOpts?: ResubOpts;
 		decodeFn?: (name: string, data: Buffer) => SignedMsgUserOrdersAccount;

@@ -1,4 +1,4 @@
-import { DriftClient } from '../driftClient';
+import { VelocityClient } from '../driftClient';
 import { UserAccount } from '../types';
 import {
 	getNonIdleUserFilter,
@@ -20,7 +20,7 @@ import { calculateOrderBaseAssetAmount } from '../math/orders';
 import { ZERO } from '../constants/numericConstants';
 
 export class OrderSubscriber {
-	driftClient: DriftClient;
+	driftClient: VelocityClient;
 	usersAccounts = new Map<string, { slot: number; userAccount: UserAccount }>();
 	subscription: PollingSubscription | WebsocketSubscription | grpcSubscription;
 	commitment: Commitment;

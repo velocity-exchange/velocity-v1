@@ -4,7 +4,7 @@ import { GrpcConfigs, ResubOpts } from '../accounts/types';
 import { SignedMsgUserOrdersAccount } from '../types';
 import { getSignedMsgUserOrdersFilter } from '../memcmp';
 import { SignedMsgUserOrdersAccountSubscriber } from './signedMsgUserAccountSubscriber';
-import { DriftClient } from '../driftClient';
+import { VelocityClient } from '../driftClient';
 
 export class grpcSignedMsgUserOrdersAccountSubscriber extends SignedMsgUserOrdersAccountSubscriber {
 	private grpcConfigs: GrpcConfigs;
@@ -19,7 +19,7 @@ export class grpcSignedMsgUserOrdersAccountSubscriber extends SignedMsgUserOrder
 		resyncIntervalMs,
 	}: {
 		grpcConfigs: GrpcConfigs;
-		driftClient: DriftClient;
+		driftClient: VelocityClient;
 		commitment?: Commitment;
 		resubOpts?: ResubOpts;
 		decodeFn?: (name: string, data: Buffer) => SignedMsgUserOrdersAccount;

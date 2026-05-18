@@ -7,7 +7,7 @@ import {
 	DLOBSubscriptionConfig,
 	SlotSource,
 } from './types';
-import { DriftClient } from '../driftClient';
+import { VelocityClient } from '../driftClient';
 import { isVariant, MarketType } from '../types';
 import {
 	DEFAULT_TOP_OF_BOOK_QUOTE_AMOUNTS,
@@ -20,7 +20,7 @@ import {
 import { BN } from '../isomorphic/anchor';
 
 export class DLOBSubscriber {
-	driftClient: DriftClient;
+	driftClient: VelocityClient;
 	dlobSource: DLOBSource;
 	slotSource: SlotSource;
 	updateFrequency: number;

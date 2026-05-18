@@ -1,4 +1,4 @@
-import { DriftClient } from '../driftClient';
+import { VelocityClient } from '../driftClient';
 import { getUserStatsAccountPublicKey } from '../addresses/pda';
 import {
 	OrderRecord,
@@ -26,7 +26,7 @@ export class UserStatsMap {
 	 * map from authority pubkey to UserStats
 	 */
 	private userStatsMap = new Map<string, UserStats>();
-	private driftClient: DriftClient;
+	private driftClient: VelocityClient;
 	private bulkAccountLoader: BulkAccountLoader;
 	private decode;
 	private syncConfig: SyncConfig;
@@ -37,11 +37,11 @@ export class UserStatsMap {
 	/**
 	 * Creates a new UserStatsMap instance.
 	 *
-	 * @param {DriftClient} driftClient - The DriftClient instance.
+	 * @param {VelocityClient} driftClient - The VelocityClient instance.
 	 * @param {BulkAccountLoader} [bulkAccountLoader] - If not provided, a new BulkAccountLoader with polling disabled will be created.
 	 */
 	constructor(
-		driftClient: DriftClient,
+		driftClient: VelocityClient,
 		bulkAccountLoader?: BulkAccountLoader,
 		syncConfig?: SyncConfig
 	) {

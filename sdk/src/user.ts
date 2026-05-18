@@ -8,13 +8,13 @@
  *   - Health factor and liquidation threshold checks.
  *   - Subscribes to and caches the latest `User` account state from chain.
  *
- * To send instructions (deposit, place order, etc.) use {@link DriftClient}.
+ * To send instructions (deposit, place order, etc.) use {@link VelocityClient}.
  * For referral/volume stats see {@link UserStats} (userStats.ts).
  */
 import { PublicKey } from '@solana/web3.js';
 import { EventEmitter } from 'events';
 import StrictEventEmitter from 'strict-event-emitter-types';
-import { DriftClient } from './driftClient';
+import { VelocityClient } from './driftClient';
 import {
 	HealthComponent,
 	HealthComponents,
@@ -128,7 +128,7 @@ import {
 export type MarginType = 'Cross' | 'Isolated';
 
 export class User {
-	driftClient: DriftClient;
+	driftClient: VelocityClient;
 	userAccountPublicKey: PublicKey;
 	accountSubscriber: UserAccountSubscriber;
 	_isSubscribed = false;

@@ -52,7 +52,7 @@ export type DriftCoreContext = {
  * - No subscriptions / polling / websockets.
  * - Pure helpers for PDAs, decoding, constants, and instruction building.
  *
- * Transaction/instruction builders will be progressively moved here from `DriftClient`.
+ * Transaction/instruction builders will be progressively moved here from `VelocityClient`.
  */
 export class DriftCore {
 	/** Re-export PDA helpers (pure). */
@@ -317,7 +317,7 @@ export class DriftCore {
 	/**
 	 * Placeholder for instruction builders.
 	 *
-	 * In follow-up refactors, DriftClient methods like `getDepositInstruction`,
+	 * In follow-up refactors, VelocityClient methods like `getDepositInstruction`,
 	 * `getPlaceOrdersIx`, etc. will be moved here as pure builders.
 	 */
 	static buildInstructions(_ctx: DriftCoreContext): TransactionInstruction[] {

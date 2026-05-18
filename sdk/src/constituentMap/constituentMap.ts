@@ -9,7 +9,7 @@ import { ConstituentAccountSubscriber, DataAndSlot } from '../accounts/types';
 import { ConstituentAccount } from '../types';
 import { PollingConstituentAccountSubscriber } from './pollingConstituentAccountSubscriber';
 import { WebSocketConstituentAccountSubscriber } from './webSocketConstituentAccountSubscriber';
-import { DriftClient } from '../driftClient';
+import { VelocityClient } from '../driftClient';
 import { getConstituentFilter, getConstituentLpPoolFilter } from '../memcmp';
 import { ZSTDDecoder } from 'zstddec';
 import { getLpPoolPublicKey } from '../addresses/pda';
@@ -17,7 +17,7 @@ import { getLpPoolPublicKey } from '../addresses/pda';
 const MAX_CONSTITUENT_SIZE_BYTES = 480; // TODO: update this when account is finalized
 
 export type ConstituentMapConfig = {
-	driftClient: DriftClient;
+	driftClient: VelocityClient;
 	connection?: Connection;
 	subscriptionConfig:
 		| {
@@ -55,7 +55,7 @@ export interface ConstituentMapInterface {
 }
 
 export class ConstituentMap implements ConstituentMapInterface {
-	private driftClient: DriftClient;
+	private driftClient: VelocityClient;
 	private constituentMap = new Map<string, DataAndSlot<ConstituentAccount>>();
 	private constituentAccountSubscriber: ConstituentAccountSubscriber;
 	private additionalFilters?: MemcmpFilter[];

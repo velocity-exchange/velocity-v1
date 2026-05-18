@@ -103,5 +103,5 @@ to a real semver range based on `sdk/package.json`'s version (see
 handles this automatically; for a manual publish:
 
 ```sh
-yarn publish-cli
+bun run publish-cli
 ```

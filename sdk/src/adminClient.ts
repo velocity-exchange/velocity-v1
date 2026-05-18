@@ -1,6 +1,6 @@
 /**
  * AdminClient — governance and protocol administration instruction builders.
- * Extends {@link DriftClient}; all trading/keeper methods are also available.
+ * Extends {@link VelocityClient}; all trading/keeper methods are also available.
  *
  * Covers: perp/spot market initialization and updates, oracle guard rail config,
  * fee structure updates, insurance fund operations, vault management, IF rebalancing,
@@ -68,7 +68,7 @@ import {
 	MINT_SIZE,
 	TOKEN_PROGRAM_ID,
 } from '@solana/spl-token';
-import { DriftClient } from './driftClient';
+import { VelocityClient } from './driftClient';
 import {
 	PEG_PRECISION,
 	QUOTE_SPOT_MARKET_INDEX,
@@ -83,7 +83,7 @@ import { calculateAmmReservesAfterSwap, getSwapDirection } from './math/amm';
 import { JupiterClient, QuoteResponse } from './jupiter/jupiterClient';
 import { SwapMode } from './swap/UnifiedSwapClient';
 
-export class AdminClient extends DriftClient {
+export class AdminClient extends VelocityClient {
 	public async initialize(
 		usdcMint: PublicKey,
 		_adminControlsPrices: boolean

@@ -1,5 +1,5 @@
 /**
- * DriftClient — main SDK entry point for all trading and keeper operations.
+ * VelocityClient — main SDK entry point for all trading and keeper operations.
  *
  * Responsibilities:
  *   - Builds and sends all on-chain instructions (place/cancel/fill orders, deposits, withdrawals,
@@ -215,10 +215,10 @@ type RemainingAccountParams =
 	import('./core/remainingAccounts').RemainingAccountParams;
 
 /**
- * # DriftClient
+ * # VelocityClient
  * This class is the main way to interact with Drift Protocol. It allows you to subscribe to the various accounts where the Market's state is stored, as well as: opening positions, liquidating, settling funding, depositing & withdrawing, and more.
  */
-export class DriftClient {
+export class VelocityClient {
 	connection: Connection;
 	wallet: IWallet;
 	public program: VelocityProgram;
@@ -2274,7 +2274,7 @@ export class DriftClient {
 		const userMapKey = this.getUserMapKey(subAccountId, authority);
 
 		if (!this.users.has(userMapKey)) {
-			throw new Error(`DriftClient has no user for user id ${userMapKey}`);
+			throw new Error(`VelocityClient has no user for user id ${userMapKey}`);
 		}
 		return this.users.get(userMapKey);
 	}
@@ -11213,7 +11213,7 @@ export class DriftClient {
 	 *
 	 * @param tx
 	 * @param additionalSigners
-	 * @param opts :: Will fallback to DriftClient's opts if not provided
+	 * @param opts :: Will fallback to VelocityClient's opts if not provided
 	 * @param preSigned
 	 * @returns
 	 */
@@ -11351,3 +11351,9 @@ export class DriftClient {
 		return currentBase.add(orderBaseAmount).abs().gt(currentBase.abs());
 	}
 }
+
+/** @deprecated Use `VelocityClient` instead. `DriftClient` will be removed in a future major. */
+export const DriftClient = VelocityClient;
+
+/** @deprecated Use `VelocityClient` instead. `DriftClient` will be removed in a future major. */
+export type DriftClient = VelocityClient;

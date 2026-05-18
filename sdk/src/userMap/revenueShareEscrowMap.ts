@@ -1,5 +1,5 @@
 import { PublicKey, RpcResponseAndContext } from '@solana/web3.js';
-import { DriftClient } from '../driftClient';
+import { VelocityClient } from '../driftClient';
 import { RevenueShareEscrowAccount } from '../types';
 import { getRevenueShareEscrowAccountPublicKey } from '../addresses/pda';
 import { getRevenueShareEscrowFilter } from '../memcmp';
@@ -9,7 +9,7 @@ export class RevenueShareEscrowMap {
 	 * map from authority pubkey to RevenueShareEscrow account data.
 	 */
 	private authorityEscrowMap = new Map<string, RevenueShareEscrowAccount>();
-	private driftClient: DriftClient;
+	private driftClient: VelocityClient;
 	private parallelSync: boolean;
 
 	private fetchPromise?: Promise<void>;
@@ -18,10 +18,10 @@ export class RevenueShareEscrowMap {
 	/**
 	 * Creates a new RevenueShareEscrowMap instance.
 	 *
-	 * @param {DriftClient} driftClient - The DriftClient instance.
+	 * @param {VelocityClient} driftClient - The VelocityClient instance.
 	 * @param {boolean} parallelSync - Whether to sync accounts in parallel.
 	 */
-	constructor(driftClient: DriftClient, parallelSync?: boolean) {
+	constructor(driftClient: VelocityClient, parallelSync?: boolean) {
 		this.driftClient = driftClient;
 		this.parallelSync = parallelSync !== undefined ? parallelSync : true;
 	}

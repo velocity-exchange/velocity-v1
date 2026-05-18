@@ -1,5 +1,5 @@
 import { AuctionSubscriberConfig, AuctionSubscriberEvents } from './types';
-import { DriftClient } from '../driftClient';
+import { VelocityClient } from '../driftClient';
 import { getUserFilter, getUserWithAuctionFilter } from '../memcmp';
 import StrictEventEmitter from 'strict-event-emitter-types';
 import { EventEmitter } from 'events';
@@ -10,7 +10,7 @@ import { GrpcConfigs, ResubOpts } from '../accounts/types';
 import { grpcProgramAccountSubscriber } from '../accounts/grpcProgramAccountSubscriber';
 
 export class AuctionSubscriberGrpc {
-	private driftClient: DriftClient;
+	private driftClient: VelocityClient;
 	private opts: ConfirmOptions;
 	private resubOpts?: ResubOpts;
 	private grpcConfigs?: GrpcConfigs;

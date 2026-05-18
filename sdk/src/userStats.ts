@@ -3,7 +3,7 @@
  * Tracks referral links, 30-day maker/taker volume, and IF staking stats.
  * One `UserStats` account exists per authority (shared across all subaccounts).
  */
-import { DriftClient } from './driftClient';
+import { VelocityClient } from './driftClient';
 import { PublicKey } from '@solana/web3.js';
 import { DataAndSlot, UserStatsAccountSubscriber } from './accounts/types';
 import { UserStatsConfig } from './userStatsConfig';
@@ -17,7 +17,7 @@ import {
 import { grpcUserStatsAccountSubscriber } from './accounts/grpcUserStatsAccountSubscriber';
 
 export class UserStats {
-	driftClient: DriftClient;
+	driftClient: VelocityClient;
 	userStatsAccountPublicKey: PublicKey;
 	accountSubscriber: UserStatsAccountSubscriber;
 	isSubscribed: boolean;

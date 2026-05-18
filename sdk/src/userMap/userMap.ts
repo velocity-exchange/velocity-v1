@@ -1,6 +1,6 @@
 import { BN } from '../isomorphic/anchor';
 import { User } from '../user';
-import { DriftClient } from '../driftClient';
+import { VelocityClient } from '../driftClient';
 import {
 	UserAccount,
 	OrderRecord,
@@ -77,7 +77,7 @@ export interface UserMapInterface {
 
 export class UserMap implements UserMapInterface {
 	private userMap = new Map<string, DataAndSlot<User>>();
-	driftClient: DriftClient;
+	driftClient: VelocityClient;
 	eventEmitter: StrictEventEmitter<EventEmitter, UserEvents>;
 	private connection: Connection;
 	private commitment: Commitment;

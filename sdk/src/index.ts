@@ -3,7 +3,7 @@
  * Main package barrel — re-exports all public SDK types, classes, and utilities.
  *
  * Primary entry points:
- *   {@link DriftClient}  — trading and keeper instruction builders (driftClient.ts)
+ *   {@link VelocityClient}  — trading and keeper instruction builders (driftClient.ts)
  *   {@link AdminClient}  — governance/admin instruction builders (adminClient.ts)
  *   {@link User}         — user account abstraction: margin queries, position accessors (user.ts)
  *   {@link DLOB}         — decentralized limit order book (dlob/DLOB.ts)

@@ -3,7 +3,7 @@ import {
 	PublicKey,
 	RpcResponseAndContext,
 } from '@solana/web3.js';
-import { DriftClient } from '../driftClient';
+import { VelocityClient } from '../driftClient';
 import { ReferrerInfo } from '../types';
 import {
 	getUserAccountPublicKeySync,
@@ -28,7 +28,7 @@ export class ReferrerMap {
 	 * Will be undefined if the referrer is not in the map yet.
 	 */
 	private referrerReferrerInfoMap = new Map<string, ReferrerInfo>();
-	private driftClient: DriftClient;
+	private driftClient: VelocityClient;
 	private parallelSync: boolean;
 
 	private fetchPromise?: Promise<void>;
@@ -37,9 +37,9 @@ export class ReferrerMap {
 	/**
 	 * Creates a new UserStatsMap instance.
 	 *
-	 * @param {DriftClient} driftClient - The DriftClient instance.
+	 * @param {VelocityClient} driftClient - The VelocityClient instance.
 	 */
-	constructor(driftClient: DriftClient, parallelSync?: boolean) {
+	constructor(driftClient: VelocityClient, parallelSync?: boolean) {
 		this.driftClient = driftClient;
 		this.parallelSync = parallelSync !== undefined ? parallelSync : true;
 	}

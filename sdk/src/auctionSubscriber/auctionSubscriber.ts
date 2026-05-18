@@ -1,5 +1,5 @@
 import { AuctionSubscriberConfig, AuctionSubscriberEvents } from './types';
-import { DriftClient } from '../driftClient';
+import { VelocityClient } from '../driftClient';
 import { getUserFilter, getUserWithAuctionFilter } from '../memcmp';
 import StrictEventEmitter from 'strict-event-emitter-types';
 import { EventEmitter } from 'events';
@@ -9,7 +9,7 @@ import { WebSocketProgramAccountSubscriber } from '../accounts/webSocketProgramA
 import { ResubOpts } from '../accounts/types';
 
 export class AuctionSubscriber {
-	private driftClient: DriftClient;
+	private driftClient: VelocityClient;
 	private opts: ConfirmOptions;
 	private resubOpts?: ResubOpts;
 

@@ -2,7 +2,7 @@ import {
 	DevnetPerpMarkets,
 	MainnetPerpMarkets,
 } from '../constants/perpMarkets';
-import { DriftClient } from '../driftClient';
+import { VelocityClient } from '../driftClient';
 import { VelocityEnv } from '../config';
 import {
 	getUserAccountPublicKey,
@@ -28,7 +28,7 @@ export interface AccountGetter {
 }
 
 export type SwiftOrderSubscriberConfig = {
-	driftClient: DriftClient;
+	driftClient: VelocityClient;
 	userAccountGetter?: AccountGetter;
 	driftEnv: VelocityEnv;
 	endpoint?: string;
@@ -70,7 +70,7 @@ export class SwiftOrderSubscriber {
 	private heartbeatTimeout: ReturnType<typeof setTimeout> | null = null;
 	private readonly heartbeatIntervalMs = 60000;
 	private ws: WebSocket | null = null;
-	private driftClient: DriftClient;
+	private driftClient: VelocityClient;
 	public userAccountGetter?: AccountGetter; // In practice, this for now is just an OrderSubscriber or a UserMap
 	public onOrder: (
 		orderMessageRaw: SwiftOrderMessage,

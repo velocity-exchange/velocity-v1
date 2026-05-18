@@ -5,7 +5,7 @@ import {
 	TransactionInstruction,
 } from '@solana/web3.js';
 import { JupiterClient, QuoteResponse } from '../jupiter/jupiterClient';
-import { DriftClient } from '../driftClient';
+import { VelocityClient } from '../driftClient';
 import { getMarinadeFinanceProgram, getMarinadeMSolPrice } from '../marinade';
 import { BN } from '../isomorphic/anchor';
 import { User } from '../user';
@@ -60,7 +60,7 @@ export async function findBestSuperStakeIxs({
 	marketIndex: number;
 	amount: BN;
 	jupiterClient: JupiterClient;
-	driftClient: DriftClient;
+	driftClient: VelocityClient;
 	price?: number;
 	userAccountPublicKey?: PublicKey;
 	forceMarinade?: boolean;
@@ -120,7 +120,7 @@ export async function findBestMSolSuperStakeIxs({
 }: {
 	amount: BN;
 	jupiterClient: JupiterClient;
-	driftClient: DriftClient;
+	driftClient: VelocityClient;
 	price?: number;
 	userAccountPublicKey?: PublicKey;
 	forceMarinade?: boolean;
@@ -200,7 +200,7 @@ export async function findBestJitoSolSuperStakeIxs({
 }: {
 	amount: BN;
 	jupiterClient: JupiterClient;
-	driftClient: DriftClient;
+	driftClient: VelocityClient;
 	userAccountPublicKey?: PublicKey;
 	onlyDirectRoutes?: boolean;
 	jupiterQuote?: QuoteResponse;
@@ -240,7 +240,7 @@ export async function findBestLstSuperStakeIxs({
 	lstMint: PublicKey;
 	lstMarketIndex: number;
 	jupiterClient: JupiterClient;
-	driftClient: DriftClient;
+	driftClient: VelocityClient;
 	userAccountPublicKey?: PublicKey;
 	onlyDirectRoutes?: boolean;
 	jupiterQuote?: QuoteResponse;

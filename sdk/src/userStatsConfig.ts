@@ -1,11 +1,11 @@
-import { DriftClient } from './driftClient';
+import { VelocityClient } from './driftClient';
 import { Commitment, PublicKey } from '@solana/web3.js';
 import { BulkAccountLoader } from './accounts/bulkAccountLoader';
 import { GrpcConfigs, UserStatsAccountSubscriber } from './accounts/types';
 
 export type UserStatsConfig = {
 	accountSubscription?: UserStatsSubscriptionConfig;
-	driftClient: DriftClient;
+	driftClient: VelocityClient;
 	userStatsAccountPublicKey: PublicKey;
 };
 

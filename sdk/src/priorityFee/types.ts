@@ -22,7 +22,7 @@ export interface PriorityFeeStrategy {
 export enum PriorityFeeMethod {
 	SOLANA = 'solana',
 	HELIUS = 'helius',
-	DRIFT = 'drift',
+	VELOCITY = 'velocity',
 }
 
 export type PriorityFeeSubscriberConfig = {
@@ -32,7 +32,9 @@ export type PriorityFeeSubscriberConfig = {
 	frequencyMs?: number;
 	/// addresses you plan to write lock, used to determine priority fees
 	addresses?: PublicKey[];
-	/// drift market type and index, optionally provide at initialization time if using priorityFeeMethod.DRIFT
+	/// market type and index, optionally provide at initialization time if using priorityFeeMethod.VELOCITY
+	velocityMarkets?: VelocityMarketInfo[];
+	/** @deprecated Use `velocityMarkets` instead. `driftMarkets` will be removed in a future major. */
 	driftMarkets?: VelocityMarketInfo[];
 	/// custom strategy to calculate priority fees, defaults to AVERAGE
 	customStrategy?: PriorityFeeStrategy;
@@ -42,7 +44,7 @@ export type PriorityFeeSubscriberConfig = {
 	slotsToCheck?: number;
 	/// url for helius rpc, required if using priorityFeeMethod.HELIUS
 	heliusRpcUrl?: string;
-	/// url for drift cached priority fee endpoint, required if using priorityFeeMethod.DRIFT
+	/// url for drift cached priority fee endpoint, required if using priorityFeeMethod.VELOCITY
 	velocityPriorityFeeEndpoint?: string;
 	/** @deprecated Use `velocityPriorityFeeEndpoint` instead. `driftPriorityFeeEndpoint` will be removed in a future major. */
 	driftPriorityFeeEndpoint?: string;
@@ -55,7 +57,9 @@ export type PriorityFeeSubscriberConfig = {
 export type PriorityFeeSubscriberMapConfig = {
 	/// frequency to make RPC calls to update priority fee samples, in milliseconds
 	frequencyMs?: number;
-	/// drift market type and associated market index to query
+	/// market type and associated market index to query
+	velocityMarkets?: VelocityMarketInfo[];
+	/** @deprecated Use `velocityMarkets` instead. `driftMarkets` will be removed in a future major. */
 	driftMarkets?: VelocityMarketInfo[];
 	/// url for drift cached priority fee endpoint
 	velocityPriorityFeeEndpoint?: string;

@@ -1,7 +1,7 @@
 <div align="center">
-  <img height="120x" src="https://uploads-ssl.webflow.com/611580035ad59b20437eb024/616f97a42f5637c4517d0193_Logo%20(1)%20(1).png" />
+  <img height="120" src="https://raw.githubusercontent.com/drift-labs/protocol-v2-shadow/master/assets/velocity-logo.svg" />
 
-  <h1 style="margin-top:20px;">Drift Protocol v2</h1>
+  <h1 style="margin-top:20px;">Velocity Exchange</h1>
 
   <p>
     <a href="https://www.npmjs.com/package/@velocity-exchange/sdk"><img alt="SDK npm package" src="https://img.shields.io/npm/v/@velocity-exchange/sdk" /></a>
@@ -272,4 +272,3 @@ Drift Protocol v2 is licensed under [Apache 2.0](./LICENSE).
 Unless you explicitly state otherwise, any contribution intentionally submitted
 for inclusion in Drift SDK by you, as defined in the Apache-2.0 license, shall be
 licensed as above, without any additional terms or conditions.
-

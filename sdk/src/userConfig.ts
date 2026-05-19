@@ -8,7 +8,9 @@ import { grpcMultiUserAccountSubscriber } from './accounts/grpcMultiUserAccountS
 
 export type UserConfig = {
 	accountSubscription?: UserSubscriptionConfig;
-	driftClient: VelocityClient;
+	velocityClient?: VelocityClient;
+	/** @deprecated Use `velocityClient` instead. `driftClient` will be removed in a future major. */
+	driftClient?: VelocityClient;
 	userAccountPublicKey: PublicKey;
 };
 

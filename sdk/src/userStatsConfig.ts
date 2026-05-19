@@ -5,7 +5,9 @@ import { GrpcConfigs, UserStatsAccountSubscriber } from './accounts/types';
 
 export type UserStatsConfig = {
 	accountSubscription?: UserStatsSubscriptionConfig;
-	driftClient: VelocityClient;
+	velocityClient?: VelocityClient;
+	/** @deprecated Use `velocityClient` instead. `driftClient` will be removed in a future major. */
+	driftClient?: VelocityClient;
 	userStatsAccountPublicKey: PublicKey;
 };
 

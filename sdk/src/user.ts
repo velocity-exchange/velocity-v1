@@ -379,7 +379,8 @@ export class User {
 	public getIsolatePerpPositionTokenAmount(perpMarketIndex: number): BN {
 		const perpPosition = this.getPerpPosition(perpMarketIndex);
 		if (!perpPosition) return ZERO;
-		const perpMarket = this.velocityClient.getPerpMarketAccount(perpMarketIndex);
+		const perpMarket =
+			this.velocityClient.getPerpMarketAccount(perpMarketIndex);
 		const spotMarket = this.velocityClient.getSpotMarketAccount(
 			perpMarket.quoteSpotMarketIndex
 		);
@@ -1225,7 +1226,9 @@ export class User {
 		if (this.isBeingLiquidated()) {
 			liquidationBufferMap.set(
 				'cross',
-				new BN(this.velocityClient.getStateAccount().liquidationMarginBufferRatio)
+				new BN(
+					this.velocityClient.getStateAccount().liquidationMarginBufferRatio
+				)
 			);
 		}
 		for (const position of this.getActivePerpPositions()) {
@@ -1361,9 +1364,8 @@ export class User {
 			const quoteSpotMarket = this.velocityClient.getSpotMarketAccount(
 				market.quoteSpotMarketIndex
 			);
-			const quoteOraclePriceData = this.velocityClient.getOracleDataForSpotMarket(
-				QUOTE_SPOT_MARKET_INDEX
-			);
+			const quoteOraclePriceData =
+				this.velocityClient.getOracleDataForSpotMarket(QUOTE_SPOT_MARKET_INDEX);
 
 			let quotePrice;
 			if (strict) {
@@ -1507,7 +1509,9 @@ export class User {
 		amountToClose?: BN,
 		useAMMClose = false
 	): [BN, BN] {
-		const market = this.velocityClient.getPerpMarketAccount(position.marketIndex);
+		const market = this.velocityClient.getPerpMarketAccount(
+			position.marketIndex
+		);
 
 		const entryPrice = calculateEntryPrice(position);
 
@@ -2537,7 +2541,8 @@ export class User {
 		if (signedTokenAmount.gt(ZERO)) {
 			const assetWeight = calculateAssetWeight(
 				signedTokenAmount,
-				this.velocityClient.getOracleDataForSpotMarket(market.marketIndex).price,
+				this.velocityClient.getOracleDataForSpotMarket(market.marketIndex)
+					.price,
 				market,
 				marginCategory
 			);
@@ -3410,7 +3415,8 @@ export class User {
 
 		const currentPosition = this.getPerpPositionOrEmpty(targetMarketIndex);
 
-		const perpMarket = this.velocityClient.getPerpMarketAccount(targetMarketIndex);
+		const perpMarket =
+			this.velocityClient.getPerpMarketAccount(targetMarketIndex);
 		const oracleData = this.getOracleDataForPerpMarket(targetMarketIndex);
 
 		let {
@@ -3966,9 +3972,8 @@ export class User {
 				perpMarket.marketIndex
 			);
 
-			const quoteOraclePriceData = this.velocityClient.getOracleDataForSpotMarket(
-				QUOTE_SPOT_MARKET_INDEX
-			);
+			const quoteOraclePriceData =
+				this.velocityClient.getOracleDataForSpotMarket(QUOTE_SPOT_MARKET_INDEX);
 
 			healthComponents.perpPositions.push(
 				this.getPerpPositionHealth({

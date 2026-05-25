@@ -50,7 +50,8 @@ export interface VelocityConfig {
 /** @deprecated Use `VelocityConfig` instead. `DriftConfig` will be removed in a future major. */
 export type DriftConfig = VelocityConfig;
 
-export const VELOCITY_PROGRAM_ID = 'dRiftyHA39MWEi3m9aunc5MzRF1JYuBsbn6VPcn33UH';
+export const VELOCITY_PROGRAM_ID =
+	'dRiftyHA39MWEi3m9aunc5MzRF1JYuBsbn6VPcn33UH';
 
 /** @deprecated Use `VELOCITY_PROGRAM_ID` instead. `DRIFT_PROGRAM_ID` will be removed in a future major. */
 export const DRIFT_PROGRAM_ID = VELOCITY_PROGRAM_ID;
@@ -215,7 +216,9 @@ export function getMarketsAndOraclesForSubscription(
 	};
 }
 
-export async function findAllMarketAndOracles(program: VelocityProgram): Promise<{
+export async function findAllMarketAndOracles(
+	program: VelocityProgram
+): Promise<{
 	perpMarketIndexes: number[];
 	perpMarketAccounts: PerpMarketAccount[];
 	spotMarketIndexes: number[];

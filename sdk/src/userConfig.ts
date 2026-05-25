@@ -6,13 +6,24 @@ import { WebSocketProgramAccountSubscriber } from './accounts/webSocketProgramAc
 import { UserAccount } from './types';
 import { grpcMultiUserAccountSubscriber } from './accounts/grpcMultiUserAccountSubscriber';
 
-export type UserConfig = {
+type UserConfigBase = {
 	accountSubscription?: UserSubscriptionConfig;
-	velocityClient?: VelocityClient;
-	/** @deprecated Use `velocityClient` instead. `driftClient` will be removed in a future major. */
-	driftClient?: VelocityClient;
 	userAccountPublicKey: PublicKey;
 };
+
+export type UserConfig = UserConfigBase &
+	(
+		| {
+				velocityClient: VelocityClient;
+				/** @deprecated Use `velocityClient` instead. `driftClient` will be removed in a future major. */
+				driftClient?: VelocityClient;
+		  }
+		| {
+				velocityClient?: VelocityClient;
+				/** @deprecated Use `velocityClient` instead. `driftClient` will be removed in a future major. */
+				driftClient: VelocityClient;
+		  }
+	);
 
 export type UserSubscriptionConfig =
 	| {

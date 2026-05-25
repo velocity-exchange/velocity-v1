@@ -27,10 +27,12 @@ export interface AccountGetter {
 	mustGetUserAccount(publicKey: string): Promise<UserAccount>;
 }
 
-export type SwiftOrderSubscriberConfig = {
-	driftClient: VelocityClient;
+type SwiftOrderSubscriberConfigBase = {
+	/** Preferred environment. */
+	velocityEnv?: VelocityEnv;
+	/** @deprecated Use velocityEnv instead. */
+	driftEnv?: VelocityEnv;
 	userAccountGetter?: AccountGetter;
-	driftEnv: VelocityEnv;
 	endpoint?: string;
 	marketIndexes: number[];
 	/**
@@ -40,6 +42,22 @@ export type SwiftOrderSubscriberConfig = {
 	*/
 	keypair: Keypair;
 };
+
+export type SwiftOrderSubscriberConfig = SwiftOrderSubscriberConfigBase &
+	(
+		| {
+				/** Preferred client reference. */
+				velocityClient: VelocityClient;
+				/** @deprecated Use velocityClient instead. */
+				driftClient?: VelocityClient;
+		  }
+		| {
+				/** Preferred client reference. */
+				velocityClient?: VelocityClient;
+				/** @deprecated Use velocityClient instead. */
+				driftClient: VelocityClient;
+		  }
+	);
 
 /**
  * Swift order message received from WebSocket
@@ -83,7 +101,7 @@ export class SwiftOrderSubscriber {
 	subscribed = false;
 
 	constructor(private config: SwiftOrderSubscriberConfig) {
-		this.driftClient = config.driftClient;
+		this.driftClient = config.velocityClient ?? config.driftClient;
 		this.userAccountGetter = config.userAccountGetter;
 	}
 
@@ -97,10 +115,8 @@ export class SwiftOrderSubscriber {
 	}
 
 	getSymbolForMarketIndex(marketIndex: number): string {
-		const markets =
-			this.config.driftEnv === 'devnet'
-				? DevnetPerpMarkets
-				: MainnetPerpMarkets;
+		const env = this.config.velocityEnv ?? this.config.driftEnv;
+		const markets = env === 'devnet' ? DevnetPerpMarkets : MainnetPerpMarkets;
 		return markets[marketIndex].symbol;
 	}
 
@@ -156,8 +172,9 @@ export class SwiftOrderSubscriber {
 	): Promise<void> {
 		this.onOrder = onOrder;
 
+		const env = this.config.velocityEnv ?? this.config.driftEnv;
 		const endpoint =
-			this.config.endpoint || this.config.driftEnv === 'devnet'
+			this.config.endpoint || env === 'devnet'
 				? 'wss://master.swift.drift.trade/ws'
 				: 'wss://swift.drift.trade/ws';
 		const ws = new WebSocket(

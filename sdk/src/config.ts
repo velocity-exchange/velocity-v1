@@ -147,8 +147,7 @@ export const initialize = (props: {
 }): VelocityConfig => {
 	const override = props.overrideEnv ?? {};
 
-	//@ts-ignore
-	const base = props.env === 'master' ? configs['devnet'] : configs[props.env];
+	const base = configs[props.env];
 	const merged: VelocityConfig = { ...base, ...override };
 
 	const overrodeVelocity = 'VELOCITY_PROGRAM_ID' in override;

@@ -27,12 +27,8 @@ export class UserStats {
 	isSubscribed: boolean;
 
 	public constructor(config: UserStatsConfig) {
-		const velocityClient = config.velocityClient ?? config.driftClient;
-		if (!velocityClient) {
-			throw new Error(
-				'UserStats: velocityClient (or deprecated driftClient) must be provided'
-			);
-		}
+		// Type-system guarantees at least one of the two is supplied.
+		const velocityClient = (config.velocityClient ?? config.driftClient)!;
 		this.velocityClient = velocityClient;
 		this.userStatsAccountPublicKey = config.userStatsAccountPublicKey;
 		if (config.accountSubscription?.type === 'polling') {

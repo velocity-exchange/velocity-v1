@@ -67,35 +67,36 @@ export type VelocityClientConfig = {
 /** @deprecated Use `VelocityClientConfig` instead. `DriftClientConfig` will be removed in a future major. */
 export type DriftClientConfig = VelocityClientConfig;
 
+type GrpcVelocityClientAccountSubscriberCtor = new (
+	grpcConfigs: GrpcConfigs,
+	program: Program,
+	perpMarketIndexes: number[],
+	spotMarketIndexes: number[],
+	oracleInfos: OracleInfo[],
+	shouldFindAllMarketsAndOracles: boolean,
+	delistedMarketSetting: DelistedMarketSetting
+) => grpcVelocityClientAccountSubscriberV2 | grpcVelocityClientAccountSubscriber;
+
+type WsVelocityClientAccountSubscriberCtor = new (
+	program: Program,
+	perpMarketIndexes: number[],
+	spotMarketIndexes: number[],
+	oracleInfos: OracleInfo[],
+	shouldFindAllMarketsAndOracles: boolean,
+	delistedMarketSetting: DelistedMarketSetting
+) =>
+	| WebSocketVelocityClientAccountSubscriber
+	| WebSocketVelocityClientAccountSubscriberV2;
+
 export type VelocityClientSubscriptionConfig =
 	| {
 			type: 'grpc';
 			grpcConfigs: GrpcConfigs;
 			resubTimeoutMs?: number;
 			logResubMessages?: boolean;
-			velocityClientAccountSubscriber?: new (
-				grpcConfigs: GrpcConfigs,
-				program: Program,
-				perpMarketIndexes: number[],
-				spotMarketIndexes: number[],
-				oracleInfos: OracleInfo[],
-				shouldFindAllMarketsAndOracles: boolean,
-				delistedMarketSetting: DelistedMarketSetting
-			) =>
-				| grpcVelocityClientAccountSubscriberV2
-				| grpcVelocityClientAccountSubscriber;
+			velocityClientAccountSubscriber?: GrpcVelocityClientAccountSubscriberCtor;
 			/** @deprecated Use `velocityClientAccountSubscriber` instead. `driftClientAccountSubscriber` will be removed in a future major. */
-			driftClientAccountSubscriber?: new (
-				grpcConfigs: GrpcConfigs,
-				program: Program,
-				perpMarketIndexes: number[],
-				spotMarketIndexes: number[],
-				oracleInfos: OracleInfo[],
-				shouldFindAllMarketsAndOracles: boolean,
-				delistedMarketSetting: DelistedMarketSetting
-			) =>
-				| grpcVelocityClientAccountSubscriberV2
-				| grpcVelocityClientAccountSubscriber;
+			driftClientAccountSubscriber?: GrpcVelocityClientAccountSubscriberCtor;
 			grpcMultiUserAccountSubscriber?: grpcMultiUserAccountSubscriber;
 	  }
 	| {
@@ -113,27 +114,9 @@ export type VelocityClientSubscriptionConfig =
 				commitment?: Commitment
 			) => WebSocketAccountSubscriberV2<any> | WebSocketAccountSubscriber<any>;
 			/** If you use V2 here, whatever you pass for perpMarketAccountSubscriber will be ignored and it will use v2 under the hood regardless */
-			velocityClientAccountSubscriber?: new (
-				program: Program,
-				perpMarketIndexes: number[],
-				spotMarketIndexes: number[],
-				oracleInfos: OracleInfo[],
-				shouldFindAllMarketsAndOracles: boolean,
-				delistedMarketSetting: DelistedMarketSetting
-			) =>
-				| WebSocketVelocityClientAccountSubscriber
-				| WebSocketVelocityClientAccountSubscriberV2;
+			velocityClientAccountSubscriber?: WsVelocityClientAccountSubscriberCtor;
 			/** @deprecated Use `velocityClientAccountSubscriber` instead. `driftClientAccountSubscriber` will be removed in a future major. */
-			driftClientAccountSubscriber?: new (
-				program: Program,
-				perpMarketIndexes: number[],
-				spotMarketIndexes: number[],
-				oracleInfos: OracleInfo[],
-				shouldFindAllMarketsAndOracles: boolean,
-				delistedMarketSetting: DelistedMarketSetting
-			) =>
-				| WebSocketVelocityClientAccountSubscriber
-				| WebSocketVelocityClientAccountSubscriberV2;
+			driftClientAccountSubscriber?: WsVelocityClientAccountSubscriberCtor;
 	  }
 	| {
 			type: 'polling';

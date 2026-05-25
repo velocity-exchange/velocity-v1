@@ -429,7 +429,7 @@ export class VelocityClient {
 
 		if (config.userStats) {
 			this.userStats = new UserStats({
-				driftClient: this,
+				velocityClient: this,
 				userStatsAccountPublicKey: getUserStatsAccountPublicKey(
 					this.program.programId,
 					this.authority
@@ -539,7 +539,7 @@ export class VelocityClient {
 		);
 
 		return new User({
-			driftClient: this,
+			velocityClient: this,
 			userAccountPublicKey,
 			accountSubscription: accountSubscriptionConfig,
 		});
@@ -820,7 +820,7 @@ export class VelocityClient {
 		this.userStats = undefined;
 
 		this.userStats = new UserStats({
-			driftClient: this,
+			velocityClient: this,
 			userStatsAccountPublicKey: this.getUserStatsAccountPublicKey(),
 			accountSubscription: this.userStatsAccountSubscriptionConfig,
 		});
@@ -868,7 +868,7 @@ export class VelocityClient {
 		this.userStats = undefined;
 
 		this.userStats = new UserStats({
-			driftClient: this,
+			velocityClient: this,
 			userStatsAccountPublicKey: this.getUserStatsAccountPublicKey(),
 			accountSubscription: this.userStatsAccountSubscriptionConfig,
 		});
@@ -903,7 +903,7 @@ export class VelocityClient {
 			}
 
 			this.userStats = new UserStats({
-				driftClient: this,
+				velocityClient: this,
 				userStatsAccountPublicKey: this.userStatsAccountPublicKey,
 				accountSubscription: this.userStatsAccountSubscriptionConfig,
 			});

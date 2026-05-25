@@ -2,6 +2,7 @@ import { GrpcConfigs } from '../accounts/types';
 import { VelocityClient } from '../velocityClient';
 import { UserAccount } from '../types';
 import { ConfirmOptions, PublicKey } from '@solana/web3.js';
+import { AtLeastOne } from '../util/deprecatedAlias';
 
 type AuctionSubscriberConfigBase = {
 	opts?: ConfirmOptions;
@@ -11,16 +12,7 @@ type AuctionSubscriberConfigBase = {
 };
 
 export type AuctionSubscriberConfig = AuctionSubscriberConfigBase &
-	(
-		| {
-				velocityClient: VelocityClient;
-				/** @deprecated use velocityClient */ driftClient?: VelocityClient;
-		  }
-		| {
-				velocityClient?: VelocityClient;
-				/** @deprecated use velocityClient */ driftClient: VelocityClient;
-		  }
-	);
+	AtLeastOne<'velocityClient', 'driftClient', VelocityClient>;
 
 export interface AuctionSubscriberEvents {
 	onAccountUpdate: (

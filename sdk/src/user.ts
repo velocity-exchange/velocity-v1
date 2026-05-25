@@ -147,12 +147,8 @@ export class User {
 	}
 
 	public constructor(config: UserConfig) {
-		const velocityClient = config.velocityClient ?? config.driftClient;
-		if (!velocityClient) {
-			throw new Error(
-				'User: velocityClient (or deprecated driftClient) must be provided'
-			);
-		}
+		// Type-system guarantees at least one of the two is supplied.
+		const velocityClient = (config.velocityClient ?? config.driftClient)!;
 		this.velocityClient = velocityClient;
 		this.userAccountPublicKey = config.userAccountPublicKey;
 		if (config.accountSubscription?.type === 'polling') {

@@ -21,25 +21,19 @@ export class PriorityFeeSubscriberMap {
 	public get driftMarkets(): VelocityMarketInfo[] | undefined {
 		return this.velocityMarkets;
 	}
-	velocityPriorityFeeEndpoint?: string;
+	velocityPriorityFeeEndpoint: string;
 	/** @deprecated Use `velocityPriorityFeeEndpoint` instead. `driftPriorityFeeEndpoint` will be removed in a future major. */
-	public get driftPriorityFeeEndpoint(): string | undefined {
+	public get driftPriorityFeeEndpoint(): string {
 		return this.velocityPriorityFeeEndpoint;
 	}
 	feesMap: Map<string, Map<number, VelocityPriorityFeeLevels>>; // marketType -> marketIndex -> priority fee
 
 	public constructor(config: PriorityFeeSubscriberMapConfig) {
-		this.frequencyMs = config.frequencyMs;
 		this.frequencyMs =
 			config.frequencyMs ?? DEFAULT_PRIORITY_FEE_MAP_FREQUENCY_MS;
-		const endpoint =
-			config.velocityPriorityFeeEndpoint ?? config.driftPriorityFeeEndpoint;
-		if (!endpoint) {
-			throw new Error(
-				'PriorityFeeSubscriberMap: velocityPriorityFeeEndpoint (or deprecated driftPriorityFeeEndpoint) must be provided'
-			);
-		}
-		this.velocityPriorityFeeEndpoint = endpoint;
+		// Type-system guarantees at least one of the two is supplied.
+		this.velocityPriorityFeeEndpoint = (config.velocityPriorityFeeEndpoint ??
+			config.driftPriorityFeeEndpoint)!;
 		this.velocityMarkets = config.velocityMarkets ?? config.driftMarkets;
 		this.feesMap = new Map<string, Map<number, VelocityPriorityFeeLevels>>();
 		this.feesMap.set('perp', new Map<number, VelocityPriorityFeeLevels>());
@@ -76,7 +70,7 @@ export class PriorityFeeSubscriberMap {
 				return;
 			}
 			const fees = await fetchVelocityPriorityFee(
-				this.velocityPriorityFeeEndpoint!,
+				this.velocityPriorityFeeEndpoint,
 				this.velocityMarkets.map((m) => m.marketType),
 				this.velocityMarkets.map((m) => m.marketIndex)
 			);

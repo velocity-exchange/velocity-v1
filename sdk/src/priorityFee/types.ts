@@ -5,6 +5,7 @@ import {
 	VelocityMarketInfo,
 	VelocityPriorityFeeResponse,
 } from './velocityPriorityFeeMethod';
+import { AtLeastOne } from '../util/deprecatedAlias';
 
 export const DEFAULT_PRIORITY_FEE_MAP_FREQUENCY_MS = 10_000;
 
@@ -44,7 +45,7 @@ export type PriorityFeeSubscriberConfig = {
 	slotsToCheck?: number;
 	/// url for helius rpc, required if using priorityFeeMethod.HELIUS
 	heliusRpcUrl?: string;
-	/// url for drift cached priority fee endpoint, required if using priorityFeeMethod.VELOCITY
+	/// url for Velocity cached priority fee endpoint, required if using priorityFeeMethod.VELOCITY
 	velocityPriorityFeeEndpoint?: string;
 	/** @deprecated Use `velocityPriorityFeeEndpoint` instead. `driftPriorityFeeEndpoint` will be removed in a future major. */
 	driftPriorityFeeEndpoint?: string;
@@ -54,15 +55,15 @@ export type PriorityFeeSubscriberConfig = {
 	priorityFeeMultiplier?: number;
 };
 
-export type PriorityFeeSubscriberMapConfig = {
+type PriorityFeeSubscriberMapConfigBase = {
 	/// frequency to make RPC calls to update priority fee samples, in milliseconds
 	frequencyMs?: number;
 	/// market type and associated market index to query
 	velocityMarkets?: VelocityMarketInfo[];
 	/** @deprecated Use `velocityMarkets` instead. `driftMarkets` will be removed in a future major. */
 	driftMarkets?: VelocityMarketInfo[];
-	/// url for drift cached priority fee endpoint
-	velocityPriorityFeeEndpoint?: string;
-	/** @deprecated Use `velocityPriorityFeeEndpoint` instead. `driftPriorityFeeEndpoint` will be removed in a future major. */
-	driftPriorityFeeEndpoint?: string;
 };
+
+/// url for Velocity cached priority fee endpoint
+export type PriorityFeeSubscriberMapConfig = PriorityFeeSubscriberMapConfigBase &
+	AtLeastOne<'velocityPriorityFeeEndpoint', 'driftPriorityFeeEndpoint', string>;

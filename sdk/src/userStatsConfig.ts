@@ -2,14 +2,15 @@ import { VelocityClient } from './velocityClient';
 import { Commitment, PublicKey } from '@solana/web3.js';
 import { BulkAccountLoader } from './accounts/bulkAccountLoader';
 import { GrpcConfigs, UserStatsAccountSubscriber } from './accounts/types';
+import { AtLeastOne } from './util/deprecatedAlias';
 
-export type UserStatsConfig = {
+type UserStatsConfigBase = {
 	accountSubscription?: UserStatsSubscriptionConfig;
-	velocityClient?: VelocityClient;
-	/** @deprecated Use `velocityClient` instead. `driftClient` will be removed in a future major. */
-	driftClient?: VelocityClient;
 	userStatsAccountPublicKey: PublicKey;
 };
+
+export type UserStatsConfig = UserStatsConfigBase &
+	AtLeastOne<'velocityClient', 'driftClient', VelocityClient>;
 
 export type UserStatsSubscriptionConfig =
 	| {

@@ -27,7 +27,7 @@ export type VelocityEnv = 'devnet' | 'mainnet-beta';
 /** @deprecated Use `VelocityEnv` instead. `DriftEnv` will be removed in a future major. */
 export type DriftEnv = VelocityEnv;
 
-/** @deprecated 'master' is an alias for 'devnet'. Use `VelocityEnv` instead. */
+/** Widened env type accepted by `initialize()`; `'master'` is a legacy alias for `'devnet'`. */
 export type LegacyVelocityEnv = VelocityEnv | 'master';
 
 export interface VelocityConfig {
@@ -144,33 +144,37 @@ export const getConfig = (): VelocityConfig => currentConfig;
  * @param props
  * @returns
  */
+/**
+ * Mirror a canonical/deprecated alias pair so the resolved config carries the
+ * same value under both keys regardless of which one the caller overrode.
+ */
+const mirrorAlias = <K1 extends keyof VelocityConfig, K2 extends keyof VelocityConfig>(
+	merged: VelocityConfig,
+	override: Partial<VelocityConfig>,
+	canon: K1,
+	deprecated: K2
+): void => {
+	const value = override[canon] ?? override[deprecated] ?? merged[canon];
+	(merged[canon] as VelocityConfig[K1]) = value as VelocityConfig[K1];
+	(merged[deprecated] as VelocityConfig[K2]) = value as VelocityConfig[K2];
+};
+
 export const initialize = (props: {
 	env: LegacyVelocityEnv;
 	overrideEnv?: Partial<VelocityConfig>;
 }): VelocityConfig => {
 	const override = props.overrideEnv ?? {};
-
 	const normalizedEnv: VelocityEnv =
 		props.env === 'master' ? 'devnet' : props.env;
-	const base = configs[normalizedEnv];
-	const merged: VelocityConfig = { ...base, ...override };
+	const merged: VelocityConfig = { ...configs[normalizedEnv], ...override };
 
-	const overrodeVelocity = 'VELOCITY_PROGRAM_ID' in override;
-	const overrodeDrift = 'DRIFT_PROGRAM_ID' in override;
-	if (overrodeVelocity && !overrodeDrift) {
-		merged.DRIFT_PROGRAM_ID = merged.VELOCITY_PROGRAM_ID;
-	} else if (overrodeDrift && !overrodeVelocity) {
-		merged.VELOCITY_PROGRAM_ID = merged.DRIFT_PROGRAM_ID;
-	}
-
-	const overrodeVelocityOracleReceiver =
-		'VELOCITY_ORACLE_RECEIVER_ID' in override;
-	const overrodeDriftOracleReceiver = 'DRIFT_ORACLE_RECEIVER_ID' in override;
-	if (overrodeVelocityOracleReceiver && !overrodeDriftOracleReceiver) {
-		merged.DRIFT_ORACLE_RECEIVER_ID = merged.VELOCITY_ORACLE_RECEIVER_ID;
-	} else if (overrodeDriftOracleReceiver && !overrodeVelocityOracleReceiver) {
-		merged.VELOCITY_ORACLE_RECEIVER_ID = merged.DRIFT_ORACLE_RECEIVER_ID;
-	}
+	mirrorAlias(merged, override, 'VELOCITY_PROGRAM_ID', 'DRIFT_PROGRAM_ID');
+	mirrorAlias(
+		merged,
+		override,
+		'VELOCITY_ORACLE_RECEIVER_ID',
+		'DRIFT_ORACLE_RECEIVER_ID'
+	);
 
 	currentConfig = merged;
 	return currentConfig;

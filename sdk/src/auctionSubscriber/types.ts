@@ -4,7 +4,9 @@ import { UserAccount } from '../types';
 import { ConfirmOptions, PublicKey } from '@solana/web3.js';
 
 export type AuctionSubscriberConfig = {
-	driftClient: VelocityClient;
+	velocityClient?: VelocityClient;
+	/** @deprecated use velocityClient */
+	driftClient?: VelocityClient;
 	opts?: ConfirmOptions;
 	resubTimeoutMs?: number;
 	logResubMessages?: boolean;

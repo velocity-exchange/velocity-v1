@@ -9,7 +9,7 @@ import { WebSocketProgramAccountSubscriber } from '../accounts/webSocketProgramA
 import { ResubOpts } from '../accounts/types';
 
 export class AuctionSubscriber {
-	private driftClient: VelocityClient;
+	private velocityClient: VelocityClient;
 	private opts: ConfirmOptions;
 	private resubOpts?: ResubOpts;
 
@@ -17,13 +17,14 @@ export class AuctionSubscriber {
 	private subscriber: WebSocketProgramAccountSubscriber<UserAccount>;
 
 	constructor({
+		velocityClient,
 		driftClient,
 		opts,
 		resubTimeoutMs,
 		logResubMessages,
 	}: AuctionSubscriberConfig) {
-		this.driftClient = driftClient;
-		this.opts = opts || this.driftClient.opts;
+		this.velocityClient = velocityClient ?? driftClient;
+		this.opts = opts || this.velocityClient.opts;
 		this.eventEmitter = new EventEmitter();
 		this.resubOpts = { resubTimeoutMs, logResubMessages };
 	}
@@ -33,11 +34,11 @@ export class AuctionSubscriber {
 			this.subscriber = new WebSocketProgramAccountSubscriber<UserAccount>(
 				'AuctionSubscriber',
 				'user',
-				this.driftClient.program,
+				this.velocityClient.program,
 				(
-					this.driftClient.program.account as any
+					this.velocityClient.program.account as any
 				).user.coder.accounts.decode.bind(
-					(this.driftClient.program.account as any).user.coder.accounts
+					(this.velocityClient.program.account as any).user.coder.accounts
 				),
 				{
 					filters: [getUserFilter(), getUserWithAuctionFilter()],

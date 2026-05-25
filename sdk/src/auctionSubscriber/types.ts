@@ -12,8 +12,14 @@ type AuctionSubscriberConfigBase = {
 
 export type AuctionSubscriberConfig = AuctionSubscriberConfigBase &
 	(
-		| { velocityClient: VelocityClient; /** @deprecated use velocityClient */ driftClient?: VelocityClient }
-		| { velocityClient?: VelocityClient; /** @deprecated use velocityClient */ driftClient: VelocityClient }
+		| {
+				velocityClient: VelocityClient;
+				/** @deprecated use velocityClient */ driftClient?: VelocityClient;
+		  }
+		| {
+				velocityClient?: VelocityClient;
+				/** @deprecated use velocityClient */ driftClient: VelocityClient;
+		  }
 	);
 
 export interface AuctionSubscriberEvents {

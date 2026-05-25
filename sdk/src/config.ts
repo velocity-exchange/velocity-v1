@@ -27,6 +27,9 @@ export type VelocityEnv = 'devnet' | 'mainnet-beta';
 /** @deprecated Use `VelocityEnv` instead. `DriftEnv` will be removed in a future major. */
 export type DriftEnv = VelocityEnv;
 
+/** @deprecated 'master' is an alias for 'devnet'. Use `VelocityEnv` instead. */
+export type LegacyVelocityEnv = VelocityEnv | 'master';
+
 export interface VelocityConfig {
 	ENV: VelocityEnv;
 	PYTH_ORACLE_MAPPING_ADDRESS: string;
@@ -142,12 +145,14 @@ export const getConfig = (): VelocityConfig => currentConfig;
  * @returns
  */
 export const initialize = (props: {
-	env: VelocityEnv;
+	env: LegacyVelocityEnv;
 	overrideEnv?: Partial<VelocityConfig>;
 }): VelocityConfig => {
 	const override = props.overrideEnv ?? {};
 
-	const base = configs[props.env];
+	const normalizedEnv: VelocityEnv =
+		props.env === 'master' ? 'devnet' : props.env;
+	const base = configs[normalizedEnv];
 	const merged: VelocityConfig = { ...base, ...override };
 
 	const overrodeVelocity = 'VELOCITY_PROGRAM_ID' in override;
@@ -166,9 +171,6 @@ export const initialize = (props: {
 	} else if (overrodeDriftOracleReceiver && !overrodeVelocityOracleReceiver) {
 		merged.VELOCITY_ORACLE_RECEIVER_ID = merged.DRIFT_ORACLE_RECEIVER_ID;
 	}
-
-	//@ts-ignore
-	if (props.env === 'master') return merged;
 
 	currentConfig = merged;
 	return currentConfig;

@@ -28,10 +28,6 @@ export interface AccountGetter {
 }
 
 type SwiftOrderSubscriberConfigBase = {
-	/** Preferred environment. */
-	velocityEnv?: VelocityEnv;
-	/** @deprecated Use velocityEnv instead. */
-	driftEnv?: VelocityEnv;
 	userAccountGetter?: AccountGetter;
 	endpoint?: string;
 	marketIndexes: number[];
@@ -44,6 +40,16 @@ type SwiftOrderSubscriberConfigBase = {
 };
 
 export type SwiftOrderSubscriberConfig = SwiftOrderSubscriberConfigBase &
+	(
+		| {
+				/** Preferred environment. */ velocityEnv: VelocityEnv;
+				/** @deprecated Use velocityEnv instead. */ driftEnv?: VelocityEnv;
+		  }
+		| {
+				/** Preferred environment. */ velocityEnv?: VelocityEnv;
+				/** @deprecated Use velocityEnv instead. */ driftEnv: VelocityEnv;
+		  }
+	) &
 	(
 		| {
 				/** Preferred client reference. */
@@ -174,9 +180,10 @@ export class SwiftOrderSubscriber {
 
 		const env = this.config.velocityEnv ?? this.config.driftEnv;
 		const endpoint =
-			this.config.endpoint || env === 'devnet'
+			this.config.endpoint ??
+			(env === 'devnet'
 				? 'wss://master.swift.drift.trade/ws'
-				: 'wss://swift.drift.trade/ws';
+				: 'wss://swift.drift.trade/ws');
 		const ws = new WebSocket(
 			endpoint + '?pubkey=' + this.config.keypair.publicKey.toBase58()
 		);

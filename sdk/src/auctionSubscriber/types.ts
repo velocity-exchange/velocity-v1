@@ -3,15 +3,18 @@ import { VelocityClient } from '../velocityClient';
 import { UserAccount } from '../types';
 import { ConfirmOptions, PublicKey } from '@solana/web3.js';
 
-export type AuctionSubscriberConfig = {
-	velocityClient?: VelocityClient;
-	/** @deprecated use velocityClient */
-	driftClient?: VelocityClient;
+type AuctionSubscriberConfigBase = {
 	opts?: ConfirmOptions;
 	resubTimeoutMs?: number;
 	logResubMessages?: boolean;
 	grpcConfigs?: GrpcConfigs;
 };
+
+export type AuctionSubscriberConfig = AuctionSubscriberConfigBase &
+	(
+		| { velocityClient: VelocityClient; /** @deprecated use velocityClient */ driftClient?: VelocityClient }
+		| { velocityClient?: VelocityClient; /** @deprecated use velocityClient */ driftClient: VelocityClient }
+	);
 
 export interface AuctionSubscriberEvents {
 	onAccountUpdate: (

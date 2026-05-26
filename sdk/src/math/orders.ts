@@ -180,7 +180,7 @@ export function getLimitPrice<T extends MarketTypeStr>(
 export function hasLimitPrice(order: Order, slot: number): boolean {
 	return (
 		order.price.gt(ZERO) ||
-		order.oraclePriceOffset != ZERO ||
+		!order.oraclePriceOffset.eq(ZERO) ||
 		!isAuctionComplete(order, slot)
 	);
 }

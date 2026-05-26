@@ -32,7 +32,7 @@ pub struct OrderParams {
     pub max_ts: Option<i64>,
     pub trigger_price: Option<u64>,
     pub trigger_condition: OrderTriggerCondition,
-    pub oracle_price_offset: Option<i32>, // price offset from oracle for order (~ +/- 2147 max)
+    pub oracle_price_offset: Option<i64>, // price offset from oracle for order
     pub auction_duration: Option<u8>,     // specified in slots
     pub auction_start_price: Option<i64>, // specified in price or oracle_price_offset
     pub auction_end_price: Option<i64>,   // specified in price or oracle_price_offset
@@ -569,7 +569,7 @@ impl OrderParams {
         perp_market: &PerpMarket,
         direction: PositionDirection,
         oracle_price: i64,
-        oracle_price_offset: Option<i32>,
+        oracle_price_offset: Option<i64>,
         start_buffer: i64,
     ) -> DriftResult<(i64, i64, u8)> {
         let (mut auction_start_price, mut auction_end_price) = if let Some(oracle_price_offset) =
@@ -924,7 +924,7 @@ pub struct ModifyOrderParams {
     pub max_ts: Option<i64>,
     pub trigger_price: Option<u64>,
     pub trigger_condition: Option<OrderTriggerCondition>,
-    pub oracle_price_offset: Option<i32>,
+    pub oracle_price_offset: Option<i64>,
     pub auction_duration: Option<u8>,
     pub auction_start_price: Option<i64>,
     pub auction_end_price: Option<i64>,

@@ -13,7 +13,7 @@ for arg in "$@"; do
 done
 
 if [ "$SKIP_BUILD" = false ]; then
-  anchor build --ignore-keys -- --features anchor-test && anchor test --skip-build --skip-local-validator --skip-deploy &&
+  anchor build --ignore-keys -- --no-default-features --features no-entrypoint,anchor-test && anchor test --skip-build --skip-local-validator --skip-deploy &&
     cp target/idl/drift.json sdk/src/idl/ && cp target/types/drift.ts sdk/src/idl/
 else
   # --skip-build still needs the bundled SDK IDL to match the deployed program ID,
@@ -115,9 +115,9 @@ test_files=(
 if [ "$FAST" = true ]; then
   prefixed=()
   for f in "${test_files[@]}"; do prefixed+=("./tests/${f}"); done
-  ts-mocha -t 300000 "${prefixed[@]}"
+  ts-mocha -t 300000 --exit "${prefixed[@]}"
 else
   for test_file in ${test_files[@]}; do
-    ts-mocha -t 300000 ./tests/${test_file} || exit 1
+    ts-mocha -t 300000 --exit ./tests/${test_file} || exit 1
   done
 fi

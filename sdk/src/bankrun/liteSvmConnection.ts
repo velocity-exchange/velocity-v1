@@ -144,6 +144,10 @@ export class LiteSvmContextWrapper {
 	public readonly context: LiteSvmProgramTestContext;
 	public readonly provider: LiteSvmProvider;
 	public readonly commitment: Commitment = 'confirmed';
+	// The drift program ID loaded into this SVM. Read by test helpers that
+	// need to own accounts under the actually-deployed program (matches
+	// `declare_id!` in the binary, not the SDK's hardcoded constant).
+	public programId?: PublicKey;
 
 	constructor(svm: LiteSVM, payer?: Keypair, verifySignatures = true) {
 		this.svm = svm;
@@ -716,6 +720,7 @@ export async function startLiteSvm(
 	}
 
 	const wrapper = new LiteSvmContextWrapper(svm, opts.payer, verifySignatures);
+	wrapper.programId = driftProgramId;
 
 	for (const acct of opts.extraAccounts ?? []) {
 		wrapper.context.setAccount(acct.address, {

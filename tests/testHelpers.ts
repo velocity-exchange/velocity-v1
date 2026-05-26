@@ -104,7 +104,7 @@ export async function mockOracleNoProgram(
 	postedSlotOffset = 0
 ): Promise<PublicKey> {
 	const currentSlot = Number(await context.connection.getSlot());
-	const driftProgramId = new PublicKey(DRIFT_PROGRAM_ID);
+	const driftProgramId = context.programId ?? new PublicKey(DRIFT_PROGRAM_ID);
 
 	const scaledPrice = BigInt(Math.round(price * 10 ** -expo));
 	const scaledConf = confidence

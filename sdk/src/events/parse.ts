@@ -12,7 +12,7 @@ const PROGRAM_INSTRUCTION_START_INDEX = PROGRAM_INSTRUCTION.length;
 export function parseLogs(
 	program: Program,
 	logs: string[],
-	programId = driftProgramId
+	programId: string = program.programId.toBase58()
 ): Event[] {
 	const { events } = parseLogsWithRaw(program, logs, programId);
 	return events;
@@ -21,7 +21,7 @@ export function parseLogs(
 export function parseLogsWithRaw(
 	program: Program,
 	logs: string[],
-	programId = driftProgramId
+	programId: string = program.programId.toBase58()
 ): { events: Event[]; rawLogs: string[] } {
 	const events = [];
 	const rawLogs = [];

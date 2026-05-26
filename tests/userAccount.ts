@@ -29,9 +29,11 @@ import {
 	calculatePrice,
 	AMM_RESERVE_PRECISION,
 } from '../sdk/src';
-import { startAnchor } from 'solana-bankrun';
 import { TestBulkAccountLoader } from '../sdk/src/accounts/testBulkAccountLoader';
-import { BankrunContextWrapper } from '../sdk/src/bankrun/bankrunConnection';
+import {
+	LiteSvmContextWrapper,
+	startLiteSvm,
+} from '../sdk/src/bankrun/liteSvmConnection';
 
 describe('User Account', () => {
 	const chProgram = anchor.workspace.Drift as Program;
@@ -40,7 +42,7 @@ describe('User Account', () => {
 
 	let bulkAccountLoader: TestBulkAccountLoader;
 
-	let bankrunContextWrapper: BankrunContextWrapper;
+	let bankrunContextWrapper: LiteSvmContextWrapper;
 
 	const ammInitialQuoteAssetAmount = new anchor.BN(2 * 10 ** 9).mul(
 		new BN(10 ** 5)
@@ -60,9 +62,7 @@ describe('User Account', () => {
 	let userAccount: User;
 
 	before(async () => {
-		const context = await startAnchor('', [], []);
-
-		bankrunContextWrapper = new BankrunContextWrapper(context);
+		bankrunContextWrapper = await startLiteSvm(chProgram.programId);
 
 		bulkAccountLoader = new TestBulkAccountLoader(
 			bankrunContextWrapper.connection,

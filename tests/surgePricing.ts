@@ -25,9 +25,11 @@ import {
 } from './testHelpers';
 import { QUOTE_PRECISION, getUserAccountPublicKey } from '../sdk/src';
 import { calculateInitUserFee } from '../sdk/src/math/state';
-import { startAnchor } from 'solana-bankrun';
 import { TestBulkAccountLoader } from '../sdk/src/accounts/testBulkAccountLoader';
-import { BankrunContextWrapper } from '../sdk/src/bankrun/bankrunConnection';
+import {
+	LiteSvmContextWrapper,
+	startLiteSvm,
+} from '../sdk/src/bankrun/liteSvmConnection';
 
 describe('surge pricing', () => {
 	const chProgram = anchor.workspace.Drift as Program;
@@ -37,7 +39,7 @@ describe('surge pricing', () => {
 
 	let bulkAccountLoader: TestBulkAccountLoader;
 
-	let bankrunContextWrapper: BankrunContextWrapper;
+	let bankrunContextWrapper: LiteSvmContextWrapper;
 
 	let solOracle: PublicKey;
 
@@ -51,9 +53,7 @@ describe('surge pricing', () => {
 	let oracleInfos: OracleInfo[];
 
 	before(async () => {
-		const context = await startAnchor('', [], []);
-
-		bankrunContextWrapper = new BankrunContextWrapper(context);
+		bankrunContextWrapper = await startLiteSvm(chProgram.programId);
 
 		bulkAccountLoader = new TestBulkAccountLoader(
 			bankrunContextWrapper.connection,

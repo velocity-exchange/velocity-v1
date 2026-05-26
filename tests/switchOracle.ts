@@ -27,9 +27,11 @@ import {
 	mockUserUSDCAccount,
 	sleep,
 } from './testHelpers';
-import { startAnchor } from 'solana-bankrun';
 import { TestBulkAccountLoader } from '../sdk/src/accounts/testBulkAccountLoader';
-import { BankrunContextWrapper } from '../sdk/src/bankrun/bankrunConnection';
+import {
+	LiteSvmContextWrapper,
+	startLiteSvm,
+} from '../sdk/src/bankrun/liteSvmConnection';
 
 async function waitForOraclePrice(
 	getOraclePrice: () => { price: BN },
@@ -70,7 +72,7 @@ describe('switch oracles', () => {
 
 	let bulkAccountLoader: TestBulkAccountLoader;
 
-	let bankrunContextWrapper: BankrunContextWrapper;
+	let bankrunContextWrapper: LiteSvmContextWrapper;
 
 	let solOracle: PublicKey;
 
@@ -92,9 +94,7 @@ describe('switch oracles', () => {
 	let oracleInfos: OracleInfo[];
 
 	before(async () => {
-		const context = await startAnchor('', [], []);
-
-		bankrunContextWrapper = new BankrunContextWrapper(context);
+		bankrunContextWrapper = await startLiteSvm(chProgram.programId);
 
 		bulkAccountLoader = new TestBulkAccountLoader(
 			bankrunContextWrapper.connection,

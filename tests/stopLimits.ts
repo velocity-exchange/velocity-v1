@@ -32,9 +32,11 @@ import {
 	createMintToInstruction,
 	getAssociatedTokenAddressSync,
 } from '@solana/spl-token';
-import { startAnchor } from 'solana-bankrun';
 import { TestBulkAccountLoader } from '../sdk/src/accounts/testBulkAccountLoader';
-import { BankrunContextWrapper } from '../sdk/src/bankrun/bankrunConnection';
+import {
+	LiteSvmContextWrapper,
+	startLiteSvm,
+} from '../sdk/src/bankrun/liteSvmConnection';
 
 describe('stop limit', () => {
 	const chProgram = anchor.workspace.Drift as Program;
@@ -45,7 +47,7 @@ describe('stop limit', () => {
 
 	let bulkAccountLoader: TestBulkAccountLoader;
 
-	let bankrunContextWrapper: BankrunContextWrapper;
+	let bankrunContextWrapper: LiteSvmContextWrapper;
 
 	let userAccountPublicKey: PublicKey;
 
@@ -75,9 +77,7 @@ describe('stop limit', () => {
 	let btcUsd;
 
 	before(async () => {
-		const context = await startAnchor('', [], []);
-
-		bankrunContextWrapper = new BankrunContextWrapper(context);
+		bankrunContextWrapper = await startLiteSvm(chProgram.programId);
 
 		bulkAccountLoader = new TestBulkAccountLoader(
 			bankrunContextWrapper.connection,

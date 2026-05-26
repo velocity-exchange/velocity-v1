@@ -29,9 +29,11 @@ import {
 	SpotBalanceType,
 } from '../sdk';
 import { PublicKey } from '@solana/web3.js';
-import { startAnchor } from 'solana-bankrun';
 import { TestBulkAccountLoader } from '../sdk/src/accounts/testBulkAccountLoader';
-import { BankrunContextWrapper } from '../sdk/src/bankrun/bankrunConnection';
+import {
+	LiteSvmContextWrapper,
+	startLiteSvm,
+} from '../sdk/src/bankrun/liteSvmConnection';
 
 describe('subaccounts', () => {
 	const chProgram = anchor.workspace.Drift as Program;
@@ -41,7 +43,7 @@ describe('subaccounts', () => {
 
 	let bulkAccountLoader: TestBulkAccountLoader;
 
-	let bankrunContextWrapper: BankrunContextWrapper;
+	let bankrunContextWrapper: LiteSvmContextWrapper;
 
 	let solOracle: PublicKey;
 
@@ -51,9 +53,7 @@ describe('subaccounts', () => {
 	const usdcAmount = new BN(10 * 10 ** 6);
 
 	before(async () => {
-		const context = await startAnchor('', [], []);
-
-		bankrunContextWrapper = new BankrunContextWrapper(context);
+		bankrunContextWrapper = await startLiteSvm(chProgram.programId);
 
 		bulkAccountLoader = new TestBulkAccountLoader(
 			bankrunContextWrapper.connection,

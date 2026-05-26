@@ -35,9 +35,8 @@ import {
 import { Program } from '@coral-xyz/anchor';
 
 import { Keypair, PublicKey } from '@solana/web3.js';
-import { startAnchor } from 'solana-bankrun';
 import { TestBulkAccountLoader } from '../sdk/src/accounts/testBulkAccountLoader';
-import { BankrunContextWrapper } from '../sdk/src/bankrun/bankrunConnection';
+import { startLiteSvm } from '../sdk/src/bankrun/liteSvmConnection';
 
 async function updateFundingRateHelper(
 	driftClient: TestClient,
@@ -471,9 +470,7 @@ describe('capped funding', () => {
 	let rollingMarketNum = 0;
 
 	before(async () => {
-		const context = await startAnchor('', [], []);
-
-		const bankrunContextWrapper = new BankrunContextWrapper(context);
+		const bankrunContextWrapper = await startLiteSvm(chProgram.programId);
 
 		bulkAccountLoader = new TestBulkAccountLoader(
 			bankrunContextWrapper.connection,

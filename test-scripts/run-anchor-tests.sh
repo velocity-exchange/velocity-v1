@@ -3,7 +3,16 @@
 set -e
 trap 'echo -e "\nStopped by signal $? (SIGINT)"; exit 0' INT
 
-if [ "$1" != "--skip-build" ]; then
+SKIP_BUILD=false
+FAST=false
+for arg in "$@"; do
+  case $arg in
+    --skip-build) SKIP_BUILD=true ;;
+    --fast) FAST=true ;;
+  esac
+done
+
+if [ "$SKIP_BUILD" = false ]; then
   anchor build --ignore-keys -- --features anchor-test && anchor test --skip-build --skip-local-validator --skip-deploy &&
     cp target/idl/drift.json sdk/src/idl/ && cp target/types/drift.ts sdk/src/idl/
 else
@@ -103,6 +112,12 @@ test_files=(
 )
 
 
-for test_file in ${test_files[@]}; do
-  ts-mocha -t 300000 ./tests/${test_file} || exit 1
-done
+if [ "$FAST" = true ]; then
+  prefixed=()
+  for f in "${test_files[@]}"; do prefixed+=("./tests/${f}"); done
+  ts-mocha -t 300000 "${prefixed[@]}"
+else
+  for test_file in ${test_files[@]}; do
+    ts-mocha -t 300000 ./tests/${test_file} || exit 1
+  done
+fi

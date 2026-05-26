@@ -30,9 +30,11 @@ import {
 	sleep,
 } from './testHelpers';
 import { OracleSource, ZERO } from '../sdk';
-import { startAnchor } from 'solana-bankrun';
 import { TestBulkAccountLoader } from '../sdk/src/accounts/testBulkAccountLoader';
-import { BankrunContextWrapper } from '../sdk/src/bankrun/bankrunConnection';
+import {
+	LiteSvmContextWrapper,
+	startLiteSvm,
+} from '../sdk/src/bankrun/liteSvmConnection';
 
 describe('scale orders', () => {
 	const chProgram = anchor.workspace.Drift as Program;
@@ -43,7 +45,7 @@ describe('scale orders', () => {
 
 	let bulkAccountLoader: TestBulkAccountLoader;
 
-	let bankrunContextWrapper: BankrunContextWrapper;
+	let bankrunContextWrapper: LiteSvmContextWrapper;
 
 	let _userAccountPublicKey: PublicKey;
 
@@ -67,9 +69,7 @@ describe('scale orders', () => {
 	let solUsd;
 
 	before(async () => {
-		const context = await startAnchor('', [], []);
-
-		bankrunContextWrapper = new BankrunContextWrapper(context);
+		bankrunContextWrapper = await startLiteSvm(chProgram.programId);
 
 		bulkAccountLoader = new TestBulkAccountLoader(
 			bankrunContextWrapper.connection,

@@ -30,9 +30,11 @@ import {
 	PerpOperation,
 	PostOnlyParams,
 } from '../sdk';
-import { startAnchor } from 'solana-bankrun';
 import { TestBulkAccountLoader } from '../sdk/src/accounts/testBulkAccountLoader';
-import { BankrunContextWrapper } from '../sdk/src/bankrun/bankrunConnection';
+import {
+	LiteSvmContextWrapper,
+	startLiteSvm,
+} from '../sdk/src/bankrun/liteSvmConnection';
 
 describe('oracle fill guardrails', () => {
 	const chProgram = anchor.workspace.Drift as Program;
@@ -42,7 +44,7 @@ describe('oracle fill guardrails', () => {
 
 	let bulkAccountLoader: TestBulkAccountLoader;
 
-	let bankrunContextWrapper: BankrunContextWrapper;
+	let bankrunContextWrapper: LiteSvmContextWrapper;
 
 	let usdcMint;
 	let userUSDCAccount;
@@ -64,9 +66,7 @@ describe('oracle fill guardrails', () => {
 	let oracleInfos;
 
 	before(async () => {
-		const context = await startAnchor('', [], []);
-
-		bankrunContextWrapper = new BankrunContextWrapper(context);
+		bankrunContextWrapper = await startLiteSvm(chProgram.programId);
 
 		bulkAccountLoader = new TestBulkAccountLoader(
 			bankrunContextWrapper.connection,

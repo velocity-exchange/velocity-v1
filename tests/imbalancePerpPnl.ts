@@ -46,9 +46,11 @@ import {
 	sleep,
 } from './testHelpers';
 import { PERCENTAGE_PRECISION } from '../sdk';
-import { startAnchor } from 'solana-bankrun';
 import { TestBulkAccountLoader } from '../sdk/src/accounts/testBulkAccountLoader';
-import { BankrunContextWrapper } from '../sdk/src/bankrun/bankrunConnection';
+import {
+	LiteSvmContextWrapper,
+	startLiteSvm,
+} from '../sdk/src/bankrun/liteSvmConnection';
 
 async function depositToFeePoolFromIF(
 	amount: number,
@@ -124,7 +126,7 @@ describe('imbalanced large perp pnl w/ borrow hitting limits', () => {
 	let driftClient: TestClient;
 	let eventSubscriber: EventSubscriber;
 
-	let bankrunContextWrapper: BankrunContextWrapper;
+	let bankrunContextWrapper: LiteSvmContextWrapper;
 
 	let bulkAccountLoader: TestBulkAccountLoader;
 
@@ -163,9 +165,7 @@ describe('imbalanced large perp pnl w/ borrow hitting limits', () => {
 	const userKeypair = new Keypair();
 
 	before(async () => {
-		const context = await startAnchor('', [], []);
-
-		bankrunContextWrapper = new BankrunContextWrapper(context);
+		bankrunContextWrapper = await startLiteSvm(chProgram.programId);
 
 		bulkAccountLoader = new TestBulkAccountLoader(
 			bankrunContextWrapper.connection,

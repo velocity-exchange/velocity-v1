@@ -21,9 +21,11 @@ import {
 	setFeedPriceNoProgram,
 	initializeQuoteSpotMarket,
 } from './testHelpers';
-import { startAnchor } from 'solana-bankrun';
 import { TestBulkAccountLoader } from '../sdk/src/accounts/testBulkAccountLoader';
-import { BankrunContextWrapper } from '../sdk/src/bankrun/bankrunConnection';
+import {
+	LiteSvmContextWrapper,
+	startLiteSvm,
+} from '../sdk/src/bankrun/liteSvmConnection';
 
 describe('isolated transfer margin checks', () => {
 	const chProgram = anchor.workspace.Drift as Program;
@@ -31,7 +33,7 @@ describe('isolated transfer margin checks', () => {
 	let driftClient: TestClient;
 	let eventSubscriber: EventSubscriber;
 
-	let bankrunContextWrapper: BankrunContextWrapper;
+	let bankrunContextWrapper: LiteSvmContextWrapper;
 
 	let bulkAccountLoader: TestBulkAccountLoader;
 
@@ -71,9 +73,7 @@ describe('isolated transfer margin checks', () => {
 	};
 
 	before(async () => {
-		const context = await startAnchor('', [], []);
-
-		bankrunContextWrapper = new BankrunContextWrapper(context);
+		bankrunContextWrapper = await startLiteSvm(chProgram.programId);
 
 		bulkAccountLoader = new TestBulkAccountLoader(
 			bankrunContextWrapper.connection,

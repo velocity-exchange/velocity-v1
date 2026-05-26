@@ -25,9 +25,11 @@ import {
 	setFeedPriceNoProgram,
 } from './testHelpers';
 import { ContractTier, MARGIN_PRECISION, OrderType } from '../sdk';
-import { startAnchor } from 'solana-bankrun';
 import { TestBulkAccountLoader } from '../sdk/src/accounts/testBulkAccountLoader';
-import { BankrunContextWrapper } from '../sdk/src/bankrun/bankrunConnection';
+import {
+	LiteSvmContextWrapper,
+	startLiteSvm,
+} from '../sdk/src/bankrun/liteSvmConnection';
 
 describe('multiple maker orders', () => {
 	const chProgram = anchor.workspace.Drift as Program;
@@ -37,7 +39,7 @@ describe('multiple maker orders', () => {
 
 	let bulkAccountLoader: TestBulkAccountLoader;
 
-	let bankrunContextWrapper: BankrunContextWrapper;
+	let bankrunContextWrapper: LiteSvmContextWrapper;
 
 	let usdcMint;
 	let userUSDCAccount;
@@ -60,9 +62,7 @@ describe('multiple maker orders', () => {
 	let oracleInfos;
 
 	before(async () => {
-		const context = await startAnchor('', [], []);
-
-		bankrunContextWrapper = new BankrunContextWrapper(context);
+		bankrunContextWrapper = await startLiteSvm(chProgram.programId);
 
 		bulkAccountLoader = new TestBulkAccountLoader(
 			bankrunContextWrapper.connection,

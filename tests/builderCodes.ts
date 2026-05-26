@@ -49,9 +49,11 @@ import {
 	mockUserUSDCAccount,
 	printTxLogs,
 } from './testHelpers';
-import { startAnchor } from 'solana-bankrun';
 import { TestBulkAccountLoader } from '../sdk/src/accounts/testBulkAccountLoader';
-import { BankrunContextWrapper } from '../sdk/src/bankrun/bankrunConnection';
+import {
+	LiteSvmContextWrapper,
+	startLiteSvm,
+} from '../sdk/src/bankrun/liteSvmConnection';
 import dotenv from 'dotenv';
 import { PYTH_STORAGE_DATA } from './pythLazerData';
 import { nanoid } from 'nanoid';
@@ -122,7 +124,7 @@ describe('builder codes', () => {
 
 	let escrowMap: RevenueShareEscrowMap;
 	let bulkAccountLoader: TestBulkAccountLoader;
-	let bankrunContextWrapper: BankrunContextWrapper;
+	let bankrunContextWrapper: LiteSvmContextWrapper;
 
 	let solUsd: PublicKey;
 	let marketIndexes;
@@ -132,19 +134,14 @@ describe('builder codes', () => {
 	const usdcAmount = new BN(10000 * 10 ** 6);
 
 	before(async () => {
-		const context = await startAnchor(
-			'',
-			[],
-			[
+		bankrunContextWrapper = await startLiteSvm(chProgram.programId, {
+			extraAccounts: [
 				{
 					address: PYTH_LAZER_STORAGE_ACCOUNT_KEY,
 					info: PYTH_STORAGE_ACCOUNT_INFO,
 				},
-			]
-		);
-
-		// @ts-ignore
-		bankrunContextWrapper = new BankrunContextWrapper(context);
+			],
+		});
 
 		bulkAccountLoader = new TestBulkAccountLoader(
 			bankrunContextWrapper.connection,

@@ -13,8 +13,10 @@ import {
 	isVariant,
 } from '../sdk/src';
 import { TestBulkAccountLoader } from '../sdk/src/accounts/testBulkAccountLoader';
-import { BankrunContextWrapper } from '../sdk/src/bankrun/bankrunConnection';
-import { startAnchor } from 'solana-bankrun';
+import {
+	LiteSvmContextWrapper,
+	startLiteSvm,
+} from '../sdk/src/bankrun/liteSvmConnection';
 import { AccountInfo, LAMPORTS_PER_SOL, PublicKey } from '@solana/web3.js';
 import { initializeQuoteSpotMarket, mockUSDCMint } from './testHelpers';
 import {
@@ -39,7 +41,7 @@ describe('pyth lazer oracles', () => {
 
 	let bulkAccountLoader: TestBulkAccountLoader;
 
-	let bankrunContextWrapper: BankrunContextWrapper;
+	let bankrunContextWrapper: LiteSvmContextWrapper;
 	let usdcMint;
 
 	const feedId = 6;
@@ -47,20 +49,14 @@ describe('pyth lazer oracles', () => {
 	let feedAddress: PublicKey;
 
 	before(async () => {
-		// use bankrun builtin function to start solana program test
-		const context = await startAnchor(
-			'',
-			[],
-			[
+		bankrunContextWrapper = await startLiteSvm(chProgram.programId, {
+			extraAccounts: [
 				{
 					address: PYTH_LAZER_STORAGE_ACCOUNT_KEY,
 					info: PYTH_STORAGE_ACCOUNT_INFO,
 				},
-			]
-		);
-
-		// wrap the context to use it with the test helpers
-		bankrunContextWrapper = new BankrunContextWrapper(context);
+			],
+		});
 
 		// don't use regular bulk account loader, use test
 		bulkAccountLoader = new TestBulkAccountLoader(

@@ -57,9 +57,9 @@ import {
 	OracleSource,
 } from '../sdk/src';
 import {
-	BankrunContextWrapper,
-	BankrunConnection,
-} from '../sdk/src/bankrun/bankrunConnection';
+	LiteSvmConnection,
+	LiteSvmContextWrapper,
+} from '../sdk/src/bankrun/liteSvmConnection';
 import { TestBulkAccountLoader } from '../sdk/src/accounts/testBulkAccountLoader';
 import { DRIFT_PROGRAM_ID } from '../sdk/src/config';
 import * as crypto from 'crypto';
@@ -97,7 +97,7 @@ export async function mockOracle(
 }
 
 export async function mockOracleNoProgram(
-	context: BankrunContextWrapper,
+	context: LiteSvmContextWrapper,
 	price: number = 50 * 10e7,
 	expo = -7,
 	confidence?: number,
@@ -153,7 +153,7 @@ export async function mockOracleNoProgram(
 }
 
 export async function mockUSDCMint(
-	context: BankrunContextWrapper,
+	context: LiteSvmContextWrapper,
 	tokenProgram = TOKEN_PROGRAM_ID,
 	permanentDelegate?: boolean
 ): Promise<Keypair> {
@@ -205,7 +205,7 @@ export async function mockUSDCMint(
 export async function mockUserUSDCAccount(
 	fakeUSDCMint: Keypair,
 	usdcMintAmount: BN,
-	context: BankrunContextWrapper,
+	context: LiteSvmContextWrapper,
 	owner?: PublicKey
 ): Promise<Keypair> {
 	const userUSDCAccount = anchor.web3.Keypair.generate();
@@ -255,7 +255,7 @@ export async function mockUserUSDCAccount(
 export async function mockUserUSDCAccountWithAuthority(
 	fakeUSDCMint: Keypair,
 	usdcMintAmount: BN,
-	context: BankrunContextWrapper,
+	context: LiteSvmContextWrapper,
 	authority: Keypair
 ): Promise<PublicKey> {
 	const userUSDCAccount = getAssociatedTokenAddressSync(
@@ -294,7 +294,7 @@ export async function mockUserUSDCAccountWithAuthority(
 }
 
 export async function mockAtaTokenAccountForMint(
-	context: BankrunContextWrapper,
+	context: LiteSvmContextWrapper,
 	tokenMint: PublicKey,
 	amount: BN,
 	owner: PublicKey
@@ -329,7 +329,7 @@ export async function mockAtaTokenAccountForMint(
 export function getMockUserUsdcAccountInfo(
 	fakeUSDCMint: Keypair,
 	usdcMintAmount: BN,
-	context: BankrunContextWrapper,
+	context: LiteSvmContextWrapper,
 	owner?: PublicKey
 ): [PublicKey, AccountInfo<Buffer>] {
 	if (owner === undefined) {
@@ -371,7 +371,7 @@ export async function mintUSDCToUser(
 	fakeUSDCMint: Keypair,
 	userUSDCAccount: PublicKey,
 	usdcMintAmount: BN,
-	context: BankrunContextWrapper
+	context: LiteSvmContextWrapper
 ): Promise<void> {
 	const tx = new Transaction();
 	const tokenProgram = (
@@ -393,7 +393,7 @@ export async function mintUSDCToUser(
 }
 
 export async function createFundedKeyPair(
-	context: BankrunContextWrapper
+	context: LiteSvmContextWrapper
 ): Promise<Keypair> {
 	const keypair = Keypair.generate();
 	await context.fundKeypair(keypair, BigInt(100 * LAMPORTS_PER_SOL));
@@ -401,7 +401,7 @@ export async function createFundedKeyPair(
 }
 
 export async function createUSDCAccountForUser(
-	context: BankrunContextWrapper,
+	context: LiteSvmContextWrapper,
 	userKeyPair: Keypair,
 	usdcMint: Keypair,
 	usdcAmount: BN
@@ -453,7 +453,7 @@ export async function initializeAndSubscribeDriftClient(
 }
 
 export async function createUserWithUSDCAccount(
-	context: BankrunContextWrapper,
+	context: LiteSvmContextWrapper,
 	usdcMint: Keypair,
 	chProgram: Program,
 	usdcAmount: BN,
@@ -485,7 +485,7 @@ export async function createUserWithUSDCAccount(
 }
 
 export async function createWSolTokenAccountForUser(
-	context: BankrunContextWrapper,
+	context: LiteSvmContextWrapper,
 	userKeypair: Keypair | Wallet,
 	amount: BN
 ): Promise<PublicKey> {
@@ -515,7 +515,7 @@ export async function createWSolTokenAccountForUser(
 }
 
 export async function fundWsolTokenAccountForUser(
-	context: BankrunContextWrapper,
+	context: LiteSvmContextWrapper,
 	userKeypair: Keypair | Wallet,
 	amount: BN
 ): Promise<void> {
@@ -538,7 +538,7 @@ export async function fundWsolTokenAccountForUser(
 }
 
 export async function createUserWithUSDCAndWSOLAccount(
-	context: BankrunContextWrapper,
+	context: LiteSvmContextWrapper,
 	usdcMint: Keypair,
 	chProgram: Program,
 	solAmount: BN,
@@ -618,7 +618,7 @@ export async function initUserAccounts(
 	NUM_USERS: number,
 	usdcMint: Keypair,
 	usdcAmount: BN,
-	context: BankrunContextWrapper,
+	context: LiteSvmContextWrapper,
 	marketIndexes: number[],
 	bankIndexes: number[],
 	oracleInfos: OracleInfo[],
@@ -756,7 +756,7 @@ export const createPriceFeedBankrun = async ({
 	expo = -4,
 }: {
 	oracleProgram: Program;
-	context: BankrunContextWrapper;
+	context: LiteSvmContextWrapper;
 	initPrice: number;
 	confidence?: number;
 	expo?: number;
@@ -800,7 +800,7 @@ export const setFeedPrice = async (
 };
 
 export const setFeedPriceNoProgram = async (
-	context: BankrunContextWrapper,
+	context: LiteSvmContextWrapper,
 	newPrice: number,
 	priceFeed: PublicKey,
 	postedSlotOffset = 0
@@ -850,7 +850,7 @@ export const getFeedData = async (
 };
 
 export const getFeedDataNoProgram = async (
-	connection: BankrunConnection,
+	connection: LiteSvmConnection,
 	priceFeed: PublicKey
 ) => {
 	// @ts-ignore
@@ -1229,7 +1229,7 @@ export async function initializeSolSpotMarket(
 
 export async function overWritePerpMarket(
 	driftClient: TestClient,
-	bankrunContextWrapper: BankrunContextWrapper,
+	bankrunContextWrapper: LiteSvmContextWrapper,
 	perpMarketKey: PublicKey,
 	perpMarket: PerpMarketAccount
 ) {
@@ -1246,7 +1246,7 @@ export async function overWritePerpMarket(
 
 export async function overWriteSpotMarket(
 	driftClient: TestClient,
-	bankrunContextWrapper: BankrunContextWrapper,
+	bankrunContextWrapper: LiteSvmContextWrapper,
 	spotMarketKey: PublicKey,
 	spotMarket: SpotMarketAccount
 ) {
@@ -1263,7 +1263,7 @@ export async function overWriteSpotMarket(
 
 export async function getPerpMarketDecoded(
 	driftClient: TestClient,
-	bankrunContextWrapper: BankrunContextWrapper,
+	bankrunContextWrapper: LiteSvmContextWrapper,
 	perpMarketPublicKey: PublicKey
 ): Promise<PerpMarketAccount> {
 	const accountInfo = await bankrunContextWrapper.connection.getAccountInfo(
@@ -1275,7 +1275,7 @@ export async function getPerpMarketDecoded(
 }
 
 export async function overWriteTokenAccountBalance(
-	bankrunContextWrapper: BankrunContextWrapper,
+	bankrunContextWrapper: LiteSvmContextWrapper,
 	tokenAccount: PublicKey,
 	newBalance: bigint
 ) {
@@ -1309,7 +1309,7 @@ export async function overWriteTokenAccountBalance(
 }
 
 export async function overWriteMintAccount(
-	bankrunContextWrapper: BankrunContextWrapper,
+	bankrunContextWrapper: LiteSvmContextWrapper,
 	mintAccount: PublicKey,
 	newSupply: bigint
 ) {
@@ -1339,7 +1339,7 @@ export async function overWriteMintAccount(
 }
 
 export type placeAndFillVammTradeParams = {
-	bankrunContextWrapper: BankrunContextWrapper;
+	bankrunContextWrapper: LiteSvmContextWrapper;
 	orderClient: TestClient;
 	fillerClient: DriftClient;
 	marketIndex: number;
@@ -1417,7 +1417,7 @@ export async function placeAndFillVammTrade({
 }
 
 export async function overwriteConstituentAccount(
-	bankrunContextWrapper: BankrunContextWrapper,
+	bankrunContextWrapper: LiteSvmContextWrapper,
 	program: Program,
 	constituentPublicKey: PublicKey,
 	overwriteFields: Array<[key: keyof ConstituentAccount, value: any]>

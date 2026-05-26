@@ -20,9 +20,11 @@ import {
 	initializeQuoteSpotMarket,
 } from './testHelpers';
 import { BASE_PRECISION, OracleSource, PERCENTAGE_PRECISION } from '../sdk';
-import { startAnchor } from 'solana-bankrun';
 import { TestBulkAccountLoader } from '../sdk/src/accounts/testBulkAccountLoader';
-import { BankrunContextWrapper } from '../sdk/src/bankrun/bankrunConnection';
+import {
+	LiteSvmContextWrapper,
+	startLiteSvm,
+} from '../sdk/src/bankrun/liteSvmConnection';
 
 function getOpenInterest(driftClient: TestClient, marketIndex: number) {
 	const perpMarket = driftClient.getPerpMarketAccount(marketIndex);
@@ -37,7 +39,7 @@ describe('trigger orders', () => {
 
 	let bulkAccountLoader: TestBulkAccountLoader;
 
-	let bankrunContextWrapper: BankrunContextWrapper;
+	let bankrunContextWrapper: LiteSvmContextWrapper;
 
 	let driftClient: TestClient;
 
@@ -62,9 +64,7 @@ describe('trigger orders', () => {
 	let oracleInfos;
 
 	before(async () => {
-		const context = await startAnchor('', [], []);
-
-		bankrunContextWrapper = new BankrunContextWrapper(context);
+		bankrunContextWrapper = await startLiteSvm(chProgram.programId);
 
 		bulkAccountLoader = new TestBulkAccountLoader(
 			bankrunContextWrapper.connection,

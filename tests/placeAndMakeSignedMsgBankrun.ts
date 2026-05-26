@@ -60,9 +60,11 @@ import {
 	PEG_PRECISION,
 	PostOnlyParams,
 } from '../sdk/src';
-import { startAnchor } from 'solana-bankrun';
 import { TestBulkAccountLoader } from '../sdk/src/accounts/testBulkAccountLoader';
-import { BankrunContextWrapper } from '../sdk/src/bankrun/bankrunConnection';
+import {
+	LiteSvmContextWrapper,
+	startLiteSvm,
+} from '../sdk/src/bankrun/liteSvmConnection';
 import dotenv from 'dotenv';
 import { nanoid } from 'nanoid';
 import { createHash } from 'crypto';
@@ -93,7 +95,7 @@ describe('place and make signedMsg order', () => {
 
 	let bulkAccountLoader: TestBulkAccountLoader;
 
-	let bankrunContextWrapper: BankrunContextWrapper;
+	let bankrunContextWrapper: LiteSvmContextWrapper;
 
 	// ammInvariant == k == x * y
 	const mantissaSqrtScale = new BN(Math.sqrt(PRICE_PRECISION.toNumber()));
@@ -116,19 +118,14 @@ describe('place and make signedMsg order', () => {
 	let oracleInfos;
 
 	before(async () => {
-		const context = await startAnchor(
-			'',
-			[],
-			[
+		bankrunContextWrapper = await startLiteSvm(chProgram.programId, {
+			extraAccounts: [
 				{
 					address: PYTH_LAZER_STORAGE_ACCOUNT_KEY,
 					info: PYTH_STORAGE_ACCOUNT_INFO,
 				},
-			]
-		);
-
-		// @ts-ignore
-		bankrunContextWrapper = new BankrunContextWrapper(context);
+			],
+		});
 
 		slot = new BN(
 			await bankrunContextWrapper.connection.toConnection().getSlot()
@@ -1705,7 +1702,7 @@ describe('place and make signedMsg order', () => {
 });
 
 async function initializeNewTakerClientAndUser(
-	bankrunContextWrapper: BankrunContextWrapper,
+	bankrunContextWrapper: LiteSvmContextWrapper,
 	chProgram: Program,
 	usdcMint: Keypair,
 	usdcAmount: BN,

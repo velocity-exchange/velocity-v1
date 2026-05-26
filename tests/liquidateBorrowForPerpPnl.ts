@@ -30,9 +30,11 @@ import {
 	setFeedPriceNoProgram,
 } from './testHelpers';
 import { isVariant, UserStatus } from '../sdk';
-import { startAnchor } from 'solana-bankrun';
 import { TestBulkAccountLoader } from '../sdk/src/accounts/testBulkAccountLoader';
-import { BankrunContextWrapper } from '../sdk/src/bankrun/bankrunConnection';
+import {
+	LiteSvmContextWrapper,
+	startLiteSvm,
+} from '../sdk/src/bankrun/liteSvmConnection';
 
 describe('liquidate borrow for perp pnl', () => {
 	const chProgram = anchor.workspace.Drift as Program;
@@ -41,7 +43,7 @@ describe('liquidate borrow for perp pnl', () => {
 
 	let bulkAccountLoader: TestBulkAccountLoader;
 
-	let bankrunContextWrapper: BankrunContextWrapper;
+	let bankrunContextWrapper: LiteSvmContextWrapper;
 
 	let usdcMint;
 	let userUSDCAccount;
@@ -68,9 +70,7 @@ describe('liquidate borrow for perp pnl', () => {
 	let eventSubscriber: EventSubscriber;
 
 	before(async () => {
-		const context = await startAnchor('', [], []);
-
-		bankrunContextWrapper = new BankrunContextWrapper(context);
+		bankrunContextWrapper = await startLiteSvm(chProgram.programId);
 
 		eventSubscriber = new EventSubscriber(
 			bankrunContextWrapper.connection.toConnection(),

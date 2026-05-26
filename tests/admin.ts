@@ -1,7 +1,6 @@
 import * as anchor from '@coral-xyz/anchor';
 import { Program } from '@coral-xyz/anchor';
 import { assert, expect } from 'chai';
-import { startAnchor } from 'solana-bankrun';
 import {
 	BN,
 	ExchangeStatus,
@@ -25,9 +24,10 @@ import {
 } from './testHelpers';
 import { PublicKey } from '@solana/web3.js';
 import {
-	BankrunContextWrapper,
+	LiteSvmContextWrapper,
 	Connection,
-} from '../sdk/src/bankrun/bankrunConnection';
+	startLiteSvm,
+} from '../sdk/src/bankrun/liteSvmConnection';
 import { TestBulkAccountLoader } from '../sdk/src/accounts/testBulkAccountLoader';
 import { createTransferCheckedInstruction } from '@solana/spl-token';
 
@@ -44,12 +44,10 @@ describe('admin', () => {
 
 	const usdcAmount = new BN(10 * 10 ** 6);
 
-	let bankrunContextWrapper: BankrunContextWrapper;
+	let bankrunContextWrapper: LiteSvmContextWrapper;
 
 	before(async () => {
-		const context = await startAnchor('', [], []);
-
-		bankrunContextWrapper = new BankrunContextWrapper(context as any);
+		bankrunContextWrapper = await startLiteSvm(chProgram.programId);
 
 		bulkAccountLoader = new TestBulkAccountLoader(
 			bankrunContextWrapper.connection,

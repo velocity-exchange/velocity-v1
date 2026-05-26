@@ -33,16 +33,18 @@ import {
 	setFeedPriceNoProgram,
 } from './testHelpers';
 import { PERCENTAGE_PRECISION } from '../sdk';
-import { startAnchor } from 'solana-bankrun';
 import { TestBulkAccountLoader } from '../sdk/src/accounts/testBulkAccountLoader';
-import { BankrunContextWrapper } from '../sdk/src/bankrun/bankrunConnection';
+import {
+	LiteSvmContextWrapper,
+	startLiteSvm,
+} from '../sdk/src/bankrun/liteSvmConnection';
 
 describe('liquidate spot', () => {
 	const chProgram = anchor.workspace.Drift as Program;
 
 	let driftClient: TestClient;
 	let eventSubscriber: EventSubscriber;
-	let bankrunContextWrapper: BankrunContextWrapper;
+	let bankrunContextWrapper: LiteSvmContextWrapper;
 
 	let bulkAccountLoader: TestBulkAccountLoader;
 
@@ -60,9 +62,7 @@ describe('liquidate spot', () => {
 	let _throwaway: PublicKey;
 
 	before(async () => {
-		const context = await startAnchor('', [], []);
-
-		bankrunContextWrapper = new BankrunContextWrapper(context);
+		bankrunContextWrapper = await startLiteSvm(chProgram.programId);
 
 		bulkAccountLoader = new TestBulkAccountLoader(
 			bankrunContextWrapper.connection,

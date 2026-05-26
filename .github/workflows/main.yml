@@ -167,7 +167,7 @@ jobs:
       - name: run anchor tests
         env:
           RUST_LOG: solana_runtime::message_processor::stable_log=info
-        run: bash test-scripts/run-anchor-tests.sh
+        run: bash test-scripts/run-anchor-tests.sh --fast
   verify-sdk-configs:
     name: Verify SDK Configs
     if: ${{ false }}

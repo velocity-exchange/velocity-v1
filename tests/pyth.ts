@@ -28,16 +28,18 @@ import {
 	User,
 	QUOTE_SPOT_MARKET_INDEX,
 } from '../sdk/src';
-import { startAnchor } from 'solana-bankrun';
 import { TestBulkAccountLoader } from '../sdk/src/accounts/testBulkAccountLoader';
-import { BankrunContextWrapper } from '../sdk/src/bankrun/bankrunConnection';
+import {
+	LiteSvmContextWrapper,
+	startLiteSvm,
+} from '../sdk/src/bankrun/liteSvmConnection';
 
 async function updateFundingRateHelper(
 	driftClient: TestClient,
 	marketIndex: number,
 	priceFeedAddress: PublicKey,
 	prices: Array<number>,
-	context: BankrunContextWrapper,
+	context: LiteSvmContextWrapper,
 	txNonce = 0 // helps prevent race conditions with identical transactions
 ) {
 	for (let i = 0; i < prices.length; i++) {
@@ -167,7 +169,7 @@ describe('pyth-oracle', () => {
 
 	let bulkAccountLoader: TestBulkAccountLoader;
 
-	let bankrunContextWrapper: BankrunContextWrapper;
+	let bankrunContextWrapper: LiteSvmContextWrapper;
 
 	let usdcMint: Keypair;
 	let userUSDCAccount: Keypair;
@@ -180,9 +182,7 @@ describe('pyth-oracle', () => {
 	let userAccount: User;
 	let userAccount2: User;
 	before(async () => {
-		const context = await startAnchor('', [], []);
-
-		bankrunContextWrapper = new BankrunContextWrapper(context);
+		bankrunContextWrapper = await startLiteSvm(chProgram.programId);
 
 		bulkAccountLoader = new TestBulkAccountLoader(
 			bankrunContextWrapper.connection,

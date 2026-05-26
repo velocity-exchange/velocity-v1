@@ -24,9 +24,11 @@ import {
 	sleep,
 } from './testHelpers';
 import { PEG_PRECISION } from '../sdk/src';
-import { startAnchor } from 'solana-bankrun';
 import { TestBulkAccountLoader } from '../sdk/src/accounts/testBulkAccountLoader';
-import { BankrunContextWrapper } from '../sdk/src/bankrun/bankrunConnection';
+import {
+	LiteSvmContextWrapper,
+	startLiteSvm,
+} from '../sdk/src/bankrun/liteSvmConnection';
 import dotenv from 'dotenv';
 dotenv.config();
 
@@ -39,7 +41,7 @@ describe('place and make signedMsg order', () => {
 
 	let bulkAccountLoader: TestBulkAccountLoader;
 
-	let bankrunContextWrapper: BankrunContextWrapper;
+	let bankrunContextWrapper: LiteSvmContextWrapper;
 
 	// ammInvariant == k == x * y
 	const mantissaSqrtScale = new BN(Math.sqrt(PRICE_PRECISION.toNumber()));
@@ -61,10 +63,7 @@ describe('place and make signedMsg order', () => {
 	let oracleInfos;
 
 	before(async () => {
-		const context = await startAnchor('', [], []);
-
-		// @ts-ignore
-		bankrunContextWrapper = new BankrunContextWrapper(context);
+		bankrunContextWrapper = await startLiteSvm(chProgram.programId);
 
 		bulkAccountLoader = new TestBulkAccountLoader(
 			bankrunContextWrapper.connection,
@@ -299,7 +298,7 @@ describe('place and make signedMsg order', () => {
 });
 
 async function initializeNewTakerClientAndUser(
-	bankrunContextWrapper: BankrunContextWrapper,
+	bankrunContextWrapper: LiteSvmContextWrapper,
 	chProgram: Program,
 	usdcMint: Keypair,
 	usdcAmount: BN,

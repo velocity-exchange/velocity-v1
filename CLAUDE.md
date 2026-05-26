@@ -93,6 +93,8 @@ ts-mocha -t 300000 ./tests/<test_file>.ts
 bash test-scripts/run-anchor-tests.sh
 # Skip rebuild if .so is already built:
 bash test-scripts/run-anchor-tests.sh --skip-build
+# Single-process variant, all files in one ts-mocha invocation:
+bash test-scripts/run-anchor-tests.sh --skip-build --fast
 ```
 The integration tests in `tests/` resolve `@coral-xyz/anchor` and friends from the **repo-root** `node_modules`, not from `sdk/`. If you only ran `bun install` / `yarn install` inside `sdk/`, the test files will fail to load with `Cannot find module '@coral-xyz/anchor'`. Run `yarn install` (or `bun install`) at the repo root first.
 
@@ -162,7 +164,7 @@ TypeScript library (`@drift-labs/sdk`). Key modules in `src/`:
 - `idl/drift.json` — generated Anchor IDL (do not edit manually)
 
 ### Tests (`tests/`)
-~70 TypeScript integration tests using ts-mocha + Anchor's local validator (bankrun for some). Each test spins up a local validator with the program deployed. Tests are run serially by `run-anchor-tests.sh`.
+~70 TypeScript integration tests using ts-mocha with [litesvm](https://litesvm.com). Each test spins up an in-process SVM with the program deployed via the `startLiteSvm()` helper in `sdk/src/bankrun/liteSvmConnection.ts`. Tests are run serially by `run-anchor-tests.sh` (per-file process isolation); add `--fast` to run all files in one ts-mocha invocation. The legacy bankrun adapter (`bankrunConnection.ts`) is preserved for backward compat but no longer used by the test suite.
 
 ### Program internals
 - `programs/drift/src/math/` — core math (funding, fees, margin, AMM)

@@ -17,9 +17,11 @@ import {
 	mockOracleNoProgram,
 	overWritePerpMarket,
 } from './testHelpers';
-import { startAnchor } from 'solana-bankrun';
 import { TestBulkAccountLoader } from '../sdk/src/accounts/testBulkAccountLoader';
-import { BankrunContextWrapper } from '../sdk/src/bankrun/bankrunConnection';
+import {
+	LiteSvmContextWrapper,
+	startLiteSvm,
+} from '../sdk/src/bankrun/liteSvmConnection';
 import dotenv from 'dotenv';
 import {
 	CustomBorshAccountsCoder,
@@ -31,7 +33,7 @@ describe('Bankrun Overwrite Accounts', () => {
 	const program = anchor.workspace.Drift as Program;
 	// @ts-ignore
 	program.coder.accounts = new CustomBorshAccountsCoder(program.idl);
-	let bankrunContextWrapper: BankrunContextWrapper;
+	let bankrunContextWrapper: LiteSvmContextWrapper;
 	let bulkAccountLoader: TestBulkAccountLoader;
 
 	let adminClient: TestClient;
@@ -49,10 +51,7 @@ describe('Bankrun Overwrite Accounts', () => {
 	let userUSDCAccount: Keypair;
 
 	before(async () => {
-		const context = await startAnchor('', [], []);
-
-		// @ts-ignore
-		bankrunContextWrapper = new BankrunContextWrapper(context);
+		bankrunContextWrapper = await startLiteSvm(chProgram.programId);
 
 		bulkAccountLoader = new TestBulkAccountLoader(
 			bankrunContextWrapper.connection,

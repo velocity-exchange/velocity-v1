@@ -28,9 +28,11 @@ import {
 	initializeSolSpotMarket,
 } from './testHelpers';
 import { isVariant, UserStatus, PERCENTAGE_PRECISION } from '../sdk';
-import { startAnchor } from 'solana-bankrun';
 import { TestBulkAccountLoader } from '../sdk/src/accounts/testBulkAccountLoader';
-import { BankrunContextWrapper } from '../sdk/src/bankrun/bankrunConnection';
+import {
+	LiteSvmContextWrapper,
+	startLiteSvm,
+} from '../sdk/src/bankrun/liteSvmConnection';
 
 describe('liquidate spot w/ social loss', () => {
 	const chProgram = anchor.workspace.Drift as Program;
@@ -39,7 +41,7 @@ describe('liquidate spot w/ social loss', () => {
 	let eventSubscriber: EventSubscriber;
 
 	let bulkAccountLoader: TestBulkAccountLoader;
-	let bankrunContextWrapper: BankrunContextWrapper;
+	let bankrunContextWrapper: LiteSvmContextWrapper;
 
 	let usdcMint;
 	let userUSDCAccount;
@@ -55,9 +57,7 @@ describe('liquidate spot w/ social loss', () => {
 	let _throwaway: PublicKey;
 
 	before(async () => {
-		const context = await startAnchor('', [], []);
-
-		bankrunContextWrapper = new BankrunContextWrapper(context);
+		bankrunContextWrapper = await startLiteSvm(chProgram.programId);
 
 		bulkAccountLoader = new TestBulkAccountLoader(
 			bankrunContextWrapper.connection,

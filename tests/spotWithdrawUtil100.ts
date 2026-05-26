@@ -45,9 +45,11 @@ import {
 } from '../sdk/src/math/spotBalance';
 import { NATIVE_MINT } from '@solana/spl-token';
 import { ContractTier } from '../sdk';
-import { startAnchor } from 'solana-bankrun';
 import { TestBulkAccountLoader } from '../sdk/src/accounts/testBulkAccountLoader';
-import { BankrunContextWrapper } from '../sdk/src/bankrun/bankrunConnection';
+import {
+	LiteSvmContextWrapper,
+	startLiteSvm,
+} from '../sdk/src/bankrun/liteSvmConnection';
 
 describe('test function when spot market at >= 100% util', () => {
 	const chProgram = anchor.workspace.Drift as Program;
@@ -57,7 +59,7 @@ describe('test function when spot market at >= 100% util', () => {
 
 	let bulkAccountLoader: TestBulkAccountLoader;
 
-	let bankrunContextWrapper: BankrunContextWrapper;
+	let bankrunContextWrapper: LiteSvmContextWrapper;
 
 	let solOracle: PublicKey;
 
@@ -80,9 +82,7 @@ describe('test function when spot market at >= 100% util', () => {
 	let oracleInfos: OracleInfo[];
 
 	before(async () => {
-		const context = await startAnchor('', [], []);
-
-		bankrunContextWrapper = new BankrunContextWrapper(context);
+		bankrunContextWrapper = await startLiteSvm(chProgram.programId);
 
 		bulkAccountLoader = new TestBulkAccountLoader(
 			bankrunContextWrapper.connection,

@@ -1,7 +1,6 @@
 import * as anchor from '@coral-xyz/anchor';
 import { Program } from '@coral-xyz/anchor';
 import { assert } from 'chai';
-import { startAnchor } from 'solana-bankrun';
 import {
 	BN,
 	getTokenAmount,
@@ -9,7 +8,10 @@ import {
 	TestClient,
 	TransferFeeAndPnlPoolDirection,
 } from '../sdk/src';
-import { BankrunContextWrapper } from '../sdk/src/bankrun/bankrunConnection';
+import {
+	LiteSvmContextWrapper,
+	startLiteSvm,
+} from '../sdk/src/bankrun/liteSvmConnection';
 import { TestBulkAccountLoader } from '../sdk/src/accounts/testBulkAccountLoader';
 import {
 	initializeQuoteSpotMarket,
@@ -25,7 +27,7 @@ describe('transfer fee and pnl pool', () => {
 
 	let driftClient: TestClient;
 	let bulkAccountLoader: TestBulkAccountLoader;
-	let bankrunContextWrapper: BankrunContextWrapper;
+	let bankrunContextWrapper: LiteSvmContextWrapper;
 
 	let usdcMint: Keypair;
 
@@ -56,8 +58,7 @@ describe('transfer fee and pnl pool', () => {
 	};
 
 	before(async () => {
-		const context = await startAnchor('', [], []);
-		bankrunContextWrapper = new BankrunContextWrapper(context as any);
+		bankrunContextWrapper = await startLiteSvm(chProgram.programId);
 
 		bulkAccountLoader = new TestBulkAccountLoader(
 			bankrunContextWrapper.connection,

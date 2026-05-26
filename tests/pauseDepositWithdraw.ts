@@ -35,9 +35,11 @@ import {
 	SPOT_MARKET_BALANCE_PRECISION,
 	SpotOperation,
 } from '../sdk';
-import { startAnchor } from 'solana-bankrun';
 import { TestBulkAccountLoader } from '../sdk/src/accounts/testBulkAccountLoader';
-import { BankrunContextWrapper } from '../sdk/src/bankrun/bankrunConnection';
+import {
+	LiteSvmContextWrapper,
+	startLiteSvm,
+} from '../sdk/src/bankrun/liteSvmConnection';
 
 describe('spot deposit and withdraw 22', () => {
 	const chProgram = anchor.workspace.Drift as Program;
@@ -47,7 +49,7 @@ describe('spot deposit and withdraw 22', () => {
 
 	let bulkAccountLoader: TestBulkAccountLoader;
 
-	let bankrunContextWrapper: BankrunContextWrapper;
+	let bankrunContextWrapper: LiteSvmContextWrapper;
 
 	let solOracle: PublicKey;
 
@@ -64,9 +66,7 @@ describe('spot deposit and withdraw 22', () => {
 	let oracleInfos: OracleInfo[];
 
 	before(async () => {
-		const context = (await startAnchor('', [], [])) as any;
-
-		bankrunContextWrapper = new BankrunContextWrapper(context);
+		bankrunContextWrapper = await startLiteSvm(chProgram.programId);
 
 		bulkAccountLoader = new TestBulkAccountLoader(
 			bankrunContextWrapper.connection,

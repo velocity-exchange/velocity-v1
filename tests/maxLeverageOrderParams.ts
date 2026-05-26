@@ -30,15 +30,17 @@ import {
 	MAX_LEVERAGE_ORDER_SIZE,
 	PERCENTAGE_PRECISION,
 } from '../sdk';
-import { startAnchor } from 'solana-bankrun';
 import { TestBulkAccountLoader } from '../sdk/src/accounts/testBulkAccountLoader';
-import { BankrunContextWrapper } from '../sdk/src/bankrun/bankrunConnection';
+import {
+	LiteSvmContextWrapper,
+	startLiteSvm,
+} from '../sdk/src/bankrun/liteSvmConnection';
 
 describe('max leverage order params', () => {
 	const chProgram = anchor.workspace.Drift as Program;
 
 	let bulkAccountLoader: TestBulkAccountLoader;
-	let bankrunContextWrapper: BankrunContextWrapper;
+	let bankrunContextWrapper: LiteSvmContextWrapper;
 
 	let driftClient: TestClient;
 	let eventSubscriber: EventSubscriber;
@@ -64,9 +66,7 @@ describe('max leverage order params', () => {
 	const usdcAmount = new BN(10 * 10 ** 6);
 
 	before(async () => {
-		const context = await startAnchor('', [], []);
-
-		bankrunContextWrapper = new BankrunContextWrapper(context);
+		bankrunContextWrapper = await startLiteSvm(chProgram.programId);
 
 		bulkAccountLoader = new TestBulkAccountLoader(
 			bankrunContextWrapper.connection,

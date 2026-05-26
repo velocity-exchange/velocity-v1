@@ -11,9 +11,11 @@ import {
 	PRICE_PRECISION,
 } from '../sdk/src';
 
-import { startAnchor } from 'solana-bankrun';
 import { TestBulkAccountLoader } from '../sdk/src/accounts/testBulkAccountLoader';
-import { BankrunContextWrapper } from '../sdk/src/bankrun/bankrunConnection';
+import {
+	LiteSvmContextWrapper,
+	startLiteSvm,
+} from '../sdk/src/bankrun/liteSvmConnection';
 import dotenv from 'dotenv';
 import {
 	initializeQuoteSpotMarket,
@@ -31,7 +33,7 @@ describe('gov stake increase on devnet', () => {
 
 	let bulkAccountLoader: TestBulkAccountLoader;
 
-	let bankrunContextWrapper: BankrunContextWrapper;
+	let bankrunContextWrapper: LiteSvmContextWrapper;
 
 	// ammInvariant == k == x * y
 	const mantissaSqrtScale = new anchor.BN(
@@ -55,10 +57,7 @@ describe('gov stake increase on devnet', () => {
 	let oracleInfos;
 
 	before(async () => {
-		const context = await startAnchor('', [], []);
-
-		// @ts-ignore
-		bankrunContextWrapper = new BankrunContextWrapper(context);
+		bankrunContextWrapper = await startLiteSvm(chProgram.programId);
 
 		bulkAccountLoader = new TestBulkAccountLoader(
 			bankrunContextWrapper.connection,

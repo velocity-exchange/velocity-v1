@@ -44,12 +44,12 @@ import {
 	mintUSDCToUser,
 } from './testHelpers';
 import { ContractTier, PERCENTAGE_PRECISION, UserStatus } from '../sdk';
-import { startAnchor } from 'solana-bankrun';
 import { TestBulkAccountLoader } from '../sdk/src/accounts/testBulkAccountLoader';
 import {
-	BankrunContextWrapper,
+	LiteSvmContextWrapper,
 	asBN,
-} from '../sdk/src/bankrun/bankrunConnection';
+	startLiteSvm,
+} from '../sdk/src/bankrun/liteSvmConnection';
 
 describe('insurance fund stake', () => {
 	const chProgram = anchor.workspace.Drift as Program;
@@ -59,7 +59,7 @@ describe('insurance fund stake', () => {
 
 	let bulkAccountLoader: TestBulkAccountLoader;
 
-	let bankrunContextWrapper: BankrunContextWrapper;
+	let bankrunContextWrapper: LiteSvmContextWrapper;
 
 	let usdcMint;
 	let userUSDCAccount: Keypair;
@@ -77,9 +77,7 @@ describe('insurance fund stake', () => {
 	const solAmount = new BN(10000 * 10 ** 9);
 
 	before(async () => {
-		const context = await startAnchor('', [], []);
-
-		bankrunContextWrapper = new BankrunContextWrapper(context);
+		bankrunContextWrapper = await startLiteSvm(chProgram.programId);
 
 		bulkAccountLoader = new TestBulkAccountLoader(
 			bankrunContextWrapper.connection,

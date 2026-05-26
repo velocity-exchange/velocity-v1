@@ -30,9 +30,11 @@ import {
 	sleep,
 } from './testHelpers';
 import { PERCENTAGE_PRECISION, UserStatus } from '../sdk';
-import { startAnchor } from 'solana-bankrun';
 import { TestBulkAccountLoader } from '../sdk/src/accounts/testBulkAccountLoader';
-import { BankrunContextWrapper } from '../sdk/src/bankrun/bankrunConnection';
+import {
+	LiteSvmContextWrapper,
+	startLiteSvm,
+} from '../sdk/src/bankrun/liteSvmConnection';
 
 describe('liquidate perp (no open orders)', () => {
 	const chProgram = anchor.workspace.Drift as Program;
@@ -42,7 +44,7 @@ describe('liquidate perp (no open orders)', () => {
 
 	let bulkAccountLoader: TestBulkAccountLoader;
 
-	let bankrunContextWrapper: BankrunContextWrapper;
+	let bankrunContextWrapper: LiteSvmContextWrapper;
 
 	let usdcMint;
 	let userUSDCAccount;
@@ -63,9 +65,7 @@ describe('liquidate perp (no open orders)', () => {
 	const usdcAmount = new BN(10 * 10 ** 6);
 
 	before(async () => {
-		const context = await startAnchor('', [], []);
-
-		bankrunContextWrapper = new BankrunContextWrapper(context);
+		bankrunContextWrapper = await startLiteSvm(chProgram.programId);
 
 		bulkAccountLoader = new TestBulkAccountLoader(
 			bankrunContextWrapper.connection,

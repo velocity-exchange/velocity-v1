@@ -36,9 +36,8 @@ import {
 	// getFeedData,
 	// sleep,
 } from './testHelpers';
-import { startAnchor } from 'solana-bankrun';
 import { TestBulkAccountLoader } from '../sdk/src/accounts/testBulkAccountLoader';
-import { BankrunContextWrapper } from '../sdk/src/bankrun/bankrunConnection';
+import { startLiteSvm } from '../sdk/src/bankrun/liteSvmConnection';
 import { ContractTier } from '../sdk';
 
 describe('asset tiers', () => {
@@ -65,9 +64,7 @@ describe('asset tiers', () => {
 	const solAmount = new BN(10000 * 10 ** 9);
 
 	before(async () => {
-		const context = await startAnchor('', [], []);
-
-		const bankrunContextWrapper = new BankrunContextWrapper(context);
+		const bankrunContextWrapper = await startLiteSvm(chProgram.programId);
 
 		bulkAccountLoader = new TestBulkAccountLoader(
 			bankrunContextWrapper.connection,

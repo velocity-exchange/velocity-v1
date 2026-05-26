@@ -29,9 +29,11 @@ import {
 	overWritePerpMarket,
 	placeAndFillVammTrade,
 } from './testHelpers';
-import { startAnchor } from 'solana-bankrun';
 import { TestBulkAccountLoader } from '../sdk/src/accounts/testBulkAccountLoader';
-import { BankrunContextWrapper } from '../sdk/src/bankrun/bankrunConnection';
+import {
+	LiteSvmContextWrapper,
+	startLiteSvm,
+} from '../sdk/src/bankrun/liteSvmConnection';
 import dotenv from 'dotenv';
 import {
 	CustomBorshAccountsCoder,
@@ -59,7 +61,7 @@ describe('Reference Price Offset E2E', () => {
 	const program = anchor.workspace.Drift as Program;
 	// @ts-ignore
 	program.coder.accounts = new CustomBorshAccountsCoder(program.idl);
-	let bankrunContextWrapper: BankrunContextWrapper;
+	let bankrunContextWrapper: LiteSvmContextWrapper;
 	let bulkAccountLoader: TestBulkAccountLoader;
 
 	let eventSubscriber: EventSubscriber;
@@ -71,10 +73,8 @@ describe('Reference Price Offset E2E', () => {
 	let userUSDCAccount: Keypair;
 
 	beforeEach(async () => {
-		const context = await startAnchor(
-			'',
-			[],
-			[
+		bankrunContextWrapper = await startLiteSvm(program.programId, {
+			extraAccounts: [
 				{
 					address: marketPubkey,
 					info: {
@@ -93,11 +93,8 @@ describe('Reference Price Offset E2E', () => {
 						data: Buffer.from(oracleSnapshotBytes, 'hex'),
 					},
 				},
-			]
-		);
-
-		// @ts-ignore
-		bankrunContextWrapper = new BankrunContextWrapper(context);
+			],
+		});
 
 		bulkAccountLoader = new TestBulkAccountLoader(
 			bankrunContextWrapper.connection,

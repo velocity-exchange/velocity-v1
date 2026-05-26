@@ -50,9 +50,11 @@ import {
 	getExtraAccountMetaAddress,
 	resolveExtraAccountMeta,
 } from '@solana/spl-token';
-import { startAnchor } from 'solana-bankrun';
 import { TestBulkAccountLoader } from '../sdk/src/accounts/testBulkAccountLoader';
-import { BankrunContextWrapper } from '../sdk/src/bankrun/bankrunConnection';
+import {
+	LiteSvmContextWrapper,
+	startLiteSvm,
+} from '../sdk/src/bankrun/liteSvmConnection';
 import { initializeExtraAccountMetaList } from './splTransferHookClient';
 
 const transferHookProgramId = new PublicKey(
@@ -68,7 +70,7 @@ describe('spot deposit and withdraw 22', () => {
 
 	let admin: TestClient;
 	let bulkAccountLoader: TestBulkAccountLoader;
-	let bankrunContextWrapper: BankrunContextWrapper;
+	let bankrunContextWrapper: LiteSvmContextWrapper;
 
 	let solOracle: PublicKey;
 	let usdcMint;
@@ -89,19 +91,14 @@ describe('spot deposit and withdraw 22', () => {
 	let mintOracle: PublicKey;
 
 	before(async () => {
-		const context = await startAnchor(
-			'',
-			[
+		bankrunContextWrapper = await startLiteSvm(chProgram.programId, {
+			extraPrograms: [
 				{
 					name: 'spl_transfer_hook_example',
 					programId: transferHookProgramId,
 				},
 			],
-			[]
-		);
-
-		// @ts-ignore
-		bankrunContextWrapper = new BankrunContextWrapper(context);
+		});
 
 		bulkAccountLoader = new TestBulkAccountLoader(
 			bankrunContextWrapper.connection,

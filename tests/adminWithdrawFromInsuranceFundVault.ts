@@ -20,12 +20,11 @@ import {
 	overWriteSpotMarket,
 	overWriteTokenAccountBalance,
 } from './testHelpers';
-import { startAnchor } from 'solana-bankrun';
 import { TestBulkAccountLoader } from '../sdk/src/accounts/testBulkAccountLoader';
 import {
-	BankrunContextWrapper,
+	LiteSvmContextWrapper,
 	asBN,
-} from '../sdk/src/bankrun/bankrunConnection';
+} from '../sdk/src/bankrun/liteSvmConnection';
 
 // Snapshot of mainnet USDC spot market + IF vault accounts.
 const prodUsdcIfAccounts = {
@@ -47,7 +46,7 @@ describe('admin withdraw from insurance fund vault', () => {
 
 	let driftClient: TestClient;
 	let bulkAccountLoader: TestBulkAccountLoader;
-	let bankrunContextWrapper: BankrunContextWrapper;
+	let bankrunContextWrapper: LiteSvmContextWrapper;
 
 	let usdcMint: Keypair;
 	let solOracle: PublicKey;
@@ -56,8 +55,7 @@ describe('admin withdraw from insurance fund vault', () => {
 	let recipientUSDCAccount: Keypair;
 
 	before(async () => {
-		const context = await startAnchor('', [], []);
-		bankrunContextWrapper = new BankrunContextWrapper(context);
+		bankrunContextWrapper = await startLiteSvm(chProgram.programId);
 
 		bulkAccountLoader = new TestBulkAccountLoader(
 			bankrunContextWrapper.connection,

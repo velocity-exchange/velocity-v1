@@ -69,9 +69,11 @@ import {
 	overWriteSpotMarket,
 	setFeedPriceNoProgram,
 } from './testHelpers';
-import { startAnchor } from 'solana-bankrun';
 import { TestBulkAccountLoader } from '../sdk/src/accounts/testBulkAccountLoader';
-import { BankrunContextWrapper } from '../sdk/src/bankrun/bankrunConnection';
+import {
+	LiteSvmContextWrapper,
+	startLiteSvm,
+} from '../sdk/src/bankrun/liteSvmConnection';
 import dotenv from 'dotenv';
 import { PYTH_LAZER_HEX_STRING_SOL, PYTH_STORAGE_DATA } from './pythLazerData';
 import {
@@ -93,7 +95,7 @@ describe('LP Pool', () => {
 	// @ts-ignore
 	program.coder.accounts = new CustomBorshAccountsCoder(program.idl);
 
-	let bankrunContextWrapper: BankrunContextWrapper;
+	let bankrunContextWrapper: LiteSvmContextWrapper;
 	let bulkAccountLoader: TestBulkAccountLoader;
 
 	let userLpTokenAccount: PublicKey;
@@ -120,19 +122,14 @@ describe('LP Pool', () => {
 	let whitelistMint: PublicKey;
 
 	before(async () => {
-		const context = await startAnchor(
-			'',
-			[],
-			[
+		bankrunContextWrapper = await startLiteSvm(program.programId, {
+			extraAccounts: [
 				{
 					address: PYTH_LAZER_STORAGE_ACCOUNT_KEY,
 					info: PYTH_STORAGE_ACCOUNT_INFO,
 				},
-			]
-		);
-
-		// @ts-ignore
-		bankrunContextWrapper = new BankrunContextWrapper(context);
+			],
+		});
 
 		bulkAccountLoader = new TestBulkAccountLoader(
 			bankrunContextWrapper.connection,

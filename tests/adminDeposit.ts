@@ -18,15 +18,17 @@ import {
 	mockUSDCMint,
 	mockUserUSDCAccount,
 } from './testHelpers';
-import { startAnchor } from 'solana-bankrun';
 import { TestBulkAccountLoader } from '../sdk/src/accounts/testBulkAccountLoader';
-import { BankrunContextWrapper } from '../sdk/src/bankrun/bankrunConnection';
+import {
+	LiteSvmContextWrapper,
+	startLiteSvm,
+} from '../sdk/src/bankrun/liteSvmConnection';
 import dotenv from 'dotenv';
 dotenv.config();
 
 describe('admin deposit', () => {
 	const chProgram = anchor.workspace.Drift as Program;
-	let bankrunContextWrapper: BankrunContextWrapper;
+	let bankrunContextWrapper: LiteSvmContextWrapper;
 	let bulkAccountLoader: TestBulkAccountLoader;
 
 	let adminDriftClient: TestClient;
@@ -43,10 +45,7 @@ describe('admin deposit', () => {
 	const usdcAmount = new BN(100 * 10 ** 6);
 
 	before(async () => {
-		const context = await startAnchor('', [], []);
-
-		// @ts-ignore
-		bankrunContextWrapper = new BankrunContextWrapper(context);
+		bankrunContextWrapper = await startLiteSvm(chProgram.programId);
 
 		userKeyPair = await createFundedKeyPair(bankrunContextWrapper);
 		userKeyPair2 = await createFundedKeyPair(bankrunContextWrapper);

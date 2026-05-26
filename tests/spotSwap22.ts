@@ -35,9 +35,11 @@ import {
 	TOKEN_PROGRAM_ID,
 	createTransferInstruction,
 } from '@solana/spl-token';
-import { startAnchor } from 'solana-bankrun';
 import { TestBulkAccountLoader } from '../sdk/src/accounts/testBulkAccountLoader';
-import { BankrunContextWrapper } from '../sdk/src/bankrun/bankrunConnection';
+import {
+	LiteSvmContextWrapper,
+	startLiteSvm,
+} from '../sdk/src/bankrun/liteSvmConnection';
 import { DRIFT_PROGRAM_ID } from '../sdk/src';
 
 describe('spot swap 22', () => {
@@ -49,7 +51,7 @@ describe('spot swap 22', () => {
 
 	let bulkAccountLoader: TestBulkAccountLoader;
 
-	let bankrunContextWrapper: BankrunContextWrapper;
+	let bankrunContextWrapper: LiteSvmContextWrapper;
 
 	let solOracle: PublicKey;
 
@@ -70,9 +72,8 @@ describe('spot swap 22', () => {
 	let takerKeypair: Keypair;
 
 	before(async () => {
-		const context = await startAnchor(
-			'',
-			[
+		bankrunContextWrapper = await startLiteSvm(chProgram.programId, {
+			extraPrograms: [
 				{
 					name: 'serum_dex',
 					programId: new PublicKey(
@@ -80,10 +81,7 @@ describe('spot swap 22', () => {
 					),
 				},
 			],
-			[]
-		);
-
-		bankrunContextWrapper = new BankrunContextWrapper(context);
+		});
 
 		bulkAccountLoader = new TestBulkAccountLoader(
 			bankrunContextWrapper.connection,

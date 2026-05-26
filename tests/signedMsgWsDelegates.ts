@@ -19,9 +19,11 @@ import {
 } from '../sdk/src';
 
 import { mockOracleNoProgram } from './testHelpers';
-import { startAnchor } from 'solana-bankrun';
 import { TestBulkAccountLoader } from '../sdk/src/accounts/testBulkAccountLoader';
-import { BankrunContextWrapper } from '../sdk/src/bankrun/bankrunConnection';
+import {
+	LiteSvmContextWrapper,
+	startLiteSvm,
+} from '../sdk/src/bankrun/liteSvmConnection';
 import dotenv from 'dotenv';
 import { PYTH_STORAGE_DATA } from './pythLazerData';
 
@@ -42,7 +44,7 @@ describe('place and make signedMsg order', () => {
 
 	let bulkAccountLoader: TestBulkAccountLoader;
 
-	let bankrunContextWrapper: BankrunContextWrapper;
+	let bankrunContextWrapper: LiteSvmContextWrapper;
 
 	let solUsd: PublicKey;
 	let marketIndexes;
@@ -50,19 +52,14 @@ describe('place and make signedMsg order', () => {
 	let oracleInfos;
 
 	before(async () => {
-		const context = await startAnchor(
-			'',
-			[],
-			[
+		bankrunContextWrapper = await startLiteSvm(chProgram.programId, {
+			extraAccounts: [
 				{
 					address: PYTH_LAZER_STORAGE_ACCOUNT_KEY,
 					info: PYTH_STORAGE_ACCOUNT_INFO,
 				},
-			]
-		);
-
-		// @ts-ignore
-		bankrunContextWrapper = new BankrunContextWrapper(context);
+			],
+		});
 
 		bulkAccountLoader = new TestBulkAccountLoader(
 			bankrunContextWrapper.connection,

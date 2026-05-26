@@ -1,7 +1,6 @@
 import * as anchor from '@coral-xyz/anchor';
 import { Program } from '@coral-xyz/anchor';
 import { assert } from 'chai';
-import { startAnchor } from 'solana-bankrun';
 import { Keypair, PublicKey } from '@solana/web3.js';
 
 import {
@@ -17,7 +16,10 @@ import {
 	TestClient,
 } from '../sdk/src';
 import { TestBulkAccountLoader } from '../sdk/src/accounts/testBulkAccountLoader';
-import { BankrunContextWrapper } from '../sdk/src/bankrun/bankrunConnection';
+import {
+	LiteSvmContextWrapper,
+	startLiteSvm,
+} from '../sdk/src/bankrun/liteSvmConnection';
 import {
 	initializeQuoteSpotMarket,
 	mockOracleNoProgram,
@@ -31,7 +33,7 @@ describe('special user account', () => {
 	let adminClient: TestClient;
 	let driftClient: TestClient;
 	let bulkAccountLoader: TestBulkAccountLoader;
-	let bankrunContextWrapper: BankrunContextWrapper;
+	let bankrunContextWrapper: LiteSvmContextWrapper;
 	let usdcMint;
 	let userAccountPublicKey: PublicKey;
 	let userSubaccount1PublicKey: PublicKey;
@@ -83,9 +85,7 @@ describe('special user account', () => {
 	};
 
 	before(async () => {
-		const context = await startAnchor('', [], []);
-
-		bankrunContextWrapper = new BankrunContextWrapper(context as any);
+		bankrunContextWrapper = await startLiteSvm(chProgram.programId);
 
 		bulkAccountLoader = new TestBulkAccountLoader(
 			bankrunContextWrapper.connection,

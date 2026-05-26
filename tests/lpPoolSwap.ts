@@ -49,9 +49,11 @@ import {
 	createUserWithUSDCAndWSOLAccount,
 	sleep,
 } from './testHelpers';
-import { startAnchor } from 'solana-bankrun';
 import { TestBulkAccountLoader } from '../sdk/src/accounts/testBulkAccountLoader';
-import { BankrunContextWrapper } from '../sdk/src/bankrun/bankrunConnection';
+import {
+	LiteSvmContextWrapper,
+	startLiteSvm,
+} from '../sdk/src/bankrun/liteSvmConnection';
 import dotenv from 'dotenv';
 import { DexInstructions, Market, OpenOrders } from '@project-serum/serum';
 import { listMarket, SERUM, makePlaceOrderTransaction } from './serumHelper';
@@ -67,7 +69,7 @@ describe('LP Pool', () => {
 	// Align account (de)serialization with on-chain zero-copy layouts
 	// @ts-ignore
 	program.coder.accounts = new CustomBorshAccountsCoder(program.idl);
-	let bankrunContextWrapper: BankrunContextWrapper;
+	let bankrunContextWrapper: LiteSvmContextWrapper;
 	let bulkAccountLoader: TestBulkAccountLoader;
 
 	let adminClient: TestClient;
@@ -105,9 +107,8 @@ describe('LP Pool', () => {
 	let serumMarket: Market;
 
 	before(async () => {
-		const context = await startAnchor(
-			'',
-			[
+		bankrunContextWrapper = await startLiteSvm(program.programId, {
+			extraPrograms: [
 				{
 					name: 'serum_dex',
 					programId: new PublicKey(
@@ -115,11 +116,7 @@ describe('LP Pool', () => {
 					),
 				},
 			],
-			[]
-		);
-
-		// @ts-ignore
-		bankrunContextWrapper = new BankrunContextWrapper(context);
+		});
 
 		bulkAccountLoader = new TestBulkAccountLoader(
 			bankrunContextWrapper.connection,

@@ -23,7 +23,7 @@ jobs:
   #    gate the publish jobs below.
   # ---------------------------------------------------------------------------
   release-please:
-    runs-on: ubuntu-latest
+    runs-on: ubicloud
     outputs:
       sdk_released: ${{ steps.release.outputs['sdk--release_created'] }}
       sdk_tag: ${{ steps.release.outputs['sdk--tag_name'] }}

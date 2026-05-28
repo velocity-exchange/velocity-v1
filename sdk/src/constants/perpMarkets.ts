@@ -30,6 +30,17 @@ export const DevnetPerpMarkets: PerpMarketConfig[] = [
 		oracleSource: OracleSource.PYTH_LAZER,
 		pythLazerId: 6,
 	},
+	{
+		fullName: 'Bitcoin',
+		category: ['L1', 'Payment'],
+		symbol: 'BTC-PERP',
+		baseAssetSymbol: 'BTC',
+		marketIndex: 1,
+		oracle: new PublicKey('J7Fp8iTKuKdCM7PnzqHXTdTo5Jr7ykAmiDyvpz58GJGZ'),
+		launchTs: 1779344430000,
+		oracleSource: OracleSource.PYTH_LAZER,
+		pythLazerId: 1,
+	},
 ];
 
 export const MainnetPerpMarkets: PerpMarketConfig[] = [

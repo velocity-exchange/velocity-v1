@@ -131,11 +131,18 @@ PRs are **squash-merged**, so the squashed commit subject is the PR title. That 
 Add a scope when useful, e.g. `fix(margin): correct rounding on partial fills`.
 
 > **Pre-1.0 note:** while a package's major version is `0` (the SDK is currently `0.x`), release-please down-shifts bumps by one level — `feat` behaves like a patch and a breaking change behaves like a minor. Set `bump-minor-pre-major: true` in `release-please-config.json` if you want `feat` to drive minor bumps before 1.0.
+>
+> **Reminder — flip this on the first release:** we deliberately ship the first
+> few releases with the down-shifted (default) behavior to keep early `0.x`
+> versions calm. Once we cut the first real release and want `feat:` to mean a
+> proper minor bump, set `bump-minor-pre-major: true` in
+> [`release-please-config.json`](./release-please-config.json) and update this
+> table.
 
 ## How a release happens
 
 1. **You merge a feature/fix PR** into `master` with a Conventional Commit title.
-2. **release-please opens (or updates) a "release PR"** titled `chore(master): release …`. This PR bumps the version in `package.json` (and the SDK's `drift.json` `metadata.version`), regenerates `CHANGELOG.md`, and updates `.release-please-manifest.json`. It is **recomputed on every push** to `master` — the version reflects the highest bump across all unreleased commits, and new commits keep getting added to it. It does **not** publish anything.
+2. **release-please opens (or updates) a "release PR"** titled `chore(master): release …`. This PR bumps the version in `package.json`, regenerates `CHANGELOG.md`, and updates `.release-please-manifest.json`. It is **recomputed on every push** to `master` — the version reflects the highest bump across all unreleased commits, and new commits keep getting added to it. It does **not** publish anything.
 3. **You merge the release PR** when you're ready to ship. release-please then creates the Git tag(s) and GitHub Release(s).
 4. **Publish jobs run automatically** (`.github/workflows/release-please.yml`), publishing the bumped packages to npm via OIDC [trusted publishing](https://docs.npmjs.com/trusted-publishers) — no `NPM_TOKEN`. Downstream repos are notified via `repository_dispatch`.
 

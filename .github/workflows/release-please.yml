@@ -9,8 +9,11 @@ permissions:
   pull-requests: write
   id-token: write
 
-env:
-  NODE_VERSION: "24.x.x"
+# Note: the node version for the publish jobs lives in the npm-publish-setup
+# composite action's default input, not here — main.yml keeps its own
+# NODE_VERSION because GitHub Actions can't share env across workflow files
+# without promoting one of them to a reusable workflow (not worth it for a
+# single string).
 
 jobs:
   # ---------------------------------------------------------------------------
@@ -59,32 +62,12 @@ jobs:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
         with:
           ref: ${{ needs.release-please.outputs.sdk_tag }}
-      - name: Setup node
-        uses: actions/setup-node@7c12f8017d5436eb855f1ed4399f037a36fbd9e8 # v2
+      - uses: ./.github/actions/npm-publish-setup
         with:
-          node-version: ${{ env.NODE_VERSION }}
-          registry-url: "https://registry.npmjs.org"
-      - name: Ensure npm CLI supports trusted publishing
-        run: npm install -g npm@11.14.1
-      - name: Setup bun
-        uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
-        with:
-          bun-version: 1.3.14
-      - name: Install dependencies
-        run: bun install --frozen-lockfile
-      - run: bun run build
+          working-directory: ./sdk
       - name: Publish node build to npm
-        # OIDC trusted publishing (--provenance is implicit). Tag inferred from
-        # the version: prerelease versions (containing a `-`) ship as `beta`,
-        # otherwise `latest`.
-        env:
-          VERSION: ${{ needs.release-please.outputs.sdk_version }}
-        run: |
-          if [[ "$VERSION" == *-* ]]; then
-            npm publish --access=public --tag beta
-          else
-            npm publish --access=public
-          fi
+        # OIDC trusted publishing — --provenance is implicit, no NPM_TOKEN.
+        run: npm publish --access=public
       - name: Build browser bundle
         run: |
           bun run build:browser
@@ -92,14 +75,7 @@ jobs:
       - name: Publish browser build to npm
         # Requires a separate Trusted Publisher entry on npmjs.com for
         # @velocity-exchange/sdk-browser pointing at this workflow + job.
-        env:
-          VERSION: ${{ needs.release-please.outputs.sdk_version }}
-        run: |
-          if [[ "$VERSION" == *-* ]]; then
-            npm publish --access=public --tag beta
-          else
-            npm publish --access=public
-          fi
+        run: npm publish --access=public
       - name: Notify Slack on failure
         if: failure()
         uses: slackapi/slack-github-action@e28cf165c92ffef168d23c5c9000cffc8a25e117 # v1.24.0
@@ -131,36 +107,17 @@ jobs:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
         with:
           ref: ${{ needs.release-please.outputs.cli_admin_tag }}
-      - name: Setup node
-        uses: actions/setup-node@7c12f8017d5436eb855f1ed4399f037a36fbd9e8 # v2
+      - uses: ./.github/actions/npm-publish-setup
         with:
-          node-version: ${{ env.NODE_VERSION }}
-          registry-url: "https://registry.npmjs.org"
-      - name: Ensure npm CLI supports trusted publishing
-        run: npm install -g npm@11.14.1
-      - name: Setup bun
-        uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
-        with:
-          bun-version: 1.3.14
-      - name: Install + build
-        run: |
-          bun install --frozen-lockfile
-          bun run build
+          working-directory: ./cli-admin
       - name: Pin @velocity-exchange/sdk dep + publish
         # prepare-publish rewrites file:../sdk to a real semver before publish;
         # restore-publish puts the file:.. back so the local checkout matches
         # the committed state. Authenticates via OIDC trusted publishing.
-        env:
-          VERSION: ${{ needs.release-please.outputs.cli_admin_version }}
         run: |
           bun run prepare-publish
-          if [[ "$VERSION" == *-* ]]; then
-            npm publish --access=public --tag beta
-            status=$?
-          else
-            npm publish --access=public
-            status=$?
-          fi
+          npm publish --access=public
+          status=$?
           bun run restore-publish
           exit $status
       - name: Notify Slack on failure

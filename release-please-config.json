@@ -21,14 +21,7 @@
   "packages": {
     "sdk": {
       "package-name": "@velocity-exchange/sdk",
-      "changelog-path": "CHANGELOG.md",
-      "extra-files": [
-        {
-          "type": "json",
-          "path": "src/idl/drift.json",
-          "jsonpath": "$.metadata.version"
-        }
-      ]
+      "changelog-path": "CHANGELOG.md"
     },
     "cli-admin": {
       "package-name": "@velocity-exchange/admin-cli",

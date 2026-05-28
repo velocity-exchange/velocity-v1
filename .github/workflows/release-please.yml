@@ -45,7 +45,7 @@ jobs:
           manifest-file: .release-please-manifest.json
 
   # ---------------------------------------------------------------------------
-  # 2. Publish @velocity-exchange/sdk (node) + @velocity-exchange/sdk-browser.
+  # 2. Publish @velocity-exchange/sdk (node).
   #    Runs only when release-please cut a tag for the `sdk` component.
   # ---------------------------------------------------------------------------
   publish-sdk:
@@ -68,22 +68,14 @@ jobs:
       - name: Publish node build to npm
         # OIDC trusted publishing — --provenance is implicit, no NPM_TOKEN.
         run: npm publish --access=public
-      - name: Build browser bundle
-        run: |
-          bun run build:browser
-          node -e "const p=require('./package.json'); p.name=p.name+'-browser'; require('fs').writeFileSync('package.json', JSON.stringify(p, null, 2));"
-      - name: Publish browser build to npm
-        # Requires a separate Trusted Publisher entry on npmjs.com for
-        # @velocity-exchange/sdk-browser pointing at this workflow + job.
-        run: npm publish --access=public
       - name: Notify Slack on failure
         if: failure()
         uses: slackapi/slack-github-action@e28cf165c92ffef168d23c5c9000cffc8a25e117 # v1.24.0
         env:
           SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_TOKEN }}
         with:
-          channel-id: "#code-review"
-          slack-message: "<!here> ❌ SDK publish failed: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+          channel-id: '#code-review'
+          slack-message: '<!here> ❌ SDK publish failed: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}'
 
   # ---------------------------------------------------------------------------
   # 3. Publish @velocity-exchange/admin-cli. Depends on publish-sdk so the SDK
@@ -126,8 +118,8 @@ jobs:
         env:
           SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_TOKEN }}
         with:
-          channel-id: "#code-review"
-          slack-message: "<!here> ❌ cli-admin publish failed: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+          channel-id: '#code-review'
+          slack-message: '<!here> ❌ cli-admin publish failed: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}'
 
   # ---------------------------------------------------------------------------
   # 4. Fan out repository_dispatch events to downstream consumers of the SDK.

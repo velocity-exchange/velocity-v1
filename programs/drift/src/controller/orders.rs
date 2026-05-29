@@ -2328,18 +2328,17 @@ pub fn fulfill_perp_order_with_amm(
     user_stats.increment_total_rebate(maker_rebate)?;
     user_stats.increment_total_referee_discount(referee_discount)?;
 
+    // SPIKE (unify referrer + builder rev-share): referral rewards ride the same
+    // rail as builder fees — they accrue into the taker's escrow referral order
+    // slot and settle later via settle_pnl into the referrer's RevenueShare
+    // account. No referrer User/UserStats is loaded or mutated on the fill, which
+    // is what lets us drop those accounts from the perp fill path. The legacy
+    // inline credit (referrer perp position + UserStats) is removed; production
+    // prerequisite is that every referred user has a RevenueShareEscrow with
+    // `referrer` set so a referral slot exists (see the migrate_referrer ix).
     if let (Some(idx), Some(escrow)) = (referrer_builder_order_idx, rev_share_escrow.as_mut()) {
         let order = escrow.get_order_mut(idx)?;
         order.fees_accrued = order.fees_accrued.safe_add(referrer_reward)?;
-    } else if let (Some(referrer), Some(referrer_stats)) =
-        (referrer.as_mut(), referrer_stats.as_mut())
-    {
-        if let Ok(referrer_position) = referrer.force_get_perp_position_mut(market.market_index) {
-            if referrer_reward > 0 {
-                update_quote_asset_amount(referrer_position, market, referrer_reward.cast()?)?;
-            }
-            referrer_stats.increment_total_referrer_reward(referrer_reward, now)?;
-        }
     }
 
     let position_index = get_position_index(&user.perp_positions, market.market_index)?;

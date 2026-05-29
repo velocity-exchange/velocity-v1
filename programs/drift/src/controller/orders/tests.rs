@@ -238,6 +238,214 @@ pub mod fulfill_order_with_maker_order {
         assert_eq!(market.amm.net_revenue_since_last_funding, 20000);
     }
 
+    // SPIKE e2e (unify referrer + builder rev-share): a single perp match-fill
+    // where the taker has BOTH a builder code and a referrer. Both fee shares must
+    // travel the one RevenueShareEscrow rail — the builder fee into the builder's
+    // Open order slot, the referrer reward into a separate auto-created Referral
+    // slot — and the fill must succeed WITHOUT any referrer User/UserStats passed
+    // in (referrer / referrer_stats = None), which is the whole point: referrer
+    // accounts no longer ride the fill.
+    #[test]
+    fn referrer_and_builder_code_both_accrue_through_escrow() {
+        use crate::state::revenue_share::{
+            BuilderInfo, RevenueShareEscrow, RevenueShareEscrowLoader, RevenueShareOrder,
+            RevenueShareOrderBitFlag,
+        };
+        use crate::state::state::{FeeStructure, FeeTier};
+        use crate::state::user::{MarketType, UserStats};
+        use crate::test_utils::create_account_info;
+
+        let taker_order_id = 1_u32;
+
+        let mut taker = User {
+            orders: get_orders(Order {
+                order_id: taker_order_id,
+                market_index: 0,
+                order_type: OrderType::Market,
+                direction: PositionDirection::Long,
+                base_asset_amount: BASE_PRECISION_U64,
+                slot: 0,
+                auction_start_price: 100 * PRICE_PRECISION_I64,
+                auction_end_price: 200 * PRICE_PRECISION_I64,
+                auction_duration: 5,
+                ..Order::default()
+            }),
+            perp_positions: get_positions(PerpPosition {
+                market_index: 0,
+                open_orders: 1,
+                open_bids: BASE_PRECISION_I64,
+                ..PerpPosition::default()
+            }),
+            ..User::default()
+        };
+
+        let mut maker = User {
+            orders: get_orders(Order {
+                market_index: 0,
+                post_only: true,
+                order_type: OrderType::Limit,
+                direction: PositionDirection::Short,
+                base_asset_amount: BASE_PRECISION_U64,
+                price: 100 * PRICE_PRECISION_U64,
+                ..Order::default()
+            }),
+            perp_positions: get_positions(PerpPosition {
+                market_index: 0,
+                open_orders: 1,
+                open_asks: -BASE_PRECISION_I64,
+                ..PerpPosition::default()
+            }),
+            ..User::default()
+        };
+
+        let mut market = PerpMarket::default_test();
+
+        let now = 1_i64;
+        let slot = 1_u64;
+
+        // Fee tier with a real referrer reward + referee discount so the referral
+        // accrual is non-zero (the default test tier zeroes these out).
+        let mut fee_tiers = [FeeTier::default(); 10];
+        fee_tiers[0] = FeeTier {
+            fee_numerator: 5,
+            fee_denominator: 10000,
+            maker_rebate_numerator: 3,
+            maker_rebate_denominator: 10000,
+            referrer_reward_numerator: 15,
+            referrer_reward_denominator: 100,
+            referee_fee_numerator: 5,
+            referee_fee_denominator: 100,
+            ..FeeTier::default()
+        };
+        let fee_structure = FeeStructure {
+            fee_tiers,
+            ..FeeStructure::test_default()
+        };
+
+        let (taker_key, maker_key, filler_key) = get_user_keys();
+
+        let mut taker_stats = UserStats::default();
+        let mut maker_stats = UserStats::default();
+
+        // Build the taker's RevenueShareEscrow: one approved builder, one Open
+        // builder order matched to the taker's order, a referrer set, and spare
+        // slots for the auto-created referral order.
+        let builder_authority = Pubkey::new_unique();
+        let referrer_authority = Pubkey::new_unique();
+        let mut escrow = RevenueShareEscrow {
+            authority: taker_key,
+            referrer: referrer_authority,
+            ..RevenueShareEscrow::default()
+        };
+        escrow.approved_builders = vec![BuilderInfo {
+            authority: builder_authority,
+            max_fee_tenth_bps: 1000,
+            padding: [0; 6],
+        }];
+        let mut orders = vec![RevenueShareOrder::default(); 4];
+        orders[0] = RevenueShareOrder::new(
+            0,              // builder_idx into approved_builders
+            0,              // sub_account_id (taker default)
+            taker_order_id, // order_id — must match the taker's order
+            100,            // fee_tenth_bps (10 bps)
+            MarketType::Perp,
+            0, // market_index
+            RevenueShareOrderBitFlag::Open as u8,
+            0, // user_order_index
+        );
+        escrow.orders = orders;
+
+        // Serialize -> account bytes -> zero-copy mut view, exactly as the program
+        // loads the escrow on a fill.
+        // `try_serialize` writes the 8-byte account discriminator followed by the
+        // Borsh body — exactly the layout `load_zc_mut` reads back.
+        let mut escrow_bytes: Vec<u8> = Vec::new();
+        anchor_lang::AccountSerialize::try_serialize(&escrow, &mut escrow_bytes).unwrap();
+        let escrow_key = Pubkey::default();
+        let mut escrow_lamports = 0_u64;
+        let program_id = crate::ID;
+        let escrow_account_info = create_account_info(
+            &escrow_key,
+            true,
+            &mut escrow_lamports,
+            &mut escrow_bytes,
+            &program_id,
+        );
+        let mut escrow_zc = escrow_account_info.load_zc_mut().unwrap();
+
+        let taker_limit_price = taker.orders[0]
+            .get_limit_price(None, None, slot, market.amm.order_tick_size)
+            .unwrap();
+        let maker_price = maker.orders[0].price;
+
+        fulfill_perp_order_with_match(
+            &mut market,
+            &mut taker,
+            &mut taker_stats,
+            0,
+            &taker_key,
+            &mut maker,
+            &mut Some(&mut maker_stats),
+            0,
+            &maker_key,
+            &mut None,
+            &mut None,
+            &filler_key,
+            &mut None, // referrer: NONE — no referrer User on the fill
+            &mut None, // referrer_stats: NONE
+            0,
+            None,
+            taker_limit_price,
+            maker_price,
+            now,
+            slot,
+            &fee_structure,
+            &mut get_oracle_map(),
+            false,
+            &mut Some(&mut escrow_zc), // unified rail
+            true,                      // builder_referral_feature_enabled
+        )
+        .unwrap();
+
+        // Builder fee accrued into the builder's Open order slot.
+        let builder_order = escrow_zc.get_order(0).unwrap();
+        assert!(builder_order.is_open());
+        assert!(
+            builder_order.fees_accrued > 0,
+            "builder fee should accrue to the builder order slot"
+        );
+
+        // Referrer reward accrued into a *separate* auto-created referral slot.
+        let mut referral_idx = None;
+        let mut referral_fees = 0_u64;
+        for i in 0..escrow_zc.orders_len() {
+            let order = escrow_zc.get_order(i).unwrap();
+            if order.is_referral_order() {
+                referral_idx = Some(i);
+                referral_fees = order.fees_accrued;
+            }
+        }
+        let referral_idx = referral_idx.expect("a referral order slot should be created");
+        assert_ne!(
+            referral_idx, 0,
+            "referral slot must be distinct from the builder order slot"
+        );
+        assert!(
+            referral_fees > 0,
+            "referrer reward should accrue to the referral order slot"
+        );
+
+        // Referee discount is still applied to the taker (unchanged by the spike).
+        assert!(taker_stats.fees.total_referee_discount > 0);
+
+        // Taker still got filled.
+        assert_eq!(
+            taker.perp_positions[0].base_asset_amount,
+            BASE_PRECISION_I64
+        );
+        assert!(taker.orders[0].is_available());
+    }
+
     #[test]
     fn long_taker_order_fulfilled_middle_of_auction() {
         let mut taker = User {

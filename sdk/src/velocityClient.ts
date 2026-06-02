@@ -2495,6 +2495,71 @@ export class VelocityClient {
 		return VelocityCore.remainingAccounts.getRemainingAccounts(this, params);
 	}
 
+	/**
+	 * Spot markets backing a user's borrows have their collateral-usage updated
+	 * on borrow/repay/liquidation, so the program needs them writable. Returns
+	 * the user's active spot market indexes plus any `additionalIndexes`.
+	 */
+	private getCollateralUsageWritableSpotMarketIndexes(
+		userAccount: UserAccount,
+		additionalIndexes: number[] = []
+	): number[] {
+		const indexes = new Set<number>(additionalIndexes);
+		for (const spotPosition of userAccount.spotPositions) {
+			if (!isSpotPositionAvailable(spotPosition)) {
+				indexes.add(spotPosition.marketIndex);
+			}
+		}
+		return Array.from(indexes);
+	}
+
+	private userAccountHasSpotBorrow(userAccount: UserAccount): boolean {
+		return userAccount.spotPositions.some(
+			(spotPosition) =>
+				!isSpotPositionAvailable(spotPosition) &&
+				isVariant(spotPosition.balanceType, 'borrow')
+		);
+	}
+
+	private async getUserAccountForCollateralUsage(
+		subAccountId: number,
+		authority: PublicKey
+	): Promise<UserAccount> {
+		const userMapKey = this.getUserMapKey(subAccountId, authority);
+		if (this.users.has(userMapKey)) {
+			return this.users.get(userMapKey).getUserAccount();
+		}
+		const userAccountPublicKey = getUserAccountPublicKeySync(
+			this.program.programId,
+			authority,
+			subAccountId
+		);
+		return (await (this.program.account as any).user.fetch(
+			userAccountPublicKey
+		)) as UserAccount;
+	}
+
+	private async getUserAccountForCollateralUsageIfExists(
+		subAccountId: number,
+		authority: PublicKey
+	): Promise<UserAccount | undefined> {
+		const userMapKey = this.getUserMapKey(subAccountId, authority);
+		if (this.users.has(userMapKey)) {
+			return this.users.get(userMapKey).getUserAccount();
+		}
+		const userAccountPublicKey = getUserAccountPublicKeySync(
+			this.program.programId,
+			authority,
+			subAccountId
+		);
+		if (!(await this.checkIfAccountExists(userAccountPublicKey))) {
+			return undefined;
+		}
+		return (await (this.program.account as any).user.fetch(
+			userAccountPublicKey
+		)) as UserAccount;
+	}
+
 	addPerpMarketToRemainingAccountMaps(
 		marketIndex: number,
 		writable: boolean,
@@ -2908,10 +2973,20 @@ export class VelocityClient {
 
 		let remainingAccounts = [];
 		if (userInitialized) {
+			const userAccount = await this.forceGetUserAccount(subAccountId);
+			// a deposit only moves collateral usage when it repays a borrow, in
+			// which case every market backing the borrow must be writable
+			const writableSpotMarketIndexes = this.userAccountHasSpotBorrow(
+				userAccount
+			)
+				? this.getCollateralUsageWritableSpotMarketIndexes(userAccount, [
+						marketIndex,
+				  ])
+				: [marketIndex];
 			remainingAccounts = this.getRemainingAccounts({
-				userAccounts: [await this.forceGetUserAccount(subAccountId)],
+				userAccounts: [userAccount],
 				useMarketLastSlotCache: true,
-				writableSpotMarketIndexes: [marketIndex],
+				writableSpotMarketIndexes,
 			});
 		} else {
 			remainingAccounts = this.getRemainingAccounts({
@@ -3610,10 +3685,16 @@ export class VelocityClient {
 	): Promise<TransactionInstruction> {
 		const user = await this.getUserAccountPublicKey(subAccountId);
 
+		// a withdraw can open/grow a borrow, moving collateral usage across every
+		// market backing the user's borrows, so all of them must be writable
+		const userAccount = this.getUserAccount(subAccountId);
 		const remainingAccounts = this.getRemainingAccounts({
-			userAccounts: [this.getUserAccount(subAccountId)],
+			userAccounts: [userAccount],
 			useMarketLastSlotCache: true,
-			writableSpotMarketIndexes: [marketIndex],
+			writableSpotMarketIndexes:
+				this.getCollateralUsageWritableSpotMarketIndexes(userAccount, [
+					marketIndex,
+				]),
 			readableSpotMarketIndexes: [QUOTE_SPOT_MARKET_INDEX],
 		});
 
@@ -3701,34 +3782,37 @@ export class VelocityClient {
 			toSubAccountId
 		);
 
-		let remainingAccounts;
-
-		const userMapKey = this.getUserMapKey(
+		// both users' borrows can move, so mark every market backing either
+		// user's borrows writable (plus the transferred market)
+		const fromUserAccount = await this.getUserAccountForCollateralUsage(
 			fromSubAccountId,
 			this.wallet.publicKey
 		);
-		if (this.users.has(userMapKey)) {
-			remainingAccounts = this.getRemainingAccounts({
-				userAccounts: [this.users.get(userMapKey).getUserAccount()],
-				useMarketLastSlotCache: true,
-				writableSpotMarketIndexes: [marketIndex],
-			});
-		} else {
-			const userAccountPublicKey = getUserAccountPublicKeySync(
-				this.program.programId,
-				this.authority,
-				fromSubAccountId
-			);
-
-			const fromUserAccount = (await (this.program.account as any).user.fetch(
-				userAccountPublicKey
-			)) as UserAccount;
-			remainingAccounts = this.getRemainingAccounts({
-				userAccounts: [fromUserAccount],
-				useMarketLastSlotCache: true,
-				writableSpotMarketIndexes: [marketIndex],
-			});
+		const toUserAccount = await this.getUserAccountForCollateralUsageIfExists(
+			toSubAccountId,
+			this.wallet.publicKey
+		);
+		const userAccounts = toUserAccount
+			? [fromUserAccount, toUserAccount]
+			: [fromUserAccount];
+		const writableSpotMarketIndexes = new Set([
+			...this.getCollateralUsageWritableSpotMarketIndexes(fromUserAccount, [
+				marketIndex,
+			]),
+		]);
+		if (toUserAccount) {
+			for (const index of this.getCollateralUsageWritableSpotMarketIndexes(
+				toUserAccount,
+				[marketIndex]
+			)) {
+				writableSpotMarketIndexes.add(index);
+			}
 		}
+		const remainingAccounts = this.getRemainingAccounts({
+			userAccounts,
+			useMarketLastSlotCache: true,
+			writableSpotMarketIndexes: [...writableSpotMarketIndexes],
+		});
 
 		return await this.program.instruction.transferDeposit(marketIndex, amount, {
 			accounts: {
@@ -3789,25 +3873,37 @@ export class VelocityClient {
 			toSubAccountId
 		);
 
-		let remainingAccounts;
-
-		const userMapKey = this.getUserMapKey(fromSubAccountId, this.authority);
-		if (this.users.has(userMapKey)) {
-			remainingAccounts = this.getRemainingAccounts({
-				userAccounts: [this.users.get(userMapKey).getUserAccount()],
-				useMarketLastSlotCache: true,
-				writableSpotMarketIndexes: [marketIndex],
-			});
-		} else {
-			const fromUserAccount = (await (this.program.account as any).user.fetch(
-				fromUser
-			)) as UserAccount;
-			remainingAccounts = this.getRemainingAccounts({
-				userAccounts: [fromUserAccount],
-				useMarketLastSlotCache: true,
-				writableSpotMarketIndexes: [marketIndex],
-			});
+		// both users' borrows can move, so mark every market backing either
+		// user's borrows writable (plus the transferred market)
+		const fromUserAccount = await this.getUserAccountForCollateralUsage(
+			fromSubAccountId,
+			this.authority
+		);
+		const toUserAccount = await this.getUserAccountForCollateralUsageIfExists(
+			toSubAccountId,
+			this.authority
+		);
+		const userAccounts = toUserAccount
+			? [fromUserAccount, toUserAccount]
+			: [fromUserAccount];
+		const writableSpotMarketIndexes = new Set([
+			...this.getCollateralUsageWritableSpotMarketIndexes(fromUserAccount, [
+				marketIndex,
+			]),
+		]);
+		if (toUserAccount) {
+			for (const index of this.getCollateralUsageWritableSpotMarketIndexes(
+				toUserAccount,
+				[marketIndex]
+			)) {
+				writableSpotMarketIndexes.add(index);
+			}
 		}
+		const remainingAccounts = this.getRemainingAccounts({
+			userAccounts,
+			useMarketLastSlotCache: true,
+			writableSpotMarketIndexes: [...writableSpotMarketIndexes],
+		});
 
 		return await this.program.instruction.transferDepositByDelegate(
 			marketIndex,
@@ -3889,21 +3985,37 @@ export class VelocityClient {
 			toSubAccountId
 		);
 
-		const userAccounts = [this.getUserAccount(fromSubAccountId)];
+		const fromUserAccount = this.getUserAccount(fromSubAccountId);
+		const userAccounts = [fromUserAccount];
+
+		// both users' borrows move across the four transfer markets, so mark
+		// every market backing either user's borrows writable too
+		const writableSpotMarketIndexes = new Set<number>([
+			depositFromMarketIndex,
+			depositToMarketIndex,
+			borrowFromMarketIndex,
+			borrowToMarketIndex,
+		]);
+		for (const index of this.getCollateralUsageWritableSpotMarketIndexes(
+			fromUserAccount
+		)) {
+			writableSpotMarketIndexes.add(index);
+		}
 
 		if (!isToNewSubAccount) {
-			userAccounts.push(this.getUserAccount(toSubAccountId));
+			const toUserAccount = this.getUserAccount(toSubAccountId);
+			userAccounts.push(toUserAccount);
+			for (const index of this.getCollateralUsageWritableSpotMarketIndexes(
+				toUserAccount
+			)) {
+				writableSpotMarketIndexes.add(index);
+			}
 		}
 
 		const remainingAccounts = this.getRemainingAccounts({
 			userAccounts,
 			useMarketLastSlotCache: true,
-			writableSpotMarketIndexes: [
-				depositFromMarketIndex,
-				depositToMarketIndex,
-				borrowFromMarketIndex,
-				borrowToMarketIndex,
-			],
+			writableSpotMarketIndexes: [...writableSpotMarketIndexes],
 		});
 
 		const tokenPrograms = new Set<string>();
@@ -5964,9 +6076,23 @@ export class VelocityClient {
 			// ignore
 		}
 
+		// end_swap moves collateral usage across every market backing the user's
+		// borrows, so mark those writable alongside the in/out markets
+		const writableSpotMarketIndexes = new Set<number>([
+			outMarketIndex,
+			inMarketIndex,
+		]);
+		for (const userAccount of userAccounts) {
+			for (const index of this.getCollateralUsageWritableSpotMarketIndexes(
+				userAccount
+			)) {
+				writableSpotMarketIndexes.add(index);
+			}
+		}
+
 		const remainingAccounts = this.getRemainingAccounts({
 			userAccounts,
-			writableSpotMarketIndexes: [outMarketIndex, inMarketIndex],
+			writableSpotMarketIndexes: [...writableSpotMarketIndexes],
 			readableSpotMarketIndexes: [QUOTE_SPOT_MARKET_INDEX],
 		});
 
@@ -7827,7 +7953,12 @@ export class VelocityClient {
 		const remainingAccounts = this.getRemainingAccounts({
 			userAccounts: [settleeUserAccount],
 			writablePerpMarketIndexes: [marketIndex],
-			writableSpotMarketIndexes: [QUOTE_SPOT_MARKET_INDEX],
+			// settling pnl moves the user's quote balance, so every market backing
+			// their borrows must be writable for collateral-usage updates
+			writableSpotMarketIndexes:
+				this.getCollateralUsageWritableSpotMarketIndexes(settleeUserAccount, [
+					QUOTE_SPOT_MARKET_INDEX,
+				]),
 		});
 
 		if (revenueShareEscrowMap) {
@@ -8024,7 +8155,12 @@ export class VelocityClient {
 		const remainingAccounts = this.getRemainingAccounts({
 			userAccounts: [settleeUserAccount],
 			writablePerpMarketIndexes: marketIndexes,
-			writableSpotMarketIndexes: [QUOTE_SPOT_MARKET_INDEX],
+			// settling pnl moves the user's quote balance, so every market backing
+			// their borrows must be writable for collateral-usage updates
+			writableSpotMarketIndexes:
+				this.getCollateralUsageWritableSpotMarketIndexes(settleeUserAccount, [
+					QUOTE_SPOT_MARKET_INDEX,
+				]),
 		});
 
 		if (revenueShareEscrowMap) {
@@ -8358,10 +8494,25 @@ export class VelocityClient {
 		);
 		const liquidatorStatsPublicKey = this.getUserStatsAccountPublicKey();
 
+		// the liability moves from the liquidatee to the liquidator, so mark
+		// every market backing either user's borrows writable
+		const liquidatorAccount = this.getUserAccount(liquidatorSubAccountId);
+		const writableSpotMarketIndexes = new Set<number>([
+			liabilityMarketIndex,
+			assetMarketIndex,
+		]);
+		for (const account of [liquidatorAccount, userAccount]) {
+			for (const index of this.getCollateralUsageWritableSpotMarketIndexes(
+				account
+			)) {
+				writableSpotMarketIndexes.add(index);
+			}
+		}
+
 		const remainingAccounts = this.getRemainingAccounts({
-			userAccounts: [this.getUserAccount(liquidatorSubAccountId), userAccount],
+			userAccounts: [liquidatorAccount, userAccount],
 			useMarketLastSlotCache: true,
-			writableSpotMarketIndexes: [liabilityMarketIndex, assetMarketIndex],
+			writableSpotMarketIndexes: [...writableSpotMarketIndexes],
 		});
 
 		return await (this.program.instruction as any).liquidateSpot(
@@ -8562,9 +8713,20 @@ export class VelocityClient {
 		const liquidatorStatsPublicKey = this.getUserStatsAccountPublicKey();
 
 		const userAccounts = [userAccount];
+		// the swap settles into the liquidatee's positions, so mark every market
+		// backing its borrows writable alongside the asset/liability markets
+		const writableSpotMarketIndexes = new Set<number>([
+			liabilityMarketIndex,
+			assetMarketIndex,
+		]);
+		for (const index of this.getCollateralUsageWritableSpotMarketIndexes(
+			userAccount
+		)) {
+			writableSpotMarketIndexes.add(index);
+		}
 		const remainingAccounts = this.getRemainingAccounts({
 			userAccounts,
-			writableSpotMarketIndexes: [liabilityMarketIndex, assetMarketIndex],
+			writableSpotMarketIndexes: [...writableSpotMarketIndexes],
 			readableSpotMarketIndexes: [QUOTE_SPOT_MARKET_INDEX],
 		});
 
@@ -8812,10 +8974,22 @@ export class VelocityClient {
 		);
 		const liquidatorStatsPublicKey = this.getUserStatsAccountPublicKey();
 
+		// spot exposure moves between both parties, so mark every market backing
+		// either user's borrows writable
+		const liquidatorAccount = this.getUserAccount(liquidatorSubAccountId);
+		const writableSpotMarketIndexes = new Set<number>([liabilityMarketIndex]);
+		for (const account of [liquidatorAccount, userAccount]) {
+			for (const index of this.getCollateralUsageWritableSpotMarketIndexes(
+				account
+			)) {
+				writableSpotMarketIndexes.add(index);
+			}
+		}
+
 		const remainingAccounts = this.getRemainingAccounts({
-			userAccounts: [this.getUserAccount(liquidatorSubAccountId), userAccount],
+			userAccounts: [liquidatorAccount, userAccount],
 			writablePerpMarketIndexes: [perpMarketIndex],
-			writableSpotMarketIndexes: [liabilityMarketIndex],
+			writableSpotMarketIndexes: [...writableSpotMarketIndexes],
 		});
 
 		return await this.program.instruction.liquidateBorrowForPerpPnl(
@@ -8887,10 +9061,22 @@ export class VelocityClient {
 		);
 		const liquidatorStatsPublicKey = this.getUserStatsAccountPublicKey();
 
+		// spot exposure moves between both parties, so mark every market backing
+		// either user's borrows writable
+		const liquidatorAccount = this.getUserAccount(liquidatorSubAccountId);
+		const writableSpotMarketIndexes = new Set<number>([assetMarketIndex]);
+		for (const account of [liquidatorAccount, userAccount]) {
+			for (const index of this.getCollateralUsageWritableSpotMarketIndexes(
+				account
+			)) {
+				writableSpotMarketIndexes.add(index);
+			}
+		}
+
 		const remainingAccounts = this.getRemainingAccounts({
-			userAccounts: [this.getUserAccount(liquidatorSubAccountId), userAccount],
+			userAccounts: [liquidatorAccount, userAccount],
 			writablePerpMarketIndexes: [perpMarketIndex],
-			writableSpotMarketIndexes: [assetMarketIndex],
+			writableSpotMarketIndexes: [...writableSpotMarketIndexes],
 		});
 
 		return await this.program.instruction.liquidatePerpPnlForDeposit(
@@ -9018,9 +9204,14 @@ export class VelocityClient {
 		);
 		const liquidatorStatsPublicKey = this.getUserStatsAccountPublicKey();
 
+		// clearing the bankrupt borrow moves the liquidatee's collateral usage
+		// across every market backing it
 		const remainingAccounts = this.getRemainingAccounts({
 			userAccounts: [this.getUserAccount(liquidatorSubAccountId), userAccount],
-			writableSpotMarketIndexes: [marketIndex],
+			writableSpotMarketIndexes:
+				this.getCollateralUsageWritableSpotMarketIndexes(userAccount, [
+					marketIndex,
+				]),
 		});
 
 		const spotMarket = this.getSpotMarketAccount(marketIndex);

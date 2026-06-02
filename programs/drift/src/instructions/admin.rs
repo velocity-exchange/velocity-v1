@@ -386,7 +386,9 @@ pub fn handle_initialize_spot_market(
         min_borrow_rate: 0,
         token_program_flag: token_program,
         pool_id: 0,
-        padding: [0; 56],
+        padding_alignment: [0; 5],
+        total_usage_as_collateral: 0,
+        padding: [0; 48],
         insurance_fund: InsuranceFund {
             vault: ctx.accounts.insurance_fund_vault.key(),
             unstaking_period: THIRTEEN_DAY,

@@ -36,7 +36,7 @@ use crate::math::margin::{
     calculate_margin_requirement_and_total_collateral_and_liability_info,
     validate_any_isolated_tier_requirements,
 };
-use crate::state::margin_calculation::{MarginCalculation, MarginContext, MarginTypeConfig};
+use crate::state::margin_calculation::{MarginContext, MarginTypeConfig};
 use crate::state::oracle_map::OracleMap;
 use crate::state::perp_market_map::PerpMarketMap;
 use crate::state::spot_market_map::SpotMarketMap;
@@ -196,6 +196,24 @@ impl User {
     pub fn get_spot_position_mut(&mut self, market_index: u16) -> DriftResult<&mut SpotPosition> {
         self.get_spot_position_index(market_index)
             .map(move |market_index| &mut self.spot_positions[market_index])
+    }
+
+    /// Active spot market indexes the user has a position in, plus
+    /// `market_index` if not already present. Used to mark every market whose
+    /// collateral usage can change on a borrow/repay as writable.
+    pub fn get_active_spot_market_indexes_including(&self, market_index: u16) -> Vec<u16> {
+        let mut indexes: Vec<u16> = self
+            .spot_positions
+            .iter()
+            .filter(|position| !position.is_available())
+            .map(|position| position.market_index)
+            .collect();
+
+        if !indexes.contains(&market_index) {
+            indexes.push(market_index);
+        }
+
+        indexes
     }
 
     pub fn get_quote_spot_position(&self) -> &SpotPosition {

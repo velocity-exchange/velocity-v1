@@ -12,7 +12,6 @@ use anchor_spl::{
 };
 use solana_program::program::invoke;
 
-use crate::auth::check_hot;
 use crate::controller::funding::settle_funding_payment;
 use crate::controller::orders::{
     cancel_orders, validate_spot_dlob_trading_enabled_for_market_type, ModifyOrderId,
@@ -41,7 +40,8 @@ use crate::math::liquidation::is_cross_margin_being_liquidated;
 use crate::math::margin::calculate_margin_requirement_and_total_collateral_and_liability_info;
 use crate::math::margin::meets_initial_margin_requirement;
 use crate::math::margin::{
-    calculate_max_withdrawable_amount, validate_spot_margin_trading, MarginRequirementType,
+    apply_spot_collateral_usage_delta, calculate_max_withdrawable_amount,
+    calculate_spot_collateral_usage, validate_spot_margin_trading, MarginRequirementType,
 };
 use crate::math::oracle::is_oracle_valid_for_action;
 use crate::math::oracle::DriftAction;
@@ -95,7 +95,6 @@ use crate::state::spot_market::SpotMarket;
 use crate::state::spot_market_map::{
     get_writable_spot_market_set, get_writable_spot_market_set_from_many,
 };
-use crate::state::state::HotRole;
 use crate::state::state::State;
 use crate::state::traits::Size;
 use crate::state::user::OrderStatus;
@@ -541,6 +540,18 @@ pub fn handle_deposit<'c: 'info, 'info>(
     let now = clock.unix_timestamp;
     let slot = clock.slot;
 
+    // a deposit only changes collateral usage if it repays/reduces a borrow
+    // when the user has a borrow, every market backing it must be writable
+    let user_has_spot_borrow = user
+        .spot_positions
+        .iter()
+        .any(|position| !position.is_available() && position.is_borrow());
+    let collateral_usage_market_indexes = if user_has_spot_borrow {
+        user.get_active_spot_market_indexes_including(market_index)
+    } else {
+        vec![market_index]
+    };
+
     let remaining_accounts_iter = &mut ctx.remaining_accounts.iter().peekable();
     let AccountMaps {
         perp_market_map,
@@ -549,7 +560,7 @@ pub fn handle_deposit<'c: 'info, 'info>(
     } = load_maps(
         remaining_accounts_iter,
         &MarketSet::new(),
-        &get_writable_spot_market_set(market_index),
+        &get_writable_spot_market_set_from_many(collateral_usage_market_indexes),
         clock.slot,
         Some(state.oracle_guard_rails),
     )?;
@@ -561,6 +572,16 @@ pub fn handle_deposit<'c: 'info, 'info>(
     }
 
     validate!(!user.is_bankrupt(), ErrorCode::UserBankrupt)?;
+
+    let collateral_usage_before = if user_has_spot_borrow {
+        Some(calculate_spot_collateral_usage(
+            user,
+            &spot_market_map,
+            &mut oracle_map,
+        )?)
+    } else {
+        None
+    };
 
     let mut spot_market = spot_market_map.get_ref_mut(&market_index)?;
     let oracle_price_data = *oracle_map.get_price_data(&spot_market.oracle_id())?;
@@ -642,6 +663,17 @@ pub fn handle_deposit<'c: 'info, 'info>(
     }
 
     drop(spot_market);
+
+    if let Some(collateral_usage_before) = collateral_usage_before {
+        let collateral_usage_after =
+            calculate_spot_collateral_usage(user, &spot_market_map, &mut oracle_map)?;
+        apply_spot_collateral_usage_delta(
+            &collateral_usage_before,
+            &collateral_usage_after,
+            &spot_market_map,
+        )?;
+    }
+
     if user.is_cross_margin_being_liquidated() {
         // try to update liquidation status if user is was already being liq'd
         let is_being_liquidated = is_cross_margin_being_liquidated(
@@ -736,11 +768,16 @@ pub fn handle_withdraw<'c: 'info, 'info>(
 ) -> anchor_lang::Result<()> {
     let user_key = ctx.accounts.user.key();
     let user = &mut load_mut!(ctx.accounts.user)?;
-    let mut user_stats = load_mut!(ctx.accounts.user_stats)?;
+
     let clock = Clock::get()?;
     let now = clock.unix_timestamp;
     let slot = clock.slot;
     let state = ctx.accounts.state.load()?;
+
+    // every market that backs the user's borrows can have its collateral-usage
+    // change on this withdraw, so all of them must be writable
+    let collateral_usage_market_indexes =
+        user.get_active_spot_market_indexes_including(market_index);
 
     let remaining_accounts_iter = &mut ctx.remaining_accounts.iter().peekable();
     let AccountMaps {
@@ -750,7 +787,7 @@ pub fn handle_withdraw<'c: 'info, 'info>(
     } = load_maps(
         remaining_accounts_iter,
         &MarketSet::new(),
-        &get_writable_spot_market_set(market_index),
+        &get_writable_spot_market_set_from_many(collateral_usage_market_indexes),
         clock.slot,
         Some(state.oracle_guard_rails),
     )?;
@@ -771,6 +808,9 @@ pub fn handle_withdraw<'c: 'info, 'info>(
 
         spot_market.is_reduce_only()
     };
+
+    let collateral_usage_before =
+        calculate_spot_collateral_usage(user, &spot_market_map, &mut oracle_map)?;
 
     let amount = {
         let reduce_only = reduce_only || spot_market_is_reduce_only;
@@ -822,6 +862,14 @@ pub fn handle_withdraw<'c: 'info, 'info>(
 
         amount
     };
+
+    let collateral_usage_after =
+        calculate_spot_collateral_usage(user, &spot_market_map, &mut oracle_map)?;
+    apply_spot_collateral_usage_delta(
+        &collateral_usage_before,
+        &collateral_usage_after,
+        &spot_market_map,
+    )?;
 
     user.meets_withdraw_margin_requirement(
         &perp_market_map,
@@ -927,6 +975,22 @@ pub fn handle_transfer_deposit_by_delegate<'c: 'info, 'info>(
         "delegate transfer not allowed"
     )?;
 
+    // the transfer debits from_user (can borrow) and credits to_user (can
+    // repay), so both parties' collateral-backing markets must be writable
+    let to_user_has_spot_borrow = to_user
+        .spot_positions
+        .iter()
+        .any(|position| !position.is_available() && position.is_borrow());
+    let mut collateral_usage_market_indexes =
+        from_user.get_active_spot_market_indexes_including(market_index);
+    if to_user_has_spot_borrow {
+        for index in to_user.get_active_spot_market_indexes_including(market_index) {
+            if !collateral_usage_market_indexes.contains(&index) {
+                collateral_usage_market_indexes.push(index);
+            }
+        }
+    }
+
     let AccountMaps {
         perp_market_map,
         spot_market_map,
@@ -934,7 +998,7 @@ pub fn handle_transfer_deposit_by_delegate<'c: 'info, 'info>(
     } = load_maps(
         &mut ctx.remaining_accounts.iter().peekable(),
         &MarketSet::new(),
-        &get_writable_spot_market_set(market_index),
+        &get_writable_spot_market_set_from_many(collateral_usage_market_indexes),
         clock.slot,
         Some(state.oracle_guard_rails),
     )?;
@@ -952,6 +1016,18 @@ pub fn handle_transfer_deposit_by_delegate<'c: 'info, 'info>(
     let oracle_price = {
         let spot_market = &spot_market_map.get_ref(&market_index)?;
         oracle_map.get_price_data(&spot_market.oracle_id())?.price
+    };
+
+    let from_usage_before =
+        calculate_spot_collateral_usage(from_user, &spot_market_map, &mut oracle_map)?;
+    let to_usage_before = if to_user_has_spot_borrow {
+        Some(calculate_spot_collateral_usage(
+            to_user,
+            &spot_market_map,
+            &mut oracle_map,
+        )?)
+    } else {
+        None
     };
 
     {
@@ -1099,6 +1175,15 @@ pub fn handle_transfer_deposit_by_delegate<'c: 'info, 'info>(
 
     to_user.update_last_active_slot(slot);
 
+    let from_usage_after =
+        calculate_spot_collateral_usage(from_user, &spot_market_map, &mut oracle_map)?;
+    apply_spot_collateral_usage_delta(&from_usage_before, &from_usage_after, &spot_market_map)?;
+    if let Some(to_usage_before) = to_usage_before {
+        let to_usage_after =
+            calculate_spot_collateral_usage(to_user, &spot_market_map, &mut oracle_map)?;
+        apply_spot_collateral_usage_delta(&to_usage_before, &to_usage_after, &spot_market_map)?;
+    }
+
     let spot_market = spot_market_map.get_ref(&market_index)?;
     math::spot_withdraw::validate_spot_market_vault_amount(
         &spot_market,
@@ -1127,10 +1212,8 @@ pub fn handle_transfer_deposit<'c: 'info, 'info>(
 
     let to_user = &mut load_mut!(ctx.accounts.to_user)?;
     let from_user = &mut load_mut!(ctx.accounts.from_user)?;
-    let user_stats = &mut load_mut!(ctx.accounts.user_stats)?;
 
     let clock = Clock::get()?;
-    let now = clock.unix_timestamp;
 
     validate!(
         !to_user.is_bankrupt(),
@@ -1150,6 +1233,22 @@ pub fn handle_transfer_deposit<'c: 'info, 'info>(
         "cant transfer between the same user account"
     )?;
 
+    // the transfer debits from_user (can borrow) and credits to_user (can
+    // repay), so both parties' collateral-backing markets must be writable
+    let to_user_has_spot_borrow = to_user
+        .spot_positions
+        .iter()
+        .any(|position| !position.is_available() && position.is_borrow());
+    let mut collateral_usage_market_indexes =
+        from_user.get_active_spot_market_indexes_including(market_index);
+    if to_user_has_spot_borrow {
+        for index in to_user.get_active_spot_market_indexes_including(market_index) {
+            if !collateral_usage_market_indexes.contains(&index) {
+                collateral_usage_market_indexes.push(index);
+            }
+        }
+    }
+
     let AccountMaps {
         perp_market_map,
         spot_market_map,
@@ -1157,7 +1256,7 @@ pub fn handle_transfer_deposit<'c: 'info, 'info>(
     } = load_maps(
         &mut ctx.remaining_accounts.iter().peekable(),
         &MarketSet::new(),
-        &get_writable_spot_market_set(market_index),
+        &get_writable_spot_market_set_from_many(collateral_usage_market_indexes),
         clock.slot,
         Some(state.oracle_guard_rails),
     )?;
@@ -1175,6 +1274,18 @@ pub fn handle_transfer_deposit<'c: 'info, 'info>(
     let oracle_price = {
         let spot_market = &spot_market_map.get_ref(&market_index)?;
         oracle_map.get_price_data(&spot_market.oracle_id())?.price
+    };
+
+    let from_usage_before =
+        calculate_spot_collateral_usage(from_user, &spot_market_map, &mut oracle_map)?;
+    let to_usage_before = if to_user_has_spot_borrow {
+        Some(calculate_spot_collateral_usage(
+            to_user,
+            &spot_market_map,
+            &mut oracle_map,
+        )?)
+    } else {
+        None
     };
 
     {
@@ -1322,6 +1433,15 @@ pub fn handle_transfer_deposit<'c: 'info, 'info>(
 
     to_user.update_last_active_slot(slot);
 
+    let from_usage_after =
+        calculate_spot_collateral_usage(from_user, &spot_market_map, &mut oracle_map)?;
+    apply_spot_collateral_usage_delta(&from_usage_before, &from_usage_after, &spot_market_map)?;
+    if let Some(to_usage_before) = to_usage_before {
+        let to_usage_after =
+            calculate_spot_collateral_usage(to_user, &spot_market_map, &mut oracle_map)?;
+        apply_spot_collateral_usage_delta(&to_usage_before, &to_usage_after, &spot_market_map)?;
+    }
+
     let spot_market = spot_market_map.get_ref(&market_index)?;
     math::spot_withdraw::validate_spot_market_vault_amount(
         &spot_market,
@@ -1354,7 +1474,6 @@ pub fn handle_transfer_pools<'c: 'info, 'info>(
 
     let to_user = &mut load_mut!(ctx.accounts.to_user)?;
     let from_user = &mut load_mut!(ctx.accounts.from_user)?;
-    let user_stats = &mut load_mut!(ctx.accounts.user_stats)?;
 
     let clock = Clock::get()?;
 
@@ -1381,6 +1500,25 @@ pub fn handle_transfer_pools<'c: 'info, 'info>(
         "cant transfer between the same pool"
     )?;
 
+    // both users' borrows move, so every market backing either user's borrows
+    // must be writable for collateral-usage updates
+    let mut collateral_usage_market_indexes =
+        from_user.get_active_spot_market_indexes_including(deposit_from_market_index);
+    for index in to_user
+        .get_active_spot_market_indexes_including(deposit_to_market_index)
+        .into_iter()
+        .chain([
+            deposit_from_market_index,
+            deposit_to_market_index,
+            borrow_from_market_index,
+            borrow_to_market_index,
+        ])
+    {
+        if !collateral_usage_market_indexes.contains(&index) {
+            collateral_usage_market_indexes.push(index);
+        }
+    }
+
     let AccountMaps {
         perp_market_map,
         spot_market_map,
@@ -1388,15 +1526,15 @@ pub fn handle_transfer_pools<'c: 'info, 'info>(
     } = load_maps(
         &mut ctx.remaining_accounts.iter().peekable(),
         &MarketSet::new(),
-        &get_writable_spot_market_set_from_many(vec![
-            deposit_from_market_index,
-            deposit_to_market_index,
-            borrow_from_market_index,
-            borrow_to_market_index,
-        ]),
+        &get_writable_spot_market_set_from_many(collateral_usage_market_indexes),
         clock.slot,
         Some(state.oracle_guard_rails),
     )?;
+
+    let from_usage_before =
+        calculate_spot_collateral_usage(from_user, &spot_market_map, &mut oracle_map)?;
+    let to_usage_before =
+        calculate_spot_collateral_usage(to_user, &spot_market_map, &mut oracle_map)?;
 
     let mut deposit_from_spot_market = spot_market_map.get_ref_mut(&deposit_from_market_index)?;
     let mut deposit_to_spot_market = spot_market_map.get_ref_mut(&deposit_to_market_index)?;
@@ -1678,6 +1816,13 @@ pub fn handle_transfer_pools<'c: 'info, 'info>(
     drop(deposit_to_spot_market);
     drop(borrow_from_spot_market);
     drop(borrow_to_spot_market);
+
+    let from_usage_after =
+        calculate_spot_collateral_usage(from_user, &spot_market_map, &mut oracle_map)?;
+    apply_spot_collateral_usage_delta(&from_usage_before, &from_usage_after, &spot_market_map)?;
+    let to_usage_after =
+        calculate_spot_collateral_usage(to_user, &spot_market_map, &mut oracle_map)?;
+    apply_spot_collateral_usage_delta(&to_usage_before, &to_usage_after, &spot_market_map)?;
 
     from_user.meets_withdraw_margin_requirement_swap(
         &perp_market_map,
@@ -3716,6 +3861,17 @@ pub fn handle_end_swap<'c: 'info, 'info>(
     let slot = clock.slot;
     let now = clock.unix_timestamp;
 
+    let user_key = ctx.accounts.user.key();
+    let mut user = load_mut!(&ctx.accounts.user)?;
+
+    // a swap borrows the in-market and deposits the out-market, moving the
+    // user's collateral usage across every market backing their borrows
+    let mut collateral_usage_market_indexes =
+        user.get_active_spot_market_indexes_including(in_market_index);
+    if !collateral_usage_market_indexes.contains(&out_market_index) {
+        collateral_usage_market_indexes.push(out_market_index);
+    }
+
     let remaining_accounts = &mut ctx.remaining_accounts.iter().peekable();
     let AccountMaps {
         perp_market_map,
@@ -3724,7 +3880,7 @@ pub fn handle_end_swap<'c: 'info, 'info>(
     } = load_maps(
         remaining_accounts,
         &MarketSet::new(),
-        &get_writable_spot_market_set_from_many(vec![in_market_index, out_market_index]),
+        &get_writable_spot_market_set_from_many(collateral_usage_market_indexes),
         clock.slot,
         Some(state.oracle_guard_rails),
     )?;
@@ -3732,9 +3888,6 @@ pub fn handle_end_swap<'c: 'info, 'info>(
 
     let in_mint = get_token_mint(remaining_accounts)?;
     let out_mint = get_token_mint(remaining_accounts)?;
-
-    let user_key = ctx.accounts.user.key();
-    let mut user = load_mut!(&ctx.accounts.user)?;
 
     let mut user_stats = load_mut!(&ctx.accounts.user_stats)?;
 
@@ -3744,6 +3897,9 @@ pub fn handle_end_swap<'c: 'info, 'info>(
         !exchange_status.contains(ExchangeStatus::DepositPaused | ExchangeStatus::WithdrawPaused),
         ErrorCode::ExchangePaused
     )?;
+
+    let collateral_usage_before =
+        calculate_spot_collateral_usage(&user, &spot_market_map, &mut oracle_map)?;
 
     let mut in_spot_market = spot_market_map.get_ref_mut(&in_market_index)?;
 
@@ -4030,6 +4186,14 @@ pub fn handle_end_swap<'c: 'info, 'info>(
 
     drop(out_spot_market);
     drop(in_spot_market);
+
+    let collateral_usage_after =
+        calculate_spot_collateral_usage(&user, &spot_market_map, &mut oracle_map)?;
+    apply_spot_collateral_usage_delta(
+        &collateral_usage_before,
+        &collateral_usage_after,
+        &spot_market_map,
+    )?;
 
     user.meets_withdraw_margin_requirement_swap(
         &perp_market_map,

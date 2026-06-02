@@ -952,6 +952,8 @@ export type SpotMarketAccount = {
 	tokenProgramFlag: number;
 
 	poolId: number;
+
+	totalUsageAsCollateral: BN;
 };
 
 export type PoolBalance = {

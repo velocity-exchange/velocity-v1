@@ -192,7 +192,13 @@ pub struct SpotMarket {
     pub min_borrow_rate: u8,
     pub token_program_flag: u8,
     pub pool_id: u8,
-    pub padding: [u8; 56],
+    /// Aligns total_usage_as_collateral to its 8-byte offset
+    pub padding_alignment: [u8; 5],
+    /// Base tokens used as collateral backing borrows, attributed per borrower
+    /// in proportion to collateral committed
+    /// precision: token mint precision
+    pub total_usage_as_collateral: u64,
+    pub padding: [u8; 48],
 }
 
 impl Default for SpotMarket {
@@ -256,7 +262,9 @@ impl Default for SpotMarket {
             min_borrow_rate: 0,
             token_program_flag: 0,
             pool_id: 0,
-            padding: [0; 56],
+            padding_alignment: [0; 5],
+            total_usage_as_collateral: 0,
+            padding: [0; 48],
         }
     }
 }

@@ -564,7 +564,7 @@ pub fn calculate_margin_requirement_and_total_collateral_and_liability_info(
                 margin_ratio_override.max(perp_position_custom_margin_ratio);
         }
 
-        let (perp_margin_requirement, weighted_pnl, worst_case_liability_value, base_asset_value) =
+        let (perp_margin_requirement, weighted_pnl, worst_case_liability_value, _base_asset_value) =
             calculate_perp_position_value_and_pnl(
                 market_position,
                 market,
@@ -641,6 +641,172 @@ pub fn calculate_margin_requirement_and_total_collateral_and_liability_info(
     calculation.validate_num_spot_liabilities()?;
 
     Ok(calculation)
+}
+
+/// A user's base token amount committed as collateral in each spot market as deposits.
+#[derive(Default, Clone, Copy, Debug)]
+pub struct SpotCollateralUsage {
+    pub entries: [(u16, u64); 8],
+    pub len: usize,
+}
+
+impl SpotCollateralUsage {
+    fn amount(&self, market_index: u16) -> u64 {
+        self.entries[..self.len]
+            .iter()
+            .find(|(idx, _)| *idx == market_index)
+            .map(|(_, amount)| *amount)
+            .unwrap_or(0)
+    }
+
+    fn contains(&self, market_index: u16) -> bool {
+        self.entries[..self.len]
+            .iter()
+            .any(|(idx, _)| *idx == market_index)
+    }
+}
+
+/// How much of each deposited spot asset `user` currently has committed as
+/// collateral backing borrows.
+///
+/// Collateral is pooled across the account, so a borrow has no single backing
+/// asset. Each deposit is attributed in proportion to the share of the user's
+/// weighted collateral that borrows consume:
+///   utilization     = total weighted borrow requirement / total weighted collateral
+///   usage(market)   = deposit token amount(market) * utilization
+///
+/// Initial weights are used and utilization is capped at 100%. Results are in
+/// each market's token mint precision.
+pub fn calculate_spot_collateral_usage(
+    user: &User,
+    spot_market_map: &SpotMarketMap,
+    oracle_map: &mut OracleMap,
+) -> DriftResult<SpotCollateralUsage> {
+    let mut total_weighted_collateral: u128 = 0;
+    let mut total_weighted_borrow: u128 = 0;
+    let mut usage = SpotCollateralUsage::default();
+
+    for spot_position in user.spot_positions.iter() {
+        if spot_position.is_available() {
+            continue;
+        }
+
+        let spot_market = spot_market_map.get_ref(&spot_position.market_index)?;
+        let oracle_price = oracle_map.get_price_data(&spot_market.oracle_id())?.price;
+        let signed_token_amount = spot_position.get_signed_token_amount(&spot_market)?;
+        let token_value = get_token_value(signed_token_amount, spot_market.decimals, oracle_price)?;
+
+        match spot_position.balance_type {
+            SpotBalanceType::Deposit => {
+                if token_value <= 0 {
+                    continue;
+                }
+
+                let weight = spot_market.get_asset_weight(
+                    signed_token_amount.unsigned_abs(),
+                    oracle_price,
+                    &MarginRequirementType::Initial,
+                )?;
+
+                total_weighted_collateral = total_weighted_collateral.safe_add(
+                    token_value
+                        .unsigned_abs()
+                        .safe_mul(weight.cast()?)?
+                        .safe_div(SPOT_WEIGHT_PRECISION_U128)?,
+                )?;
+
+                usage.entries[usage.len] = (
+                    spot_position.market_index,
+                    signed_token_amount.unsigned_abs().cast::<u64>()?,
+                );
+                usage.len += 1;
+            }
+            SpotBalanceType::Borrow => {
+                let weight = spot_market.get_liability_weight(
+                    signed_token_amount.unsigned_abs(),
+                    &MarginRequirementType::Initial,
+                )?;
+
+                total_weighted_borrow = total_weighted_borrow.safe_add(
+                    token_value
+                        .unsigned_abs()
+                        .safe_mul(weight.cast()?)?
+                        .safe_div(SPOT_WEIGHT_PRECISION_U128)?,
+                )?;
+            }
+        }
+    }
+
+    let utilization = if total_weighted_collateral == 0 {
+        0
+    } else {
+        total_weighted_borrow
+            .safe_mul(SPOT_WEIGHT_PRECISION_U128)?
+            .safe_div(total_weighted_collateral)?
+            .min(SPOT_WEIGHT_PRECISION_U128)
+    };
+
+    for entry in usage.entries[..usage.len].iter_mut() {
+        entry.1 = entry
+            .1
+            .cast::<u128>()?
+            .safe_mul(utilization)?
+            .safe_div(SPOT_WEIGHT_PRECISION_U128)?
+            .cast::<u64>()?;
+    }
+
+    Ok(usage)
+}
+
+/// Applies the change in a user's collateral usage between two snapshots to
+/// each affected market's `total_usage_as_collateral`. Every market whose usage
+/// changed must be in the writable spot market set.
+pub fn apply_spot_collateral_usage_delta(
+    before: &SpotCollateralUsage,
+    after: &SpotCollateralUsage,
+    spot_market_map: &SpotMarketMap,
+) -> DriftResult {
+    for &(market_index, after_amount) in after.entries[..after.len].iter() {
+        update_market_collateral_usage(
+            spot_market_map,
+            market_index,
+            before.amount(market_index),
+            after_amount,
+        )?;
+    }
+
+    // markets the user no longer deposits into drop to zero
+    for &(market_index, before_amount) in before.entries[..before.len].iter() {
+        if !after.contains(market_index) {
+            update_market_collateral_usage(spot_market_map, market_index, before_amount, 0)?;
+        }
+    }
+
+    Ok(())
+}
+
+fn update_market_collateral_usage(
+    spot_market_map: &SpotMarketMap,
+    market_index: u16,
+    before_amount: u64,
+    after_amount: u64,
+) -> DriftResult {
+    if before_amount == after_amount {
+        return Ok(());
+    }
+
+    let mut spot_market = spot_market_map.get_ref_mut(&market_index)?;
+    spot_market.total_usage_as_collateral = if after_amount >= before_amount {
+        spot_market
+            .total_usage_as_collateral
+            .saturating_add(after_amount.safe_sub(before_amount)?)
+    } else {
+        spot_market
+            .total_usage_as_collateral
+            .saturating_sub(before_amount.safe_sub(after_amount)?)
+    };
+
+    Ok(())
 }
 
 pub fn validate_any_isolated_tier_requirements(

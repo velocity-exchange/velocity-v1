@@ -22985,11 +22985,32 @@ export type Drift = {
             "type": "u8"
           },
           {
+            "name": "paddingAlignment",
+            "docs": [
+              "Aligns total_usage_as_collateral to its 8-byte offset"
+            ],
+            "type": {
+              "array": [
+                "u8",
+                5
+              ]
+            }
+          },
+          {
+            "name": "totalUsageAsCollateral",
+            "docs": [
+              "Base tokens used as collateral backing borrows, attributed per borrower",
+              "in proportion to collateral committed",
+              "precision: token mint precision"
+            ],
+            "type": "u64"
+          },
+          {
             "name": "padding",
             "type": {
               "array": [
                 "u8",
-                56
+                48
               ]
             }
           }

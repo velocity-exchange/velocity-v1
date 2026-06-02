@@ -7839,3 +7839,266 @@ mod fill_perp_order_margin_requirement_with_isolated {
         });
     }
 }
+
+#[cfg(test)]
+mod collateral_usage_tests {
+    use std::str::FromStr;
+
+    use anchor_lang::prelude::Pubkey;
+
+    use crate::create_anchor_account_info;
+    use crate::math::constants::{
+        SPOT_BALANCE_PRECISION_U64, SPOT_CUMULATIVE_INTEREST_PRECISION, SPOT_WEIGHT_PRECISION,
+    };
+    use crate::math::margin::{
+        apply_spot_collateral_usage_delta, calculate_spot_collateral_usage, SpotCollateralUsage,
+    };
+    use crate::state::oracle::{HistoricalOracleData, OracleSource};
+    use crate::state::oracle_map::OracleMap;
+    use crate::state::pyth_lazer_oracle::PythLazerOracle;
+    use crate::state::spot_market::{SpotBalanceType, SpotMarket};
+    use crate::state::spot_market_map::SpotMarketMap;
+    use crate::state::user::{Order, PerpPosition, SpotPosition, User};
+    use crate::test_utils::get_pyth_price;
+
+    fn sol_oracle_key() -> Pubkey {
+        Pubkey::from_str("J83w4HKfqxwcq3BEMMkPFSppX3gqekLyLJBexebFVkix").unwrap()
+    }
+
+    fn usdc_market() -> SpotMarket {
+        SpotMarket {
+            market_index: 0,
+            oracle_source: OracleSource::QuoteAsset,
+            cumulative_deposit_interest: SPOT_CUMULATIVE_INTEREST_PRECISION,
+            cumulative_borrow_interest: SPOT_CUMULATIVE_INTEREST_PRECISION,
+            decimals: 6,
+            initial_asset_weight: SPOT_WEIGHT_PRECISION,
+            maintenance_asset_weight: SPOT_WEIGHT_PRECISION,
+            initial_liability_weight: SPOT_WEIGHT_PRECISION,
+            maintenance_liability_weight: SPOT_WEIGHT_PRECISION,
+            historical_oracle_data: HistoricalOracleData::default_quote_oracle(),
+            ..SpotMarket::default()
+        }
+    }
+
+    // $100 oracle, 0.8 initial asset weight
+    fn sol_market(market_index: u16) -> SpotMarket {
+        SpotMarket {
+            market_index,
+            oracle_source: OracleSource::PythLazer,
+            oracle: sol_oracle_key(),
+            cumulative_deposit_interest: SPOT_CUMULATIVE_INTEREST_PRECISION,
+            cumulative_borrow_interest: SPOT_CUMULATIVE_INTEREST_PRECISION,
+            decimals: 9,
+            initial_asset_weight: 8 * SPOT_WEIGHT_PRECISION / 10,
+            maintenance_asset_weight: 9 * SPOT_WEIGHT_PRECISION / 10,
+            initial_liability_weight: 12 * SPOT_WEIGHT_PRECISION / 10,
+            maintenance_liability_weight: 11 * SPOT_WEIGHT_PRECISION / 10,
+            ..SpotMarket::default()
+        }
+    }
+
+    fn deposit(market_index: u16, scaled_balance: u64) -> SpotPosition {
+        SpotPosition {
+            market_index,
+            balance_type: SpotBalanceType::Deposit,
+            scaled_balance,
+            ..SpotPosition::default()
+        }
+    }
+
+    fn borrow(market_index: u16, scaled_balance: u64) -> SpotPosition {
+        SpotPosition {
+            market_index,
+            balance_type: SpotBalanceType::Borrow,
+            scaled_balance,
+            ..SpotPosition::default()
+        }
+    }
+
+    fn user_with(spot_positions: [SpotPosition; 8]) -> User {
+        User {
+            orders: [Order::default(); 32],
+            perp_positions: [PerpPosition::default(); 8],
+            spot_positions,
+            ..User::default()
+        }
+    }
+
+    fn usage_of(market_index: u16, amount: u64) -> SpotCollateralUsage {
+        let mut usage = SpotCollateralUsage::default();
+        usage.entries[0] = (market_index, amount);
+        usage.len = 1;
+        usage
+    }
+
+    // a deposit with no borrow commits none of itself as collateral
+    #[test]
+    fn zero_usage_without_borrow() {
+        let mut sol_oracle_price = get_pyth_price(100, 6);
+        let key = sol_oracle_key();
+        create_anchor_account_info!(sol_oracle_price, &key, PythLazerOracle, oracle_ai);
+        let mut oracle_map = OracleMap::load_one(&oracle_ai, 0, None).unwrap();
+
+        let mut usdc = usdc_market();
+        create_anchor_account_info!(usdc, SpotMarket, usdc_ai);
+        let mut sol = sol_market(1);
+        create_anchor_account_info!(sol, SpotMarket, sol_ai);
+        let spot_market_map = SpotMarketMap::load_multiple(vec![&usdc_ai, &sol_ai], true).unwrap();
+
+        let mut positions = [SpotPosition::default(); 8];
+        positions[0] = deposit(1, 10 * SPOT_BALANCE_PRECISION_U64);
+        let user = user_with(positions);
+
+        let usage =
+            calculate_spot_collateral_usage(&user, &spot_market_map, &mut oracle_map).unwrap();
+
+        assert_eq!(usage.amount(1), 0);
+    }
+
+    // 10 SOL ($1000, weighted $800) backing a 200 USDC borrow ($200):
+    // utilization = 200/800 = 25%, so 2.5 of the 10 SOL is in use
+    #[test]
+    fn usage_proportional_to_utilization() {
+        let mut sol_oracle_price = get_pyth_price(100, 6);
+        let key = sol_oracle_key();
+        create_anchor_account_info!(sol_oracle_price, &key, PythLazerOracle, oracle_ai);
+        let mut oracle_map = OracleMap::load_one(&oracle_ai, 0, None).unwrap();
+
+        let mut usdc = usdc_market();
+        create_anchor_account_info!(usdc, SpotMarket, usdc_ai);
+        let mut sol = sol_market(1);
+        create_anchor_account_info!(sol, SpotMarket, sol_ai);
+        let spot_market_map = SpotMarketMap::load_multiple(vec![&usdc_ai, &sol_ai], true).unwrap();
+
+        let mut positions = [SpotPosition::default(); 8];
+        positions[0] = borrow(0, 200 * SPOT_BALANCE_PRECISION_U64);
+        positions[1] = deposit(1, 10 * SPOT_BALANCE_PRECISION_U64);
+        let user = user_with(positions);
+
+        let usage =
+            calculate_spot_collateral_usage(&user, &spot_market_map, &mut oracle_map).unwrap();
+
+        assert_eq!(usage.amount(1), 2_500_000_000); // 2.5 SOL, mint precision 1e9
+        assert_eq!(usage.amount(0), 0); // the borrowed market is not a collateral entry
+    }
+
+    // borrow value exceeds weighted collateral: utilization is capped at 100%,
+    // so the entire deposit counts as in use (never more than the deposit)
+    #[test]
+    fn usage_capped_at_full_deposit() {
+        let mut sol_oracle_price = get_pyth_price(100, 6);
+        let key = sol_oracle_key();
+        create_anchor_account_info!(sol_oracle_price, &key, PythLazerOracle, oracle_ai);
+        let mut oracle_map = OracleMap::load_one(&oracle_ai, 0, None).unwrap();
+
+        let mut usdc = usdc_market();
+        create_anchor_account_info!(usdc, SpotMarket, usdc_ai);
+        let mut sol = sol_market(1);
+        create_anchor_account_info!(sol, SpotMarket, sol_ai);
+        let spot_market_map = SpotMarketMap::load_multiple(vec![&usdc_ai, &sol_ai], true).unwrap();
+
+        let mut positions = [SpotPosition::default(); 8];
+        positions[0] = borrow(0, 1000 * SPOT_BALANCE_PRECISION_U64);
+        positions[1] = deposit(1, 10 * SPOT_BALANCE_PRECISION_U64);
+        let user = user_with(positions);
+
+        let usage =
+            calculate_spot_collateral_usage(&user, &spot_market_map, &mut oracle_map).unwrap();
+
+        assert_eq!(usage.amount(1), 10_000_000_000); // full 10 SOL
+    }
+
+    // two equally-weighted deposits split the borrow's usage evenly
+    #[test]
+    fn usage_split_proportionally_across_deposits() {
+        let mut sol_oracle_price = get_pyth_price(100, 6);
+        let key = sol_oracle_key();
+        create_anchor_account_info!(sol_oracle_price, &key, PythLazerOracle, oracle_ai);
+        let mut oracle_map = OracleMap::load_one(&oracle_ai, 0, None).unwrap();
+
+        let mut usdc = usdc_market();
+        create_anchor_account_info!(usdc, SpotMarket, usdc_ai);
+        let mut sol_a = sol_market(1);
+        create_anchor_account_info!(sol_a, SpotMarket, sol_a_ai);
+        let mut sol_b = sol_market(2);
+        create_anchor_account_info!(sol_b, SpotMarket, sol_b_ai);
+        let spot_market_map =
+            SpotMarketMap::load_multiple(vec![&usdc_ai, &sol_a_ai, &sol_b_ai], true).unwrap();
+
+        // 10 SOL in each market ($800 weighted each, $1600 total) backing 200 USDC:
+        // utilization = 200/1600 = 12.5%, so 1.25 SOL in use per market
+        let mut positions = [SpotPosition::default(); 8];
+        positions[0] = borrow(0, 200 * SPOT_BALANCE_PRECISION_U64);
+        positions[1] = deposit(1, 10 * SPOT_BALANCE_PRECISION_U64);
+        positions[2] = deposit(2, 10 * SPOT_BALANCE_PRECISION_U64);
+        let user = user_with(positions);
+
+        let usage =
+            calculate_spot_collateral_usage(&user, &spot_market_map, &mut oracle_map).unwrap();
+
+        assert_eq!(usage.amount(1), 1_250_000_000);
+        assert_eq!(usage.amount(2), 1_250_000_000);
+    }
+
+    // apply adds and subtracts the snapshot delta on the market field
+    #[test]
+    fn apply_delta_updates_market_field() {
+        let mut sol = sol_market(1);
+        sol.total_usage_as_collateral = 5_000;
+        create_anchor_account_info!(sol, SpotMarket, sol_ai);
+        let spot_market_map = SpotMarketMap::load_multiple(vec![&sol_ai], true).unwrap();
+
+        apply_spot_collateral_usage_delta(
+            &usage_of(1, 2_000),
+            &usage_of(1, 3_000),
+            &spot_market_map,
+        )
+        .unwrap();
+        assert_eq!(
+            spot_market_map
+                .get_ref(&1)
+                .unwrap()
+                .total_usage_as_collateral,
+            6_000
+        );
+
+        apply_spot_collateral_usage_delta(
+            &usage_of(1, 3_000),
+            &usage_of(1, 1_000),
+            &spot_market_map,
+        )
+        .unwrap();
+        assert_eq!(
+            spot_market_map
+                .get_ref(&1)
+                .unwrap()
+                .total_usage_as_collateral,
+            4_000
+        );
+    }
+
+    // a market present in `before` but absent in `after` drops to zero, and the
+    // subtraction saturates rather than underflowing
+    #[test]
+    fn apply_delta_saturates_and_handles_dropped_market() {
+        let mut sol = sol_market(1);
+        sol.total_usage_as_collateral = 100;
+        create_anchor_account_info!(sol, SpotMarket, sol_ai);
+        let spot_market_map = SpotMarketMap::load_multiple(vec![&sol_ai], true).unwrap();
+
+        apply_spot_collateral_usage_delta(
+            &usage_of(1, 500),
+            &SpotCollateralUsage::default(),
+            &spot_market_map,
+        )
+        .unwrap();
+        assert_eq!(
+            spot_market_map
+                .get_ref(&1)
+                .unwrap()
+                .total_usage_as_collateral,
+            0
+        );
+    }
+}

@@ -48,9 +48,8 @@ use crate::{
         },
         lp_pool::perp_lp_pool_settlement,
         margin::{
-            calculate_margin_requirement_and_total_collateral_and_liability_info,
+            apply_spot_collateral_usage_delta, calculate_spot_collateral_usage,
             calculate_user_equity, meets_settle_pnl_maintenance_margin_requirement,
-            MarginRequirementType,
         },
         orders::{
             estimate_price_from_side, filter_bids_asks_by_oracle_divergence,
@@ -71,7 +70,6 @@ use crate::{
         fill_mode::FillMode,
         insurance_fund_stake::InsuranceFundStake,
         lp_pool::{Constituent, LPPool, CONSTITUENT_PDA_SEED, SETTLE_AMM_ORACLE_MAX_DELAY},
-        margin_calculation::MarginContext,
         market_status::MarketStatus,
         oracle_map::OracleMap,
         order_params::{OrderParams, PlaceOrderOptions},
@@ -896,6 +894,11 @@ pub fn handle_settle_pnl<'c: 'info, 'info>(
         "user have pool_id 0"
     )?;
 
+    // settling pnl moves the user's quote balance, changing collateral usage
+    // across every market backing its borrows
+    let collateral_usage_market_indexes =
+        user.get_active_spot_market_indexes_including(QUOTE_SPOT_MARKET_INDEX);
+
     let mut remaining_accounts = ctx.remaining_accounts.iter().peekable();
     let AccountMaps {
         perp_market_map,
@@ -904,7 +907,7 @@ pub fn handle_settle_pnl<'c: 'info, 'info>(
     } = load_maps(
         &mut remaining_accounts,
         &get_writable_perp_market_set(market_index),
-        &get_writable_spot_market_set(QUOTE_SPOT_MARKET_INDEX),
+        &get_writable_spot_market_set_from_many(collateral_usage_market_indexes),
         clock.slot,
         Some(state.oracle_guard_rails),
     )?;
@@ -918,6 +921,9 @@ pub fn handle_settle_pnl<'c: 'info, 'info>(
         } else {
             (None, None)
         };
+
+    let collateral_usage_before =
+        calculate_spot_collateral_usage(user, &spot_market_map, &mut oracle_map)?;
 
     let market_in_settlement =
         perp_market_map.get_ref(&market_index)?.status == MarketStatus::Settlement;
@@ -998,6 +1004,14 @@ pub fn handle_settle_pnl<'c: 'info, 'info>(
         }
     }
 
+    let collateral_usage_after =
+        calculate_spot_collateral_usage(user, &spot_market_map, &mut oracle_map)?;
+    apply_spot_collateral_usage_delta(
+        &collateral_usage_before,
+        &collateral_usage_after,
+        &spot_market_map,
+    )?;
+
     let spot_market = spot_market_map.get_quote_spot_market()?;
     validate_spot_market_vault_amount(&spot_market, ctx.accounts.spot_market_vault.amount)?;
 
@@ -1018,6 +1032,11 @@ pub fn handle_settle_multiple_pnls<'c: 'info, 'info>(
     let user_key = ctx.accounts.user.key();
     let user = &mut load_mut!(ctx.accounts.user)?;
 
+    // settling pnl moves the user's quote balance, changing collateral usage
+    // across every market backing its borrows
+    let collateral_usage_market_indexes =
+        user.get_active_spot_market_indexes_including(QUOTE_SPOT_MARKET_INDEX);
+
     let mut remaining_accounts = ctx.remaining_accounts.iter().peekable();
     let AccountMaps {
         perp_market_map,
@@ -1026,7 +1045,7 @@ pub fn handle_settle_multiple_pnls<'c: 'info, 'info>(
     } = load_maps(
         &mut remaining_accounts,
         &get_writable_perp_market_set_from_vec(&market_indexes),
-        &get_writable_spot_market_set(QUOTE_SPOT_MARKET_INDEX),
+        &get_writable_spot_market_set_from_many(collateral_usage_market_indexes),
         clock.slot,
         Some(state.oracle_guard_rails),
     )?;
@@ -1047,6 +1066,9 @@ pub fn handle_settle_multiple_pnls<'c: 'info, 'info>(
         &spot_market_map,
         &mut oracle_map,
     )?;
+
+    let collateral_usage_before =
+        calculate_spot_collateral_usage(user, &spot_market_map, &mut oracle_map)?;
 
     for market_index in market_indexes.iter() {
         let market_in_settlement =
@@ -1128,6 +1150,14 @@ pub fn handle_settle_multiple_pnls<'c: 'info, 'info>(
             }
         }
     }
+
+    let collateral_usage_after =
+        calculate_spot_collateral_usage(user, &spot_market_map, &mut oracle_map)?;
+    apply_spot_collateral_usage_delta(
+        &collateral_usage_before,
+        &collateral_usage_after,
+        &spot_market_map,
+    )?;
 
     let spot_market = spot_market_map.get_quote_spot_market()?;
     validate_spot_market_vault_amount(&spot_market, ctx.accounts.spot_market_vault.amount)?;
@@ -1303,6 +1333,20 @@ pub fn handle_liquidate_spot<'c: 'info, 'info>(
     let liquidator = &mut load_mut!(ctx.accounts.liquidator)?;
     let liquidator_stats = &mut load_mut!(ctx.accounts.liquidator_stats)?;
 
+    // the liability moves from user to liquidator, so both parties' collateral
+    // usage changes across every market backing their borrows
+    let mut collateral_usage_market_indexes =
+        user.get_active_spot_market_indexes_including(asset_market_index);
+    for index in liquidator
+        .get_active_spot_market_indexes_including(liability_market_index)
+        .into_iter()
+        .chain([asset_market_index, liability_market_index])
+    {
+        if !collateral_usage_market_indexes.contains(&index) {
+            collateral_usage_market_indexes.push(index);
+        }
+    }
+
     let AccountMaps {
         perp_market_map,
         spot_market_map,
@@ -1310,10 +1354,15 @@ pub fn handle_liquidate_spot<'c: 'info, 'info>(
     } = load_maps(
         &mut ctx.remaining_accounts.iter().peekable(),
         &MarketSet::new(),
-        &get_writable_spot_market_set_from_many(vec![asset_market_index, liability_market_index]),
+        &get_writable_spot_market_set_from_many(collateral_usage_market_indexes),
         clock.slot,
         Some(state.oracle_guard_rails),
     )?;
+
+    let user_usage_before =
+        calculate_spot_collateral_usage(user, &spot_market_map, &mut oracle_map)?;
+    let liquidator_usage_before =
+        calculate_spot_collateral_usage(liquidator, &spot_market_map, &mut oracle_map)?;
 
     controller::liquidation::liquidate_spot(
         asset_market_index,
@@ -1332,6 +1381,17 @@ pub fn handle_liquidate_spot<'c: 'info, 'info>(
         now,
         clock.slot,
         &state,
+    )?;
+
+    let user_usage_after =
+        calculate_spot_collateral_usage(user, &spot_market_map, &mut oracle_map)?;
+    let liquidator_usage_after =
+        calculate_spot_collateral_usage(liquidator, &spot_market_map, &mut oracle_map)?;
+    apply_spot_collateral_usage_delta(&user_usage_before, &user_usage_after, &spot_market_map)?;
+    apply_spot_collateral_usage_delta(
+        &liquidator_usage_before,
+        &liquidator_usage_after,
+        &spot_market_map,
     )?;
 
     Ok(())
@@ -1635,6 +1695,21 @@ pub fn handle_liquidate_spot_with_swap_end<'c: 'info, 'info>(
     let slot = clock.slot;
     let now = clock.unix_timestamp;
 
+    let user_key = ctx.accounts.user.key();
+    let mut user = load_mut!(&ctx.accounts.user)?;
+
+    let liquidator_key = ctx.accounts.liquidator.key();
+    let mut liquidator = load_mut!(&ctx.accounts.liquidator)?;
+
+    // only the liquidatee's balances change here (the swap covers the
+    // liability), so its collateral usage moves across every market backing
+    // its borrows
+    let mut collateral_usage_market_indexes =
+        user.get_active_spot_market_indexes_including(asset_market_index);
+    if !collateral_usage_market_indexes.contains(&liability_market_index) {
+        collateral_usage_market_indexes.push(liability_market_index);
+    }
+
     let remaining_accounts = &mut ctx.remaining_accounts.iter().peekable();
     let AccountMaps {
         perp_market_map,
@@ -1643,7 +1718,7 @@ pub fn handle_liquidate_spot_with_swap_end<'c: 'info, 'info>(
     } = load_maps(
         remaining_accounts,
         &MarketSet::new(),
-        &get_writable_spot_market_set_from_many(vec![asset_market_index, liability_market_index]),
+        &get_writable_spot_market_set_from_many(collateral_usage_market_indexes),
         clock.slot,
         Some(state.oracle_guard_rails),
     )?;
@@ -1652,12 +1727,7 @@ pub fn handle_liquidate_spot_with_swap_end<'c: 'info, 'info>(
     let asset_mint = get_token_mint(remaining_accounts)?;
     let liability_mint = get_token_mint(remaining_accounts)?;
 
-    let user_key = ctx.accounts.user.key();
-    let mut user = load_mut!(&ctx.accounts.user)?;
     let mut user_stats = load_mut!(&ctx.accounts.user_stats)?;
-
-    let liquidator_key = ctx.accounts.liquidator.key();
-    let mut liquidator = load_mut!(&ctx.accounts.liquidator)?;
     let mut liquidator_stats = load_mut!(&ctx.accounts.liquidator_stats)?;
 
     let mut asset_spot_market = spot_market_map.get_ref_mut(&asset_market_index)?;
@@ -1755,6 +1825,9 @@ pub fn handle_liquidate_spot_with_swap_end<'c: 'info, 'info>(
     drop(liability_spot_market);
     drop(asset_spot_market);
 
+    let user_usage_before =
+        calculate_spot_collateral_usage(&user, &spot_market_map, &mut oracle_map)?;
+
     liquidate_spot_with_swap_end(
         asset_market_index,
         liability_market_index,
@@ -1773,6 +1846,10 @@ pub fn handle_liquidate_spot_with_swap_end<'c: 'info, 'info>(
         amount_in.cast()?,
         amount_out.cast()?,
     )?;
+
+    let user_usage_after =
+        calculate_spot_collateral_usage(&user, &spot_market_map, &mut oracle_map)?;
+    apply_spot_collateral_usage_delta(&user_usage_before, &user_usage_after, &spot_market_map)?;
 
     let liability_spot_market = spot_market_map.get_ref_mut(&liability_market_index)?;
 
@@ -1827,6 +1904,16 @@ pub fn handle_liquidate_borrow_for_perp_pnl<'c: 'info, 'info>(
     let user = &mut load_mut!(ctx.accounts.user)?;
     let liquidator = &mut load_mut!(ctx.accounts.liquidator)?;
 
+    // spot exposure moves between user and liquidator, so both parties'
+    // collateral usage changes across every market backing their borrows
+    let mut collateral_usage_market_indexes =
+        user.get_active_spot_market_indexes_including(spot_market_index);
+    for index in liquidator.get_active_spot_market_indexes_including(spot_market_index) {
+        if !collateral_usage_market_indexes.contains(&index) {
+            collateral_usage_market_indexes.push(index);
+        }
+    }
+
     let AccountMaps {
         perp_market_map,
         spot_market_map,
@@ -1834,10 +1921,15 @@ pub fn handle_liquidate_borrow_for_perp_pnl<'c: 'info, 'info>(
     } = load_maps(
         &mut ctx.remaining_accounts.iter().peekable(),
         &MarketSet::new(),
-        &get_writable_spot_market_set(spot_market_index),
+        &get_writable_spot_market_set_from_many(collateral_usage_market_indexes),
         clock.slot,
         Some(state.oracle_guard_rails),
     )?;
+
+    let user_usage_before =
+        calculate_spot_collateral_usage(user, &spot_market_map, &mut oracle_map)?;
+    let liquidator_usage_before =
+        calculate_spot_collateral_usage(liquidator, &spot_market_map, &mut oracle_map)?;
 
     controller::liquidation::liquidate_borrow_for_perp_pnl(
         perp_market_index,
@@ -1856,6 +1948,17 @@ pub fn handle_liquidate_borrow_for_perp_pnl<'c: 'info, 'info>(
         state.liquidation_margin_buffer_ratio,
         state.initial_pct_to_liquidate as u128,
         state.liquidation_duration as u128,
+    )?;
+
+    let user_usage_after =
+        calculate_spot_collateral_usage(user, &spot_market_map, &mut oracle_map)?;
+    let liquidator_usage_after =
+        calculate_spot_collateral_usage(liquidator, &spot_market_map, &mut oracle_map)?;
+    apply_spot_collateral_usage_delta(&user_usage_before, &user_usage_after, &spot_market_map)?;
+    apply_spot_collateral_usage_delta(
+        &liquidator_usage_before,
+        &liquidator_usage_after,
+        &spot_market_map,
     )?;
 
     Ok(())
@@ -1886,6 +1989,16 @@ pub fn handle_liquidate_perp_pnl_for_deposit<'c: 'info, 'info>(
     let user = &mut load_mut!(ctx.accounts.user)?;
     let liquidator = &mut load_mut!(ctx.accounts.liquidator)?;
 
+    // spot exposure moves between user and liquidator, so both parties'
+    // collateral usage changes across every market backing their borrows
+    let mut collateral_usage_market_indexes =
+        user.get_active_spot_market_indexes_including(spot_market_index);
+    for index in liquidator.get_active_spot_market_indexes_including(spot_market_index) {
+        if !collateral_usage_market_indexes.contains(&index) {
+            collateral_usage_market_indexes.push(index);
+        }
+    }
+
     let AccountMaps {
         perp_market_map,
         spot_market_map,
@@ -1893,10 +2006,15 @@ pub fn handle_liquidate_perp_pnl_for_deposit<'c: 'info, 'info>(
     } = load_maps(
         &mut ctx.remaining_accounts.iter().peekable(),
         &MarketSet::new(),
-        &get_writable_spot_market_set(spot_market_index),
+        &get_writable_spot_market_set_from_many(collateral_usage_market_indexes),
         clock.slot,
         Some(state.oracle_guard_rails),
     )?;
+
+    let user_usage_before =
+        calculate_spot_collateral_usage(user, &spot_market_map, &mut oracle_map)?;
+    let liquidator_usage_before =
+        calculate_spot_collateral_usage(liquidator, &spot_market_map, &mut oracle_map)?;
 
     controller::liquidation::liquidate_perp_pnl_for_deposit(
         perp_market_index,
@@ -1915,6 +2033,17 @@ pub fn handle_liquidate_perp_pnl_for_deposit<'c: 'info, 'info>(
         state.liquidation_margin_buffer_ratio,
         state.initial_pct_to_liquidate as u128,
         state.liquidation_duration as u128,
+    )?;
+
+    let user_usage_after =
+        calculate_spot_collateral_usage(user, &spot_market_map, &mut oracle_map)?;
+    let liquidator_usage_after =
+        calculate_spot_collateral_usage(liquidator, &spot_market_map, &mut oracle_map)?;
+    apply_spot_collateral_usage_delta(&user_usage_before, &user_usage_after, &spot_market_map)?;
+    apply_spot_collateral_usage_delta(
+        &liquidator_usage_before,
+        &liquidator_usage_after,
+        &spot_market_map,
     )?;
 
     Ok(())
@@ -2259,6 +2388,11 @@ pub fn handle_resolve_spot_bankruptcy<'c: 'info, 'info>(
     let user = &mut load_mut!(ctx.accounts.user)?;
     let liquidator = &mut load_mut!(ctx.accounts.liquidator)?;
 
+    // clearing the bankrupt borrow changes the user's collateral usage across
+    // every market still backing it
+    let collateral_usage_market_indexes =
+        user.get_active_spot_market_indexes_including(market_index);
+
     let remaining_accounts_iter = &mut ctx.remaining_accounts.iter().peekable();
     let AccountMaps {
         perp_market_map,
@@ -2267,7 +2401,7 @@ pub fn handle_resolve_spot_bankruptcy<'c: 'info, 'info>(
     } = load_maps(
         remaining_accounts_iter,
         &MarketSet::new(),
-        &get_writable_spot_market_set(market_index),
+        &get_writable_spot_market_set_from_many(collateral_usage_market_indexes),
         clock.slot,
         Some(state.oracle_guard_rails),
     )?;
@@ -2303,6 +2437,9 @@ pub fn handle_resolve_spot_bankruptcy<'c: 'info, 'info>(
         )?;
     }
 
+    let user_usage_before =
+        calculate_spot_collateral_usage(user, &spot_market_map, &mut oracle_map)?;
+
     let pay_from_insurance = controller::liquidation::resolve_spot_bankruptcy(
         market_index,
         user,
@@ -2315,6 +2452,10 @@ pub fn handle_resolve_spot_bankruptcy<'c: 'info, 'info>(
         now,
         ctx.accounts.insurance_fund_vault.amount,
     )?;
+
+    let user_usage_after =
+        calculate_spot_collateral_usage(user, &spot_market_map, &mut oracle_map)?;
+    apply_spot_collateral_usage_delta(&user_usage_before, &user_usage_after, &spot_market_map)?;
 
     if pay_from_insurance > 0 {
         let spot_market = &spot_market_map.get_ref(&market_index)?;

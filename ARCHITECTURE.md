@@ -58,18 +58,18 @@ Navigation map for `programs/drift` and `sdk/`. Start here to find the right fil
 
 ## Fee & Revenue Flow
 
-This section maps every fee the protocol charges, where it goes, and — critically — which flows are **protocol-retained revenue** vs **pass-throughs** (paid straight back out to a user/keeper/builder) vs **liability-offsetting** (insurance-fund inflows that pre-fund bankruptcy payouts). It reflects the post-relaunch (Velocity) codebase, which differs materially from upstream Drift.
+Classifies every fee the protocol charges by destination: **protocol-retained revenue**, **pass-through** (forwarded to a user, keeper, or builder), **liability-offsetting** (insurance-fund inflows that pre-fund bankruptcy payouts), or **LP revenue**. This fork diverges from upstream Drift in the ways noted below.
 
-### Fork-specific facts that change the picture
+### Differences from upstream Drift
 
-- **Spot trading produces no fee revenue.** The swap fee is hardcoded `let fee = 0_u64;` (`instructions/user.rs:3949`). There is no spot order-book fill path in this fork (`fulfill_spot_order` does not exist); spot trades go through `begin_swap`/`end_swap` and `lp_pool_swap`. Consequently `SpotMarket.total_spot_fee`, `spot_fee_pool`, and `total_swap_fee` are **dead/zeroed fields** — ignore them when accounting revenue.
+- **Spot trading charges no fee.** The swap fee is hardcoded to zero (`let fee = 0_u64;`, `instructions/user.rs:3949`), and there is no spot order-book fill path (`fulfill_spot_order` does not exist); spot trades route through `begin_swap`/`end_swap` and `lp_pool_swap`. `SpotMarket.total_spot_fee`, `spot_fee_pool`, and `total_swap_fee` are therefore inert.
 - **Perp taker fees are the only trading-fee revenue.**
-- **The live auto-sweep keeps ½ of taker fees — but that is not the protocol's lifetime cap.** `SHARE_OF_FEES_ALLOCATED_TO_DRIFT = 1/2` (`math/constants.rs:111-112`) bounds only the *streaming* revenue-pool sweep, and it is computed off `total_exchange_fee` (explicit taker fees) — **AMM spread surplus (`total_mm_fee`) and AMM trading PnL are excluded** from that base, so a more profitable AMM does *not* raise the live ceiling; the surplus accrues as `fee_pool` equity. The retained half + that surplus is recoverable in full only at **market expiry/delist** (`settle_expired_market_pools_to_revenue_pool` sweeps 100% of residual `fee_pool + pnl_pool` to the revenue pool). See [Is the protocol capped at 50%?](#is-the-protocol-capped-at-50) below.
-- **The AMM moved into `src/vlp/`** (VLP = the decoupled AMM, rebranded DLP). AMM fee counters (`total_fee`, `total_mm_fee`, `total_fee_minus_distributions`, `total_fee_withdrawn`, `fee_pool`) now live on `vlp/amm/state.rs`, **not** `PerpMarket`. `lp_fee_transfer_scalar` was relocated to `HedgeConfig.fee_transfer_scalar` (`vlp/hedge/state.rs:80`).
+- **The AMM lives in `src/vlp/`** (the decoupled AMM). Its fee counters (`total_fee`, `total_mm_fee`, `total_fee_minus_distributions`, `total_fee_withdrawn`, `fee_pool`) are on `vlp/amm/state.rs`, not `PerpMarket`; `lp_fee_transfer_scalar` is now `HedgeConfig.fee_transfer_scalar` (`vlp/hedge/state.rs:80`).
+- **The protocol's automatic fee share is ½ of taker fees** (`SHARE_OF_FEES_ALLOCATED_TO_DRIFT = 1/2`, `math/constants.rs:111-112`). This bounds only the continuous revenue-pool sweep; AMM spread surplus and trading PnL are excluded from it and are realized at market wind-down instead (see [Protocol fee share](#protocol-fee-share-streaming-vs-wind-down)).
 
-### Diagram 1 — Perp taker-fee decomposition (per fill)
+### Diagram 1 — Perp taker-fee decomposition
 
-The carve-out order, all in `math/fees.rs` (`calculate_fee_for_fulfillment_with_amm` ~:36-142, `_with_match` ~:263-332):
+Carve-out order, in `math/fees.rs` (`calculate_fee_for_fulfillment_with_amm` `:36`, `calculate_fee_for_fulfillment_with_match` `:263`):
 
 ```mermaid
 flowchart TD
@@ -90,13 +90,13 @@ flowchart TD
     class Filler,RefEsc,RefBal,BldEsc,BldBal,Maker,Disc passthru;
 ```
 
-Only the bold `fee_to_market` path (green) is candidate protocol revenue; everything else (orange) is a pass-through to a user/keeper/builder. **`builder_fee` is additive** — it does not reduce `fee_to_market`, and it is funded out of the perp `pnl_pool` at settle time, so it is a pure pass-through to the builder.
+`fee_to_market` is the only protocol-retained component (green); the rest is forwarded to a user, keeper, or builder. `builder_fee` is additive — it does not reduce `fee_to_market` — and is paid from the perp `pnl_pool` at settlement.
 
-### Diagram 2 — Pool movement map (where value lives and moves)
+### Diagram 2 — Value flow across pools
 
-No value moves directly from a source to a destination — every flow passes through an **accounting ledger** (gray; tracks an amount, holds no tokens), one or more **token pools** (blue; actual claims/balances), and a **settlement step** (orange hexagon; the instruction that moves tokens). The diagram makes all three explicit; the tables below classify every one.
+Each flow passes through an accounting ledger (tracks an amount, holds no tokens), one or more token pools (actual balances), and a settlement instruction (moves tokens).
 
-**Node legend:** gray = accounting ledger (no tokens) · blue = token pool · orange hexagon = settlement instruction · green = protocol-retained · light-orange = pass-through · red = liability/outflow. Solid arrow `==>`/`-->` = token movement; dashed arrow `-.->` = a ledger that *gates the amount* of a settlement (not a token move).
+Legend: gray = accounting ledger · blue = token pool · orange hexagon = settlement instruction · green = protocol-retained · light-orange = pass-through · red = liability/outflow. Solid arrow = token movement; dashed arrow = a ledger that bounds a settlement amount.
 
 ```mermaid
 flowchart LR
@@ -189,23 +189,21 @@ flowchart LR
     LPV --> LPH
 ```
 
-**The only real cash exit for the protocol** is the chain `fee_pool → revenue_pool → IF vault → protocol IF shares → cold_admin wallet` via `admin_withdraw_from_insurance_fund_vault` (`if_staker.rs:1241`, gated to `state.cold_admin`, must leave ≥1 protocol share). `revenue_pool` itself has no admin→wallet withdraw; its only exits are settling to the IF (`settle_revenue_to_insurance_fund`) or covering an underwater perp market (`update_pool_balances` negative branch — which is currently a no-op at `perp_pools.rs:179`).
+The protocol's only path to an external wallet is `fee_pool → revenue_pool → IF vault → protocol IF shares → cold_admin`, via `admin_withdraw_from_insurance_fund_vault` (`if_staker.rs:1241`, restricted to `state.cold_admin`, must leave ≥1 protocol share). `revenue_pool` has no direct admin withdrawal; it exits only to the IF (`settle_revenue_to_insurance_fund`) or to an underwater perp market (`update_pool_balances`; the negative branch is currently a no-op, `perp_pools.rs:179`).
 
-### Is the protocol capped at 50%?
+### Protocol fee share: streaming vs wind-down
 
-Short answer: **the ½ is a cap on the live, on-demand sweep — not on the protocol's lifetime take.** There is no admin lever to withdraw more than ½ of taker fees *while the market is live*, but the rest is recoverable at wind-down.
+The ½ share bounds the continuous sweep, not the protocol's total claim on a market's fees.
 
-| Path | When | How much | Mechanism |
+| Path | When | Amount | Mechanism |
 |---|---|---|---|
-| Streaming sweep | Continuously, in `settle_pnl` | ≤ `½ × total_exchange_fee + liq_fees` (lifetime, via `total_fee_withdrawn`) | `proposed_revenue_outflow` (`amm/state.rs:409`), cap `total_fee_for_if = total_exchange_fee × ½` (`perp_pools.rs:81`, `repeg.rs:433`) |
-| Fee↔PnL rebalance | Admin, anytime | 0 net extraction (internal) | `transfer_fee_and_pnl_pool` (`admin.rs:1141`) — moves `fee_pool`↔`pnl_pool`, adjusts `total_fee_minus_distributions`; **does not** touch the revenue pool |
-| Wind-down sweep | Market expired → `Settlement`, users settled, after escrow | **100%** of residual `fee_pool + pnl_pool` | `settle_expired_market_pools_to_revenue_pool` (`admin.rs:1083`, sweep `:1164-1190`) |
+| Streaming sweep | Continuously, during `settle_pnl` | ≤ `½ × total_exchange_fee + liq_fees` lifetime (`total_fee_withdrawn`) | `proposed_revenue_outflow` (`amm/state.rs:409`); cap `total_fee_for_if = total_exchange_fee × ½` (`perp_pools.rs:81`, `repeg.rs:433`) |
+| Fee↔PnL rebalance | Admin | None (internal) | `transfer_fee_and_pnl_pool` (`admin.rs:1141`) moves `fee_pool`↔`pnl_pool`; does not reach the revenue pool |
+| Wind-down sweep | Market expired, balanced, after escrow | 100% of residual `fee_pool + pnl_pool` | `settle_expired_market_pools_to_revenue_pool` (`admin.rs:1083`, sweep `:1164-1190`) |
 
-Why a richer AMM does **not** raise the live ceiling: `total_fee_for_if` is `total_exchange_fee × ½`, and `total_exchange_fee` accumulates only the explicit taker fee (`user_fee`, `orders.rs:2267`). AMM **spread surplus** (`taker_surplus` → `AMM.total_mm_fee`, `quoter.rs:170`) and AMM trading PnL land in `total_fee`/`total_fee_minus_distributions`, never in `total_exchange_fee`. So extra AMM profit grows `fee_pool` (which only *raises* `fee_pool_threshold`, an upper clamp) but never the `total_exchange_fee × ½` cap that actually binds. That surplus is retained AMM equity until the market is delisted, at which point 100% of it sweeps to the revenue pool.
+The streaming cap is keyed to `total_exchange_fee`, which accumulates only the explicit taker fee (`user_fee`, `orders.rs:2267`). AMM spread surplus (`taker_surplus → AMM.total_mm_fee`, `quoter.rs:170`) and AMM trading PnL accrue to `total_fee`/`total_fee_minus_distributions` and remain in `fee_pool` as retained equity, reaching the revenue pool only at delist. Higher AMM profitability raises `fee_pool` but not the streaming cap.
 
-**Dashboard implication:** "protocol revenue while live" ≈ `total_fee_withdrawn` (the realized meter), bounded by `½ × total_exchange_fee + liq`. It does **not** include AMM spread/PnL — that's deferred equity realized only at delist. If your revenue figure is meant to capture *all* protocol value accrual, you need `total_fee_withdrawn` (streamed) **plus** the un-swept `fee_pool` surplus (deferred), not just one.
-
-### Intermediary pools & ledgers — classification
+### Pools and ledgers
 
 | Node | Kind | Holds tokens? | Role / classification |
 |---|---|---|---|
@@ -220,9 +218,9 @@ Why a richer AMM does **not** raise the live ceiling: `total_fee_for_if` is `tot
 | `Insurance Fund vault` | Token pool | Yes | **At-risk**: protocol + staker claims; pays bankruptcies |
 | `LP quote constituent vault` | Token pool | Yes | LP-holder owned (not protocol) |
 
-### Settlement steps — per-flow chains
+### Flow classification
 
-Each row is the full chain `source → ledger → token pool(s) → settlement step(s) → destination`. "→IF→cold" abbreviates the shared tail `revenue_pool —settle_revenue_to_insurance_fund→ IF vault —admin_withdraw_from_insurance_fund_vault (cold_admin)→ wallet`.
+Each row is the chain `ledger → token pool(s) → settlement step(s) → destination`, with its class. "→IF→cold" abbreviates the shared tail `revenue_pool —settle_revenue_to_insurance_fund→ IF vault —admin_withdraw_from_insurance_fund_vault (cold_admin)→ wallet`. User-account initialization charges `State.max_initialize_user_fee` (Solana rent, not revenue).
 
 | Flow | Ledger(s) | Intermediary token pool(s) | Settlement step(s) | Destination | Class |
 |---|---|---|---|---|---|
@@ -241,54 +239,28 @@ Each row is the full chain `source → ledger → token pool(s) → settlement s
 | LP swap / mint / redeem fees | `total_swap_fees`, `total_mint_redeem_fees_paid` | LP constituent vaults (stay) | `lp_pool_swap` / `add`/`remove_liquidity` | LP token holders | LP revenue |
 | Bankruptcy payout (outflow) | `quote_settled_insurance`, `total_social_loss` | IF vault → `pnl_pool` / `spot_market_vault` | `resolve_perp`/`spot_bankruptcy` (+ socialize residual via `cumulative_funding_rate` / `cumulative_deposit_interest`) | Bad debt | Liability |
 
-### Classification table
+### Lending and insurance-fund revenue
 
-| Flow | On-chain field / instruction | Class |
-|---|---|---|
-| Perp taker fee (gross) | `PerpMarket.total_exchange_fee`, `UserStats.total_fees` | Gross revenue |
-| `fee_to_market` (net of filler/referrer/referee/maker) | `AMM.total_fee`, `total_fee_minus_distributions` | Net trading fee (½ retained) |
-| AMM spread surplus | `AMM.total_mm_fee` | Included in `total_fee` |
-| Protocol share settled to revenue pool | `AMM.total_fee_withdrawn` (realized meter); `transfer_revenue_to_pool` | **Protocol revenue** |
-| Lending: `total_factor` skim of borrow interest | `controller/spot_balance.rs:147-171` → `revenue_pool` | **Protocol revenue** (shared w/ stakers at settle) |
-| Protocol IF shares | `total_shares − user_shares`; `admin_withdraw_from_insurance_fund_vault` | **Protocol revenue (withdrawable, at-risk)** |
-| Maker rebate | `UserStats.total_rebate` | Pass-through (to maker) |
-| Referrer reward (15%) | `RevenueShareEscrow` → `RevenueShare.total_referrer_rewards` | Pass-through (to referrer) |
-| Referee discount (5%) | `UserStats.total_referee_discount` | Not collected (fee reduction) |
-| Filler/keeper reward | filler `PerpPosition` quote PnL | Pass-through (to keeper) |
-| Builder fee (additive) | `RevenueShareEscrow` → `RevenueShare.total_builder_rewards` | Pass-through (to builder) |
-| Perp `liquidator_fee` | symmetric quote transfer user→liquidator | Pass-through (to liquidator) |
-| Perp/spot `if_liquidation_fee` | `total_liquidation_fee` / `revenue_pool` | Liability-offset (IF pre-funds bankruptcies) |
-| LP `fee_transfer_scalar` slice, swap fees, mint/redeem fees | `LPPool` / `Constituent` (`vlp/hedge/state.rs`) | LP-holder revenue |
-| Staker IF shares | `InsuranceFund.user_shares` | Staker-owned liability |
-| User-init rent | `State.max_initialize_user_fee` | Solana rent, not revenue |
+- **Borrower-interest skim.** In `update_spot_market_cumulative_interest` (`controller/spot_balance.rs:130-185`), `total_factor × deposit_interest / 1e6` is split off before lenders are paid and deposited into `revenue_pool`; only the remainder compounds into `cumulative_deposit_interest`. The `revenue_pool` balance, being a `Deposit`, also earns the lender rate, but the skim is the primary lending revenue.
+- **Settlement split.** When `revenue_pool` settles to the IF (`controller/insurance.rs:758-775`), the protocol's slice `(total_factor − user_factor)/total_factor` is minted as new shares to `total_shares` only; the `user_factor` slice raises existing stakers' share value.
+- **Two-way book.** `resolve_perp_bankruptcy` (`liquidation.rs:3268`) and `resolve_spot_bankruptcy` (`liquidation.rs:3491`) pay out of the IF vault (`send_from_program_vault`, `keeper.rs` ~`:2026` spot / ~`:2155` perp). Liquidation `if_fee`s and protocol IF shares absorb bad debt before they are withdrawable.
 
-### Lending / insurance-fund mechanics (the subtle part)
+### Insurance-fund staker economics
 
-- **`total_factor` is a skim, not just passive yield.** In `update_spot_market_cumulative_interest` (`controller/spot_balance.rs:130-185`), `deposit_interest_for_stakers = deposit_interest × total_factor / 1e6` is split off the top and deposited into `revenue_pool`; only `deposit_interest − that` is compounded to lenders. So the prior framing ("revenue pool just earns lend yield like any depositor") captures a *second, smaller* effect (the revenue_pool balance is a `Deposit` and does earn the lender rate), but the **primary** lending revenue is the `total_factor` skim on borrower interest.
-- **`total_factor` vs `user_factor` at settle** (`controller/insurance.rs:758-775`): when `revenue_pool` settles to the IF, the protocol's slice is `(total_factor − user_factor)/total_factor`, minted as **new IF shares to `total_shares` only** → grows protocol's claim. The `user_factor` portion instead raises existing stakers' share value. So `total_factor` = total fraction of interest routed to the IF; `user_factor` = the sub-fraction that benefits stakers; the gap is the protocol's own accrual.
-- **The IF is a two-way book.** `resolve_perp_bankruptcy` (`liquidation.rs:3268`) and `resolve_spot_bankruptcy` (`liquidation.rs:3491`) make real SPL payouts from the IF vault — the transfer is `send_from_program_vault` in the keeper handlers (`keeper.rs` ~`:2026` spot, ~`:2155` perp). So liquidation `if_fee`s and the protocol's IF shares are *at-risk capital* that absorbs bad debt before being withdrawable — not clean P&L.
+The IF is a share-based vault. Value accrues as vault-balance growth against a fixed share count; there is no per-staker interest field.
 
-### Insurance-fund staker economics (protocol vs holder accrual)
+- **Stake:** `add_insurance_fund_stake` (`controller/insurance.rs:83`) mints `amount × total_shares / vault_balance` shares (`vault_amount_to_if_shares`, `math/insurance.rs:16`) to both `user_shares` and `total_shares`.
+- **Claim:** `vault_balance × shares / total_shares` (`if_shares_to_vault_amount`, `math/insurance.rs:44`).
+- **Unstake (request + cooldown):** `request_remove_insurance_fund_stake` (`:235`) records the share count and value at request; after `unstaking_period`, `remove_insurance_fund_stake` (`:385`, cooldown `:396`) pays `min(current_value, requested_value)` (`:429`) and burns from both share counters. Losses during the cooldown reduce the payout; gains above the requested value are not captured.
+- **First-loss capital:** bankruptcy payouts shrink the vault and reduce every share's value; `apply_rebase_to_insurance_fund` (`:158`) handles a near-zero vault.
 
-The IF is a **share-based vault** (like ERC4626): there is no per-staker interest field — value accrues purely as "vault balance grows while your share count is fixed."
+Two directions exist between the IF and the revenue pool:
+1. `revenue_pool → IF vault` — `settle_revenue_to_insurance_fund` (`:685`). Throttled to `min(1/10 of revenue pool, MAX_APR cap)` per settle when stakers exist (`:719-739`), half-rate at high utilization (`:714-717`).
+2. `protocol IF shares → revenue_pool` — `transfer_protocol_if_shares_to_revenue_pool` (`:1150`), limited to protocol shares (`:1167`) and to `IfRebalanceConfig.max_transfer_amount`. Staker capital does not flow to the revenue pool.
 
-- **Stake:** `add_insurance_fund_stake` (`controller/insurance.rs:83`) mints `n_shares = amount × total_shares / vault_balance` (`vault_amount_to_if_shares`, `math/insurance.rs:16`), added to **both** `user_shares` and `total_shares`.
-- **Claim / redemption value:** `vault_balance × your_shares / total_shares` (`if_shares_to_vault_amount`, `math/insurance.rs:44`).
-- **Unstake (two-step + cooldown):** `request_remove_insurance_fund_stake` (`:235`) locks share count and records `last_withdraw_request_value` (value at request); after `unstaking_period`, `remove_insurance_fund_stake` (`:385`, cooldown `:396`) pays `min(current_value, requested_value)` (`:429`) and burns from `user_shares` + `total_shares` (`:437-441`). The `min` means stakers eat a bankruptcy hit during cooldown but don't capture upside above their request.
-- **First-loss capital:** bankruptcy payouts shrink the vault → every share worth less. `apply_rebase_to_insurance_fund` (`:158`) handles the vault-near-zero case.
+The split is set by `total_factor` and `user_factor` (`u32`, `IF_FACTOR_PRECISION = 1e6`, `spot_market.rs:681-682`) via `handle_update_spot_market_if_factor` (`admin.rs:1636`, requiring `user_factor ≤ total_factor ≤ 1e6`). Market init defaults to `user_factor = total_factor / 2` (`admin.rs:384-385`). On each settle, the protocol's slice `(total_factor − user_factor)/total_factor` is minted as new shares to `total_shares` only (`get_protocol_shares = total_shares − user_shares`, `spot_market.rs:686`); the `user_factor` slice appreciates existing shares.
 
-**Two directions** (the source of "does IF flow into revenue pool?" confusion):
-1. **revenue_pool → IF vault** — `settle_revenue_to_insurance_fund` (`:685`). The inflow that grows the vault. Throttled: with stakers present, ≤ `min(1/10 of revenue pool, MAX_APR cap)` per settle (`:719-739`), half-rate at high utilization (`:714-717`).
-2. **protocol IF shares → revenue_pool** — `transfer_protocol_if_shares_to_revenue_pool` (`:1150`). Reverse, **protocol shares only** (`shares ≤ protocol_shares`, `:1167`), rate-limited by `IfRebalanceConfig.max_transfer_amount`. **Staker capital never flows to the revenue pool.**
-
-**Protocol vs holder split** — set by two admin knobs on each settle (`:758-775`):
-- `protocol_if_factor = total_factor − user_factor`. If > 0, the protocol is minted **new shares** worth `settled × protocol_if_factor / total_factor` (to `total_shares` only → these are *protocol shares*, `get_protocol_shares = total_shares − user_shares`, `spot_market.rs:686`).
-- The `user_factor / total_factor` slice enters the vault with **no new shares** → raises every existing share's value. **That appreciation is the staker yield.**
-- Net: `total_factor` = total fraction of revenue routed into the IF; `user_factor` = the sub-fraction delivered to stakers (as appreciation); the gap is the protocol's skim, taken as protocol shares — later withdrawn via `admin_withdraw_from_insurance_fund_vault` (cold_admin) or routed back via path (2).
-
-**Who sets the split:** `total_factor` / `user_factor` are `u32` on `InsuranceFund` (`spot_market.rs:681-682`), in `IF_FACTOR_PRECISION = 1e6` (`constants.rs:68`), set by admin via `handle_update_spot_market_if_factor` (`admin.rs:1636`, validated `user_factor ≤ total_factor ≤ 1e6`). **Default at market init is `user_factor = total_factor / 2`** (`admin.rs:384-385`) — a 50/50 protocol/staker split of IF-routed interest unless the admin changes it.
-
-#### Diagram 3 — IF revenue split (where the protocol's new shares come from)
+#### Diagram 3 — Insurance-fund revenue split
 
 ```mermaid
 flowchart TD
@@ -312,22 +284,18 @@ flowchart TD
     PSH -.->|"transfer_protocol_if_shares_to_revenue_pool (rate-limited)"| RP
 ```
 
-Dashed = the factor-driven split of the just-settled tokens (not a separate token move — all tokens already sit in the vault); the protocol leg materializes as **newly minted shares**, the staker leg as **appreciation of existing shares**.
+Dashed arrows are the factor split of the just-settled tokens (all tokens already sit in the vault): the protocol leg materializes as newly minted shares, the staker leg as appreciation of existing shares.
 
-### Defining "net trading fees" and the recovery-pool number
+### Gross vs net trading-fee fields
 
-For a dashboard, the chain of definitions and their **source of truth**:
+- **Gross taker fees (perp):** `UserStats.total_fees` per user; `PerpMarket.total_exchange_fee` per market. `total_exchange_fee` accumulates gross `user_fee` on AMM fills (`orders.rs:2267`) but net `fee_to_market` on DLOB-matched fills (`orders.rs:2577`). Spot contributes zero.
+- **Deductions:** maker rebate (`UserStats.total_rebate`), referrer reward (`RevenueShare.total_referrer_rewards`), referee discount (`UserStats.total_referee_discount`), filler reward (`OrderActionRecord.filler_reward` events), builder fee (`RevenueShare.total_builder_rewards`).
+- **Net trading fee** = `fee_to_market`: taker fee minus filler and referrer rewards (and, on the match path, the maker rebate); referee discount is removed upstream and builder fee is excluded. `AMM.total_fee` captures this for AMM fills only — DLOB-matched fills accrue to `total_exchange_fee` and skip `apply_fill_fees` — so no single field equals net trading fees across both fill types; event-level aggregation from `OrderActionRecord` is required.
+- **Protocol-retained** = ½ of net, realized as growth in `AMM.total_fee_withdrawn` as it settles to `revenue_pool` (the remainder is deferred AMM equity; see [Protocol fee share](#protocol-fee-share-streaming-vs-wind-down)).
 
-1. **Gross taker fees (perp).** Per-user lifetime: `UserStats.total_fees`. Per-market: `PerpMarket.total_exchange_fee` — **but caveat:** this field adds gross `user_fee` on AMM-house fills (`orders.rs:2267`) yet net `fee_to_market` on DLOB-matched fills (`orders.rs:2577`), so it is *not* a clean gross meter. Spot contributes **0**.
-2. **Deductions / pass-throughs.** maker rebate (`UserStats.total_rebate`), referrer reward (`RevenueShare.total_referrer_rewards`), referee discount (`UserStats.total_referee_discount`), filler reward (no single accumulator — derive from `OrderActionRecord.filler_reward` events), builder fee (`RevenueShare.total_builder_rewards`).
-3. **Net trading fees = `fee_to_market`** (the remainder after filler + referrer [+ maker in match path]; referee discount already removed upstream; builder fee never included). The closest single account field is **`AMM.total_fee`** — but it only captures AMM-house fills; pure DLOB-matched fills land in `total_exchange_fee` and skip `apply_fill_fees`. **No single on-chain field cleanly equals "net trading fees" across both fill types** — the reliable source of truth is event-based accounting off `OrderActionRecord` (sum `taker_fee − maker_rebate − referrer_reward − filler_reward`, excluding the builder portion bundled into `taker_fee`).
-4. **What the protocol actually retains today is ½ of net** (`SHARE_OF_FEES_ALLOCATED_TO_DRIFT`), realized as growth in `AMM.total_fee_withdrawn` when it settles to `revenue_pool`. So a "75% of net trading fees" recovery allocation is **not** the same basis as the existing 50/50 protocol/AMM split — it would need to be defined as a new carve and reconciled against that split. **This number is not defined in code; it must be specified before it can be implemented or dashboarded.**
+### Source reference index
 
-> Open question to resolve with the team: is the recovery pool meant to take 75% of **gross taker fees**, of **net-of-pass-through fees**, or of the **protocol's ½ retained share**? Each is a different field set above, and they differ by ~2-4x.
-
-### Verified citation index
-
-Every claim in this section, with the exact symbol + line to search. Verified against the working tree on branch `feat/builder-codes-non-swift` (line numbers drift with edits — search the function name if a number is stale).
+Symbol and line for each claim above (line numbers shift with edits; search the symbol if stale).
 
 **Constants** (`programs/drift/src/math/constants.rs`)
 | Constant | Value | Line |

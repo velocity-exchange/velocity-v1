@@ -965,6 +965,8 @@ fn merge_modify_order_params_with_existing_order(
         auction_duration,
         auction_start_price,
         auction_end_price,
+        builder_idx: None,
+        builder_fee_tenth_bps: None,
     }))
 }
 

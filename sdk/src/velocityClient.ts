@@ -4625,6 +4625,36 @@ export class VelocityClient {
 		return txSig;
 	}
 
+	/**
+	 * Returns the RevenueShareEscrow account meta for the placing user when `orderParams`
+	 * carries a builder code (`builderIdx` + `builderFeeTenthBps`), otherwise `undefined`.
+	 * The on-chain handlers peek for this account last in `remaining_accounts`, so callers
+	 * must push it after the market/oracle/maker accounts.
+	 */
+	private getBuilderEscrowAccountMeta(
+		orderParams: Pick<OrderParams, 'builderIdx' | 'builderFeeTenthBps'>,
+		subAccountId?: number
+	): AccountMeta | undefined {
+		if (
+			orderParams.builderIdx === null ||
+			orderParams.builderIdx === undefined ||
+			orderParams.builderFeeTenthBps === null ||
+			orderParams.builderFeeTenthBps === undefined
+		) {
+			return undefined;
+		}
+		const authority =
+			this.getUserAccount(subAccountId)?.authority ?? this.authority;
+		return {
+			pubkey: getRevenueShareEscrowAccountPublicKey(
+				this.program.programId,
+				authority
+			),
+			isWritable: true,
+			isSigner: false,
+		};
+	}
+
 	public async getPlacePerpOrderIx(
 		orderParams: OptionalOrderParams,
 		subAccountId?: number,
@@ -4655,6 +4685,14 @@ export class VelocityClient {
 				? [depositToTradeArgs?.depositMarketIndex]
 				: undefined,
 		});
+
+		const builderEscrow = this.getBuilderEscrowAccountMeta(
+			orderParams,
+			subAccountId
+		);
+		if (builderEscrow) {
+			remainingAccounts.push(builderEscrow);
+		}
 
 		return await VelocityCore.buildPlacePerpOrderInstruction({
 			program: this.program,
@@ -5144,6 +5182,25 @@ export class VelocityClient {
 
 		const formattedParams = params.map((item) => getOrderParams(item));
 		const authority = overrides?.authority ?? this.wallet.publicKey;
+
+		// The handler loads a single RevenueShareEscrow for the placing user, so push it once
+		// if any order in the batch carries a builder code.
+		const builderParam = formattedParams.find(
+			(p) =>
+				p.builderIdx !== null &&
+				p.builderIdx !== undefined &&
+				p.builderFeeTenthBps !== null &&
+				p.builderFeeTenthBps !== undefined
+		);
+		if (builderParam) {
+			const builderEscrow = this.getBuilderEscrowAccountMeta(
+				builderParam,
+				subAccountId
+			);
+			if (builderEscrow) {
+				remainingAccounts.push(builderEscrow);
+			}
+		}
 
 		return await VelocityCore.buildPlaceOrdersInstruction({
 			program: this.program,
@@ -6502,7 +6559,8 @@ export class VelocityClient {
 		successCondition?: PlaceAndTakeOrderSuccessCondition,
 		auctionDurationPercentage?: number,
 		txParams?: TxParams,
-		subAccountId?: number
+		subAccountId?: number,
+		revenueShareEscrowMap?: RevenueShareEscrowMap
 	): Promise<TransactionSignature> {
 		const { txSig, slot } = await this.sendTransaction(
 			await this.buildTransaction(
@@ -6511,7 +6569,9 @@ export class VelocityClient {
 					makerInfo,
 					successCondition,
 					auctionDurationPercentage,
-					subAccountId
+					subAccountId,
+					undefined,
+					revenueShareEscrowMap
 				),
 				txParams
 			),
@@ -6778,7 +6838,11 @@ export class VelocityClient {
 		subAccountId?: number,
 		overrides?: {
 			authority?: PublicKey;
-		}
+		},
+		// place_and_take fills in-instruction, so the RevenueShareEscrow must be attached for
+		// BOTH builder fees and referrer revenue share. The builder case is detected from
+		// orderParams; pass this map to also attach the escrow for a referred user.
+		revenueShareEscrowMap?: RevenueShareEscrowMap
 	): Promise<TransactionInstruction> {
 		orderParams = getOrderParams(orderParams, { marketType: MarketType.PERP });
 		const userStatsPublicKey = await this.getUserStatsAccountPublicKey();
@@ -6812,6 +6876,28 @@ export class VelocityClient {
 				isWritable: true,
 				isSigner: false,
 			});
+		}
+
+		// Attach the escrow when the order carries a builder code, or — using the optional
+		// escrow map — when the placing user is referred (so the referrer earns on the fill).
+		const escrowAuthority =
+			this.getUserAccount(subAccountId)?.authority ?? this.authority;
+		let escrowMeta = this.getBuilderEscrowAccountMeta(orderParams, subAccountId);
+		if (!escrowMeta && revenueShareEscrowMap) {
+			const escrow = revenueShareEscrowMap.get(escrowAuthority.toBase58());
+			if (escrow && !escrow.referrer.equals(PublicKey.default)) {
+				escrowMeta = {
+					pubkey: getRevenueShareEscrowAccountPublicKey(
+						this.program.programId,
+						escrowAuthority
+					),
+					isWritable: true,
+					isSigner: false,
+				};
+			}
+		}
+		if (escrowMeta) {
+			remainingAccounts.push(escrowMeta);
 		}
 
 		let optionalParams = null;

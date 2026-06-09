@@ -286,6 +286,34 @@ The IF is a **share-based vault** (like ERC4626): there is no per-staker interes
 - The `user_factor / total_factor` slice enters the vault with **no new shares** → raises every existing share's value. **That appreciation is the staker yield.**
 - Net: `total_factor` = total fraction of revenue routed into the IF; `user_factor` = the sub-fraction delivered to stakers (as appreciation); the gap is the protocol's skim, taken as protocol shares — later withdrawn via `admin_withdraw_from_insurance_fund_vault` (cold_admin) or routed back via path (2).
 
+**Who sets the split:** `total_factor` / `user_factor` are `u32` on `InsuranceFund` (`spot_market.rs:681-682`), in `IF_FACTOR_PRECISION = 1e6` (`constants.rs:68`), set by admin via `handle_update_spot_market_if_factor` (`admin.rs:1636`, validated `user_factor ≤ total_factor ≤ 1e6`). **Default at market init is `user_factor = total_factor / 2`** (`admin.rs:384-385`) — a 50/50 protocol/staker split of IF-routed interest unless the admin changes it.
+
+#### Diagram 3 — IF revenue split (where the protocol's new shares come from)
+
+```mermaid
+flowchart TD
+    classDef pool fill:#e3f2fd,stroke:#1565c0,color:#000;
+    classDef step fill:#fff3e0,stroke:#ef6c00,color:#000;
+    classDef revenue fill:#cfe8cf,stroke:#2e7d32,color:#000;
+    classDef passthru fill:#ffe0b2,stroke:#e65100,color:#000;
+
+    RP["SpotMarket.revenue_pool"]:::pool
+    SET{{"settle_revenue_to_insurance_fund<br/>settled = min(1/10 pool, MAX_APR cap)"}}:::step
+    IFV["Insurance Fund vault<br/>(ALL settled tokens land here)"]:::pool
+    PSH["Protocol IF shares = total_shares − user_shares"]:::revenue
+    USH["Staker IF shares (user_shares)<br/>→ value-per-share rises"]:::passthru
+    WALL["cold_admin wallet"]:::revenue
+
+    RP ==>|"SPL transfer spot_vault → IF_vault"| SET
+    SET ==> IFV
+    IFV -.->|"slice = settled × (total_factor − user_factor)/total_factor:<br/>MINT new shares to total_shares only (insurance.rs:764-775)"| PSH
+    IFV -.->|"slice = settled × user_factor/total_factor:<br/>NO new shares → existing shares appreciate"| USH
+    PSH ==>|"admin_withdraw_from_insurance_fund_vault (cold_admin)"| WALL
+    PSH -.->|"transfer_protocol_if_shares_to_revenue_pool (rate-limited)"| RP
+```
+
+Dashed = the factor-driven split of the just-settled tokens (not a separate token move — all tokens already sit in the vault); the protocol leg materializes as **newly minted shares**, the staker leg as **appreciation of existing shares**.
+
 ### Defining "net trading fees" and the recovery-pool number
 
 For a dashboard, the chain of definitions and their **source of truth**:
@@ -376,6 +404,9 @@ Every claim in this section, with the exact symbol + line to search. Verified ag
 | Lending skim: `deposit_interest_for_stakers = deposit_interest × total_factor / 1e6`; only lender share compounds; staker share → revenue_pool | `update_spot_market_cumulative_interest` | `spot_balance.rs:130` (`:147` / `:151` / `:168`) |
 | Revenue → IF settlement (100% eligible, period/APR capped) | `settle_revenue_to_insurance_fund` | `controller/insurance.rs:685` |
 | Protocol slice = `if_amount × (total_factor − user_factor)/total_factor` minted to `total_shares` only | `protocol_if_factor` | `insurance.rs:758` (mint `:764-775`) |
+| Split knobs (`u32`, `IF_FACTOR_PRECISION`=1e6) | `InsuranceFund.total_factor` / `user_factor` | `state/spot_market.rs:681-682` (`constants.rs:68`) |
+| Admin sets the split (`user_factor ≤ total_factor ≤ 1e6`) | `handle_update_spot_market_if_factor` | `instructions/admin.rs:1636` |
+| Default split = 50/50 (`user_factor = total_factor / 2`) | (market init) | `instructions/admin.rs:384-385` |
 | Protocol withdraw: `cold_admin` only, must leave ≥1 protocol share | `handle_admin_withdraw_from_insurance_fund_vault` | `instructions/if_staker.rs:1241` (guard `:1281`, `cold_admin` `:1347`) |
 | Stake → shares = `amount × total_shares / vault` | `vault_amount_to_if_shares` / `add_insurance_fund_stake` | `math/insurance.rs:16` / `controller/insurance.rs:83` |
 | Share claim = `vault × shares / total_shares` | `if_shares_to_vault_amount` | `math/insurance.rs:44` |

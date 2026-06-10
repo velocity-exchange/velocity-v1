@@ -1818,6 +1818,100 @@ describe('builder codes', () => {
 		await userClient.fetchAccounts();
 	});
 
+	it('fill of a builder order fails when the escrow account is omitted', async () => {
+		const builder = builderClient.wallet;
+		const maxFeeBps = 150 * 10; // 1.5%
+		await userClient.changeApprovedBuilder(builder.publicKey, maxFeeBps, true);
+
+		// start from a clean slate of open orders
+		await userClient.cancelOrders();
+		await userClient.fetchAccounts();
+
+		const marketIndex = 0;
+		const builderFeeBps = 7 * 10; // 7 bps, in tenths
+		const userOrderId = 61;
+		const orderParams = getMarketOrderParams({
+			marketIndex,
+			direction: PositionDirection.LONG,
+			baseAssetAmount: BASE_PRECISION,
+			price: new BN(230).mul(PRICE_PRECISION),
+			auctionStartPrice: new BN(226).mul(PRICE_PRECISION),
+			auctionEndPrice: new BN(230).mul(PRICE_PRECISION),
+			auctionDuration: 10,
+			userOrderId,
+			postOnly: PostOnlyParams.NONE,
+			marketType: MarketType.PERP,
+			builderIdx: 0,
+			builderFeeTenthBps: builderFeeBps,
+		}) as OrderParams;
+
+		await userClient.placePerpOrder(orderParams);
+		await userClient.fetchAccounts();
+
+		const placedOrder = userClient
+			.getUser()
+			.getOpenOrders()
+			.find((o) => o.userOrderId === userOrderId);
+		assert(placedOrder !== undefined);
+		assert(hasBuilder(placedOrder) === true);
+		const orderId = placedOrder.orderId;
+
+		// Build a fill ix the normal way (with the escrow appended) and then strip
+		// the escrow remaining account, simulating a keeper trying to dodge the
+		// builder fee by leaving the optional account out.
+		const ix = await makerClient.getFillPerpOrderIx(
+			await userClient.getUserAccountPublicKey(),
+			userClient.getUserAccount(),
+			{ marketIndex, orderId },
+			undefined,
+			undefined,
+			undefined,
+			undefined,
+			true
+		);
+		const escrowPk = getRevenueShareEscrowAccountPublicKey(
+			makerClient.program.programId,
+			userClient.wallet.publicKey
+		);
+		const keysBefore = ix.keys.length;
+		ix.keys = ix.keys.filter((k) => !k.pubkey.equals(escrowPk));
+		assert(
+			ix.keys.length === keysBefore - 1,
+			'escrow account should have been appended then stripped'
+		);
+
+		const tx = new Transaction().add(ix);
+		tx.recentBlockhash = (
+			await bankrunContextWrapper.connection.getLatestBlockhash()
+		).blockhash;
+		tx.feePayer = makerClient.wallet.publicKey;
+		tx.sign(makerClient.wallet.payer);
+
+		try {
+			await bankrunContextWrapper.connection.sendTransaction(tx);
+			assert(false, 'fill of builder order without escrow should fail');
+		} catch (e) {
+			assert(
+				e.message.includes('0x18b4'), // UnableToLoadRevenueShareAccount
+				`expected UnableToLoadRevenueShareAccount (0x18b4), got ${e.message}`
+			);
+		}
+
+		// the order is untouched and remains fillable once the escrow is included
+		await userClient.fetchAccounts();
+		const stillOpen = userClient
+			.getUser()
+			.getOpenOrders()
+			.find((o) => o.orderId === orderId);
+		assert(
+			stillOpen !== undefined,
+			'order should remain open after the rejected fill'
+		);
+
+		await userClient.cancelOrders();
+		await userClient.fetchAccounts();
+	});
+
 	it('user can placeAndTake a NORMAL perp order with builder (in-ix fill)', async () => {
 		const builder = builderClient.wallet;
 		const maxFeeBps = 150 * 10;

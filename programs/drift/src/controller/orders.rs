@@ -1069,6 +1069,21 @@ pub fn fill_perp_order(
         }
     }
 
+    // Builder-fee enforcement: when the taker order carries a builder code the
+    // builder's `RevenueShareEscrow` must be supplied so the fee is actually
+    // accrued. Without it the fee silently resolves to zero, so a keeper could
+    // omit the optional account and skip the builder fee entirely. Skip when
+    // the builder-codes feature is globally disabled (the keeper passes no
+    // escrow by design) and for liquidations (the liquidatee's order is
+    // force-filled without an escrow).
+    if !fill_mode.is_liquidation() && state.builder_codes_enabled() {
+        validate!(
+            !user.orders[order_index].is_has_builder() || rev_share_escrow.is_some(),
+            ErrorCode::UnableToLoadRevenueShareAccount,
+            "Order has builder but no RevenueShareEscrow account was included in the fill"
+        )?;
+    }
+
     let reserve_price_before: u64;
     let safe_oracle_validity: OracleValidity;
     let oracle_price: i64;
@@ -2775,7 +2790,11 @@ pub fn fulfill_perp_order_step(
     );
     let taker_order_has_builder = taker.orders[taker_order_index].is_has_builder();
     if taker_order_has_builder && rev_share_escrow.is_none() {
-        msg!("Order has builder but no escrow account included, in the future this will fail.");
+        // `fill_perp_order` rejects this case up front when builder codes are
+        // enabled outside of liquidation, so reaching here means either the
+        // feature is globally disabled or this is a liquidation fill — in both
+        // the builder fee is intentionally skipped.
+        msg!("Order has builder but no escrow account included; builder fee skipped.");
     }
 
     let oracle_pd = *oracle_map.get_price_data(&market.oracle_id())?;

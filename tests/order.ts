@@ -504,8 +504,11 @@ describe('orders', () => {
 		const market = driftClient.getPerpMarketAccount(marketIndex);
 		console.log('markPrice After:', calculateReservePrice(market).toString());
 
-		const expectedFeeToMarket = new BN(901);
-		assert(market.amm.totalFee.eq(expectedFeeToMarket));
+		// post AMM-isolation: the remainder is the protocol's pending carveout
+		// (default split); the AMM books only its surplus
+		const expectedRemainder = new BN(901);
+		assert(market.feeLedger.pendingProtocolFee.eq(expectedRemainder));
+		assert(market.amm.totalFee.eq(new BN(0)));
 
 		assert(order.baseAssetAmount.eq(order.baseAssetAmountFilled));
 		assert(enumsAreEqual(order.status, OrderStatus.FILLED));
@@ -632,8 +635,11 @@ describe('orders', () => {
 		console.log('markPrice after:', calculateReservePrice(market).toString());
 
 		console.log('market.amm.totalFee:', market.amm.totalFee.toString());
-		const expectedFeeToMarket = new BN(1802);
-		assert(market.amm.totalFee.eq(expectedFeeToMarket));
+		// post AMM-isolation: cumulative remainders are the protocol's pending
+		// carveout (default split); the AMM books only its surplus
+		const expectedRemainders = new BN(1802);
+		assert(market.feeLedger.pendingProtocolFee.eq(expectedRemainders));
+		assert(market.amm.totalFee.eq(new BN(0)));
 
 		assert(order.baseAssetAmount.eq(order.baseAssetAmountFilled));
 		assert(enumsAreEqual(order.status, OrderStatus.FILLED));

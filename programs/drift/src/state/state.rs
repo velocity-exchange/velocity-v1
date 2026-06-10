@@ -70,7 +70,15 @@ pub struct State {
     pub max_initialize_user_fee: u16,
     pub feature_bit_flags: u8,
     pub lp_pool_feature_bit_flags: u8,
-    pub padding: [u8; 272],
+    /// Treasury that protocol fees may be withdrawn to. Settable only by
+    /// `cold_admin`. `protocol_fee_pool` withdrawals are hard-constrained to a
+    /// token account owned by this key (recipient-locked). `Pubkey::default()`
+    /// (unset) makes withdrawals inert — no real token account can match.
+    pub protocol_fee_recipient: Pubkey,
+    /// Hot key authorized for the `FeeWithdraw` role (triggers protocol-fee
+    /// withdrawals to `protocol_fee_recipient`).
+    pub hot_fee_withdraw: Pubkey,
+    pub padding: [u8; 208],
 }
 
 /// Purpose-specific hot role keys held on `State`. Each variant maps to one of the
@@ -88,6 +96,7 @@ pub enum HotRole {
     VaultDeposit,
     MmOracleCrank,
     AmmSpreadAdjust,
+    FeeWithdraw,
 }
 
 #[derive(BitFlags, Clone, Copy, PartialEq, Debug, Eq)]
@@ -131,6 +140,8 @@ impl Default for State {
             discount_mint: Pubkey::default(),
             signer: Pubkey::default(),
             srm_vault: Pubkey::default(),
+            protocol_fee_recipient: Pubkey::default(),
+            hot_fee_withdraw: Pubkey::default(),
             perp_fee_structure: FeeStructure::default(),
             spot_fee_structure: FeeStructure::default(),
             oracle_guard_rails: OracleGuardRails::default(),
@@ -151,7 +162,7 @@ impl Default for State {
             max_initialize_user_fee: 0,
             feature_bit_flags: 0,
             lp_pool_feature_bit_flags: 0,
-            padding: [0; 272],
+            padding: [0; 208],
         }
     }
 }
@@ -242,6 +253,7 @@ impl State {
             HotRole::VaultDeposit => self.hot_vault_deposit,
             HotRole::MmOracleCrank => self.hot_mm_oracle_crank,
             HotRole::AmmSpreadAdjust => self.hot_amm_spread_adjust,
+            HotRole::FeeWithdraw => self.hot_fee_withdraw,
         }
     }
 
@@ -258,6 +270,7 @@ impl State {
             HotRole::VaultDeposit => self.hot_vault_deposit = key,
             HotRole::MmOracleCrank => self.hot_mm_oracle_crank = key,
             HotRole::AmmSpreadAdjust => self.hot_amm_spread_adjust = key,
+            HotRole::FeeWithdraw => self.hot_fee_withdraw = key,
         }
     }
 
@@ -338,9 +351,10 @@ pub enum LpPoolFeatureBitFlags {
 }
 
 impl Size for State {
-    // 8 (disc) + 14 Pubkey (cold + warm + pause + 11 hot, 448 B) + 4 Pubkey (mint/signer, 128 B)
-    // + 2*FeeStructure + OracleGuardRails + scalars + padding[272] = 1688 B.
-    // Sized so (SIZE - 8) % 16 == 0 for the zero-copy alignment invariant.
+    // 8 (disc) + 14 Pubkey (cold + warm + pause + 11 hot, 448 B) + 6 Pubkey (mint/signer/srm
+    // + protocol_fee_recipient + hot_fee_withdraw, 192 B) + 2*FeeStructure + OracleGuardRails
+    // + scalars + padding[208] = 1688 B. The two new pubkeys (64 B) came out of padding
+    // (272 -> 208), keeping SIZE constant and (SIZE - 8) % 16 == 0.
     const SIZE: usize = 1688;
 }
 
@@ -404,10 +418,18 @@ pub struct FeeStructure {
     pub fee_tiers: [FeeTier; 10],
     pub filler_reward_structure: OrderFillerRewardStructure,
     pub flat_filler_fee: u64,
-    /// Reserved padding. Kept so `size_of::<FeeStructure>()` stays a multiple of 16
-    /// (OrderFillerRewardStructure's u128 forces 16-byte alignment on host x86_64);
-    /// removing it would diverge host vs. SBF layout.
-    pub padding: u64,
+    /// Share of the trade-fee *remainder* (taker fee after maker rebate, referral,
+    /// referee discount, and filler reward are taken off the top) provisioned to
+    /// the AMM as liquidity (its backstop-of-last-resort tranche, tracked in
+    /// `PerpMarket.fee_ledger.amm_protocol_fees_received`). precision:
+    /// FEE_PERCENTAGE_DENOMINATOR. `amm_fee_numerator + if_fee_numerator` must
+    /// be <= FEE_PERCENTAGE_DENOMINATOR; the protocol receives the residual
+    /// (`remainder − amm − if`) into its withdrawable `protocol_fee_pool`.
+    /// (Was the reserved `padding: u64`, repartitioned into two u32s —
+    /// size/alignment unchanged.)
+    pub amm_fee_numerator: u32,
+    /// Share of the trade-fee remainder routed to the insurance fund (`revenue_pool`).
+    pub if_fee_numerator: u32,
 }
 
 impl Default for FeeStructure {
@@ -529,7 +551,11 @@ impl FeeStructure {
                 _padding: [0; 8],
             },
             flat_filler_fee: 10_000,
-            padding: 0,
+            // default: 0% to the AMM and 0% to the IF — the protocol (the
+            // residual claimant) receives 100% of the net trade-fee remainder.
+            // Admin sets the AMM/IF shares explicitly.
+            amm_fee_numerator: 0,
+            if_fee_numerator: 0,
         }
     }
 
@@ -554,7 +580,8 @@ impl FeeStructure {
                 _padding: [0; 8],
             },
             flat_filler_fee: 10_000,
-            padding: 0,
+            amm_fee_numerator: 0,
+            if_fee_numerator: 0,
         }
     }
 }

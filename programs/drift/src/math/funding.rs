@@ -30,14 +30,10 @@ pub struct FundingMarketInputs {
     pub base_asset_amount_long: i128,
     /// Top-level `PerpMarket.base_asset_amount_short`.
     pub base_asset_amount_short: i128,
-    /// AMM-side `total_fee_minus_distributions` at decision time.
+    /// AMM-side `total_fee_minus_distributions` at decision time. Contains
+    /// ONLY the AMM's own equity — protocol/IF carveouts never enter it — so
+    /// funding may spend it down to zero.
     pub total_fee_minus_distributions: i128,
-    /// AMM-side `total_fee_withdrawn` (used by `calculate_fee_pool`).
-    pub total_fee_withdrawn: u128,
-    /// Top-level `PerpMarket.total_exchange_fee`.
-    pub total_exchange_fee: u128,
-    /// Top-level `PerpMarket.total_liquidation_fee`.
-    pub total_liquidation_fee: u128,
 }
 
 impl FundingMarketInputs {
@@ -52,41 +48,14 @@ impl FundingMarketInputs {
             base_asset_amount_long: market.base_asset_amount_long,
             base_asset_amount_short: market.base_asset_amount_short,
             total_fee_minus_distributions: market.amm.total_fee_minus_distributions,
-            total_fee_withdrawn: market.amm.total_fee_withdrawn,
-            total_exchange_fee: market.total_exchange_fee,
-            total_liquidation_fee: market.total_liquidation_fee,
         }
     }
 
-    /// Protocol-retained floor on `total_fee_minus_distributions`. Mirrors
-    /// `repeg::get_total_fee_lower_bound(market)`.
-    pub fn total_fee_lower_bound(&self) -> DriftResult<u128> {
-        use crate::math::constants::{
-            SHARE_OF_FEES_ALLOCATED_TO_DRIFT_DENOMINATOR,
-            SHARE_OF_FEES_ALLOCATED_TO_DRIFT_NUMERATOR,
-        };
-        self.total_exchange_fee
-            .safe_mul(SHARE_OF_FEES_ALLOCATED_TO_DRIFT_NUMERATOR)?
-            .safe_div(SHARE_OF_FEES_ALLOCATED_TO_DRIFT_DENOMINATOR)
-    }
-
-    /// Amount the protocol can spend on negative funding before hitting
-    /// its lower bound. Mirrors `repeg::calculate_fee_pool(market)`.
+    /// Amount the AMM can spend on negative funding: its own retained
+    /// equity. (The pre-isolation floor protected protocol/IF pendings that
+    /// used to live inside tfmd; they no longer do.)
     fn fee_pool(&self) -> DriftResult<u128> {
-        let lower_bound_with_liq = self
-            .total_fee_lower_bound()?
-            .safe_add(self.total_liquidation_fee)?
-            .safe_sub(self.total_fee_withdrawn)?
-            .cast::<i128>()
-            .unwrap_or(0);
-        let pool = if self.total_fee_minus_distributions > lower_bound_with_liq {
-            self.total_fee_minus_distributions
-                .safe_sub(lower_bound_with_liq)?
-                .cast()?
-        } else {
-            0
-        };
-        Ok(pool)
+        Ok(self.total_fee_minus_distributions.max(0).cast()?)
     }
 }
 
@@ -137,7 +106,8 @@ pub fn calculate_funding_rate_long_short(
 }
 
 /// Reject a funding update that would push `total_fee_minus_distributions`
-/// below the protocol-retained floor. Called by the orchestrator after
+/// negative — funding may spend the AMM's own equity but not drive it
+/// underwater. Called by the orchestrator after
 /// `calculate_funding_rate_long_short` and before dispatching
 /// `FundingUpdated`.
 pub fn validate_funding_pnl_profitability(
@@ -149,13 +119,10 @@ pub fn validate_funding_pnl_profitability(
     }
     let projected_total_fee_minus_distributions =
         inputs.total_fee_minus_distributions.safe_add(funding_pnl)?;
-    let total_fee_minus_distributions_lower_bound =
-        inputs.total_fee_lower_bound()?.cast::<i128>()?;
-    if projected_total_fee_minus_distributions < total_fee_minus_distributions_lower_bound {
+    if projected_total_fee_minus_distributions < 0 {
         msg!(
-            "new_total_fee_minus_distributions={} < total_fee_minus_distributions_lower_bound={}",
+            "new_total_fee_minus_distributions={} < 0",
             projected_total_fee_minus_distributions,
-            total_fee_minus_distributions_lower_bound
         );
         return Err(ErrorCode::InvalidFundingProfitability);
     }

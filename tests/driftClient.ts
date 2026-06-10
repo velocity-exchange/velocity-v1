@@ -337,8 +337,11 @@ describe('drift client', () => {
 
 		assert.ok(market.amm.baseAssetAmountWithAmm.eq(new BN(48000000000)));
 		console.log(market.amm.totalFee.toString());
-		assert.ok(market.amm.totalFee.eq(new BN(48001)));
-		assert.ok(market.amm.totalFeeMinusDistributions.eq(new BN(48001)));
+		// post AMM-isolation: the gross fee is on the ledger (protocol residual
+		// under the default split); the AMM books only its spread surplus
+		assert.ok(market.feeLedger.totalExchangeFee.eq(new BN(48001)));
+		assert.ok(market.feeLedger.pendingProtocolFee.eq(new BN(48001)));
+		assert.ok(market.amm.totalFee.eq(market.amm.totalFeeMinusDistributions));
 
 		const orderActionRecord =
 			eventSubscriber.getEventsArray('OrderActionRecord')[0];
@@ -424,8 +427,11 @@ describe('drift client', () => {
 
 		const market = driftClient.getPerpMarketAccount(0);
 		assert.ok(market.amm.baseAssetAmountWithAmm.eq(new BN(24000000000)));
-		assert.ok(market.amm.totalFee.eq(new BN(72001)));
-		assert.ok(market.amm.totalFeeMinusDistributions.eq(new BN(72001)));
+		// post AMM-isolation: the gross fee is on the ledger (protocol residual
+		// under the default split); the AMM books only its spread surplus
+		assert.ok(market.feeLedger.totalExchangeFee.eq(new BN(72001)));
+		assert.ok(market.feeLedger.pendingProtocolFee.eq(new BN(72001)));
+		assert.ok(market.amm.totalFee.eq(market.amm.totalFeeMinusDistributions));
 
 		const orderActionRecord =
 			eventSubscriber.getEventsArray('OrderActionRecord')[0];
@@ -494,8 +500,11 @@ describe('drift client', () => {
 
 		const market = driftClient.getPerpMarketAccount(0);
 		assert.ok(market.amm.baseAssetAmountWithAmm.eq(new BN(-24000000000)));
-		assert.ok(market.amm.totalFee.eq(new BN(120001)));
-		assert.ok(market.amm.totalFeeMinusDistributions.eq(new BN(120001)));
+		// post AMM-isolation: the gross fee is on the ledger (protocol residual
+		// under the default split); the AMM books only its spread surplus
+		assert.ok(market.feeLedger.totalExchangeFee.eq(new BN(120001)));
+		assert.ok(market.feeLedger.pendingProtocolFee.eq(new BN(120001)));
+		assert.ok(market.amm.totalFee.eq(market.amm.totalFeeMinusDistributions));
 
 		const orderActionRecord =
 			eventSubscriber.getEventsArray('OrderActionRecord')[0];
@@ -547,8 +556,11 @@ describe('drift client', () => {
 
 		const market = driftClient.getPerpMarketAccount(0);
 		assert.ok(market.amm.baseAssetAmountWithAmm.eq(new BN(0)));
-		assert.ok(market.amm.totalFee.eq(new BN(144001)));
-		assert.ok(market.amm.totalFeeMinusDistributions.eq(new BN(144001)));
+		// post AMM-isolation: the gross fee is on the ledger (protocol residual
+		// under the default split); the AMM books only its spread surplus
+		assert.ok(market.feeLedger.totalExchangeFee.eq(new BN(144001)));
+		assert.ok(market.feeLedger.pendingProtocolFee.eq(new BN(144001)));
+		assert.ok(market.amm.totalFee.eq(market.amm.totalFeeMinusDistributions));
 
 		const orderActionRecord =
 			eventSubscriber.getEventsArray('OrderActionRecord')[0];

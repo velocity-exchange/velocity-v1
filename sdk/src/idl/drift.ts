@@ -5,7 +5,7 @@
  * IDL can be found at `target/idl/drift.json`.
  */
 export type Drift = {
-  "address": "vELoC1audYbSYVRXn1vPaV8Axoa9oU6BYmNGZZBDZ1P",
+  "address": "dRiftyHA39MWEi3m9aunc5MzRF1JYuBsbn6VPcn33UH",
   "metadata": {
     "name": "drift",
     "version": "2.162.0",
@@ -446,114 +446,6 @@ export type Drift = {
         {
           "name": "pausedOperations",
           "type": "u8"
-        }
-      ]
-    },
-    {
-      "name": "adminWithdrawFromInsuranceFundVault",
-      "discriminator": [
-        228,
-        208,
-        191,
-        246,
-        169,
-        58,
-        189,
-        213
-      ],
-      "accounts": [
-        {
-          "name": "state"
-        },
-        {
-          "name": "authority",
-          "writable": true,
-          "signer": true
-        },
-        {
-          "name": "spotMarket",
-          "writable": true,
-          "pda": {
-            "seeds": [
-              {
-                "kind": "const",
-                "value": [
-                  115,
-                  112,
-                  111,
-                  116,
-                  95,
-                  109,
-                  97,
-                  114,
-                  107,
-                  101,
-                  116
-                ]
-              },
-              {
-                "kind": "arg",
-                "path": "marketIndex"
-              }
-            ]
-          }
-        },
-        {
-          "name": "insuranceFundVault",
-          "writable": true,
-          "pda": {
-            "seeds": [
-              {
-                "kind": "const",
-                "value": [
-                  105,
-                  110,
-                  115,
-                  117,
-                  114,
-                  97,
-                  110,
-                  99,
-                  101,
-                  95,
-                  102,
-                  117,
-                  110,
-                  100,
-                  95,
-                  118,
-                  97,
-                  117,
-                  108,
-                  116
-                ]
-              },
-              {
-                "kind": "arg",
-                "path": "marketIndex"
-              }
-            ]
-          }
-        },
-        {
-          "name": "recipientTokenAccount",
-          "writable": true
-        },
-        {
-          "name": "tokenProgram"
-        },
-        {
-          "name": "driftSigner"
-        }
-      ],
-      "args": [
-        {
-          "name": "marketIndex",
-          "type": "u16"
-        },
-        {
-          "name": "amount",
-          "type": "u64"
         }
       ]
     },
@@ -2883,59 +2775,6 @@ export type Drift = {
         }
       ],
       "args": []
-    },
-    {
-      "name": "forceWipeAccountsDevnet",
-      "docs": [
-        "Devnet-only escape hatch: cleans up accounts stranded by a layout-breaking",
-        "program upgrade (or by a partial re-init). For each account passed via",
-        "`remaining_accounts`:",
-        "- drift-owned PDA → drain lamports (runtime GCs at end of tx)",
-        "- token-program owned vault (drift_signer close-authority) → CPI",
-        "`close_account`, rent refunded to admin",
-        "Admin gate reads State's first pubkey field at raw offset 8..40 so it",
-        "works regardless of the State layout currently on chain. `drift_signer_nonce`",
-        "must match `State.signer_nonce`; mismatch fails the token CPI signature.",
-        "Stripped from mainnet builds via `mainnet-beta`."
-      ],
-      "discriminator": [
-        105,
-        74,
-        87,
-        6,
-        166,
-        227,
-        138,
-        215
-      ],
-      "accounts": [
-        {
-          "name": "admin",
-          "writable": true,
-          "signer": true
-        },
-        {
-          "name": "state",
-          "docs": [
-            "(cold-)admin pubkey at offset 8..40."
-          ]
-        },
-        {
-          "name": "driftSigner",
-          "docs": [
-            "at CPI time when closing token vaults; ignored otherwise."
-          ]
-        },
-        {
-          "name": "tokenProgram"
-        }
-      ],
-      "args": [
-        {
-          "name": "driftSignerNonce",
-          "type": "u8"
-        }
-      ]
     },
     {
       "name": "initialize",
@@ -8126,6 +7965,68 @@ export type Drift = {
       ]
     },
     {
+      "name": "sweepPerpMarketFees",
+      "discriminator": [
+        194,
+        147,
+        181,
+        230,
+        193,
+        155,
+        241,
+        225
+      ],
+      "accounts": [
+        {
+          "name": "state"
+        },
+        {
+          "name": "perpMarket",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  112,
+                  101,
+                  114,
+                  112,
+                  95,
+                  109,
+                  97,
+                  114,
+                  107,
+                  101,
+                  116
+                ]
+              },
+              {
+                "kind": "arg",
+                "path": "perpMarketIndex"
+              }
+            ]
+          }
+        },
+        {
+          "name": "spotMarket",
+          "docs": [
+            "The perp market's quote spot market (validated in the handler)"
+          ],
+          "writable": true
+        },
+        {
+          "name": "oracle"
+        }
+      ],
+      "args": [
+        {
+          "name": "perpMarketIndex",
+          "type": "u16"
+        }
+      ]
+    },
+    {
       "name": "transferDeposit",
       "discriminator": [
         20,
@@ -8727,120 +8628,6 @@ export type Drift = {
           "type": {
             "option": "u64"
           }
-        }
-      ]
-    },
-    {
-      "name": "transferProtocolIfSharesToRevenuePool",
-      "discriminator": [
-        236,
-        136,
-        147,
-        153,
-        146,
-        205,
-        104,
-        29
-      ],
-      "accounts": [
-        {
-          "name": "state"
-        },
-        {
-          "name": "authority",
-          "writable": true,
-          "signer": true
-        },
-        {
-          "name": "insuranceFundVault",
-          "writable": true,
-          "pda": {
-            "seeds": [
-              {
-                "kind": "const",
-                "value": [
-                  105,
-                  110,
-                  115,
-                  117,
-                  114,
-                  97,
-                  110,
-                  99,
-                  101,
-                  95,
-                  102,
-                  117,
-                  110,
-                  100,
-                  95,
-                  118,
-                  97,
-                  117,
-                  108,
-                  116
-                ]
-              },
-              {
-                "kind": "arg",
-                "path": "marketIndex"
-              }
-            ]
-          }
-        },
-        {
-          "name": "spotMarketVault",
-          "writable": true,
-          "pda": {
-            "seeds": [
-              {
-                "kind": "const",
-                "value": [
-                  115,
-                  112,
-                  111,
-                  116,
-                  95,
-                  109,
-                  97,
-                  114,
-                  107,
-                  101,
-                  116,
-                  95,
-                  118,
-                  97,
-                  117,
-                  108,
-                  116
-                ]
-              },
-              {
-                "kind": "arg",
-                "path": "marketIndex"
-              }
-            ]
-          }
-        },
-        {
-          "name": "ifRebalanceConfig",
-          "writable": true
-        },
-        {
-          "name": "tokenProgram"
-        },
-        {
-          "name": "driftSigner"
-        }
-      ],
-      "args": [
-        {
-          "name": "marketIndex",
-          "type": "u16"
-        },
-        {
-          "name": "amount",
-          "type": "u64"
         }
       ]
     },
@@ -10636,6 +10423,38 @@ export type Drift = {
       ]
     },
     {
+      "name": "updatePerpMarketFeePoolBufferTarget",
+      "discriminator": [
+        125,
+        234,
+        40,
+        44,
+        91,
+        26,
+        231,
+        177
+      ],
+      "accounts": [
+        {
+          "name": "admin",
+          "signer": true
+        },
+        {
+          "name": "state"
+        },
+        {
+          "name": "perpMarket",
+          "writable": true
+        }
+      ],
+      "args": [
+        {
+          "name": "feePoolBufferTarget",
+          "type": "u64"
+        }
+      ]
+    },
+    {
       "name": "updatePerpMarketFundingPeriod",
       "discriminator": [
         171,
@@ -10735,6 +10554,10 @@ export type Drift = {
         },
         {
           "name": "ifLiquidationFee",
+          "type": "u32"
+        },
+        {
+          "name": "protocolLiquidationFee",
           "type": "u32"
         }
       ]
@@ -11725,6 +11548,38 @@ export type Drift = {
       ]
     },
     {
+      "name": "updateProtocolFeeRecipient",
+      "docs": [
+        "Cold-only: set the treasury protocol fees may be withdrawn to."
+      ],
+      "discriminator": [
+        213,
+        60,
+        21,
+        106,
+        42,
+        67,
+        60,
+        162
+      ],
+      "accounts": [
+        {
+          "name": "state",
+          "writable": true
+        },
+        {
+          "name": "admin",
+          "signer": true
+        }
+      ],
+      "args": [
+        {
+          "name": "protocolFeeRecipient",
+          "type": "pubkey"
+        }
+      ]
+    },
+    {
       "name": "updateSpecialUserStatus",
       "discriminator": [
         23,
@@ -12054,11 +11909,11 @@ export type Drift = {
           "type": "u16"
         },
         {
-          "name": "userIfFactor",
+          "name": "ifFeeFactor",
           "type": "u32"
         },
         {
-          "name": "totalIfFactor",
+          "name": "protocolFeeBps",
           "type": "u32"
         }
       ]
@@ -12127,6 +11982,10 @@ export type Drift = {
         },
         {
           "name": "ifLiquidationFee",
+          "type": "u32"
+        },
+        {
+          "name": "protocolLiquidationFee",
           "type": "u32"
         }
       ]
@@ -13948,6 +13807,250 @@ export type Drift = {
       ]
     },
     {
+      "name": "withdrawProtocolFeesPerp",
+      "docs": [
+        "Withdraw a perp market's accrued protocol fees (from the quote spot vault)",
+        "to `protocol_fee_recipient` (auth: `FeeWithdraw` hot key)."
+      ],
+      "discriminator": [
+        227,
+        99,
+        23,
+        227,
+        168,
+        217,
+        136,
+        181
+      ],
+      "accounts": [
+        {
+          "name": "state"
+        },
+        {
+          "name": "authority",
+          "signer": true
+        },
+        {
+          "name": "perpMarket",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  112,
+                  101,
+                  114,
+                  112,
+                  95,
+                  109,
+                  97,
+                  114,
+                  107,
+                  101,
+                  116
+                ]
+              },
+              {
+                "kind": "arg",
+                "path": "marketIndex"
+              }
+            ]
+          }
+        },
+        {
+          "name": "quoteSpotMarket",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  115,
+                  112,
+                  111,
+                  116,
+                  95,
+                  109,
+                  97,
+                  114,
+                  107,
+                  101,
+                  116
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "quoteSpotMarket"
+              }
+            ]
+          }
+        },
+        {
+          "name": "spotMarketVault",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  115,
+                  112,
+                  111,
+                  116,
+                  95,
+                  109,
+                  97,
+                  114,
+                  107,
+                  101,
+                  116,
+                  95,
+                  118,
+                  97,
+                  117,
+                  108,
+                  116
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "quoteSpotMarket"
+              }
+            ]
+          }
+        },
+        {
+          "name": "recipientTokenAccount",
+          "writable": true
+        },
+        {
+          "name": "tokenProgram"
+        },
+        {
+          "name": "driftSigner"
+        }
+      ],
+      "args": [
+        {
+          "name": "marketIndex",
+          "type": "u16"
+        },
+        {
+          "name": "amount",
+          "type": "u64"
+        }
+      ]
+    },
+    {
+      "name": "withdrawProtocolFeesSpot",
+      "docs": [
+        "Withdraw a spot market's accrued protocol fees to `protocol_fee_recipient`",
+        "(auth: `FeeWithdraw` hot key)."
+      ],
+      "discriminator": [
+        177,
+        216,
+        30,
+        239,
+        253,
+        177,
+        123,
+        155
+      ],
+      "accounts": [
+        {
+          "name": "state"
+        },
+        {
+          "name": "authority",
+          "signer": true
+        },
+        {
+          "name": "spotMarket",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  115,
+                  112,
+                  111,
+                  116,
+                  95,
+                  109,
+                  97,
+                  114,
+                  107,
+                  101,
+                  116
+                ]
+              },
+              {
+                "kind": "arg",
+                "path": "marketIndex"
+              }
+            ]
+          }
+        },
+        {
+          "name": "spotMarketVault",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  115,
+                  112,
+                  111,
+                  116,
+                  95,
+                  109,
+                  97,
+                  114,
+                  107,
+                  101,
+                  116,
+                  95,
+                  118,
+                  97,
+                  117,
+                  108,
+                  116
+                ]
+              },
+              {
+                "kind": "arg",
+                "path": "marketIndex"
+              }
+            ]
+          }
+        },
+        {
+          "name": "recipientTokenAccount",
+          "writable": true
+        },
+        {
+          "name": "tokenProgram"
+        },
+        {
+          "name": "driftSigner"
+        }
+      ],
+      "args": [
+        {
+          "name": "marketIndex",
+          "type": "u16"
+        },
+        {
+          "name": "amount",
+          "type": "u64"
+        }
+      ]
+    },
+    {
       "name": "zeroMmOracleFields",
       "discriminator": [
         192,
@@ -14457,6 +14560,32 @@ export type Drift = {
         21,
         2,
         90
+      ]
+    },
+    {
+      "name": "perpMarketFeeSweepRecord",
+      "discriminator": [
+        55,
+        107,
+        227,
+        104,
+        179,
+        8,
+        121,
+        33
+      ]
+    },
+    {
+      "name": "protocolFeeWithdrawRecord",
+      "discriminator": [
+        249,
+        158,
+        52,
+        81,
+        30,
+        11,
+        45,
+        149
       ]
     },
     {
@@ -16337,6 +16466,16 @@ export type Drift = {
       "code": 6351,
       "name": "invalidAdminTier",
       "msg": "Signer is not authorized for this admin tier"
+    },
+    {
+      "code": 6352,
+      "name": "invalidProtocolFeeRecipient",
+      "msg": "Protocol fee recipient token account must be owned by State.protocol_fee_recipient"
+    },
+    {
+      "code": 6353,
+      "name": "insufficientProtocolFees",
+      "msg": "Insufficient protocol fees available to withdraw"
     }
   ],
   "types": [
@@ -16460,7 +16599,9 @@ export type Drift = {
           {
             "name": "totalFeeWithdrawn",
             "docs": [
-              "sum of all fees from fee pool withdrawn to revenue pool",
+              "@deprecated frozen analytics counter from the pre-isolation design",
+              "(sum of fees withdrawn from the fee pool to the revenue pool). The",
+              "sweep no longer touches the AMM's pools, so nothing writes this.",
               "precision: QUOTE_PRECISION"
             ],
             "type": "u128"
@@ -17694,6 +17835,80 @@ export type Drift = {
       }
     },
     {
+      "name": "feeLedger",
+      "docs": [
+        "All of a perp market's fee-split accounting in one ledger (auditor-driven",
+        "consolidation). Pure counters — token claims live in the pools",
+        "(`protocol_fee_pool`, the quote `revenue_pool`, `AMM.fee_pool`).",
+        "Convention: gross-fee counters record what the taker actually paid",
+        "(post referee discount, pre carve-outs) on BOTH the AMM and DLOB-match",
+        "paths."
+      ],
+      "serialization": "bytemuckunsafe",
+      "repr": {
+        "kind": "c"
+      },
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "totalExchangeFee",
+            "docs": [
+              "lifetime gross taker fees collected (analytics; not a routing driver)",
+              "precision: QUOTE_PRECISION"
+            ],
+            "type": "u128"
+          },
+          {
+            "name": "totalLiquidationFee",
+            "docs": [
+              "lifetime liquidation fees charged to liquidatees (IF + protocol cuts;",
+              "pure analytics — routing happens via the pending counters).",
+              "precision: QUOTE_PRECISION"
+            ],
+            "type": "u128"
+          },
+          {
+            "name": "pendingProtocolFee",
+            "docs": [
+              "protocol (residual) carveouts accrued but not yet materialized into",
+              "`protocol_fee_pool`. precision: QUOTE_PRECISION"
+            ],
+            "type": "u128"
+          },
+          {
+            "name": "pendingIfFee",
+            "docs": [
+              "insurance-fund carveouts accrued but not yet materialized into the",
+              "quote `revenue_pool`; also the first bankruptcy tranche.",
+              "precision: QUOTE_PRECISION"
+            ],
+            "type": "u128"
+          },
+          {
+            "name": "ammProtocolFeesReceived",
+            "docs": [
+              "cumulative fee provision granted to the AMM via `amm_fee_numerator` —",
+              "its backstop-of-last-resort tranche, drawable (and decremented) only in",
+              "bankruptcy. The AMM's own spread/trading capital beyond this provision",
+              "is never tapped. precision: QUOTE_PRECISION"
+            ],
+            "type": "u128"
+          },
+          {
+            "name": "pendingAmmProvision",
+            "docs": [
+              "AMM fee provision accrued at fill (already booked into the AMM's",
+              "`total_fee_minus_distributions`) but not yet tokenized into",
+              "`amm.fee_pool` by the sweep. Invariant: `<= amm_protocol_fees_received`.",
+              "precision: QUOTE_PRECISION"
+            ],
+            "type": "u128"
+          }
+        ]
+      }
+    },
+    {
       "name": "feeStructure",
       "repr": {
         "kind": "c"
@@ -17727,13 +17942,26 @@ export type Drift = {
             "type": "u64"
           },
           {
-            "name": "padding",
+            "name": "ammFeeNumerator",
             "docs": [
-              "Reserved padding. Kept so `size_of::<FeeStructure>()` stays a multiple of 16",
-              "(OrderFillerRewardStructure's u128 forces 16-byte alignment on host x86_64);",
-              "removing it would diverge host vs. SBF layout."
+              "Share of the trade-fee *remainder* (taker fee after maker rebate, referral,",
+              "referee discount, and filler reward are taken off the top) gifted to the",
+              "AMM as liquidity (its backstop-of-last-resort tranche, tracked in",
+              "`PerpMarket.amm_protocol_fees_received`). precision:",
+              "FEE_PERCENTAGE_DENOMINATOR. `amm_fee_numerator + if_fee_numerator` must",
+              "be <= FEE_PERCENTAGE_DENOMINATOR; the protocol receives the residual",
+              "(`remainder − amm − if`) into its withdrawable `protocol_fee_pool`.",
+              "(Was the reserved `padding: u64`, repartitioned into two u32s —",
+              "size/alignment unchanged.)"
             ],
-            "type": "u64"
+            "type": "u32"
+          },
+          {
+            "name": "ifFeeNumerator",
+            "docs": [
+              "Share of the trade-fee remainder routed to the insurance fund (`revenue_pool`)."
+            ],
+            "type": "u32"
           }
         ]
       }
@@ -18113,6 +18341,9 @@ export type Drift = {
           },
           {
             "name": "ammSpreadAdjust"
+          },
+          {
+            "name": "feeWithdraw"
           }
         ]
       }
@@ -18359,15 +18590,33 @@ export type Drift = {
           },
           {
             "name": "revenueSettlePeriod",
+            "docs": [
+              "How often `revenue_pool` may settle into the IF vault (seconds)."
+            ],
             "type": "i64"
           },
           {
-            "name": "totalFactor",
+            "name": "ifFeeFactor",
+            "docs": [
+              "Fraction of spot deposit-interest gains carved out to the insurance fund",
+              "(staker-owned). precision: IF_FACTOR_PRECISION. (Was `total_factor`; the",
+              "protocol-vs-staker split was removed — the IF is now 100% staker-owned,",
+              "so this is purely the staker IF carveout.)"
+            ],
             "type": "u32"
           },
           {
-            "name": "userFactor",
-            "type": "u32"
+            "name": "paddingIf",
+            "docs": [
+              "Was `user_factor` (the old protocol/staker split knob). The IF is now",
+              "100% staker-owned, so the split is gone; slot kept as padding."
+            ],
+            "type": {
+              "array": [
+                "u8",
+                4
+              ]
+            }
           }
         ]
       }
@@ -19259,6 +19508,14 @@ export type Drift = {
               "precision: QUOTE_PRECISION"
             ],
             "type": "u64"
+          },
+          {
+            "name": "protocolFee",
+            "docs": [
+              "protocol's cut, routed to the perp market's `protocol_fee_pool`",
+              "precision: QUOTE_PRECISION"
+            ],
+            "type": "u64"
           }
         ]
       }
@@ -19298,6 +19555,14 @@ export type Drift = {
           {
             "name": "ifFee",
             "docs": [
+              "precision: token mint precision"
+            ],
+            "type": "u64"
+          },
+          {
+            "name": "protocolFee",
+            "docs": [
+              "protocol's cut, routed to the liability market's `protocol_fee_pool`",
               "precision: token mint precision"
             ],
             "type": "u64"
@@ -21011,20 +21276,17 @@ export type Drift = {
             "type": "i128"
           },
           {
-            "name": "totalExchangeFee",
+            "name": "feeLedger",
             "docs": [
-              "total fees collected by exchange fee schedule",
-              "precision: QUOTE_PRECISION"
+              "The market's fee ledger: every fee-split counter in one place (gross",
+              "analytics, pending protocol/IF carveouts, and the AMM's backstop",
+              "tranche). Mutate through its accessor methods, not raw field writes."
             ],
-            "type": "u128"
-          },
-          {
-            "name": "totalLiquidationFee",
-            "docs": [
-              "all fees collected by market for liquidations",
-              "precision: QUOTE_PRECISION"
-            ],
-            "type": "u128"
+            "type": {
+              "defined": {
+                "name": "feeLedger"
+              }
+            }
           },
           {
             "name": "oracle",
@@ -21044,6 +21306,50 @@ export type Drift = {
                 "name": "poolBalance"
               }
             }
+          },
+          {
+            "name": "protocolFeePool",
+            "docs": [
+              "Protocol fees collected on this perp market, quote/USDC-denominated — a",
+              "protocol-owned Deposit-type claim against the quote spot market vault",
+              "(like `pnl_pool`; counted in the quote market's `deposit_balance`).",
+              "Owned by the protocol, not users, and never part of the insurance",
+              "backstop. `market_index` is set to `quote_spot_market_index`. Withdrawn",
+              "directly to `State.protocol_fee_recipient`."
+            ],
+            "type": {
+              "defined": {
+                "name": "poolBalance"
+              }
+            }
+          },
+          {
+            "name": "protocolLiquidationFee",
+            "docs": [
+              "Protocol's cut of a perp liquidation, taken from the liquidatee.",
+              "precision: LIQUIDATOR_FEE_PRECISION"
+            ],
+            "type": "u32"
+          },
+          {
+            "name": "paddingBuffer",
+            "type": {
+              "array": [
+                "u8",
+                4
+              ]
+            }
+          },
+          {
+            "name": "feePoolBufferTarget",
+            "docs": [
+              "The pnl-pool retention buffer the streaming sweep leaves untouched:",
+              "`sweep_market_fees` drains pendings only from what the pnl pool holds",
+              "above `max(net_user_pnl, 0) + fee_pool_buffer_target` — live user",
+              "claims stay fully backed and this margin sits on top.",
+              "precision: QUOTE_PRECISION"
+            ],
+            "type": "u64"
           },
           {
             "name": "name",
@@ -21390,13 +21696,14 @@ export type Drift = {
             "docs": [
               "Trailing padding so `market_stats` lands at the offset Rust naturally",
               "computes via `repr(C)` alignment and the `(SIZE - 8) % 16 == 0`",
-              "invariant holds. Bumped to 36 bytes (was 28) when `next_curve_record_id`",
-              "was removed."
+              "invariant holds. (32 bytes moved into `fee_ledger` as",
+              "`amm_protocol_fees_received` and then `pending_amm_provision` joined",
+              "it, keeping `market_stats` fixed.)"
             ],
             "type": {
               "array": [
                 "u8",
-                36
+                4
               ]
             }
           },
@@ -21457,6 +21764,50 @@ export type Drift = {
                 "name": "hedgeConfig"
               }
             }
+          }
+        ]
+      }
+    },
+    {
+      "name": "perpMarketFeeSweepRecord",
+      "docs": [
+        "Emitted by the streaming fee sweep (`sweep_market_fees`) when it",
+        "materializes pending fee carveouts out of a perp market's pnl pool."
+      ],
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "ts",
+            "docs": [
+              "unix_timestamp of action"
+            ],
+            "type": "i64"
+          },
+          {
+            "name": "marketIndex",
+            "type": "u16"
+          },
+          {
+            "name": "ifSwept",
+            "docs": [
+              "pending insurance cut moved to the quote spot market's revenue_pool"
+            ],
+            "type": "u64"
+          },
+          {
+            "name": "protocolSwept",
+            "docs": [
+              "pending protocol cut moved to the market's protocol_fee_pool"
+            ],
+            "type": "u64"
+          },
+          {
+            "name": "ammProvisionTokenized",
+            "docs": [
+              "AMM fee provision tokenized into amm.fee_pool (booked at fill)"
+            ],
+            "type": "u64"
           }
         ]
       }
@@ -21734,6 +22085,51 @@ export type Drift = {
           {
             "name": "oracleTwap5minPercentDivergence",
             "type": "u64"
+          }
+        ]
+      }
+    },
+    {
+      "name": "protocolFeeWithdrawRecord",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "ts",
+            "docs": [
+              "unix_timestamp of action"
+            ],
+            "type": "i64"
+          },
+          {
+            "name": "marketIndex",
+            "docs": [
+              "perp market index for a perp-fee withdrawal, else the spot market index"
+            ],
+            "type": "u16"
+          },
+          {
+            "name": "isPerp",
+            "docs": [
+              "true if this withdrawal drained a perp market's protocol_fee_pool",
+              "(sourced from the quote spot vault), false for a spot market withdrawal"
+            ],
+            "type": "bool"
+          },
+          {
+            "name": "spotMarketIndex",
+            "docs": [
+              "the spot market the tokens were drawn from"
+            ],
+            "type": "u16"
+          },
+          {
+            "name": "amount",
+            "type": "u64"
+          },
+          {
+            "name": "recipientTokenAccount",
+            "type": "pubkey"
           }
         ]
       }
@@ -23119,11 +23515,57 @@ export type Drift = {
             "type": "u8"
           },
           {
+            "name": "paddingAlignPfp",
+            "docs": [
+              "Aligns `protocol_fee_pool`'s leading u128 to a 16-byte struct offset so",
+              "host (x86_64, align 16) and SBF (align 8) layouts agree. Do not reorder."
+            ],
+            "type": {
+              "array": [
+                "u8",
+                8
+              ]
+            }
+          },
+          {
+            "name": "protocolFeePool",
+            "docs": [
+              "Protocol fees collected in this market's token (lending protocol carveout",
+              "+ spot-liquidation protocol fee). A protocol-owned Deposit-type claim",
+              "inside the spot vault (counted in `deposit_balance`, like `revenue_pool`)",
+              "— owned by the protocol, not users, and never part of the insurance",
+              "backstop. Withdrawn directly to `State.protocol_fee_recipient`; the",
+              "withdrawal decrements this claim and re-validates the vault still covers",
+              "all remaining claims, so it can never tap user deposits."
+            ],
+            "type": {
+              "defined": {
+                "name": "poolBalance"
+              }
+            }
+          },
+          {
+            "name": "protocolLiquidationFee",
+            "docs": [
+              "Protocol's cut of a spot liquidation, taken from the liquidatee.",
+              "precision: LIQUIDATOR_FEE_PRECISION"
+            ],
+            "type": "u32"
+          },
+          {
+            "name": "protocolFeeBps",
+            "docs": [
+              "Protocol's carveout of lending deposit-interest gains, routed to",
+              "`protocol_fee_pool`. precision: IF_FACTOR_PRECISION"
+            ],
+            "type": "u32"
+          },
+          {
             "name": "padding",
             "type": {
               "array": [
                 "u8",
-                56
+                8
               ]
             }
           }
@@ -23475,11 +23917,29 @@ export type Drift = {
             "type": "u8"
           },
           {
+            "name": "protocolFeeRecipient",
+            "docs": [
+              "Treasury that protocol fees may be withdrawn to. Settable only by",
+              "`cold_admin`. `protocol_fee_pool` withdrawals are hard-constrained to a",
+              "token account owned by this key (recipient-locked). `Pubkey::default()`",
+              "(unset) makes withdrawals inert — no real token account can match."
+            ],
+            "type": "pubkey"
+          },
+          {
+            "name": "hotFeeWithdraw",
+            "docs": [
+              "Hot key authorized for the `FeeWithdraw` role (triggers protocol-fee",
+              "withdrawals to `protocol_fee_recipient`)."
+            ],
+            "type": "pubkey"
+          },
+          {
             "name": "padding",
             "type": {
               "array": [
                 "u8",
-                272
+                208
               ]
             }
           }
@@ -23692,12 +24152,6 @@ export type Drift = {
           },
           {
             "name": "updateAmmSummaryStats",
-            "type": {
-              "option": "bool"
-            }
-          },
-          {
-            "name": "excludeTotalLiqFee",
             "type": {
               "option": "bool"
             }

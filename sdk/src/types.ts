@@ -773,6 +773,8 @@ export type StateAccount = {
 	hotVaultDeposit: PublicKey;
 	hotMmOracleCrank: PublicKey;
 	hotAmmSpreadAdjust: PublicKey;
+	hotFeeWithdraw: PublicKey;
+	protocolFeeRecipient: PublicKey;
 	exchangeStatus: number;
 	whitelistMint: PublicKey;
 	discountMint: PublicKey;
@@ -816,8 +818,12 @@ export type PerpMarketAccount = {
 	nextFillRecordId: BN;
 	nextFundingRateRecordId: BN;
 	pnlPool: PoolBalance;
+	protocolFeePool: PoolBalance;
+	feeLedger: FeeLedger;
 	liquidatorFee: number;
 	ifLiquidationFee: number;
+	protocolLiquidationFee: number;
+	feePoolBufferTarget: BN;
 	imfFactor: number;
 	unrealizedPnlImfFactor: number;
 	unrealizedPnlMaxImbalance: BN;
@@ -859,8 +865,6 @@ export type PerpMarketAccount = {
 	quoteBreakEvenAmountShort: BN;
 	totalSocialLoss: BN;
 	maxOpenInterest: BN;
-	totalExchangeFee: BN;
-	totalLiquidationFee: BN;
 	cumulativeFundingRateLong: BN;
 	cumulativeFundingRateShort: BN;
 	lastFundingRate: BN;
@@ -913,13 +917,15 @@ export type SpotMarketAccount = {
 		unstakingPeriod: BN;
 		lastRevenueSettleTs: BN;
 		revenueSettlePeriod: BN;
-		totalFactor: number;
-		userFactor: number;
+		ifFeeFactor: number;
 	};
 
 	revenuePool: PoolBalance;
+	protocolFeePool: PoolBalance;
 
 	ifLiquidationFee: number;
+	protocolLiquidationFee: number;
+	protocolFeeBps: number;
 
 	decimals: number;
 	optimalUtilization: number;
@@ -978,6 +984,18 @@ export type SpotMarketAccount = {
 export type PoolBalance = {
 	scaledBalance: BN;
 	marketIndex: number;
+};
+
+/// Consolidated per-market fee ledger: lifetime analytics counters plus the
+/// pending (not-yet-materialized) protocol/IF/AMM carveouts and the AMM's
+/// backstop-of-last-resort clawback cap.
+export type FeeLedger = {
+	totalExchangeFee: BN;
+	totalLiquidationFee: BN;
+	pendingProtocolFee: BN;
+	pendingIfFee: BN;
+	ammProtocolFeesReceived: BN;
+	pendingAmmProvision: BN;
 };
 
 export type AMM = {
@@ -1371,7 +1389,8 @@ export type FeeStructure = {
 	feeTiers: FeeTier[];
 	fillerRewardStructure: OrderFillerRewardStructure;
 	flatFillerFee: BN;
-	referrerRewardEpochUpperBound: BN;
+	ammFeeNumerator: number;
+	ifFeeNumerator: number;
 };
 
 export type FeeTier = {

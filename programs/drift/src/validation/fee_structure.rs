@@ -38,6 +38,21 @@ pub fn validate_fee_structure(fee_structure: &FeeStructure) -> DriftResult {
         fee_structure.flat_filler_fee
     )?;
 
+    // AMM/IF carveouts of the trade-fee remainder must not exceed 100%
+    // (the protocol receives the residual). If they did, the splits would
+    // underflow / over-accrue against what was actually collected.
+    validate!(
+        fee_structure
+            .amm_fee_numerator
+            .saturating_add(fee_structure.if_fee_numerator)
+            <= FEE_PERCENTAGE_DENOMINATOR,
+        ErrorCode::InvalidFeeStructure,
+        "amm_fee_numerator ({}) + if_fee_numerator ({}) exceeds {}",
+        fee_structure.amm_fee_numerator,
+        fee_structure.if_fee_numerator,
+        FEE_PERCENTAGE_DENOMINATOR
+    )?;
+
     Ok(())
 }
 

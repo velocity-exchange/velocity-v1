@@ -1,4 +1,278 @@
-# Fee & Revenue Flow
+# Fees & Revenue
+
+This document has two parts:
+
+- **[NEW](#new--explicit-fee-carveouts-current-system)** — the current fee
+  system (June 2026 redesign): explicit per-source protocol/IF carveouts, a
+  directly-withdrawable protocol fee pool, and a 100% staker-owned insurance
+  fund.
+- **[OLD](#old--fee--revenue-flow-pre-redesign-historical)** — the previous
+  insurance-fund-waterfall design and a snapshot of the original Drift mainnet
+  deployment's settings, kept as historical context.
+
+---
+
+# NEW — Explicit fee carveouts (current system)
+
+Design goals (vs. OLD): protocol fees are **not** part of the protocol's
+backstop, are **directly withdrawable** on demand, and every fee source has an
+**explicit** protocol/insurance split — no waterfall, no settlement-time
+share-mint, no dual insurance fund.
+
+## Trade-fee waterfall (perps)
+
+One tiered taker fee; fixed carveouts off the top; the remainder split by two
+global percentages; builder fee added on top.
+
+```
+taker_fee  = ceil(notional × fee_numerator / FEE_DENOMINATOR)   tiered by 30d volume + gov stake,
+                                                                ± per-market fee_adjustment
+          − referee_discount          (reduces what the taker pays; never collected)
+          − referrer_reward           (→ referrer, via RevenueShareEscrow)
+          − filler_reward             (→ keeper, as perp quote PnL)
+          − maker_rebate              (→ maker; match path only)
+          ───────────────────────────
+remainder ── × amm_fee_numerator/100 → AMM fee provision (booked into the AMM's ledger at fill,
+          │                                             tokenized into amm.fee_pool by the sweep;
+          │                                             clawable in bankruptcy — the backstop of
+          │                                             last resort, tracked in
+          │                                             amm_protocol_fees_received)
+          ── × if_fee_numerator/100  → insurance       (pending_if_fee → revenue_pool → IF vault)
+          ── residual                → protocol        (pending_protocol_fee → protocol_fee_pool)
+
+builder_fee = notional × fee_tenth_bps / 100_000   ADDED on top of taker_fee; pure pass-through
+```
+
+- The split lives on the global `FeeStructure` (`amm_fee_numerator` /
+  `if_fee_numerator`, precision `FEE_PERCENTAGE_DENOMINATOR` = 100); the
+  protocol is the **residual claimant**. Default: AMM 0%, IF 0% ⇒ protocol
+  100%. `validate_fee_structure` enforces `amm + if ≤ 100%`.
+- **The AMM books ONLY its own money**: `fee_to_market = amm_fee + spread
+  surplus`. The protocol/IF carveouts never enter the AMM's ledger
+  (`total_fee_minus_distributions`) or its token pool.
+- AMM spread surplus (`quote_asset_amount_surplus` → `total_mm_fee`) is **not**
+  part of the split — it remains the AMM's own income, and is NOT part of the
+  bankruptcy-clawback tranche.
+- DLOB matches split the same way; the AMM's provision is credited to its books
+  (`apply_fill_fees`) and tokenized by the sweep.
+- `calculate_fee_for_fulfillment_with_amm` / `_with_match`
+  (`math/fees.rs`, `split_fee_remainder`).
+
+## The fee ledger
+
+Every per-market fee number lives in one embedded struct,
+`PerpMarket.fee_ledger: FeeLedger` (`state/perp_market.rs`), written only
+through its accessors:
+
+| Field | Meaning |
+|---|---|
+| `total_exchange_fee` | lifetime **gross** taker fees (analytics; same convention on AMM and match paths) |
+| `total_liquidation_fee` | lifetime liquidation fees charged (IF + protocol cuts; pure analytics) |
+| `pending_protocol_fee` | protocol carveout accrued but not yet materialized |
+| `pending_if_fee` | insurance carveout accrued but not yet materialized |
+| `amm_protocol_fees_received` | cumulative AMM fee provision net of clawbacks — the bankruptcy backstop cap |
+| `pending_amm_provision` | provision booked into the AMM's ledger at fill but not yet tokenized into `amm.fee_pool` (always ≤ `amm_protocol_fees_received`) |
+
+Accessors: `accrue_fill_fees` / `accrue_liquidation_fees` (accrual),
+`consume_pending_if` / `consume_pending_protocol` /
+`consume_pending_amm_provision` / `consume_amm_backstop` (materialization and
+bankruptcy draws).
+
+## Accrual and materialization (perps)
+
+Fee value materializes in the **pnl pool**: fees debit the payer's position at
+fill, and the tokens arrive as fills settle. So carveouts accrue as **pending
+counters** in the fee ledger and the streaming sweep drains them from the pnl
+pool's surplus over live user claims — the AMM is never a conduit:
+
+1. **At fill** (`controller/orders.rs`): all three carveouts accrue
+   (`accrue_fill_fees`, which also records the gross taker fee). The AMM books
+   only its own provision + spread surplus via `apply_fill_fees`.
+2. **The sweep** (`sweep_market_fees`, `controller/perp_pools.rs`):
+   `available = pnl_pool_tokens − max(net_user_pnl, 0) − fee_pool_buffer_target`
+   — live user claims stay fully backed, the buffer is the retention margin on
+   top. Seniority under scarcity:
+   1. `pending_if_fee` → quote `SpotMarket.revenue_pool` (→ IF vault)
+   2. `pending_protocol_fee` → `PerpMarket.protocol_fee_pool` (withdrawable)
+   3. `pending_amm_provision` → tokenized into `amm.fee_pool` (the AMM's
+      ledger was already credited at fill — this is a pure token transfer)
+   Steps 1-2 never touch the AMM's books or pools. Un-drained remainders wait
+   for the next sweep. This is the **only** fee routing out of a perp market.
+   It runs inline on every pnl settle (`update_pool_balances`, after the
+   user's settle so the sweep can't starve it) and on demand via the
+   permissionless `sweep_perp_market_fees` keeper instruction, and emits
+   `PerpMarketFeeSweepRecord`. `fee_pool_buffer_target` is per-market
+   (initialized to 250 QUOTE, set via
+   `update_perp_market_fee_pool_buffer_target`).
+3. **No funding floor needed**: `total_fee_minus_distributions` contains only
+   the AMM's own equity, so funding/repeg/k-updates may spend it down to zero
+   (guards: the drawdown breaker and `is_underwater`). The old floors —
+   pendings-based funding floor, `SHARE_OF_FEES_ALLOCATED_TO_DRIFT`,
+   `protocol_floor` — are gone.
+
+## Liquidations
+
+Per-market rates (`LIQUIDATION_FEE_PRECISION` = 1e6): `liquidator_fee`,
+`if_liquidation_fee`, and the new `protocol_liquidation_fee`.
+
+- `liquidator_fee` → the liquidator, unchanged.
+- The insurance-side budget is computed once with the existing margin-aware
+  formula at cap `if_liquidation_fee + protocol_liquidation_fee`, then split
+  **IF-first**: the IF receives exactly what it would have without the protocol
+  fee; the protocol only captures margin headroom beyond it. The combined fee
+  therefore stays inside the margin budget and can never push a liquidation
+  into spurious bankruptcy (`calculate_perp_if_fee` / `calculate_spot_if_fee`,
+  `math/liquidation.rs`).
+- Perp: IF cut → `pending_if_fee`, protocol cut → `pending_protocol_fee`
+  (`total_liquidation_fee` remains a lifetime analytics counter). Spot: IF cut
+  → the liability market's `revenue_pool`, protocol cut → its
+  `protocol_fee_pool`, both directly.
+
+## The AMM as backstop of last resort
+
+The `amm_fee_numerator` cut is a fee **provision** to the AMM with a string
+attached: it is real, spendable AMM liquidity (no floor reserves it), but the
+market tracks the cumulative amount in `fee_ledger.amm_protocol_fees_received`
+and a perp bankruptcy claws back whatever is still recoverable. The resolution
+waterfall (`resolve_perp_bankruptcy`, `controller/liquidation.rs`):
+
+1. **`pending_if_fee`** — the market's own in-transit insurance fees,
+   counter-only: the pending claim and the forgiven loss are both claims on
+   future pnl-pool inflows, so canceling one against the other needs no token
+   movement
+2. **Insurance fund vault** (bounded by the market's `insurance_claim` caps;
+   real tokens → pnl pool)
+3. **Provision clawback** — capped at `amm_protocol_fees_received`, two
+   phases: first the not-yet-tokenized `pending_amm_provision` (counter-only),
+   then tokenized provision moves `amm.fee_pool → pnl_pool` (capped by what
+   the fee pool actually holds). Both phases debit the AMM's books
+   (`record_amm_pnl`) — the provision was credited at fill — and dent the
+   drawdown breaker.
+4. **Socialization** across counterparties
+
+The AMM's own spread/trading capital beyond the provision is never tapped, and
+the external LP pool (VLP constituent vaults) is untouched by bankruptcy
+entirely. Because the clawback is best-effort (the AMM may have spent the
+provision on curve costs), the cap is `min(amm_protocol_fees_received,
+pending + fee-pool tokens)`.
+
+## Lending
+
+Two explicit carveouts on deposit-interest gains
+(`update_spot_market_cumulative_interest`, `controller/spot_balance.rs`;
+precision `IF_FACTOR_PRECISION` = 1e6, sum validated ≤ 100%):
+
+- `InsuranceFund.if_fee_factor` → `revenue_pool` (staker-owned IF).
+- `SpotMarket.protocol_fee_bps` → `protocol_fee_pool` (withdrawable).
+- Lenders receive the rest. Set via `update_spot_market_if_factor`.
+
+## Insurance fund: 100% staker-owned
+
+- `revenue_pool` has exactly one purpose: staging IF fees. Its only exit is
+  `settle_revenue_to_insurance_fund` (throttles unchanged: ≤ min(1/10 pool,
+  MAX_APR cap) per period with stakers present).
+- **No protocol shares.** The settle-time protocol mint, `total_factor` /
+  `user_factor` split, `admin_withdraw_from_insurance_fund_vault`, and
+  `transfer_protocol_if_shares_to_revenue_pool` are **removed**. 100% of every
+  settle accrues to stakers as share-price appreciation. If the operating
+  company wants IF exposure, it stakes like anyone else.
+- **No-staker bootstrap:** while `total_shares == 0`, fees still build the
+  backstop; the first settle (or first stake) seeds `total_shares` 1:1 with the
+  vault so the first staker mints at share price ~1 instead of receiving 0
+  shares. The seeded shares are protocol-owned, permanent, and
+  **non-withdrawable** — pure backstop ballast.
+- The IF still pays bankruptcies (`resolve_perp/spot_bankruptcy`) — it is the
+  protocol's only backstop, and protocol fees are never part of it.
+
+## Protocol fee custody and withdrawal
+
+- `protocol_fee_pool: PoolBalance` on every market — a protocol-owned
+  Deposit-type claim inside the existing spot vault (perp pools are
+  quote/USDC-denominated against the quote spot market, like `pnl_pool`).
+  Counted in `deposit_balance`; owned by the protocol, not users; never
+  backstop.
+- `withdraw_protocol_fees_spot(market_index, amount)` and
+  `withdraw_protocol_fees_perp(market_index, amount)`
+  (`instructions/protocol_fees.rs`):
+  - **Authority:** the `FeeWithdraw` hot key (`HotRole::FeeWithdraw`, set via
+    `update_hot_admin`) — supports e.g. a daily withdrawal bot.
+  - **Recipient-locked:** funds can only go to a token account owned by
+    `State.protocol_fee_recipient`, settable **only** by `cold_admin`
+    (`update_protocol_fee_recipient`). Unset recipient ⇒ withdrawals are inert.
+  - **Depositor-safe:** capped to the pool's own balance, and the vault must
+    still cover all remaining claims afterwards
+    (`validate_spot_market_vault_amount`) — a withdrawal can never tap user
+    deposits.
+- Emits `ProtocolFeeWithdrawRecord`.
+
+## Flow diagram
+
+```mermaid
+flowchart LR
+    classDef pool fill:#e3f2fd,stroke:#1565c0,color:#000;
+    classDef ledger fill:#eceff1,stroke:#607d8b,color:#000;
+    classDef revenue fill:#cfe8cf,stroke:#2e7d32,color:#000;
+    classDef passthru fill:#ffe0b2,stroke:#e65100,color:#000;
+    classDef liability fill:#f8d7da,stroke:#c62828,color:#000;
+
+    TK["Perp taker fee remainder"]
+    LIQ["Liquidation if/protocol cuts"]
+    LEND["Lending gains"]
+
+    PEND["fee_ledger pendings: protocol / if / amm_provision"]:::ledger
+    PNL["PerpMarket.pnl_pool (fee value lands here as fills settle)"]:::pool
+    FP["AMM.fee_pool (AMM's own money only)"]:::pool
+    PFP["protocol_fee_pool (per market)"]:::revenue
+    RP["SpotMarket.revenue_pool (IF staging only)"]:::pool
+    IFV["IF vault — 100% staker-owned backstop"]:::liability
+    WALLET["State.protocol_fee_recipient"]:::revenue
+    STK["IF stakers"]:::passthru
+
+    TK -->|"split by AMM%/IF%/protocol-residual at fill"| PEND
+    LIQ -->|perp| PEND
+    PEND -.->|"token value settles into"| PNL
+    PNL -->|"sweep_market_fees (above user claims + buffer): 1. IF"| RP
+    PNL -->|"2. protocol"| PFP
+    PNL -->|"3. AMM provision tokenized"| FP
+    FP -->|"bankruptcy clawback (capped at provision received)"| PNL
+    LIQ -->|"spot (direct)"| RP
+    LIQ -->|"spot (direct)"| PFP
+    LEND -->|if_fee_factor| RP
+    LEND -->|protocol_fee_bps| PFP
+    RP -->|settle_revenue_to_insurance_fund| IFV
+    IFV -->|"share appreciation (no protocol shares)"| STK
+    PFP ==>|"withdraw_protocol_fees_* (FeeWithdraw hot key, recipient-locked)"| WALLET
+```
+
+## Reference
+
+| Item | Location |
+|---|---|
+| Split numerators + validation | `FeeStructure.amm_fee_numerator`/`if_fee_numerator` (protocol = residual) (`state/state.rs`); `validation/fee_structure.rs` |
+| Fee ledger | `PerpMarket.fee_ledger: FeeLedger` + accessors (`state/perp_market.rs`) |
+| AMM provision / clawback cap | `fee_ledger.amm_protocol_fees_received` + `pending_amm_provision`; clawback in `resolve_perp_bankruptcy` |
+| Waterfall math | `math/fees.rs` (`split_fee_remainder`, `FillFees.protocol_fee`/`if_fee`/`amm_fee`) |
+| Pending counters | `fee_ledger.pending_protocol_fee`/`pending_if_fee`/`pending_amm_provision` |
+| Streaming sweep | `sweep_market_fees` (`controller/perp_pools.rs`, source = pnl pool); inline via `update_pool_balances`, on demand via `sweep_perp_market_fees` (keeper); emits `PerpMarketFeeSweepRecord` |
+| Sweep buffer | `PerpMarket.fee_pool_buffer_target` — pnl-pool retention above `max(net_user_pnl, 0)` (`update_perp_market_fee_pool_buffer_target`) |
+| AMM ledger recompute | `calculate_perp_market_amm_summary_stats` (`math/perp_market.rs`): `tfmd = pools − net_user_pnl − pending_protocol − pending_if` |
+| Dead post-isolation | funding/curve floors (`protocol_floor`, `SHARE_OF_FEES_ALLOCATED_TO_DRIFT`, pendings funding floor), `amm.total_fee_withdrawn` (frozen), the settle_pnl `fee_pool/5` buffer |
+| Liquidation split | `controller/liquidation.rs` (perp ×2 + spot ×2 paths); rates on Perp/SpotMarket |
+| Lending carveouts | `controller/spot_balance.rs:update_spot_market_cumulative_interest`; `InsuranceFund.if_fee_factor`, `SpotMarket.protocol_fee_bps` |
+| IF bootstrap | `controller/insurance.rs` (`settle_revenue_to_insurance_fund`, `add_insurance_fund_stake`) |
+| Withdrawal | `instructions/protocol_fees.rs`; `State.protocol_fee_recipient`/`hot_fee_withdraw`; `HotRole::FeeWithdraw` |
+| Admin setters | `update_perp/spot_market_liquidation_fee` (+protocol rate), `update_spot_market_if_factor` (if_fee_factor, protocol_fee_bps), `update_protocol_fee_recipient`, `update_perp/spot_fee_structure`, `update_perp_market_fee_pool_buffer_target` |
+| Event | `ProtocolFeeWithdrawRecord`; `protocol_fee` on liquidation records |
+
+---
+
+# OLD — Fee & Revenue Flow (pre-redesign, historical)
+
+> **Historical.** This part describes the fee system **before** the June 2026
+> fee redesign (see the NEW section above). It is kept for context on what was
+> replaced and why. None of the waterfall mechanics below remain on-chain:
+> the `total_exchange_fee × ½` revenue sweep, the `total_factor`/`user_factor`
+> settlement split, and protocol-owned IF shares are all gone.
 
 Classifies every fee the protocol charges by destination: **protocol-retained revenue**, **pass-through** (forwarded to a user, keeper, or builder), **liability-offsetting** (insurance-fund inflows that pre-fund bankruptcy payouts), or **LP revenue**. This fork diverges from upstream Drift in the ways noted below.
 
@@ -347,7 +621,7 @@ Symbol and line for each claim above (line numbers shift with edits; search the 
 
 ---
 
-# Old Drift program — market & fee settings (snapshot)
+# OLD — Drift mainnet market & fee settings (snapshot)
 
 Read live from the deployed program; values are a point-in-time snapshot.
 

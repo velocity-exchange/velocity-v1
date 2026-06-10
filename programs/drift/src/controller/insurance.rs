@@ -30,7 +30,6 @@ use crate::math::spot_balance::get_token_amount;
 use crate::math::spot_withdraw::validate_spot_market_vault_amount;
 use crate::state::events::{
     InsuranceFundRecord, InsuranceFundStakeRecord, InsuranceFundSwapRecord, StakeAction,
-    TransferProtocolIfSharesToRevenuePoolRecord,
 };
 use crate::state::if_rebalance_config::IfRebalanceConfig;
 use crate::state::insurance_fund_stake::InsuranceFundStake;
@@ -94,6 +93,15 @@ pub fn add_insurance_fund_stake(
         ErrorCode::InvalidIFForNewStakes,
         "Insurance Fund balance should be non-zero for new stakers to enter"
     )?;
+
+    // No-staker bootstrap guard: if the vault was funded while no shares exist
+    // (fees settled or tokens sent before any staker), seed `total_shares` 1:1
+    // with the vault so the first staker mints `amount` shares at price ~1
+    // instead of `amount * 0 / vault == 0` (which would forfeit their deposit).
+    // The seeded shares are protocol-owned, permanent, non-withdrawable ballast.
+    if spot_market.insurance_fund.total_shares == 0 && insurance_vault_amount > 0 {
+        spot_market.insurance_fund.total_shares = insurance_vault_amount.cast()?;
+    }
 
     apply_rebase_to_insurance_fund(insurance_vault_amount, spot_market)?;
     apply_rebase_to_insurance_fund_stake(insurance_fund_stake, spot_market)?;
@@ -696,12 +704,6 @@ pub fn settle_revenue_to_insurance_fund(
         return Ok(0);
     }
 
-    validate!(
-        spot_market.insurance_fund.user_factor <= spot_market.insurance_fund.total_factor,
-        ErrorCode::RevenueSettingsCannotSettleToIF,
-        "invalid if_factor settings on spot market"
-    )?;
-
     let depositors_claim =
         validate_spot_market_vault_amount(spot_market, spot_market_vault_amount)?;
 
@@ -755,26 +757,24 @@ pub fn settle_revenue_to_insurance_fund(
 
     spot_market.insurance_fund.last_revenue_settle_ts = now;
 
-    let protocol_if_factor = spot_market
-        .insurance_fund
-        .total_factor
-        .safe_sub(spot_market.insurance_fund.user_factor)?;
-
-    // give protocol its cut
-    if protocol_if_factor > 0 {
-        let n_shares = vault_amount_to_if_shares(
-            insurance_fund_token_amount
-                .safe_mul(protocol_if_factor.cast()?)?
-                .safe_div(spot_market.insurance_fund.total_factor.cast()?)?,
-            spot_market.insurance_fund.total_shares,
-            insurance_vault_amount,
-        )?;
-
-        spot_market.insurance_fund.total_shares =
-            spot_market.insurance_fund.total_shares.safe_add(n_shares)?;
-    }
-
+    // The insurance fund is staker-owned: once stakers exist, the entire settled
+    // amount accrues to them as share-price appreciation (no protocol shares
+    // minted per-settle).
+    //
+    // Bootstrap (no-staker backstop): while `total_shares == 0`, the fund still
+    // collects fees as a backstop, but there are no shares to back the vault.
+    // Left unhandled, the first staker would mint `amount * 0 / vault == 0`
+    // shares and lose their deposit. So when there are no shares, seed
+    // `total_shares` 1:1 with the post-settle vault balance. These are
+    // protocol-owned (`total_shares > user_shares == 0`), permanent, and NOT
+    // withdrawable (the protocol-share withdraw/transfer ixs are removed) — pure
+    // backstop ballast at share price ~1. Fires only during the no-staker phase.
     let total_if_shares_before = spot_market.insurance_fund.total_shares;
+    if total_if_shares_before == 0 {
+        spot_market.insurance_fund.total_shares = insurance_vault_amount
+            .cast::<u128>()?
+            .safe_add(insurance_fund_token_amount.cast()?)?;
+    }
 
     update_revenue_pool_balances(
         insurance_fund_token_amount.cast::<u128>()?,
@@ -788,8 +788,8 @@ pub fn settle_revenue_to_insurance_fund(
         perp_market_index: 0, // todo: make option?
         amount: insurance_fund_token_amount.cast()?,
 
-        user_if_factor: spot_market.insurance_fund.user_factor,
-        total_if_factor: spot_market.insurance_fund.total_factor,
+        user_if_factor: spot_market.insurance_fund.if_fee_factor,
+        total_if_factor: spot_market.insurance_fund.if_fee_factor,
         vault_amount_before: spot_market_vault_amount,
         insurance_vault_amount_before: insurance_vault_amount,
         total_if_shares_before,
@@ -945,8 +945,8 @@ pub fn resolve_perp_pnl_deficit(
         spot_market_index: spot_market.market_index,
         perp_market_index: market.market_index,
         amount: -insurance_withdraw.cast()?,
-        user_if_factor: spot_market.insurance_fund.user_factor,
-        total_if_factor: spot_market.insurance_fund.total_factor,
+        user_if_factor: spot_market.insurance_fund.if_fee_factor,
+        total_if_factor: spot_market.insurance_fund.if_fee_factor,
         vault_amount_before: vault_amount,
         insurance_vault_amount_before: insurance_vault_amount,
         total_if_shares_before,
@@ -1142,61 +1142,6 @@ pub fn handle_if_end_swap(
         out_if_total_shares_after: out_spot_market.insurance_fund.total_shares,
         in_if_user_shares_after: in_spot_market.insurance_fund.user_shares,
         out_if_user_shares_after: out_spot_market.insurance_fund.user_shares,
-    });
-
-    Ok(())
-}
-
-pub fn transfer_protocol_if_shares_to_revenue_pool(
-    if_rebalance_config: &mut IfRebalanceConfig,
-    spot_market: &mut SpotMarket,
-    insurance_fund_vault_amount_before: u64,
-    amount: u64,
-    now: i64,
-) -> DriftResult<()> {
-    apply_rebase_to_insurance_fund(insurance_fund_vault_amount_before, spot_market)?;
-
-    let shares = vault_amount_to_if_shares(
-        amount,
-        spot_market.insurance_fund.total_shares,
-        insurance_fund_vault_amount_before,
-    )?;
-
-    let protocol_shares = spot_market.insurance_fund.get_protocol_shares()?;
-
-    validate!(
-        shares <= protocol_shares,
-        ErrorCode::InsufficientIFShares,
-        "shares={} > protocol_shares={}",
-        shares,
-        protocol_shares
-    )?;
-
-    validate!(
-        amount <= if_rebalance_config.max_transfer_amount()?,
-        ErrorCode::DefaultError,
-        "amount={} > max_transfer_amount={}",
-        amount,
-        if_rebalance_config.max_transfer_amount()?
-    )?;
-
-    spot_market.insurance_fund.total_shares =
-        spot_market.insurance_fund.total_shares.safe_sub(shares)?;
-
-    update_revenue_pool_balances(amount.cast()?, &SpotBalanceType::Deposit, spot_market)?;
-
-    if_rebalance_config.current_out_amount_transferred = if_rebalance_config
-        .current_out_amount_transferred
-        .safe_add(amount)?;
-
-    emit!(TransferProtocolIfSharesToRevenuePoolRecord {
-        ts: now,
-        market_index: spot_market.market_index,
-        amount,
-        shares,
-        if_vault_amount_before: insurance_fund_vault_amount_before,
-        protocol_shares_before: protocol_shares,
-        transfer_amount: amount,
     });
 
     Ok(())

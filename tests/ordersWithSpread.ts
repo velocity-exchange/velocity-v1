@@ -231,13 +231,14 @@ describe('amm spread: market order', () => {
 		console.log('unrealized pnl', unrealizedPnl.toString());
 
 		const market = driftClient.getPerpMarketAccount(marketIndex);
+		// post AMM-isolation: the AMM books only its spread surplus; the
+		// exchange fee is the protocol's pending carveout (default split)
 		const expectedQuoteAssetSurplus = new BN(250);
 		const expectedExchangeFee = new BN(1001);
-		const expectedFeeToMarket = expectedExchangeFee.add(
-			expectedQuoteAssetSurplus
-		);
 		console.log(market.amm.totalFee.toString());
-		assert(market.amm.totalFee.eq(expectedFeeToMarket));
+		assert(market.amm.totalFee.eq(expectedQuoteAssetSurplus));
+		assert(market.feeLedger.totalExchangeFee.eq(expectedExchangeFee));
+		assert(market.feeLedger.pendingProtocolFee.eq(expectedExchangeFee));
 
 		const firstPosition = driftClient.getUserAccount().perpPositions[0];
 		assert(firstPosition.baseAssetAmount.eq(baseAssetAmount));
@@ -273,7 +274,8 @@ describe('amm spread: market order', () => {
 		const pnl = driftClient.getQuoteAssetTokenAmount().sub(initialCollateral);
 		assert(pnl.eq(new BN(-2502)));
 		console.log(driftClient.getPerpMarketAccount(0).amm.totalFee.toString());
-		assert(driftClient.getPerpMarketAccount(0).amm.totalFee.eq(new BN(2501)));
+		// surplus only post AMM-isolation (2 x 250); fees sit on the ledger
+		assert(driftClient.getPerpMarketAccount(0).amm.totalFee.eq(new BN(500)));
 	});
 
 	it('short market order base', async () => {
@@ -373,7 +375,7 @@ describe('amm spread: market order', () => {
 			driftClient
 				.getPerpMarketAccount(0)
 				.amm.totalFee.sub(initialAmmTotalFee)
-				.eq(new BN(2501))
+				.eq(new BN(500))
 		);
 	});
 
@@ -549,7 +551,7 @@ describe('amm spread: market order', () => {
 			driftClient
 				.getPerpMarketAccount(0)
 				.amm.totalFee.sub(initialAmmTotalFee)
-				.eq(new BN(2501))
+				.eq(new BN(500))
 		);
 	});
 
@@ -636,7 +638,7 @@ describe('amm spread: market order', () => {
 			driftClient
 				.getPerpMarketAccount(0)
 				.amm.totalFee.sub(initialAmmTotalFee)
-				.eq(new BN(2501))
+				.eq(new BN(500))
 		);
 	});
 
@@ -794,7 +796,7 @@ describe('amm spread: market order', () => {
 		assert(
 			driftClient
 				.getPerpMarketAccount(marketIndex2Num)
-				.amm.totalFee.eq(new BN(10041))
+				.amm.totalFee.eq(new BN(2040))
 		);
 	});
 });

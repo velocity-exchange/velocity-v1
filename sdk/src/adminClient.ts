@@ -1425,15 +1425,13 @@ export class AdminClient extends VelocityClient {
 	public async updatePerpMarketAmmSummaryStats(
 		perpMarketIndex: number,
 		updateAmmSummaryStats?: boolean,
-		netUnsettledFundingPnl?: BN,
-		excludeTotalLiqFee?: boolean
+		netUnsettledFundingPnl?: BN
 	): Promise<TransactionSignature> {
 		const updatePerpMarketMarginRatioIx =
 			await this.getUpdatePerpMarketAmmSummaryStatsIx(
 				perpMarketIndex,
 				updateAmmSummaryStats,
-				netUnsettledFundingPnl,
-				excludeTotalLiqFee
+				netUnsettledFundingPnl
 			);
 
 		const tx = await this.buildTransaction(updatePerpMarketMarginRatioIx);
@@ -1446,14 +1444,12 @@ export class AdminClient extends VelocityClient {
 	public async getUpdatePerpMarketAmmSummaryStatsIx(
 		perpMarketIndex: number,
 		updateAmmSummaryStats?: boolean,
-		netUnsettledFundingPnl?: BN,
-		excludeTotalLiqFee?: boolean
+		netUnsettledFundingPnl?: BN
 	): Promise<TransactionInstruction> {
 		return await this.program.instruction.updatePerpMarketAmmSummaryStats(
 			{
 				updateAmmSummaryStats: updateAmmSummaryStats ?? null,
 				netUnsettledFundingPnl: netUnsettledFundingPnl ?? null,
-				excludeTotalLiqFee: excludeTotalLiqFee ?? null,
 			},
 			{
 				accounts: {
@@ -2091,13 +2087,13 @@ export class AdminClient extends VelocityClient {
 
 	public async updateSpotMarketIfFactor(
 		spotMarketIndex: number,
-		userIfFactor: BN,
-		totalIfFactor: BN
+		ifFeeFactor: number,
+		protocolFeeBps: number
 	): Promise<TransactionSignature> {
 		const updateSpotMarketIfFactorIx = await this.getUpdateSpotMarketIfFactorIx(
 			spotMarketIndex,
-			userIfFactor,
-			totalIfFactor
+			ifFeeFactor,
+			protocolFeeBps
 		);
 
 		const tx = await this.buildTransaction(updateSpotMarketIfFactorIx);
@@ -2109,13 +2105,13 @@ export class AdminClient extends VelocityClient {
 
 	public async getUpdateSpotMarketIfFactorIx(
 		spotMarketIndex: number,
-		userIfFactor: BN,
-		totalIfFactor: BN
+		ifFeeFactor: number,
+		protocolFeeBps: number
 	): Promise<TransactionInstruction> {
 		return await this.program.instruction.updateSpotMarketIfFactor(
 			spotMarketIndex,
-			userIfFactor,
-			totalIfFactor,
+			ifFeeFactor,
+			protocolFeeBps,
 			{
 				accounts: {
 					admin: this.isSubscribed
@@ -3477,6 +3473,46 @@ export class AdminClient extends VelocityClient {
 		);
 	}
 
+	public async updatePerpMarketFeePoolBufferTarget(
+		perpMarketIndex: number,
+		feePoolBufferTarget: BN
+	): Promise<TransactionSignature> {
+		const updatePerpMarketFeePoolBufferTargetIx =
+			await this.getUpdatePerpMarketFeePoolBufferTargetIx(
+				perpMarketIndex,
+				feePoolBufferTarget
+			);
+
+		const tx = await this.buildTransaction(
+			updatePerpMarketFeePoolBufferTargetIx
+		);
+
+		const { txSig } = await this.sendTransaction(tx, [], this.opts);
+
+		return txSig;
+	}
+
+	public async getUpdatePerpMarketFeePoolBufferTargetIx(
+		perpMarketIndex: number,
+		feePoolBufferTarget: BN
+	): Promise<TransactionInstruction> {
+		return await this.program.instruction.updatePerpMarketFeePoolBufferTarget(
+			feePoolBufferTarget,
+			{
+				accounts: {
+					admin: this.isSubscribed
+						? this.getStateAccount().coldAdmin
+						: this.wallet.publicKey,
+					state: await this.getStatePublicKey(),
+					perpMarket: await getPerpMarketPublicKey(
+						this.program.programId,
+						perpMarketIndex
+					),
+				},
+			}
+		);
+	}
+
 	public async updateSpotMarketFeeAdjustment(
 		perpMarketIndex: number,
 		feeAdjustment: number
@@ -3518,13 +3554,15 @@ export class AdminClient extends VelocityClient {
 	public async updatePerpMarketLiquidationFee(
 		perpMarketIndex: number,
 		liquidatorFee: number,
-		ifLiquidationFee: number
+		ifLiquidationFee: number,
+		protocolLiquidationFee = 0
 	): Promise<TransactionSignature> {
 		const updatePerpMarketLiquidationFeeIx =
 			await this.getUpdatePerpMarketLiquidationFeeIx(
 				perpMarketIndex,
 				liquidatorFee,
-				ifLiquidationFee
+				ifLiquidationFee,
+				protocolLiquidationFee
 			);
 
 		const tx = await this.buildTransaction(updatePerpMarketLiquidationFeeIx);
@@ -3537,11 +3575,13 @@ export class AdminClient extends VelocityClient {
 	public async getUpdatePerpMarketLiquidationFeeIx(
 		perpMarketIndex: number,
 		liquidatorFee: number,
-		ifLiquidationFee: number
+		ifLiquidationFee: number,
+		protocolLiquidationFee = 0
 	): Promise<TransactionInstruction> {
 		return await this.program.instruction.updatePerpMarketLiquidationFee(
 			liquidatorFee,
 			ifLiquidationFee,
+			protocolLiquidationFee,
 			{
 				accounts: {
 					admin: this.isSubscribed
@@ -3560,13 +3600,15 @@ export class AdminClient extends VelocityClient {
 	public async updateSpotMarketLiquidationFee(
 		spotMarketIndex: number,
 		liquidatorFee: number,
-		ifLiquidationFee: number
+		ifLiquidationFee: number,
+		protocolLiquidationFee = 0
 	): Promise<TransactionSignature> {
 		const updateSpotMarketLiquidationFeeIx =
 			await this.getUpdateSpotMarketLiquidationFeeIx(
 				spotMarketIndex,
 				liquidatorFee,
-				ifLiquidationFee
+				ifLiquidationFee,
+				protocolLiquidationFee
 			);
 
 		const tx = await this.buildTransaction(updateSpotMarketLiquidationFeeIx);
@@ -3579,11 +3621,13 @@ export class AdminClient extends VelocityClient {
 	public async getUpdateSpotMarketLiquidationFeeIx(
 		spotMarketIndex: number,
 		liquidatorFee: number,
-		ifLiquidationFee: number
+		ifLiquidationFee: number,
+		protocolLiquidationFee = 0
 	): Promise<TransactionInstruction> {
 		return await this.program.instruction.updateSpotMarketLiquidationFee(
 			liquidatorFee,
 			ifLiquidationFee,
+			protocolLiquidationFee,
 			{
 				accounts: {
 					admin: this.isSubscribed
@@ -3670,72 +3714,38 @@ export class AdminClient extends VelocityClient {
 		);
 	}
 
-	public async transferProtocolIfSharesToRevenuePool(
-		outMarketIndex: number,
-		inMarketIndex: number,
-		amount: BN
+	public async updateProtocolFeeRecipient(
+		protocolFeeRecipient: PublicKey
 	): Promise<TransactionSignature> {
-		const transferProtocolIfSharesToRevenuePoolIx =
-			await this.getTransferProtocolIfSharesToRevenuePoolIx(
-				outMarketIndex,
-				inMarketIndex,
-				amount
-			);
-
-		const tx = await this.buildTransaction(
-			transferProtocolIfSharesToRevenuePoolIx
-		);
-
+		const ix = await this.getUpdateProtocolFeeRecipientIx(protocolFeeRecipient);
+		const tx = await this.buildTransaction(ix);
 		const { txSig } = await this.sendTransaction(tx, [], this.opts);
-
 		return txSig;
 	}
 
-	public async getTransferProtocolIfSharesToRevenuePoolIx(
-		outMarketIndex: number,
-		inMarketIndex: number,
-		amount: BN
+	public async getUpdateProtocolFeeRecipientIx(
+		protocolFeeRecipient: PublicKey
 	): Promise<TransactionInstruction> {
-		const remainingAccounts = await this.getRemainingAccounts({
-			userAccounts: [],
-			writableSpotMarketIndexes: [outMarketIndex],
-		});
-
-		return await this.program.instruction.transferProtocolIfSharesToRevenuePool(
-			outMarketIndex,
-			amount,
+		return await this.program.instruction.updateProtocolFeeRecipient(
+			protocolFeeRecipient,
 			{
 				accounts: {
-					authority: this.wallet.publicKey,
+					admin: this.isSubscribed
+						? this.getStateAccount().coldAdmin
+						: this.wallet.publicKey,
 					state: await this.getStatePublicKey(),
-					insuranceFundVault: await getInsuranceFundVaultPublicKey(
-						this.program.programId,
-						outMarketIndex
-					),
-					spotMarketVault: await getSpotMarketVaultPublicKey(
-						this.program.programId,
-						outMarketIndex
-					),
-					ifRebalanceConfig: await getIfRebalanceConfigPublicKey(
-						this.program.programId,
-						inMarketIndex,
-						outMarketIndex
-					),
-					tokenProgram: TOKEN_PROGRAM_ID,
-					driftSigner: this.getStateAccount().signer,
 				},
-				remainingAccounts,
 			}
 		);
 	}
 
-	public async adminWithdrawFromInsuranceFundVault(
+	public async withdrawProtocolFeesSpot(
 		marketIndex: number,
 		amount: BN,
 		recipientTokenAccount: PublicKey,
 		txParams?: TxParams
 	): Promise<TransactionSignature> {
-		const ix = await this.getAdminWithdrawFromInsuranceFundVaultIx(
+		const ix = await this.getWithdrawProtocolFeesSpotIx(
 			marketIndex,
 			amount,
 			recipientTokenAccount
@@ -3745,7 +3755,7 @@ export class AdminClient extends VelocityClient {
 		return txSig;
 	}
 
-	public async getAdminWithdrawFromInsuranceFundVaultIx(
+	public async getWithdrawProtocolFeesSpotIx(
 		marketIndex: number,
 		amount: BN,
 		recipientTokenAccount: PublicKey
@@ -3766,17 +3776,74 @@ export class AdminClient extends VelocityClient {
 			);
 		}
 
-		return await this.program.instruction.adminWithdrawFromInsuranceFundVault(
+		return await this.program.instruction.withdrawProtocolFeesSpot(
 			marketIndex,
 			amount,
 			{
 				accounts: {
 					state: await this.getStatePublicKey(),
-					authority: this.isSubscribed
-						? this.getStateAccount().coldAdmin
-						: this.wallet.publicKey,
+					authority: this.wallet.publicKey,
 					spotMarket: spotMarket.pubkey,
-					insuranceFundVault: spotMarket.insuranceFund.vault,
+					spotMarketVault: spotMarket.vault,
+					recipientTokenAccount,
+					tokenProgram: tokenProgramId,
+					driftSigner: this.getSignerPublicKey(),
+				},
+				remainingAccounts,
+			}
+		);
+	}
+
+	public async withdrawProtocolFeesPerp(
+		marketIndex: number,
+		amount: BN,
+		recipientTokenAccount: PublicKey,
+		txParams?: TxParams
+	): Promise<TransactionSignature> {
+		const ix = await this.getWithdrawProtocolFeesPerpIx(
+			marketIndex,
+			amount,
+			recipientTokenAccount
+		);
+		const tx = await this.buildTransaction(ix, txParams);
+		const { txSig } = await this.sendTransaction(tx, [], this.opts);
+		return txSig;
+	}
+
+	public async getWithdrawProtocolFeesPerpIx(
+		marketIndex: number,
+		amount: BN,
+		recipientTokenAccount: PublicKey
+	): Promise<TransactionInstruction> {
+		const perpMarket = this.getPerpMarketAccount(marketIndex);
+		const quoteSpotMarket = this.getSpotMarketAccount(
+			perpMarket.quoteSpotMarketIndex
+		);
+		const tokenProgramId = this.getTokenProgramForSpotMarket(quoteSpotMarket);
+
+		const remainingAccounts: {
+			pubkey: PublicKey;
+			isSigner: boolean;
+			isWritable: boolean;
+		}[] = [];
+		this.addTokenMintToRemainingAccounts(quoteSpotMarket, remainingAccounts);
+		if (this.isTransferHook(quoteSpotMarket)) {
+			await this.addExtraAccountMetasToRemainingAccounts(
+				quoteSpotMarket.mint,
+				remainingAccounts
+			);
+		}
+
+		return await this.program.instruction.withdrawProtocolFeesPerp(
+			marketIndex,
+			amount,
+			{
+				accounts: {
+					state: await this.getStatePublicKey(),
+					authority: this.wallet.publicKey,
+					perpMarket: perpMarket.pubkey,
+					quoteSpotMarket: quoteSpotMarket.pubkey,
+					spotMarketVault: quoteSpotMarket.vault,
 					recipientTokenAccount,
 					tokenProgram: tokenProgramId,
 					driftSigner: this.getSignerPublicKey(),
@@ -5928,6 +5995,7 @@ export enum HotRole {
 	VaultDeposit = 'vaultDeposit',
 	MmOracleCrank = 'mmOracleCrank',
 	AmmSpreadAdjust = 'ammSpreadAdjust',
+	FeeWithdraw = 'feeWithdraw',
 }
 
 /** Anchor encodes Rust enums as `{ <variant>: {} }`. */

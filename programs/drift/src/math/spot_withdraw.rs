@@ -327,6 +327,13 @@ pub fn validate_spot_balances(spot_market: &SpotMarket) -> DriftResult<i64> {
     )?
     .cast()?;
 
+    let protocol_fee_amount: u64 = get_token_amount(
+        spot_market.protocol_fee_pool.scaled_balance,
+        spot_market,
+        &SpotBalanceType::Deposit,
+    )?
+    .cast()?;
+
     let depositors_claim = depositors_amount
         .cast::<i64>()?
         .safe_sub(borrowers_amount.cast()?)?;
@@ -339,6 +346,16 @@ pub fn validate_spot_balances(spot_market: &SpotMarket) -> DriftResult<i64> {
         depositors_amount,
         depositors_claim,
         spot_market.deposit_balance
+    )?;
+
+    // protocol_fee_pool is excess, like revenue_pool: it must never exceed the
+    // deposit base (it is funded from collected fees, not depositor principal).
+    validate!(
+        protocol_fee_amount <= depositors_amount,
+        ErrorCode::SpotMarketVaultInvariantViolated,
+        "protocol_fee_amount={} greater than depositors_amount={}",
+        protocol_fee_amount,
+        depositors_amount
     )?;
 
     Ok(depositors_claim)

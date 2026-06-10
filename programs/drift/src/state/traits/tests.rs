@@ -90,22 +90,27 @@ mod native_instruction_offsets {
         let stats_start = DISC + std::mem::offset_of!(PerpMarket, market_stats);
         assert_eq!(
             stats_start + std::mem::offset_of!(MarketStats, mm_oracle_price),
-            720,
+            800,
             "mm_oracle_price offset changed — update handle_update_mm_oracle_native"
         );
         assert_eq!(
             stats_start + std::mem::offset_of!(MarketStats, mm_oracle_slot),
-            728,
+            808,
             "mm_oracle_slot offset changed — update handle_update_mm_oracle_native"
         );
         assert_eq!(
             stats_start + std::mem::offset_of!(MarketStats, mm_oracle_sequence_id),
-            736,
+            816,
             "mm_oracle_sequence_id offset changed — update handle_update_mm_oracle_native"
         );
         assert_eq!(
+            std::mem::offset_of!(PerpMarket, fee_ledger) % 16,
+            0,
+            "fee_ledger must be 16-aligned (host/SBF layout parity)"
+        );
+        assert_eq!(
             amm_start + std::mem::offset_of!(AMM, amm_spread_adjustment),
-            1202,
+            1282,
             "amm_spread_adjustment offset changed — update handle_update_amm_spread_adjustment_native"
         );
     }

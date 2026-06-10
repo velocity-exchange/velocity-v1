@@ -670,6 +670,13 @@ pub mod drift {
         handle_settle_revenue_to_insurance_fund(ctx, spot_market_index)
     }
 
+    pub fn sweep_perp_market_fees(
+        ctx: Context<SweepPerpMarketFees>,
+        perp_market_index: u16,
+    ) -> Result<()> {
+        handle_sweep_perp_market_fees(ctx, perp_market_index)
+    }
+
     pub fn update_funding_rate(ctx: Context<UpdateFundingRate>, market_index: u16) -> Result<()> {
         handle_update_funding_rate(ctx, market_index)
     }
@@ -785,21 +792,8 @@ pub mod drift {
         handle_end_insurance_fund_swap(ctx, in_market_index, out_market_index)
     }
 
-    pub fn transfer_protocol_if_shares_to_revenue_pool<'c: 'info, 'info>(
-        ctx: Context<'info, TransferProtocolIfSharesToRevenuePool<'info>>,
-        market_index: u16,
-        amount: u64,
-    ) -> Result<()> {
-        handle_transfer_protocol_if_shares_to_revenue_pool(ctx, market_index, amount)
-    }
-
-    pub fn admin_withdraw_from_insurance_fund_vault<'c: 'info, 'info>(
-        ctx: Context<'info, AdminWithdrawFromInsuranceFundVault<'info>>,
-        market_index: u16,
-        amount: u64,
-    ) -> Result<()> {
-        handle_admin_withdraw_from_insurance_fund_vault(ctx, market_index, amount)
-    }
+    // Protocol IF-share withdraw/transfer removed: the insurance fund is
+    // staker-owned and its no-staker bootstrap backstop is non-withdrawable.
 
     pub fn deposit_into_insurance_fund_stake<'c: 'info, 'info>(
         ctx: Context<'info, DepositIntoInsuranceFundStake<'info>>,
@@ -1112,8 +1106,14 @@ pub mod drift {
         ctx: Context<AdminUpdatePerpMarket>,
         liquidator_fee: u32,
         if_liquidation_fee: u32,
+        protocol_liquidation_fee: u32,
     ) -> Result<()> {
-        handle_update_perp_liquidation_fee(ctx, liquidator_fee, if_liquidation_fee)
+        handle_update_perp_liquidation_fee(
+            ctx,
+            liquidator_fee,
+            if_liquidation_fee,
+            protocol_liquidation_fee,
+        )
     }
 
     pub fn update_perp_market_lp_pool_id(
@@ -1141,8 +1141,14 @@ pub mod drift {
         ctx: Context<AdminUpdateSpotMarket>,
         liquidator_fee: u32,
         if_liquidation_fee: u32,
+        protocol_liquidation_fee: u32,
     ) -> Result<()> {
-        handle_update_spot_market_liquidation_fee(ctx, liquidator_fee, if_liquidation_fee)
+        handle_update_spot_market_liquidation_fee(
+            ctx,
+            liquidator_fee,
+            if_liquidation_fee,
+            protocol_liquidation_fee,
+        )
     }
 
     pub fn update_withdraw_guard_threshold(
@@ -1155,10 +1161,10 @@ pub mod drift {
     pub fn update_spot_market_if_factor(
         ctx: Context<AdminUpdateSpotMarket>,
         spot_market_index: u16,
-        user_if_factor: u32,
-        total_if_factor: u32,
+        if_fee_factor: u32,
+        protocol_fee_bps: u32,
     ) -> Result<()> {
-        handle_update_spot_market_if_factor(ctx, spot_market_index, user_if_factor, total_if_factor)
+        handle_update_spot_market_if_factor(ctx, spot_market_index, if_fee_factor, protocol_fee_bps)
     }
 
     pub fn update_spot_market_revenue_settle_period(
@@ -1508,6 +1514,13 @@ pub mod drift {
         handle_update_perp_market_fee_adjustment(ctx, fee_adjustment)
     }
 
+    pub fn update_perp_market_fee_pool_buffer_target(
+        ctx: Context<AdminUpdatePerpMarket>,
+        fee_pool_buffer_target: u64,
+    ) -> Result<()> {
+        handle_update_perp_market_fee_pool_buffer_target(ctx, fee_pool_buffer_target)
+    }
+
     pub fn update_spot_market_fee_adjustment(
         ctx: Context<AdminUpdateSpotMarket>,
         fee_adjustment: i16,
@@ -1567,6 +1580,34 @@ pub mod drift {
         new_pubkey: Pubkey,
     ) -> Result<()> {
         handle_update_hot_admin(ctx, role, new_pubkey)
+    }
+
+    /// Cold-only: set the treasury protocol fees may be withdrawn to.
+    pub fn update_protocol_fee_recipient(
+        ctx: Context<ColdAdminUpdateState>,
+        protocol_fee_recipient: Pubkey,
+    ) -> Result<()> {
+        handle_update_protocol_fee_recipient(ctx, protocol_fee_recipient)
+    }
+
+    /// Withdraw a spot market's accrued protocol fees to `protocol_fee_recipient`
+    /// (auth: `FeeWithdraw` hot key).
+    pub fn withdraw_protocol_fees_spot<'c: 'info, 'info>(
+        ctx: Context<'info, WithdrawProtocolFeesSpot<'info>>,
+        market_index: u16,
+        amount: u64,
+    ) -> Result<()> {
+        handle_withdraw_protocol_fees_spot(ctx, market_index, amount)
+    }
+
+    /// Withdraw a perp market's accrued protocol fees (from the quote spot vault)
+    /// to `protocol_fee_recipient` (auth: `FeeWithdraw` hot key).
+    pub fn withdraw_protocol_fees_perp<'c: 'info, 'info>(
+        ctx: Context<'info, WithdrawProtocolFeesPerp<'info>>,
+        market_index: u16,
+        amount: u64,
+    ) -> Result<()> {
+        handle_withdraw_protocol_fees_perp(ctx, market_index, amount)
     }
 
     /// Devnet-only escape hatch: cleans up accounts stranded by a layout-breaking

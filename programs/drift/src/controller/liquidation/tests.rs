@@ -28,7 +28,7 @@ pub mod liquidate_perp {
     use crate::state::market_status::MarketStatus;
     use crate::state::oracle::{HistoricalOracleData, OracleSource};
     use crate::state::oracle_map::OracleMap;
-    use crate::state::perp_market::{MarketStats, PerpMarket, AMM};
+    use crate::state::perp_market::{FeeLedger, MarketStats, PerpMarket, AMM};
     use crate::state::perp_market_map::PerpMarketMap;
     use crate::state::pyth_lazer_oracle::PythLazerOracle;
     use crate::state::spot_market::{SpotBalanceType, SpotMarket};
@@ -299,7 +299,7 @@ pub mod liquidate_perp {
         );
 
         let market_after = perp_market_map.get_ref(&0).unwrap();
-        assert_eq!(market_after.total_liquidation_fee, 0);
+        assert_eq!(market_after.fee_ledger.total_liquidation_fee, 0);
     }
 
     #[test]
@@ -448,7 +448,7 @@ pub mod liquidate_perp {
         );
 
         let market_after = perp_market_map.get_ref(&0).unwrap();
-        assert_eq!(market_after.total_liquidation_fee, 0);
+        assert_eq!(market_after.fee_ledger.total_liquidation_fee, 0);
     }
 
     #[test]
@@ -729,7 +729,7 @@ pub mod liquidate_perp {
         assert_eq!(liquidator.perp_positions[0].quote_asset_amount, -49500000);
 
         let market_after = perp_market_map.get_ref(&0).unwrap();
-        assert_eq!(market_after.total_liquidation_fee, 0)
+        assert_eq!(market_after.fee_ledger.total_liquidation_fee, 0)
     }
 
     #[test]
@@ -910,7 +910,7 @@ pub mod liquidate_perp {
         assert_eq!(liquidator.perp_positions[0].quote_asset_amount, -178200000);
 
         let market_after = perp_market_map.get_ref(&0).unwrap();
-        assert_eq!(market_after.total_liquidation_fee, 1800000)
+        assert_eq!(market_after.fee_ledger.total_liquidation_fee, 1800000)
     }
 
     #[test]
@@ -947,6 +947,7 @@ pub mod liquidate_perp {
             imf_factor: 1000, // SPOT_IMF_PRECISION == 1e6
             liquidator_fee: LIQUIDATION_FEE_PRECISION / 100,
             if_liquidation_fee: LIQUIDATION_FEE_PRECISION / 100,
+            protocol_liquidation_fee: LIQUIDATION_FEE_PRECISION / 200,
             order_step_size: 10000000,
             quote_asset_amount: -150 * QUOTE_PRECISION_I128,
             oracle: oracle_price_key,
@@ -1094,8 +1095,10 @@ pub mod liquidate_perp {
         )
         .unwrap();
 
+        // user pays liquidator (1%) + IF (1%) + protocol (0.5%); the extra
+        // 0.5% protocol cut shows up as an additional 500000 quote debit
         assert_eq!(user.perp_positions[0].base_asset_amount, 9999000000000);
-        assert_eq!(user.perp_positions[0].quote_asset_amount, -1499902000000);
+        assert_eq!(user.perp_positions[0].quote_asset_amount, -1499902500000);
         assert_eq!(user.perp_positions[0].open_orders, 0);
         assert_eq!(user.perp_positions[0].open_bids, 0);
 
@@ -1109,7 +1112,18 @@ pub mod liquidate_perp {
         );
 
         let market_after = perp_market_map.get_ref(&0).unwrap();
-        assert_eq!(market_after.total_liquidation_fee, QUOTE_PRECISION);
+        // IF-first split: the IF keeps its full 1% (margin budget allowed it),
+        // the protocol captures its 0.5% on top; total_liquidation_fee records
+        // both cuts (the full amount charged to the liquidatee)
+        assert_eq!(
+            market_after.fee_ledger.total_liquidation_fee,
+            QUOTE_PRECISION * 3 / 2
+        );
+        assert_eq!(market_after.fee_ledger.pending_if_fee, QUOTE_PRECISION);
+        assert_eq!(
+            market_after.fee_ledger.pending_protocol_fee,
+            QUOTE_PRECISION / 2
+        );
     }
 
     #[test]
@@ -1513,7 +1527,10 @@ pub mod liquidate_perp {
         );
 
         let market_after = perp_market_map.get_ref(&0).unwrap();
-        assert_eq!(market_after.total_liquidation_fee, QUOTE_PRECISION / 100);
+        assert_eq!(
+            market_after.fee_ledger.total_liquidation_fee,
+            QUOTE_PRECISION / 100
+        );
     }
 
     #[test]
@@ -2175,7 +2192,7 @@ pub mod liquidate_perp {
 
         let market_after = perp_market_map.get_ref(&0).unwrap();
         // .5% * 100 * .95 =$0.475
-        assert_eq!(market_after.total_liquidation_fee, 475000);
+        assert_eq!(market_after.fee_ledger.total_liquidation_fee, 475000);
     }
 
     #[test]
@@ -2302,7 +2319,7 @@ pub mod liquidate_perp {
 
         let market_after = perp_market_map.get_ref(&0).unwrap();
         assert!(!user.is_cross_margin_being_liquidated());
-        assert_eq!(market_after.total_liquidation_fee, 41787043);
+        assert_eq!(market_after.fee_ledger.total_liquidation_fee, 41787043);
     }
 
     #[test]
@@ -2735,7 +2752,7 @@ pub mod liquidate_perp_with_fill {
         assert_eq!(liquidator.perp_positions[0].quote_asset_amount, 3600);
 
         let market_after = perp_market_map.get_ref(&0).unwrap();
-        assert_eq!(market_after.total_liquidation_fee, 360000);
+        assert_eq!(market_after.fee_ledger.total_liquidation_fee, 360000);
     }
 
     #[test]
@@ -2943,7 +2960,7 @@ pub mod liquidate_perp_with_fill {
         assert_eq!(liquidator.perp_positions[0].quote_asset_amount, 3600);
 
         let market_after = perp_market_map.get_ref(&0).unwrap();
-        assert_eq!(market_after.total_liquidation_fee, 360000);
+        assert_eq!(market_after.fee_ledger.total_liquidation_fee, 360000);
     }
 
     #[test]
@@ -3112,7 +3129,7 @@ pub mod liquidate_perp_with_fill {
         assert_eq!(liquidator.perp_positions[0].quote_asset_amount, 3587);
 
         let market_after = perp_market_map.get_ref(&0).unwrap();
-        assert_eq!(market_after.total_liquidation_fee, 358708);
+        assert_eq!(market_after.fee_ledger.total_liquidation_fee, 358708);
     }
 
     #[test]
@@ -3281,7 +3298,7 @@ pub mod liquidate_perp_with_fill {
         assert_eq!(liquidator.perp_positions[0].quote_asset_amount, 3613);
 
         let market_after = perp_market_map.get_ref(&0).unwrap();
-        assert_eq!(market_after.total_liquidation_fee, 361300);
+        assert_eq!(market_after.fee_ledger.total_liquidation_fee, 361300);
     }
 }
 
@@ -6134,7 +6151,7 @@ pub mod liquidate_perp_pnl_for_deposit {
         assert_eq!(liquidator.perp_positions[0].quote_asset_amount, -25636363);
 
         let market_after = market_map.get_ref(&0).unwrap();
-        assert_eq!(market_after.total_liquidation_fee, 0);
+        assert_eq!(market_after.fee_ledger.total_liquidation_fee, 0);
     }
 
     #[test]
@@ -7440,7 +7457,7 @@ pub mod resolve_perp_bankruptcy {
     use crate::state::market_status::MarketStatus;
     use crate::state::oracle::{HistoricalOracleData, OracleSource};
     use crate::state::oracle_map::OracleMap;
-    use crate::state::perp_market::{PerpMarket, PoolBalance, AMM};
+    use crate::state::perp_market::{FeeLedger, PerpMarket, PoolBalance, AMM};
     use crate::state::perp_market_map::PerpMarketMap;
     use crate::state::pyth_lazer_oracle::PythLazerOracle;
     use crate::state::spot_market::{SpotBalanceType, SpotMarket};
@@ -7689,6 +7706,14 @@ pub mod resolve_perp_bankruptcy {
                 },
                 ..AMM::default()
             },
+            // tranche order: the market's in-transit IF fees are consumed
+            // first, then (no IF vault here) the AMM's backstop-of-last-resort
+            // tranche, capped at fees the AMM has received
+            fee_ledger: FeeLedger {
+                pending_if_fee: 10 * QUOTE_PRECISION_I64 as u128,
+                amm_protocol_fees_received: 50 * QUOTE_PRECISION_I64 as u128,
+                ..FeeLedger::default()
+            },
             margin_ratio_initial: 1000,
             margin_ratio_maintenance: 500,
             status: MarketStatus::Initialized,
@@ -7764,12 +7789,22 @@ pub mod resolve_perp_bankruptcy {
         expected_user.total_social_loss = 100000000;
 
         let mut expected_market = market;
-        expected_market.cumulative_funding_rate_long = 1005 * FUNDING_RATE_PRECISION_I128;
-        expected_market.cumulative_funding_rate_short = -1005 * FUNDING_RATE_PRECISION_I128;
-        expected_market.total_social_loss = 50000000;
+        expected_market.cumulative_funding_rate_long = 1004 * FUNDING_RATE_PRECISION_I128;
+        expected_market.cumulative_funding_rate_short = -1004 * FUNDING_RATE_PRECISION_I128;
+        expected_market.total_social_loss = 40000000;
         expected_market.quote_asset_amount = -50 * QUOTE_PRECISION_I128;
         expected_market.number_of_users = 0;
         expected_market.amm.fee_pool.scaled_balance = 0;
+        // tranche 1: the 10-QUOTE in-transit IF cut is consumed counter-only
+        // (its value stays in the pnl pool, now backing the spared
+        // counterparties). tranche 3: the full 50-QUOTE tokenized provision is
+        // clawed back — tokens move into the pnl pool and the AMM's books pay
+        // — leaving 40 QUOTE to socialize.
+        expected_market.fee_ledger.pending_if_fee = 0;
+        expected_market.fee_ledger.amm_protocol_fees_received = 0;
+        expected_market.pnl_pool.scaled_balance = 50 * SPOT_BALANCE_PRECISION;
+        expected_market.amm.total_fee_minus_distributions = -50 * QUOTE_PRECISION_I128;
+        expected_market.amm.net_revenue_since_last_funding = -50 * QUOTE_PRECISION_I64;
 
         resolve_perp_bankruptcy(
             0,
@@ -7807,12 +7842,12 @@ pub mod resolve_perp_bankruptcy {
 
         let mut expected_affected_long_user = affected_long_user;
         expected_affected_long_user.perp_positions[0].quote_asset_amount =
-            -525 * QUOTE_PRECISION_I64; // loses $50
+            -520 * QUOTE_PRECISION_I64; // loses $20 (only 40 QUOTE socialized)
         expected_affected_long_user.perp_positions[0].quote_break_even_amount =
-            -525 * QUOTE_PRECISION_I64; // loses $50
+            -520 * QUOTE_PRECISION_I64; // loses $20
         expected_affected_long_user.perp_positions[0].last_cumulative_funding_rate =
-            1005 * FUNDING_RATE_PRECISION_I64;
-        expected_affected_long_user.cumulative_perp_funding = -25 * QUOTE_PRECISION_I64;
+            1004 * FUNDING_RATE_PRECISION_I64;
+        expected_affected_long_user.cumulative_perp_funding = -20 * QUOTE_PRECISION_I64;
 
         {
             let mut market = market_map.get_ref_mut(&0).unwrap();
@@ -7845,12 +7880,12 @@ pub mod resolve_perp_bankruptcy {
 
         let mut expected_affected_short_user = affected_short_user;
         expected_affected_short_user.perp_positions[0].quote_asset_amount =
-            475 * QUOTE_PRECISION_I64; // loses $50
+            480 * QUOTE_PRECISION_I64; // loses $20 (only 40 QUOTE socialized)
         expected_affected_short_user.perp_positions[0].quote_break_even_amount =
-            475 * QUOTE_PRECISION_I64; // loses $50
+            480 * QUOTE_PRECISION_I64; // loses $20
         expected_affected_short_user.perp_positions[0].last_cumulative_funding_rate =
-            -1005 * FUNDING_RATE_PRECISION_I64;
-        expected_affected_short_user.cumulative_perp_funding = -25 * QUOTE_PRECISION_I64;
+            -1004 * FUNDING_RATE_PRECISION_I64;
+        expected_affected_short_user.cumulative_perp_funding = -20 * QUOTE_PRECISION_I64;
 
         {
             let mut market = market_map.get_ref_mut(&0).unwrap();
@@ -8914,7 +8949,7 @@ pub mod liquidate_isolated_perp {
         );
 
         let market_after = perp_market_map.get_ref(&0).unwrap();
-        assert_eq!(market_after.total_liquidation_fee, 0);
+        assert_eq!(market_after.fee_ledger.total_liquidation_fee, 0);
     }
 
     #[test]
@@ -9064,7 +9099,7 @@ pub mod liquidate_isolated_perp {
         );
 
         let market_after = perp_market_map.get_ref(&0).unwrap();
-        assert_eq!(market_after.total_liquidation_fee, 0);
+        assert_eq!(market_after.fee_ledger.total_liquidation_fee, 0);
     }
 
     #[test]
@@ -9245,7 +9280,7 @@ pub mod liquidate_isolated_perp {
         assert_eq!(liquidator.perp_positions[0].quote_asset_amount, -178200000);
 
         let market_after = perp_market_map.get_ref(&0).unwrap();
-        assert_eq!(market_after.total_liquidation_fee, 1800000)
+        assert_eq!(market_after.fee_ledger.total_liquidation_fee, 1800000)
     }
 
     #[test]
@@ -9497,7 +9532,7 @@ pub mod liquidate_isolated_perp {
 
         let market_after = perp_market_map.get_ref(&0).unwrap();
         // .5% * 100 * .95 =$0.475
-        assert_eq!(market_after.total_liquidation_fee, 475000);
+        assert_eq!(market_after.fee_ledger.total_liquidation_fee, 475000);
     }
 
     #[test]
@@ -9620,7 +9655,7 @@ pub mod liquidate_isolated_perp {
 
         let market_after = perp_market_map.get_ref(&0).unwrap();
         assert!(!user.is_isolated_margin_being_liquidated(0).unwrap());
-        assert_eq!(market_after.total_liquidation_fee, 41787043);
+        assert_eq!(market_after.fee_ledger.total_liquidation_fee, 41787043);
     }
 
     #[test]
@@ -10208,7 +10243,7 @@ pub mod liquidate_isolated_perp_pnl_for_deposit {
         assert_eq!(calc.meets_margin_requirement(), false);
 
         let market_after = market_map.get_ref(&0).unwrap();
-        assert_eq!(market_after.total_liquidation_fee, 0);
+        assert_eq!(market_after.fee_ledger.total_liquidation_fee, 0);
         drop(market_after);
 
         resolve_perp_bankruptcy(

@@ -45,13 +45,12 @@ use crate::{
 /// - **Fills + market events**: `controller/match` dispatches through
 ///   `QuoterCommit::commit_fill` / `on_market_event` on [`crate::vlp::amm::AmmQuoter`].
 /// - **AMM-special P&L / position operations**: external code (insurance fund,
-///   revenue-pool transfer, settlement) calls methods on the
+///   settlement) calls methods on the
 ///   [`crate::vlp::amm::quoter::AmmContract`] trait (`record_credit`,
-///   `record_revenue_withdrawal`, `record_amm_pnl`, `apply_fill_fees`,
-///   `apply_settlement_counterparty`).
+///   `record_amm_pnl`, `apply_fill_fees`, `apply_settlement_counterparty`).
 /// - **Admin / keeper-crank operations**: call methods on `&mut AMM`
-///   (`apply_cost`, `set_peg`, `apply_summary_stats_correction`,
-///   `set_total_fee_minus_distributions`). These are explicit AMM-specific
+///   (`apply_cost`, `set_peg`, `apply_summary_stats_correction`). These are
+///   explicit AMM-specific
 ///   admin handlers — not general-purpose admin reach-ins.
 /// - **Single-field config setters**: AMM-specific admin handlers that update
 ///   one config value (`base_spread`, `max_spread`, `curve_update_intensity`,
@@ -117,7 +116,9 @@ pub struct AMM {
     /// total fees minus any recognized upnl and pool withdraws
     /// precision: QUOTE_PRECISION
     pub total_fee_minus_distributions: i128,
-    /// sum of all fees from fee pool withdrawn to revenue pool
+    /// @deprecated frozen analytics counter from the pre-isolation design
+    /// (sum of fees withdrawn from the fee pool to the revenue pool). The
+    /// sweep no longer touches the AMM's pools, so nothing writes this.
     /// precision: QUOTE_PRECISION
     pub total_fee_withdrawn: u128,
     /// Cached spread-adjusted reserves for the ask (long-take) side, derived
@@ -350,35 +351,6 @@ impl AMM {
         self.curve_update_intensity > 0
     }
 
-    /// Gross share of AMM-collected fees the protocol retains (before
-    /// netting against `total_fee_withdrawn`). AMM-only since the
-    /// AMM-decoupling work — non-AMM (DLOB / liquidation) flow no longer
-    /// inflates this. Use [`Self::protocol_floor`] for the floor that
-    /// includes the netting.
-    pub fn total_fee_lower_bound(&self) -> DriftResult<u128> {
-        use crate::math::constants::{
-            SHARE_OF_FEES_ALLOCATED_TO_DRIFT_DENOMINATOR,
-            SHARE_OF_FEES_ALLOCATED_TO_DRIFT_NUMERATOR,
-        };
-        self.total_fee
-            .max(0)
-            .cast::<u128>()?
-            .safe_mul(SHARE_OF_FEES_ALLOCATED_TO_DRIFT_NUMERATOR)?
-            .safe_div(SHARE_OF_FEES_ALLOCATED_TO_DRIFT_DENOMINATOR)
-    }
-
-    /// Protocol's reserved-fee floor for the AMM's `total_fee_minus_distributions`:
-    /// the share of AMM-collected fees the protocol retains, less what has
-    /// already been transferred to the revenue pool. Fully self-contained —
-    /// the AMM doesn't peek at non-AMM (DLOB or liquidation) flow the way the
-    /// pre-DLOB formula did. Admin's `transfer_fee_and_pnl_pool` ix is the
-    /// explicit lever when cross-pool rebalancing is needed.
-    pub fn protocol_floor(&self) -> DriftResult<i128> {
-        self.total_fee_lower_bound()?
-            .cast::<i128>()?
-            .safe_sub(self.total_fee_withdrawn.cast::<i128>()?)
-    }
-
     /// AMM's net counterparty position (i.e. users' net long minus net
     /// short when AMM is the counterparty). Positive = users net long.
     pub fn net_counterparty_position(&self) -> i128 {
@@ -388,38 +360,6 @@ impl AMM {
     /// Is the AMM in P&L deficit (total_fee_minus_distributions < 0)?
     pub fn is_underwater(&self) -> bool {
         self.total_fee_minus_distributions < 0
-    }
-
-    /// AMM's terminal-state P&L surplus: lifetime earnings minus
-    /// lifetime withdrawals to the revenue pool.
-    pub fn terminal_state_surplus(&self) -> DriftResult<i128> {
-        self.total_fee_minus_distributions
-            .safe_sub(self.total_fee_withdrawn.cast()?)
-    }
-
-    /// Cap a proposed outflow at the AMM's per-funding-period revenue
-    /// (zero if the AMM's recent revenue is negative).
-    pub fn cap_to_recent_revenue(&self, raw_cap: i64) -> i64 {
-        raw_cap.min(self.net_revenue_since_last_funding).max(0)
-    }
-
-    /// Compute the AMM-side proposed outflow to the revenue pool given
-    /// the protocol-provided caps and fee allocations. Pure AMM math
-    /// against `total_fee_withdrawn`.
-    pub fn proposed_revenue_outflow(
-        &self,
-        total_fee_for_protocol: i128,
-        total_liq_fees_for_revenue_pool: i128,
-        fee_pool_threshold: i128,
-        max_revenue_to_settle: i128,
-    ) -> DriftResult<i128> {
-        let transfer = total_fee_for_protocol
-            .safe_add(total_liq_fees_for_revenue_pool)?
-            .saturating_sub(self.total_fee_withdrawn.cast()?)
-            .max(0)
-            .min(fee_pool_threshold)
-            .min(max_revenue_to_settle);
-        Ok(transfer)
     }
 
     /// Has the AMM accumulated too much drawdown this funding period to

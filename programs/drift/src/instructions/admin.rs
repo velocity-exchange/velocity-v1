@@ -61,8 +61,8 @@ use crate::{
         oracle_map::OracleMap,
         paused_operations::{InsuranceFundOperation, PerpOperation, SpotOperation},
         perp_market::{
-            ContractTier, ContractType, HedgeConfig, InsuranceClaim, MarketConfigFlag, MarketStats,
-            PerpMarket, PoolBalance, AMM,
+            ContractTier, ContractType, FeeLedger, HedgeConfig, InsuranceClaim, MarketConfigFlag,
+            MarketStats, PerpMarket, PoolBalance, AMM,
         },
         perp_market_map::{get_writable_perp_market_set, MarketSet},
         pyth_lazer_oracle::{PythLazerOracle, PYTH_LAZER_ORACLE_SEED},
@@ -138,6 +138,8 @@ pub fn handle_initialize(ctx: Context<Initialize>) -> Result<()> {
         signer: drift_signer,
         signer_nonce: drift_signer_nonce,
         srm_vault: Pubkey::default(),
+        protocol_fee_recipient: Pubkey::default(),
+        hot_fee_withdraw: Pubkey::default(),
         perp_fee_structure: FeeStructure::perps_default(),
         spot_fee_structure: FeeStructure::spot_default(),
         liquidation_duration: 0,
@@ -146,7 +148,7 @@ pub fn handle_initialize(ctx: Context<Initialize>) -> Result<()> {
         max_initialize_user_fee: 0,
         feature_bit_flags: 0,
         lp_pool_feature_bit_flags: 0,
-        padding: [0; 272],
+        padding: [0; 208],
     };
 
     Ok(())
@@ -377,12 +379,19 @@ pub fn handle_initialize_spot_market(
         min_borrow_rate: 0,
         token_program_flag: token_program,
         pool_id: 0,
-        padding: [0; 56],
+        _padding_align_pfp: [0; 8],
+        protocol_fee_pool: PoolBalance {
+            scaled_balance: 0,
+            market_index: spot_market_index,
+            ..PoolBalance::default()
+        },
+        protocol_liquidation_fee: 0,
+        protocol_fee_bps: 0,
+        padding: [0; 8],
         insurance_fund: InsuranceFund {
             vault: ctx.accounts.insurance_fund_vault.key(),
             unstaking_period: THIRTEEN_DAY,
-            total_factor: if_total_factor,
-            user_factor: if_total_factor / 2,
+            if_fee_factor: if_total_factor,
             revenue_settle_period: 3600,
             ..InsuranceFund::default()
         },
@@ -648,8 +657,7 @@ pub fn handle_initialize_perp_market(
         imf_factor,
         next_fill_record_id: 1,
         next_funding_rate_record_id: 1,
-        total_exchange_fee: 0,
-        total_liquidation_fee: 0,
+        fee_ledger: FeeLedger::default(),
         pnl_pool: PoolBalance::default(),
         insurance_claim: InsuranceClaim {
             max_revenue_withdraw_per_period,
@@ -702,7 +710,7 @@ pub fn handle_initialize_perp_market(
         quote_break_even_amount_long: 0,
         quote_break_even_amount_short: 0,
         max_open_interest,
-        padding: [0; 36],
+        padding: [0; 4],
         market_stats: MarketStats {
             last_oracle_normalised_price: oracle_price,
             last_mark_price_twap: init_reserve_price,
@@ -770,6 +778,14 @@ pub fn handle_initialize_perp_market(
             reference_price_offset: 0,
             padding_post_amm: [0; 3],
         },
+        // protocol fees are quote/USDC-denominated; quote market is index 0
+        protocol_fee_pool: PoolBalance {
+            market_index: QUOTE_SPOT_MARKET_INDEX,
+            ..PoolBalance::default()
+        },
+        protocol_liquidation_fee: 0,
+        _padding_buffer: [0; 4],
+        fee_pool_buffer_target: FEE_POOL_TO_REVENUE_POOL_THRESHOLD as u64,
     };
 
     safe_increment!(state.number_of_markets, 1);
@@ -1483,6 +1499,7 @@ pub fn handle_update_perp_liquidation_fee(
     ctx: Context<AdminUpdatePerpMarket>,
     liquidator_fee: u32,
     if_liquidation_fee: u32,
+    protocol_liquidation_fee: u32,
 ) -> Result<()> {
     let perp_market = &mut load_mut!(ctx.accounts.perp_market)?;
 
@@ -1492,7 +1509,10 @@ pub fn handle_update_perp_liquidation_fee(
     );
 
     validate!(
-        liquidator_fee.safe_add(if_liquidation_fee)? < LIQUIDATION_FEE_PRECISION,
+        liquidator_fee
+            .safe_add(if_liquidation_fee)?
+            .safe_add(protocol_liquidation_fee)?
+            < LIQUIDATION_FEE_PRECISION,
         ErrorCode::DefaultError,
         "Total liquidation fee must be less than 100%"
     )?;
@@ -1501,6 +1521,12 @@ pub fn handle_update_perp_liquidation_fee(
         if_liquidation_fee < LIQUIDATION_FEE_PRECISION,
         ErrorCode::DefaultError,
         "If liquidation fee must be less than 100%"
+    )?;
+
+    validate!(
+        protocol_liquidation_fee <= LIQUIDATION_FEE_PRECISION / 10,
+        ErrorCode::DefaultError,
+        "protocol_liquidation_fee must be <= 10%"
     )?;
 
     perp_market.amm.validate_compatible_with_liquidation_fee(
@@ -1521,8 +1547,15 @@ pub fn handle_update_perp_liquidation_fee(
         if_liquidation_fee
     );
 
+    msg!(
+        "perp_market.protocol_liquidation_fee: {:?} -> {:?}",
+        perp_market.protocol_liquidation_fee,
+        protocol_liquidation_fee
+    );
+
     perp_market.liquidator_fee = liquidator_fee;
     perp_market.if_liquidation_fee = if_liquidation_fee;
+    perp_market.protocol_liquidation_fee = protocol_liquidation_fee;
     Ok(())
 }
 
@@ -1572,6 +1605,7 @@ pub fn handle_update_spot_market_liquidation_fee(
     ctx: Context<AdminUpdateSpotMarket>,
     liquidator_fee: u32,
     if_liquidation_fee: u32,
+    protocol_liquidation_fee: u32,
 ) -> Result<()> {
     let spot_market = &mut load_mut!(ctx.accounts.spot_market)?;
     msg!(
@@ -1580,7 +1614,10 @@ pub fn handle_update_spot_market_liquidation_fee(
     );
 
     validate!(
-        liquidator_fee.safe_add(if_liquidation_fee)? < LIQUIDATION_FEE_PRECISION,
+        liquidator_fee
+            .safe_add(if_liquidation_fee)?
+            .safe_add(protocol_liquidation_fee)?
+            < LIQUIDATION_FEE_PRECISION,
         ErrorCode::DefaultError,
         "Total liquidation fee must be less than 100%"
     )?;
@@ -1589,6 +1626,12 @@ pub fn handle_update_spot_market_liquidation_fee(
         if_liquidation_fee <= LIQUIDATION_FEE_PRECISION / 10,
         ErrorCode::DefaultError,
         "if_liquidation_fee must be <= 10%"
+    )?;
+
+    validate!(
+        protocol_liquidation_fee <= LIQUIDATION_FEE_PRECISION / 10,
+        ErrorCode::DefaultError,
+        "protocol_liquidation_fee must be <= 10%"
     )?;
 
     msg!(
@@ -1603,8 +1646,15 @@ pub fn handle_update_spot_market_liquidation_fee(
         if_liquidation_fee
     );
 
+    msg!(
+        "spot_market.protocol_liquidation_fee: {:?} -> {:?}",
+        spot_market.protocol_liquidation_fee,
+        protocol_liquidation_fee
+    );
+
     spot_market.liquidator_fee = liquidator_fee;
     spot_market.if_liquidation_fee = if_liquidation_fee;
+    spot_market.protocol_liquidation_fee = protocol_liquidation_fee;
     Ok(())
 }
 
@@ -1633,11 +1683,14 @@ pub fn handle_update_withdraw_guard_threshold(
 #[access_control(
     spot_market_valid(&ctx.accounts.spot_market)
 )]
+/// Set the lending-gain carveouts: `if_fee_factor` (to the insurance fund) and
+/// `protocol_fee_bps` (to the withdrawable protocol fee pool). Lenders receive
+/// deposit interest net of both.
 pub fn handle_update_spot_market_if_factor(
     ctx: Context<AdminUpdateSpotMarket>,
     spot_market_index: u16,
-    user_if_factor: u32,
-    total_if_factor: u32,
+    if_fee_factor: u32,
+    protocol_fee_bps: u32,
 ) -> Result<()> {
     let spot_market = &mut load_mut!(ctx.accounts.spot_market)?;
 
@@ -1650,30 +1703,25 @@ pub fn handle_update_spot_market_if_factor(
     )?;
 
     validate!(
-        user_if_factor <= total_if_factor,
+        if_fee_factor.safe_add(protocol_fee_bps)? <= IF_FACTOR_PRECISION.cast()?,
         ErrorCode::DefaultError,
-        "user_if_factor must be <= total_if_factor"
-    )?;
-
-    validate!(
-        total_if_factor <= IF_FACTOR_PRECISION.cast()?,
-        ErrorCode::DefaultError,
-        "total_if_factor must be <= 100%"
+        "if_fee_factor + protocol_fee_bps must be <= 100%"
     )?;
 
     msg!(
-        "spot_market.user_if_factor: {:?} -> {:?}",
-        spot_market.insurance_fund.user_factor,
-        user_if_factor
-    );
-    msg!(
-        "spot_market.total_if_factor: {:?} -> {:?}",
-        spot_market.insurance_fund.total_factor,
-        total_if_factor
+        "spot_market.if_fee_factor: {:?} -> {:?}",
+        spot_market.insurance_fund.if_fee_factor,
+        if_fee_factor
     );
 
-    spot_market.insurance_fund.user_factor = user_if_factor;
-    spot_market.insurance_fund.total_factor = total_if_factor;
+    msg!(
+        "spot_market.protocol_fee_bps: {:?} -> {:?}",
+        spot_market.protocol_fee_bps,
+        protocol_fee_bps
+    );
+
+    spot_market.insurance_fund.if_fee_factor = if_fee_factor;
+    spot_market.protocol_fee_bps = protocol_fee_bps;
 
     Ok(())
 }
@@ -2579,6 +2627,23 @@ pub fn handle_update_perp_market_fee_adjustment(
     );
 
     perp_market.fee_adjustment = fee_adjustment;
+    Ok(())
+}
+
+pub fn handle_update_perp_market_fee_pool_buffer_target(
+    ctx: Context<AdminUpdatePerpMarket>,
+    fee_pool_buffer_target: u64,
+) -> Result<()> {
+    let perp_market = &mut load_mut!(ctx.accounts.perp_market)?;
+    msg!("perp market {}", perp_market.market_index);
+
+    msg!(
+        "perp_market.fee_pool_buffer_target: {:?} -> {:?}",
+        perp_market.fee_pool_buffer_target,
+        fee_pool_buffer_target
+    );
+
+    perp_market.fee_pool_buffer_target = fee_pool_buffer_target;
     Ok(())
 }
 
@@ -4033,6 +4098,21 @@ pub fn handle_update_hot_admin(
     let prev = state.hot_key(role);
     state.set_hot_key(role, new_pubkey);
     msg!("hot_admin[{:?}]: {:?} -> {:?}", role, prev, new_pubkey);
+    Ok(())
+}
+
+/// Cold-only. Sets the treasury that protocol fees can be withdrawn to.
+pub fn handle_update_protocol_fee_recipient(
+    ctx: Context<ColdAdminUpdateState>,
+    protocol_fee_recipient: Pubkey,
+) -> Result<()> {
+    let mut state = ctx.accounts.state.load_mut()?;
+    msg!(
+        "protocol_fee_recipient: {:?} -> {:?}",
+        state.protocol_fee_recipient,
+        protocol_fee_recipient
+    );
+    state.protocol_fee_recipient = protocol_fee_recipient;
     Ok(())
 }
 

@@ -824,8 +824,7 @@ fn check_fee_collection() {
         ..User::default()
     };
 
-    spot_market.insurance_fund.user_factor = 900;
-    spot_market.insurance_fund.total_factor = 1000; //1_000_000
+    spot_market.insurance_fund.if_fee_factor = 1000; //1_000_000
 
     assert_eq!(spot_market.utilization_twap, 0);
     assert_eq!(spot_market.deposit_balance, 1000000000);
@@ -980,7 +979,9 @@ fn check_fee_collection() {
 
     assert_eq!(settle_amount, 626);
     assert_eq!(spot_market.insurance_fund.user_shares, 0);
-    assert_eq!(spot_market.insurance_fund.total_shares, 0);
+    // no-staker bootstrap: total_shares is seeded 1:1 with the IF vault balance
+    // (protocol-owned backstop, share price ~1) so the first staker isn't griefed.
+    assert_eq!(spot_market.insurance_fund.total_shares, 2941);
     assert_eq!(if_tokens_3 - (settle_amount as u128), 1689);
     assert_eq!(spot_market.revenue_pool.scaled_balance, 0);
     assert_eq!(spot_market.utilization_twap, 462005);
@@ -1189,8 +1190,7 @@ fn check_fee_collection_larger_nums() {
         ..User::default()
     };
 
-    spot_market.insurance_fund.user_factor = 90_000;
-    spot_market.insurance_fund.total_factor = 100_000;
+    spot_market.insurance_fund.if_fee_factor = 100_000;
 
     assert_eq!(spot_market.utilization_twap, 0);
     assert_eq!(
@@ -1352,7 +1352,8 @@ fn check_fee_collection_larger_nums() {
     .unwrap();
     assert_eq!(settle_amount, 229739282275);
     assert_eq!(spot_market.insurance_fund.user_shares, 0);
-    assert_eq!(spot_market.insurance_fund.total_shares, 0);
+    // no-staker bootstrap: total_shares seeded 1:1 with IF vault balance.
+    assert_eq!(spot_market.insurance_fund.total_shares, 1328226103953);
     if_balance_2 += settle_amount;
     assert_eq!(if_balance_2, 229739282275);
     assert_eq!(if_tokens_3 - (settle_amount as u128), 868747539403); // w/ update interest for settle_spot_market_to_if

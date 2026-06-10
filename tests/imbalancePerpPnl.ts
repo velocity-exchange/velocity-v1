@@ -733,7 +733,10 @@ describe('imbalanced large perp pnl w/ borrow hitting limits', () => {
 
 		console.log(perpMarket.status);
 		assert(isVariant(perpMarket.status, 'active'));
-		console.log('totalExchangeFee:', perpMarket.totalExchangeFee.toString());
+		console.log(
+			'totalExchangeFee:',
+			perpMarket.feeLedger.totalExchangeFee.toString()
+		);
 		console.log('totalFee:', perpMarket.amm.totalFee.toString());
 		console.log('totalMMFee:', perpMarket.amm.totalMmFee.toString());
 		console.log(
@@ -972,7 +975,10 @@ describe('imbalanced large perp pnl w/ borrow hitting limits', () => {
 
 		console.log(perpMarket.status);
 		assert(isVariant(perpMarket.status, 'active'));
-		console.log('totalExchangeFee:', perpMarket.totalExchangeFee.toString());
+		console.log(
+			'totalExchangeFee:',
+			perpMarket.feeLedger.totalExchangeFee.toString()
+		);
 		console.log('totalFee:', perpMarket.amm.totalFee.toString());
 		console.log('totalMMFee:', perpMarket.amm.totalMmFee.toString());
 		console.log(
@@ -1066,7 +1072,7 @@ describe('imbalanced large perp pnl w/ borrow hitting limits', () => {
 	// 	console.log('feePool:', marketAfter0.amm.feePool.scaledBalance.toString());
 	// 	console.log(
 	// 		'totalExchangeFee:',
-	// 		marketAfter0.totalExchangeFee.toString()
+	// 		marketAfter0.feeLedger.totalExchangeFee.toString()
 	// 	);
 	// 	assert(marketAfter0.amm.feePool.scaledBalance.eq(new BN(4356250)));
 	// 	await liquidatorDriftClientUser.unsubscribe();

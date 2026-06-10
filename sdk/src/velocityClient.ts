@@ -9751,6 +9751,40 @@ export class VelocityClient {
 		return ix;
 	}
 
+	public async sweepPerpMarketFees(
+		perpMarketIndex: number,
+		txParams?: TxParams
+	): Promise<TransactionSignature> {
+		const tx = await this.buildTransaction(
+			await this.getSweepPerpMarketFeesIx(perpMarketIndex),
+			txParams
+		);
+		const { txSig } = await this.sendTransaction(tx, [], this.opts);
+		return txSig;
+	}
+
+	public async getSweepPerpMarketFeesIx(
+		perpMarketIndex: number
+	): Promise<TransactionInstruction> {
+		const perpMarketAccount = this.getPerpMarketAccount(perpMarketIndex);
+		const spotMarketAccount = this.getSpotMarketAccount(
+			perpMarketAccount.quoteSpotMarketIndex
+		);
+
+		const ix = await this.program.instruction.sweepPerpMarketFees(
+			perpMarketIndex,
+			{
+				accounts: {
+					state: await this.getStatePublicKey(),
+					perpMarket: perpMarketAccount.pubkey,
+					spotMarket: spotMarketAccount.pubkey,
+					oracle: perpMarketAccount.oracle,
+				},
+			}
+		);
+		return ix;
+	}
+
 	public async resolvePerpPnlDeficit(
 		spotMarketIndex: number,
 		perpMarketIndex: number,

@@ -20,12 +20,12 @@ import {
 	overWriteSpotMarket,
 	overWriteTokenAccountBalance,
 } from './testHelpers';
-import { startAnchor } from 'solana-bankrun';
+import { startLiteSVM } from '../sdk/src/litesvm/litesvmConnection';
 import { TestBulkAccountLoader } from '../sdk/src/accounts/testBulkAccountLoader';
 import {
-	BankrunContextWrapper,
+	LiteSVMContextWrapper,
 	asBN,
-} from '../sdk/src/bankrun/bankrunConnection';
+} from '../sdk/src/litesvm/litesvmConnection';
 
 // Snapshot of mainnet USDC spot market + IF vault accounts.
 const prodUsdcIfAccounts = {
@@ -47,7 +47,7 @@ describe('admin withdraw from insurance fund vault', () => {
 
 	let driftClient: TestClient;
 	let bulkAccountLoader: TestBulkAccountLoader;
-	let bankrunContextWrapper: BankrunContextWrapper;
+	let contextWrapper: LiteSVMContextWrapper;
 
 	let usdcMint: Keypair;
 	let solOracle: PublicKey;
@@ -56,21 +56,21 @@ describe('admin withdraw from insurance fund vault', () => {
 	let recipientUSDCAccount: Keypair;
 
 	before(async () => {
-		const context = await startAnchor('', [], []);
-		bankrunContextWrapper = new BankrunContextWrapper(context);
+		const context = await startLiteSVM('', [], []);
+		contextWrapper = new LiteSVMContextWrapper(context);
 
 		bulkAccountLoader = new TestBulkAccountLoader(
-			bankrunContextWrapper.connection,
+			contextWrapper.connection,
 			'processed',
 			1
 		);
 
-		usdcMint = await mockUSDCMint(bankrunContextWrapper);
-		solOracle = await mockOracleNoProgram(bankrunContextWrapper, 22500);
+		usdcMint = await mockUSDCMint(contextWrapper);
+		solOracle = await mockOracleNoProgram(contextWrapper, 22500);
 
 		driftClient = new TestClient({
-			connection: bankrunContextWrapper.connection.toConnection(),
-			wallet: bankrunContextWrapper.provider.wallet,
+			connection: contextWrapper.connection.toConnection(),
+			wallet: contextWrapper.provider.wallet,
 			programID: chProgram.programId,
 			opts: { commitment: 'confirmed' },
 			activeSubAccountId: 0,
@@ -140,7 +140,7 @@ describe('admin withdraw from insurance fund vault', () => {
 		};
 		await overWriteSpotMarket(
 			driftClient,
-			bankrunContextWrapper,
+			contextWrapper,
 			spotMarketPk,
 			testSpotMarket
 		);
@@ -152,7 +152,7 @@ describe('admin withdraw from insurance fund vault', () => {
 		);
 		const prodIfVaultAmount = prodIfVaultData.readBigUInt64LE(64);
 		await overWriteTokenAccountBalance(
-			bankrunContextWrapper,
+			contextWrapper,
 			ifVaultPk,
 			prodIfVaultAmount
 		);
@@ -163,7 +163,7 @@ describe('admin withdraw from insurance fund vault', () => {
 		recipientUSDCAccount = await mockUserUSDCAccount(
 			usdcMint,
 			ZERO,
-			bankrunContextWrapper,
+			contextWrapper,
 			IF_WITHDRAWAL_RECIPIENT
 		);
 	});
@@ -182,7 +182,7 @@ describe('admin withdraw from insurance fund vault', () => {
 
 		const insuranceVaultAmountBefore = asBN(
 			(
-				await bankrunContextWrapper.connection.getTokenAccount(
+				await contextWrapper.connection.getTokenAccount(
 					insuranceFundVault
 				)
 			).amount
@@ -198,7 +198,7 @@ describe('admin withdraw from insurance fund vault', () => {
 
 		const recipientBalanceBefore = asBN(
 			(
-				await bankrunContextWrapper.connection.getTokenAccount(
+				await contextWrapper.connection.getTokenAccount(
 					recipientUSDCAccount.publicKey
 				)
 			).amount
@@ -223,11 +223,11 @@ describe('admin withdraw from insurance fund vault', () => {
 			withdrawAmount,
 			recipientUSDCAccount.publicKey
 		);
-		bankrunContextWrapper.printTxLogs(txSig);
+		contextWrapper.printTxLogs(txSig);
 
 		const insuranceVaultAmountAfter = asBN(
 			(
-				await bankrunContextWrapper.connection.getTokenAccount(
+				await contextWrapper.connection.getTokenAccount(
 					insuranceFundVault
 				)
 			).amount
@@ -236,7 +236,7 @@ describe('admin withdraw from insurance fund vault', () => {
 
 		const recipientBalanceAfter = asBN(
 			(
-				await bankrunContextWrapper.connection.getTokenAccount(
+				await contextWrapper.connection.getTokenAccount(
 					recipientUSDCAccount.publicKey
 				)
 			).amount

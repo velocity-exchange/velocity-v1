@@ -30,9 +30,9 @@ import {
 	sleep,
 } from './testHelpers';
 import { OracleSource, ZERO } from '../sdk';
-import { startAnchor } from 'solana-bankrun';
+import { startLiteSVM } from '../sdk/src/litesvm/litesvmConnection';
 import { TestBulkAccountLoader } from '../sdk/src/accounts/testBulkAccountLoader';
-import { BankrunContextWrapper } from '../sdk/src/bankrun/bankrunConnection';
+import { LiteSVMContextWrapper } from '../sdk/src/litesvm/litesvmConnection';
 
 describe('scale orders', () => {
 	const chProgram = anchor.workspace.Drift as Program;
@@ -43,7 +43,7 @@ describe('scale orders', () => {
 
 	let bulkAccountLoader: TestBulkAccountLoader;
 
-	let bankrunContextWrapper: BankrunContextWrapper;
+	let contextWrapper: LiteSVMContextWrapper;
 
 	let _userAccountPublicKey: PublicKey;
 
@@ -67,31 +67,31 @@ describe('scale orders', () => {
 	let solUsd;
 
 	before(async () => {
-		const context = await startAnchor('', [], []);
+		const context = await startLiteSVM('', [], []);
 
-		bankrunContextWrapper = new BankrunContextWrapper(context);
+		contextWrapper = new LiteSVMContextWrapper(context);
 
 		bulkAccountLoader = new TestBulkAccountLoader(
-			bankrunContextWrapper.connection,
+			contextWrapper.connection,
 			'processed',
 			1
 		);
 
 		eventSubscriber = new EventSubscriber(
-			bankrunContextWrapper.connection.toConnection(),
+			contextWrapper.connection.toConnection(),
 			chProgram
 		);
 
 		await eventSubscriber.subscribe();
 
-		usdcMint = await mockUSDCMint(bankrunContextWrapper);
+		usdcMint = await mockUSDCMint(contextWrapper);
 		userUSDCAccount = await mockUserUSDCAccount(
 			usdcMint,
 			usdcAmount,
-			bankrunContextWrapper
+			contextWrapper
 		);
 
-		solUsd = await mockOracleNoProgram(bankrunContextWrapper, 100);
+		solUsd = await mockOracleNoProgram(contextWrapper, 100);
 
 		const marketIndexes = [perpMarketIndex];
 		const bankIndexes = [0, 1]; // USDC and SOL spot markets
@@ -101,8 +101,8 @@ describe('scale orders', () => {
 		];
 
 		driftClient = new TestClient({
-			connection: bankrunContextWrapper.connection.toConnection(),
-			wallet: bankrunContextWrapper.provider.wallet,
+			connection: contextWrapper.connection.toConnection(),
+			wallet: contextWrapper.provider.wallet,
 			programID: chProgram.programId,
 			opts: {
 				commitment: 'confirmed',
@@ -188,10 +188,10 @@ describe('scale orders', () => {
 					accounts: {
 						user: getUserAccountPublicKeySync(
 							driftClient.program.programId,
-							bankrunContextWrapper.provider.wallet.publicKey,
+							contextWrapper.provider.wallet.publicKey,
 							0
 						),
-						authority: bankrunContextWrapper.provider.wallet.publicKey,
+						authority: contextWrapper.provider.wallet.publicKey,
 					},
 					remainingAccounts: [],
 				}
@@ -259,7 +259,7 @@ describe('scale orders', () => {
 			maxTs: null,
 		});
 
-		bankrunContextWrapper.printTxLogs(txSig);
+		contextWrapper.printTxLogs(txSig);
 
 		await driftClient.fetchAccounts();
 		await driftClientUser.fetchAccounts();
@@ -323,7 +323,7 @@ describe('scale orders', () => {
 			maxTs: null,
 		});
 
-		bankrunContextWrapper.printTxLogs(txSig);
+		contextWrapper.printTxLogs(txSig);
 
 		await driftClient.fetchAccounts();
 		await driftClientUser.fetchAccounts();
@@ -385,7 +385,7 @@ describe('scale orders', () => {
 			maxTs: null,
 		});
 
-		bankrunContextWrapper.printTxLogs(txSig);
+		contextWrapper.printTxLogs(txSig);
 
 		await driftClient.fetchAccounts();
 		await driftClientUser.fetchAccounts();
@@ -454,7 +454,7 @@ describe('scale orders', () => {
 			maxTs: null,
 		});
 
-		bankrunContextWrapper.printTxLogs(txSig);
+		contextWrapper.printTxLogs(txSig);
 
 		await driftClient.fetchAccounts();
 		await driftClientUser.fetchAccounts();
@@ -518,7 +518,7 @@ describe('scale orders', () => {
 			maxTs: null,
 		});
 
-		bankrunContextWrapper.printTxLogs(txSig);
+		contextWrapper.printTxLogs(txSig);
 
 		await driftClient.fetchAccounts();
 		await driftClientUser.fetchAccounts();
@@ -559,7 +559,7 @@ describe('scale orders', () => {
 			maxTs: null,
 		});
 
-		bankrunContextWrapper.printTxLogs(txSig);
+		contextWrapper.printTxLogs(txSig);
 
 		await driftClient.fetchAccounts();
 		await driftClientUser.fetchAccounts();

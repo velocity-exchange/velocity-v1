@@ -40,9 +40,9 @@ import {
 	SPOT_MARKET_BALANCE_PRECISION,
 	PRICE_PRECISION,
 } from '../sdk';
-import { startAnchor } from 'solana-bankrun';
+import { startLiteSVM } from '../sdk/src/litesvm/litesvmConnection';
 import { TestBulkAccountLoader } from '../sdk/src/accounts/testBulkAccountLoader';
-import { BankrunContextWrapper } from '../sdk/src/bankrun/bankrunConnection';
+import { LiteSVMContextWrapper } from '../sdk/src/litesvm/litesvmConnection';
 
 describe('spot deposit and withdraw 22', () => {
 	const chProgram = anchor.workspace.Drift as Program;
@@ -52,7 +52,7 @@ describe('spot deposit and withdraw 22', () => {
 
 	let bulkAccountLoader: TestBulkAccountLoader;
 
-	let bankrunContextWrapper: BankrunContextWrapper;
+	let contextWrapper: LiteSVMContextWrapper;
 
 	let solOracle: PublicKey;
 
@@ -75,35 +75,35 @@ describe('spot deposit and withdraw 22', () => {
 	let oracleInfos: OracleInfo[];
 
 	before(async () => {
-		const context = await startAnchor('', [], []);
+		const context = await startLiteSVM('', [], []);
 
-		bankrunContextWrapper = new BankrunContextWrapper(context);
+		contextWrapper = new LiteSVMContextWrapper(context);
 
 		bulkAccountLoader = new TestBulkAccountLoader(
-			bankrunContextWrapper.connection,
+			contextWrapper.connection,
 			'processed',
 			1
 		);
 
 		eventSubscriber = new EventSubscriber(
-			bankrunContextWrapper.connection.toConnection(),
+			contextWrapper.connection.toConnection(),
 			chProgram
 		);
 
 		await eventSubscriber.subscribe();
 
-		usdcMint = await mockUSDCMint(bankrunContextWrapper, TOKEN_2022_PROGRAM_ID);
-		await mockUserUSDCAccount(usdcMint, largeUsdcAmount, bankrunContextWrapper);
+		usdcMint = await mockUSDCMint(contextWrapper, TOKEN_2022_PROGRAM_ID);
+		await mockUserUSDCAccount(usdcMint, largeUsdcAmount, contextWrapper);
 
-		solOracle = await mockOracleNoProgram(bankrunContextWrapper, 30);
+		solOracle = await mockOracleNoProgram(contextWrapper, 30);
 
 		marketIndexes = [];
 		spotMarketIndexes = [0, 1];
 		oracleInfos = [{ publicKey: solOracle, source: OracleSource.PYTH_LAZER }];
 
 		admin = new TestClient({
-			connection: bankrunContextWrapper.connection.toConnection(),
-			wallet: bankrunContextWrapper.provider.wallet,
+			connection: contextWrapper.connection.toConnection(),
+			wallet: contextWrapper.provider.wallet,
 			programID: chProgram.programId,
 			opts: {
 				commitment: 'confirmed',
@@ -168,7 +168,7 @@ describe('spot deposit and withdraw 22', () => {
 			0,
 			new BN(10 ** 10).mul(QUOTE_PRECISION)
 		);
-		bankrunContextWrapper.printTxLogs(txSig);
+		contextWrapper.printTxLogs(txSig);
 		await admin.fetchAccounts();
 		const spotMarket = await admin.getSpotMarketAccount(0);
 		assert(spotMarket.marketIndex === 0);
@@ -231,7 +231,7 @@ describe('spot deposit and withdraw 22', () => {
 			1,
 			new BN(10 ** 10).mul(QUOTE_PRECISION)
 		);
-		bankrunContextWrapper.printTxLogs(txSig);
+		contextWrapper.printTxLogs(txSig);
 		await admin.fetchAccounts();
 		const spotMarket = await admin.getSpotMarketAccount(1);
 		assert(spotMarket.marketIndex === 1);
@@ -278,7 +278,7 @@ describe('spot deposit and withdraw 22', () => {
 	it('First User Deposit USDC', async () => {
 		[firstUserDriftClient, firstUserDriftClientUSDCAccount] =
 			await createUserWithUSDCAccount(
-				bankrunContextWrapper,
+				contextWrapper,
 				usdcMint,
 				chProgram,
 				usdcAmount,
@@ -296,7 +296,7 @@ describe('spot deposit and withdraw 22', () => {
 			marketIndex,
 			firstUserDriftClientUSDCAccount
 		);
-		bankrunContextWrapper.printTxLogs(txSig);
+		contextWrapper.printTxLogs(txSig);
 
 		const spotMarket = await admin.getSpotMarketAccount(marketIndex);
 		assert(
@@ -307,7 +307,7 @@ describe('spot deposit and withdraw 22', () => {
 
 		const vaultAmount = new BN(
 			(
-				await bankrunContextWrapper.connection.getTokenAccount(spotMarket.vault)
+				await contextWrapper.connection.getTokenAccount(spotMarket.vault)
 			).amount.toString()
 		);
 		assert(vaultAmount.eq(usdcAmount));
@@ -330,7 +330,7 @@ describe('spot deposit and withdraw 22', () => {
 			secondUserDriftClientWSOLAccount,
 			secondUserDriftClientUSDCAccount,
 		] = await createUserWithUSDCAndWSOLAccount(
-			bankrunContextWrapper,
+			contextWrapper,
 			usdcMint,
 			chProgram,
 			solAmount,
@@ -347,7 +347,7 @@ describe('spot deposit and withdraw 22', () => {
 			marketIndex,
 			secondUserDriftClientWSOLAccount
 		);
-		bankrunContextWrapper.printTxLogs(txSig);
+		contextWrapper.printTxLogs(txSig);
 
 		const spotMarket = await admin.getSpotMarketAccount(marketIndex);
 		assert(spotMarket.depositBalance.eq(SPOT_MARKET_BALANCE_PRECISION));
@@ -371,7 +371,7 @@ describe('spot deposit and withdraw 22', () => {
 
 		const vaultAmount = new BN(
 			(
-				await bankrunContextWrapper.connection.getTokenAccount(spotMarket.vault)
+				await contextWrapper.connection.getTokenAccount(spotMarket.vault)
 			).amount.toString()
 		);
 		assert(vaultAmount.eq(solAmount));
@@ -401,7 +401,7 @@ describe('spot deposit and withdraw 22', () => {
 			marketIndex,
 			secondUserDriftClientUSDCAccount
 		);
-		bankrunContextWrapper.printTxLogs(txSig);
+		contextWrapper.printTxLogs(txSig);
 
 		const spotMarket = await admin.getSpotMarketAccount(marketIndex);
 		const expectedBorrowBalance = new BN(5000000001);
@@ -409,7 +409,7 @@ describe('spot deposit and withdraw 22', () => {
 
 		const vaultAmount = new BN(
 			(
-				await bankrunContextWrapper.connection.getTokenAccount(spotMarket.vault)
+				await contextWrapper.connection.getTokenAccount(spotMarket.vault)
 			).amount.toString()
 		);
 		const expectedVaultAmount = usdcAmount.sub(withdrawAmount);
@@ -428,7 +428,7 @@ describe('spot deposit and withdraw 22', () => {
 
 		const actualAmountWithdrawn = new BN(
 			(
-				await bankrunContextWrapper.connection.getTokenAccount(
+				await contextWrapper.connection.getTokenAccount(
 					secondUserDriftClientUSDCAccount
 				)
 			).amount.toString()
@@ -451,7 +451,7 @@ describe('spot deposit and withdraw 22', () => {
 		const txSig = await firstUserDriftClient.updateSpotMarketCumulativeInterest(
 			usdcmarketIndex
 		);
-		bankrunContextWrapper.printTxLogs(txSig);
+		contextWrapper.printTxLogs(txSig);
 
 		await firstUserDriftClient.fetchAccounts();
 		const newSpotMarketAccount =
@@ -500,7 +500,7 @@ describe('spot deposit and withdraw 22', () => {
 
 		const userUSDCAmountBefore = new BN(
 			(
-				await bankrunContextWrapper.connection.getTokenAccount(
+				await contextWrapper.connection.getTokenAccount(
 					secondUserDriftClientUSDCAccount
 				)
 			).amount.toString()
@@ -518,7 +518,7 @@ describe('spot deposit and withdraw 22', () => {
 			marketIndex,
 			secondUserDriftClientUSDCAccount
 		);
-		bankrunContextWrapper.printTxLogs(txSig);
+		contextWrapper.printTxLogs(txSig);
 
 		spotMarketAccount = secondUserDriftClient.getSpotMarketAccount(marketIndex);
 		const increaseInspotPosition = getBalance(
@@ -538,7 +538,7 @@ describe('spot deposit and withdraw 22', () => {
 		const expectedUserUSDCAmount = userUSDCAmountBefore.add(withdrawAmount);
 		const userUSDCAmountAfter = new BN(
 			(
-				await bankrunContextWrapper.connection.getTokenAccount(
+				await contextWrapper.connection.getTokenAccount(
 					secondUserDriftClientUSDCAccount
 				)
 			).amount.toString()
@@ -561,7 +561,7 @@ describe('spot deposit and withdraw 22', () => {
 		const expectedVaultBalance = usdcAmount.sub(expectedUserUSDCAmount);
 		const vaultUSDCAmountAfter = new BN(
 			(
-				await bankrunContextWrapper.connection.getTokenAccount(
+				await contextWrapper.connection.getTokenAccount(
 					spotMarketAccount.vault
 				)
 			).amount.toString()
@@ -602,7 +602,7 @@ describe('spot deposit and withdraw 22', () => {
 		const txSig = await firstUserDriftClient.updateSpotMarketCumulativeInterest(
 			usdcmarketIndex
 		);
-		bankrunContextWrapper.printTxLogs(txSig);
+		contextWrapper.printTxLogs(txSig);
 
 		await firstUserDriftClient.fetchAccounts();
 		const newSpotMarketAccount =
@@ -647,7 +647,7 @@ describe('spot deposit and withdraw 22', () => {
 		const mintAmount = new BN(2 * 10 ** 6); // $2
 		const userUSDCAmountBefore = new BN(
 			(
-				await bankrunContextWrapper.connection.getTokenAccount(
+				await contextWrapper.connection.getTokenAccount(
 					secondUserDriftClientUSDCAccount
 				)
 			).amount.toString()
@@ -657,7 +657,7 @@ describe('spot deposit and withdraw 22', () => {
 			usdcMint,
 			secondUserDriftClientUSDCAccount,
 			mintAmount,
-			bankrunContextWrapper
+			contextWrapper
 		);
 
 		const userBorrowBalanceBefore =
@@ -671,7 +671,7 @@ describe('spot deposit and withdraw 22', () => {
 			marketIndex,
 			secondUserDriftClientUSDCAccount
 		);
-		bankrunContextWrapper.printTxLogs(txSig);
+		contextWrapper.printTxLogs(txSig);
 
 		await secondUserDriftClient.fetchAccounts();
 		const spotMarketAccount =
@@ -733,7 +733,7 @@ describe('spot deposit and withdraw 22', () => {
 			marketIndex,
 			secondUserDriftClientUSDCAccount
 		);
-		bankrunContextWrapper.printTxLogs(txSig);
+		contextWrapper.printTxLogs(txSig);
 
 		await secondUserDriftClient.fetchAccounts();
 		const spotMarketAccount =
@@ -768,7 +768,7 @@ describe('spot deposit and withdraw 22', () => {
 		const marketIndex = 0;
 		const userUSDCAmountBefore = new BN(
 			(
-				await bankrunContextWrapper.connection.getTokenAccount(
+				await contextWrapper.connection.getTokenAccount(
 					secondUserDriftClientUSDCAccount
 				)
 			).amount.toString()
@@ -787,7 +787,7 @@ describe('spot deposit and withdraw 22', () => {
 			undefined,
 			true
 		);
-		bankrunContextWrapper.printTxLogs(txSig);
+		contextWrapper.printTxLogs(txSig);
 
 		const spotMarketAccountAfter =
 			secondUserDriftClient.getSpotMarketAccount(marketIndex);
@@ -799,7 +799,7 @@ describe('spot deposit and withdraw 22', () => {
 
 		const userUSDCAmountAfter = new BN(
 			(
-				await bankrunContextWrapper.connection.getTokenAccount(
+				await contextWrapper.connection.getTokenAccount(
 					secondUserDriftClientUSDCAccount
 				)
 			).amount.toString()
@@ -825,7 +825,7 @@ describe('spot deposit and withdraw 22', () => {
 		const marketIndex = 1;
 		const userWSOLAmountBefore = new BN(
 			(
-				await bankrunContextWrapper.connection.getTokenAccount(
+				await contextWrapper.connection.getTokenAccount(
 					secondUserDriftClientWSOLAccount
 				)
 			).amount.toString()
@@ -841,7 +841,7 @@ describe('spot deposit and withdraw 22', () => {
 			secondUserDriftClientWSOLAccount,
 			true
 		);
-		bankrunContextWrapper.printTxLogs(txSig);
+		contextWrapper.printTxLogs(txSig);
 
 		const spotMarketAccountAfter =
 			secondUserDriftClient.getSpotMarketAccount(marketIndex);
@@ -853,7 +853,7 @@ describe('spot deposit and withdraw 22', () => {
 
 		const userWSOLAmountAfter = new BN(
 			(
-				await bankrunContextWrapper.connection.getTokenAccount(
+				await contextWrapper.connection.getTokenAccount(
 					secondUserDriftClientWSOLAccount
 				)
 			).amount.toString()
@@ -877,7 +877,7 @@ describe('spot deposit and withdraw 22', () => {
 			_thirdUserDriftClientWSOLAccount,
 			thirdUserDriftClientUSDCAccount,
 		] = await createUserWithUSDCAndWSOLAccount(
-			bankrunContextWrapper,
+			contextWrapper,
 			usdcMint,
 			chProgram,
 			solAmount,
@@ -917,7 +917,7 @@ describe('spot deposit and withdraw 22', () => {
 			marketIndex,
 			thirdUserDriftClientUSDCAccount
 		);
-		bankrunContextWrapper.printTxLogs(txSig);
+		contextWrapper.printTxLogs(txSig);
 
 		const spotPositionAfter = thirdUserDriftClient.getSpotPosition(marketIndex);
 		const tokenAmount = getTokenAmount(

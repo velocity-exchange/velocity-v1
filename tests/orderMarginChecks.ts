@@ -23,9 +23,9 @@ import {
 	setFeedPriceNoProgram,
 	initializeQuoteSpotMarket,
 } from './testHelpers';
-import { startAnchor } from 'solana-bankrun';
+import { startLiteSVM } from '../sdk/src/litesvm/litesvmConnection';
 import { TestBulkAccountLoader } from '../sdk/src/accounts/testBulkAccountLoader';
-import { BankrunContextWrapper } from '../sdk/src/bankrun/bankrunConnection';
+import { LiteSVMContextWrapper } from '../sdk/src/litesvm/litesvmConnection';
 
 describe('order margin checks with isolated positions', () => {
 	const chProgram = anchor.workspace.Drift as Program;
@@ -33,7 +33,7 @@ describe('order margin checks with isolated positions', () => {
 	let driftClient: TestClient;
 	let eventSubscriber: EventSubscriber;
 
-	let bankrunContextWrapper: BankrunContextWrapper;
+	let contextWrapper: LiteSVMContextWrapper;
 
 	let bulkAccountLoader: TestBulkAccountLoader;
 
@@ -72,37 +72,37 @@ describe('order margin checks with isolated positions', () => {
 	};
 
 	before(async () => {
-		const context = await startAnchor('', [], []);
+		const context = await startLiteSVM('', [], []);
 
-		bankrunContextWrapper = new BankrunContextWrapper(context);
+		contextWrapper = new LiteSVMContextWrapper(context);
 
 		bulkAccountLoader = new TestBulkAccountLoader(
-			bankrunContextWrapper.connection,
+			contextWrapper.connection,
 			'processed',
 			1
 		);
 
-		usdcMint = await mockUSDCMint(bankrunContextWrapper);
+		usdcMint = await mockUSDCMint(contextWrapper);
 		userUSDCAccount = await mockUserUSDCAccount(
 			usdcMint,
 			largeUsdcAmount,
-			bankrunContextWrapper
+			contextWrapper
 		);
 
 		// Create oracles for SOL and ETH
-		solUsd = await mockOracleNoProgram(bankrunContextWrapper, 100); // $100 per SOL
-		ethUsd = await mockOracleNoProgram(bankrunContextWrapper, 1000); // $1000 per ETH
+		solUsd = await mockOracleNoProgram(contextWrapper, 100); // $100 per SOL
+		ethUsd = await mockOracleNoProgram(contextWrapper, 1000); // $1000 per ETH
 
 		eventSubscriber = new EventSubscriber(
-			bankrunContextWrapper.connection.toConnection(),
+			contextWrapper.connection.toConnection(),
 			chProgram
 		);
 
 		await eventSubscriber.subscribe();
 
 		driftClient = new TestClient({
-			connection: bankrunContextWrapper.connection.toConnection(),
-			wallet: bankrunContextWrapper.provider.wallet,
+			connection: contextWrapper.connection.toConnection(),
+			wallet: contextWrapper.provider.wallet,
 			programID: chProgram.programId,
 			opts: {
 				commitment: 'confirmed',
@@ -188,8 +188,8 @@ describe('order margin checks with isolated positions', () => {
 	// Reset user state between tests
 	async function resetUserState() {
 		// Restore oracle feeds to default prices so tests start with deterministic state
-		await setFeedPriceNoProgram(bankrunContextWrapper, 100, solUsd, 10000);
-		await setFeedPriceNoProgram(bankrunContextWrapper, 1000, ethUsd, 10000);
+		await setFeedPriceNoProgram(contextWrapper, 100, solUsd, 10000);
+		await setFeedPriceNoProgram(contextWrapper, 1000, ethUsd, 10000);
 
 		await driftClient.fetchAccounts();
 
@@ -299,7 +299,7 @@ describe('order margin checks with isolated positions', () => {
 			// Lower SOL oracle so user has unrealized losses -> cross below IM but above MM
 			// (Withdraw would be rejected by program; cannot withdraw below IM.)
 			// 10 SOL long @ $100 -> drop to $79: loss = $210, effective collateral ~$390, IM required $395, MM ~$261
-			await setFeedPriceNoProgram(bankrunContextWrapper, 79, solUsd, 10000);
+			await setFeedPriceNoProgram(contextWrapper, 79, solUsd, 10000);
 			await driftClient.fetchAccounts();
 
 			// Now try to open isolated ETH-PERP position
@@ -372,7 +372,7 @@ describe('order margin checks with isolated positions', () => {
 			);
 
 			// Lower SOL oracle so cross has effective $550 (loss $150: 10*(100-85)=150)
-			await setFeedPriceNoProgram(bankrunContextWrapper, 85, solUsd, 10000);
+			await setFeedPriceNoProgram(contextWrapper, 85, solUsd, 10000);
 			await driftClient.fetchAccounts();
 
 			// Deposit and setup isolated ETH position
@@ -453,7 +453,7 @@ describe('order margin checks with isolated positions', () => {
 			);
 
 			// Lower SOL oracle so cross has effective $800 (loss $100: 10*(100-90)=100)
-			await setFeedPriceNoProgram(bankrunContextWrapper, 90, solUsd, 10000);
+			await setFeedPriceNoProgram(contextWrapper, 90, solUsd, 10000);
 			await driftClient.fetchAccounts();
 
 			// Deposit and setup isolated ETH position
@@ -537,7 +537,7 @@ describe('order margin checks with isolated positions', () => {
 			);
 
 			// Lower SOL oracle so isolated SOL has effective $400 (loss $200: 10*(100-80)=200), fails IM but passes MM
-			await setFeedPriceNoProgram(bankrunContextWrapper, 80, solUsd, 10000);
+			await setFeedPriceNoProgram(contextWrapper, 80, solUsd, 10000);
 			await driftClient.fetchAccounts();
 
 			// Now setup and open isolated ETH position
@@ -597,7 +597,7 @@ describe('order margin checks with isolated positions', () => {
 			);
 
 			// Lower SOL oracle so isolated SOL has effective $300 (loss $300: 10*(100-70)=300), below MM $333
-			await setFeedPriceNoProgram(bankrunContextWrapper, 70, solUsd, 10000);
+			await setFeedPriceNoProgram(contextWrapper, 70, solUsd, 10000);
 			await driftClient.fetchAccounts();
 
 			// Setup isolated ETH collateral

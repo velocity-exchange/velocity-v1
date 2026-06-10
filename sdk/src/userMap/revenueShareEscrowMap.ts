@@ -119,7 +119,7 @@ export class RevenueShareEscrowMap {
 	}
 
 	/**
-	 * A slow, bankrun test friendly version of sync(), uses getAccountInfo on every cached account to refresh data
+	 * A slow, litesvm test friendly version of sync(), uses getAccountInfo on every cached account to refresh data
 	 * @returns
 	 */
 	public async slowSync(): Promise<void> {

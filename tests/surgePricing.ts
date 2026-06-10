@@ -25,9 +25,9 @@ import {
 } from './testHelpers';
 import { QUOTE_PRECISION, getUserAccountPublicKey } from '../sdk/src';
 import { calculateInitUserFee } from '../sdk/src/math/state';
-import { startAnchor } from 'solana-bankrun';
+import { startLiteSVM } from '../sdk/src/litesvm/litesvmConnection';
 import { TestBulkAccountLoader } from '../sdk/src/accounts/testBulkAccountLoader';
-import { BankrunContextWrapper } from '../sdk/src/bankrun/bankrunConnection';
+import { LiteSVMContextWrapper } from '../sdk/src/litesvm/litesvmConnection';
 
 describe('surge pricing', () => {
 	const chProgram = anchor.workspace.Drift as Program;
@@ -37,7 +37,7 @@ describe('surge pricing', () => {
 
 	let bulkAccountLoader: TestBulkAccountLoader;
 
-	let bankrunContextWrapper: BankrunContextWrapper;
+	let contextWrapper: LiteSVMContextWrapper;
 
 	let solOracle: PublicKey;
 
@@ -51,35 +51,35 @@ describe('surge pricing', () => {
 	let oracleInfos: OracleInfo[];
 
 	before(async () => {
-		const context = await startAnchor('', [], []);
+		const context = await startLiteSVM('', [], []);
 
-		bankrunContextWrapper = new BankrunContextWrapper(context);
+		contextWrapper = new LiteSVMContextWrapper(context);
 
 		bulkAccountLoader = new TestBulkAccountLoader(
-			bankrunContextWrapper.connection,
+			contextWrapper.connection,
 			'processed',
 			1
 		);
 
 		eventSubscriber = new EventSubscriber(
-			bankrunContextWrapper.connection.toConnection(),
+			contextWrapper.connection.toConnection(),
 			chProgram
 		);
 
 		await eventSubscriber.subscribe();
 
-		usdcMint = await mockUSDCMint(bankrunContextWrapper);
-		await mockUserUSDCAccount(usdcMint, largeUsdcAmount, bankrunContextWrapper);
+		usdcMint = await mockUSDCMint(contextWrapper);
+		await mockUserUSDCAccount(usdcMint, largeUsdcAmount, contextWrapper);
 
-		solOracle = await mockOracleNoProgram(bankrunContextWrapper, 30);
+		solOracle = await mockOracleNoProgram(contextWrapper, 30);
 
 		marketIndexes = [];
 		spotMarketIndexes = [0, 1];
 		oracleInfos = [{ publicKey: solOracle, source: OracleSource.PYTH_LAZER }];
 
 		admin = new TestClient({
-			connection: bankrunContextWrapper.connection.toConnection(),
-			wallet: bankrunContextWrapper.provider.wallet,
+			connection: contextWrapper.connection.toConnection(),
+			wallet: contextWrapper.provider.wallet,
 			programID: chProgram.programId,
 			opts: {
 				commitment: 'confirmed',
@@ -130,7 +130,7 @@ describe('surge pricing', () => {
 			0,
 			new BN(10 ** 10).mul(QUOTE_PRECISION)
 		);
-		bankrunContextWrapper.printTxLogs(txSig);
+		contextWrapper.printTxLogs(txSig);
 		await admin.fetchAccounts();
 		const spotMarket = await admin.getSpotMarketAccount(0);
 		assert(spotMarket.marketIndex === 0);
@@ -162,7 +162,7 @@ describe('surge pricing', () => {
 		for (let i = 0; i < 5; i++) {
 			const expectedFee = calculateInitUserFee(admin.getStateAccount());
 			const [driftClient, _, keyPair] = await createUserWithUSDCAccount(
-				bankrunContextWrapper,
+				contextWrapper,
 				usdcMint,
 				chProgram,
 				usdcAmount,
@@ -178,7 +178,7 @@ describe('surge pricing', () => {
 				0
 			);
 
-			const accountInfo = await bankrunContextWrapper.connection.getAccountInfo(
+			const accountInfo = await contextWrapper.connection.getAccountInfo(
 				userAccount
 			);
 			const baseLamports = 32183040;
@@ -194,7 +194,7 @@ describe('surge pricing', () => {
 				await admin.updateStateMaxNumberOfSubAccounts(0);
 				await driftClient.reclaimRent(0);
 				const accountInfoAfterReclaim =
-					await bankrunContextWrapper.connection.getAccountInfo(userAccount);
+					await contextWrapper.connection.getAccountInfo(userAccount);
 				console.log(
 					'account info after reclaim',
 					accountInfoAfterReclaim.lamports

@@ -30,9 +30,9 @@ import {
 	PerpOperation,
 	PostOnlyParams,
 } from '../sdk';
-import { startAnchor } from 'solana-bankrun';
+import { startLiteSVM } from '../sdk/src/litesvm/litesvmConnection';
 import { TestBulkAccountLoader } from '../sdk/src/accounts/testBulkAccountLoader';
-import { BankrunContextWrapper } from '../sdk/src/bankrun/bankrunConnection';
+import { LiteSVMContextWrapper } from '../sdk/src/litesvm/litesvmConnection';
 
 describe('oracle fill guardrails', () => {
 	const chProgram = anchor.workspace.Drift as Program;
@@ -42,7 +42,7 @@ describe('oracle fill guardrails', () => {
 
 	let bulkAccountLoader: TestBulkAccountLoader;
 
-	let bankrunContextWrapper: BankrunContextWrapper;
+	let contextWrapper: LiteSVMContextWrapper;
 
 	let usdcMint;
 	let userUSDCAccount;
@@ -64,39 +64,39 @@ describe('oracle fill guardrails', () => {
 	let oracleInfos;
 
 	before(async () => {
-		const context = await startAnchor('', [], []);
+		const context = await startLiteSVM('', [], []);
 
-		bankrunContextWrapper = new BankrunContextWrapper(context);
+		contextWrapper = new LiteSVMContextWrapper(context);
 
 		bulkAccountLoader = new TestBulkAccountLoader(
-			bankrunContextWrapper.connection,
+			contextWrapper.connection,
 			'processed',
 			1
 		);
 
 		eventSubscriber = new EventSubscriber(
-			bankrunContextWrapper.connection.toConnection(),
+			contextWrapper.connection.toConnection(),
 			chProgram
 		);
 
 		await eventSubscriber.subscribe();
 
-		usdcMint = await mockUSDCMint(bankrunContextWrapper);
+		usdcMint = await mockUSDCMint(contextWrapper);
 		userUSDCAccount = await mockUserUSDCAccount(
 			usdcMint,
 			usdcAmount,
-			bankrunContextWrapper
+			contextWrapper
 		);
 
-		solUsd = await mockOracleNoProgram(bankrunContextWrapper, 20);
+		solUsd = await mockOracleNoProgram(contextWrapper, 20);
 
 		marketIndexes = [0, 1];
 		spotMarketIndexes = [0];
 		oracleInfos = [{ publicKey: solUsd, source: OracleSource.PYTH_LAZER }];
 
 		fillerDriftClient = new TestClient({
-			connection: bankrunContextWrapper.connection.toConnection(),
-			wallet: bankrunContextWrapper.provider.wallet,
+			connection: contextWrapper.connection.toConnection(),
+			wallet: contextWrapper.provider.wallet,
 			programID: chProgram.programId,
 			opts: {
 				commitment: 'confirmed',
@@ -172,7 +172,7 @@ describe('oracle fill guardrails', () => {
 	it('taker long solUsd', async () => {
 		const [takerDriftClient, takerUSDCAccount] =
 			await createUserWithUSDCAccount(
-				bankrunContextWrapper,
+				contextWrapper,
 				usdcMint,
 				chProgram,
 				usdcAmount,
@@ -186,7 +186,7 @@ describe('oracle fill guardrails', () => {
 
 		const [makerDriftClient, makerUSDCAccount] =
 			await createUserWithUSDCAccount(
-				bankrunContextWrapper,
+				contextWrapper,
 				usdcMint,
 				chProgram,
 				usdcAmount,
@@ -198,7 +198,7 @@ describe('oracle fill guardrails', () => {
 
 		await makerDriftClient.deposit(usdcAmount, 0, makerUSDCAccount);
 
-		await setFeedPriceNoProgram(bankrunContextWrapper, 14, solUsd);
+		await setFeedPriceNoProgram(contextWrapper, 14, solUsd);
 		await makerDriftClient.placePerpOrder({
 			marketIndex: 0,
 			direction: PositionDirection.SHORT,
@@ -207,7 +207,7 @@ describe('oracle fill guardrails', () => {
 			baseAssetAmount: BASE_PRECISION,
 		});
 
-		await setFeedPriceNoProgram(bankrunContextWrapper, 31, solUsd);
+		await setFeedPriceNoProgram(contextWrapper, 31, solUsd);
 
 		await takerDriftClient.placePerpOrder({
 			marketIndex: 0,
@@ -221,7 +221,7 @@ describe('oracle fill guardrails', () => {
 		});
 
 		// move price to $30
-		await setFeedPriceNoProgram(bankrunContextWrapper, 30, solUsd);
+		await setFeedPriceNoProgram(contextWrapper, 30, solUsd);
 
 		const makerInfo = [
 			{
@@ -236,7 +236,7 @@ describe('oracle fill guardrails', () => {
 			takerDriftClient.getOrder(1),
 			makerInfo
 		);
-		bankrunContextWrapper.printTxLogs(firstFillTxSig);
+		contextWrapper.printTxLogs(firstFillTxSig);
 
 		// assert that the
 		const orderActionRecord =
@@ -261,7 +261,7 @@ describe('oracle fill guardrails', () => {
 				takerDriftClient.getOrder(1),
 				makerInfo
 			);
-			bankrunContextWrapper.printTxLogs(txSig);
+			contextWrapper.printTxLogs(txSig);
 		} catch (e) {
 			error = true;
 			assert(e.message.includes('0x1787'));

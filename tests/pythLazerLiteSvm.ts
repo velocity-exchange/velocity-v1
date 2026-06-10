@@ -13,8 +13,8 @@ import {
 	isVariant,
 } from '../sdk/src';
 import { TestBulkAccountLoader } from '../sdk/src/accounts/testBulkAccountLoader';
-import { BankrunContextWrapper } from '../sdk/src/bankrun/bankrunConnection';
-import { startAnchor } from 'solana-bankrun';
+import { LiteSVMContextWrapper } from '../sdk/src/litesvm/litesvmConnection';
+import { startLiteSVM } from '../sdk/src/litesvm/litesvmConnection';
 import { AccountInfo, LAMPORTS_PER_SOL, PublicKey } from '@solana/web3.js';
 import { initializeQuoteSpotMarket, mockUSDCMint } from './testHelpers';
 import {
@@ -39,7 +39,7 @@ describe('pyth lazer oracles', () => {
 
 	let bulkAccountLoader: TestBulkAccountLoader;
 
-	let bankrunContextWrapper: BankrunContextWrapper;
+	let contextWrapper: LiteSVMContextWrapper;
 	let usdcMint;
 
 	const feedId = 6;
@@ -47,8 +47,8 @@ describe('pyth lazer oracles', () => {
 	let feedAddress: PublicKey;
 
 	before(async () => {
-		// use bankrun builtin function to start solana program test
-		const context = await startAnchor(
+		// boot the in-process litesvm test environment
+		const context = await startLiteSVM(
 			'',
 			[],
 			[
@@ -60,21 +60,21 @@ describe('pyth lazer oracles', () => {
 		);
 
 		// wrap the context to use it with the test helpers
-		bankrunContextWrapper = new BankrunContextWrapper(context);
+		contextWrapper = new LiteSVMContextWrapper(context);
 
 		// don't use regular bulk account loader, use test
 		bulkAccountLoader = new TestBulkAccountLoader(
-			bankrunContextWrapper.connection,
+			contextWrapper.connection,
 			'processed',
 			1
 		);
 
-		usdcMint = await mockUSDCMint(bankrunContextWrapper);
+		usdcMint = await mockUSDCMint(contextWrapper);
 		feedAddress = getPythLazerOraclePublicKey(chProgram.programId, feedId);
 
 		driftClient = new TestClient({
-			connection: bankrunContextWrapper.connection.toConnection(),
-			wallet: bankrunContextWrapper.provider.wallet,
+			connection: contextWrapper.connection.toConnection(),
+			wallet: contextWrapper.provider.wallet,
 			programID: chProgram.programId,
 			opts: {
 				commitment: 'confirmed',

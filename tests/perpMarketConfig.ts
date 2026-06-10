@@ -9,8 +9,8 @@ import {
 	MarketConfigFlag,
 } from '../sdk/src';
 import { TestBulkAccountLoader } from '../sdk/src/accounts/testBulkAccountLoader';
-import { BankrunContextWrapper } from '../sdk/src/bankrun/bankrunConnection';
-import { startAnchor } from 'solana-bankrun';
+import { LiteSVMContextWrapper } from '../sdk/src/litesvm/litesvmConnection';
+import { startLiteSVM } from '../sdk/src/litesvm/litesvmConnection';
 import {
 	initializeQuoteSpotMarket,
 	mockUSDCMint,
@@ -22,25 +22,25 @@ describe('perp market config flag', () => {
 
 	let driftClient: TestClient;
 	let bulkAccountLoader: TestBulkAccountLoader;
-	let bankrunContextWrapper: BankrunContextWrapper;
+	let contextWrapper: LiteSVMContextWrapper;
 	let usdcMint;
 
 	before(async () => {
-		const context = await startAnchor('', [], []);
+		const context = await startLiteSVM('', [], []);
 
-		bankrunContextWrapper = new BankrunContextWrapper(context as any);
+		contextWrapper = new LiteSVMContextWrapper(context as any);
 
 		bulkAccountLoader = new TestBulkAccountLoader(
-			bankrunContextWrapper.connection,
+			contextWrapper.connection,
 			'processed',
 			1
 		);
 
-		usdcMint = await mockUSDCMint(bankrunContextWrapper);
+		usdcMint = await mockUSDCMint(contextWrapper);
 
 		driftClient = new TestClient({
-			connection: bankrunContextWrapper.connection.toConnection(),
-			wallet: bankrunContextWrapper.provider.wallet,
+			connection: contextWrapper.connection.toConnection(),
+			wallet: contextWrapper.provider.wallet,
 			programID: chProgram.programId,
 			opts: {
 				commitment: 'confirmed',
@@ -68,7 +68,7 @@ describe('perp market config flag', () => {
 
 		await driftClient.initializePerpMarket(
 			0,
-			await mockOracleNoProgram(bankrunContextWrapper, 100),
+			await mockOracleNoProgram(contextWrapper, 100),
 			ammInitialBaseAssetReserve,
 			ammInitialQuoteAssetReserve,
 			new BN(0),

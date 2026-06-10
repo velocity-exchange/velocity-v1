@@ -28,16 +28,16 @@ import {
 	User,
 	QUOTE_SPOT_MARKET_INDEX,
 } from '../sdk/src';
-import { startAnchor } from 'solana-bankrun';
+import { startLiteSVM } from '../sdk/src/litesvm/litesvmConnection';
 import { TestBulkAccountLoader } from '../sdk/src/accounts/testBulkAccountLoader';
-import { BankrunContextWrapper } from '../sdk/src/bankrun/bankrunConnection';
+import { LiteSVMContextWrapper } from '../sdk/src/litesvm/litesvmConnection';
 
 async function updateFundingRateHelper(
 	driftClient: TestClient,
 	marketIndex: number,
 	priceFeedAddress: PublicKey,
 	prices: Array<number>,
-	context: BankrunContextWrapper,
+	context: LiteSVMContextWrapper,
 	txNonce = 0 // helps prevent race conditions with identical transactions
 ) {
 	for (let i = 0; i < prices.length; i++) {
@@ -162,7 +162,7 @@ describe('pyth-oracle', () => {
 
 	let bulkAccountLoader: TestBulkAccountLoader;
 
-	let bankrunContextWrapper: BankrunContextWrapper;
+	let contextWrapper: LiteSVMContextWrapper;
 
 	let usdcMint: Keypair;
 	let userUSDCAccount: Keypair;
@@ -175,29 +175,29 @@ describe('pyth-oracle', () => {
 	let userAccount: User;
 	let userAccount2: User;
 	before(async () => {
-		const context = await startAnchor('', [], []);
+		const context = await startLiteSVM('', [], []);
 
-		bankrunContextWrapper = new BankrunContextWrapper(context);
+		contextWrapper = new LiteSVMContextWrapper(context);
 
 		bulkAccountLoader = new TestBulkAccountLoader(
-			bankrunContextWrapper.connection,
+			contextWrapper.connection,
 			'processed',
 			1
 		);
 
-		usdcMint = await mockUSDCMint(bankrunContextWrapper);
+		usdcMint = await mockUSDCMint(contextWrapper);
 		userUSDCAccount = await mockUserUSDCAccount(
 			usdcMint,
 			usdcAmount,
-			bankrunContextWrapper
+			contextWrapper
 		);
 
 		const price = 50000;
-		await mockOracleNoProgram(bankrunContextWrapper, price, -6);
+		await mockOracleNoProgram(contextWrapper, price, -6);
 
 		driftClient = new TestClient({
-			connection: bankrunContextWrapper.connection.toConnection(),
-			wallet: bankrunContextWrapper.provider.wallet,
+			connection: contextWrapper.connection.toConnection(),
+			wallet: contextWrapper.provider.wallet,
 			programID: chProgram.programId,
 			opts: {
 				commitment: 'confirmed',
@@ -240,7 +240,7 @@ describe('pyth-oracle', () => {
 				1,
 				usdcMint,
 				usdcAmount,
-				bankrunContextWrapper,
+				contextWrapper,
 				[0, 1],
 				[0],
 				[],
@@ -269,13 +269,13 @@ describe('pyth-oracle', () => {
 		const price = 50000;
 		const expo = -9;
 		const priceFeedAddress = await mockOracleNoProgram(
-			bankrunContextWrapper,
+			contextWrapper,
 			price,
 			expo
 		);
 
 		const feedDataBefore = await getFeedDataNoProgram(
-			bankrunContextWrapper.connection,
+			contextWrapper.connection,
 			priceFeedAddress
 		);
 		assert.ok(feedDataBefore.price === price);
@@ -283,12 +283,12 @@ describe('pyth-oracle', () => {
 		const newPrice = 55000;
 
 		await setFeedPriceNoProgram(
-			bankrunContextWrapper,
+			contextWrapper,
 			newPrice,
 			priceFeedAddress
 		);
 		const feedDataAfter = await getFeedDataNoProgram(
-			bankrunContextWrapper.connection,
+			contextWrapper.connection,
 			priceFeedAddress
 		);
 		assert.ok(feedDataAfter.price === newPrice);
@@ -296,9 +296,9 @@ describe('pyth-oracle', () => {
 	});
 
 	it('oracle/vamm: funding rate calc 0hour periodicity', async () => {
-		await bankrunContextWrapper.moveTimeForward(2);
+		await contextWrapper.moveTimeForward(2);
 		const priceFeedAddress = await mockOracleNoProgram(
-			bankrunContextWrapper,
+			contextWrapper,
 			40,
 			-10
 		);
@@ -320,15 +320,15 @@ describe('pyth-oracle', () => {
 			marketIndex,
 			priceFeedAddress,
 			[42],
-			bankrunContextWrapper,
+			contextWrapper,
 			1
 		);
 	});
 
 	it('oracle/vamm: funding rate calc2 0hour periodicity', async () => {
-		await bankrunContextWrapper.moveTimeForward(2);
+		await contextWrapper.moveTimeForward(2);
 		const priceFeedAddress = await mockOracleNoProgram(
-			bankrunContextWrapper,
+			contextWrapper,
 			40,
 			-10
 		);
@@ -355,7 +355,7 @@ describe('pyth-oracle', () => {
 			marketIndex,
 			priceFeedAddress,
 			[41.501, 41.499],
-			bankrunContextWrapper,
+			contextWrapper,
 			2
 		);
 	});
@@ -410,7 +410,7 @@ describe('pyth-oracle', () => {
 			marketIndex,
 			market.oracle,
 			[43.501, 44.499],
-			bankrunContextWrapper,
+			contextWrapper,
 			3
 		);
 		await driftClient.fetchAccounts();

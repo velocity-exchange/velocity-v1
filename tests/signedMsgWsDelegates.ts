@@ -19,9 +19,9 @@ import {
 } from '../sdk/src';
 
 import { mockOracleNoProgram } from './testHelpers';
-import { startAnchor } from 'solana-bankrun';
+import { startLiteSVM } from '../sdk/src/litesvm/litesvmConnection';
 import { TestBulkAccountLoader } from '../sdk/src/accounts/testBulkAccountLoader';
-import { BankrunContextWrapper } from '../sdk/src/bankrun/bankrunConnection';
+import { LiteSVMContextWrapper } from '../sdk/src/litesvm/litesvmConnection';
 import dotenv from 'dotenv';
 import { PYTH_STORAGE_DATA } from './pythLazerData';
 
@@ -42,7 +42,7 @@ describe('place and make signedMsg order', () => {
 
 	let bulkAccountLoader: TestBulkAccountLoader;
 
-	let bankrunContextWrapper: BankrunContextWrapper;
+	let contextWrapper: LiteSVMContextWrapper;
 
 	let solUsd: PublicKey;
 	let marketIndexes;
@@ -50,7 +50,7 @@ describe('place and make signedMsg order', () => {
 	let oracleInfos;
 
 	before(async () => {
-		const context = await startAnchor(
+		const context = await startLiteSVM(
 			'',
 			[],
 			[
@@ -62,23 +62,23 @@ describe('place and make signedMsg order', () => {
 		);
 
 		// @ts-ignore
-		bankrunContextWrapper = new BankrunContextWrapper(context);
+		contextWrapper = new LiteSVMContextWrapper(context);
 
 		bulkAccountLoader = new TestBulkAccountLoader(
-			bankrunContextWrapper.connection,
+			contextWrapper.connection,
 			'processed',
 			1
 		);
 
-		solUsd = await mockOracleNoProgram(bankrunContextWrapper, 84);
+		solUsd = await mockOracleNoProgram(contextWrapper, 84);
 
 		marketIndexes = [0];
 		spotMarketIndexes = [0, 1];
 		oracleInfos = [{ publicKey: solUsd, source: OracleSource.PYTH_LAZER }];
 
 		makerDriftClient = new TestClient({
-			connection: bankrunContextWrapper.connection.toConnection(),
-			wallet: bankrunContextWrapper.provider.wallet,
+			connection: contextWrapper.connection.toConnection(),
+			wallet: contextWrapper.provider.wallet,
 			programID: chProgram.programId,
 			opts: {
 				commitment: 'confirmed',
@@ -108,7 +108,7 @@ describe('place and make signedMsg order', () => {
 		);
 
 		const delegateAccountInfo =
-			await bankrunContextWrapper.connection.getAccountInfo(
+			await contextWrapper.connection.getAccountInfo(
 				getSignedMsgWsDelegatesAccountPublicKey(
 					makerDriftClient.program.programId,
 					makerDriftClient.wallet.publicKey
@@ -134,7 +134,7 @@ describe('place and make signedMsg order', () => {
 		);
 
 		const delegateAccountInfo =
-			await bankrunContextWrapper.connection.getAccountInfo(
+			await contextWrapper.connection.getAccountInfo(
 				getSignedMsgWsDelegatesAccountPublicKey(
 					makerDriftClient.program.programId,
 					makerDriftClient.wallet.publicKey
@@ -162,7 +162,7 @@ describe('place and make signedMsg order', () => {
 		);
 
 		let delegateAccountInfo =
-			await bankrunContextWrapper.connection.getAccountInfo(
+			await contextWrapper.connection.getAccountInfo(
 				getSignedMsgWsDelegatesAccountPublicKey(
 					makerDriftClient.program.programId,
 					makerDriftClient.wallet.publicKey
@@ -184,7 +184,7 @@ describe('place and make signedMsg order', () => {
 			newPubkey2
 		);
 
-		delegateAccountInfo = await bankrunContextWrapper.connection.getAccountInfo(
+		delegateAccountInfo = await contextWrapper.connection.getAccountInfo(
 			getSignedMsgWsDelegatesAccountPublicKey(
 				makerDriftClient.program.programId,
 				makerDriftClient.wallet.publicKey

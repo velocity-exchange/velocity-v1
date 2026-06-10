@@ -44,9 +44,9 @@ import {
 	ExtensionType,
 	getMintLen,
 } from '@solana/spl-token';
-import { startAnchor } from 'solana-bankrun';
+import { startLiteSVM } from '../sdk/src/litesvm/litesvmConnection';
 import { TestBulkAccountLoader } from '../sdk/src/accounts/testBulkAccountLoader';
-import { BankrunContextWrapper } from '../sdk/src/bankrun/bankrunConnection';
+import { LiteSVMContextWrapper } from '../sdk/src/litesvm/litesvmConnection';
 
 describe('spot deposit and withdraw 22', () => {
 	const chProgram = anchor.workspace.Drift as Program;
@@ -57,7 +57,7 @@ describe('spot deposit and withdraw 22', () => {
 
 	let admin: TestClient;
 	let bulkAccountLoader: TestBulkAccountLoader;
-	let bankrunContextWrapper: BankrunContextWrapper;
+	let contextWrapper: LiteSVMContextWrapper;
 
 	let solOracle: PublicKey;
 	let usdcMint;
@@ -77,7 +77,7 @@ describe('spot deposit and withdraw 22', () => {
 	let mintOracle: PublicKey;
 
 	before(async () => {
-		const context = await startAnchor(
+		const context = await startLiteSVM(
 			'',
 			[
 				{
@@ -89,26 +89,26 @@ describe('spot deposit and withdraw 22', () => {
 		);
 
 		// @ts-ignore
-		bankrunContextWrapper = new BankrunContextWrapper(context);
+		contextWrapper = new LiteSVMContextWrapper(context);
 
 		bulkAccountLoader = new TestBulkAccountLoader(
-			bankrunContextWrapper.connection,
+			contextWrapper.connection,
 			'processed',
 			1
 		);
 
-		usdcMint = await mockUSDCMint(bankrunContextWrapper, TOKEN_2022_PROGRAM_ID);
-		await mockUserUSDCAccount(usdcMint, largeUsdcAmount, bankrunContextWrapper);
+		usdcMint = await mockUSDCMint(contextWrapper, TOKEN_2022_PROGRAM_ID);
+		await mockUserUSDCAccount(usdcMint, largeUsdcAmount, contextWrapper);
 
-		solOracle = await mockOracleNoProgram(bankrunContextWrapper, 30);
+		solOracle = await mockOracleNoProgram(contextWrapper, 30);
 
 		marketIndexes = [];
 		spotMarketIndexes = [0, 1];
 		oracleInfos = [{ publicKey: solOracle, source: OracleSource.PYTH_LAZER }];
 
 		admin = new TestClient({
-			connection: bankrunContextWrapper.connection.toConnection(),
-			wallet: bankrunContextWrapper.provider.wallet,
+			connection: contextWrapper.connection.toConnection(),
+			wallet: contextWrapper.provider.wallet,
 			programID: chProgram.programId,
 			opts: {
 				commitment: 'confirmed',
@@ -132,7 +132,7 @@ describe('spot deposit and withdraw 22', () => {
 		let _firstUserDriftClientUSDCAccount: PublicKey;
 		[firstUserDriftClient, _firstUserDriftClientUSDCAccount, firstUserKeypair] =
 			await createUserWithUSDCAccount(
-				bankrunContextWrapper,
+				contextWrapper,
 				usdcMint,
 				chProgram,
 				usdcAmount,
@@ -147,7 +147,7 @@ describe('spot deposit and withdraw 22', () => {
 		mintKeypair = Keypair.generate();
 		mint = mintKeypair.publicKey;
 
-		mintOracle = await mockOracleNoProgram(bankrunContextWrapper, 0.05); // a future we all need to believe in
+		mintOracle = await mockOracleNoProgram(contextWrapper, 0.05); // a future we all need to believe in
 
 		const extensions = [ExtensionType.ScaledUiAmountConfig];
 		const mintLen = getMintLen(extensions);
@@ -155,7 +155,7 @@ describe('spot deposit and withdraw 22', () => {
 
 		console.log('here');
 
-		const payer = bankrunContextWrapper.provider.wallet.publicKey;
+		const payer = contextWrapper.provider.wallet.publicKey;
 		const mintTransaction = new Transaction().add(
 			SystemProgram.createAccount({
 				fromPubkey: payer,
@@ -178,12 +178,12 @@ describe('spot deposit and withdraw 22', () => {
 				TOKEN_2022_PROGRAM_ID
 			)
 		);
-		await bankrunContextWrapper.sendTransaction(mintTransaction, [
-			bankrunContextWrapper.provider.wallet.payer,
+		await contextWrapper.sendTransaction(mintTransaction, [
+			contextWrapper.provider.wallet.payer,
 			mintKeypair,
 		]);
 
-		await bankrunContextWrapper.moveTimeForward(100);
+		await contextWrapper.moveTimeForward(100);
 	});
 
 	after(async () => {
@@ -202,21 +202,21 @@ describe('spot deposit and withdraw 22', () => {
 		firstUserTokenAccount = user1TokenAccountKeypair.publicKey;
 
 		const mintState = await getMint(
-			bankrunContextWrapper.connection.toConnection(),
+			contextWrapper.connection.toConnection(),
 			mint,
 			'confirmed',
 			TOKEN_2022_PROGRAM_ID
 		);
 		const space = getAccountLenForMint(mintState);
 		const lamports =
-			await bankrunContextWrapper.connection.getMinimumBalanceForRentExemption(
+			await contextWrapper.connection.getMinimumBalanceForRentExemption(
 				space
 			);
 
 		// Create user1's token account
 		const createUser1AccountTx = new Transaction().add(
 			SystemProgram.createAccount({
-				fromPubkey: bankrunContextWrapper.provider.wallet.payer.publicKey,
+				fromPubkey: contextWrapper.provider.wallet.payer.publicKey,
 				newAccountPubkey: user1TokenAccountKeypair.publicKey,
 				space,
 				lamports,
@@ -230,15 +230,15 @@ describe('spot deposit and withdraw 22', () => {
 			)
 		);
 
-		await bankrunContextWrapper.sendTransaction(createUser1AccountTx, [
-			bankrunContextWrapper.provider.wallet.payer,
+		await contextWrapper.sendTransaction(createUser1AccountTx, [
+			contextWrapper.provider.wallet.payer,
 			user1TokenAccountKeypair,
 		]);
 
 		// Create user2's token account
 		const createUser2AccountTx = new Transaction().add(
 			SystemProgram.createAccount({
-				fromPubkey: bankrunContextWrapper.provider.wallet.payer.publicKey,
+				fromPubkey: contextWrapper.provider.wallet.payer.publicKey,
 				newAccountPubkey: user2TokenAccountKeypair.publicKey,
 				space,
 				lamports,
@@ -252,8 +252,8 @@ describe('spot deposit and withdraw 22', () => {
 			)
 		);
 
-		await bankrunContextWrapper.sendTransaction(createUser2AccountTx, [
-			bankrunContextWrapper.provider.wallet.payer,
+		await contextWrapper.sendTransaction(createUser2AccountTx, [
+			contextWrapper.provider.wallet.payer,
 			user2TokenAccountKeypair,
 		]);
 
@@ -276,20 +276,20 @@ describe('spot deposit and withdraw 22', () => {
 			)
 		);
 
-		await bankrunContextWrapper.sendTransaction(mintTransaction, [
-			bankrunContextWrapper.provider.wallet.payer,
+		await contextWrapper.sendTransaction(mintTransaction, [
+			contextWrapper.provider.wallet.payer,
 			mintAuthority,
 		]);
 
 		// Check initial balances
 		const user1BalanceBefore = await getAccount(
-			bankrunContextWrapper.connection.toConnection(),
+			contextWrapper.connection.toConnection(),
 			user1TokenAccountKeypair.publicKey,
 			'confirmed',
 			TOKEN_2022_PROGRAM_ID
 		);
 		const user2BalanceBefore = await getAccount(
-			bankrunContextWrapper.connection.toConnection(),
+			contextWrapper.connection.toConnection(),
 			user2TokenAccountKeypair.publicKey,
 			'confirmed',
 			TOKEN_2022_PROGRAM_ID
@@ -317,7 +317,7 @@ describe('spot deposit and withdraw 22', () => {
 
 		// Get mint info for decimals
 		const mintInfo = await getMint(
-			bankrunContextWrapper.connection.toConnection(),
+			contextWrapper.connection.toConnection(),
 			mint,
 			'confirmed',
 			TOKEN_2022_PROGRAM_ID
@@ -337,20 +337,20 @@ describe('spot deposit and withdraw 22', () => {
 
 		const transferTransaction = new Transaction().add(transferInstruction);
 
-		await bankrunContextWrapper.sendTransaction(transferTransaction, [
-			bankrunContextWrapper.provider.wallet.payer,
+		await contextWrapper.sendTransaction(transferTransaction, [
+			contextWrapper.provider.wallet.payer,
 			firstUserKeypair,
 		]);
 
 		// Check final balances
 		const user1BalanceAfter = await getAccount(
-			bankrunContextWrapper.connection.toConnection(),
+			contextWrapper.connection.toConnection(),
 			user1TokenAccountKeypair.publicKey,
 			'confirmed',
 			TOKEN_2022_PROGRAM_ID
 		);
 		const user2BalanceAfter = await getAccount(
-			bankrunContextWrapper.connection.toConnection(),
+			contextWrapper.connection.toConnection(),
 			user2TokenAccountKeypair.publicKey,
 			'confirmed',
 			TOKEN_2022_PROGRAM_ID
@@ -429,7 +429,7 @@ describe('spot deposit and withdraw 22', () => {
 
 	async function doDepositWithdrawTest() {
 		const userTokenBalanceBefore = await getAccount(
-			bankrunContextWrapper.connection.toConnection(),
+			contextWrapper.connection.toConnection(),
 			firstUserTokenAccount,
 			'confirmed',
 			TOKEN_2022_PROGRAM_ID

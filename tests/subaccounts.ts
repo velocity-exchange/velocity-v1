@@ -29,9 +29,9 @@ import {
 	SpotBalanceType,
 } from '../sdk';
 import { PublicKey } from '@solana/web3.js';
-import { startAnchor } from 'solana-bankrun';
+import { startLiteSVM } from '../sdk/src/litesvm/litesvmConnection';
 import { TestBulkAccountLoader } from '../sdk/src/accounts/testBulkAccountLoader';
-import { BankrunContextWrapper } from '../sdk/src/bankrun/bankrunConnection';
+import { LiteSVMContextWrapper } from '../sdk/src/litesvm/litesvmConnection';
 
 describe('subaccounts', () => {
 	const chProgram = anchor.workspace.Drift as Program;
@@ -41,7 +41,7 @@ describe('subaccounts', () => {
 
 	let bulkAccountLoader: TestBulkAccountLoader;
 
-	let bankrunContextWrapper: BankrunContextWrapper;
+	let contextWrapper: LiteSVMContextWrapper;
 
 	let solOracle: PublicKey;
 
@@ -51,36 +51,36 @@ describe('subaccounts', () => {
 	const usdcAmount = new BN(10 * 10 ** 6);
 
 	before(async () => {
-		const context = await startAnchor('', [], []);
+		const context = await startLiteSVM('', [], []);
 
-		bankrunContextWrapper = new BankrunContextWrapper(context);
+		contextWrapper = new LiteSVMContextWrapper(context);
 
 		bulkAccountLoader = new TestBulkAccountLoader(
-			bankrunContextWrapper.connection,
+			contextWrapper.connection,
 			'processed',
 			1
 		);
 
 		eventSubscriber = new EventSubscriber(
-			bankrunContextWrapper.connection.toConnection(),
+			contextWrapper.connection.toConnection(),
 			chProgram
 		);
 
 		await eventSubscriber.subscribe();
 
-		usdcMint = await mockUSDCMint(bankrunContextWrapper);
+		usdcMint = await mockUSDCMint(contextWrapper);
 		usdcAccount = await mockUserUSDCAccount(
 			usdcMint,
 			usdcAmount,
-			bankrunContextWrapper
+			contextWrapper
 		);
 
 		const marketIndexes = [0, 1];
 		const spotMarketIndexes = [0, 1];
 
 		driftClient = new TestClient({
-			connection: bankrunContextWrapper.connection.toConnection(),
-			wallet: bankrunContextWrapper.provider.wallet,
+			connection: contextWrapper.connection.toConnection(),
+			wallet: contextWrapper.provider.wallet,
 			programID: chProgram.programId,
 			opts: {
 				commitment: 'confirmed',
@@ -96,7 +96,7 @@ describe('subaccounts', () => {
 			},
 		});
 
-		solOracle = await mockOracleNoProgram(bankrunContextWrapper, 100);
+		solOracle = await mockOracleNoProgram(contextWrapper, 100);
 
 		await driftClient.initialize(usdcMint.publicKey, true);
 		await driftClient.subscribe();
@@ -116,7 +116,7 @@ describe('subaccounts', () => {
 		const name = 'CRISP';
 		await driftClient.initializeUserAccountAndDepositCollateral(
 			LAMPORTS_PRECISION,
-			bankrunContextWrapper.provider.wallet.publicKey,
+			contextWrapper.provider.wallet.publicKey,
 			1,
 			subAccountId,
 			name,
@@ -184,9 +184,9 @@ describe('subaccounts', () => {
 
 	it('Fetch all user account', async () => {
 		const userAccounts = await fetchUserAccounts(
-			bankrunContextWrapper.connection.toConnection(),
+			contextWrapper.connection.toConnection(),
 			chProgram,
-			bankrunContextWrapper.provider.wallet.publicKey,
+			contextWrapper.provider.wallet.publicKey,
 			2
 		);
 		assert(userAccounts.length === 2);
@@ -208,7 +208,7 @@ describe('subaccounts', () => {
 
 		const toUser = await getUserAccountPublicKey(
 			chProgram.programId,
-			bankrunContextWrapper.provider.wallet.publicKey,
+			contextWrapper.provider.wallet.publicKey,
 			0
 		);
 		const withdrawRecord = depositRecords[1];
@@ -217,7 +217,7 @@ describe('subaccounts', () => {
 
 		const fromUser = await getUserAccountPublicKey(
 			chProgram.programId,
-			bankrunContextWrapper.provider.wallet.publicKey,
+			contextWrapper.provider.wallet.publicKey,
 			1
 		);
 		const depositRecord = depositRecords[0];
@@ -246,7 +246,7 @@ describe('subaccounts', () => {
 	});
 
 	it('Update delegate', async () => {
-		const delegateKeyPair = await createFundedKeyPair(bankrunContextWrapper);
+		const delegateKeyPair = await createFundedKeyPair(contextWrapper);
 		await driftClient.updateUserDelegate(delegateKeyPair.publicKey);
 
 		await driftClient.fetchAccounts();
@@ -261,7 +261,7 @@ describe('subaccounts', () => {
 		let deleteFailed = false;
 		try {
 			const txSig = await driftClient.deleteUser(0);
-			bankrunContextWrapper.printTxLogs(txSig);
+			contextWrapper.printTxLogs(txSig);
 		} catch (e) {
 			deleteFailed = true;
 		}

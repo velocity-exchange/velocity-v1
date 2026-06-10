@@ -17,9 +17,9 @@ import {
 	mockOracleNoProgram,
 	overWritePerpMarket,
 } from './testHelpers';
-import { startAnchor } from 'solana-bankrun';
+import { startLiteSVM } from '../sdk/src/litesvm/litesvmConnection';
 import { TestBulkAccountLoader } from '../sdk/src/accounts/testBulkAccountLoader';
-import { BankrunContextWrapper } from '../sdk/src/bankrun/bankrunConnection';
+import { LiteSVMContextWrapper } from '../sdk/src/litesvm/litesvmConnection';
 import dotenv from 'dotenv';
 import {
 	CustomBorshAccountsCoder,
@@ -27,11 +27,11 @@ import {
 } from '../sdk/src/decode/customCoder';
 dotenv.config();
 
-describe('Bankrun Overwrite Accounts', () => {
+describe('LiteSVM Overwrite Accounts', () => {
 	const program = anchor.workspace.Drift as Program;
 	// @ts-ignore
 	program.coder.accounts = new CustomBorshAccountsCoder(program.idl);
-	let bankrunContextWrapper: BankrunContextWrapper;
+	let contextWrapper: LiteSVMContextWrapper;
 	let bulkAccountLoader: TestBulkAccountLoader;
 
 	let adminClient: TestClient;
@@ -49,25 +49,25 @@ describe('Bankrun Overwrite Accounts', () => {
 	let userUSDCAccount: Keypair;
 
 	before(async () => {
-		const context = await startAnchor('', [], []);
+		const context = await startLiteSVM('', [], []);
 
 		// @ts-ignore
-		bankrunContextWrapper = new BankrunContextWrapper(context);
+		contextWrapper = new LiteSVMContextWrapper(context);
 
 		bulkAccountLoader = new TestBulkAccountLoader(
-			bankrunContextWrapper.connection,
+			contextWrapper.connection,
 			'processed',
 			1
 		);
 
-		usdcMint = await mockUSDCMint(bankrunContextWrapper);
-		spotMarketOracle = await mockOracleNoProgram(bankrunContextWrapper, 80);
+		usdcMint = await mockUSDCMint(contextWrapper);
+		spotMarketOracle = await mockOracleNoProgram(contextWrapper, 80);
 
 		const keypair = new Keypair();
-		await bankrunContextWrapper.fundKeypair(keypair, 50 * LAMPORTS_PER_SOL);
+		await contextWrapper.fundKeypair(keypair, 50 * LAMPORTS_PER_SOL);
 
 		adminClient = new TestClient({
-			connection: bankrunContextWrapper.connection.toConnection(),
+			connection: contextWrapper.connection.toConnection(),
 			wallet: new anchor.Wallet(keypair),
 			programID: program.programId,
 			opts: {
@@ -96,7 +96,7 @@ describe('Bankrun Overwrite Accounts', () => {
 		userUSDCAccount = await mockUserUSDCAccount(
 			usdcMint,
 			new BN(10).mul(QUOTE_PRECISION),
-			bankrunContextWrapper,
+			contextWrapper,
 			keypair.publicKey
 		);
 
@@ -129,7 +129,7 @@ describe('Bankrun Overwrite Accounts', () => {
 
 		await overWritePerpMarket(
 			adminClient,
-			bankrunContextWrapper,
+			contextWrapper,
 			perpMarket.pubkey,
 			perpMarket
 		);

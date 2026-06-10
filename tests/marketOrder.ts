@@ -34,9 +34,9 @@ import {
 	createMintToInstruction,
 	getAssociatedTokenAddressSync,
 } from '@solana/spl-token';
-import { startAnchor } from 'solana-bankrun';
+import { startLiteSVM } from '../sdk/src/litesvm/litesvmConnection';
 import { TestBulkAccountLoader } from '../sdk/src/accounts/testBulkAccountLoader';
-import { BankrunContextWrapper } from '../sdk/src/bankrun/bankrunConnection';
+import { LiteSVMContextWrapper } from '../sdk/src/litesvm/litesvmConnection';
 
 describe('market order', () => {
 	const chProgram = anchor.workspace.Drift as Program;
@@ -45,7 +45,7 @@ describe('market order', () => {
 	let driftClientUser: User;
 	let eventSubscriber: EventSubscriber;
 	let bulkAccountLoader: TestBulkAccountLoader;
-	let bankrunContextWrapper: BankrunContextWrapper;
+	let contextWrapper: LiteSVMContextWrapper;
 
 	let usdcMint;
 	let userUSDCAccount;
@@ -73,38 +73,38 @@ describe('market order', () => {
 	let btcUsd;
 
 	before(async () => {
-		const context = await startAnchor('', [], []);
+		const context = await startLiteSVM('', [], []);
 
-		bankrunContextWrapper = new BankrunContextWrapper(context);
+		contextWrapper = new LiteSVMContextWrapper(context);
 
 		bulkAccountLoader = new TestBulkAccountLoader(
-			bankrunContextWrapper.connection,
+			contextWrapper.connection,
 			'processed',
 			1
 		);
 
-		usdcMint = await mockUSDCMint(bankrunContextWrapper);
+		usdcMint = await mockUSDCMint(contextWrapper);
 		userUSDCAccount = await mockUserUSDCAccount(
 			usdcMint,
 			usdcAmount,
-			bankrunContextWrapper
+			contextWrapper
 		);
 
 		eventSubscriber = new EventSubscriber(
-			bankrunContextWrapper.connection.toConnection(),
+			contextWrapper.connection.toConnection(),
 			chProgram
 		);
 		await eventSubscriber.subscribe();
 
 		solUsd = await mockOracleNoProgram(
-			bankrunContextWrapper,
+			contextWrapper,
 			1,
 			-7,
 			undefined,
 			10000
 		);
 		btcUsd = await mockOracleNoProgram(
-			bankrunContextWrapper,
+			contextWrapper,
 			60000,
 			-7,
 			undefined,
@@ -119,8 +119,8 @@ describe('market order', () => {
 		];
 
 		driftClient = new TestClient({
-			connection: bankrunContextWrapper.connection.toConnection(),
-			wallet: bankrunContextWrapper.provider.wallet,
+			connection: contextWrapper.connection.toConnection(),
+			wallet: contextWrapper.provider.wallet,
 			programID: chProgram.programId,
 			opts: {
 				commitment: 'confirmed',
@@ -173,7 +173,7 @@ describe('market order', () => {
 			},
 		});
 		await driftClientUser.subscribe();
-		const discountMintKeypair = await mockUSDCMint(bankrunContextWrapper);
+		const discountMintKeypair = await mockUSDCMint(contextWrapper);
 
 		discountMint = discountMintKeypair.publicKey;
 
@@ -181,37 +181,37 @@ describe('market order', () => {
 
 		const discountTokenAccountAddress = getAssociatedTokenAddressSync(
 			discountMint,
-			bankrunContextWrapper.provider.wallet.publicKey
+			contextWrapper.provider.wallet.publicKey
 		);
 		const ix = createAssociatedTokenAccountIdempotentInstruction(
-			bankrunContextWrapper.context.payer.publicKey,
+			contextWrapper.context.payer.publicKey,
 			discountTokenAccountAddress,
-			bankrunContextWrapper.provider.wallet.publicKey,
+			contextWrapper.provider.wallet.publicKey,
 			discountMint
 		);
 
 		const tx = new Transaction().add(ix);
-		await bankrunContextWrapper.sendTransaction(tx);
+		await contextWrapper.sendTransaction(tx);
 
 		const mintToIx = createMintToInstruction(
 			discountMint,
 			discountTokenAccountAddress,
-			bankrunContextWrapper.provider.wallet.publicKey,
+			contextWrapper.provider.wallet.publicKey,
 			1000 * 10 ** 6
 		);
 
 		const tx2 = new Transaction().add(mintToIx);
-		await bankrunContextWrapper.sendTransaction(tx2);
+		await contextWrapper.sendTransaction(tx2);
 
-		bankrunContextWrapper.fundKeypair(fillerKeyPair, 10 ** 9);
+		contextWrapper.fundKeypair(fillerKeyPair, 10 ** 9);
 		fillerUSDCAccount = await mockUserUSDCAccount(
 			usdcMint,
 			usdcAmount,
-			bankrunContextWrapper,
+			contextWrapper,
 			fillerKeyPair.publicKey
 		);
 		fillerDriftClient = new TestClient({
-			connection: bankrunContextWrapper.connection.toConnection(),
+			connection: contextWrapper.connection.toConnection(),
 			wallet: new Wallet(fillerKeyPair),
 			programID: chProgram.programId,
 			opts: {

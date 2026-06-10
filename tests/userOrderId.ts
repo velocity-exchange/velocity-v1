@@ -23,16 +23,16 @@ import {
 	mockUserUSDCAccount,
 } from './testHelpers';
 import { ContractTier, ExchangeStatus } from '../sdk';
-import { startAnchor } from 'solana-bankrun';
+import { startLiteSVM } from '../sdk/src/litesvm/litesvmConnection';
 import { TestBulkAccountLoader } from '../sdk/src/accounts/testBulkAccountLoader';
-import { BankrunContextWrapper } from '../sdk/src/bankrun/bankrunConnection';
+import { LiteSVMContextWrapper } from '../sdk/src/litesvm/litesvmConnection';
 
 describe('user order id', () => {
 	const chProgram = anchor.workspace.Drift as Program;
 
 	let bulkAccountLoader: TestBulkAccountLoader;
 
-	let bankrunContextWrapper: BankrunContextWrapper;
+	let contextWrapper: LiteSVMContextWrapper;
 
 	let driftClient: TestClient;
 	let driftClientUser: User;
@@ -56,25 +56,25 @@ describe('user order id', () => {
 	let btcUsd;
 
 	before(async () => {
-		const context = await startAnchor('', [], []);
+		const context = await startLiteSVM('', [], []);
 
-		bankrunContextWrapper = new BankrunContextWrapper(context);
+		contextWrapper = new LiteSVMContextWrapper(context);
 
 		bulkAccountLoader = new TestBulkAccountLoader(
-			bankrunContextWrapper.connection,
+			contextWrapper.connection,
 			'processed',
 			1
 		);
 
-		usdcMint = await mockUSDCMint(bankrunContextWrapper);
+		usdcMint = await mockUSDCMint(contextWrapper);
 		userUSDCAccount = await mockUserUSDCAccount(
 			usdcMint,
 			usdcAmount,
-			bankrunContextWrapper
+			contextWrapper
 		);
 
-		solUsd = await mockOracleNoProgram(bankrunContextWrapper, 1);
-		btcUsd = await mockOracleNoProgram(bankrunContextWrapper, 60000);
+		solUsd = await mockOracleNoProgram(contextWrapper, 1);
+		btcUsd = await mockOracleNoProgram(contextWrapper, 60000);
 
 		const marketIndexes = [marketIndex, 1];
 		const spotMarketIndexes = [0];
@@ -84,8 +84,8 @@ describe('user order id', () => {
 		];
 
 		driftClient = new TestClient({
-			connection: bankrunContextWrapper.connection.toConnection(),
-			wallet: bankrunContextWrapper.provider.wallet,
+			connection: contextWrapper.connection.toConnection(),
+			wallet: contextWrapper.provider.wallet,
 			programID: chProgram.programId,
 			opts: {
 				commitment: 'confirmed',

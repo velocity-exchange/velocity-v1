@@ -46,9 +46,9 @@ import {
 	TWO,
 	ZERO,
 } from '../sdk';
-import { startAnchor } from 'solana-bankrun';
+import { startLiteSVM } from '../sdk/src/litesvm/litesvmConnection';
 import { TestBulkAccountLoader } from '../sdk/src/accounts/testBulkAccountLoader';
-import { BankrunContextWrapper } from '../sdk/src/bankrun/bankrunConnection';
+import { LiteSVMContextWrapper } from '../sdk/src/litesvm/litesvmConnection';
 
 const enumsAreEqual = (
 	actual: Record<string, unknown>,
@@ -66,7 +66,7 @@ describe('orders', () => {
 
 	let bulkAccountLoader: TestBulkAccountLoader;
 
-	let bankrunContextWrapper: BankrunContextWrapper;
+	let contextWrapper: LiteSVMContextWrapper;
 
 	let userAccountPublicKey: PublicKey;
 
@@ -106,46 +106,46 @@ describe('orders', () => {
 	let ethUsd;
 
 	before(async () => {
-		const context = await startAnchor('', [], []);
+		const context = await startLiteSVM('', [], []);
 
-		bankrunContextWrapper = new BankrunContextWrapper(context);
+		contextWrapper = new LiteSVMContextWrapper(context);
 
 		bulkAccountLoader = new TestBulkAccountLoader(
-			bankrunContextWrapper.connection,
+			contextWrapper.connection,
 			'processed',
 			1
 		);
 
 		eventSubscriber = new EventSubscriber(
-			bankrunContextWrapper.connection.toConnection(),
+			contextWrapper.connection.toConnection(),
 			chProgram
 		);
 
 		await eventSubscriber.subscribe();
 
-		usdcMint = await mockUSDCMint(bankrunContextWrapper);
+		usdcMint = await mockUSDCMint(contextWrapper);
 		userUSDCAccount = await mockUserUSDCAccount(
 			usdcMint,
 			usdcAmount,
-			bankrunContextWrapper
+			contextWrapper
 		);
 
 		solUsd = await mockOracleNoProgram(
-			bankrunContextWrapper,
+			contextWrapper,
 			1,
 			-7,
 			undefined,
 			10000
 		);
 		btcUsd = await mockOracleNoProgram(
-			bankrunContextWrapper,
+			contextWrapper,
 			60000,
 			-7,
 			undefined,
 			10000
 		);
 		ethUsd = await mockOracleNoProgram(
-			bankrunContextWrapper,
+			contextWrapper,
 			1,
 			-7,
 			undefined,
@@ -162,8 +162,8 @@ describe('orders', () => {
 		];
 
 		driftClient = new TestClient({
-			connection: bankrunContextWrapper.connection.toConnection(),
-			wallet: bankrunContextWrapper.provider.wallet,
+			connection: contextWrapper.connection.toConnection(),
+			wallet: contextWrapper.provider.wallet,
 			programID: chProgram.programId,
 			opts: {
 				commitment: 'confirmed',
@@ -259,15 +259,15 @@ describe('orders', () => {
 		});
 		await driftClientUser.subscribe();
 
-		await bankrunContextWrapper.fundKeypair(fillerKeyPair, 10 ** 9);
+		await contextWrapper.fundKeypair(fillerKeyPair, 10 ** 9);
 		fillerUSDCAccount = await mockUserUSDCAccount(
 			usdcMint,
 			usdcAmount,
-			bankrunContextWrapper,
+			contextWrapper,
 			fillerKeyPair.publicKey
 		);
 		fillerDriftClient = new TestClient({
-			connection: bankrunContextWrapper.connection.toConnection(),
+			connection: contextWrapper.connection.toConnection(),
 			wallet: new Wallet(fillerKeyPair),
 			programID: chProgram.programId,
 			opts: {
@@ -300,15 +300,15 @@ describe('orders', () => {
 		});
 		await fillerUser.subscribe();
 
-		await bankrunContextWrapper.fundKeypair(whaleKeyPair, 10 ** 9);
+		await contextWrapper.fundKeypair(whaleKeyPair, 10 ** 9);
 		whaleUSDCAccount = await mockUserUSDCAccount(
 			usdcMint,
 			usdcAmountWhale,
-			bankrunContextWrapper,
+			contextWrapper,
 			whaleKeyPair.publicKey
 		);
 		whaleDriftClient = new TestClient({
-			connection: bankrunContextWrapper.connection.toConnection(),
+			connection: contextWrapper.connection.toConnection(),
 			wallet: new Wallet(whaleKeyPair),
 			programID: chProgram.programId,
 			opts: {
@@ -373,7 +373,7 @@ describe('orders', () => {
 		});
 
 		const txSig = await driftClient.placePerpOrder(orderParams);
-		bankrunContextWrapper.printTxLogs(txSig);
+		contextWrapper.printTxLogs(txSig);
 
 		await driftClient.fetchAccounts();
 		await driftClientUser.fetchAccounts();
@@ -585,9 +585,9 @@ describe('orders', () => {
 		);
 
 		const computeUnits =
-			bankrunContextWrapper.connection.findComputeUnitConsumption(txSig);
+			contextWrapper.connection.findComputeUnitConsumption(txSig);
 		console.log('compute units', computeUnits);
-		bankrunContextWrapper.printTxLogs(txSig);
+		contextWrapper.printTxLogs(txSig);
 
 		await fillerDriftClient.settlePNLs(
 			[
@@ -887,7 +887,7 @@ describe('orders', () => {
 			PRICE_PRECISION
 		);
 		// move price to make liquidity for order @ $1.05 (5%)
-		await setFeedPriceNoProgram(bankrunContextWrapper, newPrice, solUsd, 10000);
+		await setFeedPriceNoProgram(contextWrapper, newPrice, solUsd, 10000);
 		await driftClient.moveAmmToPrice(
 			marketIndex,
 			new BN(newPrice * PRICE_PRECISION.toNumber())
@@ -1007,7 +1007,7 @@ describe('orders', () => {
 			PRICE_PRECISION
 		);
 		// move price to make liquidity for order @ $1.05 (5%)
-		await setFeedPriceNoProgram(bankrunContextWrapper, newPrice, solUsd, 10000);
+		await setFeedPriceNoProgram(contextWrapper, newPrice, solUsd, 10000);
 		await driftClient.moveAmmToPrice(
 			marketIndex,
 			new BN(newPrice * PRICE_PRECISION.toNumber())
@@ -1161,7 +1161,7 @@ describe('orders', () => {
 			PRICE_PRECISION
 		);
 		// move price to make liquidity for order @ $1.05 (5%)
-		await setFeedPriceNoProgram(bankrunContextWrapper, newPrice, solUsd, 10000);
+		await setFeedPriceNoProgram(contextWrapper, newPrice, solUsd, 10000);
 		try {
 			await driftClient.moveAmmToPrice(
 				marketIndex,
@@ -1350,7 +1350,7 @@ describe('orders', () => {
 				driftClientUser.getUserAccount(),
 				order
 			);
-			bankrunContextWrapper.printTxLogs(txSig);
+			contextWrapper.printTxLogs(txSig);
 		} catch (e) {
 			console.error(e);
 			throw e;
@@ -1442,7 +1442,7 @@ describe('orders', () => {
 			price.mul(new BN(96)).div(new BN(100)),
 			PRICE_PRECISION
 		);
-		await setFeedPriceNoProgram(bankrunContextWrapper, newPrice, solUsd, 10000);
+		await setFeedPriceNoProgram(contextWrapper, newPrice, solUsd, 10000);
 		await driftClient.moveAmmToPrice(
 			marketIndex,
 			new BN(newPrice * PRICE_PRECISION.toNumber())
@@ -1457,7 +1457,7 @@ describe('orders', () => {
 		const txSig = await driftClient.placeAndTakePerpOrder(orderParams);
 
 		const computeUnits =
-			bankrunContextWrapper.connection.findComputeUnitConsumption(txSig);
+			contextWrapper.connection.findComputeUnitConsumption(txSig);
 		console.log('placeAndTake compute units', computeUnits[0]);
 
 		// await driftClient.settlePNL(
@@ -1507,7 +1507,7 @@ describe('orders', () => {
 		});
 
 		const placeTxSig = await whaleDriftClient.placePerpOrder(orderParams);
-		bankrunContextWrapper.printTxLogs(placeTxSig);
+		contextWrapper.printTxLogs(placeTxSig);
 
 		await whaleDriftClient.fetchAccounts();
 		await whaleUser.fetchAccounts();

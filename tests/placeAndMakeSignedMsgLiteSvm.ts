@@ -60,9 +60,9 @@ import {
 	PEG_PRECISION,
 	PostOnlyParams,
 } from '../sdk/src';
-import { startAnchor } from 'solana-bankrun';
+import { startLiteSVM } from '../sdk/src/litesvm/litesvmConnection';
 import { TestBulkAccountLoader } from '../sdk/src/accounts/testBulkAccountLoader';
-import { BankrunContextWrapper } from '../sdk/src/bankrun/bankrunConnection';
+import { LiteSVMContextWrapper } from '../sdk/src/litesvm/litesvmConnection';
 import dotenv from 'dotenv';
 import { nanoid } from 'nanoid';
 import { createHash } from 'crypto';
@@ -93,7 +93,7 @@ describe('place and make signedMsg order', () => {
 
 	let bulkAccountLoader: TestBulkAccountLoader;
 
-	let bankrunContextWrapper: BankrunContextWrapper;
+	let contextWrapper: LiteSVMContextWrapper;
 
 	// ammInvariant == k == x * y
 	const mantissaSqrtScale = new BN(Math.sqrt(PRICE_PRECISION.toNumber()));
@@ -116,7 +116,7 @@ describe('place and make signedMsg order', () => {
 	let oracleInfos;
 
 	before(async () => {
-		const context = await startAnchor(
+		const context = await startLiteSVM(
 			'',
 			[],
 			[
@@ -128,34 +128,34 @@ describe('place and make signedMsg order', () => {
 		);
 
 		// @ts-ignore
-		bankrunContextWrapper = new BankrunContextWrapper(context);
+		contextWrapper = new LiteSVMContextWrapper(context);
 
 		slot = new BN(
-			await bankrunContextWrapper.connection.toConnection().getSlot()
+			await contextWrapper.connection.toConnection().getSlot()
 		);
 
 		bulkAccountLoader = new TestBulkAccountLoader(
-			bankrunContextWrapper.connection,
+			contextWrapper.connection,
 			'processed',
 			1
 		);
 
 		eventSubscriber = new EventSubscriber(
-			bankrunContextWrapper.connection.toConnection(),
+			contextWrapper.connection.toConnection(),
 			// @ts-ignore
 			chProgram
 		);
 
 		await eventSubscriber.subscribe();
 
-		usdcMint = await mockUSDCMint(bankrunContextWrapper);
+		usdcMint = await mockUSDCMint(contextWrapper);
 		userUSDCAccount = await mockUserUSDCAccount(
 			usdcMint,
 			usdcAmount,
-			bankrunContextWrapper
+			contextWrapper
 		);
 
-		solUsd = await mockOracleNoProgram(bankrunContextWrapper, 84);
+		solUsd = await mockOracleNoProgram(contextWrapper, 84);
 		solUsdLazer = getPythLazerOraclePublicKey(chProgram.programId, 6);
 
 		marketIndexes = [0];
@@ -166,8 +166,8 @@ describe('place and make signedMsg order', () => {
 		];
 
 		makerDriftClient = new TestClient({
-			connection: bankrunContextWrapper.connection.toConnection(),
-			wallet: bankrunContextWrapper.provider.wallet,
+			connection: contextWrapper.connection.toConnection(),
+			wallet: contextWrapper.provider.wallet,
 			programID: chProgram.programId,
 			opts: {
 				commitment: 'confirmed',
@@ -221,11 +221,11 @@ describe('place and make signedMsg order', () => {
 
 	it('makeSignedMsgOrder and reject bad orders', async () => {
 		const slot = new BN(
-			await bankrunContextWrapper.connection.toConnection().getSlot()
+			await contextWrapper.connection.toConnection().getSlot()
 		);
 		const [takerDriftClient, takerDriftClientUser] =
 			await initializeNewTakerClientAndUser(
-				bankrunContextWrapper,
+				contextWrapper,
 				chProgram,
 				usdcMint,
 				usdcAmount,
@@ -339,11 +339,11 @@ describe('place and make signedMsg order', () => {
 
 	it('should work with delegates', async () => {
 		const slot = new BN(
-			await bankrunContextWrapper.connection.toConnection().getSlot()
+			await contextWrapper.connection.toConnection().getSlot()
 		);
 		const [takerDriftClient, takerDriftClientUser] =
 			await initializeNewTakerClientAndUser(
-				bankrunContextWrapper,
+				contextWrapper,
 				chProgram,
 				usdcMint,
 				usdcAmount,
@@ -424,7 +424,7 @@ describe('place and make signedMsg order', () => {
 
 	it('should work with pyth lazer crank and filling against vamm in one tx', async () => {
 		const slot = new BN(
-			await bankrunContextWrapper.connection.toConnection().getSlot()
+			await contextWrapper.connection.toConnection().getSlot()
 		);
 
 		// Switch the oracle over to using pyth lazer
@@ -481,7 +481,7 @@ describe('place and make signedMsg order', () => {
 
 		const [takerDriftClient, takerDriftClientUser] =
 			await initializeNewTakerClientAndUser(
-				bankrunContextWrapper,
+				contextWrapper,
 				chProgram,
 				usdcMint,
 				usdcAmount,
@@ -591,7 +591,7 @@ describe('place and make signedMsg order', () => {
 		});
 
 		const lookupTableAccount = (
-			await bankrunContextWrapper.connection.getAddressLookupTable(
+			await contextWrapper.connection.getAddressLookupTable(
 				lookupTableAddress
 			)
 		).value;
@@ -613,7 +613,7 @@ describe('place and make signedMsg order', () => {
 
 	it.skip('should not fill against the vamm if the user is toxic', async () => {
 		const slot = new BN(
-			await bankrunContextWrapper.connection.toConnection().getSlot()
+			await contextWrapper.connection.toConnection().getSlot()
 		);
 
 		const [lookupTableInst, lookupTableAddress] =
@@ -653,7 +653,7 @@ describe('place and make signedMsg order', () => {
 
 		const [takerDriftClient, takerDriftClientUser] =
 			await initializeNewTakerClientAndUser(
-				bankrunContextWrapper,
+				contextWrapper,
 				chProgram,
 				usdcMint,
 				usdcAmount,
@@ -673,7 +673,7 @@ describe('place and make signedMsg order', () => {
 			chProgram.programId,
 			takerDriftClient.wallet.publicKey
 		);
-		const userStatsData = await bankrunContextWrapper.connection.getAccountInfo(
+		const userStatsData = await contextWrapper.connection.getAccountInfo(
 			userStatsPubkey
 		);
 		const userStats: UserStatsAccount =
@@ -783,7 +783,7 @@ describe('place and make signedMsg order', () => {
 		});
 
 		const lookupTableAccount = (
-			await bankrunContextWrapper.connection.getAddressLookupTable(
+			await contextWrapper.connection.getAddressLookupTable(
 				lookupTableAddress
 			)
 		).value;
@@ -805,11 +805,11 @@ describe('place and make signedMsg order', () => {
 
 	it('fills signedMsg with trigger orders ', async () => {
 		slot = new BN(
-			await bankrunContextWrapper.connection.toConnection().getSlot()
+			await contextWrapper.connection.toConnection().getSlot()
 		);
 		const [takerDriftClient, takerDriftClientUser] =
 			await initializeNewTakerClientAndUser(
-				bankrunContextWrapper,
+				contextWrapper,
 				chProgram,
 				usdcMint,
 				usdcAmount,
@@ -943,11 +943,11 @@ describe('place and make signedMsg order', () => {
 
 	it('should fail if taker order is a limit order without an auction', async () => {
 		slot = new BN(
-			await bankrunContextWrapper.connection.toConnection().getSlot()
+			await contextWrapper.connection.toConnection().getSlot()
 		);
 		const [takerDriftClient, takerDriftClientUser] =
 			await initializeNewTakerClientAndUser(
-				bankrunContextWrapper,
+				contextWrapper,
 				chProgram,
 				usdcMint,
 				usdcAmount,
@@ -1022,11 +1022,11 @@ describe('place and make signedMsg order', () => {
 
 	it('should succeed if taker order is a limit order with an auction', async () => {
 		slot = new BN(
-			await bankrunContextWrapper.connection.toConnection().getSlot()
+			await contextWrapper.connection.toConnection().getSlot()
 		);
 		const [takerDriftClient, takerDriftClientUser] =
 			await initializeNewTakerClientAndUser(
-				bankrunContextWrapper,
+				contextWrapper,
 				chProgram,
 				usdcMint,
 				usdcAmount,
@@ -1083,7 +1083,7 @@ describe('place and make signedMsg order', () => {
 		} catch (e) {
 			assert(e);
 		}
-		await bankrunContextWrapper.moveTimeForward(10);
+		await contextWrapper.moveTimeForward(10);
 
 		await takerDriftClientUser.fetchAccounts();
 		assert(
@@ -1096,12 +1096,12 @@ describe('place and make signedMsg order', () => {
 
 	it('should work with off-chain auctions', async () => {
 		const slot = new BN(
-			await bankrunContextWrapper.connection.toConnection().getSlot()
+			await contextWrapper.connection.toConnection().getSlot()
 		);
 
 		const [takerDriftClient, takerDriftClientUser] =
 			await initializeNewTakerClientAndUser(
-				bankrunContextWrapper,
+				contextWrapper,
 				chProgram,
 				usdcMint,
 				usdcAmount,
@@ -1187,12 +1187,12 @@ describe('place and make signedMsg order', () => {
 
 	it('should place with high-leverage mode update', async () => {
 		const slot = new BN(
-			await bankrunContextWrapper.connection.toConnection().getSlot()
+			await contextWrapper.connection.toConnection().getSlot()
 		);
 
 		const [takerDriftClient, takerDriftClientUser] =
 			await initializeNewTakerClientAndUser(
-				bankrunContextWrapper,
+				contextWrapper,
 				chProgram,
 				usdcMint,
 				usdcAmount,
@@ -1248,11 +1248,11 @@ describe('place and make signedMsg order', () => {
 
 	it('should fail if auction params are not set', async () => {
 		slot = new BN(
-			await bankrunContextWrapper.connection.toConnection().getSlot()
+			await contextWrapper.connection.toConnection().getSlot()
 		);
 		const [takerDriftClient, takerDriftClientUser] =
 			await initializeNewTakerClientAndUser(
-				bankrunContextWrapper,
+				contextWrapper,
 				chProgram,
 				usdcMint,
 				usdcAmount,
@@ -1311,11 +1311,11 @@ describe('place and make signedMsg order', () => {
 
 	it('should verify that auction params are not sanitized', async () => {
 		const slot = new BN(
-			await bankrunContextWrapper.connection.toConnection().getSlot()
+			await contextWrapper.connection.toConnection().getSlot()
 		);
 		const [takerDriftClient, takerDriftClientUser] =
 			await initializeNewTakerClientAndUser(
-				bankrunContextWrapper,
+				contextWrapper,
 				chProgram,
 				usdcMint,
 				usdcAmount,
@@ -1377,11 +1377,11 @@ describe('place and make signedMsg order', () => {
 
 	it('should fail on malicious subaccount id supplied to custom ix', async () => {
 		const slot = new BN(
-			await bankrunContextWrapper.connection.toConnection().getSlot()
+			await contextWrapper.connection.toConnection().getSlot()
 		);
 		const [takerDriftClient, takerDriftClientUser] =
 			await initializeNewTakerClientAndUser(
-				bankrunContextWrapper,
+				contextWrapper,
 				chProgram,
 				usdcMint,
 				usdcAmount,
@@ -1466,11 +1466,11 @@ describe('place and make signedMsg order', () => {
 
 	it('shouldnt work with improper delegate encoding', async () => {
 		const slot = new BN(
-			await bankrunContextWrapper.connection.toConnection().getSlot()
+			await contextWrapper.connection.toConnection().getSlot()
 		);
 		const [takerDriftClient, takerDriftClientUser] =
 			await initializeNewTakerClientAndUser(
-				bankrunContextWrapper,
+				contextWrapper,
 				chProgram,
 				usdcMint,
 				usdcAmount,
@@ -1569,7 +1569,7 @@ describe('place and make signedMsg order', () => {
 	it('can let user delete their account', async () => {
 		const [takerDriftClient, takerDriftClientUser] =
 			await initializeNewTakerClientAndUser(
-				bankrunContextWrapper,
+				contextWrapper,
 				chProgram,
 				usdcMint,
 				usdcAmount,
@@ -1597,11 +1597,11 @@ describe('place and make signedMsg order', () => {
 
 	it('fills signedMsg with max margin ratio and isolated position deposit', async () => {
 		slot = new BN(
-			await bankrunContextWrapper.connection.toConnection().getSlot()
+			await contextWrapper.connection.toConnection().getSlot()
 		);
 		const [takerDriftClient, takerDriftClientUser] =
 			await initializeNewTakerClientAndUser(
-				bankrunContextWrapper,
+				contextWrapper,
 				chProgram,
 				usdcMint,
 				usdcAmount,
@@ -1697,7 +1697,7 @@ describe('place and make signedMsg order', () => {
 });
 
 async function initializeNewTakerClientAndUser(
-	bankrunContextWrapper: BankrunContextWrapper,
+	contextWrapper: LiteSVMContextWrapper,
 	chProgram: Program,
 	usdcMint: Keypair,
 	usdcAmount: BN,
@@ -1707,17 +1707,17 @@ async function initializeNewTakerClientAndUser(
 	bulkAccountLoader: TestBulkAccountLoader
 ): Promise<[TestClient, User]> {
 	const keypair = new Keypair();
-	await bankrunContextWrapper.fundKeypair(keypair, 10 ** 9);
+	await contextWrapper.fundKeypair(keypair, 10 ** 9);
 	await sleep(1000);
 	const wallet = new Wallet(keypair);
 	const userUSDCAccount = await mockUserUSDCAccount(
 		usdcMint,
 		usdcAmount,
-		bankrunContextWrapper,
+		contextWrapper,
 		keypair.publicKey
 	);
 	const takerDriftClient = new TestClient({
-		connection: bankrunContextWrapper.connection.toConnection(),
+		connection: contextWrapper.connection.toConnection(),
 		wallet,
 		programID: chProgram.programId,
 		opts: {

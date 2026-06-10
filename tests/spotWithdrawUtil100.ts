@@ -45,9 +45,9 @@ import {
 } from '../sdk/src/math/spotBalance';
 import { NATIVE_MINT } from '@solana/spl-token';
 import { ContractTier } from '../sdk';
-import { startAnchor } from 'solana-bankrun';
+import { startLiteSVM } from '../sdk/src/litesvm/litesvmConnection';
 import { TestBulkAccountLoader } from '../sdk/src/accounts/testBulkAccountLoader';
-import { BankrunContextWrapper } from '../sdk/src/bankrun/bankrunConnection';
+import { LiteSVMContextWrapper } from '../sdk/src/litesvm/litesvmConnection';
 
 describe('test function when spot market at >= 100% util', () => {
 	const chProgram = anchor.workspace.Drift as Program;
@@ -57,7 +57,7 @@ describe('test function when spot market at >= 100% util', () => {
 
 	let bulkAccountLoader: TestBulkAccountLoader;
 
-	let bankrunContextWrapper: BankrunContextWrapper;
+	let contextWrapper: LiteSVMContextWrapper;
 
 	let solOracle: PublicKey;
 
@@ -80,35 +80,35 @@ describe('test function when spot market at >= 100% util', () => {
 	let oracleInfos: OracleInfo[];
 
 	before(async () => {
-		const context = await startAnchor('', [], []);
+		const context = await startLiteSVM('', [], []);
 
-		bankrunContextWrapper = new BankrunContextWrapper(context);
+		contextWrapper = new LiteSVMContextWrapper(context);
 
 		bulkAccountLoader = new TestBulkAccountLoader(
-			bankrunContextWrapper.connection,
+			contextWrapper.connection,
 			'processed',
 			1
 		);
 
 		eventSubscriber = new EventSubscriber(
-			bankrunContextWrapper.connection.toConnection(),
+			contextWrapper.connection.toConnection(),
 			chProgram
 		);
 
 		await eventSubscriber.subscribe();
 
-		usdcMint = await mockUSDCMint(bankrunContextWrapper);
-		await mockUserUSDCAccount(usdcMint, largeUsdcAmount, bankrunContextWrapper);
+		usdcMint = await mockUSDCMint(contextWrapper);
+		await mockUserUSDCAccount(usdcMint, largeUsdcAmount, contextWrapper);
 
-		solOracle = await mockOracleNoProgram(bankrunContextWrapper, 30);
+		solOracle = await mockOracleNoProgram(contextWrapper, 30);
 
 		marketIndexes = [0];
 		spotMarketIndexes = [0, 1];
 		oracleInfos = [{ publicKey: solOracle, source: OracleSource.PYTH_LAZER }];
 
 		admin = new TestClient({
-			connection: bankrunContextWrapper.connection.toConnection(),
-			wallet: bankrunContextWrapper.provider.wallet,
+			connection: contextWrapper.connection.toConnection(),
+			wallet: contextWrapper.provider.wallet,
 			programID: chProgram.programId,
 			opts: {
 				commitment: 'confirmed',
@@ -162,7 +162,7 @@ describe('test function when spot market at >= 100% util', () => {
 			0,
 			new BN(10 ** 10).mul(QUOTE_PRECISION)
 		);
-		bankrunContextWrapper.printTxLogs(txSig);
+		contextWrapper.printTxLogs(txSig);
 		await admin.fetchAccounts();
 		const spotMarket = await admin.getSpotMarketAccount(0);
 		assert(spotMarket.marketIndex === 0);
@@ -253,7 +253,7 @@ describe('test function when spot market at >= 100% util', () => {
 			1,
 			new BN(10 ** 10).mul(QUOTE_PRECISION)
 		);
-		bankrunContextWrapper.printTxLogs(txSig);
+		contextWrapper.printTxLogs(txSig);
 		await admin.fetchAccounts();
 		const spotMarket = await admin.getSpotMarketAccount(1);
 		assert(spotMarket.marketIndex === 1);
@@ -301,7 +301,7 @@ describe('test function when spot market at >= 100% util', () => {
 	it('First User Deposit USDC', async () => {
 		[firstUserDriftClient, firstUserDriftClientUSDCAccount] =
 			await createUserWithUSDCAccount(
-				bankrunContextWrapper,
+				contextWrapper,
 				usdcMint,
 				chProgram,
 				largeUsdcAmount,
@@ -319,7 +319,7 @@ describe('test function when spot market at >= 100% util', () => {
 			marketIndex,
 			firstUserDriftClientUSDCAccount
 		);
-		bankrunContextWrapper.printTxLogs(txSig);
+		contextWrapper.printTxLogs(txSig);
 
 		const spotMarket = await admin.getSpotMarketAccount(marketIndex);
 		assert(
@@ -330,7 +330,7 @@ describe('test function when spot market at >= 100% util', () => {
 
 		const vaultAmount = new BN(
 			(
-				await bankrunContextWrapper.connection.getTokenAccount(spotMarket.vault)
+				await contextWrapper.connection.getTokenAccount(spotMarket.vault)
 			).amount.toString()
 		);
 		assert(vaultAmount.eq(usdcAmount));
@@ -353,7 +353,7 @@ describe('test function when spot market at >= 100% util', () => {
 			secondUserDriftClientWSOLAccount,
 			secondUserDriftClientUSDCAccount,
 		] = await createUserWithUSDCAndWSOLAccount(
-			bankrunContextWrapper,
+			contextWrapper,
 			usdcMint,
 			chProgram,
 			solAmount.mul(new BN(1000)),
@@ -370,7 +370,7 @@ describe('test function when spot market at >= 100% util', () => {
 			marketIndex,
 			secondUserDriftClientWSOLAccount
 		);
-		bankrunContextWrapper.printTxLogs(txSig);
+		contextWrapper.printTxLogs(txSig);
 
 		const spotMarket = await admin.getSpotMarketAccount(marketIndex);
 		assert(spotMarket.depositBalance.eq(SPOT_MARKET_BALANCE_PRECISION));
@@ -394,7 +394,7 @@ describe('test function when spot market at >= 100% util', () => {
 
 		const vaultAmount = new BN(
 			(
-				await bankrunContextWrapper.connection.getTokenAccount(spotMarket.vault)
+				await contextWrapper.connection.getTokenAccount(spotMarket.vault)
 			).amount.toString()
 		);
 
@@ -425,7 +425,7 @@ describe('test function when spot market at >= 100% util', () => {
 			marketIndex,
 			secondUserDriftClientUSDCAccount
 		);
-		bankrunContextWrapper.printTxLogs(txSig);
+		contextWrapper.printTxLogs(txSig);
 
 		const spotMarket = await admin.getSpotMarketAccount(marketIndex);
 		const expectedBorrowBalance = new BN(9999999001);
@@ -434,7 +434,7 @@ describe('test function when spot market at >= 100% util', () => {
 
 		const vaultAmount = new BN(
 			(
-				await bankrunContextWrapper.connection.getTokenAccount(spotMarket.vault)
+				await contextWrapper.connection.getTokenAccount(spotMarket.vault)
 			).amount.toString()
 		);
 
@@ -467,7 +467,7 @@ describe('test function when spot market at >= 100% util', () => {
 		const txSig = await firstUserDriftClient.updateSpotMarketCumulativeInterest(
 			usdcmarketIndex
 		);
-		bankrunContextWrapper.printTxLogs(txSig);
+		contextWrapper.printTxLogs(txSig);
 
 		await firstUserDriftClient.fetchAccounts();
 		const newSpotMarketAccount =
@@ -517,7 +517,7 @@ describe('test function when spot market at >= 100% util', () => {
 		const txSig = await firstUserDriftClient.updateSpotMarketCumulativeInterest(
 			usdcmarketIndex
 		);
-		bankrunContextWrapper.printTxLogs(txSig);
+		contextWrapper.printTxLogs(txSig);
 
 		await firstUserDriftClient.fetchAccounts();
 		const newSpotMarketAccount =
@@ -622,7 +622,7 @@ describe('test function when spot market at >= 100% util', () => {
 				takerStats: firstUserDriftClient.getUserStatsAccountPublicKey(),
 			}
 		);
-		bankrunContextWrapper.printTxLogs(txSig2);
+		contextWrapper.printTxLogs(txSig2);
 		await firstUserDriftClient.fetchAccounts();
 		await takerDriftClientUser.fetchAccounts();
 		await secondUserDriftClient.fetchAccounts();
@@ -748,7 +748,7 @@ describe('test function when spot market at >= 100% util', () => {
 			}
 		);
 
-		bankrunContextWrapper.printTxLogs(txSig);
+		contextWrapper.printTxLogs(txSig);
 
 		await takerDriftClientUser.fetchAccounts();
 
@@ -767,7 +767,7 @@ describe('test function when spot market at >= 100% util', () => {
 
 		//ensure that borrow cant borrow more to settle pnl
 		console.log('set pyth price to 32.99');
-		await setFeedPriceNoProgram(bankrunContextWrapper, 32.99, solOracle);
+		await setFeedPriceNoProgram(contextWrapper, 32.99, solOracle);
 		await firstUserDriftClient.fetchAccounts();
 		await secondUserDriftClient.fetchAccounts();
 
@@ -777,14 +777,14 @@ describe('test function when spot market at >= 100% util', () => {
 			secondUserDriftClient.getUserAccount(),
 			marketIndex
 		);
-		bankrunContextWrapper.printTxLogs(settleTx2);
+		contextWrapper.printTxLogs(settleTx2);
 
 		const settleTx1 = await firstUserDriftClient.settlePNL(
 			await firstUserDriftClient.getUserAccountPublicKey(),
 			firstUserDriftClient.getUserAccount(),
 			marketIndex
 		);
-		bankrunContextWrapper.printTxLogs(settleTx1);
+		contextWrapper.printTxLogs(settleTx1);
 		await secondUserDriftClient.fetchAccounts();
 
 		const takerUSDCAfter = takerDriftClientUser.getTokenAmount(0);
@@ -805,7 +805,7 @@ describe('test function when spot market at >= 100% util', () => {
 
 		//allow that deposit to settle negative pnl for borrow
 		console.log('set pyth price to 27.4');
-		await setFeedPriceNoProgram(bankrunContextWrapper, 27.4, solOracle);
+		await setFeedPriceNoProgram(contextWrapper, 27.4, solOracle);
 		await firstUserDriftClient.fetchAccounts();
 		await secondUserDriftClient.fetchAccounts();
 
@@ -814,14 +814,14 @@ describe('test function when spot market at >= 100% util', () => {
 			firstUserDriftClient.getUserAccount(),
 			marketIndex
 		);
-		bankrunContextWrapper.printTxLogs(settleTx1Good);
+		contextWrapper.printTxLogs(settleTx1Good);
 
 		const settleTx2Good = await firstUserDriftClient.settlePNL(
 			await secondUserDriftClient.getUserAccountPublicKey(),
 			secondUserDriftClient.getUserAccount(),
 			marketIndex
 		);
-		bankrunContextWrapper.printTxLogs(settleTx2Good);
+		contextWrapper.printTxLogs(settleTx2Good);
 
 		await takerDriftClientUser.unsubscribe();
 	});

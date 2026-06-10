@@ -38,9 +38,9 @@ import {
 } from './testHelpers';
 import { NATIVE_MINT } from '@solana/spl-token';
 import { DexInstructions, Market, OpenOrders } from '@project-serum/serum';
-import { startAnchor } from 'solana-bankrun';
+import { startLiteSVM } from '../sdk/src/litesvm/litesvmConnection';
 import { TestBulkAccountLoader } from '../sdk/src/accounts/testBulkAccountLoader';
-import { BankrunContextWrapper } from '../sdk/src/bankrun/bankrunConnection';
+import { LiteSVMContextWrapper } from '../sdk/src/litesvm/litesvmConnection';
 
 describe('spot swap', () => {
 	const chProgram = anchor.workspace.Drift as Program;
@@ -51,7 +51,7 @@ describe('spot swap', () => {
 
 	let bulkAccountLoader: TestBulkAccountLoader;
 
-	let bankrunContextWrapper: BankrunContextWrapper;
+	let contextWrapper: LiteSVMContextWrapper;
 
 	let solOracle: PublicKey;
 
@@ -75,7 +75,7 @@ describe('spot swap', () => {
 	let takerKeypair: Keypair;
 
 	before(async () => {
-		const context = await startAnchor(
+		const context = await startLiteSVM(
 			'',
 			[
 				{
@@ -88,43 +88,43 @@ describe('spot swap', () => {
 			[]
 		);
 
-		bankrunContextWrapper = new BankrunContextWrapper(context);
+		contextWrapper = new LiteSVMContextWrapper(context);
 
 		bulkAccountLoader = new TestBulkAccountLoader(
-			bankrunContextWrapper.connection,
+			contextWrapper.connection,
 			'processed',
 			1
 		);
 
 		eventSubscriber = new EventSubscriber(
-			bankrunContextWrapper.connection.toConnection(),
+			contextWrapper.connection.toConnection(),
 			chProgram
 		);
 
 		await eventSubscriber.subscribe();
 
-		usdcMint = await mockUSDCMint(bankrunContextWrapper);
+		usdcMint = await mockUSDCMint(contextWrapper);
 		makerUSDC = await mockUserUSDCAccount(
 			usdcMint,
 			usdcAmount,
-			bankrunContextWrapper
+			contextWrapper
 		);
 		makerWSOL = await createWSolTokenAccountForUser(
-			bankrunContextWrapper,
+			contextWrapper,
 			// @ts-ignore
-			bankrunContextWrapper.provider.wallet,
+			contextWrapper.provider.wallet,
 			solAmount
 		);
 
-		solOracle = await mockOracleNoProgram(bankrunContextWrapper, 100);
+		solOracle = await mockOracleNoProgram(contextWrapper, 100);
 
 		marketIndexes = [];
 		spotMarketIndexes = [0, 1];
 		oracleInfos = [{ publicKey: solOracle, source: OracleSource.PYTH_LAZER }];
 
 		makerDriftClient = new TestClient({
-			connection: bankrunContextWrapper.connection.toConnection(),
-			wallet: bankrunContextWrapper.provider.wallet,
+			connection: contextWrapper.connection.toConnection(),
+			wallet: contextWrapper.provider.wallet,
 			programID: chProgram.programId,
 			opts: {
 				commitment: 'confirmed',
@@ -167,7 +167,7 @@ describe('spot swap', () => {
 
 		await makerDriftClient.updateSpotMarketIfFactor(0, new BN(0), new BN(1));
 
-		await bankrunContextWrapper.moveTimeForward(2);
+		await contextWrapper.moveTimeForward(2);
 
 		await makerDriftClient.settleRevenueToInsuranceFund(0);
 
@@ -190,7 +190,7 @@ describe('spot swap', () => {
 
 		[takerDriftClient, takerWSOL, takerUSDC, takerKeypair] =
 			await createUserWithUSDCAndWSOLAccount(
-				bankrunContextWrapper,
+				contextWrapper,
 				usdcMint,
 				chProgram,
 				solAmount,
@@ -206,7 +206,7 @@ describe('spot swap', () => {
 				bulkAccountLoader
 			);
 
-		await bankrunContextWrapper.fundKeypair(
+		await contextWrapper.fundKeypair(
 			takerKeypair,
 			10 * LAMPORTS_PER_SOL
 		);
@@ -221,8 +221,8 @@ describe('spot swap', () => {
 
 	it('Add Serum Market', async () => {
 		serumMarketPublicKey = await listMarket({
-			context: bankrunContextWrapper,
-			wallet: bankrunContextWrapper.provider.wallet,
+			context: contextWrapper,
+			wallet: contextWrapper.provider.wallet,
 			baseMint: NATIVE_MINT,
 			quoteMint: usdcMint.publicKey,
 			baseLotSize: 100000000,
@@ -234,7 +234,7 @@ describe('spot swap', () => {
 		console.log('\n\n\n\n\n here \n\n\n\n\n');
 
 		await Market.load(
-			bankrunContextWrapper.connection.toConnection(),
+			contextWrapper.connection.toConnection(),
 			serumMarketPublicKey,
 			{ commitment: 'confirmed' },
 			SERUM
@@ -245,7 +245,7 @@ describe('spot swap', () => {
 		console.log('\n\n\n\n\n here \n\n\n\n\n');
 
 		const market = await Market.load(
-			bankrunContextWrapper.connection.toConnection(),
+			contextWrapper.connection.toConnection(),
 			serumMarketPublicKey,
 			{ commitment: 'recent' },
 			SERUM
@@ -255,7 +255,7 @@ describe('spot swap', () => {
 
 		const openOrdersAccount = new Account();
 		const createOpenOrdersIx = await OpenOrders.makeCreateAccountTransaction(
-			bankrunContextWrapper.connection.toConnection(),
+			contextWrapper.connection.toConnection(),
 			market.address,
 			takerDriftClient.wallet.publicKey,
 			openOrdersAccount.publicKey,
@@ -273,7 +273,7 @@ describe('spot swap', () => {
 
 	const getIfSharesAndVaultBalance = async (marketIndex: number) => {
 		const ifVaultBalance = (
-			await bankrunContextWrapper.connection.getTokenAccount(
+			await contextWrapper.connection.getTokenAccount(
 				makerDriftClient.getSpotMarketAccount(marketIndex).insuranceFund.vault
 			)
 		).amount;
@@ -295,7 +295,7 @@ describe('spot swap', () => {
 		await makerDriftClient.updateAdmin(takerDriftClient.wallet.publicKey);
 
 		const market = await Market.load(
-			bankrunContextWrapper.connection.toConnection(),
+			contextWrapper.connection.toConnection(),
 			serumMarketPublicKey,
 			{ commitment: 'recent' },
 			SERUM
@@ -304,11 +304,11 @@ describe('spot swap', () => {
 		// place ask to sell 1 sol for 100 usdc
 		// @ts-ignore
 		const { transaction, signers } = await makePlaceOrderTransaction(
-			bankrunContextWrapper.connection.toConnection(),
+			contextWrapper.connection.toConnection(),
 			market,
 			{
 				// @ts-ignore
-				owner: bankrunContextWrapper.provider.wallet,
+				owner: contextWrapper.provider.wallet,
 				payer: makerWSOL,
 				side: 'sell',
 				price: 100,
@@ -326,7 +326,7 @@ describe('spot swap', () => {
 			return Keypair.fromSecretKey(signer.secretKey);
 		});
 
-		await bankrunContextWrapper.sendTransaction(transaction, signerKeypairs);
+		await contextWrapper.sendTransaction(transaction, signerKeypairs);
 
 		const amountIn = new BN(200).mul(QUOTE_PRECISION);
 		const { beginSwapIx, endSwapIx } =
@@ -340,7 +340,7 @@ describe('spot swap', () => {
 
 		// @ts-ignore
 		const serumBidIx = await market.makePlaceOrderInstruction(
-			bankrunContextWrapper.connection.toConnection(),
+			contextWrapper.connection.toConnection(),
 			{
 				// @ts-ignore
 				owner: takerDriftClient.wallet,
@@ -383,7 +383,7 @@ describe('spot swap', () => {
 
 		const { txSig } = await takerDriftClient.sendTransaction(tx);
 
-		bankrunContextWrapper.printTxLogs(txSig);
+		contextWrapper.printTxLogs(txSig);
 
 		const {
 			sharesTokenAmount: usdcSharesTokenAmount,
@@ -455,7 +455,7 @@ describe('spot swap', () => {
 		assert(transferRecord.protocolSharesBefore.eq(new BN(1000000000)));
 
 		const revenuePoolVaultAmount = (
-			await bankrunContextWrapper.connection.getTokenAccount(
+			await contextWrapper.connection.getTokenAccount(
 				makerDriftClient.getSpotMarketAccount(1).vault
 			)
 		).amount;

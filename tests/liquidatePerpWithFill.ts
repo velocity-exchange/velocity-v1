@@ -27,9 +27,9 @@ import {
 	setFeedPriceNoProgram,
 } from './testHelpers';
 import { OrderType, PERCENTAGE_PRECISION, PerpOperation } from '../sdk';
-import { startAnchor } from 'solana-bankrun';
+import { startLiteSVM } from '../sdk/src/litesvm/litesvmConnection';
 import { TestBulkAccountLoader } from '../sdk/src/accounts/testBulkAccountLoader';
-import { BankrunContextWrapper } from '../sdk/src/bankrun/bankrunConnection';
+import { LiteSVMContextWrapper } from '../sdk/src/litesvm/litesvmConnection';
 
 describe('liquidate perp (no open orders)', () => {
 	const chProgram = anchor.workspace.Drift as Program;
@@ -39,7 +39,7 @@ describe('liquidate perp (no open orders)', () => {
 
 	let bulkAccountLoader: TestBulkAccountLoader;
 
-	let bankrunContextWrapper: BankrunContextWrapper;
+	let contextWrapper: LiteSVMContextWrapper;
 
 	let usdcMint;
 	let userUSDCAccount;
@@ -66,33 +66,33 @@ describe('liquidate perp (no open orders)', () => {
 	let oracle: PublicKey;
 
 	before(async () => {
-		const context = await startAnchor('', [], []);
+		const context = await startLiteSVM('', [], []);
 
-		bankrunContextWrapper = new BankrunContextWrapper(context);
+		contextWrapper = new LiteSVMContextWrapper(context);
 
 		bulkAccountLoader = new TestBulkAccountLoader(
-			bankrunContextWrapper.connection,
+			contextWrapper.connection,
 			'processed',
 			1
 		);
 
 		eventSubscriber = new EventSubscriber(
-			bankrunContextWrapper.connection.toConnection(),
+			contextWrapper.connection.toConnection(),
 			//@ts-ignore
 			chProgram
 		);
 
 		await eventSubscriber.subscribe();
 
-		usdcMint = await mockUSDCMint(bankrunContextWrapper);
+		usdcMint = await mockUSDCMint(contextWrapper);
 		userUSDCAccount = await mockUserUSDCAccount(
 			usdcMint,
 			usdcAmount,
-			bankrunContextWrapper
+			contextWrapper
 		);
 
 		oracle = await mockOracleNoProgram(
-			bankrunContextWrapper,
+			contextWrapper,
 			1,
 			-7,
 			undefined,
@@ -100,8 +100,8 @@ describe('liquidate perp (no open orders)', () => {
 		);
 
 		driftClient = new TestClient({
-			connection: bankrunContextWrapper.connection.toConnection(),
-			wallet: bankrunContextWrapper.provider.wallet,
+			connection: contextWrapper.connection.toConnection(),
+			wallet: contextWrapper.provider.wallet,
 			programID: chProgram.programId,
 			opts: {
 				commitment: 'confirmed',
@@ -169,15 +169,15 @@ describe('liquidate perp (no open orders)', () => {
 			new BN(0)
 		);
 
-		bankrunContextWrapper.fundKeypair(liquidatorKeyPair, LAMPORTS_PER_SOL);
+		contextWrapper.fundKeypair(liquidatorKeyPair, LAMPORTS_PER_SOL);
 		liquidatorUSDCAccount = await mockUserUSDCAccount(
 			usdcMint,
 			usdcAmount,
-			bankrunContextWrapper,
+			contextWrapper,
 			liquidatorKeyPair.publicKey
 		);
 		liquidatorDriftClient = new TestClient({
-			connection: bankrunContextWrapper.connection.toConnection(),
+			connection: contextWrapper.connection.toConnection(),
 			wallet: new Wallet(liquidatorKeyPair),
 			programID: chProgram.programId,
 			opts: {
@@ -206,7 +206,7 @@ describe('liquidate perp (no open orders)', () => {
 		);
 
 		[makerDriftClient, makerUSDCAccount] = await createUserWithUSDCAccount(
-			bankrunContextWrapper,
+			contextWrapper,
 			usdcMint,
 			chProgram,
 			makerUsdcAmount,
@@ -232,7 +232,7 @@ describe('liquidate perp (no open orders)', () => {
 	});
 
 	it('liquidate', async () => {
-		await setFeedPriceNoProgram(bankrunContextWrapper, 0.1, oracle, 10000);
+		await setFeedPriceNoProgram(contextWrapper, 0.1, oracle, 10000);
 		await driftClient.updatePerpMarketPausedOperations(
 			0,
 			PerpOperation.AMM_FILL
@@ -247,7 +247,7 @@ describe('liquidate perp (no open orders)', () => {
 				reduceOnly: true,
 				marketIndex: 0,
 			});
-			bankrunContextWrapper.connection.printTxLogs(failToPlaceTxSig);
+			contextWrapper.connection.printTxLogs(failToPlaceTxSig);
 			throw new Error('Expected placePerpOrder to throw an error');
 		} catch (error) {
 			if (
@@ -281,7 +281,7 @@ describe('liquidate perp (no open orders)', () => {
 			makerInfos
 		);
 
-		bankrunContextWrapper.connection.printTxLogs(txSig);
+		contextWrapper.connection.printTxLogs(txSig);
 
 		for (let i = 0; i < 32; i++) {
 			assert(!isVariant(driftClient.getUserAccount().orders[i].status, 'open'));

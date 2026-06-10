@@ -36,9 +36,9 @@ import {
 	PositionDirection,
 } from '../sdk/src';
 import { decodeName } from '../sdk/src/userName';
-import { startAnchor } from 'solana-bankrun';
+import { startLiteSVM } from '../sdk/src/litesvm/litesvmConnection';
 import { TestBulkAccountLoader } from '../sdk/src/accounts/testBulkAccountLoader';
-import { BankrunContextWrapper } from '../sdk/src/bankrun/bankrunConnection';
+import { LiteSVMContextWrapper } from '../sdk/src/litesvm/litesvmConnection';
 
 describe('referrer', () => {
 	const chProgram = anchor.workspace.Drift as Program;
@@ -57,7 +57,7 @@ describe('referrer', () => {
 
 	let escrowMap: RevenueShareEscrowMap;
 
-	let bankrunContextWrapper: BankrunContextWrapper;
+	let contextWrapper: LiteSVMContextWrapper;
 
 	let usdcMint;
 	let referrerUSDCAccount;
@@ -76,32 +76,32 @@ describe('referrer', () => {
 	const usdcAmount = new BN(100 * 10 ** 6);
 
 	before(async () => {
-		const context = await startAnchor('', [], []);
+		const context = await startLiteSVM('', [], []);
 
-		bankrunContextWrapper = new BankrunContextWrapper(context);
+		contextWrapper = new LiteSVMContextWrapper(context);
 
 		bulkAccountLoader = new TestBulkAccountLoader(
-			bankrunContextWrapper.connection,
+			contextWrapper.connection,
 			'processed',
 			1
 		);
 
 		eventSubscriber = new EventSubscriber(
-			bankrunContextWrapper.connection.toConnection(),
+			contextWrapper.connection.toConnection(),
 			chProgram
 		);
 
 		await eventSubscriber.subscribe();
 
-		usdcMint = await mockUSDCMint(bankrunContextWrapper);
+		usdcMint = await mockUSDCMint(contextWrapper);
 		referrerUSDCAccount = await mockUserUSDCAccount(
 			usdcMint,
 			usdcAmount,
-			bankrunContextWrapper
+			contextWrapper
 		);
 
 		solOracle = await mockOracleNoProgram(
-			bankrunContextWrapper,
+			contextWrapper,
 			100,
 			-7,
 			undefined,
@@ -117,8 +117,8 @@ describe('referrer', () => {
 			},
 		];
 		referrerDriftClient = new TestClient({
-			connection: bankrunContextWrapper.connection.toConnection(),
-			wallet: bankrunContextWrapper.provider.wallet,
+			connection: contextWrapper.connection.toConnection(),
+			wallet: contextWrapper.provider.wallet,
 			programID: chProgram.programId,
 			opts: {
 				commitment: 'confirmed',
@@ -159,16 +159,16 @@ describe('referrer', () => {
 			referrerUSDCAccount.publicKey
 		);
 
-		refereeKeyPair = await createFundedKeyPair(bankrunContextWrapper);
+		refereeKeyPair = await createFundedKeyPair(contextWrapper);
 		refereeUSDCAccount = await mockUserUSDCAccount(
 			usdcMint,
 			usdcAmount,
-			bankrunContextWrapper,
+			contextWrapper,
 			refereeKeyPair.publicKey
 		);
 
 		refereeDriftClient = new TestClient({
-			connection: bankrunContextWrapper.connection.toConnection(),
+			connection: contextWrapper.connection.toConnection(),
 			wallet: new Wallet(refereeKeyPair),
 			programID: chProgram.programId,
 			opts: {
@@ -188,7 +188,7 @@ describe('referrer', () => {
 		await refereeDriftClient.subscribe();
 
 		[fillerDriftClient] = await createUserWithUSDCAccount(
-			bankrunContextWrapper,
+			contextWrapper,
 			usdcMint,
 			chProgram,
 			usdcAmount,
@@ -241,7 +241,7 @@ describe('referrer', () => {
 		const newUserRecord = eventSubscriber.getEventsArray('NewUserRecord')[0];
 		assert(
 			newUserRecord.referrer.equals(
-				bankrunContextWrapper.provider.wallet.publicKey
+				contextWrapper.provider.wallet.publicKey
 			)
 		);
 
@@ -249,7 +249,7 @@ describe('referrer', () => {
 		const refereeStats = refereeDriftClient.getUserStats().getAccount();
 		assert(
 			refereeStats.referrer.equals(
-				bankrunContextWrapper.provider.wallet.publicKey
+				contextWrapper.provider.wallet.publicKey
 			)
 		);
 		assert((refereeStats.referrerStatus & ReferrerStatus.IsReferred) > 0);
@@ -263,7 +263,7 @@ describe('referrer', () => {
 			referrerDriftClient.wallet.publicKey
 		);
 
-		const accountInfo = await bankrunContextWrapper.connection.getAccountInfo(
+		const accountInfo = await contextWrapper.connection.getAccountInfo(
 			getRevenueShareAccountPublicKey(
 				referrerDriftClient.program.programId,
 				referrerDriftClient.wallet.publicKey
@@ -365,7 +365,7 @@ describe('referrer', () => {
 
 		// Snapshot the referrer's RevenueShare before settle.
 		const revShareBeforeInfo =
-			await bankrunContextWrapper.connection.getAccountInfo(
+			await contextWrapper.connection.getAccountInfo(
 				getRevenueShareAccountPublicKey(
 					referrerDriftClient.program.programId,
 					referrerDriftClient.wallet.publicKey
@@ -377,7 +377,7 @@ describe('referrer', () => {
 				revShareBeforeInfo.data
 			);
 
-		await bankrunContextWrapper.moveTimeForward(100);
+		await contextWrapper.moveTimeForward(100);
 
 		// Settle the referee's pnl; the escrow map drives the SDK to include the
 		// referrer's User + RevenueShare accounts so the sweep can credit them.
@@ -407,7 +407,7 @@ describe('referrer', () => {
 
 		// Referrer's RevenueShare.totalReferrerRewards increased by the reward.
 		const revShareAfterInfo =
-			await bankrunContextWrapper.connection.getAccountInfo(
+			await contextWrapper.connection.getAccountInfo(
 				getRevenueShareAccountPublicKey(
 					referrerDriftClient.program.programId,
 					referrerDriftClient.wallet.publicKey

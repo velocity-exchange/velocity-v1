@@ -29,9 +29,9 @@ import {
 	calculatePrice,
 	AMM_RESERVE_PRECISION,
 } from '../sdk/src';
-import { startAnchor } from 'solana-bankrun';
+import { startLiteSVM } from '../sdk/src/litesvm/litesvmConnection';
 import { TestBulkAccountLoader } from '../sdk/src/accounts/testBulkAccountLoader';
-import { BankrunContextWrapper } from '../sdk/src/bankrun/bankrunConnection';
+import { LiteSVMContextWrapper } from '../sdk/src/litesvm/litesvmConnection';
 
 describe('User Account', () => {
 	const chProgram = anchor.workspace.Drift as Program;
@@ -40,7 +40,7 @@ describe('User Account', () => {
 
 	let bulkAccountLoader: TestBulkAccountLoader;
 
-	let bankrunContextWrapper: BankrunContextWrapper;
+	let contextWrapper: LiteSVMContextWrapper;
 
 	const ammInitialQuoteAssetAmount = new anchor.BN(2 * 10 ** 9).mul(
 		new BN(10 ** 5)
@@ -60,25 +60,25 @@ describe('User Account', () => {
 	let userAccount: User;
 
 	before(async () => {
-		const context = await startAnchor('', [], []);
+		const context = await startLiteSVM('', [], []);
 
-		bankrunContextWrapper = new BankrunContextWrapper(context);
+		contextWrapper = new LiteSVMContextWrapper(context);
 
 		bulkAccountLoader = new TestBulkAccountLoader(
-			bankrunContextWrapper.connection,
+			contextWrapper.connection,
 			'processed',
 			1
 		);
 
-		usdcMint = await mockUSDCMint(bankrunContextWrapper);
+		usdcMint = await mockUSDCMint(contextWrapper);
 		userUSDCAccount = await mockUserUSDCAccount(
 			usdcMint,
 			usdcAmount,
-			bankrunContextWrapper
+			contextWrapper
 		);
 
 		solUsdOracle = await mockOracleNoProgram(
-			bankrunContextWrapper,
+			contextWrapper,
 			initialSOLPrice,
 			-10,
 			0.0005,
@@ -86,8 +86,8 @@ describe('User Account', () => {
 		);
 
 		driftClient = new TestClient({
-			connection: bankrunContextWrapper.connection.toConnection(),
-			wallet: bankrunContextWrapper.provider.wallet,
+			connection: contextWrapper.connection.toConnection(),
+			wallet: contextWrapper.provider.wallet,
 			programID: chProgram.programId,
 			opts: {
 				commitment: 'confirmed',
@@ -257,7 +257,7 @@ describe('User Account', () => {
 			convertToNumber(oraclePrice)
 		);
 		await setFeedPriceNoProgram(
-			bankrunContextWrapper,
+			contextWrapper,
 			convertToNumber(reservePrice.sub(new BN(250))),
 			solUsdOracle,
 			10000
@@ -266,7 +266,7 @@ describe('User Account', () => {
 
 		await driftClient.fetchAccounts();
 		const oracleP2 = await getFeedDataNoProgram(
-			bankrunContextWrapper.connection,
+			contextWrapper.connection,
 			solUsdOracle
 		);
 		console.log('oracleP2:', oracleP2.price);
@@ -343,7 +343,7 @@ describe('User Account', () => {
 			convertToNumber(oraclePrice)
 		);
 		await setFeedPriceNoProgram(
-			bankrunContextWrapper,
+			contextWrapper,
 			convertToNumber(reservePrice.sub(new BN(275))),
 			solUsdOracle,
 			10000
@@ -352,7 +352,7 @@ describe('User Account', () => {
 
 		await driftClient.fetchAccounts();
 		const oracleP2 = await getFeedDataNoProgram(
-			bankrunContextWrapper.connection,
+			contextWrapper.connection,
 			solUsdOracle
 		);
 		console.log('oracleP2:', oracleP2.price);

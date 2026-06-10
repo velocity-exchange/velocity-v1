@@ -32,9 +32,9 @@ import {
 	createMintToInstruction,
 	getAssociatedTokenAddressSync,
 } from '@solana/spl-token';
-import { startAnchor } from 'solana-bankrun';
+import { startLiteSVM } from '../sdk/src/litesvm/litesvmConnection';
 import { TestBulkAccountLoader } from '../sdk/src/accounts/testBulkAccountLoader';
-import { BankrunContextWrapper } from '../sdk/src/bankrun/bankrunConnection';
+import { LiteSVMContextWrapper } from '../sdk/src/litesvm/litesvmConnection';
 
 describe('stop limit', () => {
 	const chProgram = anchor.workspace.Drift as Program;
@@ -45,7 +45,7 @@ describe('stop limit', () => {
 
 	let bulkAccountLoader: TestBulkAccountLoader;
 
-	let bankrunContextWrapper: BankrunContextWrapper;
+	let contextWrapper: LiteSVMContextWrapper;
 
 	let userAccountPublicKey: PublicKey;
 
@@ -75,39 +75,39 @@ describe('stop limit', () => {
 	let btcUsd;
 
 	before(async () => {
-		const context = await startAnchor('', [], []);
+		const context = await startLiteSVM('', [], []);
 
-		bankrunContextWrapper = new BankrunContextWrapper(context);
+		contextWrapper = new LiteSVMContextWrapper(context);
 
 		bulkAccountLoader = new TestBulkAccountLoader(
-			bankrunContextWrapper.connection,
+			contextWrapper.connection,
 			'processed',
 			1
 		);
 
 		eventSubscriber = new EventSubscriber(
-			bankrunContextWrapper.connection.toConnection(),
+			contextWrapper.connection.toConnection(),
 			chProgram
 		);
 
 		await eventSubscriber.subscribe();
 
-		usdcMint = await mockUSDCMint(bankrunContextWrapper);
+		usdcMint = await mockUSDCMint(contextWrapper);
 		userUSDCAccount = await mockUserUSDCAccount(
 			usdcMint,
 			usdcAmount,
-			bankrunContextWrapper
+			contextWrapper
 		);
 
 		solUsd = await mockOracleNoProgram(
-			bankrunContextWrapper,
+			contextWrapper,
 			1,
 			-7,
 			undefined,
 			10000
 		);
 		btcUsd = await mockOracleNoProgram(
-			bankrunContextWrapper,
+			contextWrapper,
 			60000,
 			-7,
 			undefined,
@@ -128,8 +128,8 @@ describe('stop limit', () => {
 		];
 
 		driftClient = new TestClient({
-			connection: bankrunContextWrapper.connection.toConnection(),
-			wallet: bankrunContextWrapper.provider.wallet,
+			connection: contextWrapper.connection.toConnection(),
+			wallet: contextWrapper.provider.wallet,
 			programID: chProgram.programId,
 			opts: {
 				commitment: 'confirmed',
@@ -186,7 +186,7 @@ describe('stop limit', () => {
 		});
 		await driftClientUser.subscribe();
 
-		const discountMintKeypair = await mockUSDCMint(bankrunContextWrapper);
+		const discountMintKeypair = await mockUSDCMint(contextWrapper);
 
 		discountMint = discountMintKeypair.publicKey;
 
@@ -194,33 +194,33 @@ describe('stop limit', () => {
 
 		const discountMintAta = getAssociatedTokenAddressSync(
 			discountMint,
-			bankrunContextWrapper.provider.wallet.publicKey
+			contextWrapper.provider.wallet.publicKey
 		);
 		const ix = createAssociatedTokenAccountIdempotentInstruction(
-			bankrunContextWrapper.context.payer.publicKey,
+			contextWrapper.context.payer.publicKey,
 			discountMintAta,
-			bankrunContextWrapper.provider.wallet.publicKey,
+			contextWrapper.provider.wallet.publicKey,
 			discountMint
 		);
 		const mintToIx = createMintToInstruction(
 			discountMint,
 			discountMintAta,
-			bankrunContextWrapper.provider.wallet.publicKey,
+			contextWrapper.provider.wallet.publicKey,
 			1000 * 10 ** 6
 		);
-		await bankrunContextWrapper.sendTransaction(
+		await contextWrapper.sendTransaction(
 			new Transaction().add(ix, mintToIx)
 		);
 
-		await bankrunContextWrapper.fundKeypair(fillerKeyPair, 10 ** 9);
+		await contextWrapper.fundKeypair(fillerKeyPair, 10 ** 9);
 		fillerUSDCAccount = await mockUserUSDCAccount(
 			usdcMint,
 			usdcAmount,
-			bankrunContextWrapper,
+			contextWrapper,
 			fillerKeyPair.publicKey
 		);
 		fillerDriftClient = new TestClient({
-			connection: bankrunContextWrapper.connection.toConnection(),
+			connection: contextWrapper.connection.toConnection(),
 			wallet: new Wallet(fillerKeyPair),
 			programID: chProgram.programId,
 			opts: {
@@ -294,7 +294,7 @@ describe('stop limit', () => {
 		await driftClientUser.fetchAccounts();
 		let order = driftClientUser.getOrder(orderId);
 
-		await setFeedPriceNoProgram(bankrunContextWrapper, 1.01, solUsd, 10000);
+		await setFeedPriceNoProgram(contextWrapper, 1.01, solUsd, 10000);
 		await driftClient.moveAmmToPrice(
 			marketIndex,
 			new BN(1.01 * PRICE_PRECISION.toNumber())
@@ -380,7 +380,7 @@ describe('stop limit', () => {
 		driftClientUser.getUserAccount();
 		let order = driftClientUser.getOrder(orderId);
 
-		await setFeedPriceNoProgram(bankrunContextWrapper, 0.99, solUsd, 10000);
+		await setFeedPriceNoProgram(contextWrapper, 0.99, solUsd, 10000);
 		await driftClient.moveAmmToPrice(
 			marketIndex,
 			new BN(0.99 * PRICE_PRECISION.toNumber())

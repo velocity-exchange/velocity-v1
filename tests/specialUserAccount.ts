@@ -1,7 +1,7 @@
 import * as anchor from '@coral-xyz/anchor';
 import { Program } from '@coral-xyz/anchor';
 import { assert } from 'chai';
-import { startAnchor } from 'solana-bankrun';
+import { startLiteSVM } from '../sdk/src/litesvm/litesvmConnection';
 import { Keypair, PublicKey } from '@solana/web3.js';
 
 import {
@@ -17,7 +17,7 @@ import {
 	TestClient,
 } from '../sdk/src';
 import { TestBulkAccountLoader } from '../sdk/src/accounts/testBulkAccountLoader';
-import { BankrunContextWrapper } from '../sdk/src/bankrun/bankrunConnection';
+import { LiteSVMContextWrapper } from '../sdk/src/litesvm/litesvmConnection';
 import {
 	initializeQuoteSpotMarket,
 	mockOracleNoProgram,
@@ -31,7 +31,7 @@ describe('special user account', () => {
 	let adminClient: TestClient;
 	let driftClient: TestClient;
 	let bulkAccountLoader: TestBulkAccountLoader;
-	let bankrunContextWrapper: BankrunContextWrapper;
+	let contextWrapper: LiteSVMContextWrapper;
 	let usdcMint;
 	let userAccountPublicKey: PublicKey;
 	let userSubaccount1PublicKey: PublicKey;
@@ -83,19 +83,19 @@ describe('special user account', () => {
 	};
 
 	before(async () => {
-		const context = await startAnchor('', [], []);
+		const context = await startLiteSVM('', [], []);
 
-		bankrunContextWrapper = new BankrunContextWrapper(context as any);
+		contextWrapper = new LiteSVMContextWrapper(context as any);
 
 		bulkAccountLoader = new TestBulkAccountLoader(
-			bankrunContextWrapper.connection,
+			contextWrapper.connection,
 			'processed',
 			1
 		);
 
-		usdcMint = await mockUSDCMint(bankrunContextWrapper);
+		usdcMint = await mockUSDCMint(contextWrapper);
 		solUsdOracle = await mockOracleNoProgram(
-			bankrunContextWrapper,
+			contextWrapper,
 			initialSolPrice,
 			-10,
 			0.0005,
@@ -103,8 +103,8 @@ describe('special user account', () => {
 		);
 
 		driftClient = new TestClient({
-			connection: bankrunContextWrapper.connection.toConnection(),
-			wallet: bankrunContextWrapper.provider.wallet,
+			connection: contextWrapper.connection.toConnection(),
+			wallet: contextWrapper.provider.wallet,
 			programID: chProgram.programId,
 			opts: {
 				commitment: 'confirmed',
@@ -124,8 +124,8 @@ describe('special user account', () => {
 		});
 
 		adminClient = new TestClient({
-			connection: bankrunContextWrapper.connection.toConnection(),
-			wallet: bankrunContextWrapper.provider.wallet,
+			connection: contextWrapper.connection.toConnection(),
+			wallet: contextWrapper.provider.wallet,
 			programID: chProgram.programId,
 			opts: {
 				commitment: 'confirmed',
@@ -168,7 +168,7 @@ describe('special user account', () => {
 		userUSDCAccount = await mockUserUSDCAccount(
 			usdcMint,
 			usdcAmount.muln(2),
-			bankrunContextWrapper,
+			contextWrapper,
 			driftClient.wallet.publicKey
 		);
 		await driftClient.deposit(

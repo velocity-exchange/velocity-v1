@@ -27,9 +27,9 @@ import {
 	PEG_PRECISION,
 	PostOnlyParams,
 } from '../sdk';
-import { startAnchor } from 'solana-bankrun';
+import { startLiteSVM } from '../sdk/src/litesvm/litesvmConnection';
 import { TestBulkAccountLoader } from '../sdk/src/accounts/testBulkAccountLoader';
-import { BankrunContextWrapper } from '../sdk/src/bankrun/bankrunConnection';
+import { LiteSVMContextWrapper } from '../sdk/src/litesvm/litesvmConnection';
 
 describe('prelisting', () => {
 	const chProgram = anchor.workspace.Drift as Program;
@@ -40,7 +40,7 @@ describe('prelisting', () => {
 
 	let bulkAccountLoader: TestBulkAccountLoader;
 
-	let bankrunContextWrapper: BankrunContextWrapper;
+	let contextWrapper: LiteSVMContextWrapper;
 
 	// ammInvariant == k == x * y
 	const mantissaSqrtScale = new BN(Math.sqrt(PRICE_PRECISION.toNumber()));
@@ -62,28 +62,28 @@ describe('prelisting', () => {
 	let oracleInfos;
 
 	before(async () => {
-		const context = await startAnchor('', [], []);
+		const context = await startLiteSVM('', [], []);
 
-		bankrunContextWrapper = new BankrunContextWrapper(context);
+		contextWrapper = new LiteSVMContextWrapper(context);
 
 		bulkAccountLoader = new TestBulkAccountLoader(
-			bankrunContextWrapper.connection,
+			contextWrapper.connection,
 			'processed',
 			1
 		);
 
 		eventSubscriber = new EventSubscriber(
-			bankrunContextWrapper.connection.toConnection(),
+			contextWrapper.connection.toConnection(),
 			chProgram
 		);
 
 		await eventSubscriber.subscribe();
 
-		usdcMint = await mockUSDCMint(bankrunContextWrapper);
+		usdcMint = await mockUSDCMint(contextWrapper);
 		userUSDCAccount = await mockUserUSDCAccount(
 			usdcMint,
 			usdcAmount,
-			bankrunContextWrapper
+			contextWrapper
 		);
 
 		prelaunchOracle = getPrelaunchOraclePublicKey(chProgram.programId, 0);
@@ -95,8 +95,8 @@ describe('prelisting', () => {
 		];
 
 		adminDriftClient = new TestClient({
-			connection: bankrunContextWrapper.connection.toConnection(),
-			wallet: bankrunContextWrapper.provider.wallet,
+			connection: contextWrapper.connection.toConnection(),
+			wallet: contextWrapper.provider.wallet,
 			programID: chProgram.programId,
 			opts: {
 				commitment: 'confirmed',
@@ -247,7 +247,7 @@ describe('prelisting', () => {
 
 		const oldOracleKey = adminDriftClient.getPerpMarketAccount(0).oracle;
 
-		const newOracle = await mockOracleNoProgram(bankrunContextWrapper, 40);
+		const newOracle = await mockOracleNoProgram(contextWrapper, 40);
 		await adminDriftClient.updatePerpMarketOracle(
 			0,
 			newOracle,
@@ -257,7 +257,7 @@ describe('prelisting', () => {
 		await adminDriftClient.deletePrelaunchOracle(0);
 
 		const result =
-			await bankrunContextWrapper.connection.getAccountInfoAndContext(
+			await contextWrapper.connection.getAccountInfoAndContext(
 				oldOracleKey,
 				'processed'
 			);

@@ -4579,7 +4579,7 @@ export class AdminClient extends VelocityClient {
 			fromPubkey: this.wallet.publicKey,
 			newAccountPubkey: mint.publicKey,
 			space: MINT_SIZE,
-			lamports: Math.min(0.05 * LAMPORTS_PER_SOL, lamports), // should be 0.0014616 ? but bankrun returns 10 SOL
+			lamports: Math.min(0.05 * LAMPORTS_PER_SOL, lamports), // should be 0.0014616 ? but the litesvm test harness returns 10 SOL
 			programId: TOKEN_PROGRAM_ID,
 		});
 		const createMintIx = createInitializeMint2Instruction(

@@ -25,9 +25,9 @@ import {
 	setFeedPriceNoProgram,
 } from './testHelpers';
 import { ContractTier, MARGIN_PRECISION, OrderType } from '../sdk';
-import { startAnchor } from 'solana-bankrun';
+import { startLiteSVM } from '../sdk/src/litesvm/litesvmConnection';
 import { TestBulkAccountLoader } from '../sdk/src/accounts/testBulkAccountLoader';
-import { BankrunContextWrapper } from '../sdk/src/bankrun/bankrunConnection';
+import { LiteSVMContextWrapper } from '../sdk/src/litesvm/litesvmConnection';
 
 describe('multiple maker orders', () => {
 	const chProgram = anchor.workspace.Drift as Program;
@@ -37,7 +37,7 @@ describe('multiple maker orders', () => {
 
 	let bulkAccountLoader: TestBulkAccountLoader;
 
-	let bankrunContextWrapper: BankrunContextWrapper;
+	let contextWrapper: LiteSVMContextWrapper;
 
 	let usdcMint;
 	let userUSDCAccount;
@@ -60,40 +60,40 @@ describe('multiple maker orders', () => {
 	let oracleInfos;
 
 	before(async () => {
-		const context = await startAnchor('', [], []);
+		const context = await startLiteSVM('', [], []);
 
-		bankrunContextWrapper = new BankrunContextWrapper(context);
+		contextWrapper = new LiteSVMContextWrapper(context);
 
 		bulkAccountLoader = new TestBulkAccountLoader(
-			bankrunContextWrapper.connection,
+			contextWrapper.connection,
 			'processed',
 			1
 		);
 
 		eventSubscriber = new EventSubscriber(
-			bankrunContextWrapper.connection.toConnection(),
+			contextWrapper.connection.toConnection(),
 			chProgram
 		);
 
 		await eventSubscriber.subscribe();
 
-		usdcMint = await mockUSDCMint(bankrunContextWrapper);
+		usdcMint = await mockUSDCMint(contextWrapper);
 		userUSDCAccount = await mockUserUSDCAccount(
 			usdcMint,
 			usdcAmount,
-			bankrunContextWrapper
+			contextWrapper
 		);
 
-		solUsd = await mockOracleNoProgram(bankrunContextWrapper, 100);
-		dogUsd = await mockOracleNoProgram(bankrunContextWrapper, 0.6899, -4, 0);
+		solUsd = await mockOracleNoProgram(contextWrapper, 100);
+		dogUsd = await mockOracleNoProgram(contextWrapper, 0.6899, -4, 0);
 
 		marketIndexes = [0, 1];
 		spotMarketIndexes = [0];
 		oracleInfos = [{ publicKey: solUsd, source: OracleSource.PYTH_LAZER }];
 
 		fillerDriftClient = new TestClient({
-			connection: bankrunContextWrapper.connection.toConnection(),
-			wallet: bankrunContextWrapper.provider.wallet,
+			connection: contextWrapper.connection.toConnection(),
+			wallet: contextWrapper.provider.wallet,
 			programID: chProgram.programId,
 			opts: {
 				commitment: 'confirmed',
@@ -182,7 +182,7 @@ describe('multiple maker orders', () => {
 	it('taker long solUsd', async () => {
 		const [takerDriftClient, takerUSDCAccount] =
 			await createUserWithUSDCAccount(
-				bankrunContextWrapper,
+				contextWrapper,
 				usdcMint,
 				chProgram,
 				usdcAmount,
@@ -196,7 +196,7 @@ describe('multiple maker orders', () => {
 
 		const [makerDriftClient, makerUSDCAccount] =
 			await createUserWithUSDCAccount(
-				bankrunContextWrapper,
+				contextWrapper,
 				usdcMint,
 				chProgram,
 				usdcAmount,
@@ -220,7 +220,7 @@ describe('multiple maker orders', () => {
 
 		const [secondMakerDriftClient, secondMakerUSDCAccount] =
 			await createUserWithUSDCAccount(
-				bankrunContextWrapper,
+				contextWrapper,
 				usdcMint,
 				chProgram,
 				usdcAmount,
@@ -270,7 +270,7 @@ describe('multiple maker orders', () => {
 			makerInfo
 		);
 
-		bankrunContextWrapper.printTxLogs(txSig);
+		contextWrapper.printTxLogs(txSig);
 
 		const orderActionRecords = eventSubscriber
 			.getEventsArray('OrderActionRecord')
@@ -319,7 +319,7 @@ describe('multiple maker orders', () => {
 			});
 		}
 
-		await setFeedPriceNoProgram(bankrunContextWrapper, 90, solUsd);
+		await setFeedPriceNoProgram(contextWrapper, 90, solUsd);
 		await takerDriftClient.placePerpOrder({
 			marketIndex: 0,
 			orderType: OrderType.LIMIT,
@@ -338,7 +338,7 @@ describe('multiple maker orders', () => {
 		const takerPosition2 = takerDriftClient.getUser().getPerpPosition(0);
 		assert(takerPosition2.baseAssetAmount.eq(new BN(0)));
 
-		bankrunContextWrapper.printTxLogs(txSig2);
+		contextWrapper.printTxLogs(txSig2);
 
 		await takerDriftClient.unsubscribe();
 		await makerDriftClient.unsubscribe();
@@ -348,7 +348,7 @@ describe('multiple maker orders', () => {
 	it('taker short dogUsd', async () => {
 		const [takerDriftClient, takerUSDCAccount] =
 			await createUserWithUSDCAccount(
-				bankrunContextWrapper,
+				contextWrapper,
 				usdcMint,
 				chProgram,
 				usdcAmount,
@@ -362,7 +362,7 @@ describe('multiple maker orders', () => {
 
 		const [makerDriftClient, makerUSDCAccount] =
 			await createUserWithUSDCAccount(
-				bankrunContextWrapper,
+				contextWrapper,
 				usdcMint,
 				chProgram,
 				usdcAmount,
@@ -386,7 +386,7 @@ describe('multiple maker orders', () => {
 
 		const [secondMakerDriftClient, secondMakerUSDCAccount] =
 			await createUserWithUSDCAccount(
-				bankrunContextWrapper,
+				contextWrapper,
 				usdcMint,
 				chProgram,
 				usdcAmount,
@@ -410,7 +410,7 @@ describe('multiple maker orders', () => {
 
 		const [thirdMakerDriftClient, thirdMakerUSDCAccount] =
 			await createUserWithUSDCAccount(
-				bankrunContextWrapper,
+				contextWrapper,
 				usdcMint,
 				chProgram,
 				usdcAmount,
@@ -441,7 +441,7 @@ describe('multiple maker orders', () => {
 			}
 		}
 
-		await setFeedPriceNoProgram(bankrunContextWrapper, 0.675, dogUsd);
+		await setFeedPriceNoProgram(contextWrapper, 0.675, dogUsd);
 		const takerBaseAssetAmount = new BN(600).mul(BASE_PRECISION);
 		await takerDriftClient.placePerpOrder({
 			marketIndex: 1,
@@ -474,7 +474,7 @@ describe('multiple maker orders', () => {
 			takerDriftClient.getOrder(1),
 			makerInfo
 		);
-		bankrunContextWrapper.printTxLogs(txSig);
+		contextWrapper.printTxLogs(txSig);
 
 		const orderActionRecords = eventSubscriber
 			.getEventsArray('OrderActionRecord')
@@ -563,7 +563,7 @@ describe('multiple maker orders', () => {
 			});
 		}
 
-		await setFeedPriceNoProgram(bankrunContextWrapper, 0.75, dogUsd);
+		await setFeedPriceNoProgram(contextWrapper, 0.75, dogUsd);
 		await takerDriftClient.placePerpOrder({
 			marketIndex: 1,
 			orderType: OrderType.LIMIT,
@@ -595,7 +595,7 @@ describe('multiple maker orders', () => {
 			dogMarketAfter.amm.baseAssetAmountWithAmm.eq(new BN('-66279600000'))
 		);
 
-		bankrunContextWrapper.printTxLogs(txSig2);
+		contextWrapper.printTxLogs(txSig2);
 
 		await takerDriftClient.unsubscribe();
 		await makerDriftClient.unsubscribe();

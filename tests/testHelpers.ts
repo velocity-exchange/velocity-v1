@@ -57,9 +57,9 @@ import {
 	OracleSource,
 } from '../sdk/src';
 import {
-	BankrunContextWrapper,
-	BankrunConnection,
-} from '../sdk/src/bankrun/bankrunConnection';
+	LiteSVMContextWrapper,
+	LiteSVMConnection,
+} from '../sdk/src/litesvm/litesvmConnection';
 import { TestBulkAccountLoader } from '../sdk/src/accounts/testBulkAccountLoader';
 import { DRIFT_PROGRAM_ID } from '../sdk/src/config';
 import * as crypto from 'crypto';
@@ -97,7 +97,7 @@ export async function mockOracle(
 }
 
 export async function mockOracleNoProgram(
-	context: BankrunContextWrapper,
+	context: LiteSVMContextWrapper,
 	price: number = 50 * 10e7,
 	expo = -7,
 	confidence?: number,
@@ -153,7 +153,7 @@ export async function mockOracleNoProgram(
 }
 
 export async function mockUSDCMint(
-	context: BankrunContextWrapper,
+	context: LiteSVMContextWrapper,
 	tokenProgram = TOKEN_PROGRAM_ID,
 	permanentDelegate?: boolean
 ): Promise<Keypair> {
@@ -205,7 +205,7 @@ export async function mockUSDCMint(
 export async function mockUserUSDCAccount(
 	fakeUSDCMint: Keypair,
 	usdcMintAmount: BN,
-	context: BankrunContextWrapper,
+	context: LiteSVMContextWrapper,
 	owner?: PublicKey
 ): Promise<Keypair> {
 	const userUSDCAccount = anchor.web3.Keypair.generate();
@@ -255,7 +255,7 @@ export async function mockUserUSDCAccount(
 export async function mockUserUSDCAccountWithAuthority(
 	fakeUSDCMint: Keypair,
 	usdcMintAmount: BN,
-	context: BankrunContextWrapper,
+	context: LiteSVMContextWrapper,
 	authority: Keypair
 ): Promise<PublicKey> {
 	const userUSDCAccount = getAssociatedTokenAddressSync(
@@ -294,7 +294,7 @@ export async function mockUserUSDCAccountWithAuthority(
 }
 
 export async function mockAtaTokenAccountForMint(
-	context: BankrunContextWrapper,
+	context: LiteSVMContextWrapper,
 	tokenMint: PublicKey,
 	amount: BN,
 	owner: PublicKey
@@ -329,7 +329,7 @@ export async function mockAtaTokenAccountForMint(
 export function getMockUserUsdcAccountInfo(
 	fakeUSDCMint: Keypair,
 	usdcMintAmount: BN,
-	context: BankrunContextWrapper,
+	context: LiteSVMContextWrapper,
 	owner?: PublicKey
 ): [PublicKey, AccountInfo<Buffer>] {
 	if (owner === undefined) {
@@ -371,7 +371,7 @@ export async function mintUSDCToUser(
 	fakeUSDCMint: Keypair,
 	userUSDCAccount: PublicKey,
 	usdcMintAmount: BN,
-	context: BankrunContextWrapper
+	context: LiteSVMContextWrapper
 ): Promise<void> {
 	const tx = new Transaction();
 	const tokenProgram = (
@@ -393,7 +393,7 @@ export async function mintUSDCToUser(
 }
 
 export async function createFundedKeyPair(
-	context: BankrunContextWrapper
+	context: LiteSVMContextWrapper
 ): Promise<Keypair> {
 	const keypair = Keypair.generate();
 	await context.fundKeypair(keypair, BigInt(100 * LAMPORTS_PER_SOL));
@@ -401,7 +401,7 @@ export async function createFundedKeyPair(
 }
 
 export async function createUSDCAccountForUser(
-	context: BankrunContextWrapper,
+	context: LiteSVMContextWrapper,
 	userKeyPair: Keypair,
 	usdcMint: Keypair,
 	usdcAmount: BN
@@ -453,7 +453,7 @@ export async function initializeAndSubscribeDriftClient(
 }
 
 export async function createUserWithUSDCAccount(
-	context: BankrunContextWrapper,
+	context: LiteSVMContextWrapper,
 	usdcMint: Keypair,
 	chProgram: Program,
 	usdcAmount: BN,
@@ -485,7 +485,7 @@ export async function createUserWithUSDCAccount(
 }
 
 export async function createWSolTokenAccountForUser(
-	context: BankrunContextWrapper,
+	context: LiteSVMContextWrapper,
 	userKeypair: Keypair | Wallet,
 	amount: BN
 ): Promise<PublicKey> {
@@ -515,7 +515,7 @@ export async function createWSolTokenAccountForUser(
 }
 
 export async function fundWsolTokenAccountForUser(
-	context: BankrunContextWrapper,
+	context: LiteSVMContextWrapper,
 	userKeypair: Keypair | Wallet,
 	amount: BN
 ): Promise<void> {
@@ -538,7 +538,7 @@ export async function fundWsolTokenAccountForUser(
 }
 
 export async function createUserWithUSDCAndWSOLAccount(
-	context: BankrunContextWrapper,
+	context: LiteSVMContextWrapper,
 	usdcMint: Keypair,
 	chProgram: Program,
 	solAmount: BN,
@@ -618,7 +618,7 @@ export async function initUserAccounts(
 	NUM_USERS: number,
 	usdcMint: Keypair,
 	usdcAmount: BN,
-	context: BankrunContextWrapper,
+	context: LiteSVMContextWrapper,
 	marketIndexes: number[],
 	bankIndexes: number[],
 	oracleInfos: OracleInfo[],
@@ -748,7 +748,7 @@ export const createPriceFeed = async ({
 	return collateralTokenFeed.publicKey;
 };
 
-export const createPriceFeedBankrun = async ({
+export const createPriceFeedLiteSVM = async ({
 	oracleProgram,
 	context,
 	initPrice,
@@ -756,7 +756,7 @@ export const createPriceFeedBankrun = async ({
 	expo = -4,
 }: {
 	oracleProgram: Program;
-	context: BankrunContextWrapper;
+	context: LiteSVMContextWrapper;
 	initPrice: number;
 	confidence?: number;
 	expo?: number;
@@ -800,7 +800,7 @@ export const setFeedPrice = async (
 };
 
 export const setFeedPriceNoProgram = async (
-	context: BankrunContextWrapper,
+	context: LiteSVMContextWrapper,
 	newPrice: number,
 	priceFeed: PublicKey,
 	postedSlotOffset = 0
@@ -850,7 +850,7 @@ export const getFeedData = async (
 };
 
 export const getFeedDataNoProgram = async (
-	connection: BankrunConnection,
+	connection: LiteSVMConnection,
 	priceFeed: PublicKey
 ) => {
 	// @ts-ignore
@@ -858,7 +858,7 @@ export const getFeedDataNoProgram = async (
 	try {
 		return parsePriceData(info.value.data);
 	} catch (_e) {
-		// Bankrun tests often use mockOracleNoProgram(), which writes Drift's
+		// LiteSVM tests often use mockOracleNoProgram(), which writes Drift's
 		// PythLazerOracle account layout (48 bytes) instead of legacy Pyth price account bytes.
 		const data = info.value.data as Buffer;
 		if (data.length === 48) {
@@ -1229,11 +1229,11 @@ export async function initializeSolSpotMarket(
 
 export async function overWritePerpMarket(
 	driftClient: TestClient,
-	bankrunContextWrapper: BankrunContextWrapper,
+	contextWrapper: LiteSVMContextWrapper,
 	perpMarketKey: PublicKey,
 	perpMarket: PerpMarketAccount
 ) {
-	bankrunContextWrapper.context.setAccount(perpMarketKey, {
+	contextWrapper.context.setAccount(perpMarketKey, {
 		executable: false,
 		owner: driftClient.program.programId,
 		lamports: LAMPORTS_PER_SOL,
@@ -1246,11 +1246,11 @@ export async function overWritePerpMarket(
 
 export async function overWriteSpotMarket(
 	driftClient: TestClient,
-	bankrunContextWrapper: BankrunContextWrapper,
+	contextWrapper: LiteSVMContextWrapper,
 	spotMarketKey: PublicKey,
 	spotMarket: SpotMarketAccount
 ) {
-	bankrunContextWrapper.context.setAccount(spotMarketKey, {
+	contextWrapper.context.setAccount(spotMarketKey, {
 		executable: false,
 		owner: driftClient.program.programId,
 		lamports: LAMPORTS_PER_SOL,
@@ -1263,10 +1263,10 @@ export async function overWriteSpotMarket(
 
 export async function getPerpMarketDecoded(
 	driftClient: TestClient,
-	bankrunContextWrapper: BankrunContextWrapper,
+	contextWrapper: LiteSVMContextWrapper,
 	perpMarketPublicKey: PublicKey
 ): Promise<PerpMarketAccount> {
-	const accountInfo = await bankrunContextWrapper.connection.getAccountInfo(
+	const accountInfo = await contextWrapper.connection.getAccountInfo(
 		perpMarketPublicKey
 	);
 	const perpMarketAccount: PerpMarketAccount =
@@ -1275,11 +1275,11 @@ export async function getPerpMarketDecoded(
 }
 
 export async function overWriteTokenAccountBalance(
-	bankrunContextWrapper: BankrunContextWrapper,
+	contextWrapper: LiteSVMContextWrapper,
 	tokenAccount: PublicKey,
 	newBalance: bigint
 ) {
-	const info = await bankrunContextWrapper.connection.getAccountInfo(
+	const info = await contextWrapper.connection.getAccountInfo(
 		tokenAccount
 	);
 	const account = unpackAccount(tokenAccount, info, info.owner);
@@ -1299,7 +1299,7 @@ export async function overWriteTokenAccountBalance(
 		closeAuthority: account.closeAuthority || PublicKey.default,
 	};
 	AccountLayout.encode(rawAccount, data);
-	bankrunContextWrapper.context.setAccount(tokenAccount, {
+	contextWrapper.context.setAccount(tokenAccount, {
 		executable: info.executable,
 		owner: info.owner,
 		lamports: info.lamports,
@@ -1309,11 +1309,11 @@ export async function overWriteTokenAccountBalance(
 }
 
 export async function overWriteMintAccount(
-	bankrunContextWrapper: BankrunContextWrapper,
+	contextWrapper: LiteSVMContextWrapper,
 	mintAccount: PublicKey,
 	newSupply: bigint
 ) {
-	const info = await bankrunContextWrapper.connection.getAccountInfo(
+	const info = await contextWrapper.connection.getAccountInfo(
 		mintAccount
 	);
 	const mint = unpackMint(mintAccount, info, info.owner);
@@ -1329,7 +1329,7 @@ export async function overWriteMintAccount(
 		freezeAuthority: mint.freezeAuthority || PublicKey.default,
 	};
 	MintLayout.encode(rawMint, data);
-	bankrunContextWrapper.context.setAccount(mintAccount, {
+	contextWrapper.context.setAccount(mintAccount, {
 		executable: info.executable,
 		owner: info.owner,
 		lamports: info.lamports,
@@ -1339,7 +1339,7 @@ export async function overWriteMintAccount(
 }
 
 export type placeAndFillVammTradeParams = {
-	bankrunContextWrapper: BankrunContextWrapper;
+	contextWrapper: LiteSVMContextWrapper;
 	orderClient: TestClient;
 	fillerClient: DriftClient;
 	marketIndex: number;
@@ -1354,7 +1354,7 @@ export type placeAndFillVammTradeParams = {
 };
 
 export async function placeAndFillVammTrade({
-	bankrunContextWrapper,
+	contextWrapper,
 	orderClient,
 	fillerClient,
 	marketIndex,
@@ -1385,10 +1385,10 @@ export async function placeAndFillVammTrade({
 		console.log(e);
 	}
 	if (dumpTxLogs) {
-		await printTxLogs(bankrunContextWrapper.connection.toConnection(), tx);
+		await printTxLogs(contextWrapper.connection.toConnection(), tx);
 	}
 
-	await bankrunContextWrapper.moveTimeForward(30);
+	await contextWrapper.moveTimeForward(30);
 	await orderClient.fetchAccounts();
 
 	const openOrders = orderClient.getUser(0).getOpenOrders();
@@ -1407,7 +1407,7 @@ export async function placeAndFillVammTrade({
 			order
 		);
 		if (dumpTxLogs) {
-			await printTxLogs(bankrunContextWrapper.connection.toConnection(), tx);
+			await printTxLogs(contextWrapper.connection.toConnection(), tx);
 		}
 		return tx;
 	} catch (e) {
@@ -1417,7 +1417,7 @@ export async function placeAndFillVammTrade({
 }
 
 export async function overwriteConstituentAccount(
-	bankrunContextWrapper: BankrunContextWrapper,
+	contextWrapper: LiteSVMContextWrapper,
 	program: Program,
 	constituentPublicKey: PublicKey,
 	overwriteFields: Array<[key: keyof ConstituentAccount, value: any]>
@@ -1431,7 +1431,7 @@ export async function overwriteConstituentAccount(
 	for (const [key, value] of overwriteFields) {
 		acc[key] = value;
 	}
-	bankrunContextWrapper.context.setAccount(constituentPublicKey, {
+	contextWrapper.context.setAccount(constituentPublicKey, {
 		executable: false,
 		owner: program.programId,
 		lamports: LAMPORTS_PER_SOL,

@@ -1,7 +1,7 @@
 import * as anchor from '@coral-xyz/anchor';
 import { Program } from '@coral-xyz/anchor';
 import { assert, expect } from 'chai';
-import { startAnchor } from 'solana-bankrun';
+import { startLiteSVM } from '../sdk/src/litesvm/litesvmConnection';
 import {
 	BN,
 	ExchangeStatus,
@@ -25,9 +25,9 @@ import {
 } from './testHelpers';
 import { PublicKey } from '@solana/web3.js';
 import {
-	BankrunContextWrapper,
+	LiteSVMContextWrapper,
 	Connection,
-} from '../sdk/src/bankrun/bankrunConnection';
+} from '../sdk/src/litesvm/litesvmConnection';
 import { TestBulkAccountLoader } from '../sdk/src/accounts/testBulkAccountLoader';
 import { createTransferCheckedInstruction } from '@solana/spl-token';
 
@@ -44,27 +44,27 @@ describe('admin', () => {
 
 	const usdcAmount = new BN(10 * 10 ** 6);
 
-	let bankrunContextWrapper: BankrunContextWrapper;
+	let contextWrapper: LiteSVMContextWrapper;
 
 	before(async () => {
-		const context = await startAnchor('', [], []);
+		const context = await startLiteSVM('', [], []);
 
-		bankrunContextWrapper = new BankrunContextWrapper(context as any);
+		contextWrapper = new LiteSVMContextWrapper(context as any);
 
 		bulkAccountLoader = new TestBulkAccountLoader(
-			bankrunContextWrapper.connection,
+			contextWrapper.connection,
 			'processed',
 			1
 		);
 
-		usdcMint = await mockUSDCMint(bankrunContextWrapper);
+		usdcMint = await mockUSDCMint(contextWrapper);
 
 		const wallet = new Wallet(loadKeypair(process.env.ANCHOR_WALLET));
 		//@ts-ignore
-		await bankrunContextWrapper.fundKeypair(wallet, 10 ** 9);
+		await contextWrapper.fundKeypair(wallet, 10 ** 9);
 
 		driftClient = new TestClient({
-			connection: bankrunContextWrapper.connection.toConnection(), // ugh.
+			connection: contextWrapper.connection.toConnection(), // ugh.
 			wallet,
 			programID: chProgram.programId,
 			opts: {
@@ -83,7 +83,7 @@ describe('admin', () => {
 		userUSDCAccount = await mockUserUSDCAccount(
 			usdcMint,
 			usdcAmount,
-			bankrunContextWrapper,
+			contextWrapper,
 			driftClient.wallet.publicKey
 		);
 
@@ -98,7 +98,7 @@ describe('admin', () => {
 
 		const periodicity = new BN(60 * 60); // 1 HOUR
 
-		const solUsd = await mockOracleNoProgram(bankrunContextWrapper, 1);
+		const solUsd = await mockOracleNoProgram(contextWrapper, 1);
 		await driftClient.initializePerpMarket(
 			0,
 			solUsd,
@@ -425,7 +425,7 @@ describe('admin', () => {
 
 		let perpMarket = driftClient.getPerpMarketAccount(0);
 		assert(perpMarket.marketStats.mmOraclePrice.eq(oraclePrice));
-		const slot = (await bankrunContextWrapper.connection.getSlot()).toString();
+		const slot = (await contextWrapper.connection.getSlot()).toString();
 		expect(perpMarket.marketStats.mmOracleSlot.toNumber()).to.be.approximately(
 			+slot,
 			1

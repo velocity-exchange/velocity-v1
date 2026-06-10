@@ -15,9 +15,9 @@ import {
 	setFeedPriceNoProgram,
 	initializeQuoteSpotMarket,
 } from './testHelpers';
-import { startAnchor } from 'solana-bankrun';
+import { startLiteSVM } from '../sdk/src/litesvm/litesvmConnection';
 import { TestBulkAccountLoader } from '../sdk/src/accounts/testBulkAccountLoader';
-import { BankrunContextWrapper } from '../sdk/src/bankrun/bankrunConnection';
+import { LiteSVMContextWrapper } from '../sdk/src/litesvm/litesvmConnection';
 
 describe('drift client', () => {
 	const chProgram = anchor.workspace.Drift as Program;
@@ -25,7 +25,7 @@ describe('drift client', () => {
 	let driftClient: TestClient;
 	let eventSubscriber: EventSubscriber;
 
-	let bankrunContextWrapper: BankrunContextWrapper;
+	let contextWrapper: LiteSVMContextWrapper;
 
 	let bulkAccountLoader: TestBulkAccountLoader;
 
@@ -48,25 +48,25 @@ describe('drift client', () => {
 	const usdcAmount = new BN(10 * 10 ** 6);
 
 	before(async () => {
-		const context = await startAnchor('', [], []);
+		const context = await startLiteSVM('', [], []);
 
-		bankrunContextWrapper = new BankrunContextWrapper(context);
+		contextWrapper = new LiteSVMContextWrapper(context);
 
 		bulkAccountLoader = new TestBulkAccountLoader(
-			bankrunContextWrapper.connection,
+			contextWrapper.connection,
 			'processed',
 			1
 		);
 
-		usdcMint = await mockUSDCMint(bankrunContextWrapper);
+		usdcMint = await mockUSDCMint(contextWrapper);
 		userUSDCAccount = await mockUserUSDCAccount(
 			usdcMint,
 			usdcAmount,
-			bankrunContextWrapper
+			contextWrapper
 		);
 
 		solUsd = await mockOracleNoProgram(
-			bankrunContextWrapper,
+			contextWrapper,
 			1,
 			-7,
 			undefined,
@@ -74,15 +74,15 @@ describe('drift client', () => {
 		);
 
 		eventSubscriber = new EventSubscriber(
-			bankrunContextWrapper.connection.toConnection(),
+			contextWrapper.connection.toConnection(),
 			chProgram
 		);
 
 		await eventSubscriber.subscribe();
 
 		driftClient = new TestClient({
-			connection: bankrunContextWrapper.connection.toConnection(),
-			wallet: bankrunContextWrapper.provider.wallet,
+			connection: contextWrapper.connection.toConnection(),
+			wallet: contextWrapper.provider.wallet,
 			programID: chProgram.programId,
 			opts: {
 				commitment: 'confirmed',
@@ -146,7 +146,7 @@ describe('drift client', () => {
 
 		// Check that drift collateral account has proper collateral
 		const quoteSpotVault =
-			await bankrunContextWrapper.connection.getTokenAccount(
+			await contextWrapper.connection.getTokenAccount(
 				driftClient.getQuoteSpotMarketAccount().vault
 			);
 
@@ -157,7 +157,7 @@ describe('drift client', () => {
 
 		assert.ok(
 			depositRecord.userAuthority.equals(
-				bankrunContextWrapper.provider.wallet.publicKey
+				contextWrapper.provider.wallet.publicKey
 			)
 		);
 		assert.ok(depositRecord.user.equals(userAccountPublicKey));
@@ -215,14 +215,14 @@ describe('drift client', () => {
 
 		// Check that drift collateral account has proper collateral]
 		const quoteSpotVault =
-			await bankrunContextWrapper.connection.getTokenAccount(
+			await contextWrapper.connection.getTokenAccount(
 				driftClient.getQuoteSpotMarketAccount().vault
 			);
 
 		assert.ok(new BN(Number(quoteSpotVault.amount)).eq(ZERO));
 
 		const userUSDCtoken =
-			await bankrunContextWrapper.connection.getTokenAccount(
+			await contextWrapper.connection.getTokenAccount(
 				userUSDCAccount.publicKey
 			);
 		assert.ok(new BN(Number(userUSDCtoken.amount)).eq(usdcAmount));
@@ -231,7 +231,7 @@ describe('drift client', () => {
 
 		assert.ok(
 			depositRecord.userAuthority.equals(
-				bankrunContextWrapper.provider.wallet.publicKey
+				contextWrapper.provider.wallet.publicKey
 			)
 		);
 		assert.ok(depositRecord.user.equals(userAccountPublicKey));
@@ -258,11 +258,11 @@ describe('drift client', () => {
 			baseAssetAmount,
 			marketIndex
 		);
-		bankrunContextWrapper.connection.printTxLogs(txSig);
+		contextWrapper.connection.printTxLogs(txSig);
 
 		const marketData = driftClient.getPerpMarketAccount(0);
 		await setFeedPriceNoProgram(
-			bankrunContextWrapper,
+			contextWrapper,
 			1.01,
 			marketData.oracle,
 			10000
@@ -409,7 +409,7 @@ describe('drift client', () => {
 	it('Reverse long position', async () => {
 		const marketData = driftClient.getPerpMarketAccount(0);
 		await setFeedPriceNoProgram(
-			bankrunContextWrapper,
+			contextWrapper,
 			1.0,
 			marketData.oracle,
 			10000

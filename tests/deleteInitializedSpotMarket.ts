@@ -22,16 +22,16 @@ import {
 	getSpotMarketVaultPublicKey,
 } from '../sdk';
 import { PublicKey } from '@solana/web3.js';
-import { startAnchor } from 'solana-bankrun';
+import { startLiteSVM } from '../sdk/src/litesvm/litesvmConnection';
 import { TestBulkAccountLoader } from '../sdk/src/accounts/testBulkAccountLoader';
-import { BankrunContextWrapper } from '../sdk/src/bankrun/bankrunConnection';
+import { LiteSVMContextWrapper } from '../sdk/src/litesvm/litesvmConnection';
 
 describe('max deposit', () => {
 	const chProgram = anchor.workspace.Drift as Program;
 
 	let driftClient: TestClient;
 
-	let bankrunContextWrapper: BankrunContextWrapper;
+	let contextWrapper: LiteSVMContextWrapper;
 
 	let bulkAccountLoader: TestBulkAccountLoader;
 
@@ -41,28 +41,28 @@ describe('max deposit', () => {
 	const usdcAmount = new BN(10 * 10 ** 6);
 
 	before(async () => {
-		const context = await startAnchor('', [], []);
+		const context = await startLiteSVM('', [], []);
 
-		bankrunContextWrapper = new BankrunContextWrapper(context);
+		contextWrapper = new LiteSVMContextWrapper(context);
 
 		bulkAccountLoader = new TestBulkAccountLoader(
-			bankrunContextWrapper.connection,
+			contextWrapper.connection,
 			'processed',
 			1
 		);
 
-		usdcMint = await mockUSDCMint(bankrunContextWrapper);
+		usdcMint = await mockUSDCMint(contextWrapper);
 		_userUSDCAccount = await mockUserUSDCAccount(
 			usdcMint,
 			usdcAmount,
-			bankrunContextWrapper
+			contextWrapper
 		);
 
-		const solUsd = await mockOracleNoProgram(bankrunContextWrapper, 1);
+		const solUsd = await mockOracleNoProgram(contextWrapper, 1);
 
 		driftClient = new TestClient({
-			connection: bankrunContextWrapper.connection.toConnection(),
-			wallet: bankrunContextWrapper.provider.wallet,
+			connection: contextWrapper.connection.toConnection(),
+			wallet: contextWrapper.provider.wallet,
 			programID: chProgram.programId,
 			opts: {
 				commitment: 'confirmed',
@@ -117,7 +117,7 @@ describe('max deposit', () => {
 	it('delete', async () => {
 		const txSig = await driftClient.deleteInitializedSpotMarket(0);
 
-		bankrunContextWrapper.connection.printTxLogs(txSig);
+		contextWrapper.connection.printTxLogs(txSig);
 
 		const spotMarketKey = await getSpotMarketPublicKey(
 			driftClient.program.programId,
@@ -125,7 +125,7 @@ describe('max deposit', () => {
 		);
 
 		let result =
-			await bankrunContextWrapper.connection.getAccountInfoAndContext(
+			await contextWrapper.connection.getAccountInfoAndContext(
 				spotMarketKey,
 				'processed'
 			);
@@ -136,7 +136,7 @@ describe('max deposit', () => {
 			0
 		);
 
-		result = await bankrunContextWrapper.connection.getAccountInfoAndContext(
+		result = await contextWrapper.connection.getAccountInfoAndContext(
 			spotMarketVaultKey,
 			'processed'
 		);
@@ -147,7 +147,7 @@ describe('max deposit', () => {
 			0
 		);
 
-		result = await bankrunContextWrapper.connection.getAccountInfoAndContext(
+		result = await contextWrapper.connection.getAccountInfoAndContext(
 			ifVaultKey,
 			'processed'
 		);

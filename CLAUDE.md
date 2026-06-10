@@ -162,7 +162,7 @@ TypeScript library (`@velocity-exchange/sdk`). Key modules in `src/`:
 - `idl/drift.json` — generated Anchor IDL (do not edit manually)
 
 ### Tests (`tests/`)
-~70 TypeScript integration tests using ts-mocha + Anchor's local validator (bankrun for some). Each test spins up a local validator with the program deployed. Tests are run serially by `run-anchor-tests.sh`.
+~70 TypeScript integration tests using ts-mocha. Most run in-process on LiteSVM via the harness in `sdk/src/litesvm/litesvmConnection.ts` (no local validator needed); a few excluded legacy tests still target Anchor's local validator. Tests are run serially by `run-anchor-tests.sh`.
 
 ### Program internals
 - `programs/drift/src/math/` — core math (funding, fees, margin, AMM)

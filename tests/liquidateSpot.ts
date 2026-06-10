@@ -33,16 +33,16 @@ import {
 	setFeedPriceNoProgram,
 } from './testHelpers';
 import { PERCENTAGE_PRECISION } from '../sdk';
-import { startAnchor } from 'solana-bankrun';
+import { startLiteSVM } from '../sdk/src/litesvm/litesvmConnection';
 import { TestBulkAccountLoader } from '../sdk/src/accounts/testBulkAccountLoader';
-import { BankrunContextWrapper } from '../sdk/src/bankrun/bankrunConnection';
+import { LiteSVMContextWrapper } from '../sdk/src/litesvm/litesvmConnection';
 
 describe('liquidate spot', () => {
 	const chProgram = anchor.workspace.Drift as Program;
 
 	let driftClient: TestClient;
 	let eventSubscriber: EventSubscriber;
-	let bankrunContextWrapper: BankrunContextWrapper;
+	let contextWrapper: LiteSVMContextWrapper;
 
 	let bulkAccountLoader: TestBulkAccountLoader;
 
@@ -60,38 +60,38 @@ describe('liquidate spot', () => {
 	let _throwaway: PublicKey;
 
 	before(async () => {
-		const context = await startAnchor('', [], []);
+		const context = await startLiteSVM('', [], []);
 
-		bankrunContextWrapper = new BankrunContextWrapper(context);
+		contextWrapper = new LiteSVMContextWrapper(context);
 
 		bulkAccountLoader = new TestBulkAccountLoader(
-			bankrunContextWrapper.connection,
+			contextWrapper.connection,
 			'processed',
 			1
 		);
 
-		usdcMint = await mockUSDCMint(bankrunContextWrapper);
+		usdcMint = await mockUSDCMint(contextWrapper);
 		userUSDCAccount = await mockUserUSDCAccount(
 			usdcMint,
 			usdcAmount,
-			bankrunContextWrapper
+			contextWrapper
 		);
 		userWSOLAccount = await createWSolTokenAccountForUser(
-			bankrunContextWrapper,
+			contextWrapper,
 			// @ts-ignore
-			bankrunContextWrapper.provider.wallet,
+			contextWrapper.provider.wallet,
 			ZERO
 		);
 
 		eventSubscriber = new EventSubscriber(
-			bankrunContextWrapper.connection.toConnection(),
+			contextWrapper.connection.toConnection(),
 			chProgram
 		);
 
 		await eventSubscriber.subscribe();
 
 		solOracle = await mockOracleNoProgram(
-			bankrunContextWrapper,
+			contextWrapper,
 			100,
 			-7,
 			undefined,
@@ -99,8 +99,8 @@ describe('liquidate spot', () => {
 		);
 
 		driftClient = new TestClient({
-			connection: bankrunContextWrapper.connection.toConnection(),
-			wallet: bankrunContextWrapper.provider.wallet,
+			connection: contextWrapper.connection.toConnection(),
+			wallet: contextWrapper.provider.wallet,
 			programID: chProgram.programId,
 			opts: {
 				commitment: 'confirmed',
@@ -146,7 +146,7 @@ describe('liquidate spot', () => {
 		const solAmount = new BN(1 * 10 ** 9);
 		[liquidatorDriftClient, liquidatorDriftClientWSOLAccount, _throwaway] =
 			await createUserWithUSDCAndWSOLAccount(
-				bankrunContextWrapper,
+				contextWrapper,
 				usdcMint,
 				chProgram,
 				solAmount,
@@ -201,7 +201,7 @@ describe('liquidate spot', () => {
 			)
 		);
 
-		await setFeedPriceNoProgram(bankrunContextWrapper, 179, solOracle, 10000);
+		await setFeedPriceNoProgram(contextWrapper, 179, solOracle, 10000);
 		await sleep(1000);
 
 		await driftClient.fetchAccounts();
@@ -225,7 +225,7 @@ describe('liquidate spot', () => {
 		);
 
 		await setFeedPriceNoProgram(
-			bankrunContextWrapper,
+			contextWrapper,
 			179 + convertToNumber(mtc.sub(mmr), QUOTE_PRECISION) * (2 / 1.1 - 0.001),
 			solOracle,
 			10000
@@ -254,7 +254,7 @@ describe('liquidate spot', () => {
 			)
 		);
 
-		await setFeedPriceNoProgram(bankrunContextWrapper, 190, solOracle, 10000);
+		await setFeedPriceNoProgram(contextWrapper, 190, solOracle, 10000);
 		await sleep(1000);
 
 		const spotMarketBefore = driftClient.getSpotMarketAccount(0);
@@ -276,9 +276,9 @@ describe('liquidate spot', () => {
 		);
 
 		const computeUnits =
-			bankrunContextWrapper.connection.findComputeUnitConsumption(txSig);
+			contextWrapper.connection.findComputeUnitConsumption(txSig);
 		console.log('compute units', computeUnits);
-		bankrunContextWrapper.connection.printTxLogs(txSig);
+		contextWrapper.connection.printTxLogs(txSig);
 
 		// assert(!driftClient.getUserAccount().isBeingLiquidated); // out of liq territory
 		assert(driftClient.getUserAccount().status === 0);

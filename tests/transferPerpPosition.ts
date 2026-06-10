@@ -20,9 +20,9 @@ import {
 	initializeQuoteSpotMarket,
 } from './testHelpers';
 import { BASE_PRECISION, OracleSource, PERCENTAGE_PRECISION } from '../sdk';
-import { startAnchor } from 'solana-bankrun';
+import { startLiteSVM } from '../sdk/src/litesvm/litesvmConnection';
 import { TestBulkAccountLoader } from '../sdk/src/accounts/testBulkAccountLoader';
-import { BankrunContextWrapper } from '../sdk/src/bankrun/bankrunConnection';
+import { LiteSVMContextWrapper } from '../sdk/src/litesvm/litesvmConnection';
 
 function getOpenInterest(driftClient: TestClient, marketIndex: number) {
 	const perpMarket = driftClient.getPerpMarketAccount(marketIndex);
@@ -37,7 +37,7 @@ describe('trigger orders', () => {
 
 	let bulkAccountLoader: TestBulkAccountLoader;
 
-	let bankrunContextWrapper: BankrunContextWrapper;
+	let contextWrapper: LiteSVMContextWrapper;
 
 	let driftClient: TestClient;
 
@@ -62,24 +62,24 @@ describe('trigger orders', () => {
 	let oracleInfos;
 
 	before(async () => {
-		const context = await startAnchor('', [], []);
+		const context = await startLiteSVM('', [], []);
 
-		bankrunContextWrapper = new BankrunContextWrapper(context);
+		contextWrapper = new LiteSVMContextWrapper(context);
 
 		bulkAccountLoader = new TestBulkAccountLoader(
-			bankrunContextWrapper.connection,
+			contextWrapper.connection,
 			'processed',
 			1
 		);
 
-		usdcMint = await mockUSDCMint(bankrunContextWrapper);
+		usdcMint = await mockUSDCMint(contextWrapper);
 		userUSDCAccount = await mockUserUSDCAccount(
 			usdcMint,
 			usdcAmount.muln(2),
-			bankrunContextWrapper
+			contextWrapper
 		);
 
-		solUsd = await mockOracleNoProgram(bankrunContextWrapper, 1);
+		solUsd = await mockOracleNoProgram(contextWrapper, 1);
 		marketIndexes = [0];
 		spotMarketIndexes = [0];
 		oracleInfos = [
@@ -90,8 +90,8 @@ describe('trigger orders', () => {
 		];
 
 		driftClient = new TestClient({
-			connection: bankrunContextWrapper.connection.toConnection(),
-			wallet: bankrunContextWrapper.provider.wallet,
+			connection: contextWrapper.connection.toConnection(),
+			wallet: contextWrapper.provider.wallet,
 			programID: chProgram.programId,
 			opts: {
 				commitment: 'confirmed',
@@ -155,7 +155,7 @@ describe('trigger orders', () => {
 			ammInitialBaseAssetReserve,
 			ammInitialQuoteAssetReserve
 		);
-		await setFeedPriceNoProgram(bankrunContextWrapper, 1, solUsd);
+		await setFeedPriceNoProgram(contextWrapper, 1, solUsd);
 	});
 
 	after(async () => {

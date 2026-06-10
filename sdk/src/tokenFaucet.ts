@@ -18,12 +18,12 @@ import {
 } from '@solana/web3.js';
 import tokenFaucet from './idl/token_faucet.json';
 import { IWallet } from './types';
-import { BankrunContextWrapper } from './bankrun/bankrunConnection';
+import { LiteSVMContextWrapper } from './litesvm/litesvmConnection';
 import { DEFAULT_CONFIRMATION_OPTS } from './config';
 import { BN } from './isomorphic/anchor';
 
 export class TokenFaucet {
-	context?: BankrunContextWrapper;
+	context?: LiteSVMContextWrapper;
 	connection: Connection;
 	wallet: IWallet;
 	public program: Program;
@@ -37,7 +37,7 @@ export class TokenFaucet {
 		programId: PublicKey,
 		mint: PublicKey,
 		opts?: ConfirmOptions,
-		context?: BankrunContextWrapper
+		context?: LiteSVMContextWrapper
 	) {
 		this.connection = connection;
 		this.context = context;

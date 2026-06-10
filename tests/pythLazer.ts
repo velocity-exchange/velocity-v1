@@ -48,7 +48,7 @@ describe('pyth lazer oracles', () => {
 	eventSubscriber.subscribe();
 
 	before(async () => {
-		// use bankrun builtin function to start solana program test
+		// boot the in-process litesvm test environment
 
 		await provider.connection.requestAirdrop(
 			provider.wallet.publicKey,

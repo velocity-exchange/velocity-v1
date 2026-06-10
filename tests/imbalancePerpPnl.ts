@@ -46,9 +46,9 @@ import {
 	sleep,
 } from './testHelpers';
 import { PERCENTAGE_PRECISION } from '../sdk';
-import { startAnchor } from 'solana-bankrun';
+import { startLiteSVM } from '../sdk/src/litesvm/litesvmConnection';
 import { TestBulkAccountLoader } from '../sdk/src/accounts/testBulkAccountLoader';
-import { BankrunContextWrapper } from '../sdk/src/bankrun/bankrunConnection';
+import { LiteSVMContextWrapper } from '../sdk/src/litesvm/litesvmConnection';
 
 async function depositToFeePoolFromIF(
 	amount: number,
@@ -124,7 +124,7 @@ describe('imbalanced large perp pnl w/ borrow hitting limits', () => {
 	let driftClient: TestClient;
 	let eventSubscriber: EventSubscriber;
 
-	let bankrunContextWrapper: BankrunContextWrapper;
+	let contextWrapper: LiteSVMContextWrapper;
 
 	let bulkAccountLoader: TestBulkAccountLoader;
 
@@ -163,35 +163,35 @@ describe('imbalanced large perp pnl w/ borrow hitting limits', () => {
 	const userKeypair = new Keypair();
 
 	before(async () => {
-		const context = await startAnchor('', [], []);
+		const context = await startLiteSVM('', [], []);
 
-		bankrunContextWrapper = new BankrunContextWrapper(context);
+		contextWrapper = new LiteSVMContextWrapper(context);
 
 		bulkAccountLoader = new TestBulkAccountLoader(
-			bankrunContextWrapper.connection,
+			contextWrapper.connection,
 			'processed',
 			1
 		);
 
 		eventSubscriber = new EventSubscriber(
-			bankrunContextWrapper.connection.toConnection(),
+			contextWrapper.connection.toConnection(),
 			chProgram
 		);
 
 		await eventSubscriber.subscribe();
 
-		usdcMint = await mockUSDCMint(bankrunContextWrapper);
+		usdcMint = await mockUSDCMint(contextWrapper);
 		userUSDCAccount = await mockUserUSDCAccount(
 			usdcMint,
 			usdcAmount.mul(new BN(10000)),
-			bankrunContextWrapper
+			contextWrapper
 		);
 
-		solOracle = await mockOracleNoProgram(bankrunContextWrapper, 43.1337);
+		solOracle = await mockOracleNoProgram(contextWrapper, 43.1337);
 
 		driftClient = new TestClient({
-			connection: bankrunContextWrapper.connection.toConnection(),
-			wallet: bankrunContextWrapper.provider.wallet,
+			connection: contextWrapper.connection.toConnection(),
+			wallet: contextWrapper.provider.wallet,
 			programID: chProgram.programId,
 			opts: {
 				commitment: 'confirmed',
@@ -257,15 +257,15 @@ describe('imbalanced large perp pnl w/ borrow hitting limits', () => {
 			userUSDCAccount.publicKey
 		);
 
-		await bankrunContextWrapper.fundKeypair(userKeypair, 10 ** 9);
+		await contextWrapper.fundKeypair(userKeypair, 10 ** 9);
 		userUSDCAccount2 = await mockUserUSDCAccount(
 			usdcMint,
 			usdcAmount,
-			bankrunContextWrapper,
+			contextWrapper,
 			userKeypair.publicKey
 		);
 		driftClientLoser = new TestClient({
-			connection: bankrunContextWrapper.connection.toConnection(),
+			connection: contextWrapper.connection.toConnection(),
 			wallet: new Wallet(userKeypair),
 			programID: chProgram.programId,
 			opts: {
@@ -314,12 +314,12 @@ describe('imbalanced large perp pnl w/ borrow hitting limits', () => {
 		await depositToFeePoolFromIF(1000, driftClient, userUSDCAccount);
 
 		const newPrice = 42.52;
-		await setFeedPriceNoProgram(bankrunContextWrapper, newPrice, solOracle);
+		await setFeedPriceNoProgram(contextWrapper, newPrice, solOracle);
 		console.log('price move to $', newPrice);
 
 		const txSig1 = await driftClient.updateAMMs([0]);
 
-		bankrunContextWrapper.connection.printTxLogs(txSig1);
+		contextWrapper.connection.printTxLogs(txSig1);
 
 		const txSig = await driftClient.openPosition(
 			PositionDirection.SHORT,
@@ -328,7 +328,7 @@ describe('imbalanced large perp pnl w/ borrow hitting limits', () => {
 			new BN(0)
 		);
 
-		bankrunContextWrapper.connection.printTxLogs(txSig);
+		contextWrapper.connection.printTxLogs(txSig);
 
 		await driftClient.fetchAccounts();
 		const userAccount = driftClient.getUserAccount();
@@ -342,11 +342,11 @@ describe('imbalanced large perp pnl w/ borrow hitting limits', () => {
 		assert(marketAccount.amm.totalFeeMinusDistributions.gt(ZERO));
 
 		const newPrice2 = 42.5;
-		await setFeedPriceNoProgram(bankrunContextWrapper, newPrice2, solOracle);
+		await setFeedPriceNoProgram(contextWrapper, newPrice2, solOracle);
 		console.log('price move to $', newPrice2);
 
 		const txSig2 = await driftClient.updateAMMs([0]);
-		bankrunContextWrapper.connection.printTxLogs(txSig2);
+		contextWrapper.connection.printTxLogs(txSig2);
 	});
 
 	it('put market in big drawdown and net user negative pnl', async () => {
@@ -381,7 +381,7 @@ describe('imbalanced large perp pnl w/ borrow hitting limits', () => {
 				0,
 				new BN(0)
 			);
-			bankrunContextWrapper.connection.printTxLogs(txSig);
+			contextWrapper.connection.printTxLogs(txSig);
 		} catch (e) {
 			console.log('failed driftClientLoserc.openPosition');
 
@@ -455,7 +455,7 @@ describe('imbalanced large perp pnl w/ borrow hitting limits', () => {
 		// 	new BN(0),
 		// 	new BN(260.5 * PRICE_PRECISION.toNumber())
 		// );
-		await setFeedPriceNoProgram(bankrunContextWrapper, 260.5, solOracle);
+		await setFeedPriceNoProgram(contextWrapper, 260.5, solOracle);
 		console.log('price move to $260.5');
 		await sleep(1000);
 		await driftClient.fetchAccounts();
@@ -478,7 +478,7 @@ describe('imbalanced large perp pnl w/ borrow hitting limits', () => {
 		assert(ask0After.eq(new BN(585978468)));
 		try {
 			const txSig = await driftClient.updateAMMs([0]);
-			bankrunContextWrapper.connection.printTxLogs(txSig);
+			contextWrapper.connection.printTxLogs(txSig);
 		} catch (e) {
 			console.error(e);
 		}
@@ -522,7 +522,7 @@ describe('imbalanced large perp pnl w/ borrow hitting limits', () => {
 			liquidatorDriftClientWSOLAccount,
 			liquidatorDriftClientWUSDCAccount,
 		] = await createUserWithUSDCAndWSOLAccount(
-			bankrunContextWrapper,
+			contextWrapper,
 			usdcMint,
 			chProgram,
 			solAmount,
@@ -612,7 +612,7 @@ describe('imbalanced large perp pnl w/ borrow hitting limits', () => {
 
 			try {
 				const txSig = await driftClient.updateAMMs([0]);
-				bankrunContextWrapper.connection.printTxLogs(txSig);
+				contextWrapper.connection.printTxLogs(txSig);
 			} catch (e) {
 				console.error(e);
 			}
@@ -663,7 +663,7 @@ describe('imbalanced large perp pnl w/ borrow hitting limits', () => {
 
 		try {
 			const txSig = await driftClient.updateAMMs([0]);
-			bankrunContextWrapper.connection.printTxLogs(txSig);
+			contextWrapper.connection.printTxLogs(txSig);
 		} catch (e) {
 			console.error(e);
 		}
@@ -689,7 +689,7 @@ describe('imbalanced large perp pnl w/ borrow hitting limits', () => {
 			QUOTE_PRECISION,
 			QUOTE_PRECISION
 		);
-		bankrunContextWrapper.connection.printTxLogs(tx1);
+		contextWrapper.connection.printTxLogs(tx1);
 		// } catch (e) {
 		// 	console.error(e);
 		// }
@@ -814,7 +814,7 @@ describe('imbalanced large perp pnl w/ borrow hitting limits', () => {
 		});
 
 		const txSig = await driftClientLoser.placeAndTakePerpOrder(orderParams);
-		bankrunContextWrapper.connection.printTxLogs(txSig);
+		contextWrapper.connection.printTxLogs(txSig);
 
 		const market1 = driftClient.getPerpMarketAccount(0);
 
@@ -831,7 +831,7 @@ describe('imbalanced large perp pnl w/ borrow hitting limits', () => {
 		const marketIndex = 0;
 
 		const usdcbalance = (
-			await bankrunContextWrapper.connection.getTokenAccount(
+			await contextWrapper.connection.getTokenAccount(
 				userUSDCAccount.publicKey
 			)
 		).amount.toString();
@@ -842,7 +842,7 @@ describe('imbalanced large perp pnl w/ borrow hitting limits', () => {
 
 		const ifStakePublicKey = getInsuranceFundStakeAccountPublicKey(
 			driftClient.program.programId,
-			bankrunContextWrapper.provider.wallet.publicKey,
+			contextWrapper.provider.wallet.publicKey,
 			bankIndex
 		);
 		const ifStakeAccount =
@@ -852,7 +852,7 @@ describe('imbalanced large perp pnl w/ borrow hitting limits', () => {
 		assert(ifStakeAccount.marketIndex === bankIndex);
 		assert(
 			ifStakeAccount.authority.equals(
-				bankrunContextWrapper.provider.wallet.publicKey
+				contextWrapper.provider.wallet.publicKey
 			)
 		);
 
@@ -861,7 +861,7 @@ describe('imbalanced large perp pnl w/ borrow hitting limits', () => {
 			amount: QUOTE_PRECISION.add(QUOTE_PRECISION.div(new BN(100))), // $1.01
 			collateralAccountPublicKey: userUSDCAccount.publicKey,
 		});
-		bankrunContextWrapper.connection.printTxLogs(txSig);
+		contextWrapper.connection.printTxLogs(txSig);
 
 		const market0 = driftClient.getPerpMarketAccount(marketIndex);
 
@@ -871,7 +871,7 @@ describe('imbalanced large perp pnl w/ borrow hitting limits', () => {
 				bankIndex,
 				marketIndex
 			);
-			bankrunContextWrapper.connection.printTxLogs(txSig2);
+			contextWrapper.connection.printTxLogs(txSig2);
 		} catch (e) {
 			console.error(e);
 		}
@@ -894,7 +894,7 @@ describe('imbalanced large perp pnl w/ borrow hitting limits', () => {
 			bankIndex,
 			marketIndex
 		);
-		bankrunContextWrapper.connection.printTxLogs(txSig2);
+		contextWrapper.connection.printTxLogs(txSig2);
 
 		const ifRecord: InsuranceFundRecord = eventSubscriber.getEventsArray(
 			'InsuranceFundRecord'

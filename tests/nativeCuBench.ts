@@ -1,7 +1,7 @@
 import * as anchor from '@coral-xyz/anchor';
 import { Program } from '@coral-xyz/anchor';
 import { assert } from 'chai';
-import { startAnchor } from 'solana-bankrun';
+import { startLiteSVM } from '../sdk/src/litesvm/litesvmConnection';
 import { BN, loadKeypair, TestClient, Wallet } from '../sdk/src';
 import {
 	initializeQuoteSpotMarket,
@@ -9,7 +9,7 @@ import {
 	mockUSDCMint,
 	mockUserUSDCAccount,
 } from './testHelpers';
-import { BankrunContextWrapper } from '../sdk/src/bankrun/bankrunConnection';
+import { LiteSVMContextWrapper } from '../sdk/src/litesvm/litesvmConnection';
 import { TestBulkAccountLoader } from '../sdk/src/accounts/testBulkAccountLoader';
 import { VelocityCore } from '../sdk/src/core/VelocityCore';
 import { findComputeUnitConsumption } from '../sdk/src/util/computeUnits';
@@ -81,7 +81,7 @@ function printComputeUnitTable(
 describe('compute units', () => {
 	const chProgram = anchor.workspace.Drift as Program;
 
-	let bankrunContextWrapper: BankrunContextWrapper;
+	let contextWrapper: LiteSVMContextWrapper;
 	let driftClient: TestClient;
 	let originalConsoleLog: typeof console.log;
 
@@ -98,8 +98,8 @@ describe('compute units', () => {
 			originalConsoleLog(...args);
 		};
 
-		const context = await startAnchor('', [], []);
-		bankrunContextWrapper = new BankrunContextWrapper(context as any);
+		const context = await startLiteSVM('', [], []);
+		contextWrapper = new LiteSVMContextWrapper(context as any);
 		const defaultIdl = VelocityCore.defaultIdl();
 		(VelocityCore as any).defaultIdl = () => ({
 			...defaultIdl,
@@ -107,17 +107,17 @@ describe('compute units', () => {
 		});
 
 		const bulkAccountLoader = new TestBulkAccountLoader(
-			bankrunContextWrapper.connection,
+			contextWrapper.connection,
 			'processed',
 			0
 		);
 
-		const usdcMint = await mockUSDCMint(bankrunContextWrapper);
+		const usdcMint = await mockUSDCMint(contextWrapper);
 		const wallet = new Wallet(loadKeypair(process.env.ANCHOR_WALLET));
-		await bankrunContextWrapper.fundKeypair(wallet, 10 ** 9);
+		await contextWrapper.fundKeypair(wallet, 10 ** 9);
 
 		driftClient = new TestClient({
-			connection: bankrunContextWrapper.connection.toConnection(),
+			connection: contextWrapper.connection.toConnection(),
 			wallet,
 			programID: chProgram.programId,
 			opts: {
@@ -136,7 +136,7 @@ describe('compute units', () => {
 		await mockUserUSDCAccount(
 			usdcMint,
 			new BN(10 * 10 ** 6),
-			bankrunContextWrapper,
+			contextWrapper,
 			driftClient.wallet.publicKey
 		);
 
@@ -148,7 +148,7 @@ describe('compute units', () => {
 		await driftClient.updatePerpAuctionDuration(new BN(0));
 		await driftClient.fetchAccounts();
 
-		const solUsd = await mockOracleNoProgram(bankrunContextWrapper, 1);
+		const solUsd = await mockOracleNoProgram(contextWrapper, 1);
 		await driftClient.initializePerpMarket(
 			0,
 			solUsd,
@@ -176,7 +176,7 @@ describe('compute units', () => {
 	});
 
 	async function advancePastMmOracleRateLimit(): Promise<void> {
-		await bankrunContextWrapper.connection.updateSlotAndClock();
+		await contextWrapper.connection.updateSlotAndClock();
 	}
 
 	async function getNativeInstructionComputeUnits(
@@ -184,7 +184,7 @@ describe('compute units', () => {
 	): Promise<number> {
 		const computeUnits = await findComputeUnitConsumption(
 			chProgram.programId,
-			bankrunContextWrapper.connection.toConnection(),
+			contextWrapper.connection.toConnection(),
 			txSig
 		);
 		assert.strictEqual(

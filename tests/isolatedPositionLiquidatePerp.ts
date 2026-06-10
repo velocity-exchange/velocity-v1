@@ -29,9 +29,9 @@ import {
 	setFeedPriceNoProgram,
 } from './testHelpers';
 import { PERCENTAGE_PRECISION } from '../sdk';
-import { startAnchor } from 'solana-bankrun';
+import { startLiteSVM } from '../sdk/src/litesvm/litesvmConnection';
 import { TestBulkAccountLoader } from '../sdk/src/accounts/testBulkAccountLoader';
-import { BankrunContextWrapper } from '../sdk/src/bankrun/bankrunConnection';
+import { LiteSVMContextWrapper } from '../sdk/src/litesvm/litesvmConnection';
 
 describe('liquidate perp (no open orders)', () => {
 	const chProgram = anchor.workspace.Drift as Program;
@@ -41,7 +41,7 @@ describe('liquidate perp (no open orders)', () => {
 
 	let bulkAccountLoader: TestBulkAccountLoader;
 
-	let bankrunContextWrapper: BankrunContextWrapper;
+	let contextWrapper: LiteSVMContextWrapper;
 
 	let usdcMint;
 	let userUSDCAccount;
@@ -62,32 +62,32 @@ describe('liquidate perp (no open orders)', () => {
 	const usdcAmount = new BN(10 * 10 ** 6);
 
 	before(async () => {
-		const context = await startAnchor('', [], []);
+		const context = await startLiteSVM('', [], []);
 
-		bankrunContextWrapper = new BankrunContextWrapper(context);
+		contextWrapper = new LiteSVMContextWrapper(context);
 
 		bulkAccountLoader = new TestBulkAccountLoader(
-			bankrunContextWrapper.connection,
+			contextWrapper.connection,
 			'processed',
 			1
 		);
 
 		eventSubscriber = new EventSubscriber(
-			bankrunContextWrapper.connection.toConnection(),
+			contextWrapper.connection.toConnection(),
 			chProgram
 		);
 
 		await eventSubscriber.subscribe();
 
-		usdcMint = await mockUSDCMint(bankrunContextWrapper);
+		usdcMint = await mockUSDCMint(contextWrapper);
 		userUSDCAccount = await mockUserUSDCAccount(
 			usdcMint,
 			usdcAmount,
-			bankrunContextWrapper
+			contextWrapper
 		);
 
 		const oracle = await mockOracleNoProgram(
-			bankrunContextWrapper,
+			contextWrapper,
 			1,
 			-7,
 			undefined,
@@ -95,8 +95,8 @@ describe('liquidate perp (no open orders)', () => {
 		);
 
 		driftClient = new TestClient({
-			connection: bankrunContextWrapper.connection.toConnection(),
-			wallet: bankrunContextWrapper.provider.wallet,
+			connection: contextWrapper.connection.toConnection(),
+			wallet: contextWrapper.provider.wallet,
 			programID: chProgram.programId,
 			opts: {
 				commitment: 'confirmed',
@@ -173,15 +173,15 @@ describe('liquidate perp (no open orders)', () => {
 			new BN(0)
 		);
 
-		bankrunContextWrapper.fundKeypair(liquidatorKeyPair, LAMPORTS_PER_SOL);
+		contextWrapper.fundKeypair(liquidatorKeyPair, LAMPORTS_PER_SOL);
 		liquidatorUSDCAccount = await mockUserUSDCAccount(
 			usdcMint,
 			usdcAmount,
-			bankrunContextWrapper,
+			contextWrapper,
 			liquidatorKeyPair.publicKey
 		);
 		liquidatorDriftClient = new TestClient({
-			connection: bankrunContextWrapper.connection.toConnection(),
+			connection: contextWrapper.connection.toConnection(),
 			wallet: new Wallet(liquidatorKeyPair),
 			programID: chProgram.programId,
 			opts: {
@@ -230,7 +230,7 @@ describe('liquidate perp (no open orders)', () => {
 		await driftClientUser.subscribe();
 
 		const oracle = driftClient.getPerpMarketAccount(0).oracle;
-		await setFeedPriceNoProgram(bankrunContextWrapper, 0.9, oracle, 10000);
+		await setFeedPriceNoProgram(contextWrapper, 0.9, oracle, 10000);
 
 		await driftClient.settlePNL(
 			driftClientUser.userAccountPublicKey,
@@ -238,7 +238,7 @@ describe('liquidate perp (no open orders)', () => {
 			0
 		);
 
-		await setFeedPriceNoProgram(bankrunContextWrapper, 1.1, oracle, 10000);
+		await setFeedPriceNoProgram(contextWrapper, 1.1, oracle, 10000);
 
 		await driftClient.settlePNL(
 			driftClientUser.userAccountPublicKey,
@@ -248,7 +248,7 @@ describe('liquidate perp (no open orders)', () => {
 
 		await driftClientUser.unsubscribe();
 
-		await setFeedPriceNoProgram(bankrunContextWrapper, 0.1, oracle, 10000);
+		await setFeedPriceNoProgram(contextWrapper, 0.1, oracle, 10000);
 
 		const txSig1 = await liquidatorDriftClient.setUserStatusToBeingLiquidated(
 			await driftClient.getUserAccountPublicKey(),
@@ -264,7 +264,7 @@ describe('liquidate perp (no open orders)', () => {
 			new BN(175).mul(BASE_PRECISION).div(new BN(10))
 		);
 
-		bankrunContextWrapper.connection.printTxLogs(txSig);
+		contextWrapper.connection.printTxLogs(txSig);
 
 		for (let i = 0; i < 32; i++) {
 			assert(!isVariant(driftClient.getUserAccount().orders[i].status, 'open'));
@@ -354,7 +354,7 @@ describe('liquidate perp (no open orders)', () => {
 			QUOTE_PRECISION,
 			QUOTE_PRECISION
 		);
-		bankrunContextWrapper.connection.printTxLogs(tx1);
+		contextWrapper.connection.printTxLogs(tx1);
 
 		await driftClient.fetchAccounts();
 		const marketBeforeBankruptcy =

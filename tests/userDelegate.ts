@@ -23,9 +23,9 @@ import {
 } from './testHelpers';
 import { assert } from 'chai';
 import { Keypair } from '@solana/web3.js';
-import { startAnchor } from 'solana-bankrun';
+import { startLiteSVM } from '../sdk/src/litesvm/litesvmConnection';
 import { TestBulkAccountLoader } from '../sdk/src/accounts/testBulkAccountLoader';
-import { BankrunContextWrapper } from '../sdk/src/bankrun/bankrunConnection';
+import { LiteSVMContextWrapper } from '../sdk/src/litesvm/litesvmConnection';
 
 describe('user delegate', () => {
 	const chProgram = anchor.workspace.Drift as Program;
@@ -35,7 +35,7 @@ describe('user delegate', () => {
 
 	let bulkAccountLoader: TestBulkAccountLoader;
 
-	let bankrunContextWrapper: BankrunContextWrapper;
+	let contextWrapper: LiteSVMContextWrapper;
 
 	let usdcMint;
 
@@ -61,29 +61,29 @@ describe('user delegate', () => {
 	);
 
 	before(async () => {
-		const context = await startAnchor('', [], []);
+		const context = await startLiteSVM('', [], []);
 
-		bankrunContextWrapper = new BankrunContextWrapper(context);
+		contextWrapper = new LiteSVMContextWrapper(context);
 
 		bulkAccountLoader = new TestBulkAccountLoader(
-			bankrunContextWrapper.connection,
+			contextWrapper.connection,
 			'processed',
 			1
 		);
 
 		eventSubscriber = new EventSubscriber(
-			bankrunContextWrapper.connection.toConnection(),
+			contextWrapper.connection.toConnection(),
 			chProgram
 		);
 
 		await eventSubscriber.subscribe();
 
-		usdcMint = await mockUSDCMint(bankrunContextWrapper);
+		usdcMint = await mockUSDCMint(contextWrapper);
 
-		solUsd = await mockOracleNoProgram(bankrunContextWrapper, 1);
+		solUsd = await mockOracleNoProgram(contextWrapper, 1);
 		driftClient = new TestClient({
-			connection: bankrunContextWrapper.connection.toConnection(),
-			wallet: bankrunContextWrapper.provider.wallet,
+			connection: contextWrapper.connection.toConnection(),
+			wallet: contextWrapper.provider.wallet,
 			programID: chProgram.programId,
 			opts: {
 				commitment: 'confirmed',
@@ -126,8 +126,8 @@ describe('user delegate', () => {
 		await driftClient.initializeUserAccount(1, 'CRISP 1');
 		await driftClient.switchActiveUser(0);
 
-		delegateKeyPair = await createFundedKeyPair(bankrunContextWrapper);
-		secondDelegateKeyPair = await createFundedKeyPair(bankrunContextWrapper);
+		delegateKeyPair = await createFundedKeyPair(contextWrapper);
+		secondDelegateKeyPair = await createFundedKeyPair(contextWrapper);
 	});
 
 	after(async () => {
@@ -154,7 +154,7 @@ describe('user delegate', () => {
 		);
 
 		delegateDriftClient = new TestClient({
-			connection: bankrunContextWrapper.connection.toConnection(),
+			connection: contextWrapper.connection.toConnection(),
 			wallet: new Wallet(delegateKeyPair),
 			programID: chProgram.programId,
 			opts: {
@@ -169,9 +169,9 @@ describe('user delegate', () => {
 					publicKey: solUsd,
 				},
 			],
-			authority: bankrunContextWrapper.provider.wallet.publicKey,
+			authority: contextWrapper.provider.wallet.publicKey,
 			authoritySubAccountMap: new Map().set(
-				bankrunContextWrapper.provider.wallet.publicKey,
+				contextWrapper.provider.wallet.publicKey,
 				[0, 1]
 			),
 			accountSubscription: {
@@ -186,7 +186,7 @@ describe('user delegate', () => {
 		delegateUsdcAccount = await mockUserUSDCAccount(
 			usdcMint,
 			usdcAmount,
-			bankrunContextWrapper,
+			contextWrapper,
 			delegateKeyPair.publicKey
 		);
 

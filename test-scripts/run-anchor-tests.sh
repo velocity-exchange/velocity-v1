@@ -8,7 +8,7 @@ if [ "$1" != "--skip-build" ]; then
     cp target/idl/drift.json sdk/src/idl/ && cp target/types/drift.ts sdk/src/idl/
 else
   # --skip-build still needs the bundled SDK IDL to match the deployed program ID,
-  # otherwise tx instructions target a program that bankrun never loaded.
+  # otherwise tx instructions target a program that the litesvm runtime never loaded.
   if [ -f target/idl/drift.json ]; then
     cp target/idl/drift.json sdk/src/idl/
   fi
@@ -72,11 +72,11 @@ test_files=(
   pauseExchange.ts
   pauseDepositWithdraw.ts
   placeAndMakePerp.ts
-  placeAndMakeSignedMsgBankrun.ts
+  placeAndMakeSignedMsgLiteSvm.ts
   postOnly.ts
   prelisting.ts
   pyth.ts
-  pythLazerBankrun.ts
+  pythLazerLiteSvm.ts
   referrer.ts
   roundInFavorBaseAsset.ts
   settlePNLInvariant.ts

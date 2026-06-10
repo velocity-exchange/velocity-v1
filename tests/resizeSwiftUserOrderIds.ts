@@ -24,9 +24,9 @@ import {
 	sleep,
 } from './testHelpers';
 import { PEG_PRECISION } from '../sdk/src';
-import { startAnchor } from 'solana-bankrun';
+import { startLiteSVM } from '../sdk/src/litesvm/litesvmConnection';
 import { TestBulkAccountLoader } from '../sdk/src/accounts/testBulkAccountLoader';
-import { BankrunContextWrapper } from '../sdk/src/bankrun/bankrunConnection';
+import { LiteSVMContextWrapper } from '../sdk/src/litesvm/litesvmConnection';
 import dotenv from 'dotenv';
 dotenv.config();
 
@@ -39,7 +39,7 @@ describe('place and make signedMsg order', () => {
 
 	let bulkAccountLoader: TestBulkAccountLoader;
 
-	let bankrunContextWrapper: BankrunContextWrapper;
+	let contextWrapper: LiteSVMContextWrapper;
 
 	// ammInvariant == k == x * y
 	const mantissaSqrtScale = new BN(Math.sqrt(PRICE_PRECISION.toNumber()));
@@ -61,41 +61,41 @@ describe('place and make signedMsg order', () => {
 	let oracleInfos;
 
 	before(async () => {
-		const context = await startAnchor('', [], []);
+		const context = await startLiteSVM('', [], []);
 
 		// @ts-ignore
-		bankrunContextWrapper = new BankrunContextWrapper(context);
+		contextWrapper = new LiteSVMContextWrapper(context);
 
 		bulkAccountLoader = new TestBulkAccountLoader(
-			bankrunContextWrapper.connection,
+			contextWrapper.connection,
 			'processed',
 			1
 		);
 
 		eventSubscriber = new EventSubscriber(
-			bankrunContextWrapper.connection.toConnection(),
+			contextWrapper.connection.toConnection(),
 			// @ts-ignore
 			chProgram
 		);
 
 		await eventSubscriber.subscribe();
 
-		usdcMint = await mockUSDCMint(bankrunContextWrapper);
+		usdcMint = await mockUSDCMint(contextWrapper);
 		userUSDCAccount = await mockUserUSDCAccount(
 			usdcMint,
 			usdcAmount,
-			bankrunContextWrapper
+			contextWrapper
 		);
 
-		solUsd = await mockOracleNoProgram(bankrunContextWrapper, 32.821);
+		solUsd = await mockOracleNoProgram(contextWrapper, 32.821);
 
 		marketIndexes = [0];
 		spotMarketIndexes = [0, 1];
 		oracleInfos = [{ publicKey: solUsd, source: OracleSource.PYTH_LAZER }];
 
 		makerDriftClient = new TestClient({
-			connection: bankrunContextWrapper.connection.toConnection(),
-			wallet: bankrunContextWrapper.provider.wallet,
+			connection: contextWrapper.connection.toConnection(),
+			wallet: contextWrapper.provider.wallet,
 			programID: chProgram.programId,
 			opts: {
 				commitment: 'confirmed',
@@ -149,7 +149,7 @@ describe('place and make signedMsg order', () => {
 	it('increase size of signedMsg user orders', async () => {
 		const [takerDriftClient, takerDriftClientUser] =
 			await initializeNewTakerClientAndUser(
-				bankrunContextWrapper,
+				contextWrapper,
 				chProgram,
 				usdcMint,
 				usdcAmount,
@@ -184,7 +184,7 @@ describe('place and make signedMsg order', () => {
 	it('fails to decrease size if authority != payer', async () => {
 		const [takerDriftClient, takerDriftClientUser] =
 			await initializeNewTakerClientAndUser(
-				bankrunContextWrapper,
+				contextWrapper,
 				chProgram,
 				usdcMint,
 				usdcAmount,
@@ -225,7 +225,7 @@ describe('place and make signedMsg order', () => {
 	it('allows decrease size if authority is delegate', async () => {
 		const [takerDriftClient, takerDriftClientUser] =
 			await initializeNewTakerClientAndUser(
-				bankrunContextWrapper,
+				contextWrapper,
 				chProgram,
 				usdcMint,
 				usdcAmount,
@@ -265,7 +265,7 @@ describe('place and make signedMsg order', () => {
 	it('decrease size of signedMsg user orders', async () => {
 		const [takerDriftClient, takerDriftClientUser] =
 			await initializeNewTakerClientAndUser(
-				bankrunContextWrapper,
+				contextWrapper,
 				chProgram,
 				usdcMint,
 				usdcAmount,
@@ -299,7 +299,7 @@ describe('place and make signedMsg order', () => {
 });
 
 async function initializeNewTakerClientAndUser(
-	bankrunContextWrapper: BankrunContextWrapper,
+	contextWrapper: LiteSVMContextWrapper,
 	chProgram: Program,
 	usdcMint: Keypair,
 	usdcAmount: BN,
@@ -309,17 +309,17 @@ async function initializeNewTakerClientAndUser(
 	bulkAccountLoader: TestBulkAccountLoader
 ): Promise<[TestClient, User]> {
 	const keypair = new Keypair();
-	await bankrunContextWrapper.fundKeypair(keypair, 10 ** 9);
+	await contextWrapper.fundKeypair(keypair, 10 ** 9);
 	await sleep(1000);
 	const wallet = new Wallet(keypair);
 	const userUSDCAccount = await mockUserUSDCAccount(
 		usdcMint,
 		usdcAmount,
-		bankrunContextWrapper,
+		contextWrapper,
 		keypair.publicKey
 	);
 	const takerDriftClient = new TestClient({
-		connection: bankrunContextWrapper.connection.toConnection(),
+		connection: contextWrapper.connection.toConnection(),
 		wallet,
 		programID: chProgram.programId,
 		opts: {

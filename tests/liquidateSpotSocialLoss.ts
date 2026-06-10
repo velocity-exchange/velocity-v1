@@ -28,9 +28,9 @@ import {
 	initializeSolSpotMarket,
 } from './testHelpers';
 import { isVariant, UserStatus, PERCENTAGE_PRECISION } from '../sdk';
-import { startAnchor } from 'solana-bankrun';
+import { startLiteSVM } from '../sdk/src/litesvm/litesvmConnection';
 import { TestBulkAccountLoader } from '../sdk/src/accounts/testBulkAccountLoader';
-import { BankrunContextWrapper } from '../sdk/src/bankrun/bankrunConnection';
+import { LiteSVMContextWrapper } from '../sdk/src/litesvm/litesvmConnection';
 
 describe('liquidate spot w/ social loss', () => {
 	const chProgram = anchor.workspace.Drift as Program;
@@ -39,7 +39,7 @@ describe('liquidate spot w/ social loss', () => {
 	let eventSubscriber: EventSubscriber;
 
 	let bulkAccountLoader: TestBulkAccountLoader;
-	let bankrunContextWrapper: BankrunContextWrapper;
+	let contextWrapper: LiteSVMContextWrapper;
 
 	let usdcMint;
 	let userUSDCAccount;
@@ -55,30 +55,30 @@ describe('liquidate spot w/ social loss', () => {
 	let _throwaway: PublicKey;
 
 	before(async () => {
-		const context = await startAnchor('', [], []);
+		const context = await startLiteSVM('', [], []);
 
-		bankrunContextWrapper = new BankrunContextWrapper(context);
+		contextWrapper = new LiteSVMContextWrapper(context);
 
 		bulkAccountLoader = new TestBulkAccountLoader(
-			bankrunContextWrapper.connection,
+			contextWrapper.connection,
 			'processed',
 			1
 		);
-		usdcMint = await mockUSDCMint(bankrunContextWrapper);
+		usdcMint = await mockUSDCMint(contextWrapper);
 		userUSDCAccount = await mockUserUSDCAccount(
 			usdcMint,
 			usdcAmount,
-			bankrunContextWrapper
+			contextWrapper
 		);
 		userWSOLAccount = await createWSolTokenAccountForUser(
-			bankrunContextWrapper,
+			contextWrapper,
 			// @ts-ignore
-			bankrunContextWrapper.provider.wallet,
+			contextWrapper.provider.wallet,
 			ZERO
 		);
 
 		solOracle = await mockOracleNoProgram(
-			bankrunContextWrapper,
+			contextWrapper,
 			100,
 			-7,
 			undefined,
@@ -86,8 +86,8 @@ describe('liquidate spot w/ social loss', () => {
 		);
 
 		driftClient = new TestClient({
-			connection: bankrunContextWrapper.connection.toConnection(),
-			wallet: bankrunContextWrapper.provider.wallet,
+			connection: contextWrapper.connection.toConnection(),
+			wallet: contextWrapper.provider.wallet,
 			programID: chProgram.programId,
 			opts: {
 				commitment: 'confirmed',
@@ -109,7 +109,7 @@ describe('liquidate spot w/ social loss', () => {
 		});
 
 		eventSubscriber = new EventSubscriber(
-			bankrunContextWrapper.connection,
+			contextWrapper.connection,
 			chProgram
 		);
 
@@ -140,7 +140,7 @@ describe('liquidate spot w/ social loss', () => {
 		const solAmount = new BN(10 * 10 ** 9);
 		[liquidatorDriftClient, liquidatorDriftClientWSOLAccount, _throwaway] =
 			await createUserWithUSDCAndWSOLAccount(
-				bankrunContextWrapper,
+				contextWrapper,
 				usdcMint,
 				chProgram,
 				solAmount,
@@ -174,7 +174,7 @@ describe('liquidate spot w/ social loss', () => {
 	});
 
 	it('liquidate', async () => {
-		await setFeedPriceNoProgram(bankrunContextWrapper, 200, solOracle, 10000);
+		await setFeedPriceNoProgram(contextWrapper, 200, solOracle, 10000);
 		const spotMarketBefore = driftClient.getSpotMarketAccount(0);
 		const spotMarket1Before = driftClient.getSpotMarketAccount(1);
 
@@ -187,9 +187,9 @@ describe('liquidate spot w/ social loss', () => {
 		);
 
 		const computeUnits =
-			bankrunContextWrapper.connection.findComputeUnitConsumption(txSig);
+			contextWrapper.connection.findComputeUnitConsumption(txSig);
 		console.log('compute units', computeUnits);
-		bankrunContextWrapper.connection.printTxLogs(txSig);
+		contextWrapper.connection.printTxLogs(txSig);
 
 		console.log(driftClient.getUserAccount().status);
 		// assert(driftClient.getUserAccount().isBeingLiquidated);

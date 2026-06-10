@@ -30,9 +30,9 @@ import {
 	setFeedPriceNoProgram,
 } from './testHelpers';
 import { isVariant, UserStatus } from '../sdk';
-import { startAnchor } from 'solana-bankrun';
+import { startLiteSVM } from '../sdk/src/litesvm/litesvmConnection';
 import { TestBulkAccountLoader } from '../sdk/src/accounts/testBulkAccountLoader';
-import { BankrunContextWrapper } from '../sdk/src/bankrun/bankrunConnection';
+import { LiteSVMContextWrapper } from '../sdk/src/litesvm/litesvmConnection';
 
 describe('liquidate borrow for perp pnl', () => {
 	const chProgram = anchor.workspace.Drift as Program;
@@ -41,7 +41,7 @@ describe('liquidate borrow for perp pnl', () => {
 
 	let bulkAccountLoader: TestBulkAccountLoader;
 
-	let bankrunContextWrapper: BankrunContextWrapper;
+	let contextWrapper: LiteSVMContextWrapper;
 
 	let usdcMint;
 	let userUSDCAccount;
@@ -68,38 +68,38 @@ describe('liquidate borrow for perp pnl', () => {
 	let eventSubscriber: EventSubscriber;
 
 	before(async () => {
-		const context = await startAnchor('', [], []);
+		const context = await startLiteSVM('', [], []);
 
-		bankrunContextWrapper = new BankrunContextWrapper(context);
+		contextWrapper = new LiteSVMContextWrapper(context);
 
 		eventSubscriber = new EventSubscriber(
-			bankrunContextWrapper.connection.toConnection(),
+			contextWrapper.connection.toConnection(),
 			chProgram
 		);
 
 		await eventSubscriber.subscribe();
 
 		bulkAccountLoader = new TestBulkAccountLoader(
-			bankrunContextWrapper.connection,
+			contextWrapper.connection,
 			'processed',
 			1
 		);
 
-		usdcMint = await mockUSDCMint(bankrunContextWrapper);
+		usdcMint = await mockUSDCMint(contextWrapper);
 		userUSDCAccount = await mockUserUSDCAccount(
 			usdcMint,
 			usdcAmount,
-			bankrunContextWrapper
+			contextWrapper
 		);
 		userWSOLAccount = await createWSolTokenAccountForUser(
-			bankrunContextWrapper,
+			contextWrapper,
 			// @ts-ignore
-			bankrunContextWrapper.provider.wallet,
+			contextWrapper.provider.wallet,
 			ZERO
 		);
 
 		solOracle = await mockOracleNoProgram(
-			bankrunContextWrapper,
+			contextWrapper,
 			1,
 			undefined,
 			undefined,
@@ -107,8 +107,8 @@ describe('liquidate borrow for perp pnl', () => {
 		);
 
 		driftClient = new TestClient({
-			connection: bankrunContextWrapper.connection.toConnection(),
-			wallet: bankrunContextWrapper.provider.wallet,
+			connection: contextWrapper.connection.toConnection(),
+			wallet: contextWrapper.provider.wallet,
 			programID: chProgram.programId,
 			opts: {
 				commitment: 'confirmed',
@@ -171,7 +171,7 @@ describe('liquidate borrow for perp pnl', () => {
 
 		await driftClient.updateOracleGuardRails(oracleGuardRails);
 
-		// await bankrunContextWrapper.fundKeypair(bankrunContextWrapper.provider.wallet, BigInt(101 * LAMPORTS_PER_SOL));
+		// await contextWrapper.fundKeypair(contextWrapper.provider.wallet, BigInt(101 * LAMPORTS_PER_SOL));
 
 		await driftClient.openPosition(
 			PositionDirection.LONG,
@@ -190,7 +190,7 @@ describe('liquidate borrow for perp pnl', () => {
 		const solAmount = new BN(10 * 10 ** 9);
 		[liquidatorDriftClient, liquidatorDriftClientWSOLAccount, _throwaway] =
 			await createUserWithUSDCAndWSOLAccount(
-				bankrunContextWrapper,
+				contextWrapper,
 				usdcMint,
 				chProgram,
 				solAmount,
@@ -217,7 +217,7 @@ describe('liquidate borrow for perp pnl', () => {
 		const solBorrow = new BN(5 * 10 ** 8);
 
 		const account =
-			await bankrunContextWrapper.connection.getAccountInfoAndContext(
+			await contextWrapper.connection.getAccountInfoAndContext(
 				userWSOLAccount
 			);
 
@@ -233,7 +233,7 @@ describe('liquidate borrow for perp pnl', () => {
 	});
 
 	it('liquidate', async () => {
-		await setFeedPriceNoProgram(bankrunContextWrapper, 50, solOracle, 10000);
+		await setFeedPriceNoProgram(contextWrapper, 50, solOracle, 10000);
 
 		const txSig = await liquidatorDriftClient.liquidateBorrowForPerpPnl(
 			await driftClient.getUserAccountPublicKey(),

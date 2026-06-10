@@ -27,9 +27,9 @@ import {
 	mockUserUSDCAccount,
 } from './testHelpers';
 // import { PRICE_PRECISION, PEG_PRECISION, Wallet, DriftClient } from '../sdk';
-import { startAnchor } from 'solana-bankrun';
+import { startLiteSVM } from '../sdk/src/litesvm/litesvmConnection';
 import { TestBulkAccountLoader } from '../sdk/src/accounts/testBulkAccountLoader';
-import { BankrunContextWrapper } from '../sdk/src/bankrun/bankrunConnection';
+import { LiteSVMContextWrapper } from '../sdk/src/litesvm/litesvmConnection';
 
 describe('oracle diff sources', () => {
 	const chProgram = anchor.workspace.Drift as Program;
@@ -39,7 +39,7 @@ describe('oracle diff sources', () => {
 
 	let bulkAccountLoader: TestBulkAccountLoader;
 
-	let bankrunContextWrapper: BankrunContextWrapper;
+	let contextWrapper: LiteSVMContextWrapper;
 
 	let solOracle: PublicKey;
 
@@ -61,27 +61,27 @@ describe('oracle diff sources', () => {
 	let oracleInfos: OracleInfo[];
 
 	before(async () => {
-		const context = await startAnchor('', [], []);
+		const context = await startLiteSVM('', [], []);
 
-		bankrunContextWrapper = new BankrunContextWrapper(context);
+		contextWrapper = new LiteSVMContextWrapper(context);
 
 		bulkAccountLoader = new TestBulkAccountLoader(
-			bankrunContextWrapper.connection,
+			contextWrapper.connection,
 			'processed',
 			1
 		);
 
 		eventSubscriber = new EventSubscriber(
-			bankrunContextWrapper.connection.toConnection(),
+			contextWrapper.connection.toConnection(),
 			chProgram
 		);
 
 		await eventSubscriber.subscribe();
 
-		usdcMint = await mockUSDCMint(bankrunContextWrapper);
-		await mockUserUSDCAccount(usdcMint, largeUsdcAmount, bankrunContextWrapper);
+		usdcMint = await mockUSDCMint(contextWrapper);
+		await mockUserUSDCAccount(usdcMint, largeUsdcAmount, contextWrapper);
 
-		solOracle = await mockOracleNoProgram(bankrunContextWrapper, 3);
+		solOracle = await mockOracleNoProgram(contextWrapper, 3);
 
 		marketIndexes = [0, 1];
 		spotMarketIndexes = [0, 1, 2];
@@ -91,8 +91,8 @@ describe('oracle diff sources', () => {
 		];
 
 		admin = new TestClient({
-			connection: bankrunContextWrapper.connection.toConnection(),
-			wallet: bankrunContextWrapper.provider.wallet,
+			connection: contextWrapper.connection.toConnection(),
+			wallet: contextWrapper.provider.wallet,
 			programID: chProgram.programId,
 			opts: {
 				commitment: 'confirmed',
@@ -161,7 +161,7 @@ describe('oracle diff sources', () => {
 	it('polling', async () => {
 		const [driftClient, _usdcAccount, _userKeyPair] =
 			await createUserWithUSDCAccount(
-				bankrunContextWrapper,
+				contextWrapper,
 				usdcMint,
 				chProgram,
 				usdcAmount,
@@ -193,9 +193,9 @@ describe('oracle diff sources', () => {
 	});
 
 	it('ws', async () => {
-		const userKeyPair = await createFundedKeyPair(bankrunContextWrapper);
+		const userKeyPair = await createFundedKeyPair(contextWrapper);
 		const driftClient = new DriftClient({
-			connection: bankrunContextWrapper.connection.toConnection(),
+			connection: contextWrapper.connection.toConnection(),
 			wallet: new Wallet(userKeyPair),
 			programID: admin.program.programId,
 			opts: {

@@ -1318,6 +1318,8 @@ export type ReferrerInfo = {
 export enum ReferrerStatus {
 	IsReferrer = 1,
 	IsReferred = 2,
+	/** set when the user's RevenueShareEscrow was initialized with a referrer */
+	BuilderReferral = 4,
 }
 
 export enum PlaceAndTakeOrderSuccessCondition {

@@ -29,10 +29,18 @@ velocity-admin auth set-hot-admin <role> <pubkey>
 velocity-admin auth init-config [--initial-warm <pk>]
 
 velocity-admin perp-market set-status <market> <status>
+velocity-admin perp-market set-fee-buffer <market> <amount>
 velocity-admin spot-market set-status <market> <status>
 velocity-admin spot-market set-guard-threshold <market> <threshold>
+velocity-admin spot-market set-fee-factors <market> <ifFeeFactor> <protocolFeeFactor>
 
 velocity-admin exchange set-status <bitfield>
+
+velocity-admin fees set-recipient <pubkey>                       # cold admin
+velocity-admin fees set-split <ammFeeNumerator> <ifFeeNumerator> # cold admin
+velocity-admin fees withdraw-perp <market> <amount> <recipientTokenAccount>  # FeeWithdraw hot key
+velocity-admin fees withdraw-spot <market> <amount> <recipientTokenAccount>  # FeeWithdraw hot key
+velocity-admin fees sweep <market>                               # permissionless
 
 velocity-admin user set-special-status <user> <flags>
 velocity-admin user admin-deposit <market> <amount> --user <pk> --user-token-account <pk>

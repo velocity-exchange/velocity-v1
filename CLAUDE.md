@@ -38,6 +38,10 @@ cd sdk/ && bun install && bun run build
 
 NEVER hand-edit `sdk/src/idl/velocity.json` or `sdk/src/idl/velocity.ts` — they are generated artifacts. To change them, modify the Rust program and regenerate (`bun run program:build`, or `bun run program:idl` for the fast path). Manual edits will silently drift from on-chain layout and break clients. Note a full `anchor build` already emits both `target/idl/velocity.json` and `target/types/velocity.ts`; the scripts just copy them into `sdk/src/idl/` — no separate `anchor idl build`/`anchor idl type` step is needed after a full build.
 
+**Update the admin CLI when admin instructions change:**
+
+`cli-admin/` wraps the admin/keeper surface. Whenever admin instructions are added, removed, renamed, or change signature, update the CLI in the same change: add/remove the dedicated wrapper in `cli-admin/src/commands/` (mirroring the existing command style), update `cli-admin/README.md`'s command list, and verify with `cd cli-admin && bun install && bun run build && bun run lint` (CI builds it on every PR via the `cli-admin-build` job). The generic `call` dispatcher is an escape hatch, not a substitute for wrappers on routinely-used operations.
+
 ### macOS build environment
 
 Two pitfalls that fresh setups regularly hit. If you see either symptom, apply the matching fix before debugging anything else.

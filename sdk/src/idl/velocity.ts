@@ -11343,7 +11343,7 @@ export type Velocity = {
           "type": "u32"
         },
         {
-          "name": "protocolFeeBps",
+          "name": "protocolFeeFactor",
           "type": "u32"
         }
       ]
@@ -15953,7 +15953,11 @@ export type Velocity = {
           {
             "name": "totalFee",
             "docs": [
-              "total fees collected by this perp market",
+              "Lifetime fee-derived income booked to the AMM ITSELF (analytics):",
+              "its fee provision (the `amm_fee` cut of trade-fee remainders) plus",
+              "spread surplus. NOT the market's gross fees — those live in",
+              "`PerpMarket.fee_ledger.total_exchange_fee`. Adjusted in lockstep with",
+              "`total_fee_minus_distributions` by admin summary-stats corrections.",
               "precision: QUOTE_PRECISION"
             ],
             "type": "i128"
@@ -15961,7 +15965,9 @@ export type Velocity = {
           {
             "name": "totalMmFee",
             "docs": [
-              "total fees collected by the vAMM's bid/ask spread",
+              "Spread-capture component of `total_fee` (analytics): the gap between",
+              "the curve price and the execution price on AMM fills. Trading profit,",
+              "not a fee anyone explicitly pays.",
               "precision: QUOTE_PRECISION"
             ],
             "type": "i128"
@@ -15969,7 +15975,14 @@ export type Velocity = {
           {
             "name": "totalFeeMinusDistributions",
             "docs": [
-              "total fees minus any recognized upnl and pool withdraws",
+              "The AMM's equity ledger (retained earnings) — broader than the name",
+              "suggests: fee income (`apply_fill_fees`) + funding and other P&L",
+              "(`record_amm_pnl`) + external credits (`record_credit`), minus",
+              "curve-adjustment costs (`apply_cost`) and bankruptcy clawbacks.",
+              "Contains ONLY the AMM's own money (protocol/IF carveouts never enter",
+              "it). Drives `is_underwater`, the drawdown breaker, and curve-cost",
+              "budgets; reconciled against pool balances by",
+              "`calculate_perp_market_amm_summary_stats`.",
               "precision: QUOTE_PRECISION"
             ],
             "type": "i128"
@@ -22642,7 +22655,7 @@ export type Velocity = {
             "type": "u32"
           },
           {
-            "name": "protocolFeeBps",
+            "name": "protocolFeeFactor",
             "docs": [
               "Protocol's carveout of lending deposit-interest gains, routed to",
               "`protocol_fee_pool`. precision: IF_FACTOR_PRECISION"

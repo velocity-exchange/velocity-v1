@@ -107,13 +107,26 @@ pub struct AMM {
     /// tracks net position (longs-shorts) in market with AMM as counterparty
     /// precision: BASE_PRECISION
     pub base_asset_amount_with_amm: i128,
-    /// total fees collected by this perp market
+    /// Lifetime fee-derived income booked to the AMM ITSELF (analytics):
+    /// its fee provision (the `amm_fee` cut of trade-fee remainders) plus
+    /// spread surplus. NOT the market's gross fees — those live in
+    /// `PerpMarket.fee_ledger.total_exchange_fee`. Adjusted in lockstep with
+    /// `total_fee_minus_distributions` by admin summary-stats corrections.
     /// precision: QUOTE_PRECISION
     pub total_fee: i128,
-    /// total fees collected by the vAMM's bid/ask spread
+    /// Spread-capture component of `total_fee` (analytics): the gap between
+    /// the curve price and the execution price on AMM fills. Trading profit,
+    /// not a fee anyone explicitly pays.
     /// precision: QUOTE_PRECISION
     pub total_mm_fee: i128,
-    /// total fees minus any recognized upnl and pool withdraws
+    /// The AMM's equity ledger (retained earnings) — broader than the name
+    /// suggests: fee income (`apply_fill_fees`) + funding and other P&L
+    /// (`record_amm_pnl`) + external credits (`record_credit`), minus
+    /// curve-adjustment costs (`apply_cost`) and bankruptcy clawbacks.
+    /// Contains ONLY the AMM's own money (protocol/IF carveouts never enter
+    /// it). Drives `is_underwater`, the drawdown breaker, and curve-cost
+    /// budgets; reconciled against pool balances by
+    /// `calculate_perp_market_amm_summary_stats`.
     /// precision: QUOTE_PRECISION
     pub total_fee_minus_distributions: i128,
     /// @deprecated frozen analytics counter from the pre-isolation design

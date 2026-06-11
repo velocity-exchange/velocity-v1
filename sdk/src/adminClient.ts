@@ -2085,12 +2085,12 @@ export class AdminClient extends VelocityClient {
 	public async updateSpotMarketIfFactor(
 		spotMarketIndex: number,
 		ifFeeFactor: number,
-		protocolFeeBps: number
+		protocolFeeFactor: number
 	): Promise<TransactionSignature> {
 		const updateSpotMarketIfFactorIx = await this.getUpdateSpotMarketIfFactorIx(
 			spotMarketIndex,
 			ifFeeFactor,
-			protocolFeeBps
+			protocolFeeFactor
 		);
 
 		const tx = await this.buildTransaction(updateSpotMarketIfFactorIx);
@@ -2103,12 +2103,12 @@ export class AdminClient extends VelocityClient {
 	public async getUpdateSpotMarketIfFactorIx(
 		spotMarketIndex: number,
 		ifFeeFactor: number,
-		protocolFeeBps: number
+		protocolFeeFactor: number
 	): Promise<TransactionInstruction> {
 		return await this.program.instruction.updateSpotMarketIfFactor(
 			spotMarketIndex,
 			ifFeeFactor,
-			protocolFeeBps,
+			protocolFeeFactor,
 			{
 				accounts: {
 					admin: this.isSubscribed

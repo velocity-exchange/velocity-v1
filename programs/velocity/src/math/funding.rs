@@ -51,11 +51,16 @@ impl FundingMarketInputs {
         }
     }
 
-    /// Amount the AMM can spend on negative funding: its own retained
-    /// equity. (The pre-isolation floor protected protocol/IF pendings that
-    /// used to live inside tfmd; they no longer do.)
-    fn fee_pool(&self) -> VelocityResult<u128> {
-        Ok(self.total_fee_minus_distributions.max(0).cast()?)
+    /// Per-period budget for AMM-paid (negative) funding: 1/3 of the AMM's
+    /// retained equity per funding period, so a sustained imbalance can't
+    /// drain it in one settle. (The pre-isolation version also floored this
+    /// at the protocol/IF pendings that used to live inside tfmd; they no
+    /// longer do.) Mirrored by the SDK's `calculateFundingPool`.
+    fn available_fees(&self) -> VelocityResult<u128> {
+        self.total_fee_minus_distributions
+            .max(0)
+            .unsigned_abs()
+            .safe_div(3)
     }
 }
 
@@ -134,11 +139,9 @@ fn calculate_capped_funding_rate(
     uncapped_funding_pnl: i128, // if negative, users would net receive from protocol
     funding_rate: i128,
 ) -> VelocityResult<(i128, i128)> {
-    // The funding_rate_pnl_limit is the amount of fees the protocol can use before it hits it's lower bound
-    let fee_pool = inputs.fee_pool()?;
-
-    // limit to 1/3 of current fee pool per funding period
-    let funding_rate_pnl_limit = -fee_pool.cast::<i128>()?.safe_div(3)?;
+    // the most the AMM may pay out this period (already throttled to 1/3 of
+    // its retained equity by `available_fees`)
+    let funding_rate_pnl_limit = -inputs.available_fees()?.cast::<i128>()?;
 
     // if theres enough in fees, give user's uncapped funding
     // if theres a little/nothing in fees, give the user's capped outflow funding

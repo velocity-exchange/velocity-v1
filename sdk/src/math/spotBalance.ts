@@ -452,7 +452,7 @@ export function calculateDepositRate(
 	const depositRate = borrowRate
 		.mul(
 			PERCENTAGE_PRECISION.sub(
-				new BN(bank.insuranceFund.ifFeeFactor + bank.protocolFeeBps)
+				new BN(bank.insuranceFund.ifFeeFactor + bank.protocolFeeFactor)
 			)
 		)
 		.mul(utilization)

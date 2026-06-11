@@ -1125,9 +1125,14 @@ pub mod velocity {
         ctx: Context<AdminUpdateSpotMarket>,
         spot_market_index: u16,
         if_fee_factor: u32,
-        protocol_fee_bps: u32,
+        protocol_fee_factor: u32,
     ) -> Result<()> {
-        handle_update_spot_market_if_factor(ctx, spot_market_index, if_fee_factor, protocol_fee_bps)
+        handle_update_spot_market_if_factor(
+            ctx,
+            spot_market_index,
+            if_fee_factor,
+            protocol_fee_factor,
+        )
     }
 
     pub fn update_spot_market_revenue_settle_period(

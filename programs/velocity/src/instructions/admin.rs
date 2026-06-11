@@ -384,7 +384,7 @@ pub fn handle_initialize_spot_market(
             ..PoolBalance::default()
         },
         protocol_liquidation_fee: 0,
-        protocol_fee_bps: 0,
+        protocol_fee_factor: 0,
         padding: [0; 8],
         insurance_fund: InsuranceFund {
             vault: ctx.accounts.insurance_fund_vault.key(),
@@ -1682,13 +1682,13 @@ pub fn handle_update_withdraw_guard_threshold(
     spot_market_valid(&ctx.accounts.spot_market)
 )]
 /// Set the lending-gain carveouts: `if_fee_factor` (to the insurance fund) and
-/// `protocol_fee_bps` (to the withdrawable protocol fee pool). Lenders receive
+/// `protocol_fee_factor` (to the withdrawable protocol fee pool). Lenders receive
 /// deposit interest net of both.
 pub fn handle_update_spot_market_if_factor(
     ctx: Context<AdminUpdateSpotMarket>,
     spot_market_index: u16,
     if_fee_factor: u32,
-    protocol_fee_bps: u32,
+    protocol_fee_factor: u32,
 ) -> Result<()> {
     let spot_market = &mut load_mut!(ctx.accounts.spot_market)?;
 
@@ -1701,9 +1701,9 @@ pub fn handle_update_spot_market_if_factor(
     )?;
 
     validate!(
-        if_fee_factor.safe_add(protocol_fee_bps)? <= IF_FACTOR_PRECISION.cast()?,
+        if_fee_factor.safe_add(protocol_fee_factor)? <= IF_FACTOR_PRECISION.cast()?,
         ErrorCode::DefaultError,
-        "if_fee_factor + protocol_fee_bps must be <= 100%"
+        "if_fee_factor + protocol_fee_factor must be <= 100%"
     )?;
 
     msg!(
@@ -1713,13 +1713,13 @@ pub fn handle_update_spot_market_if_factor(
     );
 
     msg!(
-        "spot_market.protocol_fee_bps: {:?} -> {:?}",
-        spot_market.protocol_fee_bps,
-        protocol_fee_bps
+        "spot_market.protocol_fee_factor: {:?} -> {:?}",
+        spot_market.protocol_fee_factor,
+        protocol_fee_factor
     );
 
     spot_market.insurance_fund.if_fee_factor = if_fee_factor;
-    spot_market.protocol_fee_bps = protocol_fee_bps;
+    spot_market.protocol_fee_factor = protocol_fee_factor;
 
     Ok(())
 }

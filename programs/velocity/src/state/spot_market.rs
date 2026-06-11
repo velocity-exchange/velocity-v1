@@ -208,7 +208,7 @@ pub struct SpotMarket {
     pub protocol_liquidation_fee: u32,
     /// Protocol's carveout of lending deposit-interest gains, routed to
     /// `protocol_fee_pool`. precision: IF_FACTOR_PRECISION
-    pub protocol_fee_bps: u32,
+    pub protocol_fee_factor: u32,
     pub padding: [u8; 8],
 }
 
@@ -276,7 +276,7 @@ impl Default for SpotMarket {
             _padding_align_pfp: [0; 8],
             protocol_fee_pool: PoolBalance::default(),
             protocol_liquidation_fee: 0,
-            protocol_fee_bps: 0,
+            protocol_fee_factor: 0,
             padding: [0; 8],
         }
     }

@@ -163,7 +163,7 @@ Two explicit carveouts on deposit-interest gains
 precision `IF_FACTOR_PRECISION` = 1e6, sum validated ≤ 100%):
 
 - `InsuranceFund.if_fee_factor` → `revenue_pool` (staker-owned IF).
-- `SpotMarket.protocol_fee_bps` → `protocol_fee_pool` (withdrawable).
+- `SpotMarket.protocol_fee_factor` → `protocol_fee_pool` (withdrawable).
 - Lenders receive the rest. Set via `update_spot_market_if_factor`.
 
 ## Insurance fund: 100% staker-owned
@@ -238,7 +238,7 @@ flowchart LR
     LIQ -->|"spot (direct)"| RP
     LIQ -->|"spot (direct)"| PFP
     LEND -->|if_fee_factor| RP
-    LEND -->|protocol_fee_bps| PFP
+    LEND -->|protocol_fee_factor| PFP
     RP -->|settle_revenue_to_insurance_fund| IFV
     IFV -->|"share appreciation (no protocol shares)"| STK
     PFP ==>|"withdraw_protocol_fees_* (FeeWithdraw hot key, recipient-locked)"| WALLET
@@ -258,10 +258,10 @@ flowchart LR
 | AMM ledger recompute | `calculate_perp_market_amm_summary_stats` (`math/perp_market.rs`): `tfmd = pools − net_user_pnl − pending_protocol − pending_if` |
 | Dead post-isolation | funding/curve floors (`protocol_floor`, `SHARE_OF_FEES_ALLOCATED_TO_DRIFT`, pendings funding floor), `amm.total_fee_withdrawn` (frozen), the settle_pnl `fee_pool/5` buffer |
 | Liquidation split | `controller/liquidation.rs` (perp ×2 + spot ×2 paths); rates on Perp/SpotMarket |
-| Lending carveouts | `controller/spot_balance.rs:update_spot_market_cumulative_interest`; `InsuranceFund.if_fee_factor`, `SpotMarket.protocol_fee_bps` |
+| Lending carveouts | `controller/spot_balance.rs:update_spot_market_cumulative_interest`; `InsuranceFund.if_fee_factor`, `SpotMarket.protocol_fee_factor` |
 | IF bootstrap | `controller/insurance.rs` (`settle_revenue_to_insurance_fund`, `add_insurance_fund_stake`) |
 | Withdrawal | `instructions/protocol_fees.rs`; `State.protocol_fee_recipient`/`hot_fee_withdraw`; `HotRole::FeeWithdraw` |
-| Admin setters | `update_perp/spot_market_liquidation_fee` (+protocol rate), `update_spot_market_if_factor` (if_fee_factor, protocol_fee_bps), `update_protocol_fee_recipient`, `update_perp/spot_fee_structure`, `update_perp_market_fee_pool_buffer_target` |
+| Admin setters | `update_perp/spot_market_liquidation_fee` (+protocol rate), `update_spot_market_if_factor` (if_fee_factor, protocol_fee_factor), `update_protocol_fee_recipient`, `update_perp/spot_fee_structure`, `update_perp_market_fee_pool_buffer_target` |
 | Event | `ProtocolFeeWithdrawRecord`; `protocol_fee` on liquidation records |
 
 ---

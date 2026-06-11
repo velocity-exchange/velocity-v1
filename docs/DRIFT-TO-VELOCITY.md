@@ -140,7 +140,7 @@ _Pending, `fee-arch`:_
   `ammProtocolFeesReceived`, `pendingAmmProvision`); new `protocolFeePool`,
   `protocolLiquidationFee`, `feePoolBufferTarget` fields.
 - `SpotMarketAccount`: new `protocolFeePool`, `protocolLiquidationFee`,
-  `protocolFeeBps`; `insuranceFund.totalFactor`/`userFactor` → `ifFeeFactor`.
+  `protocolFeeFactor`; `insuranceFund.totalFactor`/`userFactor` → `ifFeeFactor`.
 - `StateAccount`: new `protocolFeeRecipient` / `hotFeeWithdraw`; `FeeStructure` gains
   `ammFeeNumerator` / `ifFeeNumerator` (carved from reserved padding).
 - `calculateUpdatedAMM` / `calculateBidAskPrice` / `calculateUpdatedAMMSpreadReserves` /

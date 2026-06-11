@@ -890,7 +890,7 @@ export type SpotMarketAccount = {
 
 	ifLiquidationFee: number;
 	protocolLiquidationFee: number;
-	protocolFeeBps: number;
+	protocolFeeFactor: number;
 
 	decimals: number;
 	optimalUtilization: number;
@@ -974,9 +974,15 @@ export type AMM = {
 	pegMultiplier: BN;
 	terminalQuoteAssetReserve: BN;
 	baseAssetAmountWithAmm: BN;
+	/// the AMM's own fee-derived income (provision + spread surplus) — the
+	/// market's gross fees are feeLedger.totalExchangeFee
 	totalFee: BN;
+	/// spread-capture component of totalFee (trading profit, not a paid fee)
 	totalMmFee: BN;
+	/// the AMM's equity ledger (retained earnings): fee income + funding/PnL
+	/// + credits − curve costs − bankruptcy clawbacks; AMM money only
 	totalFeeMinusDistributions: BN;
+	/// @deprecated frozen pre-isolation analytics counter
 	totalFeeWithdrawn: BN;
 	lastUpdateSlot: BN;
 	netRevenueSinceLastFunding: BN;

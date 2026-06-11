@@ -238,7 +238,7 @@ pub fn calculate_deposit_rate(
     let total_carveout = spot_market
         .insurance_fund
         .if_fee_factor
-        .safe_add(spot_market.protocol_fee_bps)?;
+        .safe_add(spot_market.protocol_fee_factor)?;
     borrow_rate
         .safe_mul(PERCENTAGE_PRECISION.safe_sub(total_carveout.cast()?)?)?
         .safe_mul(utilization)?

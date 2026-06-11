@@ -146,14 +146,14 @@ pub fn update_spot_market_cumulative_interest(
         // Explicit lending-gain carveouts (replaces the old single `total_factor`
         // skim). Two independent cuts taken off the deposit-interest gain:
         //   - `if_fee_factor`     -> insurance fund (revenue_pool, staker-owned)
-        //   - `protocol_fee_bps`  -> withdrawable protocol fees (protocol_fee_pool)
+        //   - `protocol_fee_factor`  -> withdrawable protocol fees (protocol_fee_pool)
         // Lenders receive whatever remains.
         let deposit_interest_for_if = deposit_interest
             .safe_mul(spot_market.insurance_fund.if_fee_factor as u128)?
             .safe_div(IF_FACTOR_PRECISION)?;
 
         let deposit_interest_for_protocol = deposit_interest
-            .safe_mul(spot_market.protocol_fee_bps as u128)?
+            .safe_mul(spot_market.protocol_fee_factor as u128)?
             .safe_div(IF_FACTOR_PRECISION)?;
 
         let deposit_interest_for_lenders = deposit_interest

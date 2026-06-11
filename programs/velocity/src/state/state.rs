@@ -78,7 +78,7 @@ pub struct State {
     /// Hot key authorized for the `FeeWithdraw` role (triggers protocol-fee
     /// withdrawals to `protocol_fee_recipient`).
     pub hot_fee_withdraw: Pubkey,
-    pub padding: [u8; 208],
+    pub padding: [u8; 272],
 }
 
 /// Purpose-specific hot role keys held on `State`. Each variant maps to one of the
@@ -162,7 +162,7 @@ impl Default for State {
             max_initialize_user_fee: 0,
             feature_bit_flags: 0,
             lp_pool_feature_bit_flags: 0,
-            padding: [0; 208],
+            padding: [0; 272],
         }
     }
 }
@@ -353,9 +353,10 @@ pub enum LpPoolFeatureBitFlags {
 impl Size for State {
     // 8 (disc) + 14 Pubkey (cold + warm + pause + 11 hot, 448 B) + 6 Pubkey (mint/signer/srm
     // + protocol_fee_recipient + hot_fee_withdraw, 192 B) + 2*FeeStructure + OracleGuardRails
-    // + scalars + padding[208] = 1688 B. The two new pubkeys (64 B) came out of padding
-    // (272 -> 208), keeping SIZE constant and (SIZE - 8) % 16 == 0.
-    const SIZE: usize = 1688;
+    // + scalars + padding[272] = 1752 B. The trailing padding was restored to its full
+    // 272 bytes after protocol_fee_recipient/hot_fee_withdraw were added (clean-slate
+    // deploy, so growing the account is free); (SIZE - 8) % 16 == 0 holds (1744).
+    const SIZE: usize = 1752;
 }
 
 #[derive(Copy, AnchorSerialize, AnchorDeserialize, Clone, Debug)]

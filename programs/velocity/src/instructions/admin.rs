@@ -148,7 +148,7 @@ pub fn handle_initialize(ctx: Context<Initialize>) -> Result<()> {
         max_initialize_user_fee: 0,
         feature_bit_flags: 0,
         lp_pool_feature_bit_flags: 0,
-        padding: [0; 208],
+        padding: [0; 272],
     };
 
     Ok(())

@@ -38,8 +38,8 @@ velocity-admin exchange set-status <bitfield>
 
 velocity-admin fees set-recipient <pubkey>                       # cold admin
 velocity-admin fees set-split <ammFeeNumerator> <ifFeeNumerator> # cold admin
-velocity-admin fees withdraw-perp <market> <amount> <recipientTokenAccount>  # FeeWithdraw hot key
-velocity-admin fees withdraw-spot <market> <amount> <recipientTokenAccount>  # FeeWithdraw hot key
+velocity-admin fees withdraw-perp <market> <amount>  # FeeWithdraw hot key; pays the recipient's ATA (created if needed)
+velocity-admin fees withdraw-spot <market> <amount>  # FeeWithdraw hot key; pays the recipient's ATA (created if needed)
 velocity-admin fees sweep <market>                               # permissionless
 
 velocity-admin user set-special-status <user> <flags>

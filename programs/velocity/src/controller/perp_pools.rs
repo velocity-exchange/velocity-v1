@@ -36,13 +36,18 @@ use crate::validate;
 /// Materialize accrued pending fees out of the pnl pool — the streaming
 /// sweep. The pnl pool is where fee value lands (fees debit the payer's
 /// position; tokens arrive as fills settle), so the sweep drains only the
-/// pool's surplus over live user claims plus the retention buffer:
-/// `available = pnl_pool_tokens − max(net_user_pnl, 0) − fee_pool_buffer_target`.
-/// Waterfall order (seniority under scarcity):
-///   1. `pending_if_fee`       -> quote `SpotMarket.revenue_pool` (insurance)
-///   2. `pending_protocol_fee` -> `protocol_fee_pool` (withdrawable)
+/// pool's surplus over live user claims. Waterfall order (seniority under
+/// scarcity):
+///   1. `pending_protocol_fee` -> `protocol_fee_pool` (withdrawable)
+///   2. `pending_if_fee`       -> quote `SpotMarket.revenue_pool` (insurance)
 ///   3. `pending_amm_provision`-> `amm.fee_pool` (tokenizing the provision the
 ///      AMM already booked at fill — NO ledger change here)
+/// The protocol drain is EXEMPT from the `fee_pool_buffer_target` retention
+/// margin (it reserves only `max(net_user_pnl, 0)`) and runs first: it sweeps
+/// every settle, so each drain is small, and unlike the other two its value
+/// is not recoverable in bankruptcy anyway. The IF and provision drains then
+/// leave the buffer behind on top of user claims — the buffer throttles the
+/// outflows whose value the bankruptcy waterfall can still reach.
 /// The AMM's ledger and token pool are never touched by steps 1-2: no non-AMM
 /// money transits the AMM. Un-drained remainders simply wait for the next
 /// sweep. This is the ONLY fee routing out of a perp market. Runs inline on
@@ -84,24 +89,19 @@ pub fn sweep_market_fees(
         market.pnl_pool.balance_type(),
     )?;
 
-    // live user claims stay fully backed; the buffer is the tunable retention
-    // margin on top
-    let reserved: u128 = net_user_pnl
-        .max(0)
-        .cast::<u128>()?
-        .safe_add(market.fee_pool_buffer_target.cast()?)?;
-    let mut available: u128 = pnl_pool_tokens.saturating_sub(reserved);
+    // live user claims stay fully backed by every drain; the buffer is a
+    // retention margin on top that only the IF and AMM-provision drains
+    // respect — the protocol drain is exempt and goes first (its per-settle
+    // cadence keeps each drain small, and unlike the other two its value is
+    // not recoverable later anyway)
+    let reserved_claims: u128 = net_user_pnl.max(0).cast::<u128>()?;
+    let mut available_unbuffered: u128 = pnl_pool_tokens.saturating_sub(reserved_claims);
 
-    // 1. insurance cut to the revenue pool
-    let if_drain = market.fee_ledger.pending_if_fee.min(available);
-    if if_drain > 0 {
-        transfer_spot_balance_to_revenue_pool(if_drain, spot_market, &mut market.pnl_pool)?;
-        market.fee_ledger.consume_pending_if(if_drain)?;
-        available = available.safe_sub(if_drain)?;
-    }
-
-    // 2. protocol's withdrawable cut
-    let protocol_drain = market.fee_ledger.pending_protocol_fee.min(available);
+    // 1. protocol's withdrawable cut (buffer-exempt: only user claims reserved)
+    let protocol_drain = market
+        .fee_ledger
+        .pending_protocol_fee
+        .min(available_unbuffered);
     if protocol_drain > 0 {
         transfer_spot_balances(
             protocol_drain.cast()?,
@@ -110,10 +110,22 @@ pub fn sweep_market_fees(
             &mut market.protocol_fee_pool,
         )?;
         market.fee_ledger.consume_pending_protocol(protocol_drain)?;
-        available = available.safe_sub(protocol_drain)?;
+        available_unbuffered = available_unbuffered.safe_sub(protocol_drain)?;
     }
 
-    // 3. tokenize the AMM's fee provision (already booked into
+    // the remaining drains also leave the retention buffer behind
+    let mut available: u128 =
+        available_unbuffered.saturating_sub(market.fee_pool_buffer_target.cast()?);
+
+    // 2. insurance cut to the revenue pool (buffered)
+    let if_drain = market.fee_ledger.pending_if_fee.min(available);
+    if if_drain > 0 {
+        transfer_spot_balance_to_revenue_pool(if_drain, spot_market, &mut market.pnl_pool)?;
+        market.fee_ledger.consume_pending_if(if_drain)?;
+        available = available.safe_sub(if_drain)?;
+    }
+
+    // 3. tokenize the AMM's fee provision (buffered; already booked into
     //    `total_fee_minus_distributions` at fill — token transfer only)
     let provision_drain = market.fee_ledger.pending_amm_provision.min(available);
     if provision_drain > 0 {

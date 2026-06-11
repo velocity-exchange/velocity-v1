@@ -272,26 +272,27 @@ pub struct PerpMarket {
     /// precision: LIQUIDATOR_FEE_PRECISION
     pub protocol_liquidation_fee: u32,
     pub _padding_buffer: [u8; 4],
-    /// The pnl-pool retention buffer the streaming sweep leaves untouched:
-    /// `sweep_market_fees` drains pendings only from what the pnl pool holds
-    /// above `max(net_user_pnl, 0) + fee_pool_buffer_target`.
+    /// The pnl-pool retention buffer the streaming sweep's IF and
+    /// AMM-provision drains leave untouched: `sweep_market_fees` drains
+    /// those pendings only from what the pnl pool holds above
+    /// `max(net_user_pnl, 0) + fee_pool_buffer_target`. The protocol drain
+    /// is EXEMPT — it reserves only `max(net_user_pnl, 0)` and runs first;
+    /// it sweeps every settle, so each drain stays small, and its pending is
+    /// no bankruptcy tranche so retaining it buys nothing.
     ///
     /// Why a buffer on top of the user-claims reservation: `net_user_pnl`
     /// is a mark-to-market snapshot, so a pool swept to the exact mark is
     /// short on the next adverse oracle tick — and the sweep is a one-way
-    /// valve, so the slack can't be cheaply recalled (each destination is
-    /// irreversible: protocol fees are withdrawn, IF value returns only
+    /// valve, so the slack can't be cheaply recalled (IF value returns only
     /// through capped gated paths, the AMM provision only via bankruptcy
-    /// clawback). The buffer throttles TOTAL outflow per sweep; pool tokens
+    /// clawback). The buffer throttles those outflows per sweep; pool tokens
     /// are fungible (pendings are counters, not segregated tokens), so
     /// whichever cut lingers keeps settling winners in the meantime. This
-    /// delays materialization, it does not divert anyone's cut — the
-    /// protocol's pending in particular is no bankruptcy tranche and always
-    /// drains in full eventually. Side benefits: an unswept IF cut gives
-    /// THIS market uncapped market-local bankruptcy coverage (tranche 1)
-    /// instead of capped shared-vault coverage, and the buffer damps the IF
-    /// settle ratchet (value settled into the IF accrues to stakers
-    /// permanently).
+    /// delays materialization, it does not divert anyone's cut. Side
+    /// benefits: an unswept IF cut gives THIS market uncapped market-local
+    /// bankruptcy coverage (tranche 1) instead of capped shared-vault
+    /// coverage, and the buffer damps the IF settle ratchet (value settled
+    /// into the IF accrues to stakers permanently).
     /// precision: QUOTE_PRECISION
     pub fee_pool_buffer_target: u64,
     /// Encoded display name for the perp market e.g. SOL-PERP

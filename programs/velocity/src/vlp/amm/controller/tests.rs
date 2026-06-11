@@ -648,7 +648,9 @@ fn update_pool_balances_test() {
 fn update_pool_balances_pending_fee_drain_test() {
     // explicit IF/protocol/AMM carveouts accrued at fill time are drained
     // from the PNL pool (where fee value lands as fills settle) into
-    // revenue_pool / protocol_fee_pool / amm.fee_pool, leaving
+    // revenue_pool / protocol_fee_pool / amm.fee_pool. The protocol drain is
+    // exempt from the retention buffer (it reserves only max(net_user_pnl, 0)
+    // and runs first); the IF and provision drains leave
     // max(net_user_pnl, 0) + buffer behind. The AMM's books are never
     // touched by the sweep.
     let mut market = PerpMarket {
@@ -699,7 +701,9 @@ fn update_pool_balances_pending_fee_drain_test() {
         ..SpotMarket::default()
     };
 
-    // pnl pool (4 QUOTE) is under the 5-QUOTE retention buffer: nothing drains
+    // pnl pool (4 QUOTE) is under the 5-QUOTE retention buffer: the
+    // buffer-exempt protocol drain still takes its full 3 QUOTE, the
+    // buffered IF/provision drains wait
     let spot_position = SpotPosition::default();
     let user_quote_token_amount = spot_position.get_signed_token_amount(&spot_market).unwrap();
     update_pool_balances(
@@ -712,15 +716,15 @@ fn update_pool_balances_pending_fee_drain_test() {
     )
     .unwrap();
 
-    assert_eq!(market.pnl_pool.scaled_balance, 4000000000000000);
+    assert_eq!(market.pnl_pool.scaled_balance, 1000000000000000); // 4 - 3 QUOTE
     assert_eq!(spot_market.revenue_pool.scaled_balance, 0);
-    assert_eq!(market.protocol_fee_pool.scaled_balance, 0);
+    assert_eq!(market.protocol_fee_pool.scaled_balance, 3000000000000000); // 3 QUOTE
     assert_eq!(market.amm.fee_pool.scaled_balance, 0);
-    assert_eq!(market.fee_ledger.pending_protocol_fee, 3 * QUOTE_PRECISION);
+    assert_eq!(market.fee_ledger.pending_protocol_fee, 0);
     assert_eq!(market.fee_ledger.pending_if_fee, 2 * QUOTE_PRECISION);
     assert_eq!(market.fee_ledger.pending_amm_provision, QUOTE_PRECISION);
 
-    // top up the pnl pool above buffer + pendings: everything drains in full
+    // top up the pnl pool above buffer + pendings: the rest drains in full
     market.pnl_pool.scaled_balance = 50 * QUOTE_PRECISION * SPOT_BALANCE_PRECISION;
     let tfmd_before = market.amm.total_fee_minus_distributions;
     let user_quote_token_amount = spot_position.get_signed_token_amount(&spot_market).unwrap();
@@ -735,9 +739,9 @@ fn update_pool_balances_pending_fee_drain_test() {
     .unwrap();
 
     assert_eq!(spot_market.revenue_pool.scaled_balance, 2000000000000000); // 2 QUOTE
-    assert_eq!(market.protocol_fee_pool.scaled_balance, 3000000000000000); // 3 QUOTE
+    assert_eq!(market.protocol_fee_pool.scaled_balance, 3000000000000000); // unchanged
     assert_eq!(market.amm.fee_pool.scaled_balance, 1000000000000000); // 1 QUOTE tokenized
-    assert_eq!(market.pnl_pool.scaled_balance, 44000000000000000); // 50 - 6 QUOTE
+    assert_eq!(market.pnl_pool.scaled_balance, 47000000000000000); // 50 - 3 QUOTE
     assert_eq!(market.fee_ledger.pending_protocol_fee, 0);
     assert_eq!(market.fee_ledger.pending_if_fee, 0);
     assert_eq!(market.fee_ledger.pending_amm_provision, 0);
@@ -766,8 +770,9 @@ fn update_pool_balances_pending_fee_drain_test() {
     assert_eq!(market.amm.fee_pool.scaled_balance, 1000000000000000);
 
     // positive net user pnl reserves pool tokens for user claims: with
-    // 44 QUOTE in the pool, 38 QUOTE of net user claims + 5 buffer leaves
-    // only 1 QUOTE available; the IF cut is senior
+    // 47 QUOTE in the pool and 38 QUOTE of net user claims, the buffer-exempt
+    // protocol drain takes its full 2 QUOTE from the 9 QUOTE of headroom;
+    // the buffered IF drain then sees 7 - 5 = 2 QUOTE and partially drains
     market.fee_ledger.pending_if_fee = 4 * QUOTE_PRECISION;
     market.fee_ledger.pending_protocol_fee = 2 * QUOTE_PRECISION;
     let net_user_pnl = (38 * QUOTE_PRECISION).cast::<i128>().unwrap();
@@ -781,11 +786,11 @@ fn update_pool_balances_pending_fee_drain_test() {
         now,
     )
     .unwrap();
-    assert_eq!(spot_market.revenue_pool.scaled_balance, 3000000000000000); // 2 + 1 QUOTE
-    assert_eq!(market.protocol_fee_pool.scaled_balance, 3000000000000000); // unchanged
-    assert_eq!(market.pnl_pool.scaled_balance, 43000000000000000); // 44 - 1 QUOTE
-    assert_eq!(market.fee_ledger.pending_if_fee, 3 * QUOTE_PRECISION);
-    assert_eq!(market.fee_ledger.pending_protocol_fee, 2 * QUOTE_PRECISION);
+    assert_eq!(spot_market.revenue_pool.scaled_balance, 4000000000000000); // 2 + 2 QUOTE
+    assert_eq!(market.protocol_fee_pool.scaled_balance, 5000000000000000); // 3 + 2 QUOTE
+    assert_eq!(market.pnl_pool.scaled_balance, 43000000000000000); // 47 - 4 QUOTE
+    assert_eq!(market.fee_ledger.pending_if_fee, 2 * QUOTE_PRECISION);
+    assert_eq!(market.fee_ledger.pending_protocol_fee, 0);
 }
 
 #[test]
@@ -888,9 +893,10 @@ fn amm_isolation_balance_sheet_identity_test() {
 
 #[test]
 fn update_pool_balances_pending_fee_drain_capped_test() {
-    // the drain is capped by what the pnl pool holds above the retention
-    // buffer; seniority under scarcity is IF -> protocol -> AMM provision,
-    // and the un-drained remainder stays pending for the next sweep
+    // the buffer-exempt protocol drain runs first and is capped only by the
+    // pool's surplus over user claims; the IF and provision drains are then
+    // capped by what remains above the retention buffer. The un-drained
+    // remainder stays pending for the next sweep
     let mut market = PerpMarket {
         amm: AMM {
             base_asset_reserve: 5122950819670000,
@@ -937,9 +943,9 @@ fn update_pool_balances_pending_fee_drain_capped_test() {
         ..SpotMarket::default()
     };
 
-    // only 10 QUOTE is available above the buffer: the IF drains its full
-    // 8 QUOTE first (it is senior), the protocol gets the remaining 2 QUOTE,
-    // the AMM provision waits
+    // the buffer-exempt protocol drain takes its full 7 QUOTE first; that
+    // leaves 8 QUOTE, only 3 of which sit above the 5-QUOTE buffer — the IF
+    // partially drains, the AMM provision waits
     let spot_position = SpotPosition::default();
     let user_quote_token_amount = spot_position.get_signed_token_amount(&spot_market).unwrap();
     update_pool_balances(
@@ -952,18 +958,18 @@ fn update_pool_balances_pending_fee_drain_capped_test() {
     )
     .unwrap();
 
-    assert_eq!(spot_market.revenue_pool.scaled_balance, 8000000000000000); // 8 QUOTE
-    assert_eq!(market.protocol_fee_pool.scaled_balance, 2000000000000000); // 2 QUOTE
+    assert_eq!(spot_market.revenue_pool.scaled_balance, 3000000000000000); // 3 QUOTE
+    assert_eq!(market.protocol_fee_pool.scaled_balance, 7000000000000000); // 7 QUOTE
     assert_eq!(market.amm.fee_pool.scaled_balance, 0);
     assert_eq!(
         market.pnl_pool.scaled_balance,
         5 * QUOTE_PRECISION * SPOT_BALANCE_PRECISION
     );
-    assert_eq!(market.fee_ledger.pending_if_fee, 0);
-    assert_eq!(market.fee_ledger.pending_protocol_fee, 5 * QUOTE_PRECISION);
+    assert_eq!(market.fee_ledger.pending_if_fee, 5 * QUOTE_PRECISION);
+    assert_eq!(market.fee_ledger.pending_protocol_fee, 0);
     assert_eq!(market.fee_ledger.pending_amm_provision, 6 * QUOTE_PRECISION);
 
-    // top the pnl pool back up: the remaining protocol fee + provision drain
+    // top the pnl pool back up: the remaining IF fee + provision drain
     market.pnl_pool.scaled_balance = (5 + 50) * QUOTE_PRECISION * SPOT_BALANCE_PRECISION;
     let user_quote_token_amount = spot_position.get_signed_token_amount(&spot_market).unwrap();
     update_pool_balances(
@@ -975,8 +981,10 @@ fn update_pool_balances_pending_fee_drain_capped_test() {
         now,
     )
     .unwrap();
-    assert_eq!(market.protocol_fee_pool.scaled_balance, 7000000000000000); // 7 QUOTE
+    assert_eq!(spot_market.revenue_pool.scaled_balance, 8000000000000000); // 3 + 5 QUOTE
+    assert_eq!(market.protocol_fee_pool.scaled_balance, 7000000000000000); // unchanged
     assert_eq!(market.amm.fee_pool.scaled_balance, 6000000000000000); // 6 QUOTE
+    assert_eq!(market.fee_ledger.pending_if_fee, 0);
     assert_eq!(market.fee_ledger.pending_protocol_fee, 0);
     assert_eq!(market.fee_ledger.pending_amm_provision, 0);
     // tokenization is balance-only: the books were credited at fill

@@ -7478,12 +7478,39 @@ export type Velocity = {
         {
           "name": "spotMarket",
           "docs": [
-            "The perp market's quote spot market (validated in the handler)"
+            "The perp market's quote spot market (enforced by the PDA derivation)"
           ],
-          "writable": true
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  115,
+                  112,
+                  111,
+                  116,
+                  95,
+                  109,
+                  97,
+                  114,
+                  107,
+                  101,
+                  116
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "perpMarket"
+              }
+            ]
+          }
         },
         {
-          "name": "oracle"
+          "name": "oracle",
+          "relations": [
+            "perpMarket"
+          ]
         }
       ],
       "args": [
@@ -13257,6 +13284,11 @@ export type Velocity = {
           "name": "state"
         },
         {
+          "name": "payer",
+          "writable": true,
+          "signer": true
+        },
+        {
           "name": "authority",
           "signer": true
         },
@@ -13311,7 +13343,7 @@ export type Velocity = {
               },
               {
                 "kind": "account",
-                "path": "quoteSpotMarket"
+                "path": "perpMarket"
               }
             ]
           }
@@ -13345,20 +13377,90 @@ export type Velocity = {
               },
               {
                 "kind": "account",
-                "path": "quoteSpotMarket"
+                "path": "perpMarket"
               }
             ]
           }
         },
         {
+          "name": "mint",
+          "relations": [
+            "spotMarketVault"
+          ]
+        },
+        {
+          "name": "recipient"
+        },
+        {
           "name": "recipientTokenAccount",
-          "writable": true
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "account",
+                "path": "recipient"
+              },
+              {
+                "kind": "account",
+                "path": "tokenProgram"
+              },
+              {
+                "kind": "account",
+                "path": "mint"
+              }
+            ],
+            "program": {
+              "kind": "const",
+              "value": [
+                140,
+                151,
+                37,
+                143,
+                78,
+                36,
+                137,
+                241,
+                187,
+                61,
+                16,
+                41,
+                20,
+                142,
+                13,
+                131,
+                11,
+                90,
+                19,
+                153,
+                218,
+                255,
+                16,
+                132,
+                4,
+                142,
+                123,
+                216,
+                219,
+                233,
+                248,
+                89
+              ]
+            }
+          }
         },
         {
           "name": "tokenProgram"
         },
         {
           "name": "velocitySigner"
+        },
+        {
+          "name": "systemProgram",
+          "address": "11111111111111111111111111111111"
+        },
+        {
+          "name": "associatedTokenProgram",
+          "address": "ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL"
         }
       ],
       "args": [
@@ -13391,6 +13493,11 @@ export type Velocity = {
       "accounts": [
         {
           "name": "state"
+        },
+        {
+          "name": "payer",
+          "writable": true,
+          "signer": true
         },
         {
           "name": "authority",
@@ -13459,14 +13566,84 @@ export type Velocity = {
           }
         },
         {
+          "name": "mint",
+          "relations": [
+            "spotMarketVault"
+          ]
+        },
+        {
+          "name": "recipient"
+        },
+        {
           "name": "recipientTokenAccount",
-          "writable": true
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "account",
+                "path": "recipient"
+              },
+              {
+                "kind": "account",
+                "path": "tokenProgram"
+              },
+              {
+                "kind": "account",
+                "path": "mint"
+              }
+            ],
+            "program": {
+              "kind": "const",
+              "value": [
+                140,
+                151,
+                37,
+                143,
+                78,
+                36,
+                137,
+                241,
+                187,
+                61,
+                16,
+                41,
+                20,
+                142,
+                13,
+                131,
+                11,
+                90,
+                19,
+                153,
+                218,
+                255,
+                16,
+                132,
+                4,
+                142,
+                123,
+                216,
+                219,
+                233,
+                248,
+                89
+              ]
+            }
+          }
         },
         {
           "name": "tokenProgram"
         },
         {
           "name": "velocitySigner"
+        },
+        {
+          "name": "systemProgram",
+          "address": "11111111111111111111111111111111"
+        },
+        {
+          "name": "associatedTokenProgram",
+          "address": "ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL"
         }
       ],
       "args": [
@@ -20445,26 +20622,27 @@ export type Velocity = {
           {
             "name": "feePoolBufferTarget",
             "docs": [
-              "The pnl-pool retention buffer the streaming sweep leaves untouched:",
-              "`sweep_market_fees` drains pendings only from what the pnl pool holds",
-              "above `max(net_user_pnl, 0) + fee_pool_buffer_target`.",
+              "The pnl-pool retention buffer the streaming sweep's IF and",
+              "AMM-provision drains leave untouched: `sweep_market_fees` drains",
+              "those pendings only from what the pnl pool holds above",
+              "`max(net_user_pnl, 0) + fee_pool_buffer_target`. The protocol drain",
+              "is EXEMPT — it reserves only `max(net_user_pnl, 0)` and runs first;",
+              "it sweeps every settle, so each drain stays small, and its pending is",
+              "no bankruptcy tranche so retaining it buys nothing.",
               "",
               "Why a buffer on top of the user-claims reservation: `net_user_pnl`",
               "is a mark-to-market snapshot, so a pool swept to the exact mark is",
               "short on the next adverse oracle tick — and the sweep is a one-way",
-              "valve, so the slack can't be cheaply recalled (each destination is",
-              "irreversible: protocol fees are withdrawn, IF value returns only",
+              "valve, so the slack can't be cheaply recalled (IF value returns only",
               "through capped gated paths, the AMM provision only via bankruptcy",
-              "clawback). The buffer throttles TOTAL outflow per sweep; pool tokens",
+              "clawback). The buffer throttles those outflows per sweep; pool tokens",
               "are fungible (pendings are counters, not segregated tokens), so",
               "whichever cut lingers keeps settling winners in the meantime. This",
-              "delays materialization, it does not divert anyone's cut — the",
-              "protocol's pending in particular is no bankruptcy tranche and always",
-              "drains in full eventually. Side benefits: an unswept IF cut gives",
-              "THIS market uncapped market-local bankruptcy coverage (tranche 1)",
-              "instead of capped shared-vault coverage, and the buffer damps the IF",
-              "settle ratchet (value settled into the IF accrues to stakers",
-              "permanently).",
+              "delays materialization, it does not divert anyone's cut. Side",
+              "benefits: an unswept IF cut gives THIS market uncapped market-local",
+              "bankruptcy coverage (tranche 1) instead of capped shared-vault",
+              "coverage, and the buffer damps the IF settle ratchet (value settled",
+              "into the IF accrues to stakers permanently).",
               "precision: QUOTE_PRECISION"
             ],
             "type": "u64"

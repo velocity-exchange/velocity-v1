@@ -2623,17 +2623,17 @@ pub fn handle_settle_revenue_to_insurance_fund<'c: 'info, 'info>(
 }
 
 /// Permissionless streaming sweep: materialize a perp market's accrued
-/// pending fee carveouts out of the pnl pool — `pending_if_fee` to the quote
-/// spot market's `revenue_pool`, `pending_protocol_fee` to the market's
-/// `protocol_fee_pool`, and `pending_amm_provision` tokenized into
-/// `amm.fee_pool` — leaving `max(net_user_pnl, 0) + fee_pool_buffer_target`
-/// behind so user claims stay backed. The same sweep runs inline on every pnl
-/// settle (`update_pool_balances`); this instruction lets keepers run it on
-/// demand without settling anyone's pnl.
+/// pending fee carveouts out of the pnl pool — `pending_protocol_fee` to the
+/// market's `protocol_fee_pool` (buffer-exempt, runs first), then
+/// `pending_if_fee` to the quote spot market's `revenue_pool` and
+/// `pending_amm_provision` tokenized into `amm.fee_pool` (both leave
+/// `fee_pool_buffer_target` behind). Every drain reserves
+/// `max(net_user_pnl, 0)` so user claims stay backed. The same sweep runs
+/// inline on every pnl settle (`update_pool_balances`); this instruction lets
+/// keepers run it on demand without settling anyone's pnl.
 #[access_control(
     perp_market_valid(&ctx.accounts.perp_market)
     exchange_not_paused(&ctx.accounts.state)
-    valid_oracle_for_perp_market(&ctx.accounts.oracle, &ctx.accounts.perp_market)
 )]
 pub fn handle_sweep_perp_market_fees(
     ctx: Context<SweepPerpMarketFees>,
@@ -2643,20 +2643,10 @@ pub fn handle_sweep_perp_market_fees(
     let now = clock.unix_timestamp;
     let state = ctx.accounts.state.load()?;
 
+    // account identities (market index, quote spot market, oracle) are
+    // enforced by the SweepPerpMarketFees constraints
     let perp_market = &mut load_mut!(ctx.accounts.perp_market)?;
     let spot_market = &mut load_mut!(ctx.accounts.spot_market)?;
-
-    validate!(
-        perp_market.market_index == perp_market_index,
-        ErrorCode::InvalidMarketAccount,
-        "invalid perp_market passed"
-    )?;
-
-    validate!(
-        spot_market.market_index == perp_market.quote_spot_market_index,
-        ErrorCode::InvalidSpotMarketAccount,
-        "spot_market must be the perp market's quote spot market"
-    )?;
 
     let mut oracle_map = OracleMap::load_one(
         &ctx.accounts.oracle,
@@ -3557,13 +3547,18 @@ pub struct SweepPerpMarketFees<'info> {
     #[account(
         mut,
         seeds = [b"perp_market", perp_market_index.to_le_bytes().as_ref()],
-        bump
+        bump,
+        has_one = oracle @ ErrorCode::InvalidOracle,
     )]
     pub perp_market: AccountLoader<'info, PerpMarket>,
-    /// The perp market's quote spot market (validated in the handler)
-    #[account(mut)]
+    /// The perp market's quote spot market (enforced by the PDA derivation)
+    #[account(
+        mut,
+        seeds = [b"spot_market", perp_market.load()?.quote_spot_market_index.to_le_bytes().as_ref()],
+        bump
+    )]
     pub spot_market: AccountLoader<'info, SpotMarket>,
-    /// CHECK: checked by `valid_oracle_for_perp_market` access control
+    /// CHECK: must be `perp_market.oracle` (enforced by `has_one` above)
     pub oracle: UncheckedAccount<'info>,
 }
 

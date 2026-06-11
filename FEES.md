@@ -88,16 +88,23 @@ pool's surplus over live user claims — the AMM is never a conduit:
 1. **At fill** (`controller/orders.rs`): all three carveouts accrue
    (`accrue_fill_fees`, which also records the gross taker fee). The AMM books
    only its own provision + spread surplus via `apply_fill_fees`.
-2. **The sweep** (`sweep_market_fees`, `controller/perp_pools.rs`):
-   `available = pnl_pool_tokens − max(net_user_pnl, 0) − fee_pool_buffer_target`
-   — live user claims stay fully backed, the buffer is the retention margin on
-   top. Seniority under scarcity:
-   1. `pending_if_fee` → quote `SpotMarket.revenue_pool` (→ IF vault)
-   2. `pending_protocol_fee` → `PerpMarket.protocol_fee_pool` (withdrawable)
+2. **The sweep** (`sweep_market_fees`, `controller/perp_pools.rs`): every
+   drain reserves `max(net_user_pnl, 0)` so live user claims stay fully
+   backed. Waterfall:
+   1. `pending_protocol_fee` → `PerpMarket.protocol_fee_pool` (withdrawable).
+      **Buffer-exempt** and first: it sweeps every settle so each drain stays
+      small, and its value is no bankruptcy tranche so retaining it buys
+      nothing.
+   2. `pending_if_fee` → quote `SpotMarket.revenue_pool` (→ IF vault)
    3. `pending_amm_provision` → tokenized into `amm.fee_pool` (the AMM's
       ledger was already credited at fill — this is a pure token transfer)
-   Steps 1-2 never touch the AMM's books or pools. Un-drained remainders wait
-   for the next sweep. This is the **only** fee routing out of a perp market.
+   Steps 2-3 additionally leave the `fee_pool_buffer_target` retention margin
+   behind — the buffer throttles the outflows whose value the bankruptcy
+   waterfall can still reach (an unswept IF cut even upgrades coverage:
+   market-local tranche-1 forgiveness is uncapped, the shared vault is
+   capped). Steps 1-2 never touch the AMM's books or pools. Un-drained
+   remainders wait for the next sweep. This is the **only** fee routing out
+   of a perp market.
    It runs inline on every pnl settle (`update_pool_balances`, after the
    user's settle so the sweep can't starve it) and on demand via the
    permissionless `sweep_perp_market_fees` keeper instruction, and emits
@@ -196,8 +203,10 @@ precision `IF_FACTOR_PRECISION` = 1e6, sum validated ≤ 100%):
   (`instructions/protocol_fees.rs`):
   - **Authority:** the `FeeWithdraw` hot key (`HotRole::FeeWithdraw`, set via
     `update_hot_admin`) — supports e.g. a daily withdrawal bot.
-  - **Recipient-locked:** funds can only go to a token account owned by
-    `State.protocol_fee_recipient`, settable **only** by `cold_admin`
+  - **Recipient-locked:** funds go to the associated token account of
+    `State.protocol_fee_recipient` (created on demand via `init_if_needed`;
+    the `recipient` account is `address`-constrained to the state field).
+    The recipient is settable **only** by `cold_admin`
     (`update_protocol_fee_recipient`). Unset recipient ⇒ withdrawals are inert.
   - **Depositor-safe:** capped to the pool's own balance, and the vault must
     still cover all remaining claims afterwards
@@ -231,9 +240,9 @@ flowchart LR
     TK -->|"split by AMM%/IF%/protocol-residual at fill"| PEND
     LIQ -->|perp| PEND
     PEND -.->|"token value settles into"| PNL
-    PNL -->|"sweep_market_fees (above user claims + buffer): 1. IF"| RP
-    PNL -->|"2. protocol"| PFP
-    PNL -->|"3. AMM provision tokenized"| FP
+    PNL -->|"sweep_market_fees (above user claims): 1. protocol (buffer-exempt)"| PFP
+    PNL -->|"2. IF (above buffer)"| RP
+    PNL -->|"3. AMM provision tokenized (above buffer)"| FP
     FP -->|"bankruptcy clawback (capped at provision received)"| PNL
     LIQ -->|"spot (direct)"| RP
     LIQ -->|"spot (direct)"| PFP
@@ -254,7 +263,7 @@ flowchart LR
 | Waterfall math | `math/fees.rs` (`split_fee_remainder`, `FillFees.protocol_fee`/`if_fee`/`amm_fee`) |
 | Pending counters | `fee_ledger.pending_protocol_fee`/`pending_if_fee`/`pending_amm_provision` |
 | Streaming sweep | `sweep_market_fees` (`controller/perp_pools.rs`, source = pnl pool); inline via `update_pool_balances`, on demand via `sweep_perp_market_fees` (keeper); emits `PerpMarketFeeSweepRecord` |
-| Sweep buffer | `PerpMarket.fee_pool_buffer_target` — pnl-pool retention above `max(net_user_pnl, 0)` (`update_perp_market_fee_pool_buffer_target`) |
+| Sweep buffer | `PerpMarket.fee_pool_buffer_target` — pnl-pool retention above `max(net_user_pnl, 0)` for the IF/provision drains; the protocol drain is buffer-exempt (`update_perp_market_fee_pool_buffer_target`) |
 | AMM ledger recompute | `calculate_perp_market_amm_summary_stats` (`math/perp_market.rs`): `tfmd = pools − net_user_pnl − pending_protocol − pending_if` |
 | Dead post-isolation | funding/curve floors (`protocol_floor`, `SHARE_OF_FEES_ALLOCATED_TO_DRIFT`, pendings funding floor), `amm.total_fee_withdrawn` (frozen), the settle_pnl `fee_pool/5` buffer |
 | Liquidation split | `controller/liquidation.rs` (perp ×2 + spot ×2 paths); rates on Perp/SpotMarket |

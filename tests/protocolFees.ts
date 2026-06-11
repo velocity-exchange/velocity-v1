@@ -2,7 +2,12 @@ import * as anchor from '@coral-xyz/anchor';
 import { Program } from '@coral-xyz/anchor';
 import { assert } from 'chai';
 import { startAnchor } from 'solana-bankrun';
-import { Keypair } from '@solana/web3.js';
+import { Keypair, SystemProgram } from '@solana/web3.js';
+import {
+	ASSOCIATED_TOKEN_PROGRAM_ID,
+	getAssociatedTokenAddressSync,
+	TOKEN_PROGRAM_ID,
+} from '@solana/spl-token';
 import {
 	BN,
 	getTokenAmount,
@@ -266,13 +271,13 @@ describe('protocol fees', () => {
 		);
 	});
 
-	it('withdraws protocol fees to the recipient via the FeeWithdraw hot key', async () => {
+	it('withdraws protocol fees to the recipient ATA via the FeeWithdraw hot key', async () => {
+		// fresh recipient with NO token account — the ix must init the ATA
 		const recipient = Keypair.generate();
-		const recipientTokenAccount = await mockUserUSDCAccount(
-			usdcMint,
-			ZERO,
-			bankrunContextWrapper,
-			recipient.publicKey
+		const recipientTokenAccount = getAssociatedTokenAddressSync(
+			usdcMint.publicKey,
+			recipient.publicKey,
+			true
 		);
 
 		await velocityClient.updateProtocolFeeRecipient(recipient.publicKey);
@@ -287,16 +292,12 @@ describe('protocol fees', () => {
 		const poolTokens = readTokens(before.protocolFeePool);
 		assert(poolTokens.gt(ZERO), 'nothing to withdraw');
 
-		await velocityClient.withdrawProtocolFeesPerp(
-			MARKET_INDEX,
-			poolTokens,
-			recipientTokenAccount.publicKey
-		);
+		await velocityClient.withdrawProtocolFeesPerp(MARKET_INDEX, poolTokens);
 		await velocityClient.fetchAccounts();
 
 		const recipientBalance =
 			await bankrunContextWrapper.connection.getTokenAccount(
-				recipientTokenAccount.publicKey
+				recipientTokenAccount
 			);
 		assert(
 			new BN(Number(recipientBalance.amount)).eq(poolTokens),
@@ -310,25 +311,56 @@ describe('protocol fees', () => {
 		);
 	});
 
-	it('rejects withdrawal to a token account not owned by the recipient', async () => {
-		// rebuild a small pool balance to attempt against
+	it('rejects a recipient account that is not protocol_fee_recipient', async () => {
 		await velocityClient.fetchAccounts();
+
+		// hand-craft the ix with the wallet (NOT the configured recipient) as
+		// the ATA wallet — the address constraint must reject it
+		const fakeRecipient = velocityClient.wallet.publicKey;
+		const fakeRecipientTokenAccount = getAssociatedTokenAddressSync(
+			usdcMint.publicKey,
+			fakeRecipient,
+			true
+		);
+		const perpMarket = velocityClient.getPerpMarketAccount(MARKET_INDEX);
+		const quoteSpotMarket = velocityClient.getSpotMarketAccount(0);
+
+		const ix =
+			await velocityClient.program.instruction.withdrawProtocolFeesPerp(
+				MARKET_INDEX,
+				new BN(1),
+				{
+					accounts: {
+						state: await velocityClient.getStatePublicKey(),
+						payer: velocityClient.wallet.publicKey,
+						authority: velocityClient.wallet.publicKey,
+						perpMarket: perpMarket.pubkey,
+						quoteSpotMarket: quoteSpotMarket.pubkey,
+						spotMarketVault: quoteSpotMarket.vault,
+						mint: quoteSpotMarket.mint,
+						recipient: fakeRecipient,
+						recipientTokenAccount: fakeRecipientTokenAccount,
+						tokenProgram: TOKEN_PROGRAM_ID,
+						velocitySigner: velocityClient.getSignerPublicKey(),
+						systemProgram: SystemProgram.programId,
+						associatedTokenProgram: ASSOCIATED_TOKEN_PROGRAM_ID,
+					},
+				}
+			);
 
 		let threw = false;
 		try {
-			// userUSDCAccount is owned by the wallet, not protocol_fee_recipient
-			await velocityClient.withdrawProtocolFeesPerp(
-				MARKET_INDEX,
-				new BN(1),
-				userUSDCAccount.publicKey
-			);
+			const tx = await velocityClient.buildTransaction(ix);
+			await velocityClient.sendTransaction(tx, [], velocityClient.opts);
 		} catch (e) {
 			threw = true;
 			assert(
-				e.message.includes('custom program error'),
+				e.message.includes('custom program error') ||
+					e.message.includes('InvalidProtocolFeeRecipient') ||
+					e.message.includes('0x18d0'),
 				`unexpected error: ${e.message}`
 			);
 		}
-		assert(threw, 'withdrawal to a non-recipient token account succeeded');
+		assert(threw, 'withdrawal with a non-recipient wallet succeeded');
 	});
 });

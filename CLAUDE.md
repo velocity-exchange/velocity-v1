@@ -178,6 +178,12 @@ TypeScript library (`@velocity-exchange/sdk`). Key modules in `src/`:
 - `programs/velocity/src/controller/` — stateful operations (position updates, fills, liquidations)
 - `programs/velocity/src/validation/` — pre-instruction validation
 
+### Instruction module layout
+
+Preferred layout for instruction code (reference: `instructions/protocol_fees/`): each instruction domain is a **folder** under `src/instructions/` with **one file per instruction** and a `mod.rs` that holds the domain-level doc comment and re-exports. Within each instruction file, the `#[derive(Accounts)]` context struct goes at the **top**, the handler below it. Use this pattern for new instruction domains and when an existing domain is being substantially reworked anyway. However, if an instruction belongs under one of the existing monolithic instruction trees (`user.rs`, `keeper.rs`, `admin.rs`, …), follow that file's established structure instead — don't split a tree just to add one instruction.
+
+**Constraints over in-handler validates — when trivial.** Account *identity* checks belong on the accounts struct, not in the handler: PDA `seeds`/`bump` derivation (including deriving one account's seeds from another's loaded field, e.g. `seeds = [b"spot_market", perp_market.load()?.quote_spot_market_index.to_le_bytes().as_ref()]`), `has_one` for top-level pubkey fields (e.g. `has_one = oracle`), and `address =` locks. Only keep a check in the handler when it is genuinely non-trivial as a constraint: multi-account/stateful logic, math on loaded data, or a *data invariant* rather than an account identity. Don't contort complex logic into constraint expressions just to move it.
+
 ### Doc comments
 
 All modules have doc comments. When making feature or refactor changes, update any module-level doc comments that would be invalidated by the change.

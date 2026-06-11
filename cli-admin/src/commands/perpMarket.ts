@@ -44,7 +44,7 @@ export function registerPerpMarket(parent: Command): void {
 		pm
 			.command('set-fee-buffer <market> <amount>')
 			.description(
-				'Pnl-pool retention buffer the streaming fee sweep leaves above live user claims (raw u64, QUOTE_PRECISION).'
+				'Pnl-pool retention buffer the streaming fee sweep leaves above live user claims for the IF/AMM-provision drains; the protocol drain is buffer-exempt (raw u64, QUOTE_PRECISION).'
 			)
 	).action(async (market: string, amount: string, _flags, cmd: Command) => {
 		const opts = readGlobalOpts(cmd);

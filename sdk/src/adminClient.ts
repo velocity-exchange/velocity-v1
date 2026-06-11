@@ -58,6 +58,7 @@ import {
 } from './addresses/pda';
 import { squareRootBN } from './math/utils';
 import {
+	ASSOCIATED_TOKEN_PROGRAM_ID,
 	createInitializeMint2Instruction,
 	createMintToInstruction,
 	createTransferCheckedInstruction,
@@ -3668,14 +3669,9 @@ export class AdminClient extends VelocityClient {
 	public async withdrawProtocolFeesSpot(
 		marketIndex: number,
 		amount: BN,
-		recipientTokenAccount: PublicKey,
 		txParams?: TxParams
 	): Promise<TransactionSignature> {
-		const ix = await this.getWithdrawProtocolFeesSpotIx(
-			marketIndex,
-			amount,
-			recipientTokenAccount
-		);
+		const ix = await this.getWithdrawProtocolFeesSpotIx(marketIndex, amount);
 		const tx = await this.buildTransaction(ix, txParams);
 		const { txSig } = await this.sendTransaction(tx, [], this.opts);
 		return txSig;
@@ -3683,18 +3679,23 @@ export class AdminClient extends VelocityClient {
 
 	public async getWithdrawProtocolFeesSpotIx(
 		marketIndex: number,
-		amount: BN,
-		recipientTokenAccount: PublicKey
+		amount: BN
 	): Promise<TransactionInstruction> {
 		const spotMarket = this.getSpotMarketAccount(marketIndex);
 		const tokenProgramId = this.getTokenProgramForSpotMarket(spotMarket);
+		const recipient = this.getStateAccount().protocolFeeRecipient;
+		const recipientTokenAccount = getAssociatedTokenAddressSync(
+			spotMarket.mint,
+			recipient,
+			true,
+			tokenProgramId
+		);
 
 		const remainingAccounts: {
 			pubkey: PublicKey;
 			isSigner: boolean;
 			isWritable: boolean;
 		}[] = [];
-		this.addTokenMintToRemainingAccounts(spotMarket, remainingAccounts);
 		if (this.isTransferHook(spotMarket)) {
 			await this.addExtraAccountMetasToRemainingAccounts(
 				spotMarket.mint,
@@ -3708,12 +3709,17 @@ export class AdminClient extends VelocityClient {
 			{
 				accounts: {
 					state: await this.getStatePublicKey(),
+					payer: this.wallet.publicKey,
 					authority: this.wallet.publicKey,
 					spotMarket: spotMarket.pubkey,
 					spotMarketVault: spotMarket.vault,
+					mint: spotMarket.mint,
+					recipient,
 					recipientTokenAccount,
 					tokenProgram: tokenProgramId,
 					velocitySigner: this.getSignerPublicKey(),
+					systemProgram: SystemProgram.programId,
+					associatedTokenProgram: ASSOCIATED_TOKEN_PROGRAM_ID,
 				},
 				remainingAccounts,
 			}
@@ -3723,14 +3729,9 @@ export class AdminClient extends VelocityClient {
 	public async withdrawProtocolFeesPerp(
 		marketIndex: number,
 		amount: BN,
-		recipientTokenAccount: PublicKey,
 		txParams?: TxParams
 	): Promise<TransactionSignature> {
-		const ix = await this.getWithdrawProtocolFeesPerpIx(
-			marketIndex,
-			amount,
-			recipientTokenAccount
-		);
+		const ix = await this.getWithdrawProtocolFeesPerpIx(marketIndex, amount);
 		const tx = await this.buildTransaction(ix, txParams);
 		const { txSig } = await this.sendTransaction(tx, [], this.opts);
 		return txSig;
@@ -3738,21 +3739,26 @@ export class AdminClient extends VelocityClient {
 
 	public async getWithdrawProtocolFeesPerpIx(
 		marketIndex: number,
-		amount: BN,
-		recipientTokenAccount: PublicKey
+		amount: BN
 	): Promise<TransactionInstruction> {
 		const perpMarket = this.getPerpMarketAccount(marketIndex);
 		const quoteSpotMarket = this.getSpotMarketAccount(
 			perpMarket.quoteSpotMarketIndex
 		);
 		const tokenProgramId = this.getTokenProgramForSpotMarket(quoteSpotMarket);
+		const recipient = this.getStateAccount().protocolFeeRecipient;
+		const recipientTokenAccount = getAssociatedTokenAddressSync(
+			quoteSpotMarket.mint,
+			recipient,
+			true,
+			tokenProgramId
+		);
 
 		const remainingAccounts: {
 			pubkey: PublicKey;
 			isSigner: boolean;
 			isWritable: boolean;
 		}[] = [];
-		this.addTokenMintToRemainingAccounts(quoteSpotMarket, remainingAccounts);
 		if (this.isTransferHook(quoteSpotMarket)) {
 			await this.addExtraAccountMetasToRemainingAccounts(
 				quoteSpotMarket.mint,
@@ -3766,13 +3772,18 @@ export class AdminClient extends VelocityClient {
 			{
 				accounts: {
 					state: await this.getStatePublicKey(),
+					payer: this.wallet.publicKey,
 					authority: this.wallet.publicKey,
 					perpMarket: perpMarket.pubkey,
 					quoteSpotMarket: quoteSpotMarket.pubkey,
 					spotMarketVault: quoteSpotMarket.vault,
+					mint: quoteSpotMarket.mint,
+					recipient,
 					recipientTokenAccount,
 					tokenProgram: tokenProgramId,
 					velocitySigner: this.getSignerPublicKey(),
+					systemProgram: SystemProgram.programId,
+					associatedTokenProgram: ASSOCIATED_TOKEN_PROGRAM_ID,
 				},
 				remainingAccounts,
 			}

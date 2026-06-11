@@ -16025,7 +16025,7 @@ export type Velocity = {
     {
       "code": 6352,
       "name": "invalidProtocolFeeRecipient",
-      "msg": "Protocol fee recipient token account must be owned by State.protocol_fee_recipient"
+      "msg": "Recipient must be State.protocol_fee_recipient"
     },
     {
       "code": 6353,

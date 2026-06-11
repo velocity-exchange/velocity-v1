@@ -1955,6 +1955,7 @@ describe('builder codes', () => {
 			builderFeeTenthBps: builderFeeBps,
 		}) as OrderParams;
 
+		await escrowMap.slowSync();
 		const placeAndTakeTx = await userClient.placeAndTakePerpOrder(
 			orderParams,
 			undefined,
@@ -1962,7 +1963,7 @@ describe('builder codes', () => {
 			undefined,
 			undefined,
 			undefined,
-			escrowMap
+			escrowMap.get(userClient.wallet.publicKey.toBase58())
 		);
 		const logs = await printTxLogs(
 			bankrunContextWrapper.connection.toConnection(),

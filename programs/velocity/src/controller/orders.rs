@@ -1668,13 +1668,7 @@ fn get_builder_escrow_info(
 ) -> (Option<u32>, Option<u32>, Option<u16>, Option<u8>) {
     if let Some(escrow) = escrow_opt {
         let builder_order_idx = escrow.find_order_index(sub_account_id, order_id);
-        // without a referrer the slot could never be swept, so don't claim a
-        // permanent referral slot in the escrow
-        let referrer_builder_order_idx = if escrow.has_referrer() {
-            escrow.find_or_create_referral_index(market_index)
-        } else {
-            None
-        };
+        let referrer_builder_order_idx = escrow.find_or_create_referral_index(market_index);
 
         let builder_order = builder_order_idx.and_then(|idx| escrow.get_order(idx).ok());
         let builder_order_fee_bps = builder_order.map(|order| order.fee_tenth_bps);
@@ -3660,9 +3654,9 @@ pub fn can_reward_user_with_referral_reward(
     rev_share_escrow: &mut Option<&mut RevenueShareEscrowZeroCopyMut>,
 ) -> bool {
     if let Some(escrow) = rev_share_escrow {
-        // without a referrer the accrued reward could never be swept, so don't
-        // grant the referee discount or claim a permanent referral slot
-        escrow.has_referrer() && escrow.find_or_create_referral_index(market_index).is_some()
+        // returns None for an escrow without a referrer, so a never-referred
+        // escrow holder gets no referee discount and claims no referral slot
+        escrow.find_or_create_referral_index(market_index).is_some()
     } else {
         false
     }

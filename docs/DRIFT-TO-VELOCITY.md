@@ -132,14 +132,16 @@ Config fields `SERUM_V3`, `PHOENIX`, `OPENBOOK`, `SERUM_LOOKUP_TABLE`,
 - `StateAccount`: single `admin` replaced by the cold/warm/hot key set.
 - `CurveRecord` event → `AmmCurveChanged` (fields changed too).
 - **Revenue-share escrow on fills** (PR #68): `ReferrerStatus` enum gains
-  `BuilderReferral = 4`; new `isBuilderReferral(userStats)` helper in `math/builder`.
-  `fillPerpOrder` / `getFillPerpOrderIx`, `placeAndMakePerpOrder` /
+  `BuilderReferral = 4`; new `isBuilderReferral(userStats)`, `escrowHasReferrer(escrow)`,
+  and `hasBuilderParams(orderParams)` helpers in `math/builder`.
+  `fillPerpOrder` / `getFillPerpOrderIx`, `placeAndTakePerpOrder` /
+  `getPlaceAndTakePerpOrderIx`, `placeAndMakePerpOrder` /
   `getPlaceAndMakePerpOrderIx`, and `getPlaceAndMakeSignedMsgPerpOrderIxs` accept an
   optional trailing `takerEscrow` (the taker's decoded `RevenueShareEscrowAccount`,
   e.g. from a `RevenueShareEscrowMap`) so the taker's escrow is attached when the
   taker is referred (required by the program's fill-time enforcement — see §3). The
-  builders validate `takerEscrow.authority` against the taker's authority.
-  `getPlaceAndTakePerpOrderIx` accepts a `revenueShareEscrowMap` instead.
+  builders validate `takerEscrow.authority` against the taker's authority. The
+  settle-PnL builders keep their map-based `revenueShareEscrowMap` param.
 
 ### 4.5 New: `VelocityCore`
 

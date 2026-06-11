@@ -103,8 +103,6 @@ describe('AMM Curve', () => {
 		// AMM-isolation the AMM only books its own provision, so route 100%
 		// of the trade-fee remainder to it (the on-chain default is 0%).
 		const feeStructure = velocityClient.getStateAccount().perpFeeStructure;
-		// the on-chain default flat filler fee does not pass re-validation
-		feeStructure.flatFillerFee = new BN(0);
 		feeStructure.ammFeeNumerator = 100;
 		feeStructure.ifFeeNumerator = 0;
 		await velocityClient.updatePerpFeeStructure(feeStructure);

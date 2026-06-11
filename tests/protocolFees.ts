@@ -115,9 +115,6 @@ describe('protocol fees', () => {
 		);
 
 		const feeStructure = velocityClient.getStateAccount().perpFeeStructure;
-		// the on-chain default flat filler fee does not pass its own
-		// re-validation (see tests/admin.ts); zero it — no fillers here anyway
-		feeStructure.flatFillerFee = new BN(0);
 		feeStructure.ammFeeNumerator = AMM_FEE_NUMERATOR;
 		feeStructure.ifFeeNumerator = IF_FEE_NUMERATOR;
 		await velocityClient.updatePerpFeeStructure(feeStructure);

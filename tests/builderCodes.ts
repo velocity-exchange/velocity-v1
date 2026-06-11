@@ -2042,7 +2042,9 @@ describe('builder codes', () => {
 		// include the escrow so the referrer reward accrues.
 		await userClient.fetchAccounts();
 		assert(
-			isBuilderReferral(await fetchUserStats(userClient, bankrunContextWrapper)),
+			isBuilderReferral(
+				await fetchUserStats(userClient, bankrunContextWrapper)
+			),
 			'userClient should have the BuilderReferral status'
 		);
 

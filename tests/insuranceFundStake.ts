@@ -1198,33 +1198,6 @@ describe('insurance fund stake', () => {
 		// assert(usdcBefore.eq(usdcAfter));
 	});
 
-	it('admin deposit into insurance fund stake', async () => {
-		await mintUSDCToUser(
-			usdcMint,
-			userUSDCAccount.publicKey,
-			usdcAmount,
-			bankrunContextWrapper
-		);
-		const marketIndex = 0;
-		const insuranceFundStakePublicKey = getInsuranceFundStakeAccountPublicKey(
-			velocityClient.program.programId,
-			velocityClient.wallet.publicKey,
-			marketIndex
-		);
-		const userStatsPublicKey = getUserStatsAccountPublicKey(
-			velocityClient.program.programId,
-			velocityClient.wallet.publicKey
-		);
-		const txSig = await velocityClient.depositIntoInsuranceFundStake(
-			marketIndex,
-			usdcAmount,
-			userStatsPublicKey,
-			insuranceFundStakePublicKey,
-			userUSDCAccount.publicKey
-		);
-		bankrunContextWrapper.printTxLogs(txSig);
-	});
-
 	// it('settle spotMarket to insurance vault', async () => {
 	// 	const marketIndex = new BN(0);
 

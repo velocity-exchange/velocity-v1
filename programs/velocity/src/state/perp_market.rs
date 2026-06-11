@@ -113,8 +113,8 @@ pub enum MarketConfigFlag {
     DisableFormulaicKUpdate = 0b00000001,
 }
 
-/// All of a perp market's fee-split accounting in one ledger (auditor-driven
-/// consolidation). Pure counters — token claims live in the pools
+/// All of a perp market's fee-split accounting in one ledger.
+/// Pure counters — token claims live in the pools
 /// (`protocol_fee_pool`, the quote `revenue_pool`, `AMM.fee_pool`).
 /// Convention: gross-fee counters record what the taker actually paid
 /// (post referee discount, pre carve-outs) on BOTH the AMM and DLOB-match
@@ -1862,5 +1862,4 @@ impl MarketStats {
     }
 }
 
-pub use crate::vlp::amm::state::AMM;
-pub use crate::vlp::hedge::state::HedgeConfig;
+pub use crate::vlp::{amm::state::AMM, hedge::state::HedgeConfig};

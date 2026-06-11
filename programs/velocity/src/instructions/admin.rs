@@ -29,7 +29,7 @@ use crate::{
         bn,
         casting::Cast,
         constants::{
-            DEFAULT_LIQUIDATION_MARGIN_BUFFER_RATIO, EPOCH_DURATION, FEE_ADJUSTMENT_MAX,
+            DEFAULT_LIQUIDATION_MARGIN_BUFFER_RATIO, FEE_ADJUSTMENT_MAX,
             FEE_POOL_TO_REVENUE_POOL_THRESHOLD, GOV_SPOT_MARKET_INDEX, IF_FACTOR_PRECISION,
             INSURANCE_A_MAX, INSURANCE_B_MAX, INSURANCE_C_MAX, INSURANCE_SPECULATIVE_MAX,
             LIQUIDATION_FEE_PRECISION, MAX_CONCENTRATION_COEFFICIENT,
@@ -50,8 +50,7 @@ use crate::{
         events::{
             DepositDirection, DepositExplanation, DepositRecord, SpotMarketVaultDepositRecord,
         },
-        if_rebalance_config::{IfRebalanceConfig, IfRebalanceConfigParams},
-        insurance_fund_stake::{InsuranceFundStake, ProtocolIfSharesTransferConfig},
+        insurance_fund_stake::InsuranceFundStake,
         market_status::MarketStatus,
         oracle::{
             get_oracle_price, get_prelaunch_price, get_pyth_price, HistoricalIndexData,
@@ -115,7 +114,6 @@ pub fn handle_initialize(ctx: Context<Initialize>) -> Result<()> {
         hot_lp_cache: Pubkey::default(),
         hot_lp_swap: Pubkey::default(),
         hot_lp_settle: Pubkey::default(),
-        hot_if_rebalance: Pubkey::default(),
         hot_feature_flag: Pubkey::default(),
         hot_fuel: Pubkey::default(),
         hot_user_flag: Pubkey::default(),
@@ -148,7 +146,7 @@ pub fn handle_initialize(ctx: Context<Initialize>) -> Result<()> {
         max_initialize_user_fee: 0,
         feature_bit_flags: 0,
         lp_pool_feature_bit_flags: 0,
-        padding: [0; 272],
+        padding: [0; 304],
     };
 
     Ok(())
@@ -2888,57 +2886,6 @@ pub fn handle_admin_update_user_stats_paused_operations(
     Ok(())
 }
 
-pub fn handle_initialize_protocol_if_shares_transfer_config(
-    ctx: Context<InitializeProtocolIfSharesTransferConfig>,
-) -> Result<()> {
-    let mut config = ctx
-        .accounts
-        .protocol_if_shares_transfer_config
-        .load_init()?;
-
-    let now = Clock::get()?.unix_timestamp;
-    msg!(
-        "next_epoch_ts: {:?} -> {:?}",
-        config.next_epoch_ts,
-        now.safe_add(EPOCH_DURATION)?
-    );
-    config.next_epoch_ts = now.safe_add(EPOCH_DURATION)?;
-
-    Ok(())
-}
-
-pub fn handle_update_protocol_if_shares_transfer_config(
-    ctx: Context<UpdateProtocolIfSharesTransferConfig>,
-    whitelisted_signers: Option<[Pubkey; 4]>,
-    max_transfer_per_epoch: Option<u128>,
-) -> Result<()> {
-    let mut config = ctx.accounts.protocol_if_shares_transfer_config.load_mut()?;
-
-    if let Some(whitelisted_signers) = whitelisted_signers {
-        msg!(
-            "whitelisted_signers: {:?} -> {:?}",
-            config.whitelisted_signers,
-            whitelisted_signers
-        );
-        config.whitelisted_signers = whitelisted_signers;
-    } else {
-        msg!("whitelisted_signers: unchanged");
-    }
-
-    if let Some(max_transfer_per_epoch) = max_transfer_per_epoch {
-        msg!(
-            "max_transfer_per_epoch: {:?} -> {:?}",
-            config.max_transfer_per_epoch,
-            max_transfer_per_epoch
-        );
-        config.max_transfer_per_epoch = max_transfer_per_epoch;
-    } else {
-        msg!("max_transfer_per_epoch: unchanged");
-    }
-
-    Ok(())
-}
-
 pub fn handle_initialize_prelaunch_oracle(
     ctx: Context<InitializePrelaunchOracle>,
     params: PrelaunchOracleParams,
@@ -3247,45 +3194,6 @@ pub fn handle_admin_deposit<'c: 'info, 'info>(
     Ok(())
 }
 
-pub fn handle_initialize_if_rebalance_config(
-    ctx: Context<InitializeIfRebalanceConfig>,
-    params: IfRebalanceConfigParams,
-) -> Result<()> {
-    let pubkey = ctx.accounts.if_rebalance_config.to_account_info().key;
-    let mut config = ctx.accounts.if_rebalance_config.load_init()?;
-
-    config.pubkey = *pubkey;
-    config.total_in_amount = params.total_in_amount;
-    config.current_in_amount = 0;
-    config.epoch_max_in_amount = params.epoch_max_in_amount;
-    config.epoch_duration = params.epoch_duration;
-    config.out_market_index = params.out_market_index;
-    config.in_market_index = params.in_market_index;
-    config.max_slippage_bps = params.max_slippage_bps;
-    config.swap_mode = params.swap_mode;
-    config.status = 0;
-
-    config.validate()?;
-
-    Ok(())
-}
-
-pub fn handle_update_if_rebalance_config(
-    ctx: Context<UpdateIfRebalanceConfig>,
-    params: IfRebalanceConfigParams,
-) -> Result<()> {
-    let mut config = load_mut!(ctx.accounts.if_rebalance_config)?;
-
-    config.total_in_amount = params.total_in_amount;
-    config.epoch_max_in_amount = params.epoch_max_in_amount;
-    config.epoch_duration = params.epoch_duration;
-    config.max_slippage_bps = params.max_slippage_bps;
-
-    config.validate()?;
-
-    Ok(())
-}
-
 pub fn handle_zero_mm_oracle_fields(ctx: Context<HotAdminUpdatePerpMarket>) -> Result<()> {
     let mut perp_market = load_mut!(ctx.accounts.perp_market)?;
     perp_market.market_stats.mm_oracle_price = 0;
@@ -3296,16 +3204,16 @@ pub fn handle_zero_mm_oracle_fields(ctx: Context<HotAdminUpdatePerpMarket>) -> R
 
 pub fn handle_update_mm_oracle_native(accounts: &[AccountInfo], data: &[u8]) -> Result<()> {
     // Verify this ix is allowed. State byte offsets (from discriminator start):
-    //   hot_mm_oracle_crank: 392..424
-    //   feature_bit_flags:   1406
+    //   hot_mm_oracle_crank: 360..392
+    //   feature_bit_flags:   1374
     let state = &accounts[3].data.borrow();
-    assert!(state[1406] & 1 > 0, "ix disabled by admin state");
+    assert!(state[1374] & 1 > 0, "ix disabled by admin state");
 
     let signer_account = &accounts[1];
     #[cfg(not(feature = "anchor-test"))]
     {
         let mut hot_mm_oracle_crank = [0u8; 32];
-        hot_mm_oracle_crank.copy_from_slice(&state[392..424]);
+        hot_mm_oracle_crank.copy_from_slice(&state[360..392]);
         let hot_key = anchor_lang::prelude::Pubkey::new_from_array(hot_mm_oracle_crank);
         assert!(
             signer_account.is_signer && *signer_account.key == hot_key,
@@ -3876,36 +3784,6 @@ pub struct AdminDisableBidAskTwapUpdate<'info> {
 }
 
 #[derive(Accounts)]
-pub struct InitializeProtocolIfSharesTransferConfig<'info> {
-    #[account(mut, constraint = check_warm(&admin.key(), &state)?)]
-    pub admin: Signer<'info>,
-    #[account(
-        init,
-        seeds = [b"if_shares_transfer_config".as_ref()],
-        space = ProtocolIfSharesTransferConfig::SIZE,
-        bump,
-        payer = admin
-    )]
-    pub protocol_if_shares_transfer_config: AccountLoader<'info, ProtocolIfSharesTransferConfig>,
-    pub state: AccountLoader<'info, State>,
-    pub rent: Sysvar<'info, Rent>,
-    pub system_program: Program<'info, System>,
-}
-
-#[derive(Accounts)]
-pub struct UpdateProtocolIfSharesTransferConfig<'info> {
-    #[account(mut, constraint = check_warm(&admin.key(), &state)?)]
-    pub admin: Signer<'info>,
-    #[account(
-        mut,
-        seeds = [b"if_shares_transfer_config".as_ref()],
-        bump,
-    )]
-    pub protocol_if_shares_transfer_config: AccountLoader<'info, ProtocolIfSharesTransferConfig>,
-    pub state: AccountLoader<'info, State>,
-}
-
-#[derive(Accounts)]
 #[instruction(params: PrelaunchOracleParams,)]
 pub struct InitializePrelaunchOracle<'info> {
     #[account(mut, constraint = check_warm(&admin.key(), &state)?)]
@@ -3998,33 +3876,6 @@ pub struct AdminDeposit<'info> {
     )]
     pub admin_token_account: Box<InterfaceAccount<'info, TokenAccount>>,
     pub token_program: Interface<'info, TokenInterface>,
-}
-
-#[derive(Accounts)]
-#[instruction(params: IfRebalanceConfigParams)]
-pub struct InitializeIfRebalanceConfig<'info> {
-    #[account(mut, constraint = check_warm(&admin.key(), &state)?)]
-    pub admin: Signer<'info>,
-    #[account(
-        init,
-        seeds = [b"if_rebalance_config".as_ref(), params.in_market_index.to_le_bytes().as_ref(), params.out_market_index.to_le_bytes().as_ref()],
-        space = IfRebalanceConfig::SIZE,
-        bump,
-        payer = admin
-    )]
-    pub if_rebalance_config: AccountLoader<'info, IfRebalanceConfig>,
-    pub state: AccountLoader<'info, State>,
-    pub rent: Sysvar<'info, Rent>,
-    pub system_program: Program<'info, System>,
-}
-
-#[derive(Accounts)]
-pub struct UpdateIfRebalanceConfig<'info> {
-    #[account(mut, constraint = check_warm(&admin.key(), &state)?)]
-    pub admin: Signer<'info>,
-    #[account(mut)]
-    pub if_rebalance_config: AccountLoader<'info, IfRebalanceConfig>,
-    pub state: AccountLoader<'info, State>,
 }
 
 #[derive(Accounts)]

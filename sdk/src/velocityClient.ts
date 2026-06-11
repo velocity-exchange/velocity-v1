@@ -115,7 +115,6 @@ import {
 	getUserAccountPublicKeySync,
 	getUserStatsAccountPublicKey,
 	getSignedMsgWsDelegatesAccountPublicKey,
-	getIfRebalanceConfigPublicKey,
 	getRevenueShareAccountPublicKey,
 	getRevenueShareEscrowAccountPublicKey,
 	getConstituentTargetBasePublicKey,
@@ -8556,105 +8555,6 @@ export class VelocityClient {
 					assetTokenAccount: assetTokenAccount,
 					liabilityTokenAccount: liabilityTokenAccount,
 					tokenProgram: assetTokenProgram,
-					velocitySigner: this.getStateAccount().signer,
-					instructions: SYSVAR_INSTRUCTIONS_PUBKEY,
-				},
-				remainingAccounts,
-			}
-		);
-
-		return { beginSwapIx, endSwapIx };
-	}
-
-	public async getInsuranceFundSwapIx({
-		inMarketIndex,
-		outMarketIndex,
-		amountIn,
-		inTokenAccount,
-		outTokenAccount,
-	}: {
-		inMarketIndex: number;
-		outMarketIndex: number;
-		amountIn: BN;
-		inTokenAccount: PublicKey;
-		outTokenAccount: PublicKey;
-	}): Promise<{
-		beginSwapIx: TransactionInstruction;
-		endSwapIx: TransactionInstruction;
-	}> {
-		const remainingAccounts = await this.getRemainingAccounts({
-			userAccounts: [],
-			writableSpotMarketIndexes: [inMarketIndex, outMarketIndex],
-		});
-
-		const inSpotMarket = this.getSpotMarketAccount(inMarketIndex);
-		const outSpotMarket = this.getSpotMarketAccount(outMarketIndex);
-
-		if (this.isToken2022(inSpotMarket) || this.isToken2022(outSpotMarket)) {
-			remainingAccounts.push({
-				pubkey: inSpotMarket.mint,
-				isWritable: false,
-				isSigner: false,
-			});
-			remainingAccounts.push({
-				pubkey: outSpotMarket.mint,
-				isWritable: false,
-				isSigner: false,
-			});
-			if (this.isTransferHook(inSpotMarket)) {
-				this.addExtraAccountMetasToRemainingAccounts(
-					inSpotMarket.mint,
-					remainingAccounts
-				);
-			}
-			if (this.isTransferHook(outSpotMarket)) {
-				this.addExtraAccountMetasToRemainingAccounts(
-					outSpotMarket.mint,
-					remainingAccounts
-				);
-			}
-		}
-
-		const ifRebalanceConfig = getIfRebalanceConfigPublicKey(
-			this.program.programId,
-			inMarketIndex,
-			outMarketIndex
-		);
-
-		const beginSwapIx = await this.program.instruction.beginInsuranceFundSwap(
-			inMarketIndex,
-			outMarketIndex,
-			amountIn,
-			{
-				accounts: {
-					state: await this.getStatePublicKey(),
-					authority: this.wallet.publicKey,
-					outInsuranceFundVault: outSpotMarket.insuranceFund.vault,
-					inInsuranceFundVault: inSpotMarket.insuranceFund.vault,
-					outTokenAccount,
-					inTokenAccount,
-					ifRebalanceConfig: ifRebalanceConfig,
-					tokenProgram: TOKEN_PROGRAM_ID,
-					velocitySigner: this.getStateAccount().signer,
-					instructions: SYSVAR_INSTRUCTIONS_PUBKEY,
-				},
-				remainingAccounts,
-			}
-		);
-
-		const endSwapIx = await this.program.instruction.endInsuranceFundSwap(
-			inMarketIndex,
-			outMarketIndex,
-			{
-				accounts: {
-					state: await this.getStatePublicKey(),
-					authority: this.wallet.publicKey,
-					outInsuranceFundVault: outSpotMarket.insuranceFund.vault,
-					inInsuranceFundVault: inSpotMarket.insuranceFund.vault,
-					outTokenAccount,
-					inTokenAccount,
-					ifRebalanceConfig: ifRebalanceConfig,
-					tokenProgram: TOKEN_PROGRAM_ID,
 					velocitySigner: this.getStateAccount().signer,
 					instructions: SYSVAR_INSTRUCTIONS_PUBKEY,
 				},

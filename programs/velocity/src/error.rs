@@ -681,8 +681,10 @@ pub enum ErrorCode {
     #[msg("Deprecated")]
     DeprecatedCouldNotDeserializeHighLeverageModeConfig,
     #[msg("Invalid If Rebalance Config")]
+    /// @deprecated if-rebalance machinery removed; code preserved (ABI-stable enum)
     InvalidIfRebalanceConfig,
     #[msg("Invalid If Rebalance Swap")]
+    /// @deprecated if-rebalance machinery removed; code preserved (ABI-stable enum)
     InvalidIfRebalanceSwap,
     #[msg("Invalid RevenueShare resize")]
     InvalidRevenueShareResize,

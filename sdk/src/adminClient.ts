@@ -24,7 +24,6 @@ import {
 	MarketStatus,
 	ContractTier,
 	AssetTier,
-	IfRebalanceConfigParams,
 	TxParams,
 	AddAmmConstituentMappingDatum,
 	SwapReduceOnly,
@@ -42,12 +41,10 @@ import {
 	getSpotMarketVaultPublicKey,
 	getPerpMarketPublicKey,
 	getInsuranceFundVaultPublicKey,
-	getProtocolIfSharesTransferConfigPublicKey,
 	getPrelaunchOraclePublicKey,
 	getUserStatsAccountPublicKey,
 	getPythLazerOraclePublicKey,
 	getTokenProgramForSpotMarket,
-	getIfRebalanceConfigPublicKey,
 	getInsuranceFundStakeAccountPublicKey,
 	getLpPoolPublicKey,
 	getAmmConstituentMappingPublicKey,
@@ -3643,77 +3640,6 @@ export class AdminClient extends VelocityClient {
 		);
 	}
 
-	public async initializeProtocolIfSharesTransferConfig(): Promise<TransactionSignature> {
-		const initializeProtocolIfSharesTransferConfigIx =
-			await this.getInitializeProtocolIfSharesTransferConfigIx();
-
-		const tx = await this.buildTransaction(
-			initializeProtocolIfSharesTransferConfigIx
-		);
-
-		const { txSig } = await this.sendTransaction(tx, [], this.opts);
-
-		return txSig;
-	}
-
-	public async getInitializeProtocolIfSharesTransferConfigIx(): Promise<TransactionInstruction> {
-		return await (
-			this.program.instruction as any
-		).initializeProtocolIfSharesTransferConfig({
-			accounts: {
-				admin: this.isSubscribed
-					? this.getStateAccount().coldAdmin
-					: this.wallet.publicKey,
-				state: await this.getStatePublicKey(),
-				rent: SYSVAR_RENT_PUBKEY,
-				systemProgram: anchor.web3.SystemProgram.programId,
-				protocolIfSharesTransferConfig:
-					getProtocolIfSharesTransferConfigPublicKey(this.program.programId),
-			},
-		});
-	}
-
-	public async updateProtocolIfSharesTransferConfig(
-		whitelistedSigners?: PublicKey[],
-		maxTransferPerEpoch?: BN
-	): Promise<TransactionSignature> {
-		const updateProtocolIfSharesTransferConfigIx =
-			await this.getUpdateProtocolIfSharesTransferConfigIx(
-				whitelistedSigners,
-				maxTransferPerEpoch
-			);
-
-		const tx = await this.buildTransaction(
-			updateProtocolIfSharesTransferConfigIx
-		);
-
-		const { txSig } = await this.sendTransaction(tx, [], this.opts);
-
-		return txSig;
-	}
-
-	public async getUpdateProtocolIfSharesTransferConfigIx(
-		whitelistedSigners?: PublicKey[],
-		maxTransferPerEpoch?: BN
-	): Promise<TransactionInstruction> {
-		return await (
-			this.program.instruction as any
-		).updateProtocolIfSharesTransferConfig(
-			whitelistedSigners || null,
-			maxTransferPerEpoch,
-			{
-				accounts: {
-					admin: this.isSubscribed
-						? this.getStateAccount().coldAdmin
-						: this.wallet.publicKey,
-					state: await this.getStatePublicKey(),
-					protocolIfSharesTransferConfig:
-						getProtocolIfSharesTransferConfigPublicKey(this.program.programId),
-				},
-			}
-		);
-	}
-
 	public async updateProtocolFeeRecipient(
 		protocolFeeRecipient: PublicKey
 	): Promise<TransactionSignature> {
@@ -4122,38 +4048,6 @@ export class AdminClient extends VelocityClient {
 		);
 	}
 
-	public async initializeIfRebalanceConfig(
-		params: IfRebalanceConfigParams
-	): Promise<TransactionSignature> {
-		const initializeIfRebalanceConfigIx =
-			await this.getInitializeIfRebalanceConfigIx(params);
-
-		const tx = await this.buildTransaction(initializeIfRebalanceConfigIx);
-		const { txSig } = await this.sendTransaction(tx, [], this.opts);
-
-		return txSig;
-	}
-
-	public async getInitializeIfRebalanceConfigIx(
-		params: IfRebalanceConfigParams
-	): Promise<TransactionInstruction> {
-		return await this.program.instruction.initializeIfRebalanceConfig(params, {
-			accounts: {
-				admin: this.isSubscribed
-					? this.getStateAccount().coldAdmin
-					: this.wallet.publicKey,
-				state: await this.getStatePublicKey(),
-				ifRebalanceConfig: await getIfRebalanceConfigPublicKey(
-					this.program.programId,
-					params.inMarketIndex,
-					params.outMarketIndex
-				),
-				rent: SYSVAR_RENT_PUBKEY,
-				systemProgram: anchor.web3.SystemProgram.programId,
-			},
-		});
-	}
-
 	public async initializePythLazerOracle(
 		feedId: number
 	): Promise<TransactionSignature> {
@@ -4426,56 +4320,6 @@ export class AdminClient extends VelocityClient {
 		});
 
 		return ix;
-	}
-
-	public async depositIntoInsuranceFundStake(
-		marketIndex: number,
-		amount: BN,
-		userStatsPublicKey: PublicKey,
-		insuranceFundStakePublicKey: PublicKey,
-		userTokenAccountPublicKey: PublicKey,
-		txParams?: TxParams
-	): Promise<TransactionSignature> {
-		const tx = await this.buildTransaction(
-			await this.getDepositIntoInsuranceFundStakeIx(
-				marketIndex,
-				amount,
-				userStatsPublicKey,
-				insuranceFundStakePublicKey,
-				userTokenAccountPublicKey
-			),
-			txParams
-		);
-		const { txSig } = await this.sendTransaction(tx, [], this.opts);
-		return txSig;
-	}
-
-	public async getDepositIntoInsuranceFundStakeIx(
-		marketIndex: number,
-		amount: BN,
-		userStatsPublicKey: PublicKey,
-		insuranceFundStakePublicKey: PublicKey,
-		userTokenAccountPublicKey: PublicKey
-	): Promise<TransactionInstruction> {
-		const spotMarket = this.getSpotMarketAccount(marketIndex);
-		return await this.program.instruction.depositIntoInsuranceFundStake(
-			marketIndex,
-			amount,
-			{
-				accounts: {
-					signer: this.wallet.publicKey,
-					state: await this.getStatePublicKey(),
-					spotMarket: spotMarket.pubkey,
-					insuranceFundStake: insuranceFundStakePublicKey,
-					userStats: userStatsPublicKey,
-					spotMarketVault: spotMarket.vault,
-					insuranceFundVault: spotMarket.insuranceFund.vault,
-					userTokenAccount: userTokenAccountPublicKey,
-					tokenProgram: this.getTokenProgramForSpotMarket(spotMarket),
-					velocitySigner: this.getSignerPublicKey(),
-				},
-			}
-		);
 	}
 
 	public async updateFeatureBitFlagsSettleLpPool(
@@ -5988,7 +5832,6 @@ export enum HotRole {
 	LpCache = 'lpCache',
 	LpSwap = 'lpSwap',
 	LpSettle = 'lpSettle',
-	IfRebalance = 'ifRebalance',
 	FeatureFlag = 'featureFlag',
 	Fuel = 'fuel',
 	UserFlag = 'userFlag',

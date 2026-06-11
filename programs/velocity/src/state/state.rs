@@ -24,7 +24,7 @@ pub struct State {
     /// Root authority. Set at `initialize`; only this key can rotate `warm_admin`
     /// and `pause_admin`. Expected to sit behind a (small) timelocked multisig.
     pub cold_admin: Pubkey,
-    /// Operational authority (e.g. multisig+timelock). Can rotate the 11 hot keys
+    /// Operational authority (e.g. multisig+timelock). Can rotate the 10 hot keys
     /// below. `Pubkey::default()` means unset — only `cold_admin` can act in that case.
     pub warm_admin: Pubkey,
     /// Emergency-pause authority. No on-chain timelock — intended to live behind a
@@ -38,7 +38,6 @@ pub struct State {
     pub hot_lp_cache: Pubkey,
     pub hot_lp_swap: Pubkey,
     pub hot_lp_settle: Pubkey,
-    pub hot_if_rebalance: Pubkey,
     pub hot_feature_flag: Pubkey,
     pub hot_fuel: Pubkey,
     pub hot_user_flag: Pubkey,
@@ -78,7 +77,7 @@ pub struct State {
     /// Hot key authorized for the `FeeWithdraw` role (triggers protocol-fee
     /// withdrawals to `protocol_fee_recipient`).
     pub hot_fee_withdraw: Pubkey,
-    pub padding: [u8; 272],
+    pub padding: [u8; 304],
 }
 
 /// Purpose-specific hot role keys held on `State`. Each variant maps to one of the
@@ -89,7 +88,6 @@ pub enum HotRole {
     LpCache,
     LpSwap,
     LpSettle,
-    IfRebalance,
     FeatureFlag,
     Fuel,
     UserFlag,
@@ -129,7 +127,6 @@ impl Default for State {
             hot_lp_cache: Pubkey::default(),
             hot_lp_swap: Pubkey::default(),
             hot_lp_settle: Pubkey::default(),
-            hot_if_rebalance: Pubkey::default(),
             hot_feature_flag: Pubkey::default(),
             hot_fuel: Pubkey::default(),
             hot_user_flag: Pubkey::default(),
@@ -162,7 +159,7 @@ impl Default for State {
             max_initialize_user_fee: 0,
             feature_bit_flags: 0,
             lp_pool_feature_bit_flags: 0,
-            padding: [0; 272],
+            padding: [0; 304],
         }
     }
 }
@@ -246,7 +243,6 @@ impl State {
             HotRole::LpCache => self.hot_lp_cache,
             HotRole::LpSwap => self.hot_lp_swap,
             HotRole::LpSettle => self.hot_lp_settle,
-            HotRole::IfRebalance => self.hot_if_rebalance,
             HotRole::FeatureFlag => self.hot_feature_flag,
             HotRole::Fuel => self.hot_fuel,
             HotRole::UserFlag => self.hot_user_flag,
@@ -263,7 +259,6 @@ impl State {
             HotRole::LpCache => self.hot_lp_cache = key,
             HotRole::LpSwap => self.hot_lp_swap = key,
             HotRole::LpSettle => self.hot_lp_settle = key,
-            HotRole::IfRebalance => self.hot_if_rebalance = key,
             HotRole::FeatureFlag => self.hot_feature_flag = key,
             HotRole::Fuel => self.hot_fuel = key,
             HotRole::UserFlag => self.hot_user_flag = key,
@@ -351,11 +346,11 @@ pub enum LpPoolFeatureBitFlags {
 }
 
 impl Size for State {
-    // 8 (disc) + 14 Pubkey (cold + warm + pause + 11 hot, 448 B) + 6 Pubkey (mint/signer/srm
+    // 8 (disc) + 13 Pubkey (cold + warm + pause + 10 hot, 416 B) + 6 Pubkey (mint/signer/srm
     // + protocol_fee_recipient + hot_fee_withdraw, 192 B) + 2*FeeStructure + OracleGuardRails
-    // + scalars + padding[272] = 1752 B. The trailing padding was restored to its full
-    // 272 bytes after protocol_fee_recipient/hot_fee_withdraw were added (clean-slate
-    // deploy, so growing the account is free); (SIZE - 8) % 16 == 0 holds (1744).
+    // + scalars + padding[304] = 1752 B. hot_if_rebalance was removed with the
+    // if-rebalance machinery (its 32 B went into the padding, keeping SIZE constant);
+    // (SIZE - 8) % 16 == 0 holds (1744).
     const SIZE: usize = 1752;
 }
 

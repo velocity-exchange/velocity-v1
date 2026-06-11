@@ -444,142 +444,6 @@
       ]
     },
     {
-      "name": "begin_insurance_fund_swap",
-      "discriminator": [
-        176,
-        69,
-        143,
-        205,
-        32,
-        132,
-        163,
-        0
-      ],
-      "accounts": [
-        {
-          "name": "state"
-        },
-        {
-          "name": "authority",
-          "writable": true,
-          "signer": true
-        },
-        {
-          "name": "out_insurance_fund_vault",
-          "writable": true,
-          "pda": {
-            "seeds": [
-              {
-                "kind": "const",
-                "value": [
-                  105,
-                  110,
-                  115,
-                  117,
-                  114,
-                  97,
-                  110,
-                  99,
-                  101,
-                  95,
-                  102,
-                  117,
-                  110,
-                  100,
-                  95,
-                  118,
-                  97,
-                  117,
-                  108,
-                  116
-                ]
-              },
-              {
-                "kind": "arg",
-                "path": "out_market_index"
-              }
-            ]
-          }
-        },
-        {
-          "name": "in_insurance_fund_vault",
-          "writable": true,
-          "pda": {
-            "seeds": [
-              {
-                "kind": "const",
-                "value": [
-                  105,
-                  110,
-                  115,
-                  117,
-                  114,
-                  97,
-                  110,
-                  99,
-                  101,
-                  95,
-                  102,
-                  117,
-                  110,
-                  100,
-                  95,
-                  118,
-                  97,
-                  117,
-                  108,
-                  116
-                ]
-              },
-              {
-                "kind": "arg",
-                "path": "in_market_index"
-              }
-            ]
-          }
-        },
-        {
-          "name": "out_token_account",
-          "writable": true
-        },
-        {
-          "name": "in_token_account",
-          "writable": true
-        },
-        {
-          "name": "if_rebalance_config",
-          "writable": true
-        },
-        {
-          "name": "token_program"
-        },
-        {
-          "name": "velocity_signer"
-        },
-        {
-          "name": "instructions",
-          "docs": [
-            "Instructions Sysvar for instruction introspection"
-          ],
-          "address": "Sysvar1nstructions1111111111111111111111111"
-        }
-      ],
-      "args": [
-        {
-          "name": "in_market_index",
-          "type": "u16"
-        },
-        {
-          "name": "out_market_index",
-          "type": "u16"
-        },
-        {
-          "name": "amount_in",
-          "type": "u64"
-        }
-      ]
-    },
-    {
       "name": "begin_lp_swap",
       "discriminator": [
         64,
@@ -1678,193 +1542,6 @@
       ]
     },
     {
-      "name": "deposit_into_insurance_fund_stake",
-      "discriminator": [
-        4,
-        22,
-        226,
-        201,
-        124,
-        44,
-        82,
-        230
-      ],
-      "accounts": [
-        {
-          "name": "signer",
-          "signer": true
-        },
-        {
-          "name": "state",
-          "writable": true
-        },
-        {
-          "name": "spot_market",
-          "writable": true,
-          "pda": {
-            "seeds": [
-              {
-                "kind": "const",
-                "value": [
-                  115,
-                  112,
-                  111,
-                  116,
-                  95,
-                  109,
-                  97,
-                  114,
-                  107,
-                  101,
-                  116
-                ]
-              },
-              {
-                "kind": "arg",
-                "path": "market_index"
-              }
-            ]
-          }
-        },
-        {
-          "name": "insurance_fund_stake",
-          "writable": true,
-          "pda": {
-            "seeds": [
-              {
-                "kind": "const",
-                "value": [
-                  105,
-                  110,
-                  115,
-                  117,
-                  114,
-                  97,
-                  110,
-                  99,
-                  101,
-                  95,
-                  102,
-                  117,
-                  110,
-                  100,
-                  95,
-                  115,
-                  116,
-                  97,
-                  107,
-                  101
-                ]
-              },
-              {
-                "kind": "account",
-                "path": "user_stats"
-              },
-              {
-                "kind": "arg",
-                "path": "market_index"
-              }
-            ]
-          }
-        },
-        {
-          "name": "user_stats",
-          "writable": true
-        },
-        {
-          "name": "spot_market_vault",
-          "writable": true,
-          "pda": {
-            "seeds": [
-              {
-                "kind": "const",
-                "value": [
-                  115,
-                  112,
-                  111,
-                  116,
-                  95,
-                  109,
-                  97,
-                  114,
-                  107,
-                  101,
-                  116,
-                  95,
-                  118,
-                  97,
-                  117,
-                  108,
-                  116
-                ]
-              },
-              {
-                "kind": "arg",
-                "path": "market_index"
-              }
-            ]
-          }
-        },
-        {
-          "name": "insurance_fund_vault",
-          "writable": true,
-          "pda": {
-            "seeds": [
-              {
-                "kind": "const",
-                "value": [
-                  105,
-                  110,
-                  115,
-                  117,
-                  114,
-                  97,
-                  110,
-                  99,
-                  101,
-                  95,
-                  102,
-                  117,
-                  110,
-                  100,
-                  95,
-                  118,
-                  97,
-                  117,
-                  108,
-                  116
-                ]
-              },
-              {
-                "kind": "arg",
-                "path": "market_index"
-              }
-            ]
-          }
-        },
-        {
-          "name": "user_token_account",
-          "writable": true
-        },
-        {
-          "name": "token_program"
-        },
-        {
-          "name": "velocity_signer"
-        }
-      ],
-      "args": [
-        {
-          "name": "market_index",
-          "type": "u16"
-        },
-        {
-          "name": "amount",
-          "type": "u64"
-        }
-      ]
-    },
-    {
       "name": "deposit_into_isolated_perp_position",
       "discriminator": [
         101,
@@ -2228,138 +1905,6 @@
         {
           "name": "amount",
           "type": "u64"
-        }
-      ]
-    },
-    {
-      "name": "end_insurance_fund_swap",
-      "discriminator": [
-        206,
-        230,
-        98,
-        8,
-        249,
-        158,
-        169,
-        167
-      ],
-      "accounts": [
-        {
-          "name": "state"
-        },
-        {
-          "name": "authority",
-          "writable": true,
-          "signer": true
-        },
-        {
-          "name": "out_insurance_fund_vault",
-          "writable": true,
-          "pda": {
-            "seeds": [
-              {
-                "kind": "const",
-                "value": [
-                  105,
-                  110,
-                  115,
-                  117,
-                  114,
-                  97,
-                  110,
-                  99,
-                  101,
-                  95,
-                  102,
-                  117,
-                  110,
-                  100,
-                  95,
-                  118,
-                  97,
-                  117,
-                  108,
-                  116
-                ]
-              },
-              {
-                "kind": "arg",
-                "path": "out_market_index"
-              }
-            ]
-          }
-        },
-        {
-          "name": "in_insurance_fund_vault",
-          "writable": true,
-          "pda": {
-            "seeds": [
-              {
-                "kind": "const",
-                "value": [
-                  105,
-                  110,
-                  115,
-                  117,
-                  114,
-                  97,
-                  110,
-                  99,
-                  101,
-                  95,
-                  102,
-                  117,
-                  110,
-                  100,
-                  95,
-                  118,
-                  97,
-                  117,
-                  108,
-                  116
-                ]
-              },
-              {
-                "kind": "arg",
-                "path": "in_market_index"
-              }
-            ]
-          }
-        },
-        {
-          "name": "out_token_account",
-          "writable": true
-        },
-        {
-          "name": "in_token_account",
-          "writable": true
-        },
-        {
-          "name": "if_rebalance_config",
-          "writable": true
-        },
-        {
-          "name": "token_program"
-        },
-        {
-          "name": "velocity_signer"
-        },
-        {
-          "name": "instructions",
-          "docs": [
-            "Instructions Sysvar for instruction introspection"
-          ],
-          "address": "Sysvar1nstructions1111111111111111111111111"
-        }
-      ],
-      "args": [
-        {
-          "name": "in_market_index",
-          "type": "u16"
-        },
-        {
-          "name": "out_market_index",
-          "type": "u16"
         }
       ]
     },
@@ -3184,87 +2729,6 @@
           "name": "new_constituent_correlations",
           "type": {
             "vec": "i64"
-          }
-        }
-      ]
-    },
-    {
-      "name": "initialize_if_rebalance_config",
-      "discriminator": [
-        8,
-        85,
-        184,
-        167,
-        176,
-        61,
-        173,
-        226
-      ],
-      "accounts": [
-        {
-          "name": "admin",
-          "writable": true,
-          "signer": true
-        },
-        {
-          "name": "if_rebalance_config",
-          "writable": true,
-          "pda": {
-            "seeds": [
-              {
-                "kind": "const",
-                "value": [
-                  105,
-                  102,
-                  95,
-                  114,
-                  101,
-                  98,
-                  97,
-                  108,
-                  97,
-                  110,
-                  99,
-                  101,
-                  95,
-                  99,
-                  111,
-                  110,
-                  102,
-                  105,
-                  103
-                ]
-              },
-              {
-                "kind": "arg",
-                "path": "params.in_market_index"
-              },
-              {
-                "kind": "arg",
-                "path": "params.out_market_index"
-              }
-            ]
-          }
-        },
-        {
-          "name": "state"
-        },
-        {
-          "name": "rent",
-          "address": "SysvarRent111111111111111111111111111111111"
-        },
-        {
-          "name": "system_program",
-          "address": "11111111111111111111111111111111"
-        }
-      ],
-      "args": [
-        {
-          "name": "params",
-          "type": {
-            "defined": {
-              "name": "IfRebalanceConfigParams"
-            }
           }
         }
       ]
@@ -9547,43 +9011,6 @@
       ]
     },
     {
-      "name": "update_if_rebalance_config",
-      "discriminator": [
-        142,
-        245,
-        249,
-        66,
-        249,
-        181,
-        22,
-        83
-      ],
-      "accounts": [
-        {
-          "name": "admin",
-          "writable": true,
-          "signer": true
-        },
-        {
-          "name": "if_rebalance_config",
-          "writable": true
-        },
-        {
-          "name": "state"
-        }
-      ],
-      "args": [
-        {
-          "name": "params",
-          "type": {
-            "defined": {
-              "name": "IfRebalanceConfigParams"
-            }
-          }
-        }
-      ]
-    },
-    {
       "name": "update_initial_amm_cache_info",
       "discriminator": [
         157,
@@ -14142,19 +13569,6 @@
       ]
     },
     {
-      "name": "IfRebalanceConfig",
-      "discriminator": [
-        214,
-        84,
-        40,
-        251,
-        107,
-        144,
-        173,
-        239
-      ]
-    },
-    {
       "name": "InsuranceFundStake",
       "discriminator": [
         110,
@@ -14339,19 +13753,6 @@
   ],
   "events": [
     {
-      "name": "AdminWithdrawFromInsuranceFundRecord",
-      "discriminator": [
-        230,
-        236,
-        10,
-        0,
-        196,
-        41,
-        147,
-        45
-      ]
-    },
-    {
       "name": "AmmCurveChanged",
       "discriminator": [
         116,
@@ -14440,19 +13841,6 @@
         148,
         250,
         114
-      ]
-    },
-    {
-      "name": "InsuranceFundSwapRecord",
-      "discriminator": [
-        85,
-        190,
-        99,
-        203,
-        237,
-        33,
-        227,
-        100
       ]
     },
     {
@@ -14674,19 +14062,6 @@
         86,
         247,
         12
-      ]
-    },
-    {
-      "name": "TransferProtocolIfSharesToRevenuePoolRecord",
-      "discriminator": [
-        209,
-        118,
-        142,
-        167,
-        130,
-        46,
-        164,
-        151
       ]
     },
     {
@@ -16809,50 +16184,6 @@
       }
     },
     {
-      "name": "AdminWithdrawFromInsuranceFundRecord",
-      "type": {
-        "kind": "struct",
-        "fields": [
-          {
-            "name": "ts",
-            "type": "i64"
-          },
-          {
-            "name": "market_index",
-            "type": "u16"
-          },
-          {
-            "name": "admin",
-            "type": "pubkey"
-          },
-          {
-            "name": "amount",
-            "type": "u64"
-          },
-          {
-            "name": "shares_burned",
-            "type": "u128"
-          },
-          {
-            "name": "insurance_fund_vault_amount_before",
-            "type": "u64"
-          },
-          {
-            "name": "protocol_shares_before",
-            "type": "u128"
-          },
-          {
-            "name": "protocol_shares_after",
-            "type": "u128"
-          },
-          {
-            "name": "recipient_token_account",
-            "type": "pubkey"
-          }
-        ]
-      }
-    },
-    {
       "name": "AmmCache",
       "type": {
         "kind": "struct",
@@ -17834,8 +17165,8 @@
     {
       "name": "FeeLedger",
       "docs": [
-        "All of a perp market's fee-split accounting in one ledger (auditor-driven",
-        "consolidation). Pure counters — token claims live in the pools",
+        "All of a perp market's fee-split accounting in one ledger.",
+        "Pure counters — token claims live in the pools",
         "(`protocol_fee_pool`, the quote `revenue_pool`, `AMM.fee_pool`).",
         "Convention: gross-fee counters record what the taker actually paid",
         "(post referee discount, pre carve-outs) on BOTH the AMM and DLOB-match",
@@ -18319,9 +17650,6 @@
             "name": "LpSettle"
           },
           {
-            "name": "IfRebalance"
-          },
-          {
             "name": "FeatureFlag"
           },
           {
@@ -18341,160 +17669,6 @@
           },
           {
             "name": "FeeWithdraw"
-          }
-        ]
-      }
-    },
-    {
-      "name": "IfRebalanceConfig",
-      "serialization": "bytemuckunsafe",
-      "repr": {
-        "kind": "c"
-      },
-      "type": {
-        "kind": "struct",
-        "fields": [
-          {
-            "name": "pubkey",
-            "type": "pubkey"
-          },
-          {
-            "name": "total_in_amount",
-            "docs": [
-              "total amount to be sold"
-            ],
-            "type": "u64"
-          },
-          {
-            "name": "current_in_amount",
-            "docs": [
-              "amount already sold"
-            ],
-            "type": "u64"
-          },
-          {
-            "name": "current_out_amount",
-            "docs": [
-              "amount already bought"
-            ],
-            "type": "u64"
-          },
-          {
-            "name": "current_out_amount_transferred",
-            "docs": [
-              "amount already transferred to revenue pool"
-            ],
-            "type": "u64"
-          },
-          {
-            "name": "current_in_amount_since_last_transfer",
-            "docs": [
-              "amount already bought in epoch"
-            ],
-            "type": "u64"
-          },
-          {
-            "name": "epoch_start_ts",
-            "docs": [
-              "start time of epoch"
-            ],
-            "type": "i64"
-          },
-          {
-            "name": "epoch_in_amount",
-            "docs": [
-              "amount already bought in epoch"
-            ],
-            "type": "u64"
-          },
-          {
-            "name": "epoch_max_in_amount",
-            "docs": [
-              "max amount to swap in epoch"
-            ],
-            "type": "u64"
-          },
-          {
-            "name": "epoch_duration",
-            "docs": [
-              "duration of epoch"
-            ],
-            "type": "i64"
-          },
-          {
-            "name": "out_market_index",
-            "docs": [
-              "market index to sell"
-            ],
-            "type": "u16"
-          },
-          {
-            "name": "in_market_index",
-            "docs": [
-              "market index to buy"
-            ],
-            "type": "u16"
-          },
-          {
-            "name": "max_slippage_bps",
-            "type": "u16"
-          },
-          {
-            "name": "swap_mode",
-            "type": "u8"
-          },
-          {
-            "name": "status",
-            "type": "u8"
-          },
-          {
-            "name": "padding2",
-            "type": {
-              "array": [
-                "u8",
-                32
-              ]
-            }
-          }
-        ]
-      }
-    },
-    {
-      "name": "IfRebalanceConfigParams",
-      "type": {
-        "kind": "struct",
-        "fields": [
-          {
-            "name": "total_in_amount",
-            "type": "u64"
-          },
-          {
-            "name": "epoch_max_in_amount",
-            "type": "u64"
-          },
-          {
-            "name": "epoch_duration",
-            "type": "i64"
-          },
-          {
-            "name": "out_market_index",
-            "type": "u16"
-          },
-          {
-            "name": "in_market_index",
-            "type": "u16"
-          },
-          {
-            "name": "max_slippage_bps",
-            "type": "u16"
-          },
-          {
-            "name": "swap_mode",
-            "type": "u8"
-          },
-          {
-            "name": "status",
-            "type": "u8"
           }
         ]
       }
@@ -18800,94 +17974,6 @@
           {
             "name": "total_if_shares_after",
             "type": "u128"
-          }
-        ]
-      }
-    },
-    {
-      "name": "InsuranceFundSwapRecord",
-      "type": {
-        "kind": "struct",
-        "fields": [
-          {
-            "name": "rebalance_config",
-            "type": "pubkey"
-          },
-          {
-            "name": "in_if_total_shares_before",
-            "type": "u128"
-          },
-          {
-            "name": "out_if_total_shares_before",
-            "type": "u128"
-          },
-          {
-            "name": "in_if_user_shares_before",
-            "type": "u128"
-          },
-          {
-            "name": "out_if_user_shares_before",
-            "type": "u128"
-          },
-          {
-            "name": "in_if_total_shares_after",
-            "type": "u128"
-          },
-          {
-            "name": "out_if_total_shares_after",
-            "type": "u128"
-          },
-          {
-            "name": "in_if_user_shares_after",
-            "type": "u128"
-          },
-          {
-            "name": "out_if_user_shares_after",
-            "type": "u128"
-          },
-          {
-            "name": "ts",
-            "type": "i64"
-          },
-          {
-            "name": "in_amount",
-            "type": "u64"
-          },
-          {
-            "name": "out_amount",
-            "type": "u64"
-          },
-          {
-            "name": "out_oracle_price",
-            "type": "u64"
-          },
-          {
-            "name": "out_oracle_price_twap",
-            "type": "i64"
-          },
-          {
-            "name": "in_vault_amount_before",
-            "type": "u64"
-          },
-          {
-            "name": "out_vault_amount_before",
-            "type": "u64"
-          },
-          {
-            "name": "in_fund_vault_amount_after",
-            "type": "u64"
-          },
-          {
-            "name": "out_fund_vault_amount_after",
-            "type": "u64"
-          },
-          {
-            "name": "in_market_index",
-            "type": "u16"
-          },
-          {
-            "name": "out_market_index",
-            "type": "u16"
           }
         ]
       }
@@ -23742,7 +22828,7 @@
           {
             "name": "warm_admin",
             "docs": [
-              "Operational authority (e.g. multisig+timelock). Can rotate the 11 hot keys",
+              "Operational authority (e.g. multisig+timelock). Can rotate the 10 hot keys",
               "below. `Pubkey::default()` means unset — only `cold_admin` can act in that case."
             ],
             "type": "pubkey"
@@ -23775,10 +22861,6 @@
           },
           {
             "name": "hot_lp_settle",
-            "type": "pubkey"
-          },
-          {
-            "name": "hot_if_rebalance",
             "type": "pubkey"
           },
           {
@@ -23936,7 +23018,7 @@
             "type": {
               "array": [
                 "u8",
-                272
+                304
               ]
             }
           }
@@ -24095,42 +23177,6 @@
           },
           {
             "name": "amount",
-            "type": "u64"
-          }
-        ]
-      }
-    },
-    {
-      "name": "TransferProtocolIfSharesToRevenuePoolRecord",
-      "type": {
-        "kind": "struct",
-        "fields": [
-          {
-            "name": "ts",
-            "type": "i64"
-          },
-          {
-            "name": "market_index",
-            "type": "u16"
-          },
-          {
-            "name": "amount",
-            "type": "u64"
-          },
-          {
-            "name": "shares",
-            "type": "u128"
-          },
-          {
-            "name": "if_vault_amount_before",
-            "type": "u64"
-          },
-          {
-            "name": "protocol_shares_before",
-            "type": "u128"
-          },
-          {
-            "name": "transfer_amount",
             "type": "u64"
           }
         ]

@@ -116,14 +116,15 @@ mod native_instruction_offsets {
     }
 
     /// State is zero-copy with `#[repr(C)]`; on-chain bytes match `mem::offset_of!`.
-    /// After folding the admin authority config into State (cold/warm/pause + 11 hot
-    /// pubkeys at the top) and removing `lp_cooldown_time`, feature_bit_flags lives at
-    /// byte 1406 (offset 1398 + 8 discriminator).
+    /// After folding the admin authority config into State (cold/warm/pause + 10 hot
+    /// pubkeys at the top, `hot_if_rebalance` removed with the if-rebalance purge) and
+    /// removing `lp_cooldown_time`, feature_bit_flags lives at byte 1374
+    /// (offset 1366 + 8 discriminator).
     #[test]
     fn state_feature_bit_flags_offset() {
         assert_eq!(
             std::mem::offset_of!(State, feature_bit_flags) + DISC,
-            1406,
+            1374,
             "State::feature_bit_flags offset changed — update handle_update_mm_oracle_native"
         );
     }
@@ -134,17 +135,17 @@ mod native_instruction_offsets {
     fn state_hot_mm_oracle_crank_offset() {
         assert_eq!(
             std::mem::offset_of!(State, hot_mm_oracle_crank) + DISC,
-            392,
+            360,
             "State::hot_mm_oracle_crank offset changed — update handle_update_mm_oracle_native"
         );
     }
 
-    /// State.hot_amm_spread_adjust lives at byte 424..456 (after discriminator).
+    /// State.hot_amm_spread_adjust lives at byte 392..424 (after discriminator).
     #[test]
     fn state_hot_amm_spread_adjust_offset() {
         assert_eq!(
             std::mem::offset_of!(State, hot_amm_spread_adjust) + DISC,
-            424,
+            392,
             "State::hot_amm_spread_adjust offset changed — update handle_update_amm_spread_adjustment_native"
         );
     }

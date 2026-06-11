@@ -1107,13 +1107,13 @@ pub fn handle_update_amm_spread_adjustment_native(
     data: &[u8],
 ) -> Result<()> {
     // Accounts: [0] perp_market (mut), [1] signer, [2] state.
-    // hot_amm_spread_adjust lives at bytes 424..456 of State (after disc).
+    // hot_amm_spread_adjust lives at bytes 392..424 of State (after disc).
     let signer_account = &accounts[1];
     #[cfg(not(feature = "anchor-test"))]
     {
         let state = &accounts[2].data.borrow();
         let mut hot_amm_spread_adjust = [0u8; 32];
-        hot_amm_spread_adjust.copy_from_slice(&state[424..456]);
+        hot_amm_spread_adjust.copy_from_slice(&state[392..424]);
         let hot_key = anchor_lang::prelude::Pubkey::new_from_array(hot_amm_spread_adjust);
         assert!(
             signer_account.is_signer && *signer_account.key == hot_key,

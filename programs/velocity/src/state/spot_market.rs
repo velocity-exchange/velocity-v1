@@ -710,17 +710,6 @@ pub struct InsuranceFund {
     pub _padding_if: [u8; 4],
 }
 
-impl InsuranceFund {
-    /// Shares not owned by stakers. The IF is now 100% staker-owned (the
-    /// settle-time protocol mint was removed and staking increments
-    /// `total_shares`/`user_shares` together), so this is always 0 on a clean
-    /// deploy — which makes every protocol-share-gated path (IF asset swap,
-    /// admin IF-vault withdraw, protocol-share transfer) structurally inert.
-    pub fn get_protocol_shares(&self) -> VelocityResult<u128> {
-        self.total_shares.safe_sub(self.user_shares)
-    }
-}
-
 #[derive(Clone, Copy, BorshSerialize, BorshDeserialize, PartialEq, Debug, Eq)]
 #[borsh(use_discriminant = true)]
 pub enum TokenProgramFlag {

@@ -450,142 +450,6 @@ export type Velocity = {
       ]
     },
     {
-      "name": "beginInsuranceFundSwap",
-      "discriminator": [
-        176,
-        69,
-        143,
-        205,
-        32,
-        132,
-        163,
-        0
-      ],
-      "accounts": [
-        {
-          "name": "state"
-        },
-        {
-          "name": "authority",
-          "writable": true,
-          "signer": true
-        },
-        {
-          "name": "outInsuranceFundVault",
-          "writable": true,
-          "pda": {
-            "seeds": [
-              {
-                "kind": "const",
-                "value": [
-                  105,
-                  110,
-                  115,
-                  117,
-                  114,
-                  97,
-                  110,
-                  99,
-                  101,
-                  95,
-                  102,
-                  117,
-                  110,
-                  100,
-                  95,
-                  118,
-                  97,
-                  117,
-                  108,
-                  116
-                ]
-              },
-              {
-                "kind": "arg",
-                "path": "outMarketIndex"
-              }
-            ]
-          }
-        },
-        {
-          "name": "inInsuranceFundVault",
-          "writable": true,
-          "pda": {
-            "seeds": [
-              {
-                "kind": "const",
-                "value": [
-                  105,
-                  110,
-                  115,
-                  117,
-                  114,
-                  97,
-                  110,
-                  99,
-                  101,
-                  95,
-                  102,
-                  117,
-                  110,
-                  100,
-                  95,
-                  118,
-                  97,
-                  117,
-                  108,
-                  116
-                ]
-              },
-              {
-                "kind": "arg",
-                "path": "inMarketIndex"
-              }
-            ]
-          }
-        },
-        {
-          "name": "outTokenAccount",
-          "writable": true
-        },
-        {
-          "name": "inTokenAccount",
-          "writable": true
-        },
-        {
-          "name": "ifRebalanceConfig",
-          "writable": true
-        },
-        {
-          "name": "tokenProgram"
-        },
-        {
-          "name": "velocitySigner"
-        },
-        {
-          "name": "instructions",
-          "docs": [
-            "Instructions Sysvar for instruction introspection"
-          ],
-          "address": "Sysvar1nstructions1111111111111111111111111"
-        }
-      ],
-      "args": [
-        {
-          "name": "inMarketIndex",
-          "type": "u16"
-        },
-        {
-          "name": "outMarketIndex",
-          "type": "u16"
-        },
-        {
-          "name": "amountIn",
-          "type": "u64"
-        }
-      ]
-    },
-    {
       "name": "beginLpSwap",
       "discriminator": [
         64,
@@ -1684,193 +1548,6 @@ export type Velocity = {
       ]
     },
     {
-      "name": "depositIntoInsuranceFundStake",
-      "discriminator": [
-        4,
-        22,
-        226,
-        201,
-        124,
-        44,
-        82,
-        230
-      ],
-      "accounts": [
-        {
-          "name": "signer",
-          "signer": true
-        },
-        {
-          "name": "state",
-          "writable": true
-        },
-        {
-          "name": "spotMarket",
-          "writable": true,
-          "pda": {
-            "seeds": [
-              {
-                "kind": "const",
-                "value": [
-                  115,
-                  112,
-                  111,
-                  116,
-                  95,
-                  109,
-                  97,
-                  114,
-                  107,
-                  101,
-                  116
-                ]
-              },
-              {
-                "kind": "arg",
-                "path": "marketIndex"
-              }
-            ]
-          }
-        },
-        {
-          "name": "insuranceFundStake",
-          "writable": true,
-          "pda": {
-            "seeds": [
-              {
-                "kind": "const",
-                "value": [
-                  105,
-                  110,
-                  115,
-                  117,
-                  114,
-                  97,
-                  110,
-                  99,
-                  101,
-                  95,
-                  102,
-                  117,
-                  110,
-                  100,
-                  95,
-                  115,
-                  116,
-                  97,
-                  107,
-                  101
-                ]
-              },
-              {
-                "kind": "account",
-                "path": "userStats"
-              },
-              {
-                "kind": "arg",
-                "path": "marketIndex"
-              }
-            ]
-          }
-        },
-        {
-          "name": "userStats",
-          "writable": true
-        },
-        {
-          "name": "spotMarketVault",
-          "writable": true,
-          "pda": {
-            "seeds": [
-              {
-                "kind": "const",
-                "value": [
-                  115,
-                  112,
-                  111,
-                  116,
-                  95,
-                  109,
-                  97,
-                  114,
-                  107,
-                  101,
-                  116,
-                  95,
-                  118,
-                  97,
-                  117,
-                  108,
-                  116
-                ]
-              },
-              {
-                "kind": "arg",
-                "path": "marketIndex"
-              }
-            ]
-          }
-        },
-        {
-          "name": "insuranceFundVault",
-          "writable": true,
-          "pda": {
-            "seeds": [
-              {
-                "kind": "const",
-                "value": [
-                  105,
-                  110,
-                  115,
-                  117,
-                  114,
-                  97,
-                  110,
-                  99,
-                  101,
-                  95,
-                  102,
-                  117,
-                  110,
-                  100,
-                  95,
-                  118,
-                  97,
-                  117,
-                  108,
-                  116
-                ]
-              },
-              {
-                "kind": "arg",
-                "path": "marketIndex"
-              }
-            ]
-          }
-        },
-        {
-          "name": "userTokenAccount",
-          "writable": true
-        },
-        {
-          "name": "tokenProgram"
-        },
-        {
-          "name": "velocitySigner"
-        }
-      ],
-      "args": [
-        {
-          "name": "marketIndex",
-          "type": "u16"
-        },
-        {
-          "name": "amount",
-          "type": "u64"
-        }
-      ]
-    },
-    {
       "name": "depositIntoIsolatedPerpPosition",
       "discriminator": [
         101,
@@ -2234,138 +1911,6 @@ export type Velocity = {
         {
           "name": "amount",
           "type": "u64"
-        }
-      ]
-    },
-    {
-      "name": "endInsuranceFundSwap",
-      "discriminator": [
-        206,
-        230,
-        98,
-        8,
-        249,
-        158,
-        169,
-        167
-      ],
-      "accounts": [
-        {
-          "name": "state"
-        },
-        {
-          "name": "authority",
-          "writable": true,
-          "signer": true
-        },
-        {
-          "name": "outInsuranceFundVault",
-          "writable": true,
-          "pda": {
-            "seeds": [
-              {
-                "kind": "const",
-                "value": [
-                  105,
-                  110,
-                  115,
-                  117,
-                  114,
-                  97,
-                  110,
-                  99,
-                  101,
-                  95,
-                  102,
-                  117,
-                  110,
-                  100,
-                  95,
-                  118,
-                  97,
-                  117,
-                  108,
-                  116
-                ]
-              },
-              {
-                "kind": "arg",
-                "path": "outMarketIndex"
-              }
-            ]
-          }
-        },
-        {
-          "name": "inInsuranceFundVault",
-          "writable": true,
-          "pda": {
-            "seeds": [
-              {
-                "kind": "const",
-                "value": [
-                  105,
-                  110,
-                  115,
-                  117,
-                  114,
-                  97,
-                  110,
-                  99,
-                  101,
-                  95,
-                  102,
-                  117,
-                  110,
-                  100,
-                  95,
-                  118,
-                  97,
-                  117,
-                  108,
-                  116
-                ]
-              },
-              {
-                "kind": "arg",
-                "path": "inMarketIndex"
-              }
-            ]
-          }
-        },
-        {
-          "name": "outTokenAccount",
-          "writable": true
-        },
-        {
-          "name": "inTokenAccount",
-          "writable": true
-        },
-        {
-          "name": "ifRebalanceConfig",
-          "writable": true
-        },
-        {
-          "name": "tokenProgram"
-        },
-        {
-          "name": "velocitySigner"
-        },
-        {
-          "name": "instructions",
-          "docs": [
-            "Instructions Sysvar for instruction introspection"
-          ],
-          "address": "Sysvar1nstructions1111111111111111111111111"
-        }
-      ],
-      "args": [
-        {
-          "name": "inMarketIndex",
-          "type": "u16"
-        },
-        {
-          "name": "outMarketIndex",
-          "type": "u16"
         }
       ]
     },
@@ -3190,87 +2735,6 @@ export type Velocity = {
           "name": "newConstituentCorrelations",
           "type": {
             "vec": "i64"
-          }
-        }
-      ]
-    },
-    {
-      "name": "initializeIfRebalanceConfig",
-      "discriminator": [
-        8,
-        85,
-        184,
-        167,
-        176,
-        61,
-        173,
-        226
-      ],
-      "accounts": [
-        {
-          "name": "admin",
-          "writable": true,
-          "signer": true
-        },
-        {
-          "name": "ifRebalanceConfig",
-          "writable": true,
-          "pda": {
-            "seeds": [
-              {
-                "kind": "const",
-                "value": [
-                  105,
-                  102,
-                  95,
-                  114,
-                  101,
-                  98,
-                  97,
-                  108,
-                  97,
-                  110,
-                  99,
-                  101,
-                  95,
-                  99,
-                  111,
-                  110,
-                  102,
-                  105,
-                  103
-                ]
-              },
-              {
-                "kind": "arg",
-                "path": "params.in_market_index"
-              },
-              {
-                "kind": "arg",
-                "path": "params.out_market_index"
-              }
-            ]
-          }
-        },
-        {
-          "name": "state"
-        },
-        {
-          "name": "rent",
-          "address": "SysvarRent111111111111111111111111111111111"
-        },
-        {
-          "name": "systemProgram",
-          "address": "11111111111111111111111111111111"
-        }
-      ],
-      "args": [
-        {
-          "name": "params",
-          "type": {
-            "defined": {
-              "name": "ifRebalanceConfigParams"
-            }
           }
         }
       ]
@@ -9553,43 +9017,6 @@ export type Velocity = {
       ]
     },
     {
-      "name": "updateIfRebalanceConfig",
-      "discriminator": [
-        142,
-        245,
-        249,
-        66,
-        249,
-        181,
-        22,
-        83
-      ],
-      "accounts": [
-        {
-          "name": "admin",
-          "writable": true,
-          "signer": true
-        },
-        {
-          "name": "ifRebalanceConfig",
-          "writable": true
-        },
-        {
-          "name": "state"
-        }
-      ],
-      "args": [
-        {
-          "name": "params",
-          "type": {
-            "defined": {
-              "name": "ifRebalanceConfigParams"
-            }
-          }
-        }
-      ]
-    },
-    {
       "name": "updateInitialAmmCacheInfo",
       "discriminator": [
         157,
@@ -14148,19 +13575,6 @@ export type Velocity = {
       ]
     },
     {
-      "name": "ifRebalanceConfig",
-      "discriminator": [
-        214,
-        84,
-        40,
-        251,
-        107,
-        144,
-        173,
-        239
-      ]
-    },
-    {
       "name": "insuranceFundStake",
       "discriminator": [
         110,
@@ -14345,19 +13759,6 @@ export type Velocity = {
   ],
   "events": [
     {
-      "name": "adminWithdrawFromInsuranceFundRecord",
-      "discriminator": [
-        230,
-        236,
-        10,
-        0,
-        196,
-        41,
-        147,
-        45
-      ]
-    },
-    {
       "name": "ammCurveChanged",
       "discriminator": [
         116,
@@ -14446,19 +13847,6 @@ export type Velocity = {
         148,
         250,
         114
-      ]
-    },
-    {
-      "name": "insuranceFundSwapRecord",
-      "discriminator": [
-        85,
-        190,
-        99,
-        203,
-        237,
-        33,
-        227,
-        100
       ]
     },
     {
@@ -14680,19 +14068,6 @@ export type Velocity = {
         86,
         247,
         12
-      ]
-    },
-    {
-      "name": "transferProtocolIfSharesToRevenuePoolRecord",
-      "discriminator": [
-        209,
-        118,
-        142,
-        167,
-        130,
-        46,
-        164,
-        151
       ]
     },
     {
@@ -16815,50 +16190,6 @@ export type Velocity = {
       }
     },
     {
-      "name": "adminWithdrawFromInsuranceFundRecord",
-      "type": {
-        "kind": "struct",
-        "fields": [
-          {
-            "name": "ts",
-            "type": "i64"
-          },
-          {
-            "name": "marketIndex",
-            "type": "u16"
-          },
-          {
-            "name": "admin",
-            "type": "pubkey"
-          },
-          {
-            "name": "amount",
-            "type": "u64"
-          },
-          {
-            "name": "sharesBurned",
-            "type": "u128"
-          },
-          {
-            "name": "insuranceFundVaultAmountBefore",
-            "type": "u64"
-          },
-          {
-            "name": "protocolSharesBefore",
-            "type": "u128"
-          },
-          {
-            "name": "protocolSharesAfter",
-            "type": "u128"
-          },
-          {
-            "name": "recipientTokenAccount",
-            "type": "pubkey"
-          }
-        ]
-      }
-    },
-    {
       "name": "ammCache",
       "type": {
         "kind": "struct",
@@ -17840,8 +17171,8 @@ export type Velocity = {
     {
       "name": "feeLedger",
       "docs": [
-        "All of a perp market's fee-split accounting in one ledger (auditor-driven",
-        "consolidation). Pure counters — token claims live in the pools",
+        "All of a perp market's fee-split accounting in one ledger.",
+        "Pure counters — token claims live in the pools",
         "(`protocol_fee_pool`, the quote `revenue_pool`, `AMM.fee_pool`).",
         "Convention: gross-fee counters record what the taker actually paid",
         "(post referee discount, pre carve-outs) on BOTH the AMM and DLOB-match",
@@ -18325,9 +17656,6 @@ export type Velocity = {
             "name": "lpSettle"
           },
           {
-            "name": "ifRebalance"
-          },
-          {
             "name": "featureFlag"
           },
           {
@@ -18347,160 +17675,6 @@ export type Velocity = {
           },
           {
             "name": "feeWithdraw"
-          }
-        ]
-      }
-    },
-    {
-      "name": "ifRebalanceConfig",
-      "serialization": "bytemuckunsafe",
-      "repr": {
-        "kind": "c"
-      },
-      "type": {
-        "kind": "struct",
-        "fields": [
-          {
-            "name": "pubkey",
-            "type": "pubkey"
-          },
-          {
-            "name": "totalInAmount",
-            "docs": [
-              "total amount to be sold"
-            ],
-            "type": "u64"
-          },
-          {
-            "name": "currentInAmount",
-            "docs": [
-              "amount already sold"
-            ],
-            "type": "u64"
-          },
-          {
-            "name": "currentOutAmount",
-            "docs": [
-              "amount already bought"
-            ],
-            "type": "u64"
-          },
-          {
-            "name": "currentOutAmountTransferred",
-            "docs": [
-              "amount already transferred to revenue pool"
-            ],
-            "type": "u64"
-          },
-          {
-            "name": "currentInAmountSinceLastTransfer",
-            "docs": [
-              "amount already bought in epoch"
-            ],
-            "type": "u64"
-          },
-          {
-            "name": "epochStartTs",
-            "docs": [
-              "start time of epoch"
-            ],
-            "type": "i64"
-          },
-          {
-            "name": "epochInAmount",
-            "docs": [
-              "amount already bought in epoch"
-            ],
-            "type": "u64"
-          },
-          {
-            "name": "epochMaxInAmount",
-            "docs": [
-              "max amount to swap in epoch"
-            ],
-            "type": "u64"
-          },
-          {
-            "name": "epochDuration",
-            "docs": [
-              "duration of epoch"
-            ],
-            "type": "i64"
-          },
-          {
-            "name": "outMarketIndex",
-            "docs": [
-              "market index to sell"
-            ],
-            "type": "u16"
-          },
-          {
-            "name": "inMarketIndex",
-            "docs": [
-              "market index to buy"
-            ],
-            "type": "u16"
-          },
-          {
-            "name": "maxSlippageBps",
-            "type": "u16"
-          },
-          {
-            "name": "swapMode",
-            "type": "u8"
-          },
-          {
-            "name": "status",
-            "type": "u8"
-          },
-          {
-            "name": "padding2",
-            "type": {
-              "array": [
-                "u8",
-                32
-              ]
-            }
-          }
-        ]
-      }
-    },
-    {
-      "name": "ifRebalanceConfigParams",
-      "type": {
-        "kind": "struct",
-        "fields": [
-          {
-            "name": "totalInAmount",
-            "type": "u64"
-          },
-          {
-            "name": "epochMaxInAmount",
-            "type": "u64"
-          },
-          {
-            "name": "epochDuration",
-            "type": "i64"
-          },
-          {
-            "name": "outMarketIndex",
-            "type": "u16"
-          },
-          {
-            "name": "inMarketIndex",
-            "type": "u16"
-          },
-          {
-            "name": "maxSlippageBps",
-            "type": "u16"
-          },
-          {
-            "name": "swapMode",
-            "type": "u8"
-          },
-          {
-            "name": "status",
-            "type": "u8"
           }
         ]
       }
@@ -18806,94 +17980,6 @@ export type Velocity = {
           {
             "name": "totalIfSharesAfter",
             "type": "u128"
-          }
-        ]
-      }
-    },
-    {
-      "name": "insuranceFundSwapRecord",
-      "type": {
-        "kind": "struct",
-        "fields": [
-          {
-            "name": "rebalanceConfig",
-            "type": "pubkey"
-          },
-          {
-            "name": "inIfTotalSharesBefore",
-            "type": "u128"
-          },
-          {
-            "name": "outIfTotalSharesBefore",
-            "type": "u128"
-          },
-          {
-            "name": "inIfUserSharesBefore",
-            "type": "u128"
-          },
-          {
-            "name": "outIfUserSharesBefore",
-            "type": "u128"
-          },
-          {
-            "name": "inIfTotalSharesAfter",
-            "type": "u128"
-          },
-          {
-            "name": "outIfTotalSharesAfter",
-            "type": "u128"
-          },
-          {
-            "name": "inIfUserSharesAfter",
-            "type": "u128"
-          },
-          {
-            "name": "outIfUserSharesAfter",
-            "type": "u128"
-          },
-          {
-            "name": "ts",
-            "type": "i64"
-          },
-          {
-            "name": "inAmount",
-            "type": "u64"
-          },
-          {
-            "name": "outAmount",
-            "type": "u64"
-          },
-          {
-            "name": "outOraclePrice",
-            "type": "u64"
-          },
-          {
-            "name": "outOraclePriceTwap",
-            "type": "i64"
-          },
-          {
-            "name": "inVaultAmountBefore",
-            "type": "u64"
-          },
-          {
-            "name": "outVaultAmountBefore",
-            "type": "u64"
-          },
-          {
-            "name": "inFundVaultAmountAfter",
-            "type": "u64"
-          },
-          {
-            "name": "outFundVaultAmountAfter",
-            "type": "u64"
-          },
-          {
-            "name": "inMarketIndex",
-            "type": "u16"
-          },
-          {
-            "name": "outMarketIndex",
-            "type": "u16"
           }
         ]
       }
@@ -23748,7 +22834,7 @@ export type Velocity = {
           {
             "name": "warmAdmin",
             "docs": [
-              "Operational authority (e.g. multisig+timelock). Can rotate the 11 hot keys",
+              "Operational authority (e.g. multisig+timelock). Can rotate the 10 hot keys",
               "below. `Pubkey::default()` means unset — only `cold_admin` can act in that case."
             ],
             "type": "pubkey"
@@ -23781,10 +22867,6 @@ export type Velocity = {
           },
           {
             "name": "hotLpSettle",
-            "type": "pubkey"
-          },
-          {
-            "name": "hotIfRebalance",
             "type": "pubkey"
           },
           {
@@ -23942,7 +23024,7 @@ export type Velocity = {
             "type": {
               "array": [
                 "u8",
-                272
+                304
               ]
             }
           }
@@ -24101,42 +23183,6 @@ export type Velocity = {
           },
           {
             "name": "amount",
-            "type": "u64"
-          }
-        ]
-      }
-    },
-    {
-      "name": "transferProtocolIfSharesToRevenuePoolRecord",
-      "type": {
-        "kind": "struct",
-        "fields": [
-          {
-            "name": "ts",
-            "type": "i64"
-          },
-          {
-            "name": "marketIndex",
-            "type": "u16"
-          },
-          {
-            "name": "amount",
-            "type": "u64"
-          },
-          {
-            "name": "shares",
-            "type": "u128"
-          },
-          {
-            "name": "ifVaultAmountBefore",
-            "type": "u64"
-          },
-          {
-            "name": "protocolSharesBefore",
-            "type": "u128"
-          },
-          {
-            "name": "transferAmount",
             "type": "u64"
           }
         ]

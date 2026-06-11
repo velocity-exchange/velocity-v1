@@ -15,7 +15,7 @@ import {
 
 export class grpcAccountSubscriber<T> extends WebSocketAccountSubscriber<T> {
 	private client: Client;
-	private stream: ClientDuplexStream;
+	private stream!: ClientDuplexStream;
 	private commitmentLevel: CommitmentLevel;
 	public listenerId?: number;
 
@@ -95,7 +95,7 @@ export class grpcAccountSubscriber<T> extends WebSocketAccountSubscriber<T> {
 			transactionsStatus: {},
 		};
 		this.stream.on('data', (chunk: SubscribeUpdate) => {
-			if (!chunk.account) {
+			if (!chunk.account || !chunk.account.account) {
 				return;
 			}
 			const slot = Number(chunk.account.slot);

@@ -16,7 +16,7 @@ export class AuctionSubscriberGrpc {
 	private grpcConfigs?: GrpcConfigs;
 
 	eventEmitter: StrictEventEmitter<EventEmitter, AuctionSubscriberEvents>;
-	private subscriber: WebSocketProgramAccountSubscriber<UserAccount>;
+	private subscriber!: WebSocketProgramAccountSubscriber<UserAccount>;
 
 	constructor({
 		velocityClient,
@@ -27,7 +27,7 @@ export class AuctionSubscriberGrpc {
 	}: AuctionSubscriberConfig) {
 		// Type-system guarantees at least one of the two is supplied.
 		this.velocityClient = velocityClient!;
-		this.opts = opts || this.velocityClient.opts;
+		this.opts = opts || this.velocityClient.opts || {};
 		this.eventEmitter = new EventEmitter();
 		this.resubOpts = { resubTimeoutMs, logResubMessages };
 		this.grpcConfigs = grpcConfigs;

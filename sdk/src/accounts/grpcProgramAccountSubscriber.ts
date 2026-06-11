@@ -15,7 +15,7 @@ export class grpcProgramAccountSubscriber<
 	T,
 > extends WebSocketProgramAccountSubscriber<T> {
 	private client: Client;
-	private stream: Awaited<ReturnType<Client['subscribe']>>;
+	private stream!: Awaited<ReturnType<Client['subscribe']>>;
 	private commitmentLevel: CommitmentLevel;
 	public listenerId?: number;
 
@@ -125,7 +125,7 @@ export class grpcProgramAccountSubscriber<
 		};
 
 		this.stream.on('data', (chunk: SubscribeUpdate) => {
-			if (!chunk.account) {
+			if (!chunk.account || !chunk.account.account) {
 				return;
 			}
 			const slot = Number(chunk.account.slot);

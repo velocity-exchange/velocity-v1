@@ -77,8 +77,8 @@ export class WebSocketAccountSubscriberV2<T> implements AccountSubscriber<T> {
 	logAccountName: string;
 	program: VelocityProgram;
 	accountPublicKey: PublicKey;
-	decodeBufferFn: (buffer: Buffer) => T;
-	onChange: (data: T) => void;
+	decodeBufferFn?: (buffer: Buffer) => T;
+	onChange!: (data: T) => void;
 	listenerId?: number;
 
 	resubOpts: ResubOpts;
@@ -131,7 +131,10 @@ export class WebSocketAccountSubscriberV2<T> implements AccountSubscriber<T> {
 			usePollingInsteadOfResub: true,
 			logResubMessages: false,
 		};
-		if (this.resubOpts.resubTimeoutMs < 1000) {
+		if (
+			this.resubOpts.resubTimeoutMs != null &&
+			this.resubOpts.resubTimeoutMs < 1000
+		) {
 			console.log(
 				`resubTimeoutMs should be at least 1000ms to avoid spamming resub ${this.logAccountName}`
 			);
@@ -139,7 +142,7 @@ export class WebSocketAccountSubscriberV2<T> implements AccountSubscriber<T> {
 		this.receivingData = false;
 		if (
 			['recent', 'single', 'singleGossip', 'root', 'max'].includes(
-				(this.program.provider as AnchorProvider).opts.commitment
+				(this.program.provider as AnchorProvider).opts.commitment ?? ''
 			)
 		) {
 			console.warn(
@@ -264,7 +267,7 @@ export class WebSocketAccountSubscriberV2<T> implements AccountSubscriber<T> {
 
 		this.dataAndSlot = {
 			data,
-			slot,
+			slot: newSlot,
 		};
 	}
 

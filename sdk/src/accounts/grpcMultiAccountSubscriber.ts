@@ -38,7 +38,7 @@ function commitmentLevelToCommitment(
 
 export class grpcMultiAccountSubscriber<T, U = undefined> {
 	private client: Client;
-	private stream: ClientDuplexStream;
+	private stream!: ClientDuplexStream;
 	private commitmentLevel: CommitmentLevel;
 	private program: VelocityProgram;
 	private accountName: string;
@@ -82,7 +82,9 @@ export class grpcMultiAccountSubscriber<T, U = undefined> {
 		this.decodeBufferFn = decodeBuffer;
 		this.resubOpts = resubOpts;
 		this.onUnsubscribe = onUnsubscribe;
-		this.accountPropsMap = accountPropsMap;
+		if (accountPropsMap) {
+			this.accountPropsMap = accountPropsMap;
+		}
 	}
 
 	public static async create<T, U = undefined>(
@@ -246,7 +248,7 @@ export class grpcMultiAccountSubscriber<T, U = undefined> {
 		};
 
 		this.stream.on('data', (chunk: SubscribeUpdate) => {
-			if (!chunk.account) {
+			if (!chunk.account || !chunk.account.account) {
 				return;
 			}
 			const slot = Number(chunk.account.slot);

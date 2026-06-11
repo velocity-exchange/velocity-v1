@@ -66,12 +66,12 @@ export class WebSocketVelocityClientAccountSubscriberV2
 
 	eventEmitter: StrictEventEmitter<EventEmitter, VelocityClientAccountEvents>;
 	stateAccountSubscriber?: WebSocketAccountSubscriberV2<StateAccount>;
-	perpMarketAllAccountsSubscriber: WebSocketProgramAccountsSubscriberV2<PerpMarketAccount>;
+	perpMarketAllAccountsSubscriber!: WebSocketProgramAccountsSubscriberV2<PerpMarketAccount>;
 	perpMarketAccountLatestData = new Map<
 		number,
 		DataAndSlot<PerpMarketAccount>
 	>();
-	spotMarketAllAccountsSubscriber: WebSocketProgramAccountsSubscriberV2<SpotMarketAccount>;
+	spotMarketAllAccountsSubscriber!: WebSocketProgramAccountsSubscriberV2<SpotMarketAccount>;
 	spotMarketAccountLatestData = new Map<
 		number,
 		DataAndSlot<SpotMarketAccount>
@@ -83,13 +83,13 @@ export class WebSocketVelocityClientAccountSubscriberV2
 	oracleSubscribers = new Map<string, AccountSubscriber<OraclePriceData>>();
 	delistedMarketSetting: DelistedMarketSetting;
 
-	initialPerpMarketAccountData: Map<number, PerpMarketAccount>;
-	initialSpotMarketAccountData: Map<number, SpotMarketAccount>;
-	initialOraclePriceData: Map<string, OraclePriceData>;
+	initialPerpMarketAccountData!: Map<number, PerpMarketAccount>;
+	initialSpotMarketAccountData!: Map<number, SpotMarketAccount>;
+	initialOraclePriceData!: Map<string, OraclePriceData>;
 
 	protected isSubscribing = false;
-	protected subscriptionPromise: Promise<boolean>;
-	protected subscriptionPromiseResolver: (val: boolean) => void;
+	protected subscriptionPromise!: Promise<boolean>;
+	protected subscriptionPromiseResolver!: (val: boolean) => void;
 
 	private rpc: Rpc<any>;
 	private rpcSubscriptions: RpcSubscriptions<SolanaRpcSubscriptionsApi> &
@@ -415,27 +415,34 @@ export class WebSocketVelocityClientAccountSubscriberV2
 			)
 		).flat();
 		this.initialOraclePriceData = new Map(
-			this.oracleInfos.reduce((result, oracleInfo, i) => {
-				if (!oracleAccountInfos[i]) {
+			this.oracleInfos.reduce(
+				(result, oracleInfo, i) => {
+					const oracleAccountInfo = oracleAccountInfos[i];
+					if (!oracleAccountInfo) {
+						return result;
+					}
+
+					const oracleClient = this.oracleClientCache.get(
+						oracleInfo.source,
+						connection,
+						this.program
+					);
+					if (!oracleClient) {
+						return result;
+					}
+
+					const oraclePriceData = oracleClient.getOraclePriceDataFromBuffer(
+						oracleAccountInfo.data
+					);
+
+					result.push([
+						getOracleId(oracleInfo.publicKey, oracleInfo.source),
+						oraclePriceData,
+					]);
 					return result;
-				}
-
-				const oracleClient = this.oracleClientCache.get(
-					oracleInfo.source,
-					connection,
-					this.program
-				);
-
-				const oraclePriceData = oracleClient.getOraclePriceDataFromBuffer(
-					oracleAccountInfos[i].data
-				);
-
-				result.push([
-					getOracleId(oracleInfo.publicKey, oracleInfo.source),
-					oraclePriceData,
-				]);
-				return result;
-			}, [])
+				},
+				[] as [string, OraclePriceData][]
+			)
 		);
 		const oracleSetupEndTime = performance.now();
 		const oracleSetupDuration = oracleSetupEndTime - oracleSetupStartTime;
@@ -503,6 +510,9 @@ export class WebSocketVelocityClientAccountSubscriberV2
 				this.program.provider.connection,
 				this.program
 			);
+			if (!client) {
+				return false;
+			}
 			const accountSubscriber =
 				new WebSocketAccountSubscriberV2<OraclePriceData>(
 					'oracle',
@@ -653,8 +663,9 @@ export class WebSocketVelocityClientAccountSubscriberV2
 
 		for (const oracle of oracles) {
 			const oracleId = getOracleId(oracle.publicKey, oracle.source);
-			if (this.oracleSubscribers.has(oracleId)) {
-				await this.oracleSubscribers.get(oracleId).unsubscribe();
+			const subscriber = this.oracleSubscribers.get(oracleId);
+			if (subscriber) {
+				await subscriber.unsubscribe();
 				if (this.delistedMarketSetting === DelistedMarketSetting.Discard) {
 					this.oracleSubscribers.delete(oracleId);
 				}
@@ -716,7 +727,7 @@ export class WebSocketVelocityClientAccountSubscriberV2
 		const perpMarketAccount = this.getMarketAccountAndSlot(marketIndex);
 		const oracle = this.perpOracleMap.get(marketIndex);
 		const oracleId = this.perpOracleStringMap.get(marketIndex);
-		if (!perpMarketAccount || !oracleId) {
+		if (!perpMarketAccount || !oracleId || !oracle) {
 			return undefined;
 		}
 
@@ -734,7 +745,7 @@ export class WebSocketVelocityClientAccountSubscriberV2
 		const spotMarketAccount = this.getSpotMarketAccountAndSlot(marketIndex);
 		const oracle = this.spotOracleMap.get(marketIndex);
 		const oracleId = this.spotOracleStringMap.get(marketIndex);
-		if (!spotMarketAccount || !oracleId) {
+		if (!spotMarketAccount || !oracleId || !oracle) {
 			return undefined;
 		}
 

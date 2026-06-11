@@ -66,8 +66,8 @@ export class PollingVelocityClientAccountSubscriber
 	delistedMarketSetting: DelistedMarketSetting;
 
 	private isSubscribing = false;
-	private subscriptionPromise: Promise<boolean>;
-	private subscriptionPromiseResolver: (val: boolean) => void;
+	private subscriptionPromise!: Promise<boolean>;
+	private subscriptionPromiseResolver!: (val: boolean) => void;
 
 	public constructor(
 		program: VelocityProgram,
@@ -418,6 +418,9 @@ export class PollingVelocityClientAccountSubscriber
 		await this.addSpotMarketAccountToPoll(marketIndex);
 
 		const accountToPoll = this.accountsToPoll.get(marketPublicKey.toString());
+		if (!accountToPoll) {
+			return false;
+		}
 
 		await this.addAccountToAccountLoader(accountToPoll);
 		this.setSpotOracleMap();
@@ -436,6 +439,9 @@ export class PollingVelocityClientAccountSubscriber
 
 		await this.addPerpMarketAccountToPoll(marketIndex);
 		const accountToPoll = this.accountsToPoll.get(marketPublicKey.toString());
+		if (!accountToPoll) {
+			return false;
+		}
 		await this.addAccountToAccountLoader(accountToPoll);
 		await this.setPerpOracleMap();
 		return true;
@@ -455,7 +461,9 @@ export class PollingVelocityClientAccountSubscriber
 		if (!this.oraclesToPoll.has(oracleId)) {
 			this.addOracleToPoll(oracleInfo);
 			const oracleToPoll = this.oraclesToPoll.get(oracleId);
-			await this.addOracleToAccountLoader(oracleToPoll);
+			if (oracleToPoll) {
+				await this.addOracleToAccountLoader(oracleToPoll);
+			}
 		}
 
 		await this.pauseForOracleToBeAdded(3, oracleInfo.publicKey.toBase58());
@@ -565,7 +573,7 @@ export class PollingVelocityClientAccountSubscriber
 
 	public getStateAccountAndSlot(): DataAndSlot<StateAccount> {
 		this.assertIsSubscribed();
-		return this.state;
+		return this.state!;
 	}
 
 	public getMarketAccountAndSlot(
@@ -609,7 +617,7 @@ export class PollingVelocityClientAccountSubscriber
 		const oracle = this.perpOracleMap.get(marketIndex);
 		const oracleId = this.perpOracleStringMap.get(marketIndex);
 
-		if (!perpMarketAccount || !oracle) {
+		if (!perpMarketAccount || !oracle || !oracleId) {
 			return undefined;
 		}
 
@@ -627,7 +635,7 @@ export class PollingVelocityClientAccountSubscriber
 		const spotMarketAccount = this.getSpotMarketAccountAndSlot(marketIndex);
 		const oracle = this.spotOracleMap.get(marketIndex);
 		const oracleId = this.spotOracleStringMap.get(marketIndex);
-		if (!spotMarketAccount || !oracle) {
+		if (!spotMarketAccount || !oracle || !oracleId) {
 			return undefined;
 		}
 

@@ -190,6 +190,9 @@ export class BankrunConnection {
 
 	async getTokenAccount(publicKey: PublicKey): Promise<Account> {
 		const info = await this.getAccountInfo(publicKey);
+		if (info === null) {
+			throw new Error(`Account not found: ${publicKey.toBase58()}`);
+		}
 		return unpackAccount(publicKey, info, info.owner);
 	}
 
@@ -291,14 +294,16 @@ export class BankrunConnection {
 		if (this.onLogCallbacks.size > 0) {
 			const transaction = await this.getTransaction(signature);
 
-			const context = { slot: transaction.slot };
-			const logs = {
-				logs: transaction.meta.logMessages,
-				err: transaction.meta.err,
-				signature,
-			};
-			for (const logCallback of this.onLogCallbacks.values()) {
-				logCallback(logs, context);
+			if (transaction !== null) {
+				const context = { slot: transaction.slot };
+				const logs = {
+					logs: transaction.meta.logMessages,
+					err: transaction.meta.err,
+					signature,
+				};
+				for (const logCallback of this.onLogCallbacks.values()) {
+					logCallback(logs, context);
+				}
 			}
 		}
 
@@ -360,6 +365,9 @@ export class BankrunConnection {
 		const blockhashAndBlockheight = await this._banksClient.getLatestBlockhash(
 			commitment
 		);
+		if (blockhashAndBlockheight === null) {
+			throw new Error('Failed to get latest blockhash');
+		}
 		return {
 			blockhash: blockhashAndBlockheight[0],
 			lastValidBlockHeight: Number(blockhashAndBlockheight[1]),
@@ -447,6 +455,9 @@ export class BankrunConnection {
 		if (txMeta === undefined) {
 			throw new Error('Transaction not found');
 		}
+		if (txMeta.meta === null) {
+			throw new Error(`tx has no meta: ${JSON.stringify(txMeta)}`);
+		}
 		return txMeta.meta.computeUnitsConsumed;
 	}
 
@@ -456,6 +467,9 @@ export class BankrunConnection {
 		);
 		if (txMeta === undefined) {
 			throw new Error('Transaction not found');
+		}
+		if (txMeta.meta === null) {
+			throw new Error(`tx has no meta: ${JSON.stringify(txMeta)}`);
 		}
 		console.log(txMeta.meta.logMessages);
 	}

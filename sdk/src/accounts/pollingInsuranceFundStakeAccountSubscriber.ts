@@ -48,7 +48,7 @@ export class PollingInsuranceFundStakeAccountSubscriber
 		if (insuranceFundStake) {
 			this.insuranceFundStakeAccountAndSlot = {
 				data: insuranceFundStake,
-				slot: undefined,
+				slot: 0,
 			};
 		}
 
@@ -121,7 +121,9 @@ export class PollingInsuranceFundStakeAccountSubscriber
 			}
 		} catch (e) {
 			console.log(
-				`PollingInsuranceFundStakeAccountSubscriber.fetch() InsuranceFundStake does not exist: ${e.message}`
+				`PollingInsuranceFundStakeAccountSubscriber.fetch() InsuranceFundStake does not exist: ${
+					e instanceof Error ? e.message : String(e)
+				}`
 			);
 		}
 	}

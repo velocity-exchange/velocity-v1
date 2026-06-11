@@ -14,7 +14,7 @@ export class AuctionSubscriber {
 	private resubOpts?: ResubOpts;
 
 	eventEmitter: StrictEventEmitter<EventEmitter, AuctionSubscriberEvents>;
-	private subscriber: WebSocketProgramAccountSubscriber<UserAccount>;
+	private subscriber!: WebSocketProgramAccountSubscriber<UserAccount>;
 
 	constructor({
 		velocityClient,

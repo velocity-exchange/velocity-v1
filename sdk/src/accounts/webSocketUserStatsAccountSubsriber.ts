@@ -23,7 +23,7 @@ export class WebSocketUserStatsAccountSubscriber
 	eventEmitter: StrictEventEmitter<EventEmitter, UserStatsAccountEvents>;
 	userStatsAccountPublicKey: PublicKey;
 
-	userStatsAccountSubscriber: AccountSubscriber<UserStatsAccount>;
+	userStatsAccountSubscriber!: AccountSubscriber<UserStatsAccount>;
 
 	public constructor(
 		program: VelocityProgram,
@@ -93,6 +93,6 @@ export class WebSocketUserStatsAccountSubscriber
 
 	public getUserStatsAccountAndSlot(): DataAndSlot<UserStatsAccount> {
 		this.assertIsSubscribed();
-		return this.userStatsAccountSubscriber.dataAndSlot;
+		return this.userStatsAccountSubscriber.dataAndSlot!;
 	}
 }

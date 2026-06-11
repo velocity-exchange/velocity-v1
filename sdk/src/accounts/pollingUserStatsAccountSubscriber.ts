@@ -111,7 +111,9 @@ export class PollingUserStatsAccountSubscriber
 			}
 		} catch (e) {
 			console.log(
-				`PollingUserStatsAccountSubscriber.fetch() UserStatsAccount does not exist: ${e.message}`
+				`PollingUserStatsAccountSubscriber.fetch() UserStatsAccount does not exist: ${
+					e instanceof Error ? e.message : String(e)
+				}`
 			);
 		}
 	}
@@ -146,7 +148,7 @@ export class PollingUserStatsAccountSubscriber
 	}
 
 	public getUserStatsAccountAndSlot(): DataAndSlot<UserStatsAccount> {
-		if (!this.doesAccountExist()) {
+		if (this.userStats === undefined) {
 			throw new NotSubscribedError(
 				'You must call `subscribe` or `fetch` before using this function'
 			);

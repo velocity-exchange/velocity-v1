@@ -18,11 +18,11 @@ export class BulkAccountLoader {
 	pollingFrequency: number;
 	accountsToLoad = new Map<string, AccountToLoad>();
 	bufferAndSlotMap = new Map<string, BufferAndSlot>();
-	errorCallbacks = new Map<string, (e) => void>();
+	errorCallbacks = new Map<string, (e: Error) => void>();
 	intervalId?: ReturnType<typeof setTimeout>;
 	// to handle clients spamming load
 	loadPromise?: Promise<void>;
-	loadPromiseResolver: () => void;
+	loadPromiseResolver?: () => void;
 	lastTimeLoadingPromiseCleared = Date.now();
 	mostRecentSlot = 0;
 
@@ -137,11 +137,12 @@ export class BulkAccountLoader {
 		} catch (e) {
 			console.error(`Error in bulkAccountLoader.load()`);
 			console.error(e);
+			const error = e instanceof Error ? e : new Error(String(e));
 			for (const [_, callback] of this.errorCallbacks) {
-				callback(e);
+				callback(error);
 			}
 		} finally {
-			this.loadPromiseResolver();
+			this.loadPromiseResolver?.();
 			this.loadPromise = undefined;
 		}
 	}
@@ -179,7 +180,7 @@ export class BulkAccountLoader {
 			return;
 		}
 
-		rpcResponses.forEach((rpcResponse, i) => {
+		rpcResponses.forEach((rpcResponse: any, i: number) => {
 			if (!rpcResponse.result) {
 				console.error('rpc response missing result:');
 				console.log(JSON.stringify(rpcResponse));

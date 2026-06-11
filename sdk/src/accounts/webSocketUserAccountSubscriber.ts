@@ -21,7 +21,7 @@ export class WebSocketUserAccountSubscriber implements UserAccountSubscriber {
 	eventEmitter: StrictEventEmitter<EventEmitter, UserAccountEvents>;
 	userAccountPublicKey: PublicKey;
 
-	userDataAccountSubscriber: AccountSubscriber<UserAccount>;
+	userDataAccountSubscriber!: AccountSubscriber<UserAccount>;
 
 	public constructor(
 		program: VelocityProgram,

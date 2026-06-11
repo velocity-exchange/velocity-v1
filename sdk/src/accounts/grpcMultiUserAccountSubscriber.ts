@@ -15,7 +15,7 @@ import { grpcMultiAccountSubscriber } from './grpcMultiAccountSubscriber';
 
 export class grpcMultiUserAccountSubscriber {
 	private program: VelocityProgram;
-	private multiSubscriber: grpcMultiAccountSubscriber<UserAccount>;
+	private multiSubscriber!: grpcMultiAccountSubscriber<UserAccount>;
 
 	private userData = new Map<string, DataAndSlot<UserAccount>>();
 	private listeners = new Map<
@@ -56,7 +56,9 @@ export class grpcMultiUserAccountSubscriber {
 		multiSubscriber?: grpcMultiAccountSubscriber<UserAccount>
 	) {
 		this.program = program;
-		this.multiSubscriber = multiSubscriber;
+		if (multiSubscriber) {
+			this.multiSubscriber = multiSubscriber;
+		}
 		this.grpcConfigs = grpcConfigs;
 		this.resubOpts = resubOpts;
 	}

@@ -25,7 +25,7 @@ export class WebSocketInsuranceFundStakeAccountSubscriber
 	>;
 	insuranceFundStakeAccountPublicKey: PublicKey;
 
-	insuranceFundStakeDataAccountSubscriber: AccountSubscriber<InsuranceFundStake>;
+	insuranceFundStakeDataAccountSubscriber!: AccountSubscriber<InsuranceFundStake>;
 
 	public constructor(
 		program: VelocityProgram,

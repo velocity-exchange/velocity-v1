@@ -101,7 +101,7 @@ export class WebSocketProgramAccountsSubscriberV2<T>
 	bufferAndSlotMap: Map<string, BufferAndSlot> = new Map();
 	program: VelocityProgram;
 	decodeBuffer: (accountName: string, ix: Buffer) => T;
-	onChange: (
+	onChange!: (
 		accountId: PublicKey,
 		data: T,
 		context: Context,
@@ -160,7 +160,10 @@ export class WebSocketProgramAccountsSubscriberV2<T>
 			usePollingInsteadOfResub: true,
 			logResubMessages: false,
 		};
-		if (this.resubOpts?.resubTimeoutMs < 1000) {
+		if (
+			this.resubOpts?.resubTimeoutMs !== undefined &&
+			this.resubOpts.resubTimeoutMs < 1000
+		) {
 			console.log(
 				'resubTimeoutMs should be at least 1000ms to avoid spamming resub'
 			);
@@ -389,7 +392,9 @@ export class WebSocketProgramAccountsSubscriberV2<T>
 		// If this account was being polled, stop polling it if the buffer has changed
 		if (
 			this.accountsCurrentlyPolling.has(accountIdString) &&
-			!existingBufferAndSlot?.buffer.equals(newBuffer)
+			newBuffer &&
+			(!existingBufferAndSlot?.buffer ||
+				!newBuffer.equals(existingBufferAndSlot.buffer))
 		) {
 			this.accountsCurrentlyPolling.delete(accountIdString);
 

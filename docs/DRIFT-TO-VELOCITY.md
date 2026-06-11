@@ -6,24 +6,24 @@ This repo is a fork of [`drift-labs/protocol-v2`](https://github.com/drift-labs/
 reduced feature set, and a renamed SDK.
 
 This document tracks everything that changed between the two repos from an integrator's
-point of view. It reflects the state of `master` plus the two open PRs:
+point of view. It reflects the state of `master` plus the open PRs:
 
-- **PR #68** — builder codes on non-swift orders (marked *pending* below)
-- **PR #70** — full drift → velocity rebrand of the on-chain program
+- **PR #68** — builder codes on non-swift orders (marked _pending_ below)
+- **`fee-arch`** — fee redesign + AMM isolation (marked _pending_ below)
 
 ---
 
 ## 1. At a glance
 
-| | Drift (old) | Velocity (new) |
-|---|---|---|
-| Program ID | `dRiftyHA39MWEi3m9aunc5MzRF1JYuBsbn6VPcn33UH` | `vELoC1audYbSYVRXn1vPaV8Axoa9oU6BYmNGZZBDZ1P` (devnet & mainnet) |
-| npm package | `@drift-labs/sdk` `2.163.0-beta.0` | `@velocity-exchange/sdk` `0.0.5` (version reset) |
-| Main client class | `DriftClient` | `VelocityClient` — **no back-compat aliases** |
-| Anchor | 0.29.0 | 1.0 (`@anchor-lang/core@1.0.1`), new IDL format |
-| IDL | `drift.json` | `velocity.json` |
-| Rust crate | `drift` (`programs/drift/`) | `velocity` (`programs/velocity/`) |
-| Package manager | yarn | bun |
+|                   | Drift (old)                                   | Velocity (new)                                                   |
+| ----------------- | --------------------------------------------- | ---------------------------------------------------------------- |
+| Program ID        | `dRiftyHA39MWEi3m9aunc5MzRF1JYuBsbn6VPcn33UH` | `vELoC1audYbSYVRXn1vPaV8Axoa9oU6BYmNGZZBDZ1P` (devnet & mainnet) |
+| npm package       | `@drift-labs/sdk` `2.163.0-beta.0`            | `@velocity-exchange/sdk` `0.0.5` (version reset)                 |
+| Main client class | `DriftClient`                                 | `VelocityClient` — **no back-compat aliases**                    |
+| Anchor            | 0.29.0                                        | 1.0 (`@anchor-lang/core@1.0.1`), new IDL format                  |
+| IDL               | `drift.json`                                  | `velocity.json`                                                  |
+| Rust crate        | `drift` (`programs/drift/`)                   | `velocity` (`programs/velocity/`)                                |
+| Package manager   | yarn                                          | bun                                                              |
 
 Because the program ID is new, **every PDA address changes** (seed strings are unchanged,
 but the program ID input to derivation is different) and **no on-chain state carries
@@ -40,33 +40,35 @@ behind them changed (see §5), so old decoders must not be pointed at Velocity a
 These Drift features do not exist on Velocity. Integrations touching them must be removed
 or reworked.
 
-| Feature | Removed in | Notes |
-|---|---|---|
-| **Spot DLOB trading** | #6 | `place_spot_order`, `place_and_take_spot_order`, `place_and_make_spot_order`, `fill_spot_order` deleted. New error `SpotDlobTradingDisabled`. Spot markets still exist for collateral/borrow-lend, but cannot be traded on the order book. |
-| **External spot fulfillment (Serum / Phoenix / OpenBook v2)** | #36 | All `*_fulfillment_config` instructions and SDK subscribers (`serumSubscriber`, `phoenixSubscriber`, `openbookV2Subscriber`, fulfillment config maps) deleted. |
-| **Fuel (points/incentives)** | #36 | All `*_fuel` instructions, `User.last_fuel_bonus_update_ts`, `PerpMarket.fuel_boost_*`, SDK `math/fuel`, `FuelSeasonRecord`, `FuelSweepRecord` deleted. |
-| **vAMM LP ("BAMM" LP shares)** | #36 | `PerpPosition.lp_shares` and friends removed; `LPRecord`/`LPAction` types deleted. Replaced by the new VLP module (§6). |
-| **Protected maker mode** | #38 | All `protected_maker_*` instructions, `UserStatus::ProtectedMakerOrders` bit, SDK `math/protectedMakerParams` deleted. |
-| **High leverage mode** | — | `enable_user_high_leverage_mode` etc. deleted; `User.margin_mode` field removed; SDK high-leverage-mode config subscribers deleted. |
-| **Prediction markets** | #13 | `initialize_prediction_market` deleted; `ContractType::Prediction` removed. |
-| **Pyth pull/push (legacy)** | #7 | `pythPullClient`, `pythOracleUtils` deleted from SDK. Pyth Lazer is the supported Pyth path. Deprecated `OracleSource` discriminants are preserved (not reused). |
-| **Switchboard oracles** | #14 | Both classic and on-demand removed from SDK; `OracleSource` discriminants preserved as `Deprecated*`. |
-| **HLM** | #2, #47 | Dead code removed. |
-| **Legacy fee path** | #67 | `total_fee_lower_bound` accounting removed; fees use the AMM protocol floor directly. |
+| Feature                                                          | Removed in | Notes                                                                                                                                                                                                                                                                                                                      |
+| ---------------------------------------------------------------- | ---------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **Spot DLOB trading**                                            | #6         | `place_spot_order`, `place_and_take_spot_order`, `place_and_make_spot_order`, `fill_spot_order` deleted. New error `SpotDlobTradingDisabled`. Spot markets still exist for collateral/borrow-lend, but cannot be traded on the order book.                                                                                 |
+| **External spot fulfillment (Serum / Phoenix / OpenBook v2)**    | #36        | All `*_fulfillment_config` instructions and SDK subscribers (`serumSubscriber`, `phoenixSubscriber`, `openbookV2Subscriber`, fulfillment config maps) deleted.                                                                                                                                                             |
+| **Fuel (points/incentives)**                                     | #36        | All `*_fuel` instructions, `User.last_fuel_bonus_update_ts`, `PerpMarket.fuel_boost_*`, SDK `math/fuel`, `FuelSeasonRecord`, `FuelSweepRecord` deleted.                                                                                                                                                                    |
+| **vAMM LP ("BAMM" LP shares)**                                   | #36        | `PerpPosition.lp_shares` and friends removed; `LPRecord`/`LPAction` types deleted. Replaced by the new VLP module (§6).                                                                                                                                                                                                    |
+| **Protected maker mode**                                         | #38        | All `protected_maker_*` instructions, `UserStatus::ProtectedMakerOrders` bit, SDK `math/protectedMakerParams` deleted.                                                                                                                                                                                                     |
+| **High leverage mode**                                           | —          | `enable_user_high_leverage_mode` etc. deleted; `User.margin_mode` field removed; SDK high-leverage-mode config subscribers deleted.                                                                                                                                                                                        |
+| **Prediction markets**                                           | #13        | `initialize_prediction_market` deleted; `ContractType::Prediction` removed.                                                                                                                                                                                                                                                |
+| **Pyth pull/push (legacy)**                                      | #7         | `pythPullClient`, `pythOracleUtils` deleted from SDK. Pyth Lazer is the supported Pyth path. Deprecated `OracleSource` discriminants are preserved (not reused).                                                                                                                                                           |
+| **Switchboard oracles**                                          | #14        | Both classic and on-demand removed from SDK; `OracleSource` discriminants preserved as `Deprecated*`.                                                                                                                                                                                                                      |
+| **HLM**                                                          | #2, #47    | Dead code removed.                                                                                                                                                                                                                                                                                                         |
+| **Legacy fee path**                                              | #67        | `total_fee_lower_bound` accounting removed. (Superseded again by the fee redesign below — the AMM protocol floor itself is now gone.)                                                                                                                                                                                      |
+| **Protocol-owned insurance fund shares** (_pending, `fee-arch`_) | fee-arch   | The IF is 100% staker-owned. `admin_withdraw_from_insurance_fund_vault` and `transfer_protocol_if_shares_to_revenue_pool` are deleted; `InsuranceFund.total_factor`/`user_factor` are replaced by a single `if_fee_factor` (lending-yield carveout to stakers). Protocol revenue no longer flows through IF shares at all. |
 
 ## 3. Feature additions
 
-| Feature | Added in | Integrator impact |
-|---|---|---|
-| **VLP module** (`programs/velocity/src/vlp/`) | #65, #66 | New AMM + hedge architecture. `PerpMarket` gains `hedge_config: HedgeConfig` and `market_stats: MarketStats`. |
-| **Tiered admin keys** | #36, #63 | `State.admin` replaced by cold/warm/hot key model (`cold_admin`, `warm_admin`, `hot_*` keys). Anyone reading `State.admin` directly must update. |
-| **Native fast-path entrypoint** | #60, #63 | Keeper instructions with discriminator `[0xFF, 0xFF, 0xFF, 0xFF, opcode]` bypass Anchor dispatch (e.g. MM oracle update = opcode 0). These do not appear in the IDL. |
-| **`transfer_deposit_by_delegate`** | #45 | Delegates can transfer deposits between subaccounts. |
-| **`transfer_fee_and_pnl_pool`** | #1 | Admin pool rebalancing. |
-| **Funding rate clamp** | #12 | Funding-rate price divergence clamped (±3%) — changes funding dynamics vs Drift. |
-| **MM oracle validation** | #60 | Slot-gap and step-cap checks on MM oracle updates. |
-| **Special user status** | #17 | New `User.special_user_status` field (`SpecialUserStatus::VammHedger`). |
-| **Builder codes** (*pending, PR #68*) | #68 | Optional `builder_idx` / `builder_fee_tenth_bps` on `OrderParams`; new `change_approved_builder` instruction and `RevenueShareEscrow` account. Existing order placements are unaffected (fields are optional). |
+| Feature                                                  | Added in | Integrator impact                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                         |
+| -------------------------------------------------------- | -------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **VLP module** (`programs/velocity/src/vlp/`)            | #65, #66 | New AMM + hedge architecture. `PerpMarket` gains `hedge_config: HedgeConfig` and `market_stats: MarketStats`.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                             |
+| **Tiered admin keys**                                    | #36, #63 | `State.admin` replaced by cold/warm/hot key model (`cold_admin`, `warm_admin`, `hot_*` keys). Anyone reading `State.admin` directly must update.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                          |
+| **Native fast-path entrypoint**                          | #60, #63 | Keeper instructions with discriminator `[0xFF, 0xFF, 0xFF, 0xFF, opcode]` bypass Anchor dispatch (e.g. MM oracle update = opcode 0). These do not appear in the IDL.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                      |
+| **`transfer_deposit_by_delegate`**                       | #45      | Delegates can transfer deposits between subaccounts.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                      |
+| **`transfer_fee_and_pnl_pool`**                          | #1       | Admin pool rebalancing.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                   |
+| **Funding rate clamp**                                   | #12      | Funding-rate price divergence clamped (±3%) — changes funding dynamics vs Drift.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                          |
+| **MM oracle validation**                                 | #60      | Slot-gap and step-cap checks on MM oracle updates.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        |
+| **Special user status**                                  | #17      | New `User.special_user_status` field (`SpecialUserStatus::VammHedger`).                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                   |
+| **Builder codes** (_pending, PR #68_)                    | #68      | Optional `builder_idx` / `builder_fee_tenth_bps` on `OrderParams`; new `change_approved_builder` instruction and `RevenueShareEscrow` account. Existing order placements are unaffected (fields are optional).                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            |
+| **Fee redesign + AMM isolation** (_pending, `fee-arch`_) | fee-arch | Explicit per-fill three-way fee split (`FeeStructure.amm_fee_numerator` / `if_fee_numerator`; protocol = residual). Per-market `PerpMarket.fee_ledger: FeeLedger` tracks gross fees + pending carveouts. Protocol fees accrue to a withdrawable `protocol_fee_pool` (perp + spot) and exit via `withdraw_protocol_fees_perp/spot` (new `HotRole::FeeWithdraw` key, recipient locked to `State.protocol_fee_recipient`). Streaming sweep (`sweep_perp_market_fees`, permissionless) materializes carveouts out of the pnl pool; emits `PerpMarketFeeSweepRecord`. The AMM's books contain only its own money — its configurable fee provision is clawed back in bankruptcy as the backstop of last resort. Liquidations gain a `protocol_liquidation_fee` cut (new `protocol_fee` field on liquidation records). Full design doc: [`FEES.md`](../FEES.md). |
 
 ---
 
@@ -93,19 +95,19 @@ npm install @velocity-exchange/sdk
 PR #37 originally shipped `@deprecated` Drift aliases; they have since been **removed**.
 The old names no longer exist.
 
-| Old | New |
-|---|---|
-| `DriftClient` | `VelocityClient` |
-| `DriftClientConfig` | `VelocityClientConfig` |
-| `DriftClientSubscriptionConfig` | `VelocityClientSubscriptionConfig` |
-| `DriftEnv` | `VelocityEnv` |
-| `DRIFT_PROGRAM_ID` | `VELOCITY_PROGRAM_ID` |
-| `DRIFT_ORACLE_RECEIVER_ID` | `VELOCITY_ORACLE_RECEIVER_ID` (same pubkey) |
-| `USDC_MINT_ADDRESS` | `QUOTE_MINT_ADDRESS` (devnet value changed; mainnet USDC unchanged) |
-| `WebSocketDriftClientAccountSubscriber(V2)` | `WebSocketVelocityClientAccountSubscriber(V2)` |
-| `pollingDriftClientAccountSubscriber` | `pollingVelocityClientAccountSubscriber` |
-| `grpcDriftClientAccountSubscriber(V2)` | `grpcVelocityClientAccountSubscriber(V2)` |
-| `Program<Drift>` | `Program<Velocity>` (alias `VelocityProgram`) |
+| Old                                         | New                                                                 |
+| ------------------------------------------- | ------------------------------------------------------------------- |
+| `DriftClient`                               | `VelocityClient`                                                    |
+| `DriftClientConfig`                         | `VelocityClientConfig`                                              |
+| `DriftClientSubscriptionConfig`             | `VelocityClientSubscriptionConfig`                                  |
+| `DriftEnv`                                  | `VelocityEnv`                                                       |
+| `DRIFT_PROGRAM_ID`                          | `VELOCITY_PROGRAM_ID`                                               |
+| `DRIFT_ORACLE_RECEIVER_ID`                  | `VELOCITY_ORACLE_RECEIVER_ID` (same pubkey)                         |
+| `USDC_MINT_ADDRESS`                         | `QUOTE_MINT_ADDRESS` (devnet value changed; mainnet USDC unchanged) |
+| `WebSocketDriftClientAccountSubscriber(V2)` | `WebSocketVelocityClientAccountSubscriber(V2)`                      |
+| `pollingDriftClientAccountSubscriber`       | `pollingVelocityClientAccountSubscriber`                            |
+| `grpcDriftClientAccountSubscriber(V2)`      | `grpcVelocityClientAccountSubscriber(V2)`                           |
+| `Program<Drift>`                            | `Program<Velocity>` (alias `VelocityProgram`)                       |
 
 ### 4.3 Removed exports
 
@@ -131,6 +133,21 @@ Config fields `SERUM_V3`, `PHOENIX`, `OPENBOOK`, `SERUM_LOOKUP_TABLE`,
 - `StateAccount`: single `admin` replaced by the cold/warm/hot key set.
 - `CurveRecord` event → `AmmCurveChanged` (fields changed too).
 
+_Pending, `fee-arch`:_
+
+- `PerpMarketAccount`: `totalExchangeFee` / `totalLiquidationFee` moved into a new
+  nested `feeLedger: FeeLedger` (with `pendingProtocolFee`, `pendingIfFee`,
+  `ammProtocolFeesReceived`, `pendingAmmProvision`); new `protocolFeePool`,
+  `protocolLiquidationFee`, `feePoolBufferTarget` fields.
+- `SpotMarketAccount`: new `protocolFeePool`, `protocolLiquidationFee`,
+  `protocolFeeBps`; `insuranceFund.totalFactor`/`userFactor` → `ifFeeFactor`.
+- `StateAccount`: new `protocolFeeRecipient` / `hotFeeWithdraw`; `FeeStructure` gains
+  `ammFeeNumerator` / `ifFeeNumerator` (carved from reserved padding).
+- `calculateUpdatedAMM` / `calculateBidAskPrice` / `calculateUpdatedAMMSpreadReserves` /
+  `calculateOptimalPegAndBudget` / `calculateNewAmm` dropped their `totalExchangeFee`
+  parameter (the AMM no longer has a fee floor).
+- `updatePerpMarketAmmSummaryStats` dropped `excludeTotalLiqFee`.
+
 ### 4.5 New: `VelocityCore`
 
 A subscription-free instruction-building module (`export * from './core'`) for
@@ -145,8 +162,10 @@ withdraw / order / fill / liquidation builders) without running a full subscribe
   `State`, `PerpMarket`, `SpotMarket`, …) — Anchor derives them from the account name.
   Same for surviving instruction discriminators.
 - **Layouts changed**: `User` is 4376 → 4496 bytes; `PerpMarket` is 1216 → 1224 bytes
-  with substantial field reorganization (u128/i128 fields front-loaded for alignment).
-  Any custom (non-IDL) decoder must be rebuilt against `sdk/src/idl/velocity.json`.
+  with substantial field reorganization (u128/i128 fields front-loaded for alignment) —
+  and 1224 → 1304 bytes once `fee-arch` lands (embedded `FeeLedger` + protocol fee
+  fields). Any custom (non-IDL) decoder must be rebuilt against
+  `sdk/src/idl/velocity.json`.
 - **Error codes are ABI-stable**: removed variants were renamed to `Deprecated*` stubs
   in place (numeric codes preserved); new variants are appended at the end
   (`InvalidAdminTier`, `SpotDlobTradingDisabled`, …). Decode errors by code as before,
@@ -160,34 +179,37 @@ withdraw / order / fill / liquidation builders) without running a full subscribe
 
 ## 6. Change log vs upstream (merged PRs)
 
-| PR | Change |
-|---|---|
-| #1 | `transfer_fee_and_pnl_pool` instruction |
-| #2, #47 | Remove HLM |
-| #5 | `MarketStatus` refactor |
-| #6 | Disable spot DLOB trading |
-| #7 | Remove legacy Pyth pull/push |
-| #12 | Funding clamp + floor increase |
-| #13 | Remove prediction markets |
-| #14 | Remove Switchboard oracle support |
-| #16 | Anchor 0.29 → 1.0 |
-| #17 | Special user account status |
-| #21 | SDK core expansion, isomorphic Anchor build, perp instruction delegation |
-| #26 | New program ID + devnet deployment |
-| #36 | Remove fuel, vAMM LP, Serum/Phoenix orderbooks; add admin commands |
-| #37 | SDK rename Drift → Velocity (aliases since removed) |
-| #38 | Remove protected maker mode |
-| #39 | Yarn → Bun |
-| #45 | `transfer_deposit_by_delegate` |
-| #51 | `oracle_price_offset` widened to i64 |
-| #52–#59 | release-please publishing for SDK (`0.0.x`) |
-| #60 | MM oracle validation (slot gap, step cap) + native handlers |
-| #63 | Zero-copy native admin handlers |
-| #65 | Decouple AMM from rest of codebase |
-| #66 | VLP module (vAMM + hedge) |
-| #67 | Remove legacy fee path |
-| #68 *(open)* | Builder codes on non-swift orders |
-| #70 *(open)* | Rebrand program crate drift → velocity |
+| PR                  | Change                                                                                              |
+| ------------------- | --------------------------------------------------------------------------------------------------- |
+| #1                  | `transfer_fee_and_pnl_pool` instruction                                                             |
+| #2, #47             | Remove HLM                                                                                          |
+| #5                  | `MarketStatus` refactor                                                                             |
+| #6                  | Disable spot DLOB trading                                                                           |
+| #7                  | Remove legacy Pyth pull/push                                                                        |
+| #12                 | Funding clamp + floor increase                                                                      |
+| #13                 | Remove prediction markets                                                                           |
+| #14                 | Remove Switchboard oracle support                                                                   |
+| #16                 | Anchor 0.29 → 1.0                                                                                   |
+| #17                 | Special user account status                                                                         |
+| #21                 | SDK core expansion, isomorphic Anchor build, perp instruction delegation                            |
+| #26                 | New program ID + devnet deployment                                                                  |
+| #36                 | Remove fuel, vAMM LP, Serum/Phoenix orderbooks; add admin commands                                  |
+| #37                 | SDK rename Drift → Velocity (aliases since removed)                                                 |
+| #38                 | Remove protected maker mode                                                                         |
+| #39                 | Yarn → Bun                                                                                          |
+| #45                 | `transfer_deposit_by_delegate`                                                                      |
+| #51                 | `oracle_price_offset` widened to i64                                                                |
+| #52–#59             | release-please publishing for SDK (`0.0.x`)                                                         |
+| #60                 | MM oracle validation (slot gap, step cap) + native handlers                                         |
+| #63                 | Zero-copy native admin handlers                                                                     |
+| #65                 | Decouple AMM from rest of codebase                                                                  |
+| #66                 | VLP module (vAMM + hedge)                                                                           |
+| #67                 | Remove legacy fee path                                                                              |
+| #68 _(open)_        | Builder codes on non-swift orders                                                                   |
+| #70                 | Rebrand program crate drift → velocity                                                              |
+| #71                 | This migration guide                                                                                |
+| #73                 | Enforce referral revenue share at fill time                                                         |
+| `fee-arch` _(open)_ | Fee redesign (explicit carveouts, withdrawable protocol fees, 100% staker-owned IF) + AMM isolation |
 
 ---
 
@@ -210,6 +232,10 @@ withdraw / order / fill / liquidation builders) without running a full subscribe
    layouts (§5); discriminators match Drift's, so guard by program ID, not discriminator.
 9. **Re-test error handling**: codes are stable, but retired codes now decode to
    `Deprecated*` names and new codes exist past the old end of the enum.
-10. *(After PR #68 lands)* optionally adopt builder codes: approve builders via
+10. _(After PR #68 lands)_ optionally adopt builder codes: approve builders via
     `changeApprovedBuilder(...)` and set `builderIdx` / `builderFeeTenthBps` on
     `OrderParams`. No action needed if you don't use builders.
+11. _(After `fee-arch` lands)_ re-pull the IDL and types — `PerpMarket` grows to 1304
+    bytes and fee fields move into `feeLedger` (§4.4). IF stakers now receive 100% of
+    settled revenue (no protocol share mint). If you index fees, the authoritative
+    flow description is [`FEES.md`](../FEES.md).

@@ -135,9 +135,11 @@ Config fields `SERUM_V3`, `PHOENIX`, `OPENBOOK`, `SERUM_LOOKUP_TABLE`,
   `BuilderReferral = 4`; new `isBuilderReferral(userStats)` helper in `math/builder`.
   `fillPerpOrder` / `getFillPerpOrderIx`, `placeAndMakePerpOrder` /
   `getPlaceAndMakePerpOrderIx`, and `getPlaceAndMakeSignedMsgPerpOrderIxs` accept an
-  optional trailing `revenueShareEscrowMap` so the taker's escrow is attached when the
-  taker is referred (required by the program's fill-time enforcement — see §3).
-  `getPlaceAndTakePerpOrderIx` already accepted it.
+  optional trailing `takerEscrow` (the taker's decoded `RevenueShareEscrowAccount`,
+  e.g. from a `RevenueShareEscrowMap`) so the taker's escrow is attached when the
+  taker is referred (required by the program's fill-time enforcement — see §3). The
+  builders validate `takerEscrow.authority` against the taker's authority.
+  `getPlaceAndTakePerpOrderIx` accepts a `revenueShareEscrowMap` instead.
 
 ### 4.5 New: `VelocityCore`
 

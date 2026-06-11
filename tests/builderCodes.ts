@@ -2074,10 +2074,13 @@ describe('builder codes', () => {
 		assert(hasBuilder(placedOrder) === false);
 		const orderId = placedOrder.orderId;
 
-		// Build the fill ix with the escrow map (which appends the escrow for a
-		// referred taker) and then strip the escrow remaining account, simulating
-		// a keeper omitting the optional account and skipping the referral reward.
+		// Build the fill ix with the taker's escrow (appended for a referred
+		// taker) and then strip the escrow remaining account, simulating a
+		// keeper omitting the optional account and skipping the referral reward.
 		await escrowMap.slowSync();
+		const takerEscrow = (await escrowMap.mustGet(
+			userClient.wallet.publicKey.toBase58()
+		)) as RevenueShareEscrowAccount;
 		const ix = await makerClient.getFillPerpOrderIx(
 			await userClient.getUserAccountPublicKey(),
 			userClient.getUserAccount(),
@@ -2087,7 +2090,7 @@ describe('builder codes', () => {
 			undefined,
 			undefined,
 			undefined,
-			escrowMap
+			takerEscrow
 		);
 		const escrowPk = getRevenueShareEscrowAccountPublicKey(
 			makerClient.program.programId,
@@ -2138,7 +2141,7 @@ describe('builder codes', () => {
 			undefined,
 			undefined,
 			undefined,
-			escrowMap
+			takerEscrow
 		);
 		const logs = await printTxLogs(
 			bankrunContextWrapper.connection.toConnection(),

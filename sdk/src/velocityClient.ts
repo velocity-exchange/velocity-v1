@@ -52,6 +52,7 @@ import {
 	PositionDirection,
 	ReferrerInfo,
 	ReferrerNameAccount,
+	RevenueShareEscrowAccount,
 	ScaleOrderParams,
 	SettlePnlMode,
 	SignedTxData,
@@ -5361,7 +5362,7 @@ export class VelocityClient {
 		fillerSubAccountId?: number,
 		fillerAuthority?: PublicKey,
 		hasBuilderFee?: boolean,
-		revenueShareEscrowMap?: RevenueShareEscrowMap
+		takerEscrow?: RevenueShareEscrowAccount | null
 	): Promise<TransactionSignature> {
 		const { txSig } = await this.sendTransaction(
 			await this.buildTransaction(
@@ -5374,7 +5375,7 @@ export class VelocityClient {
 					undefined,
 					fillerAuthority,
 					hasBuilderFee,
-					revenueShareEscrowMap
+					takerEscrow
 				),
 				txParams
 			),
@@ -5395,9 +5396,9 @@ export class VelocityClient {
 		hasBuilderFee?: boolean,
 		// The program rejects fills that omit the taker's RevenueShareEscrow when the
 		// order has a builder OR the taker is referred with an escrow. The builder case
-		// is detected from the order bitflags; pass this map so referred takers also get
-		// their escrow attached.
-		revenueShareEscrowMap?: RevenueShareEscrowMap
+		// is detected from the order bitflags; pass the taker's decoded escrow (e.g.
+		// from a RevenueShareEscrowMap) so referred takers also get it attached.
+		takerEscrow?: RevenueShareEscrowAccount | null
 	): Promise<TransactionInstruction> {
 		const userStatsPublicKey = getUserStatsAccountPublicKey(
 			this.program.programId,
@@ -5480,12 +5481,14 @@ export class VelocityClient {
 			}
 		}
 
-		if (!withBuilder && revenueShareEscrowMap) {
-			// referred taker: escrow must be attached so the referrer reward accrues
-			const escrow = revenueShareEscrowMap.get(
-				userAccount.authority.toBase58()
+		if (takerEscrow && !takerEscrow.authority.equals(userAccount.authority)) {
+			throw new Error(
+				'takerEscrow.authority does not match the taker user account authority'
 			);
-			if (escrow && !escrow.referrer.equals(PublicKey.default)) {
+		}
+		if (!withBuilder && takerEscrow) {
+			// referred taker: escrow must be attached so the referrer reward accrues
+			if (!takerEscrow.referrer.equals(PublicKey.default)) {
 				withBuilder = true;
 			}
 		}
@@ -6940,7 +6943,7 @@ export class VelocityClient {
 		takerInfo: TakerInfo,
 		txParams?: TxParams,
 		subAccountId?: number,
-		revenueShareEscrowMap?: RevenueShareEscrowMap
+		takerEscrow?: RevenueShareEscrowAccount | null
 	): Promise<TransactionSignature> {
 		const { txSig, slot } = await this.sendTransaction(
 			await this.buildTransaction(
@@ -6948,7 +6951,7 @@ export class VelocityClient {
 					orderParams,
 					takerInfo,
 					subAccountId,
-					revenueShareEscrowMap
+					takerEscrow
 				),
 				txParams
 			),
@@ -6968,8 +6971,8 @@ export class VelocityClient {
 		// place_and_make fills the taker's order in-instruction, so the TAKER's
 		// RevenueShareEscrow must be attached when their order has a builder or they
 		// are referred with an escrow. The builder case is detected from the taker
-		// order bitflags; pass this map to cover the referred case.
-		revenueShareEscrowMap?: RevenueShareEscrowMap
+		// order bitflags; pass the taker's decoded escrow to cover the referred case.
+		takerEscrow?: RevenueShareEscrowAccount | null
 	): Promise<TransactionInstruction> {
 		orderParams = getOrderParams(orderParams, { marketType: MarketType.PERP });
 		const userStatsPublicKey = this.getUserStatsAccountPublicKey();
@@ -6985,12 +6988,17 @@ export class VelocityClient {
 		});
 
 		const takerOrderId = takerInfo.order.orderId;
-		let withTakerEscrow = hasBuilder(takerInfo.order);
-		if (!withTakerEscrow && revenueShareEscrowMap) {
-			const escrow = revenueShareEscrowMap.get(
-				takerInfo.takerUserAccount.authority.toBase58()
+		if (
+			takerEscrow &&
+			!takerEscrow.authority.equals(takerInfo.takerUserAccount.authority)
+		) {
+			throw new Error(
+				'takerEscrow.authority does not match the taker user account authority'
 			);
-			withTakerEscrow = escrow && !escrow.referrer.equals(PublicKey.default);
+		}
+		let withTakerEscrow = hasBuilder(takerInfo.order);
+		if (!withTakerEscrow && takerEscrow) {
+			withTakerEscrow = !takerEscrow.referrer.equals(PublicKey.default);
 		}
 		if (withTakerEscrow) {
 			remainingAccounts.push({
@@ -7244,7 +7252,7 @@ export class VelocityClient {
 		subAccountId?: number,
 		precedingIxs: TransactionInstruction[] = [],
 		overrideCustomIxIndex?: number,
-		revenueShareEscrowMap?: RevenueShareEscrowMap
+		takerEscrow?: RevenueShareEscrowAccount | null
 	): Promise<TransactionSignature> {
 		const ixs = await this.getPlaceAndMakeSignedMsgPerpOrderIxs(
 			signedSignedMsgOrderParams,
@@ -7254,7 +7262,7 @@ export class VelocityClient {
 			subAccountId,
 			precedingIxs,
 			overrideCustomIxIndex,
-			revenueShareEscrowMap
+			takerEscrow
 		);
 		const { txSig, slot } = await this.sendTransaction(
 			await this.buildTransaction(ixs, txParams),
@@ -7279,9 +7287,10 @@ export class VelocityClient {
 		subAccountId?: number,
 		precedingIxs: TransactionInstruction[] = [],
 		overrideCustomIxIndex?: number,
-		// fills the taker's order in-instruction; pass this map so a referred taker's
-		// escrow is attached even when the signed order carries no builder fee
-		revenueShareEscrowMap?: RevenueShareEscrowMap
+		// fills the taker's order in-instruction; pass the taker's decoded escrow so a
+		// referred taker's escrow is attached even when the signed order carries no
+		// builder fee
+		takerEscrow?: RevenueShareEscrowAccount | null
 	): Promise<TransactionInstruction[]> {
 		const [signedMsgOrderSignatureIx, placeTakerSignedMsgPerpOrderIx] =
 			await this.getPlaceSignedMsgTakerPerpOrderIxs(
@@ -7317,14 +7326,19 @@ export class VelocityClient {
 			borshBuf,
 			isDelegateSigner
 		);
+		if (
+			takerEscrow &&
+			!takerEscrow.authority.equals(takerInfo.takerUserAccount.authority)
+		) {
+			throw new Error(
+				'takerEscrow.authority does not match the taker user account authority'
+			);
+		}
 		let withTakerEscrow =
 			signedMessage.builderFeeTenthBps !== null &&
 			signedMessage.builderIdx !== null;
-		if (!withTakerEscrow && revenueShareEscrowMap) {
-			const escrow = revenueShareEscrowMap.get(
-				takerInfo.takerUserAccount.authority.toBase58()
-			);
-			withTakerEscrow = escrow && !escrow.referrer.equals(PublicKey.default);
+		if (!withTakerEscrow && takerEscrow) {
+			withTakerEscrow = !takerEscrow.referrer.equals(PublicKey.default);
 		}
 		if (withTakerEscrow) {
 			remainingAccounts.push({

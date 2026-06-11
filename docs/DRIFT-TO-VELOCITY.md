@@ -67,7 +67,8 @@ or reworked.
 | **Funding rate clamp**                                   | #12      | Funding-rate price divergence clamped (±3%) — changes funding dynamics vs Drift.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                          |
 | **MM oracle validation**                                 | #60      | Slot-gap and step-cap checks on MM oracle updates.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        |
 | **Special user status**                                  | #17      | New `User.special_user_status` field (`SpecialUserStatus::VammHedger`).                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                   |
-| **Builder codes** (_pending, PR #68_)                    | #68      | Optional `builder_idx` / `builder_fee_tenth_bps` on `OrderParams`; new `change_approved_builder` instruction and `RevenueShareEscrow` account. Existing order placements are unaffected (fields are optional).                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            |
+| **Builder codes**                                        | #68      | Optional `builder_idx` / `builder_fee_tenth_bps` on `OrderParams`; new `change_approved_builder` instruction and `RevenueShareEscrow` account. Existing order placements are unaffected (fields are optional).                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            |
+| **Revenue-share fill enforcement**                       | #68      | Perp fills fail with `UnableToLoadRevenueShareAccount` (6324 / `0x18b4`) unless the taker's `RevenueShareEscrow` is passed in remaining accounts when (a) the taker order carries a builder code, or (b) the taker's `UserStats.referrer_status` has the `BuilderReferral` bit (escrow exists with a referrer). Liquidation fills and the feature-flag-off state are exempt. Fillers must attach the escrow for any taker that has one with a referrer — see SDK §4.4. Referral rewards also no longer accrue (and referral slots are no longer created) for escrows without a referrer.                                                                                                                                                                |
 | **Fee redesign + AMM isolation** (_pending, `fee-arch`_) | fee-arch | Explicit per-fill three-way fee split (`FeeStructure.amm_fee_numerator` / `if_fee_numerator`; protocol = residual). Per-market `PerpMarket.fee_ledger: FeeLedger` tracks gross fees + pending carveouts. Protocol fees accrue to a withdrawable `protocol_fee_pool` (perp + spot) and exit via `withdraw_protocol_fees_perp/spot` (new `HotRole::FeeWithdraw` key; pays the ATA of `State.protocol_fee_recipient`, created on demand). Streaming sweep (`sweep_perp_market_fees`, permissionless) materializes carveouts out of the pnl pool; emits `PerpMarketFeeSweepRecord`. The AMM's books contain only its own money — its configurable fee provision is clawed back in bankruptcy as the backstop of last resort. Liquidations gain a `protocol_liquidation_fee` cut (new `protocol_fee` field on liquidation records). Full design doc: [`FEES.md`](../FEES.md). |
 
 ---
@@ -132,6 +133,17 @@ Config fields `SERUM_V3`, `PHOENIX`, `OPENBOOK`, `SERUM_LOOKUP_TABLE`,
 - `PerpPosition`: `lpShares`, `lastQuoteAssetAmountPerLp`, `perLpBase` removed.
 - `StateAccount`: single `admin` replaced by the cold/warm/hot key set.
 - `CurveRecord` event → `AmmCurveChanged` (fields changed too).
+- **Revenue-share escrow on fills** (PR #68): `ReferrerStatus` enum gains
+  `BuilderReferral = 4`; new `isBuilderReferral(userStats)`, `escrowHasReferrer(escrow)`,
+  and `hasBuilderParams(orderParams)` helpers in `math/builder`.
+  `fillPerpOrder` / `getFillPerpOrderIx`, `placeAndTakePerpOrder` /
+  `getPlaceAndTakePerpOrderIx`, `placeAndMakePerpOrder` /
+  `getPlaceAndMakePerpOrderIx`, and `getPlaceAndMakeSignedMsgPerpOrderIxs` accept an
+  optional trailing `takerEscrow` (the taker's decoded `RevenueShareEscrowAccount`,
+  e.g. from a `RevenueShareEscrowMap`) so the taker's escrow is attached when the
+  taker is referred (required by the program's fill-time enforcement — see §3). The
+  builders validate `takerEscrow.authority` against the taker's authority. The
+  settle-PnL builders keep their map-based `revenueShareEscrowMap` param.
 
 _Pending, `fee-arch`:_
 
@@ -179,37 +191,36 @@ withdraw / order / fill / liquidation builders) without running a full subscribe
 
 ## 6. Change log vs upstream (merged PRs)
 
-| PR                  | Change                                                                                              |
-| ------------------- | --------------------------------------------------------------------------------------------------- |
-| #1                  | `transfer_fee_and_pnl_pool` instruction                                                             |
-| #2, #47             | Remove HLM                                                                                          |
-| #5                  | `MarketStatus` refactor                                                                             |
-| #6                  | Disable spot DLOB trading                                                                           |
-| #7                  | Remove legacy Pyth pull/push                                                                        |
-| #12                 | Funding clamp + floor increase                                                                      |
-| #13                 | Remove prediction markets                                                                           |
-| #14                 | Remove Switchboard oracle support                                                                   |
-| #16                 | Anchor 0.29 → 1.0                                                                                   |
-| #17                 | Special user account status                                                                         |
-| #21                 | SDK core expansion, isomorphic Anchor build, perp instruction delegation                            |
-| #26                 | New program ID + devnet deployment                                                                  |
-| #36                 | Remove fuel, vAMM LP, Serum/Phoenix orderbooks; add admin commands                                  |
-| #37                 | SDK rename Drift → Velocity (aliases since removed)                                                 |
-| #38                 | Remove protected maker mode                                                                         |
-| #39                 | Yarn → Bun                                                                                          |
-| #45                 | `transfer_deposit_by_delegate`                                                                      |
-| #51                 | `oracle_price_offset` widened to i64                                                                |
-| #52–#59             | release-please publishing for SDK (`0.0.x`)                                                         |
-| #60                 | MM oracle validation (slot gap, step cap) + native handlers                                         |
-| #63                 | Zero-copy native admin handlers                                                                     |
-| #65                 | Decouple AMM from rest of codebase                                                                  |
-| #66                 | VLP module (vAMM + hedge)                                                                           |
-| #67                 | Remove legacy fee path                                                                              |
-| #68 _(open)_        | Builder codes on non-swift orders                                                                   |
-| #70                 | Rebrand program crate drift → velocity                                                              |
-| #71                 | This migration guide                                                                                |
-| #73                 | Enforce referral revenue share at fill time                                                         |
-| `fee-arch` _(open)_ | Fee redesign (explicit carveouts, withdrawable protocol fees, 100% staker-owned IF) + AMM isolation |
+| PR                  | Change                                                                                                                                                              |
+| ------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| #1                  | `transfer_fee_and_pnl_pool` instruction                                                                                                                             |
+| #2, #47             | Remove HLM                                                                                                                                                          |
+| #5                  | `MarketStatus` refactor                                                                                                                                             |
+| #6                  | Disable spot DLOB trading                                                                                                                                           |
+| #7                  | Remove legacy Pyth pull/push                                                                                                                                        |
+| #12                 | Funding clamp + floor increase                                                                                                                                      |
+| #13                 | Remove prediction markets                                                                                                                                           |
+| #14                 | Remove Switchboard oracle support                                                                                                                                   |
+| #16                 | Anchor 0.29 → 1.0                                                                                                                                                   |
+| #17                 | Special user account status                                                                                                                                         |
+| #21                 | SDK core expansion, isomorphic Anchor build, perp instruction delegation                                                                                            |
+| #26                 | New program ID + devnet deployment                                                                                                                                  |
+| #36                 | Remove fuel, vAMM LP, Serum/Phoenix orderbooks; add admin commands                                                                                                  |
+| #37                 | SDK rename Drift → Velocity (aliases since removed)                                                                                                                 |
+| #38                 | Remove protected maker mode                                                                                                                                        |
+| #39                 | Yarn → Bun                                                                                                                                                          |
+| #45                 | `transfer_deposit_by_delegate`                                                                                                                                      |
+| #51                 | `oracle_price_offset` widened to i64                                                                                                                                |
+| #52–#59             | release-please publishing for SDK (`0.0.x`)                                                                                                                         |
+| #60                 | MM oracle validation (slot gap, step cap) + native handlers                                                                                                         |
+| #63                 | Zero-copy native admin handlers                                                                                                                                     |
+| #65                 | Decouple AMM from rest of codebase                                                                                                                                  |
+| #66                 | VLP module (vAMM + hedge)                                                                                                                                           |
+| #67                 | Remove legacy fee path                                                                                                                                              |
+| #68                 | Builder codes on non-swift orders; fill-time enforcement of builder + referral revenue share (escrow required when taker has a builder order or a referred escrow)  |
+| #70                 | Rebrand program crate drift → velocity                                                                                                                              |
+| #71                 | This migration guide                                                                                                                                                |
+| `fee-arch` _(open)_ | Fee redesign (explicit carveouts, withdrawable protocol fees, 100% staker-owned IF) + AMM isolation                                                                 |
 
 ---
 

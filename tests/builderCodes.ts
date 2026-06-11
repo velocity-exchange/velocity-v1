@@ -40,6 +40,7 @@ import {
 	SignedMsgOrderParamsMessage,
 	QUOTE_PRECISION,
 	SettlePnlMode,
+	UserStatsAccount,
 } from '../sdk/src';
 
 import {
@@ -59,6 +60,7 @@ import { nanoid } from 'nanoid';
 import {
 	isBuilderOrderCompleted,
 	isBuilderOrderReferral,
+	isBuilderReferral,
 } from '../sdk/src/math/builder';
 import { createTransferInstruction } from '@solana/spl-token';
 
@@ -101,6 +103,21 @@ function buildMsg(
 		takeProfitOrderParams: null,
 		stopLossOrderParams: null,
 	} as SignedMsgOrderParamsMessage;
+}
+
+// the TestClients in this suite don't subscribe to UserStats, so fetch + decode
+// the account directly when a test needs referrer_status
+async function fetchUserStats(
+	client: TestClient,
+	ctx: BankrunContextWrapper
+): Promise<UserStatsAccount> {
+	const info = await ctx.connection.getAccountInfo(
+		client.getUserStatsAccountPublicKey()
+	);
+	return client.program.account.userStats.coder.accounts.decodeUnchecked(
+		'userStats',
+		info.data
+	) as UserStatsAccount;
 }
 
 describe('builder codes', () => {
@@ -2016,5 +2033,278 @@ describe('builder codes', () => {
 			.getOpenOrders()
 			.find((o) => o.userOrderId === userOrderId);
 		assert(open === undefined);
+	});
+
+	it('fill of a referred user order (no builder) fails when the escrow account is omitted', async () => {
+		// userClient is referred by builderClient and has a RevenueShareEscrow, so
+		// its UserStats carries the BuilderReferral flag and every fill must
+		// include the escrow so the referrer reward accrues.
+		await userClient.fetchAccounts();
+		assert(
+			isBuilderReferral(await fetchUserStats(userClient, bankrunContextWrapper)),
+			'userClient should have the BuilderReferral status'
+		);
+
+		await userClient.cancelOrders();
+		await userClient.fetchAccounts();
+
+		const marketIndex = 0;
+		const userOrderId = 71;
+		const orderParams = getMarketOrderParams({
+			marketIndex,
+			direction: PositionDirection.LONG,
+			baseAssetAmount: BASE_PRECISION,
+			price: new BN(230).mul(PRICE_PRECISION),
+			auctionStartPrice: new BN(226).mul(PRICE_PRECISION),
+			auctionEndPrice: new BN(230).mul(PRICE_PRECISION),
+			auctionDuration: 10,
+			userOrderId,
+			postOnly: PostOnlyParams.NONE,
+			marketType: MarketType.PERP,
+		}) as OrderParams;
+
+		await userClient.placePerpOrder(orderParams);
+		await userClient.fetchAccounts();
+
+		const placedOrder = userClient
+			.getUser()
+			.getOpenOrders()
+			.find((o) => o.userOrderId === userOrderId);
+		assert(placedOrder !== undefined);
+		assert(hasBuilder(placedOrder) === false);
+		const orderId = placedOrder.orderId;
+
+		// Build the fill ix with the escrow map (which appends the escrow for a
+		// referred taker) and then strip the escrow remaining account, simulating
+		// a keeper omitting the optional account and skipping the referral reward.
+		await escrowMap.slowSync();
+		const ix = await makerClient.getFillPerpOrderIx(
+			await userClient.getUserAccountPublicKey(),
+			userClient.getUserAccount(),
+			{ marketIndex, orderId },
+			undefined,
+			undefined,
+			undefined,
+			undefined,
+			undefined,
+			escrowMap
+		);
+		const escrowPk = getRevenueShareEscrowAccountPublicKey(
+			makerClient.program.programId,
+			userClient.wallet.publicKey
+		);
+		const keysBefore = ix.keys.length;
+		ix.keys = ix.keys.filter((k) => !k.pubkey.equals(escrowPk));
+		assert(
+			ix.keys.length === keysBefore - 1,
+			'escrow account should have been appended then stripped'
+		);
+
+		const tx = new Transaction().add(ix);
+		tx.recentBlockhash = (
+			await bankrunContextWrapper.connection.getLatestBlockhash()
+		).blockhash;
+		tx.feePayer = makerClient.wallet.publicKey;
+		tx.sign(makerClient.wallet.payer);
+
+		try {
+			await bankrunContextWrapper.connection.sendTransaction(tx);
+			assert(false, 'fill of a referred user without escrow should fail');
+		} catch (e) {
+			assert(
+				e.message.includes('0x18b4'), // UnableToLoadRevenueShareAccount
+				`expected UnableToLoadRevenueShareAccount (0x18b4), got ${e.message}`
+			);
+		}
+
+		// the order remains open and fills once the escrow is included, accruing
+		// the referral reward
+		await userClient.fetchAccounts();
+		const stillOpen = userClient
+			.getUser()
+			.getOpenOrders()
+			.find((o) => o.orderId === orderId);
+		assert(
+			stillOpen !== undefined,
+			'order should remain open after the rejected fill'
+		);
+
+		const fillTx = await makerClient.fillPerpOrder(
+			await userClient.getUserAccountPublicKey(),
+			userClient.getUserAccount(),
+			{ marketIndex, orderId },
+			undefined,
+			undefined,
+			undefined,
+			undefined,
+			undefined,
+			escrowMap
+		);
+		const logs = await printTxLogs(
+			bankrunContextWrapper.connection.toConnection(),
+			fillTx
+		);
+		const events = parseLogs(builderClient.program, logs);
+		const orderActionRecords = events.filter(
+			(e) => e.name === 'orderActionRecord'
+		);
+		assert(orderActionRecords.length > 0);
+		const fillEvent = orderActionRecords[orderActionRecords.length - 1];
+		assert(fillEvent.data['builderFee'] === null);
+		const referrerReward = new BN(
+			(fillEvent.data['referrerReward'] as number | null) ?? 0
+		);
+		assert(
+			referrerReward.gt(ZERO),
+			'referral reward should accrue when the escrow is included'
+		);
+
+		await userClient.cancelOrders();
+		await userClient.fetchAccounts();
+	});
+
+	it('referred user with no escrow can be filled without the escrow account', async () => {
+		// user2 is referred (UserStats.referrer is set) but never created an
+		// escrow, so the BuilderReferral flag is unset and fills succeed without
+		// the escrow account (and no referral reward accrues).
+		await user2Client.fetchAccounts();
+		assert(
+			isBuilderReferral(
+				await fetchUserStats(user2Client, bankrunContextWrapper)
+			) === false,
+			'user2 should not have the BuilderReferral status'
+		);
+
+		const marketIndex = 0;
+		const userOrderId = 72;
+		const orderParams = getMarketOrderParams({
+			marketIndex,
+			direction: PositionDirection.LONG,
+			baseAssetAmount: BASE_PRECISION,
+			price: new BN(230).mul(PRICE_PRECISION),
+			auctionStartPrice: new BN(226).mul(PRICE_PRECISION),
+			auctionEndPrice: new BN(230).mul(PRICE_PRECISION),
+			auctionDuration: 10,
+			userOrderId,
+			postOnly: PostOnlyParams.NONE,
+			marketType: MarketType.PERP,
+		}) as OrderParams;
+
+		await user2Client.placePerpOrder(orderParams);
+		await user2Client.fetchAccounts();
+
+		const placedOrder = user2Client
+			.getUser()
+			.getOpenOrders()
+			.find((o) => o.userOrderId === userOrderId);
+		assert(placedOrder !== undefined);
+		assert(hasBuilder(placedOrder) === false);
+
+		// no hasBuilderFee flag and no escrow map: nothing appends the escrow
+		const fillTx = await makerClient.fillPerpOrder(
+			await user2Client.getUserAccountPublicKey(),
+			user2Client.getUserAccount(),
+			{ marketIndex, orderId: placedOrder.orderId }
+		);
+		const logs = await printTxLogs(
+			bankrunContextWrapper.connection.toConnection(),
+			fillTx
+		);
+		const events = parseLogs(builderClient.program, logs);
+		const orderActionRecords = events.filter(
+			(e) => e.name === 'orderActionRecord'
+		);
+		assert(orderActionRecords.length > 0);
+		const fillEvent = orderActionRecords[orderActionRecords.length - 1];
+		const referrerReward = new BN(
+			(fillEvent.data['referrerReward'] as number | null) ?? 0
+		);
+		assert(referrerReward.eq(ZERO));
+
+		await user2Client.cancelOrders();
+		await user2Client.fetchAccounts();
+	});
+
+	it('escrow holder with no referrer accrues no referral rewards on fill', async () => {
+		// makerClient was created without a referrer; give it an escrow purely
+		// for builder codes. Fills must not grant a referee discount, accrue a
+		// referrer reward, or claim a permanent referral slot in the escrow.
+		await makerClient.initializeRevenueShareEscrow(
+			makerClient.wallet.publicKey,
+			4
+		);
+		await makerClient.fetchAccounts();
+		assert(
+			isBuilderReferral(
+				await fetchUserStats(makerClient, bankrunContextWrapper)
+			) === false,
+			'non-referred escrow holder should not have the BuilderReferral status'
+		);
+
+		const marketIndex = 0;
+		const userOrderId = 73;
+		const orderParams = getMarketOrderParams({
+			marketIndex,
+			direction: PositionDirection.LONG,
+			baseAssetAmount: BASE_PRECISION,
+			price: new BN(230).mul(PRICE_PRECISION),
+			auctionStartPrice: new BN(226).mul(PRICE_PRECISION),
+			auctionEndPrice: new BN(230).mul(PRICE_PRECISION),
+			auctionDuration: 10,
+			userOrderId,
+			postOnly: PostOnlyParams.NONE,
+			marketType: MarketType.PERP,
+		}) as OrderParams;
+
+		await makerClient.placePerpOrder(orderParams);
+		await makerClient.fetchAccounts();
+
+		const placedOrder = makerClient
+			.getUser()
+			.getOpenOrders()
+			.find((o) => o.userOrderId === userOrderId);
+		assert(placedOrder !== undefined);
+
+		// force-attach the (referrer-less) escrow with hasBuilderFee=true
+		const fillTx = await builderClient.fillPerpOrder(
+			await makerClient.getUserAccountPublicKey(),
+			makerClient.getUserAccount(),
+			{ marketIndex, orderId: placedOrder.orderId },
+			undefined,
+			undefined,
+			undefined,
+			undefined,
+			true
+		);
+		const logs = await printTxLogs(
+			bankrunContextWrapper.connection.toConnection(),
+			fillTx
+		);
+		const events = parseLogs(builderClient.program, logs);
+		const orderActionRecords = events.filter(
+			(e) => e.name === 'orderActionRecord'
+		);
+		assert(orderActionRecords.length > 0);
+		const fillEvent = orderActionRecords[orderActionRecords.length - 1];
+		const referrerReward = new BN(
+			(fillEvent.data['referrerReward'] as number | null) ?? 0
+		);
+		assert(
+			referrerReward.eq(ZERO),
+			'no referral reward should accrue without a referrer'
+		);
+
+		// no permanent referral slot was claimed in the escrow
+		await escrowMap.slowSync();
+		const escrow = (await escrowMap.mustGet(
+			makerClient.wallet.publicKey.toBase58()
+		)) as RevenueShareEscrowAccount;
+		assert(
+			escrow.orders.every((o) => !isBuilderOrderReferral(o)),
+			'escrow without referrer should have no referral slots'
+		);
+
+		await makerClient.cancelOrders();
+		await makerClient.fetchAccounts();
 	});
 });

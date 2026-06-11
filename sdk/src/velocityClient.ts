@@ -5360,7 +5360,8 @@ export class VelocityClient {
 		txParams?: TxParams,
 		fillerSubAccountId?: number,
 		fillerAuthority?: PublicKey,
-		hasBuilderFee?: boolean
+		hasBuilderFee?: boolean,
+		revenueShareEscrowMap?: RevenueShareEscrowMap
 	): Promise<TransactionSignature> {
 		const { txSig } = await this.sendTransaction(
 			await this.buildTransaction(
@@ -5372,7 +5373,8 @@ export class VelocityClient {
 					fillerSubAccountId,
 					undefined,
 					fillerAuthority,
-					hasBuilderFee
+					hasBuilderFee,
+					revenueShareEscrowMap
 				),
 				txParams
 			),
@@ -5390,7 +5392,12 @@ export class VelocityClient {
 		fillerSubAccountId?: number,
 		isSignedMsg?: boolean,
 		fillerAuthority?: PublicKey,
-		hasBuilderFee?: boolean
+		hasBuilderFee?: boolean,
+		// The program rejects fills that omit the taker's RevenueShareEscrow when the
+		// order has a builder OR the taker is referred with an escrow. The builder case
+		// is detected from the order bitflags; pass this map so referred takers also get
+		// their escrow attached.
+		revenueShareEscrowMap?: RevenueShareEscrowMap
 	): Promise<TransactionInstruction> {
 		const userStatsPublicKey = getUserStatsAccountPublicKey(
 			this.program.programId,
@@ -5469,6 +5476,16 @@ export class VelocityClient {
 			} else if (isSignedMsg) {
 				// Order hasn't been placed yet, we can't tell if it has a builder or not.
 				// Include it optimistically
+				withBuilder = true;
+			}
+		}
+
+		if (!withBuilder && revenueShareEscrowMap) {
+			// referred taker: escrow must be attached so the referrer reward accrues
+			const escrow = revenueShareEscrowMap.get(
+				userAccount.authority.toBase58()
+			);
+			if (escrow && !escrow.referrer.equals(PublicKey.default)) {
 				withBuilder = true;
 			}
 		}
@@ -6922,14 +6939,16 @@ export class VelocityClient {
 		orderParams: OptionalOrderParams,
 		takerInfo: TakerInfo,
 		txParams?: TxParams,
-		subAccountId?: number
+		subAccountId?: number,
+		revenueShareEscrowMap?: RevenueShareEscrowMap
 	): Promise<TransactionSignature> {
 		const { txSig, slot } = await this.sendTransaction(
 			await this.buildTransaction(
 				await this.getPlaceAndMakePerpOrderIx(
 					orderParams,
 					takerInfo,
-					subAccountId
+					subAccountId,
+					revenueShareEscrowMap
 				),
 				txParams
 			),
@@ -6945,7 +6964,12 @@ export class VelocityClient {
 	public async getPlaceAndMakePerpOrderIx(
 		orderParams: OptionalOrderParams,
 		takerInfo: TakerInfo,
-		subAccountId?: number
+		subAccountId?: number,
+		// place_and_make fills the taker's order in-instruction, so the TAKER's
+		// RevenueShareEscrow must be attached when their order has a builder or they
+		// are referred with an escrow. The builder case is detected from the taker
+		// order bitflags; pass this map to cover the referred case.
+		revenueShareEscrowMap?: RevenueShareEscrowMap
 	): Promise<TransactionInstruction> {
 		orderParams = getOrderParams(orderParams, { marketType: MarketType.PERP });
 		const userStatsPublicKey = this.getUserStatsAccountPublicKey();
@@ -6961,7 +6985,14 @@ export class VelocityClient {
 		});
 
 		const takerOrderId = takerInfo.order.orderId;
-		if (hasBuilder(takerInfo.order)) {
+		let withTakerEscrow = hasBuilder(takerInfo.order);
+		if (!withTakerEscrow && revenueShareEscrowMap) {
+			const escrow = revenueShareEscrowMap.get(
+				takerInfo.takerUserAccount.authority.toBase58()
+			);
+			withTakerEscrow = escrow && !escrow.referrer.equals(PublicKey.default);
+		}
+		if (withTakerEscrow) {
 			remainingAccounts.push({
 				pubkey: getRevenueShareEscrowAccountPublicKey(
 					this.program.programId,
@@ -7212,7 +7243,8 @@ export class VelocityClient {
 		txParams?: TxParams,
 		subAccountId?: number,
 		precedingIxs: TransactionInstruction[] = [],
-		overrideCustomIxIndex?: number
+		overrideCustomIxIndex?: number,
+		revenueShareEscrowMap?: RevenueShareEscrowMap
 	): Promise<TransactionSignature> {
 		const ixs = await this.getPlaceAndMakeSignedMsgPerpOrderIxs(
 			signedSignedMsgOrderParams,
@@ -7221,7 +7253,8 @@ export class VelocityClient {
 			orderParams,
 			subAccountId,
 			precedingIxs,
-			overrideCustomIxIndex
+			overrideCustomIxIndex,
+			revenueShareEscrowMap
 		);
 		const { txSig, slot } = await this.sendTransaction(
 			await this.buildTransaction(ixs, txParams),
@@ -7245,7 +7278,10 @@ export class VelocityClient {
 		orderParams: OptionalOrderParams,
 		subAccountId?: number,
 		precedingIxs: TransactionInstruction[] = [],
-		overrideCustomIxIndex?: number
+		overrideCustomIxIndex?: number,
+		// fills the taker's order in-instruction; pass this map so a referred taker's
+		// escrow is attached even when the signed order carries no builder fee
+		revenueShareEscrowMap?: RevenueShareEscrowMap
 	): Promise<TransactionInstruction[]> {
 		const [signedMsgOrderSignatureIx, placeTakerSignedMsgPerpOrderIx] =
 			await this.getPlaceSignedMsgTakerPerpOrderIxs(
@@ -7281,10 +7317,16 @@ export class VelocityClient {
 			borshBuf,
 			isDelegateSigner
 		);
-		if (
+		let withTakerEscrow =
 			signedMessage.builderFeeTenthBps !== null &&
-			signedMessage.builderIdx !== null
-		) {
+			signedMessage.builderIdx !== null;
+		if (!withTakerEscrow && revenueShareEscrowMap) {
+			const escrow = revenueShareEscrowMap.get(
+				takerInfo.takerUserAccount.authority.toBase58()
+			);
+			withTakerEscrow = escrow && !escrow.referrer.equals(PublicKey.default);
+		}
+		if (withTakerEscrow) {
 			remainingAccounts.push({
 				pubkey: getRevenueShareEscrowAccountPublicKey(
 					this.program.programId,

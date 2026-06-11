@@ -1,4 +1,15 @@
-import { RevenueShareOrder } from '../types';
+import { ReferrerStatus, RevenueShareOrder, UserStatsAccount } from '../types';
+
+/**
+ * True when the user's RevenueShareEscrow was initialized with a referrer.
+ * Fills for such users must include the escrow account or the program rejects
+ * them with UnableToLoadRevenueShareAccount.
+ */
+export function isBuilderReferral(
+	userStats: Pick<UserStatsAccount, 'referrerStatus'>
+): boolean {
+	return (userStats.referrerStatus & ReferrerStatus.BuilderReferral) !== 0;
+}
 
 const FLAG_IS_OPEN = 0x01;
 export function isBuilderOrderOpen(order: RevenueShareOrder): boolean {

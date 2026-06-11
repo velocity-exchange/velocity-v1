@@ -73,7 +73,13 @@ export class BulkAccountLoader {
 		return callbackId;
 	}
 
-	public removeAccount(publicKey: PublicKey, callbackId: string): void {
+	public removeAccount(
+		publicKey: PublicKey,
+		callbackId: string | undefined
+	): void {
+		if (callbackId === undefined) {
+			return;
+		}
 		const existingAccountToLoad = this.accountsToLoad.get(publicKey.toString());
 		if (existingAccountToLoad) {
 			existingAccountToLoad.callbacks.delete(callbackId);
@@ -94,7 +100,10 @@ export class BulkAccountLoader {
 		return callbackId;
 	}
 
-	public removeErrorCallbacks(callbackId: string): void {
+	public removeErrorCallbacks(callbackId: string | undefined): void {
+		if (callbackId === undefined) {
+			return;
+		}
 		this.errorCallbacks.delete(callbackId);
 	}
 
@@ -235,9 +244,12 @@ export class BulkAccountLoader {
 
 	handleAccountCallbacks(
 		accountToLoad: AccountToLoad,
-		buffer: Buffer,
+		buffer: Buffer | undefined,
 		slot: number
 	): void {
+		if (buffer === undefined) {
+			return;
+		}
 		for (const [_, callback] of accountToLoad.callbacks) {
 			try {
 				callback(buffer, slot);

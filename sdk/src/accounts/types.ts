@@ -186,7 +186,7 @@ export interface OracleAccountSubscriber {
 }
 
 export type AccountToPoll = {
-	key: string;
+	key: 'state' | 'perpMarket' | 'spotMarket';
 	publicKey: PublicKey;
 	eventType: string;
 	callbackId?: string;

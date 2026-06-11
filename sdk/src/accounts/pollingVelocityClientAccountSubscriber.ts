@@ -249,6 +249,34 @@ export class PollingVelocityClientAccountSubscriber
 		});
 	}
 
+	/**
+	 * Routes a freshly-decoded account into the correct container based on
+	 * its poll key. Replaces dynamic `this[key]` indexing with explicit,
+	 * type-checked dispatch.
+	 */
+	private storeDecodedAccount(
+		accountToPoll: AccountToPoll,
+		account: any,
+		slot: number
+	): void {
+		const dataAndSlot = { data: account, slot };
+		switch (accountToPoll.key) {
+			case 'perpMarket':
+				if (accountToPoll.mapKey !== undefined) {
+					this.perpMarket.set(accountToPoll.mapKey, dataAndSlot);
+				}
+				break;
+			case 'spotMarket':
+				if (accountToPoll.mapKey !== undefined) {
+					this.spotMarket.set(accountToPoll.mapKey, dataAndSlot);
+				}
+				break;
+			case 'state':
+				this.state = dataAndSlot;
+				break;
+		}
+	}
+
 	async addAccountToAccountLoader(accountToPoll: AccountToPoll): Promise<void> {
 		accountToPoll.callbackId = await this.accountLoader.addAccount(
 			accountToPoll.publicKey,
@@ -259,15 +287,7 @@ export class PollingVelocityClientAccountSubscriber
 					accountToPoll.key,
 					buffer
 				);
-				const dataAndSlot = {
-					data: account,
-					slot,
-				};
-				if (accountToPoll.mapKey != undefined) {
-					this[accountToPoll.key].set(accountToPoll.mapKey, dataAndSlot);
-				} else {
-					this[accountToPoll.key] = dataAndSlot;
-				}
+				this.storeDecodedAccount(accountToPoll, account, slot);
 
 				// @ts-ignore
 				this.eventEmitter.emit(accountToPoll.eventType, account);
@@ -332,17 +352,7 @@ export class PollingVelocityClientAccountSubscriber
 					accountToPoll.key,
 					buffer
 				);
-				if (accountToPoll.mapKey != undefined) {
-					this[accountToPoll.key].set(accountToPoll.mapKey, {
-						data: account,
-						slot,
-					});
-				} else {
-					this[accountToPoll.key] = {
-						data: account,
-						slot,
-					};
-				}
+				this.storeDecodedAccount(accountToPoll, account, slot);
 			}
 		}
 

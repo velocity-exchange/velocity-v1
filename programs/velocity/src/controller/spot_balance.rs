@@ -170,13 +170,23 @@ pub fn update_spot_market_cumulative_interest(
                 .safe_add(borrow_interest)?;
             spot_market.last_interest_ts = now.cast()?;
 
+            // convert both carveouts to tokens against the SAME pre-credit
+            // deposit_balance — crediting the first pool grows deposit_balance,
+            // and converting the second cut against the grown balance would
+            // skew it above its stated factor (order-dependence)
+            let if_token_amount = get_interest_token_amount(
+                spot_market.deposit_balance,
+                spot_market,
+                deposit_interest_for_if,
+            )?;
+            let protocol_token_amount = get_interest_token_amount(
+                spot_market.deposit_balance,
+                spot_market,
+                deposit_interest_for_protocol,
+            )?;
+
             // IF cut -> revenue_pool (settles to IF vault for stakers)
-            if deposit_interest_for_if > 0 {
-                let if_token_amount = get_interest_token_amount(
-                    spot_market.deposit_balance,
-                    spot_market,
-                    deposit_interest_for_if,
-                )?;
+            if if_token_amount > 0 {
                 update_revenue_pool_balances(
                     if_token_amount,
                     &SpotBalanceType::Deposit,
@@ -185,12 +195,7 @@ pub fn update_spot_market_cumulative_interest(
             }
 
             // protocol cut -> protocol_fee_pool (directly withdrawable)
-            if deposit_interest_for_protocol > 0 {
-                let protocol_token_amount = get_interest_token_amount(
-                    spot_market.deposit_balance,
-                    spot_market,
-                    deposit_interest_for_protocol,
-                )?;
+            if protocol_token_amount > 0 {
                 update_protocol_fee_pool_balances(
                     protocol_token_amount,
                     &SpotBalanceType::Deposit,

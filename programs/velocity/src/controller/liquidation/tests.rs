@@ -8041,8 +8041,7 @@ pub mod resolve_perp_bankruptcy {
         expected_market.fee_ledger.pending_if_fee = 0;
         expected_market.fee_ledger.pending_amm_provision = 0;
         expected_market.fee_ledger.amm_protocol_fees_received = 0;
-        expected_market.insurance_claim.quote_settled_insurance =
-            25 * QUOTE_PRECISION_I64 as u64;
+        expected_market.insurance_claim.quote_settled_insurance = 25 * QUOTE_PRECISION_I64 as u64;
         expected_market.pnl_pool.scaled_balance = 32 * SPOT_BALANCE_PRECISION;
         expected_market.amm.fee_pool.scaled_balance = 43 * SPOT_BALANCE_PRECISION;
         // the AMM's books pay exactly the clawback (8 + 7), nothing else

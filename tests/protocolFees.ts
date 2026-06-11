@@ -292,7 +292,12 @@ describe('protocol fees', () => {
 		const poolTokens = readTokens(before.protocolFeePool);
 		assert(poolTokens.gt(ZERO), 'nothing to withdraw');
 
-		await velocityClient.withdrawProtocolFeesPerp(MARKET_INDEX, poolTokens);
+		// over-request: the withdrawal must be capped to the pool's balance,
+		// never reaching into depositor backing
+		await velocityClient.withdrawProtocolFeesPerp(
+			MARKET_INDEX,
+			poolTokens.muln(2)
+		);
 		await velocityClient.fetchAccounts();
 
 		const recipientBalance =
@@ -301,7 +306,7 @@ describe('protocol fees', () => {
 			);
 		assert(
 			new BN(Number(recipientBalance.amount)).eq(poolTokens),
-			`recipient got ${recipientBalance.amount}, expected ${poolTokens}`
+			`recipient got ${recipientBalance.amount}, expected ${poolTokens} (capped)`
 		);
 
 		const after = velocityClient.getPerpMarketAccount(MARKET_INDEX);

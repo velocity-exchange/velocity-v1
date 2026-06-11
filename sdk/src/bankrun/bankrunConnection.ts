@@ -448,7 +448,9 @@ export class BankrunConnection {
 		};
 	}
 
-	findComputeUnitConsumption(signature: string): bigint {
+	private getTransactionMetaOrThrow(
+		signature: string
+	): NonNullable<BanksTransactionResultWithMeta['meta']> {
 		const txMeta = this.transactionToMeta.get(
 			signature as TransactionSignature
 		);
@@ -458,20 +460,15 @@ export class BankrunConnection {
 		if (txMeta.meta === null) {
 			throw new Error(`tx has no meta: ${JSON.stringify(txMeta)}`);
 		}
-		return txMeta.meta.computeUnitsConsumed;
+		return txMeta.meta;
+	}
+
+	findComputeUnitConsumption(signature: string): bigint {
+		return this.getTransactionMetaOrThrow(signature).computeUnitsConsumed;
 	}
 
 	printTxLogs(signature: string): void {
-		const txMeta = this.transactionToMeta.get(
-			signature as TransactionSignature
-		);
-		if (txMeta === undefined) {
-			throw new Error('Transaction not found');
-		}
-		if (txMeta.meta === null) {
-			throw new Error(`tx has no meta: ${JSON.stringify(txMeta)}`);
-		}
-		console.log(txMeta.meta.logMessages);
+		console.log(this.getTransactionMetaOrThrow(signature).logMessages);
 	}
 
 	async simulateTransaction(

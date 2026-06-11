@@ -532,10 +532,7 @@ export class AdminClient extends VelocityClient {
 	public async getAddMarketToAmmCacheIx(
 		perpMarketIndex: number
 	): Promise<TransactionInstruction> {
-		const perpMarketAccount = this.getPerpMarketAccount(perpMarketIndex);
-		if (!perpMarketAccount) {
-			throw new Error(`Perp market ${perpMarketIndex} not found`);
-		}
+		const perpMarketAccount = this.getPerpMarketAccountOrThrow(perpMarketIndex);
 		return await this.program.instruction.addMarketToAmmCache({
 			accounts: {
 				state: await this.getStatePublicKey(),
@@ -796,10 +793,7 @@ export class AdminClient extends VelocityClient {
 		perpMarketIndex: number,
 		sqrtK: BN
 	): Promise<TransactionInstruction> {
-		const perpMarketAccount = this.getPerpMarketAccount(perpMarketIndex);
-		if (!perpMarketAccount) {
-			throw new Error(`Perp market ${perpMarketIndex} not found`);
-		}
+		const perpMarketAccount = this.getPerpMarketAccountOrThrow(perpMarketIndex);
 		return await this.program.instruction.updateK(sqrtK, {
 			accounts: {
 				state: await this.getStatePublicKey(),
@@ -878,10 +872,7 @@ export class AdminClient extends VelocityClient {
 		perpMarketIndex: number,
 		depth: BN
 	): Promise<TransactionInstruction> {
-		const perpMarketAccount = this.getPerpMarketAccount(perpMarketIndex);
-		if (!perpMarketAccount) {
-			throw new Error(`Perp market ${perpMarketIndex} not found`);
-		}
+		const perpMarketAccount = this.getPerpMarketAccountOrThrow(perpMarketIndex);
 		return await this.program.instruction.recenterPerpMarketAmmCrank(
 			depth ?? null,
 			{
@@ -1032,10 +1023,7 @@ export class AdminClient extends VelocityClient {
 		perpMarketIndex: number,
 		targetPrice: BN
 	): Promise<TransactionInstruction> {
-		const perpMarket = this.getPerpMarketAccount(perpMarketIndex);
-		if (!perpMarket) {
-			throw new Error(`Perp market ${perpMarketIndex} not found`);
-		}
+		const perpMarket = this.getPerpMarketAccountOrThrow(perpMarketIndex);
 
 		const [direction, tradeSize, _] = calculateTargetPriceTrade(
 			perpMarket,
@@ -1098,10 +1086,7 @@ export class AdminClient extends VelocityClient {
 			this.program.programId,
 			perpMarketIndex
 		);
-		const perpMarketAccount = this.getPerpMarketAccount(perpMarketIndex);
-		if (!perpMarketAccount) {
-			throw new Error(`Perp market ${perpMarketIndex} not found`);
-		}
+		const perpMarketAccount = this.getPerpMarketAccountOrThrow(perpMarketIndex);
 
 		return await this.program.instruction.repegAmmCurve(newPeg, {
 			accounts: {
@@ -1131,10 +1116,7 @@ export class AdminClient extends VelocityClient {
 	public async getUpdatePerpMarketAmmOracleTwapIx(
 		perpMarketIndex: number
 	): Promise<TransactionInstruction> {
-		const perpMarketAccount = this.getPerpMarketAccount(perpMarketIndex);
-		if (!perpMarketAccount) {
-			throw new Error(`Perp market ${perpMarketIndex} not found`);
-		}
+		const perpMarketAccount = this.getPerpMarketAccountOrThrow(perpMarketIndex);
 		const perpMarketPublicKey = await getPerpMarketPublicKey(
 			this.program.programId,
 			perpMarketIndex
@@ -1168,10 +1150,7 @@ export class AdminClient extends VelocityClient {
 	public async getResetPerpMarketAmmOracleTwapIx(
 		perpMarketIndex: number
 	): Promise<TransactionInstruction> {
-		const perpMarketAccount = this.getPerpMarketAccount(perpMarketIndex);
-		if (!perpMarketAccount) {
-			throw new Error(`Perp market ${perpMarketIndex} not found`);
-		}
+		const perpMarketAccount = this.getPerpMarketAccountOrThrow(perpMarketIndex);
 		const perpMarketPublicKey = await getPerpMarketPublicKey(
 			this.program.programId,
 			perpMarketIndex
@@ -1302,10 +1281,7 @@ export class AdminClient extends VelocityClient {
 		amount: BN,
 		sourceVault: PublicKey
 	): Promise<TransactionInstruction> {
-		const spotMarket = this.getSpotMarketAccount(spotMarketIndex);
-		if (!spotMarket) {
-			throw new Error(`Spot market ${spotMarketIndex} not found`);
-		}
+		const spotMarket = this.getSpotMarketAccountOrThrow(spotMarketIndex);
 
 		const remainingAccounts: AccountMeta[] = [];
 		this.addTokenMintToRemainingAccounts(spotMarket, remainingAccounts);
@@ -1481,10 +1457,7 @@ export class AdminClient extends VelocityClient {
 		netUnsettledFundingPnl?: BN,
 		excludeTotalLiqFee?: boolean
 	): Promise<TransactionInstruction> {
-		const perpMarketAccount = this.getPerpMarketAccount(perpMarketIndex);
-		if (!perpMarketAccount) {
-			throw new Error(`Perp market ${perpMarketIndex} not found`);
-		}
+		const perpMarketAccount = this.getPerpMarketAccountOrThrow(perpMarketIndex);
 		return await this.program.instruction.updatePerpMarketAmmSummaryStats(
 			{
 				updateAmmSummaryStats: updateAmmSummaryStats ?? null,
@@ -2389,10 +2362,7 @@ export class AdminClient extends VelocityClient {
 		oracleSource: OracleSource,
 		skipInvaraintCheck = false
 	): Promise<TransactionInstruction> {
-		const perpMarketAccount = this.getPerpMarketAccount(perpMarketIndex);
-		if (!perpMarketAccount) {
-			throw new Error(`Perp market ${perpMarketIndex} not found`);
-		}
+		const perpMarketAccount = this.getPerpMarketAccountOrThrow(perpMarketIndex);
 		return await this.program.instruction.updatePerpMarketOracle(
 			oracle,
 			oracleSource,
@@ -2643,10 +2613,7 @@ export class AdminClient extends VelocityClient {
 		oracleSource: OracleSource,
 		skipInvaraintCheck = false
 	): Promise<TransactionInstruction> {
-		const spotMarketAccount = this.getSpotMarketAccount(spotMarketIndex);
-		if (!spotMarketAccount) {
-			throw new Error(`Spot market ${spotMarketIndex} not found`);
-		}
+		const spotMarketAccount = this.getSpotMarketAccountOrThrow(spotMarketIndex);
 		return await this.program.instruction.updateSpotMarketOracle(
 			oracle,
 			oracleSource,
@@ -3299,10 +3266,7 @@ export class AdminClient extends VelocityClient {
 		perpMarketIndex: number,
 		maxSlippageRatio: number
 	): Promise<TransactionInstruction> {
-		const perpMarketAccount = this.getPerpMarketAccount(perpMarketIndex);
-		if (!perpMarketAccount) {
-			throw new Error(`Perp market ${perpMarketIndex} not found`);
-		}
+		const perpMarketAccount = this.getPerpMarketAccountOrThrow(perpMarketIndex);
 		return await (this.program.instruction as any).updateMaxSlippageRatio(
 			maxSlippageRatio,
 			{
@@ -3798,10 +3762,7 @@ export class AdminClient extends VelocityClient {
 		amount: BN,
 		recipientTokenAccount: PublicKey
 	): Promise<TransactionInstruction> {
-		const spotMarket = this.getSpotMarketAccount(marketIndex);
-		if (!spotMarket) {
-			throw new Error(`Spot market ${marketIndex} not found`);
-		}
+		const spotMarket = this.getSpotMarketAccountOrThrow(marketIndex);
 		const tokenProgramId = this.getTokenProgramForSpotMarket(spotMarket);
 
 		const remainingAccounts: {
@@ -4192,10 +4153,7 @@ export class AdminClient extends VelocityClient {
 		adminTokenAccount?: PublicKey
 	): Promise<TransactionInstruction> {
 		const state = await this.getStatePublicKey();
-		const spotMarket = this.getSpotMarketAccount(marketIndex);
-		if (!spotMarket) {
-			throw new Error(`Spot market ${marketIndex} not found`);
-		}
+		const spotMarket = this.getSpotMarketAccountOrThrow(marketIndex);
 
 		const remainingAccounts = this.getRemainingAccounts({
 			userAccounts: [],
@@ -4388,10 +4346,7 @@ export class AdminClient extends VelocityClient {
 		delegate: PublicKey
 	): Promise<TransactionInstruction> {
 		const marketIndex = GOV_SPOT_MARKET_INDEX;
-		const spotMarket = this.getSpotMarketAccount(marketIndex);
-		if (!spotMarket) {
-			throw new Error(`Spot market ${marketIndex} not found`);
-		}
+		const spotMarket = this.getSpotMarketAccountOrThrow(marketIndex);
 		const ifStakeAccountPublicKey = getInsuranceFundStakeAccountPublicKey(
 			this.program.programId,
 			delegate,
@@ -4447,10 +4402,7 @@ export class AdminClient extends VelocityClient {
 		insuranceFundStakePublicKey: PublicKey,
 		userTokenAccountPublicKey: PublicKey
 	): Promise<TransactionInstruction> {
-		const spotMarket = this.getSpotMarketAccount(marketIndex);
-		if (!spotMarket) {
-			throw new Error(`Spot market ${marketIndex} not found`);
-		}
+		const spotMarket = this.getSpotMarketAccountOrThrow(marketIndex);
 		return await this.program.instruction.depositIntoInsuranceFundStake(
 			marketIndex,
 			amount,
@@ -4713,10 +4665,7 @@ export class AdminClient extends VelocityClient {
 			lpPool,
 			spotMarketIndex
 		);
-		const spotMarketAccount = this.getSpotMarketAccount(spotMarketIndex);
-		if (!spotMarketAccount) {
-			throw new Error(`Spot market ${spotMarketIndex} not found`);
-		}
+		const spotMarketAccount = this.getSpotMarketAccountOrThrow(spotMarketIndex);
 
 		return [
 			this.program.instruction.initializeConstituent(
@@ -5207,14 +5156,8 @@ export class AdminClient extends VelocityClient {
 				userAccountPublicKey,
 			});
 		}
-		const outSpotMarket = this.getSpotMarketAccount(outMarketIndex);
-		const inSpotMarket = this.getSpotMarketAccount(inMarketIndex);
-		if (!outSpotMarket) {
-			throw new Error(`Spot market ${outMarketIndex} not found`);
-		}
-		if (!inSpotMarket) {
-			throw new Error(`Spot market ${inMarketIndex} not found`);
-		}
+		const outSpotMarket = this.getSpotMarketAccountOrThrow(outMarketIndex);
+		const inSpotMarket = this.getSpotMarketAccountOrThrow(inMarketIndex);
 
 		const outTokenProgram = this.getTokenProgramForSpotMarket(outSpotMarket);
 		const inTokenProgram = this.getTokenProgramForSpotMarket(inSpotMarket);
@@ -5320,14 +5263,8 @@ export class AdminClient extends VelocityClient {
 		ixs: TransactionInstruction[];
 		lookupTables: AddressLookupTableAccount[];
 	}> {
-		const outMarket = this.getSpotMarketAccount(outMarketIndex);
-		const inMarket = this.getSpotMarketAccount(inMarketIndex);
-		if (!outMarket) {
-			throw new Error(`Spot market ${outMarketIndex} not found`);
-		}
-		if (!inMarket) {
-			throw new Error(`Spot market ${inMarketIndex} not found`);
-		}
+		const outMarket = this.getSpotMarketAccountOrThrow(outMarketIndex);
+		const inMarket = this.getSpotMarketAccountOrThrow(inMarketIndex);
 
 		if (!quote) {
 			const fetchedQuote = await jupiterClient.getQuote({
@@ -5443,14 +5380,10 @@ export class AdminClient extends VelocityClient {
 		inSpotMarketIndex: number,
 		outSpotMarketIndex: number
 	): Promise<TransactionInstruction[]> {
-		const inSpotMarketAccount = this.getSpotMarketAccount(inSpotMarketIndex);
-		const outSpotMarketAccount = this.getSpotMarketAccount(outSpotMarketIndex);
-		if (!inSpotMarketAccount) {
-			throw new Error(`Spot market ${inSpotMarketIndex} not found`);
-		}
-		if (!outSpotMarketAccount) {
-			throw new Error(`Spot market ${outSpotMarketIndex} not found`);
-		}
+		const inSpotMarketAccount =
+			this.getSpotMarketAccountOrThrow(inSpotMarketIndex);
+		const outSpotMarketAccount =
+			this.getSpotMarketAccountOrThrow(outSpotMarketIndex);
 
 		const outTokenAccount = await this.getAssociatedTokenAccount(
 			outSpotMarketAccount.marketIndex,
@@ -5518,14 +5451,8 @@ export class AdminClient extends VelocityClient {
 		minOutAmount: BN,
 		externalUserAuthority: PublicKey
 	) {
-		const inMarket = this.getSpotMarketAccount(inMarketIndex);
-		const outMarket = this.getSpotMarketAccount(outMarketIndex);
-		if (!inMarket) {
-			throw new Error(`Spot market ${inMarketIndex} not found`);
-		}
-		if (!outMarket) {
-			throw new Error(`Spot market ${outMarketIndex} not found`);
-		}
+		const inMarket = this.getSpotMarketAccountOrThrow(inMarketIndex);
+		const outMarket = this.getSpotMarketAccountOrThrow(outMarketIndex);
 		const { beginSwapIx, endSwapIx } = await this.getSwapIx(
 			{
 				lpPoolId,
@@ -5603,14 +5530,10 @@ export class AdminClient extends VelocityClient {
 		withdrawIx: TransactionInstruction;
 	}> {
 		const lpPool = getLpPoolPublicKey(this.program.programId, lpPoolId);
-		const depositSpotMarket = this.getSpotMarketAccount(depositMarketIndex);
-		const withdrawSpotMarket = this.getSpotMarketAccount(borrowMarketIndex);
-		if (!depositSpotMarket) {
-			throw new Error(`Spot market ${depositMarketIndex} not found`);
-		}
-		if (!withdrawSpotMarket) {
-			throw new Error(`Spot market ${borrowMarketIndex} not found`);
-		}
+		const depositSpotMarket =
+			this.getSpotMarketAccountOrThrow(depositMarketIndex);
+		const withdrawSpotMarket =
+			this.getSpotMarketAccountOrThrow(borrowMarketIndex);
 
 		const depositTokenProgram =
 			this.getTokenProgramForSpotMarket(depositSpotMarket);
@@ -5758,10 +5681,7 @@ export class AdminClient extends VelocityClient {
 		lpFeeTransferScalar?: number,
 		lpExchangeFeeExcluscionScalar?: number
 	): Promise<TransactionInstruction> {
-		const perpMarketAccount = this.getPerpMarketAccount(marketIndex);
-		if (!perpMarketAccount) {
-			throw new Error(`Perp market ${marketIndex} not found`);
-		}
+		const perpMarketAccount = this.getPerpMarketAccountOrThrow(marketIndex);
 		return this.program.instruction.updatePerpMarketLpPoolFeeTransferScalar(
 			lpFeeTransferScalar ?? null,
 			lpExchangeFeeExcluscionScalar ?? null,
@@ -5794,10 +5714,7 @@ export class AdminClient extends VelocityClient {
 		marketIndex: number,
 		pausedOperations: number
 	): Promise<TransactionInstruction> {
-		const perpMarketAccount = this.getPerpMarketAccount(marketIndex);
-		if (!perpMarketAccount) {
-			throw new Error(`Perp market ${marketIndex} not found`);
-		}
+		const perpMarketAccount = this.getPerpMarketAccountOrThrow(marketIndex);
 		return this.program.instruction.updatePerpMarketLpPoolPausedOperations(
 			pausedOperations,
 			{
@@ -5871,10 +5788,7 @@ export class AdminClient extends VelocityClient {
 		marketIndex: number,
 		marketConfig: number
 	): Promise<TransactionInstruction> {
-		const perpMarketAccount = this.getPerpMarketAccount(marketIndex);
-		if (!perpMarketAccount) {
-			throw new Error(`Perp market ${marketIndex} not found`);
-		}
+		const perpMarketAccount = this.getPerpMarketAccountOrThrow(marketIndex);
 		return this.program.instruction.updatePerpMarketConfig(marketConfig, {
 			accounts: {
 				admin: this.useHotWalletAdmin

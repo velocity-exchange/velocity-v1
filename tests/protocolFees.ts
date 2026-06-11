@@ -27,9 +27,9 @@ import {
 // FeeStructure numerators -> FeeLedger pending accrual at fill ->
 // sweep_perp_market_fees materialization -> recipient-locked withdrawal.
 describe('protocol fees', () => {
-	const chProgram = anchor.workspace.Drift as Program;
+	const chProgram = anchor.workspace.Velocity as Program;
 
-	let driftClient: TestClient;
+	let velocityClient: TestClient;
 	let bulkAccountLoader: TestBulkAccountLoader;
 	let bankrunContextWrapper: BankrunContextWrapper;
 
@@ -41,7 +41,7 @@ describe('protocol fees', () => {
 	const AMM_FEE_NUMERATOR = 10; // 10% of the remainder provisioned to the AMM
 	const IF_FEE_NUMERATOR = 50; // 50% to insurance; protocol residual = 40%
 
-	// ammInvariant == k == x * y (same curve as tests/driftClient.ts: $1 SOL)
+	// ammInvariant == k == x * y (same curve as tests/velocityClient.ts: $1 SOL)
 	const mantissaSqrtScale = new BN(100000);
 	const ammInitialQuoteAssetAmount = new BN(5 * 10 ** 13).mul(
 		mantissaSqrtScale
@@ -55,7 +55,7 @@ describe('protocol fees', () => {
 	const readTokens = (pool: { scaledBalance: BN }) =>
 		getTokenAmount(
 			pool.scaledBalance,
-			driftClient.getSpotMarketAccount(0),
+			velocityClient.getSpotMarketAccount(0),
 			SpotBalanceType.DEPOSIT
 		);
 
@@ -83,7 +83,7 @@ describe('protocol fees', () => {
 			10000
 		);
 
-		driftClient = new TestClient({
+		velocityClient = new TestClient({
 			connection: bankrunContextWrapper.connection.toConnection(),
 			wallet: bankrunContextWrapper.provider.wallet,
 			programID: chProgram.programId,
@@ -100,13 +100,13 @@ describe('protocol fees', () => {
 			},
 		});
 
-		await driftClient.initialize(usdcMint.publicKey, true);
-		await driftClient.subscribe();
-		await driftClient.updatePerpAuctionDuration(new BN(0));
+		await velocityClient.initialize(usdcMint.publicKey, true);
+		await velocityClient.subscribe();
+		await velocityClient.updatePerpAuctionDuration(new BN(0));
 
-		await initializeQuoteSpotMarket(driftClient, usdcMint.publicKey);
+		await initializeQuoteSpotMarket(velocityClient, usdcMint.publicKey);
 
-		await driftClient.initializePerpMarket(
+		await velocityClient.initializePerpMarket(
 			MARKET_INDEX,
 			solUsd,
 			ammInitialBaseAssetAmount,
@@ -114,34 +114,34 @@ describe('protocol fees', () => {
 			new BN(60 * 60)
 		);
 
-		const feeStructure = driftClient.getStateAccount().perpFeeStructure;
+		const feeStructure = velocityClient.getStateAccount().perpFeeStructure;
 		// the on-chain default flat filler fee does not pass its own
 		// re-validation (see tests/admin.ts); zero it — no fillers here anyway
 		feeStructure.flatFillerFee = new BN(0);
 		feeStructure.ammFeeNumerator = AMM_FEE_NUMERATOR;
 		feeStructure.ifFeeNumerator = IF_FEE_NUMERATOR;
-		await driftClient.updatePerpFeeStructure(feeStructure);
+		await velocityClient.updatePerpFeeStructure(feeStructure);
 
-		await driftClient.initializeUserAccountAndDepositCollateral(
+		await velocityClient.initializeUserAccountAndDepositCollateral(
 			depositAmount,
 			userUSDCAccount.publicKey
 		);
-		await driftClient.fetchAccounts();
+		await velocityClient.fetchAccounts();
 	});
 
 	after(async () => {
-		await driftClient.unsubscribe();
+		await velocityClient.unsubscribe();
 	});
 
 	it('accrues FeeLedger pendings per the fee-structure split on an AMM fill', async () => {
-		await driftClient.openPosition(
+		await velocityClient.openPosition(
 			PositionDirection.LONG,
 			new BN(48000000000),
 			MARKET_INDEX
 		);
-		await driftClient.fetchAccounts();
+		await velocityClient.fetchAccounts();
 
-		const market = driftClient.getPerpMarketAccount(MARKET_INDEX);
+		const market = velocityClient.getPerpMarketAccount(MARKET_INDEX);
 		const ledger = market.feeLedger;
 		const grossFee = ledger.totalExchangeFee;
 		assert(grossFee.gt(ZERO), 'no taker fee recorded');
@@ -188,27 +188,27 @@ describe('protocol fees', () => {
 		// exercise the per-market buffer-target setter (init default 250 QUOTE
 		// would block this small sweep entirely)
 		const bufferTarget = new BN(1 * 10 ** 6);
-		await driftClient.updatePerpMarketFeePoolBufferTarget(
+		await velocityClient.updatePerpMarketFeePoolBufferTarget(
 			MARKET_INDEX,
 			bufferTarget
 		);
 
 		// seed the pnl pool with real tokens — the sweep's source is the pnl
 		// pool (where fee value lands as fills settle), never the AMM's pools
-		await driftClient.depositIntoPerpMarketFeePool(
+		await velocityClient.depositIntoPerpMarketFeePool(
 			MARKET_INDEX,
 			feePoolSeed,
 			userUSDCAccount.publicKey
 		);
-		await driftClient.transferFeeAndPnlPool(
+		await velocityClient.transferFeeAndPnlPool(
 			MARKET_INDEX,
 			MARKET_INDEX,
 			feePoolSeed,
 			TransferFeeAndPnlPoolDirection.FEE_TO_PNL_POOL
 		);
-		await driftClient.fetchAccounts();
+		await velocityClient.fetchAccounts();
 
-		const before = driftClient.getPerpMarketAccount(MARKET_INDEX);
+		const before = velocityClient.getPerpMarketAccount(MARKET_INDEX);
 		const pendingProtocolBefore = before.feeLedger.pendingProtocolFee;
 		const pendingIfBefore = before.feeLedger.pendingIfFee;
 		const pendingProvisionBefore = before.feeLedger.pendingAmmProvision;
@@ -217,7 +217,7 @@ describe('protocol fees', () => {
 		const protocolPoolBefore = readTokens(before.protocolFeePool);
 		const ammFeePoolBefore = readTokens(before.amm.feePool);
 		const revenuePoolBefore = readTokens(
-			driftClient.getSpotMarketAccount(0).revenuePool
+			velocityClient.getSpotMarketAccount(0).revenuePool
 		);
 		assert(
 			pendingProtocolBefore.gt(ZERO) &&
@@ -225,10 +225,10 @@ describe('protocol fees', () => {
 				pendingProvisionBefore.gt(ZERO)
 		);
 
-		await driftClient.sweepPerpMarketFees(MARKET_INDEX);
-		await driftClient.fetchAccounts();
+		await velocityClient.sweepPerpMarketFees(MARKET_INDEX);
+		await velocityClient.fetchAccounts();
 
-		const after = driftClient.getPerpMarketAccount(MARKET_INDEX);
+		const after = velocityClient.getPerpMarketAccount(MARKET_INDEX);
 		assert(
 			after.feeLedger.pendingProtocolFee.eq(ZERO),
 			'pending protocol fee not fully swept'
@@ -255,7 +255,7 @@ describe('protocol fees', () => {
 		);
 
 		const ifDelta = readTokens(
-			driftClient.getSpotMarketAccount(0).revenuePool
+			velocityClient.getSpotMarketAccount(0).revenuePool
 		).sub(revenuePoolBefore);
 		assert(
 			ifDelta.eq(pendingIfBefore),
@@ -278,24 +278,24 @@ describe('protocol fees', () => {
 			recipient.publicKey
 		);
 
-		await driftClient.updateProtocolFeeRecipient(recipient.publicKey);
+		await velocityClient.updateProtocolFeeRecipient(recipient.publicKey);
 		// wallet doubles as the FeeWithdraw hot key
-		await driftClient.updateHotAdmin(
+		await velocityClient.updateHotAdmin(
 			HotRole.FeeWithdraw,
-			driftClient.wallet.publicKey
+			velocityClient.wallet.publicKey
 		);
-		await driftClient.fetchAccounts();
+		await velocityClient.fetchAccounts();
 
-		const before = driftClient.getPerpMarketAccount(MARKET_INDEX);
+		const before = velocityClient.getPerpMarketAccount(MARKET_INDEX);
 		const poolTokens = readTokens(before.protocolFeePool);
 		assert(poolTokens.gt(ZERO), 'nothing to withdraw');
 
-		await driftClient.withdrawProtocolFeesPerp(
+		await velocityClient.withdrawProtocolFeesPerp(
 			MARKET_INDEX,
 			poolTokens,
 			recipientTokenAccount.publicKey
 		);
-		await driftClient.fetchAccounts();
+		await velocityClient.fetchAccounts();
 
 		const recipientBalance =
 			await bankrunContextWrapper.connection.getTokenAccount(
@@ -306,7 +306,7 @@ describe('protocol fees', () => {
 			`recipient got ${recipientBalance.amount}, expected ${poolTokens}`
 		);
 
-		const after = driftClient.getPerpMarketAccount(MARKET_INDEX);
+		const after = velocityClient.getPerpMarketAccount(MARKET_INDEX);
 		assert(
 			readTokens(after.protocolFeePool).eq(ZERO),
 			'protocol_fee_pool not drained'
@@ -315,12 +315,12 @@ describe('protocol fees', () => {
 
 	it('rejects withdrawal to a token account not owned by the recipient', async () => {
 		// rebuild a small pool balance to attempt against
-		await driftClient.fetchAccounts();
+		await velocityClient.fetchAccounts();
 
 		let threw = false;
 		try {
 			// userUSDCAccount is owned by the wallet, not protocol_fee_recipient
-			await driftClient.withdrawProtocolFeesPerp(
+			await velocityClient.withdrawProtocolFeesPerp(
 				MARKET_INDEX,
 				new BN(1),
 				userUSDCAccount.publicKey

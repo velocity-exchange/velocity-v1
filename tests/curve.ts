@@ -32,13 +32,13 @@ import { TestBulkAccountLoader } from '../sdk/src/accounts/testBulkAccountLoader
 import { BankrunContextWrapper } from '../sdk/src/bankrun/bankrunConnection';
 
 describe('AMM Curve', () => {
-	const chProgram = anchor.workspace.Drift as Program;
+	const chProgram = anchor.workspace.Velocity as Program;
 
 	let bulkAccountLoader: TestBulkAccountLoader;
 
 	let bankrunContextWrapper: BankrunContextWrapper;
 
-	let driftClient: TestClient;
+	let velocityClient: TestClient;
 
 	const ammInitialQuoteAssetAmount = new anchor.BN(10 ** 8).mul(BASE_PRECISION);
 	const ammInitialBaseAssetAmount = new anchor.BN(10 ** 8).mul(BASE_PRECISION);
@@ -76,7 +76,7 @@ describe('AMM Curve', () => {
 			bankrunContextWrapper
 		);
 
-		driftClient = new TestClient({
+		velocityClient = new TestClient({
 			connection: bankrunContextWrapper.connection.toConnection(),
 			wallet: bankrunContextWrapper.provider.wallet,
 			programID: chProgram.programId,
@@ -93,21 +93,21 @@ describe('AMM Curve', () => {
 			},
 		});
 
-		await driftClient.initialize(usdcMint.publicKey, true);
-		await driftClient.subscribe();
+		await velocityClient.initialize(usdcMint.publicKey, true);
+		await velocityClient.subscribe();
 
-		await initializeQuoteSpotMarket(driftClient, usdcMint.publicKey);
-		await driftClient.updatePerpAuctionDuration(new BN(0));
+		await initializeQuoteSpotMarket(velocityClient, usdcMint.publicKey);
+		await velocityClient.updatePerpAuctionDuration(new BN(0));
 
 		// this suite repegs the curve out of accumulated trade fees. Post
 		// AMM-isolation the AMM only books its own provision, so route 100%
 		// of the trade-fee remainder to it (the on-chain default is 0%).
-		const feeStructure = driftClient.getStateAccount().perpFeeStructure;
+		const feeStructure = velocityClient.getStateAccount().perpFeeStructure;
 		// the on-chain default flat filler fee does not pass re-validation
 		feeStructure.flatFillerFee = new BN(0);
 		feeStructure.ammFeeNumerator = 100;
 		feeStructure.ifFeeNumerator = 0;
-		await driftClient.updatePerpFeeStructure(feeStructure);
+		await velocityClient.updatePerpFeeStructure(feeStructure);
 
 		solUsdOracle = await mockOracleNoProgram(
 			bankrunContextWrapper,
@@ -119,7 +119,7 @@ describe('AMM Curve', () => {
 
 		const periodicity = new BN(60 * 60); // 1 HOUR
 
-		await driftClient.initializePerpMarket(
+		await velocityClient.initializePerpMarket(
 			0,
 			solUsdOracle,
 			ammInitialBaseAssetAmount,
@@ -128,10 +128,10 @@ describe('AMM Curve', () => {
 			PEG_PRECISION.mul(new BN(initialSOLPrice))
 		);
 
-		await driftClient.initializeUserAccount();
+		await velocityClient.initializeUserAccount();
 		userAccount = new User({
-			driftClient,
-			userAccountPublicKey: await driftClient.getUserAccountPublicKey(),
+			velocityClient,
+			userAccountPublicKey: await velocityClient.getUserAccountPublicKey(),
 			accountSubscription: {
 				type: 'polling',
 				accountLoader: bulkAccountLoader,
@@ -141,12 +141,12 @@ describe('AMM Curve', () => {
 	});
 
 	after(async () => {
-		await driftClient.unsubscribe();
+		await velocityClient.unsubscribe();
 		await userAccount.unsubscribe();
 	});
 
 	const showCurve = async (marketIndex) => {
-		const marketData = driftClient.getPerpMarketAccount(marketIndex);
+		const marketData = velocityClient.getPerpMarketAccount(marketIndex);
 		const ammAccountState = marketData.amm;
 
 		console.log(
@@ -175,7 +175,7 @@ describe('AMM Curve', () => {
 	};
 
 	const showBook = async (marketIndex) => {
-		const market = driftClient.getPerpMarketAccount(marketIndex);
+		const market = velocityClient.getPerpMarketAccount(marketIndex);
 		const currentMark = calculateReservePrice(market, undefined);
 
 		const [bidsPrice, bidsCumSize, asksPrice, asksCumSize] = liquidityBook(
@@ -209,7 +209,7 @@ describe('AMM Curve', () => {
 	};
 
 	it('After Deposit', async () => {
-		await driftClient.deposit(
+		await velocityClient.deposit(
 			usdcAmount,
 			QUOTE_SPOT_MARKET_INDEX,
 			userUSDCAccount.publicKey
@@ -219,7 +219,7 @@ describe('AMM Curve', () => {
 	});
 
 	it('After Position Taken', async () => {
-		await driftClient.openPosition(
+		await velocityClient.openPosition(
 			PositionDirection.LONG,
 			initialBaseAssetAmount,
 			marketIndex
@@ -230,7 +230,7 @@ describe('AMM Curve', () => {
 
 	it('After Position Price Moves', async () => {
 		// const _priceIncreaseFactor = new BN(2);
-		await driftClient.moveAmmToPrice(
+		await velocityClient.moveAmmToPrice(
 			marketIndex,
 			new BN(initialSOLPrice * PRICE_PRECISION.toNumber() * 1.0001)
 		);
@@ -239,20 +239,20 @@ describe('AMM Curve', () => {
 	});
 	it('Arb back to Oracle Price Moves', async () => {
 		const [direction, basesize] = calculateTargetPriceTrade(
-			driftClient.getPerpMarketAccount(marketIndex),
+			velocityClient.getPerpMarketAccount(marketIndex),
 			new BN(initialSOLPrice).mul(PRICE_PRECISION),
 			undefined,
 			'base'
 		);
 
 		console.log('arbing', direction, basesize.toString());
-		await driftClient.openPosition(direction, basesize, marketIndex);
+		await velocityClient.openPosition(direction, basesize, marketIndex);
 
 		await showBook(marketIndex);
 	});
 
 	it('Repeg Curve LONG', async () => {
-		let marketData = driftClient.getPerpMarketAccount(marketIndex);
+		let marketData = velocityClient.getPerpMarketAccount(marketIndex);
 		const ammAccountState = marketData.amm;
 		assert(ammAccountState.totalFee.eq(ammAccountState.totalFee));
 
@@ -270,7 +270,7 @@ describe('AMM Curve', () => {
 		);
 		// showCurve(marketIndex);
 
-		await driftClient.openPosition(
+		await velocityClient.openPosition(
 			PositionDirection.LONG,
 			BASE_PRECISION.div(new BN(10)),
 			marketIndex
@@ -278,15 +278,15 @@ describe('AMM Curve', () => {
 		// showBook(marketIndex);
 
 		const priceBefore = calculateReservePrice(
-			driftClient.getPerpMarketAccount(marketIndex),
+			velocityClient.getPerpMarketAccount(marketIndex),
 			undefined
 		);
-		await driftClient.repegAmmCurve(
+		await velocityClient.repegAmmCurve(
 			new BN(150.001 * PEG_PRECISION.toNumber()),
 			marketIndex
 		);
 		const priceAfter = calculateReservePrice(
-			driftClient.getPerpMarketAccount(marketIndex),
+			velocityClient.getPerpMarketAccount(marketIndex),
 			undefined
 		);
 
@@ -298,7 +298,7 @@ describe('AMM Curve', () => {
 		await showCurve(marketIndex);
 		// showBook(marketIndex);
 
-		marketData = driftClient.getPerpMarketAccount(marketIndex);
+		marketData = velocityClient.getPerpMarketAccount(marketIndex);
 		console.log(marketData.amm);
 		console.log();
 		assert(
@@ -325,7 +325,7 @@ describe('AMM Curve', () => {
 
 		// const feeDist1h = calculateFeeDist(marketIndex);
 
-		await driftClient.closePosition(marketIndex);
+		await velocityClient.closePosition(marketIndex);
 
 		// showCurve(marketIndex);
 		// const feeDist2 = calculateFeeDist(marketIndex);
@@ -339,33 +339,33 @@ describe('AMM Curve', () => {
 	// 	await setFeedPrice(anchor.workspace.Pyth, newOraclePrice, solUsdOracle);
 	// 	showCurve(marketIndex);
 
-	// 	await driftClient.openPosition(
+	// 	await velocityClient.openPosition(
 	// 		PositionDirection.SHORT,
 	// 		BASE_PRECISION.div(new BN(1000)),
 	// 		marketIndex
 	// 	);
-	// 	const marketData1 = driftClient.getPerpMarketAccount(marketIndex);
+	// 	const marketData1 = velocityClient.getPerpMarketAccount(marketIndex);
 	// 	const ammAccountState = marketData1.amm;
 	// 	const oldPeg = ammAccountState.pegMultiplier;
 
 	// 	const priceBefore = calculateReservePrice(
-	// 		driftClient.getPerpMarketAccount(marketIndex)
+	// 		velocityClient.getPerpMarketAccount(marketIndex)
 	// 	);
 
-	// 	await driftClient.repegAmmCurve(
+	// 	await velocityClient.repegAmmCurve(
 	// 		new BN(148 * PEG_PRECISION.toNumber()),
 	// 		marketIndex
 	// 	);
 
 	// 	const priceAfter = calculateReservePrice(
-	// 		driftClient.getPerpMarketAccount(marketIndex)
+	// 		velocityClient.getPerpMarketAccount(marketIndex)
 	// 	);
 
 	// 	assert(newOraclePriceWithMantissa.lt(priceBefore));
 	// 	assert(priceAfter.lt(priceBefore));
 	// 	assert(newOraclePriceWithMantissa.lt(priceAfter));
 
-	// 	const marketData = driftClient.getPerpMarketAccount(marketIndex);
+	// 	const marketData = velocityClient.getPerpMarketAccount(marketIndex);
 	// 	const newPeg = marketData.amm.pegMultiplier;
 
 	// 	const userPerpPosition = userAccount.getUserAccount().perpPositions[0];
@@ -391,11 +391,11 @@ describe('AMM Curve', () => {
 	// 	assert(linearApproxCostToAMM > totalCostToAMMChain);
 	// 	assert(linearApproxCostToAMM / totalCostToAMMChain < 1.02);
 
-	// 	await driftClient.closePosition(marketIndex);
+	// 	await velocityClient.closePosition(marketIndex);
 	// });
 
 	it('calculateBudgetedPeg (sdk tests)', async () => {
-		const marketData1 = driftClient.getPerpMarketAccount(marketIndex);
+		const marketData1 = velocityClient.getPerpMarketAccount(marketIndex);
 
 		let amm = marketData1.amm;
 
@@ -423,13 +423,13 @@ describe('AMM Curve', () => {
 		assert(candidatePegDown0.eq(new BN(10131882)));
 
 		// check if short
-		await driftClient.openPosition(
+		await velocityClient.openPosition(
 			PositionDirection.SHORT,
 			BASE_PRECISION,
 			marketIndex
 		);
 
-		amm = driftClient.getPerpMarketAccount(marketIndex).amm;
+		amm = velocityClient.getPerpMarketAccount(marketIndex).amm;
 
 		const candidatePegUp = calculateBudgetedPeg(
 			amm,
@@ -451,16 +451,16 @@ describe('AMM Curve', () => {
 		);
 		assert(candidatePegDown.eq(new BN(148987813)));
 
-		await driftClient.closePosition(marketIndex);
+		await velocityClient.closePosition(marketIndex);
 
 		// check if long
-		await driftClient.openPosition(
+		await velocityClient.openPosition(
 			PositionDirection.LONG,
 			BASE_PRECISION,
 			marketIndex
 		);
-		await driftClient.fetchAccounts();
-		amm = driftClient.getPerpMarketAccount(marketIndex).amm;
+		await velocityClient.fetchAccounts();
+		amm = velocityClient.getPerpMarketAccount(marketIndex).amm;
 
 		const candidatePegUp2 = calculateBudgetedPeg(
 			amm,
@@ -487,8 +487,8 @@ describe('AMM Curve', () => {
 			candidatePegDown2.toString()
 		);
 		assert(candidatePegDown2.eq(new BN(10131882)));
-		await driftClient.fetchAccounts();
+		await velocityClient.fetchAccounts();
 
-		await driftClient.closePosition(marketIndex);
+		await velocityClient.closePosition(marketIndex);
 	});
 });

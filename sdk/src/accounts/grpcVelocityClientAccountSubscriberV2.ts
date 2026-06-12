@@ -1,7 +1,7 @@
 import StrictEventEmitter from 'strict-event-emitter-types';
 import { EventEmitter } from 'events';
 import { OracleInfo, OraclePriceData } from '../oracles/types';
-import { PublicKey } from '@solana/web3.js';
+import { AccountInfo, PublicKey } from '@solana/web3.js';
 import { findAllMarketAndOracles, VelocityProgram } from '../config';
 import {
 	getVelocityStateAccountPublicKey,
@@ -132,11 +132,13 @@ export class grpcVelocityClientAccountSubscriberV2
 			).flat();
 			this.initialPerpMarketAccountData = new Map(
 				perpMarketAccountInfos
-					.filter((accountInfo) => !!accountInfo)
+					.filter(
+						(accountInfo): accountInfo is AccountInfo<Buffer> => !!accountInfo
+					)
 					.map((accountInfo) => {
 						const perpMarket = this.program.coder.accounts.decode(
 							'perpMarket',
-							accountInfo!.data
+							accountInfo.data
 						);
 						return [perpMarket.marketIndex, perpMarket];
 					})
@@ -160,11 +162,13 @@ export class grpcVelocityClientAccountSubscriberV2
 			).flat();
 			this.initialSpotMarketAccountData = new Map(
 				spotMarketAccountInfos
-					.filter((accountInfo) => !!accountInfo)
+					.filter(
+						(accountInfo): accountInfo is AccountInfo<Buffer> => !!accountInfo
+					)
 					.map((accountInfo) => {
 						const spotMarket = this.program.coder.accounts.decode(
 							'spotMarket',
-							accountInfo!.data
+							accountInfo.data
 						);
 						return [spotMarket.marketIndex, spotMarket];
 					})
@@ -723,7 +727,7 @@ export class grpcVelocityClientAccountSubscriberV2
 					this.perpMarketIndexToAccountPubkeyMap.get(marketIndex);
 				return pubkeyString ? new PublicKey(pubkeyString) : null;
 			})
-			.filter((pubkey) => pubkey !== null) as PublicKey[];
+			.filter((pubkey): pubkey is PublicKey => pubkey !== null);
 
 		// Build array of oracle pubkeys to remove
 		const oraclePubkeysToRemove = oracles.map((oracle) => oracle.publicKey);

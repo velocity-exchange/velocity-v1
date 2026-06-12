@@ -18,7 +18,7 @@ import {
 	getSpotMarketPublicKeySync,
 } from '../addresses/pda';
 import { WebSocketAccountSubscriber } from './webSocketAccountSubscriber';
-import { Commitment, PublicKey } from '@solana/web3.js';
+import { AccountInfo, Commitment, PublicKey } from '@solana/web3.js';
 import { OracleInfo, OraclePriceData } from '../oracles/types';
 import { OracleClientCache } from '../oracles/oracleClientCache';
 import * as Buffer from 'buffer';
@@ -257,11 +257,13 @@ export class WebSocketVelocityClientAccountSubscriber
 			).flat();
 			this.initialPerpMarketAccountData = new Map(
 				perpMarketAccountInfos
-					.filter((accountInfo) => !!accountInfo)
+					.filter(
+						(accountInfo): accountInfo is AccountInfo<Buffer> => !!accountInfo
+					)
 					.map((accountInfo) => {
 						const perpMarket = this.program.coder.accounts.decode(
 							'perpMarket',
-							accountInfo!.data
+							accountInfo.data
 						);
 						return [perpMarket.marketIndex, perpMarket];
 					})
@@ -282,11 +284,13 @@ export class WebSocketVelocityClientAccountSubscriber
 			).flat();
 			this.initialSpotMarketAccountData = new Map(
 				spotMarketAccountInfos
-					.filter((accountInfo) => !!accountInfo)
+					.filter(
+						(accountInfo): accountInfo is AccountInfo<Buffer> => !!accountInfo
+					)
 					.map((accountInfo) => {
 						const spotMarket = this.program.coder.accounts.decode(
 							'spotMarket',
-							accountInfo!.data
+							accountInfo.data
 						);
 						return [spotMarket.marketIndex, spotMarket];
 					})

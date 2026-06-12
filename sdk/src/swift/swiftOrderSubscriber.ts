@@ -21,7 +21,6 @@ import nacl from 'tweetnacl';
 import { decodeUTF8 } from 'tweetnacl-util';
 import WebSocket from 'ws';
 import { sha256 } from '@noble/hashes/sha256';
-import { ClientRequest, IncomingMessage } from 'http';
 
 // In practice, this for now is just an OrderSubscriber or a UserMap
 export interface AccountGetter {
@@ -246,19 +245,13 @@ export class SwiftOrderSubscriber {
 			}, 5000);
 		});
 
-		ws.on(
-			'error',
-			async (request: ClientRequest, response: IncomingMessage) => {
-				console.error(
-					'WS closed from error, reconnecting in 1s:',
-					response.statusCode
-				);
-				setTimeout(() => {
-					if (this.heartbeatTimeout) clearTimeout(this.heartbeatTimeout);
-					this.reconnect();
-				}, 1000);
-			}
-		);
+		ws.on('error', async (error: Error) => {
+			console.error('WS closed from error, reconnecting in 1s:', error);
+			setTimeout(() => {
+				if (this.heartbeatTimeout) clearTimeout(this.heartbeatTimeout);
+				this.reconnect();
+			}, 1000);
+		});
 	}
 
 	async getPlaceAndMakeSignedMsgOrderIxs(

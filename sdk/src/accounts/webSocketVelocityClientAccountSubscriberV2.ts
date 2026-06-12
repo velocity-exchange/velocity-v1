@@ -115,9 +115,7 @@ export class WebSocketVelocityClientAccountSubscriberV2
 
 	protected isSubscribing = false;
 	protected subscriptionPromiseResolver: (val: boolean) => void = () => {};
-	protected subscriptionPromise: Promise<boolean> = new Promise((res) => {
-		this.subscriptionPromiseResolver = res;
-	});
+	protected subscriptionPromise: Promise<boolean> = Promise.resolve(false);
 
 	private rpc: Rpc<any>;
 	private rpcSubscriptions: RpcSubscriptions<SolanaRpcSubscriptionsApi> &
@@ -377,9 +375,7 @@ export class WebSocketVelocityClientAccountSubscriberV2
 			this.isSubscribed = true;
 			this.isSubscribing = false;
 			// Before calling subscriptionPromiseResolver, check if it's defined
-			if (this.subscriptionPromiseResolver) {
-				this.subscriptionPromiseResolver(true);
-			}
+			this.subscriptionPromiseResolver(true);
 
 			return true;
 		} catch (error) {
@@ -755,12 +751,12 @@ export class WebSocketVelocityClientAccountSubscriberV2
 		const perpMarketAccount = this.getMarketAccountAndSlot(marketIndex);
 		const oracle = this.perpOracleMap.get(marketIndex);
 		const oracleId = this.perpOracleStringMap.get(marketIndex);
-		if (!perpMarketAccount || !oracleId || !oracle) {
+		if (!perpMarketAccount || !oracleId) {
 			return undefined;
 		}
 
-		if (!perpMarketAccount.data.oracle.equals(oracle)) {
-			// If the oracle has changed, we need to update the oracle map in background
+		if (!oracle || !perpMarketAccount.data.oracle.equals(oracle)) {
+			// If the oracle has changed (or not yet cached), update the oracle map in background
 			this.setPerpOracleMap();
 		}
 
@@ -773,12 +769,12 @@ export class WebSocketVelocityClientAccountSubscriberV2
 		const spotMarketAccount = this.getSpotMarketAccountAndSlot(marketIndex);
 		const oracle = this.spotOracleMap.get(marketIndex);
 		const oracleId = this.spotOracleStringMap.get(marketIndex);
-		if (!spotMarketAccount || !oracleId || !oracle) {
+		if (!spotMarketAccount || !oracleId) {
 			return undefined;
 		}
 
-		if (!spotMarketAccount.data.oracle.equals(oracle)) {
-			// If the oracle has changed, we need to update the oracle map in background
+		if (!oracle || !spotMarketAccount.data.oracle.equals(oracle)) {
+			// If the oracle has changed (or not yet cached), update the oracle map in background
 			this.setSpotOracleMap();
 		}
 

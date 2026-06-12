@@ -71,9 +71,7 @@ export class grpcVelocityClientAccountSubscriberV2
 	private resubOpts?: ResubOpts;
 
 	protected subscriptionPromiseResolver: (val: boolean) => void = () => {};
-	private subscriptionPromise: Promise<boolean> = new Promise((res) => {
-		this.subscriptionPromiseResolver = res;
-	});
+	private subscriptionPromise: Promise<boolean> = Promise.resolve(false);
 
 	constructor(
 		grpcConfigs: GrpcConfigs,
@@ -397,12 +395,12 @@ export class grpcVelocityClientAccountSubscriberV2
 		const perpMarketAccount = this.getMarketAccountAndSlot(marketIndex);
 		const oracle = this.perpOracleMap.get(marketIndex);
 		const oracleId = this.perpOracleStringMap.get(marketIndex);
-		if (!perpMarketAccount || !oracleId || !oracle) {
+		if (!perpMarketAccount || !oracleId) {
 			return undefined;
 		}
 
-		if (!perpMarketAccount.data.oracle.equals(oracle)) {
-			// If the oracle has changed, we need to update the oracle map in background
+		if (!oracle || !perpMarketAccount.data.oracle.equals(oracle)) {
+			// If the oracle has changed (or not yet cached), update the oracle map in background
 			this.setPerpOracleMap();
 		}
 
@@ -415,12 +413,12 @@ export class grpcVelocityClientAccountSubscriberV2
 		const spotMarketAccount = this.getSpotMarketAccountAndSlot(marketIndex);
 		const oracle = this.spotOracleMap.get(marketIndex);
 		const oracleId = this.spotOracleStringMap.get(marketIndex);
-		if (!spotMarketAccount || !oracleId || !oracle) {
+		if (!spotMarketAccount || !oracleId) {
 			return undefined;
 		}
 
-		if (!spotMarketAccount.data.oracle.equals(oracle)) {
-			// If the oracle has changed, we need to update the oracle map in background
+		if (!oracle || !spotMarketAccount.data.oracle.equals(oracle)) {
+			// If the oracle has changed (or not yet cached), update the oracle map in background
 			this.setSpotOracleMap();
 		}
 

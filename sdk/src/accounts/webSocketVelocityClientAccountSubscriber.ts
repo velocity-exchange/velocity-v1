@@ -108,9 +108,7 @@ export class WebSocketVelocityClientAccountSubscriber
 
 	protected isSubscribing = false;
 	protected subscriptionPromiseResolver: (val: boolean) => void = () => {};
-	protected subscriptionPromise: Promise<boolean> = new Promise((res) => {
-		this.subscriptionPromiseResolver = res;
-	});
+	protected subscriptionPromise: Promise<boolean> = Promise.resolve(false);
 
 	public constructor(
 		program: VelocityProgram,
@@ -704,12 +702,12 @@ export class WebSocketVelocityClientAccountSubscriber
 		const perpMarketAccount = this.getMarketAccountAndSlot(marketIndex);
 		const oracle = this.perpOracleMap.get(marketIndex);
 		const oracleId = this.perpOracleStringMap.get(marketIndex);
-		if (!perpMarketAccount || !oracle || !oracleId) {
+		if (!perpMarketAccount || !oracleId) {
 			return undefined;
 		}
 
-		if (!perpMarketAccount.data.oracle.equals(oracle)) {
-			// If the oracle has changed, we need to update the oracle map in background
+		if (!oracle || !perpMarketAccount.data.oracle.equals(oracle)) {
+			// If the oracle has changed (or not yet cached), update the oracle map in background
 			this.setPerpOracleMap();
 		}
 
@@ -722,12 +720,12 @@ export class WebSocketVelocityClientAccountSubscriber
 		const spotMarketAccount = this.getSpotMarketAccountAndSlot(marketIndex);
 		const oracle = this.spotOracleMap.get(marketIndex);
 		const oracleId = this.spotOracleStringMap.get(marketIndex);
-		if (!spotMarketAccount || !oracle || !oracleId) {
+		if (!spotMarketAccount || !oracleId) {
 			return undefined;
 		}
 
-		if (!spotMarketAccount.data.oracle.equals(oracle)) {
-			// If the oracle has changed, we need to update the oracle map in background
+		if (!oracle || !spotMarketAccount.data.oracle.equals(oracle)) {
+			// If the oracle has changed (or not yet cached), update the oracle map in background
 			this.setSpotOracleMap();
 		}
 

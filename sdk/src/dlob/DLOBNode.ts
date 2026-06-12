@@ -80,7 +80,13 @@ export abstract class OrderNode implements DLOBNode {
 		oraclePriceData: T extends 'spot' ? OraclePriceData : MMOraclePriceData,
 		slot: number
 	): BN {
-		return getLimitPrice<T>(this.order, oraclePriceData, slot);
+		const price = getLimitPrice<T>(this.order, oraclePriceData, slot);
+		if (price === undefined) {
+			throw new Error(
+				`OrderNode.getPrice: order ${this.order.orderId} has no limit price`
+			);
+		}
+		return price;
 	}
 
 	isBaseFilled(): boolean {

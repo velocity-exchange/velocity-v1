@@ -234,7 +234,7 @@ export class User {
 		return account?.data;
 	}
 
-	public getUserAccountAndSlot(): DataAndSlot<UserAccount> | undefined {
+	public getUserAccountAndSlot(): DataAndSlot<UserAccount> {
 		return this.accountSubscriber.getUserAccountAndSlot();
 	}
 
@@ -335,7 +335,8 @@ export class User {
 		if (spotPosition === undefined) {
 			return ZERO;
 		}
-		const spotMarket = this.velocityClient.getSpotMarketAccount(marketIndex);
+		const spotMarket =
+			this.velocityClient.getSpotMarketAccountOrThrow(marketIndex);
 		return getSignedTokenAmount(
 			getTokenAmount(
 				spotPosition.scaledBalance,
@@ -373,8 +374,8 @@ export class User {
 		const perpPosition = this.getPerpPosition(perpMarketIndex);
 		if (!perpPosition) return ZERO;
 		const perpMarket =
-			this.velocityClient.getPerpMarketAccount(perpMarketIndex);
-		const spotMarket = this.velocityClient.getSpotMarketAccount(
+			this.velocityClient.getPerpMarketAccountOrThrow(perpMarketIndex);
+		const spotMarket = this.velocityClient.getSpotMarketAccountOrThrow(
 			perpMarket.quoteSpotMarketIndex
 		);
 		if (perpPosition === undefined) {
@@ -396,10 +397,10 @@ export class User {
 				return total;
 			}
 
-			const perpMarket = this.velocityClient.getPerpMarketAccount(
+			const perpMarket = this.velocityClient.getPerpMarketAccountOrThrow(
 				perpPosition.marketIndex
 			);
-			const quoteSpotMarket = this.velocityClient.getSpotMarketAccount(
+			const quoteSpotMarket = this.velocityClient.getSpotMarketAccountOrThrow(
 				perpMarket.quoteSpotMarketIndex
 			);
 			const quoteOraclePriceData = this.getOracleDataForSpotMarket(
@@ -484,7 +485,9 @@ export class User {
 		};
 	}
 
-	public getOpenOrdersForUserAccount(userAccount?: UserAccount): Order[] {
+	public getOpenOrdersForUserAccount(
+		userAccount?: UserAccount
+	): Order[] | undefined {
 		return userAccount?.orders.filter((order) =>
 			isVariant(order.status, 'open')
 		);
@@ -492,12 +495,13 @@ export class User {
 
 	public getOpenOrders(): Order[] {
 		const userAccount = this.getUserAccount();
-		return this.getOpenOrdersForUserAccount(userAccount);
+		return this.getOpenOrdersForUserAccount(userAccount) ?? [];
 	}
 
 	public getOpenOrdersAndSlot(): DataAndSlot<Order[]> {
 		const userAccount = this.getUserAccountAndSlot();
-		const openOrders = this.getOpenOrdersForUserAccount(userAccount.data);
+		const openOrders =
+			this.getOpenOrdersForUserAccount(userAccount.data) ?? [];
 		return {
 			data: openOrders,
 			slot: userAccount.slot,
@@ -523,6 +527,9 @@ export class User {
 	 */
 	public getPerpBidAsks(marketIndex: number): [BN, BN] {
 		const position = this.getPerpPosition(marketIndex);
+		if (!position) {
+			throw new Error(`No perp position found for market ${marketIndex}`);
+		}
 
 		const totalOpenBids = position.openBids;
 		const totalOpenAsks = position.openAsks;
@@ -537,12 +544,13 @@ export class User {
 	public getPerpBuyingPower(
 		marketIndex: number,
 		collateralBuffer = ZERO,
-		maxMarginRatio = undefined,
+		maxMarginRatio: number | undefined = undefined,
 		positionType: 'isolated' | 'cross' = 'cross'
 	): BN {
 		const perpPosition = this.getPerpPositionOrEmpty(marketIndex);
 
-		const perpMarket = this.velocityClient.getPerpMarketAccount(marketIndex);
+		const perpMarket =
+			this.velocityClient.getPerpMarketAccountOrThrow(marketIndex);
 		const oraclePriceData = this.getOracleDataForPerpMarket(marketIndex);
 		const worstCaseBaseAssetAmount = perpPosition
 			? calculateWorstCaseBaseAssetAmount(
@@ -596,14 +604,14 @@ export class User {
 		marketIndex: number,
 		freeCollateral: BN,
 		baseAssetAmount: BN,
-		perpMarketMaxMarginRatio = undefined
+		perpMarketMaxMarginRatio: number | undefined = undefined
 	): BN {
 		const maxMarginRatio = Math.max(
-			perpMarketMaxMarginRatio,
+			perpMarketMaxMarginRatio ?? NaN,
 			this.getUserAccount().maxMarginRatio
 		);
 		const marginRatio = calculateMarketMarginRatio(
-			this.velocityClient.getPerpMarketAccount(marketIndex),
+			this.velocityClient.getPerpMarketAccountOrThrow(marketIndex),
 			baseAssetAmount,
 			'Initial',
 			maxMarginRatio
@@ -801,14 +809,14 @@ export class User {
 				marketIndex !== undefined ? pos.marketIndex === marketIndex : true
 			)
 			.reduce((unrealizedPnl, perpPosition) => {
-				const market = this.velocityClient.getPerpMarketAccount(
+				const market = this.velocityClient.getPerpMarketAccountOrThrow(
 					perpPosition.marketIndex
 				);
 				const oraclePriceData = this.getMMOracleDataForPerpMarket(
 					market.marketIndex
 				);
 
-				const quoteSpotMarket = this.velocityClient.getSpotMarketAccount(
+				const quoteSpotMarket = this.velocityClient.getSpotMarketAccountOrThrow(
 					market.quoteSpotMarketIndex
 				);
 				const quoteOraclePriceData = this.getOracleDataForSpotMarket(
@@ -877,7 +885,7 @@ export class User {
 				marketIndex !== undefined ? pos.marketIndex === marketIndex : true
 			)
 			.reduce((pnl, perpPosition) => {
-				const market = this.velocityClient.getPerpMarketAccount(
+				const market = this.velocityClient.getPerpMarketAccountOrThrow(
 					perpPosition.marketIndex
 				);
 				return pnl.add(calculateUnsettledFundingPnl(market, perpPosition));
@@ -912,7 +920,9 @@ export class User {
 			}
 
 			const spotMarketAccount: SpotMarketAccount =
-				this.velocityClient.getSpotMarketAccount(spotPosition.marketIndex);
+				this.velocityClient.getSpotMarketAccountOrThrow(
+					spotPosition.marketIndex
+				);
 
 			const oraclePriceData = this.getOracleDataForSpotMarket(
 				spotPosition.marketIndex
@@ -1200,8 +1210,15 @@ export class User {
 		});
 
 		if (perpMarketIndex !== undefined) {
-			const { totalCollateral, totalCollateralBuffer } =
+			const isolatedMarginCalculation =
 				marginCalc.isolatedMarginCalculations.get(perpMarketIndex);
+			if (!isolatedMarginCalculation) {
+				throw new Error(
+					`No isolated margin calculation for perp market ${perpMarketIndex}`
+				);
+			}
+			const { totalCollateral, totalCollateralBuffer } =
+				isolatedMarginCalculation;
 			if (liquidationBuffer?.gt(ZERO)) {
 				return totalCollateralBuffer;
 			}
@@ -1301,7 +1318,7 @@ export class User {
 		includeOpenOrders?: boolean,
 		strict = false
 	): BN {
-		const market = this.velocityClient.getPerpMarketAccount(
+		const market = this.velocityClient.getPerpMarketAccountOrThrow(
 			perpPosition.marketIndex
 		);
 
@@ -1354,7 +1371,7 @@ export class User {
 				marginRatio = ZERO;
 			}
 
-			const quoteSpotMarket = this.velocityClient.getSpotMarketAccount(
+			const quoteSpotMarket = this.velocityClient.getSpotMarketAccountOrThrow(
 				market.quoteSpotMarketIndex
 			);
 			const quoteOraclePriceData =
@@ -1398,6 +1415,9 @@ export class User {
 		strict = false
 	): BN {
 		const perpPosition = this.getPerpPosition(marketIndex);
+		if (!perpPosition) {
+			throw new Error(`No perp position found for market ${marketIndex}`);
+		}
 		return this.calculateWeightedPerpPositionLiability(
 			perpPosition,
 			marginCategory,
@@ -1442,7 +1462,7 @@ export class User {
 		includeOpenOrders = false
 	): BN {
 		const userPosition = this.getPerpPositionOrEmpty(marketIndex);
-		const market = this.velocityClient.getPerpMarketAccount(
+		const market = this.velocityClient.getPerpMarketAccountOrThrow(
 			userPosition.marketIndex
 		);
 		return calculateBaseAssetValueWithOracle(
@@ -1463,7 +1483,7 @@ export class User {
 		includeOpenOrders = false
 	): BN {
 		const userPosition = this.getPerpPositionOrEmpty(marketIndex);
-		const market = this.velocityClient.getPerpMarketAccount(
+		const market = this.velocityClient.getPerpMarketAccountOrThrow(
 			userPosition.marketIndex
 		);
 
@@ -1502,7 +1522,7 @@ export class User {
 		amountToClose?: BN,
 		useAMMClose = false
 	): [BN, BN] {
-		const market = this.velocityClient.getPerpMarketAccount(
+		const market = this.velocityClient.getPerpMarketAccountOrThrow(
 			position.marketIndex
 		);
 
@@ -1591,7 +1611,7 @@ export class User {
 
 	getLeverageComponents(
 		includeOpenOrders = true,
-		marginCategory: MarginCategory = undefined,
+		marginCategory: MarginCategory | undefined = undefined,
 		perpMarketIndex?: number
 	): {
 		perpLiabilityValue: BN;
@@ -1607,14 +1627,14 @@ export class User {
 				undefined,
 				includeOpenOrders
 			);
-			const perpMarket = this.velocityClient.getPerpMarketAccount(
+			const perpMarket = this.velocityClient.getPerpMarketAccountOrThrow(
 				perpPosition.marketIndex
 			);
 
 			const oraclePriceData = this.getOracleDataForPerpMarket(
 				perpPosition.marketIndex
 			);
-			const quoteSpotMarket = this.velocityClient.getSpotMarketAccount(
+			const quoteSpotMarket = this.velocityClient.getSpotMarketAccountOrThrow(
 				perpMarket.quoteSpotMarketIndex
 			);
 			const quoteOraclePriceData = this.getOracleDataForSpotMarket(
@@ -1686,6 +1706,12 @@ export class User {
 		const marketIndex = spotMarketAccount.marketIndex;
 
 		const spotPosition = this.getSpotPosition(spotMarketAccount.marketIndex);
+
+		if (!spotPosition) {
+			throw new Error(
+				`No spot position found for market ${spotMarketAccount.marketIndex}`
+			);
+		}
 
 		if (isSpotPositionAvailable(spotPosition)) {
 			return false;
@@ -2040,7 +2066,7 @@ export class User {
 		);
 
 		return (
-			(position?.positionFlag &
+			((position?.positionFlag ?? 0) &
 				(PositionFlag.BeingLiquidated | PositionFlag.Bankruptcy)) >
 			0
 		);
@@ -2086,7 +2112,7 @@ export class User {
 				continue;
 			}
 
-			const market = this.velocityClient.getPerpMarketAccount(
+			const market = this.velocityClient.getPerpMarketAccountOrThrow(
 				userPosition.marketIndex
 			);
 			if (
@@ -2127,7 +2153,7 @@ export class User {
 			totalCollateral.sub(maintenanceMarginRequirement)
 		);
 
-		const market = this.velocityClient.getSpotMarketAccount(marketIndex);
+		const market = this.velocityClient.getSpotMarketAccountOrThrow(marketIndex);
 		let signedTokenAmount = getSignedTokenAmount(
 			getTokenAmount(
 				currentSpotPosition.scaledBalance,
@@ -2218,9 +2244,10 @@ export class User {
 		offsetCollateral = ZERO,
 		marginType?: MarginType
 	): BN {
-		const market = this.velocityClient.getPerpMarketAccount(marketIndex);
+		const market = this.velocityClient.getPerpMarketAccountOrThrow(marketIndex);
 
-		const oracle = this.velocityClient.getPerpMarketAccount(marketIndex).oracle;
+		const oracle =
+			this.velocityClient.getPerpMarketAccountOrThrow(marketIndex).oracle;
 
 		const oraclePrice =
 			this.velocityClient.getOracleDataForPerpMarket(marketIndex).price;
@@ -2595,7 +2622,7 @@ export class User {
 		perpMarketMaxMarginRatio?: number
 	): BN {
 		const maxMarginRatio = Math.max(
-			perpMarketMaxMarginRatio,
+			perpMarketMaxMarginRatio ?? NaN,
 			this.getUserAccount().maxMarginRatio
 		);
 		return calculateMarginUSDCRequiredForTrade(
@@ -2614,7 +2641,7 @@ export class User {
 		perpMarketMaxMarginRatio?: number
 	): BN {
 		const maxMarginRatio = Math.max(
-			perpMarketMaxMarginRatio,
+			perpMarketMaxMarginRatio ?? NaN,
 			this.getUserAccount().maxMarginRatio
 		);
 		return calculateCollateralDepositRequiredForTrade(
@@ -2637,7 +2664,7 @@ export class User {
 	public getMaxTradeSizeUSDCForPerp(
 		targetMarketIndex: number,
 		tradeSide: PositionDirection,
-		maxMarginRatio = undefined,
+		maxMarginRatio: number | undefined = undefined,
 		positionType: 'isolated' | 'cross' = 'cross'
 	): { tradeSize: BN; oppositeSideTradeSize: BN } {
 		let tradeSize = ZERO;
@@ -2657,7 +2684,7 @@ export class User {
 		const oracleData = this.getMMOracleDataForPerpMarket(targetMarketIndex);
 
 		const marketAccount =
-			this.velocityClient.getPerpMarketAccount(targetMarketIndex);
+			this.velocityClient.getPerpMarketAccountOrThrow(targetMarketIndex);
 
 		// add any position we have on the opposite side of the current trade, because we can "flip" the size of this position without taking any extra leverage.
 		const oppositeSizeLiabilityValue = targetingSameSide
@@ -2784,7 +2811,8 @@ export class User {
 		currentQuoteAssetValue?: BN,
 		currentSpotMarketNetValue?: BN
 	): BN {
-		const market = this.velocityClient.getSpotMarketAccount(targetMarketIndex);
+		const market =
+			this.velocityClient.getSpotMarketAccountOrThrow(targetMarketIndex);
 		const oraclePrice =
 			this.velocityClient.getOracleDataForSpotMarket(targetMarketIndex).price;
 
@@ -2876,8 +2904,10 @@ export class User {
 		calculateSwap?: (inAmount: BN) => BN;
 		iterationLimit?: number;
 	}): { inAmount: BN; outAmount: BN; leverage: BN } {
-		const inMarket = this.velocityClient.getSpotMarketAccount(inMarketIndex);
-		const outMarket = this.velocityClient.getSpotMarketAccount(outMarketIndex);
+		const inMarket =
+			this.velocityClient.getSpotMarketAccountOrThrow(inMarketIndex);
+		const outMarket =
+			this.velocityClient.getSpotMarketAccountOrThrow(outMarketIndex);
 
 		const inOraclePriceData = this.getOracleDataForSpotMarket(inMarketIndex);
 		const inOraclePrice = inOraclePriceData.price;
@@ -3134,7 +3164,7 @@ export class User {
 		const marginCategory = 'Initial';
 
 		const spotMarketAccount: SpotMarketAccount =
-			this.velocityClient.getSpotMarketAccount(spotPosition.marketIndex);
+			this.velocityClient.getSpotMarketAccountOrThrow(spotPosition.marketIndex);
 
 		const { freeCollateralContribution } = getWorstCaseTokenAmounts(
 			spotPosition,
@@ -3158,7 +3188,7 @@ export class User {
 		let totalLiabilityValue = ZERO;
 
 		const spotMarketAccount: SpotMarketAccount =
-			this.velocityClient.getSpotMarketAccount(spotPosition.marketIndex);
+			this.velocityClient.getSpotMarketAccountOrThrow(spotPosition.marketIndex);
 
 		const { tokenValue, ordersValue } = getWorstCaseTokenAmounts(
 			spotPosition,
@@ -3204,8 +3234,10 @@ export class User {
 		inAmount: BN;
 		outAmount: BN;
 	}): BN {
-		const inMarket = this.velocityClient.getSpotMarketAccount(inMarketIndex);
-		const outMarket = this.velocityClient.getSpotMarketAccount(outMarketIndex);
+		const inMarket =
+			this.velocityClient.getSpotMarketAccountOrThrow(inMarketIndex);
+		const outMarket =
+			this.velocityClient.getSpotMarketAccountOrThrow(outMarketIndex);
 
 		const inOraclePriceData = this.getOracleDataForSpotMarket(inMarketIndex);
 		const inOraclePrice = inOraclePriceData.price;
@@ -3408,7 +3440,7 @@ export class User {
 		const currentPosition = this.getPerpPositionOrEmpty(targetMarketIndex);
 
 		const perpMarket =
-			this.velocityClient.getPerpMarketAccount(targetMarketIndex);
+			this.velocityClient.getPerpMarketAccountOrThrow(targetMarketIndex);
 		const oracleData = this.getOracleDataForPerpMarket(targetMarketIndex);
 
 		let {
@@ -3480,9 +3512,11 @@ export class User {
 
 		const feeTierIndex = 0;
 		if (isVariant(marketType, 'perp')) {
-			const userStatsAccount: UserStatsAccount = this.velocityClient
-				.getUserStats()
-				.getAccount();
+			const userStats = this.velocityClient.getUserStats();
+			if (!userStats) {
+				throw new Error('VelocityClient has no UserStats subscription');
+			}
+			const userStatsAccount: UserStatsAccount = userStats.getAccount();
 
 			const total30dVolume = getUser30dRollingVolumeEstimate(
 				userStatsAccount,
@@ -3571,7 +3605,8 @@ export class User {
 	 */
 	public getWithdrawalLimit(marketIndex: number, reduceOnly?: boolean): BN {
 		const nowTs = new BN(Math.floor(Date.now() / 1000));
-		const spotMarket = this.velocityClient.getSpotMarketAccount(marketIndex);
+		const spotMarket =
+			this.velocityClient.getSpotMarketAccountOrThrow(marketIndex);
 
 		// eslint-disable-next-line prefer-const
 		let { borrowLimit, withdrawLimit } = calculateWithdrawLimit(
@@ -3663,7 +3698,8 @@ export class User {
 		depositAmount: BN;
 		maxDepositAmount: BN;
 	} {
-		const spotMarket = this.velocityClient.getSpotMarketAccount(marketIndex);
+		const spotMarket =
+			this.velocityClient.getSpotMarketAccountOrThrow(marketIndex);
 		const maxDepositAmount = spotMarket.withdrawGuardThreshold.div(new BN(10));
 		const position = this.getSpotPosition(marketIndex);
 
@@ -3772,8 +3808,14 @@ export class User {
 		now?: BN
 	): { canDelete: boolean; reason?: string } {
 		const userAccount = this.getUserAccount();
-		const userStatsAccountToUse =
-			userStatsAccount ?? this.velocityClient.getUserStats().getAccount();
+		let userStatsAccountToUse = userStatsAccount;
+		if (!userStatsAccountToUse) {
+			const userStats = this.velocityClient.getUserStats();
+			if (!userStats) {
+				throw new Error('VelocityClient has no UserStats subscription');
+			}
+			userStatsAccountToUse = userStats.getAccount();
+		}
 		const nowInSeconds = now || new BN(Math.floor(Date.now() / 1000));
 		const stateAccount = this.velocityClient.getStateAccount();
 
@@ -3845,7 +3887,9 @@ export class User {
 			safestPerpTier = Math.min(
 				safestPerpTier,
 				getPerpMarketTierNumber(
-					this.velocityClient.getPerpMarketAccount(perpPosition.marketIndex)
+					this.velocityClient.getPerpMarketAccountOrThrow(
+						perpPosition.marketIndex
+					)
 				)
 			);
 		}
@@ -3858,7 +3902,9 @@ export class User {
 			safestSpotTier = Math.min(
 				safestSpotTier,
 				getSpotMarketTierNumber(
-					this.velocityClient.getSpotMarketAccount(spotPosition.marketIndex)
+					this.velocityClient.getSpotMarketAccountOrThrow(
+						spotPosition.marketIndex
+					)
 				)
 			);
 		}
@@ -3882,7 +3928,7 @@ export class User {
 		quoteOraclePriceData?: OraclePriceData;
 		includeOpenOrders?: boolean;
 	}): HealthComponent {
-		const perpMarket = this.velocityClient.getPerpMarketAccount(
+		const perpMarket = this.velocityClient.getPerpMarketAccountOrThrow(
 			perpPosition.marketIndex
 		);
 		const _oraclePriceData =
@@ -3957,7 +4003,7 @@ export class User {
 		};
 
 		for (const perpPosition of this.getActivePerpPositions()) {
-			const perpMarket = this.velocityClient.getPerpMarketAccount(
+			const perpMarket = this.velocityClient.getPerpMarketAccountOrThrow(
 				perpPosition.marketIndex
 			);
 
@@ -3977,7 +4023,7 @@ export class User {
 				})
 			);
 
-			const quoteSpotMarket = this.velocityClient.getSpotMarketAccount(
+			const quoteSpotMarket = this.velocityClient.getSpotMarketAccountOrThrow(
 				perpMarket.quoteSpotMarketIndex
 			);
 
@@ -4021,7 +4067,9 @@ export class User {
 		let netQuoteValue = ZERO;
 		for (const spotPosition of this.getActiveSpotPositions()) {
 			const spotMarketAccount: SpotMarketAccount =
-				this.velocityClient.getSpotMarketAccount(spotPosition.marketIndex);
+				this.velocityClient.getSpotMarketAccountOrThrow(
+					spotPosition.marketIndex
+				);
 
 			const oraclePriceData = this.getOracleDataForSpotMarket(
 				spotPosition.marketIndex
@@ -4231,7 +4279,7 @@ export class User {
 
 			const isQuote = spotPosition.marketIndex === QUOTE_SPOT_MARKET_INDEX;
 
-			const spotMarket = this.velocityClient.getSpotMarketAccount(
+			const spotMarket = this.velocityClient.getSpotMarketAccountOrThrow(
 				spotPosition.marketIndex
 			);
 			const oraclePriceData = this.getOracleDataForSpotMarket(
@@ -4337,10 +4385,10 @@ export class User {
 
 		// PERP POSITIONS
 		for (const marketPosition of this.getActivePerpPositions()) {
-			const market = this.velocityClient.getPerpMarketAccount(
+			const market = this.velocityClient.getPerpMarketAccountOrThrow(
 				marketPosition.marketIndex
 			);
-			const quoteSpotMarket = this.velocityClient.getSpotMarketAccount(
+			const quoteSpotMarket = this.velocityClient.getSpotMarketAccountOrThrow(
 				market.quoteSpotMarketIndex
 			);
 			const quoteOraclePriceData = this.getOracleDataForSpotMarket(
@@ -4446,9 +4494,10 @@ export class User {
 				// derive isolated quote deposit value, mirroring on-chain logic
 				let depositValue = ZERO;
 				if (marketPosition.isolatedPositionScaledBalance?.gt(ZERO)) {
-					const quoteSpotMarket = this.velocityClient.getSpotMarketAccount(
-						market.quoteSpotMarketIndex
-					);
+					const quoteSpotMarket =
+						this.velocityClient.getSpotMarketAccountOrThrow(
+							market.quoteSpotMarketIndex
+						);
 					const quoteOraclePriceData = this.getOracleDataForSpotMarket(
 						market.quoteSpotMarketIndex
 					);

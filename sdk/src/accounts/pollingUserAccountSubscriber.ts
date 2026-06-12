@@ -45,7 +45,7 @@ export class PollingUserAccountSubscriber implements UserAccountSubscriber {
 		}
 
 		if (userAccount) {
-			this.user = { data: userAccount, slot: undefined };
+			this.user = { data: userAccount, slot: 0 };
 		}
 
 		await this.addToAccountLoader();

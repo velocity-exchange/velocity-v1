@@ -13,7 +13,7 @@ import { VelocityProgram } from '../config';
 
 export class PollingOracleAccountSubscriber implements OracleAccountSubscriber {
 	isSubscribed: boolean;
-	program: VelocityProgram;
+	program?: VelocityProgram;
 	eventEmitter: StrictEventEmitter<EventEmitter, OracleEvents>;
 	publicKey: PublicKey;
 

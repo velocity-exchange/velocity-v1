@@ -118,7 +118,14 @@ export class WebSocketInsuranceFundStakeAccountSubscriber
 
 	public getInsuranceFundStakeAccountAndSlot(): DataAndSlot<InsuranceFundStake> {
 		this.assertIsSubscribed();
-		return this.insuranceFundStakeDataAccountSubscriber.dataAndSlot;
+		const dataAndSlot =
+			this.insuranceFundStakeDataAccountSubscriber.dataAndSlot;
+		if (!dataAndSlot) {
+			throw new Error(
+				'InsuranceFundStake data not available: no account data has been received yet'
+			);
+		}
+		return dataAndSlot;
 	}
 
 	public updateData(

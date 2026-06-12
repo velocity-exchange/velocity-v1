@@ -234,7 +234,7 @@ export function calculateBidAskPrice(
 	amm: AMM,
 	marketStats: MarketStats,
 	totalExchangeFee: BN,
-	mmOraclePriceData: MMOraclePriceData,
+	mmOraclePriceData?: MMOraclePriceData,
 	withUpdate = true,
 	latestSlot?: BN
 ): [BN, BN] {
@@ -1040,6 +1040,11 @@ export function calculateSpread(
 		.div(reservePrice);
 
 	now = now || new BN(new Date().getTime() / 1000); //todo
+	if (!oraclePriceData) {
+		throw new Error(
+			'calculateSpread: oraclePriceData is required when baseSpread and curveUpdateIntensity are nonzero'
+		);
+	}
 	const liveOracleStd = calculateLiveOracleStd(
 		marketStats,
 		oraclePriceData,

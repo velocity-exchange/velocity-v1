@@ -98,7 +98,13 @@ export class WebSocketUserAccountSubscriber implements UserAccountSubscriber {
 
 	public getUserAccountAndSlot(): DataAndSlot<UserAccount> | undefined {
 		this.assertIsSubscribed();
-		return this.userDataAccountSubscriber.dataAndSlot;
+		const dataAndSlot = this.userDataAccountSubscriber.dataAndSlot;
+		if (!dataAndSlot) {
+			throw new Error(
+				'UserAccount data not available: no account data has been received yet'
+			);
+		}
+		return dataAndSlot;
 	}
 
 	public updateData(userAccount: UserAccount, slot: number) {

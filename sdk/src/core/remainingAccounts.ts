@@ -57,7 +57,7 @@ export function getRemainingAccounts(
 		)?.slot;
 
 		for (const [marketIndex, slot] of ctx.perpMarketLastSlotCache.entries()) {
-			if (slot > lastUserSlot) {
+			if (lastUserSlot !== undefined && slot > lastUserSlot) {
 				addPerpMarketToRemainingAccountMaps(
 					ctx,
 					marketIndex,
@@ -72,7 +72,7 @@ export function getRemainingAccounts(
 		}
 
 		for (const [marketIndex, slot] of ctx.spotMarketLastSlotCache.entries()) {
-			if (slot > lastUserSlot) {
+			if (lastUserSlot !== undefined && slot > lastUserSlot) {
 				addSpotMarketToRemainingAccountMaps(
 					ctx,
 					marketIndex,

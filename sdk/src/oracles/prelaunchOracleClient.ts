@@ -16,6 +16,11 @@ export class PrelaunchOracleClient implements OracleClient {
 		pricePublicKey: PublicKey
 	): Promise<OraclePriceData> {
 		const accountInfo = await this.connection.getAccountInfo(pricePublicKey);
+		if (!accountInfo) {
+			throw new Error(
+				`Prelaunch oracle account not found: ${pricePublicKey.toBase58()}`
+			);
+		}
 		return this.getOraclePriceDataFromBuffer(accountInfo.data);
 	}
 

@@ -13,7 +13,7 @@ export class RevenueShareEscrowMap {
 	private parallelSync: boolean;
 
 	private fetchPromise?: Promise<void>;
-	private fetchPromiseResolver: () => void;
+	private fetchPromiseResolver!: () => void;
 
 	/**
 	 * Creates a new RevenueShareEscrowMap instance.
@@ -130,6 +130,11 @@ export class RevenueShareEscrowMap {
 				),
 				'confirmed'
 			);
+			if (accountInfo === null) {
+				throw new Error(
+					`RevenueShareEscrow account not found for authority ${authority} during slowSync`
+				);
+			}
 			const escrowNew = (
 				this.velocityClient.program.account as any
 			).revenueShareEscrow.coder.accounts.decode(
@@ -144,7 +149,7 @@ export class RevenueShareEscrowMap {
 		const rpcRequestArgs = [
 			this.velocityClient.program.programId.toBase58(),
 			{
-				commitment: this.velocityClient.opts.commitment,
+				commitment: this.velocityClient.opts?.commitment,
 				filters: [getRevenueShareEscrowFilter()],
 				encoding: 'base64',
 				withContext: true,

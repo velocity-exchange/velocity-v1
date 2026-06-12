@@ -43,7 +43,7 @@ export class PollingUserStatsAccountSubscriber
 		}
 
 		if (userStatsAccount) {
-			this.userStats = { data: userStatsAccount, slot: undefined };
+			this.userStats = { data: userStatsAccount, slot: 0 };
 		}
 
 		await this.addToAccountLoader();

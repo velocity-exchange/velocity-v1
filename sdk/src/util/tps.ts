@@ -22,6 +22,7 @@ export async function estimateTps(
 
 	return (
 		numberOfSignatures /
-		(signatures[0].blockTime - signatures[numberOfSignatures - 1].blockTime)
+		(Number(signatures[0].blockTime) -
+			Number(signatures[numberOfSignatures - 1].blockTime))
 	);
 }

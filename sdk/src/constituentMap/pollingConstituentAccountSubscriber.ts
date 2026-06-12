@@ -63,10 +63,11 @@ export class PollingConstituentAccountSubscriber
 			await this.constituentMap.sync();
 			this.eventEmitter.emit('update');
 		} catch (error) {
+			const err = error instanceof Error ? error : new Error(String(error));
 			console.log(
-				`PollingConstituentAccountSubscriber.sync() error: ${error.message}`
+				`PollingConstituentAccountSubscriber.sync() error: ${err.message}`
 			);
-			this.eventEmitter.emit('error', error);
+			this.eventEmitter.emit('error', err);
 		}
 	}
 

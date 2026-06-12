@@ -96,6 +96,9 @@ export function calculateBaseAssetValue(
 				.mul(prepegAmm.pegMultiplier)
 				.div(AMM_TIMES_PEG_TO_QUOTE_PRECISION_RATIO)
 				.add(ONE);
+
+		default:
+			throw new Error('Invalid position direction to close');
 	}
 }
 

@@ -113,6 +113,9 @@ export class PriorityFeeSubscriber {
 			this.lookbackDistance,
 			this.addresses
 		);
+		if (samples === undefined) {
+			throw new Error('fetchSolanaPriorityFee returned no samples');
+		}
 		if (samples.length > 0) {
 			this.latestPriorityFee = samples[0].prioritizationFee;
 			this.lastSlotSeen = samples[0].slot;
@@ -138,7 +141,7 @@ export class PriorityFeeSubscriber {
 		);
 		this.lastHeliusSample = sample?.result?.priorityFeeLevels ?? undefined;
 
-		if (this.lastHeliusSample) {
+		if (sample !== undefined && this.lastHeliusSample) {
 			this.lastAvgStrategyResult =
 				this.lastHeliusSample[HeliusPriorityLevel.MEDIUM];
 			this.lastMaxStrategyResult =
@@ -164,8 +167,8 @@ export class PriorityFeeSubscriber {
 			this.velocityMarkets.map((m) => m.marketIndex)
 		);
 		if (sample.length > 0) {
-			this.lastAvgStrategyResult = sample[HeliusPriorityLevel.MEDIUM];
-			this.lastMaxStrategyResult = sample[HeliusPriorityLevel.UNSAFE_MAX];
+			this.lastAvgStrategyResult = sample[0][HeliusPriorityLevel.MEDIUM];
+			this.lastMaxStrategyResult = sample[0][HeliusPriorityLevel.UNSAFE_MAX];
 			if (this.customStrategy) {
 				this.lastCustomStrategyResult = this.customStrategy.calculate(sample);
 			}

@@ -28,11 +28,19 @@ export class PythClient implements OracleClient {
 		pricePublicKey: PublicKey
 	): Promise<OraclePriceData> {
 		const accountInfo = await this.connection.getAccountInfo(pricePublicKey);
+		if (!accountInfo) {
+			throw new Error(
+				`Pyth oracle account not found: ${pricePublicKey.toBase58()}`
+			);
+		}
 		return this.getOraclePriceDataFromBuffer(accountInfo.data);
 	}
 
 	public getOraclePriceDataFromBuffer(buffer: Buffer): OraclePriceData {
 		const priceData = parsePriceData(buffer);
+		if (priceData.confidence === undefined) {
+			throw new Error('Pyth price data is missing confidence');
+		}
 		const confidence = convertPythPrice(
 			priceData.confidence,
 			priceData.exponent,

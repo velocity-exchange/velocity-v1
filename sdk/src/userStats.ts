@@ -20,7 +20,7 @@ export class UserStats {
 	velocityClient: VelocityClient;
 	userStatsAccountPublicKey: PublicKey;
 	accountSubscriber: UserStatsAccountSubscriber;
-	isSubscribed: boolean;
+	isSubscribed = false;
 
 	public constructor(config: UserStatsConfig) {
 		// Type-system guarantees at least one of the two is supplied.
@@ -57,7 +57,7 @@ export class UserStats {
 			this.accountSubscriber =
 				config.accountSubscription.userStatsAccountSubscriber;
 		} else {
-			const exhaustiveCheck: never = config.accountSubscription;
+			const exhaustiveCheck: undefined = config.accountSubscription;
 
 			throw new Error(
 				`Unknown user stats account subscription type: ${exhaustiveCheck}`

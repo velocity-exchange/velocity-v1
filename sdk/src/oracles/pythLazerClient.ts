@@ -47,6 +47,11 @@ export class PythLazerClient implements OracleClient {
 		pricePublicKey: PublicKey
 	): Promise<OraclePriceData> {
 		const accountInfo = await this.connection.getAccountInfo(pricePublicKey);
+		if (!accountInfo) {
+			throw new Error(
+				`Pyth lazer oracle account not found: ${pricePublicKey.toBase58()}`
+			);
+		}
 		return this.getOraclePriceDataFromBuffer(accountInfo.data);
 	}
 

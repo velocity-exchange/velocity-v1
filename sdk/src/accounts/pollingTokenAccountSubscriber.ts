@@ -14,7 +14,7 @@ import { VelocityProgram } from '../config';
 
 export class PollingTokenAccountSubscriber implements TokenAccountSubscriber {
 	isSubscribed: boolean;
-	program: VelocityProgram;
+	program?: VelocityProgram;
 	eventEmitter: StrictEventEmitter<EventEmitter, TokenAccountEvents>;
 	publicKey: PublicKey;
 

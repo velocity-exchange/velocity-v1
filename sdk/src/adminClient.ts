@@ -871,7 +871,7 @@ export class AdminClient extends VelocityClient {
 
 	public async getRecenterPerpMarketAmmCrankIx(
 		perpMarketIndex: number,
-		depth: BN
+		depth?: BN
 	): Promise<TransactionInstruction> {
 		const perpMarketAccount = this.getPerpMarketAccountOrThrow(perpMarketIndex);
 		return await this.program.instruction.recenterPerpMarketAmmCrank(

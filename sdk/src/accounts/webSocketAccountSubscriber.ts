@@ -17,7 +17,16 @@ export class WebSocketAccountSubscriber<T> implements AccountSubscriber<T> {
 	program: VelocityProgram;
 	accountPublicKey: PublicKey;
 	decodeBufferFn?: (buffer: Buffer) => T;
-	onChange!: (data: T) => void;
+	private _onChange?: (data: T) => void;
+	get onChange(): (data: T) => void {
+		if (!this._onChange) {
+			throw new Error('onChange callback function must be set');
+		}
+		return this._onChange;
+	}
+	set onChange(onChange: (data: T) => void) {
+		this._onChange = onChange;
+	}
 	listenerId?: number;
 
 	resubOpts?: ResubOpts;
@@ -105,7 +114,7 @@ export class WebSocketAccountSubscriber<T> implements AccountSubscriber<T> {
 	}
 
 	protected setTimeout(): void {
-		if (!this.onChange) {
+		if (!this._onChange) {
 			throw new Error('onChange callback function must be set');
 		}
 		this.timeoutId = setTimeout(

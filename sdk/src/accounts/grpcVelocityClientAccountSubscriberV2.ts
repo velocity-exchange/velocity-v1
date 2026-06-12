@@ -70,8 +70,10 @@ export class grpcVelocityClientAccountSubscriberV2
 	oracleClientCache = new OracleClientCache();
 	private resubOpts?: ResubOpts;
 
-	private subscriptionPromise!: Promise<boolean>;
-	protected subscriptionPromiseResolver!: (val: boolean) => void;
+	protected subscriptionPromiseResolver: (val: boolean) => void = () => {};
+	private subscriptionPromise: Promise<boolean> = new Promise((res) => {
+		this.subscriptionPromiseResolver = res;
+	});
 
 	constructor(
 		grpcConfigs: GrpcConfigs,

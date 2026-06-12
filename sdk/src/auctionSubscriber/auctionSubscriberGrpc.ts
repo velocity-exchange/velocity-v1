@@ -16,7 +16,7 @@ export class AuctionSubscriberGrpc {
 	private grpcConfigs?: GrpcConfigs;
 
 	eventEmitter: StrictEventEmitter<EventEmitter, AuctionSubscriberEvents>;
-	private subscriber!: WebSocketProgramAccountSubscriber<UserAccount>;
+	private subscriber?: WebSocketProgramAccountSubscriber<UserAccount>;
 
 	constructor({
 		velocityClient,
@@ -34,8 +34,9 @@ export class AuctionSubscriberGrpc {
 	}
 
 	public async subscribe() {
-		if (!this.subscriber) {
-			this.subscriber = await grpcProgramAccountSubscriber.create<UserAccount>(
+		let subscriber = this.subscriber;
+		if (!subscriber) {
+			subscriber = await grpcProgramAccountSubscriber.create<UserAccount>(
 				this.grpcConfigs,
 				'AuctionSubscriber',
 				'user',
@@ -50,9 +51,10 @@ export class AuctionSubscriberGrpc {
 				},
 				this.resubOpts
 			);
+			this.subscriber = subscriber;
 		}
 
-		await this.subscriber.subscribe(
+		await subscriber.subscribe(
 			(accountId: PublicKey, data: UserAccount, context: Context) => {
 				this.eventEmitter.emit(
 					'onAccountUpdate',

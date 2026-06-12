@@ -66,8 +66,10 @@ export class PollingVelocityClientAccountSubscriber
 	delistedMarketSetting: DelistedMarketSetting;
 
 	private isSubscribing = false;
-	private subscriptionPromise!: Promise<boolean>;
-	private subscriptionPromiseResolver!: (val: boolean) => void;
+	private subscriptionPromiseResolver: (val: boolean) => void = () => {};
+	private subscriptionPromise: Promise<boolean> = new Promise((res) => {
+		this.subscriptionPromiseResolver = res;
+	});
 
 	public constructor(
 		program: VelocityProgram,

@@ -15,7 +15,15 @@ import {
 
 export class grpcAccountSubscriber<T> extends WebSocketAccountSubscriber<T> {
 	private client: Client;
-	private stream!: ClientDuplexStream;
+	private _stream?: ClientDuplexStream;
+	private get stream(): ClientDuplexStream {
+		if (!this._stream) {
+			throw new Error(
+				'grpcAccountSubscriber: stream accessed before subscribe()'
+			);
+		}
+		return this._stream;
+	}
 	private commitmentLevel: CommitmentLevel;
 	public listenerId?: number;
 
@@ -75,7 +83,7 @@ export class grpcAccountSubscriber<T> extends WebSocketAccountSubscriber<T> {
 		}
 
 		// Subscribe with grpc
-		this.stream =
+		this._stream =
 			(await this.client.subscribe()) as unknown as typeof this.stream;
 		const request: SubscribeRequest = {
 			slots: {},

@@ -107,8 +107,10 @@ export class WebSocketVelocityClientAccountSubscriber
 	) => AccountSubscriber<any>;
 
 	protected isSubscribing = false;
-	protected subscriptionPromise!: Promise<boolean>;
-	protected subscriptionPromiseResolver!: (val: boolean) => void;
+	protected subscriptionPromiseResolver: (val: boolean) => void = () => {};
+	protected subscriptionPromise: Promise<boolean> = new Promise((res) => {
+		this.subscriptionPromiseResolver = res;
+	});
 
 	public constructor(
 		program: VelocityProgram,

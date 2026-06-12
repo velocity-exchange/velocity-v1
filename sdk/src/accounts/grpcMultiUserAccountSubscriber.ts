@@ -15,7 +15,15 @@ import { grpcMultiAccountSubscriber } from './grpcMultiAccountSubscriber';
 
 export class grpcMultiUserAccountSubscriber {
 	private program: VelocityProgram;
-	private multiSubscriber!: grpcMultiAccountSubscriber<UserAccount>;
+	private _multiSubscriber?: grpcMultiAccountSubscriber<UserAccount>;
+	private get multiSubscriber(): grpcMultiAccountSubscriber<UserAccount> {
+		if (!this._multiSubscriber) {
+			throw new Error(
+				'grpcMultiUserAccountSubscriber: multiSubscriber accessed before subscribe()'
+			);
+		}
+		return this._multiSubscriber;
+	}
 
 	private userData = new Map<string, DataAndSlot<UserAccount>>();
 	private listeners = new Map<
@@ -57,15 +65,15 @@ export class grpcMultiUserAccountSubscriber {
 	) {
 		this.program = program;
 		if (multiSubscriber) {
-			this.multiSubscriber = multiSubscriber;
+			this._multiSubscriber = multiSubscriber;
 		}
 		this.grpcConfigs = grpcConfigs;
 		this.resubOpts = resubOpts;
 	}
 
 	public async subscribe(): Promise<void> {
-		if (!this.multiSubscriber) {
-			this.multiSubscriber =
+		if (!this._multiSubscriber) {
+			this._multiSubscriber =
 				await grpcMultiAccountSubscriber.create<UserAccount>(
 					this.grpcConfigs,
 					'user',

@@ -66,12 +66,38 @@ export class WebSocketVelocityClientAccountSubscriberV2
 
 	eventEmitter: StrictEventEmitter<EventEmitter, VelocityClientAccountEvents>;
 	stateAccountSubscriber?: WebSocketAccountSubscriberV2<StateAccount>;
-	perpMarketAllAccountsSubscriber!: WebSocketProgramAccountsSubscriberV2<PerpMarketAccount>;
+	private _perpMarketAllAccountsSubscriber?: WebSocketProgramAccountsSubscriberV2<PerpMarketAccount>;
+	get perpMarketAllAccountsSubscriber(): WebSocketProgramAccountsSubscriberV2<PerpMarketAccount> {
+		if (!this._perpMarketAllAccountsSubscriber) {
+			throw new Error(
+				'perpMarketAllAccountsSubscriber accessed before subscribe()'
+			);
+		}
+		return this._perpMarketAllAccountsSubscriber;
+	}
+	set perpMarketAllAccountsSubscriber(
+		subscriber: WebSocketProgramAccountsSubscriberV2<PerpMarketAccount>
+	) {
+		this._perpMarketAllAccountsSubscriber = subscriber;
+	}
 	perpMarketAccountLatestData = new Map<
 		number,
 		DataAndSlot<PerpMarketAccount>
 	>();
-	spotMarketAllAccountsSubscriber!: WebSocketProgramAccountsSubscriberV2<SpotMarketAccount>;
+	private _spotMarketAllAccountsSubscriber?: WebSocketProgramAccountsSubscriberV2<SpotMarketAccount>;
+	get spotMarketAllAccountsSubscriber(): WebSocketProgramAccountsSubscriberV2<SpotMarketAccount> {
+		if (!this._spotMarketAllAccountsSubscriber) {
+			throw new Error(
+				'spotMarketAllAccountsSubscriber accessed before subscribe()'
+			);
+		}
+		return this._spotMarketAllAccountsSubscriber;
+	}
+	set spotMarketAllAccountsSubscriber(
+		subscriber: WebSocketProgramAccountsSubscriberV2<SpotMarketAccount>
+	) {
+		this._spotMarketAllAccountsSubscriber = subscriber;
+	}
 	spotMarketAccountLatestData = new Map<
 		number,
 		DataAndSlot<SpotMarketAccount>
@@ -83,13 +109,15 @@ export class WebSocketVelocityClientAccountSubscriberV2
 	oracleSubscribers = new Map<string, AccountSubscriber<OraclePriceData>>();
 	delistedMarketSetting: DelistedMarketSetting;
 
-	initialPerpMarketAccountData!: Map<number, PerpMarketAccount>;
-	initialSpotMarketAccountData!: Map<number, SpotMarketAccount>;
-	initialOraclePriceData!: Map<string, OraclePriceData>;
+	initialPerpMarketAccountData: Map<number, PerpMarketAccount> = new Map();
+	initialSpotMarketAccountData: Map<number, SpotMarketAccount> = new Map();
+	initialOraclePriceData: Map<string, OraclePriceData> = new Map();
 
 	protected isSubscribing = false;
-	protected subscriptionPromise!: Promise<boolean>;
-	protected subscriptionPromiseResolver!: (val: boolean) => void;
+	protected subscriptionPromiseResolver: (val: boolean) => void = () => {};
+	protected subscriptionPromise: Promise<boolean> = new Promise((res) => {
+		this.subscriptionPromiseResolver = res;
+	});
 
 	private rpc: Rpc<any>;
 	private rpcSubscriptions: RpcSubscriptions<SolanaRpcSubscriptionsApi> &

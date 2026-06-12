@@ -38,7 +38,15 @@ function commitmentLevelToCommitment(
 
 export class grpcMultiAccountSubscriber<T, U = undefined> {
 	private client: Client;
-	private stream!: ClientDuplexStream;
+	private _stream?: ClientDuplexStream;
+	private get stream(): ClientDuplexStream {
+		if (!this._stream) {
+			throw new Error(
+				'grpcMultiAccountSubscriber: stream accessed before subscribe()'
+			);
+		}
+		return this._stream;
+	}
 	private commitmentLevel: CommitmentLevel;
 	private program: VelocityProgram;
 	private accountName: string;
@@ -227,7 +235,7 @@ export class grpcMultiAccountSubscriber<T, U = undefined> {
 			});
 		}
 
-		this.stream =
+		this._stream =
 			(await this.client.subscribe()) as unknown as typeof this.stream;
 		const request: SubscribeRequest = {
 			slots: {},

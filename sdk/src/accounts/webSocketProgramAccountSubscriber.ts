@@ -19,12 +19,33 @@ export class WebSocketProgramAccountSubscriber<T>
 	bufferAndSlotMap: Map<string, BufferAndSlot> = new Map();
 	program: VelocityProgram;
 	decodeBuffer: (accountName: string, ix: Buffer) => T;
-	onChange!: (
+	private _onChange?: (
 		accountId: PublicKey,
 		data: T,
 		context: Context,
 		buffer: Buffer
 	) => void;
+	get onChange(): (
+		accountId: PublicKey,
+		data: T,
+		context: Context,
+		buffer: Buffer
+	) => void {
+		if (!this._onChange) {
+			throw new Error('onChange callback function must be set');
+		}
+		return this._onChange;
+	}
+	set onChange(
+		onChange: (
+			accountId: PublicKey,
+			data: T,
+			context: Context,
+			buffer: Buffer
+		) => void
+	) {
+		this._onChange = onChange;
+	}
 	listenerId?: number;
 	resubOpts?: ResubOpts;
 	isUnsubscribing = false;
@@ -98,7 +119,7 @@ export class WebSocketProgramAccountSubscriber<T>
 	}
 
 	protected setTimeout(): void {
-		if (!this.onChange) {
+		if (!this._onChange) {
 			throw new Error('onChange callback function must be set');
 		}
 		this.timeoutId = setTimeout(

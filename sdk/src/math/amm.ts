@@ -159,7 +159,7 @@ export function calculateNewAmm(
 export function calculateUpdatedAMM(
 	amm: AMM,
 	totalExchangeFee: BN,
-	mmOraclePriceData: MMOraclePriceData
+	mmOraclePriceData?: MMOraclePriceData
 ): AMM {
 	if (amm.curveUpdateIntensity == 0 || mmOraclePriceData === undefined) {
 		return amm;
@@ -203,7 +203,7 @@ export function calculateUpdatedAMMSpreadReserves(
 	marketStats: MarketStats,
 	totalExchangeFee: BN,
 	direction: PositionDirection,
-	mmOraclePriceData: MMOraclePriceData,
+	mmOraclePriceData?: MMOraclePriceData,
 	latestSlot?: BN
 ): { baseAssetReserve: BN; quoteAssetReserve: BN; sqrtK: BN; newPeg: BN } {
 	const newAmm = calculateUpdatedAMM(amm, totalExchangeFee, mmOraclePriceData);
@@ -926,7 +926,7 @@ export function calculateSpreadBN(
 export function calculateSpread(
 	amm: AMM,
 	marketStats: MarketStats,
-	oraclePriceData: OraclePriceData,
+	oraclePriceData?: OraclePriceData,
 	now?: BN,
 	reservePrice?: BN
 ): [number, number] {
@@ -1012,7 +1012,7 @@ export function calculateSpread(
 export function calculateSpreadReserves(
 	amm: AMM,
 	marketStats: MarketStats,
-	mmOraclePriceData: MMOraclePriceData,
+	mmOraclePriceData?: MMOraclePriceData,
 	now?: BN,
 	latestSlot?: BN
 ) {

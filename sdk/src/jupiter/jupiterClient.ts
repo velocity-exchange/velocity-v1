@@ -6,7 +6,7 @@ import {
 	TransactionMessage,
 	VersionedTransaction,
 } from '@solana/web3.js';
-import fetch from 'node-fetch';
+import fetch, { RequestInit } from 'node-fetch';
 import { BN } from '../isomorphic/anchor';
 import { SwapMode } from '../swap/UnifiedSwapClient';
 

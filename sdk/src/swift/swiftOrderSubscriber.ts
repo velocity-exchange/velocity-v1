@@ -21,6 +21,7 @@ import nacl from 'tweetnacl';
 import { decodeUTF8 } from 'tweetnacl-util';
 import WebSocket from 'ws';
 import { sha256 } from '@noble/hashes/sha256';
+import { ClientRequest, IncomingMessage } from 'http';
 
 // In practice, this for now is just an OrderSubscriber or a UserMap
 export interface AccountGetter {
@@ -74,7 +75,7 @@ export class SwiftOrderSubscriber {
 	private ws: WebSocket | null = null;
 	private velocityClient: VelocityClient;
 	public userAccountGetter?: AccountGetter; // In practice, this for now is just an OrderSubscriber or a UserMap
-	public onOrder: (
+	public onOrder?: (
 		orderMessageRaw: SwiftOrderMessage,
 		signedMessage:
 			| SignedMsgOrderParamsMessage
@@ -91,7 +92,7 @@ export class SwiftOrderSubscriber {
 	}
 
 	unsubscribe() {
-		if (this.subscribed) {
+		if (this.subscribed && this.ws) {
 			this.ws.removeAllListeners();
 			this.ws.terminate();
 			this.ws = null;
@@ -245,16 +246,19 @@ export class SwiftOrderSubscriber {
 			}, 5000);
 		});
 
-		ws.on('error', async (request, response) => {
-			console.error(
-				'WS closed from error, reconnecting in 1s:',
-				response.statusCode
-			);
-			setTimeout(() => {
-				if (this.heartbeatTimeout) clearTimeout(this.heartbeatTimeout);
-				this.reconnect();
-			}, 1000);
-		});
+		ws.on(
+			'error',
+			async (request: ClientRequest, response: IncomingMessage) => {
+				console.error(
+					'WS closed from error, reconnecting in 1s:',
+					response.statusCode
+				);
+				setTimeout(() => {
+					if (this.heartbeatTimeout) clearTimeout(this.heartbeatTimeout);
+					this.reconnect();
+				}, 1000);
+			}
+		);
 	}
 
 	async getPlaceAndMakeSignedMsgOrderIxs(
@@ -343,8 +347,12 @@ export class SwiftOrderSubscriber {
 		}
 
 		console.log('Reconnecting to WebSocket...');
+		const onOrder = this.onOrder;
+		if (!onOrder) {
+			throw new Error('onOrder callback function must be set');
+		}
 		setTimeout(() => {
-			this.subscribe(this.onOrder);
+			this.subscribe(onOrder);
 		}, 1000);
 	}
 }

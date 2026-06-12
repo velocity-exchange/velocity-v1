@@ -315,6 +315,7 @@ export class PollingVelocityClientAccountSubscriber
 			oracleToPoll.publicKey,
 			(buffer: Buffer, slot: number) => {
 				if (!buffer) return;
+				if (!oracleClient) return;
 
 				const oraclePriceData =
 					oracleClient.getOraclePriceDataFromBuffer(buffer);
@@ -375,6 +376,9 @@ export class PollingVelocityClientAccountSubscriber
 					this.program.provider.connection,
 					this.program
 				);
+				if (!oracleClient) {
+					continue;
+				}
 				const oraclePriceData =
 					oracleClient.getOraclePriceDataFromBuffer(buffer);
 				this.oracles.set(
@@ -555,10 +559,22 @@ export class PollingVelocityClientAccountSubscriber
 		);
 
 		for (const perpMarketIndex of perpMarketIndexes) {
-			const perpMarketPubkey = this.perpMarket.get(perpMarketIndex).data.pubkey;
-			const callbackId = this.accountsToPoll.get(
+			const perpMarketData = this.perpMarket.get(perpMarketIndex);
+			if (!perpMarketData) {
+				throw new Error(
+					`PollingVelocityClientAccountSubscriber: delisted perp market ${perpMarketIndex} not found in perpMarket map`
+				);
+			}
+			const perpMarketPubkey = perpMarketData.data.pubkey;
+			const accountToPoll = this.accountsToPoll.get(
 				perpMarketPubkey.toBase58()
-			).callbackId;
+			);
+			if (!accountToPoll) {
+				throw new Error(
+					`PollingVelocityClientAccountSubscriber: delisted perp market ${perpMarketIndex} not found in accountsToPoll map`
+				);
+			}
+			const callbackId = accountToPoll.callbackId;
 			this.accountLoader.removeAccount(perpMarketPubkey, callbackId);
 			if (this.delistedMarketSetting === DelistedMarketSetting.Discard) {
 				this.perpMarket.delete(perpMarketIndex);
@@ -567,7 +583,13 @@ export class PollingVelocityClientAccountSubscriber
 
 		for (const oracle of oracles) {
 			const oracleId = getOracleId(oracle.publicKey, oracle.source);
-			const callbackId = this.oraclesToPoll.get(oracleId).callbackId;
+			const oracleToPoll = this.oraclesToPoll.get(oracleId);
+			if (!oracleToPoll) {
+				throw new Error(
+					`PollingVelocityClientAccountSubscriber: delisted oracle ${oracleId} not found in oraclesToPoll map`
+				);
+			}
+			const callbackId = oracleToPoll.callbackId;
 			this.accountLoader.removeAccount(oracle.publicKey, callbackId);
 			if (this.delistedMarketSetting === DelistedMarketSetting.Discard) {
 				this.oracles.delete(oracleId);

@@ -66,7 +66,12 @@ export class grpcMultiAccountSubscriber<T, U = undefined> {
 	private subscribedAccounts = new Set<string>();
 	private onChangeMap = new Map<
 		string,
-		(data: T, context: Context, buffer: Buffer, accountProps: U) => void
+		(
+			data: T,
+			context: Context,
+			buffer: Buffer,
+			accountProps: U | undefined
+		) => void
 	>();
 
 	private dataMap = new Map<string, DataAndSlot<T>>();
@@ -129,7 +134,7 @@ export class grpcMultiAccountSubscriber<T, U = undefined> {
 	}
 
 	setAccountData(accountPubkey: string, data: T, slot?: number): void {
-		this.dataMap.set(accountPubkey, { data, slot });
+		this.dataMap.set(accountPubkey, { data, slot: slot ?? 0 });
 	}
 
 	getAccountData(accountPubkey: string): DataAndSlot<T> | undefined {
@@ -215,7 +220,7 @@ export class grpcMultiAccountSubscriber<T, U = undefined> {
 			data: T,
 			context: Context,
 			buffer: Buffer,
-			accountProps: U
+			accountProps: U | undefined
 		) => void
 	): Promise<void> {
 		if (this.resubOpts?.logResubMessages) {
@@ -310,11 +315,11 @@ export class grpcMultiAccountSubscriber<T, U = undefined> {
 			const handleDataBuffer = (
 				context: Context,
 				buffer: Buffer,
-				accountProps: U
+				accountProps: U | undefined
 			) => {
 				const data = this.decodeBufferFn
 					? this.decodeBufferFn(buffer, accountPubkey, accountProps)
-					: this.program.account[this.accountName].coder.accounts.decode(
+					: this.program.coder.accounts.decode(
 							this.capitalize(this.accountName),
 							buffer
 					  );

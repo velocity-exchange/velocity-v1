@@ -682,6 +682,9 @@ export class grpcVelocityClientAccountSubscriberV2
 		await this.oracleMultiSubscriber.subscribe(
 			oraclePubkeys,
 			(accountId, data, context, _b, accountProps) => {
+				if (accountProps === undefined) {
+					return;
+				}
 				const oracleId = getOracleId(accountId, accountProps.source);
 				this.oracleIdToOracleDataMap.set(oracleId, {
 					data,

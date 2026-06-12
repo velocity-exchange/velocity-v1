@@ -316,6 +316,9 @@ export function calculateAvailablePerpLiquidity(
 		MarketType.PERP,
 		mmOraclePriceData
 	)) {
+		if (!bid.order) {
+			continue;
+		}
 		bids = bids.add(
 			bid.order.baseAssetAmount.sub(bid.order.baseAssetAmountFilled)
 		);
@@ -327,6 +330,9 @@ export function calculateAvailablePerpLiquidity(
 		MarketType.PERP,
 		mmOraclePriceData
 	)) {
+		if (!ask.order) {
+			continue;
+		}
 		asks = asks.add(
 			ask.order.baseAssetAmount.sub(ask.order.baseAssetAmountFilled)
 		);

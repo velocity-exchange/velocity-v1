@@ -43,7 +43,7 @@ export type Connection = SolanaConnection | BankrunConnection;
 
 type BankrunTransactionMetaNormalized = {
 	logMessages: string[];
-	err: TransactionError;
+	err: TransactionError | null;
 };
 
 type BankrunTransactionRespose = {
@@ -159,7 +159,15 @@ export class BankrunConnection {
 		TransactionSignature,
 		BanksTransactionResultWithMeta
 	> = new Map();
-	private clock: Clock;
+	private _clock?: Clock;
+	private get clock(): Clock {
+		if (!this._clock) {
+			throw new Error(
+				'BankrunConnection: clock accessed before updateSlotAndClock()'
+			);
+		}
+		return this._clock;
+	}
 
 	private nextClientSubscriptionId = 0;
 	private onLogCallbacks = new Map<number, LogsCallback>();
@@ -199,7 +207,7 @@ export class BankrunConnection {
 	async getMultipleAccountsInfo(
 		publicKeys: PublicKey[],
 		_commitmentOrConfig?: Commitment
-	): Promise<AccountInfo<Buffer>[]> {
+	): Promise<(AccountInfo<Buffer> | null)[]> {
 		const accountInfos = [];
 
 		for (const publicKey of publicKeys) {
@@ -249,9 +257,18 @@ export class BankrunConnection {
 			: await internal.tryProcessLegacyTransaction(serialized);
 		const banksTransactionMeta = new BanksTransactionResultWithMeta(inner);
 
-		const signature = isVersioned
-			? bs58.encode((tx as VersionedTransaction).signatures[0])
-			: bs58.encode((tx as Transaction).signatures[0].signature);
+		let signature: string;
+		if (isVersioned) {
+			signature = bs58.encode((tx as VersionedTransaction).signatures[0]);
+		} else {
+			const legacySignature = (tx as Transaction).signatures[0].signature;
+			if (legacySignature === null) {
+				throw new Error(
+					'BankrunConnection: transaction is missing its first signature'
+				);
+			}
+			signature = bs58.encode(legacySignature);
+		}
 
 		if (banksTransactionMeta.result) {
 			if (
@@ -276,9 +293,14 @@ export class BankrunConnection {
 		}
 		let finalizedCount = 0;
 		while (finalizedCount < 10) {
-			const signatureStatus = (await this.getSignatureStatus(signature)).value
-				.confirmationStatus;
-			if (signatureStatus.toString() == '"finalized"') {
+			const statusValue = (await this.getSignatureStatus(signature)).value;
+			if (statusValue === null) {
+				throw new Error(
+					`BankrunConnection: no signature status for ${signature}`
+				);
+			}
+			const signatureStatus = statusValue.confirmationStatus;
+			if (signatureStatus?.toString() == '"finalized"') {
 				finalizedCount += 1;
 			}
 		}
@@ -312,6 +334,9 @@ export class BankrunConnection {
 			callback,
 		] of this.onAccountChangeCallbacks.values()) {
 			const accountInfo = await this.getParsedAccountInfo(publicKey);
+			if (accountInfo.value === null) {
+				continue;
+			}
 			callback(accountInfo.value, accountInfo.context);
 		}
 
@@ -331,7 +356,7 @@ export class BankrunConnection {
 			currentClock.unixTimestamp + BigInt(1)
 		);
 		this.context.setClock(newClock);
-		this.clock = newClock;
+		this._clock = newClock;
 	}
 
 	getTime(): number {
@@ -340,7 +365,7 @@ export class BankrunConnection {
 
 	async getParsedAccountInfo(
 		publicKey: PublicKey
-	): Promise<RpcResponseAndContext<AccountInfo<Buffer>>> {
+	): Promise<RpcResponseAndContext<null | AccountInfo<Buffer>>> {
 		const accountInfoBytes = await this._banksClient.getAccount(publicKey);
 		if (accountInfoBytes === null) {
 			return {
@@ -435,6 +460,9 @@ export class BankrunConnection {
 		const transactionStatus = await this._banksClient.getTransactionStatus(
 			signature
 		);
+		if (transactionStatus === null) {
+			throw new Error(`tx has no status: ${signature}`);
+		}
 		if (txMeta.meta === null) {
 			throw new Error(`tx has no meta: ${JSON.stringify(txMeta)}`);
 		}
@@ -478,22 +506,27 @@ export class BankrunConnection {
 		const simulationResult = await this._banksClient.simulateTransaction(
 			transaction
 		);
-		const returnDataProgramId =
-			simulationResult.meta?.returnData?.programId.toBase58();
-		const returnDataNormalized = Buffer.from(
-			simulationResult.meta?.returnData?.data
-		).toString('base64');
-		const returnData: TransactionReturnData = {
-			programId: returnDataProgramId,
-			data: [returnDataNormalized, 'base64'],
-		};
+		const meta = simulationResult.meta;
+		if (meta === null) {
+			throw new Error('BankrunConnection: simulation returned no meta');
+		}
+		let returnData: TransactionReturnData | undefined;
+		if (meta.returnData !== null) {
+			const returnDataNormalized = Buffer.from(meta.returnData.data).toString(
+				'base64'
+			);
+			returnData = {
+				programId: meta.returnData.programId.toBase58(),
+				data: [returnDataNormalized, 'base64'],
+			};
+		}
 		return {
 			context: { slot: Number(await this._banksClient.getSlot()) },
 			value: {
 				err: simulationResult.result,
-				logs: simulationResult.meta.logMessages,
+				logs: meta.logMessages,
 				accounts: undefined,
-				unitsConsumed: Number(simulationResult.meta.computeUnitsConsumed),
+				unitsConsumed: Number(meta.computeUnitsConsumed),
 				returnData,
 			},
 		};

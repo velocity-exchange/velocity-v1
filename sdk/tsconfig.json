@@ -10,8 +10,7 @@
 		"declarationMap": true,
 		"paths": {
 			"@solana/web3.js": ["./node_modules/@solana/web3.js"]
-		},
-		"strict": true
+		}
 	},
 	"include": ["src"],
 	"exclude": ["node_modules", "tests"]

@@ -12,6 +12,7 @@ import {
 	BN,
 	getTokenAmount,
 	HotRole,
+	MarketType,
 	OracleSource,
 	PositionDirection,
 	SpotBalanceType,
@@ -280,7 +281,10 @@ describe('protocol fees', () => {
 			true
 		);
 
-		await velocityClient.updateProtocolFeeRecipient(recipient.publicKey);
+		await velocityClient.updateProtocolFeeRecipient(
+			recipient.publicKey,
+			MarketType.PERP
+		);
 		// wallet doubles as the FeeWithdraw hot key
 		await velocityClient.updateHotAdmin(
 			HotRole.FeeWithdraw,

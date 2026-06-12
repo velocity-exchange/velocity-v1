@@ -757,7 +757,7 @@ pub enum ErrorCode {
     SpotDlobTradingDisabled,
     #[msg("Signer is not authorized for this admin tier")]
     InvalidAdminTier,
-    #[msg("Recipient must be State.protocol_fee_recipient")]
+    #[msg("Recipient must be the configured protocol fee recipient")]
     InvalidProtocolFeeRecipient,
     #[msg("Insufficient protocol fees available to withdraw")]
     InsufficientProtocolFees,

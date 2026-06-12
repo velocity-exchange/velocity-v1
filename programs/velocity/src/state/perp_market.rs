@@ -266,7 +266,7 @@ pub struct PerpMarket {
     /// (like `pnl_pool`; counted in the quote market's `deposit_balance`).
     /// Owned by the protocol, not users, and never part of the insurance
     /// backstop. `market_index` is set to `quote_spot_market_index`. Withdrawn
-    /// directly to `State.protocol_fee_recipient`.
+    /// directly to `State.protocol_fee_recipient_perp`.
     pub protocol_fee_pool: PoolBalance,
     /// Protocol's cut of a perp liquidation, taken from the liquidatee.
     /// precision: LIQUIDATOR_FEE_PRECISION

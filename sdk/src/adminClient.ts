@@ -31,6 +31,7 @@ import {
 	ConstituentStatus,
 	LPPoolAccount,
 	TransferFeeAndPnlPoolDirection,
+	MarketType,
 } from './types';
 import { DEFAULT_MARKET_NAME, encodeName } from './userName';
 import { BN } from './isomorphic/anchor';
@@ -3642,19 +3643,25 @@ export class AdminClient extends VelocityClient {
 	}
 
 	public async updateProtocolFeeRecipient(
-		protocolFeeRecipient: PublicKey
+		protocolFeeRecipient: PublicKey,
+		marketType: MarketType
 	): Promise<TransactionSignature> {
-		const ix = await this.getUpdateProtocolFeeRecipientIx(protocolFeeRecipient);
+		const ix = await this.getUpdateProtocolFeeRecipientIx(
+			protocolFeeRecipient,
+			marketType
+		);
 		const tx = await this.buildTransaction(ix);
 		const { txSig } = await this.sendTransaction(tx, [], this.opts);
 		return txSig;
 	}
 
 	public async getUpdateProtocolFeeRecipientIx(
-		protocolFeeRecipient: PublicKey
+		protocolFeeRecipient: PublicKey,
+		marketType: MarketType
 	): Promise<TransactionInstruction> {
 		return await this.program.instruction.updateProtocolFeeRecipient(
 			protocolFeeRecipient,
+			marketType,
 			{
 				accounts: {
 					admin: this.isSubscribed
@@ -3683,7 +3690,7 @@ export class AdminClient extends VelocityClient {
 	): Promise<TransactionInstruction> {
 		const spotMarket = this.getSpotMarketAccount(marketIndex);
 		const tokenProgramId = this.getTokenProgramForSpotMarket(spotMarket);
-		const recipient = this.getStateAccount().protocolFeeRecipient;
+		const recipient = this.getStateAccount().protocolFeeRecipientSpot;
 		const recipientTokenAccount = getAssociatedTokenAddressSync(
 			spotMarket.mint,
 			recipient,
@@ -3746,7 +3753,7 @@ export class AdminClient extends VelocityClient {
 			perpMarket.quoteSpotMarketIndex
 		);
 		const tokenProgramId = this.getTokenProgramForSpotMarket(quoteSpotMarket);
-		const recipient = this.getStateAccount().protocolFeeRecipient;
+		const recipient = this.getStateAccount().protocolFeeRecipientPerp;
 		const recipientTokenAccount = getAssociatedTokenAddressSync(
 			quoteSpotMarket.mint,
 			recipient,

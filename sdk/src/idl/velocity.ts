@@ -11007,7 +11007,9 @@ export type Velocity = {
     {
       "name": "updateProtocolFeeRecipient",
       "docs": [
-        "Cold-only: set the treasury protocol fees may be withdrawn to."
+        "Cold-only: set the treasury protocol fees may be withdrawn to.",
+        "Perp (quote) and spot (per-market token) recipients are configured",
+        "independently via `market_type`."
       ],
       "discriminator": [
         213,
@@ -11033,6 +11035,14 @@ export type Velocity = {
         {
           "name": "protocolFeeRecipient",
           "type": "pubkey"
+        },
+        {
+          "name": "marketType",
+          "type": {
+            "defined": {
+              "name": "marketType"
+            }
+          }
         }
       ]
     },
@@ -13267,7 +13277,7 @@ export type Velocity = {
       "name": "withdrawProtocolFeesPerp",
       "docs": [
         "Withdraw a perp market's accrued protocol fees (from the quote spot vault)",
-        "to `protocol_fee_recipient` (auth: `FeeWithdraw` hot key)."
+        "to `protocol_fee_recipient_perp` (auth: `FeeWithdraw` hot key)."
       ],
       "discriminator": [
         227,
@@ -13477,7 +13487,7 @@ export type Velocity = {
     {
       "name": "withdrawProtocolFeesSpot",
       "docs": [
-        "Withdraw a spot market's accrued protocol fees to `protocol_fee_recipient`",
+        "Withdraw a spot market's accrued protocol fees to `protocol_fee_recipient_spot`",
         "(auth: `FeeWithdraw` hot key)."
       ],
       "discriminator": [
@@ -16025,7 +16035,7 @@ export type Velocity = {
     {
       "code": 6352,
       "name": "invalidProtocolFeeRecipient",
-      "msg": "Recipient must be State.protocol_fee_recipient"
+      "msg": "Recipient must be the configured protocol fee recipient"
     },
     {
       "code": 6353,
@@ -20614,7 +20624,7 @@ export type Velocity = {
               "(like `pnl_pool`; counted in the quote market's `deposit_balance`).",
               "Owned by the protocol, not users, and never part of the insurance",
               "backstop. `market_index` is set to `quote_spot_market_index`. Withdrawn",
-              "directly to `State.protocol_fee_recipient`."
+              "directly to `State.protocol_fee_recipient_perp`."
             ],
             "type": {
               "defined": {
@@ -22850,7 +22860,7 @@ export type Velocity = {
               "+ spot-liquidation protocol fee). A protocol-owned Deposit-type claim",
               "inside the spot vault (counted in `deposit_balance`, like `revenue_pool`)",
               "— owned by the protocol, not users, and never part of the insurance",
-              "backstop. Withdrawn directly to `State.protocol_fee_recipient`; the",
+              "backstop. Withdrawn directly to `State.protocol_fee_recipient_spot`; the",
               "withdrawal decrements this claim and re-validates the vault still covers",
               "all remaining claims, so it can never tap user deposits."
             ],
@@ -23229,12 +23239,12 @@ export type Velocity = {
             "type": "u8"
           },
           {
-            "name": "protocolFeeRecipient",
+            "name": "protocolFeeRecipientPerp",
             "docs": [
-              "Treasury that protocol fees may be withdrawn to. Settable only by",
-              "`cold_admin`. `protocol_fee_pool` withdrawals are hard-constrained to a",
-              "token account owned by this key (recipient-locked). `Pubkey::default()`",
-              "(unset) makes withdrawals inert — no real token account can match."
+              "Treasury that PERP protocol fees (quote-denominated) may be withdrawn",
+              "to. Settable only by `cold_admin`. `withdraw_protocol_fees_perp` pays",
+              "this key's associated token account (recipient-locked).",
+              "`Pubkey::default()` (unset) makes perp withdrawals inert."
             ],
             "type": "pubkey"
           },
@@ -23242,7 +23252,18 @@ export type Velocity = {
             "name": "hotFeeWithdraw",
             "docs": [
               "Hot key authorized for the `FeeWithdraw` role (triggers protocol-fee",
-              "withdrawals to `protocol_fee_recipient`)."
+              "withdrawals to the configured recipients)."
+            ],
+            "type": "pubkey"
+          },
+          {
+            "name": "protocolFeeRecipientSpot",
+            "docs": [
+              "Treasury that SPOT protocol fees (each market's own token: lending",
+              "carveouts + spot-liquidation cuts) may be withdrawn to. Settable only",
+              "by `cold_admin`. `withdraw_protocol_fees_spot` pays this key's",
+              "associated token account for the market's mint (recipient-locked).",
+              "`Pubkey::default()` (unset) makes spot withdrawals inert."
             ],
             "type": "pubkey"
           },
@@ -23251,7 +23272,7 @@ export type Velocity = {
             "type": {
               "array": [
                 "u8",
-                304
+                272
               ]
             }
           }

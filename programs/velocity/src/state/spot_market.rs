@@ -199,7 +199,7 @@ pub struct SpotMarket {
     /// + spot-liquidation protocol fee). A protocol-owned Deposit-type claim
     /// inside the spot vault (counted in `deposit_balance`, like `revenue_pool`)
     /// — owned by the protocol, not users, and never part of the insurance
-    /// backstop. Withdrawn directly to `State.protocol_fee_recipient`; the
+    /// backstop. Withdrawn directly to `State.protocol_fee_recipient_spot`; the
     /// withdrawal decrements this claim and re-validates the vault still covers
     /// all remaining claims, so it can never tap user deposits.
     pub protocol_fee_pool: PoolBalance,

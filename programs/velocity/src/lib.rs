@@ -1551,14 +1551,17 @@ pub mod velocity {
     }
 
     /// Cold-only: set the treasury protocol fees may be withdrawn to.
+    /// Perp (quote) and spot (per-market token) recipients are configured
+    /// independently via `market_type`.
     pub fn update_protocol_fee_recipient(
         ctx: Context<ColdAdminUpdateState>,
         protocol_fee_recipient: Pubkey,
+        market_type: MarketType,
     ) -> Result<()> {
-        handle_update_protocol_fee_recipient(ctx, protocol_fee_recipient)
+        handle_update_protocol_fee_recipient(ctx, protocol_fee_recipient, market_type)
     }
 
-    /// Withdraw a spot market's accrued protocol fees to `protocol_fee_recipient`
+    /// Withdraw a spot market's accrued protocol fees to `protocol_fee_recipient_spot`
     /// (auth: `FeeWithdraw` hot key).
     pub fn withdraw_protocol_fees_spot<'c: 'info, 'info>(
         ctx: Context<'info, WithdrawProtocolFeesSpot<'info>>,
@@ -1569,7 +1572,7 @@ pub mod velocity {
     }
 
     /// Withdraw a perp market's accrued protocol fees (from the quote spot vault)
-    /// to `protocol_fee_recipient` (auth: `FeeWithdraw` hot key).
+    /// to `protocol_fee_recipient_perp` (auth: `FeeWithdraw` hot key).
     pub fn withdraw_protocol_fees_perp<'c: 'info, 'info>(
         ctx: Context<'info, WithdrawProtocolFeesPerp<'info>>,
         market_index: u16,

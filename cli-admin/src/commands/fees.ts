@@ -1,9 +1,21 @@
 import { Command } from 'commander';
 import { BN } from '@coral-xyz/anchor';
 import { PublicKey } from '@solana/web3.js';
+import { MarketType } from '@velocity-exchange/sdk';
 import { readGlobalOpts, withGlobalOptions } from '../lib/options';
 import { buildAdminClient, buildProvider } from '../lib/provider';
 import { reportDispatch, sendOrPropose } from '../lib/squads';
+
+function parseMarketType(value: string): MarketType {
+	switch (value.toLowerCase()) {
+		case 'perp':
+			return MarketType.PERP;
+		case 'spot':
+			return MarketType.SPOT;
+		default:
+			throw new Error(`marketType must be "perp" or "spot", got "${value}"`);
+	}
+}
 
 /**
  * Protocol fee operations.
@@ -23,29 +35,36 @@ export function registerFees(parent: Command): void {
 
 	withGlobalOptions(
 		fees
-			.command('set-recipient <pubkey>')
+			.command('set-recipient <pubkey> <marketType>')
 			.description(
-				'Set State.protocol_fee_recipient (cold admin only). Withdrawals can only pay token accounts owned by this key.'
+				'Set the protocol fee recipient for one side (cold admin only): <marketType> is "perp" (quote-denominated perp fees) or "spot" (per-market lending/liquidation fees). Withdrawals pay the ATA of the configured key.'
 			)
-	).action(async (pubkey: string, _flags, cmd: Command) => {
-		const opts = readGlobalOpts(cmd);
-		const provider = buildProvider(opts);
-		const client = await buildAdminClient(opts);
-		try {
-			const ix = await client.getUpdateProtocolFeeRecipientIx(
-				new PublicKey(pubkey)
-			);
-			const result = await sendOrPropose(
-				provider,
-				[ix],
-				opts.multisig ? new PublicKey(opts.multisig) : undefined,
-				'velocity-admin fees set-recipient'
-			);
-			reportDispatch(`protocol_fee_recipient = ${pubkey}`, result);
-		} finally {
-			await client.unsubscribe();
+	).action(
+		async (pubkey: string, marketTypeArg: string, _flags, cmd: Command) => {
+			const marketType = parseMarketType(marketTypeArg);
+			const opts = readGlobalOpts(cmd);
+			const provider = buildProvider(opts);
+			const client = await buildAdminClient(opts);
+			try {
+				const ix = await client.getUpdateProtocolFeeRecipientIx(
+					new PublicKey(pubkey),
+					marketType
+				);
+				const result = await sendOrPropose(
+					provider,
+					[ix],
+					opts.multisig ? new PublicKey(opts.multisig) : undefined,
+					'velocity-admin fees set-recipient'
+				);
+				reportDispatch(
+					`protocol_fee_recipient_${marketTypeArg.toLowerCase()} = ${pubkey}`,
+					result
+				);
+			} finally {
+				await client.unsubscribe();
+			}
 		}
-	});
+	);
 
 	withGlobalOptions(
 		fees

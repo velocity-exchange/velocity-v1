@@ -71,7 +71,7 @@ use crate::{
             ExchangeStatus, FeeStructure, HotRole, LpPoolFeatureBitFlags, OracleGuardRails, State,
         },
         traits::Size,
-        user::{SpecialUserStatus, User, UserStats},
+        user::{MarketType, SpecialUserStatus, User, UserStats},
     },
     validate,
     validation::{
@@ -136,8 +136,9 @@ pub fn handle_initialize(ctx: Context<Initialize>) -> Result<()> {
         signer: velocity_signer,
         signer_nonce: velocity_signer_nonce,
         srm_vault: Pubkey::default(),
-        protocol_fee_recipient: Pubkey::default(),
+        protocol_fee_recipient_perp: Pubkey::default(),
         hot_fee_withdraw: Pubkey::default(),
+        protocol_fee_recipient_spot: Pubkey::default(),
         perp_fee_structure: FeeStructure::perps_default(),
         spot_fee_structure: FeeStructure::spot_default(),
         liquidation_duration: 0,
@@ -146,7 +147,7 @@ pub fn handle_initialize(ctx: Context<Initialize>) -> Result<()> {
         max_initialize_user_fee: 0,
         feature_bit_flags: 0,
         lp_pool_feature_bit_flags: 0,
-        padding: [0; 304],
+        padding: [0; 272],
     };
 
     Ok(())
@@ -3952,18 +3953,33 @@ pub fn handle_update_hot_admin(
     Ok(())
 }
 
-/// Cold-only. Sets the treasury that protocol fees can be withdrawn to.
+/// Cold-only. Sets the treasury that protocol fees can be withdrawn to —
+/// perp (quote-denominated) and spot (per-market tokens) recipients are
+/// configured independently via `market_type`.
 pub fn handle_update_protocol_fee_recipient(
     ctx: Context<ColdAdminUpdateState>,
     protocol_fee_recipient: Pubkey,
+    market_type: MarketType,
 ) -> Result<()> {
     let mut state = ctx.accounts.state.load_mut()?;
-    msg!(
-        "protocol_fee_recipient: {:?} -> {:?}",
-        state.protocol_fee_recipient,
-        protocol_fee_recipient
-    );
-    state.protocol_fee_recipient = protocol_fee_recipient;
+    match market_type {
+        MarketType::Perp => {
+            msg!(
+                "protocol_fee_recipient_perp: {:?} -> {:?}",
+                state.protocol_fee_recipient_perp,
+                protocol_fee_recipient
+            );
+            state.protocol_fee_recipient_perp = protocol_fee_recipient;
+        }
+        MarketType::Spot => {
+            msg!(
+                "protocol_fee_recipient_spot: {:?} -> {:?}",
+                state.protocol_fee_recipient_spot,
+                protocol_fee_recipient
+            );
+            state.protocol_fee_recipient_spot = protocol_fee_recipient;
+        }
+    }
     Ok(())
 }
 

@@ -69,15 +69,21 @@ pub struct State {
     pub max_initialize_user_fee: u16,
     pub feature_bit_flags: u8,
     pub lp_pool_feature_bit_flags: u8,
-    /// Treasury that protocol fees may be withdrawn to. Settable only by
-    /// `cold_admin`. `protocol_fee_pool` withdrawals are hard-constrained to a
-    /// token account owned by this key (recipient-locked). `Pubkey::default()`
-    /// (unset) makes withdrawals inert — no real token account can match.
-    pub protocol_fee_recipient: Pubkey,
+    /// Treasury that PERP protocol fees (quote-denominated) may be withdrawn
+    /// to. Settable only by `cold_admin`. `withdraw_protocol_fees_perp` pays
+    /// this key's associated token account (recipient-locked).
+    /// `Pubkey::default()` (unset) makes perp withdrawals inert.
+    pub protocol_fee_recipient_perp: Pubkey,
+    /// Treasury that SPOT protocol fees (each market's own token: lending
+    /// carveouts + spot-liquidation cuts) may be withdrawn to. Settable only
+    /// by `cold_admin`. `withdraw_protocol_fees_spot` pays this key's
+    /// associated token account for the market's mint (recipient-locked).
+    /// `Pubkey::default()` (unset) makes spot withdrawals inert.
+    pub protocol_fee_recipient_spot: Pubkey,
     /// Hot key authorized for the `FeeWithdraw` role (triggers protocol-fee
-    /// withdrawals to `protocol_fee_recipient`).
+    /// withdrawals to the configured recipients).
     pub hot_fee_withdraw: Pubkey,
-    pub padding: [u8; 304],
+    pub padding: [u8; 272],
 }
 
 /// Purpose-specific hot role keys held on `State`. Each variant maps to one of the
@@ -137,8 +143,9 @@ impl Default for State {
             discount_mint: Pubkey::default(),
             signer: Pubkey::default(),
             srm_vault: Pubkey::default(),
-            protocol_fee_recipient: Pubkey::default(),
+            protocol_fee_recipient_perp: Pubkey::default(),
             hot_fee_withdraw: Pubkey::default(),
+            protocol_fee_recipient_spot: Pubkey::default(),
             perp_fee_structure: FeeStructure::default(),
             spot_fee_structure: FeeStructure::default(),
             oracle_guard_rails: OracleGuardRails::default(),
@@ -159,7 +166,7 @@ impl Default for State {
             max_initialize_user_fee: 0,
             feature_bit_flags: 0,
             lp_pool_feature_bit_flags: 0,
-            padding: [0; 304],
+            padding: [0; 272],
         }
     }
 }
@@ -346,10 +353,11 @@ pub enum LpPoolFeatureBitFlags {
 }
 
 impl Size for State {
-    // 8 (disc) + 13 Pubkey (cold + warm + pause + 10 hot, 416 B) + 6 Pubkey (mint/signer/srm
-    // + protocol_fee_recipient + hot_fee_withdraw, 192 B) + 2*FeeStructure + OracleGuardRails
-    // + scalars + padding[304] = 1752 B. hot_if_rebalance was removed with the
-    // if-rebalance machinery (its 32 B went into the padding, keeping SIZE constant);
+    // 8 (disc) + 13 Pubkey (cold + warm + pause + 10 hot, 416 B) + 7 Pubkey (mint/signer/srm
+    // + protocol_fee_recipient_perp/_spot + hot_fee_withdraw, 224 B) + 2*FeeStructure
+    // + OracleGuardRails + scalars + padding[272] = 1752 B. hot_if_rebalance was removed
+    // with the if-rebalance machinery (its 32 B went into the padding);
+    // protocol_fee_recipient_spot later took 32 B back out. SIZE stays constant and
     // (SIZE - 8) % 16 == 0 holds (1744).
     const SIZE: usize = 1752;
 }

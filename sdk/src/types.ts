@@ -739,7 +739,8 @@ export type StateAccount = {
 	hotMmOracleCrank: PublicKey;
 	hotAmmSpreadAdjust: PublicKey;
 	hotFeeWithdraw: PublicKey;
-	protocolFeeRecipient: PublicKey;
+	protocolFeeRecipientPerp: PublicKey;
+	protocolFeeRecipientSpot: PublicKey;
 	exchangeStatus: number;
 	whitelistMint: PublicKey;
 	discountMint: PublicKey;

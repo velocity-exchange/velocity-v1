@@ -33,10 +33,19 @@ export function registerShow(parent: Command): void {
 						: '(unset)';
 				console.log(`hot.${role}:`, display);
 			}
-			const recipient = state.protocolFeeRecipient;
+			const recipientPerp = state.protocolFeeRecipientPerp;
 			console.log(
-				'protocol fee recipient:',
-				recipient.equals(PublicKey.default) ? '(unset)' : recipient.toBase58()
+				'protocol fee recipient (perp):',
+				recipientPerp.equals(PublicKey.default)
+					? '(unset)'
+					: recipientPerp.toBase58()
+			);
+			const recipientSpot = state.protocolFeeRecipientSpot;
+			console.log(
+				'protocol fee recipient (spot):',
+				recipientSpot.equals(PublicKey.default)
+					? '(unset)'
+					: recipientSpot.toBase58()
 			);
 			console.log(
 				'trade-fee split: amm =',

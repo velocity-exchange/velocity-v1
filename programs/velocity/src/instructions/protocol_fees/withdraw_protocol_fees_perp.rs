@@ -53,7 +53,7 @@ pub struct WithdrawProtocolFeesPerp<'info> {
     pub mint: InterfaceAccount<'info, Mint>,
     /// CHECK: locked to the cold-admin-set treasury; only used as the ATA wallet
     #[account(
-        address = state.load()?.protocol_fee_recipient @ ErrorCode::InvalidProtocolFeeRecipient
+        address = state.load()?.protocol_fee_recipient_perp @ ErrorCode::InvalidProtocolFeeRecipient
     )]
     pub recipient: UncheckedAccount<'info>,
     #[account(

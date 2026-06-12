@@ -203,11 +203,14 @@ precision `IF_FACTOR_PRECISION` = 1e6, sum validated ≤ 100%):
   (`instructions/protocol_fees.rs`):
   - **Authority:** the `FeeWithdraw` hot key (`HotRole::FeeWithdraw`, set via
     `update_hot_admin`) — supports e.g. a daily withdrawal bot.
-  - **Recipient-locked:** funds go to the associated token account of
-    `State.protocol_fee_recipient` (created on demand via `init_if_needed`;
-    the `recipient` account is `address`-constrained to the state field).
-    The recipient is settable **only** by `cold_admin`
-    (`update_protocol_fee_recipient`). Unset recipient ⇒ withdrawals are inert.
+  - **Recipient-locked:** funds go to the associated token account of the
+    configured recipient — `State.protocol_fee_recipient_perp` for perp
+    (quote) withdrawals, `State.protocol_fee_recipient_spot` for spot
+    (per-market token) withdrawals — created on demand via `init_if_needed`;
+    the `recipient` account is `address`-constrained to the state field.
+    Each recipient is settable **only** by `cold_admin`
+    (`update_protocol_fee_recipient(recipient, market_type)`). Unset
+    recipient ⇒ that side's withdrawals are inert.
   - **Depositor-safe:** capped to the pool's own balance, and the vault must
     still cover all remaining claims afterwards
     (`validate_spot_market_vault_amount`) — a withdrawal can never tap user
@@ -234,7 +237,7 @@ flowchart LR
     PFP["protocol_fee_pool (per market)"]:::revenue
     RP["SpotMarket.revenue_pool (IF staging only)"]:::pool
     IFV["IF vault — 100% staker-owned backstop"]:::liability
-    WALLET["State.protocol_fee_recipient"]:::revenue
+    WALLET["State.protocol_fee_recipient_perp / _spot"]:::revenue
     STK["IF stakers"]:::passthru
 
     TK -->|"split by AMM%/IF%/protocol-residual at fill"| PEND
@@ -269,7 +272,7 @@ flowchart LR
 | Liquidation split | `controller/liquidation.rs` (perp ×2 + spot ×2 paths); rates on Perp/SpotMarket |
 | Lending carveouts | `controller/spot_balance.rs:update_spot_market_cumulative_interest`; `InsuranceFund.if_fee_factor`, `SpotMarket.protocol_fee_factor` |
 | IF bootstrap | `controller/insurance.rs` (`settle_revenue_to_insurance_fund`, `add_insurance_fund_stake`) |
-| Withdrawal | `instructions/protocol_fees.rs`; `State.protocol_fee_recipient`/`hot_fee_withdraw`; `HotRole::FeeWithdraw` |
+| Withdrawal | `instructions/protocol_fees/`; `State.protocol_fee_recipient_perp`/`_spot` + `hot_fee_withdraw`; `HotRole::FeeWithdraw` |
 | Admin setters | `update_perp/spot_market_liquidation_fee` (+protocol rate), `update_spot_market_if_factor` (if_fee_factor, protocol_fee_factor), `update_protocol_fee_recipient`, `update_perp/spot_fee_structure`, `update_perp_market_fee_pool_buffer_target` |
 | Event | `ProtocolFeeWithdrawRecord`; `protocol_fee` on liquidation records |
 

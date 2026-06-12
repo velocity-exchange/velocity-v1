@@ -147,12 +147,10 @@ export class PollingUserStatsAccountSubscriber
 		}
 	}
 
-	public getUserStatsAccountAndSlot(): DataAndSlot<UserStatsAccount> {
-		if (!this.doesAccountExist()) {
-			throw new NotSubscribedError(
-				'You must call `subscribe` or `fetch` before using this function'
-			);
-		}
+	public getUserStatsAccountAndSlot():
+		| DataAndSlot<UserStatsAccount>
+		| undefined {
+		this.assertIsSubscribed();
 		return this.userStats;
 	}
 }

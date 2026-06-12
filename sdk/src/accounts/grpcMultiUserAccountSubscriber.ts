@@ -199,14 +199,8 @@ export class grpcMultiUserAccountSubscriber {
 				isSubscribed = false;
 			},
 
-			getUserAccountAndSlot(): DataAndSlot<UserAccount> {
-				const das = parent.userData.get(key);
-				if (!das) {
-					throw new NotSubscribedError(
-						'Must subscribe before getting user account data'
-					);
-				}
-				return das;
+			getUserAccountAndSlot(): DataAndSlot<UserAccount> | undefined {
+				return parent.userData.get(key);
 			},
 		};
 

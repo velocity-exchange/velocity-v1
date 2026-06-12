@@ -1599,7 +1599,16 @@ export class VelocityClient {
 				this.wallet.publicKey
 			);
 		} else {
-			userStatsAccount = userStats.getAccount();
+			const account = userStats.getAccount();
+			if (!account) {
+				userStatsAccount = await fetchUserStatsAccount(
+					this.connection,
+					this.program,
+					this.wallet.publicKey
+				);
+			} else {
+				userStatsAccount = account;
+			}
 		}
 		return userStatsAccount.numberOfSubAccountsCreated;
 	}

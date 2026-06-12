@@ -96,7 +96,7 @@ export class WebSocketUserAccountSubscriber implements UserAccountSubscriber {
 		}
 	}
 
-	public getUserAccountAndSlot(): DataAndSlot<UserAccount> {
+	public getUserAccountAndSlot(): DataAndSlot<UserAccount> | undefined {
 		this.assertIsSubscribed();
 		return this.userDataAccountSubscriber.dataAndSlot;
 	}

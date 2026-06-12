@@ -258,7 +258,6 @@ export function decodeUser(buffer: Buffer): UserAccount {
 			slot,
 			price,
 			baseAssetAmount,
-			quoteAssetAmount: ZERO,
 			baseAssetAmountFilled,
 			quoteAssetAmountFilled,
 			triggerPrice,

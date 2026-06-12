@@ -21,7 +21,6 @@ import nacl from 'tweetnacl';
 import { decodeUTF8 } from 'tweetnacl-util';
 import WebSocket from 'ws';
 import { sha256 } from '@noble/hashes/sha256';
-import { ClientRequest, IncomingMessage } from 'http';
 
 // In practice, this for now is just an OrderSubscriber or a UserMap
 export interface AccountGetter {

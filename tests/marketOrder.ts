@@ -17,6 +17,7 @@ import {
 } from '../sdk/src';
 
 import {
+	getProtocolFeeTotal,
 	initializeQuoteSpotMarket,
 	mockOracleNoProgram,
 	mockUSDCMint,
@@ -280,7 +281,7 @@ describe('market order', () => {
 		// residual under the default split); the AMM books only its surplus
 		const expectedGrossFee = new BN(1001);
 		assert(market.feeLedger.totalExchangeFee.eq(expectedGrossFee));
-		assert(market.feeLedger.pendingProtocolFee.eq(expectedGrossFee));
+		assert(getProtocolFeeTotal(velocityClient, market).eq(expectedGrossFee));
 		assert(market.amm.totalFee.eq(new BN(0)));
 
 		assert(order.baseAssetAmount.eq(order.baseAssetAmountFilled));

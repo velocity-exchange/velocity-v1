@@ -29,7 +29,6 @@ import {
 	unstakeSharesToAmount,
 	MarketStatus,
 	LIQUIDATION_PCT_PRECISION,
-	getUserStatsAccountPublicKey,
 } from '../sdk/src';
 
 import {
@@ -41,7 +40,6 @@ import {
 	sleep,
 	mockOracleNoProgram,
 	setFeedPriceNoProgram,
-	mintUSDCToUser,
 } from './testHelpers';
 import { ContractTier, PERCENTAGE_PRECISION, UserStatus } from '../sdk';
 import { startAnchor } from 'solana-bankrun';

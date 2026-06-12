@@ -28,6 +28,7 @@ import {
 } from '../sdk/src';
 
 import {
+	getProtocolFeeTotal,
 	mockOracleNoProgram,
 	mockUserUSDCAccount,
 	mockUSDCMint,
@@ -514,7 +515,7 @@ describe('orders', () => {
 		// post AMM-isolation: the remainder is the protocol's pending carveout
 		// (default split); the AMM books only its surplus
 		const expectedRemainder = new BN(901);
-		assert(market.feeLedger.pendingProtocolFee.eq(expectedRemainder));
+		assert(getProtocolFeeTotal(velocityClient, market).eq(expectedRemainder));
 		assert(market.amm.totalFee.eq(new BN(0)));
 
 		assert(order.baseAssetAmount.eq(order.baseAssetAmountFilled));
@@ -647,7 +648,7 @@ describe('orders', () => {
 		// post AMM-isolation: cumulative remainders are the protocol's pending
 		// carveout (default split); the AMM books only its surplus
 		const expectedRemainders = new BN(1802);
-		assert(market.feeLedger.pendingProtocolFee.eq(expectedRemainders));
+		assert(getProtocolFeeTotal(velocityClient, market).eq(expectedRemainders));
 		assert(market.amm.totalFee.eq(new BN(0)));
 
 		assert(order.baseAssetAmount.eq(order.baseAssetAmountFilled));

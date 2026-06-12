@@ -9,6 +9,7 @@ import { PublicKey } from '@solana/web3.js';
 import { TestClient, PositionDirection, EventSubscriber } from '../sdk/src';
 
 import {
+	getProtocolFeeTotal,
 	mockUSDCMint,
 	mockUserUSDCAccount,
 	mockOracleNoProgram,
@@ -304,7 +305,7 @@ describe('velocity client', () => {
 		// post AMM-isolation: the gross fee is on the ledger (protocol residual
 		// under the default split); the AMM books only its spread surplus
 		assert.ok(market.feeLedger.totalExchangeFee.eq(new BN(48001)));
-		assert.ok(market.feeLedger.pendingProtocolFee.eq(new BN(48001)));
+		assert.ok(getProtocolFeeTotal(velocityClient, market).eq(new BN(48001)));
 		assert.ok(market.amm.totalFee.eq(market.amm.totalFeeMinusDistributions));
 
 		const orderActionRecord =
@@ -400,7 +401,7 @@ describe('velocity client', () => {
 		// post AMM-isolation: the gross fee is on the ledger (protocol residual
 		// under the default split); the AMM books only its spread surplus
 		assert.ok(market.feeLedger.totalExchangeFee.eq(new BN(72001)));
-		assert.ok(market.feeLedger.pendingProtocolFee.eq(new BN(72001)));
+		assert.ok(getProtocolFeeTotal(velocityClient, market).eq(new BN(72001)));
 		assert.ok(market.amm.totalFee.eq(market.amm.totalFeeMinusDistributions));
 
 		const orderActionRecord =
@@ -481,7 +482,7 @@ describe('velocity client', () => {
 		// post AMM-isolation: the gross fee is on the ledger (protocol residual
 		// under the default split); the AMM books only its spread surplus
 		assert.ok(market.feeLedger.totalExchangeFee.eq(new BN(120001)));
-		assert.ok(market.feeLedger.pendingProtocolFee.eq(new BN(120001)));
+		assert.ok(getProtocolFeeTotal(velocityClient, market).eq(new BN(120001)));
 		assert.ok(market.amm.totalFee.eq(market.amm.totalFeeMinusDistributions));
 
 		const orderActionRecord =
@@ -542,7 +543,7 @@ describe('velocity client', () => {
 		// post AMM-isolation: the gross fee is on the ledger (protocol residual
 		// under the default split); the AMM books only its spread surplus
 		assert.ok(market.feeLedger.totalExchangeFee.eq(new BN(144001)));
-		assert.ok(market.feeLedger.pendingProtocolFee.eq(new BN(144001)));
+		assert.ok(getProtocolFeeTotal(velocityClient, market).eq(new BN(144001)));
 		assert.ok(market.amm.totalFee.eq(market.amm.totalFeeMinusDistributions));
 
 		const orderActionRecord =

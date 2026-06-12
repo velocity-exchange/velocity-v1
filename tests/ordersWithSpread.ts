@@ -20,6 +20,7 @@ import {
 } from '../sdk/src';
 
 import {
+	getProtocolFeeTotal,
 	initializeQuoteSpotMarket,
 	mockOracleNoProgram,
 	mockUSDCMint,
@@ -238,7 +239,7 @@ describe('amm spread: market order', () => {
 		console.log(market.amm.totalFee.toString());
 		assert(market.amm.totalFee.eq(expectedQuoteAssetSurplus));
 		assert(market.feeLedger.totalExchangeFee.eq(expectedExchangeFee));
-		assert(market.feeLedger.pendingProtocolFee.eq(expectedExchangeFee));
+		assert(getProtocolFeeTotal(velocityClient, market).eq(expectedExchangeFee));
 
 		const firstPosition = velocityClient.getUserAccount().perpPositions[0];
 		assert(firstPosition.baseAssetAmount.eq(baseAssetAmount));

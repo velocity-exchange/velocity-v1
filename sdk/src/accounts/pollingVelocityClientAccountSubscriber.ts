@@ -276,6 +276,10 @@ export class PollingVelocityClientAccountSubscriber
 			case 'state':
 				this.state = dataAndSlot;
 				break;
+			default: {
+				const _exhaustive: never = accountToPoll.key;
+				throw new Error(`Unhandled account poll key: ${String(_exhaustive)}`);
+			}
 		}
 	}
 

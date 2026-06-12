@@ -91,9 +91,9 @@ export class SwiftOrderSubscriber {
 	}
 
 	unsubscribe() {
-		if (this.subscribed && this.ws) {
-			this.ws.removeAllListeners();
-			this.ws.terminate();
+		if (this.subscribed) {
+			this.ws?.removeAllListeners();
+			this.ws?.terminate();
 			this.ws = null;
 			this.subscribed = false;
 		}

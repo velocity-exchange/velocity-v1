@@ -652,7 +652,11 @@ export class WebSocketVelocityClientAccountSubscriber
 
 	public getStateAccountAndSlot(): DataAndSlot<StateAccount> {
 		this.assertIsSubscribed();
-		return this.stateAccountSubscriber!.dataAndSlot!;
+		const dataAndSlot = this.stateAccountSubscriber?.dataAndSlot;
+		if (!dataAndSlot) {
+			throw new Error('State account data not available');
+		}
+		return dataAndSlot;
 	}
 
 	public getMarketAccountAndSlot(

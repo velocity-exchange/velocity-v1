@@ -97,7 +97,7 @@ export class PollingInsuranceFundStakeAccountSubscriber
 	}
 
 	async fetchIfUnloaded(): Promise<void> {
-		if (this.insuranceFundStakeAccountAndSlot === undefined) {
+		if (!this.doesAccountExist()) {
 			await this.fetch();
 		}
 	}
@@ -128,7 +128,9 @@ export class PollingInsuranceFundStakeAccountSubscriber
 		}
 	}
 
-	doesAccountExist(): boolean {
+	doesAccountExist(): this is {
+		insuranceFundStakeAccountAndSlot: DataAndSlot<InsuranceFundStake>;
+	} {
 		return this.insuranceFundStakeAccountAndSlot !== undefined;
 	}
 
@@ -158,7 +160,11 @@ export class PollingInsuranceFundStakeAccountSubscriber
 	}
 
 	public getInsuranceFundStakeAccountAndSlot(): DataAndSlot<InsuranceFundStake> {
-		this.assertIsSubscribed();
+		if (!this.doesAccountExist()) {
+			throw new NotSubscribedError(
+				'You must call `subscribe` or `fetch` before using this function'
+			);
+		}
 		return this.insuranceFundStakeAccountAndSlot;
 	}
 

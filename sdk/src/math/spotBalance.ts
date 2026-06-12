@@ -383,7 +383,7 @@ export function calculateInterestRate(
 	currentUtilization?: BN
 ): BN {
 	// todo: ensure both a delta and current util aren't pass?
-	const utilization = currentUtilization || calculateUtilization(bank, delta);
+	const utilization = currentUtilization ?? calculateUtilization(bank, delta);
 
 	const optimalUtil = new BN(bank.optimalUtilization);
 	const optimalRate = new BN(bank.optimalBorrowRate);
@@ -447,7 +447,7 @@ export function calculateDepositRate(
 	// positive delta => adding to deposit
 	// negative delta => adding to borrow
 
-	const utilization = currentUtilization || calculateUtilization(bank, delta);
+	const utilization = currentUtilization ?? calculateUtilization(bank, delta);
 	const borrowRate = calculateBorrowRate(bank, delta, utilization);
 	const depositRate = borrowRate
 		.mul(PERCENTAGE_PRECISION.sub(new BN(bank.insuranceFund.totalFactor)))

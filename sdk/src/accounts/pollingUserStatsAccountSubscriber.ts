@@ -90,7 +90,7 @@ export class PollingUserStatsAccountSubscriber
 	}
 
 	async fetchIfUnloaded(): Promise<void> {
-		if (this.userStats === undefined) {
+		if (!this.doesAccountExist()) {
 			await this.fetch();
 		}
 	}
@@ -118,7 +118,7 @@ export class PollingUserStatsAccountSubscriber
 		}
 	}
 
-	doesAccountExist(): boolean {
+	doesAccountExist(): this is { userStats: DataAndSlot<UserStatsAccount> } {
 		return this.userStats !== undefined;
 	}
 
@@ -148,7 +148,7 @@ export class PollingUserStatsAccountSubscriber
 	}
 
 	public getUserStatsAccountAndSlot(): DataAndSlot<UserStatsAccount> {
-		if (this.userStats === undefined) {
+		if (!this.doesAccountExist()) {
 			throw new NotSubscribedError(
 				'You must call `subscribe` or `fetch` before using this function'
 			);

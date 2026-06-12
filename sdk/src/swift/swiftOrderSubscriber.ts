@@ -21,6 +21,7 @@ import nacl from 'tweetnacl';
 import { decodeUTF8 } from 'tweetnacl-util';
 import WebSocket from 'ws';
 import { sha256 } from '@noble/hashes/sha256';
+import { ClientRequest, IncomingMessage } from 'http';
 
 // In practice, this for now is just an OrderSubscriber or a UserMap
 export interface AccountGetter {
@@ -91,9 +92,9 @@ export class SwiftOrderSubscriber {
 	}
 
 	unsubscribe() {
-		if (this.subscribed) {
-			this.ws?.removeAllListeners();
-			this.ws?.terminate();
+		if (this.subscribed && this.ws) {
+			this.ws.removeAllListeners();
+			this.ws.terminate();
 			this.ws = null;
 			this.subscribed = false;
 		}

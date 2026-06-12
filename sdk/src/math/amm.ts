@@ -663,6 +663,7 @@ export function calculateSpreadFundingBiasScale(
 	return one + Math.floor((fundingBiasSensitivity * ramp) / 100);
 }
 
+
 export interface SpreadTerms {
 	longVolSpread: number;
 	shortVolSpread: number;

@@ -268,20 +268,24 @@ export class WhileValidTxSender extends BaseTxSender {
 
 			this.txSigCache?.set(txid, true);
 
-			if (result) {
-				await this.checkConfirmationResultForError(txid, result.value);
-
-				if (result.value?.err && this.throwOnTransactionError) {
-					// Fallback error handling if there's a problem reporting the error in checkConfirmationResultForError
-					throw new SendTransactionError({
-						action: 'send',
-						signature: txid,
-						transactionMessage: `Transaction Failed`,
-					});
-				}
-
-				slot = result.context.slot;
+			if (!result) {
+				throw new Error(
+					'WhileValidTxSender: transaction confirmation returned no result'
+				);
 			}
+
+			await this.checkConfirmationResultForError(txid, result.value);
+
+			if (result.value?.err && this.throwOnTransactionError) {
+				// Fallback error handling if there's a problem reporting the error in checkConfirmationResultForError
+				throw new SendTransactionError({
+					action: 'send',
+					signature: txid,
+					transactionMessage: `Transaction Failed`,
+				});
+			}
+
+			slot = result.context.slot;
 			// eslint-disable-next-line no-useless-catch
 		} catch (e) {
 			throw e;

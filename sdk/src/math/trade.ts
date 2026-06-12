@@ -249,6 +249,10 @@ export function calculateTargetPriceTrade(
 	assert(targetPrice.gt(ZERO));
 	assert(pct.lte(MAXPCT) && pct.gt(ZERO));
 
+	if (!mmOraclePriceData) {
+		throw new Error('calculateTargetPriceTrade: mmOraclePriceData is required');
+	}
+
 	const reservePriceBefore = calculateReservePrice(market, mmOraclePriceData);
 	const bidPriceBefore = calculateBidPrice(market, mmOraclePriceData);
 	const askPriceBefore = calculateAskPrice(market, mmOraclePriceData);

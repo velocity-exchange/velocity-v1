@@ -6,12 +6,8 @@ import { SpotBalanceType, SpotMarketAccount } from '../types';
 export function nextRevenuePoolSettleApr(
 	spotMarket: SpotMarketAccount,
 	vaultBalance: BN, // vault token amount
-	amount?: BN // delta token amount
+	amount: BN // delta token amount
 ): number {
-	if (amount === undefined) {
-		throw new Error('nextRevenuePoolSettleApr requires an amount');
-	}
-
 	const MAX_APR = new BN(10).mul(PERCENTAGE_PRECISION); // 1000% APR
 
 	// Conmputing the APR:

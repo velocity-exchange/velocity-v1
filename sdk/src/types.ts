@@ -972,6 +972,8 @@ export type SpotMarketAccount = {
 	tokenProgramFlag: number;
 
 	poolId: number;
+
+	feeAdjustment: number;
 };
 
 export type PoolBalance = {

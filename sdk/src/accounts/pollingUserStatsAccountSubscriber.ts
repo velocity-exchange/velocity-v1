@@ -23,7 +23,7 @@ export class PollingUserStatsAccountSubscriber
 	callbackId?: string;
 	errorCallbackId?: string;
 
-	userStats?: DataAndSlot<UserStatsAccount>;
+	userStats?: { data: UserStatsAccount; slot: number | undefined };
 
 	public constructor(
 		program: VelocityProgram,
@@ -43,7 +43,7 @@ export class PollingUserStatsAccountSubscriber
 		}
 
 		if (userStatsAccount) {
-			this.userStats = { data: userStatsAccount, slot: 0 };
+			this.userStats = { data: userStatsAccount, slot: undefined };
 		}
 
 		await this.addToAccountLoader();
@@ -70,7 +70,11 @@ export class PollingUserStatsAccountSubscriber
 					return;
 				}
 
-				if (this.userStats && this.userStats.slot > slot) {
+				if (
+					this.userStats &&
+					this.userStats.slot !== undefined &&
+					this.userStats.slot > slot
+				) {
 					return;
 				}
 

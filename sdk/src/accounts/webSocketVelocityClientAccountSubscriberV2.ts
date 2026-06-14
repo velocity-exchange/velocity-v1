@@ -6,6 +6,7 @@ import {
 	VelocityClientAccountSubscriber,
 	NotSubscribedError,
 	ResubOpts,
+	assertDataAndSlot,
 } from './types';
 import {
 	isVariant,
@@ -707,11 +708,10 @@ export class WebSocketVelocityClientAccountSubscriberV2
 
 	public getStateAccountAndSlot(): DataAndSlot<StateAccount> {
 		this.assertIsSubscribed();
-		const dataAndSlot = this.stateAccountSubscriber?.dataAndSlot;
-		if (!dataAndSlot) {
-			throw new Error('State account data not available');
-		}
-		return dataAndSlot;
+		return assertDataAndSlot(
+			this.stateAccountSubscriber?.dataAndSlot,
+			'State account data not available'
+		);
 	}
 
 	public getMarketAccountAndSlot(

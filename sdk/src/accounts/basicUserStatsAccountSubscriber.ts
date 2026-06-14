@@ -22,7 +22,7 @@ export class BasicUserStatsAccountSubscriber
 	callbackId?: string;
 	errorCallbackId?: string;
 
-	userStats: DataAndSlot<UserStatsAccount | undefined>;
+	userStats: { data: UserStatsAccount | undefined; slot: number | undefined };
 
 	public constructor(
 		userStatsAccountPublicKey: PublicKey,
@@ -32,7 +32,7 @@ export class BasicUserStatsAccountSubscriber
 		this.isSubscribed = true;
 		this.eventEmitter = new EventEmitter();
 		this.userStatsAccountPublicKey = userStatsAccountPublicKey;
-		this.userStats = { data, slot: slot ?? 0 };
+		this.userStats = { data, slot };
 	}
 
 	async subscribe(_userStatsAccount?: UserStatsAccount): Promise<boolean> {
@@ -52,13 +52,7 @@ export class BasicUserStatsAccountSubscriber
 	assertIsSubscribed(): void {}
 
 	public getUserStatsAccountAndSlot(): DataAndSlot<UserStatsAccount> {
-		const { data, slot } = this.userStats;
-		if (data === undefined) {
-			throw new Error(
-				'UserStatsAccount data not available: no account data has been provided yet'
-			);
-		}
-		return { data, slot };
+		return this.userStats as DataAndSlot<UserStatsAccount>;
 	}
 
 	public updateData(userStatsAccount: UserStatsAccount, slot: number): void {

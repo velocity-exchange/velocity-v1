@@ -209,6 +209,16 @@ export type DataAndSlot<T> = {
 	slot: number;
 };
 
+export function assertDataAndSlot<T>(
+	dataAndSlot: DataAndSlot<T> | undefined,
+	message: string
+): DataAndSlot<T> {
+	if (!dataAndSlot) {
+		throw new Error(message);
+	}
+	return dataAndSlot;
+}
+
 export type ResubOpts = {
 	resubTimeoutMs?: number;
 	logResubMessages?: boolean;

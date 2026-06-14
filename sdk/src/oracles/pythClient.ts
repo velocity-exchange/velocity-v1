@@ -8,6 +8,7 @@ import {
 	QUOTE_PRECISION,
 	TEN,
 } from '../constants/numericConstants';
+import { getOracleAccountDataOrThrow } from './utils';
 
 export class PythClient implements OracleClient {
 	private connection: Connection;
@@ -27,22 +28,18 @@ export class PythClient implements OracleClient {
 	public async getOraclePriceData(
 		pricePublicKey: PublicKey
 	): Promise<OraclePriceData> {
-		const accountInfo = await this.connection.getAccountInfo(pricePublicKey);
-		if (!accountInfo) {
-			throw new Error(
-				`Pyth oracle account not found: ${pricePublicKey.toBase58()}`
-			);
-		}
-		return this.getOraclePriceDataFromBuffer(accountInfo.data);
+		const data = await getOracleAccountDataOrThrow(
+			this.connection,
+			pricePublicKey,
+			'Pyth oracle'
+		);
+		return this.getOraclePriceDataFromBuffer(data);
 	}
 
 	public getOraclePriceDataFromBuffer(buffer: Buffer): OraclePriceData {
 		const priceData = parsePriceData(buffer);
-		if (priceData.confidence === undefined) {
-			throw new Error('Pyth price data is missing confidence');
-		}
 		const confidence = convertPythPrice(
-			priceData.confidence,
+			priceData.confidence ?? 0,
 			priceData.exponent,
 			this.multiple
 		);

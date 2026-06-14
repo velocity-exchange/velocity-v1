@@ -23,7 +23,7 @@ export class PollingUserAccountSubscriber implements UserAccountSubscriber {
 
 	decode: (name: string, buffer: Buffer) => UserAccount;
 
-	user?: DataAndSlot<UserAccount>;
+	user?: { data: UserAccount; slot: number | undefined };
 
 	public constructor(
 		connection: Connection,
@@ -45,7 +45,7 @@ export class PollingUserAccountSubscriber implements UserAccountSubscriber {
 		}
 
 		if (userAccount) {
-			this.user = { data: userAccount, slot: 0 };
+			this.user = { data: userAccount, slot: undefined };
 		}
 
 		await this.addToAccountLoader();
@@ -71,7 +71,11 @@ export class PollingUserAccountSubscriber implements UserAccountSubscriber {
 					return;
 				}
 
-				if (this.user && this.user.slot > slot) {
+				if (
+					this.user &&
+					this.user.slot !== undefined &&
+					this.user.slot > slot
+				) {
 					return;
 				}
 
@@ -159,7 +163,7 @@ export class PollingUserAccountSubscriber implements UserAccountSubscriber {
 	}
 
 	public updateData(userAccount: UserAccount, slot: number): void {
-		if (!this.user || this.user.slot < slot) {
+		if (!this.user || (this.user.slot !== undefined && this.user.slot < slot)) {
 			this.user = { data: userAccount, slot };
 			this.eventEmitter.emit('userAccountUpdate', userAccount);
 			this.eventEmitter.emit('update');

@@ -251,7 +251,7 @@ export class VelocityClient {
 	/** @deprecated use marketLookupTables */
 	marketLookupTable: PublicKey;
 	/** @deprecated use lookupTableAccounts */
-	lookupTableAccount?: AddressLookupTableAccount;
+	lookupTableAccount?: AddressLookupTableAccount | null;
 
 	marketLookupTables: PublicKey[];
 	lookupTableAccounts?: AddressLookupTableAccount[];
@@ -723,7 +723,7 @@ export class VelocityClient {
 
 	/** @deprecated use fetchAllLookupTableAccounts() */
 	public async fetchMarketLookupTableAccount(): Promise<
-		AddressLookupTableAccount | undefined
+		AddressLookupTableAccount | null | undefined
 	> {
 		if (this.lookupTableAccount) return this.lookupTableAccount;
 
@@ -732,9 +732,9 @@ export class VelocityClient {
 			return;
 		}
 
-		const lookupTableAccount =
-			(await this.connection.getAddressLookupTable(this.marketLookupTable))
-				.value ?? undefined;
+		const lookupTableAccount = (
+			await this.connection.getAddressLookupTable(this.marketLookupTable)
+		).value;
 		this.lookupTableAccount = lookupTableAccount;
 
 		return lookupTableAccount;
@@ -2383,6 +2383,17 @@ export class VelocityClient {
 		return this.userStats;
 	}
 
+	/**
+	 * Like {@link getUserStats} but throws if there is no UserStats
+	 * subscription, for call sites that require a guaranteed account.
+	 */
+	public getUserStatsOrThrow(): UserStats {
+		if (!this.userStats) {
+			throw new Error('VelocityClient has no UserStats subscription');
+		}
+		return this.userStats;
+	}
+
 	public async fetchReferrerNameAccount(
 		name: string
 	): Promise<ReferrerNameAccount | undefined> {
@@ -2541,6 +2552,32 @@ export class VelocityClient {
 			this.mustIncludeSpotMarketIndexes.add(spotMarketIndex);
 		});
 	}
+	private cachePerpMarketSlot(
+		slot: number | undefined,
+		...marketIndexes: number[]
+	): void {
+		for (const marketIndex of marketIndexes) {
+			if (slot !== undefined) {
+				this.perpMarketLastSlotCache.set(marketIndex, slot);
+			} else {
+				this.perpMarketLastSlotCache.delete(marketIndex);
+			}
+		}
+	}
+
+	private cacheSpotMarketSlot(
+		slot: number | undefined,
+		...marketIndexes: number[]
+	): void {
+		for (const marketIndex of marketIndexes) {
+			if (slot !== undefined) {
+				this.spotMarketLastSlotCache.set(marketIndex, slot);
+			} else {
+				this.spotMarketLastSlotCache.delete(marketIndex);
+			}
+		}
+	}
+
 	getRemainingAccounts(params: RemainingAccountParams): AccountMeta[] {
 		return VelocityCore.remainingAccounts.getRemainingAccounts(
 			{
@@ -2548,9 +2585,11 @@ export class VelocityClient {
 					this.getPerpMarketAccountOrThrow(marketIndex),
 				getSpotMarketAccount: (marketIndex: number) =>
 					this.getSpotMarketAccountOrThrow(marketIndex),
-				getUserAccountAndSlot: (subAccountId: number, authority: PublicKey) =>
-					this.getUserAccountAndSlot(subAccountId, authority),
-				activeSubAccountId: this.activeSubAccountId ?? 0,
+				getUserAccountAndSlot: (
+					subAccountId: number | undefined,
+					authority: PublicKey
+				) => this.getUserAccountAndSlot(subAccountId, authority),
+				activeSubAccountId: this.activeSubAccountId,
 				authority: this.authority,
 				perpMarketLastSlotCache: this.perpMarketLastSlotCache,
 				spotMarketLastSlotCache: this.spotMarketLastSlotCache,
@@ -2961,9 +3000,7 @@ export class VelocityClient {
 		);
 
 		const { txSig, slot } = await this.sendTransaction(tx, [], this.opts);
-		if (slot !== undefined) {
-			this.spotMarketLastSlotCache.set(marketIndex, slot);
-		}
+		this.cacheSpotMarketSlot(slot, marketIndex);
 		return txSig;
 	}
 
@@ -3474,9 +3511,7 @@ export class VelocityClient {
 			additionalSigners,
 			this.opts
 		);
-		if (slot !== undefined) {
-			this.spotMarketLastSlotCache.set(marketIndex, slot);
-		}
+		this.cacheSpotMarketSlot(slot, marketIndex);
 
 		await this.addUser(subAccountId);
 
@@ -3640,9 +3675,7 @@ export class VelocityClient {
 			additionalSigners,
 			this.opts
 		);
-		if (slot !== undefined) {
-			this.spotMarketLastSlotCache.set(marketIndex, slot);
-		}
+		this.cacheSpotMarketSlot(slot, marketIndex);
 		return txSig;
 	}
 
@@ -3777,9 +3810,7 @@ export class VelocityClient {
 			fromSubAccountId === this.activeSubAccountId ||
 			toSubAccountId === this.activeSubAccountId
 		) {
-			if (slot !== undefined) {
-				this.spotMarketLastSlotCache.set(marketIndex, slot);
-			}
+			this.cacheSpotMarketSlot(slot, marketIndex);
 		}
 		return txSig;
 	}
@@ -3868,9 +3899,7 @@ export class VelocityClient {
 			fromSubAccountId === this.activeSubAccountId ||
 			toSubAccountId === this.activeSubAccountId
 		) {
-			if (slot !== undefined) {
-				this.spotMarketLastSlotCache.set(marketIndex, slot);
-			}
+			this.cacheSpotMarketSlot(slot, marketIndex);
 		}
 		return txSig;
 	}
@@ -3963,12 +3992,13 @@ export class VelocityClient {
 			fromSubAccountId === this.activeSubAccountId ||
 			toSubAccountId === this.activeSubAccountId
 		) {
-			if (slot !== undefined) {
-				this.spotMarketLastSlotCache.set(depositFromMarketIndex, slot);
-				this.spotMarketLastSlotCache.set(depositToMarketIndex, slot);
-				this.spotMarketLastSlotCache.set(borrowFromMarketIndex, slot);
-				this.spotMarketLastSlotCache.set(borrowToMarketIndex, slot);
-			}
+			this.cacheSpotMarketSlot(
+				slot,
+				depositFromMarketIndex,
+				depositToMarketIndex,
+				borrowFromMarketIndex,
+				borrowToMarketIndex
+			);
 		}
 		return txSig;
 	}
@@ -4690,9 +4720,7 @@ export class VelocityClient {
 			true
 		);
 
-		if (slot !== undefined) {
-			this.perpMarketLastSlotCache.set(orderParams.marketIndex, slot);
-		}
+		this.cachePerpMarketSlot(slot, orderParams.marketIndex);
 
 		return {
 			txSig,
@@ -4736,9 +4764,7 @@ export class VelocityClient {
 			[],
 			this.opts
 		);
-		if (slot !== undefined) {
-			this.perpMarketLastSlotCache.set(orderParams.marketIndex, slot);
-		}
+		this.cachePerpMarketSlot(slot, orderParams.marketIndex);
 		return txSig;
 	}
 
@@ -5850,10 +5876,7 @@ export class VelocityClient {
 		)) as VersionedTransaction;
 
 		const { txSig, slot } = await this.sendTransaction(tx);
-		if (slot !== undefined) {
-			this.spotMarketLastSlotCache.set(outMarketIndex, slot);
-			this.spotMarketLastSlotCache.set(inMarketIndex, slot);
-		}
+		this.cacheSpotMarketSlot(slot, outMarketIndex, inMarketIndex);
 
 		return txSig;
 	}
@@ -6742,9 +6765,7 @@ export class VelocityClient {
 			[],
 			this.opts
 		);
-		if (slot !== undefined) {
-			this.perpMarketLastSlotCache.set(orderParams.marketIndex, slot);
-		}
+		this.cachePerpMarketSlot(slot, orderParams.marketIndex);
 		return txSig;
 	}
 	public async preparePlaceAndTakePerpOrderWithAdditionalOrders(
@@ -6998,9 +7019,7 @@ export class VelocityClient {
 			true
 		);
 
-		if (slot !== undefined) {
-			this.perpMarketLastSlotCache.set(orderParams.marketIndex, slot);
-		}
+		this.cachePerpMarketSlot(slot, orderParams.marketIndex);
 
 		return {
 			txSig,
@@ -7109,9 +7128,7 @@ export class VelocityClient {
 			this.opts
 		);
 
-		if (slot !== undefined) {
-			this.perpMarketLastSlotCache.set(orderParams.marketIndex, slot);
-		}
+		this.cachePerpMarketSlot(slot, orderParams.marketIndex);
 
 		return txSig;
 	}
@@ -7408,9 +7425,7 @@ export class VelocityClient {
 			this.opts
 		);
 
-		if (slot !== undefined) {
-			this.perpMarketLastSlotCache.set(orderParams.marketIndex, slot);
-		}
+		this.cachePerpMarketSlot(slot, orderParams.marketIndex);
 		return txSig;
 	}
 
@@ -8369,9 +8384,7 @@ export class VelocityClient {
 			[],
 			this.opts
 		);
-		if (slot !== undefined) {
-			this.perpMarketLastSlotCache.set(marketIndex, slot);
-		}
+		this.cachePerpMarketSlot(slot, marketIndex);
 		return txSig;
 	}
 	public async getLiquidatePerpIx(
@@ -8435,9 +8448,7 @@ export class VelocityClient {
 			[],
 			this.opts
 		);
-		if (slot !== undefined) {
-			this.perpMarketLastSlotCache.set(marketIndex, slot);
-		}
+		this.cachePerpMarketSlot(slot, marketIndex);
 		return txSig;
 	}
 
@@ -8518,10 +8529,7 @@ export class VelocityClient {
 			[],
 			this.opts
 		);
-		if (slot !== undefined) {
-			this.spotMarketLastSlotCache.set(assetMarketIndex, slot);
-			this.spotMarketLastSlotCache.set(liabilityMarketIndex, slot);
-		}
+		this.cacheSpotMarketSlot(slot, assetMarketIndex, liabilityMarketIndex);
 		return txSig;
 	}
 
@@ -8965,10 +8973,8 @@ export class VelocityClient {
 			[],
 			this.opts
 		);
-		if (slot !== undefined) {
-			this.perpMarketLastSlotCache.set(perpMarketIndex, slot);
-			this.spotMarketLastSlotCache.set(liabilityMarketIndex, slot);
-		}
+		this.cachePerpMarketSlot(slot, perpMarketIndex);
+		this.cacheSpotMarketSlot(slot, liabilityMarketIndex);
 		return txSig;
 	}
 
@@ -9042,10 +9048,8 @@ export class VelocityClient {
 			[],
 			this.opts
 		);
-		if (slot !== undefined) {
-			this.perpMarketLastSlotCache.set(perpMarketIndex, slot);
-			this.spotMarketLastSlotCache.set(assetMarketIndex, slot);
-		}
+		this.cachePerpMarketSlot(slot, perpMarketIndex);
+		this.cacheSpotMarketSlot(slot, assetMarketIndex);
 		return txSig;
 	}
 
@@ -10201,10 +10205,8 @@ export class VelocityClient {
 				marketAccount = this.getSpotMarketAccountOrThrow(marketIndex);
 			}
 
-			if ('feeAdjustment' in marketAccount) {
-				takerFee += (takerFee * marketAccount.feeAdjustment) / 100;
-				makerFee += (makerFee * marketAccount.feeAdjustment) / 100;
-			}
+			takerFee += (takerFee * marketAccount.feeAdjustment) / 100;
+			makerFee += (makerFee * marketAccount.feeAdjustment) / 100;
 		}
 
 		return {
@@ -11567,7 +11569,7 @@ export class VelocityClient {
 			txVersion: txVersion ?? this.txVersion,
 			txParams: txParams ?? this.txParams,
 			connection: this.connection,
-			preFlightCommitment: this.opts.preflightCommitment ?? 'confirmed',
+			preFlightCommitment: this.opts.preflightCommitment,
 			fetchAllMarketLookupTableAccounts:
 				this.fetchAllLookupTableAccounts.bind(this),
 			lookupTables,
@@ -11589,7 +11591,7 @@ export class VelocityClient {
 			txVersion: txVersion ?? this.txVersion,
 			txParams: txParams ?? this.txParams,
 			connection: this.connection,
-			preFlightCommitment: this.opts.preflightCommitment ?? 'confirmed',
+			preFlightCommitment: this.opts.preflightCommitment,
 			fetchAllMarketLookupTableAccounts:
 				this.fetchAllLookupTableAccounts.bind(this),
 			lookupTables,
@@ -11612,7 +11614,7 @@ export class VelocityClient {
 			txVersion: txVersion ?? this.txVersion,
 			txParams: txParams ?? this.txParams,
 			connection: this.connection,
-			preFlightCommitment: this.opts.preflightCommitment ?? 'confirmed',
+			preFlightCommitment: this.opts.preflightCommitment,
 			fetchAllMarketLookupTableAccounts:
 				this.fetchAllLookupTableAccounts.bind(this),
 			lookupTables,
@@ -11635,7 +11637,7 @@ export class VelocityClient {
 			txVersion: txVersion ?? this.txVersion,
 			txParams: txParams ?? this.txParams,
 			connection: this.connection,
-			preFlightCommitment: this.opts.preflightCommitment ?? 'confirmed',
+			preFlightCommitment: this.opts.preflightCommitment,
 			fetchAllMarketLookupTableAccounts:
 				this.fetchAllLookupTableAccounts.bind(this),
 			lookupTables,

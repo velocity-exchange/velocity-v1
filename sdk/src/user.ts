@@ -265,6 +265,14 @@ export class User {
 		);
 	}
 
+	public getPerpPositionOrThrow(marketIndex: number): PerpPosition {
+		const position = this.getPerpPosition(marketIndex);
+		if (!position) {
+			throw new Error(`No perp position found for market ${marketIndex}`);
+		}
+		return position;
+	}
+
 	public getPerpPositionAndSlot(
 		marketIndex: number
 	): DataAndSlot<PerpPosition | undefined> {
@@ -500,8 +508,7 @@ export class User {
 
 	public getOpenOrdersAndSlot(): DataAndSlot<Order[]> {
 		const userAccount = this.getUserAccountAndSlot();
-		const openOrders =
-			this.getOpenOrdersForUserAccount(userAccount.data) ?? [];
+		const openOrders = this.getOpenOrdersForUserAccount(userAccount.data) ?? [];
 		return {
 			data: openOrders,
 			slot: userAccount.slot,
@@ -526,10 +533,7 @@ export class User {
 	 * @returns : open asks
 	 */
 	public getPerpBidAsks(marketIndex: number): [BN, BN] {
-		const position = this.getPerpPosition(marketIndex);
-		if (!position) {
-			throw new Error(`No perp position found for market ${marketIndex}`);
-		}
+		const position = this.getPerpPositionOrThrow(marketIndex);
 
 		const totalOpenBids = position.openBids;
 		const totalOpenAsks = position.openAsks;
@@ -600,16 +604,23 @@ export class User {
 		);
 	}
 
+	private resolveMaxMarginRatio(perpMarketMaxMarginRatio?: number): number {
+		// NaN (not 0) intentionally preserves the pre-strict-mode behavior of
+		// Math.max(undefined, x), which coerces undefined to NaN. All internal
+		// callers supply the param; only external callers omitting it hit NaN.
+		return Math.max(
+			perpMarketMaxMarginRatio ?? NaN,
+			this.getUserAccount().maxMarginRatio
+		);
+	}
+
 	getPerpBuyingPowerFromFreeCollateralAndBaseAssetAmount(
 		marketIndex: number,
 		freeCollateral: BN,
 		baseAssetAmount: BN,
 		perpMarketMaxMarginRatio: number | undefined = undefined
 	): BN {
-		const maxMarginRatio = Math.max(
-			perpMarketMaxMarginRatio ?? NaN,
-			this.getUserAccount().maxMarginRatio
-		);
+		const maxMarginRatio = this.resolveMaxMarginRatio(perpMarketMaxMarginRatio);
 		const marginRatio = calculateMarketMarginRatio(
 			this.velocityClient.getPerpMarketAccountOrThrow(marketIndex),
 			baseAssetAmount,
@@ -1414,10 +1425,7 @@ export class User {
 		includeOpenOrders?: boolean,
 		strict = false
 	): BN {
-		const perpPosition = this.getPerpPosition(marketIndex);
-		if (!perpPosition) {
-			throw new Error(`No perp position found for market ${marketIndex}`);
-		}
+		const perpPosition = this.getPerpPositionOrThrow(marketIndex);
 		return this.calculateWeightedPerpPositionLiability(
 			perpPosition,
 			marginCategory,
@@ -2246,8 +2254,7 @@ export class User {
 	): BN {
 		const market = this.velocityClient.getPerpMarketAccountOrThrow(marketIndex);
 
-		const oracle =
-			this.velocityClient.getPerpMarketAccountOrThrow(marketIndex).oracle;
+		const oracle = market.oracle;
 
 		const oraclePrice =
 			this.velocityClient.getOracleDataForPerpMarket(marketIndex).price;
@@ -2621,10 +2628,7 @@ export class User {
 		estEntryPrice?: BN,
 		perpMarketMaxMarginRatio?: number
 	): BN {
-		const maxMarginRatio = Math.max(
-			perpMarketMaxMarginRatio ?? NaN,
-			this.getUserAccount().maxMarginRatio
-		);
+		const maxMarginRatio = this.resolveMaxMarginRatio(perpMarketMaxMarginRatio);
 		return calculateMarginUSDCRequiredForTrade(
 			this.velocityClient,
 			targetMarketIndex,
@@ -2640,10 +2644,7 @@ export class User {
 		collateralIndex: number,
 		perpMarketMaxMarginRatio?: number
 	): BN {
-		const maxMarginRatio = Math.max(
-			perpMarketMaxMarginRatio ?? NaN,
-			this.getUserAccount().maxMarginRatio
-		);
+		const maxMarginRatio = this.resolveMaxMarginRatio(perpMarketMaxMarginRatio);
 		return calculateCollateralDepositRequiredForTrade(
 			this.velocityClient,
 			targetMarketIndex,
@@ -3512,11 +3513,9 @@ export class User {
 
 		const feeTierIndex = 0;
 		if (isVariant(marketType, 'perp')) {
-			const userStats = this.velocityClient.getUserStats();
-			if (!userStats) {
-				throw new Error('VelocityClient has no UserStats subscription');
-			}
-			const userStatsAccount: UserStatsAccount = userStats.getAccount();
+			const userStatsAccount: UserStatsAccount = this.velocityClient
+				.getUserStatsOrThrow()
+				.getAccount();
 
 			const total30dVolume = getUser30dRollingVolumeEstimate(
 				userStatsAccount,
@@ -3808,14 +3807,9 @@ export class User {
 		now?: BN
 	): { canDelete: boolean; reason?: string } {
 		const userAccount = this.getUserAccount();
-		let userStatsAccountToUse = userStatsAccount;
-		if (!userStatsAccountToUse) {
-			const userStats = this.velocityClient.getUserStats();
-			if (!userStats) {
-				throw new Error('VelocityClient has no UserStats subscription');
-			}
-			userStatsAccountToUse = userStats.getAccount();
-		}
+		const userStatsAccountToUse =
+			userStatsAccount ??
+			this.velocityClient.getUserStatsOrThrow().getAccount();
 		const nowInSeconds = now || new BN(Math.floor(Date.now() / 1000));
 		const stateAccount = this.velocityClient.getStateAccount();
 

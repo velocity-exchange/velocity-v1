@@ -9,7 +9,7 @@ import { BlockhashSubscriberConfig } from './types';
 export class BlockhashSubscriber {
 	private connection: Connection;
 	private isSubscribed = false;
-	private latestBlockHeight = 0;
+	private latestBlockHeight: number | undefined;
 	private latestBlockHeightContext: Context | undefined;
 	private blockhashes: Array<BlockhashWithExpiryBlockHeight> = [];
 	private updateBlockhashIntervalId: ReturnType<typeof setTimeout> | undefined;
@@ -31,7 +31,7 @@ export class BlockhashSubscriber {
 		return this.blockhashes.length;
 	}
 
-	getLatestBlockHeight(): number {
+	getLatestBlockHeight(): number | undefined {
 		return this.latestBlockHeight;
 	}
 
@@ -68,8 +68,9 @@ export class BlockhashSubscriber {
 
 	pruneBlockhashes() {
 		if (this.latestBlockHeight) {
+			const latestBlockHeight = this.latestBlockHeight;
 			this.blockhashes = this.blockhashes.filter(
-				(blockhash) => blockhash.lastValidBlockHeight > this.latestBlockHeight
+				(blockhash) => blockhash.lastValidBlockHeight > latestBlockHeight
 			);
 		}
 	}

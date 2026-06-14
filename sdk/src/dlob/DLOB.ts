@@ -172,13 +172,21 @@ export class DLOB {
 		return orderLists;
 	}
 
+	private tryGetMarketNodeLists(
+		marketTypeStr: MarketTypeStr,
+		marketIndex: number
+	): MarketNodeLists | undefined {
+		return this.orderLists.get(marketTypeStr)?.get(marketIndex);
+	}
+
 	private getMarketNodeLists(
 		marketTypeStr: MarketTypeStr,
 		marketIndex: number
 	): MarketNodeLists {
-		const marketNodeLists = this.orderLists
-			.get(marketTypeStr)
-			?.get(marketIndex);
+		const marketNodeLists = this.tryGetMarketNodeLists(
+			marketTypeStr,
+			marketIndex
+		);
 		if (!marketNodeLists) {
 			throw new Error(
 				`DLOB has no order lists for market type ${marketTypeStr} and market index ${marketIndex}`
@@ -889,7 +897,7 @@ export class DLOB {
 					continue;
 				}
 
-				const makerPrice = makerNode.getPrice(oraclePriceData, slot);
+				const makerPrice = makerNode.getPriceOrThrow(oraclePriceData, slot);
 				const takerPrice = takerNode.getPrice(oraclePriceData, slot);
 
 				const ordersCross = doesCross(takerPrice, makerPrice);
@@ -1019,7 +1027,7 @@ export class DLOB {
 		const nodesToFill = new Array<NodeToFill>();
 
 		const marketTypeStr = getVariant(marketType) as MarketTypeStr;
-		const nodeLists = this.orderLists.get(marketTypeStr)?.get(marketIndex);
+		const nodeLists = this.tryGetMarketNodeLists(marketTypeStr, marketIndex);
 
 		if (!nodeLists) {
 			return nodesToFill;
@@ -1105,7 +1113,7 @@ export class DLOB {
 		const nodesToFill = new Array<NodeToFill>();
 
 		const marketTypeStr = getVariant(marketType) as MarketTypeStr;
-		const nodeLists = this.orderLists.get(marketTypeStr)?.get(marketIndex);
+		const nodeLists = this.tryGetMarketNodeLists(marketTypeStr, marketIndex);
 
 		if (!nodeLists) {
 			return nodesToFill;
@@ -1153,7 +1161,7 @@ export class DLOB {
 		filterFcn?: DLOBFilterFcn
 	): Generator<DLOBNode> {
 		const marketTypeStr = getVariant(marketType) as MarketTypeStr;
-		const orderLists = this.orderLists.get(marketTypeStr)?.get(marketIndex);
+		const orderLists = this.tryGetMarketNodeLists(marketTypeStr, marketIndex);
 		if (!orderLists) {
 			return;
 		}
@@ -1192,7 +1200,7 @@ export class DLOB {
 		filterFcn?: DLOBFilterFcn
 	): Generator<DLOBNode> {
 		const marketTypeStr = getVariant(marketType) as MarketTypeStr;
-		const orderLists = this.orderLists.get(marketTypeStr)?.get(marketIndex);
+		const orderLists = this.tryGetMarketNodeLists(marketTypeStr, marketIndex);
 		if (!orderLists) {
 			return;
 		}
@@ -1308,7 +1316,7 @@ export class DLOB {
 		this.updateRestingLimitOrders(slot);
 
 		const marketTypeStr = getVariant(marketType) as MarketTypeStr;
-		const nodeLists = this.orderLists.get(marketTypeStr)?.get(marketIndex);
+		const nodeLists = this.tryGetMarketNodeLists(marketTypeStr, marketIndex);
 
 		if (!nodeLists) {
 			return;
@@ -1328,8 +1336,8 @@ export class DLOB {
 			slot,
 			(bestNode, currentNode, slot, oraclePriceData) => {
 				return bestNode
-					.getPrice(oraclePriceData, slot)
-					.lt(currentNode.getPrice(oraclePriceData, slot));
+					.getPriceOrThrow(oraclePriceData, slot)
+					.lt(currentNode.getPriceOrThrow(oraclePriceData, slot));
 			},
 			filterFcn
 		);
@@ -1351,7 +1359,7 @@ export class DLOB {
 		this.updateRestingLimitOrders(slot);
 
 		const marketTypeStr = getVariant(marketType) as MarketTypeStr;
-		const nodeLists = this.orderLists.get(marketTypeStr)?.get(marketIndex);
+		const nodeLists = this.tryGetMarketNodeLists(marketTypeStr, marketIndex);
 
 		if (!nodeLists) {
 			return;
@@ -1371,8 +1379,8 @@ export class DLOB {
 			slot,
 			(bestNode, currentNode, slot, oraclePriceData) => {
 				return bestNode
-					.getPrice(oraclePriceData, slot)
-					.gt(currentNode.getPrice(oraclePriceData, slot));
+					.getPriceOrThrow(oraclePriceData, slot)
+					.gt(currentNode.getPriceOrThrow(oraclePriceData, slot));
 			},
 			filterFcn
 		);
@@ -1501,8 +1509,8 @@ export class DLOB {
 			);
 
 			for (const bidNode of bidGenerator) {
-				const bidPrice = bidNode.getPrice(oraclePriceData, slot);
-				const askPrice = askNode.getPrice(oraclePriceData, slot);
+				const bidPrice = bidNode.getPriceOrThrow(oraclePriceData, slot);
+				const askPrice = askNode.getPriceOrThrow(oraclePriceData, slot);
 
 				// orders don't cross
 				if (bidPrice.lt(askPrice)) {
@@ -2063,7 +2071,7 @@ export class DLOB {
 		for (const ask of restingAsks) {
 			const askOrder = getOrderOrThrow(ask);
 			asks.push({
-				price: ask.getPrice(oraclePriceData, slot),
+				price: ask.getPriceOrThrow(oraclePriceData, slot),
 				size: askOrder.baseAssetAmount.sub(askOrder.baseAssetAmountFilled),
 				maker: new PublicKey(getUserAccountOrThrow(ask)),
 				orderId: askOrder.orderId,
@@ -2080,7 +2088,7 @@ export class DLOB {
 		for (const bid of restingBids) {
 			const bidOrder = getOrderOrThrow(bid);
 			bids.push({
-				price: bid.getPrice(oraclePriceData, slot),
+				price: bid.getPriceOrThrow(oraclePriceData, slot),
 				size: bidOrder.baseAssetAmount.sub(bidOrder.baseAssetAmountFilled),
 				maker: new PublicKey(getUserAccountOrThrow(bid)),
 				orderId: bidOrder.orderId,
@@ -2103,7 +2111,7 @@ export class DLOB {
 		let runningSumQuote = ZERO;
 		let runningSumBase = ZERO;
 		for (const side of dlobSide) {
-			const price = side.getPrice(oraclePriceData, slot); //side.order.quoteAssetAmount.div(side.order.baseAssetAmount);
+			const price = side.getPriceOrThrow(oraclePriceData, slot); //side.order.quoteAssetAmount.div(side.order.baseAssetAmount);
 			const sideOrder = getOrderOrThrow(side);
 			const baseAmountRemaining = sideOrder.baseAssetAmount.sub(
 				sideOrder.baseAssetAmountFilled

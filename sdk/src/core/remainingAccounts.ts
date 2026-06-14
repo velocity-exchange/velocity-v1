@@ -25,11 +25,11 @@ export type RemainingAccountsContext = {
 
 	/** Used to resolve user's last slot for cache invalidation. */
 	getUserAccountAndSlot: (
-		subAccountId: number,
+		subAccountId: number | undefined,
 		authority: PublicKey
 	) => { slot: number } | undefined;
 
-	activeSubAccountId: number;
+	activeSubAccountId: number | undefined;
 	authority: PublicKey;
 
 	/** Mutable caches + forced-market sets (owned by caller). */

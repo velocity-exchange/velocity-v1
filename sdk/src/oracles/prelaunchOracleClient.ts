@@ -2,6 +2,7 @@ import { Connection, PublicKey } from '@solana/web3.js';
 import { OracleClient, OraclePriceData } from './types';
 import { VelocityProgram } from '../config';
 import { PrelaunchOracle } from '../types';
+import { getOracleAccountDataOrThrow } from './utils';
 
 export class PrelaunchOracleClient implements OracleClient {
 	private connection: Connection;
@@ -15,13 +16,12 @@ export class PrelaunchOracleClient implements OracleClient {
 	public async getOraclePriceData(
 		pricePublicKey: PublicKey
 	): Promise<OraclePriceData> {
-		const accountInfo = await this.connection.getAccountInfo(pricePublicKey);
-		if (!accountInfo) {
-			throw new Error(
-				`Prelaunch oracle account not found: ${pricePublicKey.toBase58()}`
-			);
-		}
-		return this.getOraclePriceDataFromBuffer(accountInfo.data);
+		const data = await getOracleAccountDataOrThrow(
+			this.connection,
+			pricePublicKey,
+			'Prelaunch oracle'
+		);
+		return this.getOraclePriceDataFromBuffer(data);
 	}
 
 	public getOraclePriceDataFromBuffer(buffer: Buffer): OraclePriceData {

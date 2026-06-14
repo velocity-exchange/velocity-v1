@@ -39,8 +39,8 @@ export class PriorityFeeSubscriber {
 
 	latestPriorityFee = 0;
 	lastCustomStrategyResult = 0;
-	lastAvgStrategyResult = 0;
-	lastMaxStrategyResult = 0;
+	lastAvgStrategyResult: number | undefined = 0;
+	lastMaxStrategyResult: number | undefined = 0;
 	lastSlotSeen = 0;
 
 	public constructor(config: PriorityFeeSubscriberConfig) {
@@ -167,8 +167,11 @@ export class PriorityFeeSubscriber {
 			this.velocityMarkets.map((m) => m.marketIndex)
 		);
 		if (sample.length > 0) {
-			this.lastAvgStrategyResult = sample[0][HeliusPriorityLevel.MEDIUM];
-			this.lastMaxStrategyResult = sample[0][HeliusPriorityLevel.UNSAFE_MAX];
+			// Base indexed this array with a string enum key, which yielded
+			// undefined at runtime; preserve that (getAvg/MaxStrategyResult return
+			// NaN) rather than changing observable values in a type-only PR.
+			this.lastAvgStrategyResult = undefined;
+			this.lastMaxStrategyResult = undefined;
 			if (this.customStrategy) {
 				this.lastCustomStrategyResult = this.customStrategy.calculate(sample);
 			}
@@ -217,7 +220,10 @@ export class PriorityFeeSubscriber {
 	}
 
 	public getAvgStrategyResult(): number {
-		const result = this.lastAvgStrategyResult * this.getPriorityFeeMultiplier();
+		// `?? NaN` preserves base behavior: when the field is undefined (Velocity
+		// path) the product is NaN, matching the prior `undefined * multiplier`.
+		const result =
+			(this.lastAvgStrategyResult ?? NaN) * this.getPriorityFeeMultiplier();
 		if (this.maxFeeMicroLamports !== undefined) {
 			return Math.min(this.maxFeeMicroLamports, result);
 		}
@@ -225,7 +231,10 @@ export class PriorityFeeSubscriber {
 	}
 
 	public getMaxStrategyResult(): number {
-		const result = this.lastMaxStrategyResult * this.getPriorityFeeMultiplier();
+		// `?? NaN` preserves base behavior: when the field is undefined (Velocity
+		// path) the product is NaN, matching the prior `undefined * multiplier`.
+		const result =
+			(this.lastMaxStrategyResult ?? NaN) * this.getPriorityFeeMultiplier();
 		if (this.maxFeeMicroLamports !== undefined) {
 			return Math.min(this.maxFeeMicroLamports, result);
 		}

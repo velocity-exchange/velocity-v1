@@ -11,6 +11,7 @@ import {
 } from '../constants/numericConstants';
 import { Wallet } from '../wallet';
 import velocityIDL from '../idl/velocity.json';
+import { getOracleAccountDataOrThrow } from './utils';
 
 export class PythLazerClient implements OracleClient {
 	private connection: Connection;
@@ -46,13 +47,12 @@ export class PythLazerClient implements OracleClient {
 	public async getOraclePriceData(
 		pricePublicKey: PublicKey
 	): Promise<OraclePriceData> {
-		const accountInfo = await this.connection.getAccountInfo(pricePublicKey);
-		if (!accountInfo) {
-			throw new Error(
-				`Pyth lazer oracle account not found: ${pricePublicKey.toBase58()}`
-			);
-		}
-		return this.getOraclePriceDataFromBuffer(accountInfo.data);
+		const data = await getOracleAccountDataOrThrow(
+			this.connection,
+			pricePublicKey,
+			'Pyth lazer oracle'
+		);
+		return this.getOraclePriceDataFromBuffer(data);
 	}
 
 	public getOraclePriceDataFromBuffer(buffer: Buffer): OraclePriceData {

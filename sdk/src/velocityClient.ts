@@ -1796,7 +1796,7 @@ export class VelocityClient {
 		let remainingAccounts: AccountMeta[];
 		try {
 			remainingAccounts = this.getRemainingAccounts({
-				userAccounts: [this.getUserAccount(subAccountId)],
+				userAccounts: [this.getUserAccountOrThrow(subAccountId)],
 			});
 		} catch (err) {
 			remainingAccounts = [];
@@ -2430,8 +2430,20 @@ export class VelocityClient {
 	public getUserAccount(
 		subAccountId?: number,
 		authority?: PublicKey
+	): UserAccount | undefined {
+		return this.getUser(subAccountId, authority).getUserAccount();
+	}
+
+	/**
+	 * Like {@link getUserAccount} but throws a named error instead of returning
+	 * `undefined` when the account has not been loaded yet. Use at call sites
+	 * that structurally require a loaded account.
+	 */
+	public getUserAccountOrThrow(
+		subAccountId?: number,
+		authority?: PublicKey
 	): UserAccount {
-		return this.getUser(subAccountId, authority).getUserAccount()!;
+		return this.getUser(subAccountId, authority).getUserAccountOrThrow();
 	}
 
 	/**
@@ -2441,9 +2453,9 @@ export class VelocityClient {
 	public async forceGetUserAccount(
 		subAccountId?: number,
 		authority?: PublicKey
-	): Promise<UserAccount> {
+	): Promise<UserAccount | undefined> {
 		await this.getUser(subAccountId, authority).fetchAccounts();
-		return this.getUser(subAccountId, authority).getUserAccount()!;
+		return this.getUser(subAccountId, authority).getUserAccount();
 	}
 
 	public getUserAccountAndSlot(
@@ -2457,7 +2469,7 @@ export class VelocityClient {
 		marketIndex: number,
 		subAccountId?: number
 	): SpotPosition | undefined {
-		return this.getUserAccount(subAccountId).spotPositions.find(
+		return this.getUserAccountOrThrow(subAccountId).spotPositions.find(
 			(spotPosition) => spotPosition.marketIndex === marketIndex
 		);
 	}
@@ -3023,8 +3035,12 @@ export class VelocityClient {
 
 		let remainingAccounts = [];
 		if (userInitialized) {
+			const userAccount = await this.forceGetUserAccount(subAccountId);
+			if (!userAccount) {
+				throw new Error('User account not loaded after force fetch');
+			}
 			remainingAccounts = this.getRemainingAccounts({
-				userAccounts: [await this.forceGetUserAccount(subAccountId)],
+				userAccounts: [userAccount],
 				useMarketLastSlotCache: true,
 				writableSpotMarketIndexes: [marketIndex],
 			});
@@ -3742,7 +3758,7 @@ export class VelocityClient {
 		const user = await this.getUserAccountPublicKey(subAccountId);
 
 		const remainingAccounts = this.getRemainingAccounts({
-			userAccounts: [this.getUserAccount(subAccountId)],
+			userAccounts: [this.getUserAccountOrThrow(subAccountId)],
 			useMarketLastSlotCache: true,
 			writableSpotMarketIndexes: [marketIndex],
 			readableSpotMarketIndexes: [QUOTE_SPOT_MARKET_INDEX],
@@ -3841,7 +3857,7 @@ export class VelocityClient {
 		const mapUser = this.users.get(userMapKey);
 		if (mapUser) {
 			remainingAccounts = this.getRemainingAccounts({
-				userAccounts: [mapUser.getUserAccount()!],
+				userAccounts: [mapUser.getUserAccountOrThrow()],
 				useMarketLastSlotCache: true,
 				writableSpotMarketIndexes: [marketIndex],
 			});
@@ -3927,7 +3943,7 @@ export class VelocityClient {
 		const mapUser = this.users.get(userMapKey);
 		if (mapUser) {
 			remainingAccounts = this.getRemainingAccounts({
-				userAccounts: [mapUser.getUserAccount()!],
+				userAccounts: [mapUser.getUserAccountOrThrow()],
 				useMarketLastSlotCache: true,
 				writableSpotMarketIndexes: [marketIndex],
 			});
@@ -4025,10 +4041,10 @@ export class VelocityClient {
 			toSubAccountId
 		);
 
-		const userAccounts = [this.getUserAccount(fromSubAccountId)];
+		const userAccounts = [this.getUserAccountOrThrow(fromSubAccountId)];
 
 		if (!isToNewSubAccount) {
-			userAccounts.push(this.getUserAccount(toSubAccountId));
+			userAccounts.push(this.getUserAccountOrThrow(toSubAccountId));
 		}
 
 		const remainingAccounts = this.getRemainingAccounts({
@@ -4138,8 +4154,8 @@ export class VelocityClient {
 
 		const remainingAccounts = this.getRemainingAccounts({
 			userAccounts: [
-				this.getUserAccount(fromSubAccountId),
-				this.getUserAccount(toSubAccountId),
+				this.getUserAccountOrThrow(fromSubAccountId),
+				this.getUserAccountOrThrow(toSubAccountId),
 			],
 			useMarketLastSlotCache: true,
 			writablePerpMarketIndexes: [marketIndex],
@@ -4293,7 +4309,7 @@ export class VelocityClient {
 					this.authority,
 					subAccountId ?? this.activeSubAccountId
 				),
-				this.getUserAccount(subAccountId),
+				this.getUserAccountOrThrow(subAccountId),
 				[perpMarketIndex],
 				SettlePnlMode.TRY_SETTLE
 			);
@@ -4326,7 +4342,7 @@ export class VelocityClient {
 		const perpMarketAccount = this.getPerpMarketAccountOrThrow(perpMarketIndex);
 		const spotMarketIndex = perpMarketAccount.quoteSpotMarketIndex;
 		const spotMarketAccount = this.getSpotMarketAccountOrThrow(spotMarketIndex);
-		const user = await this.getUserAccount(subAccountId);
+		const user = await this.getUserAccountOrThrow(subAccountId);
 		const remainingAccounts = this.getRemainingAccounts({
 			userAccounts: [user],
 			writableSpotMarketIndexes: [spotMarketIndex],
@@ -4386,7 +4402,7 @@ export class VelocityClient {
 			this.authority,
 			subAccountId ?? this.activeSubAccountId
 		);
-		const userAccount = this.getUserAccount(subAccountId);
+		const userAccount = this.getUserAccountOrThrow(subAccountId);
 
 		const tokenAmountDeposited =
 			this.getIsolatedPerpPositionTokenAmount(perpMarketIndex);
@@ -4464,7 +4480,7 @@ export class VelocityClient {
 		const spotMarketIndex = perpMarketAccount.quoteSpotMarketIndex;
 		const spotMarketAccount = this.getSpotMarketAccountOrThrow(spotMarketIndex);
 		const remainingAccounts = this.getRemainingAccounts({
-			userAccounts: [this.getUserAccount(subAccountId)],
+			userAccounts: [this.getUserAccountOrThrow(subAccountId)],
 			writableSpotMarketIndexes: [spotMarketIndex],
 			readablePerpMarketIndex: [perpMarketIndex],
 		});
@@ -4850,7 +4866,7 @@ export class VelocityClient {
 		const remainingAccounts = this.getRemainingAccounts({
 			userAccounts: depositToTradeArgs?.isMakingNewAccount
 				? []
-				: [this.getUserAccount(subAccountId)],
+				: [this.getUserAccountOrThrow(subAccountId)],
 			useMarketLastSlotCache: false,
 			readablePerpMarketIndex: orderParams.marketIndex,
 			readableSpotMarketIndexes: isDepositToTradeTx
@@ -5049,7 +5065,7 @@ export class VelocityClient {
 		const user = await this.getUserAccountPublicKey(subAccountId);
 
 		const remainingAccounts = this.getRemainingAccounts({
-			userAccounts: [this.getUserAccount(subAccountId)],
+			userAccounts: [this.getUserAccountOrThrow(subAccountId)],
 			useMarketLastSlotCache: true,
 		});
 
@@ -5092,7 +5108,7 @@ export class VelocityClient {
 		const oracle = this.getPerpMarketAccountOrThrow(order.marketIndex).oracle;
 
 		const remainingAccounts = this.getRemainingAccounts({
-			userAccounts: [this.getUserAccount(subAccountId)],
+			userAccounts: [this.getUserAccountOrThrow(subAccountId)],
 			useMarketLastSlotCache: true,
 		});
 
@@ -5161,7 +5177,7 @@ export class VelocityClient {
 			user?.userAccountPublicKey ??
 			(await this.getUserAccountPublicKey(subAccountId));
 		const userAccount =
-			user?.getUserAccount() ?? this.getUserAccount(subAccountId);
+			user?.getUserAccount() ?? this.getUserAccountOrThrow(subAccountId);
 
 		const remainingAccounts = this.getRemainingAccounts({
 			userAccounts: [userAccount],
@@ -5223,7 +5239,7 @@ export class VelocityClient {
 		}
 
 		const remainingAccounts = this.getRemainingAccounts({
-			userAccounts: [this.getUserAccount(subAccountId)],
+			userAccounts: [this.getUserAccountOrThrow(subAccountId)],
 			readablePerpMarketIndex,
 			readableSpotMarketIndexes,
 			useMarketLastSlotCache: true,
@@ -5354,7 +5370,7 @@ export class VelocityClient {
 		}
 
 		const remainingAccounts = this.getRemainingAccounts({
-			userAccounts: [this.getUserAccount(subAccountId)],
+			userAccounts: [this.getUserAccountOrThrow(subAccountId)],
 			readablePerpMarketIndex,
 			readableSpotMarketIndexes,
 			useMarketLastSlotCache: true,
@@ -5408,7 +5424,7 @@ export class VelocityClient {
 		}
 
 		const remainingAccounts = this.getRemainingAccounts({
-			userAccounts: [this.getUserAccount(subAccountId)],
+			userAccounts: [this.getUserAccountOrThrow(subAccountId)],
 			readablePerpMarketIndex,
 			readableSpotMarketIndexes,
 			useMarketLastSlotCache: true,
@@ -5493,7 +5509,7 @@ export class VelocityClient {
 		const isPerp = isVariant(params.marketType, 'perp');
 
 		const remainingAccounts = this.getRemainingAccounts({
-			userAccounts: [this.getUserAccount(subAccountId)],
+			userAccounts: [this.getUserAccountOrThrow(subAccountId)],
 			readablePerpMarketIndex: isPerp ? [params.marketIndex] : [],
 			readableSpotMarketIndexes: isPerp ? [] : [params.marketIndex],
 			useMarketLastSlotCache: true,
@@ -6180,8 +6196,11 @@ export class VelocityClient {
 
 		const userAccounts = [];
 		try {
-			if (this.hasUser() && this.getUser().getUserAccountAndSlot()) {
-				userAccounts.push(this.getUser().getUserAccountAndSlot()!.data);
+			const userAccount = this.hasUser()
+				? this.getUser().getUserAccount()
+				: undefined;
+			if (userAccount) {
+				userAccounts.push(userAccount);
 			}
 		} catch (err) {
 			// ignore
@@ -6940,7 +6959,7 @@ export class VelocityClient {
 
 				const settlePnlIx = await this.settlePNLIx(
 					userAccountPublicKey,
-					this.getUserAccount(subAccountId),
+					this.getUserAccountOrThrow(subAccountId),
 					orderParams.marketIndex
 				);
 
@@ -7054,7 +7073,7 @@ export class VelocityClient {
 			? [makerInfo]
 			: [];
 
-		const userAccounts = [this.getUserAccount(subAccountId)];
+		const userAccounts = [this.getUserAccountOrThrow(subAccountId)];
 		for (const maker of makerInfo) {
 			userAccounts.push(maker.makerUserAccount);
 		}
@@ -7149,7 +7168,7 @@ export class VelocityClient {
 
 		const remainingAccounts = this.getRemainingAccounts({
 			userAccounts: [
-				this.getUserAccount(subAccountId),
+				this.getUserAccountOrThrow(subAccountId),
 				takerInfo.takerUserAccount,
 			],
 			useMarketLastSlotCache: true,
@@ -7462,7 +7481,7 @@ export class VelocityClient {
 
 		const remainingAccounts = this.getRemainingAccounts({
 			userAccounts: [
-				this.getUserAccount(subAccountId),
+				this.getUserAccountOrThrow(subAccountId),
 				takerInfo.takerUserAccount,
 			],
 			useMarketLastSlotCache: false,
@@ -7741,8 +7760,12 @@ export class VelocityClient {
 		const userPubKey =
 			overrides?.user?.getUserAccountPublicKey() ??
 			(await this.getUserAccountPublicKey(subAccountId));
+		const overrideUserAccount = overrides?.user?.getUserAccount();
+		if (overrides?.user && !overrideUserAccount) {
+			throw new Error('modifyOrder: override user account is not loaded');
+		}
 		const userAccount =
-			overrides?.user?.getUserAccount() ?? this.getUserAccount(subAccountId);
+			overrideUserAccount ?? this.getUserAccountOrThrow(subAccountId);
 
 		const remainingAccounts = this.getRemainingAccounts({
 			userAccounts: [userAccount],
@@ -7768,7 +7791,7 @@ export class VelocityClient {
 
 		const authority =
 			overrides?.authority ??
-			overrides?.user?.getUserAccount()?.authority ??
+			overrideUserAccount?.authority ??
 			this.wallet.publicKey;
 		return await VelocityCore.buildModifyOrderInstruction({
 			program: this.program,
@@ -7871,7 +7894,7 @@ export class VelocityClient {
 		const user = await this.getUserAccountPublicKey(subAccountId);
 
 		const remainingAccounts = this.getRemainingAccounts({
-			userAccounts: [this.getUserAccount(subAccountId)],
+			userAccounts: [this.getUserAccountOrThrow(subAccountId)],
 			useMarketLastSlotCache: true,
 		});
 
@@ -8406,7 +8429,7 @@ export class VelocityClient {
 		const liquidatorStatsPublicKey = this.getUserStatsAccountPublicKey();
 
 		const remainingAccounts = this.getRemainingAccounts({
-			userAccounts: [this.getUserAccount(liquidatorSubAccountId), userAccount],
+			userAccounts: [this.getUserAccountOrThrow(liquidatorSubAccountId), userAccount],
 			useMarketLastSlotCache: true,
 			writablePerpMarketIndexes: [marketIndex],
 		});
@@ -8553,7 +8576,7 @@ export class VelocityClient {
 		const liquidatorStatsPublicKey = this.getUserStatsAccountPublicKey();
 
 		const remainingAccounts = this.getRemainingAccounts({
-			userAccounts: [this.getUserAccount(liquidatorSubAccountId), userAccount],
+			userAccounts: [this.getUserAccountOrThrow(liquidatorSubAccountId), userAccount],
 			useMarketLastSlotCache: true,
 			writableSpotMarketIndexes: [liabilityMarketIndex, assetMarketIndex],
 		});
@@ -8998,7 +9021,7 @@ export class VelocityClient {
 		const liquidatorStatsPublicKey = this.getUserStatsAccountPublicKey();
 
 		const remainingAccounts = this.getRemainingAccounts({
-			userAccounts: [this.getUserAccount(liquidatorSubAccountId), userAccount],
+			userAccounts: [this.getUserAccountOrThrow(liquidatorSubAccountId), userAccount],
 			writablePerpMarketIndexes: [perpMarketIndex],
 			writableSpotMarketIndexes: [liabilityMarketIndex],
 		});
@@ -9073,7 +9096,7 @@ export class VelocityClient {
 		const liquidatorStatsPublicKey = this.getUserStatsAccountPublicKey();
 
 		const remainingAccounts = this.getRemainingAccounts({
-			userAccounts: [this.getUserAccount(liquidatorSubAccountId), userAccount],
+			userAccounts: [this.getUserAccountOrThrow(liquidatorSubAccountId), userAccount],
 			writablePerpMarketIndexes: [perpMarketIndex],
 			writableSpotMarketIndexes: [assetMarketIndex],
 		});
@@ -9137,7 +9160,7 @@ export class VelocityClient {
 		const liquidatorStatsPublicKey = this.getUserStatsAccountPublicKey();
 
 		const remainingAccounts = this.getRemainingAccounts({
-			userAccounts: [this.getUserAccount(liquidatorSubAccountId), userAccount],
+			userAccounts: [this.getUserAccountOrThrow(liquidatorSubAccountId), userAccount],
 			writablePerpMarketIndexes: [marketIndex],
 			writableSpotMarketIndexes: [QUOTE_SPOT_MARKET_INDEX],
 		});
@@ -9204,7 +9227,7 @@ export class VelocityClient {
 		const liquidatorStatsPublicKey = this.getUserStatsAccountPublicKey();
 
 		const remainingAccounts = this.getRemainingAccounts({
-			userAccounts: [this.getUserAccount(liquidatorSubAccountId), userAccount],
+			userAccounts: [this.getUserAccountOrThrow(liquidatorSubAccountId), userAccount],
 			writableSpotMarketIndexes: [marketIndex],
 		});
 
@@ -10063,7 +10086,7 @@ export class VelocityClient {
 		perpMarketIndex: number
 	): Promise<TransactionInstruction> {
 		const remainingAccounts = this.getRemainingAccounts({
-			userAccounts: [this.getUserAccount()],
+			userAccounts: [this.getUserAccountOrThrow()],
 			writablePerpMarketIndexes: [perpMarketIndex],
 			writableSpotMarketIndexes: [spotMarketIndex],
 		});
@@ -11649,7 +11672,7 @@ export class VelocityClient {
 		orderParams: OptionalOrderParams,
 		subAccountId?: number
 	): boolean {
-		const userAccount = this.getUserAccount(subAccountId);
+		const userAccount = this.getUserAccountOrThrow(subAccountId);
 		const perpPosition = userAccount.perpPositions.find(
 			(p) => p.marketIndex === orderParams.marketIndex
 		);

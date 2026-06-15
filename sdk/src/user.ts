@@ -54,6 +54,7 @@ import {
 	ACCOUNT_AGE_DELETION_CUTOFF_SECONDS,
 } from './constants/numericConstants';
 import {
+	assertDataAndSlot,
 	DataAndSlot,
 	UserAccountEvents,
 	UserAccountSubscriber,
@@ -228,6 +229,21 @@ export class User {
 		return this.accountSubscriber.getUserAccountAndSlot()?.data;
 	}
 
+	/**
+	 * Like {@link getUserAccount} but throws a named error instead of returning
+	 * `undefined` when the account has not been loaded yet. Use at call sites
+	 * that structurally require a loaded account.
+	 */
+	public getUserAccountOrThrow(): UserAccount {
+		const userAccount = this.getUserAccount();
+		if (!userAccount) {
+			throw new Error(
+				`User account not loaded: ${this.getUserAccountPublicKey().toString()}`
+			);
+		}
+		return userAccount;
+	}
+
 	public async forceGetUserAccount(): Promise<UserAccount | undefined> {
 		await this.fetchAccounts();
 		const account = this.accountSubscriber.getUserAccountAndSlot();
@@ -235,7 +251,10 @@ export class User {
 	}
 
 	public getUserAccountAndSlot(): DataAndSlot<UserAccount> {
-		return this.accountSubscriber.getUserAccountAndSlot()!;
+		return assertDataAndSlot(
+			this.accountSubscriber.getUserAccountAndSlot(),
+			`User account not loaded: ${this.getUserAccountPublicKey().toString()}`
+		);
 	}
 
 	public getPerpPositionForUserAccount(
@@ -253,12 +272,12 @@ export class User {
 	 * @returns userPerpPosition
 	 */
 	public getPerpPosition(marketIndex: number): PerpPosition | undefined {
-		const userAccount = this.getUserAccount()!;
+		const userAccount = this.getUserAccountOrThrow();
 		return this.getPerpPositionForUserAccount(userAccount, marketIndex);
 	}
 
 	public getPerpPositionOrEmpty(marketIndex: number): PerpPosition {
-		const userAccount = this.getUserAccount()!;
+		const userAccount = this.getUserAccountOrThrow();
 		return (
 			this.getPerpPositionForUserAccount(userAccount, marketIndex) ??
 			this.getEmptyPosition(marketIndex)
@@ -302,7 +321,7 @@ export class User {
 	 * @returns userSpotPosition
 	 */
 	public getSpotPosition(marketIndex: number): SpotPosition | undefined {
-		const userAccount = this.getUserAccount()!;
+		const userAccount = this.getUserAccountOrThrow();
 		return this.getSpotPositionForUserAccount(userAccount, marketIndex);
 	}
 
@@ -448,7 +467,7 @@ export class User {
 	 * @returns Order
 	 */
 	public getOrder(orderId: number): Order | undefined {
-		const userAccount = this.getUserAccount()!;
+		const userAccount = this.getUserAccountOrThrow();
 		return this.getOrderForUserAccount(userAccount, orderId);
 	}
 
@@ -475,7 +494,7 @@ export class User {
 	 * @returns Order
 	 */
 	public getOrderByUserOrderId(userOrderId: number): Order | undefined {
-		const userAccount = this.getUserAccount()!;
+		const userAccount = this.getUserAccountOrThrow();
 		return this.getOrderByUserIdForUserAccount(userAccount, userOrderId);
 	}
 
@@ -610,7 +629,7 @@ export class User {
 		// callers supply the param; only external callers omitting it hit NaN.
 		return Math.max(
 			perpMarketMaxMarginRatio ?? NaN,
-			this.getUserAccount()!.maxMarginRatio
+			this.getUserAccountOrThrow().maxMarginRatio
 		);
 	}
 
@@ -767,7 +786,7 @@ export class User {
 	}
 
 	public getActivePerpPositions(): PerpPosition[] {
-		const userAccount = this.getUserAccount()!;
+		const userAccount = this.getUserAccountOrThrow();
 		return this.getActivePerpPositionsForUserAccount(userAccount);
 	}
 	public getActivePerpPositionsAndSlot(): DataAndSlot<PerpPosition[]> {
@@ -790,7 +809,7 @@ export class User {
 	}
 
 	public getActiveSpotPositions(): SpotPosition[] {
-		const userAccount = this.getUserAccount()!;
+		const userAccount = this.getUserAccountOrThrow();
 		return this.getActiveSpotPositionsForUserAccount(userAccount);
 	}
 	public getActiveSpotPositionsAndSlot(): DataAndSlot<SpotPosition[]> {
@@ -891,7 +910,7 @@ export class User {
 	 * @returns : Precision QUOTE_PRECISION
 	 */
 	public getUnrealizedFundingPNL(marketIndex?: number): BN {
-		return this.getUserAccount()!
+		return this.getUserAccountOrThrow()
 			.perpPositions.filter((pos) =>
 				marketIndex !== undefined ? pos.marketIndex === marketIndex : true
 			)
@@ -915,7 +934,7 @@ export class User {
 		let netQuoteValue = ZERO;
 		let totalAssetValue = ZERO;
 		let totalLiabilityValue = ZERO;
-		for (const spotPosition of this.getUserAccount()!.spotPositions) {
+		for (const spotPosition of this.getUserAccountOrThrow().spotPositions) {
 			const countForBase =
 				marketIndex === undefined || spotPosition.marketIndex === marketIndex;
 
@@ -1036,7 +1055,7 @@ export class User {
 				spotMarketAccount,
 				strictOraclePrice,
 				marginCategory,
-				this.getUserAccount()!.maxMarginRatio
+				this.getUserAccountOrThrow().maxMarginRatio
 			);
 
 			if (worstCaseTokenAmount.gt(ZERO) && countForBase) {
@@ -1069,7 +1088,7 @@ export class User {
 			if (worstCaseQuoteTokenAmount.lt(ZERO) && countForQuote) {
 				let weight = SPOT_MARKET_WEIGHT_PRECISION;
 				if (marginCategory === 'Initial') {
-					weight = BN.max(weight, new BN(this.getUserAccount()!.maxMarginRatio));
+					weight = BN.max(weight, new BN(this.getUserAccountOrThrow().maxMarginRatio));
 				}
 
 				const weightedTokenValue = worstCaseQuoteTokenAmount
@@ -1126,7 +1145,7 @@ export class User {
 			tokenAmount,
 			strictOraclePrice,
 			spotMarketAccount,
-			this.getUserAccount()!.maxMarginRatio,
+			this.getUserAccountOrThrow().maxMarginRatio,
 			marginCategory,
 			liquidationBuffer
 		);
@@ -1160,7 +1179,7 @@ export class User {
 			tokenAmount,
 			strictOraclePrice,
 			spotMarketAccount,
-			this.getUserAccount()!.maxMarginRatio,
+			this.getUserAccountOrThrow().maxMarginRatio,
 			marginCategory
 		);
 	}
@@ -1363,7 +1382,7 @@ export class User {
 		if (marginCategory) {
 			const userCustomMargin = Math.max(
 				perpPosition.maxMarginRatio,
-				this.getUserAccount()!.maxMarginRatio
+				this.getUserAccountOrThrow().maxMarginRatio
 			);
 			let marginRatio = new BN(
 				calculateMarketMarginRatio(
@@ -1807,8 +1826,8 @@ export class User {
 	 */
 	getTotalAllTimePnl(): BN {
 		const netUsdValue = this.getNetUsdValue();
-		const totalDeposits = this.getUserAccount()!.totalDeposits;
-		const totalWithdraws = this.getUserAccount()!.totalWithdraws;
+		const totalDeposits = this.getUserAccountOrThrow().totalDeposits;
+		const totalWithdraws = this.getUserAccountOrThrow().totalWithdraws;
 
 		const totalPnl = netUsdValue.add(totalWithdraws).sub(totalDeposits);
 
@@ -2047,7 +2066,7 @@ export class User {
 
 	public isCrossMarginBeingLiquidated(): boolean {
 		return (
-			(this.getUserAccount()!.status &
+			(this.getUserAccountOrThrow().status &
 				(UserStatus.BEING_LIQUIDATED | UserStatus.BANKRUPT)) >
 			0
 		);
@@ -2103,11 +2122,11 @@ export class User {
 	}
 
 	public hasStatus(status: UserStatus): boolean {
-		return (this.getUserAccount()!.status & status) > 0;
+		return (this.getUserAccountOrThrow().status & status) > 0;
 	}
 
 	public isBankrupt(): boolean {
-		return (this.getUserAccount()!.status & UserStatus.BANKRUPT) > 0;
+		return (this.getUserAccountOrThrow().status & UserStatus.BANKRUPT) > 0;
 	}
 
 	/**
@@ -2115,7 +2134,7 @@ export class User {
 	 * @returns
 	 */
 	public needsToSettleFundingPayment(): boolean {
-		for (const userPosition of this.getUserAccount()!.perpPositions) {
+		for (const userPosition of this.getUserAccountOrThrow().perpPositions) {
 			if (userPosition.baseAssetAmount.eq(ZERO)) {
 				continue;
 			}
@@ -2466,7 +2485,7 @@ export class User {
 
 			const userCustomMargin = Math.max(
 				perpPosition.maxMarginRatio,
-				this.getUserAccount()!.maxMarginRatio
+				this.getUserAccountOrThrow().maxMarginRatio
 			);
 			const marginRatio = calculateMarketMarginRatio(
 				market,
@@ -2515,7 +2534,7 @@ export class User {
 
 		const userCustomMargin = Math.max(
 			perpPosition.maxMarginRatio,
-			this.getUserAccount()!.maxMarginRatio
+			this.getUserAccountOrThrow().maxMarginRatio
 		);
 
 		const marginRatio = calculateMarketMarginRatio(
@@ -2724,7 +2743,7 @@ export class User {
 				const marginRequirement = this.getInitialMarginRequirement();
 				const marginRatio = Math.max(
 					currentPosition.maxMarginRatio,
-					this.getUserAccount()!.maxMarginRatio
+					this.getUserAccountOrThrow().maxMarginRatio
 				);
 				const marginFreedByClosing = perpLiabilityValue
 					.mul(new BN(marginRatio))
@@ -2833,11 +2852,11 @@ export class User {
 			isVariant(direction, 'long')
 				? SpotBalanceType.DEPOSIT
 				: SpotBalanceType.BORROW,
-			this.getUserAccount()!.maxMarginRatio
+			this.getUserAccountOrThrow().maxMarginRatio
 		);
 
 		let tradeAmount = ZERO;
-		if (this.getUserAccount()!.isMarginTradingEnabled) {
+		if (this.getUserAccountOrThrow().isMarginTradingEnabled) {
 			// if the user is buying/selling and already short/long, need to account for closing out short/long
 			if (isVariant(direction, 'long') && currentSpotMarketNetValue.lt(ZERO)) {
 				tradeAmount = currentSpotMarketNetValue.abs();
@@ -2847,7 +2866,7 @@ export class User {
 					'Initial',
 					this.getTokenAmount(targetMarketIndex).abs(),
 					SpotBalanceType.BORROW,
-					this.getUserAccount()!.maxMarginRatio
+					this.getUserAccountOrThrow().maxMarginRatio
 				);
 				freeCollateral = freeCollateral.add(
 					tradeAmount.mul(new BN(marginRatio)).div(MARGIN_PRECISION)
@@ -2863,7 +2882,7 @@ export class User {
 					'Initial',
 					this.getTokenAmount(targetMarketIndex),
 					SpotBalanceType.DEPOSIT,
-					this.getUserAccount()!.maxMarginRatio
+					this.getUserAccountOrThrow().maxMarginRatio
 				);
 				freeCollateral = freeCollateral.add(
 					tradeAmount.mul(new BN(marginRatio)).div(MARGIN_PRECISION)
@@ -3172,7 +3191,7 @@ export class User {
 			spotMarketAccount,
 			strictOraclePrice,
 			marginCategory,
-			this.getUserAccount()!.maxMarginRatio
+			this.getUserAccountOrThrow().maxMarginRatio
 		);
 
 		return freeCollateralContribution;
@@ -3196,7 +3215,7 @@ export class User {
 			spotMarketAccount,
 			strictOraclePrice,
 			'Initial',
-			this.getUserAccount()!.maxMarginRatio
+			this.getUserAccountOrThrow().maxMarginRatio
 		);
 
 		if (tokenValue.gte(ZERO)) {
@@ -3515,7 +3534,7 @@ export class User {
 		if (isVariant(marketType, 'perp')) {
 			const userStatsAccount: UserStatsAccount = this.velocityClient
 				.getUserStatsOrThrow()
-				.getAccount()!;
+				.getAccountOrThrow();
 
 			const total30dVolume = getUser30dRollingVolumeEstimate(
 				userStatsAccount,
@@ -3702,8 +3721,8 @@ export class User {
 		const maxDepositAmount = spotMarket.withdrawGuardThreshold.div(new BN(10));
 		const position = this.getSpotPosition(marketIndex);
 
-		const netDeposits = this.getUserAccount()!.totalDeposits.sub(
-			this.getUserAccount()!.totalWithdraws
+		const netDeposits = this.getUserAccountOrThrow().totalDeposits.sub(
+			this.getUserAccountOrThrow().totalWithdraws
 		);
 
 		if (!position) {
@@ -3748,7 +3767,7 @@ export class User {
 	}
 
 	public canMakeIdle(slot: BN): boolean {
-		const userAccount = this.getUserAccount()!;
+		const userAccount = this.getUserAccountOrThrow();
 		if (userAccount.idle) {
 			return false;
 		}
@@ -3806,7 +3825,7 @@ export class User {
 		userStatsAccount?: UserStatsAccount,
 		now?: BN
 	): { canDelete: boolean; reason?: string } {
-		const userAccount = this.getUserAccount()!;
+		const userAccount = this.getUserAccountOrThrow();
 		const userStatsAccountToUse =
 			userStatsAccount ??
 			this.velocityClient.getUserStatsOrThrow().getAccount();
@@ -3950,7 +3969,7 @@ export class User {
 
 		const userCustomMargin = Math.max(
 			perpPosition.maxMarginRatio,
-			this.getUserAccount()!.maxMarginRatio
+			this.getUserAccountOrThrow().maxMarginRatio
 		);
 		const marginRatio = new BN(
 			calculateMarketMarginRatio(
@@ -4096,7 +4115,7 @@ export class User {
 				spotMarketAccount,
 				strictOraclePrice,
 				marginCategory,
-				this.getUserAccount()!.maxMarginRatio
+				this.getUserAccountOrThrow().maxMarginRatio
 			);
 
 			netQuoteValue = netQuoteValue.add(ordersValue);
@@ -4141,7 +4160,7 @@ export class User {
 				oraclePriceData.price,
 				spotMarketAccount,
 				marginCategory,
-				this.getUserAccount()!.maxMarginRatio
+				this.getUserAccountOrThrow().maxMarginRatio
 			);
 
 			if (netQuoteValue.lt(ZERO)) {
@@ -4249,7 +4268,7 @@ export class User {
 
 		// Equivalent to on-chain user_custom_margin_ratio
 		const userCustomMarginRatio =
-			marginCategory === 'Initial' ? this.getUserAccount()!.maxMarginRatio : 0;
+			marginCategory === 'Initial' ? this.getUserAccountOrThrow().maxMarginRatio : 0;
 
 		// Initialize calc via JS mirror of Rust/on-chain MarginCalculation
 		const isolatedMarginBuffers = new Map<number, BN>();
@@ -4268,7 +4287,7 @@ export class User {
 		const calc = new MarginCalculation(ctx);
 
 		// SPOT POSITIONS
-		for (const spotPosition of this.getUserAccount()!.spotPositions) {
+		for (const spotPosition of this.getUserAccountOrThrow().spotPositions) {
 			if (isSpotPositionAvailable(spotPosition)) continue;
 
 			const isQuote = spotPosition.marketIndex === QUOTE_SPOT_MARKET_INDEX;

@@ -233,7 +233,13 @@ export class DLOB {
 		// initialize the dlob with the user map
 		for (const user of userMap.values()) {
 			const userAccount = user.getUserAccount();
-			if (!userAccount) continue;
+			if (!userAccount) {
+				throw new Error(
+					`DLOB.initFromUserMap: user ${user
+						.getUserAccountPublicKey()
+						.toString()} has no loaded UserAccount`
+				);
+			}
 			const userAccountPubkey = user.getUserAccountPublicKey();
 			const userAccountPubkeyString = userAccountPubkey.toString();
 

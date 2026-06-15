@@ -297,7 +297,7 @@ export class UserMap implements UserMapInterface {
 
 	public async mustGetUserAccount(key: string): Promise<UserAccount> {
 		const user = await this.mustGet(key);
-		return user.getUserAccount()!;
+		return user.getUserAccountOrThrow();
 	}
 
 	/**
@@ -402,7 +402,7 @@ export class UserMap implements UserMapInterface {
 		});
 		const userAuths = new Set(
 			usersMeetingCriteria.map((user) =>
-				user.getUserAccount()!.authority.toBase58()
+				user.getUserAccountOrThrow().authority.toBase58()
 			)
 		);
 		const userAuthKeys = Array.from(userAuths).map(

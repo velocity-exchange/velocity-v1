@@ -91,6 +91,18 @@ export class UserStats {
 		return this.accountSubscriber.getUserStatsAccountAndSlot()?.data;
 	}
 
+	/**
+	 * Like {@link getAccount} but throws a named error instead of returning
+	 * `undefined` when the stats account has not been loaded yet.
+	 */
+	public getAccountOrThrow(): UserStatsAccount {
+		const account = this.getAccount();
+		if (!account) {
+			throw new Error('UserStats account not loaded');
+		}
+		return account;
+	}
+
 	public getReferrerInfo(): ReferrerInfo | undefined {
 		const account = this.getAccount();
 		if (!account || account.referrer.equals(PublicKey.default)) {

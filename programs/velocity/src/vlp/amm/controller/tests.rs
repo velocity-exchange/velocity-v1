@@ -867,7 +867,7 @@ fn amm_isolation_balance_sheet_identity_test() {
     //    and the AMM's books are untouched
     let tfmd_before = market.amm.total_fee_minus_distributions;
     let (if_swept, protocol_swept, provision_tokenized) =
-        sweep_market_fees(&mut market, &mut spot_market, 0, 0).unwrap();
+        sweep_market_fees(&mut market, &mut spot_market, 0, 0, false).unwrap();
     assert_eq!(if_swept, 5 * QUOTE_PRECISION);
     assert_eq!(protocol_swept, 4 * QUOTE_PRECISION);
     assert_eq!(provision_tokenized, QUOTE_PRECISION);
@@ -1024,6 +1024,60 @@ fn update_pool_balances_pending_fee_drain_capped_test() {
         QUOTE_PRECISION
     );
     assert_eq!(paused_market.fee_ledger.pending_if_fee, QUOTE_PRECISION);
+}
+
+#[test]
+fn sweep_market_fees_force_overrides_settle_rev_pool_pause() {
+    // A SettleRevPool-paused market early-returns from the streaming sweep
+    // (covered above). The final delisting sweep passes force=true and must
+    // drain regardless, so the protocol carveout lands in protocol_fee_pool
+    // instead of being dumped wholesale into the revenue pool / IF.
+    let mut spot_market = SpotMarket {
+        deposit_balance: 400 * QUOTE_PRECISION * SPOT_BALANCE_PRECISION,
+        cumulative_deposit_interest: SPOT_CUMULATIVE_INTEREST_PRECISION,
+        cumulative_borrow_interest: SPOT_CUMULATIVE_INTEREST_PRECISION,
+        revenue_pool: PoolBalance::default(),
+        ..SpotMarket::default()
+    };
+
+    let mut market = PerpMarket {
+        pnl_pool: PoolBalance {
+            scaled_balance: 100 * QUOTE_PRECISION * SPOT_BALANCE_PRECISION,
+            market_index: QUOTE_SPOT_MARKET_INDEX,
+            ..PoolBalance::default()
+        },
+        fee_ledger: FeeLedger {
+            pending_protocol_fee: 7 * QUOTE_PRECISION,
+            pending_if_fee: 8 * QUOTE_PRECISION,
+            ..FeeLedger::default()
+        },
+        paused_operations: PerpOperation::SettleRevPool as u8,
+        ..PerpMarket::default()
+    };
+
+    let now = 33928058;
+
+    // force = false: the pause holds and nothing drains.
+    let (if_swept, protocol_swept, _) =
+        sweep_market_fees(&mut market, &mut spot_market, 0, now, false).unwrap();
+    assert_eq!(if_swept, 0);
+    assert_eq!(protocol_swept, 0);
+    assert_eq!(market.protocol_fee_pool.scaled_balance, 0);
+    assert_eq!(market.fee_ledger.pending_protocol_fee, 7 * QUOTE_PRECISION);
+
+    // force = true: the pause is overridden and the waterfall runs. With
+    // net_user_pnl = 0 and a zero buffer target, both the protocol and IF cuts
+    // drain in full — the protocol cut to the withdrawable protocol_fee_pool.
+    let (if_swept, protocol_swept, _) =
+        sweep_market_fees(&mut market, &mut spot_market, 0, now, true).unwrap();
+    assert_eq!(protocol_swept, 7 * QUOTE_PRECISION);
+    assert_eq!(if_swept, 8 * QUOTE_PRECISION);
+    assert_eq!(
+        market.protocol_fee_pool.scaled_balance,
+        7 * QUOTE_PRECISION * SPOT_BALANCE_PRECISION
+    );
+    assert_eq!(market.fee_ledger.pending_protocol_fee, 0);
+    assert_eq!(market.fee_ledger.pending_if_fee, 0);
 }
 
 #[test]

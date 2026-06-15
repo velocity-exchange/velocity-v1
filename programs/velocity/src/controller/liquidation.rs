@@ -1919,6 +1919,7 @@ pub fn liquidate_spot_with_swap_begin(
         liability_decimals,
         liability_weight,
         liability_if_fee,
+        liability_protocol_fee,
         liability_pool_id,
         liability_oracle_delay,
     ) = {
@@ -1958,6 +1959,7 @@ pub fn liquidate_spot_with_swap_begin(
             liability_market.decimals,
             liability_market.maintenance_liability_weight,
             liability_market.if_liquidation_fee,
+            liability_market.protocol_liquidation_fee,
             liability_market.pool_id,
             liability_price_data.delay,
         )
@@ -2075,6 +2077,13 @@ pub fn liquidate_spot_with_swap_begin(
     let liability_weight_with_buffer =
         liability_weight.safe_add(liquidation_margin_buffer_ratio)?;
 
+    // The borrow reduction the user receives in `liquidate_spot_with_swap_end`
+    // is `liability_transfer - if_fee - protocol_fee`, so size the transfer
+    // against the combined insurance-side fee. Using only `if_fee` here would
+    // under-size the swap and leave the user with less margin relief than
+    // intended (matches the combined fee `liquidate_spot` sizes with).
+    let liability_total_if_side_fee = liability_if_fee.safe_add(liability_protocol_fee)?;
+
     // Determine what amount of borrow to transfer to reduce margin shortage to 0
     // assume 0 liquidator fee and swap is executed at oracle price
     let liability_transfer_to_cover_margin_shortage =
@@ -2086,7 +2095,7 @@ pub fn liquidate_spot_with_swap_begin(
             LIQUIDATION_FEE_PRECISION,
             liability_decimals,
             liability_price,
-            liability_if_fee,
+            liability_total_if_side_fee,
         )?;
 
     let max_pct_allowed = calculate_max_pct_to_liquidate(

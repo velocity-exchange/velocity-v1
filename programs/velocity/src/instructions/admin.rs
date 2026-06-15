@@ -1150,6 +1150,18 @@ pub fn handle_settle_expired_market_pools_to_revenue_pool(
         "outstanding quote_asset_amounts must be balanced"
     )?;
 
+    // With user base, AMM base, and net user cost basis all wound down,
+    // net_user_pnl is identically 0 — no live user claim remains on the pnl
+    // pool. This is what lets the final sweep below (and the full pnl-pool
+    // drain to the revenue pool) reserve nothing for users without consulting
+    // an oracle.
+    validate!(
+        perp_market.amm.base_asset_amount_with_amm == 0,
+        ErrorCode::DefaultError,
+        "amm base_asset_amount_with_amm must be balanced ({})",
+        perp_market.amm.base_asset_amount_with_amm
+    )?;
+
     // block when settlement_duration is default/unconfigured
     validate!(
         state.settlement_duration != 0,
@@ -1175,6 +1187,17 @@ pub fn handle_settle_expired_market_pools_to_revenue_pool(
         "must be escrow_period_before_transfer={} after market.expiry_ts",
         escrow_period_before_transfer
     )?;
+
+    // Materialize accrued fees before draining the pnl pool to the revenue
+    // pool. The pnl pool holds the un-swept fee value; without this sweep the
+    // `pending_protocol_fee` carveout (which the waterfall routes to the
+    // withdrawable `protocol_fee_pool`) would instead be dumped wholesale into
+    // the revenue pool / insurance fund and lost to the protocol, since no
+    // sweep can run once the market is Delisted. net_user_pnl is 0 here (see
+    // the wind-down validations above), so the full pnl-pool surplus is
+    // available to the waterfall. `force = true` overrides any standing
+    // SettleRevPool pause — this is the last sweep the market will ever get.
+    controller::perp_pools::sweep_market_fees(perp_market, spot_market, 0, now, true)?;
 
     let fee_pool_token_amount = perp_market.amm.fee_pool_token_amount(spot_market)?;
     let pnl_pool_token_amount = get_token_amount(
@@ -1701,10 +1724,16 @@ pub fn handle_update_spot_market_if_factor(
         "spot_market_index dne spot_market.index"
     )?;
 
+    // Strictly less than 100%: lenders must keep a nonzero configured share.
+    // At a full 100% carveout `deposit_interest_for_lenders` is 0, which skips
+    // the entire accrual block in `update_spot_market_cumulative_interest` —
+    // freezing borrower interest, the interest timestamp, and even the IF /
+    // protocol pool credits themselves. A strict `<` keeps the lender cut >= 1
+    // whenever deposit interest accrues, so the block always runs.
     validate!(
-        if_fee_factor.safe_add(protocol_fee_factor)? <= IF_FACTOR_PRECISION.cast()?,
+        if_fee_factor.safe_add(protocol_fee_factor)? < IF_FACTOR_PRECISION.cast()?,
         ErrorCode::DefaultError,
-        "if_fee_factor + protocol_fee_factor must be <= 100%"
+        "if_fee_factor + protocol_fee_factor must be < 100%"
     )?;
 
     msg!(

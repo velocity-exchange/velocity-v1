@@ -54,12 +54,19 @@ use crate::validate;
 /// every `update_pool_balances` (pnl settles, after the user's settle) and on
 /// demand via the `sweep_perp_market_fees` keeper instruction.
 ///
+/// `force` bypasses the `SettleRevPool` operation pause. It exists for the
+/// final sweep on market delisting: that is the last chance to route the
+/// protocol carveout to `protocol_fee_pool` before the remaining pnl pool is
+/// drained to the revenue pool, so a standing pause must not strand it. The
+/// streaming/keeper callers pass `false` and continue to respect the pause.
+///
 /// Returns `(if_swept, protocol_swept, amm_provision_tokenized)`.
 pub fn sweep_market_fees(
     market: &mut PerpMarket,
     spot_market: &mut SpotMarket,
     net_user_pnl: i128,
     now: i64,
+    force: bool,
 ) -> VelocityResult<(u128, u128, u128)> {
     // market can perform withdraw from revenue pool
     if spot_market.insurance_fund.last_revenue_settle_ts
@@ -75,7 +82,7 @@ pub fn sweep_market_fees(
         market.insurance_claim.revenue_withdraw_since_last_settle = 0;
     }
 
-    if market.is_operation_paused(PerpOperation::SettleRevPool)
+    if (!force && market.is_operation_paused(PerpOperation::SettleRevPool))
         || (market.fee_ledger.pending_protocol_fee == 0
             && market.fee_ledger.pending_if_fee == 0
             && market.fee_ledger.pending_amm_provision == 0)
@@ -200,7 +207,7 @@ pub fn update_pool_balances(
     // sweep must not starve the settle that triggered it. The settle just
     // moved `pnl_to_settle_with_user` out of (or into) aggregate user claims.
     let net_user_pnl_after = net_user_pnl.safe_sub(pnl_to_settle_with_user)?;
-    sweep_market_fees(market, spot_market, net_user_pnl_after, now)?;
+    sweep_market_fees(market, spot_market, net_user_pnl_after, now, false)?;
 
     let _depositors_claim = validate_spot_balances(spot_market)?;
 

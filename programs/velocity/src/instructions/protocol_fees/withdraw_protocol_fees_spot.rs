@@ -2,8 +2,10 @@
 //! carveouts) from its own vault to the protocol fee recipient's ATA.
 
 use anchor_lang::prelude::*;
-use anchor_spl::associated_token::AssociatedToken;
-use anchor_spl::token_interface::{Mint, TokenAccount, TokenInterface};
+use anchor_spl::{
+    associated_token::AssociatedToken,
+    token_interface::{Mint, TokenAccount, TokenInterface},
+};
 
 use crate::{
     auth::check_hot,
@@ -46,6 +48,7 @@ pub struct WithdrawProtocolFeesSpot<'info> {
     pub mint: InterfaceAccount<'info, Mint>,
     /// CHECK: locked to the cold-admin-set treasury; only used as the ATA wallet
     #[account(
+        constraint = recipient.key() != Pubkey::default(),
         address = state.load()?.protocol_fee_recipient_spot @ ErrorCode::InvalidProtocolFeeRecipient
     )]
     pub recipient: UncheckedAccount<'info>,

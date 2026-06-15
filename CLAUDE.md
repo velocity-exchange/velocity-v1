@@ -209,6 +209,15 @@ The velocity program's `Error` enum is ABI-stable — on-chain clients identify 
 - **Add** new variants at the **bottom** only, never insert between existing ones.
 - **Remove** by marking the variant as deprecated (e.g., `/// @deprecated`) and leaving it in place — do not delete or reorder.
 
+### Oracle usage
+
+**Any time you read an oracle price to drive a value transfer, you must guard its validity — never trust a raw oracle price.** A stale, divergent, or low-confidence oracle can mis-size any amount derived from it (PnL, sweeps, settlements, liquidations, withdrawals). When adding or reviewing code that touches an oracle:
+
+- **Gate on validity before using the price.** Mirror the checks the comparable existing path already applies — e.g. `settle_pnl` runs `validate_market_within_price_band`, then (for curve-update markets) `is_recent_oracle_valid` → `get_price_data_and_validity` → `is_oracle_valid_for_action` / `is_price_divergence_ok_for_settle_pnl`, and requires the AMM to be fresh in the same slot (`is_fresh_at`). If you compute the same kind of value (e.g. `net_user_pnl`) elsewhere, apply the same gates — divergence between two code paths that value the same thing is a bug.
+- **Consider which price you should actually be using.** The spot/last oracle price is not always correct. Decide deliberately between the live price, the safe/confidence-bounded price, and the TWAP (`last_oracle_price_twap`, 5min twap, etc.) for the operation at hand — TWAPs resist manipulation for things like price-band and divergence checks; live prices suit immediate settlement once validity is confirmed.
+- **Prefer the shared helpers** in `math/oracle.rs` and `state/oracle_map.rs` (`get_price_data_and_validity`, `is_oracle_valid_for_action`, per-market `is_recent_oracle_valid` / `get_max_confidence_interval_multiplier`) over ad-hoc checks, so behavior stays consistent across instructions.
+- New `VelocityAction` variants exist precisely so each action can express its own validity tolerance — pick the matching action (or add one) rather than reusing an unrelated one.
+
 ### Key design patterns
 
 - Velocity uses a custom native entrypoint (discriminator `[0xFF, 0xFF, 0xFF, 0xFF, opcode]`) for high-frequency keeper instructions that bypass Anchor overhead, alongside the standard Anchor `#[program]` entrypoint.

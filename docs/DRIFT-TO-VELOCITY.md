@@ -40,19 +40,20 @@ behind them changed (see §5), so old decoders must not be pointed at Velocity a
 These Drift features do not exist on Velocity. Integrations touching them must be removed
 or reworked.
 
-| Feature                                                          | Removed in | Notes                                                                                                                                                                                                                                                                                                                      |
-| ---------------------------------------------------------------- | ---------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| **Spot DLOB trading**                                            | #6         | `place_spot_order`, `place_and_take_spot_order`, `place_and_make_spot_order`, `fill_spot_order` deleted. New error `SpotDlobTradingDisabled`. Spot markets still exist for collateral/borrow-lend, but cannot be traded on the order book.                                                                                 |
-| **External spot fulfillment (Serum / Phoenix / OpenBook v2)**    | #36        | All `*_fulfillment_config` instructions and SDK subscribers (`serumSubscriber`, `phoenixSubscriber`, `openbookV2Subscriber`, fulfillment config maps) deleted.                                                                                                                                                             |
-| **Fuel (points/incentives)**                                     | #36        | All `*_fuel` instructions, `User.last_fuel_bonus_update_ts`, `PerpMarket.fuel_boost_*`, SDK `math/fuel`, `FuelSeasonRecord`, `FuelSweepRecord` deleted.                                                                                                                                                                    |
-| **vAMM LP ("BAMM" LP shares)**                                   | #36        | `PerpPosition.lp_shares` and friends removed; `LPRecord`/`LPAction` types deleted. Replaced by the new VLP module (§6).                                                                                                                                                                                                    |
-| **Protected maker mode**                                         | #38        | All `protected_maker_*` instructions, `UserStatus::ProtectedMakerOrders` bit, SDK `math/protectedMakerParams` deleted.                                                                                                                                                                                                     |
-| **High leverage mode**                                           | —          | `enable_user_high_leverage_mode` etc. deleted; `User.margin_mode` field removed; SDK high-leverage-mode config subscribers deleted.                                                                                                                                                                                        |
-| **Prediction markets**                                           | #13        | `initialize_prediction_market` deleted; `ContractType::Prediction` removed.                                                                                                                                                                                                                                                |
-| **Pyth pull/push (legacy)**                                      | #7         | `pythPullClient`, `pythOracleUtils` deleted from SDK. Pyth Lazer is the supported Pyth path. Deprecated `OracleSource` discriminants are preserved (not reused).                                                                                                                                                           |
-| **Switchboard oracles**                                          | #14        | Both classic and on-demand removed from SDK; `OracleSource` discriminants preserved as `Deprecated*`.                                                                                                                                                                                                                      |
-| **HLM**                                                          | #2, #47    | Dead code removed.                                                                                                                                                                                                                                                                                                         |
-| **Legacy fee path**                                              | #67        | `total_fee_lower_bound` accounting removed. (Superseded again by the fee redesign below — the AMM protocol floor itself is now gone.)                                                                                                                                                                                      |
+| Feature | Removed in | Notes |
+|---|---|---|
+| **Spot DLOB trading** | #6 | `place_spot_order`, `place_and_take_spot_order`, `place_and_make_spot_order`, `fill_spot_order` deleted. New error `SpotDlobTradingDisabled`. Spot markets still exist for collateral/borrow-lend, but cannot be traded on the order book. |
+| **External spot fulfillment (Serum / Phoenix / OpenBook v2)** | #36 | All `*_fulfillment_config` instructions and SDK subscribers (`serumSubscriber`, `phoenixSubscriber`, `openbookV2Subscriber`, fulfillment config maps) deleted. |
+| **Fuel (points/incentives)** | #36 | All `*_fuel` instructions, `User.last_fuel_bonus_update_ts`, `PerpMarket.fuel_boost_*`, SDK `math/fuel`, `FuelSeasonRecord`, `FuelSweepRecord` deleted. |
+| **vAMM LP ("BAMM" LP shares)** | #36 | `PerpPosition.lp_shares` and friends removed; `LPRecord`/`LPAction` types deleted. Replaced by the new VLP module (§6). |
+| **Protected maker mode** | #38 | All `protected_maker_*` instructions, `UserStatus::ProtectedMakerOrders` bit, SDK `math/protectedMakerParams` deleted. |
+| **High leverage mode** | — | `enable_user_high_leverage_mode` etc. deleted; `User.margin_mode` field removed; SDK high-leverage-mode config subscribers deleted. |
+| **Prediction markets** | #13 | `initialize_prediction_market` deleted; `ContractType::Prediction` removed. |
+| **Pyth pull/push (legacy)** | #7 | `pythPullClient`, `pythOracleUtils` deleted from SDK. Pyth Lazer is the supported Pyth path. Deprecated `OracleSource` discriminants are preserved (not reused). |
+| **Switchboard oracles** | #14 | Both classic and on-demand removed from SDK; `OracleSource` discriminants preserved as `Deprecated*`. |
+| **HLM** | #2, #47 | Dead code removed. |
+| **Legacy fee path** | #67 | `total_fee_lower_bound` accounting removed. (Superseded again by the fee redesign below — the AMM protocol floor itself is now gone.) |
+| **Gov-token (DRIFT) stake fee discount** | — | Staking the governance token in the spot-market-15 insurance fund no longer grants a fee discount: perp fee tiers are now determined by 30-day volume only. Instructions `update_user_gov_token_insurance_stake` and `update_delegate_user_gov_token_insurance_stake` deleted; `UserStats.if_staked_gov_token_amount` replaced by padding. Spot market 15 has no special treatment anymore (the gov-specific IF revenue-settle APR cap was removed; the general cap applies). |
 | **Protocol-owned insurance fund shares & IF rebalance** (*pending, `fee-arch`*) | fee-arch | The IF is 100% staker-owned. Deleted: `admin_withdraw_from_insurance_fund_vault`, `transfer_protocol_if_shares_to_revenue_pool`, `begin/end_insurance_fund_swap`, `initialize/update_if_rebalance_config`, `initialize/update_protocol_if_shares_transfer_config`, `deposit_into_insurance_fund_stake`, the `IfRebalanceConfig` / `ProtocolIfSharesTransferConfig` accounts, and `HotRole::IfRebalance` (+ `State.hot_if_rebalance`). `InsuranceFund.total_factor`/`user_factor` are replaced by a single `if_fee_factor` (lending-yield carveout to stakers). Protocol revenue no longer flows through IF shares at all. |
 
 ## 3. Feature additions
@@ -124,6 +125,13 @@ plus types `LPRecord`, `LPAction`, `FuelSeasonRecord`, `FuelSweepRecord`,
 Config fields `SERUM_V3`, `PHOENIX`, `OPENBOOK`, `SERUM_LOOKUP_TABLE`,
 `PYTH_PULL_ORACLE_LOOKUP_TABLE` were dropped from the env config object.
 
+Gov-token stake fee discount removal: `VelocityClient.updateUserGovTokenInsuranceStake`
+/ `getUpdateUserGovTokenInsuranceStakeIx`,
+`AdminClient.updateDelegateUserGovTokenInsuranceStake` /
+`getUpdateDelegateUserGovTokenInsuranceStakeIx`, and constants
+`GOV_SPOT_MARKET_INDEX` and `MAX_APR_PER_REVENUE_SETTLE_TO_INSURANCE_FUND_VAULT_GOV`
+(the `constants/insuranceFund` module) were removed.
+
 ### 4.4 Type-level breaking changes
 
 - **`oraclePriceOffset` is now `BN`** (was `number`) on `Order` and `OrderParams` —
@@ -137,6 +145,8 @@ Config fields `SERUM_V3`, `PHOENIX`, `OPENBOOK`, `SERUM_LOOKUP_TABLE`,
   `marketStats` and `hedgeConfig` sub-structs; fuel/PMM/HLM/LP fields removed.
 - `PerpPosition`: `lpShares`, `lastQuoteAssetAmountPerLp`, `perLpBase` removed.
 - `StateAccount`: single `admin` replaced by the cold/warm/hot key set.
+- `UserStatsAccount`: `ifStakedGovTokenAmount` removed (gov-stake fee discount removal).
+  `getUserFeeTier` no longer applies a stake-based discount.
 - `CurveRecord` event → `AmmCurveChanged` (fields changed too).
 - **Revenue-share escrow on fills** (PR #68): `ReferrerStatus` enum gains
   `BuilderReferral = 4`; new `isBuilderReferral(userStats)`, `escrowHasReferrer(escrow)`,
@@ -189,6 +199,11 @@ withdraw / order / fill / liquidation builders) without running a full subscribe
   but expect `Deprecated*` names for retired features.
 - **PDA seed strings unchanged** (`drift_state`, `user`, `spot_market_vault`, …) — only
   the program ID changed, so all derived addresses differ from Drift's.
+- **`UserStats` layout preserved** after the gov-stake fee discount removal:
+  `if_staked_gov_token_amount` was replaced in place by padding, so the account size
+  (240 bytes) and every other field offset are unchanged — existing accounts stay valid.
+  The `update_user_gov_token_insurance_stake` and
+  `update_delegate_user_gov_token_insurance_stake` instructions no longer exist.
 - **Oracle support**: Pyth (push), Pyth Lazer, Prelaunch, QuoteAsset. Switchboard and
   legacy Pyth pull are deprecated enum stubs.
 
@@ -226,6 +241,7 @@ withdraw / order / fill / liquidation builders) without running a full subscribe
 | #70 | Rebrand program crate drift → velocity |
 | #71 | This migration guide |
 | #77 *(open)* | Funding bias spread widening: `AMM.funding_bias_sensitivity` + `update_perp_market_funding_bias_sensitivity` admin ix; `last_funding_oracle_twap` moved `PerpMarket` → `MarketStats` (offset-preserving) |
+| #80 | Remove gov-token (DRIFT) stake fee discount: gov stake-sync instructions, `UserStats.if_staked_gov_token_amount` (→ padding), gov IF revenue-settle APR cap, `GOV_SPOT_MARKET_INDEX` |
 | `fee-arch` _(open)_ | Fee redesign (explicit carveouts, withdrawable protocol fees, 100% staker-owned IF) + AMM isolation |
 
 ---

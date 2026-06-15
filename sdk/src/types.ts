@@ -1064,7 +1064,6 @@ export type UserStatsAccount = {
 	referrerStatus: number;
 	authority: PublicKey;
 	ifStakedQuoteAssetAmount: BN;
-	ifStakedGovTokenAmount: BN;
 	delegatePermissions: number;
 };
 

@@ -15,7 +15,7 @@ use anchor_spl::{
 };
 
 use crate::{
-    auth::{check_hot, check_pause, check_warm, require_pause_only_added},
+    auth::{check_cold, check_hot, check_pause, check_warm, require_pause_only_added},
     controller,
     controller::token::{close_vault, initialize_immutable_owner, initialize_token_account},
     error::ErrorCode,
@@ -55,7 +55,7 @@ use crate::{
         oracle::{
             get_oracle_price, get_prelaunch_price, get_pyth_price, HistoricalIndexData,
             HistoricalOracleData, OraclePriceData, OracleSource, PrelaunchOracle,
-            PrelaunchOracleParams,
+            PrelaunchOracleParams, StrictOraclePrice,
         },
         oracle_map::OracleMap,
         paused_operations::{InsuranceFundOperation, PerpOperation, SpotOperation},
@@ -77,7 +77,7 @@ use crate::{
     validation::{
         fee_structure::validate_fee_structure,
         margin::{validate_margin, validate_margin_weights},
-        spot_market::validate_borrow_rate,
+        spot_market::{validate_borrow_rate, validate_withdraw_guard_threshold},
     },
     vlp::amm::math::amm,
     vlp::amm_cache::{AmmCache, AMM_POSITIONS_CACHE},
@@ -288,6 +288,12 @@ pub fn handle_initialize_spot_market(
         .or(Err(ErrorCode::UnableToCastUnixTime))?;
 
     let decimals = ctx.accounts.spot_market_mint.decimals.cast::<u32>()?;
+
+    validate_withdraw_guard_threshold(
+        withdraw_guard_threshold,
+        decimals,
+        oracle_price_data?.price,
+    )?;
 
     let mut token_program = 0_u8;
     if ctx.accounts.token_program.key() == Token2022::id() {
@@ -698,7 +704,7 @@ pub fn handle_initialize_perp_market(
         last_funding_rate_short: 0,
         last_funding_rate_ts: now,
         net_unsettled_funding_pnl: 0,
-        last_funding_oracle_twap: 0,
+        _padding_funding_twap: [0; 8],
         order_step_size,
         order_tick_size,
         base_asset_amount_long: 0,
@@ -775,7 +781,8 @@ pub fn handle_initialize_perp_market(
             long_spread: 0,
             short_spread: 0,
             reference_price_offset: 0,
-            padding_post_amm: [0; 3],
+            funding_bias_sensitivity: 0,
+            padding_post_amm: [0; 2],
         },
         // protocol fees are quote/USDC-denominated; quote market is index 0
         protocol_fee_pool: PoolBalance {
@@ -1684,7 +1691,7 @@ pub fn handle_update_spot_market_liquidation_fee(
     spot_market_valid(&ctx.accounts.spot_market)
 )]
 pub fn handle_update_withdraw_guard_threshold(
-    ctx: Context<AdminUpdateSpotMarket>,
+    ctx: Context<AdminUpdateSpotMarketWithdrawGuardThreshold>,
     withdraw_guard_threshold: u64,
 ) -> Result<()> {
     let spot_market = &mut load_mut!(ctx.accounts.spot_market)?;
@@ -1692,6 +1699,31 @@ pub fn handle_update_withdraw_guard_threshold(
         "updating spot market withdraw guard threshold {}",
         spot_market.market_index
     );
+
+    let oracle_price = get_oracle_price(
+        &spot_market.oracle_source,
+        &ctx.accounts.oracle,
+        Clock::get()?.slot,
+    )?
+    .price;
+
+    // price the notional cap with the max of the live price and the 5min
+    // twap so a momentarily manipulated-down oracle can't let an oversized
+    // threshold through
+    let strict_oracle_price = StrictOraclePrice::new(
+        oracle_price,
+        spot_market
+            .historical_oracle_data
+            .last_oracle_price_twap_5min,
+        true,
+    );
+    strict_oracle_price.validate()?;
+
+    validate_withdraw_guard_threshold(
+        withdraw_guard_threshold,
+        spot_market.decimals,
+        strict_oracle_price.max(),
+    )?;
 
     msg!(
         "spot_market.withdraw_guard_threshold: {:?} -> {:?}",
@@ -3773,8 +3805,24 @@ pub struct AdminUpdateSpotMarket<'info> {
 }
 
 #[derive(Accounts)]
-pub struct AdminUpdateSpotMarketOracle<'info> {
+pub struct AdminUpdateSpotMarketWithdrawGuardThreshold<'info> {
     #[account(constraint = check_warm(&admin.key(), &state)?)]
+    pub admin: Signer<'info>,
+    pub state: AccountLoader<'info, State>,
+    #[account(
+        mut,
+        has_one = oracle @ ErrorCode::InvalidOracle,
+    )]
+    pub spot_market: AccountLoader<'info, SpotMarket>,
+    /// CHECK: validated against `spot_market.oracle` by the `has_one` constraint
+    pub oracle: UncheckedAccount<'info>,
+}
+
+#[derive(Accounts)]
+pub struct AdminUpdateSpotMarketOracle<'info> {
+    // cold-only: a lesser admin swapping the oracle could re-price the
+    // withdraw guard threshold notional cap (and all margin math) at will
+    #[account(constraint = check_cold(&admin.key(), &state)?)]
     pub admin: Signer<'info>,
     pub state: AccountLoader<'info, State>,
     #[account(mut)]
@@ -3787,7 +3835,8 @@ pub struct AdminUpdateSpotMarketOracle<'info> {
 
 #[derive(Accounts)]
 pub struct AdminUpdatePerpMarketOracle<'info> {
-    #[account(constraint = check_warm(&admin.key(), &state)?)]
+    // cold-only: see AdminUpdateSpotMarketOracle
+    #[account(constraint = check_cold(&admin.key(), &state)?)]
     pub admin: Signer<'info>,
     pub state: AccountLoader<'info, State>,
     #[account(mut)]

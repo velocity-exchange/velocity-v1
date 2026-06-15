@@ -313,17 +313,17 @@ export class SettlePnlMode {
 }
 
 export function isVariant(object: unknown, type: string) {
-	return object.hasOwnProperty(type);
+	return Object.prototype.hasOwnProperty.call(object, type);
 }
 
 export function isOneOfVariant(object: unknown, types: string[]) {
 	return types.reduce((result, type) => {
-		return result || object.hasOwnProperty(type);
+		return result || Object.prototype.hasOwnProperty.call(object, type);
 	}, false);
 }
 
 export function getVariant(object: unknown): string {
-	return Object.keys(object)[0];
+	return Object.keys(object as object)[0];
 }
 
 export enum TradeSide {
@@ -838,7 +838,6 @@ export type PerpMarketAccount = {
 	lastFundingRateShort: BN;
 	lastFundingRateTs: BN;
 	netUnsettledFundingPnl: BN;
-	lastFundingOracleTwap: BN;
 	orderStepSize: BN;
 	orderTickSize: BN;
 };
@@ -998,6 +997,7 @@ export type AMM = {
 	ammSpreadAdjustment: number;
 	ammInventorySpreadAdjustment: number;
 	referencePriceOffsetDeadbandPct: number;
+	fundingBiasSensitivity: number;
 };
 
 export type MarketStats = {
@@ -1022,6 +1022,7 @@ export type MarketStats = {
 	lastOracleNormalisedPrice: BN;
 	lastReferencePriceOffset: number;
 	lastOracleValid: boolean;
+	lastFundingOracleTwap: BN;
 	historicalOracleData: HistoricalOracleData;
 };
 
@@ -1117,7 +1118,6 @@ export type Order = {
 	marketIndex: number;
 	price: BN;
 	baseAssetAmount: BN;
-	quoteAssetAmount: BN;
 	baseAssetAmountFilled: BN;
 	quoteAssetAmountFilled: BN;
 	direction: PositionDirection;

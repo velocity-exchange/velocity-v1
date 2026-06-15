@@ -380,10 +380,10 @@ export function calculateSpotMarketBorrowCapacity(
 export function calculateInterestRate(
 	bank: SpotMarketAccount,
 	delta = ZERO,
-	currentUtilization: BN = null
+	currentUtilization?: BN
 ): BN {
 	// todo: ensure both a delta and current util aren't pass?
-	const utilization = currentUtilization || calculateUtilization(bank, delta);
+	const utilization = currentUtilization ?? calculateUtilization(bank, delta);
 
 	const optimalUtil = new BN(bank.optimalUtilization);
 	const optimalRate = new BN(bank.optimalBorrowRate);
@@ -442,12 +442,12 @@ export function calculateInterestRate(
 export function calculateDepositRate(
 	bank: SpotMarketAccount,
 	delta = ZERO,
-	currentUtilization: BN = null
+	currentUtilization?: BN
 ): BN {
 	// positive delta => adding to deposit
 	// negative delta => adding to borrow
 
-	const utilization = currentUtilization || calculateUtilization(bank, delta);
+	const utilization = currentUtilization ?? calculateUtilization(bank, delta);
 	const borrowRate = calculateBorrowRate(bank, delta, utilization);
 	const depositRate = borrowRate
 		.mul(
@@ -464,7 +464,7 @@ export function calculateDepositRate(
 export function calculateBorrowRate(
 	bank: SpotMarketAccount,
 	delta = ZERO,
-	currentUtilization: BN = null
+	currentUtilization?: BN
 ): BN {
 	return calculateInterestRate(bank, delta, currentUtilization);
 }
@@ -553,8 +553,8 @@ export function calculateWithdrawLimit(
 	withdrawLimit: BN;
 	minDepositAmount: BN;
 	maxBorrowAmount: BN;
-	currentDepositAmount;
-	currentBorrowAmount;
+	currentDepositAmount: BN;
+	currentBorrowAmount: BN;
 } {
 	const marketDepositTokenAmount = getTokenAmount(
 		spotMarket.depositBalance,

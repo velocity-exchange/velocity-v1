@@ -757,6 +757,8 @@ pub enum ErrorCode {
     SpotDlobTradingDisabled,
     #[msg("Signer is not authorized for this admin tier")]
     InvalidAdminTier,
+    #[msg("Withdraw guard threshold notional exceeds max")]
+    WithdrawGuardThresholdNotionalTooLarge,
     #[msg("Recipient must be the configured protocol fee recipient")]
     InvalidProtocolFeeRecipient,
     #[msg("Insufficient protocol fees available to withdraw")]

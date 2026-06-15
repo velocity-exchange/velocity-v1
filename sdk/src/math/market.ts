@@ -43,7 +43,7 @@ import { assert } from '../assert/assert';
  */
 export function calculateReservePrice(
 	market: PerpMarketAccount,
-	mmOraclePriceData: MMOraclePriceData
+	mmOraclePriceData?: MMOraclePriceData
 ): BN {
 	const newAmm = calculateUpdatedAMM(market.amm, mmOraclePriceData);
 	return calculatePrice(
@@ -61,7 +61,7 @@ export function calculateReservePrice(
  */
 export function calculateBidPrice(
 	market: PerpMarketAccount,
-	mmOraclePriceData: MMOraclePriceData,
+	mmOraclePriceData?: MMOraclePriceData,
 	latestSlot?: BN
 ): BN {
 	const { baseAssetReserve, quoteAssetReserve, newPeg } =
@@ -84,7 +84,7 @@ export function calculateBidPrice(
  */
 export function calculateAskPrice(
 	market: PerpMarketAccount,
-	mmOraclePriceData: MMOraclePriceData,
+	mmOraclePriceData?: MMOraclePriceData,
 	latestSlot?: BN
 ): BN {
 	const { baseAssetReserve, quoteAssetReserve, newPeg } =
@@ -310,6 +310,9 @@ export function calculateAvailablePerpLiquidity(
 		MarketType.PERP,
 		mmOraclePriceData
 	)) {
+		if (!bid.order) {
+			continue;
+		}
 		bids = bids.add(
 			bid.order.baseAssetAmount.sub(bid.order.baseAssetAmountFilled)
 		);
@@ -321,6 +324,9 @@ export function calculateAvailablePerpLiquidity(
 		MarketType.PERP,
 		mmOraclePriceData
 	)) {
+		if (!ask.order) {
+			continue;
+		}
 		asks = asks.add(
 			ask.order.baseAssetAmount.sub(ask.order.baseAssetAmountFilled)
 		);
@@ -390,10 +396,10 @@ function getLastFundingBasis(
 	oraclePrice: BN,
 	now: BN
 ): BN {
-	if (market.lastFundingOracleTwap.gt(ZERO)) {
+	if (market.marketStats.lastFundingOracleTwap.gt(ZERO)) {
 		const lastFundingRate = market.lastFundingRate
 			.mul(PRICE_PRECISION)
-			.div(market.lastFundingOracleTwap)
+			.div(market.marketStats.lastFundingOracleTwap)
 			.muln(24);
 		const lastFundingRatePreAdj = lastFundingRate.sub(
 			FUNDING_RATE_PRECISION.div(new BN(3333)) // FUNDING_RATE_OFFSET_PERCENTAGE

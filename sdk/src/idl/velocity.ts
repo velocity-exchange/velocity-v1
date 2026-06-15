@@ -2322,6 +2322,59 @@ export type Velocity = {
       "args": []
     },
     {
+      "name": "forceWipeAccountsDevnet",
+      "docs": [
+        "Devnet-only escape hatch: cleans up accounts stranded by a layout-breaking",
+        "program upgrade (or by a partial re-init). For each account passed via",
+        "`remaining_accounts`:",
+        "- velocity-owned PDA → drain lamports (runtime GCs at end of tx)",
+        "- token-program owned vault (velocity_signer close-authority) → CPI",
+        "`close_account`, rent refunded to admin",
+        "Admin gate reads State's first pubkey field at raw offset 8..40 so it",
+        "works regardless of the State layout currently on chain. `velocity_signer_nonce`",
+        "must match `State.signer_nonce`; mismatch fails the token CPI signature.",
+        "Stripped from mainnet builds via `mainnet-beta`."
+      ],
+      "discriminator": [
+        105,
+        74,
+        87,
+        6,
+        166,
+        227,
+        138,
+        215
+      ],
+      "accounts": [
+        {
+          "name": "admin",
+          "writable": true,
+          "signer": true
+        },
+        {
+          "name": "state",
+          "docs": [
+            "(cold-)admin pubkey at offset 8..40."
+          ]
+        },
+        {
+          "name": "velocitySigner",
+          "docs": [
+            "at CPI time when closing token vaults; ignored otherwise."
+          ]
+        },
+        {
+          "name": "tokenProgram"
+        }
+      ],
+      "args": [
+        {
+          "name": "velocitySignerNonce",
+          "type": "u8"
+        }
+      ]
+    },
+    {
       "name": "initialize",
       "discriminator": [
         175,
@@ -9912,6 +9965,38 @@ export type Velocity = {
       ]
     },
     {
+      "name": "updatePerpMarketFundingBiasSensitivity",
+      "discriminator": [
+        143,
+        62,
+        234,
+        145,
+        184,
+        237,
+        110,
+        116
+      ],
+      "accounts": [
+        {
+          "name": "admin",
+          "signer": true
+        },
+        {
+          "name": "state"
+        },
+        {
+          "name": "perpMarket",
+          "writable": true
+        }
+      ],
+      "args": [
+        {
+          "name": "fundingBiasSensitivity",
+          "type": "u8"
+        }
+      ]
+    },
+    {
       "name": "updatePerpMarketFundingPeriod",
       "discriminator": [
         171,
@@ -12742,6 +12827,12 @@ export type Velocity = {
         {
           "name": "spotMarket",
           "writable": true
+        },
+        {
+          "name": "oracle",
+          "relations": [
+            "spotMarket"
+          ]
         }
       ],
       "args": [
@@ -16034,11 +16125,16 @@ export type Velocity = {
     },
     {
       "code": 6352,
+      "name": "withdrawGuardThresholdNotionalTooLarge",
+      "msg": "Withdraw guard threshold notional exceeds max"
+    },
+    {
+      "code": 6353,
       "name": "invalidProtocolFeeRecipient",
       "msg": "Recipient must be the configured protocol fee recipient"
     },
     {
-      "code": 6353,
+      "code": 6354,
       "name": "insufficientProtocolFees",
       "msg": "Insufficient protocol fees available to withdraw"
     }
@@ -16358,11 +16454,24 @@ export type Velocity = {
             "type": "u8"
           },
           {
+            "name": "fundingBiasSensitivity",
+            "docs": [
+              "s in the funding bias β(f) = 1 + s * ρ(f): how much the paying-side",
+              "spread widens while the vAMM pays funding on its inventory.",
+              "",
+              "s is stored in hundredths (s = value / 100), so at full ramp (ρ = 1)",
+              "the multiplier is 1 + value/100: 50 => 1.5x, 100 => 2x, u8 caps s at",
+              "2.55. Same convention as `amm_spread_adjustment` (100 = double).",
+              "0 disables the bias."
+            ],
+            "type": "u8"
+          },
+          {
             "name": "paddingPostAmm",
             "type": {
               "array": [
                 "u8",
-                3
+                2
               ]
             }
           }
@@ -19231,14 +19340,25 @@ export type Velocity = {
           {
             "name": "padding",
             "docs": [
-              "Padding so historical_oracle_data is 8-aligned."
+              "Padding so last_funding_oracle_twap is 8-aligned."
             ],
             "type": {
               "array": [
                 "u8",
-                11
+                3
               ]
             }
+          },
+          {
+            "name": "lastFundingOracleTwap",
+            "docs": [
+              "Oracle TWAP captured at last funding update, the normalizer",
+              "`last_24h_avg_funding_rate` accrued against. Read by the AMM's",
+              "funding bias spread and `get_last_funding_basis`. Migrated from",
+              "`PerpMarket` so the AMM reads only from `MarketStats`.",
+              "precision: PRICE_PRECISION"
+            ],
+            "type": "i64"
           },
           {
             "name": "historicalOracleData",
@@ -20739,11 +20859,17 @@ export type Velocity = {
             "type": "i64"
           },
           {
-            "name": "lastFundingOracleTwap",
+            "name": "paddingFundingTwap",
             "docs": [
-              "oracle TWAP captured at last funding update"
+              "Explicit padding where `last_funding_oracle_twap` used to live",
+              "(moved to `MarketStats`); keeps every later field at its old offset."
             ],
-            "type": "i64"
+            "type": {
+              "array": [
+                "u8",
+                8
+              ]
+            }
           },
           {
             "name": "orderStepSize",
@@ -23249,14 +23375,6 @@ export type Velocity = {
             "type": "pubkey"
           },
           {
-            "name": "hotFeeWithdraw",
-            "docs": [
-              "Hot key authorized for the `FeeWithdraw` role (triggers protocol-fee",
-              "withdrawals to the configured recipients)."
-            ],
-            "type": "pubkey"
-          },
-          {
             "name": "protocolFeeRecipientSpot",
             "docs": [
               "Treasury that SPOT protocol fees (each market's own token: lending",
@@ -23264,6 +23382,14 @@ export type Velocity = {
               "by `cold_admin`. `withdraw_protocol_fees_spot` pays this key's",
               "associated token account for the market's mint (recipient-locked).",
               "`Pubkey::default()` (unset) makes spot withdrawals inert."
+            ],
+            "type": "pubkey"
+          },
+          {
+            "name": "hotFeeWithdraw",
+            "docs": [
+              "Hot key authorized for the `FeeWithdraw` role (triggers protocol-fee",
+              "withdrawals to the configured recipients)."
             ],
             "type": "pubkey"
           },

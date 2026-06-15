@@ -2369,12 +2369,12 @@ export class VelocityClient {
 		// delegate users get added to the end
 		return [...this.users.values()]
 			.filter((acct) =>
-				acct.getUserAccount().authority.equals(this.wallet.publicKey)
+				acct.getUserAccount()?.authority.equals(this.wallet.publicKey)
 			)
 			.concat(
 				[...this.users.values()].filter(
 					(acct) =>
-						!acct.getUserAccount().authority.equals(this.wallet.publicKey)
+						!acct.getUserAccount()?.authority.equals(this.wallet.publicKey)
 				)
 			);
 	}
@@ -2431,7 +2431,7 @@ export class VelocityClient {
 		subAccountId?: number,
 		authority?: PublicKey
 	): UserAccount {
-		return this.getUser(subAccountId, authority).getUserAccount();
+		return this.getUser(subAccountId, authority).getUserAccount()!;
 	}
 
 	/**
@@ -2443,7 +2443,7 @@ export class VelocityClient {
 		authority?: PublicKey
 	): Promise<UserAccount> {
 		await this.getUser(subAccountId, authority).fetchAccounts();
-		return this.getUser(subAccountId, authority).getUserAccount();
+		return this.getUser(subAccountId, authority).getUserAccount()!;
 	}
 
 	public getUserAccountAndSlot(
@@ -3841,7 +3841,7 @@ export class VelocityClient {
 		const mapUser = this.users.get(userMapKey);
 		if (mapUser) {
 			remainingAccounts = this.getRemainingAccounts({
-				userAccounts: [mapUser.getUserAccount()],
+				userAccounts: [mapUser.getUserAccount()!],
 				useMarketLastSlotCache: true,
 				writableSpotMarketIndexes: [marketIndex],
 			});
@@ -3927,7 +3927,7 @@ export class VelocityClient {
 		const mapUser = this.users.get(userMapKey);
 		if (mapUser) {
 			remainingAccounts = this.getRemainingAccounts({
-				userAccounts: [mapUser.getUserAccount()],
+				userAccounts: [mapUser.getUserAccount()!],
 				useMarketLastSlotCache: true,
 				writableSpotMarketIndexes: [marketIndex],
 			});
@@ -7768,7 +7768,7 @@ export class VelocityClient {
 
 		const authority =
 			overrides?.authority ??
-			overrides?.user?.getUserAccount().authority ??
+			overrides?.user?.getUserAccount()?.authority ??
 			this.wallet.publicKey;
 		return await VelocityCore.buildModifyOrderInstruction({
 			program: this.program,

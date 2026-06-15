@@ -2104,7 +2104,7 @@ export class AdminClient extends VelocityClient {
 					this.program.account as any
 				).spotMarket.coder.accounts.decodeUnchecked(
 					'spotMarket',
-					accountInfo.data
+					accountInfo!.data
 				) as SpotMarketAccount;
 				oracle = spotMarket.oracle;
 			}

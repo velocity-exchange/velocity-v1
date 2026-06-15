@@ -297,7 +297,7 @@ export class UserMap implements UserMapInterface {
 
 	public async mustGetUserAccount(key: string): Promise<UserAccount> {
 		const user = await this.mustGet(key);
-		return user.getUserAccount();
+		return user.getUserAccount()!;
 	}
 
 	/**
@@ -310,7 +310,7 @@ export class UserMap implements UserMapInterface {
 		if (!user) {
 			return undefined;
 		}
-		return user.data.getUserAccount().authority;
+		return user.data.getUserAccount()?.authority;
 	}
 
 	/**
@@ -396,13 +396,13 @@ export class UserMap implements UserMapInterface {
 		const usersMeetingCriteria = Array.from(this.values()).filter((user) => {
 			let pass = true;
 			if (filterCriteria && filterCriteria.hasOpenOrders) {
-				pass = pass && user.getUserAccount().hasOpenOrder;
+				pass = pass && !!user.getUserAccount()?.hasOpenOrder;
 			}
 			return pass;
 		});
 		const userAuths = new Set(
 			usersMeetingCriteria.map((user) =>
-				user.getUserAccount().authority.toBase58()
+				user.getUserAccount()!.authority.toBase58()
 			)
 		);
 		const userAuthKeys = Array.from(userAuths).map(

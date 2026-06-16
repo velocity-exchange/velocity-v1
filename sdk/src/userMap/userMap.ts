@@ -104,9 +104,7 @@ export class UserMap implements UserMapInterface {
 	private syncConfig: SyncConfig;
 
 	private syncPromise?: Promise<void>;
-	// Set synchronously inside the Promise executor in defaultSync()/paginatedSync()
-	// before syncPromise resolves; TS can't prove the executor ran synchronously.
-	private syncPromiseResolver!: () => void;
+	private syncPromiseResolver: () => void = () => {};
 
 	private throwOnFailedSync: boolean;
 
@@ -648,9 +646,7 @@ export class UserMap implements UserMapInterface {
 				throw err;
 			}
 		} finally {
-			if (this.syncPromiseResolver) {
-				this.syncPromiseResolver();
-			}
+			this.syncPromiseResolver();
 			this.syncPromise = undefined;
 		}
 	}

@@ -159,6 +159,15 @@ Config fields `SERUM_V3`, `PHOENIX`, `OPENBOOK`, `SERUM_LOOKUP_TABLE`,
     already did.
   - `nextRevenuePoolSettleApr({ amount, ... })`'s `amount` is now required (was optional);
     the function always dereferenced it, so omitting it already threw at runtime.
+  - `BasicUserAccountSubscriber.getUserAccountAndSlot()` and
+    `BasicUserStatsAccountSubscriber.getUserStatsAccountAndSlot()` now return
+    `DataAndSlot<T> | undefined` (was the non-optional `DataAndSlot<T>`), matching the
+    `UserAccountSubscriber` / `UserStatsAccountSubscriber` interface — they return
+    `undefined` until an account is loaded, as the runtime already did. Relatedly, the
+    `{ data, slot }` pair these and the polling subscribers store is now **atomic**: a
+    loaded account always carries a real `slot` (`number`, never `undefined`; seeded
+    accounts use `0` as an oldest-possible sentinel), so `DataAndSlot.slot` can be relied
+    on as defined. `doesAccountExist()` on these subscribers is now a type predicate.
 
 ### 4.5 New: `VelocityCore`
 
@@ -218,7 +227,7 @@ withdraw / order / fill / liquidation builders) without running a full subscribe
 | #68 *(open)* | Builder codes on non-swift orders; fill-time enforcement of builder + referral revenue share (escrow required when taker has a builder order or a referred escrow) |
 | #70 *(open)* | Rebrand program crate drift → velocity |
 | #77 *(open)* | Funding bias spread widening: `AMM.funding_bias_sensitivity` + `update_perp_market_funding_bias_sensitivity` admin ix; `last_funding_oracle_twap` moved `PerpMarket` → `MarketStats` (offset-preserving) |
-| #74, #78 *(open)* | Enable TypeScript `strict` mode in the SDK. No runtime behavior change; a few public accessor signatures widened to expose already-possible `undefined` (`DLOBNode.getPrice`, `BlockhashSubscriber.getLatestBlockHeight`) and `nextRevenuePoolSettleApr`'s `amount` made required (§4.4) |
+| #74, #78 *(open)* | Enable TypeScript `strict` mode in the SDK. No runtime behavior change; a few public accessor signatures widened to expose already-possible `undefined` (`DLOBNode.getPrice`, `BlockhashSubscriber.getLatestBlockHeight`, the basic/polling user(-stats) subscribers' `get…AndSlot()`) and `nextRevenuePoolSettleApr`'s `amount` made required. The user(-stats) subscribers' stored `{ data, slot }` pair is now atomic (`slot` always defined) (§4.4) |
 
 ---
 

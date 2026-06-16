@@ -23,7 +23,7 @@ export class PollingUserStatsAccountSubscriber
 	callbackId?: string;
 	errorCallbackId?: string;
 
-	userStats?: { data: UserStatsAccount; slot: number | undefined };
+	userStats?: DataAndSlot<UserStatsAccount>;
 
 	public constructor(
 		program: VelocityProgram,
@@ -43,7 +43,9 @@ export class PollingUserStatsAccountSubscriber
 		}
 
 		if (userStatsAccount) {
-			this.userStats = { data: userStatsAccount, slot: undefined };
+			// `slot: 0` keeps {data, slot} atomic: a seeded account always carries a
+			// slot (0 = oldest-possible sentinel, overwritten by the first real fetch).
+			this.userStats = { data: userStatsAccount, slot: 0 };
 		}
 
 		await this.addToAccountLoader();
@@ -70,11 +72,7 @@ export class PollingUserStatsAccountSubscriber
 					return;
 				}
 
-				if (
-					this.userStats &&
-					this.userStats.slot !== undefined &&
-					this.userStats.slot > slot
-				) {
+				if (this.userStats && this.userStats.slot > slot) {
 					return;
 				}
 
@@ -155,9 +153,6 @@ export class PollingUserStatsAccountSubscriber
 		| DataAndSlot<UserStatsAccount>
 		| undefined {
 		this.assertIsSubscribed();
-		// `slot` may be undefined when seeded via `subscribe(userStatsAccount)` before a
-		// fetch; the historically-loose DataAndSlot contract tolerates this (same cast as
-		// BasicUserStatsAccountSubscriber). Returns undefined when no data has loaded.
-		return this.userStats as DataAndSlot<UserStatsAccount> | undefined;
+		return this.userStats;
 	}
 }

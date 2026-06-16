@@ -115,7 +115,7 @@ export class WebSocketVelocityClientAccountSubscriberV2
 	initialOraclePriceData: Map<string, OraclePriceData> = new Map();
 
 	protected isSubscribing = false;
-	protected subscriptionPromiseResolver: (val: boolean) => void = () => {};
+	private subscriptionPromiseResolver: (val: boolean) => void = () => {};
 	protected subscriptionPromise: Promise<boolean> = Promise.resolve(false);
 
 	private rpc: Rpc<any>;

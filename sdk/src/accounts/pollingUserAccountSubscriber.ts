@@ -23,7 +23,7 @@ export class PollingUserAccountSubscriber implements UserAccountSubscriber {
 
 	decode: (name: string, buffer: Buffer) => UserAccount;
 
-	user?: { data: UserAccount; slot: number | undefined };
+	user?: DataAndSlot<UserAccount>;
 
 	public constructor(
 		connection: Connection,
@@ -45,7 +45,9 @@ export class PollingUserAccountSubscriber implements UserAccountSubscriber {
 		}
 
 		if (userAccount) {
-			this.user = { data: userAccount, slot: undefined };
+			// `slot: 0` keeps {data, slot} atomic: a seeded account always carries a
+			// slot (0 = oldest-possible sentinel, overwritten by the first real fetch).
+			this.user = { data: userAccount, slot: 0 };
 		}
 
 		await this.addToAccountLoader();
@@ -71,11 +73,7 @@ export class PollingUserAccountSubscriber implements UserAccountSubscriber {
 					return;
 				}
 
-				if (
-					this.user &&
-					this.user.slot !== undefined &&
-					this.user.slot > slot
-				) {
+				if (this.user && this.user.slot > slot) {
 					return;
 				}
 
@@ -155,14 +153,11 @@ export class PollingUserAccountSubscriber implements UserAccountSubscriber {
 
 	public getUserAccountAndSlot(): DataAndSlot<UserAccount> | undefined {
 		this.assertIsSubscribed();
-		// `slot` may be undefined when seeded via `subscribe(userAccount)` before a
-		// fetch; the historically-loose DataAndSlot contract tolerates this (same cast
-		// as BasicUserAccountSubscriber). Returns undefined when no data has loaded.
-		return this.user as DataAndSlot<UserAccount> | undefined;
+		return this.user;
 	}
 
 	public updateData(userAccount: UserAccount, slot: number): void {
-		if (!this.user || (this.user.slot !== undefined && this.user.slot < slot)) {
+		if (!this.user || this.user.slot < slot) {
 			this.user = { data: userAccount, slot };
 			this.eventEmitter.emit('userAccountUpdate', userAccount);
 			this.eventEmitter.emit('update');

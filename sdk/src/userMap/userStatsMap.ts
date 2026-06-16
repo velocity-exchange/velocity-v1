@@ -32,7 +32,7 @@ export class UserStatsMap {
 	private syncConfig: SyncConfig;
 
 	private syncPromise?: Promise<void>;
-	private syncPromiseResolver?: () => void;
+	private syncPromiseResolver: () => void = () => {};
 
 	/**
 	 * Creates a new UserStatsMap instance.
@@ -357,9 +357,7 @@ export class UserStatsMap {
 		} catch (err) {
 			console.error(`Error in UserStatsMap.paginatedSync():`, err);
 		} finally {
-			if (this.syncPromiseResolver) {
-				this.syncPromiseResolver();
-			}
+			this.syncPromiseResolver();
 			this.syncPromise = undefined;
 		}
 	}

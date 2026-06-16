@@ -390,14 +390,13 @@ export class DLOB {
 
 		const marketType = getVariant(order.marketType) as MarketTypeStr;
 
-		if (!this.orderLists.has(marketType)) {
-			return undefined;
-		}
-
-		const marketNodeLists = this.getMarketNodeLists(
+		const marketNodeLists = this.tryGetMarketNodeLists(
 			marketType,
 			order.marketIndex
 		);
+		if (!marketNodeLists) {
+			return undefined;
+		}
 
 		if (isInactiveTriggerOrder) {
 			const subType = isVariant(order.triggerCondition, 'above')

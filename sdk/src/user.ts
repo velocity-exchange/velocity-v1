@@ -624,11 +624,10 @@ export class User {
 	}
 
 	private resolveMaxMarginRatio(perpMarketMaxMarginRatio?: number): number {
-		// NaN (not 0) intentionally preserves the pre-strict-mode behavior of
-		// Math.max(undefined, x), which coerces undefined to NaN. All internal
-		// callers supply the param; only external callers omitting it hit NaN.
+		// 0 means "no custom margin ratio override", so Math.max returns
+		// userAccount.maxMarginRatio unchanged — the expected semantic.
 		return Math.max(
-			perpMarketMaxMarginRatio ?? NaN,
+			perpMarketMaxMarginRatio ?? 0,
 			this.getUserAccountOrThrow().maxMarginRatio
 		);
 	}

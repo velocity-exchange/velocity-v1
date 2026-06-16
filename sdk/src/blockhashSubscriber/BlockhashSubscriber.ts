@@ -67,7 +67,7 @@ export class BlockhashSubscriber {
 	}
 
 	pruneBlockhashes() {
-		if (this.latestBlockHeight) {
+		if (this.latestBlockHeight !== undefined) {
 			const latestBlockHeight = this.latestBlockHeight;
 			this.blockhashes = this.blockhashes.filter(
 				(blockhash) => blockhash.lastValidBlockHeight > latestBlockHeight

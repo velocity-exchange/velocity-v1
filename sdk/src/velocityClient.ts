@@ -5101,7 +5101,7 @@ export class VelocityClient {
 	): Promise<TransactionInstruction> {
 		const user = await this.getUserAccountPublicKey(subAccountId);
 
-		const order = this.getOrderByUserId(userOrderId);
+		const order = this.getOrderByUserId(userOrderId, subAccountId);
 		if (!order) {
 			throw new Error(`Order with user order id ${userOrderId} not found`);
 		}
@@ -7785,7 +7785,7 @@ export class VelocityClient {
 			reduceOnly: reduceOnly != undefined ? reduceOnly : null,
 			postOnly: postOnly != undefined ? postOnly : null,
 			bitFlags: bitFlags != undefined ? bitFlags : null,
-			policy: policy || undefined,
+			policy: policy ?? undefined,
 			maxTs: maxTs || null,
 		};
 
@@ -7911,7 +7911,7 @@ export class VelocityClient {
 			reduceOnly: reduceOnly || false,
 			postOnly: postOnly || null,
 			bitFlags: bitFlags || null,
-			policy: policy || undefined,
+			policy: policy ?? undefined,
 			maxTs: maxTs || null,
 		};
 
@@ -9460,13 +9460,13 @@ export class VelocityClient {
 		let isExchangeOracleMoreRecent = true;
 		if (
 			doSlotCheckForRecency &&
-			oracleData.slot <= perpMarket.marketStats.mmOracleSlot
+			oracleData.slot.lte(perpMarket.marketStats.mmOracleSlot)
 		) {
 			isExchangeOracleMoreRecent = false;
 		} else if (
 			!doSlotCheckForRecency &&
 			oracleData.sequenceId != null &&
-			oracleData.sequenceId < mmOracleSequenceId
+			oracleData.sequenceId.lt(mmOracleSequenceId)
 		) {
 			isExchangeOracleMoreRecent = false;
 		}

@@ -20,9 +20,14 @@ export async function estimateTps(
 		return 0;
 	}
 
-	return (
-		numberOfSignatures /
-		(Number(signatures[0].blockTime) -
-			Number(signatures[numberOfSignatures - 1].blockTime))
-	);
+	const newest = signatures[0].blockTime;
+	const oldest = signatures[numberOfSignatures - 1].blockTime;
+	if (newest == null || oldest == null) {
+		return 0;
+	}
+	const windowSecs = newest - oldest;
+	if (windowSecs <= 0) {
+		return 0;
+	}
+	return numberOfSignatures / windowSecs;
 }

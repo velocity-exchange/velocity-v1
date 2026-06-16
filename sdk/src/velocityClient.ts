@@ -10086,7 +10086,7 @@ export class VelocityClient {
 		perpMarketIndex: number
 	): Promise<TransactionInstruction> {
 		const remainingAccounts = this.getRemainingAccounts({
-			userAccounts: [this.getUserAccountOrThrow()],
+			userAccounts: [],
 			writablePerpMarketIndexes: [perpMarketIndex],
 			writableSpotMarketIndexes: [spotMarketIndex],
 		});

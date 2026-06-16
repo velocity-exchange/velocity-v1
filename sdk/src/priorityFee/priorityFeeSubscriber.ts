@@ -39,8 +39,8 @@ export class PriorityFeeSubscriber {
 
 	latestPriorityFee = 0;
 	lastCustomStrategyResult = 0;
-	lastAvgStrategyResult: number | undefined = 0;
-	lastMaxStrategyResult: number | undefined = 0;
+	lastAvgStrategyResult = 0;
+	lastMaxStrategyResult = 0;
 	lastSlotSeen = 0;
 
 	public constructor(config: PriorityFeeSubscriberConfig) {

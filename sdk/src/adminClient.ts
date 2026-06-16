@@ -3790,8 +3790,8 @@ export class AdminClient extends VelocityClient {
 		marketIndex: number,
 		amount: BN
 	): Promise<TransactionInstruction> {
-		const perpMarket = this.getPerpMarketAccount(marketIndex);
-		const quoteSpotMarket = this.getSpotMarketAccount(
+		const perpMarket = this.getPerpMarketAccountOrThrow(marketIndex);
+		const quoteSpotMarket = this.getSpotMarketAccountOrThrow(
 			perpMarket.quoteSpotMarketIndex
 		);
 		const tokenProgramId = this.getTokenProgramForSpotMarket(quoteSpotMarket);

@@ -2366,8 +2366,8 @@ export class VelocityClient {
 	public getUsers(): User[] {
 		// delegate users get added to the end
 		return [...this.users.values()]
-			.filter((acct) =>
-				acct.getUserAccount()?.authority.equals(this.wallet.publicKey)
+			.filter(
+				(acct) => acct.getUserAccount()?.authority.equals(this.wallet.publicKey)
 			)
 			.concat(
 				[...this.users.values()].filter(
@@ -8427,7 +8427,10 @@ export class VelocityClient {
 		const liquidatorStatsPublicKey = this.getUserStatsAccountPublicKey();
 
 		const remainingAccounts = this.getRemainingAccounts({
-			userAccounts: [this.getUserAccountOrThrow(liquidatorSubAccountId), userAccount],
+			userAccounts: [
+				this.getUserAccountOrThrow(liquidatorSubAccountId),
+				userAccount,
+			],
 			useMarketLastSlotCache: true,
 			writablePerpMarketIndexes: [marketIndex],
 		});
@@ -8574,7 +8577,10 @@ export class VelocityClient {
 		const liquidatorStatsPublicKey = this.getUserStatsAccountPublicKey();
 
 		const remainingAccounts = this.getRemainingAccounts({
-			userAccounts: [this.getUserAccountOrThrow(liquidatorSubAccountId), userAccount],
+			userAccounts: [
+				this.getUserAccountOrThrow(liquidatorSubAccountId),
+				userAccount,
+			],
 			useMarketLastSlotCache: true,
 			writableSpotMarketIndexes: [liabilityMarketIndex, assetMarketIndex],
 		});
@@ -8920,7 +8926,10 @@ export class VelocityClient {
 		const liquidatorStatsPublicKey = this.getUserStatsAccountPublicKey();
 
 		const remainingAccounts = this.getRemainingAccounts({
-			userAccounts: [this.getUserAccountOrThrow(liquidatorSubAccountId), userAccount],
+			userAccounts: [
+				this.getUserAccountOrThrow(liquidatorSubAccountId),
+				userAccount,
+			],
 			writablePerpMarketIndexes: [perpMarketIndex],
 			writableSpotMarketIndexes: [liabilityMarketIndex],
 		});
@@ -8995,7 +9004,10 @@ export class VelocityClient {
 		const liquidatorStatsPublicKey = this.getUserStatsAccountPublicKey();
 
 		const remainingAccounts = this.getRemainingAccounts({
-			userAccounts: [this.getUserAccountOrThrow(liquidatorSubAccountId), userAccount],
+			userAccounts: [
+				this.getUserAccountOrThrow(liquidatorSubAccountId),
+				userAccount,
+			],
 			writablePerpMarketIndexes: [perpMarketIndex],
 			writableSpotMarketIndexes: [assetMarketIndex],
 		});
@@ -9059,7 +9071,10 @@ export class VelocityClient {
 		const liquidatorStatsPublicKey = this.getUserStatsAccountPublicKey();
 
 		const remainingAccounts = this.getRemainingAccounts({
-			userAccounts: [this.getUserAccountOrThrow(liquidatorSubAccountId), userAccount],
+			userAccounts: [
+				this.getUserAccountOrThrow(liquidatorSubAccountId),
+				userAccount,
+			],
 			writablePerpMarketIndexes: [marketIndex],
 			writableSpotMarketIndexes: [QUOTE_SPOT_MARKET_INDEX],
 		});
@@ -9126,7 +9141,10 @@ export class VelocityClient {
 		const liquidatorStatsPublicKey = this.getUserStatsAccountPublicKey();
 
 		const remainingAccounts = this.getRemainingAccounts({
-			userAccounts: [this.getUserAccountOrThrow(liquidatorSubAccountId), userAccount],
+			userAccounts: [
+				this.getUserAccountOrThrow(liquidatorSubAccountId),
+				userAccount,
+			],
 			writableSpotMarketIndexes: [marketIndex],
 		});
 
@@ -9940,8 +9958,8 @@ export class VelocityClient {
 	public async getSweepPerpMarketFeesIx(
 		perpMarketIndex: number
 	): Promise<TransactionInstruction> {
-		const perpMarketAccount = this.getPerpMarketAccount(perpMarketIndex);
-		const spotMarketAccount = this.getSpotMarketAccount(
+		const perpMarketAccount = this.getPerpMarketAccountOrThrow(perpMarketIndex);
+		const spotMarketAccount = this.getSpotMarketAccountOrThrow(
 			perpMarketAccount.quoteSpotMarketIndex
 		);
 

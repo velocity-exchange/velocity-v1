@@ -58,7 +58,3 @@ const FLAG_IS_REFERRAL = 0x04;
 export function isBuilderOrderReferral(order: RevenueShareOrder): boolean {
 	return (order.bitFlags & FLAG_IS_REFERRAL) !== 0;
 }
-
-export function isBuilderOrderAvailable(order: RevenueShareOrder): boolean {
-	return !isBuilderOrderOpen(order) && !isBuilderOrderCompleted(order);
-}

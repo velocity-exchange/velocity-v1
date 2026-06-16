@@ -1,50 +1,5 @@
-import { PERCENTAGE_PRECISION, ZERO } from '../constants/numericConstants';
-import { getTokenAmount } from '../math/spotBalance';
+import { ZERO } from '../constants/numericConstants';
 import { BN } from '../isomorphic/anchor';
-import { SpotBalanceType, SpotMarketAccount } from '../types';
-
-export function nextRevenuePoolSettleApr(
-	spotMarket: SpotMarketAccount,
-	vaultBalance: BN, // vault token amount
-	amount: BN // delta token amount
-): number {
-	const MAX_APR = new BN(10).mul(PERCENTAGE_PRECISION); // 1000% APR
-
-	// Conmputing the APR:
-	const revenuePoolBN = getTokenAmount(
-		spotMarket.revenuePool.scaledBalance,
-		spotMarket,
-		SpotBalanceType.DEPOSIT
-	);
-
-	const payoutRatio = 0.1;
-	// the insurance fund is 100% staker-owned: every settled token accrues to
-	// stakers as share-price appreciation (no protocol split)
-	const ratioForStakers = spotMarket.insuranceFund.revenueSettlePeriod.gt(ZERO)
-		? 1
-		: 0;
-
-	// Settle periods from on-chain data:
-	const revSettlePeriod =
-		spotMarket.insuranceFund.revenueSettlePeriod.toNumber() * 1000;
-
-	const settlesPerYear = 31536000000 / revSettlePeriod;
-
-	const projectedAnnualRev = revenuePoolBN
-		.muln(settlesPerYear)
-		.muln(payoutRatio);
-
-	const uncappedApr = vaultBalance.add(amount).eq(ZERO)
-		? 0
-		: projectedAnnualRev.muln(1000).div(vaultBalance.add(amount)).toNumber() *
-		  100 *
-		  1000;
-	const cappedApr = Math.min(uncappedApr, MAX_APR.toNumber());
-
-	const nextApr = cappedApr * ratioForStakers;
-
-	return nextApr;
-}
 
 export function stakeAmountToShares(
 	amount: BN,

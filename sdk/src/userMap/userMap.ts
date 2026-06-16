@@ -392,11 +392,17 @@ export class UserMap implements UserMapInterface {
 		filterCriteria?: UserFilterCriteria
 	): PublicKey[] {
 		const usersMeetingCriteria = Array.from(this.values()).filter((user) => {
-			let pass = true;
-			if (filterCriteria && filterCriteria.hasOpenOrders) {
-				pass = pass && !!user.getUserAccount()?.hasOpenOrder;
+			const userAccount = user.getUserAccount();
+			// Skip users whose account hasn't loaded yet rather than throwing on the
+			// authority read below; a transiently-unloaded entry is picked up on the
+			// next sync.
+			if (!userAccount) {
+				return false;
 			}
-			return pass;
+			if (filterCriteria && filterCriteria.hasOpenOrders) {
+				return userAccount.hasOpenOrder;
+			}
+			return true;
 		});
 		const userAuths = new Set(
 			usersMeetingCriteria.map((user) =>

@@ -250,7 +250,16 @@ export class User {
 		return account?.data;
 	}
 
-	public getUserAccountAndSlot(): DataAndSlot<UserAccount> {
+	public getUserAccountAndSlot(): DataAndSlot<UserAccount> | undefined {
+		return this.accountSubscriber.getUserAccountAndSlot();
+	}
+
+	/**
+	 * Like {@link getUserAccountAndSlot} but throws a named error instead of
+	 * returning `undefined` when the account has not been loaded yet. Use at
+	 * call sites that structurally require a loaded account.
+	 */
+	public getUserAccountAndSlotOrThrow(): DataAndSlot<UserAccount> {
 		return assertDataAndSlot(
 			this.accountSubscriber.getUserAccountAndSlot(),
 			`User account not loaded: ${this.getUserAccountPublicKey().toString()}`
@@ -295,7 +304,7 @@ export class User {
 	public getPerpPositionAndSlot(
 		marketIndex: number
 	): DataAndSlot<PerpPosition | undefined> {
-		const userAccount = this.getUserAccountAndSlot();
+		const userAccount = this.getUserAccountAndSlotOrThrow();
 		const perpPosition = this.getPerpPositionForUserAccount(
 			userAccount.data,
 			marketIndex
@@ -328,7 +337,7 @@ export class User {
 	public getSpotPositionAndSlot(
 		marketIndex: number
 	): DataAndSlot<SpotPosition | undefined> {
-		const userAccount = this.getUserAccountAndSlot();
+		const userAccount = this.getUserAccountAndSlotOrThrow();
 		const spotPosition = this.getSpotPositionForUserAccount(
 			userAccount.data,
 			marketIndex
@@ -472,7 +481,7 @@ export class User {
 	}
 
 	public getOrderAndSlot(orderId: number): DataAndSlot<Order | undefined> {
-		const userAccount = this.getUserAccountAndSlot();
+		const userAccount = this.getUserAccountAndSlotOrThrow();
 		const order = this.getOrderForUserAccount(userAccount.data, orderId);
 		return {
 			data: order,
@@ -501,7 +510,7 @@ export class User {
 	public getOrderByUserOrderIdAndSlot(
 		userOrderId: number
 	): DataAndSlot<Order | undefined> {
-		const userAccount = this.getUserAccountAndSlot();
+		const userAccount = this.getUserAccountAndSlotOrThrow();
 		const order = this.getOrderByUserIdForUserAccount(
 			userAccount.data,
 			userOrderId
@@ -526,7 +535,7 @@ export class User {
 	}
 
 	public getOpenOrdersAndSlot(): DataAndSlot<Order[]> {
-		const userAccount = this.getUserAccountAndSlot();
+		const userAccount = this.getUserAccountAndSlotOrThrow();
 		const openOrders = this.getOpenOrdersForUserAccount(userAccount.data) ?? [];
 		return {
 			data: openOrders,
@@ -789,7 +798,7 @@ export class User {
 		return this.getActivePerpPositionsForUserAccount(userAccount);
 	}
 	public getActivePerpPositionsAndSlot(): DataAndSlot<PerpPosition[]> {
-		const userAccount = this.getUserAccountAndSlot();
+		const userAccount = this.getUserAccountAndSlotOrThrow();
 		const positions = this.getActivePerpPositionsForUserAccount(
 			userAccount.data
 		);
@@ -812,7 +821,7 @@ export class User {
 		return this.getActiveSpotPositionsForUserAccount(userAccount);
 	}
 	public getActiveSpotPositionsAndSlot(): DataAndSlot<SpotPosition[]> {
-		const userAccount = this.getUserAccountAndSlot();
+		const userAccount = this.getUserAccountAndSlotOrThrow();
 		const positions = this.getActiveSpotPositionsForUserAccount(
 			userAccount.data
 		);

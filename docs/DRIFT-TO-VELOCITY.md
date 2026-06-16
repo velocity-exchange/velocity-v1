@@ -116,6 +116,7 @@ Importing any of these now fails at build time:
 `math/fuel`, `serum/*`, `phoenix/*`, `openbook/*`, `oracles/pythPullClient`,
 `oracles/switchboardOnDemandClient`, `util/pythOracleUtils`, `math/userStatus`,
 `math/protectedMakerParams`, `accounts/*HighLeverageModeConfigAccountSubscriber`,
+`util/tps` (and its `estimateTps` helper),
 plus types `LPRecord`, `LPAction`, `FuelSeasonRecord`, `FuelSweepRecord`,
 `SpotFulfillmentType`, `SpotFulfillmentStatus`, `SpotFulfillmentConfigStatus`.
 
@@ -157,8 +158,9 @@ Config fields `SERUM_V3`, `PHOENIX`, `OPENBOOK`, `SERUM_LOOKUP_TABLE`,
   - `BlockhashSubscriber.getLatestBlockHeight()` now returns `number | undefined` (was
     `number`) — `undefined` before any blockhash has been fetched, as the runtime
     already did.
-  - `nextRevenuePoolSettleApr({ amount, ... })`'s `amount` is now required (was optional);
-    the function always dereferenced it, so omitting it already threw at runtime.
+  - `nextRevenuePoolSettleApr(spotMarket, vaultBalance, amount)`'s third positional
+    `amount: BN` is now required (was `amount?: BN`); the function always dereferenced it,
+    so omitting it already produced `NaN`/threw at runtime.
   - `BasicUserAccountSubscriber.getUserAccountAndSlot()` and
     `BasicUserStatsAccountSubscriber.getUserStatsAccountAndSlot()` now return
     `DataAndSlot<T> | undefined` (was the non-optional `DataAndSlot<T>`), matching the
@@ -168,6 +170,10 @@ Config fields `SERUM_V3`, `PHOENIX`, `OPENBOOK`, `SERUM_LOOKUP_TABLE`,
     loaded account always carries a real `slot` (`number`, never `undefined`; seeded
     accounts use `0` as an oldest-possible sentinel), so `DataAndSlot.slot` can be relied
     on as defined. `doesAccountExist()` on these subscribers is now a type predicate.
+  - `User.getUserAccountAndSlot()` (and `VelocityClient.getUserAccountAndSlot()`) keep
+    their `DataAndSlot<UserAccount> | undefined` return — `undefined` until the account
+    loads, as the runtime already did. A new `User.getUserAccountAndSlotOrThrow()` is
+    provided for call sites that structurally require a loaded account.
 
 ### 4.5 New: `VelocityCore`
 

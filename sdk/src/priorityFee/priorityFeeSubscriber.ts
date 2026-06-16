@@ -167,13 +167,28 @@ export class PriorityFeeSubscriber {
 			this.velocityMarkets.map((m) => m.marketIndex)
 		);
 		if (sample.length > 0) {
-			// Base indexed this array with a string enum key, which yielded
-			// undefined at runtime; preserve that (getAvg/MaxStrategyResult return
-			// NaN) rather than changing observable values in a type-only PR.
-			this.lastAvgStrategyResult = undefined;
-			this.lastMaxStrategyResult = undefined;
+			// The endpoint returns one fee-level set per requested market. Take the
+			// max level across markets so a transaction touching several markets is
+			// covered by the most expensive one. (Base indexed the array itself with
+			// a string enum key — `sample['medium']` — which yielded `undefined` and
+			// produced NaN strategy results; the missing per-element index is fixed
+			// here.)
+			this.lastAvgStrategyResult = Math.max(
+				...sample.map((s) => s[HeliusPriorityLevel.MEDIUM])
+			);
+			this.lastMaxStrategyResult = Math.max(
+				...sample.map((s) => s[HeliusPriorityLevel.UNSAFE_MAX])
+			);
 			if (this.customStrategy) {
-				this.lastCustomStrategyResult = this.customStrategy.calculate(sample);
+				// Custom strategies expect `{ slot, prioritizationFee }[]`; map each
+				// market's medium level into that shape so they aggregate real values
+				// instead of summing the absent `prioritizationFee` field (NaN).
+				this.lastCustomStrategyResult = this.customStrategy.calculate(
+					sample.map((s) => ({
+						slot: 0,
+						prioritizationFee: s[HeliusPriorityLevel.MEDIUM],
+					}))
+				);
 			}
 		}
 	}
@@ -220,8 +235,7 @@ export class PriorityFeeSubscriber {
 	}
 
 	public getAvgStrategyResult(): number {
-		// `?? NaN` preserves base behavior: when the field is undefined (Velocity
-		// path) the product is NaN, matching the prior `undefined * multiplier`.
+		// `?? NaN` is a defensive fallback; every load path now assigns a number.
 		const result =
 			(this.lastAvgStrategyResult ?? NaN) * this.getPriorityFeeMultiplier();
 		if (this.maxFeeMicroLamports !== undefined) {
@@ -231,8 +245,7 @@ export class PriorityFeeSubscriber {
 	}
 
 	public getMaxStrategyResult(): number {
-		// `?? NaN` preserves base behavior: when the field is undefined (Velocity
-		// path) the product is NaN, matching the prior `undefined * multiplier`.
+		// `?? NaN` is a defensive fallback; every load path now assigns a number.
 		const result =
 			(this.lastMaxStrategyResult ?? NaN) * this.getPriorityFeeMultiplier();
 		if (this.maxFeeMicroLamports !== undefined) {

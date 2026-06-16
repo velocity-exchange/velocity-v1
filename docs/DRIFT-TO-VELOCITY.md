@@ -147,6 +147,18 @@ Config fields `SERUM_V3`, `PHOENIX`, `OPENBOOK`, `SERUM_LOOKUP_TABLE`,
   taker is referred (required by the program's fill-time enforcement — see §3). The
   builders validate `takerEscrow.authority` against the taker's authority. The
   settle-PnL builders keep their map-based `revenueShareEscrowMap` param.
+- **Strict null-checking surfaced on some accessors** (PR #74/#78, when the SDK turned
+  on `"strict": true`). A few public signatures were widened to expose the `undefined`
+  the runtime already returned:
+  - `DLOBNode.getPrice(...)` now returns `BN | undefined` (was `BN`). It always could
+    return `undefined` for orders without a resolvable limit price (e.g. post-auction
+    market orders); the type now admits it. A new `getPriceOrThrow(...)` is provided for
+    call sites that structurally require a defined price.
+  - `BlockhashSubscriber.getLatestBlockHeight()` now returns `number | undefined` (was
+    `number`) — `undefined` before any blockhash has been fetched, as the runtime
+    already did.
+  - `nextRevenuePoolSettleApr({ amount, ... })`'s `amount` is now required (was optional);
+    the function always dereferenced it, so omitting it already threw at runtime.
 
 ### 4.5 New: `VelocityCore`
 
@@ -206,6 +218,7 @@ withdraw / order / fill / liquidation builders) without running a full subscribe
 | #68 *(open)* | Builder codes on non-swift orders; fill-time enforcement of builder + referral revenue share (escrow required when taker has a builder order or a referred escrow) |
 | #70 *(open)* | Rebrand program crate drift → velocity |
 | #77 *(open)* | Funding bias spread widening: `AMM.funding_bias_sensitivity` + `update_perp_market_funding_bias_sensitivity` admin ix; `last_funding_oracle_twap` moved `PerpMarket` → `MarketStats` (offset-preserving) |
+| #74, #78 *(open)* | Enable TypeScript `strict` mode in the SDK. No runtime behavior change; a few public accessor signatures widened to expose already-possible `undefined` (`DLOBNode.getPrice`, `BlockhashSubscriber.getLatestBlockHeight`) and `nextRevenuePoolSettleApr`'s `amount` made required (§4.4) |
 
 ---
 

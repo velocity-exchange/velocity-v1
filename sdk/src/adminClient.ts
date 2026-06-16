@@ -2100,11 +2100,16 @@ export class AdminClient extends VelocityClient {
 				const accountInfo = await this.connection.getAccountInfo(
 					spotMarketPublicKey
 				);
+				if (!accountInfo) {
+					throw new Error(
+						`Spot market account not found: ${spotMarketPublicKey.toString()}`
+					);
+				}
 				const spotMarket = (
 					this.program.account as any
 				).spotMarket.coder.accounts.decodeUnchecked(
 					'spotMarket',
-					accountInfo!.data
+					accountInfo.data
 				) as SpotMarketAccount;
 				oracle = spotMarket.oracle;
 			}

@@ -151,12 +151,13 @@ export class PollingUserStatsAccountSubscriber
 		}
 	}
 
-	public getUserStatsAccountAndSlot(): DataAndSlot<UserStatsAccount> {
-		if (!this.doesAccountExist()) {
-			throw new NotSubscribedError(
-				'You must call `subscribe` or `fetch` before using this function'
-			);
-		}
-		return this.userStats;
+	public getUserStatsAccountAndSlot():
+		| DataAndSlot<UserStatsAccount>
+		| undefined {
+		this.assertIsSubscribed();
+		// `slot` may be undefined when seeded via `subscribe(userStatsAccount)` before a
+		// fetch; the historically-loose DataAndSlot contract tolerates this (same cast as
+		// BasicUserStatsAccountSubscriber). Returns undefined when no data has loaded.
+		return this.userStats as DataAndSlot<UserStatsAccount> | undefined;
 	}
 }

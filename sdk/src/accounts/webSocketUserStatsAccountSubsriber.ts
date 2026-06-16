@@ -106,12 +106,6 @@ export class WebSocketUserStatsAccountSubscriber
 		| DataAndSlot<UserStatsAccount>
 		| undefined {
 		this.assertIsSubscribed();
-		const dataAndSlot = this.userStatsAccountSubscriber.dataAndSlot;
-		if (!dataAndSlot) {
-			throw new Error(
-				'UserStatsAccount data not available: no account data has been received yet'
-			);
-		}
-		return dataAndSlot;
+		return this.userStatsAccountSubscriber.dataAndSlot;
 	}
 }

@@ -5,7 +5,6 @@ import {
 	UserAccountEvents,
 	UserAccountSubscriber,
 	ResubOpts,
-	assertDataAndSlot,
 } from './types';
 import { VelocityProgram } from '../config';
 import StrictEventEmitter from 'strict-event-emitter-types';
@@ -99,10 +98,7 @@ export class WebSocketUserAccountSubscriber implements UserAccountSubscriber {
 
 	public getUserAccountAndSlot(): DataAndSlot<UserAccount> | undefined {
 		this.assertIsSubscribed();
-		return assertDataAndSlot(
-			this.userDataAccountSubscriber.dataAndSlot,
-			'UserAccount data not available: no account data has been received yet'
-		);
+		return this.userDataAccountSubscriber.dataAndSlot;
 	}
 
 	public updateData(userAccount: UserAccount, slot: number) {

@@ -38,6 +38,9 @@ export class PythClient implements OracleClient {
 
 	public getOraclePriceDataFromBuffer(buffer: Buffer): OraclePriceData {
 		const priceData = parsePriceData(buffer);
+		// `confidence` is absent on uninitialized/invalid price accounts. Base passed it
+		// straight into convertPythPrice, which built `new BN(NaN)` and threw; fall back to
+		// a 0 confidence instead so callers get a well-formed (zero-confidence) price.
 		const confidence = convertPythPrice(
 			priceData.confidence ?? 0,
 			priceData.exponent,

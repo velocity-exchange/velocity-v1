@@ -47,6 +47,12 @@ mod size {
         let expected_size = std::mem::size_of::<UserStats>() + 8;
         let actual_size = UserStats::SIZE;
         assert_eq!(actual_size, expected_size);
+
+        // `padding1` replaced the removed `if_staked_gov_token_amount: u64` plus the
+        // 1 byte of repr(C) alignment padding that preceded it; offsets of the fields
+        // around it must not move for existing on-chain accounts to stay valid.
+        assert_eq!(std::mem::offset_of!(UserStats, padding1), 159);
+        assert_eq!(std::mem::offset_of!(UserStats, delegate_permissions), 168);
     }
 
     #[test]
@@ -90,35 +96,41 @@ mod native_instruction_offsets {
         let stats_start = DISC + std::mem::offset_of!(PerpMarket, market_stats);
         assert_eq!(
             stats_start + std::mem::offset_of!(MarketStats, mm_oracle_price),
-            720,
+            800,
             "mm_oracle_price offset changed — update handle_update_mm_oracle_native"
         );
         assert_eq!(
             stats_start + std::mem::offset_of!(MarketStats, mm_oracle_slot),
-            728,
+            808,
             "mm_oracle_slot offset changed — update handle_update_mm_oracle_native"
         );
         assert_eq!(
             stats_start + std::mem::offset_of!(MarketStats, mm_oracle_sequence_id),
-            736,
+            816,
             "mm_oracle_sequence_id offset changed — update handle_update_mm_oracle_native"
         );
         assert_eq!(
+            std::mem::offset_of!(PerpMarket, fee_ledger) % 16,
+            0,
+            "fee_ledger must be 16-aligned (host/SBF layout parity)"
+        );
+        assert_eq!(
             amm_start + std::mem::offset_of!(AMM, amm_spread_adjustment),
-            1202,
+            1282,
             "amm_spread_adjustment offset changed — update handle_update_amm_spread_adjustment_native"
         );
     }
 
     /// State is zero-copy with `#[repr(C)]`; on-chain bytes match `mem::offset_of!`.
-    /// After folding the admin authority config into State (cold/warm/pause + 11 hot
-    /// pubkeys at the top) and removing `lp_cooldown_time`, feature_bit_flags lives at
-    /// byte 1406 (offset 1398 + 8 discriminator).
+    /// After folding the admin authority config into State (cold/warm/pause + 10 hot
+    /// pubkeys at the top, `hot_if_rebalance` removed with the if-rebalance purge) and
+    /// removing `lp_cooldown_time`, feature_bit_flags lives at byte 1374
+    /// (offset 1366 + 8 discriminator).
     #[test]
     fn state_feature_bit_flags_offset() {
         assert_eq!(
             std::mem::offset_of!(State, feature_bit_flags) + DISC,
-            1406,
+            1374,
             "State::feature_bit_flags offset changed — update handle_update_mm_oracle_native"
         );
     }
@@ -129,17 +141,17 @@ mod native_instruction_offsets {
     fn state_hot_mm_oracle_crank_offset() {
         assert_eq!(
             std::mem::offset_of!(State, hot_mm_oracle_crank) + DISC,
-            392,
+            360,
             "State::hot_mm_oracle_crank offset changed — update handle_update_mm_oracle_native"
         );
     }
 
-    /// State.hot_amm_spread_adjust lives at byte 424..456 (after discriminator).
+    /// State.hot_amm_spread_adjust lives at byte 392..424 (after discriminator).
     #[test]
     fn state_hot_amm_spread_adjust_offset() {
         assert_eq!(
             std::mem::offset_of!(State, hot_amm_spread_adjust) + DISC,
-            424,
+            392,
             "State::hot_amm_spread_adjust offset changed — update handle_update_amm_spread_adjustment_native"
         );
     }

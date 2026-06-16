@@ -6,9 +6,7 @@ use crate::error::VelocityResult;
 use crate::math::casting::Cast;
 
 use crate::math::constants::{
-    FIVE_MILLION_QUOTE, ONE_HUNDRED_MILLION_QUOTE, ONE_HUNDRED_THOUSAND_QUOTE, ONE_MILLION_QUOTE,
-    ONE_THOUSAND_QUOTE, TEN_BPS, TEN_MILLION_QUOTE, TEN_THOUSAND_QUOTE, TWENTY_FIVE_THOUSAND_QUOTE,
-    TWO_HUNDRED_FIFTY_THOUSAND_QUOTE,
+    FIVE_MILLION_QUOTE, ONE_HUNDRED_MILLION_QUOTE, ONE_MILLION_QUOTE, TEN_BPS, TEN_MILLION_QUOTE,
 };
 use crate::math::helpers::get_proportion_u128;
 use crate::math::safe_math::SafeMath;
@@ -16,21 +14,60 @@ use crate::math::safe_math::SafeMath;
 use crate::state::state::{FeeStructure, FeeTier, OrderFillerRewardStructure};
 use crate::state::user::{MarketType, UserStats};
 
-use crate::math::constants::{FEE_ADJUSTMENT_MAX, QUOTE_PRECISION_U64};
+use crate::math::constants::{FEE_ADJUSTMENT_MAX, FEE_PERCENTAGE_DENOMINATOR};
 use crate::msg;
 
 #[cfg(test)]
 mod tests;
 
+/// Split a trade-fee *remainder* (taker fee after maker rebate, referral,
+/// referee discount, and filler reward are taken off the top) three ways using
+/// the global `FeeStructure` numerators:
+///   - `amm_fee` (amm_fee_numerator %): the AMM's fee provision — spendable
+///     liquidity, booked into its ledger at fill, and the
+///     backstop-of-last-resort clawback tranche, tracked in
+///     `PerpMarket.fee_ledger.amm_protocol_fees_received`
+///   - `if_fee` (if_fee_numerator %): the insurance fund's cut
+///   - `protocol_fee` (the residual): the protocol's withdrawable cut
+/// Floor division on the explicit cuts means rounding dust accrues to the
+/// protocol residual; `amm + if <= FEE_PERCENTAGE_DENOMINATOR` is validated at
+/// fee-structure update so the residual can never underflow.
+pub fn split_fee_remainder(
+    remainder: u64,
+    fee_structure: &FeeStructure,
+) -> VelocityResult<(u64, u64, u64)> {
+    let denom = FEE_PERCENTAGE_DENOMINATOR as u64;
+    let amm_fee = remainder
+        .safe_mul(fee_structure.amm_fee_numerator as u64)?
+        .safe_div(denom)?;
+    let if_fee = remainder
+        .safe_mul(fee_structure.if_fee_numerator as u64)?
+        .safe_div(denom)?;
+    let protocol_fee = remainder.safe_sub(amm_fee)?.safe_sub(if_fee)?;
+    Ok((amm_fee, if_fee, protocol_fee))
+}
+
 pub struct FillFees {
     pub user_fee: u64,
     pub maker_rebate: u64,
+    /// What the AMM books for this fill: its `amm_fee` provision plus any
+    /// `quote_asset_amount_surplus` (spread capture). The protocol / IF
+    /// carveouts are NOT included — the AMM's ledger only ever contains the
+    /// AMM's own money.
     pub fee_to_market: i64,
-    pub fee_to_market_for_lp: i64,
     pub filler_reward: u64,
     pub referrer_reward: u64,
     pub referee_discount: u64,
     pub builder_fee: Option<u64>,
+    /// Protocol's (residual) cut of the trade-fee remainder -> `protocol_fee_pool`.
+    pub protocol_fee: u64,
+    /// Insurance fund's cut of the trade-fee remainder -> `revenue_pool`.
+    pub if_fee: u64,
+    /// AMM's fee provision: its cut of the trade-fee remainder. Booked into
+    /// the AMM's ledger at fill, tokenized into `amm.fee_pool` by the sweep,
+    /// and clawable in bankruptcy (tracked via `amm_protocol_fees_received` /
+    /// `pending_amm_provision`).
+    pub amm_fee: u64,
 }
 
 pub fn calculate_fee_for_fulfillment_with_amm(
@@ -75,18 +112,26 @@ pub fn calculate_fee_for_fulfillment_with_amm(
                 &fee_structure.filler_reward_structure,
             )?
         };
-        let fee_to_market = fee.safe_sub(filler_reward)?.cast::<i64>()?;
+        // (spread-derived) house fee net of the filler reward, split three
+        // ways like a taker-fee remainder. The AMM books ONLY its own cut;
+        // the protocol / IF carveouts accrue as pending counters and are
+        // materialized out of the pnl pool by `sweep_market_fees`.
+        let remainder = fee.safe_sub(filler_reward)?;
+        let (amm_fee, if_fee, protocol_fee) = split_fee_remainder(remainder, fee_structure)?;
+        let fee_to_market = amm_fee.cast::<i64>()?;
         let user_fee = 0_u64;
 
         Ok(FillFees {
             user_fee,
             maker_rebate,
             fee_to_market,
-            fee_to_market_for_lp: 0,
             filler_reward,
             referrer_reward: 0,
             referee_discount: 0,
             builder_fee: None,
+            protocol_fee,
+            if_fee,
+            amm_fee,
         })
     } else {
         let fee = calculate_taker_fee(quote_asset_amount, &fee_tier, fee_adjustment)?;
@@ -109,13 +154,17 @@ pub fn calculate_fee_for_fulfillment_with_amm(
             )?
         };
 
-        let fee_to_market = fee
-            .safe_sub(filler_reward)?
-            .safe_sub(referrer_reward)?
+        // taker-fee remainder after filler + referral are taken off the top
+        // (referee discount already reduced `fee`), split three ways. The AMM
+        // books ONLY its own cut + its spread surplus; the protocol / IF
+        // carveouts accrue as pending counters and are materialized out of
+        // the pnl pool by `sweep_market_fees` — they never transit the AMM.
+        let remainder = fee.safe_sub(filler_reward)?.safe_sub(referrer_reward)?;
+        let (amm_fee, if_fee, protocol_fee) = split_fee_remainder(remainder, fee_structure)?;
+
+        let fee_to_market = amm_fee
             .cast::<i64>()?
             .safe_add(quote_asset_amount_surplus)?;
-
-        let fee_to_market_for_lp = fee_to_market.safe_sub(quote_asset_amount_surplus)?;
 
         let builder_fee = if let Some(builder_fee_bps) = builder_fee_bps {
             Some(
@@ -132,11 +181,13 @@ pub fn calculate_fee_for_fulfillment_with_amm(
             user_fee: fee,
             maker_rebate: 0,
             fee_to_market,
-            fee_to_market_for_lp,
             filler_reward,
             referrer_reward,
             referee_discount,
             builder_fee,
+            protocol_fee,
+            if_fee,
+            amm_fee,
         })
     }
 }
@@ -302,12 +353,18 @@ pub fn calculate_fee_for_fulfillment_with_match(
         )?
     };
 
-    // must be non-negative
-    let fee_to_market = taker_fee
+    // remainder after maker rebate + referral + filler (referee discount
+    // already reduced taker_fee), split three ways like AMM fills. The AMM cut
+    // is credited to the AMM's books by the caller (`fee_to_market` carries it)
+    // — the AMM quotes this market and earns its provision on all fills;
+    // tokens are realized into its fee pool by the `sweep_market_fees`
+    // tokenization step.
+    let remainder = taker_fee
         .safe_sub(filler_reward)?
         .safe_sub(referrer_reward)?
-        .safe_sub(maker_rebate)?
-        .cast::<i64>()?;
+        .safe_sub(maker_rebate)?;
+    let (amm_fee, if_fee, protocol_fee) = split_fee_remainder(remainder, fee_structure)?;
+    let fee_to_market = amm_fee.cast::<i64>()?;
 
     let builder_fee = if let Some(builder_fee_bps) = builder_fee_bps {
         Some(
@@ -325,9 +382,11 @@ pub fn calculate_fee_for_fulfillment_with_match(
         fee_to_market,
         filler_reward,
         referrer_reward,
-        fee_to_market_for_lp: 0,
         referee_discount,
         builder_fee,
+        protocol_fee,
+        if_fee,
+        amm_fee,
     })
 }
 
@@ -347,7 +406,6 @@ fn determine_perp_fee_tier(
     fee_structure: &FeeStructure,
 ) -> VelocityResult<FeeTier> {
     let total_30d_volume = user_stats.get_total_30d_volume()?;
-    let staked_gov_token_amount = user_stats.if_staked_gov_token_amount;
 
     const TIER_LENGTH: usize = 5;
 
@@ -359,16 +417,6 @@ fn determine_perp_fee_tier(
         ONE_HUNDRED_MILLION_QUOTE * 2,
     ];
 
-    const STAKE_THRESHOLDS: [u64; TIER_LENGTH] = [
-        ONE_THOUSAND_QUOTE - QUOTE_PRECISION_U64,
-        TEN_THOUSAND_QUOTE - QUOTE_PRECISION_U64,
-        (TWENTY_FIVE_THOUSAND_QUOTE * 2) - QUOTE_PRECISION_U64,
-        ONE_HUNDRED_THOUSAND_QUOTE - QUOTE_PRECISION_U64,
-        TWO_HUNDRED_FIFTY_THOUSAND_QUOTE - QUOTE_PRECISION_U64 * 5,
-    ];
-
-    const STAKE_BENEFIT_FRAC: [u32; TIER_LENGTH + 1] = [0, 5, 10, 20, 30, 40];
-
     let mut fee_tier_index = TIER_LENGTH;
     for i in 0..TIER_LENGTH {
         if total_30d_volume < VOLUME_THRESHOLDS[i] {
@@ -377,48 +425,7 @@ fn determine_perp_fee_tier(
         }
     }
 
-    let mut stake_benefit_index = TIER_LENGTH;
-    for i in 0..TIER_LENGTH {
-        if staked_gov_token_amount < STAKE_THRESHOLDS[i] {
-            stake_benefit_index = i;
-            break;
-        }
-    }
-
-    let stake_benefit = STAKE_BENEFIT_FRAC[stake_benefit_index];
-
-    let mut tier = fee_structure.fee_tiers[fee_tier_index];
-
-    if stake_benefit > 0 {
-        if let Some(div_scalar) = match stake_benefit {
-            5 => Some(20),
-            10 => Some(10),
-            20 => Some(5),
-            _ => None,
-        } {
-            // Fast path for 5%, 10%, 20% using no mul
-            tier.fee_numerator = tier
-                .fee_numerator
-                .saturating_sub(tier.fee_numerator.safe_div_ceil(div_scalar)?);
-
-            tier.maker_rebate_numerator = tier
-                .maker_rebate_numerator
-                .safe_add(tier.maker_rebate_numerator.safe_div(div_scalar)?)?;
-        } else {
-            // General path with mul/div
-            tier.fee_numerator = tier
-                .fee_numerator
-                .safe_mul(100_u32.saturating_sub(stake_benefit))?
-                .safe_div_ceil(100_u32)?;
-
-            tier.maker_rebate_numerator = tier
-                .maker_rebate_numerator
-                .safe_mul(100_u32.saturating_add(stake_benefit))?
-                .safe_div(100_u32)?;
-        }
-    }
-
-    Ok(tier)
+    Ok(fee_structure.fee_tiers[fee_tier_index])
 }
 
 fn determine_spot_fee_tier<'a>(

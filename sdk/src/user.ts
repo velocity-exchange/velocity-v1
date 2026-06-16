@@ -3538,7 +3538,6 @@ export class User {
 	public getUserFeeTier(marketType: MarketType, now?: BN) {
 		const state = this.velocityClient.getStateAccount();
 
-		const feeTierIndex = 0;
 		if (isVariant(marketType, 'perp')) {
 			const userStatsAccount: UserStatsAccount = this.velocityClient
 				.getUserStatsOrThrow()
@@ -3548,7 +3547,6 @@ export class User {
 				userStatsAccount,
 				now
 			);
-			const stakedGovAssetAmount = userStatsAccount.ifStakedGovTokenAmount;
 
 			const volumeThresholds = [
 				new BN(2_000_000).mul(QUOTE_PRECISION),
@@ -3557,14 +3555,6 @@ export class User {
 				new BN(80_000_000).mul(QUOTE_PRECISION),
 				new BN(200_000_000).mul(QUOTE_PRECISION),
 			];
-			const stakeThresholds = [
-				new BN(1_000 - 1).mul(QUOTE_PRECISION),
-				new BN(10_000 - 1).mul(QUOTE_PRECISION),
-				new BN(50_000 - 1).mul(QUOTE_PRECISION),
-				new BN(100_000 - 1).mul(QUOTE_PRECISION),
-				new BN(250_000 - 5).mul(QUOTE_PRECISION),
-			];
-			const stakeBenefitFrac = [0, 5, 10, 20, 30, 40];
 
 			let feeTierIndex = 5;
 			for (let i = 0; i < volumeThresholds.length; i++) {
@@ -3574,29 +3564,10 @@ export class User {
 				}
 			}
 
-			let stakeBenefitIndex = 5;
-			for (let i = 0; i < stakeThresholds.length; i++) {
-				if (stakedGovAssetAmount.lt(stakeThresholds[i])) {
-					stakeBenefitIndex = i;
-					break;
-				}
-			}
-
-			const stakeBenefit = stakeBenefitFrac[stakeBenefitIndex];
-
-			const tier = { ...state.perpFeeStructure.feeTiers[feeTierIndex] };
-
-			if (stakeBenefit > 0) {
-				tier.feeNumerator = (tier.feeNumerator * (100 - stakeBenefit)) / 100;
-
-				tier.makerRebateNumerator =
-					(tier.makerRebateNumerator * (100 + stakeBenefit)) / 100;
-			}
-
-			return tier;
+			return state.perpFeeStructure.feeTiers[feeTierIndex];
 		}
 
-		return state.spotFeeStructure.feeTiers[feeTierIndex];
+		return state.spotFeeStructure.feeTiers[0];
 	}
 
 	/**

@@ -21,7 +21,6 @@ import {
 	mockOracleNoProgram,
 	mockUSDCMint,
 	mockUserUSDCAccount,
-	sleep,
 	getMaxWithdrawGuardThreshold,
 } from './testHelpers';
 import { getUserAccountPublicKey } from '../sdk/src';

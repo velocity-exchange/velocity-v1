@@ -30,7 +30,6 @@ import {
 	setFeedPriceNoProgram,
 	initializeQuoteSpotMarket,
 	mintUSDCToUser,
-	sleep,
 } from './testHelpers';
 import { startAnchor } from 'solana-bankrun';
 import { TestBulkAccountLoader } from '../sdk/src/accounts/testBulkAccountLoader';

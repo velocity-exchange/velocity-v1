@@ -7,7 +7,6 @@ import {
 	mockUserUSDCAccount,
 	initializeQuoteSpotMarket,
 	getFeedDataNoProgram,
-	sleep,
 } from './testHelpers';
 import { Keypair } from '@solana/web3.js';
 import { assert } from 'chai';

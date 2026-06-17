@@ -159,7 +159,9 @@ export interface InsuranceFundStakeAccountSubscriber {
 	fetch(): Promise<void>;
 	unsubscribe(): Promise<void>;
 
-	getInsuranceFundStakeAccountAndSlot(): DataAndSlot<InsuranceFundStake>;
+	getInsuranceFundStakeAccountAndSlot():
+		| DataAndSlot<InsuranceFundStake>
+		| undefined;
 }
 
 export interface InsuranceFundStakeAccountEvents {
@@ -208,16 +210,6 @@ export type DataAndSlot<T> = {
 	data: T;
 	slot: number;
 };
-
-export function assertDataAndSlot<T>(
-	dataAndSlot: DataAndSlot<T> | undefined,
-	message: string
-): DataAndSlot<T> {
-	if (!dataAndSlot) {
-		throw new Error(message);
-	}
-	return dataAndSlot;
-}
 
 export type ResubOpts = {
 	resubTimeoutMs?: number;

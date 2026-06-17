@@ -246,11 +246,6 @@ export class VelocityClient {
 	mustIncludeSpotMarketIndexes = new Set<number>();
 	authority: PublicKey;
 
-	/** @deprecated use marketLookupTables */
-	marketLookupTable: PublicKey;
-	/** @deprecated use lookupTableAccounts */
-	lookupTableAccount?: AddressLookupTableAccount | null;
-
 	marketLookupTables: PublicKey[];
 	lookupTableAccounts?: AddressLookupTableAccount[];
 
@@ -438,10 +433,6 @@ export class VelocityClient {
 				accountSubscription: this.userAccountSubscriptionConfig,
 			});
 		}
-
-		this.marketLookupTable =
-			config.marketLookupTable ??
-			new PublicKey(configs[this.env].MARKET_LOOKUP_TABLE);
 
 		this.marketLookupTables =
 			config.marketLookupTables ??
@@ -719,24 +710,6 @@ export class VelocityClient {
 		);
 	}
 
-	/** @deprecated use fetchAllLookupTableAccounts() */
-	public async fetchMarketLookupTableAccount(): Promise<
-		AddressLookupTableAccount | null | undefined
-	> {
-		if (this.lookupTableAccount) return this.lookupTableAccount;
-
-		if (!this.marketLookupTable) {
-			console.log('Market lookup table address not set');
-			return;
-		}
-
-		const lookupTableAccount = (
-			await this.connection.getAddressLookupTable(this.marketLookupTable)
-		).value;
-		this.lookupTableAccount = lookupTableAccount;
-
-		return lookupTableAccount;
-	}
 	public async fetchAllLookupTableAccounts(): Promise<
 		AddressLookupTableAccount[]
 	> {

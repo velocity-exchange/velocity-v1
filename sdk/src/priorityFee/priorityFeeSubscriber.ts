@@ -235,9 +235,7 @@ export class PriorityFeeSubscriber {
 	}
 
 	public getAvgStrategyResult(): number {
-		// `?? NaN` is a defensive fallback; every load path now assigns a number.
-		const result =
-			(this.lastAvgStrategyResult ?? NaN) * this.getPriorityFeeMultiplier();
+		const result = this.lastAvgStrategyResult * this.getPriorityFeeMultiplier();
 		if (this.maxFeeMicroLamports !== undefined) {
 			return Math.min(this.maxFeeMicroLamports, result);
 		}
@@ -245,9 +243,7 @@ export class PriorityFeeSubscriber {
 	}
 
 	public getMaxStrategyResult(): number {
-		// `?? NaN` is a defensive fallback; every load path now assigns a number.
-		const result =
-			(this.lastMaxStrategyResult ?? NaN) * this.getPriorityFeeMultiplier();
+		const result = this.lastMaxStrategyResult * this.getPriorityFeeMultiplier();
 		if (this.maxFeeMicroLamports !== undefined) {
 			return Math.min(this.maxFeeMicroLamports, result);
 		}

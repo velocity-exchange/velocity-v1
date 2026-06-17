@@ -232,14 +232,7 @@ export class DLOB {
 
 		// initialize the dlob with the user map
 		for (const user of userMap.values()) {
-			const userAccount = user.getUserAccount();
-			if (!userAccount) {
-				throw new Error(
-					`DLOB.initFromUserMap: user ${user
-						.getUserAccountPublicKey()
-						.toString()} has no loaded UserAccount`
-				);
-			}
+			const userAccount = user.getUserAccountOrThrow();
 			const userAccountPubkey = user.getUserAccountPublicKey();
 			const userAccountPubkeyString = userAccountPubkey.toString();
 
@@ -993,7 +986,6 @@ export class DLOB {
 				nextNode = nodeGenerator.next();
 				continue;
 			}
-
 			const nodeOrder = getOrderOrThrow(node);
 			const nodePrice = getLimitPrice(nodeOrder, oraclePriceData, slot);
 

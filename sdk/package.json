@@ -57,6 +57,7 @@
 		"gill": "0.10.2",
 		"nanoid": "3.3.4",
 		"node-cache": "5.1.2",
+		"node-fetch": "2.6.11",
 		"solana-bankrun": "0.4.0",
 		"strict-event-emitter-types": "2.0.0",
 		"tweetnacl": "1.0.3",

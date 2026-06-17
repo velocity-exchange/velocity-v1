@@ -159,12 +159,9 @@ export class PollingInsuranceFundStakeAccountSubscriber
 		}
 	}
 
-	public getInsuranceFundStakeAccountAndSlot(): DataAndSlot<InsuranceFundStake> {
-		if (!this.doesAccountExist()) {
-			throw new NotSubscribedError(
-				'You must call `subscribe` or `fetch` before using this function'
-			);
-		}
+	public getInsuranceFundStakeAccountAndSlot():
+		| DataAndSlot<InsuranceFundStake>
+		| undefined {
 		return this.insuranceFundStakeAccountAndSlot;
 	}
 

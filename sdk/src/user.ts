@@ -54,11 +54,11 @@ import {
 	ACCOUNT_AGE_DELETION_CUTOFF_SECONDS,
 } from './constants/numericConstants';
 import {
-	assertDataAndSlot,
 	DataAndSlot,
 	UserAccountEvents,
 	UserAccountSubscriber,
 } from './accounts/types';
+import { assertDataAndSlot } from './accounts/utils';
 import { BigNum } from './factory/bigNum';
 import { BN } from './isomorphic/anchor';
 import { calculateBaseAssetValue, calculatePositionPNL } from './math/position';

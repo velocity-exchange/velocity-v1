@@ -6,8 +6,8 @@ import {
 	VelocityClientAccountSubscriber,
 	NotSubscribedError,
 	ResubOpts,
-	assertDataAndSlot,
 } from './types';
+import { assertDataAndSlot } from './utils';
 import {
 	isVariant,
 	PerpMarketAccount,

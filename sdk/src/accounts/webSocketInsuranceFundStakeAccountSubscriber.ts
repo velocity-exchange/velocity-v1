@@ -4,7 +4,6 @@ import {
 	NotSubscribedError,
 	InsuranceFundStakeAccountEvents,
 	InsuranceFundStakeAccountSubscriber,
-	assertDataAndSlot,
 } from './types';
 import StrictEventEmitter from 'strict-event-emitter-types';
 import { EventEmitter } from 'events';
@@ -117,12 +116,11 @@ export class WebSocketInsuranceFundStakeAccountSubscriber
 		}
 	}
 
-	public getInsuranceFundStakeAccountAndSlot(): DataAndSlot<InsuranceFundStake> {
+	public getInsuranceFundStakeAccountAndSlot():
+		| DataAndSlot<InsuranceFundStake>
+		| undefined {
 		this.assertIsSubscribed();
-		return assertDataAndSlot(
-			this.insuranceFundStakeDataAccountSubscriber.dataAndSlot,
-			'InsuranceFundStake data not available: no account data has been received yet'
-		);
+		return this.insuranceFundStakeDataAccountSubscriber.dataAndSlot;
 	}
 
 	public updateData(

@@ -10,13 +10,16 @@ import { MMOraclePriceData, OraclePriceData } from '../oracles/types';
 import { convertToNumber } from '../math/conversion';
 import { getOrderSignature } from './NodeList';
 
+export type NodeOraclePriceData<T extends MarketTypeStr = MarketTypeStr> =
+	T extends 'spot' ? OraclePriceData : MMOraclePriceData;
+
 export interface DLOBNode {
 	getPrice<T extends MarketTypeStr>(
-		oraclePriceData: T extends 'spot' ? OraclePriceData : MMOraclePriceData,
+		oraclePriceData: NodeOraclePriceData<T>,
 		slot: number
 	): BN | undefined;
 	getPriceOrThrow<T extends MarketTypeStr>(
-		oraclePriceData: T extends 'spot' ? OraclePriceData : MMOraclePriceData,
+		oraclePriceData: NodeOraclePriceData<T>,
 		slot: number
 	): BN;
 	isVammNode(): boolean;
@@ -81,14 +84,14 @@ export abstract class OrderNode implements DLOBNode {
 	}
 
 	getPrice<T extends MarketTypeStr>(
-		oraclePriceData: T extends 'spot' ? OraclePriceData : MMOraclePriceData,
+		oraclePriceData: NodeOraclePriceData<T>,
 		slot: number
 	): BN | undefined {
 		return getLimitPrice<T>(this.order, oraclePriceData, slot);
 	}
 
 	getPriceOrThrow<T extends MarketTypeStr>(
-		oraclePriceData: T extends 'spot' ? OraclePriceData : MMOraclePriceData,
+		oraclePriceData: NodeOraclePriceData<T>,
 		slot: number
 	): BN {
 		const price = this.getPrice<T>(oraclePriceData, slot);

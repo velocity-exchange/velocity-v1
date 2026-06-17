@@ -162,6 +162,7 @@ export class PollingInsuranceFundStakeAccountSubscriber
 	public getInsuranceFundStakeAccountAndSlot():
 		| DataAndSlot<InsuranceFundStake>
 		| undefined {
+		this.assertIsSubscribed();
 		return this.insuranceFundStakeAccountAndSlot;
 	}
 

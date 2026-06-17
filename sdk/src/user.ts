@@ -1096,7 +1096,10 @@ export class User {
 			if (worstCaseQuoteTokenAmount.lt(ZERO) && countForQuote) {
 				let weight = SPOT_MARKET_WEIGHT_PRECISION;
 				if (marginCategory === 'Initial') {
-					weight = BN.max(weight, new BN(this.getUserAccountOrThrow().maxMarginRatio));
+					weight = BN.max(
+						weight,
+						new BN(this.getUserAccountOrThrow().maxMarginRatio)
+					);
 				}
 
 				const weightedTokenValue = worstCaseQuoteTokenAmount
@@ -4247,7 +4250,9 @@ export class User {
 
 		// Equivalent to on-chain user_custom_margin_ratio
 		const userCustomMarginRatio =
-			marginCategory === 'Initial' ? this.getUserAccountOrThrow().maxMarginRatio : 0;
+			marginCategory === 'Initial'
+				? this.getUserAccountOrThrow().maxMarginRatio
+				: 0;
 
 		// Initialize calc via JS mirror of Rust/on-chain MarginCalculation
 		const isolatedMarginBuffers = new Map<number, BN>();

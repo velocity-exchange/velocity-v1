@@ -229,6 +229,7 @@ export class VelocityClient {
 	useHotWalletAdmin?: boolean;
 	users = new Map<string, User>();
 	userStats?: UserStats;
+	userStatsAccountPublicKey?: PublicKey;
 	activeSubAccountId: number | undefined;
 	userAccountSubscriptionConfig: UserSubscriptionConfig;
 	userStatsAccountSubscriptionConfig: UserStatsSubscriptionConfig;
@@ -509,10 +510,7 @@ export class VelocityClient {
 			});
 	}
 
-	public getUserMapKey(
-		subAccountId: number | undefined,
-		authority: PublicKey
-	): string {
+	public getUserMapKey(subAccountId: number, authority: PublicKey): string {
 		return `${subAccountId}_${authority.toString()}`;
 	}
 
@@ -2319,6 +2317,11 @@ export class VelocityClient {
 	public getUser(subAccountId?: number, authority?: PublicKey): User {
 		subAccountId = subAccountId ?? this.activeSubAccountId;
 		authority = authority ?? this.authority;
+
+		if (subAccountId === undefined || authority === undefined) {
+			throw new Error('Subaccount ID and authority are required');
+		}
+
 		const userMapKey = this.getUserMapKey(subAccountId, authority);
 
 		const user = this.users.get(userMapKey);
@@ -2331,6 +2334,9 @@ export class VelocityClient {
 	public hasUser(subAccountId?: number, authority?: PublicKey): boolean {
 		subAccountId = subAccountId ?? this.activeSubAccountId;
 		authority = authority ?? this.authority;
+		if (subAccountId === undefined || authority === undefined) {
+			throw new Error('Subaccount ID and authority are required');
+		}
 		const userMapKey = this.getUserMapKey(subAccountId, authority);
 
 		return this.users.has(userMapKey);
@@ -2378,7 +2384,6 @@ export class VelocityClient {
 		)) as ReferrerNameAccount;
 	}
 
-	userStatsAccountPublicKey?: PublicKey;
 	public getUserStatsAccountPublicKey(): PublicKey {
 		if (this.userStatsAccountPublicKey) {
 			return this.userStatsAccountPublicKey;
@@ -2720,6 +2725,17 @@ export class VelocityClient {
 		};
 	}
 
+	/**
+	 * Look up an open order by its program-assigned order ID from the cached user account.
+	 *
+	 * `orderId` is the monotonically incrementing u32 counter that the program assigns at
+	 * placement time — it is not known until the place instruction executes on-chain. Use
+	 * {@link getOrderByUserId} when you need to look up an order by the caller-supplied
+	 * `userOrderId` instead.
+	 *
+	 * Returns `undefined` when the order is not found (already filled, cancelled, or the
+	 * account cache is stale).
+	 */
 	public getOrder(
 		orderId: number | undefined,
 		subAccountId?: number
@@ -2729,6 +2745,17 @@ export class VelocityClient {
 		);
 	}
 
+	/**
+	 * Look up an open order by the caller-supplied `userOrderId` from the cached user account.
+	 *
+	 * `userOrderId` is a 1-255 slot chosen by the caller in {@link OrderParams} and is stable
+	 * across the life of the order — useful when you need to reference an order before the
+	 * program-assigned {@link Order.orderId} is known (e.g. immediately after placing without
+	 * waiting for confirmation). Use {@link getOrder} when you have the program-assigned ID.
+	 *
+	 * Returns `undefined` when the order is not found (already filled, cancelled, or the
+	 * account cache is stale).
+	 */
 	public getOrderByUserId(
 		userOrderId: number,
 		subAccountId?: number
@@ -4990,6 +5017,20 @@ export class VelocityClient {
 		);
 	}
 
+	/**
+	 * Cancel an open order and broadcast the transaction.
+	 *
+	 * When `orderId` is `undefined` (omitted or passed explicitly), the instruction is
+	 * sent with a `null` order ID and the program cancels the most recently placed order
+	 * on-chain via `get_last_order_id`. This is safe to use in a composed transaction
+	 * where a place instruction runs first and the assigned order ID is not yet known.
+	 *
+	 * Note: when `orderId` is `undefined` and `overrides.withdrawIsolatedDepositAmount`
+	 * is also provided, `getOrder` will return `undefined` (the ID is unknown client-side),
+	 * causing the withdraw path to throw — supply an explicit `orderId` in that case.
+	 *
+	 * @see {@link getCancelOrderIx} to obtain the instruction without sending.
+	 */
 	public async cancelOrder(
 		orderId?: number,
 		txParams?: TxParams,
@@ -5029,6 +5070,21 @@ export class VelocityClient {
 		return txSig;
 	}
 
+	/**
+	 * Build a `cancelOrder` instruction for the given order.
+	 *
+	 * When `orderId` is `undefined` (omitted or passed explicitly), the instruction is
+	 * built with a `null` order ID (`orderId ?? null`). The program interprets a `null`
+	 * ID as "cancel the user's most recently placed order" (via `get_last_order_id`
+	 * on-chain). This is useful when composing a multi-instruction transaction where a
+	 * place instruction precedes the cancel and the program-assigned order ID is not yet
+	 * known at build time.
+	 *
+	 * When `orderId` is supplied, only that specific order is cancelled.
+	 *
+	 * @see {@link cancelOrder} to send the transaction directly.
+	 * @see {@link getCancelOrderByUserIdIx} to cancel by the caller-supplied `userOrderId`.
+	 */
 	public async getCancelOrderIx(
 		orderId?: number,
 		subAccountId?: number

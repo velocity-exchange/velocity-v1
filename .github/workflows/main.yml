@@ -50,7 +50,7 @@ jobs:
           override: true
           components: rustfmt, clippy
       - name: Cache build files
-        uses: Swatinem/rust-cache@81d053bdb0871dcd3f10763c8cc60d0adc41762b # v1
+        uses: Swatinem/rust-cache@f13886b937689c021905a6b90929199931d60db1 # v2.8.1
       - name: Cargo fmt
         run: cargo fmt -- --check
       - name: Cargo clippy
@@ -67,7 +67,7 @@ jobs:
           profile: minimal
           override: true
       - name: Cache build artefacts
-        uses: Swatinem/rust-cache@81d053bdb0871dcd3f10763c8cc60d0adc41762b # v1
+        uses: Swatinem/rust-cache@f13886b937689c021905a6b90929199931d60db1 # v2.8.1
       - name: Run package checks
         run: cargo check # run package checks
       - name: Run unit tests
@@ -184,9 +184,14 @@ jobs:
           profile: minimal
           override: true
       - name: Cache build artefacts
-        uses: Swatinem/rust-cache@81d053bdb0871dcd3f10763c8cc60d0adc41762b # v1
+        uses: Swatinem/rust-cache@f13886b937689c021905a6b90929199931d60db1 # v2.8.1
         with:
           cache-on-failure: "true"
+          # The SBF program build emits its dependency rlibs under a non-host
+          # target dir that rust-cache doesn't track by default. Cache it
+          # explicitly so `anchor build` is incremental across CI runs.
+          cache-directories: |
+            target/sbpf-solana-solana
 
       - uses: ./.github/actions/setup-solana/
 
@@ -194,16 +199,26 @@ jobs:
         id: cache-anchor
         uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
         with:
-          path: ~/.avm
+          # The avm proxy + the installed version toolchains live in two places:
+          # the avm/anchor binaries in ~/.cargo/bin, the toolchains in ~/.avm.
+          # Both must persist or the gated install below has to rebuild from src.
+          path: |
+            ~/.avm
+            ~/.cargo/bin/avm
+            ~/.cargo/bin/anchor
           key: ${{ runner.os }}-anchor-cli-${{ env.ANCHOR_VERSION }}
 
+      # Building avm + anchor-cli from git source takes several minutes, so only
+      # do it on a cache miss. On a hit we just re-activate the cached version.
       - name: Install Anchor CLI
-        # if: steps.cache-anchor.outputs.cache-hit != 'true'
+        if: steps.cache-anchor.outputs.cache-hit != 'true'
         run: |
           sudo apt update -y && sudo apt install libudev-dev
           cargo install --git https://github.com/coral-xyz/anchor avm --force
           avm install ${{ env.ANCHOR_VERSION }}
-          avm use ${{ env.ANCHOR_VERSION }}
+
+      - name: Select Anchor version
+        run: avm use ${{ env.ANCHOR_VERSION }}
 
       - name: Setup node
         uses: actions/setup-node@7c12f8017d5436eb855f1ed4399f037a36fbd9e8 # v2
@@ -233,6 +248,13 @@ jobs:
       - name: run anchor tests
         env:
           RUST_LOG: solana_runtime::message_processor::stable_log=info
+          # The committed release profile uses `lto = "fat"` + `codegen-units = 1`
+          # for the production .so — the slowest possible compile. The test build
+          # runs on litesvm and doesn't need it, so override the profile here only
+          # (the verified-build job is unaffected). thin LTO keeps most cross-crate
+          # optimization while cutting compile time dramatically.
+          CARGO_PROFILE_RELEASE_LTO: "thin"
+          CARGO_PROFILE_RELEASE_CODEGEN_UNITS: "16"
         run: bash test-scripts/run-anchor-tests.sh
   verify-sdk-configs:
     name: Verify SDK Configs

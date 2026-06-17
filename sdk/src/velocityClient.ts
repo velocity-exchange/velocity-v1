@@ -7812,7 +7812,7 @@ export class VelocityClient {
 			reduceOnly: reduceOnly != undefined ? reduceOnly : null,
 			postOnly: postOnly != undefined ? postOnly : null,
 			bitFlags: bitFlags != undefined ? bitFlags : null,
-			policy: policy ?? undefined,
+			policy: policy || null,
 			maxTs: maxTs || null,
 		};
 
@@ -7938,7 +7938,7 @@ export class VelocityClient {
 			reduceOnly: reduceOnly || false,
 			postOnly: postOnly || null,
 			bitFlags: bitFlags || null,
-			policy: policy ?? undefined,
+			policy: policy || null,
 			maxTs: maxTs || null,
 		};
 

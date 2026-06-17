@@ -632,7 +632,7 @@ describe('velocity client', () => {
 			bankrunContextWrapper
 		);
 
-		await sleep(2000);
+		await bulkAccountLoader.load();
 
 		await velocityClient.deposit(
 			usdcAmount,

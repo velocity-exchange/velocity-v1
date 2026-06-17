@@ -264,7 +264,7 @@ describe('User Account', () => {
 			solUsdOracle,
 			10000
 		);
-		await sleep(5000);
+		await bulkAccountLoader.load();
 
 		await velocityClient.fetchAccounts();
 		const oracleP2 = await getFeedDataNoProgram(
@@ -352,7 +352,7 @@ describe('User Account', () => {
 			solUsdOracle,
 			10000
 		);
-		await sleep(5000);
+		await bulkAccountLoader.load();
 
 		await velocityClient.fetchAccounts();
 		const oracleP2 = await getFeedDataNoProgram(

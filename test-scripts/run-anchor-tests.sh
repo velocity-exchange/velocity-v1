@@ -3,8 +3,10 @@
 set -e
 trap 'echo -e "\nStopped by signal $? (SIGINT)"; exit 0' INT
 
+export PATH="$PWD/bin:$PWD/node_modules/.bin:$PATH"
+
 if [ "$1" != "--skip-build" ]; then
-  anchor build --ignore-keys --skip-lint -- --features anchor-test && anchor test --skip-build --skip-local-validator --skip-deploy &&
+  anchor build --ignore-keys --skip-lint -- --features anchor-test &&
     cp target/idl/velocity.json sdk/src/idl/ && cp target/types/velocity.ts sdk/src/idl/
 else
   # --skip-build still needs the bundled SDK IDL to match the deployed program ID,
@@ -101,7 +103,53 @@ test_files=(
   specialUserAccount.ts
 )
 
+# Run up to PARALLEL tests concurrently. Output is buffered per test and only
+# printed on failure so interleaved stdout from concurrent processes doesn't
+# obscure which test failed.
+PARALLEL=${PARALLEL:-4}
+tmpdir=$(mktemp -d)
+trap "rm -rf '$tmpdir'" EXIT
 
-for test_file in ${test_files[@]}; do
-  ts-mocha --exit -t 300000 ./tests/${test_file} || exit 1
+declare -a q_pids=()
+declare -a q_files=()
+declare -a q_logs=()
+overall_failed=0
+
+collect_oldest() {
+  local pid="${q_pids[0]}"
+  local file="${q_files[0]}"
+  local log="${q_logs[0]}"
+  q_pids=("${q_pids[@]:1}")
+  q_files=("${q_files[@]:1}")
+  q_logs=("${q_logs[@]:1}")
+  if wait "$pid"; then
+    echo "  pass: $file"
+  else
+    echo ""
+    echo "══════════════════════════════════════"
+    echo "  FAIL: $file"
+    echo "══════════════════════════════════════"
+    cat "$log"
+    overall_failed=1
+  fi
+}
+
+for test_file in "${test_files[@]}"; do
+  [ $overall_failed -eq 1 ] && break
+  while [ ${#q_pids[@]} -ge $PARALLEL ]; do
+    collect_oldest
+    [ $overall_failed -eq 1 ] && break 2
+  done
+  log="$tmpdir/${test_file}"
+  ts-mocha --exit -t 300000 "./tests/$test_file" >"$log" 2>&1 &
+  q_pids+=($!)
+  q_files+=("$test_file")
+  q_logs+=("$log")
+  echo "  start: $test_file"
 done
+
+while [ ${#q_pids[@]} -gt 0 ]; do
+  collect_oldest
+done
+
+[ $overall_failed -eq 0 ] || exit 1

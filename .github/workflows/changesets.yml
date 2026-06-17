@@ -1,0 +1,33 @@
+name: changesets
+
+# Maintains the "Version Packages" PR: on every push to master it opens/updates a
+# PR that runs `changeset version` (bumps versions + writes CHANGELOGs for the
+# packages with pending changesets). Merging that PR commits the version bumps.
+# Publishing is a separate, tag-triggered step — see npm-publish.yml.
+on:
+  push:
+    branches: [master]
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  version:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.3.14
+      - run: bun install --frozen-lockfile
+      - name: Create or update the Version Packages PR
+        uses: changesets/action@v1
+        with:
+          version: bun run version-packages
+          commit: "chore: version packages"
+          title: "chore: version packages"
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

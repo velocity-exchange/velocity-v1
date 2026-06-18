@@ -187,11 +187,13 @@ jobs:
         uses: Swatinem/rust-cache@f13886b937689c021905a6b90929199931d60db1 # v2.8.1
         with:
           cache-on-failure: "true"
-          # The SBF program build emits its dependency rlibs under a non-host
-          # target dir that rust-cache doesn't track by default. Cache it
-          # explicitly so `anchor build` is incremental across CI runs.
-          cache-directories: |
-            target/sbpf-solana-solana
+          # Cache only the cargo registry/git, NOT the workspace target dir.
+          # Reusing SBF artifacts (target/sbpf-solana-solana) across runs is the
+          # documented corruption hazard in this repo — the incremental build
+          # key doesn't catch every dep-resolution change, so the resulting .so
+          # loads but reads/writes wrong offsets ("Program failed to complete"
+          # at runtime). Every anchor build below must start from a clean target.
+          cache-targets: "false"
 
       - uses: ./.github/actions/setup-solana/
 
@@ -271,7 +273,12 @@ jobs:
           # optimization while cutting compile time dramatically.
           CARGO_PROFILE_RELEASE_LTO: "thin"
           CARGO_PROFILE_RELEASE_CODEGEN_UNITS: "16"
-        run: anchor build --ignore-keys --skip-lint -- --features anchor-test
+        # Clean any restored SBF artifacts first — building incrementally on top
+        # of them can emit a .so with wrong offsets (see CLAUDE.md). The program
+        # cache reuses the *final* .so on a hit; on a miss we always build fresh.
+        run: |
+          rm -rf target/sbpf-solana-solana target/deploy
+          anchor build --ignore-keys --skip-lint -- --features anchor-test
 
       # Install SDK deps; the test runner's --skip-build path syncs the freshly
       # built/restored IDL into sdk/src/idl and builds the SDK before running.

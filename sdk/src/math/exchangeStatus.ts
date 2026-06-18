@@ -127,3 +127,10 @@ export function isMarketConfigFlagSet(
 ): boolean {
 	return (marketConfig & flag) > 0;
 }
+
+export function isFormulaicKUpdateDisabled(market: PerpMarketAccount): boolean {
+	return isMarketConfigFlagSet(
+		market.marketConfig,
+		MarketConfigFlag.DISABLE_FORMULAIC_K_UPDATE
+	);
+}

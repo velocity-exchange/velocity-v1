@@ -134,28 +134,21 @@ Gov-token stake fee discount removal: `VelocityClient.updateUserGovTokenInsuranc
 (the `constants/insuranceFund` module) were removed.
 
 Dead-export cleanup: the following previously-exported symbols had no consumer
-inside the SDK, its tests, or any drift-labs org repository and were removed. The
-modules `accounts/pollingTokenAccountSubscriber`,
-`accounts/pollingOracleAccountSubscriber`,
-`accounts/grpcInsuranceFundStakeAccountSubscriber`, `tx/forwardOnlyTxSender`, and
-`util/chainClock` were deleted in full (classes `PollingTokenAccountSubscriber`,
-`PollingOracleAccountSubscriber`, `grpcInsuranceFundStakeAccountSubscriber`,
-`ForwardOnlyTxSender`, `ChainClock` and the `ChainClock*` helper types).
+inside the SDK, its tests, or any drift-labs org repository and were removed.
+The module `tx/forwardOnlyTxSender` was deleted in full (`ForwardOnlyTxSender` class).
 Removed `math` functions: `builderCodesEnabled`, `builderReferralEnabled`,
-`calculateAvailablePerpLiquidity`, `calculateBaseAssetAmountToCoverMarginShortage`,
-`calculateBudgetedK` (the non-`BN` variant; `calculateBudgetedKBN` is unaffected),
-`calculateCollateralValueOfDeposit`, `calculateLiquidationPrice`
-(`calculateLiquidationPriceAfterPerpTrade` is unaffected), `calculateMaxRemainingDeposit`,
-`calculateMaxSpread`, `calculateNewMarketAfterTrade`, `calculateOraclePriceForPerpMargin`,
-`calculateOracleReserveSpread`, `calculatePerpMarketBaseLiquidatorFee`,
-`calculatePositionFundingPNL`, `calculateUserMaxPerpOrderSize`, `fetchMSolMetrics`,
-`getTriggerAuctionStartAndExecutionPrice`, `isBuilderOrderAvailable`, `isEmptyPosition`,
-`isFormulaicKUpdateDisabled`, `isOrderReduceOnly`, `isOrderRiskIncreasing`,
-`isOrderRiskIncreasingInSameDirection`, `isTakingOrder`, `nextRevenuePoolSettleApr`,
-`positionCurrentDirection`, `trimVaaSignatures`. Also removed: `memcmp` helpers
-`getUserThatHasBeenLP` / `getUserWithName`, constants `MAX_I64` / `TEN_MILLION`, the
-misspelled `PTYH_LAZER_PROGRAM_ID` config constant, the `LiquidationBitFlag` class,
-and the deep-import-only `PYTH_SOLANA_RECEIVER_IDL` (`pyth/types`).
+`calculateAvailablePerpLiquidity`, `calculateBudgetedK` (the non-`BN` variant;
+`calculateBudgetedKBN` is unaffected), `calculateCollateralValueOfDeposit`,
+`calculateLiquidationPrice` (`calculateLiquidationPriceAfterPerpTrade` is unaffected),
+`calculateMaxRemainingDeposit`, `calculateMaxSpread`, `calculateNewMarketAfterTrade`,
+`calculateOraclePriceForPerpMargin`, `calculateOracleReserveSpread`,
+`calculatePerpMarketBaseLiquidatorFee`, `calculatePositionFundingPNL`,
+`calculateUserMaxPerpOrderSize`, `fetchMSolMetrics`, `isOrderReduceOnly`,
+`isOrderRiskIncreasing`, `isOrderRiskIncreasingInSameDirection`, `isTakingOrder`,
+`trimVaaSignatures`. Also removed: `memcmp` helper `getUserThatHasBeenLP`, constants
+`MAX_I64` / `TEN_MILLION`, the misspelled `PTYH_LAZER_PROGRAM_ID` config constant,
+type `MSOL_METRICS_ENDPOINT_RESPONSE`, and the deep-import-only
+`PYTH_SOLANA_RECEIVER_IDL` (`pyth/types`).
 
 ### 4.4 Type-level breaking changes
 
@@ -295,7 +288,7 @@ withdraw / order / fill / liquidation builders) without running a full subscribe
 | #74, #78 *(open)* | Enable TypeScript `strict` mode in the SDK. No runtime behavior change; a few public accessor signatures widened to expose already-possible `undefined` (`DLOBNode.getPrice`, `BlockhashSubscriber.getLatestBlockHeight`, the basic/polling user(-stats) subscribers' `get…AndSlot()`) and `nextRevenuePoolSettleApr`'s `amount` made required. The user(-stats) subscribers' stored `{ data, slot }` pair is now atomic (`slot` always defined) (§4.4) |
 | #80 | Remove gov-token (DRIFT) stake fee discount: gov stake-sync instructions, `UserStats.if_staked_gov_token_amount` (→ padding), gov IF revenue-settle APR cap, `GOV_SPOT_MARKET_INDEX` |
 | `fee-arch` _(open)_ | Fee redesign (explicit carveouts, withdrawable protocol fees, 100% staker-owned IF) + AMM isolation |
-| `sdk-deadcode` _(open)_ | Remove 39 unused SDK exports (no consumer in the SDK, its tests, or any drift-labs org repo): see §4.3 dead-export cleanup |
+| `sdk-deadcode` _(open)_ | Remove 27 unused SDK exports (no consumer in the SDK, its tests, or any drift-labs org repo): see §4.3 dead-export cleanup |
 
 ---
 

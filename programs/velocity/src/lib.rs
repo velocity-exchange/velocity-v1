@@ -1580,18 +1580,22 @@ pub mod velocity {
     /// program upgrade (or by a partial re-init). For each account passed via
     /// `remaining_accounts`:
     ///   - velocity-owned PDA → drain lamports (runtime GCs at end of tx)
-    ///   - token-program owned vault (velocity_signer close-authority) → CPI
-    ///     `close_account`, rent refunded to admin
+    ///   - token-program owned vault → CPI `close_account`, rent refunded to
+    ///     admin. The close-authority is chosen per vault: either the current
+    ///     `velocity_signer` PDA or the legacy `drift_signer` PDA (vaults created
+    ///     before the drift→velocity signer-seed rename are owned by the latter).
     /// Admin gate reads State's first pubkey field at raw offset 8..40 so it
-    /// works regardless of the State layout currently on chain. `velocity_signer_nonce`
-    /// must match `State.signer_nonce`; mismatch fails the token CPI signature.
+    /// works regardless of the State layout currently on chain. The two nonces
+    /// must be the canonical bumps for `[b"velocity_signer"]` / `[b"drift_signer"]`;
+    /// a mismatch fails the token CPI signature.
     /// Stripped from mainnet builds via `mainnet-beta`.
     #[cfg(not(feature = "mainnet-beta"))]
     pub fn force_wipe_accounts_devnet<'info>(
         ctx: Context<'info, ForceWipeAccountsDevnet<'info>>,
         velocity_signer_nonce: u8,
+        legacy_signer_nonce: u8,
     ) -> Result<()> {
-        handle_force_wipe_accounts_devnet(ctx, velocity_signer_nonce)
+        handle_force_wipe_accounts_devnet(ctx, velocity_signer_nonce, legacy_signer_nonce)
     }
 
     // pub fn update_whitelist_mint(

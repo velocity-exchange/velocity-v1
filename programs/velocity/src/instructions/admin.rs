@@ -4107,6 +4107,7 @@ pub struct PauseAdminUpdateUserStats<'info> {
 pub fn handle_force_wipe_accounts_devnet<'info>(
     ctx: Context<'info, ForceWipeAccountsDevnet<'info>>,
     velocity_signer_nonce: u8,
+    legacy_signer_nonce: u8,
 ) -> Result<()> {
     use anchor_lang::solana_program::system_program;
     use anchor_spl::token_interface;
@@ -4128,8 +4129,15 @@ pub fn handle_force_wipe_accounts_devnet<'info>(
 
     let admin_ai = ctx.accounts.admin.to_account_info();
     let token_program_id = ctx.accounts.token_program.key();
-    let signer_seeds = crate::signer::get_signer_seeds(&velocity_signer_nonce);
-    let cpi_signers = &[&signer_seeds[..]];
+    // Two possible close-authorities. Vaults created after the drift→velocity
+    // signer-seed rename are owned by `velocity_signer`; vaults created before it
+    // are owned by the legacy `drift_signer` PDA. Pick per vault by matching the
+    // SPL token account's owner field, so a single wipe can clear both.
+    let velocity_seeds = crate::signer::get_signer_seeds(&velocity_signer_nonce);
+    let legacy_seeds: [&[u8]; 2] = [
+        b"drift_signer".as_ref(),
+        bytemuck::bytes_of(&legacy_signer_nonce),
+    ];
 
     // PASS 1: close token vaults. Remaining accounts must come in pairs:
     //   (vault, mint), (vault, mint), ...
@@ -4153,18 +4161,39 @@ pub fn handle_force_wipe_accounts_devnet<'info>(
             .ok_or_else(|| ErrorCode::DefaultError)?;
         require_keys_eq!(*mint_ai.owner, token_program_id, ErrorCode::DefaultError);
 
-        // read current token amount (offset 64..72 in SPL token account layout)
-        let amount = {
+        // SPL token account layout: mint[0..32], owner/authority[32..64], amount[64..72]
+        let (amount, vault_authority) = {
             let data = target.try_borrow_data()?;
             require!(data.len() >= 72, ErrorCode::DefaultError);
-            u64::from_le_bytes(data[64..72].try_into().unwrap())
+            let amount = u64::from_le_bytes(data[64..72].try_into().unwrap());
+            let mut owner = [0u8; 32];
+            owner.copy_from_slice(&data[32..64]);
+            (amount, Pubkey::from(owner))
         };
+
+        // select the close-authority account + signer seeds that match this vault
+        let (authority_ai, signer_seeds): (AccountInfo<'info>, &[&[u8]]) = if vault_authority
+            == ctx.accounts.velocity_signer.key()
+        {
+            (ctx.accounts.velocity_signer.clone(), &velocity_seeds[..])
+        } else if vault_authority == ctx.accounts.legacy_signer.key() {
+            (ctx.accounts.legacy_signer.clone(), &legacy_seeds[..])
+        } else {
+            msg!(
+                "skip vault {} (authority {} is neither velocity_signer nor legacy drift_signer)",
+                target.key(),
+                vault_authority,
+            );
+            i += 2;
+            continue;
+        };
+        let cpi_signers: &[&[&[u8]]] = &[signer_seeds];
 
         if amount > 0 {
             let burn_accounts = token_interface::Burn {
                 mint: mint_ai.clone(),
                 from: target.clone(),
-                authority: ctx.accounts.velocity_signer.clone(),
+                authority: authority_ai.clone(),
             };
             let burn_ctx =
                 CpiContext::new_with_signer(token_program_id, burn_accounts, cpi_signers);
@@ -4175,7 +4204,7 @@ pub fn handle_force_wipe_accounts_devnet<'info>(
         let close_accounts = token_interface::CloseAccount {
             account: target.clone(),
             destination: admin_ai.clone(),
-            authority: ctx.accounts.velocity_signer.clone(),
+            authority: authority_ai.clone(),
         };
         let close_ctx = CpiContext::new_with_signer(token_program_id, close_accounts, cpi_signers);
         token_interface::close_account(close_ctx)?;
@@ -4221,6 +4250,10 @@ pub struct ForceWipeAccountsDevnet<'info> {
     /// CHECK: PDA seeded by [b"velocity_signer", nonce]. Verified by Token Program
     /// at CPI time when closing token vaults; ignored otherwise.
     pub velocity_signer: AccountInfo<'info>,
+    /// CHECK: legacy PDA seeded by [b"drift_signer", nonce]. Close-authority for
+    /// vaults created before the signer-seed rename. Verified by Token Program at
+    /// CPI time when closing such vaults; ignored otherwise.
+    pub legacy_signer: AccountInfo<'info>,
     pub token_program: Interface<'info, TokenInterface>,
     // Targets are passed via `remaining_accounts` so a single call can wipe
     // many accounts in one tx. Velocity-owned PDAs are drained; token-owned vaults

@@ -167,6 +167,12 @@ async function main() {
 		[Buffer.from('velocity_signer')],
 		programId
 	);
+	// legacy drift_signer PDA + nonce — close-authority for vaults created before
+	// the drift→velocity signer-seed rename.
+	const [legacySigner, legacySignerNonce] = PublicKey.findProgramAddressSync(
+		[Buffer.from('drift_signer')],
+		programId
+	);
 
 	// State for the admin gate. If the live receipt has it use that; otherwise
 	// derive from PDA (same address across layouts).
@@ -274,11 +280,12 @@ async function main() {
 	// One tx for now; expand to batching only if we ever exceed account limits.
 	{
 		const ix = await program.methods
-			.forceWipeAccountsDevnet(velocitySignerNonce)
+			.forceWipeAccountsDevnet(velocitySignerNonce, legacySignerNonce)
 			.accountsStrict({
 				admin: admin.publicKey,
 				state: statePubkey,
 				velocitySigner: velocitySigner,
+				legacySigner: legacySigner,
 				tokenProgram: TOKEN_PROGRAM_ID,
 			})
 			.remainingAccounts(remaining)

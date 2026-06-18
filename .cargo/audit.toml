@@ -4,6 +4,12 @@
 ignore = [
 	"RUSTSEC-2022-0013",
 	"RUSTSEC-2022-0093", # Double Public Key Signing Function Oracle Attack on `ed25519-dalek`
+	# anchor-lang `Program<System>` accepts arbitrary executable programs.
+	# Fixed in anchor-lang >=1.0.2, but bumping the lib without also moving the
+	# anchor CLI / ANCHOR_VERSION off 1.0.0 breaks `anchor idl build` (the 1.0.0
+	# IDL machinery is incompatible with 1.0.2 macros). Deferred until the anchor
+	# toolchain (CLI + lib + regenerated IDL) is upgraded together.
+	"RUSTSEC-2026-0144",
 ]
 informational_warnings = ["unmaintained"] # warn for categories of informational advisories
 severity_threshold = "high" # CVSS severity ("none", "low", "medium", "high", "critical")

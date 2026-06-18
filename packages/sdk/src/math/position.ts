@@ -91,6 +91,9 @@ export function calculateBaseAssetValue(
 				.mul(prepegAmm.pegMultiplier)
 				.div(AMM_TIMES_PEG_TO_QUOTE_PRECISION_RATIO)
 				.add(ONE);
+
+		default:
+			throw new Error('Invalid position direction to close');
 	}
 }
 
@@ -227,16 +230,6 @@ export function calculateUnsettledFundingPnl(
 		.mul(new BN(-1));
 
 	return perPositionFundingRate;
-}
-
-/**
- * @deprecated use calculateUnsettledFundingPnl or calculateFeesAndFundingPnl instead
- */
-export function calculatePositionFundingPNL(
-	market: PerpMarketAccount,
-	perpPosition: PerpPosition
-): BN {
-	return calculateUnsettledFundingPnl(market, perpPosition);
 }
 
 export function positionIsAvailable(position: PerpPosition): boolean {

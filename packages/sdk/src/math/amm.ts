@@ -8,7 +8,6 @@ import {
 	ONE,
 	AMM_TO_QUOTE_PRECISION_RATIO,
 	QUOTE_PRECISION,
-	MARGIN_PRECISION,
 	PRICE_DIV_PEG,
 	PERCENTAGE_PRECISION,
 	DEFAULT_REVENUE_SINCE_LAST_FUNDING_SPREAD_RETREAT,
@@ -229,7 +228,7 @@ export function calculateUpdatedAMMSpreadReserves(
 export function calculateBidAskPrice(
 	amm: AMM,
 	marketStats: MarketStats,
-	mmOraclePriceData: MMOraclePriceData,
+	mmOraclePriceData?: MMOraclePriceData,
 	withUpdate = true,
 	latestSlot?: BN
 ): [BN, BN] {
@@ -551,14 +550,6 @@ export function calculateEffectiveLeverage(
 		1 / QUOTE_PRECISION.toNumber();
 
 	return effectiveLeverage;
-}
-
-export function calculateMaxSpread(marginRatioInitial: number): number {
-	const maxTargetSpread: number = new BN(marginRatioInitial)
-		.mul(BID_ASK_SPREAD_PRECISION.div(MARGIN_PRECISION))
-		.toNumber();
-
-	return maxTargetSpread;
 }
 
 export function calculateVolSpreadBN(
@@ -1017,6 +1008,12 @@ export function calculateSpread(
 ): [number, number] {
 	if (amm.baseSpread == 0 || amm.curveUpdateIntensity == 0) {
 		return [amm.baseSpread / 2, amm.baseSpread / 2];
+	}
+
+	if (!oraclePriceData) {
+		throw new Error(
+			'calculateSpread: oraclePriceData is required when baseSpread and curveUpdateIntensity are nonzero'
+		);
 	}
 
 	if (!reservePrice) {

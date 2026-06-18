@@ -1,6 +1,7 @@
 {
 	"name": "@backend/common",
-	"version": "1.0.0",
+	"version": "1.0.1",
+	"private": true,
 	"license": "MIT",
 	"main": "dist/index.js",
 	"typings": "dist/index.d.ts",

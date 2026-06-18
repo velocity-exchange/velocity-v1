@@ -1,6 +1,7 @@
 {
 	"name": "@backend/prometheus",
 	"version": "1.0.0",
+	"private": true,
 	"license": "MIT",
 	"main": "dist/index.js",
 	"typings": "dist/index.d.ts",

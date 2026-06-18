@@ -146,8 +146,7 @@ Removed `math` functions: `builderCodesEnabled`, `builderReferralEnabled`,
 `calculateUserMaxPerpOrderSize`, `fetchMSolMetrics`, `isOrderReduceOnly`,
 `isOrderRiskIncreasing`, `isOrderRiskIncreasingInSameDirection`, `isTakingOrder`,
 `trimVaaSignatures`. Also removed: `memcmp` helper `getUserThatHasBeenLP`, constants
-`MAX_I64` / `TEN_MILLION`, the misspelled `PTYH_LAZER_PROGRAM_ID` config constant,
-type `MSOL_METRICS_ENDPOINT_RESPONSE`, and the deep-import-only
+`MAX_I64` / `TEN_MILLION`, type `MSOL_METRICS_ENDPOINT_RESPONSE`, and the deep-import-only
 `PYTH_SOLANA_RECEIVER_IDL` (`pyth/types`).
 
 ### 4.4 Type-level breaking changes

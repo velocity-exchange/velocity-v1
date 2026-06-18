@@ -24,7 +24,11 @@
  *
  * Required env:
  *   DEVNET_ADMIN          path to admin keypair file (becomes State.admin — immutable)
- *   SOL_LAZER_FEED_ID     Pyth Lazer u32 feed id for SOL/USD
+ *   SOL_LAZER_FEED_ID     Pyth Lazer u32 feed id for SOL/USD — use 6.
+ *                         Feed-id map (verified on-chain): BTC/USD=1, SOL/USD=6,
+ *                         USDT/USD=8. Feed 1 is BTC, NOT SOL — the oracle PDA is
+ *                         derived from the feed id, so a wrong id silently
+ *                         misprices the market.
  *   PYTH_LAZER_TOKEN      auth token for the Pyth Lazer relay (needed to post initial prices)
  * Optional env:
  *   USDT_LAZER_FEED_ID    Pyth Lazer u32 feed id for USDT/USD (default 8)
@@ -130,10 +134,7 @@ const WRAPPED_SOL_MINT = new PublicKey(
 	'So11111111111111111111111111111111111111112'
 );
 
-function getFaucetConfigPda(
-	programId: PublicKey,
-	mint: PublicKey
-): PublicKey {
+function getFaucetConfigPda(programId: PublicKey, mint: PublicKey): PublicKey {
 	return PublicKey.findProgramAddressSync(
 		[Buffer.from('faucet_config'), mint.toBuffer()],
 		programId
@@ -195,9 +196,14 @@ async function confirm(prompt: string, details?: string[]): Promise<void> {
 	}
 }
 
-async function assertMint(connection: Connection, mint: PublicKey, label: string) {
+async function assertMint(
+	connection: Connection,
+	mint: PublicKey,
+	label: string
+) {
 	const info = await connection.getAccountInfo(mint, 'confirmed');
-	if (!info) throw new Error(`${label} ${mint.toBase58()} not found on cluster`);
+	if (!info)
+		throw new Error(`${label} ${mint.toBase58()} not found on cluster`);
 	const owner = info.owner.toBase58();
 	const tokenProgram = 'TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA';
 	const token2022 = 'TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb';
@@ -220,6 +226,7 @@ function tryLoadExistingReceipt(receiptPath: string): Receipt | null {
 async function main() {
 	const rpcUrl = process.env.RPC_URL ?? 'https://api.devnet.solana.com';
 	const adminPath = requireEnv('DEVNET_ADMIN');
+	// Pyth Lazer feed ids: BTC/USD=1, SOL/USD=6, USDT/USD=8. Use 6 here — feed 1 is BTC.
 	const solLazerFeedId = Number(requireEnv('SOL_LAZER_FEED_ID'));
 	if (!Number.isFinite(solLazerFeedId) || solLazerFeedId < 0) {
 		throw new Error('SOL_LAZER_FEED_ID must be a non-negative integer');
@@ -279,7 +286,9 @@ async function main() {
 	console.log(`rpc:           ${rpcUrl}`);
 	console.log(`admin:         ${keypair.publicKey.toBase58()}`);
 	console.log(
-		`usdt mint:     ${usdtMint ? usdtMint.toBase58() : '(will create in Phase 0)'}`
+		`usdt mint:     ${
+			usdtMint ? usdtMint.toBase58() : '(will create in Phase 0)'
+		}`
 	);
 	console.log(`sol lazer fid: ${solLazerFeedId}`);
 	console.log(`usdt lazer fid:${usdtLazerFeedId}`);
@@ -318,9 +327,15 @@ async function main() {
 		`cluster:        ${rpcUrl}`,
 		`velocity program:  ${programId.toBase58()} (executable ✓)`,
 		`faucet program: ${tokenFaucetProgramId.toBase58()} (executable ✓)`,
-		`admin:          ${keypair.publicKey.toBase58()} (${adminSol.toFixed(4)} SOL)`,
+		`admin:          ${keypair.publicKey.toBase58()} (${adminSol.toFixed(
+			4
+		)} SOL)`,
 		`USDT mint:      ${
-			usdtMint ? `${usdtMint.toBase58()}${willCreateUsdt ? ' (to be created)' : ' (token mint ✓)'}` : '(to be created)'
+			usdtMint
+				? `${usdtMint.toBase58()}${
+						willCreateUsdt ? ' (to be created)' : ' (token mint ✓)'
+				  }`
+				: '(to be created)'
 		}`,
 		`USDT supply:    ${usdtInitialSupplyWhole.toString()} tokens pre-mint to admin (before faucet takes authority)`,
 		`SOL Lazer feed: ${solLazerFeedId}`,
@@ -413,8 +428,7 @@ async function main() {
 		);
 		const mintAuthority =
 			(mintInfo.value?.data as any)?.parsed?.info?.mintAuthority ?? null;
-		const adminIsAuthority =
-			mintAuthority === keypair.publicKey.toBase58();
+		const adminIsAuthority = mintAuthority === keypair.publicKey.toBase58();
 		if (adminIsAuthority && usdtInitialSupplyWhole.gtn(0)) {
 			const amount = usdtInitialSupplyWhole.mul(
 				new BN(10).pow(new BN(USDT_DECIMALS))
@@ -474,7 +488,9 @@ async function main() {
 				faucetConfigPk.toBase58()
 			);
 		} else {
-			logStep('token_faucet.initialize (transfers mint authority to faucet PDA)');
+			logStep(
+				'token_faucet.initialize (transfers mint authority to faucet PDA)'
+			);
 			const provider = new AnchorProvider(connection, wallet as any, {
 				commitment: 'confirmed',
 			});
@@ -678,7 +694,9 @@ async function main() {
 			throw new Error(
 				`Timed out waiting ${pythLazerWaitMs}ms for a Pyth Lazer signed message for feeds [${feedIds.join(
 					', '
-				)}]. Check PYTH_LAZER_TOKEN and that ${pythLazerEndpoints.join(', ')} accepts it.`
+				)}]. Check PYTH_LAZER_TOKEN and that ${pythLazerEndpoints.join(
+					', '
+				)} accepts it.`
 			);
 		}
 

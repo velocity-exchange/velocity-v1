@@ -319,68 +319,6 @@ fn dlob_l2_snapshot() {
     assert_eq!(l2book.bids.len(), 2);
 }
 
-#[ignore]
-#[test]
-fn dlob_l2_snapshot_max_leverage_filtering() {
-    let _ = env_logger::try_init();
-    let dlob = DLOB::default();
-    let user = Pubkey::new_unique();
-    let slot = 100_u64;
-    let oracle_price = 1000;
-
-    dlob.markets.entry(MarketId::perp(0)).or_insert(Orderbook {
-        market: MarketId::perp(0),
-        market_tick_size: 1,
-        ..Default::default()
-    });
-
-    // Enable L2 snapshots for this test
-    dlob.enable_l2_snapshot();
-
-    // Insert normal orders
-    let mut order = create_test_order(1, OrderType::Limit, Direction::Long, 1100, 5, slot);
-    order.post_only = true;
-    dlob.insert_order(&user, slot, order);
-
-    let mut order = create_test_order(2, OrderType::Limit, Direction::Short, 900, 3, slot);
-    order.post_only = true;
-    dlob.insert_order(&user, slot, order);
-
-    // Insert max leverage orders (size = u64::MAX)
-    let mut max_lev_order =
-        create_test_order(3, OrderType::Limit, Direction::Long, 1200, u64::MAX, slot);
-    max_lev_order.post_only = true;
-    dlob.insert_order(&user, slot, max_lev_order);
-
-    let mut max_lev_order =
-        create_test_order(4, OrderType::Limit, Direction::Short, 800, u64::MAX, slot);
-    max_lev_order.post_only = true;
-    dlob.insert_order(&user, slot, max_lev_order);
-
-    if let Some(mut book) = dlob.markets.get_mut(&MarketId::new(0, MarketType::Perp)) {
-        book.update_slot(slot);
-        book.update_l2_view(oracle_price);
-    }
-
-    // Test with include_max_leverage = true (should include all orders)
-    let l2book_with_max_lev = dlob.get_l2_snapshot(0, MarketType::Perp);
-    assert_eq!(l2book_with_max_lev.bids.get(&1100), Some(&5));
-    assert_eq!(l2book_with_max_lev.bids.get(&1200), Some(&u64::MAX));
-    assert_eq!(l2book_with_max_lev.asks.get(&900), Some(&3));
-    assert_eq!(l2book_with_max_lev.asks.get(&800), Some(&u64::MAX));
-    assert_eq!(l2book_with_max_lev.bids.len(), 2);
-    assert_eq!(l2book_with_max_lev.asks.len(), 2);
-
-    // Test with include_max_leverage = false (should exclude max leverage orders)
-    let l2book_without_max_lev = dlob.get_l2_snapshot(0, MarketType::Perp);
-    assert_eq!(l2book_without_max_lev.bids.get(&1100), Some(&5));
-    assert_eq!(l2book_without_max_lev.bids.get(&1200), None); // Max leverage order excluded
-    assert_eq!(l2book_without_max_lev.asks.get(&900), Some(&3));
-    assert_eq!(l2book_without_max_lev.asks.get(&800), None); // Max leverage order excluded
-    assert_eq!(l2book_without_max_lev.bids.len(), 1);
-    assert_eq!(l2book_without_max_lev.asks.len(), 1);
-}
-
 #[test]
 fn dlob_find_crosses_for_taker_order_full_fill() {
     let _ = env_logger::try_init();

@@ -78,5 +78,5 @@ export function calculateMaxRemainingDeposit(market: SpotMarketAccount) {
 		SpotBalanceType.DEPOSIT
 	);
 
-	return marketMaxTokenDeposits.sub(totalDepositsTokenAmount);
+	return BN.max(ZERO, marketMaxTokenDeposits.sub(totalDepositsTokenAmount));
 }

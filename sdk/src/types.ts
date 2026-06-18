@@ -549,6 +549,10 @@ export type SpotBankruptcyRecord = {
 	ifPayment: BN;
 };
 
+export class LiquidationBitFlag {
+	static readonly IsolatedPosition = 1;
+}
+
 export type SettlePnlRecord = {
 	ts: BN;
 	user: PublicKey;

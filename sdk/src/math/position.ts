@@ -232,6 +232,16 @@ export function calculateUnsettledFundingPnl(
 	return perPositionFundingRate;
 }
 
+/**
+ * @deprecated use calculateUnsettledFundingPnl or calculateFeesAndFundingPnl instead
+ */
+export function calculatePositionFundingPNL(
+	market: PerpMarketAccount,
+	perpPosition: PerpPosition
+): BN {
+	return calculateUnsettledFundingPnl(market, perpPosition);
+}
+
 export function positionIsAvailable(position: PerpPosition): boolean {
 	return (
 		position.baseAssetAmount.eq(ZERO) &&
@@ -311,6 +321,18 @@ export function findDirectionToClose(
 	return userPosition.baseAssetAmount.gt(ZERO)
 		? PositionDirection.SHORT
 		: PositionDirection.LONG;
+}
+
+export function positionCurrentDirection(
+	userPosition: PerpPosition
+): PositionDirection {
+	return userPosition.baseAssetAmount.gte(ZERO)
+		? PositionDirection.LONG
+		: PositionDirection.SHORT;
+}
+
+export function isEmptyPosition(userPosition: PerpPosition): boolean {
+	return userPosition.baseAssetAmount.eq(ZERO) && userPosition.openOrders === 0;
 }
 
 export function hasOpenOrders(position: PerpPosition): boolean {

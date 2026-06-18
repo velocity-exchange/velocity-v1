@@ -242,12 +242,28 @@ jobs:
           npm install ts-mocha@10.0.0 -g
           npm install --global mocha
 
-      - name: build sdk
-        run: cd sdk/ && bun install --frozen-lockfile && bun run build && cd ..
+      # Cache the compiled programs keyed on the program sources. When nothing
+      # under programs/, Cargo.lock, or Anchor.toml changed, target/deploy/*.so
+      # + IDL/types are restored and the "Build program" step below is skipped —
+      # which removes the ~6-min SBF compile from SDK/test-only PRs. (Run
+      # artifacts don't persist across runs, so a content-hashed cache — not a
+      # paths-filter alone — is what lets a later run reuse a prior build.)
+      - name: Cache compiled program
+        id: cache-program
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        with:
+          path: |
+            target/deploy
+            target/idl/velocity.json
+            target/types/velocity.ts
+          key: ${{ runner.os }}-velocity-program-${{ hashFiles('programs/**', 'Cargo.lock', 'Anchor.toml') }}
 
-      - name: run anchor tests
+      # Only recompile when the program sources changed (cache miss). bankrun's
+      # startAnchor loads velocity/pyth/token_faucet from target/deploy, so the
+      # whole dir is the cached unit.
+      - name: Build program
+        if: steps.cache-program.outputs.cache-hit != 'true'
         env:
-          RUST_LOG: solana_runtime::message_processor::stable_log=info
           # The committed release profile uses `lto = "fat"` + `codegen-units = 1`
           # for the production .so — the slowest possible compile. The test build
           # runs on litesvm and doesn't need it, so override the profile here only
@@ -255,7 +271,17 @@ jobs:
           # optimization while cutting compile time dramatically.
           CARGO_PROFILE_RELEASE_LTO: "thin"
           CARGO_PROFILE_RELEASE_CODEGEN_UNITS: "16"
-        run: bash test-scripts/run-anchor-tests.sh
+        run: anchor build --ignore-keys --skip-lint -- --features anchor-test
+
+      # Install SDK deps; the test runner's --skip-build path syncs the freshly
+      # built/restored IDL into sdk/src/idl and builds the SDK before running.
+      - name: install sdk deps
+        run: cd sdk/ && bun install --frozen-lockfile && cd ..
+
+      - name: run anchor tests
+        env:
+          RUST_LOG: solana_runtime::message_processor::stable_log=info
+        run: bash test-scripts/run-anchor-tests.sh --skip-build
   verify-sdk-configs:
     name: Verify SDK Configs
     if: ${{ false }}

@@ -287,7 +287,7 @@ accounts/events with the previous TS shapes should note:
 - **Corrected field types** (no on-chain change — the TS type was wrong):
   - `LiquidationRecord.canceledOrderIds`: `BN[]` → `number[]`.
   - `LiquidatePerpRecord.userOrderId` / `liquidatorOrderId`: `BN` → `number`.
-  - `FeeTier.rewardNumerator` / `rewardDenominator`: `BN` → `number`.
+  - `OrderFillerRewardStructure.rewardNumerator` / `rewardDenominator`: `BN` → `number`.
   - `RevenueShareSettleRecord.ts`: `number` → `BN`.
 - **Removed phantom fields** (never existed on-chain): `LPSwapRecord.outMint` / `inMint`,
   `LPMintRedeemRecord.lpMint`.
@@ -379,7 +379,7 @@ accounts/events with the previous TS shapes should note:
 | #89       | Restore `ForwardOnlyTxSender` (`tx/forwardOnlyTxSender`) and `calculateMaxRemainingDeposit` (`math/spotMarket`) to the SDK public API (both removed in #82)                                                                                                                                                                                                                   |
 | #94       | Continuous funding dead zone: per-market `funding_clamp_threshold` + `funding_ramp_slope` (recycle `_padding_funding_twap`) replace #12's global hard cutoff; `update_perp_market_funding_dead_zone` ix; `AdminClient.updatePerpMarketFundingDeadZone`; `PerpMarketAccount.fundingClampThreshold`/`fundingRampSlope` replace `paddingFundingTwap`                              |
 | #97       | Re-export `PriceUpdateAccount` from the `@velocity-exchange/sdk` package root; migrate dlob-server + keeper-bots-v2 to the workspace SDK                                                                                                                                                                                                                                       |
-| _reconcile-sdk_ (PR TBD) | Reconcile hand-written `sdk/src/types.ts` mirrors with the generated IDL: add previously-missing account/event fields, correct `BN`↔`number` field types, drop phantom (never-on-chain) `*Mint` record fields, export new param/record types (§4.7). No on-chain layout change                                                                                |
+| #127 | Reconcile hand-written `sdk/src/types.ts` mirrors with the generated IDL: add previously-missing account/event fields, correct `BN`↔`number` field types, drop phantom (never-on-chain) `*Mint` record fields, export new param/record types (§4.7). No on-chain layout change                                                                                |
 
 ---
 

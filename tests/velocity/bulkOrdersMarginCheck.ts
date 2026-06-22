@@ -238,7 +238,10 @@ describe('bulk place_orders margin check', () => {
 				`${label}: expected InsufficientCollateral (0x1773), got: ${e.message}`
 			);
 		}
-		assert(failed, `${label}: batch should have failed the initial margin check`);
+		assert(
+			failed,
+			`${label}: batch should have failed the initial margin check`
+		);
 		// Failed tx must be atomic — no orders should have landed.
 		await velocityClient.fetchAccounts();
 		assert(

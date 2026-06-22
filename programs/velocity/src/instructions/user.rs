@@ -1,3 +1,4 @@
+use std::collections::BTreeSet;
 use std::convert::TryFrom;
 use std::ops::DerefMut;
 
@@ -15,6 +16,7 @@ use solana_program::program::invoke;
 use crate::controller::funding::settle_funding_payment;
 use crate::controller::orders::{
     cancel_orders, validate_spot_dlob_trading_enabled_for_market_type, ModifyOrderId,
+    PlaceOrderResult,
 };
 use crate::controller::position::update_position_and_market;
 use crate::controller::position::PositionDirection;
@@ -2740,19 +2742,13 @@ fn place_orders<'c: 'info, 'info>(
         None
     };
 
-    // Margin is enforced once after the whole batch is placed, not per order.
-    // Each `place_perp_order` only mutates the book and reports back whether it
-    // increased risk (and in which scope); we accumulate that risk here and run
-    // the check below. Enforcing per-order — or only on the last order with a
-    // fresh `risk_increasing == false` — would let an early risk-increasing
-    // order be admitted under a weaker (maintenance) threshold, and a final
-    // no-op order (expired / `TryPostOnly` that couldn't post) would skip the
-    // check entirely.
-    let mut placed_perp_order = false;
-    let mut batch_risk_increasing = false;
-    let mut cross_risk_increasing = false;
-    let mut isolated_risk_markets: Vec<u16> = Vec::new();
-
+    // Place every order, deferring the margin check to a single post-batch pass.
+    // Each `place_perp_order` only mutates the book and reports back what risk it
+    // introduced; checking per-order — or only on the last order with a fresh
+    // `risk_increasing == false` — would let an early risk-increasing order be
+    // admitted under a weaker (maintenance) threshold, and a final no-op order
+    // (expired / `TryPostOnly` that couldn't post) would skip the check entirely.
+    let mut results: Vec<PlaceOrderResult> = Vec::new();
     for (i, params) in order_params.iter().enumerate() {
         validate!(
             !params.is_immediate_or_cancel(),
@@ -2760,92 +2756,66 @@ fn place_orders<'c: 'info, 'info>(
             "immediate_or_cancel order must be in place_and_make or place_and_take"
         )?;
 
-        // only try to expire on first order; margin is checked once after the batch
-        let options = PlaceOrderOptions {
-            signed_msg_taker_order_slot: None,
-            enforce_margin_check: false,
-            try_expire_orders: i == 0,
-            risk_increasing: false,
-            explanation: OrderActionExplanation::None,
-            existing_position_direction_override: None,
-        };
-
         validate_spot_dlob_trading_enabled_for_market_type(params.market_type)?;
 
-        if params.market_type == MarketType::Perp {
-            let builder_fee_bps = validate_builder_fee(
-                escrow.as_mut(),
-                &user.authority,
-                params.builder_idx,
-                params.builder_fee_tenth_bps,
-                &state,
-            )?;
-            let mut builder_order = add_builder_order(
-                &mut escrow,
-                &user,
-                params.builder_idx,
-                builder_fee_bps,
-                user.next_order_id,
-                params.market_index,
-            )?;
-
-            let result = controller::orders::place_perp_order(
-                &state,
-                &mut user,
-                user_key,
-                &perp_market_map,
-                &spot_market_map,
-                &mut oracle_map,
-                clock,
-                *params,
-                options,
-                &mut builder_order,
-            )?;
-
-            placed_perp_order = true;
-
-            if result.risk_increasing {
-                batch_risk_increasing = true;
-                match result.isolated_market_index {
-                    Some(market_index) => {
-                        if !isolated_risk_markets.contains(&market_index) {
-                            isolated_risk_markets.push(market_index);
-                        }
-                    }
-                    None => cross_risk_increasing = true,
-                }
-            }
+        if params.market_type != MarketType::Perp {
+            continue;
         }
+
+        let builder_fee_bps = validate_builder_fee(
+            escrow.as_mut(),
+            &user.authority,
+            params.builder_idx,
+            params.builder_fee_tenth_bps,
+            &state,
+        )?;
+        let mut builder_order = add_builder_order(
+            &mut escrow,
+            &user,
+            params.builder_idx,
+            builder_fee_bps,
+            user.next_order_id,
+            params.market_index,
+        )?;
+
+        results.push(controller::orders::place_perp_order(
+            &state,
+            &mut user,
+            user_key,
+            &perp_market_map,
+            &spot_market_map,
+            &mut oracle_map,
+            clock,
+            *params,
+            PlaceOrderOptions {
+                signed_msg_taker_order_slot: None,
+                enforce_margin_check: false, // checked once, after the batch
+                try_expire_orders: i == 0,   // expire once, on the first order
+                risk_increasing: false,
+                explanation: OrderActionExplanation::None,
+                existing_position_direction_override: None,
+            },
+            &mut builder_order,
+        )?);
     }
 
-    // Single post-batch margin check, accumulating risk across every order.
-    // Requires initial margin in each scope that any order increased risk in
-    // (cross, and/or each isolated market), maintenance otherwise — mirroring
-    // what placing each order individually would have enforced. Runs even when
-    // the final order was an allowed no-op.
-    if placed_perp_order {
-        if batch_risk_increasing {
-            if cross_risk_increasing {
-                meets_place_order_margin_requirement(
-                    &user,
-                    &perp_market_map,
-                    &spot_market_map,
-                    &mut oracle_map,
-                    true,
-                    None,
-                )?;
-            }
-            for market_index in isolated_risk_markets {
-                meets_place_order_margin_requirement(
-                    &user,
-                    &perp_market_map,
-                    &spot_market_map,
-                    &mut oracle_map,
-                    true,
-                    Some(market_index),
-                )?;
-            }
-        } else {
+    // The distinct scopes any order increased risk in: `None` = cross margin,
+    // `Some(market_index)` = that isolated market. A `BTreeSet` dedupes them for
+    // free, so each scope is checked exactly once.
+    let risk_scopes: BTreeSet<Option<u16>> = results
+        .iter()
+        .filter(|result| result.risk_increasing)
+        .map(|result| result.isolated_market_index)
+        .collect();
+
+    // One post-batch margin check, accumulating risk across the whole batch (so
+    // it still runs when the final order was a no-op), mirroring what placing
+    // each order individually would have enforced:
+    //   - no perp orders placed       -> nothing to check
+    //   - perp orders, none increasing -> a single maintenance check
+    //   - some risk-increasing         -> initial margin in each risk scope
+    if !results.is_empty() {
+        if risk_scopes.is_empty() {
             meets_place_order_margin_requirement(
                 &user,
                 &perp_market_map,
@@ -2854,6 +2824,17 @@ fn place_orders<'c: 'info, 'info>(
                 false,
                 None,
             )?;
+        } else {
+            risk_scopes.iter().try_for_each(|&isolated_market_index| {
+                meets_place_order_margin_requirement(
+                    &user,
+                    &perp_market_map,
+                    &spot_market_map,
+                    &mut oracle_map,
+                    true,
+                    isolated_market_index,
+                )
+            })?;
         }
     }
 

@@ -51,10 +51,28 @@ pub struct TestCtx {
 
 impl TestCtx {
     /// Connect to devnet, load the funded `TEST_PRIVATE_KEY` payer, subscribe to
-    /// the three devnet markets + their oracles. Panics with a clear message if
-    /// the payer isn't funded or the markets aren't initialized.
-    pub async fn new() -> Self {
+    /// the three devnet markets + their oracles.
+    ///
+    /// Returns `None` (skip the scenario) when the required live-infra env is
+    /// absent, so the suite is INERT — not a cryptic panic — when secrets aren't
+    /// set. Without this, `test_keypair()` panics base58-decoding an empty
+    /// `TEST_PRIVATE_KEY`, reddening every run (including the nightly job). Once
+    /// the markets are reached it still panics loudly if the payer is unfunded or
+    /// devnet isn't initialized.
+    pub async fn new() -> Option<Self> {
         let _ = env_logger::try_init();
+        for var in ["TEST_PRIVATE_KEY", "TEST_DEVNET_RPC_ENDPOINT"] {
+            if std::env::var(var)
+                .map(|v| v.trim().is_empty())
+                .unwrap_or(true)
+            {
+                eprintln!(
+                    "SKIP: {var} not set — devnet e2e needs live infra \
+                     (funded TEST_PRIVATE_KEY + TEST_DEVNET_RPC_ENDPOINT)"
+                );
+                return None;
+            }
+        }
         let wallet: Wallet = test_keypair().into();
         let client = VelocityClient::new(
             Context::DevNet,
@@ -73,7 +91,7 @@ impl TestCtx {
 
         let ctx = Self { client, wallet };
         ctx.assert_payer_funded().await;
-        ctx
+        Some(ctx)
     }
 
     pub fn authority(&self) -> Pubkey {

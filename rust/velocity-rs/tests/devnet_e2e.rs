@@ -36,7 +36,9 @@ const ONE_SOL: i64 = BASE_PRECISION_I64;
 // ---- Scenario 3: deposit (self-driven) -------------------------------------
 #[tokio::test]
 async fn deposit_into_spot_market() {
-    let ctx = TestCtx::new().await;
+    let Some(ctx) = TestCtx::new().await else {
+        return;
+    };
     let sub = ctx.sub(10);
     ctx.fund_and_deposit_dusdt(10, 50).await;
 
@@ -56,7 +58,9 @@ async fn deposit_into_spot_market() {
 // ---- Scenario 4: withdraw (self-driven) ------------------------------------
 #[tokio::test]
 async fn withdraw_from_spot_market() {
-    let ctx = TestCtx::new().await;
+    let Some(ctx) = TestCtx::new().await else {
+        return;
+    };
     let sub = ctx.sub(11);
     ctx.fund_and_deposit_dusdt(11, 50).await;
 
@@ -93,7 +97,9 @@ async fn withdraw_from_spot_market() {
 // ---- Scenario 7: taker takes against the AMM (self-driven) -----------------
 #[tokio::test]
 async fn taker_fills_against_amm() {
-    let ctx = TestCtx::new().await;
+    let Some(ctx) = TestCtx::new().await else {
+        return;
+    };
     let sub = ctx.sub(16);
     ctx.cleanup(16).await;
     ctx.fund_and_deposit_dusdt(16, 100).await;
@@ -136,7 +142,9 @@ async fn taker_fills_against_amm() {
 // ---- Scenario 1: resting maker + crossing taker, DEPLOYED filler matches ----
 #[tokio::test]
 async fn dlob_maker_taker_filled_by_filler() {
-    let ctx = TestCtx::new().await;
+    let Some(ctx) = TestCtx::new().await else {
+        return;
+    };
     let (maker, taker) = (ctx.sub(30), ctx.sub(12));
     ctx.cleanup(30).await;
     ctx.cleanup(12).await;
@@ -191,7 +199,9 @@ async fn dlob_maker_taker_filled_by_filler() {
 // ---- Scenario B/C: mark-twap crank keeps the market fresh -------------------
 #[tokio::test]
 async fn mark_twap_crank_advances() {
-    let ctx = TestCtx::new().await;
+    let Some(ctx) = TestCtx::new().await else {
+        return;
+    };
     let from_ts = ctx
         .client
         .get_perp_market_account(0)
@@ -210,7 +220,9 @@ async fn mark_twap_crank_advances() {
 #[tokio::test]
 #[ignore = "LIVE_INFRA: jit-maker only fills when the auction is attractive"]
 async fn jit_auction_filled_by_jit_maker() {
-    let ctx = TestCtx::new().await;
+    let Some(ctx) = TestCtx::new().await else {
+        return;
+    };
     let sub = ctx.sub(14);
     ctx.cleanup(14).await;
     ctx.fund_and_deposit_dusdt(14, 100).await;
@@ -253,7 +265,9 @@ async fn jit_auction_filled_by_jit_maker() {
 #[tokio::test]
 #[ignore = "LIVE_INFRA: velocity swift server may not be reachable from CI (SWIFT_HTTP_ENDPOINT)"]
 async fn swift_taker_filled_by_deployed_maker() {
-    let ctx = TestCtx::new().await;
+    let Some(ctx) = TestCtx::new().await else {
+        return;
+    };
     let sub_id = 13u16;
     let sub = ctx.sub(sub_id);
     ctx.fund_and_deposit_dusdt(sub_id, 100).await;
@@ -323,7 +337,9 @@ async fn swift_taker_filled_by_deployed_maker() {
 #[tokio::test]
 #[ignore = "LIVE_INFRA: needs the account to cross maintenance via oracle drift; best-effort"]
 async fn bad_perp_trade_gets_liquidated() {
-    let ctx = TestCtx::new().await;
+    let Some(ctx) = TestCtx::new().await else {
+        return;
+    };
     let sub_id = 17u16;
     let sub = ctx.sub(sub_id);
     ctx.cleanup(sub_id).await;
@@ -373,7 +389,9 @@ async fn bad_perp_trade_gets_liquidated() {
 #[tokio::test]
 #[ignore = "LIVE_INFRA: needs SOL borrow availability + maintenance breach; best-effort"]
 async fn bad_spot_borrow_gets_liquidated() {
-    let ctx = TestCtx::new().await;
+    let Some(ctx) = TestCtx::new().await else {
+        return;
+    };
     let sub_id = 18u16;
     let sub = ctx.sub(sub_id);
     ctx.fund_and_deposit_dusdt(sub_id, 20).await;
@@ -407,7 +425,9 @@ async fn bad_spot_borrow_gets_liquidated() {
 #[tokio::test]
 #[ignore = "LIVE_INFRA: settler only acts above its pnl threshold; best-effort"]
 async fn unsettled_pnl_gets_settled() {
-    let ctx = TestCtx::new().await;
+    let Some(ctx) = TestCtx::new().await else {
+        return;
+    };
     let sub_id = 19u16;
     let sub = ctx.sub(sub_id);
     ctx.cleanup(sub_id).await;

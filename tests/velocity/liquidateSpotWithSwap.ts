@@ -204,9 +204,7 @@ describe('liquidate spot with swap account bindings', () => {
 				'asset_spot_market_vault binding index mismatch'
 			);
 			assert.ok(
-				ix.keys[LIABILITY_TOKEN_ACCOUNT_IX_INDEX].pubkey.equals(
-					liquidatorWSOL
-				),
+				ix.keys[LIABILITY_TOKEN_ACCOUNT_IX_INDEX].pubkey.equals(liquidatorWSOL),
 				'liability_token_account binding index mismatch'
 			);
 			assert.ok(

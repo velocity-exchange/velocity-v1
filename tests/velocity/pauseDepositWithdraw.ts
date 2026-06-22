@@ -195,15 +195,15 @@ describe('spot deposit and withdraw 22', () => {
 			firstUserVelocityClientUSDCAccount,
 			firstUserKeyPair,
 		] = await createUserWithUSDCAccount(
-				bankrunContextWrapper,
-				usdcMint,
-				chProgram,
-				usdcAmount,
-				marketIndexes,
-				spotMarketIndexes,
-				oracleInfos,
-				bulkAccountLoader
-			);
+			bankrunContextWrapper,
+			usdcMint,
+			chProgram,
+			usdcAmount,
+			marketIndexes,
+			spotMarketIndexes,
+			oracleInfos,
+			bulkAccountLoader
+		);
 
 		const marketIndex = 0;
 		await sleep(100);
@@ -275,9 +275,8 @@ describe('spot deposit and withdraw 22', () => {
 			usdcAmount
 		);
 
-		const depositBalanceBefore = (
-			await admin.getSpotMarketAccount(marketIndex)
-		).depositBalance;
+		const depositBalanceBefore = (await admin.getSpotMarketAccount(marketIndex))
+			.depositBalance;
 
 		await firstUserVelocityClient.fetchAccounts();
 		let rejected = false;

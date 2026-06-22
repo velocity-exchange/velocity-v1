@@ -940,6 +940,35 @@ pub fn handle_transfer_deposit_by_delegate<'c: 'info, 'info>(
         oracle_map.get_price_data(&spot_market.oracle_id())?.price
     };
 
+    // Mirror direct-withdraw's reduce-only cap on the source debit so an internal
+    // transfer can't open or grow a borrow in a reduce-only spot market.
+    let amount = if spot_market_map.get_ref(&market_index)?.is_reduce_only() {
+        let position_index = from_user.force_get_spot_position_index(market_index)?;
+        validate!(
+            from_user.spot_positions[position_index].balance_type == SpotBalanceType::Deposit,
+            ErrorCode::ReduceOnlyWithdrawIncreasedRisk
+        )?;
+
+        let max_withdrawable_amount = calculate_max_withdrawable_amount(
+            market_index,
+            from_user,
+            &perp_market_map,
+            &spot_market_map,
+            &mut oracle_map,
+        )?;
+
+        let spot_market = &spot_market_map.get_ref(&market_index)?;
+        let existing_deposit_amount = from_user.spot_positions[position_index]
+            .get_token_amount(spot_market)?
+            .cast::<u64>()?;
+
+        amount
+            .min(max_withdrawable_amount)
+            .min(existing_deposit_amount)
+    } else {
+        amount
+    };
+
     {
         let spot_market = &mut spot_market_map.get_ref_mut(&market_index)?;
 
@@ -1055,6 +1084,18 @@ pub fn handle_transfer_deposit_by_delegate<'c: 'info, 'info>(
                     token_amount
                 )?;
             }
+
+            // Mirror direct-deposit admission: a positive deposit balance is only
+            // permitted while the spot market is active.
+            if to_spot_position.balance_type == SpotBalanceType::Deposit
+                && to_spot_position.scaled_balance > 0
+            {
+                validate!(
+                    matches!(spot_market.status, MarketStatus::Active),
+                    ErrorCode::MarketActionPaused,
+                    "spot_market not active",
+                )?;
+            }
         }
 
         let user_token_amount_after = to_user.get_total_token_amount(spot_market)?;
@@ -1090,6 +1131,9 @@ pub fn handle_transfer_deposit_by_delegate<'c: 'info, 'info>(
         &spot_market,
         ctx.accounts.spot_market_vault.amount,
     )?;
+
+    // Mirror direct-deposit admission: enforce the aggregate deposit cap after crediting.
+    spot_market.validate_max_token_deposits_and_borrows(false)?;
 
     Ok(())
 }
@@ -1161,6 +1205,35 @@ pub fn handle_transfer_deposit<'c: 'info, 'info>(
     let oracle_price = {
         let spot_market = &spot_market_map.get_ref(&market_index)?;
         oracle_map.get_price_data(&spot_market.oracle_id())?.price
+    };
+
+    // Mirror direct-withdraw's reduce-only cap on the source debit so an internal
+    // transfer can't open or grow a borrow in a reduce-only spot market.
+    let amount = if spot_market_map.get_ref(&market_index)?.is_reduce_only() {
+        let position_index = from_user.force_get_spot_position_index(market_index)?;
+        validate!(
+            from_user.spot_positions[position_index].balance_type == SpotBalanceType::Deposit,
+            ErrorCode::ReduceOnlyWithdrawIncreasedRisk
+        )?;
+
+        let max_withdrawable_amount = calculate_max_withdrawable_amount(
+            market_index,
+            from_user,
+            &perp_market_map,
+            &spot_market_map,
+            &mut oracle_map,
+        )?;
+
+        let spot_market = &spot_market_map.get_ref(&market_index)?;
+        let existing_deposit_amount = from_user.spot_positions[position_index]
+            .get_token_amount(spot_market)?
+            .cast::<u64>()?;
+
+        amount
+            .min(max_withdrawable_amount)
+            .min(existing_deposit_amount)
+    } else {
+        amount
     };
 
     {
@@ -1278,6 +1351,18 @@ pub fn handle_transfer_deposit<'c: 'info, 'info>(
                     token_amount
                 )?;
             }
+
+            // Mirror direct-deposit admission: a positive deposit balance is only
+            // permitted while the spot market is active.
+            if to_spot_position.balance_type == SpotBalanceType::Deposit
+                && to_spot_position.scaled_balance > 0
+            {
+                validate!(
+                    matches!(spot_market.status, MarketStatus::Active),
+                    ErrorCode::MarketActionPaused,
+                    "spot_market not active",
+                )?;
+            }
         }
 
         let user_token_amount_after = to_user.get_total_token_amount(spot_market)?;
@@ -1313,6 +1398,9 @@ pub fn handle_transfer_deposit<'c: 'info, 'info>(
         &spot_market,
         ctx.accounts.spot_market_vault.amount,
     )?;
+
+    // Mirror direct-deposit admission: enforce the aggregate deposit cap after crediting.
+    spot_market.validate_max_token_deposits_and_borrows(false)?;
 
     Ok(())
 }

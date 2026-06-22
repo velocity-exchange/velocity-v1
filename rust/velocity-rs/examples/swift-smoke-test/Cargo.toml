@@ -1,0 +1,23 @@
+[workspace]
+
+[package]
+name = "swift-smoke-test"
+version = "0.1.0"
+edition = "2021"
+
+[[bin]]
+name = "swift-smoke-test"
+path = "src/main.rs"
+
+[dependencies]
+base64 = "0.22.1"
+dotenv = "0.15.0"
+env_logger = "0.11"
+futures-util = "0.3"
+hex = "0.4.3"
+nanoid = "0.4.0"
+reqwest = "0.12"
+serde_json = "1"
+solana-pubkey = "3"
+tokio = { version = "1", features = ["full"] }
+velocity-rs = { path = "../../../velocity-rs" }

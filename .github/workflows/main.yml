@@ -542,7 +542,7 @@ jobs:
             target/deploy
             target/idl/velocity.json
             target/types/velocity.ts
-          key: ${{ runner.os }}-velocity-program-anchortest-ltothin-cu16-${{ hashFiles('programs/**', 'Cargo.toml', 'Cargo.lock', 'Anchor.toml') }}
+          key: ${{ runner.os }}-velocity-program-anchortest-ltothin-cu16-anchor${{ env.ANCHOR_VERSION }}-rust${{ env.RUST_TOOLCHAIN }}-${{ hashFiles('programs/**', 'Cargo.toml', 'Cargo.lock', 'Anchor.toml') }}
 
       # Only recompile when the program sources changed (cache miss). bankrun's
       # startAnchor loads velocity/pyth/token_faucet from target/deploy, so the
@@ -575,7 +575,7 @@ jobs:
             target/deploy
             target/idl/velocity.json
             target/types/velocity.ts
-          key: ${{ runner.os }}-velocity-program-anchortest-ltothin-cu16-${{ hashFiles('programs/**', 'Cargo.toml', 'Cargo.lock', 'Anchor.toml') }}
+          key: ${{ runner.os }}-velocity-program-anchortest-ltothin-cu16-anchor${{ env.ANCHOR_VERSION }}-rust${{ env.RUST_TOOLCHAIN }}-${{ hashFiles('programs/**', 'Cargo.toml', 'Cargo.lock', 'Anchor.toml') }}
 
       # run-anchor-tests.sh --skip-build syncs the freshly built/restored IDL
       # into packages/sdk/src/idl and builds the SDK before running the suites:
@@ -663,7 +663,7 @@ jobs:
             target/deploy
             target/idl/velocity.json
             target/types/velocity.ts
-          key: ${{ runner.os }}-velocity-program-vaulttest-nomainnet-thin-cu16-${{ hashFiles('programs/**', 'Cargo.toml', 'Cargo.lock', 'Anchor.toml') }}
+          key: ${{ runner.os }}-velocity-program-vaulttest-nomainnet-thin-cu16-anchor${{ env.ANCHOR_VERSION }}-rust${{ env.RUST_TOOLCHAIN }}-${{ hashFiles('programs/**', 'Cargo.toml', 'Cargo.lock', 'Anchor.toml') }}
 
       # Only recompile when the program sources changed (cache miss). The thin-LTO
       # override matches anchor-tests: the committed release profile uses fat LTO +
@@ -686,7 +686,7 @@ jobs:
             target/deploy
             target/idl/velocity.json
             target/types/velocity.ts
-          key: ${{ runner.os }}-velocity-program-vaulttest-nomainnet-thin-cu16-${{ hashFiles('programs/**', 'Cargo.toml', 'Cargo.lock', 'Anchor.toml') }}
+          key: ${{ runner.os }}-velocity-program-vaulttest-nomainnet-thin-cu16-anchor${{ env.ANCHOR_VERSION }}-rust${{ env.RUST_TOOLCHAIN }}-${{ hashFiles('programs/**', 'Cargo.toml', 'Cargo.lock', 'Anchor.toml') }}
 
       # --skip-build syncs the freshly built/restored IDL into packages/sdk/src/idl,
       # builds the SDKs, and runs the suite (programs already built/restored above).

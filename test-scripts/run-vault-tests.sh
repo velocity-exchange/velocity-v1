@@ -18,7 +18,7 @@
 # CI restores target/deploy + target/idl from a content-hashed cache; on a miss it
 # runs `--build-only` then saves the cache, and always finishes with `--skip-build`.
 set -e
-trap 'echo -e "\nStopped by signal $? (SIGINT)"; exit 0' INT
+trap 'echo -e "\nStopped by SIGINT"; exit 130' INT
 
 MODE="${1:-}"
 
@@ -59,8 +59,10 @@ else
   # the CI program cache target/idl is always populated (restored on a hit, freshly
   # built on a miss), so a missing IDL means the caller skipped the build by
   # mistake — fail loudly rather than silently testing against a stale bundled IDL.
-  if [ ! -f target/idl/velocity.json ] || [ ! -f target/types/velocity.ts ]; then
-    echo "ERROR: target/idl/velocity.json or target/types/velocity.ts is missing —" >&2
+  if [ ! -f target/idl/velocity.json ] || [ ! -f target/types/velocity.ts ] || \
+     [ ! -f target/deploy/velocity.so ] || [ ! -f target/deploy/vaults.so ] || \
+     [ ! -f target/deploy/pyth.so ] || [ ! -f target/deploy/token_faucet.so ]; then
+    echo "ERROR: required IDL, types, or .so artifacts are missing —" >&2
     echo "       cannot guarantee the SDK IDL matches the deployed program." >&2
     echo "       Run without --skip-build, or restore a fresh build into target/ first." >&2
     exit 1
@@ -128,6 +130,8 @@ collect_any() {
   q_pids=("${q_pids[@]:0:$idx}" "${q_pids[@]:$(( idx + 1 ))}")
   q_files=("${q_files[@]:0:$idx}" "${q_files[@]:$(( idx + 1 ))}")
   q_logs=("${q_logs[@]:0:$idx}" "${q_logs[@]:$(( idx + 1 ))}")
+  # `wait <pid>` returns that child's remembered status even after it was
+  # already reaped by `wait -n` or bash's async reaper.
   if wait "$pid"; then
     echo "  pass: $file"
   else

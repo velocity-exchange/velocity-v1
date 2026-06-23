@@ -10360,10 +10360,11 @@ export class VelocityClient {
 		);
 
 		const tx = await this.buildTransaction(updateMmOracleIx, {
-			// Headroom for the native handler's AccountLoader validation of the
-			// state + perp-market accounts (was 1000 when it bytemuck-cast the
-			// market without checks).
-			computeUnits: 4000,
+			// Headroom for the native handler's owner + discriminator validation
+			// of the state + perp-market accounts (was 1000 when it bytemuck-cast
+			// the market without any checks). Measured ~1.3k CU; 2000 leaves
+			// margin for the production-only signer check.
+			computeUnits: 2000,
 			computeUnitsPrice: 0,
 		});
 		const { txSig } = await this.sendTransaction(tx, [], this.opts);

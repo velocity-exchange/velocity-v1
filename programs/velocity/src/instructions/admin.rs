@@ -1,6 +1,7 @@
 use std::convert::TryInto;
 
 use anchor_lang::prelude::*;
+use anchor_lang::Discriminator;
 use anchor_spl::{
     token_2022::{
         spl_token_2022::{
@@ -3318,52 +3319,70 @@ pub fn handle_zero_mm_oracle_fields(ctx: Context<HotAdminUpdatePerpMarket>) -> R
     Ok(())
 }
 
-pub fn handle_update_mm_oracle_native<'info>(
-    accounts: &'info [AccountInfo<'info>],
-    data: &[u8],
-) -> Result<()> {
-    // Pre-Anchor native dispatch (see `crate::auth`): re-establish the account
-    // guarantees Anchor would normally provide before trusting any byte.
-    // Accounts: [0] perp_market (mut), [1] signer, [2] clock (vestigial — slot
-    // is read from the Clock sysvar via syscall, never a passed account),
-    // [3] state.
-    let state_loader = crate::auth::load_native_state(&accounts[3])?;
-    let perp_market_loader = crate::auth::load_native_perp_market(&accounts[0])?;
+pub fn handle_update_mm_oracle_native(accounts: &[AccountInfo], data: &[u8]) -> Result<()> {
+    // Pre-Anchor native dispatch: re-establish the ownership + discriminator
+    // guarantees Anchor would provide (see `crate::auth::require_native_account`)
+    // before trusting any byte. Accounts:
+    //   [0] perp_market (mut), [1] signer, [2] clock sysvar, [3] state.
+    // State byte offsets (from account start, incl. 8-byte discriminator):
+    //   hot_mm_oracle_crank: 360..392, feature_bit_flags: 1374
+    // (guarded by `state/traits/tests.rs::native_instruction_offsets`).
+    crate::auth::require_native_account(
+        &accounts[3],
+        State::DISCRIMINATOR,
+        ErrorCode::InvalidNativeStateAccount,
+    )?;
+    crate::auth::require_native_account(
+        &accounts[0],
+        PerpMarket::DISCRIMINATOR,
+        ErrorCode::InvalidNativePerpMarketAccount,
+    )?;
 
-    let state = state_loader.load()?;
-    // Kill switch: admin can disable this ix via feature_bit_flags. Preserved as
-    // a panic (aborts the tx) to match the prior raw-offset behavior.
-    assert!(
-        state.feature_bit_flags & (FeatureBitFlags::MmOracleUpdate as u8) > 0,
-        "mm oracle update disabled by admin state"
-    );
-
-    #[cfg(not(feature = "anchor-test"))]
     {
-        let signer_account = &accounts[1];
-        require!(
-            signer_account.is_signer && *signer_account.key == state.hot_mm_oracle_crank,
-            ErrorCode::Unauthorized
+        let state = accounts[3].data.borrow();
+        // Kill switch: admin can disable this ix via feature_bit_flags. Panic
+        // (aborts the tx) to match the prior behavior.
+        assert!(
+            state[1374] & 1 > 0,
+            "mm oracle update disabled by admin state"
         );
+
+        #[cfg(not(feature = "anchor-test"))]
+        {
+            let signer_account = &accounts[1];
+            let hot_key =
+                anchor_lang::prelude::Pubkey::new_from_array(state[360..392].try_into().unwrap());
+            require!(
+                signer_account.is_signer && *signer_account.key == hot_key,
+                ErrorCode::Unauthorized
+            );
+        }
     }
-    drop(state);
 
     if data[0..8] == [0u8; 8] {
         msg!("MM oracle price is zero, not updating");
         return Err(ErrorCode::DefaultError.into());
     }
 
-    let mut perp_market = perp_market_loader.load_mut()?;
+    let mut perp_market_data = accounts[0].data.borrow_mut();
+    let perp_market: &mut PerpMarket =
+        bytemuck::from_bytes_mut(&mut perp_market_data[8..8 + std::mem::size_of::<PerpMarket>()]);
     // Sequence-id check uses only seq fields. Defer the rest.
     let incoming_sequence_id = u64::from_le_bytes(data[8..16].try_into().unwrap());
     if incoming_sequence_id <= perp_market.market_stats.mm_oracle_sequence_id {
         return Ok(());
     }
 
-    // Read the slot from the Clock sysvar directly. A caller-supplied clock
-    // account could carry an arbitrary slot and defeat the staleness / slot-gap
-    // rate limits below.
-    let current_slot = Clock::get()?.slot;
+    // Slot comes from the passed Clock sysvar account, which we require to be the
+    // real sysvar — an attacker-supplied account could carry an arbitrary slot
+    // and defeat the staleness / slot-gap rate limits below.
+    require_keys_eq!(
+        *accounts[2].key,
+        solana_program::sysvar::clock::ID,
+        ErrorCode::DefaultError
+    );
+    let clock_data = accounts[2].data.borrow();
+    let current_slot = u64::from_le_bytes(clock_data[0..8].try_into().unwrap());
     let perp_market_slot = perp_market.market_stats.mm_oracle_slot;
 
     if current_slot <= perp_market_slot {

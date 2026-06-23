@@ -7,7 +7,10 @@
 //! `#[derive(Accounts)]` structs are shared with non-AMM perp-market admin
 //! instructions and continue to live in `admin.rs`.
 
+use std::convert::TryInto;
+
 use anchor_lang::prelude::*;
+use anchor_lang::Discriminator;
 use anchor_spl::token_interface::{TokenAccount, TokenInterface};
 
 use crate::instructions::optional_accounts::get_token_mint;
@@ -1122,31 +1125,40 @@ pub fn handle_update_perp_market_funding_bias_sensitivity(
     Ok(())
 }
 
-pub fn handle_update_amm_spread_adjustment_native<'info>(
-    accounts: &'info [AccountInfo<'info>],
+pub fn handle_update_amm_spread_adjustment_native(
+    accounts: &[AccountInfo],
     data: &[u8],
 ) -> Result<()> {
-    // Pre-Anchor native dispatch (see `crate::auth`): re-establish the account
-    // guarantees Anchor would normally provide before trusting any byte.
-    // Accounts: [0] perp_market (mut), [1] signer, [2] state.
-    let state_loader = crate::auth::load_native_state(&accounts[2])?;
-    let perp_market_loader = crate::auth::load_native_perp_market(&accounts[0])?;
+    // Pre-Anchor native dispatch: re-establish the ownership + discriminator
+    // guarantees Anchor would provide (see `crate::auth::require_native_account`)
+    // before trusting any byte. Accounts: [0] perp_market (mut), [1] signer,
+    // [2] state. hot_amm_spread_adjust lives at State bytes 392..424 (guarded by
+    // `state/traits/tests.rs::native_instruction_offsets`).
+    crate::auth::require_native_account(
+        &accounts[2],
+        State::DISCRIMINATOR,
+        ErrorCode::InvalidNativeStateAccount,
+    )?;
+    crate::auth::require_native_account(
+        &accounts[0],
+        PerpMarket::DISCRIMINATOR,
+        ErrorCode::InvalidNativePerpMarketAccount,
+    )?;
 
     #[cfg(not(feature = "anchor-test"))]
     {
-        let state = state_loader.load()?;
+        let state = accounts[2].data.borrow();
         let signer_account = &accounts[1];
+        let hot_key = Pubkey::new_from_array(state[392..424].try_into().unwrap());
         require!(
-            signer_account.is_signer && *signer_account.key == state.hot_amm_spread_adjust,
+            signer_account.is_signer && *signer_account.key == hot_key,
             ErrorCode::Unauthorized
         );
     }
-    // `load_native_state` still runs its ownership/discriminator validation under
-    // `anchor-test`; the loader binding is only consumed by the signer check above.
-    #[cfg(feature = "anchor-test")]
-    let _ = &state_loader;
 
-    let mut perp_market = perp_market_loader.load_mut()?;
+    let mut perp_market_data = accounts[0].data.borrow_mut();
+    let perp_market: &mut PerpMarket =
+        bytemuck::from_bytes_mut(&mut perp_market_data[8..8 + std::mem::size_of::<PerpMarket>()]);
     perp_market.amm.amm_spread_adjustment = data[0] as i8;
 
     Ok(())

@@ -16,51 +16,42 @@
 use anchor_lang::prelude::*;
 
 use crate::error::ErrorCode;
-use crate::state::perp_market::PerpMarket;
 use crate::state::state::{HotRole, State};
 
 /// Structural authentication for the pre-Anchor native dispatch handlers
 /// (`lib.rs::program_entry`, discriminator `[0xFF; 4]`).
 ///
 /// These handlers run *before* Anchor, so they receive a raw `&[AccountInfo]`
-/// with none of the ownership / discriminator / PDA guarantees that
+/// with none of the ownership / discriminator guarantees that
 /// `#[derive(Accounts)]` would normally establish. A handler that authenticates
 /// against byte offsets of a caller-supplied "state" account, or that
 /// `bytemuck`-casts a caller-supplied "market" account, trusts attacker-chosen
 /// bytes: a forged state account whose hot-key offset holds the caller's own
-/// pubkey defeats the signer check, and any writable account can be cast as a
-/// `PerpMarket`. Every native handler MUST re-establish these guarantees through
-/// the helpers below before reading any field.
+/// pubkey defeats the signer check, and any writable account can be reinterpreted
+/// as a `PerpMarket`. Every native handler MUST call this on each typed account
+/// before reading or writing its bytes.
 ///
-/// Validate that `state_acc` is the program's canonical `State` account, then
-/// return a loaded `AccountLoader` so the handler reads typed fields (e.g.
-/// `state.hot_mm_oracle_crank`) instead of fixed byte offsets.
-///
-/// `AccountLoader::try_from` enforces `owner == crate::ID`, `data.len() >= 8`,
-/// and `discriminator == State::DISCRIMINATOR`. Because the program only ever
-/// writes the `State` discriminator to the single `[b"velocity_state"]` PDA at
-/// `initialize`, owner + discriminator already uniquely identify the canonical
-/// state singleton — there is no other crate-owned account carrying that
-/// discriminator. We deliberately avoid an extra `find_program_address` here:
-/// it would add no security over the discriminator check while costing hundreds
-/// of CU on these intentionally minimal hot paths.
-pub fn load_native_state<'info>(
-    state_acc: &'info AccountInfo<'info>,
-) -> Result<AccountLoader<'info, State>> {
-    AccountLoader::<State>::try_from(state_acc)
-        .map_err(|_| error!(ErrorCode::InvalidNativeStateAccount))
-}
-
-/// Validate that `market_acc` is a program-owned `PerpMarket` and return a
-/// loaded `AccountLoader`. The handler calls `.load_mut()` on the result, which
-/// additionally requires the account to be writable. Replaces the unchecked
-/// `bytemuck::from_bytes_mut` cast that would otherwise let any writable account
-/// be reinterpreted as a `PerpMarket`.
-pub fn load_native_perp_market<'info>(
-    market_acc: &'info AccountInfo<'info>,
-) -> Result<AccountLoader<'info, PerpMarket>> {
-    AccountLoader::<PerpMarket>::try_from(market_acc)
-        .map_err(|_| error!(ErrorCode::InvalidNativePerpMarketAccount))
+/// Asserts the account is owned by this program and carries `discriminator` as
+/// its first 8 bytes — exactly the checks `AccountLoader` performs, but without
+/// cloning the `AccountInfo` or re-borrowing/re-validating on `load`, so the
+/// native fast path keeps its minimal CU budget. Owner + discriminator are
+/// sufficient: the program only ever writes a given account discriminator to its
+/// own PDAs, so no caller-controlled account can satisfy both (the `State`
+/// discriminator in particular only ever lands on the singleton
+/// `[b"velocity_state"]` PDA).
+pub fn require_native_account(
+    acc: &AccountInfo,
+    discriminator: &[u8],
+    err: ErrorCode,
+) -> Result<()> {
+    if acc.owner != &crate::ID {
+        return Err(err.into());
+    }
+    let data = acc.try_borrow_data()?;
+    if data.len() < discriminator.len() || &data[..discriminator.len()] != discriminator {
+        return Err(err.into());
+    }
+    Ok(())
 }
 
 /// Anchor `constraint = ...` helper. Returns `Ok(true)` iff the signer is the

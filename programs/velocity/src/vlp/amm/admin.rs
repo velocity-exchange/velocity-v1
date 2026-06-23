@@ -1122,29 +1122,31 @@ pub fn handle_update_perp_market_funding_bias_sensitivity(
     Ok(())
 }
 
-pub fn handle_update_amm_spread_adjustment_native(
-    accounts: &[AccountInfo],
+pub fn handle_update_amm_spread_adjustment_native<'info>(
+    accounts: &'info [AccountInfo<'info>],
     data: &[u8],
 ) -> Result<()> {
+    // Pre-Anchor native dispatch (see `crate::auth`): re-establish the account
+    // guarantees Anchor would normally provide before trusting any byte.
     // Accounts: [0] perp_market (mut), [1] signer, [2] state.
-    // hot_amm_spread_adjust lives at bytes 392..424 of State (after disc).
-    let signer_account = &accounts[1];
+    let state_loader = crate::auth::load_native_state(&accounts[2])?;
+    let perp_market_loader = crate::auth::load_native_perp_market(&accounts[0])?;
+
     #[cfg(not(feature = "anchor-test"))]
     {
-        let state = &accounts[2].data.borrow();
-        let mut hot_amm_spread_adjust = [0u8; 32];
-        hot_amm_spread_adjust.copy_from_slice(&state[392..424]);
-        let hot_key = anchor_lang::prelude::Pubkey::new_from_array(hot_amm_spread_adjust);
-        assert!(
-            signer_account.is_signer && *signer_account.key == hot_key,
-            "signer must match state.hot_amm_spread_adjust, signer: {}, expected: {}",
-            signer_account.key,
-            hot_key
+        let state = state_loader.load()?;
+        let signer_account = &accounts[1];
+        require!(
+            signer_account.is_signer && *signer_account.key == state.hot_amm_spread_adjust,
+            ErrorCode::Unauthorized
         );
     }
-    let mut perp_market_data = accounts[0].data.borrow_mut();
-    let perp_market: &mut PerpMarket =
-        bytemuck::from_bytes_mut(&mut perp_market_data[8..8 + std::mem::size_of::<PerpMarket>()]);
+    // `load_native_state` still runs its ownership/discriminator validation under
+    // `anchor-test`; the loader binding is only consumed by the signer check above.
+    #[cfg(feature = "anchor-test")]
+    let _ = &state_loader;
+
+    let mut perp_market = perp_market_loader.load_mut()?;
     perp_market.amm.amm_spread_adjustment = data[0] as i8;
 
     Ok(())
@@ -1434,4 +1436,136 @@ pub fn handle_update_perp_market_concentration_coef(
     );
 
     Ok(())
+}
+
+#[cfg(test)]
+mod native_auth_tests {
+    //! Tests for the pre-Anchor native dispatch authentication on
+    //! `handle_update_amm_spread_adjustment_native`. Run under `cargo test`
+    //! (default features, no `anchor-test`), so the signer check is compiled in.
+    use super::*;
+    use crate::create_anchor_account_info;
+    use crate::state::perp_market::PerpMarket;
+    use crate::state::state::State;
+    use crate::test_utils::get_anchor_account_bytes;
+    use anchor_lang::prelude::{AccountInfo, Pubkey};
+
+    fn signer_info<'a>(
+        key: &'a Pubkey,
+        is_signer: bool,
+        lamports: &'a mut u64,
+        data: &'a mut [u8],
+        owner: &'a Pubkey,
+    ) -> AccountInfo<'a> {
+        AccountInfo::new(key, is_signer, false, lamports, data, owner, false)
+    }
+
+    #[test]
+    fn spread_native_rejects_forged_state() {
+        let attacker = Pubkey::new_unique();
+        let mut state = State::default();
+        state.hot_amm_spread_adjust = attacker;
+        let mut state_bytes = get_anchor_account_bytes(&mut state);
+        let foreign_owner = Pubkey::new_unique();
+        let state_key = Pubkey::new_unique();
+        let mut state_lamports = 0u64;
+        let forged_state = AccountInfo::new(
+            &state_key,
+            false,
+            false,
+            &mut state_lamports,
+            &mut state_bytes[..],
+            &foreign_owner, // NOT crate::ID
+            false,
+        );
+
+        let mut perp_market = PerpMarket::default();
+        create_anchor_account_info!(perp_market, PerpMarket, perp_market_info);
+
+        let mut sig_lamports = 0u64;
+        let mut sig_data: [u8; 0] = [];
+        let sig_owner = Pubkey::new_unique();
+        let signer = signer_info(
+            &attacker,
+            true,
+            &mut sig_lamports,
+            &mut sig_data,
+            &sig_owner,
+        );
+
+        let accounts = [perp_market_info, signer, forged_state];
+        let err = handle_update_amm_spread_adjustment_native(&accounts, &[7i8 as u8]).unwrap_err();
+        assert_eq!(err, ErrorCode::InvalidNativeStateAccount.into());
+    }
+
+    #[test]
+    fn spread_native_rejects_non_perp_market_in_market_slot() {
+        let hot_key = Pubkey::new_unique();
+        let mut state = State::default();
+        state.hot_amm_spread_adjust = hot_key;
+        create_anchor_account_info!(state, State, state_info);
+
+        let mut not_a_market = State::default();
+        create_anchor_account_info!(not_a_market, State, not_a_market_info);
+
+        let mut sig_lamports = 0u64;
+        let mut sig_data: [u8; 0] = [];
+        let sig_owner = Pubkey::new_unique();
+        let signer = signer_info(&hot_key, true, &mut sig_lamports, &mut sig_data, &sig_owner);
+
+        let accounts = [not_a_market_info, signer, state_info];
+        let err = handle_update_amm_spread_adjustment_native(&accounts, &[7i8 as u8]).unwrap_err();
+        assert_eq!(err, ErrorCode::InvalidNativePerpMarketAccount.into());
+    }
+
+    #[test]
+    fn spread_native_rejects_unauthorized_signer() {
+        let hot_key = Pubkey::new_unique();
+        let mut state = State::default();
+        state.hot_amm_spread_adjust = hot_key;
+        create_anchor_account_info!(state, State, state_info);
+
+        let mut perp_market = PerpMarket::default();
+        create_anchor_account_info!(perp_market, PerpMarket, perp_market_info);
+
+        let attacker = Pubkey::new_unique();
+        let mut sig_lamports = 0u64;
+        let mut sig_data: [u8; 0] = [];
+        let sig_owner = Pubkey::new_unique();
+        let signer = signer_info(
+            &attacker,
+            true,
+            &mut sig_lamports,
+            &mut sig_data,
+            &sig_owner,
+        );
+
+        let accounts = [perp_market_info, signer, state_info];
+        let err = handle_update_amm_spread_adjustment_native(&accounts, &[7i8 as u8]).unwrap_err();
+        assert_eq!(err, ErrorCode::Unauthorized.into());
+    }
+
+    #[test]
+    fn spread_native_happy_path_writes_adjustment() {
+        let hot_key = Pubkey::new_unique();
+        let mut state = State::default();
+        state.hot_amm_spread_adjust = hot_key;
+        create_anchor_account_info!(state, State, state_info);
+
+        let mut perp_market = PerpMarket::default();
+        create_anchor_account_info!(perp_market, PerpMarket, perp_market_info);
+
+        let mut sig_lamports = 0u64;
+        let mut sig_data: [u8; 0] = [];
+        let sig_owner = Pubkey::new_unique();
+        let signer = signer_info(&hot_key, true, &mut sig_lamports, &mut sig_data, &sig_owner);
+
+        let expected: i8 = -5;
+        let accounts = [perp_market_info, signer, state_info];
+        handle_update_amm_spread_adjustment_native(&accounts, &[expected as u8]).unwrap();
+
+        // Reload the market account and confirm the adjustment landed.
+        let loader = AccountLoader::<PerpMarket>::try_from(&accounts[0]).unwrap();
+        assert_eq!(loader.load().unwrap().amm.amm_spread_adjustment, expected);
+    }
 }

@@ -3318,43 +3318,52 @@ pub fn handle_zero_mm_oracle_fields(ctx: Context<HotAdminUpdatePerpMarket>) -> R
     Ok(())
 }
 
-pub fn handle_update_mm_oracle_native(accounts: &[AccountInfo], data: &[u8]) -> Result<()> {
-    // Verify this ix is allowed. State byte offsets (from discriminator start):
-    //   hot_mm_oracle_crank: 360..392
-    //   feature_bit_flags:   1374
-    let state = &accounts[3].data.borrow();
-    assert!(state[1374] & 1 > 0, "ix disabled by admin state");
+pub fn handle_update_mm_oracle_native<'info>(
+    accounts: &'info [AccountInfo<'info>],
+    data: &[u8],
+) -> Result<()> {
+    // Pre-Anchor native dispatch (see `crate::auth`): re-establish the account
+    // guarantees Anchor would normally provide before trusting any byte.
+    // Accounts: [0] perp_market (mut), [1] signer, [2] clock (vestigial — slot
+    // is read from the Clock sysvar via syscall, never a passed account),
+    // [3] state.
+    let state_loader = crate::auth::load_native_state(&accounts[3])?;
+    let perp_market_loader = crate::auth::load_native_perp_market(&accounts[0])?;
 
-    let signer_account = &accounts[1];
+    let state = state_loader.load()?;
+    // Kill switch: admin can disable this ix via feature_bit_flags. Preserved as
+    // a panic (aborts the tx) to match the prior raw-offset behavior.
+    assert!(
+        state.feature_bit_flags & (FeatureBitFlags::MmOracleUpdate as u8) > 0,
+        "mm oracle update disabled by admin state"
+    );
+
     #[cfg(not(feature = "anchor-test"))]
     {
-        let mut hot_mm_oracle_crank = [0u8; 32];
-        hot_mm_oracle_crank.copy_from_slice(&state[360..392]);
-        let hot_key = anchor_lang::prelude::Pubkey::new_from_array(hot_mm_oracle_crank);
-        assert!(
-            signer_account.is_signer && *signer_account.key == hot_key,
-            "signer must match state.hot_mm_oracle_crank, signer: {}, expected: {}",
-            signer_account.key,
-            hot_key
+        let signer_account = &accounts[1];
+        require!(
+            signer_account.is_signer && *signer_account.key == state.hot_mm_oracle_crank,
+            ErrorCode::Unauthorized
         );
     }
+    drop(state);
 
     if data[0..8] == [0u8; 8] {
         msg!("MM oracle price is zero, not updating");
         return Err(ErrorCode::DefaultError.into());
     }
 
-    let mut perp_market_data = accounts[0].data.borrow_mut();
-    let perp_market: &mut PerpMarket =
-        bytemuck::from_bytes_mut(&mut perp_market_data[8..8 + std::mem::size_of::<PerpMarket>()]);
+    let mut perp_market = perp_market_loader.load_mut()?;
     // Sequence-id check uses only seq fields. Defer the rest.
     let incoming_sequence_id = u64::from_le_bytes(data[8..16].try_into().unwrap());
     if incoming_sequence_id <= perp_market.market_stats.mm_oracle_sequence_id {
         return Ok(());
     }
 
-    let clock_data = accounts[2].data.borrow();
-    let current_slot = u64::from_le_bytes(clock_data[0..8].try_into().unwrap());
+    // Read the slot from the Clock sysvar directly. A caller-supplied clock
+    // account could carry an arbitrary slot and defeat the staleness / slot-gap
+    // rate limits below.
+    let current_slot = Clock::get()?.slot;
     let perp_market_slot = perp_market.market_stats.mm_oracle_slot;
 
     if current_slot <= perp_market_slot {
@@ -4280,4 +4289,172 @@ pub struct ForceWipeAccountsDevnet<'info> {
     // Targets are passed via `remaining_accounts` so a single call can wipe
     // many accounts in one tx. Velocity-owned PDAs are drained; token-owned vaults
     // are closed via CPI (rent → admin).
+}
+
+#[cfg(test)]
+mod native_auth_tests {
+    //! Negative tests for the pre-Anchor native dispatch authentication on
+    //! `handle_update_mm_oracle_native`. These run under `cargo test` (default
+    //! features, no `anchor-test`), so the signer check is compiled in. The
+    //! structural account checks are always compiled in regardless of feature.
+    use super::*;
+    use crate::create_anchor_account_info;
+    use crate::state::perp_market::PerpMarket;
+    use crate::state::state::{FeatureBitFlags, State};
+    use crate::test_utils::get_anchor_account_bytes;
+    use anchor_lang::prelude::{AccountInfo, Pubkey};
+
+    // mm-oracle payload: 8-byte price + 8-byte sequence id (both non-zero so the
+    // happy path would proceed past the early-out checks).
+    fn mm_payload() -> [u8; 16] {
+        let mut d = [0u8; 16];
+        d[0..8].copy_from_slice(&100_i64.to_le_bytes());
+        d[8..16].copy_from_slice(&1_u64.to_le_bytes());
+        d
+    }
+
+    fn signer_info<'a>(
+        key: &'a Pubkey,
+        is_signer: bool,
+        lamports: &'a mut u64,
+        data: &'a mut [u8],
+        owner: &'a Pubkey,
+    ) -> AccountInfo<'a> {
+        AccountInfo::new(key, is_signer, false, lamports, data, owner, false)
+    }
+
+    #[test]
+    fn mm_oracle_native_rejects_forged_state() {
+        // State account with the attacker's key at the hot-key field but owned by
+        // a foreign program — the pre-fix bug authenticated against exactly this.
+        let attacker = Pubkey::new_unique();
+        let mut state = State::default();
+        state.hot_mm_oracle_crank = attacker;
+        state.feature_bit_flags = FeatureBitFlags::MmOracleUpdate as u8;
+        let mut state_bytes = get_anchor_account_bytes(&mut state);
+        let foreign_owner = Pubkey::new_unique();
+        let state_key = Pubkey::new_unique();
+        let mut state_lamports = 0u64;
+        let forged_state = AccountInfo::new(
+            &state_key,
+            false,
+            false,
+            &mut state_lamports,
+            &mut state_bytes[..],
+            &foreign_owner, // NOT crate::ID
+            false,
+        );
+
+        let mut perp_market = PerpMarket::default();
+        create_anchor_account_info!(perp_market, PerpMarket, perp_market_info);
+
+        let mut clock_lamports = 0u64;
+        let mut clock_data = [0u8; 8];
+        let clock_owner = Pubkey::new_unique();
+        let clock_key = Pubkey::new_unique();
+        let clock_info = AccountInfo::new(
+            &clock_key,
+            false,
+            false,
+            &mut clock_lamports,
+            &mut clock_data,
+            &clock_owner,
+            false,
+        );
+
+        let mut sig_lamports = 0u64;
+        let mut sig_data: [u8; 0] = [];
+        let sig_owner = Pubkey::new_unique();
+        let signer = signer_info(
+            &attacker,
+            true,
+            &mut sig_lamports,
+            &mut sig_data,
+            &sig_owner,
+        );
+
+        let accounts = [perp_market_info, signer, clock_info, forged_state];
+        let err = handle_update_mm_oracle_native(&accounts, &mm_payload()).unwrap_err();
+        assert_eq!(err, ErrorCode::InvalidNativeStateAccount.into());
+    }
+
+    #[test]
+    fn mm_oracle_native_rejects_non_perp_market_in_market_slot() {
+        // Genuine state, but the "market" slot holds a non-PerpMarket account
+        // (here a second State) — the pre-fix bug bytemuck-cast it blindly.
+        let hot_key = Pubkey::new_unique();
+        let mut state = State::default();
+        state.hot_mm_oracle_crank = hot_key;
+        state.feature_bit_flags = FeatureBitFlags::MmOracleUpdate as u8;
+        create_anchor_account_info!(state, State, state_info);
+
+        let mut not_a_market = State::default();
+        create_anchor_account_info!(not_a_market, State, not_a_market_info);
+
+        let mut clock_lamports = 0u64;
+        let mut clock_data = [0u8; 8];
+        let clock_owner = Pubkey::new_unique();
+        let clock_key = Pubkey::new_unique();
+        let clock_info = AccountInfo::new(
+            &clock_key,
+            false,
+            false,
+            &mut clock_lamports,
+            &mut clock_data,
+            &clock_owner,
+            false,
+        );
+
+        let mut sig_lamports = 0u64;
+        let mut sig_data: [u8; 0] = [];
+        let sig_owner = Pubkey::new_unique();
+        let signer = signer_info(&hot_key, true, &mut sig_lamports, &mut sig_data, &sig_owner);
+
+        let accounts = [not_a_market_info, signer, clock_info, state_info];
+        let err = handle_update_mm_oracle_native(&accounts, &mm_payload()).unwrap_err();
+        assert_eq!(err, ErrorCode::InvalidNativePerpMarketAccount.into());
+    }
+
+    #[test]
+    fn mm_oracle_native_rejects_unauthorized_signer() {
+        // Genuine state + market, but the signer is not the configured hot key.
+        let hot_key = Pubkey::new_unique();
+        let mut state = State::default();
+        state.hot_mm_oracle_crank = hot_key;
+        state.feature_bit_flags = FeatureBitFlags::MmOracleUpdate as u8;
+        create_anchor_account_info!(state, State, state_info);
+
+        let mut perp_market = PerpMarket::default();
+        create_anchor_account_info!(perp_market, PerpMarket, perp_market_info);
+
+        let mut clock_lamports = 0u64;
+        let mut clock_data = [0u8; 8];
+        let clock_owner = Pubkey::new_unique();
+        let clock_key = Pubkey::new_unique();
+        let clock_info = AccountInfo::new(
+            &clock_key,
+            false,
+            false,
+            &mut clock_lamports,
+            &mut clock_data,
+            &clock_owner,
+            false,
+        );
+
+        let attacker = Pubkey::new_unique();
+        let mut sig_lamports = 0u64;
+        let mut sig_data: [u8; 0] = [];
+        let sig_owner = Pubkey::new_unique();
+        let signer = signer_info(
+            &attacker,
+            true,
+            &mut sig_lamports,
+            &mut sig_data,
+            &sig_owner,
+        );
+
+        let accounts = [perp_market_info, signer, clock_info, state_info];
+        let err = handle_update_mm_oracle_native(&accounts, &mm_payload()).unwrap_err();
+        assert_eq!(err, ErrorCode::Unauthorized.into());
+    }
 }

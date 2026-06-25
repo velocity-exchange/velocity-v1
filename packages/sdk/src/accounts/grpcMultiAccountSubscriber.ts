@@ -319,10 +319,7 @@ export class grpcMultiAccountSubscriber<T, U = undefined> {
 			) => {
 				const data = this.decodeBufferFn
 					? this.decodeBufferFn(buffer, accountPubkey, accountProps)
-					: this.program.coder.accounts.decode(
-							this.accountName,
-							buffer
-					  );
+					: this.program.coder.accounts.decode(this.accountName, buffer);
 				const handler = this.onChangeMap.get(accountPubkey);
 				if (handler) {
 					handler(data, context, buffer, accountProps);

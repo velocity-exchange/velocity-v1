@@ -3600,7 +3600,15 @@ pub fn handle_update_special_user_status(
 
 #[derive(Accounts)]
 pub struct Initialize<'info> {
-    #[account(mut)]
+    // On mainnet, only the designated `state_init_authority` may create the
+    // singleton `State` account, so the one-time init cannot be front-run. On
+    // test/devnet builds the address lock is dropped so local validators and
+    // devnet setup can initialize with any admin key.
+    #[cfg_attr(not(feature = "mainnet-beta"), account(mut))]
+    #[cfg_attr(
+        feature = "mainnet-beta",
+        account(mut, address = crate::ids::state_init_authority::id())
+    )]
     pub admin: Signer<'info>,
     #[account(
         init,

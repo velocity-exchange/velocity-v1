@@ -246,6 +246,17 @@ copies the referrer unconditionally, making the migration redundant.
     their `DataAndSlot<UserAccount> | undefined` return — `undefined` until the account
     loads, as the runtime already did. A new `User.getUserAccountAndSlotOrThrow()` is
     provided for call sites that structurally require a loaded account.
+  - **`UserAccountSubscriber` "not subscribed" contract is now uniform.** Every
+    implementation's `getUserAccountAndSlot()` throws `NotSubscribedError` when called
+    before `subscribe()` — the WebSocket and polling subscribers already did, and the
+    gRPC-multi and WebSocket-program subscribers now match. Consequently
+    `User.getUserAccount()` **throws** when not subscribed and returns `undefined` only
+    when subscribed but the account was not found on chain (since `subscribe()` awaits
+    the initial fetch, `undefined` means "not found", not "still loading"). The
+    `getUserAccountOrThrow()` / `getUserAccountAndSlotOrThrow()` error message changed
+    from `User account not loaded: <pubkey>` to `User account not found: <pubkey>`;
+    both still propagate `NotSubscribedError` when called before subscribing. Consumers
+    that matched on the old message string should update.
 
 ### 4.5 New: `VelocityCore` (#21)
 
@@ -389,6 +400,7 @@ accounts/events with the previous TS shapes should note:
 | #97       | Re-export `PriceUpdateAccount` from the `@velocity-exchange/sdk` package root; migrate dlob-server + keeper-bots-v2 to the workspace SDK                                                                                                                                                                                                                                       |
 | #127 | Reconcile hand-written `sdk/src/types.ts` mirrors with the generated IDL: add previously-missing account/event fields, correct `BN`↔`number` field types, drop phantom (never-on-chain) `*Mint` record fields, export new param/record types (§4.7). No on-chain layout change                                                                                |
 | #149      | Remove the dead `migrate_referrer` program instruction (handler + accounts struct; entrypoint already removed with the legacy referral model, so no IDL/ABI change) and its non-functional SDK wrappers `VelocityClient.migrateReferrer` / `getMigrateReferrerIx` (§4.3)                                                                                       |
+| #155 | Uniform `UserAccountSubscriber` "not subscribed" contract: gRPC-multi and WebSocket-program subscribers' `getUserAccountAndSlot()` now throw `NotSubscribedError` before `subscribe()` (matching WebSocket/polling), so `User.getUserAccount()` throws when not subscribed and returns `undefined` only when not found; `getUserAccount(AndSlot)OrThrow` message `User account not loaded` → `User account not found` (§4.4)                                                            |
 
 ---
 

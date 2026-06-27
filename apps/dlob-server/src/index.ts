@@ -813,8 +813,8 @@ const main = async (): Promise<void> => {
 			// Check origin validation
 			const origin = req.get('Origin') || req.get('Referer');
 			const allowedOrigins = [
-				'https://app.drift.trade',
-				'https://beta.drift.trade',
+				'https://velocity.exchange',
+				'https://staging.velocity.exchange',
 			];
 
 			const hasAuth =
@@ -878,8 +878,8 @@ const main = async (): Promise<void> => {
 			// Check origin validation
 			const origin = req.get('Origin') || req.get('Referer');
 			const allowedOrigins = [
-				'https://app.drift.trade',
-				'https://beta.drift.trade',
+				'https://velocity.exchange',
+				'https://staging.velocity.exchange',
 			];
 
 			const hasAuth =

@@ -187,9 +187,9 @@ export class OrderSubscriber {
 
 				const newLastActiveSlot = new BN(
 					buffer.subarray(
-					USER_LAST_ACTIVE_SLOT_OFFSET,
-					USER_LAST_ACTIVE_SLOT_OFFSET + 8
-				),
+						USER_LAST_ACTIVE_SLOT_OFFSET,
+						USER_LAST_ACTIVE_SLOT_OFFSET + 8
+					),
 					undefined,
 					'le'
 				);
@@ -205,9 +205,9 @@ export class OrderSubscriber {
 				const buffer: Buffer = data as Buffer;
 				const newLastActiveSlot = new BN(
 					buffer.subarray(
-					USER_LAST_ACTIVE_SLOT_OFFSET,
-					USER_LAST_ACTIVE_SLOT_OFFSET + 8
-				),
+						USER_LAST_ACTIVE_SLOT_OFFSET,
+						USER_LAST_ACTIVE_SLOT_OFFSET + 8
+					),
 					undefined,
 					'le'
 				);

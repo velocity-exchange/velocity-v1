@@ -6,6 +6,7 @@ mod http;
 mod liquidator;
 mod quoter;
 mod relayer;
+mod taker;
 mod util;
 
 use crate::{
@@ -16,6 +17,7 @@ use crate::{
     },
     liquidator::LiquidatorBot,
     quoter::QuoterBot,
+    taker::TakerBot,
 };
 use clap::Parser;
 
@@ -49,7 +51,15 @@ pub struct Config {
     /// Interval in seconds between quote refresh ticks
     #[clap(long, env = "QUOTE_REFRESH_SECS", default_value = "30")]
     pub quote_refresh_secs: u64,
-    /// Order size in BASE_PRECISION units (1e9 = 1 base unit; default 0.1)
+    /// Quote size as notional in QUOTE_PRECISION (USD * 1e6; e.g. 25000000 =
+    /// $25). When > 0 this takes precedence over `--quote-size-base` and is
+    /// converted to base per market via the oracle price, so a quote is the
+    /// same dollar size on every market (rounded to the market step size, with
+    /// a floor of the market min order size). 0 = use the fixed base size.
+    #[clap(long, env = "QUOTE_SIZE_NOTIONAL", default_value = "0")]
+    pub quote_size_notional: u64,
+    /// Fallback fixed order size in BASE_PRECISION units (1e9 = 1 base unit;
+    /// default 0.1). Used only when `--quote-size-notional` is 0.
     #[clap(long, env = "QUOTE_SIZE_BASE", default_value = "100000000")]
     pub quote_size_base: u64,
     /// Replace an existing order if its price drifts more than this (bps of oracle)
@@ -65,6 +75,20 @@ pub struct Config {
     /// C USD, set this to C*L*1_000_000. 0 disables this check.
     #[clap(long, env = "QUOTE_MAX_GROSS_NOTIONAL", default_value = "0")]
     pub quote_max_gross_notional: u64,
+    /// Run taker bot (sends randomized small market orders to simulate flow)
+    #[clap(long, default_value = "false")]
+    pub taker: bool,
+    /// Seconds between taker order ticks
+    #[clap(long, env = "TAKER_INTERVAL_SECS", default_value = "15")]
+    pub taker_interval_secs: u64,
+    /// Taker order size in BASE_PRECISION units (1e9 = 1 base unit; default 0.1)
+    #[clap(long, env = "TAKER_SIZE_BASE", default_value = "100000000")]
+    pub taker_size_base: u64,
+    /// Inventory bound in BASE_PRECISION (1e9): once |position| reaches this,
+    /// the taker forces the side that reduces it (mean-reverting). 0 disables
+    /// the bound (pure random flow).
+    #[clap(long, env = "TAKER_MAX_BASE_PER_MARKET", default_value = "1000000000")]
+    pub taker_max_base_per_market: u64,
     /// Run pyth lazer oracle relayer
     #[clap(long, default_value = "false")]
     pub relayer: bool,
@@ -76,7 +100,10 @@ pub struct Config {
     /// constants (e.g. quote oracle = USDT/USD on a fork).
     #[clap(long, env = "RELAYER_EXTRA_FEEDS", default_value = "")]
     pub relayer_extra_feeds: String,
-    /// Initialize the bot's user subaccount (one-shot) and exit
+    /// Preflight: ensure the bot's user subaccounts exist before starting the
+    /// selected bot mode. Covers `--sub-account-id` and every id in
+    /// `--subaccounts` (the liquidator's take-over accounts). Idempotent; safe
+    /// on every restart.
     #[clap(long, default_value = "false")]
     pub init_user: bool,
     /// fill for all markets (overrides '--market-ids')
@@ -97,6 +124,10 @@ pub struct Config {
     pub swift_cu_limit: u32,
     #[clap(long, default_value = "256000")]
     pub fill_cu_limit: u32,
+    /// CU limit for standalone trigger_order txs. Triggers are far cheaper than fills, and the
+    /// priority fee is billed on the *requested* limit, so keep this tight to avoid overpaying.
+    #[clap(long, default_value = "100000")]
+    pub trigger_cu_limit: u32,
     #[clap(long, env = "DRY_RUN", default_value = "false")]
     pub dry: bool,
     #[clap(long, default_value = "0")]
@@ -202,10 +233,16 @@ async fn main() {
         }
     });
 
+    // `--init-user` is a preflight step, not a standalone mode: when set, ensure
+    // the bot's subaccount (User PDA for `--sub-account-id`) exists before the
+    // selected bot starts. Idempotent — `init_user` early-returns when the PDA
+    // already exists — so it's a harmless no-op on every restart. This stops the
+    // bot's first `get_user_account` read from failing with `AccountNotFound`.
     if config.init_user {
-        relayer::init_user(config, velocity).await;
-        return;
-    } else if config.relayer {
+        relayer::init_user(config.clone(), velocity.clone()).await;
+    }
+
+    if config.relayer {
         relayer::run(config, velocity).await;
     } else if config.liquidator {
         let bot = LiquidatorBot::new(config, velocity, metrics, dashboard_state).await;
@@ -213,10 +250,13 @@ async fn main() {
     } else if config.quoter {
         let bot = QuoterBot::new(config, velocity).await;
         bot.run().await;
+    } else if config.taker {
+        let bot = TakerBot::new(config, velocity).await;
+        bot.run().await;
     } else if config.filler {
         let bot = FillerBot::new(config, velocity, metrics).await;
         bot.run().await;
     } else {
-        log::warn!("provide --filler, --liquidator, --quoter, or --relayer mode");
+        log::warn!("provide --filler, --liquidator, --quoter, --taker, or --relayer mode");
     }
 }

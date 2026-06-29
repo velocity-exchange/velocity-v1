@@ -1,6 +1,6 @@
 # Migrating from Drift Protocol v2 to Velocity
 
-This repo is a fork of [`drift-labs/protocol-v2`](https://github.com/drift-labs/protocol-v2)
+This repo is a fork of [`velocity-exchange/protocol-v2`](https://github.com/velocity-exchange/protocol-v2)
 (fork point: `0ae3e3b1d`, SDK `v2.163.0-beta.0`, April 2026). The original Drift program is
 **paused**; Velocity is an **entirely new program deployment** with a new program ID, a
 reduced feature set, and a renamed SDK.
@@ -144,7 +144,7 @@ Gov-token stake fee discount removal (#80): `VelocityClient.updateUserGovTokenIn
 (the `constants/insuranceFund` module) were removed.
 
 Dead-export cleanup (#82): the following previously-exported symbols had no consumer
-inside the SDK, its tests, or any drift-labs org repository and were removed.
+inside the SDK, its tests, or any velocity-exchange org repository and were removed.
 The module `tx/forwardOnlyTxSender` was deleted (`ForwardOnlyTxSender` class) —
 **but later restored in #89** (see §4.6).
 Removed `math` functions: `builderCodesEnabled`, `builderReferralEnabled`,
@@ -162,6 +162,14 @@ Removed `math` functions: `builderCodesEnabled`, `builderReferralEnabled`,
 was renamed to the correctly-spelled `PYTH_LAZER_PROGRAM_ID`.
 
 (`calculateMaxRemainingDeposit` was in this removal batch but was restored in #89 — see §4.6.)
+
+Legacy referrer migration removal (#149): `VelocityClient.migrateReferrer` /
+`getMigrateReferrerIx` were removed. These wrapped the `migrate_referrer` program
+instruction, which backfilled `RevenueShareEscrow.referrer` from `UserStats.referrer`
+for escrows created before that copy was folded into escrow initialization. The
+instruction's entrypoint had already been removed with the legacy referral model, so it
+was absent from the IDL and the SDK methods threw at runtime; escrow initialization now
+copies the referrer unconditionally, making the migration redundant.
 
 ### 4.4 Type-level breaking changes
 
@@ -238,6 +246,17 @@ was renamed to the correctly-spelled `PYTH_LAZER_PROGRAM_ID`.
     their `DataAndSlot<UserAccount> | undefined` return — `undefined` until the account
     loads, as the runtime already did. A new `User.getUserAccountAndSlotOrThrow()` is
     provided for call sites that structurally require a loaded account.
+  - **`UserAccountSubscriber` "not subscribed" contract is now uniform.** Every
+    implementation's `getUserAccountAndSlot()` throws `NotSubscribedError` when called
+    before `subscribe()` — the WebSocket and polling subscribers already did, and the
+    gRPC-multi and WebSocket-program subscribers now match. Consequently
+    `User.getUserAccount()` **throws** when not subscribed and returns `undefined` only
+    when subscribed but the account was not found on chain (since `subscribe()` awaits
+    the initial fetch, `undefined` means "not found", not "still loading"). The
+    `getUserAccountOrThrow()` / `getUserAccountAndSlotOrThrow()` error message changed
+    from `User account not loaded: <pubkey>` to `User account not found: <pubkey>`;
+    both still propagate `NotSubscribedError` when called before subscribing. Consumers
+    that matched on the old message string should update.
 
 ### 4.5 New: `VelocityCore` (#21)
 
@@ -382,6 +401,9 @@ accounts/events with the previous TS shapes should note:
 | #97       | Re-export `PriceUpdateAccount` from the `@velocity-exchange/sdk` package root; migrate dlob-server + keeper-bots-v2 to the workspace SDK                                                                                                                                                                                                                                       |
 | #127 | Reconcile hand-written `sdk/src/types.ts` mirrors with the generated IDL: add previously-missing account/event fields, correct `BN`↔`number` field types, drop phantom (never-on-chain) `*Mint` record fields, export new param/record types (§4.7). No on-chain layout change                                                                                |
 | native-path | Harden the native fast-path admin handlers (`update_mm_oracle_native`, `update_amm_spread_adjustment_native`): authenticate against the program-owned `State` account loaded via `AccountLoader` (owner + discriminator), require the market slot to hold a program-owned `PerpMarket` (replaces an unchecked `bytemuck` cast), and read the slot from the `Clock` sysvar instead of a caller-supplied account. New errors `InvalidNativeStateAccount` (6355) / `InvalidNativePerpMarketAccount` (6356). The `update_amm_spread_adjustment_native` ix now requires the `State` account at index 2 (SDK `getUpdateAmmSpreadAdjustmentNativeIx` is now async and adds it) |
+| #139      | `transfer_deposit` / `transfer_deposit_by_delegate` now enforce the same admission checks as direct deposit/withdraw: the recipient credit requires active spot-market status for a positive deposit balance (`MarketActionPaused`) and respects `max_token_deposits` (`MaxDeposit`); the source debit honors direct-withdraw's reduce-only cap (`ReduceOnlyWithdrawIncreasedRisk`). Transfers that previously succeeded into a capped/non-active/reduce-only market now revert. No ABI/layout change |
+| #149      | Remove the dead `migrate_referrer` program instruction (handler + accounts struct; entrypoint already removed with the legacy referral model, so no IDL/ABI change) and its non-functional SDK wrappers `VelocityClient.migrateReferrer` / `getMigrateReferrerIx` (§4.3)                                                                                       |
+| #155 | Uniform `UserAccountSubscriber` "not subscribed" contract: gRPC-multi and WebSocket-program subscribers' `getUserAccountAndSlot()` now throw `NotSubscribedError` before `subscribe()` (matching WebSocket/polling), so `User.getUserAccount()` throws when not subscribed and returns `undefined` only when not found; `getUserAccount(AndSlot)OrThrow` message `User account not loaded` → `User account not found` (§4.4)                                                            |
 
 ---
 

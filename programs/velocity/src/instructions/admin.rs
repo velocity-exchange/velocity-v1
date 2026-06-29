@@ -3604,9 +3604,18 @@ pub struct Initialize<'info> {
     // singleton `State` account, so the one-time init cannot be front-run. On
     // test/devnet builds the address lock is dropped so local validators and
     // devnet setup can initialize with any admin key.
-    #[cfg_attr(not(feature = "mainnet-beta"), account(mut))]
+    //
+    // The lock is gated on `mainnet-beta && !anchor-test` (not `mainnet-beta`
+    // alone): the integration-test build keeps the default `mainnet-beta`
+    // feature on and only adds `anchor-test`, so gating on `mainnet-beta` alone
+    // would lock every test's bankrun wallet out of `initialize`. This mirrors
+    // the three-way build split used by the keys in `ids.rs`.
     #[cfg_attr(
-        feature = "mainnet-beta",
+        not(all(feature = "mainnet-beta", not(feature = "anchor-test"))),
+        account(mut)
+    )]
+    #[cfg_attr(
+        all(feature = "mainnet-beta", not(feature = "anchor-test")),
         account(mut, address = crate::ids::state_init_authority::id())
     )]
     pub admin: Signer<'info>,

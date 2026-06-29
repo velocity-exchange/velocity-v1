@@ -106,9 +106,11 @@ const logHttp = morgan(logFormat, {
 const ALLOWED_ORIGIN_PATTERN = /^https:\/\/([^/]+\.)?velocity\.exchange(\/|$)/;
 
 function isAuthorizedRequest(req: express.Request): boolean {
+	const internalSecret = process.env.INTERNAL_SECRET;
 	const hasAuth =
-		(req.headers['Authorization'] || req.headers['authorization']) ===
-		process.env.INTERNAL_SECRET;
+		typeof internalSecret === 'string' &&
+		internalSecret.length > 0 &&
+		req.get('Authorization') === internalSecret;
 	if (hasAuth) return true;
 	const origin = req.get('Origin') || req.get('Referer');
 	return !!origin && ALLOWED_ORIGIN_PATTERN.test(origin);

@@ -1,11 +1,11 @@
 {
 	"name": "@velocity-exchange/admin-cli",
-	"version": "0.1.5",
+	"version": "0.2.1",
 	"description": "Velocity v2 admin CLI: rotate authority keys, pause markets, and route operations through a Squads V4 multisig.",
 	"author": "velocity-exchange",
 	"repository": {
 		"type": "git",
-		"url": "git@github.com:drift-labs/protocol-v2-shadow.git",
+		"url": "git@github.com:velocity-exchange/velocity-v1.git",
 		"directory": "packages/cli-admin"
 	},
 	"license": "Apache-2.0",

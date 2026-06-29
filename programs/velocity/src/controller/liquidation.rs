@@ -3578,10 +3578,19 @@ pub fn resolve_perp_bankruptcy(
         "loss_to_socialize must be non-positive"
     )?;
 
-    let cumulative_funding_rate_delta = calculate_funding_rate_deltas_to_resolve_bankruptcy(
-        loss_to_socialize,
-        perp_market_map.get_ref(&market_index)?.deref(),
-    )?;
+    // Only socialized loss needs a funding-rate delta. With full coverage
+    // (loss_to_socialize == 0) skip the helper: it requires nonzero open
+    // interest, so a fully-covered bankruptcy in a market with zero OI would
+    // otherwise revert the whole atomic resolution and leave the account
+    // bankrupt despite sufficient coverage.
+    let cumulative_funding_rate_delta = if loss_to_socialize < 0 {
+        calculate_funding_rate_deltas_to_resolve_bankruptcy(
+            loss_to_socialize,
+            perp_market_map.get_ref(&market_index)?.deref(),
+        )?
+    } else {
+        0
+    };
 
     // socialize loss
     if loss_to_socialize < 0 {
@@ -3743,12 +3752,19 @@ pub fn resolve_spot_bankruptcy(
     {
         let mut spot_market = spot_market_map.get_ref_mut(&market_index)?;
         let oracle_price_data = &oracle_map.get_price_data(&spot_market.oracle_id())?;
-        let quote_social_loss = get_token_value(
+        // The user records the gross bad debt; the spot-market counters record
+        // only the loss actually borne by depositors, i.e. after the IF payment.
+        let gross_quote_loss = get_token_value(
             -borrow_amount.cast()?,
             spot_market.decimals,
             oracle_price_data.price,
         )?;
-        user.increment_total_socialized_loss(quote_social_loss.unsigned_abs().cast()?)?;
+        let socialized_quote_loss = get_token_value(
+            -loss_to_socialize.cast()?,
+            spot_market.decimals,
+            oracle_price_data.price,
+        )?;
+        user.increment_total_socialized_loss(gross_quote_loss.unsigned_abs().cast()?)?;
 
         let spot_position = user.get_spot_position_mut(market_index)?;
         update_spot_balances_and_cumulative_deposits(
@@ -3766,11 +3782,11 @@ pub fn resolve_spot_bankruptcy(
 
         spot_market.total_social_loss = spot_market
             .total_social_loss
-            .safe_add(borrow_amount.cast()?)?;
+            .safe_add(loss_to_socialize.cast()?)?;
 
         spot_market.total_quote_social_loss = spot_market
             .total_quote_social_loss
-            .safe_add(quote_social_loss.unsigned_abs().cast()?)?;
+            .safe_add(socialized_quote_loss.unsigned_abs().cast()?)?;
     }
 
     // exit bankruptcy

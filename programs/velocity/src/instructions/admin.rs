@@ -42,7 +42,7 @@ use crate::{
         orders::is_multiple_of_step_size,
         safe_math::SafeMath,
         spot_balance::get_token_amount,
-        spot_withdraw::validate_spot_market_vault_amount,
+        spot_withdraw::{validate_spot_market_vault_amount, DEFAULT_WITHDRAW_CIRCUIT_BREAKER_PCT},
     },
     math_error, msg,
     optional_accounts::get_token_mint,
@@ -2085,9 +2085,6 @@ pub fn handle_update_spot_market_withdraw_circuit_breaker(
     ctx: Context<AdminUpdateSpotMarket>,
     withdraw_circuit_breaker_pct: u32,
 ) -> Result<()> {
-    let spot_market = &mut load_mut!(ctx.accounts.spot_market)?;
-    msg!("spot market {}", spot_market.market_index);
-
     validate!(
         withdraw_circuit_breaker_pct <= PERCENTAGE_PRECISION_U32,
         ErrorCode::DefaultError,
@@ -2095,6 +2092,23 @@ pub fn handle_update_spot_market_withdraw_circuit_breaker(
         withdraw_circuit_breaker_pct,
         PERCENTAGE_PRECISION_U32
     )?;
+
+    // A higher pct loosens the breaker (allows a larger daily withdrawal). The
+    // warm admin may only keep or tighten it relative to the 25% default;
+    // loosening it past 25% is a riskier change reserved for the cold admin.
+    // (`0` is the default-25% sentinel, so it stays within the warm cap.)
+    if !check_cold(&ctx.accounts.admin.key(), &ctx.accounts.state)? {
+        validate!(
+            withdraw_circuit_breaker_pct <= DEFAULT_WITHDRAW_CIRCUIT_BREAKER_PCT,
+            ErrorCode::Unauthorized,
+            "warm admin cannot set withdraw_circuit_breaker_pct ({}) above the 25% default ({}); requires cold admin",
+            withdraw_circuit_breaker_pct,
+            DEFAULT_WITHDRAW_CIRCUIT_BREAKER_PCT
+        )?;
+    }
+
+    let spot_market = &mut load_mut!(ctx.accounts.spot_market)?;
+    msg!("spot market {}", spot_market.market_index);
 
     msg!(
         "spot_market.withdraw_circuit_breaker_pct: {:?} -> {:?}",

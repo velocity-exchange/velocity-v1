@@ -1,11 +1,11 @@
 import * as anchor from '@coral-xyz/anchor';
 import { assert } from 'chai';
+import { Keypair, Transaction } from '@solana/web3.js';
 
 import { Program } from '@coral-xyz/anchor';
 
 import {
 	TestClient,
-	QUOTE_PRECISION,
 	PERCENTAGE_PRECISION,
 	BN,
 	OracleSource,
@@ -99,10 +99,55 @@ describe('spot market deposit cap + configurable withdraw breaker', () => {
 
 	it('update deposit cap', async () => {
 		const twentyPct = PERCENTAGE_PRECISION.divn(5).toNumber();
-		await velocityClient.updateSpotMarketDepositCap(0, guardThreshold, twentyPct);
+		await velocityClient.updateSpotMarketDepositCap(
+			0,
+			guardThreshold,
+			twentyPct
+		);
 		const market = await fetchSpotMarket();
 		assert(market.depositGuardThreshold.eq(guardThreshold));
 		assert(market.maxDepositPctPerDay === twentyPct);
+	});
+
+	it('warm admin cannot loosen the breaker past 25%', async () => {
+		// rotate the warm admin to a fresh key so it is warm-but-not-cold
+		const warmKp = new Keypair();
+		await bankrunContextWrapper.fundKeypair(warmKp, 10 ** 9);
+		await velocityClient.updateWarmAdmin(warmKp.publicKey);
+
+		const statePk = await velocityClient.getStatePublicKey();
+		const spotMarketPk = await getSpotMarketPublicKey(chProgram.programId, 0);
+		const fiftyPct = PERCENTAGE_PRECISION.divn(2).toNumber();
+		// build the ix with the warm key as the admin signer (bypassing the
+		// client builder, which would use the cold admin)
+		const ix =
+			velocityClient.program.instruction.updateSpotMarketWithdrawCircuitBreaker(
+				fiftyPct,
+				{
+					accounts: {
+						admin: warmKp.publicKey,
+						state: statePk,
+						spotMarket: spotMarketPk,
+					},
+				}
+			);
+		let threw = false;
+		try {
+			await bankrunContextWrapper.sendTransaction(new Transaction().add(ix), [
+				warmKp,
+			]);
+		} catch (e) {
+			threw = true;
+		}
+		assert(threw, 'warm admin should not be able to set the breaker above 25%');
+	});
+
+	it('cold admin can loosen the breaker past 25%', async () => {
+		// the default wallet is the cold admin
+		const fiftyPct = PERCENTAGE_PRECISION.divn(2).toNumber();
+		await velocityClient.updateSpotMarketWithdrawCircuitBreaker(0, fiftyPct);
+		const market = await fetchSpotMarket();
+		assert(market.withdrawCircuitBreakerPct === fiftyPct);
 	});
 
 	it('blocks a deposit above the daily cap', async () => {

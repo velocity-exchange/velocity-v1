@@ -1044,14 +1044,13 @@ impl PerpMarket {
         )
     }
 
-    pub fn amm_can_fill_order(
+    /// Hard gates suppressing all AMM fills (standalone and JIT): `AmmFill`
+    /// pause, drawdown, MM-oracle volatility, oracle validity. Global
+    /// `amm_paused()` is the caller's. Excludes the auction-timing gates in
+    /// [`Self::amm_can_fill_order`], which JIT bypasses by design.
+    pub fn amm_fill_gates_ok(
         &self,
-        order: &Order,
-        clock_slot: u64,
-        fill_mode: FillMode,
-        state: &State,
         safe_oracle_validity: OracleValidity,
-        user_can_skip_auction_duration: bool,
         mm_oracle_price_data: &MMOraclePriceData,
     ) -> VelocityResult<bool> {
         if self.is_operation_paused(PerpOperation::AmmFill) {
@@ -1088,6 +1087,24 @@ impl PerpMarket {
             msg!("AMM cannot fill order: oracle not valid for low risk fills");
             return Ok(false);
         }
+
+        Ok(true)
+    }
+
+    pub fn amm_can_fill_order(
+        &self,
+        order: &Order,
+        clock_slot: u64,
+        fill_mode: FillMode,
+        state: &State,
+        safe_oracle_validity: OracleValidity,
+        user_can_skip_auction_duration: bool,
+        mm_oracle_price_data: &MMOraclePriceData,
+    ) -> VelocityResult<bool> {
+        if !self.amm_fill_gates_ok(safe_oracle_validity, mm_oracle_price_data)? {
+            return Ok(false);
+        }
+
         let safe_oracle_price_data = mm_oracle_price_data.get_safe_oracle_price_data();
         let can_fill_low_risk = order.is_low_risk_for_amm(
             safe_oracle_price_data.delay,

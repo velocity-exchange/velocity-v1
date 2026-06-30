@@ -133,4 +133,78 @@ export function registerSpotMarket(parent: Command): void {
 			}
 		}
 	);
+
+	withGlobalOptions(
+		sm
+			.command('set-withdraw-breaker <market> <pct>')
+			.description(
+				'Per-market daily withdraw circuit-breaker size: the max fraction of ' +
+					'the 24h deposit TWAP withdrawable per 24h window ' +
+					'(PERCENTAGE_PRECISION = 1e6, e.g. 250000 = 25%). 0 => default 25%.'
+			)
+	).action(async (market: string, pct: string, _flags, cmd: Command) => {
+		const opts = readGlobalOpts(cmd);
+		const provider = buildProvider(opts);
+		const client = await buildAdminClient(opts);
+		try {
+			const ix = await client.getUpdateSpotMarketWithdrawCircuitBreakerIx(
+				Number.parseInt(market, 10),
+				Number.parseInt(pct, 10)
+			);
+			const result = await sendOrPropose(
+				provider,
+				[ix],
+				opts.multisig ? new PublicKey(opts.multisig) : undefined,
+				'velocity-admin spot-market set-withdraw-breaker'
+			);
+			reportDispatch(
+				`spot-market[${market}] withdraw_circuit_breaker_pct = ${pct}`,
+				result
+			);
+		} finally {
+			await client.unsubscribe();
+		}
+	});
+
+	withGlobalOptions(
+		sm
+			.command('set-deposit-cap <market> <threshold> <pctPerDay>')
+			.description(
+				'Per-market daily deposit cap. threshold (raw u64, token base units): ' +
+					'no rate limit below it. pctPerDay (PERCENTAGE_PRECISION = 1e6): max ' +
+					'fraction above the 24h deposit TWAP deposits may reach per 24h window. ' +
+					'pctPerDay = 0 disables the cap.'
+			)
+	).action(
+		async (
+			market: string,
+			threshold: string,
+			pctPerDay: string,
+			_flags,
+			cmd: Command
+		) => {
+			const opts = readGlobalOpts(cmd);
+			const provider = buildProvider(opts);
+			const client = await buildAdminClient(opts);
+			try {
+				const ix = await client.getUpdateSpotMarketDepositCapIx(
+					Number.parseInt(market, 10),
+					new BN(threshold),
+					Number.parseInt(pctPerDay, 10)
+				);
+				const result = await sendOrPropose(
+					provider,
+					[ix],
+					opts.multisig ? new PublicKey(opts.multisig) : undefined,
+					'velocity-admin spot-market set-deposit-cap'
+				);
+				reportDispatch(
+					`spot-market[${market}] deposit_guard_threshold = ${threshold}, max_deposit_pct_per_day = ${pctPerDay}`,
+					result
+				);
+			} finally {
+				await client.unsubscribe();
+			}
+		}
+	);
 }

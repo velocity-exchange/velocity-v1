@@ -348,6 +348,9 @@ export const mockSpotMarkets: Array<SpotMarketAccount> = [
 		tokenProgramFlag: 0,
 		poolId: 0,
 		feeAdjustment: 0,
+		depositGuardThreshold: new BN(0),
+		withdrawCircuitBreakerPct: 0,
+		maxDepositPctPerDay: 0,
 	},
 	{
 		status: MarketStatus.ACTIVE,
@@ -442,6 +445,9 @@ export const mockSpotMarkets: Array<SpotMarketAccount> = [
 		tokenProgramFlag: 0,
 		poolId: 0,
 		feeAdjustment: 0,
+		depositGuardThreshold: new BN(0),
+		withdrawCircuitBreakerPct: 0,
+		maxDepositPctPerDay: 0,
 	},
 	{
 		status: MarketStatus.ACTIVE,
@@ -538,6 +544,9 @@ export const mockSpotMarkets: Array<SpotMarketAccount> = [
 		tokenProgramFlag: 0,
 		poolId: 0,
 		feeAdjustment: 0,
+		depositGuardThreshold: new BN(0),
+		withdrawCircuitBreakerPct: 0,
+		maxDepositPctPerDay: 0,
 	},
 ];
 

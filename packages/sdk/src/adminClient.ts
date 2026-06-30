@@ -2293,6 +2293,84 @@ export class AdminClient extends VelocityClient {
 		);
 	}
 
+	public async updateSpotMarketWithdrawCircuitBreaker(
+		spotMarketIndex: number,
+		withdrawCircuitBreakerPct: number
+	): Promise<TransactionSignature> {
+		const ix = await this.getUpdateSpotMarketWithdrawCircuitBreakerIx(
+			spotMarketIndex,
+			withdrawCircuitBreakerPct
+		);
+
+		const tx = await this.buildTransaction(ix);
+
+		const { txSig } = await this.sendTransaction(tx, [], this.opts);
+
+		return txSig;
+	}
+
+	public async getUpdateSpotMarketWithdrawCircuitBreakerIx(
+		spotMarketIndex: number,
+		withdrawCircuitBreakerPct: number
+	): Promise<TransactionInstruction> {
+		return this.program.instruction.updateSpotMarketWithdrawCircuitBreaker(
+			withdrawCircuitBreakerPct,
+			{
+				accounts: {
+					admin: this.isSubscribed
+						? this.getStateAccount().coldAdmin
+						: this.wallet.publicKey,
+					state: await this.getStatePublicKey(),
+					spotMarket: await getSpotMarketPublicKey(
+						this.program.programId,
+						spotMarketIndex
+					),
+				},
+			}
+		);
+	}
+
+	public async updateSpotMarketDepositCap(
+		spotMarketIndex: number,
+		depositGuardThreshold: BN,
+		maxDepositPctPerDay: number
+	): Promise<TransactionSignature> {
+		const ix = await this.getUpdateSpotMarketDepositCapIx(
+			spotMarketIndex,
+			depositGuardThreshold,
+			maxDepositPctPerDay
+		);
+
+		const tx = await this.buildTransaction(ix);
+
+		const { txSig } = await this.sendTransaction(tx, [], this.opts);
+
+		return txSig;
+	}
+
+	public async getUpdateSpotMarketDepositCapIx(
+		spotMarketIndex: number,
+		depositGuardThreshold: BN,
+		maxDepositPctPerDay: number
+	): Promise<TransactionInstruction> {
+		return this.program.instruction.updateSpotMarketDepositCap(
+			depositGuardThreshold,
+			maxDepositPctPerDay,
+			{
+				accounts: {
+					admin: this.isSubscribed
+						? this.getStateAccount().coldAdmin
+						: this.wallet.publicKey,
+					state: await this.getStatePublicKey(),
+					spotMarket: await getSpotMarketPublicKey(
+						this.program.programId,
+						spotMarketIndex
+					),
+				},
+			}
+		);
+	}
+
 	public async updateSpotMarketMaxTokenBorrows(
 		spotMarketIndex: number,
 		maxTokenBorrowsFraction: number

@@ -1966,6 +1966,17 @@ pub mod instructions {
     #[automatically_derived]
     impl anchor_lang::InstructionData for UpdateSpotMarketCumulativeInterest {}
     #[derive(AnchorSerialize, AnchorDeserialize, Clone, Default)]
+    pub struct UpdateSpotMarketDepositCap {
+        pub deposit_guard_threshold: u64,
+        pub max_deposit_pct_per_day: u32,
+    }
+    #[automatically_derived]
+    impl anchor_lang::Discriminator for UpdateSpotMarketDepositCap {
+        const DISCRIMINATOR: &[u8] = &[76, 21, 179, 154, 28, 161, 174, 107];
+    }
+    #[automatically_derived]
+    impl anchor_lang::InstructionData for UpdateSpotMarketDepositCap {}
+    #[derive(AnchorSerialize, AnchorDeserialize, Clone, Default)]
     pub struct UpdateSpotMarketExpiry {
         pub expiry_ts: i64,
     }
@@ -2156,6 +2167,16 @@ pub mod instructions {
     }
     #[automatically_derived]
     impl anchor_lang::InstructionData for UpdateSpotMarketStepSizeAndTickSize {}
+    #[derive(AnchorSerialize, AnchorDeserialize, Clone, Default)]
+    pub struct UpdateSpotMarketWithdrawCircuitBreaker {
+        pub withdraw_circuit_breaker_pct: u32,
+    }
+    #[automatically_derived]
+    impl anchor_lang::Discriminator for UpdateSpotMarketWithdrawCircuitBreaker {
+        const DISCRIMINATOR: &[u8] = &[2, 97, 135, 97, 117, 169, 65, 223];
+    }
+    #[automatically_derived]
+    impl anchor_lang::InstructionData for UpdateSpotMarketWithdrawCircuitBreaker {}
     #[derive(AnchorSerialize, AnchorDeserialize, Clone, Default)]
     pub struct UpdateStateMaxInitializeUserFee {
         pub max_initialize_user_fee: u16,
@@ -4883,6 +4904,9 @@ pub mod types {
         pub protocol_fee_pool: PoolBalance,
         pub protocol_liquidation_fee: u32,
         pub protocol_fee_factor: u32,
+        pub deposit_guard_threshold: u64,
+        pub withdraw_circuit_breaker_pct: u32,
+        pub max_deposit_pct_per_day: u32,
         #[serde(skip)]
         pub padding: Padding<8>,
     }
@@ -6247,6 +6271,9 @@ pub mod accounts {
         pub protocol_fee_pool: PoolBalance,
         pub protocol_liquidation_fee: u32,
         pub protocol_fee_factor: u32,
+        pub deposit_guard_threshold: u64,
+        pub withdraw_circuit_breaker_pct: u32,
+        pub max_deposit_pct_per_day: u32,
         #[serde(skip)]
         pub padding: Padding<8>,
     }
@@ -21254,6 +21281,76 @@ pub mod accounts {
     }
     #[repr(C)]
     #[derive(Copy, Clone, Default, AnchorSerialize, AnchorDeserialize, Serialize, Deserialize)]
+    pub struct UpdateSpotMarketDepositCap {
+        pub admin: Pubkey,
+        pub state: Pubkey,
+        pub spot_market: Pubkey,
+    }
+    #[automatically_derived]
+    impl anchor_lang::Discriminator for UpdateSpotMarketDepositCap {
+        const DISCRIMINATOR: &[u8] = &[57, 18, 221, 151, 198, 145, 0, 203];
+    }
+    #[automatically_derived]
+    unsafe impl anchor_lang::__private::bytemuck::Pod for UpdateSpotMarketDepositCap {}
+    #[automatically_derived]
+    unsafe impl anchor_lang::__private::bytemuck::Zeroable for UpdateSpotMarketDepositCap {}
+    #[automatically_derived]
+    impl anchor_lang::ZeroCopy for UpdateSpotMarketDepositCap {}
+    #[automatically_derived]
+    impl anchor_lang::InstructionData for UpdateSpotMarketDepositCap {}
+    #[automatically_derived]
+    impl ToAccountMetas for UpdateSpotMarketDepositCap {
+        fn to_account_metas(&self) -> Vec<AccountMeta> {
+            vec![
+                AccountMeta {
+                    pubkey: self.admin,
+                    is_signer: true,
+                    is_writable: false,
+                },
+                AccountMeta {
+                    pubkey: self.state,
+                    is_signer: false,
+                    is_writable: false,
+                },
+                AccountMeta {
+                    pubkey: self.spot_market,
+                    is_signer: false,
+                    is_writable: true,
+                },
+            ]
+        }
+    }
+    #[automatically_derived]
+    impl anchor_lang::AccountSerialize for UpdateSpotMarketDepositCap {
+        fn try_serialize<W: std::io::Write>(&self, writer: &mut W) -> anchor_lang::Result<()> {
+            if writer.write_all(Self::DISCRIMINATOR).is_err() {
+                return Err(anchor_lang::error::ErrorCode::AccountDidNotSerialize.into());
+            }
+            if AnchorSerialize::serialize(self, writer).is_err() {
+                return Err(anchor_lang::error::ErrorCode::AccountDidNotSerialize.into());
+            }
+            Ok(())
+        }
+    }
+    #[automatically_derived]
+    impl anchor_lang::AccountDeserialize for UpdateSpotMarketDepositCap {
+        fn try_deserialize(buf: &mut &[u8]) -> anchor_lang::Result<Self> {
+            let given_disc = &buf[..8];
+            if Self::DISCRIMINATOR != given_disc {
+                return Err(anchor_lang::error!(
+                    anchor_lang::error::ErrorCode::AccountDiscriminatorMismatch
+                ));
+            }
+            Self::try_deserialize_unchecked(buf)
+        }
+        fn try_deserialize_unchecked(buf: &mut &[u8]) -> anchor_lang::Result<Self> {
+            let mut data: &[u8] = &buf[8..];
+            AnchorDeserialize::deserialize(&mut data)
+                .map_err(|_| anchor_lang::error::ErrorCode::AccountDidNotDeserialize.into())
+        }
+    }
+    #[repr(C)]
+    #[derive(Copy, Clone, Default, AnchorSerialize, AnchorDeserialize, Serialize, Deserialize)]
     pub struct UpdateSpotMarketExpiry {
         pub admin: Pubkey,
         pub state: Pubkey,
@@ -22512,6 +22609,76 @@ pub mod accounts {
     }
     #[automatically_derived]
     impl anchor_lang::AccountDeserialize for UpdateSpotMarketStepSizeAndTickSize {
+        fn try_deserialize(buf: &mut &[u8]) -> anchor_lang::Result<Self> {
+            let given_disc = &buf[..8];
+            if Self::DISCRIMINATOR != given_disc {
+                return Err(anchor_lang::error!(
+                    anchor_lang::error::ErrorCode::AccountDiscriminatorMismatch
+                ));
+            }
+            Self::try_deserialize_unchecked(buf)
+        }
+        fn try_deserialize_unchecked(buf: &mut &[u8]) -> anchor_lang::Result<Self> {
+            let mut data: &[u8] = &buf[8..];
+            AnchorDeserialize::deserialize(&mut data)
+                .map_err(|_| anchor_lang::error::ErrorCode::AccountDidNotDeserialize.into())
+        }
+    }
+    #[repr(C)]
+    #[derive(Copy, Clone, Default, AnchorSerialize, AnchorDeserialize, Serialize, Deserialize)]
+    pub struct UpdateSpotMarketWithdrawCircuitBreaker {
+        pub admin: Pubkey,
+        pub state: Pubkey,
+        pub spot_market: Pubkey,
+    }
+    #[automatically_derived]
+    impl anchor_lang::Discriminator for UpdateSpotMarketWithdrawCircuitBreaker {
+        const DISCRIMINATOR: &[u8] = &[148, 194, 104, 237, 225, 232, 46, 78];
+    }
+    #[automatically_derived]
+    unsafe impl anchor_lang::__private::bytemuck::Pod for UpdateSpotMarketWithdrawCircuitBreaker {}
+    #[automatically_derived]
+    unsafe impl anchor_lang::__private::bytemuck::Zeroable for UpdateSpotMarketWithdrawCircuitBreaker {}
+    #[automatically_derived]
+    impl anchor_lang::ZeroCopy for UpdateSpotMarketWithdrawCircuitBreaker {}
+    #[automatically_derived]
+    impl anchor_lang::InstructionData for UpdateSpotMarketWithdrawCircuitBreaker {}
+    #[automatically_derived]
+    impl ToAccountMetas for UpdateSpotMarketWithdrawCircuitBreaker {
+        fn to_account_metas(&self) -> Vec<AccountMeta> {
+            vec![
+                AccountMeta {
+                    pubkey: self.admin,
+                    is_signer: true,
+                    is_writable: false,
+                },
+                AccountMeta {
+                    pubkey: self.state,
+                    is_signer: false,
+                    is_writable: false,
+                },
+                AccountMeta {
+                    pubkey: self.spot_market,
+                    is_signer: false,
+                    is_writable: true,
+                },
+            ]
+        }
+    }
+    #[automatically_derived]
+    impl anchor_lang::AccountSerialize for UpdateSpotMarketWithdrawCircuitBreaker {
+        fn try_serialize<W: std::io::Write>(&self, writer: &mut W) -> anchor_lang::Result<()> {
+            if writer.write_all(Self::DISCRIMINATOR).is_err() {
+                return Err(anchor_lang::error::ErrorCode::AccountDidNotSerialize.into());
+            }
+            if AnchorSerialize::serialize(self, writer).is_err() {
+                return Err(anchor_lang::error::ErrorCode::AccountDidNotSerialize.into());
+            }
+            Ok(())
+        }
+    }
+    #[automatically_derived]
+    impl anchor_lang::AccountDeserialize for UpdateSpotMarketWithdrawCircuitBreaker {
         fn try_deserialize(buf: &mut &[u8]) -> anchor_lang::Result<Self> {
             let given_disc = &buf[..8];
             if Self::DISCRIMINATOR != given_disc {
@@ -25268,6 +25435,8 @@ pub mod errors {
         InvalidNativeStateAccount,
         #[msg("Native dispatch: supplied market account is not a Velocity perp market")]
         InvalidNativePerpMarketAccount,
+        #[msg("DailyDepositLimit")]
+        DailyDepositLimit,
     }
 }
 pub mod events {

@@ -1208,6 +1208,21 @@ pub mod velocity {
         handle_update_spot_market_max_token_deposits(ctx, max_token_deposits)
     }
 
+    pub fn update_spot_market_withdraw_circuit_breaker(
+        ctx: Context<AdminUpdateSpotMarket>,
+        withdraw_circuit_breaker_pct: u32,
+    ) -> Result<()> {
+        handle_update_spot_market_withdraw_circuit_breaker(ctx, withdraw_circuit_breaker_pct)
+    }
+
+    pub fn update_spot_market_deposit_cap(
+        ctx: Context<AdminUpdateSpotMarket>,
+        deposit_guard_threshold: u64,
+        max_deposit_pct_per_day: u32,
+    ) -> Result<()> {
+        handle_update_spot_market_deposit_cap(ctx, deposit_guard_threshold, max_deposit_pct_per_day)
+    }
+
     pub fn update_spot_market_max_token_borrows(
         ctx: Context<AdminUpdateSpotMarket>,
         max_token_borrows_fraction: u16,

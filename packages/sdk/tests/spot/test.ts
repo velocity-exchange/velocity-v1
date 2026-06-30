@@ -6,6 +6,12 @@ import {
 	calculateSizePremiumLiabilityWeight,
 	calculateBorrowRate,
 	calculateDepositRate,
+	calculateMaxDepositTokenAmount,
+	checkDepositLimits,
+	getTokenAmount,
+	SpotBalanceType,
+	PERCENTAGE_PRECISION,
+	QUOTE_PRECISION,
 } from '../../src';
 import { mockSpotMarkets } from '../dlob/helpers';
 import * as _ from 'lodash';
@@ -222,5 +228,58 @@ describe('Spot Tests', () => {
 		const addBor1 = calculateBorrowRate(mockSpot, new BN(-1000 * 1e9));
 		// console.log(addBor1.toNumber());
 		assert(addBor1.eqn(20918)); // went up
+	});
+
+	it('calculateMaxDepositTokenAmount', () => {
+		const twap = new BN(100).mul(QUOTE_PRECISION);
+
+		// disabled (pct == 0) => null
+		assert(calculateMaxDepositTokenAmount(twap, ZERO, 0) === null);
+
+		// 20%/day => cap at 120% of twap
+		const pct = PERCENTAGE_PRECISION.divn(5).toNumber();
+		const cap = calculateMaxDepositTokenAmount(twap, ZERO, pct);
+		assert(cap!.eq(twap.add(twap.divn(5))));
+
+		// high guard threshold lifts the cap below it
+		const guard = new BN(1000).mul(QUOTE_PRECISION);
+		const capGuard = calculateMaxDepositTokenAmount(
+			new BN(10).mul(QUOTE_PRECISION),
+			guard,
+			pct
+		);
+		assert(capGuard!.eq(guard));
+	});
+
+	it('checkDepositLimits', () => {
+		const mockSpot = _.cloneDeep(mockSpotMarkets[0]);
+		mockSpot.decimals = 6;
+		mockSpot.cumulativeDepositInterest =
+			SPOT_MARKET_CUMULATIVE_INTEREST_PRECISION;
+		mockSpot.depositBalance = new BN(100).mul(QUOTE_PRECISION);
+		const currentDeposits = getTokenAmount(
+			mockSpot.depositBalance,
+			mockSpot,
+			SpotBalanceType.DEPOSIT
+		);
+		const pct = PERCENTAGE_PRECISION.divn(10).toNumber(); // 10%/day
+
+		// disabled => always allowed even with twap far below current
+		mockSpot.maxDepositPctPerDay = 0;
+		mockSpot.depositTokenTwap = currentDeposits.divn(2);
+		assert(checkDepositLimits(mockSpot) === true);
+
+		// current == twap, 10% headroom => allowed
+		mockSpot.maxDepositPctPerDay = pct;
+		mockSpot.depositTokenTwap = currentDeposits;
+		assert(checkDepositLimits(mockSpot) === true);
+
+		// current is 2x the twap (way over 110% cap) => rejected
+		mockSpot.depositTokenTwap = currentDeposits.divn(2);
+		assert(checkDepositLimits(mockSpot) === false);
+
+		// but a high guard threshold lifts the cap above current => allowed
+		mockSpot.depositGuardThreshold = currentDeposits.muln(2);
+		assert(checkDepositLimits(mockSpot) === true);
 	});
 });

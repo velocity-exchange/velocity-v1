@@ -610,9 +610,18 @@ export function calculateWithdrawLimit(
 		); // isolated pools between 50-95% utilization with friction on twap in 33% increments
 	}
 
+	// 0 is treated as the default 25% so markets created before the field
+	// existed keep prior behavior (mirrors calculate_min_deposit_token_amount).
+	const breakerPct =
+		spotMarket.withdrawCircuitBreakerPct === 0
+			? PERCENTAGE_PRECISION.divn(4)
+			: new BN(spotMarket.withdrawCircuitBreakerPct);
+	const maxDrop = depositTokenTwapLive
+		.mul(breakerPct)
+		.div(PERCENTAGE_PRECISION);
 	const minDepositTokensTwap = depositTokenTwapLive.sub(
 		BN.max(
-			depositTokenTwapLive.div(new BN(4)),
+			maxDrop,
 			BN.min(spotMarket.withdrawGuardThreshold, depositTokenTwapLive)
 		)
 	);
@@ -672,6 +681,51 @@ export function calculateWithdrawLimit(
 		currentDepositAmount: marketDepositTokenAmount,
 		currentBorrowAmount: marketBorrowTokenAmount,
 	};
+}
+
+/**
+ * Mirror of the program's `calculate_max_deposit_token_amount`. Returns the max
+ * resulting deposit token amount permitted by the daily deposit cap: growth up
+ * to `maxDepositPctPerDay` above the 24h deposit TWAP, but never below the
+ * deposit guard threshold. Returns null when the cap is disabled (pct == 0).
+ */
+export function calculateMaxDepositTokenAmount(
+	depositTokenTwap: BN,
+	depositGuardThreshold: BN,
+	maxDepositPctPerDay: number
+): BN | null {
+	if (maxDepositPctPerDay === 0) {
+		return null; // disabled
+	}
+	const maxIncrease = depositTokenTwap
+		.mul(new BN(maxDepositPctPerDay))
+		.div(PERCENTAGE_PRECISION);
+	return BN.max(depositTokenTwap.add(maxIncrease), depositGuardThreshold);
+}
+
+/**
+ * Mirror of the program's `check_deposit_limits`. Returns true if the market's
+ * current deposit level is within the daily deposit cap (always true when the
+ * cap is disabled).
+ */
+export function checkDepositLimits(spotMarket: SpotMarketAccount): boolean {
+	if (spotMarket.maxDepositPctPerDay === 0) {
+		return true;
+	}
+	const depositTokenAmount = getTokenAmount(
+		spotMarket.depositBalance,
+		spotMarket,
+		SpotBalanceType.DEPOSIT
+	);
+	const maxDepositToken = calculateMaxDepositTokenAmount(
+		spotMarket.depositTokenTwap,
+		spotMarket.depositGuardThreshold,
+		spotMarket.maxDepositPctPerDay
+	);
+	if (maxDepositToken === null) {
+		return true;
+	}
+	return depositTokenAmount.lte(maxDepositToken);
 }
 
 export function getSpotAssetValue(

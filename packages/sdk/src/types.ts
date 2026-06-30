@@ -957,6 +957,16 @@ export type SpotMarketAccount = {
 	poolId: number;
 
 	feeAdjustment: number;
+
+	// No deposit rate limit when resulting deposits are below this threshold
+	// (mirror of withdrawGuardThreshold on the deposit side). precision: token mint
+	depositGuardThreshold: BN;
+	// Max fraction of the 24h deposit TWAP withdrawable per 24h window.
+	// 0 => default 25%. precision: PERCENTAGE_PRECISION (1e6)
+	withdrawCircuitBreakerPct: number;
+	// Max fraction above the 24h deposit TWAP that resulting deposits may reach
+	// per 24h window. 0 => disabled. precision: PERCENTAGE_PRECISION (1e6)
+	maxDepositPctPerDay: number;
 };
 
 export type PoolBalance = {

@@ -11310,6 +11310,42 @@ export type Velocity = {
       "args": []
     },
     {
+      "name": "updateSpotMarketDepositCap",
+      "discriminator": [
+        76,
+        21,
+        179,
+        154,
+        28,
+        161,
+        174,
+        107
+      ],
+      "accounts": [
+        {
+          "name": "admin",
+          "signer": true
+        },
+        {
+          "name": "state"
+        },
+        {
+          "name": "spotMarket",
+          "writable": true
+        }
+      ],
+      "args": [
+        {
+          "name": "depositGuardThreshold",
+          "type": "u64"
+        },
+        {
+          "name": "maxDepositPctPerDay",
+          "type": "u32"
+        }
+      ]
+    },
+    {
       "name": "updateSpotMarketExpiry",
       "discriminator": [
         208,
@@ -11945,6 +11981,38 @@ export type Velocity = {
         {
           "name": "tickSize",
           "type": "u64"
+        }
+      ]
+    },
+    {
+      "name": "updateSpotMarketWithdrawCircuitBreaker",
+      "discriminator": [
+        2,
+        97,
+        135,
+        97,
+        117,
+        169,
+        65,
+        223
+      ],
+      "accounts": [
+        {
+          "name": "admin",
+          "signer": true
+        },
+        {
+          "name": "state"
+        },
+        {
+          "name": "spotMarket",
+          "writable": true
+        }
+      ],
+      "args": [
+        {
+          "name": "withdrawCircuitBreakerPct",
+          "type": "u32"
         }
       ]
     },
@@ -15988,6 +16056,11 @@ export type Velocity = {
       "code": 6356,
       "name": "invalidNativePerpMarketAccount",
       "msg": "Native dispatch: supplied market account is not a Velocity perp market"
+    },
+    {
+      "code": 6357,
+      "name": "dailyDepositLimit",
+      "msg": "dailyDepositLimit"
     }
   ],
   "types": [
@@ -22828,13 +22901,17 @@ export type Velocity = {
           {
             "name": "paddingAlignPfp",
             "docs": [
-              "Aligns `protocol_fee_pool`'s leading u128 to a 16-byte struct offset so",
-              "host (x86_64, align 16) and SBF (align 8) layouts agree. Do not reorder."
+              "Aligns `protocol_fee_pool`'s leading u128 to a 16-byte struct offset",
+              "(752) so host (x86_64, align 16) and SBF (align 8) layouts agree. Sized",
+              "`[u8; 13]` to fill the gap from `pool_id` (struct byte 739) to 752",
+              "EXPLICITLY — a narrower array leaves an *implicit* repr(C) pad the IDL",
+              "can't see, which desyncs Borsh decoding of every field after it. Do not",
+              "reorder or shrink."
             ],
             "type": {
               "array": [
                 "u8",
-                8
+                13
               ]
             }
           },
@@ -22868,6 +22945,34 @@ export type Velocity = {
             "docs": [
               "Protocol's carveout of lending deposit-interest gains, routed to",
               "`protocol_fee_pool`. precision: IF_FACTOR_PRECISION"
+            ],
+            "type": "u32"
+          },
+          {
+            "name": "depositGuardThreshold",
+            "docs": [
+              "No deposit rate limit when resulting deposits are below this threshold.",
+              "Mirrors `withdraw_guard_threshold` on the deposit side.",
+              "precision: token mint precision"
+            ],
+            "type": "u64"
+          },
+          {
+            "name": "withdrawCircuitBreakerPct",
+            "docs": [
+              "Daily withdraw circuit-breaker size: the max fraction of the 24h deposit",
+              "TWAP that may be withdrawn per 24h window. `0` is treated as the default",
+              "(25%) so markets created before this field existed keep prior behavior.",
+              "precision: PERCENTAGE_PRECISION (1_000_000 = 100%)"
+            ],
+            "type": "u32"
+          },
+          {
+            "name": "maxDepositPctPerDay",
+            "docs": [
+              "Daily deposit rate limit: the max fraction above the 24h deposit TWAP",
+              "that resulting deposits may reach per 24h window. Disabled when `0`.",
+              "precision: PERCENTAGE_PRECISION"
             ],
             "type": "u32"
           },

@@ -10,11 +10,11 @@ use crate::create_anchor_account_info;
 use crate::error::ErrorCode;
 use crate::math::constants::{
     AMM_RESERVE_PRECISION, BASE_PRECISION_I128, BASE_PRECISION_I64, IF_FACTOR_PRECISION,
-    LIQUIDATION_FEE_PRECISION, PEG_PRECISION, PRICE_PRECISION_I64, PRICE_PRECISION_U64,
-    QUOTE_PRECISION, QUOTE_PRECISION_I128, QUOTE_PRECISION_I64, QUOTE_PRECISION_U64,
-    SPOT_BALANCE_PRECISION, SPOT_BALANCE_PRECISION_U64, SPOT_CUMULATIVE_INTEREST_PRECISION,
-    SPOT_RATE_PRECISION_U32, SPOT_UTILIZATION_PRECISION, SPOT_UTILIZATION_PRECISION_U32,
-    SPOT_WEIGHT_PRECISION,
+    LIQUIDATION_FEE_PRECISION, PEG_PRECISION, PERCENTAGE_PRECISION_U32, PRICE_PRECISION_I64,
+    PRICE_PRECISION_U64, QUOTE_PRECISION, QUOTE_PRECISION_I128, QUOTE_PRECISION_I64,
+    QUOTE_PRECISION_U64, SPOT_BALANCE_PRECISION, SPOT_BALANCE_PRECISION_U64,
+    SPOT_CUMULATIVE_INTEREST_PRECISION, SPOT_RATE_PRECISION_U32, SPOT_UTILIZATION_PRECISION,
+    SPOT_UTILIZATION_PRECISION_U32, SPOT_WEIGHT_PRECISION,
 };
 use crate::math::margin::{
     calculate_margin_requirement_and_total_collateral_and_liability_info, MarginRequirementType,
@@ -22,7 +22,7 @@ use crate::math::margin::{
 use crate::math::spot_balance::calculate_borrow_rate;
 use crate::math::spot_withdraw::{
     calculate_max_borrow_token_amount, calculate_min_deposit_token_amount,
-    calculate_token_utilization_limits, check_withdraw_limits,
+    calculate_token_utilization_limits, check_deposit_limits, check_withdraw_limits,
 };
 use crate::math::stats::calculate_weighted_average;
 use crate::state::margin_calculation::{MarginCalculation, MarginContext};
@@ -56,6 +56,59 @@ pub fn check_perp_market_valid(
     }
 
     Ok(())
+}
+
+#[test]
+fn test_daily_deposit_limits() {
+    // deposit_balance token amount scales 1:1 with SPOT_BALANCE_PRECISION units
+    // when cumulative_deposit_interest == SPOT_CUMULATIVE_INTEREST_PRECISION.
+    let twap = 100 * QUOTE_PRECISION_U64;
+    let base = SpotMarket {
+        market_index: 0,
+        oracle_source: OracleSource::QuoteAsset,
+        cumulative_deposit_interest: SPOT_CUMULATIVE_INTEREST_PRECISION,
+        cumulative_borrow_interest: SPOT_CUMULATIVE_INTEREST_PRECISION,
+        decimals: 6,
+        deposit_token_twap: twap,
+        status: MarketStatus::Active,
+        ..SpotMarket::default()
+    };
+
+    // cap disabled (pct == 0): any deposit level is valid.
+    let disabled = SpotMarket {
+        deposit_balance: 130 * SPOT_BALANCE_PRECISION,
+        max_deposit_pct_per_day: 0,
+        ..base
+    };
+    assert!(check_deposit_limits(&disabled).unwrap());
+
+    // 20%/day cap => resulting deposits capped at 120% of twap.
+    let pct = PERCENTAGE_PRECISION_U32 / 5;
+
+    // below cap (110% of twap) => allowed.
+    let under = SpotMarket {
+        deposit_balance: 110 * SPOT_BALANCE_PRECISION,
+        max_deposit_pct_per_day: pct,
+        ..base
+    };
+    assert!(check_deposit_limits(&under).unwrap());
+
+    // above cap (130% of twap) => rejected.
+    let over = SpotMarket {
+        deposit_balance: 130 * SPOT_BALANCE_PRECISION,
+        max_deposit_pct_per_day: pct,
+        ..base
+    };
+    assert!(!check_deposit_limits(&over).unwrap());
+
+    // a high deposit guard threshold lifts the cap below it: 130% allowed.
+    let high_guard = SpotMarket {
+        deposit_balance: 130 * SPOT_BALANCE_PRECISION,
+        max_deposit_pct_per_day: pct,
+        deposit_guard_threshold: 200 * QUOTE_PRECISION_U64,
+        ..base
+    };
+    assert!(check_deposit_limits(&high_guard).unwrap());
 }
 
 #[test]
@@ -480,7 +533,7 @@ fn test_check_withdraw_limits() {
         ..User::default()
     };
 
-    let mdt = calculate_min_deposit_token_amount(QUOTE_PRECISION, 0).unwrap();
+    let mdt = calculate_min_deposit_token_amount(QUOTE_PRECISION, 0, 0).unwrap();
     assert_eq!(mdt, QUOTE_PRECISION - QUOTE_PRECISION / 4);
 
     let mbt = calculate_max_borrow_token_amount(
@@ -557,7 +610,8 @@ fn test_check_withdraw_limits_below_optimal_utilization() {
     .unwrap();
 
     let mdt_dep: u128 =
-        calculate_min_deposit_token_amount(sol_spot_market.deposit_token_twap as u128, 0).unwrap();
+        calculate_min_deposit_token_amount(sol_spot_market.deposit_token_twap as u128, 0, 0)
+            .unwrap();
 
     let mbt_bor = calculate_max_borrow_token_amount(
         deposit_tokens_1,
@@ -658,7 +712,8 @@ fn test_check_withdraw_limits_above_optimal_utilization() {
     .unwrap();
 
     let mdt_dep: u128 =
-        calculate_min_deposit_token_amount(sol_spot_market.deposit_token_twap as u128, 0).unwrap();
+        calculate_min_deposit_token_amount(sol_spot_market.deposit_token_twap as u128, 0, 0)
+            .unwrap();
 
     let mbt_bor = calculate_max_borrow_token_amount(
         deposit_tokens_1,

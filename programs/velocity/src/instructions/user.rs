@@ -707,6 +707,14 @@ pub fn handle_deposit<'c: 'info, 'info>(
 
     spot_market.validate_max_token_deposits_and_borrows(false)?;
 
+    validate!(
+        math::spot_withdraw::check_deposit_limits(spot_market)?,
+        ErrorCode::DailyDepositLimit,
+        "Spot Market {} has hit daily deposit limit (deposits exceed {} above 24h twap, precision 1e6)",
+        spot_market.market_index,
+        spot_market.max_deposit_pct_per_day
+    )?;
+
     Ok(())
 }
 

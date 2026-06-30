@@ -35,6 +35,8 @@ velocity-admin perp-market set-oracle-slot-delay <market> <slots>
 velocity-admin spot-market set-status <market> <status>
 velocity-admin spot-market set-guard-threshold <market> <threshold>
 velocity-admin spot-market set-fee-factors <market> <ifFeeFactor> <protocolFeeFactor>
+velocity-admin spot-market set-withdraw-breaker <market> <pct>
+velocity-admin spot-market set-deposit-cap <market> <threshold> <pctPerDay>
 
 velocity-admin exchange set-status <bitfield>
 

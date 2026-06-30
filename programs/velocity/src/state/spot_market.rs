@@ -192,9 +192,13 @@ pub struct SpotMarket {
     pub min_borrow_rate: u8,
     pub token_program_flag: u8,
     pub pool_id: u8,
-    /// Aligns `protocol_fee_pool`'s leading u128 to a 16-byte struct offset so
-    /// host (x86_64, align 16) and SBF (align 8) layouts agree. Do not reorder.
-    pub _padding_align_pfp: [u8; 8],
+    /// Aligns `protocol_fee_pool`'s leading u128 to a 16-byte struct offset
+    /// (752) so host (x86_64, align 16) and SBF (align 8) layouts agree. Sized
+    /// `[u8; 13]` to fill the gap from `pool_id` (struct byte 739) to 752
+    /// EXPLICITLY — a narrower array leaves an *implicit* repr(C) pad the IDL
+    /// can't see, which desyncs Borsh decoding of every field after it. Do not
+    /// reorder or shrink.
+    pub _padding_align_pfp: [u8; 13],
     /// Protocol fees collected in this market's token (lending protocol carveout
     /// + spot-liquidation protocol fee). A protocol-owned Deposit-type claim
     /// inside the spot vault (counted in `deposit_balance`, like `revenue_pool`)
@@ -209,6 +213,19 @@ pub struct SpotMarket {
     /// Protocol's carveout of lending deposit-interest gains, routed to
     /// `protocol_fee_pool`. precision: IF_FACTOR_PRECISION
     pub protocol_fee_factor: u32,
+    /// No deposit rate limit when resulting deposits are below this threshold.
+    /// Mirrors `withdraw_guard_threshold` on the deposit side.
+    /// precision: token mint precision
+    pub deposit_guard_threshold: u64,
+    /// Daily withdraw circuit-breaker size: the max fraction of the 24h deposit
+    /// TWAP that may be withdrawn per 24h window. `0` is treated as the default
+    /// (25%) so markets created before this field existed keep prior behavior.
+    /// precision: PERCENTAGE_PRECISION (1_000_000 = 100%)
+    pub withdraw_circuit_breaker_pct: u32,
+    /// Daily deposit rate limit: the max fraction above the 24h deposit TWAP
+    /// that resulting deposits may reach per 24h window. Disabled when `0`.
+    /// precision: PERCENTAGE_PRECISION
+    pub max_deposit_pct_per_day: u32,
     pub padding: [u8; 8],
 }
 
@@ -273,17 +290,20 @@ impl Default for SpotMarket {
             min_borrow_rate: 0,
             token_program_flag: 0,
             pool_id: 0,
-            _padding_align_pfp: [0; 8],
+            _padding_align_pfp: [0; 13],
             protocol_fee_pool: PoolBalance::default(),
             protocol_liquidation_fee: 0,
             protocol_fee_factor: 0,
+            deposit_guard_threshold: 0,
+            withdraw_circuit_breaker_pct: 0,
+            max_deposit_pct_per_day: 0,
             padding: [0; 8],
         }
     }
 }
 
 impl Size for SpotMarket {
-    const SIZE: usize = 808;
+    const SIZE: usize = 824;
 }
 
 impl MarketIndexOffset for SpotMarket {
@@ -291,10 +311,13 @@ impl MarketIndexOffset for SpotMarket {
     // the seven direct u128 fields) appear before revenue_pool and spot_fee_pool.
     // This ensures revenue_pool is at a 16-byte-aligned offset (384), eliminating
     // the implicit 8-byte gap that #[repr(C)] inserted on x86_64.  Combined with
-    // PoolBalance padding widened to [u8;14] (sizeof == 32 on both platforms) and
-    // SpotMarket padding widened to [u8;56] (total content == 800, a multiple of
-    // 16), sizeof(SpotMarket) is 800 on both architectures.  market_index is at
-    // struct byte 692, account byte 700 on both.
+    // PoolBalance padding widened to [u8;14] (sizeof == 32 on both platforms),
+    // sizeof(SpotMarket) is identical on both architectures.  The deposit-cap /
+    // configurable-breaker fields (deposit_guard_threshold u64, then two u32s)
+    // were appended after protocol_fee_factor with a trailing [u8;8] padding so
+    // total content stays a multiple of 16 (816); none are u128/i128 so the
+    // "u128 before PoolBalance" ordering rule is unaffected. They sit after
+    // market_index, so market_index stays at struct byte 692, account byte 700.
     const MARKET_INDEX_OFFSET: usize = 700;
 }
 

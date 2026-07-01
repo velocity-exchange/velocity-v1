@@ -3600,18 +3600,22 @@ pub fn handle_update_special_user_status(
 
 #[derive(Accounts)]
 pub struct Initialize<'info> {
-    // On mainnet, only the designated `state_init_authority` may create the
-    // singleton `State` account, so the one-time init cannot be front-run. On
-    // test/devnet builds the address lock is dropped so local validators and
-    // devnet setup can initialize with any admin key.
+    // Only the designated `state_init_authority` may create the singleton
+    // `State` account, so the one-time init cannot be front-run. This lock is
+    // active *only* on a real mainnet build (`mainnet-beta` on, `anchor-test`
+    // off). Every other build leaves `initialize` open to any admin key:
+    //   - devnet/localnet (`mainnet-beta` off) — free setup, and
+    //   - the integration-test build, which keeps the default `mainnet-beta`
+    //     feature on but adds `anchor-test`, so each test's bankrun wallet can
+    //     still initialize.
+    // The two arms below are exact complements, so exactly one applies per
+    // build. This mirrors the three-way build split used by the keys in
+    // `ids.rs`.
     //
-    // The lock is gated on `mainnet-beta && !anchor-test` (not `mainnet-beta`
-    // alone): the integration-test build keeps the default `mainnet-beta`
-    // feature on and only adds `anchor-test`, so gating on `mainnet-beta` alone
-    // would lock every test's bankrun wallet out of `initialize`. This mirrors
-    // the three-way build split used by the keys in `ids.rs`.
+    // Anchor honors a single `#[account]` per field, so `mut` is repeated in
+    // both arms rather than shared.
     #[cfg_attr(
-        not(all(feature = "mainnet-beta", not(feature = "anchor-test"))),
+        any(not(feature = "mainnet-beta"), feature = "anchor-test"),
         account(mut)
     )]
     #[cfg_attr(

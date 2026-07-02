@@ -30,6 +30,34 @@ export function solvencyRepairPaused(state: StateAccount): boolean {
 	);
 }
 
+export function depositPaused(
+	state: StateAccount,
+	market: SpotMarketAccount
+): boolean {
+	if (
+		(state.exchangeStatus & ExchangeStatus.DEPOSIT_PAUSED) ===
+		ExchangeStatus.DEPOSIT_PAUSED
+	) {
+		return true;
+	}
+
+	return isOperationPaused(market.pausedOperations, SpotOperation.DEPOSIT);
+}
+
+export function withdrawPaused(
+	state: StateAccount,
+	market: SpotMarketAccount
+): boolean {
+	if (
+		(state.exchangeStatus & ExchangeStatus.WITHDRAW_PAUSED) ===
+		ExchangeStatus.WITHDRAW_PAUSED
+	) {
+		return true;
+	}
+
+	return isOperationPaused(market.pausedOperations, SpotOperation.WITHDRAW);
+}
+
 export function fillPaused(
 	state: StateAccount,
 	market: PerpMarketAccount | SpotMarketAccount

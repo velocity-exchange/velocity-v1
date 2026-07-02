@@ -25,7 +25,7 @@ import {
 	QUOTE_SPOT_MARKET_INDEX,
 	PRICE_PRECISION,
 	PERCENTAGE_PRECISION,
-	FUNDING_RATE_PRECISION,
+	FUNDING_RATE_OFFSET_PERCENTAGE,
 } from '../constants/numericConstants';
 import { getTokenAmount } from './spotBalance';
 import { assert } from '../assert/assert';
@@ -312,7 +312,7 @@ function getLastFundingBasis(
 			.div(market.marketStats.lastFundingOracleTwap)
 			.muln(24);
 		const lastFundingRatePreAdj = lastFundingRate.sub(
-			FUNDING_RATE_PRECISION.div(new BN(3333)) // FUNDING_RATE_OFFSET_PERCENTAGE
+			FUNDING_RATE_OFFSET_PERCENTAGE
 		);
 		const timeLeftUntilFundingUpdate = BN.min(
 			BN.max(now.sub(market.lastFundingRateTs), ZERO),

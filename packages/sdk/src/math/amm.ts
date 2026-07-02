@@ -13,6 +13,7 @@ import {
 	DEFAULT_REVENUE_SINCE_LAST_FUNDING_SPREAD_RETREAT,
 	FUNDING_RATE_BUFFER_PRECISION,
 	FUNDING_RATE_OFFSET_PERCENTAGE,
+	FUNDING_RATE_OFFSET_DENOMINATOR,
 	TWO,
 } from '../constants/numericConstants';
 import {
@@ -116,11 +117,11 @@ export function calculateOptimalPegAndBudget(
 export function calculateNewAmm(
 	amm: AMM,
 	mmOraclePriceData: MMOraclePriceData
-): [BN, BN, BN, BN] {
+): [BN, BN, BN, BN, boolean] {
 	let pKNumer = new BN(1);
 	let pKDenom = new BN(1);
 
-	const [targetPrice, _newPeg, budget, _checkLowerBound] =
+	const [targetPrice, _newPeg, budget, checkLowerBound] =
 		calculateOptimalPegAndBudget(amm, mmOraclePriceData);
 	let prePegCost = calculateRepegCost(amm, _newPeg);
 	let newPeg = _newPeg;
@@ -152,7 +153,7 @@ export function calculateNewAmm(
 		prePegCost = calculateRepegCost(newAmm, newPeg);
 	}
 
-	return [prePegCost, pKNumer, pKDenom, newPeg];
+	return [prePegCost, pKNumer, pKDenom, newPeg, checkLowerBound];
 }
 
 export function calculateUpdatedAMM(
@@ -162,11 +163,23 @@ export function calculateUpdatedAMM(
 	if (amm.curveUpdateIntensity == 0 || mmOraclePriceData === undefined) {
 		return amm;
 	}
+	// mirrors is_oracle_valid_for_action(..., UpdateAMMCurve): only a
+	// non-positive oracle price invalidates the curve update
+	if (mmOraclePriceData.price.lte(ZERO)) {
+		return amm;
+	}
 	const newAmm = Object.assign({}, amm);
-	const [prepegCost, pKNumer, pKDenom, newPeg] = calculateNewAmm(
-		amm,
-		mmOraclePriceData
-	);
+	const [prepegCost, pKNumer, pKDenom, newPeg, checkLowerBound] =
+		calculateNewAmm(amm, mmOraclePriceData);
+
+	if (prepegCost.gt(ZERO)) {
+		const newTotalFeeMinusDistributions =
+			amm.totalFeeMinusDistributions.sub(prepegCost);
+		if (checkLowerBound && newTotalFeeMinusDistributions.lt(ZERO)) {
+			// affordability floor rejected the debit: passthrough, unchanged
+			return amm;
+		}
+	}
 
 	newAmm.baseAssetReserve = newAmm.baseAssetReserve.mul(pKNumer).div(pKDenom);
 	newAmm.sqrtK = newAmm.sqrtK.mul(pKNumer).div(pKDenom);
@@ -490,7 +503,10 @@ export function calculateReferencePriceOffset(
 
 	// Convert last24hAvgFundingRate to quote denominated premium
 	const markPremiumDay = clampBN(
-		last24hAvgFundingRate.div(FUNDING_RATE_BUFFER_PRECISION).mul(new BN(24)),
+		last24hAvgFundingRate
+			.div(FUNDING_RATE_BUFFER_PRECISION)
+			.mul(new BN(24))
+			.sub(oracleTwapSlow.abs().div(FUNDING_RATE_OFFSET_DENOMINATOR)),
 		maxOffsetInPrice.mul(new BN(-1)),
 		maxOffsetInPrice
 	);

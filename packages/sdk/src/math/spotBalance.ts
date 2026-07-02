@@ -25,6 +25,18 @@ import { PERCENTAGE_PRECISION } from '../constants/numericConstants';
 import { divCeil } from './utils';
 import { StrictOraclePrice } from '../oracles/strictOraclePrice';
 
+// BN's `.div()` truncates toward zero; the program uses `safe_div_floor` when
+// the numerator is negative (get_token_value / get_strict_token_value), so a
+// negative dividend must round toward -infinity here to match.
+function divFloor(a: BN, b: BN): BN {
+	const quotient = a.div(b);
+	const remainder = a.mod(b);
+	if (!remainder.isZero() && a.isNeg() !== b.isNeg()) {
+		return quotient.sub(ONE);
+	}
+	return quotient;
+}
+
 /**
  * Calculates the balance of a given token amount including any accumulated interest. This
  * is the same as `SpotPosition.scaledBalance`.
@@ -32,12 +44,16 @@ import { StrictOraclePrice } from '../oracles/strictOraclePrice';
  * @param {BN} tokenAmount - the amount of tokens
  * @param {SpotMarketAccount} spotMarket - the spot market account
  * @param {SpotBalanceType} balanceType - the balance type ('deposit' or 'borrow')
+ * @param {boolean} [roundUp] - override the default rounding direction (program's `round_up`);
+ *   defaults to rounding up for borrows only. Callers reducing a deposit balance while the
+ *   funds are leaving Velocity (e.g. a withdrawal) should pass `true` to match `is_leaving_velocity`.
  * @return {BN} the calculated balance, scaled by `SPOT_MARKET_BALANCE_PRECISION`
  */
 export function getBalance(
 	tokenAmount: BN,
 	spotMarket: SpotMarketAccount,
-	balanceType: SpotBalanceType
+	balanceType: SpotBalanceType,
+	roundUp?: boolean
 ): BN {
 	const precisionIncrease = TEN.pow(new BN(19 - spotMarket.decimals));
 
@@ -47,7 +63,8 @@ export function getBalance(
 
 	let balance = tokenAmount.mul(precisionIncrease).div(cumulativeInterest);
 
-	if (!balance.eq(ZERO) && isVariant(balanceType, 'borrow')) {
+	const shouldRoundUp = roundUp ?? isVariant(balanceType, 'borrow');
+	if (!balance.eq(ZERO) && shouldRoundUp) {
 		balance = balance.add(ONE);
 	}
 
@@ -123,8 +140,12 @@ export function getStrictTokenValue(
 	}
 
 	const precisionDecrease = TEN.pow(new BN(spotDecimals));
+	const tokenWithPrice = tokenAmount.mul(price);
 
-	return tokenAmount.mul(price).div(precisionDecrease);
+	if (tokenWithPrice.isNeg()) {
+		return divFloor(tokenWithPrice, precisionDecrease);
+	}
+	return tokenWithPrice.div(precisionDecrease);
 }
 
 /**
@@ -145,8 +166,12 @@ export function getTokenValue(
 	}
 
 	const precisionDecrease = TEN.pow(new BN(spotDecimals));
+	const tokenWithOraclePrice = tokenAmount.mul(oraclePriceData.price);
 
-	return tokenAmount.mul(oraclePriceData.price).div(precisionDecrease);
+	if (tokenWithOraclePrice.isNeg()) {
+		return divFloor(tokenWithOraclePrice, precisionDecrease);
+	}
+	return tokenWithOraclePrice.div(precisionDecrease);
 }
 
 export function calculateAssetWeight(
@@ -591,10 +616,10 @@ export function calculateWithdrawLimit(
 			spotMarket.withdrawGuardThreshold,
 			BN.min(
 				BN.max(
-					marketDepositTokenAmount.div(new BN(3)),
-					borrowTokenTwapLive.add(lesserDepositAmount.div(new BN(7)))
+					lesserDepositAmount.div(new BN(3)),
+					borrowTokenTwapLive.add(lesserDepositAmount.div(new BN(5)))
 				),
-				lesserDepositAmount.sub(lesserDepositAmount.div(new BN(8)))
+				lesserDepositAmount.sub(lesserDepositAmount.div(new BN(14)))
 			)
 		); // main pool between ~30-92.5% utilization with friction on twap in 20% increments
 	} else {
@@ -602,7 +627,7 @@ export function calculateWithdrawLimit(
 			spotMarket.withdrawGuardThreshold,
 			BN.min(
 				BN.max(
-					marketDepositTokenAmount.div(new BN(2)),
+					lesserDepositAmount.div(new BN(2)),
 					borrowTokenTwapLive.add(lesserDepositAmount.div(new BN(3)))
 				),
 				lesserDepositAmount.sub(lesserDepositAmount.div(new BN(20)))

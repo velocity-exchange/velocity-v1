@@ -114,6 +114,10 @@ export const SLOT_TIME_ESTIMATE_MS = 400;
 
 export const DUST_POSITION_SIZE = QUOTE_PRECISION.divn(100); // Dust position is any position smaller than 1c
 
+export const MAX_POSITIVE_UPNL_FOR_INITIAL_MARGIN = new BN(100).mul(
+	QUOTE_PRECISION
+); // max upnl for initial margin calc
+
 export const GET_MULTIPLE_ACCOUNTS_CHUNK_SIZE = 99;
 
 // integer constants

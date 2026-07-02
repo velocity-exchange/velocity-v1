@@ -42,6 +42,8 @@ import {
 	DUST_POSITION_SIZE,
 	FIVE_MINUTE,
 	MARGIN_PRECISION,
+	MAX_POSITIVE_UPNL_FOR_INITIAL_MARGIN,
+	ONE,
 	OPEN_ORDER_MARGIN_REQUIREMENT,
 	PRICE_PRECISION,
 	QUOTE_PRECISION,
@@ -127,6 +129,29 @@ import {
 } from './marginCalculation';
 
 export type MarginType = 'Cross' | 'Isolated';
+
+/**
+ * Ports `get_proportion_u128` (math/helpers.rs) for the referee fee discount
+ * calculation. The Rust version routes large operands through a wider U192
+ * type purely to avoid u128 overflow; BN has no such ceiling, so that branch
+ * is elided here since it produces the same numeric result.
+ */
+function getProportion128(value: BN, numerator: BN, denominator: BN): BN {
+	if (numerator.eq(denominator)) {
+		return value;
+	}
+
+	if (numerator.gt(denominator.div(TWO)) && denominator.gt(numerator)) {
+		// ceiling division, mirroring standardize_value_with_remainder_i128
+		const scaled = value.mul(denominator.sub(numerator));
+		const remainder = scaled.mod(denominator);
+		const floorDiv = scaled.div(denominator);
+		const ceilDiv = remainder.isZero() ? floorDiv : floorDiv.add(ONE);
+		return value.sub(ceilDiv);
+	}
+
+	return value.mul(numerator).div(denominator);
+}
 
 export class User {
 	velocityClient: VelocityClient;
@@ -916,6 +941,14 @@ export class User {
 								)
 							)
 							.div(new BN(SPOT_MARKET_WEIGHT_PRECISION));
+					}
+
+					if (withWeightMarginCategory === 'Initial') {
+						// safety guard for dangerously configured perp market
+						positionUnrealizedPnl = BN.min(
+							positionUnrealizedPnl,
+							MAX_POSITIVE_UPNL_FOR_INITIAL_MARGIN
+						);
 					}
 
 					if (liquidationBuffer && positionUnrealizedPnl.lt(ZERO)) {
@@ -3594,7 +3627,11 @@ export class User {
 	 * @param quoteAmount
 	 * @returns feeForQuote : Precision QUOTE_PRECISION
 	 */
-	public calculateFeeForQuoteAmount(quoteAmount: BN, marketIndex?: number): BN {
+	public calculateFeeForQuoteAmount(
+		quoteAmount: BN,
+		marketIndex?: number,
+		isReferee?: boolean
+	): BN {
 		if (marketIndex !== undefined) {
 			const takerFeeMultiplier = this.velocityClient.getMarketFees(
 				MarketType.PERP,
@@ -3607,9 +3644,28 @@ export class User {
 			return BigNum.fromPrint(feeAmountNum.toString(), QUOTE_PRECISION_EXP).val;
 		} else {
 			const feeTier = this.getUserFeeTier(MarketType.PERP);
-			return quoteAmount
-				.mul(new BN(feeTier.feeNumerator))
-				.div(new BN(feeTier.feeDenominator));
+			let fee = divCeil(
+				quoteAmount.mul(new BN(feeTier.feeNumerator)),
+				new BN(feeTier.feeDenominator)
+			);
+
+			const isUserReferee =
+				isReferee ??
+				(this.velocityClient.getUserStatsOrThrow().getAccountOrThrow()
+					.referrerStatus &
+					ReferrerStatus.IsReferred) >
+					0;
+
+			if (isUserReferee) {
+				const refereeDiscount = getProportion128(
+					fee,
+					new BN(feeTier.refereeFeeNumerator),
+					new BN(feeTier.refereeFeeDenominator)
+				);
+				fee = fee.sub(refereeDiscount);
+			}
+
+			return fee;
 		}
 	}
 
@@ -3748,6 +3804,15 @@ export class User {
 		);
 
 		if (netDeposits.lt(ZERO)) {
+			return {
+				canBypass: false,
+				maxDepositAmount,
+				depositAmount,
+				netDeposits,
+			};
+		}
+
+		if (position.cumulativeDeposits.lt(ZERO)) {
 			return {
 				canBypass: false,
 				maxDepositAmount,
@@ -4286,15 +4351,33 @@ export class User {
 			.setIsolatedMarginBuffers(isolatedMarginBuffers);
 		const calc = new MarginCalculation(ctx);
 
+		const userPoolId = this.getUserAccountOrThrow().poolId;
+
 		// SPOT POSITIONS
 		for (const spotPosition of this.getUserAccountOrThrow().spotPositions) {
 			if (isSpotPositionAvailable(spotPosition)) continue;
 
 			const isQuote = spotPosition.marketIndex === QUOTE_SPOT_MARKET_INDEX;
+			const isBorrow = isVariant(spotPosition.balanceType, 'borrow');
 
 			const spotMarket = this.velocityClient.getSpotMarketAccountOrThrow(
 				spotPosition.marketIndex
 			);
+
+			// the pool-1/quote-deposit carve-out lets a pool-1 user hold a quote
+			// deposit without matching the quote market's own pool id; every
+			// other combination requires an exact pool match
+			let skipTokenValue = false;
+			if (!(userPoolId === 1 && isQuote && !isBorrow)) {
+				if (userPoolId !== spotMarket.poolId) {
+					throw new Error(
+						`InvalidPoolId: user pool id (${userPoolId}) does not match spot market pool id (${spotMarket.poolId}) for market index ${spotMarket.marketIndex}`
+					);
+				}
+			} else {
+				skipTokenValue = true;
+			}
+
 			const oraclePriceData = this.getOracleDataForSpotMarket(
 				spotPosition.marketIndex
 			);
@@ -4319,12 +4402,14 @@ export class User {
 				);
 				if (isVariant(spotPosition.balanceType, 'deposit')) {
 					// add deposit value to total collateral
-					const weightedTokenValue = this.getSpotAssetValue(
-						tokenAmount,
-						strictOracle,
-						spotMarket,
-						marginCategory
-					);
+					const weightedTokenValue = skipTokenValue
+						? ZERO
+						: this.getSpotAssetValue(
+								tokenAmount,
+								strictOracle,
+								spotMarket,
+								marginCategory
+						  );
 					calc.addCrossMarginTotalCollateral(weightedTokenValue);
 				} else {
 					// borrow on quote contributes to margin requirement
@@ -4336,6 +4421,7 @@ export class User {
 						liquidationBufferMap.get('cross') ?? new BN(0)
 					).abs();
 					calc.addCrossMarginRequirement(tokenValueAbs, tokenValueAbs);
+					calc.addSpotLiability();
 				}
 				continue;
 			}
@@ -4362,6 +4448,8 @@ export class User {
 				);
 			}
 
+			const isIsolatedSpotTier = isVariant(spotMarket.assetTier, 'isolated');
+
 			if (worstCaseTokenAmount.gt(ZERO)) {
 				const baseAssetValue = this.getSpotAssetValue(
 					worstCaseTokenAmount,
@@ -4385,6 +4473,15 @@ export class User {
 					getSpotLiabilityValue.abs(),
 					getSpotLiabilityValue.abs()
 				);
+				calc.addSpotLiability();
+				calc.updateWithSpotIsolatedLiability(isIsolatedSpotTier);
+			} else if (
+				spotPosition.openOrders !== 0 ||
+				!spotPosition.openBids.isZero() ||
+				!spotPosition.openAsks.isZero()
+			) {
+				calc.addSpotLiability();
+				calc.updateWithSpotIsolatedLiability(isIsolatedSpotTier);
 			}
 
 			// orders value contributes to collateral or requirement
@@ -4401,6 +4498,13 @@ export class User {
 			const market = this.velocityClient.getPerpMarketAccountOrThrow(
 				marketPosition.marketIndex
 			);
+
+			if (userPoolId !== market.poolId) {
+				throw new Error(
+					`InvalidPoolId: user pool id (${userPoolId}) does not match perp market pool id (${market.poolId}) for market index ${market.marketIndex}`
+				);
+			}
+
 			const quoteSpotMarket = this.velocityClient.getSpotMarketAccountOrThrow(
 				market.quoteSpotMarketIndex
 			);
@@ -4441,16 +4545,18 @@ export class User {
 				marginRatio = ZERO;
 			}
 
-			// convert liability to quote value and apply margin ratio
+			// convert liability to quote value and apply margin ratio; since this is
+			// a liability, use the larger of the twap and current quote price
 			const quotePrice = strict
 				? BN.max(
 						quoteOraclePriceData.price,
 						quoteSpotMarket.historicalOracleData.lastOraclePriceTwap5Min
 				  )
 				: quoteOraclePriceData.price;
-			let perpMarginRequirement = worstCaseLiabilityValue
+			const worstCaseLiabilityValueQuote = worstCaseLiabilityValue
 				.mul(quotePrice)
-				.div(PRICE_PRECISION)
+				.div(PRICE_PRECISION);
+			let perpMarginRequirement = worstCaseLiabilityValueQuote
 				.mul(marginRatio)
 				.div(MARGIN_PRECISION);
 			// add open orders IM
@@ -4501,6 +4607,27 @@ export class User {
 				}
 			}
 
+			if (marginCategory === 'Initial') {
+				// safety guard for dangerously configured perp market
+				positionUnrealizedPnl = BN.min(
+					positionUnrealizedPnl,
+					MAX_POSITIVE_UPNL_FOR_INITIAL_MARGIN
+				);
+			}
+
+			const hasPerpLiability =
+				!marketPosition.baseAssetAmount.isZero() ||
+				marketPosition.quoteAssetAmount.isNeg() ||
+				marketPosition.openOrders !== 0 ||
+				!marketPosition.openBids.isZero() ||
+				!marketPosition.openAsks.isZero();
+			if (hasPerpLiability) {
+				calc.addPerpLiability();
+				calc.updateWithPerpIsolatedLiability(
+					isVariant(market.contractTier, 'isolated')
+				);
+			}
+
 			// Add perp contribution: isolated vs cross
 			const isIsolated = this.isPerpPositionIsolated(marketPosition);
 			if (isIsolated) {
@@ -4535,15 +4662,15 @@ export class User {
 					market.marketIndex,
 					depositValue,
 					positionUnrealizedPnl,
-					worstCaseLiabilityValue,
+					worstCaseLiabilityValueQuote,
 					perpMarginRequirement
 				);
-				calc.addPerpLiabilityValue(worstCaseLiabilityValue);
+				calc.addPerpLiabilityValue(worstCaseLiabilityValueQuote);
 			} else {
 				// cross: add to global requirement and collateral
 				calc.addCrossMarginRequirement(
 					perpMarginRequirement,
-					worstCaseLiabilityValue
+					worstCaseLiabilityValueQuote
 				);
 				calc.addCrossMarginTotalCollateral(positionUnrealizedPnl);
 			}
@@ -4553,5 +4680,69 @@ export class User {
 
 	public isPerpPositionIsolated(perpPosition: PerpPosition): boolean {
 		return (perpPosition.positionFlag & PositionFlag.IsolatedPosition) !== 0;
+	}
+
+	/**
+	 * Pre-flight check for `IsolatedAssetTierViolation`: mirrors
+	 * `validate_any_isolated_tier_requirements` in `math/margin.rs`. A user
+	 * holding an isolated-tier perp or spot liability may not simultaneously
+	 * carry other liabilities (besides a single usdc borrow, for a perp
+	 * isolated liability), unless they are reduce-only.
+	 */
+	public validateAnyIsolatedTierRequirements(calculation: MarginCalculation): {
+		valid: boolean;
+		reason?: string;
+	} {
+		const userAccount = this.getUserAccountOrThrow();
+		const isReduceOnly = this.hasStatus(UserStatus.REDUCE_ONLY);
+
+		if (calculation.withPerpIsolatedLiability && !isReduceOnly) {
+			if (calculation.numPerpLiabilities > 1) {
+				return {
+					valid: false,
+					reason:
+						'User attempting to increase perp liabilities above 1 with a isolated tier liability',
+				};
+			}
+
+			if (userAccount.isMarginTradingEnabled) {
+				return {
+					valid: false,
+					reason:
+						'User attempting isolated tier liability with margin trading enabled',
+				};
+			}
+
+			if (calculation.numSpotLiabilities > 0) {
+				const quoteSpotPosition = this.getSpotPosition(QUOTE_SPOT_MARKET_INDEX);
+				const quoteIsBorrow =
+					!!quoteSpotPosition &&
+					isVariant(quoteSpotPosition.balanceType, 'borrow');
+				if (!(calculation.numSpotLiabilities === 1 && quoteIsBorrow)) {
+					return {
+						valid: false,
+						reason:
+							'User attempting to increase spot liabilities beyond usdc with a isolated tier liability',
+					};
+				}
+			}
+		}
+
+		if (calculation.withSpotIsolatedLiability && !isReduceOnly) {
+			if (
+				!(
+					calculation.numPerpLiabilities === 0 &&
+					calculation.numSpotLiabilities === 1
+				)
+			) {
+				return {
+					valid: false,
+					reason:
+						'User attempting to increase perp liabilities above 0 with a isolated tier liability',
+				};
+			}
+		}
+
+		return { valid: true };
 	}
 }

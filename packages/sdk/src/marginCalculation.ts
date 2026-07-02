@@ -133,6 +133,10 @@ export class MarginCalculation {
 	marginRequirementPlusBuffer: BN;
 	isolatedMarginCalculations: Map<number, IsolatedMarginCalculation>;
 	totalPerpLiabilityValue: BN;
+	numSpotLiabilities: number;
+	numPerpLiabilities: number;
+	withPerpIsolatedLiability: boolean;
+	withSpotIsolatedLiability: boolean;
 
 	constructor(context: MarginContext) {
 		this.context = context;
@@ -142,6 +146,10 @@ export class MarginCalculation {
 		this.marginRequirementPlusBuffer = ZERO;
 		this.isolatedMarginCalculations = new Map();
 		this.totalPerpLiabilityValue = ZERO;
+		this.numSpotLiabilities = 0;
+		this.numPerpLiabilities = 0;
+		this.withPerpIsolatedLiability = false;
+		this.withSpotIsolatedLiability = false;
 	}
 
 	addCrossMarginTotalCollateral(delta: BN): void {
@@ -199,6 +207,26 @@ export class MarginCalculation {
 	addPerpLiabilityValue(perpLiabilityValue: BN): void {
 		this.totalPerpLiabilityValue =
 			this.totalPerpLiabilityValue.add(perpLiabilityValue);
+	}
+
+	addSpotLiability(): void {
+		this.numSpotLiabilities += 1;
+	}
+
+	addPerpLiability(): void {
+		this.numPerpLiabilities += 1;
+	}
+
+	updateWithSpotIsolatedLiability(isolated: boolean): void {
+		this.withSpotIsolatedLiability = this.withSpotIsolatedLiability || isolated;
+	}
+
+	updateWithPerpIsolatedLiability(isolated: boolean): void {
+		this.withPerpIsolatedLiability = this.withPerpIsolatedLiability || isolated;
+	}
+
+	getNumOfLiabilities(): number {
+		return this.numSpotLiabilities + this.numPerpLiabilities;
 	}
 
 	getCrossTotalCollateralPlusBuffer(): BN {

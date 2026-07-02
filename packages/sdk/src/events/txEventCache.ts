@@ -10,14 +10,22 @@ class Node {
 }
 
 // lru cache
+/**
+ * LRU cache of decoded events keyed by transaction signature, used by
+ * `EventSubscriber` both to serve `getEventsByTx`/`awaitTx` and to dedup
+ * redeliveries of the same transaction from a log provider. Evicts the
+ * least-recently-added entry once `maxTx` is exceeded.
+ */
 export class TxEventCache {
 	size = 0;
 	head?: Node;
 	tail?: Node;
 	cacheMap: { [key: string]: Node } = {};
 
+	/** @param maxTx Max number of transactions retained; defaults to 1024. */
 	constructor(public maxTx = 1024) {}
 
+	/** Inserts (or refreshes, if `key` already exists) the events for transaction `key` at the head, evicting the tail if this exceeds `maxTx`. */
 	public add(key: string, events: WrappedEvent<EventType>[]): void {
 		const existingNode = this.cacheMap[key];
 		if (existingNode) {
@@ -49,10 +57,12 @@ export class TxEventCache {
 		this.size++;
 	}
 
+	/** Whether transaction `key` is currently cached. */
 	public has(key: string): boolean {
 		return this.cacheMap.hasOwnProperty(key);
 	}
 
+	/** @returns The cached events for transaction `key`, or `undefined` if not cached (never seen, or evicted). */
 	public get(key: string): WrappedEvent<EventType>[] | undefined {
 		return this.cacheMap[key]?.value;
 	}
@@ -71,6 +81,7 @@ export class TxEventCache {
 		}
 	}
 
+	/** Empties the cache. */
 	public clear(): void {
 		this.head = undefined;
 		this.tail = undefined;

@@ -13,6 +13,13 @@ import { UserAccount } from '../types';
 import { VelocityProgram } from '../config';
 import { grpcMultiAccountSubscriber } from './grpcMultiAccountSubscriber';
 
+/**
+ * Multiplexes many `UserAccount` subscriptions onto a single `grpcMultiAccountSubscriber`,
+ * exposing a per-user `UserAccountSubscriber` facade via `forUser()` so callers (e.g. `User`
+ * instances) can interact with it as if each had its own subscription. New `forUser()` keys
+ * registered while already subscribed are debounced (`debounceMs`, 20ms) and flushed in a single
+ * batched `addAccounts` call rather than one gRPC round trip per user.
+ */
 export class grpcMultiUserAccountSubscriber {
 	private program: VelocityProgram;
 	private _multiSubscriber?: grpcMultiAccountSubscriber<UserAccount>;
@@ -57,6 +64,12 @@ export class grpcMultiUserAccountSubscriber {
 		}
 	};
 
+	/**
+	 * @param program Anchor program used for the per-user `fetch()` fallback.
+	 * @param grpcConfigs gRPC Geyser endpoint/token/commitment config (Yellowstone or LaserStream).
+	 * @param resubOpts Resubscription watchdog options passed to the underlying `grpcMultiAccountSubscriber`.
+	 * @param multiSubscriber Optional pre-constructed `grpcMultiAccountSubscriber` to reuse instead of creating a new one in `subscribe()`.
+	 */
 	public constructor(
 		program: VelocityProgram,
 		grpcConfigs: GrpcConfigs,
@@ -71,6 +84,12 @@ export class grpcMultiUserAccountSubscriber {
 		this.resubOpts = resubOpts;
 	}
 
+	/**
+	 * Creates the shared `grpcMultiAccountSubscriber` (if not injected at construction),
+	 * subscribes every per-user facade already registered via `forUser()`, flushes any pending
+	 * user keys into the underlying gRPC stream, and blocks until the multi-subscriber's account
+	 * data map contains an entry for every registered user key (polling at `debounceMs` intervals).
+	 */
 	public async subscribe(): Promise<void> {
 		if (!this._multiSubscriber) {
 			this._multiSubscriber =
@@ -113,6 +132,15 @@ export class grpcMultiUserAccountSubscriber {
 		}
 	}
 
+	/**
+	 * Returns a `UserAccountSubscriber` facade for `userAccountPublicKey`, creating one on first
+	 * call (subsequent calls for the same pubkey return the same instance). The facade's
+	 * `subscribe()`/`unsubscribe()` register/deregister interest in this shared multi-subscriber
+	 * rather than opening their own gRPC stream; the underlying account is only actually removed
+	 * from the shared stream once every facade sharing that key has unsubscribed. Its `fetch()`
+	 * bypasses the shared stream and issues a direct one-off `program.account.user.fetch` call.
+	 * @param userAccountPublicKey Address of the `UserAccount` to get (or create) a facade for.
+	 */
 	public forUser(userAccountPublicKey: PublicKey): UserAccountSubscriber {
 		if (this.userAccountSubscribers.has(userAccountPublicKey.toBase58())) {
 			return this.userAccountSubscribers.get(userAccountPublicKey.toBase58())!;

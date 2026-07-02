@@ -174,6 +174,21 @@ export function getTokenValue(
 	return tokenWithOraclePrice.div(precisionDecrease);
 }
 
+/**
+ * Calculates the collateral (asset) weight applied to a spot deposit balance, mirroring
+ * `SpotMarket::get_asset_weight`'s `Initial`/`Maintenance` branches (there is no SDK
+ * equivalent of the on-chain `Fill` branch, which averages initial and maintenance).
+ * Size is first rescaled into `AMM_RESERVE_PRECISION` before the IMF size-discount is applied,
+ * so larger positions receive a lower (more conservative) weight.
+ *
+ * @param {BN} balanceAmount - The deposit token amount, scaled by the spot market's token decimals
+ * @param {BN} oraclePrice - The oracle price, PRICE_PRECISION (1e6); only used for the `Initial`
+ *   scaled-weight lookup (`calculateScaledInitialAssetWeight`)
+ * @param {SpotMarketAccount} spotMarket - The spot market account
+ * @param {MarginCategory | undefined} marginCategory - `'Initial'`, `'Maintenance'`, or `undefined`
+ *   (defaults to the scaled initial weight, used for e.g. UI display outside a margin check)
+ * @return {BN} The asset weight, scaled by `SPOT_MARKET_WEIGHT_PRECISION` (1e4, i.e. 10000 = 100%)
+ */
 export function calculateAssetWeight(
 	balanceAmount: BN,
 	oraclePrice: BN,
@@ -217,6 +232,17 @@ export function calculateAssetWeight(
 	return assetWeight;
 }
 
+/**
+ * Calculates the initial asset weight after applying the market's optional deposit-value
+ * scaling, mirroring `SpotMarket::get_scaled_initial_asset_weight`. When
+ * `scaleInitialAssetWeightStart` is set and total deposit value exceeds it, the weight is
+ * scaled down proportionally (`initialAssetWeight * scaleInitialAssetWeightStart / depositsValue`)
+ * so the market's collateral usefulness degrades as its deposits grow past the configured cap.
+ *
+ * @param {SpotMarketAccount} spotMarket - The spot market account
+ * @param {BN} oraclePrice - The oracle price, PRICE_PRECISION (1e6), used to value total deposits
+ * @return {BN} The (possibly scaled) initial asset weight, `SPOT_MARKET_WEIGHT_PRECISION` (1e4)
+ */
 export function calculateScaledInitialAssetWeight(
 	spotMarket: SpotMarketAccount,
 	oraclePrice: BN
@@ -243,6 +269,18 @@ export function calculateScaledInitialAssetWeight(
 	}
 }
 
+/**
+ * Calculates the liability (borrow) weight applied to a spot borrow balance, mirroring
+ * `SpotMarket::get_liability_weight`'s `Initial`/`Maintenance` branches. Size is rescaled into
+ * `AMM_RESERVE_PRECISION` before the IMF size-premium is applied, so larger borrows receive a
+ * higher (more conservative) weight.
+ *
+ * @param {BN} size - The borrow token amount, scaled by the spot market's token decimals
+ * @param {SpotMarketAccount} spotMarket - The spot market account
+ * @param {MarginCategory | undefined} marginCategory - `'Initial'`, `'Maintenance'`, or
+ *   `undefined` (defaults to `initialLiabilityWeight` with no size premium applied)
+ * @return {BN} The liability weight, scaled by `SPOT_MARKET_WEIGHT_PRECISION` (1e4, i.e. 10000 = 100%)
+ */
 export function calculateLiabilityWeight(
 	size: BN,
 	spotMarket: SpotMarketAccount,
@@ -287,6 +325,17 @@ export function calculateLiabilityWeight(
 	return liabilityWeight;
 }
 
+/**
+ * Calculates a spot market's utilization (borrows / deposits), mirroring
+ * `calculate_utilization`. Returns `SPOT_MARKET_UTILIZATION_PRECISION` (100% utilization) if
+ * there are borrows but no deposits, and zero if both are zero.
+ *
+ * @param {SpotMarketAccount} bank - The spot market account
+ * @param {BN} [delta] - Optional hypothetical change in token amount, scaled by the market's
+ *   token decimals: a positive delta is added to deposits, a negative delta (its absolute
+ *   value) is added to borrows. Defaults to zero (current on-chain utilization).
+ * @return {BN} Utilization, scaled by `SPOT_MARKET_UTILIZATION_PRECISION` (1e6, i.e. 1e6 = 100%)
+ */
 export function calculateUtilization(
 	bank: SpotMarketAccount,
 	delta = ZERO
@@ -323,10 +372,17 @@ export function calculateUtilization(
 }
 
 /**
- * calculates max borrow amount where rate would stay below targetBorrowRate
- * @param spotMarketAccount
- * @param targetBorrowRate
- * @returns : Precision: TOKEN DECIMALS
+ * SDK-only helper (no direct on-chain counterpart) that inverts `calculateInterestRate`'s
+ * utilization curve to find how much more can be borrowed before the borrow rate would reach
+ * `targetBorrowRate`. Useful for UI "available to borrow at rate X" displays.
+ *
+ * @param {SpotMarketAccount} spotMarketAccount - The spot market account
+ * @param {BN} targetBorrowRate - The target annualized borrow rate, `SPOT_MARKET_RATE_PRECISION` (1e6)
+ * @returns {{ totalCapacity: BN; remainingCapacity: BN }} Both scaled by the market's token
+ *   decimals. `totalCapacity` is the total borrow amount implied by the target utilization;
+ *   `remainingCapacity` is `totalCapacity` minus current borrows (zero if the market's current
+ *   borrow rate already meets or exceeds the target), additionally capped by
+ *   `maxTokenBorrowsFraction` of `maxTokenDeposits` when that cap is configured (>0)
  */
 export function calculateSpotMarketBorrowCapacity(
 	spotMarketAccount: SpotMarketAccount,
@@ -402,6 +458,21 @@ export function calculateSpotMarketBorrowCapacity(
 	return { totalCapacity, remainingCapacity };
 }
 
+/**
+ * Calculates the annualized borrow interest rate for a spot market, mirroring
+ * `calculate_borrow_rate` / the underlying utilization curve. Below `optimalUtilization` the
+ * rate ramps linearly from 0 to `optimalBorrowRate`; above it, the rate ramps through a fixed
+ * piecewise schedule (85/90/95/99/99.5/100% utilization breakpoints) from `optimalBorrowRate`
+ * up to `maxBorrowRate`. The result is floored at `minBorrowRate / 200` (i.e. `minBorrowRate`
+ * is in units of half-percentage-points of `PERCENTAGE_PRECISION`).
+ *
+ * @param {SpotMarketAccount} bank - The spot market account
+ * @param {BN} [delta] - Optional hypothetical change in token amount passed through to
+ *   `calculateUtilization` (ignored if `currentUtilization` is provided)
+ * @param {BN} [currentUtilization] - Precomputed utilization, `SPOT_MARKET_UTILIZATION_PRECISION`
+ *   (1e6); if omitted it is derived from `bank` and `delta`
+ * @return {BN} Annualized borrow rate, scaled by `SPOT_MARKET_RATE_PRECISION` (1e6)
+ */
 export function calculateInterestRate(
 	bank: SpotMarketAccount,
 	delta = ZERO,
@@ -464,6 +535,19 @@ export function calculateInterestRate(
 	return BN.max(minRate, rate);
 }
 
+/**
+ * Calculates the annualized deposit interest rate for a spot market, mirroring
+ * `calculate_deposit_rate` (velocity-rs). Lenders receive the borrow rate net of the insurance
+ * fund and protocol fee carveouts (`ifFeeFactor` + `protocolFeeFactor`, both `PERCENTAGE_PRECISION`),
+ * scaled down by utilization since only borrowed deposits earn interest.
+ *
+ * @param {SpotMarketAccount} bank - The spot market account
+ * @param {BN} [delta] - Optional hypothetical change in token amount; positive adds to deposits,
+ *   negative adds to borrows (see `calculateUtilization`)
+ * @param {BN} [currentUtilization] - Precomputed utilization, `SPOT_MARKET_UTILIZATION_PRECISION`
+ *   (1e6); if omitted it is derived from `bank` and `delta`
+ * @return {BN} Annualized deposit rate, scaled by `SPOT_MARKET_RATE_PRECISION` (1e6)
+ */
 export function calculateDepositRate(
 	bank: SpotMarketAccount,
 	delta = ZERO,
@@ -486,6 +570,14 @@ export function calculateDepositRate(
 	return depositRate;
 }
 
+/**
+ * Alias for `calculateInterestRate` (annualized borrow rate).
+ *
+ * @param {SpotMarketAccount} bank - The spot market account
+ * @param {BN} [delta] - Optional hypothetical change in token amount (see `calculateUtilization`)
+ * @param {BN} [currentUtilization] - Precomputed utilization, `SPOT_MARKET_UTILIZATION_PRECISION` (1e6)
+ * @return {BN} Annualized borrow rate, scaled by `SPOT_MARKET_RATE_PRECISION` (1e6)
+ */
 export function calculateBorrowRate(
 	bank: SpotMarketAccount,
 	delta = ZERO,
@@ -494,6 +586,28 @@ export function calculateBorrowRate(
 	return calculateInterestRate(bank, delta, currentUtilization);
 }
 
+/**
+ * Projects the cumulative interest multipliers that would accrue between `spotMarket.lastInterestTs`
+ * and `now` at the market's current interest rate, mirroring the gross amounts computed by
+ * `calculate_accumulated_interest`. This is a point-in-time estimate for display purposes only —
+ * the actual on-chain update (`update_spot_market_cumulative_interest`) re-derives the rate from
+ * utilization at settlement time (same as this function calling `calculateInterestRate(bank)` with
+ * no delta), and only runs at all if `deposit_interest > 0 && borrow_interest > 1`. Borrow interest
+ * is always rounded up by 1 (added unconditionally), matching the program's lender-favoring
+ * rounding, and is credited to `cumulativeBorrowInterest` in full. **`depositInterest` here is the
+ * gross pre-carveout amount** — on-chain, `insuranceFund.ifFeeFactor` and `protocolFeeFactor`
+ * (both `IF_FACTOR_PRECISION`) are each cut from it first (to `revenuePool` and `protocolFeePool`
+ * respectively) and only the remainder is what actually gets added to `cumulativeDepositInterest`;
+ * this function does not replicate that split, so it overstates the deposit-side increment
+ * whenever either factor is non-zero.
+ *
+ * @param {SpotMarketAccount} bank - The spot market account
+ * @param {BN} now - The timestamp (unix seconds) to project interest up to
+ * @return {{ borrowInterest: BN; depositInterest: BN }} `borrowInterest` is the exact amount added
+ *   to `cumulativeBorrowInterest`; `depositInterest` is the gross pre-carveout amount, not
+ *   necessarily what's added to `cumulativeDepositInterest` (see above). Both in the same
+ *   fixed-point units as those cumulative fields (`SPOT_MARKET_CUMULATIVE_INTEREST_PRECISION`)
+ */
 export function calculateInterestAccumulated(
 	bank: SpotMarketAccount,
 	now: BN
@@ -523,6 +637,22 @@ export function calculateInterestAccumulated(
 	return { borrowInterest, depositInterest };
 }
 
+/**
+ * Calculates the minimum deposit / maximum borrow token amounts that keep the market's
+ * utilization from exceeding a "max withdraw utilization" ceiling, mirroring
+ * `calculate_token_utilization_limits`. The ceiling is `max(optimalUtilization,
+ * utilizationTwap + (100% - utilizationTwap) / 2)` — i.e. it allows utilization to rise, but
+ * only up to halfway from the TWAP to 100%. Deposit sizes already below
+ * `withdrawGuardThreshold` are never blocked (the min-deposit result is capped so it can't
+ * exceed `depositTokenAmount - withdrawGuardThreshold`), and borrows below the guard threshold
+ * are never blocked either (the max-borrow result is floored at `withdrawGuardThreshold`).
+ *
+ * @param {BN} depositTokenAmount - Current total deposit token amount, market's token decimals
+ * @param {BN} borrowTokenAmount - Current total borrow token amount, market's token decimals
+ * @param {SpotMarketAccount} spotMarket - The spot market account
+ * @return {{ minDepositTokensForUtilization: BN; maxBorrowTokensForUtilization: BN }} Both
+ *   scaled by the market's token decimals
+ */
 export function calculateTokenUtilizationLimits(
 	depositTokenAmount: BN,
 	borrowTokenAmount: BN,
@@ -570,6 +700,32 @@ export function calculateTokenUtilizationLimits(
 	};
 }
 
+/**
+ * Estimates the current immediate withdraw/borrow limits for a spot market, mirroring the
+ * on-chain `check_withdraw_limits` / `get_max_withdraw_for_market_with_token_amount` guard
+ * (combining `calculate_min_deposit_token_amount`, `calculate_max_borrow_token_amount`, and
+ * `calculateTokenUtilizationLimits`). Because the SDK cannot force an on-chain TWAP update
+ * before reading it, this projects a "live" 24h deposit/borrow TWAP by weighting the stored
+ * TWAP and the current amount by `sinceStart`/`sinceLast` (the same weighted-average shape as
+ * `update_spot_market_twap_stats`, without its rounding bias term) before deriving limits, so
+ * the result approximates what the on-chain TWAP would be if updated at `now`.
+ *
+ * Deposit/borrow TWAP friction bands differ by pool: the main pool (`poolId === 0`) targets
+ * ~30-92.5% utilization (borrow ceiling is `lesserDepositAmount` clamped between 1/3 and
+ * 13/14 of itself, floored around the live borrow TWAP + 1/5), isolated pools (`poolId !== 0`)
+ * target ~50-95% (clamped between 1/2 and 19/20, floored around the live borrow TWAP + 1/3).
+ * `lesserDepositAmount` is `min(currentDepositAmount, live deposit TWAP)` — using the smaller of
+ * the two keeps the borrow ceiling conservative whether deposits are rising or falling.
+ * `borrowLimit` is additionally zeroed for `assetTier === 'protected'` markets, and both limits
+ * are clamped by `maxTokenBorrowsFraction` of `maxTokenDeposits` when that cap is configured.
+ *
+ * @param {SpotMarketAccount} spotMarket - The spot market account
+ * @param {BN} now - The timestamp (unix seconds) to project the live TWAP up to
+ * @return {{ borrowLimit: BN; withdrawLimit: BN; minDepositAmount: BN; maxBorrowAmount: BN;
+ *   currentDepositAmount: BN; currentBorrowAmount: BN }} All values scaled by the market's token
+ *   decimals. `withdrawLimit`/`borrowLimit` are floored at zero (a market already past its
+ *   min-deposit/max-borrow bound reports zero remaining room rather than negative)
+ */
 export function calculateWithdrawLimit(
 	spotMarket: SpotMarketAccount,
 	now: BN
@@ -699,6 +855,22 @@ export function calculateWithdrawLimit(
 	};
 }
 
+/**
+ * Calculates the margin-weighted value of a spot deposit, mirroring the asset-side of the
+ * program's collateral valuation (`get_strict_token_value` + `get_asset_weight`). Uses the
+ * worst of the oracle's live price and its 5min TWAP (via `strictOraclePrice`) so a favorable
+ * price spike can't be used to over-value collateral.
+ *
+ * @param {BN} tokenAmount - The deposit token amount, scaled by `spotMarketAccount.decimals`
+ * @param {StrictOraclePrice} strictOraclePrice - Live oracle price + 5min TWAP, PRICE_PRECISION (1e6)
+ * @param {SpotMarketAccount} spotMarketAccount - The spot market account
+ * @param {number} maxMarginRatio - The user's custom max margin ratio (0 if unset), in
+ *   `SPOT_MARKET_WEIGHT_PRECISION` (1e4) units; only applied when `marginCategory === 'Initial'`
+ *   and the market isn't the quote spot market, capping the weight at
+ *   `SPOT_MARKET_WEIGHT_PRECISION - maxMarginRatio`
+ * @param {MarginCategory} [marginCategory] - When omitted, returns the unweighted (100%) value
+ * @return {BN} The (optionally weighted) asset value, scaled by `PRICE_PRECISION` (1e6)
+ */
 export function getSpotAssetValue(
 	tokenAmount: BN,
 	strictOraclePrice: StrictOraclePrice,
@@ -737,6 +909,24 @@ export function getSpotAssetValue(
 	return assetValue;
 }
 
+/**
+ * Calculates the margin-weighted value of a spot borrow, mirroring the liability-side of the
+ * program's collateral valuation (`get_strict_token_value` + `get_liability_weight`). Uses the
+ * worst of the oracle's live price and its 5min TWAP (via `strictOraclePrice`) so a favorable
+ * price dip can't be used to under-value a liability.
+ *
+ * @param {BN} tokenAmount - The borrow token amount (positive), scaled by `spotMarketAccount.decimals`
+ * @param {StrictOraclePrice} strictOraclePrice - Live oracle price + 5min TWAP, PRICE_PRECISION (1e6)
+ * @param {SpotMarketAccount} spotMarketAccount - The spot market account
+ * @param {number} maxMarginRatio - The user's custom max margin ratio (0 if unset),
+ *   `SPOT_MARKET_WEIGHT_PRECISION` (1e4) units; only applied when `marginCategory === 'Initial'`
+ *   and the market isn't the quote spot market, flooring the weight at
+ *   `SPOT_MARKET_WEIGHT_PRECISION + maxMarginRatio`
+ * @param {MarginCategory} [marginCategory] - When omitted, returns the unweighted (100%) value
+ * @param {BN} [liquidationBuffer] - Extra weight added on top (`SPOT_MARKET_WEIGHT_PRECISION`
+ *   units) to make maintenance margin checks stricter during liquidation eligibility checks
+ * @return {BN} The (optionally weighted) liability value, scaled by `PRICE_PRECISION` (1e6)
+ */
 export function getSpotLiabilityValue(
 	tokenAmount: BN,
 	strictOraclePrice: StrictOraclePrice,

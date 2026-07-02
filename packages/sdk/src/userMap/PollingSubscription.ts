@@ -1,5 +1,10 @@
 import { UserMap } from './userMap';
 
+/**
+ * `UserMap`'s `'polling'` subscription strategy: re-runs a full `userMap.sync()`
+ * on a fixed `setTimeout` interval (self-rescheduling, so syncs never overlap).
+ * Internal to `UserMap` — not part of the SDK's public exports.
+ */
 export class PollingSubscription {
 	private userMap: UserMap;
 	private frequency: number;
@@ -13,7 +18,9 @@ export class PollingSubscription {
 		skipInitialLoad = false,
 	}: {
 		userMap: UserMap;
+		/** Milliseconds to wait after one sync completes before starting the next. */
 		frequency: number;
+		/** If true, does not sync immediately on `subscribe()` — the first sync happens after `frequency` ms. */
 		skipInitialLoad?: boolean;
 		includeIdle?: boolean;
 	}) {
@@ -22,6 +29,7 @@ export class PollingSubscription {
 		this.skipInitialLoad = skipInitialLoad;
 	}
 
+	/** Starts the polling loop. No-op if already started or `frequency <= 0`. */
 	public async subscribe(): Promise<void> {
 		if (this.intervalId || this.frequency <= 0) {
 			return;
@@ -38,6 +46,7 @@ export class PollingSubscription {
 		executeSync();
 	}
 
+	/** Stops the polling loop. */
 	public async unsubscribe(): Promise<void> {
 		if (this.intervalId) {
 			clearInterval(this.intervalId);

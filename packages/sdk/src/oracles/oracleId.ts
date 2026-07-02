@@ -1,6 +1,13 @@
 import { PublicKey } from '@solana/web3.js';
 import { OracleSource, OracleSourceNum } from '../types';
 
+/**
+ * Maps an `OracleSource` enum-object (e.g. `{ pyth: {} }`) to its stable numeric encoding
+ * (`OracleSourceNum`), the representation used on-chain and as part of an oracle id string.
+ * @param source - The oracle source variant.
+ * @returns The corresponding `OracleSourceNum` value.
+ * @throws Error if `source` doesn't match any known variant.
+ */
 export function getOracleSourceNum(source: OracleSource): number {
 	if ('pyth' in source) return OracleSourceNum.PYTH;
 	if ('pyth1K' in source) return OracleSourceNum.PYTH_1K;
@@ -25,6 +32,13 @@ export function getOracleSourceNum(source: OracleSource): number {
 	throw new Error('Invalid oracle source');
 }
 
+/**
+ * Inverse of `getOracleSourceNum`: maps a numeric `OracleSourceNum` back to its `OracleSource`
+ * enum-object.
+ * @param sourceNum - Numeric oracle source encoding.
+ * @returns The corresponding `OracleSource` variant.
+ * @throws Error if `sourceNum` doesn't match any known `OracleSourceNum` value.
+ */
 export function getOracleSourceFromNum(sourceNum: number): OracleSource {
 	if (sourceNum === OracleSourceNum.PYTH) return 'pyth';
 	if (sourceNum === OracleSourceNum.PYTH_1K) return 'pyth1K';
@@ -49,6 +63,15 @@ export function getOracleSourceFromNum(sourceNum: number): OracleSource {
 	throw new Error('Invalid oracle source');
 }
 
+/**
+ * Builds a stable string id for an oracle account, uniquely identifying it by both its address
+ * and the source/decoding scheme to use — the same pubkey can be interpreted under different
+ * `OracleSource`s (e.g. `pyth` vs `pyth1K`) with different results, so the pubkey alone is not a
+ * safe cache/map key.
+ * @param publicKey - The oracle account's address.
+ * @param source - The oracle source variant to decode it as.
+ * @returns A string of the form `"<base58 pubkey>-<OracleSourceNum>"`.
+ */
 export function getOracleId(
 	publicKey: PublicKey,
 	source: OracleSource
@@ -56,6 +79,13 @@ export function getOracleId(
 	return `${publicKey.toBase58()}-${getOracleSourceNum(source)}`;
 }
 
+/**
+ * Inverse of `getOracleId`: parses an oracle id string back into its pubkey and `OracleSource`.
+ * @param oracleId - An id string previously produced by `getOracleId`.
+ * @returns The decoded `publicKey` and `source`.
+ * @throws Error if the encoded source number doesn't match any known `OracleSourceNum` value, or
+ * `PublicKey` construction fails on a malformed id.
+ */
 export function getPublicKeyAndSourceFromOracleId(oracleId: string): {
 	publicKey: PublicKey;
 	source: OracleSource;

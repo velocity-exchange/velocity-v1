@@ -21,6 +21,7 @@ import { isLowRiskForAmm, standardizePrice } from './orders';
 import { getOracleValidity } from './oracles';
 import { isOperationPaused } from './exchangeStatus';
 
+/** True if `order`'s auction has run its full `auctionDuration` (in slots) as of `slot`, or the order has no auction (`auctionDuration === 0`). */
 export function isAuctionComplete(order: Order, slot: number): boolean {
 	if (order.auctionDuration === 0) {
 		return true;
@@ -29,6 +30,22 @@ export function isAuctionComplete(order: Order, slot: number): boolean {
 	return new BN(slot).sub(order.slot).gt(new BN(order.auctionDuration));
 }
 
+/**
+ * True if the AMM is currently a permitted fallback liquidity source for `order`, gating
+ * purely on oracle validity and paused-operations state (not on price/size — see
+ * `calculateBaseAssetAmountForAmmToFulfill` for that). Blocked if `AMM_FILL` is paused for
+ * the market, or if the MM-oracle validity is `StaleForAMMLowRisk` or worse. If validity is
+ * exactly `Valid`, always allowed; otherwise (a degraded-but-not-stale oracle) only allowed
+ * when the order itself is low-risk for the AMM (`isLowRiskForAmm`) — e.g. it predates the
+ * oracle delay, is part of a liquidation, or carries the safe-trigger flag.
+ * @param order Order to check.
+ * @param mmOraclePriceData Current MM oracle price data.
+ * @param slot Current slot.
+ * @param state Global state, providing oracle guard rails.
+ * @param market Perp market the order is on.
+ * @param isLiquidation Whether the fill is part of a liquidation (relaxes the low-risk check).
+ * @returns `true` if the AMM may currently act as a fallback liquidity source for this order.
+ */
 export function isFallbackAvailableLiquiditySource(
 	order: Order,
 	mmOraclePriceData: MMOraclePriceData,
@@ -77,11 +94,17 @@ export function isFallbackAvailableLiquiditySource(
 }
 
 /**
- *
- * @param order
- * @param slot
- * @param oraclePrice Use MMOraclePriceData source for perp orders, OraclePriceData for spot
- * @returns BN
+ * Dispatches to the correct in-progress auction price for `order` based on its order type:
+ * fixed-price auction (`getAuctionPriceForFixedAuction`) for market/triggerLimit/plain-limit
+ * orders, or oracle-offset auction (`getAuctionPriceForOracleOffsetAuction`) for
+ * oracle-pegged limit/oracle/oracle-triggered-market orders. The result is always
+ * standardized to `tickSize`.
+ * @param order Order whose auction price to compute.
+ * @param slot Current slot.
+ * @param oraclePrice Use `MMOraclePriceData` source for perp orders, `OraclePriceData` for spot; PRICE_PRECISION (1e6).
+ * @param tickSize Market's order tick size, PRICE_PRECISION (1e6). Defaults to `ONE` (no effective standardization).
+ * @returns Auction price at the current slot, PRICE_PRECISION (1e6).
+ * @throws if `order.orderType` doesn't match any known auction pricing path.
  */
 export function getAuctionPrice(
 	order: Order,
@@ -124,6 +147,17 @@ export function getAuctionPrice(
 	}
 }
 
+/**
+ * Linearly interpolates between `order.auctionStartPrice` and `order.auctionEndPrice` based
+ * on slots elapsed out of `order.auctionDuration`, then standardizes the result to
+ * `tickSize` in the order's favor (via `standardizePrice`) so every auction tick already
+ * lines up with the market's tick size. Returns the (standardized) end price directly once
+ * the auction is complete or has zero duration.
+ * @param order Order whose fixed-price auction to evaluate.
+ * @param slot Current slot.
+ * @param tickSize Market's order tick size, PRICE_PRECISION (1e6). Defaults to `ONE` (no effective standardization).
+ * @returns Auction price at the current slot, PRICE_PRECISION (1e6).
+ */
 export function getAuctionPriceForFixedAuction(
 	order: Order,
 	slot: number,
@@ -162,11 +196,17 @@ export function getAuctionPriceForFixedAuction(
 }
 
 /**
- *
- * @param order
- * @param slot
- * @param oraclePrice Use MMOraclePriceData source for perp orders, OraclePriceData for spot
- * @returns
+ * Linearly interpolates the oracle price offset between `order.auctionStartPrice` and
+ * `order.auctionEndPrice` (both offsets from the oracle price, not absolute prices) based on
+ * slots elapsed out of `order.auctionDuration`, adds it to the live `oraclePrice`, floors it
+ * at `tickSize`, then standardizes the result to `tickSize` in the order's favor. Returns the
+ * (standardized, floored) end-offset price directly once the auction is complete or has zero
+ * duration.
+ * @param order Order whose oracle-offset auction to evaluate.
+ * @param slot Current slot.
+ * @param oraclePrice Use `MMOraclePriceData` source for perp orders, `OraclePriceData` for spot; PRICE_PRECISION (1e6).
+ * @param tickSize Market's order tick size, PRICE_PRECISION (1e6). Defaults to `ONE` (no effective standardization).
+ * @returns Auction price at the current slot, PRICE_PRECISION (1e6).
  */
 export function getAuctionPriceForOracleOffsetAuction(
 	order: Order,
@@ -208,6 +248,21 @@ export function getAuctionPriceForOracleOffsetAuction(
 	return standardizePrice(price, tickSize, order.direction);
 }
 
+/**
+ * Converts absolute auction start/end prices (and a desired limit price) into the
+ * oracle-offset form the program expects for oracle-pegged orders: offsets from the current
+ * oracle price rather than absolute prices. Derives `oraclePriceOffset` from `limitPrice -
+ * oraclePrice` when both are nonzero, falling back to `auctionEndPrice - oraclePrice` (±1,
+ * biased away from the oracle in the order's direction) otherwise. Optionally clamps the
+ * absolute start/end prices to `auctionPriceCaps` before converting.
+ * @param direction Order side; determines the ±1 bias when deriving a fallback offset.
+ * @param oraclePrice Current oracle price, PRICE_PRECISION (1e6).
+ * @param auctionStartPrice Desired absolute auction start price, PRICE_PRECISION (1e6).
+ * @param auctionEndPrice Desired absolute auction end price, PRICE_PRECISION (1e6).
+ * @param limitPrice Desired absolute limit price (0 to derive the offset purely from `auctionEndPrice`), PRICE_PRECISION (1e6).
+ * @param auctionPriceCaps Optional `{ min, max }` bounds (PRICE_PRECISION 1e6) to clamp the absolute start/end prices to before converting to offsets.
+ * @returns `auctionStartPrice`/`auctionEndPrice` as oracle offsets, and `oraclePriceOffset` for the limit price — all PRICE_PRECISION (1e6), relative to `oraclePrice`.
+ */
 export function deriveOracleAuctionParams({
 	direction,
 	oraclePrice,
@@ -259,9 +314,18 @@ export function deriveOracleAuctionParams({
 }
 
 /**
- *
- * @param params Use OraclePriceData.price for oraclePrice param
- * @returns
+ * Derives a reasonable auction start price for a newly-triggered trigger order, biasing off
+ * the current oracle price by an offset estimated from recent mark/oracle spread (or, if
+ * mark and oracle TWAPs have recently diverged or 24h volume is thin, a coarser
+ * TWAP-fraction fallback scaled by contract tier). Applies a further directional "start
+ * buffer" in bps (tighter for tier A/B markets) so the auction starts slightly aggressive,
+ * then clamps to `limitPrice` if one is given so the auction never starts past the user's
+ * limit.
+ * @param params.perpMarket Market providing TWAP stats and contract tier.
+ * @param params.direction Order side.
+ * @param params.oraclePrice Current oracle price — use `OraclePriceData.price`, PRICE_PRECISION (1e6).
+ * @param params.limitPrice Optional limit price to clamp the start price to, PRICE_PRECISION (1e6).
+ * @returns Auction start price, PRICE_PRECISION (1e6).
  */
 export function getTriggerAuctionStartPrice(params: {
 	perpMarket: PerpMarketAccount;
@@ -353,9 +417,16 @@ export function getTriggerAuctionStartPrice(params: {
 }
 
 /**
- *
- * @param params Use OraclePriceData.price for oraclePrice param and MMOraclePriceData.price for mmOraclePrice
- * @returns
+ * Computes both the auction start price (`getTriggerAuctionStartPrice`) and the
+ * corresponding execution price under the (potentially different) live MM oracle price —
+ * i.e. the same start offset re-applied to `mmOraclePrice` instead of `oraclePrice`. Both are
+ * clamped to `limitPrice` if one is given.
+ * @param params.perpMarket Market providing TWAP stats and contract tier.
+ * @param params.direction Order side.
+ * @param params.oraclePrice Current (exchange) oracle price — use `OraclePriceData.price`, PRICE_PRECISION (1e6).
+ * @param params.mmOraclePrice Current MM oracle price — use `MMOraclePriceData.price`, PRICE_PRECISION (1e6).
+ * @param params.limitPrice Optional limit price to clamp both results to, PRICE_PRECISION (1e6).
+ * @returns `startPrice` (auction start under `oraclePrice`) and `executionPrice` (same offset under `mmOraclePrice`), both PRICE_PRECISION (1e6).
  */
 export function getTriggerAuctionStartAndExecutionPrice(params: {
 	perpMarket: PerpMarketAccount;

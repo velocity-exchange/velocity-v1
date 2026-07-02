@@ -511,6 +511,9 @@ export class DLOB {
 
 		const isAmmPaused = ammPaused(stateAccount, marketAccount);
 
+		const tickSize = (marketAccount as PerpMarketAccount | SpotMarketAccount)
+			.orderTickSize;
+
 		const { makerRebateNumerator, makerRebateDenominator } =
 			this.getMakerRebate(marketType, stateAccount, marketAccount);
 
@@ -524,7 +527,8 @@ export class DLOB {
 				stateAccount,
 				marketAccount,
 				fallbackAsk,
-				fallbackBid
+				fallbackBid,
+				tickSize
 			);
 
 		const restingLimitOrderNodesToFill: Array<NodeToFill> =
@@ -539,7 +543,8 @@ export class DLOB {
 				makerRebateNumerator,
 				makerRebateDenominator,
 				fallbackAsk,
-				fallbackBid
+				fallbackBid,
+				tickSize
 			);
 
 		// get expired market nodes
@@ -646,7 +651,8 @@ export class DLOB {
 		makerRebateNumerator: number,
 		makerRebateDenominator: number,
 		fallbackAsk: BN | undefined,
-		fallbackBid: BN | undefined
+		fallbackBid: BN | undefined,
+		tickSize?: BN
 	): NodeToFill[] {
 		const nodesToFill = new Array<NodeToFill>();
 
@@ -654,7 +660,8 @@ export class DLOB {
 			marketIndex,
 			slot,
 			marketType,
-			oraclePriceData
+			oraclePriceData,
+			tickSize
 		);
 
 		for (const crossingNode of crossingNodes) {
@@ -666,7 +673,9 @@ export class DLOB {
 				marketIndex,
 				slot,
 				marketType,
-				oraclePriceData
+				oraclePriceData,
+				undefined,
+				tickSize
 			);
 
 			const fallbackBidWithBuffer = fallbackBid.sub(
@@ -685,7 +694,8 @@ export class DLOB {
 					return askPrice.lte(fallbackBidWithBuffer);
 				},
 				stateAccount,
-				marketAccount
+				marketAccount,
+				tickSize
 			);
 
 			for (const askCrossingFallback of asksCrossingFallback) {
@@ -698,7 +708,9 @@ export class DLOB {
 				marketIndex,
 				slot,
 				marketType,
-				oraclePriceData
+				oraclePriceData,
+				undefined,
+				tickSize
 			);
 
 			const fallbackAskWithBuffer = fallbackAsk.add(
@@ -717,7 +729,8 @@ export class DLOB {
 					return bidPrice.gte(fallbackAskWithBuffer);
 				},
 				stateAccount,
-				marketAccount
+				marketAccount,
+				tickSize
 			);
 
 			for (const bidCrossingFallback of bidsCrossingFallback) {
@@ -741,7 +754,8 @@ export class DLOB {
 			? SpotMarketAccount
 			: PerpMarketAccount,
 		fallbackAsk: BN | undefined,
-		fallbackBid?: BN | undefined
+		fallbackBid?: BN | undefined,
+		tickSize?: BN
 	): NodeToFill[] {
 		const nodesToFill = new Array<NodeToFill>();
 
@@ -770,7 +784,8 @@ export class DLOB {
 					}
 				}
 				return takerPrice === undefined || takerPrice.lte(makerPrice);
-			}
+			},
+			tickSize
 		);
 		for (const takingAskCrossingBid of takingAsksCrossingBids) {
 			nodesToFill.push(takingAskCrossingBid);
@@ -793,7 +808,8 @@ export class DLOB {
 						return takerPrice === undefined || takerPrice.lte(fallbackBid);
 					},
 					state,
-					marketAccount
+					marketAccount,
+					tickSize
 				);
 
 			for (const takingAskCrossingFallback of takingAsksCrossingFallback) {
@@ -827,7 +843,8 @@ export class DLOB {
 				}
 
 				return takerPrice === undefined || takerPrice.gte(makerPrice);
-			}
+			},
+			tickSize
 		);
 
 		for (const takingBidToFill of takingBidsToFill) {
@@ -851,7 +868,8 @@ export class DLOB {
 						return takerPrice === undefined || takerPrice.gte(fallbackAsk);
 					},
 					state,
-					marketAccount
+					marketAccount,
+					tickSize
 				);
 			for (const marketBidCrossingFallback of takingBidsCrossingFallback) {
 				nodesToFill.push(marketBidCrossingFallback);
@@ -875,9 +893,12 @@ export class DLOB {
 			marketType: T,
 			oraclePriceData: T extends { spot: unknown }
 				? OraclePriceData
-				: MMOraclePriceData
+				: MMOraclePriceData,
+			filterFcn?: DLOBFilterFcn,
+			tickSize?: BN
 		) => Generator<DLOBNode>,
-		doesCross: (takerPrice: BN | undefined, makerPrice: BN) => boolean
+		doesCross: (takerPrice: BN | undefined, makerPrice: BN) => boolean,
+		tickSize?: BN
 	): NodeToFill[] {
 		const nodesToFill = new Array<NodeToFill>();
 
@@ -886,7 +907,9 @@ export class DLOB {
 				marketIndex,
 				slot,
 				marketType,
-				oraclePriceData
+				oraclePriceData,
+				undefined,
+				tickSize
 			);
 
 			for (const makerNode of makerNodeGenerator) {
@@ -896,8 +919,12 @@ export class DLOB {
 					continue;
 				}
 
-				const makerPrice = makerNode.getPriceOrThrow(oraclePriceData, slot);
-				const takerPrice = takerNode.getPrice(oraclePriceData, slot);
+				const makerPrice = makerNode.getPriceOrThrow(
+					oraclePriceData,
+					slot,
+					tickSize
+				);
+				const takerPrice = takerNode.getPrice(oraclePriceData, slot, tickSize);
 
 				const ordersCross = doesCross(takerPrice, makerPrice);
 				if (!ordersCross) {
@@ -974,7 +1001,8 @@ export class DLOB {
 		state: StateAccount,
 		marketAccount: T extends { spot: unknown }
 			? SpotMarketAccount
-			: PerpMarketAccount
+			: PerpMarketAccount,
+		tickSize?: BN
 	): NodeToFill[] {
 		const nodesToFill = new Array<NodeToFill>();
 
@@ -987,7 +1015,12 @@ export class DLOB {
 				continue;
 			}
 			const nodeOrder = getOrderOrThrow(node);
-			const nodePrice = getLimitPrice(nodeOrder, oraclePriceData, slot);
+			const nodePrice = getLimitPrice(
+				nodeOrder,
+				oraclePriceData,
+				slot,
+				tickSize
+			);
 
 			// order crosses if there is no limit price or it crosses fallback price
 			const crosses = doesCross(nodePrice);
@@ -1305,7 +1338,8 @@ export class DLOB {
 		oraclePriceData: T extends { spot: unknown }
 			? OraclePriceData
 			: MMOraclePriceData,
-		filterFcn?: DLOBFilterFcn
+		filterFcn?: DLOBFilterFcn,
+		tickSize?: BN
 	): Generator<DLOBNode> {
 		if (isVariant(marketType, 'spot') && !oraclePriceData) {
 			throw new Error('Must provide OraclePriceData to get spot asks');
@@ -1334,8 +1368,8 @@ export class DLOB {
 			slot,
 			(bestNode, currentNode, slot, oraclePriceData) => {
 				return bestNode
-					.getPriceOrThrow(oraclePriceData, slot)
-					.lt(currentNode.getPriceOrThrow(oraclePriceData, slot));
+					.getPriceOrThrow(oraclePriceData, slot, tickSize)
+					.lt(currentNode.getPriceOrThrow(oraclePriceData, slot, tickSize));
 			},
 			filterFcn
 		);
@@ -1348,7 +1382,8 @@ export class DLOB {
 		oraclePriceData: T extends { spot: unknown }
 			? OraclePriceData
 			: MMOraclePriceData,
-		filterFcn?: DLOBFilterFcn
+		filterFcn?: DLOBFilterFcn,
+		tickSize?: BN
 	): Generator<DLOBNode> {
 		if (isVariant(marketType, 'spot') && !oraclePriceData) {
 			throw new Error('Must provide OraclePriceData to get spot bids');
@@ -1377,8 +1412,8 @@ export class DLOB {
 			slot,
 			(bestNode, currentNode, slot, oraclePriceData) => {
 				return bestNode
-					.getPriceOrThrow(oraclePriceData, slot)
-					.gt(currentNode.getPriceOrThrow(oraclePriceData, slot));
+					.getPriceOrThrow(oraclePriceData, slot, tickSize)
+					.gt(currentNode.getPriceOrThrow(oraclePriceData, slot, tickSize));
 			},
 			filterFcn
 		);
@@ -1401,7 +1436,8 @@ export class DLOB {
 		oraclePriceData: T extends { spot: unknown }
 			? OraclePriceData
 			: MMOraclePriceData,
-		filterFcn?: DLOBFilterFcn
+		filterFcn?: DLOBFilterFcn,
+		tickSize?: BN
 	): Generator<DLOBNode> {
 		if (isVariant(marketType, 'spot') && !oraclePriceData) {
 			throw new Error('Must provide OraclePriceData to get spot asks');
@@ -1409,7 +1445,14 @@ export class DLOB {
 
 		const generatorList = [
 			this.getTakingAsks(marketIndex, marketType, slot, oraclePriceData),
-			this.getRestingLimitAsks(marketIndex, slot, marketType, oraclePriceData),
+			this.getRestingLimitAsks(
+				marketIndex,
+				slot,
+				marketType,
+				oraclePriceData,
+				undefined,
+				tickSize
+			),
 		];
 
 		yield* this.getBestNode(
@@ -1417,9 +1460,10 @@ export class DLOB {
 			oraclePriceData,
 			slot,
 			(bestNode, currentNode, slot, oraclePriceData) => {
-				const bestNodePrice = bestNode.getPrice(oraclePriceData, slot) ?? ZERO;
+				const bestNodePrice =
+					bestNode.getPrice(oraclePriceData, slot, tickSize) ?? ZERO;
 				const currentNodePrice =
-					currentNode.getPrice(oraclePriceData, slot) ?? ZERO;
+					currentNode.getPrice(oraclePriceData, slot, tickSize) ?? ZERO;
 
 				if (bestNodePrice.eq(currentNodePrice)) {
 					return getOrderOrThrow(bestNode).slot.lt(
@@ -1450,7 +1494,8 @@ export class DLOB {
 		oraclePriceData: T extends { spot: unknown }
 			? OraclePriceData
 			: MMOraclePriceData,
-		filterFcn?: DLOBFilterFcn
+		filterFcn?: DLOBFilterFcn,
+		tickSize?: BN
 	): Generator<DLOBNode> {
 		if (isVariant(marketType, 'spot') && !oraclePriceData) {
 			throw new Error('Must provide OraclePriceData to get spot bids');
@@ -1458,7 +1503,14 @@ export class DLOB {
 
 		const generatorList = [
 			this.getTakingBids(marketIndex, marketType, slot, oraclePriceData),
-			this.getRestingLimitBids(marketIndex, slot, marketType, oraclePriceData),
+			this.getRestingLimitBids(
+				marketIndex,
+				slot,
+				marketType,
+				oraclePriceData,
+				undefined,
+				tickSize
+			),
 		];
 
 		yield* this.getBestNode(
@@ -1467,9 +1519,9 @@ export class DLOB {
 			slot,
 			(bestNode, currentNode, slot, oraclePriceData) => {
 				const bestNodePrice =
-					bestNode.getPrice(oraclePriceData, slot) ?? BN_MAX;
+					bestNode.getPrice(oraclePriceData, slot, tickSize) ?? BN_MAX;
 				const currentNodePrice =
-					currentNode.getPrice(oraclePriceData, slot) ?? BN_MAX;
+					currentNode.getPrice(oraclePriceData, slot, tickSize) ?? BN_MAX;
 
 				if (bestNodePrice.eq(currentNodePrice)) {
 					return getOrderOrThrow(bestNode).slot.lt(
@@ -1489,7 +1541,8 @@ export class DLOB {
 		marketType: T,
 		oraclePriceData: T extends { spot: unknown }
 			? OraclePriceData
-			: MMOraclePriceData
+			: MMOraclePriceData,
+		tickSize?: BN
 	): NodeToFill[] {
 		const nodesToFill = new Array<NodeToFill>();
 
@@ -1497,18 +1550,30 @@ export class DLOB {
 			marketIndex,
 			slot,
 			marketType,
-			oraclePriceData
+			oraclePriceData,
+			undefined,
+			tickSize
 		)) {
 			const bidGenerator = this.getRestingLimitBids(
 				marketIndex,
 				slot,
 				marketType,
-				oraclePriceData
+				oraclePriceData,
+				undefined,
+				tickSize
 			);
 
 			for (const bidNode of bidGenerator) {
-				const bidPrice = bidNode.getPriceOrThrow(oraclePriceData, slot);
-				const askPrice = askNode.getPriceOrThrow(oraclePriceData, slot);
+				const bidPrice = bidNode.getPriceOrThrow(
+					oraclePriceData,
+					slot,
+					tickSize
+				);
+				const askPrice = askNode.getPriceOrThrow(
+					oraclePriceData,
+					slot,
+					tickSize
+				);
 
 				// orders don't cross
 				if (bidPrice.lt(askPrice)) {
@@ -1613,17 +1678,20 @@ export class DLOB {
 		marketType: T,
 		oraclePriceData: T extends { spot: unknown }
 			? OraclePriceData
-			: MMOraclePriceData
+			: MMOraclePriceData,
+		tickSize?: BN
 	): BN | undefined {
 		const bestAsk = this.getRestingLimitAsks(
 			marketIndex,
 			slot,
 			marketType,
-			oraclePriceData
+			oraclePriceData,
+			undefined,
+			tickSize
 		).next().value;
 
 		if (bestAsk) {
-			return bestAsk.getPrice(oraclePriceData, slot);
+			return bestAsk.getPrice(oraclePriceData, slot, tickSize);
 		}
 		return undefined;
 	}
@@ -1634,17 +1702,20 @@ export class DLOB {
 		marketType: T,
 		oraclePriceData: T extends { spot: unknown }
 			? OraclePriceData
-			: MMOraclePriceData
+			: MMOraclePriceData,
+		tickSize?: BN
 	): BN | undefined {
 		const bestBid = this.getRestingLimitBids(
 			marketIndex,
 			slot,
 			marketType,
-			oraclePriceData
+			oraclePriceData,
+			undefined,
+			tickSize
 		).next().value;
 
 		if (bestBid) {
-			return bestBid.getPrice(oraclePriceData, slot);
+			return bestBid.getPrice(oraclePriceData, slot, tickSize);
 		}
 		return undefined;
 	}
@@ -1978,6 +2049,7 @@ export class DLOB {
 		oraclePriceData,
 		depth,
 		fallbackL2Generators = [],
+		tickSize,
 	}: {
 		marketIndex: number;
 		marketType: T;
@@ -1987,11 +2059,20 @@ export class DLOB {
 			: MMOraclePriceData;
 		depth: number;
 		fallbackL2Generators?: L2OrderBookGenerator[];
+		tickSize?: BN;
 	}): L2OrderBook {
 		const makerAskL2LevelGenerator = getL2GeneratorFromDLOBNodes(
-			this.getRestingLimitAsks(marketIndex, slot, marketType, oraclePriceData),
+			this.getRestingLimitAsks(
+				marketIndex,
+				slot,
+				marketType,
+				oraclePriceData,
+				undefined,
+				tickSize
+			),
 			oraclePriceData,
-			slot
+			slot,
+			tickSize
 		);
 
 		const fallbackAskGenerators = fallbackL2Generators.map(
@@ -2010,9 +2091,17 @@ export class DLOB {
 		const asks = createL2Levels(askL2LevelGenerator, depth);
 
 		const makerBidGenerator = getL2GeneratorFromDLOBNodes(
-			this.getRestingLimitBids(marketIndex, slot, marketType, oraclePriceData),
+			this.getRestingLimitBids(
+				marketIndex,
+				slot,
+				marketType,
+				oraclePriceData,
+				undefined,
+				tickSize
+			),
 			oraclePriceData,
-			slot
+			slot,
+			tickSize
 		);
 
 		const fallbackBidGenerators = fallbackL2Generators.map((fallbackOrders) => {
@@ -2048,6 +2137,7 @@ export class DLOB {
 		marketType,
 		slot,
 		oraclePriceData,
+		tickSize,
 	}: {
 		marketIndex: number;
 		marketType: T;
@@ -2055,6 +2145,7 @@ export class DLOB {
 		oraclePriceData: T extends { spot: unknown }
 			? OraclePriceData
 			: MMOraclePriceData;
+		tickSize?: BN;
 	}): L3OrderBook {
 		const bids: L3Level[] = [];
 		const asks: L3Level[] = [];
@@ -2063,13 +2154,15 @@ export class DLOB {
 			marketIndex,
 			slot,
 			marketType,
-			oraclePriceData
+			oraclePriceData,
+			undefined,
+			tickSize
 		);
 
 		for (const ask of restingAsks) {
 			const askOrder = getOrderOrThrow(ask);
 			asks.push({
-				price: ask.getPriceOrThrow(oraclePriceData, slot),
+				price: ask.getPriceOrThrow(oraclePriceData, slot, tickSize),
 				size: askOrder.baseAssetAmount.sub(askOrder.baseAssetAmountFilled),
 				maker: new PublicKey(getUserAccountOrThrow(ask)),
 				orderId: askOrder.orderId,
@@ -2080,13 +2173,15 @@ export class DLOB {
 			marketIndex,
 			slot,
 			marketType,
-			oraclePriceData
+			oraclePriceData,
+			undefined,
+			tickSize
 		);
 
 		for (const bid of restingBids) {
 			const bidOrder = getOrderOrThrow(bid);
 			bids.push({
-				price: bid.getPriceOrThrow(oraclePriceData, slot),
+				price: bid.getPriceOrThrow(oraclePriceData, slot, tickSize),
 				size: bidOrder.baseAssetAmount.sub(bidOrder.baseAssetAmountFilled),
 				maker: new PublicKey(getUserAccountOrThrow(bid)),
 				orderId: bidOrder.orderId,
@@ -2104,12 +2199,13 @@ export class DLOB {
 		baseAmountIn: BN,
 		oraclePriceData: OraclePriceData,
 		slot: number,
-		dlobSide: Generator<DLOBNode>
+		dlobSide: Generator<DLOBNode>,
+		tickSize?: BN
 	): BN {
 		let runningSumQuote = ZERO;
 		let runningSumBase = ZERO;
 		for (const side of dlobSide) {
-			const price = side.getPriceOrThrow(oraclePriceData, slot); //side.order.quoteAssetAmount.div(side.order.baseAssetAmount);
+			const price = side.getPriceOrThrow(oraclePriceData, slot, tickSize); //side.order.quoteAssetAmount.div(side.order.baseAssetAmount);
 			const sideOrder = getOrderOrThrow(side);
 			const baseAmountRemaining = sideOrder.baseAssetAmount.sub(
 				sideOrder.baseAssetAmountFilled
@@ -2147,6 +2243,7 @@ export class DLOB {
 		orderDirection,
 		slot,
 		oraclePriceData,
+		tickSize,
 	}: {
 		marketIndex: number;
 		marketType: T;
@@ -2156,20 +2253,37 @@ export class DLOB {
 		oraclePriceData: T extends { spot: unknown }
 			? OraclePriceData
 			: MMOraclePriceData;
+		tickSize?: BN;
 	}): BN {
 		if (isVariant(orderDirection, 'long')) {
 			return this.estimateFillExactBaseAmountInForSide(
 				baseAmount,
 				oraclePriceData,
 				slot,
-				this.getRestingLimitAsks(marketIndex, slot, marketType, oraclePriceData)
+				this.getRestingLimitAsks(
+					marketIndex,
+					slot,
+					marketType,
+					oraclePriceData,
+					undefined,
+					tickSize
+				),
+				tickSize
 			);
 		} else if (isVariant(orderDirection, 'short')) {
 			return this.estimateFillExactBaseAmountInForSide(
 				baseAmount,
 				oraclePriceData,
 				slot,
-				this.getRestingLimitBids(marketIndex, slot, marketType, oraclePriceData)
+				this.getRestingLimitBids(
+					marketIndex,
+					slot,
+					marketType,
+					oraclePriceData,
+					undefined,
+					tickSize
+				),
+				tickSize
 			);
 		}
 		throw new Error(
@@ -2186,6 +2300,7 @@ export class DLOB {
 		slot,
 		oraclePriceData,
 		numMakers,
+		tickSize,
 	}: {
 		marketIndex: number;
 		marketType: T;
@@ -2195,15 +2310,25 @@ export class DLOB {
 			? OraclePriceData
 			: MMOraclePriceData;
 		numMakers: number;
+		tickSize?: BN;
 	}): PublicKey[] {
 		const makers = new Map<string, PublicKey>();
 		const generator = isVariant(direction, 'long')
-			? this.getRestingLimitBids(marketIndex, slot, marketType, oraclePriceData)
+			? this.getRestingLimitBids(
+					marketIndex,
+					slot,
+					marketType,
+					oraclePriceData,
+					undefined,
+					tickSize
+			  )
 			: this.getRestingLimitAsks(
 					marketIndex,
 					slot,
 					marketType,
-					oraclePriceData
+					oraclePriceData,
+					undefined,
+					tickSize
 			  );
 
 		for (const node of generator) {

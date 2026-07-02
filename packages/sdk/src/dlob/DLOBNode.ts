@@ -16,11 +16,13 @@ export type NodeOraclePriceData<T extends MarketTypeStr = MarketTypeStr> =
 export interface DLOBNode {
 	getPrice<T extends MarketTypeStr>(
 		oraclePriceData: NodeOraclePriceData<T>,
-		slot: number
+		slot: number,
+		tickSize?: BN
 	): BN | undefined;
 	getPriceOrThrow<T extends MarketTypeStr>(
 		oraclePriceData: NodeOraclePriceData<T>,
-		slot: number
+		slot: number,
+		tickSize?: BN
 	): BN;
 	isVammNode(): boolean;
 	order: Order | undefined;
@@ -85,16 +87,18 @@ export abstract class OrderNode implements DLOBNode {
 
 	getPrice<T extends MarketTypeStr>(
 		oraclePriceData: NodeOraclePriceData<T>,
-		slot: number
+		slot: number,
+		tickSize?: BN
 	): BN | undefined {
-		return getLimitPrice<T>(this.order, oraclePriceData, slot);
+		return getLimitPrice<T>(this.order, oraclePriceData, slot, tickSize);
 	}
 
 	getPriceOrThrow<T extends MarketTypeStr>(
 		oraclePriceData: NodeOraclePriceData<T>,
-		slot: number
+		slot: number,
+		tickSize?: BN
 	): BN {
-		const price = this.getPrice<T>(oraclePriceData, slot);
+		const price = this.getPrice<T>(oraclePriceData, slot, tickSize);
 		if (price === undefined) {
 			throw new Error(
 				`OrderNode.getPrice: order ${this.order.orderId} has no limit price`

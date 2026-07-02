@@ -83,7 +83,8 @@ const INDICATIVE_QUOTES_PUBKEY = 'inDNdu3ML4vG5LNExqcwuCQtLcCU8KfK5YM2qYV3JJz';
 export function* getL2GeneratorFromDLOBNodes(
 	dlobNodes: Generator<DLOBNode>,
 	oraclePriceData: OraclePriceData,
-	slot: number
+	slot: number,
+	tickSize?: BN
 ): Generator<L2Level> {
 	for (const dlobNode of dlobNodes) {
 		if (!dlobNode.order) {
@@ -99,7 +100,7 @@ export function* getL2GeneratorFromDLOBNodes(
 
 		yield {
 			size,
-			price: dlobNode.getPriceOrThrow(oraclePriceData, slot),
+			price: dlobNode.getPriceOrThrow(oraclePriceData, slot, tickSize),
 			sources:
 				dlobNode.userAccount == INDICATIVE_QUOTES_PUBKEY
 					? { indicative: size }

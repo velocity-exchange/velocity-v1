@@ -48,6 +48,13 @@ export function standardizePrice(
 		return price;
 	}
 
+	// A non-positive tick size means "no tick constraint" (e.g. unset markets);
+	// on-chain markets always have tick_size >= 1, but guard against a zero
+	// divisor rather than throwing.
+	if (tickSize.lte(ZERO)) {
+		return price;
+	}
+
 	const remainder = price.mod(tickSize);
 	if (remainder.eq(ZERO)) {
 		return price;
@@ -64,14 +71,21 @@ export function getLimitPrice<T extends MarketTypeStr>(
 	order: Order,
 	oraclePriceData: T extends 'spot' ? OraclePriceData : MMOraclePriceData,
 	slot: number,
+	tickSize: BN = ONE,
 	fallbackPrice?: BN
 ): BN | undefined {
 	if (hasAuctionPrice(order, slot)) {
-		return getAuctionPrice(order, slot, oraclePriceData.price);
+		return getAuctionPrice(order, slot, oraclePriceData.price, tickSize);
 	} else if (!order.oraclePriceOffset.eq(ZERO)) {
-		return BN.max(oraclePriceData.price.add(order.oraclePriceOffset), ONE);
+		const limitPrice = BN.max(
+			oraclePriceData.price.add(order.oraclePriceOffset),
+			tickSize
+		);
+		return standardizePrice(limitPrice, tickSize, order.direction);
 	} else if (order.price.eq(ZERO)) {
-		return fallbackPrice;
+		return fallbackPrice === undefined
+			? undefined
+			: standardizePrice(fallbackPrice, tickSize, order.direction);
 	} else {
 		return order.price;
 	}
@@ -148,7 +162,12 @@ export function calculateBaseAssetAmountForAmmToFulfill(
 		return ZERO;
 	}
 
-	const limitPrice = getLimitPrice(order, mmOraclePriceData, slot);
+	const limitPrice = getLimitPrice(
+		order,
+		mmOraclePriceData,
+		slot,
+		market.orderTickSize
+	);
 	let baseAssetAmount;
 
 	const updatedAMM = calculateUpdatedAMM(market.amm, mmOraclePriceData);
@@ -276,14 +295,12 @@ export function isRestingLimitOrder(order: Order, slot: number): boolean {
 	return order.postOnly || isAuctionComplete(order, slot);
 }
 
-const FLAG_IS_SIGNED_MSG = 0x01;
 export function isSignedMsgOrder(order: Order): boolean {
-	return (order.bitFlags & FLAG_IS_SIGNED_MSG) !== 0;
+	return (order.bitFlags & OrderBitFlag.SignedMessage) !== 0;
 }
 
-const FLAG_HAS_BUILDER = 0x10;
 export function hasBuilder(order: Order): boolean {
-	return (order.bitFlags & FLAG_HAS_BUILDER) !== 0;
+	return (order.bitFlags & OrderBitFlag.HasBuilder) !== 0;
 }
 
 export function calculateOrderBaseAssetAmount(

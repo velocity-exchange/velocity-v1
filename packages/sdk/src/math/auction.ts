@@ -17,7 +17,7 @@ import {
 import { getVariant, OrderBitFlag, PerpMarketAccount } from '../types';
 import { getPerpMarketTierNumber } from './tiers';
 import { MMOraclePriceData } from '../oracles/types';
-import { isLowRiskForAmm } from './orders';
+import { isLowRiskForAmm, standardizePrice } from './orders';
 import { getOracleValidity } from './oracles';
 import { isOperationPaused } from './exchangeStatus';
 
@@ -86,26 +86,37 @@ export function isFallbackAvailableLiquiditySource(
 export function getAuctionPrice(
 	order: Order,
 	slot: number,
-	oraclePrice: BN
+	oraclePrice: BN,
+	tickSize: BN = ONE
 ): BN {
 	if (
 		isOneOfVariant(order.orderType, ['market', 'triggerLimit']) ||
 		(isVariant(order.orderType, 'triggerMarket') &&
 			(order.bitFlags & OrderBitFlag.OracleTriggerMarket) === 0)
 	) {
-		return getAuctionPriceForFixedAuction(order, slot);
+		return getAuctionPriceForFixedAuction(order, slot, tickSize);
 	} else if (isVariant(order.orderType, 'limit')) {
 		if (order.oraclePriceOffset != null && !order.oraclePriceOffset.eq(ZERO)) {
-			return getAuctionPriceForOracleOffsetAuction(order, slot, oraclePrice);
+			return getAuctionPriceForOracleOffsetAuction(
+				order,
+				slot,
+				oraclePrice,
+				tickSize
+			);
 		} else {
-			return getAuctionPriceForFixedAuction(order, slot);
+			return getAuctionPriceForFixedAuction(order, slot, tickSize);
 		}
 	} else if (
 		isVariant(order.orderType, 'oracle') ||
 		(isVariant(order.orderType, 'triggerMarket') &&
 			(order.bitFlags & OrderBitFlag.OracleTriggerMarket) !== 0)
 	) {
-		return getAuctionPriceForOracleOffsetAuction(order, slot, oraclePrice);
+		return getAuctionPriceForOracleOffsetAuction(
+			order,
+			slot,
+			oraclePrice,
+			tickSize
+		);
 	} else {
 		throw Error(
 			`Cant get auction price for order type ${getVariant(order.orderType)}`
@@ -113,14 +124,18 @@ export function getAuctionPrice(
 	}
 }
 
-export function getAuctionPriceForFixedAuction(order: Order, slot: number): BN {
+export function getAuctionPriceForFixedAuction(
+	order: Order,
+	slot: number,
+	tickSize: BN = ONE
+): BN {
 	const slotsElapsed = new BN(slot).sub(order.slot);
 
 	const deltaDenominator = new BN(order.auctionDuration);
 	const deltaNumerator = BN.min(slotsElapsed, deltaDenominator);
 
 	if (deltaDenominator.eq(ZERO)) {
-		return order.auctionEndPrice;
+		return standardizePrice(order.auctionEndPrice, tickSize, order.direction);
 	}
 
 	let priceDelta;
@@ -143,7 +158,7 @@ export function getAuctionPriceForFixedAuction(order: Order, slot: number): BN {
 		price = order.auctionStartPrice.sub(priceDelta);
 	}
 
-	return price;
+	return standardizePrice(price, tickSize, order.direction);
 }
 
 /**
@@ -156,7 +171,8 @@ export function getAuctionPriceForFixedAuction(order: Order, slot: number): BN {
 export function getAuctionPriceForOracleOffsetAuction(
 	order: Order,
 	slot: number,
-	oraclePrice: BN
+	oraclePrice: BN,
+	tickSize: BN = ONE
 ): BN {
 	const slotsElapsed = new BN(slot).sub(order.slot);
 
@@ -164,7 +180,8 @@ export function getAuctionPriceForOracleOffsetAuction(
 	const deltaNumerator = BN.min(slotsElapsed, deltaDenominator);
 
 	if (deltaDenominator.eq(ZERO)) {
-		return BN.max(oraclePrice.add(order.auctionEndPrice), ONE);
+		const price = BN.max(oraclePrice.add(order.auctionEndPrice), tickSize);
+		return standardizePrice(price, tickSize, order.direction);
 	}
 
 	let priceOffsetDelta;
@@ -187,7 +204,8 @@ export function getAuctionPriceForOracleOffsetAuction(
 		priceOffset = order.auctionStartPrice.sub(priceOffsetDelta);
 	}
 
-	return BN.max(oraclePrice.add(priceOffset), ONE);
+	const price = BN.max(oraclePrice.add(priceOffset), tickSize);
+	return standardizePrice(price, tickSize, order.direction);
 }
 
 export function deriveOracleAuctionParams({

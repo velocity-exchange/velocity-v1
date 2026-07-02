@@ -18,6 +18,11 @@ export function isUserBankrupt(user: User): boolean {
 	}
 
 	for (const position of userAccount.perpPositions) {
+		// Isolated perp positions are handled by isIsolatedPositionBankrupt
+		if (user.isPerpPositionIsolated(position)) {
+			continue;
+		}
+
 		if (
 			!position.baseAssetAmount.eq(ZERO) ||
 			position.quoteAssetAmount.gt(ZERO) ||
@@ -32,4 +37,21 @@ export function isUserBankrupt(user: User): boolean {
 	}
 
 	return hasLiability;
+}
+
+export function isIsolatedPositionBankrupt(
+	user: User,
+	marketIndex: number
+): boolean {
+	const position = user.getPerpPositionOrThrow(marketIndex);
+
+	if (position.isolatedPositionScaledBalance.gt(ZERO)) {
+		return false;
+	}
+
+	return (
+		position.baseAssetAmount.eq(ZERO) &&
+		position.quoteAssetAmount.lt(ZERO) &&
+		!hasOpenOrders(position)
+	);
 }

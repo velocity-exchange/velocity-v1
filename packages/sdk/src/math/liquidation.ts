@@ -7,16 +7,18 @@ import {
 	QUOTE_PRECISION,
 	LIQUIDATION_PCT_PRECISION,
 	SPOT_MARKET_WEIGHT_PRECISION,
+	BASE_PRECISION,
 	TEN,
 	ONE,
+	ZERO,
 } from '../constants/numericConstants';
 
 /**
- * @param ifLiquidationFee Since PR#75 the program sizes liquidations against the
- *   COMBINED insurance-fund + protocol liquidation fee budget:
- *   `market.ifLiquidationFee + market.protocolLiquidationFee` (split IF-first
- *   on-chain). Pass that sum here to match on-chain sizing; passing
- *   `market.ifLiquidationFee` alone under-sizes the estimate.
+ * @param ifLiquidationFee The margin-shortage-aware insurance-side fee, i.e. the
+ *   output of {@link calculatePerpIfFee} (which is itself capped at
+ *   `market.ifLiquidationFee + market.protocolLiquidationFee`). Pass that
+ *   computed value here, not the raw `ifLiquidationFee + protocolLiquidationFee`
+ *   sum — the on-chain sizing uses the capped, shortage-aware amount.
  */
 export function calculateBaseAssetAmountToCoverMarginShortage(
 	marginShortage: BN,
@@ -49,11 +51,11 @@ export function calculateBaseAssetAmountToCoverMarginShortage(
 }
 
 /**
- * @param ifLiquidationFee Since PR#75 the program sizes liquidations against the
- *   COMBINED insurance-fund + protocol liquidation fee budget:
- *   `market.ifLiquidationFee + market.protocolLiquidationFee` (split IF-first
- *   on-chain). Pass that sum here to match on-chain sizing; passing
- *   `market.ifLiquidationFee` alone under-sizes the estimate.
+ * @param ifLiquidationFee The margin-shortage-aware insurance-side fee, i.e. the
+ *   output of {@link calculateSpotIfFee} (which is itself capped at
+ *   `liabilityMarket.ifLiquidationFee + liabilityMarket.protocolLiquidationFee`).
+ *   Pass that computed value here, not the raw sum of the two rates — the
+ *   on-chain sizing uses the capped, shortage-aware amount.
  */
 export function calculateLiabilityTransferToCoverMarginShortage(
 	marginShortage: BN,
@@ -110,6 +112,97 @@ export function calculateLiabilityTransferToCoverMarginShortage(
 			.div(denominatorScale),
 		ONE
 	);
+}
+
+export function calculatePerpIfFee(
+	marginShortage: BN,
+	userBaseAssetAmount: BN,
+	marginRatio: number,
+	liquidatorFee: number,
+	oraclePrice: BN,
+	quoteOraclePrice: BN,
+	maxIfLiquidationFee: number
+): number {
+	const marginRatioBN = new BN(marginRatio).mul(
+		LIQUIDATION_FEE_PRECISION.div(MARGIN_PRECISION)
+	);
+
+	if (
+		oraclePrice.eq(ZERO) ||
+		quoteOraclePrice.eq(ZERO) ||
+		marginRatioBN.lte(new BN(liquidatorFee)) ||
+		userBaseAssetAmount.eq(ZERO)
+	) {
+		return 0;
+	}
+
+	const price = oraclePrice.mul(quoteOraclePrice).div(PRICE_PRECISION);
+
+	// margin ratio - liquidator fee - (margin shortage / (user base asset amount * price))
+	let impliedIfFee = BN.max(marginRatioBN.sub(new BN(liquidatorFee)), ZERO);
+	const shortageComponent = marginShortage
+		.mul(BASE_PRECISION)
+		.div(userBaseAssetAmount)
+		.mul(PRICE_PRECISION)
+		.div(price);
+	impliedIfFee = BN.max(impliedIfFee.sub(shortageComponent), ZERO);
+
+	// multiply by 95% to avoid situation where fee leads to deposits == negative pnl
+	// leading to bankruptcy
+	impliedIfFee = impliedIfFee.mul(new BN(19)).div(new BN(20));
+
+	return BN.min(new BN(maxIfLiquidationFee), impliedIfFee).toNumber();
+}
+
+export function calculateSpotIfFee(
+	marginShortage: BN,
+	tokenAmount: BN,
+	assetWeight: number,
+	assetLiquidationMultiplier: number,
+	liabilityWeight: number,
+	liabilityLiquidationMultiplier: number,
+	liabilityDecimals: number,
+	liabilityPrice: BN,
+	maxIfFee: number
+): number {
+	if (
+		assetWeight >= liabilityWeight ||
+		liabilityPrice.eq(ZERO) ||
+		tokenAmount.eq(ZERO) ||
+		liabilityLiquidationMultiplier === 0
+	) {
+		return 0;
+	}
+
+	const tokenPrecision = TEN.pow(new BN(liabilityDecimals));
+
+	const weightPrecisionRatio = LIQUIDATION_FEE_PRECISION.div(
+		SPOT_MARKET_WEIGHT_PRECISION
+	);
+	const liabilityWeightBN = new BN(liabilityWeight).mul(weightPrecisionRatio);
+	const assetWeightBN = new BN(assetWeight).mul(weightPrecisionRatio);
+
+	let impliedIfFee = BN.max(
+		liabilityWeightBN.sub(
+			assetWeightBN
+				.mul(new BN(assetLiquidationMultiplier))
+				.div(new BN(liabilityLiquidationMultiplier))
+		),
+		ZERO
+	);
+
+	const shortageComponent = marginShortage
+		.mul(LIQUIDATION_FEE_PRECISION)
+		.mul(tokenPrecision)
+		.div(tokenAmount)
+		.div(liabilityPrice);
+	impliedIfFee = BN.max(impliedIfFee.sub(shortageComponent), ZERO);
+
+	impliedIfFee = impliedIfFee
+		.mul(LIQUIDATION_FEE_PRECISION)
+		.div(liabilityWeightBN);
+
+	return BN.min(new BN(maxIfFee), impliedIfFee).toNumber();
 }
 
 export function calculateAssetTransferForLiabilityTransfer(
@@ -179,19 +272,20 @@ export function calculateMaxPctToLiquidate(
 	marginShortage: BN,
 	slot: BN,
 	initialPctToLiquidate: BN,
-	liquidationDuration: BN
+	liquidationDuration: BN,
+	isIsolatedPosition = false
 ): BN {
+	// isolated perp positions are liquidated 100% in one shot
+	if (isIsolatedPosition) {
+		return LIQUIDATION_PCT_PRECISION;
+	}
+
 	// if margin shortage is tiny, accelerate liquidation
 	if (marginShortage.lt(new BN(50).mul(QUOTE_PRECISION))) {
 		return LIQUIDATION_PCT_PRECISION;
 	}
 
-	let slotsElapsed;
-	if (userLiquidationMarginFreed.gt(new BN(0))) {
-		slotsElapsed = BN.max(slot.sub(userLastActiveSlot), new BN(0));
-	} else {
-		slotsElapsed = new BN(0);
-	}
+	const slotsElapsed = BN.max(slot.sub(userLastActiveSlot), new BN(0));
 
 	const pctFreeable = BN.min(
 		slotsElapsed

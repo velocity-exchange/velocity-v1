@@ -669,7 +669,7 @@ pub fn validate_any_isolated_tier_requirements(
                     (calculation.num_spot_liabilities == 1 && quote_spot_position.is_borrow()
                     ),
                     ErrorCode::IsolatedAssetTierViolation,
-                    "User attempting to increase spot liabilities beyond usdc with a isolated tier liability"
+                    "User attempting to increase spot liabilities beyond the quote asset with a isolated tier liability"
                 )?;
         }
     }

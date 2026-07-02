@@ -20,6 +20,10 @@ import {
 	LPSettleRecord,
 	LPSwapRecord,
 	LPBorrowLendDepositRecord,
+	PerpMarketFeeSweepRecord,
+	ProtocolFeeWithdrawRecord,
+	RevenueShareSettleRecord,
+	TransferFeeAndPnlPoolRecord,
 } from '../types';
 import { EventEmitter } from 'events';
 
@@ -58,6 +62,11 @@ export const DefaultEventSubscriptionOptions: EventSubscriptionOptions = {
 		'LPMintRedeemRecord',
 		'LPSettleRecord',
 		'LPSwapRecord',
+		'LPBorrowLendDepositRecord',
+		'PerpMarketFeeSweepRecord',
+		'ProtocolFeeWithdrawRecord',
+		'RevenueShareSettleRecord',
+		'TransferFeeAndPnlPoolRecord',
 	],
 	maxEventsPerType: 4096,
 	orderBy: 'blockchain',
@@ -105,6 +114,11 @@ export type EventMap = {
 	LPSettleRecord: Event<LPSettleRecord>;
 	LPMintRedeemRecord: Event<LPMintRedeemRecord>;
 	LPSwapRecord: Event<LPSwapRecord>;
+	LPBorrowLendDepositRecord: Event<LPBorrowLendDepositRecord>;
+	PerpMarketFeeSweepRecord: Event<PerpMarketFeeSweepRecord>;
+	ProtocolFeeWithdrawRecord: Event<ProtocolFeeWithdrawRecord>;
+	RevenueShareSettleRecord: Event<RevenueShareSettleRecord>;
+	TransferFeeAndPnlPoolRecord: Event<TransferFeeAndPnlPoolRecord>;
 };
 
 export type EventType = keyof EventMap;
@@ -130,6 +144,10 @@ export type VelocityEvent =
 	| Event<LPMintRedeemRecord>
 	| Event<LPSwapRecord>
 	| Event<LPBorrowLendDepositRecord>
+	| Event<PerpMarketFeeSweepRecord>
+	| Event<ProtocolFeeWithdrawRecord>
+	| Event<RevenueShareSettleRecord>
+	| Event<TransferFeeAndPnlPoolRecord>
 	| Event<CuUsage>;
 
 export interface EventSubscriberEvents {

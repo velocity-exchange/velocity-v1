@@ -97,10 +97,18 @@ export function getUserStatsFilter(): MemcmpFilter {
 	};
 }
 
+/*
+ * Byte offset of `referrer_status` in the `UserStats` account: 8 (discriminator)
+ * + authority(32) + referrer(32) + fees(32) + maker/taker/filler volume 30d(24)
+ * + last maker/taker/filler volume 30d ts(24) + if_staked_quote_asset_amount(8)
+ * + number_of_sub_accounts(2) + number_of_sub_accounts_created(2) = 164.
+ */
+const USER_STATS_REFERRER_STATUS_OFFSET = 164;
+
 export function getUserStatsIsReferredFilter(): MemcmpFilter {
 	return {
 		memcmp: {
-			offset: 188,
+			offset: USER_STATS_REFERRER_STATUS_OFFSET,
 			bytes: bs58.encode(Buffer.from(Uint8Array.from([2]))),
 		},
 	};
@@ -109,7 +117,7 @@ export function getUserStatsIsReferredFilter(): MemcmpFilter {
 export function getUserStatsIsReferredOrReferrerFilter(): MemcmpFilter {
 	return {
 		memcmp: {
-			offset: 188,
+			offset: USER_STATS_REFERRER_STATUS_OFFSET,
 			bytes: bs58.encode(Buffer.from(Uint8Array.from([3]))),
 		},
 	};

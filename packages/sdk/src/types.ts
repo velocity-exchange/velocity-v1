@@ -50,7 +50,6 @@ export enum FeatureBitFlags {
 	MM_ORACLE_UPDATE = 1,
 	MEDIAN_TRIGGER_PRICE = 2,
 	BUILDER_CODES = 4,
-	BUILDER_REFERRAL = 8,
 }
 
 export class MarketStatus {
@@ -68,7 +67,8 @@ export enum PerpOperation {
 	SETTLE_PNL = 8,
 	SETTLE_PNL_WITH_POSITION = 16,
 	LIQUIDATION = 32,
-	SETTLE_REV_POOL = 64,
+	AMM_IMMEDIATE_FILL = 64,
+	SETTLE_REV_POOL = 128,
 }
 
 export enum SpotOperation {
@@ -114,7 +114,8 @@ export class MarginMode {
 
 export class ContractType {
 	static readonly PERPETUAL = { perpetual: {} };
-	static readonly FUTURE = { future: {} };
+	static readonly DEPRECATED_FUTURE = { deprecatedFuture: {} };
+	static readonly DEPRECATED_PREDICTION = { deprecatedPrediction: {} };
 }
 
 export class ContractTier {
@@ -166,12 +167,14 @@ export class OracleSource {
 	static readonly PYTH_PULL = { pythPull: {} };
 	static readonly PYTH_1K_PULL = { pyth1KPull: {} };
 	static readonly PYTH_1M_PULL = { pyth1MPull: {} };
-	static readonly SWITCHBOARD = { switchboard: {} };
+	static readonly DEPRECATED_SWITCHBOARD = { deprecatedSwitchboard: {} };
 	static readonly QUOTE_ASSET = { quoteAsset: {} };
 	static readonly PYTH_STABLE_COIN = { pythStableCoin: {} };
 	static readonly PYTH_STABLE_COIN_PULL = { pythStableCoinPull: {} };
 	static readonly Prelaunch = { prelaunch: {} };
-	static readonly SWITCHBOARD_ON_DEMAND = { switchboardOnDemand: {} };
+	static readonly DEPRECATED_SWITCHBOARD_ON_DEMAND = {
+		deprecatedSwitchboardOnDemand: {},
+	};
 	static readonly PYTH_LAZER = { pythLazer: {} };
 	static readonly PYTH_LAZER_1K = { pythLazer1K: {} };
 	static readonly PYTH_LAZER_1M = { pythLazer1M: {} };
@@ -185,12 +188,12 @@ export class OracleSourceNum {
 	static readonly PYTH_PULL = 3;
 	static readonly PYTH_1K_PULL = 4;
 	static readonly PYTH_1M_PULL = 5;
-	static readonly SWITCHBOARD = 6;
+	static readonly DEPRECATED_SWITCHBOARD = 6;
 	static readonly QUOTE_ASSET = 7;
 	static readonly PYTH_STABLE_COIN = 8;
 	static readonly PYTH_STABLE_COIN_PULL = 9;
 	static readonly PRELAUNCH = 10;
-	static readonly SWITCHBOARD_ON_DEMAND = 11;
+	static readonly DEPRECATED_SWITCHBOARD_ON_DEMAND = 11;
 	static readonly PYTH_LAZER = 12;
 	static readonly PYTH_LAZER_1K = 13;
 	static readonly PYTH_LAZER_1M = 14;
@@ -223,6 +226,8 @@ export class OrderBitFlag {
 	static readonly OracleTriggerMarket = 2;
 	static readonly SafeTriggerOrder = 4;
 	static readonly NewTriggerReduceOnly = 8;
+	static readonly HasBuilder = 16;
+	static readonly IsIsolatedPosition = 32;
 }
 
 export class OrderAction {
@@ -1693,7 +1698,7 @@ export type LPPoolAccount = {
 	tokenSupply: BN;
 	volatility: BN;
 	constituents: number;
-	quoteConstituentIndex: number;
+	quoteConsituentIndex: number;
 	bump: number;
 	gammaExecution: number;
 	xi: number;

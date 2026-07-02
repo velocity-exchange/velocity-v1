@@ -6,8 +6,12 @@ import {
 	PRICE_PRECISION,
 	getOracleValidity,
 	isOracleTooDivergent,
+	isFallbackAvailableLiquiditySource,
+	MMOraclePriceData,
+	StateAccount,
 } from '../../src';
 import { mockPerpMarkets } from '../dlob/helpers';
+import { mockOrder } from '../user/helpers';
 import { assert } from '../../src/assert/assert';
 
 // Pins the UseMMOraclePrice gating semantics from
@@ -134,5 +138,135 @@ describe('MM oracle validity gate (UseMMOraclePrice semantics)', () => {
 		);
 
 		assert(mmOracleValidity === OracleValidity.TooVolatile);
+	});
+});
+
+// M15: isFallbackAvailableLiquiditySource must mirror amm_fill_gates_ok's
+// mm_oracle_not_too_volatile gate: suppress AMM fills when the MM oracle is
+// enabled, at least as recent as the exchange oracle, and diverges >1% from it.
+describe('AMM fallback availability — MM-oracle volatility gate', () => {
+	const guardRails: OracleGuardRails = {
+		priceDivergence: {
+			markOraclePercentDivergence: new BN(0),
+			oracleTwap5MinPercentDivergence: new BN(0),
+		},
+		validity: {
+			slotsBeforeStaleForAmm: new BN(10),
+			slotsBeforeStaleForMargin: new BN(60),
+			confidenceIntervalMaxSize: new BN(20000),
+			tooVolatileRatio: new BN(5),
+		},
+	};
+
+	const slot = 1000;
+
+	function makeValidMarketAndState() {
+		const market = _.cloneDeep(mockPerpMarkets[0]);
+		market.pausedOperations = 0;
+		market.marketStats.historicalOracleData.lastOraclePriceTwap = new BN(
+			100
+		).mul(PRICE_PRECISION);
+		market.marketStats.historicalOracleData.lastOraclePriceTwap5Min = new BN(
+			100
+		).mul(PRICE_PRECISION);
+		const state = { oracleGuardRails: guardRails } as StateAccount;
+		return { market, state };
+	}
+
+	// A fresh, on-price MM oracle => OracleValidity.Valid, so the only thing that
+	// can flip availability in these cases is the volatility gate.
+	function makeMMData(
+		overrides: Partial<MMOraclePriceData>
+	): MMOraclePriceData {
+		return {
+			price: new BN(100).mul(PRICE_PRECISION),
+			slot: new BN(slot),
+			confidence: new BN(1000),
+			hasSufficientNumberOfDataPoints: true,
+			isMMOracleActive: true,
+			isMMOracleEnabled: true,
+			isMMOracleAsRecent: true,
+			isMMExchangeDiffBpsHigh: false,
+			...overrides,
+		};
+	}
+
+	it('is available (baseline) when the mm oracle is valid and diff is within 1%', () => {
+		const { market, state } = makeValidMarketAndState();
+		const available = isFallbackAvailableLiquiditySource(
+			mockOrder,
+			makeMMData({}),
+			slot,
+			state,
+			market
+		);
+		assert(
+			available,
+			'expected AMM fallback available for a valid, low-diff mm oracle'
+		);
+	});
+
+	it('is blocked when mm oracle is enabled, as-recent, and diff > 1%', () => {
+		const { market, state } = makeValidMarketAndState();
+		const available = isFallbackAvailableLiquiditySource(
+			mockOrder,
+			makeMMData({ isMMExchangeDiffBpsHigh: true }),
+			slot,
+			state,
+			market
+		);
+		assert(
+			!available,
+			'expected AMM fallback blocked by mm-oracle volatility gate'
+		);
+	});
+
+	it('is NOT blocked by the volatility gate when the mm oracle is not as-recent (mirrors else{true})', () => {
+		const { market, state } = makeValidMarketAndState();
+		const available = isFallbackAvailableLiquiditySource(
+			mockOrder,
+			makeMMData({ isMMExchangeDiffBpsHigh: true, isMMOracleAsRecent: false }),
+			slot,
+			state,
+			market
+		);
+		assert(
+			available,
+			'expected volatility gate to not apply when mm oracle is stale'
+		);
+	});
+
+	it('is NOT blocked by the volatility gate when the mm oracle is disabled', () => {
+		const { market, state } = makeValidMarketAndState();
+		const available = isFallbackAvailableLiquiditySource(
+			mockOrder,
+			makeMMData({ isMMExchangeDiffBpsHigh: true, isMMOracleEnabled: false }),
+			slot,
+			state,
+			market
+		);
+		assert(
+			available,
+			'expected volatility gate to not apply when mm oracle disabled'
+		);
+	});
+
+	it('skips the volatility gate when the flags are absent (backward compat)', () => {
+		const { market, state } = makeValidMarketAndState();
+		const available = isFallbackAvailableLiquiditySource(
+			mockOrder,
+			makeMMData({
+				isMMOracleEnabled: undefined,
+				isMMOracleAsRecent: undefined,
+				isMMExchangeDiffBpsHigh: undefined,
+			}),
+			slot,
+			state,
+			market
+		);
+		assert(
+			available,
+			'expected gate skipped when mm volatility flags unpopulated'
+		);
 	});
 });

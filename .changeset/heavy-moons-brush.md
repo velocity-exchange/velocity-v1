@@ -15,3 +15,11 @@ and fee-pool transfers. Also fixed withdrawFromIsolatedPerpPosition's withdraw-a
 it substituted the MIN_I64 sentinel into the instruction's unsigned u64 amount (serializing
 as 2^63, so full withdrawals always failed on-chain with InsufficientCollateral); it now
 clamps the request to the position's deposit plus claimable PnL.
+
+Follow-up completeness fixes: DLOBSubscriber.getL2/getL3 (and the dlob-server publisher) now
+thread orderTickSize so the public book view is tick-standardized like on-chain; added
+hasIsolatedMarginBankrupt and wired isolated-only bankruptcy detection into keeper resolution
+(isIsolatedPositionBankrupt now guards against non-isolated indices); getMarketFees applies the
+referee discount and calculateFeeForQuoteAmount accepts builder params so both public fee-prediction
+entry points match on-chain; and isFallbackAvailableLiquiditySource now fully mirrors
+amm_fill_gates_ok, adding the market-drawdown and MM-vs-exchange oracle volatility gates.

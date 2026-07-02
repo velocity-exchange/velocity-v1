@@ -2,6 +2,7 @@ import {
 	BN,
 	ZERO,
 	User,
+	MarketType,
 	SpotBalanceType,
 	ReferrerStatus,
 	UserStatsAccount,
@@ -89,6 +90,17 @@ async function makeFeeMockUser(referrerStatus: number): Promise<User> {
 		({
 			getAccountOrThrow: () => userStatsAccount,
 		}) as any;
+	// getMarketFees reads referee status via getUserStats()?.getAccount()
+	user.velocityClient.getUserStats = () =>
+		({
+			getAccount: () => userStatsAccount,
+		}) as any;
+	// getMarketFees(marketIndex) reads the market's feeAdjustment
+	user.velocityClient.getPerpMarketAccountOrThrow = () =>
+		({
+			marketIndex: 0,
+			feeAdjustment: 0,
+		}) as any;
 
 	return user;
 }
@@ -138,6 +150,93 @@ describe('User fee calculation', () => {
 		assert(
 			fee.eq(new BN(750)),
 			`expected 25% referee discount applied via override, got ${fee.toString()}`
+		);
+	});
+
+	// M11: getMarketFees (the primary fee-prediction entry point) must apply the
+	// referee discount, not just calculateFeeForQuoteAmount's volume-tier branch.
+	it('getMarketFees applies the referee discount to the taker fee for a referred user', async () => {
+		const referred = await makeFeeMockUser(ReferrerStatus.IsReferred);
+		const notReferred = await makeFeeMockUser(0);
+
+		const { takerFee: referredTakerFee } =
+			referred.velocityClient.getMarketFees(MarketType.PERP, 0, referred);
+		const { takerFee: baseTakerFee } = notReferred.velocityClient.getMarketFees(
+			MarketType.PERP,
+			0,
+			notReferred
+		);
+
+		// base taker fee = 1/1000 = 0.001; referee discount = 25% -> 0.00075
+		assert(
+			Math.abs(baseTakerFee - 0.001) < 1e-12,
+			`expected base taker fee 0.001, got ${baseTakerFee}`
+		);
+		assert(
+			Math.abs(referredTakerFee - 0.00075) < 1e-12,
+			`expected discounted taker fee 0.00075, got ${referredTakerFee}`
+		);
+	});
+
+	// M11: the calculateFeeForQuoteAmount marketIndex path (which delegates to
+	// getMarketFees) must now also reflect the referee discount.
+	it('calculateFeeForQuoteAmount marketIndex path applies the referee discount', async () => {
+		const user = await makeFeeMockUser(ReferrerStatus.IsReferred);
+
+		const fee = user.calculateFeeForQuoteAmount(new BN(1_000_000), 0);
+		// 1_000_000 * 0.00075 = 750
+		assert(
+			fee.eq(new BN(750)),
+			`expected discounted market-index fee 750, got ${fee.toString()}`
+		);
+	});
+
+	// M12: builder fee must be added by getMarketFees when orderParams carry a builder code.
+	it('getMarketFees adds the builder fee fraction to the taker fee', async () => {
+		const user = await makeFeeMockUser(0);
+
+		const { takerFee } = user.velocityClient.getMarketFees(
+			MarketType.PERP,
+			0,
+			user,
+			{ builderIdx: 0, builderFeeTenthBps: 10 }
+		);
+		// base 0.001 + builder 10/100_000 = 0.0001 -> 0.0011
+		assert(
+			Math.abs(takerFee - 0.0011) < 1e-12,
+			`expected taker fee incl. builder 0.0011, got ${takerFee}`
+		);
+	});
+
+	// M12: builder fee must also be applied by calculateFeeForQuoteAmount on both
+	// the volume-tier branch and the marketIndex branch.
+	it('calculateFeeForQuoteAmount adds the builder fee on the volume-tier branch', async () => {
+		const user = await makeFeeMockUser(0);
+
+		const fee = user.calculateFeeForQuoteAmount(
+			new BN(1_000_000),
+			undefined,
+			false,
+			{ builderIdx: 0, builderFeeTenthBps: 10 }
+		);
+		// base 1000 + builderFee(1_000_000, 10) = 1_000_000*10/100_000 = 100 -> 1100
+		assert(
+			fee.eq(new BN(1100)),
+			`expected fee incl. builder 1100, got ${fee.toString()}`
+		);
+	});
+
+	it('calculateFeeForQuoteAmount adds the builder fee on the marketIndex branch', async () => {
+		const user = await makeFeeMockUser(0);
+
+		const fee = user.calculateFeeForQuoteAmount(new BN(1_000_000), 0, false, {
+			builderIdx: 0,
+			builderFeeTenthBps: 10,
+		});
+		// 1_000_000 * (0.001 + 0.0001) = 1100
+		assert(
+			fee.eq(new BN(1100)),
+			`expected market-index fee incl. builder 1100, got ${fee.toString()}`
 		);
 	});
 });

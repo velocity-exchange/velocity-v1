@@ -19,7 +19,7 @@ import { getPerpMarketTierNumber } from './tiers';
 import { MMOraclePriceData } from '../oracles/types';
 import { isLowRiskForAmm, standardizePrice } from './orders';
 import { getOracleValidity } from './oracles';
-import { isOperationPaused } from './exchangeStatus';
+import { isAmmDrawdownPause, isOperationPaused } from './exchangeStatus';
 
 /** True if `order`'s auction has run its full `auctionDuration` (in slots) as of `slot`, or the order has no auction (`auctionDuration === 0`). */
 export function isAuctionComplete(order: Order, slot: number): boolean {
@@ -31,15 +31,20 @@ export function isAuctionComplete(order: Order, slot: number): boolean {
 }
 
 /**
- * True if the AMM is currently a permitted fallback liquidity source for `order`, gating
- * purely on oracle validity and paused-operations state (not on price/size — see
- * `calculateBaseAssetAmountForAmmToFulfill` for that). Blocked if `AMM_FILL` is paused for
- * the market, or if the MM-oracle validity is `StaleForAMMLowRisk` or worse. If validity is
- * exactly `Valid`, always allowed; otherwise (a degraded-but-not-stale oracle) only allowed
- * when the order itself is low-risk for the AMM (`isLowRiskForAmm`) — e.g. it predates the
- * oracle delay, is part of a liquidation, or carries the safe-trigger flag.
+ * True if the AMM is currently a permitted fallback liquidity source for `order`, mirroring the
+ * program's `amm_fill_gates_ok` (`state/perp_market.rs`) — the hard gates that suppress all AMM
+ * fills (standalone and JIT), not the auction-timing gates JIT bypasses, and not price/size (see
+ * `calculateBaseAssetAmountForAmmToFulfill` for that). Blocked if `AMM_FILL` is paused, if the
+ * market has too much drawdown, if the MM oracle is too volatile vs the exchange oracle (enabled +
+ * as-recent + >1% price diff — early volatility protection), or if the MM-oracle validity is
+ * `StaleForAMMLowRisk` or worse. If validity is exactly `Valid`, always allowed; otherwise (a
+ * degraded-but-not-stale oracle) only allowed when the order itself is low-risk for the AMM
+ * (`isLowRiskForAmm`) — e.g. it predates the oracle delay, is part of a liquidation, or carries
+ * the safe-trigger flag.
  * @param order Order to check.
- * @param mmOraclePriceData Current MM oracle price data.
+ * @param mmOraclePriceData Current MM oracle price data — the MM-volatility gate reads its
+ *   `isMMOracleEnabled`/`isMMOracleAsRecent`/`isMMExchangeDiffBpsHigh` flags (populated by
+ *   `VelocityClient.getMMOracleDataForPerpMarket`); when those are absent the gate is skipped.
  * @param slot Current slot.
  * @param state Global state, providing oracle guard rails.
  * @param market Perp market the order is on.
@@ -58,7 +63,22 @@ export function isFallbackAvailableLiquiditySource(
 		return false;
 	}
 
-	// TODO: include too much drawdown check & mm oracle volatility
+	if (isAmmDrawdownPause(market)) {
+		return false;
+	}
+
+	// MM-oracle volatility gate (M15): mirrors `amm_fill_gates_ok`'s
+	// `mm_oracle_not_too_volatile`. We already use safe MM oracle data, but the AMM isn't
+	// available if we *could* have used the MM oracle yet fell back due to a >1% price diff —
+	// early volatility protection. Only applies when the MM oracle is enabled and at least as
+	// recent as the exchange oracle; skipped when those flags weren't populated.
+	if (
+		mmOraclePriceData.isMMOracleEnabled &&
+		mmOraclePriceData.isMMOracleAsRecent &&
+		mmOraclePriceData.isMMExchangeDiffBpsHigh
+	) {
+		return false;
+	}
 
 	const oracleValidity = getOracleValidity(
 		market!,

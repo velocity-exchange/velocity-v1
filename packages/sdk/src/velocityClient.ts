@@ -53,6 +53,7 @@ import {
 	PositionDirection,
 	ReferrerInfo,
 	ReferrerNameAccount,
+	ReferrerStatus,
 	RevenueShareEscrowAccount,
 	ScaleOrderParams,
 	SettlePnlMode,
@@ -11902,13 +11903,27 @@ export class VelocityClient {
 			mmOracleValidity === OracleValidity.NonPositive ||
 			mmOracleValidity === OracleValidity.TooVolatile;
 
+		// Volatility-gate inputs, mirroring the same-named `MMOraclePriceData` predicates
+		// (`state/oracle.rs`). Computed regardless of which price is selected below, so the
+		// AMM-fill gate (`isFallbackAvailableLiquiditySource`) can reproduce `amm_fill_gates_ok`.
+		const isMMOracleEnabled =
+			isMMOracleActive && !perpMarket.marketStats.mmOraclePrice.eq(ZERO);
+		const isMMOracleAsRecent = !isExchangeOracleMoreRecent;
+		const isMMExchangeDiffBpsHigh = pctDiff.gt(PERCENTAGE_PRECISION.divn(100)); // 1% threshold
+
 		if (
 			isMMOracleInvalidForUse ||
 			perpMarket.marketStats.mmOraclePrice.eq(ZERO) ||
 			isExchangeOracleMoreRecent ||
-			pctDiff.gt(PERCENTAGE_PRECISION.divn(100)) // 1% threshold
+			isMMExchangeDiffBpsHigh
 		) {
-			return { ...oracleData, isMMOracleActive };
+			return {
+				...oracleData,
+				isMMOracleActive,
+				isMMOracleEnabled,
+				isMMOracleAsRecent,
+				isMMExchangeDiffBpsHigh,
+			};
 		} else {
 			return {
 				price: perpMarket.marketStats.mmOraclePrice,
@@ -11916,6 +11931,9 @@ export class VelocityClient {
 				confidence: conf,
 				hasSufficientNumberOfDataPoints: true,
 				isMMOracleActive,
+				isMMOracleEnabled,
+				isMMOracleAsRecent,
+				isMMExchangeDiffBpsHigh,
 			};
 		}
 	}
@@ -12795,6 +12813,25 @@ export class VelocityClient {
 
 			takerFee += (takerFee * marketAccount.feeAdjustment) / 100;
 			makerFee += (makerFee * marketAccount.feeAdjustment) / 100;
+		}
+
+		// Referee discount (M11): mirrors `calculate_referee_fee_and_referrer_reward`
+		// (`math/fees.rs`), which reduces the taker fee by
+		// `referee_fee_numerator/referee_fee_denominator` when the taker is a referee
+		// (`reward_referrer`). Applied after `feeAdjustment` and only to the taker fee —
+		// maker rebates are untouched — matching the program's ordering. Referee status is
+		// read from the client's `UserStats.referrerStatus` (`IsReferred` bit); if stats are
+		// unavailable, no discount is applied (parity with a non-referred taker).
+		if (user && feeTier.refereeFeeDenominator > 0) {
+			const referrerStatus = this.getUserStats()?.getAccount()?.referrerStatus;
+			const isReferee =
+				referrerStatus !== undefined &&
+				(referrerStatus & ReferrerStatus.IsReferred) > 0;
+			if (isReferee) {
+				takerFee -=
+					(takerFee * feeTier.refereeFeeNumerator) /
+					feeTier.refereeFeeDenominator;
+			}
 		}
 
 		if (orderParams && hasBuilderParams(orderParams)) {

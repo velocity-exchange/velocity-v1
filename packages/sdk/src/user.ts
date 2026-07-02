@@ -21,6 +21,7 @@ import {
 	isVariant,
 	MarginCategory,
 	Order,
+	OrderParams,
 	PerpMarketAccount,
 	PerpPosition,
 	ReferrerStatus,
@@ -90,6 +91,7 @@ import {
 	SpotMarketAccount,
 } from './types';
 import { standardizeBaseAssetAmount } from './math/orders';
+import { calculateBuilderFee, hasBuilderParams } from './math/builder';
 import { WebSocketProgramUserAccountSubscriber } from './accounts/websocketProgramUserAccountSubscriber';
 import {
 	calculateAssetWeight,
@@ -4037,27 +4039,33 @@ export class User {
 	 * Calculates how much perp fee will be taken for a given sized trade.
 	 *
 	 * When `marketIndex` is provided, delegates to `VelocityClient.getMarketFees`
-	 * for that specific market's taker-fee multiplier (this path does not apply
-	 * a referee discount). Otherwise uses the volume-based fee tier from
+	 * for that specific market's taker-fee multiplier (which itself applies the
+	 * market's `feeAdjustment`, the referee discount, and — when `builderInfo` is
+	 * passed — the builder fee). Otherwise uses the volume-based fee tier from
 	 * `getUserFeeTier(MarketType.PERP)`; if the user is a referee (determined
 	 * from `UserStats.referrerStatus`'s `IsReferred` flag unless `isReferee` is
 	 * explicitly passed), the tier's `refereeFeeNumerator`/`refereeFeeDenominator`
-	 * proportion is subtracted from the fee as a discount.
+	 * proportion is subtracted from the fee as a discount, and — when `builderInfo`
+	 * carries a builder code — the builder fee (`quoteAmount * builderFeeTenthBps /
+	 * 100_000`) is added on top, mirroring the program's `builder_fee` (`math/fees.rs`).
 	 * @param quoteAmount Trade size, QUOTE_PRECISION (1e6).
 	 * @param marketIndex Optional perp market to use `VelocityClient.getMarketFees` for instead of the volume-tier fee structure.
-	 * @param isReferee Optional override for whether the referee discount applies; defaults to the user's actual `UserStats` referred status.
+	 * @param isReferee Optional override for whether the referee discount applies; defaults to the user's actual `UserStats` referred status. Ignored on the `marketIndex` path (which reads referee status inside `getMarketFees`).
+	 * @param builderInfo Optional builder code; when it carries `builderIdx` + `builderFeeTenthBps`, the builder fee is added on top of the tiered fee.
 	 * @returns feeForQuote : Precision QUOTE_PRECISION (1e6)
 	 */
 	public calculateFeeForQuoteAmount(
 		quoteAmount: BN,
 		marketIndex?: number,
-		isReferee?: boolean
+		isReferee?: boolean,
+		builderInfo?: Pick<OrderParams, 'builderIdx' | 'builderFeeTenthBps'>
 	): BN {
 		if (marketIndex !== undefined) {
 			const takerFeeMultiplier = this.velocityClient.getMarketFees(
 				MarketType.PERP,
 				marketIndex,
-				this
+				this,
+				builderInfo
 			).takerFee;
 			const feeAmountNum =
 				BigNum.from(quoteAmount, QUOTE_PRECISION_EXP).toNum() *
@@ -4084,6 +4092,14 @@ export class User {
 					new BN(feeTier.refereeFeeDenominator)
 				);
 				fee = fee.sub(refereeDiscount);
+			}
+
+			// Builder fee (M12): charged on top of the tiered fee, on the raw quote
+			// (independent of the referee discount), mirroring `builder_fee` in `math/fees.rs`.
+			if (builderInfo && hasBuilderParams(builderInfo)) {
+				fee = fee.add(
+					calculateBuilderFee(quoteAmount, builderInfo.builderFeeTenthBps!)
+				);
 			}
 
 			return fee;

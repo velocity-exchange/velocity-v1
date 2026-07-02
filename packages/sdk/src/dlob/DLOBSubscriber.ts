@@ -173,11 +173,14 @@ export class DLOBSubscriber {
 				oraclePriceData,
 				slot: this.slotSource.getSlot(),
 				fallbackL2Generators: fallbackL2Generators,
+				tickSize: perpMarketAccount.orderTickSize,
 			});
 		}
 
 		const oraclePriceData =
 			this.velocityClient.getOracleDataForSpotMarket(marketIndex);
+		const spotMarketAccount =
+			this.velocityClient.getSpotMarketAccountOrThrow(marketIndex);
 
 		return this.dlob.getL2({
 			marketIndex,
@@ -186,6 +189,7 @@ export class DLOBSubscriber {
 			oraclePriceData,
 			slot: this.slotSource.getSlot(),
 			fallbackL2Generators: fallbackL2Generators,
+			tickSize: spotMarketAccount.orderTickSize,
 		});
 	}
 
@@ -229,23 +233,29 @@ export class DLOBSubscriber {
 		if (isPerp) {
 			const oraclePriceData =
 				this.velocityClient.getMMOracleDataForPerpMarket(marketIndex);
+			const perpMarketAccount =
+				this.velocityClient.getPerpMarketAccountOrThrow(marketIndex);
 
 			return this.dlob.getL3({
 				marketIndex,
 				marketType: MarketType.PERP,
 				oraclePriceData,
 				slot: this.slotSource.getSlot(),
+				tickSize: perpMarketAccount.orderTickSize,
 			});
 		}
 
 		const oraclePriceData =
 			this.velocityClient.getOracleDataForSpotMarket(marketIndex);
+		const spotMarketAccount =
+			this.velocityClient.getSpotMarketAccountOrThrow(marketIndex);
 
 		return this.dlob.getL3({
 			marketIndex,
 			marketType: MarketType.SPOT,
 			oraclePriceData,
 			slot: this.slotSource.getSlot(),
+			tickSize: spotMarketAccount.orderTickSize,
 		});
 	}
 

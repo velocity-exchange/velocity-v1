@@ -18,6 +18,7 @@ import {
 	QUOTE_SPOT_MARKET_INDEX,
 	TEN_THOUSAND,
 	isUserBankrupt,
+	hasIsolatedMarginBankrupt,
 	TEN,
 	PriorityFeeSubscriber,
 	getTokenValue,
@@ -1533,7 +1534,11 @@ export class LiquidatorBot implements Bot {
 			const userAcc = user.getUserAccountOrThrow();
 			const auth = userAcc.authority.toBase58();
 
-			if (isUserBankrupt(user) || user.isBankrupt()) {
+			if (
+				isUserBankrupt(user) ||
+				user.isBankrupt() ||
+				hasIsolatedMarginBankrupt(user)
+			) {
 				await this.tryResolveBankruptUser(user);
 			} else if (canBeLiquidated) {
 				const lastAttempt = this.throttledUsers.get(userKey);

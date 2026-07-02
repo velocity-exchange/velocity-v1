@@ -300,6 +300,21 @@ These public exports were **added** (or restored) relative to the fork point:
 - `AdminClient.updatePauseAdmin` / `getUpdatePauseAdminIx` — cold-admin rotation of the
   emergency `pause_admin` key (`StateAccount.pauseAdmin`), sitting alongside
   `updateWarmAdmin` / `updateHotAdmin`.
+- `hasIsolatedMarginBankrupt(user)` (`math/bankruptcy`) — mirrors the isolated half of the
+  program's bankruptcy routing (`has_isolated_margin_bankrupt` + economic
+  `is_isolated_margin_bankrupt`). Needed because `User.isBankrupt()` reads only the
+  account-level `UserStatus.BANKRUPT` bit, which is never set for isolated-only bankruptcies,
+  and `isUserBankrupt` (cross) deliberately skips isolated positions.
+- `User.calculateFeeForQuoteAmount` gained an optional trailing `builderInfo`
+  (`Pick<OrderParams, 'builderIdx' | 'builderFeeTenthBps'>`) arg; when present the builder fee
+  (`quoteAmount * builderFeeTenthBps / 100_000`) is added on top of the tiered fee.
+  `VelocityClient.getMarketFees` now also applies the **referee discount** to the taker fee
+  (previously omitted on this path) — referred users get a lower predicted fee.
+- `MMOraclePriceData` gained optional `isMMOracleEnabled` / `isMMOracleAsRecent` /
+  `isMMExchangeDiffBpsHigh` fields (populated by `getMMOracleDataForPerpMarket`).
+  `isFallbackAvailableLiquiditySource` now mirrors `amm_fill_gates_ok` fully — it additionally
+  suppresses AMM fallback on market drawdown and on MM-vs-exchange oracle volatility (>1% diff
+  while the MM oracle is enabled and as-recent).
 - Several types were added by the `types.ts` ↔ IDL reconciliation — see §4.7.
 
 ### 4.7 SDK type reconciliation (`types.ts` ↔ IDL)
@@ -382,13 +397,15 @@ accounts/events with the previous TS shapes should note:
   `DEPRECATED_SWITCHBOARD` / `DEPRECATED_SWITCHBOARD_ON_DEMAND` (Borsh keys
   `deprecatedSwitchboard` / `deprecatedSwitchboardOnDemand`). Any code still matching on the
   old `switchboard` / `switchboardOnDemand` keys will fail to decode these oracle sources.
-- **Bankruptcy record `bankrupt` field is now state-derived, not a constant** (#174):
-  `PerpBankruptcyRecord.bankrupt` / `SpotBankruptcyRecord.bankrupt` reflect whether the user
-  still holds a bankrupting liability **after** the resolve call completes, rather than
-  always being `true`. The wire type is unchanged (still a `bool`), so this is invisible to
-  type-checkers — indexers and downstream consumers that assumed `bankrupt == true` on every
-  emitted record must re-check the field's value instead of treating its presence as the
-  signal.
+- **`LiquidationRecord.bankrupt` is now state-derived, not a constant** (#174):
+  the top-level `bankrupt` flag on `LiquidationRecord` (a sibling of the nested
+  `perpBankruptcy` / `spotBankruptcy` sub-records — those sub-records have no `bankrupt`
+  field of their own) now reflects whether the user still holds a bankrupting liability
+  **after** the resolve call completes, rather than always being `true`. Read it as
+  `record.bankrupt`, not `record.perpBankruptcy.bankrupt`. The wire type is unchanged
+  (still a `bool`), so this is invisible to type-checkers — indexers and downstream
+  consumers that assumed `bankrupt == true` on every emitted record must re-check the
+  field's value instead of treating its presence as the signal.
 - **Mainnet `initialize` requires a fixed signer** (#158): the one-time global `State`
   creation now locks the `admin` account to `state_init_authority`
   (`prpHJmuXnqdaz92tBVdwsqmqyhqPLuq5Km35a5QWco3`) on real mainnet builds only, to prevent

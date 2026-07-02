@@ -18,6 +18,24 @@ export type MMOraclePriceData = Omit<
 > & {
 	/** Whether the MM oracle is currently considered active/valid and safe to use in place of the primary oracle. */
 	isMMOracleActive: boolean;
+	/**
+	 * Whether the MM oracle is enabled (has a non-zero price), mirroring `MMOraclePriceData::is_enabled`.
+	 * Populated by `VelocityClient.getMMOracleDataForPerpMarket`; used by the AMM-fill volatility gate
+	 * (`isFallbackAvailableLiquiditySource`). Optional because MM data is sometimes constructed without it.
+	 */
+	isMMOracleEnabled?: boolean;
+	/**
+	 * Whether the MM oracle is at least as recent as the exchange (safe) oracle, mirroring
+	 * `MMOraclePriceData::is_mm_oracle_as_recent`. Used together with `isMMExchangeDiffBpsHigh` by the
+	 * AMM-fill volatility gate.
+	 */
+	isMMOracleAsRecent?: boolean;
+	/**
+	 * Whether the MM-vs-exchange oracle price difference exceeds the 1% fallback threshold
+	 * (`MM_EXCHANGE_FALLBACK_THRESHOLD`), mirroring `MMOraclePriceData::is_mm_exchange_diff_bps_high`.
+	 * When the MM oracle is enabled and as-recent, a high diff suppresses AMM fills (early volatility protection).
+	 */
+	isMMExchangeDiffBpsHigh?: boolean;
 };
 
 /** Normalized oracle price snapshot produced by every `OracleClient`, regardless of underlying source. */

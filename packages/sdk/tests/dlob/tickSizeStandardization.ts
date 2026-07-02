@@ -4,6 +4,7 @@ import { Keypair } from '@solana/web3.js';
 import {
 	BN,
 	DLOB,
+	DLOBSubscriber,
 	MarketType,
 	Order,
 	OrderStatus,
@@ -439,5 +440,94 @@ describe('tick size standardization parity', () => {
 			const order = makeOrder({ bitFlags: OrderBitFlag.SignedMessage });
 			expect(hasBuilder(order)).to.equal(false);
 		});
+	});
+});
+
+// C3: the public book-view wrapper (DLOBSubscriber.getL2/getL3) must forward the
+// market's orderTickSize into DLOB, otherwise getLimitPrice falls back to ONE and
+// the shipped book (dlob-server) emits un-standardized prices for tick_size>1 markets.
+describe('DLOBSubscriber threads orderTickSize into DLOB', () => {
+	const PERP_TICK = new BN(1000);
+	const SPOT_TICK = new BN(500);
+
+	function makeSubscriberWithSpy() {
+		const calls: {
+			method: string;
+			marketType: MarketType;
+			tickSize?: BN;
+		}[] = [];
+
+		const velocityClient = {
+			getMMOracleDataForPerpMarket: () => mmOracle(100, 1),
+			getOracleDataForSpotMarket: () => ({
+				price: new BN(100),
+				slot: new BN(1),
+				confidence: new BN(1),
+				hasSufficientNumberOfDataPoints: true,
+			}),
+			getPerpMarketAccountOrThrow: () => ({
+				marketIndex: 0,
+				orderTickSize: PERP_TICK,
+			}),
+			getSpotMarketAccountOrThrow: () => ({
+				marketIndex: 0,
+				orderTickSize: SPOT_TICK,
+			}),
+		} as any;
+
+		const subscriber = new DLOBSubscriber({
+			velocityClient,
+			slotSource: { getSlot: () => 1 },
+			dlobSource: { getDLOB: async () => new DLOB() } as any,
+			updateFrequency: 1000,
+		});
+
+		// Spy on the underlying DLOB the wrapper delegates to.
+		subscriber.dlob = {
+			getL2: (args: any) => {
+				calls.push({
+					method: 'getL2',
+					marketType: args.marketType,
+					tickSize: args.tickSize,
+				});
+				return { bids: [], asks: [], slot: 1 };
+			},
+			getL3: (args: any) => {
+				calls.push({
+					method: 'getL3',
+					marketType: args.marketType,
+					tickSize: args.tickSize,
+				});
+				return { bids: [], asks: [], slot: 1 };
+			},
+		} as any;
+
+		return { subscriber, calls };
+	}
+
+	it('getL2 passes the perp market orderTickSize', () => {
+		const { subscriber, calls } = makeSubscriberWithSpy();
+		subscriber.getL2({ marketIndex: 0, marketType: MarketType.PERP });
+		expect(calls).to.have.length(1);
+		expect(calls[0].tickSize).to.not.equal(undefined);
+		expect(calls[0].tickSize!.eq(PERP_TICK)).to.equal(true);
+	});
+
+	it('getL2 passes the spot market orderTickSize', () => {
+		const { subscriber, calls } = makeSubscriberWithSpy();
+		subscriber.getL2({ marketIndex: 0, marketType: MarketType.SPOT });
+		expect(calls[0].tickSize!.eq(SPOT_TICK)).to.equal(true);
+	});
+
+	it('getL3 passes the perp market orderTickSize', () => {
+		const { subscriber, calls } = makeSubscriberWithSpy();
+		subscriber.getL3({ marketIndex: 0, marketType: MarketType.PERP });
+		expect(calls[0].tickSize!.eq(PERP_TICK)).to.equal(true);
+	});
+
+	it('getL3 passes the spot market orderTickSize', () => {
+		const { subscriber, calls } = makeSubscriberWithSpy();
+		subscriber.getL3({ marketIndex: 0, marketType: MarketType.SPOT });
+		expect(calls[0].tickSize!.eq(SPOT_TICK)).to.equal(true);
 	});
 });

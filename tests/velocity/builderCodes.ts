@@ -204,7 +204,6 @@ describe('builder codes', () => {
 		await builderClient.subscribe();
 
 		await builderClient.updateFeatureBitFlagsBuilderCodes(true);
-		// await builderClient.updateFeatureBitFlagsBuilderReferral(true);
 
 		await initializeQuoteSpotMarket(builderClient, usdcMint.publicKey);
 

@@ -1720,6 +1720,13 @@ pub mod velocity {
         handle_update_feature_bit_flags_builder_codes(ctx, enable)
     }
 
+    pub fn update_feature_bit_flags_isolated_positions(
+        ctx: Context<HotAdminUpdateState>,
+        enable: bool,
+    ) -> Result<()> {
+        handle_update_feature_bit_flags_isolated_positions(ctx, enable)
+    }
+
     pub fn initialize_revenue_share<'c: 'info, 'info>(
         ctx: Context<'info, InitializeRevenueShare<'info>>,
     ) -> Result<()> {
@@ -1786,6 +1793,13 @@ pub mod velocity {
         enable: bool,
     ) -> Result<()> {
         handle_update_feature_bit_flags_mint_redeem_lp_pool(ctx, enable)
+    }
+
+    pub fn update_feature_bit_flags_hedge(
+        ctx: Context<HotAdminUpdateState>,
+        enable: bool,
+    ) -> Result<()> {
+        handle_update_feature_bit_flags_hedge(ctx, enable)
     }
 
     pub fn initialize_constituent<'info>(

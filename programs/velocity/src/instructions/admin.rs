@@ -3569,6 +3569,48 @@ pub fn handle_update_feature_bit_flags_mint_redeem_lp_pool(
     Ok(())
 }
 
+pub fn handle_update_feature_bit_flags_hedge(
+    ctx: Context<HotAdminUpdateState>,
+    enable: bool,
+) -> Result<()> {
+    let mut state = ctx.accounts.state.load_mut()?;
+    if enable {
+        validate!(
+            ctx.accounts.admin.key().eq(&state.cold_admin),
+            ErrorCode::Unauthorized,
+            "Only state admin can re-enable after kill switch"
+        )?;
+
+        msg!("Setting fourth bit to 1, enabling LP pool hedge");
+        state.lp_pool_feature_bit_flags |= LpPoolFeatureBitFlags::Hedge as u8;
+    } else {
+        msg!("Setting fourth bit to 0, disabling LP pool hedge");
+        state.lp_pool_feature_bit_flags &= !(LpPoolFeatureBitFlags::Hedge as u8);
+    }
+    Ok(())
+}
+
+pub fn handle_update_feature_bit_flags_isolated_positions(
+    ctx: Context<HotAdminUpdateState>,
+    enable: bool,
+) -> Result<()> {
+    let mut state = ctx.accounts.state.load_mut()?;
+    if enable {
+        validate!(
+            ctx.accounts.admin.key().eq(&state.cold_admin),
+            ErrorCode::Unauthorized,
+            "Only state admin can re-enable after kill switch"
+        )?;
+
+        msg!("Setting fourth bit to 1, enabling isolated positions");
+        state.feature_bit_flags |= FeatureBitFlags::IsolatedPositions as u8;
+    } else {
+        msg!("Setting fourth bit to 0, disabling isolated positions");
+        state.feature_bit_flags &= !(FeatureBitFlags::IsolatedPositions as u8);
+    }
+    Ok(())
+}
+
 #[access_control(
     perp_market_valid(&ctx.accounts.perp_market)
 )]

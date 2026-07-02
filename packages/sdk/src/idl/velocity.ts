@@ -8791,6 +8791,64 @@ export type Velocity = {
       ]
     },
     {
+      "name": "updateFeatureBitFlagsHedge",
+      "discriminator": [
+        79,
+        98,
+        125,
+        114,
+        194,
+        243,
+        244,
+        141
+      ],
+      "accounts": [
+        {
+          "name": "admin",
+          "signer": true
+        },
+        {
+          "name": "state",
+          "writable": true
+        }
+      ],
+      "args": [
+        {
+          "name": "enable",
+          "type": "bool"
+        }
+      ]
+    },
+    {
+      "name": "updateFeatureBitFlagsIsolatedPositions",
+      "discriminator": [
+        186,
+        130,
+        175,
+        199,
+        70,
+        1,
+        174,
+        189
+      ],
+      "accounts": [
+        {
+          "name": "admin",
+          "signer": true
+        },
+        {
+          "name": "state",
+          "writable": true
+        }
+      ],
+      "args": [
+        {
+          "name": "enable",
+          "type": "bool"
+        }
+      ]
+    },
+    {
       "name": "updateFeatureBitFlagsMedianTriggerPrice",
       "discriminator": [
         64,
@@ -16017,6 +16075,16 @@ export type Velocity = {
       "code": 6356,
       "name": "invalidNativePerpMarketAccount",
       "msg": "Native dispatch: supplied market account is not a Velocity perp market"
+    },
+    {
+      "code": 6357,
+      "name": "isolatedPositionsDisabled",
+      "msg": "Isolated positions are disabled"
+    },
+    {
+      "code": 6358,
+      "name": "hedgeDisabled",
+      "msg": "LP pool hedge is disabled"
     }
   ],
   "types": [

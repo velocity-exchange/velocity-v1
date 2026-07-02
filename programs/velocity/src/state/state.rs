@@ -263,6 +263,10 @@ impl State {
         (self.feature_bit_flags & (FeatureBitFlags::BuilderCodes as u8)) > 0
     }
 
+    pub fn allow_isolated_positions(&self) -> bool {
+        (self.feature_bit_flags & (FeatureBitFlags::IsolatedPositions as u8)) > 0
+    }
+
     pub fn allow_settle_lp_pool(&self) -> bool {
         (self.lp_pool_feature_bit_flags & (LpPoolFeatureBitFlags::SettleLpPool as u8)) > 0
     }
@@ -273,6 +277,10 @@ impl State {
 
     pub fn allow_mint_redeem_lp_pool(&self) -> bool {
         (self.lp_pool_feature_bit_flags & (LpPoolFeatureBitFlags::MintRedeemLpPool as u8)) > 0
+    }
+
+    pub fn allow_hedge(&self) -> bool {
+        (self.lp_pool_feature_bit_flags & (LpPoolFeatureBitFlags::Hedge as u8)) > 0
     }
 
     /// Pubkey assigned to a given hot role. `Pubkey::default()` if unassigned.
@@ -375,6 +383,9 @@ pub enum FeatureBitFlags {
     MmOracleUpdate = 0b00000001,
     MedianTriggerPrice = 0b00000010,
     BuilderCodes = 0b00000100,
+    // 0b00001000 was `BuilderReferral`, removed from the program in PR #67 and
+    // now reclaimed for isolated positions.
+    IsolatedPositions = 0b00001000,
 }
 
 #[derive(Clone, Copy, PartialEq, Debug, Eq)]
@@ -382,6 +393,7 @@ pub enum LpPoolFeatureBitFlags {
     SettleLpPool = 0b00000001,
     SwapLpPool = 0b00000010,
     MintRedeemLpPool = 0b00000100,
+    Hedge = 0b00001000,
 }
 
 impl Size for State {

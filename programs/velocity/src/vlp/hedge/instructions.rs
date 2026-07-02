@@ -61,6 +61,12 @@ use crate::vlp::hedge::state::{
 pub fn handle_update_constituent_target_base<'c: 'info, 'info>(
     ctx: Context<'info, UpdateConstituentTargetBase<'info>>,
 ) -> Result<()> {
+    validate!(
+        ctx.accounts.state.load()?.allow_hedge(),
+        ErrorCode::HedgeDisabled,
+        "LP pool hedge is disabled"
+    )?;
+
     let slot = Clock::get()?.slot;
 
     let lp_pool_key: &Pubkey = &ctx.accounts.lp_pool.key();

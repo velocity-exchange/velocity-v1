@@ -4392,35 +4392,6 @@ export class AdminClient extends VelocityClient {
 		});
 	}
 
-	public async updateFeatureBitFlagsBuilderReferral(
-		enable: boolean
-	): Promise<TransactionSignature> {
-		const updateFeatureBitFlagsBuilderReferralIx =
-			await this.getUpdateFeatureBitFlagsBuilderReferralIx(enable);
-
-		const tx = await this.buildTransaction(
-			updateFeatureBitFlagsBuilderReferralIx
-		);
-		const { txSig } = await this.sendTransaction(tx, [], this.opts);
-
-		return txSig;
-	}
-
-	public async getUpdateFeatureBitFlagsBuilderReferralIx(
-		enable: boolean
-	): Promise<TransactionInstruction> {
-		return (
-			this.program.instruction as any
-		).updateFeatureBitFlagsBuilderReferral(enable, {
-			accounts: {
-				admin: this.useHotWalletAdmin
-					? this.wallet.publicKey
-					: this.getStateAccount().coldAdmin,
-				state: await this.getStatePublicKey(),
-			},
-		});
-	}
-
 	public async updateFeatureBitFlagsMedianTriggerPrice(
 		enable: boolean
 	): Promise<TransactionSignature> {
@@ -4522,6 +4493,61 @@ export class AdminClient extends VelocityClient {
 		enable: boolean
 	): Promise<TransactionInstruction> {
 		return await this.program.instruction.updateFeatureBitFlagsMintRedeemLpPool(
+			enable,
+			{
+				accounts: {
+					admin: this.useHotWalletAdmin
+						? this.wallet.publicKey
+						: this.getStateAccount().coldAdmin,
+					state: await this.getStatePublicKey(),
+				},
+			}
+		);
+	}
+
+	public async updateFeatureBitFlagsHedge(
+		enable: boolean
+	): Promise<TransactionSignature> {
+		const updateFeatureBitFlagsHedgeIx =
+			await this.getUpdateFeatureBitFlagsHedgeIx(enable);
+
+		const tx = await this.buildTransaction(updateFeatureBitFlagsHedgeIx);
+		const { txSig } = await this.sendTransaction(tx, [], this.opts);
+
+		return txSig;
+	}
+
+	public async getUpdateFeatureBitFlagsHedgeIx(
+		enable: boolean
+	): Promise<TransactionInstruction> {
+		return await this.program.instruction.updateFeatureBitFlagsHedge(enable, {
+			accounts: {
+				admin: this.useHotWalletAdmin
+					? this.wallet.publicKey
+					: this.getStateAccount().coldAdmin,
+				state: await this.getStatePublicKey(),
+			},
+		});
+	}
+
+	public async updateFeatureBitFlagsIsolatedPositions(
+		enable: boolean
+	): Promise<TransactionSignature> {
+		const updateFeatureBitFlagsIsolatedPositionsIx =
+			await this.getUpdateFeatureBitFlagsIsolatedPositionsIx(enable);
+
+		const tx = await this.buildTransaction(
+			updateFeatureBitFlagsIsolatedPositionsIx
+		);
+		const { txSig } = await this.sendTransaction(tx, [], this.opts);
+
+		return txSig;
+	}
+
+	public async getUpdateFeatureBitFlagsIsolatedPositionsIx(
+		enable: boolean
+	): Promise<TransactionInstruction> {
+		return await this.program.instruction.updateFeatureBitFlagsIsolatedPositions(
 			enable,
 			{
 				accounts: {

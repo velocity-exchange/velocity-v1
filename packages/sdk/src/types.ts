@@ -50,7 +50,14 @@ export enum FeatureBitFlags {
 	MM_ORACLE_UPDATE = 1,
 	MEDIAN_TRIGGER_PRICE = 2,
 	BUILDER_CODES = 4,
-	BUILDER_REFERRAL = 8,
+	ISOLATED_POSITIONS = 8,
+}
+
+export enum LpPoolFeatureBitFlags {
+	SETTLE_LP_POOL = 1,
+	SWAP_LP_POOL = 2,
+	MINT_REDEEM_LP_POOL = 4,
+	HEDGE = 8,
 }
 
 export class MarketStatus {

@@ -904,11 +904,11 @@ pub trait StateExt {
     const MM_ORACLE_UPDATE_FLAG: u8 = 0b0000_0001;
     const MEDIAN_TRIGGER_PRICE_FLAG: u8 = 0b0000_0010;
     const BUILDER_CODES_FLAG: u8 = 0b0000_0100;
-    const BUILDER_REFERRAL_FLAG: u8 = 0b0000_1000;
+    const ISOLATED_POSITIONS_FLAG: u8 = 0b0000_1000;
     fn has_mm_oracle_update_feature(&self) -> bool;
     fn has_median_trigger_price_feature(&self) -> bool;
     fn has_builder_codes_feature(&self) -> bool;
-    fn has_builder_referral_feature(&self) -> bool;
+    fn has_isolated_positions_feature(&self) -> bool;
 }
 impl StateExt for accounts::State {
     fn has_mm_oracle_update_feature(&self) -> bool {
@@ -920,7 +920,7 @@ impl StateExt for accounts::State {
     fn has_builder_codes_feature(&self) -> bool {
         (self.feature_bit_flags & Self::BUILDER_CODES_FLAG) != 0
     }
-    fn has_builder_referral_feature(&self) -> bool {
-        (self.feature_bit_flags & Self::BUILDER_REFERRAL_FLAG) != 0
+    fn has_isolated_positions_feature(&self) -> bool {
+        (self.feature_bit_flags & Self::ISOLATED_POSITIONS_FLAG) != 0
     }
 }

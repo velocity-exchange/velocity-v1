@@ -1280,6 +1280,26 @@ pub mod instructions {
     #[automatically_derived]
     impl anchor_lang::InstructionData for UpdateFeatureBitFlagsBuilderCodes {}
     #[derive(AnchorSerialize, AnchorDeserialize, Clone, Default)]
+    pub struct UpdateFeatureBitFlagsHedge {
+        pub enable: bool,
+    }
+    #[automatically_derived]
+    impl anchor_lang::Discriminator for UpdateFeatureBitFlagsHedge {
+        const DISCRIMINATOR: &[u8] = &[79, 98, 125, 114, 194, 243, 244, 141];
+    }
+    #[automatically_derived]
+    impl anchor_lang::InstructionData for UpdateFeatureBitFlagsHedge {}
+    #[derive(AnchorSerialize, AnchorDeserialize, Clone, Default)]
+    pub struct UpdateFeatureBitFlagsIsolatedPositions {
+        pub enable: bool,
+    }
+    #[automatically_derived]
+    impl anchor_lang::Discriminator for UpdateFeatureBitFlagsIsolatedPositions {
+        const DISCRIMINATOR: &[u8] = &[186, 130, 175, 199, 70, 1, 174, 189];
+    }
+    #[automatically_derived]
+    impl anchor_lang::InstructionData for UpdateFeatureBitFlagsIsolatedPositions {}
+    #[derive(AnchorSerialize, AnchorDeserialize, Clone, Default)]
     pub struct UpdateFeatureBitFlagsMedianTriggerPrice {
         pub enable: bool,
     }
@@ -1904,6 +1924,16 @@ pub mod instructions {
     }
     #[automatically_derived]
     impl anchor_lang::InstructionData for UpdateProtocolFeeRecipient {}
+    #[derive(AnchorSerialize, AnchorDeserialize, Clone, Default)]
+    pub struct UpdateSolvencyStatus {
+        pub solvency_status: u8,
+    }
+    #[automatically_derived]
+    impl anchor_lang::Discriminator for UpdateSolvencyStatus {
+        const DISCRIMINATOR: &[u8] = &[81, 136, 15, 6, 24, 165, 44, 133];
+    }
+    #[automatically_derived]
+    impl anchor_lang::InstructionData for UpdateSolvencyStatus {}
     #[derive(AnchorSerialize, AnchorDeserialize, Clone, Default)]
     pub struct UpdateSpecialUserStatus {
         pub status: u8,
@@ -5005,11 +5035,12 @@ pub mod types {
         pub max_initialize_user_fee: u16,
         pub feature_bit_flags: u8,
         pub lp_pool_feature_bit_flags: u8,
+        pub solvency_status: u8,
         pub protocol_fee_recipient_perp: Pubkey,
         pub protocol_fee_recipient_spot: Pubkey,
         pub hot_fee_withdraw: Pubkey,
         #[serde(skip)]
-        pub padding: Padding<272>,
+        pub padding: Padding<271>,
     }
     #[repr(C)]
     #[derive(
@@ -6340,11 +6371,12 @@ pub mod accounts {
         pub max_initialize_user_fee: u16,
         pub feature_bit_flags: u8,
         pub lp_pool_feature_bit_flags: u8,
+        pub solvency_status: u8,
         pub protocol_fee_recipient_perp: Pubkey,
         pub protocol_fee_recipient_spot: Pubkey,
         pub hot_fee_withdraw: Pubkey,
         #[serde(skip)]
-        pub padding: Padding<272>,
+        pub padding: Padding<271>,
     }
     #[automatically_derived]
     impl anchor_lang::Discriminator for State {
@@ -16464,6 +16496,134 @@ pub mod accounts {
     }
     #[repr(C)]
     #[derive(Copy, Clone, Default, AnchorSerialize, AnchorDeserialize, Serialize, Deserialize)]
+    pub struct UpdateFeatureBitFlagsHedge {
+        pub admin: Pubkey,
+        pub state: Pubkey,
+    }
+    #[automatically_derived]
+    impl anchor_lang::Discriminator for UpdateFeatureBitFlagsHedge {
+        const DISCRIMINATOR: &[u8] = &[15, 179, 66, 241, 54, 125, 220, 23];
+    }
+    #[automatically_derived]
+    unsafe impl anchor_lang::__private::bytemuck::Pod for UpdateFeatureBitFlagsHedge {}
+    #[automatically_derived]
+    unsafe impl anchor_lang::__private::bytemuck::Zeroable for UpdateFeatureBitFlagsHedge {}
+    #[automatically_derived]
+    impl anchor_lang::ZeroCopy for UpdateFeatureBitFlagsHedge {}
+    #[automatically_derived]
+    impl anchor_lang::InstructionData for UpdateFeatureBitFlagsHedge {}
+    #[automatically_derived]
+    impl ToAccountMetas for UpdateFeatureBitFlagsHedge {
+        fn to_account_metas(&self) -> Vec<AccountMeta> {
+            vec![
+                AccountMeta {
+                    pubkey: self.admin,
+                    is_signer: true,
+                    is_writable: false,
+                },
+                AccountMeta {
+                    pubkey: self.state,
+                    is_signer: false,
+                    is_writable: true,
+                },
+            ]
+        }
+    }
+    #[automatically_derived]
+    impl anchor_lang::AccountSerialize for UpdateFeatureBitFlagsHedge {
+        fn try_serialize<W: std::io::Write>(&self, writer: &mut W) -> anchor_lang::Result<()> {
+            if writer.write_all(Self::DISCRIMINATOR).is_err() {
+                return Err(anchor_lang::error::ErrorCode::AccountDidNotSerialize.into());
+            }
+            if AnchorSerialize::serialize(self, writer).is_err() {
+                return Err(anchor_lang::error::ErrorCode::AccountDidNotSerialize.into());
+            }
+            Ok(())
+        }
+    }
+    #[automatically_derived]
+    impl anchor_lang::AccountDeserialize for UpdateFeatureBitFlagsHedge {
+        fn try_deserialize(buf: &mut &[u8]) -> anchor_lang::Result<Self> {
+            let given_disc = &buf[..8];
+            if Self::DISCRIMINATOR != given_disc {
+                return Err(anchor_lang::error!(
+                    anchor_lang::error::ErrorCode::AccountDiscriminatorMismatch
+                ));
+            }
+            Self::try_deserialize_unchecked(buf)
+        }
+        fn try_deserialize_unchecked(buf: &mut &[u8]) -> anchor_lang::Result<Self> {
+            let mut data: &[u8] = &buf[8..];
+            AnchorDeserialize::deserialize(&mut data)
+                .map_err(|_| anchor_lang::error::ErrorCode::AccountDidNotDeserialize.into())
+        }
+    }
+    #[repr(C)]
+    #[derive(Copy, Clone, Default, AnchorSerialize, AnchorDeserialize, Serialize, Deserialize)]
+    pub struct UpdateFeatureBitFlagsIsolatedPositions {
+        pub admin: Pubkey,
+        pub state: Pubkey,
+    }
+    #[automatically_derived]
+    impl anchor_lang::Discriminator for UpdateFeatureBitFlagsIsolatedPositions {
+        const DISCRIMINATOR: &[u8] = &[241, 228, 49, 180, 107, 83, 39, 194];
+    }
+    #[automatically_derived]
+    unsafe impl anchor_lang::__private::bytemuck::Pod for UpdateFeatureBitFlagsIsolatedPositions {}
+    #[automatically_derived]
+    unsafe impl anchor_lang::__private::bytemuck::Zeroable for UpdateFeatureBitFlagsIsolatedPositions {}
+    #[automatically_derived]
+    impl anchor_lang::ZeroCopy for UpdateFeatureBitFlagsIsolatedPositions {}
+    #[automatically_derived]
+    impl anchor_lang::InstructionData for UpdateFeatureBitFlagsIsolatedPositions {}
+    #[automatically_derived]
+    impl ToAccountMetas for UpdateFeatureBitFlagsIsolatedPositions {
+        fn to_account_metas(&self) -> Vec<AccountMeta> {
+            vec![
+                AccountMeta {
+                    pubkey: self.admin,
+                    is_signer: true,
+                    is_writable: false,
+                },
+                AccountMeta {
+                    pubkey: self.state,
+                    is_signer: false,
+                    is_writable: true,
+                },
+            ]
+        }
+    }
+    #[automatically_derived]
+    impl anchor_lang::AccountSerialize for UpdateFeatureBitFlagsIsolatedPositions {
+        fn try_serialize<W: std::io::Write>(&self, writer: &mut W) -> anchor_lang::Result<()> {
+            if writer.write_all(Self::DISCRIMINATOR).is_err() {
+                return Err(anchor_lang::error::ErrorCode::AccountDidNotSerialize.into());
+            }
+            if AnchorSerialize::serialize(self, writer).is_err() {
+                return Err(anchor_lang::error::ErrorCode::AccountDidNotSerialize.into());
+            }
+            Ok(())
+        }
+    }
+    #[automatically_derived]
+    impl anchor_lang::AccountDeserialize for UpdateFeatureBitFlagsIsolatedPositions {
+        fn try_deserialize(buf: &mut &[u8]) -> anchor_lang::Result<Self> {
+            let given_disc = &buf[..8];
+            if Self::DISCRIMINATOR != given_disc {
+                return Err(anchor_lang::error!(
+                    anchor_lang::error::ErrorCode::AccountDiscriminatorMismatch
+                ));
+            }
+            Self::try_deserialize_unchecked(buf)
+        }
+        fn try_deserialize_unchecked(buf: &mut &[u8]) -> anchor_lang::Result<Self> {
+            let mut data: &[u8] = &buf[8..];
+            AnchorDeserialize::deserialize(&mut data)
+                .map_err(|_| anchor_lang::error::ErrorCode::AccountDidNotDeserialize.into())
+        }
+    }
+    #[repr(C)]
+    #[derive(Copy, Clone, Default, AnchorSerialize, AnchorDeserialize, Serialize, Deserialize)]
     pub struct UpdateFeatureBitFlagsMedianTriggerPrice {
         pub admin: Pubkey,
         pub state: Pubkey,
@@ -20823,6 +20983,70 @@ pub mod accounts {
     }
     #[automatically_derived]
     impl anchor_lang::AccountDeserialize for UpdateProtocolFeeRecipient {
+        fn try_deserialize(buf: &mut &[u8]) -> anchor_lang::Result<Self> {
+            let given_disc = &buf[..8];
+            if Self::DISCRIMINATOR != given_disc {
+                return Err(anchor_lang::error!(
+                    anchor_lang::error::ErrorCode::AccountDiscriminatorMismatch
+                ));
+            }
+            Self::try_deserialize_unchecked(buf)
+        }
+        fn try_deserialize_unchecked(buf: &mut &[u8]) -> anchor_lang::Result<Self> {
+            let mut data: &[u8] = &buf[8..];
+            AnchorDeserialize::deserialize(&mut data)
+                .map_err(|_| anchor_lang::error::ErrorCode::AccountDidNotDeserialize.into())
+        }
+    }
+    #[repr(C)]
+    #[derive(Copy, Clone, Default, AnchorSerialize, AnchorDeserialize, Serialize, Deserialize)]
+    pub struct UpdateSolvencyStatus {
+        pub state: Pubkey,
+        pub admin: Pubkey,
+    }
+    #[automatically_derived]
+    impl anchor_lang::Discriminator for UpdateSolvencyStatus {
+        const DISCRIMINATOR: &[u8] = &[168, 28, 43, 254, 145, 46, 88, 119];
+    }
+    #[automatically_derived]
+    unsafe impl anchor_lang::__private::bytemuck::Pod for UpdateSolvencyStatus {}
+    #[automatically_derived]
+    unsafe impl anchor_lang::__private::bytemuck::Zeroable for UpdateSolvencyStatus {}
+    #[automatically_derived]
+    impl anchor_lang::ZeroCopy for UpdateSolvencyStatus {}
+    #[automatically_derived]
+    impl anchor_lang::InstructionData for UpdateSolvencyStatus {}
+    #[automatically_derived]
+    impl ToAccountMetas for UpdateSolvencyStatus {
+        fn to_account_metas(&self) -> Vec<AccountMeta> {
+            vec![
+                AccountMeta {
+                    pubkey: self.state,
+                    is_signer: false,
+                    is_writable: true,
+                },
+                AccountMeta {
+                    pubkey: self.admin,
+                    is_signer: true,
+                    is_writable: false,
+                },
+            ]
+        }
+    }
+    #[automatically_derived]
+    impl anchor_lang::AccountSerialize for UpdateSolvencyStatus {
+        fn try_serialize<W: std::io::Write>(&self, writer: &mut W) -> anchor_lang::Result<()> {
+            if writer.write_all(Self::DISCRIMINATOR).is_err() {
+                return Err(anchor_lang::error::ErrorCode::AccountDidNotSerialize.into());
+            }
+            if AnchorSerialize::serialize(self, writer).is_err() {
+                return Err(anchor_lang::error::ErrorCode::AccountDidNotSerialize.into());
+            }
+            Ok(())
+        }
+    }
+    #[automatically_derived]
+    impl anchor_lang::AccountDeserialize for UpdateSolvencyStatus {
         fn try_deserialize(buf: &mut &[u8]) -> anchor_lang::Result<Self> {
             let given_disc = &buf[..8];
             if Self::DISCRIMINATOR != given_disc {
@@ -25268,6 +25492,10 @@ pub mod errors {
         InvalidNativeStateAccount,
         #[msg("Native dispatch: supplied market account is not a Velocity perp market")]
         InvalidNativePerpMarketAccount,
+        #[msg("Isolated positions are disabled")]
+        IsolatedPositionsDisabled,
+        #[msg("LP pool hedge is disabled")]
+        HedgeDisabled,
     }
 }
 pub mod events {

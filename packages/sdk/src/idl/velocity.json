@@ -8785,6 +8785,64 @@
       ]
     },
     {
+      "name": "update_feature_bit_flags_hedge",
+      "discriminator": [
+        79,
+        98,
+        125,
+        114,
+        194,
+        243,
+        244,
+        141
+      ],
+      "accounts": [
+        {
+          "name": "admin",
+          "signer": true
+        },
+        {
+          "name": "state",
+          "writable": true
+        }
+      ],
+      "args": [
+        {
+          "name": "enable",
+          "type": "bool"
+        }
+      ]
+    },
+    {
+      "name": "update_feature_bit_flags_isolated_positions",
+      "discriminator": [
+        186,
+        130,
+        175,
+        199,
+        70,
+        1,
+        174,
+        189
+      ],
+      "accounts": [
+        {
+          "name": "admin",
+          "signer": true
+        },
+        {
+          "name": "state",
+          "writable": true
+        }
+      ],
+      "args": [
+        {
+          "name": "enable",
+          "type": "bool"
+        }
+      ]
+    },
+    {
       "name": "update_feature_bit_flags_median_trigger_price",
       "discriminator": [
         64,
@@ -16011,6 +16069,16 @@
       "code": 6356,
       "name": "InvalidNativePerpMarketAccount",
       "msg": "Native dispatch: supplied market account is not a Velocity perp market"
+    },
+    {
+      "code": 6357,
+      "name": "IsolatedPositionsDisabled",
+      "msg": "Isolated positions are disabled"
+    },
+    {
+      "code": 6358,
+      "name": "HedgeDisabled",
+      "msg": "LP pool hedge is disabled"
     }
   ],
   "types": [

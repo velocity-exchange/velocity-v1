@@ -2076,6 +2076,11 @@ pub fn handle_deposit_into_isolated_perp_position<'c: 'info, 'info>(
     let mut user = load_mut!(ctx.accounts.user)?;
 
     let state = ctx.accounts.state.load()?;
+    validate!(
+        state.allow_isolated_positions(),
+        ErrorCode::IsolatedPositionsDisabled,
+        "Isolated positions are disabled"
+    )?;
     let clock = Clock::get()?;
     let now = clock.unix_timestamp;
     let slot = clock.slot;
@@ -2148,6 +2153,15 @@ pub fn handle_transfer_isolated_perp_position_deposit<'c: 'info, 'info>(
     amount: i64,
 ) -> anchor_lang::Result<()> {
     let state = ctx.accounts.state.load()?;
+    // Gate only the entry direction (moving collateral into the isolated
+    // position, `amount > 0`); a negative `amount` moves collateral back to
+    // cross and must stay open so funds are never trapped when the feature is
+    // disabled.
+    validate!(
+        amount <= 0 || state.allow_isolated_positions(),
+        ErrorCode::IsolatedPositionsDisabled,
+        "Isolated positions are disabled"
+    )?;
     let clock = Clock::get()?;
     let slot = clock.slot;
 
@@ -2213,6 +2227,9 @@ pub fn handle_withdraw_from_isolated_perp_position<'c: 'info, 'info>(
     let now = clock.unix_timestamp;
     let slot = clock.slot;
     let state = ctx.accounts.state.load()?;
+    // Not gated on `allow_isolated_positions`: withdrawing from an isolated
+    // position is a pure exit and must stay open so funds are never trapped
+    // when the feature is disabled.
 
     let remaining_accounts_iter = &mut ctx.remaining_accounts.iter().peekable();
     let AccountMaps {

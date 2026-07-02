@@ -11,4 +11,7 @@ corrected MM-oracle validity gating, referrer_status memcmp offset, PerpOperatio
 OrderBitFlag bit values, wired five missing event records into EventSubscriber, fixed
 withdraw-limit divisors, multi-pool margin segregation, referee/builder fee estimation,
 and added AdminClient.updatePauseAdmin plus admin CLI commands for pause-admin rotation
-and fee-pool transfers.
+and fee-pool transfers. Also fixed withdrawFromIsolatedPerpPosition's withdraw-all path:
+it substituted the MIN_I64 sentinel into the instruction's unsigned u64 amount (serializing
+as 2^63, so full withdrawals always failed on-chain with InsufficientCollateral); it now
+clamps the request to the position's deposit plus claimable PnL.

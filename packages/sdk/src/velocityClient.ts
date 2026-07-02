@@ -5626,21 +5626,23 @@ export class VelocityClient {
 
 	/**
 	 * Builds the full instruction sequence for `withdrawFromIsolatedPerpPosition`: computes the position's
-	 * claimable unrealized PnL, and — if `amount` exceeds the isolated deposit plus that claimable PnL —
-	 * substitutes `MIN_I64` in an attempt to request "withdraw everything". **This substitution is
-	 * very likely a bug**: `withdrawFromIsolatedPerpPosition`'s on-chain `amount` is `u64`, not `i64`
-	 * (unlike the sibling `transferIsolatedPerpPositionDeposit`, whose `i64` `amount` does treat
-	 * `i64::MIN` as a real "withdraw all" sentinel); serializing `MIN_I64` into a `u64` arg produces
-	 * `2^63` (≈9.2e18), which will fail the on-chain `InsufficientCollateral` check against any real
-	 * position size rather than withdrawing the full balance. Also prepends a `TRY_SETTLE` settle-PnL
-	 * instruction for `perpMarketIndex` whenever the request draws into unrealized (unsettled) PnL.
-	 * @param amount - Amount to withdraw, in the position's quote spot market's token precision.
+	 * claimable unrealized PnL, and clamps `amount` to the isolated deposit plus that claimable PnL —
+	 * the on-chain `amount` is `u64` with no "withdraw all" sentinel (unlike the sibling
+	 * `transferIsolatedPerpPositionDeposit`, whose `i64` `amount` treats `i64::MIN` as one), so passing
+	 * `BN` values larger than the withdrawable balance is how a caller requests "withdraw everything".
+	 * Also prepends a `TRY_SETTLE` settle-PnL instruction for `perpMarketIndex` whenever the request
+	 * draws into unrealized (unsettled) PnL. Note the clamp is a build-time estimate: if the settle
+	 * realizes less than the claimable PnL (e.g. the market's PnL pool is short), the withdraw can still
+	 * fail on-chain with `InsufficientCollateral`.
+	 * @param amount - Amount to withdraw, in the position's quote spot market's token precision. Values
+	 * exceeding the withdrawable balance are clamped to it (i.e. pass a huge value to withdraw all).
 	 * @param perpMarketIndex - Perp market index of the isolated position to withdraw from.
 	 * @param subAccountId - Sub-account id owning the position; defaults to `this.activeSubAccountId`.
 	 * @param userTokenAccount - Destination token account; defaults to the signer's own associated token
 	 * account for the position's quote spot market.
 	 * @returns The ordered instructions (optional settle-PnL, then withdraw).
-	 * @throws if `subAccountId` has no perp position in `perpMarketIndex`.
+	 * @throws if `subAccountId` has no perp position in `perpMarketIndex`, or if the position has no
+	 * withdrawable collateral (deposit plus claimable PnL is zero or negative).
 	 */
 	public async getWithdrawFromIsolatedPerpPositionIxsBundle(
 		amount: BN,
@@ -5680,9 +5682,14 @@ export class VelocityClient {
 			isolatedPositionUnrealizedPnl
 		);
 
-		const amountToWithdraw = amount.gt(depositAmountPlusUnrealizedPnl)
-			? MIN_I64 // min i64
-			: amount;
+		// On-chain amount is u64 with no "withdraw all" sentinel — clamp to the
+		// withdrawable estimate instead of overshooting into InsufficientCollateral
+		const amountToWithdraw = BN.min(amount, depositAmountPlusUnrealizedPnl);
+		if (amountToWithdraw.lte(ZERO)) {
+			throw new Error(
+				`Isolated perp position in market ${perpMarketIndex} has no withdrawable collateral (deposit + claimable PnL = ${depositAmountPlusUnrealizedPnl.toString()})`
+			);
+		}
 		let associatedTokenAccount = userTokenAccount;
 		if (!associatedTokenAccount) {
 			const perpMarketAccount =
@@ -5720,9 +5727,9 @@ export class VelocityClient {
 	 * Builds the raw `withdrawFromIsolatedPerpPosition` instruction (no settle-PnL/clamping — see
 	 * `getWithdrawFromIsolatedPerpPositionIxsBundle` for the full sequence).
 	 * @param amount - Amount to withdraw, in the position's quote spot market's token precision.
-	 * The on-chain `amount` arg is `u64` (unsigned) — do not pass `MIN_I64` expecting a "withdraw all"
-	 * sentinel; see `getWithdrawFromIsolatedPerpPositionIxsBundle` for why that would fail on-chain
-	 * instead.
+	 * The on-chain `amount` arg is `u64` (unsigned) with no "withdraw all" sentinel — the exact amount
+	 * is withdrawn, and it must not exceed the isolated position's token balance. Use
+	 * `getWithdrawFromIsolatedPerpPositionIxsBundle` for withdraw-all/clamping behavior.
 	 * @param perpMarketIndex - Perp market index of the isolated position to withdraw from.
 	 * @param userTokenAccount - Destination token account for the withdrawal.
 	 * @param subAccountId - Sub-account id owning the position; defaults to `this.activeSubAccountId`.

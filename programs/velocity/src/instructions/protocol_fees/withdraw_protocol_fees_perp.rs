@@ -1,4 +1,4 @@
-//! Withdraw a perp market's accrued protocol fees (quote/USDC-denominated)
+//! Withdraw a perp market's accrued protocol fees (quote-denominated)
 //! from the quote spot market's vault to the protocol fee recipient's ATA.
 
 use anchor_lang::prelude::*;

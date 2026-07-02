@@ -40,7 +40,7 @@ The below is a light overview of using Solana and Velocity's typescript sdk. If 
 # Generate a keypair
 solana-keygen new
 
-# Get the pubkey for the new wallet (You will need to send USDC to this address to Deposit into Velocity (only on mainnet - devnet has a faucet for USDC))
+# Get the pubkey for the new wallet (You will need to send the quote asset to this address to Deposit into Velocity (only on mainnet - devnet has a faucet for the quote asset))
 solana address
 
 # Put the private key into your .env to be used by your bot
@@ -210,12 +210,12 @@ const main = async () => {
 			provider.wallet.publicKey.toString()
 		);
 
-		//// Create a Velocity V1 account by Depositing some USDC ($10,000 in this case)
+		//// Create a Velocity V1 account by Depositing some quote asset ($10,000 in this case)
 		const depositAmount = new BN(10000).mul(QUOTE_PRECISION);
 		await velocityClient.initializeUserAccountAndDepositCollateral(
 			depositAmount,
 			await getTokenAddress(
-				usdcTokenAddress.toString(),
+				quoteTokenAddress.toString(),
 				provider.wallet.publicKey.toString()
 			)
 		);

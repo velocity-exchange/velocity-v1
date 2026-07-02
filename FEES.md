@@ -195,7 +195,7 @@ precision `IF_FACTOR_PRECISION` = 1e6, sum validated ≤ 100%):
 
 - `protocol_fee_pool: PoolBalance` on every market — a protocol-owned
   Deposit-type claim inside the existing spot vault (perp pools are
-  quote/USDC-denominated against the quote spot market, like `pnl_pool`).
+  quote-denominated against the quote spot market, like `pnl_pool`).
   Counted in `deposit_balance`; owned by the protocol, not users; never
   backstop.
 - `withdraw_protocol_fees_spot(market_index, amount)` and
@@ -473,7 +473,7 @@ Two per-spot-market knobs — `total_factor` and `user_factor` (`u32`, `IF_FACTO
 
 - **Lending skim — into the revenue pool, `total_factor` only.** In `update_spot_market_cumulative_interest` (`controller/spot_balance.rs:130-185`), `total_factor × deposit_interest / 1e6` is split off before lenders are paid and deposited into that spot market's `revenue_pool`; only the remainder compounds into `cumulative_deposit_interest`. (The local variable is named `deposit_interest_for_stakers` but uses `total_factor` and funds the IF system as a whole — protocol *and* stakers — not stakers alone.) The `revenue_pool` balance, being a `Deposit`, also passively earns the lender rate, but the skim is the primary lending revenue.
 - **Settlement split — out of the revenue pool to the IF, both factors.** `settle_revenue_to_insurance_fund` (`controller/insurance.rs:758-775`) divides the settled amount: `(total_factor − user_factor)/total_factor` is minted as new protocol shares (`total_shares` only), and `user_factor/total_factor` raises existing stakers' share value. This split applies to the **entire** revenue pool regardless of source — perp taker fees and liquidation `if_fee`s are commingled with the lending skim and carved the same way. So `total_factor` does double duty: it is both the lending-skim rate and (with `user_factor`) the protocol/staker split ratio for all revenue.
-- **Per-market scoping.** Each spot market has its own `revenue_pool`, `InsuranceFund` (factors, shares, vault), and settlement. Spot lending/liquidation revenue stays in *that* market's pool and IF. **All perp revenue routes to spot market 0 (USDC)**: every perp's `quote_spot_market_index` is fixed to `QUOTE_SPOT_MARKET_INDEX = 0` (`admin.rs:666`, no setter), and `settle_pnl` sweeps to it via `get_quote_spot_market_mut()` (`pnl.rs:124`). So the USDC market's `total_factor`/`user_factor` govern the protocol/staker split of essentially all perp-derived revenue.
+- **Per-market scoping.** Each spot market has its own `revenue_pool`, `InsuranceFund` (factors, shares, vault), and settlement. Spot lending/liquidation revenue stays in *that* market's pool and IF. **All perp revenue routes to spot market 0 (the quote market)**: every perp's `quote_spot_market_index` is fixed to `QUOTE_SPOT_MARKET_INDEX = 0` (`admin.rs:666`, no setter), and `settle_pnl` sweeps to it via `get_quote_spot_market_mut()` (`pnl.rs:124`). So the quote market's `total_factor`/`user_factor` govern the protocol/staker split of essentially all perp-derived revenue.
 - **Two-way book.** `resolve_perp_bankruptcy` (`liquidation.rs:3268`) and `resolve_spot_bankruptcy` (`liquidation.rs:3491`) pay out of the IF vault (`send_from_program_vault`, `keeper.rs` ~`:2026` spot / ~`:2155` perp). Liquidation `if_fee`s and protocol IF shares absorb bad debt before they are withdrawable.
 
 ## Insurance-fund staker economics
@@ -500,7 +500,7 @@ flowchart TD
     classDef revenue fill:#cfe8cf,stroke:#2e7d32,color:#000;
     classDef passthru fill:#ffe0b2,stroke:#e65100,color:#000;
 
-    RP["SpotMarket.revenue_pool<br/>(per market; perp revenue → spot 0 / USDC)"]:::pool
+    RP["SpotMarket.revenue_pool<br/>(per market; perp revenue → spot 0 / quote)"]:::pool
     SET{{"settle_revenue_to_insurance_fund<br/>settled = min(1/10 pool, MAX_APR cap)"}}:::step
     IFV["Insurance Fund vault<br/>(ALL settled tokens land here)"]:::pool
     PSH["Protocol IF shares = total_shares − user_shares"]:::revenue

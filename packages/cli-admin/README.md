@@ -25,6 +25,7 @@ velocity-admin show config
 
 velocity-admin auth set-admin <pubkey>
 velocity-admin auth set-warm-admin <pubkey>
+velocity-admin auth set-pause-admin <pubkey>
 velocity-admin auth set-hot-admin <role> <pubkey>
 velocity-admin auth init-config [--initial-warm <pk>]
 
@@ -44,6 +45,7 @@ velocity-admin fees set-split <ammFeeNumerator> <ifFeeNumerator> # cold admin
 velocity-admin fees withdraw-perp <market> <amount>  # FeeWithdraw hot key; pays the recipient's ATA (created if needed)
 velocity-admin fees withdraw-spot <market> <amount>  # FeeWithdraw hot key; pays the recipient's ATA (created if needed)
 velocity-admin fees sweep <market>                               # permissionless
+velocity-admin fees transfer-fee-pnl <feePoolMarket> <pnlPoolMarket> <amount> <fee-to-pnl|pnl-to-fee> # cold admin
 
 velocity-admin user set-special-status <user> <flags>
 velocity-admin user admin-deposit <market> <amount> --user <pk> --user-token-account <pk>

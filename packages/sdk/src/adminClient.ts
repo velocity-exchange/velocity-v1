@@ -5932,6 +5932,28 @@ export class AdminClient extends VelocityClient {
 		});
 	}
 
+	public async updatePauseAdmin(
+		newPauseAdmin: PublicKey
+	): Promise<TransactionSignature> {
+		const ix = await this.getUpdatePauseAdminIx(newPauseAdmin);
+		const tx = await this.buildTransaction(ix);
+		const { txSig } = await this.sendTransaction(tx, [], this.opts);
+		return txSig;
+	}
+
+	public async getUpdatePauseAdminIx(
+		newPauseAdmin: PublicKey
+	): Promise<TransactionInstruction> {
+		return this.program.instruction.updatePauseAdmin(newPauseAdmin, {
+			accounts: {
+				state: await this.getStatePublicKey(),
+				admin: this.isSubscribed
+					? this.getStateAccount().coldAdmin
+					: this.wallet.publicKey,
+			},
+		});
+	}
+
 	public async updateHotAdmin(
 		role: HotRole,
 		newPubkey: PublicKey

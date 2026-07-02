@@ -1,0 +1,14 @@
+---
+'@velocity-exchange/sdk': patch
+'@velocity-exchange/admin-cli': patch
+---
+
+Program↔SDK parity fixes from the 2026-07-02 audit: renamed deprecated Switchboard
+OracleSource keys to match the IDL (fixes a decode crash on affected markets), applied
+the $100 initial-margin unrealized-PnL cap, standardized auction/limit prices to order
+tick size across the DLOB, isolated-position handling in bankruptcy/liquidation math,
+corrected MM-oracle validity gating, referrer_status memcmp offset, PerpOperation and
+OrderBitFlag bit values, wired five missing event records into EventSubscriber, fixed
+withdraw-limit divisors, multi-pool margin segregation, referee/builder fee estimation,
+and added AdminClient.updatePauseAdmin plus admin CLI commands for pause-admin rotation
+and fee-pool transfers.

@@ -217,6 +217,8 @@ describe('isolated transfer margin checks', () => {
 		// Initialize user account
 		await velocityClient.initializeUserAccount();
 		console.log('Initialized user account');
+
+		await velocityClient.updateFeatureBitFlagsIsolatedPositions(true);
 	});
 
 	after(async () => {

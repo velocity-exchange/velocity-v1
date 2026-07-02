@@ -127,6 +127,7 @@ describe('liquidate perp (no open orders)', () => {
 
 		await velocityClient.initialize(usdcMint.publicKey, true);
 		await velocityClient.subscribe();
+		await velocityClient.updateFeatureBitFlagsIsolatedPositions(true);
 
 		await velocityClient.updateInitialPctToLiquidate(
 			LIQUIDATION_PCT_PRECISION.toNumber()

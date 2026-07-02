@@ -129,6 +129,7 @@ describe('order margin checks with isolated positions', () => {
 		await velocityClient.initialize(usdcMint.publicKey, true);
 
 		await velocityClient.subscribe();
+		await velocityClient.updateFeatureBitFlagsIsolatedPositions(true);
 		await velocityClient.updatePerpAuctionDuration(new BN(0));
 
 		await initializeQuoteSpotMarket(velocityClient, usdcMint.publicKey);

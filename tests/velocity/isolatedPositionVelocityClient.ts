@@ -126,6 +126,8 @@ describe('velocity client', () => {
 			new BN(1),
 			new BN(1)
 		);
+
+		await velocityClient.updateFeatureBitFlagsIsolatedPositions(true);
 	});
 
 	after(async () => {

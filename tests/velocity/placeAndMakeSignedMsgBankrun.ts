@@ -183,6 +183,7 @@ describe('place and make signedMsg order', () => {
 		});
 		await makerVelocityClient.initialize(usdcMint.publicKey, true);
 		await makerVelocityClient.subscribe();
+		await makerVelocityClient.updateFeatureBitFlagsIsolatedPositions(true);
 		await initializeQuoteSpotMarket(makerVelocityClient, usdcMint.publicKey);
 
 		const periodicity = new BN(0);

@@ -190,6 +190,7 @@ describe('LP Pool', () => {
 		});
 		await adminClient.initialize(usdcMint.publicKey, true);
 		await adminClient.subscribe();
+		await adminClient.updateFeatureBitFlagsHedge(true);
 		await initializeQuoteSpotMarket(adminClient, usdcMint.publicKey);
 
 		const userUSDCAccount = await mockUserUSDCAccountWithAuthority(

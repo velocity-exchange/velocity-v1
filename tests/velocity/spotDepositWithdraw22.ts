@@ -800,6 +800,7 @@ describe('spot deposit and withdraw 22', () => {
 			true
 		);
 		bankrunContextWrapper.printTxLogs(txSig);
+		await secondUserVelocityClient.fetchAccounts();
 
 		const spotMarketAccountAfter =
 			secondUserVelocityClient.getSpotMarketAccount(marketIndex);
@@ -855,6 +856,7 @@ describe('spot deposit and withdraw 22', () => {
 			true
 		);
 		bankrunContextWrapper.printTxLogs(txSig);
+		await secondUserVelocityClient.fetchAccounts();
 
 		const spotMarketAccountAfter =
 			secondUserVelocityClient.getSpotMarketAccount(marketIndex);

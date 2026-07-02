@@ -300,11 +300,16 @@ These public exports were **added** (or restored) relative to the fork point:
 - `AdminClient.updatePauseAdmin` / `getUpdatePauseAdminIx` — cold-admin rotation of the
   emergency `pause_admin` key (`StateAccount.pauseAdmin`), sitting alongside
   `updateWarmAdmin` / `updateHotAdmin`.
-- `hasIsolatedMarginBankrupt(user)` (`math/bankruptcy`) — mirrors the isolated half of the
-  program's bankruptcy routing (`has_isolated_margin_bankrupt` + economic
-  `is_isolated_margin_bankrupt`). Needed because `User.isBankrupt()` reads only the
-  account-level `UserStatus.BANKRUPT` bit, which is never set for isolated-only bankruptcies,
-  and `isUserBankrupt` (cross) deliberately skips isolated positions.
+- `isIsolatedPositionBankrupt(user, marketIndex)` and `hasIsolatedMarginBankrupt(user)`
+  (`math/bankruptcy`) — mirror the isolated half of the program's bankruptcy routing
+  (`is_isolated_margin_bankrupt` + `has_isolated_margin_bankrupt`). Needed because
+  `User.isBankrupt()` reads only the account-level `UserStatus.BANKRUPT` bit, which is never
+  set for isolated-only bankruptcies, and `isUserBankrupt` (cross) deliberately skips isolated
+  positions. `isIsolatedPositionBankrupt` throws `InvalidPerpPosition` on a non-isolated index.
+- `calculatePerpIfFee` / `calculateSpotIfFee` (`math/liquidation`) — port the margin-shortage-aware
+  insurance-fund fee caps; feed their output (not the raw `if + protocol` sum) into the
+  covering-amount helpers. `calculateMaxPctToLiquidate` gained an `isIsolatedPosition` param
+  (returns 100% in one shot for isolated positions, per `IsolatedMarginLiquidatePerpMode`).
 - `User.calculateFeeForQuoteAmount` gained an optional trailing `builderInfo`
   (`Pick<OrderParams, 'builderIdx' | 'builderFeeTenthBps'>`) arg; when present the builder fee
   (`quoteAmount * builderFeeTenthBps / 100_000`) is added on top of the tiered fee.
@@ -466,9 +471,9 @@ accounts/events with the previous TS shapes should note:
 | #134      | Fix `liquidate_spot_with_swap_begin`/`_end`: a stale fixed account-index/count guard (13 vs the actual 11) made every real call fail with `InvalidLiquidateSpotWithSwap`. The instruction was non-functional prior to this fix and is now operational; keepers that shelved this ix should re-verify their integration. SDK builder (`velocityClient.ts`) was already correct — no SDK change |
 | #135      | Bulk `place_orders`/`place_scale_orders` now enforce the initial-margin check once per risk scope touched by the batch (cross-margin, plus each isolated market with a risk-increasing order), rather than a single check after the last order — closing a gap where an early risk-increasing order's exposure wasn't accumulated into the check, and the check could be skipped entirely if the final order in the batch was a no-op. Batches that previously succeeded may now be rejected with `InsufficientCollateral` (§3) |
 | #137      | Direct `deposit()` now respects the per-market `SpotOperation::Deposit` pause bit (`MarketActionPaused`), independent of the pre-existing global deposit-pause and aggregate `max_token_deposits` cap checks. Deposits into a market with only the per-market deposit bit paused now revert |
-| #174      | `PerpBankruptcyRecord`/`SpotBankruptcyRecord.bankrupt` now reflects whether the user still holds a bankrupting liability after the resolve call, instead of always being `true`. Wire type unchanged — consumers assuming `bankrupt == true` must update (§5) |
-| #182      | AMM JIT no longer participates in a DLOB match fill when a hard AMM-fill gate (pause / drawdown / MM-oracle volatility / oracle invalidity) is active; match fills can now be smaller or route entirely to the resting DLOB maker under those conditions |
 | #158      | Mainnet `initialize` (one-time global `State` creation) now requires a fixed admin signer (`state_init_authority` = `prpHJmuXnqdaz92tBVdwsqmqyhqPLuq5Km35a5QWco3`) to prevent front-running of genesis; devnet/localnet and the integration-test build are unaffected (§5) |
+| #174      | `LiquidationRecord.bankrupt` (the top-level flag, not a field of the nested `perpBankruptcy`/`spotBankruptcy` sub-records) now reflects whether the user still holds a bankrupting liability after the resolve call, instead of always being `true`. Wire type unchanged — consumers assuming `bankrupt == true` must update (§5) |
+| #182      | AMM JIT no longer participates in a DLOB match fill when a hard AMM-fill gate (pause / drawdown / MM-oracle volatility / oracle invalidity) is active; match fills can now be smaller or route entirely to the resting DLOB maker under those conditions |
 
 ---
 

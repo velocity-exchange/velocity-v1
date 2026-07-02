@@ -129,7 +129,9 @@ export function calculateOracleSpread(
  *
  * @param {PerpMarketAccount} market - The perp market account
  * @param {BN} size - The position's base asset amount (`abs()` semantics expected), BASE_PRECISION (1e9)
- * @param {MarginCategory} marginCategory - `'Initial'` or `'Maintenance'`; throws for any other value
+ * @param {MarginCategory} marginCategory - `'Initial'`, `'Maintenance'`, or `'Fill'`; throws for any other value.
+ *   `'Fill'` uses `(marginRatioInitial + marginRatioMaintenance) / 2` (integer division), mirroring
+ *   `PerpMarket::get_margin_ratio`.
  * @param {number} [customMarginRatio] - User's custom max margin ratio, `MARGIN_PRECISION` (1e4)
  *   units; only applied for `'Initial'`, where the looser (higher) of the computed ratio and
  *   this value is used
@@ -147,6 +149,12 @@ export function calculateMarketMarginRatio(
 	switch (marginCategory) {
 		case 'Initial':
 			defaultMarginRatio = market.marginRatioInitial;
+			break;
+		case 'Fill':
+			// mirrors PerpMarket::get_margin_ratio's Fill branch: integer-divided average
+			defaultMarginRatio = Math.floor(
+				(market.marginRatioInitial + market.marginRatioMaintenance) / 2
+			);
 			break;
 		case 'Maintenance':
 			defaultMarginRatio = market.marginRatioMaintenance;
@@ -196,7 +204,7 @@ export function calculateMarketMarginRatio(
  * @param {PerpMarketAccount} market - The perp market account
  * @param {SpotMarketAccount} quoteSpotMarket - The market's quote spot market account
  * @param {BN} unrealizedPnl - The position's unrealized PnL, expected positive, QUOTE_PRECISION (1e6)
- * @param {MarginCategory} marginCategory - `'Initial'` or `'Maintenance'`
+ * @param {MarginCategory} marginCategory - `'Initial'`, `'Maintenance'`, or `'Fill'` (Fill is weighted identically to Initial)
  * @param {Pick<OraclePriceData, 'price'>} oraclePriceData - Oracle price, PRICE_PRECISION (1e6),
  *   used only for the imbalance check's `calculateNetUserPnlImbalance` call
  * @return {BN} The asset weight, scaled by `SPOT_MARKET_WEIGHT_PRECISION` (1e4, i.e. 10000 = 100%)
@@ -210,7 +218,10 @@ export function calculateUnrealizedAssetWeight(
 ): BN {
 	let assetWeight: BN;
 	switch (marginCategory) {
+		// mirrors get_unrealized_asset_weight: Fill is treated like Initial (same base
+		// weight, same imbalance + size-discount adjustments).
 		case 'Initial':
+		case 'Fill':
 			assetWeight = new BN(market.unrealizedPnlInitialAssetWeight);
 
 			if (market.unrealizedPnlMaxImbalance.gt(ZERO)) {
@@ -235,6 +246,8 @@ export function calculateUnrealizedAssetWeight(
 		case 'Maintenance':
 			assetWeight = new BN(market.unrealizedPnlMaintenanceAssetWeight);
 			break;
+		default:
+			throw new Error('Invalid margin category');
 	}
 
 	return assetWeight;

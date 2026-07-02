@@ -2869,12 +2869,13 @@ export class User {
 				freeCollateralChange = newPositionValue.sub(costBasis);
 			}
 
-			// assume worst fee tier
+			// assume worst fee tier; ceil-divide to match calculate_taker_fee's safe_div_ceil
 			const takerFeeTier =
 				this.velocityClient.getStateAccount().perpFeeStructure.feeTiers[0];
-			const takerFee = newPositionValue
-				.muln(takerFeeTier.feeNumerator)
-				.divn(takerFeeTier.feeDenominator);
+			const takerFee = divCeil(
+				newPositionValue.muln(takerFeeTier.feeNumerator),
+				new BN(takerFeeTier.feeDenominator)
+			);
 			freeCollateralChange = freeCollateralChange.sub(takerFee);
 		}
 

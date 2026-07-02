@@ -245,7 +245,13 @@ export class OracleSource {
 	static readonly PYTH_LAZER_STABLE_COIN = { pythLazerStableCoin: {} };
 }
 
-/** Numeric-discriminant twin of `OracleSource`, in the same variant order as the on-chain enum. Used where a plain number (not the `{variant: {}}` shape) is needed, e.g. raw memcmp filters. */
+/**
+ * Stable SDK-internal numeric encoding of `OracleSource`, used only for oracle-id string
+ * round-tripping (`getOracleSourceNum` ↔ `getOracleSourceFromNum` in `oracles/oracleId.ts`).
+ * NOTE: these numbers are **not** the on-chain Borsh discriminants and are **not** in the
+ * on-chain enum's declaration order — do not use them for raw memcmp filters against chain
+ * data. They only need to be self-consistent within the SDK.
+ */
 export class OracleSourceNum {
 	static readonly PYTH = 0;
 	static readonly PYTH_1K = 1;
@@ -2086,8 +2092,13 @@ export type UpdatePerpMarketSummaryStatsParams = {
 	updateAmmSummaryStats: boolean | null;
 };
 
-/** Which margin requirement (initial, for opening/maintaining leverage headroom, or maintenance, for liquidation) a calculation is being performed for. */
-export type MarginCategory = 'Initial' | 'Maintenance';
+/**
+ * Which margin requirement a calculation is being performed for, mirroring the program's
+ * `MarginRequirementType`: `'Initial'` (opening/maintaining leverage headroom), `'Maintenance'`
+ * (liquidation), or `'Fill'` (fill-time check — weights/ratios are the integer-averaged midpoint
+ * of initial and maintenance).
+ */
+export type MarginCategory = 'Initial' | 'Maintenance' | 'Fill';
 
 /** Decoded mirror of the on-chain `InsuranceFundStake` account: one user's stake in one spot market's insurance fund. */
 export type InsuranceFundStake = {

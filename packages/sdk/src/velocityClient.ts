@@ -11879,6 +11879,8 @@ export class VelocityClient {
 			isExchangeOracleMoreRecent = false;
 		}
 
+		// Diff-adjusted confidence used only for the *returned* MM price data (mirrors
+		// MMOraclePriceData::new's `adjusted_confidence = exchange.confidence + diff_premium`).
 		const conf = getOracleConfidenceFromMMOracleData(
 			perpMarket.marketStats.mmOraclePrice,
 			oracleData
@@ -11886,6 +11888,10 @@ export class VelocityClient {
 
 		// UseMMOraclePrice only blocks on NonPositive/TooVolatile validity, not on
 		// the twap-5min divergence band `isOracleTooDivergent` checks elsewhere.
+		// Validity is computed with the RAW exchange confidence (not the diff-adjusted
+		// `conf`), matching the program's get_mm_oracle_price_data, which feeds
+		// `oracle_price_data.confidence` into `oracle_validity`. (Currently latent since the
+		// gate below only inspects NonPositive/TooVolatile, but correct for TooUncertain too.)
 		const mmOracleValidity = perpMarket.marketStats.mmOraclePrice.eq(ZERO)
 			? OracleValidity.NonPositive
 			: getOracleValidity(
@@ -11893,7 +11899,7 @@ export class VelocityClient {
 					{
 						price: perpMarket.marketStats.mmOraclePrice,
 						slot: perpMarket.marketStats.mmOracleSlot,
-						confidence: conf,
+						confidence: oracleData.confidence,
 						hasSufficientNumberOfDataPoints: true,
 					},
 					stateAccountAndSlot.data.oracleGuardRails,

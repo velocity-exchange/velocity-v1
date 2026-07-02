@@ -185,7 +185,8 @@ export function getTokenValue(
  * @param {BN} oraclePrice - The oracle price, PRICE_PRECISION (1e6); only used for the `Initial`
  *   scaled-weight lookup (`calculateScaledInitialAssetWeight`)
  * @param {SpotMarketAccount} spotMarket - The spot market account
- * @param {MarginCategory | undefined} marginCategory - `'Initial'`, `'Maintenance'`, or `undefined`
+ * @param {MarginCategory | undefined} marginCategory - `'Initial'`, `'Maintenance'`, `'Fill'`
+ *   (the integer-averaged midpoint of scaled-initial and maintenance weights), or `undefined`
  *   (defaults to the scaled initial weight, used for e.g. UI display outside a margin check)
  * @return {BN} The asset weight, scaled by `SPOT_MARKET_WEIGHT_PRECISION` (1e4, i.e. 10000 = 100%)
  */
@@ -215,6 +216,17 @@ export function calculateAssetWeight(
 				sizeInAmmReservePrecision,
 				new BN(spotMarket.imfFactor),
 				calculateScaledInitialAssetWeight(spotMarket, oraclePrice)
+			);
+			break;
+		case 'Fill':
+			// mirrors SpotMarket::get_asset_weight's Fill branch:
+			// (scaled_initial_asset_weight + maintenance_asset_weight) / 2 (integer division)
+			assetWeight = calculateSizeDiscountAssetWeight(
+				sizeInAmmReservePrecision,
+				new BN(spotMarket.imfFactor),
+				calculateScaledInitialAssetWeight(spotMarket, oraclePrice)
+					.add(new BN(spotMarket.maintenanceAssetWeight))
+					.divn(2)
 			);
 			break;
 		case 'Maintenance':
@@ -277,7 +289,8 @@ export function calculateScaledInitialAssetWeight(
  *
  * @param {BN} size - The borrow token amount, scaled by the spot market's token decimals
  * @param {SpotMarketAccount} spotMarket - The spot market account
- * @param {MarginCategory | undefined} marginCategory - `'Initial'`, `'Maintenance'`, or
+ * @param {MarginCategory | undefined} marginCategory - `'Initial'`, `'Maintenance'`, `'Fill'`
+ *   (the integer-averaged midpoint of initial and maintenance liability weights), or
  *   `undefined` (defaults to `initialLiabilityWeight` with no size premium applied)
  * @return {BN} The liability weight, scaled by `SPOT_MARKET_WEIGHT_PRECISION` (1e4, i.e. 10000 = 100%)
  */
@@ -306,6 +319,18 @@ export function calculateLiabilityWeight(
 				sizeInAmmReservePrecision,
 				new BN(spotMarket.imfFactor),
 				new BN(spotMarket.initialLiabilityWeight),
+				SPOT_MARKET_WEIGHT_PRECISION
+			);
+			break;
+		case 'Fill':
+			// mirrors SpotMarket::get_liability_weight's Fill branch:
+			// (initial_liability_weight + maintenance_liability_weight) / 2 (integer division)
+			liabilityWeight = calculateSizePremiumLiabilityWeight(
+				sizeInAmmReservePrecision,
+				new BN(spotMarket.imfFactor),
+				new BN(spotMarket.initialLiabilityWeight)
+					.add(new BN(spotMarket.maintenanceLiabilityWeight))
+					.divn(2),
 				SPOT_MARKET_WEIGHT_PRECISION
 			);
 			break;

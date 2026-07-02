@@ -1,9 +1,14 @@
 import { BN } from './isomorphic/anchor';
 import { MARGIN_PRECISION, ZERO } from './constants/numericConstants';
-import { getVariant, isVariant, MarketType } from './types';
+import { getVariant, isVariant, MarginCategory, MarketType } from './types';
 
-/** Which margin threshold a `MarginCalculation` is computing against: `Initial` (opening/increasing risk), `Maintenance` (liquidation eligibility), or `Fill` (order-fill-time check, generally between Initial and Maintenance in strictness). */
-export type MarginCategory = 'Initial' | 'Maintenance' | 'Fill';
+/**
+ * Which margin threshold a `MarginCalculation` is computing against: `Initial` (opening/increasing
+ * risk), `Maintenance` (liquidation eligibility), or `Fill` (order-fill-time check, the
+ * integer-averaged midpoint of Initial and Maintenance). Re-exported from `./types` so the SDK has
+ * a single `MarginCategory` definition.
+ */
+export type { MarginCategory };
 
 /** Selects the margin-buffer behavior of a `MarginContext`: `Standard` for ordinary health checks (no buffer), or `Liquidation` to apply the cross/isolated margin buffers used to avoid liquidating a user who is only marginally underwater. */
 export type MarginCalculationMode =

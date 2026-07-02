@@ -3,7 +3,8 @@ import { OracleSource, OracleSourceNum } from '../types';
 
 /**
  * Maps an `OracleSource` enum-object (e.g. `{ pyth: {} }`) to its stable numeric encoding
- * (`OracleSourceNum`), the representation used on-chain and as part of an oracle id string.
+ * (`OracleSourceNum`) used as part of an oracle id string. This encoding is SDK-internal — it
+ * is not the on-chain Borsh discriminant (see `OracleSourceNum`).
  * @param source - The oracle source variant.
  * @returns The corresponding `OracleSourceNum` value.
  * @throws Error if `source` doesn't match any known variant.

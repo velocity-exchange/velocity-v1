@@ -1,4 +1,5 @@
 import { PublicKey } from '@solana/web3.js';
+import { BN } from '../isomorphic/anchor';
 import {
 	OrderParams,
 	ReferrerStatus,
@@ -6,6 +7,21 @@ import {
 	RevenueShareOrder,
 	UserStatsAccount,
 } from '../types';
+
+const BUILDER_FEE_TENTH_BPS_DENOMINATOR = new BN(100_000);
+
+/**
+ * Builder fee charged on top of the tiered taker/maker fee, in tenth-bps of
+ * `quoteAssetAmount` (10 `builderFeeTenthBps` == 1 bp).
+ */
+export function calculateBuilderFee(
+	quoteAssetAmount: BN,
+	builderFeeTenthBps: number
+): BN {
+	return quoteAssetAmount
+		.mul(new BN(builderFeeTenthBps))
+		.div(BUILDER_FEE_TENTH_BPS_DENOMINATOR);
+}
 
 /**
  * True when the user's RevenueShareEscrow was initialized with a referrer.

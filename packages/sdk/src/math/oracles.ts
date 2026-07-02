@@ -17,6 +17,7 @@ import {
 	FIVE_MINUTE,
 	PERCENTAGE_PRECISION,
 	FIVE,
+	TEN,
 } from '../constants/numericConstants';
 import { assert } from '../assert/assert';
 import { BN } from '../isomorphic/anchor';
@@ -191,6 +192,21 @@ export function isOracleTooDivergent(
 	);
 	const tooDivergent = oracleSpreadPct.abs().gte(maxDivergence);
 	return tooDivergent;
+}
+
+/**
+ * True when |priceSpreadPct| (mark vs 5min oracle twap, BID_ASK_SPREAD_PRECISION)
+ * exceeds the configured divergence threshold, with a 10% safety floor.
+ */
+export function isMarkOracleTooDivergent(
+	priceSpreadPct: BN,
+	oracleGuardRails: OracleGuardRails
+): boolean {
+	const maxDivergence = BN.max(
+		oracleGuardRails.priceDivergence.markOraclePercentDivergence,
+		PERCENTAGE_PRECISION.div(TEN)
+	);
+	return priceSpreadPct.abs().gt(maxDivergence);
 }
 
 export function calculateLiveOracleTwap(

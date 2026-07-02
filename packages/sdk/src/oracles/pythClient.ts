@@ -86,7 +86,7 @@ function convertPythPrice(price: number, exponent: number, multiple: BN): BN {
 
 const fiveBPS = new BN(500);
 function getStableCoinPrice(price: BN, confidence: BN): BN {
-	if (price.sub(QUOTE_PRECISION).abs().lt(BN.min(confidence, fiveBPS))) {
+	if (price.sub(QUOTE_PRECISION).abs().lte(BN.min(confidence, fiveBPS))) {
 		return QUOTE_PRECISION;
 	} else {
 		return price;

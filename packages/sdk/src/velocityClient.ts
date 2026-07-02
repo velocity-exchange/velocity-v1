@@ -42,6 +42,7 @@ import {
 	ModifyOrderPolicy,
 	OptionalOrderParams,
 	OracleSource,
+	OracleValidity,
 	Order,
 	OrderParams,
 	OrderTriggerCondition,
@@ -181,7 +182,7 @@ import { getMarinadeDepositIx, getMarinadeFinanceProgram } from './marinade';
 import { getOrderParams } from './orderParams';
 import { numberToSafeBN } from './math/utils';
 import { TransactionParamProcessor } from './tx/txParamProcessor';
-import { isOracleTooDivergent, isOracleValid } from './math/oracles';
+import { isOracleValid, getOracleValidity } from './math/oracles';
 import { TxHandler } from './tx/txHandler';
 import { createMinimalEd25519VerifyIx } from './util/ed25519Utils';
 import {
@@ -4165,8 +4166,17 @@ export class VelocityClient {
 		marketIndex: number,
 		amount?: BN
 	): Promise<TransactionInstruction> {
+		const user = this.getUsers().find((u) =>
+			u.getUserAccountPublicKey().equals(userAccountPublicKey)
+		);
+		if (!user) {
+			throw new Error(
+				`VelocityClient has no user for user account ${userAccountPublicKey.toString()}`
+			);
+		}
+
 		const remainingAccounts = this.getRemainingAccounts({
-			userAccounts: [],
+			userAccounts: [user.getUserAccountOrThrow()],
 			writablePerpMarketIndexes: [marketIndex],
 		});
 
@@ -9391,17 +9401,27 @@ export class VelocityClient {
 			oracleData
 		);
 
+		// UseMMOraclePrice only blocks on NonPositive/TooVolatile validity, not on
+		// the twap-5min divergence band `isOracleTooDivergent` checks elsewhere.
+		const mmOracleValidity = perpMarket.marketStats.mmOraclePrice.eq(ZERO)
+			? OracleValidity.NonPositive
+			: getOracleValidity(
+					perpMarket,
+					{
+						price: perpMarket.marketStats.mmOraclePrice,
+						slot: perpMarket.marketStats.mmOracleSlot,
+						confidence: conf,
+						hasSufficientNumberOfDataPoints: true,
+					},
+					stateAccountAndSlot.data.oracleGuardRails,
+					new BN(stateAccountAndSlot.slot)
+			  );
+		const isMMOracleInvalidForUse =
+			mmOracleValidity === OracleValidity.NonPositive ||
+			mmOracleValidity === OracleValidity.TooVolatile;
+
 		if (
-			isOracleTooDivergent(
-				perpMarket.marketStats,
-				{
-					price: perpMarket.marketStats.mmOraclePrice,
-					slot: perpMarket.marketStats.mmOracleSlot,
-					confidence: conf,
-					hasSufficientNumberOfDataPoints: true,
-				},
-				stateAccountAndSlot.data.oracleGuardRails
-			) ||
+			isMMOracleInvalidForUse ||
 			perpMarket.marketStats.mmOraclePrice.eq(ZERO) ||
 			isExchangeOracleMoreRecent ||
 			pctDiff.gt(PERCENTAGE_PRECISION.divn(100)) // 1% threshold
@@ -10109,12 +10129,15 @@ export class VelocityClient {
 	 * Calculates taker / maker fee (as a percentage, e.g. .001 = 10 basis points) for particular marketType
 	 * @param marketType
 	 * @param positionMarketIndex
+	 * @param user
+	 * @param orderParams When it carries a builder code, the builder fee (quoteAssetAmount * builderFeeTenthBps / 100_000) is added to takerFee.
 	 * @returns : {takerFee: number, makerFee: number} Precision None
 	 */
 	public getMarketFees(
 		marketType: MarketType,
 		marketIndex?: number,
-		user?: User
+		user?: User,
+		orderParams?: Pick<OrderParams, 'builderIdx' | 'builderFeeTenthBps'>
 	) {
 		let feeTier;
 		if (user) {
@@ -10140,6 +10163,10 @@ export class VelocityClient {
 
 			takerFee += (takerFee * marketAccount.feeAdjustment) / 100;
 			makerFee += (makerFee * marketAccount.feeAdjustment) / 100;
+		}
+
+		if (orderParams && hasBuilderParams(orderParams)) {
+			takerFee += (orderParams.builderFeeTenthBps ?? 0) / 100_000;
 		}
 
 		return {

@@ -338,8 +338,8 @@ accounts/events with the previous TS shapes should note:
   enum is now `SpotDlobTradingDisabled` (6350), `InvalidAdminTier` (6351),
   `WithdrawGuardThresholdNotionalTooLarge` (6352), `InvalidProtocolFeeRecipient` (6353),
   `InsufficientProtocolFees` (6354), `InvalidNativeStateAccount` (6355),
-  `InvalidNativePerpMarketAccount` (6356). Decode errors by code as before, but expect
-  `Deprecated*` names for retired features.
+  `InvalidNativePerpMarketAccount` (6356), `IFStakeTooSmall` (6357). Decode errors by code
+  as before, but expect `Deprecated*` names for retired features.
 - **PDA seed strings unchanged** (`drift_state`, `user`, `spot_market_vault`, …) — only
   the program ID changed, so all derived addresses differ from Drift's.
 - **`UserStats` layout preserved** across the gov-stake fee discount removal (#80) and the

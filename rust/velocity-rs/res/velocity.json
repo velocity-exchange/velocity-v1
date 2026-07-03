@@ -2,7 +2,7 @@
   "address": "vELoC1audYbSYVRXn1vPaV8Axoa9oU6BYmNGZZBDZ1P",
   "metadata": {
     "name": "velocity",
-    "version": "2.162.0",
+    "version": "2.162.1",
     "spec": "0.1.0",
     "description": "Created with Anchor"
   },
@@ -11069,6 +11069,35 @@
       ]
     },
     {
+      "name": "update_solvency_status",
+      "discriminator": [
+        81,
+        136,
+        15,
+        6,
+        24,
+        165,
+        44,
+        133
+      ],
+      "accounts": [
+        {
+          "name": "state",
+          "writable": true
+        },
+        {
+          "name": "admin",
+          "signer": true
+        }
+      ],
+      "args": [
+        {
+          "name": "solvency_status",
+          "type": "u8"
+        }
+      ]
+    },
+    {
       "name": "update_special_user_status",
       "discriminator": [
         23,
@@ -15982,6 +16011,11 @@
       "code": 6356,
       "name": "InvalidNativePerpMarketAccount",
       "msg": "Native dispatch: supplied market account is not a Velocity perp market"
+    },
+    {
+      "code": 6357,
+      "name": "IFStakeTooSmall",
+      "msg": "Insurance fund stake amount too small: mints zero shares"
     }
   ],
   "types": [
@@ -23218,6 +23252,16 @@
             "type": "u8"
           },
           {
+            "name": "solvency_status",
+            "docs": [
+              "Bitmask of `SolvencyStatus` flags. Gates internal solvency-repair flows",
+              "(bankruptcy / pnl-deficit resolution) independently of `WithdrawPaused`,",
+              "so user withdrawals can be halted while repair keeps running, or repair",
+              "can be frozen on its own when an oracle is suspect. `0` = repair allowed."
+            ],
+            "type": "u8"
+          },
+          {
             "name": "protocol_fee_recipient_perp",
             "docs": [
               "Treasury that PERP protocol fees (quote-denominated) may be withdrawn",
@@ -23251,7 +23295,7 @@
             "type": {
               "array": [
                 "u8",
-                272
+                271
               ]
             }
           }

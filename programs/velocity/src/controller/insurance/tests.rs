@@ -1462,3 +1462,69 @@ fn resolve_perp_pnl_deficit_refreshes_period_after_new_settle() {
     assert_eq!(market.insurance_claim.quote_settled_insurance, cap);
     assert_eq!(market.insurance_claim.last_revenue_withdraw_ts, now);
 }
+
+#[test]
+pub fn add_if_stake_zero_shares_rejected() {
+    // Regression (cold-start first-staker inflation): a stake that rounds down to
+    // zero shares must be rejected, not silently take the staker's tokens for 0
+    // shares. Reproduces the be-first-staker-then-donate share-price inflation.
+    let mut spot_market = SpotMarket {
+        cumulative_deposit_interest: SPOT_CUMULATIVE_INTEREST_PRECISION,
+        insurance_fund: InsuranceFund {
+            unstaking_period: 0,
+            ..InsuranceFund::default()
+        },
+        ..SpotMarket::default()
+    };
+
+    // Attacker is the first staker: mint 1 share at vault == 0.
+    let mut attacker_stake = InsuranceFundStake::new(Pubkey::default(), 0, 0);
+    let mut attacker_stats = UserStats::default();
+    add_insurance_fund_stake(
+        1,
+        0,
+        &mut attacker_stake,
+        &mut attacker_stats,
+        &mut spot_market,
+        0,
+        false,
+    )
+    .unwrap();
+    assert_eq!(spot_market.insurance_fund.total_shares, 1);
+    assert_eq!(spot_market.insurance_fund.user_shares, 1);
+
+    // Attacker donates D straight to the IF vault, inflating share price to ~1 + D.
+    let donation: u64 = 1_000_000;
+    let inflated_vault = 1 + donation;
+
+    // Victim stakes V <= D -> floor(V * 1 / (1 + D)) == 0 shares -> must revert.
+    let mut victim_stake = InsuranceFundStake::new(Pubkey::default(), 0, 0);
+    let mut victim_stats = UserStats::default();
+    let res = add_insurance_fund_stake(
+        100,
+        inflated_vault,
+        &mut victim_stake,
+        &mut victim_stats,
+        &mut spot_market,
+        0,
+        false,
+    );
+    assert_eq!(res.unwrap_err(), crate::error::ErrorCode::IFStakeTooSmall);
+    // no tokens taken for 0 shares; nothing mutated
+    assert_eq!(victim_stake.unchecked_if_shares(), 0);
+    assert_eq!(spot_market.insurance_fund.user_shares, 1);
+    assert_eq!(spot_market.insurance_fund.total_shares, 1);
+
+    // A stake large enough to mint >= 1 share still succeeds (guard not over-firing).
+    add_insurance_fund_stake(
+        2 * inflated_vault,
+        inflated_vault,
+        &mut victim_stake,
+        &mut victim_stats,
+        &mut spot_market,
+        0,
+        false,
+    )
+    .unwrap();
+    assert!(victim_stake.unchecked_if_shares() >= 1);
+}

@@ -767,6 +767,8 @@ pub enum ErrorCode {
     InvalidNativeStateAccount,
     #[msg("Native dispatch: supplied market account is not a Velocity perp market")]
     InvalidNativePerpMarketAccount,
+    #[msg("Insurance fund stake amount too small: mints zero shares")]
+    IFStakeTooSmall,
 }
 
 #[macro_export]

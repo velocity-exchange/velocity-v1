@@ -105,6 +105,21 @@ pub fn add_insurance_fund_stake(
         insurance_vault_amount,
     )?;
 
+    // Reject a stake that mints zero shares. On a freshly-bootstrapped fund an
+    // inflated share price (e.g. a first staker who donated straight to the
+    // vault) rounds a later staker's deposit down to 0 shares, silently
+    // forfeiting their tokens. The symmetric remove path already guards
+    // `n_shares > 0` (request_remove_insurance_fund_stake); do the same on the
+    // way in.
+    validate!(
+        n_shares > 0,
+        ErrorCode::IFStakeTooSmall,
+        "if stake amount {} mints 0 shares (vault={}, total_shares={})",
+        amount,
+        insurance_vault_amount,
+        spot_market.insurance_fund.total_shares
+    )?;
+
     // reset cost basis if no shares
     insurance_fund_stake.cost_basis = if if_shares_before == 0 {
         amount.cast()?

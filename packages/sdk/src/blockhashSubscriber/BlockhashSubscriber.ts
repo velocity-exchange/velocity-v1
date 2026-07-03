@@ -103,7 +103,8 @@ export class BlockhashSubscriber {
 	 * the blockhash to the cache (skipped if it's identical to the
 	 * most-recently-cached one), then prunes expired entries. Errors (e.g. RPC
 	 * failure) are caught and logged, not thrown — on error, `latestBlockHeight`
-	 * and the cache are left at their previous values.
+	 * is left at its previous value, but `pruneBlockhashes()` still runs in a
+	 * `finally` block and may evict entries that expired in the meantime.
 	 */
 	async updateBlockhash() {
 		try {

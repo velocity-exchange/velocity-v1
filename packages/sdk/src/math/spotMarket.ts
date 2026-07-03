@@ -14,10 +14,11 @@ import { MARGIN_PRECISION, ZERO } from '../constants/numericConstants';
 import { numberToSafeBN } from './utils';
 
 /**
- * Converts a human-readable number (or an already-scaled BN) into the spot market's on-chain
- * token precision (`10 ** spotMarket.decimals`).
+ * Converts a human-readable number or `BN` into the spot market's on-chain token precision
+ * (`10 ** spotMarket.decimals`). Both inputs are treated as whole-token amounts and multiplied
+ * by the market's precision.
  *
- * @param {number | BN} value - A human-readable amount, or a `BN` already expressed in whole
+ * @param {number | BN} value - A human-readable amount, or a `BN` expressed in whole
  *   tokens (not yet scaled) that will be multiplied by the market's precision
  * @param {SpotMarketAccount} spotMarket - The spot market account (supplies `decimals`)
  * @return {BN} The token amount scaled by `10 ** spotMarket.decimals`

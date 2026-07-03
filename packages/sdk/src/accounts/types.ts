@@ -120,8 +120,11 @@ export interface VelocityClientAccountEvents {
  * (default, one WebSocket subscription per account), `pollingVelocityClientAccountSubscriber.ts`
  * (single `BulkAccountLoader` batches all accounts via periodic `getMultipleAccounts`), and
  * `grpcVelocityClientAccountSubscriber.ts`/`grpcVelocityClientAccountSubscriberV2.ts` (gRPC
- * Geyser stream). All `getX` accessors below throw `NotSubscribedError` (or return `undefined`
- * for a market/oracle not yet added) until `subscribe()` has completed.
+ * Geyser stream). Accessor contracts differ by shape: the guarded singleton getters
+ * (`getStateAccountAndSlot`) throw `NotSubscribedError` until `subscribe()` has completed; the
+ * per-market/oracle accessors return `undefined` when that entry isn't cached yet; and the
+ * collection getters (`getMarketAccountsAndSlots`, etc.) are cache reads that return a
+ * possibly-empty array.
  */
 export interface VelocityClientAccountSubscriber {
 	eventEmitter: StrictEventEmitter<EventEmitter, VelocityClientAccountEvents>;

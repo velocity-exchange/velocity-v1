@@ -33,10 +33,10 @@ function blockchainSortFn(
  * `orderBy: 'client'` always inserts at the position matching `orderDir`
  * (head for `'asc'`, tail for `'desc'`) regardless of the events' own
  * slot/index — i.e. pure arrival order. `orderBy: 'blockchain'` always uses
- * `blockchainSortFn` (slot, then `txSigIndex`); `orderDir` there controls
- * whether ascending or descending blockchain order sorts toward the head.
+ * `blockchainSortFn` (slot, then `txSigIndex`); `orderDir` is ignored in that
+ * case — blockchain order is always ascending by slot/`txSigIndex`.
  * @param orderBy Whether to sort by client arrival order or blockchain-produced order.
- * @param orderDir Sort direction.
+ * @param orderDir Sort direction; ignored when `orderBy` is `'blockchain'`.
  * @returns The `SortFn` to pass to `EventList`.
  */
 export function getSortFn(

@@ -52,8 +52,8 @@ export function getSpotMarketTierNumber(spotMarket: SpotMarketAccount): number {
  * True if a perp market's tier is at least as safe as both a reference perp tier and a reference
  * spot tier, mirroring `ContractTier::is_as_safe_as`. Used to gate cross-margining: a position in
  * a market riskier than the account's other collateral/positions can force isolated margin.
- * A perp tier is "as safe as" a spot tier if the spot tier is Unlisted (anything beats Unlisted),
- * or if the spot tier is Cross-or-safer AND the perp tier is C-or-safer (tiers 0-2).
+ * A perp tier is "as safe as" a spot tier if the spot tier is Unlisted (anything beats Unlisted);
+ * otherwise, if the spot tier is Cross or Isolated, the perp tier must be C-or-safer (tiers 0-2).
  *
  * @param {number} perpTier - This market's tier number, from `getPerpMarketTierNumber`
  * @param {number} otherPerpTier - The reference perp tier number to compare against

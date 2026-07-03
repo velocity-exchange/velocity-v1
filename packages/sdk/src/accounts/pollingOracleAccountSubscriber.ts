@@ -78,9 +78,9 @@ export class PollingOracleAccountSubscriber implements OracleAccountSubscriber {
 
 		this.callbackId = await this.accountLoader.addAccount(
 			this.publicKey,
-			async (buffer, slot) => {
+			(buffer, slot) => {
 				const oraclePriceData =
-					await this.oracleClient.getOraclePriceDataFromBuffer(buffer);
+					this.oracleClient.getOraclePriceDataFromBuffer(buffer);
 				this.oraclePriceData = { data: oraclePriceData, slot };
 				// @ts-ignore
 				this.eventEmitter.emit('oracleUpdate', oraclePriceData);

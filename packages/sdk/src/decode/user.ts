@@ -41,8 +41,9 @@ function readSignedBigInt64LE(buffer: Buffer, offset: number): BN {
  * `scaledBalance == 0 && openOrders == 0`; a perp position when `baseAssetAmount`,
  * `quoteAssetAmount`, and `isolatedPositionScaledBalance` are all 0, `openOrders == 0`, and
  * neither `BeingLiquidated` nor `Bankruptcy` position flags are set; an order slot when its
- * `status` byte isn't `1` (`OrderStatus.OPEN`) — in all three cases the skipped slot's fields
- * are populated with their zero values in the returned struct.
+ * `status` byte isn't `1` (`OrderStatus.OPEN`) — in all three cases the skipped slot is omitted
+ * from the returned array entirely (only active entries are pushed), so the array length may be
+ * less than the on-chain fixed slot count.
  * @param buffer - Raw `User` account data, including its 8-byte Anchor discriminator (skipped internally).
  * @returns The decoded `UserAccount`. Amount/price fields retain on-chain precision (e.g.
  * `baseAssetAmount`/`openBids`/`openAsks` in BASE_PRECISION 1e9, `quoteAssetAmount` and other

@@ -184,7 +184,7 @@ export class PollingUserAccountSubscriber implements UserAccountSubscriber {
 
 	/**
 	 * Applies an externally-obtained account update (e.g. relayed by the SDK's `User` wrapper) if
-	 * `slot` is not older than the currently cached slot.
+	 * `slot` is strictly newer than the currently cached slot (equal-slot updates are ignored).
 	 * @param userAccount Decoded account data to apply.
 	 * @param slot Slot the data was observed at.
 	 */

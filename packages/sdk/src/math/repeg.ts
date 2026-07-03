@@ -115,7 +115,7 @@ export function calculateRepegCost(amm: AMM, newPeg: BN): BN {
  * inventory) costs exactly `budget`. Used as the closed-form companion to
  * `calculateAdjustKCost` (same K-shrink mechanism as the program's `adjust_k_cost_and_update`)
  * when solving for "how much must K move to spend exactly this much." Falls back to a fixed
- * 1/10000 scale-down if the budget is negative (protocol spending to increase K) and the
+ * `[10000, 1]` (10000x factor) if the budget is negative (protocol spending to increase K) and the
  * solution would be numerically unstable.
  * @param x AMM `baseAssetReserve`, AMM_RESERVE_PRECISION (1e9).
  * @param y AMM `quoteAssetReserve`, AMM_RESERVE_PRECISION (1e9).

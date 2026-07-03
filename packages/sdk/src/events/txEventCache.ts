@@ -14,7 +14,8 @@ class Node {
  * LRU cache of decoded events keyed by transaction signature, used by
  * `EventSubscriber` both to serve `getEventsByTx`/`awaitTx` and to dedup
  * redeliveries of the same transaction from a log provider. Evicts the
- * least-recently-added entry once `maxTx` is exceeded.
+ * least-recently-used entry once `maxTx` is exceeded (`add()` refreshes an
+ * existing key's recency by moving it back to the head).
  */
 export class TxEventCache {
 	size = 0;

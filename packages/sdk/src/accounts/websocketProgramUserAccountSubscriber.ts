@@ -67,6 +67,11 @@ export class WebSocketProgramUserAccountSubscriber
 			data: UserAccount,
 			context: Context
 		) => {
+			// the shared programSubscriber callback isn't detached on unsubscribe(), so
+			// guard here to stop delivering updates once this facade is unsubscribed
+			if (!this.isSubscribed) {
+				return;
+			}
 			if (accountId.equals(this.userAccountPublicKey)) {
 				this.updateData(data, context.slot);
 				this.eventEmitter.emit('userAccountUpdate', data);

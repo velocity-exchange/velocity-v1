@@ -420,8 +420,9 @@ export function calculateTargetPriceTrade(
  *   quoteFilled: BN }} `entryPrice`/`bestPrice`/`worstPrice` are PRICE_PRECISION (1e6);
  *   `priceImpact` is `|entryPrice - bestPrice| / bestPrice`, also scaled by PRICE_PRECISION
  *   (1e6) but represents a ratio, not a price (e.g. `1e4` = 1% impact); `baseFilled` is
- *   BASE_PRECISION (1e9); `quoteFilled` is QUOTE_PRECISION (1e6). All-zero if `amount` is zero
- *   or if liquidity runs out before `amount` fills (fields then reflect the partial fill)
+ *   BASE_PRECISION (1e9); `quoteFilled` is QUOTE_PRECISION (1e6). All-zero only if `amount` is
+ *   zero; if liquidity runs out before `amount` fully fills, the returned fields reflect the
+ *   partial fill
  */
 export function calculateEstimatedPerpEntryPrice(
 	assetType: AssetType,

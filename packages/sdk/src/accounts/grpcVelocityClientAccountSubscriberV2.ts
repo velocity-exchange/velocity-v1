@@ -283,7 +283,21 @@ export class grpcVelocityClientAccountSubscriberV2
 		}
 
 		this.oracleInfos = this.oracleInfos.concat(oracleInfo);
-		this.oracleMultiSubscriber?.addAccounts([oracleInfo.publicKey]);
+
+		// extend the multi-subscriber's accountPropsMap alongside the pubkey filter, so the
+		// oracle decode path has the OracleInfo(s) it needs for the newly added feed (all infos
+		// sharing this pubkey, mirroring the fan-out map built in subscribeToOracles)
+		const pubkey = oracleInfo.publicKey.toBase58();
+		const infosForPubkey = this.oracleInfos.filter(
+			(o) => o.publicKey.toBase58() === pubkey
+		);
+		const accountProps = new Map<string, OracleInfo | OracleInfo[]>([
+			[pubkey, infosForPubkey],
+		]);
+		this.oracleMultiSubscriber?.addAccounts(
+			[oracleInfo.publicKey],
+			accountProps
+		);
 
 		return true;
 	}
@@ -313,6 +327,25 @@ export class grpcVelocityClientAccountSubscriberV2
 		try {
 			return await this.subscribeInner();
 		} catch (err) {
+			// tear down any partially-created subscribers so a retry starts clean and doesn't
+			// stack duplicate gRPC streams / leak callbacks — unsubscribe() bails while
+			// isSubscribed is still false, so it can't recover these on its own
+			try {
+				await this.stateAccountSubscriber?.unsubscribe();
+				await this.oracleMultiSubscriber?.unsubscribe();
+				await this.perpMarketsSubscriber?.unsubscribe();
+				await this.spotMarketsSubscriber?.unsubscribe();
+			} catch (teardownErr) {
+				console.error(
+					'[grpcVelocityClientAccountSubscriberV2] cleanup after failed subscribe threw',
+					teardownErr
+				);
+			}
+			this.stateAccountSubscriber = undefined;
+			this.oracleMultiSubscriber = undefined;
+			this.perpMarketsSubscriber = undefined;
+			this.spotMarketsSubscriber = undefined;
+
 			// settle the shared promise so concurrent subscribe() callers don't hang forever
 			this.isSubscribing = false;
 			this.subscriptionPromiseResolver(false);

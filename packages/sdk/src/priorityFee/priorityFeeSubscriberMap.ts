@@ -71,7 +71,7 @@ export class PriorityFeeSubscriberMap {
 	 */
 	public async load(): Promise<void> {
 		try {
-			if (!this.velocityMarkets) {
+			if (!this.velocityMarkets || this.velocityMarkets.length === 0) {
 				return;
 			}
 			const fees = await fetchVelocityPriorityFee(

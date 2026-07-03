@@ -11,6 +11,7 @@ export class PollingSubscription {
 	private skipInitialLoad: boolean;
 
 	intervalId?: ReturnType<typeof setTimeout>;
+	private active = false;
 
 	constructor({
 		userMap,
@@ -31,13 +32,16 @@ export class PollingSubscription {
 
 	/** Starts the polling loop. No-op if already started or `frequency <= 0`. */
 	public async subscribe(): Promise<void> {
-		if (this.intervalId || this.frequency <= 0) {
+		if (this.active || this.frequency <= 0) {
 			return;
 		}
+		this.active = true;
 
 		const executeSync = async () => {
 			await this.userMap.sync();
-			this.intervalId = setTimeout(executeSync, this.frequency);
+			if (this.active) {
+				this.intervalId = setTimeout(executeSync, this.frequency);
+			}
 		};
 
 		if (!this.skipInitialLoad) {
@@ -48,6 +52,7 @@ export class PollingSubscription {
 
 	/** Stops the polling loop. */
 	public async unsubscribe(): Promise<void> {
+		this.active = false;
 		if (this.intervalId) {
 			clearInterval(this.intervalId);
 			this.intervalId = undefined;

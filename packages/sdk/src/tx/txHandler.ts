@@ -92,9 +92,9 @@ export type TxHandlerConfig = {
 	blockhashCachingEnabled?: boolean;
 	/** Tuning for `CachedBlockhashFetcher` when `blockhashCachingEnabled` is `true`; each field defaults if omitted (see `BLOCKHASH_FETCH_RETRY_COUNT`/`BLOCKHASH_FETCH_RETRY_SLEEP`/`RECENT_BLOCKHASH_STALE_TIME_MS`). */
 	blockhashCachingConfig?: {
-		retryCount: number;
-		retrySleepTimeMs: number;
-		staleCacheTimeMs: number;
+		retryCount?: number;
+		retrySleepTimeMs?: number;
+		staleCacheTimeMs?: number;
 	};
 };
 

@@ -7,9 +7,26 @@ import {
 	TransactionSignature,
 	VersionedTransactionResponse,
 } from '@solana/web3.js';
-import { WrappedEvents } from './types';
+import {
+	DefaultEventSubscriptionOptions,
+	EventType,
+	WrappedEvents,
+} from './types';
 import { promiseTimeout } from '../util/promiseTimeout';
 import { parseLogs } from './parse';
+
+/**
+ * Case-insensitive lookup from decoded (camelCase) IDL event names to
+ * PascalCase `EventType` keys, mirroring `EventSubscriber`'s
+ * `eventTypeByLowercaseName` — `@coral-xyz/anchor` 0.32+ decodes event names
+ * in camelCase, but the rest of the SDK keys off the PascalCase `EventType`.
+ */
+const eventTypeByLowercaseName = new Map<string, EventType>(
+	(DefaultEventSubscriptionOptions.eventTypes ?? []).map((eventType) => [
+		eventType.toLowerCase(),
+		eventType,
+	])
+);
 
 type Log = { txSig: TransactionSignature; slot: number; logs: string[] };
 type FetchLogsResponse = {
@@ -189,7 +206,9 @@ export class LogParser {
 		for (const eventLog of parseLogs(this.program, event.logs)) {
 			eventLog.data.txSig = event.txSig;
 			eventLog.data.slot = event.slot;
-			eventLog.data.eventType = eventLog.name;
+			eventLog.data.eventType =
+				eventTypeByLowercaseName.get(eventLog.name.toLowerCase()) ??
+				eventLog.name;
 			eventLog.data.txSigIndex = runningEventIndex;
 			// @ts-ignore
 			records.push(eventLog.data);

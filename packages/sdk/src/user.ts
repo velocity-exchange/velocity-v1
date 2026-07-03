@@ -4911,9 +4911,12 @@ export class User {
 				spotPosition.marketIndex
 			);
 
-			// the pool-1/quote-deposit carve-out lets a pool-1 user hold a quote
-			// deposit without matching the quote market's own pool id; every
-			// other combination requires an exact pool match
+			// the pool-1/quote-deposit carve-out lets a pool-1 user *hold* a quote
+			// deposit without matching the quote market's own pool id (no
+			// InvalidPoolId throw); every other combination requires an exact pool
+			// match. Note the deposit still contributes ZERO collateral in this case
+			// (skipTokenValue below) — this faithfully mirrors margin.rs:319-321,
+			// which sets token_value = 0 before add_cross_margin_total_collateral.
 			let skipTokenValue = false;
 			if (!(userPoolId === 1 && isQuote && !isBorrow)) {
 				if (userPoolId !== spotMarket.poolId) {
@@ -5209,7 +5212,6 @@ export class User {
 					worstCaseLiabilityValueQuote,
 					perpMarginRequirement
 				);
-				calc.addPerpLiabilityValue(worstCaseLiabilityValueQuote);
 			} else {
 				// cross: add to global requirement and collateral
 				calc.addCrossMarginRequirement(
@@ -5218,6 +5220,12 @@ export class User {
 				);
 				calc.addCrossMarginTotalCollateral(positionUnrealizedPnl);
 			}
+
+			// mirrors margin.rs:616-617 — perp liability value accumulates for every
+			// position regardless of the isolated/cross split, so it must run outside
+			// the branch above (previously only the isolated branch accumulated it,
+			// underreporting totalPerpLiabilityValue for cross positions)
+			calc.addPerpLiabilityValue(worstCaseLiabilityValueQuote);
 		}
 		return calc;
 	}

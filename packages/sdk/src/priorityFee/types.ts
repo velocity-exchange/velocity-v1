@@ -17,9 +17,9 @@ export const DEFAULT_PRIORITY_FEE_MAP_FREQUENCY_MS = 10_000;
  */
 export interface PriorityFeeStrategy {
 	// calculate the priority fee for a given set of samples.
-	// expect samples to be sorted in descending order (by slot)
+	// when samples is an array (SOLANA), expect it sorted in descending order (by slot)
 	/**
-	 * @param samples Fee samples from whichever `priorityFeeMethod` is active — `SolanaPriorityFeeResponse[]` for SOLANA, a single `HeliusPriorityFeeResponse` for HELIUS, or `VelocityPriorityFeeResponse` for VELOCITY — expected sorted descending by slot.
+	 * @param samples Fee samples from whichever `priorityFeeMethod` is active — `SolanaPriorityFeeResponse[]` for SOLANA (expected sorted descending by slot), a single `HeliusPriorityFeeResponse` for HELIUS, or `VelocityPriorityFeeResponse` for VELOCITY.
 	 * @returns A priority fee estimate in micro-lamports per compute unit.
 	 */
 	calculate(

@@ -57,6 +57,12 @@ export class EventsServerLogProvider implements LogProvider {
 		const ws = new WebSocketImpl(this.url);
 		this.ws = ws;
 
+		// reset teardown flags for a fresh subscription cycle — the `ws !== undefined`
+		// unsubscribe path (e.g. a heartbeat-timeout resubscribe) leaves isUnsubscribing
+		// set, which would otherwise disable the watchdog and reconnect on this new socket
+		this.isUnsubscribing = false;
+		this.externalUnsubscribe = false;
+
 		this.callback = callback;
 		ws.addEventListener('open', () => {
 			for (const channel of this.eventTypes) {

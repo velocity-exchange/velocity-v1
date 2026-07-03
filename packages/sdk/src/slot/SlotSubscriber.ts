@@ -32,7 +32,7 @@ export class SlotSubscriber {
 
 	/**
 	 * @param connection RPC connection to subscribe on.
-	 * @param config.resubTimeoutMs If set, resubscribe when no slot update arrives for this many ms. Values below 1000ms log a warning (too aggressive) but are still honored.
+	 * @param config.resubTimeoutMs If set to a positive value, resubscribe when no slot update arrives for this many ms; `0` (or unset) disables the resubscribe watchdog. Positive values below 1000ms log a warning (too aggressive) but are still honored.
 	 */
 	public constructor(
 		private connection: Connection,

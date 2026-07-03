@@ -116,6 +116,22 @@ export class CustomBorshAccountsCoder<A extends string = string> {
 	}
 
 	/**
+	 * Returns the 8-byte account discriminator for `accountName`, read from the IDL-derived
+	 * account layout (Anchor 0.32+ derives discriminators from the IDL rather than a static
+	 * `sha256("account:Name")` hash). This is the instance-scoped counterpart to the throwing
+	 * static `accountDiscriminator` stub.
+	 * @param accountName - IDL account type name (e.g. `"User"`, `"PerpMarket"`).
+	 * @throws Error if `accountName` is not present in the IDL's account layouts.
+	 */
+	public accountDiscriminator(accountName: A): Buffer {
+		const layout = (this.baseCoder as any)['accountLayouts'].get(accountName);
+		if (!layout) {
+			throw new Error(`Unknown account: ${accountName}`);
+		}
+		return Buffer.from(layout.discriminator);
+	}
+
+	/**
 	 * Always throws. Anchor 0.32+ derives account discriminators from the IDL rather than a
 	 * static `sha256("account:Name")` hash, so no *static* method can compute one without an
 	 * IDL instance — this stub exists only to satisfy code written against Anchor's older static

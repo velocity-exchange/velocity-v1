@@ -49,7 +49,7 @@ export type OrderFillSimulation = {
  * Calculates a spot position's worst-case token amount and margin contribution, accounting for
  * the possibility that its resting open bids or asks could fill. Mirrors the program's
  * worst-case spot balance logic used in margin/health checks: if both `openBids` and `openAsks`
- * are non-zero (or `includeOpenOrders` is false), the position's current balance is valued as-is;
+ * are zero (or `includeOpenOrders` is false), the position's current balance is valued as-is;
  * otherwise the function separately simulates full fill of the bids and of the asks
  * (`simulateOrderFill`) and returns whichever leaves the *lower* `freeCollateralContribution` —
  * i.e. the more conservative (worse-case) scenario for margin purposes.

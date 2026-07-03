@@ -231,10 +231,21 @@ export class grpcMultiAccountSubscriber<T, U = undefined> {
 								slot: currentSlot,
 							});
 
-							const accountDecoded = this.program.coder.accounts.decode(
-								this.accountName,
-								newBuffer
-							);
+							// decode via the injected decoder (with accountProps) so backfill
+							// matches the live-update decode path — the stock program coder
+							// can't decode custom-decoder accounts (e.g. oracle buffers). For a
+							// pubkey backing multiple props, seed from the first (dataMap is
+							// keyed by pubkey; see the accountPropsMap notes above).
+							const accountProps = this.accountPropsMap?.get(accountId);
+							const decodeProps = Array.isArray(accountProps)
+								? accountProps[0]
+								: accountProps;
+							const accountDecoded = this.decodeBufferFn
+								? this.decodeBufferFn(newBuffer, accountId, decodeProps)
+								: this.program.coder.accounts.decode(
+										this.accountName,
+										newBuffer
+								  );
 							this.setAccountData(accountId, accountDecoded, currentSlot);
 						}
 					}
@@ -402,10 +413,21 @@ export class grpcMultiAccountSubscriber<T, U = undefined> {
 	 * accumulated filter set, since the gRPC protocol has no incremental "add" primitive), then
 	 * immediately calls `fetch()` to backfill their initial data.
 	 * @param accounts Additional pubkeys to start tracking.
+	 * @param accountProps Optional per-pubkey metadata to merge into `accountPropsMap` so the
+	 *   injected decoder can decode the newly added accounts (without it, a new `(pubkey, source)`
+	 *   oracle would decode with missing `accountProps` and throw).
 	 */
-	async addAccounts(accounts: PublicKey[]): Promise<void> {
+	async addAccounts(
+		accounts: PublicKey[],
+		accountProps?: Map<string, U | Array<U>>
+	): Promise<void> {
 		for (const pk of accounts) {
 			this.subscribedAccounts.add(pk.toBase58());
+		}
+		if (accountProps) {
+			for (const [key, props] of accountProps.entries()) {
+				this.accountPropsMap.set(key, props);
+			}
 		}
 		const request: SubscribeRequest = {
 			slots: {},
@@ -483,42 +505,47 @@ export class grpcMultiAccountSubscriber<T, U = undefined> {
 		clearTimeout(this.timeoutId);
 		this.timeoutId = undefined;
 
-		if (this.listenerId != null) {
-			const promise = new Promise<void>((resolve, reject) => {
-				const request: SubscribeRequest = {
-					slots: {},
-					accounts: {},
-					transactions: {},
-					blocks: {},
-					blocksMeta: {},
-					accountsDataSlice: [],
-					entry: {},
-					transactionsStatus: {},
-				};
-				this.stream.write(request, (err) => {
-					if (err === null || err === undefined) {
-						this.listenerId = undefined;
-						this.isUnsubscribing = false;
-						resolve();
-					} else {
-						reject(err);
-					}
+		try {
+			if (this.listenerId != null) {
+				await new Promise<void>((resolve, reject) => {
+					const request: SubscribeRequest = {
+						slots: {},
+						accounts: {},
+						transactions: {},
+						blocks: {},
+						blocksMeta: {},
+						accountsDataSlice: [],
+						entry: {},
+						transactionsStatus: {},
+					};
+					this.stream.write(request, (err) => {
+						if (err === null || err === undefined) {
+							this.listenerId = undefined;
+							resolve();
+						} else {
+							reject(err);
+						}
+					});
+				}).catch((reason) => {
+					console.error(reason);
+					throw reason;
 				});
-			}).catch((reason) => {
-				console.error(reason);
-				throw reason;
-			});
-			return promise;
-		} else {
-			this.isUnsubscribing = false;
-		}
-
-		if (this.onUnsubscribe) {
-			try {
-				await this.onUnsubscribe();
-			} catch (e) {
-				console.error(e);
 			}
+
+			// invoke onUnsubscribe on the normal path too (previously it only ran when
+			// listenerId was already null, so the resubscribe hook never fired on the
+			// standard unsubscribe path)
+			if (this.onUnsubscribe) {
+				try {
+					await this.onUnsubscribe();
+				} catch (e) {
+					console.error(e);
+				}
+			}
+		} finally {
+			// clear the flag on every exit path, including a failed stream.write, so
+			// the instance isn't wedged and can resubscribe
+			this.isUnsubscribing = false;
 		}
 	}
 

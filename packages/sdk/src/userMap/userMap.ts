@@ -768,7 +768,7 @@ export class UserMap implements UserMapInterface {
 				this.eventEmitter.emit('userUpdate', userWithSlot.data);
 			}
 		} else {
-			this.addPubkey(new PublicKey(key), userAccount, slot);
+			await this.addPubkey(new PublicKey(key), userAccount, slot);
 		}
 	}
 

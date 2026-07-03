@@ -486,8 +486,8 @@ export class EventSubscriber {
 	 */
 	public getEventList<Type extends keyof EventMap>(
 		eventType: Type
-	): EventList<Type> {
-		return this.eventListMap.get(eventType) as EventList<Type>;
+	): EventList<Type> | undefined {
+		return this.eventListMap.get(eventType) as EventList<Type> | undefined;
 	}
 
 	/**

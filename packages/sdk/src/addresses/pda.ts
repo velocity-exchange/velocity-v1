@@ -22,9 +22,11 @@ import { SpotMarketAccount, TokenProgramFlag } from '../types';
 export async function getVelocityStateAccountPublicKeyAndNonce(
 	programId: PublicKey
 ): Promise<[PublicKey, number]> {
-	return PublicKey.findProgramAddress(
-		[Buffer.from(anchor.utils.bytes.utf8.encode('velocity_state'))],
-		programId
+	return Promise.resolve(
+		PublicKey.findProgramAddressSync(
+			[Buffer.from(anchor.utils.bytes.utf8.encode('velocity_state'))],
+			programId
+		)
 	);
 }
 
@@ -52,13 +54,15 @@ export async function getUserAccountPublicKeyAndNonce(
 	authority: PublicKey,
 	subAccountId = 0
 ): Promise<[PublicKey, number]> {
-	return PublicKey.findProgramAddress(
-		[
-			Buffer.from(anchor.utils.bytes.utf8.encode('user')),
-			authority.toBuffer(),
-			new anchor.BN(subAccountId).toArrayLike(Buffer, 'le', 2),
-		],
-		programId
+	return Promise.resolve(
+		PublicKey.findProgramAddressSync(
+			[
+				Buffer.from(anchor.utils.bytes.utf8.encode('user')),
+				authority.toBuffer(),
+				new anchor.BN(subAccountId).toArrayLike(Buffer, 'le', 2),
+			],
+			programId
+		)
 	);
 }
 

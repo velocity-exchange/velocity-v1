@@ -47,7 +47,7 @@ export class SlothashSubscriber {
 	/**
 	 * @param connection RPC connection to subscribe on.
 	 * @param config.commitment Commitment for both the initial fetch and the account-change subscription; defaults to `'processed'`.
-	 * @param config.resubTimeoutMs If set, resubscribe when no update arrives for this many ms. Values below 1000ms log a warning but are still honored.
+	 * @param config.resubTimeoutMs If set to a positive value, resubscribe when no update arrives for this many ms; `0` (or unset) disables the resubscribe watchdog. Positive values below 1000ms log a warning but are still honored.
 	 */
 	public constructor(
 		private connection: Connection,

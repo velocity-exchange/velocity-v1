@@ -72,7 +72,7 @@ export class UserStatsMap {
 		);
 	}
 
-	/** Populates the map for `authorities` via `sync()` (no-op if already populated). */
+	/** Populates the map for `authorities` via `sync()` (no-op if the map already has entries). */
 	public async subscribe(authorities: PublicKey[]) {
 		if (this.size() > 0) {
 			return;

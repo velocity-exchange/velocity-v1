@@ -41,6 +41,8 @@ export class grpcMultiUserAccountSubscriber {
 	private pendingAddKeys = new Set<string>();
 	private debounceTimer?: ReturnType<typeof setTimeout>;
 	private debounceMs = 20;
+	/** Maximum time to wait in `subscribe()` for every registered user key to appear in the multi-subscriber's data map before giving up. */
+	private static readonly SUBSCRIBE_DATA_TIMEOUT_MS = 30_000;
 	private isMultiSubscribed = false;
 	private userAccountSubscribers = new Map<string, UserAccountSubscriber>();
 	private grpcConfigs: GrpcConfigs;
@@ -88,7 +90,9 @@ export class grpcMultiUserAccountSubscriber {
 	 * Creates the shared `grpcMultiAccountSubscriber` (if not injected at construction),
 	 * subscribes every per-user facade already registered via `forUser()`, flushes any pending
 	 * user keys into the underlying gRPC stream, and blocks until the multi-subscriber's account
-	 * data map contains an entry for every registered user key (polling at `debounceMs` intervals).
+	 * data map contains an entry for every registered user key (polling at `debounceMs` intervals),
+	 * up to `SUBSCRIBE_DATA_TIMEOUT_MS`.
+	 * @throws if any registered user key is still missing from the data map once the timeout elapses.
 	 */
 	public async subscribe(): Promise<void> {
 		if (!this._multiSubscriber) {
@@ -115,20 +119,26 @@ export class grpcMultiUserAccountSubscriber {
 		// Wait until the underlying multi-subscriber has data for every registered user key
 		const targetKeys = Array.from(this.listeners.keys());
 		if (targetKeys.length === 0) return;
-		// Poll until all keys are present in dataMap
+		// Poll until all keys are present in dataMap, bounded by a deadline so a key that never
+		// arrives (e.g. dropped subscription) fails loudly instead of hanging forever.
 		// Use debounceMs as the polling cadence to avoid introducing new magic numbers
-		// eslint-disable-next-line no-constant-condition
-		while (true) {
-			const map = this.multiSubscriber.getAccountDataMap();
-			let allPresent = true;
-			for (const k of targetKeys) {
-				if (!map.has(k)) {
-					allPresent = false;
-					break;
-				}
+		const deadline =
+			Date.now() + grpcMultiUserAccountSubscriber.SUBSCRIBE_DATA_TIMEOUT_MS;
+		let missingKeys = targetKeys.filter(
+			(k) => !this.multiSubscriber.getAccountDataMap().has(k)
+		);
+		while (missingKeys.length > 0) {
+			if (Date.now() >= deadline) {
+				throw new Error(
+					`grpcMultiUserAccountSubscriber: timed out after ${
+						grpcMultiUserAccountSubscriber.SUBSCRIBE_DATA_TIMEOUT_MS
+					}ms waiting for account data for keys: ${missingKeys.join(', ')}`
+				);
 			}
-			if (allPresent) break;
 			await new Promise((resolve) => setTimeout(resolve, this.debounceMs));
+			missingKeys = targetKeys.filter(
+				(k) => !this.multiSubscriber.getAccountDataMap().has(k)
+			);
 		}
 	}
 

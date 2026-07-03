@@ -50,6 +50,12 @@ export class WebSocketLogProvider implements LogProvider {
 			return true;
 		}
 
+		// reset teardown flags for a fresh subscription cycle — a caller-initiated
+		// unsubscribe(true) leaves externalUnsubscribe set, which would otherwise
+		// permanently suppress the heartbeat-driven resubscribe watchdog here
+		this.isUnsubscribing = false;
+		this.externalUnsubscribe = false;
+
 		this.callback = callback;
 		try {
 			this.setSubscription(callback);

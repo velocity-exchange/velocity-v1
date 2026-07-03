@@ -410,6 +410,20 @@ export class WebSocketVelocityClientAccountSubscriberV2
 			return true;
 		} catch (error) {
 			console.error('Subscription failed:', error);
+			// Tear down any child subscribers that were created before the failure so a
+			// subsequent subscribe() attempt doesn't leak live connections; isSubscribed is
+			// still false at this point, so unsubscribe() alone would otherwise skip this.
+			await Promise.all([
+				this.stateAccountSubscriber?.unsubscribe(),
+				this.unsubscribeFromMarketAccounts(),
+				this.unsubscribeFromSpotMarketAccounts(),
+				this.unsubscribeFromOracles(),
+			]).catch((teardownError) => {
+				console.error(
+					'Error tearing down partial subscription:',
+					teardownError
+				);
+			});
 			this.isSubscribing = false;
 			this.subscriptionPromiseResolver(false);
 			return false;

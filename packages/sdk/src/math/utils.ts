@@ -126,7 +126,8 @@ export function timeRemainingUntilUpdate(
 
 /**
  * Compares two date strings for equality by calendar day (year/month/date), ignoring
- * time-of-day and timezone offset of the parsed `Date` objects.
+ * time-of-day. Uses the local `getDate()`/`getMonth()`/`getFullYear()` getters, so the
+ * comparison is against the process's local-timezone calendar day (not UTC).
  *
  * @param {string} dateString1 - A date string parseable by `new Date()`
  * @param {string} dateString2 - A date string parseable by `new Date()`
@@ -159,7 +160,9 @@ export function isBNSafe(number: number): boolean {
  * Converts a human-readable JS `number` into a `BN` scaled by `precision`, routing through a
  * string conversion (`number.toString()` for whole numbers) instead of `number * precision` when
  * the naive multiplication would exceed `Number.MAX_SAFE_INTEGER` (per `isBNSafe`), avoiding
- * silent floating-point precision loss for large inputs.
+ * silent floating-point precision loss for large inputs. Note a fractional input whose scaled
+ * value exceeds `Number.MAX_SAFE_INTEGER` has its fractional part truncated (`bn.js` accepts only
+ * integer numbers); this is intentional and pinned by `tests/bn/test.ts`.
  *
  * @param {number} number - The human-readable amount to convert
  * @param {BN} precision - The target fixed-point precision (e.g. `QUOTE_PRECISION`, `BASE_PRECISION`)

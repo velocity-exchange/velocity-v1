@@ -610,23 +610,25 @@ export class WebSocketVelocityClientAccountSubscriber
 		if (this.spotMarketAccountSubscribers.has(marketIndex)) {
 			return true;
 		}
-		const subscriptionSuccess = this.subscribeToSpotMarketAccount(marketIndex);
+		const subscriptionSuccess = await this.subscribeToSpotMarketAccount(
+			marketIndex
+		);
 		await this.setSpotOracleMap();
 		return subscriptionSuccess;
 	}
 
 	/**
 	 * Adds a perp market (and its oracle, via `setPerpOracleMap`) to be tracked, subscribing a new
-	 * `WebSocketAccountSubscriber` for it. Idempotent: returns `true` immediately if already
-	 * tracked. Note the returned promise is not awaited before calling `setPerpOracleMap`, so the
-	 * oracle map may be updated slightly before the market subscription itself resolves.
+	 * `WebSocketAccountSubscriber` for it. Idempotent: returns `true` immediately if already tracked.
 	 * @param marketIndex Perp market index to start tracking.
 	 */
 	async addPerpMarket(marketIndex: number): Promise<boolean> {
 		if (this.perpMarketAccountSubscribers.has(marketIndex)) {
 			return true;
 		}
-		const subscriptionSuccess = this.subscribeToPerpMarketAccount(marketIndex);
+		const subscriptionSuccess = await this.subscribeToPerpMarketAccount(
+			marketIndex
+		);
 		await this.setPerpOracleMap();
 		return subscriptionSuccess;
 	}

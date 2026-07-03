@@ -1007,6 +1007,11 @@ export class WebSocketProgramAccountsSubscriberV2<T>
 		// Remove from currently polling set if it was being polled
 		this.accountsCurrentlyPolling.delete(accountIdString);
 
+		// Clear stale monitoring bookkeeping so a re-added pubkey isn't mistaken for
+		// having a recent WS notification or a still-pending missed update.
+		this.lastWsNotificationTime.delete(accountIdString);
+		this.accountsWithMissedUpdates.delete(accountIdString);
+
 		// If no more accounts are being polled, stop batch polling
 		if (this.accountsCurrentlyPolling.size === 0 && this.batchPollingTimeout) {
 			clearTimeout(this.batchPollingTimeout);

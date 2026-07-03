@@ -476,7 +476,7 @@ export class PollingVelocityClientAccountSubscriber
 		}
 
 		await this.addAccountToAccountLoader(accountToPoll);
-		this.setSpotOracleMap();
+		await this.setSpotOracleMap();
 		return true;
 	}
 

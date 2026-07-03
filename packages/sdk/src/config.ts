@@ -166,14 +166,18 @@ export const initialize = (props: {
 
 /**
  * Whether the SDK can construct an `OracleClient` for `source` — mirrors the throwing branches in
- * `getOracleClient`. Markets whose oracle source is unsupported (retired Switchboard feeds) are
- * still listed/indexed, but their oracles must not be added to subscription lists, since building
- * a client for them throws and would abort the whole subscribe.
+ * `getOracleClient`. Markets whose oracle source is unsupported (retired Switchboard feeds and
+ * removed Pyth pull feeds) are still listed/indexed, but their oracles must not be added to
+ * subscription lists, since building a client for them throws and would abort the whole subscribe.
  */
 function isOracleSourceSubscribable(source: OracleSource): boolean {
 	return !(
 		isVariant(source, 'deprecatedSwitchboard') ||
-		isVariant(source, 'deprecatedSwitchboardOnDemand')
+		isVariant(source, 'deprecatedSwitchboardOnDemand') ||
+		isVariant(source, 'pythPull') ||
+		isVariant(source, 'pyth1KPull') ||
+		isVariant(source, 'pyth1MPull') ||
+		isVariant(source, 'pythStableCoinPull')
 	);
 }
 

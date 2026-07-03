@@ -88,16 +88,16 @@ export function standardizePrice(
  * @param order Order to price.
  * @param oraclePriceData Oracle price source — use `MMOraclePriceData` for perp orders, `OraclePriceData` for spot.
  * @param slot Current slot, used to evaluate auction progress.
- * @param tickSize Market's order tick size, PRICE_PRECISION (1e6). Defaults to `ONE` (no effective standardization).
  * @param fallbackPrice Price to return for a market order with no auction/offset/fixed price (e.g. a mark or oracle price), PRICE_PRECISION (1e6).
+ * @param tickSize Market's order tick size, PRICE_PRECISION (1e6). Defaults to `ONE` (no effective standardization).
  * @returns Limit price, PRICE_PRECISION (1e6); `undefined` if the order has no resolvable price and no `fallbackPrice` was given.
  */
 export function getLimitPrice<T extends MarketTypeStr>(
 	order: Order,
 	oraclePriceData: T extends 'spot' ? OraclePriceData : MMOraclePriceData,
 	slot: number,
-	tickSize: BN = ONE,
-	fallbackPrice?: BN
+	fallbackPrice?: BN,
+	tickSize: BN = ONE
 ): BN | undefined {
 	if (hasAuctionPrice(order, slot)) {
 		return getAuctionPrice(order, slot, oraclePriceData.price, tickSize);
@@ -230,6 +230,7 @@ export function calculateBaseAssetAmountForAmmToFulfill(
 		order,
 		mmOraclePriceData,
 		slot,
+		undefined,
 		market.orderTickSize
 	);
 	let baseAssetAmount;

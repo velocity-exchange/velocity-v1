@@ -235,7 +235,13 @@ describe('tick size standardization parity', () => {
 				auctionDuration: 0,
 			});
 			expect(
-				getLimitPrice(longOrder, mmOracle(1000, 4), 4, TICK)!.toString()
+				getLimitPrice(
+					longOrder,
+					mmOracle(1000, 4),
+					4,
+					undefined,
+					TICK
+				)!.toString()
 			).to.equal('1020');
 
 			const shortOrder = makeOrder({
@@ -245,7 +251,13 @@ describe('tick size standardization parity', () => {
 				auctionDuration: 0,
 			});
 			expect(
-				getLimitPrice(shortOrder, mmOracle(1000, 4), 4, TICK)!.toString()
+				getLimitPrice(
+					shortOrder,
+					mmOracle(1000, 4),
+					4,
+					undefined,
+					TICK
+				)!.toString()
 			).to.equal('1030');
 		});
 
@@ -257,7 +269,7 @@ describe('tick size standardization parity', () => {
 				auctionDuration: 0,
 			});
 			expect(
-				getLimitPrice(order, mmOracle(5, 4), 4, TICK)!.toString()
+				getLimitPrice(order, mmOracle(5, 4), 4, undefined, TICK)!.toString()
 			).to.equal('10');
 		});
 
@@ -273,7 +285,13 @@ describe('tick size standardization parity', () => {
 			});
 			// slot 4 -> elapsed 3 -> raw 132 -> floor 130
 			expect(
-				getLimitPrice(order, mmOracle(1000, 4), 4, TICK)!.toString()
+				getLimitPrice(
+					order,
+					mmOracle(1000, 4),
+					4,
+					undefined,
+					TICK
+				)!.toString()
 			).to.equal('130');
 		});
 
@@ -285,7 +303,7 @@ describe('tick size standardization parity', () => {
 				auctionDuration: 0,
 			});
 			expect(
-				getLimitPrice(order, mmOracle(1000, 4), 4, TICK)!.toString()
+				getLimitPrice(order, mmOracle(1000, 4), 4, undefined, TICK)!.toString()
 			).to.equal('123');
 		});
 
@@ -302,8 +320,8 @@ describe('tick size standardization parity', () => {
 					order,
 					mmOracle(1000, 4),
 					4,
-					TICK,
-					new BN(127)
+					new BN(127),
+					TICK
 				)!.toString()
 			).to.equal('130');
 		});

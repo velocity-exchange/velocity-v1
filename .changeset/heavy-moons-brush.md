@@ -1,6 +1,6 @@
 ---
-'@velocity-exchange/sdk': patch
-'@velocity-exchange/admin-cli': patch
+'@velocity-exchange/sdk': minor
+'@velocity-exchange/admin-cli': minor
 ---
 
 Program↔SDK parity fixes from the 2026-07-02 audit: renamed deprecated Switchboard
@@ -33,3 +33,11 @@ calculate_taker_fee; MM-oracle validity is computed with the raw exchange confid
 get_mm_oracle_price_data) while the returned MM price keeps its diff-adjusted confidence; and
 corrected the OracleSourceNum doc (it is an SDK-internal oracle-id encoding, not the on-chain
 Borsh discriminant).
+
+Visible/breaking API changes in this release: `OracleSource.SWITCHBOARD` /
+`OracleSource.SWITCHBOARD_ON_DEMAND` (and the corresponding `OracleSourceNum` entries) are renamed
+to `DEPRECATED_SWITCHBOARD` / `DEPRECATED_SWITCHBOARD_ON_DEMAND` with no aliases kept for the old
+names; `ContractType.FUTURE` is renamed to `DEPRECATED_FUTURE`; and `FeatureBitFlags.BUILDER_REFERRAL`
+is removed outright, since no such on-chain flag exists. Separately, `getLimitPrice` gained a new
+optional trailing `tickSize` parameter — the existing `fallbackPrice` parameter stays in its original
+4th position, so old 4-argument call sites keep working unchanged.

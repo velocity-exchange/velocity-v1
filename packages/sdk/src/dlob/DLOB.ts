@@ -1244,6 +1244,7 @@ export class DLOB {
 				nodeOrder,
 				oraclePriceData,
 				slot,
+				undefined,
 				tickSize
 			);
 

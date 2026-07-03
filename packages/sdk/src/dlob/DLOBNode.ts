@@ -151,7 +151,13 @@ export abstract class OrderNode implements DLOBNode {
 		slot: number,
 		tickSize?: BN
 	): BN | undefined {
-		return getLimitPrice<T>(this.order, oraclePriceData, slot, tickSize);
+		return getLimitPrice<T>(
+			this.order,
+			oraclePriceData,
+			slot,
+			undefined,
+			tickSize
+		);
 	}
 
 	/** See `DLOBNode.getPriceOrThrow`. @throws if `getPrice` returns `undefined` for this order. */

@@ -58,7 +58,6 @@ export function standardizePrice(
 	direction: PositionDirection
 ): BN {
 	if (price.eq(ZERO)) {
-		console.log('price is zero');
 		return price;
 	}
 

@@ -4055,7 +4055,7 @@ export class User {
 	 * @param builderInfo Optional builder code; when it carries `builderIdx` + `builderFeeTenthBps`, the builder fee is added on top of the tiered fee.
 	 * @returns feeForQuote : Precision QUOTE_PRECISION (1e6)
 	 */
-	public calculateFeeForQuoteAmount(
+	public calculatePerpTakerFee(
 		quoteAmount: BN,
 		marketIndex?: number,
 		isReferee?: boolean,

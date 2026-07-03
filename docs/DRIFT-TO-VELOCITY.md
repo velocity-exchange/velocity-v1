@@ -310,7 +310,8 @@ These public exports were **added** (or restored) relative to the fork point:
   insurance-fund fee caps; feed their output (not the raw `if + protocol` sum) into the
   covering-amount helpers. `calculateMaxPctToLiquidate` gained an `isIsolatedPosition` param
   (returns 100% in one shot for isolated positions, per `IsolatedMarginLiquidatePerpMode`).
-- `User.calculateFeeForQuoteAmount` gained an optional trailing `builderInfo`
+- `User.calculateFeeForQuoteAmount` was **renamed to `User.calculatePerpTakerFee`** (the old
+  name is gone — update call sites). It also gained an optional trailing `builderInfo`
   (`Pick<OrderParams, 'builderIdx' | 'builderFeeTenthBps'>`) arg; when present the builder fee
   (`quoteAmount * builderFeeTenthBps / 100_000`) is added on top of the tiered fee.
   `VelocityClient.getMarketFees` now also applies the **referee discount** to the taker fee

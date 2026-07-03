@@ -1467,7 +1467,16 @@ export class LiquidatorBot implements Bot {
 		for (const user of this.userMap!.values()) {
 			checkedUsers++;
 			const { canBeLiquidated, marginRequirement } = user.canBeLiquidated();
-			if (canBeLiquidated || user.isBeingLiquidated()) {
+			// `canBeLiquidated` is the cross-margin flag and `isBeingLiquidated()` only reads
+			// the on-chain BeingLiquidated/Bankruptcy status flags. An isolated position that is
+			// economically bankrupt but not yet flagged on-chain (with a healthy cross account)
+			// would otherwise be filtered out here and never reach the `hasIsolatedMarginBankrupt`
+			// resolve gate in tryLiquidate. Include it in candidate selection so it does.
+			if (
+				canBeLiquidated ||
+				user.isBeingLiquidated() ||
+				hasIsolatedMarginBankrupt(user)
+			) {
 				liquidatableUsers++;
 				const userKey = user.userAccountPublicKey.toBase58();
 				if (this.excludedAccounts.has(userKey)) {

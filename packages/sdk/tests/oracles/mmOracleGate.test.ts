@@ -9,6 +9,7 @@ import {
 	isFallbackAvailableLiquiditySource,
 	MMOraclePriceData,
 	StateAccount,
+	VelocityClient,
 } from '../../src';
 import { mockPerpMarkets } from '../dlob/helpers';
 import { mockOrder } from '../user/helpers';
@@ -138,6 +139,113 @@ describe('MM oracle validity gate (UseMMOraclePrice semantics)', () => {
 		);
 
 		assert(mmOracleValidity === OracleValidity.TooVolatile);
+	});
+});
+
+// Pins the sequence-id recency ordering in
+// `VelocityClient.getMMOracleDataForPerpMarket` against the program's
+// `MMOraclePriceData::new` (`state/oracle.rs`). Two boundary cases the SDK
+// previously got wrong:
+//   1. Equal sequence ids: Rust uses `exchange_seq > mm_seq`, so equal ids mean
+//      the exchange oracle is NOT more recent and the MM price is used.
+//   2. The sequence-id path guard is `abs_diff < exchange_seq / 10_000`; the slot
+//      path is its negation and must fire on `>=`, not `>`.
+describe('MM oracle sequence-id recency (getMMOracleDataForPerpMarket)', () => {
+	const guardRails: OracleGuardRails = {
+		priceDivergence: {
+			markOraclePercentDivergence: new BN(0),
+			oracleTwap5MinPercentDivergence: new BN(0),
+		},
+		validity: {
+			slotsBeforeStaleForAmm: new BN(10),
+			slotsBeforeStaleForMargin: new BN(60),
+			confidenceIntervalMaxSize: new BN(20000),
+			tooVolatileRatio: new BN(5),
+		},
+	};
+
+	// exchange 100.0, mm 100.5 => 0.5% apart (within the 1% fallback threshold),
+	// so the only thing deciding which price is returned is the recency ordering.
+	const exchangePrice = new BN(100).mul(PRICE_PRECISION);
+	const mmOraclePrice = exchangePrice.add(PRICE_PRECISION.divn(2));
+
+	function callWith(
+		exchangeSequenceId: BN,
+		mmOracleSequenceId: BN
+	): MMOraclePriceData {
+		const market = _.cloneDeep(mockPerpMarkets[0]);
+		// twaps == exchange price keeps the mm oracle Valid (not TooVolatile).
+		market.marketStats.historicalOracleData.lastOraclePriceTwap =
+			exchangePrice;
+		market.marketStats.historicalOracleData.lastOraclePriceTwap5Min =
+			exchangePrice;
+		market.marketStats.mmOraclePrice = mmOraclePrice;
+		market.marketStats.mmOracleSlot = new BN(1000);
+		market.marketStats.mmOracleSequenceId = mmOracleSequenceId;
+
+		const oracleData = {
+			price: exchangePrice,
+			slot: new BN(1000),
+			confidence: new BN(1000),
+			hasSufficientNumberOfDataPoints: true,
+			sequenceId: exchangeSequenceId,
+		};
+
+		const fakeThis = {
+			getPerpMarketAccountOrThrow: () => market,
+			getOracleDataForPerpMarket: () => oracleData,
+			accountSubscriber: {
+				getStateAccountAndSlot: () => ({
+					data: { oracleGuardRails: guardRails },
+					slot: 1000,
+				}),
+			},
+		};
+
+		return VelocityClient.prototype.getMMOracleDataForPerpMarket.call(
+			fakeThis,
+			0
+		) as MMOraclePriceData;
+	}
+
+	it('uses the MM oracle when sequence ids are equal (mirrors exchange_seq > mm_seq)', () => {
+		// seq >= 10_000 so abs_diff(0) < seq/10_000, i.e. the sequence-id path is taken.
+		const result = callWith(new BN(20000), new BN(20000));
+		assert(
+			result.price.eq(mmOraclePrice),
+			`expected MM price on equal sequence ids, got ${result.price.toString()}`
+		);
+	});
+
+	it('uses the MM oracle when the exchange sequence id is older', () => {
+		// abs_diff (5) < threshold (100_000 / 10_000 = 10) => sequence-id path.
+		const result = callWith(new BN(100_000), new BN(100_005));
+		assert(
+			result.price.eq(mmOraclePrice),
+			`expected MM price when exchange seq < mm seq, got ${result.price.toString()}`
+		);
+	});
+
+	it('falls back to the exchange oracle when its sequence id is newer', () => {
+		// abs_diff (6) < threshold (100_006 / 10_000 = 10) => sequence-id path.
+		const result = callWith(new BN(100_006), new BN(100_000));
+		assert(
+			result.price.eq(exchangePrice),
+			`expected exchange price when exchange seq > mm seq, got ${result.price.toString()}`
+		);
+	});
+
+	it('switches to slot recency at the abs_diff == seq/10_000 boundary (>=, not >)', () => {
+		// exchange_seq = 100_000 => threshold = 10. abs_diff = 10 == threshold, so
+		// Rust takes the slot/delay path. With equal slots the exchange oracle is not
+		// more recent, so the MM price is used — a `>` guard would instead take the
+		// sequence path and, with exchange_seq (100_010) > mm_seq (100_000), wrongly
+		// fall back to the exchange oracle.
+		const result = callWith(new BN(100_010), new BN(100_000));
+		assert(
+			result.price.eq(mmOraclePrice),
+			`expected MM price at the slot-path boundary, got ${result.price.toString()}`
+		);
 	});
 });
 

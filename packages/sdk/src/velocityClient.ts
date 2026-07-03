@@ -11855,7 +11855,9 @@ export class VelocityClient {
 
 		const mmOracleSequenceId = perpMarket.marketStats.mmOracleSequenceId;
 
-		// Do slot check for recency if sequence ids are zero or they're too divergent
+		// Do slot check for recency if sequence ids are zero or they're too divergent.
+		// Mirrors Rust's sequence-id path guard `abs_diff < exchange_seq / 10_000`: the slot
+		// path is the negation, so it fires on `>=` (not `>`).
 		const doSlotCheckForRecency =
 			oracleData.sequenceId == null ||
 			oracleData.sequenceId.eq(ZERO) ||
@@ -11863,7 +11865,7 @@ export class VelocityClient {
 			oracleData.sequenceId
 				.sub(perpMarket.marketStats.mmOracleSequenceId)
 				.abs()
-				.gt(oracleData.sequenceId.div(new BN(10_000)));
+				.gte(oracleData.sequenceId.div(new BN(10_000)));
 
 		let isExchangeOracleMoreRecent = true;
 		if (
@@ -11874,7 +11876,9 @@ export class VelocityClient {
 		} else if (
 			!doSlotCheckForRecency &&
 			oracleData.sequenceId != null &&
-			oracleData.sequenceId.lt(mmOracleSequenceId)
+			// Rust uses `exchange_seq > mm_seq`; equal sequence ids mean the exchange oracle is
+			// NOT more recent, so the MM oracle is used. Use `lte` so equality clears the flag.
+			oracleData.sequenceId.lte(mmOracleSequenceId)
 		) {
 			isExchangeOracleMoreRecent = false;
 		}

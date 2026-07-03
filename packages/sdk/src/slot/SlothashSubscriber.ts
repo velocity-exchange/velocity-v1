@@ -144,7 +144,7 @@ export class SlothashSubscriber {
 		this.timeoutId = undefined;
 
 		if (this.subscriptionId != null) {
-			await this.connection.removeSlotChangeListener(this.subscriptionId);
+			await this.connection.removeAccountChangeListener(this.subscriptionId);
 			this.subscriptionId = undefined;
 			this.isUnsubscribing = false;
 		} else {

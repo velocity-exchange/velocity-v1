@@ -90,7 +90,9 @@ describe('getMarginCalculation snapshot', () => {
 		const calc = user.getMarginCalculation('Initial', {
 			liquidationBufferMap: new Map([['cross', tenPercent]]),
 		});
-		const liability = new BN(110).mul(QUOTE_PRECISION); // $110
+		// mirrors margin.rs: a quote borrow enters the requirement at its raw strict
+		// token value; the cross buffer only appears in marginRequirementPlusBuffer
+		const liability = new BN(100).mul(QUOTE_PRECISION); // $100
 		assert(calc.totalCollateral.eq(ZERO));
 		assert(
 			calc.marginRequirement.eq(liability),

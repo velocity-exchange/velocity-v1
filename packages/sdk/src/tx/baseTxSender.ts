@@ -331,7 +331,10 @@ export abstract class BaseTxSender implements TxSender {
 		let response: RpcResponseAndContext<SignatureResult> | null = null;
 		const promises = connections.map((connection, i) => {
 			let subscriptionId: number | undefined;
-			const confirmPromise = new Promise((resolve, reject) => {
+			// a failed subscription setup on one connection is best-effort: log and
+			// leave its promise pending so the race keeps waiting on the others
+			// (if every subscription fails, the timeout/Combo fallback still applies)
+			const confirmPromise = new Promise((resolve) => {
 				try {
 					subscriptionId = connection.onSignature(
 						signature,
@@ -346,7 +349,10 @@ export abstract class BaseTxSender implements TxSender {
 						subscriptionCommitment
 					);
 				} catch (err) {
-					reject(err);
+					console.error(
+						'confirmTransactionWebSocket: failed to set up onSignature listener',
+						err
+					);
 				}
 			});
 			subscriptionIds.push(subscriptionId);
@@ -424,12 +430,24 @@ export abstract class BaseTxSender implements TxSender {
 
 			const signatureResult = rpcResponse && rpcResponse.value?.[0];
 
+			// a stronger status satisfies a weaker commitment (processed < confirmed < finalized),
+			// e.g. a tx already finalized must not keep a 'confirmed' wait polling until timeout
+			const statusRank: Record<string, number> = {
+				processed: 0,
+				confirmed: 1,
+				finalized: 2,
+			};
 			if (
 				rpcResponse &&
 				signatureResult &&
-				signatureResult.confirmationStatus === commitment
+				signatureResult.confirmationStatus &&
+				statusRank[signatureResult.confirmationStatus] >=
+					(statusRank[commitment] ?? 2)
 			) {
-				return { context: rpcResponse.context, value: { err: null } };
+				return {
+					context: rpcResponse.context,
+					value: { err: signatureResult.err },
+				};
 			}
 
 			totalTime += backoffTime;

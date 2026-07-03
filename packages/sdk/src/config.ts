@@ -1,5 +1,10 @@
 import { ConfirmOptions, PublicKey } from '@solana/web3.js';
-import { PerpMarketAccount, SpotMarketAccount } from './types';
+import {
+	isVariant,
+	OracleSource,
+	PerpMarketAccount,
+	SpotMarketAccount,
+} from './types';
 import {
 	DevnetPerpMarkets,
 	MainnetPerpMarkets,
@@ -160,6 +165,19 @@ export const initialize = (props: {
 };
 
 /**
+ * Whether the SDK can construct an `OracleClient` for `source` — mirrors the throwing branches in
+ * `getOracleClient`. Markets whose oracle source is unsupported (retired Switchboard feeds) are
+ * still listed/indexed, but their oracles must not be added to subscription lists, since building
+ * a client for them throws and would abort the whole subscribe.
+ */
+function isOracleSourceSubscribable(source: OracleSource): boolean {
+	return !(
+		isVariant(source, 'deprecatedSwitchboard') ||
+		isVariant(source, 'deprecatedSwitchboardOnDemand')
+	);
+}
+
+/**
  * Builds the market-index and oracle-subscription lists a `VelocityClient` needs to subscribe to,
  * from static market configs (no RPC calls) — the fast, offline alternative to
  * `findAllMarketAndOracles`. Oracles are de-duplicated by `getOracleId` (pubkey + source), so a
@@ -197,18 +215,22 @@ export function getMarketsAndOraclesForSubscription(
 
 	for (const market of perpMarketsToUse) {
 		perpMarketIndexes.push(market.marketIndex);
-		oracleInfos.set(getOracleId(market.oracle, market.oracleSource), {
-			publicKey: market.oracle,
-			source: market.oracleSource,
-		});
+		if (isOracleSourceSubscribable(market.oracleSource)) {
+			oracleInfos.set(getOracleId(market.oracle, market.oracleSource), {
+				publicKey: market.oracle,
+				source: market.oracleSource,
+			});
+		}
 	}
 
 	for (const spotMarket of spotMarketsToUse) {
 		spotMarketIndexes.push(spotMarket.marketIndex);
-		oracleInfos.set(getOracleId(spotMarket.oracle, spotMarket.oracleSource), {
-			publicKey: spotMarket.oracle,
-			source: spotMarket.oracleSource,
-		});
+		if (isOracleSourceSubscribable(spotMarket.oracleSource)) {
+			oracleInfos.set(getOracleId(spotMarket.oracle, spotMarket.oracleSource), {
+				publicKey: spotMarket.oracle,
+				source: spotMarket.oracleSource,
+			});
+		}
 	}
 
 	return {
@@ -251,19 +273,23 @@ export async function findAllMarketAndOracles(
 	for (const perpMarketProgramAccount of perpMarketProgramAccounts) {
 		const perpMarket = perpMarketProgramAccount.account as PerpMarketAccount;
 		perpMarketIndexes.push(perpMarket.marketIndex);
-		oracleInfos.set(getOracleId(perpMarket.oracle, perpMarket.oracleSource), {
-			publicKey: perpMarket.oracle,
-			source: perpMarket.oracleSource,
-		});
+		if (isOracleSourceSubscribable(perpMarket.oracleSource)) {
+			oracleInfos.set(getOracleId(perpMarket.oracle, perpMarket.oracleSource), {
+				publicKey: perpMarket.oracle,
+				source: perpMarket.oracleSource,
+			});
+		}
 	}
 
 	for (const spotMarketProgramAccount of spotMarketProgramAccounts) {
 		const spotMarket = spotMarketProgramAccount.account as SpotMarketAccount;
 		spotMarketIndexes.push(spotMarket.marketIndex);
-		oracleInfos.set(getOracleId(spotMarket.oracle, spotMarket.oracleSource), {
-			publicKey: spotMarket.oracle,
-			source: spotMarket.oracleSource,
-		});
+		if (isOracleSourceSubscribable(spotMarket.oracleSource)) {
+			oracleInfos.set(getOracleId(spotMarket.oracle, spotMarket.oracleSource), {
+				publicKey: spotMarket.oracle,
+				source: spotMarket.oracleSource,
+			});
+		}
 	}
 
 	return {

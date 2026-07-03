@@ -110,7 +110,7 @@ describe('User fee calculation', () => {
 		const user = await makeFeeMockUser(0);
 
 		// 1_000_007 * 1 / 1000 = 1000.007 -> ceil = 1001, floor would be 1000
-		const fee = user.calculateFeeForQuoteAmount(new BN(1_000_007));
+		const fee = user.calculatePerpTakerFee(new BN(1_000_007));
 		assert(
 			fee.eq(new BN(1001)),
 			`expected ceil-rounded fee of 1001, got ${fee.toString()}`
@@ -120,7 +120,7 @@ describe('User fee calculation', () => {
 	it('referee discount is not applied for a non-referred user', async () => {
 		const user = await makeFeeMockUser(0);
 
-		const fee = user.calculateFeeForQuoteAmount(new BN(1_000_000));
+		const fee = user.calculatePerpTakerFee(new BN(1_000_000));
 		// 1_000_000 * 1 / 1000 = 1000, no referee discount
 		assert(
 			fee.eq(new BN(1000)),
@@ -131,7 +131,7 @@ describe('User fee calculation', () => {
 	it('referee discount is applied when the user stats account marks them as referred', async () => {
 		const user = await makeFeeMockUser(ReferrerStatus.IsReferred);
 
-		const fee = user.calculateFeeForQuoteAmount(new BN(1_000_000));
+		const fee = user.calculatePerpTakerFee(new BN(1_000_000));
 		// base fee = 1000, referee discount = 25% of 1000 = 250 -> fee = 750
 		assert(
 			fee.eq(new BN(750)),
@@ -142,11 +142,7 @@ describe('User fee calculation', () => {
 	it('an explicit isReferee override applies the discount regardless of user stats', async () => {
 		const user = await makeFeeMockUser(0);
 
-		const fee = user.calculateFeeForQuoteAmount(
-			new BN(1_000_000),
-			undefined,
-			true
-		);
+		const fee = user.calculatePerpTakerFee(new BN(1_000_000), undefined, true);
 		assert(
 			fee.eq(new BN(750)),
 			`expected 25% referee discount applied via override, got ${fee.toString()}`
@@ -154,7 +150,7 @@ describe('User fee calculation', () => {
 	});
 
 	// M11: getMarketFees (the primary fee-prediction entry point) must apply the
-	// referee discount, not just calculateFeeForQuoteAmount's volume-tier branch.
+	// referee discount, not just calculatePerpTakerFee's volume-tier branch.
 	it('getMarketFees applies the referee discount to the taker fee for a referred user', async () => {
 		const referred = await makeFeeMockUser(ReferrerStatus.IsReferred);
 		const notReferred = await makeFeeMockUser(0);
@@ -178,12 +174,12 @@ describe('User fee calculation', () => {
 		);
 	});
 
-	// M11: the calculateFeeForQuoteAmount marketIndex path (which delegates to
+	// M11: the calculatePerpTakerFee marketIndex path (which delegates to
 	// getMarketFees) must now also reflect the referee discount.
-	it('calculateFeeForQuoteAmount marketIndex path applies the referee discount', async () => {
+	it('calculatePerpTakerFee marketIndex path applies the referee discount', async () => {
 		const user = await makeFeeMockUser(ReferrerStatus.IsReferred);
 
-		const fee = user.calculateFeeForQuoteAmount(new BN(1_000_000), 0);
+		const fee = user.calculatePerpTakerFee(new BN(1_000_000), 0);
 		// 1_000_000 * 0.00075 = 750
 		assert(
 			fee.eq(new BN(750)),
@@ -208,12 +204,12 @@ describe('User fee calculation', () => {
 		);
 	});
 
-	// M12: builder fee must also be applied by calculateFeeForQuoteAmount on both
+	// M12: builder fee must also be applied by calculatePerpTakerFee on both
 	// the volume-tier branch and the marketIndex branch.
-	it('calculateFeeForQuoteAmount adds the builder fee on the volume-tier branch', async () => {
+	it('calculatePerpTakerFee adds the builder fee on the volume-tier branch', async () => {
 		const user = await makeFeeMockUser(0);
 
-		const fee = user.calculateFeeForQuoteAmount(
+		const fee = user.calculatePerpTakerFee(
 			new BN(1_000_000),
 			undefined,
 			false,
@@ -226,10 +222,10 @@ describe('User fee calculation', () => {
 		);
 	});
 
-	it('calculateFeeForQuoteAmount adds the builder fee on the marketIndex branch', async () => {
+	it('calculatePerpTakerFee adds the builder fee on the marketIndex branch', async () => {
 		const user = await makeFeeMockUser(0);
 
-		const fee = user.calculateFeeForQuoteAmount(new BN(1_000_000), 0, false, {
+		const fee = user.calculatePerpTakerFee(new BN(1_000_000), 0, false, {
 			builderIdx: 0,
 			builderFeeTenthBps: 10,
 		});

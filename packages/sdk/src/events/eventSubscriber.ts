@@ -55,6 +55,8 @@ import { EventsServerLogProvider } from './eventsServerLogProvider';
 export class EventSubscriber {
 	private address: PublicKey;
 	private eventListMap: Map<EventType, EventList<EventType>>;
+	/** Case-insensitive lookup from decoded (camelCase) IDL event names to subscribed `EventType` keys. */
+	private eventTypeByLowercaseName = new Map<string, EventType>();
 	private txEventCache: TxEventCache;
 	private awaitTxPromises = new Map<string, Promise<void>>();
 	private awaitTxResolver = new Map<string, () => void>();
@@ -194,6 +196,7 @@ export class EventSubscriber {
 					orderDir
 				)
 			);
+			this.eventTypeByLowercaseName.set(eventType.toLowerCase(), eventType);
 		}
 	}
 
@@ -428,16 +431,16 @@ export class EventSubscriber {
 		const events = parseLogs(this.program, logs);
 		let runningEventIndex = 0;
 		for (const event of events) {
-			// @coral-xyz/anchor 0.32+ converts IDL names to camelCase; normalize
-			// back to PascalCase so EventType keys remain consistent.
-			const pascalName =
-				event.name.charAt(0).toUpperCase() + event.name.slice(1);
-			// @ts-ignore
-			const expectRecordType = this.eventListMap.has(pascalName);
-			if (expectRecordType) {
+			// @coral-xyz/anchor 0.32+ converts IDL names to camelCase; match
+			// case-insensitively so names with leading acronyms (LPSwapRecord →
+			// lpSwapRecord) still resolve to their PascalCase EventType keys.
+			const eventType = this.eventTypeByLowercaseName.get(
+				event.name.toLowerCase()
+			);
+			if (eventType) {
 				event.data.txSig = txSig;
 				event.data.slot = slot;
-				event.data.eventType = pascalName;
+				event.data.eventType = eventType;
 				event.data.txSigIndex =
 					txSigIndex !== undefined ? txSigIndex : runningEventIndex;
 				records.push(event.data);

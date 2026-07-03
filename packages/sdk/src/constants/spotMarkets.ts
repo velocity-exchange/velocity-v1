@@ -68,7 +68,7 @@ export const DevnetSpotMarkets: SpotMarketConfig[] = [
 	},
 ];
 
-/** Mainnet-beta spot market registry. Entries with `oracleSource: OracleSource.DEPRECATED_SWITCHBOARD_ON_DEMAND` reflect markets whose live oracle has since been retired/replaced and are kept for historical/indexing reference. */
+/** Mainnet-beta spot market registry. Entries with `oracleSource: OracleSource.DEPRECATED_SWITCHBOARD_ON_DEMAND` reflect markets whose live oracle has since been retired/replaced and are kept for historical/indexing reference — their oracles are excluded from subscription lists (`getMarketsAndOraclesForSubscription`/`findAllMarketAndOracles`) since the SDK can no longer construct oracle clients for them. */
 export const MainnetSpotMarkets: SpotMarketConfig[] = [
 	{
 		symbol: 'USDC',

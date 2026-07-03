@@ -165,15 +165,22 @@ export class FastSingleTxSender extends BaseTxSender {
 		if (!this.skipConfirmation) {
 			try {
 				if (this.confirmInBackground) {
-					this.confirmTransaction(txid, opts.commitment).then(
-						async (result) => {
+					this.confirmTransaction(txid, opts.commitment)
+						.then(async (result) => {
 							this.txSigCache?.set(txid, true);
 							if (result) {
 								await this.checkConfirmationResultForError(txid, result.value);
 								slot = result.context.slot;
 							}
-						}
-					);
+						})
+						.catch((err) => {
+							// background confirmation is fire-and-forget; surface failures
+							// in logs instead of as unhandled promise rejections
+							console.error(
+								`Error confirming transaction ${txid} in background:`,
+								err
+							);
+						});
 				} else {
 					const result = await this.confirmTransaction(txid, opts.commitment);
 					this.txSigCache?.set(txid, true);

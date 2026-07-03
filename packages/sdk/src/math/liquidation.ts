@@ -187,10 +187,12 @@ export function calculatePerpIfFee(
 	const price = oraclePrice.mul(quoteOraclePrice).div(PRICE_PRECISION);
 
 	// margin ratio - liquidator fee - (margin shortage / (user base asset amount * price))
+	// the program receives base_asset_amount.unsigned_abs() (u64), so only the magnitude
+	// participates in the shortage term
 	let impliedIfFee = BN.max(marginRatioBN.sub(new BN(liquidatorFee)), ZERO);
 	const shortageComponent = marginShortage
 		.mul(BASE_PRECISION)
-		.div(userBaseAssetAmount)
+		.div(userBaseAssetAmount.abs())
 		.mul(PRICE_PRECISION)
 		.div(price);
 	impliedIfFee = BN.max(impliedIfFee.sub(shortageComponent), ZERO);

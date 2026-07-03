@@ -14,7 +14,8 @@ import { User } from '../user';
 function isIsolatedPositionEconomicallyBankrupt(
 	position: PerpPosition
 ): boolean {
-	if (position.isolatedPositionScaledBalance.gt(ZERO)) {
+	// defensive ?? ZERO matches user.ts's reads of this field (see its `//TODO remove ? later`)
+	if ((position.isolatedPositionScaledBalance ?? ZERO).gt(ZERO)) {
 		return false;
 	}
 

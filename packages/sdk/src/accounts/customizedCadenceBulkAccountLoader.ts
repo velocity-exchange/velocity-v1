@@ -238,7 +238,12 @@ export class CustomizedCadenceBulkAccountLoader extends BulkAccountLoader {
 		this.lastPollingTimes.clear();
 	}
 
-	/** Clears all per-account custom cadences (accounts revert to being due on every tick until re-set via `setCustomPollingFrequency`/`addAccount`). Does not affect registered accounts/callbacks themselves. */
+	/**
+	 * Clears all per-account cadence bookkeeping. Because `getAccountsToLoad()` only considers
+	 * accounts with an entry in `accountFrequencies`, this stops polling for every registered
+	 * account until a cadence is re-established via `setCustomPollingFrequency` or `addAccount`.
+	 * Registered accounts/callbacks themselves are untouched.
+	 */
 	public clearAccountFrequencies(): void {
 		this.accountFrequencies.clear();
 	}

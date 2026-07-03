@@ -310,6 +310,17 @@ export class grpcVelocityClientAccountSubscriberV2
 			this.subscriptionPromiseResolver = res;
 		});
 
+		try {
+			return await this.subscribeInner();
+		} catch (err) {
+			// settle the shared promise so concurrent subscribe() callers don't hang forever
+			this.isSubscribing = false;
+			this.subscriptionPromiseResolver(false);
+			throw err;
+		}
+	}
+
+	private async subscribeInner(): Promise<boolean> {
 		if (this.shouldFindAllMarketsAndOracles) {
 			const {
 				perpMarketIndexes,

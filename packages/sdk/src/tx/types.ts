@@ -61,13 +61,13 @@ export interface TxSender {
 	): Promise<TxSigAndSlot>;
 
 	/**
-	 * Builds (but does not send) a signed `VersionedTransaction` from raw instructions.
+	 * Builds (but does not send or sign) an unsigned `VersionedTransaction` from raw instructions.
 	 * @param ixs - Instructions to include, in order.
 	 * @param lookupTableAccounts - Address lookup tables to compile the message against.
-	 * @param additionalSigners - Extra signers to co-sign alongside the wallet.
-	 * @param opts - Options affecting how the blockhash/signing are resolved.
-	 * @param blockhash - Blockhash to use; if omitted, the sender fetches/derives a current one.
-	 * @returns The compiled and signed `VersionedTransaction`, not yet sent.
+	 * @param additionalSigners - Unused by `BaseTxSender` (signing happens at send time, e.g. in `sendVersionedTransaction`).
+	 * @param opts - Unused by `BaseTxSender`.
+	 * @param blockhash - Blockhash to compile the message with; if omitted, the sender fetches a current one.
+	 * @returns The compiled, unsigned `VersionedTransaction`, not yet sent.
 	 */
 	getVersionedTransaction(
 		ixs: TransactionInstruction[],

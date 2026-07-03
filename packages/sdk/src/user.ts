@@ -4947,26 +4947,23 @@ export class User {
 					),
 					spotPosition.balanceType
 				);
+				// mirrors margin.rs's `market_index == 0` block: the quote market uses the
+				// raw strict token value on both sides — no asset/liability weight, and the
+				// cross-margin buffer is applied inside addCrossMarginRequirement (from
+				// context.crossMarginBuffer), not folded into the value here
+				const tokenValue = getStrictTokenValue(
+					tokenAmount,
+					spotMarket.decimals,
+					strictOracle
+				);
 				if (isVariant(spotPosition.balanceType, 'deposit')) {
 					// add deposit value to total collateral
-					const weightedTokenValue = skipTokenValue
-						? ZERO
-						: this.getSpotAssetValue(
-								tokenAmount,
-								strictOracle,
-								spotMarket,
-								marginCategory
-						  );
-					calc.addCrossMarginTotalCollateral(weightedTokenValue);
+					calc.addCrossMarginTotalCollateral(
+						skipTokenValue ? ZERO : tokenValue
+					);
 				} else {
 					// borrow on quote contributes to margin requirement
-					const tokenValueAbs = this.getSpotLiabilityValue(
-						tokenAmount,
-						strictOracle,
-						spotMarket,
-						marginCategory,
-						liquidationBufferMap.get('cross') ?? new BN(0)
-					).abs();
+					const tokenValueAbs = tokenValue.abs();
 					calc.addCrossMarginRequirement(tokenValueAbs, tokenValueAbs);
 					calc.addSpotLiability();
 				}

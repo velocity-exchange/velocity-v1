@@ -1451,6 +1451,7 @@ export class LiquidatorBot implements Bot {
 			userKey: string;
 			marginRequirement: BN;
 			canBeLiquidated: boolean;
+			bankrupt: boolean;
 		}>;
 		checkedUsers: number;
 		liquidatableUsers: number;
@@ -1460,6 +1461,7 @@ export class LiquidatorBot implements Bot {
 			userKey: string;
 			marginRequirement: BN;
 			canBeLiquidated: boolean;
+			bankrupt: boolean;
 		}>();
 
 		let checkedUsers = 0;
@@ -1472,11 +1474,8 @@ export class LiquidatorBot implements Bot {
 			// economically bankrupt but not yet flagged on-chain (with a healthy cross account)
 			// would otherwise be filtered out here and never reach the `hasIsolatedMarginBankrupt`
 			// resolve gate in tryLiquidate. Include it in candidate selection so it does.
-			if (
-				canBeLiquidated ||
-				user.isBeingLiquidated() ||
-				hasIsolatedMarginBankrupt(user)
-			) {
+			const isolatedBankrupt = hasIsolatedMarginBankrupt(user);
+			if (canBeLiquidated || user.isBeingLiquidated() || isolatedBankrupt) {
 				liquidatableUsers++;
 				const userKey = user.userAccountPublicKey.toBase58();
 				if (this.excludedAccounts.has(userKey)) {
@@ -1490,13 +1489,20 @@ export class LiquidatorBot implements Bot {
 						userKey,
 						marginRequirement,
 						canBeLiquidated,
+						bankrupt:
+							isUserBankrupt(user) || user.isBankrupt() || isolatedBankrupt,
 					});
 				}
 			}
 		}
 
-		// sort the usersCanBeLiquidated by marginRequirement, largest to smallest
+		// bankrupt users first (an isolated-only bankruptcy can have a cross-margin
+		// requirement of zero and would otherwise sort last), then by cross-margin
+		// requirement, largest to smallest
 		usersCanBeLiquidated.sort((a, b) => {
+			if (a.bankrupt !== b.bankrupt) {
+				return a.bankrupt ? -1 : 1;
+			}
 			return b.marginRequirement.gt(a.marginRequirement) ? 1 : -1;
 		});
 
@@ -1539,15 +1545,12 @@ export class LiquidatorBot implements Bot {
 			userKey,
 			marginRequirement: _marginRequirement,
 			canBeLiquidated,
+			bankrupt,
 		} of usersCanBeLiquidated) {
 			const userAcc = user.getUserAccountOrThrow();
 			const auth = userAcc.authority.toBase58();
 
-			if (
-				isUserBankrupt(user) ||
-				user.isBankrupt() ||
-				hasIsolatedMarginBankrupt(user)
-			) {
+			if (bankrupt) {
 				await this.tryResolveBankruptUser(user);
 			} else if (canBeLiquidated) {
 				const lastAttempt = this.throttledUsers.get(userKey);

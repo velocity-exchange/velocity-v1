@@ -264,7 +264,9 @@ export class DLOBSubscriberIO extends DLOBSubscriber {
 										const limitPrice = getLimitPrice(
 											indicativeBid,
 											oraclePriceData,
-											this.slotSource.getSlot()
+											this.slotSource.getSlot(),
+											undefined,
+											marketArgs.tickSize
 										);
 										if (bestBid && limitPrice.gt(bestBid)) {
 											indicativeBid = Object.assign({}, indicativeBid, {
@@ -299,7 +301,9 @@ export class DLOBSubscriberIO extends DLOBSubscriber {
 										const limitPrice = getLimitPrice(
 											indicativeAsk,
 											oraclePriceData,
-											this.slotSource.getSlot()
+											this.slotSource.getSlot(),
+											undefined,
+											marketArgs.tickSize
 										);
 										if (bestAsk && limitPrice.lt(bestAsk)) {
 											indicativeAsk = Object.assign({}, indicativeAsk, {

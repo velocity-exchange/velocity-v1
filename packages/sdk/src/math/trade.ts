@@ -454,7 +454,14 @@ export function calculateEstimatedPerpEntryPrice(
 	const takerIsLong = isVariant(direction, 'long');
 	const limitOrders = dlob[
 		takerIsLong ? 'getRestingLimitAsks' : 'getRestingLimitBids'
-	](market.marketIndex, slot, MarketType.PERP, mmOraclePriceData);
+	](
+		market.marketIndex,
+		slot,
+		MarketType.PERP,
+		mmOraclePriceData,
+		undefined,
+		market.orderTickSize
+	);
 
 	const swapDirection = getSwapDirection(assetType, direction);
 
@@ -511,7 +518,11 @@ export function calculateEstimatedPerpEntryPrice(
 
 	let limitOrder = limitOrders.next().value;
 	if (limitOrder) {
-		const limitOrderPrice = limitOrder.getPriceOrThrow(mmOraclePriceData, slot);
+		const limitOrderPrice = limitOrder.getPriceOrThrow(
+			mmOraclePriceData,
+			slot,
+			market.orderTickSize
+		);
 		bestPrice = takerIsLong
 			? BN.min(limitOrderPrice, bestPrice)
 			: BN.max(limitOrderPrice, bestPrice);
@@ -524,7 +535,11 @@ export function calculateEstimatedPerpEntryPrice(
 			!cumulativeBaseFilled.eq(amount) &&
 			(ammLiquidity.gt(ZERO) || limitOrder)
 		) {
-			const limitOrderPrice = limitOrder?.getPrice(mmOraclePriceData, slot);
+			const limitOrderPrice = limitOrder?.getPrice(
+				mmOraclePriceData,
+				slot,
+				market.orderTickSize
+			);
 
 			let maxAmmFill: BN;
 			if (limitOrderPrice) {
@@ -608,7 +623,11 @@ export function calculateEstimatedPerpEntryPrice(
 			!cumulativeQuoteFilled.eq(amount) &&
 			(ammLiquidity.gt(ZERO) || limitOrder)
 		) {
-			const limitOrderPrice = limitOrder?.getPrice(mmOraclePriceData, slot);
+			const limitOrderPrice = limitOrder?.getPrice(
+				mmOraclePriceData,
+				slot,
+				market.orderTickSize
+			);
 
 			let maxAmmFill: BN;
 			if (limitOrderPrice) {

@@ -175,8 +175,7 @@ describe('MM oracle sequence-id recency (getMMOracleDataForPerpMarket)', () => {
 	): MMOraclePriceData {
 		const market = _.cloneDeep(mockPerpMarkets[0]);
 		// twaps == exchange price keeps the mm oracle Valid (not TooVolatile).
-		market.marketStats.historicalOracleData.lastOraclePriceTwap =
-			exchangePrice;
+		market.marketStats.historicalOracleData.lastOraclePriceTwap = exchangePrice;
 		market.marketStats.historicalOracleData.lastOraclePriceTwap5Min =
 			exchangePrice;
 		market.marketStats.mmOraclePrice = mmOraclePrice;

@@ -285,13 +285,7 @@ describe('tick size standardization parity', () => {
 			});
 			// slot 4 -> elapsed 3 -> raw 132 -> floor 130
 			expect(
-				getLimitPrice(
-					order,
-					mmOracle(1000, 4),
-					4,
-					undefined,
-					TICK
-				)!.toString()
+				getLimitPrice(order, mmOracle(1000, 4), 4, undefined, TICK)!.toString()
 			).to.equal('130');
 		});
 

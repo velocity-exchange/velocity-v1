@@ -92,7 +92,10 @@ function deriveFieldOffset(structTypeName: string, fieldName: string): number {
 	);
 }
 
-const REFERRER_STATUS_OFFSET = deriveFieldOffset('UserStats', 'referrer_status');
+const REFERRER_STATUS_OFFSET = deriveFieldOffset(
+	'UserStats',
+	'referrer_status'
+);
 
 // Sanity check: this offset is also asserted as a literal in
 // `USER_STATS_REFERRER_STATUS_OFFSET` (packages/sdk/src/memcmp.ts). If the IDL

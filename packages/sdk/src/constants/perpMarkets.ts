@@ -37,6 +37,28 @@ export const DevnetPerpMarkets: PerpMarketConfig[] = [
 		oracleSource: OracleSource.PYTH_LAZER,
 		pythLazerId: 6,
 	},
+	{
+		fullName: 'Bitcoin',
+		category: ['L1', 'Payment'],
+		symbol: 'BTC-PERP',
+		baseAssetSymbol: 'BTC',
+		marketIndex: 1,
+		oracle: new PublicKey('J7Fp8iTKuKdCM7PnzqHXTdTo5Jr7ykAmiDyvpz58GJGZ'),
+		launchTs: 1782950400000,
+		oracleSource: OracleSource.PYTH_LAZER,
+		pythLazerId: 1,
+	},
+	{
+		fullName: 'Ethereum',
+		category: ['L1', 'Infra'],
+		symbol: 'ETH-PERP',
+		baseAssetSymbol: 'ETH',
+		marketIndex: 2,
+		oracle: new PublicKey('6wQ5RiQ7usJ3TqYZSiuAPZHrVCeSWNrvace84khDKEmH'),
+		launchTs: 1782950400000,
+		oracleSource: OracleSource.PYTH_LAZER,
+		pythLazerId: 2,
+	},
 ];
 
 // Relaunch set from deploy-scripts/params/relaunch-perp-markets.json (PR #188).

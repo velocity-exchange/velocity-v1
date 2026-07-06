@@ -9431,7 +9431,10 @@
         },
         {
           "name": "authority",
-          "signer": true
+          "signer": true,
+          "relations": [
+            "keeper_stats"
+          ]
         }
       ],
       "args": []

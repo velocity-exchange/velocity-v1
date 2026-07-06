@@ -9437,7 +9437,10 @@ export type Velocity = {
         },
         {
           "name": "authority",
-          "signer": true
+          "signer": true,
+          "relations": [
+            "keeperStats"
+          ]
         }
       ],
       "args": []

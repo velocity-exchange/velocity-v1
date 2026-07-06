@@ -11679,11 +11679,12 @@ export class VelocityClient {
 
 	/**
 	 * Keeper instruction: estimates the market's bid/ask price from the given makers' resting DLOB
-	 * orders (filtered to those within `BID_ASK_TWAP_MAX_ORACLE_DIVERGENCE_PERCENT` of the oracle
-	 * price) and folds the estimate into `lastBidPriceTwap`/`lastAskPriceTwap`. Restricted: the
-	 * calling wallet's `UserStats` must have `canUpdateBidAskTwap` set and at least 1000 USDC
-	 * (`QUOTE_PRECISION`, 1e6) staked in the insurance fund (`ifStakedQuoteAssetAmount`), or the
-	 * instruction reverts.
+	 * orders (kept only within `±BID_ASK_TWAP_MAX_ORACLE_DIVERGENCE_PERCENT` of the oracle price on
+	 * both sides) and folds the estimate into `lastBidPriceTwap`/`lastAskPriceTwap`. This does NOT
+	 * update the funding rate, crank funding separately via `getUpdateFundingRateIx`. Restricted:
+	 * the calling wallet's `UserStats` (which must be the signer's own) must have
+	 * `canUpdateBidAskTwap` set and at least 1000 USDC (`QUOTE_PRECISION`, 1e6) staked in the
+	 * insurance fund (`ifStakedQuoteAssetAmount`), or the instruction reverts.
 	 * @param perpMarketIndex - Perp market index to update.
 	 * @param makers - `(maker, makerStats)` pairs whose resting orders are sampled for the estimate.
 	 * @param txParams - Optional compute-unit/priority-fee overrides.

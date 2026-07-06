@@ -10,7 +10,7 @@ Program upgrades to **mainnet** and **devnet** are gated through a Squads multis
 
 | Target | Trigger | Workflow |
 | --- | --- | --- |
-| **mainnet** | Push tag `program-velocity-<version>` (e.g. `program-velocity-2.163.0`) | [`.github/workflows/release-program.yaml`](../.github/workflows/release-program.yaml) |
+| **mainnet** | Push tag `program-<name>-<version>` where `<name>` is the program lib name: `velocity` or `jit_proxy` (e.g. `program-velocity-2.163.0`, `program-jit_proxy-0.21.0`) | [`.github/workflows/release-program.yaml`](../.github/workflows/release-program.yaml) |
 | **devnet** | Run **Manual Devnet Program Deploy** from the Actions tab (pick program + branch) | [`.github/workflows/manual-devnet-deploy.yaml`](../.github/workflows/manual-devnet-deploy.yaml) |
 
 Both workflows do the same thing on different multisigs:
@@ -33,6 +33,12 @@ Both workflows do the same thing on different multisigs:
 ### Initial deploy: create the IDL metadata account
 
 CI **only updates** the IDL — it never creates the canonical metadata account, because creating one requires the program's **upgrade authority** to sign (program-metadata: "canonical metadata accounts are created by the program upgrade authority"). After launch the upgrade authority is the multisig vault, and creating velocity's ~53 KB account through a vault CPI would need a batched proposal — so instead **the canonical IDL account is created once, by the deployer, at initial program deploy, while the deployer still holds the upgrade authority** (no multisig, no batch — the deployer just sends the chunked writes directly). The Anchor CLI does **not** do this: `anchor deploy` only deploys the program, and `anchor idl init` targets the legacy on-chain IDL account, not the program-metadata account velocity's clients resolve. Use the program-metadata CLI explicitly.
+
+> **jit-proxy:** its program id is a create-with-seed vanity address with **no keypair**, so step 1
+> below doesn't apply — the initial deploy must go through
+> [`deploy-jit-proxy.sh`](./deploy-jit-proxy.sh) (write-buffer + `createAccountWithSeed` +
+> a hand-built `DeployWithMaxDataLen`). Steps 2–5 (IDL metadata account, delegation, authority
+> handoff to the vault) apply to jit-proxy unchanged, substituting `jit_proxy` for `velocity`.
 
 Run this once per cluster (mainnet is not deployed yet; devnet's account already exists), against a **private RPC**, in order — **before** transferring the upgrade authority to the multisig:
 

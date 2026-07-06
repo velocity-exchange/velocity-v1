@@ -5,13 +5,66 @@
  * IDL can be found at `target/idl/jit_proxy.json`.
  */
 export type JitProxy = {
-	address: 'J1TnP8zvVxbtF5KFp5xRmWuvG9McnhzmBd9XGfCyuxFP';
+	address: 'J1TPRoXCtGuMcWiWFE6RB9eZU8U35PBMETCwNQLCNPhQ';
 	metadata: {
 		name: 'jitProxy';
 		version: '0.21.0';
 		spec: '0.1.0';
+		description: 'Created with Anchor';
 	};
 	instructions: [
+		{
+			name: 'arbPerp';
+			discriminator: [116, 105, 138, 99, 28, 171, 39, 225];
+			accounts: [
+				{
+					name: 'state';
+				},
+				{
+					name: 'user';
+					writable: true;
+				},
+				{
+					name: 'userStats';
+					writable: true;
+				},
+				{
+					name: 'authority';
+					signer: true;
+				},
+				{
+					name: 'velocityProgram';
+					address: 'vELoC1audYbSYVRXn1vPaV8Axoa9oU6BYmNGZZBDZ1P';
+				},
+			];
+			args: [
+				{
+					name: 'marketIndex';
+					type: 'u16';
+				},
+			];
+		},
+		{
+			name: 'checkOrderConstraints';
+			discriminator: [183, 174, 142, 245, 5, 29, 207, 2];
+			accounts: [
+				{
+					name: 'user';
+				},
+			];
+			args: [
+				{
+					name: 'constraints';
+					type: {
+						vec: {
+							defined: {
+								name: 'orderConstraint';
+							};
+						};
+					};
+				},
+			];
+		},
 		{
 			name: 'jit';
 			discriminator: [99, 42, 97, 140, 152, 62, 167, 234];
@@ -41,6 +94,7 @@ export type JitProxy = {
 				},
 				{
 					name: 'velocityProgram';
+					address: 'vELoC1audYbSYVRXn1vPaV8Axoa9oU6BYmNGZZBDZ1P';
 				},
 			];
 			args: [
@@ -87,6 +141,7 @@ export type JitProxy = {
 				},
 				{
 					name: 'velocityProgram';
+					address: 'vELoC1audYbSYVRXn1vPaV8Axoa9oU6BYmNGZZBDZ1P';
 				},
 			];
 			args: [
@@ -97,57 +152,6 @@ export type JitProxy = {
 							name: 'jitSignedMsgParams';
 						};
 					};
-				},
-			];
-		},
-		{
-			name: 'checkOrderConstraints';
-			discriminator: [183, 174, 142, 245, 5, 29, 207, 2];
-			accounts: [
-				{
-					name: 'user';
-				},
-			];
-			args: [
-				{
-					name: 'constraints';
-					type: {
-						vec: {
-							defined: {
-								name: 'orderConstraint';
-							};
-						};
-					};
-				},
-			];
-		},
-		{
-			name: 'arbPerp';
-			discriminator: [116, 105, 138, 99, 28, 171, 39, 225];
-			accounts: [
-				{
-					name: 'state';
-				},
-				{
-					name: 'user';
-					writable: true;
-				},
-				{
-					name: 'userStats';
-					writable: true;
-				},
-				{
-					name: 'authority';
-					signer: true;
-				},
-				{
-					name: 'velocityProgram';
-				},
-			];
-			args: [
-				{
-					name: 'marketIndex';
-					type: 'u16';
 				},
 			];
 		},
@@ -208,32 +212,110 @@ export type JitProxy = {
 			name: 'signedMsgOrderDoesNotExist';
 			msg: 'signedMsgOrderDoesNotExist';
 		},
+		{
+			code: 6011;
+			name: 'spotOrdersNotSupported';
+			msg: 'spotOrdersNotSupported';
+		},
 	];
 	types: [
 		{
-			name: 'orderConstraint';
+			name: 'feeStructure';
+			repr: {
+				kind: 'c';
+			};
 			type: {
 				kind: 'struct';
 				fields: [
 					{
-						name: 'maxPosition';
-						type: 'i64';
+						name: 'feeTiers';
+						type: {
+							array: [
+								{
+									defined: {
+										name: 'feeTier';
+									};
+								},
+								10,
+							];
+						};
 					},
 					{
-						name: 'minPosition';
-						type: 'i64';
-					},
-					{
-						name: 'marketIndex';
-						type: 'u16';
-					},
-					{
-						name: 'marketType';
+						name: 'fillerRewardStructure';
 						type: {
 							defined: {
-								name: 'marketType';
+								name: 'orderFillerRewardStructure';
 							};
 						};
+					},
+					{
+						name: 'flatFillerFee';
+						type: 'u64';
+					},
+					{
+						name: 'ammFeeNumerator';
+						docs: [
+							'Share of the trade-fee *remainder* (taker fee after maker rebate, referral,',
+							'referee discount, and filler reward are taken off the top) provisioned to',
+							'the AMM as liquidity (its backstop-of-last-resort tranche, tracked in',
+							'`PerpMarket.fee_ledger.amm_protocol_fees_received`). precision:',
+							'FEE_PERCENTAGE_DENOMINATOR. `amm_fee_numerator + if_fee_numerator` must',
+							'be <= FEE_PERCENTAGE_DENOMINATOR; the protocol receives the residual',
+							'(`remainder − amm − if`) into its withdrawable `protocol_fee_pool`.',
+							'(Was the reserved `padding: u64`, repartitioned into two u32s —',
+							'size/alignment unchanged.)',
+						];
+						type: 'u32';
+					},
+					{
+						name: 'ifFeeNumerator';
+						docs: [
+							'Share of the trade-fee remainder routed to the insurance fund (`revenue_pool`).',
+						];
+						type: 'u32';
+					},
+				];
+			};
+		},
+		{
+			name: 'feeTier';
+			repr: {
+				kind: 'c';
+			};
+			type: {
+				kind: 'struct';
+				fields: [
+					{
+						name: 'feeNumerator';
+						type: 'u32';
+					},
+					{
+						name: 'feeDenominator';
+						type: 'u32';
+					},
+					{
+						name: 'makerRebateNumerator';
+						type: 'u32';
+					},
+					{
+						name: 'makerRebateDenominator';
+						type: 'u32';
+					},
+					{
+						name: 'referrerRewardNumerator';
+						type: 'u32';
+					},
+					{
+						name: 'referrerRewardDenominator';
+						type: 'u32';
+					},
+					{
+						name: 'refereeFeeNumerator';
+						type: 'u32';
+					},
+					{
+						name: 'refereeFeeDenominator';
+						type: 'u32';
 					},
 				];
 			};
@@ -333,6 +415,493 @@ export type JitProxy = {
 			};
 		},
 		{
+			name: 'oracleGuardRails';
+			repr: {
+				kind: 'c';
+			};
+			type: {
+				kind: 'struct';
+				fields: [
+					{
+						name: 'priceDivergence';
+						type: {
+							defined: {
+								name: 'priceDivergenceGuardRails';
+							};
+						};
+					},
+					{
+						name: 'validity';
+						type: {
+							defined: {
+								name: 'validityGuardRails';
+							};
+						};
+					},
+				];
+			};
+		},
+		{
+			name: 'order';
+			serialization: 'bytemuckunsafe';
+			repr: {
+				kind: 'c';
+			};
+			type: {
+				kind: 'struct';
+				fields: [
+					{
+						name: 'slot';
+						docs: ['The slot the order was placed'];
+						type: 'u64';
+					},
+					{
+						name: 'price';
+						docs: [
+							'The limit price for the order (can be 0 for market orders)',
+							"For orders with an auction, this price isn't used until the auction is complete",
+							'precision: PRICE_PRECISION',
+						];
+						type: 'u64';
+					},
+					{
+						name: 'baseAssetAmount';
+						docs: [
+							'The size of the order',
+							'precision for perps: BASE_PRECISION',
+							'precision for spot: token mint precision',
+						];
+						type: 'u64';
+					},
+					{
+						name: 'baseAssetAmountFilled';
+						docs: [
+							'The amount of the order filled',
+							'precision for perps: BASE_PRECISION',
+							'precision for spot: token mint precision',
+						];
+						type: 'u64';
+					},
+					{
+						name: 'quoteAssetAmountFilled';
+						docs: [
+							'The amount of quote filled for the order',
+							'precision: QUOTE_PRECISION',
+						];
+						type: 'u64';
+					},
+					{
+						name: 'triggerPrice';
+						docs: [
+							'At what price the order will be triggered. Only relevant for trigger orders',
+							'precision: PRICE_PRECISION',
+						];
+						type: 'u64';
+					},
+					{
+						name: 'auctionStartPrice';
+						docs: [
+							'The start price for the auction. Only relevant for market/oracle orders',
+							'precision: PRICE_PRECISION',
+						];
+						type: 'i64';
+					},
+					{
+						name: 'auctionEndPrice';
+						docs: [
+							'The end price for the auction. Only relevant for market/oracle orders',
+							'precision: PRICE_PRECISION',
+						];
+						type: 'i64';
+					},
+					{
+						name: 'maxTs';
+						docs: ['The time when the order will expire'];
+						type: 'i64';
+					},
+					{
+						name: 'oraclePriceOffset';
+						docs: [
+							'If set, the order limit price is the oracle price + this offset',
+							'precision: PRICE_PRECISION',
+						];
+						type: 'i64';
+					},
+					{
+						name: 'orderId';
+						docs: [
+							'The id for the order. Each users has their own order id space',
+						];
+						type: 'u32';
+					},
+					{
+						name: 'marketIndex';
+						docs: ['The perp/spot market index'];
+						type: 'u16';
+					},
+					{
+						name: 'status';
+						docs: ['Whether the order is open or unused'];
+						type: {
+							defined: {
+								name: 'orderStatus';
+							};
+						};
+					},
+					{
+						name: 'orderType';
+						docs: ['The type of order'];
+						type: {
+							defined: {
+								name: 'orderType';
+							};
+						};
+					},
+					{
+						name: 'marketType';
+						docs: ['Whether market is spot or perp'];
+						type: {
+							defined: {
+								name: 'velocity::state::user::MarketType';
+							};
+						};
+					},
+					{
+						name: 'userOrderId';
+						docs: [
+							'User generated order id. Can make it easier to place/cancel orders',
+						];
+						type: 'u8';
+					},
+					{
+						name: 'existingPositionDirection';
+						docs: ['What the users position was when the order was placed'];
+						type: {
+							defined: {
+								name: 'positionDirection';
+							};
+						};
+					},
+					{
+						name: 'direction';
+						docs: [
+							'Whether the user is going long or short. LONG = bid, SHORT = ask',
+						];
+						type: {
+							defined: {
+								name: 'positionDirection';
+							};
+						};
+					},
+					{
+						name: 'reduceOnly';
+						docs: ['Whether the order is allowed to only reduce position size'];
+						type: 'bool';
+					},
+					{
+						name: 'postOnly';
+						docs: ['Whether the order must be a maker'];
+						type: 'bool';
+					},
+					{
+						name: 'immediateOrCancel';
+						docs: [
+							'Whether the order must be canceled the same slot it is placed',
+						];
+						type: 'bool';
+					},
+					{
+						name: 'triggerCondition';
+						docs: [
+							'Whether the order is triggered above or below the trigger price. Only relevant for trigger orders',
+						];
+						type: {
+							defined: {
+								name: 'orderTriggerCondition';
+							};
+						};
+					},
+					{
+						name: 'auctionDuration';
+						docs: ['How many slots the auction lasts'];
+						type: 'u8';
+					},
+					{
+						name: 'postedSlotTail';
+						docs: [
+							'Last 8 bits of the slot the order was posted on-chain (not order slot for signed msg orders)',
+						];
+						type: 'u8';
+					},
+					{
+						name: 'bitFlags';
+						docs: [
+							'Bitflags for further classification',
+							'0: is_signed_message',
+						];
+						type: 'u8';
+					},
+					{
+						name: 'padding';
+						type: {
+							array: ['u8', 5];
+						};
+					},
+				];
+			};
+		},
+		{
+			name: 'orderConstraint';
+			type: {
+				kind: 'struct';
+				fields: [
+					{
+						name: 'maxPosition';
+						type: 'i64';
+					},
+					{
+						name: 'minPosition';
+						type: 'i64';
+					},
+					{
+						name: 'marketIndex';
+						type: 'u16';
+					},
+					{
+						name: 'marketType';
+						type: {
+							defined: {
+								name: 'jit_proxy::state::MarketType';
+							};
+						};
+					},
+				];
+			};
+		},
+		{
+			name: 'orderFillerRewardStructure';
+			docs: [
+				'`u128` is placed first so `#[repr(C)]` layout matches between host (x86_64,',
+				'align 16 in Rust ≥ 1.77) and the SBF VM (align 8). Trailing `_padding`',
+				'rounds the struct to a host-portable 32 bytes. See',
+				'`docs/alignment-and-native-offsets.md`.',
+			];
+			repr: {
+				kind: 'c';
+			};
+			type: {
+				kind: 'struct';
+				fields: [
+					{
+						name: 'timeBasedRewardLowerBound';
+						type: 'u128';
+					},
+					{
+						name: 'rewardNumerator';
+						type: 'u32';
+					},
+					{
+						name: 'rewardDenominator';
+						type: 'u32';
+					},
+					{
+						name: 'padding';
+						type: {
+							array: ['u8', 8];
+						};
+					},
+				];
+			};
+		},
+		{
+			name: 'orderStatus';
+			type: {
+				kind: 'enum';
+				variants: [
+					{
+						name: 'init';
+					},
+					{
+						name: 'open';
+					},
+					{
+						name: 'filled';
+					},
+					{
+						name: 'canceled';
+					},
+				];
+			};
+		},
+		{
+			name: 'orderTriggerCondition';
+			type: {
+				kind: 'enum';
+				variants: [
+					{
+						name: 'above';
+					},
+					{
+						name: 'below';
+					},
+					{
+						name: 'triggeredAbove';
+					},
+					{
+						name: 'triggeredBelow';
+					},
+				];
+			};
+		},
+		{
+			name: 'orderType';
+			type: {
+				kind: 'enum';
+				variants: [
+					{
+						name: 'market';
+					},
+					{
+						name: 'limit';
+					},
+					{
+						name: 'triggerMarket';
+					},
+					{
+						name: 'triggerLimit';
+					},
+					{
+						name: 'oracle';
+					},
+				];
+			};
+		},
+		{
+			name: 'perpPosition';
+			serialization: 'bytemuckunsafe';
+			repr: {
+				kind: 'c';
+			};
+			type: {
+				kind: 'struct';
+				fields: [
+					{
+						name: 'lastCumulativeFundingRate';
+						docs: [
+							"The perp market's last cumulative funding rate. Used to calculate the funding payment owed to user",
+							'precision: FUNDING_RATE_PRECISION',
+						];
+						type: 'i64';
+					},
+					{
+						name: 'baseAssetAmount';
+						docs: [
+							'the size of the users perp position',
+							'precision: BASE_PRECISION',
+						];
+						type: 'i64';
+					},
+					{
+						name: 'quoteAssetAmount';
+						docs: [
+							'Used to calculate the users pnl. Upon entry, is equal to base_asset_amount * avg entry price - fees',
+							'Updated when the user open/closes position or settles pnl. Includes fees/funding',
+							'precision: QUOTE_PRECISION',
+						];
+						type: 'i64';
+					},
+					{
+						name: 'quoteBreakEvenAmount';
+						docs: [
+							'The amount of quote the user would need to exit their position at to break even',
+							'Updated when the user open/closes position or settles pnl. Includes fees/funding',
+							'precision: QUOTE_PRECISION',
+						];
+						type: 'i64';
+					},
+					{
+						name: 'quoteEntryAmount';
+						docs: [
+							'The amount quote the user entered the position with. Equal to base asset amount * avg entry price',
+							'Updated when the user open/closes position. Excludes fees/funding',
+							'precision: QUOTE_PRECISION',
+						];
+						type: 'i64';
+					},
+					{
+						name: 'openBids';
+						docs: [
+							'The amount of non reduce only trigger orders the user has open',
+							'precision: BASE_PRECISION',
+						];
+						type: 'i64';
+					},
+					{
+						name: 'openAsks';
+						docs: [
+							'The amount of non reduce only trigger orders the user has open',
+							'precision: BASE_PRECISION',
+						];
+						type: 'i64';
+					},
+					{
+						name: 'settledPnl';
+						docs: [
+							'The amount of pnl settled in this market since opening the position',
+							'precision: QUOTE_PRECISION',
+						];
+						type: 'i64';
+					},
+					{
+						name: 'isolatedPositionScaledBalance';
+						docs: [
+							'The scaled balance of the isolated position',
+							'precision: SPOT_BALANCE_PRECISION',
+						];
+						type: 'u64';
+					},
+					{
+						name: 'padding';
+						type: {
+							array: ['u8', 2];
+						};
+					},
+					{
+						name: 'maxMarginRatio';
+						type: 'u16';
+					},
+					{
+						name: 'marketIndex';
+						docs: ['The market index for the perp market'];
+						type: 'u16';
+					},
+					{
+						name: 'openOrders';
+						docs: ['The number of open orders'];
+						type: 'u8';
+					},
+					{
+						name: 'positionFlag';
+						type: 'u8';
+					},
+				];
+			};
+		},
+		{
+			name: 'positionDirection';
+			type: {
+				kind: 'enum';
+				variants: [
+					{
+						name: 'long';
+					},
+					{
+						name: 'short';
+					},
+				];
+			};
+		},
+		{
 			name: 'postOnlyParam';
 			type: {
 				kind: 'enum';
@@ -353,6 +922,25 @@ export type JitProxy = {
 			};
 		},
 		{
+			name: 'priceDivergenceGuardRails';
+			repr: {
+				kind: 'c';
+			};
+			type: {
+				kind: 'struct';
+				fields: [
+					{
+						name: 'markOraclePercentDivergence';
+						type: 'u64';
+					},
+					{
+						name: 'oracleTwap5minPercentDivergence';
+						type: 'u64';
+					},
+				];
+			};
+		},
+		{
 			name: 'priceType';
 			type: {
 				kind: 'enum';
@@ -367,7 +955,729 @@ export type JitProxy = {
 			};
 		},
 		{
-			name: 'marketType';
+			name: 'spotBalanceType';
+			type: {
+				kind: 'enum';
+				variants: [
+					{
+						name: 'deposit';
+					},
+					{
+						name: 'borrow';
+					},
+				];
+			};
+		},
+		{
+			name: 'spotPosition';
+			serialization: 'bytemuckunsafe';
+			repr: {
+				kind: 'c';
+			};
+			type: {
+				kind: 'struct';
+				fields: [
+					{
+						name: 'scaledBalance';
+						docs: [
+							'The scaled balance of the position. To get the token amount, multiply by the cumulative deposit/borrow',
+							'interest of corresponding market.',
+							'precision: SPOT_BALANCE_PRECISION',
+						];
+						type: 'u64';
+					},
+					{
+						name: 'openBids';
+						docs: [
+							'How many spot non reduce only trigger orders the user has open',
+							'precision: token mint precision',
+						];
+						type: 'i64';
+					},
+					{
+						name: 'openAsks';
+						docs: [
+							'How many spot non reduce only trigger orders the user has open',
+							'precision: token mint precision',
+						];
+						type: 'i64';
+					},
+					{
+						name: 'cumulativeDeposits';
+						docs: [
+							'The cumulative deposits/borrows a user has made into a market',
+							'precision: token mint precision',
+						];
+						type: 'i64';
+					},
+					{
+						name: 'marketIndex';
+						docs: ['The market index of the corresponding spot market'];
+						type: 'u16';
+					},
+					{
+						name: 'balanceType';
+						docs: ['Whether the position is deposit or borrow'];
+						type: {
+							defined: {
+								name: 'spotBalanceType';
+							};
+						};
+					},
+					{
+						name: 'openOrders';
+						docs: ['Number of open orders'];
+						type: 'u8';
+					},
+					{
+						name: 'padding';
+						type: {
+							array: ['u8', 4];
+						};
+					},
+				];
+			};
+		},
+		{
+			name: 'state';
+			serialization: 'bytemuckunsafe';
+			repr: {
+				kind: 'c';
+			};
+			type: {
+				kind: 'struct';
+				fields: [
+					{
+						name: 'coldAdmin';
+						docs: [
+							'Root authority. Set at `initialize`; only this key can rotate `warm_admin`',
+							'and `pause_admin`. Expected to sit behind a (small) timelocked multisig.',
+						];
+						type: 'pubkey';
+					},
+					{
+						name: 'warmAdmin';
+						docs: [
+							'Operational authority (e.g. multisig+timelock). Can rotate the 10 hot keys',
+							'below. `Pubkey::default()` means unset — only `cold_admin` can act in that case.',
+						];
+						type: 'pubkey';
+					},
+					{
+						name: 'pauseAdmin';
+						docs: [
+							'Emergency-pause authority. No on-chain timelock — intended to live behind a',
+							'fast-acting multisig that can flip pause flags without delay. May only *add*',
+							'pause bits (never clear them); cold/warm retain full pause + unpause power.',
+							'`Pubkey::default()` means unassigned (only cold/warm can pause).',
+						];
+						type: 'pubkey';
+					},
+					{
+						name: 'hotAmmCrank';
+						docs: [
+							'Purpose-specific bot keys. `Pubkey::default()` means the role is unassigned',
+							'and only warm/cold can call handlers gated on that role.',
+						];
+						type: 'pubkey';
+					},
+					{
+						name: 'hotLpCache';
+						type: 'pubkey';
+					},
+					{
+						name: 'hotLpSwap';
+						type: 'pubkey';
+					},
+					{
+						name: 'hotLpSettle';
+						type: 'pubkey';
+					},
+					{
+						name: 'hotFeatureFlag';
+						type: 'pubkey';
+					},
+					{
+						name: 'hotFuel';
+						type: 'pubkey';
+					},
+					{
+						name: 'hotUserFlag';
+						type: 'pubkey';
+					},
+					{
+						name: 'hotVaultDeposit';
+						type: 'pubkey';
+					},
+					{
+						name: 'hotMmOracleCrank';
+						type: 'pubkey';
+					},
+					{
+						name: 'hotAmmSpreadAdjust';
+						type: 'pubkey';
+					},
+					{
+						name: 'whitelistMint';
+						type: 'pubkey';
+					},
+					{
+						name: 'discountMint';
+						type: 'pubkey';
+					},
+					{
+						name: 'signer';
+						type: 'pubkey';
+					},
+					{
+						name: 'srmVault';
+						type: 'pubkey';
+					},
+					{
+						name: 'perpFeeStructure';
+						type: {
+							defined: {
+								name: 'feeStructure';
+							};
+						};
+					},
+					{
+						name: 'spotFeeStructure';
+						type: {
+							defined: {
+								name: 'feeStructure';
+							};
+						};
+					},
+					{
+						name: 'oracleGuardRails';
+						type: {
+							defined: {
+								name: 'oracleGuardRails';
+							};
+						};
+					},
+					{
+						name: 'numberOfAuthorities';
+						type: 'u64';
+					},
+					{
+						name: 'numberOfSubAccounts';
+						type: 'u64';
+					},
+					{
+						name: 'liquidationMarginBufferRatio';
+						type: 'u32';
+					},
+					{
+						name: 'settlementDuration';
+						type: 'u16';
+					},
+					{
+						name: 'numberOfMarkets';
+						type: 'u16';
+					},
+					{
+						name: 'numberOfSpotMarkets';
+						type: 'u16';
+					},
+					{
+						name: 'signerNonce';
+						type: 'u8';
+					},
+					{
+						name: 'minPerpAuctionDuration';
+						type: 'u8';
+					},
+					{
+						name: 'defaultMarketOrderTimeInForce';
+						type: 'u8';
+					},
+					{
+						name: 'defaultSpotAuctionDuration';
+						type: 'u8';
+					},
+					{
+						name: 'exchangeStatus';
+						type: 'u8';
+					},
+					{
+						name: 'liquidationDuration';
+						type: 'u8';
+					},
+					{
+						name: 'initialPctToLiquidate';
+						type: 'u16';
+					},
+					{
+						name: 'maxNumberOfSubAccounts';
+						type: 'u16';
+					},
+					{
+						name: 'maxInitializeUserFee';
+						type: 'u16';
+					},
+					{
+						name: 'featureBitFlags';
+						type: 'u8';
+					},
+					{
+						name: 'lpPoolFeatureBitFlags';
+						type: 'u8';
+					},
+					{
+						name: 'solvencyStatus';
+						docs: [
+							'Bitmask of `SolvencyStatus` flags. Gates internal solvency-repair flows',
+							'(bankruptcy / pnl-deficit resolution) independently of `WithdrawPaused`,',
+							'so user withdrawals can be halted while repair keeps running, or repair',
+							'can be frozen on its own when an oracle is suspect. `0` = repair allowed.',
+						];
+						type: 'u8';
+					},
+					{
+						name: 'protocolFeeRecipientPerp';
+						docs: [
+							'Treasury that PERP protocol fees (quote-denominated) may be withdrawn',
+							'to. Settable only by `cold_admin`. `withdraw_protocol_fees_perp` pays',
+							"this key's associated token account (recipient-locked).",
+							'`Pubkey::default()` (unset) makes perp withdrawals inert.',
+						];
+						type: 'pubkey';
+					},
+					{
+						name: 'protocolFeeRecipientSpot';
+						docs: [
+							"Treasury that SPOT protocol fees (each market's own token: lending",
+							'carveouts + spot-liquidation cuts) may be withdrawn to. Settable only',
+							"by `cold_admin`. `withdraw_protocol_fees_spot` pays this key's",
+							"associated token account for the market's mint (recipient-locked).",
+							'`Pubkey::default()` (unset) makes spot withdrawals inert.',
+						];
+						type: 'pubkey';
+					},
+					{
+						name: 'hotFeeWithdraw';
+						docs: [
+							'Hot key authorized for the `FeeWithdraw` role (triggers protocol-fee',
+							'withdrawals to the configured recipients).',
+						];
+						type: 'pubkey';
+					},
+					{
+						name: 'padding';
+						type: {
+							array: ['u8', 271];
+						};
+					},
+				];
+			};
+		},
+		{
+			name: 'user';
+			serialization: 'bytemuckunsafe';
+			repr: {
+				kind: 'c';
+			};
+			type: {
+				kind: 'struct';
+				fields: [
+					{
+						name: 'authority';
+						docs: ['The owner/authority of the account'];
+						type: 'pubkey';
+					},
+					{
+						name: 'delegate';
+						docs: [
+							"An addresses that can control the account on the authority's behalf. Has limited power, cant withdraw",
+						];
+						type: 'pubkey';
+					},
+					{
+						name: 'name';
+						docs: ['Encoded display name e.g. "toly"'];
+						type: {
+							array: ['u8', 32];
+						};
+					},
+					{
+						name: 'spotPositions';
+						docs: ["The user's spot positions"];
+						type: {
+							array: [
+								{
+									defined: {
+										name: 'spotPosition';
+									};
+								},
+								8,
+							];
+						};
+					},
+					{
+						name: 'perpPositions';
+						docs: ["The user's perp positions"];
+						type: {
+							array: [
+								{
+									defined: {
+										name: 'perpPosition';
+									};
+								},
+								8,
+							];
+						};
+					},
+					{
+						name: 'orders';
+						docs: ["The user's orders"];
+						type: {
+							array: [
+								{
+									defined: {
+										name: 'order';
+									};
+								},
+								32,
+							];
+						};
+					},
+					{
+						name: 'totalDeposits';
+						docs: [
+							'The total values of deposits the user has made',
+							'precision: QUOTE_PRECISION',
+						];
+						type: 'u64';
+					},
+					{
+						name: 'totalWithdraws';
+						docs: [
+							'The total values of withdrawals the user has made',
+							'precision: QUOTE_PRECISION',
+						];
+						type: 'u64';
+					},
+					{
+						name: 'totalSocialLoss';
+						docs: [
+							'The total socialized loss the users has incurred upon the protocol',
+							'precision: QUOTE_PRECISION',
+						];
+						type: 'u64';
+					},
+					{
+						name: 'settledPerpPnl';
+						docs: [
+							'Fees (taker fees, maker rebate, referrer reward, filler reward) and pnl for perps',
+							'precision: QUOTE_PRECISION',
+						];
+						type: 'i64';
+					},
+					{
+						name: 'cumulativeSpotFees';
+						docs: [
+							'Fees (taker fees, maker rebate, filler reward) for spot',
+							'precision: QUOTE_PRECISION',
+						];
+						type: 'i64';
+					},
+					{
+						name: 'cumulativePerpFunding';
+						docs: [
+							'Cumulative funding paid/received for perps',
+							'precision: QUOTE_PRECISION',
+						];
+						type: 'i64';
+					},
+					{
+						name: 'liquidationMarginFreed';
+						docs: [
+							'The amount of margin freed during liquidation. Used to force the liquidation to occur over a period of time',
+							'Defaults to zero when not being liquidated',
+							'precision: QUOTE_PRECISION',
+						];
+						type: 'u64';
+					},
+					{
+						name: 'lastActiveSlot';
+						docs: [
+							'The last slot a user was active. Used to determine if a user is idle',
+						];
+						type: 'u64';
+					},
+					{
+						name: 'nextOrderId';
+						docs: [
+							'Every user order has an order id. This is the next order id to be used',
+						];
+						type: 'u32';
+					},
+					{
+						name: 'maxMarginRatio';
+						docs: ['Custom max initial margin ratio for the user'];
+						type: 'u32';
+					},
+					{
+						name: 'nextLiquidationId';
+						docs: ['The next liquidation id to be used for user'];
+						type: 'u16';
+					},
+					{
+						name: 'subAccountId';
+						docs: ['The sub account id for this user'];
+						type: 'u16';
+					},
+					{
+						name: 'status';
+						docs: ['Whether the user is active, being liquidated or bankrupt'];
+						type: 'u8';
+					},
+					{
+						name: 'isMarginTradingEnabled';
+						docs: ['Whether the user has enabled margin trading'];
+						type: 'bool';
+					},
+					{
+						name: 'idle';
+						docs: [
+							"User is idle if they haven't interacted with the protocol in 1 week and they have no orders, perp positions or borrows",
+							'Off-chain keeper bots can ignore users that are idle',
+						];
+						type: 'bool';
+					},
+					{
+						name: 'openOrders';
+						docs: ['number of open orders'];
+						type: 'u8';
+					},
+					{
+						name: 'hasOpenOrder';
+						docs: ['Whether or not user has open order'];
+						type: 'bool';
+					},
+					{
+						name: 'openAuctions';
+						docs: ['number of open orders with auction'];
+						type: 'u8';
+					},
+					{
+						name: 'hasOpenAuction';
+						docs: ['Whether or not user has open order with auction'];
+						type: 'bool';
+					},
+					{
+						name: 'poolId';
+						type: 'u8';
+					},
+					{
+						name: 'specialUserStatus';
+						docs: ['Whether the user is a special user (vamm hedger, etc)'];
+						type: 'u8';
+					},
+					{
+						name: 'padding';
+						type: {
+							array: ['u8', 14];
+						};
+					},
+				];
+			};
+		},
+		{
+			name: 'userFees';
+			serialization: 'bytemuckunsafe';
+			repr: {
+				kind: 'c';
+			};
+			type: {
+				kind: 'struct';
+				fields: [
+					{
+						name: 'totalFeePaid';
+						docs: ['Total taker fee paid', 'precision: QUOTE_PRECISION'];
+						type: 'u64';
+					},
+					{
+						name: 'totalFeeRebate';
+						docs: ['Total maker fee rebate', 'precision: QUOTE_PRECISION'];
+						type: 'u64';
+					},
+					{
+						name: 'totalTokenDiscount';
+						docs: [
+							'Total discount from holding token',
+							'precision: QUOTE_PRECISION',
+						];
+						type: 'u64';
+					},
+					{
+						name: 'totalRefereeDiscount';
+						docs: [
+							'Total discount from being referred',
+							'precision: QUOTE_PRECISION',
+						];
+						type: 'u64';
+					},
+				];
+			};
+		},
+		{
+			name: 'userStats';
+			serialization: 'bytemuckunsafe';
+			repr: {
+				kind: 'c';
+			};
+			type: {
+				kind: 'struct';
+				fields: [
+					{
+						name: 'authority';
+						docs: ['The authority for all of a users sub accounts'];
+						type: 'pubkey';
+					},
+					{
+						name: 'referrer';
+						docs: ['The address that referred this user'];
+						type: 'pubkey';
+					},
+					{
+						name: 'fees';
+						docs: ['Stats on the fees paid by the user'];
+						type: {
+							defined: {
+								name: 'userFees';
+							};
+						};
+					},
+					{
+						name: 'makerVolume30d';
+						docs: [
+							'Rolling 30day maker volume for user',
+							'precision: QUOTE_PRECISION',
+						];
+						type: 'u64';
+					},
+					{
+						name: 'takerVolume30d';
+						docs: [
+							'Rolling 30day taker volume for user',
+							'precision: QUOTE_PRECISION',
+						];
+						type: 'u64';
+					},
+					{
+						name: 'fillerVolume30d';
+						docs: [
+							'Rolling 30day filler volume for user',
+							'precision: QUOTE_PRECISION',
+						];
+						type: 'u64';
+					},
+					{
+						name: 'lastMakerVolume30dTs';
+						docs: ['last time the maker volume was updated'];
+						type: 'i64';
+					},
+					{
+						name: 'lastTakerVolume30dTs';
+						docs: ['last time the taker volume was updated'];
+						type: 'i64';
+					},
+					{
+						name: 'lastFillerVolume30dTs';
+						docs: ['last time the filler volume was updated'];
+						type: 'i64';
+					},
+					{
+						name: 'ifStakedQuoteAssetAmount';
+						docs: ['The amount of tokens staked in the quote spot markets if'];
+						type: 'u64';
+					},
+					{
+						name: 'numberOfSubAccounts';
+						docs: ['The current number of sub accounts'];
+						type: 'u16';
+					},
+					{
+						name: 'numberOfSubAccountsCreated';
+						docs: [
+							'The number of sub accounts created. Can be greater than the number of sub accounts if user',
+							'has deleted sub accounts',
+						];
+						type: 'u16';
+					},
+					{
+						name: 'referrerStatus';
+						docs: [
+							'Flags for referrer status:',
+							'First bit (LSB): 1 if user is a referrer, 0 otherwise',
+							'Second bit: 1 if user was referred, 0 otherwise',
+						];
+						type: 'u8';
+					},
+					{
+						name: 'disableUpdatePerpBidAskTwap';
+						type: 'u8';
+					},
+					{
+						name: 'pausedOperations';
+						type: 'u8';
+					},
+					{
+						name: 'padding1';
+						docs: [
+							'9 bytes: 1 byte of former repr(C) alignment padding + the removed',
+							'8-byte `if_staked_gov_token_amount` field (gov-token stake fee discount)',
+						];
+						type: {
+							array: ['u8', 9];
+						};
+					},
+					{
+						name: 'delegatePermissions';
+						docs: ['Delegate permissions across all sub accounts'];
+						type: 'u8';
+					},
+					{
+						name: 'padding';
+						type: {
+							array: ['u8', 63];
+						};
+					},
+				];
+			};
+		},
+		{
+			name: 'validityGuardRails';
+			repr: {
+				kind: 'c';
+			};
+			type: {
+				kind: 'struct';
+				fields: [
+					{
+						name: 'slotsBeforeStaleForAmm';
+						type: 'i64';
+					},
+					{
+						name: 'slotsBeforeStaleForMargin';
+						type: 'i64';
+					},
+					{
+						name: 'confidenceIntervalMaxSize';
+						type: 'u64';
+					},
+					{
+						name: 'tooVolatileRatio';
+						type: 'i64';
+					},
+				];
+			};
+		},
+		{
+			name: 'jit_proxy::state::MarketType';
 			type: {
 				kind: 'enum';
 				variants: [
@@ -376,6 +1686,20 @@ export type JitProxy = {
 					},
 					{
 						name: 'spot';
+					},
+				];
+			};
+		},
+		{
+			name: 'velocity::state::user::MarketType';
+			type: {
+				kind: 'enum';
+				variants: [
+					{
+						name: 'spot';
+					},
+					{
+						name: 'perp';
 					},
 				];
 			};

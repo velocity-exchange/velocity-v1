@@ -215,6 +215,9 @@ describe('spot deposit and withdraw 22', () => {
 		);
 		bankrunContextWrapper.printTxLogs(txSig);
 
+		// the deposit went through firstUserVelocityClient — refresh admin's cache
+		// before asserting on it
+		await admin.fetchAccounts();
 		const spotMarket = await admin.getSpotMarketAccount(marketIndex);
 		assert(
 			spotMarket.depositBalance.eq(

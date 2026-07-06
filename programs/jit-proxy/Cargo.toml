@@ -1,0 +1,19 @@
+[package]
+name = "jit-proxy"
+version = "0.21.0"
+description = "Created with Anchor"
+edition = "2021"
+
+[lib]
+crate-type = ["cdylib", "lib"]
+name = "jit_proxy"
+
+[features]
+no-entrypoint = []
+cpi = ["no-entrypoint"]
+default = []
+idl-build = ["anchor-lang/idl-build", "velocity/idl-build"]
+
+[dependencies]
+anchor-lang = "1.0.2"
+velocity = { path = "../velocity", default-features = false, features = ["cpi"] }

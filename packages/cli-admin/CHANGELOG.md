@@ -1,5 +1,81 @@
 # @velocity-exchange/admin-cli
 
+## 0.5.0
+
+### Minor Changes
+
+- [#205](https://github.com/velocity-exchange/velocity-v1/pull/205) [`9854dfa`](https://github.com/velocity-exchange/velocity-v1/commit/9854dfa1c915938fe08495568f262285ffb6c933) Thanks [@0xahzam](https://github.com/0xahzam)! - Add `user deposit`, `user withdraw`, and `if stake` commands to the admin CLI, usable directly or through a Squads V4 multisig (`--multisig` defaults the authority to the vault 0 PDA so the proposal executes with the vault as signer). SDK: `getWithdrawIx`, `getInitializeInsuranceFundStakeIx`, and `getAddInsuranceFundStakeIx` now accept an optional `overrides.authority`, matching `getDepositInstruction`, so instructions can be built for an authority other than the wallet (e.g. a multisig vault PDA).
+
+### Patch Changes
+
+- Updated dependencies [[`9854dfa`](https://github.com/velocity-exchange/velocity-v1/commit/9854dfa1c915938fe08495568f262285ffb6c933), [`6d58632`](https://github.com/velocity-exchange/velocity-v1/commit/6d58632540814c739fc3848e4110c2a24547722b), [`3042967`](https://github.com/velocity-exchange/velocity-v1/commit/304296799e8d5b8a6525cb18cfd8398637c00521)]:
+  - @velocity-exchange/sdk@0.5.0
+
+## 0.4.0
+
+### Minor Changes
+
+- [#189](https://github.com/velocity-exchange/velocity-v1/pull/189) [`8df28ac`](https://github.com/velocity-exchange/velocity-v1/commit/8df28ac6d113760ae4a8cdff4ad438cb25efce2c) Thanks [@ChesterSim](https://github.com/ChesterSim)! - Program↔SDK parity fixes from the 2026-07-02 audit: renamed deprecated Switchboard
+  OracleSource keys to match the IDL (fixes a decode crash on affected markets), applied
+  the $100 initial-margin unrealized-PnL cap, standardized auction/limit prices to order
+  tick size across the DLOB, isolated-position handling in bankruptcy/liquidation math,
+  corrected MM-oracle validity gating, referrer_status memcmp offset, PerpOperation and
+  OrderBitFlag bit values, wired five missing event records into EventSubscriber, fixed
+  withdraw-limit divisors, multi-pool margin segregation, referee/builder fee estimation,
+  and added AdminClient.updatePauseAdmin plus admin CLI commands for pause-admin rotation
+  and fee-pool transfers. Also fixed withdrawFromIsolatedPerpPosition's withdraw-all path:
+  it substituted the MIN_I64 sentinel into the instruction's unsigned u64 amount (serializing
+  as 2^63, so full withdrawals always failed on-chain with InsufficientCollateral); it now
+  clamps the request to the position's deposit plus claimable PnL.
+
+  Follow-up completeness fixes: DLOBSubscriber.getL2/getL3 (and the dlob-server publisher) now
+  thread orderTickSize so the public book view is tick-standardized like on-chain; added
+  hasIsolatedMarginBankrupt and wired isolated-only bankruptcy detection into keeper resolution
+  (isIsolatedPositionBankrupt now guards against non-isolated indices); getMarketFees applies the
+  referee discount and calculateFeeForQuoteAmount accepts builder params so both public fee-prediction
+  entry points match on-chain; and isFallbackAvailableLiquiditySource now fully mirrors
+  amm_fill_gates_ok, adding the market-drawdown and MM-vs-exchange oracle volatility gates.
+
+  Low-risk parity follow-ups: MarginCategory now includes 'Fill' as a single shared type, handled
+  across perp margin ratio / unrealized-asset-weight and spot asset/liability weights (the
+  integer-averaged midpoint of initial and maintenance, mirroring get_margin_ratio /
+  get_asset_weight / get_liability_weight) instead of throwing or returning undefined; the
+  worst-tier taker-fee estimate in calculateEntriesEffectOnFreeCollateral now ceil-divides to match
+  calculate_taker_fee; MM-oracle validity is computed with the raw exchange confidence (matching
+  get_mm_oracle_price_data) while the returned MM price keeps its diff-adjusted confidence; and
+  corrected the OracleSourceNum doc (it is an SDK-internal oracle-id encoding, not the on-chain
+  Borsh discriminant).
+
+  Visible/breaking API changes in this release: `OracleSource.SWITCHBOARD` /
+  `OracleSource.SWITCHBOARD_ON_DEMAND` (and the corresponding `OracleSourceNum` entries) are renamed
+  to `DEPRECATED_SWITCHBOARD` / `DEPRECATED_SWITCHBOARD_ON_DEMAND` with no aliases kept for the old
+  names; `ContractType.FUTURE` is renamed to `DEPRECATED_FUTURE`; and `FeatureBitFlags.BUILDER_REFERRAL`
+  is removed outright, since no such on-chain flag exists. Separately, `getLimitPrice` gained a new
+  optional trailing `tickSize` parameter — the existing `fallbackPrice` parameter stays in its original
+  4th position, so old 4-argument call sites keep working unchanged.
+
+### Patch Changes
+
+- Updated dependencies [[`dff8a47`](https://github.com/velocity-exchange/velocity-v1/commit/dff8a4754f6b736fed330b2ab4fa5685db4f8159), [`900c07d`](https://github.com/velocity-exchange/velocity-v1/commit/900c07d9da7e106c82fbe65b3d92226d090bdee9), [`8df28ac`](https://github.com/velocity-exchange/velocity-v1/commit/8df28ac6d113760ae4a8cdff4ad438cb25efce2c), [`bafd699`](https://github.com/velocity-exchange/velocity-v1/commit/bafd6990f8322f232d2f0d17042beb0e9c567164)]:
+  - @velocity-exchange/sdk@0.4.0
+
+## 0.3.0
+
+### Minor Changes
+
+- [#172](https://github.com/velocity-exchange/velocity-v1/pull/172) [`b7d15b9`](https://github.com/velocity-exchange/velocity-v1/commit/b7d15b970a74d267aeaf20bb644d5344b9aadc61) Thanks [@0xahzam](https://github.com/0xahzam)! - Decouple solvency-repair from the withdraw pause. The `resolve_perp_pnl_deficit`,
+  `resolve_perp_bankruptcy`, and `resolve_spot_bankruptcy` instructions are now gated by a
+  new `State.solvencyStatus` bitfield instead of `WithdrawPaused`, so user withdrawals can
+  be halted while solvency repair keeps running (or repair can be frozen on its own). Adds
+  the `SolvencyStatus` enum, `StateAccount.solvencyStatus`, a `solvencyRepairPaused()`
+  helper, `AdminClient.updateSolvencyStatus`, and the `exchange set-solvency-status` admin
+  CLI command.
+
+### Patch Changes
+
+- Updated dependencies [[`b7d15b9`](https://github.com/velocity-exchange/velocity-v1/commit/b7d15b970a74d267aeaf20bb644d5344b9aadc61), [`2f6c64d`](https://github.com/velocity-exchange/velocity-v1/commit/2f6c64d54f1146d8e7f9ee4ab556929c6bf8b920), [`3f148f8`](https://github.com/velocity-exchange/velocity-v1/commit/3f148f8b477e4176e11e0660adb0e67dd5163d3b)]:
+  - @velocity-exchange/sdk@0.3.0
+
 ## 0.2.1
 
 ### Patch Changes

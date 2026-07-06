@@ -188,6 +188,10 @@ describe('trigger orders', () => {
 			// should throw error
 		}
 
+		// Refresh the polling cache before reading OI — otherwise getPerpMarketAccount
+		// may still hold the pre-order snapshot (baseAssetAmountLong = 0) and oiBefore
+		// races the account loader.
+		await velocityClient.fetchAccounts();
 		const oiBefore = getOpenInterest(velocityClient, marketIndex);
 
 		await velocityClient.transferPerpPosition(
@@ -196,6 +200,8 @@ describe('trigger orders', () => {
 			marketIndex,
 			baseAssetAmount
 		);
+
+		await velocityClient.fetchAccounts();
 
 		const firstUserBaseAssetAmount = velocityClient
 			.getUser(0)

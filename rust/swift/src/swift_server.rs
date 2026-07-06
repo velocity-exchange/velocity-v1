@@ -76,7 +76,18 @@ struct Config {
     disable_rpc_sim: AtomicBool,
     /// RPC tx simulation timeout
     simulation_timeout: Duration,
+    /// Fee payer used for RPC tx simulation. Never signs (sim runs with
+    /// `sig_verify: false`) but must exist and hold rent-exempt SOL on-chain,
+    /// otherwise `simulateTransaction` fails at account-loading with
+    /// `AccountNotFound` before the program runs. Defaults to the
+    /// gas-station-maintained fee payer; override with `SIM_FEE_PAYER`.
+    sim_fee_payer: Pubkey,
 }
+
+/// Gas-station-maintained fee payer (see infrastructure-v3 gas-station-bot,
+/// which tops it up above a 2 SOL threshold). Used as the default sim fee payer.
+const DEFAULT_SIM_FEE_PAYER: Pubkey =
+    solana_pubkey::pubkey!("feezFJywCs7LZXXi6dyLKpr3XKgtf7KXXKZ2y6vzTSQ");
 
 impl Config {
     fn from_env() -> Self {
@@ -85,6 +96,10 @@ impl Config {
                 std::env::var("DISABLE_RPC_SIM").unwrap_or("false".to_string()) == "true",
             ),
             simulation_timeout: Duration::from_millis(300),
+            sim_fee_payer: std::env::var("SIM_FEE_PAYER")
+                .ok()
+                .and_then(|s| s.parse::<Pubkey>().ok())
+                .unwrap_or(DEFAULT_SIM_FEE_PAYER),
         }
     }
 }
@@ -965,7 +980,41 @@ impl ServerParams {
             .disable_rpc_sim
             .load(std::sync::atomic::Ordering::Relaxed)
     }
+    /// Run the off-chain pre-trade simulation, returning `true` only on a clean
+    /// local success. A `false` (build error, sim error, or **panic**) makes the
+    /// caller fall back to RPC simulation — the local sim is best-effort and must
+    /// never take down the request. The native zero-copy loaders cast account
+    /// bytes by reference (`bytemuck::from_bytes`), which panics rather than
+    /// errors on an unexpected layout/alignment; we catch that here, log it, and
+    /// degrade to RPC rather than letting the panic drop the connection (-> 502).
     fn simulate_taker_order_local(
+        &self,
+        order_params: &OrderParams,
+        user: &velocity_rs::types::accounts::User,
+        max_margin_ratio: Option<u16>,
+        context: &RequestContext,
+    ) -> bool {
+        match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            self.simulate_taker_order_local_inner(order_params, user, max_margin_ratio, context)
+        })) {
+            Ok(ok) => ok,
+            Err(panic) => {
+                let msg = panic
+                    .downcast_ref::<String>()
+                    .map(String::as_str)
+                    .or_else(|| panic.downcast_ref::<&str>().copied())
+                    .unwrap_or("<non-string panic payload>");
+                log::error!(
+                    target: "sim",
+                    "{}: local sim panicked, falling back to rpc sim: {msg}",
+                    context.log_prefix
+                );
+                false
+            }
+        }
+    }
+
+    fn simulate_taker_order_local_inner(
         &self,
         order_params: &OrderParams,
         user: &velocity_rs::types::accounts::User,
@@ -1038,7 +1087,9 @@ impl ServerParams {
         let t0 = SystemTime::now();
 
         if let Some(delegate) = delegate_signer {
-            log::debug!(
+            // trace, not debug: the INFO order line already prints
+            // delegate_signer, so this would be per-order noise at sim=debug.
+            log::trace!(
                 target: "sim",
                 "{}: delegate signer for sim: {delegate}",
                 context.log_prefix
@@ -1139,9 +1190,7 @@ impl ServerParams {
         // supports privey wallets and how a swift order is intended to be placed anyway
         let message = tx
             .place_orders(vec![*taker_order_params])
-            .fee_payer(solana_pubkey::pubkey!(
-                "Eiv8eZUWaEPMne8XjA6afzVJ2tJs1BJJ4a1MpZacMSRA"
-            ))
+            .fee_payer(self.config.sim_fee_payer)
             .build();
 
         let simulate_result_with_timeout = tokio::time::timeout(
@@ -1172,6 +1221,39 @@ impl ServerParams {
                         "{}: program sim error: {simulate_err:?}",
                         context.log_prefix
                     );
+                    // A tx-level `AccountNotFound` means an account failed to
+                    // load before the program ran (empty logs). It has many
+                    // causes, but a common (and confusing) one is an unfunded /
+                    // garbage-collected sim fee payer — it never signs but must
+                    // exist and be rent-exempt. Surface its balance as a hint
+                    // when this hits; it doesn't prove the fee payer is at fault.
+                    // Fire-and-forget so the check never delays the error we
+                    // return to the client (the order is already failing).
+                    if matches!(
+                        client_error::TransactionError::from(simulate_err.to_owned()),
+                        client_error::TransactionError::AccountNotFound
+                    ) {
+                        let rpc = self.velocity.rpc();
+                        let fee_payer = self.config.sim_fee_payer;
+                        let log_prefix = context.log_prefix.clone();
+                        tokio::spawn(async move {
+                            match rpc.get_balance(&fee_payer).await {
+                                Ok(0) => log::error!(
+                                    target: "sim",
+                                    "{log_prefix}: sim AccountNotFound and sim fee payer {fee_payer} is unfunded (0 SOL) — likely the cause; fund it",
+                                ),
+                                Ok(lamports) => log::warn!(
+                                    target: "sim",
+                                    "{log_prefix}: sim AccountNotFound; sim fee payer {fee_payer} is funded ({} SOL) so the missing account is elsewhere",
+                                    lamports as f64 / 1e9,
+                                ),
+                                Err(err) => log::warn!(
+                                    target: "sim",
+                                    "{log_prefix}: sim AccountNotFound; could not check sim fee payer {fee_payer} balance: {err:?}",
+                                ),
+                            }
+                        });
+                    }
                     let err = SdkError::Rpc(Box::new(client_error::Error {
                         request: None,
                         kind: Box::new(client_error::ErrorKind::TransactionError(

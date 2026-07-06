@@ -1,12 +1,12 @@
 [package]
 name = "velocity-rs"
-version = "1.0.0"
+version = "1.0.1"
 edition = "2021"
 build = "build.rs"
 license = "Apache-2.0"
 readme = "README.md"
 repository = "https://github.com/velocity-exchange/velocity-v1"
-homepage = "https://drift.trade"
+homepage = "https://velocity.exchange"
 description = """
 Rust SDK for Velocity Protocol on the Solana blockchain.
 """
@@ -29,7 +29,7 @@ dlob_dbg = []
 ahash = "0.8.12"
 anchor-lang = { version = "1.0.0", features = ["derive"] }
 arc-swap = "1.7"
-program = { package = "velocity", path = "../../programs/velocity", default-features = false, features = ["velocity-rs", "mainnet-beta", "cpi"] }
+program = { package = "velocity", path = "../../programs/velocity", default-features = false, features = ["velocity-rs", "mainnet-beta", "cpi", "isolated-position", "vlp-hedge"] }
 arrayvec = "0.7.6"
 base64 = "0.22"
 bytemuck = "1.17"

@@ -1,3 +1,12 @@
 {
-  "vELoC1audYbSYVRXn1vPaV8Axoa9oU6BYmNGZZBDZ1P": ["--commit-hash", "8d2cd726afdc800f89c841ff3cf1968980719df0", "--library-name", "velocity"]
+	"vELoC1audYbSYVRXn1vPaV8Axoa9oU6BYmNGZZBDZ1P": [
+		"--commit-hash",
+		"8d2cd726afdc800f89c841ff3cf1968980719df0",
+		"--library-name",
+		"velocity"
+	],
+	"J1TnP8zvVxbtF5KFp5xRmWuvG9McnhzmBd9XGfCyuxFP": [
+		"--library-name",
+		"jit_proxy"
+	]
 }

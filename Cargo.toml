@@ -2,6 +2,7 @@
 members = [
 	"programs/velocity",
 	"programs/vaults",
+	"programs/jit-proxy",
 	"programs/pyth",
 	"programs/pyth-lazer",
 	"programs/token_faucet",

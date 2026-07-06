@@ -32,7 +32,7 @@ import {
 	JitterShotgun,
 	JitterSniper,
 	PriceType,
-} from '@drift-labs/jit-proxy/lib';
+} from '@velocity-exchange/jit-proxy';
 import dotenv from 'dotenv';
 
 dotenv.config();
@@ -358,13 +358,15 @@ export class JitMaker implements Bot {
 			perpMarketAccount.marketIndex,
 			slot,
 			MarketType.PERP,
-			mmOraclePriceData
+			mmOraclePriceData,
+			perpMarketAccount.orderTickSize
 		);
 		const bestDLOBAsk = dlob.getBestAsk(
 			perpMarketAccount.marketIndex,
 			slot,
 			MarketType.PERP,
-			mmOraclePriceData
+			mmOraclePriceData,
+			perpMarketAccount.orderTickSize
 		);
 
 		const [ammBid, ammAsk] = calculateBidAskPrice(

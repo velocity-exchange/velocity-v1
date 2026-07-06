@@ -1,12 +1,11 @@
 use crate::solana_sdk::pubkey::Pubkey;
 use ahash::{HashMap, HashMapExt};
 
-use program::sdk::{OwnedAccount, VelocityAccounts};
+use program::sdk::{AlignedAccountData, OwnedAccount, VelocityAccounts};
 
 use crate::{
     constants::{self, oracle_source_to_owner},
     types::accounts::User,
-    utils::zero_account_to_bytes,
     MarketId, SdkError, SdkResult, VelocityClient,
 };
 
@@ -26,7 +25,7 @@ pub struct AccountsListBuilder {
     accounts: VelocityAccounts,
 }
 
-fn into_owned(owner: Pubkey, data: Vec<u8>) -> OwnedAccount {
+fn into_owned(owner: Pubkey, data: AlignedAccountData) -> OwnedAccount {
     OwnedAccount {
         lamports: 0,
         data,
@@ -47,7 +46,7 @@ impl AccountsListBuilder {
         force_markets: &[MarketId],
     ) -> SdkResult<&mut VelocityAccounts> {
         let mut oracle_markets = HashMap::<Pubkey, MarketId>::with_capacity(16);
-        let drift_state_account = client.state_account()?;
+        let velocity_state_account = client.state_account()?;
 
         let force_spot_iter = force_markets
             .iter()
@@ -69,7 +68,10 @@ impl AccountsListBuilder {
             let pubkey = market.pubkey;
             self.accounts.spot_markets.push((
                 pubkey,
-                into_owned(constants::PROGRAM_ID, zero_account_to_bytes(market)),
+                into_owned(
+                    constants::PROGRAM_ID,
+                    AlignedAccountData::from_account(&market),
+                ),
             ));
         }
 
@@ -91,7 +93,10 @@ impl AccountsListBuilder {
             let pubkey = market.pubkey;
             self.accounts.perp_markets.push((
                 pubkey,
-                into_owned(constants::PROGRAM_ID, zero_account_to_bytes(market)),
+                into_owned(
+                    constants::PROGRAM_ID,
+                    AlignedAccountData::from_account(&market),
+                ),
             ));
         }
 
@@ -103,15 +108,16 @@ impl AccountsListBuilder {
 
             latest_oracle_slot = oracle.slot.max(latest_oracle_slot);
             let oracle_owner = oracle_source_to_owner(client.context, oracle.source);
-            self.accounts
-                .oracles
-                .push((*oracle_key, into_owned(oracle_owner, oracle.raw)));
+            self.accounts.oracles.push((
+                *oracle_key,
+                into_owned(oracle_owner, AlignedAccountData::from(oracle.raw)),
+            ));
         }
 
         self.accounts.latest_slot = latest_oracle_slot;
         self.accounts.oracle_guard_rails = Some(unsafe {
             std::mem::transmute_copy::<_, program::state::state::OracleGuardRails>(
-                &drift_state_account.oracle_guard_rails,
+                &velocity_state_account.oracle_guard_rails,
             )
         });
 
@@ -126,7 +132,7 @@ impl AccountsListBuilder {
         force_markets: &[MarketId],
     ) -> SdkResult<&mut VelocityAccounts> {
         let mut oracle_markets = HashMap::<Pubkey, MarketId>::with_capacity(16);
-        let drift_state_account = client.state_account()?;
+        let velocity_state_account = client.state_account()?;
 
         let force_spot_iter = force_markets
             .iter()
@@ -147,7 +153,10 @@ impl AccountsListBuilder {
             let pubkey = market.pubkey;
             self.accounts.spot_markets.push((
                 pubkey,
-                into_owned(constants::PROGRAM_ID, zero_account_to_bytes(market)),
+                into_owned(
+                    constants::PROGRAM_ID,
+                    AlignedAccountData::from_account(&market),
+                ),
             ));
         }
 
@@ -169,7 +178,10 @@ impl AccountsListBuilder {
             let pubkey = market.pubkey;
             self.accounts.perp_markets.push((
                 pubkey,
-                into_owned(constants::PROGRAM_ID, zero_account_to_bytes(market)),
+                into_owned(
+                    constants::PROGRAM_ID,
+                    AlignedAccountData::from_account(&market),
+                ),
             ));
         }
 
@@ -179,15 +191,16 @@ impl AccountsListBuilder {
 
             latest_oracle_slot = oracle.slot.max(latest_oracle_slot);
             let oracle_owner = oracle_source_to_owner(client.context, oracle.source);
-            self.accounts
-                .oracles
-                .push((*oracle_key, into_owned(oracle_owner, oracle.raw)));
+            self.accounts.oracles.push((
+                *oracle_key,
+                into_owned(oracle_owner, AlignedAccountData::from(oracle.raw)),
+            ));
         }
 
         self.accounts.latest_slot = latest_oracle_slot;
         self.accounts.oracle_guard_rails = Some(unsafe {
             std::mem::transmute_copy::<_, program::state::state::OracleGuardRails>(
-                &drift_state_account.oracle_guard_rails,
+                &velocity_state_account.oracle_guard_rails,
             )
         });
 

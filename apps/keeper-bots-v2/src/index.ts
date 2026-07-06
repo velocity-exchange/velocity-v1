@@ -74,7 +74,7 @@ import { VelocityStateWatcher, StateChecks } from './velocityStateWatcher';
 import { webhookMessage } from './webhook';
 import { PythLazerCrankerBot } from './bots/pythLazerCranker';
 import { JitMaker } from './bots/jitMaker';
-import { JitProxyClient, JitterSniper } from '@drift-labs/jit-proxy/lib';
+import { JitProxyClient, JitterSniper } from '@velocity-exchange/jit-proxy';
 import { JetProxyTxSender } from './bots/common/jetTxSender';
 import { Agent, setGlobalDispatcher } from 'undici';
 import { timedCacheableLookup } from './bots/common/timedLookup';
@@ -619,14 +619,14 @@ const runBot = async () => {
 
 		const jitProxyClient = new JitProxyClient({
 			// @ts-ignore
-			driftClient: velocityClient,
+			velocityClient: velocityClient,
 			programId: new PublicKey(sdkConfig.JIT_PROXY_PROGRAM_ID!),
 		});
 
 		// Cast to any to work around SDK version mismatch between jit-proxy and main SDK
 		const jitter = new JitterSniper({
 			auctionSubscriber: auctionSubscriber as any,
-			driftClient: velocityClient as any,
+			velocityClient: velocityClient as any,
 			jitProxyClient,
 			swiftOrderSubscriber: swiftOrderSubscriber as any,
 			slotSubscriber: slotSubscriber as any,

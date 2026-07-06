@@ -8,6 +8,7 @@ import {
 	DLOBNode,
 	VelocityClient,
 	FeeTier,
+	getUserAccountPublicKeySync,
 	getUserStatsAccountPublicKey,
 	getUserWithoutOrderFilter,
 	isFillableByVAMM,
@@ -319,11 +320,8 @@ export class FillerMultithreaded {
 		});
 
 		this.subaccount = config.subaccount ?? 0;
-		if (!this.velocityClient.hasUser(this.subaccount)) {
-			throw new Error(
-				`User account not found for subaccount: ${this.subaccount}`
-			);
-		}
+		// The on-chain user account for this.subaccount may not exist yet on a
+		// fresh deployment; it is created (or added to client tracking) in init().
 
 		this.runtimeSpec = runtimeSpec;
 		this.initializeMetrics(config.metricsPort ?? this.globalConfig.metricsPort);
@@ -426,6 +424,8 @@ export class FillerMultithreaded {
 	}
 
 	async init() {
+		await this.ensureUserAccount();
+
 		await this.blockhashSubscriber.subscribe();
 		await this.priorityFeeSubscriber.subscribe();
 		await this.pythLazerSubscriber?.subscribe();
@@ -446,6 +446,67 @@ export class FillerMultithreaded {
 		);
 		assert(this.lookupTableAccounts, 'Lookup table account not found');
 		this.startProcesses();
+	}
+
+	/**
+	 * Ensure the on-chain user account for the configured subaccount exists and
+	 * is tracked by the client. On a fresh deployment the account won't exist
+	 * yet, so create it (and bootstrap sub-0 + UserStats first if needed, since
+	 * initializing any subaccount requires UserStats to exist). If it already
+	 * exists on chain but isn't tracked, just add it to the client.
+	 */
+	private async ensureUserAccount(): Promise<void> {
+		if (this.velocityClient.hasUser(this.subaccount)) {
+			return;
+		}
+
+		const userAccountPublicKey = getUserAccountPublicKeySync(
+			this.velocityClient.program.programId,
+			this.velocityClient.wallet.publicKey,
+			this.subaccount
+		);
+		const accountInfo = await this.velocityClient.connection.getAccountInfo(
+			userAccountPublicKey
+		);
+
+		if (!accountInfo) {
+			// InitializeUser for any subaccount requires UserStats to exist, but
+			// only initializeUserAccount(0) creates UserStats. A fresh wallet has
+			// neither, so bootstrap sub-0 + UserStats first, then the configured
+			// subaccount. (initializeUserAccount also adds the user to the client.)
+			const userStatsPublicKey = getUserStatsAccountPublicKey(
+				this.velocityClient.program.programId,
+				this.velocityClient.wallet.publicKey
+			);
+			const userStatsInfo = await this.velocityClient.connection.getAccountInfo(
+				userStatsPublicKey
+			);
+			if (!userStatsInfo) {
+				logger.info(
+					`${this.name}: UserStats does not exist; initializing sub-0 + UserStats`
+				);
+				await this.velocityClient.initializeUserAccount(0);
+			}
+			if (this.subaccount !== 0) {
+				logger.info(
+					`${this.name}: Subaccount ${
+						this.subaccount
+					} user account ${userAccountPublicKey.toBase58()} does not exist; initializing`
+				);
+				const [txSig] = await this.velocityClient.initializeUserAccount(
+					this.subaccount,
+					`filler-${this.subaccount}`
+				);
+				logger.info(
+					`${this.name}: Initialized subaccount ${this.subaccount} user account in tx: ${txSig}`
+				);
+			}
+		} else if (!this.velocityClient.hasUser(this.subaccount)) {
+			logger.info(
+				`${this.name}: Adding subaccount ${this.subaccount} to velocityClient`
+			);
+			await this.velocityClient.addUser(this.subaccount);
+		}
 	}
 
 	private startProcesses() {
@@ -1456,6 +1517,7 @@ export class FillerMultithreaded {
 				takerUserPubKey,
 				takerUserSlot,
 				referrerInfo,
+				takerIsReferred,
 				marketType,
 				takerStatsPubKey,
 				isSignedMsg,
@@ -1567,7 +1629,11 @@ export class FillerMultithreaded {
 					// referrer param removed from velocity SDK; 5th arg is now
 					// fillerSubAccountId.
 					this.subaccount,
-					isSignedMsg
+					isSignedMsg,
+					undefined, // fillerAuthority
+					undefined, // hasBuilderFee (derived from order bitflags)
+					undefined, // takerEscrow (referred case signalled below)
+					takerIsReferred
 				);
 				fillIxs.push(fillIx);
 
@@ -1774,6 +1840,7 @@ export class FillerMultithreaded {
 			takerStatsPubKey,
 			isSignedMsg,
 			authority,
+			takerIsReferred,
 		} = await this.getNodeFillInfo(nodeToFill);
 
 		let removeLastIxPostSim = this.revertOnFailure && !isSignedMsg;
@@ -1852,7 +1919,11 @@ export class FillerMultithreaded {
 			// referrer param removed from velocity SDK; 5th arg is now
 			// fillerSubAccountId.
 			this.subaccount,
-			isSignedMsg
+			isSignedMsg,
+			undefined, // fillerAuthority
+			undefined, // hasBuilderFee (derived from order bitflags)
+			undefined, // takerEscrow (referred case signalled below)
+			takerIsReferred
 		);
 		fillIxs.push(fillIx);
 
@@ -2279,6 +2350,7 @@ export class FillerMultithreaded {
 		takerStatsPubKey: PublicKey;
 		takerUserSlot: number;
 		referrerInfo: ReferrerInfo | undefined;
+		takerIsReferred: boolean;
 		marketType: MarketType;
 		isSignedMsg: boolean | undefined;
 		authority: PublicKey;
@@ -2355,6 +2427,21 @@ export class FillerMultithreaded {
 			referrerInfo = undefined;
 		}
 
+		// The program's fill gate requires the taker's RevenueShareEscrow when the
+		// taker is referred (their escrow was initialized with a referrer) — the
+		// UserStats.referrerStatus BuilderReferral bit. ReferrerMap reads it from
+		// the same UserStats fetch it already does for referrerInfo.
+		let takerIsReferred = false;
+		try {
+			takerIsReferred = await this.referrerMap.mustGetIsBuilderReferral(
+				authority
+			);
+		} catch (e) {
+			logger.warn(
+				`getNodeFillInfo: Failed to get builder-referral status: ${e}`
+			);
+		}
+
 		return Promise.resolve({
 			makerInfos,
 			takerUserPubKey,
@@ -2365,6 +2452,7 @@ export class FillerMultithreaded {
 			),
 			takerUserSlot: this.slotSubscriber.getSlot(),
 			referrerInfo,
+			takerIsReferred,
 			marketType: nodeToFill.node.order!.marketType,
 			isSignedMsg: nodeToFill.node.isSignedMsg,
 			authority: new PublicKey(authority),

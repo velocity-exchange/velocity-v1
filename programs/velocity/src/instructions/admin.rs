@@ -1,5 +1,7 @@
 use std::convert::TryInto;
 
+use crate::state::state::LpPoolFeatureBitFlags;
+
 use anchor_lang::prelude::*;
 use anchor_lang::Discriminator;
 use anchor_spl::{
@@ -67,9 +69,7 @@ use crate::{
         pyth_lazer_oracle::{PythLazerOracle, PYTH_LAZER_ORACLE_SEED},
         spot_market::{AssetTier, InsuranceFund, SpotBalanceType, SpotMarket, TokenProgramFlag},
         spot_market_map::get_writable_spot_market_set,
-        state::{
-            ExchangeStatus, FeeStructure, HotRole, LpPoolFeatureBitFlags, OracleGuardRails, State,
-        },
+        state::{ExchangeStatus, FeeStructure, HotRole, OracleGuardRails, SolvencyStatus, State},
         traits::Size,
         user::{MarketType, SpecialUserStatus, User, UserStats},
     },
@@ -147,7 +147,8 @@ pub fn handle_initialize(ctx: Context<Initialize>) -> Result<()> {
         max_initialize_user_fee: 0,
         feature_bit_flags: 0,
         lp_pool_feature_bit_flags: 0,
-        padding: [0; 272],
+        solvency_status: SolvencyStatus::active(),
+        padding: [0; 271],
     };
 
     Ok(())
@@ -3014,6 +3015,20 @@ pub fn handle_update_exchange_status(
     Ok(())
 }
 
+pub fn handle_update_solvency_status(
+    ctx: Context<ColdAdminUpdateState>,
+    solvency_status: u8,
+) -> Result<()> {
+    let mut state = ctx.accounts.state.load_mut()?;
+    msg!(
+        "solvency_status: {:?} -> {:?}",
+        state.solvency_status,
+        solvency_status
+    );
+    state.solvency_status = solvency_status;
+    Ok(())
+}
+
 pub fn handle_update_perp_auction_duration(
     ctx: Context<AdminUpdateState>,
     min_perp_auction_duration: u8,
@@ -3700,7 +3715,28 @@ pub fn handle_update_special_user_status(
 
 #[derive(Accounts)]
 pub struct Initialize<'info> {
-    #[account(mut)]
+    // Only the designated `state_init_authority` may create the singleton
+    // `State` account, so the one-time init cannot be front-run. This lock is
+    // active *only* on a real mainnet build (`mainnet-beta` on, `anchor-test`
+    // off). Every other build leaves `initialize` open to any admin key:
+    //   - devnet/localnet (`mainnet-beta` off) — free setup, and
+    //   - the integration-test build, which keeps the default `mainnet-beta`
+    //     feature on but adds `anchor-test`, so each test's bankrun wallet can
+    //     still initialize.
+    // The two arms below are exact complements, so exactly one applies per
+    // build. This mirrors the three-way build split used by the keys in
+    // `ids.rs`.
+    //
+    // Anchor honors a single `#[account]` per field, so `mut` is repeated in
+    // both arms rather than shared.
+    #[cfg_attr(
+        any(not(feature = "mainnet-beta"), feature = "anchor-test"),
+        account(mut)
+    )]
+    #[cfg_attr(
+        all(feature = "mainnet-beta", not(feature = "anchor-test")),
+        account(mut, address = crate::ids::state_init_authority::id())
+    )]
     pub admin: Signer<'info>,
     #[account(
         init,

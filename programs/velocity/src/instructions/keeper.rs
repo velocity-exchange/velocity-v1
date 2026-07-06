@@ -614,6 +614,7 @@ pub fn place_signed_msg_taker_order<'c: 'info, 'info>(
         taker.update_perp_position_max_margin_ratio(market_index, max_margin_ratio)?;
     }
 
+    #[cfg(feature = "isolated-position")]
     if let Some(isolated_position_deposit) =
         verified_message_and_signature.isolated_position_deposit
     {
@@ -629,6 +630,17 @@ pub fn place_signed_msg_taker_order<'c: 'info, 'info>(
             0,
             market_index,
             isolated_position_deposit.cast::<i64>()?,
+        )?;
+    }
+    #[cfg(not(feature = "isolated-position"))]
+    {
+        let _ = &taker_stats;
+        validate!(
+            verified_message_and_signature
+                .isolated_position_deposit
+                .is_none(),
+            ErrorCode::IsolatedPositionDisabled,
+            "signed msg isolated position deposit not enabled in this build"
         )?;
     }
 
@@ -1825,7 +1837,7 @@ pub fn handle_set_user_status_to_being_liquidated<'c: 'info, 'info>(
 }
 
 #[access_control(
-    withdraw_not_paused(&ctx.accounts.state)
+    solvency_repair_not_paused(&ctx.accounts.state)
 )]
 pub fn handle_resolve_perp_pnl_deficit<'c: 'info, 'info>(
     ctx: Context<'info, ResolvePerpPnlDeficit<'info>>,
@@ -1970,7 +1982,7 @@ pub fn handle_resolve_perp_pnl_deficit<'c: 'info, 'info>(
 }
 
 #[access_control(
-    withdraw_not_paused(&ctx.accounts.state)
+    solvency_repair_not_paused(&ctx.accounts.state)
 )]
 pub fn handle_resolve_perp_bankruptcy<'c: 'info, 'info>(
     ctx: Context<'info, ResolveBankruptcy<'info>>,
@@ -2103,7 +2115,7 @@ pub fn handle_resolve_perp_bankruptcy<'c: 'info, 'info>(
 }
 
 #[access_control(
-    withdraw_not_paused(&ctx.accounts.state)
+    solvency_repair_not_paused(&ctx.accounts.state)
 )]
 pub fn handle_resolve_spot_bankruptcy<'c: 'info, 'info>(
     ctx: Context<'info, ResolveBankruptcy<'info>>,
@@ -2444,18 +2456,11 @@ pub fn handle_update_perp_bid_ask_twap<'c: 'info, 'info>(
         )?;
     }
 
-    let funding_paused =
-        state.funding_paused()? || perp_market.is_operation_paused(PerpOperation::UpdateFunding);
-    controller::funding::update_funding_rate(
-        perp_market.market_index,
-        perp_market,
-        &mut oracle_map,
-        now,
-        slot,
-        &state.oracle_guard_rails,
-        funding_paused,
-        None,
-    )?;
+    // Funding is intentionally decoupled from this crank: refreshing the mark
+    // TWAP from caller-supplied DLOB depth and applying funding in the same
+    // instruction let a caller stamp `last_mark_price_twap_ts = now` and then
+    // have funding read that just-written TWAP back at zero elapsed time.
+    // Funding runs via its own `update_funding_rate` crank (and on fills).
 
     Ok(())
 }
@@ -3541,6 +3546,7 @@ pub struct UpdatePerpBidAskTwap<'info> {
     pub perp_market: AccountLoader<'info, PerpMarket>,
     /// CHECK: checked in `update_funding_rate` ix constraint
     pub oracle: UncheckedAccount<'info>,
+    #[account(has_one = authority)]
     pub keeper_stats: AccountLoader<'info, UserStats>,
     pub authority: Signer<'info>,
 }

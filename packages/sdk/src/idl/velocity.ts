@@ -8,7 +8,7 @@ export type Velocity = {
   "address": "vELoC1audYbSYVRXn1vPaV8Axoa9oU6BYmNGZZBDZ1P",
   "metadata": {
     "name": "velocity",
-    "version": "2.162.0",
+    "version": "2.162.1",
     "spec": "0.1.0",
     "description": "Created with Anchor"
   },
@@ -9437,7 +9437,10 @@ export type Velocity = {
         },
         {
           "name": "authority",
-          "signer": true
+          "signer": true,
+          "relations": [
+            "keeperStats"
+          ]
         }
       ],
       "args": []
@@ -11071,6 +11074,35 @@ export type Velocity = {
               "name": "marketType"
             }
           }
+        }
+      ]
+    },
+    {
+      "name": "updateSolvencyStatus",
+      "discriminator": [
+        81,
+        136,
+        15,
+        6,
+        24,
+        165,
+        44,
+        133
+      ],
+      "accounts": [
+        {
+          "name": "state",
+          "writable": true
+        },
+        {
+          "name": "admin",
+          "signer": true
+        }
+      ],
+      "args": [
+        {
+          "name": "solvencyStatus",
+          "type": "u8"
         }
       ]
     },
@@ -16059,6 +16091,11 @@ export type Velocity = {
     },
     {
       "code": 6357,
+      "name": "isolatedPositionDisabled",
+      "msg": "Isolated positions are not enabled in this build"
+    },
+    {
+      "code": 6358,
       "name": "dailyDepositLimit",
       "msg": "dailyDepositLimit"
     }
@@ -23329,6 +23366,16 @@ export type Velocity = {
             "type": "u8"
           },
           {
+            "name": "solvencyStatus",
+            "docs": [
+              "Bitmask of `SolvencyStatus` flags. Gates internal solvency-repair flows",
+              "(bankruptcy / pnl-deficit resolution) independently of `WithdrawPaused`,",
+              "so user withdrawals can be halted while repair keeps running, or repair",
+              "can be frozen on its own when an oracle is suspect. `0` = repair allowed."
+            ],
+            "type": "u8"
+          },
+          {
             "name": "protocolFeeRecipientPerp",
             "docs": [
               "Treasury that PERP protocol fees (quote-denominated) may be withdrawn",
@@ -23362,7 +23409,7 @@ export type Velocity = {
             "type": {
               "array": [
                 "u8",
-                272
+                271
               ]
             }
           }

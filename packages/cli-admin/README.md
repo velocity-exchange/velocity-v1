@@ -1,6 +1,6 @@
 # @velocity-exchange/admin-cli
 
-CLI for Velocity v2 admin operations. Sign with the right key (or pass a Squads
+CLI for Velocity v1 admin operations. Sign with the right key (or pass a Squads
 V4 multisig); the on-chain program enforces which tier of authority is
 required for the action.
 
@@ -25,6 +25,7 @@ velocity-admin show config
 
 velocity-admin auth set-admin <pubkey>
 velocity-admin auth set-warm-admin <pubkey>
+velocity-admin auth set-pause-admin <pubkey>
 velocity-admin auth set-hot-admin <role> <pubkey>
 velocity-admin auth init-config [--initial-warm <pk>]
 
@@ -39,15 +40,24 @@ velocity-admin spot-market set-withdraw-breaker <market> <pct>
 velocity-admin spot-market set-deposit-cap <market> <threshold> <pctPerDay>
 
 velocity-admin exchange set-status <bitfield>
+velocity-admin exchange set-solvency-status <bitfield>  # cold admin; gates solvency-repair ixs (1=solvencyRepairPaused)
 
 velocity-admin fees set-recipient <pubkey> <perp|spot>           # cold admin
-velocity-admin fees set-split <ammFeeNumerator> <ifFeeNumerator> # cold admin
+velocity-admin fees set-split <ammFeeNumerator> <ifFeeNumerator> # warm/cold admin
 velocity-admin fees withdraw-perp <market> <amount>  # FeeWithdraw hot key; pays the recipient's ATA (created if needed)
 velocity-admin fees withdraw-spot <market> <amount>  # FeeWithdraw hot key; pays the recipient's ATA (created if needed)
 velocity-admin fees sweep <market>                               # permissionless
+velocity-admin fees transfer-fee-pnl <feePoolMarket> <pnlPoolMarket> <amount> <fee-to-pnl|pnl-to-fee> # warm/cold admin
 
 velocity-admin user set-special-status <user> <flags>
 velocity-admin user admin-deposit <market> <amount> --user <pk> --user-token-account <pk>
+velocity-admin user deposit <market> <amount> [--authority <pk>] [--sub-account <id>] [--user-token-account <pk>] [--reduce-only]
+velocity-admin user withdraw <market> <amount> [--authority <pk>] [--sub-account <id>] [--user-token-account <pk>] [--reduce-only]
+
+velocity-admin if stake <market> <amount> [--authority <pk>] [--user-token-account <pk>]  # inits the stake account if missing
+
+velocity-admin program halt [--so <path>]                        # deploy sbpf-asm-abort + propose an upgrade that bricks the program
+velocity-admin program close-buffers [--dry-run] [--program-only|--metadata-only]  # reclaim rent from orphaned program + IDL buffers
 
 velocity-admin multisig create --proposer <pubkey> [--name <name>]  # create a Squads V4 1/1 multisig
 
@@ -60,6 +70,11 @@ Append `--multisig <multisigPda>` to any subcommand. The CLI submits a single
 transaction that creates a `vault_transaction` + `proposal` against the
 multisig with your wallet as the proposer. Members then approve + execute via
 the Squads UI.
+
+User-scoped commands (`user deposit`, `user withdraw`, `if stake`) default the
+authority to the multisig's vault 0 PDA when `--multisig` is passed, since the
+vault is what signs at execution. The vault must be the velocity user / stake
+authority and own the source token account.
 
 ```sh
 velocity-admin auth set-warm-admin <newWarmAdmin> \

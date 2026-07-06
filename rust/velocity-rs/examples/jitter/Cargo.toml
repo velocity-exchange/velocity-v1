@@ -1,0 +1,19 @@
+[package]
+name = "jitter-example"
+version = "0.1.0"
+edition = "2021"
+
+# Standalone example crate: its own workspace root so it carries its own
+# Cargo.lock and is independent of the parent `rust/` workspace.
+[workspace]
+
+[dependencies]
+velocity-rs = { path = "../../../velocity-rs", features = ["unsafe_pub"] }
+async-trait = "0.1"
+dashmap = "6"
+dotenv = "0.15.0"
+env_logger = "0.11"
+futures = "0.3"
+log = "0.4"
+thiserror = "1"
+tokio = { version = "1", features = ["full"] }

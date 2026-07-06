@@ -985,10 +985,14 @@ impl VelocityClient {
         let perp_market = self.try_get_perp_market_account(market_index)?;
         let oracle_validity_guard_rails = self.state_account().unwrap().oracle_guard_rails.validity;
 
-        let drift_validity_guard_rails: program::state::state::ValidityGuardRails =
+        let velocity_validity_guard_rails: program::state::state::ValidityGuardRails =
             unsafe { std::mem::transmute_copy::<_, _>(&oracle_validity_guard_rails) };
         perp_market
-            .get_mm_oracle_price_data(oracle_data.data, current_slot, &drift_validity_guard_rails)
+            .get_mm_oracle_price_data(
+                oracle_data.data,
+                current_slot,
+                &velocity_validity_guard_rails,
+            )
             .map(|x| x.get_safe_oracle_price_data())
             .map_err(|e| SdkError::Anchor(Box::new(e.into())))
     }
@@ -1631,8 +1635,12 @@ impl VelocityClientBackend {
             if account_data.is_empty() {
                 return Err(SdkError::NoAccountData(*account));
             }
-            T::try_deserialize(&mut account_data.as_slice())
-                .map_err(|err| SdkError::Anchor(Box::new(err)))
+            // Decode with the alignment-safe Pod reader (an unaligned copy into
+            // an owned `T`), the same path the cache hit above uses. Anchor's
+            // `T::try_deserialize` would `bytemuck::from_bytes` by reference into
+            // these byte-aligned RPC bytes and panic for 16-aligned zero-copy
+            // structs (PerpMarket/SpotMarket) off-chain.
+            crate::utils::try_deser_zero_copy::<T>(&account_data).ok_or(SdkError::InvalidAccount)
         }
     }
 
@@ -1647,8 +1655,10 @@ impl VelocityClientBackend {
             let (account, slot) = self.get_account_with_slot_raw(account).await?;
             Ok(DataAndSlot {
                 slot,
-                data: T::try_deserialize(&mut account.data.as_slice())
-                    .map_err(|err| SdkError::Anchor(Box::new(err)))?,
+                // Alignment-safe Pod reader (see `get_account`); avoids anchor's
+                // by-reference `from_bytes` panic on 16-aligned zero-copy structs.
+                data: crate::utils::try_deser_zero_copy::<T>(&account.data)
+                    .ok_or(SdkError::InvalidAccount)?,
             })
         }
     }
@@ -2143,7 +2153,7 @@ impl<'a> TransactionBuilder<'a> {
                     &self.authority,
                     spot_market,
                 ),
-                velocity_signer: constants::derive_drift_signer(),
+                velocity_signer: constants::derive_velocity_signer(),
                 token_program: spot_market.token_program(),
             },
             [self.account_data.as_ref()].into_iter(),
@@ -3363,7 +3373,11 @@ impl<'a> TransactionBuilder<'a> {
             ]);
         }
 
-        let add_revenue_share_escrow = if let Some(has) = has_builder {
+        // The on-chain FillPerpOrder (programs/velocity/src/controller/orders.rs)
+        // requires the taker's RevenueShareEscrow in two independent cases: the
+        // order carries a builder code, OR the taker is referred (their escrow was
+        // initialized with a referrer, i.e. the `BuilderReferral` status bit).
+        let order_has_builder = if let Some(has) = has_builder {
             has
         } else if let Some(order_id) = taker_order_id {
             taker_account
@@ -3375,7 +3389,7 @@ impl<'a> TransactionBuilder<'a> {
             // no taker_order_id, should be a swift order, include the revenue share escrow optimistically
             true
         };
-        if add_revenue_share_escrow {
+        if order_has_builder || taker_stats.has_builder_referral() {
             accounts.push(AccountMeta::new(
                 derive_revenue_share_escrow(&taker_account.authority),
                 false,
@@ -3670,7 +3684,7 @@ impl<'a> TransactionBuilder<'a> {
                     asset_spot_market,
                 ),
                 token_program: liability_spot_market.token_program(),
-                velocity_signer: constants::derive_drift_signer(),
+                velocity_signer: constants::derive_velocity_signer(),
                 instructions: SYSVAR_INSTRUCTIONS_PUBKEY,
             },
             [&self.account_data, user_account].into_iter(),
@@ -3745,7 +3759,7 @@ impl<'a> TransactionBuilder<'a> {
                     asset_spot_market,
                 ),
                 token_program: liability_spot_market.token_program(),
-                velocity_signer: constants::derive_drift_signer(),
+                velocity_signer: constants::derive_velocity_signer(),
                 instructions: SYSVAR_INSTRUCTIONS_PUBKEY,
             },
             [&self.account_data, user_account].into_iter(),
@@ -4379,5 +4393,68 @@ mod tests {
 
         let high_leverage_account = *high_leverage_mode_account();
         assert!(tx.static_account_keys().contains(&high_leverage_account));
+    }
+
+    /// Regression: a fill of a *referred* taker's order (their RevenueShareEscrow
+    /// was initialized with a referrer -> `BuilderReferral` status bit) must attach
+    /// the escrow account even when the order itself carries no builder code, or the
+    /// on-chain `FillPerpOrder` reverts with `UnableToLoadRevenueShareAccount`.
+    #[test]
+    fn fill_perp_order_attaches_escrow_for_referred_taker() {
+        let program_data = ProgramData::new(
+            vec![SpotMarket::default()],
+            vec![PerpMarket::default()],
+            vec![],
+            State::default(),
+        );
+        let filler = Pubkey::new_unique();
+        let taker = Pubkey::new_unique();
+
+        // Taker holds a plain order (id 1) that carries no builder code.
+        let mut taker_account = User::default();
+        taker_account.orders[0].order_id = 1;
+        assert!(!taker_account.orders[0].has_builder());
+        let makers: Vec<User> = vec![];
+        let escrow = derive_revenue_share_escrow(&taker_account.authority);
+
+        // Referred taker (BuilderReferral bit set): escrow MUST be attached even
+        // though the order has no builder. This is the regressed case.
+        let mut referred_stats = UserStats::default();
+        referred_stats.referrer_status = 0b0000_0100;
+        assert!(referred_stats.has_builder_referral());
+        let tx = TransactionBuilder::new(&program_data, filler, Cow::Owned(User::default()), false)
+            .fill_perp_order(
+                0,
+                taker,
+                &taker_account,
+                &referred_stats,
+                Some(1),
+                &makers,
+                None,
+            )
+            .build();
+        assert!(
+            tx.static_account_keys().contains(&escrow),
+            "referred taker's fill must include the RevenueShareEscrow account"
+        );
+
+        // Control: not referred and order has no builder -> escrow omitted.
+        let plain_stats = UserStats::default();
+        assert!(!plain_stats.has_builder_referral());
+        let tx = TransactionBuilder::new(&program_data, filler, Cow::Owned(User::default()), false)
+            .fill_perp_order(
+                0,
+                taker,
+                &taker_account,
+                &plain_stats,
+                Some(1),
+                &makers,
+                None,
+            )
+            .build();
+        assert!(
+            !tx.static_account_keys().contains(&escrow),
+            "non-referred, non-builder fill must not include the RevenueShareEscrow account"
+        );
     }
 }

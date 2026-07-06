@@ -1253,8 +1253,13 @@ pub fn find_bids_and_asks_from_users(
     Ok((bids, asks))
 }
 
-/// Filter out bids and asks that are more than max_divergence_percent away from the oracle price.
-/// Bids below oracle * (100 - max_divergence) / 100 and asks above oracle * (100 + max_divergence) / 100 are excluded.
+/// Filter out bids and asks whose price diverges from the oracle by more than
+/// `max_divergence_percent` in either direction. A level is kept only when its
+/// price lies within `[oracle * (100 - d) / 100, oracle * (100 + d) / 100]`.
+/// The band is symmetric on both sides for both books: a bid above the upper
+/// bound and an ask below the lower bound are excluded too, so caller-supplied
+/// DLOB depth cannot drive the mark TWAP past the oracle band in either
+/// direction.
 pub fn filter_bids_asks_by_oracle_divergence(
     bids: Vec<Level>,
     asks: Vec<Level>,
@@ -1262,25 +1267,20 @@ pub fn filter_bids_asks_by_oracle_divergence(
     max_divergence_percent: u64,
 ) -> VelocityResult<(Vec<Level>, Vec<Level>)> {
     let oracle_abs = oracle_price.unsigned_abs().max(1);
-    let min_bid_price: u64 = oracle_abs
+    let min_price: u64 = oracle_abs
         .cast::<u128>()?
         .safe_mul((100 - max_divergence_percent).min(100).cast()?)?
         .safe_div(100)?
         .cast()?;
-    let max_ask_price: u64 = oracle_abs
+    let max_price: u64 = oracle_abs
         .cast::<u128>()?
         .safe_mul((100 + max_divergence_percent).cast()?)?
         .safe_div(100)?
         .cast()?;
 
-    let filtered_bids: Vec<Level> = bids
-        .into_iter()
-        .filter(|level| level.price >= min_bid_price)
-        .collect();
-    let filtered_asks: Vec<Level> = asks
-        .into_iter()
-        .filter(|level| level.price <= max_ask_price)
-        .collect();
+    let in_band = |level: &Level| level.price >= min_price && level.price <= max_price;
+    let filtered_bids: Vec<Level> = bids.into_iter().filter(&in_band).collect();
+    let filtered_asks: Vec<Level> = asks.into_iter().filter(&in_band).collect();
 
     Ok((filtered_bids, filtered_asks))
 }

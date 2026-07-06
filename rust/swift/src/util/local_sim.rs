@@ -7,20 +7,14 @@
 //!
 //! Replaces the deleted `velocity_rs::ffi::simulate_place_perp_order`.
 
-use std::{
-    cell::RefCell,
-    rc::Rc,
-    time::{SystemTime, UNIX_EPOCH},
-};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use anchor_lang::AccountDeserialize;
-use solana_account_info::AccountInfo;
 use solana_clock::Clock;
-use solana_pubkey::Pubkey;
 use velocity_rs::program::{
     controller::orders::place_perp_order,
     error::{ErrorCode, VelocityResult},
-    sdk::{OwnedAccount, VelocityAccounts},
+    sdk::{build_infos, AlignedAccountData, VelocityAccounts},
     state::{
         oracle_map::OracleMap,
         order_params::{OrderParams, PlaceOrderOptions},
@@ -31,31 +25,21 @@ use velocity_rs::program::{
     },
 };
 
-#[allow(deprecated)]
-fn account_info_from<'a>(slot: &'a mut (Pubkey, OwnedAccount)) -> AccountInfo<'a> {
-    let (ref key, ref mut acc) = *slot;
-    AccountInfo {
-        key,
-        lamports: Rc::new(RefCell::new(&mut acc.lamports)),
-        data: Rc::new(RefCell::new(acc.data.as_mut_slice())),
-        owner: &acc.owner,
-        _unused: 0,
-        is_signer: false,
-        is_writable: true,
-        executable: acc.executable,
-    }
-}
-
-fn build_infos<'a>(entries: &'a mut [(Pubkey, OwnedAccount)]) -> Vec<AccountInfo<'a>> {
-    entries.iter_mut().map(account_info_from).collect()
-}
-
 /// Off-chain replay of `place_perp_order`.
 ///
 /// `user` is cloned before the call so the caller's value is not mutated,
 /// matching the pre-FFI-removal behavior. `state_bytes` is the raw cached
-/// state-account bytes (including 8-byte discriminator) — velocity's native
-/// `State` is Borsh-only and not safely castable from the Pod IDL mirror.
+/// state-account bytes (including 8-byte discriminator).
+///
+/// `State` is a `#[account(zero_copy)]` struct (embeds `FeeStructure` /
+/// `OracleGuardRails`, which hold `u128`/`i128`), so off-chain on x86_64 it is
+/// 16-aligned and its `try_deserialize` casts the body **by reference**
+/// (`bytemuck::from_bytes(&data[8..])`). The raw `state_bytes` arrive in a plain
+/// allocation that's 16-aligned only at the *base*, so `&data[8..]` sits at
+/// `8 mod 16` and the cast panics (`TargetAlignmentGreaterAndInputNotAligned`).
+/// Copy once into an [`AlignedAccountData`] buffer (body at `base + 16`) so the
+/// cast lands on a 16-byte boundary — the same treatment the market/oracle
+/// accounts get in `AccountsListBuilder`.
 pub fn simulate_place_perp_order(
     user: &User,
     accounts: &mut VelocityAccounts,
@@ -63,7 +47,8 @@ pub fn simulate_place_perp_order(
     order_params: OrderParams,
     max_margin_ratio: Option<u16>,
 ) -> VelocityResult<()> {
-    let state = NativeState::try_deserialize(&mut &*state_bytes)
+    let state_aligned = AlignedAccountData::from_bytes(state_bytes);
+    let state = NativeState::try_deserialize(&mut state_aligned.as_slice())
         .map_err(|_| ErrorCode::UnableToLoadAccountLoader)?;
 
     let mut user = user.clone();

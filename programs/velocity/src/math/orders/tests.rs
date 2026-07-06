@@ -4182,6 +4182,76 @@ pub mod filter_bids_asks_by_oracle_divergence {
     }
 
     #[test]
+    fn test_filters_bids_above_oracle_band() {
+        // Symmetric band: bids above oracle * 1.15 are excluded too, so
+        // caller-supplied depth cannot push the mark TWAP above the band.
+        // Oracle at 100, 15% filter: max price = 115.
+        let bids = vec![
+            Level {
+                price: 110 * PRICE_PRECISION_U64,
+                base_asset_amount: 1,
+            },
+            Level {
+                price: 115 * PRICE_PRECISION_U64,
+                base_asset_amount: 1,
+            },
+            Level {
+                price: 116 * PRICE_PRECISION_U64,
+                base_asset_amount: 1,
+            },
+            Level {
+                price: 120 * PRICE_PRECISION_U64,
+                base_asset_amount: 1,
+            },
+        ];
+        let asks: Vec<Level> = vec![];
+        let oracle_price = 100 * PRICE_PRECISION_I64;
+
+        let (filtered_bids, filtered_asks) =
+            filter_bids_asks_by_oracle_divergence(bids, asks, oracle_price, 15).unwrap();
+
+        assert_eq!(filtered_bids.len(), 2); // 110 and 115 kept
+        assert_eq!(filtered_bids[0].price, 110 * PRICE_PRECISION_U64);
+        assert_eq!(filtered_bids[1].price, 115 * PRICE_PRECISION_U64);
+        assert!(filtered_asks.is_empty());
+    }
+
+    #[test]
+    fn test_filters_asks_below_oracle_band() {
+        // Symmetric band: asks below oracle * 0.85 are excluded too, so
+        // caller-supplied depth cannot push the mark TWAP below the band.
+        // Oracle at 100, 15% filter: min price = 85.
+        let bids: Vec<Level> = vec![];
+        let asks = vec![
+            Level {
+                price: 80 * PRICE_PRECISION_U64,
+                base_asset_amount: 1,
+            },
+            Level {
+                price: 84 * PRICE_PRECISION_U64,
+                base_asset_amount: 1,
+            },
+            Level {
+                price: 85 * PRICE_PRECISION_U64,
+                base_asset_amount: 1,
+            },
+            Level {
+                price: 90 * PRICE_PRECISION_U64,
+                base_asset_amount: 1,
+            },
+        ];
+        let oracle_price = 100 * PRICE_PRECISION_I64;
+
+        let (filtered_bids, filtered_asks) =
+            filter_bids_asks_by_oracle_divergence(bids, asks, oracle_price, 15).unwrap();
+
+        assert!(filtered_bids.is_empty());
+        assert_eq!(filtered_asks.len(), 2); // 85 and 90 kept
+        assert_eq!(filtered_asks[0].price, 85 * PRICE_PRECISION_U64);
+        assert_eq!(filtered_asks[1].price, 90 * PRICE_PRECISION_U64);
+    }
+
+    #[test]
     fn test_uses_constant_for_divergence() {
         // Verify the constant is used correctly
         let bids = vec![Level {

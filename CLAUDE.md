@@ -41,6 +41,8 @@ bun run program:build:mainnet   # mainnet .so (default features: production gate
 
 `program:build` and `program:idl` use `--no-default-features --features no-entrypoint,anchor-test`. This is required even though `declare_id!` is now unconditional: default features include `mainnet-beta`, which compiles out devnet-only instructions (e.g. `force_wipe_accounts_devnet` — `wipe-devnet.ts` calls it via the SDK IDL) and switches `ids.rs` to mainnet constants. `program:idl` runs `anchor idl build` under `cargo test` with the host toolchain, which sidesteps the bundled-cargo issues described below.
 
+**Post-audit feature gates (`isolated-position`, `vlp-hedge`):** the instruction surface of isolated perp positions and the VLP hedge/LP-pool component is compiled out of mainnet builds (default features) pending audit. `anchor-test` implies both features, so `program:build`, `program:idl`, and all tests keep them; `build-devnet.sh` enables them explicitly, so devnet keeps them live. Only instructions are gated — all state (`PerpPosition.isolated_position_scaled_balance`, `PerpMarket.hedge_config`, LP-pool accounts) and interior logic stay compiled in every build so account layouts never diverge. **A gated instruction must not share a `#[derive(Accounts)]` struct with an ungated one**: anchor's `cpi` module dedups the per-struct re-export and inherits the cfg, so the ungated instruction's cpi accounts type vanishes and the build breaks only when the `cpi` feature is on — a plain `cargo check -p velocity` does not catch it; also run `cargo check -p vaults` (or `cargo check -p velocity --features cpi`). This is why five lp-pool admin config ixs (`update_perp_market_lp_pool_id`, `..._paused_operations`, three `update_feature_bit_flags_*_lp_pool`) remain ungated — they are inert config writes whose readers are compiled out. To enable on mainnet: add the features to the mainnet build invocation and upgrade in place. When touching either subsystem, verify both flavors compile: `cargo check -p velocity` (gated) and `cargo check -p velocity --no-default-features --features no-entrypoint,anchor-test` (enabled).
+
 **SDK:**
 
 ```bash
@@ -153,7 +155,7 @@ solana-sdk 3.x dependency tree never unifies with the program's SBF build. It ha
 `./target`. Build/check it with `cargo check --manifest-path rust/Cargo.toml` (or `bun run rust:build`).
 
 - These crates consume the velocity program as a **host library** path-dep: `drift = { package = "velocity", path = "../../programs/velocity", ... }`. That host build is independent of `cargo build-sbf`.
-- **IDL tie:** `velocity-rs/build.rs` regenerates `velocity-rs/crates/src/velocity_idl.rs` from `velocity-rs/res/velocity.json` on every build. `bun run program:idl` regenerates the program IDL **and** syncs it into `rust/velocity-rs/res/velocity.json` (via the `rust:idl-sync` script), so the Rust types track the program. Never hand-edit `res/velocity.json` or `velocity_idl.rs` — both are generated.
+- **IDL tie:** `velocity-rs/build.rs` regenerates `velocity-rs/crates/src/velocity_idl.rs` on every build from the **canonical** program IDL `packages/sdk/src/idl/velocity.json` — the same file the TypeScript SDK consumes, read directly across the workspace (no vendored copy). `bun run program:idl` regenerates that IDL; the next `cargo build`/`cargo check` of the rust workspace picks it up and recompiles the types. Never hand-edit `velocity_idl.rs` — it is generated. (Pre-monorepo, velocity-rs vendored a fetched copy at `res/velocity.json` kept in sync by a `rust:idl-sync` script; both are removed.)
 - `keep-rs`'s `[patch.crates-io]` and `swift`'s `[profile.dev.package]` are **hoisted** into `rust/Cargo.toml` (Cargo only honors patches/profiles at the workspace root). `keep-rs/vendor/pyth-lazer-protocol` is un-ignored in `.gitignore`.
 - The velocity fork **removed** some upstream-drift features (IF-rebalance / `ProtocolIfSharesTransferConfig`, gov-token staking). When importing newer velocity-rs/keep-rs/swift, expect to drop references to removed types (see the import commits for the pattern).
 
@@ -224,7 +226,7 @@ Each item below cost real time before being understood — read this before touc
 
 ## Architecture
 
-This is **Velocity Protocol v2** — a Solana perpetuals and spot trading protocol.
+This is **Velocity Protocol v1** — a Solana perpetuals and spot trading protocol.
 
 ### Programs (`programs/`)
 

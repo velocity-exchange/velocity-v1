@@ -412,6 +412,9 @@ export class WebsocketCacheProgramAccountSubscriber {
 
 class grpcCacheProgramAccountSubscriber extends WebsocketCacheProgramAccountSubscriber {
 	client: Client;
+	// yellowstone-grpc 5.x requires an explicit connect() before subscribe();
+	// guard so we only dial once even across resubscribes.
+	private connected = false;
 	// Relaxed generics: ClientDuplexStream<SubscribeRequest, SubscribeUpdate> makes
 	// TS expand SubscribeUpdate's deep protobuf union on instantiation (TS2589). The
 	// stream is assigned via an `as unknown as` cast, so the precise generics add no
@@ -446,6 +449,13 @@ class grpcCacheProgramAccountSubscriber extends WebsocketCacheProgramAccountSubs
 			return;
 		}
 
+		// yellowstone-grpc 5.0.5's subscribe() throws "Client not connected. Call
+		// connect() first" unless the channel has been dialed. Do it once here.
+		if (!this.connected) {
+			await this.client.connect();
+			this.connected = true;
+		}
+
 		this.stream =
 			(await this.client.subscribe()) as unknown as typeof this.stream;
 		const filters = this.options.filters.map((filter) => ({
@@ -455,9 +465,16 @@ class grpcCacheProgramAccountSubscriber extends WebsocketCacheProgramAccountSubs
 			},
 		}));
 		const request: SubscribeRequest = {
-			slots: {},
+			// `slots` is a name->filter MAP. The old `slots: {}` was an EMPTY map,
+			// i.e. no slot subscription at all — so the server never streamed slot
+			// updates, and the health check (which only learns the current slot from
+			// incoming account writes) reported "slot lag" whenever user accounts
+			// were idle. A named entry streams a slot every ~400ms, so liveness is
+			// driven by chain progress, not by whether a user account happened to
+			// change.
+			slots: { client: { filterByCommitment: true } },
 			accounts: {
-				drift: {
+				velocity: {
 					account: [],
 					owner: [this.program.programId.toBase58()],
 					filters,
@@ -473,6 +490,20 @@ class grpcCacheProgramAccountSubscriber extends WebsocketCacheProgramAccountSubs
 		};
 
 		this.stream.on('data', (chunk: SubscribeUpdate) => {
+			// Slot updates prove the stream is live and drive the health check even
+			// when no user accounts are changing. They carry no account payload, so
+			// just advance the liveness markers and re-arm the resub timer — there is
+			// nothing to cache, so don't call handleRpcResponse.
+			if (chunk.slot) {
+				this.lastReceivedSlot = Number(chunk.slot.slot);
+				this.lastWriteTs = Date.now();
+				if (this.resubTimeoutMs) {
+					this.receivingData = true;
+					clearTimeout(this.timeoutId);
+					this.setTimeout();
+				}
+				return;
+			}
 			if (!chunk.account) {
 				return;
 			}
@@ -671,8 +702,13 @@ async function main() {
 		publisher: subscriber,
 	};
 
-	await subscriber.subscribe();
 	setupEndpoints(core);
+
+	// Only the subscription is retried. The one-time setup above (fork(sync),
+	// clients, and especially server.listen) must NOT re-run on failure — a second
+	// setupServer() would try to bind :5001 again and crash with EADDRINUSE, an
+	// unhandled 'error' event that bypasses recursiveTryCatch entirely.
+	await recursiveTryCatch(() => subscriber.subscribe());
 
 	console.log(``);
 	console.log(`Server is set up and running: ${httpPort}`);
@@ -700,4 +736,7 @@ async function recursiveTryCatch(f: () => Promise<void>) {
 	}
 }
 
-recursiveTryCatch(() => main());
+main().catch((e) => {
+	console.error('Fatal error in usermap publisher main():', e);
+	process.exit(1);
+});

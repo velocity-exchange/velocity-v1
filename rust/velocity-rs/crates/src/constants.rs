@@ -60,11 +60,12 @@ pub const ASSOCIATED_TOKEN_PROGRAM_ID: Pubkey =
 pub const LUTS_DEVNET: &[Pubkey] = &[solana_pubkey::pubkey!(
     "FaMS3U4uBojvGn5FSDEPimddcXsCfwkKsFgMVVnDdxGb"
 )];
-/// Velocity market lookup table (MainNet)
-pub const LUTS_MAINNET: &[Pubkey] = &[
-    solana_pubkey::pubkey!("Fpys8GRa5RBWfyeN7AaDUwFGD1zkDCA4z3t4CJLV8dfL"),
-    solana_pubkey::pubkey!("EiWSskK5HXnBTptiS5DH6gpAJRVNQ3cAhTKBGaiaysAb"),
-];
+/// Velocity market lookup table (MainNet): relaunch LUT holding state,
+/// signer, spot markets 0-1 (oracles/mints/vaults/IF vaults), perp markets
+/// 0-3 with oracles, and the token/ATA/system programs.
+pub const LUTS_MAINNET: &[Pubkey] = &[solana_pubkey::pubkey!(
+    "4E971nER9Jn4JjT8mKEX1nvkfg8Qycp7zNEcCq2nT8ZY"
+)];
 
 /// Velocity state account
 pub fn state_account() -> &'static Pubkey {

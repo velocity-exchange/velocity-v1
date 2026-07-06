@@ -33,7 +33,7 @@ import { BankrunContextWrapper } from '../../packages/sdk/src/bankrun/bankrunCon
 
 // jit-proxy program id
 const JIT_PROXY_PROGRAM_ID = new PublicKey(
-	'J1TnP8zvVxbtF5KFp5xRmWuvG9McnhzmBd9XGfCyuxFP'
+	'J1TPRoXCtGuMcWiWFE6RB9eZU8U35PBMETCwNQLCNPhQ'
 );
 
 describe('jit proxy smoke test', () => {

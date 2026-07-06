@@ -256,7 +256,7 @@ export class JitProxyClient {
 			if (hasBuilder(order)) {
 				remainingAccounts.push({
 					pubkey: getRevenueShareEscrowAccountPublicKey(
-						this.program.programId,
+						this.velocityClient.program.programId,
 						taker.authority
 					),
 					isWritable: true,
@@ -283,7 +283,6 @@ export class JitProxyClient {
 				state: await this.velocityClient.getStatePublicKey(),
 				user: await this.velocityClient.getUserAccountPublicKey(subAccountId),
 				userStats: this.velocityClient.getUserStatsAccountPublicKey(),
-				velocityProgram: this.velocityClient.program.programId,
 			})
 			.remainingAccounts(remainingAccounts)
 			.instruction();
@@ -345,7 +344,7 @@ export class JitProxyClient {
 		) {
 			remainingAccounts.push({
 				pubkey: getRevenueShareEscrowAccountPublicKey(
-					this.program.programId,
+					this.velocityClient.program.programId,
 					taker.authority
 				),
 				isWritable: true,
@@ -376,7 +375,6 @@ export class JitProxyClient {
 				state: await this.velocityClient.getStatePublicKey(),
 				user: await this.velocityClient.getUserAccountPublicKey(subAccountId),
 				userStats: this.velocityClient.getUserStatsAccountPublicKey(),
-				velocityProgram: this.velocityClient.program.programId,
 			})
 			.remainingAccounts(remainingAccounts)
 			.instruction();
@@ -495,7 +493,6 @@ export class JitProxyClient {
 				state: await this.velocityClient.getStatePublicKey(),
 				user: await this.velocityClient.getUserAccountPublicKey(),
 				userStats: this.velocityClient.getUserStatsAccountPublicKey(),
-				velocityProgram: this.velocityClient.program.programId,
 			})
 			.remainingAccounts(remainingAccounts)
 			.instruction();

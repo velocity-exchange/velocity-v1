@@ -157,6 +157,9 @@ describe('spot deposit and withdraw', () => {
 		);
 		bankrunContextWrapper.printTxLogs(txSig);
 
+		// the deposit went through firstUserVelocityClient — refresh admin's cache
+		// before asserting on it
+		await admin.fetchAccounts();
 		const spotMarket = await admin.getSpotMarketAccount(marketIndex);
 		assert(
 			spotMarket.depositBalance.eq(
@@ -187,6 +190,9 @@ describe('spot deposit and withdraw', () => {
 		);
 		assert(vaultAmountAfter.eq(usdcAmount.muln(2)));
 
+		// getTokenAmount derives from the cached spot market state, which
+		// depositIntoSpotMarketVault just mutated — refresh first
+		await firstUserVelocityClient.fetchAccounts();
 		const depositTokenAmount = firstUserVelocityClient.getTokenAmount(0);
 		assert(depositTokenAmount.eq(usdcAmount.muln(2)));
 	});

@@ -75,12 +75,14 @@ jobs:
             # program crate version bump only (drives the verifiable build)
             program_version:
               - 'programs/velocity/Cargo.toml'
-            # rust/ workspace; also the program, consumed as a host path-dep
+            # rust/ workspace; also the program, consumed as a host path-dep,
+            # and the canonical IDL, consumed by velocity-rs's build.rs
             rust_workspace:
               - 'rust/**'
               - 'programs/**'
               - 'Cargo.toml'
               - 'Cargo.lock'
+              - 'packages/sdk/src/idl/velocity.json'
             # anchor integration tests need the program, the tests, and the SDK
             anchor:
               - 'programs/**'
@@ -366,6 +368,12 @@ jobs:
       # packages/sdk/src/idl/velocity.json; the velocity program crate is compiled as a host lib path-dep.
       - name: cargo check rust workspace
         run: cargo check --manifest-path rust/Cargo.toml --locked --all-targets
+      # build.rs just regenerated velocity_idl.rs from the canonical IDL; a diff
+      # means the committed copy is stale. External (git-dep) consumers may build
+      # without regenerating — e.g. from a read-only or vendored source dir — so
+      # the committed file must stay in sync with the IDL.
+      - name: velocity_idl.rs in sync with IDL
+        run: git diff --exit-code rust/velocity-rs/crates/src/velocity_idl.rs
       # Gating: offline-deterministic tests only (rpc_tests feature OFF, so all
       # live tests are compiled out). Redis is provided by the service above.
       - name: cargo test rust workspace (offline, gating)

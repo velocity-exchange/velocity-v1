@@ -934,7 +934,7 @@ mod test {
         let logs: Vec<String> = [
             "Program ComputeBudget111111111111111111111111111111 invoke [1]",
             "Program ComputeBudget111111111111111111111111111111 success",
-            "Program J1TnP8zvVxbtF5KFp5xRmWuvG9McnhzmBd9XGfCyuxFP invoke [1]",
+            "Program J1TPRoXCtGuMcWiWFE6RB9eZU8U35PBMETCwNQLCNPhQ invoke [1]",
             "Program log: Instruction: ArbPerp",
             "Program dRiftyHA39MWEi3m9aunc5MzRF1JYuBsbn6VPcn33UH invoke [2]",
             "Program log: Instruction: PlaceAndTakePerpOrder",
@@ -954,8 +954,8 @@ mod test {
             "Program dRiftyHA39MWEi3m9aunc5MzRF1JYuBsbn6VPcn33UH consumed 269624 of 934786 compute units",
             "Program dRiftyHA39MWEi3m9aunc5MzRF1JYuBsbn6VPcn33UH success",
             "Program log: pnl 792986",
-            "Program J1TnP8zvVxbtF5KFp5xRmWuvG9McnhzmBd9XGfCyuxFP consumed 738458 of 1399850 compute units",
-            "Program J1TnP8zvVxbtF5KFp5xRmWuvG9McnhzmBd9XGfCyuxFP success",
+            "Program J1TPRoXCtGuMcWiWFE6RB9eZU8U35PBMETCwNQLCNPhQ consumed 738458 of 1399850 compute units",
+            "Program J1TPRoXCtGuMcWiWFE6RB9eZU8U35PBMETCwNQLCNPhQ success",
             ].into_iter().map(Into::into).collect();
 
         log_stream.process_log(338797360, RpcLogsResponse {
@@ -1134,12 +1134,12 @@ mod test {
         );
 
         let cpi_logs = &[
-            "Program J1TnP8zvVxbtF5KFp5xRmWuvG9McnhzmBd9XGfCyuxFP invoke [1]".to_string(),
+            "Program J1TPRoXCtGuMcWiWFE6RB9eZU8U35PBMETCwNQLCNPhQ invoke [1]".to_string(),
             "Program log: Instruction: ArbPerp".to_string(),
             "Program dRiftyHA39MWEi3m9aunc5MzRF1JYuBsbn6VPcn33UH invoke [2]".to_string(),
             format!("{PROGRAM_DATA}{}", serialize_event(order_record)),
             format!("{PROGRAM_DATA}{}", serialize_event(fill)),
-            "Program J1TnP8zvVxbtF5KFp5xRmWuvG9McnhzmBd9XGfCyuxFP success".to_string(),
+            "Program J1TPRoXCtGuMcWiWFE6RB9eZU8U35PBMETCwNQLCNPhQ success".to_string(),
         ];
 
         let events: Vec<VelocityEvent> = cpi_logs

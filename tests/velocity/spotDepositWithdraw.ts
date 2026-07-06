@@ -515,6 +515,7 @@ describe('spot deposit and withdraw', () => {
 		);
 		bankrunContextWrapper.printTxLogs(txSig);
 
+		await secondUserVelocityClient.fetchAccounts();
 		spotMarketAccount =
 			secondUserVelocityClient.getSpotMarketAccount(marketIndex);
 		const increaseInspotPosition = getBalance(
@@ -590,10 +591,12 @@ describe('spot deposit and withdraw', () => {
 
 	it('Update Cumulative Interest with 100% utilization', async () => {
 		const usdcmarketIndex = 0;
+		// refresh the cache BEFORE snapshotting the old state — the previous test's
+		// withdraw already accrued interest, and a stale snapshot skews the
+		// expected cumulative interest below
+		await firstUserVelocityClient.fetchAccounts();
 		const oldSpotMarketAccount =
 			firstUserVelocityClient.getSpotMarketAccount(usdcmarketIndex);
-
-		await bulkAccountLoader.load();
 
 		const txSig =
 			await firstUserVelocityClient.updateSpotMarketCumulativeInterest(

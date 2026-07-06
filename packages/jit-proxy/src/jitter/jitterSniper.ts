@@ -41,12 +41,12 @@ export class JitterSniper extends BaseJitter {
 		auctionSubscriber,
 		slotSubscriber,
 		jitProxyClient,
-		driftClient,
+		velocityClient,
 		userStatsMap,
 		swiftOrderSubscriber,
 		auctionSubscriberIgnoresSwiftOrders,
 	}: {
-		driftClient: VelocityClient;
+		velocityClient: VelocityClient;
 		slotSubscriber: SlotSubscriber;
 		auctionSubscriber: AuctionSubscriber;
 		jitProxyClient: JitProxyClient;
@@ -57,7 +57,7 @@ export class JitterSniper extends BaseJitter {
 		super({
 			auctionSubscriber,
 			jitProxyClient,
-			driftClient,
+			velocityClient,
 			userStatsMap,
 			swiftOrderSubscriber,
 			slotSubscriber,
@@ -99,8 +99,8 @@ export class JitterSniper extends BaseJitter {
 			// don't increase risk if we're past max positions
 			if (isVariant(order.marketType, 'perp')) {
 				const currPerpPos =
-					this.driftClient.getUser().getPerpPosition(order.marketIndex) ||
-					this.driftClient.getUser().getEmptyPosition(order.marketIndex);
+					this.velocityClient.getUser().getPerpPosition(order.marketIndex) ||
+					this.velocityClient.getUser().getEmptyPosition(order.marketIndex);
 				if (
 					currPerpPos.baseAssetAmount.lt(ZERO) &&
 					isVariant(order.direction, 'short')
@@ -285,8 +285,8 @@ export class JitterSniper extends BaseJitter {
 			// don't increase risk if we're past max positions
 			if (isVariant(order.marketType, 'perp')) {
 				const currPerpPos =
-					this.driftClient.getUser().getPerpPosition(order.marketIndex) ||
-					this.driftClient.getUser().getEmptyPosition(order.marketIndex);
+					this.velocityClient.getUser().getPerpPosition(order.marketIndex) ||
+					this.velocityClient.getUser().getEmptyPosition(order.marketIndex);
 				if (
 					currPerpPos.baseAssetAmount.lt(ZERO) &&
 					isVariant(order.direction, 'short')
@@ -444,8 +444,8 @@ export class JitterSniper extends BaseJitter {
 			? this.perpParams.get(order.marketIndex)
 			: this.spotParams.get(order.marketIndex);
 		const oraclePrice = isVariant(order.marketType, 'perp')
-			? this.driftClient.getMMOracleDataForPerpMarket(order.marketIndex)
-			: this.driftClient.getOracleDataForSpotMarket(order.marketIndex);
+			? this.velocityClient.getMMOracleDataForPerpMarket(order.marketIndex)
+			: this.velocityClient.getOracleDataForSpotMarket(order.marketIndex);
 
 		const makerOrderDir = isVariant(order.direction, 'long') ? 'sell' : 'buy';
 		const auctionStartPrice = convertToNumber(

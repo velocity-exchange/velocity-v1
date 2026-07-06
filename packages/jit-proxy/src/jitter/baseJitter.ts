@@ -50,7 +50,7 @@ export abstract class BaseJitter {
 	auctionSubscriber: AuctionSubscriber;
 	swiftOrderSubscriber: SwiftOrderSubscriber;
 	slotSubscriber: SlotSubscriber;
-	driftClient: VelocityClient;
+	velocityClient: VelocityClient;
 	jitProxyClient: JitProxyClient;
 	auctionSubscriberIgnoresSwiftOrders?: boolean;
 	userStatsMap: UserStatsMap;
@@ -69,13 +69,13 @@ export abstract class BaseJitter {
 	constructor({
 		auctionSubscriber,
 		jitProxyClient,
-		driftClient,
+		velocityClient,
 		userStatsMap,
 		swiftOrderSubscriber,
 		slotSubscriber,
 		auctionSubscriberIgnoresSwiftOrders,
 	}: {
-		driftClient: VelocityClient;
+		velocityClient: VelocityClient;
 		auctionSubscriber: AuctionSubscriber;
 		jitProxyClient: JitProxyClient;
 		userStatsMap: UserStatsMap;
@@ -84,13 +84,13 @@ export abstract class BaseJitter {
 		auctionSubscriberIgnoresSwiftOrders?: boolean;
 	}) {
 		this.auctionSubscriber = auctionSubscriber;
-		this.driftClient = driftClient;
+		this.velocityClient = velocityClient;
 		this.jitProxyClient = jitProxyClient;
 		this.userStatsMap =
 			userStatsMap ||
 			new UserStatsMap(
-				this.driftClient,
-				new BulkAccountLoader(this.driftClient.connection, 'confirmed', 0)
+				this.velocityClient,
+				new BulkAccountLoader(this.velocityClient.connection, 'confirmed', 0)
 			);
 		this.slotSubscriber = slotSubscriber;
 		this.swiftOrderSubscriber = swiftOrderSubscriber;
@@ -111,7 +111,7 @@ export abstract class BaseJitter {
 	}
 
 	async subscribe(): Promise<void> {
-		await this.driftClient.subscribe();
+		await this.velocityClient.subscribe();
 
 		await this.auctionSubscriber.subscribe();
 		this.auctionSubscriber.eventEmitter.on(
@@ -120,7 +120,7 @@ export abstract class BaseJitter {
 				const takerKeyString = takerKey.toBase58();
 
 				const takerStatsKey = getUserStatsAccountPublicKey(
-					this.driftClient.program.programId,
+					this.velocityClient.program.programId,
 					taker.authority
 				);
 				for (const order of taker.orders) {
@@ -165,7 +165,7 @@ export abstract class BaseJitter {
 						}
 
 						// Velocity perp markets have no min order size (amm.minOrderSize
-						// was removed from the program vs Drift), so the upstream dust
+						// is not part of the perp market layout), so the dust
 						// guard collapses to "skip only fully-filled orders".
 						if (
 							order.baseAssetAmount.sub(order.baseAssetAmountFilled).lte(ZERO)
@@ -186,7 +186,7 @@ export abstract class BaseJitter {
 							return;
 						}
 
-						const spotMarketAccount = this.driftClient.getSpotMarketAccount(
+						const spotMarketAccount = this.velocityClient.getSpotMarketAccount(
 							order.marketIndex
 						);
 						if (
@@ -239,7 +239,7 @@ export abstract class BaseJitter {
 				const takerUserPubkey = isDelegateSigner
 					? (signedMessage as SignedMsgOrderParamsDelegateMessage).takerPubkey
 					: await getUserAccountPublicKey(
-							this.driftClient.program.programId,
+							this.velocityClient.program.programId,
 							takerAuthority,
 							(signedMessage as SignedMsgOrderParamsMessage).subAccountId
 					  );
@@ -344,7 +344,7 @@ export abstract class BaseJitter {
 					takerUserAccount,
 					takerUserPubkey,
 					getUserStatsAccountPublicKey(
-						this.driftClient.program.programId,
+						this.velocityClient.program.programId,
 						takerUserAccount.authority
 					),
 					signedMsgOrder,

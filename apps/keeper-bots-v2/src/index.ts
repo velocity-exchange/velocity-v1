@@ -619,14 +619,14 @@ const runBot = async () => {
 
 		const jitProxyClient = new JitProxyClient({
 			// @ts-ignore
-			driftClient: velocityClient,
+			velocityClient: velocityClient,
 			programId: new PublicKey(sdkConfig.JIT_PROXY_PROGRAM_ID!),
 		});
 
 		// Cast to any to work around SDK version mismatch between jit-proxy and main SDK
 		const jitter = new JitterSniper({
 			auctionSubscriber: auctionSubscriber as any,
-			driftClient: velocityClient as any,
+			velocityClient: velocityClient as any,
 			jitProxyClient,
 			swiftOrderSubscriber: swiftOrderSubscriber as any,
 			slotSubscriber: slotSubscriber as any,

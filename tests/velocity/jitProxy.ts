@@ -31,7 +31,7 @@ import { startAnchor } from 'solana-bankrun';
 import { TestBulkAccountLoader } from '../../packages/sdk/src/accounts/testBulkAccountLoader';
 import { BankrunContextWrapper } from '../../packages/sdk/src/bankrun/bankrunConnection';
 
-// jit-proxy program id (unchanged across the drift -> velocity migration)
+// jit-proxy program id
 const JIT_PROXY_PROGRAM_ID = new PublicKey(
 	'J1TnP8zvVxbtF5KFp5xRmWuvG9McnhzmBd9XGfCyuxFP'
 );
@@ -64,9 +64,14 @@ describe('jit proxy smoke test', () => {
 	let oracleInfos;
 
 	before(async () => {
-		// startAnchor loads every program in Anchor.toml's workspace from
-		// target/deploy — velocity AND jit_proxy (now a workspace member).
-		const context = await startAnchor('', [], []);
+		// startAnchor loads the Anchor.toml workspace programs (velocity, …) from
+		// target/deploy; jit_proxy is loaded explicitly here (not via Anchor.toml)
+		// so it isn't a hard dependency of every other bankrun test.
+		const context = await startAnchor(
+			'',
+			[{ name: 'jit_proxy', programId: JIT_PROXY_PROGRAM_ID }],
+			[]
+		);
 		bankrunContextWrapper = new BankrunContextWrapper(context);
 
 		bulkAccountLoader = new TestBulkAccountLoader(
@@ -216,7 +221,7 @@ describe('jit proxy smoke test', () => {
 
 		// --- JIT maker fills the taker's auction through the jit-proxy program ---
 		const jitProxyClient = new JitProxyClient({
-			driftClient: makerVelocityClient,
+			velocityClient: makerVelocityClient,
 			programId: JIT_PROXY_PROGRAM_ID,
 		});
 

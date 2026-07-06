@@ -431,7 +431,7 @@ pub struct Jit<'info> {
     #[account(mut)]
     pub taker_stats: AccountLoader<'info, UserStats>,
     pub authority: Signer<'info>,
-    pub drift_program: Program<'info, Velocity>,
+    pub velocity_program: Program<'info, Velocity>,
 }
 
 #[derive(Accounts)]
@@ -449,7 +449,7 @@ pub struct JitSignedMsg<'info> {
     #[account(mut)]
     pub taker_signed_msg_user_orders: AccountInfo<'info>,
     pub authority: Signer<'info>,
-    pub drift_program: Program<'info, Velocity>,
+    pub velocity_program: Program<'info, Velocity>,
 }
 
 #[derive(Debug, Clone, Copy, AnchorSerialize, AnchorDeserialize, PartialEq, Eq)]
@@ -593,7 +593,7 @@ fn place_and_make<'info>(
         taker_stats: ctx.accounts.taker_stats.to_account_info().clone(),
     };
 
-    let cpi_context = CpiContext::new(ctx.accounts.drift_program.key(), cpi_accounts)
+    let cpi_context = CpiContext::new(ctx.accounts.velocity_program.key(), cpi_accounts)
         .with_remaining_accounts(ctx.remaining_accounts.into());
 
     if order_params.market_type == VelocityMarketType::Perp {
@@ -628,7 +628,7 @@ fn place_and_make_signed_msg<'info>(
     };
 
     let cpi_context_place_and_make = CpiContext::new(
-        ctx.accounts.drift_program.key(),
+        ctx.accounts.velocity_program.key(),
         cpi_accounts_place_and_make,
     )
     .with_remaining_accounts(ctx.remaining_accounts.into());

@@ -40,7 +40,7 @@ export type JitProxy = {
 					signer: true;
 				},
 				{
-					name: 'driftProgram';
+					name: 'velocityProgram';
 				},
 			];
 			args: [
@@ -86,7 +86,7 @@ export type JitProxy = {
 					signer: true;
 				},
 				{
-					name: 'driftProgram';
+					name: 'velocityProgram';
 				},
 			];
 			args: [
@@ -141,7 +141,7 @@ export type JitProxy = {
 					signer: true;
 				},
 				{
-					name: 'driftProgram';
+					name: 'velocityProgram';
 				},
 			];
 			args: [

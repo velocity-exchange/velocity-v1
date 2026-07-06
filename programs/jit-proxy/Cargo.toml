@@ -11,6 +11,9 @@ name = "jit_proxy"
 [features]
 no-entrypoint = []
 cpi = ["no-entrypoint"]
+# no-op flag: the workspace `anchor build -- --features anchor-test` passes this
+# to every program; jit-proxy has no test-gated code but must accept the feature.
+anchor-test = []
 default = []
 idl-build = ["anchor-lang/idl-build", "velocity/idl-build"]
 

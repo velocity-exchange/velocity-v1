@@ -162,7 +162,7 @@ pub struct ArbPerp<'info> {
     #[account(mut)]
     pub user_stats: AccountLoader<'info, UserStats>,
     pub authority: Signer<'info>,
-    pub drift_program: Program<'info, Velocity>,
+    pub velocity_program: Program<'info, Velocity>,
 }
 
 fn calculate_max_base_asset_amount(
@@ -190,7 +190,7 @@ fn place_and_take<'info>(
             authority: ctx.accounts.authority.to_account_info().clone(),
         };
 
-        let cpi_context = CpiContext::new(ctx.accounts.drift_program.key(), cpi_accounts)
+        let cpi_context = CpiContext::new(ctx.accounts.velocity_program.key(), cpi_accounts)
             .with_remaining_accounts(ctx.remaining_accounts.into());
 
         velocity::cpi::place_and_take_perp_order(cpi_context, order_params, None)?;

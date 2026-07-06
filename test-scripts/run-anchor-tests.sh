@@ -90,6 +90,7 @@ test_files=(
   pauseDepositWithdraw.ts
   placeAndMakePerp.ts
   placeAndMakeSignedMsgBankrun.ts
+  jitProxy.ts
   postOnly.ts
   prelisting.ts
   pyth.ts

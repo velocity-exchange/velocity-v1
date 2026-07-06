@@ -2456,18 +2456,11 @@ pub fn handle_update_perp_bid_ask_twap<'c: 'info, 'info>(
         )?;
     }
 
-    let funding_paused =
-        state.funding_paused()? || perp_market.is_operation_paused(PerpOperation::UpdateFunding);
-    controller::funding::update_funding_rate(
-        perp_market.market_index,
-        perp_market,
-        &mut oracle_map,
-        now,
-        slot,
-        &state.oracle_guard_rails,
-        funding_paused,
-        None,
-    )?;
+    // Funding is intentionally decoupled from this crank: refreshing the mark
+    // TWAP from caller-supplied DLOB depth and applying funding in the same
+    // instruction let a caller stamp `last_mark_price_twap_ts = now` and then
+    // have funding read that just-written TWAP back at zero elapsed time.
+    // Funding runs via its own `update_funding_rate` crank (and on fills).
 
     Ok(())
 }
@@ -3553,6 +3546,7 @@ pub struct UpdatePerpBidAskTwap<'info> {
     pub perp_market: AccountLoader<'info, PerpMarket>,
     /// CHECK: checked in `update_funding_rate` ix constraint
     pub oracle: UncheckedAccount<'info>,
+    #[account(has_one = authority)]
     pub keeper_stats: AccountLoader<'info, UserStats>,
     pub authority: Signer<'info>,
 }

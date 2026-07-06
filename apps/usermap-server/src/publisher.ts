@@ -412,6 +412,9 @@ export class WebsocketCacheProgramAccountSubscriber {
 
 class grpcCacheProgramAccountSubscriber extends WebsocketCacheProgramAccountSubscriber {
 	client: Client;
+	// yellowstone-grpc 5.x requires an explicit connect() before subscribe();
+	// guard so we only dial once even across resubscribes.
+	private connected = false;
 	// Relaxed generics: ClientDuplexStream<SubscribeRequest, SubscribeUpdate> makes
 	// TS expand SubscribeUpdate's deep protobuf union on instantiation (TS2589). The
 	// stream is assigned via an `as unknown as` cast, so the precise generics add no
@@ -444,6 +447,13 @@ class grpcCacheProgramAccountSubscriber extends WebsocketCacheProgramAccountSubs
 
 		if (this.listenerId != null || this.isUnsubscribing) {
 			return;
+		}
+
+		// yellowstone-grpc 5.0.5's subscribe() throws "Client not connected. Call
+		// connect() first" unless the channel has been dialed. Do it once here.
+		if (!this.connected) {
+			await this.client.connect();
+			this.connected = true;
 		}
 
 		this.stream =
@@ -671,8 +681,13 @@ async function main() {
 		publisher: subscriber,
 	};
 
-	await subscriber.subscribe();
 	setupEndpoints(core);
+
+	// Only the subscription is retried. The one-time setup above (fork(sync),
+	// clients, and especially server.listen) must NOT re-run on failure — a second
+	// setupServer() would try to bind :5001 again and crash with EADDRINUSE, an
+	// unhandled 'error' event that bypasses recursiveTryCatch entirely.
+	await recursiveTryCatch(() => subscriber.subscribe());
 
 	console.log(``);
 	console.log(`Server is set up and running: ${httpPort}`);
@@ -700,4 +715,7 @@ async function recursiveTryCatch(f: () => Promise<void>) {
 	}
 }
 
-recursiveTryCatch(() => main());
+main().catch((e) => {
+	console.error('Fatal error in usermap publisher main():', e);
+	process.exit(1);
+});

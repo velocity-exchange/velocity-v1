@@ -465,7 +465,14 @@ class grpcCacheProgramAccountSubscriber extends WebsocketCacheProgramAccountSubs
 			},
 		}));
 		const request: SubscribeRequest = {
-			slots: {},
+			// `slots` is a name->filter MAP. The old `slots: {}` was an EMPTY map,
+			// i.e. no slot subscription at all — so the server never streamed slot
+			// updates, and the health check (which only learns the current slot from
+			// incoming account writes) reported "slot lag" whenever user accounts
+			// were idle. A named entry streams a slot every ~400ms, so liveness is
+			// driven by chain progress, not by whether a user account happened to
+			// change.
+			slots: { client: { filterByCommitment: true } },
 			accounts: {
 				velocity: {
 					account: [],
@@ -483,6 +490,20 @@ class grpcCacheProgramAccountSubscriber extends WebsocketCacheProgramAccountSubs
 		};
 
 		this.stream.on('data', (chunk: SubscribeUpdate) => {
+			// Slot updates prove the stream is live and drive the health check even
+			// when no user accounts are changing. They carry no account payload, so
+			// just advance the liveness markers and re-arm the resub timer — there is
+			// nothing to cache, so don't call handleRpcResponse.
+			if (chunk.slot) {
+				this.lastReceivedSlot = Number(chunk.slot.slot);
+				this.lastWriteTs = Date.now();
+				if (this.resubTimeoutMs) {
+					this.receivingData = true;
+					clearTimeout(this.timeoutId);
+					this.setTimeout();
+				}
+				return;
+			}
 			if (!chunk.account) {
 				return;
 			}

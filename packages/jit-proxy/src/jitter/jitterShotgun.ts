@@ -17,13 +17,13 @@ export class JitterShotgun extends BaseJitter {
 	constructor({
 		auctionSubscriber,
 		jitProxyClient,
-		driftClient,
+		velocityClient,
 		userStatsMap,
 		swiftOrderSubscriber,
 		slotSubscriber,
 		auctionSubscriberIgnoresSwiftOrders,
 	}: {
-		driftClient: VelocityClient;
+		velocityClient: VelocityClient;
 		auctionSubscriber: AuctionSubscriber;
 		jitProxyClient: JitProxyClient;
 		userStatsMap?: UserStatsMap;
@@ -34,7 +34,7 @@ export class JitterShotgun extends BaseJitter {
 		super({
 			auctionSubscriber,
 			jitProxyClient,
-			driftClient,
+			velocityClient,
 			userStatsMap,
 			swiftOrderSubscriber,
 			slotSubscriber,

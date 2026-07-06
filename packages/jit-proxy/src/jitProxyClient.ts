@@ -121,17 +121,17 @@ export type OrderConstraint = {
 };
 
 export class JitProxyClient {
-	private driftClient: VelocityClient;
+	private velocityClient: VelocityClient;
 	private program: Program<JitProxy>;
 
 	constructor({
-		driftClient,
+		velocityClient,
 		programId,
 	}: {
-		driftClient: VelocityClient;
+		velocityClient: VelocityClient;
 		programId: PublicKey;
 	}) {
-		this.driftClient = driftClient;
+		this.velocityClient = velocityClient;
 		// Anchor 1.0: the program address lives in the IDL and the Program
 		// constructor is (idl, provider). Honor a caller-supplied programId by
 		// overriding the IDL address before constructing.
@@ -139,7 +139,7 @@ export class JitProxyClient {
 			...(jitProxyIDL as JitProxy),
 			address: programId.toBase58(),
 		} as JitProxy;
-		this.program = new Program(idl, driftClient.provider);
+		this.program = new Program(idl, velocityClient.provider);
 	}
 
 	public async jit(
@@ -147,8 +147,8 @@ export class JitProxyClient {
 		txParams?: TxParams
 	): Promise<TxSigAndSlot> {
 		const ix = await this.getJitIx(params);
-		const tx = await this.driftClient.buildTransaction([ix], txParams);
-		return await this.driftClient.sendTransaction(tx);
+		const tx = await this.velocityClient.buildTransaction([ix], txParams);
+		return await this.velocityClient.sendTransaction(tx);
 	}
 
 	public async jitSignedMsg(
@@ -168,7 +168,7 @@ export class JitProxyClient {
 		];
 
 		const signedMsgTakerIxs =
-			await this.driftClient.getPlaceSignedMsgTakerPerpOrderIxs(
+			await this.velocityClient.getPlaceSignedMsgTakerPerpOrderIxs(
 				params.signedMsgOrderParams,
 				params.marketIndex,
 				{
@@ -186,14 +186,16 @@ export class JitProxyClient {
 
 		const v0Message = new TransactionMessage({
 			instructions: ixs,
-			payerKey: this.driftClient.wallet.publicKey,
+			payerKey: this.velocityClient.wallet.publicKey,
 			recentBlockhash: (
-				await this.driftClient.txHandler.getLatestBlockhashForTransaction()
+				await this.velocityClient.txHandler.getLatestBlockhashForTransaction()
 			).blockhash,
-		}).compileToV0Message(await this.driftClient.fetchAllLookupTableAccounts());
+		}).compileToV0Message(
+			await this.velocityClient.fetchAllLookupTableAccounts()
+		);
 		const tx = new VersionedTransaction(v0Message);
 
-		return await this.driftClient.txSender.sendVersionedTransaction(tx);
+		return await this.velocityClient.txSender.sendVersionedTransaction(tx);
 	}
 
 	public async getJitIx({
@@ -213,10 +215,10 @@ export class JitProxyClient {
 		subAccountId =
 			subAccountId !== undefined
 				? subAccountId
-				: this.driftClient.activeSubAccountId;
+				: this.velocityClient.activeSubAccountId;
 		const order = taker.orders.find((order) => order.orderId === takerOrderId);
-		const remainingAccounts = this.driftClient.getRemainingAccounts({
-			userAccounts: [taker, this.driftClient.getUserAccount(subAccountId)],
+		const remainingAccounts = this.velocityClient.getRemainingAccounts({
+			userAccounts: [taker, this.velocityClient.getUserAccount(subAccountId)],
 			writableSpotMarketIndexes: isVariant(order.marketType, 'spot')
 				? [order.marketIndex, QUOTE_SPOT_MARKET_INDEX]
 				: [],
@@ -240,12 +242,13 @@ export class JitProxyClient {
 
 		if (isVariant(order.marketType, 'spot')) {
 			remainingAccounts.push({
-				pubkey: this.driftClient.getSpotMarketAccount(order.marketIndex).vault,
+				pubkey: this.velocityClient.getSpotMarketAccount(order.marketIndex)
+					.vault,
 				isWritable: false,
 				isSigner: false,
 			});
 			remainingAccounts.push({
-				pubkey: this.driftClient.getQuoteSpotMarketAccount().vault,
+				pubkey: this.velocityClient.getQuoteSpotMarketAccount().vault,
 				isWritable: false,
 				isSigner: false,
 			});
@@ -277,10 +280,10 @@ export class JitProxyClient {
 			.accounts({
 				taker: takerKey,
 				takerStats: takerStatsKey,
-				state: await this.driftClient.getStatePublicKey(),
-				user: await this.driftClient.getUserAccountPublicKey(subAccountId),
-				userStats: this.driftClient.getUserStatsAccountPublicKey(),
-				driftProgram: this.driftClient.program.programId,
+				state: await this.velocityClient.getStatePublicKey(),
+				user: await this.velocityClient.getUserAccountPublicKey(subAccountId),
+				userStats: this.velocityClient.getUserStatsAccountPublicKey(),
+				velocityProgram: this.velocityClient.program.programId,
 			})
 			.remainingAccounts(remainingAccounts)
 			.instruction();
@@ -306,9 +309,9 @@ export class JitProxyClient {
 		subAccountId =
 			subAccountId !== undefined
 				? subAccountId
-				: this.driftClient.activeSubAccountId;
-		const remainingAccounts = this.driftClient.getRemainingAccounts({
-			userAccounts: [taker, this.driftClient.getUserAccount(subAccountId)],
+				: this.velocityClient.activeSubAccountId;
+		const remainingAccounts = this.velocityClient.getRemainingAccounts({
+			userAccounts: [taker, this.velocityClient.getUserAccount(subAccountId)],
 			writableSpotMarketIndexes: [],
 			writablePerpMarketIndexes: [marketIndex],
 		});
@@ -332,7 +335,7 @@ export class JitProxyClient {
 			'hex'
 		);
 
-		const signedMessage = this.driftClient.decodeSignedMsgOrderParamsMessage(
+		const signedMessage = this.velocityClient.decodeSignedMsgOrderParamsMessage(
 			borshBuf,
 			isDelegateSigner
 		);
@@ -366,14 +369,14 @@ export class JitProxyClient {
 				taker: takerKey,
 				takerStats: takerStatsKey,
 				takerSignedMsgUserOrders: getSignedMsgUserAccountPublicKey(
-					this.driftClient.program.programId,
+					this.velocityClient.program.programId,
 					taker.authority
 				),
-				authority: this.driftClient.wallet.payer.publicKey,
-				state: await this.driftClient.getStatePublicKey(),
-				user: await this.driftClient.getUserAccountPublicKey(subAccountId),
-				userStats: this.driftClient.getUserStatsAccountPublicKey(),
-				driftProgram: this.driftClient.program.programId,
+				authority: this.velocityClient.wallet.payer.publicKey,
+				state: await this.velocityClient.getStatePublicKey(),
+				user: await this.velocityClient.getUserAccountPublicKey(subAccountId),
+				userStats: this.velocityClient.getUserStatsAccountPublicKey(),
+				velocityProgram: this.velocityClient.program.programId,
 			})
 			.remainingAccounts(remainingAccounts)
 			.instruction();
@@ -389,7 +392,7 @@ export class JitProxyClient {
 		subAccountId =
 			subAccountId !== undefined
 				? subAccountId
-				: this.driftClient.activeSubAccountId;
+				: this.velocityClient.activeSubAccountId;
 
 		const readablePerpMarketIndex = [];
 		const readableSpotMarketIndexes = [];
@@ -401,8 +404,8 @@ export class JitProxyClient {
 			}
 		}
 
-		const remainingAccounts = this.driftClient.getRemainingAccounts({
-			userAccounts: [this.driftClient.getUserAccount(subAccountId)],
+		const remainingAccounts = this.velocityClient.getRemainingAccounts({
+			userAccounts: [this.velocityClient.getUserAccount(subAccountId)],
 			readableSpotMarketIndexes,
 			readablePerpMarketIndex,
 		});
@@ -417,7 +420,7 @@ export class JitProxyClient {
 		return this.program.methods
 			.checkOrderConstraints(validatedOrderConstraints)
 			.accounts({
-				user: await this.driftClient.getUserAccountPublicKey(subAccountId),
+				user: await this.velocityClient.getUserAccountPublicKey(subAccountId),
 			})
 			.remainingAccounts(remainingAccounts)
 			.instruction();
@@ -431,8 +434,8 @@ export class JitProxyClient {
 		txParams?: TxParams
 	): Promise<TxSigAndSlot> {
 		const ix = await this.getArbPerpIx(params);
-		const tx = await this.driftClient.buildTransaction([ix], txParams);
-		return await this.driftClient.sendTransaction(tx);
+		const tx = await this.velocityClient.buildTransaction([ix], txParams);
+		return await this.velocityClient.sendTransaction(tx);
 	}
 
 	public async getArbPerpIx({
@@ -444,12 +447,12 @@ export class JitProxyClient {
 		marketIndex: number;
 		referrerInfo?: ReferrerInfo;
 	}): Promise<TransactionInstruction> {
-		const userAccounts = [this.driftClient.getUserAccount()];
+		const userAccounts = [this.velocityClient.getUserAccount()];
 		for (const makerInfo of makerInfos) {
 			userAccounts.push(makerInfo.makerUserAccount);
 		}
 
-		const remainingAccounts = this.driftClient.getRemainingAccounts({
+		const remainingAccounts = this.velocityClient.getRemainingAccounts({
 			userAccounts,
 			writablePerpMarketIndexes: [marketIndex],
 		});
@@ -489,10 +492,10 @@ export class JitProxyClient {
 		return this.program.methods
 			.arbPerp(marketIndex)
 			.accounts({
-				state: await this.driftClient.getStatePublicKey(),
-				user: await this.driftClient.getUserAccountPublicKey(),
-				userStats: this.driftClient.getUserStatsAccountPublicKey(),
-				driftProgram: this.driftClient.program.programId,
+				state: await this.velocityClient.getStatePublicKey(),
+				user: await this.velocityClient.getUserAccountPublicKey(),
+				userStats: this.velocityClient.getUserStatsAccountPublicKey(),
+				velocityProgram: this.velocityClient.program.programId,
 			})
 			.remainingAccounts(remainingAccounts)
 			.instruction();

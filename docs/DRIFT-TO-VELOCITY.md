@@ -144,6 +144,13 @@ plus types `LPRecord`, `LPAction`, `FuelSeasonRecord`, `FuelSweepRecord`,
 Config fields `SERUM_V3`, `PHOENIX`, `OPENBOOK`, `SERUM_LOOKUP_TABLE`,
 `PYTH_PULL_ORACLE_LOOKUP_TABLE` were dropped from the env config object.
 
+Mainnet `MARKET_LOOKUP_TABLE` / `MARKET_LOOKUP_TABLES` now point at the
+relaunch lookup table `4E971nER9Jn4JjT8mKEX1nvkfg8Qycp7zNEcCq2nT8ZY`
+(state, signer, spot markets 0-1 with oracles/mints/vaults/IF vaults, perp
+markets 0-3 with oracles, token/ATA/system programs). Drift's original
+tables (`Fpys8…`, `EiWSs…`) reference pre-relaunch accounts and must not be
+used against the Velocity program.
+
 Gov-token stake fee discount removal (#80): `VelocityClient.updateUserGovTokenInsuranceStake`
 / `getUpdateUserGovTokenInsuranceStakeIx`,
 `AdminClient.updateDelegateUserGovTokenInsuranceStake` /

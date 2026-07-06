@@ -124,11 +124,10 @@ export const configs: { [key in VelocityEnv]: VelocityConfig } = {
 		PERP_MARKETS: MainnetPerpMarkets,
 		SPOT_MARKETS: MainnetSpotMarkets,
 		/** @deprecated use MARKET_LOOKUP_TABLES */
-		MARKET_LOOKUP_TABLE: 'Fpys8GRa5RBWfyeN7AaDUwFGD1zkDCA4z3t4CJLV8dfL',
-		MARKET_LOOKUP_TABLES: [
-			'Fpys8GRa5RBWfyeN7AaDUwFGD1zkDCA4z3t4CJLV8dfL',
-			'EiWSskK5HXnBTptiS5DH6gpAJRVNQ3cAhTKBGaiaysAb',
-		],
+		MARKET_LOOKUP_TABLE: '4E971nER9Jn4JjT8mKEX1nvkfg8Qycp7zNEcCq2nT8ZY',
+		// Relaunch LUT: state, signer, spot markets 0-1 (oracle/mint/vault/IF
+		// vault), perp markets 0-3 with oracles, token/ATA/system programs.
+		MARKET_LOOKUP_TABLES: ['4E971nER9Jn4JjT8mKEX1nvkfg8Qycp7zNEcCq2nT8ZY'],
 		VELOCITY_ORACLE_RECEIVER_ID,
 		SB_ON_DEMAND_PID: SB_ON_DEMAND_MAINNET_PID,
 	},

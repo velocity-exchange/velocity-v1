@@ -218,6 +218,7 @@ impl OracleOrder {
             size: self.size,
             offset_price: self.oracle_price_offset,
             max_ts: self.max_ts,
+            direction: self.direction,
             post_only: false,
             reduce_only: self.reduce_only,
         }
@@ -308,6 +309,7 @@ pub(crate) struct FloatingLimitOrder {
     pub slot: u64,
     pub max_ts: u64,
     pub offset_price: i64,
+    pub direction: Direction,
     pub post_only: bool,
     pub reduce_only: bool,
 }
@@ -475,9 +477,13 @@ impl DynamicPrice for OracleOrder {
     fn get_price(&self, slot: u64, oracle_price: u64, tick_size: u64) -> Option<u64> {
         let slots_elapsed = slot.saturating_sub(self.slot) as i64;
         // limit price after auction end
+        // mirrors onchain `Order::get_limit_price`: any non-zero offset (negative included)
+        // is a real limit price; only offset-less orders fall back to the vamm price
         if slots_elapsed > self.duration as i64 {
-            return if self.oracle_price_offset > 0 {
-                Some((oracle_price as i64 + self.oracle_price_offset as i64) as u64)
+            return if self.oracle_price_offset != 0 {
+                let price =
+                    ((oracle_price as i64 + self.oracle_price_offset).max(tick_size as i64)) as u64;
+                Some(standardize_price(price, tick_size, self.direction))
             } else {
                 None
             };
@@ -554,8 +560,11 @@ impl From<(u64, Order)> for LimitOrder {
 }
 
 impl FloatingLimitOrder {
+    /// mirrors onchain `Order::get_limit_price` for oracle-offset orders:
+    /// `max(oracle + offset, tick)` standardized to tick by direction
     pub fn get_price(&self, oracle_price: u64, tick_size: u64) -> u64 {
-        (oracle_price as i64 + self.offset_price as i64).max(tick_size as i64) as u64
+        let price = (oracle_price as i64 + self.offset_price).max(tick_size as i64) as u64;
+        standardize_price(price, tick_size, self.direction)
     }
 }
 
@@ -568,6 +577,7 @@ impl From<(u64, Order)> for FloatingLimitOrder {
             offset_price: order.oracle_price_offset,
             slot: order.slot,
             max_ts: order.max_ts as u64,
+            direction: order.direction,
             post_only: order.post_only,
             reduce_only: order.reduce_only,
         }

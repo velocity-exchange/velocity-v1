@@ -3869,3 +3869,173 @@ fn market_order_get_price_same_start_end_price() {
         );
     }
 }
+
+#[test]
+fn dlob_upsert_then_remove_lands_on_same_key() {
+    // simulates the delta flow: place → partial fill (Create re-emitted for the same
+    // logical order upserts in place) → cancel (Remove computed from the latest state)
+    let _ = env_logger::try_init();
+    let dlob = DLOB::default();
+    let user = Pubkey::new_unique();
+    let slot = 100;
+    let market = MarketId::new(0, MarketType::Perp);
+
+    let mut o1 = create_test_order(1, OrderType::Limit, Direction::Long, 100, 10, slot);
+    o1.post_only = true;
+    dlob.insert_order(&user, slot, o1);
+
+    // partial fill: size changes but the sort key does not — the entry is replaced
+    let mut o1_filled = o1;
+    o1_filled.base_asset_amount_filled = 4;
+    dlob.insert_order(&user, slot + 1, o1_filled);
+    {
+        let book = dlob.markets.get(&market).unwrap();
+        assert_eq!(book.resting_limit_orders.bids.len(), 1);
+        let bid = book.resting_limit_orders.bids.values().next().unwrap();
+        assert_eq!(bid.size, 6, "partial fill reflected: 10 - 4");
+    }
+    assert_eq!(dlob.metadata.len(), 1);
+
+    // cancel with the latest order state removes the upserted entry
+    dlob.remove_order(&user, slot + 2, o1_filled);
+    {
+        let book = dlob.markets.get(&market).unwrap();
+        assert!(book.resting_limit_orders.bids.is_empty());
+    }
+    assert!(dlob.metadata.is_empty());
+}
+
+#[test]
+fn dlob_remove_order_clears_dual_residency() {
+    let _ = env_logger::try_init();
+    let dlob = DLOB::default();
+    let user = Pubkey::new_unique();
+    let market = MarketId::new(0, MarketType::Perp);
+
+    // limit order with an active auction: enters the book as a market auction order
+    let mut order = create_test_order(1, OrderType::Limit, Direction::Long, 100, 10, 100);
+    order.auction_duration = 10;
+    dlob.insert_order(&user, 100, order);
+    {
+        let book = dlob.markets.get(&market).unwrap();
+        assert_eq!(book.market_orders.bids.len(), 1);
+        assert!(book.resting_limit_orders.bids.is_empty());
+    }
+
+    // same order re-applied after its auction completed (e.g. a fill update arriving
+    // ahead of the book's slot tick): inserted as resting while the auction copy remains
+    let mut order_later = order;
+    order_later.base_asset_amount_filled = 1;
+    dlob.insert_order(&user, 200, order_later);
+    {
+        let book = dlob.markets.get(&market).unwrap();
+        assert_eq!(book.market_orders.bids.len(), 1);
+        assert_eq!(book.resting_limit_orders.bids.len(), 1);
+    }
+
+    // one remove clears both copies
+    dlob.remove_order(&user, 201, order_later);
+    {
+        let book = dlob.markets.get(&market).unwrap();
+        assert!(book.market_orders.bids.is_empty());
+        assert!(book.resting_limit_orders.bids.is_empty());
+    }
+    assert!(dlob.metadata.is_empty());
+}
+
+#[test]
+fn dlob_remove_order_always_clears_metadata() {
+    let _ = env_logger::try_init();
+    let dlob = DLOB::default();
+    let user = Pubkey::new_unique();
+    let slot = 100;
+
+    let mut order = create_test_order(1, OrderType::Limit, Direction::Long, 100, 10, slot);
+    order.post_only = true;
+    dlob.insert_order(&user, slot, order);
+    assert_eq!(dlob.metadata.len(), 1);
+
+    // remove with a divergent order snapshot (key mismatch, e.g. stale upstream data):
+    // the book removal misses but metadata must not leak
+    let mut divergent = order;
+    divergent.price = 150;
+    dlob.remove_order(&user, slot + 1, divergent);
+    assert!(dlob.metadata.is_empty());
+}
+
+#[test]
+fn dlob_oracle_order_negative_offset_prices_post_auction() {
+    // mirrors onchain `Order::get_limit_price`: after the auction, any non-zero
+    // oracle_price_offset (negative included) is a real limit price — only
+    // offset-less orders fall back to the vamm price
+    use crate::dlob::types::{DynamicPrice, OracleOrder};
+
+    let oracle_price = 100_000_u64;
+    let tick_size = 10_u64;
+    let order = OracleOrder {
+        id: 1,
+        size: 5,
+        start_price_offset: -500,
+        end_price_offset: -100,
+        oracle_price_offset: -250,
+        max_ts: 0,
+        slot: 100,
+        duration: 10,
+        is_limit: true,
+        direction: Direction::Long,
+        reduce_only: false,
+    };
+
+    // post auction: limit = oracle + offset, standardized (Long rounds down to tick)
+    let price = order.get_price(200, oracle_price, tick_size);
+    assert_eq!(price, Some(99_750));
+
+    // offset-less order falls back to vamm pricing
+    let no_offset = OracleOrder {
+        oracle_price_offset: 0,
+        ..order.clone()
+    };
+    assert_eq!(no_offset.get_price(200, oracle_price, tick_size), None);
+
+    // positive offset unchanged
+    let pos_offset = OracleOrder {
+        oracle_price_offset: 250,
+        direction: Direction::Short,
+        ..order
+    };
+    assert_eq!(
+        pos_offset.get_price(200, oracle_price, tick_size),
+        Some(100_250)
+    );
+}
+
+#[test]
+fn dlob_floating_limit_price_is_standardized() {
+    // mirrors onchain `Order::get_limit_price`: oracle-offset maker prices are
+    // standardized to tick (Long rounds down, Short rounds up)
+    use crate::dlob::types::FloatingLimitOrder;
+
+    let tick_size = 10_u64;
+    let off_tick_oracle = 100_007_u64;
+
+    let bid = FloatingLimitOrder {
+        id: 1,
+        size: 5,
+        slot: 100,
+        max_ts: 0,
+        offset_price: -250,
+        direction: Direction::Long,
+        post_only: true,
+        reduce_only: false,
+    };
+    // 100_007 - 250 = 99_757 → rounds down to 99_750
+    assert_eq!(bid.get_price(off_tick_oracle, tick_size), 99_750);
+
+    let ask = FloatingLimitOrder {
+        direction: Direction::Short,
+        offset_price: 250,
+        ..bid
+    };
+    // 100_007 + 250 = 100_257 → rounds up to 100_260
+    assert_eq!(ask.get_price(off_tick_oracle, tick_size), 100_260);
+}

@@ -238,7 +238,10 @@ impl DLOBNotifier {
     /// # Parameters
     ///
     /// * `pubkey` - The public key of the user account being updated
-    /// * `old_user` - The previous state of the user account, if any. `None` indicates a new user
+    /// * `old_user` - The previous state of the user account, if any. `None` indicates a new user.
+    ///   Removals are only emitted by comparison against this state, so it must be the state
+    ///   *previously fed* to the DLOB (the producer preserves it upstream) — feeding a different
+    ///   lineage can strand orders in the book
     /// * `new_user` - The current state of the user account
     /// * `slot` - The slot number when this update occurred
     ///
@@ -629,41 +632,85 @@ impl DLOB {
         );
 
         self.with_orderbook_mut(&MarketId::new(order.market_index, order.market_type), |mut orderbook| {
-            if let Some(metadata) = self.metadata.get(&order_id) {
-                let metadata_ref = *metadata;
-                drop(metadata); // release dashmap ref
+            log::trace!(target: TARGET, "remove order: {order_id} @ status: {:?}, type: {:?}, slot: {slot}", order.status, order.order_type);
 
-                log::trace!(target: TARGET, "remove order: {order_id} @ status: {:?}, kind: {:?}/{:?}, slot: {slot}", order.status, metadata_ref.kind, order.order_type);
-
-                let order_removed = match metadata_ref.kind {
-                    OrderKind::Market => {
-                        orderbook.market_orders.remove(order_id, order) || orderbook.resting_limit_orders.remove(order_id, order)
+            // probe only the collections this order shape can inhabit (mirrors the
+            // `insert_order` dispatch). non-post-only limit orders probe both their
+            // auction and resting collections, non-short-circuiting (`|`): the auction
+            // copy can coexist with the resting copy until the next slot tick migrates
+            // it. keys embed `order_id` so a probe can never remove another order's entry
+            let order_removed = match order.order_type {
+                OrderType::Market => orderbook.market_orders.remove(order_id, order),
+                OrderType::Oracle => orderbook.oracle_orders.remove(order_id, order),
+                OrderType::Limit => {
+                    let is_floating = order.oracle_price_offset != 0;
+                    if order.post_only {
+                        if is_floating {
+                            orderbook.floating_limit_orders.remove(order_id, order)
+                        } else {
+                            orderbook.resting_limit_orders.remove(order_id, order)
+                        }
+                    } else if is_floating {
+                        orderbook.oracle_orders.remove(order_id, order)
+                            | orderbook.floating_limit_orders.remove(order_id, order)
+                    } else {
+                        orderbook.market_orders.remove(order_id, order)
+                            | orderbook.resting_limit_orders.remove(order_id, order)
                     }
-                    OrderKind::Oracle => {
-                        orderbook.oracle_orders.remove(order_id, order) || orderbook.floating_limit_orders.remove(order_id, order)
-                    }
-                    OrderKind::Limit => {
-                        orderbook.resting_limit_orders.remove(order_id, order)
-                    }
-                    OrderKind::FloatingLimit => {
-                        orderbook.floating_limit_orders.remove(order_id, order)
-                    }
-                    OrderKind::TriggerMarket | OrderKind::TriggerLimit => {
+                }
+                OrderType::TriggerMarket => match order.trigger_condition {
+                    OrderTriggerCondition::Above | OrderTriggerCondition::Below => {
                         orderbook.trigger_orders.remove(order_id, order)
                     }
-                };
+                    OrderTriggerCondition::TriggeredAbove
+                    | OrderTriggerCondition::TriggeredBelow => {
+                        if order.is_oracle_trigger_market() {
+                            orderbook.oracle_orders.remove(order_id, order)
+                        } else {
+                            orderbook.market_orders.remove(order_id, order)
+                        }
+                    }
+                },
+                OrderType::TriggerLimit => match order.trigger_condition {
+                    OrderTriggerCondition::Above | OrderTriggerCondition::Below => {
+                        orderbook.trigger_orders.remove(order_id, order)
+                    }
+                    OrderTriggerCondition::TriggeredAbove
+                    | OrderTriggerCondition::TriggeredBelow => {
+                        orderbook.market_orders.remove(order_id, order)
+                            | orderbook.resting_limit_orders.remove(order_id, order)
+                    }
+                },
+            };
 
-                if order_removed {
-                    self.metadata.remove(&order_id);
-                } else {
-                    log::warn!(
-                        target: TARGET,
-                        "remove order failed: {order_id} not removed. kind: {:?}, user: {}, order_id: {}",
-                        metadata_ref.kind,
-                        metadata_ref.user,
-                        metadata_ref.order_id,
-                    );
-                    DLOB::log_missing_order_events_helper(order_id, &self.order_events);
+            // the order is gone onchain: metadata must not outlive the book entries
+            let metadata = self.metadata.remove(&order_id);
+
+            if !order_removed {
+                if let Some((_, metadata)) = metadata {
+                    let now = SystemTime::now()
+                        .duration_since(UNIX_EPOCH)
+                        .unwrap()
+                        .as_secs();
+                    if crate::dlob::types::order_is_expired(order.max_ts.unsigned_abs(), now) {
+                        // expected: dropped locally by auction expiry before the onchain removal landed
+                        log::debug!(
+                            target: TARGET,
+                            "remove order: {order_id} already expired locally. kind: {:?}, user: {}, order_id: {}",
+                            metadata.kind,
+                            metadata.user,
+                            metadata.order_id,
+                        );
+                    } else {
+                        log::warn!(
+                            target: TARGET,
+                            "remove order failed: {order_id} not removed. kind: {:?}, user: {}, order_id: {}",
+                            metadata.kind,
+                            metadata.user,
+                            metadata.order_id,
+                        );
+                        DLOB::log_missing_order_events_helper(order_id, &self.order_events);
+                    }
                 }
             }
         });

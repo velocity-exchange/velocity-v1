@@ -439,9 +439,9 @@ describe('equity floor', () => {
 
 	const fetchBreakerTripped = async (): Promise<number> => {
 		const statsPk = velocityClient.getUserStatsAccountPublicKey();
-		const stats = await (
-			velocityClient.program.account as any
-		).userStats.fetch(statsPk);
+		const stats = await (velocityClient.program.account as any).userStats.fetch(
+			statsPk
+		);
 		return stats.equityBreakerTripped;
 	};
 

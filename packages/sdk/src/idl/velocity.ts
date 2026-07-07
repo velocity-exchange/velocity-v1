@@ -2322,6 +2322,59 @@ export type Velocity = {
       "args": []
     },
     {
+      "name": "forceWipeAccountsDevnet",
+      "docs": [
+        "Devnet-only escape hatch: cleans up accounts stranded by a layout-breaking",
+        "program upgrade (or by a partial re-init). For each account passed via",
+        "`remaining_accounts`:",
+        "- velocity-owned PDA → drain lamports (runtime GCs at end of tx)",
+        "- token-program owned vault (velocity_signer close-authority) → CPI",
+        "`close_account`, rent refunded to admin",
+        "Admin gate reads State's first pubkey field at raw offset 8..40 so it",
+        "works regardless of the State layout currently on chain. `velocity_signer_nonce`",
+        "must match `State.signer_nonce`; mismatch fails the token CPI signature.",
+        "Stripped from mainnet builds via `mainnet-beta`."
+      ],
+      "discriminator": [
+        105,
+        74,
+        87,
+        6,
+        166,
+        227,
+        138,
+        215
+      ],
+      "accounts": [
+        {
+          "name": "admin",
+          "writable": true,
+          "signer": true
+        },
+        {
+          "name": "state",
+          "docs": [
+            "(cold-)admin pubkey at offset 8..40."
+          ]
+        },
+        {
+          "name": "velocitySigner",
+          "docs": [
+            "at CPI time when closing token vaults; ignored otherwise."
+          ]
+        },
+        {
+          "name": "tokenProgram"
+        }
+      ],
+      "args": [
+        {
+          "name": "velocitySignerNonce",
+          "type": "u8"
+        }
+      ]
+    },
+    {
       "name": "initialize",
       "discriminator": [
         175,

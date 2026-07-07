@@ -996,7 +996,11 @@ impl LiquidatorBot {
                         market,
                         slot,
                     } => {
-                        log::debug!(target: TARGET, "oracle update received: market={:?}, slot={}", market, slot);
+                        // Per-update firehose: kept at trace so it stays retrievable
+                        // (RUST_LOG=…,liquidator=trace) but is off in the debug stream.
+                        // The oracle price at the moment of a liquidation is logged on the
+                        // attempt events below instead.
+                        log::trace!(target: TARGET, "oracle update received: market={:?}, slot={}", market, slot);
                         if slot >= current_slot {
                             if market.is_perp() {
                                 if oracle_price_data.price > 0 {
@@ -2639,12 +2643,24 @@ impl PrimaryLiquidationStrategy {
                         .with_label_values(&["perp"])
                         .inc();
 
+                    let oracle_price = {
+                        let state = market_state.read().unwrap();
+                        match state.get_perp_oracle_price(pos.market_index) {
+                            Some(data) if data.price > 0 => data.price as u64,
+                            _ => {
+                                log::warn!(target: TARGET, "invalid oracle price for market {}, skipping liquidation", pos.market_index);
+                                return;
+                            }
+                        }
+                    };
+
                     log::info!(
                         target: TARGET,
-                        "attempting perp liquidation (isolated): user={:?}, market={}, base_asset_amount={}",
+                        "attempting perp liquidation (isolated): user={:?}, market={}, base_asset_amount={}, oracle={}",
                         liquidatee,
                         market_index,
                         pos.base_asset_amount,
+                        oracle_price,
                     );
 
                     let Some(makers) = Self::find_top_makers(
@@ -2655,17 +2671,6 @@ impl PrimaryLiquidationStrategy {
                         pos.base_asset_amount,
                     ) else {
                         return;
-                    };
-
-                    let oracle_price = {
-                        let state = market_state.read().unwrap();
-                        match state.get_perp_oracle_price(pos.market_index) {
-                            Some(data) if data.price > 0 => data.price as u64,
-                            _ => {
-                                log::warn!(target: TARGET, "invalid oracle price for market {}", pos.market_index);
-                                return;
-                            }
-                        }
                     };
 
                     let pyth_update =
@@ -2708,13 +2713,27 @@ impl PrimaryLiquidationStrategy {
             return;
         };
 
+        // Get oracle price once, up front, so the liquidation attempt event below
+        // carries the price that drove it (and we bail early on an invalid oracle).
+        let oracle_price = {
+            let state = market_state.read().unwrap();
+            match state.get_perp_oracle_price(pos.market_index) {
+                Some(data) if data.price > 0 => data.price as u64,
+                _ => {
+                    log::warn!(target: TARGET, "invalid oracle price for market {}, skipping liquidation", pos.market_index);
+                    return;
+                }
+            }
+        };
+
         log::info!(
             target: TARGET,
-            "attempting perp liquidation: user={:?}, market={}, base_asset_amount={}, quote_asset_amount={}",
+            "attempting perp liquidation: user={:?}, market={}, base_asset_amount={}, quote_asset_amount={}, oracle={}",
             liquidatee,
             pos.market_index,
             pos.base_asset_amount,
             pos.quote_asset_amount,
+            oracle_price,
         );
 
         // Calculate collateral required
@@ -2731,18 +2750,6 @@ impl PrimaryLiquidationStrategy {
         let Some(free_collateral) = self.free_collateral_per_subaccount.get(&subaccount) else {
             log::warn!(target: TARGET, "no free collateral for keeper subaccount");
             return;
-        };
-
-        // Get oracle price and pyth update once
-        let oracle_price = {
-            let state = market_state.read().unwrap();
-            match state.get_perp_oracle_price(pos.market_index) {
-                Some(data) if data.price > 0 => data.price as u64,
-                _ => {
-                    log::warn!(target: TARGET, "invalid oracle price for market {}", pos.market_index);
-                    return;
-                }
-            }
         };
 
         // Find makers and decide method

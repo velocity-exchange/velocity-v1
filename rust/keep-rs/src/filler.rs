@@ -189,6 +189,10 @@ impl FillerBot {
             .map(|s| s.oracle_guard_rails.validity.slots_before_stale_for_amm)
             .unwrap_or(10);
         let mut pyth_oracle_prices = BTreeMap::<u16, PythPriceUpdate>::new();
+        // Per-market last-known oracle-stale state. Staleness is logged on transition
+        // (fresh<->stale) instead of every slot, so a stale oracle shows as two edges
+        // rather than a wall of per-slot lines during the exact window you're debugging.
+        let mut oracle_stale_state = BTreeMap::<u16, bool>::new();
 
         // Create a dummy receiver that never sends when pyth is disabled
         let (_dummy_tx, dummy_rx) = tokio::sync::mpsc::channel::<PythPriceUpdate>(1);
@@ -216,7 +220,7 @@ impl FillerBot {
                             // try an immediate fill against resting liquidity
                             match evaluate_swift_crosses(dlob, &signed_order, &perp_market, oracle_price_data.price, oracle_price_data.delay, slot, slots_before_stale_for_amm) {
                                 SwiftEval::Fillable(crosses) => {
-                                    log::info!(target: TARGET, "found resting cross. crosses={crosses:?}");
+                                    log::info!(target: TARGET, "found resting cross. market={market_index} oracle={} delay={} crosses={crosses:?}", oracle_price_data.price, oracle_price_data.delay);
                                     let pf = priority_fee_subscriber.priority_fee_nth(0.6);
                                     try_swift_fill(
                                         velocity,
@@ -303,9 +307,18 @@ impl FillerBot {
 
                         let perp_market = velocity.try_get_perp_market_account(market_index).expect("got perp market");
                         let chain_oracle_data = velocity.try_get_mmoracle_for_perp_market(market_index, slot).expect("got oracle price");
-                        log::debug!(target: "oracle", "oracle price: delay:{:?},market:{:?},oracle:{:?},amm:{:?}", chain_oracle_data.delay, market, chain_oracle_data.price, perp_market.market_stats.mm_oracle_price);
                         let oracle_stale_for_amm = chain_oracle_data.delay > slots_before_stale_for_amm;
-                        log::debug!(target: TARGET, "oracle_stale_for_amm={} (delay={}, market={})", oracle_stale_for_amm, chain_oracle_data.delay, market_index);
+                        // Log staleness only on transition; the per-slot price/staleness dump
+                        // was pure spam. The oracle price at the moment of an actual decision
+                        // is carried on the fill/uncross events below instead.
+                        let prev_stale = oracle_stale_state.insert(market_index, oracle_stale_for_amm);
+                        if prev_stale != Some(oracle_stale_for_amm) {
+                            if oracle_stale_for_amm {
+                                log::warn!(target: TARGET, "oracle went stale market={market_index} delay={} oracle={} amm={}", chain_oracle_data.delay, chain_oracle_data.price, perp_market.market_stats.mm_oracle_price);
+                            } else if prev_stale.is_some() {
+                                log::info!(target: TARGET, "oracle recovered market={market_index} delay={}", chain_oracle_data.delay);
+                            }
+                        }
                         let mut oracle_price = chain_oracle_data.price as u64;
                         let trigger_price = perp_market.get_trigger_price(oracle_price as i64, unix_now, use_median_trigger_price).unwrap_or(oracle_price);
                         let mut pyth_update = None;
@@ -333,7 +346,7 @@ impl FillerBot {
                             .collect();
 
                         if !crosses_and_top_makers.crosses.is_empty() {
-                            log::info!(target: TARGET, "found auction crosses. market: {},{crosses_and_top_makers:?}", market.index());
+                            log::info!(target: TARGET, "found auction crosses. market={market_index} oracle={oracle_price} delay={} amm={} trigger={trigger_price} stale_for_amm={oracle_stale_for_amm} crosses={crosses_and_top_makers:?}", chain_oracle_data.delay, perp_market.market_stats.mm_oracle_price);
                             try_auction_fill(
                                 velocity,
                                 priority_fee,
@@ -390,7 +403,7 @@ impl FillerBot {
                         // ghetto rate limit
                         if slot % 2 == 0 {
                             if let Some(crosses) = dlob.find_crossing_region(oracle_price, market_index, MarketType::Perp, Some(&perp_market)) {
-                                log::info!(target: TARGET, "found limit crosses (market: {market_index}), top bid: {:?}, top ask: {:?}", crosses.crossing_bids.first(), crosses.crossing_asks.first());
+                                log::info!(target: TARGET, "found limit crosses (market={market_index}) oracle={oracle_price} delay={}, top bid: {:?}, top ask: {:?}", chain_oracle_data.delay, crosses.crossing_bids.first(), crosses.crossing_asks.first());
                                 try_uncross(velocity, slot + 1, priority_fee, config.fill_cu_limit, market_index, filler_subaccount, crosses, &tx_worker_ref).await;
                             }
                         }
@@ -620,7 +633,7 @@ fn evaluate_swift_crosses(
         && crosses.has_vamm_cross
         && oracle_delay > slots_before_stale_for_amm
     {
-        log::info!(target: TARGET, "skip swift vAMM fill: oracle stale (delay={oracle_delay})");
+        log::info!(target: TARGET, "skip swift vAMM fill: oracle stale (delay={oracle_delay} oracle={oracle_price})");
         return SwiftEval::NotFillable;
     }
     SwiftEval::Fillable(crosses)

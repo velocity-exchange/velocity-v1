@@ -2075,6 +2075,13 @@ pub mod velocity {
         handle_update_special_user_status(ctx, status)
     }
 
+    pub fn update_user_equity_floor(
+        ctx: Context<AdminUpdateUserEquityFloor>,
+        equity_floor: u64,
+    ) -> Result<()> {
+        handle_update_user_equity_floor(ctx, equity_floor)
+    }
+
     pub fn special_transfer_perp_position_to_vamm<'c: 'info, 'info>(
         ctx: Context<'info, SpecialTransferPerpPositionToVamm<'info>>,
         market_index: u16,

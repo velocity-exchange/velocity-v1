@@ -1944,6 +1944,14 @@ pub fn handle_transfer_perp_position<'c: 'info, 'info>(
         "from user margin requirement is greater than total collateral"
     )?;
 
+    validate!(
+        !from_user.is_below_equity_floor(from_user_margin_calculation.total_collateral),
+        ErrorCode::EquityBelowFloor,
+        "from user total collateral {} below equity floor {}",
+        from_user_margin_calculation.total_collateral,
+        from_user.equity_floor
+    )?;
+
     let to_user_margin_context = MarginContext::standard(MarginRequirementType::Initial);
 
     let to_user_margin_requirement =

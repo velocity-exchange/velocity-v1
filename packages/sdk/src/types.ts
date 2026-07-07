@@ -1649,6 +1649,8 @@ export type UserAccount = {
 	poolId: number;
 	/** bitmask, see `SpecialUserStatus` */
 	specialUserStatus: number;
+	/** QUOTE_PRECISION (1e6); admin-set minimum cross-margin total collateral for risk-increasing orders, fills, withdrawals and transfers; 0 = disabled */
+	equityFloor: BN;
 };
 
 /** A user's balance in one spot market. Decoded mirror of the on-chain `SpotPosition`. */

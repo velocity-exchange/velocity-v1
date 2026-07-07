@@ -7989,6 +7989,52 @@ export class AdminClient extends VelocityClient {
 		});
 	}
 
+	/**
+	 * Sets a `User` account's `equityFloor`: the minimum cross-margin total
+	 * collateral (QUOTE_PRECISION) the account must keep. Below the floor the
+	 * program rejects risk-increasing order placement and fills, withdrawals,
+	 * and deposit/position transfers out of the account; reduce-only activity
+	 * stays allowed. Requires warm admin (`check_warm`); the account's
+	 * authority and delegate cannot change it. Pass `0` to disable.
+	 * @param userAccountPublicKey - `User` PDA to update.
+	 * @param equityFloor - New floor, QUOTE_PRECISION; `0` disables.
+	 * @param txParams - Optional transaction-building overrides.
+	 * @returns Transaction signature.
+	 */
+	public async updateUserEquityFloor(
+		userAccountPublicKey: PublicKey,
+		equityFloor: BN,
+		txParams?: TxParams
+	): Promise<TransactionSignature> {
+		const ix = await this.getUpdateUserEquityFloorIx(
+			userAccountPublicKey,
+			equityFloor
+		);
+		const tx = await this.buildTransaction(ix, txParams);
+		const { txSig } = await this.sendTransaction(tx, [], this.opts);
+		return txSig;
+	}
+
+	/**
+	 * Builds the `updateUserEquityFloor` instruction without sending it. See
+	 * `updateUserEquityFloor`.
+	 * @returns The unsigned `updateUserEquityFloor` instruction.
+	 */
+	public async getUpdateUserEquityFloorIx(
+		userAccountPublicKey: PublicKey,
+		equityFloor: BN
+	): Promise<TransactionInstruction> {
+		return this.program.instruction.updateUserEquityFloor(equityFloor, {
+			accounts: {
+				admin: this.useHotWalletAdmin
+					? this.wallet.publicKey
+					: this.getStateAccount().coldAdmin,
+				state: await this.getStatePublicKey(),
+				user: userAccountPublicKey,
+			},
+		});
+	}
+
 	// ----- Tiered admin authority -----
 	//
 	// `state.coldAdmin` is the root. `state.warmAdmin` is rotated by cold; each

@@ -3641,6 +3641,24 @@ pub fn handle_update_special_user_status(
     Ok(())
 }
 
+pub fn handle_update_user_equity_floor(
+    ctx: Context<AdminUpdateUserEquityFloor>,
+    equity_floor: u64,
+) -> Result<()> {
+    let user = &mut load_mut!(ctx.accounts.user)?;
+
+    msg!(
+        "equity_floor for {:?}: {:?} -> {:?}",
+        user.authority,
+        user.equity_floor,
+        equity_floor
+    );
+
+    user.equity_floor = equity_floor;
+
+    Ok(())
+}
+
 #[derive(Accounts)]
 pub struct Initialize<'info> {
     // Only the designated `state_init_authority` may create the singleton
@@ -4049,6 +4067,15 @@ pub struct AdminDeposit<'info> {
 #[derive(Accounts)]
 pub struct UpdateSpecialUserStatus<'info> {
     #[account(constraint = check_hot(&admin.key(), &state, HotRole::UserFlag)?)]
+    pub admin: Signer<'info>,
+    pub state: AccountLoader<'info, State>,
+    #[account(mut)]
+    pub user: AccountLoader<'info, User>,
+}
+
+#[derive(Accounts)]
+pub struct AdminUpdateUserEquityFloor<'info> {
+    #[account(constraint = check_warm(&admin.key(), &state)?)]
     pub admin: Signer<'info>,
     pub state: AccountLoader<'info, State>,
     #[account(mut)]

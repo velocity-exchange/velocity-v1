@@ -135,7 +135,13 @@ pub struct User {
     pub pool_id: u8,
     /// Whether the user is a special user (vamm hedger, etc)
     pub special_user_status: u8,
-    pub padding: [u8; 14],
+    pub padding: [u8; 3],
+    /// Minimum account equity (cross-margin total collateral) required for
+    /// risk-increasing orders, fills, withdrawals and deposit transfers.
+    /// Settable only by the warm/cold admin; 0 disables the check.
+    /// precision: QUOTE_PRECISION
+    pub equity_floor: u64,
+    pub padding2: [u8; 8],
 }
 
 impl User {
@@ -161,6 +167,12 @@ impl User {
 
     pub fn is_advanced_lp(&self) -> bool {
         self.status & (UserStatus::AdvancedLp as u8) > 0
+    }
+
+    /// True when the equity floor is enabled and `total_collateral`
+    /// (cross-margin, QUOTE_PRECISION) is below it.
+    pub fn is_below_equity_floor(&self, total_collateral: i128) -> bool {
+        self.equity_floor > 0 && total_collateral < self.equity_floor as i128
     }
 
     pub fn add_user_status(&mut self, status: UserStatus) {
@@ -640,6 +652,14 @@ impl User {
             calculation
         )?;
 
+        validate!(
+            !self.is_below_equity_floor(calculation.total_collateral),
+            ErrorCode::EquityBelowFloor,
+            "total collateral {} below equity floor {}",
+            calculation.total_collateral,
+            self.equity_floor
+        )?;
+
         Ok(true)
     }
 
@@ -678,6 +698,14 @@ impl User {
             ErrorCode::InsufficientCollateral,
             "margin calculation: {:?}",
             calculation
+        )?;
+
+        validate!(
+            !self.is_below_equity_floor(calculation.total_collateral),
+            ErrorCode::EquityBelowFloor,
+            "total collateral {} below equity floor {}",
+            calculation.total_collateral,
+            self.equity_floor
         )?;
 
         Ok(true)
@@ -725,6 +753,14 @@ impl User {
             ErrorCode::InsufficientCollateral,
             "margin calculation: {:?}",
             calculation
+        )?;
+
+        validate!(
+            !self.is_below_equity_floor(calculation.total_collateral),
+            ErrorCode::EquityBelowFloor,
+            "total collateral {} below equity floor {}",
+            calculation.total_collateral,
+            self.equity_floor
         )?;
 
         Ok(true)

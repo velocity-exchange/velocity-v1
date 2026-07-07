@@ -2229,6 +2229,16 @@ pub mod instructions {
     #[automatically_derived]
     impl anchor_lang::InstructionData for UpdateUserDelegate {}
     #[derive(AnchorSerialize, AnchorDeserialize, Clone, Default)]
+    pub struct UpdateUserEquityFloor {
+        pub equity_floor: u64,
+    }
+    #[automatically_derived]
+    impl anchor_lang::Discriminator for UpdateUserEquityFloor {
+        const DISCRIMINATOR: &[u8] = &[49, 87, 139, 119, 136, 239, 186, 104];
+    }
+    #[automatically_derived]
+    impl anchor_lang::InstructionData for UpdateUserEquityFloor {}
+    #[derive(AnchorSerialize, AnchorDeserialize, Clone, Default)]
     pub struct UpdateUserIdle {}
     #[automatically_derived]
     impl anchor_lang::Discriminator for UpdateUserIdle {
@@ -5181,7 +5191,10 @@ pub mod types {
         pub pool_id: u8,
         pub special_user_status: u8,
         #[serde(skip)]
-        pub padding: Padding<14>,
+        pub padding: Padding<3>,
+        pub equity_floor: u64,
+        #[serde(skip)]
+        pub padding2: Padding<8>,
     }
     #[repr(C)]
     #[derive(
@@ -6439,7 +6452,10 @@ pub mod accounts {
         pub pool_id: u8,
         pub special_user_status: u8,
         #[serde(skip)]
-        pub padding: Padding<14>,
+        pub padding: Padding<3>,
+        pub equity_floor: u64,
+        #[serde(skip)]
+        pub padding2: Padding<8>,
     }
     #[automatically_derived]
     impl anchor_lang::Discriminator for User {
@@ -22989,6 +23005,76 @@ pub mod accounts {
     }
     #[repr(C)]
     #[derive(Copy, Clone, Default, AnchorSerialize, AnchorDeserialize, Serialize, Deserialize)]
+    pub struct UpdateUserEquityFloor {
+        pub admin: Pubkey,
+        pub state: Pubkey,
+        pub user: Pubkey,
+    }
+    #[automatically_derived]
+    impl anchor_lang::Discriminator for UpdateUserEquityFloor {
+        const DISCRIMINATOR: &[u8] = &[101, 116, 140, 255, 126, 8, 211, 214];
+    }
+    #[automatically_derived]
+    unsafe impl anchor_lang::__private::bytemuck::Pod for UpdateUserEquityFloor {}
+    #[automatically_derived]
+    unsafe impl anchor_lang::__private::bytemuck::Zeroable for UpdateUserEquityFloor {}
+    #[automatically_derived]
+    impl anchor_lang::ZeroCopy for UpdateUserEquityFloor {}
+    #[automatically_derived]
+    impl anchor_lang::InstructionData for UpdateUserEquityFloor {}
+    #[automatically_derived]
+    impl ToAccountMetas for UpdateUserEquityFloor {
+        fn to_account_metas(&self) -> Vec<AccountMeta> {
+            vec![
+                AccountMeta {
+                    pubkey: self.admin,
+                    is_signer: true,
+                    is_writable: false,
+                },
+                AccountMeta {
+                    pubkey: self.state,
+                    is_signer: false,
+                    is_writable: false,
+                },
+                AccountMeta {
+                    pubkey: self.user,
+                    is_signer: false,
+                    is_writable: true,
+                },
+            ]
+        }
+    }
+    #[automatically_derived]
+    impl anchor_lang::AccountSerialize for UpdateUserEquityFloor {
+        fn try_serialize<W: std::io::Write>(&self, writer: &mut W) -> anchor_lang::Result<()> {
+            if writer.write_all(Self::DISCRIMINATOR).is_err() {
+                return Err(anchor_lang::error::ErrorCode::AccountDidNotSerialize.into());
+            }
+            if AnchorSerialize::serialize(self, writer).is_err() {
+                return Err(anchor_lang::error::ErrorCode::AccountDidNotSerialize.into());
+            }
+            Ok(())
+        }
+    }
+    #[automatically_derived]
+    impl anchor_lang::AccountDeserialize for UpdateUserEquityFloor {
+        fn try_deserialize(buf: &mut &[u8]) -> anchor_lang::Result<Self> {
+            let given_disc = &buf[..8];
+            if Self::DISCRIMINATOR != given_disc {
+                return Err(anchor_lang::error!(
+                    anchor_lang::error::ErrorCode::AccountDiscriminatorMismatch
+                ));
+            }
+            Self::try_deserialize_unchecked(buf)
+        }
+        fn try_deserialize_unchecked(buf: &mut &[u8]) -> anchor_lang::Result<Self> {
+            let mut data: &[u8] = &buf[8..];
+            AnchorDeserialize::deserialize(&mut data)
+                .map_err(|_| anchor_lang::error::ErrorCode::AccountDidNotDeserialize.into())
+        }
+    }
+    #[repr(C)]
+    #[derive(Copy, Clone, Default, AnchorSerialize, AnchorDeserialize, Serialize, Deserialize)]
     pub struct UpdateUserIdle {
         pub state: Pubkey,
         pub authority: Pubkey,
@@ -25346,6 +25432,8 @@ pub mod errors {
         InvalidNativePerpMarketAccount,
         #[msg("Isolated positions are not enabled in this build")]
         IsolatedPositionDisabled,
+        #[msg("Account equity is below the user-set equity floor")]
+        EquityBelowFloor,
     }
 }
 pub mod events {

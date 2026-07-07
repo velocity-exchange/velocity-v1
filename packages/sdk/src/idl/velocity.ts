@@ -12231,6 +12231,38 @@ export type Velocity = {
       ]
     },
     {
+      "name": "updateUserEquityFloor",
+      "discriminator": [
+        49,
+        87,
+        139,
+        119,
+        136,
+        239,
+        186,
+        104
+      ],
+      "accounts": [
+        {
+          "name": "admin",
+          "signer": true
+        },
+        {
+          "name": "state"
+        },
+        {
+          "name": "user",
+          "writable": true
+        }
+      ],
+      "args": [
+        {
+          "name": "equityFloor",
+          "type": "u64"
+        }
+      ]
+    },
+    {
       "name": "updateUserIdle",
       "discriminator": [
         253,
@@ -16025,6 +16057,11 @@ export type Velocity = {
       "code": 6357,
       "name": "isolatedPositionDisabled",
       "msg": "Isolated positions are not enabled in this build"
+    },
+    {
+      "code": 6358,
+      "name": "equityBelowFloor",
+      "msg": "Account equity is below the user-set equity floor"
     }
   ],
   "types": [
@@ -23729,7 +23766,26 @@ export type Velocity = {
             "type": {
               "array": [
                 "u8",
-                14
+                3
+              ]
+            }
+          },
+          {
+            "name": "equityFloor",
+            "docs": [
+              "Minimum account equity (cross-margin total collateral) required for",
+              "risk-increasing orders, fills, withdrawals and deposit transfers.",
+              "Settable only by the warm/cold admin; 0 disables the check.",
+              "precision: QUOTE_PRECISION"
+            ],
+            "type": "u64"
+          },
+          {
+            "name": "padding2",
+            "type": {
+              "array": [
+                "u8",
+                8
               ]
             }
           }

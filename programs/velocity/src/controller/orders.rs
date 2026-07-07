@@ -2005,6 +2005,17 @@ fn fulfill_perp_order(
             );
             return Err(ErrorCode::InsufficientCollateral);
         }
+
+        if !user_order_position_decreasing
+            && user.is_below_equity_floor(taker_margin_calculation.total_collateral)
+        {
+            msg!(
+                "taker total collateral {} below equity floor {}",
+                taker_margin_calculation.total_collateral,
+                user.equity_floor
+            );
+            return Err(ErrorCode::EquityBelowFloor);
+        }
     }
 
     for (maker_key, (maker_base_asset_amount_filled, maker_is_isolated_position)) in maker_fills {
@@ -2082,6 +2093,18 @@ fn fulfill_perp_order(
                 total_collateral
             );
             return Err(ErrorCode::InsufficientCollateral);
+        }
+
+        if maker_risk_increasing
+            && maker.is_below_equity_floor(maker_margin_calculation.total_collateral)
+        {
+            msg!(
+                "maker ({}) total collateral {} below equity floor {}",
+                maker_key,
+                maker_margin_calculation.total_collateral,
+                maker.equity_floor
+            );
+            return Err(ErrorCode::EquityBelowFloor);
         }
     }
 
@@ -3526,12 +3549,19 @@ pub fn trigger_order(
 
     drop(perp_market);
 
-    // If order increases risk and user is below initial margin, cancel it
+    // If order increases risk and user is below initial margin or their equity floor, cancel it
     if is_risk_increasing && !user.orders[order_index].reduce_only {
-        let meets_initial_margin_requirement =
-            meets_initial_margin_requirement(user, perp_market_map, spot_market_map, oracle_map)?;
+        let margin_calc = calculate_margin_requirement_and_total_collateral_and_liability_info(
+            user,
+            perp_market_map,
+            spot_market_map,
+            oracle_map,
+            MarginContext::standard(MarginRequirementType::Initial),
+        )?;
 
-        if !meets_initial_margin_requirement {
+        if !margin_calc.meets_margin_requirement()
+            || user.is_below_equity_floor(margin_calc.total_collateral)
+        {
             cancel_order(
                 order_index,
                 user,
@@ -3633,15 +3663,16 @@ pub fn force_cancel_orders(
         MarginContext::standard(MarginRequirementType::Initial),
     )?;
 
+    let below_equity_floor = user.is_below_equity_floor(margin_calc.total_collateral);
     let meets_initial_margin_requirement = margin_calc.meets_margin_requirement();
 
     validate!(
-        !meets_initial_margin_requirement,
+        !meets_initial_margin_requirement || below_equity_floor,
         ErrorCode::SufficientCollateral
     )?;
 
     let cross_margin_meets_initial_margin_requirement =
-        margin_calc.meets_cross_margin_requirement();
+        margin_calc.meets_cross_margin_requirement() && !below_equity_floor;
 
     let mut total_fee = 0_u64;
 

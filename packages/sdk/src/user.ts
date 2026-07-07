@@ -1533,6 +1533,38 @@ export class User {
 	}
 
 	/**
+	 * True when the account has an admin-set `equityFloor` and its cross-margin
+	 * total collateral is below it. While below the floor, the program rejects
+	 * risk-increasing order placement and fills, withdrawals, and transfers out
+	 * of the account (`EquityBelowFloor`); reduce-only activity stays allowed.
+	 * Mirrors `User::is_below_equity_floor` on-chain.
+	 * @param strict Use TWAP-bounded oracle pricing, matching the withdraw path. Defaults to false.
+	 */
+	public isBelowEquityFloor(strict = false): boolean {
+		const equityFloor = this.getUserAccountOrThrow().equityFloor;
+		if (equityFloor.lte(ZERO)) {
+			return false;
+		}
+		return this.getTotalCollateral('Initial', strict).lt(equityFloor);
+	}
+
+	/**
+	 * Cross-margin total collateral in excess of the admin-set `equityFloor`,
+	 * floored at zero (QUOTE_PRECISION). Unbounded (`null`) when no floor is set.
+	 * @param strict Use TWAP-bounded oracle pricing. Defaults to false.
+	 */
+	public getEquityAboveFloor(strict = false): BN | null {
+		const equityFloor = this.getUserAccountOrThrow().equityFloor;
+		if (equityFloor.lte(ZERO)) {
+			return null;
+		}
+		return BN.max(
+			this.getTotalCollateral('Initial', strict).sub(equityFloor),
+			ZERO
+		);
+	}
+
+	/**
 	 * Builds the liquidation-buffer map to pass into margin calculations while
 	 * a liquidation is in progress: `'cross'` is set to the state account's
 	 * `liquidationMarginBufferRatio` if cross margin is being liquidated, and
@@ -4134,7 +4166,17 @@ export class User {
 			nowTs
 		);
 
-		const freeCollateral = this.getFreeCollateral();
+		// the withdraw path enforces the equity floor on post-withdraw total
+		// collateral, so equity above the floor caps free collateral here
+		const equityAboveFloor = this.getEquityAboveFloor(true);
+		if (equityAboveFloor !== null && equityAboveFloor.eq(ZERO)) {
+			return ZERO;
+		}
+
+		let freeCollateral = this.getFreeCollateral();
+		if (equityAboveFloor !== null) {
+			freeCollateral = BN.min(freeCollateral, equityAboveFloor);
+		}
 		const initialMarginRequirement = this.getInitialMarginRequirement();
 		const oracleData = this.getOracleDataForSpotMarket(marketIndex);
 		const { numeratorScale, denominatorScale } =

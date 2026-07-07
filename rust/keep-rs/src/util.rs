@@ -404,13 +404,16 @@ impl<const N: usize> PendingTxs<N> {
 
     /// Confirm and return the first item with matching signature.
     ///
-    /// Returns Some(item) if found, else None.
+    /// Returns Some(item) if found, else None. The entry is consumed: a duplicate
+    /// confirmation of the same signature (e.g. redelivered by the tx stream) returns
+    /// None instead of re-running the confirmation accounting.
     pub fn confirm(&mut self, sig: &Signature) -> Option<PendingTxMeta> {
         for i in 0..self.size {
             let idx = (self.head + i) % N;
             // TODO: check if overwritten entry is confirmed or not
             if self.buffer[idx].signature == *sig {
-                return Some(self.buffer[idx].clone());
+                // leave a default (never-matching) hole; head/size stay untouched
+                return Some(std::mem::take(&mut self.buffer[idx]));
             }
         }
         None
@@ -728,7 +731,27 @@ pub fn subscribe_price_feeds(
 
 #[cfg(test)]
 mod tests {
-    use super::{swift_placement_expired, OrderSlotLimiter, TxIntent};
+    use super::{swift_placement_expired, OrderSlotLimiter, PendingTxMeta, PendingTxs, TxIntent};
+    use solana_sdk::signature::Signature;
+
+    #[test]
+    fn pending_txs_confirm_consumes_entry() {
+        let mut pending = PendingTxs::<8>::new();
+        let sig = Signature::from([7u8; 64]);
+        pending.insert(PendingTxMeta::new(
+            sig,
+            TxIntent::Trigger {
+                market_index: 0,
+                order_id: 1,
+                slot: 2,
+            },
+            100,
+        ));
+        // first confirmation returns the entry
+        assert!(pending.confirm(&sig).is_some());
+        // a redelivered signature must not re-run the confirmation accounting
+        assert!(pending.confirm(&sig).is_none());
+    }
 
     #[test]
     fn swift_expiry_placement_deadline_binds_before_staleness() {

@@ -130,6 +130,7 @@ impl FillerBot {
             dlob,
             tx_worker_ref.clone(),
             market_ids.clone(),
+            filler_subaccount,
         )
         .await;
         log::info!(target: TARGET, "subscribed gRPC");
@@ -189,6 +190,8 @@ impl FillerBot {
             .map(|s| s.oracle_guard_rails.validity.slots_before_stale_for_amm)
             .unwrap_or(10);
         let mut pyth_oracle_prices = BTreeMap::<u16, PythPriceUpdate>::new();
+        // per-market consecutive perp-market/oracle cache-miss counters (see slot loop)
+        let mut cache_misses = BTreeMap::<u16, u32>::new();
         // Per-market last-known oracle-stale state. Staleness is logged on transition
         // (fresh<->stale) instead of every slot, so a stale oracle shows as two edges
         // rather than a wall of per-slot lines during the exact window you're debugging.
@@ -214,8 +217,16 @@ impl FillerBot {
                             let market_index = order_params.market_index;
                             log::info!(target: TARGET, "new swift order. uuid={}, market={}", signed_order.order_uuid_str(), market_index);
                             log::debug!(target: TARGET, "details: {signed_order:?}");
-                            let perp_market = velocity.try_get_perp_market_account(market_index).unwrap();
-                            let oracle_price_data = velocity.try_get_mmoracle_for_perp_market(market_index, slot).expect("got oracle price");
+                            // transient cache misses must not kill the fill loop; drop this
+                            // order (the swift feed keeps flowing) rather than panic
+                            let Ok(perp_market) = velocity.try_get_perp_market_account(market_index) else {
+                                log::warn!(target: TARGET, "no perp market {market_index} for swift order, skipping. uuid={}", signed_order.order_uuid_str());
+                                continue;
+                            };
+                            let Ok(oracle_price_data) = velocity.try_get_mmoracle_for_perp_market(market_index, slot) else {
+                                log::warn!(target: TARGET, "no oracle price for market {market_index}, skipping swift order. uuid={}", signed_order.order_uuid_str());
+                                continue;
+                            };
 
                             // try an immediate fill against resting liquidity
                             match evaluate_swift_crosses(dlob, &signed_order, &perp_market, oracle_price_data.price, oracle_price_data.delay, slot, slots_before_stale_for_amm) {
@@ -272,8 +283,10 @@ impl FillerBot {
                                     log::warn!(target: "swift", "feed disconnected, retry {retries}/{MAX_SWIFT_RECONNECT_RETRIES} in {backoff}s");
                                     tokio::time::sleep(Duration::from_secs(backoff)).await;
 
+                                    // keep the same ws url override as the initial subscription,
+                                    // otherwise a reconnect silently switches to the default host
                                     match velocity
-                                        .subscribe_swift_orders(&market_ids, Some(true), None, None)
+                                        .subscribe_swift_orders(&market_ids, Some(true), None, std::env::var("SWIFT_WS_URL").ok())
                                         .await
                                     {
                                         Ok(stream) => swift_order_stream = stream,
@@ -305,8 +318,32 @@ impl FillerBot {
                     for market in &market_ids {
                         let market_index = market.index();
 
-                        let perp_market = velocity.try_get_perp_market_account(market_index).expect("got perp market");
-                        let chain_oracle_data = velocity.try_get_mmoracle_for_perp_market(market_index, slot).expect("got oracle price");
+                        // skip the market this slot on a transient cache miss; next slot
+                        // retries. a persistent miss panics (main loop => process restart)
+                        // rather than silently never filling the market again
+                        let cache_result = velocity
+                            .try_get_perp_market_account(market_index)
+                            .and_then(|perp_market| {
+                                velocity
+                                    .try_get_mmoracle_for_perp_market(market_index, slot)
+                                    .map(|oracle| (perp_market, oracle))
+                            });
+                        let (perp_market, chain_oracle_data) = match cache_result {
+                            Ok(x) => {
+                                cache_misses.insert(market_index, 0);
+                                x
+                            }
+                            Err(err) => {
+                                let count = cache_misses.entry(market_index).or_insert(0);
+                                *count += 1;
+                                log::warn!(target: TARGET, "no perp market/oracle for market {market_index} ({count} consecutive): {err:?}, skipping fills this slot");
+                                assert!(
+                                    *count < MAX_CONSECUTIVE_ORACLE_MISSES,
+                                    "market {market_index} unavailable for {count} consecutive slots"
+                                );
+                                continue;
+                            }
+                        };
                         let oracle_stale_for_amm = chain_oracle_data.delay > slots_before_stale_for_amm;
                         // Log staleness only on transition; the per-slot price/staleness dump
                         // was pure spam. The oracle price at the moment of an actual decision
@@ -330,7 +367,10 @@ impl FillerBot {
                         }
 
                         let mut crosses_and_top_makers = dlob.find_crosses_for_auctions(market_index, MarketType::Perp, slot, oracle_price, Some(&perp_market), trigger_price, None);
-                        crosses_and_top_makers.crosses.retain(|(o, _)| limiter.allow_event(slot, o.order_id));
+                        // key on the full (user, order_id) identity: order_id is a per-user
+                        // counter, so a bare order_id collides across users and would wrongly
+                        // suppress another user's fill
+                        crosses_and_top_makers.crosses.retain(|(o, _)| limiter.allow_event(slot, order_dedup_key(&o.user, o.order_id)));
 
                         // Trigger orders that already cross are triggered+filled atomically by
                         // the auction path below; capture their ids so the standalone trigger
@@ -383,7 +423,9 @@ impl FillerBot {
                             }
                             // Rate-limit re-sends by the full (user, order_id) identity. The
                             // limiter keys on u32, so fold the user pubkey in to avoid colliding
-                            // with another user's order_id (or an auction fill's bare order_id).
+                            // with another user's order_id. The auction-fill pass uses the same
+                            // key, so a trigger+fill and a standalone trigger of the same order
+                            // share one rate-limit window.
                             if !limiter.allow_event(slot, order_dedup_key(&taker_subaccount, order_id)) {
                                 continue;
                             }
@@ -453,17 +495,43 @@ fn on_transaction_update_fn(
     }
 }
 
+/// Max consecutive slots a market's oracle may be missing before the process exits.
+///
+/// A panic here is NOT protective: this closure runs on the gRPC dispatch thread, and a
+/// thread panic doesn't stop the process — the bot would keep running with a frozen book
+/// (zombie). A transient miss is skipped and retried next slot; a persistent one exits the
+/// process so the supervisor restarts it with fresh subscriptions.
+const MAX_CONSECUTIVE_ORACLE_MISSES: u32 = 300; // ~2min of slots
+
 fn on_slot_update_fn(
     velocity: VelocityClient,
     market_ids: Vec<MarketId>,
     dlob_notifier: DLOBNotifier,
     slot_tx: tokio::sync::mpsc::Sender<u64>,
 ) -> impl Fn(u64) + Send + Sync + 'static {
+    // single gRPC dispatch thread: the mutex is uncontended
+    let consecutive_misses_ref = std::sync::Mutex::new(BTreeMap::<u16, u32>::new());
     move |new_slot| {
         for market in market_ids.iter() {
-            let oracle_price_data = velocity
-                .try_get_mmoracle_for_perp_market(market.index(), new_slot)
-                .unwrap();
+            // a transiently missing oracle must not kill the gRPC dispatch thread;
+            // skip the market this slot and let the next tick retry
+            let Ok(oracle_price_data) =
+                velocity.try_get_mmoracle_for_perp_market(market.index(), new_slot)
+            else {
+                let mut misses = consecutive_misses_ref.lock().unwrap();
+                let count = misses.entry(market.index()).or_insert(0);
+                *count += 1;
+                log::warn!(target: TARGET, "no oracle price for market {} ({count} consecutive), skipping slot update", market.index());
+                if *count >= MAX_CONSECUTIVE_ORACLE_MISSES {
+                    log::error!(target: TARGET, "oracle for market {} missing for {count} consecutive slots, exiting for restart", market.index());
+                    std::process::exit(1);
+                }
+                continue;
+            };
+            consecutive_misses_ref
+                .lock()
+                .unwrap()
+                .insert(market.index(), 0);
             dlob_notifier.slot_and_oracle_update(*market, new_slot, oracle_price_data.price as u64);
         }
         if let Err(err) = slot_tx.try_send(new_slot) {
@@ -477,29 +545,49 @@ fn on_account_update_fn(
     velocity: VelocityClient,
 ) -> impl Fn(&AccountUpdate) + Send + Sync + 'static {
     move |update| {
-        let new_user = velocity_rs::utils::deser_zero_copy::<User>(update.data);
-        if let Some(ref existing) = velocity
+        // Skip closed / empty-data updates rather than panic on `&data[8..]`.
+        let Some(new_user) = velocity_rs::utils::try_deser_zero_copy::<User>(update.data) else {
+            if update.lamports == 0 {
+                // account closed/deleted: diff its last known state against an empty
+                // account so its open orders are removed from the book
+                if let Some(old_user) = velocity
+                    .backend()
+                    .account_map()
+                    .account_data_and_slot::<User>(&update.pubkey)
+                {
+                    dlob_notifier.user_update(
+                        update.pubkey,
+                        Some(&old_user.data),
+                        &User::default(),
+                        update.slot,
+                    );
+                }
+            }
+            return;
+        };
+        // always feed the DLOB with the same lineage the account_map stores (this hook
+        // runs before the account_map write): a slot-based skip here while the map still
+        // accepts the update would desync `old_user` from the book and strand orders
+        let existing = velocity
             .backend()
             .account_map()
-            .account_data_and_slot::<User>(&update.pubkey)
-        {
-            if existing.slot <= update.slot {
-                dlob_notifier.user_update(
-                    update.pubkey,
-                    Some(&existing.data),
-                    &new_user,
-                    update.slot,
-                );
-            } else {
-                log::warn!(
+            .account_data_and_slot::<User>(&update.pubkey);
+        if let Some(ref existing) = existing {
+            if existing.slot > update.slot {
+                log::debug!(
+                    target: TARGET,
                     "out of order user update: {} > {}",
                     existing.slot,
                     update.slot
                 );
             }
-        } else {
-            dlob_notifier.user_update(update.pubkey, None, &new_user, update.slot);
         }
+        dlob_notifier.user_update(
+            update.pubkey,
+            existing.as_ref().map(|x| &x.data),
+            &new_user,
+            update.slot,
+        );
     }
 }
 
@@ -670,13 +758,11 @@ async fn try_trigger_order(
     slot: u64,
     tx_worker_ref: TxSender,
 ) {
-    let filler_account_data = match velocity.try_get_account::<User>(&filler_subaccount) {
-        Ok(a) => a,
-        Err(err) => {
-            log::warn!(target: TARGET, "trigger: failed to load filler account: {err:?}");
-            return;
-        }
-    };
+    // the bot's own account missing from cache is structural (lost subscription /
+    // misconfig) and would silently no-op every fill: panic so the service restarts
+    let filler_account_data = velocity
+        .try_get_account::<User>(&filler_subaccount)
+        .expect("filler subaccount in cache; restart");
     let taker_account_data = match velocity.try_get_account::<User>(&taker_subaccount) {
         Ok(a) => a,
         Err(err) => {
@@ -729,15 +815,22 @@ async fn try_swift_fill(
     let taker_subaccount = swift_order.taker_subaccount();
     let taker_authority = swift_order.taker_authority;
 
+    // the bot's own account missing from cache is structural (lost subscription /
+    // misconfig) and would silently no-op every fill: panic so the service restarts
     let filler_account_data = velocity
         .try_get_account::<User>(&filler_subaccount)
-        .expect("filler account");
+        .expect("filler subaccount in cache; restart");
     let taker_stats = Wallet::derive_stats_account(&taker_authority);
-    let (taker_account_data, taker_stats) = tokio::try_join!(
+    let (taker_account_data, taker_stats) = match tokio::try_join!(
         velocity.get_account_value::<User>(&taker_subaccount),
         velocity.get_account_value::<UserStats>(&taker_stats)
-    )
-    .unwrap();
+    ) {
+        Ok(accounts) => accounts,
+        Err(err) => {
+            log::warn!(target: TARGET, "swift fill: failed to load taker accounts {taker_subaccount}: {err:?}");
+            return;
+        }
+    };
     let tx_builder = TransactionBuilder::new(
         velocity.program_data(),
         filler_subaccount,
@@ -749,11 +842,9 @@ async fn try_swift_fill(
         .orders
         .iter()
         .filter(|m| m.0.user != taker_subaccount) // can't fill itself
-        .map(|(m, _fill_size)| {
-            velocity
-                .try_get_account::<User>(&m.user)
-                .expect("maker account syncd")
-        })
+        // drop makers not yet in cache rather than panicking; a missing maker just
+        // shrinks the cross (handled by the empty-cross check below)
+        .filter_map(|(m, _fill_size)| velocity.try_get_account::<User>(&m.user).ok())
         .collect();
 
     if maker_accounts.is_empty() && !crosses.has_vamm_cross {
@@ -776,11 +867,13 @@ async fn try_swift_fill(
         );
 
     // large accounts list, bump CU limit to compensate
+    let mut effective_cu_limit = cu_limit;
     if let Some(ix) = tx_builder.ixs().last() {
         if ix.accounts.len() >= 30 {
+            effective_cu_limit = cu_limit * 2;
             tx_builder = tx_builder.set_ix(
                 1,
-                ComputeBudgetInstruction::set_compute_unit_limit(cu_limit * 2),
+                ComputeBudgetInstruction::set_compute_unit_limit(effective_cu_limit),
             );
         }
     }
@@ -794,7 +887,7 @@ async fn try_swift_fill(
                 market_index: taker_order.market_index,
                 maker_crosses: crosses,
             },
-            cu_limit as u64,
+            effective_cu_limit as u64,
         )
         .await;
 }
@@ -817,13 +910,11 @@ async fn try_swift_place(
     let market_index = swift_order.order_params().market_index;
     let taker_subaccount = swift_order.taker_subaccount();
 
-    let filler_account_data = match velocity.try_get_account::<User>(&filler_subaccount) {
-        Ok(a) => a,
-        Err(err) => {
-            log::warn!(target: TARGET, "swift place: failed to load filler account: {err:?}");
-            return;
-        }
-    };
+    // the bot's own account missing from cache is structural (lost subscription /
+    // misconfig) and would silently no-op every fill: panic so the service restarts
+    let filler_account_data = velocity
+        .try_get_account::<User>(&filler_subaccount)
+        .expect("filler subaccount in cache; restart");
     let taker_account_data = match velocity.get_account_value::<User>(&taker_subaccount).await {
         Ok(a) => a,
         Err(err) => {
@@ -872,37 +963,35 @@ async fn try_auction_fill(
     perp_market: PerpMarket,
     oracle_stale_for_amm: bool,
 ) {
+    // the bot's own account missing from cache is structural (lost subscription /
+    // misconfig) and would silently no-op every fill: panic so the service restarts
     let filler_account_data = velocity
         .try_get_account::<User>(&filler_subaccount)
-        .expect("filler account");
+        .expect("filler subaccount in cache; restart");
 
+    // drop makers not yet in cache rather than panicking; a shorter top-maker
+    // list just means fewer fallback makers on the fill
     let top_maker_asks: Vec<User> = auction_crosses
         .top_maker_asks
         .iter()
-        .map(|m| {
-            velocity
-                .try_get_account::<User>(m)
-                .expect("maker account syncd")
-        })
+        .filter_map(|m| velocity.try_get_account::<User>(m).ok())
         .collect();
 
     let top_maker_bids: Vec<User> = auction_crosses
         .top_maker_bids
         .iter()
-        .map(|m| {
-            velocity
-                .try_get_account::<User>(m)
-                .expect("maker account syncd")
-        })
+        .filter_map(|m| velocity.try_get_account::<User>(m).ok())
         .collect();
     let mut sent_oracle_update = false;
     for (taker_order, crosses) in auction_crosses.crosses {
         log::info!(target: TARGET, "try fill auction order: {taker_order:?}");
         let taker_subaccount = taker_order.user;
 
-        let taker_account_data = velocity
-            .try_get_account::<User>(&taker_subaccount)
-            .expect("taker account");
+        // the taker may have closed its account between the DLOB snapshot and now
+        let Ok(taker_account_data) = velocity.try_get_account::<User>(&taker_subaccount) else {
+            log::warn!(target: TARGET, "auction fill: taker account {taker_subaccount} not in cache, skipping");
+            continue;
+        };
 
         let taker_stats = velocity.try_get_account::<UserStats>(&Wallet::derive_stats_account(
             &taker_account_data.authority,
@@ -1056,11 +1145,13 @@ async fn try_auction_fill(
         );
 
         // large accounts list, bump CU limit to compensate
+        let mut effective_cu_limit = cu_limit;
         if let Some(ix) = tx_builder.ixs().last() {
             if ix.accounts.len() >= 20 {
+                effective_cu_limit = cu_limit * 2;
                 tx_builder = tx_builder.set_ix(
                     1,
-                    ComputeBudgetInstruction::set_compute_unit_limit(cu_limit * 2),
+                    ComputeBudgetInstruction::set_compute_unit_limit(effective_cu_limit),
                 );
             }
         }
@@ -1076,7 +1167,7 @@ async fn try_auction_fill(
                     maker_crosses: crosses,
                     has_trigger: taker_is_trigger,
                 },
-                cu_limit as u64,
+                effective_cu_limit as u64,
             )
             .await;
     }
@@ -1095,9 +1186,11 @@ async fn try_uncross(
     crosses: CrossingRegion,
     tx_worker_ref: &TxSender,
 ) {
+    // the bot's own account missing from cache is structural (lost subscription /
+    // misconfig) and would silently no-op every fill: panic so the service restarts
     let filler_account_data = velocity
         .try_get_account::<User>(&filler_subaccount)
-        .expect("filler account");
+        .expect("filler subaccount in cache; restart");
 
     let best_bid = &crosses.crossing_bids.first();
     let best_ask = &crosses.crossing_asks.first();
@@ -1158,9 +1251,11 @@ async fn try_uncross(
 
         let taker_order_id = taker_order.order_id;
         let taker_subaccount = taker_order.user;
-        let taker_account_data = velocity
-            .try_get_account::<User>(&taker_subaccount)
-            .expect("taker account");
+        // the taker may have closed its account between the DLOB snapshot and now
+        let Ok(taker_account_data) = velocity.try_get_account::<User>(&taker_subaccount) else {
+            log::warn!(target: TARGET, "uncross: taker account {taker_subaccount} not in cache, skipping");
+            continue;
+        };
 
         let taker_stats = velocity.try_get_account::<UserStats>(&Wallet::derive_stats_account(
             &taker_account_data.authority,
@@ -1189,11 +1284,13 @@ async fn try_uncross(
             );
 
         // large accounts list, bump CU limit to compensate
+        let mut effective_cu_limit = cu_limit;
         if let Some(ix) = tx_builder.ixs().last() {
             if ix.accounts.len() >= 40 {
+                effective_cu_limit = (cu_limit * 25) / 10;
                 tx_builder = tx_builder.set_ix(
                     1,
-                    ComputeBudgetInstruction::set_compute_unit_limit((cu_limit * 25) / 10),
+                    ComputeBudgetInstruction::set_compute_unit_limit(effective_cu_limit),
                 );
             }
         }
@@ -1208,7 +1305,7 @@ async fn try_uncross(
                     taker_order_id,
                     maker_order_id: 0,
                 },
-                cu_limit as u64,
+                effective_cu_limit as u64,
             )
             .await;
     }
@@ -1242,6 +1339,7 @@ pub async fn setup_grpc(
     dlob: &'static DLOB,
     tx_worker_ref: TxSender,
     market_ids: Vec<MarketId>,
+    filler_subaccount: Pubkey,
 ) -> tokio::sync::mpsc::Receiver<u64> {
     let dlob_notifier = dlob.spawn_notifier();
 
@@ -1252,7 +1350,15 @@ pub async fn setup_grpc(
 
     let (slot_tx, slot_rx) = tokio::sync::mpsc::channel(64);
 
-    subscribe_grpc(velocity, dlob_notifier, slot_tx, tx_worker_ref, market_ids).await;
+    subscribe_grpc(
+        velocity,
+        dlob_notifier,
+        slot_tx,
+        tx_worker_ref,
+        market_ids,
+        filler_subaccount,
+    )
+    .await;
 
     slot_rx
 }
@@ -1353,6 +1459,7 @@ async fn subscribe_grpc(
     slot_tx: tokio::sync::mpsc::Sender<u64>,
     transaction_tx: TxSender,
     market_ids: Vec<MarketId>,
+    filler_subaccount: Pubkey,
 ) {
     let _res = velocity
         .grpc_subscribe(
@@ -1365,7 +1472,10 @@ async fn subscribe_grpc(
                 .connection_opts(GrpcConnectionOpts::default().enable_compression())
                 .usermap_on()
                 .statsmap_on()
-                .transaction_include_accounts(vec![velocity.wallet().default_sub_account()])
+                // must watch the subaccount fills are actually sent from: with a non-zero
+                // configured sub_account_id the default subaccount never appears in the
+                // bot's txs and confirmations would never fire
+                .transaction_include_accounts(vec![filler_subaccount])
                 .on_transaction(on_transaction_update_fn(transaction_tx.clone()))
                 .on_slot(on_slot_update_fn(
                     velocity.clone(),
@@ -1679,7 +1789,9 @@ impl TxWorker {
                                     .observe(confirmation_slots as f64);
                                 let cu_consumed: Option<u64> =
                                     meta.compute_units_consumed.clone().into();
-                                let cus_spent = sent_cu_limit - cu_consumed.unwrap_or(0);
+                                // saturating: the account-count heuristic can raise the tx's
+                                // actual CU limit above `sent_cu_limit` recorded at send time
+                                let cus_spent = sent_cu_limit.saturating_sub(cu_consumed.unwrap_or(0));
                                 metrics
                                     .cu_spent
                                     .with_label_values(&[intent_label])
@@ -1962,7 +2074,13 @@ impl TxSender {
         intent: TxIntent,
         cu_limit: u64,
     ) -> Option<Signature> {
-        let blockhash = self.velocity.get_latest_blockhash().await.unwrap();
+        // no blockhash = subscription dead AND rpc fallback failed; silently dropping
+        // every tx from here would be worse than a restart
+        let blockhash = self
+            .velocity
+            .get_latest_blockhash()
+            .await
+            .expect("blockhash available; restart");
         let signed_tx = self.velocity.wallet().sign_tx(tx, blockhash).ok()?;
         let sig = signed_tx.signatures[0];
 

@@ -101,10 +101,16 @@ impl AccountFilter {
         self
     }
     /// Returns true if pubkey/account matches the filter
+    ///
+    /// closed/short-data accounts (e.g. lamports drained to 0) carry no discriminator:
+    /// they never match a discriminator filter but can still match an explicit accounts
+    /// filter (`&account.data[..8]` would panic on them)
     pub fn matches(&self, pubkey: &Pubkey, account: &SubscribeUpdateAccountInfo) -> bool {
+        let discriminator_matches =
+            |x: &'static [u8]| account.data.get(..8).is_some_and(|prefix| x == prefix);
         if !self.is_full {
             // partial matches
-            self.discriminator.is_some_and(|x| x == &account.data[..8])
+            self.discriminator.is_some_and(discriminator_matches)
                 || self.accounts.as_ref().is_some_and(|x| x.contains(pubkey))
                 || self
                     .memcmp
@@ -113,7 +119,7 @@ impl AccountFilter {
         } else {
             // full matches
             (match self.discriminator {
-                Some(x) => x == &account.data[..8],
+                Some(x) => discriminator_matches(x),
                 None => true,
             }) && (match self.accounts.as_ref() {
                 Some(x) => x.contains(pubkey),

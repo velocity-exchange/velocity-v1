@@ -634,15 +634,54 @@ impl DLOB {
         self.with_orderbook_mut(&MarketId::new(order.market_index, order.market_type), |mut orderbook| {
             log::trace!(target: TARGET, "remove order: {order_id} @ status: {:?}, type: {:?}, slot: {slot}", order.status, order.order_type);
 
-            // probe every collection, non-short-circuiting (`|`): an order can transiently
-            // reside in two collections at once, e.g. its auction copy and its resting copy
-            // while a book slot update is pending. each key embeds `order_id` so a probe
-            // can never remove another order's entry
-            let order_removed = orderbook.market_orders.remove(order_id, order)
-                | orderbook.oracle_orders.remove(order_id, order)
-                | orderbook.resting_limit_orders.remove(order_id, order)
-                | orderbook.floating_limit_orders.remove(order_id, order)
-                | orderbook.trigger_orders.remove(order_id, order);
+            // probe only the collections this order shape can inhabit (mirrors the
+            // `insert_order` dispatch). non-post-only limit orders probe both their
+            // auction and resting collections, non-short-circuiting (`|`): the auction
+            // copy can coexist with the resting copy until the next slot tick migrates
+            // it. keys embed `order_id` so a probe can never remove another order's entry
+            let order_removed = match order.order_type {
+                OrderType::Market => orderbook.market_orders.remove(order_id, order),
+                OrderType::Oracle => orderbook.oracle_orders.remove(order_id, order),
+                OrderType::Limit => {
+                    let is_floating = order.oracle_price_offset != 0;
+                    if order.post_only {
+                        if is_floating {
+                            orderbook.floating_limit_orders.remove(order_id, order)
+                        } else {
+                            orderbook.resting_limit_orders.remove(order_id, order)
+                        }
+                    } else if is_floating {
+                        orderbook.oracle_orders.remove(order_id, order)
+                            | orderbook.floating_limit_orders.remove(order_id, order)
+                    } else {
+                        orderbook.market_orders.remove(order_id, order)
+                            | orderbook.resting_limit_orders.remove(order_id, order)
+                    }
+                }
+                OrderType::TriggerMarket => match order.trigger_condition {
+                    OrderTriggerCondition::Above | OrderTriggerCondition::Below => {
+                        orderbook.trigger_orders.remove(order_id, order)
+                    }
+                    OrderTriggerCondition::TriggeredAbove
+                    | OrderTriggerCondition::TriggeredBelow => {
+                        if order.is_oracle_trigger_market() {
+                            orderbook.oracle_orders.remove(order_id, order)
+                        } else {
+                            orderbook.market_orders.remove(order_id, order)
+                        }
+                    }
+                },
+                OrderType::TriggerLimit => match order.trigger_condition {
+                    OrderTriggerCondition::Above | OrderTriggerCondition::Below => {
+                        orderbook.trigger_orders.remove(order_id, order)
+                    }
+                    OrderTriggerCondition::TriggeredAbove
+                    | OrderTriggerCondition::TriggeredBelow => {
+                        orderbook.market_orders.remove(order_id, order)
+                            | orderbook.resting_limit_orders.remove(order_id, order)
+                    }
+                },
+            };
 
             // the order is gone onchain: metadata must not outlive the book entries
             let metadata = self.metadata.remove(&order_id);

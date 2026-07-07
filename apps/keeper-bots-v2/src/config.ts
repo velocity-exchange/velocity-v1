@@ -148,6 +148,7 @@ export type BotConfigMap = {
 	liquidator?: LiquidatorConfig;
 	floatingMaker?: BaseBotConfig;
 	ifRevenueSettler?: BaseBotConfig;
+	protocolFeeCollector?: BaseBotConfig;
 	fundingRateUpdater?: BaseBotConfig;
 	userPnlSettler?: UserPnlSettlerConfig;
 	userIdleFlipper?: BaseBotConfig;
@@ -496,6 +497,15 @@ export function loadConfigFromOpts(opts: any): Config {
 		config.botConfigs!.ifRevenueSettler = {
 			dryRun: opts.dryRun ?? false,
 			botId: process.env.BOT_ID ?? 'ifRevenueSettler',
+			metricsPort: 9464,
+			runOnce: opts.runOnce ?? false,
+		};
+	}
+	if (opts.protocolFeeCollector) {
+		config.enabledBots.push('protocolFeeCollector');
+		config.botConfigs!.protocolFeeCollector = {
+			dryRun: opts.dryRun ?? false,
+			botId: process.env.BOT_ID ?? 'protocolFeeCollector',
 			metricsPort: 9464,
 			runOnce: opts.runOnce ?? false,
 		};

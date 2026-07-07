@@ -23,7 +23,7 @@ velocity-admin --help
 ```
 velocity-admin show config
 
-velocity-admin auth set-admin <pubkey>
+velocity-admin auth set-cold-admin <pubkey>
 velocity-admin auth set-warm-admin <pubkey>
 velocity-admin auth set-pause-admin <pubkey>
 velocity-admin auth set-hot-admin <role> <pubkey>

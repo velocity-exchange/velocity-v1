@@ -13,6 +13,7 @@ import {
 
 import { getAssociatedTokenAddress } from '@solana/spl-token';
 import {
+	AdminClient,
 	BulkAccountLoader,
 	VelocityClient,
 	initialize,
@@ -50,6 +51,7 @@ import { LiquidatorBot } from './bots/liquidator';
 import { FloatingPerpMakerBot } from './bots/floatingMaker';
 import { Bot } from './types';
 import { IFRevenueSettlerBot } from './bots/ifRevenueSettler';
+import { ProtocolFeeCollectorBot } from './bots/protocolFeeCollector';
 import { UserPnlSettlerBot } from './bots/userPnlSettler';
 import { UserIdleFlipperBot } from './bots/userIdleFlipper';
 import {
@@ -103,6 +105,10 @@ program
 	.option(
 		'--if-revenue-settler',
 		'Enable Insurance Fund revenue pool settler bot'
+	)
+	.option(
+		'--protocol-fee-collector',
+		'Enable protocol fee sweep/withdraw bot (signer needs the FeeWithdraw hot role)'
 	)
 	.option('--funding-rate-updater', 'Enable Funding Rate updater bot')
 	.option('--user-pnl-settler', 'Enable User PnL settler bot')
@@ -839,6 +845,19 @@ const runBot = async () => {
 			new IFRevenueSettlerBot(
 				velocityClient,
 				config.botConfigs!.ifRevenueSettler!
+			)
+		);
+	}
+
+	if (configHasBot(config, 'protocolFeeCollector')) {
+		needVelocityStateWatcher = true;
+
+		// the withdraw ix builders live on AdminClient (extends VelocityClient);
+		// bot-private instance, subscribed in the bot's init()
+		bots.push(
+			new ProtocolFeeCollectorBot(
+				new AdminClient(velocityClientConfig),
+				config.botConfigs!.protocolFeeCollector!
 			)
 		);
 	}

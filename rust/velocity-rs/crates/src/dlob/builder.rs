@@ -99,6 +99,20 @@ impl<'a> DLOBBuilder<'a> {
         move |update| {
             // Skip closed / empty-data updates rather than panic on `&data[8..]`.
             let Some(new_user) = crate::utils::try_deser_zero_copy::<User>(update.data) else {
+                if update.lamports == 0 {
+                    // account closed/deleted: diff its last known state against an empty
+                    // account so its open orders are removed from the book
+                    if let Some(old_user) =
+                        account_map.account_data_and_slot::<User>(&update.pubkey)
+                    {
+                        notifier.user_update(
+                            update.pubkey,
+                            Some(&old_user.data),
+                            &User::default(),
+                            update.slot,
+                        );
+                    }
+                }
                 return;
             };
             let old_user = account_map

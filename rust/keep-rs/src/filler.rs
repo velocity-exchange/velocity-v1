@@ -20,8 +20,8 @@ use velocity_rs::program::math::auction::calculate_auction_price;
 use velocity_rs::{
     constants::PROGRAM_ID,
     dlob::{
-        CrossesAndTopMakers, CrossingRegion, DLOBNotifier, MakerCrosses, OrderKind, TakerOrder,
-        DLOB,
+        CrossesAndTopMakers, CrossingRegion, DLOBNotifier, L3Order, MakerCrosses, OrderKind,
+        TakerOrder, DLOB,
     },
     event_subscriber::VelocityEvent,
     grpc::{
@@ -372,6 +372,17 @@ impl FillerBot {
                         // suppress another user's fill
                         crosses_and_top_makers.crosses.retain(|(o, _)| limiter.allow_event(slot, order_dedup_key(&o.user, o.order_id)));
 
+                        // resting orders crossed by the vAMM quote (at most one per side),
+                        // computed by the same find pass; extract (along with the top makers, so
+                        // the fill can route to a better-priced user maker) before
+                        // `try_auction_fill` consumes the struct
+                        let vamm_crossed_bid = crosses_and_top_makers.take_vamm_crossed_bid();
+                        let vamm_crossed_ask = crosses_and_top_makers.take_vamm_crossed_ask();
+                        let vamm_taker_top_makers = (
+                            crosses_and_top_makers.top_maker_asks.to_vec(),
+                            crosses_and_top_makers.top_maker_bids.to_vec(),
+                        );
+
                         // Trigger orders that already cross are triggered+filled atomically by
                         // the auction path below; capture their ids so the standalone trigger
                         // pass doesn't double-trigger (and waste) them. Keyed on the full
@@ -397,11 +408,9 @@ impl FillerBot {
                                 tx_worker_ref.clone(),
                                 pyth_update,
                                 trigger_price,
-                                move |maker_cross| {
-                                    perp_market.has_too_much_drawdown().unwrap_or(false) && amm_wants_to_jit_make(&perp_market.amm, perp_market.order_step_size, maker_cross.taker_direction)
-                                },
                                 perp_market,
                                 oracle_stale_for_amm,
+                                chain_oracle_data.delay,
                             ).await;
                         }
 
@@ -448,6 +457,30 @@ impl FillerBot {
                                 log::info!(target: TARGET, "found limit crosses (market={market_index}) oracle={oracle_price} delay={}, top bid: {:?}, top ask: {:?}", chain_oracle_data.delay, crosses.crossing_bids.first(), crosses.crossing_asks.first());
                                 try_uncross(velocity, slot + 1, priority_fee, config.fill_cu_limit, market_index, filler_subaccount, crosses, &tx_worker_ref).await;
                             }
+                        }
+
+                        // Resting-limit-vs-vAMM fills: a lone resting limit order that comes to
+                        // cross the vAMM only after placement (price moved, or the mm-oracle was
+                        // stale and later recovered) matches neither the auction path (needs a
+                        // live auction) nor the uncross path (needs both book sides populated).
+                        // The find pass above already detects these; previously its
+                        // vamm_taker_bid/ask results were never consumed.
+                        if vamm_crossed_bid.is_some() || vamm_crossed_ask.is_some() {
+                            try_vamm_taker_fill(
+                                velocity,
+                                slot,
+                                priority_fee,
+                                config.fill_cu_limit,
+                                market_index,
+                                filler_subaccount,
+                                [vamm_crossed_bid, vamm_crossed_ask],
+                                vamm_taker_top_makers,
+                                &perp_market,
+                                oracle_stale_for_amm,
+                                chain_oracle_data.delay,
+                                &mut limiter,
+                                &tx_worker_ref,
+                            ).await;
                         }
 
                         // check state config ~every minute
@@ -959,9 +992,9 @@ async fn try_auction_fill(
     tx_worker_ref: TxSender,
     oracle_update: Option<PythPriceUpdate>,
     trigger_price: u64,
-    is_vamm_inactive: impl Fn(&MakerCrosses) -> bool,
     perp_market: PerpMarket,
     oracle_stale_for_amm: bool,
+    oracle_delay: i64,
 ) {
     // the bot's own account missing from cache is structural (lost subscription /
     // misconfig) and would silently no-op every fill: panic so the service restarts
@@ -987,20 +1020,11 @@ async fn try_auction_fill(
         log::info!(target: TARGET, "try fill auction order: {taker_order:?}");
         let taker_subaccount = taker_order.user;
 
-        // the taker may have closed its account between the DLOB snapshot and now
-        let Ok(taker_account_data) = velocity.try_get_account::<User>(&taker_subaccount) else {
-            log::warn!(target: TARGET, "auction fill: taker account {taker_subaccount} not in cache, skipping");
+        let Some((taker_account_data, taker_stats)) =
+            fetch_user_and_stats(velocity, &taker_subaccount, "auction fill")
+        else {
             continue;
         };
-
-        let taker_stats = velocity.try_get_account::<UserStats>(&Wallet::derive_stats_account(
-            &taker_account_data.authority,
-        ));
-
-        if taker_stats.is_err() {
-            log::warn!(target: TARGET, "failed to fetch taker stats: {:?}", taker_account_data.authority);
-            continue;
-        }
 
         let mut tx_builder = TransactionBuilder::new(
             velocity.program_data(),
@@ -1077,19 +1101,36 @@ async fn try_auction_fill(
             .filter_map(|(m, _fill_size)| velocity.try_get_account::<User>(&m.user).ok())
             .collect();
 
-        let effective_vamm_cross = crosses.has_vamm_cross && !oracle_stale_for_amm;
-        if effective_vamm_cross {
-            if is_vamm_inactive(&crosses) {
-                log::debug!(target: TARGET, "skip inactive vamm cross: {crosses:?}");
-                continue;
-            }
+        // The on-chain order backing this cross; used for the program's low-risk rule and the
+        // AMM fill sizing. It may be gone (filled/cancelled since the DLOB snapshot) — then the
+        // vAMM leg can't be validated, so it doesn't count towards sending the fill.
+        let actual_order = taker_account_data
+            .orders
+            .iter()
+            .find(|o| o.order_id == taker_order.order_id);
 
+        // Mirror the program's AMM availability gates (`amm_fill_gates_ok` +
+        // `amm_fill_timing_ok`): drawdown and oracle staleness hard-block; an order not yet
+        // "low risk" (placed within the oracle delay, `User::is_low_risk_for_amm`) additionally
+        // needs the AMM to want to JIT-make in the taker direction. Inputs are hoisted into
+        // locals so the cross-decision wide event can carry each one.
+        let drawdown = perp_market.has_too_much_drawdown().unwrap_or(false);
+        let order_low_risk = actual_order
+            .is_some_and(|o| (crosses.slot as i64).saturating_sub(oracle_delay) > o.slot as i64);
+        let wants_jit = amm_wants_to_jit_make(
+            &perp_market.amm,
+            perp_market.order_step_size,
+            crosses.taker_direction,
+        );
+        let mut vamm_usable = crosses.has_vamm_cross
+            && vamm_can_fill_taker(drawdown, oracle_stale_for_amm, order_low_risk, wants_jit);
+
+        // vAMM-fillable size when it was computable; carried on the wide event either way
+        let mut vamm_fillable: Option<u64> = None;
+        if vamm_usable {
             if let (Ok(pos), Some(order)) = (
                 taker_account_data.get_perp_position(market_index),
-                taker_account_data
-                    .orders
-                    .iter()
-                    .find(|o| o.order_id == taker_order.order_id),
+                actual_order,
             ) {
                 if let Ok((base_asset_amount, _limit_price)) =
                     velocity_rs::program::math::orders::calculate_base_asset_amount_for_amm_to_fulfill(
@@ -1101,6 +1142,7 @@ async fn try_auction_fill(
                         &FeeTier::default(),
                     )
                 {
+                    vamm_fillable = Some(base_asset_amount);
                     // if user position is less than min order size, step size is the threshold
                     let amm_size_threshold = if !taker_order.is_reduce_only()
                         && pos.base_asset_amount.unsigned_abs()
@@ -1111,19 +1153,45 @@ async fn try_auction_fill(
                         perp_market.order_step_size
                     };
                     if base_asset_amount < amm_size_threshold {
-                        log::info!(target: TARGET, "skip vamm cross too small: {crosses:?}");
-                        continue;
+                        vamm_usable = false;
                     }
                 }
             }
         }
-        if !effective_vamm_cross && maker_accounts.is_empty() {
-            if oracle_stale_for_amm && crosses.has_vamm_cross {
-                log::info!(target: TARGET, "skip vAMM fill: oracle stale for AMM (market={market_index})");
-            } else {
-                log::debug!(target: TARGET, "skip empty maker cross: {crosses:?}");
+
+        let action = classify_cross(
+            crosses.has_vamm_cross,
+            vamm_usable,
+            !maker_accounts.is_empty(),
+        );
+        emit_cross_decision_event(
+            market_index,
+            &taker_subaccount,
+            taker_order.order_id,
+            crosses.slot,
+            &action,
+            crosses.has_vamm_cross,
+            oracle_stale_for_amm,
+            oracle_delay,
+            drawdown,
+            order_low_risk,
+            wants_jit,
+            vamm_fillable,
+            maker_accounts.len(),
+        );
+        match action {
+            CrossAction::Skip => {
+                if oracle_stale_for_amm && crosses.has_vamm_cross {
+                    log::info!(target: TARGET, "skip vAMM fill: oracle stale for AMM (market={market_index})");
+                } else {
+                    log::debug!(target: TARGET, "skip cross (vamm gated, no makers): {crosses:?}");
+                }
+                continue;
             }
-            continue;
+            CrossAction::FillMakersOnly => {
+                log::debug!(target: TARGET, "vamm leg gated, filling against makers only: {crosses:?}");
+            }
+            CrossAction::FillWithVamm => {}
         }
 
         if maker_accounts.len() < 3 {
@@ -1138,7 +1206,7 @@ async fn try_auction_fill(
             market_index,
             taker_subaccount,
             &taker_account_data,
-            &taker_stats.unwrap(),
+            &taker_stats,
             Some(taker_order.order_id),
             maker_accounts.as_slice(),
             None,
@@ -1251,19 +1319,11 @@ async fn try_uncross(
 
         let taker_order_id = taker_order.order_id;
         let taker_subaccount = taker_order.user;
-        // the taker may have closed its account between the DLOB snapshot and now
-        let Ok(taker_account_data) = velocity.try_get_account::<User>(&taker_subaccount) else {
-            log::warn!(target: TARGET, "uncross: taker account {taker_subaccount} not in cache, skipping");
+        let Some((taker_account_data, taker_stats)) =
+            fetch_user_and_stats(velocity, &taker_subaccount, "uncross")
+        else {
             continue;
         };
-
-        let taker_stats = velocity.try_get_account::<UserStats>(&Wallet::derive_stats_account(
-            &taker_account_data.authority,
-        ));
-        if taker_stats.is_err() {
-            log::warn!(target: TARGET, "failed to fetch taker stats: {:?}", taker_account_data.authority);
-            continue;
-        }
 
         let mut tx_builder = TransactionBuilder::new(
             velocity.program_data(),
@@ -1277,7 +1337,7 @@ async fn try_uncross(
                 market_index,
                 taker_subaccount,
                 &taker_account_data,
-                &taker_stats.unwrap(),
+                &taker_stats,
                 Some(taker_order_id),
                 makers.as_slice(),
                 None,
@@ -1311,12 +1371,305 @@ async fn try_uncross(
     }
 }
 
+/// Fill resting limit orders that the vAMM quote crosses (`find_crosses_for_auctions`'
+/// `vamm_taker_bid`/`vamm_taker_ask` results).
+///
+/// Sends a `fill_perp_order` with NO maker accounts: the program then sources the fill from
+/// the vAMM, dispatching on `order.post_only` (`math/fulfillment.rs`):
+/// - non-post-only: ordinary vAMM fill — the resting order takes against the AMM quote
+/// - post-only: vAMM-taker fill — the AMM crosses the resting maker at the maker's price
+///   (`determine_perp_fulfillment_methods_for_maker`)
+///
+/// Before sending, the cross is re-validated with the program's own
+/// `calculate_base_asset_amount_for_amm_to_fulfill`, capped at the order's current limit
+/// price (with the post-only maker-rebate buffer applied inside), so a nonzero result here
+/// matches the on-chain outcome; residual view drift is dropped by the send path's
+/// pre-simulation.
+///
+/// When the mm-oracle is stale for AMM fills, only orders strictly older than the oracle data
+/// (`slot - oracle_delay > order.slot`) are attempted — the program's low-risk rule: such
+/// orders cannot be exploiting staleness and fill against the exchange-oracle fallback.
+/// Orders that only become fillable once the mm-oracle recovers are picked up on a later
+/// slot's pass.
+///
+/// Expired crossing orders are attempted too: the program converts the fill into an
+/// expiry-cancel (flat filler reward), which clears them off the book.
+#[allow(clippy::too_many_arguments)]
+async fn try_vamm_taker_fill(
+    velocity: &'static VelocityClient,
+    slot: u64,
+    priority_fee: u64,
+    cu_limit: u32,
+    market_index: u16,
+    filler_subaccount: Pubkey,
+    // the crossed resting bid and ask (at most one per book side)
+    candidates: [Option<L3Order>; 2],
+    // (top ask makers, top bid makers): each candidate's fill includes the opposite-side
+    // makers so the program can route to a better price than the vAMM if one crosses too
+    top_makers: (Vec<Pubkey>, Vec<Pubkey>),
+    perp_market: &PerpMarket,
+    oracle_stale_for_amm: bool,
+    oracle_delay: i64,
+    limiter: &mut OrderSlotLimiter<40>,
+    tx_worker_ref: &TxSender,
+) {
+    // the bot's own account missing from cache is structural (lost subscription /
+    // misconfig) and would silently no-op every fill: panic so the service restarts
+    let filler_account_data = velocity
+        .try_get_account::<User>(&filler_subaccount)
+        .expect("filler subaccount in cache; restart");
+
+    for l3_order in candidates.into_iter().flatten() {
+        let user_subaccount = l3_order.user;
+        let Some((user_account, user_stats)) =
+            fetch_user_and_stats(velocity, &user_subaccount, "vamm-taker fill")
+        else {
+            continue;
+        };
+        let Some(order) = user_account
+            .orders
+            .iter()
+            .find(|o| o.order_id == l3_order.order_id)
+            .copied()
+        else {
+            continue;
+        };
+
+        // during mm-oracle staleness only orders strictly older than the oracle data can
+        // fill, against the exchange-oracle fallback (`User::is_low_risk_for_amm`:
+        // `clock_slot - mm_oracle_delay > order.slot`); newer ones wait for recovery
+        if oracle_stale_for_amm && (slot as i64).saturating_sub(oracle_delay) <= order.slot as i64 {
+            emit_vamm_taker_decision_event(
+                market_index,
+                &user_subaccount,
+                l3_order.order_id,
+                slot,
+                "skip_order_too_new",
+                order.post_only,
+                order.slot,
+                oracle_stale_for_amm,
+                oracle_delay,
+                l3_order.price,
+                None,
+                None,
+            );
+            continue;
+        }
+
+        let existing_base = user_account
+            .get_perp_position(market_index)
+            .map(|p| p.base_asset_amount)
+            .unwrap_or(0);
+
+        let Ok((fillable, _)) =
+            velocity_rs::program::math::orders::calculate_base_asset_amount_for_amm_to_fulfill(
+                &order,
+                perp_market,
+                Some(l3_order.price),
+                None,
+                existing_base,
+                &FeeTier::default(),
+            )
+        else {
+            continue;
+        };
+
+        // same size threshold as the auction-path vamm fill: if the user's position is
+        // less than min order size, step size is the threshold
+        let amm_size_threshold = if !order.reduce_only
+            && existing_base.unsigned_abs() > perp_market.market_stats.min_order_size
+        {
+            perp_market.market_stats.min_order_size
+        } else {
+            perp_market.order_step_size
+        };
+        if fillable < amm_size_threshold {
+            emit_vamm_taker_decision_event(
+                market_index,
+                &user_subaccount,
+                l3_order.order_id,
+                slot,
+                "skip_too_small",
+                order.post_only,
+                order.slot,
+                oracle_stale_for_amm,
+                oracle_delay,
+                l3_order.price,
+                Some(fillable),
+                Some(amm_size_threshold),
+            );
+            continue;
+        }
+
+        // rate-limited re-attempts are not wide-logged (see `emit_vamm_taker_decision_event`)
+        if !limiter.allow_event(slot, order_dedup_key(&user_subaccount, l3_order.order_id)) {
+            continue;
+        }
+
+        log::info!(
+            target: TARGET,
+            "try vamm-taker fill: market={market_index} user={user_subaccount} order={} limit={} fillable={fillable} stale_for_amm={oracle_stale_for_amm}",
+            l3_order.order_id,
+            l3_order.price,
+        );
+        emit_vamm_taker_decision_event(
+            market_index,
+            &user_subaccount,
+            l3_order.order_id,
+            slot,
+            "sent",
+            order.post_only,
+            order.slot,
+            oracle_stale_for_amm,
+            oracle_delay,
+            l3_order.price,
+            Some(fillable),
+            Some(amm_size_threshold),
+        );
+
+        // opposite-side top makers: if a user maker crosses too, the program routes the
+        // fill to the best price among the provided makers and the vAMM
+        let (ref top_maker_asks, ref top_maker_bids) = top_makers;
+        let maker_accounts: Vec<User> = if l3_order.is_long() {
+            top_maker_asks
+        } else {
+            top_maker_bids
+        }
+        .iter()
+        .filter(|m| **m != user_subaccount) // can't fill itself
+        .filter_map(|m| velocity.try_get_account::<User>(m).ok())
+        .collect();
+
+        let mut tx_builder = TransactionBuilder::new(
+            velocity.program_data(),
+            filler_subaccount,
+            std::borrow::Cow::Borrowed(&filler_account_data),
+            false,
+        )
+        .with_priority_fee(priority_fee, Some(cu_limit))
+        .fill_perp_order(
+            market_index,
+            user_subaccount,
+            &user_account,
+            &user_stats,
+            Some(l3_order.order_id),
+            maker_accounts.as_slice(),
+            None,
+        );
+
+        // large accounts list, bump CU limit to compensate
+        let mut effective_cu_limit = cu_limit;
+        if let Some(ix) = tx_builder.ixs().last() {
+            if ix.accounts.len() >= 20 {
+                effective_cu_limit = cu_limit * 2;
+                tx_builder = tx_builder.set_ix(
+                    1,
+                    ComputeBudgetInstruction::set_compute_unit_limit(effective_cu_limit),
+                );
+            }
+        }
+        let tx = tx_builder.build();
+
+        tx_worker_ref
+            .send_tx(
+                tx,
+                TxIntent::VAMMTakerFill {
+                    slot,
+                    market_index,
+                    maker_order_id: l3_order.order_id,
+                },
+                effective_cu_limit as u64,
+            )
+            .await;
+    }
+}
+
+/// Fetch a fill counterparty's user account and stats from the local cache.
+///
+/// Returns `None` (with a warn log) when either is missing — the account may have been
+/// closed between the DLOB snapshot and now, or its stats subscription hasn't landed yet;
+/// callers skip the fill rather than panic. Shared by the auction, uncross, and
+/// vamm-taker fill paths.
+fn fetch_user_and_stats(
+    velocity: &VelocityClient,
+    subaccount: &Pubkey,
+    context: &str,
+) -> Option<(User, UserStats)> {
+    let Ok(user) = velocity.try_get_account::<User>(subaccount) else {
+        log::warn!(target: TARGET, "{context}: user account {subaccount} not in cache, skipping");
+        return None;
+    };
+    match velocity.try_get_account::<UserStats>(&Wallet::derive_stats_account(&user.authority)) {
+        Ok(stats) => Some((user, stats)),
+        Err(_) => {
+            log::warn!(target: TARGET, "{context}: failed to fetch user stats: {:?}, skipping", user.authority);
+            None
+        }
+    }
+}
+
 /// Fold a `(user, order_id)` pair into a single u32 for the `OrderSlotLimiter` (which keys on
 /// u32). `order_id` is a per-user counter, so a bare order_id collides across users; mixing in
 /// the user pubkey prefix makes cross-user collisions negligible.
 fn order_dedup_key(user: &Pubkey, order_id: u32) -> u32 {
     let b = user.to_bytes();
     u32::from_le_bytes([b[0], b[1], b[2], b[3]]) ^ order_id
+}
+
+/// Whether the vAMM can participate in filling a taker order right now, mirroring the
+/// program's gates (`PerpMarket::amm_fill_gates_ok` + `amm_fill_timing_ok`):
+/// - `drawdown` (or oracle staleness) alone hard-blocks every AMM fill;
+/// - a "low risk" order (rested longer than the oracle delay, `User::is_low_risk_for_amm`)
+///   fills unconditionally past the hard gates;
+/// - otherwise (still within the oracle delay, e.g. mid-auction) the AMM only fills
+///   immediately when it *wants* to JIT-make in the taker's direction.
+///
+/// Best-effort economy filter only — the program re-checks everything; a `true` here that the
+/// program rejects just costs a failed simulation.
+fn vamm_can_fill_taker(
+    drawdown: bool,
+    oracle_stale_for_amm: bool,
+    order_low_risk: bool,
+    amm_wants_to_jit_make: bool,
+) -> bool {
+    !drawdown && !oracle_stale_for_amm && (order_low_risk || amm_wants_to_jit_make)
+}
+
+/// How to handle one auction cross given the vAMM's usability and available DLOB makers.
+///
+/// A cross is NOT categorically one or the other: `MakerCrosses` sets `has_vamm_cross`
+/// independently of the maker orders it collected, so both legs routinely coexist. A gated
+/// vAMM must therefore degrade the fill to makers-only — never drop it (the program happily
+/// executes the Match steps with `amm_is_available = false`).
+#[derive(Debug, PartialEq, Eq)]
+enum CrossAction {
+    /// send the fill relying on the vAMM (any makers ride along)
+    FillWithVamm,
+    /// vAMM leg gated but DLOB makers can still fill
+    FillMakersOnly,
+    /// no fillable counterparty at all
+    Skip,
+}
+
+impl CrossAction {
+    /// stable label for wide-event logging
+    fn label(&self) -> &'static str {
+        match self {
+            CrossAction::FillWithVamm => "fill_with_vamm",
+            CrossAction::FillMakersOnly => "makers_only",
+            CrossAction::Skip => "skip",
+        }
+    }
+}
+
+fn classify_cross(has_vamm_cross: bool, vamm_usable: bool, has_makers: bool) -> CrossAction {
+    if has_vamm_cross && vamm_usable {
+        CrossAction::FillWithVamm
+    } else if has_makers {
+        CrossAction::FillMakersOnly
+    } else {
+        CrossAction::Skip
+    }
 }
 
 fn amm_wants_to_jit_make(
@@ -1999,6 +2352,89 @@ impl TxWorker {
     }
 }
 
+/// Emit a wide structured event (one JSON line, log target `tx_event`) for every auction
+/// cross evaluated, capturing the routing decision AND each vAMM gate input that produced it.
+///
+/// The per-tx event (`event: "tx"`) only exists for crosses that result in a send; this event
+/// is the debugging trail for the ones that don't — why a cross was degraded to makers-only or
+/// skipped (drawdown? staleness? order too fresh? no JIT appetite? vAMM fillable too small?).
+/// Correlate with the tx event on (market, order_id).
+#[allow(clippy::too_many_arguments)]
+fn emit_cross_decision_event(
+    market_index: u16,
+    taker: &Pubkey,
+    order_id: u32,
+    slot: u64,
+    action: &CrossAction,
+    has_vamm_cross: bool,
+    oracle_stale_for_amm: bool,
+    oracle_delay: i64,
+    drawdown: bool,
+    order_low_risk: bool,
+    amm_wants_to_jit_make: bool,
+    vamm_fillable: Option<u64>,
+    n_makers: usize,
+) {
+    let event = serde_json::json!({
+        "event": "cross_decision",
+        "market": market_index,
+        "taker": taker.to_string(),
+        "order_id": order_id,
+        "slot": slot,
+        "action": action.label(),
+        "has_vamm_cross": has_vamm_cross,
+        "oracle_stale_for_amm": oracle_stale_for_amm,
+        "oracle_delay": oracle_delay,
+        "drawdown": drawdown,
+        "order_low_risk": order_low_risk,
+        "amm_wants_to_jit_make": amm_wants_to_jit_make,
+        "vamm_fillable": vamm_fillable,
+        "n_makers": n_makers,
+    });
+    log::info!(target: "tx_event", "{event}");
+}
+
+/// Emit a wide structured event (one JSON line, log target `tx_event`) for each
+/// resting-order-vs-vAMM fill candidate that reaches a terminal decision
+/// (`action`: "sent" / "skip_order_too_new" / "skip_too_small"), with the gate inputs.
+///
+/// Rate-limited re-attempts are deliberately NOT emitted (one per slot for the whole limiter
+/// window would drown the signal); the send attempt they throttle already produced a "sent"
+/// decision plus a terminal `event: "tx"` (intent `vamm_taker`). Correlate on
+/// (market, order_id).
+#[allow(clippy::too_many_arguments)]
+fn emit_vamm_taker_decision_event(
+    market_index: u16,
+    user: &Pubkey,
+    order_id: u32,
+    slot: u64,
+    action: &str,
+    post_only: bool,
+    order_slot: u64,
+    oracle_stale_for_amm: bool,
+    oracle_delay: i64,
+    limit_price: u64,
+    fillable: Option<u64>,
+    size_threshold: Option<u64>,
+) {
+    let event = serde_json::json!({
+        "event": "vamm_taker_decision",
+        "market": market_index,
+        "user": user.to_string(),
+        "order_id": order_id,
+        "slot": slot,
+        "action": action,
+        "post_only": post_only,
+        "order_slot": order_slot,
+        "oracle_stale_for_amm": oracle_stale_for_amm,
+        "oracle_delay": oracle_delay,
+        "limit_price": limit_price,
+        "fillable": fillable,
+        "size_threshold": size_threshold,
+    });
+    log::info!(target: "tx_event", "{event}");
+}
+
 /// Emit a single wide structured event (one JSON line, log target `tx_event`) capturing the
 /// full outcome of a transaction.
 ///
@@ -2102,7 +2538,47 @@ impl TxSender {
 
 #[cfg(test)]
 mod tests {
-    use super::{order_dedup_key, Pubkey};
+    use super::{classify_cross, order_dedup_key, vamm_can_fill_taker, CrossAction, Pubkey};
+
+    #[test]
+    fn vamm_gated_cross_degrades_to_makers_instead_of_skipping() {
+        // Regression: a cross carrying both a vAMM leg and DLOB maker orders used to be
+        // skipped entirely when the vAMM was gated (drawdown/staleness/timing), dropping
+        // perfectly fillable maker matches. It must degrade to a makers-only fill.
+        assert_eq!(
+            classify_cross(true, false, true),
+            CrossAction::FillMakersOnly
+        );
+        // vAMM gated and no makers: nothing to fill against
+        assert_eq!(classify_cross(true, false, false), CrossAction::Skip);
+        // vAMM usable: send the fill relying on it, with or without makers
+        assert_eq!(classify_cross(true, true, false), CrossAction::FillWithVamm);
+        assert_eq!(classify_cross(true, true, true), CrossAction::FillWithVamm);
+        // no vAMM cross at all: plain maker fill or skip
+        assert_eq!(
+            classify_cross(false, false, true),
+            CrossAction::FillMakersOnly
+        );
+        assert_eq!(classify_cross(false, false, false), CrossAction::Skip);
+    }
+
+    #[test]
+    fn vamm_can_fill_taker_mirrors_program_gates() {
+        // Regression: the old `is_vamm_inactive` closure computed
+        // `drawdown && amm_wants_to_jit_make` — drawdown with no JIT appetite passed as
+        // "active", and JIT appetite was treated as a disqualifier rather than the
+        // requirement it is for non-low-risk orders.
+        // drawdown alone hard-blocks (amm_fill_gates_ok), regardless of everything else
+        assert!(!vamm_can_fill_taker(true, false, true, true));
+        assert!(!vamm_can_fill_taker(true, false, false, false));
+        // oracle staleness hard-blocks
+        assert!(!vamm_can_fill_taker(false, true, true, true));
+        // low-risk order fills without JIT appetite (amm_fill_timing_ok fast path)
+        assert!(vamm_can_fill_taker(false, false, true, false));
+        // non-low-risk order requires the AMM to want to JIT-make
+        assert!(vamm_can_fill_taker(false, false, false, true));
+        assert!(!vamm_can_fill_taker(false, false, false, false));
+    }
 
     #[test]
     fn order_dedup_key_distinguishes_users_with_same_order_id() {

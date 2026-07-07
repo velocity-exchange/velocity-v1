@@ -106,10 +106,36 @@ pub struct CrossesAndTopMakers {
     pub top_maker_bids: ArrayVec<Pubkey, 3>,
     // top of book limit cross, if any
     pub limit_crosses: Option<(L3Order, L3Order)>,
+    /// Best resting BID crossed by the vAMM ask quote (named for the vAMM quote side,
+    /// not the order's side). See [`Self::take_vamm_crossed_resting_orders`].
     pub vamm_taker_ask: Option<L3Order>,
+    /// Best resting ASK crossed by the vAMM bid quote (named for the vAMM quote side,
+    /// not the order's side). See [`Self::take_vamm_crossed_resting_orders`].
     pub vamm_taker_bid: Option<L3Order>,
     //  taker crosses and maker orders
     pub crosses: Vec<(L3Order, MakerCrosses)>,
+}
+
+impl CrossesAndTopMakers {
+    /// The best resting BID currently crossed by the vAMM's ask quote, if any
+    /// (drains the `vamm_taker_ask` field — that field is named for the vAMM quote
+    /// side doing the crossing, this accessor for the order you get back).
+    ///
+    /// Such an order is fillable with a `fill_perp_order` carrying no (or only
+    /// fallback) maker accounts: the program dispatches on the order's `post_only` —
+    /// post-only → the vAMM takes at the maker's price
+    /// (`determine_perp_fulfillment_methods_for_maker`); otherwise → an ordinary
+    /// vAMM fill where the resting order takes against the vAMM quote.
+    pub fn take_vamm_crossed_bid(&mut self) -> Option<L3Order> {
+        self.vamm_taker_ask.take()
+    }
+
+    /// The best resting ASK currently crossed by the vAMM's bid quote, if any
+    /// (drains the `vamm_taker_bid` field). See [`Self::take_vamm_crossed_bid`] for
+    /// the naming rationale and fill semantics.
+    pub fn take_vamm_crossed_ask(&mut self) -> Option<L3Order> {
+        self.vamm_taker_bid.take()
+    }
 }
 
 /// Best fills for a taker order

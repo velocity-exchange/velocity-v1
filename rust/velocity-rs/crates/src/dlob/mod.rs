@@ -879,7 +879,7 @@ impl DLOB {
         let book = self.get_l3_snapshot(market_index, market_type);
         let mut all_crosses = Vec::with_capacity(16);
 
-        let (vamm_bid, vamm_ask, vamm_min_order) = if let Some(m) = perp_market {
+        let (vamm_bid, vamm_ask, vamm_min_order, vamm_step) = if let Some(m) = perp_market {
             let r = m.amm.reserve_price().unwrap_or(0);
             (
                 m.amm
@@ -889,9 +889,10 @@ impl DLOB {
                     .ask_price(r, m.amm.long_spread, m.amm.reference_price_offset)
                     .ok(),
                 m.market_stats.min_order_size,
+                m.order_step_size,
             )
         } else {
-            (None, None, u64::MAX)
+            (None, None, u64::MAX, u64::MAX)
         };
         log::trace!(target: TARGET, "VAMM market={} bid={vamm_bid:?} ask={vamm_ask:?}", market_index);
 
@@ -922,15 +923,22 @@ impl DLOB {
         if let (Some(best_bid), Some(best_ask)) = (resting_bids.first(), resting_asks.first()) {
             // check for crossing resting limit orders
             limit_crosses = self.find_limit_cross(best_bid, best_ask);
-            // check for VAMM crossing resting limit orders
-            if best_ask.size > vamm_min_order
-                && vamm_bid.is_some_and(|v| v > best_ask.price && best_ask.is_post_only())
-            {
+        }
+        // Check for the VAMM quote crossing resting limit orders, each side
+        // independently (a lone order on a one-sided book must still be detected).
+        // Covers both fill shapes: a post-only maker the AMM takes against, and a
+        // non-post-only resting limit that takes against the AMM quote — the price
+        // predicate is the same, the program dispatches on `post_only` at fill time.
+        // Crossing is inclusive, mirroring `do_orders_cross` (math/matching.rs); the
+        // size floor is `order_step_size`, the weakest on-chain threshold (applies to
+        // reduce-only orders) — the fill path re-validates with the exact one.
+        if let Some(best_ask) = resting_asks.first() {
+            if best_ask.size >= vamm_step && vamm_bid.is_some_and(|v| v >= best_ask.price) {
                 vamm_taker_bid = Some(best_ask.clone());
             }
-            if best_bid.size > vamm_min_order
-                && vamm_ask.is_some_and(|v| v < best_bid.price && best_bid.is_post_only())
-            {
+        }
+        if let Some(best_bid) = resting_bids.first() {
+            if best_bid.size >= vamm_step && vamm_ask.is_some_and(|v| v <= best_bid.price) {
                 vamm_taker_ask = Some(best_bid.clone());
             }
         }

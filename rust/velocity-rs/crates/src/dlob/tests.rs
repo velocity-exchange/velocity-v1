@@ -4039,3 +4039,231 @@ fn dlob_floating_limit_price_is_standardized() {
     // 100_007 + 250 = 100_257 → rounds up to 100_260
     assert_eq!(ask.get_price(off_tick_oracle, tick_size), 100_260);
 }
+
+/// PerpMarket fixture for the vamm-taker detection tests: reserve price =
+/// 1000 * PRICE_PRECISION, ±0.01% spread → vamm bid = 999_900_000, ask = 1_000_100_000.
+fn vamm_taker_test_market(order_step_size: u64) -> PerpMarket {
+    let base_reserves = 100 * AMM_RESERVE_PRECISION;
+    let quote_reserves = base_reserves * 1000;
+    PerpMarket {
+        market_index: 0,
+        contract_tier: crate::types::ContractTier::A,
+        amm: AMM {
+            max_fill_reserve_fraction: 1,
+            base_asset_reserve: base_reserves.into(),
+            quote_asset_reserve: quote_reserves.into(),
+            sqrt_k: (base_reserves * quote_reserves).into(),
+            peg_multiplier: PEG_PRECISION.into(),
+            terminal_quote_asset_reserve: quote_reserves.into(),
+            concentration_coef: 5u128.into(),
+            long_spread: 100,
+            short_spread: 100,
+            max_base_asset_reserve: (u64::MAX as u128).into(),
+            min_base_asset_reserve: 0u128.into(),
+            max_spread: 1000,
+            ..Default::default()
+        },
+        order_step_size,
+        order_tick_size: 1,
+        market_stats: MarketStats {
+            min_order_size: 10,
+            historical_oracle_data: HistoricalOracleData {
+                last_oracle_price: 1000 * 1_000_000,
+                ..Default::default()
+            },
+            last_oracle_valid: true,
+            ..Default::default()
+        },
+        ..Default::default()
+    }
+}
+
+fn vamm_taker_crosses(
+    dlob: &DLOB,
+    perp_market: &PerpMarket,
+    slot: u64,
+) -> crate::dlob::CrossesAndTopMakers {
+    let oracle_price = 1000 * 1_000_000;
+    if let Some(book) = dlob.markets.get(&MarketId::new(0, MarketType::Perp)) {
+        book.update_l3_view(oracle_price, &dlob.metadata, &Default::default());
+    }
+    dlob.find_crosses_for_auctions(
+        0,
+        MarketType::Perp,
+        slot,
+        oracle_price,
+        Some(perp_market),
+        oracle_price,
+        None,
+    )
+}
+
+/// A lone NON-post-only resting bid priced above the vamm ask must be detected even with an
+/// empty ask side (regression: detection used to require both book sides AND post_only —
+/// the mainnet BTC-PERP "crossing but never filled" order was exactly this shape).
+#[test]
+fn dlob_vamm_taker_detects_lone_non_post_only_bid() {
+    let _ = env_logger::try_init();
+    let dlob = DLOB::default();
+    let user = Pubkey::new_unique();
+    let slot = 100;
+
+    let perp_market = vamm_taker_test_market(1);
+    // vamm ask = 1_000_100_000; bid above it crosses
+    let order = create_test_order(
+        1,
+        OrderType::Limit,
+        Direction::Long,
+        1_000_200_000,
+        50,
+        slot,
+    );
+    dlob.insert_order(&user, slot, order);
+
+    let crosses = vamm_taker_crosses(&dlob, &perp_market, slot);
+    let hit = crosses.vamm_taker_ask.expect("lone crossing bid detected");
+    assert_eq!(hit.order_id, 1);
+    assert_eq!(hit.user, user);
+    assert!(crosses.vamm_taker_bid.is_none());
+}
+
+/// A lone post-only resting ask priced below the vamm bid must be detected (vAMM-as-taker
+/// shape, `determine_perp_fulfillment_methods_for_maker`).
+#[test]
+fn dlob_vamm_taker_detects_lone_post_only_ask() {
+    let _ = env_logger::try_init();
+    let dlob = DLOB::default();
+    let user = Pubkey::new_unique();
+    let slot = 100;
+
+    let perp_market = vamm_taker_test_market(1);
+    // vamm bid = 999_900_000; ask below it crosses
+    let mut order = create_test_order(1, OrderType::Limit, Direction::Short, 999_800_000, 50, slot);
+    order.post_only = true;
+    dlob.insert_order(&user, slot, order);
+
+    let crosses = vamm_taker_crosses(&dlob, &perp_market, slot);
+    let hit = crosses
+        .vamm_taker_bid
+        .expect("lone crossing post-only ask detected");
+    assert_eq!(hit.order_id, 1);
+    assert!(crosses.vamm_taker_ask.is_none());
+}
+
+/// Crossing is inclusive, mirroring the program's `do_orders_cross` (math/matching.rs):
+/// an order priced exactly at the vamm quote crosses.
+#[test]
+fn dlob_vamm_taker_crossing_is_inclusive() {
+    let _ = env_logger::try_init();
+    let dlob = DLOB::default();
+    let slot = 100;
+
+    let perp_market = vamm_taker_test_market(1);
+    // bid exactly at vamm ask, ask exactly at vamm bid
+    let bid = create_test_order(
+        1,
+        OrderType::Limit,
+        Direction::Long,
+        1_000_100_000,
+        50,
+        slot,
+    );
+    dlob.insert_order(&Pubkey::new_unique(), slot, bid);
+    let ask = create_test_order(2, OrderType::Limit, Direction::Short, 999_900_000, 50, slot);
+    dlob.insert_order(&Pubkey::new_unique(), slot, ask);
+
+    let mut crosses = vamm_taker_crosses(&dlob, &perp_market, slot);
+    assert_eq!(
+        crosses
+            .vamm_taker_ask
+            .as_ref()
+            .expect("bid at exact vamm ask crosses")
+            .order_id,
+        1
+    );
+    assert_eq!(
+        crosses
+            .vamm_taker_bid
+            .as_ref()
+            .expect("ask at exact vamm bid crosses")
+            .order_id,
+        2
+    );
+
+    // accessors are named for the order returned (fields for the vAMM quote side):
+    // the crossed resting bid is order 1, the crossed resting ask order 2
+    assert_eq!(crosses.take_vamm_crossed_bid().expect("bid").order_id, 1);
+    assert_eq!(crosses.take_vamm_crossed_ask().expect("ask").order_id, 2);
+    // draining accessors: fields now empty
+    assert!(crosses.vamm_taker_ask.is_none() && crosses.vamm_taker_bid.is_none());
+}
+
+/// Orders inside the vamm spread do not cross and must not be detected.
+#[test]
+fn dlob_vamm_taker_ignores_non_crossing_orders() {
+    let _ = env_logger::try_init();
+    let dlob = DLOB::default();
+    let slot = 100;
+
+    let perp_market = vamm_taker_test_market(1);
+    // both inside the spread (bid < vamm ask, ask > vamm bid)
+    let bid = create_test_order(
+        1,
+        OrderType::Limit,
+        Direction::Long,
+        1_000_000_000,
+        50,
+        slot,
+    );
+    dlob.insert_order(&Pubkey::new_unique(), slot, bid);
+    let ask = create_test_order(
+        2,
+        OrderType::Limit,
+        Direction::Short,
+        1_000_000_000,
+        50,
+        slot,
+    );
+    dlob.insert_order(&Pubkey::new_unique(), slot, ask);
+
+    let crosses = vamm_taker_crosses(&dlob, &perp_market, slot);
+    assert!(crosses.vamm_taker_ask.is_none());
+    assert!(crosses.vamm_taker_bid.is_none());
+}
+
+/// The size floor is `order_step_size` (the weakest on-chain threshold, which applies to
+/// reduce-only orders), inclusive — NOT `min_order_size`, which would drop small
+/// reduce-only closes that the program will happily fill.
+#[test]
+fn dlob_vamm_taker_size_floor_is_step_size() {
+    let _ = env_logger::try_init();
+    let slot = 100;
+    let perp_market = vamm_taker_test_market(10); // step 10, fixture min_order_size 10
+
+    // below step size: skipped
+    let dlob = DLOB::default();
+    let order = create_test_order(1, OrderType::Limit, Direction::Long, 1_000_200_000, 9, slot);
+    dlob.insert_order(&Pubkey::new_unique(), slot, order);
+    let crosses = vamm_taker_crosses(&dlob, &perp_market, slot);
+    assert!(crosses.vamm_taker_ask.is_none());
+
+    // exactly step size: detected (inclusive)
+    let dlob = DLOB::default();
+    let order = create_test_order(
+        1,
+        OrderType::Limit,
+        Direction::Long,
+        1_000_200_000,
+        10,
+        slot,
+    );
+    dlob.insert_order(&Pubkey::new_unique(), slot, order);
+    let crosses = vamm_taker_crosses(&dlob, &perp_market, slot);
+    assert_eq!(
+        crosses
+            .vamm_taker_ask
+            .expect("step-size order detected")
+            .order_id,
+        1
+    );
+}

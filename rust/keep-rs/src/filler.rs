@@ -523,11 +523,12 @@ fn evaluate_swift_crosses(
     let mut order_params = signed_order.order_params();
     let _ = order_params.update_perp_auction_params(perp_market, oracle_price, true);
 
+    // Post-only limits are maker orders: never taker-fill them, but do place them on-chain so
+    // they rest on the book (the program cancels/amends them if they'd cross on placement).
     if order_params.order_type == OrderType::Limit && order_params.post_only != PostOnlyParam::None
     {
-        log::warn!(target: TARGET, "swift order limit post only: uuid={}", signed_order.order_uuid_str());
-        // TODO: search for immediate fill
-        return SwiftEval::Drop;
+        log::info!(target: TARGET, "swift order limit post only, placing on-chain. uuid={}", signed_order.order_uuid_str());
+        return SwiftEval::NotFillable;
     }
 
     let (start_price, end_price, duration) = (
@@ -601,9 +602,12 @@ fn evaluate_swift_crosses(
                 perp_market.price_tick(),
             ) {
                 Ok(Some(p)) => p,
+                // No resolvable limit price at this slot (e.g. auction-limit with no final
+                // price). Can't evaluate crossing without one, but the order is still valid
+                // on-chain — place it rather than dropping it.
                 _ => {
-                    log::warn!(target: TARGET, "could not get limit price: {order_params:?}, dropping...");
-                    return SwiftEval::Drop;
+                    log::info!(target: TARGET, "no limit price yet, placing on-chain: {order_params:?}");
+                    return SwiftEval::NotFillable;
                 }
             }
         }
@@ -643,9 +647,10 @@ fn evaluate_swift_crosses(
 enum SwiftEval {
     /// Crosses resting liquidity / vAMM right now: fill it immediately.
     Fillable(MakerCrosses),
-    /// Well-formed but not marketable yet: place it on-chain so the slot loop can fill it later.
+    /// Well-formed but not taker-fillable now (not marketable yet, post-only maker order, or no
+    /// resolvable limit price): place it on-chain so the slot loop can fill it later.
     NotFillable,
-    /// Malformed / unsupported (bad price, post-only limit, non-market/limit type): drop it.
+    /// Malformed / unsupported (bad auction price, non-market/limit type): drop it.
     Drop,
 }
 

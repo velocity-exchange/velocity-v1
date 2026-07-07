@@ -342,6 +342,11 @@ impl TxIntent {
                 | Self::LiquidateSpot { .. }
         )
     }
+
+    /// Returns true if this intent is a swift order fill/placement
+    pub fn is_swift(&self) -> bool {
+        matches!(self, Self::SwiftFill { .. } | Self::SwiftPlace { .. })
+    }
 }
 
 #[derive(Clone, Default, Debug)]

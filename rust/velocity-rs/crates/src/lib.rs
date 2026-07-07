@@ -10,7 +10,7 @@ use std::{
 use crate::solana_sdk::{
     account::Account,
     clock::Slot,
-    commitment_config::CommitmentLevel,
+    commitment_config::{CommitmentConfig, CommitmentLevel},
     compute_budget::ComputeBudgetInstruction,
     instruction::{AccountMeta, Instruction},
     message::{v0, Hash, Message, VersionedMessage},
@@ -708,6 +708,11 @@ impl VelocityClient {
                 RpcSimulateTransactionConfig {
                     sig_verify: false,
                     replace_recent_blockhash: true,
+                    // simulate against the freshest state: the client default is
+                    // finalized (~32 slots stale), which rejects txs that depend
+                    // on accounts changed in the last ~13s — e.g. a swift order
+                    // signed by a delegate approved seconds earlier
+                    commitment: Some(CommitmentConfig::processed()),
                     ..Default::default()
                 },
             )

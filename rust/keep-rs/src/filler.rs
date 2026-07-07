@@ -1945,12 +1945,17 @@ impl TxWorker {
                     if let Some(err) = sim_result.err {
                         log::warn!(
                             target: TARGET,
-                            "sim failed: {err:?}, intent: {intent_label}, liquidatee: {:?}, slot: {:?}",
+                            "sim failed: {err:?}, intent: {intent_label}, uuid: {:?}, liquidatee: {:?}, slot: {:?}",
+                            intent
+                                .swift_uuid()
+                                .map(|u| String::from_utf8_lossy(&u).into_owned()),
                             intent.liquidatee(),
                             intent.slot()
                         );
-                        // Log simulation logs for liquidation intents to help diagnose failures
-                        if intent.is_liquidation() {
+                        // Log simulation logs for liquidation and swift intents to help
+                        // diagnose failures: a failed swift placement is a silently lost
+                        // taker order, so the sim error must survive in the logs
+                        if intent.is_liquidation() || intent.is_swift() {
                             if let Some(logs) = sim_result.logs {
                                 for log_line in &logs {
                                     if log_line.contains("Error") || log_line.contains("error") || log_line.contains("failed") || log_line.contains("Program log:") {

@@ -236,14 +236,14 @@ End-to-end smoke: use a second wallet to call `VelocityClient.initializeUserAcco
 
 ## Operational notes (learned on first deploy)
 
-- **Use a private RPC for `solana program` writes.** The public `api.devnet.solana.com` rate-limits the ~5,000 chunked writes a velocity upgrade requires (velocity.so is ~5 MB → ~5,000 × 1 KB chunks) and fails partway through with `Data writes to account failed: Custom error: Max retries exceeded` and/or `Blockhash expired. N retries remaining`, leaving a partial buffer on chain. Pass a private RPC via `--url` to `solana program …` directly, or set `SOLANA_RPC` / `RPC_URL` for the helper scripts (`write-buffer-devnet.sh` / `deploy-from-buffer-devnet.sh` read it). `anchor program upgrade --provider.cluster <url>` works for the wrapper too, but it does **not** propagate the URL to the underlying `solana program deploy` subprocess — so also `solana config set --url <url>` before invoking anchor. Velocity has a Triton pool at `https://velocity-velocity-a827.devnet.rpcpool.com/<token>` — see user memory `reference_velocity_devnet_rpc.md`.
+- **Use a private RPC for `solana program` writes.** The public `api.devnet.solana.com` rate-limits the ~5,000 chunked writes a velocity upgrade requires (velocity.so is ~5 MB → ~5,000 × 1 KB chunks) and fails partway through with `Data writes to account failed: Custom error: Max retries exceeded` and/or `Blockhash expired. N retries remaining`, leaving a partial buffer on chain. Pass a private RPC via `--url` to `solana program …` directly, or set `SOLANA_RPC` / `RPC_URL` for the helper scripts (`write-buffer-devnet.sh` / `deploy-from-buffer-devnet.sh` read it). `anchor program upgrade --provider.cluster <url>` works for the wrapper too, but it does **not** propagate the URL to the underlying `solana program deploy` subprocess — so also `solana config set --url <url>` before invoking anchor. Use your own private RPC endpoint (e.g. a Triton/rpcpool or Helius URL) — do not rely on the public devnet endpoint for uploads.
 
 - **`anchor upgrade` is deprecated → `anchor program upgrade` in Anchor 1.0.** Same flags, same `solana program deploy` underneath. `deploy-devnet.sh` uses the new form.
 
 - **Prefer the two-phase `write-buffer` → `deploy-from-buffer` flow over `anchor program upgrade`** for any upload more than a few hundred KB. The single-shot `anchor program upgrade` / bare `solana program deploy <file.so>` creates an *anonymous* internal buffer, then auto-closes it on fatal error to refund rent — so on the next attempt there's nothing to resume from and you start at chunk 0 again. The two-phase flow uses a **named buffer keypair** so the on-chain buffer persists across attempts and `write-buffer` resumes by only re-sending chunks that haven't landed yet. Use the helper scripts:
   ```
   export VELOCITY_DEVNET_UPGRADE_KEYPAIR=/path/to/upgrade-authority.json
-  export SOLANA_RPC=https://velocity-velocity-a827.devnet.rpcpool.com/<token>
+  export SOLANA_RPC=https://<your-private-rpc-endpoint>/<token>
   bash deploy-scripts/write-buffer-devnet.sh     # ← re-run this until it exits clean
   BUFFER_ACCOUNT_KEYPAIR=deploy-scripts/out/velocity-so-write-buffer-keypair.json \
     bash deploy-scripts/deploy-from-buffer-devnet.sh

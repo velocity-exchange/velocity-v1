@@ -6377,6 +6377,33 @@
       ]
     },
     {
+      "name": "reset_equity_floor_breaker",
+      "discriminator": [
+        230,
+        181,
+        202,
+        36,
+        127,
+        56,
+        56,
+        27
+      ],
+      "accounts": [
+        {
+          "name": "admin",
+          "signer": true
+        },
+        {
+          "name": "state"
+        },
+        {
+          "name": "user_stats",
+          "writable": true
+        }
+      ],
+      "args": []
+    },
+    {
       "name": "reset_perp_market_amm_oracle_twap",
       "discriminator": [
         127,
@@ -8219,6 +8246,39 @@
           "type": "u32"
         }
       ]
+    },
+    {
+      "name": "trip_equity_floor_breaker",
+      "discriminator": [
+        133,
+        184,
+        25,
+        80,
+        193,
+        52,
+        162,
+        249
+      ],
+      "accounts": [
+        {
+          "name": "state"
+        },
+        {
+          "name": "keeper",
+          "docs": [
+            "Any signer may trip the breaker; the proof is the margin calculation."
+          ],
+          "signer": true
+        },
+        {
+          "name": "user"
+        },
+        {
+          "name": "user_stats",
+          "writable": true
+        }
+      ],
+      "args": []
     },
     {
       "name": "update_admin",
@@ -23978,11 +24038,21 @@
             "type": "u8"
           },
           {
+            "name": "equity_breaker_tripped",
+            "docs": [
+              "Set by the permissionless `trip_equity_floor_breaker` instruction when",
+              "any of the authority's subaccounts falls below its equity floor.",
+              "While set, every subaccount of the authority rejects risk-increasing",
+              "fills, withdrawals and transfers out. Cleared only by the warm admin."
+            ],
+            "type": "u8"
+          },
+          {
             "name": "padding",
             "type": {
               "array": [
                 "u8",
-                63
+                62
               ]
             }
           }

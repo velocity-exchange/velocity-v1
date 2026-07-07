@@ -8403,6 +8403,62 @@ export class VelocityClient {
 	}
 
 	/**
+	 * Keeper instruction: trips the authority-wide equity floor breaker. Proves on-chain that the
+	 * given subaccount's cross-margin total collateral is below its `equityFloor` (reverts with
+	 * `SufficientCollateral` otherwise, or if no floor is set) and sets `equityBreakerTripped` on the
+	 * authority's `UserStats` — every subaccount of the authority then rejects risk-increasing fills,
+	 * withdrawals and transfers out until the warm admin calls `resetEquityFloorBreaker`.
+	 * Permissionless — any signer may trip it; the margin calculation is the proof.
+	 * @param userAccountPublicKey - Public key of the breached subaccount's user account.
+	 * @param user - Decoded user account of the breached subaccount.
+	 * @param txParams - Optional compute-unit/priority-fee overrides.
+	 * @returns The transaction signature.
+	 */
+	public async tripEquityFloorBreaker(
+		userAccountPublicKey: PublicKey,
+		user: UserAccount,
+		txParams?: TxParams
+	): Promise<TransactionSignature> {
+		const { txSig } = await this.sendTransaction(
+			await this.buildTransaction(
+				await this.getTripEquityFloorBreakerIx(userAccountPublicKey, user),
+				txParams
+			),
+			[],
+			this.opts
+		);
+		return txSig;
+	}
+
+	/**
+	 * Builds the `tripEquityFloorBreaker` instruction. See `tripEquityFloorBreaker` for semantics.
+	 * @param userAccountPublicKey - Public key of the breached subaccount's user account.
+	 * @param userAccount - Decoded user account of the breached subaccount.
+	 * @returns The instruction.
+	 */
+	public async getTripEquityFloorBreakerIx(
+		userAccountPublicKey: PublicKey,
+		userAccount: UserAccount
+	): Promise<TransactionInstruction> {
+		const remainingAccounts = this.getRemainingAccounts({
+			userAccounts: [userAccount],
+		});
+
+		return await this.program.instruction.tripEquityFloorBreaker({
+			accounts: {
+				state: await this.getStatePublicKey(),
+				keeper: this.wallet.publicKey,
+				user: userAccountPublicKey,
+				userStats: getUserStatsAccountPublicKey(
+					this.program.programId,
+					userAccount.authority
+				),
+			},
+			remainingAccounts,
+		});
+	}
+
+	/**
 	 * Keeper instruction: marks a user account idle after confirming (via `validate_user_is_idle`)
 	 * it has been inactive long enough — the inactivity window is shorter (accelerated) when the
 	 * user's equity is below 1000 USDC (QUOTE_PRECISION, 1e6). Idle users are excluded from some

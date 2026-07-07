@@ -723,11 +723,17 @@ pub fn handle_withdraw<'c: 'info, 'info>(
 ) -> anchor_lang::Result<()> {
     let user_key = ctx.accounts.user.key();
     let user = &mut load_mut!(ctx.accounts.user)?;
-    let _user_stats = load_mut!(ctx.accounts.user_stats)?;
+    let user_stats = load_mut!(ctx.accounts.user_stats)?;
     let clock = Clock::get()?;
     let now = clock.unix_timestamp;
     let slot = clock.slot;
     let state = ctx.accounts.state.load()?;
+
+    validate!(
+        !user_stats.is_equity_breaker_tripped(),
+        ErrorCode::EquityBelowFloor,
+        "equity floor breaker is tripped for this authority"
+    )?;
 
     let remaining_accounts_iter = &mut ctx.remaining_accounts.iter().peekable();
     let AccountMaps {
@@ -916,6 +922,12 @@ pub fn handle_transfer_deposit_by_delegate<'c: 'info, 'info>(
         "delegate transfer not allowed"
     )?;
 
+    validate!(
+        !user_stats.is_equity_breaker_tripped(),
+        ErrorCode::EquityBelowFloor,
+        "equity floor breaker is tripped for this authority"
+    )?;
+
     // Carry equity floor along with the funds so the sum of floors across the
     // authority's subaccounts is preserved. The from side is validated against
     // its reduced floor by the withdraw margin check inside
@@ -994,7 +1006,13 @@ pub fn handle_transfer_deposit<'c: 'info, 'info>(
 
     let to_user = &mut load_mut!(ctx.accounts.to_user)?;
     let from_user = &mut load_mut!(ctx.accounts.from_user)?;
-    let _user_stats = &mut load_mut!(ctx.accounts.user_stats)?;
+    let user_stats = &mut load_mut!(ctx.accounts.user_stats)?;
+
+    validate!(
+        !user_stats.is_equity_breaker_tripped(),
+        ErrorCode::EquityBelowFloor,
+        "equity floor breaker is tripped for this authority"
+    )?;
 
     validate!(
         !to_user.is_bankrupt(),
@@ -1297,9 +1315,15 @@ pub fn handle_transfer_pools<'c: 'info, 'info>(
 
     let to_user = &mut load_mut!(ctx.accounts.to_user)?;
     let from_user = &mut load_mut!(ctx.accounts.from_user)?;
-    let _user_stats = &mut load_mut!(ctx.accounts.user_stats)?;
+    let user_stats = &mut load_mut!(ctx.accounts.user_stats)?;
 
     let clock = Clock::get()?;
+
+    validate!(
+        !user_stats.is_equity_breaker_tripped(),
+        ErrorCode::EquityBelowFloor,
+        "equity floor breaker is tripped for this authority"
+    )?;
 
     validate!(
         !to_user.is_bankrupt(),
@@ -1766,9 +1790,16 @@ pub fn handle_transfer_perp_position<'c: 'info, 'info>(
 
     let to_user = &mut load_mut!(ctx.accounts.to_user)?;
     let from_user = &mut load_mut!(ctx.accounts.from_user)?;
+    let user_stats = load!(ctx.accounts.user_stats)?;
 
     let clock = Clock::get()?;
     let now = clock.unix_timestamp;
+
+    validate!(
+        !user_stats.is_equity_breaker_tripped(),
+        ErrorCode::EquityBelowFloor,
+        "equity floor breaker is tripped for this authority"
+    )?;
 
     validate!(
         !to_user.is_bankrupt(),

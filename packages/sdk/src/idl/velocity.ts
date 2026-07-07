@@ -6383,6 +6383,33 @@ export type Velocity = {
       ]
     },
     {
+      "name": "resetEquityFloorBreaker",
+      "discriminator": [
+        230,
+        181,
+        202,
+        36,
+        127,
+        56,
+        56,
+        27
+      ],
+      "accounts": [
+        {
+          "name": "admin",
+          "signer": true
+        },
+        {
+          "name": "state"
+        },
+        {
+          "name": "userStats",
+          "writable": true
+        }
+      ],
+      "args": []
+    },
+    {
       "name": "resetPerpMarketAmmOracleTwap",
       "discriminator": [
         127,
@@ -8225,6 +8252,39 @@ export type Velocity = {
           "type": "u32"
         }
       ]
+    },
+    {
+      "name": "tripEquityFloorBreaker",
+      "discriminator": [
+        133,
+        184,
+        25,
+        80,
+        193,
+        52,
+        162,
+        249
+      ],
+      "accounts": [
+        {
+          "name": "state"
+        },
+        {
+          "name": "keeper",
+          "docs": [
+            "Any signer may trip the breaker; the proof is the margin calculation."
+          ],
+          "signer": true
+        },
+        {
+          "name": "user"
+        },
+        {
+          "name": "userStats",
+          "writable": true
+        }
+      ],
+      "args": []
     },
     {
       "name": "updateAdmin",
@@ -23984,11 +24044,21 @@ export type Velocity = {
             "type": "u8"
           },
           {
+            "name": "equityBreakerTripped",
+            "docs": [
+              "Set by the permissionless `trip_equity_floor_breaker` instruction when",
+              "any of the authority's subaccounts falls below its equity floor.",
+              "While set, every subaccount of the authority rejects risk-increasing",
+              "fills, withdrawals and transfers out. Cleared only by the warm admin."
+            ],
+            "type": "u8"
+          },
+          {
             "name": "padding",
             "type": {
               "array": [
                 "u8",
-                63
+                62
               ]
             }
           }

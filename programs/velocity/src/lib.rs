@@ -492,6 +492,12 @@ pub mod velocity {
         handle_update_user_idle(ctx)
     }
 
+    pub fn trip_equity_floor_breaker<'c: 'info, 'info>(
+        ctx: Context<'info, TripEquityFloorBreaker<'info>>,
+    ) -> Result<()> {
+        handle_trip_equity_floor_breaker(ctx)
+    }
+
     pub fn log_user_balances<'c: 'info, 'info>(
         ctx: Context<'info, LogUserBalances<'info>>,
     ) -> Result<()> {
@@ -2081,6 +2087,10 @@ pub mod velocity {
         equity_floor: u64,
     ) -> Result<()> {
         handle_update_user_equity_floor(ctx, equity_floor)
+    }
+
+    pub fn reset_equity_floor_breaker(ctx: Context<ResetEquityFloorBreaker>) -> Result<()> {
+        handle_reset_equity_floor_breaker(ctx)
     }
 
     pub fn special_transfer_perp_position_to_vamm<'c: 'info, 'info>(

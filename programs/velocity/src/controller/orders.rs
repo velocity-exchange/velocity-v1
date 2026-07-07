@@ -2007,12 +2007,14 @@ fn fulfill_perp_order(
         }
 
         if !user_order_position_decreasing
-            && user.is_below_equity_floor(taker_margin_calculation.total_collateral)
+            && (user.is_below_equity_floor(taker_margin_calculation.total_collateral)
+                || user_stats.is_equity_breaker_tripped())
         {
             msg!(
-                "taker total collateral {} below equity floor {}",
+                "taker total collateral {} below equity floor {} (breaker tripped: {})",
                 taker_margin_calculation.total_collateral,
-                user.equity_floor
+                user.equity_floor,
+                user_stats.is_equity_breaker_tripped()
             );
             return Err(ErrorCode::EquityBelowFloor);
         }
@@ -2021,10 +2023,12 @@ fn fulfill_perp_order(
     for (maker_key, (maker_base_asset_amount_filled, maker_is_isolated_position)) in maker_fills {
         let maker = makers_and_referrer.get_ref_mut(&maker_key)?;
 
-        let _maker_stats = if maker.authority == user.authority {
-            None
+        let maker_breaker_tripped = if maker.authority == user.authority {
+            user_stats.is_equity_breaker_tripped()
         } else {
-            Some(makers_and_referrer_stats.get_ref_mut(&maker.authority)?)
+            makers_and_referrer_stats
+                .get_ref(&maker.authority)?
+                .is_equity_breaker_tripped()
         };
 
         let (margin_type, maker_risk_increasing) = select_margin_type_for_perp_maker(
@@ -2096,13 +2100,15 @@ fn fulfill_perp_order(
         }
 
         if maker_risk_increasing
-            && maker.is_below_equity_floor(maker_margin_calculation.total_collateral)
+            && (maker.is_below_equity_floor(maker_margin_calculation.total_collateral)
+                || maker_breaker_tripped)
         {
             msg!(
-                "maker ({}) total collateral {} below equity floor {}",
+                "maker ({}) total collateral {} below equity floor {} (breaker tripped: {})",
                 maker_key,
                 maker_margin_calculation.total_collateral,
-                maker.equity_floor
+                maker.equity_floor,
+                maker_breaker_tripped
             );
             return Err(ErrorCode::EquityBelowFloor);
         }

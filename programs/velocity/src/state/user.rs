@@ -1871,7 +1871,12 @@ pub struct UserStats {
 
     /// Delegate permissions across all sub accounts
     pub delegate_permissions: u8,
-    pub padding: [u8; 63],
+    /// Set by the permissionless `trip_equity_floor_breaker` instruction when
+    /// any of the authority's subaccounts falls below its equity floor.
+    /// While set, every subaccount of the authority rejects risk-increasing
+    /// fills, withdrawals and transfers out. Cleared only by the warm admin.
+    pub equity_breaker_tripped: u8,
+    pub padding: [u8; 62],
 }
 
 impl Default for UserStats {
@@ -1894,7 +1899,8 @@ impl Default for UserStats {
             paused_operations: 0,
             padding1: [0; 9],
             delegate_permissions: 0,
-            padding: [0; 63],
+            equity_breaker_tripped: 0,
+            padding: [0; 62],
         }
     }
 }
@@ -1942,6 +1948,14 @@ impl UserStats {
 
     pub fn is_delegate_transfer_allowed(&self) -> bool {
         self.delegate_permissions & UserDelegatePermission::AllowDelegateTransfer as u8 != 0
+    }
+
+    pub fn is_equity_breaker_tripped(&self) -> bool {
+        self.equity_breaker_tripped != 0
+    }
+
+    pub fn set_equity_breaker_tripped(&mut self, tripped: bool) {
+        self.equity_breaker_tripped = tripped as u8;
     }
 
     pub fn validate_delegate_permissions(&self) -> VelocityResult {

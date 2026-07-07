@@ -8035,6 +8035,44 @@ export class AdminClient extends VelocityClient {
 		});
 	}
 
+	/**
+	 * Clears the authority-wide equity floor breaker set by the permissionless
+	 * `tripEquityFloorBreaker` keeper instruction, unfreezing all of the
+	 * authority's subaccounts. Requires warm admin (`check_warm`); intended to
+	 * be called after a human has reviewed why the breaker fired.
+	 * @param userStatsPublicKey - `UserStats` PDA of the authority to unfreeze.
+	 * @param txParams - Optional transaction-building overrides.
+	 * @returns Transaction signature.
+	 */
+	public async resetEquityFloorBreaker(
+		userStatsPublicKey: PublicKey,
+		txParams?: TxParams
+	): Promise<TransactionSignature> {
+		const ix = await this.getResetEquityFloorBreakerIx(userStatsPublicKey);
+		const tx = await this.buildTransaction(ix, txParams);
+		const { txSig } = await this.sendTransaction(tx, [], this.opts);
+		return txSig;
+	}
+
+	/**
+	 * Builds the `resetEquityFloorBreaker` instruction without sending it. See
+	 * `resetEquityFloorBreaker`.
+	 * @returns The unsigned `resetEquityFloorBreaker` instruction.
+	 */
+	public async getResetEquityFloorBreakerIx(
+		userStatsPublicKey: PublicKey
+	): Promise<TransactionInstruction> {
+		return this.program.instruction.resetEquityFloorBreaker({
+			accounts: {
+				admin: this.useHotWalletAdmin
+					? this.wallet.publicKey
+					: this.getStateAccount().coldAdmin,
+				state: await this.getStatePublicKey(),
+				userStats: userStatsPublicKey,
+			},
+		});
+	}
+
 	// ----- Tiered admin authority -----
 	//
 	// `state.coldAdmin` is the root. `state.warmAdmin` is rotated by cold; each

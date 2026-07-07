@@ -207,6 +207,33 @@ export function registerUser(parent: Command): void {
 
 	withGlobalOptions(
 		user
+			.command('reset-equity-breaker <userStats>')
+			.description(
+				'Clear the authority-wide equity floor breaker on a UserStats account (warm admin). ' +
+					'Unfreezes all subaccounts of the authority after a breach has been reviewed.'
+			)
+	).action(async (userStatsPk: string, _flags, cmd: Command) => {
+		const opts = readGlobalOpts(cmd);
+		const provider = buildProvider(opts);
+		const client = await buildAdminClient(opts);
+		try {
+			const ix = await (client as any).getResetEquityFloorBreakerIx(
+				new PublicKey(userStatsPk)
+			);
+			const result = await sendOrPropose(
+				provider,
+				[ix],
+				opts.multisig ? new PublicKey(opts.multisig) : undefined,
+				'velocity-admin user reset-equity-breaker'
+			);
+			reportDispatch(`userStats[${userStatsPk}] equity breaker reset`, result);
+		} finally {
+			await client.unsubscribe();
+		}
+	});
+
+	withGlobalOptions(
+		user
 			.command('admin-deposit <market> <amount>')
 			.description(
 				'Admin deposit on behalf of a user. <amount> is raw token units.'

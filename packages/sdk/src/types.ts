@@ -1606,6 +1606,8 @@ export type UserStatsAccount = {
 	authority: PublicKey;
 	ifStakedQuoteAssetAmount: BN;
 	delegatePermissions: number;
+	/** non-zero when the permissionless `tripEquityFloorBreaker` fired: every subaccount of the authority rejects risk-increasing fills, withdrawals and transfers out until the warm admin resets */
+	equityBreakerTripped: number;
 };
 
 /** Decoded mirror of the on-chain `User` (sub-account) zero-copy account. */

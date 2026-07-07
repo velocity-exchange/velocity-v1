@@ -32,6 +32,8 @@ import { BankrunContextWrapper } from '../../packages/sdk/src/bankrun/bankrunCon
 const EQUITY_BELOW_FLOOR_HEX = '0x18d6';
 // InvalidEquityFloorTransfer
 const INVALID_FLOOR_TRANSFER_HEX = '0x18d7';
+// SufficientCollateral
+const SUFFICIENT_COLLATERAL_HEX = '0x1774';
 
 describe('equity floor', () => {
 	const chProgram = anchor.workspace.Velocity as Program;
@@ -431,6 +433,96 @@ describe('equity floor', () => {
 		// sum still conserved, and some floor actually moved
 		assert(floor0.add(floor1).eq(new BN(4 * 10 ** 6)));
 		assert(floor1.gt(ZERO));
+	});
+
+	// ---- authority-wide breaker ----
+
+	const fetchBreakerTripped = async (): Promise<number> => {
+		const statsPk = velocityClient.getUserStatsAccountPublicKey();
+		const stats = await (
+			velocityClient.program.account as any
+		).userStats.fetch(statsPk);
+		return stats.equityBreakerTripped;
+	};
+
+	it('breaker cannot be tripped while above the floor', async () => {
+		await velocityClient.fetchAccounts();
+
+		let err: Error | undefined;
+		try {
+			await delegateVelocityClient.tripEquityFloorBreaker(
+				userAccountPublicKey,
+				velocityClient.getUser(0).getUserAccount()
+			);
+		} catch (e) {
+			err = e as Error;
+		}
+		assert(err, 'trip should have been rejected');
+		assert(err.message.includes(SUFFICIENT_COLLATERAL_HEX));
+		assert((await fetchBreakerTripped()) === 0);
+	});
+
+	it('breaker trips permissionlessly and freezes every subaccount', async () => {
+		// simulate a drawdown breach by raising sub 0's floor above its equity
+		await velocityClient.updateUserEquityFloor(
+			userAccountPublicKey,
+			new BN(50 * 10 ** 6)
+		);
+		await velocityClient.fetchAccounts();
+
+		// the delegate wallet is "anyone" here: trip is permissionless
+		await delegateVelocityClient.tripEquityFloorBreaker(
+			userAccountPublicKey,
+			velocityClient.getUser(0).getUserAccount()
+		);
+		assert((await fetchBreakerTripped()) !== 0);
+
+		// sub 1 is comfortably above its own floor, yet frozen too
+		await velocityClient.switchActiveUser(1);
+		let err: Error | undefined;
+		try {
+			await velocityClient.withdraw(
+				new BN(1 * 10 ** 6),
+				0,
+				userUSDCAccount.publicKey
+			);
+		} catch (e) {
+			err = e as Error;
+		}
+		await velocityClient.switchActiveUser(0);
+		assert(err, 'withdraw from healthy subaccount should have been rejected');
+		assert(err.message.includes(EQUITY_BELOW_FLOOR_HEX));
+
+		// delegate transfers are frozen as well
+		let transferErr: Error | undefined;
+		try {
+			await delegateVelocityClient.transferDepositByDelegate(
+				new BN(1 * 10 ** 6),
+				0,
+				1,
+				0
+			);
+		} catch (e) {
+			transferErr = e as Error;
+		}
+		assert(transferErr, 'delegate transfer should have been rejected');
+		assert(transferErr.message.includes(EQUITY_BELOW_FLOOR_HEX));
+	});
+
+	it('warm admin resets the breaker and unfreezes', async () => {
+		await velocityClient.resetEquityFloorBreaker(
+			velocityClient.getUserStatsAccountPublicKey()
+		);
+		assert((await fetchBreakerTripped()) === 0);
+
+		// healthy subaccount can act again
+		await velocityClient.switchActiveUser(1);
+		await velocityClient.withdraw(
+			new BN(1 * 10 ** 6),
+			0,
+			userUSDCAccount.publicKey
+		);
+		await velocityClient.switchActiveUser(0);
 
 		await delegateVelocityClient.unsubscribe();
 	});

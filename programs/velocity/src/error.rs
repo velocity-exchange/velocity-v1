@@ -771,6 +771,8 @@ pub enum ErrorCode {
     IsolatedPositionDisabled,
     #[msg("Account equity is below the user-set equity floor")]
     EquityBelowFloor,
+    #[msg("Invalid equity floor transfer between subaccounts")]
+    InvalidEquityFloorTransfer,
 }
 
 #[macro_export]

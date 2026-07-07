@@ -156,8 +156,9 @@ pub mod velocity {
         ctx: Context<'info, TransferDepositByDelegate<'info>>,
         market_index: u16,
         amount: u64,
+        equity_floor_delta: u64,
     ) -> anchor_lang::Result<()> {
-        handle_transfer_deposit_by_delegate(ctx, market_index, amount)
+        handle_transfer_deposit_by_delegate(ctx, market_index, amount, equity_floor_delta)
     }
 
     pub fn transfer_pools<'c: 'info, 'info>(

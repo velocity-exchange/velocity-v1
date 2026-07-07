@@ -10,12 +10,14 @@ import {
 	TestClient,
 	PositionDirection,
 	User,
+	Wallet,
 	getMarketOrderParams,
 	EventSubscriber,
 	PRICE_PRECISION,
 } from '../../packages/sdk/src';
 
 import {
+	createFundedKeyPair,
 	initializeQuoteSpotMarket,
 	mockOracleNoProgram,
 	mockUSDCMint,
@@ -28,6 +30,8 @@ import { BankrunContextWrapper } from '../../packages/sdk/src/bankrun/bankrunCon
 
 // EquityBelowFloor
 const EQUITY_BELOW_FLOOR_HEX = '0x18d6';
+// InvalidEquityFloorTransfer
+const INVALID_FLOOR_TRANSFER_HEX = '0x18d7';
 
 describe('equity floor', () => {
 	const chProgram = anchor.workspace.Velocity as Program;
@@ -263,5 +267,171 @@ describe('equity floor', () => {
 			0,
 			userUSDCAccount.publicKey
 		);
+	});
+
+	// ---- floor-carrying delegate transfers ----
+	// sub 0 equity here is ~8 USDC (10 deposited, 1 withdrawn, ~2000 in fees)
+
+	let delegateVelocityClient: TestClient;
+
+	const floorOf = async (subAccountId: number): Promise<BN> => {
+		await velocityClient.fetchAccounts();
+		return velocityClient.getUser(subAccountId).getUserAccount().equityFloor;
+	};
+
+	it('sets up second subaccount and delegate', async () => {
+		await velocityClient.initializeUserAccount(1);
+		await velocityClient.switchActiveUser(0);
+
+		const delegateKeyPair = await createFundedKeyPair(bankrunContextWrapper);
+		await velocityClient.updateUserDelegate(delegateKeyPair.publicKey);
+		await velocityClient.switchActiveUser(1);
+		await velocityClient.updateUserDelegate(delegateKeyPair.publicKey, 1);
+		await velocityClient.switchActiveUser(0);
+		await velocityClient.updateUserAllowDelegateTransfer(true);
+
+		delegateVelocityClient = new TestClient({
+			connection: bankrunContextWrapper.connection.toConnection(),
+			wallet: new Wallet(delegateKeyPair),
+			programID: chProgram.programId,
+			opts: {
+				commitment: 'confirmed',
+			},
+			activeSubAccountId: 0,
+			perpMarketIndexes: [0],
+			spotMarketIndexes: [0],
+			oracleInfos: [{ publicKey: solUsd, source: OracleSource.PYTH_LAZER }],
+			authority: bankrunContextWrapper.provider.wallet.publicKey,
+			authoritySubAccountMap: new Map().set(
+				bankrunContextWrapper.provider.wallet.publicKey,
+				[0, 1]
+			),
+			accountSubscription: {
+				type: 'polling',
+				accountLoader: bulkAccountLoader,
+			},
+		});
+		await delegateVelocityClient.subscribe();
+
+		// floor sub 0 at 4 USDC; equity ~8 so above floor
+		await velocityClient.updateUserEquityFloor(
+			userAccountPublicKey,
+			new BN(4 * 10 ** 6)
+		);
+	});
+
+	it('delegate transfer without floor delta leaves floors in place', async () => {
+		await delegateVelocityClient.transferDepositByDelegate(
+			new BN(3 * 10 ** 6),
+			0,
+			0,
+			1
+		);
+
+		assert((await floorOf(0)).eq(new BN(4 * 10 ** 6)));
+		assert((await floorOf(1)).eq(ZERO));
+	});
+
+	it('from side cannot transfer past its floor', async () => {
+		// sub 0 equity ~5, floor 4: moving 4 more would breach
+		let err: Error | undefined;
+		try {
+			await delegateVelocityClient.transferDepositByDelegate(
+				new BN(4 * 10 ** 6),
+				0,
+				0,
+				1
+			);
+		} catch (e) {
+			err = e as Error;
+		}
+		assert(err, 'transfer should have been rejected');
+		assert(err.message.includes(EQUITY_BELOW_FLOOR_HEX));
+	});
+
+	it('floor moves with the funds when a delta is passed', async () => {
+		// move 3 USDC and 2 USDC of floor: sub 0 keeps equity ~2 >= floor 2,
+		// sub 1 gets equity ~6 >= floor 2; sum of floors stays 4
+		await delegateVelocityClient.transferDepositByDelegate(
+			new BN(3 * 10 ** 6),
+			0,
+			0,
+			1,
+			new BN(2 * 10 ** 6)
+		);
+
+		assert((await floorOf(0)).eq(new BN(2 * 10 ** 6)));
+		assert((await floorOf(1)).eq(new BN(2 * 10 ** 6)));
+	});
+
+	it('cannot move more floor than the from side holds', async () => {
+		let err: Error | undefined;
+		try {
+			await delegateVelocityClient.transferDepositByDelegate(
+				new BN(1 * 10 ** 6),
+				0,
+				0,
+				1,
+				new BN(5 * 10 ** 6)
+			);
+		} catch (e) {
+			err = e as Error;
+		}
+		assert(err, 'transfer should have been rejected');
+		assert(err.message.includes(INVALID_FLOOR_TRANSFER_HEX));
+	});
+
+	it('receiving side must back its increased floor with equity', async () => {
+		// sub 0 has equity ~2 and floor 2; pushing 2 more floor onto it with
+		// only 0.4 of funds leaves floor 4 > equity ~2.4
+		let err: Error | undefined;
+		try {
+			await delegateVelocityClient.transferDepositByDelegate(
+				new BN(0.4 * 10 ** 6),
+				0,
+				1,
+				0,
+				new BN(2 * 10 ** 6)
+			);
+		} catch (e) {
+			err = e as Error;
+		}
+		assert(err, 'transfer should have been rejected');
+		assert(err.message.includes(INVALID_FLOOR_TRANSFER_HEX));
+	});
+
+	it('funds and floor can migrate back together', async () => {
+		await delegateVelocityClient.transferDepositByDelegate(
+			new BN(2 * 10 ** 6),
+			0,
+			1,
+			0,
+			new BN(2 * 10 ** 6)
+		);
+
+		// sum of floors preserved through every shuffle
+		assert((await floorOf(0)).eq(new BN(4 * 10 ** 6)));
+		assert((await floorOf(1)).eq(ZERO));
+	});
+
+	it("'auto' computes the minimal floor delta", async () => {
+		// sub 0: equity ~5, floor 4 -> excess ~1. moving 3 needs ~2 of floor;
+		// auto should land the transfer without the caller doing the math
+		await delegateVelocityClient.transferDepositByDelegate(
+			new BN(3 * 10 ** 6),
+			0,
+			0,
+			1,
+			'auto'
+		);
+
+		const floor0 = await floorOf(0);
+		const floor1 = await floorOf(1);
+
+		// sum still conserved, and some floor actually moved
+		assert(floor0.add(floor1).eq(new BN(4 * 10 ** 6)));
+		assert(floor1.gt(ZERO));
+
+		await delegateVelocityClient.unsubscribe();
 	});
 });

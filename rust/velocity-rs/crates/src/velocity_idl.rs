@@ -1085,6 +1085,7 @@ pub mod instructions {
     pub struct TransferDepositByDelegate {
         pub market_index: u16,
         pub amount: u64,
+        pub equity_floor_delta: u64,
     }
     #[automatically_derived]
     impl anchor_lang::Discriminator for TransferDepositByDelegate {
@@ -25434,6 +25435,8 @@ pub mod errors {
         IsolatedPositionDisabled,
         #[msg("Account equity is below the user-set equity floor")]
         EquityBelowFloor,
+        #[msg("Invalid equity floor transfer between subaccounts")]
+        InvalidEquityFloorTransfer,
     }
 }
 pub mod events {

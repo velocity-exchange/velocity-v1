@@ -4934,6 +4934,15 @@ export class VelocityClient {
 	 * @param marketIndex - Spot market index of the balance to transfer.
 	 * @param fromSubAccountId - Sub-account id to debit.
 	 * @param toSubAccountId - Sub-account id to credit.
+	 * @param equityFloorDelta - Equity floor (QUOTE_PRECISION) to move from the debited to the credited
+	 * sub-account along with the funds, keeping the sum of floors constant. The debited side must stay
+	 * at/above its reduced floor and the credited side's collateral (after the transfer lands) must back
+	 * its increased floor, else the transfer reverts with `InvalidEquityFloorTransfer`. Pass `'auto'`
+	 * (quote market only) to move the minimal floor needed for the debited side to stay at/above its
+	 * floor: `max(0, amount - (collateral - floor))`, capped at the debited side's floor. The auto delta
+	 * never exceeds `amount`, so the credited side stays backed whenever it was before. Client-side
+	 * pricing can differ slightly from the on-chain strict check at the exact boundary; retry with an
+	 * explicit padded delta if an `'auto'` transfer reverts. Defaults to zero.
 	 * @param txParams - Optional compute-unit/priority-fee overrides for the transaction.
 	 * @returns The transaction signature.
 	 * @throws (on-chain) if `allowDelegateTransfer` is not enabled, if the signer is not the delegate on
@@ -4945,6 +4954,7 @@ export class VelocityClient {
 		marketIndex: number,
 		fromSubAccountId: number,
 		toSubAccountId: number,
+		equityFloorDelta: BN | 'auto' = ZERO,
 		txParams?: TxParams
 	): Promise<TransactionSignature> {
 		const { txSig, slot } = await this.sendTransaction(
@@ -4953,7 +4963,8 @@ export class VelocityClient {
 					amount,
 					marketIndex,
 					fromSubAccountId,
-					toSubAccountId
+					toSubAccountId,
+					equityFloorDelta
 				),
 				txParams
 			),
@@ -4984,7 +4995,8 @@ export class VelocityClient {
 		amount: BN,
 		marketIndex: number,
 		fromSubAccountId: number,
-		toSubAccountId: number
+		toSubAccountId: number,
+		equityFloorDelta: BN | 'auto' = ZERO
 	): Promise<TransactionInstruction> {
 		const fromUser = await getUserAccountPublicKey(
 			this.program.programId,
@@ -4997,30 +5009,61 @@ export class VelocityClient {
 			toSubAccountId
 		);
 
-		let remainingAccounts;
-
-		const userMapKey = this.getUserMapKey(fromSubAccountId, this.authority);
-		const mapUser = this.users.get(userMapKey);
-		if (mapUser) {
-			remainingAccounts = this.getRemainingAccounts({
-				userAccounts: [mapUser.getUserAccountOrThrow()],
-				useMarketLastSlotCache: true,
-				writableSpotMarketIndexes: [marketIndex],
-			});
+		let resolvedFloorDelta: BN;
+		if (equityFloorDelta === 'auto') {
+			// auto assumes amount and equity share QUOTE_PRECISION; for
+			// non-quote markets the caller must value the tokens themselves
+			if (marketIndex !== QUOTE_SPOT_MARKET_INDEX) {
+				throw new Error(
+					"equityFloorDelta 'auto' is only supported for the quote spot market; pass an explicit delta"
+				);
+			}
+			const fromUserClass = this.getUser(fromSubAccountId, this.authority);
+			const floor = fromUserClass.getUserAccountOrThrow().equityFloor;
+			if (floor.lte(ZERO)) {
+				resolvedFloorDelta = ZERO;
+			} else {
+				const excess = BN.max(
+					fromUserClass.getTotalCollateral('Initial', true).sub(floor),
+					ZERO
+				);
+				resolvedFloorDelta = BN.min(BN.max(amount.sub(excess), ZERO), floor);
+			}
 		} else {
-			const fromUserAccount = (await (this.program.account as any).user.fetch(
-				fromUser
-			)) as UserAccount;
-			remainingAccounts = this.getRemainingAccounts({
-				userAccounts: [fromUserAccount],
-				useMarketLastSlotCache: true,
-				writableSpotMarketIndexes: [marketIndex],
-			});
+			resolvedFloorDelta = equityFloorDelta;
 		}
+
+		const loadUserAccount = async (
+			subAccountId: number,
+			userPublicKey: PublicKey
+		): Promise<UserAccount> => {
+			const userMapKey = this.getUserMapKey(subAccountId, this.authority);
+			const mapUser = this.users.get(userMapKey);
+			if (mapUser) {
+				return mapUser.getUserAccountOrThrow();
+			}
+			return (await (this.program.account as any).user.fetch(
+				userPublicKey
+			)) as UserAccount;
+		};
+
+		// moving equity floor triggers an on-chain margin check of the credited
+		// side, so its markets/oracles must be in the remaining accounts too
+		const userAccounts = [await loadUserAccount(fromSubAccountId, fromUser)];
+		if (resolvedFloorDelta.gt(ZERO)) {
+			userAccounts.push(await loadUserAccount(toSubAccountId, toUser));
+		}
+
+		const remainingAccounts = this.getRemainingAccounts({
+			userAccounts,
+			useMarketLastSlotCache: true,
+			writableSpotMarketIndexes: [marketIndex],
+		});
 
 		return await this.program.instruction.transferDepositByDelegate(
 			marketIndex,
 			amount,
+			resolvedFloorDelta,
 			{
 				accounts: {
 					delegate: this.wallet.publicKey,

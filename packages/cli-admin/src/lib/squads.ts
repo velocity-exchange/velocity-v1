@@ -22,9 +22,13 @@ export type DispatchResult =
  * `sendInstructionsOrSquadsV4`.
  *
  * If `multisigPda` is undefined, instructions are signed and sent directly.
- * Otherwise a `vaultTransactionCreate` + `proposalCreate` is submitted; the
- * wallet pays rent and is recorded as the proposer. Approval/execution still
- * happen through the multisig members (CLI does not auto-approve).
+ * Otherwise the CLI checks whether the multisig's vault 0 PDA is a required
+ * signer of any instruction: if it is not (e.g. the target authority is the
+ * wallet itself), a proposal would be pointless — the instructions are sent
+ * directly. Only when the vault must sign is a `vaultTransactionCreate` +
+ * `proposalCreate` submitted; the wallet pays rent and is recorded as the
+ * proposer. Approval/execution still happen through the multisig members
+ * (CLI does not auto-approve).
  */
 export async function sendOrPropose(
 	provider: AnchorProvider,
@@ -32,7 +36,20 @@ export async function sendOrPropose(
 	multisigPda: PublicKey | undefined,
 	memo: string
 ): Promise<DispatchResult> {
-	if (!multisigPda) {
+	let vaultMustSign = false;
+	if (multisigPda) {
+		const [vaultPda] = multisig.getVaultPda({ multisigPda, index: 0 });
+		vaultMustSign = instructions.some((ix) =>
+			ix.keys.some((key) => key.isSigner && key.pubkey.equals(vaultPda))
+		);
+		if (!vaultMustSign) {
+			console.log(
+				`multisig vault ${vaultPda.toBase58()} is not a required signer of this action — sending directly instead of proposing`
+			);
+		}
+	}
+
+	if (!multisigPda || !vaultMustSign) {
 		const tx = new Transaction().add(...instructions);
 		const signature = await provider.sendAndConfirm(tx);
 		return { kind: 'sent', signature };

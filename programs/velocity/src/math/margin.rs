@@ -723,6 +723,15 @@ pub fn meets_place_order_margin_requirement(
         return Err(ErrorCode::InsufficientCollateral);
     }
 
+    if risk_increasing && user.is_below_equity_floor(calculation.total_collateral) {
+        msg!(
+            "total collateral {} below equity floor {}",
+            calculation.total_collateral,
+            user.equity_floor
+        );
+        return Err(ErrorCode::EquityBelowFloor);
+    }
+
     validate_any_isolated_tier_requirements(user, &calculation)?;
 
     Ok(())

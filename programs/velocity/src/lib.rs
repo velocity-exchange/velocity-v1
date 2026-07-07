@@ -156,8 +156,9 @@ pub mod velocity {
         ctx: Context<'info, TransferDepositByDelegate<'info>>,
         market_index: u16,
         amount: u64,
+        equity_floor_delta: u64,
     ) -> anchor_lang::Result<()> {
-        handle_transfer_deposit_by_delegate(ctx, market_index, amount)
+        handle_transfer_deposit_by_delegate(ctx, market_index, amount, equity_floor_delta)
     }
 
     pub fn transfer_pools<'c: 'info, 'info>(
@@ -489,6 +490,12 @@ pub mod velocity {
         ctx: Context<'info, UpdateUserIdle<'info>>,
     ) -> Result<()> {
         handle_update_user_idle(ctx)
+    }
+
+    pub fn trip_equity_floor_breaker<'c: 'info, 'info>(
+        ctx: Context<'info, TripEquityFloorBreaker<'info>>,
+    ) -> Result<()> {
+        handle_trip_equity_floor_breaker(ctx)
     }
 
     pub fn log_user_balances<'c: 'info, 'info>(
@@ -2073,6 +2080,17 @@ pub mod velocity {
         status: u8,
     ) -> Result<()> {
         handle_update_special_user_status(ctx, status)
+    }
+
+    pub fn update_user_equity_floor(
+        ctx: Context<AdminUpdateUserEquityFloor>,
+        equity_floor: u64,
+    ) -> Result<()> {
+        handle_update_user_equity_floor(ctx, equity_floor)
+    }
+
+    pub fn reset_equity_floor_breaker(ctx: Context<ResetEquityFloorBreaker>) -> Result<()> {
+        handle_reset_equity_floor_breaker(ctx)
     }
 
     pub fn special_transfer_perp_position_to_vamm<'c: 'info, 'info>(

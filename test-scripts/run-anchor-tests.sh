@@ -59,6 +59,7 @@ test_files=(
   curve.ts
   deleteInitializedSpotMarket.ts
   depositIntoSpotMarketVault.ts
+  equityFloor.ts
   velocityClient.ts
   insuranceFundStake.ts
   isolatedPositionVelocityClient.ts

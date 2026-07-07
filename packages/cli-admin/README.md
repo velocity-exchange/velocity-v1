@@ -50,6 +50,8 @@ velocity-admin fees sweep <market>                               # permissionles
 velocity-admin fees transfer-fee-pnl <feePoolMarket> <pnlPoolMarket> <amount> <fee-to-pnl|pnl-to-fee> # warm/cold admin
 
 velocity-admin user set-special-status <user> <flags>
+velocity-admin user set-equity-floor <user> <floor>              # warm/cold admin; floor in QUOTE_PRECISION raw units, 0 disables
+velocity-admin user reset-equity-breaker <userStats>             # warm/cold admin; unfreezes an authority after the breaker tripped
 velocity-admin user admin-deposit <market> <amount> --user <pk> --user-token-account <pk>
 velocity-admin user deposit <market> <amount> [--authority <pk>] [--sub-account <id>] [--user-token-account <pk>] [--reduce-only]
 velocity-admin user withdraw <market> <amount> [--authority <pk>] [--sub-account <id>] [--user-token-account <pk>] [--reduce-only]

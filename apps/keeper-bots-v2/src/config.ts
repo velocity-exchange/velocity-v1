@@ -13,6 +13,7 @@ import {
 	PerpMarkets,
 } from '@velocity-exchange/sdk';
 import { JitMakerConfig } from './bots/jitMaker';
+import { EquityFloorGuardConfig } from './bots/equityFloorGuard';
 import { PriceFeedProperty } from '@pythnetwork/pyth-lazer-sdk';
 
 export type BaseBotConfig = {
@@ -151,6 +152,7 @@ export type BotConfigMap = {
 	fundingRateUpdater?: BaseBotConfig;
 	userPnlSettler?: UserPnlSettlerConfig;
 	userIdleFlipper?: BaseBotConfig;
+	equityFloorGuard?: EquityFloorGuardConfig;
 	markTwapCrank?: MakerBidAskTwapCrankConfig;
 	pythLazerCranker?: PythLazerCrankerBotConfig;
 	swiftTaker?: BaseBotConfig;
@@ -517,6 +519,15 @@ export function loadConfigFromOpts(opts: any): Config {
 		config.botConfigs!.userIdleFlipper = {
 			dryRun: opts.dryRun ?? false,
 			botId: process.env.BOT_ID ?? 'userIdleFlipper',
+			metricsPort: 9464,
+			runOnce: opts.runOnce ?? false,
+		};
+	}
+	if (opts.equityFloorGuard) {
+		config.enabledBots.push('equityFloorGuard');
+		config.botConfigs!.equityFloorGuard = {
+			dryRun: opts.dryRun ?? false,
+			botId: process.env.BOT_ID ?? 'equityFloorGuard',
 			metricsPort: 9464,
 			runOnce: opts.runOnce ?? false,
 		};

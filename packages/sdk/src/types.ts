@@ -1606,6 +1606,8 @@ export type UserStatsAccount = {
 	authority: PublicKey;
 	ifStakedQuoteAssetAmount: BN;
 	delegatePermissions: number;
+	/** non-zero when the permissionless `tripEquityFloorBreaker` fired: every subaccount of the authority rejects risk-increasing fills, withdrawals and transfers out until the warm admin resets */
+	equityBreakerTripped: number;
 };
 
 /** Decoded mirror of the on-chain `User` (sub-account) zero-copy account. */
@@ -1649,6 +1651,8 @@ export type UserAccount = {
 	poolId: number;
 	/** bitmask, see `SpecialUserStatus` */
 	specialUserStatus: number;
+	/** QUOTE_PRECISION (1e6); admin-set minimum cross-margin total collateral for risk-increasing orders, fills, withdrawals and transfers; 0 = disabled */
+	equityFloor: BN;
 };
 
 /** A user's balance in one spot market. Decoded mirror of the on-chain `SpotPosition`. */

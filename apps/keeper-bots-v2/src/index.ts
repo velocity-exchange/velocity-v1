@@ -52,6 +52,7 @@ import { Bot } from './types';
 import { IFRevenueSettlerBot } from './bots/ifRevenueSettler';
 import { UserPnlSettlerBot } from './bots/userPnlSettler';
 import { UserIdleFlipperBot } from './bots/userIdleFlipper';
+import { EquityFloorGuardBot } from './bots/equityFloorGuard';
 import {
 	getOrCreateAssociatedTokenAccount,
 	sleepMs,
@@ -108,6 +109,10 @@ program
 	.option('--user-pnl-settler', 'Enable User PnL settler bot')
 	.option('--user-lp-settler', 'Settle active LP positions')
 	.option('--user-idle-flipper', 'Flips eligible users to idle')
+	.option(
+		'--equity-floor-guard',
+		'Watches equity-floored users and trips the breaker on breach'
+	)
 	.option('--mark-twap-crank', 'Enable bid/ask twap crank bot')
 	.option('--test-liveness', 'Purposefully fail liveness test after 1 minute')
 	.option(
@@ -828,6 +833,18 @@ const runBot = async () => {
 				velocityClient,
 				config.botConfigs!.userIdleFlipper!,
 				blockhashSubscriber
+			)
+		);
+	}
+
+	if (configHasBot(config, 'equityFloorGuard')) {
+		needUserMapSubscribe = true;
+		needVelocityStateWatcher = true;
+
+		bots.push(
+			new EquityFloorGuardBot(
+				velocityClient,
+				config.botConfigs!.equityFloorGuard!
 			)
 		);
 	}

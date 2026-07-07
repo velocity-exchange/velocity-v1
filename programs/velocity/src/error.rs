@@ -769,6 +769,10 @@ pub enum ErrorCode {
     InvalidNativePerpMarketAccount,
     #[msg("Isolated positions are not enabled in this build")]
     IsolatedPositionDisabled,
+    #[msg("Account equity is below the user-set equity floor")]
+    EquityBelowFloor,
+    #[msg("Invalid equity floor transfer between subaccounts")]
+    InvalidEquityFloorTransfer,
 }
 
 #[macro_export]

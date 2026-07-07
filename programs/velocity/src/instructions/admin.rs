@@ -3641,6 +3641,40 @@ pub fn handle_update_special_user_status(
     Ok(())
 }
 
+/// Clears the authority-wide equity breaker set by the permissionless
+/// `trip_equity_floor_breaker`. Warm admin only; intended to be called after
+/// a human has reviewed why the breaker fired.
+pub fn handle_reset_equity_floor_breaker(ctx: Context<ResetEquityFloorBreaker>) -> Result<()> {
+    let mut user_stats = load_mut!(ctx.accounts.user_stats)?;
+
+    msg!(
+        "equity floor breaker reset for authority {:?}",
+        user_stats.authority
+    );
+
+    user_stats.set_equity_breaker_tripped(false);
+
+    Ok(())
+}
+
+pub fn handle_update_user_equity_floor(
+    ctx: Context<AdminUpdateUserEquityFloor>,
+    equity_floor: u64,
+) -> Result<()> {
+    let user = &mut load_mut!(ctx.accounts.user)?;
+
+    msg!(
+        "equity_floor for {:?}: {:?} -> {:?}",
+        user.authority,
+        user.equity_floor,
+        equity_floor
+    );
+
+    user.equity_floor = equity_floor;
+
+    Ok(())
+}
+
 #[derive(Accounts)]
 pub struct Initialize<'info> {
     // Only the designated `state_init_authority` may create the singleton
@@ -4053,6 +4087,24 @@ pub struct UpdateSpecialUserStatus<'info> {
     pub state: AccountLoader<'info, State>,
     #[account(mut)]
     pub user: AccountLoader<'info, User>,
+}
+
+#[derive(Accounts)]
+pub struct AdminUpdateUserEquityFloor<'info> {
+    #[account(constraint = check_warm(&admin.key(), &state)?)]
+    pub admin: Signer<'info>,
+    pub state: AccountLoader<'info, State>,
+    #[account(mut)]
+    pub user: AccountLoader<'info, User>,
+}
+
+#[derive(Accounts)]
+pub struct ResetEquityFloorBreaker<'info> {
+    #[account(constraint = check_warm(&admin.key(), &state)?)]
+    pub admin: Signer<'info>,
+    pub state: AccountLoader<'info, State>,
+    #[account(mut)]
+    pub user_stats: AccountLoader<'info, UserStats>,
 }
 
 // ----- Tiered admin authority handlers -----

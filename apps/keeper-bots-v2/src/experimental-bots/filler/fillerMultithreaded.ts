@@ -2415,13 +2415,25 @@ export class FillerMultithreaded {
 			  )
 			: (await this.userMap.mustGet(takerUserPubKey)).getUserAccountOrThrow();
 
-		const authority = nodeToFill.authority
+		// The message's *signing* authority — equal to the taker authority for a
+		// self-signed order, but the delegate's key for a delegate-signed swift
+		// order. Used only where the actual signer matters (ed25519 verify /
+		// `signingAuthority`), never to derive UserStats.
+		const signingAuthority = nodeToFill.authority
 			? nodeToFill.authority
 			: takerUserAccount.authority.toString();
 
+		// The taker's *true* account authority. UserStats is a PDA of
+		// `["user_stats", authority]`, so referrer / builder-referral / taker-stats
+		// lookups must key off this, not the signing authority — otherwise a
+		// delegate-signed order (e.g. a Privy embedded wallet) derives a UserStats
+		// PDA that doesn't exist, failing the lookups and the on-chain
+		// `is_stats_for_user` gate. Mirrors the single-threaded filler.
+		const takerAuthority = takerUserAccount.authority.toString();
+
 		let referrerInfo: ReferrerInfo | undefined;
 		try {
-			referrerInfo = await this.referrerMap?.mustGet(authority);
+			referrerInfo = await this.referrerMap?.mustGet(takerAuthority);
 		} catch (e) {
 			logger.warn(`getNodeFillInfo: Failed to get referrer info: ${e}`);
 			referrerInfo = undefined;
@@ -2434,7 +2446,7 @@ export class FillerMultithreaded {
 		let takerIsReferred = false;
 		try {
 			takerIsReferred = await this.referrerMap.mustGetIsBuilderReferral(
-				authority
+				takerAuthority
 			);
 		} catch (e) {
 			logger.warn(
@@ -2448,14 +2460,14 @@ export class FillerMultithreaded {
 			takerUser: takerUserAccount,
 			takerStatsPubKey: getUserStatsAccountPublicKey(
 				this.velocityClient.program.programId,
-				new PublicKey(authority)
+				new PublicKey(takerAuthority)
 			),
 			takerUserSlot: this.slotSubscriber.getSlot(),
 			referrerInfo,
 			takerIsReferred,
 			marketType: nodeToFill.node.order!.marketType,
 			isSignedMsg: nodeToFill.node.isSignedMsg,
-			authority: new PublicKey(authority),
+			authority: new PublicKey(signingAuthority),
 		});
 	}
 

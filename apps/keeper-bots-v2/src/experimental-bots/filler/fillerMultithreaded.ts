@@ -2415,13 +2415,18 @@ export class FillerMultithreaded {
 			  )
 			: (await this.userMap.mustGet(takerUserPubKey)).getUserAccountOrThrow();
 
-		const authority = nodeToFill.authority
+		// `nodeToFill.authority` is the swift message's signing authority, which
+		// may be a delegate wallet. UserStats/referrer PDAs are derived from the
+		// user account's own authority; the signing authority is only used to
+		// verify the signed-msg signature.
+		const signingAuthority = nodeToFill.authority
 			? nodeToFill.authority
 			: takerUserAccount.authority.toString();
+		const takerAuthority = takerUserAccount.authority.toString();
 
 		let referrerInfo: ReferrerInfo | undefined;
 		try {
-			referrerInfo = await this.referrerMap?.mustGet(authority);
+			referrerInfo = await this.referrerMap?.mustGet(takerAuthority);
 		} catch (e) {
 			logger.warn(`getNodeFillInfo: Failed to get referrer info: ${e}`);
 			referrerInfo = undefined;
@@ -2434,7 +2439,7 @@ export class FillerMultithreaded {
 		let takerIsReferred = false;
 		try {
 			takerIsReferred = await this.referrerMap.mustGetIsBuilderReferral(
-				authority
+				takerAuthority
 			);
 		} catch (e) {
 			logger.warn(
@@ -2448,14 +2453,14 @@ export class FillerMultithreaded {
 			takerUser: takerUserAccount,
 			takerStatsPubKey: getUserStatsAccountPublicKey(
 				this.velocityClient.program.programId,
-				new PublicKey(authority)
+				new PublicKey(takerAuthority)
 			),
 			takerUserSlot: this.slotSubscriber.getSlot(),
 			referrerInfo,
 			takerIsReferred,
 			marketType: nodeToFill.node.order!.marketType,
 			isSignedMsg: nodeToFill.node.isSignedMsg,
-			authority: new PublicKey(authority),
+			authority: new PublicKey(signingAuthority),
 		});
 	}
 

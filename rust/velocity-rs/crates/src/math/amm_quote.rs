@@ -12,10 +12,10 @@
 //!
 //! [`project_perp_market_for_quoting`] reproduces the `setup` sequence exactly,
 //! using the program's own functions, so local bid/ask matches what
-//! `determine_perp_fulfillment_methods` will compare against on-chain. The parity
-//! test below pins this against the real `AmmQuoter::setup` — if the program's
-//! quote-prep gains another step, the test fails rather than the filler spamming
-//! no-op fills.
+//! `determine_perp_fulfillment_methods` will compare against on-chain. The
+//! incident-shaped regression test in `dlob/tests.rs`
+//! (`dlob_vamm_taker_candidate_requires_fill_path_quote`) pins the filler's
+//! vAMM-cross decisions against this projection.
 
 use program::{
     state::{oracle::OraclePriceData, perp_market::PerpMarket, state::ValidityGuardRails},
@@ -89,8 +89,8 @@ pub fn project_perp_market_for_quoting(
 /// there, so not importable): BTC-ish market at peg $19,400, short 1 BTC of
 /// AMM inventory, 2.5bps base / 9.75bps max spread, live curve updates.
 ///
-/// Shared by the parity tests below and the DLOB regression tests
-/// (`dlob/tests.rs`) that exercise the filler's vAMM-cross decisions.
+/// Used by the DLOB regression tests (`dlob/tests.rs`) that exercise the
+/// filler's vAMM-cross decisions.
 #[cfg(test)]
 pub(crate) fn btc_market_fixture() -> PerpMarket {
     use program::state::{
@@ -151,169 +151,5 @@ pub(crate) fn validity_guard_rails_fixture() -> ValidityGuardRails {
         slots_before_stale_for_margin: 120,
         confidence_interval_max_size: 20_000,
         too_volatile_ratio: 5,
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use program::{
-        controller::position::PositionDirection,
-        state::quoter::{QuoteContext, Quoter},
-        vlp::amm::quoter::AmmQuoter,
-    };
-
-    use super::*;
-
-    const PRICE_PRECISION_I64: i64 = 1_000_000;
-
-    fn btc_market() -> PerpMarket {
-        btc_market_fixture()
-    }
-
-    fn guard_rails() -> ValidityGuardRails {
-        validity_guard_rails_fixture()
-    }
-
-    /// Run the program's actual fill-path quote prep (`AmmQuoter::setup`) and
-    /// return (bid, ask).
-    fn program_fill_path_quote(
-        market: &PerpMarket,
-        exchange_oracle: &OraclePriceData,
-        rails: &ValidityGuardRails,
-        slot: u64,
-    ) -> (u64, u64) {
-        let mm_oracle = market
-            .get_mm_oracle_price_data(*exchange_oracle, slot, rails)
-            .unwrap();
-        let validity =
-            compute_amm_refresh_validity_with_guard_rails(market, &mm_oracle, rails).unwrap();
-        let ctx = QuoteContext {
-            stats: &market.market_stats,
-            oracle: exchange_oracle,
-            mm_oracle: Some(&mm_oracle),
-            oracle_validity: validity,
-            fee_budget: 0,
-            tick: market.order_tick_size,
-            step_size: market.order_step_size,
-            slot,
-            base_precision: 1_000_000_000,
-            market_status: market.status,
-            market_config: market.market_config,
-        };
-        let mut amm = market.amm;
-        let mut quoter = AmmQuoter { amm: &mut amm };
-        quoter.setup(&ctx).unwrap();
-        (
-            quoter.best_price(&ctx, PositionDirection::Short).unwrap(),
-            quoter.best_price(&ctx, PositionDirection::Long).unwrap(),
-        )
-    }
-
-    /// Quote off a projected market the way the filler does.
-    fn projected_quote(market: &PerpMarket) -> (u64, u64) {
-        let reserve_price = market.amm.reserve_price().unwrap();
-        (
-            market
-                .amm
-                .bid_price(
-                    reserve_price,
-                    market.amm.short_spread,
-                    market.amm.reference_price_offset,
-                )
-                .unwrap(),
-            market
-                .amm
-                .ask_price(
-                    reserve_price,
-                    market.amm.long_spread,
-                    market.amm.reference_price_offset,
-                )
-                .unwrap(),
-        )
-    }
-
-    /// The projected market's bid/ask must match what the program's own
-    /// `AmmQuoter::setup` + `best_price` produce at fill time — for a fresh
-    /// oracle, a stale (for-AMM) oracle, and an already-projected slot.
-    #[test]
-    fn projected_quote_matches_program_fill_path() {
-        let rails = guard_rails();
-        let cases = [
-            // (oracle price, delay, slot) — moved oracle, fresh
-            (19_600 * PRICE_PRECISION_I64, 0_i64, 100_u64),
-            // moved oracle, stale for AMM (delay > slots_before_stale_for_amm)
-            (19_600 * PRICE_PRECISION_I64, 12, 100),
-            // oracle below peg
-            (19_150 * PRICE_PRECISION_I64, 1, 100),
-        ];
-        for (price, delay, slot) in cases {
-            let market = btc_market();
-            let exchange_oracle = OraclePriceData {
-                price,
-                confidence: 1_000,
-                delay,
-                has_sufficient_number_of_data_points: true,
-                sequence_id: None,
-            };
-            let (want_bid, want_ask) =
-                program_fill_path_quote(&market, &exchange_oracle, &rails, slot);
-            let projected =
-                project_perp_market_for_quoting(market, exchange_oracle, &rails, slot).unwrap();
-            let (got_bid, got_ask) = projected_quote(&projected);
-            assert_eq!(
-                (got_bid, got_ask),
-                (want_bid, want_ask),
-                "projected quote diverged from program fill path (price={price} delay={delay} slot={slot})"
-            );
-        }
-    }
-
-    /// Slot-idempotency parity: when `amm.last_update_slot >= slot` the program
-    /// skips the curve projection but still refreshes the spread state — the
-    /// helper must do the same.
-    #[test]
-    fn projected_quote_matches_program_fill_path_when_curve_already_projected() {
-        let rails = guard_rails();
-        let slot = 100;
-        let mut market = btc_market();
-        market.amm.last_update_slot = slot; // crank already projected this slot
-        let exchange_oracle = OraclePriceData {
-            price: 19_600 * PRICE_PRECISION_I64,
-            confidence: 1_000,
-            delay: 0,
-            has_sufficient_number_of_data_points: true,
-            sequence_id: None,
-        };
-        let (want_bid, want_ask) = program_fill_path_quote(&market, &exchange_oracle, &rails, slot);
-        let projected =
-            project_perp_market_for_quoting(market, exchange_oracle, &rails, slot).unwrap();
-        assert_eq!(projected_quote(&projected), (want_bid, want_ask));
-    }
-
-    /// Regression shape for the vamm_taker spam: quoting the *cached* account
-    /// state (stale-tight spreads, un-projected curve) must NOT be trusted — with
-    /// a moved oracle it diverges from the program's fill-time quote, which is
-    /// exactly the phantom cross that produced repeated on-chain
-    /// "taker does not cross amm" no-op fills. Also guards the parity test above
-    /// against passing vacuously (i.e. proves setup actually changes the quote in
-    /// this fixture).
-    #[test]
-    fn cached_account_quote_diverges_from_fill_path_when_oracle_moved() {
-        let rails = guard_rails();
-        let market = btc_market();
-        let exchange_oracle = OraclePriceData {
-            price: 19_600 * PRICE_PRECISION_I64,
-            confidence: 1_000,
-            delay: 0,
-            has_sufficient_number_of_data_points: true,
-            sequence_id: None,
-        };
-        let naive = projected_quote(&market); // raw cached account state
-        let (fill_bid, fill_ask) = program_fill_path_quote(&market, &exchange_oracle, &rails, 100);
-        assert_ne!(
-            naive,
-            (fill_bid, fill_ask),
-            "fixture no longer exercises the projection: cached and fill-path quotes agree"
-        );
     }
 }

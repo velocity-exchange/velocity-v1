@@ -216,6 +216,14 @@ impl FillerBot {
         // Swift reconnect backoff state (reset on successful resubscribe / first order)
         let mut retries = 0u32;
 
+        // Swift-feed liveness. A half-open ws never yields an error or `None` — the
+        // stream just goes quiet, which on the order channel is indistinguishable from
+        // a quiet market (server heartbeats are consumed inside the SDK). Reconnecting
+        // is cheap, so after SWIFT_FEED_STALE_LIMIT of silence just tear the stream
+        // down and resubscribe rather than trusting the socket.
+        const SWIFT_FEED_STALE_LIMIT: Duration = Duration::from_secs(300);
+        let mut last_swift_msg = std::time::Instant::now();
+
         // Slot-feed liveness watchdog. Slots arrive ~2.5/s from the gRPC subscription;
         // if the feed dies *silently* (half-open connection — no error, no None, just
         // no more messages) `slot_rx.recv()` pends forever and every per-slot fill
@@ -234,6 +242,7 @@ impl FillerBot {
                         Some(signed_order) => {
                             // reset
                             retries = 0;
+                            last_swift_msg = std::time::Instant::now();
 
                             let order_params = signed_order.order_params();
                             let market_index = order_params.market_index;
@@ -332,6 +341,7 @@ impl FillerBot {
                                     log::info!(target: "swift", "feed resubscribed after {retries} attempt(s)");
                                     swift_order_stream = stream;
                                     retries = 0;
+                                    last_swift_msg = std::time::Instant::now();
                                     feed_health.set_swift_connected(true);
                                 }
                                 Err(e) => {
@@ -584,6 +594,32 @@ impl FillerBot {
                             last_slot_update.elapsed().as_secs()
                         );
                         std::process::exit(1);
+                    }
+                    if last_swift_msg.elapsed() > SWIFT_FEED_STALE_LIMIT {
+                        log::warn!(
+                            target: "swift",
+                            "no swift orders for {}s, resubscribing in case the ws is half-open",
+                            last_swift_msg.elapsed().as_secs()
+                        );
+                        // keep the same ws url override as the initial subscription
+                        match velocity
+                            .subscribe_swift_orders(&market_ids, Some(true), None, std::env::var("SWIFT_WS_URL").ok())
+                            .await
+                        {
+                            Ok(stream) => {
+                                log::info!(target: "swift", "feed resubscribed after stale window");
+                                swift_order_stream = stream;
+                                feed_health.set_swift_connected(true);
+                            }
+                            Err(e) => {
+                                // keep the old stream; it may still be alive in a quiet
+                                // market and the next tick past the limit retries anyway
+                                log::error!(target: "swift", "stale resubscribe failed: {e:?}");
+                            }
+                        }
+                        // reset either way so a failed attempt retries after a full
+                        // stale window instead of every 15s tick
+                        last_swift_msg = std::time::Instant::now();
                     }
                 }
             }

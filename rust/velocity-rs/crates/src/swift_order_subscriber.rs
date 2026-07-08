@@ -502,50 +502,10 @@ pub async fn subscribe_swift_orders(
 
     let (tx, rx) = tokio::sync::mpsc::channel(256);
 
-    // Liveness watchdog parameters. The server heartbeats every ~30s, so a healthy
-    // connection is never silent for long: READ_IDLE_TIMEOUT of total silence (no
-    // orders, heartbeats, or pongs) means the connection is dead even though the
-    // socket looks open (half-open TCP, LB idle drop, server-side unroute) — without
-    // it `incoming.next()` pends forever and the feed fails silently. Client pings
-    // give the connection regular write traffic so a broken pipe surfaces as a write
-    // error within one PING_INTERVAL instead of never, and keep NAT/LB idle timers
-    // from firing.
-    const READ_IDLE_TIMEOUT: Duration = Duration::from_secs(90);
-    const PING_INTERVAL: Duration = Duration::from_secs(15);
-
     // handle swift orders; exiting this task drops `tx`, which ends the returned
     // stream — the subscriber's signal to reconnect
     tokio::spawn(async move {
-        let mut ping_timer = tokio::time::interval(PING_INTERVAL);
-        ping_timer.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
-        loop {
-            let msg = tokio::select! {
-                biased;
-                read = tokio::time::timeout(READ_IDLE_TIMEOUT, incoming.next()) => {
-                    match read {
-                        Ok(Some(msg)) => msg,
-                        Ok(None) => {
-                            log::error!(target: LOG_TARGET, "swift ws stream ended");
-                            break;
-                        }
-                        Err(_elapsed) => {
-                            log::error!(
-                                target: LOG_TARGET,
-                                "swift ws silent for {}s (no orders or heartbeats), dropping connection",
-                                READ_IDLE_TIMEOUT.as_secs()
-                            );
-                            break;
-                        }
-                    }
-                }
-                _ = ping_timer.tick() => {
-                    if let Err(err) = outgoing.send(Message::Ping(Default::default())).await {
-                        log::error!(target: LOG_TARGET, "swift ws ping failed: {err:?}");
-                        break;
-                    }
-                    continue;
-                }
-            };
+        while let Some(msg) = incoming.next().await {
             match msg {
                 Ok(Message::Text(ref text)) => {
                     match serde_json::from_str::<OrderNotification>(text) {
@@ -583,22 +543,9 @@ pub async fn subscribe_swift_orders(
                                 );
                                 continue;
                             }
-                            match tx.try_send(order) {
-                                Ok(()) => {}
-                                Err(tokio::sync::mpsc::error::TrySendError::Full(order)) => {
-                                    // slow consumer: shed this order but keep the
-                                    // connection — killing the pump over one burst
-                                    // turns backpressure into a full feed outage
-                                    log::error!(
-                                        target: LOG_TARGET,
-                                        "order chan full, dropping order: {}",
-                                        order.uuid
-                                    );
-                                }
-                                Err(tokio::sync::mpsc::error::TrySendError::Closed(_)) => {
-                                    log::error!(target: LOG_TARGET, "order chan closed");
-                                    break;
-                                }
+                            if let Err(err) = tx.try_send(order) {
+                                log::error!(target: LOG_TARGET, "order chan failed: {err:?}");
+                                break;
                             }
                         }
                         Err(err) => {

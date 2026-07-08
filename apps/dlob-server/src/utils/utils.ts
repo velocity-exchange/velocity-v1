@@ -27,7 +27,12 @@ import { NextFunction, Request, Response } from 'express';
 import FEATURE_FLAGS from './featureFlags';
 import { Connection } from '@solana/web3.js';
 import { wsMarketArgs } from 'src/dlob-subscriber/DLOBSubscriberIO';
-import { DEFAULT_AUCTION_PARAMS, MID_MAJOR_MARKETS } from './constants';
+import {
+	DEFAULT_AUCTION_PARAMS,
+	FAST_FILL_AUCTION_DURATION,
+	FAST_FILL_AUCTION_START_PRICE_OFFSET,
+	MID_MAJOR_MARKETS,
+} from './constants';
 import { AuctionParamArgs } from './types';
 import { COMMON_MATH, ENUM_UTILS } from '@velocity-exchange/common';
 import { TakerFillVsOracleBpsRedisResult } from '../athena/repositories/fillQualityAnalytics';
@@ -652,11 +657,17 @@ export function createMarketBasedAuctionParams(
 		args.marketType?.toLowerCase() === 'perp' &&
 		[0, 1, 2].includes(args.marketIndex);
 
+	// Version 3+ weights toward fast fills: start just inside the touch on all
+	// markets and run a short auction, rather than fishing for price improvement
+	const isFastFill = version >= 3;
+
 	// Resolve "marketBased" values and undefined values (both should use market-based logic)
 	const resolvedAuctionStartPriceOffsetFrom =
 		args.auctionStartPriceOffsetFrom === 'marketBased' ||
 		args.auctionStartPriceOffsetFrom === undefined
-			? isMajorMarket
+			? isFastFill
+				? 'bestOffer'
+				: isMajorMarket
 				? 'mark'
 				: 'bestOffer'
 			: args.auctionStartPriceOffsetFrom;
@@ -664,7 +675,9 @@ export function createMarketBasedAuctionParams(
 	const resolvedAuctionStartPriceOffset =
 		args.auctionStartPriceOffset === 'marketBased' ||
 		args.auctionStartPriceOffset === undefined
-			? isMajorMarket
+			? isFastFill
+				? FAST_FILL_AUCTION_START_PRICE_OFFSET
+				: isMajorMarket
 				? 0
 				: -0.1
 			: args.auctionStartPriceOffset;
@@ -672,6 +685,7 @@ export function createMarketBasedAuctionParams(
 	// Set market-specific defaults (only used if values are undefined)
 	const marketSpecificDefaults: Partial<AuctionParamArgs> = {
 		...DEFAULT_AUCTION_PARAMS,
+		...(isFastFill ? { auctionDuration: FAST_FILL_AUCTION_DURATION } : {}),
 		auctionStartPriceOffsetFrom:
 			isMajorMarket && version === 1 ? 'mark' : 'bestOffer',
 		auctionStartPriceOffset: isMajorMarket && version === 1 ? 0 : -0.1,
@@ -985,8 +999,8 @@ export const mapToMarketOrderParams = async (
 		// Store original oracle for debugging
 		debugInfo.originalOraclePrice = estimatedPrices.oraclePrice.toString();
 
-		// VERSION 2: Adjust oracle price based on fill quality when orderbook is crossed
-		if (apiVersion === 2 && fillQualityInfo && redisL2) {
+		// VERSION 2+: Adjust oracle price based on fill quality when orderbook is crossed
+		if (apiVersion >= 2 && fillQualityInfo && redisL2) {
 			try {
 				// Convert raw L2 to formatted L2 for cross detection
 				const l2Formatted = convertRawL2ToBN(redisL2);
@@ -1202,7 +1216,7 @@ export const mapToMarketOrderParams = async (
 				priceImpactBps: estimatedPrices.priceImpact.toString(),
 			},
 			v2CrossDetection:
-				apiVersion === 2
+				apiVersion >= 2
 					? {
 							isCrossed: debugInfo.isCrossed,
 							fillQualityBps: debugInfo.fillQualityBps,
@@ -1449,8 +1463,8 @@ export const calculateDynamicSlippage = (
 		maxSlippage
 	);
 
-	// Apply 10% boost for API v2
-	if (apiVersion === 2) {
+	// Apply boost for API v2+
+	if (apiVersion >= 2) {
 		finalSlippage = finalSlippage * 1.2;
 	}
 

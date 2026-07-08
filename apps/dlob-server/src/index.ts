@@ -951,7 +951,7 @@ const main = async (): Promise<void> => {
 			const apiVersion = version ? parseInt(version as string) : 1;
 
 			let redisFillQualityInfo: TakerFillVsOracleBpsRedisResult | undefined;
-			if (apiVersion === 2) {
+			if (apiVersion >= 2) {
 				const redisKey = `taker_fill_vs_oracle_bps:market:${marketIndex}`;
 				try {
 					const redisValue = await fetchFromRedis(
@@ -1096,6 +1096,8 @@ const main = async (): Promise<void> => {
 					slippageTolerance: (
 						result.data.marketOrderParams.slippageTolerance / 100
 					).toString(),
+					// Quote timestamp so clients can re-fetch stale params before signing
+					generatedAt: Date.now(),
 				},
 			};
 

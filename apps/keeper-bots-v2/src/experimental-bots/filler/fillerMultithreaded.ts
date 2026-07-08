@@ -2415,13 +2415,26 @@ export class FillerMultithreaded {
 			  )
 			: (await this.userMap.mustGet(takerUserPubKey)).getUserAccountOrThrow();
 
+		// `authority` is the SIGNING authority: for delegated signed-msg orders this
+		// is the delegate key (nodeToFill.authority), which the program needs to
+		// verify the taker's ed25519 signature. It is passed through as
+		// `signingAuthority` and must stay the delegate.
 		const authority = nodeToFill.authority
 			? nodeToFill.authority
 			: takerUserAccount.authority.toString();
 
+		// UserStats (and the referrer / builder-referral status it carries) is a PDA
+		// per account OWNER, so it must always be derived from the taker sub-account's
+		// real authority — never the delegate. Deriving it from a delegate signer
+		// yields an uninitialized PDA and the program rejects the fill with
+		// AccountOwnedByWrongProgram (0xbbf / 3007) on `user_stats`, which for
+		// delegated (e.g. UI-placed) swift orders silently fails simulation so the
+		// fill tx is never sent.
+		const takerAuthority = takerUserAccount.authority;
+
 		let referrerInfo: ReferrerInfo | undefined;
 		try {
-			referrerInfo = await this.referrerMap?.mustGet(authority);
+			referrerInfo = await this.referrerMap?.mustGet(takerAuthority.toString());
 		} catch (e) {
 			logger.warn(`getNodeFillInfo: Failed to get referrer info: ${e}`);
 			referrerInfo = undefined;
@@ -2434,7 +2447,7 @@ export class FillerMultithreaded {
 		let takerIsReferred = false;
 		try {
 			takerIsReferred = await this.referrerMap.mustGetIsBuilderReferral(
-				authority
+				takerAuthority.toString()
 			);
 		} catch (e) {
 			logger.warn(
@@ -2448,7 +2461,7 @@ export class FillerMultithreaded {
 			takerUser: takerUserAccount,
 			takerStatsPubKey: getUserStatsAccountPublicKey(
 				this.velocityClient.program.programId,
-				new PublicKey(authority)
+				takerAuthority
 			),
 			takerUserSlot: this.slotSubscriber.getSlot(),
 			referrerInfo,

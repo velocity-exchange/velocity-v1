@@ -8,12 +8,9 @@
 // builds exclude it until the hedge component is audited). State, settlement
 // math, and the constituent loader stay compiled so account layouts and shared
 // readers (amm_cache, keeper crank) are identical across builds.
-#[cfg(feature = "vlp-hedge")]
 pub mod admin;
 pub mod constituent_map;
-#[cfg(feature = "vlp-hedge")]
 pub mod instructions;
 pub mod math;
-#[cfg(feature = "vlp-hedge")]
 pub mod settle;
 pub mod state;

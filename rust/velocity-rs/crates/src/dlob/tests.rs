@@ -3434,7 +3434,7 @@ fn dlob_l3_trigger_orders_by_price() {
 
     // Verify trigger orders are sorted correctly (required for filtering to work)
     // Bids should be sorted by trigger price descending (highest first)
-    let trigger_bid_prices: Vec<u64> = l3book.trigger_bids.iter().map(|o| o.price).collect();
+    let trigger_bid_prices: Vec<u64> = l3book.trigger_bids.iter().map(|o| o.order.price).collect();
     for i in 1..trigger_bid_prices.len() {
         assert!(
             trigger_bid_prices[i - 1] >= trigger_bid_prices[i],
@@ -3444,7 +3444,7 @@ fn dlob_l3_trigger_orders_by_price() {
     }
 
     // Asks should be sorted by trigger price ascending (lowest first)
-    let trigger_ask_prices: Vec<u64> = l3book.trigger_asks.iter().map(|o| o.price).collect();
+    let trigger_ask_prices: Vec<u64> = l3book.trigger_asks.iter().map(|o| o.order.price).collect();
     for i in 1..trigger_ask_prices.len() {
         assert!(
             trigger_ask_prices[i - 1] <= trigger_ask_prices[i],
@@ -3455,8 +3455,8 @@ fn dlob_l3_trigger_orders_by_price() {
 
     // Verify test includes orders with trigger_price below oracle for asks
     // and trigger_price above oracle for bids
-    let ask_trigger_prices: Vec<u64> = l3book.trigger_asks.iter().map(|o| o.price).collect();
-    let bid_trigger_prices: Vec<u64> = l3book.trigger_bids.iter().map(|o| o.price).collect();
+    let ask_trigger_prices: Vec<u64> = l3book.trigger_asks.iter().map(|o| o.order.price).collect();
+    let bid_trigger_prices: Vec<u64> = l3book.trigger_bids.iter().map(|o| o.order.price).collect();
 
     // Verify asks include orders with trigger_price below oracle (900, 950 < 1000)
     let asks_below_oracle: Vec<u64> = ask_trigger_prices
@@ -4499,4 +4499,200 @@ fn dlob_vamm_taker_candidate_requires_fill_path_quote() {
         fillable_fill_path, 0,
         "fill-path view must report nothing fillable (on-chain: no fulfillment methods found)"
     );
+}
+
+#[test]
+fn post_trigger_price_mirrors_program_trigger_auction_params() {
+    use crate::dlob::types::{L3Order, TriggerL3Order};
+    use program::{
+        math::auction::{calculate_auction_params_for_trigger_order, calculate_auction_price},
+        state::oracle::OraclePriceData,
+        state::user::{Order as VelocityOrder, OrderBitFlag},
+    };
+
+    let market = vamm_taker_test_market(1);
+    let slot = 100;
+    let oracle_price: u64 = 1_000_000_000; // $1000 @ PRICE_PRECISION
+
+    // --- TriggerLimit: the program clamps the post-trigger auction to the order's
+    // limit price (`derive_market_order_auction_params`); a passive limit must cap
+    // the reported post-trigger price exactly ---
+    let limit_price: u64 = 900_000_000;
+    let trigger_limit = TriggerL3Order {
+        order: L3Order {
+            price: 999_000_000, // trigger price (Above; oracle > trigger => triggers)
+            size: 50,
+            max_ts: 0,
+            order_id: 1,
+            kind: OrderKind::TriggerLimit,
+            user: Pubkey::new_unique(),
+            flags: L3Order::IS_LONG | L3Order::IS_TRIGGER_ABOVE,
+        },
+        limit_price,
+    };
+    assert_eq!(
+        trigger_limit.post_trigger_price(slot, oracle_price, &market),
+        Some(limit_price),
+        "long trigger-limit with passive limit must be clamped to its limit price"
+    );
+
+    // --- TriggerMarket: must reproduce the program's trigger recipe exactly
+    // (`update_trigger_order_params`: oracle-offset auction params + the
+    // OracleTriggerMarket bit flag, then fill-time `calculate_auction_price`) ---
+    let trigger_market = TriggerL3Order {
+        order: L3Order {
+            price: 999_000_000,
+            size: 50,
+            max_ts: 0,
+            order_id: 2,
+            kind: OrderKind::TriggerMarket,
+            user: Pubkey::new_unique(),
+            flags: L3Order::IS_LONG | L3Order::IS_TRIGGER_ABOVE,
+        },
+        limit_price: 0,
+    };
+    let got = trigger_market
+        .post_trigger_price(slot, oracle_price, &market)
+        .expect("post trigger price");
+
+    let mut expected_order = VelocityOrder {
+        slot,
+        direction: Direction::Long,
+        order_type: OrderType::TriggerMarket,
+        market_index: 0,
+        market_type: MarketType::Perp,
+        base_asset_amount: 50,
+        status: OrderStatus::Open,
+        trigger_condition: crate::types::OrderTriggerCondition::TriggeredAbove,
+        ..Default::default()
+    };
+    let (duration, start, end) = calculate_auction_params_for_trigger_order(
+        &expected_order,
+        &OraclePriceData {
+            price: oracle_price as i64,
+            confidence: 0,
+            delay: 0,
+            has_sufficient_number_of_data_points: true,
+            sequence_id: None,
+        },
+        20, // the program's hardcoded min duration in `controller::orders::trigger_order`
+        Some(&market),
+    )
+    .unwrap();
+    expected_order.auction_duration = duration;
+    expected_order.auction_start_price = start;
+    expected_order.auction_end_price = end;
+    expected_order.bit_flags |= OrderBitFlag::OracleTriggerMarket as u8;
+    let expected = calculate_auction_price(
+        &expected_order,
+        slot,
+        market.order_tick_size,
+        Some(oracle_price as i64),
+    )
+    .unwrap();
+    assert_eq!(
+        got, expected,
+        "trigger-market post-trigger price must mirror the on-chain trigger recipe"
+    );
+}
+
+#[test]
+fn find_crosses_for_auctions_respects_trigger_limit_price() {
+    let _ = env_logger::try_init();
+    let dlob = DLOB::default();
+    let slot = 100;
+    let market = vamm_taker_test_market(1);
+    let oracle_price: u64 = 1_000_000_000;
+    // vamm bid/ask = 999_900_000 / 1_000_100_000 (0.01% spread): the resting ask
+    // sits between them so no vamm-taker cross muddies the assertions
+    let resting_ask_price: i64 = 999_950_000;
+
+    let maker = Pubkey::new_unique();
+    let resting_ask = create_test_order(
+        1,
+        OrderType::Limit,
+        Direction::Short,
+        resting_ask_price,
+        50,
+        slot,
+    );
+    dlob.insert_order(&maker, slot, resting_ask);
+
+    // Stop-buy trigger-limit whose condition is met (Above 999, oracle 1000) but whose
+    // limit price (900) is far below the resting ask: post-trigger it cannot fill, so
+    // it must NOT be reported as a cross (it belongs to the standalone trigger pass)
+    let taker = Pubkey::new_unique();
+    let mut passive = create_test_order(
+        2,
+        OrderType::TriggerLimit,
+        Direction::Long,
+        900_000_000,
+        50,
+        slot,
+    );
+    passive.trigger_price = 999_000_000;
+    passive.trigger_condition = crate::types::OrderTriggerCondition::Above;
+    dlob.insert_order(&taker, slot, passive);
+
+    if let Some(book) = dlob.markets.get(&MarketId::new(0, MarketType::Perp)) {
+        book.update_l3_view(oracle_price, &dlob.metadata, &Default::default());
+    }
+    let crosses = dlob.find_crosses_for_auctions(
+        0,
+        MarketType::Perp,
+        slot,
+        oracle_price,
+        Some(&market),
+        oracle_price,
+        None,
+    );
+    assert!(
+        crosses.crosses.is_empty(),
+        "passive-limit trigger order must not cross: {:?}",
+        crosses.crosses
+    );
+    // ...but the standalone trigger pass must still surface it
+    let mut triggerable = Vec::new();
+    dlob.find_triggerable_orders(0, MarketType::Perp, oracle_price, &mut triggerable);
+    assert_eq!(triggerable, vec![(taker, 2)]);
+
+    // Same order with an aggressive limit (>= resting ask): the clamped post-trigger
+    // auction starts at the limit price and crosses => atomic trigger+fill candidate
+    dlob.remove_order(&taker, slot, passive);
+    let mut aggressive = create_test_order(
+        3,
+        OrderType::TriggerLimit,
+        Direction::Long,
+        1_000_000_000,
+        50,
+        slot,
+    );
+    aggressive.trigger_price = 999_000_000;
+    aggressive.trigger_condition = crate::types::OrderTriggerCondition::Above;
+    dlob.insert_order(&taker, slot, aggressive);
+
+    if let Some(book) = dlob.markets.get(&MarketId::new(0, MarketType::Perp)) {
+        book.update_l3_view(oracle_price, &dlob.metadata, &Default::default());
+    }
+    let crosses = dlob.find_crosses_for_auctions(
+        0,
+        MarketType::Perp,
+        slot,
+        oracle_price,
+        Some(&market),
+        oracle_price,
+        None,
+    );
+    assert_eq!(
+        crosses.crosses.len(),
+        1,
+        "aggressive-limit trigger order must cross"
+    );
+    let (taker_order, maker_crosses) = &crosses.crosses[0];
+    assert_eq!(taker_order.order_id, 3);
+    assert_eq!(taker_order.kind, OrderKind::TriggerLimit);
+    assert!(maker_crosses
+        .orders
+        .iter()
+        .any(|(m, _)| m.user == maker && m.order_id == 1));
 }

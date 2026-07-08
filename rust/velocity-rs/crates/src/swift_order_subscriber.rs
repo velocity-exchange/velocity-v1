@@ -1,5 +1,5 @@
 //! Swift order subscriber and serialization utilities
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use crate::solana_sdk::{clock::Slot, pubkey::Pubkey, signature::Signature};
 use anchor_lang::{AnchorDeserialize, AnchorSerialize};
@@ -395,15 +395,44 @@ pub async fn subscribe_swift_orders(
 
     let maker_pubkey = client.wallet().authority().to_string();
     let uri = format!("{base_url}/ws?pubkey={maker_pubkey}");
-    let (ws_stream, _) = connect_async(uri).await.map_err(|err| {
-        log::error!(target: LOG_TARGET, "couldn't connect to server: {err:?}");
-        SdkError::WsClient(Box::new(err))
-    })?;
+
+    // The TCP/WS connect and the auth handshake must complete within a deadline.
+    // Neither resolves on its own against a server that accepts the connection but
+    // never progresses (dead backend behind a Service/LB, hung server) — and callers
+    // await this function inline in their event loops, so an unbounded hang here
+    // freezes the whole bot, not just the swift feed.
+    const CONNECT_TIMEOUT: Duration = Duration::from_secs(20);
+
+    let deadline = tokio::time::Instant::now() + CONNECT_TIMEOUT;
+    let (ws_stream, _) = tokio::time::timeout_at(deadline, connect_async(uri))
+        .await
+        .map_err(|_| {
+            log::error!(
+                target: LOG_TARGET,
+                "swift ws connect timed out after {}s",
+                CONNECT_TIMEOUT.as_secs()
+            );
+            SdkError::WebsocketError
+        })?
+        .map_err(|err| {
+            log::error!(target: LOG_TARGET, "couldn't connect to server: {err:?}");
+            SdkError::WsClient(Box::new(err))
+        })?;
 
     let (mut outgoing, mut incoming) = ws_stream.split();
 
-    // handle authentication and subscription
-    while let Some(msg) = incoming.next().await {
+    // handle authentication and subscription (same deadline as the connect)
+    while let Some(msg) = tokio::time::timeout_at(deadline, incoming.next())
+        .await
+        .map_err(|_| {
+            log::error!(
+                target: LOG_TARGET,
+                "swift ws auth handshake timed out after {}s",
+                CONNECT_TIMEOUT.as_secs()
+            );
+            SdkError::WebsocketError
+        })?
+    {
         let msg = msg.map_err(|err| {
             log::error!(target: LOG_TARGET, "failed reading swift msg: {err:?}");
             SdkError::WsClient(Box::new(err))
@@ -473,7 +502,8 @@ pub async fn subscribe_swift_orders(
 
     let (tx, rx) = tokio::sync::mpsc::channel(256);
 
-    // handle swift orders
+    // handle swift orders; exiting this task drops `tx`, which ends the returned
+    // stream — the subscriber's signal to reconnect
     tokio::spawn(async move {
         while let Some(msg) = incoming.next().await {
             match msg {
@@ -503,7 +533,9 @@ pub async fn subscribe_swift_orders(
                                 order.pre_deposit = Some(deposit.to_string());
                             }
 
-                            if !accept_sanitized {
+                            // drop only orders actually flagged for sanitization;
+                            // unflagged flow is always deliverable
+                            if order.will_sanitize && !accept_sanitized {
                                 log::debug!(
                                     target: LOG_TARGET,
                                     "skipping sanitized order: {}",

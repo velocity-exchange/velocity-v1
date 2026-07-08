@@ -1,0 +1,520 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Swift Order Flow — Velocity Protocol</title>
+<style>
+  :root {
+    --bg:          #fafaf9;
+    --fg:          #111827;
+    --muted:       #525252;
+    --accent:      #0f766e;
+    --accent-soft: #f0fdfa;
+    --panel:       #f5f5f4;
+    --border:      #e7e5e4;
+    --code-bg:     #111827;
+    --code-fg:     #f5f5f4;
+  }
+  html { color-scheme: light; }
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--fg);
+    font: 16px/1.6 -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
+  }
+  main { max-width: 880px; margin: 0 auto; padding: 56px 24px 96px; }
+
+  h1 { font-size: 2.25rem; margin: 0 0 8px; letter-spacing: -0.02em; }
+  h2 { margin-top: 56px; padding-top: 8px; font-size: 1.5rem; letter-spacing: -0.01em; border-top: 1px solid var(--border); }
+  h3 { margin-top: 32px; font-size: 1.125rem; }
+
+  p, li { color: var(--fg); }
+  .lede  { color: var(--muted); font-size: 1.05rem; margin: 0 0 8px; }
+  .meta  { color: var(--muted); font-size: 0.875rem; margin: 0 0 32px; }
+  .file  { color: var(--muted); font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace; font-size: 0.85em; }
+
+  code, pre {
+    font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+    font-size: 0.9em;
+  }
+  code { background: var(--panel); padding: 0.1em 0.35em; border-radius: 4px; }
+  pre {
+    background: var(--code-bg);
+    color: var(--code-fg);
+    padding: 18px 20px;
+    border-radius: 8px;
+    overflow-x: auto;
+    line-height: 1.5;
+    font-size: 0.85rem;
+  }
+  pre code { background: transparent; padding: 0; color: inherit; }
+
+  a { color: var(--accent); text-decoration: none; }
+  a:hover { text-decoration: underline; }
+
+  .panel {
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 16px 20px;
+    margin: 16px 0;
+  }
+  .panel.note {
+    background: var(--accent-soft);
+    border-left: 3px solid var(--accent);
+  }
+
+  .grid {
+    display: grid;
+    grid-template-columns: max-content 1fr;
+    gap: 4px 18px;
+    margin: 12px 0;
+  }
+  .grid dt { font-weight: 600; color: var(--muted); }
+  .grid dd { margin: 0; }
+
+  table { border-collapse: collapse; width: 100%; margin: 16px 0; }
+  th, td { border-bottom: 1px solid var(--border); padding: 8px 10px; text-align: left; vertical-align: top; }
+  th { background: var(--panel); font-weight: 600; }
+
+  .toc { background: var(--panel); border-radius: 8px; padding: 14px 20px; margin: 24px 0 32px; }
+  .toc ol { margin: 0; padding-left: 22px; }
+  .toc li { margin: 2px 0; }
+
+  .pill {
+    display: inline-block;
+    background: var(--accent);
+    color: white;
+    font-size: 0.7rem;
+    font-weight: 600;
+    padding: 2px 8px;
+    border-radius: 999px;
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+    vertical-align: middle;
+  }
+
+  figure { margin: 24px 0; }
+  figcaption { color: var(--muted); font-size: 0.85rem; margin-top: 6px; text-align: center; }
+  svg { display: block; max-width: 100%; height: auto; margin: 0 auto; }
+</style>
+</head>
+<body>
+<main>
+  <p class="meta">
+    <span class="pill">Velocity Protocol</span> &middot;
+    System data flow
+  </p>
+  <h1>Swift Order Flow</h1>
+  <p class="lede">
+    How a signed-message ("Swift") order travels from the UI to an on-chain fill —
+    the four services it passes through, who is actually responsible for landing the
+    transaction, and every point where an order can be silently dropped.
+  </p>
+
+  <div class="toc">
+    <strong>Contents</strong>
+    <ol>
+      <li><a href="#overview">Overview</a></li>
+      <li><a href="#sequence">End-to-end sequence</a></li>
+      <li><a href="#services">Services &amp; responsibilities</a></li>
+      <li><a href="#filler-logic">Filler decision logic</a></li>
+      <li><a href="#drop-points">Where orders silently die</a></li>
+      <li><a href="#tracing">Log targets &amp; how to trace</a></li>
+    </ol>
+  </div>
+
+  <h2 id="overview">1. Overview</h2>
+  <p>
+    A <em>Swift order</em> is a gasless, signed-message order. The user's wallet (or a
+    delegate) signs the order params off-chain; the taker never sends a transaction. Instead,
+    a chain of off-chain services validates, distributes, and finally <strong>a keeper/filler
+    submits the on-chain transaction</strong> on the taker's behalf. This inverts the usual
+    model: the UI returning <code>200 OK</code> means the order was <em>accepted for
+    distribution</em>, not that it landed.
+  </p>
+  <p>
+    The path has four hops between the browser and the blockchain. Understanding which hop owns
+    which responsibility is the key to debugging "the order was accepted but nothing happened
+    on-chain" — the single most common Swift failure mode.
+  </p>
+
+  <dl class="grid">
+    <dt>Signed message</dt><dd>The order params (market, direction, size, auction curve) signed by the taker or delegate. Carries a UUID and the slot it was signed at.</dd>
+    <dt>swift-server</dt><dd>HTTP endpoint the UI posts to. Verifies the signature, runs an off-chain simulation, and <strong>publishes to Redis</strong>. Never touches the chain.</dd>
+    <dt>swift-ws-server</dt><dd>Subscribes to Redis and re-broadcasts each order to authenticated WebSocket clients (the keepers).</dd>
+    <dt>Filler / keeper</dt><dd>Subscribes to the WebSocket, decides whether the order crosses, and <strong>builds + sends the on-chain transaction</strong>.</dd>
+  </dl>
+
+  <h2 id="sequence">2. End-to-end sequence</h2>
+  <p>
+    The round-trip below shows the full lifecycle. Note that the <code>200 OK</code> the UI
+    receives (step&nbsp;1's return) happens right after the Redis publish — long before any
+    on-chain activity. Everything from step&nbsp;4 onward is invisible to the browser.
+  </p>
+
+  <figure>
+    <svg viewBox="0 0 940 430" xmlns="http://www.w3.org/2000/svg" role="img" aria-labelledby="seq-title">
+      <title id="seq-title">Swift order lifecycle from UI signature to on-chain fill</title>
+      <style>
+        .lane        { fill: #fff; stroke: #111827; stroke-width: 1.2; }
+        .lane-label  { font: 600 12px -apple-system, sans-serif; fill: #111827; }
+        .life        { stroke: #999; stroke-dasharray: 3 3; }
+        .arrow       { stroke: #111827; stroke-width: 1.4; fill: none; marker-end: url(#arr); }
+        .ret         { stroke: #0f766e; stroke-width: 1.4; fill: none; stroke-dasharray: 5 3; marker-end: url(#arr-o); }
+        .step        { font: 10.5px ui-monospace, monospace; fill: #111827; }
+        .note-box    { fill: #f0fdfa; stroke: #0f766e; stroke-width: 1; }
+        .note-text   { font: 10.5px -apple-system, sans-serif; fill: #111827; }
+      </style>
+      <defs>
+        <marker id="arr" viewBox="0 0 10 10" refX="10" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse">
+          <path d="M0,0 L10,5 L0,10 z" fill="#111827"/>
+        </marker>
+        <marker id="arr-o" viewBox="0 0 10 10" refX="10" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse">
+          <path d="M0,0 L10,5 L0,10 z" fill="#0f766e"/>
+        </marker>
+      </defs>
+
+      <!-- LANES -->
+      <g>
+        <rect class="lane" x="20"  y="20" width="110" height="34" rx="6"/>
+        <text class="lane-label" x="75"  y="41" text-anchor="middle">UI (wallet)</text>
+        <line class="life" x1="75"  y1="54" x2="75"  y2="410"/>
+
+        <rect class="lane" x="165" y="20" width="140" height="34" rx="6"/>
+        <text class="lane-label" x="235" y="41" text-anchor="middle">swift-server</text>
+        <line class="life" x1="235" y1="54" x2="235" y2="410"/>
+
+        <rect class="lane" x="350" y="20" width="90"  height="34" rx="6"/>
+        <text class="lane-label" x="395" y="41" text-anchor="middle">Redis</text>
+        <line class="life" x1="395" y1="54" x2="395" y2="410"/>
+
+        <rect class="lane" x="480" y="20" width="150" height="34" rx="6"/>
+        <text class="lane-label" x="555" y="41" text-anchor="middle">swift-ws-server</text>
+        <line class="life" x1="555" y1="54" x2="555" y2="410"/>
+
+        <rect class="lane" x="675" y="20" width="140" height="34" rx="6"/>
+        <text class="lane-label" x="745" y="41" text-anchor="middle">filler (keeper)</text>
+        <line class="life" x1="745" y1="54" x2="745" y2="410"/>
+
+        <rect class="lane" x="855" y="20" width="75"  height="34" rx="6"/>
+        <text class="lane-label" x="892" y="41" text-anchor="middle">Solana</text>
+        <line class="life" x1="892" y1="54" x2="892" y2="410"/>
+      </g>
+
+      <!-- 1. UI -> swift-server -->
+      <line class="arrow" x1="83" y1="90" x2="227" y2="90"/>
+      <text class="step" x="88" y="84">1. POST /orders {signed msg}</text>
+
+      <!-- note: verify + sim -->
+      <rect class="note-box" x="165" y="104" width="140" height="34" rx="4"/>
+      <text class="note-text" x="235" y="118" text-anchor="middle">verify signature +</text>
+      <text class="note-text" x="235" y="131" text-anchor="middle">local simulation</text>
+
+      <!-- 1r. return 200 OK -->
+      <line class="ret" x1="227" y1="160" x2="83" y2="160"/>
+      <text class="step" x="88" y="154">1r. 200 OK (accepted)</text>
+
+      <!-- 2. swift-server -> Redis -->
+      <line class="arrow" x1="243" y1="196" x2="387" y2="196"/>
+      <text class="step" x="248" y="190">2. PUBLISH swift_orders_perp_0</text>
+
+      <!-- 3. Redis -> ws-server -->
+      <line class="arrow" x1="403" y1="232" x2="547" y2="232"/>
+      <text class="step" x="408" y="226">3. deliver (receivers=1)</text>
+
+      <!-- 4. ws-server -> filler -->
+      <line class="arrow" x1="563" y1="268" x2="737" y2="268"/>
+      <text class="step" x="568" y="262">4. WS broadcast (receivers=N)</text>
+
+      <!-- note: evaluate crosses -->
+      <rect class="note-box" x="675" y="282" width="140" height="34" rx="4"/>
+      <text class="note-text" x="745" y="296" text-anchor="middle">evaluate crosses +</text>
+      <text class="note-text" x="745" y="309" text-anchor="middle">load accounts</text>
+
+      <!-- 5. filler -> Solana -->
+      <line class="arrow" x1="753" y1="338" x2="884" y2="338"/>
+      <text class="step" x="700" y="332">5. place_swift_order (+ fill_perp_order)</text>
+
+      <!-- 6. Solana -> filler confirm -->
+      <line class="ret" x1="884" y1="374" x2="753" y2="374"/>
+      <text class="step" x="690" y="368">6. tx confirmed (observed via gRPC)</text>
+    </svg>
+    <figcaption>
+      Steps 1&ndash;1r are the only part the browser sees; the order is "accepted" at the Redis
+      publish. Steps 4&ndash;6 — the actual on-chain landing — happen on the keeper, out of the
+      UI's sight. The dashed accent arrows are returns.
+    </figcaption>
+  </figure>
+
+  <p>
+    Two things make this flow surprising. First, the <code>receivers</code> count in the
+    swift-server log (step&nbsp;2) counts <em>Redis</em> subscribers — i.e. the swift-ws-server —
+    <strong>not</strong> keepers. <code>receivers=1</code> means "the ws-server got it," not "a
+    keeper got it." Second, the swift-server's local simulation (step&nbsp;1 note) is a pre-publish
+    admission check against cached state; it guarantees nothing about on-chain landing.
+  </p>
+
+  <h2 id="services">3. Services &amp; responsibilities</h2>
+  <p>
+    All four services deploy from separate repos but run in the same cluster. On mainnet they
+    are Kubernetes deployments in namespace <code>mainnet-beta</code>, with logs shipped to Loki
+    (query in Grafana by the <code>app</code> label). The keeper exists in two implementations —
+    both subscribe to the same ws-server, and this distinction matters for debugging (see
+    §4&ndash;5).
+  </p>
+
+  <table>
+    <thead>
+      <tr><th>Service</th><th>Loki <code>app</code> label</th><th>Role &amp; boundary</th></tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td>swift-server</td>
+        <td><code>swift-server-app</code></td>
+        <td>Publisher. Verify sig &rarr; simulate &rarr; <code>PUBLISH</code> to Redis. Responsibility ends at publish.</td>
+      </tr>
+      <tr>
+        <td>swift-ws-server</td>
+        <td><code>swift-ws-server-app</code></td>
+        <td>Redis subscriber &rarr; WebSocket fan-out to authenticated keepers. Drops if no keeper is subscribed.</td>
+      </tr>
+      <tr>
+        <td>Rust filler</td>
+        <td><code>rust-filler-bot</code></td>
+        <td>keeprs. Has a <strong>place-only fallback</strong> — lands non-crossing swift limits as resting orders.</td>
+      </tr>
+      <tr>
+        <td>TS filler</td>
+        <td><code>order-filler-multithreaded-bot</code></td>
+        <td>keeper-bots-v2. <strong>Only</strong> sends on a DLOB cross — never places a non-crossing swift order.</td>
+      </tr>
+    </tbody>
+  </table>
+
+  <div class="panel note">
+    <strong>The <code>receivers</code> field is a two-hop trap.</strong>
+    <code>receivers=1</code> on <code>swift-server-app</code> proves only that the
+    <code>swift-ws-server-app</code> received the order from Redis. The ws-server then does its
+    <em>own</em> fan-out; if no keeper is WebSocket-subscribed to that market, it logs
+    <code>No receiver found for topic ... dropping order message!</code> and the order dies
+    there — despite the healthy-looking publish upstream.
+  </div>
+
+  <h2 id="filler-logic">4. Filler decision logic</h2>
+  <p>
+    Once a keeper receives an order over the WebSocket, it evaluates whether the order crosses
+    resting liquidity or the vAMM, then branches. The Rust filler
+    (<span class="file">rust/keep-rs/src/filler.rs</span>) has three outcomes from
+    <code>evaluate_swift_crosses</code>: <code>Fillable</code>, <code>NotFillable</code>, and
+    <code>Drop</code>. The flowchart below traces the two paths that can reach the chain.
+  </p>
+
+  <figure>
+    <svg viewBox="0 0 760 620" xmlns="http://www.w3.org/2000/svg" role="img" aria-labelledby="flow-title">
+      <title id="flow-title">Rust filler decision: fill, place, or skip a swift order</title>
+      <style>
+        .node       { fill: #fff; stroke: #111827; stroke-width: 1.4; }
+        .diamond    { fill: #fff; stroke: #111827; stroke-width: 1.4; }
+        .terminal   { fill: #f5f5f4; stroke: #111827; stroke-width: 1.4; }
+        .label      { font: 12.5px -apple-system, sans-serif; fill: #111827; }
+        .label.small{ font-size: 10.5px; fill: #525252; }
+        .mono       { font: 11px ui-monospace, monospace; fill: #111827; }
+        .edge       { stroke: #111827; stroke-width: 1.4; fill: none; marker-end: url(#arr2); }
+        .edge.accent{ stroke: #0f766e; stroke-dasharray: 5 3; marker-end: url(#arr2-o); }
+        .edge-label { font: 11px -apple-system, sans-serif; fill: #525252; }
+      </style>
+      <defs>
+        <marker id="arr2" viewBox="0 0 10 10" refX="10" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse">
+          <path d="M0,0 L10,5 L0,10 z" fill="#111827"/>
+        </marker>
+        <marker id="arr2-o" viewBox="0 0 10 10" refX="10" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse">
+          <path d="M0,0 L10,5 L0,10 z" fill="#0f766e"/>
+        </marker>
+      </defs>
+
+      <!-- start -->
+      <ellipse class="terminal" cx="360" cy="40" rx="110" ry="22"/>
+      <text class="label" x="360" y="45" text-anchor="middle">new swift order (from WS)</text>
+      <line class="edge" x1="360" y1="62" x2="360" y2="96"/>
+
+      <!-- process: evaluate -->
+      <rect class="node" x="270" y="98" width="180" height="54" rx="6"/>
+      <text class="mono" x="360" y="120" text-anchor="middle">evaluate_swift_crosses()</text>
+      <text class="label small" x="360" y="138" text-anchor="middle">vs DLOB makers + vAMM + oracle</text>
+      <line class="edge" x1="360" y1="152" x2="360" y2="178"/>
+
+      <!-- diamond 1: crosses now? -->
+      <polygon class="diamond" points="360,180 465,232 360,284 255,232"/>
+      <text class="label" x="360" y="230" text-anchor="middle">crosses now?</text>
+      <text class="label small" x="360" y="246" text-anchor="middle">Fillable</text>
+
+      <!-- yes -> right -> try_swift_fill -->
+      <text class="edge-label" x="478" y="226">yes</text>
+      <line class="edge" x1="465" y1="232" x2="558" y2="232"/>
+      <rect class="node" x="558" y="204" width="182" height="56" rx="6"/>
+      <text class="mono" x="649" y="226" text-anchor="middle">try_swift_fill</text>
+      <text class="label small" x="649" y="244" text-anchor="middle">place_swift_order + fill_perp_order</text>
+
+      <!-- no -> down -->
+      <text class="edge-label" x="372" y="300">no</text>
+      <line class="edge" x1="360" y1="284" x2="360" y2="316"/>
+
+      <!-- diamond 2: placement window open? -->
+      <polygon class="diamond" points="360,318 470,364 360,410 250,364"/>
+      <text class="label" x="360" y="362" text-anchor="middle">window open?</text>
+      <text class="label small" x="360" y="378" text-anchor="middle">not expired</text>
+
+      <!-- no -> right accent -> skip -->
+      <text class="edge-label" x="482" y="358">no</text>
+      <path class="edge accent" d="M 470 364 L 545 364"/>
+      <ellipse class="terminal" cx="640" cy="364" rx="72" ry="22"/>
+      <text class="label" x="640" y="369" text-anchor="middle">skip (expired)</text>
+
+      <!-- yes -> down -> try_swift_place -->
+      <text class="edge-label" x="372" y="428">yes</text>
+      <line class="edge" x1="360" y1="410" x2="360" y2="442"/>
+      <rect class="node" x="270" y="444" width="180" height="56" rx="6"/>
+      <text class="mono" x="360" y="466" text-anchor="middle">try_swift_place</text>
+      <text class="label small" x="360" y="484" text-anchor="middle">place-only &rarr; rests on book</text>
+      <line class="edge" x1="360" y1="500" x2="360" y2="536"/>
+
+      <!-- on-chain terminal -->
+      <ellipse class="terminal" cx="360" cy="558" rx="90" ry="22"/>
+      <text class="label" x="360" y="563" text-anchor="middle">tx &rarr; on-chain</text>
+
+      <!-- merge fill path down right side into on-chain terminal -->
+      <path class="edge" d="M 649 260 L 649 558 L 452 558"/>
+    </svg>
+    <figcaption>
+      Rust filler paths to the chain. A third outcome, <code>Drop</code> (malformed / post-only /
+      unpriced), is logged and discarded before this diagram. The TS filler has
+      <strong>only</strong> the "crosses now? &rarr; yes" path — it never runs
+      <code>try_swift_place</code>.
+    </figcaption>
+  </figure>
+
+  <p>
+    Both on-chain paths (<code>try_swift_fill</code>, <code>try_swift_place</code>) build a
+    transaction and hand it to an async <strong>tx worker</strong>, which simulates, sends
+    (<code>skip_preflight: true, max_retries: 0</code>), and later confirms. There is
+    <strong>no retry</strong>: a single sim/send/confirm failure logs and drops the order.
+  </p>
+
+  <h2 id="drop-points">5. Where orders silently die</h2>
+  <p>
+    An order that returns <code>200 OK</code> at the UI but never lands on-chain died at one of
+    the hops below. They are ordered from earliest (UI-adjacent) to latest (chain-adjacent).
+  </p>
+
+  <table>
+    <thead>
+      <tr><th>Hop</th><th>Failure</th><th>Signature in logs</th></tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td>swift-ws-server</td>
+        <td>No keeper WS-subscribed to the market</td>
+        <td><code>No receiver found for topic ... dropping</code></td>
+      </tr>
+      <tr>
+        <td>ws-server &rarr; keeper</td>
+        <td>Keeper pointed at a dead WS host (stale image)</td>
+        <td>No <code>new swift order</code> line on any keeper</td>
+      </tr>
+      <tr>
+        <td>filler (TS)</td>
+        <td>Non-crossing swift limit — no place-only path</td>
+        <td>Order cached, never surfaced as a fill node</td>
+      </tr>
+      <tr>
+        <td>filler (Rust)</td>
+        <td>Auction/placement window already expired</td>
+        <td><code>swift order past placement window, not placing</code></td>
+      </tr>
+      <tr>
+        <td>filler &rarr; tx</td>
+        <td>Keeper's own subaccount not initialized on-chain</td>
+        <td><code>filler account: NoAccountData(...)</code> &rarr; panic at <code>filler.rs:716</code></td>
+      </tr>
+      <tr>
+        <td>tx worker</td>
+        <td>Simulation / send / confirm failed (no retry)</td>
+        <td><code>tx_event</code> with <code>status: sim_failed | send_error | confirmation_failed</code></td>
+      </tr>
+    </tbody>
+  </table>
+
+  <div class="panel note">
+    <strong>Observed failure — keeper subaccount not initialized.</strong>
+    When a swift order crossed, <span class="file">rust/keep-rs/src/filler.rs</span> at line 716
+    did <code>.try_get_account::&lt;User&gt;(&amp;filler_subaccount).expect("filler account")</code>
+    on the filler's <em>own</em> trading subaccount, which returned
+    <code>NoAccountData</code> because that account was never created on Velocity. The
+    <code>.expect()</code> panicked the keeper's main thread, Kubernetes restarted it, and the
+    next crossing order crashed it again — a crash loop, so no fill ever landed. The
+    non-crossing (<code>try_swift_place</code>) path hit the same missing account but returns
+    with a warning instead of panicking, so that path failed silently. Fix: initialize the
+    keeper's User subaccount on-chain; harden the fill path to log-and-skip instead of
+    <code>.expect()</code>.
+  </div>
+
+  <h2 id="tracing">6. Log targets &amp; how to trace</h2>
+  <p>
+    The whole keeper tx path logs under one target, <code>filler</code>, plus a structured
+    <code>tx_event</code> JSON line. Crucially, the only line on the send/confirm path that
+    carries the order <strong>UUID</strong> is the <code>tx_event</code>; the send-success and
+    account-load-failure lines carry the signature or subaccount instead — so a naive
+    <code>|= "&lt;uuid&gt;"</code> grep can dead-end even though the order was processed.
+  </p>
+
+  <table>
+    <thead>
+      <tr><th>Stage</th><th>Log line (target <code>filler</code>)</th><th>Level</th></tr>
+    </thead>
+    <tbody>
+      <tr><td>Received</td><td><code>new swift order. uuid=...</code></td><td>info</td></tr>
+      <tr><td>Fill path</td><td><code>found resting cross ...</code> / <code>try fill swift order</code></td><td>info</td></tr>
+      <tr><td>Place path</td><td><code>swift order not fillable yet, placing on-chain</code></td><td>info</td></tr>
+      <tr><td>Expired</td><td><code>swift order past placement window, not placing</code></td><td>debug</td></tr>
+      <tr><td>Sim rejected</td><td><code>sim failed: ...</code></td><td>warn</td></tr>
+      <tr><td>Send failed</td><td><code>fill failed &#128034;: ...</code></td><td><strong>info</strong></td></tr>
+      <tr><td>Confirm failed</td><td><code>tx confirmation failed &#128034;: ...</code></td><td><strong>info</strong></td></tr>
+      <tr><td>Outcome (has UUID)</td><td><code>tx_event</code> JSON: <code>{ "uuid", "sig", "status", "error" }</code></td><td>info</td></tr>
+    </tbody>
+  </table>
+
+  <p>
+    Because send/confirm failures log at <code>info</code> (not warn/error), filtering Loki to
+    <code>level&gt;=warn</code> hides them. Trace by <em>time window</em> around the "placing
+    on-chain" line rather than by UUID alone:
+  </p>
+
+  <pre><code># 1. Find the order and its decision on the keeper (rust-filler-bot)
+{app="rust-filler-bot"} |= "&lt;uuid&gt;"
+
+# 2. If it dead-ends after "placing on-chain", widen to the time window
+#    (do NOT filter by level — send/confirm failures are info-level)
+{app="rust-filler-bot"}     # range: the ~5s after the placement line
+
+# 3. The tx_event line carries the verdict; read its "status" and "error":
+#    placed / place_noop_* = landed;  sim_failed | send_error |
+#    confirmation_failed | insufficient_funds = failed at that stage
+
+# 4. Upstream sanity check — did a keeper even receive it?
+{app="swift-ws-server-app"} |= "&lt;uuid&gt;"   # look for receivers=N or "No receiver found"</code></pre>
+
+  <p class="meta" style="margin-top: 56px;">
+    Source files:
+    <span class="file">rust/swift/src/swift_server.rs</span>,
+    <span class="file">rust/swift/src/ws_server.rs</span>,
+    <span class="file">rust/swift/src/user_account_fetcher.rs</span>,
+    <span class="file">rust/keep-rs/src/filler.rs</span>,
+    <span class="file">rust/keep-rs/src/util.rs</span>,
+    <span class="file">apps/keeper-bots-v2/src/experimental-bots/filler/fillerMultithreaded.ts</span>,
+    <span class="file">apps/keeper-bots-v2/src/experimental-bots/filler-common/swiftOrderSubscriber.ts</span>.
+  </p>
+</main>
+</body>
+</html>

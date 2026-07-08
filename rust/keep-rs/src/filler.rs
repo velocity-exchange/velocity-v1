@@ -194,8 +194,7 @@ impl FillerBot {
         let (_dummy_tx, dummy_rx) = tokio::sync::mpsc::channel::<PythPriceUpdate>(1);
         let mut pyth_price_feed = self.pyth_price_feed.unwrap_or(dummy_rx);
 
-        // Swift retry mechanism
-        const MAX_SWIFT_RECONNECT_RETRIES: u32 = 10;
+        // Swift feed reconnect attempt counter (resets when an order is received)
         let mut retries = 0u32;
         loop {
             tokio::select! {
@@ -262,26 +261,25 @@ impl FillerBot {
                             }
                         }
                         None => {
+                            // Reconnect indefinitely with capped exponential backoff. The swift
+                            // WS drops fairly often (server-side `closed unexpectedly: Protocol`);
+                            // permanently giving up after N retries silently stops the bot from
+                            // consuming any further swift orders while the process stays "healthy".
+                            // `retries` resets to 0 once an order is received (see the Some arm).
                             retries += 1;
-                            if retries <= MAX_SWIFT_RECONNECT_RETRIES {
-                                    let backoff = 2u64.pow(retries).min(30);
-                                    log::warn!(target: "swift", "feed disconnected, retry {retries}/{MAX_SWIFT_RECONNECT_RETRIES} in {backoff}s");
-                                    tokio::time::sleep(Duration::from_secs(backoff)).await;
+                            let backoff = 2u64.pow(retries.min(5)).min(30);
+                            log::warn!(target: "swift", "feed disconnected, reconnecting (attempt {retries}) in {backoff}s");
+                            tokio::time::sleep(Duration::from_secs(backoff)).await;
 
-                                    match velocity
-                                        .subscribe_swift_orders(&market_ids, Some(true), None, None)
-                                        .await
-                                    {
-                                        Ok(stream) => swift_order_stream = stream,
-                                        Err(e) => {
-                                            log::error!(target: "swift", "resubscribe failed: {e:?}");
-                                            continue;
-                                        }
-                                    }
-                                } else {
-                                    log::error!(target: TARGET, "swift order stream finished after {MAX_SWIFT_RECONNECT_RETRIES} retries");
-                                    break;
+                            match velocity
+                                .subscribe_swift_orders(&market_ids, Some(true), None, None)
+                                .await
+                            {
+                                Ok(stream) => swift_order_stream = stream,
+                                Err(e) => {
+                                    log::error!(target: "swift", "resubscribe failed: {e:?}");
                                 }
+                            }
                         }
                     }
                 }
@@ -711,15 +709,27 @@ async fn try_swift_fill(
     let taker_subaccount = swift_order.taker_subaccount();
     let taker_authority = swift_order.taker_authority;
 
-    let filler_account_data = velocity
-        .try_get_account::<User>(&filler_subaccount)
-        .expect("filler account");
-    let taker_stats = Wallet::derive_stats_account(&taker_authority);
-    let (taker_account_data, taker_stats) = tokio::try_join!(
+    // A missing/unsynced account must skip this one order, not panic the whole
+    // bot: an abrupt exit drops every subscription (swift WS, gRPC) and forces a
+    // crash-restart cycle that misses unrelated orders while it backs off.
+    let filler_account_data = match velocity.try_get_account::<User>(&filler_subaccount) {
+        Ok(a) => a,
+        Err(err) => {
+            log::warn!(target: TARGET, "swift fill: filler account not loaded, skipping {}: {err:?}", swift_order.order_uuid_str());
+            return;
+        }
+    };
+    let taker_stats_key = Wallet::derive_stats_account(&taker_authority);
+    let (taker_account_data, taker_stats) = match tokio::try_join!(
         velocity.get_account_value::<User>(&taker_subaccount),
-        velocity.get_account_value::<UserStats>(&taker_stats)
-    )
-    .unwrap();
+        velocity.get_account_value::<UserStats>(&taker_stats_key)
+    ) {
+        Ok(accounts) => accounts,
+        Err(err) => {
+            log::warn!(target: TARGET, "swift fill: failed to load taker {taker_subaccount} accounts, skipping {}: {err:?}", swift_order.order_uuid_str());
+            return;
+        }
+    };
     let tx_builder = TransactionBuilder::new(
         velocity.program_data(),
         filler_subaccount,
@@ -727,16 +737,20 @@ async fn try_swift_fill(
         false,
     );
 
-    let maker_accounts: Vec<User> = crosses
+    let mut maker_accounts: Vec<User> = Vec::with_capacity(crosses.orders.len());
+    for (maker, _fill_size) in crosses
         .orders
         .iter()
-        .filter(|m| m.0.user != taker_subaccount) // can't fill itself
-        .map(|(m, _fill_size)| {
-            velocity
-                .try_get_account::<User>(&m.user)
-                .expect("maker account syncd")
-        })
-        .collect();
+        .filter(|m| m.0.user != taker_subaccount)
+    {
+        match velocity.try_get_account::<User>(&maker.user) {
+            Ok(a) => maker_accounts.push(a),
+            Err(err) => {
+                log::warn!(target: TARGET, "swift fill: maker {} not synced, skipping {}: {err:?}", maker.user, swift_order.order_uuid_str());
+                return;
+            }
+        }
+    }
 
     if maker_accounts.is_empty() && !crosses.has_vamm_cross {
         log::warn!("invalid cross: {crosses:?}");

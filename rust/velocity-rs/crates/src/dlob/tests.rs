@@ -4325,3 +4325,178 @@ fn dlob_queries_on_market_with_no_book_do_not_panic() {
         .get_l2_snapshot_safe(market_index, MarketType::Perp)
         .is_none());
 }
+
+/// Regression for the keep-rs v0.1.22 `vamm_taker` spam incident.
+///
+/// A resting (non-post-only) limit bid — order 8 @ $62,500 on mainnet market 1 —
+/// crossed the vAMM ask quoted from the *cached account state*, but not the quote
+/// the program computes at fill time (`AmmQuoter::setup`: curve snap onto the
+/// oracle + spread refresh). The filler sent a fill every slot and each one
+/// no-op'd on-chain:
+///
+/// ```text
+/// Program log: taker does not cross amm: taker price 62500000000 amm price 62768662571
+/// Program log: no fulfillment methods found
+/// ```
+///
+/// This test reproduces that shape end-to-end from the filler's point of view: a
+/// resting bid priced between the cached quote and the fill-path quote must
+/// * be surfaced as a phantom `vamm_taker_ask` candidate by
+///   `find_crosses_for_auctions` when given the cached market (what v0.1.22 did),
+/// * NOT be surfaced when given the projected market
+///   (`project_perp_market_for_quoting` — what the filler now passes), and
+/// * produce zero fillable size from the program's own
+///   `calculate_base_asset_amount_for_amm_to_fulfill` against the projected
+///   market (the same check `try_vamm_taker_fill` runs before sending), mirroring
+///   the on-chain "no fulfillment methods found".
+#[test]
+fn dlob_vamm_taker_candidate_requires_fill_path_quote() {
+    use crate::math::amm_quote::{
+        btc_market_fixture, project_perp_market_for_quoting, validity_guard_rails_fixture,
+    };
+    use program::math::orders::calculate_base_asset_amount_for_amm_to_fulfill;
+    use program::state::oracle::OraclePriceData;
+
+    let _ = env_logger::try_init();
+    let dlob = DLOB::default();
+    let user = Pubkey::new_unique();
+    let slot = 100;
+    let rails = validity_guard_rails_fixture();
+
+    // The cached account state: whatever the last on-chain refresh left behind —
+    // curve and spread state quoted at the then-current oracle ($19,400), fifty
+    // slots ago.
+    let stale_oracle = OraclePriceData {
+        price: 19_400 * 1_000_000,
+        confidence: 1_000,
+        delay: 0,
+        has_sufficient_number_of_data_points: true,
+        sequence_id: None,
+    };
+    let cached_market =
+        project_perp_market_for_quoting(btc_market_fixture(), stale_oracle, &rails, slot - 50)
+            .unwrap();
+
+    // Oracle has since moved above the cached curve, mirroring the incident: the
+    // program's fill-time quote snaps to the new oracle and re-derives spreads,
+    // landing above the cached ask.
+    let exchange_oracle = OraclePriceData {
+        price: 19_600 * 1_000_000,
+        confidence: 1_000,
+        delay: 0,
+        has_sufficient_number_of_data_points: true,
+        sequence_id: None,
+    };
+    let projected =
+        project_perp_market_for_quoting(cached_market, exchange_oracle, &rails, slot).unwrap();
+
+    let vamm_ask = |m: &PerpMarket| {
+        let reserve_price = m.amm.reserve_price().unwrap();
+        m.amm
+            .ask_price(
+                reserve_price,
+                m.amm.long_spread,
+                m.amm.reference_price_offset,
+            )
+            .unwrap()
+    };
+    let cached_ask = vamm_ask(&cached_market);
+    let fill_path_ask = vamm_ask(&projected);
+    assert!(
+        cached_ask < fill_path_ask,
+        "fixture must reproduce the incident shape (cached quote below fill-time quote): \
+         cached_ask={cached_ask} fill_path_ask={fill_path_ask}"
+    );
+
+    // The incident's "$62,500" order: a resting bid strictly between the two quotes.
+    let bid_price = (cached_ask + fill_path_ask) / 2;
+    let base_amount = AMM_RESERVE_PRECISION as u64; // 1 base unit
+    let mut resting_bid = create_test_order(
+        8,
+        OrderType::Limit,
+        Direction::Long,
+        bid_price as i64,
+        base_amount,
+        1, // placed long ago: rests, no live auction
+    );
+    resting_bid.max_ts = 0; // no expiry (create_test_order's max_ts=30 is in the past)
+    dlob.insert_order(&user, slot, resting_bid);
+
+    let oracle_u64 = exchange_oracle.price as u64;
+    // materialise the L3 view (the bot's slot loop does this each slot)
+    if let Some(book) = dlob.markets.get(&MarketId::new(0, MarketType::Perp)) {
+        book.update_l3_view(oracle_u64, &dlob.metadata, &Default::default());
+    }
+
+    // Cached account view: phantom candidate — this is what made v0.1.22 spam.
+    let crosses_cached = dlob.find_crosses_for_auctions(
+        0,
+        MarketType::Perp,
+        slot,
+        oracle_u64,
+        Some(&cached_market),
+        oracle_u64,
+        None,
+    );
+    assert!(
+        crosses_cached.vamm_taker_ask.is_some(),
+        "resting bid between the quotes must cross the cached vAMM ask"
+    );
+
+    // Fill-path view: no candidate — matches the on-chain outcome.
+    let crosses_projected = dlob.find_crosses_for_auctions(
+        0,
+        MarketType::Perp,
+        slot,
+        oracle_u64,
+        Some(&projected),
+        oracle_u64,
+        None,
+    );
+    assert!(
+        crosses_projected.vamm_taker_ask.is_none(),
+        "projected (fill-path) vAMM ask must not cross the resting bid"
+    );
+
+    // The pre-send fillable check `try_vamm_taker_fill` runs (the program's own
+    // math): nonzero against the cached market (the bot would send — the spam),
+    // zero against the projected market (the program won't fill — the no-op).
+    let order = Order {
+        order_id: 8,
+        order_type: OrderType::Limit,
+        direction: Direction::Long,
+        base_asset_amount: base_amount,
+        price: bid_price,
+        slot: 1,
+        market_index: 0,
+        market_type: MarketType::Perp,
+        status: OrderStatus::Open,
+        ..Default::default()
+    };
+    let (fillable_cached, _) = calculate_base_asset_amount_for_amm_to_fulfill(
+        &order,
+        &cached_market,
+        Some(bid_price),
+        None,
+        0,
+        &crate::types::FeeTier::default(),
+    )
+    .unwrap();
+    let (fillable_fill_path, _) = calculate_base_asset_amount_for_amm_to_fulfill(
+        &order,
+        &projected,
+        Some(bid_price),
+        None,
+        0,
+        &crate::types::FeeTier::default(),
+    )
+    .unwrap();
+    assert!(
+        fillable_cached > 0,
+        "cached view must report fillable size (the phantom cross that caused the spam)"
+    );
+    assert_eq!(
+        fillable_fill_path, 0,
+        "fill-path view must report nothing fillable (on-chain: no fulfillment methods found)"
+    );
+}

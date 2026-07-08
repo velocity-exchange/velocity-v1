@@ -85,76 +85,93 @@ pub fn project_perp_market_for_quoting(
     Ok(perp_market)
 }
 
+/// Replica of the program's `PerpMarket::default_btc_test` (cfg(test)-gated
+/// there, so not importable): BTC-ish market at peg $19,400, short 1 BTC of
+/// AMM inventory, 2.5bps base / 9.75bps max spread, live curve updates.
+///
+/// Shared by the parity tests below and the DLOB regression tests
+/// (`dlob/tests.rs`) that exercise the filler's vAMM-cross decisions.
 #[cfg(test)]
-mod tests {
-    use program::{
-        controller::position::PositionDirection,
-        state::{
-            market_status::MarketStatus,
-            oracle::HistoricalOracleData,
-            perp_market::MarketStats,
-            quoter::{QuoteContext, Quoter},
-        },
-        vlp::amm::{quoter::AmmQuoter, state::AMM},
+pub(crate) fn btc_market_fixture() -> PerpMarket {
+    use program::state::{
+        market_status::MarketStatus, oracle::HistoricalOracleData, perp_market::MarketStats,
     };
-
-    use super::*;
+    use program::vlp::amm::state::AMM;
 
     const AMM_RESERVE_PRECISION: u128 = 1_000_000_000;
     const PRICE_PRECISION_I64: i64 = 1_000_000;
     const MAX_CONCENTRATION_COEFFICIENT: u128 = 1_414_200;
 
-    /// Replica of the program's `PerpMarket::default_btc_test` (cfg(test)-gated
-    /// there, so not importable): BTC-ish market at peg $19,400, short 1 BTC of
-    /// AMM inventory, 2.5bps base / 9.75bps max spread, live curve updates.
-    fn btc_market() -> PerpMarket {
-        let amm = AMM {
-            base_asset_reserve: 65 * AMM_RESERVE_PRECISION,
-            quote_asset_reserve: 63_015_384_615,
-            terminal_quote_asset_reserve: 64 * AMM_RESERVE_PRECISION,
-            sqrt_k: 64 * AMM_RESERVE_PRECISION,
-            peg_multiplier: 19_400_000_000,
-            concentration_coef: MAX_CONCENTRATION_COEFFICIENT,
-            max_base_asset_reserve: 90 * AMM_RESERVE_PRECISION,
-            min_base_asset_reserve: 45 * AMM_RESERVE_PRECISION,
-            base_asset_amount_with_amm: -(AMM_RESERVE_PRECISION as i128),
-            curve_update_intensity: 100,
-            base_spread: 250,
-            max_spread: 975,
-            ..AMM::default()
-        };
-        PerpMarket {
-            market_stats: MarketStats {
-                historical_oracle_data: HistoricalOracleData {
-                    last_oracle_price: 19_400 * PRICE_PRECISION_I64,
-                    last_oracle_price_twap: 19_400 * PRICE_PRECISION_I64,
-                    last_oracle_price_twap_5min: 19_400 * PRICE_PRECISION_I64,
-                    last_oracle_price_twap_ts: 1_662_800_000_i64,
-                    ..HistoricalOracleData::default()
-                },
-                last_mark_price_twap_ts: 1_662_800_000,
-                mark_std: 1_000_000,
-                last_oracle_valid: true,
-                funding_period: 3600,
-                ..MarketStats::default()
+    let amm = AMM {
+        base_asset_reserve: 65 * AMM_RESERVE_PRECISION,
+        quote_asset_reserve: 63_015_384_615,
+        terminal_quote_asset_reserve: 64 * AMM_RESERVE_PRECISION,
+        sqrt_k: 64 * AMM_RESERVE_PRECISION,
+        peg_multiplier: 19_400_000_000,
+        concentration_coef: MAX_CONCENTRATION_COEFFICIENT,
+        max_base_asset_reserve: 90 * AMM_RESERVE_PRECISION,
+        min_base_asset_reserve: 45 * AMM_RESERVE_PRECISION,
+        base_asset_amount_with_amm: -(AMM_RESERVE_PRECISION as i128),
+        curve_update_intensity: 100,
+        base_spread: 250,
+        max_spread: 975,
+        max_fill_reserve_fraction: 1,
+        ..AMM::default()
+    };
+    PerpMarket {
+        market_stats: MarketStats {
+            historical_oracle_data: HistoricalOracleData {
+                last_oracle_price: 19_400 * PRICE_PRECISION_I64,
+                last_oracle_price_twap: 19_400 * PRICE_PRECISION_I64,
+                last_oracle_price_twap_5min: 19_400 * PRICE_PRECISION_I64,
+                last_oracle_price_twap_ts: 1_662_800_000_i64,
+                ..HistoricalOracleData::default()
             },
-            amm,
-            order_step_size: 1,
-            order_tick_size: 1,
-            margin_ratio_initial: 1000,
-            margin_ratio_maintenance: 500,
-            status: MarketStatus::Initialized,
-            ..PerpMarket::default()
-        }
+            last_mark_price_twap_ts: 1_662_800_000,
+            mark_std: 1_000_000,
+            last_oracle_valid: true,
+            funding_period: 3600,
+            ..MarketStats::default()
+        },
+        amm,
+        order_step_size: 1,
+        order_tick_size: 1,
+        margin_ratio_initial: 1000,
+        margin_ratio_maintenance: 500,
+        status: MarketStatus::Initialized,
+        ..PerpMarket::default()
+    }
+}
+
+/// Mainnet-shaped oracle validity guard rails for tests.
+#[cfg(test)]
+pub(crate) fn validity_guard_rails_fixture() -> ValidityGuardRails {
+    ValidityGuardRails {
+        slots_before_stale_for_amm: 10,
+        slots_before_stale_for_margin: 120,
+        confidence_interval_max_size: 20_000,
+        too_volatile_ratio: 5,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use program::{
+        controller::position::PositionDirection,
+        state::quoter::{QuoteContext, Quoter},
+        vlp::amm::quoter::AmmQuoter,
+    };
+
+    use super::*;
+
+    const PRICE_PRECISION_I64: i64 = 1_000_000;
+
+    fn btc_market() -> PerpMarket {
+        btc_market_fixture()
     }
 
     fn guard_rails() -> ValidityGuardRails {
-        ValidityGuardRails {
-            slots_before_stale_for_amm: 10,
-            slots_before_stale_for_margin: 120,
-            confidence_interval_max_size: 20_000,
-            too_volatile_ratio: 5,
-        }
+        validity_guard_rails_fixture()
     }
 
     /// Run the program's actual fill-path quote prep (`AmmQuoter::setup`) and

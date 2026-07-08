@@ -692,10 +692,25 @@ impl VelocityClient {
             .ok_or(SdkError::NoAccountData(*account))
     }
 
-    /// Simulate the tx on remote RPC node
+    /// Simulate the tx on remote RPC node (at the RPC client's default commitment)
     pub async fn simulate_tx(
         &self,
         tx: VersionedMessage,
+    ) -> SdkResult<RpcSimulateTransactionResult> {
+        self.simulate_tx_with_commitment(tx, None).await
+    }
+
+    /// Simulate the tx on remote RPC node at the given commitment level
+    ///
+    /// `None` falls back to the RPC client's default commitment (typically finalized,
+    /// ~32 slots stale). Latency-sensitive callers whose tx was built from a
+    /// processed-commitment view (e.g. keeper fills of a just-triggered order) should
+    /// pass `CommitmentConfig::processed()` so preflight doesn't reject valid txs for
+    /// the entire finalization window.
+    pub async fn simulate_tx_with_commitment(
+        &self,
+        tx: VersionedMessage,
+        commitment: Option<CommitmentConfig>,
     ) -> SdkResult<RpcSimulateTransactionResult> {
         let response = self
             .rpc()
@@ -708,6 +723,7 @@ impl VelocityClient {
                 RpcSimulateTransactionConfig {
                     sig_verify: false,
                     replace_recent_blockhash: true,
+                    commitment,
                     ..Default::default()
                 },
             )

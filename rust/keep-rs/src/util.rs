@@ -123,6 +123,11 @@ pub enum TxIntent {
         slot: u64,
         market_index: u16,
         taker_order_id: u32,
+        /// taker subaccount the fill was sent for (order ids are per-user counters,
+        /// so `taker_order_id` alone is ambiguous across users)
+        taker_user: Pubkey,
+        /// order id of the best crossing counterparty attached as a maker account.
+        /// Context only — the program picks the actual maker order(s) to match.
         maker_order_id: u32,
     },
     LiquidateWithFill {
@@ -306,6 +311,15 @@ impl TxIntent {
             | Self::LimitUncross { taker_order_id, .. } => Some(*taker_order_id),
             Self::VAMMTakerFill { maker_order_id, .. } => Some(*maker_order_id),
             Self::Trigger { order_id, .. } => Some(*order_id),
+            _ => None,
+        }
+    }
+
+    /// Taker/target user subaccount, where the intent carries one. Used for wide-event
+    /// logging to disambiguate per-user order ids.
+    pub fn user(&self) -> Option<Pubkey> {
+        match self {
+            Self::LimitUncross { taker_user, .. } => Some(*taker_user),
             _ => None,
         }
     }

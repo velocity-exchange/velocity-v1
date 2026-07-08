@@ -178,6 +178,73 @@ describe('Auction Parameters Functions', () => {
 			expect(result.auctionStartPriceOffsetFrom).toBe('bestOffer');
 			expect(result.auctionStartPriceOffset).toBe(-0.1);
 		});
+
+		describe('version 3 fast-fill profile', () => {
+			const baseArgs = (marketIndex: number) => ({
+				marketIndex,
+				marketType: 'perp' as any,
+				direction: 'long' as any,
+				amount: '100',
+				assetType: 'base' as any,
+				auctionStartPriceOffsetFrom: 'marketBased' as any,
+				auctionStartPriceOffset: 'marketBased' as any,
+			});
+
+			it('should start just inside the touch for all markets', () => {
+				[0, 1, 2, 3, 5, 10].forEach((marketIndex) => {
+					const result = createMarketBasedAuctionParams(
+						baseArgs(marketIndex),
+						undefined,
+						3
+					);
+
+					expect(result.auctionStartPriceOffsetFrom).toBe('bestOffer');
+					expect(result.auctionStartPriceOffset).toBe(-0.05);
+				});
+			});
+
+			it('should default to a short auction duration', () => {
+				const result = createMarketBasedAuctionParams(
+					baseArgs(0),
+					undefined,
+					3
+				);
+
+				expect(result.auctionDuration).toBe(5);
+			});
+
+			it('should preserve an explicit auction duration', () => {
+				const result = createMarketBasedAuctionParams(
+					{ ...baseArgs(0), auctionDuration: 20 },
+					undefined,
+					3
+				);
+
+				expect(result.auctionDuration).toBe(20);
+			});
+
+			it('should not change version 1/2 behavior', () => {
+				[1, 2].forEach((version) => {
+					const majorResult = createMarketBasedAuctionParams(
+						baseArgs(0),
+						undefined,
+						version
+					);
+					expect(majorResult.auctionStartPriceOffsetFrom).toBe('mark');
+					expect(majorResult.auctionStartPriceOffset).toBe(0);
+					expect(majorResult.auctionDuration).toBe(20);
+
+					const minorResult = createMarketBasedAuctionParams(
+						baseArgs(5),
+						undefined,
+						version
+					);
+					expect(minorResult.auctionStartPriceOffsetFrom).toBe('bestOffer');
+					expect(minorResult.auctionStartPriceOffset).toBe(-0.1);
+					expect(minorResult.auctionDuration).toBe(20);
+				});
+			});
+		});
 	});
 
 	describe('mapToMarketOrderParams with Mock L2 Data', () => {

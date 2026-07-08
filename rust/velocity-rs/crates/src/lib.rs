@@ -1047,24 +1047,12 @@ impl VelocityClient {
             exchange_oracle.delay = 0;
         }
 
-        let mm_oracle_price_data = perp_market
-            .get_mm_oracle_price_data(exchange_oracle, slot, &velocity_validity_guard_rails)
-            .map_err(|e| SdkError::Anchor(Box::new(e.into())))?;
-        let validity = program::vlp::amm::refresh::compute_amm_refresh_validity_with_guard_rails(
-            &perp_market,
-            &mm_oracle_price_data,
+        crate::math::amm_quote::project_perp_market_for_quoting(
+            perp_market,
+            exchange_oracle,
             &velocity_validity_guard_rails,
+            slot,
         )
-        .map_err(|e| SdkError::Anchor(Box::new(e.into())))?;
-        program::vlp::amm::math::repeg::project_post_refresh(
-            &perp_market,
-            &mm_oracle_price_data,
-            validity,
-        )
-        .and_then(|projection| projection.apply_to(&mut perp_market.amm))
-        .map_err(|e| SdkError::Anchor(Box::new(e.into())))?;
-
-        Ok(perp_market)
     }
 
     /// Get the latest oracle data for `market`

@@ -233,24 +233,18 @@ impl FillerBot {
                                 log::warn!(target: TARGET, "no oracle price for market {market_index}, skipping swift order. uuid={}", signed_order.order_uuid_str());
                                 continue;
                             };
-                            // same pyth override the slot loop applies: the fill tx posts this
-                            // lazer price, so it is the oracle the program sees at landing
-                            let mut oracle_price = oracle_price_data.price;
-                            if let Some(p) = pyth_oracle_prices.get(&market_index) {
-                                if p.price as i64 != oracle_price {
-                                    oracle_price = p.price as i64;
-                                }
-                            }
-                            // project the AMM onto that oracle the way the program does before
-                            // quoting (snap-to-oracle); cached reserves mis-price the vAMM quote
+                            // Project the AMM to the state the program quotes at fill time
+                            // (`AmmQuoter::setup`: curve snap + spread refresh). No oracle
+                            // override: swift fill txs don't post the pyth price, so the
+                            // program sees the chain oracle as-is.
                             let perp_market = velocity
-                                .try_get_projected_perp_market(market_index, landing_slot, Some(oracle_price))
+                                .try_get_projected_perp_market(market_index, landing_slot, None)
                                 .unwrap_or(perp_market);
 
                             // try an immediate fill against resting liquidity
-                            match evaluate_swift_crosses(dlob, &signed_order, &perp_market, oracle_price, oracle_price_data.delay, landing_slot, slots_before_stale_for_amm) {
+                            match evaluate_swift_crosses(dlob, &signed_order, &perp_market, oracle_price_data.price, oracle_price_data.delay, landing_slot, slots_before_stale_for_amm) {
                                 SwiftEval::Fillable(crosses) => {
-                                    log::info!(target: TARGET, "found resting cross. market={market_index} oracle={oracle_price} delay={} crosses={crosses:?}", oracle_price_data.delay);
+                                    log::info!(target: TARGET, "found resting cross. market={market_index} oracle={} delay={} crosses={crosses:?}", oracle_price_data.price, oracle_price_data.delay);
                                     let pf = priority_fee_subscriber.priority_fee_nth(0.6);
                                     try_swift_fill(
                                         velocity,
@@ -384,13 +378,26 @@ impl FillerBot {
                                 pyth_update = Some(p.clone());
                             }
                         }
-                        // project the AMM onto the oracle the program will quote with at fill
-                        // time (snap-to-oracle, at the expected landing slot); crossing checks
-                        // against the cached reserves mis-price the vAMM quote and send fills
-                        // that no-op on-chain with "taker does not cross amm"
-                        let perp_market = velocity
-                            .try_get_projected_perp_market(market_index, slot + 1, Some(oracle_price as i64))
+                        // Project the AMM to the state the program quotes at fill time
+                        // (`AmmQuoter::setup`: curve snap + spread refresh, at the expected
+                        // landing slot); crossing checks against the cached account state
+                        // mis-price the vAMM quote and send fills that no-op on-chain with
+                        // "taker does not cross amm".
+                        //
+                        // The view depends on the tx shape: auction fills post the pyth-lazer
+                        // price in the same tx (fresh exchange oracle at landing), vamm-taker
+                        // fills don't (the program sees the chain oracle as-is) — so project
+                        // each view.
+                        let chain_view_market = velocity
+                            .try_get_projected_perp_market(market_index, slot + 1, None)
                             .unwrap_or(perp_market);
+                        let perp_market = if pyth_update.is_some() {
+                            velocity
+                                .try_get_projected_perp_market(market_index, slot + 1, Some(oracle_price as i64))
+                                .unwrap_or(perp_market)
+                        } else {
+                            chain_view_market
+                        };
 
                         let mut crosses_and_top_makers = dlob.find_crosses_for_auctions(market_index, MarketType::Perp, slot, oracle_price, Some(&perp_market), trigger_price, None);
                         // key on the full (user, order_id) identity: order_id is a per-user
@@ -503,7 +510,10 @@ impl FillerBot {
                                 filler_subaccount,
                                 [vamm_crossed_bid, vamm_crossed_ask],
                                 vamm_taker_top_makers,
-                                &perp_market,
+                                // vamm-taker txs don't post the pyth price: validate against
+                                // the chain-oracle view or the fillable check passes on quotes
+                                // the program won't reproduce
+                                &chain_view_market,
                                 oracle_stale_for_amm,
                                 chain_oracle_data.delay,
                                 &mut limiter,

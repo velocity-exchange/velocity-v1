@@ -588,7 +588,9 @@ impl DLOB {
         market_type: MarketType,
         perp_market: Option<&PerpMarket>,
     ) -> Option<CrossingRegion> {
-        let book = self.get_l3_snapshot(market_index, market_type);
+        // book is created lazily on the first order write: missing = no orders yet,
+        // not an error — treat as an empty (uncrossed) market
+        let book = self.get_l3_snapshot_safe(market_index, market_type)?;
 
         let mut bids = book.bids(Some(oracle_price), perp_market, None).peekable();
         let mut asks = book.asks(Some(oracle_price), perp_market, None).peekable();
@@ -876,7 +878,11 @@ impl DLOB {
         trigger_price: u64,
         depth: Option<usize>,
     ) -> CrossesAndTopMakers {
-        let book = self.get_l3_snapshot(market_index, market_type);
+        // book is created lazily on the first order write: missing = no orders yet,
+        // not an error — a market with no orders has no crosses
+        let Some(book) = self.get_l3_snapshot_safe(market_index, market_type) else {
+            return CrossesAndTopMakers::default();
+        };
         let mut all_crosses = Vec::with_capacity(16);
 
         let (vamm_bid, vamm_ask, vamm_min_order, vamm_step) = if let Some(m) = perp_market {
@@ -1028,7 +1034,11 @@ impl DLOB {
         out: &mut Vec<(Pubkey, u32)>,
     ) {
         out.clear();
-        let book = self.get_l3_snapshot(market_index, market_type);
+        // book is created lazily on the first order write: missing = no orders yet,
+        // not an error — nothing to trigger
+        let Some(book) = self.get_l3_snapshot_safe(market_index, market_type) else {
+            return;
+        };
         out.extend(
             book.trigger_bids(trigger_price)
                 .chain(book.trigger_asks(trigger_price))
@@ -1046,9 +1056,8 @@ impl DLOB {
     /// * `perp_market` - PerpMarket struct provides vamm price, fallback price, and trigger price
     /// * `depth` - Optional order depth to consider for matches. default: 20
     ///
-    /// ## Panics
-    ///
-    /// if market_index,market_type has not been initialized on this dlob instance
+    /// A market whose book hasn't been created yet (no orders seen) is treated as an
+    /// empty book: no maker crosses, but the vAMM cross is still evaluated.
     ///
     /// # Returns
     ///
@@ -1061,7 +1070,10 @@ impl DLOB {
         perp_market: Option<&PerpMarket>,
         depth: Option<usize>,
     ) -> MakerCrosses {
-        let book = self.get_l3_snapshot(taker_order.market_index, taker_order.market_type);
+        // book is created lazily on the first order write: missing = no orders yet,
+        // not an error — treat as an empty book (no resting makers). The vAMM-cross
+        // check is independent of the book, so it still runs below.
+        let book = self.get_l3_snapshot_safe(taker_order.market_index, taker_order.market_type);
         let is_long = taker_order.direction == PositionDirection::Long;
         let depth = depth.unwrap_or(32);
         let vamm_min_order = perp_market
@@ -1077,16 +1089,29 @@ impl DLOB {
                         .ok()
                 })
                 .unwrap_or(u64::MAX);
-            self.find_crosses_for_taker_order_inner(
-                current_slot,
-                taker_order.price,
-                taker_order.size,
-                true,
-                book.top_asks(depth, Some(oracle_price), perp_market, None)
-                    .filter(|o| o.is_post_only())
-                    .peekable(),
-                |taker_price, taker_size| taker_size > vamm_min_order && taker_price > vamm_price,
-            )
+            let has_vamm_cross = |taker_price: u64, taker_size: u64| {
+                taker_size > vamm_min_order && taker_price > vamm_price
+            };
+            match book {
+                Some(book) => self.find_crosses_for_taker_order_inner(
+                    current_slot,
+                    taker_order.price,
+                    taker_order.size,
+                    true,
+                    book.top_asks(depth, Some(oracle_price), perp_market, None)
+                        .filter(|o| o.is_post_only())
+                        .peekable(),
+                    has_vamm_cross,
+                ),
+                None => self.find_crosses_for_taker_order_inner(
+                    current_slot,
+                    taker_order.price,
+                    taker_order.size,
+                    true,
+                    std::iter::empty().peekable(),
+                    has_vamm_cross,
+                ),
+            }
         } else {
             let vamm_price = perp_market
                 .and_then(|p| {
@@ -1096,16 +1121,29 @@ impl DLOB {
                         .ok()
                 })
                 .unwrap_or(u64::MIN);
-            self.find_crosses_for_taker_order_inner(
-                current_slot,
-                taker_order.price,
-                taker_order.size,
-                false,
-                book.top_bids(depth, Some(oracle_price), perp_market, None)
-                    .filter(|o| o.is_post_only())
-                    .peekable(),
-                |taker_price, taker_size| taker_size > vamm_min_order && taker_price < vamm_price,
-            )
+            let has_vamm_cross = |taker_price: u64, taker_size: u64| {
+                taker_size > vamm_min_order && taker_price < vamm_price
+            };
+            match book {
+                Some(book) => self.find_crosses_for_taker_order_inner(
+                    current_slot,
+                    taker_order.price,
+                    taker_order.size,
+                    false,
+                    book.top_bids(depth, Some(oracle_price), perp_market, None)
+                        .filter(|o| o.is_post_only())
+                        .peekable(),
+                    has_vamm_cross,
+                ),
+                None => self.find_crosses_for_taker_order_inner(
+                    current_slot,
+                    taker_order.price,
+                    taker_order.size,
+                    false,
+                    std::iter::empty().peekable(),
+                    has_vamm_cross,
+                ),
+            }
         }
     }
 

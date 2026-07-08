@@ -1,5 +1,16 @@
 # @velocity-exchange/usermap-server
 
+## 0.1.7
+
+### Patch Changes
+
+- [#214](https://github.com/velocity-exchange/velocity-v1/pull/214) [`f7b2eb6`](https://github.com/velocity-exchange/velocity-v1/commit/f7b2eb6a133e04816505f24d8ab5ea6fecf458b5) Thanks [@jordy25519](https://github.com/jordy25519)! - Fix usermap publisher crash under gRPC. Call `client.connect()` before `subscribe()` (yellowstone-grpc 5.x requires an explicit dial, otherwise it throws "Client not connected. Call connect() first"). Also stop retrying the whole `main()` on failure — only the subscription is retried now, so a transient failure no longer re-runs `server.listen(:5001)` and crashes with `EADDRINUSE` (an unhandled `'error'` event that bypassed the retry). Fatal setup errors now exit the process for a clean pod restart.
+
+- [#215](https://github.com/velocity-exchange/velocity-v1/pull/215) [`7947f6c`](https://github.com/velocity-exchange/velocity-v1/commit/7947f6cb077a67b8b2f627134e49cf71e33c703a) Thanks [@jordy25519](https://github.com/jordy25519)! - Fix usermap publisher gRPC health/liveness on low-activity markets. The subscribe request used `slots: {}` (an empty map = no slot subscription), so the health check — which only learns the current slot from incoming account writes — reported "slot lag" and resubscribed every 30s whenever user accounts were idle. Subscribe to the slot stream and advance the liveness markers from slot updates, so health tracks chain progress rather than account activity.
+
+- Updated dependencies [[`00decfd`](https://github.com/velocity-exchange/velocity-v1/commit/00decfd93fff5668779255288a0f61242be99d07), [`7b44bb0`](https://github.com/velocity-exchange/velocity-v1/commit/7b44bb0832e3eb72b2cd31d01d3c7d60c9794dab), [`c288314`](https://github.com/velocity-exchange/velocity-v1/commit/c2883143d813a5c608354d64c3d1a5b825c4f398), [`61cbeb2`](https://github.com/velocity-exchange/velocity-v1/commit/61cbeb2f70dcd3f6d4fab1209962132dea9d60fe), [`7b44bb0`](https://github.com/velocity-exchange/velocity-v1/commit/7b44bb0832e3eb72b2cd31d01d3c7d60c9794dab), [`155ed06`](https://github.com/velocity-exchange/velocity-v1/commit/155ed0618d7012b9305f4c84786c4d4e96d86be8)]:
+  - @velocity-exchange/sdk@0.6.0
+
 ## 0.1.6
 
 ### Patch Changes

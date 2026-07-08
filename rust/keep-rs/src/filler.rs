@@ -223,15 +223,34 @@ impl FillerBot {
                                 log::warn!(target: TARGET, "no perp market {market_index} for swift order, skipping. uuid={}", signed_order.order_uuid_str());
                                 continue;
                             };
-                            let Ok(oracle_price_data) = velocity.try_get_mmoracle_for_perp_market(market_index, slot) else {
+                            // a fill tx sent now lands ~1 slot ahead (per tx_event
+                            // latency_slots telemetry); evaluate fillability at landing, on the
+                            // state the program will actually see. Overestimating here assumes a
+                            // higher auction price than the program will compute and sends fill
+                            // legs that no-op on-chain, so stay at the observed latency.
+                            let landing_slot = slot + 1;
+                            let Ok(oracle_price_data) = velocity.try_get_mmoracle_for_perp_market(market_index, landing_slot) else {
                                 log::warn!(target: TARGET, "no oracle price for market {market_index}, skipping swift order. uuid={}", signed_order.order_uuid_str());
                                 continue;
                             };
+                            // same pyth override the slot loop applies: the fill tx posts this
+                            // lazer price, so it is the oracle the program sees at landing
+                            let mut oracle_price = oracle_price_data.price;
+                            if let Some(p) = pyth_oracle_prices.get(&market_index) {
+                                if p.price as i64 != oracle_price {
+                                    oracle_price = p.price as i64;
+                                }
+                            }
+                            // project the AMM onto that oracle the way the program does before
+                            // quoting (snap-to-oracle); cached reserves mis-price the vAMM quote
+                            let perp_market = velocity
+                                .try_get_projected_perp_market(market_index, landing_slot, Some(oracle_price))
+                                .unwrap_or(perp_market);
 
                             // try an immediate fill against resting liquidity
-                            match evaluate_swift_crosses(dlob, &signed_order, &perp_market, oracle_price_data.price, oracle_price_data.delay, slot, slots_before_stale_for_amm) {
+                            match evaluate_swift_crosses(dlob, &signed_order, &perp_market, oracle_price, oracle_price_data.delay, landing_slot, slots_before_stale_for_amm) {
                                 SwiftEval::Fillable(crosses) => {
-                                    log::info!(target: TARGET, "found resting cross. market={market_index} oracle={} delay={} crosses={crosses:?}", oracle_price_data.price, oracle_price_data.delay);
+                                    log::info!(target: TARGET, "found resting cross. market={market_index} oracle={oracle_price} delay={} crosses={crosses:?}", oracle_price_data.delay);
                                     let pf = priority_fee_subscriber.priority_fee_nth(0.6);
                                     try_swift_fill(
                                         velocity,
@@ -243,7 +262,7 @@ impl FillerBot {
                                         tx_worker_ref.clone(),
                                     ).await;
                                 }
-                                SwiftEval::NotFillable => {
+                                SwiftEval::NotFillable(reason) => {
                                     // Well-formed but not marketable yet. Rather than dropping it,
                                     // place it on-chain (no fill) so it becomes a regular resting
                                     // order that the normal per-slot fill path will pick up while
@@ -257,7 +276,7 @@ impl FillerBot {
                                         log::debug!(target: TARGET, "swift order past placement window, not placing. uuid={}", signed_order.order_uuid_str());
                                         metrics.swift_place_skipped.inc();
                                     } else {
-                                        log::info!(target: TARGET, "swift order not fillable yet, placing on-chain. uuid={}", signed_order.order_uuid_str());
+                                        log::info!(target: TARGET, "swift order not fillable yet ({reason}), placing on-chain. uuid={}", signed_order.order_uuid_str());
                                         let pf = priority_fee_subscriber.priority_fee_nth(0.6);
                                         try_swift_place(
                                             velocity,
@@ -365,6 +384,13 @@ impl FillerBot {
                                 pyth_update = Some(p.clone());
                             }
                         }
+                        // project the AMM onto the oracle the program will quote with at fill
+                        // time (snap-to-oracle, at the expected landing slot); crossing checks
+                        // against the cached reserves mis-price the vAMM quote and send fills
+                        // that no-op on-chain with "taker does not cross amm"
+                        let perp_market = velocity
+                            .try_get_projected_perp_market(market_index, slot + 1, Some(oracle_price as i64))
+                            .unwrap_or(perp_market);
 
                         let mut crosses_and_top_makers = dlob.find_crosses_for_auctions(market_index, MarketType::Perp, slot, oracle_price, Some(&perp_market), trigger_price, None);
                         // key on the full (user, order_id) identity: order_id is a per-user
@@ -626,21 +652,32 @@ fn on_account_update_fn(
     }
 }
 
-/// Evaluate whether a swift order crosses resting liquidity / the vAMM at the current slot.
+/// Evaluate whether a swift order will cross resting liquidity / the vAMM when a fill tx
+/// sent now lands.
 ///
-/// Returns `Some(crosses)` when the order is fillable right now, or `None` when it isn't (so
-/// the caller can queue it for retry). This is the shared core used both on arrival and on
-/// each retry tick, so the fill decision stays identical across the two paths.
+/// Returns `Fillable(crosses)` when the order should fill at landing, `NotFillable(reason)`
+/// when it is well-formed but won't cross yet (the caller places it on-chain for the
+/// per-slot fill loop to pick up), or `Drop` for malformed/unsupported orders.
 ///
-/// `oracle_price` is the chain mm-oracle price (i64) for the market; `oracle_delay` its age in
-/// slots, used to skip vAMM-only fills when the oracle is stale for the AMM.
+/// `landing_slot` is the slot the fill tx is expected to land at. The taker's auction is
+/// priced on the on-chain clock — the program starts a signed-msg order's auction at the
+/// *message* slot (`signed_msg_taker_order_slot`), not the placement slot — so by landing
+/// time the auction has already progressed a few price steps.
+///
+/// `perp_market` must have its AMM projected onto the oracle the program will quote with
+/// at landing (see `try_get_projected_perp_market`); the program re-snaps the curve before
+/// quoting bid/ask at fill time, so the cached reserves mis-price the vAMM quote.
+///
+/// `oracle_price` is the oracle price the program will see at landing (including any lazer
+/// update posted with the fill); `oracle_delay` its age in slots, used to skip vAMM-only
+/// fills when the oracle is stale for the AMM.
 fn evaluate_swift_crosses(
     dlob: &DLOB,
     signed_order: &SignedOrderInfo,
     perp_market: &PerpMarket,
     oracle_price: i64,
     oracle_delay: i64,
-    slot: u64,
+    landing_slot: u64,
     slots_before_stale_for_amm: i64,
 ) -> SwiftEval {
     let mut order_params = signed_order.order_params();
@@ -650,8 +687,7 @@ fn evaluate_swift_crosses(
     // they rest on the book (the program cancels/amends them if they'd cross on placement).
     if order_params.order_type == OrderType::Limit && order_params.post_only != PostOnlyParam::None
     {
-        log::info!(target: TARGET, "swift order limit post only, placing on-chain. uuid={}", signed_order.order_uuid_str());
-        return SwiftEval::NotFillable;
+        return SwiftEval::NotFillable("post-only limit (maker order)".into());
     }
 
     let (start_price, end_price, duration) = (
@@ -659,8 +695,12 @@ fn evaluate_swift_crosses(
         order_params.auction_end_price.unwrap_or_default(),
         order_params.auction_duration.unwrap_or_default(),
     );
+    // On-chain the auction clock starts at the signed message slot, not when the order is
+    // placed. `min` guards `calculate_auction_price`'s elapsed-slot underflow when the
+    // taker's slot is ahead of our slot subscriber.
+    let order_slot = signed_order.slot().min(landing_slot);
     let order = Order {
-        slot: slot + 1,
+        slot: order_slot,
         price: order_params.price,
         base_asset_amount: order_params.base_asset_amount,
         trigger_price: order_params.trigger_price.unwrap_or_default(),
@@ -706,7 +746,7 @@ fn evaluate_swift_crosses(
         OrderType::Market | OrderType::Oracle => {
             match calculate_auction_price(
                 &order,
-                slot + 1,
+                landing_slot,
                 perp_market.price_tick(),
                 Some(oracle_price),
             ) {
@@ -721,7 +761,7 @@ fn evaluate_swift_crosses(
             match order.get_limit_price(
                 Some(oracle_price),
                 Some(vamm_price),
-                slot + 1,
+                landing_slot,
                 perp_market.price_tick(),
             ) {
                 Ok(Some(p)) => p,
@@ -729,8 +769,8 @@ fn evaluate_swift_crosses(
                 // price). Can't evaluate crossing without one, but the order is still valid
                 // on-chain — place it rather than dropping it.
                 _ => {
-                    log::info!(target: TARGET, "no limit price yet, placing on-chain: {order_params:?}");
-                    return SwiftEval::NotFillable;
+                    log::debug!(target: TARGET, "no limit price yet: {order_params:?}");
+                    return SwiftEval::NotFillable("no resolvable limit price yet".into());
                 }
             }
         }
@@ -744,7 +784,7 @@ fn evaluate_swift_crosses(
 
     let taker_order = TakerOrder::from_order_params(order_params, price);
     let crosses = dlob.find_crosses_for_taker_order(
-        slot + 1,
+        landing_slot,
         oracle_price as u64,
         taker_order,
         Some(perp_market),
@@ -752,7 +792,15 @@ fn evaluate_swift_crosses(
     );
     // Well-formed but not (yet) fillable -> NotFillable, so the caller can place it on-chain.
     if crosses.is_empty() {
-        return SwiftEval::NotFillable;
+        let vamm_side = if order_params.direction == PositionDirection::Long {
+            "ask"
+        } else {
+            "bid"
+        };
+        return SwiftEval::NotFillable(format!(
+            "no cross at landing slot {landing_slot}: taker_price={price} vamm_{vamm_side}={vamm_price} auction_elapsed={}/{duration}",
+            landing_slot.saturating_sub(order_slot),
+        ));
     }
     // vAMM-only cross with a stale oracle: don't fill against the vAMM now, but the order is
     // still well-formed, so let the caller place it (it may fill once the oracle refreshes).
@@ -760,8 +808,9 @@ fn evaluate_swift_crosses(
         && crosses.has_vamm_cross
         && oracle_delay > slots_before_stale_for_amm
     {
-        log::info!(target: TARGET, "skip swift vAMM fill: oracle stale (delay={oracle_delay} oracle={oracle_price})");
-        return SwiftEval::NotFillable;
+        return SwiftEval::NotFillable(format!(
+            "vAMM-only cross but oracle stale for AMM (delay={oracle_delay} oracle={oracle_price})"
+        ));
     }
     SwiftEval::Fillable(crosses)
 }
@@ -771,8 +820,9 @@ enum SwiftEval {
     /// Crosses resting liquidity / vAMM right now: fill it immediately.
     Fillable(MakerCrosses),
     /// Well-formed but not taker-fillable now (not marketable yet, post-only maker order, or no
-    /// resolvable limit price): place it on-chain so the slot loop can fill it later.
-    NotFillable,
+    /// resolvable limit price): place it on-chain so the slot loop can fill it later. Carries a
+    /// human-readable reason for the placement log.
+    NotFillable(String),
     /// Malformed / unsupported (bad auction price, non-market/limit type): drop it.
     Drop,
 }

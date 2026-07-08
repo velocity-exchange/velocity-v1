@@ -961,7 +961,7 @@ impl DLOB {
                 true,
                 resting_asks.iter().peekable(),
                 |taker_price: u64, taker_size: u64| {
-                    taker_size > vamm_min_order && vamm_ask.is_some_and(|v| taker_price > v)
+                    taker_size > vamm_min_order && vamm_ask.is_some_and(|v| taker_price >= v)
                 },
             );
 
@@ -984,7 +984,7 @@ impl DLOB {
                 false,
                 resting_bids.iter().peekable(),
                 |taker_price: u64, taker_size: u64| {
-                    taker_size > vamm_min_order && vamm_bid.is_some_and(|v| taker_price < v)
+                    taker_size > vamm_min_order && vamm_bid.is_some_and(|v| taker_price <= v)
                 },
             );
 
@@ -1089,8 +1089,9 @@ impl DLOB {
                         .ok()
                 })
                 .unwrap_or(u64::MAX);
+            // crossing is inclusive, mirroring the on-chain `do_orders_cross`
             let has_vamm_cross = |taker_price: u64, taker_size: u64| {
-                taker_size > vamm_min_order && taker_price > vamm_price
+                taker_size > vamm_min_order && taker_price >= vamm_price
             };
             match book {
                 Some(book) => self.find_crosses_for_taker_order_inner(
@@ -1121,8 +1122,9 @@ impl DLOB {
                         .ok()
                 })
                 .unwrap_or(u64::MIN);
+            // crossing is inclusive, mirroring the on-chain `do_orders_cross`
             let has_vamm_cross = |taker_price: u64, taker_size: u64| {
-                taker_size > vamm_min_order && taker_price < vamm_price
+                taker_size > vamm_min_order && taker_price <= vamm_price
             };
             match book {
                 Some(book) => self.find_crosses_for_taker_order_inner(
@@ -1160,10 +1162,12 @@ impl DLOB {
         let mut candidates = ArrayVec::<(L3Order, u64), 16>::new();
         let mut remaining_size = taker_size;
 
+        // inclusive, mirroring the on-chain `do_orders_cross` (math/matching.rs): orders
+        // at exactly equal prices do cross
         let price_crosses = if is_long {
-            |taker_price: u64, maker_price: u64| taker_price > maker_price
+            |taker_price: u64, maker_price: u64| taker_price >= maker_price
         } else {
-            |taker_price: u64, maker_price: u64| taker_price < maker_price
+            |taker_price: u64, maker_price: u64| taker_price <= maker_price
         };
 
         while let Some(maker_order) = resting_limit_orders.peek() {

@@ -143,7 +143,7 @@ async fn get_l3_orderbook(
     };
 
     // Convert L3Order to L3OrderResponse for JSON serialization
-    let convert_order = |order: &velocity_rs::dlob::L3Order| L3OrderResponse {
+    let convert_order = |order: velocity_rs::dlob::L3Order| L3OrderResponse {
         price: order.price,
         size: order.size,
         max_ts: order.max_ts,

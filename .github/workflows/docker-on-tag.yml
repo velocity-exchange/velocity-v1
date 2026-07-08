@@ -70,8 +70,11 @@ jobs:
           file: docker/ts-app.Dockerfile
           push: true
           tags: ${{ steps.login-ecr.outputs.registry }}/${{ needs.route.outputs.ecr }}:${{ needs.route.outputs.version }}
-          cache-from: type=gha,scope=${{ needs.route.outputs.app }}
-          cache-to: type=gha,mode=max,scope=${{ needs.route.outputs.app }}
+          # Same cache scope as main.yml's docker-images-ts job: a tag usually points
+          # at a commit main CI just built, and with an identical scope the whole
+          # build replays from the layer cache instead of rebuilding from scratch.
+          cache-from: type=gha,scope=docker-ts-${{ needs.route.outputs.app }}
+          cache-to: type=gha,mode=max,scope=docker-ts-${{ needs.route.outputs.app }}
           build-args: |
             APP_PATH=${{ needs.route.outputs.path }}
             APP_SCOPE=${{ needs.route.outputs.scope }}
@@ -117,8 +120,14 @@ jobs:
           file: docker/rust-app.Dockerfile
           push: true
           tags: ${{ steps.login-ecr.outputs.registry }}/${{ needs.route.outputs.ecr }}:${{ needs.route.outputs.version }}
-          cache-from: type=gha,scope=${{ needs.route.outputs.app }}
-          cache-to: type=gha,mode=max,scope=${{ needs.route.outputs.app }}
+          # Same cache scope as main.yml's docker-images-rust job (keyed by bin, not
+          # app): a tag usually points at a commit main CI just built, and with an
+          # identical scope the expensive `cargo build` layer replays from the layer
+          # cache instead of recompiling the whole rust workspace. The GIT_SHA /
+          # BUILD_VERSION build-args below don't hurt reuse — they're declared in the
+          # runner stage only, after the builder layers.
+          cache-from: type=gha,scope=docker-rust-${{ needs.route.outputs.bin }}
+          cache-to: type=gha,mode=max,scope=docker-rust-${{ needs.route.outputs.bin }}
           build-args: |
             APP_BIN=${{ needs.route.outputs.bin }}
             GIT_SHA=${{ github.sha }}

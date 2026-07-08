@@ -384,8 +384,9 @@ impl FillerBot {
                         );
 
                         // Trigger orders that already cross are triggered+filled atomically by
-                        // the auction path below; capture their ids so the standalone trigger
-                        // pass doesn't double-trigger (and waste) them. Keyed on the full
+                        // the auction path below (which sends a standalone trigger instead when
+                        // it decides to skip the fill); capture their ids so the standalone
+                        // trigger pass doesn't double-trigger (and waste) them. Keyed on the full
                         // (user, order_id) identity: order_id is a per-user counter, so a bare
                         // order_id collides across users and would wrongly suppress another
                         // user's trigger.
@@ -402,6 +403,7 @@ impl FillerBot {
                                 velocity,
                                 priority_fee,
                                 config.fill_cu_limit,
+                                config.trigger_cu_limit,
                                 market_index,
                                 filler_subaccount,
                                 crosses_and_top_makers,
@@ -986,6 +988,7 @@ async fn try_auction_fill(
     velocity: &'static VelocityClient,
     priority_fee: u64,
     cu_limit: u32,
+    trigger_cu_limit: u32,
     market_index: u16,
     filler_subaccount: Pubkey,
     auction_crosses: CrossesAndTopMakers,
@@ -1186,6 +1189,32 @@ async fn try_auction_fill(
                 } else {
                     log::debug!(target: TARGET, "skip cross (vamm gated, no makers): {crosses:?}");
                 }
+                // The fill tx (and the trigger ix piggybacked on it) is dropped, but the
+                // taker is a trigger order whose condition is met. The run loop's
+                // standalone trigger pass suppresses crossing trigger orders on the
+                // assumption this path triggers them atomically — so send the trigger
+                // alone here, or the order stays untriggered until another keeper acts.
+                if taker_is_trigger {
+                    log::info!(
+                        target: TARGET,
+                        "cross skipped but taker trigger condition met; sending standalone trigger: market={market_index}, order={}/{}, slot={}",
+                        taker_order.order_id,
+                        taker_subaccount,
+                        crosses.slot,
+                    );
+                    try_trigger_order(
+                        velocity,
+                        priority_fee,
+                        trigger_cu_limit,
+                        market_index,
+                        filler_subaccount,
+                        taker_subaccount,
+                        taker_order.order_id,
+                        crosses.slot + 1,
+                        tx_worker_ref.clone(),
+                    )
+                    .await;
+                }
                 continue;
             }
             CrossAction::FillMakersOnly => {
@@ -1270,32 +1299,40 @@ async fn try_uncross(
     let best_bid = best_bid.unwrap();
     let best_ask = best_ask.unwrap();
 
-    let maker_asks: Vec<User> = crosses
+    // Only a resting limit order can act as a maker on-chain (`is_maker_for_taker`
+    // requires `Order::is_resting_limit_order`): DLOB kinds Limit/FloatingLimit.
+    // Market/Oracle (auction) and untriggered trigger orders never match as makers —
+    // attaching them just lands a no-op fill that burns the tx fee.
+    fn is_maker_eligible(o: &L3Order) -> bool {
+        matches!(o.kind, OrderKind::Limit | OrderKind::FloatingLimit)
+    }
+
+    // crossing counterparty orders considered as makers for each taker leg (the program
+    // picks the actual maker orders to match; these determine the accounts attached)
+    let maker_ask_orders: Vec<&L3Order> = crosses
         .crossing_asks
         .iter()
         .take(3)
-        .filter_map(|x| {
-            let maker = x.user;
-            if maker != best_bid.user {
-                velocity.try_get_account::<User>(&maker).ok()
-            } else {
-                None
-            }
-        })
+        .filter(|x| x.user != best_bid.user)
         .collect();
 
-    let maker_bids: Vec<User> = crosses
+    let maker_bid_orders: Vec<&L3Order> = crosses
         .crossing_bids
         .iter()
         .take(3)
-        .filter_map(|x| {
-            let maker = x.user;
-            if maker != best_ask.user {
-                velocity.try_get_account::<User>(&maker).ok()
-            } else {
-                None
-            }
-        })
+        .filter(|x| x.user != best_ask.user)
+        .collect();
+
+    let maker_asks: Vec<User> = maker_ask_orders
+        .iter()
+        .filter(|x| is_maker_eligible(x))
+        .filter_map(|x| velocity.try_get_account::<User>(&x.user).ok())
+        .collect();
+
+    let maker_bids: Vec<User> = maker_bid_orders
+        .iter()
+        .filter(|x| is_maker_eligible(x))
+        .filter_map(|x| velocity.try_get_account::<User>(&x.user).ok())
         .collect();
 
     log::info!(target: TARGET, "try uncross book={market_index},slot={slot}");
@@ -1307,13 +1344,32 @@ async fn try_uncross(
     );
 
     // try valid combinations of taker/maker with all crossing asks/bids
-    for (taker_order, makers) in [(best_ask, maker_bids), (best_bid, maker_asks)] {
+    for (taker_order, maker_orders, makers) in [
+        (best_ask, &maker_bid_orders, maker_bids),
+        (best_bid, &maker_ask_orders, maker_asks),
+    ] {
         if taker_order.is_post_only() {
+            emit_uncross_attempt_event(
+                market_index,
+                slot,
+                "skip_taker_post_only",
+                taker_order,
+                maker_orders,
+                makers.len(),
+            );
             continue;
         }
 
         if makers.is_empty() {
-            log::debug!(target: TARGET, "no makers to uncross");
+            // distinguish "nothing on the other side" from "counterparties exist but
+            // none can act as a maker on-chain" (per-maker `eligible` in the event)
+            let action = if maker_orders.is_empty() {
+                "skip_no_makers"
+            } else {
+                "skip_no_eligible_makers"
+            };
+            log::debug!(target: TARGET, "no eligible makers to uncross (market={market_index})");
+            emit_uncross_attempt_event(market_index, slot, action, taker_order, maker_orders, 0);
             continue;
         }
 
@@ -1356,6 +1412,14 @@ async fn try_uncross(
         }
         let tx = tx_builder.build();
 
+        emit_uncross_attempt_event(
+            market_index,
+            slot,
+            "sent",
+            taker_order,
+            maker_orders,
+            makers.len(),
+        );
         tx_worker_ref
             .send_tx(
                 tx,
@@ -1363,7 +1427,8 @@ async fn try_uncross(
                     slot,
                     market_index,
                     taker_order_id,
-                    maker_order_id: 0,
+                    taker_user: taker_subaccount,
+                    maker_order_id: maker_orders.first().map(|m| m.order_id).unwrap_or(0),
                 },
                 effective_cu_limit as u64,
             )
@@ -1939,8 +2004,18 @@ impl TxWorker {
         }
 
         rt.spawn(async move {
-            // simulate first
-            match velocity.simulate_tx(signed_tx.message.clone()).await {
+            // simulate first, against processed state: the tx was built from the
+            // processed-commitment gRPC view, so a default-commitment (finalized)
+            // preflight lags ~32 slots and rejects valid fills for the whole
+            // finalization window (e.g. `OrderMustBeTriggeredFirst` on fills of a
+            // just-triggered order)
+            match velocity
+                .simulate_tx_with_commitment(
+                    signed_tx.message.clone(),
+                    Some(CommitmentConfig::processed()),
+                )
+                .await
+            {
                 Ok(sim_result) => {
                     if let Some(err) = sim_result.err {
                         log::warn!(
@@ -1949,8 +2024,11 @@ impl TxWorker {
                             intent.liquidatee(),
                             intent.slot()
                         );
-                        // Log simulation logs for liquidation intents to help diagnose failures
-                        if intent.is_liquidation() {
+                        // Log simulation logs for liquidation and uncross intents to help
+                        // diagnose failures
+                        if intent.is_liquidation()
+                            || matches!(intent, TxIntent::LimitUncross { .. })
+                        {
                             if let Some(logs) = sim_result.logs {
                                 for log_line in &logs {
                                     if log_line.contains("Error") || log_line.contains("error") || log_line.contains("failed") || log_line.contains("Program log:") {
@@ -2435,6 +2513,55 @@ fn emit_vamm_taker_decision_event(
     log::info!(target: "tx_event", "{event}");
 }
 
+/// Emit a wide structured event (one JSON line, log target `tx_event`) for each uncross leg
+/// that reaches a decision (`action`: "sent" / "skip_taker_post_only" / "skip_no_makers").
+///
+/// Carries the taker order and the crossing counterparty orders considered as makers, with
+/// post-only/kind decoded, so a landed-but-`no_fills` `limit_uncross` tx (correlate on
+/// (market, taker_order_id, slot=sent_slot)) can be analyzed without replaying the book:
+/// e.g. a non-post-only counterparty can never match as a maker, an auction-phase taker may
+/// not be matchable at the maker's price yet, etc. `n_maker_accounts` is how many maker user
+/// accounts were actually attached to the tx (candidates missing from the account cache are
+/// dropped).
+fn emit_uncross_attempt_event(
+    market_index: u16,
+    slot: u64,
+    action: &str,
+    taker: &L3Order,
+    maker_candidates: &[&L3Order],
+    n_maker_accounts: usize,
+) {
+    let event = serde_json::json!({
+        "event": "uncross_attempt",
+        "market": market_index,
+        "slot": slot,
+        "action": action,
+        "taker": taker.user.to_string(),
+        "taker_order_id": taker.order_id,
+        "taker_kind": format!("{:?}", taker.kind),
+        "taker_price": taker.price,
+        "taker_size": taker.size,
+        "taker_post_only": taker.is_post_only(),
+        "taker_is_long": taker.is_long(),
+        "makers": maker_candidates
+            .iter()
+            .map(|m| {
+                serde_json::json!({
+                    "user": m.user.to_string(),
+                    "order_id": m.order_id,
+                    "kind": format!("{:?}", m.kind),
+                    "price": m.price,
+                    "size": m.size,
+                    "post_only": m.is_post_only(),
+                    "eligible": matches!(m.kind, OrderKind::Limit | OrderKind::FloatingLimit),
+                })
+            })
+            .collect::<Vec<_>>(),
+        "n_maker_accounts": n_maker_accounts,
+    });
+    log::info!(target: "tx_event", "{event}");
+}
+
 /// Emit a single wide structured event (one JSON line, log target `tx_event`) capturing the
 /// full outcome of a transaction.
 ///
@@ -2468,6 +2595,7 @@ fn emit_tx_event(
         "intent": intent.label(),
         "market": intent.market_index(),
         "order_id": intent.order_id(),
+        "user": intent.user().map(|u| u.to_string()),
         "uuid": uuid,
         "sig": sig,
         "status": status,

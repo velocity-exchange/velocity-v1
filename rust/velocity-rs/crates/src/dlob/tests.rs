@@ -4267,3 +4267,61 @@ fn dlob_vamm_taker_size_floor_is_step_size() {
         1
     );
 }
+
+/// Books are created lazily on the first order write: every query for a market that has
+/// never seen an order must behave as an empty book, not panic (regression: prod filler
+/// panic-restarted on a market with no orders — "orderbook missing for market 2, Perp").
+#[test]
+fn dlob_queries_on_market_with_no_book_do_not_panic() {
+    let _ = env_logger::try_init();
+    let dlob = DLOB::default();
+    let slot = 100;
+    let oracle_price = 1000;
+    // market 7 never received an order — no book exists
+    let market_index = 7;
+
+    let crosses = dlob.find_crosses_for_auctions(
+        market_index,
+        MarketType::Perp,
+        slot,
+        oracle_price,
+        None,
+        oracle_price,
+        None,
+    );
+    assert!(crosses.crosses.is_empty());
+    assert!(crosses.limit_crosses.is_none());
+
+    assert!(dlob
+        .find_crossing_region(oracle_price, market_index, MarketType::Perp, None)
+        .is_none());
+
+    let mut triggerable = vec![(Pubkey::new_unique(), 1)];
+    dlob.find_triggerable_orders(
+        market_index,
+        MarketType::Perp,
+        oracle_price,
+        &mut triggerable,
+    );
+    assert!(triggerable.is_empty());
+
+    let taker_order = TakerOrder {
+        price: 1000,
+        size: 7,
+        direction: Direction::Long,
+        market_index,
+        market_type: MarketType::Perp,
+    };
+    let result = dlob.find_crosses_for_taker_order(slot, oracle_price, taker_order, None, None);
+    assert!(result.orders.is_empty());
+    assert!(!result.has_vamm_cross);
+    assert!(result.is_partial);
+    assert_eq!(result.slot, slot);
+
+    assert!(dlob
+        .get_l3_snapshot_safe(market_index, MarketType::Perp)
+        .is_none());
+    assert!(dlob
+        .get_l2_snapshot_safe(market_index, MarketType::Perp)
+        .is_none());
+}

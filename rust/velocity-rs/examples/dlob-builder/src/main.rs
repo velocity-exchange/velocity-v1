@@ -8,16 +8,16 @@ use axum::{
     routing::get,
     Router,
 };
-use velocity_rs::{
-    dlob::{builder::DLOBBuilder, DLOB},
-    types::{MarketId, MarketType},
-    Context, VelocityClient, GrpcSubscribeOpts, RpcClient,
-};
 use serde::{Deserialize, Serialize};
 use solana_commitment_config::CommitmentLevel;
 use solana_keypair::Keypair;
 use tower::ServiceBuilder;
 use tower_http::cors::CorsLayer;
+use velocity_rs::{
+    dlob::{builder::DLOBBuilder, DLOB},
+    types::{MarketId, MarketType},
+    Context, GrpcSubscribeOpts, RpcClient, VelocityClient,
+};
 
 #[derive(Serialize, Deserialize)]
 struct OrderbookLevel {
@@ -70,9 +70,21 @@ async fn get_l2_orderbook(
     Query(params): Query<L2Query>,
     State(state): State<Arc<AppState>>,
 ) -> Result<Json<L2Response>, StatusCode> {
-    let l2_book = state
+    // Book is created lazily on the first order write for a market: missing just means
+    // no orders seen yet (e.g. a quiet market right after startup) — serve an empty book
+    // rather than panicking the process with `get_l2_snapshot`
+    let Some(l2_book) = state
         .dlob
-        .get_l2_snapshot(params.market_index, MarketType::Perp);
+        .get_l2_snapshot_safe(params.market_index, MarketType::Perp)
+    else {
+        return Ok(Json(L2Response {
+            slot: 0,
+            oracle_price: 0,
+            asks: vec![],
+            bids: vec![],
+            market_index: params.market_index,
+        }));
+    };
 
     // Convert BTreeMap to Vec<OrderbookLevel> for JSON serialization
     let asks: Vec<OrderbookLevel> = l2_book
@@ -106,17 +118,29 @@ async fn get_l3_orderbook(
     Query(params): Query<L3Query>,
     State(state): State<Arc<AppState>>,
 ) -> Result<Json<L3Response>, StatusCode> {
-    // Get the L3 snapshot from the DLOB
+    // unknown/unsubscribed market: no oracle data
     let oracle_price = state
         .velocity
         .try_get_oracle_price_data_and_slot(MarketId::perp(params.market_index))
-        .unwrap()
+        .ok_or(StatusCode::NOT_FOUND)?
         .data
         .price as u64;
 
-    let l3_book = state
+    // Book is created lazily on the first order write for a market: missing just means
+    // no orders seen yet (e.g. a quiet market right after startup) — serve an empty book
+    // rather than panicking the process with `get_l3_snapshot`
+    let Some(l3_book) = state
         .dlob
-        .get_l3_snapshot(params.market_index, MarketType::Perp);
+        .get_l3_snapshot_safe(params.market_index, MarketType::Perp)
+    else {
+        return Ok(Json(L3Response {
+            slot: 0,
+            oracle_price,
+            bids: vec![],
+            asks: vec![],
+            market_index: params.market_index,
+        }));
+    };
 
     // Convert L3Order to L3OrderResponse for JSON serialization
     let convert_order = |order: &velocity_rs::dlob::L3Order| L3OrderResponse {
@@ -132,7 +156,7 @@ async fn get_l3_orderbook(
     let perp_market = state
         .velocity
         .try_get_perp_market_account(params.market_index)
-        .unwrap();
+        .map_err(|_| StatusCode::NOT_FOUND)?;
     let unix_now = std::time::SystemTime::now()
         .duration_since(std::time::SystemTime::UNIX_EPOCH)
         .unwrap()
@@ -206,14 +230,10 @@ async fn main() {
     let grpc_url = std::env::var("GRPC_URL").expect("GRPC_URL set");
     let grpc_x_token = std::env::var("GRPC_X_TOKEN").expect("GRPC_X_TOKEN set");
 
-    // let all_perp_markets = velocity.get_all_perp_market_ids();
-    let perp_markets = vec![
-        MarketId::perp(0),
-        MarketId::perp(1),
-        MarketId::perp(2),
-        MarketId::perp(59),
-        MarketId::perp(79),
-    ];
+    // all live perp markets from chain state, so new listings are picked up on restart
+    // without a code change
+    let perp_markets = velocity.get_all_perp_market_ids();
+    println!("tracking perp markets: {perp_markets:?}");
 
     let res = velocity
         .grpc_subscribe(

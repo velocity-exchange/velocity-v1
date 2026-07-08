@@ -708,11 +708,11 @@ impl VelocityClient {
                 RpcSimulateTransactionConfig {
                     sig_verify: false,
                     replace_recent_blockhash: true,
-                    // simulate against the freshest state: the client default is
+                    // simulate against recent state: the client default is
                     // finalized (~32 slots stale), which rejects txs that depend
                     // on accounts changed in the last ~13s — e.g. a swift order
                     // signed by a delegate approved seconds earlier
-                    commitment: Some(CommitmentConfig::processed()),
+                    commitment: Some(CommitmentConfig::confirmed()),
                     ..Default::default()
                 },
             )

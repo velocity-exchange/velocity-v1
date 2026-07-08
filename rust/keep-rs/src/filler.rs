@@ -40,7 +40,7 @@ use velocity_rs::{
 };
 
 use crate::{
-    http::Metrics,
+    http::{FeedHealth, Metrics},
     util::{
         swift_placement_expired, OrderSlotLimiter, PendingTxMeta, PendingTxs, PythPriceUpdate,
         TxIntent,
@@ -63,10 +63,16 @@ pub struct FillerBot {
     priority_fee_subscriber: Arc<PriorityFeeSubscriber>,
     pyth_price_feed: Option<tokio::sync::mpsc::Receiver<PythPriceUpdate>>,
     metrics: Arc<Metrics>,
+    feed_health: Arc<FeedHealth>,
 }
 
 impl FillerBot {
-    pub async fn new(config: Config, velocity: VelocityClient, metrics: Arc<Metrics>) -> Self {
+    pub async fn new(
+        config: Config,
+        velocity: VelocityClient,
+        metrics: Arc<Metrics>,
+        feed_health: Arc<FeedHealth>,
+    ) -> Self {
         let dlob: &'static DLOB = Box::leak(Box::new(DLOB::default()));
         let tx_worker = TxWorker::new(
             velocity.clone(),
@@ -122,6 +128,7 @@ impl FillerBot {
             .subscribe_swift_orders(&market_ids, Some(true), None, swift_ws_url)
             .await
             .expect("subscribed swift orders");
+        feed_health.set_swift_connected(true);
         log::info!(target: TARGET, "subscribed swift orders");
 
         velocity.subscribe_blockhashes().await.expect("subscribed");
@@ -133,6 +140,9 @@ impl FillerBot {
             filler_subaccount,
         )
         .await;
+        // start the grpc liveness clock at subscription time so a feed that never
+        // delivers a single slot still trips the health check
+        feed_health.touch_slot();
         log::info!(target: TARGET, "subscribed gRPC");
 
         let pyth_price_feed = if !config.no_pyth {
@@ -163,6 +173,7 @@ impl FillerBot {
             priority_fee_subscriber,
             pyth_price_feed,
             metrics,
+            feed_health,
         }
     }
 
@@ -178,6 +189,7 @@ impl FillerBot {
         let tx_worker_ref = self.tx_worker_ref.clone();
         let priority_fee_subscriber = Arc::clone(&self.priority_fee_subscriber);
         let metrics = Arc::clone(&self.metrics);
+        let feed_health = Arc::clone(&self.feed_health);
         // reused per-slot scratch buffer for triggerable order ids (avoids per-slot allocation)
         let mut triggerable_buf: Vec<(Pubkey, u32)> = Vec::new();
         let mut slot = 0;
@@ -201,9 +213,19 @@ impl FillerBot {
         let (_dummy_tx, dummy_rx) = tokio::sync::mpsc::channel::<PythPriceUpdate>(1);
         let mut pyth_price_feed = self.pyth_price_feed.unwrap_or(dummy_rx);
 
-        // Swift retry mechanism
-        const MAX_SWIFT_RECONNECT_RETRIES: u32 = 10;
+        // Swift reconnect backoff state (reset on successful resubscribe / first order)
         let mut retries = 0u32;
+
+        // Slot-feed liveness watchdog. Slots arrive ~2.5/s from the gRPC subscription;
+        // if the feed dies *silently* (half-open connection — no error, no None, just
+        // no more messages) `slot_rx.recv()` pends forever and every per-slot fill
+        // pass stops while the process still reports healthy. Same restart policy as
+        // MAX_CONSECUTIVE_ORACLE_MISSES: exit so the supervisor restarts the bot with
+        // fresh subscriptions.
+        const SLOT_FEED_STALE_LIMIT: Duration = Duration::from_secs(60);
+        let mut slot_watchdog = tokio::time::interval(Duration::from_secs(15));
+        slot_watchdog.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+        let mut last_slot_update = std::time::Instant::now();
         loop {
             tokio::select! {
                 biased;
@@ -290,28 +312,33 @@ impl FillerBot {
                             }
                         }
                         None => {
+                            // Reconnect forever with capped backoff. Giving up after N
+                            // retries left the bot permanently deaf to swift flow while
+                            // reporting healthy — a swift-server outage longer than the
+                            // retry budget must not require a manual restart.
+                            feed_health.set_swift_connected(false);
                             retries += 1;
-                            if retries <= MAX_SWIFT_RECONNECT_RETRIES {
-                                    let backoff = 2u64.pow(retries).min(30);
-                                    log::warn!(target: "swift", "feed disconnected, retry {retries}/{MAX_SWIFT_RECONNECT_RETRIES} in {backoff}s");
-                                    tokio::time::sleep(Duration::from_secs(backoff)).await;
+                            let backoff = 2u64.saturating_pow(retries.min(5)).min(30);
+                            log::warn!(target: "swift", "feed disconnected, retry {retries} in {backoff}s");
+                            tokio::time::sleep(Duration::from_secs(backoff)).await;
 
-                                    // keep the same ws url override as the initial subscription,
-                                    // otherwise a reconnect silently switches to the default host
-                                    match velocity
-                                        .subscribe_swift_orders(&market_ids, Some(true), None, std::env::var("SWIFT_WS_URL").ok())
-                                        .await
-                                    {
-                                        Ok(stream) => swift_order_stream = stream,
-                                        Err(e) => {
-                                            log::error!(target: "swift", "resubscribe failed: {e:?}");
-                                            continue;
-                                        }
-                                    }
-                                } else {
-                                    log::error!(target: TARGET, "swift order stream finished after {MAX_SWIFT_RECONNECT_RETRIES} retries");
-                                    break;
+                            // keep the same ws url override as the initial subscription,
+                            // otherwise a reconnect silently switches to the default host
+                            match velocity
+                                .subscribe_swift_orders(&market_ids, Some(true), None, std::env::var("SWIFT_WS_URL").ok())
+                                .await
+                            {
+                                Ok(stream) => {
+                                    log::info!(target: "swift", "feed resubscribed after {retries} attempt(s)");
+                                    swift_order_stream = stream;
+                                    retries = 0;
+                                    feed_health.set_swift_connected(true);
                                 }
+                                Err(e) => {
+                                    log::error!(target: "swift", "resubscribe failed: {e:?}");
+                                    continue;
+                                }
+                            }
                         }
                     }
                 }
@@ -321,6 +348,8 @@ impl FillerBot {
                         break;
                     }
                     slot = new_slot.expect("got slot update");
+                    last_slot_update = std::time::Instant::now();
+                    feed_health.touch_slot();
                     log::trace!(target: TARGET, "got slot update: {slot}");
 
                     let priority_fee = priority_fee_subscriber.priority_fee_nth(0.5) + slot % 2; // add entropy to produce unique tx hash on conseuctive tx resubmission
@@ -545,6 +574,16 @@ impl FillerBot {
                             log::error!(target: TARGET, "pyth price feed disconnected, shutting down");
                             break;  // exits the loop
                         }
+                    }
+                }
+                _ = slot_watchdog.tick() => {
+                    if last_slot_update.elapsed() > SLOT_FEED_STALE_LIMIT {
+                        log::error!(
+                            target: TARGET,
+                            "no slot updates for {}s: gRPC slot feed is dead, exiting for supervisor restart",
+                            last_slot_update.elapsed().as_secs()
+                        );
+                        std::process::exit(1);
                     }
                 }
             }

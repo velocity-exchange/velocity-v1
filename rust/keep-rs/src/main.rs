@@ -203,9 +203,11 @@ async fn main() {
         .await
         .expect("bind metrics port");
 
+    let feed_health = Arc::new(crate::http::FeedHealth::default());
     let app_state = crate::http::AppState {
         metrics: Arc::clone(&metrics),
         dashboard_state: Arc::clone(&dashboard_state),
+        feed_health: Arc::clone(&feed_health),
     };
     let _http_task = tokio::spawn(async move {
         axum::serve(
@@ -294,7 +296,7 @@ async fn main() {
         let bot = TakerBot::new(config, velocity).await;
         bot.run().await;
     } else if config.filler {
-        let bot = FillerBot::new(config, velocity, metrics).await;
+        let bot = FillerBot::new(config, velocity, metrics, feed_health).await;
         bot.run().await;
     } else {
         log::warn!("provide --filler, --liquidator, --quoter, --taker, or --relayer mode");

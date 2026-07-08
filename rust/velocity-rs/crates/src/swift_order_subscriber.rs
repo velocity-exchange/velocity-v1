@@ -1,5 +1,5 @@
 //! Swift order subscriber and serialization utilities
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use crate::solana_sdk::{clock::Slot, pubkey::Pubkey, signature::Signature};
 use anchor_lang::{AnchorDeserialize, AnchorSerialize};
@@ -395,15 +395,44 @@ pub async fn subscribe_swift_orders(
 
     let maker_pubkey = client.wallet().authority().to_string();
     let uri = format!("{base_url}/ws?pubkey={maker_pubkey}");
-    let (ws_stream, _) = connect_async(uri).await.map_err(|err| {
-        log::error!(target: LOG_TARGET, "couldn't connect to server: {err:?}");
-        SdkError::WsClient(Box::new(err))
-    })?;
+
+    // The TCP/WS connect and the auth handshake must complete within a deadline.
+    // Neither resolves on its own against a server that accepts the connection but
+    // never progresses (dead backend behind a Service/LB, hung server) — and callers
+    // await this function inline in their event loops, so an unbounded hang here
+    // freezes the whole bot, not just the swift feed.
+    const CONNECT_TIMEOUT: Duration = Duration::from_secs(20);
+
+    let deadline = tokio::time::Instant::now() + CONNECT_TIMEOUT;
+    let (ws_stream, _) = tokio::time::timeout_at(deadline, connect_async(uri))
+        .await
+        .map_err(|_| {
+            log::error!(
+                target: LOG_TARGET,
+                "swift ws connect timed out after {}s",
+                CONNECT_TIMEOUT.as_secs()
+            );
+            SdkError::WebsocketError
+        })?
+        .map_err(|err| {
+            log::error!(target: LOG_TARGET, "couldn't connect to server: {err:?}");
+            SdkError::WsClient(Box::new(err))
+        })?;
 
     let (mut outgoing, mut incoming) = ws_stream.split();
 
-    // handle authentication and subscription
-    while let Some(msg) = incoming.next().await {
+    // handle authentication and subscription (same deadline as the connect)
+    while let Some(msg) = tokio::time::timeout_at(deadline, incoming.next())
+        .await
+        .map_err(|_| {
+            log::error!(
+                target: LOG_TARGET,
+                "swift ws auth handshake timed out after {}s",
+                CONNECT_TIMEOUT.as_secs()
+            );
+            SdkError::WebsocketError
+        })?
+    {
         let msg = msg.map_err(|err| {
             log::error!(target: LOG_TARGET, "failed reading swift msg: {err:?}");
             SdkError::WsClient(Box::new(err))
@@ -473,9 +502,50 @@ pub async fn subscribe_swift_orders(
 
     let (tx, rx) = tokio::sync::mpsc::channel(256);
 
-    // handle swift orders
+    // Liveness watchdog parameters. The server heartbeats every ~30s, so a healthy
+    // connection is never silent for long: READ_IDLE_TIMEOUT of total silence (no
+    // orders, heartbeats, or pongs) means the connection is dead even though the
+    // socket looks open (half-open TCP, LB idle drop, server-side unroute) — without
+    // it `incoming.next()` pends forever and the feed fails silently. Client pings
+    // give the connection regular write traffic so a broken pipe surfaces as a write
+    // error within one PING_INTERVAL instead of never, and keep NAT/LB idle timers
+    // from firing.
+    const READ_IDLE_TIMEOUT: Duration = Duration::from_secs(90);
+    const PING_INTERVAL: Duration = Duration::from_secs(15);
+
+    // handle swift orders; exiting this task drops `tx`, which ends the returned
+    // stream — the subscriber's signal to reconnect
     tokio::spawn(async move {
-        while let Some(msg) = incoming.next().await {
+        let mut ping_timer = tokio::time::interval(PING_INTERVAL);
+        ping_timer.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+        loop {
+            let msg = tokio::select! {
+                biased;
+                read = tokio::time::timeout(READ_IDLE_TIMEOUT, incoming.next()) => {
+                    match read {
+                        Ok(Some(msg)) => msg,
+                        Ok(None) => {
+                            log::error!(target: LOG_TARGET, "swift ws stream ended");
+                            break;
+                        }
+                        Err(_elapsed) => {
+                            log::error!(
+                                target: LOG_TARGET,
+                                "swift ws silent for {}s (no orders or heartbeats), dropping connection",
+                                READ_IDLE_TIMEOUT.as_secs()
+                            );
+                            break;
+                        }
+                    }
+                }
+                _ = ping_timer.tick() => {
+                    if let Err(err) = outgoing.send(Message::Ping(Default::default())).await {
+                        log::error!(target: LOG_TARGET, "swift ws ping failed: {err:?}");
+                        break;
+                    }
+                    continue;
+                }
+            };
             match msg {
                 Ok(Message::Text(ref text)) => {
                     match serde_json::from_str::<OrderNotification>(text) {
@@ -503,7 +573,9 @@ pub async fn subscribe_swift_orders(
                                 order.pre_deposit = Some(deposit.to_string());
                             }
 
-                            if !accept_sanitized {
+                            // drop only orders actually flagged for sanitization;
+                            // unflagged flow is always deliverable
+                            if order.will_sanitize && !accept_sanitized {
                                 log::debug!(
                                     target: LOG_TARGET,
                                     "skipping sanitized order: {}",
@@ -511,9 +583,22 @@ pub async fn subscribe_swift_orders(
                                 );
                                 continue;
                             }
-                            if let Err(err) = tx.try_send(order) {
-                                log::error!(target: LOG_TARGET, "order chan failed: {err:?}");
-                                break;
+                            match tx.try_send(order) {
+                                Ok(()) => {}
+                                Err(tokio::sync::mpsc::error::TrySendError::Full(order)) => {
+                                    // slow consumer: shed this order but keep the
+                                    // connection — killing the pump over one burst
+                                    // turns backpressure into a full feed outage
+                                    log::error!(
+                                        target: LOG_TARGET,
+                                        "order chan full, dropping order: {}",
+                                        order.uuid
+                                    );
+                                }
+                                Err(tokio::sync::mpsc::error::TrySendError::Closed(_)) => {
+                                    log::error!(target: LOG_TARGET, "order chan closed");
+                                    break;
+                                }
                             }
                         }
                         Err(err) => {

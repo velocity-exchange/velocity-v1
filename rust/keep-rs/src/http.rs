@@ -2,7 +2,6 @@
 use std::sync::Arc;
 
 use axum::{
-    body::Body,
     extract::State,
     http::{header::CONTENT_TYPE, Response, StatusCode},
     response::{Html, IntoResponse, Json},
@@ -290,11 +289,24 @@ pub async fn metrics_handler(State(state): State<AppState>) -> impl IntoResponse
         .unwrap()
 }
 
-pub async fn health_handler() -> impl IntoResponse {
-    Response::builder()
-        .status(StatusCode::OK)
-        .body(Body::empty())
-        .unwrap()
+/// Liveness endpoint for the k8s probe: 200 while every tracked upstream feed is
+/// live, 503 otherwise (with a JSON body naming the dead feed) so the kubelet
+/// restarts the pod. See [`FeedHealth`].
+pub async fn health_handler(State(state): State<AppState>) -> impl IntoResponse {
+    let swift_stream_live = state.feed_health.swift_stream_live();
+    let grpc_stream_live = state.feed_health.grpc_stream_live();
+    let status = if swift_stream_live && grpc_stream_live {
+        StatusCode::OK
+    } else {
+        StatusCode::SERVICE_UNAVAILABLE
+    };
+    (
+        status,
+        Json(serde_json::json!({
+            "swift_stream_live": swift_stream_live,
+            "grpc_stream_live": grpc_stream_live,
+        })),
+    )
 }
 
 /// Dashboard state shared between liquidator and HTTP server
@@ -348,6 +360,61 @@ pub type DashboardStateRef = Arc<RwLock<Option<DashboardState>>>;
 pub struct AppState {
     pub metrics: Arc<Metrics>,
     pub dashboard_state: DashboardStateRef,
+    pub feed_health: Arc<FeedHealth>,
+}
+
+/// Upstream feed liveness shared between a bot's event loop and `/health`.
+///
+/// The k8s liveness probe is the last line of defence against silent feed death:
+/// unlike in-loop watchdogs, the probe handler runs on its own task, so it still
+/// answers (with a failure) when the bot's event loop is wedged inside one select
+/// arm and can't run any watchdog of its own. Feeds a bot doesn't register stay
+/// untracked and report live, so each bot only fails health on feeds it uses.
+#[derive(Debug, Default)]
+pub struct FeedHealth {
+    /// unix ms of the last gRPC slot update; 0 = untracked
+    last_slot_update_ms: std::sync::atomic::AtomicU64,
+    /// swift ws subscription state: 0 = untracked, 1 = connected, 2 = disconnected
+    swift_state: std::sync::atomic::AtomicU8,
+}
+
+impl FeedHealth {
+    /// gRPC slots arrive ~2.5/s; this much silence means the feed is dead
+    const GRPC_STALE_LIMIT_MS: u64 = 60_000;
+
+    fn unix_now_ms() -> u64 {
+        std::time::SystemTime::now()
+            .duration_since(std::time::SystemTime::UNIX_EPOCH)
+            .unwrap()
+            .as_millis() as u64
+    }
+
+    /// Record a gRPC slot update (marks the grpc feed tracked)
+    pub fn touch_slot(&self) {
+        self.last_slot_update_ms
+            .store(Self::unix_now_ms(), std::sync::atomic::Ordering::Relaxed);
+    }
+
+    /// Record the swift subscription state (marks the swift feed tracked)
+    pub fn set_swift_connected(&self, connected: bool) {
+        self.swift_state.store(
+            if connected { 1 } else { 2 },
+            std::sync::atomic::Ordering::Relaxed,
+        );
+    }
+
+    /// false only when the grpc feed is tracked and stale
+    pub fn grpc_stream_live(&self) -> bool {
+        let last = self
+            .last_slot_update_ms
+            .load(std::sync::atomic::Ordering::Relaxed);
+        last == 0 || Self::unix_now_ms().saturating_sub(last) < Self::GRPC_STALE_LIMIT_MS
+    }
+
+    /// false only when the swift feed is tracked and disconnected
+    pub fn swift_stream_live(&self) -> bool {
+        self.swift_state.load(std::sync::atomic::Ordering::Relaxed) != 2
+    }
 }
 
 /// API endpoint to get dashboard data

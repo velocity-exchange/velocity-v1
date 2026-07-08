@@ -801,7 +801,7 @@ pub fn handle_initialize_perp_market(
             funding_bias_sensitivity: 0,
             padding_post_amm: [0; 2],
         },
-        // protocol fees are quote/USDC-denominated; quote market is index 0
+        // protocol fees are quote-denominated; quote market is QUOTE_SPOT_MARKET_INDEX
         protocol_fee_pool: PoolBalance {
             market_index: QUOTE_SPOT_MARKET_INDEX,
             ..PoolBalance::default()

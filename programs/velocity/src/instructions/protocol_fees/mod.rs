@@ -1,7 +1,7 @@
 //! Direct protocol-fee withdrawal.
 //!
 //! Protocol fees accrue as an excess `protocol_fee_pool` claim on each market
-//! (perp fees are quote/USDC-denominated and drawn from the quote spot vault;
+//! (perp fees are quote-denominated and drawn from the quote spot vault;
 //! spot/lending fees are drawn from the market's own vault). These ixs let the
 //! `FeeWithdraw` hot key move those fees directly to the associated token
 //! account of the configured recipient — `State.protocol_fee_recipient_perp`

@@ -144,7 +144,7 @@ export const ONE_HOUR = new BN(60 * 60);
 /** 31,536,000 seconds (365 days). */
 export const ONE_YEAR = new BN(31536000);
 
-/** Market index of the protocol's quote spot market (USDC on mainnet). */
+/** Market index of the protocol's quote spot market (the protocol's quote asset on mainnet). */
 export const QUOTE_SPOT_MARKET_INDEX = 0;
 
 /** 1e9 (`LAMPORTS_PER_SOL`); token-mint precision for wrapped SOL spot markets. */

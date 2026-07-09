@@ -1438,6 +1438,14 @@ pub fn liquidate_spot(
         margin_context,
     )?;
 
+    // deposits priced by a margin-invalid oracle (e.g. StaleForMargin/TooUncertain) must not
+    // determine liquidatability or size the asset seizure
+    validate!(
+        margin_calculation.all_deposit_oracles_valid,
+        ErrorCode::InvalidOracle,
+        "a deposit oracle is invalid for margin calculation, cannot liquidate spot"
+    )?;
+
     if !user.is_cross_margin_being_liquidated()
         && margin_calculation.meets_cross_margin_requirement()
     {
@@ -1985,6 +1993,14 @@ pub fn liquidate_spot_with_swap_begin(
         spot_market_map,
         oracle_map,
         margin_context,
+    )?;
+
+    // deposits priced by a margin-invalid oracle (e.g. StaleForMargin/TooUncertain) must not
+    // determine liquidatability or size the asset seizure
+    validate!(
+        margin_calculation.all_deposit_oracles_valid,
+        ErrorCode::InvalidOracle,
+        "a deposit oracle is invalid for margin calculation, cannot liquidate spot"
     )?;
 
     if !user.is_cross_margin_being_liquidated()
@@ -3054,6 +3070,14 @@ pub fn liquidate_perp_pnl_for_deposit(
         spot_market_map,
         oracle_map,
         MarginContext::liquidation(liquidation_margin_buffer_ratio),
+    )?;
+
+    // deposits priced by a margin-invalid oracle (e.g. StaleForMargin/TooUncertain) must not
+    // determine liquidatability or size the asset seizure
+    validate!(
+        margin_calculation.all_deposit_oracles_valid,
+        ErrorCode::InvalidOracle,
+        "a deposit oracle is invalid for margin calculation, cannot liquidate deposit for perp pnl"
     )?;
 
     let user_is_being_liquidated = liquidation_mode.user_is_being_liquidated(user)?;

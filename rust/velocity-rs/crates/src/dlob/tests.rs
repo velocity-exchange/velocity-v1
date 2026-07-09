@@ -4723,3 +4723,99 @@ fn find_crosses_for_auctions_respects_trigger_limit_price() {
         .iter()
         .any(|(m, _)| m.user == maker && m.order_id == 1));
 }
+
+/// Replay of the 2026-07-09 BTC-PERP mainnet incident: a min-size reduce-only
+/// swift close (oracle order, size == order_step_size == min_order_size ==
+/// 100_000) rested post-auction with its limit price ~$590 *through* the vAMM
+/// bid and was never detected as a cross, because the vAMM size floor was a
+/// strict `> min_order_size`. Order fields and market parameters are the
+/// values recorded from the incident (order uuid jw0lnurW, slot 431858723).
+#[test]
+fn dlob_min_size_oracle_close_crosses_vamm_incident_replay() {
+    let _ = env_logger::try_init();
+    let dlob = DLOB::default();
+    let order_slot = 431_858_723u64;
+    let oracle_price: u64 = 63_153_644_024; // $63,153.64 (PRICE_PRECISION)
+
+    // Reserves chosen so reserve_price ≈ the recorded quote; spreads are the
+    // measured BTC-PERP values at the time (long 2022 / short 87, 1e-6 units).
+    let base_reserves = 100 * AMM_RESERVE_PRECISION;
+    let quote_reserves = base_reserves * 63_153;
+    let perp_market = PerpMarket {
+        market_index: 0,
+        contract_tier: crate::types::ContractTier::A,
+        amm: AMM {
+            max_fill_reserve_fraction: 1,
+            base_asset_reserve: base_reserves.into(),
+            quote_asset_reserve: quote_reserves.into(),
+            sqrt_k: (base_reserves * quote_reserves).into(),
+            peg_multiplier: PEG_PRECISION.into(),
+            terminal_quote_asset_reserve: quote_reserves.into(),
+            concentration_coef: 5u128.into(),
+            long_spread: 2022,
+            short_spread: 87,
+            max_base_asset_reserve: (u64::MAX as u128).into(),
+            min_base_asset_reserve: 0u128.into(),
+            max_spread: 10000,
+            ..Default::default()
+        },
+        order_step_size: 100_000, // == min_order_size on BTC-PERP
+        order_tick_size: 100_000, // $0.10
+        market_stats: MarketStats {
+            min_order_size: 100_000,
+            historical_oracle_data: HistoricalOracleData {
+                last_oracle_price: oracle_price as i64,
+                ..Default::default()
+            },
+            last_oracle_valid: true,
+            ..Default::default()
+        },
+        ..Default::default()
+    };
+
+    // The recorded order: oracle short, reduce-only, exactly min size,
+    // auction start +$41.86 walking to -$590.15, resting at oracle - $590.15.
+    let mut order = create_test_order(
+        12,
+        OrderType::Oracle,
+        Direction::Short,
+        41_855_976,
+        100_000,
+        order_slot,
+    );
+    order.auction_end_price = -590_151_024;
+    order.oracle_price_offset = -590_151_024;
+    order.auction_duration = 20;
+    order.reduce_only = true;
+    order.max_ts = 0; // detection under test, not expiry
+    dlob.insert_order(&Pubkey::new_unique(), order_slot, order);
+
+    // Advance past the auction (the incident order rested ~22s post-auction)
+    let slot = order_slot + 25;
+    if let Some(mut book) = dlob.markets.get_mut(&MarketId::new(0, MarketType::Perp)) {
+        book.update_slot(slot);
+        book.update_l3_view(oracle_price, &dlob.metadata, &Default::default());
+    }
+
+    let crosses = dlob.find_crosses_for_auctions(
+        0,
+        MarketType::Perp,
+        slot,
+        oracle_price,
+        Some(&perp_market),
+        oracle_price,
+        None,
+    );
+
+    // Resting price = oracle - $590.15 crosses the vAMM bid (≈ reserve - 8.7bps)
+    // by hundreds of dollars; a min-size order must be seen as a vAMM cross.
+    assert_eq!(
+        crosses.crosses.len(),
+        1,
+        "min-size resting oracle close must cross the vAMM"
+    );
+    let (crossed_order, maker_crosses) = &crosses.crosses[0];
+    assert_eq!(crossed_order.size, 100_000);
+    assert!(maker_crosses.has_vamm_cross);
+    assert!(maker_crosses.orders.is_empty()); // no makers on the book — vAMM only
+}

@@ -1085,9 +1085,7 @@ impl DLOB {
         // `min_order_size`). A strict `> min_order_size` floor here made
         // exactly-min-size and small reduce-only orders permanently invisible
         // to vAMM crossing.
-        let vamm_step = perp_market
-            .map(|p| p.order_step_size)
-            .unwrap_or(u64::MAX);
+        let vamm_step = perp_market.map(|p| p.order_step_size).unwrap_or(u64::MAX);
 
         if is_long {
             let vamm_price = perp_market

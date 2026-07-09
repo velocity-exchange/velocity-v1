@@ -32,7 +32,8 @@ use crate::{
         bn,
         casting::Cast,
         constants::{
-            BPS_PRECISION, DEFAULT_LIQUIDATION_MARGIN_BUFFER_RATIO, FEE_ADJUSTMENT_MAX,
+            BPS_PRECISION, DEFAULT_BANKRUPTCY_IF_FLOOR_PCT,
+            DEFAULT_LIQUIDATION_MARGIN_BUFFER_RATIO, FEE_ADJUSTMENT_MAX,
             FEE_POOL_TO_REVENUE_POOL_THRESHOLD, IF_FACTOR_PRECISION, INSURANCE_A_MAX,
             INSURANCE_B_MAX, INSURANCE_C_MAX, INSURANCE_SPECULATIVE_MAX, LIQUIDATION_FEE_PRECISION,
             MAX_CONCENTRATION_COEFFICIENT, MM_ORACLE_MAX_STEP_PCT_PRECISION,
@@ -731,7 +732,7 @@ pub fn handle_initialize_perp_market(
         quote_break_even_amount_long: 0,
         quote_break_even_amount_short: 0,
         max_open_interest,
-        padding: [0; 4],
+        bankruptcy_if_floor_pct: DEFAULT_BANKRUPTCY_IF_FLOOR_PCT,
         market_stats: MarketStats {
             last_oracle_normalised_price: oracle_price,
             last_mark_price_twap: init_reserve_price,
@@ -2760,6 +2761,32 @@ pub fn handle_update_perp_market_fee_pool_buffer_target(
     );
 
     perp_market.fee_pool_buffer_target = fee_pool_buffer_target;
+    Ok(())
+}
+
+/// Set the market's `bankruptcy_if_floor_pct` — the fraction of open-interest
+/// notional the fee sweep must leave behind in `pending_if_fee` as a standing
+/// bankruptcy tranche (PERCENTAGE_PRECISION; 0 disables the floor).
+pub fn handle_update_perp_market_bankruptcy_if_floor_pct(
+    ctx: Context<AdminUpdatePerpMarket>,
+    bankruptcy_if_floor_pct: u32,
+) -> Result<()> {
+    let perp_market = &mut load_mut!(ctx.accounts.perp_market)?;
+    msg!("perp market {}", perp_market.market_index);
+
+    validate!(
+        bankruptcy_if_floor_pct <= PERCENTAGE_PRECISION_U32,
+        ErrorCode::DefaultError,
+        "bankruptcy_if_floor_pct must be <= PERCENTAGE_PRECISION (100%)"
+    )?;
+
+    msg!(
+        "perp_market.bankruptcy_if_floor_pct: {:?} -> {:?}",
+        perp_market.bankruptcy_if_floor_pct,
+        bankruptcy_if_floor_pct
+    );
+
+    perp_market.bankruptcy_if_floor_pct = bankruptcy_if_floor_pct;
     Ok(())
 }
 

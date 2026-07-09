@@ -65,6 +65,7 @@ test_files=(
   isolatedPositionVelocityClient.ts
   isolatedPositionLiquidatePerp.ts
   isolatedPositionLiquidatePerpwithFill.ts
+  bankruptcyIfFloor.ts
   liquidateBorrowForPerpPnl.ts
   liquidatePerp.ts
   liquidatePerpWithFill.ts

@@ -106,10 +106,36 @@ pub struct CrossesAndTopMakers {
     pub top_maker_bids: ArrayVec<Pubkey, 3>,
     // top of book limit cross, if any
     pub limit_crosses: Option<(L3Order, L3Order)>,
+    /// Best resting BID crossed by the vAMM ask quote (named for the vAMM quote side,
+    /// not the order's side). See [`Self::take_vamm_crossed_resting_orders`].
     pub vamm_taker_ask: Option<L3Order>,
+    /// Best resting ASK crossed by the vAMM bid quote (named for the vAMM quote side,
+    /// not the order's side). See [`Self::take_vamm_crossed_resting_orders`].
     pub vamm_taker_bid: Option<L3Order>,
     //  taker crosses and maker orders
     pub crosses: Vec<(L3Order, MakerCrosses)>,
+}
+
+impl CrossesAndTopMakers {
+    /// The best resting BID currently crossed by the vAMM's ask quote, if any
+    /// (drains the `vamm_taker_ask` field — that field is named for the vAMM quote
+    /// side doing the crossing, this accessor for the order you get back).
+    ///
+    /// Such an order is fillable with a `fill_perp_order` carrying no (or only
+    /// fallback) maker accounts: the program dispatches on the order's `post_only` —
+    /// post-only → the vAMM takes at the maker's price
+    /// (`determine_perp_fulfillment_methods_for_maker`); otherwise → an ordinary
+    /// vAMM fill where the resting order takes against the vAMM quote.
+    pub fn take_vamm_crossed_bid(&mut self) -> Option<L3Order> {
+        self.vamm_taker_ask.take()
+    }
+
+    /// The best resting ASK currently crossed by the vAMM's bid quote, if any
+    /// (drains the `vamm_taker_bid` field). See [`Self::take_vamm_crossed_bid`] for
+    /// the naming rationale and fill semantics.
+    pub fn take_vamm_crossed_ask(&mut self) -> Option<L3Order> {
+        self.vamm_taker_bid.take()
+    }
 }
 
 /// Best fills for a taker order
@@ -218,6 +244,7 @@ impl OracleOrder {
             size: self.size,
             offset_price: self.oracle_price_offset,
             max_ts: self.max_ts,
+            direction: self.direction,
             post_only: false,
             reduce_only: self.reduce_only,
         }
@@ -308,6 +335,7 @@ pub(crate) struct FloatingLimitOrder {
     pub slot: u64,
     pub max_ts: u64,
     pub offset_price: i64,
+    pub direction: Direction,
     pub post_only: bool,
     pub reduce_only: bool,
 }
@@ -319,6 +347,8 @@ pub(crate) struct TriggerOrder {
     pub size: u64,
     /// static trigger price
     pub price: u64,
+    /// the order's limit price (0 = none); caps the post-trigger auction for trigger-limit orders
+    pub limit_price: u64,
     pub slot: u64,
     pub max_ts: u64,
     pub condition: OrderTriggerCondition,
@@ -357,6 +387,9 @@ impl TriggerOrder {
                 market_index: market.market_index,
                 market_type: program::state::user::MarketType::Perp,
                 base_asset_amount: self.size,
+                // caps the derived auction for trigger-limit orders (the program clamps
+                // auction start/end to the order's limit price on trigger)
+                price: self.limit_price,
                 status: program::state::user::OrderStatus::Open,
                 trigger_condition: match self.condition {
                     OrderTriggerCondition::Above => OrderTriggerCondition::TriggeredAbove,
@@ -377,7 +410,9 @@ impl TriggerOrder {
                         has_sufficient_number_of_data_points: true,
                         sequence_id: None,
                     },
-                    program::math::margin::MarginRequirementType::Maintenance as u8,
+                    // min auction duration; mirrors the hardcoded value the program passes in
+                    // `controller::orders::trigger_order`
+                    20,
                     Some(market),
                 )
                 .unwrap();
@@ -475,9 +510,13 @@ impl DynamicPrice for OracleOrder {
     fn get_price(&self, slot: u64, oracle_price: u64, tick_size: u64) -> Option<u64> {
         let slots_elapsed = slot.saturating_sub(self.slot) as i64;
         // limit price after auction end
+        // mirrors onchain `Order::get_limit_price`: any non-zero offset (negative included)
+        // is a real limit price; only offset-less orders fall back to the vamm price
         if slots_elapsed > self.duration as i64 {
-            return if self.oracle_price_offset > 0 {
-                Some((oracle_price as i64 + self.oracle_price_offset as i64) as u64)
+            return if self.oracle_price_offset != 0 {
+                let price =
+                    ((oracle_price as i64 + self.oracle_price_offset).max(tick_size as i64)) as u64;
+                Some(standardize_price(price, tick_size, self.direction))
             } else {
                 None
             };
@@ -554,8 +593,11 @@ impl From<(u64, Order)> for LimitOrder {
 }
 
 impl FloatingLimitOrder {
+    /// mirrors onchain `Order::get_limit_price` for oracle-offset orders:
+    /// `max(oracle + offset, tick)` standardized to tick by direction
     pub fn get_price(&self, oracle_price: u64, tick_size: u64) -> u64 {
-        (oracle_price as i64 + self.offset_price as i64).max(tick_size as i64) as u64
+        let price = (oracle_price as i64 + self.offset_price).max(tick_size as i64) as u64;
+        standardize_price(price, tick_size, self.direction)
     }
 }
 
@@ -568,6 +610,7 @@ impl From<(u64, Order)> for FloatingLimitOrder {
             offset_price: order.oracle_price_offset,
             slot: order.slot,
             max_ts: order.max_ts as u64,
+            direction: order.direction,
             post_only: order.post_only,
             reduce_only: order.reduce_only,
         }
@@ -581,6 +624,7 @@ impl From<(u64, Order)> for TriggerOrder {
             id,
             size: order.base_asset_amount,
             price: order.trigger_price,
+            limit_price: order.price,
             condition: order.trigger_condition,
             max_ts: order.max_ts.unsigned_abs(),
             slot: order.slot,
@@ -719,43 +763,6 @@ impl L3Order {
     pub fn is_post_only(&self) -> bool {
         self.flags & Self::IS_POST_ONLY > 0
     }
-    /// Calculate the 'limit' price of an _untriggered_ perp trigger order
-    ///
-    /// i.e. if order was triggered onchain immediately at the current `slot` and `oracle_price`
-    pub fn post_trigger_price(
-        &self,
-        slot: u64,
-        oracle_price: u64,
-        perp_market: &PerpMarket,
-    ) -> Option<u64> {
-        if matches!(
-            self.kind,
-            OrderKind::TriggerMarket | OrderKind::TriggerLimit
-        ) {
-            let condition = if self.is_trigger_above() {
-                OrderTriggerCondition::Above
-            } else {
-                OrderTriggerCondition::Below
-            };
-            let order = TriggerOrder {
-                id: 0,
-                size: self.size,
-                reduce_only: self.is_reduce_only(),
-                max_ts: self.max_ts,
-                direction: if self.is_long() {
-                    Direction::Long
-                } else {
-                    Direction::Short
-                },
-                condition,
-                slot,
-                ..Default::default()
-            };
-            order.get_price(slot, oracle_price, Some(perp_market)).ok()
-        } else {
-            None
-        }
-    }
     /// True if order is maker only
     pub fn is_maker(&self) -> bool {
         self.kind.is_maker()
@@ -763,6 +770,68 @@ impl L3Order {
     /// True if order is taker only
     pub fn is_taker(&self) -> bool {
         self.kind.is_taker()
+    }
+}
+
+/// An untriggered trigger order in the L3 book view.
+///
+/// `order.price` holds the *trigger* price; the extra fields carried here are the static
+/// order data needed to compute the price it would fill at once triggered (which the
+/// `L3Book` bids/asks merge computes dynamically per query).
+#[derive(Debug, Clone)]
+pub(crate) struct TriggerL3Order {
+    pub order: L3Order,
+    /// the order's limit price (0 = none); the program clamps the post-trigger auction
+    /// of a trigger-limit order to this price
+    pub limit_price: u64,
+}
+
+impl TriggerL3Order {
+    /// Calculate the price of this _untriggered_ perp trigger order as if it were
+    /// triggered onchain immediately at the current `slot` and `oracle_price`
+    ///
+    /// Mirrors the program's `update_trigger_order_params` + fill-time auction pricing.
+    pub fn post_trigger_price(
+        &self,
+        slot: u64,
+        oracle_price: u64,
+        perp_market: &PerpMarket,
+    ) -> Option<u64> {
+        if !matches!(
+            self.order.kind,
+            OrderKind::TriggerMarket | OrderKind::TriggerLimit
+        ) {
+            return None;
+        }
+        let condition = if self.order.is_trigger_above() {
+            OrderTriggerCondition::Above
+        } else {
+            OrderTriggerCondition::Below
+        };
+        let order = TriggerOrder {
+            id: 0,
+            size: self.order.size,
+            reduce_only: self.order.is_reduce_only(),
+            max_ts: self.order.max_ts,
+            direction: if self.order.is_long() {
+                Direction::Long
+            } else {
+                Direction::Short
+            },
+            condition,
+            slot,
+            // preserve the real order type and limit price: the program derives
+            // oracle-offset auctions for trigger-market orders and clamps the
+            // auction to the limit price for trigger-limit orders
+            kind: if matches!(self.order.kind, OrderKind::TriggerMarket) {
+                OrderType::TriggerMarket
+            } else {
+                OrderType::TriggerLimit
+            },
+            limit_price: self.limit_price,
+            ..Default::default()
+        };
+        order.get_price(slot, oracle_price, Some(perp_market)).ok()
     }
 }
 

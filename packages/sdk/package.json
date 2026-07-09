@@ -1,12 +1,16 @@
 {
 	"name": "@velocity-exchange/sdk",
-	"version": "0.5.0",
+	"version": "0.6.0",
 	"main": "lib/node/index.js",
 	"types": "lib/node/index.d.ts",
 	"module": "./lib/browser/index.js",
+	"files": [
+		"lib"
+	],
 	"repository": {
 		"type": "git",
-		"url": "git@github.com:velocity-exchange/velocity-v1.git"
+		"url": "git+https://github.com/velocity-exchange/velocity-v1.git",
+		"directory": "packages/sdk"
 	},
 	"scripts": {
 		"lint": "eslint './**/*.{ts,tsx}' --quiet --format unix",
@@ -111,7 +115,7 @@
 	},
 	"description": "SDK for Velocity Protocol",
 	"engines": {
-		"node": "^24.0.0"
+		"node": ">=20"
 	},
 	"resolutions": {
 		"@solana/web3.js": "1.98.0",

@@ -61,6 +61,7 @@ const mockUserStatsAccount: UserStatsAccount = {
 	authority: undefined as any,
 	ifStakedQuoteAssetAmount: ZERO,
 	delegatePermissions: 0,
+	equityBreakerTripped: 0,
 };
 
 async function makeFeeMockUser(referrerStatus: number): Promise<User> {

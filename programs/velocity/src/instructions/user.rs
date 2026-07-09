@@ -103,7 +103,9 @@ use crate::state::state::State;
 use crate::state::traits::Size;
 use crate::state::user::OrderStatus;
 use crate::state::user::ReferrerStatus;
-use crate::state::user::{MarketType, OrderType, ReferrerName, User, UserStats};
+use crate::state::user::{
+    transfer_equity_floor, MarketType, OrderType, ReferrerName, User, UserStats,
+};
 use crate::state::user::{Order, SpecialUserStatus};
 use crate::state::user_map::load_user_maps;
 use crate::validate;
@@ -729,11 +731,17 @@ pub fn handle_withdraw<'c: 'info, 'info>(
 ) -> anchor_lang::Result<()> {
     let user_key = ctx.accounts.user.key();
     let user = &mut load_mut!(ctx.accounts.user)?;
-    let _user_stats = load_mut!(ctx.accounts.user_stats)?;
+    let user_stats = load_mut!(ctx.accounts.user_stats)?;
     let clock = Clock::get()?;
     let now = clock.unix_timestamp;
     let slot = clock.slot;
     let state = ctx.accounts.state.load()?;
+
+    validate!(
+        !user_stats.is_equity_breaker_tripped(),
+        ErrorCode::EquityBelowFloor,
+        "equity floor breaker is tripped for this authority"
+    )?;
 
     let remaining_accounts_iter = &mut ctx.remaining_accounts.iter().peekable();
     let AccountMaps {
@@ -901,6 +909,7 @@ pub fn handle_transfer_deposit_by_delegate<'c: 'info, 'info>(
     ctx: Context<'info, TransferDepositByDelegate<'info>>,
     market_index: u16,
     amount: u64,
+    equity_floor_delta: u64,
 ) -> anchor_lang::Result<()> {
     let signer_key = ctx.accounts.delegate.key();
     let to_user_key = ctx.accounts.to_user.key();
@@ -920,6 +929,21 @@ pub fn handle_transfer_deposit_by_delegate<'c: 'info, 'info>(
         ErrorCode::DefaultError,
         "delegate transfer not allowed"
     )?;
+
+    validate!(
+        !user_stats.is_equity_breaker_tripped(),
+        ErrorCode::EquityBelowFloor,
+        "equity floor breaker is tripped for this authority"
+    )?;
+
+    // Carry equity floor along with the funds so the sum of floors across the
+    // authority's subaccounts is preserved. The from side is validated against
+    // its reduced floor by the withdraw margin check inside
+    // `transfer_spot_deposit`; the to side is validated below, after the
+    // deposit lands, so its increased floor must be backed by real equity.
+    if equity_floor_delta > 0 {
+        transfer_equity_floor(from_user, to_user, equity_floor_delta)?;
+    }
 
     let AccountMaps {
         perp_market_map,
@@ -947,7 +971,28 @@ pub fn handle_transfer_deposit_by_delegate<'c: 'info, 'info>(
         &mut oracle_map,
         now,
         slot,
-    )
+    )?;
+
+    if equity_floor_delta > 0 {
+        let to_user_margin_calculation =
+            calculate_margin_requirement_and_total_collateral_and_liability_info(
+                to_user,
+                &perp_market_map,
+                &spot_market_map,
+                &mut oracle_map,
+                MarginContext::standard(MarginRequirementType::Initial).strict(true),
+            )?;
+
+        validate!(
+            !to_user.is_below_equity_floor(to_user_margin_calculation.total_collateral),
+            ErrorCode::InvalidEquityFloorTransfer,
+            "to_user total collateral {} does not back new equity floor {}",
+            to_user_margin_calculation.total_collateral,
+            to_user.equity_floor
+        )?;
+    }
+
+    Ok(())
 }
 
 #[access_control(
@@ -969,7 +1014,13 @@ pub fn handle_transfer_deposit<'c: 'info, 'info>(
 
     let to_user = &mut load_mut!(ctx.accounts.to_user)?;
     let from_user = &mut load_mut!(ctx.accounts.from_user)?;
-    let _user_stats = &mut load_mut!(ctx.accounts.user_stats)?;
+    let user_stats = &mut load_mut!(ctx.accounts.user_stats)?;
+
+    validate!(
+        !user_stats.is_equity_breaker_tripped(),
+        ErrorCode::EquityBelowFloor,
+        "equity floor breaker is tripped for this authority"
+    )?;
 
     validate!(
         !to_user.is_bankrupt(),
@@ -1272,9 +1323,15 @@ pub fn handle_transfer_pools<'c: 'info, 'info>(
 
     let to_user = &mut load_mut!(ctx.accounts.to_user)?;
     let from_user = &mut load_mut!(ctx.accounts.from_user)?;
-    let _user_stats = &mut load_mut!(ctx.accounts.user_stats)?;
+    let user_stats = &mut load_mut!(ctx.accounts.user_stats)?;
 
     let clock = Clock::get()?;
+
+    validate!(
+        !user_stats.is_equity_breaker_tripped(),
+        ErrorCode::EquityBelowFloor,
+        "equity floor breaker is tripped for this authority"
+    )?;
 
     validate!(
         !to_user.is_bankrupt(),
@@ -1741,9 +1798,16 @@ pub fn handle_transfer_perp_position<'c: 'info, 'info>(
 
     let to_user = &mut load_mut!(ctx.accounts.to_user)?;
     let from_user = &mut load_mut!(ctx.accounts.from_user)?;
+    let user_stats = load!(ctx.accounts.user_stats)?;
 
     let clock = Clock::get()?;
     let now = clock.unix_timestamp;
+
+    validate!(
+        !user_stats.is_equity_breaker_tripped(),
+        ErrorCode::EquityBelowFloor,
+        "equity floor breaker is tripped for this authority"
+    )?;
 
     validate!(
         !to_user.is_bankrupt(),
@@ -1950,6 +2014,14 @@ pub fn handle_transfer_perp_position<'c: 'info, 'info>(
         from_user_margin_calculation.meets_margin_requirement(),
         ErrorCode::InsufficientCollateral,
         "from user margin requirement is greater than total collateral"
+    )?;
+
+    validate!(
+        !from_user.is_below_equity_floor(from_user_margin_calculation.total_collateral),
+        ErrorCode::EquityBelowFloor,
+        "from user total collateral {} below equity floor {}",
+        from_user_margin_calculation.total_collateral,
+        from_user.equity_floor
     )?;
 
     let to_user_margin_context = MarginContext::standard(MarginRequirementType::Initial);

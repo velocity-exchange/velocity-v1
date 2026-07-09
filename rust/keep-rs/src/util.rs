@@ -123,6 +123,11 @@ pub enum TxIntent {
         slot: u64,
         market_index: u16,
         taker_order_id: u32,
+        /// taker subaccount the fill was sent for (order ids are per-user counters,
+        /// so `taker_order_id` alone is ambiguous across users)
+        taker_user: Pubkey,
+        /// order id of the best crossing counterparty attached as a maker account.
+        /// Context only — the program picks the actual maker order(s) to match.
         maker_order_id: u32,
     },
     LiquidateWithFill {
@@ -182,9 +187,9 @@ impl TxIntent {
             }
             TxIntent::SwiftFill { maker_crosses, .. } => {
                 if maker_crosses.has_vamm_cross {
-                    "swift_fill"
-                } else {
                     "swift_fill_vamm"
+                } else {
+                    "swift_fill"
                 }
             }
             TxIntent::SwiftPlace { .. } => "swift_place",
@@ -310,6 +315,15 @@ impl TxIntent {
         }
     }
 
+    /// Taker/target user subaccount, where the intent carries one. Used for wide-event
+    /// logging to disambiguate per-user order ids.
+    pub fn user(&self) -> Option<Pubkey> {
+        match self {
+            Self::LimitUncross { taker_user, .. } => Some(*taker_user),
+            _ => None,
+        }
+    }
+
     /// Swift order uuid (hex), where applicable. Used for wide-event logging so swift
     /// placements/fills can be correlated and their gas cost attributed.
     pub fn swift_uuid(&self) -> Option<[u8; 8]> {
@@ -404,13 +418,16 @@ impl<const N: usize> PendingTxs<N> {
 
     /// Confirm and return the first item with matching signature.
     ///
-    /// Returns Some(item) if found, else None.
+    /// Returns Some(item) if found, else None. The entry is consumed: a duplicate
+    /// confirmation of the same signature (e.g. redelivered by the tx stream) returns
+    /// None instead of re-running the confirmation accounting.
     pub fn confirm(&mut self, sig: &Signature) -> Option<PendingTxMeta> {
         for i in 0..self.size {
             let idx = (self.head + i) % N;
             // TODO: check if overwritten entry is confirmed or not
             if self.buffer[idx].signature == *sig {
-                return Some(self.buffer[idx].clone());
+                // leave a default (never-matching) hole; head/size stay untouched
+                return Some(std::mem::take(&mut self.buffer[idx]));
             }
         }
         None
@@ -728,7 +745,27 @@ pub fn subscribe_price_feeds(
 
 #[cfg(test)]
 mod tests {
-    use super::{swift_placement_expired, OrderSlotLimiter, TxIntent};
+    use super::{swift_placement_expired, OrderSlotLimiter, PendingTxMeta, PendingTxs, TxIntent};
+    use solana_sdk::signature::Signature;
+
+    #[test]
+    fn pending_txs_confirm_consumes_entry() {
+        let mut pending = PendingTxs::<8>::new();
+        let sig = Signature::from([7u8; 64]);
+        pending.insert(PendingTxMeta::new(
+            sig,
+            TxIntent::Trigger {
+                market_index: 0,
+                order_id: 1,
+                slot: 2,
+            },
+            100,
+        ));
+        // first confirmation returns the entry
+        assert!(pending.confirm(&sig).is_some());
+        // a redelivered signature must not re-run the confirmation accounting
+        assert!(pending.confirm(&sig).is_none());
+    }
 
     #[test]
     fn swift_expiry_placement_deadline_binds_before_staleness() {

@@ -10,7 +10,7 @@ Program upgrades to **mainnet** and **devnet** are gated through a Squads multis
 
 | Target | Trigger | Workflow |
 | --- | --- | --- |
-| **mainnet** | Push tag `program-velocity-<version>` (e.g. `program-velocity-2.163.0`) | [`.github/workflows/release-program.yaml`](../.github/workflows/release-program.yaml) |
+| **mainnet** | Push tag `program-<name>-<version>` where `<name>` is the program lib name: `velocity` or `jit_proxy` (e.g. `program-velocity-2.163.0`, `program-jit_proxy-0.21.0`) | [`.github/workflows/release-program.yaml`](../.github/workflows/release-program.yaml) |
 | **devnet** | Run **Manual Devnet Program Deploy** from the Actions tab (pick program + branch) | [`.github/workflows/manual-devnet-deploy.yaml`](../.github/workflows/manual-devnet-deploy.yaml) |
 
 Both workflows do the same thing on different multisigs:
@@ -33,6 +33,12 @@ Both workflows do the same thing on different multisigs:
 ### Initial deploy: create the IDL metadata account
 
 CI **only updates** the IDL — it never creates the canonical metadata account, because creating one requires the program's **upgrade authority** to sign (program-metadata: "canonical metadata accounts are created by the program upgrade authority"). After launch the upgrade authority is the multisig vault, and creating velocity's ~53 KB account through a vault CPI would need a batched proposal — so instead **the canonical IDL account is created once, by the deployer, at initial program deploy, while the deployer still holds the upgrade authority** (no multisig, no batch — the deployer just sends the chunked writes directly). The Anchor CLI does **not** do this: `anchor deploy` only deploys the program, and `anchor idl init` targets the legacy on-chain IDL account, not the program-metadata account velocity's clients resolve. Use the program-metadata CLI explicitly.
+
+> **jit-proxy:** its program id is a create-with-seed vanity address with **no keypair**, so step 1
+> below doesn't apply — the initial deploy must go through
+> [`deploy-jit-proxy.sh`](./deploy-jit-proxy.sh) (write-buffer + `createAccountWithSeed` +
+> a hand-built `DeployWithMaxDataLen`). Steps 2–5 (IDL metadata account, delegation, authority
+> handoff to the vault) apply to jit-proxy unchanged, substituting `jit_proxy` for `velocity`.
 
 Run this once per cluster (mainnet is not deployed yet; devnet's account already exists), against a **private RPC**, in order — **before** transferring the upgrade authority to the multisig:
 
@@ -230,14 +236,14 @@ End-to-end smoke: use a second wallet to call `VelocityClient.initializeUserAcco
 
 ## Operational notes (learned on first deploy)
 
-- **Use a private RPC for `solana program` writes.** The public `api.devnet.solana.com` rate-limits the ~5,000 chunked writes a velocity upgrade requires (velocity.so is ~5 MB → ~5,000 × 1 KB chunks) and fails partway through with `Data writes to account failed: Custom error: Max retries exceeded` and/or `Blockhash expired. N retries remaining`, leaving a partial buffer on chain. Pass a private RPC via `--url` to `solana program …` directly, or set `SOLANA_RPC` / `RPC_URL` for the helper scripts (`write-buffer-devnet.sh` / `deploy-from-buffer-devnet.sh` read it). `anchor program upgrade --provider.cluster <url>` works for the wrapper too, but it does **not** propagate the URL to the underlying `solana program deploy` subprocess — so also `solana config set --url <url>` before invoking anchor. Velocity has a Triton pool at `https://velocity-velocity-a827.devnet.rpcpool.com/<token>` — see user memory `reference_velocity_devnet_rpc.md`.
+- **Use a private RPC for `solana program` writes.** The public `api.devnet.solana.com` rate-limits the ~5,000 chunked writes a velocity upgrade requires (velocity.so is ~5 MB → ~5,000 × 1 KB chunks) and fails partway through with `Data writes to account failed: Custom error: Max retries exceeded` and/or `Blockhash expired. N retries remaining`, leaving a partial buffer on chain. Pass a private RPC via `--url` to `solana program …` directly, or set `SOLANA_RPC` / `RPC_URL` for the helper scripts (`write-buffer-devnet.sh` / `deploy-from-buffer-devnet.sh` read it). `anchor program upgrade --provider.cluster <url>` works for the wrapper too, but it does **not** propagate the URL to the underlying `solana program deploy` subprocess — so also `solana config set --url <url>` before invoking anchor. Use your own private RPC endpoint (e.g. a Triton/rpcpool or Helius URL) — do not rely on the public devnet endpoint for uploads.
 
 - **`anchor upgrade` is deprecated → `anchor program upgrade` in Anchor 1.0.** Same flags, same `solana program deploy` underneath. `deploy-devnet.sh` uses the new form.
 
 - **Prefer the two-phase `write-buffer` → `deploy-from-buffer` flow over `anchor program upgrade`** for any upload more than a few hundred KB. The single-shot `anchor program upgrade` / bare `solana program deploy <file.so>` creates an *anonymous* internal buffer, then auto-closes it on fatal error to refund rent — so on the next attempt there's nothing to resume from and you start at chunk 0 again. The two-phase flow uses a **named buffer keypair** so the on-chain buffer persists across attempts and `write-buffer` resumes by only re-sending chunks that haven't landed yet. Use the helper scripts:
   ```
   export VELOCITY_DEVNET_UPGRADE_KEYPAIR=/path/to/upgrade-authority.json
-  export SOLANA_RPC=https://velocity-velocity-a827.devnet.rpcpool.com/<token>
+  export SOLANA_RPC=https://<your-private-rpc-endpoint>/<token>
   bash deploy-scripts/write-buffer-devnet.sh     # ← re-run this until it exits clean
   BUFFER_ACCOUNT_KEYPAIR=deploy-scripts/out/velocity-so-write-buffer-keypair.json \
     bash deploy-scripts/deploy-from-buffer-devnet.sh

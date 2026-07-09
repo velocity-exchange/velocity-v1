@@ -14,6 +14,20 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // monorepo makes that copy — and its drift — unnecessary.)
     let idl_source_path = current_dir.join("../../packages/sdk/src/idl/velocity.json");
     let idl_mod_path = current_dir.join("crates/src/velocity_idl.rs");
+
+    // The IDL only exists when building inside the monorepo checkout. A packaged
+    // or vendored copy of this crate won't have it — fall back to the committed
+    // crates/src/velocity_idl.rs, which CI keeps in sync with the IDL.
+    if !idl_source_path.exists() {
+        println!(
+            "cargo:warning=program IDL not found at {}; using committed velocity_idl.rs",
+            idl_source_path.display()
+        );
+        return Ok(());
+    }
+
+    // Only emit rerun-if-changed when the IDL exists: pointing it at a missing
+    // path would make cargo rerun this script on every build.
     println!("cargo:rerun-if-changed=../../packages/sdk/src/idl/velocity.json");
     generate_idl_types(&idl_source_path, idl_mod_path.as_path())?;
     Ok(())
@@ -26,6 +40,12 @@ fn generate_idl_types(
     let idl_mod_rs = velocity_idl_gen::generate_rust_types(idl_source_path)
         .map_err(|err| format!("generating IDL failed: {err:?}"))?;
 
+    // Skip the write when the committed file is already current. Consumers may
+    // build from a read-only or checksum-verified source dir (cargo vendor, Nix),
+    // where a gratuitous rewrite fails the build or invalidates checksums.
+    if std::fs::read(idl_mod_path).ok().as_deref() == Some(idl_mod_rs.as_bytes()) {
+        return Ok(());
+    }
     std::fs::write(idl_mod_path, idl_mod_rs)?;
     Ok(())
 }

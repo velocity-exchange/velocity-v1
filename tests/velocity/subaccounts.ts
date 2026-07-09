@@ -272,6 +272,7 @@ describe('subaccounts', () => {
 
 		await velocityClient.deleteUser(1);
 
+		await velocityClient.fetchAccounts();
 		assert(velocityClient.getStateAccount().numberOfAuthorities.eq(new BN(1)));
 		assert(velocityClient.getStateAccount().numberOfSubAccounts.eq(new BN(1)));
 	});

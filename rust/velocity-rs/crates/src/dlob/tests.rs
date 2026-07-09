@@ -3434,7 +3434,7 @@ fn dlob_l3_trigger_orders_by_price() {
 
     // Verify trigger orders are sorted correctly (required for filtering to work)
     // Bids should be sorted by trigger price descending (highest first)
-    let trigger_bid_prices: Vec<u64> = l3book.trigger_bids.iter().map(|o| o.price).collect();
+    let trigger_bid_prices: Vec<u64> = l3book.trigger_bids.iter().map(|o| o.order.price).collect();
     for i in 1..trigger_bid_prices.len() {
         assert!(
             trigger_bid_prices[i - 1] >= trigger_bid_prices[i],
@@ -3444,7 +3444,7 @@ fn dlob_l3_trigger_orders_by_price() {
     }
 
     // Asks should be sorted by trigger price ascending (lowest first)
-    let trigger_ask_prices: Vec<u64> = l3book.trigger_asks.iter().map(|o| o.price).collect();
+    let trigger_ask_prices: Vec<u64> = l3book.trigger_asks.iter().map(|o| o.order.price).collect();
     for i in 1..trigger_ask_prices.len() {
         assert!(
             trigger_ask_prices[i - 1] <= trigger_ask_prices[i],
@@ -3455,8 +3455,8 @@ fn dlob_l3_trigger_orders_by_price() {
 
     // Verify test includes orders with trigger_price below oracle for asks
     // and trigger_price above oracle for bids
-    let ask_trigger_prices: Vec<u64> = l3book.trigger_asks.iter().map(|o| o.price).collect();
-    let bid_trigger_prices: Vec<u64> = l3book.trigger_bids.iter().map(|o| o.price).collect();
+    let ask_trigger_prices: Vec<u64> = l3book.trigger_asks.iter().map(|o| o.order.price).collect();
+    let bid_trigger_prices: Vec<u64> = l3book.trigger_bids.iter().map(|o| o.order.price).collect();
 
     // Verify asks include orders with trigger_price below oracle (900, 950 < 1000)
     let asks_below_oracle: Vec<u64> = ask_trigger_prices
@@ -3868,4 +3868,831 @@ fn market_order_get_price_same_start_end_price() {
             direction
         );
     }
+}
+
+#[test]
+fn dlob_upsert_then_remove_lands_on_same_key() {
+    // simulates the delta flow: place → partial fill (Create re-emitted for the same
+    // logical order upserts in place) → cancel (Remove computed from the latest state)
+    let _ = env_logger::try_init();
+    let dlob = DLOB::default();
+    let user = Pubkey::new_unique();
+    let slot = 100;
+    let market = MarketId::new(0, MarketType::Perp);
+
+    let mut o1 = create_test_order(1, OrderType::Limit, Direction::Long, 100, 10, slot);
+    o1.post_only = true;
+    dlob.insert_order(&user, slot, o1);
+
+    // partial fill: size changes but the sort key does not — the entry is replaced
+    let mut o1_filled = o1;
+    o1_filled.base_asset_amount_filled = 4;
+    dlob.insert_order(&user, slot + 1, o1_filled);
+    {
+        let book = dlob.markets.get(&market).unwrap();
+        assert_eq!(book.resting_limit_orders.bids.len(), 1);
+        let bid = book.resting_limit_orders.bids.values().next().unwrap();
+        assert_eq!(bid.size, 6, "partial fill reflected: 10 - 4");
+    }
+    assert_eq!(dlob.metadata.len(), 1);
+
+    // cancel with the latest order state removes the upserted entry
+    dlob.remove_order(&user, slot + 2, o1_filled);
+    {
+        let book = dlob.markets.get(&market).unwrap();
+        assert!(book.resting_limit_orders.bids.is_empty());
+    }
+    assert!(dlob.metadata.is_empty());
+}
+
+#[test]
+fn dlob_remove_order_clears_dual_residency() {
+    let _ = env_logger::try_init();
+    let dlob = DLOB::default();
+    let user = Pubkey::new_unique();
+    let market = MarketId::new(0, MarketType::Perp);
+
+    // limit order with an active auction: enters the book as a market auction order
+    let mut order = create_test_order(1, OrderType::Limit, Direction::Long, 100, 10, 100);
+    order.auction_duration = 10;
+    dlob.insert_order(&user, 100, order);
+    {
+        let book = dlob.markets.get(&market).unwrap();
+        assert_eq!(book.market_orders.bids.len(), 1);
+        assert!(book.resting_limit_orders.bids.is_empty());
+    }
+
+    // same order re-applied after its auction completed (e.g. a fill update arriving
+    // ahead of the book's slot tick): inserted as resting while the auction copy remains
+    let mut order_later = order;
+    order_later.base_asset_amount_filled = 1;
+    dlob.insert_order(&user, 200, order_later);
+    {
+        let book = dlob.markets.get(&market).unwrap();
+        assert_eq!(book.market_orders.bids.len(), 1);
+        assert_eq!(book.resting_limit_orders.bids.len(), 1);
+    }
+
+    // one remove clears both copies
+    dlob.remove_order(&user, 201, order_later);
+    {
+        let book = dlob.markets.get(&market).unwrap();
+        assert!(book.market_orders.bids.is_empty());
+        assert!(book.resting_limit_orders.bids.is_empty());
+    }
+    assert!(dlob.metadata.is_empty());
+}
+
+#[test]
+fn dlob_remove_order_always_clears_metadata() {
+    let _ = env_logger::try_init();
+    let dlob = DLOB::default();
+    let user = Pubkey::new_unique();
+    let slot = 100;
+
+    let mut order = create_test_order(1, OrderType::Limit, Direction::Long, 100, 10, slot);
+    order.post_only = true;
+    dlob.insert_order(&user, slot, order);
+    assert_eq!(dlob.metadata.len(), 1);
+
+    // remove with a divergent order snapshot (key mismatch, e.g. stale upstream data):
+    // the book removal misses but metadata must not leak
+    let mut divergent = order;
+    divergent.price = 150;
+    dlob.remove_order(&user, slot + 1, divergent);
+    assert!(dlob.metadata.is_empty());
+}
+
+#[test]
+fn dlob_oracle_order_negative_offset_prices_post_auction() {
+    // mirrors onchain `Order::get_limit_price`: after the auction, any non-zero
+    // oracle_price_offset (negative included) is a real limit price — only
+    // offset-less orders fall back to the vamm price
+    use crate::dlob::types::{DynamicPrice, OracleOrder};
+
+    let oracle_price = 100_000_u64;
+    let tick_size = 10_u64;
+    let order = OracleOrder {
+        id: 1,
+        size: 5,
+        start_price_offset: -500,
+        end_price_offset: -100,
+        oracle_price_offset: -250,
+        max_ts: 0,
+        slot: 100,
+        duration: 10,
+        is_limit: true,
+        direction: Direction::Long,
+        reduce_only: false,
+    };
+
+    // post auction: limit = oracle + offset, standardized (Long rounds down to tick)
+    let price = order.get_price(200, oracle_price, tick_size);
+    assert_eq!(price, Some(99_750));
+
+    // offset-less order falls back to vamm pricing
+    let no_offset = OracleOrder {
+        oracle_price_offset: 0,
+        ..order.clone()
+    };
+    assert_eq!(no_offset.get_price(200, oracle_price, tick_size), None);
+
+    // positive offset unchanged
+    let pos_offset = OracleOrder {
+        oracle_price_offset: 250,
+        direction: Direction::Short,
+        ..order
+    };
+    assert_eq!(
+        pos_offset.get_price(200, oracle_price, tick_size),
+        Some(100_250)
+    );
+}
+
+#[test]
+fn dlob_floating_limit_price_is_standardized() {
+    // mirrors onchain `Order::get_limit_price`: oracle-offset maker prices are
+    // standardized to tick (Long rounds down, Short rounds up)
+    use crate::dlob::types::FloatingLimitOrder;
+
+    let tick_size = 10_u64;
+    let off_tick_oracle = 100_007_u64;
+
+    let bid = FloatingLimitOrder {
+        id: 1,
+        size: 5,
+        slot: 100,
+        max_ts: 0,
+        offset_price: -250,
+        direction: Direction::Long,
+        post_only: true,
+        reduce_only: false,
+    };
+    // 100_007 - 250 = 99_757 → rounds down to 99_750
+    assert_eq!(bid.get_price(off_tick_oracle, tick_size), 99_750);
+
+    let ask = FloatingLimitOrder {
+        direction: Direction::Short,
+        offset_price: 250,
+        ..bid
+    };
+    // 100_007 + 250 = 100_257 → rounds up to 100_260
+    assert_eq!(ask.get_price(off_tick_oracle, tick_size), 100_260);
+}
+
+/// PerpMarket fixture for the vamm-taker detection tests: reserve price =
+/// 1000 * PRICE_PRECISION, ±0.01% spread → vamm bid = 999_900_000, ask = 1_000_100_000.
+fn vamm_taker_test_market(order_step_size: u64) -> PerpMarket {
+    let base_reserves = 100 * AMM_RESERVE_PRECISION;
+    let quote_reserves = base_reserves * 1000;
+    PerpMarket {
+        market_index: 0,
+        contract_tier: crate::types::ContractTier::A,
+        amm: AMM {
+            max_fill_reserve_fraction: 1,
+            base_asset_reserve: base_reserves.into(),
+            quote_asset_reserve: quote_reserves.into(),
+            sqrt_k: (base_reserves * quote_reserves).into(),
+            peg_multiplier: PEG_PRECISION.into(),
+            terminal_quote_asset_reserve: quote_reserves.into(),
+            concentration_coef: 5u128.into(),
+            long_spread: 100,
+            short_spread: 100,
+            max_base_asset_reserve: (u64::MAX as u128).into(),
+            min_base_asset_reserve: 0u128.into(),
+            max_spread: 1000,
+            ..Default::default()
+        },
+        order_step_size,
+        order_tick_size: 1,
+        market_stats: MarketStats {
+            min_order_size: 10,
+            historical_oracle_data: HistoricalOracleData {
+                last_oracle_price: 1000 * 1_000_000,
+                ..Default::default()
+            },
+            last_oracle_valid: true,
+            ..Default::default()
+        },
+        ..Default::default()
+    }
+}
+
+fn vamm_taker_crosses(
+    dlob: &DLOB,
+    perp_market: &PerpMarket,
+    slot: u64,
+) -> crate::dlob::CrossesAndTopMakers {
+    let oracle_price = 1000 * 1_000_000;
+    if let Some(book) = dlob.markets.get(&MarketId::new(0, MarketType::Perp)) {
+        book.update_l3_view(oracle_price, &dlob.metadata, &Default::default());
+    }
+    dlob.find_crosses_for_auctions(
+        0,
+        MarketType::Perp,
+        slot,
+        oracle_price,
+        Some(perp_market),
+        oracle_price,
+        None,
+    )
+}
+
+/// A lone NON-post-only resting bid priced above the vamm ask must be detected even with an
+/// empty ask side (regression: detection used to require both book sides AND post_only —
+/// the mainnet BTC-PERP "crossing but never filled" order was exactly this shape).
+#[test]
+fn dlob_vamm_taker_detects_lone_non_post_only_bid() {
+    let _ = env_logger::try_init();
+    let dlob = DLOB::default();
+    let user = Pubkey::new_unique();
+    let slot = 100;
+
+    let perp_market = vamm_taker_test_market(1);
+    // vamm ask = 1_000_100_000; bid above it crosses
+    let order = create_test_order(
+        1,
+        OrderType::Limit,
+        Direction::Long,
+        1_000_200_000,
+        50,
+        slot,
+    );
+    dlob.insert_order(&user, slot, order);
+
+    let crosses = vamm_taker_crosses(&dlob, &perp_market, slot);
+    let hit = crosses.vamm_taker_ask.expect("lone crossing bid detected");
+    assert_eq!(hit.order_id, 1);
+    assert_eq!(hit.user, user);
+    assert!(crosses.vamm_taker_bid.is_none());
+}
+
+/// A lone post-only resting ask priced below the vamm bid must be detected (vAMM-as-taker
+/// shape, `determine_perp_fulfillment_methods_for_maker`).
+#[test]
+fn dlob_vamm_taker_detects_lone_post_only_ask() {
+    let _ = env_logger::try_init();
+    let dlob = DLOB::default();
+    let user = Pubkey::new_unique();
+    let slot = 100;
+
+    let perp_market = vamm_taker_test_market(1);
+    // vamm bid = 999_900_000; ask below it crosses
+    let mut order = create_test_order(1, OrderType::Limit, Direction::Short, 999_800_000, 50, slot);
+    order.post_only = true;
+    dlob.insert_order(&user, slot, order);
+
+    let crosses = vamm_taker_crosses(&dlob, &perp_market, slot);
+    let hit = crosses
+        .vamm_taker_bid
+        .expect("lone crossing post-only ask detected");
+    assert_eq!(hit.order_id, 1);
+    assert!(crosses.vamm_taker_ask.is_none());
+}
+
+/// Crossing is inclusive, mirroring the program's `do_orders_cross` (math/matching.rs):
+/// an order priced exactly at the vamm quote crosses.
+#[test]
+fn dlob_vamm_taker_crossing_is_inclusive() {
+    let _ = env_logger::try_init();
+    let dlob = DLOB::default();
+    let slot = 100;
+
+    let perp_market = vamm_taker_test_market(1);
+    // bid exactly at vamm ask, ask exactly at vamm bid
+    let bid = create_test_order(
+        1,
+        OrderType::Limit,
+        Direction::Long,
+        1_000_100_000,
+        50,
+        slot,
+    );
+    dlob.insert_order(&Pubkey::new_unique(), slot, bid);
+    let ask = create_test_order(2, OrderType::Limit, Direction::Short, 999_900_000, 50, slot);
+    dlob.insert_order(&Pubkey::new_unique(), slot, ask);
+
+    let mut crosses = vamm_taker_crosses(&dlob, &perp_market, slot);
+    assert_eq!(
+        crosses
+            .vamm_taker_ask
+            .as_ref()
+            .expect("bid at exact vamm ask crosses")
+            .order_id,
+        1
+    );
+    assert_eq!(
+        crosses
+            .vamm_taker_bid
+            .as_ref()
+            .expect("ask at exact vamm bid crosses")
+            .order_id,
+        2
+    );
+
+    // accessors are named for the order returned (fields for the vAMM quote side):
+    // the crossed resting bid is order 1, the crossed resting ask order 2
+    assert_eq!(crosses.take_vamm_crossed_bid().expect("bid").order_id, 1);
+    assert_eq!(crosses.take_vamm_crossed_ask().expect("ask").order_id, 2);
+    // draining accessors: fields now empty
+    assert!(crosses.vamm_taker_ask.is_none() && crosses.vamm_taker_bid.is_none());
+}
+
+/// Orders inside the vamm spread do not cross and must not be detected.
+#[test]
+fn dlob_vamm_taker_ignores_non_crossing_orders() {
+    let _ = env_logger::try_init();
+    let dlob = DLOB::default();
+    let slot = 100;
+
+    let perp_market = vamm_taker_test_market(1);
+    // both inside the spread (bid < vamm ask, ask > vamm bid)
+    let bid = create_test_order(
+        1,
+        OrderType::Limit,
+        Direction::Long,
+        1_000_000_000,
+        50,
+        slot,
+    );
+    dlob.insert_order(&Pubkey::new_unique(), slot, bid);
+    let ask = create_test_order(
+        2,
+        OrderType::Limit,
+        Direction::Short,
+        1_000_000_000,
+        50,
+        slot,
+    );
+    dlob.insert_order(&Pubkey::new_unique(), slot, ask);
+
+    let crosses = vamm_taker_crosses(&dlob, &perp_market, slot);
+    assert!(crosses.vamm_taker_ask.is_none());
+    assert!(crosses.vamm_taker_bid.is_none());
+}
+
+/// The size floor is `order_step_size` (the weakest on-chain threshold, which applies to
+/// reduce-only orders), inclusive — NOT `min_order_size`, which would drop small
+/// reduce-only closes that the program will happily fill.
+#[test]
+fn dlob_vamm_taker_size_floor_is_step_size() {
+    let _ = env_logger::try_init();
+    let slot = 100;
+    let perp_market = vamm_taker_test_market(10); // step 10, fixture min_order_size 10
+
+    // below step size: skipped
+    let dlob = DLOB::default();
+    let order = create_test_order(1, OrderType::Limit, Direction::Long, 1_000_200_000, 9, slot);
+    dlob.insert_order(&Pubkey::new_unique(), slot, order);
+    let crosses = vamm_taker_crosses(&dlob, &perp_market, slot);
+    assert!(crosses.vamm_taker_ask.is_none());
+
+    // exactly step size: detected (inclusive)
+    let dlob = DLOB::default();
+    let order = create_test_order(
+        1,
+        OrderType::Limit,
+        Direction::Long,
+        1_000_200_000,
+        10,
+        slot,
+    );
+    dlob.insert_order(&Pubkey::new_unique(), slot, order);
+    let crosses = vamm_taker_crosses(&dlob, &perp_market, slot);
+    assert_eq!(
+        crosses
+            .vamm_taker_ask
+            .expect("step-size order detected")
+            .order_id,
+        1
+    );
+}
+
+/// Books are created lazily on the first order write: every query for a market that has
+/// never seen an order must behave as an empty book, not panic (regression: prod filler
+/// panic-restarted on a market with no orders — "orderbook missing for market 2, Perp").
+#[test]
+fn dlob_queries_on_market_with_no_book_do_not_panic() {
+    let _ = env_logger::try_init();
+    let dlob = DLOB::default();
+    let slot = 100;
+    let oracle_price = 1000;
+    // market 7 never received an order — no book exists
+    let market_index = 7;
+
+    let crosses = dlob.find_crosses_for_auctions(
+        market_index,
+        MarketType::Perp,
+        slot,
+        oracle_price,
+        None,
+        oracle_price,
+        None,
+    );
+    assert!(crosses.crosses.is_empty());
+    assert!(crosses.limit_crosses.is_none());
+
+    assert!(dlob
+        .find_crossing_region(oracle_price, market_index, MarketType::Perp, None)
+        .is_none());
+
+    let mut triggerable = vec![(Pubkey::new_unique(), 1)];
+    dlob.find_triggerable_orders(
+        market_index,
+        MarketType::Perp,
+        oracle_price,
+        &mut triggerable,
+    );
+    assert!(triggerable.is_empty());
+
+    let taker_order = TakerOrder {
+        price: 1000,
+        size: 7,
+        direction: Direction::Long,
+        market_index,
+        market_type: MarketType::Perp,
+    };
+    let result = dlob.find_crosses_for_taker_order(slot, oracle_price, taker_order, None, None);
+    assert!(result.orders.is_empty());
+    assert!(!result.has_vamm_cross);
+    assert!(result.is_partial);
+    assert_eq!(result.slot, slot);
+
+    assert!(dlob
+        .get_l3_snapshot_safe(market_index, MarketType::Perp)
+        .is_none());
+    assert!(dlob
+        .get_l2_snapshot_safe(market_index, MarketType::Perp)
+        .is_none());
+}
+
+/// Regression for the keep-rs v0.1.22 `vamm_taker` spam incident.
+///
+/// A resting (non-post-only) limit bid — order 8 @ $62,500 on mainnet market 1 —
+/// crossed the vAMM ask quoted from the *cached account state*, but not the quote
+/// the program computes at fill time (`AmmQuoter::setup`: curve snap onto the
+/// oracle + spread refresh). The filler sent a fill every slot and each one
+/// no-op'd on-chain:
+///
+/// ```text
+/// Program log: taker does not cross amm: taker price 62500000000 amm price 62768662571
+/// Program log: no fulfillment methods found
+/// ```
+///
+/// This test reproduces that shape end-to-end from the filler's point of view: a
+/// resting bid priced between the cached quote and the fill-path quote must
+/// * be surfaced as a phantom `vamm_taker_ask` candidate by
+///   `find_crosses_for_auctions` when given the cached market (what v0.1.22 did),
+/// * NOT be surfaced when given the projected market
+///   (`project_perp_market_for_quoting` — what the filler now passes), and
+/// * produce zero fillable size from the program's own
+///   `calculate_base_asset_amount_for_amm_to_fulfill` against the projected
+///   market (the same check `try_vamm_taker_fill` runs before sending), mirroring
+///   the on-chain "no fulfillment methods found".
+#[test]
+fn dlob_vamm_taker_candidate_requires_fill_path_quote() {
+    use crate::math::amm_quote::{
+        btc_market_fixture, project_perp_market_for_quoting, validity_guard_rails_fixture,
+    };
+    use program::math::orders::calculate_base_asset_amount_for_amm_to_fulfill;
+    use program::state::oracle::OraclePriceData;
+
+    let _ = env_logger::try_init();
+    let dlob = DLOB::default();
+    let user = Pubkey::new_unique();
+    let slot = 100;
+    let rails = validity_guard_rails_fixture();
+
+    // The cached account state: whatever the last on-chain refresh left behind —
+    // curve and spread state quoted at the then-current oracle ($19,400), fifty
+    // slots ago.
+    let stale_oracle = OraclePriceData {
+        price: 19_400 * 1_000_000,
+        confidence: 1_000,
+        delay: 0,
+        has_sufficient_number_of_data_points: true,
+        sequence_id: None,
+    };
+    let cached_market =
+        project_perp_market_for_quoting(btc_market_fixture(), stale_oracle, &rails, slot - 50)
+            .unwrap();
+
+    // Oracle has since moved above the cached curve, mirroring the incident: the
+    // program's fill-time quote snaps to the new oracle and re-derives spreads,
+    // landing above the cached ask.
+    let exchange_oracle = OraclePriceData {
+        price: 19_600 * 1_000_000,
+        confidence: 1_000,
+        delay: 0,
+        has_sufficient_number_of_data_points: true,
+        sequence_id: None,
+    };
+    let projected =
+        project_perp_market_for_quoting(cached_market, exchange_oracle, &rails, slot).unwrap();
+
+    let vamm_ask = |m: &PerpMarket| {
+        let reserve_price = m.amm.reserve_price().unwrap();
+        m.amm
+            .ask_price(
+                reserve_price,
+                m.amm.long_spread,
+                m.amm.reference_price_offset,
+            )
+            .unwrap()
+    };
+    let cached_ask = vamm_ask(&cached_market);
+    let fill_path_ask = vamm_ask(&projected);
+    assert!(
+        cached_ask < fill_path_ask,
+        "fixture must reproduce the incident shape (cached quote below fill-time quote): \
+         cached_ask={cached_ask} fill_path_ask={fill_path_ask}"
+    );
+
+    // The incident's "$62,500" order: a resting bid strictly between the two quotes.
+    let bid_price = (cached_ask + fill_path_ask) / 2;
+    let base_amount = AMM_RESERVE_PRECISION as u64; // 1 base unit
+    let mut resting_bid = create_test_order(
+        8,
+        OrderType::Limit,
+        Direction::Long,
+        bid_price as i64,
+        base_amount,
+        1, // placed long ago: rests, no live auction
+    );
+    resting_bid.max_ts = 0; // no expiry (create_test_order's max_ts=30 is in the past)
+    dlob.insert_order(&user, slot, resting_bid);
+
+    let oracle_u64 = exchange_oracle.price as u64;
+    // materialise the L3 view (the bot's slot loop does this each slot)
+    if let Some(book) = dlob.markets.get(&MarketId::new(0, MarketType::Perp)) {
+        book.update_l3_view(oracle_u64, &dlob.metadata, &Default::default());
+    }
+
+    // Cached account view: phantom candidate — this is what made v0.1.22 spam.
+    let crosses_cached = dlob.find_crosses_for_auctions(
+        0,
+        MarketType::Perp,
+        slot,
+        oracle_u64,
+        Some(&cached_market),
+        oracle_u64,
+        None,
+    );
+    assert!(
+        crosses_cached.vamm_taker_ask.is_some(),
+        "resting bid between the quotes must cross the cached vAMM ask"
+    );
+
+    // Fill-path view: no candidate — matches the on-chain outcome.
+    let crosses_projected = dlob.find_crosses_for_auctions(
+        0,
+        MarketType::Perp,
+        slot,
+        oracle_u64,
+        Some(&projected),
+        oracle_u64,
+        None,
+    );
+    assert!(
+        crosses_projected.vamm_taker_ask.is_none(),
+        "projected (fill-path) vAMM ask must not cross the resting bid"
+    );
+
+    // The pre-send fillable check `try_vamm_taker_fill` runs (the program's own
+    // math): nonzero against the cached market (the bot would send — the spam),
+    // zero against the projected market (the program won't fill — the no-op).
+    let order = Order {
+        order_id: 8,
+        order_type: OrderType::Limit,
+        direction: Direction::Long,
+        base_asset_amount: base_amount,
+        price: bid_price,
+        slot: 1,
+        market_index: 0,
+        market_type: MarketType::Perp,
+        status: OrderStatus::Open,
+        ..Default::default()
+    };
+    let (fillable_cached, _) = calculate_base_asset_amount_for_amm_to_fulfill(
+        &order,
+        &cached_market,
+        Some(bid_price),
+        None,
+        0,
+        &crate::types::FeeTier::default(),
+    )
+    .unwrap();
+    let (fillable_fill_path, _) = calculate_base_asset_amount_for_amm_to_fulfill(
+        &order,
+        &projected,
+        Some(bid_price),
+        None,
+        0,
+        &crate::types::FeeTier::default(),
+    )
+    .unwrap();
+    assert!(
+        fillable_cached > 0,
+        "cached view must report fillable size (the phantom cross that caused the spam)"
+    );
+    assert_eq!(
+        fillable_fill_path, 0,
+        "fill-path view must report nothing fillable (on-chain: no fulfillment methods found)"
+    );
+}
+
+#[test]
+fn post_trigger_price_mirrors_program_trigger_auction_params() {
+    use crate::dlob::types::{L3Order, TriggerL3Order};
+    use program::{
+        math::auction::{calculate_auction_params_for_trigger_order, calculate_auction_price},
+        state::oracle::OraclePriceData,
+        state::user::{Order as VelocityOrder, OrderBitFlag},
+    };
+
+    let market = vamm_taker_test_market(1);
+    let slot = 100;
+    let oracle_price: u64 = 1_000_000_000; // $1000 @ PRICE_PRECISION
+
+    // --- TriggerLimit: the program clamps the post-trigger auction to the order's
+    // limit price (`derive_market_order_auction_params`); a passive limit must cap
+    // the reported post-trigger price exactly ---
+    let limit_price: u64 = 900_000_000;
+    let trigger_limit = TriggerL3Order {
+        order: L3Order {
+            price: 999_000_000, // trigger price (Above; oracle > trigger => triggers)
+            size: 50,
+            max_ts: 0,
+            order_id: 1,
+            kind: OrderKind::TriggerLimit,
+            user: Pubkey::new_unique(),
+            flags: L3Order::IS_LONG | L3Order::IS_TRIGGER_ABOVE,
+        },
+        limit_price,
+    };
+    assert_eq!(
+        trigger_limit.post_trigger_price(slot, oracle_price, &market),
+        Some(limit_price),
+        "long trigger-limit with passive limit must be clamped to its limit price"
+    );
+
+    // --- TriggerMarket: must reproduce the program's trigger recipe exactly
+    // (`update_trigger_order_params`: oracle-offset auction params + the
+    // OracleTriggerMarket bit flag, then fill-time `calculate_auction_price`) ---
+    let trigger_market = TriggerL3Order {
+        order: L3Order {
+            price: 999_000_000,
+            size: 50,
+            max_ts: 0,
+            order_id: 2,
+            kind: OrderKind::TriggerMarket,
+            user: Pubkey::new_unique(),
+            flags: L3Order::IS_LONG | L3Order::IS_TRIGGER_ABOVE,
+        },
+        limit_price: 0,
+    };
+    let got = trigger_market
+        .post_trigger_price(slot, oracle_price, &market)
+        .expect("post trigger price");
+
+    let mut expected_order = VelocityOrder {
+        slot,
+        direction: Direction::Long,
+        order_type: OrderType::TriggerMarket,
+        market_index: 0,
+        market_type: MarketType::Perp,
+        base_asset_amount: 50,
+        status: OrderStatus::Open,
+        trigger_condition: crate::types::OrderTriggerCondition::TriggeredAbove,
+        ..Default::default()
+    };
+    let (duration, start, end) = calculate_auction_params_for_trigger_order(
+        &expected_order,
+        &OraclePriceData {
+            price: oracle_price as i64,
+            confidence: 0,
+            delay: 0,
+            has_sufficient_number_of_data_points: true,
+            sequence_id: None,
+        },
+        20, // the program's hardcoded min duration in `controller::orders::trigger_order`
+        Some(&market),
+    )
+    .unwrap();
+    expected_order.auction_duration = duration;
+    expected_order.auction_start_price = start;
+    expected_order.auction_end_price = end;
+    expected_order.bit_flags |= OrderBitFlag::OracleTriggerMarket as u8;
+    let expected = calculate_auction_price(
+        &expected_order,
+        slot,
+        market.order_tick_size,
+        Some(oracle_price as i64),
+    )
+    .unwrap();
+    assert_eq!(
+        got, expected,
+        "trigger-market post-trigger price must mirror the on-chain trigger recipe"
+    );
+}
+
+#[test]
+fn find_crosses_for_auctions_respects_trigger_limit_price() {
+    let _ = env_logger::try_init();
+    let dlob = DLOB::default();
+    let slot = 100;
+    let market = vamm_taker_test_market(1);
+    let oracle_price: u64 = 1_000_000_000;
+    // vamm bid/ask = 999_900_000 / 1_000_100_000 (0.01% spread): the resting ask
+    // sits between them so no vamm-taker cross muddies the assertions
+    let resting_ask_price: i64 = 999_950_000;
+
+    let maker = Pubkey::new_unique();
+    let resting_ask = create_test_order(
+        1,
+        OrderType::Limit,
+        Direction::Short,
+        resting_ask_price,
+        50,
+        slot,
+    );
+    dlob.insert_order(&maker, slot, resting_ask);
+
+    // Stop-buy trigger-limit whose condition is met (Above 999, oracle 1000) but whose
+    // limit price (900) is far below the resting ask: post-trigger it cannot fill, so
+    // it must NOT be reported as a cross (it belongs to the standalone trigger pass)
+    let taker = Pubkey::new_unique();
+    let mut passive = create_test_order(
+        2,
+        OrderType::TriggerLimit,
+        Direction::Long,
+        900_000_000,
+        50,
+        slot,
+    );
+    passive.trigger_price = 999_000_000;
+    passive.trigger_condition = crate::types::OrderTriggerCondition::Above;
+    dlob.insert_order(&taker, slot, passive);
+
+    if let Some(book) = dlob.markets.get(&MarketId::new(0, MarketType::Perp)) {
+        book.update_l3_view(oracle_price, &dlob.metadata, &Default::default());
+    }
+    let crosses = dlob.find_crosses_for_auctions(
+        0,
+        MarketType::Perp,
+        slot,
+        oracle_price,
+        Some(&market),
+        oracle_price,
+        None,
+    );
+    assert!(
+        crosses.crosses.is_empty(),
+        "passive-limit trigger order must not cross: {:?}",
+        crosses.crosses
+    );
+    // ...but the standalone trigger pass must still surface it
+    let mut triggerable = Vec::new();
+    dlob.find_triggerable_orders(0, MarketType::Perp, oracle_price, &mut triggerable);
+    assert_eq!(triggerable, vec![(taker, 2)]);
+
+    // Same order with an aggressive limit (>= resting ask): the clamped post-trigger
+    // auction starts at the limit price and crosses => atomic trigger+fill candidate
+    dlob.remove_order(&taker, slot, passive);
+    let mut aggressive = create_test_order(
+        3,
+        OrderType::TriggerLimit,
+        Direction::Long,
+        1_000_000_000,
+        50,
+        slot,
+    );
+    aggressive.trigger_price = 999_000_000;
+    aggressive.trigger_condition = crate::types::OrderTriggerCondition::Above;
+    dlob.insert_order(&taker, slot, aggressive);
+
+    if let Some(book) = dlob.markets.get(&MarketId::new(0, MarketType::Perp)) {
+        book.update_l3_view(oracle_price, &dlob.metadata, &Default::default());
+    }
+    let crosses = dlob.find_crosses_for_auctions(
+        0,
+        MarketType::Perp,
+        slot,
+        oracle_price,
+        Some(&market),
+        oracle_price,
+        None,
+    );
+    assert_eq!(
+        crosses.crosses.len(),
+        1,
+        "aggressive-limit trigger order must cross"
+    );
+    let (taker_order, maker_crosses) = &crosses.crosses[0];
+    assert_eq!(taker_order.order_id, 3);
+    assert_eq!(taker_order.kind, OrderKind::TriggerLimit);
+    assert!(maker_crosses
+        .orders
+        .iter()
+        .any(|(m, _)| m.user == maker && m.order_id == 1));
 }

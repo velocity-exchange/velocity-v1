@@ -16,8 +16,13 @@ watch_cargo = 'find ./programs/clearing_house/src/* ./tests ./packages/sdk/src |
 
 [programs.devnet]
 velocity = "vELoC1audYbSYVRXn1vPaV8Axoa9oU6BYmNGZZBDZ1P"
+jit_proxy = "J1TPRoXCtGuMcWiWFE6RB9eZU8U35PBMETCwNQLCNPhQ"
 
 [programs.localnet]
+# jit_proxy is intentionally NOT listed here: bankrun's startAnchor loads every
+# localnet entry from target/deploy, and only the velocity suite builds
+# jit_proxy.so (the vault suite doesn't). tests/velocity/jitProxy.ts loads it
+# explicitly via startAnchor extraPrograms instead.
 velocity = "vELoC1audYbSYVRXn1vPaV8Axoa9oU6BYmNGZZBDZ1P"
 vaults = "vAuLTsyrvSfZRuRB3XgvkPwNGgYSs9YRYymVebLKoxR"
 pyth = "FsJ3A3u2vn5cTVofAjvy6y5kwABJAqYWpe4975bi2epH"

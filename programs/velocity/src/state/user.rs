@@ -135,7 +135,13 @@ pub struct User {
     pub pool_id: u8,
     /// Whether the user is a special user (vamm hedger, etc)
     pub special_user_status: u8,
-    pub padding: [u8; 14],
+    pub padding: [u8; 3],
+    /// Minimum account equity (cross-margin total collateral) required for
+    /// risk-increasing orders, fills, withdrawals and deposit transfers.
+    /// Settable only by the warm/cold admin; 0 disables the check.
+    /// precision: QUOTE_PRECISION
+    pub equity_floor: u64,
+    pub padding2: [u8; 8],
 }
 
 impl User {
@@ -161,6 +167,12 @@ impl User {
 
     pub fn is_advanced_lp(&self) -> bool {
         self.status & (UserStatus::AdvancedLp as u8) > 0
+    }
+
+    /// True when the equity floor is enabled and `total_collateral`
+    /// (cross-margin, QUOTE_PRECISION) is below it.
+    pub fn is_below_equity_floor(&self, total_collateral: i128) -> bool {
+        self.equity_floor > 0 && total_collateral < self.equity_floor as i128
     }
 
     pub fn add_user_status(&mut self, status: UserStatus) {
@@ -640,6 +652,14 @@ impl User {
             calculation
         )?;
 
+        validate!(
+            !self.is_below_equity_floor(calculation.total_collateral),
+            ErrorCode::EquityBelowFloor,
+            "total collateral {} below equity floor {}",
+            calculation.total_collateral,
+            self.equity_floor
+        )?;
+
         Ok(true)
     }
 
@@ -678,6 +698,14 @@ impl User {
             ErrorCode::InsufficientCollateral,
             "margin calculation: {:?}",
             calculation
+        )?;
+
+        validate!(
+            !self.is_below_equity_floor(calculation.total_collateral),
+            ErrorCode::EquityBelowFloor,
+            "total collateral {} below equity floor {}",
+            calculation.total_collateral,
+            self.equity_floor
         )?;
 
         Ok(true)
@@ -725,6 +753,14 @@ impl User {
             ErrorCode::InsufficientCollateral,
             "margin calculation: {:?}",
             calculation
+        )?;
+
+        validate!(
+            !self.is_below_equity_floor(calculation.total_collateral),
+            ErrorCode::EquityBelowFloor,
+            "total collateral {} below equity floor {}",
+            calculation.total_collateral,
+            self.equity_floor
         )?;
 
         Ok(true)
@@ -1835,7 +1871,12 @@ pub struct UserStats {
 
     /// Delegate permissions across all sub accounts
     pub delegate_permissions: u8,
-    pub padding: [u8; 63],
+    /// Set by the permissionless `trip_equity_floor_breaker` instruction when
+    /// any of the authority's subaccounts falls below its equity floor.
+    /// While set, every subaccount of the authority rejects risk-increasing
+    /// fills, withdrawals and transfers out. Cleared only by the warm admin.
+    pub equity_breaker_tripped: u8,
+    pub padding: [u8; 62],
 }
 
 impl Default for UserStats {
@@ -1858,7 +1899,8 @@ impl Default for UserStats {
             paused_operations: 0,
             padding1: [0; 9],
             delegate_permissions: 0,
-            padding: [0; 63],
+            equity_breaker_tripped: 0,
+            padding: [0; 62],
         }
     }
 }
@@ -1906,6 +1948,14 @@ impl UserStats {
 
     pub fn is_delegate_transfer_allowed(&self) -> bool {
         self.delegate_permissions & UserDelegatePermission::AllowDelegateTransfer as u8 != 0
+    }
+
+    pub fn is_equity_breaker_tripped(&self) -> bool {
+        self.equity_breaker_tripped != 0
+    }
+
+    pub fn set_equity_breaker_tripped(&mut self, tripped: bool) {
+        self.equity_breaker_tripped = tripped as u8;
     }
 
     pub fn validate_delegate_permissions(&self) -> VelocityResult {
@@ -2054,5 +2104,129 @@ pub enum UserStatsPausedOperations {
 impl UserStatsPausedOperations {
     pub fn is_operation_paused(current: u8, operation: UserStatsPausedOperations) -> bool {
         current & operation as u8 != 0
+    }
+}
+
+/// Moves `delta` of equity floor from one subaccount to another. The sum of
+/// the two floors is preserved and the update is atomic: on error neither
+/// account is modified. Errors when `from` holds less floor than `delta` or
+/// `to`'s floor would overflow.
+pub fn transfer_equity_floor(from: &mut User, to: &mut User, delta: u64) -> VelocityResult {
+    let new_from_floor = from
+        .equity_floor
+        .checked_sub(delta)
+        .ok_or(ErrorCode::InvalidEquityFloorTransfer)?;
+    let new_to_floor = to
+        .equity_floor
+        .checked_add(delta)
+        .ok_or(ErrorCode::InvalidEquityFloorTransfer)?;
+    from.equity_floor = new_from_floor;
+    to.equity_floor = new_to_floor;
+    Ok(())
+}
+
+#[cfg(test)]
+mod equity_floor_transfer_tests {
+    use super::*;
+
+    /// Deterministic LCG so the sequence is reproducible without a rand dep.
+    struct Lcg(u64);
+
+    impl Lcg {
+        fn next(&mut self, modulus: u64) -> u64 {
+            self.0 = self
+                .0
+                .wrapping_mul(6364136223846793005)
+                .wrapping_add(1442695040888963407);
+            (self.0 >> 33) % modulus
+        }
+    }
+
+    fn get_pair_mut(users: &mut [User], a: usize, b: usize) -> (&mut User, &mut User) {
+        assert!(a != b);
+        if a < b {
+            let (left, right) = users.split_at_mut(b);
+            (&mut left[a], &mut right[0])
+        } else {
+            let (left, right) = users.split_at_mut(a);
+            (&mut right[0], &mut left[b])
+        }
+    }
+
+    /// Hammers `transfer_equity_floor` with a long pseudo-random sequence of
+    /// moves (roughly half intentionally invalid) across a set of subaccounts
+    /// and asserts after every step that the sum of floors equals the
+    /// initially assigned total and that failed moves changed nothing.
+    #[test]
+    fn floor_sum_is_invariant_over_arbitrary_transfer_sequences() {
+        const SUB_ACCOUNTS: usize = 8;
+        const TOTAL_FLOOR: u64 = 700_000_000_000; // 700k QUOTE_PRECISION
+        const STEPS: usize = 100_000;
+
+        let mut users: Vec<User> = (0..SUB_ACCOUNTS).map(|_| User::default()).collect();
+        users[0].equity_floor = TOTAL_FLOOR;
+
+        let mut rng = Lcg(0x5EED_CAFE);
+
+        for step in 0..STEPS {
+            let from_index = rng.next(SUB_ACCOUNTS as u64) as usize;
+            let mut to_index = rng.next(SUB_ACCOUNTS as u64) as usize;
+            if to_index == from_index {
+                to_index = (to_index + 1) % SUB_ACCOUNTS;
+            }
+
+            let delta = rng.next(2 * TOTAL_FLOOR);
+
+            let from_floor_before = users[from_index].equity_floor;
+            let to_floor_before = users[to_index].equity_floor;
+
+            let (from, to) = get_pair_mut(&mut users, from_index, to_index);
+            let result = transfer_equity_floor(from, to, delta);
+
+            if result.is_err() {
+                assert_eq!(
+                    users[from_index].equity_floor, from_floor_before,
+                    "failed move mutated from side at step {}",
+                    step
+                );
+                assert_eq!(
+                    users[to_index].equity_floor, to_floor_before,
+                    "failed move mutated to side at step {}",
+                    step
+                );
+            }
+
+            let sum: u64 = users.iter().map(|u| u.equity_floor).sum();
+            assert_eq!(sum, TOTAL_FLOOR, "sum of floors drifted at step {}", step);
+        }
+    }
+
+    #[test]
+    fn overflow_on_to_side_is_rejected_atomically() {
+        let mut from = User {
+            equity_floor: 10,
+            ..User::default()
+        };
+        let mut to = User {
+            equity_floor: u64::MAX - 5,
+            ..User::default()
+        };
+
+        assert!(transfer_equity_floor(&mut from, &mut to, 10).is_err());
+        assert_eq!(from.equity_floor, 10);
+        assert_eq!(to.equity_floor, u64::MAX - 5);
+    }
+
+    #[test]
+    fn insufficient_from_floor_is_rejected() {
+        let mut from = User {
+            equity_floor: 5,
+            ..User::default()
+        };
+        let mut to = User::default();
+
+        assert!(transfer_equity_floor(&mut from, &mut to, 6).is_err());
+        assert_eq!(from.equity_floor, 5);
+        assert_eq!(to.equity_floor, 0);
     }
 }

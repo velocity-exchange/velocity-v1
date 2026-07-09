@@ -8,7 +8,7 @@ export type Velocity = {
   "address": "vELoC1audYbSYVRXn1vPaV8Axoa9oU6BYmNGZZBDZ1P",
   "metadata": {
     "name": "velocity",
-    "version": "2.162.1",
+    "version": "2.163.0",
     "spec": "0.1.0",
     "description": "Created with Anchor"
   },
@@ -6383,6 +6383,33 @@ export type Velocity = {
       ]
     },
     {
+      "name": "resetEquityFloorBreaker",
+      "discriminator": [
+        230,
+        181,
+        202,
+        36,
+        127,
+        56,
+        56,
+        27
+      ],
+      "accounts": [
+        {
+          "name": "admin",
+          "signer": true
+        },
+        {
+          "name": "state"
+        },
+        {
+          "name": "userStats",
+          "writable": true
+        }
+      ],
+      "args": []
+    },
+    {
       "name": "resetPerpMarketAmmOracleTwap",
       "discriminator": [
         127,
@@ -7740,6 +7767,10 @@ export type Velocity = {
         {
           "name": "amount",
           "type": "u64"
+        },
+        {
+          "name": "equityFloorDelta",
+          "type": "u64"
         }
       ]
     },
@@ -8221,6 +8252,39 @@ export type Velocity = {
           "type": "u32"
         }
       ]
+    },
+    {
+      "name": "tripEquityFloorBreaker",
+      "discriminator": [
+        133,
+        184,
+        25,
+        80,
+        193,
+        52,
+        162,
+        249
+      ],
+      "accounts": [
+        {
+          "name": "state"
+        },
+        {
+          "name": "keeper",
+          "docs": [
+            "Any signer may trip the breaker; the proof is the margin calculation."
+          ],
+          "signer": true
+        },
+        {
+          "name": "user"
+        },
+        {
+          "name": "userStats",
+          "writable": true
+        }
+      ],
+      "args": []
     },
     {
       "name": "updateAdmin",
@@ -12299,6 +12363,38 @@ export type Velocity = {
       ]
     },
     {
+      "name": "updateUserEquityFloor",
+      "discriminator": [
+        49,
+        87,
+        139,
+        119,
+        136,
+        239,
+        186,
+        104
+      ],
+      "accounts": [
+        {
+          "name": "admin",
+          "signer": true
+        },
+        {
+          "name": "state"
+        },
+        {
+          "name": "user",
+          "writable": true
+        }
+      ],
+      "args": [
+        {
+          "name": "equityFloor",
+          "type": "u64"
+        }
+      ]
+    },
+    {
       "name": "updateUserIdle",
       "discriminator": [
         253,
@@ -16096,6 +16192,16 @@ export type Velocity = {
     },
     {
       "code": 6358,
+      "name": "equityBelowFloor",
+      "msg": "Account equity is below the user-set equity floor"
+    },
+    {
+      "code": 6359,
+      "name": "invalidEquityFloorTransfer",
+      "msg": "Invalid equity floor transfer between subaccounts"
+    },
+    {
+      "code": 6360,
       "name": "dailyDepositLimit",
       "msg": "dailyDepositLimit"
     }
@@ -23834,7 +23940,26 @@ export type Velocity = {
             "type": {
               "array": [
                 "u8",
-                14
+                3
+              ]
+            }
+          },
+          {
+            "name": "equityFloor",
+            "docs": [
+              "Minimum account equity (cross-margin total collateral) required for",
+              "risk-increasing orders, fills, withdrawals and deposit transfers.",
+              "Settable only by the warm/cold admin; 0 disables the check.",
+              "precision: QUOTE_PRECISION"
+            ],
+            "type": "u64"
+          },
+          {
+            "name": "padding2",
+            "type": {
+              "array": [
+                "u8",
+                8
               ]
             }
           }
@@ -24024,11 +24149,21 @@ export type Velocity = {
             "type": "u8"
           },
           {
+            "name": "equityBreakerTripped",
+            "docs": [
+              "Set by the permissionless `trip_equity_floor_breaker` instruction when",
+              "any of the authority's subaccounts falls below its equity floor.",
+              "While set, every subaccount of the authority rejects risk-increasing",
+              "fills, withdrawals and transfers out. Cleared only by the warm admin."
+            ],
+            "type": "u8"
+          },
+          {
             "name": "padding",
             "type": {
               "array": [
                 "u8",
-                63
+                62
               ]
             }
           }

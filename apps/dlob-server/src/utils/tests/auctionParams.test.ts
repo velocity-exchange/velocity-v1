@@ -17,8 +17,8 @@ import {
 
 describe('Auction Parameters Functions', () => {
 	describe('createMarketBasedAuctionParams', () => {
-		it('should apply market-based logic for major PERP markets (0, 1, 2)', () => {
-			[0, 1, 2].forEach((marketIndex) => {
+		it('should apply market-based logic for major PERP markets (0, 1, 2, 3)', () => {
+			[0, 1, 2, 3].forEach((marketIndex) => {
 				const args = {
 					marketIndex,
 					marketType: 'perp' as any,
@@ -36,8 +36,8 @@ describe('Auction Parameters Functions', () => {
 			});
 		});
 
-		it('should apply market-based logic for minor PERP markets (>2)', () => {
-			[3, 4, 5, 10].forEach((marketIndex) => {
+		it('should apply market-based logic for minor PERP markets (>3)', () => {
+			[4, 5, 10].forEach((marketIndex) => {
 				const args = {
 					marketIndex,
 					marketType: 'perp' as any,
@@ -148,7 +148,7 @@ describe('Auction Parameters Functions', () => {
 
 		it('should include all original parameters in the result', () => {
 			const args = {
-				marketIndex: 3,
+				marketIndex: 5,
 				marketType: 'perp' as any,
 				direction: 'short' as any,
 				amount: '250',
@@ -164,7 +164,7 @@ describe('Auction Parameters Functions', () => {
 			const result = createMarketBasedAuctionParams(args);
 
 			// Should preserve all original parameters
-			expect(result.marketIndex).toBe(3);
+			expect(result.marketIndex).toBe(5);
 			expect(result.marketType).toBe('perp');
 			expect(result.direction).toBe('short');
 			expect(result.amount).toBe('250');
@@ -177,6 +177,73 @@ describe('Auction Parameters Functions', () => {
 			// Should apply market-based logic
 			expect(result.auctionStartPriceOffsetFrom).toBe('bestOffer');
 			expect(result.auctionStartPriceOffset).toBe(-0.1);
+		});
+
+		describe('version 3 fast-fill profile', () => {
+			const baseArgs = (marketIndex: number) => ({
+				marketIndex,
+				marketType: 'perp' as any,
+				direction: 'long' as any,
+				amount: '100',
+				assetType: 'base' as any,
+				auctionStartPriceOffsetFrom: 'marketBased' as any,
+				auctionStartPriceOffset: 'marketBased' as any,
+			});
+
+			it('should start just inside the touch for all markets', () => {
+				[0, 1, 2, 3, 5, 10].forEach((marketIndex) => {
+					const result = createMarketBasedAuctionParams(
+						baseArgs(marketIndex),
+						undefined,
+						3
+					);
+
+					expect(result.auctionStartPriceOffsetFrom).toBe('bestOffer');
+					expect(result.auctionStartPriceOffset).toBe(-0.05);
+				});
+			});
+
+			it('should default to a short auction duration', () => {
+				const result = createMarketBasedAuctionParams(
+					baseArgs(0),
+					undefined,
+					3
+				);
+
+				expect(result.auctionDuration).toBe(5);
+			});
+
+			it('should preserve an explicit auction duration', () => {
+				const result = createMarketBasedAuctionParams(
+					{ ...baseArgs(0), auctionDuration: 20 },
+					undefined,
+					3
+				);
+
+				expect(result.auctionDuration).toBe(20);
+			});
+
+			it('should not change version 1/2 behavior', () => {
+				[1, 2].forEach((version) => {
+					const majorResult = createMarketBasedAuctionParams(
+						baseArgs(0),
+						undefined,
+						version
+					);
+					expect(majorResult.auctionStartPriceOffsetFrom).toBe('mark');
+					expect(majorResult.auctionStartPriceOffset).toBe(0);
+					expect(majorResult.auctionDuration).toBe(20);
+
+					const minorResult = createMarketBasedAuctionParams(
+						baseArgs(5),
+						undefined,
+						version
+					);
+					expect(minorResult.auctionStartPriceOffsetFrom).toBe('bestOffer');
+					expect(minorResult.auctionStartPriceOffset).toBe(-0.1);
+					expect(minorResult.auctionDuration).toBe(20);
+				});
+			});
 		});
 	});
 

@@ -20,7 +20,6 @@ use crate::vlp::hedge::state::{
 };
 use crate::{controller, load_mut};
 use anchor_lang::prelude::*;
-use anchor_lang::Discriminator;
 use anchor_spl::associated_token::AssociatedToken;
 use anchor_spl::token::Token;
 use anchor_spl::token_2022::Token2022;
@@ -32,6 +31,21 @@ use crate::state::traits::Size;
 use solana_program::sysvar::instructions;
 
 use crate::instructions::optional_accounts::get_token_interface;
+
+/// Discriminator of the `end_lp_swap` instruction (`sha256("global:end_lp_swap")[..8]`),
+/// spelled out so this module compiles when the `vlp-hedge` entry points are gated out.
+/// Pinned to the generated value by `end_lp_swap_discriminator_matches` below.
+const END_LP_SWAP_DISCRIMINATOR: &[u8] = &[99, 125, 214, 165, 129, 175, 253, 135];
+
+#[cfg(all(test, feature = "vlp-hedge"))]
+#[test]
+fn end_lp_swap_discriminator_matches() {
+    use anchor_lang::Discriminator;
+    assert_eq!(
+        END_LP_SWAP_DISCRIMINATOR,
+        crate::instruction::EndLpSwap::DISCRIMINATOR
+    );
+}
 
 pub fn handle_initialize_lp_pool(
     ctx: Context<InitializeLpPool>,
@@ -715,7 +729,7 @@ pub fn handle_begin_lp_swap<'c: 'info, 'info>(
             found_end = true;
 
             // must be the SwapEnd instruction
-            let discriminator = crate::instruction::EndLpSwap::DISCRIMINATOR;
+            let discriminator = END_LP_SWAP_DISCRIMINATOR;
             validate!(
                 &ix.data[0..8] == discriminator,
                 ErrorCode::InvalidSwap,

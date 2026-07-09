@@ -669,7 +669,7 @@ pub fn validate_any_isolated_tier_requirements(
                     (calculation.num_spot_liabilities == 1 && quote_spot_position.is_borrow()
                     ),
                     ErrorCode::IsolatedAssetTierViolation,
-                    "User attempting to increase spot liabilities beyond usdc with a isolated tier liability"
+                    "User attempting to increase spot liabilities beyond the quote asset with a isolated tier liability"
                 )?;
         }
     }
@@ -721,6 +721,15 @@ pub fn meets_place_order_margin_requirement(
     if !calculation.meets_margin_requirement() {
         msg!("margin calculation: {:?}", calculation);
         return Err(ErrorCode::InsufficientCollateral);
+    }
+
+    if risk_increasing && user.is_below_equity_floor(calculation.total_collateral) {
+        msg!(
+            "total collateral {} below equity floor {}",
+            calculation.total_collateral,
+            user.equity_floor
+        );
+        return Err(ErrorCode::EquityBelowFloor);
     }
 
     validate_any_isolated_tier_requirements(user, &calculation)?;

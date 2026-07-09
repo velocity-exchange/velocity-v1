@@ -45,7 +45,11 @@ use crate::{
             BID_ASK_TWAP_MAX_ORACLE_DIVERGENCE_PERCENT, QUOTE_PRECISION_I128, QUOTE_PRECISION_U64,
             QUOTE_SPOT_MARKET_INDEX,
         },
-        margin::{calculate_user_equity, meets_settle_pnl_maintenance_margin_requirement},
+        margin::{
+            calculate_margin_requirement_and_total_collateral_and_liability_info,
+            calculate_user_equity, meets_settle_pnl_maintenance_margin_requirement,
+            MarginRequirementType,
+        },
         oracle::{is_oracle_valid_for_action, VelocityAction},
         orders::{
             estimate_price_from_side, filter_bids_asks_by_oracle_divergence,
@@ -62,6 +66,7 @@ use crate::{
         events::{DeleteUserRecord, OrderActionExplanation, SignedMsgOrderRecord},
         fill_mode::FillMode,
         insurance_fund_stake::InsuranceFundStake,
+        margin_calculation::MarginContext,
         market_status::MarketStatus,
         oracle_map::OracleMap,
         order_params::{OrderParams, PlaceOrderOptions},
@@ -280,6 +285,65 @@ pub fn handle_force_cancel_orders<'c: 'info, 'info>(
         &ctx.accounts.filler,
         &Clock::get()?,
     )?;
+
+    Ok(())
+}
+
+/// Permissionless breaker trip: proves a single subaccount is below its
+/// equity floor and sets the authority-wide `equity_breaker_tripped` flag on
+/// `UserStats`, freezing every subaccount of the authority (no risk-increasing
+/// fills, withdrawals or transfers out). Cleared only by the warm admin via
+/// `reset_equity_floor_breaker`.
+pub fn handle_trip_equity_floor_breaker<'c: 'info, 'info>(
+    ctx: Context<'info, TripEquityFloorBreaker<'info>>,
+) -> Result<()> {
+    let state = ctx.accounts.state.load()?;
+    let user = load!(ctx.accounts.user)?;
+    let mut user_stats = load_mut!(ctx.accounts.user_stats)?;
+
+    validate!(
+        user.equity_floor > 0,
+        ErrorCode::SufficientCollateral,
+        "user has no equity floor set"
+    )?;
+
+    let AccountMaps {
+        perp_market_map,
+        spot_market_map,
+        mut oracle_map,
+    } = load_maps(
+        &mut ctx.remaining_accounts.iter().peekable(),
+        &MarketSet::new(),
+        &MarketSet::new(),
+        Clock::get()?.slot,
+        Some(state.oracle_guard_rails),
+    )?;
+
+    let margin_calc = calculate_margin_requirement_and_total_collateral_and_liability_info(
+        &user,
+        &perp_market_map,
+        &spot_market_map,
+        &mut oracle_map,
+        MarginContext::standard(MarginRequirementType::Initial).strict(true),
+    )?;
+
+    validate!(
+        user.is_below_equity_floor(margin_calc.total_collateral),
+        ErrorCode::SufficientCollateral,
+        "user total collateral {} not below equity floor {}",
+        margin_calc.total_collateral,
+        user.equity_floor
+    )?;
+
+    msg!(
+        "equity floor breaker tripped for authority {:?}: subaccount {} collateral {} below floor {}",
+        user.authority,
+        user.sub_account_id,
+        margin_calc.total_collateral,
+        user.equity_floor
+    );
+
+    user_stats.set_equity_breaker_tripped(true);
 
     Ok(())
 }
@@ -3189,6 +3253,19 @@ pub struct UpdateUserIdle<'info> {
     pub filler: AccountLoader<'info, User>,
     #[account(mut)]
     pub user: AccountLoader<'info, User>,
+}
+
+#[derive(Accounts)]
+pub struct TripEquityFloorBreaker<'info> {
+    pub state: AccountLoader<'info, State>,
+    /// Any signer may trip the breaker; the proof is the margin calculation.
+    pub keeper: Signer<'info>,
+    pub user: AccountLoader<'info, User>,
+    #[account(
+        mut,
+        constraint = is_stats_for_user(&user, &user_stats)?
+    )]
+    pub user_stats: AccountLoader<'info, UserStats>,
 }
 
 #[derive(Accounts)]

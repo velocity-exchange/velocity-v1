@@ -99,7 +99,7 @@ export const configs: { [key in VelocityEnv]: VelocityConfig } = {
 		ENV: 'devnet',
 		PYTH_ORACLE_MAPPING_ADDRESS: 'BmA9Z6FjioHJPpjT39QazZyhDRUdZy2ezwx4GiDdE2u2',
 		VELOCITY_PROGRAM_ID: VELOCITY_DEVNET_PROGRAM_ID,
-		JIT_PROXY_PROGRAM_ID: 'J1TnP8zvVxbtF5KFp5xRmWuvG9McnhzmBd9XGfCyuxFP',
+		JIT_PROXY_PROGRAM_ID: 'J1TPRoXCtGuMcWiWFE6RB9eZU8U35PBMETCwNQLCNPhQ',
 		QUOTE_MINT_ADDRESS: 'GqmEqYsy8EyvofDpmtFxK8zhYrgWgNokAtYoduQdL7v6',
 		V2_ALPHA_TICKET_MINT_ADDRESS:
 			'DeEiGWfCMP9psnLGkxGrBBMEAW5Jv8bBGMN8DCtFRCyB',
@@ -115,7 +115,7 @@ export const configs: { [key in VelocityEnv]: VelocityConfig } = {
 		ENV: 'mainnet-beta',
 		PYTH_ORACLE_MAPPING_ADDRESS: 'AHtgzX45WTKfkPG53L6WYhGEXwQkN1BVknET3sVsLL8J',
 		VELOCITY_PROGRAM_ID,
-		JIT_PROXY_PROGRAM_ID: 'J1TnP8zvVxbtF5KFp5xRmWuvG9McnhzmBd9XGfCyuxFP',
+		JIT_PROXY_PROGRAM_ID: 'J1TPRoXCtGuMcWiWFE6RB9eZU8U35PBMETCwNQLCNPhQ',
 		// Relaunch quote market (spot 0) is USDT — see
 		// deploy-scripts/params/relaunch-spot-markets.json.
 		QUOTE_MINT_ADDRESS: 'Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB',

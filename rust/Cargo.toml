@@ -4,6 +4,7 @@ members = [
 	"velocity-rs",
 	"velocity-rs/crates/velocity-idl-gen",
 	"velocity-rs/crates/pubsub-client",
+	"velocity-rs/examples/dlob-builder",
 	"keep-rs",
 	"swift",
 ]

@@ -6,7 +6,7 @@ description: >
   resolves to the devnet pubkey.
 inputs:
   program:
-    description: "Program crate name (velocity | token_faucet)"
+    description: "Program lib name (velocity | token_faucet | jit_proxy)"
     required: true
   devnet:
     description: "If 'true', strip mainnet-beta feature (velocity only)"
@@ -58,7 +58,7 @@ runs:
         # dirs; a full `anchor build` used to create target/idl as a side effect.
         mkdir -p target/idl
         if [ "$PROGRAM" = "velocity" ] && [ "$DEVNET" = "true" ]; then
-          anchor idl build --skip-lint -p velocity -o target/idl/velocity.json -- --no-default-features --features no-entrypoint
+          anchor idl build --skip-lint -p velocity -o target/idl/velocity.json -- --no-default-features --features no-entrypoint,isolated-position,vlp-hedge
         else
           anchor idl build --skip-lint -p "$PROGRAM" -o "target/idl/$PROGRAM.json"
         fi
@@ -72,7 +72,7 @@ runs:
       run: |
         set -euo pipefail
         if [ "$PROGRAM" = "velocity" ] && [ "$DEVNET" = "true" ]; then
-          solana-verify build --library-name velocity -b "$VERIFIABLE_BUILD_IMAGE" -- --no-default-features --features no-entrypoint
+          solana-verify build --library-name velocity -b "$VERIFIABLE_BUILD_IMAGE" -- --no-default-features --features no-entrypoint,isolated-position,vlp-hedge
         else
           solana-verify build --library-name "$PROGRAM" -b "$VERIFIABLE_BUILD_IMAGE"
         fi

@@ -179,6 +179,61 @@ export function registerUser(parent: Command): void {
 
 	withGlobalOptions(
 		user
+			.command('set-equity-floor <user> <floor>')
+			.description(
+				'Set a user account equity floor (warm admin). <floor> is QUOTE_PRECISION (1e6) raw units; ' +
+					'below the floor the program rejects risk-increasing orders, fills, withdrawals and transfers. 0 disables.'
+			)
+	).action(async (userPk: string, floor: string, _flags, cmd: Command) => {
+		const opts = readGlobalOpts(cmd);
+		const provider = buildProvider(opts);
+		const client = await buildAdminClient(opts);
+		try {
+			const ix = await (client as any).getUpdateUserEquityFloorIx(
+				new PublicKey(userPk),
+				new BN(floor)
+			);
+			const result = await sendOrPropose(
+				provider,
+				[ix],
+				opts.multisig ? new PublicKey(opts.multisig) : undefined,
+				'velocity-admin user set-equity-floor'
+			);
+			reportDispatch(`user[${userPk}] equity-floor = ${floor}`, result);
+		} finally {
+			await client.unsubscribe();
+		}
+	});
+
+	withGlobalOptions(
+		user
+			.command('reset-equity-breaker <userStats>')
+			.description(
+				'Clear the authority-wide equity floor breaker on a UserStats account (warm admin). ' +
+					'Unfreezes all subaccounts of the authority after a breach has been reviewed.'
+			)
+	).action(async (userStatsPk: string, _flags, cmd: Command) => {
+		const opts = readGlobalOpts(cmd);
+		const provider = buildProvider(opts);
+		const client = await buildAdminClient(opts);
+		try {
+			const ix = await (client as any).getResetEquityFloorBreakerIx(
+				new PublicKey(userStatsPk)
+			);
+			const result = await sendOrPropose(
+				provider,
+				[ix],
+				opts.multisig ? new PublicKey(opts.multisig) : undefined,
+				'velocity-admin user reset-equity-breaker'
+			);
+			reportDispatch(`userStats[${userStatsPk}] equity breaker reset`, result);
+		} finally {
+			await client.unsubscribe();
+		}
+	});
+
+	withGlobalOptions(
+		user
 			.command('admin-deposit <market> <amount>')
 			.description(
 				'Admin deposit on behalf of a user. <amount> is raw token units.'

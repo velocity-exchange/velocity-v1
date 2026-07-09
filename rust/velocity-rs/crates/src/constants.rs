@@ -32,7 +32,7 @@ pub const ED25519_PROGRAM_ID: Pubkey =
 
 /// JIT proxy program address
 pub const JIT_PROXY_ID: Pubkey =
-    solana_pubkey::pubkey!("J1TnP8zvVxbtF5KFp5xRmWuvG9McnhzmBd9XGfCyuxFP");
+    solana_pubkey::pubkey!("J1TPRoXCtGuMcWiWFE6RB9eZU8U35PBMETCwNQLCNPhQ");
 /// Empty pubkey
 pub const DEFAULT_PUBKEY: Pubkey = solana_pubkey::pubkey!("11111111111111111111111111111111");
 

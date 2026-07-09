@@ -1,10 +1,10 @@
 {
 	"name": "@velocity-exchange/jit-proxy",
-	"version": "0.2.1",
+	"version": "0.3.0",
 	"description": "TypeScript SDK for the Velocity jit-proxy program (JIT maker auctions).",
 	"repository": {
 		"type": "git",
-		"url": "git@github.com:velocity-exchange/velocity-v1.git",
+		"url": "git+https://github.com/velocity-exchange/velocity-v1.git",
 		"directory": "packages/jit-proxy"
 	},
 	"license": "Apache-2.0",

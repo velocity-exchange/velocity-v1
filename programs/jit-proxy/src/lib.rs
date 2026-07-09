@@ -6,7 +6,7 @@ pub mod state;
 
 use instructions::*;
 
-declare_id!("J1TnP8zvVxbtF5KFp5xRmWuvG9McnhzmBd9XGfCyuxFP");
+declare_id!("J1TPRoXCtGuMcWiWFE6RB9eZU8U35PBMETCwNQLCNPhQ");
 
 #[program]
 pub mod jit_proxy {

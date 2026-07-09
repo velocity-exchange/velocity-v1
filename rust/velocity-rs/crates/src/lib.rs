@@ -692,10 +692,25 @@ impl VelocityClient {
             .ok_or(SdkError::NoAccountData(*account))
     }
 
-    /// Simulate the tx on remote RPC node
+    /// Simulate the tx on remote RPC node (at the RPC client's default commitment)
     pub async fn simulate_tx(
         &self,
         tx: VersionedMessage,
+    ) -> SdkResult<RpcSimulateTransactionResult> {
+        self.simulate_tx_with_commitment(tx, None).await
+    }
+
+    /// Simulate the tx on remote RPC node at the given commitment level
+    ///
+    /// `None` falls back to the RPC client's default commitment (typically finalized,
+    /// ~32 slots stale). Latency-sensitive callers whose tx was built from a
+    /// processed-commitment view (e.g. keeper fills of a just-triggered order) should
+    /// pass `CommitmentConfig::processed()` so preflight doesn't reject valid txs for
+    /// the entire finalization window.
+    pub async fn simulate_tx_with_commitment(
+        &self,
+        tx: VersionedMessage,
+        commitment: Option<CommitmentConfig>,
     ) -> SdkResult<RpcSimulateTransactionResult> {
         let response = self
             .rpc()
@@ -708,6 +723,7 @@ impl VelocityClient {
                 RpcSimulateTransactionConfig {
                     sig_verify: false,
                     replace_recent_blockhash: true,
+                    commitment,
                     ..Default::default()
                 },
             )
@@ -995,6 +1011,48 @@ impl VelocityClient {
             )
             .map(|x| x.get_safe_oracle_price_data())
             .map_err(|e| SdkError::Anchor(Box::new(e.into())))
+    }
+
+    /// Get a copy of the perp market with its AMM projected onto the current oracle,
+    /// mirroring the program's pre-fill AMM refresh (`snap_to_oracle`)
+    ///
+    /// The cached account holds the AMM curve as of its last on-chain update; at fill
+    /// time the program first re-projects the curve onto the (safe MM) oracle before
+    /// quoting bid/ask. Crossing checks against the cached reserves therefore mis-price
+    /// the vAMM quote whenever the oracle has moved since the last on-chain update —
+    /// use the market returned here for fill-decision quoting.
+    ///
+    /// ## Params
+    /// * `market_index` - perp market index
+    /// * `slot` - slot to project at (e.g. the expected tx landing slot)
+    /// * `oracle_price_override` - replace the cached exchange oracle price (with delay 0),
+    ///   e.g. when the caller will post a fresher oracle update in the same tx as the fill
+    pub fn try_get_projected_perp_market(
+        &self,
+        market_index: u16,
+        slot: Slot,
+        oracle_price_override: Option<i64>,
+    ) -> SdkResult<PerpMarket> {
+        let oracle_data = self
+            .try_get_oracle_price_data_and_slot(MarketId::perp(market_index))
+            .ok_or(SdkError::InvalidOracle)?;
+        let mut perp_market = self.try_get_perp_market_account(market_index)?;
+        let oracle_validity_guard_rails = self.state_account().unwrap().oracle_guard_rails.validity;
+        let velocity_validity_guard_rails: program::state::state::ValidityGuardRails =
+            unsafe { std::mem::transmute_copy::<_, _>(&oracle_validity_guard_rails) };
+
+        let mut exchange_oracle = oracle_data.data;
+        if let Some(price) = oracle_price_override {
+            exchange_oracle.price = price;
+            exchange_oracle.delay = 0;
+        }
+
+        crate::math::amm_quote::project_perp_market_for_quoting(
+            perp_market,
+            exchange_oracle,
+            &velocity_validity_guard_rails,
+            slot,
+        )
     }
 
     /// Get the latest oracle data for `market`

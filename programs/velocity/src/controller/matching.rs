@@ -801,7 +801,7 @@ mod tests {
 
         let (dlob_filled, amm_filled) = {
             let mut amm_jit = AmmJitQuoter::new_no_spread(&mut amm, dlob_price, jit_cap);
-            let mut dlob_maker = DlobOrderQuoter::new(&mut dlob);
+            let mut dlob_maker = DlobOrderQuoter::new(&mut dlob, u64::MAX);
             // At the tied price AmmJitQuoter (is_prio=true) takes its full cap
             // first; DlobOrderQuoter (is_prio=false) fills the residual. Vec
             // order is irrelevant — match_take sorts prio ahead within a tie.
@@ -934,8 +934,8 @@ mod tests {
         let mut cheap = ask(100, 30);
         let mut expensive = ask(110, 100);
         {
-            let mut cheap_m = DlobOrderQuoter::new(&mut cheap);
-            let mut exp_m = DlobOrderQuoter::new(&mut expensive);
+            let mut cheap_m = DlobOrderQuoter::new(&mut cheap, u64::MAX);
+            let mut exp_m = DlobOrderQuoter::new(&mut expensive, u64::MAX);
             let mut makers: Vec<&mut dyn QuoterCommit> = vec![&mut cheap_m, &mut exp_m];
 
             let result = match_take(&mut makers, &ctx, PositionDirection::Long, 50, None).unwrap();
@@ -945,6 +945,62 @@ mod tests {
         }
         assert_eq!(cheap.base_asset_amount_filled, 30);
         assert_eq!(expensive.base_asset_amount_filled, 20);
+    }
+
+    #[test]
+    fn reduce_only_maker_fill_capped_at_position() {
+        use crate::state::quoter::DlobOrderQuoter;
+        use crate::state::user::{
+            MarketType, Order, OrderStatus, OrderTriggerCondition, OrderType,
+        };
+
+        let stats = MarketStats::default();
+        let oracle = OraclePriceData::default();
+        let ctx = make_ctx(&stats, &oracle, 1);
+
+        // Maker is long 4 with a reduce-only ask of 6. The caller passes the
+        // position-capped unfilled (4) so the taker's buy of 6 fills only 4;
+        // the maker's position closes and never flips short.
+        let mut ask = Order {
+            slot: 0,
+            price: 100,
+            base_asset_amount: 6,
+            base_asset_amount_filled: 0,
+            quote_asset_amount_filled: 0,
+            trigger_price: 0,
+            auction_start_price: 0,
+            auction_end_price: 0,
+            max_ts: 0,
+            oracle_price_offset: 0,
+            order_id: 0,
+            market_index: 0,
+            status: OrderStatus::Open,
+            order_type: OrderType::Limit,
+            market_type: MarketType::Perp,
+            user_order_id: 0,
+            existing_position_direction: PositionDirection::Long,
+            direction: PositionDirection::Short,
+            reduce_only: true,
+            post_only: true,
+            immediate_or_cancel: false,
+            trigger_condition: OrderTriggerCondition::Above,
+            auction_duration: 0,
+            posted_slot_tail: 0,
+            bit_flags: 0,
+            padding: [0; 5],
+        };
+
+        let position_capped_unfilled = 4;
+        {
+            let mut maker = DlobOrderQuoter::new(&mut ask, position_capped_unfilled);
+            let mut makers: Vec<&mut dyn QuoterCommit> = vec![&mut maker];
+
+            let result = match_take(&mut makers, &ctx, PositionDirection::Long, 6, None).unwrap();
+
+            assert!(!result.is_complete(), "only 4 of 6 should fill");
+            assert_eq!(result.total_base_filled, 4);
+        }
+        assert_eq!(ask.base_asset_amount_filled, 4);
     }
 
     #[test]

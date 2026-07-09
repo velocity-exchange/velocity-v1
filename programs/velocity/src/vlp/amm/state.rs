@@ -473,28 +473,30 @@ impl AMM {
         }
     }
 
-    /// Validate that a proposed margin and liquidator-fee configuration is
+    /// Validate that a proposed margin and liquidation-fee configuration is
     /// compatible with the AMM's current `max_spread`. The non-AMM
     /// arguments (`margin_ratio_initial`, `margin_ratio_maintenance`,
-    /// `liquidation_fee`) are forwarded to the protocol-level
-    /// `validate_margin` so the AMM owns the `max_spread` portion of the
-    /// constraint without duplicating margin bounds checks here. Used by
-    /// `handle_update_perp_market_margin_ratio`.
+    /// `liquidator_fee`, `if_liquidation_fee`) are forwarded to the
+    /// protocol-level `validate_margin` so the AMM owns the `max_spread`
+    /// portion of the constraint without duplicating margin bounds checks
+    /// here. Used by `handle_update_perp_market_margin_ratio`.
     pub fn validate_compatible_with_margin_ratio(
         &self,
         margin_ratio_initial: u32,
         margin_ratio_maintenance: u32,
-        liquidation_fee: u32,
+        liquidator_fee: u32,
+        if_liquidation_fee: u32,
     ) -> VelocityResult<()> {
         crate::validation::margin::validate_margin(
             margin_ratio_initial,
             margin_ratio_maintenance,
-            liquidation_fee,
+            liquidator_fee,
+            if_liquidation_fee,
             self.max_spread,
         )
     }
 
-    /// Validate that a proposed liquidator fee is compatible with the
+    /// Validate that proposed liquidation fees are compatible with the
     /// AMM's current `max_spread` (via the protocol-level
     /// `validate_margin` rules). Used by
     /// `handle_update_perp_liquidation_fee`.
@@ -502,12 +504,14 @@ impl AMM {
         &self,
         margin_ratio_initial: u32,
         margin_ratio_maintenance: u32,
-        liquidation_fee: u32,
+        liquidator_fee: u32,
+        if_liquidation_fee: u32,
     ) -> VelocityResult<()> {
         crate::validation::margin::validate_margin(
             margin_ratio_initial,
             margin_ratio_maintenance,
-            liquidation_fee,
+            liquidator_fee,
+            if_liquidation_fee,
             self.max_spread,
         )
     }

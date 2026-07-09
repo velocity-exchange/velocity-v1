@@ -6,10 +6,16 @@ use crate::math::constants::{
 use crate::msg;
 use crate::validate;
 
+/// Total liquidation fees (`liquidator_fee + if_liquidation_fee`) must fit
+/// strictly inside `margin_ratio_maintenance`: both fees are paid out of the
+/// liquidated account's remaining equity, which at the liquidation boundary is
+/// exactly the maintenance margin. Fees at or above it guarantee bad debt
+/// before any adverse price movement during the close.
 pub fn validate_margin(
     margin_ratio_initial: u32,
     margin_ratio_maintenance: u32,
-    liquidation_fee: u32,
+    liquidator_fee: u32,
+    if_liquidation_fee: u32,
     max_spread: u32,
 ) -> VelocityResult {
     if !(MIN_MARGIN_RATIO..=MAX_MARGIN_RATIO).contains(&margin_ratio_initial) {
@@ -24,10 +30,14 @@ pub fn validate_margin(
         return Err(ErrorCode::InvalidMarginRatio);
     }
 
+    let total_liquidation_fee = liquidator_fee.saturating_add(if_liquidation_fee);
     validate!(
-        margin_ratio_maintenance * LIQUIDATION_FEE_TO_MARGIN_PRECISION_RATIO > liquidation_fee,
+        margin_ratio_maintenance * LIQUIDATION_FEE_TO_MARGIN_PRECISION_RATIO
+            > total_liquidation_fee,
         ErrorCode::InvalidMarginRatio,
-        "margin_ratio_maintenance must be greater than liquidation fee"
+        "margin_ratio_maintenance ({}) must exceed liquidator_fee + if_liquidation_fee ({})",
+        margin_ratio_maintenance * LIQUIDATION_FEE_TO_MARGIN_PRECISION_RATIO,
+        total_liquidation_fee
     )?;
 
     validate!(
@@ -119,4 +129,45 @@ pub fn validate_margin_weights(
     )?;
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const MAX_SPREAD: u32 = 2500;
+
+    #[test]
+    fn total_liquidation_fee_above_maintenance_margin_rejected() {
+        // 5% maintenance margin, 1% liquidator + 5% IF fee = 6% total
+        assert_eq!(
+            validate_margin(1000, 500, 10000, 50000, MAX_SPREAD),
+            Err(ErrorCode::InvalidMarginRatio)
+        );
+    }
+
+    #[test]
+    fn total_liquidation_fee_equal_to_maintenance_margin_rejected() {
+        // 5% maintenance margin, fees sum to exactly 5%
+        assert_eq!(
+            validate_margin(1000, 500, 25000, 25000, MAX_SPREAD),
+            Err(ErrorCode::InvalidMarginRatio)
+        );
+    }
+
+    #[test]
+    fn total_liquidation_fee_below_maintenance_margin_accepted() {
+        // 5% maintenance margin, 1% + 1% fees
+        assert!(validate_margin(1000, 500, 10000, 10000, MAX_SPREAD).is_ok());
+        // 3% maintenance margin, 0.75% + 0.75% fees
+        assert!(validate_margin(500, 300, 7500, 7500, MAX_SPREAD).is_ok());
+    }
+
+    #[test]
+    fn fee_sum_overflow_saturates_and_rejects() {
+        assert_eq!(
+            validate_margin(1000, 500, u32::MAX, u32::MAX, MAX_SPREAD),
+            Err(ErrorCode::InvalidMarginRatio)
+        );
+    }
 }

@@ -257,6 +257,9 @@ export class ProtocolFeeCollectorBot implements Bot {
 			let sweepsSent = 0;
 			for (const perpMarket of this.adminClient.getPerpMarketAccounts()) {
 				if (perpMarket.feeLedger.pendingProtocolFee.eq(ZERO)) {
+					logger.info(
+						`${this.name}: skipping sweep for perp market ${perpMarket.marketIndex}: no pending protocol fees`
+					);
 					continue;
 				}
 				const sent = await this.sendIx(
@@ -300,6 +303,9 @@ export class ProtocolFeeCollectorBot implements Bot {
 						SpotBalanceType.DEPOSIT
 					).add(perpMarket.feeLedger.pendingProtocolFee);
 					if (available.eq(ZERO)) {
+						logger.info(
+							`${this.name}: skipping withdraw for perp market ${perpMarket.marketIndex}: protocol fee pool is empty`
+						);
 						continue;
 					}
 					logger.info(
@@ -335,6 +341,9 @@ export class ProtocolFeeCollectorBot implements Bot {
 						SpotBalanceType.DEPOSIT
 					);
 					if (available.eq(ZERO)) {
+						logger.info(
+							`${this.name}: skipping withdraw for spot market ${spotMarket.marketIndex}: protocol fee pool is empty`
+						);
 						continue;
 					}
 					logger.info(

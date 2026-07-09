@@ -13,7 +13,10 @@ use redis::{AsyncCommands, ScanOptions};
 use serde_json::Value;
 use tower_http::cors::{Any, CorsLayer};
 
-const HASH_PREFIX: &str = "swift-hashes::*";
+/// Literal prefix every confirmation key carries in Redis (`swift-hashes::<hash>`).
+const HASH_KEY_PREFIX: &str = "swift-hashes::";
+/// SCAN glob for enumerating every confirmation key.
+const HASH_SCAN_PATTERN: &str = "swift-hashes::*";
 
 #[derive(Clone)]
 pub struct ServerParams<T: Clone + AsyncCommands> {
@@ -53,7 +56,7 @@ pub async fn get_all_hashes<T: Clone + AsyncCommands>(
     State(server_params): State<ServerParams<T>>,
 ) -> impl axum::response::IntoResponse {
     let scan_opts = ScanOptions::default()
-        .with_pattern(HASH_PREFIX)
+        .with_pattern(HASH_SCAN_PATTERN)
         .with_count(256);
     let mut conn = server_params.redis_pool.clone();
 
@@ -86,8 +89,8 @@ pub async fn get_all_hashes<T: Clone + AsyncCommands>(
     let mut map = serde_json::Map::new();
     for (mut key, value) in keys.into_iter().zip(values.into_iter()) {
         if let Some(value) = value {
-            if key.starts_with(HASH_PREFIX) {
-                key.drain(0..HASH_PREFIX.len());
+            if key.starts_with(HASH_KEY_PREFIX) {
+                key.drain(0..HASH_KEY_PREFIX.len());
             }
             map.insert(key, serde_json::Value::String(value));
         }
@@ -125,7 +128,7 @@ pub async fn get_hash_status<T: Clone + AsyncCommands>(
 
     let mut conn = server_params.redis_pool.clone();
 
-    let redis_key = format!("swift-hashes::{}", decoded_hash);
+    let redis_key = format!("{HASH_KEY_PREFIX}{decoded_hash}");
     match conn.get::<_, Option<String>>(redis_key).await {
         Ok(Some(value)) => {
             log::info!("Value for decoded_hash {decoded_hash}: {value}");
@@ -348,9 +351,8 @@ mod tests {
         // `get_all_hashes` returns NOT_FOUND for an empty store, so seed a hash
         // matching the scan pattern (`swift-hashes::*`) first. This makes the
         // test self-contained instead of relying on pre-existing Redis state.
-        // HASH_PREFIX ends in a `*` glob, so trim it for the concrete key.
-        let key_prefix = HASH_PREFIX.trim_end_matches('*');
-        let seeded_key = format!("{key_prefix}test_get_all_hashes_seed");
+        let bare_hash = "test_get_all_hashes_seed";
+        let seeded_key = format!("{HASH_KEY_PREFIX}{bare_hash}");
         let mut conn = state.redis_pool.clone();
         let _: () = conn
             .set(&seeded_key, "confirmed")
@@ -367,5 +369,13 @@ mod tests {
         let response: HashesResponse = serde_json::from_str(body_str).unwrap();
 
         assert!(response.hashes.len() > 0);
+        // The `swift-hashes::` prefix must be stripped from returned keys, and
+        // the value preserved.
+        assert_eq!(
+            response.hashes.get(bare_hash),
+            Some(&serde_json::Value::String("confirmed".to_string())),
+            "expected bare hash key with prefix stripped; got keys: {:?}",
+            response.hashes.keys().collect::<Vec<_>>()
+        );
     }
 }

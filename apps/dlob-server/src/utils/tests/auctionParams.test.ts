@@ -17,8 +17,8 @@ import {
 
 describe('Auction Parameters Functions', () => {
 	describe('createMarketBasedAuctionParams', () => {
-		it('should apply market-based logic for major PERP markets (0, 1, 2)', () => {
-			[0, 1, 2].forEach((marketIndex) => {
+		it('should apply market-based logic for major PERP markets (0, 1, 2, 3)', () => {
+			[0, 1, 2, 3].forEach((marketIndex) => {
 				const args = {
 					marketIndex,
 					marketType: 'perp' as any,
@@ -36,8 +36,8 @@ describe('Auction Parameters Functions', () => {
 			});
 		});
 
-		it('should apply market-based logic for minor PERP markets (>2)', () => {
-			[3, 4, 5, 10].forEach((marketIndex) => {
+		it('should apply market-based logic for minor PERP markets (>3)', () => {
+			[4, 5, 10].forEach((marketIndex) => {
 				const args = {
 					marketIndex,
 					marketType: 'perp' as any,
@@ -148,7 +148,7 @@ describe('Auction Parameters Functions', () => {
 
 		it('should include all original parameters in the result', () => {
 			const args = {
-				marketIndex: 3,
+				marketIndex: 5,
 				marketType: 'perp' as any,
 				direction: 'short' as any,
 				amount: '250',
@@ -164,7 +164,7 @@ describe('Auction Parameters Functions', () => {
 			const result = createMarketBasedAuctionParams(args);
 
 			// Should preserve all original parameters
-			expect(result.marketIndex).toBe(3);
+			expect(result.marketIndex).toBe(5);
 			expect(result.marketType).toBe('perp');
 			expect(result.direction).toBe('short');
 			expect(result.amount).toBe('250');

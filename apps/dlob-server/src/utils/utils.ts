@@ -1151,6 +1151,13 @@ export const mapToMarketOrderParams = async (
 		// (`min(limitPrice, worst × (1 + auctionEndPriceOffset))`), so an
 		// undershooting worst produces auctions that can never cross the
 		// program's fill-time quote on vAMM-only books and expire unfilled.
+		//
+		// Only applied when the order actually needs vAMM liquidity: if
+		// resting (non-vAMM) makers priced inside the vAMM quote can cover
+		// the full size, their tighter worst estimate stands — the user's
+		// budget is never widened by a quote the auction would not touch.
+		// A user-set (fixed) slippage remains the hard cap either way:
+		// deriveMarketOrderParams takes min(limitPrice, worst-based end).
 		if (isVariant(marketType, 'perp')) {
 			const vammQuote = getVammSideQuoteWithMargin(
 				velocityClient,
@@ -1158,9 +1165,47 @@ export const mapToMarketOrderParams = async (
 				direction
 			);
 			if (vammQuote) {
-				estimatedPrices.worstPrice = isVariant(direction, 'long')
-					? BN.max(estimatedPrices.worstPrice, vammQuote)
-					: BN.min(estimatedPrices.worstPrice, vammQuote);
+				const isLong = isVariant(direction, 'long');
+				const orderBaseAmount =
+					params.maxLeverageSelected && params.maxLeverageOrderSize
+						? stringToBN(params.maxLeverageOrderSize)
+						: params.assetType === 'base'
+						? amount
+						: amount.mul(BASE_PRECISION).div(estimatedPrices.entryPrice);
+
+				let makerDepthInsideQuote = ZERO;
+				try {
+					const l2ForGate = redisL2
+						? convertRawL2ToBN(redisL2)
+						: { bids: [], asks: [] };
+					const levels = isLong ? l2ForGate.asks : l2ForGate.bids;
+					for (const level of levels ?? []) {
+						// levels are sorted best-first; stop at the first level
+						// priced beyond the vAMM quote
+						const insideQuote = isLong
+							? level.price.lte(vammQuote)
+							: level.price.gte(vammQuote);
+						if (!insideQuote) {
+							break;
+						}
+						const vammSize = level.sources?.vamm
+							? new BN(level.sources.vamm)
+							: ZERO;
+						makerDepthInsideQuote = makerDepthInsideQuote.add(
+							BN.max(level.size.sub(vammSize), ZERO)
+						);
+					}
+				} catch (error) {
+					logger.warn(
+						`Failed to compute maker depth inside vAMM quote for market ${params.marketIndex}: ${error}`
+					);
+				}
+
+				if (makerDepthInsideQuote.lt(orderBaseAmount)) {
+					estimatedPrices.worstPrice = isLong
+						? BN.max(estimatedPrices.worstPrice, vammQuote)
+						: BN.min(estimatedPrices.worstPrice, vammQuote);
+				}
 			}
 		}
 

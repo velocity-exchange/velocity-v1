@@ -26,8 +26,11 @@ import { ZERO } from '../constants/numericConstants';
  * was for the older 4376-byte layout; the current Velocity layout is 4496
  * bytes, shifting this field +120 bytes. With the wrong offset this read 8
  * zero-padding bytes, so the staleness guard rejected every post-load update.
+ * Exported so downstream `tryUpdateUserAccount` overrides (e.g. the keeper
+ * bots' filtered order subscriber) share the same offset instead of
+ * re-hardcoding it.
  */
-const USER_LAST_ACTIVE_SLOT_OFFSET = 4448;
+export const USER_LAST_ACTIVE_SLOT_OFFSET = 4448;
 
 /**
  * OrderSubscriber — maintains a live, in-memory map of every `User` account

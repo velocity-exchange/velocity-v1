@@ -31,6 +31,7 @@ import {
 	DEFAULT_AUCTION_PARAMS,
 	FAST_FILL_AUCTION_DURATION,
 	FAST_FILL_AUCTION_START_PRICE_OFFSET,
+	MAJOR_MARKETS,
 	MID_MAJOR_MARKETS,
 } from './constants';
 import { AuctionParamArgs } from './types';
@@ -652,10 +653,10 @@ export function createMarketBasedAuctionParams(
 	overrideDefaults?: Partial<AuctionParamArgs>,
 	version: number = 1
 ): AuctionParamArgs {
-	// Determine if this is a major market (PERP with marketIndex 0, 1, or 2)
+	// Determine if this is a major market (PERP: SOL, BTC, ETH, HYPE)
 	const isMajorMarket =
 		args.marketType?.toLowerCase() === 'perp' &&
-		[0, 1, 2].includes(args.marketIndex);
+		MAJOR_MARKETS.includes(args.marketIndex);
 
 	// Version 3+ weights toward fast fills: start just inside the touch on all
 	// markets and run a short auction, rather than fishing for price improvement
@@ -1378,9 +1379,9 @@ export const calculateDynamicSlippage = (
 	worstPrice: BN,
 	apiVersion?: number
 ): number => {
-	// Determine if this is a major market (PERP with marketIndex 0, 1, or 2)
+	// Determine if this is a major market (PERP: SOL, BTC, ETH, HYPE)
 	const isPerp = marketType.toLowerCase() === 'perp';
-	const isMajor = isPerp && marketIndex < 3;
+	const isMajor = isPerp && MAJOR_MARKETS.includes(marketIndex);
 	const isMidMajor = isPerp && MID_MAJOR_MARKETS.includes(marketIndex);
 
 	const baseSlippage = isMajor

@@ -212,8 +212,8 @@ describe('bankruptcy IF-fee floor', () => {
 		// markets initialize with the 10 bps default
 		await velocityClient.fetchAccounts();
 		assert(
-			velocityClient.getPerpMarketAccount(MARKET_INDEX)
-				.bankruptcyIfFloorPct === 1000,
+			velocityClient.getPerpMarketAccount(MARKET_INDEX).bankruptcyIfFloorPct ===
+				1000,
 			'new market should default to a 10 bps floor'
 		);
 
@@ -245,8 +245,7 @@ describe('bankruptcy IF-fee floor', () => {
 		await velocityClient.fetchAccounts();
 
 		const pendingIfSeed =
-			velocityClient.getPerpMarketAccount(MARKET_INDEX).feeLedger
-				.pendingIfFee;
+			velocityClient.getPerpMarketAccount(MARKET_INDEX).feeLedger.pendingIfFee;
 		assert(
 			pendingIfSeed.gt(ZERO),
 			'setup should have accrued a pending IF fee from the open fill'
@@ -272,9 +271,7 @@ describe('bankruptcy IF-fee floor', () => {
 			velocityClient.getUserAccount(),
 			MARKET_INDEX,
 			0,
-			velocityClient
-				.getUserAccount()
-				.perpPositions[0].quoteAssetAmount.abs()
+			velocityClient.getUserAccount().perpPositions[0].quoteAssetAmount.abs()
 		);
 
 		await velocityClient.fetchAccounts();

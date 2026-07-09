@@ -884,7 +884,10 @@ describe('calculateDynamicSlippage - limit price covers auction end price', () =
 		// Tight book so the spread term stays negligible
 		const l2Tight = {
 			bids: [
-				{ price: new BN(9_999).mul(PRICE_PRECISION).divn(100), size: new BN(1) },
+				{
+					price: new BN(9_999).mul(PRICE_PRECISION).divn(100),
+					size: new BN(1),
+				},
 			],
 			asks: [
 				{

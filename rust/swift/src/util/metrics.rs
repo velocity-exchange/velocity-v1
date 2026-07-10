@@ -41,6 +41,15 @@ pub struct SwiftServerMetrics {
     pub current_slot_gauge: Gauge,
     pub rpc_simulation_status: CounterVec,
     pub response_time_histogram: Histogram,
+    /// Outcomes of the oracle-band stale/fat-finger guard, by market and
+    /// outcome (`reject`, `skip_oracle_stale`, `skip_slot_subscriber_stale`,
+    /// `skip_oracle_missing`). Alert on `reject` rate for fat-fingers, and on
+    /// any `skip_*` rate rising — a skip means the guard failed open because the
+    /// server couldn't trust its own oracle freshness.
+    pub auction_band_guard: CounterVec,
+    /// Live oracle staleness (`current_slot - oracle_slot`) observed by the
+    /// guard, by market. Build health checks / alerts directly on this.
+    pub auction_oracle_staleness_slots: GaugeVec,
 }
 
 impl SwiftServerMetrics {
@@ -104,6 +113,22 @@ impl SwiftServerMetrics {
             &["status"],
         )
         .unwrap();
+        let auction_band_guard = CounterVec::new(
+            Opts::new(
+                "swift_auction_band_guard_count",
+                "Oracle-band stale/fat-finger guard outcomes (reject, or skip = failed open) by market",
+            ),
+            &["market_index", "outcome"],
+        )
+        .unwrap();
+        let auction_oracle_staleness_slots = GaugeVec::new(
+            Opts::new(
+                "swift_auction_oracle_staleness_slots",
+                "Oracle slot staleness (current_slot - oracle_slot) seen by the auction band guard, by market",
+            ),
+            &["market_index"],
+        )
+        .unwrap();
 
         SwiftServerMetrics {
             taker_orders_counter,
@@ -115,6 +140,8 @@ impl SwiftServerMetrics {
             current_slot_gauge,
             rpc_simulation_status,
             response_time_histogram,
+            auction_band_guard,
+            auction_oracle_staleness_slots,
         }
     }
 
@@ -145,6 +172,12 @@ impl SwiftServerMetrics {
             .unwrap();
         registry
             .register(Box::new(self.rpc_simulation_status.clone()))
+            .unwrap();
+        registry
+            .register(Box::new(self.auction_band_guard.clone()))
+            .unwrap();
+        registry
+            .register(Box::new(self.auction_oracle_staleness_slots.clone()))
             .unwrap();
     }
 }

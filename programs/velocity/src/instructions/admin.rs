@@ -637,6 +637,7 @@ pub fn handle_initialize_perp_market(
         margin_ratio_initial,
         margin_ratio_maintenance,
         liquidator_fee,
+        if_liquidation_fee,
         max_spread,
     )?;
 
@@ -1396,6 +1397,7 @@ pub fn handle_update_perp_market_margin_ratio(
         margin_ratio_initial,
         margin_ratio_maintenance,
         perp_market.liquidator_fee,
+        perp_market.if_liquidation_fee,
     )?;
 
     msg!(
@@ -1618,6 +1620,7 @@ pub fn handle_update_perp_liquidation_fee(
         perp_market.margin_ratio_initial,
         perp_market.margin_ratio_maintenance,
         liquidator_fee,
+        if_liquidation_fee,
     )?;
 
     msg!(

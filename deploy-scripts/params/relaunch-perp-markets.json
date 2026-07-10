@@ -1,5 +1,6 @@
 {
 	"_encoding": "u64/u128 fields are JSON strings; numbers above 2^53 lose precision through JSON.parse. init-markets.ts converts via BN(string).",
+	"_pnl_deficit_relief": "resolve_perp_pnl_deficit is intentionally disabled at launch: unrealized_pnl_max_imbalance stays 0 on-chain and max_revenue_withdraw_per_period is a $100 placeholder. Size both together if the path is ever enabled.",
 	"global": {
 		"initial_pct_to_liquidate": null,
 		"liquidation_duration": null
@@ -86,7 +87,7 @@
 			"amm_peg_multiplier": "2136317398",
 			"amm_periodicity": 3600,
 			"margin_ratio_initial": 500,
-			"margin_ratio_maintenance": 200,
+			"margin_ratio_maintenance": 300,
 			"imf_factor": 250,
 			"liquidator_fee": 5000,
 			"if_liquidation_fee": 7500,
@@ -123,9 +124,9 @@
 			"margin_ratio_maintenance": 500,
 			"imf_factor": 100,
 			"liquidator_fee": 10000,
-			"if_liquidation_fee": 50000,
+			"if_liquidation_fee": 10000,
 			"max_open_interest": "1376177944013",
-			"quote_max_insurance": "10000000000",
+			"quote_max_insurance": "20000000000",
 			"max_revenue_withdraw_per_period": "100000000",
 			"base_spread": 1000,
 			"max_spread": 2500,

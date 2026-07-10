@@ -215,6 +215,15 @@ pub fn calculate_user_safest_position_tiers(
         if market_position.is_available() {
             continue;
         }
+        // a zero-base position with positive unsettled pnl is a claim on the
+        // market's pnl pool, not a liability
+        if !market_position.is_open_position()
+            && !market_position.has_open_order()
+            && market_position.isolated_position_scaled_balance == 0
+            && market_position.quote_asset_amount > 0
+        {
+            continue;
+        }
         let market = &perp_market_map.get_ref(&market_position.market_index)?;
         safest_tier_perp_liablity = min(safest_tier_perp_liablity, market.contract_tier);
     }

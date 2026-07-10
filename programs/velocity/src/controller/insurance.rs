@@ -105,6 +105,20 @@ pub fn add_insurance_fund_stake(
         insurance_vault_amount,
     )?;
 
+    // Reject deposits that mint zero shares. Shares are priced off the pre-transfer
+    // vault balance, so an attacker can donate into the vault to inflate the share
+    // price and force floor(amount * total_shares / vault) == 0, then capture the
+    // victim's full deposit as appreciation on their own shares. Mirrors the
+    // `n_shares > 0` guard the request-remove path already enforces.
+    validate!(
+        n_shares > 0,
+        ErrorCode::IFDepositMintsZeroShares,
+        "deposit of {} mints zero IF shares at current share price (vault {}, total_shares {})",
+        amount,
+        insurance_vault_amount,
+        spot_market.insurance_fund.total_shares
+    )?;
+
     // reset cost basis if no shares
     insurance_fund_stake.cost_basis = if if_shares_before == 0 {
         amount.cast()?

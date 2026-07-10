@@ -3116,15 +3116,18 @@ pub fn fulfill_perp_order_step(
             let maker_user = maker
                 .as_deref_mut()
                 .ok_or_else(print_error!(ErrorCode::DefaultError))?;
+            // Position-capped unfilled: for a reduce-only maker this is
+            // min(order unfilled, |position|), so the fill can never grow
+            // or flip the maker's position. Sizes both the JIT split and
+            // the DLOB quoter's capacity.
+            let maker_unfilled = maker_user.orders[m_idx].get_base_asset_amount_unfilled(Some(
+                maker_user
+                    .get_perp_position(market_index)?
+                    .base_asset_amount,
+            ))?;
             // Add the AMM as a JIT maker only when allowed; a hard gate
             // (pause/drawdown) must keep it off the reserves. Else: DLOB only.
             if amm_jit_allowed {
-                let maker_unfilled =
-                    maker_user.orders[m_idx].get_base_asset_amount_unfilled(Some(
-                        maker_user
-                            .get_perp_position(market_index)?
-                            .base_asset_amount,
-                    ))?;
                 let taker_has_limit_price =
                     taker.orders[taker_order_index].has_limit_price(slot)?;
                 let mut amm_jit = crate::vlp::amm::AmmJitQuoter::from_match_context(
@@ -3136,7 +3139,7 @@ pub fn fulfill_perp_order_step(
                     maker_unfilled,
                     taker_has_limit_price,
                 )?;
-                let mut dlob = DlobOrderQuoter::new(&mut maker_user.orders[m_idx]);
+                let mut dlob = DlobOrderQuoter::new(&mut maker_user.orders[m_idx], maker_unfilled);
                 let mut quoters: Vec<&mut dyn QuoterCommit> = vec![&mut amm_jit, &mut dlob];
                 crate::controller::matching::match_take(
                     &mut quoters,
@@ -3146,7 +3149,7 @@ pub fn fulfill_perp_order_step(
                     taker_price_for_match,
                 )?
             } else {
-                let mut dlob = DlobOrderQuoter::new(&mut maker_user.orders[m_idx]);
+                let mut dlob = DlobOrderQuoter::new(&mut maker_user.orders[m_idx], maker_unfilled);
                 let mut quoters: Vec<&mut dyn QuoterCommit> = vec![&mut dlob];
                 crate::controller::matching::match_take(
                     &mut quoters,

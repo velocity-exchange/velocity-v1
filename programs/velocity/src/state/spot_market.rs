@@ -209,7 +209,15 @@ pub struct SpotMarket {
     /// Protocol's carveout of lending deposit-interest gains, routed to
     /// `protocol_fee_pool`. precision: IF_FACTOR_PRECISION
     pub protocol_fee_factor: u32,
-    pub padding: [u8; 8],
+    /// Insurance-fund vault token balance recorded at the end of the last
+    /// revenue settle. Used as a donation-proof base for the per-period APR cap
+    /// in `settle_revenue_to_insurance_fund`: the cap is sized off
+    /// `min(live_if_vault, this snapshot)`, so a direct SPL donation into the IF
+    /// vault right before a settle cannot inflate the cap (the snapshot predates
+    /// the donation). Repurposed from trailing padding — layout/size unchanged;
+    /// `0` on existing accounts means "uninitialized", handled by seeding it to
+    /// the live balance on the first post-upgrade settle.
+    pub if_last_settle_vault_amount: u64,
 }
 
 impl Default for SpotMarket {
@@ -277,7 +285,7 @@ impl Default for SpotMarket {
             protocol_fee_pool: PoolBalance::default(),
             protocol_liquidation_fee: 0,
             protocol_fee_factor: 0,
-            padding: [0; 8],
+            if_last_settle_vault_amount: 0,
         }
     }
 }

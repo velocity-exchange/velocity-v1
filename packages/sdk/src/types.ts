@@ -1302,6 +1302,10 @@ export type SpotMarketAccount = {
 	protocolLiquidationFee: number;
 	/** IF_FACTOR_PRECISION (1e6); protocol's carveout of lending deposit-interest gains */
 	protocolFeeFactor: number;
+	/** token mint precision; IF vault balance recorded at the last revenue settle, used as a
+	 * donation-proof base for the per-period revenue-settle APR cap (see `settle_revenue_to_insurance_fund`);
+	 * `0` = uninitialized (pre-upgrade accounts, seeded on first settle) */
+	ifLastSettleVaultAmount: BN;
 
 	/** token mint decimals; token-mint precision throughout this account is 10^decimals */
 	decimals: number;

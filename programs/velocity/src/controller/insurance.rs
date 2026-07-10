@@ -564,8 +564,24 @@ pub fn settle_revenue_to_insurance_fund(
     }
 
     if spot_market.insurance_fund.user_shares > 0 {
+        // Size the APR cap off a donation-proof base rather than the live vault
+        // balance. `insurance_vault_amount` is the raw token-account balance, which
+        // anyone can inflate with a direct SPL transfer right before a settle to
+        // lift the cap toward the 1/10-of-revenue-pool bound. `if_last_settle_vault_amount`
+        // is the vault balance recorded at the previous settle, so a fresh donation
+        // is not reflected in it; taking the min means the cap can only be lifted by
+        // a balance that was already present a full period ago (i.e. sustained,
+        // staking-equivalent capital), not a pre-settle spike. A `0` snapshot means
+        // the field is uninitialized (existing account pre-upgrade) — seed it from
+        // the live balance for this first settle.
+        let cap_vault_amount = if spot_market.if_last_settle_vault_amount == 0 {
+            insurance_vault_amount
+        } else {
+            insurance_vault_amount.min(spot_market.if_last_settle_vault_amount)
+        };
+
         // only allow MAX_APR_PER_REVENUE_SETTLE_TO_INSURANCE_FUND_VAULT or 1/10th of revenue pool to be settled
-        let capped_apr_amount = insurance_vault_amount
+        let capped_apr_amount = cap_vault_amount
             .cast::<u128>()?
             .safe_mul(MAX_APR_PER_REVENUE_SETTLE_TO_INSURANCE_FUND_VAULT)?
             .safe_div(PERCENTAGE_PRECISION)?
@@ -594,6 +610,12 @@ pub fn settle_revenue_to_insurance_fund(
     }
 
     spot_market.insurance_fund.last_revenue_settle_ts = now;
+
+    // Record the post-settle IF vault balance as the donation-proof base for the
+    // next period's APR cap (see the `cap_vault_amount` note above). This also
+    // seeds the field on the first post-upgrade settle for existing markets.
+    spot_market.if_last_settle_vault_amount =
+        insurance_vault_amount.safe_add(insurance_fund_token_amount)?;
 
     // The insurance fund is staker-owned: once stakers exist, the entire settled
     // amount accrues to them as share-price appreciation (no protocol shares

@@ -13,7 +13,7 @@ use anchor_lang::{
 use serde::{Deserialize, Serialize};
 use solana_instruction::AccountMeta;
 use solana_pubkey::Pubkey;
-pub const IDL_VERSION: &str = "2.163.0";
+pub const IDL_VERSION: &str = "2.163.1";
 use self::traits::ToAccountMetas;
 pub mod traits {
     use crate::solana_sdk::instruction::AccountMeta;
@@ -4929,8 +4929,7 @@ pub mod types {
         pub protocol_fee_pool: PoolBalance,
         pub protocol_liquidation_fee: u32,
         pub protocol_fee_factor: u32,
-        #[serde(skip)]
-        pub padding: Padding<8>,
+        pub if_last_settle_vault_amount: u64,
     }
     #[repr(C)]
     #[derive(
@@ -6297,8 +6296,7 @@ pub mod accounts {
         pub protocol_fee_pool: PoolBalance,
         pub protocol_liquidation_fee: u32,
         pub protocol_fee_factor: u32,
-        #[serde(skip)]
-        pub padding: Padding<8>,
+        pub if_last_settle_vault_amount: u64,
     }
     #[automatically_derived]
     impl anchor_lang::Discriminator for SpotMarket {

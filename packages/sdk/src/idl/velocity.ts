@@ -8,7 +8,7 @@ export type Velocity = {
   "address": "vELoC1audYbSYVRXn1vPaV8Axoa9oU6BYmNGZZBDZ1P",
   "metadata": {
     "name": "velocity",
-    "version": "2.163.0",
+    "version": "2.163.1",
     "spec": "0.1.0",
     "description": "Created with Anchor"
   },
@@ -23048,13 +23048,18 @@ export type Velocity = {
             "type": "u32"
           },
           {
-            "name": "padding",
-            "type": {
-              "array": [
-                "u8",
-                8
-              ]
-            }
+            "name": "ifLastSettleVaultAmount",
+            "docs": [
+              "Insurance-fund vault token balance recorded at the end of the last",
+              "revenue settle. Used as a donation-proof base for the per-period APR cap",
+              "in `settle_revenue_to_insurance_fund`: the cap is sized off",
+              "`min(live_if_vault, this snapshot)`, so a direct SPL donation into the IF",
+              "vault right before a settle cannot inflate the cap (the snapshot predates",
+              "the donation). Repurposed from trailing padding — layout/size unchanged;",
+              "`0` on existing accounts means \"uninitialized\", handled by seeding it to",
+              "the live balance on the first post-upgrade settle."
+            ],
+            "type": "u64"
           }
         ]
       }

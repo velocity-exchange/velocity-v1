@@ -73,7 +73,11 @@ import { startAnchor } from 'solana-bankrun';
 import { TestBulkAccountLoader } from '../../packages/sdk/src/accounts/testBulkAccountLoader';
 import { BankrunContextWrapper } from '../../packages/sdk/src/bankrun/bankrunConnection';
 import dotenv from 'dotenv';
-import { PYTH_LAZER_HEX_STRING_SOL, PYTH_STORAGE_DATA } from './pythLazerData';
+import {
+	PYTH_LAZER_HEX_STRING_SOL,
+	PYTH_LAZER_TS_SOL,
+	PYTH_STORAGE_DATA,
+} from './pythLazerData';
 import {
 	CustomBorshAccountsCoder,
 	CustomBorshCoder,
@@ -717,6 +721,9 @@ describe('LP Pool', () => {
 	});
 
 	it('can update constituent target weights', async () => {
+		// Pin the clock to the (frozen) fixture's timestamp so the on-chain max-staleness
+		// check accepts it; see PYTH_LAZER_MAX_STALENESS_SECONDS.
+		await bankrunContextWrapper.setTimestamp(PYTH_LAZER_TS_SOL);
 		await adminClient.postPythLazerOracleUpdate([6], PYTH_LAZER_HEX_STRING_SOL);
 		await adminClient.updatePerpMarketOracle(
 			0,

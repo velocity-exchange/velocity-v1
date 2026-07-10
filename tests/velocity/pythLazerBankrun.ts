@@ -20,6 +20,8 @@ import { initializeQuoteSpotMarket, mockUSDCMint } from './testHelpers';
 import {
 	PYTH_LAZER_HEX_STRING_MULTI,
 	PYTH_LAZER_HEX_STRING_SOL,
+	PYTH_LAZER_TS_MULTI,
+	PYTH_LAZER_TS_SOL,
 	PYTH_STORAGE_DATA,
 } from './pythLazerData';
 
@@ -99,6 +101,9 @@ describe('pyth lazer oracles', () => {
 		await velocityClient.subscribe();
 
 		await velocityClient.initializePythLazerOracle(feedId);
+		// Pin the clock to the (frozen) fixture's timestamp so the on-chain max-staleness
+		// check accepts it; see PYTH_LAZER_MAX_STALENESS_SECONDS.
+		await bankrunContextWrapper.setTimestamp(PYTH_LAZER_TS_SOL);
 		await velocityClient.postPythLazerOracleUpdate(
 			[feedId],
 			PYTH_LAZER_HEX_STRING_SOL
@@ -137,6 +142,7 @@ describe('pyth lazer oracles', () => {
 	});
 
 	it('crank single', async () => {
+		await bankrunContextWrapper.setTimestamp(PYTH_LAZER_TS_SOL);
 		await velocityClient.postPythLazerOracleUpdate(
 			[6],
 			PYTH_LAZER_HEX_STRING_SOL
@@ -156,6 +162,7 @@ describe('pyth lazer oracles', () => {
 	});
 
 	it('crank multi', async () => {
+		await bankrunContextWrapper.setTimestamp(PYTH_LAZER_TS_MULTI);
 		const tx = await velocityClient.postPythLazerOracleUpdate(
 			[1, 2, 6],
 			PYTH_LAZER_HEX_STRING_MULTI

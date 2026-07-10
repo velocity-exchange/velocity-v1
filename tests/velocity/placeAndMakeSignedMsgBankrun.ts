@@ -68,6 +68,7 @@ import { createHash } from 'crypto';
 import {
 	PYTH_LAZER_HEX_STRING_SOL,
 	PYTH_LAZER_HEX_STRING_SOL_LATER,
+	PYTH_LAZER_TS_SOL,
 	PYTH_STORAGE_DATA,
 } from './pythLazerData';
 
@@ -427,6 +428,13 @@ describe('place and make signedMsg order', () => {
 		const slot = new BN(
 			await bankrunContextWrapper.connection.toConnection().getSlot()
 		);
+
+		// Pin the clock to the (frozen) SOL fixture's timestamp so the on-chain max-staleness
+		// check accepts it (both the direct posts here and the crank ix bundled into the fill
+		// tx below). setTimestamp preserves the slot captured above. See
+		// PYTH_LAZER_MAX_STALENESS_SECONDS. The later SOL_LATER crank is monotonic-skipped
+		// (its timestamp precedes SOL's), so it needs no pin.
+		await bankrunContextWrapper.setTimestamp(PYTH_LAZER_TS_SOL);
 
 		// Switch the oracle over to using pyth lazer
 		await makerVelocityClient.initializePythLazerOracle(6);

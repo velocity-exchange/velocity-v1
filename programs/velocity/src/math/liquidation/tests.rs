@@ -567,6 +567,81 @@ mod calculate_cumulative_deposit_interest_delta_to_resolve_bankruptcy {
 
         assert_eq!(delta, 916666667);
     }
+
+    #[test]
+    fn loss_equal_to_total_deposits() {
+        // Uncapped delta would equal cumulative_deposit_interest exactly,
+        // zeroing it and breaking balance conversions that divide by it.
+        let loss = 100 * QUOTE_PRECISION;
+        let spot_market = SpotMarket {
+            deposit_balance: 100 * SPOT_BALANCE_PRECISION,
+            cumulative_deposit_interest: SPOT_CUMULATIVE_INTEREST_PRECISION,
+            decimals: 6,
+            ..SpotMarket::default()
+        };
+
+        let delta =
+            calculate_cumulative_deposit_interest_delta_to_resolve_bankruptcy(loss, &spot_market)
+                .unwrap();
+
+        assert_eq!(delta, SPOT_CUMULATIVE_INTEREST_PRECISION - 1);
+    }
+
+    #[test]
+    fn loss_one_above_total_deposits() {
+        // Uncapped delta would exceed cumulative_deposit_interest and
+        // underflow the subtraction in resolve_spot_bankruptcy.
+        let loss = 100 * QUOTE_PRECISION + 1;
+        let spot_market = SpotMarket {
+            deposit_balance: 100 * SPOT_BALANCE_PRECISION,
+            cumulative_deposit_interest: SPOT_CUMULATIVE_INTEREST_PRECISION,
+            decimals: 6,
+            ..SpotMarket::default()
+        };
+
+        let delta =
+            calculate_cumulative_deposit_interest_delta_to_resolve_bankruptcy(loss, &spot_market)
+                .unwrap();
+
+        assert_eq!(delta, SPOT_CUMULATIVE_INTEREST_PRECISION - 1);
+    }
+
+    #[test]
+    fn loss_just_below_total_deposits() {
+        // Cap must not fire when the loss still fits within total deposits.
+        let loss = 100 * QUOTE_PRECISION - 1;
+        let spot_market = SpotMarket {
+            deposit_balance: 100 * SPOT_BALANCE_PRECISION,
+            cumulative_deposit_interest: SPOT_CUMULATIVE_INTEREST_PRECISION,
+            decimals: 6,
+            ..SpotMarket::default()
+        };
+
+        let delta =
+            calculate_cumulative_deposit_interest_delta_to_resolve_bankruptcy(loss, &spot_market)
+                .unwrap();
+
+        assert_eq!(delta, SPOT_CUMULATIVE_INTEREST_PRECISION - 100);
+    }
+
+    #[test]
+    fn dust_deposit_large_loss() {
+        // A single dust deposit must not make the delta exceed the current
+        // cumulative interest (griefing-DoS regression).
+        let loss = 100 * QUOTE_PRECISION;
+        let spot_market = SpotMarket {
+            deposit_balance: SPOT_BALANCE_PRECISION / 1000,
+            cumulative_deposit_interest: SPOT_CUMULATIVE_INTEREST_PRECISION,
+            decimals: 6,
+            ..SpotMarket::default()
+        };
+
+        let delta =
+            calculate_cumulative_deposit_interest_delta_to_resolve_bankruptcy(loss, &spot_market)
+                .unwrap();
+
+        assert_eq!(delta, SPOT_CUMULATIVE_INTEREST_PRECISION - 1);
+    }
 }
 
 mod validate_transfer_satisfies_limit_price {

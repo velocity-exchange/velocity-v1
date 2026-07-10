@@ -9072,6 +9072,148 @@ pub mod resolve_spot_bankruptcy {
         // depositors lose exactly the socialized $60
         assert_eq!(deposit_token_amount, 940 * QUOTE_PRECISION);
     }
+
+    #[test]
+    pub fn resolve_spot_bankruptcy_loss_exceeds_total_deposits() {
+        // $100 bad debt, empty IF vault, and only a dust deposit ($0.001) in
+        // the market. The socialized loss exceeds total deposits, so the
+        // haircut must clamp: cumulative_deposit_interest floors at 1 instead
+        // of underflowing, the full loss is still recorded, and resolution
+        // succeeds (griefing-DoS regression: one dust deposit previously made
+        // every resolve_spot_bankruptcy call revert).
+        let now = 0_i64;
+        let slot = 0_u64;
+
+        let mut oracle_price = get_pyth_price(100, 6);
+        let oracle_price_key =
+            Pubkey::from_str("J83w4HKfqxwcq3BEMMkPFSppX3gqekLyLJBexebFVkix").unwrap();
+        create_anchor_account_info!(
+            oracle_price,
+            &oracle_price_key,
+            PythLazerOracle,
+            oracle_account_info
+        );
+        let mut oracle_map = OracleMap::load_one(&oracle_account_info, slot, None).unwrap();
+
+        let mut market = PerpMarket {
+            amm: AMM {
+                base_asset_reserve: 100 * AMM_RESERVE_PRECISION,
+                quote_asset_reserve: 100 * AMM_RESERVE_PRECISION,
+                sqrt_k: 100 * AMM_RESERVE_PRECISION,
+                peg_multiplier: 100 * PEG_PRECISION,
+                max_slippage_ratio: 50,
+                max_fill_reserve_fraction: 100,
+                base_asset_amount_with_amm: BASE_PRECISION_I128,
+                ..AMM::default()
+            },
+            margin_ratio_initial: 1000,
+            margin_ratio_maintenance: 500,
+            status: MarketStatus::Initialized,
+            liquidator_fee: LIQUIDATION_FEE_PRECISION / 100,
+            order_step_size: 10000000,
+            quote_asset_amount: -150 * QUOTE_PRECISION_I128,
+            base_asset_amount_long: 5 * BASE_PRECISION_I128,
+            base_asset_amount_short: -5 * BASE_PRECISION_I128,
+            oracle: oracle_price_key,
+            oracle_source: crate::state::oracle::OracleSource::PythLazer,
+            cumulative_funding_rate_long: 1000 * FUNDING_RATE_PRECISION_I128,
+            cumulative_funding_rate_short: -1000 * FUNDING_RATE_PRECISION_I128,
+            ..PerpMarket::default()
+        };
+        create_anchor_account_info!(market, PerpMarket, market_account_info);
+        let market_map = PerpMarketMap::load_one(&market_account_info, true).unwrap();
+
+        let mut spot_market = SpotMarket {
+            market_index: 0,
+            oracle_source: OracleSource::QuoteAsset,
+            cumulative_deposit_interest: SPOT_CUMULATIVE_INTEREST_PRECISION,
+            cumulative_borrow_interest: SPOT_CUMULATIVE_INTEREST_PRECISION,
+            decimals: 6,
+            initial_asset_weight: SPOT_WEIGHT_PRECISION,
+            deposit_balance: SPOT_BALANCE_PRECISION / 1000,
+            borrow_balance: 100 * SPOT_BALANCE_PRECISION,
+            historical_oracle_data: HistoricalOracleData::default_price(QUOTE_PRECISION_I64),
+            ..SpotMarket::default()
+        };
+        create_anchor_account_info!(spot_market, SpotMarket, spot_market_account_info);
+        let spot_market_map = SpotMarketMap::load_one(&spot_market_account_info, true).unwrap();
+
+        let mut user = User {
+            orders: get_orders(Order {
+                market_index: 0,
+                status: OrderStatus::Open,
+                order_type: OrderType::Limit,
+                direction: PositionDirection::Long,
+                base_asset_amount: BASE_PRECISION_U64,
+                slot: 0,
+                ..Order::default()
+            }),
+            perp_positions: [PerpPosition::default(); 8],
+            spot_positions: get_spot_positions(SpotPosition {
+                market_index: 0,
+                scaled_balance: 100 * SPOT_BALANCE_PRECISION_U64,
+                balance_type: SpotBalanceType::Borrow,
+                ..SpotPosition::default()
+            }),
+            status: UserStatus::Bankrupt as u8,
+            next_liquidation_id: 2,
+            ..User::default()
+        };
+
+        let mut liquidator = User {
+            spot_positions: get_spot_positions(SpotPosition {
+                market_index: 0,
+                balance_type: SpotBalanceType::Deposit,
+                scaled_balance: 50 * SPOT_BALANCE_PRECISION_U64,
+                ..SpotPosition::default()
+            }),
+            ..User::default()
+        };
+
+        let user_key = Pubkey::default();
+        let liquidator_key = Pubkey::default();
+
+        let mut expected_user = user;
+        expected_user.status = 0;
+        expected_user.spot_positions[0].scaled_balance = 0;
+        expected_user.spot_positions[0].cumulative_deposits = 100 * QUOTE_PRECISION_I64;
+        expected_user.total_social_loss = 100 * QUOTE_PRECISION as u64;
+
+        let mut expected_spot_market = spot_market;
+        expected_spot_market.borrow_balance = 0;
+        // haircut clamped: depositors are wiped but interest floors at 1
+        expected_spot_market.cumulative_deposit_interest = 1;
+        // the full $100 is still recorded even though deposits only covered $0.001
+        expected_spot_market.total_social_loss = 100 * QUOTE_PRECISION;
+        expected_spot_market.total_quote_social_loss = 100 * QUOTE_PRECISION;
+
+        // empty IF vault: nothing payable, the entire loss is socialized
+        let if_payment = resolve_spot_bankruptcy(
+            0,
+            &mut user,
+            &user_key,
+            &mut liquidator,
+            &liquidator_key,
+            &market_map,
+            &spot_market_map,
+            &mut oracle_map,
+            now,
+            0,
+        )
+        .unwrap();
+
+        assert_eq!(if_payment, 0);
+        assert_eq!(expected_user, user);
+        assert_eq!(expected_spot_market, *spot_market_map.get_ref(&0).unwrap());
+
+        let spot_market = spot_market_map.get_ref_mut(&0).unwrap();
+        let deposit_balance = spot_market.deposit_balance;
+        let deposit_token_amount =
+            get_token_amount(deposit_balance, &spot_market, &SpotBalanceType::Deposit).unwrap();
+
+        // remaining deposits redeem for ~0 tokens
+        assert_eq!(deposit_token_amount, 0);
+    }
 }
 
 pub mod set_user_status_to_being_liquidated {

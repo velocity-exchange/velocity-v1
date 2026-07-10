@@ -410,6 +410,7 @@ fn dlob_find_crosses_for_taker_order_full_fill() {
         direction: Direction::Long,
         market_index: 0,
         market_type: MarketType::Perp,
+        reduce_only: false,
     };
 
     let result = dlob.find_crosses_for_taker_order(slot, oracle_price, taker_order, None, None);
@@ -450,6 +451,7 @@ fn dlob_find_crosses_for_taker_order_partial_fill() {
         direction: Direction::Long,
         market_index: 0,
         market_type: MarketType::Perp,
+        reduce_only: false,
     };
 
     let result = dlob.find_crosses_for_taker_order(slot, oracle_price, taker_order, None, None);
@@ -482,6 +484,7 @@ fn dlob_find_crosses_for_taker_order_no_cross() {
         direction: Direction::Long,
         market_index: 0,
         market_type: MarketType::Perp,
+        reduce_only: false,
     };
 
     let result = dlob.find_crosses_for_taker_order(slot, oracle_price, taker_order, None, None);
@@ -566,6 +569,7 @@ fn dlob_find_crosses_for_taker_order_vamm_cross() {
         direction: Direction::Long,
         market_index: 0,
         market_type: MarketType::Perp,
+        reduce_only: false,
     };
 
     let result = dlob.find_crosses_for_taker_order(
@@ -581,15 +585,15 @@ fn dlob_find_crosses_for_taker_order_vamm_cross() {
     assert!(result.has_vamm_cross);
     assert!(result.is_partial);
 
-    // Test 2: Taker order below min_order_size but >= order_step_size — still a
-    // vamm cross. The floor is the step size (the weakest on-chain threshold;
-    // reduce-only orders may validly be below min_order_size).
+    // Test 2: Normal taker order below min_order_size does not report a vAMM
+    // cross; the program would reject it before fill.
     let taker_order_small = TakerOrder {
         price: taker_price, // Crosses vamm price
-        size: 5,            // Below min_order_size (10), above order_step_size (1)
+        size: 5,            // Below min_order_size (10)
         direction: Direction::Long,
         market_index: 0,
         market_type: MarketType::Perp,
+        reduce_only: false,
     };
 
     let result_small = dlob.find_crosses_for_taker_order(
@@ -601,8 +605,26 @@ fn dlob_find_crosses_for_taker_order_vamm_cross() {
     );
 
     assert_eq!(result_small.orders.len(), 0);
-    assert!(result_small.has_vamm_cross);
+    assert!(!result_small.has_vamm_cross);
     assert!(result_small.is_partial);
+
+    // Test 2b: Reduce-only taker order below min_order_size can still cross vAMM.
+    let taker_order_small_reduce_only = TakerOrder {
+        reduce_only: true,
+        ..taker_order_small
+    };
+
+    let result_small_reduce_only = dlob.find_crosses_for_taker_order(
+        slot,
+        oracle_price,
+        taker_order_small_reduce_only,
+        Some(&perp_market),
+        None,
+    );
+
+    assert_eq!(result_small_reduce_only.orders.len(), 0);
+    assert!(result_small_reduce_only.has_vamm_cross);
+    assert!(result_small_reduce_only.is_partial);
 
     // Test 3: Taker order with size == min_order_size — must have a vamm cross.
     // Regression: a strict `> min_order_size` floor made exactly-min-size orders
@@ -613,6 +635,7 @@ fn dlob_find_crosses_for_taker_order_vamm_cross() {
         direction: Direction::Long,
         market_index: 0,
         market_type: MarketType::Perp,
+        reduce_only: false,
     };
 
     let result_equal = dlob.find_crosses_for_taker_order(
@@ -634,31 +657,6 @@ fn dlob_find_crosses_for_taker_order_vamm_cross() {
     assert_eq!(result_no_market.orders.len(), 0);
     assert!(!result_no_market.has_vamm_cross);
     assert!(result_no_market.is_partial);
-
-    // Test 5: Taker order below order_step_size — no vamm cross (the one real floor)
-    let perp_market_big_step = PerpMarket {
-        order_step_size: 10,
-        ..perp_market
-    };
-    let taker_order_sub_step = TakerOrder {
-        price: taker_price, // Crosses vamm price
-        size: 5,            // Below order_step_size (10)
-        direction: Direction::Long,
-        market_index: 0,
-        market_type: MarketType::Perp,
-    };
-
-    let result_sub_step = dlob.find_crosses_for_taker_order(
-        slot,
-        oracle_price,
-        taker_order_sub_step,
-        Some(&perp_market_big_step),
-        None,
-    );
-
-    assert_eq!(result_sub_step.orders.len(), 0);
-    assert!(!result_sub_step.has_vamm_cross);
-    assert!(result_sub_step.is_partial);
 }
 
 #[test]
@@ -687,6 +685,7 @@ fn dlob_find_crosses_for_taker_order_floating_limit() {
         direction: Direction::Long,
         market_index: 0,
         market_type: MarketType::Perp,
+        reduce_only: false,
     };
 
     let result = dlob.find_crosses_for_taker_order(slot, oracle_price, taker_order, None, None);
@@ -728,6 +727,7 @@ fn dlob_find_crosses_for_taker_order_price_priority() {
         direction: Direction::Long,
         market_index: 0,
         market_type: MarketType::Perp,
+        reduce_only: false,
     };
 
     let result = dlob.find_crosses_for_taker_order(slot, oracle_price, taker_order, None, None);
@@ -1271,7 +1271,7 @@ fn dlob_find_crosses_for_auctions_comprehensive() {
 }
 
 #[test]
-fn dlob_find_crosses_for_auctions_vamm_step_size_floor() {
+fn dlob_find_crosses_for_auctions_vamm_reduce_only_min_size() {
     let _ = env_logger::try_init();
     let dlob = DLOB::default();
     let market_index = 0;
@@ -1307,7 +1307,7 @@ fn dlob_find_crosses_for_auctions_vamm_step_size_floor() {
             max_spread: 1000,
             ..Default::default()
         },
-        order_step_size: 20, // The vAMM-cross size floor
+        order_step_size: 1,
         order_tick_size: 1,
         market_stats: MarketStats {
             min_order_size: 20,
@@ -1340,13 +1340,13 @@ fn dlob_find_crosses_for_auctions_vamm_step_size_floor() {
     let limit_ask = create_test_order(1, OrderType::Limit, Direction::Short, 1000, 100, slot);
     dlob.insert_order(&Pubkey::new_unique(), slot, limit_ask);
 
-    // Insert a market bid with size >= order_step_size that should cross vamm
+    // Insert a normal market bid above min_order_size that should cross vamm
     let mut market_bid_large = create_test_order(
         2,
         OrderType::Market,
         Direction::Long,
         taker_price_i64, // Much higher than vamm ask price
-        25,              // Above order_step_size (20)
+        25,              // Above min_order_size (20)
         slot,
     );
     market_bid_large.auction_duration = 10;
@@ -1354,19 +1354,35 @@ fn dlob_find_crosses_for_auctions_vamm_step_size_floor() {
     market_bid_large.auction_end_price = taker_price_i64;
     dlob.insert_order(&Pubkey::new_unique(), slot, market_bid_large);
 
-    // Insert a market bid with size < order_step_size - should NOT cross vamm
+    // Insert a normal market bid below min_order_size - should NOT cross vamm
     let mut market_bid_small = create_test_order(
         3,
         OrderType::Market,
         Direction::Long,
         taker_price_i64, // Still crosses vamm price
-        15,              // Below order_step_size (20)
+        15,              // Below min_order_size (20)
         slot,
     );
     market_bid_small.auction_duration = 10;
     market_bid_small.auction_start_price = taker_price_i64;
     market_bid_small.auction_end_price = taker_price_i64;
     dlob.insert_order(&Pubkey::new_unique(), slot, market_bid_small);
+
+    // Same small size, but reduce-only: the program's min-size gate is waived,
+    // so DLOB should still surface the vAMM cross.
+    let mut market_bid_small_reduce_only = create_test_order(
+        4,
+        OrderType::Market,
+        Direction::Long,
+        taker_price_i64,
+        15,
+        slot,
+    );
+    market_bid_small_reduce_only.reduce_only = true;
+    market_bid_small_reduce_only.auction_duration = 10;
+    market_bid_small_reduce_only.auction_start_price = taker_price_i64;
+    market_bid_small_reduce_only.auction_end_price = taker_price_i64;
+    dlob.insert_order(&Pubkey::new_unique(), slot, market_bid_small_reduce_only);
 
     // Update L3 view before finding crosses
     if let Some(book) = dlob.markets.get(&MarketId::new(0, MarketType::Perp)) {
@@ -1383,8 +1399,8 @@ fn dlob_find_crosses_for_auctions_vamm_step_size_floor() {
         None,
     );
 
-    // Should find 2 crosses (both cross limit orders)
-    assert_eq!(crosses.crosses.len(), 2);
+    // Should find 3 crosses (all cross limit orders)
+    assert_eq!(crosses.crosses.len(), 3);
 
     // Find the cross for order 2 (large size)
     let cross_large = crosses
@@ -1392,7 +1408,7 @@ fn dlob_find_crosses_for_auctions_vamm_step_size_floor() {
         .iter()
         .find(|(meta, _)| meta.order_id == 2)
         .unwrap();
-    // Should have vamm cross since size (25) >= order_step_size (20)
+    // Should have vamm cross since size (25) >= min_order_size (20)
     assert!(cross_large.1.has_vamm_cross);
 
     // Find the cross for order 3 (small size)
@@ -1401,8 +1417,16 @@ fn dlob_find_crosses_for_auctions_vamm_step_size_floor() {
         .iter()
         .find(|(meta, _)| meta.order_id == 3)
         .unwrap();
-    // Should NOT have vamm cross since size (15) < order_step_size (20)
+    // Should NOT have vamm cross since size (15) < min_order_size (20)
     assert!(!cross_small.1.has_vamm_cross);
+
+    // Find the cross for order 4 (small reduce-only size)
+    let cross_small_reduce_only = crosses
+        .crosses
+        .iter()
+        .find(|(meta, _)| meta.order_id == 4)
+        .unwrap();
+    assert!(cross_small_reduce_only.1.has_vamm_cross);
 }
 
 #[test]
@@ -1709,6 +1733,7 @@ fn dlob_metadata_consistency_after_auction_expiry_and_removal() {
         direction: Direction::Short,
         market_index: 0,
         market_type: MarketType::Perp,
+        reduce_only: false,
     };
 
     let crosses =
@@ -1804,6 +1829,7 @@ fn dlob_metadata_consistency_limit_auction_expiry_and_removal() {
         direction: Direction::Long,
         market_index: 0,
         market_type: MarketType::Perp,
+        reduce_only: false,
     };
 
     let crosses =
@@ -1898,6 +1924,7 @@ fn dlob_metadata_consistency_floating_limit_auction_expiry_and_removal() {
         direction: Direction::Long,
         market_index: 0,
         market_type: MarketType::Perp,
+        reduce_only: false,
     };
 
     let crosses =
@@ -4258,26 +4285,40 @@ fn dlob_vamm_taker_ignores_non_crossing_orders() {
     assert!(crosses.vamm_taker_bid.is_none());
 }
 
-/// The size floor is `order_step_size` (the weakest on-chain threshold, which applies to
-/// reduce-only orders), inclusive — NOT `min_order_size`, which would drop small
-/// reduce-only closes that the program will happily fill.
+/// Resting orders use the same min-size distinction as placement validation:
+/// normal orders need `min_order_size`, while reduce-only orders may cross vAMM
+/// below that size.
 #[test]
-fn dlob_vamm_taker_size_floor_is_step_size() {
+fn dlob_vamm_taker_reduce_only_bypasses_min_size() {
     let _ = env_logger::try_init();
     let slot = 100;
-    let perp_market = vamm_taker_test_market(10); // step 10, fixture min_order_size 10
+    let perp_market = vamm_taker_test_market(1); // fixture min_order_size 10
 
-    // below step size: skipped
+    // normal order below min size: skipped
     let dlob = DLOB::default();
     let order = create_test_order(1, OrderType::Limit, Direction::Long, 1_000_200_000, 9, slot);
     dlob.insert_order(&Pubkey::new_unique(), slot, order);
     let crosses = vamm_taker_crosses(&dlob, &perp_market, slot);
     assert!(crosses.vamm_taker_ask.is_none());
 
-    // exactly step size: detected (inclusive)
+    // reduce-only order below min size: detected
+    let dlob = DLOB::default();
+    let mut order = create_test_order(1, OrderType::Limit, Direction::Long, 1_000_200_000, 9, slot);
+    order.reduce_only = true;
+    dlob.insert_order(&Pubkey::new_unique(), slot, order);
+    let crosses = vamm_taker_crosses(&dlob, &perp_market, slot);
+    assert_eq!(
+        crosses
+            .vamm_taker_ask
+            .expect("reduce-only small order detected")
+            .order_id,
+        1
+    );
+
+    // normal order exactly at min size: detected (inclusive)
     let dlob = DLOB::default();
     let order = create_test_order(
-        1,
+        2,
         OrderType::Limit,
         Direction::Long,
         1_000_200_000,
@@ -4289,9 +4330,9 @@ fn dlob_vamm_taker_size_floor_is_step_size() {
     assert_eq!(
         crosses
             .vamm_taker_ask
-            .expect("step-size order detected")
+            .expect("min-size order detected")
             .order_id,
-        1
+        2
     );
 }
 
@@ -4338,6 +4379,7 @@ fn dlob_queries_on_market_with_no_book_do_not_panic() {
         direction: Direction::Long,
         market_index,
         market_type: MarketType::Perp,
+        reduce_only: false,
     };
     let result = dlob.find_crosses_for_taker_order(slot, oracle_price, taker_order, None, None);
     assert!(result.orders.is_empty());

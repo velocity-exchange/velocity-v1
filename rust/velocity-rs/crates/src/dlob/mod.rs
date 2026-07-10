@@ -39,6 +39,10 @@ pub use util::OrderDelta;
 /// log target
 const TARGET: &str = "dlob";
 
+fn can_order_cross_vamm(size: u64, reduce_only: bool, min_order_size: u64) -> bool {
+    reduce_only || size >= min_order_size
+}
+
 type Direction = PositionDirection;
 type MetadataMap = DashMap<u64, OrderMetadata, FxBuildHasher>;
 type OrderEventMap = DashMap<u64, Vec<OrderEvent>, FxBuildHasher>;
@@ -884,7 +888,7 @@ impl DLOB {
         };
         let mut all_crosses = Vec::with_capacity(16);
 
-        let (vamm_bid, vamm_ask, vamm_step) = if let Some(m) = perp_market {
+        let (vamm_bid, vamm_ask, min_order_size) = if let Some(m) = perp_market {
             let r = m.amm.reserve_price().unwrap_or(0);
             (
                 m.amm
@@ -893,7 +897,7 @@ impl DLOB {
                 m.amm
                     .ask_price(r, m.amm.long_spread, m.amm.reference_price_offset)
                     .ok(),
-                m.order_step_size,
+                m.market_stats.min_order_size,
             )
         } else {
             (None, None, u64::MAX)
@@ -934,16 +938,20 @@ impl DLOB {
         // Covers both fill shapes: a post-only maker the AMM takes against, and a
         // non-post-only resting limit that takes against the AMM quote — the price
         // predicate is the same, the program dispatches on `post_only` at fill time.
-        // Crossing is inclusive, mirroring `do_orders_cross` (math/matching.rs); the
-        // size floor is `order_step_size`, the weakest on-chain threshold (applies to
-        // reduce-only orders) — the fill path re-validates with the exact one.
+        // Crossing is inclusive, mirroring `do_orders_cross` (math/matching.rs).
+        // Reduce-only orders bypass the program's min-order-size gate; normal
+        // orders must satisfy it. Do not use a separate vAMM min-size rule here.
         if let Some(best_ask) = resting_asks.first() {
-            if best_ask.size >= vamm_step && vamm_bid.is_some_and(|v| v >= best_ask.price) {
+            if can_order_cross_vamm(best_ask.size, best_ask.is_reduce_only(), min_order_size)
+                && vamm_bid.is_some_and(|v| v >= best_ask.price)
+            {
                 vamm_taker_bid = Some(best_ask.clone());
             }
         }
         if let Some(best_bid) = resting_bids.first() {
-            if best_bid.size >= vamm_step && vamm_ask.is_some_and(|v| v <= best_bid.price) {
+            if can_order_cross_vamm(best_bid.size, best_bid.is_reduce_only(), min_order_size)
+                && vamm_ask.is_some_and(|v| v <= best_bid.price)
+            {
                 vamm_taker_ask = Some(best_bid.clone());
             }
         }
@@ -959,12 +967,9 @@ impl DLOB {
                 taker_bid.size,
                 true,
                 resting_asks.iter().peekable(),
-                // Size floor is `order_step_size`, the weakest on-chain threshold
-                // (matching the resting-limit-vs-vAMM check above): a strict
-                // `> min_order_size` floor made exactly-min-size and small
-                // reduce-only orders permanently invisible to vAMM crossing.
                 |taker_price: u64, taker_size: u64| {
-                    taker_size >= vamm_step && vamm_ask.is_some_and(|v| taker_price >= v)
+                    can_order_cross_vamm(taker_size, taker_bid.is_reduce_only(), min_order_size)
+                        && vamm_ask.is_some_and(|v| taker_price >= v)
                 },
             );
 
@@ -986,9 +991,9 @@ impl DLOB {
                 taker_ask.size,
                 false,
                 resting_bids.iter().peekable(),
-                // Size floor mirrors the ask-side predicate above: `>= order_step_size`.
                 |taker_price: u64, taker_size: u64| {
-                    taker_size >= vamm_step && vamm_bid.is_some_and(|v| taker_price <= v)
+                    can_order_cross_vamm(taker_size, taker_ask.is_reduce_only(), min_order_size)
+                        && vamm_bid.is_some_and(|v| taker_price <= v)
                 },
             );
 
@@ -1080,12 +1085,9 @@ impl DLOB {
         let book = self.get_l3_snapshot_safe(taker_order.market_index, taker_order.market_type);
         let is_long = taker_order.direction == PositionDirection::Long;
         let depth = depth.unwrap_or(32);
-        // Size floor is `order_step_size`, the weakest on-chain threshold (the
-        // program's placement gate; reduce-only orders may validly be below
-        // `min_order_size`). A strict `> min_order_size` floor here made
-        // exactly-min-size and small reduce-only orders permanently invisible
-        // to vAMM crossing.
-        let vamm_step = perp_market.map(|p| p.order_step_size).unwrap_or(u64::MAX);
+        let min_order_size = perp_market
+            .map(|p| p.market_stats.min_order_size)
+            .unwrap_or(u64::MAX);
 
         if is_long {
             let vamm_price = perp_market
@@ -1098,7 +1100,8 @@ impl DLOB {
                 .unwrap_or(u64::MAX);
             // crossing is inclusive, mirroring the on-chain `do_orders_cross`
             let has_vamm_cross = |taker_price: u64, taker_size: u64| {
-                taker_size >= vamm_step && taker_price >= vamm_price
+                can_order_cross_vamm(taker_size, taker_order.reduce_only, min_order_size)
+                    && taker_price >= vamm_price
             };
             match book {
                 Some(book) => self.find_crosses_for_taker_order_inner(
@@ -1131,7 +1134,8 @@ impl DLOB {
                 .unwrap_or(u64::MIN);
             // crossing is inclusive, mirroring the on-chain `do_orders_cross`
             let has_vamm_cross = |taker_price: u64, taker_size: u64| {
-                taker_size >= vamm_step && taker_price <= vamm_price
+                can_order_cross_vamm(taker_size, taker_order.reduce_only, min_order_size)
+                    && taker_price <= vamm_price
             };
             match book {
                 Some(book) => self.find_crosses_for_taker_order_inner(

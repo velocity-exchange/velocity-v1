@@ -7445,19 +7445,22 @@ pub mod resolve_perp_bankruptcy {
 
     use crate::controller::funding::settle_funding_payment;
     use crate::controller::liquidation::resolve_perp_bankruptcy;
+    use crate::controller::perp_pools::sweep_market_fees;
     use crate::controller::position::PositionDirection;
     use crate::create_anchor_account_info;
     use crate::math::constants::{
         AMM_RESERVE_PRECISION, BASE_PRECISION_I128, BASE_PRECISION_I64, BASE_PRECISION_U64,
         FUNDING_RATE_PRECISION_I128, FUNDING_RATE_PRECISION_I64, LIQUIDATION_FEE_PRECISION,
-        PEG_PRECISION, QUOTE_PRECISION, QUOTE_PRECISION_I128, QUOTE_PRECISION_I64,
-        QUOTE_PRECISION_U64, QUOTE_SPOT_MARKET_INDEX, SPOT_BALANCE_PRECISION,
+        PEG_PRECISION, PERCENTAGE_PRECISION_U32, QUOTE_PRECISION, QUOTE_PRECISION_I128,
+        QUOTE_PRECISION_I64, QUOTE_PRECISION_U64, QUOTE_SPOT_MARKET_INDEX, SPOT_BALANCE_PRECISION,
         SPOT_BALANCE_PRECISION_U64, SPOT_CUMULATIVE_INTEREST_PRECISION, SPOT_WEIGHT_PRECISION,
     };
     use crate::state::market_status::MarketStatus;
     use crate::state::oracle::{HistoricalOracleData, OracleSource};
     use crate::state::oracle_map::OracleMap;
-    use crate::state::perp_market::{FeeLedger, InsuranceClaim, PerpMarket, PoolBalance, AMM};
+    use crate::state::perp_market::{
+        FeeLedger, InsuranceClaim, MarketStats, PerpMarket, PoolBalance, AMM,
+    };
     use crate::state::perp_market_map::PerpMarketMap;
     use crate::state::pyth_lazer_oracle::PythLazerOracle;
     use crate::state::spot_market::{SpotBalanceType, SpotMarket};
@@ -8622,6 +8625,297 @@ pub mod resolve_perp_bankruptcy {
             50 * QUOTE_PRECISION_I64 as u128
         );
         assert_eq!(expected_market, market_after);
+    }
+
+    /// The OI-scaled floor defeats a sweep front-run of a pending
+    /// bankruptcy: with `bankruptcy_if_floor_pct` covering the loss, a
+    /// permissionless `sweep_market_fees` fired between the bankruptcy and
+    /// its resolution leaves the pending IF tranche intact, so tranche 1
+    /// still fully absorbs the loss — zero social loss, funding untouched.
+    #[test]
+    pub fn bankruptcy_if_floor_survives_sweep_front_run() {
+        let now = 0_i64;
+        let slot = 0_u64;
+
+        let mut oracle_price = get_pyth_price(100, 6);
+        let oracle_price_key =
+            Pubkey::from_str("J83w4HKfqxwcq3BEMMkPFSppX3gqekLyLJBexebFVkix").unwrap();
+        create_anchor_account_info!(
+            oracle_price,
+            &oracle_price_key,
+            PythLazerOracle,
+            oracle_account_info
+        );
+        let mut oracle_map = OracleMap::load_one(&oracle_account_info, slot, None).unwrap();
+
+        // OI = 5 base at a $100 TWAP -> 500 QUOTE notional; 30% floor = 150,
+        // covering the full accrued pending IF fee
+        let mut market = PerpMarket {
+            amm: AMM {
+                base_asset_reserve: 100 * AMM_RESERVE_PRECISION,
+                quote_asset_reserve: 100 * AMM_RESERVE_PRECISION,
+                sqrt_k: 100 * AMM_RESERVE_PRECISION,
+                peg_multiplier: 100 * PEG_PRECISION,
+                max_slippage_ratio: 50,
+                max_fill_reserve_fraction: 100,
+                base_asset_amount_with_amm: BASE_PRECISION_I128,
+                ..AMM::default()
+            },
+            fee_ledger: FeeLedger {
+                pending_if_fee: 150 * QUOTE_PRECISION_I64 as u128,
+                ..FeeLedger::default()
+            },
+            pnl_pool: PoolBalance {
+                scaled_balance: 200 * QUOTE_PRECISION * SPOT_BALANCE_PRECISION,
+                market_index: QUOTE_SPOT_MARKET_INDEX,
+                ..PoolBalance::default()
+            },
+            bankruptcy_if_floor_pct: 3 * PERCENTAGE_PRECISION_U32 / 10, // 30%
+            market_stats: MarketStats {
+                historical_oracle_data: HistoricalOracleData {
+                    last_oracle_price_twap: 100 * PRICE_PRECISION_I64,
+                    ..HistoricalOracleData::default()
+                },
+                ..MarketStats::default()
+            },
+            margin_ratio_initial: 1000,
+            margin_ratio_maintenance: 500,
+            status: MarketStatus::Initialized,
+            liquidator_fee: LIQUIDATION_FEE_PRECISION / 100,
+            number_of_users: 1,
+            order_step_size: 10000000,
+            quote_asset_amount: -150 * QUOTE_PRECISION_I128,
+            base_asset_amount_long: 5 * BASE_PRECISION_I128,
+            base_asset_amount_short: -5 * BASE_PRECISION_I128,
+            oracle: oracle_price_key,
+            oracle_source: crate::state::oracle::OracleSource::PythLazer,
+            cumulative_funding_rate_long: 1000 * FUNDING_RATE_PRECISION_I128,
+            cumulative_funding_rate_short: -1000 * FUNDING_RATE_PRECISION_I128,
+            ..PerpMarket::default()
+        };
+        create_anchor_account_info!(market, PerpMarket, market_account_info);
+        let market_map = PerpMarketMap::load_one(&market_account_info, true).unwrap();
+
+        let mut spot_market = SpotMarket {
+            market_index: 0,
+            deposit_balance: 400 * QUOTE_PRECISION * SPOT_BALANCE_PRECISION,
+            oracle_source: OracleSource::QuoteAsset,
+            cumulative_deposit_interest: SPOT_CUMULATIVE_INTEREST_PRECISION,
+            cumulative_borrow_interest: SPOT_CUMULATIVE_INTEREST_PRECISION,
+            decimals: 6,
+            initial_asset_weight: SPOT_WEIGHT_PRECISION,
+            ..SpotMarket::default()
+        };
+        create_anchor_account_info!(spot_market, SpotMarket, spot_market_account_info);
+        let spot_market_map = SpotMarketMap::load_one(&spot_market_account_info, true).unwrap();
+
+        let mut user = User {
+            perp_positions: get_positions(PerpPosition {
+                market_index: 0,
+                base_asset_amount: 0,
+                quote_asset_amount: -100 * QUOTE_PRECISION_I64,
+                quote_entry_amount: -100 * QUOTE_PRECISION_I64,
+                quote_break_even_amount: -100 * QUOTE_PRECISION_I64,
+                ..PerpPosition::default()
+            }),
+            spot_positions: [SpotPosition::default(); 8],
+            status: UserStatus::Bankrupt as u8,
+            next_liquidation_id: 2,
+            ..User::default()
+        };
+
+        let mut liquidator = User {
+            spot_positions: get_spot_positions(SpotPosition {
+                market_index: 0,
+                balance_type: SpotBalanceType::Deposit,
+                scaled_balance: 50 * SPOT_BALANCE_PRECISION_U64,
+                ..SpotPosition::default()
+            }),
+            ..User::default()
+        };
+
+        let user_key = Pubkey::default();
+        let liquidator_key = Pubkey::default();
+
+        // attacker front-runs the resolution with a permissionless sweep:
+        // the floor covers the whole pending IF fee, nothing may leave
+        {
+            let mut market = market_map.get_ref_mut(&0).unwrap();
+            let mut spot_market = spot_market_map.get_ref_mut(&0).unwrap();
+            let (if_swept, _, _) =
+                sweep_market_fees(&mut market, &mut spot_market, 0, now, false).unwrap();
+            assert_eq!(if_swept, 0);
+            assert_eq!(
+                market.fee_ledger.pending_if_fee,
+                150 * QUOTE_PRECISION_I64 as u128
+            );
+        }
+
+        resolve_perp_bankruptcy(
+            0,
+            &mut user,
+            &user_key,
+            &mut liquidator,
+            &liquidator_key,
+            &market_map,
+            &spot_market_map,
+            &mut oracle_map,
+            now,
+            0,
+        )
+        .unwrap();
+
+        // tranche 1 fully absorbed the loss despite the sweep attempt
+        let market_after = market_map.get_ref(&0).unwrap().clone();
+        assert_eq!(
+            market_after.fee_ledger.pending_if_fee,
+            50 * QUOTE_PRECISION_I64 as u128
+        );
+        assert_eq!(market_after.total_social_loss, 0);
+        assert_eq!(
+            market_after.cumulative_funding_rate_long,
+            1000 * FUNDING_RATE_PRECISION_I128
+        );
+        assert_eq!(
+            market_after.cumulative_funding_rate_short,
+            -1000 * FUNDING_RATE_PRECISION_I128
+        );
+        assert_eq!(user.status, 0);
+        assert_eq!(user.perp_positions[0].quote_asset_amount, 0);
+    }
+
+    /// Control leg for the test above: with the floor disabled (the pre-fix
+    /// behavior, and what legacy accounts read until the admin sets a pct),
+    /// the same front-running sweep clears the pending IF tranche and the
+    /// identical loss is socialized through cumulative funding instead.
+    #[test]
+    pub fn bankruptcy_if_floor_disabled_sweep_socializes_loss() {
+        let now = 0_i64;
+        let slot = 0_u64;
+
+        let mut oracle_price = get_pyth_price(100, 6);
+        let oracle_price_key =
+            Pubkey::from_str("J83w4HKfqxwcq3BEMMkPFSppX3gqekLyLJBexebFVkix").unwrap();
+        create_anchor_account_info!(
+            oracle_price,
+            &oracle_price_key,
+            PythLazerOracle,
+            oracle_account_info
+        );
+        let mut oracle_map = OracleMap::load_one(&oracle_account_info, slot, None).unwrap();
+
+        let mut market = PerpMarket {
+            amm: AMM {
+                base_asset_reserve: 100 * AMM_RESERVE_PRECISION,
+                quote_asset_reserve: 100 * AMM_RESERVE_PRECISION,
+                sqrt_k: 100 * AMM_RESERVE_PRECISION,
+                max_slippage_ratio: 50,
+                max_fill_reserve_fraction: 100,
+                peg_multiplier: 100 * PEG_PRECISION,
+                base_asset_amount_with_amm: BASE_PRECISION_I128,
+                ..AMM::default()
+            },
+            fee_ledger: FeeLedger {
+                pending_if_fee: 150 * QUOTE_PRECISION_I64 as u128,
+                ..FeeLedger::default()
+            },
+            pnl_pool: PoolBalance {
+                scaled_balance: 200 * QUOTE_PRECISION * SPOT_BALANCE_PRECISION,
+                market_index: QUOTE_SPOT_MARKET_INDEX,
+                ..PoolBalance::default()
+            },
+            bankruptcy_if_floor_pct: 0,
+            margin_ratio_initial: 1000,
+            margin_ratio_maintenance: 500,
+            status: MarketStatus::Initialized,
+            liquidator_fee: LIQUIDATION_FEE_PRECISION / 100,
+            number_of_users: 1,
+            order_step_size: 10000000,
+            quote_asset_amount: -150 * QUOTE_PRECISION_I128,
+            base_asset_amount_long: 5 * BASE_PRECISION_I128,
+            base_asset_amount_short: -5 * BASE_PRECISION_I128,
+            oracle: oracle_price_key,
+            oracle_source: crate::state::oracle::OracleSource::PythLazer,
+            cumulative_funding_rate_long: 1000 * FUNDING_RATE_PRECISION_I128,
+            cumulative_funding_rate_short: -1000 * FUNDING_RATE_PRECISION_I128,
+            ..PerpMarket::default()
+        };
+        create_anchor_account_info!(market, PerpMarket, market_account_info);
+        let market_map = PerpMarketMap::load_one(&market_account_info, true).unwrap();
+
+        let mut spot_market = SpotMarket {
+            market_index: 0,
+            deposit_balance: 400 * QUOTE_PRECISION * SPOT_BALANCE_PRECISION,
+            oracle_source: OracleSource::QuoteAsset,
+            cumulative_deposit_interest: SPOT_CUMULATIVE_INTEREST_PRECISION,
+            cumulative_borrow_interest: SPOT_CUMULATIVE_INTEREST_PRECISION,
+            decimals: 6,
+            initial_asset_weight: SPOT_WEIGHT_PRECISION,
+            ..SpotMarket::default()
+        };
+        create_anchor_account_info!(spot_market, SpotMarket, spot_market_account_info);
+        let spot_market_map = SpotMarketMap::load_one(&spot_market_account_info, true).unwrap();
+
+        let mut user = User {
+            perp_positions: get_positions(PerpPosition {
+                market_index: 0,
+                base_asset_amount: 0,
+                quote_asset_amount: -100 * QUOTE_PRECISION_I64,
+                quote_entry_amount: -100 * QUOTE_PRECISION_I64,
+                quote_break_even_amount: -100 * QUOTE_PRECISION_I64,
+                ..PerpPosition::default()
+            }),
+            spot_positions: [SpotPosition::default(); 8],
+            status: UserStatus::Bankrupt as u8,
+            next_liquidation_id: 2,
+            ..User::default()
+        };
+
+        let mut liquidator = User {
+            spot_positions: get_spot_positions(SpotPosition {
+                market_index: 0,
+                balance_type: SpotBalanceType::Deposit,
+                scaled_balance: 50 * SPOT_BALANCE_PRECISION_U64,
+                ..SpotPosition::default()
+            }),
+            ..User::default()
+        };
+
+        let user_key = Pubkey::default();
+        let liquidator_key = Pubkey::default();
+
+        // no floor: the front-running sweep drains the entire tranche
+        {
+            let mut market = market_map.get_ref_mut(&0).unwrap();
+            let mut spot_market = spot_market_map.get_ref_mut(&0).unwrap();
+            let (if_swept, _, _) =
+                sweep_market_fees(&mut market, &mut spot_market, 0, now, false).unwrap();
+            assert_eq!(if_swept, 150 * QUOTE_PRECISION);
+            assert_eq!(market.fee_ledger.pending_if_fee, 0);
+        }
+
+        resolve_perp_bankruptcy(
+            0,
+            &mut user,
+            &user_key,
+            &mut liquidator,
+            &liquidator_key,
+            &market_map,
+            &spot_market_map,
+            &mut oracle_map,
+            now,
+            0,
+        )
+        .unwrap();
+
+        // with no tranche left, the whole loss socializes: counterparties pay
+        let market_after = market_map.get_ref(&0).unwrap().clone();
+        assert_eq!(
+            market_after.total_social_loss,
+            100 * QUOTE_PRECISION_I64 as u128
+        );
+        assert!(market_after.cumulative_funding_rate_long > 1000 * FUNDING_RATE_PRECISION_I128);
+        assert!(market_after.cumulative_funding_rate_short < -1000 * FUNDING_RATE_PRECISION_I128);
     }
 
     /// Clawing back a provision that was never tokenized is counter-only:

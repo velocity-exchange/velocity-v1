@@ -1138,6 +1138,8 @@ export type PerpMarketAccount = {
 	protocolLiquidationFee: number;
 	/** QUOTE_PRECISION (1e6); pnl-pool retention buffer the fee-sweep leaves untouched above `max(net_user_pnl, 0)` */
 	feePoolBufferTarget: BN;
+	/** PERCENTAGE_PRECISION (1e6 = 100%); fraction of OI notional (at the oracle TWAP) the sweep leaves behind in `feeLedger.pendingIfFee` as a standing bankruptcy first-loss tranche; 0 disables */
+	bankruptcyIfFloorPct: number;
 	/** MARGIN_PRECISION (1e4); scales margin ratio up for large positions */
 	imfFactor: number;
 	/** MARGIN_PRECISION (1e4); discounts positive-unrealized-pnl asset weight for large positions */

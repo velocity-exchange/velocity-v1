@@ -195,6 +195,10 @@ describe('protocol fees', () => {
 			MARKET_INDEX,
 			bufferTarget
 		);
+		// disable the bankruptcy IF floor (init default 10 bps of OI notional)
+		// so this test can assert a FULL drain; bankruptcyIfFloor.ts covers
+		// the floor-active behavior
+		await velocityClient.updatePerpMarketBankruptcyIfFloorPct(MARKET_INDEX, 0);
 
 		// seed the pnl pool with real tokens — the sweep's source is the pnl
 		// pool (where fee value lands as fills settle), never the AMM's pools

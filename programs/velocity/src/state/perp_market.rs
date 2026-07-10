@@ -11,9 +11,10 @@ use crate::{
     math::{
         casting::Cast,
         constants::{
-            AMM_TO_QUOTE_PRECISION_RATIO, DEFAULT_REVENUE_SINCE_LAST_FUNDING_SPREAD_RETREAT,
-            FUNDING_RATE_BUFFER_I128, FUNDING_RATE_OFFSET_PERCENTAGE, LIQUIDATION_FEE_PRECISION,
-            MARGIN_PRECISION, MARGIN_PRECISION_U128, MAX_LIQUIDATION_MULTIPLIER,
+            AMM_TO_QUOTE_PRECISION_RATIO, BASE_PRECISION,
+            DEFAULT_REVENUE_SINCE_LAST_FUNDING_SPREAD_RETREAT, FUNDING_RATE_BUFFER_I128,
+            FUNDING_RATE_OFFSET_PERCENTAGE, LIQUIDATION_FEE_PRECISION, MARGIN_PRECISION,
+            MARGIN_PRECISION_U128, MAX_LIQUIDATION_MULTIPLIER, PERCENTAGE_PRECISION,
             PERCENTAGE_PRECISION_I128, PERCENTAGE_PRECISION_I64, PERCENTAGE_PRECISION_U32,
             PERCENTAGE_PRECISION_U64, PRICE_PRECISION_I128, SPOT_WEIGHT_PRECISION,
         },
@@ -410,12 +411,18 @@ pub struct PerpMarket {
     /// the override for the state.min_perp_auction_duration
     /// 0 is no override, -1 is disable speed bump, 1-100 is literal speed bump
     pub oracle_low_risk_slot_delay_override: i8,
-    /// Trailing padding so `market_stats` lands at the offset Rust naturally
-    /// computes via `repr(C)` alignment and the `(SIZE - 8) % 16 == 0`
-    /// invariant holds. (32 bytes moved into `fee_ledger` as
-    /// `amm_protocol_fees_received` and then `pending_amm_provision` joined
-    /// it, keeping `market_stats` fixed.)
-    pub padding: [u8; 4],
+    /// Floor on the unswept IF-fee carveout, as a percentage of open-interest
+    /// notional (PERCENTAGE_PRECISION; 0 disables). The fee sweep's IF drain
+    /// leaves `pending_if_fee` at (at least) this floor, so a standing
+    /// first-loss tranche is always available to `resolve_perp_bankruptcy` —
+    /// a permissionless sweep (or the inline sweep on any pnl settle) cannot
+    /// drain the tranche below it ahead of a bankruptcy resolution. Notional
+    /// is valued at the market's own oracle TWAP so a manipulated spot print
+    /// can't crush the floor. Occupies the former 4-byte trailing padding
+    /// before `market_stats` (same offset/alignment on all targets), so
+    /// existing accounts read 0 = disabled until the admin sets it;
+    /// new markets initialize to `DEFAULT_BANKRUPTCY_IF_FLOOR_PCT`.
+    pub bankruptcy_if_floor_pct: u32,
     /// Market-wide stats shared across all makers: mark/oracle TWAPs, std,
     /// volume, intensity, mm-oracle snapshot, `historical_oracle_data`,
     /// `last_oracle_normalised_price`, `last_oracle_valid`. Writers (e.g.
@@ -499,7 +506,7 @@ impl Default for PerpMarket {
             oracle_source: OracleSource::default(),
             oracle_slot_delay_override: -1,
             oracle_low_risk_slot_delay_override: 0,
-            padding: [0; 4],
+            bankruptcy_if_floor_pct: 0,
             market_stats: MarketStats::default(),
             _padding_align_amm: [0; 8],
             amm: AMM::default(),
@@ -803,6 +810,29 @@ impl PerpMarket {
             .abs()
             .max(self.base_asset_amount_short.abs())
             .unsigned_abs()
+    }
+
+    /// The `pending_if_fee` floor the sweep's IF drain must leave behind:
+    /// `bankruptcy_if_floor_pct` of open-interest notional, valued at the
+    /// market's oracle TWAP (manipulation-resistant; no live oracle needed).
+    /// precision: QUOTE_PRECISION
+    pub fn get_bankruptcy_if_floor(&self) -> VelocityResult<u128> {
+        if self.bankruptcy_if_floor_pct == 0 {
+            return Ok(0);
+        }
+
+        let oracle_price_twap = self
+            .market_stats
+            .historical_oracle_data
+            .last_oracle_price_twap
+            .max(0)
+            .cast::<u128>()?;
+
+        self.get_open_interest()
+            .safe_mul(oracle_price_twap)?
+            .safe_div(BASE_PRECISION)?
+            .safe_mul(self.bankruptcy_if_floor_pct.cast()?)?
+            .safe_div(PERCENTAGE_PRECISION)
     }
 
     pub fn get_market_depth_for_funding_rate(&self) -> VelocityResult<u64> {

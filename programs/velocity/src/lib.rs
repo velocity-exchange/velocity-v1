@@ -1505,6 +1505,13 @@ pub mod velocity {
         handle_update_perp_market_fee_pool_buffer_target(ctx, fee_pool_buffer_target)
     }
 
+    pub fn update_perp_market_bankruptcy_if_floor_pct(
+        ctx: Context<AdminUpdatePerpMarket>,
+        bankruptcy_if_floor_pct: u32,
+    ) -> Result<()> {
+        handle_update_perp_market_bankruptcy_if_floor_pct(ctx, bankruptcy_if_floor_pct)
+    }
+
     pub fn update_spot_market_fee_adjustment(
         ctx: Context<AdminUpdateSpotMarket>,
         fee_adjustment: i16,

@@ -94,6 +94,23 @@ impl OrderParams {
             return Ok(false);
         }
 
+        let is_signed_msg_non_tail_mkt = is_signed_msg
+            && perp_market
+                .contract_tier
+                .is_as_safe_as_contract(&ContractTier::B);
+
+        if is_signed_msg_non_tail_mkt
+            && self.auction_duration.is_some()
+            && self.auction_start_price.is_some()
+            && self.auction_end_price.is_some()
+        {
+            // Signed-message limit orders also carry user-approved auction
+            // parameters. On A/B markets, preserve fully specified auctions so a
+            // crossing limit can choose a short/aggressive fill path; validation
+            // and the limit/oracle-offset price remain the hard bounds.
+            return Ok(false);
+        }
+
         let auction_start_price_offset =
             OrderParams::get_perp_baseline_start_price_offset(perp_market, self.direction)?;
         let new_auction_start_price = oracle_price.safe_add(auction_start_price_offset)?;
@@ -385,6 +402,20 @@ impl OrderParams {
 
             return Ok(true);
         }
+
+        let is_signed_msg_non_tail_mkt = is_signed_msg
+            && perp_market
+                .contract_tier
+                .is_as_safe_as_contract(&ContractTier::B);
+
+        if is_signed_msg_non_tail_mkt {
+            // Signed-message orders carry user-approved auction parameters. On
+            // A/B markets, leave fully specified auctions to the client so it can
+            // choose fast/aggressive fills; validation and user price limits are
+            // still enforced when the order is built.
+            return Ok(false);
+        }
+
         // only update auction start price if the contract tier isn't Isolated
         if perp_market.can_sanitize_market_order_auctions() {
             let (new_start_price_offset, new_end_price_offset) =

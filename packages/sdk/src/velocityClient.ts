@@ -12381,8 +12381,10 @@ export class VelocityClient {
 
 	/**
 	 * Starts the unstaking cooldown for this wallet's insurance fund stake in `marketIndex`, locking
-	 * in the number of IF shares corresponding to `amount` at the current share price. The actual
-	 * withdrawal must be completed with `removeInsuranceFundStake` after
+	 * in the number of IF shares corresponding to `amount` at the current share price. Any revenue
+	 * already due to the insurance fund is settled first (mirroring `addInsuranceFundStake`), so the
+	 * frozen exit value includes the staker's share of it rather than forfeiting it to the remaining
+	 * stakers. The actual withdrawal must be completed with `removeInsuranceFundStake` after
 	 * `spotMarket.insuranceFund.unstakingPeriod` seconds have elapsed; only one request may be
 	 * in-flight per stake account (`cancelRequestRemoveInsuranceFundStake` to reset). A caller may
 	 * only act on their own stake account.
@@ -12404,6 +12406,16 @@ export class VelocityClient {
 			marketIndex
 		);
 
+		const remainingAccounts: AccountMeta[] = [];
+		this.addTokenMintToRemainingAccounts(spotMarketAccount, remainingAccounts);
+		if (this.isTransferHook(spotMarketAccount)) {
+			await this.addExtraAccountMetasToRemainingAccounts(
+				spotMarketAccount.mint,
+				remainingAccounts
+			);
+		}
+
+		const tokenProgram = this.getTokenProgramForSpotMarket(spotMarketAccount);
 		const ix = await (
 			this.program.instruction as any
 		).requestRemoveInsuranceFundStake(marketIndex, amount, {
@@ -12416,8 +12428,12 @@ export class VelocityClient {
 					this.wallet.publicKey // only allow payer to request remove own insurance fund stake account
 				),
 				authority: this.wallet.publicKey,
+				spotMarketVault: spotMarketAccount.vault,
 				insuranceFundVault: spotMarketAccount.insuranceFund.vault,
+				velocitySigner: this.getSignerPublicKey(),
+				tokenProgram,
 			},
+			remainingAccounts,
 		});
 
 		const tx = await this.buildTransaction(ix, txParams);

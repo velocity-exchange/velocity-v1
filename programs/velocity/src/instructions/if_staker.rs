@@ -149,15 +149,20 @@ pub fn handle_add_insurance_fund_stake<'c: 'info, 'info>(
     Ok(())
 }
 
-pub fn handle_request_remove_insurance_fund_stake(
-    ctx: Context<RequestRemoveInsuranceFundStake>,
+pub fn handle_request_remove_insurance_fund_stake<'c: 'info, 'info>(
+    ctx: Context<'info, RequestRemoveInsuranceFundStake<'info>>,
     market_index: u16,
     amount: u64,
 ) -> Result<()> {
     let clock = Clock::get()?;
+    let now = clock.unix_timestamp;
     let insurance_fund_stake = &mut load_mut!(ctx.accounts.insurance_fund_stake)?;
     let user_stats = &mut load_mut!(ctx.accounts.user_stats)?;
     let spot_market = &mut load_mut!(ctx.accounts.spot_market)?;
+    let state = ctx.accounts.state.load()?;
+
+    let remaining_accounts_iter = &mut ctx.remaining_accounts.iter().peekable();
+    let mint = get_token_mint(remaining_accounts_iter)?;
 
     validate!(
         !spot_market.is_insurance_fund_operation_paused(InsuranceFundOperation::RequestRemove),
@@ -176,6 +181,48 @@ pub fn handle_request_remove_insurance_fund_stake(
         ErrorCode::IFWithdrawRequestInProgress,
         "Withdraw request is already in progress"
     )?;
+
+    // Settle any already-due revenue into the IF vault before freezing the exit
+    // value, mirroring the add path. Otherwise the frozen `last_withdraw_request_value`
+    // would exclude revenue the staker was already entitled to at request time, and a
+    // later public settle between request and remove would shift that share to the
+    // remaining stakers. Revenue accruing *after* this point is still (intentionally)
+    // excluded by the freeze — that is the escrow tradeoff, not this bug.
+    {
+        if spot_market.has_transfer_hook() {
+            controller::insurance::attempt_settle_revenue_to_insurance_fund(
+                &ctx.accounts.spot_market_vault,
+                &ctx.accounts.insurance_fund_vault,
+                spot_market,
+                now,
+                &ctx.accounts.token_program,
+                &ctx.accounts.velocity_signer,
+                &state,
+                &mint,
+                Some(&mut remaining_accounts_iter.clone()),
+            )?;
+        } else {
+            controller::insurance::attempt_settle_revenue_to_insurance_fund(
+                &ctx.accounts.spot_market_vault,
+                &ctx.accounts.insurance_fund_vault,
+                spot_market,
+                now,
+                &ctx.accounts.token_program,
+                &ctx.accounts.velocity_signer,
+                &state,
+                &mint,
+                None,
+            )?;
+        };
+
+        // reload the vault balances so they're up-to-date
+        ctx.accounts.spot_market_vault.reload()?;
+        ctx.accounts.insurance_fund_vault.reload()?;
+        math::spot_withdraw::validate_spot_market_vault_amount(
+            spot_market,
+            ctx.accounts.spot_market_vault.amount,
+        )?;
+    }
 
     let n_shares = math::insurance::vault_amount_to_if_shares(
         amount,
@@ -205,7 +252,7 @@ pub fn handle_request_remove_insurance_fund_stake(
 }
 
 pub fn handle_cancel_request_remove_insurance_fund_stake(
-    ctx: Context<RequestRemoveInsuranceFundStake>,
+    ctx: Context<CancelRequestRemoveInsuranceFundStake>,
     market_index: u16,
 ) -> Result<()> {
     let clock = Clock::get()?;
@@ -391,6 +438,47 @@ pub struct AddInsuranceFundStake<'info> {
 #[derive(Accounts)]
 #[instruction(market_index: u16,)]
 pub struct RequestRemoveInsuranceFundStake<'info> {
+    pub state: AccountLoader<'info, State>,
+    #[account(
+        mut,
+        seeds = [b"spot_market", market_index.to_le_bytes().as_ref()],
+        bump
+    )]
+    pub spot_market: AccountLoader<'info, SpotMarket>,
+    #[account(
+        mut,
+        has_one = authority,
+    )]
+    pub insurance_fund_stake: AccountLoader<'info, InsuranceFundStake>,
+    #[account(
+        mut,
+        has_one = authority,
+    )]
+    pub user_stats: AccountLoader<'info, UserStats>,
+    pub authority: Signer<'info>,
+    #[account(
+        mut,
+        seeds = [b"spot_market_vault".as_ref(), market_index.to_le_bytes().as_ref()],
+        bump,
+    )]
+    pub spot_market_vault: Box<InterfaceAccount<'info, TokenAccount>>,
+    #[account(
+        mut,
+        seeds = [b"insurance_fund_vault".as_ref(), market_index.to_le_bytes().as_ref()],
+        bump,
+    )]
+    pub insurance_fund_vault: Box<InterfaceAccount<'info, TokenAccount>>,
+    #[account(
+        constraint = state.load()?.signer.eq(&velocity_signer.key())
+    )]
+    /// CHECK: forced velocity_signer
+    pub velocity_signer: UncheckedAccount<'info>,
+    pub token_program: Interface<'info, TokenInterface>,
+}
+
+#[derive(Accounts)]
+#[instruction(market_index: u16,)]
+pub struct CancelRequestRemoveInsuranceFundStake<'info> {
     #[account(
         mut,
         seeds = [b"spot_market", market_index.to_le_bytes().as_ref()],

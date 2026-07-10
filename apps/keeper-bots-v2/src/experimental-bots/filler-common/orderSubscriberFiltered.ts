@@ -10,6 +10,7 @@ import {
 	getUserWithOrderFilter,
 	Wallet,
 	BN,
+	USER_LAST_ACTIVE_SLOT_OFFSET,
 } from '@velocity-exchange/sdk';
 import { Connection, PublicKey, RpcResponseAndContext } from '@solana/web3.js';
 import dotenv from 'dotenv';
@@ -74,8 +75,14 @@ class OrderSubscriberFiltered extends OrderSubscriber {
 		}
 
 		const lastActiveSlot = slotAndUserAccount?.userAccount.lastActiveSlot;
+		// Read from the SDK's shared offset — a hardcoded 4328 here predated the
+		// current 4496-byte User layout and made this guard read zero-padding,
+		// rejecting every update after an account was first cached.
 		const newLastActiveSlot = new BN(
-			buffer.subarray(4328, 4328 + 8),
+			buffer.subarray(
+				USER_LAST_ACTIVE_SLOT_OFFSET,
+				USER_LAST_ACTIVE_SLOT_OFFSET + 8
+			),
 			undefined,
 			'le'
 		);

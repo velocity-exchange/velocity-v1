@@ -8749,3 +8749,69 @@ mod order_is_low_risk_for_amm {
         assert!(!is_low);
     }
 }
+
+/// The signed-message sanitizer relaxation (`state::order_params`) preserves a
+/// client's fully-specified auction tuple on A/B markets — including a short
+/// `auction_duration`. But the duration the order is *placed* with is not the
+/// value the sanitizer leaves behind: `get_auction_params` independently floors
+/// it to `state.min_perp_auction_duration` at build time. On mainnet (program
+/// `vELoC1audYbSYVRXn1vPaV8Axoa9oU6BYmNGZZBDZ1P`, state PDA
+/// `2etx5NvPNxeMZ7EfHE6GjJfW2imRYEUANehNS1WB4CVW`) that floor is 10 as of
+/// 2026-07-10, so a client's 5-slot signed-message auction is placed as a
+/// 10-slot auction. These tests pin that end-to-end behavior so the "5 stays 5"
+/// unit tests in `state::order_params::tests` don't read as the whole story.
+mod get_auction_params_min_duration_floor {
+    use crate::controller::orders::get_auction_params;
+    use crate::state::oracle::OraclePriceData;
+    use crate::state::order_params::OrderParams;
+    use crate::state::user::OrderType;
+    use crate::{PositionDirection, PRICE_PRECISION_I64};
+
+    fn oracle() -> OraclePriceData {
+        OraclePriceData {
+            price: 100 * PRICE_PRECISION_I64,
+            ..OraclePriceData::default()
+        }
+    }
+
+    /// A fully-specified, aggressive 5-slot market auction — the shape a
+    /// signed-message order has after the A/B sanitizer preserves it.
+    fn aggressive_5_slot_market_order() -> OrderParams {
+        OrderParams {
+            order_type: OrderType::Market,
+            direction: PositionDirection::Long,
+            auction_duration: Some(5),
+            auction_start_price: Some(99_700_000),
+            auction_end_price: Some(100_300_000),
+            price: 100_300_000,
+            ..OrderParams::default()
+        }
+    }
+
+    #[test]
+    fn floors_preserved_client_duration_to_mainnet_min() {
+        let params = aggressive_5_slot_market_order();
+        // tick_size = 1 is identity, so the only change is the duration floor.
+        let (start, end, duration) = get_auction_params(&params, &oracle(), 1, 10).unwrap();
+
+        assert_eq!(start, 99_700_000);
+        assert_eq!(end, 100_300_000);
+        // The client asked for 5 slots and the sanitizer preserved it, but the
+        // placed order is floored to the mainnet minimum of 10.
+        assert_eq!(duration, 10);
+        assert_ne!(duration, params.auction_duration.unwrap());
+    }
+
+    #[test]
+    fn preserves_client_duration_only_when_floor_is_low_enough() {
+        let params = aggressive_5_slot_market_order();
+
+        // Lowering state.min_perp_auction_duration to <= the client's choice is
+        // what actually lets a 5-slot auction survive end-to-end.
+        let (_, _, duration) = get_auction_params(&params, &oracle(), 1, 5).unwrap();
+        assert_eq!(duration, 5);
+
+        let (_, _, duration) = get_auction_params(&params, &oracle(), 1, 3).unwrap();
+        assert_eq!(duration, 5);
+    }
+}

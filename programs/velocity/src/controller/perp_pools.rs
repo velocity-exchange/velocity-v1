@@ -39,7 +39,11 @@ use crate::validate;
 /// pool's surplus over live user claims. Waterfall order (seniority under
 /// scarcity):
 ///   1. `pending_protocol_fee` -> `protocol_fee_pool` (withdrawable)
-///   2. `pending_if_fee`       -> quote `SpotMarket.revenue_pool` (insurance)
+///   2. `pending_if_fee`       -> quote `SpotMarket.revenue_pool` (insurance),
+///      leaving `get_bankruptcy_if_floor()` behind — a standing first-loss
+///      tranche (pct of OI notional at the oracle TWAP) that
+///      `resolve_perp_bankruptcy` can always reach, so a permissionless
+///      sweep can't drain the tranche ahead of a bankruptcy resolution
 ///   3. `pending_amm_provision`-> `amm.fee_pool` (tokenizing the provision the
 ///      AMM already booked at fill — NO ledger change here)
 /// The protocol drain is EXEMPT from the `fee_pool_buffer_target` retention
@@ -118,8 +122,28 @@ pub fn sweep_market_fees(
     let mut available: u128 =
         available_unbuffered.saturating_sub(market.fee_pool_buffer_target.cast()?);
 
-    // 2. insurance cut to the revenue pool (buffered)
-    let if_drain = market.fee_ledger.pending_if_fee.min(available);
+    // 2. insurance cut to the revenue pool (buffered), leaving the
+    //    bankruptcy floor behind: `pending_if_fee` is the first-loss tranche
+    //    `resolve_perp_bankruptcy` consumes, and since this sweep (and the
+    //    pnl settles that run it inline) is permissionless, draining the
+    //    tranche completely would let anyone front-run a pending bankruptcy
+    //    resolution and push the loss onto the shared IF or into
+    //    socialization. The floor (a pct of OI notional at the oracle TWAP)
+    //    keeps a standing tranche sized to the market's risk. The final
+    //    delisting sweep (`force`) bypasses it: positions are settled and
+    //    bankruptcies resolved before wind-down, and the remaining pnl pool
+    //    is about to be drained to the revenue pool anyway — withholding
+    //    would only strand a stale counter on a dead market.
+    let bankruptcy_if_floor = if force {
+        0
+    } else {
+        market.get_bankruptcy_if_floor()?
+    };
+    let if_drain = market
+        .fee_ledger
+        .pending_if_fee
+        .saturating_sub(bankruptcy_if_floor)
+        .min(available);
     if if_drain > 0 {
         transfer_spot_balance_to_revenue_pool(if_drain, spot_market, &mut market.pnl_pool)?;
         market.fee_ledger.consume_pending_if(if_drain)?;

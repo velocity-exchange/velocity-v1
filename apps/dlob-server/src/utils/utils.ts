@@ -15,6 +15,7 @@ import {
 	BASE_PRECISION,
 	PRICE_PRECISION,
 	calculateEstimatedEntryPriceWithL2,
+	calculateBidAskPrice,
 	AssetType,
 	MainnetSpotMarkets,
 	DevnetSpotMarkets,
@@ -31,6 +32,7 @@ import {
 	DEFAULT_AUCTION_PARAMS,
 	FAST_FILL_AUCTION_DURATION,
 	FAST_FILL_AUCTION_START_PRICE_OFFSET,
+	MAJOR_MARKETS,
 	MID_MAJOR_MARKETS,
 } from './constants';
 import { AuctionParamArgs } from './types';
@@ -652,10 +654,10 @@ export function createMarketBasedAuctionParams(
 	overrideDefaults?: Partial<AuctionParamArgs>,
 	version: number = 1
 ): AuctionParamArgs {
-	// Determine if this is a major market (PERP with marketIndex 0, 1, or 2)
+	// Determine if this is a major market (PERP: SOL, BTC, ETH, HYPE)
 	const isMajorMarket =
 		args.marketType?.toLowerCase() === 'perp' &&
-		[0, 1, 2].includes(args.marketIndex);
+		MAJOR_MARKETS.includes(args.marketIndex);
 
 	// Version 3+ weights toward fast fills: start just inside the touch on all
 	// markets and run a short auction, rather than fishing for price improvement
@@ -1144,6 +1146,69 @@ export const mapToMarketOrderParams = async (
 			}
 		}
 
+		// Floor (long) / cap (short) the L2-walk worst price at the vAMM side
+		// quote (+ margin). The auction end price is derived from worstPrice
+		// (`min(limitPrice, worst × (1 + auctionEndPriceOffset))`), so an
+		// undershooting worst produces auctions that can never cross the
+		// program's fill-time quote on vAMM-only books and expire unfilled.
+		//
+		// Only applied when the order actually needs vAMM liquidity: if
+		// resting (non-vAMM) makers priced inside the vAMM quote can cover
+		// the full size, their tighter worst estimate stands — the user's
+		// budget is never widened by a quote the auction would not touch.
+		// A user-set (fixed) slippage remains the hard cap either way:
+		// deriveMarketOrderParams takes min(limitPrice, worst-based end).
+		if (isVariant(marketType, 'perp')) {
+			const vammQuote = getVammSideQuoteWithMargin(
+				velocityClient,
+				params.marketIndex,
+				direction
+			);
+			if (vammQuote) {
+				const isLong = isVariant(direction, 'long');
+				const orderBaseAmount =
+					params.maxLeverageSelected && params.maxLeverageOrderSize
+						? stringToBN(params.maxLeverageOrderSize)
+						: params.assetType === 'base'
+						? amount
+						: amount.mul(BASE_PRECISION).div(estimatedPrices.entryPrice);
+
+				let makerDepthInsideQuote = ZERO;
+				try {
+					const l2ForGate = redisL2
+						? convertRawL2ToBN(redisL2)
+						: { bids: [], asks: [] };
+					const levels = isLong ? l2ForGate.asks : l2ForGate.bids;
+					for (const level of levels ?? []) {
+						// levels are sorted best-first; stop at the first level
+						// priced beyond the vAMM quote
+						const insideQuote = isLong
+							? level.price.lte(vammQuote)
+							: level.price.gte(vammQuote);
+						if (!insideQuote) {
+							break;
+						}
+						const vammSize = level.sources?.vamm
+							? new BN(level.sources.vamm)
+							: ZERO;
+						makerDepthInsideQuote = makerDepthInsideQuote.add(
+							BN.max(level.size.sub(vammSize), ZERO)
+						);
+					}
+				} catch (error) {
+					logger.warn(
+						`Failed to compute maker depth inside vAMM quote for market ${params.marketIndex}: ${error}`
+					);
+				}
+
+				if (makerDepthInsideQuote.lt(orderBaseAmount)) {
+					estimatedPrices.worstPrice = isLong
+						? BN.max(estimatedPrices.worstPrice, vammQuote)
+						: BN.min(estimatedPrices.worstPrice, vammQuote);
+				}
+			}
+		}
+
 		// Handle dynamic slippage tolerance calculation if needed
 		if (params.slippageTolerance === undefined) {
 			// Convert raw L2 to formatted L2 for slippage calculation
@@ -1369,6 +1434,66 @@ export const fetchL2FromRedis = async (
  * @param l2Formatted - Already formatted L2OrderBook data
  * @returns Dynamic slippage tolerance as a number
  */
+/**
+ * The vAMM quote for the side of the book a taker order executes against
+ * (ask for longs, bid for shorts), computed from the perp market account's
+ * own AMM state (curve projection + cached spread state), with a safety
+ * margin on top.
+ *
+ * On vAMM-dominated books (e.g. BTC-PERP, which has no resting makers) the
+ * L2-walk `worstPrice` systematically undershoots what the program actually
+ * quotes at fill time: `AmmQuoter::setup` re-projects the curve and
+ * recomputes spreads against the fill-slot oracle, so the realized quote
+ * moves with every slot. An auction whose end price is derived from the
+ * unfloored L2 worst can sit just below the realized quote for its entire
+ * life and expire unfilled ("taker does not cross amm").
+ *
+ * `marginPct` (percent, `DYNAMIC_VAMM_QUOTE_MARGIN` env, default 0.15)
+ * covers the model-vs-fill-slot drift. Returns `undefined` when the market
+ * account or oracle is unavailable (callers skip the floor).
+ */
+export const getVammSideQuoteWithMargin = (
+	velocityClient: VelocityClient,
+	marketIndex: number,
+	direction: PositionDirection
+): BN | undefined => {
+	try {
+		const perpMarket = velocityClient.getPerpMarketAccount?.(marketIndex);
+		if (!perpMarket) {
+			return undefined;
+		}
+		const mmOracle = velocityClient.getMMOracleDataForPerpMarket(marketIndex);
+		if (!mmOracle?.price || mmOracle.price.isZero()) {
+			return undefined;
+		}
+		const [vammBid, vammAsk] = calculateBidAskPrice(
+			perpMarket.amm,
+			perpMarket.marketStats,
+			mmOracle,
+			true,
+			mmOracle.slot
+		);
+		const marginPct = parseFloat(
+			process.env.DYNAMIC_VAMM_QUOTE_MARGIN || '0.15'
+		);
+		// percent -> 1e6 fraction, applied away from the taker's favor
+		const marginScaled = Math.round(marginPct * 10_000);
+		const isLong = isVariant(direction, 'long');
+		const quote = isLong ? vammAsk : vammBid;
+		if (!quote || quote.isZero()) {
+			return undefined;
+		}
+		return isLong
+			? quote.muln(1_000_000 + marginScaled).divn(1_000_000)
+			: quote.muln(1_000_000 - marginScaled).divn(1_000_000);
+	} catch (error) {
+		logger.warn(
+			`Failed to compute vAMM side quote for market ${marketIndex}: ${error}`
+		);
+		return undefined;
+	}
+};
+
 export const calculateDynamicSlippage = (
 	marketIndex: number,
 	marketType: string,
@@ -1378,9 +1503,9 @@ export const calculateDynamicSlippage = (
 	worstPrice: BN,
 	apiVersion?: number
 ): number => {
-	// Determine if this is a major market (PERP with marketIndex 0, 1, or 2)
+	// Determine if this is a major market (PERP: SOL, BTC, ETH, HYPE)
 	const isPerp = marketType.toLowerCase() === 'perp';
-	const isMajor = isPerp && marketIndex < 3;
+	const isMajor = isPerp && MAJOR_MARKETS.includes(marketIndex);
 	const isMidMajor = isPerp && MID_MAJOR_MARKETS.includes(marketIndex);
 
 	const baseSlippage = isMajor
@@ -1444,6 +1569,26 @@ export const calculateDynamicSlippage = (
 			100;
 
 		dynamicSlippage = Math.max(dynamicSlippage, sizeAdjustedSlippage);
+	}
+
+	// The derived limit price (baseline × (1 + slippage)) must be able to
+	// reach the auction end price (worst × (1 + auctionEndPriceOffset)):
+	// deriveMarketOrderParams takes min(limitPrice, worst-based end), so a
+	// slippage smaller than the full start→worst distance caps the auction
+	// below the worst-price estimate — on vAMM-only books the order then
+	// never crosses the program's fill-time quote and expires unfilled.
+	// Floor at the full distance plus the (default 0.1%) end-price offset.
+	if (isPerp && startPrice && worstPrice && !startPrice.isZero()) {
+		const fullDistancePct =
+			(startPrice.sub(worstPrice).abs().toNumber() / startPrice.toNumber()) *
+			100;
+		const endOffsetMarginPct = parseFloat(
+			process.env.DYNAMIC_SLIPPAGE_END_OFFSET_MARGIN || '0.1'
+		);
+		dynamicSlippage = Math.max(
+			dynamicSlippage,
+			fullDistancePct + endOffsetMarginPct
+		);
 	}
 
 	// Apply multiplier from env var

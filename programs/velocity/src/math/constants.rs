@@ -196,6 +196,10 @@ pub const DEFAULT_MAX_TWAP_UPDATE_PRICE_BAND_DENOMINATOR: i64 = 3; // '3' here m
 
 // DEFAULTS
 pub const DEFAULT_REVENUE_SINCE_LAST_FUNDING_SPREAD_RETREAT: i64 = -25 * QUOTE_PRECISION_I64; //$25 loss
+/// Default `PerpMarket.bankruptcy_if_floor_pct` for new markets: 10 bps of
+/// open-interest notional retained in `pending_if_fee` as a standing
+/// bankruptcy tranche (PERCENTAGE_PRECISION).
+pub const DEFAULT_BANKRUPTCY_IF_FLOOR_PCT: u32 = PERCENTAGE_PRECISION_U32 / 1000; // 0.1%
 pub const DEFAULT_LARGE_BID_ASK_FACTOR: u64 = 10 * BID_ASK_SPREAD_PRECISION;
 pub const DEFAULT_LIQUIDATION_MARGIN_BUFFER_RATIO: u32 = MARGIN_PRECISION / 50; // 2%
 pub const DEFAULT_BASE_ASSET_AMOUNT_STEP_SIZE: u64 = BASE_PRECISION_U64 / 10000; // 1e-4;

@@ -9673,6 +9673,38 @@
       ]
     },
     {
+      "name": "update_perp_market_bankruptcy_if_floor_pct",
+      "discriminator": [
+        192,
+        2,
+        229,
+        220,
+        243,
+        115,
+        121,
+        84
+      ],
+      "accounts": [
+        {
+          "name": "admin",
+          "signer": true
+        },
+        {
+          "name": "state"
+        },
+        {
+          "name": "perp_market",
+          "writable": true
+        }
+      ],
+      "args": [
+        {
+          "name": "bankruptcy_if_floor_pct",
+          "type": "u32"
+        }
+      ]
+    },
+    {
       "name": "update_perp_market_base_spread",
       "discriminator": [
         71,
@@ -21140,20 +21172,21 @@
             "type": "i8"
           },
           {
-            "name": "padding",
+            "name": "bankruptcy_if_floor_pct",
             "docs": [
-              "Trailing padding so `market_stats` lands at the offset Rust naturally",
-              "computes via `repr(C)` alignment and the `(SIZE - 8) % 16 == 0`",
-              "invariant holds. (32 bytes moved into `fee_ledger` as",
-              "`amm_protocol_fees_received` and then `pending_amm_provision` joined",
-              "it, keeping `market_stats` fixed.)"
+              "Floor on the unswept IF-fee carveout, as a percentage of open-interest",
+              "notional (PERCENTAGE_PRECISION; 0 disables). The fee sweep's IF drain",
+              "leaves `pending_if_fee` at (at least) this floor, so a standing",
+              "first-loss tranche is always available to `resolve_perp_bankruptcy` —",
+              "a permissionless sweep (or the inline sweep on any pnl settle) cannot",
+              "drain the tranche below it ahead of a bankruptcy resolution. Notional",
+              "is valued at the market's own oracle TWAP so a manipulated spot print",
+              "can't crush the floor. Occupies the former 4-byte trailing padding",
+              "before `market_stats` (same offset/alignment on all targets), so",
+              "existing accounts read 0 = disabled until the admin sets it;",
+              "new markets initialize to `DEFAULT_BANKRUPTCY_IF_FLOOR_PCT`."
             ],
-            "type": {
-              "array": [
-                "u8",
-                4
-              ]
-            }
+            "type": "u32"
           },
           {
             "name": "market_stats",

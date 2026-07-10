@@ -385,11 +385,17 @@ use crate::state::user::Order;
 /// price.
 pub struct DlobOrderQuoter<'a> {
     pub order: &'a mut Order,
+    /// Upper bound on how much base this order may fill, on top of the
+    /// order's own unfilled amount. Callers pass the position-capped
+    /// unfilled (`Order::get_base_asset_amount_unfilled(Some(position))`)
+    /// so a reduce-only order can only shrink the maker's position, never
+    /// grow or flip it.
+    max_fill: u64,
 }
 
 impl<'a> DlobOrderQuoter<'a> {
-    pub fn new(order: &'a mut Order) -> Self {
-        DlobOrderQuoter { order }
+    pub fn new(order: &'a mut Order, max_fill: u64) -> Self {
+        DlobOrderQuoter { order, max_fill }
     }
 
     /// Sentinel "doesn't quote on this side" price.
@@ -419,6 +425,7 @@ impl<'a> DlobOrderQuoter<'a> {
         self.order
             .base_asset_amount
             .saturating_sub(self.order.base_asset_amount_filled)
+            .min(self.max_fill)
     }
 }
 
@@ -597,7 +604,7 @@ mod dlob_order_maker_tests {
         let ctx = make_ctx(&stats, &oracle);
 
         let mut order = make_ask_order(100, 50);
-        let maker = DlobOrderQuoter::new(&mut order);
+        let maker = DlobOrderQuoter::new(&mut order, u64::MAX);
 
         // Buying taker should see the ask price.
         let bp = maker.best_price(&ctx, PositionDirection::Long).unwrap();
@@ -615,7 +622,7 @@ mod dlob_order_maker_tests {
         let ctx = make_ctx(&stats, &oracle);
 
         let mut order = make_bid_order(95, 30);
-        let maker = DlobOrderQuoter::new(&mut order);
+        let maker = DlobOrderQuoter::new(&mut order, u64::MAX);
 
         let bp = maker.best_price(&ctx, PositionDirection::Short).unwrap();
         assert_eq!(bp, 95);
@@ -631,7 +638,7 @@ mod dlob_order_maker_tests {
         let ctx = make_ctx(&stats, &oracle);
 
         let mut order = make_ask_order(100, 50);
-        let maker = DlobOrderQuoter::new(&mut order);
+        let maker = DlobOrderQuoter::new(&mut order, u64::MAX);
 
         // The order presents as a single discrete level: price = the ask, and
         // level_capacity = full remaining size.
@@ -654,6 +661,38 @@ mod dlob_order_maker_tests {
     }
 
     #[test]
+    fn max_fill_caps_capacity_and_solo_fill() {
+        let stats = MarketStats::default();
+        let oracle = OraclePriceData::default();
+        let ctx = make_ctx(&stats, &oracle);
+
+        // Reduce-only shape: order asks 60 but the maker position only
+        // covers 40, so the caller passes 40 as the position-capped
+        // unfilled. Both the advertised level and the solo fill must
+        // respect it.
+        let mut order = make_ask_order(100, 60);
+        let maker = DlobOrderQuoter::new(&mut order, 40);
+
+        assert_eq!(
+            maker.level_capacity(&ctx, PositionDirection::Long).unwrap(),
+            40
+        );
+        let fill = maker
+            .try_fill_solo(&ctx, PositionDirection::Long, 60)
+            .unwrap()
+            .unwrap();
+        assert_eq!(fill.base_filled, 40);
+
+        // Cap above the order's own remaining changes nothing.
+        let mut order = make_ask_order(100, 60);
+        let maker = DlobOrderQuoter::new(&mut order, u64::MAX);
+        assert_eq!(
+            maker.level_capacity(&ctx, PositionDirection::Long).unwrap(),
+            60
+        );
+    }
+
+    #[test]
     fn commit_fill_increments_filled_counters() {
         let stats = MarketStats::default();
         let oracle = OraclePriceData::default();
@@ -661,7 +700,7 @@ mod dlob_order_maker_tests {
 
         let mut order = make_ask_order(100, 50);
         {
-            let mut maker = DlobOrderQuoter::new(&mut order);
+            let mut maker = DlobOrderQuoter::new(&mut order, u64::MAX);
             let fill = QuoterFill {
                 side: PositionDirection::Long,
                 base_filled: 20,
@@ -678,7 +717,7 @@ mod dlob_order_maker_tests {
         assert_eq!(order.quote_asset_amount_filled, 2000);
 
         // try_fill_solo after partial fill reflects reduced remaining.
-        let maker = DlobOrderQuoter::new(&mut order);
+        let maker = DlobOrderQuoter::new(&mut order, u64::MAX);
         let fill = maker
             .try_fill_solo(&ctx, PositionDirection::Long, 100)
             .unwrap()

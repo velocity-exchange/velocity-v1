@@ -1,5 +1,32 @@
 # @velocity-exchange/sdk
 
+## 0.6.0
+
+### Minor Changes
+
+- [#216](https://github.com/velocity-exchange/velocity-v1/pull/216) [`7b44bb0`](https://github.com/velocity-exchange/velocity-v1/commit/7b44bb0832e3eb72b2cd31d01d3c7d60c9794dab) Thanks [@ChewingGlass](https://github.com/ChewingGlass)! - Point jit-proxy at Velocity's own program deployment `J1TPRoXCtGuMcWiWFE6RB9eZU8U35PBMETCwNQLCNPhQ` (devnet & mainnet), replacing Drift's upstream `J1TnP8zvVxbtF5KFp5xRmWuvG9McnhzmBd9XGfCyuxFP`: the jit-proxy IDL/types are regenerated with the new address and the SDK config presets' `JIT_PROXY_PROGRAM_ID` now resolve to it. Also fixes `JitProxyClient` deriving the builder-order `REV_ESCROW` PDA under the jit-proxy program id instead of the velocity program id (the account passed for `hasBuilder` orders was wrong), and stops passing `velocityProgram` explicitly now that the IDL pins its address.
+
+- [#220](https://github.com/velocity-exchange/velocity-v1/pull/220) [`155ed06`](https://github.com/velocity-exchange/velocity-v1/commit/155ed0618d7012b9305f4c84786c4d4e96d86be8) Thanks [@0xahzam](https://github.com/0xahzam)! - Per-user equity floor: new warm-admin instruction `update_user_equity_floor` sets `User.equityFloor` (QUOTE_PRECISION), a minimum cross-margin total collateral below which the program rejects risk-increasing order placement and fills, withdrawals, and transfers out of the account with `EquityBelowFloor` (6358); reduce-only activity stays allowed and 0 disables. `transferDepositByDelegate` gains an `equityFloorDelta` argument (instruction signature change) that atomically moves floor along with funds between same-authority subaccounts, preserving the sum of floors (`InvalidEquityFloorTransfer`, 6359). An authority-wide breaker escalates the freeze: the permissionless `trip_equity_floor_breaker` proves one subaccount below its floor and sets `UserStats.equityBreakerTripped`, freezing all of the authority's subaccounts until the warm-admin `reset_equity_floor_breaker` clears it. SDK adds `AdminClient.updateUserEquityFloor` / `getUpdateUserEquityFloorIx` / `resetEquityFloorBreaker`, `VelocityClient.tripEquityFloorBreaker`, `UserAccount.equityFloor`, `UserStatsAccount.equityBreakerTripped`, `User.isBelowEquityFloor` / `getEquityAboveFloor`, floor-aware `getWithdrawalLimit`, and an `'auto'` floor-delta mode on `transferDepositByDelegate` (quote market) that computes the minimal floor to carry. Admin CLI adds `velocity-admin user reset-equity-breaker <userStats>`. Admin CLI adds `velocity-admin user set-equity-floor <user> <floor>`.
+
+### Patch Changes
+
+- [#213](https://github.com/velocity-exchange/velocity-v1/pull/213) [`00decfd`](https://github.com/velocity-exchange/velocity-v1/commit/00decfd93fff5668779255288a0f61242be99d07) Thanks [@0xahzam](https://github.com/0xahzam)! - `updatePerpBidAskTwap` no longer updates the funding rate as a side effect.
+
+  The `update_perp_bid_ask_twap` program instruction previously refreshed the mark-price TWAP from caller-supplied DLOB depth and then applied the funding rate in the same instruction, letting the just-written TWAP feed funding at zero elapsed time. Funding is now decoupled: it runs only via the dedicated `update_funding_rate` crank (and on fills). Callers of `velocityClient.updatePerpBidAskTwap` / `getUpdatePerpBidAskTwapIx` that relied on the funding side effect must call `getUpdateFundingRateIx` separately.
+
+  Alongside this, two program-side hardening changes affect callers: the oracle-divergence filter used by the crank is now symmetric (DLOB levels are kept only within ±15% of the oracle on both sides), and `keeper_stats` must belong to the signing authority (`has_one`), so a caller can no longer pass a third party's staked `UserStats` to satisfy the insurance-fund stake gate. The SDK already passes the caller's own stats, so the normal happy path is unaffected.
+
+- [#206](https://github.com/velocity-exchange/velocity-v1/pull/206) [`c288314`](https://github.com/velocity-exchange/velocity-v1/commit/c2883143d813a5c608354d64c3d1a5b825c4f398) Thanks [@jordy25519](https://github.com/jordy25519)! - Fix two `PythLazerSubscriber` reliability bugs:
+
+  - **Register the message listener once per client, not once per feed chunk.** The SDK's `addMessageListener` is global to the client (it fires for every message, not scoped to a subscription), so registering it inside the per-chunk subscribe loop meant every incoming message was processed once per chunk — K× redundant map writes and K× resubscribe-timer churn for K subscription chunks. The stored prices were already idempotent so there is no behavior change to reported prices; this removes the wasted per-message work.
+  - **Subscribe via `subscribe()` instead of `send()`.** `send()` fires the subscription frame once and is never replayed, so after the first heartbeat-timeout socket reconnect the connection streamed nothing and only recovered via the coarse watchdog (which tears down the whole client and reopens all connections). `subscribe()` registers the request in the pool so `ResilientWebSocket` replays it on every reconnect, recovering in place with no connection churn.
+
+  Affects every consumer of `PythLazerSubscriber` (filler, pyth-lazer cranker; the maker bid/ask TWAP crank and multithreaded filler use a separate copy in keeper-bots-v2 that already used `subscribe()` and got the same single-listener fix).
+
+- [#210](https://github.com/velocity-exchange/velocity-v1/pull/210) [`61cbeb2`](https://github.com/velocity-exchange/velocity-v1/commit/61cbeb2f70dcd3f6d4fab1209962132dea9d60fe) Thanks [@0xahzam](https://github.com/0xahzam)! - Point mainnet-beta `MARKET_LOOKUP_TABLE(S)` at the relaunch lookup table `4E971nER9Jn4JjT8mKEX1nvkfg8Qycp7zNEcCq2nT8ZY` (state, signer, spot markets 0-1 with oracles/mints/vaults/IF vaults, perp markets 0-3 with oracles, token/ATA/system programs). Removes the two stale pre-relaunch tables, whose addresses no longer match any deployed account.
+
+- [#216](https://github.com/velocity-exchange/velocity-v1/pull/216) [`7b44bb0`](https://github.com/velocity-exchange/velocity-v1/commit/7b44bb0832e3eb72b2cd31d01d3c7d60c9794dab) Thanks [@ChewingGlass](https://github.com/ChewingGlass)! - Publish only the built `lib/` output (adds a `files` field, shrinking the npm tarball from ~14 MB unpacked to the compiled artifacts), widen the `engines` constraint from `^24.0.0` to `>=20` so Node 20/22 LTS consumers install without engine errors, and point the `repository` field at the public https URL.
+
 ## 0.5.0
 
 ### Minor Changes

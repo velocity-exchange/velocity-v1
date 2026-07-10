@@ -95,7 +95,19 @@ pool's surplus over live user claims — the AMM is never a conduit:
       **Buffer-exempt** and first: it sweeps every settle so each drain stays
       small, and its value is no bankruptcy tranche so retaining it buys
       nothing.
-   2. `pending_if_fee` → quote `SpotMarket.revenue_pool` (→ IF vault)
+   2. `pending_if_fee` → quote `SpotMarket.revenue_pool` (→ IF vault),
+      leaving the **bankruptcy floor** behind: `bankruptcy_if_floor_pct` of
+      open-interest notional (valued at the market's oracle TWAP) stays in
+      `pending_if_fee` as a standing first-loss tranche. Since the sweep and
+      the pnl settles that run it inline are permissionless, an unfloored
+      drain would let anyone clear `resolve_perp_bankruptcy`'s tranche-1
+      budget ahead of a pending resolution and push the loss onto the shared
+      IF or into socialization. New markets initialize to 10 bps
+      (`DEFAULT_BANKRUPTCY_IF_FLOOR_PCT`); set per market via
+      `update_perp_market_bankruptcy_if_floor_pct` (0 disables). The final
+      delisting sweep (`force`) bypasses the floor — bankruptcies are
+      resolved before wind-down and the pnl pool is drained wholesale right
+      after.
    3. `pending_amm_provision` → tokenized into `amm.fee_pool` (the AMM's
       ledger was already credited at fill — this is a pure token transfer)
    Steps 2-3 additionally leave the `fee_pool_buffer_target` retention margin
@@ -146,7 +158,9 @@ waterfall (`resolve_perp_bankruptcy`, `controller/liquidation.rs`):
 1. **`pending_if_fee`** — the market's own in-transit insurance fees,
    counter-only: the pending claim and the forgiven loss are both claims on
    future pnl-pool inflows, so canceling one against the other needs no token
-   movement
+   movement. The sweep's `bankruptcy_if_floor_pct` (see the waterfall above)
+   keeps this tranche stocked to a floor of OI notional so a front-running
+   sweep can't clear it
 2. **Insurance fund vault** (bounded by the market's `insurance_claim` caps;
    real tokens → pnl pool)
 3. **Provision clawback** — capped at `amm_protocol_fees_received`, two

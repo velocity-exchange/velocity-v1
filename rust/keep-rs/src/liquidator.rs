@@ -2199,6 +2199,16 @@ impl PrimaryLiquidationStrategy {
             .iter()
             .filter(|p| !p.is_available())
         {
+            // a zero-base position with positive unsettled pnl is a claim on
+            // the market's pnl pool, not a liability (mirrors
+            // calculate_user_safest_position_tiers in the program)
+            if !perp_position.is_open_position()
+                && !perp_position.has_open_order()
+                && perp_position.isolated_position_scaled_balance == 0
+                && perp_position.quote_asset_amount > 0
+            {
+                continue;
+            }
             if let Some(perp_market) = velocity
                 .program_data()
                 .perp_market_config_by_index(perp_position.market_index)

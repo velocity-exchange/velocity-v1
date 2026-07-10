@@ -4962,6 +4962,61 @@ export class AdminClient extends VelocityClient {
 	}
 
 	/**
+	 * Sets the fraction of open-interest notional the streaming fee sweep must leave behind in
+	 * `feeLedger.pendingIfFee` as a standing bankruptcy tranche (notional valued at the market's
+	 * oracle TWAP). The permissionless sweep cannot drain the tranche below this floor, so a
+	 * sweep front-running a `resolvePerpBankruptcy` cannot strip the first-loss coverage up to
+	 * the floor. New markets initialize to 10 bps; 0 disables. Requires warm admin (`check_warm`).
+	 * @param perpMarketIndex - Perp market to update.
+	 * @param bankruptcyIfFloorPct - Floor as PERCENTAGE_PRECISION (1e6 = 100%; 1000 = 10 bps); max 1e6.
+	 * @returns Transaction signature.
+	 */
+	public async updatePerpMarketBankruptcyIfFloorPct(
+		perpMarketIndex: number,
+		bankruptcyIfFloorPct: number
+	): Promise<TransactionSignature> {
+		const updatePerpMarketBankruptcyIfFloorPctIx =
+			await this.getUpdatePerpMarketBankruptcyIfFloorPctIx(
+				perpMarketIndex,
+				bankruptcyIfFloorPct
+			);
+
+		const tx = await this.buildTransaction(
+			updatePerpMarketBankruptcyIfFloorPctIx
+		);
+
+		const { txSig } = await this.sendTransaction(tx, [], this.opts);
+
+		return txSig;
+	}
+
+	/**
+	 * Builds the `updatePerpMarketBankruptcyIfFloorPct` instruction without sending it. See
+	 * `updatePerpMarketBankruptcyIfFloorPct`.
+	 * @returns The unsigned `updatePerpMarketBankruptcyIfFloorPct` instruction.
+	 */
+	public async getUpdatePerpMarketBankruptcyIfFloorPctIx(
+		perpMarketIndex: number,
+		bankruptcyIfFloorPct: number
+	): Promise<TransactionInstruction> {
+		return await this.program.instruction.updatePerpMarketBankruptcyIfFloorPct(
+			bankruptcyIfFloorPct,
+			{
+				accounts: {
+					admin: this.isSubscribed
+						? this.getStateAccount().coldAdmin
+						: this.wallet.publicKey,
+					state: await this.getStatePublicKey(),
+					perpMarket: await getPerpMarketPublicKey(
+						this.program.programId,
+						perpMarketIndex
+					),
+				},
+			}
+		);
+	}
+
+	/**
 	 * Scales a spot market's taker fee and maker rebate up or down by a percentage of the base
 	 * fee tier. Requires warm admin (`check_warm`). Throws `DefaultError` on-chain if
 	 * `abs(feeAdjustment) > FEE_ADJUSTMENT_MAX` (100). Note: the first parameter is a **spot**

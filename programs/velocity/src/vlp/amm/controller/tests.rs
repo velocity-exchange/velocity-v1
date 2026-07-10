@@ -5,16 +5,18 @@ use crate::{
     math::{
         bn,
         constants::{
-            AMM_RESERVE_PRECISION, MAX_CONCENTRATION_COEFFICIENT, MAX_SQRT_K, PRICE_PRECISION_I64,
-            QUOTE_PRECISION, QUOTE_SPOT_MARKET_INDEX, SPOT_BALANCE_PRECISION,
-            SPOT_CUMULATIVE_INTEREST_PRECISION,
+            AMM_RESERVE_PRECISION, BASE_PRECISION_I128, MAX_CONCENTRATION_COEFFICIENT, MAX_SQRT_K,
+            PERCENTAGE_PRECISION_U32, PRICE_PRECISION_I64, QUOTE_PRECISION,
+            QUOTE_SPOT_MARKET_INDEX, SPOT_BALANCE_PRECISION, SPOT_CUMULATIVE_INTEREST_PRECISION,
         },
     },
     state::{
         events::TransferFeeAndPnlPoolDirection,
-        oracle::OraclePriceData,
+        oracle::{HistoricalOracleData, OraclePriceData},
         paused_operations::PerpOperation,
-        perp_market::{FeeLedger, InsuranceClaim, MarketConfigFlag, PerpMarket, PoolBalance},
+        perp_market::{
+            FeeLedger, InsuranceClaim, MarketConfigFlag, MarketStats, PerpMarket, PoolBalance,
+        },
         spot_market::SpotBalanceType,
         user::SpotPosition,
     },
@@ -1024,6 +1026,81 @@ fn update_pool_balances_pending_fee_drain_capped_test() {
         QUOTE_PRECISION
     );
     assert_eq!(paused_market.fee_ledger.pending_if_fee, QUOTE_PRECISION);
+}
+
+#[test]
+fn sweep_market_fees_leaves_bankruptcy_if_floor() {
+    // The IF drain must leave `bankruptcy_if_floor_pct` of OI notional
+    // (valued at the oracle TWAP) behind in `pending_if_fee`: it is
+    // resolve_perp_bankruptcy's first-loss tranche, and a permissionless
+    // sweep must not be able to clear it ahead of a resolution. The
+    // protocol and AMM-provision drains are NOT floor-gated.
+    let mut spot_market = SpotMarket {
+        deposit_balance: 400 * QUOTE_PRECISION * SPOT_BALANCE_PRECISION,
+        cumulative_deposit_interest: SPOT_CUMULATIVE_INTEREST_PRECISION,
+        cumulative_borrow_interest: SPOT_CUMULATIVE_INTEREST_PRECISION,
+        revenue_pool: PoolBalance::default(),
+        ..SpotMarket::default()
+    };
+
+    // OI = 5 base, TWAP = $100 -> OI notional = 500 QUOTE; pct = 1% -> floor
+    // = 5 QUOTE. pending_if = 8 QUOTE, ample pool: only the 3 above the
+    // floor may drain; protocol + provision drain in full.
+    let mut market = PerpMarket {
+        base_asset_amount_long: 5 * BASE_PRECISION_I128,
+        base_asset_amount_short: -5 * BASE_PRECISION_I128,
+        bankruptcy_if_floor_pct: PERCENTAGE_PRECISION_U32 / 100, // 1%
+        market_stats: MarketStats {
+            historical_oracle_data: HistoricalOracleData {
+                last_oracle_price_twap: 100 * PRICE_PRECISION_I64,
+                ..HistoricalOracleData::default()
+            },
+            ..MarketStats::default()
+        },
+        pnl_pool: PoolBalance {
+            scaled_balance: 100 * QUOTE_PRECISION * SPOT_BALANCE_PRECISION,
+            market_index: QUOTE_SPOT_MARKET_INDEX,
+            ..PoolBalance::default()
+        },
+        fee_ledger: FeeLedger {
+            pending_protocol_fee: 4 * QUOTE_PRECISION,
+            pending_if_fee: 8 * QUOTE_PRECISION,
+            pending_amm_provision: QUOTE_PRECISION,
+            amm_protocol_fees_received: QUOTE_PRECISION,
+            ..FeeLedger::default()
+        },
+        ..PerpMarket::default()
+    };
+    assert_eq!(
+        market.get_bankruptcy_if_floor().unwrap(),
+        5 * QUOTE_PRECISION
+    );
+
+    let (if_swept, protocol_swept, provision_tokenized) =
+        sweep_market_fees(&mut market, &mut spot_market, 0, 0, false).unwrap();
+    assert_eq!(if_swept, 3 * QUOTE_PRECISION);
+    assert_eq!(protocol_swept, 4 * QUOTE_PRECISION);
+    assert_eq!(provision_tokenized, QUOTE_PRECISION);
+    assert_eq!(market.fee_ledger.pending_if_fee, 5 * QUOTE_PRECISION);
+
+    // at (or below) the floor nothing more leaves, however often it's swept
+    let (if_swept, _, _) = sweep_market_fees(&mut market, &mut spot_market, 0, 0, false).unwrap();
+    assert_eq!(if_swept, 0);
+    assert_eq!(market.fee_ledger.pending_if_fee, 5 * QUOTE_PRECISION);
+
+    // raising the floor above the accrued pending fee zeroes the IF drain
+    // entirely (the floor withholds, it can't conjure budget)
+    market.fee_ledger.pending_if_fee = 8 * QUOTE_PRECISION;
+    market.bankruptcy_if_floor_pct = PERCENTAGE_PRECISION_U32 / 10; // 10% -> floor 50
+    let (if_swept, _, _) = sweep_market_fees(&mut market, &mut spot_market, 0, 0, false).unwrap();
+    assert_eq!(if_swept, 0);
+    assert_eq!(market.fee_ledger.pending_if_fee, 8 * QUOTE_PRECISION);
+
+    // pct = 0 disables the floor (legacy accounts read 0)
+    market.bankruptcy_if_floor_pct = 0;
+    let (if_swept, _, _) = sweep_market_fees(&mut market, &mut spot_market, 0, 0, false).unwrap();
+    assert_eq!(if_swept, 8 * QUOTE_PRECISION);
+    assert_eq!(market.fee_ledger.pending_if_fee, 0);
 }
 
 #[test]

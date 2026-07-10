@@ -332,10 +332,16 @@ pub fn calculate_cumulative_deposit_interest_delta_to_resolve_bankruptcy(
         return Ok(0);
     }
 
-    spot_market
+    let delta = spot_market
         .cumulative_deposit_interest
         .safe_mul(borrow)?
-        .safe_div_ceil(total_deposits)
+        .safe_div_ceil(total_deposits)?;
+
+    // When the loss meets or exceeds total deposits, cap the haircut so
+    // cumulative_deposit_interest stays >= 1: depositors are wiped out
+    // (balances redeem for ~0 tokens) but the interest never underflows and
+    // balance conversions, which divide by it, stay well-defined.
+    Ok(delta.min(spot_market.cumulative_deposit_interest.saturating_sub(1)))
 }
 
 pub fn validate_transfer_satisfies_limit_price(

@@ -34,6 +34,7 @@ import {
 import {
 	calculateEntryPrice,
 	calculateUnsettledFundingPnl,
+	hasOpenOrders,
 	positionIsAvailable,
 } from './math/position';
 import {
@@ -4488,9 +4489,11 @@ export class User {
 
 	/**
 	 * Returns the numerically-lowest (i.e. safest) contract/asset tier across
-	 * the user's active positions — perp tiers from active perp positions,
-	 * spot tiers only from spot **borrows** (deposits are skipped, since asset
-	 * tier only restricts borrowing exposure). Defaults to `4` (the
+	 * the user's active positions — perp tiers from active perp positions
+	 * (skipping zero-base positions whose only exposure is positive unsettled
+	 * pnl: those are claims on the pnl pool, not liabilities), spot tiers only
+	 * from spot **borrows** (deposits are skipped, since asset tier only
+	 * restricts borrowing exposure). Defaults to `4` (the
 	 * second-riskiest tier index) when the user has no positions of that kind —
 	 * this is a permissive default intended for callers doing tier-safety
 	 * comparisons (see `perpTierIsAsSafeAs` in `math/tiers`), not a claim that
@@ -4502,6 +4505,17 @@ export class User {
 		let safestSpotTier = 4;
 
 		for (const perpPosition of this.getActivePerpPositions()) {
+			// a zero-base position with positive unsettled pnl is a claim on the
+			// market's pnl pool, not a liability (mirrors
+			// calculate_user_safest_position_tiers in math/margin.rs)
+			if (
+				perpPosition.baseAssetAmount.eq(ZERO) &&
+				!hasOpenOrders(perpPosition) &&
+				!(perpPosition.isolatedPositionScaledBalance ?? ZERO).gt(ZERO) &&
+				perpPosition.quoteAssetAmount.gt(ZERO)
+			) {
+				continue;
+			}
 			safestPerpTier = Math.min(
 				safestPerpTier,
 				getPerpMarketTierNumber(

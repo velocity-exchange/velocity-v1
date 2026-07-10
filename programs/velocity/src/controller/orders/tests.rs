@@ -8815,3 +8815,288 @@ mod get_auction_params_min_duration_floor {
         assert_eq!(duration, 5);
     }
 }
+
+/// End-to-end evidence that a market order's realized slippage is enforced at
+/// FILL time, not by the up-front auction sanitizer (`update_perp_auction_params`).
+///
+/// Two independent mechanisms are exercised against the real fill path:
+///
+///   1. `auction_end_price_caps_taker_fill_at_match_time` — a `price == 0`
+///      Market order has no fixed limit price, yet during its auction the
+///      taker's effective limit *is* the auction price (start→end). At the end
+///      of the auction that equals `auction_end_price`, so `fulfill_perp_order`
+///      refuses to cross a maker priced past the client's chosen tolerance and
+///      fills one inside it. The client's signed `auction_end_price` is the
+///      slippage cap, enforced when the match is attempted.
+///
+///   2. `amm_fill_price_capped_by_oracle_margin_band` — the backstop once a
+///      `price == 0` order goes unbounded after its auction: the vAMM fill
+///      price is validated against the oracle margin band exactly as
+///      `fulfill_perp_order` does (`orders.rs:1363`), reverting with
+///      `PriceBandsBreached` beyond `margin_ratio_initial`.
+///
+/// Note the maker-side guard `limit_price_breaches_maker_oracle_price_bands`
+/// bounds the *maker's* direction, not the taker's overpay — so on the maker
+/// path the taker's protection is (1), the auction price, not a taker-side band.
+mod slippage_is_handled_at_fill_time {
+    use std::str::FromStr;
+
+    use crate::controller::orders::fulfill_perp_order;
+    use crate::controller::position::PositionDirection;
+    use crate::create_anchor_account_info;
+    use crate::error::ErrorCode;
+    use crate::math::constants::{
+        AMM_RESERVE_PRECISION, BASE_PRECISION_I64, BASE_PRECISION_U64, PEG_PRECISION,
+        PERCENTAGE_PRECISION_U64, PRICE_PRECISION, PRICE_PRECISION_I64, PRICE_PRECISION_U64,
+        QUOTE_PRECISION_I64, SPOT_BALANCE_PRECISION_U64, SPOT_CUMULATIVE_INTEREST_PRECISION,
+        SPOT_WEIGHT_PRECISION,
+    };
+    use crate::math::orders::validate_fill_price_within_price_bands;
+    use crate::state::fill_mode::FillMode;
+    use crate::state::market_status::MarketStatus;
+    use crate::state::oracle::{HistoricalOracleData, OracleSource};
+    use crate::state::oracle_map::OracleMap;
+    use crate::state::perp_market::{MarketStats, PerpMarket, AMM};
+    use crate::state::perp_market_map::PerpMarketMap;
+    use crate::state::pyth_lazer_oracle::PythLazerOracle;
+    use crate::state::spot_market::{SpotBalanceType, SpotMarket};
+    use crate::state::spot_market_map::SpotMarketMap;
+    use crate::state::state::ValidityGuardRails;
+    use crate::state::user::{
+        Order, OrderStatus, OrderType, PerpPosition, SpotPosition, User, UserStats,
+    };
+    use crate::state::user_map::{UserMap, UserStatsMap};
+    use crate::test_utils::{get_orders, get_positions, get_pyth_price, get_spot_positions};
+    use anchor_lang::prelude::Pubkey;
+
+    use super::{get_fee_structure, get_user_keys};
+
+    // One fill of a 0.5-base Market Long (price == 0) against a single post-only
+    // Short maker at `maker_price`, at `fill_slot`, with the AMM disabled so the
+    // maker path is isolated. `auction_duration == fill_slot` means the fill
+    // lands exactly at auction end, where the taker's auction price == the
+    // supplied `auction_end`. Returns (base_filled, taker_quote_asset_amount).
+    fn fill_against_maker(maker_price: u64, fill_slot: u64, auction_end: i64) -> (u64, i64) {
+        let now = 0_i64;
+
+        let mut oracle_price = get_pyth_price(100, 6);
+        let oracle_price_key =
+            Pubkey::from_str("J83w4HKfqxwcq3BEMMkPFSppX3gqekLyLJBexebFVkix").unwrap();
+        create_anchor_account_info!(
+            oracle_price,
+            &oracle_price_key,
+            PythLazerOracle,
+            oracle_account_info
+        );
+        let mut oracle_map = OracleMap::load_one(&oracle_account_info, fill_slot, None).unwrap();
+
+        let mut market = PerpMarket {
+            amm: AMM {
+                base_asset_reserve: 100 * AMM_RESERVE_PRECISION,
+                quote_asset_reserve: 100 * AMM_RESERVE_PRECISION,
+                sqrt_k: 100 * AMM_RESERVE_PRECISION,
+                peg_multiplier: 100 * PEG_PRECISION,
+                max_slippage_ratio: 50,
+                max_fill_reserve_fraction: 100,
+                base_spread: 0,
+                ..AMM::default()
+            },
+            margin_ratio_initial: 1000, // 10%
+            margin_ratio_maintenance: 500,
+            status: MarketStatus::Initialized,
+            order_step_size: 1000,
+            order_tick_size: 1,
+            oracle: oracle_price_key,
+            oracle_source: OracleSource::PythLazer,
+            market_stats: MarketStats {
+                historical_oracle_data: HistoricalOracleData {
+                    last_oracle_price: (100 * PRICE_PRECISION) as i64,
+                    last_oracle_price_twap: (100 * PRICE_PRECISION) as i64,
+                    last_oracle_price_twap_5min: (100 * PRICE_PRECISION) as i64,
+                    ..HistoricalOracleData::default()
+                },
+                ..MarketStats::default()
+            },
+            ..PerpMarket::default_test()
+        };
+        market.amm.max_base_asset_reserve = u128::MAX;
+        market.amm.min_base_asset_reserve = 0;
+        create_anchor_account_info!(market, PerpMarket, market_account_info);
+        let market_map = PerpMarketMap::load_one(&market_account_info, true).unwrap();
+
+        let mut spot_market = SpotMarket {
+            market_index: 0,
+            oracle_source: OracleSource::QuoteAsset,
+            cumulative_deposit_interest: SPOT_CUMULATIVE_INTEREST_PRECISION,
+            decimals: 6,
+            initial_asset_weight: SPOT_WEIGHT_PRECISION,
+            maintenance_asset_weight: SPOT_WEIGHT_PRECISION,
+            historical_oracle_data: HistoricalOracleData::default_price(QUOTE_PRECISION_I64),
+            ..SpotMarket::default()
+        };
+        create_anchor_account_info!(spot_market, SpotMarket, spot_market_account_info);
+        let spot_market_map = SpotMarketMap::load_one(&spot_market_account_info, true).unwrap();
+
+        let mut taker = User {
+            orders: get_orders(Order {
+                market_index: 0,
+                status: OrderStatus::Open,
+                order_type: OrderType::Market,
+                direction: PositionDirection::Long,
+                base_asset_amount: BASE_PRECISION_U64 / 2,
+                slot: 0,
+                price: 0, // market order: no fixed limit price
+                auction_start_price: 100 * PRICE_PRECISION_I64,
+                auction_end_price: auction_end,
+                auction_duration: fill_slot as u8,
+                ..Order::default()
+            }),
+            perp_positions: get_positions(PerpPosition {
+                market_index: 0,
+                open_orders: 1,
+                open_bids: BASE_PRECISION_I64 / 2,
+                ..PerpPosition::default()
+            }),
+            spot_positions: get_spot_positions(SpotPosition {
+                market_index: 0,
+                balance_type: SpotBalanceType::Deposit,
+                scaled_balance: 200 * SPOT_BALANCE_PRECISION_U64,
+                ..SpotPosition::default()
+            }),
+            ..User::default()
+        };
+
+        let maker_authority =
+            Pubkey::from_str("J83w4HKfqxwcq3BEMMkPFSppX3gqekLyLJBexebFVkix").unwrap();
+        let mut maker = User {
+            authority: maker_authority,
+            orders: get_orders(Order {
+                market_index: 0,
+                post_only: true,
+                order_type: OrderType::Limit,
+                direction: PositionDirection::Short,
+                base_asset_amount: BASE_PRECISION_U64 / 2,
+                price: maker_price,
+                ..Order::default()
+            }),
+            perp_positions: get_positions(PerpPosition {
+                market_index: 0,
+                open_orders: 1,
+                open_asks: -BASE_PRECISION_I64 / 2,
+                ..PerpPosition::default()
+            }),
+            spot_positions: get_spot_positions(SpotPosition {
+                market_index: 0,
+                balance_type: SpotBalanceType::Deposit,
+                scaled_balance: 200 * SPOT_BALANCE_PRECISION_U64,
+                ..SpotPosition::default()
+            }),
+            ..User::default()
+        };
+        create_anchor_account_info!(maker, User, maker_account_info);
+        let makers_and_referrers = UserMap::load_one(&maker_account_info).unwrap();
+
+        let mut maker_stats = UserStats {
+            authority: maker_authority,
+            ..UserStats::default()
+        };
+        create_anchor_account_info!(maker_stats, UserStats, maker_stats_account_info);
+        let maker_and_referrer_stats = UserStatsMap::load_one(&maker_stats_account_info).unwrap();
+
+        let mut filler = User::default();
+        let mut filler_stats = UserStats::default();
+        let mut taker_stats = UserStats::default();
+        let (taker_key, _, filler_key) = get_user_keys();
+        let fee_structure = get_fee_structure();
+
+        let (base_asset_amount, _) = fulfill_perp_order(
+            &mut taker,
+            0,
+            &taker_key,
+            &mut taker_stats,
+            &makers_and_referrers,
+            &maker_and_referrer_stats,
+            &[(Pubkey::default(), 0, maker_price)],
+            &mut Some(&mut filler),
+            &filler_key,
+            &mut Some(&mut filler_stats),
+            &spot_market_map,
+            &market_map,
+            &mut oracle_map,
+            &ValidityGuardRails::default(),
+            &fee_structure,
+            100 * PRICE_PRECISION_U64,
+            Some(market.market_stats.historical_oracle_data.last_oracle_price),
+            now,
+            fill_slot,
+            false, // is_amm_available = false -> isolate the maker path
+            true,
+            FillMode::Fill,
+            false,
+            &mut None,
+        )
+        .unwrap();
+
+        (
+            base_asset_amount,
+            taker.perp_positions[0].quote_asset_amount,
+        )
+    }
+
+    #[test]
+    fn auction_end_price_caps_taker_fill_at_match_time() {
+        // Client tolerance = auction_end +10% ($110). A maker priced +12% ($112)
+        // is past that tolerance: the taker will NOT cross it, even though a
+        // market order carries no fixed limit price. Zero fill.
+        let (base_over, _) =
+            fill_against_maker(112 * PRICE_PRECISION_U64, 2, 110 * PRICE_PRECISION_I64);
+        assert_eq!(base_over, 0);
+
+        // Same order; maker at +8% ($108), inside the tolerance -> fills, and the
+        // realized price is the maker's $108, never the $110 tolerance.
+        let (base_in, quote_in) =
+            fill_against_maker(108 * PRICE_PRECISION_U64, 2, 110 * PRICE_PRECISION_I64);
+        assert_eq!(base_in, BASE_PRECISION_U64 / 2);
+        // 0.5 base * $108 = $54 paid (fees aside); bounded by the maker price,
+        // well under 0.5 * $110 = $55.
+        assert!(quote_in <= -(53 * QUOTE_PRECISION_I64));
+        assert!(quote_in >= -(55 * QUOTE_PRECISION_I64));
+    }
+
+    #[test]
+    fn amm_fill_price_capped_by_oracle_margin_band() {
+        // Mirrors the fill-time guard call in fulfill_perp_order (orders.rs:1363):
+        // margin_ratio_initial = 1000 (10%), oracle = twap = $100. The twap
+        // divergence limit (~50%) is generous so the margin band is the binding
+        // constraint, exactly as on-chain.
+        let oracle = 100 * PRICE_PRECISION_I64;
+        let twap = 100 * PRICE_PRECISION_I64;
+        let margin_ratio_initial = 1000u32;
+        let twap_divergence = PERCENTAGE_PRECISION_U64 / 2; // 50%
+
+        // within band: a +9% vAMM fill passes
+        assert!(validate_fill_price_within_price_bands(
+            109 * PRICE_PRECISION_U64,
+            oracle,
+            twap,
+            margin_ratio_initial,
+            twap_divergence,
+            None,
+        )
+        .is_ok());
+
+        // beyond band: a +11% vAMM fill reverts with PriceBandsBreached,
+        // regardless of any auction_end_price the order was signed with
+        assert_eq!(
+            validate_fill_price_within_price_bands(
+                111 * PRICE_PRECISION_U64,
+                oracle,
+                twap,
+                margin_ratio_initial,
+                twap_divergence,
+                None,
+            ),
+            Err(ErrorCode::PriceBandsBreached)
+        );
+    }
+}

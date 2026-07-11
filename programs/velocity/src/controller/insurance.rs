@@ -120,6 +120,16 @@ pub fn add_insurance_fund_stake(
     spot_market.insurance_fund.user_shares =
         spot_market.insurance_fund.user_shares.safe_add(n_shares)?;
 
+    // Grow the donation-proof accounted vault balance by this deposit so legitimate
+    // stakes lift the revenue-settle APR cap (unlike a raw SPL donation, which never
+    // runs this path). `insurance_vault_amount` is the pre-deposit vault, so the seed
+    // (first-touch) captures any pre-existing balance plus this deposit.
+    spot_market.if_last_settle_vault_amount = if spot_market.if_last_settle_vault_amount == 0 {
+        insurance_vault_amount.safe_add(amount)?
+    } else {
+        spot_market.if_last_settle_vault_amount.safe_add(amount)?
+    };
+
     update_user_stats_if_stake_amount(
         amount.cast()?,
         insurance_vault_amount,
@@ -437,6 +447,13 @@ pub fn remove_insurance_fund_stake(
     spot_market.insurance_fund.user_shares =
         spot_market.insurance_fund.user_shares.safe_sub(n_shares)?;
 
+    // Shrink the donation-proof accounted vault balance by this withdrawal so it tracks
+    // real outflows (keeping the revenue-settle APR cap base honest). Saturating: if the
+    // field is still uninitialized (0) it stays 0 and the next settle/add seeds it.
+    spot_market.if_last_settle_vault_amount = spot_market
+        .if_last_settle_vault_amount
+        .saturating_sub(withdraw_amount);
+
     // reset insurance_fund_stake withdraw request info
     insurance_fund_stake.last_withdraw_request_shares = 0;
     insurance_fund_stake.last_withdraw_request_value = 0;
@@ -568,12 +585,12 @@ pub fn settle_revenue_to_insurance_fund(
         // balance. `insurance_vault_amount` is the raw token-account balance, which
         // anyone can inflate with a direct SPL transfer right before a settle to
         // lift the cap toward the 1/10-of-revenue-pool bound. `if_last_settle_vault_amount`
-        // is the vault balance recorded at the previous settle, so a fresh donation
-        // is not reflected in it; taking the min means the cap can only be lifted by
-        // a balance that was already present a full period ago (i.e. sustained,
-        // staking-equivalent capital), not a pre-settle spike. A `0` snapshot means
-        // the field is uninitialized (existing account pre-upgrade) — seed it from
-        // the live balance for this first settle.
+        // is the accounted balance (grown only by stakes + settled revenue, shrunk by
+        // withdrawals), so a raw donation is not reflected in it; taking the min means a
+        // pre-settle donation spike cannot lift the cap, while legitimate stakes (which
+        // do update the accounted balance) still do. A `0` value means the field is
+        // uninitialized (existing account pre-upgrade) — seed it from the live balance
+        // for this first settle.
         let cap_vault_amount = if spot_market.if_last_settle_vault_amount == 0 {
             insurance_vault_amount
         } else {
@@ -611,11 +628,17 @@ pub fn settle_revenue_to_insurance_fund(
 
     spot_market.insurance_fund.last_revenue_settle_ts = now;
 
-    // Record the post-settle IF vault balance as the donation-proof base for the
-    // next period's APR cap (see the `cap_vault_amount` note above). This also
-    // seeds the field on the first post-upgrade settle for existing markets.
-    spot_market.if_last_settle_vault_amount =
-        insurance_vault_amount.safe_add(insurance_fund_token_amount)?;
+    // Grow the donation-proof accounted vault balance by the amount just settled in
+    // (see the `cap_vault_amount` note above). We add the delta rather than re-reading
+    // the live vault, so a raw SPL donation sitting in the vault is never folded into
+    // the accounted balance. Seed from the live vault on the first post-upgrade settle.
+    spot_market.if_last_settle_vault_amount = if spot_market.if_last_settle_vault_amount == 0 {
+        insurance_vault_amount.safe_add(insurance_fund_token_amount)?
+    } else {
+        spot_market
+            .if_last_settle_vault_amount
+            .safe_add(insurance_fund_token_amount)?
+    };
 
     // The insurance fund is staker-owned: once stakers exist, the entire settled
     // amount accrues to them as share-price appreciation (no protocol shares

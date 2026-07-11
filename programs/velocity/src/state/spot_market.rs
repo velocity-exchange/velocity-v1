@@ -209,14 +209,20 @@ pub struct SpotMarket {
     /// Protocol's carveout of lending deposit-interest gains, routed to
     /// `protocol_fee_pool`. precision: IF_FACTOR_PRECISION
     pub protocol_fee_factor: u32,
-    /// Insurance-fund vault token balance recorded at the end of the last
-    /// revenue settle. Used as a donation-proof base for the per-period APR cap
-    /// in `settle_revenue_to_insurance_fund`: the cap is sized off
-    /// `min(live_if_vault, this snapshot)`, so a direct SPL donation into the IF
-    /// vault right before a settle cannot inflate the cap (the snapshot predates
-    /// the donation). Repurposed from trailing padding — layout/size unchanged;
-    /// `0` on existing accounts means "uninitialized", handled by seeding it to
-    /// the live balance on the first post-upgrade settle.
+    /// Donation-proof accounted balance of the insurance-fund vault, maintained
+    /// through the accounted IF flows only — grown by staker deposits
+    /// (`add_insurance_fund_stake`) and settled revenue
+    /// (`settle_revenue_to_insurance_fund`), shrunk by withdrawals
+    /// (`remove_insurance_fund_stake`). A raw SPL donation into the vault runs
+    /// none of these, so it never enters this balance. Used as the base for the
+    /// per-period revenue-settle APR cap: the cap is sized off
+    /// `min(live_if_vault, this)`, so a donation right before a settle cannot
+    /// inflate the cap (the accounted balance excludes it) while legitimate
+    /// stakes still lift it. Repurposed from trailing padding — layout/size
+    /// unchanged; `0` on existing accounts means "uninitialized", seeded from the
+    /// live balance on the first post-upgrade add/settle. (IF-vault draws for
+    /// bankruptcy/deficit are not decremented here; the `min` with the live
+    /// balance keeps the cap correctly sized after such a draw.)
     pub if_last_settle_vault_amount: u64,
 }
 

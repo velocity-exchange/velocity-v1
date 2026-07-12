@@ -41,6 +41,7 @@ velocity-admin spot-market set-fee-factors <market> <ifFeeFactor> <protocolFeeFa
 velocity-admin exchange set-status <bitfield>
 velocity-admin exchange set-solvency-status <bitfield>  # cold admin; gates solvency-repair ixs (1=solvencyRepairPaused)
 
+velocity-admin feature-flags median-trigger-price <true|false>  # bit 2; enabling requires cold admin
 velocity-admin feature-flags builder-codes <true|false>  # bit 4; enabling requires cold admin
 
 velocity-admin fees set-recipient <pubkey> <perp|spot>           # cold admin

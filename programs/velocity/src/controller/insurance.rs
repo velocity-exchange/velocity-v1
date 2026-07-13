@@ -316,6 +316,14 @@ pub fn request_remove_insurance_fund_stake(
     Ok(())
 }
 
+/// Cancel a pending unstake request, modeled as **withdraw-and-restake at the current
+/// active share price** (finding #30). The staker's `n_shares` requested shares are
+/// treated as if they were withdrawn (paying out the value frozen at request time) and
+/// immediately re-staked at the price prevailing now: any appreciation accrued during the
+/// escrow window is forfeited to the remaining stakers (`if_shares_lost`), while a cancel
+/// with no appreciation leaves the stake untouched. See `calculate_if_shares_lost` for the
+/// exact share math and why bounding the withdraw leg by the request-time snapshot makes
+/// this donation-immune without reading the accounted `if_last_settle_vault_amount`.
 pub fn cancel_request_remove_insurance_fund_stake(
     insurance_vault_amount: u64,
     insurance_fund_stake: &mut InsuranceFundStake,
@@ -342,6 +350,10 @@ pub fn cancel_request_remove_insurance_fund_stake(
         "No withdraw request in progress"
     )?;
 
+    // Shares forfeited = requested shares minus the shares a withdraw-then-restake at the
+    // current active price (from the live vault balance) would leave. Priced off the live
+    // balance is safe here: the restake value is bounded by the request-time snapshot, so a
+    // raw donation cannot manufacture extractable forfeiture (see `calculate_if_shares_lost`).
     let if_shares_lost =
         calculate_if_shares_lost(insurance_fund_stake, spot_market, insurance_vault_amount)?;
 

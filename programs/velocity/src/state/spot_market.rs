@@ -220,13 +220,13 @@ pub struct SpotMarket {
     /// `resolve_spot_bankruptcy`. The one movement deliberately *excluded* is a
     /// raw SPL transfer straight into the vault: it runs no instruction, so it
     /// never enters this balance — that is exactly the donation the shadow must
-    /// not see. Consumed two ways, both off `min(live_if_vault, this)`: (1) the
-    /// per-period revenue-settle APR cap base, and (2) the unstake-cancel
-    /// share-forfeiture valuation (`calculate_if_shares_lost`). Taking the min
-    /// means a donation spiked into the live vault right before a settle or a
-    /// signed cancel cannot inflate the cap or manufacture forfeitable
-    /// "appreciation", while legitimate stakes and real settled revenue (which
-    /// this balance tracks) still do. Repurposed from trailing padding —
+    /// not see. Consumed by the per-period revenue-settle APR cap in
+    /// `settle_revenue_to_insurance_fund`, sized off `min(live_if_vault, this)`,
+    /// so a donation spiked into the live vault right before a settle cannot
+    /// inflate the cap while legitimate stakes and real settled revenue (which
+    /// this balance tracks) still do. (The unstake-cancel share forfeiture is
+    /// donation-proofed differently — by withdraw-and-restake at the active share
+    /// price — and does *not* read this field.) Repurposed from trailing padding —
     /// layout/size unchanged; `0` means "uninitialized" (existing account
     /// pre-upgrade, or an accounted balance legitimately drained to empty — an
     /// empty IF vault has no user shares, so this is safe), and is seeded from the

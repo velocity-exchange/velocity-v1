@@ -385,7 +385,7 @@ export function calculateLiveOracleStd(
  */
 export function getNewOracleConfPct(
 	marketStats: MarketStats,
-	oraclePriceData: OraclePriceData,
+	oraclePriceData: Pick<OraclePriceData, 'confidence'>,
 	reservePrice: BN,
 	now: BN
 ): BN {

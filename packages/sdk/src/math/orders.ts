@@ -281,7 +281,7 @@ export function calculateBaseAssetAmountToFillUpToLimitPrice(
 	orderStepSize: BN,
 	orderTickSize: BN,
 	limitPrice: BN,
-	mmOraclePriceData: MMOraclePriceData
+	mmOraclePriceData: Pick<MMOraclePriceData, 'price' | 'confidence'>
 ): BN {
 	const adjustedLimitPrice = isVariant(order.direction, 'long')
 		? limitPrice.sub(orderTickSize)

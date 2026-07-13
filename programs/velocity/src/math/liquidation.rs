@@ -133,6 +133,26 @@ pub fn calculate_user_protective_asset_price(
         .max(confidence_adjusted_high_price))
 }
 
+/// Liability-side counterpart of [`calculate_user_protective_asset_price`]: a margin-invalid
+/// (stale/uncertain) borrow oracle must not overvalue the liability being repaid, since the
+/// exchange rate `liability_price / asset_price` cheapens the user's collateral from either
+/// side. Prices the repayment at `min(oracle, 5min twap, oracle - confidence)`, floored at 1
+/// to keep the exchange-rate math well-defined.
+pub fn calculate_user_protective_liability_price(
+    oracle_price_data: &OraclePriceData,
+    last_oracle_price_twap_5min: i64,
+) -> VelocityResult<i64> {
+    let confidence_adjusted_low_price = oracle_price_data
+        .price
+        .saturating_sub(oracle_price_data.confidence.cast::<i64>()?);
+
+    Ok(oracle_price_data
+        .price
+        .min(last_oracle_price_twap_5min)
+        .min(confidence_adjusted_low_price)
+        .max(1))
+}
+
 pub fn calculate_liability_transfer_implied_by_asset_amount(
     asset_amount: u128,
     asset_liquidation_multiplier: u32,

@@ -9,6 +9,7 @@ import {
 	calculatePerpIfFee,
 	calculateSpotIfFee,
 	calculateUserProtectiveAssetPrice,
+	calculateUserProtectiveLiabilityPrice,
 } from '../../src';
 
 describe('calculateMaxPctToLiquidate', () => {
@@ -155,5 +156,45 @@ describe('calculateUserProtectiveAssetPrice', () => {
 		);
 
 		assert.isTrue(price.eq(new BN(110).mul(PRICE_PRECISION)));
+	});
+});
+
+describe('calculateUserProtectiveLiabilityPrice', () => {
+	it('uses the 5min twap when the (stale) oracle price is above it', () => {
+		const price = calculateUserProtectiveLiabilityPrice(
+			new BN(110).mul(PRICE_PRECISION),
+			new BN(0),
+			new BN(100).mul(PRICE_PRECISION)
+		);
+
+		assert.isTrue(price.eq(new BN(100).mul(PRICE_PRECISION)));
+	});
+
+	it('uses the confidence-adjusted low when it is below oracle and twap', () => {
+		const price = calculateUserProtectiveLiabilityPrice(
+			new BN(100).mul(PRICE_PRECISION),
+			new BN(5).mul(PRICE_PRECISION),
+			new BN(105).mul(PRICE_PRECISION)
+		);
+
+		assert.isTrue(price.eq(new BN(95).mul(PRICE_PRECISION)));
+	});
+
+	it('never returns more than the raw oracle price and floors at 1', () => {
+		const price = calculateUserProtectiveLiabilityPrice(
+			new BN(90).mul(PRICE_PRECISION),
+			new BN(0),
+			new BN(100).mul(PRICE_PRECISION)
+		);
+
+		assert.isTrue(price.eq(new BN(90).mul(PRICE_PRECISION)));
+
+		const floored = calculateUserProtectiveLiabilityPrice(
+			new BN(100).mul(PRICE_PRECISION),
+			new BN(200).mul(PRICE_PRECISION),
+			new BN(100).mul(PRICE_PRECISION)
+		);
+
+		assert.isTrue(floored.eq(new BN(1)));
 	});
 });

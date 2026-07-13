@@ -134,11 +134,14 @@ pub fn liquidate_perp(
 
     drop(market);
 
+    let funding_paused = state.funding_paused()?;
+
     settle_funding_payment(
         user,
         user_key,
         perp_market_map.get_ref_mut(&market_index)?.deref_mut(),
         now,
+        funding_paused,
     )?;
 
     settle_funding_payment(
@@ -146,6 +149,7 @@ pub fn liquidate_perp(
         liquidator_key,
         perp_market_map.get_ref_mut(&market_index)?.deref_mut(),
         now,
+        funding_paused,
     )?;
 
     let margin_calculation = calculate_margin_requirement_and_total_collateral_and_liability_info(
@@ -794,11 +798,14 @@ pub fn liquidate_perp_with_fill(
 
     drop(market);
 
+    let funding_paused = state.funding_paused()?;
+
     settle_funding_payment(
         &mut user,
         user_key,
         perp_market_map.get_ref_mut(&market_index)?.deref_mut(),
         now,
+        funding_paused,
     )?;
 
     settle_funding_payment(
@@ -806,6 +813,7 @@ pub fn liquidate_perp_with_fill(
         liquidator_key,
         perp_market_map.get_ref_mut(&market_index)?.deref_mut(),
         now,
+        funding_paused,
     )?;
 
     let margin_calculation = calculate_margin_requirement_and_total_collateral_and_liability_info(
@@ -2485,6 +2493,7 @@ pub fn liquidate_borrow_for_perp_pnl(
         user_key,
         perp_market_map.get_ref_mut(&perp_market_index)?.deref_mut(),
         now,
+        funding_paused,
     )?;
 
     settle_funding_payment(
@@ -2492,6 +2501,7 @@ pub fn liquidate_borrow_for_perp_pnl(
         liquidator_key,
         perp_market_map.get_ref_mut(&perp_market_index)?.deref_mut(),
         now,
+        funding_paused,
     )?;
 
     let (pnl, quote_price, quote_decimals, pnl_asset_weight, pnl_liquidation_multiplier) = {
@@ -2964,6 +2974,7 @@ pub fn liquidate_perp_pnl_for_deposit(
         user_key,
         perp_market_map.get_ref_mut(&perp_market_index)?.deref_mut(),
         now,
+        funding_paused,
     )?;
 
     settle_funding_payment(
@@ -2971,6 +2982,7 @@ pub fn liquidate_perp_pnl_for_deposit(
         liquidator_key,
         perp_market_map.get_ref_mut(&perp_market_index)?.deref_mut(),
         now,
+        funding_paused,
     )?;
 
     let (

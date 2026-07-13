@@ -37,7 +37,22 @@ pub fn settle_funding_payment(
     user_key: &Pubkey,
     market: &mut PerpMarket,
     now: UnixTimestamp,
+    funding_paused: bool,
 ) -> VelocityResult {
+    // Freeze funding application when the exchange-wide funding pause
+    // (`State::funding_paused`) is set. The market's cumulative funding
+    // accumulators are already frozen by the gated `update_funding_rate` crank,
+    // so any delta still owed on the position is left unapplied — the user's
+    // `last_cumulative_funding_rate` is untouched, so the next settlement after
+    // funding resumes covers the full elapsed interval. `funding_paused` is
+    // threaded in from callers because the global flag lives on `State`, which
+    // this controller does not load; this mirrors the dedicated
+    // `settle_funding_payment` instruction, which the `funding_not_paused`
+    // access_control blocks outright while paused.
+    if funding_paused {
+        return Ok(());
+    }
+
     let position_index = match get_position_index(&user.perp_positions, market.market_index) {
         Ok(position_index) => position_index,
         Err(_) => return Ok(()),

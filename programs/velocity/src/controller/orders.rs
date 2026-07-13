@@ -1050,8 +1050,9 @@ pub fn fill_perp_order(
     )?;
 
     // settle lp position so its tradeable
+    let funding_paused = state.funding_paused()?;
     let mut market = perp_market_map.get_ref_mut(&market_index)?;
-    settle_funding_payment(user, &user_key, &mut market, now)?;
+    settle_funding_payment(user, &user_key, &mut market, now, funding_paused)?;
 
     validate!(
         matches!(
@@ -1262,6 +1263,7 @@ pub fn fill_perp_order(
         jit_maker_order_id,
         now,
         slot,
+        funding_paused,
     )?;
 
     let oracle_too_divergent_with_twap_5min = is_oracle_too_divergent_with_twap_5min(
@@ -1545,6 +1547,7 @@ fn get_maker_orders_info(
     jit_maker_order_id: Option<u32>,
     now: i64,
     slot: u64,
+    funding_paused: bool,
 ) -> VelocityResult<Vec<(Pubkey, usize, u64)>> {
     let maker_direction = taker_order.direction.opposite();
 
@@ -1578,7 +1581,7 @@ fn get_maker_orders_info(
 
         maker.update_last_active_slot(slot);
 
-        settle_funding_payment(&mut maker, maker_key, &mut market, now)?;
+        settle_funding_payment(&mut maker, maker_key, &mut market, now, funding_paused)?;
 
         let initial_margin_ratio = market.margin_ratio_initial;
         let step_size = market.order_step_size;

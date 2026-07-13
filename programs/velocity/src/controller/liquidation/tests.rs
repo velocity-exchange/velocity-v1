@@ -7853,6 +7853,7 @@ pub mod resolve_perp_bankruptcy {
                 &Pubkey::default(),
                 &mut market,
                 now,
+                false,
             )
             .unwrap()
         }
@@ -7891,6 +7892,7 @@ pub mod resolve_perp_bankruptcy {
                 &Pubkey::default(),
                 &mut market,
                 now,
+                false,
             )
             .unwrap()
         }
@@ -8043,8 +8045,14 @@ pub mod resolve_perp_bankruptcy {
             };
 
             let mut market = market_map.get_ref_mut(&0).unwrap();
-            settle_funding_payment(&mut affected_user, &Pubkey::default(), &mut market, now)
-                .unwrap();
+            settle_funding_payment(
+                &mut affected_user,
+                &Pubkey::default(),
+                &mut market,
+                now,
+                false,
+            )
+            .unwrap();
         }
 
         // All settled: only rounding dust remains, not the full socialized loss.
@@ -8491,6 +8499,7 @@ pub mod resolve_perp_bankruptcy {
                 &Pubkey::default(),
                 &mut market,
                 now,
+                false,
             )
             .unwrap()
         }
@@ -8529,6 +8538,7 @@ pub mod resolve_perp_bankruptcy {
                 &Pubkey::default(),
                 &mut market,
                 now,
+                false,
             )
             .unwrap()
         }

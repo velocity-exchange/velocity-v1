@@ -2,7 +2,10 @@ use std::{
     collections::HashSet,
     env,
     net::SocketAddr,
-    sync::{atomic::AtomicBool, Arc},
+    sync::{
+        atomic::{AtomicBool, AtomicU64, Ordering},
+        Arc,
+    },
     time::{Duration, SystemTime},
 };
 
@@ -136,6 +139,41 @@ pub struct ServerParams {
     user_account_fetcher: UserAccountFetcher,
     config: Arc<Config>,
     farmer_pubkeys: HashSet<Pubkey>,
+    rpc_health_cache: RpcHealthCache,
+}
+
+/// TTL for the cached RPC `get_health` result. k8s liveness/readiness probes
+/// hit `/health` far more often than the RPC's health can meaningfully change,
+/// so we only re-probe the RPC at most once per this window.
+const RPC_HEALTH_CACHE_TTL_MS: u64 = 60_000;
+
+/// Caches the result of the RPC `get_health` probe so `/health` doesn't
+/// round-trip to the RPC on every k8s probe. All other health signals (ws,
+/// slot subscriber, redis, market subs) are already read from local
+/// subscribed state, so they stay live on every call.
+#[derive(Default)]
+struct RpcHealthCache {
+    /// unix-ms timestamp of the last real RPC probe; 0 means never probed.
+    last_checked_ms: AtomicU64,
+    healthy: AtomicBool,
+}
+
+impl RpcHealthCache {
+    /// Returns the cached health if the last probe is within the TTL, else
+    /// `None` to signal the caller should re-probe.
+    fn get_fresh(&self, now_ms: u64) -> Option<bool> {
+        let last = self.last_checked_ms.load(Ordering::Relaxed);
+        if last != 0 && now_ms.saturating_sub(last) < RPC_HEALTH_CACHE_TTL_MS {
+            Some(self.healthy.load(Ordering::Relaxed))
+        } else {
+            None
+        }
+    }
+
+    fn store(&self, now_ms: u64, healthy: bool) {
+        self.healthy.store(healthy, Ordering::Relaxed);
+        self.last_checked_ms.store(now_ms, Ordering::Relaxed);
+    }
 }
 
 pub async fn fallback(uri: axum::http::Uri) -> impl axum::response::IntoResponse {
@@ -683,8 +721,17 @@ pub async fn health_check(
                     .len() as u16
     });
 
-    // Check if rpc is healthy
-    let rpc_healthy = server_params.velocity.rpc().get_health().await.is_ok();
+    // Check if rpc is healthy, caching the result so k8s probes don't
+    // round-trip to the RPC's getHealth on every hit.
+    let now_ms = unix_now_ms();
+    let rpc_healthy = match server_params.rpc_health_cache.get_fresh(now_ms) {
+        Some(cached) => cached,
+        None => {
+            let healthy = server_params.velocity.rpc().get_health().await.is_ok();
+            server_params.rpc_health_cache.store(now_ms, healthy);
+            healthy
+        }
+    };
 
     if ws_healthy
         && slot_sub_healthy
@@ -788,6 +835,7 @@ pub async fn start_server() {
         user_account_fetcher,
         config: Arc::new(Config::from_env()),
         farmer_pubkeys: HashSet::from_iter(pubkeys),
+        rpc_health_cache: RpcHealthCache::default(),
     }));
 
     // start oracle/market subscriptions (async)
@@ -2533,6 +2581,7 @@ mod tests {
             velocity,
             farmer_pubkeys: Default::default(),
             redis_pool,
+            rpc_health_cache: RpcHealthCache::default(),
         };
 
         // Create mock order params

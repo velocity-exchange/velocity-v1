@@ -139,6 +139,8 @@ export const PRICE_TIMES_AMM_TO_QUOTE_PRECISION_RATIO = PRICE_PRECISION.mul(
 
 /** 300 seconds. */
 export const FIVE_MINUTE = new BN(60 * 5);
+/** Max age of the last fill before the trigger price's last-fill leg is treated as absent (oracle price substitutes). */
+export const TRIGGER_PRICE_LAST_FILL_MAX_AGE = FIVE_MINUTE;
 /** 3600 seconds. */
 export const ONE_HOUR = new BN(60 * 60);
 /** 31,536,000 seconds (365 days). */

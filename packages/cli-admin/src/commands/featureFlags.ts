@@ -24,6 +24,34 @@ export function registerFeatureFlags(parent: Command): void {
 
 	withGlobalOptions(
 		ff
+			.command('median-trigger-price <enable>')
+			.description(
+				'Enable/disable the median trigger price for trigger-order evaluation (bit 2). Enabling requires the cold admin. <enable> = true|false|on|off|1|0.'
+			)
+	).action(async (enable: string, _flags, cmd: Command) => {
+		const on = parseEnable(enable);
+		const opts = readGlobalOpts(cmd);
+		const provider = buildProvider(opts);
+		const client = await buildAdminClient(opts);
+		try {
+			const ix = await client.getUpdateFeatureBitFlagsMedianTriggerPriceIx(on);
+			const result = await sendOrPropose(
+				provider,
+				[ix],
+				opts.multisig ? new PublicKey(opts.multisig) : undefined,
+				'velocity-admin feature-flags median-trigger-price'
+			);
+			reportDispatch(
+				`median trigger price = ${on ? 'enabled' : 'disabled'}`,
+				result
+			);
+		} finally {
+			await client.unsubscribe();
+		}
+	});
+
+	withGlobalOptions(
+		ff
 			.command('builder-codes <enable>')
 			.description(
 				'Enable/disable builder codes (bit 4). Enabling requires the cold admin. <enable> = true|false|on|off|1|0.'

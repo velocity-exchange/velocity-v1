@@ -130,7 +130,6 @@ impl Config {
     }
 }
 
-#[derive(Clone)]
 pub struct ServerParams {
     velocity: velocity_rs::VelocityClient,
     slot_subscriber: Arc<SuperSlotSubscriber>,

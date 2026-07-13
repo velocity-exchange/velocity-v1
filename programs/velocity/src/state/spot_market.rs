@@ -209,20 +209,29 @@ pub struct SpotMarket {
     /// Protocol's carveout of lending deposit-interest gains, routed to
     /// `protocol_fee_pool`. precision: IF_FACTOR_PRECISION
     pub protocol_fee_factor: u32,
-    /// Donation-proof accounted balance of the insurance-fund vault, maintained
-    /// through the accounted IF flows only — grown by staker deposits
-    /// (`add_insurance_fund_stake`) and settled revenue
-    /// (`settle_revenue_to_insurance_fund`), shrunk by withdrawals
-    /// (`remove_insurance_fund_stake`). A raw SPL donation into the vault runs
-    /// none of these, so it never enters this balance. Used as the base for the
-    /// per-period revenue-settle APR cap: the cap is sized off
-    /// `min(live_if_vault, this)`, so a donation right before a settle cannot
-    /// inflate the cap (the accounted balance excludes it) while legitimate
-    /// stakes still lift it. Repurposed from trailing padding — layout/size
-    /// unchanged; `0` on existing accounts means "uninitialized", seeded from the
-    /// live balance on the first post-upgrade add/settle. (IF-vault draws for
-    /// bankruptcy/deficit are not decremented here; the `min` with the live
-    /// balance keeps the cap correctly sized after such a draw.)
+    /// Donation-proof accounted balance of the insurance-fund vault. It is moved
+    /// by the same signed delta as the real SPL vault on *every* instruction that
+    /// moves the vault, so it stays a faithful shadow of the vault minus raw
+    /// donations. Inflows grow it: staker deposits (`add_insurance_fund_stake`)
+    /// and settled revenue (`settle_revenue_to_insurance_fund`). Outflows/draws
+    /// shrink it (saturating at 0): staker withdrawals
+    /// (`remove_insurance_fund_stake`) and every IF draw that covers a loss —
+    /// `resolve_perp_pnl_deficit`, `resolve_perp_bankruptcy`,
+    /// `resolve_spot_bankruptcy`. The one movement deliberately *excluded* is a
+    /// raw SPL transfer straight into the vault: it runs no instruction, so it
+    /// never enters this balance — that is exactly the donation the shadow must
+    /// not see. Consumed two ways, both off `min(live_if_vault, this)`: (1) the
+    /// per-period revenue-settle APR cap base, and (2) the unstake-cancel
+    /// share-forfeiture valuation (`calculate_if_shares_lost`). Taking the min
+    /// means a donation spiked into the live vault right before a settle or a
+    /// signed cancel cannot inflate the cap or manufacture forfeitable
+    /// "appreciation", while legitimate stakes and real settled revenue (which
+    /// this balance tracks) still do. Repurposed from trailing padding —
+    /// layout/size unchanged; `0` means "uninitialized" (existing account
+    /// pre-upgrade, or an accounted balance legitimately drained to empty — an
+    /// empty IF vault has no user shares, so this is safe), and is seeded from the
+    /// live balance on the next add/settle and treated as "fall back to live" by
+    /// the consumers.
     pub if_last_settle_vault_amount: u64,
 }
 

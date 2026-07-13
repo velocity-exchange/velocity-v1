@@ -203,7 +203,11 @@ const runBot = async () => {
 			configHasBot(config, 'spotFillerMultithreaded');
 		txSender = new FastSingleTxSender({
 			connection: sendTxConnection,
-			blockhashRefreshInterval: 500,
+			// Disable the background blockhash refresh loop: FastSingleTxSender's
+			// `recentBlockhash` cache is never consumed by `sendRawTransaction`, and
+			// the filler builds txs from its own BlockhashSubscriber. The loop was
+			// pure redundant getLatestBlockhash traffic.
+			blockhashRefreshInterval: 0,
 			wallet,
 			opts,
 			skipConfirmation,

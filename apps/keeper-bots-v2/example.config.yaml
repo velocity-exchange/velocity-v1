@@ -111,6 +111,10 @@ enabledBots:
   # settles PnLs for the insurance fund (may want to run with runOnce: true)
   # - ifRevenueSettler
 
+  # sweeps + withdraws protocol fees to the configured recipients (may want to
+  # run with runOnce: true under a cron; signer needs the FeeWithdraw hot role)
+  # - protocolFeeCollector
+
   # settles negative PnLs for users (may want to run with runOnce: true)
   # - userPnlSettler
 
@@ -197,6 +201,12 @@ botConfigs:
     botId: 'trigger'
     dryRun: false
     metricsPort: 9465
+
+  protocolFeeCollector:
+    botId: 'protocolFeeCollector'
+    dryRun: false
+    metricsPort: 9464
+    runOnce: true
 
   markTwapCrank:
     botId: 'mark-twap-cranker'

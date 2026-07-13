@@ -459,6 +459,26 @@ pub fn settle_expired_position(
         perp_market.expiry_ts
     )?;
 
+    // Expired-position settlement mutates the market PnL pool and user balances
+    // just like `settle_pnl`, so it must honor the same market-scoped settle
+    // pause bits. Without this, a paused market could still have its expired
+    // positions closed out permissionlessly.
+    validate!(
+        !perp_market.is_operation_paused(PerpOperation::SettlePnl),
+        ErrorCode::InvalidMarketStatusToSettlePnl,
+        "Cannot settle expired position: market {} SettlePnl paused",
+        perp_market_index
+    )?;
+
+    if user.perp_positions[position_index].base_asset_amount != 0 {
+        validate!(
+            !perp_market.is_operation_paused(PerpOperation::SettlePnlWithPosition),
+            ErrorCode::InvalidMarketStatusToSettlePnl,
+            "Cannot settle expired position: market {} SettlePnlWithPosition paused",
+            perp_market_index
+        )?;
+    }
+
     let position_settlement_ts = perp_market
         .expiry_ts
         .safe_add(state.settlement_duration.cast()?)?;

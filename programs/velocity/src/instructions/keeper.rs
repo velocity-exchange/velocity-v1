@@ -214,7 +214,7 @@ pub fn handle_revert_fill<'info>(ctx: Context<RevertFill>) -> Result<()> {
 }
 
 #[access_control(
-    exchange_not_paused(&ctx.accounts.state)
+    fill_not_paused(&ctx.accounts.state)
 )]
 pub fn handle_trigger_order<'c: 'info, 'info>(
     ctx: Context<'info, TriggerOrder<'info>>,
@@ -1182,7 +1182,8 @@ pub fn handle_liquidate_perp<'c: 'info, 'info>(
 }
 
 #[access_control(
-liq_not_paused(&ctx.accounts.state)
+    liq_not_paused(&ctx.accounts.state)
+    fill_not_paused(&ctx.accounts.state)
 )]
 pub fn handle_liquidate_perp_with_fill<'c: 'info, 'info>(
     ctx: Context<'info, LiquidatePerp<'info>>,

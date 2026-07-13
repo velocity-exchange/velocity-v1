@@ -1363,6 +1363,31 @@ pub fn handle_liquidate_spot_with_swap_begin<'c: 'info, 'info>(
         now,
     )?;
 
+    // The swap sends asset-vault tokens out and pulls liability tokens in — the
+    // same egress/ingress the direct spot withdraw/deposit paths gate. `liq_not_paused`
+    // alone doesn't cover them, so mirror `end_swap`: reject when the global
+    // Deposit/Withdraw status is paused, when the asset market's Withdraw is
+    // paused, or when the liability market's Deposit is paused. Gating the begin
+    // ix is sufficient — a matching end ix is required in the same atomic tx.
+    validate!(
+        !(state.deposit_paused()? || state.withdraw_paused()?),
+        ErrorCode::ExchangePaused
+    )?;
+
+    validate!(
+        !asset_spot_market.is_operation_paused(SpotOperation::Withdraw),
+        ErrorCode::MarketWithdrawPaused,
+        "asset spot market {} withdraws paused",
+        asset_market_index
+    )?;
+
+    validate!(
+        !liability_spot_market.is_operation_paused(SpotOperation::Deposit),
+        ErrorCode::MarketActionPaused,
+        "liability spot market {} deposits paused",
+        liability_market_index
+    )?;
+
     drop(liability_spot_market);
     drop(asset_spot_market);
 
@@ -2546,6 +2571,16 @@ pub fn handle_settle_revenue_to_insurance_fund<'c: 'info, 'info>(
         spot_market_index == spot_market.market_index,
         ErrorCode::InvalidSpotMarketAccount,
         "invalid spot_market passed"
+    )?;
+
+    // Moving revenue out of the spot vault into the IF vault is an egress from
+    // the market: gate it on the market-scoped Withdraw pause, not just the
+    // global `withdraw_not_paused` access control.
+    validate!(
+        !spot_market.is_operation_paused(SpotOperation::Withdraw),
+        ErrorCode::MarketWithdrawPaused,
+        "spot market {} withdraws paused",
+        spot_market.market_index
     )?;
 
     validate!(

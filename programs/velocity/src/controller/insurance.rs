@@ -28,6 +28,7 @@ use crate::math::spot_balance::get_token_amount;
 use crate::math::spot_withdraw::validate_spot_market_vault_amount;
 use crate::state::events::{InsuranceFundRecord, InsuranceFundStakeRecord, StakeAction};
 use crate::state::insurance_fund_stake::InsuranceFundStake;
+use crate::state::paused_operations::SpotOperation;
 use crate::state::perp_market::PerpMarket;
 use crate::state::spot_market::{SpotBalanceType, SpotMarket};
 use crate::state::state::State;
@@ -481,6 +482,17 @@ pub fn attempt_settle_revenue_to_insurance_fund<'info>(
     mint: &Option<InterfaceAccount<'info, Mint>>,
     remaining_accounts: Option<&mut Peekable<Iter<'info, AccountInfo<'info>>>>,
 ) -> Result<()> {
+    // This is an opportunistic settle folded into other instructions (IF-add,
+    // liquidations, pnl-deficit resolution). Moving revenue into the IF vault
+    // is a spot-vault egress, so it must respect the same withdraw pauses the
+    // direct `settle_revenue_to_insurance_fund` instruction enforces — the
+    // global `WithdrawPaused` status and the market-scoped `SpotOperation::Withdraw`
+    // bit. Unlike the direct instruction we *skip* (rather than error) so a
+    // withdraw pause never bricks the host instruction (e.g. a liquidation).
+    if state.withdraw_paused()? || spot_market.is_operation_paused(SpotOperation::Withdraw) {
+        return Ok(());
+    }
+
     let valid_revenue_settle_time = if spot_market.insurance_fund.revenue_settle_period > 0 {
         let time_until_next_update = on_the_hour_update(
             now,

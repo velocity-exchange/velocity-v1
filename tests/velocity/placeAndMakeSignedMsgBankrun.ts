@@ -65,12 +65,8 @@ import { BankrunContextWrapper } from '../../packages/sdk/src/bankrun/bankrunCon
 import dotenv from 'dotenv';
 import { nanoid } from 'nanoid';
 import { createHash } from 'crypto';
-import {
-	PYTH_LAZER_HEX_STRING_SOL,
-	PYTH_LAZER_HEX_STRING_SOL_LATER,
-	PYTH_LAZER_TS_SOL,
-	PYTH_STORAGE_DATA,
-} from './pythLazerData';
+import { PYTH_LAZER_HEX_STRING_SOL_LATER } from './pythLazerData';
+import { freshLazerSolHex, mockLazerStorageData } from './pythLazerMock';
 
 dotenv.config();
 
@@ -79,7 +75,7 @@ const PYTH_STORAGE_ACCOUNT_INFO: AccountInfo<Buffer> = {
 	lamports: LAMPORTS_PER_SOL,
 	owner: new PublicKey(PYTH_LAZER_PROGRAM_ID),
 	rentEpoch: 0,
-	data: Buffer.from(PYTH_STORAGE_DATA, 'base64'),
+	data: Buffer.from(mockLazerStorageData(), 'base64'),
 };
 
 describe('place and make signedMsg order', () => {
@@ -429,23 +425,16 @@ describe('place and make signedMsg order', () => {
 			await bankrunContextWrapper.connection.toConnection().getSlot()
 		);
 
-		// Pin the clock to the (frozen) SOL fixture's timestamp so the on-chain max-staleness
-		// check accepts it (both the direct posts here and the crank ix bundled into the fill
-		// tx below). setTimestamp preserves the slot captured above. See
-		// PYTH_LAZER_MAX_STALENESS_SECONDS. The later SOL_LATER crank is monotonic-skipped
-		// (its timestamp precedes SOL's), so it needs no pin.
-		await bankrunContextWrapper.setTimestamp(PYTH_LAZER_TS_SOL);
-
 		// Switch the oracle over to using pyth lazer
 		await makerVelocityClient.initializePythLazerOracle(6);
 		await makerVelocityClient.postPythLazerOracleUpdate(
 			[6],
-			PYTH_LAZER_HEX_STRING_SOL
+			freshLazerSolHex(bankrunContextWrapper.connection.getTime())
 		);
 
 		await makerVelocityClient.postPythLazerOracleUpdate(
 			[6],
-			PYTH_LAZER_HEX_STRING_SOL
+			freshLazerSolHex(bankrunContextWrapper.connection.getTime())
 		);
 		await makerVelocityClient.updatePerpMarketOracle(
 			0,
@@ -530,9 +519,11 @@ describe('place and make signedMsg order', () => {
 
 		// Get pyth lazer instruction
 		const pythLazerCrankIxs =
+			// crank rides inside the fill tx sent further below (after building the lookup
+			// table + taker), so lead the stamp to stay fresh across those transactions.
 			await makerVelocityClient.getPostPythLazerOracleUpdateIxs(
 				[6],
-				PYTH_LAZER_HEX_STRING_SOL,
+				freshLazerSolHex(bankrunContextWrapper.connection.getTime(), 90),
 				undefined,
 				1
 			);

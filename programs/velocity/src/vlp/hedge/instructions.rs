@@ -720,7 +720,12 @@ pub fn handle_lp_pool_add_liquidity<'c: 'info, 'info>(
 
     // TODO: check self.aum validity
 
-    update_spot_market_cumulative_interest(&mut in_spot_market, Some(&in_oracle), now)?;
+    update_spot_market_cumulative_interest(
+        &mut in_spot_market,
+        Some(&in_oracle),
+        now,
+        state.funding_paused()?,
+    )?;
 
     msg!("aum: {}", lp_pool.last_aum);
     let in_target_weight = if lp_pool.last_aum == 0 {
@@ -1088,7 +1093,12 @@ pub fn handle_lp_pool_remove_liquidity<'c: 'info, 'info>(
         return Err(ErrorCode::InvalidOracle.into());
     }
 
-    update_spot_market_cumulative_interest(&mut out_spot_market, Some(&out_oracle), now)?;
+    update_spot_market_cumulative_interest(
+        &mut out_spot_market,
+        Some(&out_oracle),
+        now,
+        state.funding_paused()?,
+    )?;
 
     let out_target_weight = constituent_target_base.get_target_weight(
         out_constituent.constituent_index,
@@ -1431,6 +1441,7 @@ pub fn handle_deposit_to_program_vault<'c: 'info, 'info>(
         &mut spot_market,
         Some(oracle_data),
         clock.unix_timestamp,
+        ctx.accounts.state.load()?.funding_paused()?,
     )?;
     let token_balance_after_cumulative_interest_update = constituent
         .spot_balance
@@ -1560,6 +1571,7 @@ pub fn handle_withdraw_from_program_vault<'c: 'info, 'info>(
         &mut spot_market,
         Some(oracle_data),
         clock.unix_timestamp,
+        ctx.accounts.state.load()?.funding_paused()?,
     )?;
     let token_balance_after_cumulative_interest_update = constituent
         .spot_balance

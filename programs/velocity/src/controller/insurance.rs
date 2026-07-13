@@ -504,6 +504,7 @@ pub fn attempt_settle_revenue_to_insurance_fund<'info>(
             spot_market,
             now,
             false,
+            state.funding_paused()?,
         )?;
 
         if token_amount > 0 {
@@ -541,8 +542,9 @@ pub fn settle_revenue_to_insurance_fund(
     spot_market: &mut SpotMarket,
     now: i64,
     check_invariants: bool,
+    funding_paused: bool,
 ) -> VelocityResult<u64> {
-    update_spot_market_cumulative_interest(spot_market, None, now)?;
+    update_spot_market_cumulative_interest(spot_market, None, now, funding_paused)?;
 
     if spot_market.insurance_fund.revenue_settle_period == 0 {
         // revenue pool not configured to settle, ending early
@@ -643,6 +645,7 @@ pub fn resolve_perp_pnl_deficit(
     spot_market: &mut SpotMarket,
     market: &mut PerpMarket,
     now: i64,
+    funding_paused: bool,
 ) -> VelocityResult<u64> {
     validate!(
         market.amm.is_underwater(),
@@ -675,7 +678,7 @@ pub fn resolve_perp_pnl_deficit(
         net_user_pnl
     )?;
 
-    update_spot_market_cumulative_interest(spot_market, None, now)?;
+    update_spot_market_cumulative_interest(spot_market, None, now, funding_paused)?;
 
     let total_if_shares_before = spot_market.insurance_fund.total_shares;
 

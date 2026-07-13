@@ -570,6 +570,7 @@ pub fn handle_deposit<'c: 'info, 'info>(
         &mut spot_market,
         Some(&oracle_price_data),
         now,
+        state.funding_paused()?,
     )?;
 
     let position_index = user.force_get_spot_position_index(spot_market.market_index)?;
@@ -760,6 +761,7 @@ pub fn handle_withdraw<'c: 'info, 'info>(
             spot_market,
             Some(oracle_price_data),
             now,
+            state.funding_paused()?,
         )?;
 
         spot_market.is_reduce_only()
@@ -963,6 +965,7 @@ pub fn handle_transfer_deposit_by_delegate<'c: 'info, 'info>(
         &mut oracle_map,
         now,
         slot,
+        state.funding_paused()?,
     )?;
 
     if equity_floor_delta > 0 {
@@ -1058,6 +1061,7 @@ pub fn handle_transfer_deposit<'c: 'info, 'info>(
         &mut oracle_map,
         now,
         slot,
+        state.funding_paused()?,
     )
 }
 
@@ -1086,6 +1090,7 @@ fn transfer_spot_deposit(
     oracle_map: &mut OracleMap,
     now: i64,
     slot: u64,
+    funding_paused: bool,
 ) -> anchor_lang::Result<()> {
     {
         let spot_market = &mut spot_market_map.get_ref_mut(&market_index)?;
@@ -1094,6 +1099,7 @@ fn transfer_spot_deposit(
             spot_market,
             Some(oracle_price_data),
             now,
+            funding_paused,
         )?;
     }
 
@@ -1413,24 +1419,28 @@ pub fn handle_transfer_pools<'c: 'info, 'info>(
         &mut deposit_from_spot_market,
         Some(&deposit_from_oracle_price_data),
         clock.unix_timestamp,
+        state.funding_paused()?,
     )?;
 
     controller::spot_balance::update_spot_market_cumulative_interest(
         &mut deposit_to_spot_market,
         Some(&deposit_to_oracle_price_data),
         clock.unix_timestamp,
+        state.funding_paused()?,
     )?;
 
     controller::spot_balance::update_spot_market_cumulative_interest(
         &mut borrow_from_spot_market,
         Some(&borrow_from_oracle_price_data),
         clock.unix_timestamp,
+        state.funding_paused()?,
     )?;
 
     controller::spot_balance::update_spot_market_cumulative_interest(
         &mut borrow_to_spot_market,
         Some(&borrow_to_oracle_price_data),
         clock.unix_timestamp,
+        state.funding_paused()?,
     )?;
 
     let deposit_transfer = if let Some(0) = deposit_amount {
@@ -2260,6 +2270,7 @@ pub fn handle_transfer_isolated_perp_position_deposit<'c: 'info, 'info>(
         spot_market_index,
         perp_market_index,
         amount,
+        state.funding_paused()?,
     )?;
 
     let spot_market = spot_market_map.get_ref(&spot_market_index)?;
@@ -2316,6 +2327,7 @@ pub fn handle_withdraw_from_isolated_perp_position<'c: 'info, 'info>(
         spot_market_index,
         perp_market_index,
         amount,
+        state.funding_paused()?,
     )?;
 
     let spot_market = spot_market_map.get_ref(&spot_market_index)?;
@@ -3547,6 +3559,7 @@ pub fn handle_begin_swap<'c: 'info, 'info>(
         &mut in_spot_market,
         Some(in_oracle_data),
         now,
+        state.funding_paused()?,
     )?;
 
     let mut out_spot_market = spot_market_map.get_ref_mut(&out_market_index)?;
@@ -3585,6 +3598,7 @@ pub fn handle_begin_swap<'c: 'info, 'info>(
         &mut out_spot_market,
         Some(out_oracle_data),
         now,
+        state.funding_paused()?,
     )?;
 
     validate!(

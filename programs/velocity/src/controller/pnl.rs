@@ -65,7 +65,7 @@ pub fn settle_pnl(
     let borrows_balance_before;
     {
         let spot_market = &mut spot_market_map.get_quote_spot_market_mut()?;
-        update_spot_market_cumulative_interest(spot_market, None, now)?;
+        update_spot_market_cumulative_interest(spot_market, None, now, state.funding_paused()?)?;
 
         tvl_before = spot_market.get_tvl()?;
         deposits_balance_before = spot_market.deposit_balance;
@@ -424,7 +424,12 @@ pub fn settle_expired_position(
 
     {
         let quote_spot_market = &mut spot_market_map.get_quote_spot_market_mut()?;
-        update_spot_market_cumulative_interest(quote_spot_market, None, now)?;
+        update_spot_market_cumulative_interest(
+            quote_spot_market,
+            None,
+            now,
+            state.funding_paused()?,
+        )?;
     }
 
     settle_funding_payment(

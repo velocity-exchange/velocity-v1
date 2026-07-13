@@ -22,11 +22,17 @@ pub fn sweep_completed_revenue_share_for_market<'a>(
     revenue_share_map: &RevenueShareMap<'a>,
     now_ts: i64,
     builder_codes_feature_enabled: bool,
+    funding_paused: bool,
 ) -> crate::error::VelocityResult<()> {
     let perp_market = &mut perp_market_map.get_ref_mut(&market_index)?;
     let quote_spot_market = &mut spot_market_map.get_quote_spot_market_mut()?;
 
-    spot_balance::update_spot_market_cumulative_interest(quote_spot_market, None, now_ts)?;
+    spot_balance::update_spot_market_cumulative_interest(
+        quote_spot_market,
+        None,
+        now_ts,
+        funding_paused,
+    )?;
 
     let orders_len = revenue_share_escrow.orders_len();
     for i in 0..orders_len {

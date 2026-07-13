@@ -2490,6 +2490,7 @@ pub mod delisting_test {
                 10,
                 PERCENTAGE_PRECISION,
                 150,
+                false,
             )
             .unwrap();
 
@@ -2580,6 +2581,7 @@ pub mod delisting_test {
                 10,
                 PERCENTAGE_PRECISION,
                 150,
+                false,
             )
             .unwrap();
 
@@ -2705,6 +2707,7 @@ pub mod delisting_test {
                 &mut oracle_map,
                 clock.unix_timestamp,
                 0,
+                false,
             )
             .unwrap();
 

@@ -694,6 +694,7 @@ pub fn place_signed_msg_taker_order<'c: 'info, 'info>(
             0,
             market_index,
             isolated_position_deposit.cast::<i64>()?,
+            state.funding_paused()?,
         )?;
     }
     #[cfg(not(feature = "isolated-position"))]
@@ -941,6 +942,7 @@ pub fn handle_settle_pnl<'c: 'info, 'info>(
                     builder_map,
                     clock.unix_timestamp,
                     state.builder_codes_enabled(),
+                    state.funding_paused()?,
                 )?;
             } else {
                 msg!("Builder Users not provided, but RevenueEscrow was provided");
@@ -961,6 +963,7 @@ pub fn handle_settle_pnl<'c: 'info, 'info>(
                 QUOTE_SPOT_MARKET_INDEX,
                 market_index,
                 i64::MIN,
+                state.funding_paused()?,
             )?;
         }
     }
@@ -1063,6 +1066,7 @@ pub fn handle_settle_multiple_pnls<'c: 'info, 'info>(
                         builder_map,
                         clock.unix_timestamp,
                         state.builder_codes_enabled(),
+                        state.funding_paused()?,
                     )?;
                 } else {
                     msg!("Builder Users not provided, but RevenueEscrow was provided");
@@ -1083,6 +1087,7 @@ pub fn handle_settle_multiple_pnls<'c: 'info, 'info>(
                     QUOTE_SPOT_MARKET_INDEX,
                     *market_index,
                     i64::MIN,
+                    state.funding_paused()?,
                 )?;
             }
         }
@@ -1345,6 +1350,7 @@ pub fn handle_liquidate_spot_with_swap_begin<'c: 'info, 'info>(
         &mut asset_spot_market,
         Some(asset_oracle_data),
         now,
+        state.funding_paused()?,
     )?;
 
     let mut liability_spot_market = spot_market_map.get_ref_mut(&liability_market_index)?;
@@ -1361,6 +1367,7 @@ pub fn handle_liquidate_spot_with_swap_begin<'c: 'info, 'info>(
         &mut liability_spot_market,
         Some(liability_oracle_data),
         now,
+        state.funding_paused()?,
     )?;
 
     drop(liability_spot_market);
@@ -1802,6 +1809,7 @@ pub fn handle_liquidate_borrow_for_perp_pnl<'c: 'info, 'info>(
         state.liquidation_margin_buffer_ratio,
         state.initial_pct_to_liquidate as u128,
         state.liquidation_duration as u128,
+        state.funding_paused()?,
     )?;
 
     Ok(())
@@ -1861,6 +1869,7 @@ pub fn handle_liquidate_perp_pnl_for_deposit<'c: 'info, 'info>(
         state.liquidation_margin_buffer_ratio,
         state.initial_pct_to_liquidate as u128,
         state.liquidation_duration as u128,
+        state.funding_paused()?,
     )?;
 
     Ok(())
@@ -2005,6 +2014,7 @@ pub fn handle_resolve_perp_pnl_deficit<'c: 'info, 'info>(
             spot_market,
             perp_market,
             clock.unix_timestamp,
+            state.funding_paused()?,
         )?
     };
 
@@ -2128,6 +2138,7 @@ pub fn handle_resolve_perp_bankruptcy<'c: 'info, 'info>(
         &mut oracle_map,
         now,
         ctx.accounts.insurance_fund_vault.amount,
+        state.funding_paused()?,
     )?;
 
     if pay_from_insurance > 0 {
@@ -2400,6 +2411,17 @@ pub fn handle_update_perp_bid_ask_twap<'c: 'info, 'info>(
     ctx: Context<'info, UpdatePerpBidAskTwap<'info>>,
 ) -> Result<()> {
     let perp_market = &mut load_mut!(ctx.accounts.perp_market)?;
+
+    // Freeze the funding-input TWAP state whenever this market's funding is
+    // paused. The `funding_not_paused` access_control already blocks the
+    // exchange-wide pause; this mirrors the market-scoped gate the direct
+    // `update_funding_rate` path enforces (`is_operation_paused(UpdateFunding)`)
+    // so a single paused market's mark/bid/ask TWAP can't keep advancing here
+    // and feed a stale jump into funding when it resumes.
+    if perp_market.is_operation_paused(PerpOperation::UpdateFunding) {
+        return Ok(());
+    }
+
     let clock = Clock::get()?;
     let now = clock.unix_timestamp;
     let slot = clock.slot;
@@ -2580,6 +2602,7 @@ pub fn handle_settle_revenue_to_insurance_fund<'c: 'info, 'info>(
         spot_market,
         now,
         true,
+        state.funding_paused()?,
     )?;
 
     spot_market.insurance_fund.last_revenue_settle_ts = now;
@@ -2690,7 +2713,12 @@ pub fn handle_sweep_perp_market_fees(
         }
     }
 
-    controller::spot_balance::update_spot_market_cumulative_interest(spot_market, None, now)?;
+    controller::spot_balance::update_spot_market_cumulative_interest(
+        spot_market,
+        None,
+        now,
+        state.funding_paused()?,
+    )?;
 
     let net_user_pnl = calculate_net_user_pnl(
         &perp_market.amm,
@@ -2741,20 +2769,12 @@ pub fn handle_update_spot_market_cumulative_interest(
 
     let oracle_price_data = oracle_map.get_price_data(&spot_market.oracle_id())?;
 
-    if !state.funding_paused()? {
-        controller::spot_balance::update_spot_market_cumulative_interest(
-            spot_market,
-            Some(oracle_price_data),
-            now,
-        )?;
-    } else {
-        // even if funding is paused still update twap stats
-        controller::spot_balance::update_spot_market_twap_stats(
-            spot_market,
-            Some(oracle_price_data),
-            now,
-        )?;
-    }
+    controller::spot_balance::update_spot_market_cumulative_interest(
+        spot_market,
+        Some(oracle_price_data),
+        now,
+        state.funding_paused()?,
+    )?;
 
     math::spot_withdraw::validate_spot_market_vault_amount(
         spot_market,
@@ -2964,6 +2984,7 @@ pub fn handle_force_delete_user<'c: 'info, 'info>(
             spot_market,
             Some(oracle_price_data),
             now,
+            state.funding_paused()?,
         )?;
 
         let token_amount = spot_position.get_token_amount(spot_market)?;

@@ -288,7 +288,7 @@ export function isMarkOracleTooDivergent(
  */
 export function calculateLiveOracleTwap(
 	histOracleData: HistoricalOracleData,
-	oraclePriceData: OraclePriceData,
+	oraclePriceData: Pick<OraclePriceData, 'price'>,
 	now: BN,
 	period: BN
 ): BN {
@@ -333,7 +333,7 @@ export function calculateLiveOracleTwap(
  */
 export function calculateLiveOracleStd(
 	marketStats: MarketStats,
-	oraclePriceData: OraclePriceData,
+	oraclePriceData: Pick<OraclePriceData, 'price'>,
 	now: BN
 ): BN {
 	const sinceLastUpdate = BN.max(
@@ -385,7 +385,7 @@ export function calculateLiveOracleStd(
  */
 export function getNewOracleConfPct(
 	marketStats: MarketStats,
-	oraclePriceData: OraclePriceData,
+	oraclePriceData: Pick<OraclePriceData, 'confidence'>,
 	reservePrice: BN,
 	now: BN
 ): BN {

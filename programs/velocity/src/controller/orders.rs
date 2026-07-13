@@ -1914,11 +1914,16 @@ fn fulfill_perp_order(
 
         base_asset_amount = base_asset_amount.safe_add(fill_base_asset_amount)?;
         quote_asset_amount = quote_asset_amount.safe_add(fill_quote_asset_amount)?;
-        market.market_stats.update_volume_24h(
-            fill_quote_asset_amount,
-            user_order_direction,
-            now,
-        )?;
+        // Only real fills update volume stats and stamp `last_trade_ts`; a
+        // zero-fill step must not refresh the last-trade timestamp (it gates
+        // the trigger-price last-fill leg).
+        if fill_base_asset_amount != 0 {
+            market.market_stats.update_volume_24h(
+                fill_quote_asset_amount,
+                user_order_direction,
+                now,
+            )?;
+        }
     }
 
     validate!(

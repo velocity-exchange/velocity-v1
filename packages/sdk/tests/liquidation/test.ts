@@ -2,11 +2,13 @@ import { assert } from 'chai';
 import {
 	BN,
 	BASE_PRECISION,
+	PRICE_PRECISION,
 	QUOTE_PRECISION,
 	LIQUIDATION_PCT_PRECISION,
 	calculateMaxPctToLiquidate,
 	calculatePerpIfFee,
 	calculateSpotIfFee,
+	calculateUserProtectiveAssetPrice,
 } from '../../src';
 
 describe('calculateMaxPctToLiquidate', () => {
@@ -121,5 +123,37 @@ describe('calculateSpotIfFee', () => {
 		);
 
 		assert.equal(fee, 100_000);
+	});
+});
+
+describe('calculateUserProtectiveAssetPrice', () => {
+	it('uses the 5min twap when the (stale) oracle price is below it', () => {
+		const price = calculateUserProtectiveAssetPrice(
+			new BN(90).mul(PRICE_PRECISION),
+			new BN(0),
+			new BN(100).mul(PRICE_PRECISION)
+		);
+
+		assert.isTrue(price.eq(new BN(100).mul(PRICE_PRECISION)));
+	});
+
+	it('uses the confidence-adjusted high when it exceeds oracle and twap', () => {
+		const price = calculateUserProtectiveAssetPrice(
+			new BN(100).mul(PRICE_PRECISION),
+			new BN(5).mul(PRICE_PRECISION),
+			new BN(95).mul(PRICE_PRECISION)
+		);
+
+		assert.isTrue(price.eq(new BN(105).mul(PRICE_PRECISION)));
+	});
+
+	it('never returns less than the raw oracle price', () => {
+		const price = calculateUserProtectiveAssetPrice(
+			new BN(110).mul(PRICE_PRECISION),
+			new BN(0),
+			new BN(100).mul(PRICE_PRECISION)
+		);
+
+		assert.isTrue(price.eq(new BN(110).mul(PRICE_PRECISION)));
 	});
 });

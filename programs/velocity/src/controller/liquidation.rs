@@ -38,14 +38,15 @@ use crate::math::liquidation::{
     calculate_liability_transfer_implied_by_asset_amount,
     calculate_liability_transfer_to_cover_margin_shortage, calculate_liquidation_multiplier,
     calculate_max_pct_to_liquidate, calculate_perp_if_fee, calculate_spot_if_fee,
-    get_liquidation_fee, get_liquidation_order_params, validate_swap_within_liquidation_boundaries,
-    validate_transfer_satisfies_limit_price, LiquidationMultiplierType,
+    calculate_user_protective_asset_price, get_liquidation_fee, get_liquidation_order_params,
+    validate_swap_within_liquidation_boundaries, validate_transfer_satisfies_limit_price,
+    LiquidationMultiplierType,
 };
 use crate::math::margin::{
     calculate_margin_requirement_and_total_collateral_and_liability_info,
     meets_initial_margin_requirement, MarginRequirementType,
 };
-use crate::math::oracle::VelocityAction;
+use crate::math::oracle::{is_oracle_valid_for_action, oracle_validity, LogMode, VelocityAction};
 use crate::math::orders::{
     calculate_existing_position_fields_for_order_action, get_position_delta_for_fill,
     is_multiple_of_step_size, is_oracle_too_divergent_with_twap_5min,
@@ -1312,6 +1313,7 @@ pub fn liquidate_spot(
 
     let (
         asset_amount,
+        asset_oracle_price,
         asset_price,
         asset_decimals,
         asset_weight,
@@ -1323,7 +1325,7 @@ pub fn liquidate_spot(
         let (asset_price_data, validity_guard_rails) =
             oracle_map.get_price_data_and_guard_rails(&asset_market.oracle_id())?;
 
-        update_spot_market_and_check_validity(
+        let asset_oracle_validity = update_spot_market_and_check_validity(
             &mut asset_market,
             asset_price_data,
             validity_guard_rails,
@@ -1348,9 +1350,25 @@ pub fn liquidate_spot(
             asset_market_index
         )?;
 
-        let asset_price = asset_price_data.price;
+        // a margin-invalid (stale/uncertain) deposit oracle may make the account
+        // liquidatable, but must not let its collateral be seized at a depressed
+        // price: size the transfer at a user-protective price instead
+        let asset_price =
+            if is_oracle_valid_for_action(asset_oracle_validity, Some(VelocityAction::MarginCalc))?
+            {
+                asset_price_data.price
+            } else {
+                calculate_user_protective_asset_price(
+                    asset_price_data,
+                    asset_market
+                        .historical_oracle_data
+                        .last_oracle_price_twap_5min,
+                )?
+            };
+
         (
             token_amount,
+            asset_price_data.price,
             asset_price,
             asset_market.decimals,
             asset_market.maintenance_asset_weight,
@@ -1436,14 +1454,6 @@ pub fn liquidate_spot(
         spot_market_map,
         oracle_map,
         margin_context,
-    )?;
-
-    // deposits priced by a margin-invalid oracle (e.g. StaleForMargin/TooUncertain) must not
-    // determine liquidatability or size the asset seizure
-    validate!(
-        margin_calculation.all_deposit_oracles_valid,
-        ErrorCode::InvalidOracle,
-        "a deposit oracle is invalid for margin calculation, cannot liquidate spot"
     )?;
 
     if !user.is_cross_margin_being_liquidated()
@@ -1667,7 +1677,7 @@ pub fn liquidate_spot(
     )?;
 
     let asset_oracle_too_divergent = is_oracle_too_divergent_with_twap_5min(
-        asset_price.cast()?,
+        asset_oracle_price.cast()?,
         spot_market_map
             .get_ref(&asset_market_index)?
             .historical_oracle_data
@@ -1877,6 +1887,7 @@ pub fn liquidate_spot_with_swap_begin(
 
     let (
         asset_amount,
+        asset_oracle_price,
         asset_price,
         asset_decimals,
         asset_weight,
@@ -1887,7 +1898,7 @@ pub fn liquidate_spot_with_swap_begin(
         let (asset_price_data, validity_guard_rails) =
             oracle_map.get_price_data_and_guard_rails(&asset_market.oracle_id())?;
 
-        update_spot_market_and_check_validity(
+        let asset_oracle_validity = update_spot_market_and_check_validity(
             &mut asset_market,
             asset_price_data,
             validity_guard_rails,
@@ -1912,9 +1923,25 @@ pub fn liquidate_spot_with_swap_begin(
             asset_market_index
         )?;
 
-        let asset_price = asset_price_data.price;
+        // a margin-invalid (stale/uncertain) deposit oracle may make the account
+        // liquidatable, but must not let its collateral be swapped away at a
+        // depressed price: cap the swap at a user-protective price instead
+        let asset_price =
+            if is_oracle_valid_for_action(asset_oracle_validity, Some(VelocityAction::MarginCalc))?
+            {
+                asset_price_data.price
+            } else {
+                calculate_user_protective_asset_price(
+                    asset_price_data,
+                    asset_market
+                        .historical_oracle_data
+                        .last_oracle_price_twap_5min,
+                )?
+            };
+
         (
             token_amount,
+            asset_price_data.price,
             asset_price,
             asset_market.decimals,
             asset_market.maintenance_asset_weight,
@@ -1993,14 +2020,6 @@ pub fn liquidate_spot_with_swap_begin(
         spot_market_map,
         oracle_map,
         margin_context,
-    )?;
-
-    // deposits priced by a margin-invalid oracle (e.g. StaleForMargin/TooUncertain) must not
-    // determine liquidatability or size the asset seizure
-    validate!(
-        margin_calculation.all_deposit_oracles_valid,
-        ErrorCode::InvalidOracle,
-        "a deposit oracle is invalid for margin calculation, cannot liquidate spot"
     )?;
 
     if !user.is_cross_margin_being_liquidated()
@@ -2201,7 +2220,7 @@ pub fn liquidate_spot_with_swap_begin(
     )?;
 
     let asset_oracle_too_divergent = is_oracle_too_divergent_with_twap_5min(
-        asset_price.cast()?,
+        asset_oracle_price.cast()?,
         spot_market_map
             .get_ref(&asset_market_index)?
             .historical_oracle_data
@@ -2240,10 +2259,41 @@ pub fn liquidate_spot_with_swap_end(
 
     let (asset_price, asset_decimals, asset_liquidation_multiplier) = {
         let asset_market = spot_market_map.get_ref_mut(&asset_market_index)?;
-        let (asset_price_data, _validity_guard_rails) =
+        let (asset_price_data, validity_guard_rails) =
             oracle_map.get_price_data_and_guard_rails(&asset_market.oracle_id())?;
 
-        let asset_price = asset_price_data.price;
+        // mirror the protective pricing applied in liquidate_spot_with_swap_begin: a
+        // margin-invalid (stale/uncertain) deposit oracle must not lower the worst-case
+        // swap price the liquidator's swap is validated against
+        let asset_price = if asset_market.market_index == QUOTE_SPOT_MARKET_INDEX {
+            asset_price_data.price
+        } else {
+            let asset_oracle_validity = oracle_validity(
+                MarketType::Spot,
+                asset_market.market_index,
+                asset_market.historical_oracle_data.last_oracle_price_twap,
+                asset_price_data,
+                validity_guard_rails,
+                asset_market.get_max_confidence_interval_multiplier()?,
+                &asset_market.oracle_source,
+                LogMode::None,
+                -1,
+                0,
+            )?;
+
+            if is_oracle_valid_for_action(asset_oracle_validity, Some(VelocityAction::MarginCalc))?
+            {
+                asset_price_data.price
+            } else {
+                calculate_user_protective_asset_price(
+                    asset_price_data,
+                    asset_market
+                        .historical_oracle_data
+                        .last_oracle_price_twap_5min,
+                )?
+            }
+        };
+
         (
             asset_price,
             asset_market.decimals,
@@ -2992,7 +3042,7 @@ pub fn liquidate_perp_pnl_for_deposit(
         let (asset_price_data, validity_guard_rails) =
             oracle_map.get_price_data_and_guard_rails(&asset_market.oracle_id())?;
 
-        update_spot_market_and_check_validity(
+        let asset_oracle_validity = update_spot_market_and_check_validity(
             &mut asset_market,
             asset_price_data,
             validity_guard_rails,
@@ -3000,7 +3050,21 @@ pub fn liquidate_perp_pnl_for_deposit(
             Some(VelocityAction::Liquidate),
         )?;
 
-        let token_price = asset_price_data.price;
+        // a margin-invalid (stale/uncertain) deposit oracle may make the account
+        // liquidatable, but must not let its collateral be seized at a depressed
+        // price: size the transfer at a user-protective price instead
+        let token_price =
+            if is_oracle_valid_for_action(asset_oracle_validity, Some(VelocityAction::MarginCalc))?
+            {
+                asset_price_data.price
+            } else {
+                calculate_user_protective_asset_price(
+                    asset_price_data,
+                    asset_market
+                        .historical_oracle_data
+                        .last_oracle_price_twap_5min,
+                )?
+            };
 
         let token_amount = liquidation_mode.get_spot_token_amount(user, &asset_market)?;
 
@@ -3070,14 +3134,6 @@ pub fn liquidate_perp_pnl_for_deposit(
         spot_market_map,
         oracle_map,
         MarginContext::liquidation(liquidation_margin_buffer_ratio),
-    )?;
-
-    // deposits priced by a margin-invalid oracle (e.g. StaleForMargin/TooUncertain) must not
-    // determine liquidatability or size the asset seizure
-    validate!(
-        margin_calculation.all_deposit_oracles_valid,
-        ErrorCode::InvalidOracle,
-        "a deposit oracle is invalid for margin calculation, cannot liquidate deposit for perp pnl"
     )?;
 
     let user_is_being_liquidated = liquidation_mode.user_is_being_liquidated(user)?;

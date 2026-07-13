@@ -14,6 +14,7 @@ use crate::math::constants::{BASE_PRECISION, LIQUIDATION_FEE_INCREASE_PER_SLOT};
 use crate::math::spot_swap::calculate_swap_price;
 use crate::msg;
 use crate::state::margin_calculation::MarginContext;
+use crate::state::oracle::OraclePriceData;
 use crate::state::oracle_map::OracleMap;
 use crate::state::perp_market::PerpMarket;
 use crate::state::perp_market_map::PerpMarketMap;
@@ -111,6 +112,25 @@ pub fn calculate_liability_transfer_to_cover_margin_shortage(
         )?
         .safe_div(denominator_scale)
         .map(|x| x.max(1))
+}
+
+/// User-protective price for seizing a collateral (deposit) asset whose oracle is
+/// margin-invalid (`StaleForMargin`/`TooUncertain`) but still acceptable for
+/// `VelocityAction::Liquidate`. Pricing the seizure at
+/// `max(oracle, 5min twap, oracle + confidence)` preserves the invariant that a stale or
+/// uncertain oracle can make an account liquidatable but cannot cheapen its collateral.
+pub fn calculate_user_protective_asset_price(
+    oracle_price_data: &OraclePriceData,
+    last_oracle_price_twap_5min: i64,
+) -> VelocityResult<i64> {
+    let confidence_adjusted_high_price = oracle_price_data
+        .price
+        .safe_add(oracle_price_data.confidence.cast::<i64>()?)?;
+
+    Ok(oracle_price_data
+        .price
+        .max(last_oracle_price_twap_5min)
+        .max(confidence_adjusted_high_price))
 }
 
 pub fn calculate_liability_transfer_implied_by_asset_amount(

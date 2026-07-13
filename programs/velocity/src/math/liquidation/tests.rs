@@ -358,6 +358,63 @@ mod calculate_liability_transfer_implied_by_asset_amount {
     }
 }
 
+mod calculate_user_protective_asset_price {
+    use crate::math::constants::PRICE_PRECISION_I64;
+    use crate::math::liquidation::calculate_user_protective_asset_price;
+    use crate::state::oracle::OraclePriceData;
+
+    #[test]
+    pub fn stale_price_below_twap_uses_twap() {
+        let oracle_price_data = OraclePriceData {
+            price: 90 * PRICE_PRECISION_I64,
+            confidence: 0,
+            delay: 200,
+            has_sufficient_number_of_data_points: true,
+            sequence_id: None,
+        };
+
+        let price =
+            calculate_user_protective_asset_price(&oracle_price_data, 100 * PRICE_PRECISION_I64)
+                .unwrap();
+
+        assert_eq!(price, 100 * PRICE_PRECISION_I64);
+    }
+
+    #[test]
+    pub fn uncertain_price_uses_confidence_adjusted_high() {
+        let oracle_price_data = OraclePriceData {
+            price: 100 * PRICE_PRECISION_I64,
+            confidence: 5 * PRICE_PRECISION_I64 as u64,
+            delay: 0,
+            has_sufficient_number_of_data_points: true,
+            sequence_id: None,
+        };
+
+        let price =
+            calculate_user_protective_asset_price(&oracle_price_data, 95 * PRICE_PRECISION_I64)
+                .unwrap();
+
+        assert_eq!(price, 105 * PRICE_PRECISION_I64);
+    }
+
+    #[test]
+    pub fn oracle_above_twap_and_confidence_uses_oracle() {
+        let oracle_price_data = OraclePriceData {
+            price: 110 * PRICE_PRECISION_I64,
+            confidence: 0,
+            delay: 200,
+            has_sufficient_number_of_data_points: true,
+            sequence_id: None,
+        };
+
+        let price =
+            calculate_user_protective_asset_price(&oracle_price_data, 100 * PRICE_PRECISION_I64)
+                .unwrap();
+
+        assert_eq!(price, 110 * PRICE_PRECISION_I64);
+    }
+}
+
 mod calculate_asset_transfer_for_liability_transfer {
     use crate::math::constants::{
         BASE_PRECISION, LIQUIDATION_FEE_PRECISION, PRICE_PRECISION_I64, QUOTE_PRECISION,

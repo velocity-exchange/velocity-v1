@@ -45,6 +45,18 @@ mod tests;
 #[cfg(test)]
 mod delisting;
 
+/// Settle a user's unrealized pnl for `market_index` against the market's pnl
+/// pool.
+///
+/// Returns `Ok(true)` when settlement actually occurred and `Ok(false)` when it
+/// was soft-skipped under [`SettlePnlMode::TrySettle`] (a paused SettlePnl /
+/// SettlePnlWithPosition operation, a degraded oracle, no unsettled pnl, an
+/// empty pnl pool, etc. — any bail-out routed through [`SettlePnlMode::result`]).
+/// In [`SettlePnlMode::MustSettle`] those same conditions return `Err` instead.
+/// Callers must gate any follow-on side effect that assumes settlement happened
+/// (notably `sweep_completed_revenue_share_for_market`, which moves
+/// builder/referrer fees out of the market's pnl pool) on this `true` signal, so
+/// a soft-skip does not drain the pool of a market that never settled.
 pub fn settle_pnl(
     market_index: u16,
     user: &mut User,
@@ -57,7 +69,7 @@ pub fn settle_pnl(
     state: &State,
     meets_margin_requirement: Option<bool>,
     mut mode: SettlePnlMode,
-) -> VelocityResult {
+) -> VelocityResult<bool> {
     validate!(!user.is_bankrupt(), ErrorCode::UserBankrupt)?;
     let now = clock.unix_timestamp;
     let tvl_before;
@@ -385,7 +397,7 @@ pub fn settle_pnl(
         tvl_after
     )?;
 
-    Ok(())
+    Ok(true)
 }
 
 pub fn settle_expired_position(

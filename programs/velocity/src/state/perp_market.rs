@@ -17,6 +17,7 @@ use crate::{
             MARGIN_PRECISION_U128, MAX_LIQUIDATION_MULTIPLIER, PERCENTAGE_PRECISION,
             PERCENTAGE_PRECISION_I128, PERCENTAGE_PRECISION_I64, PERCENTAGE_PRECISION_U32,
             PERCENTAGE_PRECISION_U64, PRICE_PRECISION_I128, SPOT_WEIGHT_PRECISION,
+            TRIGGER_PRICE_LAST_FILL_MAX_AGE,
         },
         margin::{
             calculate_size_discount_asset_weight, calculate_size_premium_liability_weight,
@@ -916,6 +917,22 @@ impl PerpMarket {
         self.oracle_source != OracleSource::Prelaunch
     }
 
+    /// Reference price for evaluating trigger (TP/SL) orders:
+    ///
+    /// `trigger_price = clamp(median(leg_a, leg_b, leg_c))`
+    ///
+    /// - Leg A: `last_fill_price`, the last trade on this market. The oracle
+    ///   price substitutes until the market's first fill (`last_fill_price == 0`)
+    ///   and when the last fill is stale (older than
+    ///   `TRIGGER_PRICE_LAST_FILL_MAX_AGE`).
+    /// - Leg B: `oracle + funding_basis`, the price premium implied by the last
+    ///   funding rate, decaying linearly with its age (`get_last_funding_basis`).
+    /// - Leg C: `oracle + basis_5min`, where
+    ///   `basis_5min = mark_twap_5min - oracle_twap_5min`.
+    ///
+    /// The median is clamped to a per-tier band around the oracle price
+    /// (`clamp_trigger_price`). With `use_median_price` off, returns the raw
+    /// oracle price.
     pub fn get_trigger_price(
         &self,
         oracle_price: i64,
@@ -926,8 +943,13 @@ impl PerpMarket {
             return oracle_price.cast::<u64>();
         }
 
+        // Leg A: last trade price, only while fresh. `last_trade_ts` is
+        // stamped by the same fill path that writes `last_fill_price`.
         let last_fill_price = self.last_fill_price;
+        let last_fill_is_fresh =
+            now.safe_sub(self.market_stats.last_trade_ts)? <= TRIGGER_PRICE_LAST_FILL_MAX_AGE;
 
+        // Leg C: oracle + (mark_twap_5min - oracle_twap_5min)
         let mark_price_5min_twap = self.market_stats.last_mark_price_twap_5min;
         let last_oracle_price_twap_5min = self
             .market_stats
@@ -940,11 +962,12 @@ impl PerpMarket {
 
         let oracle_plus_basis_5min = oracle_price.safe_add(basis_5min)?.cast::<u64>()?;
 
+        // Leg B: oracle + decayed funding basis
         let last_funding_basis = self.get_last_funding_basis(oracle_price, now)?;
 
         let oracle_plus_funding_basis = oracle_price.safe_add(last_funding_basis)?.cast::<u64>()?;
 
-        let median_price = if last_fill_price > 0 {
+        let median_price = if last_fill_price > 0 && last_fill_is_fresh {
             msg!(
                 "last_fill_price: {} oracle_plus_funding_basis: {} oracle_plus_basis_5min: {}",
                 last_fill_price,
@@ -960,6 +983,7 @@ impl PerpMarket {
 
             prices[1]
         } else {
+            // No fill yet or last fill is stale: oracle price stands in for Leg A
             let mut prices = [
                 oracle_price.unsigned_abs(),
                 oracle_plus_funding_basis,
@@ -973,6 +997,16 @@ impl PerpMarket {
         self.clamp_trigger_price(oracle_price.unsigned_abs(), median_price)
     }
 
+    /// Price basis implied by the last funding rate (Leg B of the trigger price).
+    ///
+    /// ```text
+    /// daily_rate = last_funding_rate / last_funding_oracle_twap * 24 - funding_rate_offset
+    /// basis      = oracle_price * daily_rate * (funding_period - time_since_funding_update) / funding_period
+    /// ```
+    ///
+    /// A fresh funding print contributes the full basis; it decays linearly to
+    /// zero as it ages toward one funding period. Returns 0 with no funding
+    /// history (`last_funding_oracle_twap <= 0`).
     #[inline(always)]
     fn get_last_funding_basis(&self, oracle_price: i64, now: i64) -> VelocityResult<i64> {
         if self.market_stats.last_funding_oracle_twap > 0 {
@@ -986,7 +1020,7 @@ impl PerpMarket {
                 last_funding_rate.safe_sub(FUNDING_RATE_OFFSET_PERCENTAGE as i128)?;
 
             let funding_period = self.market_stats.funding_period;
-            let time_left_until_funding_update =
+            let time_since_funding_update =
                 now.safe_sub(self.last_funding_rate_ts)?.min(funding_period);
 
             let last_funding_basis = oracle_price
@@ -995,7 +1029,7 @@ impl PerpMarket {
                 .safe_div(PERCENTAGE_PRECISION_I128)?
                 .safe_mul(
                     funding_period
-                        .safe_sub(time_left_until_funding_update)?
+                        .safe_sub(time_since_funding_update)?
                         .cast::<i128>()?,
                 )?
                 .safe_div(funding_period.cast::<i128>()?)?
@@ -1007,16 +1041,18 @@ impl PerpMarket {
         }
     }
 
+    /// Clamps the median trigger price to a band around the oracle price.
+    /// Band width by contract tier: A/B 20 bps, C 100 bps, rest 250 bps.
     #[inline(always)]
     fn clamp_trigger_price(&self, oracle_price: u64, median_price: u64) -> VelocityResult<u64> {
-        let max_bps_diff = if matches!(self.contract_tier, ContractTier::A | ContractTier::B) {
-            500 // 20 BPS
+        let clamp_divisor = if matches!(self.contract_tier, ContractTier::A | ContractTier::B) {
+            500 // oracle / 500 = 20 bps
         } else if matches!(self.contract_tier, ContractTier::C) {
-            100 // 100 BPS
+            100 // oracle / 100 = 100 bps
         } else {
-            40 // 250 BPS
+            40 // oracle / 40 = 250 bps
         };
-        let max_oracle_diff = oracle_price / max_bps_diff;
+        let max_oracle_diff = oracle_price / clamp_divisor;
 
         Ok(median_price.clamp(
             oracle_price.safe_sub(max_oracle_diff)?,

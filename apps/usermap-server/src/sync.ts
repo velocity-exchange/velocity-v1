@@ -5,6 +5,7 @@ import {
 	getConfig,
 	getNonIdleUserFilter,
 	getUserFilter,
+	USER_ACCOUNT_SIZE_BYTES,
 } from '@velocity-exchange/sdk';
 import {
 	RedisClient,
@@ -31,7 +32,6 @@ if (!endpoint) {
 const SYNC_INTERVAL = parseInt(process.env.SYNC_INTERVAL || '90000');
 const SYNC_ON_STARTUP = process.env.SYNC_ON_STARTUP === 'true';
 const EXPIRY_MULTIPLIER = 4;
-const MAX_USER_ACCOUNT_SIZE_BYTES = 4376;
 const sdkConfig = getConfig();
 const connection = new Connection(endpoint, 'confirmed');
 
@@ -93,7 +93,7 @@ async function sync(): Promise<void> {
 				);
 				const userBuffer = decoder.decode(
 					compressedUserData,
-					MAX_USER_ACCOUNT_SIZE_BYTES
+					USER_ACCOUNT_SIZE_BYTES
 				);
 				programAccountBufferMap.set(
 					programAccount.pubkey.toString(),

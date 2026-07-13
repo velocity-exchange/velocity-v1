@@ -8238,6 +8238,9 @@
         {
           "name": "user",
           "writable": true
+        },
+        {
+          "name": "user_stats"
         }
       ],
       "args": [

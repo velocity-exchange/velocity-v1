@@ -248,6 +248,7 @@ pub fn handle_trigger_order<'c: 'info, 'info>(
         order_id,
         &*ctx.accounts.state.load()?,
         &ctx.accounts.user,
+        &ctx.accounts.user_stats,
         &spot_market_map,
         &perp_market_map,
         &mut oracle_map,
@@ -3227,6 +3228,10 @@ pub struct TriggerOrder<'info> {
     pub filler: AccountLoader<'info, User>,
     #[account(mut)]
     pub user: AccountLoader<'info, User>,
+    #[account(
+        constraint = is_stats_for_user(&user, &user_stats)?
+    )]
+    pub user_stats: AccountLoader<'info, UserStats>,
 }
 
 #[derive(Accounts)]

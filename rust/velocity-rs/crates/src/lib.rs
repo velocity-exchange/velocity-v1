@@ -3491,6 +3491,7 @@ impl<'a> TransactionBuilder<'a> {
                 authority: self.authority,
                 user,
                 filler: self.sub_account,
+                user_stats: Wallet::derive_stats_account(&user_account.authority),
             },
             std::iter::once(user_account),
             std::iter::empty(),

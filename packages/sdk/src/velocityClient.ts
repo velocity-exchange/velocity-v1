@@ -8335,6 +8335,10 @@ export class VelocityClient {
 			state: await this.getStatePublicKey(),
 			filler,
 			user: userAccountPublicKey,
+			userStats: getUserStatsAccountPublicKey(
+				this.program.programId,
+				userAccount.authority
+			),
 			authority: this.wallet.publicKey,
 			remainingAccounts,
 		});

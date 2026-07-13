@@ -26,6 +26,7 @@ use crate::error::ErrorCode;
 use crate::error::VelocityResult;
 use crate::get_struct_values;
 use crate::get_then_update_id;
+use crate::load;
 use crate::load_mut;
 use crate::math::auction::{calculate_auction_params_for_trigger_order, calculate_auction_prices};
 use crate::math::casting::Cast;
@@ -3365,6 +3366,7 @@ pub fn trigger_order(
     order_id: u32,
     state: &State,
     user: &AccountLoader<User>,
+    user_stats: &AccountLoader<UserStats>,
     spot_market_map: &SpotMarketMap,
     perp_market_map: &PerpMarketMap,
     oracle_map: &mut OracleMap,
@@ -3377,6 +3379,7 @@ pub fn trigger_order(
     let filler_key = filler.key();
     let user_key = user.key();
     let user = &mut load_mut!(user)?;
+    let user_stats = load!(user_stats)?;
 
     let order_index = user
         .orders
@@ -3563,7 +3566,13 @@ pub fn trigger_order(
 
     drop(perp_market);
 
-    // If order increases risk and user is below initial margin or their equity floor, cancel it
+    // If order increases risk and the user is below initial margin, below their
+    // own equity floor, or the authority-wide equity breaker is tripped, cancel
+    // it. The breaker check mirrors the fill/withdraw/transfer paths: while it is
+    // set, no risk-increasing action is allowed on any of the authority's
+    // subaccounts, so a keeper must not be able to flip a resting risk-increasing
+    // trigger order into a live one (and collect the trigger reward) for a
+    // subaccount that is individually healthy but authority-wide frozen.
     if is_risk_increasing && !user.orders[order_index].reduce_only {
         let margin_calc = calculate_margin_requirement_and_total_collateral_and_liability_info(
             user,
@@ -3575,6 +3584,7 @@ pub fn trigger_order(
 
         if !margin_calc.meets_margin_requirement()
             || user.is_below_equity_floor(margin_calc.total_collateral)
+            || user_stats.is_equity_breaker_tripped()
         {
             cancel_order(
                 order_index,

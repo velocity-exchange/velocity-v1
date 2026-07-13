@@ -2033,6 +2033,18 @@ pub fn handle_transfer_perp_position<'c: 'info, 'info>(
         "to user margin requirement is greater than total collateral"
     )?;
 
+    // The recipient takes on risk-increasing exposure, so it must also stay at
+    // or above its own admin-set equity floor (mirrors the from-side check
+    // above). A recipient that passes initial margin can still land below its
+    // warm-admin floor, which would otherwise leave the floor unenforced.
+    validate!(
+        !to_user.is_below_equity_floor(to_user_margin_requirement.total_collateral),
+        ErrorCode::EquityBelowFloor,
+        "to user total collateral {} below equity floor {}",
+        to_user_margin_requirement.total_collateral,
+        to_user.equity_floor
+    )?;
+
     let mut perp_market = perp_market_map.get_ref_mut(&market_index)?;
     let oi_after = perp_market.get_open_interest();
 
@@ -3808,6 +3820,17 @@ pub fn handle_end_swap<'c: 'info, 'info>(
     let mut user = load_mut!(&ctx.accounts.user)?;
 
     let mut user_stats = load_mut!(&ctx.accounts.user_stats)?;
+
+    // A generic spot swap can book new borrow/deposit balances (risk-increasing)
+    // from any of the authority's subaccounts, so it must respect the
+    // authority-wide equity breaker just like withdrawals and transfers out.
+    // The per-subaccount floor is enforced separately in
+    // `meets_withdraw_margin_requirement_swap`.
+    validate!(
+        !user_stats.is_equity_breaker_tripped(),
+        ErrorCode::EquityBelowFloor,
+        "equity floor breaker is tripped for this authority"
+    )?;
 
     let exchange_status = state.get_exchange_status()?;
 

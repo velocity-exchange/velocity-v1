@@ -290,6 +290,7 @@ export class VelocityCore {
 	 * @param args.state - the global `State` PDA.
 	 * @param args.filler - the keeper's `User` account submitting the trigger.
 	 * @param args.user - the order owner's `User` account.
+	 * @param args.userStats - the order owner's `UserStats` account (authority-wide equity breaker).
 	 * @param args.authority - signer that must own or be a registered delegate of `filler`.
 	 * @param args.remainingAccounts - oracle/market `AccountMeta[]` for the order's market.
 	 * @returns the unsigned `triggerOrder` `TransactionInstruction`.
@@ -300,6 +301,7 @@ export class VelocityCore {
 		state: PublicKey;
 		filler: PublicKey;
 		user: PublicKey;
+		userStats: PublicKey;
 		authority: PublicKey;
 		remainingAccounts: AccountMeta[];
 	}): Promise<TransactionInstruction> {

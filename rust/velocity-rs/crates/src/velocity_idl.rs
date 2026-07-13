@@ -15590,6 +15590,7 @@ pub mod accounts {
         pub authority: Pubkey,
         pub filler: Pubkey,
         pub user: Pubkey,
+        pub user_stats: Pubkey,
     }
     #[automatically_derived]
     impl anchor_lang::Discriminator for TriggerOrder {
@@ -15626,6 +15627,11 @@ pub mod accounts {
                     pubkey: self.user,
                     is_signer: false,
                     is_writable: true,
+                },
+                AccountMeta {
+                    pubkey: self.user_stats,
+                    is_signer: false,
+                    is_writable: false,
                 },
             ]
         }

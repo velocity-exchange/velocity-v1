@@ -981,7 +981,18 @@ pub fn liquidate_perp_with_fill(
     let quote_oracle_price = oracle_map
         .get_price_data(&quote_spot_market.oracle_id())?
         .price;
-    let liquidator_fee = market.liquidator_fee;
+    // Use the time-adjusted liquidator fee (grace-period ramp) as the basis for
+    // both the IF/protocol fee budget and the margin-shortage base sizing, so it
+    // matches the fee the forced liquidation order is actually priced with
+    // (see `liquidator_fee` below). Sizing against the un-aged `market.liquidator_fee`
+    // would under-budget the insurance/protocol fees relative to the larger
+    // execution discount the victim pays post-grace-period (matches liquidate_perp).
+    let liquidator_fee = get_liquidation_fee(
+        market.get_base_liquidator_fee(),
+        market.get_max_liquidation_fee()?,
+        user.last_active_slot,
+        slot,
+    )?;
     // total insurance-side budget with the cap raised to if + protocol rates,
     // split IF-first (see liquidate_perp for rationale)
     let total_if_side_fee = calculate_perp_if_fee(
@@ -1049,23 +1060,13 @@ pub fn liquidate_perp_with_fill(
     )?;
 
     let existing_direction = user.perp_positions[position_index].get_direction();
-    let max_liquidation_fee = perp_market_map
-        .get_ref(&market_index)?
-        .get_max_liquidation_fee()?;
-
-    let liquidator_fee_adjusted = get_liquidation_fee(
-        liquidator_fee,
-        max_liquidation_fee,
-        user.last_active_slot,
-        slot,
-    )?;
 
     let order_params = get_liquidation_order_params(
         market_index,
         existing_direction,
         base_asset_amount,
         oracle_price,
-        liquidator_fee_adjusted,
+        liquidator_fee,
     )?;
 
     let order_id = user.next_order_id;
@@ -2115,20 +2116,26 @@ pub fn liquidate_spot_with_swap_begin(
         return Err(ErrorCode::InvalidLiquidation);
     }
 
-    // Given the borrow amount to transfer, determine how much deposit amount to transfer
-    let asset_transfer_to_cover_margin_shortage = calculate_asset_transfer_for_liability_transfer(
+    // Size the swap bound against the time-ramped max-pct-to-liquidate throttle
+    // (`max_liability_allowed_to_be_transferred`), NOT the uncapped
+    // `liability_transfer_to_cover_margin_shortage`. Deriving `max_asset_transfer`
+    // from the full shortage would let this lane seize more collateral in a single
+    // swap than the throttle permits, since `swap_amount_in` is only bounded by
+    // `max_asset_transfer` here (swap_end re-checks price, not the throttle). This
+    // mirrors the direct `liquidate_spot` path, which caps the transfer at
+    // `max_liability_allowed_to_be_transferred`.
+    let throttled_asset_transfer = calculate_asset_transfer_for_liability_transfer(
         asset_amount,
         LIQUIDATION_FEE_PRECISION,
         asset_decimals,
         asset_price,
-        liability_transfer_to_cover_margin_shortage,
+        max_liability_allowed_to_be_transferred,
         LIQUIDATION_FEE_PRECISION,
         liability_decimals,
         liability_price,
     )?;
 
-    let max_asset_transfer = asset_transfer_to_cover_margin_shortage
-        .safe_add(asset_transfer_to_cover_margin_shortage / 400)?; // 25bps buffer
+    let max_asset_transfer = throttled_asset_transfer.safe_add(throttled_asset_transfer / 400)?; // 25bps buffer
 
     if max_asset_transfer == 0 {
         msg!(

@@ -342,14 +342,17 @@ pub fn handle_resize_signed_msg_user_orders<'c: 'info, 'info>(
     num_orders: u16,
 ) -> Result<()> {
     let signed_msg_user_orders = &mut ctx.accounts.signed_msg_user_orders;
-    let user = load!(ctx.accounts.user)?;
-    if ctx.accounts.payer.key != ctx.accounts.authority.key
-        && ctx.accounts.payer.key != &user.delegate.key()
-    {
+    // The SignedMsgUserOrders account is authority-scoped and shared across all of the
+    // authority's subaccounts (its replay-protection UUIDs cover every subaccount). A
+    // per-subaccount delegate must therefore not be able to shrink it: shrinking evicts
+    // active UUIDs belonging to other subaccounts and re-enables replay of their signed
+    // orders. Only the authority itself (which owns every subaccount) may shrink; anyone
+    // else may only grow the account (and pays for the extra rent).
+    if ctx.accounts.payer.key != ctx.accounts.authority.key {
         validate!(
             num_orders as usize >= signed_msg_user_orders.signed_msg_order_data.len(),
             ErrorCode::InvalidSignedMsgUserOrdersResize,
-            "Invalid shrinking resize for payer != user authority or delegate"
+            "Invalid shrinking resize for payer != user authority"
         )?;
     }
 
@@ -4479,10 +4482,6 @@ pub struct ResizeSignedMsgUserOrders<'info> {
     pub signed_msg_user_orders: Box<Account<'info, SignedMsgUserOrders>>,
     /// CHECK: authority
     pub authority: UncheckedAccount<'info>,
-    #[account(
-        has_one = authority
-    )]
-    pub user: AccountLoader<'info, User>,
     #[account(mut)]
     pub payer: Signer<'info>,
     pub system_program: Program<'info, System>,

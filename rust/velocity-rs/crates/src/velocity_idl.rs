@@ -13800,7 +13800,6 @@ pub mod accounts {
     pub struct ResizeSignedMsgUserOrders {
         pub signed_msg_user_orders: Pubkey,
         pub authority: Pubkey,
-        pub user: Pubkey,
         pub payer: Pubkey,
         pub system_program: Pubkey,
     }
@@ -13827,11 +13826,6 @@ pub mod accounts {
                 },
                 AccountMeta {
                     pubkey: self.authority,
-                    is_signer: false,
-                    is_writable: false,
-                },
-                AccountMeta {
-                    pubkey: self.user,
                     is_signer: false,
                     is_writable: false,
                 },

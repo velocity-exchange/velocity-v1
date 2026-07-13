@@ -155,7 +155,7 @@ function shrinkStaleTwaps(
 export function calculateAllEstimatedFundingRate(
 	market: PerpMarketAccount,
 	mmOraclePriceData?: MMOraclePriceData,
-	oraclePriceData?: OraclePriceData,
+	oraclePriceData?: Pick<OraclePriceData, 'price'>,
 	markPrice?: BN,
 	now?: BN
 ): [BN, BN, BN, BN, BN] {
@@ -457,7 +457,7 @@ export function calculateLongShortFundingRate(
 export function calculateLongShortFundingRateAndLiveTwaps(
 	market: PerpMarketAccount,
 	mmOraclePriceData?: MMOraclePriceData,
-	oraclePriceData?: OraclePriceData,
+	oraclePriceData?: Pick<OraclePriceData, 'price'>,
 	markPrice?: BN,
 	now?: BN
 ): [BN, BN, BN, BN] {

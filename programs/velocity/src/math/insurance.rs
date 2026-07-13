@@ -89,18 +89,37 @@ pub fn calculate_if_shares_lost(
 ) -> VelocityResult<u128> {
     let n_shares = insurance_fund_stake.last_withdraw_request_shares;
 
+    // Value the staker's requested shares against a donation-proof vault balance,
+    // not the raw live SPL token-account balance. `calculate_if_shares_lost` powers the
+    // anti-free-option forfeiture on unstake-cancel: if the fund appreciated during the
+    // escrow window, the canceling staker forfeits the appreciation on the requested
+    // shares (they are burned to the remaining stakers). But `insurance_fund_vault_balance`
+    // is read live from the SPL vault, which anyone can inflate with a raw SPL transfer —
+    // an attacker holding a residual IF share could sandwich a victim's signed cancel with
+    // a donation, manufacture "appreciation", and burn the victim's pending shares into
+    // their own. `if_last_settle_vault_amount` is the accounted balance (grown only by
+    // stakes + settled revenue, shrunk by withdrawals), so a raw donation is never in it;
+    // taking the min means a pre-cancel donation spike cannot inflate the forfeiture while
+    // real revenue appreciation still does. `0` means uninitialized (existing account
+    // pre-upgrade) — fall back to the live balance, matching the convention used by the
+    // revenue-settle APR cap.
+    let accounted_vault_balance = if spot_market.if_last_settle_vault_amount == 0 {
+        insurance_fund_vault_balance
+    } else {
+        insurance_fund_vault_balance.min(spot_market.if_last_settle_vault_amount)
+    };
+
     let amount = if_shares_to_vault_amount(
         n_shares,
         spot_market.insurance_fund.total_shares,
-        insurance_fund_vault_balance,
+        accounted_vault_balance,
     )?;
 
     let if_shares_lost = if amount > insurance_fund_stake.last_withdraw_request_value {
         let new_n_shares = vault_amount_to_if_shares(
             insurance_fund_stake.last_withdraw_request_value,
             spot_market.insurance_fund.total_shares.safe_sub(n_shares)?,
-            insurance_fund_vault_balance
-                .safe_sub(insurance_fund_stake.last_withdraw_request_value)?,
+            accounted_vault_balance.safe_sub(insurance_fund_stake.last_withdraw_request_value)?,
         )?;
 
         validate!(

@@ -16163,6 +16163,11 @@ export type Velocity = {
       "code": 6359,
       "name": "invalidEquityFloorTransfer",
       "msg": "Invalid equity floor transfer between subaccounts"
+    },
+    {
+      "code": 6360,
+      "name": "invalidRevenueShareRecipient",
+      "msg": "Revenue share recipient user must be sub_account_id 0"
     }
   ],
   "types": [

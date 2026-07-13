@@ -773,6 +773,8 @@ pub enum ErrorCode {
     EquityBelowFloor,
     #[msg("Invalid equity floor transfer between subaccounts")]
     InvalidEquityFloorTransfer,
+    #[msg("Revenue share recipient user must be sub_account_id 0")]
+    InvalidRevenueShareRecipient,
 }
 
 #[macro_export]

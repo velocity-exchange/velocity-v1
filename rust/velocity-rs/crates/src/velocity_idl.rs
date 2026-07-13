@@ -25679,6 +25679,8 @@ pub mod errors {
         EquityBelowFloor,
         #[msg("Invalid equity floor transfer between subaccounts")]
         InvalidEquityFloorTransfer,
+        #[msg("Revenue share recipient user must be sub_account_id 0")]
+        InvalidRevenueShareRecipient,
     }
 }
 pub mod events {

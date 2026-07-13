@@ -3733,6 +3733,19 @@ pub fn resolve_spot_bankruptcy(
         MarginContext::standard(MarginRequirementType::Maintenance),
     )?;
 
+    // Accrue the borrow market's cumulative interest to `now` before reading
+    // the borrow amount. `SpotPosition::get_token_amount` scales the position
+    // by `cumulative_borrow_interest`, so a stale (un-accrued) index would clear
+    // the debt at less than its current value — under-drawing the revenue-pool
+    // and IF tranches, under-socializing the residual, and forgiving the
+    // interest accrued since the last touch. Mirrors the refresh
+    // `resolve_perp_bankruptcy` performs before it moves value.
+    {
+        let spot_market = &mut spot_market_map.get_ref_mut(&market_index)?;
+        let oracle_price_data = oracle_map.get_price_data(&spot_market.oracle_id())?;
+        update_spot_market_cumulative_interest(spot_market, Some(oracle_price_data), now)?;
+    }
+
     let borrow_amount = {
         let spot_position = user.get_spot_position(market_index)?;
         validate!(

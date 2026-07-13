@@ -1,6 +1,6 @@
 {
 	"name": "@velocity-exchange/keeper-bots-v2",
-	"version": "0.2.3",
+	"version": "0.2.4",
 	"author": "crispheaney",
 	"main": "lib/index.js",
 	"license": "Apache-2.0",
@@ -74,6 +74,7 @@
 		"dev:jitmaker": "ts-node src/index.ts --jit-maker",
 		"dev:liquidator": "ts-node src/index.ts --liquidator",
 		"dev:pnlsettler": "ts-node src/index.ts --user-pnl-settler",
+		"dev:protocolFeeCollector": "ts-node src/index.ts --protocol-fee-collector",
 		"dev-exp": "NODE_OPTIONS=--max-old-space-size=8192 ts-node src/experimental-bots/entrypoint.ts",
 		"dev-exp:inspect": "NODE_OPTIONS=--max-old-space-size=8192 node --inspect --require ts-node/register src/experimental-bots/entrypoint.ts",
 		"prettify": "prettier --check './src/**/*.ts'",

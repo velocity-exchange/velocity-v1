@@ -23,7 +23,7 @@ velocity-admin --help
 ```
 velocity-admin show config
 
-velocity-admin auth set-admin <pubkey>
+velocity-admin auth set-cold-admin <pubkey>
 velocity-admin auth set-warm-admin <pubkey>
 velocity-admin auth set-pause-admin <pubkey>
 velocity-admin auth set-hot-admin <role> <pubkey>
@@ -70,10 +70,13 @@ velocity-admin call <ixName> <payloadFile>     # generic IDL escape hatch
 
 ## Routing through a Squads V4 multisig
 
-Append `--multisig <multisigPda>` to any subcommand. The CLI submits a single
-transaction that creates a `vault_transaction` + `proposal` against the
-multisig with your wallet as the proposer. Members then approve + execute via
-the Squads UI.
+Append `--multisig <multisigPda>` to any subcommand. If the multisig's vault 0
+PDA is a required signer of the action (e.g. it is the cold admin / authority),
+the CLI submits a single transaction that creates a `vault_transaction` +
+`proposal` against the multisig with your wallet as the proposer. Members then
+approve + execute via the Squads UI. If the vault does **not** need to sign
+(e.g. the wallet itself is the required authority), a proposal would be
+pointless — the CLI says so and sends the transaction directly instead.
 
 User-scoped commands (`user deposit`, `user withdraw`, `if stake`) default the
 authority to the multisig's vault 0 PDA when `--multisig` is passed, since the

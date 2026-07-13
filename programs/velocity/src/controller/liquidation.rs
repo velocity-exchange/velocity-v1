@@ -57,7 +57,7 @@ use crate::vlp::amm::controller::get_fee_pool_tokens;
 use crate::vlp::amm::refresh::update_amm_and_check_validity;
 
 use crate::math::constants::LST_POOL_ID;
-use crate::math::spot_balance::get_token_value;
+use crate::math::spot_balance::{get_token_amount, get_token_value};
 use crate::state::events::{
     LiquidateBorrowForPerpPnlRecord, LiquidatePerpPnlForDepositRecord, LiquidatePerpRecord,
     LiquidateSpotRecord, LiquidationRecord, LiquidationType, OrderAction, OrderActionExplanation,
@@ -3748,11 +3748,38 @@ pub fn resolve_spot_bankruptcy(
         spot_position.get_token_amount(spot_market_map.get_ref(&market_index)?.deref())?
     };
 
-    // todo: add market's insurance fund draw attempt here (before social loss)
-    // subtract 1 so insurance_fund_vault_balance always stays >= 1
-    let if_payment = borrow_amount.min(insurance_fund_vault_balance.saturating_sub(1).cast()?);
+    // Tranche 1: the market's own unsettled IF revenue (`revenue_pool`) is
+    // consumed BEFORE the staker-owned IF vault and any social loss. Counter-
+    // only: the pool's tokens already sit in the spot vault, so canceling the
+    // pool's deposit claim against the forgiven borrow needs no token movement
+    // — value that would have settled to the insurance vault covers the bad
+    // debt directly instead of depositors. Unlike the periodic revenue settle,
+    // this draw is not timer-gated or staker-APR-capped: in a bankruptcy the
+    // pool is first-loss capital.
+    let revenue_pool_payment = {
+        let mut spot_market = spot_market_map.get_ref_mut(&market_index)?;
+        let revenue_pool_token_amount = get_token_amount(
+            spot_market.revenue_pool.scaled_balance,
+            spot_market.deref(),
+            &SpotBalanceType::Deposit,
+        )?;
+        let payment = borrow_amount.min(revenue_pool_token_amount);
+        if payment > 0 {
+            update_revenue_pool_balances(payment, &SpotBalanceType::Borrow, &mut spot_market)?;
+            msg!("bankruptcy revenue pool tranche: {}", payment);
+        }
+        payment
+    };
 
-    let loss_to_socialize = borrow_amount.safe_sub(if_payment)?;
+    // Tranche 2: the staker-owned insurance fund vault.
+    // subtract 1 so insurance_fund_vault_balance always stays >= 1
+    let if_payment = borrow_amount
+        .safe_sub(revenue_pool_payment)?
+        .min(insurance_fund_vault_balance.saturating_sub(1).cast()?);
+
+    let loss_to_socialize = borrow_amount
+        .safe_sub(revenue_pool_payment)?
+        .safe_sub(if_payment)?;
 
     let cumulative_deposit_interest_delta =
         calculate_cumulative_deposit_interest_delta_to_resolve_bankruptcy(
@@ -3764,7 +3791,8 @@ pub fn resolve_spot_bankruptcy(
         let mut spot_market = spot_market_map.get_ref_mut(&market_index)?;
         let oracle_price_data = &oracle_map.get_price_data(&spot_market.oracle_id())?;
         // The user records the gross bad debt; the spot-market counters record
-        // only the loss actually borne by depositors, i.e. after the IF payment.
+        // only the loss actually borne by depositors, i.e. after the
+        // revenue-pool and IF payments.
         let gross_quote_loss = get_token_value(
             -borrow_amount.cast()?,
             spot_market.decimals,

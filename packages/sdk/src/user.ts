@@ -4571,8 +4571,8 @@ export class User {
 	}: {
 		marginCategory: MarginCategory;
 		perpPosition: PerpPosition;
-		oraclePriceData?: OraclePriceData;
-		quoteOraclePriceData?: OraclePriceData;
+		oraclePriceData?: Pick<OraclePriceData, 'price'>;
+		quoteOraclePriceData?: Pick<OraclePriceData, 'price'>;
 		includeOpenOrders?: boolean;
 	}): HealthComponent {
 		const perpMarket = this.velocityClient.getPerpMarketAccountOrThrow(

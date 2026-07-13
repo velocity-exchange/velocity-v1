@@ -126,6 +126,9 @@ pub const EPOCH_DURATION: i64 = TWENTY_FOUR_HOUR * 28;
 pub const THIRTY_DAY: i64 = TWENTY_FOUR_HOUR * 30;
 pub const THIRTY_DAY_I128: i128 = (TWENTY_FOUR_HOUR * 30) as i128;
 pub const ONE_YEAR: u128 = 31536000;
+/// Max age of the last fill before the trigger price's last-fill leg is
+/// treated as absent (oracle price substitutes).
+pub const TRIGGER_PRICE_LAST_FILL_MAX_AGE: i64 = FIVE_MINUTE as i64;
 
 // QUOTE AMOUNTS
 pub const ONE_HUNDRED_MILLION_QUOTE: u64 = 100_000_000_u64 * QUOTE_PRECISION_U64;

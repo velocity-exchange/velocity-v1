@@ -81,7 +81,7 @@ export function calculatePegFromTargetPrice(
  */
 export function calculateOptimalPegAndBudget(
 	amm: AMM,
-	mmOraclePriceData: MMOraclePriceData
+	mmOraclePriceData: Pick<MMOraclePriceData, 'price'>
 ): [BN, BN, BN, boolean] {
 	const reservePriceBefore = calculatePrice(
 		amm.baseAssetReserve,
@@ -159,7 +159,7 @@ export function calculateOptimalPegAndBudget(
  */
 export function calculateNewAmm(
 	amm: AMM,
-	mmOraclePriceData: MMOraclePriceData
+	mmOraclePriceData: Pick<MMOraclePriceData, 'price'>
 ): [BN, BN, BN, BN, boolean] {
 	let pKNumer = new BN(1);
 	let pKDenom = new BN(1);
@@ -217,7 +217,7 @@ export function calculateNewAmm(
  */
 export function calculateUpdatedAMM(
 	amm: AMM,
-	mmOraclePriceData?: MMOraclePriceData
+	mmOraclePriceData?: Pick<MMOraclePriceData, 'price'>
 ): AMM {
 	if (amm.curveUpdateIntensity == 0 || mmOraclePriceData === undefined) {
 		return amm;
@@ -283,7 +283,7 @@ export function calculateUpdatedAMMSpreadReserves(
 	amm: AMM,
 	marketStats: MarketStats,
 	direction: PositionDirection,
-	mmOraclePriceData?: MMOraclePriceData,
+	mmOraclePriceData?: Pick<MMOraclePriceData, 'price' | 'confidence'>,
 	latestSlot?: BN
 ): { baseAssetReserve: BN; quoteAssetReserve: BN; sqrtK: BN; newPeg: BN } {
 	const newAmm = calculateUpdatedAMM(amm, mmOraclePriceData);
@@ -322,7 +322,7 @@ export function calculateUpdatedAMMSpreadReserves(
 export function calculateBidAskPrice(
 	amm: AMM,
 	marketStats: MarketStats,
-	mmOraclePriceData?: MMOraclePriceData,
+	mmOraclePriceData?: Pick<MMOraclePriceData, 'price' | 'confidence'>,
 	withUpdate = true,
 	latestSlot?: BN
 ): [BN, BN] {
@@ -1275,7 +1275,7 @@ export function calculateSpreadBN(
 export function calculateSpread(
 	amm: AMM,
 	marketStats: MarketStats,
-	oraclePriceData?: OraclePriceData,
+	oraclePriceData?: Pick<OraclePriceData, 'price' | 'confidence'>,
 	now?: BN,
 	reservePrice?: BN
 ): [number, number] {
@@ -1388,7 +1388,7 @@ export function calculateSpread(
 export function calculateSpreadReserves(
 	amm: AMM,
 	marketStats: MarketStats,
-	mmOraclePriceData?: MMOraclePriceData,
+	mmOraclePriceData?: Pick<MMOraclePriceData, 'price' | 'confidence'>,
 	now?: BN,
 	latestSlot?: BN
 ) {
@@ -1649,7 +1649,7 @@ export function calculateMaxBaseAssetAmountToTrade(
 	marketStats: MarketStats,
 	limit_price: BN,
 	direction: PositionDirection,
-	mmOraclePriceData: MMOraclePriceData,
+	mmOraclePriceData: Pick<MMOraclePriceData, 'price' | 'confidence'>,
 	now?: BN
 ): [BN, PositionDirection] {
 	const invariant = amm.sqrtK.mul(amm.sqrtK);

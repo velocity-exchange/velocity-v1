@@ -13,6 +13,7 @@ import {
 
 import { getAssociatedTokenAddress } from '@solana/spl-token';
 import {
+	AdminClient,
 	BulkAccountLoader,
 	VelocityClient,
 	initialize,
@@ -50,6 +51,7 @@ import { LiquidatorBot } from './bots/liquidator';
 import { FloatingPerpMakerBot } from './bots/floatingMaker';
 import { Bot } from './types';
 import { IFRevenueSettlerBot } from './bots/ifRevenueSettler';
+import { ProtocolFeeCollectorBot } from './bots/protocolFeeCollector';
 import { UserPnlSettlerBot } from './bots/userPnlSettler';
 import { UserIdleFlipperBot } from './bots/userIdleFlipper';
 import { EquityFloorGuardBot } from './bots/equityFloorGuard';
@@ -104,6 +106,10 @@ program
 	.option(
 		'--if-revenue-settler',
 		'Enable Insurance Fund revenue pool settler bot'
+	)
+	.option(
+		'--protocol-fee-collector',
+		'Enable protocol fee sweep/withdraw bot (signer needs the FeeWithdraw hot role)'
 	)
 	.option('--funding-rate-updater', 'Enable Funding Rate updater bot')
 	.option('--user-pnl-settler', 'Enable User PnL settler bot')
@@ -403,7 +409,11 @@ const runBot = async () => {
 			configHasBot(config, 'pythLazerCranker');
 		txSender = new FastSingleTxSender({
 			connection: sendTxConnection,
-			blockhashRefreshInterval: 500,
+			// Disable the background blockhash refresh loop: FastSingleTxSender's
+			// `recentBlockhash` cache is never consumed by `sendRawTransaction`, and
+			// the fillers build txs from their own BlockhashSubscriber. The loop was
+			// pure redundant getLatestBlockhash traffic.
+			blockhashRefreshInterval: 0,
 			wallet,
 			opts,
 			skipConfirmation,
@@ -856,6 +866,19 @@ const runBot = async () => {
 			new IFRevenueSettlerBot(
 				velocityClient,
 				config.botConfigs!.ifRevenueSettler!
+			)
+		);
+	}
+
+	if (configHasBot(config, 'protocolFeeCollector')) {
+		needVelocityStateWatcher = true;
+
+		// the withdraw ix builders live on AdminClient (extends VelocityClient);
+		// bot-private instance, subscribed in the bot's init()
+		bots.push(
+			new ProtocolFeeCollectorBot(
+				new AdminClient(velocityClientConfig),
+				config.botConfigs!.protocolFeeCollector!
 			)
 		);
 	}

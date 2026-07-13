@@ -27,6 +27,7 @@ import {
 	Wallet,
 	getNonIdleUserFilter,
 	getUserFilter,
+	USER_ACCOUNT_SIZE_BYTES,
 } from '@velocity-exchange/sdk';
 import { sleep } from './utils/utils';
 import { setupEndpoints } from './endpoints';
@@ -88,10 +89,6 @@ if (useGrpc && !grpcEndpoint) {
 const SYNC_INTERVAL = parseInt(process.env.SYNC_INTERVAL || '90000');
 
 const EXPIRY_MULTIPLIER = 4;
-// Velocity's User account is 4496 bytes (drift's was 4376). This caps the
-// zstd-decompressed buffer in sync(); if it's smaller than the real account, the
-// cached buffer is silently truncated and consumers decode garbage past 4376.
-const MAX_USER_ACCOUNT_SIZE_BYTES = 4496;
 
 export class WebsocketCacheProgramAccountSubscriber {
 	// Program<any>: the concrete velocity IDL makes anchor's Program type expand too
@@ -225,7 +222,7 @@ export class WebsocketCacheProgramAccountSubscriber {
 					);
 					const userBuffer = this.decoder.decode(
 						compressedUserData,
-						MAX_USER_ACCOUNT_SIZE_BYTES
+						USER_ACCOUNT_SIZE_BYTES
 					);
 					programAccountBufferMap.set(
 						programAccount.pubkey.toString(),

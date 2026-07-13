@@ -157,6 +157,44 @@ mod get_trigger_price {
     }
 
     #[test]
+    fn test_get_trigger_price_stale_last_fill() {
+        use crate::math::constants::TRIGGER_PRICE_LAST_FILL_MAX_AGE;
+
+        let oracle_price = 100_000_000_000;
+        let now = 1_752_082_210;
+
+        // No funding history (leg B = oracle), 5min basis = +10_000_000 (leg C),
+        // last fill between them so a fresh leg A is the median.
+        let mut perp_market = PerpMarket {
+            market_stats: MarketStats {
+                last_mark_price_twap_5min: 100_010_000_000,
+                historical_oracle_data: HistoricalOracleData {
+                    last_oracle_price_twap_5min: 100_000_000_000,
+                    ..HistoricalOracleData::default()
+                },
+                last_trade_ts: now - TRIGGER_PRICE_LAST_FILL_MAX_AGE,
+                ..MarketStats::default()
+            },
+            amm: AMM { ..AMM::default() },
+            last_fill_price: 100_005_000_000,
+            ..PerpMarket::default()
+        };
+
+        // Fill exactly at max age: still fresh, leg A is the median.
+        let trigger_price = perp_market
+            .get_trigger_price(oracle_price, now, true)
+            .unwrap();
+        assert_eq!(trigger_price, 100_005_000_000);
+
+        // One second past max age: leg A is stale, oracle substitutes.
+        perp_market.market_stats.last_trade_ts = now - TRIGGER_PRICE_LAST_FILL_MAX_AGE - 1;
+        let trigger_price = perp_market
+            .get_trigger_price(oracle_price, now, true)
+            .unwrap();
+        assert_eq!(trigger_price, 100_000_000_000);
+    }
+
+    #[test]
     fn test_clamp_trigger_price() {
         use crate::state::perp_market::{ContractTier, PerpMarket};
 
@@ -167,8 +205,8 @@ mod get_trigger_price {
         };
 
         let oracle_price = 100_000_000_000; // $100,000
-        let max_bps_diff = 500; // 20 BPS
-        let max_oracle_diff = oracle_price / max_bps_diff; // 200,000,000
+        let clamp_divisor = 500; // oracle / 500 = 20 bps
+        let max_oracle_diff = oracle_price / clamp_divisor; // 200,000,000
 
         // Test median price below lower bound
         let median_price_below = oracle_price - max_oracle_diff - 1_000_000;
@@ -210,8 +248,8 @@ mod get_trigger_price {
             ..PerpMarket::default()
         };
 
-        let max_bps_diff_c = 100; // 100 BPS
-        let max_oracle_diff_c = oracle_price / max_bps_diff_c; // 1,000,000,000
+        let clamp_divisor_c = 100; // oracle / 100 = 100 bps
+        let max_oracle_diff_c = oracle_price / clamp_divisor_c; // 1,000,000,000
 
         // Test median price below lower bound for Tier C
         let median_price_below_c = oracle_price - max_oracle_diff_c - 1_000_000;
@@ -236,7 +274,7 @@ mod get_trigger_price {
 
         // Test edge cases with very small oracle price
         let small_oracle_price = 1_000_000; // $1
-        let max_oracle_diff_small = small_oracle_price / max_bps_diff; // 2,000
+        let max_oracle_diff_small = small_oracle_price / clamp_divisor; // 2,000
 
         let median_price_small = small_oracle_price - max_oracle_diff_small - 100;
         let clamped_price = perp_market_a
@@ -246,7 +284,7 @@ mod get_trigger_price {
 
         // Test edge cases with very large oracle price
         let large_oracle_price = 1_000_000_000_000_000; // $1M
-        let max_oracle_diff_large = large_oracle_price / max_bps_diff; // 2,000,000,000,000
+        let max_oracle_diff_large = large_oracle_price / clamp_divisor; // 2,000,000,000,000
 
         let median_price_large = large_oracle_price + max_oracle_diff_large + 1_000_000_000;
         let clamped_price = perp_market_a

@@ -2968,6 +2968,12 @@ pub fn liquidate_perp_pnl_for_deposit(
         perp_market_index
     )?;
 
+    // Audit #25 scoping: an expired/delisted market (Settlement) winds positions
+    // down at the expiry price regardless of margin improvement, so the
+    // "shortage must not grow" postcondition below is deliberately skipped there
+    // — see the guard for the rationale.
+    let market_in_settlement = perp_market.status == MarketStatus::Settlement;
+
     drop(perp_market);
 
     user.get_perp_position(perp_market_index)
@@ -3362,15 +3368,24 @@ pub fn liquidate_perp_pnl_for_deposit(
     // size: either every transfer helps or none does. We therefore revert rather
     // than silently degrade the account. The tolerance absorbs the sub-$1 deposit
     // dust-rounding in `calculate_asset_transfer_for_liability_transfer`.
-    let new_margin_shortage = liquidation_mode.margin_shortage(&margin_calculation_after)?;
-    validate!(
-        new_margin_shortage
-            <= margin_shortage.safe_add(LIQUIDATE_PNL_FOR_DEPOSIT_MARGIN_SHORTAGE_TOLERANCE)?,
-        ErrorCode::LiquidationWorsensAccountHealth,
-        "liquidate_perp_pnl_for_deposit would grow margin shortage ({} -> {}); refusing to worsen account health",
-        margin_shortage,
-        new_margin_shortage
-    )?;
+    //
+    // Exempt Settlement (delisting): an expired market winds every position down
+    // at the expiry price and this path clears the residual expired pnl into the
+    // liquidator, which legitimately drives the account to bankruptcy. There is
+    // no live risk left to protect, so the worsen-check must not block the
+    // wind-down. The finding targets the ordinary permissionless liquidation of a
+    // live market, which stays guarded.
+    if !market_in_settlement {
+        let new_margin_shortage = liquidation_mode.margin_shortage(&margin_calculation_after)?;
+        validate!(
+            new_margin_shortage
+                <= margin_shortage.safe_add(LIQUIDATE_PNL_FOR_DEPOSIT_MARGIN_SHORTAGE_TOLERANCE)?,
+            ErrorCode::LiquidationWorsensAccountHealth,
+            "liquidate_perp_pnl_for_deposit would grow margin shortage ({} -> {}); refusing to worsen account health",
+            margin_shortage,
+            new_margin_shortage
+        )?;
+    }
 
     margin_freed = margin_freed.safe_add(margin_freed_from_liability)?;
     liquidation_mode.increment_free_margin(user, margin_freed_from_liability)?;

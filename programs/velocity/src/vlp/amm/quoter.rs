@@ -854,6 +854,20 @@ impl<'a> AmmJitQuoter<'a> {
             maker_unfilled,
             taker_has_limit_price,
         )?;
+        // Apply the per-fill reserve-movement throttle. The JIT sizing math
+        // above bounds participation by oracle proximity, intensity and
+        // inventory, but — unlike the AMM-only fill path, which caps its take
+        // at `calculate_amm_available_liquidity` — it does NOT cap how far a
+        // single fill may push the reserves. A DLOB match is permissionless,
+        // so without this clamp a matcher could drive an unbounded JIT slice
+        // that moves reserves past `max_fill_reserve_fraction` in one fill.
+        // Clamp to the same available-liquidity bound the AMM-only path uses.
+        let amm_available = amm_math::calculate_amm_available_liquidity(
+            &market.amm,
+            &taker_direction,
+            market.order_step_size,
+        )?;
+        let max_jit_base = max_jit_base.min(amm_available);
         if max_jit_base > 0 {
             market.amm.validate_for_fill(taker_direction)?;
         }

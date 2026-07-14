@@ -16157,6 +16157,16 @@
       "code": 6359,
       "name": "InvalidEquityFloorTransfer",
       "msg": "Invalid equity floor transfer between subaccounts"
+    },
+    {
+      "code": 6360,
+      "name": "LiquidationWorsensAccountHealth",
+      "msg": "Liquidation would worsen the account's margin shortage"
+    },
+    {
+      "code": 6361,
+      "name": "PerpBankruptcyMustPrecedeSpot",
+      "msg": "Perp bankruptcies must be resolved before spot bankruptcies"
     }
   ],
   "types": [

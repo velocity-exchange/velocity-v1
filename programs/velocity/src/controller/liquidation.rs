@@ -23,7 +23,7 @@ use crate::controller::spot_balance::{
 };
 use crate::controller::spot_position::update_spot_balances_and_cumulative_deposits;
 use crate::error::{ErrorCode, VelocityResult};
-use crate::math::bankruptcy::is_cross_margin_bankrupt;
+use crate::math::bankruptcy::{has_pending_cross_margin_perp_bankruptcy, is_cross_margin_bankrupt};
 use crate::math::casting::Cast;
 use crate::math::constants::{
     LIQUIDATION_FEE_PRECISION, LIQUIDATION_FEE_PRECISION_U128, LIQUIDATION_PCT_PRECISION,
@@ -80,6 +80,14 @@ use crate::{get_then_update_id, load_mut};
 
 #[cfg(test)]
 mod tests;
+
+/// Tolerance ($1, in QUOTE_PRECISION) for the audit #25 postcondition in
+/// `liquidate_perp_pnl_for_deposit`. Absorbs the deposit dust-rounding in
+/// `calculate_asset_transfer_for_liability_transfer`, which can round the seized
+/// asset up to the user's full deposit when the rounded-away value is under
+/// QUOTE_PRECISION — a legitimate degradation of up to <$1 that must not trip
+/// the "shortage must not grow" guard.
+const LIQUIDATE_PNL_FOR_DEPOSIT_MARGIN_SHORTAGE_TOLERANCE: u128 = QUOTE_PRECISION;
 
 pub fn liquidate_perp(
     market_index: u16,
@@ -2229,7 +2237,7 @@ pub fn liquidate_spot_with_swap_end(
 ) -> VelocityResult {
     let liquidation_margin_buffer_ratio = state.liquidation_margin_buffer_ratio;
 
-    let (asset_price, asset_decimals, asset_liquidation_multiplier) = {
+    let (asset_price, asset_decimals, asset_weight, asset_liquidation_multiplier) = {
         let asset_market = spot_market_map.get_ref_mut(&asset_market_index)?;
         let (asset_price_data, _validity_guard_rails) =
             oracle_map.get_price_data_and_guard_rails(&asset_market.oracle_id())?;
@@ -2238,6 +2246,7 @@ pub fn liquidate_spot_with_swap_end(
         (
             asset_price,
             asset_market.decimals,
+            asset_market.maintenance_asset_weight,
             calculate_liquidation_multiplier(
                 asset_market.liquidator_fee,
                 LiquidationMultiplierType::Premium,
@@ -2248,9 +2257,10 @@ pub fn liquidate_spot_with_swap_end(
     let (
         liability_price,
         liability_decimals,
+        liability_weight,
         liability_liquidation_multiplier,
-        liquidation_if_fee,
-        liquidation_protocol_fee,
+        liability_if_liquidation_fee,
+        liability_protocol_liquidation_fee,
     ) = {
         let liability_market = spot_market_map.get_ref_mut(&liability_market_index)?;
         let (liability_price_data, _validity_guard_rails) =
@@ -2261,6 +2271,7 @@ pub fn liquidate_spot_with_swap_end(
         (
             liability_price,
             liability_market.decimals,
+            liability_market.maintenance_liability_weight,
             calculate_liquidation_multiplier(
                 liability_market.liquidator_fee,
                 LiquidationMultiplierType::Discount,
@@ -2296,6 +2307,30 @@ pub fn liquidate_spot_with_swap_end(
     let mut margin_freed = 0_u64;
 
     let margin_shortage = margin_calculation.cross_margin_margin_shortage()?;
+
+    // Audit #51: cap the insurance-side fee by the account's margin shortage,
+    // exactly as the direct spot-liquidation path (`liquidate_spot`) does via
+    // `calculate_spot_if_fee`. Charging the raw if + protocol rates on the
+    // swap-realized borrow relief would route value into the fee pools that the
+    // account needs to climb out of its shortage, delivering less borrow relief
+    // than the direct path for an equivalent seizure. The basis is the
+    // swap-realized `liability_transfer` (the actual borrow reduction), and the
+    // capped total is split IF-first then protocol, mirroring `liquidate_spot`.
+    let liability_weight_with_buffer =
+        liability_weight.safe_add(liquidation_margin_buffer_ratio)?;
+    let total_if_side_fee = calculate_spot_if_fee(
+        margin_calculation.tracked_market_margin_shortage(margin_shortage)?,
+        liability_transfer,
+        asset_weight,
+        asset_liquidation_multiplier,
+        liability_weight_with_buffer,
+        liability_liquidation_multiplier,
+        liability_decimals,
+        liability_price,
+        liability_if_liquidation_fee.safe_add(liability_protocol_liquidation_fee)?,
+    )?;
+    let liquidation_if_fee = total_if_side_fee.min(liability_if_liquidation_fee);
+    let liquidation_protocol_fee = total_if_side_fee.safe_sub(liquidation_if_fee)?;
 
     let if_fee = liability_transfer
         .cast::<u128>()?
@@ -3306,7 +3341,7 @@ pub fn liquidate_perp_pnl_for_deposit(
         update_quote_asset_amount(user_position, &mut perp_market, pnl_transfer.cast()?)?;
     }
 
-    let (margin_freed_from_liability, _) = calculate_margin_freed(
+    let (margin_freed_from_liability, margin_calculation_after) = calculate_margin_freed(
         user,
         perp_market_map,
         spot_market_map,
@@ -3315,6 +3350,28 @@ pub fn liquidate_perp_pnl_for_deposit(
         margin_shortage,
         Some(liquidation_mode.as_ref()),
     )?;
+
+    // Audit #25: `liquidate_perp_pnl_for_deposit` must never worsen the account's
+    // (buffered) margin shortage. When a perp market's liquidator fee exceeds the
+    // liquidation margin buffer, the asset premium the liquidator collects on the
+    // seized deposit can exceed the collateral relief from cancelling the negative
+    // pnl, so the transfer strips quote collateral while the shortage *grows* —
+    // and `calculate_margin_freed` saturates that negative improvement to 0,
+    // hiding it. The per-unit margin improvement is linear through the origin, so
+    // there is no partial "break-even" transfer between zero and the computed
+    // size: either every transfer helps or none does. We therefore revert rather
+    // than silently degrade the account. The tolerance absorbs the sub-$1 deposit
+    // dust-rounding in `calculate_asset_transfer_for_liability_transfer`.
+    let new_margin_shortage = liquidation_mode.margin_shortage(&margin_calculation_after)?;
+    validate!(
+        new_margin_shortage
+            <= margin_shortage.safe_add(LIQUIDATE_PNL_FOR_DEPOSIT_MARGIN_SHORTAGE_TOLERANCE)?,
+        ErrorCode::LiquidationWorsensAccountHealth,
+        "liquidate_perp_pnl_for_deposit would grow margin shortage ({} -> {}); refusing to worsen account health",
+        margin_shortage,
+        new_margin_shortage
+    )?;
+
     margin_freed = margin_freed.safe_add(margin_freed_from_liability)?;
     liquidation_mode.increment_free_margin(user, margin_freed_from_liability)?;
 
@@ -3694,6 +3751,19 @@ pub fn resolve_spot_bankruptcy(
         user.is_cross_margin_bankrupt(),
         ErrorCode::UserNotBankrupt,
         "user not bankrupt",
+    )?;
+
+    // Audit #52: enforce a deterministic perp-before-spot bankruptcy precedence.
+    // resolve_perp_bankruptcy and resolve_spot_bankruptcy both draw from the
+    // shared (quote) insurance fund vault, so a public caller could otherwise
+    // pick which resolver spends it first and shift socialized loss between perp
+    // and spot stakeholders. The keeper bots already resolve every perp
+    // bankruptcy before any spot bankruptcy, so we require the same order
+    // on-chain: any pending cross-margin perp bankruptcy must be cleared first.
+    validate!(
+        !has_pending_cross_margin_perp_bankruptcy(user),
+        ErrorCode::PerpBankruptcyMustPrecedeSpot,
+        "resolve pending perp bankruptcies before spot bankruptcies",
     )?;
 
     validate!(

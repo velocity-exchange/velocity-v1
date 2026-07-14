@@ -773,6 +773,10 @@ pub enum ErrorCode {
     EquityBelowFloor,
     #[msg("Invalid equity floor transfer between subaccounts")]
     InvalidEquityFloorTransfer,
+    #[msg("Liquidation would worsen the account's margin shortage")]
+    LiquidationWorsensAccountHealth,
+    #[msg("Perp bankruptcies must be resolved before spot bankruptcies")]
+    PerpBankruptcyMustPrecedeSpot,
 }
 
 #[macro_export]

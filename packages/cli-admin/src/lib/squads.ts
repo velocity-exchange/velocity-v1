@@ -22,7 +22,8 @@ export type DispatchResult =
  * `sendInstructionsOrSquadsV4`.
  *
  * If `multisigPda` is undefined, instructions are signed and sent directly.
- * Otherwise a proposal is mandatory: the multisig's vault 0 PDA must be a
+ * Otherwise a proposal is mandatory: the multisig's vault PDA at `vaultIndex`
+ * (default 0) must be a
  * required signer of at least one instruction, and the call errors out if it
  * is not (e.g. the target authority resolved to the wallet instead of the
  * vault) — `--multisig` never silently downgrades to a direct send. When the
@@ -35,16 +36,17 @@ export async function sendOrPropose(
 	provider: AnchorProvider,
 	instructions: TransactionInstruction[],
 	multisigPda: PublicKey | undefined,
-	memo: string
+	memo: string,
+	vaultIndex = 0
 ): Promise<DispatchResult> {
 	if (multisigPda) {
-		const [vaultPda] = multisig.getVaultPda({ multisigPda, index: 0 });
+		const [vaultPda] = multisig.getVaultPda({ multisigPda, index: vaultIndex });
 		const vaultMustSign = instructions.some((ix) =>
 			ix.keys.some((key) => key.isSigner && key.pubkey.equals(vaultPda))
 		);
 		if (!vaultMustSign) {
 			throw new Error(
-				`--multisig was passed but vault ${vaultPda.toBase58()} (index 0) is not a required signer of any instruction — ` +
+				`--multisig was passed but vault ${vaultPda.toBase58()} (index ${vaultIndex}) is not a required signer of any instruction — ` +
 					`a proposal would not gate execution. Check that the target authority is the vault PDA, ` +
 					`or drop --multisig to send directly with the local wallet.`
 			);
@@ -65,7 +67,7 @@ export async function sendOrPropose(
 
 	const [vaultPda] = multisig.getVaultPda({
 		multisigPda,
-		index: 0,
+		index: vaultIndex,
 	});
 
 	const { blockhash } = await provider.connection.getLatestBlockhash();
@@ -79,7 +81,7 @@ export async function sendOrPropose(
 		multisigPda,
 		transactionIndex,
 		creator: provider.wallet.publicKey,
-		vaultIndex: 0,
+		vaultIndex,
 		ephemeralSigners: 0,
 		transactionMessage,
 		memo,
@@ -100,6 +102,76 @@ export async function sendOrPropose(
 		transactionIndex,
 		signature,
 	};
+}
+
+/**
+ * Print what a `sendOrPropose` call with the same arguments would do, without
+ * sending anything: the instruction list, the dispatch mode, and the expected
+ * costs. For a direct send that is just the network fee; for a proposal it is
+ * the rent for the `VaultTransaction` + `Proposal` accounts (estimated from
+ * the compiled inner message size and the multisig member count; both
+ * accounts are closable after execution, so the rent is reclaimable) plus the
+ * network fee.
+ */
+export async function reportDryRun(
+	provider: AnchorProvider,
+	instructions: TransactionInstruction[],
+	multisigPda: PublicKey | undefined,
+	vaultIndex = 0
+): Promise<void> {
+	console.log('dry run, nothing sent');
+	instructions.forEach((ix, i) => {
+		console.log(
+			`  ix[${i}] program=${ix.programId.toBase58()} accounts=${
+				ix.keys.length
+			} data=${ix.data.length}B`
+		);
+	});
+
+	if (!multisigPda) {
+		console.log('  dispatch: direct send (1 tx, 1 signature)');
+		console.log('  network fee: ~5000 lamports');
+		return;
+	}
+
+	const info = await multisig.accounts.Multisig.fromAccountAddress(
+		provider.connection,
+		multisigPda
+	);
+	const [vaultPda] = multisig.getVaultPda({ multisigPda, index: vaultIndex });
+	const transactionIndex = BigInt(Number(info.transactionIndex) + 1);
+	const members = info.members.length;
+
+	const { blockhash } = await provider.connection.getLatestBlockhash();
+	const messageBytes = new TransactionMessage({
+		payerKey: vaultPda,
+		recentBlockhash: blockhash,
+		instructions,
+	})
+		.compileToLegacyMessage()
+		.serialize().length;
+
+	// VaultTransaction: discriminator + multisig/creator pubkeys + index +
+	// bumps/flags + the serialized inner message; Proposal: fixed fields plus
+	// three member-sized vote vectors. Padded slack keeps this an upper bound.
+	const vaultTxSize = 8 + 32 + 32 + 8 + 1 + 1 + 1 + 4 + messageBytes + 64;
+	const proposalSize = 8 + 32 + 8 + 1 + 8 * 4 + (4 + 32 * members) * 3 + 64;
+	const rent =
+		(await provider.connection.getMinimumBalanceForRentExemption(vaultTxSize)) +
+		(await provider.connection.getMinimumBalanceForRentExemption(proposalSize));
+
+	console.log(
+		`  dispatch: proposal to multisig ${multisigPda.toBase58()}, vault ${vaultIndex} (${vaultPda.toBase58()}), next tx index ${transactionIndex}`
+	);
+	console.log(
+		`  proposer rent: ~${rent} lamports (~${(rent / 1e9).toFixed(
+			4
+		)} SOL) for VaultTransaction + Proposal accounts, reclaimable after execution`
+	);
+	console.log('  network fee: ~5000 lamports');
+	console.log(
+		'  (members must still approve + execute via Squads UI / CLI before it lands)'
+	);
 }
 
 export function reportDispatch(label: string, result: DispatchResult): void {

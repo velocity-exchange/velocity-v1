@@ -3738,12 +3738,16 @@ pub fn resolve_spot_bankruptcy(
     // by `cumulative_borrow_interest`, so a stale (un-accrued) index would clear
     // the debt at less than its current value — under-drawing the revenue-pool
     // and IF tranches, under-socializing the residual, and forgiving the
-    // interest accrued since the last touch. Mirrors the refresh
-    // `resolve_perp_bankruptcy` performs before it moves value.
+    // interest accrued since the last touch. Pass `None` (interest + token/util
+    // TWAPs only, no oracle price data): the fix only needs the interest index
+    // refreshed, and interest accrual does not depend on the oracle. Feeding the
+    // oracle price here would also stamp the market's `historical_oracle_data`
+    // (conf/delay/TWAPs) as a side effect of a bankruptcy resolution — state
+    // this path never reads — so it is deliberately omitted, matching the
+    // sibling `resolve_perp_pnl_deficit` refresh.
     {
         let spot_market = &mut spot_market_map.get_ref_mut(&market_index)?;
-        let oracle_price_data = oracle_map.get_price_data(&spot_market.oracle_id())?;
-        update_spot_market_cumulative_interest(spot_market, Some(oracle_price_data), now)?;
+        update_spot_market_cumulative_interest(spot_market, None, now)?;
     }
 
     let borrow_amount = {

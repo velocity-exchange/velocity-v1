@@ -1,6 +1,6 @@
 import { Command } from 'commander';
 import { BN } from '@coral-xyz/anchor';
-import { PublicKey, Transaction } from '@solana/web3.js';
+import { PublicKey } from '@solana/web3.js';
 import {
 	fetchUserStatsAccount,
 	getUserAccountPublicKeySync,
@@ -19,10 +19,12 @@ export function registerUser(parent: Command): void {
 			.command('init <name>')
 			.description(
 				'Initialize velocity user accounts for an authority: UserStats (if missing) plus ' +
-					'sequential sub-accounts named "<name>-<id>" until --sub-accounts exist. Creation is ' +
-					'permissionless — the local keypair signs and pays rent, no proposal is created; ' +
-					'--multisig is only used to derive the vault PDA authority. Idempotent: skips ' +
-					'sub-accounts that already exist, safe to rerun after a partial failure.'
+					'sequential sub-accounts named "<name>-<id>" until --sub-accounts exist. On mainnet ' +
+					'the program requires the authority to sign creation (or be the payer), so with ' +
+					'--multisig all instructions are batched into one vault transaction proposal and ' +
+					'the vault PDA pays the rent — make sure it holds enough SOL. Without --multisig ' +
+					'the local keypair signs and pays. Idempotent: resumes from the created count, ' +
+					'safe to rerun after a partial failure.'
 			)
 			.option(
 				'--authority <pubkey>',
@@ -107,31 +109,58 @@ export function registerUser(parent: Command): void {
 					).toBase58()} name="${name}-${subAccountId}"`
 				);
 			}
+
+			// On mainnet the program requires the authority to sign creation (or
+			// be the payer). Through a Squads proposal only the vault PDA signs at
+			// execution, so the vault must be the payer of the inner instructions
+			// (payer == authority satisfies the check) and it pays the rent.
+			const multisigPda = opts.multisig
+				? new PublicKey(opts.multisig)
+				: undefined;
+			const rentPayer = multisigPda ? authority : provider.wallet.publicKey;
 			console.log(
 				`rent: ${totalRent} lamports (~${(totalRent / 1e9).toFixed(
 					4
-				)} SOL), paid by ${provider.wallet.publicKey.toBase58()}`
+				)} SOL), paid by ${rentPayer.toBase58()}${
+					multisigPda ? ' (the vault PDA, fund it with SOL first)' : ''
+				}`
 			);
-			console.log(
-				`network fees: ~${5000 * toCreate} lamports (${toCreate} tx)`
-			);
+
+			const ixs = [];
+			const payerOverride = multisigPda
+				? { externalWallet: authority }
+				: undefined;
+			if (needStats) {
+				ixs.push(await client.getInitializeUserStatsIx(payerOverride));
+			}
+			for (let subAccountId = created; subAccountId < count; subAccountId++) {
+				// private SDK builder: the public wrapper doesn't expose the payer
+				// override needed to make the vault pay inside a proposal.
+				const [, ix] = await (client as any).getInitializeUserInstructions(
+					subAccountId,
+					`${name}-${subAccountId}`,
+					undefined,
+					payerOverride
+				);
+				ixs.push(ix);
+			}
+
 			if (local.dryRun) {
-				console.log('dry run, nothing sent');
+				await reportDryRun(provider, ixs, multisigPda, vaultIndex);
 				return;
 			}
 
-			for (let subAccountId = created; subAccountId < count; subAccountId++) {
-				const [ixs, userPk] = await client.getInitializeUserAccountIxs(
-					subAccountId,
-					`${name}-${subAccountId}`
-				);
-				const tx = new Transaction().add(...ixs);
-				const signature = await provider.sendAndConfirm(tx);
-				console.log(
-					`✓ sub-account ${subAccountId}: ${userPk.toBase58()} name="${name}-${subAccountId}"`
-				);
-				console.log(`  signature: ${signature}`);
-			}
+			const result = await sendOrPropose(
+				provider,
+				ixs,
+				multisigPda,
+				'velocity-admin user init',
+				vaultIndex
+			);
+			reportDispatch(
+				`init ${toCreate} sub-account(s) for authority ${authority.toBase58()}`,
+				result
+			);
 			console.log(
 				`userStats: ${getUserStatsAccountPublicKey(
 					client.program.programId,

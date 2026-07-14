@@ -51,7 +51,7 @@ velocity-admin fees withdraw-spot <market> <amount>  # FeeWithdraw hot key; pays
 velocity-admin fees sweep <market>                               # permissionless
 velocity-admin fees transfer-fee-pnl <feePoolMarket> <pnlPoolMarket> <amount> <fee-to-pnl|pnl-to-fee> # warm/cold admin
 
-velocity-admin user init <name> [--sub-accounts <n>] [--authority <pk>] [--vault-index <i>] [--dry-run]  # permissionless; signer pays rent, no proposal
+velocity-admin user init <name> [--sub-accounts <n>] [--authority <pk>] [--vault-index <i>] [--dry-run]  # authority must sign on mainnet; one proposal with --multisig, vault pays rent
 velocity-admin user set-delegate <delegate> [--sub-accounts <n>] [--allow-transfer <bool>] [--authority <pk>] [--vault-index <i>] [--dry-run]  # authority signs; one proposal with --multisig
 velocity-admin user set-special-status <user> <flags>
 velocity-admin user set-equity-floor <user> <floor>              # warm/cold admin; floor in QUOTE_PRECISION raw units, 0 disables
@@ -87,10 +87,12 @@ must be the velocity user / stake authority and own the source token account.
 `user deposit`, `user withdraw` and `user set-delegate` also honor
 `--vault-index` to target and propose against a vault other than 0.
 
-`user init` is the exception: account creation is permissionless (the authority
-never signs), so `--multisig` (with `--vault-index`) only derives the vault PDA
-used as the authority — the local keypair signs, pays rent, and the transaction
-is sent directly with no proposal.
+`user init` follows the same pattern on mainnet: the program only allows
+account creation when the authority signs or is the payer, so with `--multisig`
+the create instructions are batched into one proposal and the vault PDA is the
+inner payer — the vault itself must hold enough SOL for the rent. Without
+`--multisig` the local keypair is both authority and payer and the transaction
+is sent directly.
 
 ```sh
 velocity-admin auth set-warm-admin <newWarmAdmin> \

@@ -822,6 +822,16 @@ pub mod delisting_test {
 
         let market = market_map.get_ref_mut(&0).unwrap();
         assert_eq!(market.pnl_pool.scaled_balance, 960549500000);
+        // #44: the permissionless expiry closeout charges a taker fee; it must
+        // accrue to the market fee ledger (split IF + protocol, AMM provision
+        // zeroed since there is no AMM counterparty) rather than lingering in
+        // the pnl pool to be dumped into the revenue pool at delisting. With
+        // the default fee structure (amm/if numerators both 0) the whole fee
+        // lands in the protocol residual.
+        assert_eq!(market.fee_ledger.pending_protocol_fee, 49499);
+        assert_eq!(market.fee_ledger.pending_if_fee, 0);
+        assert_eq!(market.fee_ledger.pending_amm_provision, 0);
+        assert_eq!(market.fee_ledger.total_exchange_fee, 49499);
         drop(market);
 
         assert_eq!(taker.perp_positions[0].open_orders, 0);

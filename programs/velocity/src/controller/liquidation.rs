@@ -38,6 +38,7 @@ use crate::math::liquidation::{
     calculate_liability_transfer_implied_by_asset_amount,
     calculate_liability_transfer_to_cover_margin_shortage, calculate_liquidation_multiplier,
     calculate_max_pct_to_liquidate, calculate_perp_if_fee, calculate_spot_if_fee,
+    calculate_user_protective_asset_price, calculate_user_protective_liability_price,
     get_liquidation_fee, get_liquidation_order_params, validate_swap_within_liquidation_boundaries,
     validate_transfer_satisfies_limit_price, LiquidationMultiplierType,
 };
@@ -45,7 +46,7 @@ use crate::math::margin::{
     calculate_margin_requirement_and_total_collateral_and_liability_info,
     meets_initial_margin_requirement, MarginRequirementType,
 };
-use crate::math::oracle::VelocityAction;
+use crate::math::oracle::{is_oracle_valid_for_action, VelocityAction};
 use crate::math::orders::{
     calculate_existing_position_fields_for_order_action, get_position_delta_for_fill,
     is_multiple_of_step_size, is_oracle_too_divergent_with_twap_5min,
@@ -2537,6 +2538,7 @@ pub fn liquidate_borrow_for_perp_pnl(
 
     let (
         liability_amount,
+        liability_oracle_price,
         liability_price,
         liability_decimals,
         liability_weight,
@@ -2546,7 +2548,7 @@ pub fn liquidate_borrow_for_perp_pnl(
         let (liability_price_data, validity_guard_rails) =
             oracle_map.get_price_data_and_guard_rails(&liability_market.oracle_id())?;
 
-        update_spot_market_and_check_validity(
+        let liability_oracle_validity = update_spot_market_and_check_validity(
             &mut liability_market,
             liability_price_data,
             validity_guard_rails,
@@ -2571,9 +2573,29 @@ pub fn liquidate_borrow_for_perp_pnl(
             liability_market_index
         )?;
 
+        // #14: this pnl-vs-spot route skips the oracle-vs-5min-TWAP band. Mirror the
+        // deposit-side protection on the liability leg (PR #243): a margin-invalid
+        // (stale/uncertain) borrow oracle must not overvalue the debt being taken over and
+        // cheapen the pnl the user receives for it. Only the exchange rate uses this price;
+        // valuation stays at the raw oracle price, consistent with the margin calculation.
+        let liability_price = if is_oracle_valid_for_action(
+            liability_oracle_validity,
+            Some(VelocityAction::MarginCalc),
+        )? {
+            liability_price_data.price
+        } else {
+            calculate_user_protective_liability_price(
+                liability_price_data,
+                liability_market
+                    .historical_oracle_data
+                    .last_oracle_price_twap_5min,
+            )?
+        };
+
         (
             token_amount,
             liability_price_data.price,
+            liability_price,
             liability_market.decimals,
             liability_market.maintenance_liability_weight,
             calculate_liquidation_multiplier(
@@ -2681,7 +2703,9 @@ pub fn liquidate_borrow_for_perp_pnl(
     let liability_weight_with_buffer =
         liability_weight.safe_add(liquidation_margin_buffer_ratio)?;
 
-    // Determine what amount of borrow to transfer to reduce margin shortage to 0
+    // Determine what amount of borrow to transfer to reduce margin shortage to 0.
+    // valuation (shortage -> tokens) stays at the raw oracle price, consistent with the
+    // margin calculation; only the exchange rate uses the protective price.
     let liability_transfer_to_cover_margin_shortage =
         calculate_liability_transfer_to_cover_margin_shortage(
             margin_shortage,
@@ -2690,7 +2714,7 @@ pub fn liquidate_borrow_for_perp_pnl(
             liability_weight_with_buffer,
             liability_liquidation_multiplier,
             liability_decimals,
-            liability_price,
+            liability_oracle_price,
             0,
         )?;
 
@@ -2724,7 +2748,7 @@ pub fn liquidate_borrow_for_perp_pnl(
     let liability_value = get_token_value(
         liability_amount.cast()?,
         liability_decimals,
-        liability_price,
+        liability_oracle_price,
     )?;
 
     let minimum_liability_transfer = if liability_value > 10 * QUOTE_PRECISION_I128 {
@@ -2976,7 +3000,7 @@ pub fn liquidate_perp_pnl_for_deposit(
         let (asset_price_data, validity_guard_rails) =
             oracle_map.get_price_data_and_guard_rails(&asset_market.oracle_id())?;
 
-        update_spot_market_and_check_validity(
+        let asset_oracle_validity = update_spot_market_and_check_validity(
             &mut asset_market,
             asset_price_data,
             validity_guard_rails,
@@ -2984,7 +3008,23 @@ pub fn liquidate_perp_pnl_for_deposit(
             Some(VelocityAction::Liquidate),
         )?;
 
-        let token_price = asset_price_data.price;
+        // #14: this pnl-vs-spot route skips the oracle-vs-5min-TWAP band that direct spot
+        // liquidation enforces. Rather than block the liquidation (PR #243 philosophy), a
+        // margin-invalid (stale/uncertain) deposit oracle that can still make the account
+        // liquidatable must not let its collateral be seized at a depressed conversion
+        // price: size the exchange at a user-protective price instead.
+        let token_price =
+            if is_oracle_valid_for_action(asset_oracle_validity, Some(VelocityAction::MarginCalc))?
+            {
+                asset_price_data.price
+            } else {
+                calculate_user_protective_asset_price(
+                    asset_price_data,
+                    asset_market
+                        .historical_oracle_data
+                        .last_oracle_price_twap_5min,
+                )?
+            };
 
         let token_amount = liquidation_mode.get_spot_token_amount(user, &asset_market)?;
 

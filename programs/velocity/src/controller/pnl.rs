@@ -8,7 +8,7 @@ use crate::controller::spot_balance::{
     update_spot_balances, update_spot_market_cumulative_interest,
 };
 use crate::error::{ErrorCode, VelocityResult};
-use crate::math::oracle::{is_oracle_valid_for_action, VelocityAction};
+use crate::math::oracle::{is_oracle_valid_for_action, OracleValidity, VelocityAction};
 use crate::vlp::amm::controller::{update_pnl_pool_and_user_balance, update_pool_balances};
 use crate::vlp::amm::math::amm::calculate_net_user_pnl;
 
@@ -164,6 +164,30 @@ pub fn settle_pnl(
                     );
                     return mode.result(ErrorCode::AMMNotUpdatedInSameSlot, market_index, &msg);
                 }
+            }
+
+            // #70: SettlePnl deliberately admits StaleForMargin / InsufficientDataPoints — a
+            // user settling their own pnl through a slightly stale oracle is acceptable, and
+            // the layered last_oracle_valid + is_fresh_at checks above backstop the AMM. But a
+            // *third party* (anyone who is not the user's authority or delegate) must not be
+            // able to push another user's *negative* pnl (a loss debited from that user's
+            // collateral) through such a margin-invalid oracle. Gate that specific combination
+            // on the stricter margin validity, mirroring the existing positive-pnl guard that
+            // forces a user to settle their own positive pnl.
+            let settler_can_sign_for_user =
+                user.authority.eq(authority) || user.delegate.eq(authority);
+            if unrealized_pnl < 0
+                && !settler_can_sign_for_user
+                && matches!(
+                    oracle_validity,
+                    OracleValidity::StaleForMargin | OracleValidity::InsufficientDataPoints
+                )
+            {
+                let msg = format!(
+                    "Third party cannot settle user's negative pnl against a margin-invalid oracle ({}) for Market = {}",
+                    oracle_validity, market_index
+                );
+                return mode.result(oracle_validity.get_error_code(), market_index, &msg);
             }
         }
     }

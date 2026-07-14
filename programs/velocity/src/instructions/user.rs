@@ -928,15 +928,6 @@ pub fn handle_transfer_deposit_by_delegate<'c: 'info, 'info>(
         "equity floor breaker is tripped for this authority"
     )?;
 
-    // Carry equity floor along with the funds so the sum of floors across the
-    // authority's subaccounts is preserved. The from side is validated against
-    // its reduced floor by the withdraw margin check inside
-    // `transfer_spot_deposit`; the to side is validated below, after the
-    // deposit lands, so its increased floor must be backed by real equity.
-    if equity_floor_delta > 0 {
-        transfer_equity_floor(from_user, to_user, equity_floor_delta)?;
-    }
-
     let AccountMaps {
         perp_market_map,
         spot_market_map,
@@ -948,6 +939,40 @@ pub fn handle_transfer_deposit_by_delegate<'c: 'info, 'info>(
         clock.slot,
         Some(state.oracle_guard_rails),
     )?;
+
+    // Carry equity floor along with the funds so the sum of floors across the
+    // authority's subaccounts is preserved. The from side is validated against
+    // its reduced floor by the withdraw margin check inside
+    // `transfer_spot_deposit`; the to side is validated below, after the
+    // deposit lands, so its increased floor must be backed by real equity.
+    if equity_floor_delta > 0 {
+        // Guard (#55): a delegate must not shed floor off a subaccount that is
+        // already below the floor being reduced. Without this, an owner could
+        // shift the floor off a breached subaccount with a zero-amount transfer
+        // and drop it out of breach before the permissionless breaker trips,
+        // defusing the pending trip. Evaluate from_user against its
+        // PRE-reduction floor (the transfer below reduces it); the withdraw
+        // margin check inside `transfer_spot_deposit` re-validates the from side
+        // against the reduced floor after the funds move.
+        let from_user_margin_calculation =
+            calculate_margin_requirement_and_total_collateral_and_liability_info(
+                from_user,
+                &perp_market_map,
+                &spot_market_map,
+                &mut oracle_map,
+                MarginContext::standard(MarginRequirementType::Initial).strict(true),
+            )?;
+
+        validate!(
+            !from_user.is_below_equity_floor(from_user_margin_calculation.total_collateral),
+            ErrorCode::InvalidEquityFloorTransfer,
+            "from_user total collateral {} is below equity floor {}; cannot reduce floor while breached",
+            from_user_margin_calculation.total_collateral,
+            from_user.equity_floor
+        )?;
+
+        transfer_equity_floor(from_user, to_user, equity_floor_delta)?;
+    }
 
     transfer_spot_deposit(
         from_user,

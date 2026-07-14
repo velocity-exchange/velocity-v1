@@ -4427,6 +4427,10 @@ export type Velocity = {
           "writable": true
         },
         {
+          "name": "liquidatorStats",
+          "writable": true
+        },
+        {
           "name": "user",
           "writable": true
         }

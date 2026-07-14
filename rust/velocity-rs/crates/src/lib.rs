@@ -3668,6 +3668,7 @@ impl<'a> TransactionBuilder<'a> {
                     user_account.sub_account_id,
                 ),
                 liquidator: self.sub_account,
+                liquidator_stats: Wallet::derive_stats_account(&self.owner()),
             },
             [&self.account_data, user_account].into_iter(),
             std::iter::empty(),

@@ -11233,6 +11233,7 @@ pub mod accounts {
         pub state: Pubkey,
         pub authority: Pubkey,
         pub liquidator: Pubkey,
+        pub liquidator_stats: Pubkey,
         pub user: Pubkey,
     }
     #[automatically_derived]
@@ -11263,6 +11264,11 @@ pub mod accounts {
                 },
                 AccountMeta {
                     pubkey: self.liquidator,
+                    is_signer: false,
+                    is_writable: true,
+                },
+                AccountMeta {
+                    pubkey: self.liquidator_stats,
                     is_signer: false,
                     is_writable: true,
                 },

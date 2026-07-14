@@ -4421,6 +4421,10 @@
           "writable": true
         },
         {
+          "name": "liquidator_stats",
+          "writable": true
+        },
+        {
           "name": "user",
           "writable": true
         }

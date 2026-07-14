@@ -4935,9 +4935,11 @@ export class VelocityClient {
 	 * @param fromSubAccountId - Sub-account id to debit.
 	 * @param toSubAccountId - Sub-account id to credit.
 	 * @param equityFloorDelta - Equity floor (QUOTE_PRECISION) to move from the debited to the credited
-	 * sub-account along with the funds, keeping the sum of floors constant. The debited side must stay
-	 * at/above its reduced floor and the credited side's collateral (after the transfer lands) must back
-	 * its increased floor, else the transfer reverts with `InvalidEquityFloorTransfer`. Pass `'auto'`
+	 * sub-account along with the funds, keeping the sum of floors constant. The debited side must not
+	 * already be below the floor being reduced (a below-floor sub-account cannot shed floor to defuse a
+	 * pending equity-breaker trip), must stay at/above its reduced floor, and the credited side's
+	 * collateral (after the transfer lands) must back its increased floor, else the transfer reverts with
+	 * `InvalidEquityFloorTransfer`. Pass `'auto'`
 	 * (quote market only) to move the minimal floor needed for the debited side to stay at/above its
 	 * floor: `max(0, amount - (collateral - floor))`, capped at the debited side's floor. The auto delta
 	 * never exceeds `amount`, so the credited side stays backed whenever it was before. Client-side
@@ -10675,7 +10677,8 @@ export class VelocityClient {
 	 * position to the calling liquidator's sub-account at the oracle price (subject to `limitPrice`
 	 * and the on-chain liquidation fee). Reverts if `userAccountPublicKey` equals the liquidator's
 	 * own user account. Permissionless — any signer can act as liquidator, taking on the position
-	 * and its PnL themselves.
+	 * and its PnL themselves. Reverts with `EquityBelowFloor` if the liquidator's authority-wide
+	 * equity breaker is tripped (a tripped authority is barred from position-acquiring liquidations).
 	 * @param userAccountPublicKey - Public key of the user account being liquidated.
 	 * @param userAccount - Decoded user account being liquidated.
 	 * @param marketIndex - Perp market index of the position to liquidate.
@@ -10870,7 +10873,9 @@ export class VelocityClient {
 	 * debt from the user to the liquidator's own sub-account in exchange for `assetMarketIndex`
 	 * collateral, when the user is below maintenance margin (or already flagged `beingLiquidated`).
 	 * Reverts if `userAccountPublicKey` equals the liquidator's own user account. Permissionless —
-	 * any signer can act as liquidator.
+	 * any signer can act as liquidator. Reverts with `EquityBelowFloor` if the liquidator's
+	 * authority-wide equity breaker is tripped (a tripped authority is barred from position-acquiring
+	 * liquidations).
 	 * @param userAccountPublicKey - Public key of the user account being liquidated.
 	 * @param userAccount - Decoded user account being liquidated.
 	 * @param assetMarketIndex - Spot market index of the collateral the liquidator receives.

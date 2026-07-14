@@ -755,7 +755,7 @@ pub fn handle_initialize_perp_market(
             },
             ..MarketStats::default()
         },
-        _padding_align_amm: [0; 8],
+        pending_revenue_share: 0,
         amm: AMM {
             base_asset_reserve: amm_base_asset_reserve,
             quote_asset_reserve: amm_quote_asset_reserve,

@@ -36,11 +36,19 @@ pub fn sweep_completed_revenue_share_for_market<'a>(
 
     spot_balance::update_spot_market_cumulative_interest(quote_spot_market, None, now_ts)?;
 
-    // Aggregate positive user PnL claim on this market's PnL pool. Builder/referrer
-    // payouts below must leave this amount behind: the PnL pool backs users' positive
-    // unsettled PnL, and this sweep is permissionless, so draining it to pay revenue
-    // share would leave a third party's settlement short. Mirrors the reservation the
-    // protocol fee sweep applies (`controller::perp_pools::sweep_market_fees`).
+    // Amount this permissionless sweep must leave in the PnL pool, mirroring
+    // the reservation the protocol fee sweep applies
+    // (`controller::perp_pools::sweep_market_fees`):
+    //   * `max(net_user_pnl, 0)`: the PnL pool backs users' positive unsettled
+    //     PnL, so paying revenue share out of it would leave a third party's
+    //     settlement short (audit #48).
+    //   * the floored IF bankruptcy tranche (`min(pending_if_fee,
+    //     get_bankruptcy_if_floor())`): `resolve_perp_bankruptcy` consumes
+    //     `pending_if_fee` counter-only, so a revenue-share payout must not
+    //     drain the tokens backing the standing tranche the #245 floor
+    //     promises either (same class as audit #53 on the protocol sweep).
+    // This sweep does NOT reserve `pending_revenue_share` — it is the payer of
+    // that claim, and decrements the counter as it pays below.
     let reserved_user_claims: u128 = calculate_net_user_pnl(
         &perp_market.amm,
         oracle_price,
@@ -48,7 +56,8 @@ pub fn sweep_completed_revenue_share_for_market<'a>(
         perp_market.net_unsettled_funding_pnl,
     )?
     .max(0)
-    .cast::<u128>()?;
+    .cast::<u128>()?
+    .safe_add(perp_market.get_bankruptcy_if_tranche_reservation(false)?)?;
 
     let orders_len = revenue_share_escrow.orders_len();
     for i in 0..orders_len {
@@ -134,6 +143,8 @@ pub fn sweep_completed_revenue_share_for_market<'a>(
                     referrer_user.get_quote_spot_position_mut(),
                 )?;
 
+                perp_market.settle_pending_revenue_share(fees_accrued)?;
+
                 referrer_rev_share.total_referrer_rewards = referrer_rev_share
                     .total_referrer_rewards
                     .safe_add(fees_accrued)?;
@@ -180,6 +191,8 @@ pub fn sweep_completed_revenue_share_for_market<'a>(
                     &mut perp_market.pnl_pool,
                     builder_user.get_quote_spot_position_mut(),
                 )?;
+
+                perp_market.settle_pending_revenue_share(fees_accrued)?;
 
                 builder_revenue_share.total_builder_rewards = builder_revenue_share
                     .total_builder_rewards

@@ -2356,6 +2356,9 @@ fn settle_amm_house_fill(
         if let (Some(idx), Some(escrow)) = (builder_order_idx, rev_share_escrow.as_mut()) {
             let order = escrow.get_order_mut(idx)?;
             order.fees_accrued = order.fees_accrued.safe_add(builder_fee)?;
+            // mirror the per-order accrual into the market aggregate the fee
+            // sweep reserves (audit #73)
+            market.accrue_pending_revenue_share(builder_fee)?;
         } else {
             validate!(
                 false,
@@ -2398,6 +2401,8 @@ fn settle_amm_house_fill(
     if let (Some(idx), Some(escrow)) = (referrer_builder_order_idx, rev_share_escrow.as_mut()) {
         let order = escrow.get_order_mut(idx)?;
         order.fees_accrued = order.fees_accrued.safe_add(referrer_reward)?;
+        // mirror into the market aggregate the fee sweep reserves (audit #73)
+        market.accrue_pending_revenue_share(referrer_reward)?;
     }
 
     if user_fee != 0 || builder_fee != 0 {
@@ -2688,6 +2693,9 @@ fn settle_dlob_match_fill(
         if let (Some(idx), Some(escrow)) = (builder_order_idx, rev_share_escrow.as_deref_mut()) {
             let order = escrow.get_order_mut(idx)?;
             order.fees_accrued = order.fees_accrued.safe_add(builder_fee)?;
+            // mirror the per-order accrual into the market aggregate the fee
+            // sweep reserves (audit #73)
+            market.accrue_pending_revenue_share(builder_fee)?;
         } else {
             validate!(
                 false,
@@ -2757,6 +2765,8 @@ fn settle_dlob_match_fill(
     {
         let order = escrow.get_order_mut(idx)?;
         order.fees_accrued = order.fees_accrued.safe_add(referrer_reward)?;
+        // mirror into the market aggregate the fee sweep reserves (audit #73)
+        market.accrue_pending_revenue_share(referrer_reward)?;
     }
 
     // Update taker order BEFORE event emit.

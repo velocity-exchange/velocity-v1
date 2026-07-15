@@ -3775,7 +3775,13 @@ pub fn resolve_spot_bankruptcy(
         )?;
         let payment = borrow_amount.min(revenue_pool_token_amount);
         if payment > 0 {
-            update_revenue_pool_balances(payment, &SpotBalanceType::Borrow, &mut spot_market)?;
+            // counter-only draw, no tokens leave the vault
+            update_revenue_pool_balances(
+                payment,
+                &SpotBalanceType::Borrow,
+                &mut spot_market,
+                false,
+            )?;
             msg!("bankruptcy revenue pool tranche: {}", payment);
         }
         payment

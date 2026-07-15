@@ -132,6 +132,14 @@ export type PythLazerCrankerBotConfig = BaseBotConfig & {
 	intervalMs: number;
 	onlyCrankUsedOracles?: boolean;
 	feedProperties?: PriceFeedProperty[];
+	/// Adaptive cranking: when set, each intervalMs tick only posts a chunk if
+	/// maxCrankIntervalMs has elapsed since its last post OR any feed in the
+	/// chunk moved >= this many bps from its last posted price. intervalMs then
+	/// acts as the condition poll rate rather than the post rate. Unset
+	/// preserves the legacy post-every-tick behavior.
+	crankDivergenceBps?: number;
+	/// Max time between posts per chunk in adaptive mode (default 1600ms ~ 4 slots)
+	maxCrankIntervalMs?: number;
 };
 
 export type LpPoolTargetBaseCrankerConfig = BaseBotConfig & {

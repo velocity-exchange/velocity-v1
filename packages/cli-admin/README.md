@@ -51,12 +51,14 @@ velocity-admin fees withdraw-spot <market> <amount>  # FeeWithdraw hot key; pays
 velocity-admin fees sweep <market>                               # permissionless
 velocity-admin fees transfer-fee-pnl <feePoolMarket> <pnlPoolMarket> <amount> <fee-to-pnl|pnl-to-fee> # warm/cold admin
 
+velocity-admin user init <name> [--sub-accounts <n>] [--authority <pk>] [--vault-index <i>] [--dry-run]  # authority must sign on mainnet; one proposal with --multisig, vault pays rent
+velocity-admin user set-delegate <delegate> [--sub-accounts <n>] [--allow-transfer <bool>] [--authority <pk>] [--vault-index <i>] [--dry-run]  # authority signs; one proposal with --multisig
 velocity-admin user set-special-status <user> <flags>
 velocity-admin user set-equity-floor <user> <floor>              # warm/cold admin; floor in QUOTE_PRECISION raw units, 0 disables
 velocity-admin user reset-equity-breaker <userStats>             # warm/cold admin; unfreezes an authority after the breaker tripped
 velocity-admin user admin-deposit <market> <amount> --user <pk> --user-token-account <pk>
-velocity-admin user deposit <market> <amount> [--authority <pk>] [--sub-account <id>] [--user-token-account <pk>] [--reduce-only]
-velocity-admin user withdraw <market> <amount> [--authority <pk>] [--sub-account <id>] [--user-token-account <pk>] [--reduce-only]
+velocity-admin user deposit <market> <amount> [--authority <pk>] [--vault-index <i>] [--sub-account <id>] [--user-token-account <pk>] [--reduce-only] [--dry-run]
+velocity-admin user withdraw <market> <amount> [--authority <pk>] [--vault-index <i>] [--sub-account <id>] [--user-token-account <pk>] [--reduce-only] [--dry-run]
 
 velocity-admin if stake <market> <amount> [--authority <pk>] [--user-token-account <pk>]  # inits the stake account if missing
 
@@ -78,10 +80,19 @@ approve + execute via the Squads UI. If the vault does **not** need to sign
 (e.g. the wallet itself is the required authority), a proposal would be
 pointless — the CLI says so and sends the transaction directly instead.
 
-User-scoped commands (`user deposit`, `user withdraw`, `if stake`) default the
-authority to the multisig's vault 0 PDA when `--multisig` is passed, since the
-vault is what signs at execution. The vault must be the velocity user / stake
-authority and own the source token account.
+User-scoped commands (`user deposit`, `user withdraw`, `user set-delegate`,
+`if stake`) default the authority to the multisig's vault 0 PDA when
+`--multisig` is passed, since the vault is what signs at execution. The vault
+must be the velocity user / stake authority and own the source token account.
+`user deposit`, `user withdraw` and `user set-delegate` also honor
+`--vault-index` to target and propose against a vault other than 0.
+
+`user init` follows the same pattern on mainnet: the program only allows
+account creation when the authority signs or is the payer, so with `--multisig`
+the create instructions are batched into one proposal and the vault PDA is the
+inner payer — the vault itself must hold enough SOL for the rent. Without
+`--multisig` the local keypair is both authority and payer and the transaction
+is sent directly.
 
 ```sh
 velocity-admin auth set-warm-admin <newWarmAdmin> \

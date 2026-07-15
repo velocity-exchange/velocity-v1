@@ -73,7 +73,7 @@ import { startAnchor } from 'solana-bankrun';
 import { TestBulkAccountLoader } from '../../packages/sdk/src/accounts/testBulkAccountLoader';
 import { BankrunContextWrapper } from '../../packages/sdk/src/bankrun/bankrunConnection';
 import dotenv from 'dotenv';
-import { PYTH_LAZER_HEX_STRING_SOL, PYTH_STORAGE_DATA } from './pythLazerData';
+import { freshLazerSolHex, mockLazerStorageData } from './pythLazerMock';
 import {
 	CustomBorshAccountsCoder,
 	CustomBorshCoder,
@@ -85,7 +85,7 @@ const PYTH_STORAGE_ACCOUNT_INFO: AccountInfo<Buffer> = {
 	lamports: LAMPORTS_PER_SOL,
 	owner: new PublicKey(PYTH_LAZER_PROGRAM_ID),
 	rentEpoch: 0,
-	data: Buffer.from(PYTH_STORAGE_DATA, 'base64'),
+	data: Buffer.from(mockLazerStorageData(), 'base64'),
 };
 
 describe('LP Pool', () => {
@@ -717,7 +717,10 @@ describe('LP Pool', () => {
 	});
 
 	it('can update constituent target weights', async () => {
-		await adminClient.postPythLazerOracleUpdate([6], PYTH_LAZER_HEX_STRING_SOL);
+		await adminClient.postPythLazerOracleUpdate(
+			[6],
+			freshLazerSolHex(bankrunContextWrapper.connection.getTime())
+		);
 		await adminClient.updatePerpMarketOracle(
 			0,
 			solUsdLazer,

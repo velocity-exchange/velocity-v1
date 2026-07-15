@@ -56,10 +56,10 @@ export class PythLazerCrankerBot implements Bot {
 	// Metrics
 	private txRecorder: TxRecorder;
 
-	// Adaptive cranking state, keyed by feed-chunk hash. Only maintained when
-	// crankDivergenceBps is set; lastPostMs/lastPostedPrices reflect the last
-	// send that resolved successfully, inFlightSinceMs marks a send whose
-	// outcome is still pending.
+	// Post-tracking state, keyed by feed-chunk hash. lastPostMs/lastPostedPrices
+	// reflect the last send that resolved successfully, inFlightSinceMs marks a
+	// send whose outcome is still pending. Always maintained; only consulted by
+	// the gate when crankDivergenceBps is set.
 	private lastPostMs: Map<string, number> = new Map();
 	private lastPostedPrices: Map<string, Map<number, number>> = new Map();
 	private inFlightSinceMs: Map<string, number> = new Map();
@@ -395,16 +395,13 @@ export class PythLazerCrankerBot implements Bot {
 			return;
 		}
 
-		const adaptive = this.crankConfigs.crankDivergenceBps !== undefined;
 		for (const [
 			feedIdsStr,
 			priceMessage,
 		] of this.pythLazerClient.feedIdChunkToPriceMessage.entries()) {
 			const feedIds = this.pythLazerClient.getPriceFeedIdsFromHash(feedIdsStr);
 			const nowMs = Date.now();
-			const chunkPrices = adaptive
-				? this.snapshotChunkPrices(feedIds)
-				: new Map<number, number>();
+			const chunkPrices = this.snapshotChunkPrices(feedIds);
 			const postReason = this.shouldPostChunk(
 				feedIdsStr,
 				feedIds,
@@ -414,10 +411,7 @@ export class PythLazerCrankerBot implements Bot {
 			if (postReason === undefined) {
 				continue;
 			}
-			if (adaptive) {
-				logger.info(`Posting pyth lazer oracles for ${feedIds}: ${postReason}`);
-				this.inFlightSinceMs.set(feedIdsStr, nowMs);
-			}
+			this.inFlightSinceMs.set(feedIdsStr, nowMs);
 			const cus = Math.max(0, feedIds.length - 3) * 6_000 + 30_000;
 			const ixs = [
 				ComputeBudgetProgram.setComputeUnitLimit({
@@ -461,28 +455,22 @@ export class PythLazerCrankerBot implements Bot {
 					logger.error(
 						`Error simulating pyth lazer oracles for ${feedIds}: ${simResult.simTxLogs}`
 					);
-					if (adaptive) {
-						this.recordFailedChunk(feedIdsStr);
-					}
+					this.recordFailedChunk(feedIdsStr);
 					continue;
 				}
 				const startTime = Date.now();
 				this.velocityClient
 					.sendTransaction(simResult.tx)
 					.then((txSigAndSlot: TxSigAndSlot) => {
-						if (adaptive) {
-							this.recordPostedChunk(feedIdsStr, chunkPrices);
-						}
+						this.recordPostedChunk(feedIdsStr, chunkPrices);
 						const duration = Date.now() - startTime;
 						this.txRecorder.send(duration);
 						logger.info(
-							`Posted pyth lazer oracles for ${feedIds} update atomic tx: ${txSigAndSlot.txSig}, took ${duration}ms, skippedSim: false`
+							`Posted pyth lazer oracles for ${feedIds} (${postReason}) update atomic tx: ${txSigAndSlot.txSig}, took ${duration}ms, skippedSim: false`
 						);
 					})
 					.catch((e) => {
-						if (adaptive) {
-							this.recordFailedChunk(feedIdsStr);
-						}
+						this.recordFailedChunk(feedIdsStr);
 						logger.error(
 							`Error sending pyth lazer oracle update for ${feedIds}: ${e}`
 						);
@@ -498,19 +486,15 @@ export class PythLazerCrankerBot implements Bot {
 				this.velocityClient
 					.sendTransaction(tx)
 					.then((txSigAndSlot: TxSigAndSlot) => {
-						if (adaptive) {
-							this.recordPostedChunk(feedIdsStr, chunkPrices);
-						}
+						this.recordPostedChunk(feedIdsStr, chunkPrices);
 						const duration = Date.now() - startTime;
 						this.txRecorder.send(duration);
 						logger.info(
-							`Posted pyth lazer oracles for ${feedIds} update atomic tx: ${txSigAndSlot.txSig}, took ${duration}ms, skippedSim: true`
+							`Posted pyth lazer oracles for ${feedIds} (${postReason}) update atomic tx: ${txSigAndSlot.txSig}, took ${duration}ms, skippedSim: true`
 						);
 					})
 					.catch((e) => {
-						if (adaptive) {
-							this.recordFailedChunk(feedIdsStr);
-						}
+						this.recordFailedChunk(feedIdsStr);
 						logger.error(
 							`Error sending pyth lazer oracle update for ${feedIds}: ${e}`
 						);

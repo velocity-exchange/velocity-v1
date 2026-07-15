@@ -39,6 +39,9 @@ const SIM_CU_ESTIMATE_MULTIPLIER = 1.5;
 const DEFAULT_INTEVAL_MS = 30000;
 // ~4 slots at 400ms/slot; ceiling between posts when adaptive cranking is on
 const DEFAULT_MAX_CRANK_INTERVAL_MS = 1600;
+// A chunk with an unresolved send is not re-gated until this long has passed,
+// so a hung sendTransaction cannot permanently wedge the chunk
+const IN_FLIGHT_EXPIRY_MS = 10_000;
 
 export class PythLazerCrankerBot implements Bot {
 	private pythLazerClient?: PythLazerSubscriber;
@@ -53,9 +56,13 @@ export class PythLazerCrankerBot implements Bot {
 	// Metrics
 	private txRecorder: TxRecorder;
 
-	// Adaptive cranking state, keyed by feed-chunk hash
+	// Adaptive cranking state, keyed by feed-chunk hash. Only maintained when
+	// crankDivergenceBps is set; lastPostMs/lastPostedPrices reflect the last
+	// send that resolved successfully, inFlightSinceMs marks a send whose
+	// outcome is still pending.
 	private lastPostMs: Map<string, number> = new Map();
 	private lastPostedPrices: Map<string, Map<number, number>> = new Map();
+	private inFlightSinceMs: Map<string, number> = new Map();
 
 	constructor(
 		private globalConfig: GlobalConfig,
@@ -255,10 +262,19 @@ export class PythLazerCrankerBot implements Bot {
 	async startIntervalLoop(intervalMs = this.defaultIntervalMs): Promise<void> {
 		logger.info(`Starting ${this.name} bot with interval ${intervalMs} ms`);
 		if (this.crankConfigs.crankDivergenceBps !== undefined) {
+			const maxCrankIntervalMs =
+				this.crankConfigs.maxCrankIntervalMs ?? DEFAULT_MAX_CRANK_INTERVAL_MS;
 			logger.info(
-				`Adaptive cranking enabled: posting at most every ${
-					this.crankConfigs.maxCrankIntervalMs ?? DEFAULT_MAX_CRANK_INTERVAL_MS
-				}ms or on >=${this.crankConfigs.crankDivergenceBps}bps divergence`
+				`Adaptive cranking enabled: posting at most every ${maxCrankIntervalMs}ms or on >=${this.crankConfigs.crankDivergenceBps}bps divergence`
+			);
+			if (intervalMs !== undefined && intervalMs >= maxCrankIntervalMs) {
+				logger.warn(
+					`intervalMs (${intervalMs}) >= maxCrankIntervalMs (${maxCrankIntervalMs}): every tick will post via the max-interval branch and divergence gating will never apply. Set intervalMs below maxCrankIntervalMs so it acts as the condition poll rate.`
+				);
+			}
+		} else if (this.crankConfigs.maxCrankIntervalMs !== undefined) {
+			logger.warn(
+				`maxCrankIntervalMs is set but crankDivergenceBps is not: adaptive cranking is disabled and maxCrankIntervalMs is ignored (posting every ${intervalMs}ms tick)`
 			);
 		}
 		await sleepMs(5000);
@@ -284,20 +300,46 @@ export class PythLazerCrankerBot implements Bot {
 	}
 
 	/**
+	 * Snapshot of the parsed prices for a chunk's feeds, taken at gate time so
+	 * the divergence baseline matches the priceMessage being posted. Feeds with
+	 * missing or non-finite prices are omitted.
+	 */
+	private snapshotChunkPrices(feedIds: number[]): Map<number, number> {
+		const prices = new Map<number, number>();
+		for (const feedId of feedIds) {
+			const price = this.pythLazerClient!.feedIdToPrice.get(feedId);
+			if (price !== undefined && Number.isFinite(price) && price > 0) {
+				prices.set(feedId, price);
+			}
+		}
+		return prices;
+	}
+
+	/**
 	 * Decides whether a feed chunk should be posted this tick. Always posts when
 	 * adaptive cranking is disabled (crankDivergenceBps unset). Otherwise posts
-	 * when maxCrankIntervalMs has elapsed since the chunk's last post, or when
-	 * any feed in the chunk has moved >= crankDivergenceBps from its last
-	 * posted price.
+	 * when maxCrankIntervalMs has elapsed since the chunk's last successful
+	 * post, when any feed in the chunk has moved >= crankDivergenceBps from its
+	 * last posted price, or when a feed's price is unknown (posting is the safe
+	 * default). A chunk with an unresolved in-flight send is skipped.
 	 */
 	private shouldPostChunk(
 		feedIdsStr: string,
 		feedIds: number[],
+		currentPrices: Map<number, number>,
 		nowMs: number
 	): string | undefined {
 		const divergenceBps = this.crankConfigs.crankDivergenceBps;
 		if (divergenceBps === undefined) {
 			return 'interval';
+		}
+
+		const inFlightSinceMs = this.inFlightSinceMs.get(feedIdsStr);
+		if (
+			inFlightSinceMs !== undefined &&
+			nowMs - inFlightSinceMs < IN_FLIGHT_EXPIRY_MS
+		) {
+			return undefined;
 		}
 
 		const lastPostMs = this.lastPostMs.get(feedIdsStr);
@@ -315,12 +357,12 @@ export class PythLazerCrankerBot implements Bot {
 
 		const lastPrices = this.lastPostedPrices.get(feedIdsStr);
 		for (const feedId of feedIds) {
-			const currentPrice = this.pythLazerClient!.feedIdToPrice.get(feedId);
+			const currentPrice = currentPrices.get(feedId);
 			if (currentPrice === undefined) {
-				continue;
+				return `no live parsed price for feed ${feedId}`;
 			}
 			const lastPrice = lastPrices?.get(feedId);
-			if (lastPrice === undefined || lastPrice <= 0) {
+			if (lastPrice === undefined) {
 				return `no last posted price for feed ${feedId}`;
 			}
 			const moveBps = (Math.abs(currentPrice - lastPrice) / lastPrice) * 10_000;
@@ -336,18 +378,15 @@ export class PythLazerCrankerBot implements Bot {
 
 	private recordPostedChunk(
 		feedIdsStr: string,
-		feedIds: number[],
-		nowMs: number
+		postedPrices: Map<number, number>
 	) {
-		this.lastPostMs.set(feedIdsStr, nowMs);
-		const postedPrices = new Map<number, number>();
-		for (const feedId of feedIds) {
-			const price = this.pythLazerClient!.feedIdToPrice.get(feedId);
-			if (price !== undefined) {
-				postedPrices.set(feedId, price);
-			}
-		}
+		this.lastPostMs.set(feedIdsStr, Date.now());
 		this.lastPostedPrices.set(feedIdsStr, postedPrices);
+		this.inFlightSinceMs.delete(feedIdsStr);
+	}
+
+	private recordFailedChunk(feedIdsStr: string) {
+		this.inFlightSinceMs.delete(feedIdsStr);
 	}
 
 	async runCrankLoop() {
@@ -356,18 +395,28 @@ export class PythLazerCrankerBot implements Bot {
 			return;
 		}
 
+		const adaptive = this.crankConfigs.crankDivergenceBps !== undefined;
 		for (const [
 			feedIdsStr,
 			priceMessage,
 		] of this.pythLazerClient.feedIdChunkToPriceMessage.entries()) {
 			const feedIds = this.pythLazerClient.getPriceFeedIdsFromHash(feedIdsStr);
 			const nowMs = Date.now();
-			const postReason = this.shouldPostChunk(feedIdsStr, feedIds, nowMs);
+			const chunkPrices = adaptive
+				? this.snapshotChunkPrices(feedIds)
+				: new Map<number, number>();
+			const postReason = this.shouldPostChunk(
+				feedIdsStr,
+				feedIds,
+				chunkPrices,
+				nowMs
+			);
 			if (postReason === undefined) {
 				continue;
 			}
-			if (this.crankConfigs.crankDivergenceBps !== undefined) {
+			if (adaptive) {
 				logger.info(`Posting pyth lazer oracles for ${feedIds}: ${postReason}`);
+				this.inFlightSinceMs.set(feedIdsStr, nowMs);
 			}
 			const cus = Math.max(0, feedIds.length - 3) * 6_000 + 30_000;
 			const ixs = [
@@ -412,13 +461,18 @@ export class PythLazerCrankerBot implements Bot {
 					logger.error(
 						`Error simulating pyth lazer oracles for ${feedIds}: ${simResult.simTxLogs}`
 					);
+					if (adaptive) {
+						this.recordFailedChunk(feedIdsStr);
+					}
 					continue;
 				}
-				this.recordPostedChunk(feedIdsStr, feedIds, nowMs);
 				const startTime = Date.now();
 				this.velocityClient
 					.sendTransaction(simResult.tx)
 					.then((txSigAndSlot: TxSigAndSlot) => {
+						if (adaptive) {
+							this.recordPostedChunk(feedIdsStr, chunkPrices);
+						}
 						const duration = Date.now() - startTime;
 						this.txRecorder.send(duration);
 						logger.info(
@@ -426,10 +480,14 @@ export class PythLazerCrankerBot implements Bot {
 						);
 					})
 					.catch((e) => {
-						console.log(e);
+						if (adaptive) {
+							this.recordFailedChunk(feedIdsStr);
+						}
+						logger.error(
+							`Error sending pyth lazer oracle update for ${feedIds}: ${e}`
+						);
 					});
 			} else {
-				this.recordPostedChunk(feedIdsStr, feedIds, nowMs);
 				const startTime = Date.now();
 				const tx = getVersionedTransaction(
 					this.velocityClient.wallet.publicKey,
@@ -440,6 +498,9 @@ export class PythLazerCrankerBot implements Bot {
 				this.velocityClient
 					.sendTransaction(tx)
 					.then((txSigAndSlot: TxSigAndSlot) => {
+						if (adaptive) {
+							this.recordPostedChunk(feedIdsStr, chunkPrices);
+						}
 						const duration = Date.now() - startTime;
 						this.txRecorder.send(duration);
 						logger.info(
@@ -447,7 +508,12 @@ export class PythLazerCrankerBot implements Bot {
 						);
 					})
 					.catch((e) => {
-						console.log(e);
+						if (adaptive) {
+							this.recordFailedChunk(feedIdsStr);
+						}
+						logger.error(
+							`Error sending pyth lazer oracle update for ${feedIds}: ${e}`
+						);
 					});
 			}
 		}

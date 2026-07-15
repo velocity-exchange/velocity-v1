@@ -37,6 +37,8 @@ setGlobalDispatcher(
 
 const SIM_CU_ESTIMATE_MULTIPLIER = 1.5;
 const DEFAULT_INTEVAL_MS = 30000;
+// ~4 slots at 400ms/slot; ceiling between posts when adaptive cranking is on
+const DEFAULT_MAX_CRANK_INTERVAL_MS = 1600;
 
 export class PythLazerCrankerBot implements Bot {
 	private pythLazerClient?: PythLazerSubscriber;
@@ -50,6 +52,10 @@ export class PythLazerCrankerBot implements Bot {
 	private health: boolean = true;
 	// Metrics
 	private txRecorder: TxRecorder;
+
+	// Adaptive cranking state, keyed by feed-chunk hash
+	private lastPostMs: Map<string, number> = new Map();
+	private lastPostedPrices: Map<string, Map<number, number>> = new Map();
 
 	constructor(
 		private globalConfig: GlobalConfig,
@@ -248,6 +254,13 @@ export class PythLazerCrankerBot implements Bot {
 
 	async startIntervalLoop(intervalMs = this.defaultIntervalMs): Promise<void> {
 		logger.info(`Starting ${this.name} bot with interval ${intervalMs} ms`);
+		if (this.crankConfigs.crankDivergenceBps !== undefined) {
+			logger.info(
+				`Adaptive cranking enabled: posting at most every ${
+					this.crankConfigs.maxCrankIntervalMs ?? DEFAULT_MAX_CRANK_INTERVAL_MS
+				}ms or on >=${this.crankConfigs.crankDivergenceBps}bps divergence`
+			);
+		}
 		await sleepMs(5000);
 		await this.runCrankLoop();
 
@@ -270,6 +283,73 @@ export class PythLazerCrankerBot implements Bot {
 		return recentBlockhash.blockhash;
 	}
 
+	/**
+	 * Decides whether a feed chunk should be posted this tick. Always posts when
+	 * adaptive cranking is disabled (crankDivergenceBps unset). Otherwise posts
+	 * when maxCrankIntervalMs has elapsed since the chunk's last post, or when
+	 * any feed in the chunk has moved >= crankDivergenceBps from its last
+	 * posted price.
+	 */
+	private shouldPostChunk(
+		feedIdsStr: string,
+		feedIds: number[],
+		nowMs: number
+	): string | undefined {
+		const divergenceBps = this.crankConfigs.crankDivergenceBps;
+		if (divergenceBps === undefined) {
+			return 'interval';
+		}
+
+		const lastPostMs = this.lastPostMs.get(feedIdsStr);
+		if (lastPostMs === undefined) {
+			return 'first post';
+		}
+
+		const maxCrankIntervalMs =
+			this.crankConfigs.maxCrankIntervalMs ?? DEFAULT_MAX_CRANK_INTERVAL_MS;
+		if (nowMs - lastPostMs >= maxCrankIntervalMs) {
+			return `max interval (${
+				nowMs - lastPostMs
+			}ms >= ${maxCrankIntervalMs}ms)`;
+		}
+
+		const lastPrices = this.lastPostedPrices.get(feedIdsStr);
+		for (const feedId of feedIds) {
+			const currentPrice = this.pythLazerClient!.feedIdToPrice.get(feedId);
+			if (currentPrice === undefined) {
+				continue;
+			}
+			const lastPrice = lastPrices?.get(feedId);
+			if (lastPrice === undefined || lastPrice <= 0) {
+				return `no last posted price for feed ${feedId}`;
+			}
+			const moveBps = (Math.abs(currentPrice - lastPrice) / lastPrice) * 10_000;
+			if (moveBps >= divergenceBps) {
+				return `feed ${feedId} moved ${moveBps.toFixed(
+					1
+				)}bps >= ${divergenceBps}bps`;
+			}
+		}
+
+		return undefined;
+	}
+
+	private recordPostedChunk(
+		feedIdsStr: string,
+		feedIds: number[],
+		nowMs: number
+	) {
+		this.lastPostMs.set(feedIdsStr, nowMs);
+		const postedPrices = new Map<number, number>();
+		for (const feedId of feedIds) {
+			const price = this.pythLazerClient!.feedIdToPrice.get(feedId);
+			if (price !== undefined) {
+				postedPrices.set(feedId, price);
+			}
+		}
+		this.lastPostedPrices.set(feedIdsStr, postedPrices);
+	}
+
 	async runCrankLoop() {
 		if (!this.pythLazerClient) {
 			logger.warn('pythLazerClient not initialized, skipping crank loop');
@@ -281,6 +361,14 @@ export class PythLazerCrankerBot implements Bot {
 			priceMessage,
 		] of this.pythLazerClient.feedIdChunkToPriceMessage.entries()) {
 			const feedIds = this.pythLazerClient.getPriceFeedIdsFromHash(feedIdsStr);
+			const nowMs = Date.now();
+			const postReason = this.shouldPostChunk(feedIdsStr, feedIds, nowMs);
+			if (postReason === undefined) {
+				continue;
+			}
+			if (this.crankConfigs.crankDivergenceBps !== undefined) {
+				logger.info(`Posting pyth lazer oracles for ${feedIds}: ${postReason}`);
+			}
 			const cus = Math.max(0, feedIds.length - 3) * 6_000 + 30_000;
 			const ixs = [
 				ComputeBudgetProgram.setComputeUnitLimit({
@@ -326,6 +414,7 @@ export class PythLazerCrankerBot implements Bot {
 					);
 					continue;
 				}
+				this.recordPostedChunk(feedIdsStr, feedIds, nowMs);
 				const startTime = Date.now();
 				this.velocityClient
 					.sendTransaction(simResult.tx)
@@ -340,6 +429,7 @@ export class PythLazerCrankerBot implements Bot {
 						console.log(e);
 					});
 			} else {
+				this.recordPostedChunk(feedIdsStr, feedIds, nowMs);
 				const startTime = Date.now();
 				const tx = getVersionedTransaction(
 					this.velocityClient.wallet.publicKey,

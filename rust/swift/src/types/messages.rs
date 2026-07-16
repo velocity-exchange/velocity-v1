@@ -92,12 +92,12 @@ impl OrderMetadataAndMessage {
     /// Get the signed order info
     ///
     /// DEV: this performs a deserialization of the raw payload
-    pub fn order_info(&self) -> SignedMessageInfo {
-        // expect: message already succesfully deserialized by this point
+    pub fn order_info(&self) -> Result<SignedMessageInfo> {
         let deser =
             StrDeserializer::<serde::de::value::Error>::new(self.order_message_str.as_str());
-        let res = deser_signed_msg_type(deser);
-        res.unwrap().info(&self.taker_authority)
+        let signed = deser_signed_msg_type(deser)
+            .context("Failed to deserialize signed msg from order metadata")?;
+        Ok(signed.info(&self.taker_authority))
     }
     /// Borsh serialize and
     /// base64 encode the message
@@ -532,7 +532,7 @@ mod tests {
         .encode();
         let order_metadata = OrderMetadataAndMessage::decode(&encoded).unwrap();
         assert_eq!(order_metadata.encode(), encoded);
-        dbg!(&order_metadata.order_info().order_params);
+        dbg!(&order_metadata.order_info().unwrap().order_params);
     }
 
     #[test]

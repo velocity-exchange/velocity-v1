@@ -36,6 +36,7 @@ velocity-admin perp-market set-funding-dead-zone <market> <threshold> <slope>
 velocity-admin perp-market set-oracle-slot-delay <market> <slots>
 velocity-admin spot-market set-status <market> <status>
 velocity-admin spot-market set-guard-threshold <market> <threshold>
+velocity-admin spot-market set-scale-initial-asset-weight-start <market> <start>  # warm/cold admin; QUOTE_PRECISION (1e6); 0 disables
 velocity-admin spot-market set-fee-factors <market> <ifFeeFactor> <protocolFeeFactor>
 
 velocity-admin exchange set-status <bitfield>
@@ -62,6 +63,7 @@ velocity-admin user withdraw <market> <amount> [--authority <pk>] [--vault-index
 
 velocity-admin if stake <market> <amount> [--authority <pk>] [--user-token-account <pk>]  # inits the stake account if missing
 
+velocity-admin program upgrade --buffer <pk> [--spill <pk>] [--dry-run]  # propose an upgrade from an existing on-chain buffer
 velocity-admin program halt [--so <path>]                        # deploy sbpf-asm-abort + propose an upgrade that bricks the program
 velocity-admin program close-buffers [--dry-run] [--program-only|--metadata-only]  # reclaim rent from orphaned program + IDL buffers
 

@@ -522,7 +522,7 @@ impl WsConnection {
                                 let sender = self.message_tx.clone();
                                 let log_prefix = log_prefix.clone();
                                 // remove internal routing latency from the delay
-                                let delay_ms = FAST_SLOW_WS_DIFF - Duration::from_millis(updates.first().unwrap().recv_lag);
+                                let delay_ms = FAST_SLOW_WS_DIFF.saturating_sub(Duration::from_millis(updates.first().unwrap().recv_lag));
                                 let delay_fut = tokio::time::sleep(delay_ms);
                                 tokio::spawn(async move {
                                     let _ = delay_fut.await;
@@ -663,9 +663,13 @@ async fn subscribe_redis_pubsub(
             continue;
         }
         let payload: &[u8] = message.get_payload_bytes();
-        let payload_str = std::str::from_utf8(payload)
-            .context("Failed to convert payload to string")
-            .unwrap();
+        let payload_str = match std::str::from_utf8(payload) {
+            Ok(s) => s,
+            Err(err) => {
+                log::error!(target: "redis", "topic={topic}: payload not valid utf-8, dropping: {err:?}");
+                continue;
+            }
+        };
 
         let (order_metadata, deposit) = if !topic.contains("deposit") {
             (
@@ -681,7 +685,13 @@ async fn subscribe_redis_pubsub(
                 #[serde(borrow)]
                 order: &'a str,
             }
-            let value: DepositOrder = serde_json::from_str(payload_str).unwrap();
+            let value: DepositOrder = match serde_json::from_str(payload_str) {
+                Ok(v) => v,
+                Err(err) => {
+                    log::error!(target: "redis", "topic={topic}: failed to parse deposit order json, dropping: {err:?}");
+                    continue;
+                }
+            };
             (
                 OrderMetadataAndMessage::decode(value.order)
                     .context("Failed to decode order metadata"),
@@ -703,11 +713,18 @@ async fn subscribe_redis_pubsub(
             .with_label_values(&[topic])
             .observe(forward_latency as f64 / 1000.0);
 
+        let order_info = match order_metadata.order_info() {
+            Ok(info) => info,
+            Err(err) => {
+                log::error!(target: "redis", "topic={topic}: failed to extract order info, dropping: {err:?}");
+                continue;
+            }
+        };
         let SignedMessageInfo {
             taker_pubkey: taker_subaccount,
             order_params,
             ..
-        } = order_metadata.order_info();
+        } = order_info;
 
         log::info!(
             target: "redis",

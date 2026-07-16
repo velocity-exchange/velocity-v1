@@ -474,7 +474,10 @@ export function registerProgram(parent: Command): void {
 					'members approve.',
 				].join('\n')
 			)
-			.requiredOption('--buffer <pubkey>', 'existing program buffer to upgrade from')
+			.requiredOption(
+				'--buffer <pubkey>',
+				'existing program buffer to upgrade from'
+			)
 			.option(
 				'--upgrade-authority <pubkey>',
 				'overrides the upgrade authority signer (defaults to the multisig vault, or the wallet when --multisig is absent)'
@@ -557,7 +560,9 @@ export function registerProgram(parent: Command): void {
 			console.log(`program:          ${programId.toBase58()}`);
 			console.log(`buffer:           ${buffer.toBase58()}`);
 			console.log(
-				`buffer size:      ${data.length - BUFFER_HEADER_SIZE} bytes of bytecode`
+				`buffer size:      ${
+					data.length - BUFFER_HEADER_SIZE
+				} bytes of bytecode`
 			);
 			console.log(
 				`executable hash:  ${executableHash(data.subarray(BUFFER_HEADER_SIZE))}`

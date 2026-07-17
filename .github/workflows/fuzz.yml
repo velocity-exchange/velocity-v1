@@ -46,6 +46,14 @@ env:
   # cache into merging stale expansions (E0428 duplicate `main`). Incremental is
   # useless in CI anyway — disable it so each feature build is clean.
   CARGO_INCREMENTAL: 0
+  # velocity's custom native entrypoint (`solana_program::entrypoint!` at
+  # lib.rs:48) is gated by `#[cfg(not(feature = "cpi"))]`, NOT by no-entrypoint,
+  # so linking velocity as a host lib into the harness *binary* exports a
+  # `#[no_mangle] entrypoint` symbol that collides with another program crate's
+  # (duplicate symbol under rust-lld on Linux; macOS ld64 tolerates it). The
+  # harness never calls `entrypoint` — it's a libafl host binary with its own
+  # main — so letting the linker keep one copy is safe.
+  RUSTFLAGS: "-C link-arg=-Wl,--allow-multiple-definition"
 
 defaults:
   run:

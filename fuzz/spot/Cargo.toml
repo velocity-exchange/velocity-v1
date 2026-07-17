@@ -1,0 +1,43 @@
+[package]
+name = "spot_fuzz"
+version = "0.1.0"
+edition = "2021"
+
+# Standalone workspace — isolated from the parent project to avoid Solana
+# version conflicts (Crucible's harness model).
+[workspace]
+
+[dependencies]
+# Crucible framework, pinned to the exact commit.
+crucible-fuzzer = { git = "https://github.com/asymmetric-research/crucible", rev = "daeaa4d4a4e334175c4f171daacc7e177ad2fae0" }
+crucible-test-context = { git = "https://github.com/asymmetric-research/crucible", rev = "daeaa4d4a4e334175c4f171daacc7e177ad2fae0" }
+velocity = { path = "../../programs/velocity", default-features = false, features = [
+  "no-entrypoint",
+  "isolated-position",
+  "vlp-hedge",
+  "fuzz-fixtures",
+] }
+velocity-fuzz-common = { path = "../velocity-fuzz-common" }
+
+anchor-lang = "1.0"
+arbitrary = { version = "1", features = ["derive"] }
+libafl = { version = "0.15.1", features = ["std", "cli", "prelude"] }
+libafl_bolts = { version = "0.15.1", features = ["std"] }
+ctrlc = "3.4"
+solana-pubkey = "3.0"
+
+[[bin]]
+name = "invariant_test"
+path = "src/main.rs"
+
+[features]
+# One entry per fuzz test; `crucible run spot <name>` builds --features <name>.
+# --- Family II invariant harnesses (spot accounting <-> token reconciliation) ---
+prop_scaled_token_roundtrip = []
+prop_interest_monotone = []
+prop_deposits_ge_borrows = []
+prop_swap_and_withdraw_limits = []
+# --- Regression harnesses (PENDING PR #185) ---
+regr_185_withdraw_circuit_breaker = []
+# NOTE: #185 daily deposit cap is DEFERRED (no host surface on master); see
+# src/main.rs. Add its feature entry when un-gated as a real harness.

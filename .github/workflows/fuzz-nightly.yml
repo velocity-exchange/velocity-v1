@@ -108,10 +108,14 @@ jobs:
       - name: Collect findings
         if: ${{ always() }}
         run: |
-          set -uo pipefail
-          crashes=$(find "fuzz/${{ matrix.crate }}" -path '*/crashes/*' -type f 2>/dev/null | grep -v '\.meta\.json$' | wc -l | tr -d ' ')
-          echo "**${{ matrix.crate }}: ${crashes} crash input(s) found**" >> "$GITHUB_STEP_SUMMARY"
-          if [ "$crashes" != "0" ]; then find "fuzz/${{ matrix.crate }}" -path '*/crashes/*' -type f | sed 's/^/  - /' >> "$GITHUB_STEP_SUMMARY"; fi
+          # No grep in the pipeline: under `bash -e -o pipefail` a no-match grep
+          # exits 1 and would fail this step on a clean (0-crash) run. `find`
+          # with `! -name` excludes the .meta.json sidecars and exits 0 on empty.
+          crashes=$(find "fuzz/${{ matrix.crate }}" -path '*/crashes/*' -type f ! -name '*.meta.json' 2>/dev/null | wc -l | tr -d ' ')
+          echo "**${{ matrix.crate }}: ${crashes:-0} crash input(s) found**" >> "$GITHUB_STEP_SUMMARY"
+          if [ "${crashes:-0}" != "0" ]; then
+            find "fuzz/${{ matrix.crate }}" -path '*/crashes/*' -type f ! -name '*.meta.json' | sed 's/^/  - /' >> "$GITHUB_STEP_SUMMARY"
+          fi
 
       - name: Upload crash corpus
         if: ${{ always() }}
@@ -167,6 +171,10 @@ jobs:
         env:
           CARGO_PROFILE_RELEASE_LTO: 'thin'
           CARGO_PROFILE_RELEASE_CODEGEN_UNITS: '16'
+          # Clear the host-link RUSTFLAGS: the SBF build invokes rust-lld directly
+          # and rejects the cc-style `-Wl,--allow-multiple-definition` (that flag
+          # is only for the host harness *binary* link, not the on-chain .so).
+          RUSTFLAGS: ''
         run: |
           rm -rf target/sbpf-solana-solana target/deploy
           anchor build --ignore-keys --skip-lint -- --features anchor-test
@@ -179,8 +187,9 @@ jobs:
         continue-on-error: true
         run: |
           set -uo pipefail
-          # SVM exec is slow (~60/s); cap per-harness budget so the job finishes.
-          per=$(( DURATION * 60 )); [ "$per" -le 1800 ] || per=1800; [ "$per" -ge 120 ] || per=120
+          # SVM exec is slow (~60/s) and the .so build already dominates; cap the
+          # per-harness budget (max 10 min each) so the job finishes in good time.
+          per=$(( DURATION * 60 )); [ "$per" -le 600 ] || per=600; [ "$per" -ge 120 ] || per=120
           for pair in "e2e-svm:invariant_solvency" "e2e-svm-liq:invariant_liq"; do
             c="${pair%%:*}"; f="${pair##*:}"
             echo "::group::crucible run $c $f (${per}s)"
@@ -192,10 +201,9 @@ jobs:
       - name: Collect + upload findings
         if: ${{ always() }}
         run: |
-          set -uo pipefail
           for c in e2e-svm e2e-svm-liq; do
-            n=$(find "fuzz/$c" -path '*/crashes/*' -type f 2>/dev/null | grep -v '\.meta\.json$' | wc -l | tr -d ' ')
-            echo "**$c: ${n} crash input(s)**" >> "$GITHUB_STEP_SUMMARY"
+            n=$(find "fuzz/$c" -path '*/crashes/*' -type f ! -name '*.meta.json' 2>/dev/null | wc -l | tr -d ' ')
+            echo "**$c: ${n:-0} crash input(s)**" >> "$GITHUB_STEP_SUMMARY"
           done
 
       - name: Upload SVM crash corpus

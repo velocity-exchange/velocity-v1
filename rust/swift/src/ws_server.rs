@@ -63,6 +63,13 @@ const HEARTBEAT_INTERVAL: Duration = Duration::from_secs(1);
 const HEARTBEAT_INTERVAL: Duration = Duration::from_secs(30);
 const FAST_SLOW_WS_DIFF: Duration = Duration::from_secs(1);
 
+/// How long a client has to deliver its HTTP request line after connecting.
+/// Keep this below the fronting proxy's upstream timeout so a silent peer gets a
+/// clean 408 rather than a proxy-synthesized 504.
+const REQUEST_READ_TIMEOUT: Duration = Duration::from_secs(5);
+/// Backoff between peeks while only part of the request line has arrived.
+const REQUEST_PEEK_RETRY: Duration = Duration::from_millis(5);
+
 const HEARTBEAT_LOG_INTERVAL_MS: u64 = 30_000;
 static LAST_REDIS_HEARTBEAT_LOG_MS: AtomicU64 = AtomicU64::new(0);
 
@@ -894,45 +901,65 @@ pub async fn start_server() {
     ws_config.compression = Some(DeflateConfig::default());
     ws_config.max_message_size = Some(2 << 20); // max. Ws message size ~2MiB
 
-    // ~max len of a valid request + some room for headers
-    // GET https://host.example.com/ws?pubkey=FN3CntYCrHnDAXBV6HntRxcYxkZ2qwnHw3z7RLPKzQpm
-    let mut request_buf = [0u8; 1024];
-
     while let Ok((mut tcp_stream, addr)) = listener.accept().await {
-        // 'peek' as Ws upgrade handshake needs to see the request value too
-        let n_read = match tcp_stream.peek(&mut request_buf).await {
-            Ok(n) => n,
-            Err(err) => {
-                log::warn!(target: "ws", "couldn't read client buffer: {err:?}");
-                let _ = tcp_stream
-                    .write(b"HTTP/1.1 500\r\nContent-Length: 0\r\n\r\n")
-                    .await;
-                continue;
-            }
-        };
+        // Everything that touches the client must happen off the accept loop. A
+        // peer that completes the TCP handshake and then sends nothing would
+        // otherwise stall `peek` here forever, and no further connection is
+        // accepted meanwhile — new clients sit in the backlog until the proxy
+        // gives up and returns 504, while already-established connections (each
+        // in its own task) keep serving as if nothing were wrong.
+        tokio::spawn(async move {
+            // ~max len of a valid request + some room for headers
+            // GET https://host.example.com/ws?pubkey=FN3CntYCrHnDAXBV6HntRxcYxkZ2qwnHw3z7RLPKzQpm
+            let mut request_buf = [0u8; 1024];
 
-        // check for http request
-        let request = match core::str::from_utf8(request_buf[..n_read].trim_ascii_end()) {
-            Ok(r) => r,
-            Err(_) => {
-                let _ = tcp_stream
-                    .write(b"HTTP/1.1 400\r\nContent-Length: 0\r\n\r\n")
-                    .await;
-                continue;
-            }
-        };
-        if request.starts_with("GET /ws?pubkey") {
-            let pubkey = match decode_pubkey(request) {
-                Ok(p) => p,
-                Err(_) => {
+            let n_read = match timeout(
+                REQUEST_READ_TIMEOUT,
+                peek_request(&tcp_stream, &mut request_buf),
+            )
+            .await
+            {
+                Ok(Ok(n)) => n,
+                Ok(Err(err)) => {
+                    log::warn!(target: "ws", "couldn't read client buffer: {err:?}");
                     let _ = tcp_stream
-                        .write(b"HTTP/1.1 400\r\nContent-Length: 0\r\n\r\n")
+                        .write_all(b"HTTP/1.1 500\r\nContent-Length: 0\r\n\r\n")
                         .await;
-                    continue;
+                    return;
+                }
+                Err(_) => {
+                    log::warn!(target: "ws", "no request within {REQUEST_READ_TIMEOUT:?}: {addr:?}");
+                    let _ = tcp_stream
+                        .write_all(b"HTTP/1.1 408\r\nContent-Length: 0\r\n\r\n")
+                        .await;
+                    return;
                 }
             };
-            // spawn handler for the connection
-            tokio::spawn(async move {
+            // peer closed before sending anything
+            if n_read == 0 {
+                return;
+            }
+
+            // check for http request
+            let request = match core::str::from_utf8(request_buf[..n_read].trim_ascii_end()) {
+                Ok(r) => r,
+                Err(_) => {
+                    let _ = tcp_stream
+                        .write_all(b"HTTP/1.1 400\r\nContent-Length: 0\r\n\r\n")
+                        .await;
+                    return;
+                }
+            };
+            if request.starts_with("GET /ws?pubkey") {
+                let pubkey = match decode_pubkey(request) {
+                    Ok(p) => p,
+                    Err(_) => {
+                        let _ = tcp_stream
+                            .write_all(b"HTTP/1.1 400\r\nContent-Length: 0\r\n\r\n")
+                            .await;
+                        return;
+                    }
+                };
                 log::info!(target: "ws", "new connection: {addr:?}|{pubkey:?}");
                 match tokio_tungstenite::accept_async_with_config(tcp_stream, Some(ws_config)).await
                 {
@@ -957,16 +984,39 @@ pub async fn start_server() {
                     }
                 }
                 log::info!(target: "ws", "connection closed: {addr:?}|{pubkey:?}");
-            });
-        } else if request.starts_with("GET /ws/health") {
-            let _ = tcp_stream
-                .write(b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n")
-                .await;
-        } else {
-            let _ = tcp_stream
-                .write(b"HTTP/1.1 404\r\nContent-Length: 0\r\n\r\n")
-                .await;
+            } else if request.starts_with("GET /ws/health") {
+                let _ = tcp_stream
+                    .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n")
+                    .await;
+            } else {
+                let _ = tcp_stream
+                    .write_all(b"HTTP/1.1 404\r\nContent-Length: 0\r\n\r\n")
+                    .await;
+            }
+        });
+    }
+}
+
+/// Peek the client's HTTP request line, leaving it in the socket queue for the
+/// Ws handshake to re-read.
+///
+/// TCP may split the request across segments, so a single `peek` can return a
+/// partial line — routing on that would 404 a valid `/ws?pubkey=` request. Keep
+/// peeking until the request line is terminated or the buffer fills. Callers
+/// must bound this with a timeout: a peer that sends nothing never resolves it.
+async fn peek_request(
+    tcp_stream: &tokio::net::TcpStream,
+    buf: &mut [u8],
+) -> std::io::Result<usize> {
+    loop {
+        let n = tcp_stream.peek(buf).await?;
+        // EOF, request line complete, or no room left to grow
+        if n == 0 || n == buf.len() || buf[..n].windows(2).any(|w| w == b"\r\n") {
+            return Ok(n);
         }
+        // `peek` is level-triggered: the bytes already buffered keep the socket
+        // readable, so an immediate re-peek would spin on the same partial line.
+        tokio::time::sleep(REQUEST_PEEK_RETRY).await;
     }
 }
 
@@ -1003,6 +1053,105 @@ mod test {
     fn decode_pubkey_works() {
         assert!(decode_pubkey("blahblah=").is_err());
         assert!(decode_pubkey("=DxoRJ4f5XRMvXU9SGuM4ZziBFUxbhB3ubur5sVZEvue2").is_ok());
+    }
+
+    /// TCP is free to split the request line across segments; peeking once would
+    /// route on a truncated line and reject a valid upgrade.
+    #[tokio::test]
+    async fn peek_request_waits_for_full_request_line() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+
+        let client = tokio::spawn(async move {
+            let mut client = tokio::net::TcpStream::connect(addr).await.unwrap();
+            // first segment: request line cut mid-pubkey, no CRLF yet
+            client
+                .write_all(b"GET /ws?pubkey=DxoRJ4f5XRMvXU9SGu")
+                .await
+                .unwrap();
+            client.flush().await.unwrap();
+            tokio::time::sleep(Duration::from_millis(50)).await;
+            client
+                .write_all(b"M4ZziBFUxbhB3ubur5sVZEvue2 HTTP/1.1\r\nHost: swift\r\n\r\n")
+                .await
+                .unwrap();
+            // hold the socket open so the peek sees a live connection
+            tokio::time::sleep(Duration::from_secs(2)).await;
+        });
+
+        let (server_stream, _) = listener.accept().await.unwrap();
+        let mut buf = [0u8; 1024];
+        let n = timeout(
+            Duration::from_secs(1),
+            peek_request(&server_stream, &mut buf),
+        )
+        .await
+        .expect("peek_request hung")
+        .unwrap();
+
+        let request = core::str::from_utf8(buf[..n].trim_ascii_end()).unwrap();
+        assert!(
+            request.starts_with("GET /ws?pubkey"),
+            "request line incomplete: {request:?}"
+        );
+        // the truncated first segment would have decoded to an invalid pubkey
+        assert_eq!(
+            decode_pubkey(request).unwrap(),
+            Pubkey::from_str("DxoRJ4f5XRMvXU9SGuM4ZziBFUxbhB3ubur5sVZEvue2").unwrap()
+        );
+
+        // peek leaves the bytes queued for the handshake to re-read
+        let mut buf2 = [0u8; 1024];
+        let n2 = peek_request(&server_stream, &mut buf2).await.unwrap();
+        assert_eq!(&buf[..n], &buf2[..n2]);
+
+        client.abort();
+    }
+
+    #[tokio::test]
+    async fn peek_request_returns_on_eof() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+
+        tokio::spawn(async move {
+            let client = tokio::net::TcpStream::connect(addr).await.unwrap();
+            drop(client);
+        });
+
+        let (server_stream, _) = listener.accept().await.unwrap();
+        let mut buf = [0u8; 1024];
+        let n = timeout(
+            Duration::from_secs(1),
+            peek_request(&server_stream, &mut buf),
+        )
+        .await
+        .expect("peek_request hung on a closed peer")
+        .unwrap();
+        assert_eq!(n, 0);
+    }
+
+    /// A peer that connects and never sends must not be able to occupy the
+    /// server indefinitely — the accept loop caller bounds it with a timeout.
+    #[tokio::test]
+    async fn peek_request_is_bounded_by_caller_timeout() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+
+        let silent = tokio::spawn(async move {
+            let _client = tokio::net::TcpStream::connect(addr).await.unwrap();
+            tokio::time::sleep(Duration::from_secs(30)).await;
+        });
+
+        let (server_stream, _) = listener.accept().await.unwrap();
+        let mut buf = [0u8; 1024];
+        let res = timeout(
+            Duration::from_millis(100),
+            peek_request(&server_stream, &mut buf),
+        )
+        .await;
+        assert!(res.is_err(), "silent peer should hit the caller's timeout");
+
+        silent.abort();
     }
 
     #[tokio::test]

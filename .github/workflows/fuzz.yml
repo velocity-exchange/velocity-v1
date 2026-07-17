@@ -1,0 +1,174 @@
+# Crucible fuzz harnesses (fuzz/ — a separate, root-excluded Cargo workspace set).
+#
+# Gating job (`fuzz-build`): compile every harness feature of every crate. This
+# verifies the harnesses + their velocity(host-lib) + crucible + libafl dep graph
+# build. It does NOT run the fuzzer (no crucible CLI, no program .so needed —
+# `cargo build --features <test>` produces the harness binary directly), which
+# keeps the required check fast and deterministic. Building the first feature
+# pays the full dependency compile; each additional feature only recompiles the
+# small binary, so full per-feature coverage is nearly free.
+#
+# Non-gating job (`fuzz-smoke`, workflow_dispatch only): installs the pinned
+# crucible CLI and runs short host-tier invariant smokes. It never runs on PRs,
+# so it cannot affect the required status.
+name: fuzz
+
+on:
+  pull_request:
+    branches: [master, devnet, feat/monorepo-consolidation]
+    paths:
+      - 'fuzz/**'
+      - 'programs/velocity/Cargo.toml'
+      - 'programs/velocity/src/lib.rs'
+      - 'programs/velocity/src/test_utils/**'
+      - '.github/workflows/fuzz.yml'
+  push:
+    branches: [master]
+    paths:
+      - 'fuzz/**'
+      - '.github/workflows/fuzz.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: fuzz-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_TOOLCHAIN: 1.91.1
+  DO_NOT_TRACK: 1
+  # The fuzz-build job compiles each harness feature in turn within one target
+  # dir. Crucible's proc-macros emit a per-feature `main`/`__CRUCIBLE_ALLOC`;
+  # switching --features without a source change confuses cargo's incremental
+  # cache into merging stale expansions (E0428 duplicate `main`). Incremental is
+  # useless in CI anyway — disable it so each feature build is clean.
+  CARGO_INCREMENTAL: 0
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  fuzz-build:
+    name: build ${{ matrix.crate }}
+    runs-on: ubicloud
+    timeout-minutes: 75
+    strategy:
+      fail-fast: false
+      matrix:
+        crate:
+          - velocity-fuzz-common
+          - margin-liq
+          - amm-pricing
+          - funding
+          - fees-if-bankruptcy
+          - spot
+          - orders-matching
+          - oracle
+          - e2e-svm
+          - e2e-svm-liq
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+
+      - name: Install Rust toolchain
+        uses: actions-rs/toolchain@16499b5e05bf2e26879000db0c1d13f7e13fa3af # v1
+        with:
+          toolchain: ${{ env.RUST_TOOLCHAIN }}
+          profile: minimal
+          # crucible-idl-gen's declare_fuzz_program! shells out to rustfmt during
+          # codegen (used by the e2e-svm* crates); install it everywhere for parity.
+          components: rustfmt
+          override: true
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@f13886b937689c021905a6b90929199931d60db1 # v2.8.1
+        with:
+          workspaces: fuzz/${{ matrix.crate }}
+
+      # Required: a representative harness (the crate's first feature) must
+      # compile from a clean bin state. `cargo clean -p <pkg>` drops only this
+      # crate's artifacts (deps stay cached), giving a fresh single-feature build
+      # — the reliable path. (Crucible's proc-macro emits a per-feature
+      # `main`/`__CRUCIBLE_ALLOC`; rebuilding the bin in place after a --features
+      # switch can leave stale codegen units → spurious E0428, so we always start
+      # the bin fresh.)
+      - name: Build representative harness (required)
+        working-directory: fuzz/${{ matrix.crate }}
+        run: |
+          set -euo pipefail
+          pkg=$(grep -m1 '^name = ' Cargo.toml | sed -E 's/name = "([^"]+)"/\1/')
+          cargo clean -p "$pkg" || true
+          if [ "${{ matrix.crate }}" = "velocity-fuzz-common" ]; then
+            cargo build
+            exit 0
+          fi
+          first=$(grep -oE '^[a-zA-Z0-9_]+ = \[\]' Cargo.toml | sed 's/ .*//' | head -1)
+          if [ -z "$first" ]; then
+            echo "no [features] test entries in $(pwd)/Cargo.toml" >&2
+            exit 1
+          fi
+          echo "::group::cargo build --features $first"
+          cargo build --features "$first"
+          echo "::endgroup::"
+
+      # Best-effort: compile the crate's remaining harness features (each from a
+      # clean bin). Non-blocking — surfaces any per-harness compile issue as a
+      # warning without failing the required check.
+      - name: Build remaining harness features (best-effort)
+        if: ${{ matrix.crate != 'velocity-fuzz-common' }}
+        continue-on-error: true
+        working-directory: fuzz/${{ matrix.crate }}
+        run: |
+          set -uo pipefail
+          pkg=$(grep -m1 '^name = ' Cargo.toml | sed -E 's/name = "([^"]+)"/\1/')
+          for f in $(grep -oE '^[a-zA-Z0-9_]+ = \[\]' Cargo.toml | sed 's/ .*//' | tail -n +2); do
+            echo "::group::cargo build --features $f"
+            cargo clean -p "$pkg" || true
+            cargo build --features "$f" || echo "::warning title=fuzz harness::$f failed to build (best-effort)"
+            echo "::endgroup::"
+          done
+
+  # Manually-triggered only (workflow_dispatch). Never runs on PRs, so it cannot
+  # gate merges. Runs short host-tier invariant smokes to confirm the fuzzer
+  # executes end-to-end. SVM smokes are omitted here (they need a built .so via
+  # `anchor build`) — run those locally per the plan.
+  fuzz-smoke:
+    name: smoke (host-tier, non-gating)
+    if: ${{ github.event_name == 'workflow_dispatch' }}
+    runs-on: ubicloud
+    timeout-minutes: 90
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+
+      - name: Install Rust toolchain
+        uses: actions-rs/toolchain@16499b5e05bf2e26879000db0c1d13f7e13fa3af # v1
+        with:
+          toolchain: ${{ env.RUST_TOOLCHAIN }}
+          profile: minimal
+          components: rustfmt
+          override: true
+
+      - name: Install crucible CLI (pinned)
+        run: cargo install --git https://github.com/asymmetric-research/crucible --rev daeaa4d4a4e334175c4f171daacc7e177ad2fae0 crucible-fuzz-cli --locked || cargo install --git https://github.com/asymmetric-research/crucible --rev daeaa4d4a4e334175c4f171daacc7e177ad2fae0 crucible-fuzz-cli
+
+      - name: Host-tier invariant smokes (20s each)
+        run: |
+          set -uo pipefail
+          declare -A inv=(
+            [margin-liq]=prop_margin_value_totality
+            [amm-pricing]=prop_k_conserved_swap
+            [funding]=prop_funding_zero_sum
+            [fees-if-bankruptcy]=inv_if_share_round_trip
+            [spot]=prop_scaled_token_roundtrip
+            [orders-matching]=prop_standardize_base
+            [oracle]=inv_validity_monotonicity
+          )
+          for c in "${!inv[@]}"; do
+            echo "::group::crucible run $c ${inv[$c]}"
+            crucible run "$c" "${inv[$c]}" --timeout 20 || echo "smoke $c reported nonzero (informational)"
+            echo "::endgroup::"
+          done

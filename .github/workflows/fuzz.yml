@@ -78,6 +78,9 @@ jobs:
           - oracle
           - e2e-svm
           - e2e-svm-liq
+          - e2e-svm-revshare
+          - e2e-svm-signedmsg
+          - e2e-svm-pause
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
 

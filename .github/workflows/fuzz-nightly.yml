@@ -12,13 +12,6 @@
 name: fuzz-nightly
 
 on:
-  # TEMPORARY (removed before merge): lets us exercise this workflow on the
-  # feature branch, since workflow_dispatch/schedule only register from the
-  # default branch. On a push event the inputs are empty → the env defaults
-  # (30 min, both tiers) apply.
-  push:
-    branches: [feat/crucible]
-    paths: ['.github/workflows/fuzz-nightly.yml']
   schedule:
     # 07:00 UTC daily.
     - cron: '0 7 * * *'

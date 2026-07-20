@@ -201,9 +201,7 @@ export function registerShow(parent: Command): void {
 					`liquidation: liquidator ${pct1e6(market.liquidatorFee)},`,
 					`if ${pct1e6(market.ifLiquidationFee)},`,
 					`protocol ${pct1e6(market.protocolLiquidationFee)} |`,
-					`interest carveout: if ${pct1e6(
-						market.insuranceFund.ifFeeFactor
-					)},`,
+					`interest carveout: if ${pct1e6(market.insuranceFund.ifFeeFactor)},`,
 					`protocol ${pct1e6(market.protocolFeeFactor)}`
 				);
 			}

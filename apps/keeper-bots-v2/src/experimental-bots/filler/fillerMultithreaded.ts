@@ -19,6 +19,8 @@ import {
 	MakerInfo,
 	MarketType,
 	NodeToFill,
+	OrderActionRecord,
+	parseLogs,
 	PerpMarkets,
 	PriorityFeeSubscriber,
 	QUOTE_PRECISION,
@@ -116,6 +118,13 @@ const logPrefix = '[Filler]';
 export type MakerNodeMap = Map<string, DLOBNode[]>;
 
 const FILL_ORDER_THROTTLE_BACKOFF = 1000; // the time to wait before trying to fill a throttled (error filling) node again
+// Pathological backstop only: caps how many times we ever attempt to fill a
+// single order signature. Chosen to comfortably exceed the largest plausible
+// perp auction duration in slots (maxSlot = orderSlot + auctionDuration, see
+// filler-common/dlobBuilder.ts). The real retry bounds are the crossability
+// filter, auction expiry, the DLOB LRU TTL, and Part A's full-fill eviction --
+// this only stops an unbounded loop if all of those somehow fail.
+const MAX_FILL_ATTEMPTS_PER_ORDER = 32;
 const THROTTLED_NODE_SIZE_TO_PRUNE = 10; // Size of throttled nodes to get to before pruning the map
 export const MAX_MAKERS_PER_FILL = 6; // max number of unique makers to include per fill
 const MAX_ACCOUNTS_PER_TX = 64; // solana limit, track https://github.com/solana-labs/solana/issues/27241
@@ -179,7 +188,7 @@ export class FillerMultithreaded {
 	private revertOnFailure?: boolean;
 	private lookupTableAccounts: AddressLookupTableAccount[];
 	private lastSettlePnl = Date.now() - SETTLE_POSITIVE_PNL_COOLDOWN_MS;
-	private seenFillableOrders = new Set<string>();
+	private fillAttemptCounts = new Map<string, number>();
 	private blockhashSubscriber: BlockhashSubscriber;
 	private priorityFeeSubscriber: PriorityFeeSubscriber;
 
@@ -1079,13 +1088,35 @@ export class FillerMultithreaded {
 								txAge / 1000
 							} s`
 						);
+						// Only evict a signed-msg node from the DLOB builder once its taker
+						// order is FULLY filled. An atomic place+fill of a swift order that
+						// lands at auction-elapsed 0 is an `Ok` tx but fills 0 base -- a
+						// structural no-op waiting for the auction to ramp into a cross.
+						// Evicting the node on any landed tx (Defect 2) removed it from the
+						// builder before that crossing window, so the per-slot fill path
+						// never re-attempted it. A *partial* fill must not evict either --
+						// that would orphan the order's remaining base for the rest of the
+						// auction. So gate eviction on a full fill (cumulative filled base
+						// >= order base, from the OrderActionRecord); a 0-base or partial
+						// fill keeps the node fillable, and the builder's per-order TTL
+						// (auction-duration bound) still reaps a node that never completes.
+						const fullyFilledTakerOrderIds = nodeFilled.some(
+							(node) => node.node.isSignedMsg
+						)
+							? this.getFullyFilledTakerOrderIds(txResp.meta?.logMessages)
+							: new Set<number>();
 						for (const node of nodeFilled) {
-							if (node.node.isSignedMsg) {
+							const orderId = node.node.order?.orderId;
+							if (
+								node.node.isSignedMsg &&
+								orderId !== undefined &&
+								fullyFilledTakerOrderIds.has(orderId)
+							) {
 								this.routeMessageToDlobBuilder({
 									data: {
 										marketIndex: node.node.order?.marketIndex,
 										type: 'confirmed',
-										uuid: node.node.order?.orderId,
+										uuid: orderId,
 									},
 								});
 							}
@@ -1460,19 +1491,34 @@ export class FillerMultithreaded {
 		return true;
 	}
 
+	// Retry composition (why re-attempts are both allowed and bounded):
+	//  - Part A (full-fill-gated signed-msg eviction, see confirmPendingTxSigs)
+	//    keeps a not-yet-complete node available and stops retrying it on full fill.
+	//  - filterFillableNodes' crossability check (isFillableByVAMM ~:1467) only
+	//    lets a node through when it can actually cross, so a not-yet-crossing
+	//    auction order isn't attempted uselessly.
+	//  - fillingNodes + FILL_ORDER_THROTTLE_BACKOFF (~:1440) pace retries to ~1/sec.
+	//  - auction expiry (isOrderExpired ~:1458) and the DLOB builder's per-order
+	//    LRU TTL (auction-duration bound) end retries at auction close.
+	//  - MAX_FILL_ATTEMPTS_PER_ORDER is the pathological backstop if all of the
+	//    above somehow fail; it replaced a process-lifetime one-shot Set that
+	//    permanently blocked the legitimate per-slot retry the cooldown enables.
 	async executeFillablePerpNodes(nodesToFill: NodeToFillWithBuffer[]) {
 		for (const node of nodesToFill) {
-			if (this.seenFillableOrders.has(getNodeToFillSignature(node))) {
+			const sig = getNodeToFillSignature(node);
+			const attempts = this.fillAttemptCounts.get(sig) ?? 0;
+			if (attempts >= MAX_FILL_ATTEMPTS_PER_ORDER) {
 				logger.debug(
 					// @ts-ignore
-					`${logPrefix} already filled order (account: ${
+					`${logPrefix} hit max fill attempts (${MAX_FILL_ATTEMPTS_PER_ORDER}) for order (account: ${
 						node.node.userAccount
-					}, order ${node.node.order?.orderId.toString()}`
+					}, order ${node.node.order?.orderId.toString()}), skipping`
 				);
 				continue;
 			}
 
-			this.seenFillableOrders.add(getNodeToFillSignature(node));
+			// Increment before attempting so a failed/no-op attempt still counts.
+			this.fillAttemptCounts.set(sig, attempts + 1);
 			if (node.makerNodes.length > 1) {
 				this.tryFillMultiMakerPerpNodes(node);
 			} else {
@@ -2489,6 +2535,64 @@ export class FillerMultithreaded {
 				user.getUserAccountOrThrow()
 			),
 		});
+	}
+
+	/**
+	 * Parses a landed tx's logs and returns the set of taker order ids that were
+	 * FULLY filled (cumulative filled base >= the order's total base amount).
+	 *
+	 * A landed tx is `Ok` even when it filled nothing (a swift atomic place+fill
+	 * that can't cross yet returns `Ok((0, 0))` from `fill_perp_order`), so "the
+	 * tx landed" is not a fill signal. A fill `OrderActionRecord` is emitted only
+	 * when base filled > 0, but a *partial* fill (some base filled, order still
+	 * open) must NOT trigger eviction -- evicting a partially-filled node orphans
+	 * its remaining base for the rest of the auction (the same bug class we are
+	 * fixing). So we require a FULL fill: `takerOrderCumulativeBaseAssetAmountFilled`
+	 * (the order's `base_asset_amount_filled`, updated before the event is emitted
+	 * -- see `controller/orders.rs` "Update taker order BEFORE event emit") must
+	 * reach `takerOrderBaseAssetAmount` (the order's `base_asset_amount`). Perps
+	 * don't move token balances, so log parsing is the correct source.
+	 *
+	 * @param logs logs from tx.meta.logMessages
+	 * @returns taker order ids fully filled in this tx
+	 */
+	protected getFullyFilledTakerOrderIds(
+		logs: string[] | null | undefined
+	): Set<number> {
+		const fullyFilledTakerOrderIds = new Set<number>();
+		if (!logs) {
+			return fullyFilledTakerOrderIds;
+		}
+		try {
+			// @ts-ignore VelocityProgram vs Program<Idl>; parseLogs only reads the
+			// event coder (mirrors EventSubscriber.parseEventsFromLogs).
+			for (const event of parseLogs(this.velocityClient.program, logs)) {
+				if (event.name.toLowerCase() !== 'orderactionrecord') {
+					continue;
+				}
+				const record = event.data as unknown as OrderActionRecord;
+				const totalBase = record.takerOrderBaseAssetAmount;
+				const cumulativeFilled =
+					record.takerOrderCumulativeBaseAssetAmountFilled;
+				if (
+					isVariant(record.action, 'fill') &&
+					record.takerOrderId !== null &&
+					totalBase !== null &&
+					cumulativeFilled !== null &&
+					totalBase.gtn(0) &&
+					cumulativeFilled.gte(totalBase)
+				) {
+					fullyFilledTakerOrderIds.add(record.takerOrderId);
+				}
+			}
+		} catch (e) {
+			logger.error(
+				`Error parsing fill logs for signed-msg eviction: ${
+					(e as Error).message
+				}`
+			);
+		}
+		return fullyFilledTakerOrderIds;
 	}
 
 	/**

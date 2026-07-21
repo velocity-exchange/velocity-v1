@@ -1314,6 +1314,41 @@ fn transfer_spot_deposit(
     Ok(())
 }
 
+/// Mirror the direct `deposit()` admission checks on a `transfer_pools`
+/// deposit-side credit. `transfer_pools` credits every leg through
+/// `update_spot_balances_and_cumulative_deposits_with_limits`, which only
+/// enforces the *withdraw*-side admission (source debit). For a credit into a
+/// destination market that is a deposit, the deposit-side gates must still
+/// hold: the market-scoped `SpotOperation::Deposit` pause, the active-status
+/// requirement for a positive resulting deposit balance, and the aggregate
+/// `max_token_deposits` cap after crediting.
+fn enforce_transfer_pools_deposit_admission(
+    spot_market: &SpotMarket,
+    user: &User,
+    market_index: u16,
+) -> anchor_lang::Result<()> {
+    validate!(
+        !spot_market.is_operation_paused(SpotOperation::Deposit),
+        ErrorCode::MarketActionPaused,
+        "transfer_pools deposit into spot market {} paused",
+        market_index
+    )?;
+
+    let spot_position = user.get_spot_position(market_index)?;
+    if spot_position.balance_type == SpotBalanceType::Deposit && spot_position.scaled_balance > 0 {
+        validate!(
+            matches!(spot_market.status, MarketStatus::Active),
+            ErrorCode::MarketActionPaused,
+            "transfer_pools deposit spot market {} not active",
+            market_index
+        )?;
+    }
+
+    spot_market.validate_max_token_deposits_and_borrows(false)?;
+
+    Ok(())
+}
+
 #[access_control(
     deposit_not_paused(&ctx.accounts.state)
     withdraw_not_paused(&ctx.accounts.state)
@@ -1535,6 +1570,16 @@ pub fn handle_transfer_pools<'c: 'info, 'info>(
             to_user,
         )?;
 
+        // `..._with_limits` only enforces the withdraw-side admission (source
+        // debit); the destination credit is a deposit and must mirror direct
+        // `deposit()`: the market-scoped Deposit pause, the active-status gate
+        // for a positive deposit balance, and the aggregate deposit cap.
+        enforce_transfer_pools_deposit_admission(
+            &deposit_to_spot_market,
+            to_user,
+            deposit_to_market_index,
+        )?;
+
         let deposit_record_id = get_then_update_id!(deposit_to_spot_market, next_deposit_record_id);
         let deposit_record = DepositRecord {
             ts: clock.unix_timestamp,
@@ -1600,6 +1645,15 @@ pub fn handle_transfer_pools<'c: 'info, 'info>(
             &SpotBalanceType::Deposit,
             &mut borrow_from_spot_market,
             from_user,
+        )?;
+
+        // Deposit-side credit (repaying / flipping from_user's borrow): apply
+        // the same direct-`deposit()` admission the withdraw-oriented helper
+        // skips. See the deposit_to credit above.
+        enforce_transfer_pools_deposit_admission(
+            &borrow_from_spot_market,
+            from_user,
+            borrow_from_market_index,
         )?;
 
         let deposit_record_id =
@@ -3445,6 +3499,15 @@ pub fn handle_deposit_into_spot_market_revenue_pool<'c: 'info, 'info>(
         !spot_market.is_in_settlement(Clock::get()?.unix_timestamp),
         ErrorCode::DefaultError,
         "spot market {} not active",
+        spot_market.market_index
+    )?;
+
+    // Mirror the direct-deposit path: crediting the revenue pool moves tokens
+    // into the spot vault, so it must respect the market-scoped Deposit pause.
+    validate!(
+        !spot_market.is_operation_paused(SpotOperation::Deposit),
+        ErrorCode::MarketActionPaused,
+        "spot market {} deposits paused",
         spot_market.market_index
     )?;
 

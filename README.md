@@ -1,131 +1,166 @@
 <div align="center">
   <img height="120" src="./assets/velocity-logo.svg" />
 
-  <h1 style="margin-top:20px;">Velocity Exchange</h1>
+  <h1>Velocity Exchange</h1>
 
   <p>
-    <a href="https://velocity-exchange.github.io/v2-teacher/"><img alt="Docs" src="https://img.shields.io/badge/docs-tutorials-blueviolet" /></a>
-    <a href="https://discord.com/channels/849494028176588802/878700556904980500"><img alt="Discord Chat" src="https://img.shields.io/discord/889577356681945098?color=blueviolet" /></a>
-    <a href="https://opensource.org/licenses/Apache-2.0"><img alt="License" src="https://img.shields.io/github/license/project-serum/anchor?color=blueviolet" /></a>
+    <a href="./LICENSE"><img alt="License" src="https://img.shields.io/badge/license-Apache--2.0-blueviolet" /></a>
+    <a href="https://www.npmjs.com/package/@velocity-exchange/sdk"><img alt="npm" src="https://img.shields.io/npm/v/@velocity-exchange/sdk?label=%40velocity-exchange%2Fsdk&color=blueviolet" /></a>
   </p>
 </div>
 
-# Velocity Protocol v1
+Velocity Protocol v1: a Solana perpetuals and spot trading protocol. This monorepo holds the
+on-chain programs, the TypeScript and Rust SDKs, the admin CLI, and the deployable keeper/DLOB
+services.
 
-This repository provides open source access to Velocity V1's Typescript SDK, Solana Programs, and more.
+Integrating against the protocol? Start with the [SDK guide](./packages/sdk/README.md) and, if you
+are migrating from the Drift SDK, [docs/DRIFT-TO-VELOCITY.md](./docs/DRIFT-TO-VELOCITY.md).
 
-Integrating Velocity? [Go here](./sdk/README.md)
+## Repository map
 
-# SDK Guide
+| Path              | What it is                                                                                                                   |
+| ----------------- | ---------------------------------------------------------------------------------------------------------------------------- |
+| `programs/`       | On-chain programs: `velocity` (core protocol), `vaults`, `jit-proxy`, plus oracle stubs/integrations used by tests            |
+| `packages/`       | Publishable npm libraries: `@velocity-exchange/sdk`, `admin-cli`, `vaults-sdk`, `jit-proxy`                                   |
+| `apps/`           | Private deployable services (shipped as Docker images, never npm): `dlob-server`, `keeper-bots-v2`, `usermap-server`          |
+| `rust/`           | A **second, separate Cargo workspace**: `velocity-rs` (Rust SDK), `keep-rs` (keeper bots), `swift` (tx server)                |
+| `tests/`          | ~70 TypeScript integration tests (local validator / bankrun)                                                                  |
+| `deploy-scripts/` | Devnet build/deploy/wipe/init runbooks; see [deploy-scripts/README.md](./deploy-scripts/README.md)                           |
+| `docs/`           | Deep-dive docs (see [Further reading](#further-reading))                                                                      |
 
-SDK docs can be found [here](./sdk/README.md)
+The two Cargo workspaces are deliberately separate: the root workspace builds the on-chain
+programs (SBF), while `rust/` consumes the program as a host library with its own lockfile and
+`rust/target/`, so its solana-sdk 3.x tree never unifies with the SBF build.
 
-# Example Bot Implementations
+## Deployments
 
-Example bots (makers, liquidators, fillers, etc) can be found [here](https://github.com/velocity-exchange/keeper-bots-v2)
+| Program     | ID                                             |
+| ----------- | ---------------------------------------------- |
+| `velocity`  | `vELoC1audYbSYVRXn1vPaV8Axoa9oU6BYmNGZZBDZ1P`  |
+| `vaults`    | `vAuLTsyrvSfZRuRB3XgvkPwNGgYSs9YRYymVebLKoxR`  |
+| `jit-proxy` | `J1TPRoXCtGuMcWiWFE6RB9eZU8U35PBMETCwNQLCNPhQ` |
 
-# Building Locally
+## Prerequisites
 
-Note: If you are running the build on an Apple computer with an M1 chip, please set the default rust toolchain to `stable-x86_64-apple-darwin`
+| Tool                       | Version                | Notes                                                                                                     |
+| -------------------------- | ---------------------- | --------------------------------------------------------------------------------------------------------- |
+| Rust                       | **≥ 1.89**             | Anchor 1.0 MSRV. Develop with ≥ 1.77 so the 16-byte `u128` alignment guards are exercised locally          |
+| Solana platform-tools      | **≥ v1.54**            | Older bundled cargo (≤ 1.84) cannot parse `edition2024` dependencies; see [Troubleshooting](#troubleshooting) |
+| Anchor CLI                 | **1.0.2**              | Matches the `anchor-lang` version pinned in the programs                                                    |
+| Bun                        | ≥ 1.x                  | The only supported JS package manager here (not yarn/npm)                                                   |
+
+**Apple Silicon (M-series): always use the x86_64 cross-compile toolchain, never a native aarch64
+one.** Native ARM toolchains break the memory-layout expectations of zero-copy accounts, which must
+match the on-chain (x86_64) representation:
 
 ```bash
 rustup default stable-x86_64-apple-darwin
 ```
 
-## Compiling Programs
+macOS also needs the SDK path exported for the platform-tools clang (add to your shell profile):
 
 ```bash
-# build v2
-anchor build
-# install packages
+export SDKROOT="$(xcrun --show-sdk-path)"
+```
+
+And upgrade the platform-tools once:
+
+```bash
+cargo-build-sbf --tools-version v1.54 --force-tools-install
+```
+
+## Quick start
+
+```bash
+git clone https://github.com/velocity-exchange/velocity-v1.git && cd velocity-v1
+
+# install ALL workspace deps, once, at the repo root (never inside individual packages)
 bun install
-# build sdk
-cd sdk/ && bun install && bun run build && cd ..
-```
 
-## Running Rust Test
+# build the program and sync the IDL + types into packages/sdk
+bun run program:build
 
-For running cargo tests, you'll need version 1.70. You'll also need Solana CLI version 1.16.27
+# run the Rust unit tests
+cargo test -p velocity
 
-```bash
-rustup override set 1.70
-cargo test
-```
+# build the whole TypeScript workspace (turbo, dependency order)
+bun run build
 
-## Running Javascript Tests
-
-```bash
+# run the full integration suite (~70 files, serial; builds the .so first)
 bash test-scripts/run-anchor-tests.sh
 ```
 
-# Development (with devcontainer)
+## Common tasks
 
-We've provided a devcontainer `Dockerfile` to help you spin up a dev environment with the correct versions of Rust, Solana, and Anchor for program development.
+| Task                                          | Command                                                                    |
+| --------------------------------------------- | -------------------------------------------------------------------------- |
+| Build program + sync IDL/types into the SDK   | `bun run program:build`                                                     |
+| Regenerate IDL/types only (fast, no SBF build) | `bun run program:idl` (vaults: `program:idl:vaults`, jit: `program:idl:jit-proxy`) |
+| Deployable devnet `.so`                       | `bun run program:build:devnet`                                              |
+| Mainnet `.so` (production gates on)           | `bun run program:build:mainnet`                                             |
+| Build one TS package + its deps               | `bunx turbo run build --filter=@velocity-exchange/sdk`                      |
+| Build the `rust/` workspace                   | `bun run rust:build` (or `cargo check --manifest-path rust/Cargo.toml`)     |
+| Rust unit tests                               | `cargo test -p velocity` (add `-- --show-output` for stdout)                |
+| One integration test                          | `ts-mocha -t 300000 ./tests/<test_file>.ts`                                 |
+| Full integration suite (skip rebuild)         | `bash test-scripts/run-anchor-tests.sh --skip-build`                        |
+| SDK unit tests                                | `cd packages/sdk && bun run test:ci` (DLOB: `bun run test:dlob`)            |
+| Rust lint/format                              | `cargo fmt && cargo clippy -p velocity` (CI enforces both)                  |
+| SDK lint/format                               | `cd packages/sdk && bun run prettify:fix && bun run lint`                   |
 
-Build the container and tag it `velocity-dev`:
+Two rules that save a lot of pain:
 
-```
-cd .devcontainer && docker build -t velocity-dev .
-```
+- **Never hand-edit generated artifacts.** `packages/sdk/src/idl/velocity.json`/`velocity.ts` and
+  `rust/velocity-rs/crates/src/velocity_idl.rs` are all generated from the Rust program. Change the
+  program, then `bun run program:build` (or `program:idl` for the fast path).
+- **`packages/sdk/src/types.ts` is a hand-maintained mirror of the on-chain structs.** Whenever a
+  struct/account/event changes in the program, update the mirror in the same change.
 
-Open a shell to the container:
+## Troubleshooting
 
-```
-# Find the container ID first
-docker ps
+**`fatal error: 'assert.h' file not found` during `anchor build` (macOS).**
+The platform-tools clang has no built-in macOS SDK path. Fix:
+`export SDKROOT="$(xcrun --show-sdk-path)"` (put it in your shell profile).
 
-# Then exec into it
-docker exec -it <CONTAINER_ID> /bin/bash
-```
+**`feature 'edition2024' is required ... not stabilized in this version of Cargo (1.84.0)`.**
+The bundled cargo in older platform-tools can't parse `edition2024` dependencies. Upgrade once with
+`cargo-build-sbf --tools-version v1.54 --force-tools-install`, then verify via
+`cargo-build-sbf --version`.
 
-Alternatively use an extension provided by your IDE to make use of the dev container. For example on vscode/cursor:
-
-```
-1. Press Ctrl+Shift+P (or Cmd+Shift+P on Mac)
-2. Type "Dev Containers: Reopen in Container"
-3. Select it and wait for the container to build
-4. The IDE terminal should be targeting the dev container now
-```
-
-Use the dev container as you would a local build environment:
-
-```
-# build program
-anchor build
-
-# update idl
-anchor build -- --features anchor-test && cp target/idl/velocity.json sdk/src/idl/velocity.json
-
-# run cargo tests
-cargo test
-
-# run typescript tests
-bash test-scripts/run-anchor-tests.sh
-```
-
-## Development (with docker-compose)
-
-You can also run the dev environment using Docker Compose:
+**Runtime panic `Access violation in unknown section at address 0x...` on instructions touching
+types you didn't change.**
+Almost always stale SBF build artifacts after a `Cargo.lock` change (e.g. after `cargo update` or
+switching branches with different lockfiles). The cache key misses some dep-resolution changes and
+the resulting `.so` reads wrong offsets. Fix:
 
 ```bash
-cd .devcontainer
-docker compose up -d
-docker compose exec velocity bash
+rm -rf target/sbpf-solana-solana target/deploy
+cargo-build-sbf --tools-version v1.54 -- --features anchor-test
 ```
 
-# Releases
+**Weird zero-copy layout/`const_assert_eq!` failures on Apple Silicon.**
+You're on a native aarch64 toolchain. Switch: `rustup default stable-x86_64-apple-darwin`.
+
+## Dev container (alternative)
+
+If you'd rather not install the toolchain locally, `.devcontainer/` ships a Dockerfile and
+docker-compose with pinned Rust/Solana/Anchor versions. Use your IDE's "Reopen in Container", or:
+
+```bash
+cd .devcontainer && docker compose up -d && docker compose exec velocity bash
+```
+
+## Releases
 
 This monorepo uses [changesets](https://github.com/changesets/changesets) for versioning and
-publishing the library packages under `packages/*` (`@velocity-exchange/sdk`,
-`@velocity-exchange/admin-cli`, `@velocity-exchange/vaults-sdk`). Apps under `apps/*` are
-`private` and ship as Docker images (see `docker-info.json` / `docker-on-tag.yml`), not npm.
+publishing the library packages under `packages/*`. Apps under `apps/*` are `private` and ship as
+Docker images (see `docker-info.json` / `docker-on-tag.yml`), not npm.
 
 Workflow:
 
 1. In a PR that changes a publishable package, run `bun run changeset` and describe the bump.
 2. On merge to `master`, the `changesets` workflow opens/updates a **Version Packages** PR that
    runs `changeset version` (bumps versions + writes CHANGELOGs). Merge it to commit the bumps.
-3. Push a per-package tag `npm-<pkg>-v<version>` — the `npm-publish` workflow builds and publishes
+3. Push a per-package tag `npm-<pkg>-v<version>`; the `npm-publish` workflow builds and publishes
    that package via npm OIDC trusted publishing (idempotent: skipped if that version is already on
    the registry). `<pkg>` is the directory name under `packages/`:
 
@@ -134,10 +169,21 @@ Workflow:
 | `@velocity-exchange/sdk`        | `npm-sdk-v0.2.3`        |
 | `@velocity-exchange/admin-cli`  | `npm-cli-admin-v0.2.3`  |
 | `@velocity-exchange/vaults-sdk` | `npm-vaults-sdk-v0.2.3` |
+| `@velocity-exchange/jit-proxy`  | `npm-jit-proxy-v0.2.3`  |
 
 The tag version must match the `package.json` version committed by the "Version Packages" PR. Do
-not manually edit `package.json` versions — changesets and the bot own those fields.
+not manually edit `package.json` versions; changesets and the bot own those fields.
 
-# Bug Bounty
+## Further reading
 
-Information about the Bug Bounty can be found [here](./bug-bounty/README.md)
+| Doc                                                                          | What's in it                                                                 |
+| ---------------------------------------------------------------------------- | ----------------------------------------------------------------------------- |
+| [ARCHITECTURE.md](./ARCHITECTURE.md)                                          | Execution flow maps, module responsibility matrix, SDK ↔ program mappings     |
+| [docs/DRIFT-TO-VELOCITY.md](./docs/DRIFT-TO-VELOCITY.md)                      | Canonical record of every change vs upstream Drift; read this if integrating |
+| [FEES.md](./FEES.md)                                                          | The fee architecture: per-fill splits, fee ledger, sweeps, carveouts          |
+| [deploy-scripts/README.md](./deploy-scripts/README.md)                        | Devnet upgrade runbook (two-phase buffer deploys, wipe/reinit)                |
+| [docs/alignment-and-native-offsets.md](./docs/alignment-and-native-offsets.md) | Zero-copy struct alignment invariants; read before adding fields to accounts  |
+
+## Bug bounty
+
+Information about the bug bounty is in [bug-bounty/README.md](./bug-bounty/README.md).

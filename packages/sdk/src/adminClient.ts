@@ -3117,6 +3117,84 @@ export class AdminClient extends VelocityClient {
 		);
 	}
 
+	public async updateSpotMarketWithdrawCircuitBreaker(
+		spotMarketIndex: number,
+		withdrawCircuitBreakerBps: number
+	): Promise<TransactionSignature> {
+		const ix = await this.getUpdateSpotMarketWithdrawCircuitBreakerIx(
+			spotMarketIndex,
+			withdrawCircuitBreakerBps
+		);
+
+		const tx = await this.buildTransaction(ix);
+
+		const { txSig } = await this.sendTransaction(tx, [], this.opts);
+
+		return txSig;
+	}
+
+	public async getUpdateSpotMarketWithdrawCircuitBreakerIx(
+		spotMarketIndex: number,
+		withdrawCircuitBreakerBps: number
+	): Promise<TransactionInstruction> {
+		return this.program.instruction.updateSpotMarketWithdrawCircuitBreaker(
+			withdrawCircuitBreakerBps,
+			{
+				accounts: {
+					admin: this.isSubscribed
+						? this.getStateAccount().coldAdmin
+						: this.wallet.publicKey,
+					state: await this.getStatePublicKey(),
+					spotMarket: await getSpotMarketPublicKey(
+						this.program.programId,
+						spotMarketIndex
+					),
+				},
+			}
+		);
+	}
+
+	public async updateSpotMarketDepositCap(
+		spotMarketIndex: number,
+		depositGuardThreshold: BN,
+		maxDepositBpsPerDay: number
+	): Promise<TransactionSignature> {
+		const ix = await this.getUpdateSpotMarketDepositCapIx(
+			spotMarketIndex,
+			depositGuardThreshold,
+			maxDepositBpsPerDay
+		);
+
+		const tx = await this.buildTransaction(ix);
+
+		const { txSig } = await this.sendTransaction(tx, [], this.opts);
+
+		return txSig;
+	}
+
+	public async getUpdateSpotMarketDepositCapIx(
+		spotMarketIndex: number,
+		depositGuardThreshold: BN,
+		maxDepositBpsPerDay: number
+	): Promise<TransactionInstruction> {
+		return this.program.instruction.updateSpotMarketDepositCap(
+			depositGuardThreshold,
+			maxDepositBpsPerDay,
+			{
+				accounts: {
+					admin: this.isSubscribed
+						? this.getStateAccount().coldAdmin
+						: this.wallet.publicKey,
+					state: await this.getStatePublicKey(),
+					spotMarket: await getSpotMarketPublicKey(
+						this.program.programId,
+						spotMarketIndex
+					),
+				},
+			}
+		);
+	}
+
 	/**
 	 * Caps a spot market's total borrows as a fraction of its `maxTokenDeposits`, rather than
 	 * an absolute token amount. Requires warm admin (`check_warm`). On-chain, the effective cap

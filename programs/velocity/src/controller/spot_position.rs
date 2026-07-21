@@ -6,7 +6,7 @@ use crate::error::ErrorCode;
 use crate::error::VelocityResult;
 use crate::math::casting::Cast;
 use crate::math::safe_math::SafeMath;
-use crate::math::spot_withdraw::check_withdraw_limits;
+use crate::math::spot_withdraw::{check_deposit_limits, check_withdraw_limits};
 use crate::math_error;
 use crate::safe_decrement;
 use crate::safe_increment;
@@ -135,6 +135,19 @@ pub fn update_spot_balances_and_cumulative_deposits_with_limits(
         spot_market.market_index,
         token_amount,
         user.authority
+    )?;
+
+    // Enforce the daily deposit cap on the shared credit path so every
+    // deposit-crediting caller (transfer_pools, end_swap, transfers) is bound,
+    // not just the direct `deposit` instruction. No-op when the market has no
+    // cap configured (`max_deposit_bps_per_day == 0`) and on withdraw-direction
+    // updates (deposits don't grow), so it only bites a real over-cap deposit.
+    validate!(
+        check_deposit_limits(spot_market)?,
+        ErrorCode::DailyDepositLimit,
+        "Spot Market {} has hit daily deposit limit (deposits exceed {} bps above 24h twap)",
+        spot_market.market_index,
+        spot_market.max_deposit_bps_per_day
     )?;
 
     validate!(

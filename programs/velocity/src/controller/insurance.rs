@@ -619,10 +619,15 @@ pub fn settle_revenue_to_insurance_fund(
             .safe_add(insurance_fund_token_amount.cast()?)?;
     }
 
+    // These tokens physically leave the spot vault (transferred to the IF
+    // vault by the caller), so round the ledger debit up to keep
+    // the remaining depositor claim <= the vault balance and preserve the
+    // `validate_spot_market_vault_amount` invariant.
     update_revenue_pool_balances(
         insurance_fund_token_amount.cast::<u128>()?,
         &SpotBalanceType::Borrow,
         spot_market,
+        true,
     )?;
 
     emit!(InsuranceFundRecord {

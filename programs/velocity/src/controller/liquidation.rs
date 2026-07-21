@@ -1705,7 +1705,12 @@ pub fn liquidate_spot(
             Some(user_liability_reduction),
         )?;
 
-        update_revenue_pool_balances(if_fee, &SpotBalanceType::Deposit, &mut liability_market)?;
+        update_revenue_pool_balances(
+            if_fee,
+            &SpotBalanceType::Deposit,
+            &mut liability_market,
+            false,
+        )?;
         update_protocol_fee_pool_balances(
             protocol_fee,
             &SpotBalanceType::Deposit,
@@ -2314,7 +2319,12 @@ pub fn liquidate_spot_with_swap_end(
             Some(user_liability_reduction),
         )?;
 
-        update_revenue_pool_balances(if_fee, &SpotBalanceType::Deposit, &mut liability_market)?;
+        update_revenue_pool_balances(
+            if_fee,
+            &SpotBalanceType::Deposit,
+            &mut liability_market,
+            false,
+        )?;
         update_protocol_fee_pool_balances(
             protocol_fee,
             &SpotBalanceType::Deposit,
@@ -3782,7 +3792,13 @@ pub fn resolve_spot_bankruptcy(
         )?;
         let payment = borrow_amount.min(revenue_pool_token_amount);
         if payment > 0 {
-            update_revenue_pool_balances(payment, &SpotBalanceType::Borrow, &mut spot_market)?;
+            // counter-only draw, no tokens leave the vault
+            update_revenue_pool_balances(
+                payment,
+                &SpotBalanceType::Borrow,
+                &mut spot_market,
+                false,
+            )?;
             msg!("bankruptcy revenue pool tranche: {}", payment);
         }
         payment

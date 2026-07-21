@@ -10,7 +10,7 @@ import {
 	checkDepositLimits,
 	getTokenAmount,
 	SpotBalanceType,
-	PERCENTAGE_PRECISION,
+	BPS_PRECISION,
 	QUOTE_PRECISION,
 	calculateWithdrawLimit,
 	getTokenValue,
@@ -241,7 +241,7 @@ describe('Spot Tests', () => {
 		assert(calculateMaxDepositTokenAmount(twap, ZERO, 0) === null);
 
 		// 20%/day => cap at 120% of twap
-		const pct = PERCENTAGE_PRECISION.divn(5).toNumber();
+		const pct = BPS_PRECISION.divn(5).toNumber(); // 2000 bps = 20%
 		const cap = calculateMaxDepositTokenAmount(twap, ZERO, pct);
 		assert(cap!.eq(twap.add(twap.divn(5))));
 
@@ -266,15 +266,15 @@ describe('Spot Tests', () => {
 			mockSpot,
 			SpotBalanceType.DEPOSIT
 		);
-		const pct = PERCENTAGE_PRECISION.divn(10).toNumber(); // 10%/day
+		const pct = BPS_PRECISION.divn(10).toNumber(); // 1000 bps = 10%/day
 
 		// disabled => always allowed even with twap far below current
-		mockSpot.maxDepositPctPerDay = 0;
+		mockSpot.maxDepositBpsPerDay = 0;
 		mockSpot.depositTokenTwap = currentDeposits.divn(2);
 		assert(checkDepositLimits(mockSpot) === true);
 
 		// current == twap, 10% headroom => allowed
-		mockSpot.maxDepositPctPerDay = pct;
+		mockSpot.maxDepositBpsPerDay = pct;
 		mockSpot.depositTokenTwap = currentDeposits;
 		assert(checkDepositLimits(mockSpot) === true);
 

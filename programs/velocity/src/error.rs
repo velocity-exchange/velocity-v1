@@ -781,7 +781,7 @@ pub enum ErrorCode {
     PerpBankruptcyMustPrecedeSpot,
     #[msg("Revenue share recipient user must be sub_account_id 0")]
     InvalidRevenueShareRecipient,
-    #[msg("DailyDepositLimit")]
+    #[msg("Spot market daily deposit limit hit")]
     DailyDepositLimit,
 }
 

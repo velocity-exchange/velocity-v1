@@ -9,8 +9,8 @@ use crate::controller::spot_position::update_spot_balances_and_cumulative_deposi
 use crate::create_anchor_account_info;
 use crate::error::ErrorCode;
 use crate::math::constants::{
-    AMM_RESERVE_PRECISION, BASE_PRECISION_I128, BASE_PRECISION_I64, IF_FACTOR_PRECISION,
-    LIQUIDATION_FEE_PRECISION, PEG_PRECISION, PERCENTAGE_PRECISION_U32, PRICE_PRECISION_I64,
+    AMM_RESERVE_PRECISION, BASE_PRECISION_I128, BASE_PRECISION_I64, BPS_PRECISION,
+    IF_FACTOR_PRECISION, LIQUIDATION_FEE_PRECISION, PEG_PRECISION, PRICE_PRECISION_I64,
     PRICE_PRECISION_U64, QUOTE_PRECISION, QUOTE_PRECISION_I128, QUOTE_PRECISION_I64,
     QUOTE_PRECISION_U64, SPOT_BALANCE_PRECISION, SPOT_BALANCE_PRECISION_U64,
     SPOT_CUMULATIVE_INTEREST_PRECISION, SPOT_RATE_PRECISION_U32, SPOT_UTILIZATION_PRECISION,
@@ -77,18 +77,18 @@ fn test_daily_deposit_limits() {
     // cap disabled (pct == 0): any deposit level is valid.
     let disabled = SpotMarket {
         deposit_balance: 130 * SPOT_BALANCE_PRECISION,
-        max_deposit_pct_per_day: 0,
+        max_deposit_bps_per_day: 0,
         ..base
     };
     assert!(check_deposit_limits(&disabled).unwrap());
 
     // 20%/day cap => resulting deposits capped at 120% of twap.
-    let pct = PERCENTAGE_PRECISION_U32 / 5;
+    let pct = (BPS_PRECISION / 5) as u16; // 2000 bps = 20%
 
     // below cap (110% of twap) => allowed.
     let under = SpotMarket {
         deposit_balance: 110 * SPOT_BALANCE_PRECISION,
-        max_deposit_pct_per_day: pct,
+        max_deposit_bps_per_day: pct,
         ..base
     };
     assert!(check_deposit_limits(&under).unwrap());
@@ -96,7 +96,7 @@ fn test_daily_deposit_limits() {
     // above cap (130% of twap) => rejected.
     let over = SpotMarket {
         deposit_balance: 130 * SPOT_BALANCE_PRECISION,
-        max_deposit_pct_per_day: pct,
+        max_deposit_bps_per_day: pct,
         ..base
     };
     assert!(!check_deposit_limits(&over).unwrap());
@@ -104,7 +104,7 @@ fn test_daily_deposit_limits() {
     // a high deposit guard threshold lifts the cap below it: 130% allowed.
     let high_guard = SpotMarket {
         deposit_balance: 130 * SPOT_BALANCE_PRECISION,
-        max_deposit_pct_per_day: pct,
+        max_deposit_bps_per_day: pct,
         deposit_guard_threshold: 200 * QUOTE_PRECISION_U64,
         ..base
     };

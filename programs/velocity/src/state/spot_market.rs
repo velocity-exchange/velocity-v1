@@ -192,14 +192,28 @@ pub struct SpotMarket {
     pub min_borrow_rate: u8,
     pub token_program_flag: u8,
     pub pool_id: u8,
-    /// Aligns `protocol_fee_pool`'s leading u128 to a 16-byte struct offset
-    /// (752) so host (x86_64, align 16) and SBF (align 8) layouts agree, AND
-    /// so the borsh/IDL packed layout reaches the same offset with no implicit
-    /// `#[repr(C)]` padding — off-chain borsh decoders (TS SDK, velocity-rs)
-    /// know nothing about implicit padding, so every byte must be explicit.
-    /// Was `[u8; 8]`, which left borsh 5 bytes short of the real offset and
-    /// made clients misread the three fields below. Do not reorder.
-    pub _padding_align_pfp: [u8; 13],
+    /// Explicit filler carved from the alignment gap before `protocol_fee_pool`
+    /// (which must stay at struct offset 752 so host/SBF layouts agree and the
+    /// borsh/IDL packed offset matches). The gap is 13 bytes; the three
+    /// configurable-limit fields below plus this 1-byte filler fill it exactly,
+    /// so `protocol_fee_pool` and every field after it keep their offsets and the
+    /// account size is unchanged. Reads 0 on markets created before these fields
+    /// existed. Every byte is explicit so no implicit `#[repr(C)]` pad desyncs
+    /// off-chain borsh decoders. Do not reorder or resize.
+    pub _padding_align_pfp: u8,
+    /// Daily withdraw circuit-breaker size: the max fraction of the 24h deposit
+    /// TWAP that may be withdrawn per 24h window. `0` is treated as the default
+    /// (2500 bps = 25%) so markets created before this field existed keep prior
+    /// behavior. precision: basis points (10_000 = 100%)
+    pub withdraw_circuit_breaker_bps: u16,
+    /// Daily deposit rate limit: the max fraction above the 24h deposit TWAP that
+    /// resulting deposits may reach per 24h window. Disabled when `0`.
+    /// precision: basis points (10_000 = 100%)
+    pub max_deposit_bps_per_day: u16,
+    /// No deposit rate limit when resulting deposits are below this threshold.
+    /// Mirrors `withdraw_guard_threshold` on the deposit side.
+    /// precision: token mint precision
+    pub deposit_guard_threshold: u64,
     /// Protocol fees collected in this market's token (lending protocol carveout
     /// + spot-liquidation protocol fee). A protocol-owned Deposit-type claim
     /// inside the spot vault (counted in `deposit_balance`, like `revenue_pool`)
@@ -238,19 +252,6 @@ pub struct SpotMarket {
     /// live balance on the next add/settle and treated as "fall back to live" by
     /// the consumers.
     pub if_last_settle_vault_amount: u64,
-    /// No deposit rate limit when resulting deposits are below this threshold.
-    /// Mirrors `withdraw_guard_threshold` on the deposit side.
-    /// precision: token mint precision
-    pub deposit_guard_threshold: u64,
-    /// Daily withdraw circuit-breaker size: the max fraction of the 24h deposit
-    /// TWAP that may be withdrawn per 24h window. `0` is treated as the default
-    /// (25%) so markets created before this field existed keep prior behavior.
-    /// precision: PERCENTAGE_PRECISION (1_000_000 = 100%)
-    pub withdraw_circuit_breaker_pct: u32,
-    /// Daily deposit rate limit: the max fraction above the 24h deposit TWAP
-    /// that resulting deposits may reach per 24h window. Disabled when `0`.
-    /// precision: PERCENTAGE_PRECISION
-    pub max_deposit_pct_per_day: u32,
 }
 
 // Layout guards: the deployed account layout is frozen, and the borsh/IDL
@@ -258,14 +259,14 @@ pub struct SpotMarket {
 // padding (off-chain decoders read the IDL's packed layout). If one of these
 // fires after a struct change, re-size the explicit padding fields — never
 // let the compiler insert implicit padding.
-const _: () = assert!(std::mem::size_of::<SpotMarket>() == 816);
+const _: () = assert!(std::mem::size_of::<SpotMarket>() == 800);
+const _: () = assert!(std::mem::offset_of!(SpotMarket, withdraw_circuit_breaker_bps) == 740);
+const _: () = assert!(std::mem::offset_of!(SpotMarket, max_deposit_bps_per_day) == 742);
+const _: () = assert!(std::mem::offset_of!(SpotMarket, deposit_guard_threshold) == 744);
 const _: () = assert!(std::mem::offset_of!(SpotMarket, protocol_fee_pool) == 752);
 const _: () = assert!(std::mem::offset_of!(SpotMarket, protocol_liquidation_fee) == 784);
 const _: () = assert!(std::mem::offset_of!(SpotMarket, protocol_fee_factor) == 788);
 const _: () = assert!(std::mem::offset_of!(SpotMarket, if_last_settle_vault_amount) == 792);
-const _: () = assert!(std::mem::offset_of!(SpotMarket, deposit_guard_threshold) == 800);
-const _: () = assert!(std::mem::offset_of!(SpotMarket, withdraw_circuit_breaker_pct) == 808);
-const _: () = assert!(std::mem::offset_of!(SpotMarket, max_deposit_pct_per_day) == 812);
 
 impl Default for SpotMarket {
     fn default() -> Self {
@@ -328,20 +329,20 @@ impl Default for SpotMarket {
             min_borrow_rate: 0,
             token_program_flag: 0,
             pool_id: 0,
-            _padding_align_pfp: [0; 13],
+            _padding_align_pfp: 0,
+            withdraw_circuit_breaker_bps: 0,
+            max_deposit_bps_per_day: 0,
+            deposit_guard_threshold: 0,
             protocol_fee_pool: PoolBalance::default(),
             protocol_liquidation_fee: 0,
             protocol_fee_factor: 0,
             if_last_settle_vault_amount: 0,
-            deposit_guard_threshold: 0,
-            withdraw_circuit_breaker_pct: 0,
-            max_deposit_pct_per_day: 0,
         }
     }
 }
 
 impl Size for SpotMarket {
-    const SIZE: usize = 824;
+    const SIZE: usize = 808;
 }
 
 impl MarketIndexOffset for SpotMarket {

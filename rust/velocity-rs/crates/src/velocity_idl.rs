@@ -25673,6 +25673,8 @@ pub mod errors {
         EquityBelowFloor,
         #[msg("Invalid equity floor transfer between subaccounts")]
         InvalidEquityFloorTransfer,
+        #[msg("Insurance fund deposit would mint zero shares")]
+        IFDepositMintsZeroShares,
     }
 }
 pub mod events {

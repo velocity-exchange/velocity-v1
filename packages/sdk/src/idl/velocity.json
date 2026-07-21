@@ -16151,6 +16151,11 @@
       "code": 6359,
       "name": "InvalidEquityFloorTransfer",
       "msg": "Invalid equity floor transfer between subaccounts"
+    },
+    {
+      "code": 6360,
+      "name": "IFDepositMintsZeroShares",
+      "msg": "Insurance fund deposit would mint zero shares"
     }
   ],
   "types": [

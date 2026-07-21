@@ -16157,6 +16157,11 @@ export type Velocity = {
       "code": 6359,
       "name": "invalidEquityFloorTransfer",
       "msg": "Invalid equity floor transfer between subaccounts"
+    },
+    {
+      "code": 6360,
+      "name": "ifDepositMintsZeroShares",
+      "msg": "Insurance fund deposit would mint zero shares"
     }
   ],
   "types": [

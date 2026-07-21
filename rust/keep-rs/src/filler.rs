@@ -587,16 +587,23 @@ impl FillerBot {
                         }
 
                         // Re-evaluate held swift orders (see `held_swift_orders` above) for this
-                        // market against the same projected book/oracle computed for it this
-                        // slot. `evaluate_swift_crosses` anchors its own auction clock to the
-                        // order's on-chain slot, so re-running it here each slot naturally
-                        // converges on the slot the program's own auction would actually cross
-                        // at, instead of only checking once at arrival.
+                        // market. `evaluate_swift_crosses` anchors its own auction clock to the
+                        // order's on-chain slot, so re-running it each slot naturally converges on
+                        // the slot the program's own auction would actually cross at, instead of
+                        // only checking once at arrival.
+                        //
+                        // Validate against the CHAIN-oracle view (`chain_view_market` +
+                        // `chain_oracle_data.price`), not the pyth-projected `perp_market`/
+                        // `oracle_price`: `try_swift_fill` does not post the pyth-lazer price (only
+                        // `try_auction_fill` does), so the program values the fill against the chain
+                        // oracle as-is. Crossing against the pyth view when it diverges would send
+                        // swift-fill legs that no-op on-chain. This mirrors the arrival-path and
+                        // vamm-taker choices above.
                         let landing_slot = slot + 1;
                         let mut held_to_fill: Vec<([u8; 8], MakerCrosses)> = Vec::new();
                         let mut held_to_drop: Vec<[u8; 8]> = Vec::new();
                         for (uuid, held) in held_swift_orders.for_market(market_index) {
-                            match evaluate_swift_crosses(dlob, &held.order, &perp_market, oracle_price as i64, chain_oracle_data.delay, landing_slot, slots_before_stale_for_amm) {
+                            match evaluate_swift_crosses(dlob, &held.order, &chain_view_market, chain_oracle_data.price, chain_oracle_data.delay, landing_slot, slots_before_stale_for_amm) {
                                 SwiftEval::Fillable(crosses) => held_to_fill.push((*uuid, crosses)),
                                 SwiftEval::Drop => held_to_drop.push(*uuid),
                                 SwiftEval::NotFillable(_) => {}
@@ -609,9 +616,13 @@ impl FillerBot {
                             }
                         }
                         for (uuid, crosses) in held_to_fill {
-                            // Shared with the arrival-time fill dispatch above: same limiter
-                            // instance, same uuid-derived key, so a fill already in flight for
-                            // this order (from either path) is not redispatched.
+                            // Shared with the arrival-time swift-fill dispatch above: same limiter
+                            // instance, same uuid-derived key, so a swift fill already in flight for
+                            // this order is not redispatched across those two paths. (The on-chain
+                            // order can also be filled by the DLOB `try_auction_fill` path once it's
+                            // surfaced there; that path keys the limiter on (user, order_id), so it
+                            // is a deliberately-accepted third path — a redundant tx there no-ops
+                            // on-chain rather than double-filling.)
                             if !limiter.allow_event(slot, swift_order_dedup_key(uuid)) {
                                 continue;
                             }

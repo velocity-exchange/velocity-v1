@@ -16,10 +16,10 @@ to host crates); it is never enabled by any SBF/mainnet/devnet build.
 
 | Path | What |
 | --- | --- |
-| `velocity-fuzz-common/` | Shared re-exports + reusable invariant assertions (some still stubbed — see below) |
+| `velocity-fuzz-common/` | Shared re-exports + reusable invariant assertions (some still stubbed, see below) |
 | `amm-pricing/`, `funding/`, `margin-liq/`, `oracle/`, `orders-matching/`, `spot/`, `fees-if-bankruptcy/` | **Host tier**: call `velocity` math/controller fns directly (no `.so`), assert pure properties. ~1.1k exec/s |
 | `e2e-svm/`, `e2e-svm-liq/`, `e2e-svm-pause/`, `e2e-svm-revshare/`, `e2e-svm-signedmsg/` | **SVM tier**: load the compiled `.so` into LiteSVM, drive real instructions, reconcile on-chain state against invariants |
-| `*/idls/velocity.json` | Vendored copy of the canonical IDL the SVM harnesses embed (see “IDL sync” — do not hand-edit) |
+| `*/idls/velocity.json` | Vendored copy of the canonical IDL the SVM harnesses embed (see “IDL sync”; do not hand-edit) |
 | `sync-idls.sh` | Re-vendor / `--check` the IDL copies against canonical |
 | `rust-toolchain.toml` | Pins the toolchain (matches the repo `RUST_TOOLCHAIN`, x86_64 host target) |
 
@@ -56,13 +56,13 @@ Useful flags: `--timeout <secs>`, `-j <cores>`, `--release`, `--coverage`
 
 Harness features come in two kinds:
 
-- `prop_*` / `inv_*` — open-ended **properties/invariants**. These are the
+- `prop_*` / `inv_*`: open-ended **properties/invariants**. These are the
   discovery surface and are what the nightly campaign fuzzes.
-- `regr_<NNN>_*` — **regression** harnesses that reproduce a specific audit fix
+- `regr_<NNN>_*`: **regression** harnesses that reproduce a specific audit fix
   (`<NNN>` = PR number). A `regr_` target crashes on the pre-fix program and
   passes once the fix is in. A regression that can only be reproduced in stateful
   controller logic lives at the SVM tier; do **not** add a host-tier `regr_` for
-  a controller-ordering bug — assert the underlying math property as a `prop_`
+  a controller-ordering bug; assert the underlying math property as a `prop_`
   instead (see `prop_borrow_debt_monotonic_in_index`), because a host math check
   that the fix doesn't touch is either vacuous or noise, never a real regression.
 
@@ -100,7 +100,7 @@ against these failure modes (each has bitten a harness here):
    state or assert a **fix-exclusive** error code, not infer the bug from an
    unrelated downstream failure or a generic pre-existing error code.
 4. **Fails loudly on decode drift.** Reading zero-copy accounts must panic (not
-   silently skip the invariant) when an existing account is the wrong size — that
+   silently skip the invariant) when an existing account is the wrong size, which
    means the host layout drifted from the `.so`. `read_zc` does this.
 5. **No false positives.** An invariant that isn't *always* true for the protocol
    generates noise that drowns real crashes. Gate conditional properties on the

@@ -488,12 +488,12 @@ fn prop_asset_never_lowers_collateral(
 // REGRESSION HARNESSES (PENDING audit-fix PRs — violate on current master)
 // ===========================================================================
 
-// Conditional property backing PR #267 (F5) — NOT a reproduction of it. #267's
+// Conditional property backing PR #267 (F5), NOT a reproduction of it. #267's
 // fix is a controller-level revert (`LiquidationWorsensAccountHealth`) inside
 // `liquidate_perp_pnl_for_deposit`; it does NOT change the math function called
 // here (`calculate_asset_transfer_for_liability_transfer`). So this host
 // arithmetic is identical pre- and post-fix and can never be a pass/fail
-// regression — the authoritative reproduction is the controller revert (SVM
+// regression; the authoritative reproduction is the controller revert (SVM
 // tier) plus the program's own `reverts_when_transfer_worsens_margin_shortage`
 // unit test. What IS host-checkable is the boundary the guard keys off: seizing
 // a quote deposit at the liquidator premium in exchange for pnl relief changes
@@ -503,7 +503,7 @@ fn prop_asset_never_lowers_collateral(
 // (liquidator_fee is LIQUIDATION_FEE_PRECISION=1e6; buffer is
 // MARGIN_PRECISION=1e4, hence the x100 to compare). Worsening is possible only
 // when `fee > 100*buffer`; below that boundary the transfer provably never
-// worsens the shortage. We assert exactly that sound implication — the previous
+// worsens the shortage. We assert exactly that sound implication; the previous
 // version asserted non-worsening unconditionally, which fails whenever
 // `fee > 100*buffer` (the case the SVM guard rejects), i.e. it was noise, not a
 // regression.

@@ -173,7 +173,7 @@ fn prop_bid_ask_price_bounds(
     // so bid < sqrt_k < ask and bid*ask == sqrt_k^2 (modulo integer rounding).
     // The balanced fixture pool has sqrt_k == base_r, so pass base_r as sqrt_k
     // (the previous code passed base_r but then asserted base_r was bracketed by
-    // bounds *derived from base_r* — tautological, and it never checked the two
+    // bounds *derived from base_r*, so it was tautological, and never checked the two
     // bounds against each other). The geometric-symmetry check below is the real
     // invariant: a wrong formula or asymmetric rounding on one leg breaks the
     // product even though each bound still sits on the correct side of sqrt_k.

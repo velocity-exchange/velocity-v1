@@ -58,30 +58,22 @@ cargo test
 bash test-scripts/run-anchor-tests.sh
 ```
 
-## Fuzzing (Crucible)
+## Fuzzing
 
-Property/invariant fuzz harnesses for the `velocity` program live in
-[`fuzz/`](./fuzz/README.md) — a set of standalone Cargo workspaces (excluded from
-the root workspace, like `rust/`) built on [Crucible](https://github.com/asymmetric-research/crucible)
-(LibAFL) plus LiteSVM for the end-to-end tier. Nothing there ships on-chain; the
-only program hook is the off-by-default `fuzz-fixtures` cargo feature.
+Fuzz harnesses for the program live in [`fuzz/`](./fuzz/README.md), built on [Crucible](https://github.com/asymmetric-research/crucible). They run as a separate Cargo workspace and don't ship on-chain.
 
 ```bash
-# install the pinned Crucible CLI (see fuzz/README.md for the exact rev)
+# install the Crucible CLI (pinned rev in fuzz/README.md)
 cargo install --git https://github.com/asymmetric-research/crucible crucible-fuzz-cli --locked
 
-# host tier (pure math, no .so needed)
+# host tier (pure math)
 crucible run amm-pricing prop_k_conserved_swap --timeout 30
 
-# SVM tier (needs a devnet .so: `bun run program:build:devnet`)
+# svm tier (needs a devnet .so from `bun run program:build:devnet`)
 crucible run e2e-svm invariant_solvency --release --timeout 60
 ```
 
-The SVM harnesses embed a vendored copy of the IDL; after any program change run
-`bash fuzz/sync-idls.sh` to re-vendor it (CI fails on drift). See
-[`fuzz/README.md`](./fuzz/README.md) for the full harness list, the host/SVM tier
-split, and the guidelines for writing a sound (non-tautological, reachable,
-false-positive-free) harness.
+After a program change, run `bash fuzz/sync-idls.sh` to re-sync the vendored IDL. See [`fuzz/README.md`](./fuzz/README.md) for the harness list and details.
 
 # Development (with devcontainer)
 

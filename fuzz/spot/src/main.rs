@@ -298,7 +298,7 @@ fn prop_swap_and_withdraw_limits(
 
     // Totality (no-panic) check, deliberately result-discarding: over the whole
     // fuzzed input space `check_withdraw_limits` must never panic or hit an
-    // unreachable — a panic is a crash the fuzzer reports. The Ok/Err verdict is
+    // unreachable; a panic is a crash the fuzzer reports. The Ok/Err verdict is
     // intentionally NOT asserted: there is no independent allow/deny oracle at
     // this tier (asserting `is_ok()` would false-positive on the legitimate
     // SafeMath overflow-rejection the fuzzer reaches at extreme balances). The

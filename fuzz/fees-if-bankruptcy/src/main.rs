@@ -540,16 +540,16 @@ fn regr_255_floored_if_tranche(
     }
 }
 
-// Monotonicity property backing PR #273 (F8) — NOT a reproduction of it.
+// Monotonicity property backing PR #273 (F8), NOT a reproduction of it.
 // #273's actual bug is interest-refresh *ordering* in the `resolve_spot_bankruptcy`
 // controller (it reads `get_token_amount` before refreshing interest, clearing the
 // borrow at a stale-low index). That ordering is stateful and lives in the
 // controller, so it is reproduced at the SVM tier (`e2e-svm-revshare`/`e2e-svm-liq`)
-// and covered by the program's own tests — it CANNOT be caught here. This host
+// and covered by the program's own tests; it CANNOT be caught here. This host
 // harness only asserts the underlying math fact the fix relies on: valuing the same
 // borrow at a fresher (larger) cumulative index never yields a smaller debt. That is
 // a monotonicity of `get_token_amount` in the index and is always true, so it will
-// never fail — it documents/pins the sub-property, it does not detect the bug. Named
+// never fail; it documents/pins the sub-property, it does not detect the bug. Named
 // `prop_` (not `regr_`) so it is not mistaken for a bug regression.
 #[cfg(feature = "prop_borrow_debt_monotonic_in_index")]
 #[crucible_fuzz]
@@ -589,15 +589,15 @@ fn prop_borrow_debt_monotonic_in_index(
     fuzz_assert!(debt_fresh >= debt_stale);
 }
 
-// Monotonicity property backing PR #252 — NOT a reproduction of it. #252's actual
+// Monotonicity property backing PR #252, NOT a reproduction of it. #252's actual
 // bug is settle-before-freeze *ordering* in `request_remove_insurance_fund_stake`
 // (plus an accounts-struct ABI change), which is stateful controller logic
-// reproduced at the SVM tier and covered by the program's own tests — it CANNOT be
+// reproduced at the SVM tier and covered by the program's own tests; it CANNOT be
 // caught here. This host harness only asserts the math fact the fix relies on:
 // freezing the exit value against a larger (post-settle) vault never shortchanges
 // the staker vs a smaller (pre-settle) vault. That is monotonicity of
 // `if_shares_to_vault_amount` in the vault balance and is always true, so it will
-// never fail — it pins the sub-property, it does not detect the bug. Named `prop_`
+// never fail; it pins the sub-property, it does not detect the bug. Named `prop_`
 // (not `regr_`) so it is not mistaken for a bug regression.
 #[cfg(feature = "prop_if_exit_value_monotonic_in_vault")]
 #[crucible_fuzz]

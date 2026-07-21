@@ -4261,8 +4261,7 @@ pub mod types {
         pub oracle_low_risk_slot_delay_override: i8,
         pub bankruptcy_if_floor_pct: u32,
         pub market_stats: MarketStats,
-        #[serde(skip)]
-        pub _padding_align_amm: Padding<8>,
+        pub pending_revenue_share: u64,
         pub amm: AMM,
         pub hedge_config: HedgeConfig,
     }
@@ -5807,8 +5806,7 @@ pub mod accounts {
         pub oracle_low_risk_slot_delay_override: i8,
         pub bankruptcy_if_floor_pct: u32,
         pub market_stats: MarketStats,
-        #[serde(skip)]
-        pub _padding_align_amm: Padding<8>,
+        pub pending_revenue_share: u64,
         pub amm: AMM,
         pub hedge_config: HedgeConfig,
     }

@@ -1,6 +1,7 @@
 use anchor_lang::prelude::*;
 
 use crate::controller::spot_balance;
+use crate::math::casting::Cast;
 use crate::math::safe_math::SafeMath;
 use crate::math::spot_balance::get_token_amount;
 use crate::state::events::{emit_stack, RevenueShareSettleRecord};
@@ -12,9 +13,15 @@ use crate::state::spot_market::SpotBalance;
 use crate::state::spot_market_map::SpotMarketMap;
 use crate::state::traits::Size;
 use crate::state::user::MarketType;
+use crate::vlp::amm::math::amm::calculate_net_user_pnl;
 
 /// Runs through the user's RevenueShareEscrow account and sweeps any accrued fees to the corresponding
 /// builders and referrer.
+///
+/// `oracle_price` is the market's oracle price, already validity-gated in-slot by the `settle_pnl`
+/// that runs immediately before this sweep at every call site. It is used to value
+/// `net_user_pnl` so builder/referrer payouts can only draw the PnL pool's excess *over* live
+/// positive user claims — never the tokens backing a third party's positive PnL.
 pub fn sweep_completed_revenue_share_for_market<'a>(
     market_index: u16,
     revenue_share_escrow: &mut RevenueShareEscrowZeroCopyMut,
@@ -22,6 +29,7 @@ pub fn sweep_completed_revenue_share_for_market<'a>(
     spot_market_map: &SpotMarketMap<'a>,
     revenue_share_map: &RevenueShareMap<'a>,
     now_ts: i64,
+    oracle_price: i64,
     builder_codes_feature_enabled: bool,
 ) -> crate::error::VelocityResult<()> {
     let perp_market = &mut perp_market_map.get_ref_mut(&market_index)?;
@@ -37,6 +45,29 @@ pub fn sweep_completed_revenue_share_for_market<'a>(
     let quote_spot_market = &mut spot_market_map.get_quote_spot_market_mut()?;
 
     spot_balance::update_spot_market_cumulative_interest(quote_spot_market, None, now_ts)?;
+
+    // Amount this permissionless sweep must leave in the PnL pool, mirroring
+    // the reservation the protocol fee sweep applies
+    // (`controller::perp_pools::sweep_market_fees`):
+    //   * `max(net_user_pnl, 0)`: the PnL pool backs users' positive unsettled
+    //     PnL, so paying revenue share out of it would leave a third party's
+    //     settlement short (audit #48).
+    //   * the floored IF bankruptcy tranche (`min(pending_if_fee,
+    //     get_bankruptcy_if_floor())`): `resolve_perp_bankruptcy` consumes
+    //     `pending_if_fee` counter-only, so a revenue-share payout must not
+    //     drain the tokens backing the standing tranche the #245 floor
+    //     promises either (same class as audit #53 on the protocol sweep).
+    // This sweep does NOT reserve `pending_revenue_share` — it is the payer of
+    // that claim, and decrements the counter as it pays below.
+    let reserved_user_claims: u128 = calculate_net_user_pnl(
+        &perp_market.amm,
+        oracle_price,
+        perp_market.quote_asset_amount,
+        perp_market.net_unsettled_funding_pnl,
+    )?
+    .max(0)
+    .cast::<u128>()?
+    .safe_add(perp_market.get_bankruptcy_if_tranche_reservation(false)?)?;
 
     let orders_len = revenue_share_escrow.orders_len();
     for i in 0..orders_len {
@@ -84,12 +115,17 @@ pub fn sweep_completed_revenue_share_for_market<'a>(
             perp_market.pnl_pool.balance_type(),
         )?;
 
-        // TODO: should we add buffer on pnl pool?
-        if pnl_pool_token_amount < fees_accrued as u128 {
+        // Only the PnL pool's excess over live positive user claims is available to
+        // pay revenue share; the reserved portion must stay to back user settlements.
+        let available_for_sweep = pnl_pool_token_amount.saturating_sub(reserved_user_claims);
+
+        if available_for_sweep < fees_accrued as u128 {
             msg!(
-                "market {} PNL pool has insufficient balance to sweep fees for builder. pnl_pool_token_amount: {}, fees_accrued: {}",
+                "market {} PNL pool has insufficient available balance to sweep fees for builder. pnl_pool_token_amount: {}, reserved_user_claims: {}, available: {}, fees_accrued: {}",
                 market_index,
                 pnl_pool_token_amount,
+                reserved_user_claims,
+                available_for_sweep,
                 fees_accrued
             );
             break;
@@ -116,6 +152,8 @@ pub fn sweep_completed_revenue_share_for_market<'a>(
                     &mut perp_market.pnl_pool,
                     referrer_user.get_quote_spot_position_mut(),
                 )?;
+
+                perp_market.settle_pending_revenue_share(fees_accrued)?;
 
                 referrer_rev_share.total_referrer_rewards = referrer_rev_share
                     .total_referrer_rewards
@@ -163,6 +201,8 @@ pub fn sweep_completed_revenue_share_for_market<'a>(
                     &mut perp_market.pnl_pool,
                     builder_user.get_quote_spot_position_mut(),
                 )?;
+
+                perp_market.settle_pending_revenue_share(fees_accrued)?;
 
                 builder_revenue_share.total_builder_rewards = builder_revenue_share
                     .total_builder_rewards

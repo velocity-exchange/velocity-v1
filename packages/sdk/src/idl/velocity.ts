@@ -21267,19 +21267,24 @@ export type Velocity = {
             }
           },
           {
-            "name": "paddingAlignAmm",
+            "name": "pendingRevenueShare",
             "docs": [
-              "8 bytes of explicit padding so MarketStats (216 bytes) plus this",
-              "padding equals 224 bytes — the offset Rust naturally inserts to",
-              "16-align AMM's leading u128. Making it explicit keeps the IDL byte",
-              "layout aligned with `repr(C)`."
+              "Aggregate accrued builder/referrer revenue-share owed out of this",
+              "market's `pnl_pool` but not yet paid: incremented as builder and",
+              "referrer fees accrue on fills (mirrors the per-order",
+              "`RevenueShareOrder.fees_accrued` writes) and decremented as",
+              "`sweep_completed_revenue_share_for_market` pays them. The",
+              "permissionless fee sweep reserves it (like `max(net_user_pnl, 0)` and",
+              "the floored IF tranche) so a protocol-fee drain can't move the tokens",
+              "backing already-owed revenue share out of the pnl pool and leave those",
+              "claims temporarily unpayable. precision: QUOTE_PRECISION.",
+              "",
+              "Occupies the 8 bytes Rust naturally inserts to 16-align AMM's leading",
+              "u128 (formerly explicit `_padding_align_amm`): a u64 at the same",
+              "8-aligned offset keeps every downstream byte offset and the total size",
+              "unchanged, so legacy accounts read 0 (nothing owed) until fees accrue."
             ],
-            "type": {
-              "array": [
-                "u8",
-                8
-              ]
-            }
+            "type": "u64"
           },
           {
             "name": "amm",

@@ -146,6 +146,7 @@ function mockPerpMarketCommon(): Omit<
 	return {
 		status: MarketStatus.INITIALIZED,
 		lastFillPrice: new BN(0),
+		pendingRevenueShare: new BN(0),
 		name: [],
 		contractType: ContractType.PERPETUAL,
 		expiryTs: new BN(0),

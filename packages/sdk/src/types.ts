@@ -1140,6 +1140,8 @@ export type PerpMarketAccount = {
 	feePoolBufferTarget: BN;
 	/** PERCENTAGE_PRECISION (1e6 = 100%); fraction of OI notional (at the oracle TWAP) the sweep leaves behind in `feeLedger.pendingIfFee` as a standing bankruptcy first-loss tranche; 0 disables */
 	bankruptcyIfFloorPct: number;
+	/** QUOTE_PRECISION (1e6); aggregate builder/referrer revenue share accrued but not yet paid out of this market's pnl pool. The fee sweep reserves it (like `max(net_user_pnl, 0)` and the floored IF tranche) so a protocol-fee drain can't leave accrued revenue-share claims temporarily unpayable */
+	pendingRevenueShare: BN;
 	/** MARGIN_PRECISION (1e4); scales margin ratio up for large positions */
 	imfFactor: number;
 	/** MARGIN_PRECISION (1e4); discounts positive-unrealized-pnl asset weight for large positions */

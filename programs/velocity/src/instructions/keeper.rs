@@ -945,6 +945,14 @@ pub fn handle_settle_pnl<'c: 'info, 'info>(
             // fees out of a market that never settled.
             if settled {
                 if let Some(ref builder_map) = maybe_rev_share_map {
+                    // Oracle price for this market, validity-gated in-slot by the
+                    // settle_pnl/settle_expired_position above; used to reserve
+                    // max(net_user_pnl, 0) so the sweep can't pay revenue share out
+                    // of tokens backing a user's positive PnL.
+                    let oracle_price = {
+                        let perp_market = perp_market_map.get_ref(&market_index)?;
+                        oracle_map.get_price_data(&perp_market.oracle_id())?.price
+                    };
                     controller::revenue_share::sweep_completed_revenue_share_for_market(
                         market_index,
                         escrow,
@@ -952,6 +960,7 @@ pub fn handle_settle_pnl<'c: 'info, 'info>(
                         &spot_market_map,
                         builder_map,
                         clock.unix_timestamp,
+                        oracle_price,
                         state.builder_codes_enabled(),
                     )?;
                 } else {
@@ -1078,6 +1087,14 @@ pub fn handle_settle_multiple_pnls<'c: 'info, 'info>(
                 // builder/referrer fees out of a market that never settled.
                 if settled {
                     if let Some(ref builder_map) = maybe_rev_share_map {
+                        // Oracle price for this market, validity-gated in-slot by the
+                        // settle above; used to reserve max(net_user_pnl, 0) so the
+                        // sweep can't pay revenue share out of tokens backing a user's
+                        // positive PnL.
+                        let oracle_price = {
+                            let perp_market = perp_market_map.get_ref(market_index)?;
+                            oracle_map.get_price_data(&perp_market.oracle_id())?.price
+                        };
                         controller::revenue_share::sweep_completed_revenue_share_for_market(
                             *market_index,
                             escrow,
@@ -1085,6 +1102,7 @@ pub fn handle_settle_multiple_pnls<'c: 'info, 'info>(
                             &spot_market_map,
                             builder_map,
                             clock.unix_timestamp,
+                            oracle_price,
                             state.builder_codes_enabled(),
                         )?;
                     } else {

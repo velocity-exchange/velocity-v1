@@ -56,6 +56,7 @@ import {
 	AddressLookupTableAccount,
 	TransactionInstruction,
 } from '@solana/web3.js';
+import { getAssociatedTokenAddressSync } from '@solana/spl-token';
 import {
 	calculateAccountValueUsd,
 	handleSimResultError,
@@ -539,7 +540,94 @@ export class LiquidatorBot implements Bot {
 			this.velocitySpotLookupTables
 		);
 
+		if (!this.liquidatorConfig.disableAutoDeposit) {
+			await this.autoDepositIdleWalletFunds();
+		}
+
 		await webhookMessage(`[${this.name}]: started`);
+	}
+
+	/**
+	 * Deposits idle wallet token balances into liquidation subaccounts that
+	 * have no free collateral. A liquidator with zero free collateral sizes
+	 * every liquidation at zero (maxPositionTakeoverPctOfCollateral of 0 is 0)
+	 * and each attempt fails on-chain with InvalidLiquidation, so funds left
+	 * sitting in the authority wallet are dead weight. For each subaccount with
+	 * no free collateral, sweep the wallet's full ATA balance of every spot
+	 * market mapped to it. Disable with `disableAutoDeposit`.
+	 */
+	private async autoDepositIdleWalletFunds(): Promise<void> {
+		for (const subAccountId of this.allSubaccounts) {
+			const freeCollateral = this.velocityClient
+				.getUser(subAccountId)
+				.getFreeCollateral('Initial');
+			if (freeCollateral.gt(ZERO)) {
+				continue;
+			}
+
+			for (const [
+				marketIndex,
+				mappedSubAccount,
+			] of this.spotMarketToSubAccount.entries()) {
+				if (mappedSubAccount !== subAccountId) {
+					continue;
+				}
+				const spotMarket =
+					this.velocityClient.getSpotMarketAccount(marketIndex);
+				if (!spotMarket) {
+					continue;
+				}
+				const ata = getAssociatedTokenAddressSync(
+					spotMarket.mint,
+					this.velocityClient.wallet.publicKey,
+					true,
+					this.velocityClient.getTokenProgramForSpotMarket(spotMarket)
+				);
+				let walletBalance = ZERO;
+				try {
+					const balance =
+						await this.velocityClient.connection.getTokenAccountBalance(ata);
+					walletBalance = new BN(balance.value.amount);
+				} catch (e) {
+					// no ATA for this mint
+					continue;
+				}
+				if (walletBalance.lte(ZERO)) {
+					continue;
+				}
+
+				if (this.dryRun) {
+					logger.info(
+						`[${
+							this.name
+						}]: dry run - would auto-deposit ${walletBalance.toString()} into spot market ${marketIndex} for subaccount ${subAccountId}`
+					);
+					continue;
+				}
+
+				try {
+					const txSig = await this.velocityClient.deposit(
+						walletBalance,
+						marketIndex,
+						ata,
+						subAccountId
+					);
+					const msg = `[${
+						this.name
+					}]: subaccount ${subAccountId} has no free collateral, auto-deposited wallet balance ${walletBalance.toString()} into spot market ${marketIndex}. tx: ${txSig}`;
+					logger.info(msg);
+					webhookMessage(msg);
+				} catch (e) {
+					const msg = `[${
+						this.name
+					}]: :x: failed to auto-deposit ${walletBalance.toString()} into spot market ${marketIndex} for subaccount ${subAccountId}: ${
+						e instanceof Error ? e.message : e
+					}`;
+					logger.error(msg);
+					webhookMessage(msg);
+				}
+			}
+		}
 	}
 
 	public async reset() {

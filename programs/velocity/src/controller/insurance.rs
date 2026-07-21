@@ -28,6 +28,7 @@ use crate::math::spot_balance::get_token_amount;
 use crate::math::spot_withdraw::validate_spot_market_vault_amount;
 use crate::state::events::{InsuranceFundRecord, InsuranceFundStakeRecord, StakeAction};
 use crate::state::insurance_fund_stake::InsuranceFundStake;
+use crate::state::paused_operations::SpotOperation;
 use crate::state::perp_market::PerpMarket;
 use crate::state::spot_market::{SpotBalanceType, SpotMarket};
 use crate::state::state::State;
@@ -103,6 +104,20 @@ pub fn add_insurance_fund_stake(
         amount,
         spot_market.insurance_fund.total_shares,
         insurance_vault_amount,
+    )?;
+
+    // Reject deposits that mint zero shares. Shares are priced off the pre-transfer
+    // vault balance, so an attacker can donate into the vault to inflate the share
+    // price and force floor(amount * total_shares / vault) == 0, then capture the
+    // victim's full deposit as appreciation on their own shares. Mirrors the
+    // `n_shares > 0` guard the request-remove path already enforces.
+    validate!(
+        n_shares > 0,
+        ErrorCode::IFDepositMintsZeroShares,
+        "deposit of {} mints zero IF shares at current share price (vault {}, total_shares {})",
+        amount,
+        insurance_vault_amount,
+        spot_market.insurance_fund.total_shares
     )?;
 
     // reset cost basis if no shares
@@ -481,6 +496,17 @@ pub fn attempt_settle_revenue_to_insurance_fund<'info>(
     mint: &Option<InterfaceAccount<'info, Mint>>,
     remaining_accounts: Option<&mut Peekable<Iter<'info, AccountInfo<'info>>>>,
 ) -> Result<()> {
+    // This is an opportunistic settle folded into other instructions (IF-add,
+    // liquidations, pnl-deficit resolution). Moving revenue into the IF vault
+    // is a spot-vault egress, so it must respect the same withdraw pauses the
+    // direct `settle_revenue_to_insurance_fund` instruction enforces — the
+    // global `WithdrawPaused` status and the market-scoped `SpotOperation::Withdraw`
+    // bit. Unlike the direct instruction we *skip* (rather than error) so a
+    // withdraw pause never bricks the host instruction (e.g. a liquidation).
+    if state.withdraw_paused()? || spot_market.is_operation_paused(SpotOperation::Withdraw) {
+        return Ok(());
+    }
+
     let valid_revenue_settle_time = if spot_market.insurance_fund.revenue_settle_period > 0 {
         let time_until_next_update = on_the_hour_update(
             now,
@@ -656,6 +682,14 @@ pub fn resolve_perp_pnl_deficit(
         market.amm.total_fee_minus_distributions
     )?;
 
+    // Accrue the quote market's cumulative interest to `now` BEFORE valuing the
+    // pnl pool. `get_token_amount` scales `pnl_pool.scaled_balance` by
+    // `cumulative_deposit_interest`, so a stale (un-accrued) index understates
+    // the pool. The sufficiency gate below rejects an IF draw whenever the pool
+    // already covers `net_user_pnl`; sizing that gate off a stale-low pool would
+    // draw from the insurance fund even when a current-interest pool suffices.
+    update_spot_market_cumulative_interest(spot_market, None, now)?;
+
     let pnl_pool_token_amount = get_token_amount(
         market.pnl_pool.scaled_balance,
         spot_market,
@@ -679,8 +713,6 @@ pub fn resolve_perp_pnl_deficit(
         pnl_pool_token_amount,
         net_user_pnl
     )?;
-
-    update_spot_market_cumulative_interest(spot_market, None, now)?;
 
     let total_if_shares_before = spot_market.insurance_fund.total_shares;
 

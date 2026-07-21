@@ -7,7 +7,7 @@ use crate::load_mut;
 use crate::optional_accounts::get_token_mint;
 use crate::state::insurance_fund_stake::InsuranceFundStake;
 use crate::state::market_status::MarketStatus;
-use crate::state::paused_operations::InsuranceFundOperation;
+use crate::state::paused_operations::{InsuranceFundOperation, SpotOperation};
 use crate::state::spot_market::SpotMarket;
 use crate::state::state::State;
 use crate::state::traits::Size;
@@ -168,6 +168,28 @@ pub fn handle_request_remove_insurance_fund_stake<'c: 'info, 'info>(
         !spot_market.is_insurance_fund_operation_paused(InsuranceFundOperation::RequestRemove),
         ErrorCode::InsuranceFundOperationPaused,
         "if staking request remove disabled",
+    )?;
+
+    // The pre-freeze revenue settle below goes through
+    // `attempt_settle_revenue_to_insurance_fund`, which silently SKIPS while the
+    // global withdraw status or this market's `SpotOperation::Withdraw` bit is
+    // paused (so a pause never bricks the liquidation/IF-add paths that share
+    // it). A request accepted during such a pause would therefore freeze a
+    // pre-settle exit value and reintroduce the already-due-revenue leak this
+    // instruction exists to close. Reject the request instead: the frozen value
+    // of any accepted request is always post-settle, and gating the request
+    // mirrors how every other vault-egress path treats the withdraw pauses.
+    validate!(
+        !state.withdraw_paused()?,
+        ErrorCode::ExchangePaused,
+        "withdraws paused exchange-wide; cannot freeze unstake exit value"
+    )?;
+
+    validate!(
+        !spot_market.is_operation_paused(SpotOperation::Withdraw),
+        ErrorCode::MarketWithdrawPaused,
+        "spot market {} withdraws paused; cannot freeze unstake exit value",
+        spot_market.market_index
     )?;
 
     validate!(

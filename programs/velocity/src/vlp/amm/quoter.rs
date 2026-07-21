@@ -415,6 +415,7 @@ impl<'a> Quoter for AmmQuoter<'a> {
             let projection_inputs = crate::vlp::amm::math::repeg::ProjectionInputs {
                 market_status: ctx.market_status,
                 market_config: ctx.market_config,
+                min_order_size: ctx.stats.min_order_size,
             };
             let projection = crate::vlp::amm::math::repeg::project_post_refresh_scalar(
                 self.amm,
@@ -423,18 +424,21 @@ impl<'a> Quoter for AmmQuoter<'a> {
                 ctx.oracle_validity,
             )?;
             projection.apply_to(self.amm)?;
-            // Match legacy `_update_amm`: bump `last_update_slot` when the
-            // oracle is fresh enough for low-risk fills and the affordability
-            // gate didn't reject the curve update.
+            // Match legacy `_update_amm` (and `snap_to_oracle`): bump
+            // `last_update_slot` when the oracle is fresh enough for low-risk
+            // fills and the affordability floor didn't reject the curve update.
+            // Gate on `rejected_due_to_affordability` — a rejected refresh is
+            // returned as a passthrough with `cost == 0` (peg/reserves stay at
+            // current values), so `cost > 0` never catches it and would
+            // otherwise mark stale curve state fresh for downstream same-slot
+            // freshness gates.
             if let Some(validity) = ctx.oracle_validity {
                 if crate::math::oracle::is_oracle_valid_for_action(
                     validity,
                     Some(crate::math::oracle::VelocityAction::FillOrderAmmLowRisk),
-                )? {
-                    let suppress = projection.cost > 0 && !projection.applied;
-                    if !suppress {
-                        self.amm.last_update_slot = ctx.slot;
-                    }
+                )? && !projection.rejected_due_to_affordability
+                {
+                    self.amm.last_update_slot = ctx.slot;
                 }
             }
         }
@@ -850,6 +854,20 @@ impl<'a> AmmJitQuoter<'a> {
             maker_unfilled,
             taker_has_limit_price,
         )?;
+        // Apply the per-fill reserve-movement throttle. The JIT sizing math
+        // above bounds participation by oracle proximity, intensity and
+        // inventory, but — unlike the AMM-only fill path, which caps its take
+        // at `calculate_amm_available_liquidity` — it does NOT cap how far a
+        // single fill may push the reserves. A DLOB match is permissionless,
+        // so without this clamp a matcher could drive an unbounded JIT slice
+        // that moves reserves past `max_fill_reserve_fraction` in one fill.
+        // Clamp to the same available-liquidity bound the AMM-only path uses.
+        let amm_available = amm_math::calculate_amm_available_liquidity(
+            &market.amm,
+            &taker_direction,
+            market.order_step_size,
+        )?;
+        let max_jit_base = max_jit_base.min(amm_available);
         if max_jit_base > 0 {
             market.amm.validate_for_fill(taker_direction)?;
         }

@@ -381,13 +381,17 @@ pub fn calculate_base_asset_amount_to_trade_to_price(
         .integer_sqrt()
         .try_to_u128()?;
 
-    let base_asset_reserve_before = if amm.base_spread > 0 {
-        match direction {
-            PositionDirection::Long => amm.ask_base_asset_reserve,
-            PositionDirection::Short => amm.bid_base_asset_reserve,
-        }
-    } else {
-        amm.base_asset_reserve
+    // Always size the take off the spread-adjusted ask/bid reserves — the
+    // same basis the swap actually executes against. Gating on
+    // `base_spread > 0` (and falling back to the raw `base_asset_reserve`)
+    // let the limit cap diverge from execution whenever the vol/inventory
+    // spreads pushed long/short spread above zero while `base_spread` was
+    // still zero, so the AMM would fill past the taker's limit price. The
+    // cached ask/bid reserves collapse to `base_asset_reserve` when there is
+    // no effective spread, so this is exact in the zero-spread case too.
+    let base_asset_reserve_before = match direction {
+        PositionDirection::Long => amm.ask_base_asset_reserve,
+        PositionDirection::Short => amm.bid_base_asset_reserve,
     };
 
     if new_base_asset_reserve > base_asset_reserve_before {

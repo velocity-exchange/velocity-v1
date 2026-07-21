@@ -26,6 +26,7 @@ import {
 	PRICE_PRECISION,
 	PERCENTAGE_PRECISION,
 	FUNDING_RATE_OFFSET_PERCENTAGE,
+	TRIGGER_PRICE_LAST_FILL_MAX_AGE,
 } from '../constants/numericConstants';
 import { getTokenAmount } from './spotBalance';
 import { assert } from '../assert/assert';
@@ -377,10 +378,11 @@ export function calculateNetUserPnlImbalance(
 /**
  * Calculates the price used to evaluate trigger (stop/take-profit) orders for a perp market,
  * mirroring the Rust `get_trigger_price`. When `useMedianPrice` is true, the trigger price is the
- * median of three candidates — the last fill price (or oracle price if there's been no fill), the
- * oracle price adjusted by the implied funding basis, and the oracle price adjusted by the 5min
- * mark/oracle TWAP basis — then clamped to within a contract-tier-dependent band around the raw
- * oracle price (tier A/B: 20bps, tier C: 100bps, others: 250bps) via `clampTriggerPrice`. This
+ * median of three candidates — the last fill price (or oracle price if there's been no fill or the
+ * last fill is older than `TRIGGER_PRICE_LAST_FILL_MAX_AGE`), the oracle price adjusted by the
+ * implied funding basis, and the oracle price adjusted by the 5min mark/oracle TWAP basis — then
+ * clamped to within a contract-tier-dependent band around the raw oracle price (tier A/B: 20bps,
+ * tier C: 100bps, others: 250bps) via `clampTriggerPrice`. This
  * resists a single manipulated print (last fill or a momentary oracle/mark divergence) from
  * triggering orders it shouldn't. When `useMedianPrice` is false, the raw oracle price is used
  * directly with no smoothing.
@@ -404,9 +406,14 @@ export function getTriggerPrice(
 		return oraclePrice.abs();
 	}
 
+	// Leg A: last trade price, only while fresh. `lastTradeTs` is stamped by
+	// the same fill path that writes `lastFillPrice`.
 	const lastFillPrice = market.lastFillPrice;
+	const lastFillIsFresh = now
+		.sub(market.marketStats.lastTradeTs)
+		.lte(TRIGGER_PRICE_LAST_FILL_MAX_AGE);
 
-	// Calculate 5-minute basis
+	// Leg C: oracle + (mark_twap_5min - oracle_twap_5min)
 	const markPrice5minTwap = market.marketStats.lastMarkPriceTwap5Min;
 	const lastOraclePriceTwap5min =
 		market.marketStats.historicalOracleData.lastOraclePriceTwap5Min;
@@ -414,12 +421,13 @@ export function getTriggerPrice(
 
 	const oraclePlusBasis5min = oraclePrice.add(basis5min);
 
-	// Calculate funding basis
+	// Leg B: oracle + decayed funding basis
 	const lastFundingBasis = getLastFundingBasis(market, oraclePrice, now);
 	const oraclePlusFundingBasis = oraclePrice.add(lastFundingBasis);
 
+	// No fill yet or last fill is stale: oracle price stands in for Leg A
 	const prices = [
-		lastFillPrice.gt(ZERO) ? lastFillPrice : oraclePrice,
+		lastFillPrice.gt(ZERO) && lastFillIsFresh ? lastFillPrice : oraclePrice,
 		oraclePlusFundingBasis,
 		oraclePlusBasis5min,
 	].sort((a, b) => a.cmp(b));
@@ -445,14 +453,14 @@ function getLastFundingBasis(
 		const lastFundingRatePreAdj = lastFundingRate.sub(
 			FUNDING_RATE_OFFSET_PERCENTAGE
 		);
-		const timeLeftUntilFundingUpdate = BN.min(
+		const timeSinceFundingUpdate = BN.min(
 			BN.max(now.sub(market.lastFundingRateTs), ZERO),
 			market.marketStats.fundingPeriod
 		);
 		const lastFundingBasis = oraclePrice
 			.mul(lastFundingRatePreAdj)
 			.div(PERCENTAGE_PRECISION)
-			.mul(market.marketStats.fundingPeriod.sub(timeLeftUntilFundingUpdate))
+			.mul(market.marketStats.fundingPeriod.sub(timeSinceFundingUpdate))
 			.div(market.marketStats.fundingPeriod)
 			.div(new BN(1000)); // FUNDING_RATE_BUFFER
 		return lastFundingBasis;
@@ -470,16 +478,16 @@ function clampTriggerPrice(
 	oraclePrice: BN,
 	medianPrice: BN
 ): BN {
-	let maxBpsDiff: BN;
+	let clampDivisor: BN;
 	const tier = market.contractTier;
 	if (isVariant(tier, 'a') || isVariant(tier, 'b')) {
-		maxBpsDiff = new BN(500); // 20 BPS
+		clampDivisor = new BN(500); // oracle / 500 = 20 bps
 	} else if (isVariant(tier, 'c')) {
-		maxBpsDiff = new BN(100); // 100 BPS
+		clampDivisor = new BN(100); // oracle / 100 = 100 bps
 	} else {
-		maxBpsDiff = new BN(40); // 250 BPS
+		clampDivisor = new BN(40); // oracle / 40 = 250 bps
 	}
-	const maxOracleDiff = oraclePrice.div(maxBpsDiff);
+	const maxOracleDiff = oraclePrice.div(clampDivisor);
 	return BN.min(
 		BN.max(medianPrice, oraclePrice.sub(maxOracleDiff)),
 		oraclePrice.add(maxOracleDiff)

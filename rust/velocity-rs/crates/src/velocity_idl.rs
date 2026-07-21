@@ -13,7 +13,7 @@ use anchor_lang::{
 use serde::{Deserialize, Serialize};
 use solana_instruction::AccountMeta;
 use solana_pubkey::Pubkey;
-pub const IDL_VERSION: &str = "2.163.0";
+pub const IDL_VERSION: &str = "2.163.2";
 use self::traits::ToAccountMetas;
 pub mod traits {
     use crate::solana_sdk::instruction::AccountMeta;
@@ -1529,6 +1529,16 @@ pub mod instructions {
     }
     #[automatically_derived]
     impl anchor_lang::InstructionData for UpdatePerpMarketAmmSummaryStats {}
+    #[derive(AnchorSerialize, AnchorDeserialize, Clone, Default)]
+    pub struct UpdatePerpMarketBankruptcyIfFloorPct {
+        pub bankruptcy_if_floor_pct: u32,
+    }
+    #[automatically_derived]
+    impl anchor_lang::Discriminator for UpdatePerpMarketBankruptcyIfFloorPct {
+        const DISCRIMINATOR: &[u8] = &[192, 2, 229, 220, 243, 115, 121, 84];
+    }
+    #[automatically_derived]
+    impl anchor_lang::InstructionData for UpdatePerpMarketBankruptcyIfFloorPct {}
     #[derive(AnchorSerialize, AnchorDeserialize, Clone, Default)]
     pub struct UpdatePerpMarketBaseSpread {
         pub base_spread: u32,
@@ -4270,11 +4280,9 @@ pub mod types {
         pub oracle_source: OracleSource,
         pub oracle_slot_delay_override: i8,
         pub oracle_low_risk_slot_delay_override: i8,
-        #[serde(skip)]
-        pub padding: Padding<4>,
+        pub bankruptcy_if_floor_pct: u32,
         pub market_stats: MarketStats,
-        #[serde(skip)]
-        pub _padding_align_amm: Padding<8>,
+        pub pending_revenue_share: u64,
         pub amm: AMM,
         pub hedge_config: HedgeConfig,
     }
@@ -4941,11 +4949,10 @@ pub mod types {
         pub protocol_fee_pool: PoolBalance,
         pub protocol_liquidation_fee: u32,
         pub protocol_fee_factor: u32,
+        pub if_last_settle_vault_amount: u64,
         pub deposit_guard_threshold: u64,
         pub withdraw_circuit_breaker_pct: u32,
         pub max_deposit_pct_per_day: u32,
-        #[serde(skip)]
-        pub padding: Padding<8>,
     }
     #[repr(C)]
     #[derive(
@@ -5821,11 +5828,9 @@ pub mod accounts {
         pub oracle_source: OracleSource,
         pub oracle_slot_delay_override: i8,
         pub oracle_low_risk_slot_delay_override: i8,
-        #[serde(skip)]
-        pub padding: Padding<4>,
+        pub bankruptcy_if_floor_pct: u32,
         pub market_stats: MarketStats,
-        #[serde(skip)]
-        pub _padding_align_amm: Padding<8>,
+        pub pending_revenue_share: u64,
         pub amm: AMM,
         pub hedge_config: HedgeConfig,
     }
@@ -6313,11 +6318,10 @@ pub mod accounts {
         pub protocol_fee_pool: PoolBalance,
         pub protocol_liquidation_fee: u32,
         pub protocol_fee_factor: u32,
+        pub if_last_settle_vault_amount: u64,
         pub deposit_guard_threshold: u64,
         pub withdraw_circuit_breaker_pct: u32,
         pub max_deposit_pct_per_day: u32,
-        #[serde(skip)]
-        pub padding: Padding<8>,
     }
     #[automatically_derived]
     impl anchor_lang::Discriminator for SpotMarket {
@@ -11252,6 +11256,7 @@ pub mod accounts {
         pub state: Pubkey,
         pub authority: Pubkey,
         pub liquidator: Pubkey,
+        pub liquidator_stats: Pubkey,
         pub user: Pubkey,
     }
     #[automatically_derived]
@@ -11284,6 +11289,11 @@ pub mod accounts {
                     pubkey: self.liquidator,
                     is_signer: false,
                     is_writable: true,
+                },
+                AccountMeta {
+                    pubkey: self.liquidator_stats,
+                    is_signer: false,
+                    is_writable: false,
                 },
                 AccountMeta {
                     pubkey: self.user,
@@ -13513,11 +13523,15 @@ pub mod accounts {
     #[repr(C)]
     #[derive(Copy, Clone, Default, AnchorSerialize, AnchorDeserialize, Serialize, Deserialize)]
     pub struct RequestRemoveInsuranceFundStake {
+        pub state: Pubkey,
         pub spot_market: Pubkey,
         pub insurance_fund_stake: Pubkey,
         pub user_stats: Pubkey,
         pub authority: Pubkey,
+        pub spot_market_vault: Pubkey,
         pub insurance_fund_vault: Pubkey,
+        pub velocity_signer: Pubkey,
+        pub token_program: Pubkey,
     }
     #[automatically_derived]
     impl anchor_lang::Discriminator for RequestRemoveInsuranceFundStake {
@@ -13535,6 +13549,11 @@ pub mod accounts {
     impl ToAccountMetas for RequestRemoveInsuranceFundStake {
         fn to_account_metas(&self) -> Vec<AccountMeta> {
             vec![
+                AccountMeta {
+                    pubkey: self.state,
+                    is_signer: false,
+                    is_writable: false,
+                },
                 AccountMeta {
                     pubkey: self.spot_market,
                     is_signer: false,
@@ -13556,9 +13575,24 @@ pub mod accounts {
                     is_writable: false,
                 },
                 AccountMeta {
+                    pubkey: self.spot_market_vault,
+                    is_signer: false,
+                    is_writable: true,
+                },
+                AccountMeta {
                     pubkey: self.insurance_fund_vault,
                     is_signer: false,
                     is_writable: true,
+                },
+                AccountMeta {
+                    pubkey: self.velocity_signer,
+                    is_signer: false,
+                    is_writable: false,
+                },
+                AccountMeta {
+                    pubkey: self.token_program,
+                    is_signer: false,
+                    is_writable: false,
                 },
             ]
         }
@@ -13819,7 +13853,6 @@ pub mod accounts {
     pub struct ResizeSignedMsgUserOrders {
         pub signed_msg_user_orders: Pubkey,
         pub authority: Pubkey,
-        pub user: Pubkey,
         pub payer: Pubkey,
         pub system_program: Pubkey,
     }
@@ -13846,11 +13879,6 @@ pub mod accounts {
                 },
                 AccountMeta {
                     pubkey: self.authority,
-                    is_signer: false,
-                    is_writable: false,
-                },
-                AccountMeta {
-                    pubkey: self.user,
                     is_signer: false,
                     is_writable: false,
                 },
@@ -15609,6 +15637,7 @@ pub mod accounts {
         pub authority: Pubkey,
         pub filler: Pubkey,
         pub user: Pubkey,
+        pub user_stats: Pubkey,
     }
     #[automatically_derived]
     impl anchor_lang::Discriminator for TriggerOrder {
@@ -15645,6 +15674,11 @@ pub mod accounts {
                     pubkey: self.user,
                     is_signer: false,
                     is_writable: true,
+                },
+                AccountMeta {
+                    pubkey: self.user_stats,
+                    is_signer: false,
+                    is_writable: false,
                 },
             ]
         }
@@ -18335,6 +18369,76 @@ pub mod accounts {
     }
     #[automatically_derived]
     impl anchor_lang::AccountDeserialize for UpdatePerpMarketAmmSummaryStats {
+        fn try_deserialize(buf: &mut &[u8]) -> anchor_lang::Result<Self> {
+            let given_disc = &buf[..8];
+            if Self::DISCRIMINATOR != given_disc {
+                return Err(anchor_lang::error!(
+                    anchor_lang::error::ErrorCode::AccountDiscriminatorMismatch
+                ));
+            }
+            Self::try_deserialize_unchecked(buf)
+        }
+        fn try_deserialize_unchecked(buf: &mut &[u8]) -> anchor_lang::Result<Self> {
+            let mut data: &[u8] = &buf[8..];
+            AnchorDeserialize::deserialize(&mut data)
+                .map_err(|_| anchor_lang::error::ErrorCode::AccountDidNotDeserialize.into())
+        }
+    }
+    #[repr(C)]
+    #[derive(Copy, Clone, Default, AnchorSerialize, AnchorDeserialize, Serialize, Deserialize)]
+    pub struct UpdatePerpMarketBankruptcyIfFloorPct {
+        pub admin: Pubkey,
+        pub state: Pubkey,
+        pub perp_market: Pubkey,
+    }
+    #[automatically_derived]
+    impl anchor_lang::Discriminator for UpdatePerpMarketBankruptcyIfFloorPct {
+        const DISCRIMINATOR: &[u8] = &[117, 206, 88, 87, 119, 67, 79, 40];
+    }
+    #[automatically_derived]
+    unsafe impl anchor_lang::__private::bytemuck::Pod for UpdatePerpMarketBankruptcyIfFloorPct {}
+    #[automatically_derived]
+    unsafe impl anchor_lang::__private::bytemuck::Zeroable for UpdatePerpMarketBankruptcyIfFloorPct {}
+    #[automatically_derived]
+    impl anchor_lang::ZeroCopy for UpdatePerpMarketBankruptcyIfFloorPct {}
+    #[automatically_derived]
+    impl anchor_lang::InstructionData for UpdatePerpMarketBankruptcyIfFloorPct {}
+    #[automatically_derived]
+    impl ToAccountMetas for UpdatePerpMarketBankruptcyIfFloorPct {
+        fn to_account_metas(&self) -> Vec<AccountMeta> {
+            vec![
+                AccountMeta {
+                    pubkey: self.admin,
+                    is_signer: true,
+                    is_writable: false,
+                },
+                AccountMeta {
+                    pubkey: self.state,
+                    is_signer: false,
+                    is_writable: false,
+                },
+                AccountMeta {
+                    pubkey: self.perp_market,
+                    is_signer: false,
+                    is_writable: true,
+                },
+            ]
+        }
+    }
+    #[automatically_derived]
+    impl anchor_lang::AccountSerialize for UpdatePerpMarketBankruptcyIfFloorPct {
+        fn try_serialize<W: std::io::Write>(&self, writer: &mut W) -> anchor_lang::Result<()> {
+            if writer.write_all(Self::DISCRIMINATOR).is_err() {
+                return Err(anchor_lang::error::ErrorCode::AccountDidNotSerialize.into());
+            }
+            if AnchorSerialize::serialize(self, writer).is_err() {
+                return Err(anchor_lang::error::ErrorCode::AccountDidNotSerialize.into());
+            }
+            Ok(())
+        }
+    }
+    #[automatically_derived]
+    impl anchor_lang::AccountDeserialize for UpdatePerpMarketBankruptcyIfFloorPct {
         fn try_deserialize(buf: &mut &[u8]) -> anchor_lang::Result<Self> {
             let given_disc = &buf[..8];
             if Self::DISCRIMINATOR != given_disc {
@@ -25768,6 +25872,14 @@ pub mod errors {
         EquityBelowFloor,
         #[msg("Invalid equity floor transfer between subaccounts")]
         InvalidEquityFloorTransfer,
+        #[msg("Insurance fund deposit would mint zero shares")]
+        IFDepositMintsZeroShares,
+        #[msg("Liquidation would worsen the account's margin shortage")]
+        LiquidationWorsensAccountHealth,
+        #[msg("Perp bankruptcies must be resolved before spot bankruptcies")]
+        PerpBankruptcyMustPrecedeSpot,
+        #[msg("Revenue share recipient user must be sub_account_id 0")]
+        InvalidRevenueShareRecipient,
         #[msg("DailyDepositLimit")]
         DailyDepositLimit,
     }

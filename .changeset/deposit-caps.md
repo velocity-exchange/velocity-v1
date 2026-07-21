@@ -12,7 +12,7 @@ per spot market via `SpotMarketAccount.withdrawCircuitBreakerPct`
 mirrors the withdraw side: `depositGuardThreshold` (no cap below it) and
 `maxDepositPctPerDay` (`0` disables) bound how far resulting deposits may exceed
 the 24h deposit TWAP, enforced on the user `deposit` instruction with the new
-`DailyDepositLimit` (6357) program error.
+`DailyDepositLimit` (6364) program error.
 
 SDK: `SpotMarketAccount` gains `withdrawCircuitBreakerPct`,
 `depositGuardThreshold`, and `maxDepositPctPerDay`; new

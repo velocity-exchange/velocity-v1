@@ -358,6 +358,145 @@ mod calculate_liability_transfer_implied_by_asset_amount {
     }
 }
 
+mod calculate_user_protective_asset_price {
+    use crate::math::constants::PRICE_PRECISION_I64;
+    use crate::math::liquidation::calculate_user_protective_asset_price;
+    use crate::state::oracle::OraclePriceData;
+
+    #[test]
+    pub fn stale_price_below_twap_uses_twap() {
+        let oracle_price_data = OraclePriceData {
+            price: 90 * PRICE_PRECISION_I64,
+            confidence: 0,
+            delay: 200,
+            has_sufficient_number_of_data_points: true,
+            sequence_id: None,
+        };
+
+        let price =
+            calculate_user_protective_asset_price(&oracle_price_data, 100 * PRICE_PRECISION_I64)
+                .unwrap();
+
+        assert_eq!(price, 100 * PRICE_PRECISION_I64);
+    }
+
+    #[test]
+    pub fn uncertain_price_uses_confidence_adjusted_high() {
+        let oracle_price_data = OraclePriceData {
+            price: 100 * PRICE_PRECISION_I64,
+            confidence: 5 * PRICE_PRECISION_I64 as u64,
+            delay: 0,
+            has_sufficient_number_of_data_points: true,
+            sequence_id: None,
+        };
+
+        let price =
+            calculate_user_protective_asset_price(&oracle_price_data, 95 * PRICE_PRECISION_I64)
+                .unwrap();
+
+        assert_eq!(price, 105 * PRICE_PRECISION_I64);
+    }
+
+    #[test]
+    pub fn oracle_above_twap_and_confidence_uses_oracle() {
+        let oracle_price_data = OraclePriceData {
+            price: 110 * PRICE_PRECISION_I64,
+            confidence: 0,
+            delay: 200,
+            has_sufficient_number_of_data_points: true,
+            sequence_id: None,
+        };
+
+        let price =
+            calculate_user_protective_asset_price(&oracle_price_data, 100 * PRICE_PRECISION_I64)
+                .unwrap();
+
+        assert_eq!(price, 110 * PRICE_PRECISION_I64);
+    }
+}
+
+mod calculate_user_protective_liability_price {
+    use crate::math::constants::PRICE_PRECISION_I64;
+    use crate::math::liquidation::calculate_user_protective_liability_price;
+    use crate::state::oracle::OraclePriceData;
+
+    #[test]
+    pub fn stale_price_above_twap_uses_twap() {
+        let oracle_price_data = OraclePriceData {
+            price: 110 * PRICE_PRECISION_I64,
+            confidence: 0,
+            delay: 200,
+            has_sufficient_number_of_data_points: true,
+            sequence_id: None,
+        };
+
+        let price = calculate_user_protective_liability_price(
+            &oracle_price_data,
+            100 * PRICE_PRECISION_I64,
+        )
+        .unwrap();
+
+        assert_eq!(price, 100 * PRICE_PRECISION_I64);
+    }
+
+    #[test]
+    pub fn uncertain_price_uses_confidence_adjusted_low() {
+        let oracle_price_data = OraclePriceData {
+            price: 100 * PRICE_PRECISION_I64,
+            confidence: 5 * PRICE_PRECISION_I64 as u64,
+            delay: 0,
+            has_sufficient_number_of_data_points: true,
+            sequence_id: None,
+        };
+
+        let price = calculate_user_protective_liability_price(
+            &oracle_price_data,
+            105 * PRICE_PRECISION_I64,
+        )
+        .unwrap();
+
+        assert_eq!(price, 95 * PRICE_PRECISION_I64);
+    }
+
+    #[test]
+    pub fn oracle_below_twap_and_confidence_uses_oracle() {
+        let oracle_price_data = OraclePriceData {
+            price: 90 * PRICE_PRECISION_I64,
+            confidence: 0,
+            delay: 200,
+            has_sufficient_number_of_data_points: true,
+            sequence_id: None,
+        };
+
+        let price = calculate_user_protective_liability_price(
+            &oracle_price_data,
+            100 * PRICE_PRECISION_I64,
+        )
+        .unwrap();
+
+        assert_eq!(price, 90 * PRICE_PRECISION_I64);
+    }
+
+    #[test]
+    pub fn floors_at_one_when_confidence_exceeds_price() {
+        let oracle_price_data = OraclePriceData {
+            price: 100 * PRICE_PRECISION_I64,
+            confidence: 200 * PRICE_PRECISION_I64 as u64,
+            delay: 0,
+            has_sufficient_number_of_data_points: true,
+            sequence_id: None,
+        };
+
+        let price = calculate_user_protective_liability_price(
+            &oracle_price_data,
+            100 * PRICE_PRECISION_I64,
+        )
+        .unwrap();
+
+        assert_eq!(price, 1);
+    }
+}
+
 mod calculate_asset_transfer_for_liability_transfer {
     use crate::math::constants::{
         BASE_PRECISION, LIQUIDATION_FEE_PRECISION, PRICE_PRECISION_I64, QUOTE_PRECISION,
@@ -566,6 +705,81 @@ mod calculate_cumulative_deposit_interest_delta_to_resolve_bankruptcy {
                 .unwrap();
 
         assert_eq!(delta, 916666667);
+    }
+
+    #[test]
+    fn loss_equal_to_total_deposits() {
+        // Uncapped delta would equal cumulative_deposit_interest exactly,
+        // zeroing it and breaking balance conversions that divide by it.
+        let loss = 100 * QUOTE_PRECISION;
+        let spot_market = SpotMarket {
+            deposit_balance: 100 * SPOT_BALANCE_PRECISION,
+            cumulative_deposit_interest: SPOT_CUMULATIVE_INTEREST_PRECISION,
+            decimals: 6,
+            ..SpotMarket::default()
+        };
+
+        let delta =
+            calculate_cumulative_deposit_interest_delta_to_resolve_bankruptcy(loss, &spot_market)
+                .unwrap();
+
+        assert_eq!(delta, SPOT_CUMULATIVE_INTEREST_PRECISION - 1);
+    }
+
+    #[test]
+    fn loss_one_above_total_deposits() {
+        // Uncapped delta would exceed cumulative_deposit_interest and
+        // underflow the subtraction in resolve_spot_bankruptcy.
+        let loss = 100 * QUOTE_PRECISION + 1;
+        let spot_market = SpotMarket {
+            deposit_balance: 100 * SPOT_BALANCE_PRECISION,
+            cumulative_deposit_interest: SPOT_CUMULATIVE_INTEREST_PRECISION,
+            decimals: 6,
+            ..SpotMarket::default()
+        };
+
+        let delta =
+            calculate_cumulative_deposit_interest_delta_to_resolve_bankruptcy(loss, &spot_market)
+                .unwrap();
+
+        assert_eq!(delta, SPOT_CUMULATIVE_INTEREST_PRECISION - 1);
+    }
+
+    #[test]
+    fn loss_just_below_total_deposits() {
+        // Cap must not fire when the loss still fits within total deposits.
+        let loss = 100 * QUOTE_PRECISION - 1;
+        let spot_market = SpotMarket {
+            deposit_balance: 100 * SPOT_BALANCE_PRECISION,
+            cumulative_deposit_interest: SPOT_CUMULATIVE_INTEREST_PRECISION,
+            decimals: 6,
+            ..SpotMarket::default()
+        };
+
+        let delta =
+            calculate_cumulative_deposit_interest_delta_to_resolve_bankruptcy(loss, &spot_market)
+                .unwrap();
+
+        assert_eq!(delta, SPOT_CUMULATIVE_INTEREST_PRECISION - 100);
+    }
+
+    #[test]
+    fn dust_deposit_large_loss() {
+        // A single dust deposit must not make the delta exceed the current
+        // cumulative interest (griefing-DoS regression).
+        let loss = 100 * QUOTE_PRECISION;
+        let spot_market = SpotMarket {
+            deposit_balance: SPOT_BALANCE_PRECISION / 1000,
+            cumulative_deposit_interest: SPOT_CUMULATIVE_INTEREST_PRECISION,
+            decimals: 6,
+            ..SpotMarket::default()
+        };
+
+        let delta =
+            calculate_cumulative_deposit_interest_delta_to_resolve_bankruptcy(loss, &spot_market)
+                .unwrap();
+
+        assert_eq!(delta, SPOT_CUMULATIVE_INTEREST_PRECISION - 1);
     }
 }
 

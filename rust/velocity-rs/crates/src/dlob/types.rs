@@ -83,6 +83,7 @@ pub struct TakerOrder {
     pub market_index: u16,
     pub direction: Direction,
     pub market_type: MarketType,
+    pub reduce_only: bool,
 }
 
 impl TakerOrder {
@@ -93,6 +94,7 @@ impl TakerOrder {
             direction: order.direction,
             market_index: order.market_index,
             market_type: order.market_type,
+            reduce_only: order.reduce_only,
         }
     }
 }

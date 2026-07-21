@@ -284,11 +284,12 @@ fn test_daily_withdraw_limits() {
     assert_eq!(user.spot_positions[0].market_index, 0);
 
     let old_twap = spot_market.deposit_token_twap;
-    update_spot_market_cumulative_interest(&mut spot_market, None, now + 3600).unwrap();
+    update_spot_market_cumulative_interest(&mut spot_market, None, now + 3600, false).unwrap();
     assert_eq!(spot_market.deposit_token_twap, 494792);
-    update_spot_market_cumulative_interest(&mut spot_market, None, now + 3600 * 24).unwrap();
+    update_spot_market_cumulative_interest(&mut spot_market, None, now + 3600 * 24, false).unwrap();
     assert_eq!(spot_market.deposit_token_twap, 379991); // little bit slower than 1 day
-    update_spot_market_cumulative_interest(&mut spot_market, None, now + 3600 * 48 + 100).unwrap();
+    update_spot_market_cumulative_interest(&mut spot_market, None, now + 3600 * 48 + 100, false)
+        .unwrap();
     let new_twap = spot_market.deposit_token_twap;
     assert!(old_twap >= new_twap);
     assert_eq!(new_twap, 375001);
@@ -308,9 +309,9 @@ fn test_daily_withdraw_limits() {
 
     spot_market.last_interest_ts = now as u64;
     spot_market.last_twap_ts = now as u64;
-    update_spot_market_cumulative_interest(&mut spot_market, None, now + 3600).unwrap();
+    update_spot_market_cumulative_interest(&mut spot_market, None, now + 3600, false).unwrap();
     assert_eq!(spot_market.deposit_token_twap, 4167041666); //$4167.04
-    update_spot_market_cumulative_interest(&mut spot_market, None, now + 3600 * 44).unwrap();
+    update_spot_market_cumulative_interest(&mut spot_market, None, now + 3600 * 44, false).unwrap();
     assert_eq!(spot_market.deposit_token_twap, 99999755926);
 
     // tiny whale who will grow
@@ -405,7 +406,8 @@ fn test_daily_withdraw_limits() {
     assert_eq!(sol_spot_market.borrow_balance, 8000000002);
     assert_eq!(sol_spot_market.borrow_token_twap, 0);
 
-    update_spot_market_cumulative_interest(&mut sol_spot_market, None, now + 3655 * 24).unwrap();
+    update_spot_market_cumulative_interest(&mut sol_spot_market, None, now + 3655 * 24, false)
+        .unwrap();
     assert_eq!(sol_spot_market.deposit_token_twap, 500007120768);
     assert_eq!(sol_spot_market.borrow_token_twap, 80006208813);
 
@@ -902,7 +904,7 @@ fn check_fee_collection() {
     assert_eq!(spot_market.borrow_balance, 125000001);
     assert_eq!(spot_market.utilization_twap, 0);
 
-    update_spot_market_cumulative_interest(&mut spot_market, None, now + 100).unwrap();
+    update_spot_market_cumulative_interest(&mut spot_market, None, now + 100, false).unwrap();
 
     assert_eq!(spot_market.revenue_pool.scaled_balance, 0);
     assert_eq!(spot_market.cumulative_deposit_interest, 10000019799);
@@ -934,7 +936,7 @@ fn check_fee_collection() {
     assert_eq!(borrow_tokens_1, 125002);
     assert_eq!(if_tokens_1, 0);
 
-    update_spot_market_cumulative_interest(&mut spot_market, None, now + 7500).unwrap();
+    update_spot_market_cumulative_interest(&mut spot_market, None, now + 7500, false).unwrap();
 
     assert_eq!(spot_market.last_interest_ts, 7500);
     assert_eq!(spot_market.last_twap_ts, 7500);
@@ -977,6 +979,7 @@ fn check_fee_collection() {
         &mut spot_market,
         None,
         now + 750 + (60 * 60 * 24 * 365),
+        false,
     )
     .unwrap();
 
@@ -1030,6 +1033,7 @@ fn check_fee_collection() {
         &mut spot_market,
         now + 60,
         true,
+        false,
     )
     .unwrap();
 
@@ -1080,8 +1084,13 @@ fn check_fee_collection() {
     assert_eq!(if_tokens_4, 0);
 
     // one more day later, twap update
-    update_spot_market_cumulative_interest(&mut spot_market, None, now + 60 + (60 * 60 * 24))
-        .unwrap();
+    update_spot_market_cumulative_interest(
+        &mut spot_market,
+        None,
+        now + 60 + (60 * 60 * 24),
+        false,
+    )
+    .unwrap();
 
     let deposit_tokens_5 = get_token_amount(
         spot_market.deposit_balance,
@@ -1124,6 +1133,7 @@ fn check_fee_collection() {
         &mut spot_market,
         None,
         now + (60 * 60 * 24 * 365 * 150),
+        false,
     )
     .unwrap();
 
@@ -1272,7 +1282,7 @@ fn check_fee_collection_larger_nums() {
     assert_eq!(spot_market.borrow_balance, 540510000000001);
     assert_eq!(spot_market.utilization_twap, 0);
 
-    update_spot_market_cumulative_interest(&mut spot_market, None, now + 100).unwrap();
+    update_spot_market_cumulative_interest(&mut spot_market, None, now + 100, false).unwrap();
 
     let br = calculate_borrow_rate(&spot_market, spot_market.get_utilization().unwrap()).unwrap();
     assert_eq!(br, 20173678);
@@ -1306,7 +1316,7 @@ fn check_fee_collection_larger_nums() {
     assert_eq!(borrow_tokens_1, 540544576533);
     assert_eq!(if_tokens_1, 3457599);
 
-    update_spot_market_cumulative_interest(&mut spot_market, None, now + 7500).unwrap();
+    update_spot_market_cumulative_interest(&mut spot_market, None, now + 7500, false).unwrap();
 
     assert_eq!(spot_market.last_interest_ts, 7500);
     assert_eq!(spot_market.last_twap_ts, 7500);
@@ -1349,6 +1359,7 @@ fn check_fee_collection_larger_nums() {
         &mut spot_market,
         None,
         now + 750 + (60 * 60 * 24 * 365),
+        false,
     )
     .unwrap();
 
@@ -1404,6 +1415,7 @@ fn check_fee_collection_larger_nums() {
         &mut spot_market,
         now + 60,
         true,
+        false,
     )
     .unwrap();
     assert_eq!(settle_amount, 229739282275);
@@ -1414,7 +1426,10 @@ fn check_fee_collection_larger_nums() {
     assert_eq!(if_balance_2, 229739282275);
     assert_eq!(if_tokens_3 - (settle_amount as u128), 868747539403); // w/ update interest for settle_spot_market_to_if
 
-    assert_eq!(spot_market.revenue_pool.scaled_balance, 79996002243946);
+    // settled tokens leave the vault, so the revenue-pool debit rounds up (one
+    // extra share vs the old floor of 79996002243946) to keep the vault fully
+    // backing depositor claims.
+    assert_eq!(spot_market.revenue_pool.scaled_balance, 79996002243945);
     assert_eq!(spot_market.utilization_twap, 961580);
 
     let deposit_tokens_4 = get_token_amount(
@@ -2121,7 +2136,8 @@ fn lending_interest_carveout_three_way_split() {
     let borrow_interest_before = spot_market.cumulative_borrow_interest;
 
     // a year of interest at 50% utilization
-    update_spot_market_cumulative_interest(&mut spot_market, None, 60 * 60 * 24 * 365).unwrap();
+    update_spot_market_cumulative_interest(&mut spot_market, None, 60 * 60 * 24 * 365, false)
+        .unwrap();
 
     assert!(
         spot_market.cumulative_borrow_interest > borrow_interest_before,

@@ -284,10 +284,16 @@ pub fn large_num_seeded_stake_if_test() {
         &mut spot_market,
         1,
         true,
+        false,
     )
     .unwrap();
     assert_eq!(flow, 11);
-    assert_eq!(spot_market.revenue_pool.scaled_balance, 90099009901);
+    // The `flow` tokens physically leave the spot vault, so the revenue-pool
+    // ledger debit rounds up (removes one extra share vs the exact floor of
+    // 90099009901). This keeps `deposit_balance` from ever exceeding the vault
+    // balance by a rounding residue and preserves the
+    // `validate_spot_market_vault_amount` invariant.
+    assert_eq!(spot_market.revenue_pool.scaled_balance, 90099009900);
     let spot_market_vault_amount = get_token_amount(
         spot_market.deposit_balance,
         &spot_market,
@@ -1450,6 +1456,7 @@ fn resolve_perp_pnl_deficit_refreshes_period_after_new_settle() {
         &mut spot_market,
         &mut market,
         now,
+        false,
     )
     .unwrap();
 
@@ -1461,4 +1468,171 @@ fn resolve_perp_pnl_deficit_refreshes_period_after_new_settle() {
     );
     assert_eq!(market.insurance_claim.quote_settled_insurance, cap);
     assert_eq!(market.insurance_claim.last_revenue_withdraw_ts, now);
+}
+
+/// Regression for `SpotMarketVaultInvariantViolated` on IF stake/settle.
+///
+/// The revenue sweep transfers an exact integer token amount OUT of the spot
+/// vault into the IF vault, then debits the revenue pool from the internal
+/// ledger. If that ledger debit is floor-rounded, `deposit_balance`'s token
+/// value falls by less than the tokens that physically left, leaving
+/// `depositors_claim` above the vault balance by the rounding residue and
+/// tripping `validate_spot_market_vault_amount`. `is_leaving_velocity = true`
+/// forces the debit to round up so the claim drops by *at least* the tokens
+/// removed and the invariant `vault_amount >= depositors_claim` always holds.
+///
+/// A cumulative deposit interest just above 1.0x on a 9-decimal market (SOL)
+/// is exactly the production condition that surfaced the bug: `10 * P / C`
+/// floors to 9 shares, so a floor debit reduces the claim by only 9 for a
+/// 10-token withdrawal.
+#[test]
+pub fn revenue_debit_leaving_vault_preserves_backing() {
+    use crate::controller::spot_balance::update_revenue_pool_balances;
+
+    // The residue only appears when `deposit_balance * C / P` is not near an
+    // integer, so sweep `scaled_balance` offsets (and a few interest indices) to
+    // cover the misaligned cases the production SOL market hit.
+    for tokens_out in [1u128, 10] {
+        for c_plus in [1u128, 3, 7, 13, 9999] {
+            let cumulative_deposit_interest = SPOT_CUMULATIVE_INTEREST_PRECISION + c_plus;
+            for offset in 0..32u128 {
+                // deposit_balance backed entirely by the revenue pool (borrows == 0),
+                // so depositors_claim == the deposit token amount.
+                let scaled_balance = 100_000 * SPOT_BALANCE_PRECISION + offset;
+                let mut spot_market = SpotMarket {
+                    decimals: 9,
+                    deposit_balance: scaled_balance,
+                    cumulative_deposit_interest,
+                    revenue_pool: PoolBalance {
+                        market_index: 0,
+                        scaled_balance,
+                        ..PoolBalance::default()
+                    },
+                    ..SpotMarket::default()
+                };
+
+                let claim_before = get_token_amount(
+                    spot_market.deposit_balance,
+                    &spot_market,
+                    &SpotBalanceType::Deposit,
+                )
+                .unwrap();
+
+                update_revenue_pool_balances(
+                    tokens_out,
+                    &SpotBalanceType::Borrow,
+                    &mut spot_market,
+                    true,
+                )
+                .unwrap();
+
+                let claim_after = get_token_amount(
+                    spot_market.deposit_balance,
+                    &spot_market,
+                    &SpotBalanceType::Deposit,
+                )
+                .unwrap();
+
+                // The vault drops by exactly `tokens_out`; the recorded claim must
+                // drop by at least that much or the vault under-backs depositors.
+                // Floor rounding (is_leaving_velocity = false) drops it by only
+                // `tokens_out - 1` for most offsets → the reported underwater bug.
+                assert!(
+                    claim_before - claim_after >= tokens_out,
+                    "claim dropped by {} < {tokens_out} (c_plus={c_plus}, offset={offset}) \
+                     — vault would be underwater",
+                    claim_before - claim_after
+                );
+            }
+        }
+    }
+}
+
+#[test]
+pub fn cancel_request_after_rebase_floors_request_to_zero() {
+    // #34: a market-level IF rebase can floor a small pending unstake request to
+    // zero (`last_withdraw_request_shares / rebase_divisor`). Before the fix,
+    // cancel re-checked `last_withdraw_request_shares != 0` *after* the rebase and
+    // rejected the zeroed request (InvalidIFUnstakeCancel), stranding the stake:
+    // `remove` also rejects a zero request, and `add` / re-`request` are blocked
+    // by the still-in-progress request. Cancel must now succeed, returning the
+    // intact rebased stake to active and abandoning only the dust request value.
+    let mut if_balance = 0;
+
+    let mut if_stake_1 = InsuranceFundStake::new(Pubkey::default(), 0, 0);
+    let mut user_stats_1 = UserStats::default();
+
+    let mut if_stake_2 = InsuranceFundStake::new(Pubkey::default(), 0, 0);
+    let mut user_stats_2 = UserStats::default();
+
+    let amount = (QUOTE_PRECISION * 100_000) as u64; // $100k each
+    let mut spot_market = SpotMarket {
+        deposit_balance: 0,
+        cumulative_deposit_interest: 1111 * SPOT_CUMULATIVE_INTEREST_PRECISION / 1000,
+        insurance_fund: InsuranceFund {
+            unstaking_period: 0,
+            ..InsuranceFund::default()
+        },
+        ..SpotMarket::default()
+    };
+
+    add_insurance_fund_stake(
+        amount,
+        if_balance,
+        &mut if_stake_1,
+        &mut user_stats_1,
+        &mut spot_market,
+        0,
+        false,
+    )
+    .unwrap();
+    if_balance = amount;
+    add_insurance_fund_stake(
+        amount,
+        if_balance,
+        &mut if_stake_2,
+        &mut user_stats_2,
+        &mut spot_market,
+        0,
+        false,
+    )
+    .unwrap();
+    if_balance = 2 * amount;
+
+    // Staker 1 requests a tiny partial unstake (5 shares) while the fund is full,
+    // so no rebase happens at request time.
+    request_remove_insurance_fund_stake(
+        5,
+        if_balance,
+        &mut if_stake_1,
+        &mut user_stats_1,
+        &mut spot_market,
+        0,
+    )
+    .unwrap();
+    assert_eq!(if_stake_1.last_withdraw_request_shares, 5);
+    assert_eq!(if_stake_1.if_base, 0);
+    assert_eq!(spot_market.insurance_fund.shares_base, 0);
+
+    // The fund is drained to $1: the next touch triggers a rebase whose divisor
+    // (10^4) exceeds the 5-share request, flooring it to zero.
+    if_balance = QUOTE_PRECISION as u64;
+
+    cancel_request_remove_insurance_fund_stake(
+        if_balance,
+        &mut if_stake_1,
+        &mut user_stats_1,
+        &mut spot_market,
+        0,
+    )
+    .unwrap();
+
+    // Rebase fired and the stake was carried across it.
+    assert_eq!(spot_market.insurance_fund.shares_base, 4);
+    assert_eq!(if_stake_1.if_base, 4);
+
+    // Request cleared, stake intact and non-zero (only the dust value abandoned).
+    assert_eq!(if_stake_1.last_withdraw_request_shares, 0);
+    assert_eq!(if_stake_1.last_withdraw_request_value, 0);
+    assert!(if_stake_1.unchecked_if_shares() > 0);
 }

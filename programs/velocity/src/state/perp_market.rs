@@ -11,11 +11,13 @@ use crate::{
     math::{
         casting::Cast,
         constants::{
-            AMM_TO_QUOTE_PRECISION_RATIO, DEFAULT_REVENUE_SINCE_LAST_FUNDING_SPREAD_RETREAT,
-            FUNDING_RATE_BUFFER_I128, FUNDING_RATE_OFFSET_PERCENTAGE, LIQUIDATION_FEE_PRECISION,
-            MARGIN_PRECISION, MARGIN_PRECISION_U128, MAX_LIQUIDATION_MULTIPLIER,
+            AMM_TO_QUOTE_PRECISION_RATIO, BASE_PRECISION,
+            DEFAULT_REVENUE_SINCE_LAST_FUNDING_SPREAD_RETREAT, FUNDING_RATE_BUFFER_I128,
+            FUNDING_RATE_OFFSET_PERCENTAGE, LIQUIDATION_FEE_PRECISION, MARGIN_PRECISION,
+            MARGIN_PRECISION_U128, MAX_LIQUIDATION_MULTIPLIER, PERCENTAGE_PRECISION,
             PERCENTAGE_PRECISION_I128, PERCENTAGE_PRECISION_I64, PERCENTAGE_PRECISION_U32,
             PERCENTAGE_PRECISION_U64, PRICE_PRECISION_I128, SPOT_WEIGHT_PRECISION,
+            TRIGGER_PRICE_LAST_FILL_MAX_AGE,
         },
         margin::{
             calculate_size_discount_asset_weight, calculate_size_premium_liability_weight,
@@ -410,23 +412,39 @@ pub struct PerpMarket {
     /// the override for the state.min_perp_auction_duration
     /// 0 is no override, -1 is disable speed bump, 1-100 is literal speed bump
     pub oracle_low_risk_slot_delay_override: i8,
-    /// Trailing padding so `market_stats` lands at the offset Rust naturally
-    /// computes via `repr(C)` alignment and the `(SIZE - 8) % 16 == 0`
-    /// invariant holds. (32 bytes moved into `fee_ledger` as
-    /// `amm_protocol_fees_received` and then `pending_amm_provision` joined
-    /// it, keeping `market_stats` fixed.)
-    pub padding: [u8; 4],
+    /// Floor on the unswept IF-fee carveout, as a percentage of open-interest
+    /// notional (PERCENTAGE_PRECISION; 0 disables). The fee sweep's IF drain
+    /// leaves `pending_if_fee` at (at least) this floor, so a standing
+    /// first-loss tranche is always available to `resolve_perp_bankruptcy` —
+    /// a permissionless sweep (or the inline sweep on any pnl settle) cannot
+    /// drain the tranche below it ahead of a bankruptcy resolution. Notional
+    /// is valued at the market's own oracle TWAP so a manipulated spot print
+    /// can't crush the floor. Occupies the former 4-byte trailing padding
+    /// before `market_stats` (same offset/alignment on all targets), so
+    /// existing accounts read 0 = disabled until the admin sets it;
+    /// new markets initialize to `DEFAULT_BANKRUPTCY_IF_FLOOR_PCT`.
+    pub bankruptcy_if_floor_pct: u32,
     /// Market-wide stats shared across all makers: mark/oracle TWAPs, std,
     /// volume, intensity, mm-oracle snapshot, `historical_oracle_data`,
     /// `last_oracle_normalised_price`, `last_oracle_valid`. Writers (e.g.
     /// `MarketStats::update_mark_std`, `update_volume_24h`, native
     /// `handle_update_mm_oracle_native`) update this directly.
     pub market_stats: MarketStats,
-    /// 8 bytes of explicit padding so MarketStats (216 bytes) plus this
-    /// padding equals 224 bytes — the offset Rust naturally inserts to
-    /// 16-align AMM's leading u128. Making it explicit keeps the IDL byte
-    /// layout aligned with `repr(C)`.
-    pub _padding_align_amm: [u8; 8],
+    /// Aggregate accrued builder/referrer revenue-share owed out of this
+    /// market's `pnl_pool` but not yet paid: incremented as builder and
+    /// referrer fees accrue on fills (mirrors the per-order
+    /// `RevenueShareOrder.fees_accrued` writes) and decremented as
+    /// `sweep_completed_revenue_share_for_market` pays them. The
+    /// permissionless fee sweep reserves it (like `max(net_user_pnl, 0)` and
+    /// the floored IF tranche) so a protocol-fee drain can't move the tokens
+    /// backing already-owed revenue share out of the pnl pool and leave those
+    /// claims temporarily unpayable. precision: QUOTE_PRECISION.
+    ///
+    /// Occupies the 8 bytes Rust naturally inserts to 16-align AMM's leading
+    /// u128 (formerly explicit `_padding_align_amm`): a u64 at the same
+    /// 8-aligned offset keeps every downstream byte offset and the total size
+    /// unchanged, so legacy accounts read 0 (nothing owed) until fees accrue.
+    pub pending_revenue_share: u64,
     /// The automated market maker. Last field so future quoter modules can
     /// land in the trailing region without disturbing earlier byte offsets
     /// — in the target architecture this account holds back-to-back
@@ -499,9 +517,9 @@ impl Default for PerpMarket {
             oracle_source: OracleSource::default(),
             oracle_slot_delay_override: -1,
             oracle_low_risk_slot_delay_override: 0,
-            padding: [0; 4],
+            bankruptcy_if_floor_pct: 0,
             market_stats: MarketStats::default(),
-            _padding_align_amm: [0; 8],
+            pending_revenue_share: 0,
             amm: AMM::default(),
             hedge_config: HedgeConfig::default(),
             protocol_fee_pool: PoolBalance::default(),
@@ -560,7 +578,13 @@ impl PerpMarket {
         state: &State,
         amm_has_low_enough_inventory: bool,
     ) -> VelocityResult<bool> {
-        if state.amm_immediate_fill_paused()? {
+        // Honor both the exchange-wide immediate-fill breaker and the
+        // market-scoped `AmmImmediateFill` pause bit; either being set forces
+        // the auction to run its full duration instead of skipping to an
+        // immediate AMM fill.
+        if state.amm_immediate_fill_paused()?
+            || self.is_operation_paused(PerpOperation::AmmImmediateFill)
+        {
             return Ok(false);
         }
 
@@ -805,6 +829,67 @@ impl PerpMarket {
             .unsigned_abs()
     }
 
+    /// The `pending_if_fee` floor the sweep's IF drain must leave behind:
+    /// `bankruptcy_if_floor_pct` of open-interest notional, valued at the
+    /// market's oracle TWAP (manipulation-resistant; no live oracle needed).
+    /// precision: QUOTE_PRECISION
+    pub fn get_bankruptcy_if_floor(&self) -> VelocityResult<u128> {
+        if self.bankruptcy_if_floor_pct == 0 {
+            return Ok(0);
+        }
+
+        let oracle_price_twap = self
+            .market_stats
+            .historical_oracle_data
+            .last_oracle_price_twap
+            .max(0)
+            .cast::<u128>()?;
+
+        self.get_open_interest()
+            .safe_mul(oracle_price_twap)?
+            .safe_div(BASE_PRECISION)?
+            .safe_mul(self.bankruptcy_if_floor_pct.cast()?)?
+            .safe_div(PERCENTAGE_PRECISION)
+    }
+
+    /// The pnl-pool tokens that must stay behind to keep the standing
+    /// first-loss IF bankruptcy tranche backed: `min(pending_if_fee,
+    /// get_bankruptcy_if_floor())`. `resolve_perp_bankruptcy` consumes
+    /// `pending_if_fee` counter-only (it cancels the forgiven loss against the
+    /// pending claim with no token movement, relying on that fee value still
+    /// sitting in the pnl pool), so a permissionless drain that moved those
+    /// tokens elsewhere — e.g. `sweep_market_fees`' buffer-exempt protocol cut
+    /// into `protocol_fee_pool`, which is not part of the insurance backstop —
+    /// would leave the tranche unbacked and surviving-trader PnL short. Every
+    /// permissionless pnl-pool drain reserves this on top of
+    /// `max(net_user_pnl, 0)`. `force` (delisting, once bankruptcies are
+    /// resolved) returns 0.
+    /// precision: QUOTE_PRECISION
+    pub fn get_bankruptcy_if_tranche_reservation(&self, force: bool) -> VelocityResult<u128> {
+        if force {
+            return Ok(0);
+        }
+        Ok(self
+            .fee_ledger
+            .pending_if_fee
+            .min(self.get_bankruptcy_if_floor()?))
+    }
+
+    /// Record builder/referrer revenue share accrued on a fill into the
+    /// per-market aggregate (mirrors the per-order `fees_accrued` write so the
+    /// fee sweep can reserve the tokens backing it).
+    pub fn accrue_pending_revenue_share(&mut self, amount: u64) -> VelocityResult {
+        self.pending_revenue_share = self.pending_revenue_share.safe_add(amount)?;
+        Ok(())
+    }
+
+    /// Discharge revenue share from the per-market aggregate as
+    /// `sweep_completed_revenue_share_for_market` pays it out of the pnl pool.
+    pub fn settle_pending_revenue_share(&mut self, amount: u64) -> VelocityResult {
+        self.pending_revenue_share = self.pending_revenue_share.saturating_sub(amount);
+        Ok(())
+    }
+
     pub fn get_market_depth_for_funding_rate(&self) -> VelocityResult<u64> {
         // base amount used on user orders for funding calculation
 
@@ -886,6 +971,22 @@ impl PerpMarket {
         self.oracle_source != OracleSource::Prelaunch
     }
 
+    /// Reference price for evaluating trigger (TP/SL) orders:
+    ///
+    /// `trigger_price = clamp(median(leg_a, leg_b, leg_c))`
+    ///
+    /// - Leg A: `last_fill_price`, the last trade on this market. The oracle
+    ///   price substitutes until the market's first fill (`last_fill_price == 0`)
+    ///   and when the last fill is stale (older than
+    ///   `TRIGGER_PRICE_LAST_FILL_MAX_AGE`).
+    /// - Leg B: `oracle + funding_basis`, the price premium implied by the last
+    ///   funding rate, decaying linearly with its age (`get_last_funding_basis`).
+    /// - Leg C: `oracle + basis_5min`, where
+    ///   `basis_5min = mark_twap_5min - oracle_twap_5min`.
+    ///
+    /// The median is clamped to a per-tier band around the oracle price
+    /// (`clamp_trigger_price`). With `use_median_price` off, returns the raw
+    /// oracle price.
     pub fn get_trigger_price(
         &self,
         oracle_price: i64,
@@ -896,8 +997,13 @@ impl PerpMarket {
             return oracle_price.cast::<u64>();
         }
 
+        // Leg A: last trade price, only while fresh. `last_trade_ts` is
+        // stamped by the same fill path that writes `last_fill_price`.
         let last_fill_price = self.last_fill_price;
+        let last_fill_is_fresh =
+            now.safe_sub(self.market_stats.last_trade_ts)? <= TRIGGER_PRICE_LAST_FILL_MAX_AGE;
 
+        // Leg C: oracle + (mark_twap_5min - oracle_twap_5min)
         let mark_price_5min_twap = self.market_stats.last_mark_price_twap_5min;
         let last_oracle_price_twap_5min = self
             .market_stats
@@ -910,11 +1016,12 @@ impl PerpMarket {
 
         let oracle_plus_basis_5min = oracle_price.safe_add(basis_5min)?.cast::<u64>()?;
 
+        // Leg B: oracle + decayed funding basis
         let last_funding_basis = self.get_last_funding_basis(oracle_price, now)?;
 
         let oracle_plus_funding_basis = oracle_price.safe_add(last_funding_basis)?.cast::<u64>()?;
 
-        let median_price = if last_fill_price > 0 {
+        let median_price = if last_fill_price > 0 && last_fill_is_fresh {
             msg!(
                 "last_fill_price: {} oracle_plus_funding_basis: {} oracle_plus_basis_5min: {}",
                 last_fill_price,
@@ -930,6 +1037,7 @@ impl PerpMarket {
 
             prices[1]
         } else {
+            // No fill yet or last fill is stale: oracle price stands in for Leg A
             let mut prices = [
                 oracle_price.unsigned_abs(),
                 oracle_plus_funding_basis,
@@ -943,6 +1051,16 @@ impl PerpMarket {
         self.clamp_trigger_price(oracle_price.unsigned_abs(), median_price)
     }
 
+    /// Price basis implied by the last funding rate (Leg B of the trigger price).
+    ///
+    /// ```text
+    /// daily_rate = last_funding_rate / last_funding_oracle_twap * 24 - funding_rate_offset
+    /// basis      = oracle_price * daily_rate * (funding_period - time_since_funding_update) / funding_period
+    /// ```
+    ///
+    /// A fresh funding print contributes the full basis; it decays linearly to
+    /// zero as it ages toward one funding period. Returns 0 with no funding
+    /// history (`last_funding_oracle_twap <= 0`).
     #[inline(always)]
     fn get_last_funding_basis(&self, oracle_price: i64, now: i64) -> VelocityResult<i64> {
         if self.market_stats.last_funding_oracle_twap > 0 {
@@ -956,7 +1074,7 @@ impl PerpMarket {
                 last_funding_rate.safe_sub(FUNDING_RATE_OFFSET_PERCENTAGE as i128)?;
 
             let funding_period = self.market_stats.funding_period;
-            let time_left_until_funding_update =
+            let time_since_funding_update =
                 now.safe_sub(self.last_funding_rate_ts)?.min(funding_period);
 
             let last_funding_basis = oracle_price
@@ -965,7 +1083,7 @@ impl PerpMarket {
                 .safe_div(PERCENTAGE_PRECISION_I128)?
                 .safe_mul(
                     funding_period
-                        .safe_sub(time_left_until_funding_update)?
+                        .safe_sub(time_since_funding_update)?
                         .cast::<i128>()?,
                 )?
                 .safe_div(funding_period.cast::<i128>()?)?
@@ -977,16 +1095,18 @@ impl PerpMarket {
         }
     }
 
+    /// Clamps the median trigger price to a band around the oracle price.
+    /// Band width by contract tier: A/B 20 bps, C 100 bps, rest 250 bps.
     #[inline(always)]
     fn clamp_trigger_price(&self, oracle_price: u64, median_price: u64) -> VelocityResult<u64> {
-        let max_bps_diff = if matches!(self.contract_tier, ContractTier::A | ContractTier::B) {
-            500 // 20 BPS
+        let clamp_divisor = if matches!(self.contract_tier, ContractTier::A | ContractTier::B) {
+            500 // oracle / 500 = 20 bps
         } else if matches!(self.contract_tier, ContractTier::C) {
-            100 // 100 BPS
+            100 // oracle / 100 = 100 bps
         } else {
-            40 // 250 BPS
+            40 // oracle / 40 = 250 bps
         };
-        let max_oracle_diff = oracle_price / max_bps_diff;
+        let max_oracle_diff = oracle_price / clamp_divisor;
 
         Ok(median_price.clamp(
             oracle_price.safe_sub(max_oracle_diff)?,

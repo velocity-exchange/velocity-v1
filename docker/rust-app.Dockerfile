@@ -47,4 +47,9 @@ ENV BUILD_VERSION=${BUILD_VERSION}
 # Keep `/usr/local/bin/app` as a symlink so the default ENTRYPOINT still resolves.
 COPY --from=builder /usr/local/bin/${APP_BIN} /usr/local/bin/${APP_BIN}
 RUN ln -s /usr/local/bin/${APP_BIN} /usr/local/bin/app
+# Run as a non-root user (uid 1001, primary gid 0) so the k8s workloads can set
+# `runAsNonRoot: true` for the file-mount secret hardening. The binary is world-
+# executable and reads its config from a read-only mount, so no chown is needed.
+RUN useradd -r -u 1001 -g 0 -m -d /home/nonroot nonroot
+USER 1001
 ENTRYPOINT ["/usr/local/bin/app"]

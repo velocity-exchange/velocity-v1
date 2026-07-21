@@ -10,6 +10,18 @@ export class TestClient extends AdminClient {
 		if (config.accountSubscription?.type !== 'polling') {
 			throw new Error('Test client must be polling');
 		}
+		// Blockhash caching keys its TTL off the wall clock, which is incompatible
+		// with bankrun's simulated clock: within a single 2s wall-clock window the
+		// bankrun validator advances many slots (and its blockhash), so a cached
+		// blockhash goes stale and sequential builds collide into identical
+		// transactions ("already processed") or reference an expired blockhash
+		// ("Blockhash not found"). There is also no real RPC to save in bankrun.
+		// Force fresh fetches unless a test explicitly opts back in.
+		config.txHandlerConfig = {
+			...config.txHandlerConfig,
+			blockhashCachingEnabled:
+				config.txHandlerConfig?.blockhashCachingEnabled ?? false,
+		};
 		super(config);
 	}
 

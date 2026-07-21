@@ -52,6 +52,10 @@ export type FillerMultiThreadedConfig = BaseBotConfig & {
 	pythLazerChunkSize?: number;
 
 	triggerPriorityFeeMultiplier?: number;
+
+	// Min slots between fill attempts on the same order (paces re-attempts against
+	// the DLOB builder's ~200ms re-emit). Defaults to 5.
+	fillAttemptSlotInterval?: number;
 };
 
 export type FillerConfig = BaseBotConfig & {
@@ -91,6 +95,9 @@ export type SubaccountConfig = {
 
 export type LiquidatorConfig = BaseBotConfig & {
 	disableAutoDerisking: boolean;
+	/// Skip the startup sweep that deposits idle wallet token balances into
+	/// liquidation subaccounts that have no free collateral.
+	disableAutoDeposit?: boolean;
 	/// @deprecated, use {@link perpSubAccountConfig} to restrict markets
 	perpMarketIndicies?: Array<number>;
 	/// @deprecated, use {@link spotSubAccountConfig} to restrict markets
@@ -132,6 +139,14 @@ export type PythLazerCrankerBotConfig = BaseBotConfig & {
 	intervalMs: number;
 	onlyCrankUsedOracles?: boolean;
 	feedProperties?: PriceFeedProperty[];
+	/// Adaptive cranking: when set, each intervalMs tick only posts a chunk if
+	/// maxCrankIntervalMs has elapsed since its last post OR any feed in the
+	/// chunk moved >= this many bps from its last posted price. intervalMs then
+	/// acts as the condition poll rate rather than the post rate. Unset
+	/// preserves the legacy post-every-tick behavior.
+	crankDivergenceBps?: number;
+	/// Max time between posts per chunk in adaptive mode (default 1600ms ~ 4 slots)
+	maxCrankIntervalMs?: number;
 };
 
 export type LpPoolTargetBaseCrankerConfig = BaseBotConfig & {
@@ -149,6 +164,7 @@ export type BotConfigMap = {
 	liquidator?: LiquidatorConfig;
 	floatingMaker?: BaseBotConfig;
 	ifRevenueSettler?: BaseBotConfig;
+	protocolFeeCollector?: BaseBotConfig;
 	fundingRateUpdater?: BaseBotConfig;
 	userPnlSettler?: UserPnlSettlerConfig;
 	userIdleFlipper?: BaseBotConfig;
@@ -498,6 +514,15 @@ export function loadConfigFromOpts(opts: any): Config {
 		config.botConfigs!.ifRevenueSettler = {
 			dryRun: opts.dryRun ?? false,
 			botId: process.env.BOT_ID ?? 'ifRevenueSettler',
+			metricsPort: 9464,
+			runOnce: opts.runOnce ?? false,
+		};
+	}
+	if (opts.protocolFeeCollector) {
+		config.enabledBots.push('protocolFeeCollector');
+		config.botConfigs!.protocolFeeCollector = {
+			dryRun: opts.dryRun ?? false,
+			botId: process.env.BOT_ID ?? 'protocolFeeCollector',
 			metricsPort: 9464,
 			runOnce: opts.runOnce ?? false,
 		};

@@ -473,28 +473,30 @@ impl AMM {
         }
     }
 
-    /// Validate that a proposed margin and liquidator-fee configuration is
+    /// Validate that a proposed margin and liquidation-fee configuration is
     /// compatible with the AMM's current `max_spread`. The non-AMM
     /// arguments (`margin_ratio_initial`, `margin_ratio_maintenance`,
-    /// `liquidation_fee`) are forwarded to the protocol-level
-    /// `validate_margin` so the AMM owns the `max_spread` portion of the
-    /// constraint without duplicating margin bounds checks here. Used by
-    /// `handle_update_perp_market_margin_ratio`.
+    /// `liquidator_fee`, `if_liquidation_fee`) are forwarded to the
+    /// protocol-level `validate_margin` so the AMM owns the `max_spread`
+    /// portion of the constraint without duplicating margin bounds checks
+    /// here. Used by `handle_update_perp_market_margin_ratio`.
     pub fn validate_compatible_with_margin_ratio(
         &self,
         margin_ratio_initial: u32,
         margin_ratio_maintenance: u32,
-        liquidation_fee: u32,
+        liquidator_fee: u32,
+        if_liquidation_fee: u32,
     ) -> VelocityResult<()> {
         crate::validation::margin::validate_margin(
             margin_ratio_initial,
             margin_ratio_maintenance,
-            liquidation_fee,
+            liquidator_fee,
+            if_liquidation_fee,
             self.max_spread,
         )
     }
 
-    /// Validate that a proposed liquidator fee is compatible with the
+    /// Validate that proposed liquidation fees are compatible with the
     /// AMM's current `max_spread` (via the protocol-level
     /// `validate_margin` rules). Used by
     /// `handle_update_perp_liquidation_fee`.
@@ -502,12 +504,14 @@ impl AMM {
         &self,
         margin_ratio_initial: u32,
         margin_ratio_maintenance: u32,
-        liquidation_fee: u32,
+        liquidator_fee: u32,
+        if_liquidation_fee: u32,
     ) -> VelocityResult<()> {
         crate::validation::margin::validate_margin(
             margin_ratio_initial,
             margin_ratio_maintenance,
-            liquidation_fee,
+            liquidator_fee,
+            if_liquidation_fee,
             self.max_spread,
         )
     }
@@ -526,6 +530,17 @@ impl AMM {
         min_order_size: u64,
     ) -> VelocityResult<u64> {
         // PRICE_PRECISION
+        //
+        // The time-to-expiry premium divisor is bounded, so clamp
+        // `seconds_til_order_expiry` *before* multiplying rather than clamping
+        // the product. `max_ts` is unbounded at placement, and with
+        // `overflow-checks = true` an order carrying `max_ts = i64::MAX` would
+        // otherwise overflow `seconds_til_order_expiry * 20` (or `* 2`) and
+        // abort every fill routed through this fallback price. Clamping the
+        // seconds first caps the operand (≤ 200 / ≤ 50) while preserving the
+        // exact same divisor: `(s * 20).clamp(100, 200) == s.clamp(5, 10) * 20`
+        // and `(s * 2).clamp(10, 50) == s.clamp(5, 25) * 2` (the clamp bounds
+        // are exact multiples, and the mapping is monotone).
         if direction.eq(&PositionDirection::Long) {
             // pick amm ask + buffer if theres liquidity
             // otherwise be aggressive vs oracle + 1hr premium
@@ -535,7 +550,7 @@ impl AMM {
                     .ask_price(reserve_price, self.long_spread, self.reference_price_offset)?
                     .cast()?;
                 amm_ask_price
-                    .safe_add(amm_ask_price / (seconds_til_order_expiry * 20).clamp(100, 200))?
+                    .safe_add(amm_ask_price / (seconds_til_order_expiry.clamp(5, 10) * 20))?
                     .cast::<u64>()
             } else {
                 oracle_price
@@ -546,7 +561,7 @@ impl AMM {
                             .safe_sub(market_stats.historical_oracle_data.last_oracle_price_twap)?
                             .max(0),
                     )?
-                    .safe_add(oracle_price / (seconds_til_order_expiry * 2).clamp(10, 50))?
+                    .safe_add(oracle_price / (seconds_til_order_expiry.clamp(5, 25) * 2))?
                     .cast::<u64>()
             }
         } else {
@@ -562,7 +577,7 @@ impl AMM {
                     )?
                     .cast()?;
                 amm_bid_price
-                    .safe_sub(amm_bid_price / (seconds_til_order_expiry * 20).clamp(100, 200))?
+                    .safe_sub(amm_bid_price / (seconds_til_order_expiry.clamp(5, 10) * 20))?
                     .cast::<u64>()
             } else {
                 oracle_price
@@ -573,7 +588,7 @@ impl AMM {
                             .safe_sub(market_stats.historical_oracle_data.last_oracle_price_twap)?
                             .min(0),
                     )?
-                    .safe_sub(oracle_price / (seconds_til_order_expiry * 2).clamp(10, 50))?
+                    .safe_sub(oracle_price / (seconds_til_order_expiry.clamp(5, 25) * 2))?
                     .max(0)
                     .cast::<u64>()
             }

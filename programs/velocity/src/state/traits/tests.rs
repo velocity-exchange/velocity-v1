@@ -115,6 +115,15 @@ mod native_instruction_offsets {
             1282,
             "amm_spread_adjustment offset changed"
         );
+        // Repurposed the former 4-byte trailing padding before market_stats;
+        // it must keep occupying exactly those bytes (4-aligned) so every
+        // other offset stays fixed and legacy accounts read the correct
+        // initial 0 (= floor disabled).
+        assert_eq!(
+            DISC + std::mem::offset_of!(PerpMarket, bankruptcy_if_floor_pct),
+            stats_start - 4,
+            "bankruptcy_if_floor_pct must sit in the 4 bytes before market_stats"
+        );
     }
 
     /// State.feature_bit_flags is read at byte 1374 by the MM-oracle kill switch.

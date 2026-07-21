@@ -5,6 +5,7 @@ import { getSpotMarketPublicKey } from '@velocity-exchange/sdk';
 import { readGlobalOpts, withGlobalOptions } from '../lib/options';
 import { buildAdminClient, buildProvider } from '../lib/provider';
 import { reportDispatch, sendOrPropose } from '../lib/squads';
+import { resolveAuthority } from '../lib/userOps';
 
 export function registerSpotMarket(parent: Command): void {
 	const sm = parent
@@ -25,9 +26,13 @@ export function registerSpotMarket(parent: Command): void {
 			const enumVariant: { [k: string]: Record<string, never> } = {
 				[status.charAt(0).toLowerCase() + status.slice(1)]: {},
 			};
+			// All spot-market governance ixs are warm-gated: the admin signer
+			// must be the key that executes — the multisig's vault PDA when
+			// proposing, else the local keypair (never state.coldAdmin blindly).
 			const ix = await client.getUpdateSpotMarketStatusIx(
 				Number.parseInt(market, 10),
-				enumVariant as never
+				enumVariant as never,
+				resolveAuthority(opts)
 			);
 			const result = await sendOrPropose(
 				provider,
@@ -76,7 +81,8 @@ export function registerSpotMarket(parent: Command): void {
 			const ix = await client.getUpdateWithdrawGuardThresholdIx(
 				marketIndex,
 				new BN(threshold),
-				oracle as PublicKey
+				oracle as PublicKey,
+				resolveAuthority(opts)
 			);
 			const result = await sendOrPropose(
 				provider,
@@ -88,6 +94,37 @@ export function registerSpotMarket(parent: Command): void {
 				`spot-market[${market}] guard-threshold = ${threshold} (oracle ${(
 					oracle as PublicKey
 				).toBase58()})`,
+				result
+			);
+		} finally {
+			await client.unsubscribe();
+		}
+	});
+
+	withGlobalOptions(
+		sm
+			.command('set-scale-initial-asset-weight-start <market> <start>')
+			.description(
+				'Deposit-notional threshold (QUOTE_PRECISION, 1e6) above which initialAssetWeight scales down. 0 disables. Maintenance weight is unaffected.'
+			)
+	).action(async (market: string, start: string, _flags, cmd: Command) => {
+		const opts = readGlobalOpts(cmd);
+		const provider = buildProvider(opts);
+		const client = await buildAdminClient(opts);
+		try {
+			const ix = await client.getUpdateSpotMarketScaleInitialAssetWeightStartIx(
+				Number.parseInt(market, 10),
+				new BN(start),
+				resolveAuthority(opts)
+			);
+			const result = await sendOrPropose(
+				provider,
+				[ix],
+				opts.multisig ? new PublicKey(opts.multisig) : undefined,
+				'velocity-admin spot-market set-scale-initial-asset-weight-start'
+			);
+			reportDispatch(
+				`spot-market[${market}] scale_initial_asset_weight_start = ${start}`,
 				result
 			);
 		} finally {
@@ -116,7 +153,8 @@ export function registerSpotMarket(parent: Command): void {
 				const ix = await client.getUpdateSpotMarketIfFactorIx(
 					Number.parseInt(market, 10),
 					Number.parseInt(ifFeeFactor, 10),
-					Number.parseInt(protocolFeeFactor, 10)
+					Number.parseInt(protocolFeeFactor, 10),
+					resolveAuthority(opts)
 				);
 				const result = await sendOrPropose(
 					provider,

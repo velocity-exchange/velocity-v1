@@ -92,12 +92,12 @@ impl OrderMetadataAndMessage {
     /// Get the signed order info
     ///
     /// DEV: this performs a deserialization of the raw payload
-    pub fn order_info(&self) -> SignedMessageInfo {
-        // expect: message already succesfully deserialized by this point
+    pub fn order_info(&self) -> Result<SignedMessageInfo> {
         let deser =
             StrDeserializer::<serde::de::value::Error>::new(self.order_message_str.as_str());
-        let res = deser_signed_msg_type(deser);
-        res.unwrap().info(&self.taker_authority)
+        let signed = deser_signed_msg_type(deser)
+            .context("Failed to deserialize signed msg from order metadata")?;
+        Ok(signed.info(&self.taker_authority))
     }
     /// Borsh serialize and
     /// base64 encode the message
@@ -155,6 +155,8 @@ pub const PROCESS_ORDER_RESPONSE_ERROR_MSG_VERIFY_SIGNATURE: &str =
     "Error verifying signed message";
 pub const PROCESS_ORDER_RESPONSE_ERROR_MSG_ORDER_SLOT_TOO_OLD: &str = "Order slot too old";
 pub const PROCESS_ORDER_RESPONSE_ERROR_MSG_INVALID_ORDER: &str = "Invalid order";
+pub const PROCESS_ORDER_RESPONSE_ERROR_MSG_AUCTION_OUTSIDE_ORACLE_BAND: &str =
+    "Auction price outside oracle band";
 pub const PROCESS_ORDER_RESPONSE_ERROR_MSG_DELISTED_MARKET: &str = "Delisted market";
 pub const PROCESS_ORDER_RESPONSE_ERROR_MSG_INVALID_ORDER_AMOUNT: &str =
     "Invalid base_asset_amount in tp/sl";
@@ -530,7 +532,7 @@ mod tests {
         .encode();
         let order_metadata = OrderMetadataAndMessage::decode(&encoded).unwrap();
         assert_eq!(order_metadata.encode(), encoded);
-        dbg!(&order_metadata.order_info().order_params);
+        dbg!(&order_metadata.order_info().unwrap().order_params);
     }
 
     #[test]

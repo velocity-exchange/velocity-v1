@@ -14,6 +14,7 @@ use crate::math::constants::{BASE_PRECISION, LIQUIDATION_FEE_INCREASE_PER_SLOT};
 use crate::math::spot_swap::calculate_swap_price;
 use crate::msg;
 use crate::state::margin_calculation::MarginContext;
+use crate::state::oracle::OraclePriceData;
 use crate::state::oracle_map::OracleMap;
 use crate::state::perp_market::PerpMarket;
 use crate::state::perp_market_map::PerpMarketMap;
@@ -111,6 +112,45 @@ pub fn calculate_liability_transfer_to_cover_margin_shortage(
         )?
         .safe_div(denominator_scale)
         .map(|x| x.max(1))
+}
+
+/// User-protective price for seizing a collateral (deposit) asset whose oracle is
+/// margin-invalid (`StaleForMargin`/`TooUncertain`) but still acceptable for
+/// `VelocityAction::Liquidate`. Pricing the seizure at
+/// `max(oracle, 5min twap, oracle + confidence)` preserves the invariant that a stale or
+/// uncertain oracle can make an account liquidatable but cannot cheapen its collateral.
+pub fn calculate_user_protective_asset_price(
+    oracle_price_data: &OraclePriceData,
+    last_oracle_price_twap_5min: i64,
+) -> VelocityResult<i64> {
+    let confidence_adjusted_high_price = oracle_price_data
+        .price
+        .safe_add(oracle_price_data.confidence.cast::<i64>()?)?;
+
+    Ok(oracle_price_data
+        .price
+        .max(last_oracle_price_twap_5min)
+        .max(confidence_adjusted_high_price))
+}
+
+/// Liability-side counterpart of [`calculate_user_protective_asset_price`]: a margin-invalid
+/// (stale/uncertain) borrow oracle must not overvalue the liability being repaid, since the
+/// exchange rate `liability_price / asset_price` cheapens the user's collateral from either
+/// side. Prices the repayment at `min(oracle, 5min twap, oracle - confidence)`, floored at 1
+/// to keep the exchange-rate math well-defined.
+pub fn calculate_user_protective_liability_price(
+    oracle_price_data: &OraclePriceData,
+    last_oracle_price_twap_5min: i64,
+) -> VelocityResult<i64> {
+    let confidence_adjusted_low_price = oracle_price_data
+        .price
+        .saturating_sub(oracle_price_data.confidence.cast::<i64>()?);
+
+    Ok(oracle_price_data
+        .price
+        .min(last_oracle_price_twap_5min)
+        .min(confidence_adjusted_low_price)
+        .max(1))
 }
 
 pub fn calculate_liability_transfer_implied_by_asset_amount(
@@ -332,10 +372,16 @@ pub fn calculate_cumulative_deposit_interest_delta_to_resolve_bankruptcy(
         return Ok(0);
     }
 
-    spot_market
+    let delta = spot_market
         .cumulative_deposit_interest
         .safe_mul(borrow)?
-        .safe_div_ceil(total_deposits)
+        .safe_div_ceil(total_deposits)?;
+
+    // When the loss meets or exceeds total deposits, cap the haircut so
+    // cumulative_deposit_interest stays >= 1: depositors are wiped out
+    // (balances redeem for ~0 tokens) but the interest never underflows and
+    // balance conversions, which divide by it, stay well-defined.
+    Ok(delta.min(spot_market.cumulative_deposit_interest.saturating_sub(1)))
 }
 
 pub fn validate_transfer_satisfies_limit_price(

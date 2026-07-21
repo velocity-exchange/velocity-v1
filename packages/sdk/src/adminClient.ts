@@ -2891,12 +2891,17 @@ export class AdminClient extends VelocityClient {
 	 * `updateWithdrawGuardThreshold` — in particular, the `oracle` param must equal
 	 * `spotMarket.oracle` (enforced by the `has_one` constraint) and is auto-resolved when
 	 * omitted. Throws if the spot market account can't be found when not subscribed.
+	 * @param admin - Overrides the `admin` signer account. The instruction is warm-gated
+	 *   on-chain, so pass the key that will actually sign at execution — e.g. a Squads warm-admin
+	 *   vault PDA when the ix is wrapped in a multisig proposal. Defaults to `state.coldAdmin`
+	 *   (or the wallet if not subscribed).
 	 * @returns The unsigned `updateWithdrawGuardThreshold` instruction.
 	 */
 	public async getUpdateWithdrawGuardThresholdIx(
 		spotMarketIndex: number,
 		withdrawGuardThreshold: BN,
-		oracle?: PublicKey
+		oracle?: PublicKey,
+		admin?: PublicKey
 	): Promise<TransactionInstruction> {
 		const spotMarketPublicKey = await getSpotMarketPublicKey(
 			this.program.programId,
@@ -2932,9 +2937,11 @@ export class AdminClient extends VelocityClient {
 			withdrawGuardThreshold,
 			{
 				accounts: {
-					admin: this.isSubscribed
-						? this.getStateAccount().coldAdmin
-						: this.wallet.publicKey,
+					admin:
+						admin ??
+						(this.isSubscribed
+							? this.getStateAccount().coldAdmin
+							: this.wallet.publicKey),
 					state: await this.getStatePublicKey(),
 					spotMarket: spotMarketPublicKey,
 					oracle,
@@ -2976,12 +2983,17 @@ export class AdminClient extends VelocityClient {
 	/**
 	 * Builds the `updateSpotMarketIfFactor` instruction without sending it. See
 	 * `updateSpotMarketIfFactor` for units and validation.
+	 * @param admin - Overrides the `admin` signer account. The instruction is warm-gated
+	 *   on-chain, so pass the key that will actually sign at execution — e.g. a Squads warm-admin
+	 *   vault PDA when the ix is wrapped in a multisig proposal. Defaults to `state.coldAdmin`
+	 *   (or the wallet if not subscribed).
 	 * @returns The unsigned `updateSpotMarketIfFactor` instruction.
 	 */
 	public async getUpdateSpotMarketIfFactorIx(
 		spotMarketIndex: number,
 		ifFeeFactor: number,
-		protocolFeeFactor: number
+		protocolFeeFactor: number,
+		admin?: PublicKey
 	): Promise<TransactionInstruction> {
 		return await this.program.instruction.updateSpotMarketIfFactor(
 			spotMarketIndex,
@@ -2989,9 +3001,11 @@ export class AdminClient extends VelocityClient {
 			protocolFeeFactor,
 			{
 				accounts: {
-					admin: this.isSubscribed
-						? this.getStateAccount().coldAdmin
-						: this.wallet.publicKey,
+					admin:
+						admin ??
+						(this.isSubscribed
+							? this.getStateAccount().coldAdmin
+							: this.wallet.publicKey),
 					state: await this.getStatePublicKey(),
 					spotMarket: await getSpotMarketPublicKey(
 						this.program.programId,
@@ -3263,19 +3277,26 @@ export class AdminClient extends VelocityClient {
 	/**
 	 * Builds the `updateSpotMarketScaleInitialAssetWeightStart` instruction without sending it.
 	 * See `updateSpotMarketScaleInitialAssetWeightStart`.
+	 * @param admin - Overrides the `admin` signer account. The instruction is warm-gated
+	 *   on-chain, so pass the key that will actually sign at execution — e.g. a Squads warm-admin
+	 *   vault PDA when the ix is wrapped in a multisig proposal. Defaults to `state.coldAdmin`
+	 *   (or the wallet if not subscribed).
 	 * @returns The unsigned `updateSpotMarketScaleInitialAssetWeightStart` instruction.
 	 */
 	public async getUpdateSpotMarketScaleInitialAssetWeightStartIx(
 		spotMarketIndex: number,
-		scaleInitialAssetWeightStart: BN
+		scaleInitialAssetWeightStart: BN,
+		admin?: PublicKey
 	): Promise<TransactionInstruction> {
 		return this.program.instruction.updateSpotMarketScaleInitialAssetWeightStart(
 			scaleInitialAssetWeightStart,
 			{
 				accounts: {
-					admin: this.isSubscribed
-						? this.getStateAccount().coldAdmin
-						: this.wallet.publicKey,
+					admin:
+						admin ??
+						(this.isSubscribed
+							? this.getStateAccount().coldAdmin
+							: this.wallet.publicKey),
 					state: await this.getStatePublicKey(),
 					spotMarket: await getSpotMarketPublicKey(
 						this.program.programId,
@@ -4195,17 +4216,24 @@ export class AdminClient extends VelocityClient {
 	/**
 	 * Builds the `updateSpotMarketStatus` instruction without sending it. See
 	 * `updateSpotMarketStatus`.
+	 * @param admin - Overrides the `admin` signer account. The instruction is warm-gated
+	 *   on-chain, so pass the key that will actually sign at execution — e.g. a Squads warm-admin
+	 *   vault PDA when the ix is wrapped in a multisig proposal. Defaults to `state.coldAdmin`
+	 *   (or the wallet if not subscribed).
 	 * @returns The unsigned `updateSpotMarketStatus` instruction.
 	 */
 	public async getUpdateSpotMarketStatusIx(
 		spotMarketIndex: number,
-		marketStatus: MarketStatus
+		marketStatus: MarketStatus,
+		admin?: PublicKey
 	): Promise<TransactionInstruction> {
 		return await this.program.instruction.updateSpotMarketStatus(marketStatus, {
 			accounts: {
-				admin: this.isSubscribed
-					? this.getStateAccount().coldAdmin
-					: this.wallet.publicKey,
+				admin:
+					admin ??
+					(this.isSubscribed
+						? this.getStateAccount().coldAdmin
+						: this.wallet.publicKey),
 				state: await this.getStatePublicKey(),
 				spotMarket: await getSpotMarketPublicKey(
 					this.program.programId,
@@ -5024,6 +5052,61 @@ export class AdminClient extends VelocityClient {
 	): Promise<TransactionInstruction> {
 		return await this.program.instruction.updatePerpMarketFeePoolBufferTarget(
 			feePoolBufferTarget,
+			{
+				accounts: {
+					admin: this.isSubscribed
+						? this.getStateAccount().coldAdmin
+						: this.wallet.publicKey,
+					state: await this.getStatePublicKey(),
+					perpMarket: await getPerpMarketPublicKey(
+						this.program.programId,
+						perpMarketIndex
+					),
+				},
+			}
+		);
+	}
+
+	/**
+	 * Sets the fraction of open-interest notional the streaming fee sweep must leave behind in
+	 * `feeLedger.pendingIfFee` as a standing bankruptcy tranche (notional valued at the market's
+	 * oracle TWAP). The permissionless sweep cannot drain the tranche below this floor, so a
+	 * sweep front-running a `resolvePerpBankruptcy` cannot strip the first-loss coverage up to
+	 * the floor. New markets initialize to 10 bps; 0 disables. Requires warm admin (`check_warm`).
+	 * @param perpMarketIndex - Perp market to update.
+	 * @param bankruptcyIfFloorPct - Floor as PERCENTAGE_PRECISION (1e6 = 100%; 1000 = 10 bps); max 1e6.
+	 * @returns Transaction signature.
+	 */
+	public async updatePerpMarketBankruptcyIfFloorPct(
+		perpMarketIndex: number,
+		bankruptcyIfFloorPct: number
+	): Promise<TransactionSignature> {
+		const updatePerpMarketBankruptcyIfFloorPctIx =
+			await this.getUpdatePerpMarketBankruptcyIfFloorPctIx(
+				perpMarketIndex,
+				bankruptcyIfFloorPct
+			);
+
+		const tx = await this.buildTransaction(
+			updatePerpMarketBankruptcyIfFloorPctIx
+		);
+
+		const { txSig } = await this.sendTransaction(tx, [], this.opts);
+
+		return txSig;
+	}
+
+	/**
+	 * Builds the `updatePerpMarketBankruptcyIfFloorPct` instruction without sending it. See
+	 * `updatePerpMarketBankruptcyIfFloorPct`.
+	 * @returns The unsigned `updatePerpMarketBankruptcyIfFloorPct` instruction.
+	 */
+	public async getUpdatePerpMarketBankruptcyIfFloorPctIx(
+		perpMarketIndex: number,
+		bankruptcyIfFloorPct: number
+	): Promise<TransactionInstruction> {
+		return await this.program.instruction.updatePerpMarketBankruptcyIfFloorPct(
+			bankruptcyIfFloorPct,
 			{
 				accounts: {
 					admin: this.isSubscribed

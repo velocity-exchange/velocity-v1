@@ -7,6 +7,13 @@ use solana_clock::Slot;
 use solana_pubkey::Pubkey;
 use velocity_rs::{types::accounts::User, VelocityClient};
 
+/// Max age (in slots, ~90s at Solana's ~2.5 slots/s) of a redis-cached user
+/// account before it's treated as too stale to simulate against. This is a
+/// swift-side freshness tolerance, not a program constant (cf. velocity's
+/// `SIGNED_MSG_SLOT_EVICTION_BUFFER = 10`, which governs on-chain order-id
+/// eviction, not user-account caching).
+const MAX_CACHED_USER_AGE_SLOTS: u64 = 225;
+
 /// Fallback lookup strategy
 #[derive(Clone)]
 enum Fallback {
@@ -107,7 +114,7 @@ impl UserAccountFetcher {
                 match (parts.next(), parts.next()) {
                     (Some(redis_slot), Some(account)) => {
                         let redis_slot = redis_slot.parse::<u64>().unwrap_or_default();
-                        if slot.saturating_sub(redis_slot) > (90_f64 * 2.5) as u64 {
+                        if slot.saturating_sub(redis_slot) > MAX_CACHED_USER_AGE_SLOTS {
                             log::warn!("User found in redis is too old. redis: {redis_slot}, current: {slot}");
                             return Err(());
                         }

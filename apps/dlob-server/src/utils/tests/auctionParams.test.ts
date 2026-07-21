@@ -854,3 +854,65 @@ describe('calculateDynamicSlippage - crossed book handling', () => {
 		expect(slipNormal).toBeGreaterThanOrEqual(slipCrossed);
 	});
 });
+
+describe('calculateDynamicSlippage - limit price covers auction end price', () => {
+	const mockVelocityClient = {
+		getMMOracleDataForPerpMarket: jest.fn(),
+		getOracleDataForSpotMarket: jest.fn(),
+	} as any;
+
+	beforeEach(() => {
+		jest.clearAllMocks();
+	});
+
+	it('floors slippage at the full start→worst distance plus the end-price offset', () => {
+		// Regression (BTC-PERP, 2026-07-09): dynamic slippage derived from half
+		// the start→worst distance produced a limit price below
+		// worst × (1 + auctionEndPriceOffset), so deriveMarketOrderParams'
+		// min(limitPrice, ...) capped the auction below the worst-price
+		// estimate and orders on the vAMM-only book expired unfilled.
+		process.env.DYNAMIC_BASE_SLIPPAGE_MAJOR = '0';
+		process.env.DYNAMIC_SLIPPAGE_MULTIPLIER_MAJOR = '1';
+		process.env.DYNAMIC_SLIPPAGE_MIN = '0';
+		process.env.DYNAMIC_SLIPPAGE_MAX = '100';
+		delete process.env.DYNAMIC_SLIPPAGE_END_OFFSET_MARGIN; // default 0.1%
+
+		mockVelocityClient.getMMOracleDataForPerpMarket.mockReturnValue({
+			price: new BN(100).mul(PRICE_PRECISION),
+		});
+
+		// Tight book so the spread term stays negligible
+		const l2Tight = {
+			bids: [
+				{
+					price: new BN(9_999).mul(PRICE_PRECISION).divn(100),
+					size: new BN(1),
+				},
+			],
+			asks: [
+				{
+					price: new BN(10_001).mul(PRICE_PRECISION).divn(100),
+					size: new BN(1),
+				},
+			],
+		} as any;
+
+		// worst is 1% past start (e.g. a vAMM-floored worst on a wide-spread
+		// market); halving it (the old behavior) yields 0.5%, below what the
+		// end price needs.
+		const startPrice = new BN(100).mul(PRICE_PRECISION);
+		const worstPrice = new BN(101).mul(PRICE_PRECISION);
+
+		const slip = calculateDynamicSlippage(
+			0, // major perp
+			'perp',
+			mockVelocityClient,
+			l2Tight,
+			startPrice,
+			worstPrice
+		);
+
+		// full 1% distance + 0.1% end-price offset
+		expect(slip).toBeGreaterThanOrEqual(1.1);
+	});
+});

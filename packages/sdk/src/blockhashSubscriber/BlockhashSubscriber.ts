@@ -7,12 +7,22 @@ import {
 import { BlockhashSubscriberConfig } from './types';
 
 /**
- * BlockhashSubscriber — polls `getLatestBlockhashAndContext`/`getBlockHeight`
- * on a fixed interval and caches a short history of recent blockhashes, so
- * callers can grab a recent blockhash for transaction building without an
- * RPC round-trip per transaction. Nothing is populated until `subscribe()`
- * (or a manual `updateBlockhash()`) has completed at least once — all getters
- * return `undefined`/empty before then.
+ * A blockhash is valid for signing until 150 blocks after the block it was
+ * fetched from, so `getLatestBlockhash`'s `lastValidBlockHeight` is exactly
+ * `(block height of that blockhash) + 150`. Subtracting this offset recovers
+ * the current block height without a second RPC call.
+ */
+const BLOCKHASH_VALIDITY_BLOCKS = 150;
+
+/**
+ * BlockhashSubscriber — polls `getLatestBlockhashAndContext` on a fixed
+ * interval and caches a short history of recent blockhashes, so callers can
+ * grab a recent blockhash for transaction building without an RPC round-trip
+ * per transaction. The current block height is derived from the same response
+ * (`lastValidBlockHeight - 150`), so no paired `getBlockHeight` call is made.
+ * Nothing is populated until `subscribe()` (or a manual `updateBlockhash()`)
+ * has completed at least once — all getters return `undefined`/empty before
+ * then.
  */
 export class BlockhashSubscriber {
 	private connection: Connection;
@@ -48,9 +58,9 @@ export class BlockhashSubscriber {
 	 * @returns The block height as of the most recent successful poll, or
 	 * `undefined` if `subscribe()`/`updateBlockhash()` has not yet completed
 	 * successfully at least once (including if every poll so far has errored).
-	 * This value is a `getBlockHeight` snapshot taken alongside the latest
-	 * blockhash fetch — it is not guaranteed to be perfectly in sync with the
-	 * blockhash slot, only "recent as of the last poll".
+	 * This value is derived from the latest blockhash fetch
+	 * (`lastValidBlockHeight - 150`) — it is not guaranteed to be perfectly in
+	 * sync with the blockhash slot, only "recent as of the last poll".
 	 */
 	getLatestBlockHeight(): number | undefined {
 		return this.latestBlockHeight;
@@ -99,22 +109,22 @@ export class BlockhashSubscriber {
 	}
 
 	/**
-	 * Fetches the latest blockhash and block height in parallel and appends
-	 * the blockhash to the cache (skipped if it's identical to the
-	 * most-recently-cached one), then prunes expired entries. Errors (e.g. RPC
-	 * failure) are caught and logged, not thrown — on error, `latestBlockHeight`
-	 * is left at its previous value, but `pruneBlockhashes()` still runs in a
-	 * `finally` block and may evict entries that expired in the meantime.
+	 * Fetches the latest blockhash and appends it to the cache (skipped if it's
+	 * identical to the most-recently-cached one), then prunes expired entries.
+	 * The current block height is derived from the same response
+	 * (`lastValidBlockHeight - 150`) rather than a paired `getBlockHeight` call.
+	 * Errors (e.g. RPC failure) are caught and logged, not thrown — on error,
+	 * `latestBlockHeight` is left at its previous value, but `pruneBlockhashes()`
+	 * still runs in a `finally` block and may evict entries that expired in the
+	 * meantime.
 	 */
 	async updateBlockhash() {
 		try {
-			const [resp, lastConfirmedBlockHeight] = await Promise.all([
-				this.connection.getLatestBlockhashAndContext({
-					commitment: this.commitment,
-				}),
-				this.connection.getBlockHeight({ commitment: this.commitment }),
-			]);
-			this.latestBlockHeight = lastConfirmedBlockHeight;
+			const resp = await this.connection.getLatestBlockhashAndContext({
+				commitment: this.commitment,
+			});
+			this.latestBlockHeight =
+				resp.value.lastValidBlockHeight - BLOCKHASH_VALIDITY_BLOCKS;
 			this.latestBlockHeightContext = resp.context;
 
 			// avoid caching duplicate blockhashes

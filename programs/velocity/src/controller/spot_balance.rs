@@ -1,7 +1,7 @@
-use crate::math::oracle::{oracle_validity, LogMode};
+use crate::math::oracle::{oracle_validity, LogMode, OracleValidity};
 use crate::state::perp_market::PoolBalance;
 use crate::state::state::ValidityGuardRails;
-use std::cmp::max; //, OracleValidity};
+use std::cmp::max;
 
 use crate::msg;
 use anchor_lang::prelude::*;
@@ -131,8 +131,16 @@ pub fn update_spot_market_cumulative_interest(
     spot_market: &mut SpotMarket,
     oracle_price_data: Option<&OraclePriceData>,
     now: i64,
+    funding_paused: bool,
 ) -> VelocityResult {
-    if spot_market.is_operation_paused(SpotOperation::UpdateCumulativeInterest) {
+    // Freeze interest accrual when the exchange-wide funding pause
+    // (`State::funding_paused`) is set or this market's
+    // `UpdateCumulativeInterest` operation is paused. `funding_paused` is
+    // threaded in from callers because the global flag lives on `State`, which
+    // this controller does not load. TWAP stats still advance so oracle EMAs
+    // stay fresh, mirroring the dedicated `update_spot_market_cumulative_interest`
+    // crank; on resume the next accrual covers the full elapsed interval.
+    if funding_paused || spot_market.is_operation_paused(SpotOperation::UpdateCumulativeInterest) {
         update_spot_market_twap_stats(spot_market, oracle_price_data, now)?;
         return Ok(());
     }
@@ -191,6 +199,7 @@ pub fn update_spot_market_cumulative_interest(
                     if_token_amount,
                     &SpotBalanceType::Deposit,
                     spot_market,
+                    false,
                 )?;
             }
 
@@ -223,10 +232,25 @@ pub fn update_spot_market_cumulative_interest(
     Ok(())
 }
 
+/// Move tokens in/out of a spot market's `revenue_pool` (a Deposit-type claim
+/// counted inside `deposit_balance`).
+///
+/// `is_leaving_velocity` must be true when the Borrow direction corresponds to
+/// tokens physically exiting the spot vault (the revenue sweep into the IF
+/// vault). It forces the ledger debit to round **up**, so `deposit_balance`'s
+/// token value drops by at least the amount transferred out — otherwise the
+/// floor-rounded share debit reduces the recorded depositor claim by less than
+/// the tokens that left, pushing the vault below `depositors_claim` by the
+/// rounding residue and tripping `validate_spot_market_vault_amount`. Mirrors
+/// `update_protocol_fee_pool_balances`. Pass false for pure internal moves
+/// (e.g. revenue_pool <-> another spot balance in the same vault) where no
+/// tokens leave and net `deposit_balance` is unchanged, and for Deposit-side
+/// credits where the flag is inert.
 pub fn update_revenue_pool_balances(
     token_amount: u128,
     update_direction: &SpotBalanceType,
     spot_market: &mut SpotMarket,
+    is_leaving_velocity: bool,
 ) -> VelocityResult {
     let mut spot_balance = spot_market.revenue_pool;
     update_spot_balances(
@@ -234,7 +258,7 @@ pub fn update_revenue_pool_balances(
         update_direction,
         spot_market,
         &mut spot_balance,
-        false,
+        is_leaving_velocity,
     )?;
     spot_market.revenue_pool = spot_balance;
 
@@ -409,7 +433,9 @@ pub fn transfer_revenue_pool_to_spot_balance(
         "transfer market indexes arent equal",
     )?;
 
-    update_revenue_pool_balances(token_amount, &SpotBalanceType::Borrow, spot_market)?;
+    // Internal move within the same vault (revenue_pool -> another spot
+    // balance); no tokens leave, so floor rounding is fine.
+    update_revenue_pool_balances(token_amount, &SpotBalanceType::Borrow, spot_market, false)?;
 
     update_spot_balances(
         token_amount,
@@ -441,23 +467,32 @@ pub fn transfer_spot_balance_to_revenue_pool(
         false,
     )?;
 
-    update_revenue_pool_balances(token_amount, &SpotBalanceType::Deposit, spot_market)?;
+    update_revenue_pool_balances(token_amount, &SpotBalanceType::Deposit, spot_market, false)?;
 
     Ok(())
 }
 
+/// Returns the computed [`OracleValidity`] so callers can apply stricter, action-specific
+/// handling (e.g. liquidation pricing collateral protectively when the oracle is
+/// margin-invalid). The quote spot market skips validity checks and reports `Valid`.
 pub fn update_spot_market_and_check_validity(
     spot_market: &mut SpotMarket,
     oracle_price_data: &OraclePriceData,
     validity_guard_rails: &ValidityGuardRails,
     now: i64,
     action: Option<VelocityAction>,
-) -> VelocityResult {
+    funding_paused: bool,
+) -> VelocityResult<OracleValidity> {
     // update spot market EMAs with new/current data
-    update_spot_market_cumulative_interest(spot_market, Some(oracle_price_data), now)?;
+    update_spot_market_cumulative_interest(
+        spot_market,
+        Some(oracle_price_data),
+        now,
+        funding_paused,
+    )?;
 
     if spot_market.market_index == QUOTE_SPOT_MARKET_INDEX {
-        return Ok(());
+        return Ok(OracleValidity::Valid);
     }
 
     // 1 hour EMA
@@ -486,7 +521,7 @@ pub fn update_spot_market_and_check_validity(
         action
     )?;
 
-    Ok(())
+    Ok(oracle_validity)
 }
 
 fn increase_spot_balance(

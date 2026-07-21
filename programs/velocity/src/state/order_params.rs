@@ -94,6 +94,23 @@ impl OrderParams {
             return Ok(false);
         }
 
+        let is_signed_msg_non_tail_mkt = is_signed_msg
+            && perp_market
+                .contract_tier
+                .is_as_safe_as_contract(&ContractTier::B);
+
+        if is_signed_msg_non_tail_mkt
+            && self.auction_duration.is_some()
+            && self.auction_start_price.is_some()
+            && self.auction_end_price.is_some()
+        {
+            // Signed-message limit orders also carry user-approved auction
+            // parameters. On A/B markets, preserve fully specified auctions so a
+            // crossing limit can choose a short/aggressive fill path; validation
+            // and the limit/oracle-offset price remain the hard bounds.
+            return Ok(false);
+        }
+
         let auction_start_price_offset =
             OrderParams::get_perp_baseline_start_price_offset(perp_market, self.direction)?;
         let new_auction_start_price = oracle_price.safe_add(auction_start_price_offset)?;
@@ -277,10 +294,7 @@ impl OrderParams {
 
         let auction_duration_before = self.auction_duration;
         let new_auction_duration = get_auction_duration(
-            self.auction_end_price
-                .safe_unwrap()?
-                .safe_sub(self.auction_start_price.safe_unwrap()?)?
-                .unsigned_abs(),
+            self.get_duration_floor_price_diff(auction_start_price, auction_end_price)?,
             oracle_price.unsigned_abs(),
             perp_market.contract_tier,
         )?;
@@ -329,6 +343,30 @@ impl OrderParams {
         };
 
         Ok(end_offset)
+    }
+
+    /// Price diff for the duration floor: the narrower of the requested and
+    /// sanitized auction ranges (sanitized only if the order didn't supply
+    /// auction prices), so sanitizing the start price toward baseline doesn't
+    /// inflate the floor
+    fn get_duration_floor_price_diff(
+        &self,
+        requested_start: Option<i64>,
+        requested_end: Option<i64>,
+    ) -> VelocityResult<u64> {
+        let sanitized_price_diff = self
+            .auction_end_price
+            .safe_unwrap()?
+            .safe_sub(self.auction_start_price.safe_unwrap()?)?
+            .unsigned_abs();
+
+        match (requested_start, requested_end) {
+            (Some(requested_start), Some(requested_end)) => Ok(requested_end
+                .safe_sub(requested_start)?
+                .unsigned_abs()
+                .min(sanitized_price_diff)),
+            _ => Ok(sanitized_price_diff),
+        }
     }
 
     pub fn update_perp_auction_params_market_and_oracle_orders(
@@ -385,6 +423,20 @@ impl OrderParams {
 
             return Ok(true);
         }
+
+        let is_signed_msg_non_tail_mkt = is_signed_msg
+            && perp_market
+                .contract_tier
+                .is_as_safe_as_contract(&ContractTier::B);
+
+        if is_signed_msg_non_tail_mkt {
+            // Signed-message orders carry user-approved auction parameters. On
+            // A/B markets, leave fully specified auctions to the client so it can
+            // choose fast/aggressive fills; validation and user price limits are
+            // still enforced when the order is built.
+            return Ok(false);
+        }
+
         // only update auction start price if the contract tier isn't Isolated
         if perp_market.can_sanitize_market_order_auctions() {
             let (new_start_price_offset, new_end_price_offset) =
@@ -476,10 +528,7 @@ impl OrderParams {
 
         let auction_duration_before = self.auction_duration;
         let new_auction_duration = get_auction_duration(
-            self.auction_end_price
-                .safe_unwrap()?
-                .safe_sub(self.auction_start_price.safe_unwrap()?)?
-                .unsigned_abs(),
+            self.get_duration_floor_price_diff(auction_start_price, auction_end_price)?,
             oracle_price.unsigned_abs(),
             perp_market.contract_tier,
         )?;

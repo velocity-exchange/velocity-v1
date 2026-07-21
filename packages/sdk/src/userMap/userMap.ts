@@ -44,11 +44,7 @@ import { grpcSubscription } from './grpcSubscription';
 import StrictEventEmitter from 'strict-event-emitter-types';
 import { EventEmitter } from 'events';
 
-// Velocity's User account is 4496 bytes (8-byte discriminator + 4488 struct);
-// drift's was 4376. This caps the zstd-decompressed buffer in defaultSync — if it's
-// smaller than the real account, the buffer is truncated and decodeUser reads past
-// the end (RangeError: ERR_BUFFER_OUT_OF_BOUNDS). Must be >= the on-chain User size.
-const MAX_USER_ACCOUNT_SIZE_BYTES = 4496;
+export const USER_ACCOUNT_SIZE_BYTES = 4496;
 
 /** Public surface implemented by `UserMap`. */
 export interface UserMapInterface {
@@ -546,7 +542,7 @@ export class UserMap implements UserMapInterface {
 					await decoder.init();
 					const userBuffer = decoder.decode(
 						compressedUserData,
-						MAX_USER_ACCOUNT_SIZE_BYTES
+						USER_ACCOUNT_SIZE_BYTES
 					);
 					programAccountBufferMap.set(
 						programAccount.pubkey.toString(),

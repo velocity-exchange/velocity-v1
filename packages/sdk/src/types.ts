@@ -1138,6 +1138,10 @@ export type PerpMarketAccount = {
 	protocolLiquidationFee: number;
 	/** QUOTE_PRECISION (1e6); pnl-pool retention buffer the fee-sweep leaves untouched above `max(net_user_pnl, 0)` */
 	feePoolBufferTarget: BN;
+	/** PERCENTAGE_PRECISION (1e6 = 100%); fraction of OI notional (at the oracle TWAP) the sweep leaves behind in `feeLedger.pendingIfFee` as a standing bankruptcy first-loss tranche; 0 disables */
+	bankruptcyIfFloorPct: number;
+	/** QUOTE_PRECISION (1e6); aggregate builder/referrer revenue share accrued but not yet paid out of this market's pnl pool. The fee sweep reserves it (like `max(net_user_pnl, 0)` and the floored IF tranche) so a protocol-fee drain can't leave accrued revenue-share claims temporarily unpayable */
+	pendingRevenueShare: BN;
 	/** MARGIN_PRECISION (1e4); scales margin ratio up for large positions */
 	imfFactor: number;
 	/** MARGIN_PRECISION (1e4); discounts positive-unrealized-pnl asset weight for large positions */
@@ -1300,6 +1304,10 @@ export type SpotMarketAccount = {
 	protocolLiquidationFee: number;
 	/** IF_FACTOR_PRECISION (1e6); protocol's carveout of lending deposit-interest gains */
 	protocolFeeFactor: number;
+	/** token mint precision; IF vault balance recorded at the last revenue settle, used as a
+	 * donation-proof base for the per-period revenue-settle APR cap (see `settle_revenue_to_insurance_fund`);
+	 * `0` = uninitialized (pre-upgrade accounts, seeded on first settle) */
+	ifLastSettleVaultAmount: BN;
 
 	/** token mint decimals; token-mint precision throughout this account is 10^decimals */
 	decimals: number;

@@ -69,6 +69,42 @@ export function registerPerpMarket(parent: Command): void {
 
 	withGlobalOptions(
 		pm
+			.command('set-bankruptcy-if-floor <market> <pct>')
+			.description(
+				'Fraction of OI notional (at the oracle TWAP) the fee sweep leaves in pending_if_fee as a standing bankruptcy first-loss tranche (u32, PERCENTAGE_PRECISION: 1000000 = 100%, 1000 = 10 bps = the new-market default). 0 disables.'
+			)
+	).action(async (market: string, pct: string, _flags, cmd: Command) => {
+		const opts = readGlobalOpts(cmd);
+		const provider = buildProvider(opts);
+		const client = await buildAdminClient(opts);
+		try {
+			const value = Number.parseInt(pct, 10);
+			if (!Number.isInteger(value) || value < 0 || value > 1000000) {
+				throw new Error(
+					`pct must be an integer in [0, 1000000] (PERCENTAGE_PRECISION), got "${pct}"`
+				);
+			}
+			const ix = await client.getUpdatePerpMarketBankruptcyIfFloorPctIx(
+				Number.parseInt(market, 10),
+				value
+			);
+			const result = await sendOrPropose(
+				provider,
+				[ix],
+				opts.multisig ? new PublicKey(opts.multisig) : undefined,
+				'velocity-admin perp-market set-bankruptcy-if-floor'
+			);
+			reportDispatch(
+				`perp-market[${market}] bankruptcy_if_floor_pct = ${value}`,
+				result
+			);
+		} finally {
+			await client.unsubscribe();
+		}
+	});
+
+	withGlobalOptions(
+		pm
 			.command('set-funding-bias-sensitivity <market> <sensitivity>')
 			.description(
 				'Funding bias sensitivity (u8, hundredths): paying-side spread widens up to 1 + sensitivity/100 while the vAMM pays funding. 50 => up to 1.5x, 0 disables.'

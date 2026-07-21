@@ -276,6 +276,60 @@ export function calculateSpotIfFee(
 }
 
 /**
+ * User-protective price at which a collateral (deposit) asset is seized when its oracle is
+ * margin-invalid (`StaleForMargin`/`TooUncertain`) but still acceptable for
+ * `VelocityAction::Liquidate`, mirroring `calculate_user_protective_asset_price` in
+ * `programs/velocity/src/math/liquidation.rs`. The program sizes the asset-conversion leg
+ * of spot and pnl-vs-spot liquidations (and the swap-liquidation worst-case price) with this
+ * instead of the raw oracle price whenever the deposit oracle fails the margin-calc validity
+ * gate — a stale or uncertain oracle can make an account liquidatable but cannot cheapen its
+ * collateral. Pass the result as `assetPrice` to `calculateAssetTransferForLiabilityTransfer`
+ * to predict on-chain transfer amounts in that case.
+ * @param oraclePrice Raw oracle price of the asset, PRICE_PRECISION (1e6).
+ * @param oracleConfidence Oracle confidence interval, PRICE_PRECISION (1e6).
+ * @param lastOraclePriceTwap5Min The asset spot market's `historicalOracleData.lastOraclePriceTwap5Min`, PRICE_PRECISION (1e6).
+ * @returns `max(oraclePrice, lastOraclePriceTwap5Min, oraclePrice + oracleConfidence)`, PRICE_PRECISION (1e6).
+ */
+export function calculateUserProtectiveAssetPrice(
+	oraclePrice: BN,
+	oracleConfidence: BN,
+	lastOraclePriceTwap5Min: BN
+): BN {
+	return BN.max(
+		BN.max(oraclePrice, lastOraclePriceTwap5Min),
+		oraclePrice.add(oracleConfidence)
+	);
+}
+
+/**
+ * Liability-side counterpart of `calculateUserProtectiveAssetPrice`, mirroring
+ * `calculate_user_protective_liability_price` in
+ * `programs/velocity/src/math/liquidation.rs`. When the borrow (liability) oracle is
+ * margin-invalid, the program prices the repayment leg of spot and pnl-vs-spot liquidations
+ * (and the swap-liquidation worst-case price) at this instead of the raw oracle price, so an
+ * inflated stale/uncertain debt price cannot cheapen the collateral (or pnl) exchanged for
+ * it. Pass the result as `liabilityPrice` to `calculateAssetTransferForLiabilityTransfer` to
+ * predict on-chain transfer amounts in that case.
+ * @param oraclePrice Raw oracle price of the liability, PRICE_PRECISION (1e6).
+ * @param oracleConfidence Oracle confidence interval, PRICE_PRECISION (1e6).
+ * @param lastOraclePriceTwap5Min The liability spot market's `historicalOracleData.lastOraclePriceTwap5Min`, PRICE_PRECISION (1e6).
+ * @returns `min(oraclePrice, lastOraclePriceTwap5Min, oraclePrice - oracleConfidence)`, floored at 1, PRICE_PRECISION (1e6).
+ */
+export function calculateUserProtectiveLiabilityPrice(
+	oraclePrice: BN,
+	oracleConfidence: BN,
+	lastOraclePriceTwap5Min: BN
+): BN {
+	return BN.max(
+		BN.min(
+			BN.min(oraclePrice, lastOraclePriceTwap5Min),
+			oraclePrice.sub(oracleConfidence)
+		),
+		ONE
+	);
+}
+
+/**
  * Calculates how much of a liquidated user's collateral asset a liquidator receives in
  * exchange for repaying `liabilityAmount` of a liability, mirroring
  * `calculate_asset_transfer_for_liability_transfer` in
@@ -287,11 +341,15 @@ export function calculateSpotIfFee(
  * @param assetAmount User's available balance of the asset being transferred, asset spot market's own token precision.
  * @param assetLiquidationMultiplier Liquidation-time discount multiplier on the asset side, LIQUIDATION_FEE_PRECISION (1e6).
  * @param assetDecimals Asset spot market's token decimals.
- * @param assetPrice Oracle price of the asset, PRICE_PRECISION (1e6).
+ * @param assetPrice Oracle price of the asset, PRICE_PRECISION (1e6). When the asset oracle
+ *   is margin-invalid, the program prices the seizure protectively — pass
+ *   `calculateUserProtectiveAssetPrice(...)` instead of the raw oracle price to match.
  * @param liabilityAmount Liability amount being repaid, liability spot market's own token precision.
  * @param liabilityLiquidationMultiplier Liquidation-time premium multiplier on the liability side, LIQUIDATION_FEE_PRECISION (1e6).
  * @param liabilityDecimals Liability spot market's token decimals.
- * @param liabilityPrice Oracle price of the liability asset, PRICE_PRECISION (1e6).
+ * @param liabilityPrice Oracle price of the liability asset, PRICE_PRECISION (1e6). When the
+ *   liability oracle is margin-invalid, the program prices the repayment protectively — pass
+ *   `calculateUserProtectiveLiabilityPrice(...)` instead of the raw oracle price to match.
  * @returns Asset amount to transfer to the liquidator, asset spot market's own token precision (floored at 1).
  */
 export function calculateAssetTransferForLiabilityTransfer(

@@ -172,6 +172,24 @@ pub fn load_revenue_share_map<'a: 'b, 'b>(
                 AccountLoader::try_from(user_account_info)
                     .or(Err(ErrorCode::InvalidUserAccount))?;
 
+            // Builder/referrer revenue-share payouts have a single canonical
+            // recipient: sub_account_id 0 of the stored authority (referrer
+            // registration already enforces this). The escrow records only the
+            // authority, so a permissionless settlement caller could otherwise
+            // supply any sibling subaccount of that authority and redirect the
+            // accrued rewards. Pin the map to subaccount 0.
+            let sub_account_id = user_account_loader
+                .load()
+                .or(Err(ErrorCode::UnableToLoadUserAccount))?
+                .sub_account_id;
+            validate!(
+                sub_account_id == 0,
+                ErrorCode::InvalidRevenueShareRecipient,
+                "revenue share recipient for authority {} must be sub_account_id 0, got {}",
+                authority,
+                sub_account_id
+            )?;
+
             revenue_share_map.insert_user(authority, user_account_loader)?;
             continue;
         }

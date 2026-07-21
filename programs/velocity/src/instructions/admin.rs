@@ -32,7 +32,8 @@ use crate::{
         bn,
         casting::Cast,
         constants::{
-            BPS_PRECISION, DEFAULT_LIQUIDATION_MARGIN_BUFFER_RATIO, FEE_ADJUSTMENT_MAX,
+            BPS_PRECISION, DEFAULT_BANKRUPTCY_IF_FLOOR_PCT,
+            DEFAULT_LIQUIDATION_MARGIN_BUFFER_RATIO, FEE_ADJUSTMENT_MAX,
             FEE_POOL_TO_REVENUE_POOL_THRESHOLD, IF_FACTOR_PRECISION, INSURANCE_A_MAX,
             INSURANCE_B_MAX, INSURANCE_C_MAX, INSURANCE_SPECULATIVE_MAX, LIQUIDATION_FEE_PRECISION,
             MAX_CONCENTRATION_COEFFICIENT, MM_ORACLE_MAX_STEP_PCT_PRECISION,
@@ -393,10 +394,10 @@ pub fn handle_initialize_spot_market(
         },
         protocol_liquidation_fee: 0,
         protocol_fee_factor: 0,
+        if_last_settle_vault_amount: 0,
         deposit_guard_threshold: 0,
         withdraw_circuit_breaker_pct: 0, // 0 => default 25%
         max_deposit_pct_per_day: 0,      // disabled
-        padding: [0; 8],
         insurance_fund: InsuranceFund {
             vault: ctx.accounts.insurance_fund_vault.key(),
             unstaking_period: THIRTEEN_DAY,
@@ -640,6 +641,7 @@ pub fn handle_initialize_perp_market(
         margin_ratio_initial,
         margin_ratio_maintenance,
         liquidator_fee,
+        if_liquidation_fee,
         max_spread,
     )?;
 
@@ -734,7 +736,7 @@ pub fn handle_initialize_perp_market(
         quote_break_even_amount_long: 0,
         quote_break_even_amount_short: 0,
         max_open_interest,
-        padding: [0; 4],
+        bankruptcy_if_floor_pct: DEFAULT_BANKRUPTCY_IF_FLOOR_PCT,
         market_stats: MarketStats {
             last_oracle_normalised_price: oracle_price,
             last_mark_price_twap: init_reserve_price,
@@ -756,7 +758,7 @@ pub fn handle_initialize_perp_market(
             },
             ..MarketStats::default()
         },
-        _padding_align_amm: [0; 8],
+        pending_revenue_share: 0,
         amm: AMM {
             base_asset_reserve: amm_base_asset_reserve,
             quote_asset_reserve: amm_quote_asset_reserve,
@@ -1142,7 +1144,12 @@ pub fn handle_settle_expired_market_pools_to_revenue_pool(
     let clock = Clock::get()?;
     let now = clock.unix_timestamp;
 
-    controller::spot_balance::update_spot_market_cumulative_interest(spot_market, None, now)?;
+    controller::spot_balance::update_spot_market_cumulative_interest(
+        spot_market,
+        None,
+        now,
+        state.funding_paused()?,
+    )?;
 
     validate!(
         spot_market.market_index == QUOTE_SPOT_MARKET_INDEX,
@@ -1251,6 +1258,7 @@ pub fn handle_settle_expired_market_pools_to_revenue_pool(
         pnl_pool_token_amount.safe_add(fee_pool_token_amount)?,
         &SpotBalanceType::Deposit,
         spot_market,
+        false,
     )?;
 
     math::spot_withdraw::validate_spot_balances(spot_market)?;
@@ -1399,6 +1407,7 @@ pub fn handle_update_perp_market_margin_ratio(
         margin_ratio_initial,
         margin_ratio_maintenance,
         perp_market.liquidator_fee,
+        perp_market.if_liquidation_fee,
     )?;
 
     msg!(
@@ -1621,6 +1630,7 @@ pub fn handle_update_perp_liquidation_fee(
         perp_market.margin_ratio_initial,
         perp_market.margin_ratio_maintenance,
         liquidator_fee,
+        if_liquidation_fee,
     )?;
 
     msg!(
@@ -2835,6 +2845,32 @@ pub fn handle_update_perp_market_fee_pool_buffer_target(
     Ok(())
 }
 
+/// Set the market's `bankruptcy_if_floor_pct` — the fraction of open-interest
+/// notional the fee sweep must leave behind in `pending_if_fee` as a standing
+/// bankruptcy tranche (PERCENTAGE_PRECISION; 0 disables the floor).
+pub fn handle_update_perp_market_bankruptcy_if_floor_pct(
+    ctx: Context<AdminUpdatePerpMarket>,
+    bankruptcy_if_floor_pct: u32,
+) -> Result<()> {
+    let perp_market = &mut load_mut!(ctx.accounts.perp_market)?;
+    msg!("perp market {}", perp_market.market_index);
+
+    validate!(
+        bankruptcy_if_floor_pct <= PERCENTAGE_PRECISION_U32,
+        ErrorCode::DefaultError,
+        "bankruptcy_if_floor_pct must be <= PERCENTAGE_PRECISION (100%)"
+    )?;
+
+    msg!(
+        "perp_market.bankruptcy_if_floor_pct: {:?} -> {:?}",
+        perp_market.bankruptcy_if_floor_pct,
+        bankruptcy_if_floor_pct
+    );
+
+    perp_market.bankruptcy_if_floor_pct = bankruptcy_if_floor_pct;
+    Ok(())
+}
+
 pub fn handle_update_perp_market_number_of_users(
     ctx: Context<AdminUpdatePerpMarket>,
     number_of_users: Option<u32>,
@@ -3298,6 +3334,7 @@ pub fn handle_admin_deposit<'c: 'info, 'info>(
         &mut spot_market,
         Some(&oracle_price_data),
         now,
+        state.funding_paused()?,
     )?;
 
     let position_index = user.force_get_spot_position_index(spot_market.market_index)?;

@@ -2,7 +2,10 @@ use std::{
     collections::HashSet,
     env,
     net::SocketAddr,
-    sync::{atomic::AtomicBool, Arc},
+    sync::{
+        atomic::{AtomicBool, AtomicU64, Ordering},
+        Arc,
+    },
     time::{Duration, SystemTime},
 };
 
@@ -11,7 +14,8 @@ use crate::{
     types::{
         messages::{
             DepositAndPlaceRequest, IncomingSignedMessage, OrderMetadataAndMessage,
-            ProcessOrderResponse, PROCESS_ORDER_RESPONSE_ERROR_MSG_DELISTED_MARKET,
+            ProcessOrderResponse, PROCESS_ORDER_RESPONSE_ERROR_MSG_AUCTION_OUTSIDE_ORACLE_BAND,
+            PROCESS_ORDER_RESPONSE_ERROR_MSG_DELISTED_MARKET,
             PROCESS_ORDER_RESPONSE_ERROR_MSG_DELIVERY_FAILED,
             PROCESS_ORDER_RESPONSE_ERROR_MSG_INVALID_ORDER,
             PROCESS_ORDER_RESPONSE_ERROR_MSG_INVALID_ORDER_AMOUNT,
@@ -82,6 +86,20 @@ struct Config {
     /// `AccountNotFound` before the program runs. Defaults to the
     /// gas-station-maintained fee payer; override with `SIM_FEE_PAYER`.
     sim_fee_payer: Pubkey,
+    /// Reject signed orders whose auction start/end prices sit more than this
+    /// many bps from the live oracle — a server-side fat-finger / stale-order
+    /// guard. The program preserves signed A/B auctions verbatim (it no longer
+    /// re-prices them), so genuinely-off auctions are caught here instead of
+    /// on-chain, protecting the client without hijacking a well-formed
+    /// aggressive one. `0` disables. Override with `AUCTION_ORACLE_BAND_BPS`
+    /// (default 300 = 3%).
+    auction_oracle_band_bps: u32,
+    /// Skip the oracle-band guard (fail open) when the server's own oracle is
+    /// more than this many slots behind the latest slot — so a stale swift-side
+    /// oracle can't start rejecting otherwise-valid orders. `0` disables the
+    /// staleness gate (always apply the band). Override with
+    /// `AUCTION_ORACLE_MAX_STALENESS_SLOTS` (default 10 ≈ 4s).
+    auction_oracle_max_staleness_slots: u64,
 }
 
 /// Gas-station-maintained fee payer (see infrastructure-v3 gas-station-bot,
@@ -100,11 +118,18 @@ impl Config {
                 .ok()
                 .and_then(|s| s.parse::<Pubkey>().ok())
                 .unwrap_or(DEFAULT_SIM_FEE_PAYER),
+            auction_oracle_band_bps: std::env::var("AUCTION_ORACLE_BAND_BPS")
+                .ok()
+                .and_then(|s| s.parse::<u32>().ok())
+                .unwrap_or(300),
+            auction_oracle_max_staleness_slots: std::env::var("AUCTION_ORACLE_MAX_STALENESS_SLOTS")
+                .ok()
+                .and_then(|s| s.parse::<u64>().ok())
+                .unwrap_or(10),
         }
     }
 }
 
-#[derive(Clone)]
 pub struct ServerParams {
     velocity: velocity_rs::VelocityClient,
     slot_subscriber: Arc<SuperSlotSubscriber>,
@@ -113,6 +138,41 @@ pub struct ServerParams {
     user_account_fetcher: UserAccountFetcher,
     config: Arc<Config>,
     farmer_pubkeys: HashSet<Pubkey>,
+    rpc_health_cache: RpcHealthCache,
+}
+
+/// TTL for the cached RPC `get_health` result. k8s liveness/readiness probes
+/// hit `/health` far more often than the RPC's health can meaningfully change,
+/// so we only re-probe the RPC at most once per this window.
+const RPC_HEALTH_CACHE_TTL_MS: u64 = 60_000;
+
+/// Caches the result of the RPC `get_health` probe so `/health` doesn't
+/// round-trip to the RPC on every k8s probe. All other health signals (ws,
+/// slot subscriber, redis, market subs) are already read from local
+/// subscribed state, so they stay live on every call.
+#[derive(Default)]
+struct RpcHealthCache {
+    /// unix-ms timestamp of the last real RPC probe; 0 means never probed.
+    last_checked_ms: AtomicU64,
+    healthy: AtomicBool,
+}
+
+impl RpcHealthCache {
+    /// Returns the cached health if the last probe is within the TTL, else
+    /// `None` to signal the caller should re-probe.
+    fn get_fresh(&self, now_ms: u64) -> Option<bool> {
+        let last = self.last_checked_ms.load(Ordering::Relaxed);
+        if last != 0 && now_ms.saturating_sub(last) < RPC_HEALTH_CACHE_TTL_MS {
+            Some(self.healthy.load(Ordering::Relaxed))
+        } else {
+            None
+        }
+    }
+
+    fn store(&self, now_ms: u64, healthy: bool) {
+        self.healthy.store(healthy, Ordering::Relaxed);
+        self.last_checked_ms.store(now_ms, Ordering::Relaxed);
+    }
 }
 
 pub async fn fallback(uri: axum::http::Uri) -> impl axum::response::IntoResponse {
@@ -311,6 +371,12 @@ pub async fn process_order(
             },
         ));
     }
+
+    // Server-side stale / fat-finger guard: reject auctions priced far off the
+    // live oracle. Replaces the on-chain sanitizer for signed A/B orders, which
+    // the program now preserves verbatim. Skips itself (fail open) if the
+    // server's own oracle is stale — see validate_auction_within_oracle_band.
+    server_params.validate_auction_within_oracle_band(&order_params, current_slot, context)?;
 
     if !skip_sim {
         match server_params
@@ -654,8 +720,17 @@ pub async fn health_check(
                     .len() as u16
     });
 
-    // Check if rpc is healthy
-    let rpc_healthy = server_params.velocity.rpc().get_health().await.is_ok();
+    // Check if rpc is healthy, caching the result so k8s probes don't
+    // round-trip to the RPC's getHealth on every hit.
+    let now_ms = unix_now_ms();
+    let rpc_healthy = match server_params.rpc_health_cache.get_fresh(now_ms) {
+        Some(cached) => cached,
+        None => {
+            let healthy = server_params.velocity.rpc().get_health().await.is_ok();
+            server_params.rpc_health_cache.store(now_ms, healthy);
+            healthy
+        }
+    };
 
     if ws_healthy
         && slot_sub_healthy
@@ -759,6 +834,7 @@ pub async fn start_server() {
         user_account_fetcher,
         config: Arc::new(Config::from_env()),
         farmer_pubkeys: HashSet::from_iter(pubkeys),
+        rpc_health_cache: RpcHealthCache::default(),
     }));
 
     // start oracle/market subscriptions (async)
@@ -939,6 +1015,43 @@ fn validate_signed_order_params(
     } else {
         Err(ErrorCode::InvalidOrderAuction)
     }
+}
+
+/// True when the order carries a fully-specified auction (duration + start +
+/// end), i.e. there are prices to bound against the oracle.
+fn has_bounded_auction(order_params: &OrderParams) -> bool {
+    order_params.auction_duration.is_some()
+        && order_params.auction_start_price.is_some()
+        && order_params.auction_end_price.is_some()
+}
+
+/// Pure check: are the order's auction start & end prices within `band_bps` of
+/// `oracle_price`? `OrderType::Oracle` auctions carry oracle-relative offsets
+/// (already stale-immune); every other type carries absolute prices, which are
+/// normalised to a signed distance from oracle before comparison. Returns true
+/// when there is nothing to bound (band disabled, no auction, or bad oracle).
+fn auction_within_oracle_band(
+    order_params: &OrderParams,
+    oracle_price: i64,
+    band_bps: u32,
+) -> bool {
+    if band_bps == 0 || oracle_price <= 0 || !has_bounded_auction(order_params) {
+        return true;
+    }
+    let start = order_params.auction_start_price.unwrap();
+    let end = order_params.auction_end_price.unwrap();
+
+    let band = (oracle_price as i128 * band_bps as i128 / 10_000) as i64;
+    let is_offset = order_params.order_type == OrderType::Oracle;
+    let distance_from_oracle = |p: i64| {
+        if is_offset {
+            p
+        } else {
+            p.saturating_sub(oracle_price)
+        }
+    };
+
+    distance_from_oracle(start).abs() <= band && distance_from_oracle(end).abs() <= band
 }
 
 #[derive(Debug)]
@@ -1336,6 +1449,108 @@ impl ServerParams {
     }
 
     /// Simulate if auction params will be sanitized
+    /// Server-side stale / fat-finger guard. Rejects a signed order whose
+    /// auction prices sit outside `config.auction_oracle_band_bps` of the live
+    /// oracle. The program preserves signed A/B auctions verbatim, so this is
+    /// where a genuinely-off auction (stale data, fat finger) is stopped —
+    /// off-program, still saving the client, without re-pricing a well-formed
+    /// aggressive auction.
+    ///
+    /// The guard is designed to never itself become a source of rejections:
+    /// it **fails open** if the oracle can't be read, and it **skips the check**
+    /// (also failing open) when the server's own oracle is more than
+    /// `auction_oracle_max_staleness_slots` behind the latest slot — a lagging
+    /// swift-side oracle must not start bouncing otherwise-valid orders. Every
+    /// rejection logs the oracle's staleness (oracle slot vs current slot) for
+    /// debuggability.
+    fn validate_auction_within_oracle_band(
+        &self,
+        order_params: &OrderParams,
+        current_slot: Slot,
+        context: &RequestContext,
+    ) -> Result<(), (axum::http::StatusCode, ProcessOrderResponse)> {
+        let band_bps = self.config.auction_oracle_band_bps;
+        if band_bps == 0 || !has_bounded_auction(order_params) {
+            return Ok(());
+        }
+
+        let market_index_str = order_params.market_index.to_string();
+        let record = |outcome: &str| {
+            self.metrics
+                .auction_band_guard
+                .with_label_values(&[&market_index_str, outcome])
+                .inc();
+        };
+
+        let market_id = MarketId::new(order_params.market_index, order_params.market_type);
+        let oracle = match self.velocity.try_get_oracle_price_data_and_slot(market_id) {
+            Some(o) => o,
+            None => {
+                // fail open: don't block on a missing oracle read
+                record("skip_oracle_missing");
+                log::warn!(
+                    target: "server",
+                    "{}: oracle price None (market {market_id:?}); skipping auction band check",
+                    context.log_prefix
+                );
+                return Ok(());
+            }
+        };
+
+        let oracle_slot = oracle.slot;
+        let oracle_staleness_slots = current_slot.saturating_sub(oracle_slot);
+        self.metrics
+            .auction_oracle_staleness_slots
+            .with_label_values(&[&market_index_str])
+            .set(oracle_staleness_slots as f64);
+
+        // Fail open whenever we can't trust our own freshness: a stale slot
+        // subscriber (which makes `current_slot` — and therefore the staleness
+        // measurement — unreliable) or a stale oracle must never turn this guard
+        // into a source of rejections for otherwise-valid orders.
+        let slot_subscriber_stale = self.slot_subscriber.is_stale();
+        let max_staleness = self.config.auction_oracle_max_staleness_slots;
+        let oracle_stale = max_staleness != 0 && oracle_staleness_slots > max_staleness;
+        if slot_subscriber_stale || oracle_stale {
+            record(if slot_subscriber_stale {
+                "skip_slot_subscriber_stale"
+            } else {
+                "skip_oracle_stale"
+            });
+            log::warn!(
+                target: "server",
+                "{}: skipping auction band check (fail open) — slot_subscriber_stale={slot_subscriber_stale} \
+                 oracle_stale_by={oracle_staleness_slots} slots (oracle_slot={oracle_slot} \
+                 current_slot={current_slot} max={max_staleness})",
+                context.log_prefix,
+            );
+            return Ok(());
+        }
+
+        if auction_within_oracle_band(order_params, oracle.data.price, band_bps) {
+            return Ok(());
+        }
+        record("reject");
+
+        log::warn!(
+            target: "server",
+            "{}: rejecting order — auction outside oracle band: start={:?} end={:?} \
+             oracle_price={} oracle_slot={oracle_slot} current_slot={current_slot} \
+             oracle_staleness_slots={oracle_staleness_slots} band_bps={band_bps}",
+            context.log_prefix,
+            order_params.auction_start_price,
+            order_params.auction_end_price,
+            oracle.data.price,
+        );
+        Err((
+            axum::http::StatusCode::BAD_REQUEST,
+            ProcessOrderResponse {
+                message: PROCESS_ORDER_RESPONSE_ERROR_MSG_AUCTION_OUTSIDE_ORACLE_BAND,
+                error: None,
+            },
+        ))
+    }
+
     fn simulate_will_auction_params_sanitize(
         &self,
         order_params: &OrderParams,
@@ -1515,7 +1730,7 @@ fn validate_order(
     }
 
     // Validate slot
-    if taker_slot < current_slot - 500 {
+    if taker_slot < current_slot.saturating_sub(500) {
         return Err((
             axum::http::StatusCode::BAD_REQUEST,
             ProcessOrderResponse {
@@ -1742,6 +1957,65 @@ mod tests {
             },
             ..Default::default()
         }
+    }
+
+    #[test]
+    fn test_auction_within_oracle_band() {
+        let oracle = 10_000_i64; // arbitrary price units; the check is proportional
+        let band_bps = 300; // 3% -> band of 300 price units
+
+        // Absolute (Market) auction hugging oracle: start -1%, end +1% -> inside.
+        let near = create_test_order_params(
+            OrderType::Market,
+            MarketType::Perp,
+            1_000_000_000,
+            PositionDirection::Long,
+            Some((5, 9_900, 10_100)),
+        );
+        assert!(auction_within_oracle_band(&near, oracle, band_bps));
+
+        // Fat-finger end at +10% -> outside the band -> rejected.
+        let far = create_test_order_params(
+            OrderType::Market,
+            MarketType::Perp,
+            1_000_000_000,
+            PositionDirection::Long,
+            Some((5, 9_900, 11_000)),
+        );
+        assert!(!auction_within_oracle_band(&far, oracle, band_bps));
+
+        // band_bps == 0 disables the guard entirely.
+        assert!(auction_within_oracle_band(&far, oracle, 0));
+
+        // A resting limit with no auction has nothing to bound.
+        let no_auction = create_test_order_params(
+            OrderType::Limit,
+            MarketType::Perp,
+            1_000_000_000,
+            PositionDirection::Long,
+            None,
+        );
+        assert!(auction_within_oracle_band(&no_auction, oracle, band_bps));
+
+        // Oracle-type auctions carry oracle-relative offsets: +2% end offset is
+        // inside, +5% is outside — no dependence on absolute oracle level.
+        let offset_near = create_test_order_params(
+            OrderType::Oracle,
+            MarketType::Perp,
+            1_000_000_000,
+            PositionDirection::Long,
+            Some((5, 1, 200)),
+        );
+        assert!(auction_within_oracle_band(&offset_near, oracle, band_bps));
+
+        let offset_far = create_test_order_params(
+            OrderType::Oracle,
+            MarketType::Perp,
+            1_000_000_000,
+            PositionDirection::Long,
+            Some((5, 1, 500)),
+        );
+        assert!(!auction_within_oracle_band(&offset_far, oracle, band_bps));
     }
 
     #[test]
@@ -2306,6 +2580,7 @@ mod tests {
             velocity,
             farmer_pubkeys: Default::default(),
             redis_pool,
+            rpc_health_cache: RpcHealthCache::default(),
         };
 
         // Create mock order params

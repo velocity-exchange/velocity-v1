@@ -57,6 +57,7 @@ pub fn handle_settle_perp_to_lp_pool<'c: 'info, 'info>(
         &mut *quote_market,
         None,
         now,
+        state.funding_paused()?,
     )?;
 
     let tvl_before = quote_market

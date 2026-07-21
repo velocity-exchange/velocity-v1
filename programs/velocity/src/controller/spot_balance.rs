@@ -1,7 +1,7 @@
-use crate::math::oracle::{oracle_validity, LogMode};
+use crate::math::oracle::{oracle_validity, LogMode, OracleValidity};
 use crate::state::perp_market::PoolBalance;
 use crate::state::state::ValidityGuardRails;
-use std::cmp::max; //, OracleValidity};
+use std::cmp::max;
 
 use crate::msg;
 use anchor_lang::prelude::*;
@@ -131,8 +131,16 @@ pub fn update_spot_market_cumulative_interest(
     spot_market: &mut SpotMarket,
     oracle_price_data: Option<&OraclePriceData>,
     now: i64,
+    funding_paused: bool,
 ) -> VelocityResult {
-    if spot_market.is_operation_paused(SpotOperation::UpdateCumulativeInterest) {
+    // Freeze interest accrual when the exchange-wide funding pause
+    // (`State::funding_paused`) is set or this market's
+    // `UpdateCumulativeInterest` operation is paused. `funding_paused` is
+    // threaded in from callers because the global flag lives on `State`, which
+    // this controller does not load. TWAP stats still advance so oracle EMAs
+    // stay fresh, mirroring the dedicated `update_spot_market_cumulative_interest`
+    // crank; on resume the next accrual covers the full elapsed interval.
+    if funding_paused || spot_market.is_operation_paused(SpotOperation::UpdateCumulativeInterest) {
         update_spot_market_twap_stats(spot_market, oracle_price_data, now)?;
         return Ok(());
     }
@@ -464,18 +472,27 @@ pub fn transfer_spot_balance_to_revenue_pool(
     Ok(())
 }
 
+/// Returns the computed [`OracleValidity`] so callers can apply stricter, action-specific
+/// handling (e.g. liquidation pricing collateral protectively when the oracle is
+/// margin-invalid). The quote spot market skips validity checks and reports `Valid`.
 pub fn update_spot_market_and_check_validity(
     spot_market: &mut SpotMarket,
     oracle_price_data: &OraclePriceData,
     validity_guard_rails: &ValidityGuardRails,
     now: i64,
     action: Option<VelocityAction>,
-) -> VelocityResult {
+    funding_paused: bool,
+) -> VelocityResult<OracleValidity> {
     // update spot market EMAs with new/current data
-    update_spot_market_cumulative_interest(spot_market, Some(oracle_price_data), now)?;
+    update_spot_market_cumulative_interest(
+        spot_market,
+        Some(oracle_price_data),
+        now,
+        funding_paused,
+    )?;
 
     if spot_market.market_index == QUOTE_SPOT_MARKET_INDEX {
-        return Ok(());
+        return Ok(OracleValidity::Valid);
     }
 
     // 1 hour EMA
@@ -504,7 +521,7 @@ pub fn update_spot_market_and_check_validity(
         action
     )?;
 
-    Ok(())
+    Ok(oracle_validity)
 }
 
 fn increase_spot_balance(

@@ -3061,6 +3061,12 @@ export class VaultClient {
 				vault,
 				manager: vaultAccount.manager,
 				velocityUserStats: vaultAccount.userStats,
+				// request-remove now settles already-due revenue before freezing the exit
+				// value, so it CPIs velocity's settle path and needs these accounts.
+				// velocitySpotMarketVault is a PDA and auto-resolves from its seeds.
+				velocityState: await this.velocityClient.getStatePublicKey(),
+				velocitySigner: this.velocityClient.getStateAccount().signer,
+				tokenProgram: TOKEN_PROGRAM_ID,
 			})
 			.instruction();
 	}

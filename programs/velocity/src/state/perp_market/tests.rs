@@ -40,6 +40,27 @@ mod amm {
     }
 }
 
+mod pending_revenue_share {
+    use crate::state::perp_market::PerpMarket;
+
+    #[test]
+    fn accrue_and_settle_round_trip() {
+        let mut market = PerpMarket::default();
+        assert_eq!(market.pending_revenue_share, 0);
+
+        market.accrue_pending_revenue_share(100).unwrap();
+        market.accrue_pending_revenue_share(50).unwrap();
+        assert_eq!(market.pending_revenue_share, 150);
+
+        market.settle_pending_revenue_share(60).unwrap();
+        assert_eq!(market.pending_revenue_share, 90);
+
+        // settling more than accrued saturates at 0 rather than underflowing
+        market.settle_pending_revenue_share(1_000).unwrap();
+        assert_eq!(market.pending_revenue_share, 0);
+    }
+}
+
 mod get_margin_ratio {
     use crate::math::margin::MarginRequirementType;
     use crate::state::perp_market::PerpMarket;

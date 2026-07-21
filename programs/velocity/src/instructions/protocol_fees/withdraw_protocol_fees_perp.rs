@@ -102,7 +102,12 @@ pub fn handle_withdraw_protocol_fees_perp<'c: 'info, 'info>(
         spot_market.market_index
     )?;
 
-    controller::spot_balance::update_spot_market_cumulative_interest(spot_market, None, now)?;
+    controller::spot_balance::update_spot_market_cumulative_interest(
+        spot_market,
+        None,
+        now,
+        state.funding_paused()?,
+    )?;
 
     let available = get_token_amount(
         perp_market.protocol_fee_pool.scaled_balance,

@@ -89,6 +89,32 @@ pub fn calculate_if_shares_lost(
 ) -> VelocityResult<u128> {
     let n_shares = insurance_fund_stake.last_withdraw_request_shares;
 
+    // Forfeiture on unstake-cancel, modeled as **withdraw-and-restake at the current
+    // active share price** (finding #30). A cancel is treated as if the staker completed
+    // the withdrawal of their `n_shares` requested shares and immediately re-staked the
+    // resulting tokens at the price prevailing right now:
+    //   * the withdrawal pays out `withdraw_value = min(current value of n_shares,
+    //     last_withdraw_request_value)` — the exact payout `remove_insurance_fund_stake`
+    //     would give, capped at the value frozen at request time;
+    //   * re-staking that `withdraw_value` at the current active price (the pool after
+    //     removing `n_shares` and `withdraw_value` tokens) mints `new_n_shares`;
+    //   * the staker keeps `new_n_shares` and forfeits `n_shares - new_n_shares` to the
+    //     remaining stakers.
+    // If the fund appreciated during escrow the current price is higher, so re-staking
+    // the frozen value buys back fewer shares and the appreciation is forfeited — this is
+    // the anti-free-option property (you cannot request at a low price, watch the fund
+    // rise, then cancel and keep the upside for free). If it did not appreciate
+    // (`current value <= last_withdraw_request_value`) nothing is forfeited.
+    //
+    // This is donation-immune without consulting the accounted balance: the withdraw leg
+    // is bounded by `last_withdraw_request_value`, snapshotted at request time and never
+    // re-read from the live vault. A raw SPL donation inflates the live price, but the
+    // extractable forfeiture is capped by that frozen value, and the donation is spread
+    // pro-rata across *all* shareholders — so an attacker sandwiching a victim's cancel
+    // with a donation always forgoes more on the donated capital (a `(1 - f)` share of
+    // the donation, `f` = attacker's share fraction) than they can recapture from the
+    // victim's `f`-weighted burn. The attack is unprofitable for any `f < 1`, so pricing
+    // the restake off the live balance here is safe.
     let amount = if_shares_to_vault_amount(
         n_shares,
         spot_market.insurance_fund.total_shares,

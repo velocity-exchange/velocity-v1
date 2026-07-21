@@ -22,6 +22,7 @@ velocity-admin --help
 
 ```
 velocity-admin show config
+velocity-admin show fees    # every fee users pay: trading tiers, filler reward, split, per-market adjustments + liquidation fees
 
 velocity-admin auth set-cold-admin <pubkey>
 velocity-admin auth set-warm-admin <pubkey>

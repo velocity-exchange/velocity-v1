@@ -5,6 +5,7 @@ import { getSpotMarketPublicKey } from '@velocity-exchange/sdk';
 import { readGlobalOpts, withGlobalOptions } from '../lib/options';
 import { buildAdminClient, buildProvider } from '../lib/provider';
 import { reportDispatch, sendOrPropose } from '../lib/squads';
+import { resolveAuthority } from '../lib/userOps';
 
 export function registerSpotMarket(parent: Command): void {
 	const sm = parent
@@ -25,9 +26,13 @@ export function registerSpotMarket(parent: Command): void {
 			const enumVariant: { [k: string]: Record<string, never> } = {
 				[status.charAt(0).toLowerCase() + status.slice(1)]: {},
 			};
+			// All spot-market governance ixs are warm-gated: the admin signer
+			// must be the key that executes — the multisig's vault PDA when
+			// proposing, else the local keypair (never state.coldAdmin blindly).
 			const ix = await client.getUpdateSpotMarketStatusIx(
 				Number.parseInt(market, 10),
-				enumVariant as never
+				enumVariant as never,
+				resolveAuthority(opts)
 			);
 			const result = await sendOrPropose(
 				provider,
@@ -76,7 +81,8 @@ export function registerSpotMarket(parent: Command): void {
 			const ix = await client.getUpdateWithdrawGuardThresholdIx(
 				marketIndex,
 				new BN(threshold),
-				oracle as PublicKey
+				oracle as PublicKey,
+				resolveAuthority(opts)
 			);
 			const result = await sendOrPropose(
 				provider,
@@ -108,7 +114,8 @@ export function registerSpotMarket(parent: Command): void {
 		try {
 			const ix = await client.getUpdateSpotMarketScaleInitialAssetWeightStartIx(
 				Number.parseInt(market, 10),
-				new BN(start)
+				new BN(start),
+				resolveAuthority(opts)
 			);
 			const result = await sendOrPropose(
 				provider,
@@ -146,7 +153,8 @@ export function registerSpotMarket(parent: Command): void {
 				const ix = await client.getUpdateSpotMarketIfFactorIx(
 					Number.parseInt(market, 10),
 					Number.parseInt(ifFeeFactor, 10),
-					Number.parseInt(protocolFeeFactor, 10)
+					Number.parseInt(protocolFeeFactor, 10),
+					resolveAuthority(opts)
 				);
 				const result = await sendOrPropose(
 					provider,

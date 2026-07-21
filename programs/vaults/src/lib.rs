@@ -265,7 +265,7 @@ pub mod vaults {
     }
 
     pub fn cancel_request_remove_insurance_fund_stake<'info>(
-        ctx: Context<'info, RequestRemoveInsuranceFundStake<'info>>,
+        ctx: Context<'info, CancelRequestRemoveInsuranceFundStake<'info>>,
         market_index: u16,
     ) -> Result<()> {
         instructions::cancel_request_remove_insurance_fund_stake(ctx, market_index)

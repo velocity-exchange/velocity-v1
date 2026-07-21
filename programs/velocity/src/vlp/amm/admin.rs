@@ -527,6 +527,7 @@ pub fn handle_deposit_into_perp_market_fee_pool<'c: 'info, 'info>(
         &mut *quote_spot_market,
         None,
         Clock::get()?.unix_timestamp,
+        ctx.accounts.state.load()?.funding_paused()?,
     )?;
 
     controller::spot_balance::update_spot_balances(
@@ -1270,7 +1271,12 @@ pub fn handle_transfer_fee_and_pnl_pool<'c: 'info, 'info>(
 
     let spot_market = &mut load_mut!(ctx.accounts.spot_market)?;
 
-    controller::spot_balance::update_spot_market_cumulative_interest(spot_market, None, now)?;
+    controller::spot_balance::update_spot_market_cumulative_interest(
+        spot_market,
+        None,
+        now,
+        ctx.accounts.state.load()?.funding_paused()?,
+    )?;
 
     let same_market = ctx.accounts.perp_market_with_fee_pool.key()
         == ctx.accounts.perp_market_with_pnl_pool.key();

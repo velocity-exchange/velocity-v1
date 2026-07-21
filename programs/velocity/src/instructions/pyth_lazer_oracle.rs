@@ -83,12 +83,14 @@ pub fn handle_update_pyth_lazer_oracle<'c: 'info, 'info>(
         let mut best_ask_price: Option<Price> = None;
         let mut exponent: Option<i16> = None;
         let mut next_timestamp: Option<u64> = None;
+        let mut signed_confidence: Option<Price> = None;
 
         for property in &payload_data.properties {
             match property {
                 PayloadPropertyValue::BestBidPrice(price) => best_bid_price = *price,
                 PayloadPropertyValue::BestAskPrice(price) => best_ask_price = *price,
                 PayloadPropertyValue::Exponent(exp) => exponent = Some(*exp),
+                PayloadPropertyValue::Confidence(confidence) => signed_confidence = *confidence,
                 PayloadPropertyValue::FeedUpdateTimestamp(timestamp) => match timestamp {
                     Some(timestamp) => next_timestamp = Some(timestamp.as_micros()),
                     None => continue,
@@ -135,11 +137,24 @@ pub fn handle_update_pyth_lazer_oracle<'c: 'info, 'info>(
 
         let exponent = exponent.ok_or(ErrorCode::InvalidPythLazerMessage)?;
 
-        // Default to 20bps of the price for conf if bid > ask or one-sided market
+        // #72: never understate confidence. Confidence shares the price feed's exponent, so
+        // its mantissa is directly comparable to `price`. Take the widest of three signals:
+        //   - a 20bps-of-price floor (kept as the minimum, as before),
+        //   - the bid/ask spread (prior behaviour), and
+        //   - the SIGNED `Confidence` property carried in the Lazer message (previously
+        //     ignored entirely and fabricated as a fixed 20bps).
+        // Using the max guarantees the persisted conf is never smaller than today's value.
         let mut conf: i64 = price.safe_div(500)?;
         if let (Some(bid), Some(ask)) = (best_bid_price, best_ask_price) {
-            if bid.mantissa_i64() < ask.mantissa_i64() {
-                conf = ask.mantissa_i64() - bid.mantissa_i64();
+            let spread = ask.mantissa_i64().safe_sub(bid.mantissa_i64())?;
+            if spread > conf {
+                conf = spread;
+            }
+        }
+        if let Some(signed_confidence) = signed_confidence {
+            let signed_confidence = signed_confidence.mantissa_i64();
+            if signed_confidence > conf {
+                conf = signed_confidence;
             }
         }
 

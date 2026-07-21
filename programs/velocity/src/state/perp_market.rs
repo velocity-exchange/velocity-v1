@@ -430,11 +430,21 @@ pub struct PerpMarket {
     /// `MarketStats::update_mark_std`, `update_volume_24h`, native
     /// `handle_update_mm_oracle_native`) update this directly.
     pub market_stats: MarketStats,
-    /// 8 bytes of explicit padding so MarketStats (216 bytes) plus this
-    /// padding equals 224 bytes — the offset Rust naturally inserts to
-    /// 16-align AMM's leading u128. Making it explicit keeps the IDL byte
-    /// layout aligned with `repr(C)`.
-    pub _padding_align_amm: [u8; 8],
+    /// Aggregate accrued builder/referrer revenue-share owed out of this
+    /// market's `pnl_pool` but not yet paid: incremented as builder and
+    /// referrer fees accrue on fills (mirrors the per-order
+    /// `RevenueShareOrder.fees_accrued` writes) and decremented as
+    /// `sweep_completed_revenue_share_for_market` pays them. The
+    /// permissionless fee sweep reserves it (like `max(net_user_pnl, 0)` and
+    /// the floored IF tranche) so a protocol-fee drain can't move the tokens
+    /// backing already-owed revenue share out of the pnl pool and leave those
+    /// claims temporarily unpayable. precision: QUOTE_PRECISION.
+    ///
+    /// Occupies the 8 bytes Rust naturally inserts to 16-align AMM's leading
+    /// u128 (formerly explicit `_padding_align_amm`): a u64 at the same
+    /// 8-aligned offset keeps every downstream byte offset and the total size
+    /// unchanged, so legacy accounts read 0 (nothing owed) until fees accrue.
+    pub pending_revenue_share: u64,
     /// The automated market maker. Last field so future quoter modules can
     /// land in the trailing region without disturbing earlier byte offsets
     /// — in the target architecture this account holds back-to-back
@@ -509,7 +519,7 @@ impl Default for PerpMarket {
             oracle_low_risk_slot_delay_override: 0,
             bankruptcy_if_floor_pct: 0,
             market_stats: MarketStats::default(),
-            _padding_align_amm: [0; 8],
+            pending_revenue_share: 0,
             amm: AMM::default(),
             hedge_config: HedgeConfig::default(),
             protocol_fee_pool: PoolBalance::default(),
@@ -568,7 +578,13 @@ impl PerpMarket {
         state: &State,
         amm_has_low_enough_inventory: bool,
     ) -> VelocityResult<bool> {
-        if state.amm_immediate_fill_paused()? {
+        // Honor both the exchange-wide immediate-fill breaker and the
+        // market-scoped `AmmImmediateFill` pause bit; either being set forces
+        // the auction to run its full duration instead of skipping to an
+        // immediate AMM fill.
+        if state.amm_immediate_fill_paused()?
+            || self.is_operation_paused(PerpOperation::AmmImmediateFill)
+        {
             return Ok(false);
         }
 
@@ -834,6 +850,44 @@ impl PerpMarket {
             .safe_div(BASE_PRECISION)?
             .safe_mul(self.bankruptcy_if_floor_pct.cast()?)?
             .safe_div(PERCENTAGE_PRECISION)
+    }
+
+    /// The pnl-pool tokens that must stay behind to keep the standing
+    /// first-loss IF bankruptcy tranche backed: `min(pending_if_fee,
+    /// get_bankruptcy_if_floor())`. `resolve_perp_bankruptcy` consumes
+    /// `pending_if_fee` counter-only (it cancels the forgiven loss against the
+    /// pending claim with no token movement, relying on that fee value still
+    /// sitting in the pnl pool), so a permissionless drain that moved those
+    /// tokens elsewhere — e.g. `sweep_market_fees`' buffer-exempt protocol cut
+    /// into `protocol_fee_pool`, which is not part of the insurance backstop —
+    /// would leave the tranche unbacked and surviving-trader PnL short. Every
+    /// permissionless pnl-pool drain reserves this on top of
+    /// `max(net_user_pnl, 0)`. `force` (delisting, once bankruptcies are
+    /// resolved) returns 0.
+    /// precision: QUOTE_PRECISION
+    pub fn get_bankruptcy_if_tranche_reservation(&self, force: bool) -> VelocityResult<u128> {
+        if force {
+            return Ok(0);
+        }
+        Ok(self
+            .fee_ledger
+            .pending_if_fee
+            .min(self.get_bankruptcy_if_floor()?))
+    }
+
+    /// Record builder/referrer revenue share accrued on a fill into the
+    /// per-market aggregate (mirrors the per-order `fees_accrued` write so the
+    /// fee sweep can reserve the tokens backing it).
+    pub fn accrue_pending_revenue_share(&mut self, amount: u64) -> VelocityResult {
+        self.pending_revenue_share = self.pending_revenue_share.safe_add(amount)?;
+        Ok(())
+    }
+
+    /// Discharge revenue share from the per-market aggregate as
+    /// `sweep_completed_revenue_share_for_market` pays it out of the pnl pool.
+    pub fn settle_pending_revenue_share(&mut self, amount: u64) -> VelocityResult {
+        self.pending_revenue_share = self.pending_revenue_share.saturating_sub(amount);
+        Ok(())
     }
 
     pub fn get_market_depth_for_funding_rate(&self) -> VelocityResult<u64> {

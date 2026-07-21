@@ -191,9 +191,20 @@ fn build_perp_market(pubkey: Pubkey, quote_spot_index: u16) -> PerpMarket {
 fn read_zc<T: bytemuck::Pod>(ctx: &TestContext, pk: &Pubkey) -> Option<T> {
     let acct = ctx.get_account(pk).ok()?;
     let size = std::mem::size_of::<T>();
-    if acct.data.len() < 8 + size {
-        return None;
-    }
+    // An account that EXISTS but is too small is a host/on-chain LAYOUT DRIFT
+    // (host `size_of::<T>` diverged from the deployed .so, e.g. a stale vendored
+    // IDL or an un-rebuilt .so). Fail LOUDLY: silently returning None here would
+    // skip every invariant that reads through this helper and turn the whole
+    // harness green with zero checks executed. Genuinely-absent accounts still
+    // return None via the `.ok()?` above.
+    assert!(
+        acct.data.len() >= 8 + size,
+        "layout drift: account {pk} has {} data bytes, need >= {} (8 + size_of::<{}>); \
+         re-run `bash fuzz/sync-idls.sh` and rebuild target/deploy/velocity.so",
+        acct.data.len(),
+        8 + size,
+        std::any::type_name::<T>(),
+    );
     Some(bytemuck::pod_read_unaligned::<T>(&acct.data[8..8 + size]))
 }
 

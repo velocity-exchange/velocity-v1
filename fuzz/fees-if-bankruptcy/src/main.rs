@@ -540,19 +540,20 @@ fn regr_255_floored_if_tranche(
     }
 }
 
-// PENDING PR #273 (F8): spot bankruptcy must clear the borrow valued at FRESH
-// cumulative interest, not the stale-low stored index. The socialization delta
-// is exact for the borrow it is given
-// (`calculate_cumulative_deposit_interest_delta_to_resolve_bankruptcy`); the bug
-// is that the controller passes a STALE (too-small) borrow because it reads
-// `get_token_amount` before refreshing interest. This harness demonstrates the
-// staleness gap as a math sub-property: valuing the same borrow balance at a
-// stale vs fresh borrow index yields a strictly smaller debt at the stale index,
-// which under-socializes. NOTE: the interest refresh ordering is in the
-// `resolve_spot_bankruptcy` controller — full reproduction is SVM (P8).
-#[cfg(feature = "regr_273_spot_bankruptcy_fresh_interest")]
+// Monotonicity property backing PR #273 (F8) — NOT a reproduction of it.
+// #273's actual bug is interest-refresh *ordering* in the `resolve_spot_bankruptcy`
+// controller (it reads `get_token_amount` before refreshing interest, clearing the
+// borrow at a stale-low index). That ordering is stateful and lives in the
+// controller, so it is reproduced at the SVM tier (`e2e-svm-revshare`/`e2e-svm-liq`)
+// and covered by the program's own tests — it CANNOT be caught here. This host
+// harness only asserts the underlying math fact the fix relies on: valuing the same
+// borrow at a fresher (larger) cumulative index never yields a smaller debt. That is
+// a monotonicity of `get_token_amount` in the index and is always true, so it will
+// never fail — it documents/pins the sub-property, it does not detect the bug. Named
+// `prop_` (not `regr_`) so it is not mistaken for a bug regression.
+#[cfg(feature = "prop_borrow_debt_monotonic_in_index")]
 #[crucible_fuzz]
-fn regr_273_spot_bankruptcy_fresh_interest(
+fn prop_borrow_debt_monotonic_in_index(
     fixture: &mut FeesFixture,
     #[range(1..1_000_000_000_000u64)] borrow_balance: u64,
     #[range(0..1_000_000_000_000u64)] interest_accrued: u64,
@@ -588,18 +589,19 @@ fn regr_273_spot_bankruptcy_fresh_interest(
     fuzz_assert!(debt_fresh >= debt_stale);
 }
 
-// PENDING PR #252: request-remove must settle already-due revenue into the IF
-// vault BEFORE freezing the staker's exit value (mirroring the add path), so a
-// public revenue settle between request and remove can't shift the exiting
-// staker's rightful share to the remaining stakers. This is almost entirely
-// controller/stateful ordering (`request_remove_insurance_fund_stake` +
-// `attempt_settle_revenue_to_insurance_fund`) with an ABI change to the accounts
-// struct. The host-testable sub-property is monotonicity of the exit value in
-// the vault balance: settling revenue in first (raising the vault) never lowers
-// the frozen exit value for given shares. NOTE: full reproduction is SVM (P8).
-#[cfg(feature = "regr_252_request_remove_settle")]
+// Monotonicity property backing PR #252 — NOT a reproduction of it. #252's actual
+// bug is settle-before-freeze *ordering* in `request_remove_insurance_fund_stake`
+// (plus an accounts-struct ABI change), which is stateful controller logic
+// reproduced at the SVM tier and covered by the program's own tests — it CANNOT be
+// caught here. This host harness only asserts the math fact the fix relies on:
+// freezing the exit value against a larger (post-settle) vault never shortchanges
+// the staker vs a smaller (pre-settle) vault. That is monotonicity of
+// `if_shares_to_vault_amount` in the vault balance and is always true, so it will
+// never fail — it pins the sub-property, it does not detect the bug. Named `prop_`
+// (not `regr_`) so it is not mistaken for a bug regression.
+#[cfg(feature = "prop_if_exit_value_monotonic_in_vault")]
 #[crucible_fuzz]
-fn regr_252_request_remove_settle(
+fn prop_if_exit_value_monotonic_in_vault(
     fixture: &mut FeesFixture,
     #[range(1..1_000_000_000_000u64)] shares: u64,
     #[range(1..1_000_000_000_000u64)] total_shares: u64,

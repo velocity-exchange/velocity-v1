@@ -58,6 +58,31 @@ cargo test
 bash test-scripts/run-anchor-tests.sh
 ```
 
+## Fuzzing (Crucible)
+
+Property/invariant fuzz harnesses for the `velocity` program live in
+[`fuzz/`](./fuzz/README.md) — a set of standalone Cargo workspaces (excluded from
+the root workspace, like `rust/`) built on [Crucible](https://github.com/asymmetric-research/crucible)
+(LibAFL) plus LiteSVM for the end-to-end tier. Nothing there ships on-chain; the
+only program hook is the off-by-default `fuzz-fixtures` cargo feature.
+
+```bash
+# install the pinned Crucible CLI (see fuzz/README.md for the exact rev)
+cargo install --git https://github.com/asymmetric-research/crucible crucible-fuzz-cli --locked
+
+# host tier (pure math, no .so needed)
+crucible run amm-pricing prop_k_conserved_swap --timeout 30
+
+# SVM tier (needs a devnet .so: `bun run program:build:devnet`)
+crucible run e2e-svm invariant_solvency --release --timeout 60
+```
+
+The SVM harnesses embed a vendored copy of the IDL; after any program change run
+`bash fuzz/sync-idls.sh` to re-vendor it (CI fails on drift). See
+[`fuzz/README.md`](./fuzz/README.md) for the full harness list, the host/SVM tier
+split, and the guidelines for writing a sound (non-tautological, reachable,
+false-positive-free) harness.
+
 # Development (with devcontainer)
 
 We've provided a devcontainer `Dockerfile` to help you spin up a dev environment with the correct versions of Rust, Solana, and Anchor for program development.

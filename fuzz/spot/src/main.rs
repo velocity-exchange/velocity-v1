@@ -296,7 +296,13 @@ fn prop_swap_and_withdraw_limits(
         fuzz_assert_le!(max_borrow, cap);
     }
 
-    // Totality: check_withdraw_limits must never panic (user=None path).
+    // Totality (no-panic) check, deliberately result-discarding: over the whole
+    // fuzzed input space `check_withdraw_limits` must never panic or hit an
+    // unreachable — a panic is a crash the fuzzer reports. The Ok/Err verdict is
+    // intentionally NOT asserted: there is no independent allow/deny oracle at
+    // this tier (asserting `is_ok()` would false-positive on the legitimate
+    // SafeMath overflow-rejection the fuzzer reaches at extreme balances). The
+    // allow/deny logic itself is exercised end-to-end at the SVM tier.
     let market = SpotMarket {
         decimals: 6,
         cumulative_deposit_interest: SPOT_CUMULATIVE_INTEREST_PRECISION,

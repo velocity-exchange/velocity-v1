@@ -204,14 +204,32 @@ fn inv_twap_between(
 #[crucible_fuzz]
 fn inv_confidence_floor(
     fixture: &mut OracleFixture,
-    #[range(1..1_000_000_000_000u64)] mm_price: u64,
-    #[range(1..1_000_000_000_000u64)] exch_price: u64,
+    #[range(1_000..1_000_000_000_000u64)] mm_price: u64,
+    // `exch_price` is derived within `diff_bps` (PERCENTAGE_PRECISION units, so
+    // 10_000 == 1%) of `mm_price` on either side. MM_EXCHANGE_FALLBACK_THRESHOLD
+    // is 1%, so spanning 0..3% lands ~1/3 of inputs on the MM premium branch (the
+    // path this invariant actually guards) and the rest on the fallback branch.
+    // The previous version drew the two prices independently over the full range,
+    // so they were almost always >1% apart and the premium branch was never hit.
+    #[range(0..30_000u64)] diff_bps: u64,
+    #[range(0..2u8)] dir: u8,
     #[range(0..1_000_000u64)] exch_conf: u64,
     #[range(0..100_000u64)] mm_slot: u64,
-    #[range(0..100_000u64)] extra_slot: u64,
+    // clock_slot - mm_slot; straddles the 10-slot amm-staleness boundary so the
+    // mm oracle is fresh enough to be UseMMOraclePrice-valid on a real fraction
+    // of inputs (large `extra_slot` previously forced the stale fallback anyway).
+    #[range(0..30u64)] mm_age: u64,
 ) {
     let _ = &fixture.ctx;
-    let clock_slot = mm_slot + extra_slot; // clock_slot >= mm_slot
+    let clock_slot = mm_slot + mm_age; // clock_slot >= mm_slot
+
+    // PERCENTAGE_PRECISION == 1_000_000; offset is a relative fraction of mm_price.
+    let offset = ((mm_price as u128) * (diff_bps as u128) / 1_000_000u128) as u64;
+    let exch_price = if dir == 0 {
+        mm_price.saturating_sub(offset).max(1)
+    } else {
+        mm_price.saturating_add(offset)
+    };
 
     let mut market = PerpMarket {
         contract_tier: ContractTier::B,

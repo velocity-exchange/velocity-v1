@@ -488,24 +488,28 @@ fn prop_asset_never_lowers_collateral(
 // REGRESSION HARNESSES (PENDING audit-fix PRs — violate on current master)
 // ===========================================================================
 
-// PENDING PR #267 (F5 liquidation math): liquidate_perp_pnl_for_deposit must
-// not let the post-transfer buffered margin shortage exceed the prior shortage
-// (the fix reverts with `LiquidationWorsensAccountHealth` 6360). This models
-// the arithmetic core: seizing a quote deposit at the liquidator premium
-// (asset_liquidation_multiplier) in exchange for pnl relief changes the
-// buffered shortage by `seized_value - relieved_value*(1 + buffer)`. When the
-// liquidator fee exceeds the liquidation buffer, that delta is positive — the
-// transfer strips more collateral than the pnl relief plus buffer benefit, and
-// master has no guard against it. Asserts the FIXED invariant (non-worsening,
-// within a $1 tolerance for deposit dust rounding).
-//
-// NOTE: the authoritative reproduction is the controller revert
-// (`LiquidationWorsensAccountHealth`), which is SVM-tier (P8). This host model
-// reproduces the underlying worsening arithmetic so the fuzzer demonstrably
-// catches the bug; its un-gate on merge tracks the P8 SVM harness.
-#[cfg(feature = "regr_267_worsens_health")]
+// Conditional property backing PR #267 (F5) — NOT a reproduction of it. #267's
+// fix is a controller-level revert (`LiquidationWorsensAccountHealth`) inside
+// `liquidate_perp_pnl_for_deposit`; it does NOT change the math function called
+// here (`calculate_asset_transfer_for_liability_transfer`). So this host
+// arithmetic is identical pre- and post-fix and can never be a pass/fail
+// regression — the authoritative reproduction is the controller revert (SVM
+// tier) plus the program's own `reverts_when_transfer_worsens_margin_shortage`
+// unit test. What IS host-checkable is the boundary the guard keys off: seizing
+// a quote deposit at the liquidator premium in exchange for pnl relief changes
+// the buffered shortage by `seized - relieved - relieved*buffer`. With equal $1
+// prices `seized = relieved*(PREC+fee)/PREC`, so
+//   shortage_delta = relieved*(fee - 100*buffer)/PREC
+// (liquidator_fee is LIQUIDATION_FEE_PRECISION=1e6; buffer is
+// MARGIN_PRECISION=1e4, hence the x100 to compare). Worsening is possible only
+// when `fee > 100*buffer`; below that boundary the transfer provably never
+// worsens the shortage. We assert exactly that sound implication — the previous
+// version asserted non-worsening unconditionally, which fails whenever
+// `fee > 100*buffer` (the case the SVM guard rejects), i.e. it was noise, not a
+// regression.
+#[cfg(feature = "prop_pnl_for_deposit_no_worsen_within_buffer")]
 #[crucible_fuzz]
-fn regr_267_worsens_health(
+fn prop_pnl_for_deposit_no_worsen_within_buffer(
     fixture: &mut MarginFixture,
     #[range(1..1_000_000_000u128)] liability_transfer: u128,
     #[range(0..100_000u32)] liquidator_fee: u32,
@@ -536,10 +540,12 @@ fn regr_267_worsens_health(
         let buffer_benefit = relieved.saturating_mul(buffer as i128) / (MARGIN_PRECISION as i128);
         let shortage_delta = seized - relieved - buffer_benefit;
 
-        // FIXED invariant: the transfer must not worsen the buffered shortage
-        // (with $1 dust tolerance). Violated on master when the premium exceeds
-        // the buffer.
-        fuzz_assert_le!(shortage_delta, QUOTE_PRECISION as i128);
+        // Sound implication: when the liquidator premium is within the buffer
+        // (matched precision: fee_1e6 <= buffer_1e4 * 100), the transfer never
+        // worsens the buffered shortage (within $1 deposit-dust tolerance).
+        if (liquidator_fee as i128) <= (buffer as i128).saturating_mul(100) {
+            fuzz_assert_le!(shortage_delta, QUOTE_PRECISION as i128);
+        }
     }
 }
 

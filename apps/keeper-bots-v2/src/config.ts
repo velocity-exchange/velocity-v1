@@ -91,6 +91,9 @@ export type SubaccountConfig = {
 
 export type LiquidatorConfig = BaseBotConfig & {
 	disableAutoDerisking: boolean;
+	/// Skip the startup sweep that deposits idle wallet token balances into
+	/// liquidation subaccounts that have no free collateral.
+	disableAutoDeposit?: boolean;
 	/// @deprecated, use {@link perpSubAccountConfig} to restrict markets
 	perpMarketIndicies?: Array<number>;
 	/// @deprecated, use {@link spotSubAccountConfig} to restrict markets

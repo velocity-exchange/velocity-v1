@@ -2,7 +2,7 @@
   "address": "vELoC1audYbSYVRXn1vPaV8Axoa9oU6BYmNGZZBDZ1P",
   "metadata": {
     "name": "velocity",
-    "version": "2.163.1",
+    "version": "2.163.2",
     "spec": "0.1.0",
     "description": "Created with Anchor"
   },
@@ -4421,8 +4421,7 @@
           "writable": true
         },
         {
-          "name": "liquidator_stats",
-          "writable": true
+          "name": "liquidator_stats"
         },
         {
           "name": "user",
@@ -6288,6 +6287,9 @@
       ],
       "accounts": [
         {
+          "name": "state"
+        },
+        {
           "name": "spot_market",
           "writable": true,
           "pda": {
@@ -6332,6 +6334,40 @@
           ]
         },
         {
+          "name": "spot_market_vault",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  115,
+                  112,
+                  111,
+                  116,
+                  95,
+                  109,
+                  97,
+                  114,
+                  107,
+                  101,
+                  116,
+                  95,
+                  118,
+                  97,
+                  117,
+                  108,
+                  116
+                ]
+              },
+              {
+                "kind": "arg",
+                "path": "market_index"
+              }
+            ]
+          }
+        },
+        {
           "name": "insurance_fund_vault",
           "writable": true,
           "pda": {
@@ -6367,6 +6403,12 @@
               }
             ]
           }
+        },
+        {
+          "name": "velocity_signer"
+        },
+        {
+          "name": "token_program"
         }
       ],
       "args": [
@@ -6541,13 +6583,7 @@
           }
         },
         {
-          "name": "authority",
-          "relations": [
-            "user"
-          ]
-        },
-        {
-          "name": "user"
+          "name": "authority"
         },
         {
           "name": "payer",
@@ -16164,6 +16200,26 @@
       "code": 6359,
       "name": "InvalidEquityFloorTransfer",
       "msg": "Invalid equity floor transfer between subaccounts"
+    },
+    {
+      "code": 6360,
+      "name": "IFDepositMintsZeroShares",
+      "msg": "Insurance fund deposit would mint zero shares"
+    },
+    {
+      "code": 6361,
+      "name": "LiquidationWorsensAccountHealth",
+      "msg": "Liquidation would worsen the account's margin shortage"
+    },
+    {
+      "code": 6362,
+      "name": "PerpBankruptcyMustPrecedeSpot",
+      "msg": "Perp bankruptcies must be resolved before spot bankruptcies"
+    },
+    {
+      "code": 6363,
+      "name": "InvalidRevenueShareRecipient",
+      "msg": "Revenue share recipient user must be sub_account_id 0"
     }
   ],
   "types": [
@@ -21211,19 +21267,24 @@
             }
           },
           {
-            "name": "_padding_align_amm",
+            "name": "pending_revenue_share",
             "docs": [
-              "8 bytes of explicit padding so MarketStats (216 bytes) plus this",
-              "padding equals 224 bytes — the offset Rust naturally inserts to",
-              "16-align AMM's leading u128. Making it explicit keeps the IDL byte",
-              "layout aligned with `repr(C)`."
+              "Aggregate accrued builder/referrer revenue-share owed out of this",
+              "market's `pnl_pool` but not yet paid: incremented as builder and",
+              "referrer fees accrue on fills (mirrors the per-order",
+              "`RevenueShareOrder.fees_accrued` writes) and decremented as",
+              "`sweep_completed_revenue_share_for_market` pays them. The",
+              "permissionless fee sweep reserves it (like `max(net_user_pnl, 0)` and",
+              "the floored IF tranche) so a protocol-fee drain can't move the tokens",
+              "backing already-owed revenue share out of the pnl pool and leave those",
+              "claims temporarily unpayable. precision: QUOTE_PRECISION.",
+              "",
+              "Occupies the 8 bytes Rust naturally inserts to 16-align AMM's leading",
+              "u128 (formerly explicit `_padding_align_amm`): a u64 at the same",
+              "8-aligned offset keeps every downstream byte offset and the total size",
+              "unchanged, so legacy accounts read 0 (nothing owed) until fees accrue."
             ],
-            "type": {
-              "array": [
-                "u8",
-                8
-              ]
-            }
+            "type": "u64"
           },
           {
             "name": "amm",
@@ -23005,13 +23066,18 @@
           {
             "name": "_padding_align_pfp",
             "docs": [
-              "Aligns `protocol_fee_pool`'s leading u128 to a 16-byte struct offset so",
-              "host (x86_64, align 16) and SBF (align 8) layouts agree. Do not reorder."
+              "Aligns `protocol_fee_pool`'s leading u128 to a 16-byte struct offset",
+              "(752) so host (x86_64, align 16) and SBF (align 8) layouts agree, AND",
+              "so the borsh/IDL packed layout reaches the same offset with no implicit",
+              "`#[repr(C)]` padding — off-chain borsh decoders (TS SDK, velocity-rs)",
+              "know nothing about implicit padding, so every byte must be explicit.",
+              "Was `[u8; 8]`, which left borsh 5 bytes short of the real offset and",
+              "made clients misread the three fields below. Do not reorder."
             ],
             "type": {
               "array": [
                 "u8",
-                8
+                13
               ]
             }
           },
@@ -23049,13 +23115,33 @@
             "type": "u32"
           },
           {
-            "name": "padding",
-            "type": {
-              "array": [
-                "u8",
-                8
-              ]
-            }
+            "name": "if_last_settle_vault_amount",
+            "docs": [
+              "Donation-proof accounted balance of the insurance-fund vault. It is moved",
+              "by the same signed delta as the real SPL vault on *every* instruction that",
+              "moves the vault, so it stays a faithful shadow of the vault minus raw",
+              "donations. Inflows grow it: staker deposits (`add_insurance_fund_stake`)",
+              "and settled revenue (`settle_revenue_to_insurance_fund`). Outflows/draws",
+              "shrink it (saturating at 0): staker withdrawals",
+              "(`remove_insurance_fund_stake`) and every IF draw that covers a loss —",
+              "`resolve_perp_pnl_deficit`, `resolve_perp_bankruptcy`,",
+              "`resolve_spot_bankruptcy`. The one movement deliberately *excluded* is a",
+              "raw SPL transfer straight into the vault: it runs no instruction, so it",
+              "never enters this balance — that is exactly the donation the shadow must",
+              "not see. Consumed by the per-period revenue-settle APR cap in",
+              "`settle_revenue_to_insurance_fund`, sized off `min(live_if_vault, this)`,",
+              "so a donation spiked into the live vault right before a settle cannot",
+              "inflate the cap while legitimate stakes and real settled revenue (which",
+              "this balance tracks) still do. (The unstake-cancel share forfeiture is",
+              "donation-proofed differently — by withdraw-and-restake at the active share",
+              "price — and does *not* read this field.) Repurposed from trailing padding —",
+              "layout/size unchanged; `0` means \"uninitialized\" (existing account",
+              "pre-upgrade, or an accounted balance legitimately drained to empty — an",
+              "empty IF vault has no user shares, so this is safe), and is seeded from the",
+              "live balance on the next add/settle and treated as \"fall back to live\" by",
+              "the consumers."
+            ],
+            "type": "u64"
           }
         ]
       }

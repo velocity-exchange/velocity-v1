@@ -1104,6 +1104,121 @@ fn sweep_market_fees_leaves_bankruptcy_if_floor() {
 }
 
 #[test]
+fn sweep_market_fees_reserves_floored_if_tranche_backing() {
+    // Audit #53: the tokens backing the floored IF bankruptcy tranche must
+    // stay in the pnl pool even against the buffer-exempt protocol drain.
+    // `resolve_perp_bankruptcy` cancels a forgiven loss against `pending_if_fee`
+    // counter-only, relying on that value still sitting in the pnl pool, but the
+    // protocol drain moves value to `protocol_fee_pool` (outside the insurance
+    // backstop) WITHOUT touching the counter — so without a reservation it
+    // could empty a pnl pool whose `pending_if_fee` counter (and thus the
+    // #245 floor) still claims backing.
+    let mut spot_market = SpotMarket {
+        deposit_balance: 400 * QUOTE_PRECISION * SPOT_BALANCE_PRECISION,
+        cumulative_deposit_interest: SPOT_CUMULATIVE_INTEREST_PRECISION,
+        cumulative_borrow_interest: SPOT_CUMULATIVE_INTEREST_PRECISION,
+        revenue_pool: PoolBalance::default(),
+        ..SpotMarket::default()
+    };
+
+    // OI = 5 base, TWAP = $100 -> notional 500 QUOTE; pct = 1% -> floor 5 QUOTE.
+    // pending_if == floor == 5 QUOTE, pending_protocol = 10 QUOTE, and the pnl
+    // pool holds only 7 QUOTE (thinner than protocol + floor). The protocol
+    // drain must leave the 5-QUOTE floored tranche backing behind.
+    let mut market = PerpMarket {
+        base_asset_amount_long: 5 * BASE_PRECISION_I128,
+        base_asset_amount_short: -5 * BASE_PRECISION_I128,
+        bankruptcy_if_floor_pct: PERCENTAGE_PRECISION_U32 / 100, // 1%
+        market_stats: MarketStats {
+            historical_oracle_data: HistoricalOracleData {
+                last_oracle_price_twap: 100 * PRICE_PRECISION_I64,
+                ..HistoricalOracleData::default()
+            },
+            ..MarketStats::default()
+        },
+        pnl_pool: PoolBalance {
+            scaled_balance: 7 * QUOTE_PRECISION * SPOT_BALANCE_PRECISION,
+            market_index: QUOTE_SPOT_MARKET_INDEX,
+            ..PoolBalance::default()
+        },
+        fee_ledger: FeeLedger {
+            pending_protocol_fee: 10 * QUOTE_PRECISION,
+            pending_if_fee: 5 * QUOTE_PRECISION,
+            ..FeeLedger::default()
+        },
+        ..PerpMarket::default()
+    };
+    assert_eq!(
+        market.get_bankruptcy_if_tranche_reservation(false).unwrap(),
+        5 * QUOTE_PRECISION
+    );
+
+    let (if_swept, protocol_swept, _) =
+        sweep_market_fees(&mut market, &mut spot_market, 0, 0, false).unwrap();
+    // only 7 - 5 = 2 QUOTE was above the reserved tranche backing
+    assert_eq!(protocol_swept, 2 * QUOTE_PRECISION);
+    assert_eq!(if_swept, 0);
+    assert_eq!(market.fee_ledger.pending_protocol_fee, 8 * QUOTE_PRECISION);
+    assert_eq!(market.fee_ledger.pending_if_fee, 5 * QUOTE_PRECISION);
+    // the pnl pool retains exactly the floored tranche backing (5 QUOTE)
+    let pnl_pool_tokens = get_token_amount(
+        market.pnl_pool.balance(),
+        &spot_market,
+        market.pnl_pool.balance_type(),
+    )
+    .unwrap();
+    assert_eq!(pnl_pool_tokens, 5 * QUOTE_PRECISION);
+
+    // force=true (delisting) drops the reservation: the full protocol cut drains
+    let (_, protocol_swept, _) =
+        sweep_market_fees(&mut market, &mut spot_market, 0, 0, true).unwrap();
+    assert_eq!(protocol_swept, 5 * QUOTE_PRECISION); // remaining pool, capped by the 8 pending
+    assert_eq!(market.fee_ledger.pending_protocol_fee, 3 * QUOTE_PRECISION);
+}
+
+#[test]
+fn sweep_market_fees_reserves_pending_revenue_share() {
+    // Audit #73: already-accrued builder/referrer revenue share is owed out of
+    // the pnl pool; the protocol drain must leave its backing behind so those
+    // claims stay payable by `sweep_completed_revenue_share_for_market`.
+    let mut spot_market = SpotMarket {
+        deposit_balance: 400 * QUOTE_PRECISION * SPOT_BALANCE_PRECISION,
+        cumulative_deposit_interest: SPOT_CUMULATIVE_INTEREST_PRECISION,
+        cumulative_borrow_interest: SPOT_CUMULATIVE_INTEREST_PRECISION,
+        revenue_pool: PoolBalance::default(),
+        ..SpotMarket::default()
+    };
+
+    // pnl pool holds 7 QUOTE; 3 QUOTE of revenue share is owed; pending_protocol
+    // = 10 QUOTE. The protocol drain may take only 7 - 3 = 4 QUOTE.
+    let mut market = PerpMarket {
+        pnl_pool: PoolBalance {
+            scaled_balance: 7 * QUOTE_PRECISION * SPOT_BALANCE_PRECISION,
+            market_index: QUOTE_SPOT_MARKET_INDEX,
+            ..PoolBalance::default()
+        },
+        fee_ledger: FeeLedger {
+            pending_protocol_fee: 10 * QUOTE_PRECISION,
+            ..FeeLedger::default()
+        },
+        pending_revenue_share: (3 * QUOTE_PRECISION) as u64,
+        ..PerpMarket::default()
+    };
+
+    let (_, protocol_swept, _) =
+        sweep_market_fees(&mut market, &mut spot_market, 0, 0, false).unwrap();
+    assert_eq!(protocol_swept, 4 * QUOTE_PRECISION);
+    assert_eq!(market.fee_ledger.pending_protocol_fee, 6 * QUOTE_PRECISION);
+    let pnl_pool_tokens = get_token_amount(
+        market.pnl_pool.balance(),
+        &spot_market,
+        market.pnl_pool.balance_type(),
+    )
+    .unwrap();
+    assert_eq!(pnl_pool_tokens, 3 * QUOTE_PRECISION); // revenue-share backing retained
+}
+
+#[test]
 fn sweep_market_fees_force_overrides_settle_rev_pool_pause() {
     // A SettleRevPool-paused market early-returns from the streaming sweep
     // (covered above). The final delisting sweep passes force=true and must

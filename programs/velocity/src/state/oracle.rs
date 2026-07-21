@@ -567,7 +567,7 @@ pub fn get_prelaunch_price(
     Ok(OraclePriceData {
         price: oracle.price,
         confidence: oracle.confidence,
-        delay: oracle.amm_last_update_slot.saturating_sub(slot).cast()?,
+        delay: slot.saturating_sub(oracle.amm_last_update_slot).cast()?,
         has_sufficient_number_of_data_points: true,
         sequence_id: None,
     })

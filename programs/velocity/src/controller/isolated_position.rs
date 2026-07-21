@@ -76,6 +76,7 @@ pub fn deposit_into_isolated_perp_position<'c: 'info, 'info>(
         &mut spot_market,
         Some(&oracle_price_data),
         now,
+        state.funding_paused()?,
     )?;
 
     user.increment_total_deposits(
@@ -167,6 +168,7 @@ pub fn transfer_isolated_perp_position_deposit<'c: 'info, 'info>(
     spot_market_index: u16,
     perp_market_index: u16,
     amount: i64,
+    funding_paused: bool,
 ) -> VelocityResult<()> {
     validate!(
         amount != 0,
@@ -202,6 +204,7 @@ pub fn transfer_isolated_perp_position_deposit<'c: 'info, 'info>(
             spot_market,
             Some(oracle_price_data),
             now,
+            funding_paused,
         )?;
 
         tvl_before = spot_market.get_tvl()?;
@@ -346,6 +349,7 @@ pub fn withdraw_from_isolated_perp_position<'c: 'info, 'info>(
     spot_market_index: u16,
     perp_market_index: u16,
     amount: u64,
+    funding_paused: bool,
 ) -> VelocityResult<()> {
     validate!(
         amount != 0,
@@ -373,6 +377,7 @@ pub fn withdraw_from_isolated_perp_position<'c: 'info, 'info>(
             spot_market,
             Some(oracle_price_data),
             now,
+            funding_paused,
         )?;
 
         user.increment_total_withdraws(

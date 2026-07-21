@@ -251,6 +251,18 @@ impl Metrics {
         .unwrap();
         registry.register(Box::new(cu_spent.clone())).unwrap();
 
+        // Pre-warm the label children the liquidator uses: a registered
+        // IntCounterVec exports NO series until with_label_values() creates a
+        // child, so on a quiet market these counters are absent for days and
+        // the Grafana "Liquidation Attempts Rate" alert can't tell "no
+        // liquidations" from "metric missing". Touching the children here makes
+        // them export as 0 from startup.
+        for market_type in ["perp", "spot"] {
+            liquidation_attempts.with_label_values(&[market_type]);
+            liquidation_success.with_label_values(&[market_type]);
+            liquidation_failed.with_label_values(&[market_type]);
+        }
+
         Self {
             tx_sent,
             tx_confirmed,

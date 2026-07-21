@@ -11,12 +11,13 @@ import {
 	TransactionMessage,
 } from '@solana/web3.js';
 import { utils } from '@coral-xyz/anchor';
+import { createHash } from 'node:crypto';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import * as multisig from '@sqds/multisig';
 import { readGlobalOpts, withGlobalOptions } from '../lib/options';
 import { buildAdminClient, buildProvider } from '../lib/provider';
-import { reportDispatch, sendOrPropose } from '../lib/squads';
+import { reportDispatch, reportDryRun, sendOrPropose } from '../lib/squads';
 
 /** BPFLoaderUpgradeab1e11111111111111111111111 — Solana's upgradeable loader. */
 const BPF_LOADER_UPGRADEABLE_PROGRAM_ID = new PublicKey(
@@ -215,6 +216,19 @@ function buildCloseMetadataBufferIx(args: {
 		],
 		data: IX_METADATA_CLOSE,
 	});
+}
+
+/**
+ * sha256 of bytecode with trailing zero bytes stripped — the same
+ * normalization `solana-verify get-buffer-hash` / `get-executable-hash`
+ * applies, so the printed hash is directly comparable to CI's.
+ */
+function executableHash(bytecode: Buffer): string {
+	let end = bytecode.length;
+	while (end > 0 && bytecode[end - 1] === 0) {
+		end--;
+	}
+	return createHash('sha256').update(bytecode.subarray(0, end)).digest('hex');
 }
 
 /** A single buffer discovered on-chain, with its type and reclaimable rent. */
@@ -437,6 +451,146 @@ export function registerProgram(parent: Command): void {
 			);
 			reportDispatch(
 				`program halt — upgrading ${programId.toBase58()} with buffer ${bufferKp.publicKey.toBase58()} (authority=${upgradeAuthority.toBase58()}, spill=${spill.toBase58()})`,
+				result
+			);
+		} finally {
+			await client.unsubscribe();
+		}
+	});
+
+	withGlobalOptions(
+		prog
+			.command('upgrade')
+			.description(
+				[
+					'Propose a BPFLoaderUpgradeable::upgrade of the velocity program from an',
+					'EXISTING on-chain buffer (e.g. one staged by the release CI whose Squads',
+					'proposal went stale). The buffer must already be fully written and its',
+					'authority must equal the program upgrade authority (the multisig vault',
+					'under --multisig).',
+					'',
+					'Prints the buffer executable hash (same normalization as `solana-verify',
+					'get-buffer-hash`) so it can be checked against the verified build before',
+					'members approve.',
+				].join('\n')
+			)
+			.requiredOption(
+				'--buffer <pubkey>',
+				'existing program buffer to upgrade from'
+			)
+			.option(
+				'--upgrade-authority <pubkey>',
+				'overrides the upgrade authority signer (defaults to the multisig vault, or the wallet when --multisig is absent)'
+			)
+			.option(
+				'--spill <pubkey>',
+				'recipient for the reclaimed buffer rent on upgrade (defaults to the wallet)'
+			)
+			.option(
+				'--dry-run',
+				'print the instruction and proposal costs without sending'
+			)
+	).action(async (_flags, cmd: Command) => {
+		const opts = readGlobalOpts(cmd);
+		const local = cmd.opts() as {
+			buffer: string;
+			upgradeAuthority?: string;
+			spill?: string;
+			dryRun?: boolean;
+		};
+		const provider = buildProvider(opts);
+		const client = await buildAdminClient(opts);
+		try {
+			const programId = client.program.programId;
+			const buffer = new PublicKey(local.buffer);
+
+			let upgradeAuthority: PublicKey;
+			if (local.upgradeAuthority) {
+				upgradeAuthority = new PublicKey(local.upgradeAuthority);
+			} else if (opts.multisig) {
+				[upgradeAuthority] = multisig.getVaultPda({
+					multisigPda: new PublicKey(opts.multisig),
+					index: 0,
+				});
+			} else {
+				upgradeAuthority = provider.wallet.publicKey;
+			}
+			const spill = local.spill
+				? new PublicKey(local.spill)
+				: provider.wallet.publicKey;
+
+			// The loader rejects an Upgrade whose buffer is missing, malformed, or
+			// owned by a different authority — but only at execution time, after the
+			// members already voted. Check everything up front instead.
+			const account = await provider.connection.getAccountInfo(buffer);
+			if (!account) {
+				throw new Error(`buffer ${buffer.toBase58()} does not exist`);
+			}
+			if (!account.owner.equals(BPF_LOADER_UPGRADEABLE_PROGRAM_ID)) {
+				throw new Error(
+					`buffer ${buffer.toBase58()} is not owned by the upgradeable loader (owner: ${account.owner.toBase58()})`
+				);
+			}
+			const data = Buffer.from(account.data);
+			if (
+				data.length < BUFFER_HEADER_SIZE ||
+				!data.subarray(0, 4).equals(BPF_BUFFER_TAG)
+			) {
+				throw new Error(
+					`buffer ${buffer.toBase58()} is not an UpgradeableLoaderState::Buffer account`
+				);
+			}
+			if (data[4] !== 1) {
+				throw new Error(
+					`buffer ${buffer.toBase58()} has no authority (already consumed?)`
+				);
+			}
+			const bufferAuthority = new PublicKey(
+				data.subarray(
+					BPF_BUFFER_AUTHORITY_OFFSET,
+					BPF_BUFFER_AUTHORITY_OFFSET + 32
+				)
+			);
+			if (!bufferAuthority.equals(upgradeAuthority)) {
+				throw new Error(
+					`buffer authority ${bufferAuthority.toBase58()} does not match the upgrade authority ${upgradeAuthority.toBase58()} — the loader would reject the upgrade`
+				);
+			}
+
+			console.log(`program:          ${programId.toBase58()}`);
+			console.log(`buffer:           ${buffer.toBase58()}`);
+			console.log(
+				`buffer size:      ${
+					data.length - BUFFER_HEADER_SIZE
+				} bytes of bytecode`
+			);
+			console.log(
+				`executable hash:  ${executableHash(data.subarray(BUFFER_HEADER_SIZE))}`
+			);
+			console.log(`upgrade authority: ${upgradeAuthority.toBase58()}`);
+			console.log(`spill (rent to):  ${spill.toBase58()}`);
+
+			const ix = buildUpgradeIx({
+				programId,
+				buffer,
+				authority: upgradeAuthority,
+				spill,
+			});
+			const multisigPda = opts.multisig
+				? new PublicKey(opts.multisig)
+				: undefined;
+			if (local.dryRun) {
+				await reportDryRun(provider, [ix], multisigPda);
+				return;
+			}
+			const result = await sendOrPropose(
+				provider,
+				[ix],
+				multisigPda,
+				`velocity-admin program upgrade buffer=${buffer.toBase58()}`
+			);
+			reportDispatch(
+				`program upgrade — ${programId.toBase58()} from buffer ${buffer.toBase58()}`,
 				result
 			);
 		} finally {

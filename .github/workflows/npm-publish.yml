@@ -36,6 +36,10 @@ env:
 jobs:
   publish:
     runs-on: ubuntu-latest
+    # TEMPORARY: vaults-sdk and admin-cli are not ready to publish publicly.
+    # Skip (don't fail) their release tags so the check stays green and no
+    # "publish failed" Slack alert fires. Remove this guard when they're cleared.
+    if: ${{ !startsWith(github.ref_name, 'npm-vaults-sdk-v') && !startsWith(github.ref_name, 'npm-cli-admin-v') }}
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
       - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0

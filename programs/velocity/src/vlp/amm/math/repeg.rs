@@ -430,6 +430,14 @@ pub struct ProjectionInputs {
     /// Raw `market_config` byte — checked against `MarketConfigFlag` bits
     /// inside `adjust_amm` (e.g. `DisableFormulaicKUpdate`).
     pub market_config: u8,
+    /// The market's `min_order_size` (`MarketStats::min_order_size`). Threaded
+    /// through so the synthetic market the scalar projection builds carries the
+    /// real k-down floor: `adjust_amm` → `can_lower_k` / `get_lower_bound_sqrt_k`
+    /// read `market.market_stats.min_order_size` to bound how far a k decrease
+    /// may go. Without it, the synthetic's `PerpMarket::default()` min order
+    /// size (0) lets the fill-path projection lower AMM liquidity below the
+    /// floor a full keeper refresh (which passes the real market) enforces.
+    pub min_order_size: u64,
 }
 
 impl ProjectionInputs {
@@ -437,6 +445,7 @@ impl ProjectionInputs {
         Self {
             market_status: market.status,
             market_config: market.market_config,
+            min_order_size: market.market_stats.min_order_size,
         }
     }
 }
@@ -452,12 +461,15 @@ pub fn project_post_refresh_scalar(
     mm_oracle_price_data: &MMOraclePriceData,
     oracle_validity: Option<OracleValidity>,
 ) -> VelocityResult<ProjectedAmmState> {
-    let synthetic = PerpMarket {
+    let mut synthetic = PerpMarket {
         amm: *amm,
         status: inputs.market_status,
         market_config: inputs.market_config,
         ..PerpMarket::default()
     };
+    // Carry the real k-down floor into the synthetic market so `adjust_amm`'s
+    // `can_lower_k` / `get_lower_bound_sqrt_k` use it instead of the default 0.
+    synthetic.market_stats.min_order_size = inputs.min_order_size;
     project_post_refresh(&synthetic, mm_oracle_price_data, oracle_validity)
 }
 

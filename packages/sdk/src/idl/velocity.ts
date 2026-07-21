@@ -8,7 +8,7 @@ export type Velocity = {
   "address": "vELoC1audYbSYVRXn1vPaV8Axoa9oU6BYmNGZZBDZ1P",
   "metadata": {
     "name": "velocity",
-    "version": "2.163.1",
+    "version": "2.163.2",
     "spec": "0.1.0",
     "description": "Created with Anchor"
   },
@@ -6290,6 +6290,9 @@ export type Velocity = {
       ],
       "accounts": [
         {
+          "name": "state"
+        },
+        {
           "name": "spotMarket",
           "writable": true,
           "pda": {
@@ -6334,6 +6337,40 @@ export type Velocity = {
           ]
         },
         {
+          "name": "spotMarketVault",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  115,
+                  112,
+                  111,
+                  116,
+                  95,
+                  109,
+                  97,
+                  114,
+                  107,
+                  101,
+                  116,
+                  95,
+                  118,
+                  97,
+                  117,
+                  108,
+                  116
+                ]
+              },
+              {
+                "kind": "arg",
+                "path": "marketIndex"
+              }
+            ]
+          }
+        },
+        {
           "name": "insuranceFundVault",
           "writable": true,
           "pda": {
@@ -6369,6 +6406,12 @@ export type Velocity = {
               }
             ]
           }
+        },
+        {
+          "name": "velocitySigner"
+        },
+        {
+          "name": "tokenProgram"
         }
       ],
       "args": [
@@ -6543,13 +6586,7 @@ export type Velocity = {
           }
         },
         {
-          "name": "authority",
-          "relations": [
-            "user"
-          ]
-        },
-        {
-          "name": "user"
+          "name": "authority"
         },
         {
           "name": "payer",
@@ -16163,6 +16200,26 @@ export type Velocity = {
       "code": 6359,
       "name": "invalidEquityFloorTransfer",
       "msg": "Invalid equity floor transfer between subaccounts"
+    },
+    {
+      "code": 6360,
+      "name": "ifDepositMintsZeroShares",
+      "msg": "Insurance fund deposit would mint zero shares"
+    },
+    {
+      "code": 6361,
+      "name": "liquidationWorsensAccountHealth",
+      "msg": "Liquidation would worsen the account's margin shortage"
+    },
+    {
+      "code": 6362,
+      "name": "perpBankruptcyMustPrecedeSpot",
+      "msg": "Perp bankruptcies must be resolved before spot bankruptcies"
+    },
+    {
+      "code": 6363,
+      "name": "invalidRevenueShareRecipient",
+      "msg": "Revenue share recipient user must be sub_account_id 0"
     }
   ],
   "types": [
@@ -23004,13 +23061,18 @@ export type Velocity = {
           {
             "name": "paddingAlignPfp",
             "docs": [
-              "Aligns `protocol_fee_pool`'s leading u128 to a 16-byte struct offset so",
-              "host (x86_64, align 16) and SBF (align 8) layouts agree. Do not reorder."
+              "Aligns `protocol_fee_pool`'s leading u128 to a 16-byte struct offset",
+              "(752) so host (x86_64, align 16) and SBF (align 8) layouts agree, AND",
+              "so the borsh/IDL packed layout reaches the same offset with no implicit",
+              "`#[repr(C)]` padding — off-chain borsh decoders (TS SDK, velocity-rs)",
+              "know nothing about implicit padding, so every byte must be explicit.",
+              "Was `[u8; 8]`, which left borsh 5 bytes short of the real offset and",
+              "made clients misread the three fields below. Do not reorder."
             ],
             "type": {
               "array": [
                 "u8",
-                8
+                13
               ]
             }
           },
@@ -23050,14 +23112,29 @@ export type Velocity = {
           {
             "name": "ifLastSettleVaultAmount",
             "docs": [
-              "Insurance-fund vault token balance recorded at the end of the last",
-              "revenue settle. Used as a donation-proof base for the per-period APR cap",
-              "in `settle_revenue_to_insurance_fund`: the cap is sized off",
-              "`min(live_if_vault, this snapshot)`, so a direct SPL donation into the IF",
-              "vault right before a settle cannot inflate the cap (the snapshot predates",
-              "the donation). Repurposed from trailing padding — layout/size unchanged;",
-              "`0` on existing accounts means \"uninitialized\", handled by seeding it to",
-              "the live balance on the first post-upgrade settle."
+              "Donation-proof accounted balance of the insurance-fund vault. It is moved",
+              "by the same signed delta as the real SPL vault on *every* instruction that",
+              "moves the vault, so it stays a faithful shadow of the vault minus raw",
+              "donations. Inflows grow it: staker deposits (`add_insurance_fund_stake`)",
+              "and settled revenue (`settle_revenue_to_insurance_fund`). Outflows/draws",
+              "shrink it (saturating at 0): staker withdrawals",
+              "(`remove_insurance_fund_stake`) and every IF draw that covers a loss —",
+              "`resolve_perp_pnl_deficit`, `resolve_perp_bankruptcy`,",
+              "`resolve_spot_bankruptcy`. The one movement deliberately *excluded* is a",
+              "raw SPL transfer straight into the vault: it runs no instruction, so it",
+              "never enters this balance — that is exactly the donation the shadow must",
+              "not see. Consumed by the per-period revenue-settle APR cap in",
+              "`settle_revenue_to_insurance_fund`, sized off `min(live_if_vault, this)`,",
+              "so a donation spiked into the live vault right before a settle cannot",
+              "inflate the cap while legitimate stakes and real settled revenue (which",
+              "this balance tracks) still do. (The unstake-cancel share forfeiture is",
+              "donation-proofed differently — by withdraw-and-restake at the active share",
+              "price — and does *not* read this field.) Repurposed from trailing padding —",
+              "layout/size unchanged; `0` means \"uninitialized\" (existing account",
+              "pre-upgrade, or an accounted balance legitimately drained to empty — an",
+              "empty IF vault has no user shares, so this is safe), and is seeded from the",
+              "live balance on the next add/settle and treated as \"fall back to live\" by",
+              "the consumers."
             ],
             "type": "u64"
           }

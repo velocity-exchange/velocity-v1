@@ -183,6 +183,12 @@ describe('prelisting', () => {
 		await adminVelocityClient.fetchAccounts();
 		const bidOrder = adminVelocityClientUser.getOrderByUserOrderId(1);
 
+		// Advance the AMM's last_update_slot past the order slot so the prelaunch
+		// oracle (whose delay is slot - amm.last_update_slot) is fresh enough for the
+		// AMM to fill low-risk. A prelaunch market only tracks AMM-update freshness, so
+		// without a keeper AMM crank the order can never age past the oracle delay.
+		await adminVelocityClient.updateAMMs([0]);
+
 		await adminVelocityClient.fillPerpOrder(
 			await adminVelocityClient.getUserAccountPublicKey(),
 			adminVelocityClient.getUserAccount(),
@@ -211,6 +217,9 @@ describe('prelisting', () => {
 		await adminVelocityClient.placePerpOrder(askOrderParams);
 		await adminVelocityClient.fetchAccounts();
 		const askOrder = adminVelocityClientUser.getOrderByUserOrderId(1);
+
+		// Same as the bid: crank the AMM so the prelaunch oracle is fresh at fill time.
+		await adminVelocityClient.updateAMMs([0]);
 
 		await adminVelocityClient.fillPerpOrder(
 			await adminVelocityClient.getUserAccountPublicKey(),

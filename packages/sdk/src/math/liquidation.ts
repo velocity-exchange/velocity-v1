@@ -279,12 +279,12 @@ export function calculateSpotIfFee(
  * User-protective price at which a collateral (deposit) asset is seized when its oracle is
  * margin-invalid (`StaleForMargin`/`TooUncertain`) but still acceptable for
  * `VelocityAction::Liquidate`, mirroring `calculate_user_protective_asset_price` in
- * `programs/velocity/src/math/liquidation.rs`. The program sizes spot-liquidation asset
- * transfers (and the swap-liquidation worst-case price) with this instead of the raw oracle
- * price whenever the deposit oracle fails the margin-calc validity gate — a stale or
- * uncertain oracle can make an account liquidatable but cannot cheapen its collateral. Pass
- * the result as `assetPrice` to `calculateAssetTransferForLiabilityTransfer` to predict
- * on-chain transfer amounts in that case.
+ * `programs/velocity/src/math/liquidation.rs`. The program sizes the asset-conversion leg
+ * of spot and pnl-vs-spot liquidations (and the swap-liquidation worst-case price) with this
+ * instead of the raw oracle price whenever the deposit oracle fails the margin-calc validity
+ * gate — a stale or uncertain oracle can make an account liquidatable but cannot cheapen its
+ * collateral. Pass the result as `assetPrice` to `calculateAssetTransferForLiabilityTransfer`
+ * to predict on-chain transfer amounts in that case.
  * @param oraclePrice Raw oracle price of the asset, PRICE_PRECISION (1e6).
  * @param oracleConfidence Oracle confidence interval, PRICE_PRECISION (1e6).
  * @param lastOraclePriceTwap5Min The asset spot market's `historicalOracleData.lastOraclePriceTwap5Min`, PRICE_PRECISION (1e6).
@@ -305,11 +305,11 @@ export function calculateUserProtectiveAssetPrice(
  * Liability-side counterpart of `calculateUserProtectiveAssetPrice`, mirroring
  * `calculate_user_protective_liability_price` in
  * `programs/velocity/src/math/liquidation.rs`. When the borrow (liability) oracle is
- * margin-invalid, the program prices the repayment leg of spot liquidations (and the
- * swap-liquidation worst-case price) at this instead of the raw oracle price, so an
- * inflated stale/uncertain debt price cannot cheapen the collateral exchanged for it. Pass
- * the result as `liabilityPrice` to `calculateAssetTransferForLiabilityTransfer` to predict
- * on-chain transfer amounts in that case.
+ * margin-invalid, the program prices the repayment leg of spot and pnl-vs-spot liquidations
+ * (and the swap-liquidation worst-case price) at this instead of the raw oracle price, so an
+ * inflated stale/uncertain debt price cannot cheapen the collateral (or pnl) exchanged for
+ * it. Pass the result as `liabilityPrice` to `calculateAssetTransferForLiabilityTransfer` to
+ * predict on-chain transfer amounts in that case.
  * @param oraclePrice Raw oracle price of the liability, PRICE_PRECISION (1e6).
  * @param oracleConfidence Oracle confidence interval, PRICE_PRECISION (1e6).
  * @param lastOraclePriceTwap5Min The liability spot market's `historicalOracleData.lastOraclePriceTwap5Min`, PRICE_PRECISION (1e6).

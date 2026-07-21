@@ -6326,7 +6326,10 @@ export class VelocityClient {
 			});
 			oracleAccountInfos.push({
 				pubkey: market.oracle,
-				isWritable: false,
+				// `update_amms` loads each market as writable, and `load_maps` refreshes a
+				// `prelaunch`-sourced oracle in place, so that oracle account must be writable
+				// or the crank reverts with "modified data of a read-only account".
+				isWritable: isVariant(market.oracleSource, 'prelaunch'),
 				isSigner: false,
 			});
 		}

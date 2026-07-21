@@ -2821,6 +2821,44 @@
           }
         },
         {
+          "name": "velocity_spot_market_vault",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  115,
+                  112,
+                  111,
+                  116,
+                  95,
+                  109,
+                  97,
+                  114,
+                  107,
+                  101,
+                  116,
+                  95,
+                  118,
+                  97,
+                  117,
+                  108,
+                  116
+                ]
+              },
+              {
+                "kind": "arg",
+                "path": "market_index"
+              }
+            ],
+            "program": {
+              "kind": "account",
+              "path": "velocity_program"
+            }
+          }
+        },
+        {
           "name": "insurance_fund_vault",
           "writable": true,
           "pda": {
@@ -2866,8 +2904,17 @@
           "writable": true
         },
         {
+          "name": "velocity_state"
+        },
+        {
+          "name": "velocity_signer"
+        },
+        {
           "name": "velocity_program",
           "address": "vELoC1audYbSYVRXn1vPaV8Axoa9oU6BYmNGZZBDZ1P"
+        },
+        {
+          "name": "token_program"
         }
       ],
       "args": [
@@ -6045,7 +6092,26 @@
             "type": {
               "array": [
                 "u8",
-                14
+                3
+              ]
+            }
+          },
+          {
+            "name": "equity_floor",
+            "docs": [
+              "Minimum account equity (cross-margin total collateral) required for",
+              "risk-increasing orders, fills, withdrawals and deposit transfers.",
+              "Settable only by the warm/cold admin; 0 disables the check.",
+              "precision: QUOTE_PRECISION"
+            ],
+            "type": "u64"
+          },
+          {
+            "name": "padding2",
+            "type": {
+              "array": [
+                "u8",
+                8
               ]
             }
           }
@@ -6235,11 +6301,21 @@
             "type": "u8"
           },
           {
+            "name": "equity_breaker_tripped",
+            "docs": [
+              "Set by the permissionless `trip_equity_floor_breaker` instruction when",
+              "any of the authority's subaccounts falls below its equity floor.",
+              "While set, every subaccount of the authority rejects risk-increasing",
+              "fills, withdrawals and transfers out. Cleared only by the warm admin."
+            ],
+            "type": "u8"
+          },
+          {
             "name": "padding",
             "type": {
               "array": [
                 "u8",
-                63
+                62
               ]
             }
           }

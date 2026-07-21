@@ -1547,3 +1547,92 @@ pub fn revenue_debit_leaving_vault_preserves_backing() {
         }
     }
 }
+
+#[test]
+pub fn cancel_request_after_rebase_floors_request_to_zero() {
+    // #34: a market-level IF rebase can floor a small pending unstake request to
+    // zero (`last_withdraw_request_shares / rebase_divisor`). Before the fix,
+    // cancel re-checked `last_withdraw_request_shares != 0` *after* the rebase and
+    // rejected the zeroed request (InvalidIFUnstakeCancel), stranding the stake:
+    // `remove` also rejects a zero request, and `add` / re-`request` are blocked
+    // by the still-in-progress request. Cancel must now succeed, returning the
+    // intact rebased stake to active and abandoning only the dust request value.
+    let mut if_balance = 0;
+
+    let mut if_stake_1 = InsuranceFundStake::new(Pubkey::default(), 0, 0);
+    let mut user_stats_1 = UserStats::default();
+
+    let mut if_stake_2 = InsuranceFundStake::new(Pubkey::default(), 0, 0);
+    let mut user_stats_2 = UserStats::default();
+
+    let amount = (QUOTE_PRECISION * 100_000) as u64; // $100k each
+    let mut spot_market = SpotMarket {
+        deposit_balance: 0,
+        cumulative_deposit_interest: 1111 * SPOT_CUMULATIVE_INTEREST_PRECISION / 1000,
+        insurance_fund: InsuranceFund {
+            unstaking_period: 0,
+            ..InsuranceFund::default()
+        },
+        ..SpotMarket::default()
+    };
+
+    add_insurance_fund_stake(
+        amount,
+        if_balance,
+        &mut if_stake_1,
+        &mut user_stats_1,
+        &mut spot_market,
+        0,
+        false,
+    )
+    .unwrap();
+    if_balance = amount;
+    add_insurance_fund_stake(
+        amount,
+        if_balance,
+        &mut if_stake_2,
+        &mut user_stats_2,
+        &mut spot_market,
+        0,
+        false,
+    )
+    .unwrap();
+    if_balance = 2 * amount;
+
+    // Staker 1 requests a tiny partial unstake (5 shares) while the fund is full,
+    // so no rebase happens at request time.
+    request_remove_insurance_fund_stake(
+        5,
+        if_balance,
+        &mut if_stake_1,
+        &mut user_stats_1,
+        &mut spot_market,
+        0,
+    )
+    .unwrap();
+    assert_eq!(if_stake_1.last_withdraw_request_shares, 5);
+    assert_eq!(if_stake_1.if_base, 0);
+    assert_eq!(spot_market.insurance_fund.shares_base, 0);
+
+    // The fund is drained to $1: the next touch triggers a rebase whose divisor
+    // (10^4) exceeds the 5-share request, flooring it to zero.
+    if_balance = QUOTE_PRECISION as u64;
+
+    cancel_request_remove_insurance_fund_stake(
+        if_balance,
+        &mut if_stake_1,
+        &mut user_stats_1,
+        &mut spot_market,
+        0,
+    )
+    .unwrap();
+
+    // Rebase fired and the stake was carried across it.
+    assert_eq!(spot_market.insurance_fund.shares_base, 4);
+    assert_eq!(if_stake_1.if_base, 4);
+
+    // Request cleared, stake intact and non-zero (only the dust value abandoned).
+    assert_eq!(if_stake_1.last_withdraw_request_shares, 0);
+    assert_eq!(if_stake_1.last_withdraw_request_value, 0);
+    assert!(if_stake_1.unchecked_if_shares() > 0);
+}

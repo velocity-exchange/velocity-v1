@@ -1,5 +1,5 @@
 use anchor_lang::prelude::*;
-use anchor_spl::token_interface::TokenAccount;
+use anchor_spl::token_interface::{TokenAccount, TokenInterface};
 use velocity::cpi::accounts::RequestRemoveInsuranceFundStake as VelocityRequestRemoveInsuranceFundStake;
 use velocity::program::Velocity;
 use velocity::state::insurance_fund_stake::InsuranceFundStake;
@@ -44,6 +44,13 @@ pub struct RequestRemoveInsuranceFundStake<'info> {
     pub insurance_fund_stake: AccountLoader<'info, InsuranceFundStake>,
     #[account(
         mut,
+        seeds = [b"spot_market_vault".as_ref(), market_index.to_le_bytes().as_ref()],
+        bump,
+        seeds::program = velocity_program.key(),
+    )]
+    pub velocity_spot_market_vault: Box<InterfaceAccount<'info, TokenAccount>>,
+    #[account(
+        mut,
         seeds = [b"insurance_fund_vault".as_ref(), market_index.to_le_bytes().as_ref()],
         bump,
         seeds::program = velocity_program.key(),
@@ -55,7 +62,12 @@ pub struct RequestRemoveInsuranceFundStake<'info> {
     )]
     /// CHECK: checked in velocity cpi
     pub velocity_user_stats: AccountInfo<'info>,
+    /// CHECK: checked in velocity cpi
+    pub velocity_state: AccountInfo<'info>,
+    /// CHECK: forced velocity_signer
+    pub velocity_signer: AccountInfo<'info>,
     pub velocity_program: Program<'info, Velocity>,
+    pub token_program: Interface<'info, TokenInterface>,
 }
 
 impl<'info> RequestRemoveInsuranceFundStakeCPI
@@ -69,11 +81,19 @@ impl<'info> RequestRemoveInsuranceFundStakeCPI
         declare_vault_seeds!(self.accounts.vault, seeds);
 
         let cpi_accounts = VelocityRequestRemoveInsuranceFundStake {
+            state: self.accounts.velocity_state.clone(),
             spot_market: self.accounts.velocity_spot_market.to_account_info().clone(),
             insurance_fund_stake: self.accounts.insurance_fund_stake.to_account_info().clone(),
             user_stats: self.accounts.velocity_user_stats.clone(),
             authority: self.accounts.vault.to_account_info().clone(),
+            spot_market_vault: self
+                .accounts
+                .velocity_spot_market_vault
+                .to_account_info()
+                .clone(),
             insurance_fund_vault: self.accounts.insurance_fund_vault.to_account_info().clone(),
+            velocity_signer: self.accounts.velocity_signer.clone(),
+            token_program: self.accounts.token_program.to_account_info().clone(),
         };
 
         let velocity_program = self.accounts.velocity_program.key();

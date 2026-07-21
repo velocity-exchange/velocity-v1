@@ -1,7 +1,7 @@
-use crate::math::oracle::{oracle_validity, LogMode};
+use crate::math::oracle::{oracle_validity, LogMode, OracleValidity};
 use crate::state::perp_market::PoolBalance;
 use crate::state::state::ValidityGuardRails;
-use std::cmp::max; //, OracleValidity};
+use std::cmp::max;
 
 use crate::msg;
 use anchor_lang::prelude::*;
@@ -472,6 +472,9 @@ pub fn transfer_spot_balance_to_revenue_pool(
     Ok(())
 }
 
+/// Returns the computed [`OracleValidity`] so callers can apply stricter, action-specific
+/// handling (e.g. liquidation pricing collateral protectively when the oracle is
+/// margin-invalid). The quote spot market skips validity checks and reports `Valid`.
 pub fn update_spot_market_and_check_validity(
     spot_market: &mut SpotMarket,
     oracle_price_data: &OraclePriceData,
@@ -479,7 +482,7 @@ pub fn update_spot_market_and_check_validity(
     now: i64,
     action: Option<VelocityAction>,
     funding_paused: bool,
-) -> VelocityResult {
+) -> VelocityResult<OracleValidity> {
     // update spot market EMAs with new/current data
     update_spot_market_cumulative_interest(
         spot_market,
@@ -489,7 +492,7 @@ pub fn update_spot_market_and_check_validity(
     )?;
 
     if spot_market.market_index == QUOTE_SPOT_MARKET_INDEX {
-        return Ok(());
+        return Ok(OracleValidity::Valid);
     }
 
     // 1 hour EMA
@@ -518,7 +521,7 @@ pub fn update_spot_market_and_check_validity(
         action
     )?;
 
-    Ok(())
+    Ok(oracle_validity)
 }
 
 fn increase_spot_balance(

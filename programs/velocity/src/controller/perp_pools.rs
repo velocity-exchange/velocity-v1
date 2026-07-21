@@ -47,11 +47,17 @@ use crate::validate;
 ///   3. `pending_amm_provision`-> `amm.fee_pool` (tokenizing the provision the
 ///      AMM already booked at fill — NO ledger change here)
 /// The protocol drain is EXEMPT from the `fee_pool_buffer_target` retention
-/// margin (it reserves only `max(net_user_pnl, 0)`) and runs first: it sweeps
-/// every settle, so each drain is small, and unlike the other two its value
-/// is not recoverable in bankruptcy anyway. The IF and provision drains then
-/// leave the buffer behind on top of user claims — the buffer throttles the
-/// outflows whose value the bankruptcy waterfall can still reach.
+/// margin and runs first: it sweeps every settle, so each drain is small, and
+/// unlike the other two its value is not recoverable in bankruptcy anyway. It
+/// is exempt only from the buffer, NOT from the hard claim reservation — every
+/// drain (protocol included) leaves `max(net_user_pnl, 0)` + the floored IF
+/// bankruptcy tranche backing + `pending_revenue_share` behind, so a
+/// permissionless protocol-fee sweep can't unback the standing bankruptcy
+/// tranche (a claim on the pnl pool that `resolve_perp_bankruptcy` cancels
+/// counter-only) or already-owed builder/referrer revenue share. The IF and
+/// provision drains then leave the buffer behind on top of those claims — the
+/// buffer throttles the outflows whose value the bankruptcy waterfall can
+/// still reach.
 /// The AMM's ledger and token pool are never touched by steps 1-2: no non-AMM
 /// money transits the AMM. Un-drained remainders simply wait for the next
 /// sweep. This is the ONLY fee routing out of a perp market. Runs inline on
@@ -94,12 +100,29 @@ pub fn sweep_market_fees(
         market.pnl_pool.balance_type(),
     )?;
 
-    // live user claims stay fully backed by every drain; the buffer is a
-    // retention margin on top that only the IF and AMM-provision drains
-    // respect — the protocol drain is exempt and goes first (its per-settle
-    // cadence keeps each drain small, and unlike the other two its value is
-    // not recoverable later anyway)
-    let reserved_claims: u128 = net_user_pnl.max(0).cast::<u128>()?;
+    // Every drain — INCLUDING the buffer-exempt protocol cut — must leave
+    // these live claims on the pnl pool fully backed:
+    //   * `max(net_user_pnl, 0)`: users' positive unsettled PnL.
+    //   * the floored IF bankruptcy tranche (`min(pending_if_fee,
+    //     get_bankruptcy_if_floor())`): `resolve_perp_bankruptcy` consumes
+    //     `pending_if_fee` counter-only, so the tokens backing the standing
+    //     tranche must stay in the pnl pool — the protocol drain moves value
+    //     to `protocol_fee_pool` (outside the insurance backstop) without
+    //     touching the counter, so without this reservation it could unback
+    //     the tranche the #245 floor promises.
+    //   * `pending_revenue_share`: builder/referrer fees already accrued and
+    //     owed out of this pnl pool by `sweep_completed_revenue_share_for_market`
+    //     — draining protocol fees ahead of them would leave those claims
+    //     temporarily unpayable.
+    // The buffer is an ADDITIONAL retention margin on top that only the IF and
+    // AMM-provision drains respect — the protocol drain is exempt and goes
+    // first (its per-settle cadence keeps each drain small, and unlike the
+    // other two its value is not recoverable later anyway).
+    let reserved_claims: u128 = net_user_pnl
+        .max(0)
+        .cast::<u128>()?
+        .safe_add(market.get_bankruptcy_if_tranche_reservation(force)?)?
+        .safe_add(market.pending_revenue_share.cast::<u128>()?)?;
     let mut available_unbuffered: u128 = pnl_pool_tokens.saturating_sub(reserved_claims);
 
     // 1. protocol's withdrawable cut (buffer-exempt: only user claims reserved)

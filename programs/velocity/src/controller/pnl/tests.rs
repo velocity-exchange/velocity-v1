@@ -2019,7 +2019,7 @@ pub fn user_invalid_oracle_position() {
         None,
         SettlePnlMode::MustSettle,
     );
-    assert_eq!(result, Ok(()));
+    assert_eq!(result, Ok(true));
 }
 
 #[test]

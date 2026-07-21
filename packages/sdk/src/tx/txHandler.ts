@@ -88,7 +88,13 @@ export type TxBuildingProps = {
 
 /** Configuration for `TxHandler`'s blockhash-fetching strategy. */
 export type TxHandlerConfig = {
-	/** If `true`, use a `CachedBlockhashFetcher` (reduces RPC calls during bursts of tx construction); otherwise fetch fresh every time via `BaseBlockhashFetcher`. */
+	/**
+	 * Blockhash-fetching strategy. Defaults to `true`: a `CachedBlockhashFetcher`
+	 * reuses a recent blockhash for `RECENT_BLOCKHASH_STALE_TIME_MS` (2s) to avoid a
+	 * `getLatestBlockhash` RPC call on every transaction build — this is safe because a
+	 * blockhash stays valid on-chain far longer than the cache TTL. Set to `false` to
+	 * force a fresh RPC fetch on every build via `BaseBlockhashFetcher`.
+	 */
 	blockhashCachingEnabled?: boolean;
 	/** Tuning for `CachedBlockhashFetcher` when `blockhashCachingEnabled` is `true`; each field defaults if omitted (see `BLOCKHASH_FETCH_RETRY_COUNT`/`BLOCKHASH_FETCH_RETRY_SLEEP`/`RECENT_BLOCKHASH_STALE_TIME_MS`). */
 	blockhashCachingConfig?: {
@@ -153,18 +159,22 @@ export class TxHandler {
 			this.blockhashCommitment ??
 			'confirmed';
 
-		this.blockHashFetcher = props?.config?.blockhashCachingEnabled
-			? new CachedBlockhashFetcher(
-					this.connection,
-					this.blockhashCommitment,
-					props?.config?.blockhashCachingConfig?.retryCount ??
-						BLOCKHASH_FETCH_RETRY_COUNT,
-					props?.config?.blockhashCachingConfig?.retrySleepTimeMs ??
-						BLOCKHASH_FETCH_RETRY_SLEEP,
-					props?.config?.blockhashCachingConfig?.staleCacheTimeMs ??
-						RECENT_BLOCKHASH_STALE_TIME_MS
-			  )
-			: new BaseBlockhashFetcher(this.connection, this.blockhashCommitment);
+		// Cache by default: only opt out when a consumer explicitly disables it. This
+		// collapses per-build `getLatestBlockhash` RPC calls (crankers dominate these)
+		// into at most one fetch per staleCacheTimeMs window.
+		this.blockHashFetcher =
+			props?.config?.blockhashCachingEnabled === false
+				? new BaseBlockhashFetcher(this.connection, this.blockhashCommitment)
+				: new CachedBlockhashFetcher(
+						this.connection,
+						this.blockhashCommitment,
+						props?.config?.blockhashCachingConfig?.retryCount ??
+							BLOCKHASH_FETCH_RETRY_COUNT,
+						props?.config?.blockhashCachingConfig?.retrySleepTimeMs ??
+							BLOCKHASH_FETCH_RETRY_SLEEP,
+						props?.config?.blockhashCachingConfig?.staleCacheTimeMs ??
+							RECENT_BLOCKHASH_STALE_TIME_MS
+				  );
 
 		// #Optionals
 		this.returnBlockHeightsWithSignedTxCallbackData =

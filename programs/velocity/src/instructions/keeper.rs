@@ -493,6 +493,9 @@ pub fn handle_update_user_open_orders_count<'info>(ctx: Context<UpdateUserIdle>)
     Ok(())
 }
 
+#[access_control(
+    exchange_not_paused(&ctx.accounts.state)
+)]
 pub fn handle_place_signed_msg_taker_order<'c: 'info, 'info>(
     ctx: Context<'info, PlaceSignedMsgTakerOrder<'info>>,
     signed_msg_order_params_message_bytes: Vec<u8>,

@@ -773,6 +773,8 @@ pub enum ErrorCode {
     EquityBelowFloor,
     #[msg("Invalid equity floor transfer between subaccounts")]
     InvalidEquityFloorTransfer,
+    #[msg("Insurance fund deposit would mint zero shares")]
+    IFDepositMintsZeroShares,
 }
 
 #[macro_export]

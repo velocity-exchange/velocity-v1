@@ -47,4 +47,13 @@ RUN apk add --no-cache --virtual .build python3 make g++ \
  && apk del .build
 COPY --from=builder /app/${APP_PATH}/${APP_OUT} ./${APP_OUT}
 ENV APP_START=${APP_START}
+# Run as a non-root user (uid 1001, primary gid 0) so the k8s workloads can set
+# `runAsNonRoot: true` for the file-mount secret hardening. gid 0 + `chmod -R g=u`
+# follow the OpenShift arbitrary-uid convention: the app keeps full read/write to its
+# working dir under any assigned non-root uid, and a secret volume mounted with
+# `fsGroup: 0` (mode 0440) stays group-readable.
+RUN adduser -D -u 1001 -G root nonroot \
+ && chown -R 1001:0 /app \
+ && chmod -R g=u /app
+USER 1001
 CMD ["sh", "-c", "node ${APP_START}"]

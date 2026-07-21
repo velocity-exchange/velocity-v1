@@ -52,6 +52,10 @@ export type FillerMultiThreadedConfig = BaseBotConfig & {
 	pythLazerChunkSize?: number;
 
 	triggerPriorityFeeMultiplier?: number;
+
+	// Min slots between fill attempts on the same order (paces re-attempts against
+	// the DLOB builder's ~200ms re-emit). Defaults to 5.
+	fillAttemptSlotInterval?: number;
 };
 
 export type FillerConfig = BaseBotConfig & {

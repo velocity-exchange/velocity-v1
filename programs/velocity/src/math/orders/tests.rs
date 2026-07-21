@@ -4692,6 +4692,65 @@ mod fallback_price_logic {
             )
             .unwrap();
         assert_eq!(result, 99500000);
+
+        // `max_ts` is unbounded at placement, so `seconds_til_order_expiry`
+        // can be as large as `i64::MAX`. The expiry premium divisor is clamped
+        // (max 10*20 = 200) before the multiply, so this must not overflow the
+        // `i64` multiply (which would abort the fill under `overflow-checks`),
+        // and it yields the same tight premium as any expiry >= 10s.
+        let result = market
+            .amm
+            .get_fallback_price(
+                &market.market_stats,
+                &PositionDirection::Long,
+                1000000000,
+                2012 * PRICE_PRECISION_I64 / 100,
+                i64::MAX,
+                market.market_stats.min_order_size,
+            )
+            .unwrap();
+        assert_eq!(result, 100500000);
+
+        let result = market
+            .amm
+            .get_fallback_price(
+                &market.market_stats,
+                &PositionDirection::Short,
+                1000000000,
+                2012 * PRICE_PRECISION_I64 / 100,
+                i64::MAX,
+                market.market_stats.min_order_size,
+            )
+            .unwrap();
+        assert_eq!(result, 99500000);
+
+        // No-liquidity path (oracle + premium) also multiplies the expiry;
+        // `i64::MAX` must not overflow there either.
+        let result = market
+            .amm
+            .get_fallback_price(
+                &market.market_stats,
+                &PositionDirection::Long,
+                0,
+                2012 * PRICE_PRECISION_I64 / 100,
+                i64::MAX,
+                market.market_stats.min_order_size,
+            )
+            .unwrap();
+        assert!(result > 0);
+
+        let result = market
+            .amm
+            .get_fallback_price(
+                &market.market_stats,
+                &PositionDirection::Short,
+                0,
+                2012 * PRICE_PRECISION_I64 / 100,
+                i64::MAX,
+                market.market_stats.min_order_size,
+            )
+            .unwrap();
+        assert!(result > 0);
     }
 }
 

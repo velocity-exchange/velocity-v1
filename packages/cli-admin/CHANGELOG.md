@@ -1,5 +1,18 @@
 # @velocity-exchange/admin-cli
 
+## 0.7.0
+
+### Minor Changes
+
+- [#258](https://github.com/velocity-exchange/velocity-v1/pull/258) [`075913d`](https://github.com/velocity-exchange/velocity-v1/commit/075913d6643d2ee0218b3b807deb6fd68854394c) Thanks [@0xahzam](https://github.com/0xahzam)! - New `feature-flags median-trigger-price <true|false>` command wrapping `updateFeatureBitFlagsMedianTriggerPrice` (bit 2 of `State.featureBitFlags`; enabling requires the cold admin).
+
+### Patch Changes
+
+- [#225](https://github.com/velocity-exchange/velocity-v1/pull/225) [`a874748`](https://github.com/velocity-exchange/velocity-v1/commit/a874748e268183f1cea12353ca404da8439cb88d) Thanks [@ChewingGlass](https://github.com/ChewingGlass)! - `--multisig` now only creates a Squads proposal when the multisig's vault 0 PDA is actually a required signer of the instructions being dispatched. When the vault does not need to sign (e.g. the wallet itself is the required authority), the CLI prints a notice and sends the transaction directly instead of creating a pointless proposal.
+
+- Updated dependencies [[`cec4fcb`](https://github.com/velocity-exchange/velocity-v1/commit/cec4fcbf440645ad55dd41ec8410a250ca96fdef), [`f03beee`](https://github.com/velocity-exchange/velocity-v1/commit/f03beeecea6f3c9cc6c0ad7e828e9fab639e9a1b), [`c85d802`](https://github.com/velocity-exchange/velocity-v1/commit/c85d80284fb61dac7a08e47fe7b78340bf1213cc)]:
+  - @velocity-exchange/sdk@0.7.0
+
 ## 0.6.1
 
 ### Patch Changes

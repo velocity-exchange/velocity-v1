@@ -1260,8 +1260,18 @@ async fn try_auction_fill(
             perp_market.order_step_size,
             crosses.taker_direction,
         );
+        // JIT leg validates the MM oracle at the landing slot (crosses were snapshotted at
+        // `crosses.slot`; the fill lands ~next slot). A same-slot snapshot that looks fresh
+        // routinely lands one slot stale under the immediate threshold, so measure at landing.
+        let mm_stale_immediate = mm_oracle_stale_for_amm_immediate(&perp_market, crosses.slot + 1);
         let mut vamm_usable = crosses.has_vamm_cross
-            && vamm_can_fill_taker(drawdown, oracle_stale_for_amm, order_low_risk, wants_jit);
+            && vamm_can_fill_taker(
+                drawdown,
+                oracle_stale_for_amm,
+                order_low_risk,
+                wants_jit,
+                mm_stale_immediate,
+            );
 
         // vAMM-fillable size when it was computable; carried on the wide event either way
         let mut vamm_fillable: Option<u64> = None;
@@ -1314,6 +1324,7 @@ async fn try_auction_fill(
             drawdown,
             order_low_risk,
             wants_jit,
+            mm_stale_immediate,
             vamm_fillable,
             maker_accounts.len(),
         );
@@ -1818,11 +1829,19 @@ fn order_dedup_key(user: &Pubkey, order_id: u32) -> u32 {
 
 /// Whether the vAMM can participate in filling a taker order right now, mirroring the
 /// program's gates (`PerpMarket::amm_fill_gates_ok` + `amm_fill_timing_ok`):
-/// - `drawdown` (or oracle staleness) alone hard-blocks every AMM fill;
+/// - `drawdown` (or the low-risk oracle staleness) alone hard-blocks every AMM fill;
 /// - a "low risk" order (rested longer than the oracle delay, `User::is_low_risk_for_amm`)
 ///   fills unconditionally past the hard gates;
-/// - otherwise (still within the oracle delay, e.g. mid-auction) the AMM only fills
-///   immediately when it *wants* to JIT-make in the taker's direction.
+/// - otherwise (still within the oracle delay, e.g. mid-auction) the AMM only fills via the
+///   immediate JIT leg, which the program gates on `FillOrderAmmImmediate` oracle validity —
+///   a *tighter* staleness bound than the low-risk one (`mm_stale_immediate`) — in addition to
+///   the AMM *wanting* to JIT-make in the taker's direction.
+///
+/// The immediate leg reads the *MM* oracle (`market_stats.mm_oracle_slot`), which a pyth-lazer
+/// update posted in the fill tx does NOT refresh, so a MM crank that lands even one slot late
+/// closes it while the exchange oracle looks fresh. Gating the JIT branch only on the loose
+/// low-risk staleness (as before) sent fills that no-op on-chain with "oracle not valid for
+/// immediate fills" — the `vamm_taker no_fill` spam.
 ///
 /// Best-effort economy filter only — the program re-checks everything; a `true` here that the
 /// program rejects just costs a failed simulation.
@@ -1831,8 +1850,28 @@ fn vamm_can_fill_taker(
     oracle_stale_for_amm: bool,
     order_low_risk: bool,
     amm_wants_to_jit_make: bool,
+    mm_stale_immediate: bool,
 ) -> bool {
-    !drawdown && !oracle_stale_for_amm && (order_low_risk || amm_wants_to_jit_make)
+    !drawdown
+        && !oracle_stale_for_amm
+        && (order_low_risk || (amm_wants_to_jit_make && !mm_stale_immediate))
+}
+
+/// MM-oracle staleness for the *immediate* (JIT) AMM-fill leg, mirroring the program's
+/// `is_stale_for_amm_immediate` (`math/oracle.rs`) with the per-market
+/// `oracle_slot_delay_override`: `override != 0 => delay > override.max(0)`; `override == 0`
+/// disables the immediate leg entirely (always stale). Delay is measured against the *MM*
+/// oracle slot (`market_stats.mm_oracle_slot`) at the expected landing slot, since that — not
+/// the exchange oracle — is what the JIT leg validates.
+fn mm_oracle_stale_for_amm_immediate(perp_market: &PerpMarket, landing_slot: u64) -> bool {
+    let mm_oracle_delay =
+        (landing_slot as i64).saturating_sub(perp_market.market_stats.mm_oracle_slot as i64);
+    let override_ = perp_market.oracle_slot_delay_override;
+    if override_ != 0 {
+        mm_oracle_delay > override_.max(0) as i64
+    } else {
+        true
+    }
 }
 
 /// How to handle one auction cross given the vAMM's usability and available DLOB makers.
@@ -2585,6 +2624,7 @@ fn emit_cross_decision_event(
     drawdown: bool,
     order_low_risk: bool,
     amm_wants_to_jit_make: bool,
+    mm_stale_immediate: bool,
     vamm_fillable: Option<u64>,
     n_makers: usize,
 ) {
@@ -2601,6 +2641,7 @@ fn emit_cross_decision_event(
         "drawdown": drawdown,
         "order_low_risk": order_low_risk,
         "amm_wants_to_jit_make": amm_wants_to_jit_make,
+        "mm_stale_immediate": mm_stale_immediate,
         "vamm_fillable": vamm_fillable,
         "n_makers": n_makers,
     });
@@ -2831,16 +2872,22 @@ mod tests {
         // `drawdown && amm_wants_to_jit_make` — drawdown with no JIT appetite passed as
         // "active", and JIT appetite was treated as a disqualifier rather than the
         // requirement it is for non-low-risk orders.
+        // args: (drawdown, oracle_stale_for_amm, order_low_risk, wants_jit, mm_stale_immediate)
         // drawdown alone hard-blocks (amm_fill_gates_ok), regardless of everything else
-        assert!(!vamm_can_fill_taker(true, false, true, true));
-        assert!(!vamm_can_fill_taker(true, false, false, false));
-        // oracle staleness hard-blocks
-        assert!(!vamm_can_fill_taker(false, true, true, true));
-        // low-risk order fills without JIT appetite (amm_fill_timing_ok fast path)
-        assert!(vamm_can_fill_taker(false, false, true, false));
+        assert!(!vamm_can_fill_taker(true, false, true, true, false));
+        assert!(!vamm_can_fill_taker(true, false, false, false, false));
+        // low-risk oracle staleness hard-blocks
+        assert!(!vamm_can_fill_taker(false, true, true, true, false));
+        // low-risk order fills without JIT appetite (amm_fill_timing_ok fast path), and is
+        // NOT subject to the immediate-staleness gate
+        assert!(vamm_can_fill_taker(false, false, true, false, true));
         // non-low-risk order requires the AMM to want to JIT-make
-        assert!(vamm_can_fill_taker(false, false, false, true));
-        assert!(!vamm_can_fill_taker(false, false, false, false));
+        assert!(vamm_can_fill_taker(false, false, false, true, false));
+        assert!(!vamm_can_fill_taker(false, false, false, false, false));
+        // Regression (vamm_taker no_fill spam): a non-low-risk JIT cross with the MM oracle
+        // stale for immediate fills must NOT send — the program's FillOrderAmmImmediate gate
+        // rejects it on-chain even though the low-risk staleness looks fine.
+        assert!(!vamm_can_fill_taker(false, false, false, true, true));
     }
 
     #[test]

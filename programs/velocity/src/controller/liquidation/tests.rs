@@ -14,10 +14,10 @@ pub mod liquidate_perp {
     use crate::error::ErrorCode;
     use crate::math::constants::{
         AMM_RESERVE_PRECISION, BASE_PRECISION_I128, BASE_PRECISION_I64, BASE_PRECISION_U64,
-        LIQUIDATION_FEE_PRECISION, LIQUIDATION_PCT_PRECISION, MARGIN_PRECISION,
-        MARGIN_PRECISION_U128, PEG_PRECISION, PRICE_PRECISION, PRICE_PRECISION_U64,
-        QUOTE_PRECISION, QUOTE_PRECISION_I128, QUOTE_PRECISION_I64, SPOT_BALANCE_PRECISION_U64,
-        SPOT_CUMULATIVE_INTEREST_PRECISION, SPOT_WEIGHT_PRECISION,
+        FUNDING_RATE_PRECISION_I128, LIQUIDATION_FEE_PRECISION, LIQUIDATION_PCT_PRECISION,
+        MARGIN_PRECISION, MARGIN_PRECISION_U128, PEG_PRECISION, PRICE_PRECISION,
+        PRICE_PRECISION_U64, QUOTE_PRECISION, QUOTE_PRECISION_I128, QUOTE_PRECISION_I64,
+        SPOT_BALANCE_PRECISION_U64, SPOT_CUMULATIVE_INTEREST_PRECISION, SPOT_WEIGHT_PRECISION,
     };
     use crate::math::liquidation::is_cross_margin_being_liquidated;
     use crate::math::margin::{
@@ -300,6 +300,160 @@ pub mod liquidate_perp {
 
         let market_after = perp_market_map.get_ref(&0).unwrap();
         assert_eq!(market_after.fee_ledger.total_liquidation_fee, 0);
+    }
+
+    // Regression (audit bot on the funding-pause PR): a position carrying a
+    // pre-pause unsettled funding delta must stay liquidatable while the
+    // exchange-wide FundingPaused bit is set. `update_position_and_market`
+    // validates `position.last_cumulative_funding_rate ==
+    // market.cumulative_funding_rate_{long,short}` before any modification, and
+    // the unconditional `settle_funding_payment` at the top of `liquidate_perp`
+    // is what establishes it. An earlier revision skipped that settle during the
+    // pause, which made this exact call revert with
+    // InvalidPositionLastFundingRate and left underwater accounts frozen for the
+    // pause's duration. Settling here is safe: the accumulators are frozen by
+    // the gated `update_funding_rate`, so only pre-pause accrual is folded in.
+    #[test]
+    pub fn liquidation_settles_pre_pause_funding_delta_while_funding_paused() {
+        let now = 0_i64;
+        let slot = 0_u64;
+
+        let mut oracle_price = get_pyth_price(100, 6);
+        let oracle_price_key =
+            Pubkey::from_str("J83w4HKfqxwcq3BEMMkPFSppX3gqekLyLJBexebFVkix").unwrap();
+        create_anchor_account_info!(
+            oracle_price,
+            &oracle_price_key,
+            PythLazerOracle,
+            oracle_account_info
+        );
+        let mut oracle_map = OracleMap::load_one(&oracle_account_info, slot, None).unwrap();
+
+        let mut market = PerpMarket {
+            amm: AMM {
+                base_asset_reserve: 100 * AMM_RESERVE_PRECISION,
+                quote_asset_reserve: 100 * AMM_RESERVE_PRECISION,
+                sqrt_k: 100 * AMM_RESERVE_PRECISION,
+                max_slippage_ratio: 50,
+                max_fill_reserve_fraction: 100,
+                peg_multiplier: 100 * PEG_PRECISION,
+                base_asset_amount_with_amm: BASE_PRECISION_I128,
+                ..AMM::default()
+            },
+            margin_ratio_initial: 1000,
+            margin_ratio_maintenance: 500,
+            number_of_users_with_base: 1,
+            status: MarketStatus::Initialized,
+            liquidator_fee: LIQUIDATION_FEE_PRECISION / 100,
+            if_liquidation_fee: LIQUIDATION_FEE_PRECISION / 100,
+            order_step_size: 10000000,
+            quote_asset_amount: -150 * QUOTE_PRECISION_I128,
+            oracle: oracle_price_key,
+            oracle_source: crate::state::oracle::OracleSource::PythLazer,
+            // funding accrued before the pause; the position below has not been
+            // touched since (last_cumulative_funding_rate == 0), so it carries a
+            // pre-pause unsettled delta
+            cumulative_funding_rate_long: 1000 * FUNDING_RATE_PRECISION_I128,
+            market_stats: MarketStats {
+                historical_oracle_data: HistoricalOracleData::default_price(oracle_price.price),
+                ..MarketStats::default()
+            },
+            ..PerpMarket::default()
+        };
+        create_anchor_account_info!(market, PerpMarket, market_account_info);
+        let perp_market_map = PerpMarketMap::load_one(&market_account_info, true).unwrap();
+
+        let mut spot_market = SpotMarket {
+            market_index: 0,
+            oracle_source: OracleSource::QuoteAsset,
+            cumulative_deposit_interest: SPOT_CUMULATIVE_INTEREST_PRECISION,
+            decimals: 6,
+            initial_asset_weight: SPOT_WEIGHT_PRECISION,
+            historical_oracle_data: HistoricalOracleData {
+                last_oracle_price_twap: PRICE_PRECISION_I64,
+                last_oracle_price_twap_5min: PRICE_PRECISION_I64,
+                ..HistoricalOracleData::default()
+            },
+            ..SpotMarket::default()
+        };
+        create_anchor_account_info!(spot_market, SpotMarket, spot_market_account_info);
+        let spot_market_map = SpotMarketMap::load_one(&spot_market_account_info, true).unwrap();
+
+        let mut user = User {
+            orders: get_orders(Order {
+                market_index: 0,
+                status: OrderStatus::Open,
+                order_type: OrderType::Limit,
+                direction: PositionDirection::Long,
+                base_asset_amount: BASE_PRECISION_U64,
+                slot: 0,
+                ..Order::default()
+            }),
+            perp_positions: get_positions(PerpPosition {
+                market_index: 0,
+                base_asset_amount: BASE_PRECISION_I64,
+                quote_asset_amount: -150 * QUOTE_PRECISION_I64,
+                quote_entry_amount: -150 * QUOTE_PRECISION_I64,
+                quote_break_even_amount: -150 * QUOTE_PRECISION_I64,
+                open_orders: 1,
+                open_bids: BASE_PRECISION_I64,
+                ..PerpPosition::default()
+            }),
+            spot_positions: [SpotPosition::default(); 8],
+            ..User::default()
+        };
+
+        let mut liquidator = User {
+            spot_positions: get_spot_positions(SpotPosition {
+                market_index: 0,
+                balance_type: SpotBalanceType::Deposit,
+                scaled_balance: 50 * SPOT_BALANCE_PRECISION_U64,
+                ..SpotPosition::default()
+            }),
+            ..User::default()
+        };
+
+        let user_key = Pubkey::default();
+        let liquidator_key = Pubkey::default();
+
+        let mut user_stats = UserStats::default();
+        let mut liquidator_stats = UserStats::default();
+        let state = State {
+            liquidation_margin_buffer_ratio: 10,
+            initial_pct_to_liquidate: LIQUIDATION_PCT_PRECISION as u16,
+            liquidation_duration: 150,
+            // exchange-wide FundingPaused
+            exchange_status: 0b00100000,
+            ..Default::default()
+        };
+
+        liquidate_perp(
+            0,
+            BASE_PRECISION_U64,
+            None,
+            &mut user,
+            &user_key,
+            &mut user_stats,
+            &mut liquidator,
+            &liquidator_key,
+            &mut liquidator_stats,
+            &perp_market_map,
+            &spot_market_map,
+            &mut oracle_map,
+            slot,
+            now,
+            &state,
+        )
+        .unwrap();
+
+        // the pre-pause funding delta was settled into the position before the
+        // liquidation modified it, and the liquidation completed
+        assert_eq!(user.perp_positions[0].base_asset_amount, 0);
+        assert_eq!(user.cumulative_perp_funding, -1000 * QUOTE_PRECISION_I64);
+        assert_eq!(
+            user.perp_positions[0].quote_asset_amount,
+            -1051 * QUOTE_PRECISION_I64
+        );
     }
 
     #[test]
@@ -8882,7 +9036,6 @@ pub mod resolve_perp_bankruptcy {
                 &Pubkey::default(),
                 &mut market,
                 now,
-                false,
             )
             .unwrap()
         }
@@ -8921,7 +9074,6 @@ pub mod resolve_perp_bankruptcy {
                 &Pubkey::default(),
                 &mut market,
                 now,
-                false,
             )
             .unwrap()
         }
@@ -9074,14 +9226,8 @@ pub mod resolve_perp_bankruptcy {
             };
 
             let mut market = market_map.get_ref_mut(&0).unwrap();
-            settle_funding_payment(
-                &mut affected_user,
-                &Pubkey::default(),
-                &mut market,
-                now,
-                false,
-            )
-            .unwrap();
+            settle_funding_payment(&mut affected_user, &Pubkey::default(), &mut market, now)
+                .unwrap();
         }
 
         // All settled: only rounding dust remains, not the full socialized loss.
@@ -9528,7 +9674,6 @@ pub mod resolve_perp_bankruptcy {
                 &Pubkey::default(),
                 &mut market,
                 now,
-                false,
             )
             .unwrap()
         }
@@ -9567,7 +9712,6 @@ pub mod resolve_perp_bankruptcy {
                 &Pubkey::default(),
                 &mut market,
                 now,
-                false,
             )
             .unwrap()
         }

@@ -91,7 +91,7 @@ pub fn settle_pnl(
 
     validate_market_within_price_band(&market, state, oracle_price)?;
 
-    settle_funding_payment(user, user_key, &mut market, now, state.funding_paused()?)?;
+    settle_funding_payment(user, user_key, &mut market, now)?;
 
     drop(market);
 
@@ -474,7 +474,6 @@ pub fn settle_expired_position(
         user_key,
         perp_market_map.get_ref_mut(&perp_market_index)?.deref_mut(),
         now,
-        state.funding_paused()?,
     )?;
 
     cancel_orders(

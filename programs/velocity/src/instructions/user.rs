@@ -1922,14 +1922,11 @@ pub fn handle_transfer_perp_position<'c: 'info, 'info>(
     // The funding-rate accumulators are updated by `update_funding_rate`;
     // refreshing the AMM here was cargo-cult.
 
-    let funding_paused = state.funding_paused()?;
-
     settle_funding_payment(
         from_user,
         &from_user_key,
         perp_market_map.get_ref_mut(&market_index)?.deref_mut(),
         now,
-        funding_paused,
     )?;
 
     settle_funding_payment(
@@ -1937,7 +1934,6 @@ pub fn handle_transfer_perp_position<'c: 'info, 'info>(
         &to_user_key,
         perp_market_map.get_ref_mut(&market_index)?.deref_mut(),
         now,
-        funding_paused,
     )?;
 
     let oi_before;
@@ -4336,7 +4332,6 @@ pub fn handle_special_transfer_perp_position_to_vamm<'c: 'info, 'info>(
         &user_key,
         perp_market_map.get_ref_mut(&market_index)?.deref_mut(),
         now,
-        state.funding_paused()?,
     )?;
 
     let step_size;

@@ -214,7 +214,7 @@ pub fn handle_revert_fill<'info>(ctx: Context<RevertFill>) -> Result<()> {
 }
 
 #[access_control(
-    exchange_not_paused(&ctx.accounts.state)
+    fill_not_paused(&ctx.accounts.state)
 )]
 pub fn handle_trigger_order<'c: 'info, 'info>(
     ctx: Context<'info, TriggerOrder<'info>>,
@@ -493,6 +493,9 @@ pub fn handle_update_user_open_orders_count<'info>(ctx: Context<UpdateUserIdle>)
     Ok(())
 }
 
+#[access_control(
+    exchange_not_paused(&ctx.accounts.state)
+)]
 pub fn handle_place_signed_msg_taker_order<'c: 'info, 'info>(
     ctx: Context<'info, PlaceSignedMsgTakerOrder<'info>>,
     signed_msg_order_params_message_bytes: Vec<u8>,
@@ -892,7 +895,11 @@ pub fn handle_settle_pnl<'c: 'info, 'info>(
     let market_in_settlement =
         perp_market_map.get_ref(&market_index)?.status == MarketStatus::Settlement;
 
-    if market_in_settlement {
+    // Whether settlement actually happened this call. The revenue-share sweep
+    // moves builder/referrer fees out of the market's pnl pool, so it must only
+    // run when we truly settled — a soft-skipped `settle_pnl` (TrySettle turning
+    // a pause/degraded-oracle/etc. into a no-op) must not drain the pool.
+    let settled = if market_in_settlement {
         amm_not_paused(&ctx.accounts.state)?;
 
         controller::pnl::settle_expired_position(
@@ -907,6 +914,7 @@ pub fn handle_settle_pnl<'c: 'info, 'info>(
         )?;
 
         user.update_last_active_slot(clock.slot);
+        true
     } else {
         // No `update_amm` here: settle_pnl reads the live oracle and falls
         // back to the AMM's slot-fresh check only when the live oracle is
@@ -926,24 +934,29 @@ pub fn handle_settle_pnl<'c: 'info, 'info>(
             &state,
             None,
             SettlePnlMode::MustSettle,
-        )?;
-    }
+        )?
+    };
 
     if state.builder_codes_enabled() {
         if let Some(ref mut escrow) = builder_escrow {
             escrow.revoke_completed_orders(user)?;
-            if let Some(ref builder_map) = maybe_rev_share_map {
-                controller::revenue_share::sweep_completed_revenue_share_for_market(
-                    market_index,
-                    escrow,
-                    &perp_market_map,
-                    &spot_market_map,
-                    builder_map,
-                    clock.unix_timestamp,
-                    state.builder_codes_enabled(),
-                )?;
-            } else {
-                msg!("Builder Users not provided, but RevenueEscrow was provided");
+            // Only sweep the market's pnl pool when settlement actually
+            // happened; a soft-skipped settle must not move builder/referrer
+            // fees out of a market that never settled.
+            if settled {
+                if let Some(ref builder_map) = maybe_rev_share_map {
+                    controller::revenue_share::sweep_completed_revenue_share_for_market(
+                        market_index,
+                        escrow,
+                        &perp_market_map,
+                        &spot_market_map,
+                        builder_map,
+                        clock.unix_timestamp,
+                        state.builder_codes_enabled(),
+                    )?;
+                } else {
+                    msg!("Builder Users not provided, but RevenueEscrow was provided");
+                }
             }
         }
     }
@@ -1018,7 +1031,12 @@ pub fn handle_settle_multiple_pnls<'c: 'info, 'info>(
         let market_in_settlement =
             perp_market_map.get_ref(market_index)?.status == MarketStatus::Settlement;
 
-        if market_in_settlement {
+        // Whether settlement actually happened for this market. Under
+        // `TrySettle`, `settle_pnl` soft-skips a paused / degraded-oracle
+        // market into `Ok(false)`; the revenue-share sweep below must be tied
+        // to real settlement so it does not move builder/referrer fees out of a
+        // market that never settled.
+        let settled = if market_in_settlement {
             amm_not_paused(&ctx.accounts.state)?;
 
             controller::pnl::settle_expired_position(
@@ -1033,6 +1051,7 @@ pub fn handle_settle_multiple_pnls<'c: 'info, 'info>(
             )?;
 
             user.update_last_active_slot(clock.slot);
+            true
         } else {
             // See `handle_settle_pnl` for the no-refresh rationale.
 
@@ -1048,24 +1067,29 @@ pub fn handle_settle_multiple_pnls<'c: 'info, 'info>(
                 &state,
                 Some(meets_margin_requirement),
                 mode,
-            )?;
-        }
+            )?
+        };
 
         if state.builder_codes_enabled() {
             if let Some(ref mut escrow) = builder_escrow {
                 escrow.revoke_completed_orders(user)?;
-                if let Some(ref builder_map) = maybe_rev_share_map {
-                    controller::revenue_share::sweep_completed_revenue_share_for_market(
-                        *market_index,
-                        escrow,
-                        &perp_market_map,
-                        &spot_market_map,
-                        builder_map,
-                        clock.unix_timestamp,
-                        state.builder_codes_enabled(),
-                    )?;
-                } else {
-                    msg!("Builder Users not provided, but RevenueEscrow was provided");
+                // Only sweep the market's pnl pool when settlement actually
+                // happened; a soft-skipped settle must not move
+                // builder/referrer fees out of a market that never settled.
+                if settled {
+                    if let Some(ref builder_map) = maybe_rev_share_map {
+                        controller::revenue_share::sweep_completed_revenue_share_for_market(
+                            *market_index,
+                            escrow,
+                            &perp_market_map,
+                            &spot_market_map,
+                            builder_map,
+                            clock.unix_timestamp,
+                            state.builder_codes_enabled(),
+                        )?;
+                    } else {
+                        msg!("Builder Users not provided, but RevenueEscrow was provided");
+                    }
                 }
             }
         }
@@ -1182,7 +1206,8 @@ pub fn handle_liquidate_perp<'c: 'info, 'info>(
 }
 
 #[access_control(
-liq_not_paused(&ctx.accounts.state)
+    liq_not_paused(&ctx.accounts.state)
+    fill_not_paused(&ctx.accounts.state)
 )]
 pub fn handle_liquidate_perp_with_fill<'c: 'info, 'info>(
     ctx: Context<'info, LiquidatePerp<'info>>,

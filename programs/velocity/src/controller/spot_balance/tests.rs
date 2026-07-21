@@ -1371,7 +1371,10 @@ fn check_fee_collection_larger_nums() {
     assert_eq!(if_balance_2, 229739282275);
     assert_eq!(if_tokens_3 - (settle_amount as u128), 868747539403); // w/ update interest for settle_spot_market_to_if
 
-    assert_eq!(spot_market.revenue_pool.scaled_balance, 79996002243946);
+    // settled tokens leave the vault, so the revenue-pool debit rounds up (one
+    // extra share vs the old floor of 79996002243946) to keep the vault fully
+    // backing depositor claims.
+    assert_eq!(spot_market.revenue_pool.scaled_balance, 79996002243945);
     assert_eq!(spot_market.utilization_twap, 961580);
 
     let deposit_tokens_4 = get_token_amount(

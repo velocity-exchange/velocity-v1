@@ -17,11 +17,8 @@ import { BankrunContextWrapper } from '../../packages/sdk/src/bankrun/bankrunCon
 import { startAnchor } from 'solana-bankrun';
 import { AccountInfo, LAMPORTS_PER_SOL, PublicKey } from '@solana/web3.js';
 import { initializeQuoteSpotMarket, mockUSDCMint } from './testHelpers';
-import {
-	PYTH_LAZER_HEX_STRING_MULTI,
-	PYTH_LAZER_HEX_STRING_SOL,
-	PYTH_STORAGE_DATA,
-} from './pythLazerData';
+import { PYTH_LAZER_HEX_STRING_MULTI } from './pythLazerData';
+import { freshLazerSolHex, mockLazerStorageData } from './pythLazerMock';
 
 // set up account infos to load into banks client
 const PYTH_STORAGE_ACCOUNT_INFO: AccountInfo<Buffer> = {
@@ -29,7 +26,7 @@ const PYTH_STORAGE_ACCOUNT_INFO: AccountInfo<Buffer> = {
 	lamports: LAMPORTS_PER_SOL,
 	owner: new PublicKey(PYTH_LAZER_PROGRAM_ID),
 	rentEpoch: 0,
-	data: Buffer.from(PYTH_STORAGE_DATA, 'base64'),
+	data: Buffer.from(mockLazerStorageData(), 'base64'),
 };
 
 describe('pyth lazer oracles', () => {
@@ -101,7 +98,7 @@ describe('pyth lazer oracles', () => {
 		await velocityClient.initializePythLazerOracle(feedId);
 		await velocityClient.postPythLazerOracleUpdate(
 			[feedId],
-			PYTH_LAZER_HEX_STRING_SOL
+			freshLazerSolHex(bankrunContextWrapper.connection.getTime())
 		);
 
 		const mantissaSqrtScale = new BN(Math.sqrt(PRICE_PRECISION.toNumber()));
@@ -139,7 +136,7 @@ describe('pyth lazer oracles', () => {
 	it('crank single', async () => {
 		await velocityClient.postPythLazerOracleUpdate(
 			[6],
-			PYTH_LAZER_HEX_STRING_SOL
+			freshLazerSolHex(bankrunContextWrapper.connection.getTime())
 		);
 		await velocityClient.updatePerpMarketOracle(
 			0,
@@ -156,6 +153,9 @@ describe('pyth lazer oracles', () => {
 	});
 
 	it('crank multi', async () => {
+		// MULTI stays a frozen Pyth-signed fixture: it still verifies (Pyth's signer is kept
+		// trusted) but its stale feeds are skipped by the max-age check, so the crank is a
+		// no-op update here (this case only asserts the tx succeeds).
 		const tx = await velocityClient.postPythLazerOracleUpdate(
 			[1, 2, 6],
 			PYTH_LAZER_HEX_STRING_MULTI

@@ -288,7 +288,12 @@ pub fn large_num_seeded_stake_if_test() {
     )
     .unwrap();
     assert_eq!(flow, 11);
-    assert_eq!(spot_market.revenue_pool.scaled_balance, 90099009901);
+    // The `flow` tokens physically leave the spot vault, so the revenue-pool
+    // ledger debit rounds up (removes one extra share vs the exact floor of
+    // 90099009901). This keeps `deposit_balance` from ever exceeding the vault
+    // balance by a rounding residue and preserves the
+    // `validate_spot_market_vault_amount` invariant.
+    assert_eq!(spot_market.revenue_pool.scaled_balance, 90099009900);
     let spot_market_vault_amount = get_token_amount(
         spot_market.deposit_balance,
         &spot_market,
@@ -1463,4 +1468,82 @@ fn resolve_perp_pnl_deficit_refreshes_period_after_new_settle() {
     );
     assert_eq!(market.insurance_claim.quote_settled_insurance, cap);
     assert_eq!(market.insurance_claim.last_revenue_withdraw_ts, now);
+}
+
+/// Regression for `SpotMarketVaultInvariantViolated` on IF stake/settle.
+///
+/// The revenue sweep transfers an exact integer token amount OUT of the spot
+/// vault into the IF vault, then debits the revenue pool from the internal
+/// ledger. If that ledger debit is floor-rounded, `deposit_balance`'s token
+/// value falls by less than the tokens that physically left, leaving
+/// `depositors_claim` above the vault balance by the rounding residue and
+/// tripping `validate_spot_market_vault_amount`. `is_leaving_velocity = true`
+/// forces the debit to round up so the claim drops by *at least* the tokens
+/// removed and the invariant `vault_amount >= depositors_claim` always holds.
+///
+/// A cumulative deposit interest just above 1.0x on a 9-decimal market (SOL)
+/// is exactly the production condition that surfaced the bug: `10 * P / C`
+/// floors to 9 shares, so a floor debit reduces the claim by only 9 for a
+/// 10-token withdrawal.
+#[test]
+pub fn revenue_debit_leaving_vault_preserves_backing() {
+    use crate::controller::spot_balance::update_revenue_pool_balances;
+
+    // The residue only appears when `deposit_balance * C / P` is not near an
+    // integer, so sweep `scaled_balance` offsets (and a few interest indices) to
+    // cover the misaligned cases the production SOL market hit.
+    for tokens_out in [1u128, 10] {
+        for c_plus in [1u128, 3, 7, 13, 9999] {
+            let cumulative_deposit_interest = SPOT_CUMULATIVE_INTEREST_PRECISION + c_plus;
+            for offset in 0..32u128 {
+                // deposit_balance backed entirely by the revenue pool (borrows == 0),
+                // so depositors_claim == the deposit token amount.
+                let scaled_balance = 100_000 * SPOT_BALANCE_PRECISION + offset;
+                let mut spot_market = SpotMarket {
+                    decimals: 9,
+                    deposit_balance: scaled_balance,
+                    cumulative_deposit_interest,
+                    revenue_pool: PoolBalance {
+                        market_index: 0,
+                        scaled_balance,
+                        ..PoolBalance::default()
+                    },
+                    ..SpotMarket::default()
+                };
+
+                let claim_before = get_token_amount(
+                    spot_market.deposit_balance,
+                    &spot_market,
+                    &SpotBalanceType::Deposit,
+                )
+                .unwrap();
+
+                update_revenue_pool_balances(
+                    tokens_out,
+                    &SpotBalanceType::Borrow,
+                    &mut spot_market,
+                    true,
+                )
+                .unwrap();
+
+                let claim_after = get_token_amount(
+                    spot_market.deposit_balance,
+                    &spot_market,
+                    &SpotBalanceType::Deposit,
+                )
+                .unwrap();
+
+                // The vault drops by exactly `tokens_out`; the recorded claim must
+                // drop by at least that much or the vault under-backs depositors.
+                // Floor rounding (is_leaving_velocity = false) drops it by only
+                // `tokens_out - 1` for most offsets → the reported underwater bug.
+                assert!(
+                    claim_before - claim_after >= tokens_out,
+                    "claim dropped by {} < {tokens_out} (c_plus={c_plus}, offset={offset}) \
+                     — vault would be underwater",
+                    claim_before - claim_after
+                );
+            }
+        }
+    }
 }

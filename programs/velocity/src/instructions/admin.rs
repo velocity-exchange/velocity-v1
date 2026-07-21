@@ -1255,6 +1255,7 @@ pub fn handle_settle_expired_market_pools_to_revenue_pool(
         pnl_pool_token_amount.safe_add(fee_pool_token_amount)?,
         &SpotBalanceType::Deposit,
         spot_market,
+        false,
     )?;
 
     math::spot_withdraw::validate_spot_balances(spot_market)?;

@@ -1730,7 +1730,7 @@ fn validate_order(
     }
 
     // Validate slot
-    if taker_slot < current_slot - 500 {
+    if taker_slot < current_slot.saturating_sub(500) {
         return Err((
             axum::http::StatusCode::BAD_REQUEST,
             ProcessOrderResponse {

@@ -6543,13 +6543,7 @@ export type Velocity = {
           }
         },
         {
-          "name": "authority",
-          "relations": [
-            "user"
-          ]
-        },
-        {
-          "name": "user"
+          "name": "authority"
         },
         {
           "name": "payer",

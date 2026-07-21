@@ -97,6 +97,36 @@ export function registerSpotMarket(parent: Command): void {
 
 	withGlobalOptions(
 		sm
+			.command('set-scale-initial-asset-weight-start <market> <start>')
+			.description(
+				'Deposit-notional threshold (QUOTE_PRECISION, 1e6) above which initialAssetWeight scales down. 0 disables. Maintenance weight is unaffected.'
+			)
+	).action(async (market: string, start: string, _flags, cmd: Command) => {
+		const opts = readGlobalOpts(cmd);
+		const provider = buildProvider(opts);
+		const client = await buildAdminClient(opts);
+		try {
+			const ix = await client.getUpdateSpotMarketScaleInitialAssetWeightStartIx(
+				Number.parseInt(market, 10),
+				new BN(start)
+			);
+			const result = await sendOrPropose(
+				provider,
+				[ix],
+				opts.multisig ? new PublicKey(opts.multisig) : undefined,
+				'velocity-admin spot-market set-scale-initial-asset-weight-start'
+			);
+			reportDispatch(
+				`spot-market[${market}] scale_initial_asset_weight_start = ${start}`,
+				result
+			);
+		} finally {
+			await client.unsubscribe();
+		}
+	});
+
+	withGlobalOptions(
+		sm
 			.command('set-fee-factors <market> <ifFeeFactor> <protocolFeeFactor>')
 			.description(
 				'Lending deposit-interest carveouts (IF_FACTOR_PRECISION = 1e6; sum <= 1e6): ifFeeFactor -> staker-owned insurance fund, protocolFeeFactor -> withdrawable protocol fees. Lenders receive the rest.'

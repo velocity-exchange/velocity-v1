@@ -2088,6 +2088,15 @@ pub fn handle_resolve_perp_pnl_deficit<'c: 'info, 'info>(
             ErrorCode::InvalidIFDetected,
             "insurance_fund_vault.amount must remain > 0"
         )?;
+
+        // Shrink the donation-proof accounted vault balance by the amount drawn to
+        // cover this deficit so it tracks the real outflow (see
+        // `if_last_settle_vault_amount`). Saturating: if the field is still
+        // uninitialized (0) it stays 0 and the next add/settle seeds it from the live
+        // balance.
+        spot_market.if_last_settle_vault_amount = spot_market
+            .if_last_settle_vault_amount
+            .saturating_sub(pay_from_insurance);
     }
 
     // todo: validate amounts transfered and spot_market before and after are zero-sum
@@ -2217,6 +2226,14 @@ pub fn handle_resolve_perp_bankruptcy<'c: 'info, 'info>(
 
     {
         let spot_market = &mut spot_market_map.get_ref_mut(&quote_spot_market_index)?;
+        // Shrink the donation-proof accounted vault balance by the amount drawn to
+        // cover this bankruptcy so it tracks the real outflow (see
+        // `if_last_settle_vault_amount`). Saturating: a `0` (uninitialized) field stays
+        // 0 and is re-seeded from the live balance on the next add/settle. No-op when
+        // `pay_from_insurance == 0`.
+        spot_market.if_last_settle_vault_amount = spot_market
+            .if_last_settle_vault_amount
+            .saturating_sub(pay_from_insurance);
         // reload the spot market vault balance so it's up-to-date
         ctx.accounts.spot_market_vault.reload()?;
         math::spot_withdraw::validate_spot_market_vault_amount(
@@ -2335,6 +2352,14 @@ pub fn handle_resolve_spot_bankruptcy<'c: 'info, 'info>(
 
     {
         let spot_market = &mut spot_market_map.get_ref_mut(&market_index)?;
+        // Shrink the donation-proof accounted vault balance by the amount drawn to
+        // cover this bankruptcy so it tracks the real outflow (see
+        // `if_last_settle_vault_amount`). Saturating: a `0` (uninitialized) field stays
+        // 0 and is re-seeded from the live balance on the next add/settle. No-op when
+        // `pay_from_insurance == 0`.
+        spot_market.if_last_settle_vault_amount = spot_market
+            .if_last_settle_vault_amount
+            .saturating_sub(pay_from_insurance);
         // reload the spot market vault balance so it's up-to-date
         ctx.accounts.spot_market_vault.reload()?;
         math::spot_withdraw::validate_spot_market_vault_amount(

@@ -214,7 +214,30 @@ pub struct SpotMarket {
     /// Protocol's carveout of lending deposit-interest gains, routed to
     /// `protocol_fee_pool`. precision: IF_FACTOR_PRECISION
     pub protocol_fee_factor: u32,
-    pub padding: [u8; 8],
+    /// Donation-proof accounted balance of the insurance-fund vault. It is moved
+    /// by the same signed delta as the real SPL vault on *every* instruction that
+    /// moves the vault, so it stays a faithful shadow of the vault minus raw
+    /// donations. Inflows grow it: staker deposits (`add_insurance_fund_stake`)
+    /// and settled revenue (`settle_revenue_to_insurance_fund`). Outflows/draws
+    /// shrink it (saturating at 0): staker withdrawals
+    /// (`remove_insurance_fund_stake`) and every IF draw that covers a loss —
+    /// `resolve_perp_pnl_deficit`, `resolve_perp_bankruptcy`,
+    /// `resolve_spot_bankruptcy`. The one movement deliberately *excluded* is a
+    /// raw SPL transfer straight into the vault: it runs no instruction, so it
+    /// never enters this balance — that is exactly the donation the shadow must
+    /// not see. Consumed by the per-period revenue-settle APR cap in
+    /// `settle_revenue_to_insurance_fund`, sized off `min(live_if_vault, this)`,
+    /// so a donation spiked into the live vault right before a settle cannot
+    /// inflate the cap while legitimate stakes and real settled revenue (which
+    /// this balance tracks) still do. (The unstake-cancel share forfeiture is
+    /// donation-proofed differently — by withdraw-and-restake at the active share
+    /// price — and does *not* read this field.) Repurposed from trailing padding —
+    /// layout/size unchanged; `0` means "uninitialized" (existing account
+    /// pre-upgrade, or an accounted balance legitimately drained to empty — an
+    /// empty IF vault has no user shares, so this is safe), and is seeded from the
+    /// live balance on the next add/settle and treated as "fall back to live" by
+    /// the consumers.
+    pub if_last_settle_vault_amount: u64,
 }
 
 // Layout guards: the deployed account layout is frozen, and the borsh/IDL
@@ -292,7 +315,7 @@ impl Default for SpotMarket {
             protocol_fee_pool: PoolBalance::default(),
             protocol_liquidation_fee: 0,
             protocol_fee_factor: 0,
-            padding: [0; 8],
+            if_last_settle_vault_amount: 0,
         }
     }
 }

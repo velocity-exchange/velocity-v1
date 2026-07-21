@@ -135,6 +135,16 @@ pub fn add_insurance_fund_stake(
     spot_market.insurance_fund.user_shares =
         spot_market.insurance_fund.user_shares.safe_add(n_shares)?;
 
+    // Grow the donation-proof accounted vault balance by this deposit so legitimate
+    // stakes lift the revenue-settle APR cap (unlike a raw SPL donation, which never
+    // runs this path). `insurance_vault_amount` is the pre-deposit vault, so the seed
+    // (first-touch) captures any pre-existing balance plus this deposit.
+    spot_market.if_last_settle_vault_amount = if spot_market.if_last_settle_vault_amount == 0 {
+        insurance_vault_amount.safe_add(amount)?
+    } else {
+        spot_market.if_last_settle_vault_amount.safe_add(amount)?
+    };
+
     update_user_stats_if_stake_amount(
         amount.cast()?,
         insurance_vault_amount,
@@ -321,6 +331,14 @@ pub fn request_remove_insurance_fund_stake(
     Ok(())
 }
 
+/// Cancel a pending unstake request, modeled as **withdraw-and-restake at the current
+/// active share price** (finding #30). The staker's `n_shares` requested shares are
+/// treated as if they were withdrawn (paying out the value frozen at request time) and
+/// immediately re-staked at the price prevailing now: any appreciation accrued during the
+/// escrow window is forfeited to the remaining stakers (`if_shares_lost`), while a cancel
+/// with no appreciation leaves the stake untouched. See `calculate_if_shares_lost` for the
+/// exact share math and why bounding the withdraw leg by the request-time snapshot makes
+/// this donation-immune without reading the accounted `if_last_settle_vault_amount`.
 pub fn cancel_request_remove_insurance_fund_stake(
     insurance_vault_amount: u64,
     insurance_fund_stake: &mut InsuranceFundStake,
@@ -352,6 +370,11 @@ pub fn cancel_request_remove_insurance_fund_stake(
     // has floored to zero, cancel is a no-op on shares (`calculate_if_shares_lost`
     // returns 0), returns the intact rebased stake to active, and abandons only
     // the dust `last_withdraw_request_value`.
+    //
+    // Shares forfeited = requested shares minus the shares a withdraw-then-restake at the
+    // current active price (from the live vault balance) would leave. Priced off the live
+    // balance is safe here: the restake value is bounded by the request-time snapshot, so a
+    // raw donation cannot manufacture extractable forfeiture (see `calculate_if_shares_lost`).
     let if_shares_lost =
         calculate_if_shares_lost(insurance_fund_stake, spot_market, insurance_vault_amount)?;
 
@@ -456,6 +479,13 @@ pub fn remove_insurance_fund_stake(
 
     spot_market.insurance_fund.user_shares =
         spot_market.insurance_fund.user_shares.safe_sub(n_shares)?;
+
+    // Shrink the donation-proof accounted vault balance by this withdrawal so it tracks
+    // real outflows (keeping the revenue-settle APR cap base honest). Saturating: if the
+    // field is still uninitialized (0) it stays 0 and the next settle/add seeds it.
+    spot_market.if_last_settle_vault_amount = spot_market
+        .if_last_settle_vault_amount
+        .saturating_sub(withdraw_amount);
 
     // reset insurance_fund_stake withdraw request info
     insurance_fund_stake.last_withdraw_request_shares = 0;
@@ -595,8 +625,24 @@ pub fn settle_revenue_to_insurance_fund(
     }
 
     if spot_market.insurance_fund.user_shares > 0 {
+        // Size the APR cap off a donation-proof base rather than the live vault
+        // balance. `insurance_vault_amount` is the raw token-account balance, which
+        // anyone can inflate with a direct SPL transfer right before a settle to
+        // lift the cap toward the 1/10-of-revenue-pool bound. `if_last_settle_vault_amount`
+        // is the accounted balance (grown only by stakes + settled revenue, shrunk by
+        // withdrawals), so a raw donation is not reflected in it; taking the min means a
+        // pre-settle donation spike cannot lift the cap, while legitimate stakes (which
+        // do update the accounted balance) still do. A `0` value means the field is
+        // uninitialized (existing account pre-upgrade) — seed it from the live balance
+        // for this first settle.
+        let cap_vault_amount = if spot_market.if_last_settle_vault_amount == 0 {
+            insurance_vault_amount
+        } else {
+            insurance_vault_amount.min(spot_market.if_last_settle_vault_amount)
+        };
+
         // only allow MAX_APR_PER_REVENUE_SETTLE_TO_INSURANCE_FUND_VAULT or 1/10th of revenue pool to be settled
-        let capped_apr_amount = insurance_vault_amount
+        let capped_apr_amount = cap_vault_amount
             .cast::<u128>()?
             .safe_mul(MAX_APR_PER_REVENUE_SETTLE_TO_INSURANCE_FUND_VAULT)?
             .safe_div(PERCENTAGE_PRECISION)?
@@ -625,6 +671,18 @@ pub fn settle_revenue_to_insurance_fund(
     }
 
     spot_market.insurance_fund.last_revenue_settle_ts = now;
+
+    // Grow the donation-proof accounted vault balance by the amount just settled in
+    // (see the `cap_vault_amount` note above). We add the delta rather than re-reading
+    // the live vault, so a raw SPL donation sitting in the vault is never folded into
+    // the accounted balance. Seed from the live vault on the first post-upgrade settle.
+    spot_market.if_last_settle_vault_amount = if spot_market.if_last_settle_vault_amount == 0 {
+        insurance_vault_amount.safe_add(insurance_fund_token_amount)?
+    } else {
+        spot_market
+            .if_last_settle_vault_amount
+            .safe_add(insurance_fund_token_amount)?
+    };
 
     // The insurance fund is staker-owned: once stakers exist, the entire settled
     // amount accrues to them as share-price appreciation (no protocol shares

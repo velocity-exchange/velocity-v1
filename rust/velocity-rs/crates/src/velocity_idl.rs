@@ -4929,8 +4929,7 @@ pub mod types {
         pub protocol_fee_pool: PoolBalance,
         pub protocol_liquidation_fee: u32,
         pub protocol_fee_factor: u32,
-        #[serde(skip)]
-        pub padding: Padding<8>,
+        pub if_last_settle_vault_amount: u64,
     }
     #[repr(C)]
     #[derive(
@@ -6297,8 +6296,7 @@ pub mod accounts {
         pub protocol_fee_pool: PoolBalance,
         pub protocol_liquidation_fee: u32,
         pub protocol_fee_factor: u32,
-        #[serde(skip)]
-        pub padding: Padding<8>,
+        pub if_last_settle_vault_amount: u64,
     }
     #[automatically_derived]
     impl anchor_lang::Discriminator for SpotMarket {

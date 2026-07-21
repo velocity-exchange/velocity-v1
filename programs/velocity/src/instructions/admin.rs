@@ -394,7 +394,7 @@ pub fn handle_initialize_spot_market(
         },
         protocol_liquidation_fee: 0,
         protocol_fee_factor: 0,
-        padding: [0; 8],
+        if_last_settle_vault_amount: 0,
         insurance_fund: InsuranceFund {
             vault: ctx.accounts.insurance_fund_vault.key(),
             unstaking_period: THIRTEEN_DAY,

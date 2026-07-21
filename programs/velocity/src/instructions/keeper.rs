@@ -248,6 +248,7 @@ pub fn handle_trigger_order<'c: 'info, 'info>(
         order_id,
         &*ctx.accounts.state.load()?,
         &ctx.accounts.user,
+        &ctx.accounts.user_stats,
         &spot_market_map,
         &perp_market_map,
         &mut oracle_map,
@@ -1195,6 +1196,17 @@ pub fn handle_liquidate_perp<'c: 'info, 'info>(
     let liquidator = &mut load_mut!(ctx.accounts.liquidator)?;
     let liquidator_stats = &mut load_mut!(ctx.accounts.liquidator_stats)?;
 
+    // #82: a position-acquiring liquidation both takes on the liquidatee's risk
+    // and earns a liquidation fee — exactly the risk-taking the authority-wide
+    // equity breaker freezes. Bar a tripped authority from liquidating out of a
+    // healthy sibling subaccount. (PnL-settlement liquidations stay allowed;
+    // they are protocol-protective and acquire no new risk.)
+    validate!(
+        !liquidator_stats.is_equity_breaker_tripped(),
+        ErrorCode::EquityBelowFloor,
+        "liquidator authority equity breaker is tripped"
+    )?;
+
     let AccountMaps {
         perp_market_map,
         spot_market_map,
@@ -1307,6 +1319,18 @@ pub fn handle_liquidate_spot<'c: 'info, 'info>(
 
     let user = &mut load_mut!(ctx.accounts.user)?;
     let liquidator = &mut load_mut!(ctx.accounts.liquidator)?;
+    let liquidator_stats = load!(ctx.accounts.liquidator_stats)?;
+
+    // #82: a position-acquiring liquidation both takes on the liquidatee's risk
+    // and earns a liquidation fee — exactly the risk-taking the authority-wide
+    // equity breaker freezes. Bar a tripped authority from liquidating out of a
+    // healthy sibling subaccount. (PnL-settlement liquidations stay allowed;
+    // they are protocol-protective and acquire no new risk.)
+    validate!(
+        !liquidator_stats.is_equity_breaker_tripped(),
+        ErrorCode::EquityBelowFloor,
+        "liquidator authority equity breaker is tripped"
+    )?;
 
     let AccountMaps {
         perp_market_map,
@@ -1847,6 +1871,19 @@ pub fn handle_liquidate_borrow_for_perp_pnl<'c: 'info, 'info>(
 
     let user = &mut load_mut!(ctx.accounts.user)?;
     let liquidator = &mut load_mut!(ctx.accounts.liquidator)?;
+    let liquidator_stats = load!(ctx.accounts.liquidator_stats)?;
+
+    // #82: taking over the user's borrow (in exchange for positive pnl) both acquires balance-sheet risk and
+    // earns a liquidation fee — the same risk-taking the authority-wide equity
+    // breaker freezes, and the same shape as `liquidate_spot` (which is barred).
+    // Bar a tripped authority here too. (`liquidate_perp_with_fill` stays
+    // ungated: its liquidator routes the position to the book and never
+    // acquires a balance.)
+    validate!(
+        !liquidator_stats.is_equity_breaker_tripped(),
+        ErrorCode::EquityBelowFloor,
+        "liquidator authority equity breaker is tripped"
+    )?;
 
     let AccountMaps {
         perp_market_map,
@@ -1907,6 +1944,19 @@ pub fn handle_liquidate_perp_pnl_for_deposit<'c: 'info, 'info>(
 
     let user = &mut load_mut!(ctx.accounts.user)?;
     let liquidator = &mut load_mut!(ctx.accounts.liquidator)?;
+    let liquidator_stats = load!(ctx.accounts.liquidator_stats)?;
+
+    // #82: taking over the user's deposit (in exchange for negative pnl) both acquires balance-sheet risk and
+    // earns a liquidation fee — the same risk-taking the authority-wide equity
+    // breaker freezes, and the same shape as `liquidate_spot` (which is barred).
+    // Bar a tripped authority here too. (`liquidate_perp_with_fill` stays
+    // ungated: its liquidator routes the position to the book and never
+    // acquires a balance.)
+    validate!(
+        !liquidator_stats.is_equity_breaker_tripped(),
+        ErrorCode::EquityBelowFloor,
+        "liquidator authority equity breaker is tripped"
+    )?;
 
     let AccountMaps {
         perp_market_map,
@@ -3368,6 +3418,10 @@ pub struct TriggerOrder<'info> {
     pub filler: AccountLoader<'info, User>,
     #[account(mut)]
     pub user: AccountLoader<'info, User>,
+    #[account(
+        constraint = is_stats_for_user(&user, &user_stats)?
+    )]
+    pub user_stats: AccountLoader<'info, UserStats>,
 }
 
 #[derive(Accounts)]
@@ -3503,6 +3557,10 @@ pub struct LiquidateSpot<'info> {
         constraint = can_sign_for_user(&liquidator, &authority)?
     )]
     pub liquidator: AccountLoader<'info, User>,
+    #[account(
+        constraint = is_stats_for_user(&liquidator, &liquidator_stats)?
+    )]
+    pub liquidator_stats: AccountLoader<'info, UserStats>,
     #[account(mut)]
     pub user: AccountLoader<'info, User>,
 }

@@ -952,15 +952,6 @@ pub fn handle_transfer_deposit_by_delegate<'c: 'info, 'info>(
         "equity floor breaker is tripped for this authority"
     )?;
 
-    // Carry equity floor along with the funds so the sum of floors across the
-    // authority's subaccounts is preserved. The from side is validated against
-    // its reduced floor by the withdraw margin check inside
-    // `transfer_spot_deposit`; the to side is validated below, after the
-    // deposit lands, so its increased floor must be backed by real equity.
-    if equity_floor_delta > 0 {
-        transfer_equity_floor(from_user, to_user, equity_floor_delta)?;
-    }
-
     let AccountMaps {
         perp_market_map,
         spot_market_map,
@@ -972,6 +963,40 @@ pub fn handle_transfer_deposit_by_delegate<'c: 'info, 'info>(
         clock.slot,
         Some(state.oracle_guard_rails),
     )?;
+
+    // Carry equity floor along with the funds so the sum of floors across the
+    // authority's subaccounts is preserved. The from side is validated against
+    // its reduced floor by the withdraw margin check inside
+    // `transfer_spot_deposit`; the to side is validated below, after the
+    // deposit lands, so its increased floor must be backed by real equity.
+    if equity_floor_delta > 0 {
+        // Guard (#55): a delegate must not shed floor off a subaccount that is
+        // already below the floor being reduced. Without this, an owner could
+        // shift the floor off a breached subaccount with a zero-amount transfer
+        // and drop it out of breach before the permissionless breaker trips,
+        // defusing the pending trip. Evaluate from_user against its
+        // PRE-reduction floor (the transfer below reduces it); the withdraw
+        // margin check inside `transfer_spot_deposit` re-validates the from side
+        // against the reduced floor after the funds move.
+        let from_user_margin_calculation =
+            calculate_margin_requirement_and_total_collateral_and_liability_info(
+                from_user,
+                &perp_market_map,
+                &spot_market_map,
+                &mut oracle_map,
+                MarginContext::standard(MarginRequirementType::Initial).strict(true),
+            )?;
+
+        validate!(
+            !from_user.is_below_equity_floor(from_user_margin_calculation.total_collateral),
+            ErrorCode::InvalidEquityFloorTransfer,
+            "from_user total collateral {} is below equity floor {}; cannot reduce floor while breached",
+            from_user_margin_calculation.total_collateral,
+            from_user.equity_floor
+        )?;
+
+        transfer_equity_floor(from_user, to_user, equity_floor_delta)?;
+    }
 
     transfer_spot_deposit(
         from_user,
@@ -2117,6 +2142,18 @@ pub fn handle_transfer_perp_position<'c: 'info, 'info>(
         to_user_margin_requirement.meets_margin_requirement(),
         ErrorCode::InsufficientCollateral,
         "to user margin requirement is greater than total collateral"
+    )?;
+
+    // The recipient takes on risk-increasing exposure, so it must also stay at
+    // or above its own admin-set equity floor (mirrors the from-side check
+    // above). A recipient that passes initial margin can still land below its
+    // warm-admin floor, which would otherwise leave the floor unenforced.
+    validate!(
+        !to_user.is_below_equity_floor(to_user_margin_requirement.total_collateral),
+        ErrorCode::EquityBelowFloor,
+        "to user total collateral {} below equity floor {}",
+        to_user_margin_requirement.total_collateral,
+        to_user.equity_floor
     )?;
 
     let mut perp_market = perp_market_map.get_ref_mut(&market_index)?;
@@ -3925,6 +3962,17 @@ pub fn handle_end_swap<'c: 'info, 'info>(
     let mut user = load_mut!(&ctx.accounts.user)?;
 
     let mut user_stats = load_mut!(&ctx.accounts.user_stats)?;
+
+    // A generic spot swap can book new borrow/deposit balances (risk-increasing)
+    // from any of the authority's subaccounts, so it must respect the
+    // authority-wide equity breaker just like withdrawals and transfers out.
+    // The per-subaccount floor is enforced separately in
+    // `meets_withdraw_margin_requirement_swap`.
+    validate!(
+        !user_stats.is_equity_breaker_tripped(),
+        ErrorCode::EquityBelowFloor,
+        "equity floor breaker is tripped for this authority"
+    )?;
 
     let exchange_status = state.get_exchange_status()?;
 

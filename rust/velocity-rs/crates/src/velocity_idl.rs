@@ -11229,6 +11229,7 @@ pub mod accounts {
         pub state: Pubkey,
         pub authority: Pubkey,
         pub liquidator: Pubkey,
+        pub liquidator_stats: Pubkey,
         pub user: Pubkey,
     }
     #[automatically_derived]
@@ -11261,6 +11262,11 @@ pub mod accounts {
                     pubkey: self.liquidator,
                     is_signer: false,
                     is_writable: true,
+                },
+                AccountMeta {
+                    pubkey: self.liquidator_stats,
+                    is_signer: false,
+                    is_writable: false,
                 },
                 AccountMeta {
                     pubkey: self.user,
@@ -15604,6 +15610,7 @@ pub mod accounts {
         pub authority: Pubkey,
         pub filler: Pubkey,
         pub user: Pubkey,
+        pub user_stats: Pubkey,
     }
     #[automatically_derived]
     impl anchor_lang::Discriminator for TriggerOrder {
@@ -15640,6 +15647,11 @@ pub mod accounts {
                     pubkey: self.user,
                     is_signer: false,
                     is_writable: true,
+                },
+                AccountMeta {
+                    pubkey: self.user_stats,
+                    is_signer: false,
+                    is_writable: false,
                 },
             ]
         }

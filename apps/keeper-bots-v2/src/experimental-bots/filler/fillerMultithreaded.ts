@@ -122,6 +122,28 @@ const FILL_ORDER_THROTTLE_BACKOFF = 1000; // the time to wait before trying to f
 // re-emits a still-fillable order every ~200ms; this paces re-attempts. Override
 // via FillerMultiThreadedConfig.fillAttemptSlotInterval.
 const DEFAULT_FILL_ATTEMPT_SLOT_INTERVAL_SLOTS = 5;
+
+// Validate `fillAttemptSlotInterval` config: only a finite, non-negative integer
+// is a meaningful slot count. Anything else (negative / fractional / NaN /
+// Infinity) would silently break the pacing comparison in executeFillablePerpNodes
+// (e.g. a negative or NaN interval disables pacing entirely), so fall back to the
+// default and surface a warning. Omitted (undefined) is not an error — it takes
+// the default. Exported for unit testing.
+export function resolveFillAttemptSlotInterval(
+	raw: number | undefined,
+	defaultValue = DEFAULT_FILL_ATTEMPT_SLOT_INTERVAL_SLOTS
+): { value: number; warning?: string } {
+	if (raw === undefined) {
+		return { value: defaultValue };
+	}
+	if (!Number.isInteger(raw) || raw < 0) {
+		return {
+			value: defaultValue,
+			warning: `invalid fillAttemptSlotInterval ${raw}; expected a non-negative integer, falling back to ${defaultValue}`,
+		};
+	}
+	return { value: raw };
+}
 // Backstop cap on attempts per order: ~30s market-order lifetime / ~2s (5-slot)
 // attempt interval.
 const MAX_FILL_ATTEMPTS_PER_ORDER = 15;
@@ -293,9 +315,13 @@ export class FillerMultithreaded {
 		this.marketIndexesFlattened = config.marketIndexes.flat();
 		this.bundleSender = bundleSender;
 		this.simulateTxForCUEstimate = config.simulateTxForCUEstimate ?? true;
-		this.fillAttemptSlotInterval =
-			config.fillAttemptSlotInterval ??
-			DEFAULT_FILL_ATTEMPT_SLOT_INTERVAL_SLOTS;
+		const fillAttemptSlotInterval = resolveFillAttemptSlotInterval(
+			config.fillAttemptSlotInterval
+		);
+		if (fillAttemptSlotInterval.warning) {
+			logger.warn(`${logPrefix} ${fillAttemptSlotInterval.warning}`);
+		}
+		this.fillAttemptSlotInterval = fillAttemptSlotInterval.value;
 		if (globalConfig.txConfirmationEndpoint) {
 			this.txConfirmationConnection = new Connection(
 				globalConfig.txConfirmationEndpoint
@@ -1106,11 +1132,11 @@ export class FillerMultithreaded {
 							} s`
 						);
 
-						const fullyFilledTakerOrderIds = nodeFilled.some(
-							(node) => node.node.isSignedMsg
-						)
-							? this.getFullyFilledTakerOrderIds(txResp.meta?.logMessages)
-							: new Set<number>();
+						const fullyFilledTakerOrderIds =
+							txResp.meta?.err === null &&
+							nodeFilled.some((node) => node.node.isSignedMsg)
+								? this.getFullyFilledTakerOrderIds(txResp.meta?.logMessages)
+								: new Set<number>();
 						for (const node of nodeFilled) {
 							const orderId = node.node.order?.orderId;
 							if (
@@ -1125,8 +1151,6 @@ export class FillerMultithreaded {
 										uuid: orderId,
 									},
 								});
-
-								this.fillAttempts.delete(getNodeToFillSignature(node));
 							}
 						}
 						this.pendingTxSigsToconfirm.delete(txSig);

@@ -31,6 +31,7 @@ pub fn sweep_completed_revenue_share_for_market<'a>(
     now_ts: i64,
     oracle_price: i64,
     builder_codes_feature_enabled: bool,
+    funding_paused: bool,
 ) -> crate::error::VelocityResult<()> {
     let perp_market = &mut perp_market_map.get_ref_mut(&market_index)?;
 
@@ -44,7 +45,12 @@ pub fn sweep_completed_revenue_share_for_market<'a>(
 
     let quote_spot_market = &mut spot_market_map.get_quote_spot_market_mut()?;
 
-    spot_balance::update_spot_market_cumulative_interest(quote_spot_market, None, now_ts)?;
+    spot_balance::update_spot_market_cumulative_interest(
+        quote_spot_market,
+        None,
+        now_ts,
+        funding_paused,
+    )?;
 
     // Amount this permissionless sweep must leave in the PnL pool, mirroring
     // the reservation the protocol fee sweep applies

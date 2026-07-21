@@ -1239,6 +1239,7 @@ pub fn liquidate_spot(
     let liquidation_margin_buffer_ratio = state.liquidation_margin_buffer_ratio;
     let initial_pct_to_liquidate = state.initial_pct_to_liquidate as u128;
     let liquidation_duration = state.liquidation_duration as u128;
+    let funding_paused = state.funding_paused()?;
 
     validate!(
         !user.is_cross_margin_bankrupt(),
@@ -1340,6 +1341,7 @@ pub fn liquidate_spot(
             validity_guard_rails,
             now,
             Some(VelocityAction::Liquidate),
+            funding_paused,
         )?;
 
         let spot_deposit_position = user.get_spot_position(asset_market_index)?;
@@ -1410,6 +1412,7 @@ pub fn liquidate_spot(
             validity_guard_rails,
             now,
             Some(VelocityAction::Liquidate),
+            funding_paused,
         )?;
 
         let spot_position = user.get_spot_position(liability_market_index)?;
@@ -1876,6 +1879,7 @@ pub fn liquidate_spot_with_swap_begin(
     let liquidation_margin_buffer_ratio = state.liquidation_margin_buffer_ratio;
     let initial_pct_to_liquidate = state.initial_pct_to_liquidate as u128;
     let liquidation_duration = state.liquidation_duration as u128;
+    let funding_paused = state.funding_paused()?;
 
     validate!(
         !user.is_cross_margin_bankrupt(),
@@ -1937,6 +1941,7 @@ pub fn liquidate_spot_with_swap_begin(
             validity_guard_rails,
             now,
             Some(VelocityAction::Liquidate),
+            funding_paused,
         )?;
 
         let spot_deposit_position = user.get_spot_position(asset_market_index)?;
@@ -2003,6 +2008,7 @@ pub fn liquidate_spot_with_swap_begin(
             validity_guard_rails,
             now,
             Some(VelocityAction::Liquidate),
+            funding_paused,
         )?;
 
         let spot_position = user.get_spot_position(liability_market_index)?;
@@ -2588,6 +2594,7 @@ pub fn liquidate_borrow_for_perp_pnl(
     liquidation_margin_buffer_ratio: u32,
     initial_pct_to_liquidate: u128,
     liquidation_duration: u128,
+    funding_paused: bool,
 ) -> VelocityResult {
     // liquidator takes over a user borrow in exchange for that user's positive perpetual pnl
     // can only be done once a user's perpetual position size is 0
@@ -2743,6 +2750,7 @@ pub fn liquidate_borrow_for_perp_pnl(
             validity_guard_rails,
             now,
             Some(VelocityAction::Liquidate),
+            funding_paused,
         )?;
 
         let spot_position = user.get_spot_position(liability_market_index)?;
@@ -3090,6 +3098,7 @@ pub fn liquidate_perp_pnl_for_deposit(
     liquidation_margin_buffer_ratio: u32,
     initial_pct_to_liquidate: u128,
     liquidation_duration: u128,
+    funding_paused: bool,
 ) -> VelocityResult {
     // liquidator takes over remaining negative perpetual pnl in exchange for a user deposit
     // can only be done once the perpetual position's size is 0
@@ -3199,6 +3208,7 @@ pub fn liquidate_perp_pnl_for_deposit(
             validity_guard_rails,
             now,
             Some(VelocityAction::Liquidate),
+            funding_paused,
         )?;
 
         // a margin-invalid (stale/uncertain) deposit oracle may make the account
@@ -3631,6 +3641,7 @@ pub fn resolve_perp_bankruptcy(
     oracle_map: &mut OracleMap,
     now: i64,
     insurance_fund_vault_balance: u64,
+    funding_paused: bool,
 ) -> VelocityResult<u64> {
     let liquidation_mode = get_perp_liquidation_mode(user, market_index)?;
 
@@ -3745,7 +3756,12 @@ pub fn resolve_perp_bankruptcy(
         // move if payment to pnl pool
         let spot_market = &mut spot_market_map.get_ref_mut(&QUOTE_SPOT_MARKET_INDEX)?;
         let oracle_price_data = oracle_map.get_price_data(&spot_market.oracle_id())?;
-        update_spot_market_cumulative_interest(spot_market, Some(oracle_price_data), now)?;
+        update_spot_market_cumulative_interest(
+            spot_market,
+            Some(oracle_price_data),
+            now,
+            funding_paused,
+        )?;
 
         update_spot_balances(
             if_payment,
@@ -3940,6 +3956,7 @@ pub fn resolve_spot_bankruptcy(
     oracle_map: &mut OracleMap,
     now: i64,
     insurance_fund_vault_balance: u64,
+    funding_paused: bool,
 ) -> VelocityResult<u64> {
     if !user.is_cross_margin_bankrupt() && is_cross_margin_bankrupt(user) {
         user.enter_cross_margin_bankruptcy();
@@ -4022,7 +4039,7 @@ pub fn resolve_spot_bankruptcy(
     // sibling `resolve_perp_pnl_deficit` refresh.
     {
         let spot_market = &mut spot_market_map.get_ref_mut(&market_index)?;
-        update_spot_market_cumulative_interest(spot_market, None, now)?;
+        update_spot_market_cumulative_interest(spot_market, None, now, funding_paused)?;
     }
 
     let borrow_amount = {

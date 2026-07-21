@@ -1141,7 +1141,12 @@ pub fn handle_settle_expired_market_pools_to_revenue_pool(
     let clock = Clock::get()?;
     let now = clock.unix_timestamp;
 
-    controller::spot_balance::update_spot_market_cumulative_interest(spot_market, None, now)?;
+    controller::spot_balance::update_spot_market_cumulative_interest(
+        spot_market,
+        None,
+        now,
+        state.funding_paused()?,
+    )?;
 
     validate!(
         spot_market.market_index == QUOTE_SPOT_MARKET_INDEX,
@@ -3257,6 +3262,7 @@ pub fn handle_admin_deposit<'c: 'info, 'info>(
         &mut spot_market,
         Some(&oracle_price_data),
         now,
+        state.funding_paused()?,
     )?;
 
     let position_index = user.force_get_spot_position_index(spot_market.market_index)?;

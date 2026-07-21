@@ -284,6 +284,7 @@ pub fn large_num_seeded_stake_if_test() {
         &mut spot_market,
         1,
         true,
+        false,
     )
     .unwrap();
     assert_eq!(flow, 11);
@@ -1455,6 +1456,7 @@ fn resolve_perp_pnl_deficit_refreshes_period_after_new_settle() {
         &mut spot_market,
         &mut market,
         now,
+        false,
     )
     .unwrap();
 

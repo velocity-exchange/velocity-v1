@@ -32,6 +32,16 @@ use crate::state::quoter::{MarketEvent, QuoteContext, Quoter, QuoterCommit};
 use crate::state::state::OracleGuardRails;
 use crate::state::user::User;
 
+/// NOTE: this must run UNCONDITIONALLY on every position-mutating path (fills,
+/// liquidations, transfers, expiry settlement), including while the exchange-wide
+/// funding pause is set. `update_position_and_market` validates
+/// `position.last_cumulative_funding_rate == market.cumulative_funding_rate_{long,short}`
+/// before any modification of a position with base, and this settle is what
+/// establishes that invariant. Skipping it during a pause deadlocks every position
+/// carrying a pre-pause funding delta (unfillable, untransferable, un-liquidatable)
+/// while the gated crank can't clear the delta either. Settling during a pause is
+/// safe: the accumulators are frozen by the gated `update_funding_rate`, so this
+/// only folds in funding accrued BEFORE the pause — it cannot advance funding.
 pub fn settle_funding_payment(
     user: &mut User,
     user_key: &Pubkey,

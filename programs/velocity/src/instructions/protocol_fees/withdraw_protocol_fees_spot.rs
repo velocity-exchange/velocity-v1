@@ -83,7 +83,12 @@ pub fn handle_withdraw_protocol_fees_spot<'c: 'info, 'info>(
     let remaining_accounts_iter = &mut ctx.remaining_accounts.iter().peekable();
     let mint = Some(ctx.accounts.mint.clone());
 
-    controller::spot_balance::update_spot_market_cumulative_interest(spot_market, None, now)?;
+    controller::spot_balance::update_spot_market_cumulative_interest(
+        spot_market,
+        None,
+        now,
+        state.funding_paused()?,
+    )?;
 
     let available = get_token_amount(
         spot_market.protocol_fee_pool.scaled_balance,

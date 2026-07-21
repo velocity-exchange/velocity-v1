@@ -317,6 +317,7 @@ pub mod transfer_isolated_perp_position_deposit {
             0,
             0,
             QUOTE_PRECISION_I64,
+            false,
         )
         .unwrap();
 
@@ -421,6 +422,7 @@ pub mod transfer_isolated_perp_position_deposit {
             0,
             0,
             QUOTE_PRECISION_I64,
+            false,
         );
 
         assert_eq!(result, Err(ErrorCode::InvalidPerpPosition));
@@ -511,6 +513,7 @@ pub mod transfer_isolated_perp_position_deposit {
             0,
             0,
             2 * QUOTE_PRECISION_I64,
+            false,
         );
 
         assert_eq!(result, Err(ErrorCode::InsufficientCollateral));
@@ -602,6 +605,7 @@ pub mod transfer_isolated_perp_position_deposit {
             0,
             0,
             -QUOTE_PRECISION_I64,
+            false,
         )
         .unwrap();
 
@@ -702,6 +706,7 @@ pub mod transfer_isolated_perp_position_deposit {
             0,
             0,
             -QUOTE_PRECISION_I64,
+            false,
         );
 
         assert_eq!(result, Err(ErrorCode::InvalidPerpPosition));
@@ -794,6 +799,7 @@ pub mod transfer_isolated_perp_position_deposit {
             0,
             0,
             -QUOTE_PRECISION_I64,
+            false,
         );
 
         assert_eq!(result, Err(ErrorCode::InsufficientCollateral));
@@ -915,6 +921,7 @@ pub mod withdraw_from_isolated_perp_position {
             0,
             0,
             QUOTE_PRECISION_U64,
+            false,
         )
         .unwrap();
 
@@ -1012,6 +1019,7 @@ pub mod withdraw_from_isolated_perp_position {
             0,
             0,
             QUOTE_PRECISION_U64,
+            false,
         );
 
         assert_eq!(result, Err(ErrorCode::InvalidPerpPosition));
@@ -1106,6 +1114,7 @@ pub mod withdraw_from_isolated_perp_position {
             0,
             0,
             QUOTE_PRECISION_U64,
+            false,
         );
 
         assert_eq!(result, Err(ErrorCode::InsufficientCollateral));

@@ -131,8 +131,16 @@ pub fn update_spot_market_cumulative_interest(
     spot_market: &mut SpotMarket,
     oracle_price_data: Option<&OraclePriceData>,
     now: i64,
+    funding_paused: bool,
 ) -> VelocityResult {
-    if spot_market.is_operation_paused(SpotOperation::UpdateCumulativeInterest) {
+    // Freeze interest accrual when the exchange-wide funding pause
+    // (`State::funding_paused`) is set or this market's
+    // `UpdateCumulativeInterest` operation is paused. `funding_paused` is
+    // threaded in from callers because the global flag lives on `State`, which
+    // this controller does not load. TWAP stats still advance so oracle EMAs
+    // stay fresh, mirroring the dedicated `update_spot_market_cumulative_interest`
+    // crank; on resume the next accrual covers the full elapsed interval.
+    if funding_paused || spot_market.is_operation_paused(SpotOperation::UpdateCumulativeInterest) {
         update_spot_market_twap_stats(spot_market, oracle_price_data, now)?;
         return Ok(());
     }
@@ -473,9 +481,15 @@ pub fn update_spot_market_and_check_validity(
     validity_guard_rails: &ValidityGuardRails,
     now: i64,
     action: Option<VelocityAction>,
+    funding_paused: bool,
 ) -> VelocityResult<OracleValidity> {
     // update spot market EMAs with new/current data
-    update_spot_market_cumulative_interest(spot_market, Some(oracle_price_data), now)?;
+    update_spot_market_cumulative_interest(
+        spot_market,
+        Some(oracle_price_data),
+        now,
+        funding_paused,
+    )?;
 
     if spot_market.market_index == QUOTE_SPOT_MARKET_INDEX {
         return Ok(OracleValidity::Valid);

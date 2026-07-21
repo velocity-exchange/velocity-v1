@@ -513,6 +513,7 @@ describe('admin', () => {
 			0,
 			referenceOffsetDeadbandPct
 		);
+		await velocityClient.fetchAccounts();
 		const perpMarket = velocityClient.getPerpMarketAccount(0);
 		assert(
 			perpMarket.amm.referencePriceOffsetDeadbandPct ==

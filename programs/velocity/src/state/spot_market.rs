@@ -192,9 +192,14 @@ pub struct SpotMarket {
     pub min_borrow_rate: u8,
     pub token_program_flag: u8,
     pub pool_id: u8,
-    /// Aligns `protocol_fee_pool`'s leading u128 to a 16-byte struct offset so
-    /// host (x86_64, align 16) and SBF (align 8) layouts agree. Do not reorder.
-    pub _padding_align_pfp: [u8; 8],
+    /// Aligns `protocol_fee_pool`'s leading u128 to a 16-byte struct offset
+    /// (752) so host (x86_64, align 16) and SBF (align 8) layouts agree, AND
+    /// so the borsh/IDL packed layout reaches the same offset with no implicit
+    /// `#[repr(C)]` padding — off-chain borsh decoders (TS SDK, velocity-rs)
+    /// know nothing about implicit padding, so every byte must be explicit.
+    /// Was `[u8; 8]`, which left borsh 5 bytes short of the real offset and
+    /// made clients misread the three fields below. Do not reorder.
+    pub _padding_align_pfp: [u8; 13],
     /// Protocol fees collected in this market's token (lending protocol carveout
     /// + spot-liquidation protocol fee). A protocol-owned Deposit-type claim
     /// inside the spot vault (counted in `deposit_balance`, like `revenue_pool`)
@@ -211,6 +216,16 @@ pub struct SpotMarket {
     pub protocol_fee_factor: u32,
     pub padding: [u8; 8],
 }
+
+// Layout guards: the deployed account layout is frozen, and the borsh/IDL
+// packed layout must reach the same offsets with zero implicit `#[repr(C)]`
+// padding (off-chain decoders read the IDL's packed layout). If one of these
+// fires after a struct change, re-size the explicit padding fields — never
+// let the compiler insert implicit padding.
+const _: () = assert!(std::mem::size_of::<SpotMarket>() == 800);
+const _: () = assert!(std::mem::offset_of!(SpotMarket, protocol_fee_pool) == 752);
+const _: () = assert!(std::mem::offset_of!(SpotMarket, protocol_liquidation_fee) == 784);
+const _: () = assert!(std::mem::offset_of!(SpotMarket, protocol_fee_factor) == 788);
 
 impl Default for SpotMarket {
     fn default() -> Self {
@@ -273,7 +288,7 @@ impl Default for SpotMarket {
             min_borrow_rate: 0,
             token_program_flag: 0,
             pool_id: 0,
-            _padding_align_pfp: [0; 8],
+            _padding_align_pfp: [0; 13],
             protocol_fee_pool: PoolBalance::default(),
             protocol_liquidation_fee: 0,
             protocol_fee_factor: 0,

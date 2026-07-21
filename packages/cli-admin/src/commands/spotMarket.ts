@@ -178,7 +178,7 @@ export function registerSpotMarket(parent: Command): void {
 			.description(
 				'Per-market daily withdraw circuit-breaker size: the max fraction of ' +
 					'the 24h deposit TWAP withdrawable per 24h window ' +
-					'(PERCENTAGE_PRECISION = 1e6, e.g. 250000 = 25%). 0 => default 25%.'
+					'(basis points, 10000 = 100%, e.g. 2500 = 25%). 0 => default 25%.'
 			)
 	).action(async (market: string, pct: string, _flags, cmd: Command) => {
 		const opts = readGlobalOpts(cmd);
@@ -209,7 +209,7 @@ export function registerSpotMarket(parent: Command): void {
 			.command('set-deposit-cap <market> <threshold> <pctPerDay>')
 			.description(
 				'Per-market daily deposit cap. threshold (raw u64, token base units): ' +
-					'no rate limit below it. pctPerDay (PERCENTAGE_PRECISION = 1e6): max ' +
+					'no rate limit below it. pctPerDay (basis points, 10000 = 100%): max ' +
 					'fraction above the 24h deposit TWAP deposits may reach per 24h window. ' +
 					'pctPerDay = 0 disables the cap.'
 			)

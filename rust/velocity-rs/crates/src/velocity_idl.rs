@@ -2005,7 +2005,7 @@ pub mod instructions {
     #[derive(AnchorSerialize, AnchorDeserialize, Clone, Default)]
     pub struct UpdateSpotMarketDepositCap {
         pub deposit_guard_threshold: u64,
-        pub max_deposit_pct_per_day: u32,
+        pub max_deposit_pct_per_day: u16,
     }
     #[automatically_derived]
     impl anchor_lang::Discriminator for UpdateSpotMarketDepositCap {
@@ -2206,7 +2206,7 @@ pub mod instructions {
     impl anchor_lang::InstructionData for UpdateSpotMarketStepSizeAndTickSize {}
     #[derive(AnchorSerialize, AnchorDeserialize, Clone, Default)]
     pub struct UpdateSpotMarketWithdrawCircuitBreaker {
-        pub withdraw_circuit_breaker_pct: u32,
+        pub withdraw_circuit_breaker_pct: u16,
     }
     #[automatically_derived]
     impl anchor_lang::Discriminator for UpdateSpotMarketWithdrawCircuitBreaker {
@@ -4944,15 +4944,14 @@ pub mod types {
         pub min_borrow_rate: u8,
         pub token_program_flag: u8,
         pub pool_id: u8,
-        #[serde(skip)]
-        pub _padding_align_pfp: Padding<13>,
+        pub _padding_align_pfp: u8,
+        pub withdraw_circuit_breaker_pct: u16,
+        pub max_deposit_pct_per_day: u16,
+        pub deposit_guard_threshold: u64,
         pub protocol_fee_pool: PoolBalance,
         pub protocol_liquidation_fee: u32,
         pub protocol_fee_factor: u32,
         pub if_last_settle_vault_amount: u64,
-        pub deposit_guard_threshold: u64,
-        pub withdraw_circuit_breaker_pct: u32,
-        pub max_deposit_pct_per_day: u32,
     }
     #[repr(C)]
     #[derive(
@@ -6313,15 +6312,14 @@ pub mod accounts {
         pub min_borrow_rate: u8,
         pub token_program_flag: u8,
         pub pool_id: u8,
-        #[serde(skip)]
-        pub _padding_align_pfp: Padding<13>,
+        pub _padding_align_pfp: u8,
+        pub withdraw_circuit_breaker_pct: u16,
+        pub max_deposit_pct_per_day: u16,
+        pub deposit_guard_threshold: u64,
         pub protocol_fee_pool: PoolBalance,
         pub protocol_liquidation_fee: u32,
         pub protocol_fee_factor: u32,
         pub if_last_settle_vault_amount: u64,
-        pub deposit_guard_threshold: u64,
-        pub withdraw_circuit_breaker_pct: u32,
-        pub max_deposit_pct_per_day: u32,
     }
     #[automatically_derived]
     impl anchor_lang::Discriminator for SpotMarket {
@@ -25880,7 +25878,7 @@ pub mod errors {
         PerpBankruptcyMustPrecedeSpot,
         #[msg("Revenue share recipient user must be sub_account_id 0")]
         InvalidRevenueShareRecipient,
-        #[msg("DailyDepositLimit")]
+        #[msg("Spot market daily deposit limit hit")]
         DailyDepositLimit,
     }
 }

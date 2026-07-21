@@ -9,19 +9,18 @@ use crate::state::spot_market::{SpotBalance, SpotBalanceType, SpotMarket};
 use crate::state::user::User;
 use crate::validate;
 
-use super::constants::{
-    PERCENTAGE_PRECISION, PERCENTAGE_PRECISION_U32, SPOT_UTILIZATION_PRECISION,
-};
+use super::constants::{BPS_PRECISION, SPOT_UTILIZATION_PRECISION};
 
 /// Default withdraw circuit-breaker size when a market has not configured one
 /// (i.e. `withdraw_circuit_breaker_pct == 0`): 25% of the 24h deposit TWAP.
 /// Keeps markets created before the field existed on prior behavior.
-pub const DEFAULT_WITHDRAW_CIRCUIT_BREAKER_PCT: u32 = PERCENTAGE_PRECISION_U32 / 4;
+/// precision: basis points (10_000 = 100%)
+pub const DEFAULT_WITHDRAW_CIRCUIT_BREAKER_PCT: u16 = (BPS_PRECISION / 4) as u16;
 
 pub fn calculate_min_deposit_token_amount(
     deposit_token_twap: u128,
     withdraw_guard_threshold: u128,
-    withdraw_circuit_breaker_pct: u32,
+    withdraw_circuit_breaker_pct: u16,
 ) -> VelocityResult<u128> {
     // minimum required deposit amount after withdrawal
     // minimum deposit amount lower of (100% - breaker pct) of TWAP or withdrawal guard threshold below TWAP
@@ -38,7 +37,7 @@ pub fn calculate_min_deposit_token_amount(
 
     let max_drop = deposit_token_twap
         .safe_mul(breaker_pct.cast()?)?
-        .safe_div(PERCENTAGE_PRECISION)?;
+        .safe_div(BPS_PRECISION.cast()?)?;
 
     let min_deposit_token = deposit_token_twap
         .safe_sub(max_drop.max(withdraw_guard_threshold.min(deposit_token_twap)))?;
@@ -49,7 +48,7 @@ pub fn calculate_min_deposit_token_amount(
 pub fn calculate_max_deposit_token_amount(
     deposit_token_twap: u128,
     deposit_guard_threshold: u128,
-    max_deposit_pct_per_day: u32,
+    max_deposit_pct_per_day: u16,
 ) -> VelocityResult<u128> {
     // maximum permitted deposit token amount after a deposit
     // mirror of `calculate_min_deposit_token_amount` on the deposit side:
@@ -62,7 +61,7 @@ pub fn calculate_max_deposit_token_amount(
 
     let max_increase = deposit_token_twap
         .safe_mul(max_deposit_pct_per_day.cast()?)?
-        .safe_div(PERCENTAGE_PRECISION)?;
+        .safe_div(BPS_PRECISION.cast()?)?;
 
     let max_deposit_token = deposit_token_twap
         .safe_add(max_increase)?
@@ -469,7 +468,7 @@ mod tests {
     fn min_deposit_configurable_pct_tightens() {
         let twap = 100 * QUOTE_PRECISION;
         // 10% breaker => can only withdraw 10%, min deposit = 90% of twap.
-        let pct = PERCENTAGE_PRECISION_U32 / 10;
+        let pct = (BPS_PRECISION / 10) as u16; // 1000 bps = 10%
         let min = calculate_min_deposit_token_amount(twap, 0, pct).unwrap();
         assert_eq!(min, twap - twap / 10);
     }
@@ -494,7 +493,7 @@ mod tests {
     fn max_deposit_caps_growth_above_twap() {
         let twap = 100 * QUOTE_PRECISION;
         // 20%/day => resulting deposits capped at 120% of twap.
-        let pct = PERCENTAGE_PRECISION_U32 / 5;
+        let pct = (BPS_PRECISION / 5) as u16; // 2000 bps = 20%
         let max = calculate_max_deposit_token_amount(twap, 0, pct).unwrap();
         assert_eq!(max, twap + twap / 5);
     }
@@ -504,7 +503,7 @@ mod tests {
         let twap = 10 * QUOTE_PRECISION;
         // small twap but a high guard threshold => deposits allowed up to threshold.
         let guard = 1_000 * QUOTE_PRECISION;
-        let pct = PERCENTAGE_PRECISION_U32 / 5;
+        let pct = (BPS_PRECISION / 5) as u16; // 2000 bps = 20%
         let max = calculate_max_deposit_token_amount(twap, guard, pct).unwrap();
         assert_eq!(max, guard);
     }

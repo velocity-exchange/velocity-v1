@@ -21,7 +21,10 @@ import {
 	calculateSizePremiumLiabilityWeight,
 } from './margin';
 import { OraclePriceData } from '../oracles/types';
-import { PERCENTAGE_PRECISION } from '../constants/numericConstants';
+import {
+	BPS_PRECISION,
+	PERCENTAGE_PRECISION,
+} from '../constants/numericConstants';
 import { divCeil } from './utils';
 import { StrictOraclePrice } from '../oracles/strictOraclePrice';
 
@@ -816,15 +819,14 @@ export function calculateWithdrawLimit(
 		); // isolated pools between 50-95% utilization with friction on twap in 33% increments
 	}
 
-	// 0 is treated as the default 25% so markets created before the field
-	// existed keep prior behavior (mirrors calculate_min_deposit_token_amount).
+	// 0 is treated as the default 25% (2500 bps) so markets created before the
+	// field existed keep prior behavior (mirrors calculate_min_deposit_token_amount).
+	// withdrawCircuitBreakerPct is in basis points (BPS_PRECISION = 10_000 = 100%).
 	const breakerPct =
 		spotMarket.withdrawCircuitBreakerPct === 0
-			? PERCENTAGE_PRECISION.divn(4)
+			? BPS_PRECISION.divn(4)
 			: new BN(spotMarket.withdrawCircuitBreakerPct);
-	const maxDrop = depositTokenTwapLive
-		.mul(breakerPct)
-		.div(PERCENTAGE_PRECISION);
+	const maxDrop = depositTokenTwapLive.mul(breakerPct).div(BPS_PRECISION);
 	const minDepositTokensTwap = depositTokenTwapLive.sub(
 		BN.max(
 			maxDrop,
@@ -903,9 +905,10 @@ export function calculateMaxDepositTokenAmount(
 	if (maxDepositPctPerDay === 0) {
 		return null; // disabled
 	}
+	// maxDepositPctPerDay is in basis points (BPS_PRECISION = 10_000 = 100%).
 	const maxIncrease = depositTokenTwap
 		.mul(new BN(maxDepositPctPerDay))
-		.div(PERCENTAGE_PRECISION);
+		.div(BPS_PRECISION);
 	return BN.max(depositTokenTwap.add(maxIncrease), depositGuardThreshold);
 }
 

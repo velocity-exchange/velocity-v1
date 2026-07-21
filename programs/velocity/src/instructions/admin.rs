@@ -386,7 +386,7 @@ pub fn handle_initialize_spot_market(
         min_borrow_rate: 0,
         token_program_flag: token_program,
         pool_id: 0,
-        _padding_align_pfp: [0; 13],
+        _padding_align_pfp: 0,
         protocol_fee_pool: PoolBalance {
             scaled_balance: 0,
             market_index: spot_market_index,
@@ -2094,14 +2094,14 @@ pub fn handle_update_spot_market_max_token_deposits(
 )]
 pub fn handle_update_spot_market_withdraw_circuit_breaker(
     ctx: Context<AdminUpdateSpotMarket>,
-    withdraw_circuit_breaker_pct: u32,
+    withdraw_circuit_breaker_pct: u16,
 ) -> Result<()> {
     validate!(
-        withdraw_circuit_breaker_pct <= PERCENTAGE_PRECISION_U32,
+        withdraw_circuit_breaker_pct <= BPS_PRECISION as u16,
         ErrorCode::DefaultError,
-        "withdraw_circuit_breaker_pct ({}) must be <= 100% ({})",
+        "withdraw_circuit_breaker_pct ({} bps) must be <= 100% ({} bps)",
         withdraw_circuit_breaker_pct,
-        PERCENTAGE_PRECISION_U32
+        BPS_PRECISION
     )?;
 
     // A higher pct loosens the breaker (allows a larger daily withdrawal). The
@@ -2137,7 +2137,7 @@ pub fn handle_update_spot_market_withdraw_circuit_breaker(
 pub fn handle_update_spot_market_deposit_cap(
     ctx: Context<AdminUpdateSpotMarket>,
     deposit_guard_threshold: u64,
-    max_deposit_pct_per_day: u32,
+    max_deposit_pct_per_day: u16,
 ) -> Result<()> {
     let spot_market = &mut load_mut!(ctx.accounts.spot_market)?;
     msg!("spot market {}", spot_market.market_index);

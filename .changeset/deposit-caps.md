@@ -7,10 +7,10 @@ Add per-market configurable withdraw circuit breaker and a daily deposit rate
 cap.
 
 The previously-hardcoded 25% daily withdraw circuit breaker is now configurable
-per spot market via `SpotMarketAccount.withdrawCircuitBreakerPct` (basis points,
+per spot market via `SpotMarketAccount.withdrawCircuitBreakerBps` (basis points,
 10000 = 100%; `0` keeps the default 25% = 2500 bps). A new daily deposit rate
 cap mirrors the withdraw side: `depositGuardThreshold` (no cap below it) and
-`maxDepositPctPerDay` (basis points; `0` disables) bound how far resulting
+`maxDepositBpsPerDay` (basis points; `0` disables) bound how far resulting
 deposits may exceed the 24h deposit TWAP. It is enforced on the direct `deposit`
 instruction and on the shared spot-credit path, so `transfer_pools` and
 `end_swap` deposit credits are bounded too; it reverts with the new
@@ -23,8 +23,8 @@ bytes as 0 (default 25% breaker, disabled deposit cap). The two percentage
 fields are `u16` basis points rather than `u32` PERCENTAGE_PRECISION so the set
 fits the gap; `depositGuardThreshold` stays `u64` (token amount).
 
-SDK: `SpotMarketAccount` gains `withdrawCircuitBreakerPct`,
-`depositGuardThreshold`, and `maxDepositPctPerDay`; new
+SDK: `SpotMarketAccount` gains `withdrawCircuitBreakerBps`,
+`depositGuardThreshold`, and `maxDepositBpsPerDay`; new
 `AdminClient.updateSpotMarketWithdrawCircuitBreaker` /
 `updateSpotMarketDepositCap` (and their `getUpdate…Ix` builders); new math
 helpers `calculateMaxDepositTokenAmount` / `checkDepositLimits`; the existing

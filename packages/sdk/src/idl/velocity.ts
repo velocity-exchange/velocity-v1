@@ -11511,7 +11511,7 @@ export type Velocity = {
           "type": "u64"
         },
         {
-          "name": "maxDepositPctPerDay",
+          "name": "maxDepositBpsPerDay",
           "type": "u16"
         }
       ]
@@ -12182,7 +12182,7 @@ export type Velocity = {
       ],
       "args": [
         {
-          "name": "withdrawCircuitBreakerPct",
+          "name": "withdrawCircuitBreakerBps",
           "type": "u16"
         }
       ]
@@ -23157,7 +23157,7 @@ export type Velocity = {
             "type": "u8"
           },
           {
-            "name": "withdrawCircuitBreakerPct",
+            "name": "withdrawCircuitBreakerBps",
             "docs": [
               "Daily withdraw circuit-breaker size: the max fraction of the 24h deposit",
               "TWAP that may be withdrawn per 24h window. `0` is treated as the default",
@@ -23167,7 +23167,7 @@ export type Velocity = {
             "type": "u16"
           },
           {
-            "name": "maxDepositPctPerDay",
+            "name": "maxDepositBpsPerDay",
             "docs": [
               "Daily deposit rate limit: the max fraction above the 24h deposit TWAP that",
               "resulting deposits may reach per 24h window. Disabled when `0`.",

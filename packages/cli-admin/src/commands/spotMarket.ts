@@ -196,7 +196,7 @@ export function registerSpotMarket(parent: Command): void {
 				'velocity-admin spot-market set-withdraw-breaker'
 			);
 			reportDispatch(
-				`spot-market[${market}] withdraw_circuit_breaker_pct = ${pct}`,
+				`spot-market[${market}] withdraw_circuit_breaker_bps = ${pct}`,
 				result
 			);
 		} finally {
@@ -237,7 +237,7 @@ export function registerSpotMarket(parent: Command): void {
 					'velocity-admin spot-market set-deposit-cap'
 				);
 				reportDispatch(
-					`spot-market[${market}] deposit_guard_threshold = ${threshold}, max_deposit_pct_per_day = ${pctPerDay}`,
+					`spot-market[${market}] deposit_guard_threshold = ${threshold}, max_deposit_bps_per_day = ${pctPerDay}`,
 					result
 				);
 			} finally {

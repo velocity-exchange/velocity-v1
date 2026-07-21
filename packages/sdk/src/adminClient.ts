@@ -3119,11 +3119,11 @@ export class AdminClient extends VelocityClient {
 
 	public async updateSpotMarketWithdrawCircuitBreaker(
 		spotMarketIndex: number,
-		withdrawCircuitBreakerPct: number
+		withdrawCircuitBreakerBps: number
 	): Promise<TransactionSignature> {
 		const ix = await this.getUpdateSpotMarketWithdrawCircuitBreakerIx(
 			spotMarketIndex,
-			withdrawCircuitBreakerPct
+			withdrawCircuitBreakerBps
 		);
 
 		const tx = await this.buildTransaction(ix);
@@ -3135,10 +3135,10 @@ export class AdminClient extends VelocityClient {
 
 	public async getUpdateSpotMarketWithdrawCircuitBreakerIx(
 		spotMarketIndex: number,
-		withdrawCircuitBreakerPct: number
+		withdrawCircuitBreakerBps: number
 	): Promise<TransactionInstruction> {
 		return this.program.instruction.updateSpotMarketWithdrawCircuitBreaker(
-			withdrawCircuitBreakerPct,
+			withdrawCircuitBreakerBps,
 			{
 				accounts: {
 					admin: this.isSubscribed
@@ -3157,12 +3157,12 @@ export class AdminClient extends VelocityClient {
 	public async updateSpotMarketDepositCap(
 		spotMarketIndex: number,
 		depositGuardThreshold: BN,
-		maxDepositPctPerDay: number
+		maxDepositBpsPerDay: number
 	): Promise<TransactionSignature> {
 		const ix = await this.getUpdateSpotMarketDepositCapIx(
 			spotMarketIndex,
 			depositGuardThreshold,
-			maxDepositPctPerDay
+			maxDepositBpsPerDay
 		);
 
 		const tx = await this.buildTransaction(ix);
@@ -3175,11 +3175,11 @@ export class AdminClient extends VelocityClient {
 	public async getUpdateSpotMarketDepositCapIx(
 		spotMarketIndex: number,
 		depositGuardThreshold: BN,
-		maxDepositPctPerDay: number
+		maxDepositBpsPerDay: number
 	): Promise<TransactionInstruction> {
 		return this.program.instruction.updateSpotMarketDepositCap(
 			depositGuardThreshold,
-			maxDepositPctPerDay,
+			maxDepositBpsPerDay,
 			{
 				accounts: {
 					admin: this.isSubscribed

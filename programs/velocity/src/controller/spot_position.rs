@@ -140,14 +140,14 @@ pub fn update_spot_balances_and_cumulative_deposits_with_limits(
     // Enforce the daily deposit cap on the shared credit path so every
     // deposit-crediting caller (transfer_pools, end_swap, transfers) is bound,
     // not just the direct `deposit` instruction. No-op when the market has no
-    // cap configured (`max_deposit_pct_per_day == 0`) and on withdraw-direction
+    // cap configured (`max_deposit_bps_per_day == 0`) and on withdraw-direction
     // updates (deposits don't grow), so it only bites a real over-cap deposit.
     validate!(
         check_deposit_limits(spot_market)?,
         ErrorCode::DailyDepositLimit,
         "Spot Market {} has hit daily deposit limit (deposits exceed {} bps above 24h twap)",
         spot_market.market_index,
-        spot_market.max_deposit_pct_per_day
+        spot_market.max_deposit_bps_per_day
     )?;
 
     validate!(

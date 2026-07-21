@@ -2005,7 +2005,7 @@ pub mod instructions {
     #[derive(AnchorSerialize, AnchorDeserialize, Clone, Default)]
     pub struct UpdateSpotMarketDepositCap {
         pub deposit_guard_threshold: u64,
-        pub max_deposit_pct_per_day: u16,
+        pub max_deposit_bps_per_day: u16,
     }
     #[automatically_derived]
     impl anchor_lang::Discriminator for UpdateSpotMarketDepositCap {
@@ -2206,7 +2206,7 @@ pub mod instructions {
     impl anchor_lang::InstructionData for UpdateSpotMarketStepSizeAndTickSize {}
     #[derive(AnchorSerialize, AnchorDeserialize, Clone, Default)]
     pub struct UpdateSpotMarketWithdrawCircuitBreaker {
-        pub withdraw_circuit_breaker_pct: u16,
+        pub withdraw_circuit_breaker_bps: u16,
     }
     #[automatically_derived]
     impl anchor_lang::Discriminator for UpdateSpotMarketWithdrawCircuitBreaker {
@@ -4945,8 +4945,8 @@ pub mod types {
         pub token_program_flag: u8,
         pub pool_id: u8,
         pub _padding_align_pfp: u8,
-        pub withdraw_circuit_breaker_pct: u16,
-        pub max_deposit_pct_per_day: u16,
+        pub withdraw_circuit_breaker_bps: u16,
+        pub max_deposit_bps_per_day: u16,
         pub deposit_guard_threshold: u64,
         pub protocol_fee_pool: PoolBalance,
         pub protocol_liquidation_fee: u32,
@@ -6313,8 +6313,8 @@ pub mod accounts {
         pub token_program_flag: u8,
         pub pool_id: u8,
         pub _padding_align_pfp: u8,
-        pub withdraw_circuit_breaker_pct: u16,
-        pub max_deposit_pct_per_day: u16,
+        pub withdraw_circuit_breaker_bps: u16,
+        pub max_deposit_bps_per_day: u16,
         pub deposit_guard_threshold: u64,
         pub protocol_fee_pool: PoolBalance,
         pub protocol_liquidation_fee: u32,

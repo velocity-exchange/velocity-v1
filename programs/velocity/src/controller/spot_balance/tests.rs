@@ -77,7 +77,7 @@ fn test_daily_deposit_limits() {
     // cap disabled (pct == 0): any deposit level is valid.
     let disabled = SpotMarket {
         deposit_balance: 130 * SPOT_BALANCE_PRECISION,
-        max_deposit_pct_per_day: 0,
+        max_deposit_bps_per_day: 0,
         ..base
     };
     assert!(check_deposit_limits(&disabled).unwrap());
@@ -88,7 +88,7 @@ fn test_daily_deposit_limits() {
     // below cap (110% of twap) => allowed.
     let under = SpotMarket {
         deposit_balance: 110 * SPOT_BALANCE_PRECISION,
-        max_deposit_pct_per_day: pct,
+        max_deposit_bps_per_day: pct,
         ..base
     };
     assert!(check_deposit_limits(&under).unwrap());
@@ -96,7 +96,7 @@ fn test_daily_deposit_limits() {
     // above cap (130% of twap) => rejected.
     let over = SpotMarket {
         deposit_balance: 130 * SPOT_BALANCE_PRECISION,
-        max_deposit_pct_per_day: pct,
+        max_deposit_bps_per_day: pct,
         ..base
     };
     assert!(!check_deposit_limits(&over).unwrap());
@@ -104,7 +104,7 @@ fn test_daily_deposit_limits() {
     // a high deposit guard threshold lifts the cap below it: 130% allowed.
     let high_guard = SpotMarket {
         deposit_balance: 130 * SPOT_BALANCE_PRECISION,
-        max_deposit_pct_per_day: pct,
+        max_deposit_bps_per_day: pct,
         deposit_guard_threshold: 200 * QUOTE_PRECISION_U64,
         ..base
     };

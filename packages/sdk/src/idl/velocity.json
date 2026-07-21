@@ -11505,7 +11505,7 @@
           "type": "u64"
         },
         {
-          "name": "max_deposit_pct_per_day",
+          "name": "max_deposit_bps_per_day",
           "type": "u16"
         }
       ]
@@ -12176,7 +12176,7 @@
       ],
       "args": [
         {
-          "name": "withdraw_circuit_breaker_pct",
+          "name": "withdraw_circuit_breaker_bps",
           "type": "u16"
         }
       ]
@@ -23151,7 +23151,7 @@
             "type": "u8"
           },
           {
-            "name": "withdraw_circuit_breaker_pct",
+            "name": "withdraw_circuit_breaker_bps",
             "docs": [
               "Daily withdraw circuit-breaker size: the max fraction of the 24h deposit",
               "TWAP that may be withdrawn per 24h window. `0` is treated as the default",
@@ -23161,7 +23161,7 @@
             "type": "u16"
           },
           {
-            "name": "max_deposit_pct_per_day",
+            "name": "max_deposit_bps_per_day",
             "docs": [
               "Daily deposit rate limit: the max fraction above the 24h deposit TWAP that",
               "resulting deposits may reach per 24h window. Disabled when `0`.",

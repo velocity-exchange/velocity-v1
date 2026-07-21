@@ -821,11 +821,11 @@ export function calculateWithdrawLimit(
 
 	// 0 is treated as the default 25% (2500 bps) so markets created before the
 	// field existed keep prior behavior (mirrors calculate_min_deposit_token_amount).
-	// withdrawCircuitBreakerPct is in basis points (BPS_PRECISION = 10_000 = 100%).
+	// withdrawCircuitBreakerBps is in basis points (BPS_PRECISION = 10_000 = 100%).
 	const breakerPct =
-		spotMarket.withdrawCircuitBreakerPct === 0
+		spotMarket.withdrawCircuitBreakerBps === 0
 			? BPS_PRECISION.divn(4)
-			: new BN(spotMarket.withdrawCircuitBreakerPct);
+			: new BN(spotMarket.withdrawCircuitBreakerBps);
 	const maxDrop = depositTokenTwapLive.mul(breakerPct).div(BPS_PRECISION);
 	const minDepositTokensTwap = depositTokenTwapLive.sub(
 		BN.max(
@@ -894,20 +894,20 @@ export function calculateWithdrawLimit(
 /**
  * Mirror of the program's `calculate_max_deposit_token_amount`. Returns the max
  * resulting deposit token amount permitted by the daily deposit cap: growth up
- * to `maxDepositPctPerDay` above the 24h deposit TWAP, but never below the
+ * to `maxDepositBpsPerDay` above the 24h deposit TWAP, but never below the
  * deposit guard threshold. Returns null when the cap is disabled (pct == 0).
  */
 export function calculateMaxDepositTokenAmount(
 	depositTokenTwap: BN,
 	depositGuardThreshold: BN,
-	maxDepositPctPerDay: number
+	maxDepositBpsPerDay: number
 ): BN | null {
-	if (maxDepositPctPerDay === 0) {
+	if (maxDepositBpsPerDay === 0) {
 		return null; // disabled
 	}
-	// maxDepositPctPerDay is in basis points (BPS_PRECISION = 10_000 = 100%).
+	// maxDepositBpsPerDay is in basis points (BPS_PRECISION = 10_000 = 100%).
 	const maxIncrease = depositTokenTwap
-		.mul(new BN(maxDepositPctPerDay))
+		.mul(new BN(maxDepositBpsPerDay))
 		.div(BPS_PRECISION);
 	return BN.max(depositTokenTwap.add(maxIncrease), depositGuardThreshold);
 }
@@ -918,7 +918,7 @@ export function calculateMaxDepositTokenAmount(
  * cap is disabled).
  */
 export function checkDepositLimits(spotMarket: SpotMarketAccount): boolean {
-	if (spotMarket.maxDepositPctPerDay === 0) {
+	if (spotMarket.maxDepositBpsPerDay === 0) {
 		return true;
 	}
 	const depositTokenAmount = getTokenAmount(
@@ -929,7 +929,7 @@ export function checkDepositLimits(spotMarket: SpotMarketAccount): boolean {
 	const maxDepositToken = calculateMaxDepositTokenAmount(
 		spotMarket.depositTokenTwap,
 		spotMarket.depositGuardThreshold,
-		spotMarket.maxDepositPctPerDay
+		spotMarket.maxDepositBpsPerDay
 	);
 	if (maxDepositToken === null) {
 		return true;

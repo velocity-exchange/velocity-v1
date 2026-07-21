@@ -1408,10 +1408,10 @@ export type SpotMarketAccount = {
 	depositGuardThreshold: BN;
 	// Max fraction of the 24h deposit TWAP withdrawable per 24h window.
 	// 0 => default 25%. precision: PERCENTAGE_PRECISION (1e6)
-	withdrawCircuitBreakerPct: number;
+	withdrawCircuitBreakerBps: number;
 	// Max fraction above the 24h deposit TWAP that resulting deposits may reach
 	// per 24h window. 0 => disabled. precision: PERCENTAGE_PRECISION (1e6)
-	maxDepositPctPerDay: number;
+	maxDepositBpsPerDay: number;
 };
 
 /** A scaled token balance inside a market's internal pools (pnl pool, protocol fee pool, revenue pool, spot fee pool, AMM fee pool). Multiply `scaledBalance` (SPOT_BALANCE_PRECISION, 1e9) by the referenced spot market's `cumulativeDepositInterest`/`cumulativeBorrowInterest` to get the token amount. */

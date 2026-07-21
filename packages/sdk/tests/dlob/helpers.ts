@@ -352,8 +352,8 @@ export const mockSpotMarkets: Array<SpotMarketAccount> = [
 		feeAdjustment: 0,
 		ifLastSettleVaultAmount: new BN(0),
 		depositGuardThreshold: new BN(0),
-		withdrawCircuitBreakerPct: 0,
-		maxDepositPctPerDay: 0,
+		withdrawCircuitBreakerBps: 0,
+		maxDepositBpsPerDay: 0,
 	},
 	{
 		status: MarketStatus.ACTIVE,
@@ -450,8 +450,8 @@ export const mockSpotMarkets: Array<SpotMarketAccount> = [
 		feeAdjustment: 0,
 		ifLastSettleVaultAmount: new BN(0),
 		depositGuardThreshold: new BN(0),
-		withdrawCircuitBreakerPct: 0,
-		maxDepositPctPerDay: 0,
+		withdrawCircuitBreakerBps: 0,
+		maxDepositBpsPerDay: 0,
 	},
 	{
 		status: MarketStatus.ACTIVE,
@@ -550,8 +550,8 @@ export const mockSpotMarkets: Array<SpotMarketAccount> = [
 		feeAdjustment: 0,
 		ifLastSettleVaultAmount: new BN(0),
 		depositGuardThreshold: new BN(0),
-		withdrawCircuitBreakerPct: 0,
-		maxDepositPctPerDay: 0,
+		withdrawCircuitBreakerBps: 0,
+		maxDepositBpsPerDay: 0,
 	},
 ];
 

@@ -94,7 +94,7 @@ describe('spot market deposit cap + configurable withdraw breaker', () => {
 		const tenPct = BPS_PRECISION.divn(10).toNumber(); // 1000 bps = 10%
 		await velocityClient.updateSpotMarketWithdrawCircuitBreaker(0, tenPct);
 		const market = await fetchSpotMarket();
-		assert(market.withdrawCircuitBreakerPct === tenPct);
+		assert(market.withdrawCircuitBreakerBps === tenPct);
 	});
 
 	it('update deposit cap', async () => {
@@ -106,7 +106,7 @@ describe('spot market deposit cap + configurable withdraw breaker', () => {
 		);
 		const market = await fetchSpotMarket();
 		assert(market.depositGuardThreshold.eq(guardThreshold));
-		assert(market.maxDepositPctPerDay === twentyPct);
+		assert(market.maxDepositBpsPerDay === twentyPct);
 	});
 
 	it('warm admin cannot loosen the breaker past 25%', async () => {
@@ -147,7 +147,7 @@ describe('spot market deposit cap + configurable withdraw breaker', () => {
 		const fiftyPct = BPS_PRECISION.divn(2).toNumber(); // 5000 bps = 50%
 		await velocityClient.updateSpotMarketWithdrawCircuitBreaker(0, fiftyPct);
 		const market = await fetchSpotMarket();
-		assert(market.withdrawCircuitBreakerPct === fiftyPct);
+		assert(market.withdrawCircuitBreakerBps === fiftyPct);
 	});
 
 	it('blocks a deposit above the daily cap', async () => {

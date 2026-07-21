@@ -269,12 +269,12 @@ describe('Spot Tests', () => {
 		const pct = BPS_PRECISION.divn(10).toNumber(); // 1000 bps = 10%/day
 
 		// disabled => always allowed even with twap far below current
-		mockSpot.maxDepositPctPerDay = 0;
+		mockSpot.maxDepositBpsPerDay = 0;
 		mockSpot.depositTokenTwap = currentDeposits.divn(2);
 		assert(checkDepositLimits(mockSpot) === true);
 
 		// current == twap, 10% headroom => allowed
-		mockSpot.maxDepositPctPerDay = pct;
+		mockSpot.maxDepositBpsPerDay = pct;
 		mockSpot.depositTokenTwap = currentDeposits;
 		assert(checkDepositLimits(mockSpot) === true);
 

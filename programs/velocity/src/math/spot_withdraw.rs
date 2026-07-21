@@ -12,15 +12,15 @@ use crate::validate;
 use super::constants::{BPS_PRECISION, SPOT_UTILIZATION_PRECISION};
 
 /// Default withdraw circuit-breaker size when a market has not configured one
-/// (i.e. `withdraw_circuit_breaker_pct == 0`): 25% of the 24h deposit TWAP.
+/// (i.e. `withdraw_circuit_breaker_bps == 0`): 25% of the 24h deposit TWAP.
 /// Keeps markets created before the field existed on prior behavior.
 /// precision: basis points (10_000 = 100%)
-pub const DEFAULT_WITHDRAW_CIRCUIT_BREAKER_PCT: u16 = (BPS_PRECISION / 4) as u16;
+pub const DEFAULT_WITHDRAW_CIRCUIT_BREAKER_BPS: u16 = (BPS_PRECISION / 4) as u16;
 
 pub fn calculate_min_deposit_token_amount(
     deposit_token_twap: u128,
     withdraw_guard_threshold: u128,
-    withdraw_circuit_breaker_pct: u16,
+    withdraw_circuit_breaker_bps: u16,
 ) -> VelocityResult<u128> {
     // minimum required deposit amount after withdrawal
     // minimum deposit amount lower of (100% - breaker pct) of TWAP or withdrawal guard threshold below TWAP
@@ -29,10 +29,10 @@ pub fn calculate_min_deposit_token_amount(
     // `0` is treated as the default 25% so existing on-chain markets (whose
     // field reads 0 from old padding) keep the prior behavior rather than a
     // 0% breaker, which would forbid all withdrawals.
-    let breaker_pct = if withdraw_circuit_breaker_pct == 0 {
-        DEFAULT_WITHDRAW_CIRCUIT_BREAKER_PCT
+    let breaker_pct = if withdraw_circuit_breaker_bps == 0 {
+        DEFAULT_WITHDRAW_CIRCUIT_BREAKER_BPS
     } else {
-        withdraw_circuit_breaker_pct
+        withdraw_circuit_breaker_bps
     };
 
     let max_drop = deposit_token_twap
@@ -48,19 +48,19 @@ pub fn calculate_min_deposit_token_amount(
 pub fn calculate_max_deposit_token_amount(
     deposit_token_twap: u128,
     deposit_guard_threshold: u128,
-    max_deposit_pct_per_day: u16,
+    max_deposit_bps_per_day: u16,
 ) -> VelocityResult<u128> {
     // maximum permitted deposit token amount after a deposit
     // mirror of `calculate_min_deposit_token_amount` on the deposit side:
-    // allows growth up to `max_deposit_pct_per_day` above the 24h deposit TWAP,
+    // allows growth up to `max_deposit_bps_per_day` above the 24h deposit TWAP,
     // but never restricts below the deposit guard threshold.
-    // disabled (no cap) when `max_deposit_pct_per_day == 0`.
-    if max_deposit_pct_per_day == 0 {
+    // disabled (no cap) when `max_deposit_bps_per_day == 0`.
+    if max_deposit_bps_per_day == 0 {
         return Ok(u128::MAX);
     }
 
     let max_increase = deposit_token_twap
-        .safe_mul(max_deposit_pct_per_day.cast()?)?
+        .safe_mul(max_deposit_bps_per_day.cast()?)?
         .safe_div(BPS_PRECISION.cast()?)?;
 
     let max_deposit_token = deposit_token_twap
@@ -72,8 +72,8 @@ pub fn calculate_max_deposit_token_amount(
 
 pub fn check_deposit_limits(spot_market: &SpotMarket) -> VelocityResult<bool> {
     // checks the resulting market deposit level against the daily deposit cap.
-    // disabled (always valid) when `max_deposit_pct_per_day == 0`.
-    if spot_market.max_deposit_pct_per_day == 0 {
+    // disabled (always valid) when `max_deposit_bps_per_day == 0`.
+    if spot_market.max_deposit_bps_per_day == 0 {
         return Ok(true);
     }
 
@@ -86,7 +86,7 @@ pub fn check_deposit_limits(spot_market: &SpotMarket) -> VelocityResult<bool> {
     let max_deposit_token = calculate_max_deposit_token_amount(
         spot_market.deposit_token_twap.cast()?,
         spot_market.deposit_guard_threshold.cast()?,
-        spot_market.max_deposit_pct_per_day,
+        spot_market.max_deposit_bps_per_day,
     )?;
 
     Ok(deposit_token_amount <= max_deposit_token)
@@ -257,7 +257,7 @@ pub fn check_withdraw_limits(
     let min_deposit_token_for_twap = calculate_min_deposit_token_amount(
         spot_market.deposit_token_twap.cast()?,
         spot_market.withdraw_guard_threshold.cast()?,
-        spot_market.withdraw_circuit_breaker_pct,
+        spot_market.withdraw_circuit_breaker_bps,
     )?;
 
     let min_deposit_token = min_deposit_token_for_twap.max(min_deposit_token_for_utilization);
@@ -327,7 +327,7 @@ pub fn get_max_withdraw_for_market_with_token_amount(
         let min_deposit_token_for_twap = calculate_min_deposit_token_amount(
             spot_market.deposit_token_twap.cast()?,
             spot_market.withdraw_guard_threshold.cast()?,
-            spot_market.withdraw_circuit_breaker_pct,
+            spot_market.withdraw_circuit_breaker_bps,
         )?;
         let min_deposit_token = min_deposit_token_for_twap.max(min_deposit_token_for_utilization);
         let withdraw_limit = deposit_token_amount.saturating_sub(min_deposit_token);

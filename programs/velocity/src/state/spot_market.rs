@@ -205,11 +205,11 @@ pub struct SpotMarket {
     /// TWAP that may be withdrawn per 24h window. `0` is treated as the default
     /// (2500 bps = 25%) so markets created before this field existed keep prior
     /// behavior. precision: basis points (10_000 = 100%)
-    pub withdraw_circuit_breaker_pct: u16,
+    pub withdraw_circuit_breaker_bps: u16,
     /// Daily deposit rate limit: the max fraction above the 24h deposit TWAP that
     /// resulting deposits may reach per 24h window. Disabled when `0`.
     /// precision: basis points (10_000 = 100%)
-    pub max_deposit_pct_per_day: u16,
+    pub max_deposit_bps_per_day: u16,
     /// No deposit rate limit when resulting deposits are below this threshold.
     /// Mirrors `withdraw_guard_threshold` on the deposit side.
     /// precision: token mint precision
@@ -260,8 +260,8 @@ pub struct SpotMarket {
 // fires after a struct change, re-size the explicit padding fields — never
 // let the compiler insert implicit padding.
 const _: () = assert!(std::mem::size_of::<SpotMarket>() == 800);
-const _: () = assert!(std::mem::offset_of!(SpotMarket, withdraw_circuit_breaker_pct) == 740);
-const _: () = assert!(std::mem::offset_of!(SpotMarket, max_deposit_pct_per_day) == 742);
+const _: () = assert!(std::mem::offset_of!(SpotMarket, withdraw_circuit_breaker_bps) == 740);
+const _: () = assert!(std::mem::offset_of!(SpotMarket, max_deposit_bps_per_day) == 742);
 const _: () = assert!(std::mem::offset_of!(SpotMarket, deposit_guard_threshold) == 744);
 const _: () = assert!(std::mem::offset_of!(SpotMarket, protocol_fee_pool) == 752);
 const _: () = assert!(std::mem::offset_of!(SpotMarket, protocol_liquidation_fee) == 784);
@@ -330,8 +330,8 @@ impl Default for SpotMarket {
             token_program_flag: 0,
             pool_id: 0,
             _padding_align_pfp: 0,
-            withdraw_circuit_breaker_pct: 0,
-            max_deposit_pct_per_day: 0,
+            withdraw_circuit_breaker_bps: 0,
+            max_deposit_bps_per_day: 0,
             deposit_guard_threshold: 0,
             protocol_fee_pool: PoolBalance::default(),
             protocol_liquidation_fee: 0,

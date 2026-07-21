@@ -1,5 +1,17 @@
 # @velocity-exchange/sdk
 
+## 0.7.0
+
+### Minor Changes
+
+- [#258](https://github.com/velocity-exchange/velocity-v1/pull/258) [`c85d802`](https://github.com/velocity-exchange/velocity-v1/commit/c85d80284fb61dac7a08e47fe7b78340bf1213cc) Thanks [@0xahzam](https://github.com/0xahzam)! - `getTriggerPrice` now mirrors the program's last-fill staleness guard: the last-fill leg of the median trigger price is ignored (oracle price substitutes) when the market's last fill is older than the new `TRIGGER_PRICE_LAST_FILL_MAX_AGE` export (5 minutes, read from `marketStats.lastTradeTs`).
+
+### Patch Changes
+
+- [#259](https://github.com/velocity-exchange/velocity-v1/pull/259) [`cec4fcb`](https://github.com/velocity-exchange/velocity-v1/commit/cec4fcbf440645ad55dd41ec8410a250ca96fdef) Thanks [@jt-lumen](https://github.com/jt-lumen)! - TxHandler now caches recent blockhashes by default (2s TTL), collapsing the per-build `getLatestBlockhash` RPC call into at most one fetch per window. Consumers building many transactions in quick succession (e.g. crankers) no longer hit RPC on every build. Set `txHandlerConfig.blockhashCachingEnabled: false` to restore the previous fetch-fresh-every-build behavior.
+
+- [#260](https://github.com/velocity-exchange/velocity-v1/pull/260) [`f03beee`](https://github.com/velocity-exchange/velocity-v1/commit/f03beeecea6f3c9cc6c0ad7e828e9fab639e9a1b) Thanks [@jt-lumen](https://github.com/jt-lumen)! - BlockhashSubscriber: derive the current block height from `getLatestBlockhashAndContext().value.lastValidBlockHeight - 150` instead of a paired `getBlockHeight` RPC call. This halves the per-poll RPC load of the subscriber (removing one `getBlockHeight` request per interval) with no change to `getLatestBlockHeight()` semantics, matching the Rust subscriber which never issued the extra call.
+
 ## 0.6.1
 
 ### Patch Changes

@@ -341,12 +341,17 @@ pub fn cancel_request_remove_insurance_fund_stake(
         "if stake base != spot market base"
     )?;
 
-    validate!(
-        insurance_fund_stake.last_withdraw_request_shares != 0,
-        ErrorCode::InvalidIFUnstakeCancel,
-        "No withdraw request in progress"
-    )?;
-
+    // NOTE: we intentionally do NOT re-check `last_withdraw_request_shares != 0`
+    // here (after the rebase above). A market-level IF rebase floors a small
+    // pending request to zero (`last_withdraw_request_shares / rebase_divisor`),
+    // so a post-rebase `!= 0` guard would reject the cancel and permanently
+    // strand the stake: `remove` also rejects the zeroed request, and `add` /
+    // re-`request` are blocked by the still-in-progress request. The genuine
+    // "no request in progress" case is already rejected by the pre-rebase guard
+    // in `handle_cancel_request_remove_insurance_fund_stake`. When the request
+    // has floored to zero, cancel is a no-op on shares (`calculate_if_shares_lost`
+    // returns 0), returns the intact rebased stake to active, and abandons only
+    // the dust `last_withdraw_request_value`.
     let if_shares_lost =
         calculate_if_shares_lost(insurance_fund_stake, spot_market, insurance_vault_amount)?;
 

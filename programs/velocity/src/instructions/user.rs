@@ -3489,6 +3489,8 @@ pub fn handle_deposit_into_spot_market_revenue_pool<'c: 'info, 'info>(
         return Err(ErrorCode::InsufficientDeposit.into());
     }
 
+    let now = Clock::get()?.unix_timestamp;
+
     let mut spot_market = load_mut!(ctx.accounts.spot_market)?;
 
     let remaining_accounts_iter = &mut ctx.remaining_accounts.iter().peekable();
@@ -3496,7 +3498,7 @@ pub fn handle_deposit_into_spot_market_revenue_pool<'c: 'info, 'info>(
     let mint = get_token_mint(remaining_accounts_iter)?;
 
     validate!(
-        !spot_market.is_in_settlement(Clock::get()?.unix_timestamp),
+        !spot_market.is_in_settlement(now),
         ErrorCode::DefaultError,
         "spot market {} not active",
         spot_market.market_index
@@ -3510,6 +3512,16 @@ pub fn handle_deposit_into_spot_market_revenue_pool<'c: 'info, 'info>(
         "spot market {} deposits paused",
         spot_market.market_index
     )?;
+
+    // Refresh cumulative deposit/borrow interest before crediting, exactly like the
+    // normal `handle_deposit` path. `update_revenue_pool_balances` converts `amount`
+    // into a scaled balance using `cumulative_deposit_interest`; if the market is stale
+    // the stored (lower) interest would mint too large a scaled balance, and a later
+    // interest refresh at settlement would revalue it upward — letting the revenue pool
+    // claim interest that accrued before this deposit existed. No oracle account is
+    // passed to this instruction, so refresh with `None` (matches the revenue-settle
+    // and pnl-deficit paths).
+    controller::spot_balance::update_spot_market_cumulative_interest(&mut spot_market, None, now)?;
 
     controller::spot_balance::update_revenue_pool_balances(
         amount.cast::<u128>()?,

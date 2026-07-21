@@ -342,14 +342,17 @@ pub fn handle_resize_signed_msg_user_orders<'c: 'info, 'info>(
     num_orders: u16,
 ) -> Result<()> {
     let signed_msg_user_orders = &mut ctx.accounts.signed_msg_user_orders;
-    let user = load!(ctx.accounts.user)?;
-    if ctx.accounts.payer.key != ctx.accounts.authority.key
-        && ctx.accounts.payer.key != &user.delegate.key()
-    {
+    // The SignedMsgUserOrders account is authority-scoped and shared across all of the
+    // authority's subaccounts (its replay-protection UUIDs cover every subaccount). A
+    // per-subaccount delegate must therefore not be able to shrink it: shrinking evicts
+    // active UUIDs belonging to other subaccounts and re-enables replay of their signed
+    // orders. Only the authority itself (which owns every subaccount) may shrink; anyone
+    // else may only grow the account (and pays for the extra rent).
+    if ctx.accounts.payer.key != ctx.accounts.authority.key {
         validate!(
             num_orders as usize >= signed_msg_user_orders.signed_msg_order_data.len(),
             ErrorCode::InvalidSignedMsgUserOrdersResize,
-            "Invalid shrinking resize for payer != user authority or delegate"
+            "Invalid shrinking resize for payer != user authority"
         )?;
     }
 
@@ -752,9 +755,18 @@ pub fn handle_withdraw<'c: 'info, 'info>(
 
     validate!(!user.is_bankrupt(), ErrorCode::UserBankrupt)?;
 
-    let spot_market_is_reduce_only = {
+    let (spot_market_is_reduce_only, refreshed_liability_twap) = {
         let spot_market = &mut spot_market_map.get_ref_mut(&market_index)?;
         let oracle_price_data = oracle_map.get_price_data(&spot_market.oracle_id())?;
+
+        // #81: snapshot the withdrawn (liability) market's risk-EMA TWAP BEFORE this
+        // in-instruction cumulative-interest update refreshes it. `TooVolatile` validity
+        // compares the live oracle price against `last_oracle_price_twap`; if the refresh
+        // dragged the TWAP toward the live price first, a too-volatile oracle could slip
+        // through the same-instruction withdraw margin check and release vault tokens. We
+        // hold the pre-refresh snapshot in the account across the margin check, then restore
+        // the refreshed value so the account still persists the up-to-date TWAP.
+        let pre_refresh_liability_twap = spot_market.historical_oracle_data.last_oracle_price_twap;
 
         controller::spot_balance::update_spot_market_cumulative_interest(
             spot_market,
@@ -762,7 +774,10 @@ pub fn handle_withdraw<'c: 'info, 'info>(
             now,
         )?;
 
-        spot_market.is_reduce_only()
+        let refreshed_liability_twap = spot_market.historical_oracle_data.last_oracle_price_twap;
+        spot_market.historical_oracle_data.last_oracle_price_twap = pre_refresh_liability_twap;
+
+        (spot_market.is_reduce_only(), refreshed_liability_twap)
     };
 
     let amount = {
@@ -824,6 +839,13 @@ pub fn handle_withdraw<'c: 'info, 'info>(
     )?;
 
     validate_spot_margin_trading(user, &perp_market_map, &spot_market_map, &mut oracle_map)?;
+
+    // #81: the margin check has now been evaluated against the pre-refresh TWAP snapshot;
+    // restore the refreshed risk-EMA TWAP so the account persists the up-to-date value.
+    {
+        let mut spot_market = spot_market_map.get_ref_mut(&market_index)?;
+        spot_market.historical_oracle_data.last_oracle_price_twap = refreshed_liability_twap;
+    }
 
     if user.is_cross_margin_being_liquidated() {
         user.exit_cross_margin_liquidation();
@@ -4485,10 +4507,6 @@ pub struct ResizeSignedMsgUserOrders<'info> {
     pub signed_msg_user_orders: Box<Account<'info, SignedMsgUserOrders>>,
     /// CHECK: authority
     pub authority: UncheckedAccount<'info>,
-    #[account(
-        has_one = authority
-    )]
-    pub user: AccountLoader<'info, User>,
     #[account(mut)]
     pub payer: Signer<'info>,
     pub system_program: Program<'info, System>,

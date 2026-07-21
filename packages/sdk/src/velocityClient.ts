@@ -1392,27 +1392,22 @@ export class VelocityClient {
 	}
 
 	/**
-	 * Grows an existing `SignedMsgUserOrders` account to hold more order-message slots. The program
-	 * only allows growing, never shrinking.
+	 * Resizes an existing `SignedMsgUserOrders` account. Growing (adding order-message slots) is
+	 * permitted for any payer; shrinking is only permitted when the payer is the account's
+	 * `authority`, because the account is authority-scoped and shared across all of the authority's
+	 * subaccounts — a shrink evicts replay-protection UUIDs for every subaccount.
 	 * @param authority - Authority whose account is resized.
-	 * @param numOrders - New (larger) number of order-message slots.
-	 * @param userSubaccountId - Sub-account id used to derive the `user` account passed to the
-	 * instruction; defaults to `0`.
+	 * @param numOrders - New number of order-message slots.
 	 * @param txParams - Optional compute-unit/priority-fee overrides for the transaction.
 	 * @returns The transaction signature.
 	 */
 	public async resizeSignedMsgUserOrders(
 		authority: PublicKey,
 		numOrders: number,
-		userSubaccountId?: number,
 		txParams?: TxParams
 	): Promise<TransactionSignature> {
 		const resizeUserAccountIx =
-			await this.getResizeSignedMsgUserOrdersInstruction(
-				authority,
-				numOrders,
-				userSubaccountId
-			);
+			await this.getResizeSignedMsgUserOrdersInstruction(authority, numOrders);
 		const tx = await this.buildTransaction([resizeUserAccountIx], txParams);
 		const { txSig } = await this.sendTransaction(tx, [], this.opts);
 
@@ -1423,14 +1418,12 @@ export class VelocityClient {
 	 * Builds the `resizeSignedMsgUserOrders` instruction. See `resizeSignedMsgUserOrders` for
 	 * semantics.
 	 * @param authority - Authority whose account is resized.
-	 * @param numOrders - New (larger) number of order-message slots.
-	 * @param userSubaccountId - Sub-account id used to derive the `user` account; defaults to `0`.
+	 * @param numOrders - New number of order-message slots.
 	 * @returns The resize instruction.
 	 */
 	async getResizeSignedMsgUserOrdersInstruction(
 		authority: PublicKey,
-		numOrders: number,
-		userSubaccountId?: number
+		numOrders: number
 	): Promise<TransactionInstruction> {
 		const signedMsgUserAccountPublicKey = getSignedMsgUserAccountPublicKey(
 			this.program.programId,
@@ -1443,11 +1436,6 @@ export class VelocityClient {
 					authority,
 					payer: this.wallet.publicKey,
 					systemProgram: SystemProgram.programId,
-					user: await getUserAccountPublicKey(
-						this.program.programId,
-						authority,
-						userSubaccountId
-					),
 				},
 			});
 
@@ -6338,7 +6326,10 @@ export class VelocityClient {
 			});
 			oracleAccountInfos.push({
 				pubkey: market.oracle,
-				isWritable: false,
+				// `update_amms` loads each market as writable, and `load_maps` refreshes a
+				// `prelaunch`-sourced oracle in place, so that oracle account must be writable
+				// or the crank reverts with "modified data of a read-only account".
+				isWritable: isVariant(market.oracleSource, 'prelaunch'),
 				isSigner: false,
 			});
 		}

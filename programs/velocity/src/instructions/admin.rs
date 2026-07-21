@@ -386,7 +386,7 @@ pub fn handle_initialize_spot_market(
         min_borrow_rate: 0,
         token_program_flag: token_program,
         pool_id: 0,
-        _padding_align_pfp: [0; 8],
+        _padding_align_pfp: [0; 13],
         protocol_fee_pool: PoolBalance {
             scaled_balance: 0,
             market_index: spot_market_index,

@@ -15,8 +15,11 @@ use std::{
 
 use tokio::time::sleep;
 use velocity_rs::{
-    types::{accounts::User, MarketId, RpcSendTransactionConfig},
-    TransactionBuilder, VelocityClient,
+    math::liquidation::calculate_collateral,
+    types::{
+        accounts::User, MarginRequirementType, MarketId, RpcSendTransactionConfig, SpotBalanceType,
+    },
+    TransactionBuilder, VelocityClient, Wallet,
 };
 
 use crate::{Config, UseMarkets};
@@ -303,4 +306,137 @@ async fn init_one_subaccount(
     Err(format!(
         "subaccount {subaccount} not visible on-chain within timeout after init"
     ))
+}
+
+/// Preflight: sweep idle wallet token balances into the liquidator's take-over
+/// subaccount (the first id in `--subaccounts`) when it has no free
+/// collateral. An unfunded liquidator skips every perp liquidation with
+/// `no_free_collateral`, so tokens left sitting in the authority wallet are
+/// dead weight — deposit them at startup instead. Idempotent: once the
+/// subaccount has free collateral (or the wallet ATAs are empty) this is a
+/// no-op. Disable with `--no-auto-deposit`.
+pub async fn auto_deposit_idle_funds(config: &Config, velocity: &VelocityClient) {
+    let authority = *velocity.wallet.authority();
+    let Some(&sub_account_id) = config.get_subaccounts().first() else {
+        log::warn!(target: TARGET, "auto-deposit: no subaccounts configured; skipping");
+        return;
+    };
+    let subaccount = velocity.wallet.sub_account(sub_account_id);
+
+    let user_account = match velocity.get_user_account(&subaccount).await {
+        Ok(user) => user,
+        Err(e) => {
+            log::warn!(
+                target: TARGET,
+                "auto-deposit: could not load subaccount id={sub_account_id} ({subaccount}): {e:?}; skipping (run --init-user first)"
+            );
+            return;
+        }
+    };
+
+    // "Needs funds" = no free (initial) collateral. Market/oracle caches may
+    // not be warm this early in startup; if the margin calc fails, fall back
+    // to treating a subaccount with no deposit positions as unfunded.
+    let needs_funds = match calculate_collateral(
+        velocity,
+        &user_account,
+        MarginRequirementType::Initial,
+    ) {
+        Ok(info) => info.free <= 0,
+        Err(e) => {
+            log::debug!(
+                target: TARGET,
+                "auto-deposit: collateral calc unavailable ({e:?}); falling back to deposit-position check"
+            );
+            !user_account
+                .spot_positions
+                .iter()
+                .any(|p| matches!(p.balance_type, SpotBalanceType::Deposit) && !p.is_available())
+        }
+    };
+    if !needs_funds {
+        log::debug!(
+            target: TARGET,
+            "auto-deposit: subaccount id={sub_account_id} already has free collateral; skipping"
+        );
+        return;
+    }
+
+    for spot_market in velocity.program_data().spot_market_configs() {
+        if spot_market.has_transfer_hook() {
+            log::info!(
+                target: TARGET,
+                "auto-deposit: skipping spot market {} (transfer hook token)",
+                spot_market.market_index
+            );
+            continue;
+        }
+        let ata = Wallet::derive_associated_token_address(&authority, spot_market);
+        let wallet_balance: u64 = match velocity.rpc().get_token_account_balance(&ata).await {
+            Ok(balance) => balance.amount.parse().unwrap_or(0),
+            // no ATA for this mint
+            Err(_) => continue,
+        };
+        if wallet_balance == 0 {
+            continue;
+        }
+
+        if config.dry {
+            log::info!(
+                target: TARGET,
+                "auto-deposit (dry run): would deposit {wallet_balance} into spot market {} for subaccount id={sub_account_id}",
+                spot_market.market_index
+            );
+            continue;
+        }
+
+        let tx = TransactionBuilder::new(
+            velocity.program_data(),
+            subaccount,
+            Cow::Borrowed(&user_account),
+            false,
+        )
+        .with_priority_fee(config.priority_fee, Some(200_000))
+        .deposit(wallet_balance, spot_market.market_index, None, None)
+        .build();
+
+        let blockhash = match velocity.get_latest_blockhash().await {
+            Ok(b) => b,
+            Err(e) => {
+                log::error!(target: TARGET, "auto-deposit: fetch blockhash failed: {e:?}");
+                return;
+            }
+        };
+        let signed = match velocity.wallet().sign_tx(tx, blockhash) {
+            Ok(s) => s,
+            Err(e) => {
+                log::error!(target: TARGET, "auto-deposit: sign tx failed: {e:?}");
+                return;
+            }
+        };
+        let cfg = RpcSendTransactionConfig {
+            skip_preflight: false,
+            ..Default::default()
+        };
+        match velocity
+            .rpc()
+            .send_transaction_with_config(&signed, cfg)
+            .await
+        {
+            Ok(sig) => {
+                log::info!(
+                    target: TARGET,
+                    "auto-deposit: deposited {wallet_balance} into spot market {} for subaccount id={sub_account_id}: sig={sig}",
+                    spot_market.market_index
+                );
+            }
+            Err(e) => {
+                log::error!(
+                    target: TARGET,
+                    "auto-deposit: deposit into spot market {} failed: {e:?}",
+                    spot_market.market_index
+                );
+            }
+        }
+    }
 }

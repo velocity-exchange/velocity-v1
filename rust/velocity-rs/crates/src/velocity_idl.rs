@@ -13,7 +13,7 @@ use anchor_lang::{
 use serde::{Deserialize, Serialize};
 use solana_instruction::AccountMeta;
 use solana_pubkey::Pubkey;
-pub const IDL_VERSION: &str = "2.163.1";
+pub const IDL_VERSION: &str = "2.163.2";
 use self::traits::ToAccountMetas;
 pub mod traits {
     use crate::solana_sdk::instruction::AccountMeta;
@@ -4925,7 +4925,7 @@ pub mod types {
         pub token_program_flag: u8,
         pub pool_id: u8,
         #[serde(skip)]
-        pub _padding_align_pfp: Padding<8>,
+        pub _padding_align_pfp: Padding<13>,
         pub protocol_fee_pool: PoolBalance,
         pub protocol_liquidation_fee: u32,
         pub protocol_fee_factor: u32,
@@ -6293,7 +6293,7 @@ pub mod accounts {
         pub token_program_flag: u8,
         pub pool_id: u8,
         #[serde(skip)]
-        pub _padding_align_pfp: Padding<8>,
+        pub _padding_align_pfp: Padding<13>,
         pub protocol_fee_pool: PoolBalance,
         pub protocol_liquidation_fee: u32,
         pub protocol_fee_factor: u32,
@@ -13800,7 +13800,6 @@ pub mod accounts {
     pub struct ResizeSignedMsgUserOrders {
         pub signed_msg_user_orders: Pubkey,
         pub authority: Pubkey,
-        pub user: Pubkey,
         pub payer: Pubkey,
         pub system_program: Pubkey,
     }
@@ -13827,11 +13826,6 @@ pub mod accounts {
                 },
                 AccountMeta {
                     pubkey: self.authority,
-                    is_signer: false,
-                    is_writable: false,
-                },
-                AccountMeta {
-                    pubkey: self.user,
                     is_signer: false,
                     is_writable: false,
                 },
@@ -25679,6 +25673,8 @@ pub mod errors {
         EquityBelowFloor,
         #[msg("Invalid equity floor transfer between subaccounts")]
         InvalidEquityFloorTransfer,
+        #[msg("Insurance fund deposit would mint zero shares")]
+        IFDepositMintsZeroShares,
         #[msg("Liquidation would worsen the account's margin shortage")]
         LiquidationWorsensAccountHealth,
         #[msg("Perp bankruptcies must be resolved before spot bankruptcies")]

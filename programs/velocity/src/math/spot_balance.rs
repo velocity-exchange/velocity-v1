@@ -30,7 +30,7 @@ pub fn get_spot_balance(
         .safe_mul(precision_increase)?
         .safe_div(cumulative_interest)?;
 
-    if round_up && balance != 0 {
+    if round_up && token_amount != 0 {
         balance = balance.safe_add(1)?;
     }
 

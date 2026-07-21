@@ -112,10 +112,12 @@ so_path="$repo_root/target/deploy/${program}.so"
 if [ "$skip_build" -eq 0 ]; then
 	echo ">> building $program with solana-verify (image: $image)..." >&2
 	build_args="--library-name $program -b $image"
-	# velocity's declare_id! is cfg-gated; devnet build drops mainnet-beta so the
-	# devnet program id resolves (mirrors .github/actions/build-program).
+	# velocity's devnet build drops mainnet-beta (production gates off, devnet-only
+	# ixs compiled in) and enables the audit-gated features, mirroring
+	# .github/actions/build-program — the flag sets must stay identical or the
+	# hashes diverge.
 	if [ "$program" = "velocity" ] && [ "$devnet" -eq 1 ]; then
-		( cd "$repo_root" && solana-verify build $build_args -- --no-default-features --features no-entrypoint )
+		( cd "$repo_root" && solana-verify build $build_args -- --no-default-features --features no-entrypoint,isolated-position,vlp-hedge )
 	else
 		( cd "$repo_root" && solana-verify build $build_args )
 	fi

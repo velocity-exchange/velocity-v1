@@ -1069,7 +1069,24 @@ pub fn fill_perp_order(
         "Market fills paused",
     )?;
 
+    // A `ReduceOnly` market forces every order it fills to be risk-reducing.
+    // Placement only stamps `order.reduce_only` from the market status at the
+    // time the order was created (`place_perp_order` -> `force_reduce_only`),
+    // so a legacy order placed while the market was `Active` still carries
+    // `reduce_only = false` after the market is flipped to `ReduceOnly`. Since
+    // every downstream reduce-only guard (fill-size clamp in
+    // `get_base_asset_amount_unfilled`, `should_cancel_reduce_only_order`, the
+    // trigger-path risk check) keys off the stored flag, re-derive it from the
+    // live market status here and stamp it onto the order so the fill cannot
+    // increase exposure. Mirrors placement: once a market is reduce-only, its
+    // orders are reduce-only.
+    let market_is_reduce_only = market.is_reduce_only()?;
+
     drop(market);
+
+    if market_is_reduce_only {
+        user.orders[order_index].reduce_only = true;
+    }
 
     validate!(
         order_status == OrderStatus::Open,
@@ -1583,6 +1600,12 @@ fn get_maker_orders_info(
 
         let initial_margin_ratio = market.margin_ratio_initial;
         let step_size = market.order_step_size;
+        // A `ReduceOnly` market forces resting maker orders risk-reducing too,
+        // regardless of the flag they were placed with (see the taker-side note
+        // in `fill_perp_order`). Stamped onto each maker order below so the
+        // reduce-only cancel check and the position-capped `maker_unfilled`
+        // fill size both apply.
+        let market_is_reduce_only = market.is_reduce_only()?;
 
         drop(market);
 
@@ -1614,6 +1637,10 @@ fn get_maker_orders_info(
                     initial_margin_ratio,
                 )?
             };
+
+            if market_is_reduce_only {
+                maker.orders[maker_order_index].reduce_only = true;
+            }
 
             let should_expire_order = should_expire_order(&maker, maker_order_index, now)?;
 
@@ -3057,11 +3084,20 @@ pub fn fulfill_perp_order_step(
 
     // ---- 4. Build QuoteContext for the matcher. AMM-projection fields
     // not needed here — setup has already run on amm_quoter.
+    //
+    // The matcher reprices DLOB makers off `ctx.oracle.price`
+    // (`DlobOrderQuoter::effective_price`), so oracle-offset limit orders
+    // must be requoted against the *same* oracle that maker discovery froze
+    // their `match_maker_price` at. Discovery prices makers at
+    // `mm_oracle_price_data.get_price()`, which is exactly `safe_oracle.price`
+    // (`get_price()` returns `safe_oracle_price_data.price`). Passing a
+    // default (zero-price) oracle here would reprice an oracle-offset maker to
+    // just its offset, so its fill would disagree with the frozen maker price
+    // and revert in `validate_fill_price`.
     let stats_snapshot = market.market_stats;
-    let oracle_stub = OraclePriceData::default();
     let ctx = QuoteContext {
         stats: &stats_snapshot,
-        oracle: &oracle_stub,
+        oracle: &safe_oracle,
         mm_oracle: None,
         oracle_validity: None,
         fee_budget: 0,

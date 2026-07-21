@@ -62,6 +62,9 @@ pub struct Metrics {
     pub trigger_actual: IntCounter,
     pub swift_placed: IntCounter,
     pub swift_place_skipped: IntCounter,
+    pub swift_held: IntCounter,
+    pub swift_held_filled: IntCounter,
+    pub swift_held_expired: IntCounter,
     pub fill_expected: IntCounterVec,
     pub fill_actual: IntCounterVec,
     pub liquidation_attempts: IntCounterVec,
@@ -146,6 +149,31 @@ impl Metrics {
         .unwrap();
         registry
             .register(Box::new(swift_place_skipped.clone()))
+            .unwrap();
+
+        let swift_held = IntCounter::new(
+            "rfb_swift_held_total",
+            "Swift orders retained in memory for re-evaluation against the live book/oracle on each slot tick",
+        )
+        .unwrap();
+        registry.register(Box::new(swift_held.clone())).unwrap();
+
+        let swift_held_filled = IntCounter::new(
+            "rfb_swift_held_filled_total",
+            "Held swift orders that crossed on a later slot tick and were cranked for fill",
+        )
+        .unwrap();
+        registry
+            .register(Box::new(swift_held_filled.clone()))
+            .unwrap();
+
+        let swift_held_expired = IntCounter::new(
+            "rfb_swift_held_expired_total",
+            "Held swift orders dropped from memory without filling (placement window expired or became unfillable)",
+        )
+        .unwrap();
+        registry
+            .register(Box::new(swift_held_expired.clone()))
             .unwrap();
 
         let liquidation_attempts = IntCounterVec::new(
@@ -272,6 +300,9 @@ impl Metrics {
             trigger_actual,
             swift_placed,
             swift_place_skipped,
+            swift_held,
+            swift_held_filled,
+            swift_held_expired,
         }
     }
 }

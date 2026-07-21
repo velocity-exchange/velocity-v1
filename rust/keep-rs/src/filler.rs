@@ -42,8 +42,8 @@ use velocity_rs::{
 use crate::{
     http::{FeedHealth, Metrics},
     util::{
-        swift_placement_expired, OrderSlotLimiter, PendingTxMeta, PendingTxs, PythPriceUpdate,
-        TxIntent,
+        swift_placement_expired, HeldSwiftOrder, HeldSwiftOrders, OrderSlotLimiter, PendingTxMeta,
+        PendingTxs, PythPriceUpdate, TxIntent,
     },
     Config, UseMarkets,
 };
@@ -208,6 +208,12 @@ impl FillerBot {
         // (fresh<->stale) instead of every slot, so a stale oracle shows as two edges
         // rather than a wall of per-slot lines during the exact window you're debugging.
         let mut oracle_stale_state = BTreeMap::<u16, bool>::new();
+        // Signed swift orders retained after arrival because they weren't immediately
+        // fillable (in addition to being placed on-chain, see the `NotFillable` swift arm
+        // below). Re-evaluated against the live book/oracle on every `new_slot` tick so a
+        // cross is caught as soon as the auction decays to it, rather than only once at the
+        // landing slot the order arrived at.
+        let mut held_swift_orders = HeldSwiftOrders::new();
 
         // Create a dummy receiver that never sends when pyth is disabled
         let (_dummy_tx, dummy_rx) = tokio::sync::mpsc::channel::<PythPriceUpdate>(1);
@@ -275,6 +281,13 @@ impl FillerBot {
                             // try an immediate fill against resting liquidity
                             match evaluate_swift_crosses(dlob, &signed_order, &perp_market, oracle_price_data.price, oracle_price_data.delay, landing_slot, slots_before_stale_for_amm) {
                                 SwiftEval::Fillable(crosses) => {
+                                    // Shared with the held-order re-check below (same limiter
+                                    // instance, same uuid-derived key) so a fill already in
+                                    // flight for this order isn't redispatched from either path.
+                                    if !limiter.allow_event(slot, swift_order_dedup_key(signed_order.order_uuid())) {
+                                        log::debug!(target: TARGET, "swift fill already in flight, skipping duplicate dispatch. uuid={}", signed_order.order_uuid_str());
+                                        continue;
+                                    }
                                     log::info!(target: TARGET, "found resting cross. market={market_index} oracle={} delay={} crosses={crosses:?}", oracle_price_data.price, oracle_price_data.delay);
                                     let pf = priority_fee_subscriber.priority_fee_nth(0.6);
                                     try_swift_fill(
@@ -301,18 +314,31 @@ impl FillerBot {
                                         log::debug!(target: TARGET, "swift order past placement window, not placing. uuid={}", signed_order.order_uuid_str());
                                         metrics.swift_place_skipped.inc();
                                     } else {
-                                        log::info!(target: TARGET, "swift order not fillable yet ({reason}), placing on-chain. uuid={}", signed_order.order_uuid_str());
+                                        let uuid_str = signed_order.order_uuid_str().to_string();
+                                        log::info!(target: TARGET, "swift order not fillable yet ({reason}), placing on-chain. uuid={uuid_str}");
                                         let pf = priority_fee_subscriber.priority_fee_nth(0.6);
+                                        let uuid = signed_order.order_uuid();
+                                        // AUGMENT (not replace): keep the on-chain place below so
+                                        // the order survives a bot restart, and additionally hold
+                                        // it in memory so it can be re-evaluated every slot tick
+                                        // instead of only once at arrival.
                                         try_swift_place(
                                             velocity,
                                             pf,
                                             config.swift_cu_limit,
                                             filler_subaccount,
-                                            signed_order,
+                                            signed_order.clone(),
                                             slot,
                                             tx_worker_ref.clone(),
                                         ).await;
                                         metrics.swift_placed.inc();
+
+                                        if held_swift_orders.insert(uuid, HeldSwiftOrder::new(signed_order, market_index, order_slot, auction_duration, max_ts)) {
+                                            metrics.swift_held.inc();
+                                            log::debug!(target: TARGET, "holding swift order in memory for re-evaluation ({} held). uuid={uuid_str}", held_swift_orders.len());
+                                        } else {
+                                            log::warn!(target: TARGET, "held swift order store at capacity ({}), not holding for re-evaluation. uuid={uuid_str}", held_swift_orders.len());
+                                        }
                                     }
                                 }
                                 SwiftEval::Drop => {
@@ -560,6 +586,50 @@ impl FillerBot {
                             ).await;
                         }
 
+                        // Re-evaluate held swift orders (see `held_swift_orders` above) for this
+                        // market against the same projected book/oracle computed for it this
+                        // slot. `evaluate_swift_crosses` anchors its own auction clock to the
+                        // order's on-chain slot, so re-running it here each slot naturally
+                        // converges on the slot the program's own auction would actually cross
+                        // at, instead of only checking once at arrival.
+                        let landing_slot = slot + 1;
+                        let mut held_to_fill: Vec<([u8; 8], MakerCrosses)> = Vec::new();
+                        let mut held_to_drop: Vec<[u8; 8]> = Vec::new();
+                        for (uuid, held) in held_swift_orders.for_market(market_index) {
+                            match evaluate_swift_crosses(dlob, &held.order, &perp_market, oracle_price as i64, chain_oracle_data.delay, landing_slot, slots_before_stale_for_amm) {
+                                SwiftEval::Fillable(crosses) => held_to_fill.push((*uuid, crosses)),
+                                SwiftEval::Drop => held_to_drop.push(*uuid),
+                                SwiftEval::NotFillable(_) => {}
+                            }
+                        }
+                        for uuid in held_to_drop {
+                            if held_swift_orders.remove(&uuid).is_some() {
+                                metrics.swift_held_expired.inc();
+                                log::debug!(target: TARGET, "held swift order no longer valid, dropping. market={market_index} uuid={uuid:x?}");
+                            }
+                        }
+                        for (uuid, crosses) in held_to_fill {
+                            // Shared with the arrival-time fill dispatch above: same limiter
+                            // instance, same uuid-derived key, so a fill already in flight for
+                            // this order (from either path) is not redispatched.
+                            if !limiter.allow_event(slot, swift_order_dedup_key(uuid)) {
+                                continue;
+                            }
+                            if let Some(held) = held_swift_orders.remove(&uuid) {
+                                log::info!(target: TARGET, "held swift order now crosses, filling. market={market_index} uuid={}", held.order.order_uuid_str());
+                                metrics.swift_held_filled.inc();
+                                try_swift_fill(
+                                    velocity,
+                                    priority_fee,
+                                    config.swift_cu_limit,
+                                    filler_subaccount,
+                                    held.order,
+                                    crosses,
+                                    tx_worker_ref.clone(),
+                                ).await;
+                            }
+                        }
+
                         // check state config ~every minute
                         if slot % 300 == 0 {
                             use_median_trigger_price = velocity
@@ -572,6 +642,15 @@ impl FillerBot {
                                 .unwrap_or(10);
                         }
                     }
+
+                    // Prune held swift orders whose on-chain placement window has passed, once
+                    // per slot tick (not per-market: the store isn't market-partitioned data, so
+                    // this only needs a single pass over it).
+                    for uuid in held_swift_orders.prune_expired(slot, unix_now) {
+                        metrics.swift_held_expired.inc();
+                        log::debug!(target: TARGET, "held swift order expired, dropping. uuid={uuid:x?}");
+                    }
+
                     let duration = std::time::SystemTime::now().duration_since(t0).unwrap().as_millis();
                     log::trace!(target: TARGET, "⏱️ checked fills at {slot}: {:?}ms", duration);
                 }
@@ -1827,6 +1906,20 @@ fn order_dedup_key(user: &Pubkey, order_id: u32) -> u32 {
     u32::from_le_bytes([b[0], b[1], b[2], b[3]]) ^ order_id
 }
 
+/// Fold a swift order's uuid into a single u32 for the `OrderSlotLimiter`.
+///
+/// A signed swift order is both placed on-chain (`try_swift_place`) AND held in memory for
+/// re-evaluation (`held_swift_orders`) — decision: augment, not replace, so the order
+/// survives a bot restart. That means the *same* order can become fillable from two call
+/// sites (the arrival-time check and the held-order per-slot re-check); both key their
+/// `limiter.allow_event` call on this hash so whichever fires first claims the rate-limit
+/// window and the other does not redispatch a fill already in flight.
+fn swift_order_dedup_key(uuid: [u8; 8]) -> u32 {
+    let a = u32::from_le_bytes([uuid[0], uuid[1], uuid[2], uuid[3]]);
+    let b = u32::from_le_bytes([uuid[4], uuid[5], uuid[6], uuid[7]]);
+    a ^ b
+}
+
 /// Whether the vAMM can participate in filling a taker order right now, mirroring the
 /// program's gates (`PerpMarket::amm_fill_gates_ok` + `amm_fill_timing_ok`):
 /// - `drawdown` (or the low-risk oracle staleness) alone hard-blocks every AMM fill;
@@ -2842,7 +2935,20 @@ impl TxSender {
 
 #[cfg(test)]
 mod tests {
-    use super::{classify_cross, order_dedup_key, vamm_can_fill_taker, CrossAction, Pubkey};
+    use super::{
+        classify_cross, evaluate_swift_crosses, order_dedup_key, swift_order_dedup_key,
+        vamm_can_fill_taker, CrossAction, MarketType, OrderType, PerpMarket, Pubkey,
+        SignedOrderInfo, SwiftEval, AMM, DLOB,
+    };
+    use solana_sdk::signature::Signature;
+    use velocity_rs::{
+        math::constants::{AMM_RESERVE_PRECISION, PEG_PRECISION},
+        program::state::perp_market::MarketStats,
+        types::{
+            ContractTier, HistoricalOracleData, OrderParams, PositionDirection,
+            SignedMsgOrderParamsMessage,
+        },
+    };
 
     #[test]
     fn vamm_gated_cross_degrades_to_makers_instead_of_skipping() {
@@ -2901,5 +3007,141 @@ mod tests {
         assert_ne!(order_dedup_key(&a, 3), order_dedup_key(&b, 3));
         // different order_id under the same user must differ too
         assert_ne!(order_dedup_key(&a, 3), order_dedup_key(&a, 4));
+    }
+
+    #[test]
+    fn swift_order_dedup_key_stable_and_sensitive_to_uuid() {
+        let a: [u8; 8] = [1, 2, 3, 4, 5, 6, 7, 8];
+        let b: [u8; 8] = [8, 7, 6, 5, 4, 3, 2, 1];
+        assert_eq!(swift_order_dedup_key(a), swift_order_dedup_key(a));
+        assert_ne!(swift_order_dedup_key(a), swift_order_dedup_key(b));
+    }
+
+    /// Build a minimal perp market whose vAMM has a concrete, computable bid/ask (mirrors the
+    /// setup used in `velocity_rs::dlob::tests`).
+    fn test_perp_market(min_order_size: u64) -> PerpMarket {
+        let base_reserves = 100 * AMM_RESERVE_PRECISION;
+        let quote_reserves = base_reserves * 1000; // reserve_price = 1000 * PRICE_PRECISION
+        PerpMarket {
+            market_index: 0,
+            contract_tier: ContractTier::A,
+            amm: AMM {
+                max_fill_reserve_fraction: 1,
+                base_asset_reserve: base_reserves.into(),
+                quote_asset_reserve: quote_reserves.into(),
+                sqrt_k: (base_reserves * quote_reserves).into(),
+                peg_multiplier: PEG_PRECISION.into(),
+                terminal_quote_asset_reserve: quote_reserves.into(),
+                concentration_coef: 5u128.into(),
+                long_spread: 100,
+                short_spread: 100,
+                max_base_asset_reserve: (u64::MAX as u128).into(),
+                min_base_asset_reserve: 0u128.into(),
+                max_spread: 1000,
+                ..Default::default()
+            },
+            order_step_size: 1,
+            order_tick_size: 1,
+            market_stats: MarketStats {
+                min_order_size,
+                historical_oracle_data: HistoricalOracleData {
+                    last_oracle_price: 1000 * 1_000_000,
+                    ..Default::default()
+                },
+                last_oracle_valid: true,
+                ..Default::default()
+            },
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn evaluate_swift_crosses_finds_the_cross_only_once_the_auction_decays_to_the_book() {
+        // Regression for BE-510: a swift order is only evaluated once, at its landing slot,
+        // when it arrives. A short whose auction starts *above* the vAMM bid (so it can't
+        // cross yet) was previously dropped/placed and never re-checked as its auction price
+        // decayed down toward — and eventually through — the book. This pins that
+        // `evaluate_swift_crosses` itself (the function the held-order re-check now calls
+        // every slot) reports the cross once the auction reaches it, given a later slot.
+        let dlob = DLOB::default();
+        let perp_market = test_perp_market(10);
+
+        let reserve_price = perp_market.amm.reserve_price().unwrap();
+        let vamm_bid = perp_market
+            .amm
+            .bid_price(
+                reserve_price,
+                perp_market.amm.short_spread,
+                perp_market.amm.reference_price_offset,
+            )
+            .unwrap();
+
+        let order_slot = 100u64;
+        let auction_duration = 10u8;
+        // Starts comfortably above the bid (no cross for a SHORT taker asking above the
+        // bid)...
+        let auction_start_price = (vamm_bid + 5_000_000) as i64;
+        // ...and decays to comfortably below it (crosses).
+        let auction_end_price = vamm_bid.saturating_sub(5_000_000) as i64;
+
+        let order_params = OrderParams {
+            order_type: OrderType::Market,
+            market_type: MarketType::Perp,
+            direction: PositionDirection::Short,
+            base_asset_amount: 15, // > min_order_size (10)
+            market_index: 0,
+            auction_duration: Some(auction_duration),
+            auction_start_price: Some(auction_start_price),
+            auction_end_price: Some(auction_end_price),
+            ..Default::default()
+        };
+        let msg = SignedMsgOrderParamsMessage {
+            signed_msg_order_params: order_params,
+            sub_account_id: 0,
+            slot: order_slot,
+            uuid: *b"tstuuid1",
+            take_profit_order_params: None,
+            stop_loss_order_params: None,
+            max_margin_ratio: None,
+            builder_idx: None,
+            builder_fee_tenth_bps: None,
+            isolated_position_deposit: None,
+        };
+        let signed_order =
+            SignedOrderInfo::authority(Pubkey::new_unique(), msg, Signature::default());
+
+        let oracle_price = 1000 * 1_000_000;
+
+        // At the landing slot (elapsed = 0) the auction is still at its start price, above
+        // the book: not fillable yet.
+        assert!(matches!(
+            evaluate_swift_crosses(
+                &dlob,
+                &signed_order,
+                &perp_market,
+                oracle_price,
+                0,
+                order_slot,
+                10
+            ),
+            SwiftEval::NotFillable(_)
+        ));
+
+        // By the time the auction reaches its end price (elapsed = duration), it has decayed
+        // through the book and crosses — this is the projected cross slot the held-order
+        // re-check must catch on a later `new_slot` tick.
+        let projected_cross_slot = order_slot + auction_duration as u64;
+        assert!(matches!(
+            evaluate_swift_crosses(
+                &dlob,
+                &signed_order,
+                &perp_market,
+                oracle_price,
+                0,
+                projected_cross_slot,
+                10
+            ),
+            SwiftEval::Fillable(_)
+        ));
     }
 }

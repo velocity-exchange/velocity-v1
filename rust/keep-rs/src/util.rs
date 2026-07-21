@@ -1,5 +1,5 @@
 use std::{
-    collections::HashSet,
+    collections::{HashMap, HashSet},
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
@@ -21,6 +21,7 @@ use velocity_rs::{
         pyth_lazer_feed_id_to_spot_market_index, spot_market_index_to_pyth_lazer_feed_id,
     },
     dlob::{L3Order, MakerCrosses},
+    swift_order_subscriber::SignedOrderInfo,
     types::{MarketId, MarketType},
     Pubkey,
 };
@@ -475,6 +476,119 @@ pub fn swift_placement_expired(
     false
 }
 
+/// Max number of signed swift orders held in memory for re-evaluation at once.
+///
+/// A pathological burst of never-fillable swift orders (bad flow, or a market that never
+/// converges) must not grow the held-order store unbounded: the bot already places every
+/// held order on-chain as a regular resting order (see `try_swift_place`), so refusing new
+/// entries past the cap just falls back to the existing per-slot DLOB fill path for the
+/// overflow rather than losing the order entirely.
+pub const MAX_HELD_SWIFT_ORDERS: usize = 4096;
+
+/// A signed swift order retained in memory after arrival because it wasn't immediately
+/// fillable (see `evaluate_swift_crosses` in `filler.rs`).
+///
+/// The auction/expiry fields are snapshotted at insertion (rather than re-derived from
+/// `order` each time) so `swift_placement_expired` can be checked cheaply every slot without
+/// re-parsing the signed order params.
+#[derive(Clone)]
+pub struct HeldSwiftOrder {
+    pub order: SignedOrderInfo,
+    pub market_index: u16,
+    pub order_slot: u64,
+    pub auction_duration: u8,
+    pub max_ts: i64,
+}
+
+impl HeldSwiftOrder {
+    pub fn new(
+        order: SignedOrderInfo,
+        market_index: u16,
+        order_slot: u64,
+        auction_duration: u8,
+        max_ts: i64,
+    ) -> Self {
+        Self {
+            order,
+            market_index,
+            order_slot,
+            auction_duration,
+            max_ts,
+        }
+    }
+}
+
+/// In-memory store of signed swift orders retained after arrival (see `HeldSwiftOrder`),
+/// keyed by the swift order's uuid so a given order is held at most once regardless of how
+/// many times it's re-inserted (e.g. a redelivered message after a swift feed reconnect).
+///
+/// Bounded by `MAX_HELD_SWIFT_ORDERS` (see its doc) — `insert` simply refuses new entries
+/// past the cap rather than evicting, since every held order is also placed on-chain and
+/// remains reachable via the normal per-slot fill path regardless of whether it's held.
+#[derive(Default)]
+pub struct HeldSwiftOrders {
+    orders: HashMap<[u8; 8], HeldSwiftOrder>,
+}
+
+impl HeldSwiftOrders {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Number of currently held orders (logged on insert for observability).
+    pub fn len(&self) -> usize {
+        self.orders.len()
+    }
+
+    /// Insert a held order, unless the store is already at `MAX_HELD_SWIFT_ORDERS` capacity.
+    /// Returns `true` if inserted (or refreshed).
+    pub fn insert(&mut self, uuid: [u8; 8], held: HeldSwiftOrder) -> bool {
+        if self.orders.len() >= MAX_HELD_SWIFT_ORDERS && !self.orders.contains_key(&uuid) {
+            return false;
+        }
+        self.orders.insert(uuid, held);
+        true
+    }
+
+    /// Remove and return a held order by uuid, if present.
+    pub fn remove(&mut self, uuid: &[u8; 8]) -> Option<HeldSwiftOrder> {
+        self.orders.remove(uuid)
+    }
+
+    /// Iterate held orders for a given perp market index.
+    pub fn for_market(
+        &self,
+        market_index: u16,
+    ) -> impl Iterator<Item = (&[u8; 8], &HeldSwiftOrder)> {
+        self.orders
+            .iter()
+            .filter(move |(_, h)| h.market_index == market_index)
+    }
+
+    /// Remove and return the uuids of held orders whose on-chain placement window
+    /// (`swift_placement_expired`) has passed, so callers can prune + bump metrics.
+    pub fn prune_expired(&mut self, current_slot: u64, now_ts: i64) -> Vec<[u8; 8]> {
+        let expired: Vec<[u8; 8]> = self
+            .orders
+            .iter()
+            .filter(|(_, h)| {
+                swift_placement_expired(
+                    h.order_slot,
+                    h.auction_duration,
+                    h.max_ts,
+                    current_slot,
+                    now_ts,
+                )
+            })
+            .map(|(uuid, _)| *uuid)
+            .collect();
+        for uuid in &expired {
+            self.orders.remove(uuid);
+        }
+        expired
+    }
+}
+
 #[derive(Clone, Debug)]
 pub struct PythPriceUpdate {
     pub market_type: MarketType,
@@ -745,8 +859,137 @@ pub fn subscribe_price_feeds(
 
 #[cfg(test)]
 mod tests {
-    use super::{swift_placement_expired, OrderSlotLimiter, PendingTxMeta, PendingTxs, TxIntent};
+    use super::{
+        swift_placement_expired, HeldSwiftOrder, HeldSwiftOrders, OrderSlotLimiter, PendingTxMeta,
+        PendingTxs, TxIntent, MAX_HELD_SWIFT_ORDERS,
+    };
     use solana_sdk::signature::Signature;
+    use velocity_rs::{
+        swift_order_subscriber::SignedOrderInfo,
+        types::{
+            MarketType, OrderParams, OrderType, PositionDirection, SignedMsgOrderParamsMessage,
+        },
+        Pubkey,
+    };
+
+    /// Minimal signed order for exercising the `HeldSwiftOrders` store; the auction/price
+    /// contents don't matter here, only the slot/uuid/market bookkeeping.
+    fn test_signed_order(uuid: [u8; 8], order_slot: u64, market_index: u16) -> SignedOrderInfo {
+        let order_params = OrderParams {
+            order_type: OrderType::Market,
+            market_type: MarketType::Perp,
+            direction: PositionDirection::Long,
+            base_asset_amount: 1,
+            market_index,
+            auction_duration: Some(10),
+            auction_start_price: Some(0),
+            auction_end_price: Some(0),
+            ..Default::default()
+        };
+        let msg = SignedMsgOrderParamsMessage {
+            signed_msg_order_params: order_params,
+            sub_account_id: 0,
+            slot: order_slot,
+            uuid,
+            take_profit_order_params: None,
+            stop_loss_order_params: None,
+            max_margin_ratio: None,
+            builder_idx: None,
+            builder_fee_tenth_bps: None,
+            isolated_position_deposit: None,
+        };
+        SignedOrderInfo::authority(Pubkey::new_unique(), msg, Signature::default())
+    }
+
+    #[test]
+    fn held_swift_orders_insert_remove_and_market_filter() {
+        let mut held = HeldSwiftOrders::new();
+        let uuid_a = *b"aaaaaaaa";
+        let uuid_b = *b"bbbbbbbb";
+
+        assert!(held.insert(
+            uuid_a,
+            HeldSwiftOrder::new(test_signed_order(uuid_a, 100, 0), 0, 100, 10, 0)
+        ));
+        assert!(held.insert(
+            uuid_b,
+            HeldSwiftOrder::new(test_signed_order(uuid_b, 100, 1), 1, 100, 10, 0)
+        ));
+        assert_eq!(held.len(), 2);
+
+        // filtering by market only returns that market's held order
+        let market0: Vec<_> = held.for_market(0).map(|(uuid, _)| *uuid).collect();
+        assert_eq!(market0, vec![uuid_a]);
+
+        // remove returns the held order and drops it from the store
+        assert!(held.remove(&uuid_a).is_some());
+        assert!(held.remove(&uuid_a).is_none());
+        assert_eq!(held.len(), 1);
+
+        assert!(held.remove(&uuid_b).is_some());
+        assert_eq!(held.len(), 0);
+    }
+
+    #[test]
+    fn held_swift_orders_prune_expired_removes_only_expired() {
+        let mut held = HeldSwiftOrders::new();
+        let uuid_live = *b"11111111";
+        let uuid_dead = *b"22222222";
+
+        // live: still within its auction_duration=10 placement window at slot 105
+        held.insert(
+            uuid_live,
+            HeldSwiftOrder::new(test_signed_order(uuid_live, 100, 0), 0, 100, 10, 0),
+        );
+        // dead: placement window (order_slot + auction_duration = 110) already passed
+        held.insert(
+            uuid_dead,
+            HeldSwiftOrder::new(test_signed_order(uuid_dead, 50, 0), 0, 50, 10, 0),
+        );
+
+        let pruned = held.prune_expired(105, 0);
+        assert_eq!(pruned, vec![uuid_dead]);
+        assert_eq!(held.len(), 1);
+        assert!(held.remove(&uuid_live).is_some());
+    }
+
+    #[test]
+    fn held_swift_orders_refuses_new_entries_past_capacity() {
+        // uuids must be valid UTF-8 (mirrors real swift order uuids, which are nanoid
+        // strings) since `SignedOrderInfo::authority` derives its display string from them.
+        let test_uuid = |i: usize| -> [u8; 8] {
+            let s = format!("{i:08}");
+            let mut uuid = [0u8; 8];
+            uuid.copy_from_slice(s.as_bytes());
+            uuid
+        };
+
+        let mut held = HeldSwiftOrders::new();
+        for i in 0..MAX_HELD_SWIFT_ORDERS {
+            let uuid = test_uuid(i);
+            assert!(held.insert(
+                uuid,
+                HeldSwiftOrder::new(test_signed_order(uuid, 100, 0), 0, 100, 10, 0)
+            ));
+        }
+        assert_eq!(held.len(), MAX_HELD_SWIFT_ORDERS);
+
+        // store is full: a brand new uuid is refused...
+        let overflow_uuid = test_uuid(MAX_HELD_SWIFT_ORDERS);
+        assert!(!held.insert(
+            overflow_uuid,
+            HeldSwiftOrder::new(test_signed_order(overflow_uuid, 100, 0), 0, 100, 10, 0)
+        ));
+        assert_eq!(held.len(), MAX_HELD_SWIFT_ORDERS);
+
+        // ...but re-inserting (refreshing) an already-held uuid is still allowed
+        let existing_uuid = test_uuid(0);
+        assert!(held.insert(
+            existing_uuid,
+            HeldSwiftOrder::new(test_signed_order(existing_uuid, 101, 0), 0, 101, 10, 0)
+        ));
+        assert_eq!(held.len(), MAX_HELD_SWIFT_ORDERS);
+    }
 
     #[test]
     fn pending_txs_confirm_consumes_entry() {

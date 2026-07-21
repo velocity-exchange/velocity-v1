@@ -214,7 +214,7 @@ pub fn handle_revert_fill<'info>(ctx: Context<RevertFill>) -> Result<()> {
 }
 
 #[access_control(
-    exchange_not_paused(&ctx.accounts.state)
+    fill_not_paused(&ctx.accounts.state)
 )]
 pub fn handle_trigger_order<'c: 'info, 'info>(
     ctx: Context<'info, TriggerOrder<'info>>,
@@ -493,6 +493,9 @@ pub fn handle_update_user_open_orders_count<'info>(ctx: Context<UpdateUserIdle>)
     Ok(())
 }
 
+#[access_control(
+    exchange_not_paused(&ctx.accounts.state)
+)]
 pub fn handle_place_signed_msg_taker_order<'c: 'info, 'info>(
     ctx: Context<'info, PlaceSignedMsgTakerOrder<'info>>,
     signed_msg_order_params_message_bytes: Vec<u8>,
@@ -892,7 +895,11 @@ pub fn handle_settle_pnl<'c: 'info, 'info>(
     let market_in_settlement =
         perp_market_map.get_ref(&market_index)?.status == MarketStatus::Settlement;
 
-    if market_in_settlement {
+    // Whether settlement actually happened this call. The revenue-share sweep
+    // moves builder/referrer fees out of the market's pnl pool, so it must only
+    // run when we truly settled — a soft-skipped `settle_pnl` (TrySettle turning
+    // a pause/degraded-oracle/etc. into a no-op) must not drain the pool.
+    let settled = if market_in_settlement {
         amm_not_paused(&ctx.accounts.state)?;
 
         controller::pnl::settle_expired_position(
@@ -907,6 +914,7 @@ pub fn handle_settle_pnl<'c: 'info, 'info>(
         )?;
 
         user.update_last_active_slot(clock.slot);
+        true
     } else {
         // No `update_amm` here: settle_pnl reads the live oracle and falls
         // back to the AMM's slot-fresh check only when the live oracle is
@@ -926,24 +934,29 @@ pub fn handle_settle_pnl<'c: 'info, 'info>(
             &state,
             None,
             SettlePnlMode::MustSettle,
-        )?;
-    }
+        )?
+    };
 
     if state.builder_codes_enabled() {
         if let Some(ref mut escrow) = builder_escrow {
             escrow.revoke_completed_orders(user)?;
-            if let Some(ref builder_map) = maybe_rev_share_map {
-                controller::revenue_share::sweep_completed_revenue_share_for_market(
-                    market_index,
-                    escrow,
-                    &perp_market_map,
-                    &spot_market_map,
-                    builder_map,
-                    clock.unix_timestamp,
-                    state.builder_codes_enabled(),
-                )?;
-            } else {
-                msg!("Builder Users not provided, but RevenueEscrow was provided");
+            // Only sweep the market's pnl pool when settlement actually
+            // happened; a soft-skipped settle must not move builder/referrer
+            // fees out of a market that never settled.
+            if settled {
+                if let Some(ref builder_map) = maybe_rev_share_map {
+                    controller::revenue_share::sweep_completed_revenue_share_for_market(
+                        market_index,
+                        escrow,
+                        &perp_market_map,
+                        &spot_market_map,
+                        builder_map,
+                        clock.unix_timestamp,
+                        state.builder_codes_enabled(),
+                    )?;
+                } else {
+                    msg!("Builder Users not provided, but RevenueEscrow was provided");
+                }
             }
         }
     }
@@ -1018,7 +1031,12 @@ pub fn handle_settle_multiple_pnls<'c: 'info, 'info>(
         let market_in_settlement =
             perp_market_map.get_ref(market_index)?.status == MarketStatus::Settlement;
 
-        if market_in_settlement {
+        // Whether settlement actually happened for this market. Under
+        // `TrySettle`, `settle_pnl` soft-skips a paused / degraded-oracle
+        // market into `Ok(false)`; the revenue-share sweep below must be tied
+        // to real settlement so it does not move builder/referrer fees out of a
+        // market that never settled.
+        let settled = if market_in_settlement {
             amm_not_paused(&ctx.accounts.state)?;
 
             controller::pnl::settle_expired_position(
@@ -1033,6 +1051,7 @@ pub fn handle_settle_multiple_pnls<'c: 'info, 'info>(
             )?;
 
             user.update_last_active_slot(clock.slot);
+            true
         } else {
             // See `handle_settle_pnl` for the no-refresh rationale.
 
@@ -1048,24 +1067,29 @@ pub fn handle_settle_multiple_pnls<'c: 'info, 'info>(
                 &state,
                 Some(meets_margin_requirement),
                 mode,
-            )?;
-        }
+            )?
+        };
 
         if state.builder_codes_enabled() {
             if let Some(ref mut escrow) = builder_escrow {
                 escrow.revoke_completed_orders(user)?;
-                if let Some(ref builder_map) = maybe_rev_share_map {
-                    controller::revenue_share::sweep_completed_revenue_share_for_market(
-                        *market_index,
-                        escrow,
-                        &perp_market_map,
-                        &spot_market_map,
-                        builder_map,
-                        clock.unix_timestamp,
-                        state.builder_codes_enabled(),
-                    )?;
-                } else {
-                    msg!("Builder Users not provided, but RevenueEscrow was provided");
+                // Only sweep the market's pnl pool when settlement actually
+                // happened; a soft-skipped settle must not move
+                // builder/referrer fees out of a market that never settled.
+                if settled {
+                    if let Some(ref builder_map) = maybe_rev_share_map {
+                        controller::revenue_share::sweep_completed_revenue_share_for_market(
+                            *market_index,
+                            escrow,
+                            &perp_market_map,
+                            &spot_market_map,
+                            builder_map,
+                            clock.unix_timestamp,
+                            state.builder_codes_enabled(),
+                        )?;
+                    } else {
+                        msg!("Builder Users not provided, but RevenueEscrow was provided");
+                    }
                 }
             }
         }
@@ -1182,7 +1206,8 @@ pub fn handle_liquidate_perp<'c: 'info, 'info>(
 }
 
 #[access_control(
-liq_not_paused(&ctx.accounts.state)
+    liq_not_paused(&ctx.accounts.state)
+    fill_not_paused(&ctx.accounts.state)
 )]
 pub fn handle_liquidate_perp_with_fill<'c: 'info, 'info>(
     ctx: Context<'info, LiquidatePerp<'info>>,
@@ -2675,61 +2700,77 @@ pub fn handle_sweep_perp_market_fees(
         clock.slot,
         Some(state.oracle_guard_rails),
     )?;
-    let oracle_price = oracle_map.get_price_data(&perp_market.oracle_id())?.price;
 
-    // The swept amount is derived from net_user_pnl, which is valued at the
-    // oracle price below. Mirror the oracle-validity gates that settle_pnl
-    // applies before trusting that price, so a stale/divergent oracle can't
-    // mis-size the sweep against the user PnL pool.
-    controller::orders::validate_market_within_price_band(perp_market, &state, oracle_price)?;
+    // The swept amount reserves the aggregate live user claim on the pnl pool.
+    // During Settlement expired positions settle at the market's fixed
+    // `expiry_price` (see `settle_expired_position`), NOT the live oracle, so
+    // the reserve must be valued at `expiry_price` too — mirroring the
+    // Settlement branch liquidation already uses. Reserving at a live oracle
+    // that sits below `expiry_price` for a net-long expired market
+    // under-reserves and lets the sweep drain pnl-pool value the pending
+    // expiry claims still need, making those claims later revert with
+    // InsufficientPerpPnlPool. `expiry_price` is fixed once set at settlement,
+    // so no live-oracle validity gate is needed for it. Outside Settlement,
+    // value at the live oracle and mirror the oracle-validity gates that
+    // `settle_pnl` applies, so a stale/divergent oracle can't mis-size the
+    // sweep against the user PnL pool.
+    let reserve_price = if perp_market.status == MarketStatus::Settlement {
+        perp_market.expiry_price
+    } else {
+        let oracle_price = oracle_map.get_price_data(&perp_market.oracle_id())?.price;
 
-    if perp_market.amm.is_curve_update_enabled() {
-        let healthy_oracle = perp_market.is_recent_oracle_valid(oracle_map.slot)?;
+        controller::orders::validate_market_within_price_band(perp_market, &state, oracle_price)?;
 
-        if !healthy_oracle {
-            let (_, oracle_validity) = oracle_map.get_price_data_and_validity(
-                MarketType::Perp,
-                perp_market.market_index,
-                &perp_market.oracle_id(),
-                perp_market
-                    .market_stats
-                    .historical_oracle_data
-                    .last_oracle_price_twap,
-                perp_market.get_max_confidence_interval_multiplier()?,
-                0,
-                0,
-                None,
-            )?;
+        if perp_market.amm.is_curve_update_enabled() {
+            let healthy_oracle = perp_market.is_recent_oracle_valid(oracle_map.slot)?;
 
-            if !is_oracle_valid_for_action(oracle_validity, Some(VelocityAction::SettlePnl))?
-                || !perp_market.is_price_divergence_ok_for_settle_pnl(oracle_price)?
-            {
-                validate!(
-                    perp_market.market_stats.last_oracle_valid,
-                    oracle_validity.get_error_code(),
-                    "Oracle Price detected as invalid ({}) on last perp market update for Market = {}",
-                    oracle_validity,
-                    perp_market_index
+            if !healthy_oracle {
+                let (_, oracle_validity) = oracle_map.get_price_data_and_validity(
+                    MarketType::Perp,
+                    perp_market.market_index,
+                    &perp_market.oracle_id(),
+                    perp_market
+                        .market_stats
+                        .historical_oracle_data
+                        .last_oracle_price_twap,
+                    perp_market.get_max_confidence_interval_multiplier()?,
+                    0,
+                    0,
+                    None,
                 )?;
 
-                validate!(
-                    perp_market.amm.is_fresh_at(oracle_map.slot),
-                    ErrorCode::AMMNotUpdatedInSameSlot,
-                    "Market={} AMM must be updated in a prior instruction within same slot (current={} != amm={}, last_oracle_valid={})",
-                    perp_market_index,
-                    oracle_map.slot,
-                    perp_market.amm.last_update_slot(),
-                    perp_market.market_stats.last_oracle_valid
-                )?;
+                if !is_oracle_valid_for_action(oracle_validity, Some(VelocityAction::SettlePnl))?
+                    || !perp_market.is_price_divergence_ok_for_settle_pnl(oracle_price)?
+                {
+                    validate!(
+                        perp_market.market_stats.last_oracle_valid,
+                        oracle_validity.get_error_code(),
+                        "Oracle Price detected as invalid ({}) on last perp market update for Market = {}",
+                        oracle_validity,
+                        perp_market_index
+                    )?;
+
+                    validate!(
+                        perp_market.amm.is_fresh_at(oracle_map.slot),
+                        ErrorCode::AMMNotUpdatedInSameSlot,
+                        "Market={} AMM must be updated in a prior instruction within same slot (current={} != amm={}, last_oracle_valid={})",
+                        perp_market_index,
+                        oracle_map.slot,
+                        perp_market.amm.last_update_slot(),
+                        perp_market.market_stats.last_oracle_valid
+                    )?;
+                }
             }
         }
-    }
+
+        oracle_price
+    };
 
     controller::spot_balance::update_spot_market_cumulative_interest(spot_market, None, now)?;
 
     let net_user_pnl = calculate_net_user_pnl(
         &perp_market.amm,
-        oracle_price,
+        reserve_price,
         perp_market.quote_asset_amount,
         perp_market.net_unsettled_funding_pnl,
     )?;

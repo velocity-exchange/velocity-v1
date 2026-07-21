@@ -8,11 +8,12 @@ use crate::controller::spot_balance::{
     update_spot_balances, update_spot_market_cumulative_interest,
 };
 use crate::error::{ErrorCode, VelocityResult};
-use crate::math::oracle::{is_oracle_valid_for_action, VelocityAction};
+use crate::math::oracle::{is_oracle_valid_for_action, OracleValidity, VelocityAction};
 use crate::vlp::amm::controller::{update_pnl_pool_and_user_balance, update_pool_balances};
 use crate::vlp::amm::math::amm::calculate_net_user_pnl;
 
 use crate::math::casting::Cast;
+use crate::math::fees::split_fee_remainder;
 use crate::math::margin::{
     meets_maintenance_margin_requirement, meets_settle_pnl_maintenance_margin_requirement,
 };
@@ -45,6 +46,18 @@ mod tests;
 #[cfg(test)]
 mod delisting;
 
+/// Settle a user's unrealized pnl for `market_index` against the market's pnl
+/// pool.
+///
+/// Returns `Ok(true)` when settlement actually occurred and `Ok(false)` when it
+/// was soft-skipped under [`SettlePnlMode::TrySettle`] (a paused SettlePnl /
+/// SettlePnlWithPosition operation, a degraded oracle, no unsettled pnl, an
+/// empty pnl pool, etc. — any bail-out routed through [`SettlePnlMode::result`]).
+/// In [`SettlePnlMode::MustSettle`] those same conditions return `Err` instead.
+/// Callers must gate any follow-on side effect that assumes settlement happened
+/// (notably `sweep_completed_revenue_share_for_market`, which moves
+/// builder/referrer fees out of the market's pnl pool) on this `true` signal, so
+/// a soft-skip does not drain the pool of a market that never settled.
 pub fn settle_pnl(
     market_index: u16,
     user: &mut User,
@@ -57,7 +70,7 @@ pub fn settle_pnl(
     state: &State,
     meets_margin_requirement: Option<bool>,
     mut mode: SettlePnlMode,
-) -> VelocityResult {
+) -> VelocityResult<bool> {
     validate!(!user.is_bankrupt(), ErrorCode::UserBankrupt)?;
     let now = clock.unix_timestamp;
     let tvl_before;
@@ -164,6 +177,30 @@ pub fn settle_pnl(
                     );
                     return mode.result(ErrorCode::AMMNotUpdatedInSameSlot, market_index, &msg);
                 }
+            }
+
+            // #70: SettlePnl deliberately admits StaleForMargin / InsufficientDataPoints — a
+            // user settling their own pnl through a slightly stale oracle is acceptable, and
+            // the layered last_oracle_valid + is_fresh_at checks above backstop the AMM. But a
+            // *third party* (anyone who is not the user's authority or delegate) must not be
+            // able to push another user's *negative* pnl (a loss debited from that user's
+            // collateral) through such a margin-invalid oracle. Gate that specific combination
+            // on the stricter margin validity, mirroring the existing positive-pnl guard that
+            // forces a user to settle their own positive pnl.
+            let settler_can_sign_for_user =
+                user.authority.eq(authority) || user.delegate.eq(authority);
+            if unrealized_pnl < 0
+                && !settler_can_sign_for_user
+                && matches!(
+                    oracle_validity,
+                    OracleValidity::StaleForMargin | OracleValidity::InsufficientDataPoints
+                )
+            {
+                let msg = format!(
+                    "Third party cannot settle user's negative pnl against a margin-invalid oracle ({}) for Market = {}",
+                    oracle_validity, market_index
+                );
+                return mode.result(oracle_validity.get_error_code(), market_index, &msg);
             }
         }
     }
@@ -385,7 +422,7 @@ pub fn settle_pnl(
         tvl_after
     )?;
 
-    Ok(())
+    Ok(true)
 }
 
 pub fn settle_expired_position(
@@ -459,6 +496,26 @@ pub fn settle_expired_position(
         perp_market.expiry_ts
     )?;
 
+    // Expired-position settlement mutates the market PnL pool and user balances
+    // just like `settle_pnl`, so it must honor the same market-scoped settle
+    // pause bits. Without this, a paused market could still have its expired
+    // positions closed out permissionlessly.
+    validate!(
+        !perp_market.is_operation_paused(PerpOperation::SettlePnl),
+        ErrorCode::InvalidMarketStatusToSettlePnl,
+        "Cannot settle expired position: market {} SettlePnl paused",
+        perp_market_index
+    )?;
+
+    if user.perp_positions[position_index].base_asset_amount != 0 {
+        validate!(
+            !perp_market.is_operation_paused(PerpOperation::SettlePnlWithPosition),
+            ErrorCode::InvalidMarketStatusToSettlePnl,
+            "Cannot settle expired position: market {} SettlePnlWithPosition paused",
+            perp_market_index
+        )?;
+    }
+
     let position_settlement_ts = perp_market
         .expiry_ts
         .safe_add(state.settlement_duration.cast()?)?;
@@ -509,6 +566,25 @@ pub fn settle_expired_position(
         perp_market,
         -fee.abs(),
     )?;
+
+    // Route the closeout taker fee through the market fee ledger with the
+    // standard split so it is materialized to the protocol / IF pools by the
+    // fee sweep, instead of lingering in the pnl pool and being dumped
+    // wholesale into the revenue pool / insurance fund when the market
+    // delists. There is no AMM counterparty on an expiry closeout (the
+    // settlement counterparty is booked via `apply_settlement_counterparty`
+    // below, not an AMM fill), so ZERO the AMM provision and fold its share
+    // into the protocol residual — keeping the full fee accounted as
+    // protocol + IF.
+    let gross_closeout_fee = fee.unsigned_abs();
+    if gross_closeout_fee > 0 {
+        let (_amm_fee, if_fee, _protocol_residual) =
+            split_fee_remainder(gross_closeout_fee, fee_structure)?;
+        let protocol_fee = gross_closeout_fee.safe_sub(if_fee)?;
+        perp_market
+            .fee_ledger
+            .accrue_fill_fees(gross_closeout_fee, protocol_fee, if_fee, 0)?;
+    }
 
     let pnl = user.perp_positions[position_index].quote_asset_amount;
 

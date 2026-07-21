@@ -114,6 +114,10 @@ pub struct Config {
     /// on every restart.
     #[clap(long, default_value = "false")]
     pub init_user: bool,
+    /// Disable the liquidator startup sweep that deposits idle wallet token
+    /// balances into the take-over subaccount when it has no free collateral.
+    #[clap(long, default_value = "false")]
+    pub no_auto_deposit: bool,
     /// fill for all markets (overrides '--market-ids')
     #[clap(long, default_value = "false")]
     pub all_markets: bool,
@@ -267,6 +271,13 @@ async fn main() {
     // bot's first `get_user_account` read from failing with `AccountNotFound`.
     if config.init_user {
         relayer::init_user(config.clone(), velocity.clone()).await;
+    }
+
+    // Liquidator preflight: an unfunded liquidator skips every perp
+    // liquidation ("no_free_collateral"), so sweep idle wallet token balances
+    // into the take-over subaccount before the bot loop starts.
+    if config.liquidator && !config.no_auto_deposit {
+        relayer::auto_deposit_idle_funds(&config, &velocity).await;
     }
 
     if config.relayer {

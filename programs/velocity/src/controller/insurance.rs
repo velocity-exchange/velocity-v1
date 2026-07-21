@@ -106,6 +106,20 @@ pub fn add_insurance_fund_stake(
         insurance_vault_amount,
     )?;
 
+    // Reject deposits that mint zero shares. Shares are priced off the pre-transfer
+    // vault balance, so an attacker can donate into the vault to inflate the share
+    // price and force floor(amount * total_shares / vault) == 0, then capture the
+    // victim's full deposit as appreciation on their own shares. Mirrors the
+    // `n_shares > 0` guard the request-remove path already enforces.
+    validate!(
+        n_shares > 0,
+        ErrorCode::IFDepositMintsZeroShares,
+        "deposit of {} mints zero IF shares at current share price (vault {}, total_shares {})",
+        amount,
+        insurance_vault_amount,
+        spot_market.insurance_fund.total_shares
+    )?;
+
     // reset cost basis if no shares
     insurance_fund_stake.cost_basis = if if_shares_before == 0 {
         amount.cast()?
@@ -668,6 +682,14 @@ pub fn resolve_perp_pnl_deficit(
         market.amm.total_fee_minus_distributions
     )?;
 
+    // Accrue the quote market's cumulative interest to `now` BEFORE valuing the
+    // pnl pool. `get_token_amount` scales `pnl_pool.scaled_balance` by
+    // `cumulative_deposit_interest`, so a stale (un-accrued) index understates
+    // the pool. The sufficiency gate below rejects an IF draw whenever the pool
+    // already covers `net_user_pnl`; sizing that gate off a stale-low pool would
+    // draw from the insurance fund even when a current-interest pool suffices.
+    update_spot_market_cumulative_interest(spot_market, None, now)?;
+
     let pnl_pool_token_amount = get_token_amount(
         market.pnl_pool.scaled_balance,
         spot_market,
@@ -691,8 +713,6 @@ pub fn resolve_perp_pnl_deficit(
         pnl_pool_token_amount,
         net_user_pnl
     )?;
-
-    update_spot_market_cumulative_interest(spot_market, None, now)?;
 
     let total_if_shares_before = spot_market.insurance_fund.total_shares;
 

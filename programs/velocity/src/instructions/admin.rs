@@ -386,7 +386,7 @@ pub fn handle_initialize_spot_market(
         min_borrow_rate: 0,
         token_program_flag: token_program,
         pool_id: 0,
-        _padding_align_pfp: [0; 8],
+        _padding_align_pfp: [0; 13],
         protocol_fee_pool: PoolBalance {
             scaled_balance: 0,
             market_index: spot_market_index,
@@ -394,7 +394,7 @@ pub fn handle_initialize_spot_market(
         },
         protocol_liquidation_fee: 0,
         protocol_fee_factor: 0,
-        padding: [0; 8],
+        if_last_settle_vault_amount: 0,
         insurance_fund: InsuranceFund {
             vault: ctx.accounts.insurance_fund_vault.key(),
             unstaking_period: THIRTEEN_DAY,

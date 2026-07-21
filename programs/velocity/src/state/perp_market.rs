@@ -578,7 +578,13 @@ impl PerpMarket {
         state: &State,
         amm_has_low_enough_inventory: bool,
     ) -> VelocityResult<bool> {
-        if state.amm_immediate_fill_paused()? {
+        // Honor both the exchange-wide immediate-fill breaker and the
+        // market-scoped `AmmImmediateFill` pause bit; either being set forces
+        // the auction to run its full duration instead of skipping to an
+        // immediate AMM fill.
+        if state.amm_immediate_fill_paused()?
+            || self.is_operation_paused(PerpOperation::AmmImmediateFill)
+        {
             return Ok(false);
         }
 

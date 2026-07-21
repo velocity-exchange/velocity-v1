@@ -222,7 +222,11 @@ describe('place and make signedMsg order', () => {
 		await takerVelocityClient.unsubscribe();
 	});
 
-	it('allows decrease size if authority is delegate', async () => {
+	it('fails to decrease size if payer is a delegate (not the authority)', async () => {
+		// The SignedMsgUserOrders account is authority-scoped and shared across every
+		// subaccount of the authority. A per-subaccount delegate must not be able to shrink
+		// it: shrinking evicts other subaccounts' active replay-protection UUIDs and re-enables
+		// replay of their signed orders. Only the authority itself may shrink.
 		const [takerVelocityClient, takerVelocityClientUser] =
 			await initializeNewTakerClientAndUser(
 				bankrunContextWrapper,
@@ -246,17 +250,22 @@ describe('place and make signedMsg order', () => {
 				takerVelocityClientUser.getUserAccount().authority
 			);
 
-		await makerVelocityClient.resizeSignedMsgUserOrders(
-			takerVelocityClientUser.getUserAccount().authority,
-			4
-		);
+		try {
+			await makerVelocityClient.resizeSignedMsgUserOrders(
+				takerVelocityClientUser.getUserAccount().authority,
+				4
+			);
+			assert.fail('Expected an error');
+		} catch (error) {
+			assert.include(error.toString(), '0x18a9');
+		}
 
 		const signedMsgUserOrders =
 			(await takerVelocityClient.program.account.signedMsgUserOrders.fetch(
 				signedMsgUserOrdersAccountPublicKey
 			)) as any;
 
-		assert.equal(signedMsgUserOrders.signedMsgOrderData.length, 4);
+		assert.equal(signedMsgUserOrders.signedMsgOrderData.length, 32);
 
 		await takerVelocityClientUser.unsubscribe();
 		await takerVelocityClient.unsubscribe();

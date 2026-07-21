@@ -5,6 +5,7 @@ use crate::math::casting::Cast;
 use crate::math::safe_math::SafeMath;
 use crate::math::spot_balance::get_token_amount;
 use crate::state::events::{emit_stack, RevenueShareSettleRecord};
+use crate::state::paused_operations::PerpOperation;
 use crate::state::perp_market_map::PerpMarketMap;
 use crate::state::revenue_share::{RevenueShareEscrowZeroCopyMut, RevenueShareOrder};
 use crate::state::revenue_share_map::RevenueShareMap;
@@ -32,6 +33,15 @@ pub fn sweep_completed_revenue_share_for_market<'a>(
     builder_codes_feature_enabled: bool,
 ) -> crate::error::VelocityResult<()> {
     let perp_market = &mut perp_market_map.get_ref_mut(&market_index)?;
+
+    // This is a revenue routing path out of the perp market's pnl pool, the
+    // same conduit `sweep_market_fees` drains. Respect the market's
+    // `SettleRevPool` pause so a paused market can't have its pnl pool swept to
+    // builders/referrers while the direct fee sweep is halted.
+    if perp_market.is_operation_paused(PerpOperation::SettleRevPool) {
+        return Ok(());
+    }
+
     let quote_spot_market = &mut spot_market_map.get_quote_spot_market_mut()?;
 
     spot_balance::update_spot_market_cumulative_interest(quote_spot_market, None, now_ts)?;

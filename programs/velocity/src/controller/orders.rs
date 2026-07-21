@@ -275,6 +275,11 @@ pub fn place_perp_order(
 
     if max_ts != 0 && max_ts < now {
         msg!("max_ts ({}) < now ({}), skipping order", max_ts, now);
+        // The order id is NOT consumed on this path (next_order_id is incremented
+        // below), so the next placement reuses it. Clear the builder-order row that
+        // `add_builder_order` already wrote for this id, otherwise it would linger
+        // and attach to the reusing order (fill-time lookup is keyed by order id).
+        clear_placed_builder_order(rev_share_order);
         return Ok(PlaceOrderResult::default());
     }
 
@@ -352,7 +357,11 @@ pub fn place_perp_order(
         Err(ErrorCode::PlacePostOnlyLimitFailure)
             if params.post_only == PostOnlyParam::TryPostOnly =>
         {
-            // just want place to succeeds without error if TryPostOnly
+            // just want place to succeeds without error if TryPostOnly.
+            // The order id was already consumed above, so it can't be reused; but the
+            // builder-order row `add_builder_order` wrote for it would be orphaned
+            // (no live order carries it). Clear it so it can't linger in the escrow.
+            clear_placed_builder_order(rev_share_order);
             return Ok(PlaceOrderResult::default());
         }
         Err(err) => return Err(err),
@@ -1470,6 +1479,13 @@ pub fn fill_perp_order(
         let funding_paused =
             state.funding_paused()? || market.is_operation_paused(PerpOperation::UpdateFunding);
 
+        // Pass `None` so the funding update recomputes the reserve price from
+        // the POST-fill AMM. The fills just moved the reserves, so gating the
+        // mark/oracle divergence check (and the oracle-TWAP sanitization that
+        // shares this value) on `reserve_price_before` would test a stale,
+        // pre-fill mark — letting a fill that pushes the mark past the
+        // divergence band still update funding, or conversely blocking a
+        // funding update the post-fill mark no longer warrants.
         controller::funding::update_funding_rate(
             market_index,
             market,
@@ -1478,7 +1494,7 @@ pub fn fill_perp_order(
             slot,
             &state.oracle_guard_rails,
             funding_paused,
-            Some(reserve_price_before),
+            None,
         )?;
     }
 
@@ -1725,15 +1741,39 @@ fn insert_maker_order_info(
     }
 }
 
+/// Clears a builder-order row that `add_builder_order` wrote for a placement that then
+/// bailed before committing the order. Resetting the row to default frees the escrow slot —
+/// the same "remove" idiom the sweep uses — so a skipped placement leaves no orphaned row
+/// keyed to an order id a later order might reuse.
+#[inline(always)]
+fn clear_placed_builder_order(rev_share_order: &mut Option<&mut RevenueShareOrder>) {
+    if let Some(order) = rev_share_order.as_mut() {
+        **order = RevenueShareOrder::default();
+    }
+}
+
 #[inline(always)]
 fn get_builder_escrow_info(
     escrow_opt: &mut Option<&mut RevenueShareEscrowZeroCopyMut>,
     sub_account_id: u16,
     order_id: u32,
     market_index: u16,
+    order_has_builder: bool,
 ) -> (Option<u32>, Option<u32>, Option<u16>, Option<u8>) {
     if let Some(escrow) = escrow_opt {
-        let builder_order_idx = escrow.find_order_index(sub_account_id, order_id);
+        // Only match a builder-order row for an order that actually carries the
+        // `HasBuilder` flag. Escrow rows are keyed by `(sub_account_id, order_id)`,
+        // and order ids are reused when a placement soft-skips after
+        // `add_builder_order` already wrote the row (e.g. an expired `max_ts`, which
+        // returns before `next_order_id` is consumed). Without this gate a stale row
+        // would attach to the later non-builder order that reuses the id and charge
+        // it a builder fee. The referral lookup is keyed by market, not order id, so
+        // it is unaffected and stays unconditional.
+        let builder_order_idx = if order_has_builder {
+            escrow.find_order_index(sub_account_id, order_id)
+        } else {
+            None
+        };
         let referrer_builder_order_idx = escrow.find_or_create_referral_index(market_index);
 
         let builder_order = builder_order_idx.and_then(|idx| escrow.get_order(idx).ok());
@@ -2351,6 +2391,7 @@ fn settle_amm_house_fill(
             taker.sub_account_id,
             order_id,
             market.market_index,
+            taker.orders[taker_order_index].is_has_builder(),
         );
 
     let FillFees {
@@ -2677,6 +2718,7 @@ fn settle_dlob_match_fill(
             taker.sub_account_id,
             taker.orders[taker_order_index].order_id,
             market.market_index,
+            taker.orders[taker_order_index].is_has_builder(),
         );
 
     let filler_multiplier = if reward_filler {
@@ -3066,30 +3108,22 @@ pub fn fulfill_perp_order_step(
         return Ok((0, 0, 0));
     }
 
-    // ---- 3. Mark-TWAP update. ----
-    // Market-level mutation, kept out of the quoter constructors. Trade-
-    // price hint: the AMM's natural ask/bid for AMM-only steps; the maker
-    // price for Match steps. `update_mark_twap_with_amm_bid_ask` takes the
-    // AMM inputs as scalars — no `&AMM` borrow — so this call is shaped
-    // for the target architecture where the AMM is an isolated module:
-    // bid/ask/base-spread come back through the AMM's contract methods
-    // rather than from reaching into its struct.
+    // ---- 3. Mark-TWAP trade-price hint (deferred update). ----
+    // Snapshot the trade-price hint from the pre-fill AMM quote: the AMM's
+    // natural ask/bid for AMM-only steps, the maker price for Match steps.
+    // The actual `update_mark_twap_with_amm_bid_ask` mutation is deferred
+    // until *after* the fill is confirmed non-zero (step 3b): the mark-TWAP is
+    // `first-write-wins` within a single `now` timestamp (a same-`now` update
+    // sees `since_last == 0` and is a no-op), so a step that quotes but fills
+    // zero base — e.g. an AMM-override step the matcher passes over — must not
+    // stamp its price and pre-empt a real, same-timestamp maker trade that
+    // fills afterwards. The AMM-derived inputs are all captured as scalars
+    // here (no `&AMM` borrow), shaped for the target architecture where the
+    // AMM is an isolated module surfacing bid/ask/base-spread via its contract.
     let twap_trade_price = match_maker_price.unwrap_or(match taker_direction {
         PositionDirection::Long => amm_ask_price,
         PositionDirection::Short => amm_bid_price,
     });
-    market.market_stats.update_mark_twap_with_amm_bid_ask(
-        amm_bid_price,
-        amm_ask_price,
-        amm_base_spread,
-        amm_long_spread,
-        amm_short_spread,
-        now,
-        Some(twap_trade_price),
-        Some(taker_direction),
-        sanitize_clamp_denom,
-        order_tick_size,
-    )?;
 
     // ---- 4. Build QuoteContext for the matcher. AMM-projection fields
     // not needed here — setup has already run on amm_quoter.
@@ -3216,6 +3250,25 @@ pub fn fulfill_perp_order_step(
     if match_result.total_base_filled == 0 {
         return Ok((0, 0, 0));
     }
+
+    // ---- 3b. Deferred Mark-TWAP update (see step 3). ----
+    // Reached only once this step actually traded, so a zero-fill quote can
+    // never stamp the TWAP ahead of a real same-`now` maker trade. Uses the
+    // pre-fill AMM scalars captured above — the fill does not touch the
+    // mark/oracle TWAP inputs read here, so the stamped value is identical to
+    // computing it before the swap, just gated on a real fill.
+    market.market_stats.update_mark_twap_with_amm_bid_ask(
+        amm_bid_price,
+        amm_ask_price,
+        amm_base_spread,
+        amm_long_spread,
+        amm_short_spread,
+        now,
+        Some(twap_trade_price),
+        Some(taker_direction),
+        sanitize_clamp_denom,
+        order_tick_size,
+    )?;
 
     // An AmmHouse fill emitted from a Match step is always a JIT slice
     // (the only AMM-side quoter present in a Match step is `AmmJitQuoter`),
@@ -3467,6 +3520,17 @@ pub fn trigger_order(
     validate!(!user.is_bankrupt(), ErrorCode::UserBankrupt)?;
 
     let mut perp_market = perp_market_map.get_ref_mut(&market_index)?;
+
+    // Triggering starts the order's auction (and pays the keeper reward), so it
+    // is part of the fill lifecycle: respect the market-scoped fill pause the
+    // same way `fill_perp_order` does. The exchange-wide `FillPaused` breaker is
+    // enforced by the handler's `fill_not_paused` access control.
+    validate!(
+        !perp_market.is_operation_paused(PerpOperation::Fill),
+        ErrorCode::MarketFillOrderPaused,
+        "Market fills paused",
+    )?;
+
     let (oracle_price_data, oracle_validity) = oracle_map.get_price_data_and_validity(
         MarketType::Perp,
         perp_market.market_index,

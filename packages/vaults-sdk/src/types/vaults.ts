@@ -2409,6 +2409,44 @@ export type Vaults = {
 					};
 				},
 				{
+					name: 'velocitySpotMarketVault';
+					writable: true;
+					pda: {
+						seeds: [
+							{
+								kind: 'const';
+								value: [
+									115,
+									112,
+									111,
+									116,
+									95,
+									109,
+									97,
+									114,
+									107,
+									101,
+									116,
+									95,
+									118,
+									97,
+									117,
+									108,
+									116,
+								];
+							},
+							{
+								kind: 'arg';
+								path: 'marketIndex';
+							},
+						];
+						program: {
+							kind: 'account';
+							path: 'velocityProgram';
+						};
+					};
+				},
+				{
 					name: 'insuranceFundVault';
 					writable: true;
 					pda: {
@@ -2454,8 +2492,17 @@ export type Vaults = {
 					writable: true;
 				},
 				{
+					name: 'velocityState';
+				},
+				{
+					name: 'velocitySigner';
+				},
+				{
 					name: 'velocityProgram';
 					address: 'vELoC1audYbSYVRXn1vPaV8Axoa9oU6BYmNGZZBDZ1P';
+				},
+				{
+					name: 'tokenProgram';
 				},
 			];
 			args: [
@@ -5261,7 +5308,23 @@ export type Vaults = {
 					{
 						name: 'padding';
 						type: {
-							array: ['u8', 14];
+							array: ['u8', 3];
+						};
+					},
+					{
+						name: 'equityFloor';
+						docs: [
+							'Minimum account equity (cross-margin total collateral) required for',
+							'risk-increasing orders, fills, withdrawals and deposit transfers.',
+							'Settable only by the warm/cold admin; 0 disables the check.',
+							'precision: QUOTE_PRECISION',
+						];
+						type: 'u64';
+					},
+					{
+						name: 'padding2';
+						type: {
+							array: ['u8', 8];
 						};
 					},
 				];
@@ -5423,9 +5486,19 @@ export type Vaults = {
 						type: 'u8';
 					},
 					{
+						name: 'equityBreakerTripped';
+						docs: [
+							'Set by the permissionless `trip_equity_floor_breaker` instruction when',
+							"any of the authority's subaccounts falls below its equity floor.",
+							'While set, every subaccount of the authority rejects risk-increasing',
+							'fills, withdrawals and transfers out. Cleared only by the warm admin.',
+						];
+						type: 'u8';
+					},
+					{
 						name: 'padding';
 						type: {
-							array: ['u8', 63];
+							array: ['u8', 62];
 						};
 					},
 				];

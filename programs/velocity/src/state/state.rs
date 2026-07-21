@@ -216,6 +216,18 @@ impl State {
             .contains(ExchangeStatus::FundingPaused))
     }
 
+    pub fn withdraw_paused(&self) -> VelocityResult<bool> {
+        Ok(self
+            .get_exchange_status()?
+            .contains(ExchangeStatus::WithdrawPaused))
+    }
+
+    pub fn deposit_paused(&self) -> VelocityResult<bool> {
+        Ok(self
+            .get_exchange_status()?
+            .contains(ExchangeStatus::DepositPaused))
+    }
+
     pub fn get_solvency_status(&self) -> VelocityResult<BitFlags<SolvencyStatus>> {
         BitFlags::<SolvencyStatus>::from_bits(usize::from(self.solvency_status)).safe_unwrap()
     }

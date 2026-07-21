@@ -2,7 +2,7 @@
   "address": "vELoC1audYbSYVRXn1vPaV8Axoa9oU6BYmNGZZBDZ1P",
   "metadata": {
     "name": "velocity",
-    "version": "2.163.1",
+    "version": "2.163.2",
     "spec": "0.1.0",
     "description": "Created with Anchor"
   },
@@ -6284,6 +6284,9 @@
       ],
       "accounts": [
         {
+          "name": "state"
+        },
+        {
           "name": "spot_market",
           "writable": true,
           "pda": {
@@ -6328,6 +6331,40 @@
           ]
         },
         {
+          "name": "spot_market_vault",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  115,
+                  112,
+                  111,
+                  116,
+                  95,
+                  109,
+                  97,
+                  114,
+                  107,
+                  101,
+                  116,
+                  95,
+                  118,
+                  97,
+                  117,
+                  108,
+                  116
+                ]
+              },
+              {
+                "kind": "arg",
+                "path": "market_index"
+              }
+            ]
+          }
+        },
+        {
           "name": "insurance_fund_vault",
           "writable": true,
           "pda": {
@@ -6363,6 +6400,12 @@
               }
             ]
           }
+        },
+        {
+          "name": "velocity_signer"
+        },
+        {
+          "name": "token_program"
         }
       ],
       "args": [
@@ -6537,13 +6580,7 @@
           }
         },
         {
-          "name": "authority",
-          "relations": [
-            "user"
-          ]
-        },
-        {
-          "name": "user"
+          "name": "authority"
         },
         {
           "name": "payer",
@@ -16157,6 +16194,26 @@
       "code": 6359,
       "name": "InvalidEquityFloorTransfer",
       "msg": "Invalid equity floor transfer between subaccounts"
+    },
+    {
+      "code": 6360,
+      "name": "IFDepositMintsZeroShares",
+      "msg": "Insurance fund deposit would mint zero shares"
+    },
+    {
+      "code": 6361,
+      "name": "LiquidationWorsensAccountHealth",
+      "msg": "Liquidation would worsen the account's margin shortage"
+    },
+    {
+      "code": 6362,
+      "name": "PerpBankruptcyMustPrecedeSpot",
+      "msg": "Perp bankruptcies must be resolved before spot bankruptcies"
+    },
+    {
+      "code": 6363,
+      "name": "InvalidRevenueShareRecipient",
+      "msg": "Revenue share recipient user must be sub_account_id 0"
     }
   ],
   "types": [
@@ -22998,13 +23055,18 @@
           {
             "name": "_padding_align_pfp",
             "docs": [
-              "Aligns `protocol_fee_pool`'s leading u128 to a 16-byte struct offset so",
-              "host (x86_64, align 16) and SBF (align 8) layouts agree. Do not reorder."
+              "Aligns `protocol_fee_pool`'s leading u128 to a 16-byte struct offset",
+              "(752) so host (x86_64, align 16) and SBF (align 8) layouts agree, AND",
+              "so the borsh/IDL packed layout reaches the same offset with no implicit",
+              "`#[repr(C)]` padding — off-chain borsh decoders (TS SDK, velocity-rs)",
+              "know nothing about implicit padding, so every byte must be explicit.",
+              "Was `[u8; 8]`, which left borsh 5 bytes short of the real offset and",
+              "made clients misread the three fields below. Do not reorder."
             ],
             "type": {
               "array": [
                 "u8",
-                8
+                13
               ]
             }
           },

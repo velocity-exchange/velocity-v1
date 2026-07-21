@@ -1392,27 +1392,22 @@ export class VelocityClient {
 	}
 
 	/**
-	 * Grows an existing `SignedMsgUserOrders` account to hold more order-message slots. The program
-	 * only allows growing, never shrinking.
+	 * Resizes an existing `SignedMsgUserOrders` account. Growing (adding order-message slots) is
+	 * permitted for any payer; shrinking is only permitted when the payer is the account's
+	 * `authority`, because the account is authority-scoped and shared across all of the authority's
+	 * subaccounts — a shrink evicts replay-protection UUIDs for every subaccount.
 	 * @param authority - Authority whose account is resized.
-	 * @param numOrders - New (larger) number of order-message slots.
-	 * @param userSubaccountId - Sub-account id used to derive the `user` account passed to the
-	 * instruction; defaults to `0`.
+	 * @param numOrders - New number of order-message slots.
 	 * @param txParams - Optional compute-unit/priority-fee overrides for the transaction.
 	 * @returns The transaction signature.
 	 */
 	public async resizeSignedMsgUserOrders(
 		authority: PublicKey,
 		numOrders: number,
-		userSubaccountId?: number,
 		txParams?: TxParams
 	): Promise<TransactionSignature> {
 		const resizeUserAccountIx =
-			await this.getResizeSignedMsgUserOrdersInstruction(
-				authority,
-				numOrders,
-				userSubaccountId
-			);
+			await this.getResizeSignedMsgUserOrdersInstruction(authority, numOrders);
 		const tx = await this.buildTransaction([resizeUserAccountIx], txParams);
 		const { txSig } = await this.sendTransaction(tx, [], this.opts);
 
@@ -1423,14 +1418,12 @@ export class VelocityClient {
 	 * Builds the `resizeSignedMsgUserOrders` instruction. See `resizeSignedMsgUserOrders` for
 	 * semantics.
 	 * @param authority - Authority whose account is resized.
-	 * @param numOrders - New (larger) number of order-message slots.
-	 * @param userSubaccountId - Sub-account id used to derive the `user` account; defaults to `0`.
+	 * @param numOrders - New number of order-message slots.
 	 * @returns The resize instruction.
 	 */
 	async getResizeSignedMsgUserOrdersInstruction(
 		authority: PublicKey,
-		numOrders: number,
-		userSubaccountId?: number
+		numOrders: number
 	): Promise<TransactionInstruction> {
 		const signedMsgUserAccountPublicKey = getSignedMsgUserAccountPublicKey(
 			this.program.programId,
@@ -1443,11 +1436,6 @@ export class VelocityClient {
 					authority,
 					payer: this.wallet.publicKey,
 					systemProgram: SystemProgram.programId,
-					user: await getUserAccountPublicKey(
-						this.program.programId,
-						authority,
-						userSubaccountId
-					),
 				},
 			});
 
@@ -6338,7 +6326,10 @@ export class VelocityClient {
 			});
 			oracleAccountInfos.push({
 				pubkey: market.oracle,
-				isWritable: false,
+				// `update_amms` loads each market as writable, and `load_maps` refreshes a
+				// `prelaunch`-sourced oracle in place, so that oracle account must be writable
+				// or the crank reverts with "modified data of a read-only account".
+				isWritable: isVariant(market.oracleSource, 'prelaunch'),
 				isSigner: false,
 			});
 		}
@@ -12381,8 +12372,10 @@ export class VelocityClient {
 
 	/**
 	 * Starts the unstaking cooldown for this wallet's insurance fund stake in `marketIndex`, locking
-	 * in the number of IF shares corresponding to `amount` at the current share price. The actual
-	 * withdrawal must be completed with `removeInsuranceFundStake` after
+	 * in the number of IF shares corresponding to `amount` at the current share price. Any revenue
+	 * already due to the insurance fund is settled first (mirroring `addInsuranceFundStake`), so the
+	 * frozen exit value includes the staker's share of it rather than forfeiting it to the remaining
+	 * stakers. The actual withdrawal must be completed with `removeInsuranceFundStake` after
 	 * `spotMarket.insuranceFund.unstakingPeriod` seconds have elapsed; only one request may be
 	 * in-flight per stake account (`cancelRequestRemoveInsuranceFundStake` to reset). A caller may
 	 * only act on their own stake account.
@@ -12404,6 +12397,16 @@ export class VelocityClient {
 			marketIndex
 		);
 
+		const remainingAccounts: AccountMeta[] = [];
+		this.addTokenMintToRemainingAccounts(spotMarketAccount, remainingAccounts);
+		if (this.isTransferHook(spotMarketAccount)) {
+			await this.addExtraAccountMetasToRemainingAccounts(
+				spotMarketAccount.mint,
+				remainingAccounts
+			);
+		}
+
+		const tokenProgram = this.getTokenProgramForSpotMarket(spotMarketAccount);
 		const ix = await (
 			this.program.instruction as any
 		).requestRemoveInsuranceFundStake(marketIndex, amount, {
@@ -12416,8 +12419,12 @@ export class VelocityClient {
 					this.wallet.publicKey // only allow payer to request remove own insurance fund stake account
 				),
 				authority: this.wallet.publicKey,
+				spotMarketVault: spotMarketAccount.vault,
 				insuranceFundVault: spotMarketAccount.insuranceFund.vault,
+				velocitySigner: this.getSignerPublicKey(),
+				tokenProgram,
 			},
+			remainingAccounts,
 		});
 
 		const tx = await this.buildTransaction(ix, txParams);
@@ -12701,8 +12708,10 @@ export class VelocityClient {
 	 * `pendingAmmProvision` into the AMM's fee pool (both leave `feePoolBufferTarget` behind). Every
 	 * drain reserves `max(netUserPnl, 0)` so user claims stay backed. This runs inline on every
 	 * `settlePNL` already — this instruction lets a keeper run it on demand without settling anyone's
-	 * PnL. Gates the oracle price used to value `netUserPnl` the same way `settlePNL` does (price-band
-	 * + validity/divergence checks when the market has curve updates enabled).
+	 * PnL. Values `netUserPnl` at the market's fixed `expiryPrice` when the market is in `settlement`
+	 * status (expired positions settle at that price, not the live oracle, so no live-oracle gate is
+	 * applied); otherwise it uses the live oracle price and gates it the same way `settlePNL` does
+	 * (price-band + validity/divergence checks when the market has curve updates enabled).
 	 * @param perpMarketIndex - Perp market index to sweep fees for.
 	 * @param txParams - Optional compute-unit/priority-fee overrides.
 	 * @returns The transaction signature.

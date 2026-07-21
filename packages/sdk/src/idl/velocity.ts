@@ -8,7 +8,7 @@ export type Velocity = {
   "address": "vELoC1audYbSYVRXn1vPaV8Axoa9oU6BYmNGZZBDZ1P",
   "metadata": {
     "name": "velocity",
-    "version": "2.163.1",
+    "version": "2.163.2",
     "spec": "0.1.0",
     "description": "Created with Anchor"
   },
@@ -6290,6 +6290,9 @@ export type Velocity = {
       ],
       "accounts": [
         {
+          "name": "state"
+        },
+        {
           "name": "spotMarket",
           "writable": true,
           "pda": {
@@ -6334,6 +6337,40 @@ export type Velocity = {
           ]
         },
         {
+          "name": "spotMarketVault",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  115,
+                  112,
+                  111,
+                  116,
+                  95,
+                  109,
+                  97,
+                  114,
+                  107,
+                  101,
+                  116,
+                  95,
+                  118,
+                  97,
+                  117,
+                  108,
+                  116
+                ]
+              },
+              {
+                "kind": "arg",
+                "path": "marketIndex"
+              }
+            ]
+          }
+        },
+        {
           "name": "insuranceFundVault",
           "writable": true,
           "pda": {
@@ -6369,6 +6406,12 @@ export type Velocity = {
               }
             ]
           }
+        },
+        {
+          "name": "velocitySigner"
+        },
+        {
+          "name": "tokenProgram"
         }
       ],
       "args": [
@@ -6543,13 +6586,7 @@ export type Velocity = {
           }
         },
         {
-          "name": "authority",
-          "relations": [
-            "user"
-          ]
-        },
-        {
-          "name": "user"
+          "name": "authority"
         },
         {
           "name": "payer",
@@ -16163,6 +16200,26 @@ export type Velocity = {
       "code": 6359,
       "name": "invalidEquityFloorTransfer",
       "msg": "Invalid equity floor transfer between subaccounts"
+    },
+    {
+      "code": 6360,
+      "name": "ifDepositMintsZeroShares",
+      "msg": "Insurance fund deposit would mint zero shares"
+    },
+    {
+      "code": 6361,
+      "name": "liquidationWorsensAccountHealth",
+      "msg": "Liquidation would worsen the account's margin shortage"
+    },
+    {
+      "code": 6362,
+      "name": "perpBankruptcyMustPrecedeSpot",
+      "msg": "Perp bankruptcies must be resolved before spot bankruptcies"
+    },
+    {
+      "code": 6363,
+      "name": "invalidRevenueShareRecipient",
+      "msg": "Revenue share recipient user must be sub_account_id 0"
     }
   ],
   "types": [
@@ -23004,13 +23061,18 @@ export type Velocity = {
           {
             "name": "paddingAlignPfp",
             "docs": [
-              "Aligns `protocol_fee_pool`'s leading u128 to a 16-byte struct offset so",
-              "host (x86_64, align 16) and SBF (align 8) layouts agree. Do not reorder."
+              "Aligns `protocol_fee_pool`'s leading u128 to a 16-byte struct offset",
+              "(752) so host (x86_64, align 16) and SBF (align 8) layouts agree, AND",
+              "so the borsh/IDL packed layout reaches the same offset with no implicit",
+              "`#[repr(C)]` padding — off-chain borsh decoders (TS SDK, velocity-rs)",
+              "know nothing about implicit padding, so every byte must be explicit.",
+              "Was `[u8; 8]`, which left borsh 5 bytes short of the real offset and",
+              "made clients misread the three fields below. Do not reorder."
             ],
             "type": {
               "array": [
                 "u8",
-                8
+                13
               ]
             }
           },

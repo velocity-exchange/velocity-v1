@@ -16156,6 +16156,16 @@
       "code": 6360,
       "name": "IFDepositMintsZeroShares",
       "msg": "Insurance fund deposit would mint zero shares"
+    },
+    {
+      "code": 6361,
+      "name": "LiquidationWorsensAccountHealth",
+      "msg": "Liquidation would worsen the account's margin shortage"
+    },
+    {
+      "code": 6362,
+      "name": "PerpBankruptcyMustPrecedeSpot",
+      "msg": "Perp bankruptcies must be resolved before spot bankruptcies"
     }
   ],
   "types": [

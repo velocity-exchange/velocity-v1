@@ -6717,6 +6717,155 @@ pub mod liquidate_perp_pnl_for_deposit {
         assert_eq!(liquidator.perp_positions[0].quote_asset_amount, -50000000);
     }
 
+    // Audit #25: when the perp + asset liquidator fees exceed the liquidation
+    // margin buffer, transferring pnl-for-deposit *worsens* the account's
+    // (buffered) margin shortage — the asset premium the liquidator collects
+    // outweighs the collateral relief from cancelling the negative pnl. The
+    // postcondition must reject rather than silently strip the deposit.
+    #[test]
+    pub fn reverts_when_transfer_worsens_margin_shortage() {
+        let now = 0_i64;
+        let slot = 0_u64;
+
+        let mut sol_oracle_price = get_pyth_price(100, 6);
+        let sol_oracle_price_key =
+            Pubkey::from_str("J83w4HKfqxwcq3BEMMkPFSppX3gqekLyLJBexebFVkix").unwrap();
+        create_anchor_account_info!(
+            sol_oracle_price,
+            &sol_oracle_price_key,
+            PythLazerOracle,
+            oracle_account_info
+        );
+        let mut oracle_map = OracleMap::load_one(&oracle_account_info, slot, None).unwrap();
+
+        let mut market = PerpMarket {
+            amm: AMM {
+                base_asset_reserve: 100 * AMM_RESERVE_PRECISION,
+                quote_asset_reserve: 100 * AMM_RESERVE_PRECISION,
+                sqrt_k: 100 * AMM_RESERVE_PRECISION,
+                peg_multiplier: 100 * PEG_PRECISION,
+                max_slippage_ratio: 50,
+                max_fill_reserve_fraction: 100,
+                base_asset_amount_with_amm: BASE_PRECISION_I128,
+                ..AMM::default()
+            },
+            margin_ratio_initial: 1000,
+            margin_ratio_maintenance: 500,
+            unrealized_pnl_initial_asset_weight: 9000,
+            unrealized_pnl_maintenance_asset_weight: 10000,
+            number_of_users_with_base: 1,
+            status: MarketStatus::Initialized,
+            // 10% liquidator fee: well above the 0.1% buffer passed below.
+            liquidator_fee: LIQUIDATION_FEE_PRECISION / 10,
+            order_step_size: 10000000,
+            quote_asset_amount: 150 * QUOTE_PRECISION_I128,
+            oracle: sol_oracle_price_key,
+            oracle_source: crate::state::oracle::OracleSource::PythLazer,
+            ..PerpMarket::default()
+        };
+        create_anchor_account_info!(market, PerpMarket, market_account_info);
+        let market_map = PerpMarketMap::load_one(&market_account_info, true).unwrap();
+
+        let mut usdc_market = SpotMarket {
+            market_index: 0,
+            oracle_source: OracleSource::QuoteAsset,
+            cumulative_deposit_interest: SPOT_CUMULATIVE_INTEREST_PRECISION,
+            decimals: 6,
+            initial_asset_weight: SPOT_WEIGHT_PRECISION,
+            maintenance_asset_weight: SPOT_WEIGHT_PRECISION,
+            deposit_balance: 200 * SPOT_BALANCE_PRECISION,
+            liquidator_fee: 0,
+            historical_oracle_data: HistoricalOracleData {
+                last_oracle_price_twap: QUOTE_PRECISION_I64,
+                last_oracle_price_twap_5min: QUOTE_PRECISION_I64,
+                ..HistoricalOracleData::default()
+            },
+            ..SpotMarket::default()
+        };
+        create_anchor_account_info!(usdc_market, SpotMarket, usdc_spot_market_account_info);
+        let mut sol_market = SpotMarket {
+            market_index: 1,
+            oracle_source: crate::state::oracle::OracleSource::PythLazer,
+            oracle: sol_oracle_price_key,
+            cumulative_deposit_interest: SPOT_CUMULATIVE_INTEREST_PRECISION,
+            cumulative_borrow_interest: SPOT_CUMULATIVE_INTEREST_PRECISION,
+            decimals: 6,
+            initial_asset_weight: 8 * SPOT_WEIGHT_PRECISION / 10,
+            maintenance_asset_weight: 9 * SPOT_WEIGHT_PRECISION / 10,
+            initial_liability_weight: 12 * SPOT_WEIGHT_PRECISION / 10,
+            maintenance_liability_weight: 11 * SPOT_WEIGHT_PRECISION / 10,
+            deposit_balance: SPOT_BALANCE_PRECISION,
+            borrow_balance: 0,
+            // 10% liquidator fee on the seized asset.
+            liquidator_fee: LIQUIDATION_FEE_PRECISION / 10,
+            historical_oracle_data: HistoricalOracleData {
+                last_oracle_price_twap: (sol_oracle_price.price * 99 / 100),
+                last_oracle_price_twap_5min: (sol_oracle_price.price * 99 / 100),
+                ..HistoricalOracleData::default()
+            },
+            ..SpotMarket::default()
+        };
+        create_anchor_account_info!(sol_market, SpotMarket, sol_spot_market_account_info);
+        let spot_market_account_infos = Vec::from([
+            &usdc_spot_market_account_info,
+            &sol_spot_market_account_info,
+        ]);
+        let spot_market_map =
+            SpotMarketMap::load_multiple(spot_market_account_infos, true).unwrap();
+
+        let mut spot_positions = [SpotPosition::default(); 8];
+        spot_positions[0] = SpotPosition {
+            market_index: 1,
+            balance_type: SpotBalanceType::Deposit,
+            scaled_balance: SPOT_BALANCE_PRECISION_U64,
+            ..SpotPosition::default()
+        };
+        let mut user = User {
+            orders: [Order::default(); 32],
+            perp_positions: get_positions(PerpPosition {
+                market_index: 0,
+                quote_asset_amount: -100 * QUOTE_PRECISION_I64,
+                ..PerpPosition::default()
+            }),
+            spot_positions,
+            ..User::default()
+        };
+
+        let mut liquidator = User {
+            spot_positions: get_spot_positions(SpotPosition {
+                market_index: 0,
+                balance_type: SpotBalanceType::Deposit,
+                scaled_balance: 100 * SPOT_BALANCE_PRECISION_U64,
+                ..SpotPosition::default()
+            }),
+            ..User::default()
+        };
+
+        let user_key = Pubkey::default();
+        let liquidator_key = Pubkey::default();
+
+        let result = liquidate_perp_pnl_for_deposit(
+            0,
+            1,
+            100 * 10_u128.pow(6),
+            None,
+            &mut user,
+            &user_key,
+            &mut liquidator,
+            &liquidator_key,
+            &market_map,
+            &spot_market_map,
+            &mut oracle_map,
+            now,
+            slot,
+            10,
+            PERCENTAGE_PRECISION,
+            150,
+        );
+
+        assert_eq!(result, Err(ErrorCode::LiquidationWorsensAccountHealth));
+    }
+
     #[test]
     pub fn successful_liquidation_pnl_transfer_to_cover_margin_shortage() {
         let now = 0_i64;
@@ -10145,6 +10294,7 @@ pub mod resolve_spot_bankruptcy {
     use crate::controller::liquidation::resolve_spot_bankruptcy;
     use crate::controller::position::PositionDirection;
     use crate::create_anchor_account_info;
+    use crate::error::ErrorCode;
     use crate::math::constants::{
         AMM_RESERVE_PRECISION, BASE_PRECISION_I128, BASE_PRECISION_U64,
         FUNDING_RATE_PRECISION_I128, LIQUIDATION_FEE_PRECISION, PEG_PRECISION, QUOTE_PRECISION,
@@ -10163,7 +10313,7 @@ pub mod resolve_spot_bankruptcy {
     use crate::state::user::{
         Order, OrderStatus, OrderType, PerpPosition, SpotPosition, User, UserStatus,
     };
-    use crate::test_utils::{get_orders, get_pyth_price, get_spot_positions};
+    use crate::test_utils::{get_orders, get_positions, get_pyth_price, get_spot_positions};
 
     #[test]
     pub fn successful_resolve_spot_bankruptcy() {
@@ -10295,6 +10445,120 @@ pub mod resolve_spot_bankruptcy {
             get_token_amount(deposit_balance, &spot_market, &SpotBalanceType::Deposit).unwrap();
 
         assert_eq!(deposit_token_amount, 900 * QUOTE_PRECISION);
+    }
+
+    // Audit #52: resolve_spot_bankruptcy must refuse to run while the user still
+    // has a pending cross-margin perp bankruptcy (a non-isolated perp position
+    // with bad debt). Both resolvers draw from the shared quote insurance fund,
+    // so a fixed perp-before-spot precedence (matching the keeper bots) keeps the
+    // socialized-loss split deterministic and unforgeable by the public caller.
+    #[test]
+    pub fn reverts_when_perp_bankruptcy_pending() {
+        let now = 0_i64;
+        let slot = 0_u64;
+
+        let mut oracle_price = get_pyth_price(100, 6);
+        let oracle_price_key =
+            Pubkey::from_str("J83w4HKfqxwcq3BEMMkPFSppX3gqekLyLJBexebFVkix").unwrap();
+        create_anchor_account_info!(
+            oracle_price,
+            &oracle_price_key,
+            PythLazerOracle,
+            oracle_account_info
+        );
+        let mut oracle_map = OracleMap::load_one(&oracle_account_info, slot, None).unwrap();
+
+        let mut market = PerpMarket {
+            amm: AMM {
+                base_asset_reserve: 100 * AMM_RESERVE_PRECISION,
+                quote_asset_reserve: 100 * AMM_RESERVE_PRECISION,
+                sqrt_k: 100 * AMM_RESERVE_PRECISION,
+                peg_multiplier: 100 * PEG_PRECISION,
+                max_slippage_ratio: 50,
+                max_fill_reserve_fraction: 100,
+                base_asset_amount_with_amm: BASE_PRECISION_I128,
+                ..AMM::default()
+            },
+            margin_ratio_initial: 1000,
+            margin_ratio_maintenance: 500,
+            status: MarketStatus::Initialized,
+            liquidator_fee: LIQUIDATION_FEE_PRECISION / 100,
+            order_step_size: 10000000,
+            quote_asset_amount: -150 * QUOTE_PRECISION_I128,
+            base_asset_amount_long: 5 * BASE_PRECISION_I128,
+            base_asset_amount_short: -5 * BASE_PRECISION_I128,
+            oracle: oracle_price_key,
+            oracle_source: crate::state::oracle::OracleSource::PythLazer,
+            cumulative_funding_rate_long: 1000 * FUNDING_RATE_PRECISION_I128,
+            cumulative_funding_rate_short: -1000 * FUNDING_RATE_PRECISION_I128,
+            ..PerpMarket::default()
+        };
+        create_anchor_account_info!(market, PerpMarket, market_account_info);
+        let market_map = PerpMarketMap::load_one(&market_account_info, true).unwrap();
+
+        let mut spot_market = SpotMarket {
+            market_index: 0,
+            oracle_source: OracleSource::QuoteAsset,
+            cumulative_deposit_interest: SPOT_CUMULATIVE_INTEREST_PRECISION,
+            cumulative_borrow_interest: SPOT_CUMULATIVE_INTEREST_PRECISION,
+            decimals: 6,
+            initial_asset_weight: SPOT_WEIGHT_PRECISION,
+            deposit_balance: 1000 * SPOT_BALANCE_PRECISION,
+            borrow_balance: 100 * SPOT_BALANCE_PRECISION,
+            historical_oracle_data: HistoricalOracleData::default_price(QUOTE_PRECISION_I64),
+            ..SpotMarket::default()
+        };
+        create_anchor_account_info!(spot_market, SpotMarket, spot_market_account_info);
+        let spot_market_map = SpotMarketMap::load_one(&spot_market_account_info, true).unwrap();
+
+        // User is cross-margin bankrupt with BOTH a spot borrow and a bad-debt
+        // perp position (base 0, negative quote) still outstanding.
+        let mut user = User {
+            orders: [Order::default(); 32],
+            perp_positions: get_positions(PerpPosition {
+                market_index: 0,
+                base_asset_amount: 0,
+                quote_asset_amount: -50 * QUOTE_PRECISION_I64,
+                ..PerpPosition::default()
+            }),
+            spot_positions: get_spot_positions(SpotPosition {
+                market_index: 0,
+                scaled_balance: 100 * SPOT_BALANCE_PRECISION_U64,
+                balance_type: SpotBalanceType::Borrow,
+                ..SpotPosition::default()
+            }),
+            status: UserStatus::Bankrupt as u8,
+            next_liquidation_id: 2,
+            ..User::default()
+        };
+
+        let mut liquidator = User {
+            spot_positions: get_spot_positions(SpotPosition {
+                market_index: 0,
+                balance_type: SpotBalanceType::Deposit,
+                scaled_balance: 50 * SPOT_BALANCE_PRECISION_U64,
+                ..SpotPosition::default()
+            }),
+            ..User::default()
+        };
+
+        let user_key = Pubkey::default();
+        let liquidator_key = Pubkey::default();
+
+        let result = resolve_spot_bankruptcy(
+            0,
+            &mut user,
+            &user_key,
+            &mut liquidator,
+            &liquidator_key,
+            &market_map,
+            &spot_market_map,
+            &mut oracle_map,
+            now,
+            0,
+        );
+
+        assert_eq!(result, Err(ErrorCode::PerpBankruptcyMustPrecedeSpot));
     }
 
     #[test]
@@ -11389,11 +11653,16 @@ pub mod liquidate_spot_with_swap {
                 .unwrap(),
             40661800
         );
+        // Audit #51: the insurance-side fee is now capped by the account's margin
+        // shortage (~$7 here) exactly like the direct `liquidate_spot` path, so it
+        // charges ~0.098% instead of the raw 1% if_liquidation_fee. The user keeps
+        // more borrow relief (-357251 -> -357249, i.e. less residual borrow) and
+        // only ~631 (vs 6433 at the raw rate) routes into the revenue pool.
         assert_eq!(
             user.spot_positions[1]
                 .get_signed_token_amount(&sol_spot_market)
                 .unwrap(),
-            -363051
+            -357249
         );
 
         let market_revenue = get_token_amount(
@@ -11403,7 +11672,7 @@ pub mod liquidate_spot_with_swap {
         )
         .unwrap();
 
-        assert_eq!(market_revenue, liability_transfer / 100);
+        assert_eq!(market_revenue, 631);
     }
 
     #[test]

@@ -16162,6 +16162,16 @@ export type Velocity = {
       "code": 6360,
       "name": "ifDepositMintsZeroShares",
       "msg": "Insurance fund deposit would mint zero shares"
+    },
+    {
+      "code": 6361,
+      "name": "liquidationWorsensAccountHealth",
+      "msg": "Liquidation would worsen the account's margin shortage"
+    },
+    {
+      "code": 6362,
+      "name": "perpBankruptcyMustPrecedeSpot",
+      "msg": "Perp bankruptcies must be resolved before spot bankruptcies"
     }
   ],
   "types": [

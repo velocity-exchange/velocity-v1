@@ -25675,6 +25675,10 @@ pub mod errors {
         InvalidEquityFloorTransfer,
         #[msg("Insurance fund deposit would mint zero shares")]
         IFDepositMintsZeroShares,
+        #[msg("Liquidation would worsen the account's margin shortage")]
+        LiquidationWorsensAccountHealth,
+        #[msg("Perp bankruptcies must be resolved before spot bankruptcies")]
+        PerpBankruptcyMustPrecedeSpot,
     }
 }
 pub mod events {

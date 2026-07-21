@@ -12692,8 +12692,10 @@ export class VelocityClient {
 	 * `pendingAmmProvision` into the AMM's fee pool (both leave `feePoolBufferTarget` behind). Every
 	 * drain reserves `max(netUserPnl, 0)` so user claims stay backed. This runs inline on every
 	 * `settlePNL` already — this instruction lets a keeper run it on demand without settling anyone's
-	 * PnL. Gates the oracle price used to value `netUserPnl` the same way `settlePNL` does (price-band
-	 * + validity/divergence checks when the market has curve updates enabled).
+	 * PnL. Values `netUserPnl` at the market's fixed `expiryPrice` when the market is in `settlement`
+	 * status (expired positions settle at that price, not the live oracle, so no live-oracle gate is
+	 * applied); otherwise it uses the live oracle price and gates it the same way `settlePNL` does
+	 * (price-band + validity/divergence checks when the market has curve updates enabled).
 	 * @param perpMarketIndex - Perp market index to sweep fees for.
 	 * @param txParams - Optional compute-unit/priority-fee overrides.
 	 * @returns The transaction signature.

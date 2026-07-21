@@ -16166,6 +16166,11 @@
       "code": 6362,
       "name": "PerpBankruptcyMustPrecedeSpot",
       "msg": "Perp bankruptcies must be resolved before spot bankruptcies"
+    },
+    {
+      "code": 6363,
+      "name": "InvalidRevenueShareRecipient",
+      "msg": "Revenue share recipient user must be sub_account_id 0"
     }
   ],
   "types": [

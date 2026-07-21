@@ -25679,6 +25679,8 @@ pub mod errors {
         LiquidationWorsensAccountHealth,
         #[msg("Perp bankruptcies must be resolved before spot bankruptcies")]
         PerpBankruptcyMustPrecedeSpot,
+        #[msg("Revenue share recipient user must be sub_account_id 0")]
+        InvalidRevenueShareRecipient,
     }
 }
 pub mod events {

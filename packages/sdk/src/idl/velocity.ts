@@ -16172,6 +16172,11 @@ export type Velocity = {
       "code": 6362,
       "name": "perpBankruptcyMustPrecedeSpot",
       "msg": "Perp bankruptcies must be resolved before spot bankruptcies"
+    },
+    {
+      "code": 6363,
+      "name": "invalidRevenueShareRecipient",
+      "msg": "Revenue share recipient user must be sub_account_id 0"
     }
   ],
   "types": [

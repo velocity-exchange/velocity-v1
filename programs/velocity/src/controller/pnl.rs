@@ -13,6 +13,7 @@ use crate::vlp::amm::controller::{update_pnl_pool_and_user_balance, update_pool_
 use crate::vlp::amm::math::amm::calculate_net_user_pnl;
 
 use crate::math::casting::Cast;
+use crate::math::fees::split_fee_remainder;
 use crate::math::margin::{
     meets_maintenance_margin_requirement, meets_settle_pnl_maintenance_margin_requirement,
 };
@@ -565,6 +566,25 @@ pub fn settle_expired_position(
         perp_market,
         -fee.abs(),
     )?;
+
+    // Route the closeout taker fee through the market fee ledger with the
+    // standard split so it is materialized to the protocol / IF pools by the
+    // fee sweep, instead of lingering in the pnl pool and being dumped
+    // wholesale into the revenue pool / insurance fund when the market
+    // delists. There is no AMM counterparty on an expiry closeout (the
+    // settlement counterparty is booked via `apply_settlement_counterparty`
+    // below, not an AMM fill), so ZERO the AMM provision and fold its share
+    // into the protocol residual — keeping the full fee accounted as
+    // protocol + IF.
+    let gross_closeout_fee = fee.unsigned_abs();
+    if gross_closeout_fee > 0 {
+        let (_amm_fee, if_fee, _protocol_residual) =
+            split_fee_remainder(gross_closeout_fee, fee_structure)?;
+        let protocol_fee = gross_closeout_fee.safe_sub(if_fee)?;
+        perp_market
+            .fee_ledger
+            .accrue_fill_fees(gross_closeout_fee, protocol_fee, if_fee, 0)?;
+    }
 
     let pnl = user.perp_positions[position_index].quote_asset_amount;
 

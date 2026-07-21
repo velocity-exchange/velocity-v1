@@ -2665,61 +2665,77 @@ pub fn handle_sweep_perp_market_fees(
         clock.slot,
         Some(state.oracle_guard_rails),
     )?;
-    let oracle_price = oracle_map.get_price_data(&perp_market.oracle_id())?.price;
 
-    // The swept amount is derived from net_user_pnl, which is valued at the
-    // oracle price below. Mirror the oracle-validity gates that settle_pnl
-    // applies before trusting that price, so a stale/divergent oracle can't
-    // mis-size the sweep against the user PnL pool.
-    controller::orders::validate_market_within_price_band(perp_market, &state, oracle_price)?;
+    // The swept amount reserves the aggregate live user claim on the pnl pool.
+    // During Settlement expired positions settle at the market's fixed
+    // `expiry_price` (see `settle_expired_position`), NOT the live oracle, so
+    // the reserve must be valued at `expiry_price` too — mirroring the
+    // Settlement branch liquidation already uses. Reserving at a live oracle
+    // that sits below `expiry_price` for a net-long expired market
+    // under-reserves and lets the sweep drain pnl-pool value the pending
+    // expiry claims still need, making those claims later revert with
+    // InsufficientPerpPnlPool. `expiry_price` is fixed once set at settlement,
+    // so no live-oracle validity gate is needed for it. Outside Settlement,
+    // value at the live oracle and mirror the oracle-validity gates that
+    // `settle_pnl` applies, so a stale/divergent oracle can't mis-size the
+    // sweep against the user PnL pool.
+    let reserve_price = if perp_market.status == MarketStatus::Settlement {
+        perp_market.expiry_price
+    } else {
+        let oracle_price = oracle_map.get_price_data(&perp_market.oracle_id())?.price;
 
-    if perp_market.amm.is_curve_update_enabled() {
-        let healthy_oracle = perp_market.is_recent_oracle_valid(oracle_map.slot)?;
+        controller::orders::validate_market_within_price_band(perp_market, &state, oracle_price)?;
 
-        if !healthy_oracle {
-            let (_, oracle_validity) = oracle_map.get_price_data_and_validity(
-                MarketType::Perp,
-                perp_market.market_index,
-                &perp_market.oracle_id(),
-                perp_market
-                    .market_stats
-                    .historical_oracle_data
-                    .last_oracle_price_twap,
-                perp_market.get_max_confidence_interval_multiplier()?,
-                0,
-                0,
-                None,
-            )?;
+        if perp_market.amm.is_curve_update_enabled() {
+            let healthy_oracle = perp_market.is_recent_oracle_valid(oracle_map.slot)?;
 
-            if !is_oracle_valid_for_action(oracle_validity, Some(VelocityAction::SettlePnl))?
-                || !perp_market.is_price_divergence_ok_for_settle_pnl(oracle_price)?
-            {
-                validate!(
-                    perp_market.market_stats.last_oracle_valid,
-                    oracle_validity.get_error_code(),
-                    "Oracle Price detected as invalid ({}) on last perp market update for Market = {}",
-                    oracle_validity,
-                    perp_market_index
+            if !healthy_oracle {
+                let (_, oracle_validity) = oracle_map.get_price_data_and_validity(
+                    MarketType::Perp,
+                    perp_market.market_index,
+                    &perp_market.oracle_id(),
+                    perp_market
+                        .market_stats
+                        .historical_oracle_data
+                        .last_oracle_price_twap,
+                    perp_market.get_max_confidence_interval_multiplier()?,
+                    0,
+                    0,
+                    None,
                 )?;
 
-                validate!(
-                    perp_market.amm.is_fresh_at(oracle_map.slot),
-                    ErrorCode::AMMNotUpdatedInSameSlot,
-                    "Market={} AMM must be updated in a prior instruction within same slot (current={} != amm={}, last_oracle_valid={})",
-                    perp_market_index,
-                    oracle_map.slot,
-                    perp_market.amm.last_update_slot(),
-                    perp_market.market_stats.last_oracle_valid
-                )?;
+                if !is_oracle_valid_for_action(oracle_validity, Some(VelocityAction::SettlePnl))?
+                    || !perp_market.is_price_divergence_ok_for_settle_pnl(oracle_price)?
+                {
+                    validate!(
+                        perp_market.market_stats.last_oracle_valid,
+                        oracle_validity.get_error_code(),
+                        "Oracle Price detected as invalid ({}) on last perp market update for Market = {}",
+                        oracle_validity,
+                        perp_market_index
+                    )?;
+
+                    validate!(
+                        perp_market.amm.is_fresh_at(oracle_map.slot),
+                        ErrorCode::AMMNotUpdatedInSameSlot,
+                        "Market={} AMM must be updated in a prior instruction within same slot (current={} != amm={}, last_oracle_valid={})",
+                        perp_market_index,
+                        oracle_map.slot,
+                        perp_market.amm.last_update_slot(),
+                        perp_market.market_stats.last_oracle_valid
+                    )?;
+                }
             }
         }
-    }
+
+        oracle_price
+    };
 
     controller::spot_balance::update_spot_market_cumulative_interest(spot_market, None, now)?;
 
     let net_user_pnl = calculate_net_user_pnl(
         &perp_market.amm,
-        oracle_price,
+        reserve_price,
         perp_market.quote_asset_amount,
         perp_market.net_unsettled_funding_pnl,
     )?;

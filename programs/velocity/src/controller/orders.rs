@@ -3510,6 +3510,17 @@ pub fn trigger_order(
     validate!(!user.is_bankrupt(), ErrorCode::UserBankrupt)?;
 
     let mut perp_market = perp_market_map.get_ref_mut(&market_index)?;
+
+    // Triggering starts the order's auction (and pays the keeper reward), so it
+    // is part of the fill lifecycle: respect the market-scoped fill pause the
+    // same way `fill_perp_order` does. The exchange-wide `FillPaused` breaker is
+    // enforced by the handler's `fill_not_paused` access control.
+    validate!(
+        !perp_market.is_operation_paused(PerpOperation::Fill),
+        ErrorCode::MarketFillOrderPaused,
+        "Market fills paused",
+    )?;
+
     let (oracle_price_data, oracle_validity) = oracle_map.get_price_data_and_validity(
         MarketType::Perp,
         perp_market.market_index,

@@ -3449,6 +3449,7 @@ pub fn handle_deposit_into_spot_market_revenue_pool<'c: 'info, 'info>(
         amount.cast::<u128>()?,
         &SpotBalanceType::Deposit,
         &mut spot_market,
+        false,
     )?;
 
     controller::token::receive(
@@ -4053,7 +4054,12 @@ pub fn handle_end_swap<'c: 'info, 'info>(
         .get_signed_token_amount(&out_spot_market)?;
 
     // update fees
-    update_revenue_pool_balances(fee.cast()?, &SpotBalanceType::Deposit, &mut out_spot_market)?;
+    update_revenue_pool_balances(
+        fee.cast()?,
+        &SpotBalanceType::Deposit,
+        &mut out_spot_market,
+        false,
+    )?;
 
     let out_position_is_reduced = out_token_amount_before < 0
         && out_token_amount_before.unsigned_abs() >= amount_out_after_fee.cast()?;

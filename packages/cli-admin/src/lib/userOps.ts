@@ -8,15 +8,17 @@ const ASSOCIATED_TOKEN_PROGRAM_ID = new PublicKey(
 
 /**
  * Resolve the user authority for user-scoped commands (deposit / withdraw /
- * IF stake).
+ * IF stake / init).
  *
- * Priority: explicit `--authority` flag, then the multisig's vault 0 PDA when
- * proposing via `--multisig` (the vault is the signer that executes the
- * proposal, so it must be the authority), then the local signer keypair.
+ * Priority: explicit `--authority` flag, then the multisig's vault PDA at
+ * `vaultIndex` when proposing via `--multisig` (the vault is the signer that
+ * executes the proposal, so it must be the authority), then the local signer
+ * keypair.
  */
 export function resolveAuthority(
 	opts: GlobalOpts,
-	explicit?: string
+	explicit?: string,
+	vaultIndex = 0
 ): PublicKey {
 	if (explicit) {
 		return new PublicKey(explicit);
@@ -24,7 +26,7 @@ export function resolveAuthority(
 	if (opts.multisig) {
 		const [vaultPda] = multisig.getVaultPda({
 			multisigPda: new PublicKey(opts.multisig),
-			index: 0,
+			index: vaultIndex,
 		});
 		return vaultPda;
 	}

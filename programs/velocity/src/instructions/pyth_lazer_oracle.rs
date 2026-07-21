@@ -2,7 +2,8 @@ use crate::error::ErrorCode;
 use crate::math::casting::Cast;
 use crate::math::safe_math::SafeMath;
 use crate::state::pyth_lazer_oracle::{
-    PythLazerOracle, PYTH_LAZER_ORACLE_SEED, PYTH_LAZER_STORAGE_ID,
+    PythLazerOracle, PYTH_LAZER_MAX_STALENESS_SECONDS, PYTH_LAZER_ORACLE_SEED,
+    PYTH_LAZER_STORAGE_ID,
 };
 use crate::validate;
 use anchor_lang::prelude::*;
@@ -106,8 +107,24 @@ pub fn handle_update_pyth_lazer_oracle<'c: 'info, 'info>(
         if next_timestamp.unwrap() < current_timestamp {
             msg!(
                 "Skipping lazer price update. next_timestamp {} < current_timestamp {}",
-                current_timestamp,
-                next_timestamp.unwrap()
+                next_timestamp.unwrap(),
+                current_timestamp
+            );
+            continue;
+        }
+
+        // Reject stale/replayed messages against the wall clock. The monotonic check above only
+        // guarantees the feed timestamp is non-decreasing versus the cached value, not that it is
+        // recent; since `posted_slot` (set to the current slot below) is the sole input to
+        // downstream staleness, an authentic-but-old message would otherwise read as slot-fresh.
+        let now = Clock::get()?.unix_timestamp;
+        let next_timestamp_secs = next_timestamp.unwrap().safe_div(1_000_000)?.cast::<i64>()?;
+        if now.safe_sub(next_timestamp_secs)? > PYTH_LAZER_MAX_STALENESS_SECONDS {
+            msg!(
+                "Skipping lazer price update. message ts {}s is older than {}s (now {}s)",
+                next_timestamp_secs,
+                PYTH_LAZER_MAX_STALENESS_SECONDS,
+                now
             );
             continue;
         }

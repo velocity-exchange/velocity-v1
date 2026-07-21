@@ -151,6 +151,9 @@ botConfigs:
     metricsPort: 9465
     # if true will NOT attempt to sell off any inherited positions
     disableAutoDerisking: false
+    # if true will NOT sweep idle wallet token balances into liquidation
+    # subaccounts that start with zero free collateral
+    disableAutoDeposit: false
     # null will handle all markets
     perpMarketIndicies:
     spotMarketIndicies:

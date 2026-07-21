@@ -76,6 +76,7 @@ const errorCodesToSuppress = [
 	6035, // Error Code: InvalidOracle. Error Number: 6035. Error Message: InvalidOracle.
 	6078, // Error Code: PerpMarketNotFound. Error Number: 6078. Error Message: PerpMarketNotFound.
 	6095, // Error Code: InsufficientCollateralForSettlingPNL. Error Number: 6095. Error Message: InsufficientCollateralForSettlingPNL.
+	6251, // Error Code: FundingWasNotUpdated. Error Number: 6251. Error Message: FundingWasNotUpdated. (expected when the oracle is too stale to update funding; fundingRateUpdater suppresses it too)
 	6259, // Error Code: NoUnsettledPnl. Error Number: 6259. Error Message: NoUnsettledPnl.
 ];
 

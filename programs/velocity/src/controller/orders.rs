@@ -275,6 +275,11 @@ pub fn place_perp_order(
 
     if max_ts != 0 && max_ts < now {
         msg!("max_ts ({}) < now ({}), skipping order", max_ts, now);
+        // The order id is NOT consumed on this path (next_order_id is incremented
+        // below), so the next placement reuses it. Clear the builder-order row that
+        // `add_builder_order` already wrote for this id, otherwise it would linger
+        // and attach to the reusing order (fill-time lookup is keyed by order id).
+        clear_placed_builder_order(rev_share_order);
         return Ok(PlaceOrderResult::default());
     }
 
@@ -352,7 +357,11 @@ pub fn place_perp_order(
         Err(ErrorCode::PlacePostOnlyLimitFailure)
             if params.post_only == PostOnlyParam::TryPostOnly =>
         {
-            // just want place to succeeds without error if TryPostOnly
+            // just want place to succeeds without error if TryPostOnly.
+            // The order id was already consumed above, so it can't be reused; but the
+            // builder-order row `add_builder_order` wrote for it would be orphaned
+            // (no live order carries it). Clear it so it can't linger in the escrow.
+            clear_placed_builder_order(rev_share_order);
             return Ok(PlaceOrderResult::default());
         }
         Err(err) => return Err(err),
@@ -1732,15 +1741,39 @@ fn insert_maker_order_info(
     }
 }
 
+/// Clears a builder-order row that `add_builder_order` wrote for a placement that then
+/// bailed before committing the order. Resetting the row to default frees the escrow slot —
+/// the same "remove" idiom the sweep uses — so a skipped placement leaves no orphaned row
+/// keyed to an order id a later order might reuse.
+#[inline(always)]
+fn clear_placed_builder_order(rev_share_order: &mut Option<&mut RevenueShareOrder>) {
+    if let Some(order) = rev_share_order.as_mut() {
+        **order = RevenueShareOrder::default();
+    }
+}
+
 #[inline(always)]
 fn get_builder_escrow_info(
     escrow_opt: &mut Option<&mut RevenueShareEscrowZeroCopyMut>,
     sub_account_id: u16,
     order_id: u32,
     market_index: u16,
+    order_has_builder: bool,
 ) -> (Option<u32>, Option<u32>, Option<u16>, Option<u8>) {
     if let Some(escrow) = escrow_opt {
-        let builder_order_idx = escrow.find_order_index(sub_account_id, order_id);
+        // Only match a builder-order row for an order that actually carries the
+        // `HasBuilder` flag. Escrow rows are keyed by `(sub_account_id, order_id)`,
+        // and order ids are reused when a placement soft-skips after
+        // `add_builder_order` already wrote the row (e.g. an expired `max_ts`, which
+        // returns before `next_order_id` is consumed). Without this gate a stale row
+        // would attach to the later non-builder order that reuses the id and charge
+        // it a builder fee. The referral lookup is keyed by market, not order id, so
+        // it is unaffected and stays unconditional.
+        let builder_order_idx = if order_has_builder {
+            escrow.find_order_index(sub_account_id, order_id)
+        } else {
+            None
+        };
         let referrer_builder_order_idx = escrow.find_or_create_referral_index(market_index);
 
         let builder_order = builder_order_idx.and_then(|idx| escrow.get_order(idx).ok());
@@ -2358,6 +2391,7 @@ fn settle_amm_house_fill(
             taker.sub_account_id,
             order_id,
             market.market_index,
+            taker.orders[taker_order_index].is_has_builder(),
         );
 
     let FillFees {
@@ -2679,6 +2713,7 @@ fn settle_dlob_match_fill(
             taker.sub_account_id,
             taker.orders[taker_order_index].order_id,
             market.market_index,
+            taker.orders[taker_order_index].is_has_builder(),
         );
 
     let filler_multiplier = if reward_filler {

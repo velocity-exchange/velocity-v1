@@ -1479,6 +1479,13 @@ pub fn fill_perp_order(
         let funding_paused =
             state.funding_paused()? || market.is_operation_paused(PerpOperation::UpdateFunding);
 
+        // Pass `None` so the funding update recomputes the reserve price from
+        // the POST-fill AMM. The fills just moved the reserves, so gating the
+        // mark/oracle divergence check (and the oracle-TWAP sanitization that
+        // shares this value) on `reserve_price_before` would test a stale,
+        // pre-fill mark — letting a fill that pushes the mark past the
+        // divergence band still update funding, or conversely blocking a
+        // funding update the post-fill mark no longer warrants.
         controller::funding::update_funding_rate(
             market_index,
             market,
@@ -1487,7 +1494,7 @@ pub fn fill_perp_order(
             slot,
             &state.oracle_guard_rails,
             funding_paused,
-            Some(reserve_price_before),
+            None,
         )?;
     }
 
@@ -3091,30 +3098,22 @@ pub fn fulfill_perp_order_step(
         return Ok((0, 0, 0));
     }
 
-    // ---- 3. Mark-TWAP update. ----
-    // Market-level mutation, kept out of the quoter constructors. Trade-
-    // price hint: the AMM's natural ask/bid for AMM-only steps; the maker
-    // price for Match steps. `update_mark_twap_with_amm_bid_ask` takes the
-    // AMM inputs as scalars — no `&AMM` borrow — so this call is shaped
-    // for the target architecture where the AMM is an isolated module:
-    // bid/ask/base-spread come back through the AMM's contract methods
-    // rather than from reaching into its struct.
+    // ---- 3. Mark-TWAP trade-price hint (deferred update). ----
+    // Snapshot the trade-price hint from the pre-fill AMM quote: the AMM's
+    // natural ask/bid for AMM-only steps, the maker price for Match steps.
+    // The actual `update_mark_twap_with_amm_bid_ask` mutation is deferred
+    // until *after* the fill is confirmed non-zero (step 3b): the mark-TWAP is
+    // `first-write-wins` within a single `now` timestamp (a same-`now` update
+    // sees `since_last == 0` and is a no-op), so a step that quotes but fills
+    // zero base — e.g. an AMM-override step the matcher passes over — must not
+    // stamp its price and pre-empt a real, same-timestamp maker trade that
+    // fills afterwards. The AMM-derived inputs are all captured as scalars
+    // here (no `&AMM` borrow), shaped for the target architecture where the
+    // AMM is an isolated module surfacing bid/ask/base-spread via its contract.
     let twap_trade_price = match_maker_price.unwrap_or(match taker_direction {
         PositionDirection::Long => amm_ask_price,
         PositionDirection::Short => amm_bid_price,
     });
-    market.market_stats.update_mark_twap_with_amm_bid_ask(
-        amm_bid_price,
-        amm_ask_price,
-        amm_base_spread,
-        amm_long_spread,
-        amm_short_spread,
-        now,
-        Some(twap_trade_price),
-        Some(taker_direction),
-        sanitize_clamp_denom,
-        order_tick_size,
-    )?;
 
     // ---- 4. Build QuoteContext for the matcher. AMM-projection fields
     // not needed here — setup has already run on amm_quoter.
@@ -3241,6 +3240,25 @@ pub fn fulfill_perp_order_step(
     if match_result.total_base_filled == 0 {
         return Ok((0, 0, 0));
     }
+
+    // ---- 3b. Deferred Mark-TWAP update (see step 3). ----
+    // Reached only once this step actually traded, so a zero-fill quote can
+    // never stamp the TWAP ahead of a real same-`now` maker trade. Uses the
+    // pre-fill AMM scalars captured above — the fill does not touch the
+    // mark/oracle TWAP inputs read here, so the stamped value is identical to
+    // computing it before the swap, just gated on a real fill.
+    market.market_stats.update_mark_twap_with_amm_bid_ask(
+        amm_bid_price,
+        amm_ask_price,
+        amm_base_spread,
+        amm_long_spread,
+        amm_short_spread,
+        now,
+        Some(twap_trade_price),
+        Some(taker_direction),
+        sanitize_clamp_denom,
+        order_tick_size,
+    )?;
 
     // An AmmHouse fill emitted from a Match step is always a JIT slice
     // (the only AMM-side quoter present in a Match step is `AmmJitQuoter`),

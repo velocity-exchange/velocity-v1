@@ -294,7 +294,8 @@ export class FillerMultithreaded {
 		this.bundleSender = bundleSender;
 		this.simulateTxForCUEstimate = config.simulateTxForCUEstimate ?? true;
 		this.fillAttemptSlotInterval =
-			config.fillAttemptSlotInterval ?? DEFAULT_FILL_ATTEMPT_SLOT_INTERVAL_SLOTS;
+			config.fillAttemptSlotInterval ??
+			DEFAULT_FILL_ATTEMPT_SLOT_INTERVAL_SLOTS;
 		if (globalConfig.txConfirmationEndpoint) {
 			this.txConfirmationConnection = new Connection(
 				globalConfig.txConfirmationEndpoint

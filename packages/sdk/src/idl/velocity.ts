@@ -8,7 +8,7 @@ export type Velocity = {
   "address": "vELoC1audYbSYVRXn1vPaV8Axoa9oU6BYmNGZZBDZ1P",
   "metadata": {
     "name": "velocity",
-    "version": "2.163.2",
+    "version": "2.164.0",
     "spec": "0.1.0",
     "description": "Created with Anchor"
   },

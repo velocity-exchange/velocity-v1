@@ -72,6 +72,21 @@ cargo-build-sbf --tools-version v1.54 --force-tools-install
 ## Quick start
 
 ```bash
+git clone https://github.com/velocity-exchange/velocity-v1.git && cd velocity-v1
+
+# install ALL workspace deps, once, at the repo root (never inside individual packages)
+bun install
+
+# build the program and sync the IDL + types into packages/sdk
+bun run program:build
+
+# run the Rust unit tests
+cargo test -p velocity
+
+# build the whole TypeScript workspace (turbo, dependency order)
+bun run build
+
+# run the full integration suite (~70 files, serial; builds the .so first)
 bash test-scripts/run-anchor-tests.sh
 ```
 
@@ -91,25 +106,6 @@ crucible run e2e-svm invariant_solvency --release --timeout 60
 ```
 
 After a program change, run `bash fuzz/sync-idls.sh` to re-sync the vendored IDL. See [`fuzz/README.md`](./fuzz/README.md) for the harness list and details.
-
-# Development (with devcontainer)
-git clone https://github.com/velocity-exchange/velocity-v1.git && cd velocity-v1
-
-# install ALL workspace deps, once, at the repo root (never inside individual packages)
-bun install
-
-# build the program and sync the IDL + types into packages/sdk
-bun run program:build
-
-# run the Rust unit tests
-cargo test -p velocity
-
-# build the whole TypeScript workspace (turbo, dependency order)
-bun run build
-
-# run the full integration suite (~70 files, serial; builds the .so first)
-bash test-scripts/run-anchor-tests.sh
-```
 
 ## Common tasks
 

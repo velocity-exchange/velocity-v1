@@ -19,8 +19,6 @@ import {
 	MakerInfo,
 	MarketType,
 	NodeToFill,
-	OrderActionRecord,
-	parseLogs,
 	PerpMarkets,
 	PriorityFeeSubscriber,
 	QUOTE_PRECISION,
@@ -221,6 +219,16 @@ export class FillerMultithreaded {
 		string,
 		{ count: number; lastAttemptSlot: number }
 	>({
+		max: FILL_ATTEMPT_COUNTS_MAX,
+		ttl: FILL_ATTEMPT_COUNTS_TTL_MS,
+		ttlResolution: 1000,
+	});
+	// Signatures (getNodeToFillSignature) of signed-msg orders whose place+fill has
+	// landed on-chain. Once placed, the order is filled through its on-chain order
+	// node, so the signed-msg node must never be place+filled again. This is the
+	// authoritative in-process guard; the DLOB-builder eviction (routed on the same
+	// landing) additionally stops the builder from re-emitting the dead node.
+	private placedSignedMsgOrders = new LRUCache<string, true>({
 		max: FILL_ATTEMPT_COUNTS_MAX,
 		ttl: FILL_ATTEMPT_COUNTS_TTL_MS,
 		ttlResolution: 1000,
@@ -1133,25 +1141,28 @@ export class FillerMultithreaded {
 							} s${fillCorrelationSuffix(nodeFilled)}`
 						);
 
-						const fullyFilledTakerOrderIds =
-							txResp.meta?.err === null &&
-							nodeFilled.some((node) => node.node.isSignedMsg)
-								? this.getFullyFilledTakerOrderIds(txResp.meta?.logMessages)
-								: new Set<number>();
-						for (const node of nodeFilled) {
-							const orderId = node.node.order?.orderId;
-							if (
-								node.node.isSignedMsg &&
-								orderId !== undefined &&
-								fullyFilledTakerOrderIds.has(orderId)
-							) {
-								this.routeMessageToDlobBuilder({
-									data: {
-										marketIndex: node.node.order?.marketIndex,
-										type: 'confirmed',
-										uuid: orderId,
-									},
-								});
+						// A signed-msg place+fill that lands Ok has placed the order
+						// on-chain (signed-msg fills carry no RevertFill ix, so even a
+						// 0-base no-op place+fill lands Ok). Retire the signed-msg node:
+						// mark it placed so we never re-run the place+fill, and evict it
+						// from the DLOB builder so it stops being emitted. Any remaining
+						// base fills through the order's on-chain node instead.
+						if (txResp.meta?.err === null) {
+							for (const node of nodeFilled) {
+								const orderId = node.node.order?.orderId;
+								if (node.node.isSignedMsg && orderId !== undefined) {
+									this.placedSignedMsgOrders.set(
+										getNodeToFillSignature(node),
+										true
+									);
+									this.routeMessageToDlobBuilder({
+										data: {
+											marketIndex: node.node.order?.marketIndex,
+											type: 'confirmed',
+											uuid: orderId,
+										},
+									});
+								}
 							}
 						}
 						this.pendingTxSigsToconfirm.delete(txSig);
@@ -1525,11 +1536,30 @@ export class FillerMultithreaded {
 		return true;
 	}
 
-	// Re-attempts are bounded by the slot-interval pacing below, the crossability
-	// and expiry filters in filterFillableNodes, the DLOB builder's per-order TTL,
-	// full-fill eviction in confirmPendingTxSigs, and MAX_FILL_ATTEMPTS_PER_ORDER.
+	// Retry policy differs by node origin:
+	//
+	// - Signed-msg (swift) nodes are submitted as an atomic place+fill. We attempt
+	//   that place+fill only ONCE per order: while the tx is unconfirmed
+	//   (in-flight guard) we don't re-send, and once it lands the place is durable
+	//   (signed-msg fills carry no RevertFill ix, so a 0-base place+fill still
+	//   lands Ok and places the order — see tryFillPerpNode). At that point the
+	//   node is retired (`placedSignedMsgOrders` + eviction in
+	//   confirmPendingTxSigs) and the order fills through its on-chain order node
+	//   via the non-signed path below. A re-attempt of the signed node would only
+	//   re-run the heavier place+fill (redundant place ix + ed25519 + oracle
+	//   updates) and race its own on-chain node — which is what produced two
+	//   concurrent fill txs for the same order. If a place+fill is dropped
+	//   (never confirmed), the in-flight guard clears and it is retried.
+	// - Non-signed nodes (including a signed order's on-chain node once placed)
+	//   keep retrying through the auction, paced to once per fillAttemptSlotInterval
+	//   slots so the fill lands as the Dutch auction ramps into a cross.
+	//
+	// Re-attempts are further bounded by the crossability and expiry filters in
+	// filterFillableNodes, the DLOB builder's per-order TTL, and
+	// MAX_FILL_ATTEMPTS_PER_ORDER.
 	async executeFillablePerpNodes(nodesToFill: NodeToFillWithBuffer[]) {
 		const currentSlot = this.slotSubscriber.getSlot();
+		const inFlightSignedMsgSigs = this.getInFlightSignedMsgSignatures();
 		for (const node of nodesToFill) {
 			const sig = getNodeToFillSignature(node);
 			const prior = this.fillAttempts.get(sig);
@@ -1545,11 +1575,23 @@ export class FillerMultithreaded {
 				continue;
 			}
 
-			// Pace re-attempts to at most once per fillAttemptSlotInterval slots.
-			if (
+			if (node.node.isSignedMsg) {
+				// Place+fill a signed-msg order at most once: skip while a prior
+				// place+fill is unconfirmed, and skip forever once it has landed
+				// (the order is placed and its on-chain node carries any remaining
+				// base through the auction).
+				if (
+					this.placedSignedMsgOrders.has(sig) ||
+					inFlightSignedMsgSigs.has(sig)
+				) {
+					continue;
+				}
+			} else if (
 				prior !== undefined &&
 				currentSlot - prior.lastAttemptSlot < this.fillAttemptSlotInterval
 			) {
+				// Pace non-signed re-attempts to at most once per
+				// fillAttemptSlotInterval slots.
 				continue;
 			}
 
@@ -1564,6 +1606,23 @@ export class FillerMultithreaded {
 				this.tryFillPerpNode(node);
 			}
 		}
+	}
+
+	// Signatures of signed-msg nodes that currently have an unconfirmed fill
+	// (place+fill) tx in flight, drawn from the pending-confirmation set. Used to
+	// avoid firing a second place+fill for an order whose first place+fill has not
+	// yet landed. Entries clear automatically when the tx lands or times out in
+	// confirmPendingTxSigs.
+	protected getInFlightSignedMsgSignatures(): Set<string> {
+		const sigs = new Set<string>();
+		for (const { nodeFilled } of this.pendingTxSigsToconfirm.values()) {
+			for (const node of nodeFilled) {
+				if (node.node.isSignedMsg) {
+					sigs.add(getNodeToFillSignature(node));
+				}
+			}
+		}
+		return sigs;
 	}
 
 	protected async tryFillMultiMakerPerpNodes(nodeToFill: NodeToFillWithBuffer) {
@@ -2602,55 +2661,6 @@ export class FillerMultithreaded {
 				user.getUserAccountOrThrow()
 			),
 		});
-	}
-
-	/**
-	 * Returns the taker order ids that a landed tx FULLY filled (cumulative filled
-	 * base >= order base).
-	 *
-	 * A landed tx is `Ok` even when it fills nothing (a swift place+fill that
-	 * can't cross yet returns `Ok((0, 0))`), so "landed" is not a fill signal. We
-	 * require a full fill, not just any fill record: evicting a partially-filled
-	 * node would orphan its remaining base for the rest of the auction. Perps
-	 * don't move token balances, so parsing the OrderActionRecord logs is the
-	 * correct source.
-	 */
-	protected getFullyFilledTakerOrderIds(
-		logs: string[] | null | undefined
-	): Set<number> {
-		const fullyFilledTakerOrderIds = new Set<number>();
-		if (!logs) {
-			return fullyFilledTakerOrderIds;
-		}
-		try {
-			// @ts-ignore VelocityProgram vs Program<Idl>; parseLogs only uses the event coder.
-			for (const event of parseLogs(this.velocityClient.program, logs)) {
-				if (event.name.toLowerCase() !== 'orderactionrecord') {
-					continue;
-				}
-				const record = event.data as unknown as OrderActionRecord;
-				const totalBase = record.takerOrderBaseAssetAmount;
-				const cumulativeFilled =
-					record.takerOrderCumulativeBaseAssetAmountFilled;
-				if (
-					isVariant(record.action, 'fill') &&
-					record.takerOrderId !== null &&
-					totalBase !== null &&
-					cumulativeFilled !== null &&
-					totalBase.gtn(0) &&
-					cumulativeFilled.gte(totalBase)
-				) {
-					fullyFilledTakerOrderIds.add(record.takerOrderId);
-				}
-			}
-		} catch (e) {
-			logger.error(
-				`Error parsing fill logs for signed-msg eviction: ${
-					(e as Error).message
-				}`
-			);
-		}
-		return fullyFilledTakerOrderIds;
 	}
 
 	/**

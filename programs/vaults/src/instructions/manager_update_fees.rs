@@ -5,6 +5,7 @@ use {
         error::ErrorCode,
         state::{
             events::{FeeUpdateAction, FeeUpdateRecord},
+            vault::validate_fee_policy,
             FeeUpdate, FeeUpdateStatus,
         },
         validate, Vault,
@@ -59,11 +60,28 @@ pub fn manager_update_fees<'info>(
         let old_profit_share = vault.profit_share;
         let old_hurdle_rate = vault.hurdle_rate;
 
+        let new_management_fee = params.new_management_fee.unwrap_or(old_management_fee);
+        let new_profit_share = params.new_profit_share.unwrap_or(old_profit_share);
+        let new_hurdle_rate = params.new_hurdle_rate.unwrap_or(old_hurdle_rate);
+
+        // #97: enforce the same bounds as vault initialization on the queued values, so the
+        // timelocked update path cannot install a policy no init instruction could create.
+        // The combined protocol-fee/profit-share sums can only be validated where the
+        // VaultProtocol account is loaded (apply_fee, at maturity); here we enforce the
+        // manager-facing bounds and, for protocol vaults, hurdle == 0.
+        validate_fee_policy(
+            new_management_fee,
+            new_profit_share,
+            new_hurdle_rate,
+            vault.vault_protocol,
+            0,
+            0,
+        )?;
+
         fee_update.incoming_update_ts = timelock_end_ts;
-        fee_update.incoming_management_fee =
-            params.new_management_fee.unwrap_or(old_management_fee);
-        fee_update.incoming_profit_share = params.new_profit_share.unwrap_or(old_profit_share);
-        fee_update.incoming_hurdle_rate = params.new_hurdle_rate.unwrap_or(old_hurdle_rate);
+        fee_update.incoming_management_fee = new_management_fee;
+        fee_update.incoming_profit_share = new_profit_share;
+        fee_update.incoming_hurdle_rate = new_hurdle_rate;
 
         vault.fee_update_status = FeeUpdateStatus::PendingFeeUpdate as u8;
 

@@ -157,8 +157,16 @@ pub trait VaultDepositorBase {
             .safe_add(protocol_profit_share)?
             .cast()?;
 
-        let profit_share_shares: u128 =
+        let mut profit_share_shares: u128 =
             vault_amount_to_depositor_shares(profit_share, vault.total_shares, vault_equity)?;
+
+        // #104: calculate_profit_share_and_update already advanced the depositor's high-water mark
+        // and profit_share_fee_paid. At a high enough share price a positive fee can floor to zero
+        // shares, so the fee would be recorded as paid while no shares actually move. Round up to a
+        // single share so a recorded fee always transfers at least one share to manager/protocol.
+        if profit_share > 0 && profit_share_shares == 0 {
+            profit_share_shares = 1;
+        }
 
         self.decrease_vault_shares(profit_share_shares, vault)?;
 
@@ -257,7 +265,7 @@ pub trait VaultDepositorBase {
         now: i64,
         deposit_oracle_price: i64,
     ) -> Result<(u128, Option<RefMut<'a, VaultProtocol>>)> {
-        let from_rebase_divisor = self.apply_rebase(vault, vault_protocol, vault_equity)?;
+        let mut from_rebase_divisor = self.apply_rebase(vault, vault_protocol, vault_equity)?;
         let to_rebase_divisor = to.apply_rebase(vault, vault_protocol, vault_equity)?;
 
         validate!(
@@ -272,6 +280,21 @@ pub trait VaultDepositorBase {
             protocol_fee_payment,
             protocol_fee_shares,
         } = vault.apply_fee(vault_protocol, fee_update, vault_equity, now)?;
+
+        // #107: apply_fee may induce a further vault rebase. Re-sync both depositors before the
+        // base-checked apply_profit_share / share-transfer ops, and fold any extra divisor into
+        // from_rebase_divisor so a Shares-unit transfer converts the caller's original-base share
+        // count correctly.
+        let from_extra = self.apply_rebase(vault, vault_protocol, vault_equity)?;
+        let to_extra = to.apply_rebase(vault, vault_protocol, vault_equity)?;
+        validate!(
+            from_extra == to_extra,
+            ErrorCode::InvalidVaultRebase,
+            "from and to vault depositors rebase divisors mismatch after fee"
+        )?;
+        if let Some(extra) = from_extra {
+            from_rebase_divisor = Some(from_rebase_divisor.unwrap_or(1).safe_mul(extra)?);
+        }
 
         let (from_manager_profit_share, from_protocol_profit_share) =
             self.apply_profit_share(vault_equity, vault, vault_protocol)?;

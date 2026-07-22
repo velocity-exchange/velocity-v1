@@ -6,7 +6,7 @@ use {
             is_tokenized_depositor_for_vault, is_user_for_vault,
         },
         error::ErrorCode,
-        state::traits::VaultDepositorBase,
+        state::{traits::VaultDepositorBase, FeeUpdateProvider, FeeUpdateStatus},
         token_cpi::MintTokensCPI,
         validate, AccountMapProvider, TokenizedVaultDepositor, Vault, VaultDepositor,
         VaultProtocolProvider, WithdrawUnit,
@@ -49,13 +49,23 @@ pub fn tokenize_shares<'info>(
         .get_vault_shares()
         .safe_add(tokenized_vault_depositor.get_vault_shares())?;
 
+    // #101: apply a matured fee update on this share-movement path (mirrors deposit/withdraw).
+    let has_fee_update = FeeUpdateStatus::has_pending_fee_update(vault.fee_update_status);
+    let mut fee_update = ctx.fee_update(vp.is_some(), has_fee_update);
+    vault.validate_fee_update(&fee_update)?;
+
     let user = ctx.accounts.velocity_user.load()?;
     let spot_market_index = vault.spot_market_index;
     let AccountMaps {
         perp_market_map,
         spot_market_map,
         mut oracle_map,
-    } = ctx.load_maps(clock.slot, Some(spot_market_index), vp.is_some(), false)?;
+    } = ctx.load_maps(
+        clock.slot,
+        Some(spot_market_index),
+        vp.is_some(),
+        has_fee_update,
+    )?;
 
     let vault_equity =
         vault.calculate_equity(&user, &perp_market_map, &spot_market_map, &mut oracle_map)?;
@@ -71,11 +81,14 @@ pub fn tokenize_shares<'info>(
     let spot_market = spot_market_map.get_ref(&spot_market_index)?;
     let oracle = oracle_map.get_price_data(&spot_market.oracle_id())?;
 
-    let (shares_transferred, _) = vault_depositor.transfer_shares(
+    // transfer_shares is the first apply_fee on this path, so it applies the matured update.
+    // Keep the VaultProtocol provider alive (capture the returned provider) so the subsequent
+    // tokenize_shares accounting still sees protocol state.
+    let (shares_transferred, mut vp) = vault_depositor.transfer_shares(
         &mut *tokenized_vault_depositor,
         &mut vault,
         &mut vp,
-        &mut None,
+        &mut fee_update,
         amount,
         unit,
         vault_equity,

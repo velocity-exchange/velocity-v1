@@ -22,12 +22,30 @@ use crate::validate;
 
 pub(crate) type OracleIdentifier = (Pubkey, OracleSource);
 
+/// Cache key for a computed [`OracleValidity`]. Validity is NOT a pure function of the oracle
+/// account: it also depends on the per-market inputs passed to `oracle_validity` — the risk
+/// TWAP (the `TooVolatile` band), the confidence-interval multiplier, and the staleness
+/// slot-delay overrides — so two markets sharing one oracle can legitimately reach different
+/// verdicts. Keying the cache by the oracle pubkey alone let market B reuse market A's verdict
+/// (#69); this key folds in every per-market validity input so each combination is cached
+/// independently. The cached *price* stays keyed by [`OracleIdentifier`] (price is a pure
+/// function of the oracle account and the slot).
+pub(crate) type OracleValidityKey = (
+    OracleIdentifier,
+    u8,  // market_type
+    u16, // market_index
+    i64, // last_oracle_price_twap (risk EMA)
+    u64, // max_confidence_interval_multiplier
+    i8,  // slots_before_stale_for_amm_override
+    i8,  // oracle_low_risk_slot_delay_override_override
+);
+
 const EXTERNAL_ORACLE_PROGRAM_IDS: [Pubkey; 1] = [pyth_program::id()];
 
 pub struct OracleMap<'a> {
     oracles: BTreeMap<Pubkey, AccountInfo<'a>>,
     price_data: BTreeMap<OracleIdentifier, OraclePriceData>,
-    validity: BTreeMap<OracleIdentifier, OracleValidity>,
+    validity: BTreeMap<OracleValidityKey, OracleValidity>,
     pub slot: u64,
     pub oracle_guard_rails: OracleGuardRails,
     pub quote_asset_price_data: OraclePriceData,
@@ -94,10 +112,22 @@ impl<'a> OracleMap<'a> {
             LogMode::ExchangeOracle
         };
 
+        // #69: validity depends on the per-market inputs below, not just the oracle account,
+        // so it is cached per (oracle, market-params) combination rather than per oracle.
+        let validity_key: OracleValidityKey = (
+            *oracle_id,
+            market_type as u8,
+            market_index,
+            last_oracle_price_twap,
+            max_confidence_interval_multiplier,
+            slots_before_stale_for_amm_override,
+            oracle_low_risk_slot_delay_override_override,
+        );
+
         if self.price_data.contains_key(oracle_id) {
             let oracle_price_data = self.price_data.get(oracle_id).safe_unwrap()?;
 
-            let oracle_validity = if let Some(oracle_validity) = self.validity.get(oracle_id) {
+            let oracle_validity = if let Some(oracle_validity) = self.validity.get(&validity_key) {
                 *oracle_validity
             } else {
                 let oracle_validity = oracle_validity(
@@ -112,7 +142,7 @@ impl<'a> OracleMap<'a> {
                     slots_before_stale_for_amm_override,
                     oracle_low_risk_slot_delay_override_override,
                 )?;
-                self.validity.insert(*oracle_id, oracle_validity);
+                self.validity.insert(validity_key, oracle_validity);
                 oracle_validity
             };
             return Ok((oracle_price_data, oracle_validity));
@@ -143,7 +173,7 @@ impl<'a> OracleMap<'a> {
             slots_before_stale_for_amm_override,
             oracle_low_risk_slot_delay_override_override,
         )?;
-        self.validity.insert(*oracle_id, oracle_validity);
+        self.validity.insert(validity_key, oracle_validity);
 
         Ok((oracle_price_data, oracle_validity))
     }

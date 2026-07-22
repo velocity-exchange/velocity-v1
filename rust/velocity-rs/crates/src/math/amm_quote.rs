@@ -62,6 +62,7 @@ pub fn project_perp_market_for_quoting(
         let projection_inputs = ProjectionInputs {
             market_status: perp_market.status,
             market_config: perp_market.market_config,
+            min_order_size: perp_market.market_stats.min_order_size,
         };
         project_post_refresh_scalar(&perp_market.amm, &projection_inputs, &mm_oracle, validity)
             .and_then(|projection| projection.apply_to(&mut perp_market.amm))

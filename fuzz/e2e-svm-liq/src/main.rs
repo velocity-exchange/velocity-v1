@@ -877,9 +877,19 @@ impl Fixture {
     fn read_zc<T: bytemuck::Pod>(&self, pk: &Pubkey) -> Option<T> {
         let acct = self.ctx.read_account(pk).ok()?;
         let size = std::mem::size_of::<T>();
-        if acct.data.len() < 8 + size {
-            return None;
-        }
+        // An account that EXISTS but is too small is a host/on-chain LAYOUT DRIFT
+        // (host `size_of::<T>` diverged from the deployed .so). Fail LOUDLY:
+        // silently returning None would skip every invariant reading through this
+        // helper and turn the harness green with zero checks. Genuinely-absent
+        // accounts still return None via the `.ok()?` above.
+        assert!(
+            acct.data.len() >= 8 + size,
+            "layout drift: account {pk} has {} data bytes, need >= {} (8 + size_of::<{}>); \
+             re-run `bash fuzz/sync-idls.sh` and rebuild target/deploy/velocity.so",
+            acct.data.len(),
+            8 + size,
+            std::any::type_name::<T>(),
+        );
         Some(bytemuck::pod_read_unaligned::<T>(&acct.data[8..8 + size]))
     }
 

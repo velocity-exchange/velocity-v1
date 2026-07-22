@@ -40,5 +40,5 @@ prop_liquidation_sizing_healthy = []
 prop_liquidation_fee_bounded = []
 prop_asset_never_lowers_collateral = []
 # --- Regression harnesses (assert the PENDING audit-fix invariant) ---
-regr_267_worsens_health = []
+prop_pnl_for_deposit_no_worsen_within_buffer = []
 regr_243_protective_pricing = []

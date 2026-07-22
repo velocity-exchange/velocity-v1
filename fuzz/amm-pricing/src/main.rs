@@ -168,10 +168,25 @@ fn prop_bid_ask_price_bounds(
     let twap = twap_u as i64;
     let denom = denom_u as i64;
 
-    // Concentration bounds bracket sqrt_k.
-    let (bid_bound, ask_bound) = calculate_bid_ask_bounds(coef as u128, base_r as u128).unwrap();
-    fuzz_assert!(bid_bound <= base_r as u128);
-    fuzz_assert!(ask_bound >= base_r as u128);
+    // Concentration bounds are a reciprocal pair around sqrt_k:
+    //   bid = sqrt_k * PREC / coef,  ask = sqrt_k * coef / PREC
+    // so bid < sqrt_k < ask and bid*ask == sqrt_k^2 (modulo integer rounding).
+    // The balanced fixture pool has sqrt_k == base_r, so pass base_r as sqrt_k
+    // (the previous code passed base_r but then asserted base_r was bracketed by
+    // bounds *derived from base_r*, so it was tautological, and never checked the two
+    // bounds against each other). The geometric-symmetry check below is the real
+    // invariant: a wrong formula or asymmetric rounding on one leg breaks the
+    // product even though each bound still sits on the correct side of sqrt_k.
+    let sqrt_k = base_r as u128;
+    let (bid_bound, ask_bound) = calculate_bid_ask_bounds(coef as u128, sqrt_k).unwrap();
+    fuzz_assert!(bid_bound < sqrt_k && sqrt_k < ask_bound);
+    let prod = bid_bound.checked_mul(ask_bound).unwrap();
+    let k_sq = sqrt_k.checked_mul(sqrt_k).unwrap();
+    // Tolerance 0.1% of sqrt_k^2 dwarfs the O(1) integer-division rounding on each
+    // leg (sqrt_k >= 1e9 here), so this cannot false-positive but does catch a
+    // formula/rounding asymmetry.
+    let tol = k_sq / 1000;
+    fuzz_assert!(prod <= k_sq + tol && prod + tol >= k_sq);
 
     // Price monotonicity: up in quote reserve, down in base reserve.
     let p1 = calculate_price(quote_r as u128, base_r as u128, peg as u128).unwrap();

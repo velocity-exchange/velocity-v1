@@ -146,6 +146,7 @@ function mockPerpMarketCommon(): Omit<
 	return {
 		status: MarketStatus.INITIALIZED,
 		lastFillPrice: new BN(0),
+		pendingRevenueShare: new BN(0),
 		name: [],
 		contractType: ContractType.PERPETUAL,
 		expiryTs: new BN(0),
@@ -349,6 +350,7 @@ export const mockSpotMarkets: Array<SpotMarketAccount> = [
 		tokenProgramFlag: 0,
 		poolId: 0,
 		feeAdjustment: 0,
+		ifLastSettleVaultAmount: new BN(0),
 	},
 	{
 		status: MarketStatus.ACTIVE,
@@ -443,6 +445,7 @@ export const mockSpotMarkets: Array<SpotMarketAccount> = [
 		tokenProgramFlag: 0,
 		poolId: 0,
 		feeAdjustment: 0,
+		ifLastSettleVaultAmount: new BN(0),
 	},
 	{
 		status: MarketStatus.ACTIVE,
@@ -539,6 +542,7 @@ export const mockSpotMarkets: Array<SpotMarketAccount> = [
 		tokenProgramFlag: 0,
 		poolId: 0,
 		feeAdjustment: 0,
+		ifLastSettleVaultAmount: new BN(0),
 	},
 ];
 

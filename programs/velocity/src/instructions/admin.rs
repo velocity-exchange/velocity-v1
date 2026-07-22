@@ -386,7 +386,7 @@ pub fn handle_initialize_spot_market(
         min_borrow_rate: 0,
         token_program_flag: token_program,
         pool_id: 0,
-        _padding_align_pfp: [0; 8],
+        _padding_align_pfp: [0; 13],
         protocol_fee_pool: PoolBalance {
             scaled_balance: 0,
             market_index: spot_market_index,
@@ -394,7 +394,7 @@ pub fn handle_initialize_spot_market(
         },
         protocol_liquidation_fee: 0,
         protocol_fee_factor: 0,
-        padding: [0; 8],
+        if_last_settle_vault_amount: 0,
         insurance_fund: InsuranceFund {
             vault: ctx.accounts.insurance_fund_vault.key(),
             unstaking_period: THIRTEEN_DAY,
@@ -755,7 +755,7 @@ pub fn handle_initialize_perp_market(
             },
             ..MarketStats::default()
         },
-        _padding_align_amm: [0; 8],
+        pending_revenue_share: 0,
         amm: AMM {
             base_asset_reserve: amm_base_asset_reserve,
             quote_asset_reserve: amm_quote_asset_reserve,
@@ -1141,7 +1141,12 @@ pub fn handle_settle_expired_market_pools_to_revenue_pool(
     let clock = Clock::get()?;
     let now = clock.unix_timestamp;
 
-    controller::spot_balance::update_spot_market_cumulative_interest(spot_market, None, now)?;
+    controller::spot_balance::update_spot_market_cumulative_interest(
+        spot_market,
+        None,
+        now,
+        state.funding_paused()?,
+    )?;
 
     validate!(
         spot_market.market_index == QUOTE_SPOT_MARKET_INDEX,
@@ -3257,6 +3262,7 @@ pub fn handle_admin_deposit<'c: 'info, 'info>(
         &mut spot_market,
         Some(&oracle_price_data),
         now,
+        state.funding_paused()?,
     )?;
 
     let position_index = user.force_get_spot_position_index(spot_market.market_index)?;

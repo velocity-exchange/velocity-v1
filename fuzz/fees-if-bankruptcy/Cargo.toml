@@ -48,5 +48,5 @@ regr_253_if_add_zero_shares = []
 # exercise (the if_last_settle_vault_amount snapshot field is added by the PR).
 regr_266_cancel_after_rebase = []
 regr_255_floored_if_tranche = []
-regr_273_spot_bankruptcy_fresh_interest = []
-regr_252_request_remove_settle = []
+prop_borrow_debt_monotonic_in_index = []
+prop_if_exit_value_monotonic_in_vault = []

@@ -150,6 +150,14 @@ const MAX_FILL_ATTEMPTS_PER_ORDER = 15;
 // lives at most one auction, so a short TTL reaps entries soon after.
 const FILL_ATTEMPT_COUNTS_TTL_MS = 2 * 60 * 1000;
 const FILL_ATTEMPT_COUNTS_MAX = 10_000;
+// Drop-detection window for an in-flight signed-msg place+fill. A signed-msg
+// node is guarded against re-attempt from the moment it is launched until its
+// tx lands, its send fails, or this TTL elapses. It is deliberately longer than
+// normal confirmation latency (a few seconds) so a slow-but-live tx is not
+// duplicated, and shorter than a typical swift order's lifetime (~25-30s) so a
+// silently-dropped place+fill is retried while the order is still valid and
+// still emitted by the DLOB builder.
+const SIGNED_MSG_FILL_IN_FLIGHT_TTL_MS = 15_000;
 const THROTTLED_NODE_SIZE_TO_PRUNE = 10; // Size of throttled nodes to get to before pruning the map
 export const MAX_MAKERS_PER_FILL = 6; // max number of unique makers to include per fill
 const MAX_ACCOUNTS_PER_TX = 64; // solana limit, track https://github.com/solana-labs/solana/issues/27241
@@ -231,6 +239,17 @@ export class FillerMultithreaded {
 	private placedSignedMsgOrders = new LRUCache<string, true>({
 		max: FILL_ATTEMPT_COUNTS_MAX,
 		ttl: FILL_ATTEMPT_COUNTS_TTL_MS,
+		ttlResolution: 1000,
+	});
+	// Signatures of signed-msg orders with a place+fill currently in flight. Set
+	// synchronously the instant a fill is launched — before the async
+	// build/sim/send/registration chain runs — so the ~200ms DLOB re-emit cannot
+	// launch a second place+fill for the same order before the first is tracked.
+	// Cleared when the tx lands (confirmPendingTxSigs), when the send definitively
+	// fails, or by the TTL (drop detection). See SIGNED_MSG_FILL_IN_FLIGHT_TTL_MS.
+	private signedMsgFillsInFlight = new LRUCache<string, true>({
+		max: FILL_ATTEMPT_COUNTS_MAX,
+		ttl: SIGNED_MSG_FILL_IN_FLIGHT_TTL_MS,
 		ttlResolution: 1000,
 	});
 	private fillAttemptSlotInterval: number;
@@ -1141,28 +1160,33 @@ export class FillerMultithreaded {
 							} s${fillCorrelationSuffix(nodeFilled)}`
 						);
 
-						// A signed-msg place+fill that lands Ok has placed the order
-						// on-chain (signed-msg fills carry no RevertFill ix, so even a
-						// 0-base no-op place+fill lands Ok). Retire the signed-msg node:
-						// mark it placed so we never re-run the place+fill, and evict it
-						// from the DLOB builder so it stops being emitted. Any remaining
-						// base fills through the order's on-chain node instead.
-						if (txResp.meta?.err === null) {
-							for (const node of nodeFilled) {
-								const orderId = node.node.order?.orderId;
-								if (node.node.isSignedMsg && orderId !== undefined) {
-									this.placedSignedMsgOrders.set(
-										getNodeToFillSignature(node),
-										true
-									);
-									this.routeMessageToDlobBuilder({
-										data: {
-											marketIndex: node.node.order?.marketIndex,
-											type: 'confirmed',
-											uuid: orderId,
-										},
-									});
-								}
+						// The place+fill attempt has resolved: release the in-flight
+						// reservation for every signed-msg node in this tx. If it landed
+						// Ok the order is placed on-chain (a single-maker signed-msg
+						// place+fill carries no RevertFill ix, so even a 0-base no-op
+						// lands Ok), so additionally retire the node: mark it placed so
+						// we never re-run the place+fill, and evict it from the DLOB
+						// builder so it stops being emitted — any remaining base fills
+						// through the order's on-chain node instead. A landed-but-errored
+						// place+fill (e.g. a multi-maker RevertFill, or expiry) is not
+						// marked placed, so it stays retriable while still valid.
+						const landedOk = txResp.meta?.err === null;
+						for (const node of nodeFilled) {
+							if (!node.node.isSignedMsg) {
+								continue;
+							}
+							const sig = getNodeToFillSignature(node);
+							this.signedMsgFillsInFlight.delete(sig);
+							const orderId = node.node.order?.orderId;
+							if (landedOk && orderId !== undefined) {
+								this.placedSignedMsgOrders.set(sig, true);
+								this.routeMessageToDlobBuilder({
+									data: {
+										marketIndex: node.node.order?.marketIndex,
+										type: 'confirmed',
+										uuid: orderId,
+									},
+								});
 							}
 						}
 						this.pendingTxSigsToconfirm.delete(txSig);
@@ -1539,17 +1563,20 @@ export class FillerMultithreaded {
 	// Retry policy differs by node origin:
 	//
 	// - Signed-msg (swift) nodes are submitted as an atomic place+fill. We attempt
-	//   that place+fill only ONCE per order: while the tx is unconfirmed
-	//   (in-flight guard) we don't re-send, and once it lands the place is durable
-	//   (signed-msg fills carry no RevertFill ix, so a 0-base place+fill still
-	//   lands Ok and places the order — see tryFillPerpNode). At that point the
+	//   that place+fill only ONCE per order: the node is reserved in
+	//   `signedMsgFillsInFlight` synchronously the moment the fill is launched (so
+	//   the ~200ms DLOB re-emit can't fire a second place+fill before the first is
+	//   even built/sent), and once it lands Ok the order is placed on-chain and the
 	//   node is retired (`placedSignedMsgOrders` + eviction in
-	//   confirmPendingTxSigs) and the order fills through its on-chain order node
-	//   via the non-signed path below. A re-attempt of the signed node would only
-	//   re-run the heavier place+fill (redundant place ix + ed25519 + oracle
-	//   updates) and race its own on-chain node — which is what produced two
-	//   concurrent fill txs for the same order. If a place+fill is dropped
-	//   (never confirmed), the in-flight guard clears and it is retried.
+	//   confirmPendingTxSigs). A single-maker signed-msg place+fill carries no
+	//   RevertFill ix (see tryFillPerpNode), so even a 0-base no-op lands Ok and
+	//   places the order; thereafter it fills through its on-chain order node via
+	//   the non-signed path below. Re-attempting the signed node would only re-run
+	//   the heavier place+fill (redundant place ix + ed25519 + oracle updates) and
+	//   race its own on-chain node — which is what produced two concurrent fill txs
+	//   for the same order. A place+fill that fails to send or is dropped releases
+	//   the reservation (send-error path, or SIGNED_MSG_FILL_IN_FLIGHT_TTL_MS) so
+	//   it can be retried while the order is still valid.
 	// - Non-signed nodes (including a signed order's on-chain node once placed)
 	//   keep retrying through the auction, paced to once per fillAttemptSlotInterval
 	//   slots so the fill lands as the Dutch auction ramps into a cross.
@@ -1559,7 +1586,6 @@ export class FillerMultithreaded {
 	// MAX_FILL_ATTEMPTS_PER_ORDER.
 	async executeFillablePerpNodes(nodesToFill: NodeToFillWithBuffer[]) {
 		const currentSlot = this.slotSubscriber.getSlot();
-		const inFlightSignedMsgSigs = this.getInFlightSignedMsgSignatures();
 		for (const node of nodesToFill) {
 			const sig = getNodeToFillSignature(node);
 			const prior = this.fillAttempts.get(sig);
@@ -1577,12 +1603,12 @@ export class FillerMultithreaded {
 
 			if (node.node.isSignedMsg) {
 				// Place+fill a signed-msg order at most once: skip while a prior
-				// place+fill is unconfirmed, and skip forever once it has landed
+				// place+fill is in flight, and skip forever once it has landed
 				// (the order is placed and its on-chain node carries any remaining
 				// base through the auction).
 				if (
 					this.placedSignedMsgOrders.has(sig) ||
-					inFlightSignedMsgSigs.has(sig)
+					this.signedMsgFillsInFlight.has(sig)
 				) {
 					continue;
 				}
@@ -1600,29 +1626,18 @@ export class FillerMultithreaded {
 				count: attempts + 1,
 				lastAttemptSlot: currentSlot,
 			});
+			// Reserve the signed-msg order synchronously, before the async fill
+			// launches, so a subsequent tick can't race a second place+fill in the
+			// window before the tx is registered for confirmation.
+			if (node.node.isSignedMsg) {
+				this.signedMsgFillsInFlight.set(sig, true);
+			}
 			if (node.makerNodes.length > 1) {
 				this.tryFillMultiMakerPerpNodes(node);
 			} else {
 				this.tryFillPerpNode(node);
 			}
 		}
-	}
-
-	// Signatures of signed-msg nodes that currently have an unconfirmed fill
-	// (place+fill) tx in flight, drawn from the pending-confirmation set. Used to
-	// avoid firing a second place+fill for an order whose first place+fill has not
-	// yet landed. Entries clear automatically when the tx lands or times out in
-	// confirmPendingTxSigs.
-	protected getInFlightSignedMsgSignatures(): Set<string> {
-		const sigs = new Set<string>();
-		for (const { nodeFilled } of this.pendingTxSigsToconfirm.values()) {
-			for (const node of nodeFilled) {
-				if (node.node.isSignedMsg) {
-					sigs.add(getNodeToFillSignature(node));
-				}
-			}
-		}
-		return sigs;
 	}
 
 	protected async tryFillMultiMakerPerpNodes(nodeToFill: NodeToFillWithBuffer) {
@@ -2248,6 +2263,16 @@ export class FillerMultithreaded {
 							nodesSent
 						)}, error: ${simError.message}`
 					);
+
+					// The send definitively failed, so no place+fill is in flight for
+					// these signed-msg orders: release the in-flight guard now (rather
+					// than waiting for the drop-detection TTL) so the order can be
+					// retried while it is still valid.
+					for (const node of nodesSent) {
+						if (node.node.isSignedMsg) {
+							this.signedMsgFillsInFlight.delete(getNodeToFillSignature(node));
+						}
+					}
 
 					if (e.message.includes('too large:')) {
 						logger.error(

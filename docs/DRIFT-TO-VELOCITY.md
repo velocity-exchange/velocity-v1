@@ -419,10 +419,17 @@ accounts/events with the previous TS shapes should note:
   `InvalidNativePerpMarketAccount` (6356), `IsolatedPositionDisabled` (6357),
   `EquityBelowFloor` (6358), `InvalidEquityFloorTransfer` (6359),
   `IFDepositMintsZeroShares` (6360), `LiquidationWorsensAccountHealth` (6361),
-  `PerpBankruptcyMustPrecedeSpot` (6362), `InvalidRevenueShareRecipient` (6363).
-  Decode errors by
-  code as before, but expect `Deprecated*` names for retired features.
-  code as before, but expect `Deprecated*` names for retired features.
+  `PerpBankruptcyMustPrecedeSpot` (6362), `InvalidRevenueShareRecipient` (6363),
+  `DailyDepositLimit` (6364).
+  Decode errors by code as before, but expect `Deprecated*` names for retired features.
+- **`SpotMarket` per-market withdraw/deposit limit fields** (deposit-caps): three fields
+  carved from the 13-byte alignment gap before `protocol_fee_pool` —
+  `withdraw_circuit_breaker_bps: u16` and `max_deposit_bps_per_day: u16` (both basis points,
+  10000 = 100%) and `deposit_guard_threshold: u64` (token amount). Account size stays 808 and
+  no other field offset moved (`protocol_fee_pool` remains at struct offset 752), so existing
+  accounts stay valid and read the new fields as 0 (default 25% breaker, disabled deposit cap).
+  SDK `SpotMarketAccount` gains `withdrawCircuitBreakerBps` / `maxDepositBpsPerDay` (`number`,
+  basis points) and `depositGuardThreshold` (`BN`).
 - **`User` layout**: `equity_floor: u64` was carved from the tail padding after
   `special_user_status` (3 padding bytes, the 8-byte field at offset 4472, then 8 more
   padding bytes). Account size is unchanged at 4496 bytes and no other offset moved —
@@ -529,6 +536,7 @@ accounts/events with the previous TS shapes should note:
 | PR        | Change                                                                                                                                                                                                                                                                                                                                                                       |
 | --------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | #1        | `transfer_fee_and_pnl_pool` instruction (warm-admin); rebalance AMM fee pool ↔ PnL pool. SDK `AdminClient.transferFeeAndPnlPool` / `getTransferFeeAndPnlPoolIx`; new `TransferFeeAndPnlPoolDirection` export; emits `TransferFeeAndPnlPoolRecord` event                                                                                                                       |
+| #185 deposit-caps | Per-market configurable withdraw circuit breaker + daily deposit rate cap. The hardcoded 25% daily withdraw breaker becomes `SpotMarket.withdraw_circuit_breaker_bps` (basis points; `0` = default 2500 bps = 25%, so pre-existing markets keep prior behavior). New daily deposit cap mirrors the withdraw side: `deposit_guard_threshold` (u64 token amount, no cap below it) + `max_deposit_bps_per_day` (basis points, `0` disables) bound how far resulting deposits may exceed the 24h deposit TWAP; enforced on the direct `deposit` **and** on the shared spot-credit path (`transfer_pools`, `end_swap` credits), reverting with new `DailyDepositLimit` (6364). New warm/cold admin ixs `update_spot_market_withdraw_circuit_breaker` (warm may only tighten toward the 25% default; loosening past it needs cold admin) / `update_spot_market_deposit_cap`. All three fields are carved from the existing 13-byte alignment gap before `protocol_fee_pool`, so `SpotMarket` stays **808 bytes** with every other offset unchanged and no migration (existing accounts read 0). SDK `SpotMarketAccount.withdrawCircuitBreakerBps` / `maxDepositBpsPerDay` (basis points) / `depositGuardThreshold`; `AdminClient.updateSpotMarketWithdrawCircuitBreaker` / `updateSpotMarketDepositCap` + ix builders; math `calculateMaxDepositTokenAmount` / `checkDepositLimits` and configurable breaker in `calculateWithdrawLimit`; admin CLI `spot-market set-withdraw-breaker` / `set-deposit-cap` (§5) |
 | #2, #47   | Remove high leverage mode: instructions, `User.margin_mode`/`MarginMode`, `PerpMarket` HLM fields, HLM config subscribers, `HIGH_LEVERAGE_MIN_MARGIN_RATIO` (#47); error variants → `Deprecated*` stubs                                                                                                                                                                       |
 | #5        | `MarketStatus` refactor: extract into own module; remove deprecated `FundingPaused`/`AmmPaused`/`FillPaused`/`WithdrawPaused`; discriminants for `ReduceOnly`/`Settlement`/`Delisted` shift 6/7/8 → 2/3/4                                                                                                                                                                      |
 | #6        | Disable spot DLOB trading (`SpotDlobTradingDisabled` = 6350)                                                                                                                                                                                                                                                                                                                  |

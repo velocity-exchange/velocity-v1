@@ -11481,6 +11481,42 @@ export type Velocity = {
       "args": []
     },
     {
+      "name": "updateSpotMarketDepositCap",
+      "discriminator": [
+        76,
+        21,
+        179,
+        154,
+        28,
+        161,
+        174,
+        107
+      ],
+      "accounts": [
+        {
+          "name": "admin",
+          "signer": true
+        },
+        {
+          "name": "state"
+        },
+        {
+          "name": "spotMarket",
+          "writable": true
+        }
+      ],
+      "args": [
+        {
+          "name": "depositGuardThreshold",
+          "type": "u64"
+        },
+        {
+          "name": "maxDepositBpsPerDay",
+          "type": "u16"
+        }
+      ]
+    },
+    {
       "name": "updateSpotMarketExpiry",
       "discriminator": [
         208,
@@ -12116,6 +12152,38 @@ export type Velocity = {
         {
           "name": "tickSize",
           "type": "u64"
+        }
+      ]
+    },
+    {
+      "name": "updateSpotMarketWithdrawCircuitBreaker",
+      "discriminator": [
+        2,
+        97,
+        135,
+        97,
+        117,
+        169,
+        65,
+        223
+      ],
+      "accounts": [
+        {
+          "name": "admin",
+          "signer": true
+        },
+        {
+          "name": "state"
+        },
+        {
+          "name": "spotMarket",
+          "writable": true
+        }
+      ],
+      "args": [
+        {
+          "name": "withdrawCircuitBreakerBps",
+          "type": "u16"
         }
       ]
     },
@@ -16226,6 +16294,11 @@ export type Velocity = {
       "code": 6363,
       "name": "invalidRevenueShareRecipient",
       "msg": "Revenue share recipient user must be sub_account_id 0"
+    },
+    {
+      "code": 6364,
+      "name": "dailyDepositLimit",
+      "msg": "Spot market daily deposit limit hit"
     }
   ],
   "types": [
@@ -23072,20 +23145,44 @@ export type Velocity = {
           {
             "name": "paddingAlignPfp",
             "docs": [
-              "Aligns `protocol_fee_pool`'s leading u128 to a 16-byte struct offset",
-              "(752) so host (x86_64, align 16) and SBF (align 8) layouts agree, AND",
-              "so the borsh/IDL packed layout reaches the same offset with no implicit",
-              "`#[repr(C)]` padding — off-chain borsh decoders (TS SDK, velocity-rs)",
-              "know nothing about implicit padding, so every byte must be explicit.",
-              "Was `[u8; 8]`, which left borsh 5 bytes short of the real offset and",
-              "made clients misread the three fields below. Do not reorder."
+              "Explicit filler carved from the alignment gap before `protocol_fee_pool`",
+              "(which must stay at struct offset 752 so host/SBF layouts agree and the",
+              "borsh/IDL packed offset matches). The gap is 13 bytes; the three",
+              "configurable-limit fields below plus this 1-byte filler fill it exactly,",
+              "so `protocol_fee_pool` and every field after it keep their offsets and the",
+              "account size is unchanged. Reads 0 on markets created before these fields",
+              "existed. Every byte is explicit so no implicit `#[repr(C)]` pad desyncs",
+              "off-chain borsh decoders. Do not reorder or resize."
             ],
-            "type": {
-              "array": [
-                "u8",
-                13
-              ]
-            }
+            "type": "u8"
+          },
+          {
+            "name": "withdrawCircuitBreakerBps",
+            "docs": [
+              "Daily withdraw circuit-breaker size: the max fraction of the 24h deposit",
+              "TWAP that may be withdrawn per 24h window. `0` is treated as the default",
+              "(2500 bps = 25%) so markets created before this field existed keep prior",
+              "behavior. precision: basis points (10_000 = 100%)"
+            ],
+            "type": "u16"
+          },
+          {
+            "name": "maxDepositBpsPerDay",
+            "docs": [
+              "Daily deposit rate limit: the max fraction above the 24h deposit TWAP that",
+              "resulting deposits may reach per 24h window. Disabled when `0`.",
+              "precision: basis points (10_000 = 100%)"
+            ],
+            "type": "u16"
+          },
+          {
+            "name": "depositGuardThreshold",
+            "docs": [
+              "No deposit rate limit when resulting deposits are below this threshold.",
+              "Mirrors `withdraw_guard_threshold` on the deposit side.",
+              "precision: token mint precision"
+            ],
+            "type": "u64"
           },
           {
             "name": "protocolFeePool",

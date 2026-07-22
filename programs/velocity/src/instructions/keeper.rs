@@ -631,6 +631,17 @@ pub fn place_signed_msg_taker_order<'c: 'info, 'info>(
         return Err(print_error!(ErrorCode::InvalidSignedMsgOrderParam)().into());
     }
 
+    // Reject IOC on the signed-message path, mirroring the direct/batch place
+    // paths (which return `InvalidOrderIOC`). Limit orders default `max_ts` to 0,
+    // so a stored IOC limit order would never expire and would rest indefinitely,
+    // filling long after the signer's immediate-or-cancel window — IOC residual
+    // cancellation only exists in place-and-take/make fill modes, not for a
+    // persisted signed order (OtterSec #85).
+    if matching_taker_order_params.is_immediate_or_cancel() {
+        msg!("signed msg taker order cannot be immediate_or_cancel");
+        return Err(print_error!(ErrorCode::InvalidOrderIOC)().into());
+    }
+
     // Set max slot for the order early so we set correct signed msg order id
     let order_slot = verified_message_and_signature.slot;
     if order_slot < clock.slot.saturating_sub(500) {
@@ -668,7 +679,6 @@ pub fn place_signed_msg_taker_order<'c: 'info, 'info>(
     }
 
     // Dont place order if signed msg order already exists
-    let mut taker_order_id_to_use = taker.next_order_id;
     let mut signed_msg_order_id =
         SignedMsgOrderId::new(verified_message_and_signature.uuid, max_slot, 0);
     if signed_msg_account
@@ -713,9 +723,31 @@ pub fn place_signed_msg_taker_order<'c: 'info, 'info>(
         )?;
     }
 
-    // Good to place orders, do stop loss and take profit orders first
+    // #84: if the main taker order would soft-skip on an already-expired
+    // `max_ts`, place NOTHING. The reduce-only TP/SL sidecars below are trigger
+    // orders, which are exempt from `max_ts` expiry, so without this pre-check
+    // they'd be installed as standalone triggers even though the main entry
+    // never existed — breaking the bundle's atomicity. Checked up front (rather
+    // than placing the main first) so the sidecars keep their order ids and the
+    // main keeps the trailing id that clients and the SignedMsgOrderRecord rely
+    // on. (`place_perp_order`'s only other soft-skip, a `TryPostOnly` that would
+    // cross, does not apply to a signed-msg taker order — takers are not
+    // post-only.)
+    if let Some(max_ts) = matching_taker_order_params.max_ts {
+        if max_ts != 0 && max_ts < clock.unix_timestamp {
+            msg!(
+                "signed msg main order max_ts {} expired (< now {}); skipping bundle",
+                max_ts,
+                clock.unix_timestamp
+            );
+            return Ok(());
+        }
+    }
+
+    // Good to place orders, do stop loss and take profit orders first. Each
+    // builder row is keyed to `taker.next_order_id`, the id `place_perp_order`
+    // will assign; the main order below therefore takes the trailing id.
     if let Some(stop_loss_order_params) = verified_message_and_signature.stop_loss_order_params {
-        taker_order_id_to_use += 1;
         let stop_loss_order = OrderParams {
             order_type: OrderType::TriggerMarket,
             direction: matching_taker_order_params.direction.opposite(),
@@ -737,7 +769,7 @@ pub fn place_signed_msg_taker_order<'c: 'info, 'info>(
             taker,
             verified_message_and_signature.builder_idx,
             builder_fee_bps,
-            taker_order_id_to_use - 1,
+            taker.next_order_id,
             market_index,
         )?;
 
@@ -761,7 +793,6 @@ pub fn place_signed_msg_taker_order<'c: 'info, 'info>(
 
     if let Some(take_profit_order_params) = verified_message_and_signature.take_profit_order_params
     {
-        taker_order_id_to_use += 1;
         let take_profit_order = OrderParams {
             order_type: OrderType::TriggerMarket,
             direction: matching_taker_order_params.direction.opposite(),
@@ -783,7 +814,7 @@ pub fn place_signed_msg_taker_order<'c: 'info, 'info>(
             taker,
             verified_message_and_signature.builder_idx,
             builder_fee_bps,
-            taker_order_id_to_use - 1,
+            taker.next_order_id,
             market_index,
         )?;
 
@@ -804,7 +835,8 @@ pub fn place_signed_msg_taker_order<'c: 'info, 'info>(
             &mut builder_order,
         )?;
     }
-    signed_msg_order_id.order_id = taker_order_id_to_use;
+
+    signed_msg_order_id.order_id = taker.next_order_id;
     signed_msg_account.add_signed_msg_order_id(signed_msg_order_id)?;
 
     let mut builder_order = add_builder_order(
@@ -812,7 +844,7 @@ pub fn place_signed_msg_taker_order<'c: 'info, 'info>(
         taker,
         verified_message_and_signature.builder_idx,
         builder_fee_bps,
-        taker_order_id_to_use,
+        taker.next_order_id,
         market_index,
     )?;
 

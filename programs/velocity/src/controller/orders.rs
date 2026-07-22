@@ -3534,6 +3534,19 @@ pub fn trigger_order(
         "Market fills paused",
     )?;
 
+    // A trigger starts the order's auction and pays the flat keeper reward, both
+    // of which the place/fill paths forbid once a market is in settlement (see
+    // the `is_in_settlement` gate in `place_perp_order`). Without the same gate
+    // here a keeper could trigger a dormant order on an expired/settling market,
+    // minting a settleable positive zero-base quote claim out of the flat reward
+    // and consuming PnL-pool headroom that backs legitimate expiry claimants
+    // (OtterSec #86).
+    validate!(
+        !perp_market.is_in_settlement(now),
+        ErrorCode::MarketPlaceOrderPaused,
+        "Market is in settlement mode",
+    )?;
+
     let (oracle_price_data, oracle_validity) = oracle_map.get_price_data_and_validity(
         MarketType::Perp,
         perp_market.market_index,

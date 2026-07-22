@@ -2004,6 +2004,20 @@ pub fn handle_transfer_perp_position<'c: 'info, 'info>(
             "perp market fills paused"
         )?;
 
+        // Reject transfers once the market is expired / in settlement. The
+        // transfer prices its deltas at the LIVE oracle below, but expired
+        // positions settle at the market's fixed `expiry_price`; permitting a
+        // post-expiry transfer lets an authority split a live-oracle gain from
+        // the matching fixed-expiry loss across two of its own subaccounts,
+        // leaving the source a positive zero-base quote claim while the
+        // destination settles the base lower (OtterSec #87). Mirrors the
+        // settlement gate the place/fill/trigger paths enforce.
+        validate!(
+            !perp_market.is_in_settlement(now),
+            ErrorCode::InvalidTransferPerpPosition,
+            "market is in settlement mode"
+        )?;
+
         oracle_price = oracle_price_data.price;
     }
 

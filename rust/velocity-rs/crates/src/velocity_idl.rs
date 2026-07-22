@@ -25880,6 +25880,8 @@ pub mod errors {
         InvalidRevenueShareRecipient,
         #[msg("Spot market daily deposit limit hit")]
         DailyDepositLimit,
+        #[msg("Cannot modify a builder-coded order; cancel and re-place instead")]
+        CannotModifyBuilderOrder,
     }
 }
 pub mod events {

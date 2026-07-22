@@ -16299,6 +16299,11 @@ export type Velocity = {
       "code": 6364,
       "name": "dailyDepositLimit",
       "msg": "Spot market daily deposit limit hit"
+    },
+    {
+      "code": 6365,
+      "name": "cannotModifyBuilderOrder",
+      "msg": "Cannot modify a builder-coded order; cancel and re-place instead"
     }
   ],
   "types": [

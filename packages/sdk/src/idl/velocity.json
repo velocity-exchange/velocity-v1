@@ -16293,6 +16293,11 @@
       "code": 6364,
       "name": "DailyDepositLimit",
       "msg": "Spot market daily deposit limit hit"
+    },
+    {
+      "code": 6365,
+      "name": "CannotModifyBuilderOrder",
+      "msg": "Cannot modify a builder-coded order; cancel and re-place instead"
     }
   ],
   "types": [

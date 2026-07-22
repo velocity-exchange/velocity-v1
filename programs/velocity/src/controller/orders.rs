@@ -882,6 +882,18 @@ pub fn modify_order(
 
     let existing_order = user.orders[order_index];
 
+    // A builder-coded order's fee attribution lives in the `RevenueShareEscrow`
+    // row keyed to its order_id. modify cancels and re-places under a NEW order
+    // id without carrying that row across, silently downgrading the order to
+    // no-builder and dropping the builder fee (OtterSec #82). Reject the modify
+    // so the attribution can't be stripped; the taker can cancel and re-place
+    // with builder params to change a builder-coded order.
+    validate!(
+        !existing_order.is_has_builder(),
+        ErrorCode::CannotModifyBuilderOrder,
+        "cannot modify a builder-coded order; cancel and re-place instead"
+    )?;
+
     cancel_order(
         order_index,
         &mut user,

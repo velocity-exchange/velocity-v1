@@ -56,6 +56,7 @@ import {
 import { assert } from 'console';
 import {
 	chunks,
+	fillCorrelationSuffix,
 	getAllPythOracleUpdateIxs,
 	getFillSignatureFromUserAccountAndOrderId,
 	getNodeToFillSignature,
@@ -1120,7 +1121,7 @@ export class FillerMultithreaded {
 						logger.info(
 							`Tx not found, (fillTxId: ${fillTxId}) (txType: ${txType}): ${txSig}, tx age: ${
 								txAge / 1000
-							} s`
+							} s${fillCorrelationSuffix(nodeFilled)}`
 						);
 						if (Math.abs(txAge) > TX_TIMEOUT_THRESHOLD_MS) {
 							this.pendingTxSigsToconfirm.delete(txSig);
@@ -1129,7 +1130,7 @@ export class FillerMultithreaded {
 						logger.info(
 							`Tx landed (fillTxId: ${fillTxId}) (txType: ${txType}): ${txSig}, tx age: ${
 								txAge / 1000
-							} s`
+							} s${fillCorrelationSuffix(nodeFilled)}`
 						);
 
 						const fullyFilledTakerOrderIds =
@@ -1840,12 +1841,14 @@ export class FillerMultithreaded {
 			logger.info(
 				`${logPrefix} tryFillMultiMakerPerpNodes estimated CUs: ${
 					simResult!.cuEstimate
-				} (fillTxId: ${fillTxId})`
+				} (fillTxId: ${fillTxId})${fillCorrelationSuffix([nodeToFill])}`
 			);
 
 			if (simResult!.simError) {
 				logger.error(
-					`${logPrefix} Error simulating multi maker perp node (fillTxId: ${fillTxId}): ${JSON.stringify(
+					`${logPrefix} Error simulating multi maker perp node (fillTxId: ${fillTxId})${fillCorrelationSuffix(
+						[nodeToFill]
+					)}: ${JSON.stringify(
 						simResult!.simError
 					)}\nTaker slot: ${takerUserSlot}\nMaker slots: ${makerInfosToUse
 						.map((m) => `  ${m.data.maker.toBase58()}: ${m.slot}`)
@@ -2067,7 +2070,9 @@ export class FillerMultithreaded {
 		}
 
 		logger.info(
-			`tryFillPerpNode estimated CUs: ${simResult.cuEstimate} (fillTxId: ${fillTxId})`
+			`tryFillPerpNode estimated CUs: ${
+				simResult.cuEstimate
+			} (fillTxId: ${fillTxId})${fillCorrelationSuffix([nodeToFill])}`
 		);
 
 		if (simResult.simError) {
@@ -2078,7 +2083,9 @@ export class FillerMultithreaded {
 			logger.error(
 				`simError: ${JSON.stringify(
 					simResult.simError
-				)} (fillTxId: ${fillTxId}), sim logs:\n${
+				)} (fillTxId: ${fillTxId})${fillCorrelationSuffix([
+					nodeToFill,
+				])}, sim logs:\n${
 					simResult.simTxLogs ? simResult.simTxLogs.join('\n') : 'none'
 				}`
 			);
@@ -2151,13 +2158,19 @@ export class FillerMultithreaded {
 				.then((resp: TxSigAndSlot) => {
 					const duration = Date.now() - txStart;
 					logger.info(
-						`${logPrefix} sent tx: ${resp.txSig}, took: ${duration}ms (fillTxId: ${fillTxId})`
+						`${logPrefix} sent tx: ${
+							resp.txSig
+						}, took: ${duration}ms (fillTxId: ${fillTxId})${fillCorrelationSuffix(
+							nodesSent
+						)}`
 					);
 				})
 				.catch(async (e) => {
 					const simError = e as SendTransactionError;
 					logger.error(
-						`${logPrefix} Failed to send packed tx txAccountKeys: ${txAccounts} (${writeAccs} writeable) (fillTxId: ${fillTxId}), error: ${simError.message}`
+						`${logPrefix} Failed to send packed tx txAccountKeys: ${txAccounts} (${writeAccs} writeable) (fillTxId: ${fillTxId}), error: ${
+							simError.message
+						}${fillCorrelationSuffix(nodesSent)}`
 					);
 
 					if (e.message.includes('too large:')) {

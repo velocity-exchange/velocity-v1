@@ -55,6 +55,12 @@ pub enum UserStatus {
     ReduceOnly = 0b00000100,
     AdvancedLp = 0b00001000,
     // 0b00010000 reserved (was ProtectedMakerOrders)
+    /// This User is owned by a Strategy Vault (its authority is a vault PDA and
+    /// its equity prices vault depositor shares). Set by the vaults program at
+    /// vault init. Revenue-share (builder/referrer) sweeps must NOT credit such
+    /// a User: the reward would enter vault NAV at an attacker-controlled sweep
+    /// time and mis-split depositor value (OtterSec #91/#92/#93).
+    VaultOwned = 0b00100000,
 }
 
 #[derive(Clone, Copy, BorshSerialize, BorshDeserialize, PartialEq, Debug, Eq)]
@@ -167,6 +173,14 @@ impl User {
 
     pub fn is_advanced_lp(&self) -> bool {
         self.status & (UserStatus::AdvancedLp as u8) > 0
+    }
+
+    /// True when this User is owned by a Strategy Vault (see
+    /// [`UserStatus::VaultOwned`]). Such a User's equity prices vault depositor
+    /// shares, so the revenue-share sweep must not credit builder/referrer
+    /// rewards into it.
+    pub fn is_vault_owned(&self) -> bool {
+        self.status & (UserStatus::VaultOwned as u8) > 0
     }
 
     /// True when the equity floor is enabled and `total_collateral`

@@ -12888,6 +12888,63 @@ export type Velocity = {
       "args": []
     },
     {
+      "name": "updateUserVaultOwned",
+      "docs": [
+        "Mark a User as vault-owned (its authority is a vault PDA and its equity",
+        "prices vault depositor shares). Set-only and authority-gated: only the",
+        "User's authority may call it, and it is CPI'd by the vaults program at",
+        "vault init. A vault-owned User is skipped by the revenue-share sweep so a",
+        "builder/referral reward can never enter vault NAV (OtterSec #91/#92/#93)."
+      ],
+      "discriminator": [
+        50,
+        156,
+        218,
+        143,
+        216,
+        94,
+        68,
+        93
+      ],
+      "accounts": [
+        {
+          "name": "user",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  117,
+                  115,
+                  101,
+                  114
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "authority"
+              },
+              {
+                "kind": "arg",
+                "path": "subAccountId"
+              }
+            ]
+          }
+        },
+        {
+          "name": "authority",
+          "signer": true
+        }
+      ],
+      "args": [
+        {
+          "name": "subAccountId",
+          "type": "u16"
+        }
+      ]
+    },
+    {
       "name": "updateWarmAdmin",
       "discriminator": [
         35,

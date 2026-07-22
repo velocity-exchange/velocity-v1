@@ -282,6 +282,21 @@ impl VaultDepositor {
 
         let n_shares = vault_amount_to_depositor_shares(amount, vault.total_shares, vault_equity)?;
 
+        // Reject a positive deposit that mints zero shares. A deposit small
+        // relative to per-share NAV floors to zero shares, so the depositor's
+        // tokens stay in the vault as pure price appreciation on existing shares
+        // — the ERC4626-style inflation/donation sink. `request_withdraw` already
+        // guards `n_shares > 0`; mirror it on the deposit side, matching the IF
+        // add path's `IFDepositMintsZeroShares` guard (OtterSec #93).
+        validate!(
+            amount == 0 || n_shares > 0,
+            ErrorCode::InvalidVaultDeposit,
+            "deposit of {} mints zero shares (vault_equity {}, total_shares {})",
+            amount,
+            vault_equity,
+            vault.total_shares
+        )?;
+
         self.total_deposits = self.total_deposits.saturating_add(amount);
         self.net_deposits = self.net_deposits.safe_add(amount.cast()?)?;
 
@@ -870,6 +885,48 @@ mod vault_v1_tests {
         let vd = VaultDepositor::new(Pubkey::default(), Pubkey::default(), Pubkey::default(), now);
         assert_eq!(vd.vault_shares_base, 0);
         assert_eq!(vd.last_valid_ts, now);
+    }
+
+    /// OtterSec #93: a positive deposit that floors to zero shares must revert
+    /// (the ERC4626-style inflation/donation sink), mirroring
+    /// `request_withdraw`'s `n_shares > 0` guard and the IF add path's
+    /// `IFDepositMintsZeroShares`.
+    #[test]
+    fn deposit_rejects_zero_share_mint() {
+        let now = 1000;
+        let mut vault = Vault::default();
+        let vp = RefCell::new(VaultProtocol::default());
+        let vd =
+            &mut VaultDepositor::new(Pubkey::default(), Pubkey::default(), Pubkey::default(), now);
+
+        // First deposit bootstraps shares 1:1 at $100 equity.
+        vd.deposit(
+            100 * QUOTE_PRECISION_U64,
+            100 * QUOTE_PRECISION_U64,
+            &mut vault,
+            &mut Some(vp.borrow_mut()),
+            &mut None,
+            now,
+            0,
+        )
+        .unwrap();
+
+        // Equity triples (per-share value now 3); a 1-unit deposit floors to
+        // zero shares and must revert rather than become free appreciation on
+        // existing shares.
+        assert!(
+            vd.deposit(
+                1,
+                300 * QUOTE_PRECISION_U64,
+                &mut vault,
+                &mut Some(vp.borrow_mut()),
+                &mut None,
+                now,
+                0,
+            )
+            .is_err(),
+            "1-unit deposit into a 3x-inflated vault must revert, not mint zero shares"
+        );
     }
 
     #[test]

@@ -10,11 +10,12 @@ use velocity::math::insurance::{
     vault_amount_to_if_shares as vault_amount_to_depositor_shares,
 };
 use velocity::math::margin::calculate_user_equity;
+use velocity::math::oracle::{is_oracle_valid_for_action, LogMode, VelocityAction};
 use velocity::math::safe_math::SafeMath;
 use velocity::state::oracle_map::OracleMap;
 use velocity::state::perp_market_map::PerpMarketMap;
 use velocity::state::spot_market_map::SpotMarketMap;
-use velocity::state::user::User;
+use velocity::state::user::{MarketType, User};
 use velocity_macros::assert_no_slop;
 
 use crate::constants::TIME_FOR_LIQUIDATION;
@@ -436,10 +437,33 @@ impl Vault {
 
         let spot_market = spot_market_map.get_ref(&self.spot_market_index)?;
         let spot_market_precision = spot_market.get_precision().cast::<i128>()?;
-        let oracle_price = oracle_map
-            .get_price_data(&spot_market.oracle_id())?
-            .price
-            .cast::<i128>()?;
+        // Fetch the denomination-market oracle WITH validity and gate on it before
+        // using it as the NAV divisor. `calculate_user_equity` above only validates
+        // oracles backing *held* positions and skips an "available" (zero-balance,
+        // no-open-orders) spot position — so if the vault holds no denomination
+        // position, that oracle would otherwise never be checked, and a raw
+        // `get_price_data` let a stale-high price shrink NAV and overmint shares
+        // (OtterSec #94). Use the same policy the margin walk applies to the
+        // position oracles feeding `all_oracles_valid`: `MarketType::Spot` +
+        // `VelocityAction::MarginCalc` (rejects NonPositive / TooVolatile /
+        // TooUncertain / StaleForMargin), keeping both sides of the equity
+        // computation consistent.
+        let (oracle_price_data, oracle_validity) = oracle_map.get_price_data_and_validity(
+            MarketType::Spot,
+            spot_market.market_index,
+            &spot_market.oracle_id(),
+            spot_market.historical_oracle_data.last_oracle_price_twap,
+            spot_market.get_max_confidence_interval_multiplier()?,
+            -1,
+            0,
+            Some(LogMode::Margin),
+        )?;
+        validate!(
+            is_oracle_valid_for_action(oracle_validity, Some(VelocityAction::MarginCalc))?,
+            ErrorCode::InvalidEquityValue,
+            "denomination-market oracle invalid for share pricing"
+        )?;
+        let oracle_price = oracle_price_data.price.cast::<i128>()?;
 
         Ok(vault_equity
             .safe_mul(spot_market_precision)?

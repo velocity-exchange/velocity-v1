@@ -1,9 +1,9 @@
 use crate::constants::ONE_DAY;
-use crate::velocity_cpi::InitializeUserCPI;
+use crate::velocity_cpi::{InitializeUserCPI, SetUserVaultOwnedCPI};
 use crate::{error::ErrorCode, validate, Size, Vault};
 use anchor_lang::prelude::*;
 use anchor_spl::token::{Mint, Token, TokenAccount};
-use velocity::cpi::accounts::{InitializeUser, InitializeUserStats};
+use velocity::cpi::accounts::{InitializeUser, InitializeUserStats, UpdateUser};
 use velocity::math::casting::Cast;
 use velocity::math::constants::PERCENTAGE_PRECISION_U64;
 use velocity::program::Velocity;
@@ -57,6 +57,9 @@ pub fn initialize_vault<'info>(
 
     ctx.velocity_initialize_user_stats(params.name, bump)?;
     ctx.velocity_initialize_user(params.name, bump)?;
+    // Flag the freshly-created velocity User as vault-owned so the revenue-share
+    // sweep never credits builder/referral rewards into it (OtterSec #91/#92/#93).
+    ctx.velocity_set_user_vault_owned(params.name, bump)?;
 
     Ok(())
 }
@@ -157,6 +160,24 @@ impl<'info> InitializeUserCPI for Context<'info, InitializeVault<'info>> {
         };
         let cpi_ctx = CpiContext::new_with_signer(cpi_program, cpi_accounts, signers);
         velocity::cpi::initialize_user_stats(cpi_ctx)?;
+
+        Ok(())
+    }
+}
+
+impl<'info> SetUserVaultOwnedCPI for Context<'info, InitializeVault<'info>> {
+    fn velocity_set_user_vault_owned(&self, name: [u8; 32], bump: u8) -> Result<()> {
+        let signature_seeds = Vault::get_vault_signer_seeds(&name, &bump);
+        let signers = &[&signature_seeds[..]];
+
+        let cpi_program = self.accounts.velocity_program.key();
+        let cpi_accounts = UpdateUser {
+            user: self.accounts.velocity_user.clone(),
+            authority: self.accounts.vault.to_account_info().clone(),
+        };
+        let cpi_ctx = CpiContext::new_with_signer(cpi_program, cpi_accounts, signers);
+        // sub_account_id 0 matches the User PDA created by velocity_initialize_user
+        velocity::cpi::update_user_vault_owned(cpi_ctx, 0_u16)?;
 
         Ok(())
     }

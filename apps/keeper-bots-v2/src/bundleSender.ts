@@ -648,7 +648,9 @@ export class BundleSender {
 		} catch (e) {
 			const err = e as Error;
 			logger.error(
-				`${logPrefix} failed to send bundle: ${err.message}. ${err.stack}`
+				`${logPrefix} failed to send bundle ${metadata ?? ''}: ${
+					err.message
+				}. ${err.stack}`
 			);
 		}
 	}

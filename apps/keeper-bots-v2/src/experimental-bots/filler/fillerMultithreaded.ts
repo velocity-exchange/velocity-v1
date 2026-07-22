@@ -1358,7 +1358,8 @@ export class FillerMultithreaded {
 
 	protected async sendTxThroughJito(
 		tx: VersionedTransaction,
-		metadata: number | string
+		metadata: number | string,
+		nodesSent?: Array<NodeToFill>
 	) {
 		const blockhash = await this.getBlockhashForTx();
 		tx.message.recentBlockhash = blockhash;
@@ -1378,7 +1379,7 @@ export class FillerMultithreaded {
 		if (slotsUntilNextLeader !== undefined) {
 			this.bundleSender.sendTransactions(
 				[tx],
-				`(fillTxId: ${metadata})`,
+				`(fillTxId: ${metadata})${fillCorrelationSuffix(nodesSent ?? [])}`,
 				undefined,
 				false
 			);
@@ -2122,7 +2123,7 @@ export class FillerMultithreaded {
 		const txSig = bs58.encode(tx.signatures[0]);
 
 		if (buildForBundle) {
-			await this.sendTxThroughJito(tx, fillTxId);
+			await this.sendTxThroughJito(tx, fillTxId, nodesSent);
 			this.removeFillingNodes(nodesSent);
 		} else {
 			estTxSize = tx.message.serialize().length;
@@ -2168,9 +2169,9 @@ export class FillerMultithreaded {
 				.catch(async (e) => {
 					const simError = e as SendTransactionError;
 					logger.error(
-						`${logPrefix} Failed to send packed tx txAccountKeys: ${txAccounts} (${writeAccs} writeable) (fillTxId: ${fillTxId}), error: ${
-							simError.message
-						}${fillCorrelationSuffix(nodesSent)}`
+						`${logPrefix} Failed to send packed tx txAccountKeys: ${txAccounts} (${writeAccs} writeable) (fillTxId: ${fillTxId})${fillCorrelationSuffix(
+							nodesSent
+						)}, error: ${simError.message}`
 					);
 
 					if (e.message.includes('too large:')) {

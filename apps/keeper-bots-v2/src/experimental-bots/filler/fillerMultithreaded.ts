@@ -1775,7 +1775,11 @@ export class FillerMultithreaded {
 						removeLastIxPostSim,
 					});
 				} catch (error) {
-					logger.error(`Error simulating tx: ${error}`);
+					logger.error(
+						`${logPrefix} Error simulating tx (fillTxId: ${fillTxId})${fillCorrelationSuffix(
+							[nodeToFill]
+						)}: ${error}`
+					);
 					return;
 				}
 				if (simResult.simError) {
@@ -1813,7 +1817,9 @@ export class FillerMultithreaded {
 			let attempt = 0;
 			while (txAccounts > MAX_ACCOUNTS_PER_TX && makerInfosToUse.length > 0) {
 				logger.info(
-					`${logPrefix} (fillTxId: ${fillTxId} attempt ${attempt++}) Too many accounts, remove 1 and try again (had ${
+					`${logPrefix} (fillTxId: ${fillTxId} attempt ${attempt++})${fillCorrelationSuffix(
+						[nodeToFill]
+					)} Too many accounts, remove 1 and try again (had ${
 						makerInfosToUse.length
 					} maker and ${txAccounts} accounts)`
 				);
@@ -1823,14 +1829,18 @@ export class FillerMultithreaded {
 
 			if (makerInfosToUse.length === 0) {
 				logger.error(
-					`${logPrefix} No makerInfos left to use for multi maker perp node (fillTxId: ${fillTxId})`
+					`${logPrefix} No makerInfos left to use for multi maker perp node (fillTxId: ${fillTxId})${fillCorrelationSuffix(
+						[nodeToFill]
+					)}`
 				);
 				return true;
 			}
 
 			if (simResult === undefined) {
 				logger.error(
-					`${logPrefix} No simResult after ${attempt} attempts (fillTxId: ${fillTxId})`
+					`${logPrefix} No simResult after ${attempt} attempts (fillTxId: ${fillTxId})${fillCorrelationSuffix(
+						[nodeToFill]
+					)}`
 				);
 				return true;
 			}
@@ -1861,14 +1871,16 @@ export class FillerMultithreaded {
 						(simResult.simError as any)['InstructionError'][1]['Custom'] < 6000
 					) {
 						logger.info(
-							`${logPrefix} (fillTxId: ${fillTxId}) sim logs: ${simResult.simTxLogs?.join(
-								'\n'
-							)}`
+							`${logPrefix} (fillTxId: ${fillTxId})${fillCorrelationSuffix([
+								nodeToFill,
+							])} sim logs: ${simResult.simTxLogs?.join('\n')}`
 						);
 					}
 				} catch (e) {
 					logger.error(
-						`${logPrefix} Error parsing sim logs (fillTxId: ${fillTxId}): ${e}`
+						`${logPrefix} Error parsing sim logs (fillTxId: ${fillTxId})${fillCorrelationSuffix(
+							[nodeToFill]
+						)}: ${e}`
 					);
 				}
 			} else {
@@ -1888,9 +1900,9 @@ export class FillerMultithreaded {
 		} catch (e) {
 			if (e instanceof Error) {
 				logger.error(
-					`${logPrefix} Error filling multi maker perp node (fillTxId: ${fillTxId}): ${
-						e.stack ? e.stack : e.message
-					}`
+					`${logPrefix} Error filling multi maker perp node (fillTxId: ${fillTxId})${fillCorrelationSuffix(
+						[nodeToFill]
+					)}: ${e.stack ? e.stack : e.message}`
 				);
 			}
 		}
@@ -2066,7 +2078,11 @@ export class FillerMultithreaded {
 				removeLastIxPostSim,
 			});
 		} catch (error) {
-			logger.error(`Error simulating tx: ${error}`);
+			logger.error(
+				`${logPrefix} Error simulating tx (fillTxId: ${fillTxId})${fillCorrelationSuffix(
+					[nodeToFill]
+				)}: ${error}`
+			);
 			return;
 		}
 

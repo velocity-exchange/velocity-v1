@@ -1,0 +1,52 @@
+[package]
+name = "fees_if_bankruptcy_fuzz"
+version = "0.1.0"
+edition = "2021"
+
+# Standalone workspace — isolated from the parent project to avoid Solana
+# version conflicts (Crucible's harness model).
+[workspace]
+
+[dependencies]
+# Crucible framework, pinned to the exact commit.
+crucible-fuzzer = { git = "https://github.com/asymmetric-research/crucible", rev = "daeaa4d4a4e334175c4f171daacc7e177ad2fae0" }
+crucible-test-context = { git = "https://github.com/asymmetric-research/crucible", rev = "daeaa4d4a4e334175c4f171daacc7e177ad2fae0" }
+velocity = { path = "../../programs/velocity", default-features = false, features = [
+  "no-entrypoint",
+  "isolated-position",
+  "vlp-hedge",
+  "fuzz-fixtures",
+] }
+velocity-fuzz-common = { path = "../velocity-fuzz-common" }
+
+anchor-lang = "1.0"
+arbitrary = { version = "1", features = ["derive"] }
+libafl = { version = "0.15.1", features = ["std", "cli", "prelude"] }
+libafl_bolts = { version = "0.15.1", features = ["std"] }
+ctrlc = "3.4"
+solana-pubkey = "3.0"
+
+[[bin]]
+name = "invariant_test"
+path = "src/main.rs"
+
+[features]
+# One entry per fuzz test; `crucible run fees-if-bankruptcy <name>` builds --features <name>.
+
+# --- Invariant harnesses (Families III + VII) ---
+inv_if_share_round_trip = []
+inv_socialization_funding_delta = []
+inv_socialization_deposit_interest_delta = []
+inv_split_fee_conserves = []
+inv_if_shares_lost_bounded = []
+inv_rebase_preserves_redeemable = []
+inv_fee_tier_monotone = []
+
+# --- Regression harnesses (PENDING audit-fix PRs) ---
+regr_253_if_add_zero_shares = []
+# regr_254 (revenue-settle APR cap) is DEFERRED TO SVM (P8): no master host fn to
+# exercise (the if_last_settle_vault_amount snapshot field is added by the PR).
+regr_266_cancel_after_rebase = []
+regr_255_floored_if_tranche = []
+prop_borrow_debt_monotonic_in_index = []
+prop_if_exit_value_monotonic_in_vault = []

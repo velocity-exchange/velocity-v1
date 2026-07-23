@@ -8981,6 +8981,23 @@ pub mod resolve_perp_bankruptcy {
         let mut expected_market = market;
         expected_market.cumulative_funding_rate_long = 1010 * FUNDING_RATE_PRECISION_I128;
         expected_market.cumulative_funding_rate_short = -1010 * FUNDING_RATE_PRECISION_I128;
+        // resolve_perp_bankruptcy settles the AMM's genuine funding, then resyncs
+        // its stamp past the socialization bump so the bump is excluded from the
+        // AMM's next funding payment (no phantom AMM revenue — OtterSec #89).
+        expected_market.amm.last_cumulative_funding_rate_long =
+            expected_market.cumulative_funding_rate_long as i64;
+        expected_market.amm.last_cumulative_funding_rate_short =
+            expected_market.cumulative_funding_rate_short as i64;
+        // Model the production invariant: update_funding_rate keeps the AMM
+        // funding stamp in sync with the market cum rates, so on entry the stamp
+        // is not lagging and the #89 settle-first is a no-op (without this the
+        // harness's default-zero stamp would make the settle realize a spurious
+        // payment and shift total_fee_minus_distributions).
+        {
+            let mut m = market_map.get_ref_mut(&0).unwrap();
+            m.amm.last_cumulative_funding_rate_long = m.cumulative_funding_rate_long as i64;
+            m.amm.last_cumulative_funding_rate_short = m.cumulative_funding_rate_short as i64;
+        }
         expected_market.total_social_loss = 100000000;
         expected_market.net_unsettled_funding_pnl = -100 * QUOTE_PRECISION_I64;
         expected_market.quote_asset_amount = -50 * QUOTE_PRECISION_I128;
@@ -9607,6 +9624,18 @@ pub mod resolve_perp_bankruptcy {
         let mut expected_market = market;
         expected_market.cumulative_funding_rate_long = 1004 * FUNDING_RATE_PRECISION_I128;
         expected_market.cumulative_funding_rate_short = -1004 * FUNDING_RATE_PRECISION_I128;
+        // AMM stamp resynced past the socialization bump (OtterSec #89)
+        expected_market.amm.last_cumulative_funding_rate_long =
+            expected_market.cumulative_funding_rate_long as i64;
+        expected_market.amm.last_cumulative_funding_rate_short =
+            expected_market.cumulative_funding_rate_short as i64;
+        // Model the production invariant (see successful_resolve_perp_bankruptcy):
+        // the AMM stamp is not lagging at entry, so #89's settle-first is a no-op.
+        {
+            let mut m = market_map.get_ref_mut(&0).unwrap();
+            m.amm.last_cumulative_funding_rate_long = m.cumulative_funding_rate_long as i64;
+            m.amm.last_cumulative_funding_rate_short = m.cumulative_funding_rate_short as i64;
+        }
         expected_market.total_social_loss = 40000000;
         expected_market.net_unsettled_funding_pnl = -40 * QUOTE_PRECISION_I64;
         expected_market.quote_asset_amount = -50 * QUOTE_PRECISION_I128;
@@ -9851,6 +9880,18 @@ pub mod resolve_perp_bankruptcy {
         // 30 QUOTE socialized over 10 base -> 3 QUOTE/base funding delta
         expected_market.cumulative_funding_rate_long = 1003 * FUNDING_RATE_PRECISION_I128;
         expected_market.cumulative_funding_rate_short = -1003 * FUNDING_RATE_PRECISION_I128;
+        // AMM stamp resynced past the socialization bump (OtterSec #89)
+        expected_market.amm.last_cumulative_funding_rate_long =
+            expected_market.cumulative_funding_rate_long as i64;
+        expected_market.amm.last_cumulative_funding_rate_short =
+            expected_market.cumulative_funding_rate_short as i64;
+        // Model the production invariant (see successful_resolve_perp_bankruptcy):
+        // the AMM stamp is not lagging at entry, so #89's settle-first is a no-op.
+        {
+            let mut m = market_map.get_ref_mut(&0).unwrap();
+            m.amm.last_cumulative_funding_rate_long = m.cumulative_funding_rate_long as i64;
+            m.amm.last_cumulative_funding_rate_short = m.cumulative_funding_rate_short as i64;
+        }
         expected_market.total_social_loss = 30 * QUOTE_PRECISION_I64 as u128;
         expected_market.net_unsettled_funding_pnl = -30 * QUOTE_PRECISION_I64;
         expected_market.quote_asset_amount = -50 * QUOTE_PRECISION_I128;
@@ -10445,6 +10486,18 @@ pub mod resolve_perp_bankruptcy {
         // 80 QUOTE socialized over 10 base -> 8 QUOTE/base funding delta
         expected_market.cumulative_funding_rate_long = 1008 * FUNDING_RATE_PRECISION_I128;
         expected_market.cumulative_funding_rate_short = -1008 * FUNDING_RATE_PRECISION_I128;
+        // AMM stamp resynced past the socialization bump (OtterSec #89)
+        expected_market.amm.last_cumulative_funding_rate_long =
+            expected_market.cumulative_funding_rate_long as i64;
+        expected_market.amm.last_cumulative_funding_rate_short =
+            expected_market.cumulative_funding_rate_short as i64;
+        // Model the production invariant (see successful_resolve_perp_bankruptcy):
+        // the AMM stamp is not lagging at entry, so #89's settle-first is a no-op.
+        {
+            let mut m = market_map.get_ref_mut(&0).unwrap();
+            m.amm.last_cumulative_funding_rate_long = m.cumulative_funding_rate_long as i64;
+            m.amm.last_cumulative_funding_rate_short = m.cumulative_funding_rate_short as i64;
+        }
         expected_market.total_social_loss = 80 * QUOTE_PRECISION_I64 as u128;
         expected_market.net_unsettled_funding_pnl = -80 * QUOTE_PRECISION_I64;
         expected_market.quote_asset_amount = -50 * QUOTE_PRECISION_I128;

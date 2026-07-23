@@ -1,0 +1,41 @@
+[package]
+name = "oracle_fuzz"
+version = "0.1.0"
+edition = "2021"
+
+# Standalone workspace — isolated from the parent project to avoid Solana
+# version conflicts (Crucible's harness model).
+[workspace]
+
+[dependencies]
+# Crucible framework, pinned to the exact commit.
+crucible-fuzzer = { git = "https://github.com/asymmetric-research/crucible", rev = "daeaa4d4a4e334175c4f171daacc7e177ad2fae0" }
+crucible-test-context = { git = "https://github.com/asymmetric-research/crucible", rev = "daeaa4d4a4e334175c4f171daacc7e177ad2fae0" }
+velocity = { path = "../../programs/velocity", default-features = false, features = [
+  "no-entrypoint",
+  "isolated-position",
+  "vlp-hedge",
+  "fuzz-fixtures",
+] }
+velocity-fuzz-common = { path = "../velocity-fuzz-common" }
+
+anchor-lang = "1.0"
+arbitrary = { version = "1", features = ["derive"] }
+libafl = { version = "0.15.1", features = ["std", "cli", "prelude"] }
+libafl_bolts = { version = "0.15.1", features = ["std"] }
+ctrlc = "3.4"
+solana-pubkey = "3.0"
+
+[[bin]]
+name = "invariant_test"
+path = "src/main.rs"
+
+[features]
+# One entry per fuzz test; `crucible run oracle <name>` builds --features <name>.
+# --- Family VIII invariant harnesses (always-on properties) ---
+inv_validity_monotonicity = []
+inv_twap_between = []
+inv_confidence_floor = []
+# --- Regression harnesses (pinned audit findings) ---
+regr_fallback_price_overflow = []
+regr_268_prelaunch_delay = []

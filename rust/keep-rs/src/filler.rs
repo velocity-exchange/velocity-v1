@@ -963,6 +963,7 @@ async fn try_trigger_order(
             TxIntent::Trigger {
                 market_index,
                 order_id,
+                taker_user: taker_subaccount,
                 slot,
             },
             cu_limit as u64,
@@ -1055,6 +1056,7 @@ async fn try_swift_fill(
             TxIntent::SwiftFill {
                 uuid: swift_order.order_uuid(),
                 market_index: taker_order.market_index,
+                taker_user: taker_subaccount,
                 maker_crosses: crosses,
             },
             effective_cu_limit as u64,
@@ -1109,6 +1111,7 @@ async fn try_swift_place(
             TxIntent::SwiftPlace {
                 uuid: swift_order.order_uuid(),
                 market_index,
+                taker_user: taker_subaccount,
                 slot,
             },
             cu_limit as u64,
@@ -1407,6 +1410,7 @@ async fn try_auction_fill(
                 TxIntent::AuctionFill {
                     market_index,
                     taker_order_id: taker_order.order_id,
+                    taker_user: taker_subaccount,
                     maker_crosses: crosses,
                     has_trigger: taker_is_trigger,
                 },
@@ -1788,6 +1792,7 @@ async fn try_vamm_taker_fill(
                     slot,
                     market_index,
                     maker_order_id: l3_order.order_id,
+                    taker_user: user_subaccount,
                 },
                 effective_cu_limit as u64,
             )

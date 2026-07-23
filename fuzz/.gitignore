@@ -1,0 +1,15 @@
+# Build artifacts — each standalone harness workspace builds into its own
+# <crate>/target/ (see rust-toolchain / no shared target-dir). Never commit.
+target/
+*/target/
+
+# Fuzzer-generated artifacts — regenerable, can be large/noisy.
+crashes/
+*/crashes/
+corpus/
+*/corpus/
+.fuzz-cache/
+*/.fuzz-cache/
+
+# Committed on purpose (do NOT ignore): src/, Cargo.toml, Cargo.lock,
+# idls/ (needed by declare_fuzz_program!), rust-toolchain.toml.

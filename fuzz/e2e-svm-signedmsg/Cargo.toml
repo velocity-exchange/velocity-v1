@@ -1,0 +1,68 @@
+[package]
+name = "e2e_svm_signedmsg_fuzz"
+version = "0.1.0"
+edition = "2021"
+
+# Standalone workspace — isolated from the parent project to avoid Solana
+# version conflicts (Crucible's harness model).
+[workspace]
+
+[dependencies]
+# Crucible framework, pinned to the exact commit.
+crucible-fuzzer = { git = "https://github.com/asymmetric-research/crucible", rev = "daeaa4d4a4e334175c4f171daacc7e177ad2fae0" }
+crucible-test-context = { git = "https://github.com/asymmetric-research/crucible", rev = "daeaa4d4a4e334175c4f171daacc7e177ad2fae0" }
+crucible-idl-gen = { git = "https://github.com/asymmetric-research/crucible", rev = "daeaa4d4a4e334175c4f171daacc7e177ad2fae0" }
+
+# velocity as a HOST library — same feature set as build-devnet.sh so the host
+# structs match the loaded .so layout. Used for zero-copy account reads.
+velocity = { path = "../../programs/velocity", default-features = false, features = [
+  "no-entrypoint",
+  "isolated-position",
+  "vlp-hedge",
+  "fuzz-fixtures",
+] }
+velocity-fuzz-common = { path = "../velocity-fuzz-common" }
+
+anchor-lang = "1.0"
+arbitrary = { version = "1", features = ["derive"] }
+libafl = { version = "0.15.1", features = ["std", "cli", "prelude"] }
+libafl_bolts = { version = "0.15.1", features = ["std"] }
+ctrlc = "3.4"
+ctor = "0.6"
+solana-pubkey = "3.0"
+solana-keypair = "3.0"
+solana-signer = "3.0"
+solana-instruction = "3.0"
+bytemuck = "1.14"
+# Register a no-op builtin at the native Ed25519 program id (crucible builds
+# litesvm without the `precompiles` feature). Pinned to litesvm 0.9.1's
+# transitive version so InvokeContext / BuiltinFunctionWithContext types unify.
+solana-program-runtime = "=3.1.14"
+
+[[bin]]
+name = "invariant_test"
+path = "src/main.rs"
+
+[features]
+# One entry per fuzz test; `crucible run e2e-svm-signedmsg <name>` builds
+# --features <name>. Each test fn is `#[cfg(feature = "<fnname>")]`-gated so the
+# per-feature `main`/`__CRUCIBLE_ALLOC` symbols never collide.
+
+# --- PR #271 (OtterSec F10) regression harnesses ---
+#
+# regr_271_replay_resize_authority — `resize_signed_msg_user_orders` let a
+# per-sub-account delegate SHRINK the authority-scoped replay account, evicting
+# other sub-accounts' active replay UUIDs. The fix restricts shrinking to the
+# `authority`. This harness asserts the FIXED behavior (delegate shrink rejected
+# with InvalidSignedMsgUserOrdersResize / 6313) and therefore FAILS on pre-fix
+# master (where the shrink is allowed). No signing required.
+regr_271_replay_resize_authority = []
+#
+# regr_271_signed_msg_taker_pause — `place_signed_msg_taker_order` lacked the
+# global `exchange_not_paused` guard, so a signed-message taker order could be
+# placed while the exchange is fully paused. The fix adds the guard (an
+# `#[access_control]` that runs before the handler body). This harness submits a
+# signed-message taker order (ed25519 pre-ix + SignedMsgUserOrders account) while
+# the exchange is fully paused and asserts the FIXED behavior (rejected with
+# ExchangePaused / 6024), so it FAILS on pre-fix master.
+regr_271_signed_msg_taker_pause = []

@@ -70,6 +70,7 @@ pub struct Metrics {
     pub liquidation_skipped: IntCounterVec,
     pub liquidation_backoff_skips: IntCounter,
     pub swap_quote_latency_ms: IntGauge,
+    pub pyth_price_age_ms: IntGauge,
     pub jupiter_quote_failures: IntCounter,
     pub titan_quote_failures: IntCounter,
     pub confirmation_slots: HistogramVec,
@@ -214,6 +215,15 @@ impl Metrics {
             .register(Box::new(swap_quote_latency_ms.clone()))
             .unwrap();
 
+        let pyth_price_age_ms = IntGauge::new(
+            "rfb_pyth_price_age_ms",
+            "Wall-clock age of the last-consumed pyth-lazer price update, in milliseconds",
+        )
+        .unwrap();
+        registry
+            .register(Box::new(pyth_price_age_ms.clone()))
+            .unwrap();
+
         let jupiter_quote_failures = IntCounter::new(
             "rfb_jupiter_quote_failures_total",
             "Number of Jupiter quote failures",
@@ -275,6 +285,7 @@ impl Metrics {
             liquidation_skipped,
             liquidation_backoff_skips,
             swap_quote_latency_ms,
+            pyth_price_age_ms,
             jupiter_quote_failures,
             titan_quote_failures,
             confirmation_slots,
@@ -307,7 +318,8 @@ pub async fn metrics_handler(State(state): State<AppState>) -> impl IntoResponse
 pub async fn health_handler(State(state): State<AppState>) -> impl IntoResponse {
     let swift_stream_live = state.feed_health.swift_stream_live();
     let grpc_stream_live = state.feed_health.grpc_stream_live();
-    let status = if swift_stream_live && grpc_stream_live {
+    let pyth_stream_live = state.feed_health.pyth_stream_live();
+    let status = if swift_stream_live && grpc_stream_live && pyth_stream_live {
         StatusCode::OK
     } else {
         StatusCode::SERVICE_UNAVAILABLE
@@ -317,6 +329,7 @@ pub async fn health_handler(State(state): State<AppState>) -> impl IntoResponse 
         Json(serde_json::json!({
             "swift_stream_live": swift_stream_live,
             "grpc_stream_live": grpc_stream_live,
+            "pyth_stream_live": pyth_stream_live,
         })),
     )
 }
@@ -388,11 +401,15 @@ pub struct FeedHealth {
     last_slot_update_ms: std::sync::atomic::AtomicU64,
     /// swift ws subscription state: 0 = untracked, 1 = connected, 2 = disconnected
     swift_state: std::sync::atomic::AtomicU8,
+    /// unix ms of the last pyth-lazer price update; 0 = untracked
+    last_pyth_update_ms: std::sync::atomic::AtomicU64,
 }
 
 impl FeedHealth {
     /// gRPC slots arrive ~2.5/s; this much silence means the feed is dead
     const GRPC_STALE_LIMIT_MS: u64 = 60_000;
+    /// pyth-lazer feeds tick every 50-200ms; this much silence means the feed is dead
+    const PYTH_STALE_LIMIT_MS: u64 = 60_000;
 
     fn unix_now_ms() -> u64 {
         std::time::SystemTime::now()
@@ -415,6 +432,12 @@ impl FeedHealth {
         );
     }
 
+    /// Record a pyth-lazer price update (marks the pyth feed tracked)
+    pub fn touch_pyth(&self) {
+        self.last_pyth_update_ms
+            .store(Self::unix_now_ms(), std::sync::atomic::Ordering::Relaxed);
+    }
+
     /// false only when the grpc feed is tracked and stale
     pub fn grpc_stream_live(&self) -> bool {
         let last = self
@@ -426,6 +449,14 @@ impl FeedHealth {
     /// false only when the swift feed is tracked and disconnected
     pub fn swift_stream_live(&self) -> bool {
         self.swift_state.load(std::sync::atomic::Ordering::Relaxed) != 2
+    }
+
+    /// false only when the pyth feed is tracked and stale
+    pub fn pyth_stream_live(&self) -> bool {
+        let last = self
+            .last_pyth_update_ms
+            .load(std::sync::atomic::Ordering::Relaxed);
+        last == 0 || Self::unix_now_ms().saturating_sub(last) < Self::PYTH_STALE_LIMIT_MS
     }
 }
 

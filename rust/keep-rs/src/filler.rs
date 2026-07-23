@@ -8,6 +8,7 @@ use std::{
 use anchor_lang::Discriminator;
 use dashmap::DashMap;
 use futures_util::StreamExt;
+use pyth_lazer_protocol::router::TimestampUs;
 use solana_account_decoder_client_types::UiAccountEncoding;
 use solana_compute_budget_interface::ComputeBudgetInstruction;
 use solana_rpc_client_api::config::{
@@ -42,8 +43,8 @@ use velocity_rs::{
 use crate::{
     http::{FeedHealth, Metrics},
     util::{
-        swift_placement_expired, OrderSlotLimiter, PendingTxMeta, PendingTxs, PythPriceUpdate,
-        TxIntent,
+        pyth_update_is_fresh, swift_placement_expired, OrderSlotLimiter, PendingTxMeta, PendingTxs,
+        PythPriceUpdate, TxIntent,
     },
     Config, UseMarkets,
 };
@@ -153,6 +154,9 @@ impl FillerBot {
             )
             .expect("pyth price feed connects");
             let feed = crate::util::subscribe_price_feeds(pyth_feed_cli, &market_ids, &[], &[]);
+            // start the liveness clock at subscription time so a feed that never
+            // delivers a single update still trips the health check
+            feed_health.touch_pyth();
             log::info!(target: TARGET, "subscribed pyth price feeds");
             Some(feed)
         } else {
@@ -208,10 +212,21 @@ impl FillerBot {
         // (fresh<->stale) instead of every slot, so a stale oracle shows as two edges
         // rather than a wall of per-slot lines during the exact window you're debugging.
         let mut oracle_stale_state = BTreeMap::<u16, bool>::new();
+        // Per-market last-known pyth-price-stale state, for the same transition-only
+        // logging as `oracle_stale_state`.
+        let mut pyth_price_stale_state = BTreeMap::<u16, bool>::new();
 
         // Create a dummy receiver that never sends when pyth is disabled
         let (_dummy_tx, dummy_rx) = tokio::sync::mpsc::channel::<PythPriceUpdate>(1);
         let mut pyth_price_feed = self.pyth_price_feed.unwrap_or(dummy_rx);
+
+        // Wall-clock age gate for cached pyth prices: a frozen feed leaves this cache
+        // holding a price that's arbitrarily old with no signal of that in the update
+        // itself, so a per-market timestamp check on every read is the only way to
+        // catch it. Must stay strictly tighter than the program's
+        // `PYTH_LAZER_MAX_STALENESS_SECONDS` (15s) so the bot stops trusting a price
+        // before the program would reject it on-chain.
+        const PYTH_PRICE_MAX_AGE_US: u64 = 10_000_000;
 
         // Swift reconnect backoff state (reset on successful resubscribe / first order)
         let mut retries = 0u32;
@@ -365,6 +380,7 @@ impl FillerBot {
                     let priority_fee = priority_fee_subscriber.priority_fee_nth(0.5) + slot % 2; // add entropy to produce unique tx hash on conseuctive tx resubmission
                     let t0 = std::time::SystemTime::now();
                     let unix_now = t0.duration_since(std::time::SystemTime::UNIX_EPOCH).unwrap().as_secs() as i64;
+                    let now_us = TimestampUs::now();
 
                     // check for auction and limit crosses in all markets
                     for market in &market_ids {
@@ -412,7 +428,19 @@ impl FillerBot {
                         let trigger_price = perp_market.get_trigger_price(oracle_price as i64, unix_now, use_median_trigger_price).unwrap_or(oracle_price);
                         let mut pyth_update = None;
                         if let Some(p) = pyth_oracle_prices.get(&market_index) {
-                            if oracle_price != p.price {
+                            let age_us = now_us.saturating_us_since(p.ts);
+                            let is_stale = !pyth_update_is_fresh(p.ts, now_us, PYTH_PRICE_MAX_AGE_US);
+                            // Log staleness only on transition, matching `oracle_stale_state` above.
+                            let prev_stale = pyth_price_stale_state.insert(market_index, is_stale);
+                            if prev_stale != Some(is_stale) {
+                                if is_stale {
+                                    log::warn!(target: TARGET, "pyth price went stale market={market_index} age_ms={} falling back to chain oracle", age_us / 1_000);
+                                } else if prev_stale.is_some() {
+                                    log::info!(target: TARGET, "pyth price recovered market={market_index} age_ms={}", age_us / 1_000);
+                                }
+                            }
+                            metrics.pyth_price_age_ms.set((age_us / 1_000) as i64);
+                            if !is_stale && oracle_price != p.price {
                                 oracle_price = p.price;
                                 pyth_update = Some(p.clone());
                             }
@@ -578,6 +606,7 @@ impl FillerBot {
                 new_price = pyth_price_feed.recv() => {
                     match new_price {
                         Some(update) => {
+                            feed_health.touch_pyth();
                             pyth_oracle_prices.insert(update.market_id, update);
                         }
                         None => {

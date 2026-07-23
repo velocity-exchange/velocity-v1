@@ -7,7 +7,7 @@ use axum::{
     response::{Html, IntoResponse, Json},
 };
 use prometheus::{
-    Encoder, HistogramVec, IntCounter, IntCounterVec, IntGauge, Registry, TextEncoder,
+    Encoder, HistogramVec, IntCounter, IntCounterVec, IntGauge, IntGaugeVec, Registry, TextEncoder,
 };
 use serde::{Deserialize, Serialize};
 use tokio::sync::RwLock;
@@ -70,7 +70,7 @@ pub struct Metrics {
     pub liquidation_skipped: IntCounterVec,
     pub liquidation_backoff_skips: IntCounter,
     pub swap_quote_latency_ms: IntGauge,
-    pub pyth_price_age_ms: IntGauge,
+    pub pyth_price_age_ms: IntGaugeVec,
     pub jupiter_quote_failures: IntCounter,
     pub titan_quote_failures: IntCounter,
     pub confirmation_slots: HistogramVec,
@@ -215,9 +215,12 @@ impl Metrics {
             .register(Box::new(swap_quote_latency_ms.clone()))
             .unwrap();
 
-        let pyth_price_age_ms = IntGauge::new(
-            "rfb_pyth_price_age_ms",
-            "Wall-clock age of the last-consumed pyth-lazer price update, in milliseconds",
+        let pyth_price_age_ms = IntGaugeVec::new(
+            prometheus::Opts::new(
+                "rfb_pyth_price_age_ms",
+                "Wall-clock age of the last-consumed pyth-lazer price update, in milliseconds",
+            ),
+            &["market"],
         )
         .unwrap();
         registry

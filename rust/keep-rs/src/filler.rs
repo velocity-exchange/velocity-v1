@@ -380,7 +380,6 @@ impl FillerBot {
                     let priority_fee = priority_fee_subscriber.priority_fee_nth(0.5) + slot % 2; // add entropy to produce unique tx hash on conseuctive tx resubmission
                     let t0 = std::time::SystemTime::now();
                     let unix_now = t0.duration_since(std::time::SystemTime::UNIX_EPOCH).unwrap().as_secs() as i64;
-                    let now_us = TimestampUs::now();
 
                     // check for auction and limit crosses in all markets
                     for market in &market_ids {
@@ -428,6 +427,10 @@ impl FillerBot {
                         let trigger_price = perp_market.get_trigger_price(oracle_price as i64, unix_now, use_median_trigger_price).unwrap_or(oracle_price);
                         let mut pyth_update = None;
                         if let Some(p) = pyth_oracle_prices.get(&market_index) {
+                            // capture the clock per market, not per slot: earlier markets in
+                            // this loop await fill txs, so a slot-start timestamp can be
+                            // seconds behind by the time later markets are evaluated
+                            let now_us = TimestampUs::now();
                             let age_us = now_us.saturating_us_since(p.ts);
                             let is_stale = !pyth_update_is_fresh(p.ts, now_us, PYTH_PRICE_MAX_AGE_US);
                             // Log staleness only on transition, matching `oracle_stale_state` above.
@@ -439,7 +442,10 @@ impl FillerBot {
                                     log::info!(target: TARGET, "pyth price recovered market={market_index} age_ms={}", age_us / 1_000);
                                 }
                             }
-                            metrics.pyth_price_age_ms.set((age_us / 1_000) as i64);
+                            metrics
+                                .pyth_price_age_ms
+                                .with_label_values(&[&market_index.to_string()])
+                                .set((age_us / 1_000) as i64);
                             if !is_stale && oracle_price != p.price {
                                 oracle_price = p.price;
                                 pyth_update = Some(p.clone());

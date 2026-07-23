@@ -1,0 +1,44 @@
+[package]
+name = "margin_liq_fuzz"
+version = "0.1.0"
+edition = "2021"
+
+# Standalone workspace — isolated from the parent project to avoid Solana
+# version conflicts (Crucible's harness model).
+[workspace]
+
+[dependencies]
+# Crucible framework, pinned to the exact commit.
+crucible-fuzzer = { git = "https://github.com/asymmetric-research/crucible", rev = "daeaa4d4a4e334175c4f171daacc7e177ad2fae0" }
+crucible-test-context = { git = "https://github.com/asymmetric-research/crucible", rev = "daeaa4d4a4e334175c4f171daacc7e177ad2fae0" }
+velocity = { path = "../../programs/velocity", default-features = false, features = [
+  "no-entrypoint",
+  "isolated-position",
+  "vlp-hedge",
+  "fuzz-fixtures",
+] }
+velocity-fuzz-common = { path = "../velocity-fuzz-common" }
+
+anchor-lang = "1.0"
+arbitrary = { version = "1", features = ["derive"] }
+libafl = { version = "0.15.1", features = ["std", "cli", "prelude"] }
+libafl_bolts = { version = "0.15.1", features = ["std"] }
+ctrlc = "3.4"
+solana-pubkey = "3.0"
+
+[[bin]]
+name = "invariant_test"
+path = "src/main.rs"
+
+[features]
+# One entry per fuzz test; `crucible run margin-liq <name>` builds --features <name>.
+# --- Invariant harnesses (Family V: margin / liquidation math) ---
+prop_margin_value_totality = []
+prop_initial_ge_maintenance = []
+prop_meets_initial_implies_maintenance = []
+prop_liquidation_sizing_healthy = []
+prop_liquidation_fee_bounded = []
+prop_asset_never_lowers_collateral = []
+# --- Regression harnesses (assert the PENDING audit-fix invariant) ---
+prop_pnl_for_deposit_no_worsen_within_buffer = []
+regr_243_protective_pricing = []

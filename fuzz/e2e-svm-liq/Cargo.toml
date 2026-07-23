@@ -1,0 +1,54 @@
+[package]
+name = "e2e_svm_liq_fuzz"
+version = "0.1.0"
+edition = "2021"
+
+# Standalone workspace — isolated from the parent project to avoid Solana
+# version conflicts (Crucible's harness model). Mirrors fuzz/e2e-svm (P7).
+[workspace]
+
+[dependencies]
+# Crucible framework, pinned to the exact commit (same rev as P7).
+crucible-fuzzer = { git = "https://github.com/asymmetric-research/crucible", rev = "daeaa4d4a4e334175c4f171daacc7e177ad2fae0" }
+crucible-test-context = { git = "https://github.com/asymmetric-research/crucible", rev = "daeaa4d4a4e334175c4f171daacc7e177ad2fae0" }
+crucible-idl-gen = { git = "https://github.com/asymmetric-research/crucible", rev = "daeaa4d4a4e334175c4f171daacc7e177ad2fae0" }
+
+# velocity as a HOST library — same feature set as build-devnet.sh so the host
+# structs match the loaded .so layout. Used for zero-copy account reads and
+# host-side account injection.
+velocity = { path = "../../programs/velocity", default-features = false, features = [
+  "no-entrypoint",
+  "isolated-position",
+  "vlp-hedge",
+  "fuzz-fixtures",
+] }
+velocity-fuzz-common = { path = "../velocity-fuzz-common" }
+
+anchor-lang = "1.0"
+arbitrary = { version = "1", features = ["derive"] }
+libafl = { version = "0.15.1", features = ["std", "cli", "prelude"] }
+libafl_bolts = { version = "0.15.1", features = ["std"] }
+ctrlc = "3.4"
+ctor = "0.6"
+solana-pubkey = "3.0"
+solana-keypair = "3.0"
+solana-signer = "3.0"
+solana-instruction = "3.0"
+bytemuck = "1.14"
+
+[[bin]]
+name = "invariant_test"
+path = "src/main.rs"
+
+[features]
+# One entry per fuzz test; `crucible run e2e-svm-liq <name>` builds --features <name>.
+
+# --- Always-on invariant harness (families III + V + VII end-to-end) ---
+invariant_liq = []
+
+# --- Regression harnesses (pending audit-fix PRs) ---
+# Off by default so the standard lane stays green on master. Each asserts the
+# FIXED behavior, so it FAILS on current (pre-fix) master, proving reproduction.
+regr_267_perp_before_spot = []
+regr_255_floored_if_tranche = []
+regr_275_equity_floor_liq = []

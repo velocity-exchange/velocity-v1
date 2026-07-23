@@ -1,5 +1,0 @@
----
-'@velocity-exchange/sdk': patch
----
-
-AMM-quoter audit fixes (protocol-side behavior; the SDK's off-chain prediction now matches on-chain again). The vAMM limit-fill cap now always sizes off the spread-adjusted ask/bid reserves — including when `baseSpread == 0` but the vol/inventory spread is non-zero — so a take can no longer execute past the taker's limit price; this aligns the program with `calculateMaxBaseAssetAmountToTrade`, which already sized off `calculateSpreadReserves` unconditionally (no SDK code change was needed). The fill-triggered funding update now evaluates the mark/oracle divergence gate (and the oracle-TWAP sanitization sharing that reserve) against the post-fill reserve rather than the pre-fill one; a zero-fill quote step no longer stamps the mark-TWAP ahead of a real same-timestamp maker trade; and AMM JIT participation in a permissionless DLOB match is now throttled by the per-fill `maxFillReserveFraction` available-liquidity bound (a deliberate divergence from upstream Drift's JIT sizing).

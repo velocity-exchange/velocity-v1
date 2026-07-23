@@ -1,0 +1,57 @@
+[package]
+name = "e2e_svm_revshare_fuzz"
+version = "0.1.0"
+edition = "2021"
+
+# Standalone workspace — isolated from the parent project to avoid Solana
+# version conflicts (Crucible's harness model).
+[workspace]
+
+[dependencies]
+# Crucible framework, pinned to the exact commit.
+crucible-fuzzer = { git = "https://github.com/asymmetric-research/crucible", rev = "daeaa4d4a4e334175c4f171daacc7e177ad2fae0" }
+crucible-test-context = { git = "https://github.com/asymmetric-research/crucible", rev = "daeaa4d4a4e334175c4f171daacc7e177ad2fae0" }
+crucible-idl-gen = { git = "https://github.com/asymmetric-research/crucible", rev = "daeaa4d4a4e334175c4f171daacc7e177ad2fae0" }
+
+# velocity as a HOST library — same feature set as build-devnet.sh so the host
+# structs match the loaded .so layout. Used for zero-copy account reads.
+velocity = { path = "../../programs/velocity", default-features = false, features = [
+  "no-entrypoint",
+  "isolated-position",
+  "vlp-hedge",
+  "fuzz-fixtures",
+] }
+velocity-fuzz-common = { path = "../velocity-fuzz-common" }
+
+anchor-lang = "1.0"
+arbitrary = { version = "1", features = ["derive"] }
+libafl = { version = "0.15.1", features = ["std", "cli", "prelude"] }
+libafl_bolts = { version = "0.15.1", features = ["std"] }
+ctrlc = "3.4"
+ctor = "0.6"
+solana-pubkey = "3.0"
+solana-keypair = "3.0"
+solana-signer = "3.0"
+solana-instruction = "3.0"
+bytemuck = "1.14"
+
+[[bin]]
+name = "invariant_test"
+path = "src/main.rs"
+
+[features]
+# One entry per fuzz test; `crucible run e2e-svm-revshare <name>` builds --features <name>.
+# Each is a regression harness that encodes the FIXED invariant, so it FAILS on
+# current (pre-fix) master — reproducing the audit bug — and flips to passing
+# once the corresponding PR merges.
+
+# PR #256 (OtterSec High #49): a stale RevenueShareOrder row written by
+# add_builder_order before a place that soft-skips on expired max_ts is reused
+# by a later non-builder order with the same order id, overcharging a builder
+# fee at fill time.
+regr_256_reused_order_id_stale_builder_fee = []
+
+# PR #273 (OtterSec #45): load_revenue_share_map keyed the recipient User by
+# authority only, letting a permissionless settle caller redirect accrued
+# builder/referrer rewards to any sibling subaccount (sub_account_id != 0).
+regr_273_revenue_share_subaccount_redirect = []

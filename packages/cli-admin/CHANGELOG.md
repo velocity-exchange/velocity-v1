@@ -1,5 +1,58 @@
 # @velocity-exchange/admin-cli
 
+## 0.8.0
+
+### Minor Changes
+
+- [#185](https://github.com/velocity-exchange/velocity-v1/pull/185) [`1f866f1`](https://github.com/velocity-exchange/velocity-v1/commit/1f866f1c44def526aeef8927fe14d563f3a8ed7b) Thanks [@ChewingGlass](https://github.com/ChewingGlass)! - Add per-market configurable withdraw circuit breaker and a daily deposit rate
+  cap.
+
+  The previously-hardcoded 25% daily withdraw circuit breaker is now configurable
+  per spot market via `SpotMarketAccount.withdrawCircuitBreakerBps` (basis points,
+  10000 = 100%; `0` keeps the default 25% = 2500 bps). A new daily deposit rate
+  cap mirrors the withdraw side: `depositGuardThreshold` (no cap below it) and
+  `maxDepositBpsPerDay` (basis points; `0` disables) bound how far resulting
+  deposits may exceed the 24h deposit TWAP. It is enforced on the direct `deposit`
+  instruction and on the shared spot-credit path, so `transfer_pools` and
+  `end_swap` deposit credits are bounded too; it reverts with the new
+  `DailyDepositLimit` (6364) program error.
+
+  All three fields are carved from the existing 13-byte alignment gap before
+  `protocol_fee_pool`, so `SpotMarket` stays 808 bytes with every other field
+  offset unchanged and no account migration. Existing markets read the repurposed
+  bytes as 0 (default 25% breaker, disabled deposit cap). The two percentage
+  fields are `u16` basis points rather than `u32` PERCENTAGE_PRECISION so the set
+  fits the gap; `depositGuardThreshold` stays `u64` (token amount).
+
+  SDK: `SpotMarketAccount` gains `withdrawCircuitBreakerBps`,
+  `depositGuardThreshold`, and `maxDepositBpsPerDay`; new
+  `AdminClient.updateSpotMarketWithdrawCircuitBreaker` /
+  `updateSpotMarketDepositCap` (and their `getUpdate…Ix` builders); new math
+  helpers `calculateMaxDepositTokenAmount` / `checkDepositLimits`; the existing
+  `calculateWithdrawLimit` now honors the configurable breaker (all in basis
+  points).
+
+  Admin CLI: new `spot-market set-withdraw-breaker <market> <pct>` and
+  `spot-market set-deposit-cap <market> <threshold> <pctPerDay>` commands (pct in
+  basis points).
+
+- [#291](https://github.com/velocity-exchange/velocity-v1/pull/291) [`ded5391`](https://github.com/velocity-exchange/velocity-v1/commit/ded5391eaeeed7c401eda6a0070072ba97d40e17) Thanks [@0xahzam](https://github.com/0xahzam)! - Add `program upgrade` command: propose a BPFLoaderUpgradeable upgrade from an existing on-chain buffer (validates the buffer and prints its executable hash before proposing).
+
+- [#284](https://github.com/velocity-exchange/velocity-v1/pull/284) [`ad91962`](https://github.com/velocity-exchange/velocity-v1/commit/ad91962bddd83efc5e39076aeb229e1adbb71cc9) Thanks [@0xahzam](https://github.com/0xahzam)! - Add `spot-market set-scale-initial-asset-weight-start` command: sets the deposit-notional threshold (QUOTE_PRECISION, 1e6) above which a spot market's initial asset weight scales down. `0` disables scaling. Warm/cold admin; maintenance weight is unaffected.
+
+- [#297](https://github.com/velocity-exchange/velocity-v1/pull/297) [`373edfc`](https://github.com/velocity-exchange/velocity-v1/commit/373edfc398386942124656d85609060e12445a1e) Thanks [@ChewingGlass](https://github.com/ChewingGlass)! - Add `show fees`: read-only command printing every fee a user can pay — perp fee tiers (by 30d volume) and the spot tier, filler reward, the trade-fee remainder split, and per-market fee adjustments, liquidation fees, and spot interest carveouts.
+
+- [#279](https://github.com/velocity-exchange/velocity-v1/pull/279) [`605e0be`](https://github.com/velocity-exchange/velocity-v1/commit/605e0be12a96c2c6c5a21b2a98c83083b3fa37fe) Thanks [@0xahzam](https://github.com/0xahzam)! - Add `user init` command: initializes UserStats (if missing) and sequential named sub-accounts for a given authority (or a Squads vault PDA via `--multisig`/`--vault-index`). On mainnet the program requires the authority to sign creation, so with `--multisig` the instructions are batched into one vault transaction proposal with the vault as rent payer; otherwise the signer pays and the transaction is sent directly. Idempotent across reruns. Prints the planned accounts and expected rent up front; `--dry-run` stops there.
+
+- [#279](https://github.com/velocity-exchange/velocity-v1/pull/279) [`605e0be`](https://github.com/velocity-exchange/velocity-v1/commit/605e0be12a96c2c6c5a21b2a98c83083b3fa37fe) Thanks [@0xahzam](https://github.com/0xahzam)! - Add `user set-delegate` command: sets the delegate wallet on an authority's sub-accounts (optionally toggling the authority-wide `allowDelegateTransfer` flag), batched into a single Squads vault transaction proposal with `--multisig`. `sendOrPropose` now accepts a vault index so proposals can execute from vaults other than 0, and `user deposit`/`user withdraw` gain a `--vault-index` option. `set-delegate`, `deposit` and `withdraw` also gain `--dry-run`, printing the instruction list and expected proposal rent/fees without sending.
+
+### Patch Changes
+
+- [#292](https://github.com/velocity-exchange/velocity-v1/pull/292) [`633c5f1`](https://github.com/velocity-exchange/velocity-v1/commit/633c5f17c56b186e505a3a7bfad2a450a1e9a82e) Thanks [@ChewingGlass](https://github.com/ChewingGlass)! - Fix warm-gated spot-market admin commands failing when proposed through the warm-admin Squads multisig. `getUpdateSpotMarketStatusIx`, `getUpdateWithdrawGuardThresholdIx`, `getUpdateSpotMarketIfFactorIx`, and `getUpdateSpotMarketScaleInitialAssetWeightStartIx` now accept an optional `admin` override, and `velocity-admin spot-market` commands resolve the admin signer to the executing authority (the multisig's vault 0 PDA with `--multisig`, else the local keypair) instead of always embedding `state.coldAdmin`.
+
+- Updated dependencies [[`ac29aa1`](https://github.com/velocity-exchange/velocity-v1/commit/ac29aa129c2cac14099a92b4a484bf20d2974863), [`88642ad`](https://github.com/velocity-exchange/velocity-v1/commit/88642ad1784af54c9ca0df271535b32a69cbe517), [`1f866f1`](https://github.com/velocity-exchange/velocity-v1/commit/1f866f1c44def526aeef8927fe14d563f3a8ed7b), [`ce18d22`](https://github.com/velocity-exchange/velocity-v1/commit/ce18d22926ae6a18b98df8a60bbd2696e0d10dbc), [`4179772`](https://github.com/velocity-exchange/velocity-v1/commit/417977294e10ffc152a0e5230019671000d2185b), [`88a3c64`](https://github.com/velocity-exchange/velocity-v1/commit/88a3c647f609a5fe357e414ee8b4b630fd2dc68c), [`e1f45a3`](https://github.com/velocity-exchange/velocity-v1/commit/e1f45a3d9e9e54e42987ed71bff9f6eaa6eac623), [`fc86321`](https://github.com/velocity-exchange/velocity-v1/commit/fc86321e8b8323e95e2d8385a82fdc69ca00075f), [`8f8b1ef`](https://github.com/velocity-exchange/velocity-v1/commit/8f8b1efcd9323369e13b0166ea158d78bd49b2ad), [`70ec53e`](https://github.com/velocity-exchange/velocity-v1/commit/70ec53e9390f8da2dd5aeee752c2bf3d285a2697), [`3b9a07b`](https://github.com/velocity-exchange/velocity-v1/commit/3b9a07bbe8f72145006ab45837a1fc21858d8c73), [`2994a81`](https://github.com/velocity-exchange/velocity-v1/commit/2994a813ab3de23c44d11157f040f690e3ddf8d6), [`a0e111a`](https://github.com/velocity-exchange/velocity-v1/commit/a0e111a237245d4011b33ff263a2cc9237a66265), [`0e0654c`](https://github.com/velocity-exchange/velocity-v1/commit/0e0654cafc5a95855caccd1f7741e74089cb6007), [`943095b`](https://github.com/velocity-exchange/velocity-v1/commit/943095b975dff10791b0e287df462d2ecf176aea), [`2d4a32f`](https://github.com/velocity-exchange/velocity-v1/commit/2d4a32f1c74b28b123ad4bd47f734c2843b090e4), [`8761596`](https://github.com/velocity-exchange/velocity-v1/commit/87615967d775c435fa777a5fa9396a80bbb0a62f), [`633c5f1`](https://github.com/velocity-exchange/velocity-v1/commit/633c5f17c56b186e505a3a7bfad2a450a1e9a82e)]:
+  - @velocity-exchange/sdk@0.8.0
+
 ## 0.7.0
 
 ### Minor Changes

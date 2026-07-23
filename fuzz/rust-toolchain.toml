@@ -1,0 +1,13 @@
+# Portable pin matching the repo's RUST_TOOLCHAIN (see .github/workflows/main.yml).
+# Resolves to the host-native target: x86_64-unknown-linux-gnu on CI runners and
+# Intel macOS, which is the correct architecture for the zero-copy alignment
+# invariant (docs/alignment-and-native-offsets.md — u128 must be 16-aligned; any
+# Rust >= 1.77 on x86_64 satisfies this).
+#
+# APPLE SILICON developers: the native aarch64 target would build too. The repo's
+# zero-copy structs are padded so `sizeof` is identical across targets, so host
+# fixtures still match the on-chain (SBF) layout — but to exactly mirror CLAUDE.md's
+# x86_64 development guidance, run `rustup override set 1.91.1-x86_64-apple-darwin`
+# inside fuzz/ before building the harnesses.
+[toolchain]
+channel = "1.91.1"

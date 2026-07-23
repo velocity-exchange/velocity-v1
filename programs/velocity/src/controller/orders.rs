@@ -1763,15 +1763,23 @@ fn get_builder_escrow_info(
 ) -> (Option<u32>, Option<u32>, Option<u16>, Option<u8>) {
     if let Some(escrow) = escrow_opt {
         // Only match a builder-order row for an order that actually carries the
-        // `HasBuilder` flag. Escrow rows are keyed by `(sub_account_id, order_id)`,
-        // and order ids are reused when a placement soft-skips after
-        // `add_builder_order` already wrote the row (e.g. an expired `max_ts`, which
-        // returns before `next_order_id` is consumed). Without this gate a stale row
-        // would attach to the later non-builder order that reuses the id and charge
-        // it a builder fee. The referral lookup is keyed by market, not order id, so
-        // it is unaffected and stays unconditional.
+        // `HasBuilder` flag, and bind the row to the market being filled. Escrow rows
+        // are keyed on chain by `(sub_account_id, order_id)`, and order ids are reused
+        // both within a market (a placement soft-skips after `add_builder_order` wrote
+        // the row — e.g. an expired `max_ts`, which returns before `next_order_id` is
+        // consumed) and across markets (ids are per-subaccount). Without the
+        // `HasBuilder` gate a stale row would attach to a later non-builder order that
+        // reuses the id (OtterSec #49); without the market binding a market-A row would
+        // attach to a same-id market-B fill and be paid from market A's pnl pool
+        // (OtterSec #88). `find_builder_order_index` enforces both. The referral lookup
+        // is keyed by market, not order id, so it is unaffected and stays unconditional.
         let builder_order_idx = if order_has_builder {
-            escrow.find_order_index(sub_account_id, order_id)
+            escrow.find_builder_order_index(
+                sub_account_id,
+                order_id,
+                market_index,
+                MarketType::Perp,
+            )
         } else {
             None
         };

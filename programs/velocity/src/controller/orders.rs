@@ -1863,11 +1863,53 @@ fn fulfill_perp_order(
                 slot,
             )?;
         }
+        // Route off the PROJECTED curve, not the stored one. `Quoter::setup`
+        // snaps the AMM toward oracle only after a fulfillment method is
+        // selected, so routing off the stored reserve price lets a stale
+        // curve block the very fill that would refresh it: the taker fails
+        // to cross the stale quote, no method is selected, setup never runs.
+        // Project the refresh onto a scratch copy (same inputs and same
+        // slot-idempotency gate as `setup`, so the routing price equals the
+        // price the first step will quote) and leave the real AMM
+        // untouched: curve mutation stays in `Quoter::setup`. When the
+        // projection is a passthrough (oracle invalid for curve updates,
+        // zero intensity, or the affordability floor rejected it), the
+        // scratch copy equals the stored curve and routing behaves exactly
+        // as before.
+        let (projected_amm, projected_reserve_price) = if market.amm.last_update_slot >= slot {
+            // Already projected against this slot's oracle (a prior fill or
+            // keeper crank); `setup` skips re-projection in this case, so
+            // route off the stored curve for exact parity.
+            (market.amm, reserve_price_before)
+        } else {
+            let amm_refresh_validity =
+                crate::vlp::amm::refresh::compute_amm_refresh_validity_with_guard_rails(
+                    &market,
+                    &mm_oracle_pd,
+                    validity_guard_rails,
+                )?;
+            let projection = crate::vlp::amm::math::repeg::project_post_refresh_scalar(
+                &market.amm,
+                &crate::vlp::amm::math::repeg::ProjectionInputs::from_market(&market),
+                &mm_oracle_pd,
+                amm_refresh_validity,
+            )?;
+            let mut projected_amm = projection.projected_amm(&market.amm)?;
+            let projected_reserve_price = projected_amm.reserve_price()?;
+            crate::vlp::amm::math::spread::update_amm_quote_state(
+                &mut projected_amm,
+                &market.market_stats,
+                &mm_oracle_pd,
+                projected_reserve_price,
+                slot,
+            )?;
+            (projected_amm, projected_reserve_price)
+        };
         determine_perp_fulfillment_methods(
             &user.orders[user_order_index],
             maker_orders_info,
-            &market.amm,
-            reserve_price_before,
+            &projected_amm,
+            projected_reserve_price,
             limit_price,
             amm_is_available,
         )?

@@ -1,0 +1,64 @@
+[package]
+name = "e2e_svm_fuzz"
+version = "0.1.0"
+edition = "2021"
+
+# Standalone workspace — isolated from the parent project to avoid Solana
+# version conflicts (Crucible's harness model).
+[workspace]
+
+[dependencies]
+# Crucible framework, pinned to the exact commit.
+crucible-fuzzer = { git = "https://github.com/asymmetric-research/crucible", rev = "daeaa4d4a4e334175c4f171daacc7e177ad2fae0" }
+crucible-test-context = { git = "https://github.com/asymmetric-research/crucible", rev = "daeaa4d4a4e334175c4f171daacc7e177ad2fae0" }
+crucible-idl-gen = { git = "https://github.com/asymmetric-research/crucible", rev = "daeaa4d4a4e334175c4f171daacc7e177ad2fae0" }
+
+# velocity as a HOST library — same feature set as build-devnet.sh so the host
+# structs match the loaded .so layout. Used for zero-copy account reads.
+velocity = { path = "../../programs/velocity", default-features = false, features = [
+  "no-entrypoint",
+  "isolated-position",
+  "vlp-hedge",
+  "fuzz-fixtures",
+] }
+velocity-fuzz-common = { path = "../velocity-fuzz-common" }
+
+anchor-lang = "1.0"
+arbitrary = { version = "1", features = ["derive"] }
+libafl = { version = "0.15.1", features = ["std", "cli", "prelude"] }
+libafl_bolts = { version = "0.15.1", features = ["std"] }
+ctrlc = "3.4"
+ctor = "0.6"
+solana-pubkey = "3.0"
+solana-keypair = "3.0"
+solana-signer = "3.0"
+solana-instruction = "3.0"
+bytemuck = "1.14"
+
+[[bin]]
+name = "invariant_test"
+path = "src/main.rs"
+
+[features]
+# One entry per fuzz test; `crucible run e2e-svm <name>` builds --features <name>.
+
+# --- Phase 1/2: always-on invariant harness ---
+invariant_solvency = []
+
+# --- Phase 3: regression harnesses (pending audit-fix PRs) ---
+# Off by default so the standard lane stays green on master.
+#
+# IMPLEMENTED — reproduces on current (pre-fix) master:
+#   PR #270 (OtterSec F1): the market-scoped SettlePnl pause is not enforced on
+#   the expired-position settle path. Run:
+#     crucible run e2e-svm regr_270_perp_pause --timeout 10
+regr_270_perp_pause = []
+#
+# DEFERRED — see the module-level "Deferred regressions" note in src/main.rs.
+# Each needs coherent state that is impractical to inject in this tier's budget
+# (signed-message envelopes, RevenueShareEscrow + approved-builder rows,
+# borrow/utilization so interest actually accrues, or the fill/matching engine).
+# These are better homed in P8 (e2e-svm-liq) or a dedicated escrow harness.
+#   regr_256_builder_fee, regr_273_revenue_share_subaccount,
+#   regr_271_signed_msg_pause, regr_272_deposit_withdraw_pause,
+#   regr_276_funding_pause

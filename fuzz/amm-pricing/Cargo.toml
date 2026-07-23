@@ -1,0 +1,44 @@
+[package]
+name = "amm_pricing_fuzz"
+version = "0.1.0"
+edition = "2021"
+
+# Standalone workspace — isolated from the parent project to avoid Solana
+# version conflicts (Crucible's harness model).
+[workspace]
+
+[dependencies]
+# Crucible framework, pinned to the exact commit.
+crucible-fuzzer = { git = "https://github.com/asymmetric-research/crucible", rev = "daeaa4d4a4e334175c4f171daacc7e177ad2fae0" }
+crucible-test-context = { git = "https://github.com/asymmetric-research/crucible", rev = "daeaa4d4a4e334175c4f171daacc7e177ad2fae0" }
+velocity = { path = "../../programs/velocity", default-features = false, features = [
+  "no-entrypoint",
+  "isolated-position",
+  "vlp-hedge",
+  "fuzz-fixtures",
+] }
+velocity-fuzz-common = { path = "../velocity-fuzz-common" }
+
+anchor-lang = "1.0"
+arbitrary = { version = "1", features = ["derive"] }
+libafl = { version = "0.15.1", features = ["std", "cli", "prelude"] }
+libafl_bolts = { version = "0.15.1", features = ["std"] }
+ctrlc = "3.4"
+solana-pubkey = "3.0"
+
+[[bin]]
+name = "invariant_test"
+path = "src/main.rs"
+
+[features]
+# One entry per fuzz test; `crucible run amm-pricing <name>` builds --features <name>.
+# --- Invariant harnesses (Families IV + II, always-on / required-green) ---
+prop_k_conserved_swap = []
+prop_cap_to_max_spread = []
+prop_bid_ask_price_bounds = []
+prop_repeg_k_cost = []
+prop_jit_clamped_bound = []
+# --- Regression harnesses (PENDING PR #269, must FAIL on current master) ---
+regr_269_limit_cap_reserve_basis = []
+regr_269_scalar_k_floor = []
+regr_269_jit_available_liquidity = []

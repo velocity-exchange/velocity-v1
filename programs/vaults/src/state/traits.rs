@@ -149,6 +149,12 @@ pub trait VaultDepositorBase {
             vault_equity,
         )?;
 
+        // #104: calculate_profit_share_and_update advances the depositor's high-water mark and
+        // profit_share_fee_paid by the computed fee. Snapshot both first so we can undo that
+        // advance if the fee is too small to move a whole share (see the defer branch below).
+        let cumulative_profit_share_before = self.get_cumulative_profit_share_amount();
+        let profit_share_fee_paid_before = self.get_profit_share_fee_paid();
+
         let (manager_profit_share, protocol_profit_share) =
             self.calculate_profit_share_and_update(total_amount, vault, vault_protocol)?;
         let manager_profit_share: u64 = manager_profit_share.cast()?;
@@ -157,15 +163,21 @@ pub trait VaultDepositorBase {
             .safe_add(protocol_profit_share)?
             .cast()?;
 
-        let mut profit_share_shares: u128 =
+        let profit_share_shares: u128 =
             vault_amount_to_depositor_shares(profit_share, vault.total_shares, vault_equity)?;
 
-        // #104: calculate_profit_share_and_update already advanced the depositor's high-water mark
-        // and profit_share_fee_paid. At a high enough share price a positive fee can floor to zero
-        // shares, so the fee would be recorded as paid while no shares actually move. Round up to a
-        // single share so a recorded fee always transfers at least one share to manager/protocol.
+        // #104: shares are indivisible. A fee worth less than one share must not be crystallized:
+        // moving zero shares would record the fee as paid while nothing transfers, and rounding
+        // up to one whole share would confiscate value far exceeding the fee owed — at a high
+        // share price (e.g. after a rebase-then-recovery cycle) a manager-cranked apply_profit_share
+        // could take a full share of near-unbounded value per small gain, capturing ~100% of a
+        // depositor's profit instead of the contracted rate. Defer instead: transfer nothing and
+        // roll back the high-water mark / fee-paid advance, so this profit is charged later once it
+        // has grown enough that the fee is worth at least one share.
         if profit_share > 0 && profit_share_shares == 0 {
-            profit_share_shares = 1;
+            self.set_cumulative_profit_share_amount(cumulative_profit_share_before);
+            self.set_profit_share_fee_paid(profit_share_fee_paid_before);
+            return Ok((0, 0));
         }
 
         self.decrease_vault_shares(profit_share_shares, vault)?;

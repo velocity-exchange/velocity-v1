@@ -1779,12 +1779,17 @@ mod vault_v1_tests {
         );
     }
 
-    // OtterSec #104: at a high share price a positive profit-share fee can floor to zero shares
-    // while the high-water mark advances. A recorded fee must move at least one share.
+    // OtterSec #104: at a high share price a positive profit-share fee can floor to zero shares.
+    // The fee must NOT be crystallized in that case — neither by silently moving zero shares (fee
+    // recorded paid, nothing transferred) nor by confiscating a whole share worth far more than the
+    // fee owed. It must be deferred: transfer nothing, leave the high-water mark untouched, and
+    // charge the fee later once accrued profit makes it worth at least one share.
     #[test]
-    fn test_apply_profit_share_rounds_up_zero_shares() {
+    fn test_apply_profit_share_defers_sub_share_fee() {
         use crate::state::VaultDepositorBase;
         let now = 1000;
+
+        // --- sub-share fee: must be deferred (no share taken, HWM not advanced) ---
         let mut vault = Vault::default();
         let mut vp = None;
         vault.profit_share = 100_000; // 10%
@@ -1794,21 +1799,52 @@ mod vault_v1_tests {
         let vd =
             &mut VaultDepositor::new(Pubkey::default(), Pubkey::default(), Pubkey::default(), now);
         vd.set_vault_shares(100);
-        vd.net_deposits = 999_999_900; // small unrealized profit
+        vd.net_deposits = 999_999_900; // profit of 100 tokens -> fee of 10 tokens
 
-        let vault_equity: u64 = 1_000_000_000; // ~1e7 per share
+        let vault_equity: u64 = 1_000_000_000; // ~1e7 per share; 10-token fee floors to 0 shares
         let shares_before = vd.get_vault_shares();
-        vd.apply_profit_share(vault_equity, &mut vault, &mut vp, now)
+        let (mgr, proto) = vd
+            .apply_profit_share(vault_equity, &mut vault, &mut vp, now)
             .unwrap();
-        let shares_after = vd.get_vault_shares();
 
-        // profit-share fee is ~10 tokens which floors to 0 shares; must round up to 1
         assert_eq!(
-            shares_before - shares_after,
-            1,
-            "a recorded profit-share fee must transfer at least one share"
+            shares_before,
+            vd.get_vault_shares(),
+            "a sub-share profit-share fee must not confiscate a whole share"
         );
-        assert!(vd.profit_share_fee_paid > 0);
+        assert_eq!((mgr, proto), (0, 0), "deferred fee reports zero charged");
+        assert_eq!(
+            vd.profit_share_fee_paid, 0,
+            "deferred fee must not be recorded as paid"
+        );
+        assert_eq!(
+            vd.cumulative_profit_share_amount, 0,
+            "deferred fee must not advance the high-water mark"
+        );
+        assert_eq!(vault.user_shares, 100, "vault.user_shares unchanged");
+
+        // --- fee worth >= 1 share: charged normally ---
+        let mut vault2 = Vault::default();
+        let mut vp2 = None;
+        vault2.profit_share = 100_000; // 10%
+        vault2.total_shares = 100;
+        vault2.user_shares = 100;
+
+        let vd2 =
+            &mut VaultDepositor::new(Pubkey::default(), Pubkey::default(), Pubkey::default(), now);
+        vd2.set_vault_shares(100);
+        vd2.net_deposits = 0; // profit of 1e9 -> fee of 1e8 tokens = 10 shares
+
+        let shares_before2 = vd2.get_vault_shares();
+        let (mgr2, _) = vd2
+            .apply_profit_share(vault_equity, &mut vault2, &mut vp2, now)
+            .unwrap();
+        assert_eq!(
+            shares_before2 - vd2.get_vault_shares(),
+            10,
+            "a fee worth >= 1 share transfers the floored share count"
+        );
+        assert!(mgr2 > 0 && vd2.profit_share_fee_paid > 0);
     }
 
     // OtterSec #106: the signerless apply_rebase (apply_rebase_public) must not floor an active

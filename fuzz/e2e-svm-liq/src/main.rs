@@ -30,6 +30,12 @@
 //!    equity breaker is tripped is barred (`EquityBelowFloor`) from the
 //!    position-acquiring `liquidate_perp`. Scaffolded; see the header note on
 //!    the file for the reproduction caveat.
+//!  * `regr_306_amm_phantom_funding` — PR #306: `resolve_perp_bankruptcy` must
+//!    resync the AMM's funding stamp past the socialization bump. On master it
+//!    doesn't, so the next funding settlement credits the net-flat AMM phantom
+//!    `total_fee_minus_distributions` (≈ the socialized loss). Forces a
+//!    socializing bankruptcy, then computes the AMM's next funding payment from
+//!    the post-resolve state and asserts it is zero.
 
 use crucible_fuzzer::*;
 use solana_instruction::{AccountMeta, Instruction};
@@ -1229,6 +1235,79 @@ fn regr_275_equity_floor_liq(fixture: &mut Fixture) {
         "regr #275: liquidate_perp succeeded while the liquidator's authority-wide \
          equity breaker is tripped — position-acquiring liquidation not barred \
          (expected EquityBelowFloor)"
+    );
+}
+
+// PENDING PR #306 (OtterSec High / finding #89): `resolve_perp_bankruptcy`
+// socializes residual bad debt by bumping `cumulative_funding_rate_long` up and
+// `_short` down (so surviving longs AND shorts both owe funding covering the
+// loss). It must also resync the AMM's own funding stamp
+// (`amm.last_cumulative_funding_rate_long`/`_short`) past that bump. On master
+// it does not, so the next `update_funding_rate` settles the AMM against the
+// stale stamp: because the socialization bump is ASYMMETRIC, the AMM (the
+// zero-sum counterparty to both the gross long and gross short book) "receives"
+// on both legs — pocketing ~the socialized loss as phantom
+// `total_fee_minus_distributions`, even though its net position is flat.
+//
+// The fixture's AMM is net-flat (`base_asset_amount_with_amm == 0`), so a
+// correct implementation leaves it with ZERO funding to settle after the
+// bankruptcy. This harness forces a socializing bankruptcy (the seed victim's
+// -$1 quote is fully covered and never socializes, so we inject bad debt well
+// beyond all coverage), then computes exactly what the next `FundingUpdated`
+// settlement would pay the AMM from the post-resolve on-chain state. Pre-#306
+// that is nonzero (phantom); with #306 (settle-then-resync) it is zero.
+#[cfg(feature = "regr_306_amm_phantom_funding")]
+#[invariant_test]
+fn regr_306_amm_phantom_funding(fixture: &mut Fixture) {
+    // Force the victim's perp bad debt far beyond bankruptcy coverage (IF vault
+    // + pending IF-fee tranche) so `resolve_perp_bankruptcy` must socialize a
+    // residual via the cum-rate bump rather than fully absorbing it.
+    let victim = fixture.users[VICTIM_IDX].clone();
+    if let Some(mut u) = fixture.read_user(&victim.user_pda) {
+        u.perp_positions[0].quote_asset_amount = -(50_000i64 * QUOTE_PRECISION as i64);
+        fixture
+            .ctx
+            .write_zero_copy_account(&victim.user_pda, &u)
+            .expect("overwrite victim perp quote");
+    }
+
+    let cum_long_before = fixture
+        .read_perp_market()
+        .expect("perp market")
+        .cumulative_funding_rate_long;
+
+    let succeeded = fixture.action_resolve_perp_bankruptcy();
+    fuzz_assert!(
+        succeeded,
+        "regr #306: resolve_perp_bankruptcy did not execute; scenario broken"
+    );
+
+    let pm = fixture.read_perp_market().expect("perp market");
+
+    // The residual must actually have socialized (cum rate bumped); otherwise
+    // the path under test was never exercised and the regression is vacuous.
+    fuzz_assert!(
+        pm.cumulative_funding_rate_long != cum_long_before,
+        "regr #306: bankruptcy did not socialize (cum rate unchanged); scenario broken"
+    );
+
+    // What the next FundingUpdated settlement would pay this (net-flat) AMM,
+    // computed from the post-resolve on-chain state exactly as the quoter does.
+    let phantom = velocity::math::funding::calculate_amm_funding_payment(
+        pm.base_asset_amount_long,
+        pm.base_asset_amount_short,
+        pm.cumulative_funding_rate_long,
+        pm.cumulative_funding_rate_short,
+        pm.amm.last_cumulative_funding_rate_long,
+        pm.amm.last_cumulative_funding_rate_short,
+    )
+    .unwrap_or(0);
+    fuzz_assert!(
+        phantom == 0,
+        "regr #306: net-flat AMM would receive {} phantom funding on the next update — \
+         resolve_perp_bankruptcy left amm.last_cumulative_funding_rate behind the socialization \
+         bump (phantom total_fee_minus_distributions ≈ the socialized loss)",
+        phantom
     );
 }
 

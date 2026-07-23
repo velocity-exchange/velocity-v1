@@ -398,7 +398,10 @@ impl<'a> RevenueShareEscrowZeroCopyMut<'a> {
                     && existing_order.sub_account_id == sub_account_id
                     && existing_order.market_index == market_index
                     && existing_order.market_type == market_type
+                    // Completed rows keep their Open bit (`add_bit_flag` never
+                    // clears), so Open alone does not exclude them.
                     && existing_order.is_open()
+                    && !existing_order.is_completed()
                     && !existing_order.is_referral_order()
                 {
                     return Some(i);
@@ -647,7 +650,8 @@ mod builder_order_index_tests {
     #[test]
     fn find_builder_order_index_binds_market_type_and_open_state() {
         let mut completed = open_builder(9, 1, 5);
-        completed.bit_flags = RevenueShareOrderBitFlag::Completed as u8;
+        // completion ORs the bit in, so real completed rows are Open|Completed
+        completed.add_bit_flag(RevenueShareOrderBitFlag::Completed);
         let mut referral = open_builder(7, 1, 0);
         referral.bit_flags = RevenueShareOrderBitFlag::Referral as u8;
         let orders = [

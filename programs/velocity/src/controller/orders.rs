@@ -1763,15 +1763,23 @@ fn get_builder_escrow_info(
 ) -> (Option<u32>, Option<u32>, Option<u16>, Option<u8>) {
     if let Some(escrow) = escrow_opt {
         // Only match a builder-order row for an order that actually carries the
-        // `HasBuilder` flag. Escrow rows are keyed by `(sub_account_id, order_id)`,
-        // and order ids are reused when a placement soft-skips after
-        // `add_builder_order` already wrote the row (e.g. an expired `max_ts`, which
-        // returns before `next_order_id` is consumed). Without this gate a stale row
-        // would attach to the later non-builder order that reuses the id and charge
-        // it a builder fee. The referral lookup is keyed by market, not order id, so
-        // it is unaffected and stays unconditional.
+        // `HasBuilder` flag, and bind the row to the market being filled. Escrow rows
+        // are keyed on chain by `(sub_account_id, order_id)`, and order ids are reused
+        // both within a market (a placement soft-skips after `add_builder_order` wrote
+        // the row — e.g. an expired `max_ts`, which returns before `next_order_id` is
+        // consumed) and across markets (ids are per-subaccount). Without the
+        // `HasBuilder` gate a stale row would attach to a later non-builder order that
+        // reuses the id (OtterSec #49); without the market binding a market-A row would
+        // attach to a same-id market-B fill and be paid from market A's pnl pool
+        // (OtterSec #88). `find_builder_order_index` enforces both. The referral lookup
+        // is keyed by market, not order id, so it is unaffected and stays unconditional.
         let builder_order_idx = if order_has_builder {
-            escrow.find_order_index(sub_account_id, order_id)
+            escrow.find_builder_order_index(
+                sub_account_id,
+                order_id,
+                market_index,
+                MarketType::Perp,
+            )
         } else {
             None
         };
@@ -1855,11 +1863,53 @@ fn fulfill_perp_order(
                 slot,
             )?;
         }
+        // Route off the PROJECTED curve, not the stored one. `Quoter::setup`
+        // snaps the AMM toward oracle only after a fulfillment method is
+        // selected, so routing off the stored reserve price lets a stale
+        // curve block the very fill that would refresh it: the taker fails
+        // to cross the stale quote, no method is selected, setup never runs.
+        // Project the refresh onto a scratch copy (same inputs and same
+        // slot-idempotency gate as `setup`, so the routing price equals the
+        // price the first step will quote) and leave the real AMM
+        // untouched: curve mutation stays in `Quoter::setup`. When the
+        // projection is a passthrough (oracle invalid for curve updates,
+        // zero intensity, or the affordability floor rejected it), the
+        // scratch copy equals the stored curve and routing behaves exactly
+        // as before.
+        let (projected_amm, projected_reserve_price) = if market.amm.last_update_slot >= slot {
+            // Already projected against this slot's oracle (a prior fill or
+            // keeper crank); `setup` skips re-projection in this case, so
+            // route off the stored curve for exact parity.
+            (market.amm, reserve_price_before)
+        } else {
+            let amm_refresh_validity =
+                crate::vlp::amm::refresh::compute_amm_refresh_validity_with_guard_rails(
+                    &market,
+                    &mm_oracle_pd,
+                    validity_guard_rails,
+                )?;
+            let projection = crate::vlp::amm::math::repeg::project_post_refresh_scalar(
+                &market.amm,
+                &crate::vlp::amm::math::repeg::ProjectionInputs::from_market(&market),
+                &mm_oracle_pd,
+                amm_refresh_validity,
+            )?;
+            let mut projected_amm = projection.projected_amm(&market.amm)?;
+            let projected_reserve_price = projected_amm.reserve_price()?;
+            crate::vlp::amm::math::spread::update_amm_quote_state(
+                &mut projected_amm,
+                &market.market_stats,
+                &mm_oracle_pd,
+                projected_reserve_price,
+                slot,
+            )?;
+            (projected_amm, projected_reserve_price)
+        };
         determine_perp_fulfillment_methods(
             &user.orders[user_order_index],
             maker_orders_info,
-            &market.amm,
-            reserve_price_before,
+            &projected_amm,
+            projected_reserve_price,
             limit_price,
             amm_is_available,
         )?

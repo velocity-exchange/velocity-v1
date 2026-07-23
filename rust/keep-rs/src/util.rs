@@ -98,12 +98,17 @@ pub enum TxIntent {
     AuctionFill {
         market_index: u16,
         taker_order_id: u32,
+        /// taker subaccount the fill was sent for (order ids are per-user counters,
+        /// so `taker_order_id` alone is ambiguous across users)
+        taker_user: Pubkey,
         has_trigger: bool,
         maker_crosses: MakerCrosses,
     },
     SwiftFill {
         uuid: [u8; 8],
         market_index: u16,
+        /// taker subaccount the fill was sent for (disambiguates the swift uuid across users)
+        taker_user: Pubkey,
         maker_crosses: MakerCrosses,
     },
     /// place-only swift order: order placed on-chain (no immediate fill) so the normal
@@ -111,12 +116,16 @@ pub enum TxIntent {
     SwiftPlace {
         uuid: [u8; 8],
         market_index: u16,
+        /// taker subaccount whose order was placed on-chain
+        taker_user: Pubkey,
         slot: u64,
     },
     VAMMTakerFill {
         slot: u64,
         market_index: u16,
         maker_order_id: u32,
+        /// taker (the resting-order user) filled against the vAMM
+        taker_user: Pubkey,
     },
     /// limit orders crossed
     LimitUncross {
@@ -170,6 +179,8 @@ pub enum TxIntent {
     Trigger {
         market_index: u16,
         order_id: u32,
+        /// taker subaccount whose trigger order is being triggered
+        taker_user: Pubkey,
         slot: u64,
     },
 }
@@ -316,10 +327,18 @@ impl TxIntent {
     }
 
     /// Taker/target user subaccount, where the intent carries one. Used for wide-event
-    /// logging to disambiguate per-user order ids.
+    /// logging to disambiguate per-user order ids / swift uuids, and — critically — so a
+    /// single Loki query on the taker subaccount (`| json | user="<subaccount>"`, or a
+    /// line filter) captures the whole fill lifecycle for one order across every fill-path
+    /// intent, not just `limit_uncross`.
     pub fn user(&self) -> Option<Pubkey> {
         match self {
-            Self::LimitUncross { taker_user, .. } => Some(*taker_user),
+            Self::AuctionFill { taker_user, .. }
+            | Self::SwiftFill { taker_user, .. }
+            | Self::SwiftPlace { taker_user, .. }
+            | Self::VAMMTakerFill { taker_user, .. }
+            | Self::LimitUncross { taker_user, .. }
+            | Self::Trigger { taker_user, .. } => Some(*taker_user),
             _ => None,
         }
     }
@@ -745,7 +764,9 @@ pub fn subscribe_price_feeds(
 
 #[cfg(test)]
 mod tests {
-    use super::{swift_placement_expired, OrderSlotLimiter, PendingTxMeta, PendingTxs, TxIntent};
+    use super::{
+        swift_placement_expired, OrderSlotLimiter, PendingTxMeta, PendingTxs, Pubkey, TxIntent,
+    };
     use solana_sdk::signature::Signature;
 
     #[test]
@@ -757,6 +778,7 @@ mod tests {
             TxIntent::Trigger {
                 market_index: 0,
                 order_id: 1,
+                taker_user: Pubkey::new_unique(),
                 slot: 2,
             },
             100,
@@ -797,9 +819,11 @@ mod tests {
 
     #[test]
     fn trigger_intent_metadata() {
+        let taker = Pubkey::new_unique();
         let intent = TxIntent::Trigger {
             market_index: 3,
             order_id: 42,
+            taker_user: taker,
             slot: 7,
         };
         assert_eq!(intent.label(), "trigger");
@@ -809,13 +833,17 @@ mod tests {
         assert_eq!(intent.market_index(), Some(3));
         assert_eq!(intent.order_id(), Some(42));
         assert_eq!(intent.swift_uuid(), None);
+        // taker subaccount must be carried so the tx event is filterable by user in Loki
+        assert_eq!(intent.user(), Some(taker));
     }
 
     #[test]
     fn swift_place_intent_metadata() {
+        let taker = Pubkey::new_unique();
         let intent = TxIntent::SwiftPlace {
             uuid: *b"abcd1234",
             market_index: 5,
+            taker_user: taker,
             slot: 9,
         };
         assert_eq!(intent.label(), "swift_place");
@@ -826,6 +854,8 @@ mod tests {
         assert_eq!(intent.market_index(), Some(5));
         assert_eq!(intent.order_id(), None);
         assert_eq!(intent.swift_uuid(), Some(*b"abcd1234"));
+        // even the place-only path carries the taker so its lifecycle is filterable by user
+        assert_eq!(intent.user(), Some(taker));
     }
 
     #[test]

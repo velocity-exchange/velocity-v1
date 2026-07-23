@@ -37,8 +37,8 @@ pub mod math;
 pub mod sdk;
 mod signer;
 pub mod state;
-#[cfg(test)]
-mod test_utils;
+#[cfg(any(test, feature = "fuzz-fixtures"))]
+pub mod test_utils;
 mod validation;
 pub mod vlp;
 

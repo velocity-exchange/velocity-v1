@@ -1,0 +1,87 @@
+[package]
+name = "e2e_svm_pause_fuzz"
+version = "0.1.0"
+edition = "2021"
+
+# Standalone workspace — isolated from the parent project to avoid Solana
+# version conflicts (Crucible's harness model). Mirrors fuzz/e2e-svm/.
+[workspace]
+
+[dependencies]
+# Crucible framework, pinned to the exact commit used by fuzz/e2e-svm.
+crucible-fuzzer = { git = "https://github.com/asymmetric-research/crucible", rev = "daeaa4d4a4e334175c4f171daacc7e177ad2fae0" }
+crucible-test-context = { git = "https://github.com/asymmetric-research/crucible", rev = "daeaa4d4a4e334175c4f171daacc7e177ad2fae0" }
+crucible-idl-gen = { git = "https://github.com/asymmetric-research/crucible", rev = "daeaa4d4a4e334175c4f171daacc7e177ad2fae0" }
+
+# velocity as a HOST library — same feature set as build-devnet.sh so the host
+# structs match the loaded .so layout. Used for zero-copy account reads/inject.
+velocity = { path = "../../programs/velocity", default-features = false, features = [
+  "no-entrypoint",
+  "isolated-position",
+  "vlp-hedge",
+  "fuzz-fixtures",
+] }
+velocity-fuzz-common = { path = "../velocity-fuzz-common" }
+
+anchor-lang = "1.0"
+arbitrary = { version = "1", features = ["derive"] }
+libafl = { version = "0.15.1", features = ["std", "cli", "prelude"] }
+libafl_bolts = { version = "0.15.1", features = ["std"] }
+ctrlc = "3.4"
+ctor = "0.6"
+solana-pubkey = "3.0"
+solana-keypair = "3.0"
+solana-signer = "3.0"
+solana-instruction = "3.0"
+bytemuck = "1.14"
+
+[[bin]]
+name = "invariant_test"
+path = "src/main.rs"
+
+[features]
+# One entry per fuzz test fn; `crucible run e2e-svm-pause <name>` builds
+# `--features <name>`. Only ONE may be enabled at a time — each test fn expands
+# to its own `main`/`__CRUCIBLE_ALLOC`, which would collide otherwise.
+#
+# ---------------------------------------------------------------------------
+# HARNESS SET A — PR #272 (deposit/withdraw/revenue pause on bypassed paths)
+# ---------------------------------------------------------------------------
+# IMPLEMENTED — reproduce on current (pre-fix) master:
+#   regr_272_revenue_pool_deposit: `deposit_into_spot_market_revenue_pool`
+#     credits the spot vault while ignoring the market-scoped
+#     `SpotOperation::Deposit` pause. Fix rejects with MarketActionPaused.
+#   regr_272_settle_revenue_if: direct `settle_revenue_to_insurance_fund`
+#     ignores the market-scoped `SpotOperation::Withdraw` pause (only the
+#     exchange-wide withdraw pause was gated). Fix rejects with MarketWithdrawPaused.
+regr_272_revenue_pool_deposit = []
+regr_272_settle_revenue_if = []
+#
+# ---------------------------------------------------------------------------
+# HARNESS SET B — PR #276 (funding pause on bypassed paths)
+# ---------------------------------------------------------------------------
+# IMPLEMENTED — reproduce on current (pre-fix) master:
+#   regr_276_spot_interest: `update_spot_market_cumulative_interest` accrues
+#     interest during an exchange-wide FundingPaused when reached via the shared
+#     helper (driven here through `deposit`). Fix freezes accrual.
+#   regr_276_bid_ask_twap: `update_perp_bid_ask_twap` keeps running (advancing
+#     funding-input TWAP state) when a market's `PerpOperation::UpdateFunding`
+#     is paused. Fix early-returns Ok before touching oracle/keeper/TWAP state.
+regr_276_spot_interest = []
+regr_276_bid_ask_twap = []
+#
+# ---------------------------------------------------------------------------
+# DEFERRED — genuinely require trade/fill/liquidation machinery this
+# injection tier cannot stand up. See the "DEFERRED" note in src/main.rs for
+# per-path blockers and evidence.
+#   regr_272_transfer_pools_pause    (4 coherent spot markets + 2 users + a
+#                                     transfer that passes the source-debit gate)
+#   regr_272_swap_begin_pause        (flash-loan begin/end tx pair + a
+#                                     cross-spot liquidatable user)
+#   regr_272_opportunistic_revenue   (attempt_settle_revenue_to_insurance_fund
+#                                     is only reachable folded inside IF-add /
+#                                     liquidation / pnl-deficit)
+#   regr_276_funding_settle          (settle_funding_payment fold only commits
+#                                     if the whole host ix returns Ok; the fill /
+#                                     pnl / liquidation sites need the matching
+#                                     engine + a coherent AMM to not revert)

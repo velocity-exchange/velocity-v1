@@ -19,7 +19,16 @@ use crate::vlp::amm::math::amm::calculate_net_user_pnl;
 ///
 /// Identity: everything the market's pools hold that is neither claimable by
 /// users (`net_user_pnl`) nor earmarked for the protocol / insurance fund
-/// (the pending counters) is the AMM's equity. `pending_amm_provision` is
+/// (the pending counters) nor owed as accrued builder/referrer revenue share
+/// (`pending_revenue_share`) is the AMM's equity. Revenue share is a real
+/// liability against the pnl pool — the taker's quote is debited at fill and a
+/// matching payable is booked, so while the escrow row is outstanding the
+/// pools still hold the tokens but they are owed to the builder/referrer, not
+/// the AMM. Omitting it would let an `AmmCrank` summary correction commit that
+/// liability into `total_fee_minus_distributions` as if it were retained AMM
+/// profit (double-backing the same tokens; see OtterSec #90). It is subtracted
+/// here exactly as the fee sweep reserves it in `sweep_market_fees`, keeping a
+/// single balance-sheet source of truth. `pending_amm_provision` is
 /// deliberately NOT subtracted — the provision is already booked into tfmd at
 /// fill while its token backing (counted in the pools) waits in the pnl pool
 /// for tokenization; subtracting both sides would double-count it. The same
@@ -56,5 +65,6 @@ pub fn calculate_perp_market_amm_summary_stats(
     pnl_tokens_available
         .safe_sub(net_user_pnl)?
         .safe_sub(perp_market.fee_ledger.pending_protocol_fee.cast()?)?
-        .safe_sub(perp_market.fee_ledger.pending_if_fee.cast()?)
+        .safe_sub(perp_market.fee_ledger.pending_if_fee.cast()?)?
+        .safe_sub(perp_market.pending_revenue_share.cast()?)
 }

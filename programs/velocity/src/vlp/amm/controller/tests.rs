@@ -891,6 +891,21 @@ fn amm_isolation_balance_sheet_identity_test() {
         market.fee_ledger.amm_protocol_fees_received,
         QUOTE_PRECISION
     );
+
+    // 4. accrued-but-unswept revenue share is a pnl-pool liability, not AMM
+    //    equity: an outstanding builder/referrer payable must lower the summary
+    //    by exactly its amount so an AmmCrank correction can't book it as
+    //    retained AMM profit (OtterSec #90).
+    let summary_before = identity(&market, &spot_market);
+    let owed = 3 * QUOTE_PRECISION as u64;
+    market.accrue_pending_revenue_share(owed).unwrap();
+    assert_eq!(
+        identity(&market, &spot_market),
+        summary_before - owed as i128
+    );
+    // paying it out (sweep decrements the counter) restores the summary
+    market.settle_pending_revenue_share(owed).unwrap();
+    assert_eq!(identity(&market, &spot_market), summary_before);
 }
 
 #[test]

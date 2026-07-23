@@ -155,6 +155,31 @@ pub fn handle_initialize(ctx: Context<Initialize>) -> Result<()> {
     Ok(())
 }
 
+/// Names reserved to the quote spot market (index 0). Monitoring keys the
+/// stablecoin exemption in the deposit-concentration alert off the decoded
+/// market name (`decodeName` = utf8 + trim), so if any *other* market could be
+/// named "USDT" it would silently inherit that exemption and hide TVL
+/// concentration. Reserving the name on-chain makes the name↔index binding
+/// trustworthy: only market 0 can ever be "USDT".
+const RESERVED_QUOTE_NAMES: &[&[u8]] = &[b"USDT"];
+
+/// True if `name` decodes to one of the reserved quote names after trimming
+/// leading/trailing whitespace + NUL. Trims a *superset* of what the off-chain
+/// `decodeName().trim()` strips (ASCII whitespace incl. vertical tab, plus NUL)
+/// so a whitespace-padded "USDT" can't evade the reservation on-chain while
+/// still decoding to "USDT" for the monitor.
+fn name_is_reserved_quote(name: &[u8; 32]) -> bool {
+    const TRIM: &[u8] = &[0x00, 0x09, 0x0a, 0x0b, 0x0c, 0x0d, 0x20];
+    let is_trim = |b: &u8| TRIM.contains(b);
+    let start = name.iter().position(|b| !is_trim(b));
+    let end = name.iter().rposition(|b| !is_trim(b));
+    let trimmed: &[u8] = match (start, end) {
+        (Some(s), Some(e)) => &name[s..=e],
+        _ => &[],
+    };
+    RESERVED_QUOTE_NAMES.contains(&trimmed)
+}
+
 pub fn handle_initialize_spot_market(
     ctx: Context<InitializeSpotMarket>,
     optimal_utilization: u32,
@@ -211,6 +236,13 @@ pub fn handle_initialize_spot_market(
     let spot_market_index = get_then_update_id!(state, number_of_spot_markets);
 
     msg!("initializing spot market {}", spot_market_index);
+
+    validate!(
+        !name_is_reserved_quote(&name) || spot_market_index == QUOTE_SPOT_MARKET_INDEX,
+        ErrorCode::ReservedSpotMarketName,
+        "reserved quote name (USDT) may only be used by spot market {}",
+        QUOTE_SPOT_MARKET_INDEX
+    )?;
 
     if oracle_source == OracleSource::QuoteAsset {
         // catches inconsistent parameters
@@ -1581,6 +1613,12 @@ pub fn handle_update_spot_market_name(
     name: [u8; 32],
 ) -> Result<()> {
     let mut spot_market = load_mut!(ctx.accounts.spot_market)?;
+    validate!(
+        !name_is_reserved_quote(&name) || spot_market.market_index == QUOTE_SPOT_MARKET_INDEX,
+        ErrorCode::ReservedSpotMarketName,
+        "reserved quote name (USDT) may only be used by spot market {}",
+        QUOTE_SPOT_MARKET_INDEX
+    )?;
     msg!("spot_market.name: {:?} -> {:?}", spot_market.name, name);
     spot_market.name = name;
     Ok(())
@@ -4600,5 +4638,45 @@ mod native_auth_tests {
         let accounts = [perp_market_info, signer, clock_info, state_info];
         let err = handle_update_mm_oracle_native(&accounts, &mm_payload()).unwrap_err();
         assert_eq!(err, ErrorCode::Unauthorized.into());
+    }
+}
+
+#[cfg(test)]
+mod reserved_quote_name_tests {
+    //! The "USDT" name is reserved to spot market 0 so the monitoring
+    //! stablecoin-exemption (keyed off decodeName) can't be inherited by any
+    //! other market. These lock the trim semantics (must be at least as
+    //! aggressive as off-chain `decodeName().trim()`).
+    use super::name_is_reserved_quote;
+
+    fn padded(s: &str) -> [u8; 32] {
+        let mut n = [b' '; 32];
+        n[..s.len()].copy_from_slice(s.as_bytes());
+        n
+    }
+
+    #[test]
+    fn reserved_variants_match() {
+        // exact + the SDK's space padding
+        assert!(name_is_reserved_quote(&padded("USDT")));
+        // leading/trailing whitespace + NUL padding all still decode to USDT
+        assert!(name_is_reserved_quote(&padded("  USDT")));
+        let mut nul = [0u8; 32];
+        nul[..4].copy_from_slice(b"USDT");
+        assert!(name_is_reserved_quote(&nul));
+        let mut mixed = [0u8; 32];
+        mixed[..6].copy_from_slice(b"\tUSDT\n");
+        assert!(name_is_reserved_quote(&mixed));
+    }
+
+    #[test]
+    fn non_reserved_names_pass() {
+        // devnet stable, other stable, and volatile tokens must NOT be reserved
+        assert!(!name_is_reserved_quote(&padded("dUSDT")));
+        assert!(!name_is_reserved_quote(&padded("USDC")));
+        assert!(!name_is_reserved_quote(&padded("SOL")));
+        assert!(!name_is_reserved_quote(&padded("USDT.e")));
+        assert!(!name_is_reserved_quote(&padded("USD")));
+        assert!(!name_is_reserved_quote(&[b' '; 32])); // all blank
     }
 }

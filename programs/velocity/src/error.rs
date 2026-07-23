@@ -781,6 +781,8 @@ pub enum ErrorCode {
     PerpBankruptcyMustPrecedeSpot,
     #[msg("Revenue share recipient user must be sub_account_id 0")]
     InvalidRevenueShareRecipient,
+    #[msg("The name \"USDT\" is reserved for the quote spot market (index 0)")]
+    ReservedSpotMarketName,
 }
 
 #[macro_export]

@@ -155,8 +155,11 @@ export class ProtocolFeeCollectorBot implements Bot {
 				marketType,
 				marketIndex
 			);
+			// Guard NaN: /batchPriorityFees returns level-less entries for markets
+			// with no published fees (see fundingRateUpdater.ts) — pfs.medium is
+			// then undefined and Math.floor(NaN) throws at BigInt conversion.
 			let microLamports = 10_000;
-			if (pfs) {
+			if (pfs && Number.isFinite(pfs.medium)) {
 				microLamports = Math.floor(pfs.medium);
 			}
 			const ixs = [

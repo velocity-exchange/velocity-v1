@@ -52,7 +52,6 @@ import {
 import FEATURE_FLAGS from './utils/featureFlags';
 import { getDLOBProviderFromOrderSubscriber } from './dlobProvider';
 import { setGlobalDispatcher, Agent } from 'undici';
-import { HermesClient } from '@pythnetwork/hermes-client';
 import { COMMON_UI_UTILS, ENUM_UTILS } from '@velocity-exchange/common';
 import { AuctionParamArgs } from './utils/types';
 import { TakerFillVsOracleBpsRedisResult } from './athena/repositories/fillQualityAnalytics';
@@ -88,7 +87,6 @@ export const ORDERBOOK_UPDATE_INTERVAL =
 	parseInt(process.env.ORDERBOOK_UPDATE_INTERVAL) || 400;
 const WS_FALLBACK_FETCH_INTERVAL = ORDERBOOK_UPDATE_INTERVAL * 60;
 const useWebsocket = process.env.USE_WEBSOCKET?.toLowerCase() === 'true';
-const hermesUrl = process.env.HERMES_ENDPOINT;
 const pythLazerVelocityToken = process.env.PYTH_LAZER_DRIFT_TOKEN;
 const pythLazerEndpoint = process.env.PYTH_LAZER_ENDPOINT;
 
@@ -856,47 +854,6 @@ const main = async (): Promise<void> => {
 			}).then((res) => res.json());
 
 			const data = latestPriceRes.solana.data;
-
-			if (data) {
-				res.status(200).json({
-					data,
-				});
-
-				return;
-			} else {
-				res.writeHead(404);
-				res.end('Not found');
-			}
-		} catch (err) {
-			next(err);
-		}
-	});
-
-	app.get('/pythPull', async (req, res, next) => {
-		try {
-			if (!isAuthorizedRequest(req)) {
-				res.status(403).json({ error: 'Forbidden: Invalid origin' });
-				return;
-			}
-
-			const { feedIds } = req.query;
-
-			if (!feedIds) {
-				res.writeHead(400);
-				res.end('Bad Request: must include a feedIds');
-				return;
-			}
-
-			const feedIdsArray = (feedIds as string).split(',');
-
-			const hermesClient = new HermesClient(hermesUrl);
-			const latestPriceUpdates = await hermesClient.getLatestPriceUpdates(
-				feedIdsArray,
-				{
-					encoding: 'base64',
-				}
-			);
-			const data = latestPriceUpdates.binary.data.join('');
 
 			if (data) {
 				res.status(200).json({

@@ -1,0 +1,26 @@
+# Shared support crate for the velocity Crucible fuzz harnesses.
+#
+# NOTE: no [workspace] table. Each harness under fuzz/<name>/ is its OWN
+# standalone workspace (Crucible's model), and path-deps this crate. Cargo pulls
+# it in as a regular dependency package; it is never a workspace member itself.
+# The repo-root Cargo.toml has `exclude = ["fuzz"]`, so this never unifies with
+# the program (SBF) build.
+[package]
+name = "velocity-fuzz-common"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+# velocity as a HOST library (not SBF). fuzz-fixtures exposes test_utils; the two
+# post-audit gates match build-devnet.sh so host and .so fuzz the same paths.
+velocity = { path = "../../programs/velocity", default-features = false, features = [
+  "no-entrypoint",
+  "isolated-position",
+  "vlp-hedge",
+  "fuzz-fixtures",
+] }
+# Crucible runtime — pinned to the exact commit so every harness builds one API.
+crucible-test-context = { git = "https://github.com/asymmetric-research/crucible", rev = "daeaa4d4a4e334175c4f171daacc7e177ad2fae0" }
+anchor-lang = "1.0"
+bytemuck = "1.14"
+solana-pubkey = "3.0"

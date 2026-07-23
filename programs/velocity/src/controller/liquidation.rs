@@ -3878,6 +3878,33 @@ pub fn resolve_perp_bankruptcy(
             .total_social_loss
             .safe_add(loss_to_socialize.unsigned_abs())?;
 
+        // Fully settle the AMM's OWN funding through the current (pre-
+        // socialization) cum rates against its actual net position first —
+        // exactly the payment the `FundingUpdated` quoter handler applies — so
+        // no genuine accrued AMM funding is dropped when we advance the AMM
+        // stamp past the socialization bump below. `calculate_amm_funding_payment`
+        // pays the AMM `(cumulative_funding_rate − amm.last_cumulative_funding_rate)
+        // × −net_position` per leg; here the deltas are only what has genuinely
+        // accrued (the socialization bump has NOT been applied yet). Today the
+        // market cum rates and the AMM stamp only ever advance together in
+        // `update_funding_rate`, so on entry this payment is 0 — but applying it
+        // explicitly (rather than assuming the invariant) keeps the AMM's books
+        // correct even if another writer of the cum rates is ever added.
+        let amm_funding_payment = crate::math::funding::calculate_amm_funding_payment(
+            market.base_asset_amount_long,
+            market.base_asset_amount_short,
+            market.cumulative_funding_rate_long,
+            market.cumulative_funding_rate_short,
+            market.amm.last_cumulative_funding_rate_long,
+            market.amm.last_cumulative_funding_rate_short,
+        )?;
+        <crate::vlp::amm::AMM as crate::vlp::amm::quoter::AmmContract>::record_amm_pnl(
+            &mut market.amm,
+            amm_funding_payment,
+        )?;
+
+        // Socialize the loss across surviving open interest via an asymmetric
+        // cum-rate bump (longs and shorts both owe funding covering the loss).
         market.cumulative_funding_rate_long = market
             .cumulative_funding_rate_long
             .safe_add(cumulative_funding_rate_delta)?;
@@ -3895,6 +3922,20 @@ pub fn resolve_perp_bankruptcy(
         market.net_unsettled_funding_pnl = market
             .net_unsettled_funding_pnl
             .safe_add(loss_to_socialize.cast()?)?;
+
+        // Now advance the AMM stamp PAST the socialization bump. The AMM's
+        // genuine funding was just settled above, so this only excludes the
+        // socialization delta from the AMM's next funding payment — the
+        // socialized loss is borne by surviving USER open interest, not the AMM.
+        // Leaving the stamp behind would instead credit the AMM phantom funding
+        // on the bump (both legs resolve positive for a balanced book),
+        // manufacturing `total_fee_minus_distributions` (≈ D·G1/G0, able to
+        // exceed the socialized loss D as gross OI grows) that is then payable to
+        // survivors or spendable as curve budget (OtterSec #89).
+        market.amm.last_cumulative_funding_rate_long =
+            market.cumulative_funding_rate_long.cast::<i64>()?;
+        market.amm.last_cumulative_funding_rate_short =
+            market.cumulative_funding_rate_short.cast::<i64>()?;
     }
 
     // clear bad debt

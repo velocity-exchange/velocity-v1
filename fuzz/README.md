@@ -1,0 +1,118 @@
+# Velocity fuzz harnesses (Crucible)
+
+Property- and invariant-based fuzzing of the `velocity` program using
+[Crucible](https://github.com/asymmetric-research/crucible) (LibAFL-backed) plus
+LiteSVM for the end-to-end tier. This directory is a **set of standalone Cargo
+workspaces**, one per harness crate, deliberately excluded from the repo-root
+workspace (see the root `Cargo.toml`) so its `solana-sdk` 3.x / LibAFL / Crucible
+dependency trees never unify with the on-chain (SBF) program build. There is no
+`fuzz/Cargo.toml` root.
+
+Nothing here ships on-chain. The only program-side hook is the off-by-default
+`fuzz-fixtures` cargo feature on `programs/velocity` (exposes `pub mod test_utils`
+to host crates); it is never enabled by any SBF/mainnet/devnet build.
+
+## Layout
+
+| Path | What |
+| --- | --- |
+| `velocity-fuzz-common/` | Shared re-exports + reusable invariant assertions (some still stubbed, see below) |
+| `amm-pricing/`, `funding/`, `margin-liq/`, `oracle/`, `orders-matching/`, `spot/`, `fees-if-bankruptcy/` | **Host tier**: call `velocity` math/controller fns directly (no `.so`), assert pure properties. ~1.1k exec/s |
+| `e2e-svm/`, `e2e-svm-liq/`, `e2e-svm-pause/`, `e2e-svm-revshare/`, `e2e-svm-signedmsg/` | **SVM tier**: load the compiled `.so` into LiteSVM, drive real instructions, reconcile on-chain state against invariants |
+| `*/idls/velocity.json` | Vendored copy of the canonical IDL the SVM harnesses embed (see “IDL sync”; do not hand-edit) |
+| `sync-idls.sh` | Re-vendor / `--check` the IDL copies against canonical |
+| `rust-toolchain.toml` | Pins the toolchain (matches the repo `RUST_TOOLCHAIN`, x86_64 host target) |
+
+## Prerequisites
+
+- The pinned toolchain (installed automatically from `fuzz/rust-toolchain.toml`);
+  Rust ≥ 1.77 on an **x86_64** host so zero-copy `u128` alignment matches on-chain
+  (Apple Silicon: `rustup override set 1.91.1-x86_64-apple-darwin` inside `fuzz/`).
+- The Crucible CLI (pinned rev):
+  ```bash
+  cargo install --git https://github.com/asymmetric-research/crucible \
+    --rev daeaa4d4a4e334175c4f171daacc7e177ad2fae0 crucible-fuzz-cli --locked
+  ```
+- **SVM tier only**: a compiled `target/deploy/velocity.so`. Build it with the
+  devnet feature flavor so its account layouts match the host fixtures:
+  ```bash
+  bun run program:build:devnet     # from the repo root
+  ```
+
+## Running
+
+Each harness "test" is a cargo feature on its crate. List and run:
+
+```bash
+crucible list amm-pricing
+crucible run amm-pricing prop_k_conserved_swap --timeout 30
+crucible run e2e-svm invariant_solvency --release --timeout 60
+```
+
+`crucible run <crate> <feature>` builds `--features <feature>` and fuzzes it.
+Useful flags: `--timeout <secs>`, `-j <cores>`, `--release`, `--coverage`
+(single-core), `--corpus-in/--corpus-out <dir>`. Replay a crash with
+`crucible show <crate> <feature>`; minimize with `crucible tmin` / `cmin`.
+
+Harness features come in two kinds:
+
+- `prop_*` / `inv_*`: open-ended **properties/invariants**. These are the
+  discovery surface and are what the nightly campaign fuzzes.
+- `regr_<NNN>_*`: **regression** harnesses that reproduce a specific audit fix
+  (`<NNN>` = PR number). A `regr_` target crashes on the pre-fix program and
+  passes once the fix is in. A regression that can only be reproduced in stateful
+  controller logic lives at the SVM tier; do **not** add a host-tier `regr_` for
+  a controller-ordering bug; assert the underlying math property as a `prop_`
+  instead (see `prop_borrow_debt_monotonic_in_index`), because a host math check
+  that the fix doesn't touch is either vacuous or noise, never a real regression.
+
+## IDL sync (important)
+
+The SVM harnesses embed a copy of the program IDL via
+`crucible_idl_gen::declare_fuzz_program!(velocity_idl = "idls/velocity.json")`
+because this separate workspace can't read the SDK's generated artifact at build
+time. That copy **must** equal the canonical
+`packages/sdk/src/idl/velocity.json`, or the harnesses fuzz a stale ABI. After
+any program change / `bun run program:idl`:
+
+```bash
+bash fuzz/sync-idls.sh          # re-vendor all copies
+bash fuzz/sync-idls.sh --check  # CI mode: fail if any copy is stale
+```
+
+CI (`.github/workflows/fuzz.yml` → `idl-sync`) runs the `--check` and fails the
+build on drift.
+
+## Writing a sound harness
+
+The campaign is only as good as its assertions. Before adding one, check it
+against these failure modes (each has bitten a harness here):
+
+1. **Not tautological.** Don't assert a function's own construction back at it
+   (e.g. that a value is bracketed by bounds derived from that same value), or
+   that a monotone function is monotone. Assert a *joint* or *independent*
+   relationship a bug could actually break.
+2. **Reaches the target.** Make sure the fixture state can actually get past the
+   early guards into the logic you mean to test (a victim with `base == 0` never
+   reaches the liquidation math; post-only-no-cross orders never produce a fill).
+   Prefer confirming reachability with `--coverage`.
+3. **Observes the real effect.** A `regr_` should observe the actual mutated
+   state or assert a **fix-exclusive** error code, not infer the bug from an
+   unrelated downstream failure or a generic pre-existing error code.
+4. **Fails loudly on decode drift.** Reading zero-copy accounts must panic (not
+   silently skip the invariant) when an existing account is the wrong size, which
+   means the host layout drifted from the `.so`. `read_zc` does this.
+5. **No false positives.** An invariant that isn't *always* true for the protocol
+   generates noise that drowns real crashes. Gate conditional properties on the
+   exact precondition (mind precision scales: `LIQUIDATION_FEE_PRECISION` = 1e6 vs
+   `MARGIN_PRECISION` = 1e4).
+
+## CI
+
+- `fuzz.yml` (gating, on PRs touching `fuzz/**` or the program hooks): `idl-sync`
+  check + compile every harness feature. It does **not** run the fuzzer, so the
+  required check stays fast and deterministic.
+- `fuzz-nightly.yml` (scheduled + manual, **non-gating**, `continue-on-error`):
+  runs the `prop_*`/`inv_*` discovery harnesses; crashes surface as uploaded
+  artifacts and job-summary lines, never a red required check. A fuzzer is a
+  discovery tool, not a pass/fail gate.

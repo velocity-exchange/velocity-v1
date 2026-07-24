@@ -1892,7 +1892,7 @@ impl VelocityClientBackend {
 ///
 /// In contrast, without this Transactions are built using the latest known state of
 /// users's open positions and orders, which can result in race conditions when executed onchain.
-#[derive(Default)]
+#[derive(Clone, Default)]
 struct ForceMarkets {
     /// markets must include as readable
     readable: Vec<MarketId>,
@@ -1936,6 +1936,7 @@ impl ForceMarkets {
 /// let signature = client.sign_and_send(tx, &wallet).await?;
 /// ```
 ///
+#[derive(Clone)]
 pub struct TransactionBuilder<'a> {
     /// sub-account data
     account_data: Cow<'a, User>,
@@ -3467,6 +3468,28 @@ impl<'a> TransactionBuilder<'a> {
         self
     }
 
+    /// Assert that the filler was activated in the current slot.
+    ///
+    /// This is a slot-scoped guard, not transaction-local proof: if another transaction already
+    /// activated the filler in this slot, a subsequent no-op fill also passes. Callers that need
+    /// transaction-local proof must additionally inspect the simulation's `OrderFill` event.
+    pub fn revert_fill(mut self) -> Self {
+        let accounts = program::accounts::RevertFill {
+            state: *state_account(),
+            authority: self.authority,
+            filler: self.sub_account,
+            filler_stats: Wallet::derive_stats_account(&self.owner()),
+        }
+        .to_account_metas(None);
+
+        self.ixs.push(Instruction {
+            program_id: constants::PROGRAM_ID,
+            accounts,
+            data: InstructionData::data(&program::instruction::RevertFill {}),
+        });
+        self
+    }
+
     /// Trigger a conditional order (stop loss, take profit, etc.)
     ///
     /// This instruction allows a filler to trigger a conditional order when the specified
@@ -4516,5 +4539,41 @@ mod tests {
             !tx.static_account_keys().contains(&escrow),
             "non-referred, non-builder fill must not include the RevenueShareEscrow account"
         );
+    }
+
+    #[test]
+    fn revert_fill_builds_expected_instruction() {
+        let program_data = ProgramData::new(
+            vec![SpotMarket::default()],
+            vec![PerpMarket::default()],
+            vec![],
+            State::default(),
+        );
+        let filler = Pubkey::new_unique();
+        let filler_account = User {
+            authority: Pubkey::new_unique(),
+            ..User::default()
+        };
+
+        let builder =
+            TransactionBuilder::new(&program_data, filler, Cow::Owned(filler_account), false)
+                .revert_fill();
+        let ix = builder.ixs().last().expect("revert fill instruction");
+
+        assert_eq!(
+            ix.data,
+            InstructionData::data(&program::instruction::RevertFill {})
+        );
+        assert_eq!(ix.accounts.len(), 4);
+        assert_eq!(ix.accounts[0].pubkey, *state_account());
+        assert_eq!(ix.accounts[1].pubkey, builder.authority);
+        assert!(ix.accounts[1].is_signer);
+        assert_eq!(ix.accounts[2].pubkey, filler);
+        assert!(ix.accounts[2].is_writable);
+        assert_eq!(
+            ix.accounts[3].pubkey,
+            Wallet::derive_stats_account(&builder.owner())
+        );
+        assert!(ix.accounts[3].is_writable);
     }
 }

@@ -331,7 +331,7 @@ export class FundingRateUpdaterBot implements Bot {
 			marketIndex
 		);
 		let microLamports = 10_000;
-		if (pfs) {
+		if (pfs && Number.isFinite(pfs.medium)) {
 			microLamports = Math.floor(pfs.medium);
 		}
 

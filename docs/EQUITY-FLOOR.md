@@ -329,51 +329,74 @@ means risk-increasing actions are already rejecting, and `breached` means the br
 any moment. The breaker is permissionless, so Velocity's guard bot is not the only party that can
 call it.
 
+## Using from Rust
+
+`velocity-rs` carries the same surface for Rust consumers. The generated bindings already include
+`equity_floor_buffer` on the `User` account and the `equity_floor_delta` argument on
+`transfer_deposit_by_delegate`, and the on-chain predicates come straight from the program crate
+the SDK re-exports. The client-side math mirrors the TypeScript helpers exactly (same thresholds,
+same tests):
+
+```rust
+use velocity_rs::math::equity_floor::{
+	calculate_equity_floor_auto_delta, equity_floor_level, EquityFloorLevel,
+	DEFAULT_WARNING_BUFFER_MULTIPLE,
+};
+
+// size the floor delta a transfer must carry (what transferQuote computes);
+// pad it slightly when the debit side would land near its buffered floor
+let delta = calculate_equity_floor_auto_delta(
+	amount,
+	total_collateral, // i128, from a margin calculation, strict pricing
+	user.equity_floor,
+	user.equity_floor_buffer,
+);
+
+// classify for monitoring; levels order by severity, so worst-of is max()
+let level = equity_floor_level(
+	total_collateral,
+	user.equity_floor,
+	user.equity_floor_buffer,
+	DEFAULT_WARNING_BUFFER_MULTIPLE,
+);
+if level >= EquityFloorLevel::Critical {
+	// risk-increasing actions are rejecting on this subaccount
+}
+
+// the program's own predicates, for exact on-chain semantics
+let gated = user.is_below_buffered_equity_floor(total_collateral);
+let trippable = user.is_below_equity_floor(total_collateral);
+```
+
+There is no Rust equivalent of the `EquityFloorManager`; a Rust client passes the computed delta
+to `transfer_deposit_by_delegate` directly and applies its own haircut when landing near the line.
+
 ## How the pieces fit together
 
-End-to-end, the system is four layers, each thin on its own:
+| Layer          | Where                                      | Role                                                         |
+| -------------- | ------------------------------------------ | ------------------------------------------------------------ |
+| Program        | `programs/velocity`                        | The only enforcement: gates, trip, freeze                    |
+| TypeScript SDK | `packages/sdk`                             | Mirrors the checks; `EquityFloorManager`                     |
+| Rust SDK       | `rust/velocity-rs`                         | Mirrors the math; bindings and predicates                    |
+| Guard bot      | `apps/keeper-bots-v2` (`equityFloorGuard`) | Watches, alerts, and trips the breaker                       |
+| Admin CLI      | `packages/cli-admin` (`user` commands)     | Velocity's lifecycle tooling: set, inspect, wind down, reset |
 
-| Layer      | Where                                        | Role                                                        |
-| ---------- | -------------------------------------------- | ----------------------------------------------------------- |
-| Program    | `programs/velocity`                          | The only enforcement: gates, trip, freeze                   |
-| SDK        | `packages/sdk`                               | Faithful mirror of the checks, plus the manager             |
-| Guard bot  | `apps/keeper-bots-v2` (`equityFloorGuard`)   | Watches, alerts, and trips the breaker                      |
-| Admin CLI  | `packages/cli-admin` (`user` commands)       | Velocity's lifecycle tooling: set, inspect, wind down, reset |
+The program is the only layer that enforces anything. Floor and buffer live on each `User`
+account and every risk-increasing instruction checks equity against `floor + buffer` on the
+subaccount it is already operating on; the authority-wide part is a single flag on `UserStats`,
+set by the permissionless trip and cleared only by the warm admin. The SDKs mirror those checks
+rather than adding rules of their own, and every consumer that reports a level (the manager, the
+guard bot, the CLI) uses the same classifier.
 
-The program holds two `u64` fields on each `User` account, `equity_floor` and
-`equity_floor_buffer` (carved from existing padding, so the account layout and size never
-changed), and two predicates over them: below-floor (the trip condition) and below-buffered-floor
-(the action gate). Every risk-increasing path evaluates the gate against the margin engine's
-total collateral, which it has already computed for the margin check itself: order placement,
-taker and maker fills, withdrawals, swaps, and all transfers out. The checks read only the one
-`User` account each path already has loaded, which is why the floor is per subaccount rather than
-authority-wide: an aggregate check would need every sibling subaccount's collateral in every hot
-path. The authority-wide part is a single byte on `UserStats`, set by the permissionless
-`tripEquityFloorBreaker` (whose proof is just a margin calculation) and cleared only by the warm
-admin; while set, the same gates reject on every subaccount regardless of individual health.
+Lifecycle:
 
-The SDK mirrors the program rather than adding rules of its own. `UserAccount` carries the two
-fields, the `User` class reimplements the two predicates over the same strict oracle pricing, and
-one small pure-math module (`math/margin`) holds the delta formula and the level classifier. The
-`EquityFloorManager` composes those primitives over `transferDepositByDelegate`; it introduces no
-new authority and nothing it does could not be done with raw instruction calls. Everything that
-displays or decides, the manager, the guard bot, and the admin CLI's status command, imports the
-same classifier, so `critical` means the same thing in a maker's dashboard, Velocity's metrics,
-and an operator's terminal.
-
-The guard bot polls every floored subaccount with the same strict pricing the program uses,
-publishes headroom and level metrics, alerts on level transitions and sharp headroom drops, and
-submits the trip the moment a subaccount's equity is provably below its floor. Because the trip is
-permissionless and its proof is on-chain, the bot holds no privileged key; it is an alarm clock,
-not an authority.
-
-A full lifecycle reads like this: Velocity funds the subaccounts and sets floors and buffers
-(`user set-equity-floor`); the delegate trades and rebalances freely while every action is gated
-at `floor + buffer`; the guard bot watches headroom the whole time; if losses burn through a
-buffer, the breaker trips and every subaccount goes reduce-only; Velocity inspects
-(`user equity-floor-status`), winds down positions if needed (`user close-positions`, itself
-purely reduce-only, which is why it works while frozen), and after review clears the flag
-(`user reset-equity-breaker`).
+1. Velocity funds the subaccounts and sets floors and buffers (`user set-equity-floor`).
+2. The delegate trades and rebalances freely; every action is gated at `floor + buffer`.
+3. The guard bot watches headroom and alerts on `warning` and `critical`.
+4. If losses cross a floor, the breaker trips and every subaccount goes reduce-only.
+5. Velocity inspects (`user equity-floor-status`), winds down if needed (`user close-positions`,
+   reduce-only, so it works while frozen), and clears the flag after review
+   (`user reset-equity-breaker`).
 
 ## Quick reference
 

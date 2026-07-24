@@ -7,16 +7,6 @@ use std::{
     time::Duration,
 };
 
-use crate::solana_sdk::{
-    account::Account,
-    clock::Slot,
-    commitment_config::CommitmentLevel,
-    compute_budget::ComputeBudgetInstruction,
-    instruction::{AccountMeta, Instruction},
-    message::{v0, Hash, Message, VersionedMessage},
-    signature::Signature,
-};
-pub use crate::solana_sdk::{message::AddressLookupTableAccount, pubkey::Pubkey};
 #[cfg(feature = "titan")]
 use crate::titan::TitanSwapInfo;
 use crate::{
@@ -31,6 +21,15 @@ use crate::{
     jupiter::JupiterSwapInfo,
     marketmap::MarketMap,
     oraclemap::{Oracle, OracleMap},
+    solana_sdk::{
+        account::Account,
+        clock::Slot,
+        commitment_config::CommitmentLevel,
+        compute_budget::ComputeBudgetInstruction,
+        instruction::{AccountMeta, Instruction},
+        message::{v0, Hash, Message, VersionedMessage},
+        signature::Signature,
+    },
     swift_order_subscriber::{SignedOrderInfo, SwiftOrderStream},
     types::{
         accounts::{PerpMarket, SpotMarket, State, User, UserStats},
@@ -38,7 +37,12 @@ use crate::{
     },
     utils::{get_http_url, get_ws_url},
 };
-pub use crate::{grpc::GrpcSubscribeOpts, types::Context, wallet::Wallet};
+pub use crate::{
+    grpc::GrpcSubscribeOpts,
+    solana_sdk::{message::AddressLookupTableAccount, pubkey::Pubkey},
+    types::Context,
+    wallet::Wallet,
+};
 use anchor_lang::{AccountDeserialize, Discriminator, InstructionData, ToAccountMetas};
 use bytemuck::Pod;
 use constants::{

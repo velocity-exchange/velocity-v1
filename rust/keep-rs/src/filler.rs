@@ -2180,14 +2180,7 @@ impl TxWorker {
                             log::debug!(target: TARGET, "skip tx dry run: {intent:?}");
                             continue;
                         }
-                        self.send_tx(
-                            &rt,
-                            tx,
-                            simulation_tx,
-                            require_fill_event,
-                            intent,
-                            cu_limit,
-                        );
+                        self.send_tx(&rt, tx, simulation_tx, require_fill_event, intent, cu_limit);
                     }
                     TxWork::Confirm { tx, ts: _ } => {
                         self.confirm_tx(&rt, tx);
@@ -2935,8 +2928,7 @@ impl TxSender {
         intent: TxIntent,
         cu_limit: u64,
     ) -> Option<Signature> {
-        self.queue_tx(tx, None, false, intent, cu_limit)
-            .await
+        self.queue_tx(tx, None, false, intent, cu_limit).await
     }
 
     pub async fn send_fill_tx(

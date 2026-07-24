@@ -67,7 +67,7 @@
 		"typecheck": "turbo run typecheck",
 		"changeset": "changeset",
 		"version-packages": "changeset version",
-		"bench:native-cu": "RUST_LOG=error ts-mocha -t 1000000 ./tests/nativeCuBench.ts",
+		"bench:native-cu": "RUST_LOG=error ts-mocha -t 1000000 ./tests/velocity/nativeCuBench.ts",
 		"program:sync-idl": "cp target/idl/velocity.json packages/sdk/src/idl/velocity.json && cp target/types/velocity.ts packages/sdk/src/idl/velocity.ts",
 		"program:build": "anchor build --skip-lint --ignore-keys -- --no-default-features --features no-entrypoint,anchor-test && bun run program:sync-idl",
 		"program:build:devnet": "bash deploy-scripts/build-devnet.sh",

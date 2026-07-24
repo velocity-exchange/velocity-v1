@@ -298,6 +298,43 @@ pub fn snap_to_oracle(
     Ok(projection.cost)
 }
 
+/// Scalar-input, fill-path variant of [`snap_to_oracle`]: project the AMM
+/// against the current oracle and apply the result in place, bumping
+/// `last_update_slot` under the same gates. Slot-idempotent: returns
+/// immediately when the AMM was already refreshed at `slot`, so the
+/// projection runs at most once per market per slot no matter how many
+/// callers invoke it. Emits no `AmmCurveChanged` event (matching the
+/// historical `Quoter::setup` refresh; the explicit keeper crank is the
+/// evented path). Shared by `AmmQuoter::setup` and the routing phase of
+/// `controller::orders::fulfill_perp_order`, so routing and execution can
+/// never diverge on the projected curve.
+pub fn project_and_apply(
+    amm: &mut crate::vlp::amm::AMM,
+    inputs: &repeg::ProjectionInputs,
+    mm_oracle_price_data: &MMOraclePriceData,
+    oracle_validity: Option<OracleValidity>,
+    slot: u64,
+) -> VelocityResult<()> {
+    if amm.last_update_slot >= slot {
+        return Ok(());
+    }
+    let projection =
+        repeg::project_post_refresh_scalar(amm, inputs, mm_oracle_price_data, oracle_validity)?;
+    projection.apply_to(amm)?;
+    // Same bump gates as `snap_to_oracle`: the oracle must be fresh enough
+    // for low-risk fills and the affordability floor must have accepted the
+    // debit, otherwise the AMM stays marked stale for same-slot freshness
+    // gates downstream.
+    if let Some(validity) = oracle_validity {
+        if is_oracle_valid_for_action(validity, Some(VelocityAction::FillOrderAmmLowRisk))?
+            && !projection.rejected_due_to_affordability
+        {
+            amm.last_update_slot = slot;
+        }
+    }
+    Ok(())
+}
+
 pub fn update_amm_and_check_validity(
     market: &mut PerpMarket,
     mm_oracle_price_data: &MMOraclePriceData,

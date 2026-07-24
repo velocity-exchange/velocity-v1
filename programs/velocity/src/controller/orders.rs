@@ -1844,13 +1844,42 @@ fn fulfill_perp_order(
 
     let fulfillment_methods = {
         let mut market = perp_market_map.get_ref_mut(&market_index)?;
-        // Refresh the AMM's cached spread state (off the current reserves)
-        // before routing so fulfillment decisions quote off live spread —
-        // even on the very first fill of a slot before any keeper crank. The
-        // matcher's `setup` re-refreshes against the post-projection curve.
+        // Route off the PROJECTED curve, not the stored one. The AMM
+        // refresh (snap toward oracle) used to run only inside `Quoter::setup`,
+        // after a fulfillment method was already selected, so routing off the
+        // stored reserve price let a stale curve block the very fill that would
+        // refresh it: the taker failed to cross the stale quote, no method was
+        // selected, setup never ran. Project and apply the refresh here, on the
+        // real AMM, before routing. `project_and_apply` is slot-idempotent and
+        // shares its implementation with `Quoter::setup`, so the projection
+        // (the expensive peg / reserves / k-budget math) runs at most once per
+        // market per slot: this call does it, and the first fill step's setup
+        // then skips it. Routing and execution therefore quote off the exact
+        // same curve. When the projection is a passthrough (oracle invalid for
+        // curve updates, zero intensity, or the affordability floor rejected
+        // it) the AMM is left at its stored curve and routing behaves as before.
         let oracle_pd = *oracle_map.get_price_data(&market.oracle_id())?;
         let mm_oracle_pd =
             market.get_mm_oracle_price_data(oracle_pd, slot, validity_guard_rails)?;
+        let amm_refresh_validity =
+            crate::vlp::amm::refresh::compute_amm_refresh_validity_with_guard_rails(
+                &market,
+                &mm_oracle_pd,
+                validity_guard_rails,
+            )?;
+        let projection_inputs =
+            crate::vlp::amm::math::repeg::ProjectionInputs::from_market(&market);
+        crate::vlp::amm::refresh::project_and_apply(
+            &mut market.amm,
+            &projection_inputs,
+            &mm_oracle_pd,
+            amm_refresh_validity,
+            slot,
+        )?;
+        // Refresh the cached spread state against the just-projected curve so
+        // routing quotes off live spread even on the first fill of a slot
+        // before any keeper crank. Reads the post-projection reserve price.
+        let projected_reserve_price = market.amm.reserve_price()?;
         {
             let crate::state::perp_market::PerpMarket {
                 amm, market_stats, ..
@@ -1859,56 +1888,14 @@ fn fulfill_perp_order(
                 amm,
                 market_stats,
                 &mm_oracle_pd,
-                reserve_price_before,
-                slot,
-            )?;
-        }
-        // Route off the PROJECTED curve, not the stored one. `Quoter::setup`
-        // snaps the AMM toward oracle only after a fulfillment method is
-        // selected, so routing off the stored reserve price lets a stale
-        // curve block the very fill that would refresh it: the taker fails
-        // to cross the stale quote, no method is selected, setup never runs.
-        // Project the refresh onto a scratch copy (same inputs and same
-        // slot-idempotency gate as `setup`, so the routing price equals the
-        // price the first step will quote) and leave the real AMM
-        // untouched: curve mutation stays in `Quoter::setup`. When the
-        // projection is a passthrough (oracle invalid for curve updates,
-        // zero intensity, or the affordability floor rejected it), the
-        // scratch copy equals the stored curve and routing behaves exactly
-        // as before.
-        let (projected_amm, projected_reserve_price) = if market.amm.last_update_slot >= slot {
-            // Already projected against this slot's oracle (a prior fill or
-            // keeper crank); `setup` skips re-projection in this case, so
-            // route off the stored curve for exact parity.
-            (market.amm, reserve_price_before)
-        } else {
-            let amm_refresh_validity =
-                crate::vlp::amm::refresh::compute_amm_refresh_validity_with_guard_rails(
-                    &market,
-                    &mm_oracle_pd,
-                    validity_guard_rails,
-                )?;
-            let projection = crate::vlp::amm::math::repeg::project_post_refresh_scalar(
-                &market.amm,
-                &crate::vlp::amm::math::repeg::ProjectionInputs::from_market(&market),
-                &mm_oracle_pd,
-                amm_refresh_validity,
-            )?;
-            let mut projected_amm = projection.projected_amm(&market.amm)?;
-            let projected_reserve_price = projected_amm.reserve_price()?;
-            crate::vlp::amm::math::spread::update_amm_quote_state(
-                &mut projected_amm,
-                &market.market_stats,
-                &mm_oracle_pd,
                 projected_reserve_price,
                 slot,
             )?;
-            (projected_amm, projected_reserve_price)
-        };
+        }
         determine_perp_fulfillment_methods(
             &user.orders[user_order_index],
             maker_orders_info,
-            &projected_amm,
+            &market.amm,
             projected_reserve_price,
             limit_price,
             amm_is_available,
@@ -3063,12 +3050,22 @@ pub fn fulfill_perp_order_step(
     // end of this function — the AMM-match arm uses it directly; the
     // DLOB-Match arm explicitly drops it before constructing an
     // `AmmJitQuoter` over the same `&mut market`.
-    let amm_refresh_validity =
+    //
+    // Compute the refresh validity only when setup would actually project.
+    // `setup` reads `oracle_validity` solely inside `project_and_apply`,
+    // which no-ops when the curve was already refreshed at this slot (the
+    // orchestrator's routing phase, a prior step, or a keeper crank). In that
+    // dominant case the validity is unused, so skip the `oracle_validity`
+    // recompute and pass `None`; `project_and_apply` returns before reading it.
+    let amm_refresh_validity = if market.amm.last_update_slot < slot {
         crate::vlp::amm::refresh::compute_amm_refresh_validity_with_guard_rails(
             market,
             &mm_oracle_price_data,
             validity_guard_rails,
-        )?;
+        )?
+    } else {
+        None
+    };
     let market_stats_snapshot = market.market_stats;
     let safe_oracle = mm_oracle_price_data.get_safe_oracle_price_data();
     let order_tick_size = market.order_tick_size;

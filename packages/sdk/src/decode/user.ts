@@ -371,7 +371,8 @@ export function decodeUser(buffer: Buffer): UserAccount {
 	offset += 3; // padding
 	const equityFloor = readUnsignedBigInt64LE(buffer, offset);
 	offset += 8;
-	offset += 8; // padding2
+	const equityFloorBuffer = readUnsignedBigInt64LE(buffer, offset);
+	offset += 8;
 	return {
 		authority,
 		delegate,
@@ -401,5 +402,6 @@ export function decodeUser(buffer: Buffer): UserAccount {
 		poolId,
 		specialUserStatus,
 		equityFloor,
+		equityFloorBuffer,
 	};
 }

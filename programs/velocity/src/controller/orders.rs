@@ -2130,13 +2130,14 @@ fn fulfill_perp_order(
         }
 
         if !user_order_position_decreasing
-            && (user.is_below_equity_floor(taker_margin_calculation.total_collateral)
+            && (user.is_below_buffered_equity_floor(taker_margin_calculation.total_collateral)
                 || user_stats.is_equity_breaker_tripped())
         {
             msg!(
-                "taker total collateral {} below equity floor {} (breaker tripped: {})",
+                "taker total collateral {} below equity floor {} + buffer {} (breaker tripped: {})",
                 taker_margin_calculation.total_collateral,
                 user.equity_floor,
+                user.equity_floor_buffer,
                 user_stats.is_equity_breaker_tripped()
             );
             return Err(ErrorCode::EquityBelowFloor);
@@ -2223,14 +2224,15 @@ fn fulfill_perp_order(
         }
 
         if maker_risk_increasing
-            && (maker.is_below_equity_floor(maker_margin_calculation.total_collateral)
+            && (maker.is_below_buffered_equity_floor(maker_margin_calculation.total_collateral)
                 || maker_breaker_tripped)
         {
             msg!(
-                "maker ({}) total collateral {} below equity floor {} (breaker tripped: {})",
+                "maker ({}) total collateral {} below equity floor {} + buffer {} (breaker tripped: {})",
                 maker_key,
                 maker_margin_calculation.total_collateral,
                 maker.equity_floor,
+                maker.equity_floor_buffer,
                 maker_breaker_tripped
             );
             return Err(ErrorCode::EquityBelowFloor);
@@ -3727,7 +3729,7 @@ pub fn trigger_order(
     drop(perp_market);
 
     // If order increases risk and the user is below initial margin, below their
-    // own equity floor, or the authority-wide equity breaker is tripped, cancel
+    // own buffered equity floor, or the authority-wide equity breaker is tripped, cancel
     // it. The breaker check mirrors the fill/withdraw/transfer paths: while it is
     // set, no risk-increasing action is allowed on any of the authority's
     // subaccounts, so a keeper must not be able to flip a resting risk-increasing
@@ -3743,7 +3745,7 @@ pub fn trigger_order(
         )?;
 
         if !margin_calc.meets_margin_requirement()
-            || user.is_below_equity_floor(margin_calc.total_collateral)
+            || user.is_below_buffered_equity_floor(margin_calc.total_collateral)
             || user_stats.is_equity_breaker_tripped()
         {
             cancel_order(

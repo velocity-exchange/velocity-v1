@@ -985,7 +985,10 @@ pub fn handle_transfer_deposit_by_delegate<'c: 'info, 'info>(
         // defusing the pending trip. Evaluate from_user against its
         // PRE-reduction floor (the transfer below reduces it); the withdraw
         // margin check inside `transfer_spot_deposit` re-validates the from side
-        // against the reduced floor after the funds move.
+        // against the reduced floor after the funds move. Deliberately checks
+        // the raw floor, not floor + buffer: its only job is trip defusal, and
+        // a subaccount inside the buffer band (at/above floor) may still
+        // rebalance floor away.
         let from_user_margin_calculation =
             calculate_margin_requirement_and_total_collateral_and_liability_info(
                 from_user,
@@ -1034,11 +1037,12 @@ pub fn handle_transfer_deposit_by_delegate<'c: 'info, 'info>(
             )?;
 
         validate!(
-            !to_user.is_below_equity_floor(to_user_margin_calculation.total_collateral),
+            !to_user.is_below_buffered_equity_floor(to_user_margin_calculation.total_collateral),
             ErrorCode::InvalidEquityFloorTransfer,
-            "to_user total collateral {} does not back new equity floor {}",
+            "to_user total collateral {} does not back new equity floor {} + buffer {}",
             to_user_margin_calculation.total_collateral,
-            to_user.equity_floor
+            to_user.equity_floor,
+            to_user.equity_floor_buffer
         )?;
     }
 
@@ -2128,11 +2132,12 @@ pub fn handle_transfer_perp_position<'c: 'info, 'info>(
     )?;
 
     validate!(
-        !from_user.is_below_equity_floor(from_user_margin_calculation.total_collateral),
+        !from_user.is_below_buffered_equity_floor(from_user_margin_calculation.total_collateral),
         ErrorCode::EquityBelowFloor,
-        "from user total collateral {} below equity floor {}",
+        "from user total collateral {} below equity floor {} + buffer {}",
         from_user_margin_calculation.total_collateral,
-        from_user.equity_floor
+        from_user.equity_floor,
+        from_user.equity_floor_buffer
     )?;
 
     let to_user_margin_context = MarginContext::standard(MarginRequirementType::Initial);
@@ -2157,11 +2162,12 @@ pub fn handle_transfer_perp_position<'c: 'info, 'info>(
     // above). A recipient that passes initial margin can still land below its
     // warm-admin floor, which would otherwise leave the floor unenforced.
     validate!(
-        !to_user.is_below_equity_floor(to_user_margin_requirement.total_collateral),
+        !to_user.is_below_buffered_equity_floor(to_user_margin_requirement.total_collateral),
         ErrorCode::EquityBelowFloor,
-        "to user total collateral {} below equity floor {}",
+        "to user total collateral {} below equity floor {} + buffer {}",
         to_user_margin_requirement.total_collateral,
-        to_user.equity_floor
+        to_user.equity_floor,
+        to_user.equity_floor_buffer
     )?;
 
     let mut perp_market = perp_market_map.get_ref_mut(&market_index)?;

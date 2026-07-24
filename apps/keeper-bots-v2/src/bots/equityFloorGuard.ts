@@ -23,12 +23,13 @@ import { simulateAndGetTxWithCUs } from '../utils';
 import { PrometheusExporter } from '@opentelemetry/exporter-prometheus';
 import { Counter, Meter, ObservableGauge } from '@opentelemetry/api';
 import { MeterProvider } from '@opentelemetry/sdk-metrics-base';
-import { metricAttrFromUserAccount } from '../metrics';
+import { metricAttrFromUserAccount, RuntimeSpec } from '../metrics';
 
 const DEFAULT_WARNING_BUFFER_MULTIPLE = 2; // warn inside floor + 2x buffer
 const DEFAULT_HEADROOM_DROP_ALERT_PCT = 10; // alert when headroom falls 10% between checks
 
 enum METRIC_TYPES {
+	runtime_specs = 'runtime_specs',
 	equity_floor_headroom = 'equity_floor_headroom',
 	equity_floor_buffered_headroom = 'equity_floor_buffered_headroom',
 	equity_floor_level = 'equity_floor_level',
@@ -100,6 +101,9 @@ export class EquityFloorGuardBot implements Bot {
 	private metricsInitialized = false;
 	private exporter?: PrometheusExporter;
 	private meter?: Meter;
+	private runtimeSpec: RuntimeSpec;
+	private bootTimeMs?: number;
+	private runtimeSpecsGauge?: ObservableGauge;
 	private headroomGauge?: ObservableGauge;
 	private bufferedHeadroomGauge?: ObservableGauge;
 	private levelGauge?: ObservableGauge;
@@ -116,11 +120,16 @@ export class EquityFloorGuardBot implements Bot {
 	private watchdogTimerMutex = new Mutex();
 	private watchdogTimerLastPatTime = Date.now();
 
-	constructor(velocityClient: VelocityClient, config: EquityFloorGuardConfig) {
+	constructor(
+		velocityClient: VelocityClient,
+		runtimeSpec: RuntimeSpec,
+		config: EquityFloorGuardConfig
+	) {
 		this.name = config.botId;
 		this.dryRun = config.dryRun;
 		this.runOnce = config.runOnce || false;
 		this.velocityClient = velocityClient;
+		this.runtimeSpec = runtimeSpec;
 		this.warningBufferMultiple =
 			config.warningBufferMultiple ?? DEFAULT_WARNING_BUFFER_MULTIPLE;
 		this.headroomDropAlertPct =
@@ -163,6 +172,17 @@ export class EquityFloorGuardBot implements Bot {
 		const meterProvider = new MeterProvider();
 		meterProvider.addMetricReader(this.exporter);
 		this.meter = meterProvider.getMeter(this.name);
+
+		this.bootTimeMs = Date.now();
+		this.runtimeSpecsGauge = this.meter.createObservableGauge(
+			METRIC_TYPES.runtime_specs,
+			{
+				description: 'Runtime specification of this program',
+			}
+		);
+		this.runtimeSpecsGauge.addCallback((obs) => {
+			obs.observe(this.bootTimeMs!, this.runtimeSpec as any);
+		});
 
 		this.headroomGauge = this.meter.createObservableGauge(
 			METRIC_TYPES.equity_floor_headroom,

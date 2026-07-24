@@ -12460,6 +12460,10 @@
         {
           "name": "equity_floor",
           "type": "u64"
+        },
+        {
+          "name": "equity_floor_buffer",
+          "type": "u64"
         }
       ]
     },
@@ -24059,21 +24063,24 @@
           {
             "name": "equity_floor",
             "docs": [
-              "Minimum account equity (cross-margin total collateral) required for",
-              "risk-increasing orders, fills, withdrawals and deposit transfers.",
-              "Settable only by the warm/cold admin; 0 disables the check.",
+              "Minimum account equity (cross-margin total collateral). Below this the",
+              "permissionless breaker can trip. Risk-increasing orders, fills,",
+              "withdrawals and deposit transfers must clear `equity_floor +",
+              "equity_floor_buffer`. Settable only by the warm/cold admin; 0 disables",
+              "both checks.",
               "precision: QUOTE_PRECISION"
             ],
             "type": "u64"
           },
           {
-            "name": "padding2",
-            "type": {
-              "array": [
-                "u8",
-                8
-              ]
-            }
+            "name": "equity_floor_buffer",
+            "docs": [
+              "Extra headroom above `equity_floor` required by risk-increasing",
+              "actions, so an account cannot legally end an action at the trip",
+              "threshold. No effect while `equity_floor` is 0.",
+              "precision: QUOTE_PRECISION"
+            ],
+            "type": "u64"
           }
         ]
       }

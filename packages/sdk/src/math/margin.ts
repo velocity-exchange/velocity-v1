@@ -325,3 +325,74 @@ export function calculateCollateralDepositRequiredForTrade(
 
 	return baseAmountRequired;
 }
+
+/**
+ * Minimal equity floor to carry along with a quote transfer of `amount` out
+ * of a subaccount so the debited side ends at/above its buffered floor
+ * (`equityFloor + equityFloorBuffer`): the first
+ * `totalCollateral - (floor + buffer)` of the transfer carries no floor, the
+ * remainder carries floor one-for-one, capped at the floor the subaccount
+ * actually holds. Returns zero when no floor is set. The result never exceeds
+ * `amount`, so a credited side that met its own buffered floor before the
+ * transfer still meets it after. All values QUOTE_PRECISION.
+ */
+export function calculateEquityFloorAutoDelta(
+	amount: BN,
+	totalCollateral: BN,
+	equityFloor: BN,
+	equityFloorBuffer: BN
+): BN {
+	if (equityFloor.lte(ZERO)) {
+		return ZERO;
+	}
+	const excess = BN.max(
+		totalCollateral.sub(equityFloor.add(equityFloorBuffer)),
+		ZERO
+	);
+	return BN.min(BN.max(amount.sub(excess), ZERO), equityFloor);
+}
+
+/**
+ * Severity of a subaccount's equity relative to its floor, most to least
+ * severe. `breached`: below the floor, the permissionless breaker can trip.
+ * `critical`: below `floor + buffer`, risk-increasing actions are rejecting.
+ * `warning`: within `warningBufferMultiple * buffer` of the floor.
+ * `healthy`: above all thresholds. `disabled`: no floor set.
+ */
+export type EquityFloorLevel =
+	| 'breached'
+	| 'critical'
+	| 'warning'
+	| 'healthy'
+	| 'disabled';
+
+/**
+ * Classifies `totalCollateral` against the floor thresholds. Used by the
+ * `EquityFloorManager` and the equity-floor guard bot so both report the same
+ * levels. `warningBufferMultiple` scales the warning threshold above the
+ * floor (default 2: warn inside `floor + 2 * buffer`). All QUOTE_PRECISION.
+ */
+export function getEquityFloorLevel(
+	totalCollateral: BN,
+	equityFloor: BN,
+	equityFloorBuffer: BN,
+	warningBufferMultiple = 2
+): EquityFloorLevel {
+	if (equityFloor.lte(ZERO)) {
+		return 'disabled';
+	}
+	if (totalCollateral.lt(equityFloor)) {
+		return 'breached';
+	}
+	if (totalCollateral.lt(equityFloor.add(equityFloorBuffer))) {
+		return 'critical';
+	}
+	if (
+		totalCollateral.lt(
+			equityFloor.add(equityFloorBuffer.muln(warningBufferMultiple))
+		)
+	) {
+		return 'warning';
+	}
+	return 'healthy';
+}

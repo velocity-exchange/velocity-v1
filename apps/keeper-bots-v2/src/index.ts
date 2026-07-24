@@ -854,6 +854,13 @@ const runBot = async () => {
 		bots.push(
 			new EquityFloorGuardBot(
 				velocityClient,
+				{
+					rpcEndpoint: endpoint,
+					commit: commitHash,
+					velocityEnv: config.global.velocityEnv!,
+					velocityPid: velocityPublicKey.toBase58(),
+					walletAuthority: wallet.publicKey.toBase58(),
+				},
 				config.botConfigs!.equityFloorGuard!
 			)
 		);

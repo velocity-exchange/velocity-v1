@@ -3769,17 +3769,21 @@ pub fn handle_reset_equity_floor_breaker(ctx: Context<ResetEquityFloorBreaker>) 
 pub fn handle_update_user_equity_floor(
     ctx: Context<AdminUpdateUserEquityFloor>,
     equity_floor: u64,
+    equity_floor_buffer: u64,
 ) -> Result<()> {
     let user = &mut load_mut!(ctx.accounts.user)?;
 
     msg!(
-        "equity_floor for {:?}: {:?} -> {:?}",
+        "equity_floor for {:?}: {:?} -> {:?}, buffer: {:?} -> {:?}",
         user.authority,
         user.equity_floor,
-        equity_floor
+        equity_floor,
+        user.equity_floor_buffer,
+        equity_floor_buffer
     );
 
     user.equity_floor = equity_floor;
+    user.equity_floor_buffer = equity_floor_buffer;
 
     Ok(())
 }

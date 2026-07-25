@@ -164,20 +164,17 @@ pub fn handle_initialize(ctx: Context<Initialize>) -> Result<()> {
 const RESERVED_QUOTE_NAMES: &[&[u8]] = &[b"USDT"];
 
 /// True if `name` decodes to one of the reserved quote names after trimming
-/// leading/trailing whitespace + NUL. Trims a *superset* of what the off-chain
-/// `decodeName().trim()` strips (ASCII whitespace incl. vertical tab, plus NUL)
-/// so a whitespace-padded "USDT" can't evade the reservation on-chain while
-/// still decoding to "USDT" for the monitor.
+/// leading/trailing whitespace. Trims a superset of what the off-chain
+/// `decodeName().trim()` strips: all Unicode whitespace (`char::is_whitespace`)
+/// plus U+FEFF (BOM, trimmed by JS but not Rust) and NUL. Invalid UTF-8 is
+/// never reserved: it decodes to U+FFFD off-chain, which `trim()` keeps, so it
+/// cannot decode to a reserved name.
 fn name_is_reserved_quote(name: &[u8; 32]) -> bool {
-    const TRIM: &[u8] = &[0x00, 0x09, 0x0a, 0x0b, 0x0c, 0x0d, 0x20];
-    let is_trim = |b: &u8| TRIM.contains(b);
-    let start = name.iter().position(|b| !is_trim(b));
-    let end = name.iter().rposition(|b| !is_trim(b));
-    let trimmed: &[u8] = match (start, end) {
-        (Some(s), Some(e)) => &name[s..=e],
-        _ => &[],
-    };
-    RESERVED_QUOTE_NAMES.contains(&trimmed)
+    let is_trim = |c: char| c.is_whitespace() || c == '\0' || c == '\u{feff}';
+    match core::str::from_utf8(name) {
+        Ok(s) => RESERVED_QUOTE_NAMES.contains(&s.trim_matches(is_trim).as_bytes()),
+        Err(_) => false,
+    }
 }
 
 pub fn handle_initialize_spot_market(
@@ -4746,6 +4743,24 @@ mod reserved_quote_name_tests {
     }
 
     #[test]
+    fn unicode_whitespace_padding_is_reserved() {
+        // JS trim() strips these, so they decode to "USDT" off-chain and must
+        // be reserved on-chain: NBSP, ogham space, en quad, line/paragraph
+        // separators, narrow NBSP, medium math space, ideographic space, BOM
+        for pad in [
+            "\u{00a0}", "\u{1680}", "\u{2000}", "\u{200a}", "\u{2028}", "\u{2029}", "\u{202f}",
+            "\u{205f}", "\u{3000}", "\u{feff}",
+        ] {
+            let s = format!("{pad}USDT{pad}");
+            assert!(
+                name_is_reserved_quote(&padded(&s)),
+                "{:?} padding not reserved",
+                pad
+            );
+        }
+    }
+
+    #[test]
     fn non_reserved_names_pass() {
         // devnet stable, other stable, and volatile tokens must NOT be reserved
         assert!(!name_is_reserved_quote(&padded("dUSDT")));
@@ -4754,5 +4769,12 @@ mod reserved_quote_name_tests {
         assert!(!name_is_reserved_quote(&padded("USDT.e")));
         assert!(!name_is_reserved_quote(&padded("USD")));
         assert!(!name_is_reserved_quote(&[b' '; 32])); // all blank
+                                                       // ZWSP is not trimmed by JS trim(), so "\u{200b}USDT" does not decode
+                                                       // to "USDT" off-chain and must not be reserved
+        assert!(!name_is_reserved_quote(&padded("\u{200b}USDT")));
+        // invalid UTF-8 decodes with U+FFFD, which trim() keeps
+        let mut invalid = [b' '; 32];
+        invalid[..5].copy_from_slice(&[0xff, b'U', b'S', b'D', b'T']);
+        assert!(!name_is_reserved_quote(&invalid));
     }
 }

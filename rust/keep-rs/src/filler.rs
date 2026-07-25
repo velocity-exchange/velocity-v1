@@ -8,13 +8,16 @@ use std::{
 use anchor_lang::Discriminator;
 use dashmap::DashMap;
 use futures_util::StreamExt;
+use pyth_lazer_protocol::router::TimestampUs;
 use solana_account_decoder_client_types::UiAccountEncoding;
 use solana_compute_budget_interface::ComputeBudgetInstruction;
 use solana_rpc_client_api::config::{
     RpcAccountInfoConfig, RpcProgramAccountsConfig, RpcTransactionConfig,
 };
-use solana_sdk::{signature::Signature, transaction::TransactionError};
-use solana_transaction_status_client_types::UiTransactionEncoding;
+use solana_sdk::{
+    instruction::InstructionError, signature::Signature, transaction::TransactionError,
+};
+use solana_transaction_status_client_types::{UiTransactionEncoding, UiTransactionError};
 use tokio::{runtime::Handle, sync::RwLock};
 use velocity_rs::program::math::auction::calculate_auction_price;
 use velocity_rs::{
@@ -42,8 +45,8 @@ use velocity_rs::{
 use crate::{
     http::{FeedHealth, Metrics},
     util::{
-        swift_placement_expired, OrderSlotLimiter, PendingTxMeta, PendingTxs, PythPriceUpdate,
-        TxIntent,
+        pyth_update_is_fresh, swift_placement_expired, OrderSlotLimiter, PendingTxMeta, PendingTxs,
+        PythPriceUpdate, TxIntent,
     },
     Config, UseMarkets,
 };
@@ -153,6 +156,9 @@ impl FillerBot {
             )
             .expect("pyth price feed connects");
             let feed = crate::util::subscribe_price_feeds(pyth_feed_cli, &market_ids, &[], &[]);
+            // start the liveness clock at subscription time so a feed that never
+            // delivers a single update still trips the health check
+            feed_health.touch_pyth();
             log::info!(target: TARGET, "subscribed pyth price feeds");
             Some(feed)
         } else {
@@ -208,10 +214,21 @@ impl FillerBot {
         // (fresh<->stale) instead of every slot, so a stale oracle shows as two edges
         // rather than a wall of per-slot lines during the exact window you're debugging.
         let mut oracle_stale_state = BTreeMap::<u16, bool>::new();
+        // Per-market last-known pyth-price-stale state, for the same transition-only
+        // logging as `oracle_stale_state`.
+        let mut pyth_price_stale_state = BTreeMap::<u16, bool>::new();
 
         // Create a dummy receiver that never sends when pyth is disabled
         let (_dummy_tx, dummy_rx) = tokio::sync::mpsc::channel::<PythPriceUpdate>(1);
         let mut pyth_price_feed = self.pyth_price_feed.unwrap_or(dummy_rx);
+
+        // Wall-clock age gate for cached pyth prices: a frozen feed leaves this cache
+        // holding a price that's arbitrarily old with no signal of that in the update
+        // itself, so a per-market timestamp check on every read is the only way to
+        // catch it. Must stay strictly tighter than the program's
+        // `PYTH_LAZER_MAX_STALENESS_SECONDS` (15s) so the bot stops trusting a price
+        // before the program would reject it on-chain.
+        const PYTH_PRICE_MAX_AGE_US: u64 = 10_000_000;
 
         // Swift reconnect backoff state (reset on successful resubscribe / first order)
         let mut retries = 0u32;
@@ -412,7 +429,26 @@ impl FillerBot {
                         let trigger_price = perp_market.get_trigger_price(oracle_price as i64, unix_now, use_median_trigger_price).unwrap_or(oracle_price);
                         let mut pyth_update = None;
                         if let Some(p) = pyth_oracle_prices.get(&market_index) {
-                            if oracle_price != p.price {
+                            // capture the clock per market, not per slot: earlier markets in
+                            // this loop await fill txs, so a slot-start timestamp can be
+                            // seconds behind by the time later markets are evaluated
+                            let now_us = TimestampUs::now();
+                            let age_us = now_us.saturating_us_since(p.ts);
+                            let is_stale = !pyth_update_is_fresh(p.ts, now_us, PYTH_PRICE_MAX_AGE_US);
+                            // Log staleness only on transition, matching `oracle_stale_state` above.
+                            let prev_stale = pyth_price_stale_state.insert(market_index, is_stale);
+                            if prev_stale != Some(is_stale) {
+                                if is_stale {
+                                    log::warn!(target: TARGET, "pyth price went stale market={market_index} age_ms={} falling back to chain oracle", age_us / 1_000);
+                                } else if prev_stale.is_some() {
+                                    log::info!(target: TARGET, "pyth price recovered market={market_index} age_ms={}", age_us / 1_000);
+                                }
+                            }
+                            metrics
+                                .pyth_price_age_ms
+                                .with_label_values(&[&market_index.to_string()])
+                                .set((age_us / 1_000) as i64);
+                            if !is_stale && oracle_price != p.price {
                                 oracle_price = p.price;
                                 pyth_update = Some(p.clone());
                             }
@@ -578,6 +614,7 @@ impl FillerBot {
                 new_price = pyth_price_feed.recv() => {
                     match new_price {
                         Some(update) => {
+                            feed_health.touch_pyth();
                             pyth_oracle_prices.insert(update.market_id, update);
                         }
                         None => {
@@ -1119,6 +1156,26 @@ async fn try_swift_place(
         .await;
 }
 
+/// Build the broadcast transaction and, when needed, a guarded simulation variant.
+///
+/// The worker requires a matching nonzero `OrderFill` event from this simulation because
+/// `RevertFill` only proves that the filler was active sometime in the current slot; activity from
+/// an earlier transaction can otherwise produce a false positive. Ordinary fills strip
+/// `RevertFill` after simulation to reduce transaction size and compute. Pyth-update transactions
+/// retain it as an additional execution-time rollback guard.
+fn build_fill_tx(
+    tx_builder: TransactionBuilder<'_>,
+    retain_revert_fill: bool,
+) -> (VersionedMessage, Option<VersionedMessage>) {
+    if retain_revert_fill {
+        (tx_builder.revert_fill().build(), None)
+    } else {
+        let tx = tx_builder.clone().build();
+        let simulation_tx = tx_builder.revert_fill().build();
+        (tx, Some(simulation_tx))
+    }
+}
+
 /// Try to fill an auction order
 ///
 /// - `auction_crosses` list of one or more crosses to fill
@@ -1176,11 +1233,13 @@ async fn try_auction_fill(
 
         tx_builder = tx_builder.with_priority_fee(priority_fee, Some(cu_limit));
 
+        let mut includes_oracle_update = false;
         if let Some(ref update_msg) = oracle_update {
             if !sent_oracle_update {
                 tx_builder = tx_builder
                     .post_pyth_lazer_oracle_update(&[update_msg.feed_id], &update_msg.message);
                 sent_oracle_update = true;
+                includes_oracle_update = true;
             }
         }
 
@@ -1402,11 +1461,12 @@ async fn try_auction_fill(
             }
         }
 
-        let tx = tx_builder.build();
+        let (tx, simulation_tx) = build_fill_tx(tx_builder, includes_oracle_update);
 
         tx_worker_ref
-            .send_tx(
+            .send_fill_tx(
                 tx,
+                simulation_tx,
                 TxIntent::AuctionFill {
                     market_index,
                     taker_order_id: taker_order.order_id,
@@ -1560,7 +1620,7 @@ async fn try_uncross(
                 );
             }
         }
-        let tx = tx_builder.build();
+        let (tx, simulation_tx) = build_fill_tx(tx_builder, false);
 
         emit_uncross_attempt_event(
             market_index,
@@ -1571,8 +1631,9 @@ async fn try_uncross(
             makers.len(),
         );
         tx_worker_ref
-            .send_tx(
+            .send_fill_tx(
                 tx,
+                simulation_tx,
                 TxIntent::LimitUncross {
                     slot,
                     market_index,
@@ -1783,11 +1844,12 @@ async fn try_vamm_taker_fill(
                 );
             }
         }
-        let tx = tx_builder.build();
+        let (tx, simulation_tx) = build_fill_tx(tx_builder, false);
 
         tx_worker_ref
-            .send_tx(
+            .send_fill_tx(
                 tx,
+                simulation_tx,
                 TxIntent::VAMMTakerFill {
                     slot,
                     market_index,
@@ -2092,6 +2154,8 @@ async fn subscribe_grpc(
 pub enum TxWork {
     Send {
         tx: VersionedTransaction,
+        simulation_tx: Option<VersionedMessage>,
+        require_fill_event: bool,
         ts: u64,
         intent: TxIntent,
         cu_limit: u64,
@@ -2141,6 +2205,8 @@ impl TxWorker {
                 match work {
                     TxWork::Send {
                         tx,
+                        simulation_tx,
+                        require_fill_event,
                         ts: _,
                         intent,
                         cu_limit,
@@ -2149,7 +2215,7 @@ impl TxWorker {
                             log::debug!(target: TARGET, "skip tx dry run: {intent:?}");
                             continue;
                         }
-                        self.send_tx(&rt, tx, intent, cu_limit);
+                        self.send_tx(&rt, tx, simulation_tx, require_fill_event, intent, cu_limit);
                     }
                     TxWork::Confirm { tx, ts: _ } => {
                         self.confirm_tx(&rt, tx);
@@ -2164,6 +2230,8 @@ impl TxWorker {
         &self,
         rt: &Handle,
         signed_tx: VersionedTransaction,
+        simulation_tx: Option<VersionedMessage>,
+        require_fill_event: bool,
         intent: TxIntent,
         cu_limit: u64,
     ) {
@@ -2183,6 +2251,7 @@ impl TxWorker {
         }
 
         rt.spawn(async move {
+            let simulation_tx = simulation_tx.unwrap_or_else(|| signed_tx.message.clone());
             // simulate first, against processed state: the tx was built from the
             // processed-commitment gRPC view, so a default-commitment (finalized)
             // preflight lags ~32 slots and rejects valid fills for the whole
@@ -2190,13 +2259,34 @@ impl TxWorker {
             // just-triggered order)
             match velocity
                 .simulate_tx_with_commitment(
-                    signed_tx.message.clone(),
+                    simulation_tx,
                     Some(CommitmentConfig::processed()),
                 )
                 .await
             {
                 Ok(sim_result) => {
                     if let Some(err) = sim_result.err {
+                        if is_revert_fill_error(&err) {
+                            log::debug!(
+                                target: TARGET,
+                                "fill produced no fills during simulation, intent: {intent_label}"
+                            );
+                            emit_tx_event(
+                                &intent,
+                                None,
+                                "no_fills",
+                                intent.crosses_and_slot().1,
+                                None,
+                                intent.expected_fill_count(),
+                                0,
+                                false,
+                                cu_limit,
+                                None,
+                                None,
+                                Some("RevertFill"),
+                            );
+                            return;
+                        }
                         log::warn!(
                             target: TARGET,
                             "sim failed: {err:?}, intent: {intent_label}, liquidatee: {:?}, slot: {:?}",
@@ -2233,6 +2323,30 @@ impl TxWorker {
                             None,
                             None,
                             Some(&format!("{err:?}")),
+                        );
+                        return;
+                    }
+
+                    if require_fill_event
+                        && !simulation_has_expected_fill(sim_result.logs.as_deref(), &intent)
+                    {
+                        log::debug!(
+                            target: TARGET,
+                            "fill simulation emitted no matching fill event, intent: {intent_label}"
+                        );
+                        emit_tx_event(
+                            &intent,
+                            None,
+                            "no_fills",
+                            intent.crosses_and_slot().1,
+                            None,
+                            intent.expected_fill_count(),
+                            0,
+                            false,
+                            cu_limit,
+                            None,
+                            None,
+                            Some("NoFillEvent"),
                         );
                         return;
                     }
@@ -2794,6 +2908,36 @@ fn emit_tx_event(
     log::info!(target: "tx_event", "{event}");
 }
 
+fn is_revert_fill_error(error: &UiTransactionError) -> bool {
+    matches!(
+        TransactionError::from(error.clone()),
+        TransactionError::InstructionError(_, InstructionError::Custom(6239))
+    )
+}
+
+fn is_expected_fill_event(event: &VelocityEvent, intent: &TxIntent) -> bool {
+    matches!(
+        event,
+        VelocityEvent::OrderFill {
+            taker,
+            taker_order_id,
+            base_asset_amount_filled,
+            market_index,
+            ..
+        } if *base_asset_amount_filled > 0
+            && *taker == intent.user()
+            && Some(*taker_order_id) == intent.order_id()
+            && Some(*market_index) == intent.market_index()
+    )
+}
+
+fn simulation_has_expected_fill(logs: Option<&[String]>, intent: &TxIntent) -> bool {
+    logs.into_iter().flatten().enumerate().any(|(tx_idx, log)| {
+        velocity_rs::event_subscriber::try_parse_log(log, "simulation", tx_idx)
+            .is_some_and(|event| is_expected_fill_event(&event, intent))
+    })
+}
+
 #[derive(Clone)]
 pub struct TxSender {
     tx: crossbeam::channel::Sender<TxWork>,
@@ -2819,6 +2963,28 @@ impl TxSender {
         intent: TxIntent,
         cu_limit: u64,
     ) -> Option<Signature> {
+        self.queue_tx(tx, None, false, intent, cu_limit).await
+    }
+
+    pub async fn send_fill_tx(
+        &self,
+        tx: VersionedMessage,
+        simulation_tx: Option<VersionedMessage>,
+        intent: TxIntent,
+        cu_limit: u64,
+    ) -> Option<Signature> {
+        self.queue_tx(tx, simulation_tx, true, intent, cu_limit)
+            .await
+    }
+
+    async fn queue_tx(
+        &self,
+        tx: VersionedMessage,
+        simulation_tx: Option<VersionedMessage>,
+        require_fill_event: bool,
+        intent: TxIntent,
+        cu_limit: u64,
+    ) -> Option<Signature> {
         // no blockhash = subscription dead AND rpc fallback failed; silently dropping
         // every tx from here would be worse than a restart
         let blockhash = self
@@ -2832,6 +2998,8 @@ impl TxSender {
         self.tx
             .send(TxWork::Send {
                 tx: signed_tx,
+                simulation_tx,
+                require_fill_event,
                 ts: SystemTime::now()
                     .duration_since(UNIX_EPOCH)
                     .unwrap()
@@ -2847,7 +3015,116 @@ impl TxSender {
 
 #[cfg(test)]
 mod tests {
-    use super::{classify_cross, order_dedup_key, vamm_can_fill_taker, CrossAction, Pubkey};
+    use std::borrow::Cow;
+
+    use solana_sdk::{instruction::InstructionError, transaction::TransactionError};
+    use velocity_rs::{
+        constants::ProgramData,
+        types::accounts::{PerpMarket, SpotMarket, State, User},
+        velocity_idl::types::MarketType as EventMarketType,
+        TransactionBuilder,
+    };
+
+    use super::{
+        build_fill_tx, classify_cross, is_expected_fill_event, is_revert_fill_error,
+        order_dedup_key, vamm_can_fill_taker, CrossAction, Pubkey, TxIntent, VelocityEvent,
+    };
+
+    fn order_fill_event(taker: Pubkey, order_id: u32, base_filled: u64) -> VelocityEvent {
+        VelocityEvent::OrderFill {
+            maker: None,
+            maker_fee: 0,
+            maker_order_id: 0,
+            maker_side: None,
+            taker: Some(taker),
+            taker_fee: 0,
+            taker_order_id: order_id,
+            taker_side: None,
+            base_asset_amount_filled: base_filled,
+            quote_asset_amount_filled: 1,
+            market_index: 7,
+            market_type: EventMarketType::Perp,
+            oracle_price: 1,
+            signature: "simulation".to_string(),
+            tx_idx: 0,
+            ts: 0,
+            bit_flags: 0,
+        }
+    }
+
+    #[test]
+    fn fill_event_is_transaction_local_success_proof() {
+        let taker = Pubkey::new_unique();
+        let intent = TxIntent::LimitUncross {
+            slot: 10,
+            market_index: 7,
+            taker_order_id: 42,
+            taker_user: taker,
+            maker_order_id: 9,
+        };
+
+        assert!(is_expected_fill_event(
+            &order_fill_event(taker, 42, 1),
+            &intent
+        ));
+        assert!(!is_expected_fill_event(
+            &order_fill_event(taker, 42, 0),
+            &intent
+        ));
+        assert!(!is_expected_fill_event(
+            &order_fill_event(Pubkey::new_unique(), 42, 1),
+            &intent
+        ));
+    }
+
+    #[test]
+    fn fill_tx_retains_revert_only_when_requested() {
+        let program_data = ProgramData::new(
+            vec![SpotMarket::default()],
+            vec![PerpMarket::default()],
+            vec![],
+            State::default(),
+        );
+
+        let builder = TransactionBuilder::new(
+            &program_data,
+            Pubkey::new_unique(),
+            Cow::Owned(User::default()),
+            false,
+        );
+        let (send_tx, simulation_tx) = build_fill_tx(builder, false);
+        assert_eq!(send_tx.instructions().len(), 0);
+        assert_eq!(
+            simulation_tx
+                .expect("ordinary fills simulate with RevertFill")
+                .instructions()
+                .len(),
+            1
+        );
+
+        let builder = TransactionBuilder::new(
+            &program_data,
+            Pubkey::new_unique(),
+            Cow::Owned(User::default()),
+            false,
+        );
+        let (send_tx, simulation_tx) = build_fill_tx(builder, true);
+        assert_eq!(send_tx.instructions().len(), 1);
+        assert!(
+            simulation_tx.is_none(),
+            "Pyth-update fills must retain RevertFill when sent"
+        );
+    }
+
+    #[test]
+    fn recognizes_revert_fill_simulation_error() {
+        assert!(is_revert_fill_error(
+            &TransactionError::InstructionError(3, InstructionError::Custom(6239)).into()
+        ));
+        assert!(!is_revert_fill_error(
+            &TransactionError::InstructionError(3, InstructionError::Custom(6240)).into()
+        ));
+    }
 
     #[test]
     fn vamm_gated_cross_degrades_to_makers_instead_of_skipping() {

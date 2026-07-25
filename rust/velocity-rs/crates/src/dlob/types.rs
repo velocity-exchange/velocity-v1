@@ -8,8 +8,10 @@ use solana_pubkey::Pubkey;
 
 use program::{
     math::auction::{calculate_auction_params_for_trigger_order, calculate_auction_price},
-    state::oracle::OraclePriceData,
-    state::user::{Order as VelocityOrder, OrderBitFlag},
+    state::{
+        oracle::OraclePriceData,
+        user::{Order as VelocityOrder, OrderBitFlag},
+    },
 };
 
 use crate::{

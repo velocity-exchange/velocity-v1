@@ -2107,8 +2107,9 @@ pub mod velocity {
     pub fn update_user_equity_floor(
         ctx: Context<AdminUpdateUserEquityFloor>,
         equity_floor: u64,
+        equity_floor_buffer: u64,
     ) -> Result<()> {
-        handle_update_user_equity_floor(ctx, equity_floor)
+        handle_update_user_equity_floor(ctx, equity_floor, equity_floor_buffer)
     }
 
     pub fn reset_equity_floor_breaker(ctx: Context<ResetEquityFloorBreaker>) -> Result<()> {

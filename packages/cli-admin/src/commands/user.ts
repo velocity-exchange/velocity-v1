@@ -3,9 +3,15 @@ import { BN } from '@coral-xyz/anchor';
 import { PublicKey } from '@solana/web3.js';
 import {
 	fetchUserStatsAccount,
+	getEquityFloorLevel,
 	getUserAccountPublicKeySync,
 	getUserStatsAccountPublicKey,
 } from '@velocity-exchange/sdk';
+
+/** QUOTE_PRECISION BN → human-readable decimal string for status output. */
+function fmtQuote(value: BN): string {
+	return (Number(value.toString()) / 1e6).toFixed(2);
+}
 import { readGlobalOpts, withGlobalOptions } from '../lib/options';
 import { buildAdminClient, buildProvider } from '../lib/provider';
 import { reportDispatch, reportDryRun, sendOrPropose } from '../lib/squads';
@@ -523,31 +529,44 @@ export function registerUser(parent: Command): void {
 
 	withGlobalOptions(
 		user
-			.command('set-equity-floor <user> <floor>')
+			.command('set-equity-floor <user> <floor> <buffer>')
 			.description(
-				'Set a user account equity floor (warm admin). <floor> is QUOTE_PRECISION (1e6) raw units; ' +
-					'below the floor the program rejects risk-increasing orders, fills, withdrawals and transfers. 0 disables.'
+				'Set a user account equity floor and buffer (warm admin). Both QUOTE_PRECISION (1e6) raw units. ' +
+					'Below the floor the permissionless breaker can trip; risk-increasing orders, fills, withdrawals ' +
+					'and transfers must clear floor + buffer. Floor 0 disables both checks.'
 			)
-	).action(async (userPk: string, floor: string, _flags, cmd: Command) => {
-		const opts = readGlobalOpts(cmd);
-		const provider = buildProvider(opts);
-		const client = await buildAdminClient(opts);
-		try {
-			const ix = await (client as any).getUpdateUserEquityFloorIx(
-				new PublicKey(userPk),
-				new BN(floor)
-			);
-			const result = await sendOrPropose(
-				provider,
-				[ix],
-				opts.multisig ? new PublicKey(opts.multisig) : undefined,
-				'velocity-admin user set-equity-floor'
-			);
-			reportDispatch(`user[${userPk}] equity-floor = ${floor}`, result);
-		} finally {
-			await client.unsubscribe();
+	).action(
+		async (
+			userPk: string,
+			floor: string,
+			buffer: string,
+			_flags,
+			cmd: Command
+		) => {
+			const opts = readGlobalOpts(cmd);
+			const provider = buildProvider(opts);
+			const client = await buildAdminClient(opts);
+			try {
+				const ix = await (client as any).getUpdateUserEquityFloorIx(
+					new PublicKey(userPk),
+					new BN(floor),
+					new BN(buffer)
+				);
+				const result = await sendOrPropose(
+					provider,
+					[ix],
+					opts.multisig ? new PublicKey(opts.multisig) : undefined,
+					'velocity-admin user set-equity-floor'
+				);
+				reportDispatch(
+					`user[${userPk}] equity-floor = ${floor}, buffer = ${buffer}`,
+					result
+				);
+			} finally {
+				await client.unsubscribe();
+			}
 		}
-	});
+	);
 
 	withGlobalOptions(
 		user
@@ -571,6 +590,160 @@ export function registerUser(parent: Command): void {
 				'velocity-admin user reset-equity-breaker'
 			);
 			reportDispatch(`userStats[${userStatsPk}] equity breaker reset`, result);
+		} finally {
+			await client.unsubscribe();
+		}
+	});
+
+	withGlobalOptions(
+		user
+			.command('equity-floor-status <authority>')
+			.description(
+				'Report every subaccount of an authority against its equity floor: strict collateral, floor, ' +
+					'buffer, headroom and level (healthy/warning/critical/breached), plus the authority-wide ' +
+					'breaker flag. Read-only.'
+			)
+	).action(async (authorityPk: string, _flags, cmd: Command) => {
+		const opts = readGlobalOpts(cmd);
+		const provider = buildProvider(opts);
+		const client = await buildAdminClient(opts);
+		try {
+			const authority = new PublicKey(authorityPk);
+			const userStats = await fetchUserStatsAccount(
+				provider.connection,
+				client.program,
+				authority
+			);
+			if (!userStats) {
+				console.log(`no UserStats account for authority ${authorityPk}`);
+				return;
+			}
+			const tripped = userStats.equityBreakerTripped !== 0;
+			console.log(
+				`authority ${authorityPk}: breaker ${tripped ? 'TRIPPED' : 'clear'}`
+			);
+			let totalEquity = new BN(0);
+			let totalFloor = new BN(0);
+			let totalBuffer = new BN(0);
+			for (
+				let subId = 0;
+				subId < userStats.numberOfSubAccountsCreated;
+				subId++
+			) {
+				const added = await client.addUser(subId, authority);
+				if (!added) {
+					continue; // deleted subaccount
+				}
+				const u = client.getUser(subId, authority);
+				const account = u.getUserAccountOrThrow();
+				const equity = u.getTotalCollateral('Initial', true);
+				const floor = account.equityFloor;
+				const buffer = account.equityFloorBuffer;
+				totalEquity = totalEquity.add(equity);
+				totalFloor = totalFloor.add(floor);
+				totalBuffer = totalBuffer.add(buffer);
+				const level = getEquityFloorLevel(equity, floor, buffer);
+				console.log(
+					`  sub ${subId}: equity ${fmtQuote(equity)}  floor ${fmtQuote(
+						floor
+					)}  buffer ${fmtQuote(buffer)}  headroom ${fmtQuote(
+						equity.sub(floor).sub(buffer)
+					)}  [${level}]`
+				);
+			}
+			console.log(
+				`  total: equity ${fmtQuote(totalEquity)}  floor ${fmtQuote(
+					totalFloor
+				)}  buffer ${fmtQuote(totalBuffer)}  headroom ${fmtQuote(
+					totalEquity.sub(totalFloor).sub(totalBuffer)
+				)}`
+			);
+		} finally {
+			await client.unsubscribe();
+		}
+	});
+
+	withGlobalOptions(
+		user
+			.command('close-positions')
+			.description(
+				'Cancel all open orders and close every open perp position, reduce-only, across the signing ' +
+					"authority's subaccounts. Run with the account authority keypair (for loan accounts, the " +
+					'Velocity-held authority), typically after the equity breaker has tripped, to wind the ' +
+					'account down. Closes fill immediately against the AMM via placeAndTake; failures are ' +
+					'reported per market and do not stop the sweep.'
+			)
+			.option(
+				'--sub-accounts <csv>',
+				'comma-separated sub-account ids to sweep (default: all)'
+			)
+	).action(async (_flags, cmd: Command) => {
+		const opts = readGlobalOpts(cmd);
+		const provider = buildProvider(opts);
+		const client = await buildAdminClient(opts);
+		const local = cmd.opts() as { subAccounts?: string };
+		try {
+			const authority = client.wallet.publicKey;
+			const userStats = await fetchUserStatsAccount(
+				provider.connection,
+				client.program,
+				authority
+			);
+			if (!userStats) {
+				console.log(
+					`no UserStats account for signer authority ${authority.toBase58()}`
+				);
+				return;
+			}
+			const wanted = local.subAccounts
+				?.split(',')
+				.map((s) => Number.parseInt(s.trim(), 10));
+			for (
+				let subId = 0;
+				subId < userStats.numberOfSubAccountsCreated;
+				subId++
+			) {
+				if (wanted && !wanted.includes(subId)) {
+					continue;
+				}
+				const added = await client.addUser(subId, authority);
+				if (!added) {
+					continue; // deleted subaccount
+				}
+				const u = client.getUser(subId, authority);
+				if (u.getUserAccountOrThrow().hasOpenOrder) {
+					const sig = await client.cancelOrders(
+						undefined,
+						undefined,
+						undefined,
+						undefined,
+						subId
+					);
+					console.log(`  sub ${subId}: cancelled open orders (${sig})`);
+				}
+				for (const position of u.getActivePerpPositions()) {
+					if (position.baseAssetAmount.isZero()) {
+						continue;
+					}
+					try {
+						const sig = await client.closePosition(
+							position.marketIndex,
+							undefined,
+							subId
+						);
+						console.log(
+							`  sub ${subId}: closed perp market ${position.marketIndex} (${sig})`
+						);
+					} catch (e) {
+						console.log(
+							`  sub ${subId}: FAILED closing perp market ${
+								position.marketIndex
+							}: ${(e as Error).message}`
+						);
+					}
+				}
+			}
+			console.log('sweep complete');
 		} finally {
 			await client.unsubscribe();
 		}

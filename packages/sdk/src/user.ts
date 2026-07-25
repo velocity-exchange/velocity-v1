@@ -1535,9 +1535,9 @@ export class User {
 
 	/**
 	 * True when the account has an admin-set `equityFloor` and its cross-margin
-	 * total collateral is below it. While below the floor, the program rejects
-	 * risk-increasing order placement and fills, withdrawals, and transfers out
-	 * of the account (`EquityBelowFloor`); reduce-only activity stays allowed.
+	 * total collateral is below it. This is the trip threshold of the
+	 * permissionless `tripEquityFloorBreaker`; action gating happens at
+	 * `equityFloor + equityFloorBuffer` (see `isBelowBufferedEquityFloor`).
 	 * Mirrors `User::is_below_equity_floor` on-chain.
 	 * @param strict Use TWAP-bounded oracle pricing, matching the withdraw path. Defaults to false.
 	 */
@@ -1550,8 +1550,40 @@ export class User {
 	}
 
 	/**
+	 * The equity required by risk-increasing actions:
+	 * `equityFloor + equityFloorBuffer` (QUOTE_PRECISION). Mirrors
+	 * `User::buffered_equity_floor` on-chain. Meaningless while
+	 * `equityFloor` is 0 (the checks are disabled).
+	 */
+	public getBufferedEquityFloor(): BN {
+		const userAccount = this.getUserAccountOrThrow();
+		return userAccount.equityFloor.add(userAccount.equityFloorBuffer);
+	}
+
+	/**
+	 * True when the account has an admin-set `equityFloor` and its cross-margin
+	 * total collateral is below `equityFloor + equityFloorBuffer`. While below,
+	 * the program rejects risk-increasing order placement and fills,
+	 * withdrawals, and transfers out of the account (`EquityBelowFloor`);
+	 * reduce-only activity stays allowed. Mirrors
+	 * `User::is_below_buffered_equity_floor` on-chain.
+	 * @param strict Use TWAP-bounded oracle pricing, matching the withdraw path. Defaults to false.
+	 */
+	public isBelowBufferedEquityFloor(strict = false): boolean {
+		const equityFloor = this.getUserAccountOrThrow().equityFloor;
+		if (equityFloor.lte(ZERO)) {
+			return false;
+		}
+		return this.getTotalCollateral('Initial', strict).lt(
+			this.getBufferedEquityFloor()
+		);
+	}
+
+	/**
 	 * Cross-margin total collateral in excess of the admin-set `equityFloor`,
 	 * floored at zero (QUOTE_PRECISION). Unbounded (`null`) when no floor is set.
+	 * This is headroom above the trip threshold; headroom above the level
+	 * risk-increasing actions must clear is `getEquityAboveBufferedFloor`.
 	 * @param strict Use TWAP-bounded oracle pricing. Defaults to false.
 	 */
 	public getEquityAboveFloor(strict = false): BN | null {
@@ -1561,6 +1593,26 @@ export class User {
 		}
 		return BN.max(
 			this.getTotalCollateral('Initial', strict).sub(equityFloor),
+			ZERO
+		);
+	}
+
+	/**
+	 * Cross-margin total collateral in excess of `equityFloor +
+	 * equityFloorBuffer`, floored at zero (QUOTE_PRECISION). Unbounded
+	 * (`null`) when no floor is set. When this reaches zero, risk-increasing
+	 * actions start rejecting.
+	 * @param strict Use TWAP-bounded oracle pricing. Defaults to false.
+	 */
+	public getEquityAboveBufferedFloor(strict = false): BN | null {
+		const equityFloor = this.getUserAccountOrThrow().equityFloor;
+		if (equityFloor.lte(ZERO)) {
+			return null;
+		}
+		return BN.max(
+			this.getTotalCollateral('Initial', strict).sub(
+				this.getBufferedEquityFloor()
+			),
 			ZERO
 		);
 	}

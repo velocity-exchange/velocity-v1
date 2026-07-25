@@ -94,10 +94,12 @@ pub fn project_perp_market_for_quoting(
 /// filler's vAMM-cross decisions.
 #[cfg(test)]
 pub(crate) fn btc_market_fixture() -> PerpMarket {
-    use program::state::{
-        market_status::MarketStatus, oracle::HistoricalOracleData, perp_market::MarketStats,
+    use program::{
+        state::{
+            market_status::MarketStatus, oracle::HistoricalOracleData, perp_market::MarketStats,
+        },
+        vlp::amm::state::AMM,
     };
-    use program::vlp::amm::state::AMM;
 
     const AMM_RESERVE_PRECISION: u128 = 1_000_000_000;
     const PRICE_PRECISION_I64: i64 = 1_000_000;

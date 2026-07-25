@@ -136,12 +136,18 @@ pub struct User {
     /// Whether the user is a special user (vamm hedger, etc)
     pub special_user_status: u8,
     pub padding: [u8; 3],
-    /// Minimum account equity (cross-margin total collateral) required for
-    /// risk-increasing orders, fills, withdrawals and deposit transfers.
-    /// Settable only by the warm/cold admin; 0 disables the check.
+    /// Minimum account equity (cross-margin total collateral). Below this the
+    /// permissionless breaker can trip. Risk-increasing orders, fills,
+    /// withdrawals and deposit transfers must clear `equity_floor +
+    /// equity_floor_buffer`. Settable only by the warm/cold admin; 0 disables
+    /// both checks.
     /// precision: QUOTE_PRECISION
     pub equity_floor: u64,
-    pub padding2: [u8; 8],
+    /// Extra headroom above `equity_floor` required by risk-increasing
+    /// actions, so an account cannot legally end an action at the trip
+    /// threshold. No effect while `equity_floor` is 0.
+    /// precision: QUOTE_PRECISION
+    pub equity_floor_buffer: u64,
 }
 
 impl User {
@@ -170,9 +176,25 @@ impl User {
     }
 
     /// True when the equity floor is enabled and `total_collateral`
-    /// (cross-margin, QUOTE_PRECISION) is below it.
+    /// (cross-margin, QUOTE_PRECISION) is below it. This is the breaker trip
+    /// threshold; action gating uses `is_below_buffered_equity_floor`.
     pub fn is_below_equity_floor(&self, total_collateral: i128) -> bool {
         self.equity_floor > 0 && total_collateral < self.equity_floor as i128
+    }
+
+    /// Equity required by risk-increasing actions:
+    /// `equity_floor + equity_floor_buffer` (QUOTE_PRECISION).
+    pub fn buffered_equity_floor(&self) -> u128 {
+        (self.equity_floor as u128).saturating_add(self.equity_floor_buffer as u128)
+    }
+
+    /// True when the equity floor is enabled and `total_collateral` is below
+    /// `equity_floor + equity_floor_buffer`. Gates risk-increasing orders,
+    /// fills, withdrawals and transfers out, so equity cannot legally be
+    /// brought down to the trip threshold; the breaker itself trips on
+    /// `is_below_equity_floor`.
+    pub fn is_below_buffered_equity_floor(&self, total_collateral: i128) -> bool {
+        self.equity_floor > 0 && total_collateral < self.buffered_equity_floor() as i128
     }
 
     pub fn add_user_status(&mut self, status: UserStatus) {
@@ -653,11 +675,12 @@ impl User {
         )?;
 
         validate!(
-            !self.is_below_equity_floor(calculation.total_collateral),
+            !self.is_below_buffered_equity_floor(calculation.total_collateral),
             ErrorCode::EquityBelowFloor,
-            "total collateral {} below equity floor {}",
+            "total collateral {} below equity floor {} + buffer {}",
             calculation.total_collateral,
-            self.equity_floor
+            self.equity_floor,
+            self.equity_floor_buffer
         )?;
 
         Ok(true)
@@ -701,11 +724,12 @@ impl User {
         )?;
 
         validate!(
-            !self.is_below_equity_floor(calculation.total_collateral),
+            !self.is_below_buffered_equity_floor(calculation.total_collateral),
             ErrorCode::EquityBelowFloor,
-            "total collateral {} below equity floor {}",
+            "total collateral {} below equity floor {} + buffer {}",
             calculation.total_collateral,
-            self.equity_floor
+            self.equity_floor,
+            self.equity_floor_buffer
         )?;
 
         Ok(true)
@@ -756,11 +780,12 @@ impl User {
         )?;
 
         validate!(
-            !self.is_below_equity_floor(calculation.total_collateral),
+            !self.is_below_buffered_equity_floor(calculation.total_collateral),
             ErrorCode::EquityBelowFloor,
-            "total collateral {} below equity floor {}",
+            "total collateral {} below equity floor {} + buffer {}",
             calculation.total_collateral,
-            self.equity_floor
+            self.equity_floor,
+            self.equity_floor_buffer
         )?;
 
         Ok(true)
@@ -2228,5 +2253,66 @@ mod equity_floor_transfer_tests {
         assert!(transfer_equity_floor(&mut from, &mut to, 6).is_err());
         assert_eq!(from.equity_floor, 5);
         assert_eq!(to.equity_floor, 0);
+    }
+}
+
+#[cfg(test)]
+mod equity_floor_buffer_tests {
+    use super::*;
+
+    fn user_with(floor: u64, buffer: u64) -> User {
+        User {
+            equity_floor: floor,
+            equity_floor_buffer: buffer,
+            ..User::default()
+        }
+    }
+
+    #[test]
+    fn disabled_floor_ignores_buffer() {
+        let user = user_with(0, 1_000_000);
+        assert!(!user.is_below_equity_floor(-1));
+        assert!(!user.is_below_buffered_equity_floor(-1));
+    }
+
+    #[test]
+    fn zero_buffer_matches_raw_floor() {
+        let user = user_with(100, 0);
+        for collateral in [-1i128, 0, 99, 100, 101] {
+            assert_eq!(
+                user.is_below_equity_floor(collateral),
+                user.is_below_buffered_equity_floor(collateral),
+            );
+        }
+    }
+
+    /// The buffer band (floor <= collateral < floor + buffer) must gate
+    /// risk-increasing actions while the trip threshold stays un-armed, so no
+    /// permitted action can leave the account trippable.
+    #[test]
+    fn buffer_band_gates_actions_without_arming_the_trip() {
+        let user = user_with(100, 25);
+
+        assert!(user.is_below_equity_floor(99));
+        assert!(user.is_below_buffered_equity_floor(99));
+
+        for collateral in [100i128, 101, 124] {
+            assert!(!user.is_below_equity_floor(collateral));
+            assert!(user.is_below_buffered_equity_floor(collateral));
+        }
+
+        for collateral in [125i128, 126, i128::MAX] {
+            assert!(!user.is_below_equity_floor(collateral));
+            assert!(!user.is_below_buffered_equity_floor(collateral));
+        }
+    }
+
+    #[test]
+    fn buffered_floor_does_not_overflow_at_extremes() {
+        let user = user_with(u64::MAX, u64::MAX);
+        assert_eq!(user.buffered_equity_floor(), (u64::MAX as u128) * 2);
+        assert!(user.is_below_buffered_equity_floor((u64::MAX as i128) * 2 - 1));
+        assert!(!user.is_below_buffered_equity_floor((u64::MAX as i128) * 2));
+        assert!(!user.is_below_buffered_equity_floor(i128::MAX));
     }
 }

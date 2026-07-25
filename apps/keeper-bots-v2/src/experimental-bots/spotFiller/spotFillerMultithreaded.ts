@@ -696,14 +696,19 @@ export class SpotFillerMultithreaded {
 				if (buildForBundle) {
 					ixs.push(this.bundleSender!.getTipIx());
 				} else {
+					// Guard NaN: /batchPriorityFees returns level-less entries for
+					// markets with no published fees (see fundingRateUpdater.ts) —
+					// .high is then undefined and setComputeUnitPrice throws at
+					// BigInt conversion.
+					const pfs = this.priorityFeeSubscriber.getPriorityFees(
+						'spot',
+						nodeToFill.node.order!.marketIndex
+					);
 					ixs.push(
 						ComputeBudgetProgram.setComputeUnitPrice({
-							microLamports: Math.floor(
-								this.priorityFeeSubscriber.getPriorityFees(
-									'spot',
-									nodeToFill.node.order!.marketIndex
-								)!.high
-							),
+							microLamports: Number.isFinite(pfs?.high)
+								? Math.floor(pfs!.high)
+								: 10_000,
 						})
 					);
 				}
@@ -905,12 +910,14 @@ export class SpotFillerMultithreaded {
 		if (buildForBundle) {
 			ixs.push(this.bundleSender!.getTipIx());
 		} else {
-			const priorityFee = Math.floor(
-				this.priorityFeeSubscriber.getPriorityFees(
-					'spot',
-					nodeToFill.node.order!.marketIndex
-				)!.high
+			// Guard NaN — see the comment on the sibling site above.
+			const pfs = this.priorityFeeSubscriber.getPriorityFees(
+				'spot',
+				nodeToFill.node.order!.marketIndex
 			);
+			const priorityFee = Number.isFinite(pfs?.high)
+				? Math.floor(pfs!.high)
+				: 10_000;
 			logger.info(`(fillTxId: ${fillTxId}) Using priority fee: ${priorityFee}`);
 			ixs.push(
 				ComputeBudgetProgram.setComputeUnitPrice({

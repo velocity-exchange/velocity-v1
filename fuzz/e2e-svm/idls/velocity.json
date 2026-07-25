@@ -16297,6 +16297,11 @@
       "code": 6364,
       "name": "DailyDepositLimit",
       "msg": "Spot market daily deposit limit hit"
+    },
+    {
+      "code": 6365,
+      "name": "ReservedSpotMarketName",
+      "msg": "The name 'USDT' is reserved for the quote spot market (index 0)"
     }
   ],
   "types": [

@@ -39,7 +39,10 @@ use velocity_rs::program::{
 /// `8 mod 16` and the cast panics (`TargetAlignmentGreaterAndInputNotAligned`).
 /// Copy once into an [`AlignedAccountData`] buffer (body at `base + 16`) so the
 /// cast lands on a 16-byte boundary — the same treatment the market/oracle
-/// accounts get in `AccountsListBuilder`.
+/// accounts get in `AccountsListBuilder`. The copy is trimmed to
+/// `8 + size_of::<NativeState>()` first: `from_bytes` also panics on a size
+/// mismatch, so an account extended past the compiled-in struct by a program
+/// upgrade would otherwise take down the sim.
 pub fn simulate_place_perp_order(
     user: &User,
     accounts: &mut VelocityAccounts,
@@ -47,7 +50,11 @@ pub fn simulate_place_perp_order(
     order_params: OrderParams,
     max_margin_ratio: Option<u16>,
 ) -> VelocityResult<()> {
-    let state_aligned = AlignedAccountData::from_bytes(state_bytes);
+    let state_len = 8 + std::mem::size_of::<NativeState>();
+    if state_bytes.len() < state_len {
+        return Err(ErrorCode::UnableToLoadAccountLoader);
+    }
+    let state_aligned = AlignedAccountData::from_bytes(&state_bytes[..state_len]);
     let state = NativeState::try_deserialize(&mut state_aligned.as_slice())
         .map_err(|_| ErrorCode::UnableToLoadAccountLoader)?;
 

@@ -16303,6 +16303,11 @@ export type Velocity = {
       "code": 6364,
       "name": "dailyDepositLimit",
       "msg": "Spot market daily deposit limit hit"
+    },
+    {
+      "code": 6365,
+      "name": "reservedSpotMarketName",
+      "msg": "The name 'USDT' is reserved for the quote spot market (index 0)"
     }
   ],
   "types": [

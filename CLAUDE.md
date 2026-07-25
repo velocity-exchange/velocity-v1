@@ -33,8 +33,8 @@ There is also a **second, separate Cargo workspace** at `rust/` (velocity-rs, ke
 **Solana programs (Rust/Anchor):** use the `program:*` scripts in the root package.json — they encode the correct feature flags so you don't have to remember them.
 
 ```bash
-bun run program:build           # program + IDL/types synced into packages/sdk/src/idl/ (devnet/test flavor)
-bun run program:idl             # IDL/types only, no SBF build — fast path for layout/name changes
+bun run program:build           # program + IDL/types synced into packages/sdk/src/idl/ + vendored fuzz IDLs (devnet/test flavor)
+bun run program:idl             # IDL/types + vendored fuzz IDLs, no SBF build — fast path for layout/name changes
 bun run program:build:devnet    # deployable devnet .so (wraps deploy-scripts/build-devnet.sh)
 bun run program:build:mainnet   # mainnet .so (default features: production gates on, devnet ixs compiled out)
 ```

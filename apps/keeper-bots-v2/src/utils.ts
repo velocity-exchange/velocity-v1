@@ -807,6 +807,57 @@ export function logMessageForNodeToFill(
 	}
 }
 
+export interface FillTakerRef {
+	taker: string;
+	takerOrderId: number;
+}
+
+/**
+ * Extracts the (taker subaccount PDA, takerOrderId) pairs a fill tx is
+ * attempting or landing, taken straight from the nodes the tx was built from.
+ *
+ * A single fill tx can bundle more than one taker node, so this returns *every*
+ * pair rather than assuming 1:1 — the nodes themselves are the fillId → taker(s)
+ * mapping, so there is no side-map to keep in sync. `taker` is the on-chain User
+ * subaccount PDA (matching the `taker` field on the `fill attempt:` line), NOT
+ * the wallet authority.
+ */
+export function getFillTakerRefs(
+	nodes: Array<NodeToFill>
+): Array<FillTakerRef> {
+	const refs: Array<FillTakerRef> = [];
+	for (const node of nodes) {
+		const order = node.node.order;
+		if (node.node.userAccount && order) {
+			refs.push({
+				taker: node.node.userAccount.toString(),
+				takerOrderId: order.orderId,
+			});
+		}
+	}
+	return refs;
+}
+
+/**
+ * Renders a compact, greppable correlation suffix to append to fill-path log
+ * lines (`estimated CUs`, `simError`, `sent tx`, `Tx landed`, …) that otherwise
+ * carry only `fillTxId`. Stamping the taker(s) + takerOrderId(s) onto every
+ * lifecycle line lets a single Loki query — a line filter on the taker
+ * subaccount, or a `taker` field extraction — trace one order across its whole
+ * fill lifecycle, instead of only the single `fill attempt:` line.
+ *
+ * Because a bundled tx carries all of its taker refs here, a filter on one taker
+ * still matches a tx that fills several takers at once. Returns '' when there are
+ * no taker refs (e.g. settlePnl txs) so non-fill lines are left untouched.
+ */
+export function fillCorrelationSuffix(nodes: Array<NodeToFill>): string {
+	const takers = getFillTakerRefs(nodes);
+	if (takers.length === 0) {
+		return '';
+	}
+	return ' takers: ' + JSON.stringify(takers);
+}
+
 export function getTransactionAccountMetas(
 	tx: VersionedTransaction,
 	lutAccounts: Array<AddressLookupTableAccount>

@@ -17,6 +17,7 @@ pub mod account_list_builder;
 pub mod amm_quote;
 pub mod auction;
 pub mod constants;
+pub mod equity_floor;
 pub mod leverage;
 pub mod liquidation;
 pub mod order;

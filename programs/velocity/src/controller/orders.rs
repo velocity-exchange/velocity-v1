@@ -1763,15 +1763,23 @@ fn get_builder_escrow_info(
 ) -> (Option<u32>, Option<u32>, Option<u16>, Option<u8>) {
     if let Some(escrow) = escrow_opt {
         // Only match a builder-order row for an order that actually carries the
-        // `HasBuilder` flag. Escrow rows are keyed by `(sub_account_id, order_id)`,
-        // and order ids are reused when a placement soft-skips after
-        // `add_builder_order` already wrote the row (e.g. an expired `max_ts`, which
-        // returns before `next_order_id` is consumed). Without this gate a stale row
-        // would attach to the later non-builder order that reuses the id and charge
-        // it a builder fee. The referral lookup is keyed by market, not order id, so
-        // it is unaffected and stays unconditional.
+        // `HasBuilder` flag, and bind the row to the market being filled. Escrow rows
+        // are keyed on chain by `(sub_account_id, order_id)`, and order ids are reused
+        // both within a market (a placement soft-skips after `add_builder_order` wrote
+        // the row — e.g. an expired `max_ts`, which returns before `next_order_id` is
+        // consumed) and across markets (ids are per-subaccount). Without the
+        // `HasBuilder` gate a stale row would attach to a later non-builder order that
+        // reuses the id (OtterSec #49); without the market binding a market-A row would
+        // attach to a same-id market-B fill and be paid from market A's pnl pool
+        // (OtterSec #88). `find_builder_order_index` enforces both. The referral lookup
+        // is keyed by market, not order id, so it is unaffected and stays unconditional.
         let builder_order_idx = if order_has_builder {
-            escrow.find_order_index(sub_account_id, order_id)
+            escrow.find_builder_order_index(
+                sub_account_id,
+                order_id,
+                market_index,
+                MarketType::Perp,
+            )
         } else {
             None
         };
@@ -1836,13 +1844,42 @@ fn fulfill_perp_order(
 
     let fulfillment_methods = {
         let mut market = perp_market_map.get_ref_mut(&market_index)?;
-        // Refresh the AMM's cached spread state (off the current reserves)
-        // before routing so fulfillment decisions quote off live spread —
-        // even on the very first fill of a slot before any keeper crank. The
-        // matcher's `setup` re-refreshes against the post-projection curve.
+        // Route off the PROJECTED curve, not the stored one. The AMM
+        // refresh (snap toward oracle) used to run only inside `Quoter::setup`,
+        // after a fulfillment method was already selected, so routing off the
+        // stored reserve price let a stale curve block the very fill that would
+        // refresh it: the taker failed to cross the stale quote, no method was
+        // selected, setup never ran. Project and apply the refresh here, on the
+        // real AMM, before routing. `project_and_apply` is slot-idempotent and
+        // shares its implementation with `Quoter::setup`, so the projection
+        // (the expensive peg / reserves / k-budget math) runs at most once per
+        // market per slot: this call does it, and the first fill step's setup
+        // then skips it. Routing and execution therefore quote off the exact
+        // same curve. When the projection is a passthrough (oracle invalid for
+        // curve updates, zero intensity, or the affordability floor rejected
+        // it) the AMM is left at its stored curve and routing behaves as before.
         let oracle_pd = *oracle_map.get_price_data(&market.oracle_id())?;
         let mm_oracle_pd =
             market.get_mm_oracle_price_data(oracle_pd, slot, validity_guard_rails)?;
+        let amm_refresh_validity =
+            crate::vlp::amm::refresh::compute_amm_refresh_validity_with_guard_rails(
+                &market,
+                &mm_oracle_pd,
+                validity_guard_rails,
+            )?;
+        let projection_inputs =
+            crate::vlp::amm::math::repeg::ProjectionInputs::from_market(&market);
+        crate::vlp::amm::refresh::project_and_apply(
+            &mut market.amm,
+            &projection_inputs,
+            &mm_oracle_pd,
+            amm_refresh_validity,
+            slot,
+        )?;
+        // Refresh the cached spread state against the just-projected curve so
+        // routing quotes off live spread even on the first fill of a slot
+        // before any keeper crank. Reads the post-projection reserve price.
+        let projected_reserve_price = market.amm.reserve_price()?;
         {
             let crate::state::perp_market::PerpMarket {
                 amm, market_stats, ..
@@ -1851,7 +1888,7 @@ fn fulfill_perp_order(
                 amm,
                 market_stats,
                 &mm_oracle_pd,
-                reserve_price_before,
+                projected_reserve_price,
                 slot,
             )?;
         }
@@ -1859,7 +1896,7 @@ fn fulfill_perp_order(
             &user.orders[user_order_index],
             maker_orders_info,
             &market.amm,
-            reserve_price_before,
+            projected_reserve_price,
             limit_price,
             amm_is_available,
         )?
@@ -2080,13 +2117,14 @@ fn fulfill_perp_order(
         }
 
         if !user_order_position_decreasing
-            && (user.is_below_equity_floor(taker_margin_calculation.total_collateral)
+            && (user.is_below_buffered_equity_floor(taker_margin_calculation.total_collateral)
                 || user_stats.is_equity_breaker_tripped())
         {
             msg!(
-                "taker total collateral {} below equity floor {} (breaker tripped: {})",
+                "taker total collateral {} below equity floor {} + buffer {} (breaker tripped: {})",
                 taker_margin_calculation.total_collateral,
                 user.equity_floor,
+                user.equity_floor_buffer,
                 user_stats.is_equity_breaker_tripped()
             );
             return Err(ErrorCode::EquityBelowFloor);
@@ -2173,14 +2211,15 @@ fn fulfill_perp_order(
         }
 
         if maker_risk_increasing
-            && (maker.is_below_equity_floor(maker_margin_calculation.total_collateral)
+            && (maker.is_below_buffered_equity_floor(maker_margin_calculation.total_collateral)
                 || maker_breaker_tripped)
         {
             msg!(
-                "maker ({}) total collateral {} below equity floor {} (breaker tripped: {})",
+                "maker ({}) total collateral {} below equity floor {} + buffer {} (breaker tripped: {})",
                 maker_key,
                 maker_margin_calculation.total_collateral,
                 maker.equity_floor,
+                maker.equity_floor_buffer,
                 maker_breaker_tripped
             );
             return Err(ErrorCode::EquityBelowFloor);
@@ -3011,12 +3050,22 @@ pub fn fulfill_perp_order_step(
     // end of this function — the AMM-match arm uses it directly; the
     // DLOB-Match arm explicitly drops it before constructing an
     // `AmmJitQuoter` over the same `&mut market`.
-    let amm_refresh_validity =
+    //
+    // Compute the refresh validity only when setup would actually project.
+    // `setup` reads `oracle_validity` solely inside `project_and_apply`,
+    // which no-ops when the curve was already refreshed at this slot (the
+    // orchestrator's routing phase, a prior step, or a keeper crank). In that
+    // dominant case the validity is unused, so skip the `oracle_validity`
+    // recompute and pass `None`; `project_and_apply` returns before reading it.
+    let amm_refresh_validity = if market.amm.last_update_slot < slot {
         crate::vlp::amm::refresh::compute_amm_refresh_validity_with_guard_rails(
             market,
             &mm_oracle_price_data,
             validity_guard_rails,
-        )?;
+        )?
+    } else {
+        None
+    };
     let market_stats_snapshot = market.market_stats;
     let safe_oracle = mm_oracle_price_data.get_safe_oracle_price_data();
     let order_tick_size = market.order_tick_size;
@@ -3677,7 +3726,7 @@ pub fn trigger_order(
     drop(perp_market);
 
     // If order increases risk and the user is below initial margin, below their
-    // own equity floor, or the authority-wide equity breaker is tripped, cancel
+    // own buffered equity floor, or the authority-wide equity breaker is tripped, cancel
     // it. The breaker check mirrors the fill/withdraw/transfer paths: while it is
     // set, no risk-increasing action is allowed on any of the authority's
     // subaccounts, so a keeper must not be able to flip a resting risk-increasing
@@ -3693,7 +3742,7 @@ pub fn trigger_order(
         )?;
 
         if !margin_calc.meets_margin_requirement()
-            || user.is_below_equity_floor(margin_calc.total_collateral)
+            || user.is_below_buffered_equity_floor(margin_calc.total_collateral)
             || user_stats.is_equity_breaker_tripped()
         {
             cancel_order(

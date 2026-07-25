@@ -1402,6 +1402,16 @@ export type SpotMarketAccount = {
 
 	/** -100 to 100; percentage adjustment applied to the base fee rate */
 	feeAdjustment: number;
+
+	// No deposit rate limit when resulting deposits are below this threshold
+	// (mirror of withdrawGuardThreshold on the deposit side). precision: token mint
+	depositGuardThreshold: BN;
+	// Max fraction of the 24h deposit TWAP withdrawable per 24h window.
+	// 0 => default 25%. precision: PERCENTAGE_PRECISION (1e6)
+	withdrawCircuitBreakerBps: number;
+	// Max fraction above the 24h deposit TWAP that resulting deposits may reach
+	// per 24h window. 0 => disabled. precision: PERCENTAGE_PRECISION (1e6)
+	maxDepositBpsPerDay: number;
 };
 
 /** A scaled token balance inside a market's internal pools (pnl pool, protocol fee pool, revenue pool, spot fee pool, AMM fee pool). Multiply `scaledBalance` (SPOT_BALANCE_PRECISION, 1e9) by the referenced spot market's `cumulativeDepositInterest`/`cumulativeBorrowInterest` to get the token amount. */
@@ -1659,8 +1669,10 @@ export type UserAccount = {
 	poolId: number;
 	/** bitmask, see `SpecialUserStatus` */
 	specialUserStatus: number;
-	/** QUOTE_PRECISION (1e6); admin-set minimum cross-margin total collateral for risk-increasing orders, fills, withdrawals and transfers; 0 = disabled */
+	/** QUOTE_PRECISION (1e6); admin-set minimum cross-margin total collateral; below it the permissionless breaker can trip; 0 = disabled */
 	equityFloor: BN;
+	/** QUOTE_PRECISION (1e6); extra headroom above `equityFloor` required by risk-increasing orders, fills, withdrawals and transfers; no effect while `equityFloor` is 0 */
+	equityFloorBuffer: BN;
 };
 
 /** A user's balance in one spot market. Decoded mirror of the on-chain `SpotPosition`. */

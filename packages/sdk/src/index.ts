@@ -50,6 +50,7 @@ export {
 	type PriceUpdateAccount,
 } from './pyth';
 export * from './testClient';
+export * from './equityFloorManager';
 export * from './user';
 export * from './userConfig';
 export * from './userStats';

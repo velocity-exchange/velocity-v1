@@ -39,6 +39,8 @@ velocity-admin spot-market set-status <market> <status>
 velocity-admin spot-market set-guard-threshold <market> <threshold>
 velocity-admin spot-market set-scale-initial-asset-weight-start <market> <start>  # warm/cold admin; QUOTE_PRECISION (1e6); 0 disables
 velocity-admin spot-market set-fee-factors <market> <ifFeeFactor> <protocolFeeFactor>
+velocity-admin spot-market set-withdraw-breaker <market> <pct>
+velocity-admin spot-market set-deposit-cap <market> <threshold> <pctPerDay>
 
 velocity-admin exchange set-status <bitfield>
 velocity-admin exchange set-solvency-status <bitfield>  # cold admin; gates solvency-repair ixs (1=solvencyRepairPaused)
@@ -56,8 +58,10 @@ velocity-admin fees transfer-fee-pnl <feePoolMarket> <pnlPoolMarket> <amount> <f
 velocity-admin user init <name> [--sub-accounts <n>] [--authority <pk>] [--vault-index <i>] [--dry-run]  # authority must sign on mainnet; one proposal with --multisig, vault pays rent
 velocity-admin user set-delegate <delegate> [--sub-accounts <n>] [--allow-transfer <bool>] [--authority <pk>] [--vault-index <i>] [--dry-run]  # authority signs; one proposal with --multisig
 velocity-admin user set-special-status <user> <flags>
-velocity-admin user set-equity-floor <user> <floor>              # warm/cold admin; floor in QUOTE_PRECISION raw units, 0 disables
+velocity-admin user set-equity-floor <user> <floor> <buffer>     # warm/cold admin; QUOTE_PRECISION raw units; floor 0 disables both checks
 velocity-admin user reset-equity-breaker <userStats>             # warm/cold admin; unfreezes an authority after the breaker tripped
+velocity-admin user equity-floor-status <authority>              # read-only; per-subaccount equity/floor/buffer/headroom + level + breaker flag
+velocity-admin user close-positions [--sub-accounts <csv>]       # signer = account authority; cancel all orders + close all perp positions reduce-only
 velocity-admin user admin-deposit <market> <amount> --user <pk> --user-token-account <pk>
 velocity-admin user deposit <market> <amount> [--authority <pk>] [--vault-index <i>] [--sub-account <id>] [--user-token-account <pk>] [--reduce-only] [--dry-run]
 velocity-admin user withdraw <market> <amount> [--authority <pk>] [--vault-index <i>] [--sub-account <id>] [--user-token-account <pk>] [--reduce-only] [--dry-run]

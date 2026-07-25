@@ -184,7 +184,6 @@ export interface GlobalConfig {
 	endpoint: string;
 	/// ws endpoint to use (inferred from endpoint using web3.js rules, only provide if you want to use a different one)
 	wsEndpoint?: string;
-	hermesEndpoint?: string;
 	lazerHttpEndpoints?: string[];
 	lazerEndpoints?: string[];
 	lazerToken?: string;
@@ -281,7 +280,6 @@ const defaultConfig: Partial<Config> = {
 		bulkAccountLoaderPollingInterval: 5000,
 
 		endpoint: process.env.ENDPOINT!,
-		hermesEndpoint: process.env.HERMES_ENDPOINT,
 		wsEndpoint: process.env.WS_ENDPOINT,
 		heliusEndpoint: process.env.HELIUS_ENDPOINT,
 		additionalSendTxEndpoints: [],
@@ -382,7 +380,6 @@ export function loadConfigFromOpts(opts: any): Config {
 			velocityEnv: (process.env.ENV ?? 'devnet') as VelocityEnv,
 			endpoint: opts.endpoint ?? process.env.ENDPOINT,
 			wsEndpoint: opts.wsEndpoint ?? process.env.WS_ENDPOINT,
-			hermesEndpoint: opts.hermesEndpoint ?? process.env.HERMES_ENDPOINT,
 			heliusEndpoint: opts.heliusEndpoint ?? process.env.HELIUS_ENDPOINT,
 			additionalSendTxEndpoints: loadCommaDelimitToStringArray(
 				opts.additionalSendTxEndpoints

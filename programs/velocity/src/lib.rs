@@ -37,8 +37,8 @@ pub mod math;
 pub mod sdk;
 mod signer;
 pub mod state;
-#[cfg(test)]
-mod test_utils;
+#[cfg(any(test, feature = "fuzz-fixtures"))]
+pub mod test_utils;
 mod validation;
 pub mod vlp;
 
@@ -1220,6 +1220,21 @@ pub mod velocity {
         handle_update_spot_market_max_token_deposits(ctx, max_token_deposits)
     }
 
+    pub fn update_spot_market_withdraw_circuit_breaker(
+        ctx: Context<AdminUpdateSpotMarket>,
+        withdraw_circuit_breaker_bps: u16,
+    ) -> Result<()> {
+        handle_update_spot_market_withdraw_circuit_breaker(ctx, withdraw_circuit_breaker_bps)
+    }
+
+    pub fn update_spot_market_deposit_cap(
+        ctx: Context<AdminUpdateSpotMarket>,
+        deposit_guard_threshold: u64,
+        max_deposit_bps_per_day: u16,
+    ) -> Result<()> {
+        handle_update_spot_market_deposit_cap(ctx, deposit_guard_threshold, max_deposit_bps_per_day)
+    }
+
     pub fn update_spot_market_max_token_borrows(
         ctx: Context<AdminUpdateSpotMarket>,
         max_token_borrows_fraction: u16,
@@ -2092,8 +2107,9 @@ pub mod velocity {
     pub fn update_user_equity_floor(
         ctx: Context<AdminUpdateUserEquityFloor>,
         equity_floor: u64,
+        equity_floor_buffer: u64,
     ) -> Result<()> {
-        handle_update_user_equity_floor(ctx, equity_floor)
+        handle_update_user_equity_floor(ctx, equity_floor, equity_floor_buffer)
     }
 
     pub fn reset_equity_floor_breaker(ctx: Context<ResetEquityFloorBreaker>) -> Result<()> {

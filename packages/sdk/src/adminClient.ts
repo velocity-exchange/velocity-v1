@@ -3117,6 +3117,84 @@ export class AdminClient extends VelocityClient {
 		);
 	}
 
+	public async updateSpotMarketWithdrawCircuitBreaker(
+		spotMarketIndex: number,
+		withdrawCircuitBreakerBps: number
+	): Promise<TransactionSignature> {
+		const ix = await this.getUpdateSpotMarketWithdrawCircuitBreakerIx(
+			spotMarketIndex,
+			withdrawCircuitBreakerBps
+		);
+
+		const tx = await this.buildTransaction(ix);
+
+		const { txSig } = await this.sendTransaction(tx, [], this.opts);
+
+		return txSig;
+	}
+
+	public async getUpdateSpotMarketWithdrawCircuitBreakerIx(
+		spotMarketIndex: number,
+		withdrawCircuitBreakerBps: number
+	): Promise<TransactionInstruction> {
+		return this.program.instruction.updateSpotMarketWithdrawCircuitBreaker(
+			withdrawCircuitBreakerBps,
+			{
+				accounts: {
+					admin: this.isSubscribed
+						? this.getStateAccount().coldAdmin
+						: this.wallet.publicKey,
+					state: await this.getStatePublicKey(),
+					spotMarket: await getSpotMarketPublicKey(
+						this.program.programId,
+						spotMarketIndex
+					),
+				},
+			}
+		);
+	}
+
+	public async updateSpotMarketDepositCap(
+		spotMarketIndex: number,
+		depositGuardThreshold: BN,
+		maxDepositBpsPerDay: number
+	): Promise<TransactionSignature> {
+		const ix = await this.getUpdateSpotMarketDepositCapIx(
+			spotMarketIndex,
+			depositGuardThreshold,
+			maxDepositBpsPerDay
+		);
+
+		const tx = await this.buildTransaction(ix);
+
+		const { txSig } = await this.sendTransaction(tx, [], this.opts);
+
+		return txSig;
+	}
+
+	public async getUpdateSpotMarketDepositCapIx(
+		spotMarketIndex: number,
+		depositGuardThreshold: BN,
+		maxDepositBpsPerDay: number
+	): Promise<TransactionInstruction> {
+		return this.program.instruction.updateSpotMarketDepositCap(
+			depositGuardThreshold,
+			maxDepositBpsPerDay,
+			{
+				accounts: {
+					admin: this.isSubscribed
+						? this.getStateAccount().coldAdmin
+						: this.wallet.publicKey,
+					state: await this.getStatePublicKey(),
+					spotMarket: await getSpotMarketPublicKey(
+						this.program.programId,
+						spotMarketIndex
+					),
+				},
+			}
+		);
+	}
+
 	/**
 	 * Caps a spot market's total borrows as a fraction of its `maxTokenDeposits`, rather than
 	 * an absolute token amount. Requires warm admin (`check_warm`). On-chain, the effective cap
@@ -8073,25 +8151,30 @@ export class AdminClient extends VelocityClient {
 	}
 
 	/**
-	 * Sets a `User` account's `equityFloor`: the minimum cross-margin total
-	 * collateral (QUOTE_PRECISION) the account must keep. Below the floor the
-	 * program rejects risk-increasing order placement and fills, withdrawals,
-	 * and deposit/position transfers out of the account; reduce-only activity
-	 * stays allowed. Requires warm admin (`check_warm`); the account's
-	 * authority and delegate cannot change it. Pass `0` to disable.
+	 * Sets a `User` account's `equityFloor` and `equityFloorBuffer`. The floor
+	 * is the minimum cross-margin total collateral (QUOTE_PRECISION) below
+	 * which the permissionless breaker can trip; risk-increasing order
+	 * placement and fills, withdrawals, and deposit/position transfers out of
+	 * the account must clear `floor + buffer` (`EquityBelowFloor` otherwise);
+	 * reduce-only activity stays allowed. Requires warm admin (`check_warm`);
+	 * the account's authority and delegate cannot change either value. Pass
+	 * `0` as the floor to disable both checks.
 	 * @param userAccountPublicKey - `User` PDA to update.
 	 * @param equityFloor - New floor, QUOTE_PRECISION; `0` disables.
+	 * @param equityFloorBuffer - New buffer, QUOTE_PRECISION; no effect while the floor is 0.
 	 * @param txParams - Optional transaction-building overrides.
 	 * @returns Transaction signature.
 	 */
 	public async updateUserEquityFloor(
 		userAccountPublicKey: PublicKey,
 		equityFloor: BN,
+		equityFloorBuffer: BN,
 		txParams?: TxParams
 	): Promise<TransactionSignature> {
 		const ix = await this.getUpdateUserEquityFloorIx(
 			userAccountPublicKey,
-			equityFloor
+			equityFloor,
+			equityFloorBuffer
 		);
 		const tx = await this.buildTransaction(ix, txParams);
 		const { txSig } = await this.sendTransaction(tx, [], this.opts);
@@ -8105,17 +8188,22 @@ export class AdminClient extends VelocityClient {
 	 */
 	public async getUpdateUserEquityFloorIx(
 		userAccountPublicKey: PublicKey,
-		equityFloor: BN
+		equityFloor: BN,
+		equityFloorBuffer: BN
 	): Promise<TransactionInstruction> {
-		return this.program.instruction.updateUserEquityFloor(equityFloor, {
-			accounts: {
-				admin: this.useHotWalletAdmin
-					? this.wallet.publicKey
-					: this.getStateAccount().coldAdmin,
-				state: await this.getStatePublicKey(),
-				user: userAccountPublicKey,
-			},
-		});
+		return this.program.instruction.updateUserEquityFloor(
+			equityFloor,
+			equityFloorBuffer,
+			{
+				accounts: {
+					admin: this.useHotWalletAdmin
+						? this.wallet.publicKey
+						: this.getStateAccount().coldAdmin,
+					state: await this.getStatePublicKey(),
+					user: userAccountPublicKey,
+				},
+			}
+		);
 	}
 
 	/**

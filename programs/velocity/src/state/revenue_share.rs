@@ -373,6 +373,44 @@ impl<'a> RevenueShareEscrowZeroCopyMut<'a> {
         None
     }
 
+    /// Returns the index of the live builder-order row for a fill, binding the match to the
+    /// market being filled — not just `(sub_account_id, order_id)`.
+    ///
+    /// `(sub_account_id, order_id)` alone is ambiguous: order ids are per-subaccount and are
+    /// reused across markets, and a builder row created by `add_builder_order` can linger past
+    /// its order (a placement that soft-skips after writing the row, a `Completed` row awaiting
+    /// sweep). Matching on order id alone lets a stale row from market A attach to a same-id
+    /// order filled in market B, so the market-B taker is charged a builder fee that accrues to —
+    /// and is later swept from — market A's pnl pool (OtterSec #88). Requiring the row's
+    /// `market_index`/`market_type` to equal the fill's, that it still be `Open` (not a
+    /// `Completed` row whose id is stale), and that it not be a referral row binds the fee terms
+    /// to the order actually being filled.
+    pub fn find_builder_order_index(
+        &self,
+        sub_account_id: u16,
+        order_id: u32,
+        market_index: u16,
+        market_type: MarketType,
+    ) -> Option<u32> {
+        for i in 0..self.orders_len() {
+            if let Ok(existing_order) = self.get_order(i) {
+                if existing_order.order_id == order_id
+                    && existing_order.sub_account_id == sub_account_id
+                    && existing_order.market_index == market_index
+                    && existing_order.market_type == market_type
+                    // Completed rows keep their Open bit (`add_bit_flag` never
+                    // clears), so Open alone does not exclude them.
+                    && existing_order.is_open()
+                    && !existing_order.is_completed()
+                    && !existing_order.is_referral_order()
+                {
+                    return Some(i);
+                }
+            }
+        }
+        None
+    }
+
     /// Returns the index for the referral order, creating one if necessary. Returns None if the
     /// escrow has no referrer (a referral slot without a referrer could never be swept, so one is
     /// never claimed) or if a new order cannot be created.
@@ -547,5 +585,120 @@ impl<'a> RevenueShareEscrowLoader<'a> for AccountInfo<'a> {
             fixed: RefMut::map(fixed, |b| bytemuck::from_bytes_mut(b)),
             data,
         })
+    }
+}
+
+#[cfg(test)]
+mod builder_order_index_tests {
+    use super::*;
+    use std::cell::{RefCell, RefMut};
+
+    fn open_builder(order_id: u32, sub_account_id: u16, market_index: u16) -> RevenueShareOrder {
+        RevenueShareOrder::new(
+            0,
+            sub_account_id,
+            order_id,
+            100,
+            MarketType::Perp,
+            market_index,
+            RevenueShareOrderBitFlag::Open as u8,
+            0,
+        )
+    }
+
+    /// Builds a 16-byte-aligned escrow buffer (so `bytemuck::from_bytes` over the
+    /// 8-aligned `RevenueShareOrder`s never trips alignment) with `orders` written
+    /// via the same byte path production uses, then runs `body` against the loaded
+    /// zero-copy view. Mirrors `load_zc_mut`'s split without the AccountInfo/owner
+    /// plumbing.
+    fn with_escrow(
+        orders: &[RevenueShareOrder],
+        body: impl FnOnce(&RevenueShareEscrowZeroCopyMut),
+    ) {
+        let n = RevenueShareEscrow::space(orders.len(), 0);
+        let mut backing = vec![0u128; (n + 15) / 16];
+        let full: &mut [u8] = bytemuck::cast_slice_mut(&mut backing);
+        let buf = &mut full[..n];
+
+        buf[0..8].copy_from_slice(RevenueShareEscrow::DISCRIMINATOR);
+        let hdr = 8 + std::mem::size_of::<RevenueShareEscrowFixed>();
+        // data layout after the fixed header: [padding0 4][orders_len 4][orders..]
+        buf[hdr + 4..hdr + 8].copy_from_slice(&(orders.len() as u32).to_le_bytes());
+        let osz = std::mem::size_of::<RevenueShareOrder>();
+        for (i, order) in orders.iter().enumerate() {
+            let start = hdr + 8 + i * osz;
+            buf[start..start + osz].copy_from_slice(bytemuck::bytes_of(order));
+        }
+
+        let cell = RefCell::new(buf);
+        let data = RefMut::map(cell.borrow_mut(), |d| &mut **d);
+        let (_disc, data) = RefMut::map_split(data, |d| d.split_at_mut(8));
+        let (fixed, data) = RefMut::map_split(data, |d| {
+            d.split_at_mut(std::mem::size_of::<RevenueShareEscrowFixed>())
+        });
+        let escrow = RevenueShareEscrowZeroCopyMut {
+            fixed: RefMut::map(fixed, |b| bytemuck::from_bytes_mut(b)),
+            data,
+        };
+        body(&escrow);
+    }
+
+    /// OtterSec #88: the fill-time builder lookup must bind to the market being
+    /// filled, not just `(sub_account_id, order_id)`. A market-A row must never be
+    /// returned for a market-B fill, a `Completed` row's stale id must not match,
+    /// and the market type must agree.
+    #[test]
+    fn find_builder_order_index_binds_market_type_and_open_state() {
+        let mut completed = open_builder(9, 1, 5);
+        // completion ORs the bit in, so real completed rows are Open|Completed
+        completed.add_bit_flag(RevenueShareOrderBitFlag::Completed);
+        let mut referral = open_builder(7, 1, 0);
+        referral.bit_flags = RevenueShareOrderBitFlag::Referral as u8;
+        let orders = [
+            open_builder(7, 1, 0), // idx 0: market 0
+            open_builder(7, 1, 3), // idx 1: SAME (sub, order_id), market 3
+            completed,             // idx 2: completed, stale id 9
+            referral,              // idx 3: referral row, id 7 market 0
+        ];
+
+        with_escrow(&orders, |escrow| {
+            // exact (sub, order_id, market, Perp), open, non-referral → matched
+            assert_eq!(
+                escrow.find_builder_order_index(1, 7, 0, MarketType::Perp),
+                Some(0)
+            );
+            // same (sub, order_id) but the fill is in a different market → the
+            // market-0 row is NOT charged on a market-3 fill; only the genuine
+            // market-3 row matches
+            assert_eq!(
+                escrow.find_builder_order_index(1, 7, 3, MarketType::Perp),
+                Some(1)
+            );
+            // no row for this (order_id, market) pair
+            assert_eq!(
+                escrow.find_builder_order_index(1, 7, 9, MarketType::Perp),
+                None
+            );
+            // wrong market type
+            assert_eq!(
+                escrow.find_builder_order_index(1, 7, 0, MarketType::Spot),
+                None
+            );
+            // a Completed row whose id is stale must not match
+            assert_eq!(
+                escrow.find_builder_order_index(1, 9, 5, MarketType::Perp),
+                None
+            );
+            // a referral row is never a builder row
+            assert_eq!(
+                escrow.find_builder_order_index(1, 7, 0, MarketType::Perp),
+                Some(0)
+            );
+
+            // the legacy id-only finder still matches the first (sub, order_id)
+            // row regardless of market — the exact behavior the tightened finder
+            // guards the fill path against.
+            assert_eq!(escrow.find_order_index(1, 7), Some(0));
+        });
     }
 }

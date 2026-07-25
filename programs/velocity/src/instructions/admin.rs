@@ -45,7 +45,7 @@ use crate::{
         orders::is_multiple_of_step_size,
         safe_math::SafeMath,
         spot_balance::get_token_amount,
-        spot_withdraw::validate_spot_market_vault_amount,
+        spot_withdraw::{validate_spot_market_vault_amount, DEFAULT_WITHDRAW_CIRCUIT_BREAKER_BPS},
     },
     math_error, msg,
     optional_accounts::get_token_mint,
@@ -418,7 +418,7 @@ pub fn handle_initialize_spot_market(
         min_borrow_rate: 0,
         token_program_flag: token_program,
         pool_id: 0,
-        _padding_align_pfp: [0; 13],
+        _padding_align_pfp: 0,
         protocol_fee_pool: PoolBalance {
             scaled_balance: 0,
             market_index: spot_market_index,
@@ -427,6 +427,9 @@ pub fn handle_initialize_spot_market(
         protocol_liquidation_fee: 0,
         protocol_fee_factor: 0,
         if_last_settle_vault_amount: 0,
+        deposit_guard_threshold: 0,
+        withdraw_circuit_breaker_bps: 0, // 0 => default 25%
+        max_deposit_bps_per_day: 0,      // disabled
         insurance_fund: InsuranceFund {
             vault: ctx.accounts.insurance_fund_vault.key(),
             unstaking_period: THIRTEEN_DAY,
@@ -2127,6 +2130,75 @@ pub fn handle_update_spot_market_max_token_deposits(
 #[access_control(
     spot_market_valid(&ctx.accounts.spot_market)
 )]
+pub fn handle_update_spot_market_withdraw_circuit_breaker(
+    ctx: Context<AdminUpdateSpotMarket>,
+    withdraw_circuit_breaker_bps: u16,
+) -> Result<()> {
+    validate!(
+        withdraw_circuit_breaker_bps <= BPS_PRECISION as u16,
+        ErrorCode::DefaultError,
+        "withdraw_circuit_breaker_bps ({} bps) must be <= 100% ({} bps)",
+        withdraw_circuit_breaker_bps,
+        BPS_PRECISION
+    )?;
+
+    // A higher pct loosens the breaker (allows a larger daily withdrawal). The
+    // warm admin may only keep or tighten it relative to the 25% default;
+    // loosening it past 25% is a riskier change reserved for the cold admin.
+    // (`0` is the default-25% sentinel, so it stays within the warm cap.)
+    if !check_cold(&ctx.accounts.admin.key(), &ctx.accounts.state)? {
+        validate!(
+            withdraw_circuit_breaker_bps <= DEFAULT_WITHDRAW_CIRCUIT_BREAKER_BPS,
+            ErrorCode::Unauthorized,
+            "warm admin cannot set withdraw_circuit_breaker_bps ({}) above the 25% default ({}); requires cold admin",
+            withdraw_circuit_breaker_bps,
+            DEFAULT_WITHDRAW_CIRCUIT_BREAKER_BPS
+        )?;
+    }
+
+    let spot_market = &mut load_mut!(ctx.accounts.spot_market)?;
+    msg!("spot market {}", spot_market.market_index);
+
+    msg!(
+        "spot_market.withdraw_circuit_breaker_bps: {:?} -> {:?}",
+        spot_market.withdraw_circuit_breaker_bps,
+        withdraw_circuit_breaker_bps
+    );
+
+    spot_market.withdraw_circuit_breaker_bps = withdraw_circuit_breaker_bps;
+    Ok(())
+}
+
+#[access_control(
+    spot_market_valid(&ctx.accounts.spot_market)
+)]
+pub fn handle_update_spot_market_deposit_cap(
+    ctx: Context<AdminUpdateSpotMarket>,
+    deposit_guard_threshold: u64,
+    max_deposit_bps_per_day: u16,
+) -> Result<()> {
+    let spot_market = &mut load_mut!(ctx.accounts.spot_market)?;
+    msg!("spot market {}", spot_market.market_index);
+
+    msg!(
+        "spot_market.deposit_guard_threshold: {:?} -> {:?}",
+        spot_market.deposit_guard_threshold,
+        deposit_guard_threshold
+    );
+    msg!(
+        "spot_market.max_deposit_bps_per_day: {:?} -> {:?}",
+        spot_market.max_deposit_bps_per_day,
+        max_deposit_bps_per_day
+    );
+
+    spot_market.deposit_guard_threshold = deposit_guard_threshold;
+    spot_market.max_deposit_bps_per_day = max_deposit_bps_per_day;
+    Ok(())
+}
+
+#[access_control(
+    spot_market_valid(&ctx.accounts.spot_market)
+)]
 pub fn handle_update_spot_market_max_token_borrows(
     ctx: Context<AdminUpdateSpotMarket>,
     max_token_borrows_fraction: u16,
@@ -3735,17 +3807,21 @@ pub fn handle_reset_equity_floor_breaker(ctx: Context<ResetEquityFloorBreaker>) 
 pub fn handle_update_user_equity_floor(
     ctx: Context<AdminUpdateUserEquityFloor>,
     equity_floor: u64,
+    equity_floor_buffer: u64,
 ) -> Result<()> {
     let user = &mut load_mut!(ctx.accounts.user)?;
 
     msg!(
-        "equity_floor for {:?}: {:?} -> {:?}",
+        "equity_floor for {:?}: {:?} -> {:?}, buffer: {:?} -> {:?}",
         user.authority,
         user.equity_floor,
-        equity_floor
+        equity_floor,
+        user.equity_floor_buffer,
+        equity_floor_buffer
     );
 
     user.equity_floor = equity_floor;
+    user.equity_floor_buffer = equity_floor_buffer;
 
     Ok(())
 }

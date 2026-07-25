@@ -19,8 +19,6 @@ import {
 	MakerInfo,
 	MarketType,
 	NodeToFill,
-	OrderActionRecord,
-	parseLogs,
 	PerpMarkets,
 	PriorityFeeSubscriber,
 	QUOTE_PRECISION,
@@ -56,6 +54,7 @@ import {
 import { assert } from 'console';
 import {
 	chunks,
+	fillCorrelationSuffix,
 	getAllPythOracleUpdateIxs,
 	getFillSignatureFromUserAccountAndOrderId,
 	getNodeToFillSignature,
@@ -151,6 +150,14 @@ const MAX_FILL_ATTEMPTS_PER_ORDER = 15;
 // lives at most one auction, so a short TTL reaps entries soon after.
 const FILL_ATTEMPT_COUNTS_TTL_MS = 2 * 60 * 1000;
 const FILL_ATTEMPT_COUNTS_MAX = 10_000;
+// Drop-detection window for an in-flight signed-msg place+fill. A signed-msg
+// node is guarded against re-attempt from the moment it is launched until its
+// tx lands, its send fails, or this TTL elapses. It is deliberately longer than
+// normal confirmation latency (a few seconds) so a slow-but-live tx is not
+// duplicated, and shorter than a typical swift order's lifetime (~25-30s) so a
+// silently-dropped place+fill is retried while the order is still valid and
+// still emitted by the DLOB builder.
+const SIGNED_MSG_FILL_IN_FLIGHT_TTL_MS = 15_000;
 const THROTTLED_NODE_SIZE_TO_PRUNE = 10; // Size of throttled nodes to get to before pruning the map
 export const MAX_MAKERS_PER_FILL = 6; // max number of unique makers to include per fill
 const MAX_ACCOUNTS_PER_TX = 64; // solana limit, track https://github.com/solana-labs/solana/issues/27241
@@ -222,6 +229,27 @@ export class FillerMultithreaded {
 	>({
 		max: FILL_ATTEMPT_COUNTS_MAX,
 		ttl: FILL_ATTEMPT_COUNTS_TTL_MS,
+		ttlResolution: 1000,
+	});
+	// Signatures (getNodeToFillSignature) of signed-msg orders whose place+fill has
+	// landed on-chain. Once placed, the order is filled through its on-chain order
+	// node, so the signed-msg node must never be place+filled again. This is the
+	// authoritative in-process guard; the DLOB-builder eviction (routed on the same
+	// landing) additionally stops the builder from re-emitting the dead node.
+	private placedSignedMsgOrders = new LRUCache<string, true>({
+		max: FILL_ATTEMPT_COUNTS_MAX,
+		ttl: FILL_ATTEMPT_COUNTS_TTL_MS,
+		ttlResolution: 1000,
+	});
+	// Signatures of signed-msg orders with a place+fill currently in flight. Set
+	// synchronously the instant a fill is launched — before the async
+	// build/sim/send/registration chain runs — so the ~200ms DLOB re-emit cannot
+	// launch a second place+fill for the same order before the first is tracked.
+	// Cleared when the tx lands (confirmPendingTxSigs), when the send definitively
+	// fails, or by the TTL (drop detection). See SIGNED_MSG_FILL_IN_FLIGHT_TTL_MS.
+	private signedMsgFillsInFlight = new LRUCache<string, true>({
+		max: FILL_ATTEMPT_COUNTS_MAX,
+		ttl: SIGNED_MSG_FILL_IN_FLIGHT_TTL_MS,
 		ttlResolution: 1000,
 	});
 	private fillAttemptSlotInterval: number;
@@ -1120,7 +1148,7 @@ export class FillerMultithreaded {
 						logger.info(
 							`Tx not found, (fillTxId: ${fillTxId}) (txType: ${txType}): ${txSig}, tx age: ${
 								txAge / 1000
-							} s`
+							} s${fillCorrelationSuffix(nodeFilled)}`
 						);
 						if (Math.abs(txAge) > TX_TIMEOUT_THRESHOLD_MS) {
 							this.pendingTxSigsToconfirm.delete(txSig);
@@ -1129,21 +1157,29 @@ export class FillerMultithreaded {
 						logger.info(
 							`Tx landed (fillTxId: ${fillTxId}) (txType: ${txType}): ${txSig}, tx age: ${
 								txAge / 1000
-							} s`
+							} s${fillCorrelationSuffix(nodeFilled)}`
 						);
 
-						const fullyFilledTakerOrderIds =
-							txResp.meta?.err === null &&
-							nodeFilled.some((node) => node.node.isSignedMsg)
-								? this.getFullyFilledTakerOrderIds(txResp.meta?.logMessages)
-								: new Set<number>();
+						// The place+fill attempt has resolved: release the in-flight
+						// reservation for every signed-msg node in this tx. If it landed
+						// Ok the order is placed on-chain (a single-maker signed-msg
+						// place+fill carries no RevertFill ix, so even a 0-base no-op
+						// lands Ok), so additionally retire the node: mark it placed so
+						// we never re-run the place+fill, and evict it from the DLOB
+						// builder so it stops being emitted — any remaining base fills
+						// through the order's on-chain node instead. A landed-but-errored
+						// place+fill (e.g. a multi-maker RevertFill, or expiry) is not
+						// marked placed, so it stays retriable while still valid.
+						const landedOk = txResp.meta?.err === null;
 						for (const node of nodeFilled) {
+							if (!node.node.isSignedMsg) {
+								continue;
+							}
+							const sig = getNodeToFillSignature(node);
+							this.signedMsgFillsInFlight.delete(sig);
 							const orderId = node.node.order?.orderId;
-							if (
-								node.node.isSignedMsg &&
-								orderId !== undefined &&
-								fullyFilledTakerOrderIds.has(orderId)
-							) {
+							if (landedOk && orderId !== undefined) {
+								this.placedSignedMsgOrders.set(sig, true);
 								this.routeMessageToDlobBuilder({
 									data: {
 										marketIndex: node.node.order?.marketIndex,
@@ -1357,7 +1393,8 @@ export class FillerMultithreaded {
 
 	protected async sendTxThroughJito(
 		tx: VersionedTransaction,
-		metadata: number | string
+		metadata: number | string,
+		nodesSent?: Array<NodeToFill>
 	) {
 		const blockhash = await this.getBlockhashForTx();
 		tx.message.recentBlockhash = blockhash;
@@ -1377,7 +1414,7 @@ export class FillerMultithreaded {
 		if (slotsUntilNextLeader !== undefined) {
 			this.bundleSender.sendTransactions(
 				[tx],
-				`(fillTxId: ${metadata})`,
+				`(fillTxId: ${metadata})${fillCorrelationSuffix(nodesSent ?? [])}`,
 				undefined,
 				false
 			);
@@ -1523,9 +1560,30 @@ export class FillerMultithreaded {
 		return true;
 	}
 
-	// Re-attempts are bounded by the slot-interval pacing below, the crossability
-	// and expiry filters in filterFillableNodes, the DLOB builder's per-order TTL,
-	// full-fill eviction in confirmPendingTxSigs, and MAX_FILL_ATTEMPTS_PER_ORDER.
+	// Retry policy differs by node origin:
+	//
+	// - Signed-msg (swift) nodes are submitted as an atomic place+fill. We attempt
+	//   that place+fill only ONCE per order: the node is reserved in
+	//   `signedMsgFillsInFlight` synchronously the moment the fill is launched (so
+	//   the ~200ms DLOB re-emit can't fire a second place+fill before the first is
+	//   even built/sent), and once it lands Ok the order is placed on-chain and the
+	//   node is retired (`placedSignedMsgOrders` + eviction in
+	//   confirmPendingTxSigs). A single-maker signed-msg place+fill carries no
+	//   RevertFill ix (see tryFillPerpNode), so even a 0-base no-op lands Ok and
+	//   places the order; thereafter it fills through its on-chain order node via
+	//   the non-signed path below. Re-attempting the signed node would only re-run
+	//   the heavier place+fill (redundant place ix + ed25519 + oracle updates) and
+	//   race its own on-chain node — which is what produced two concurrent fill txs
+	//   for the same order. A place+fill that fails to send or is dropped releases
+	//   the reservation (send-error path, or SIGNED_MSG_FILL_IN_FLIGHT_TTL_MS) so
+	//   it can be retried while the order is still valid.
+	// - Non-signed nodes (including a signed order's on-chain node once placed)
+	//   keep retrying through the auction, paced to once per fillAttemptSlotInterval
+	//   slots so the fill lands as the Dutch auction ramps into a cross.
+	//
+	// Re-attempts are further bounded by the crossability and expiry filters in
+	// filterFillableNodes, the DLOB builder's per-order TTL, and
+	// MAX_FILL_ATTEMPTS_PER_ORDER.
 	async executeFillablePerpNodes(nodesToFill: NodeToFillWithBuffer[]) {
 		const currentSlot = this.slotSubscriber.getSlot();
 		for (const node of nodesToFill) {
@@ -1543,11 +1601,23 @@ export class FillerMultithreaded {
 				continue;
 			}
 
-			// Pace re-attempts to at most once per fillAttemptSlotInterval slots.
-			if (
+			if (node.node.isSignedMsg) {
+				// Place+fill a signed-msg order at most once: skip while a prior
+				// place+fill is in flight, and skip forever once it has landed
+				// (the order is placed and its on-chain node carries any remaining
+				// base through the auction).
+				if (
+					this.placedSignedMsgOrders.has(sig) ||
+					this.signedMsgFillsInFlight.has(sig)
+				) {
+					continue;
+				}
+			} else if (
 				prior !== undefined &&
 				currentSlot - prior.lastAttemptSlot < this.fillAttemptSlotInterval
 			) {
+				// Pace non-signed re-attempts to at most once per
+				// fillAttemptSlotInterval slots.
 				continue;
 			}
 
@@ -1556,6 +1626,12 @@ export class FillerMultithreaded {
 				count: attempts + 1,
 				lastAttemptSlot: currentSlot,
 			});
+			// Reserve the signed-msg order synchronously, before the async fill
+			// launches, so a subsequent tick can't race a second place+fill in the
+			// window before the tx is registered for confirmation.
+			if (node.node.isSignedMsg) {
+				this.signedMsgFillsInFlight.set(sig, true);
+			}
 			if (node.makerNodes.length > 1) {
 				this.tryFillMultiMakerPerpNodes(node);
 			} else {
@@ -1773,7 +1849,11 @@ export class FillerMultithreaded {
 						removeLastIxPostSim,
 					});
 				} catch (error) {
-					logger.error(`Error simulating tx: ${error}`);
+					logger.error(
+						`${logPrefix} Error simulating tx (fillTxId: ${fillTxId})${fillCorrelationSuffix(
+							[nodeToFill]
+						)}: ${error}`
+					);
 					return;
 				}
 				if (simResult.simError) {
@@ -1811,7 +1891,9 @@ export class FillerMultithreaded {
 			let attempt = 0;
 			while (txAccounts > MAX_ACCOUNTS_PER_TX && makerInfosToUse.length > 0) {
 				logger.info(
-					`${logPrefix} (fillTxId: ${fillTxId} attempt ${attempt++}) Too many accounts, remove 1 and try again (had ${
+					`${logPrefix} (fillTxId: ${fillTxId} attempt ${attempt++})${fillCorrelationSuffix(
+						[nodeToFill]
+					)} Too many accounts, remove 1 and try again (had ${
 						makerInfosToUse.length
 					} maker and ${txAccounts} accounts)`
 				);
@@ -1821,14 +1903,18 @@ export class FillerMultithreaded {
 
 			if (makerInfosToUse.length === 0) {
 				logger.error(
-					`${logPrefix} No makerInfos left to use for multi maker perp node (fillTxId: ${fillTxId})`
+					`${logPrefix} No makerInfos left to use for multi maker perp node (fillTxId: ${fillTxId})${fillCorrelationSuffix(
+						[nodeToFill]
+					)}`
 				);
 				return true;
 			}
 
 			if (simResult === undefined) {
 				logger.error(
-					`${logPrefix} No simResult after ${attempt} attempts (fillTxId: ${fillTxId})`
+					`${logPrefix} No simResult after ${attempt} attempts (fillTxId: ${fillTxId})${fillCorrelationSuffix(
+						[nodeToFill]
+					)}`
 				);
 				return true;
 			}
@@ -1840,12 +1926,14 @@ export class FillerMultithreaded {
 			logger.info(
 				`${logPrefix} tryFillMultiMakerPerpNodes estimated CUs: ${
 					simResult!.cuEstimate
-				} (fillTxId: ${fillTxId})`
+				} (fillTxId: ${fillTxId})${fillCorrelationSuffix([nodeToFill])}`
 			);
 
 			if (simResult!.simError) {
 				logger.error(
-					`${logPrefix} Error simulating multi maker perp node (fillTxId: ${fillTxId}): ${JSON.stringify(
+					`${logPrefix} Error simulating multi maker perp node (fillTxId: ${fillTxId})${fillCorrelationSuffix(
+						[nodeToFill]
+					)}: ${JSON.stringify(
 						simResult!.simError
 					)}\nTaker slot: ${takerUserSlot}\nMaker slots: ${makerInfosToUse
 						.map((m) => `  ${m.data.maker.toBase58()}: ${m.slot}`)
@@ -1857,14 +1945,16 @@ export class FillerMultithreaded {
 						(simResult.simError as any)['InstructionError'][1]['Custom'] < 6000
 					) {
 						logger.info(
-							`${logPrefix} (fillTxId: ${fillTxId}) sim logs: ${simResult.simTxLogs?.join(
-								'\n'
-							)}`
+							`${logPrefix} (fillTxId: ${fillTxId})${fillCorrelationSuffix([
+								nodeToFill,
+							])} sim logs: ${simResult.simTxLogs?.join('\n')}`
 						);
 					}
 				} catch (e) {
 					logger.error(
-						`${logPrefix} Error parsing sim logs (fillTxId: ${fillTxId}): ${e}`
+						`${logPrefix} Error parsing sim logs (fillTxId: ${fillTxId})${fillCorrelationSuffix(
+							[nodeToFill]
+						)}: ${e}`
 					);
 				}
 			} else {
@@ -1884,9 +1974,9 @@ export class FillerMultithreaded {
 		} catch (e) {
 			if (e instanceof Error) {
 				logger.error(
-					`${logPrefix} Error filling multi maker perp node (fillTxId: ${fillTxId}): ${
-						e.stack ? e.stack : e.message
-					}`
+					`${logPrefix} Error filling multi maker perp node (fillTxId: ${fillTxId})${fillCorrelationSuffix(
+						[nodeToFill]
+					)}: ${e.stack ? e.stack : e.message}`
 				);
 			}
 		}
@@ -2062,12 +2152,18 @@ export class FillerMultithreaded {
 				removeLastIxPostSim,
 			});
 		} catch (error) {
-			logger.error(`Error simulating tx: ${error}`);
+			logger.error(
+				`${logPrefix} Error simulating tx (fillTxId: ${fillTxId})${fillCorrelationSuffix(
+					[nodeToFill]
+				)}: ${error}`
+			);
 			return;
 		}
 
 		logger.info(
-			`tryFillPerpNode estimated CUs: ${simResult.cuEstimate} (fillTxId: ${fillTxId})`
+			`tryFillPerpNode estimated CUs: ${
+				simResult.cuEstimate
+			} (fillTxId: ${fillTxId})${fillCorrelationSuffix([nodeToFill])}`
 		);
 
 		if (simResult.simError) {
@@ -2078,7 +2174,9 @@ export class FillerMultithreaded {
 			logger.error(
 				`simError: ${JSON.stringify(
 					simResult.simError
-				)} (fillTxId: ${fillTxId}), sim logs:\n${
+				)} (fillTxId: ${fillTxId})${fillCorrelationSuffix([
+					nodeToFill,
+				])}, sim logs:\n${
 					simResult.simTxLogs ? simResult.simTxLogs.join('\n') : 'none'
 				}`
 			);
@@ -2115,7 +2213,7 @@ export class FillerMultithreaded {
 		const txSig = bs58.encode(tx.signatures[0]);
 
 		if (buildForBundle) {
-			await this.sendTxThroughJito(tx, fillTxId);
+			await this.sendTxThroughJito(tx, fillTxId, nodesSent);
 			this.removeFillingNodes(nodesSent);
 		} else {
 			estTxSize = tx.message.serialize().length;
@@ -2151,14 +2249,30 @@ export class FillerMultithreaded {
 				.then((resp: TxSigAndSlot) => {
 					const duration = Date.now() - txStart;
 					logger.info(
-						`${logPrefix} sent tx: ${resp.txSig}, took: ${duration}ms (fillTxId: ${fillTxId})`
+						`${logPrefix} sent tx: ${
+							resp.txSig
+						}, took: ${duration}ms (fillTxId: ${fillTxId})${fillCorrelationSuffix(
+							nodesSent
+						)}`
 					);
 				})
 				.catch(async (e) => {
 					const simError = e as SendTransactionError;
 					logger.error(
-						`${logPrefix} Failed to send packed tx txAccountKeys: ${txAccounts} (${writeAccs} writeable) (fillTxId: ${fillTxId}), error: ${simError.message}`
+						`${logPrefix} Failed to send packed tx txAccountKeys: ${txAccounts} (${writeAccs} writeable) (fillTxId: ${fillTxId})${fillCorrelationSuffix(
+							nodesSent
+						)}, error: ${simError.message}`
 					);
+
+					// The send definitively failed, so no place+fill is in flight for
+					// these signed-msg orders: release the in-flight guard now (rather
+					// than waiting for the drop-detection TTL) so the order can be
+					// retried while it is still valid.
+					for (const node of nodesSent) {
+						if (node.node.isSignedMsg) {
+							this.signedMsgFillsInFlight.delete(getNodeToFillSignature(node));
+						}
+					}
 
 					if (e.message.includes('too large:')) {
 						logger.error(
@@ -2572,55 +2686,6 @@ export class FillerMultithreaded {
 				user.getUserAccountOrThrow()
 			),
 		});
-	}
-
-	/**
-	 * Returns the taker order ids that a landed tx FULLY filled (cumulative filled
-	 * base >= order base).
-	 *
-	 * A landed tx is `Ok` even when it fills nothing (a swift place+fill that
-	 * can't cross yet returns `Ok((0, 0))`), so "landed" is not a fill signal. We
-	 * require a full fill, not just any fill record: evicting a partially-filled
-	 * node would orphan its remaining base for the rest of the auction. Perps
-	 * don't move token balances, so parsing the OrderActionRecord logs is the
-	 * correct source.
-	 */
-	protected getFullyFilledTakerOrderIds(
-		logs: string[] | null | undefined
-	): Set<number> {
-		const fullyFilledTakerOrderIds = new Set<number>();
-		if (!logs) {
-			return fullyFilledTakerOrderIds;
-		}
-		try {
-			// @ts-ignore VelocityProgram vs Program<Idl>; parseLogs only uses the event coder.
-			for (const event of parseLogs(this.velocityClient.program, logs)) {
-				if (event.name.toLowerCase() !== 'orderactionrecord') {
-					continue;
-				}
-				const record = event.data as unknown as OrderActionRecord;
-				const totalBase = record.takerOrderBaseAssetAmount;
-				const cumulativeFilled =
-					record.takerOrderCumulativeBaseAssetAmountFilled;
-				if (
-					isVariant(record.action, 'fill') &&
-					record.takerOrderId !== null &&
-					totalBase !== null &&
-					cumulativeFilled !== null &&
-					totalBase.gtn(0) &&
-					cumulativeFilled.gte(totalBase)
-				) {
-					fullyFilledTakerOrderIds.add(record.takerOrderId);
-				}
-			}
-		} catch (e) {
-			logger.error(
-				`Error parsing fill logs for signed-msg eviction: ${
-					(e as Error).message
-				}`
-			);
-		}
-		return fullyFilledTakerOrderIds;
 	}
 
 	/**

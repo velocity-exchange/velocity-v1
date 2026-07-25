@@ -57,7 +57,7 @@
     },
     "apps/dlob-server": {
       "name": "@velocity-exchange/dlob-server",
-      "version": "0.1.12",
+      "version": "0.1.20",
       "dependencies": {
         "@aws-sdk/client-athena": "^3.830.0",
         "@aws-sdk/client-kinesis": "^3.830.0",
@@ -71,7 +71,6 @@
         "@opentelemetry/sdk-node": "^0.31.0",
         "@project-serum/anchor": "^0.19.1-beta.1",
         "@project-serum/serum": "^0.13.65",
-        "@pythnetwork/hermes-client": "^1.3.1",
         "@solana/web3.js": "1.98.0",
         "@triton-one/yellowstone-grpc": "5.0.5",
         "@types/redis": "^4.0.11",
@@ -118,7 +117,7 @@
     },
     "apps/keeper-bots-v2": {
       "name": "@velocity-exchange/keeper-bots-v2",
-      "version": "0.1.10",
+      "version": "0.2.5",
       "dependencies": {
         "@coral-xyz/anchor": "^0.29.0",
         "@noble/hashes": "1.7.1",
@@ -131,7 +130,6 @@
         "@opentelemetry/sdk-node": "0.31.0",
         "@project-serum/anchor": "0.19.1-beta.1",
         "@project-serum/serum": "0.13.65",
-        "@pythnetwork/price-service-client": "1.9.0",
         "@pythnetwork/pyth-lazer-sdk": "5.2.1",
         "@solana/spl-token": "0.3.7",
         "@solana/web3.js": "1.92.3",
@@ -181,7 +179,7 @@
     },
     "apps/usermap-server": {
       "name": "@velocity-exchange/usermap-server",
-      "version": "0.1.4",
+      "version": "0.1.9",
       "dependencies": {
         "@coral-xyz/anchor": "^0.29.0",
         "@grpc/grpc-js": "^1.8.0",
@@ -222,7 +220,7 @@
     },
     "packages/cli-admin": {
       "name": "@velocity-exchange/admin-cli",
-      "version": "0.3.0",
+      "version": "0.7.0",
       "bin": {
         "velocity-admin": "lib/index.js",
       },
@@ -243,7 +241,7 @@
     },
     "packages/jit-proxy": {
       "name": "@velocity-exchange/jit-proxy",
-      "version": "0.1.0",
+      "version": "0.3.2",
       "dependencies": {
         "@velocity-exchange/sdk": "workspace:*",
         "tweetnacl-util": "0.15.1",
@@ -261,7 +259,7 @@
     },
     "packages/sdk": {
       "name": "@velocity-exchange/sdk",
-      "version": "0.3.0",
+      "version": "0.7.0",
       "dependencies": {
         "@anchor-lang/core": "1.0.1",
         "@coral-xyz/anchor": "npm:@anchor-lang/core@1.0.1",
@@ -332,7 +330,7 @@
     },
     "packages/vaults-sdk": {
       "name": "@velocity-exchange/vaults-sdk",
-      "version": "0.1.8",
+      "version": "0.1.13",
       "dependencies": {
         "@metaplex-foundation/js": "0.20.1",
         "@velocity-exchange/sdk": "workspace:*",
@@ -1027,8 +1025,6 @@
 
     "@pythnetwork/client": ["@pythnetwork/client@2.21.0", "", { "dependencies": { "@coral-xyz/anchor": "^0.29.0", "@coral-xyz/borsh": "^0.28.0", "buffer": "^6.0.1" }, "peerDependencies": { "@solana/web3.js": "^1.30.2" } }, "sha512-jqUuPLuVKRNUsZfwLuvK/MwnJ3LIrIxBNoz43xt0fjvVuH5QyTlz51ek76CkeKfCbomGKe41Vq7bvn8aqWVOGA=="],
 
-    "@pythnetwork/hermes-client": ["@pythnetwork/hermes-client@1.4.0", "", { "dependencies": { "@zodios/core": "^10.9.6", "eventsource": "^3.0.5", "zod": "^3.23.8" } }, "sha512-nOOlqFgnSjFLcOUeKjfCxPOYShp4VW9/pTUB7D7OFjgmdJ3hPbSadR9rajurGc4zl2N4NbqR2O/ZMdYkAFaddQ=="],
-
     "@pythnetwork/price-service-client": ["@pythnetwork/price-service-client@1.9.0", "", { "dependencies": { "@pythnetwork/price-service-sdk": "*", "@types/ws": "^8.5.3", "axios": "^1.5.1", "axios-retry": "^3.8.0", "isomorphic-ws": "^4.0.1", "ts-log": "^2.2.4", "ws": "^8.6.0" } }, "sha512-SLm3IFcfmy9iMqHeT4Ih6qMNZhJEefY14T9yTlpsH2D/FE5+BaGGnfcexUifVlfH6M7mwRC4hEFdNvZ6ebZjJg=="],
 
     "@pythnetwork/price-service-sdk": ["@pythnetwork/price-service-sdk@1.7.1", "", { "dependencies": { "bn.js": "^5.2.1" } }, "sha512-xr2boVXTyv1KUt/c6llUTfbv2jpud99pWlMJbFaHGUBoygQsByuy7WbjIJKZ+0Blg1itLZl0Lp/pJGGg8SdJoQ=="],
@@ -1418,8 +1414,6 @@
     "@wallet-standard/base": ["@wallet-standard/base@1.1.1", "", {}, "sha512-gggIHTtxicF9XFMQ12DkfS6NAG92Ak795JeSA7f2whAQ6Y3AkMWWuCMxSZXG2NIPN42kEaZSNVjqMsJRaJRxMQ=="],
 
     "@wallet-standard/features": ["@wallet-standard/features@1.1.1", "", { "dependencies": { "@wallet-standard/base": "^1.1.1" } }, "sha512-aCWYmVeSCGViyEU5k7GMoW8zxE4Gs+C1s1Pp2XLesvSNlnZ4PMES9HUnTB3hl0b3RVj7C61yze3IWyrncqg4MA=="],
-
-    "@zodios/core": ["@zodios/core@10.9.6", "", { "peerDependencies": { "axios": "^0.x || ^1.0.0", "zod": "^3.x" } }, "sha512-aH4rOdb3AcezN7ws8vDgBfGboZMk2JGGzEq/DtW65MhnRxyTGRuLJRWVQ/2KxDgWvV2F5oTkAS+5pnjKbl0n+A=="],
 
     "accepts": ["accepts@1.3.8", "", { "dependencies": { "mime-types": "~2.1.34", "negotiator": "0.6.3" } }, "sha512-PYAthTa2m2VKxuvSD3DPC/Gy+U+sOA1LAuT8mkmRuvw+NACSaeXEQ+NHcVF7rONl6qcaxV3Uuemwawk+7+SJLw=="],
 
@@ -1888,10 +1882,6 @@
     "eventemitter3": ["eventemitter3@4.0.7", "", {}, "sha512-8guHBZCwKnFhYdHr2ysuRWErTwhoN2X8XELRlrRwpmfeY2jjuUN4taQMsULKUVo1K4DvZl+0pgfyoysHxvmvEw=="],
 
     "events": ["events@1.1.1", "", {}, "sha512-kEcvvCBByWXGnZy6JUlgAp2gBIUjfCAV6P6TgT1/aaQKcmuAEC4OZTV1I4EWQLz2gxZw76atuVyvHhTxvi0Flw=="],
-
-    "eventsource": ["eventsource@3.0.7", "", { "dependencies": { "eventsource-parser": "^3.0.1" } }, "sha512-CRT1WTyuQoD771GW56XEZFQ/ZoSfWid1alKGDYMmkt2yl8UXrVR4pspqWNEcqKvVIzg6PAltWjxcSSPrboA4iA=="],
-
-    "eventsource-parser": ["eventsource-parser@3.1.0", "", {}, "sha512-kJezFj9YFAMLeORyi7aCLxLbD5/qWMQnoMVlVPyHIll7lgRJCc3JVln9Vgl9nwQi0YkMnhdGTMNn7CkRRAptMg=="],
 
     "evp_bytestokey": ["evp_bytestokey@1.0.3", "", { "dependencies": { "md5.js": "^1.3.4", "safe-buffer": "^5.1.1" } }, "sha512-/f2Go4TognH/KvCISP7OUsHn85hT9nUkxxA9BEWxFn+Oj9o8ZNLm/40hdlgSLyuOimsrTKLUMEorQexp/aPQeA=="],
 
@@ -3392,8 +3382,6 @@
     "@pythnetwork/client/@coral-xyz/anchor": ["@coral-xyz/anchor@0.29.0", "", { "dependencies": { "@coral-xyz/borsh": "^0.29.0", "@noble/hashes": "^1.3.1", "@solana/web3.js": "^1.68.0", "bn.js": "^5.1.2", "bs58": "^4.0.1", "buffer-layout": "^1.2.2", "camelcase": "^6.3.0", "cross-fetch": "^3.1.5", "crypto-hash": "^1.3.0", "eventemitter3": "^4.0.7", "pako": "^2.0.3", "snake-case": "^3.0.4", "superstruct": "^0.15.4", "toml": "^3.0.0" } }, "sha512-eny6QNG0WOwqV0zQ7cs/b1tIuzZGmP7U7EcH+ogt4Gdbl8HDmIYVMh/9aTmYZPaFWjtUaI8qSn73uYEXWfATdA=="],
 
     "@pythnetwork/client/@coral-xyz/borsh": ["@coral-xyz/borsh@0.28.0", "", { "dependencies": { "bn.js": "^5.1.2", "buffer-layout": "^1.2.0" }, "peerDependencies": { "@solana/web3.js": "^1.68.0" } }, "sha512-/u1VTzw7XooK7rqeD7JLUSwOyRSesPUk0U37BV9zK0axJc1q0nRbKFGFLYCQ16OtdOJTTwGfGp11Lx9B45bRCQ=="],
-
-    "@pythnetwork/hermes-client/zod": ["zod@3.25.76", "", {}, "sha512-gzUt/qt81nXsFGKIFcC3YnfEAx5NkunCfnDlvuBSSFS02bcXu4Lmea0AFIUwbLWxWPx3d9p8S5QoaujKcNQxcQ=="],
 
     "@pythnetwork/price-service-client/ws": ["ws@8.18.1", "", { "peerDependencies": { "bufferutil": "^4.0.1", "utf-8-validate": ">=5.0.2" }, "optionalPeers": ["bufferutil", "utf-8-validate"] }, "sha512-RKW2aJZMXeMxVpnZ6bck+RswznaxmzdULiBr6KY7XkTnW8uvt0iT9H5DkHUChXrc+uurzwa0rVI16n/Xzjdz1w=="],
 

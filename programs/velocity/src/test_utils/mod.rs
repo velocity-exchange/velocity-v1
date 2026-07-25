@@ -2,7 +2,7 @@ use anchor_lang::prelude::{AccountInfo, Pubkey};
 use anchor_lang::{Owner, ZeroCopy};
 use bytes::BytesMut;
 
-#[cfg(test)]
+#[cfg(any(test, feature = "fuzz-fixtures"))]
 pub mod legacy_snapshot;
 
 use crate::state::pyth_lazer_oracle::PythLazerOracle;

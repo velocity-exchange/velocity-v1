@@ -153,11 +153,16 @@ describe('equity floor', () => {
 		await velocityClient.unsubscribe();
 		await velocityClientUser.unsubscribe();
 		await eventSubscriber.unsubscribe();
+		await delegateVelocityClient?.unsubscribe();
 	});
 
 	it('warm admin sets the equity floor', async () => {
 		const floor = new BN(20 * 10 ** 6); // above the 10 USDC of equity
-		await velocityClient.updateUserEquityFloor(userAccountPublicKey, floor);
+		await velocityClient.updateUserEquityFloor(
+			userAccountPublicKey,
+			floor,
+			ZERO
+		);
 
 		await velocityClient.fetchAccounts();
 		await velocityClientUser.fetchAccounts();
@@ -210,7 +215,11 @@ describe('equity floor', () => {
 
 	it('lowering the floor re-enables trading', async () => {
 		const floor = new BN(2 * 10 ** 6); // below the 10 USDC of equity
-		await velocityClient.updateUserEquityFloor(userAccountPublicKey, floor);
+		await velocityClient.updateUserEquityFloor(
+			userAccountPublicKey,
+			floor,
+			ZERO
+		);
 
 		await velocityClient.fetchAccounts();
 		await velocityClientUser.fetchAccounts();
@@ -236,7 +245,8 @@ describe('equity floor', () => {
 		// push the floor back above equity with a position open
 		await velocityClient.updateUserEquityFloor(
 			userAccountPublicKey,
-			new BN(20 * 10 ** 6)
+			new BN(20 * 10 ** 6),
+			ZERO
 		);
 
 		const orderParams = getMarketOrderParams({
@@ -256,7 +266,11 @@ describe('equity floor', () => {
 	});
 
 	it('clearing the floor disables the check', async () => {
-		await velocityClient.updateUserEquityFloor(userAccountPublicKey, ZERO);
+		await velocityClient.updateUserEquityFloor(
+			userAccountPublicKey,
+			ZERO,
+			ZERO
+		);
 
 		await velocityClient.fetchAccounts();
 		await velocityClientUser.fetchAccounts();
@@ -318,7 +332,8 @@ describe('equity floor', () => {
 		// floor sub 0 at 4 USDC; equity ~8 so above floor
 		await velocityClient.updateUserEquityFloor(
 			userAccountPublicKey,
-			new BN(4 * 10 ** 6)
+			new BN(4 * 10 ** 6),
+			ZERO
 		);
 	});
 
@@ -466,7 +481,8 @@ describe('equity floor', () => {
 		// simulate a drawdown breach by raising sub 0's floor above its equity
 		await velocityClient.updateUserEquityFloor(
 			userAccountPublicKey,
-			new BN(50 * 10 ** 6)
+			new BN(50 * 10 ** 6),
+			ZERO
 		);
 		await velocityClient.fetchAccounts();
 
@@ -523,7 +539,276 @@ describe('equity floor', () => {
 			userUSDCAccount.publicKey
 		);
 		await velocityClient.switchActiveUser(0);
+	});
 
-		await delegateVelocityClient.unsubscribe();
+	// ---- buffer band ----
+	// sub 1 has ~6 USDC of equity here (integral transfers +3 +3 -2 +3 -1,
+	// minus a unit or two of interest-index rounding dust), so tests measure
+	// equity instead of assuming exact values, and avoid landing transfers
+	// exactly on the buffered line (the dust makes that fragile on-chain).
+
+	let sub1UserPublicKey: PublicKey;
+
+	const tripAttempt = async (
+		userPk: PublicKey,
+		subAccountId: number
+	): Promise<Error | undefined> => {
+		await velocityClient.fetchAccounts();
+		try {
+			await delegateVelocityClient.tripEquityFloorBreaker(
+				userPk,
+				velocityClient.getUser(subAccountId).getUserAccount()
+			);
+			return undefined;
+		} catch (e) {
+			return e as Error;
+		}
+	};
+
+	it('warm admin sets floor and buffer together', async () => {
+		sub1UserPublicKey = await velocityClient.getUserAccountPublicKey(1);
+
+		await velocityClient.updateUserEquityFloor(
+			userAccountPublicKey,
+			ZERO,
+			ZERO
+		);
+		await velocityClient.updateUserEquityFloor(
+			sub1UserPublicKey,
+			new BN(3 * 10 ** 6),
+			new BN(2 * 10 ** 6)
+		);
+
+		await velocityClient.fetchAccounts();
+		const sub1 = velocityClient.getUser(1);
+		assert(sub1.getUserAccount().equityFloor.eq(new BN(3 * 10 ** 6)));
+		assert(sub1.getUserAccount().equityFloorBuffer.eq(new BN(2 * 10 ** 6)));
+		assert(sub1.getBufferedEquityFloor().eq(new BN(5 * 10 ** 6)));
+		// equity ~6 vs buffered floor 5: healthy, ~1 of headroom above the gate
+		assert(!sub1.isBelowEquityFloor());
+		assert(!sub1.isBelowBufferedEquityFloor());
+		const aboveBuffered = sub1.getEquityAboveBufferedFloor()!;
+		assert(aboveBuffered.gt(new BN(0.9 * 10 ** 6)));
+		assert(aboveBuffered.lte(new BN(1 * 10 ** 6)));
+	});
+
+	it('withdrawals may not dip into the buffer band', async () => {
+		await velocityClient.switchActiveUser(1);
+
+		// ~6 - 2 = ~4 < 5 (floor + buffer): rejected even though 4 > floor 3
+		let err: Error | undefined;
+		try {
+			await velocityClient.withdraw(
+				new BN(2 * 10 ** 6),
+				0,
+				userUSDCAccount.publicKey
+			);
+		} catch (e) {
+			err = e as Error;
+		}
+		assert(err, 'withdraw into the band should have been rejected');
+		assert(err.message.includes(EQUITY_BELOW_FLOOR_HEX));
+
+		// withdrawing everything above the buffered floor except a sliver of
+		// slack is allowed, parking sub 1 just above floor + buffer
+		await velocityClient.fetchAccounts();
+		const drainTo = new BN(5 * 10 ** 6).addn(20);
+		await velocityClient.withdraw(
+			velocityClient
+				.getUser(1)
+				.getTotalCollateral('Initial', true)
+				.sub(drainTo),
+			0,
+			userUSDCAccount.publicKey
+		);
+
+		// now essentially at the buffered floor: nothing meaningful may leave
+		let err2: Error | undefined;
+		try {
+			await velocityClient.withdraw(
+				new BN(0.1 * 10 ** 6),
+				0,
+				userUSDCAccount.publicKey
+			);
+		} catch (e) {
+			err2 = e as Error;
+		}
+		await velocityClient.switchActiveUser(0);
+		assert(err2, 'withdraw below the buffered floor should have been rejected');
+		assert(err2.message.includes(EQUITY_BELOW_FLOOR_HEX));
+	});
+
+	it('the buffer band gates actions but does not arm the breaker', async () => {
+		// simulate a drawdown into the band: equity 5, floor 4.5, buffered 6.5
+		await velocityClient.updateUserEquityFloor(
+			sub1UserPublicKey,
+			new BN(4.5 * 10 ** 6),
+			new BN(2 * 10 ** 6)
+		);
+		await velocityClient.switchActiveUser(1);
+
+		// risk-increasing order rejected
+		let orderErr: Error | undefined;
+		try {
+			await velocityClient.placeAndTakePerpOrder(
+				getMarketOrderParams({
+					marketIndex,
+					direction: PositionDirection.LONG,
+					baseAssetAmount: new BN(AMM_RESERVE_PRECISION),
+					price: PRICE_PRECISION.mul(new BN(1049)).div(new BN(1000)),
+				})
+			);
+		} catch (e) {
+			orderErr = e as Error;
+		}
+		assert(orderErr, 'order in the band should have been rejected');
+		assert(orderErr.message.includes(EQUITY_BELOW_FLOOR_HEX));
+
+		// withdrawal rejected
+		let withdrawErr: Error | undefined;
+		try {
+			await velocityClient.withdraw(
+				new BN(0.5 * 10 ** 6),
+				0,
+				userUSDCAccount.publicKey
+			);
+		} catch (e) {
+			withdrawErr = e as Error;
+		}
+		assert(withdrawErr, 'withdraw in the band should have been rejected');
+		assert(withdrawErr.message.includes(EQUITY_BELOW_FLOOR_HEX));
+
+		await velocityClient.switchActiveUser(0);
+
+		// but the trip is impossible: equity 5 >= raw floor 4.5
+		const tripErr = await tripAttempt(sub1UserPublicKey, 1);
+		assert(tripErr, 'trip inside the band should have been rejected');
+		assert(tripErr.message.includes(SUFFICIENT_COLLATERAL_HEX));
+		assert((await fetchBreakerTripped()) === 0);
+	});
+
+	it("'auto' transfers carry no floor while headroom covers the amount", async () => {
+		// sub 1: equity ~5, floor 1, buffer 1 -> ~3 of excess above the gate
+		await velocityClient.updateUserEquityFloor(
+			sub1UserPublicKey,
+			new BN(1 * 10 ** 6),
+			new BN(1 * 10 ** 6)
+		);
+		await delegateVelocityClient.fetchAccounts();
+
+		// moving 1 fits entirely inside the excess: no floor should move
+		await delegateVelocityClient.transferDepositByDelegate(
+			new BN(1 * 10 ** 6),
+			0,
+			1,
+			0,
+			'auto'
+		);
+
+		assert((await floorOf(1)).eq(new BN(1 * 10 ** 6)));
+		assert((await floorOf(0)).eq(ZERO));
+
+		const tripErr = await tripAttempt(sub1UserPublicKey, 1);
+		assert(tripErr, 'trip after an auto transfer should have been rejected');
+		assert(tripErr.message.includes(SUFFICIENT_COLLATERAL_HEX));
+		assert((await fetchBreakerTripped()) === 0);
+	});
+
+	it("'auto' transfers shed the whole floor when the cap binds, disabling the check", async () => {
+		// sub 1: equity ~4, floor 1, buffer 1 -> excess ~2; moving 3.5 wants
+		// ~1.5 of floor but the cap is the 1 of floor sub 1 holds, so the
+		// whole floor migrates and sub 1's check turns off (floor 0)
+		await delegateVelocityClient.fetchAccounts();
+		await delegateVelocityClient.transferDepositByDelegate(
+			new BN(3.5 * 10 ** 6),
+			0,
+			1,
+			0,
+			'auto'
+		);
+
+		assert((await floorOf(1)).eq(ZERO));
+		assert((await floorOf(0)).eq(new BN(1 * 10 ** 6)));
+
+		// neither side is trippable: sub 0 backs its floor, sub 1 has none
+		const trip0 = await tripAttempt(userAccountPublicKey, 0);
+		assert(trip0, 'trip on the floor-holding side should have been rejected');
+		assert(trip0.message.includes(SUFFICIENT_COLLATERAL_HEX));
+		const trip1 = await tripAttempt(sub1UserPublicKey, 1);
+		assert(trip1, 'trip on the floorless side should have been rejected');
+		assert(trip1.message.includes(SUFFICIENT_COLLATERAL_HEX));
+		assert((await fetchBreakerTripped()) === 0);
+
+		// with the floor fully shed, sub 1 is unrestricted again
+		await velocityClient.switchActiveUser(1);
+		await velocityClient.withdraw(
+			new BN(0.1 * 10 ** 6),
+			0,
+			userUSDCAccount.publicKey
+		);
+		await velocityClient.switchActiveUser(0);
+	});
+
+	it('floor rebalances without funds, inside the same rules', async () => {
+		// sub 1 (~0.4 equity) cannot take 0.3 of floor while its own buffer is
+		// still 1: the credited side must back floor + buffer
+		await delegateVelocityClient.fetchAccounts();
+		let err: Error | undefined;
+		try {
+			await delegateVelocityClient.transferDepositByDelegate(
+				ZERO,
+				0,
+				0,
+				1,
+				new BN(0.3 * 10 ** 6)
+			);
+		} catch (e) {
+			err = e as Error;
+		}
+		assert(err, 'unbacked floor-only move should have been rejected');
+		assert(err.message.includes(INVALID_FLOOR_TRANSFER_HEX));
+
+		// with the buffer cleared, the same zero-amount move is backed and lands
+		await velocityClient.updateUserEquityFloor(sub1UserPublicKey, ZERO, ZERO);
+		await delegateVelocityClient.fetchAccounts();
+		await delegateVelocityClient.transferDepositByDelegate(
+			ZERO,
+			0,
+			0,
+			1,
+			new BN(0.3 * 10 ** 6)
+		);
+
+		assert((await floorOf(0)).eq(new BN(0.7 * 10 ** 6)));
+		assert((await floorOf(1)).eq(new BN(0.3 * 10 ** 6)));
+
+		const trip0 = await tripAttempt(userAccountPublicKey, 0);
+		assert(trip0, 'trip on sub 0 should have been rejected');
+		assert(trip0.message.includes(SUFFICIENT_COLLATERAL_HEX));
+		const trip1 = await tripAttempt(sub1UserPublicKey, 1);
+		assert(trip1, 'trip on sub 1 should have been rejected');
+		assert(trip1.message.includes(SUFFICIENT_COLLATERAL_HEX));
+		assert((await fetchBreakerTripped()) === 0);
+	});
+
+	it('clearing floors ends buffer enforcement', async () => {
+		await velocityClient.updateUserEquityFloor(
+			userAccountPublicKey,
+			ZERO,
+			ZERO
+		);
+		await velocityClient.updateUserEquityFloor(sub1UserPublicKey, ZERO, ZERO);
+
+		await velocityClient.fetchAccounts();
+		assert(!velocityClient.getUser(0).isBelowBufferedEquityFloor());
+		assert(!velocityClient.getUser(1).isBelowBufferedEquityFloor());
+
+		await velocityClient.switchActiveUser(1);
+		await velocityClient.withdraw(
+			new BN(0.1 * 10 ** 6),
+			0,
+			userUSDCAccount.publicKey
+		);
+		await velocityClient.switchActiveUser(0);
 	});
 });

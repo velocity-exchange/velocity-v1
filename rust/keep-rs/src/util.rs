@@ -98,12 +98,17 @@ pub enum TxIntent {
     AuctionFill {
         market_index: u16,
         taker_order_id: u32,
+        /// taker subaccount the fill was sent for (order ids are per-user counters,
+        /// so `taker_order_id` alone is ambiguous across users)
+        taker_user: Pubkey,
         has_trigger: bool,
         maker_crosses: MakerCrosses,
     },
     SwiftFill {
         uuid: [u8; 8],
         market_index: u16,
+        /// taker subaccount the fill was sent for (disambiguates the swift uuid across users)
+        taker_user: Pubkey,
         maker_crosses: MakerCrosses,
     },
     /// place-only swift order: order placed on-chain (no immediate fill) so the normal
@@ -111,12 +116,16 @@ pub enum TxIntent {
     SwiftPlace {
         uuid: [u8; 8],
         market_index: u16,
+        /// taker subaccount whose order was placed on-chain
+        taker_user: Pubkey,
         slot: u64,
     },
     VAMMTakerFill {
         slot: u64,
         market_index: u16,
         maker_order_id: u32,
+        /// taker (the resting-order user) filled against the vAMM
+        taker_user: Pubkey,
     },
     /// limit orders crossed
     LimitUncross {
@@ -170,6 +179,8 @@ pub enum TxIntent {
     Trigger {
         market_index: u16,
         order_id: u32,
+        /// taker subaccount whose trigger order is being triggered
+        taker_user: Pubkey,
         slot: u64,
     },
 }
@@ -316,10 +327,18 @@ impl TxIntent {
     }
 
     /// Taker/target user subaccount, where the intent carries one. Used for wide-event
-    /// logging to disambiguate per-user order ids.
+    /// logging to disambiguate per-user order ids / swift uuids, and — critically — so a
+    /// single Loki query on the taker subaccount (`| json | user="<subaccount>"`, or a
+    /// line filter) captures the whole fill lifecycle for one order across every fill-path
+    /// intent, not just `limit_uncross`.
     pub fn user(&self) -> Option<Pubkey> {
         match self {
-            Self::LimitUncross { taker_user, .. } => Some(*taker_user),
+            Self::AuctionFill { taker_user, .. }
+            | Self::SwiftFill { taker_user, .. }
+            | Self::SwiftPlace { taker_user, .. }
+            | Self::VAMMTakerFill { taker_user, .. }
+            | Self::LimitUncross { taker_user, .. }
+            | Self::Trigger { taker_user, .. } => Some(*taker_user),
             _ => None,
         }
     }
@@ -486,6 +505,23 @@ pub struct PythPriceUpdate {
     pub ts: TimestampUs,
 }
 
+/// Tolerated forward clock skew before a future-dated feed timestamp is treated as invalid —
+/// a timestamp further ahead than this means a bad clock on one side, not a fresh price.
+const PYTH_MAX_CLOCK_SKEW_US: u64 = 1_000_000;
+
+/// Returns true if a pyth-lazer update's feed timestamp is within `max_age_us` of wall-clock
+/// `now_us`. Used to gate consumption of the cached `PythPriceUpdate` on wall-clock age, since
+/// a frozen websocket (see [`subscribe_price_feeds`]) leaves the cache holding a price that's
+/// arbitrarily old with no signal of that in the update itself.
+pub fn pyth_update_is_fresh(
+    update_ts_us: TimestampUs,
+    now_us: TimestampUs,
+    max_age_us: u64,
+) -> bool {
+    now_us.saturating_us_since(update_ts_us) <= max_age_us
+        && update_ts_us.saturating_us_since(now_us) <= PYTH_MAX_CLOCK_SKEW_US
+}
+
 fn fixed_rate(feed_id: u32) -> FixedRate {
     match feed_id {
         1 | 2 | 6 => FixedRate::MIN,
@@ -540,6 +576,11 @@ pub fn subscribe_price_feeds(
     let feed_ids: Vec<PriceFeedId> = feed_id_set.into_iter().map(PriceFeedId).collect();
 
     const MAX_RETRIES: u32 = 10;
+    // Pyth feeds tick every 50-200ms (see `fixed_rate`), so this much silence on the
+    // websocket is unambiguous. A half-open socket never yields an error or `None` —
+    // `stream.next()` just pends forever — so wrap it in a timeout and fall through
+    // to the existing reconnect/backoff machinery below rather than trusting the socket.
+    const PYTH_FEED_STALE_LIMIT: Duration = Duration::from_secs(30);
 
     let (price_tx, price_rx) = tokio::sync::mpsc::channel(512);
 
@@ -607,7 +648,20 @@ pub fn subscribe_price_feeds(
             retries = 0u32; // retry on successful connect
 
             let mut stream = pyth_lazer_stream.boxed();
-            while let Some(update) = stream.next().await {
+            loop {
+                let update = match tokio::time::timeout(PYTH_FEED_STALE_LIMIT, stream.next()).await
+                {
+                    Ok(Some(update)) => update,
+                    Ok(None) => break,
+                    Err(_) => {
+                        log::warn!(
+                            target: "pyth",
+                            "no pyth updates for {}s, reconnecting",
+                            PYTH_FEED_STALE_LIMIT.as_secs()
+                        );
+                        break;
+                    }
+                };
                 match update {
                     Ok(AnyResponse::Binary(outer)) => {
                         for message in outer.messages {
@@ -620,6 +674,22 @@ pub fn subscribe_price_feeds(
 
                                     log::trace!(target: "pyth", "got update: {data:?}");
                                     for f in data.feeds {
+                                        // the program gates staleness and monotonicity on the
+                                        // per-feed `FeedUpdateTimestamp` (see
+                                        // `instructions/pyth_lazer_oracle.rs`), not the payload
+                                        // timestamp — a fixed-rate channel keeps ticking a fresh
+                                        // payload timestamp even when a feed's price is stalled,
+                                        // so stamp updates with the timestamp the program checks
+                                        let feed_update_ts = f
+                                            .properties
+                                            .iter()
+                                            .find_map(|p| match p {
+                                                PayloadPropertyValue::FeedUpdateTimestamp(ts) => {
+                                                    *ts
+                                                }
+                                                _ => None,
+                                            })
+                                            .unwrap_or(data.timestamp_us);
                                         for p in f.properties {
                                             if let PayloadPropertyValue::Price(Some(new_price)) = p
                                             {
@@ -641,7 +711,7 @@ pub fn subscribe_price_feeds(
                                                         feed_id,
                                                         price: scaled_price,
                                                         message: buf.clone(),
-                                                        ts: data.timestamp_us,
+                                                        ts: feed_update_ts,
                                                     });
                                                 }
 
@@ -659,7 +729,7 @@ pub fn subscribe_price_feeds(
                                                         feed_id,
                                                         price: scaled_price,
                                                         message: buf.clone(),
-                                                        ts: data.timestamp_us,
+                                                        ts: feed_update_ts,
                                                     });
                                                 }
 
@@ -688,7 +758,7 @@ pub fn subscribe_price_feeds(
                                                         feed_id,
                                                         price: scaled_price,
                                                         message: buf.clone(),
-                                                        ts: data.timestamp_us,
+                                                        ts: feed_update_ts,
                                                     });
                                                 }
                                             }
@@ -745,7 +815,11 @@ pub fn subscribe_price_feeds(
 
 #[cfg(test)]
 mod tests {
-    use super::{swift_placement_expired, OrderSlotLimiter, PendingTxMeta, PendingTxs, TxIntent};
+    use super::{
+        pyth_update_is_fresh, swift_placement_expired, OrderSlotLimiter, PendingTxMeta, PendingTxs,
+        Pubkey, TxIntent,
+    };
+    use pyth_lazer_protocol::router::TimestampUs;
     use solana_sdk::signature::Signature;
 
     #[test]
@@ -757,6 +831,7 @@ mod tests {
             TxIntent::Trigger {
                 market_index: 0,
                 order_id: 1,
+                taker_user: Pubkey::new_unique(),
                 slot: 2,
             },
             100,
@@ -797,9 +872,11 @@ mod tests {
 
     #[test]
     fn trigger_intent_metadata() {
+        let taker = Pubkey::new_unique();
         let intent = TxIntent::Trigger {
             market_index: 3,
             order_id: 42,
+            taker_user: taker,
             slot: 7,
         };
         assert_eq!(intent.label(), "trigger");
@@ -809,13 +886,17 @@ mod tests {
         assert_eq!(intent.market_index(), Some(3));
         assert_eq!(intent.order_id(), Some(42));
         assert_eq!(intent.swift_uuid(), None);
+        // taker subaccount must be carried so the tx event is filterable by user in Loki
+        assert_eq!(intent.user(), Some(taker));
     }
 
     #[test]
     fn swift_place_intent_metadata() {
+        let taker = Pubkey::new_unique();
         let intent = TxIntent::SwiftPlace {
             uuid: *b"abcd1234",
             market_index: 5,
+            taker_user: taker,
             slot: 9,
         };
         assert_eq!(intent.label(), "swift_place");
@@ -826,6 +907,37 @@ mod tests {
         assert_eq!(intent.market_index(), Some(5));
         assert_eq!(intent.order_id(), None);
         assert_eq!(intent.swift_uuid(), Some(*b"abcd1234"));
+        // even the place-only path carries the taker so its lifecycle is filterable by user
+        assert_eq!(intent.user(), Some(taker));
+    }
+
+    #[test]
+    fn pyth_update_freshness() {
+        let update_ts = TimestampUs(1_000_000);
+        // exactly at max_age: still fresh
+        assert!(pyth_update_is_fresh(
+            update_ts,
+            TimestampUs(1_010_000),
+            10_000
+        ));
+        // one us past max_age: stale
+        assert!(!pyth_update_is_fresh(
+            update_ts,
+            TimestampUs(1_010_001),
+            10_000
+        ));
+        // update from the near future (clock skew within PYTH_MAX_CLOCK_SKEW_US): fresh
+        assert!(pyth_update_is_fresh(
+            update_ts,
+            TimestampUs(500_000),
+            10_000
+        ));
+        // update from beyond the tolerated skew: invalid, treated as stale
+        assert!(!pyth_update_is_fresh(
+            TimestampUs(3_000_001),
+            TimestampUs(2_000_000),
+            10_000
+        ));
     }
 
     #[test]

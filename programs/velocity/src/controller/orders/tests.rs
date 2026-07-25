@@ -2795,10 +2795,10 @@ pub mod fulfill_order {
     use crate::error::ErrorCode;
     use crate::get_orders;
     use crate::math::constants::{
-        AMM_RESERVE_PRECISION, BASE_PRECISION_I64, BASE_PRECISION_U64, PEG_PRECISION,
-        PRICE_PRECISION, PRICE_PRECISION_I64, PRICE_PRECISION_U64, QUOTE_PRECISION_I64,
-        QUOTE_PRECISION_U64, SPOT_BALANCE_PRECISION_U64, SPOT_CUMULATIVE_INTEREST_PRECISION,
-        SPOT_WEIGHT_PRECISION,
+        AMM_RESERVE_PRECISION, BASE_PRECISION_I64, BASE_PRECISION_U64,
+        MAX_CONCENTRATION_COEFFICIENT, PEG_PRECISION, PRICE_PRECISION, PRICE_PRECISION_I64,
+        PRICE_PRECISION_U64, QUOTE_PRECISION_I64, QUOTE_PRECISION_U64, SPOT_BALANCE_PRECISION_U64,
+        SPOT_CUMULATIVE_INTEREST_PRECISION, SPOT_WEIGHT_PRECISION,
     };
     use crate::math::margin::calculate_margin_requirement_and_total_collateral_and_liability_info;
     use crate::state::fill_mode::FillMode;
@@ -3199,6 +3199,491 @@ pub mod fulfill_order {
 
         let reserve_price = market_after.amm.reserve_price().unwrap();
         assert_eq!(reserve_price, 101_007_550);
+    }
+
+    #[test]
+    fn fulfill_with_amm_routes_off_projected_reserve_price() {
+        // Stale-curve deadlock regression: the stored curve sits at 100 while
+        // the oracle has moved to 102. The taker sells at 101.9, crossable
+        // against the projected (post-refresh) AMM bid near 102, but not
+        // against the stale stored bid at 100. Routing must quote off the
+        // projected curve, otherwise the fill that would refresh the curve
+        // is the one being blocked.
+        let now = 0_i64;
+        let slot = 5_u64;
+
+        let mut oracle_price = get_pyth_price(102, 6);
+        let oracle_price_key =
+            Pubkey::from_str("J83w4HKfqxwcq3BEMMkPFSppX3gqekLyLJBexebFVkix").unwrap();
+        create_anchor_account_info!(
+            oracle_price,
+            &oracle_price_key,
+            PythLazerOracle,
+            oracle_account_info
+        );
+        let mut oracle_map = OracleMap::load_one(&oracle_account_info, slot, None).unwrap();
+
+        let mut market = PerpMarket {
+            amm: AMM {
+                base_asset_reserve: 100 * AMM_RESERVE_PRECISION,
+                quote_asset_reserve: 100 * AMM_RESERVE_PRECISION,
+                sqrt_k: 100 * AMM_RESERVE_PRECISION,
+                peg_multiplier: 100 * PEG_PRECISION,
+                terminal_quote_asset_reserve: 100 * AMM_RESERVE_PRECISION,
+                concentration_coef: MAX_CONCENTRATION_COEFFICIENT,
+                max_slippage_ratio: 50,
+                max_fill_reserve_fraction: 100,
+                base_spread: 0,
+                max_spread: 1000,
+                curve_update_intensity: 100,
+                ..AMM::default()
+            },
+            margin_ratio_initial: 1000,
+            margin_ratio_maintenance: 500,
+            status: MarketStatus::Initialized,
+            order_step_size: 1000,
+            order_tick_size: 1,
+            oracle: oracle_price_key,
+            oracle_source: crate::state::oracle::OracleSource::PythLazer,
+            market_stats: MarketStats {
+                historical_oracle_data: HistoricalOracleData {
+                    last_oracle_price: (102 * PRICE_PRECISION) as i64,
+                    last_oracle_price_twap: (102 * PRICE_PRECISION) as i64,
+                    last_oracle_price_twap_5min: (102 * PRICE_PRECISION) as i64,
+                    ..HistoricalOracleData::default()
+                },
+                ..MarketStats::default()
+            },
+            ..PerpMarket::default_test()
+        };
+        market.amm.max_base_asset_reserve = u64::MAX as u128;
+        market.amm.min_base_asset_reserve = 0;
+
+        create_anchor_account_info!(market, PerpMarket, market_account_info);
+        let market_map = PerpMarketMap::load_one(&market_account_info, true).unwrap();
+
+        let mut spot_market = SpotMarket {
+            market_index: 0,
+            oracle_source: OracleSource::QuoteAsset,
+            cumulative_deposit_interest: SPOT_CUMULATIVE_INTEREST_PRECISION,
+            decimals: 6,
+            initial_asset_weight: SPOT_WEIGHT_PRECISION,
+            maintenance_asset_weight: SPOT_WEIGHT_PRECISION,
+            historical_oracle_data: HistoricalOracleData::default_price(QUOTE_PRECISION_I64),
+            ..SpotMarket::default()
+        };
+        create_anchor_account_info!(spot_market, SpotMarket, spot_market_account_info);
+        let spot_market_map = SpotMarketMap::load_one(&spot_market_account_info, true).unwrap();
+
+        let mut taker = User {
+            orders: get_orders(Order {
+                market_index: 0,
+                status: OrderStatus::Open,
+                order_type: OrderType::Market,
+                direction: PositionDirection::Short,
+                base_asset_amount: BASE_PRECISION_U64,
+                slot: 0,
+                auction_duration: 0,
+                price: 101_900_000, // 101.9: crosses projected bid, not stale bid
+                ..Order::default()
+            }),
+            perp_positions: get_positions(PerpPosition {
+                market_index: 0,
+                open_orders: 1,
+                open_asks: -BASE_PRECISION_I64,
+                ..PerpPosition::default()
+            }),
+            spot_positions: get_spot_positions(SpotPosition {
+                market_index: 0,
+                balance_type: SpotBalanceType::Deposit,
+                scaled_balance: 100 * SPOT_BALANCE_PRECISION_U64,
+                ..SpotPosition::default()
+            }),
+            ..User::default()
+        };
+
+        let mut filler = User::default();
+        let fee_structure = get_fee_structure();
+        let (taker_key, _, filler_key) = get_user_keys();
+        let mut taker_stats = UserStats::default();
+        let mut filler_stats = UserStats::default();
+
+        let order_index = 0;
+        let user_can_skip_auction_duration = taker
+            .can_skip_auction_duration(&taker_stats, false)
+            .unwrap();
+        let is_amm_available = get_amm_is_available(
+            &taker.orders[order_index],
+            0,
+            &market,
+            &mut oracle_map,
+            slot,
+            user_can_skip_auction_duration,
+        );
+        assert!(is_amm_available);
+
+        let (base_asset_amount, quote_asset_amount) = fulfill_perp_order(
+            &mut taker,
+            order_index,
+            &taker_key,
+            &mut taker_stats,
+            &UserMap::empty(),
+            &UserStatsMap::empty(),
+            &[],
+            &mut Some(&mut filler),
+            &filler_key,
+            &mut Some(&mut filler_stats),
+            &spot_market_map,
+            &market_map,
+            &mut oracle_map,
+            &crate::state::state::OracleGuardRails::default().validity,
+            &fee_structure,
+            100 * PRICE_PRECISION_U64, // stale stored reserve price
+            Some(market.market_stats.historical_oracle_data.last_oracle_price),
+            now,
+            slot,
+            is_amm_available,
+            true,
+            FillMode::Fill,
+            false,
+            &mut None,
+        )
+        .unwrap();
+
+        // Fill happened against the projected curve near the oracle price,
+        // impossible against the stale stored bid at 100 (101.9 > 100 never
+        // crosses). Partial: the sell walks the curve from ~102 down to the
+        // 101.9 limit price.
+        assert!(base_asset_amount > 0);
+        let avg_fill_price =
+            quote_asset_amount as u128 * BASE_PRECISION_U64 as u128 / base_asset_amount as u128;
+        assert!(avg_fill_price > 101_900_000 && avg_fill_price < 102_100_000);
+
+        // The executed curve matches the routing projection: the AMM snapped
+        // toward the oracle before quoting (then the sell moved it back down
+        // a touch), so the post-fill reserve price sits near 102, not 100.
+        let market_after = market_map.get_ref(&0).unwrap();
+        let reserve_price_after = market_after.amm.reserve_price().unwrap();
+        assert!(reserve_price_after > 101 * PRICE_PRECISION as u64);
+    }
+
+    #[test]
+    fn fulfill_with_amm_projection_passthrough_keeps_stale_routing() {
+        // Companion to fulfill_with_amm_routes_off_projected_reserve_price:
+        // when the projection is a passthrough (curve_update_intensity == 0),
+        // routing must behave exactly as before: the taker does not cross
+        // the stored curve and no fulfillment method is selected.
+        let now = 0_i64;
+        let slot = 5_u64;
+
+        let mut oracle_price = get_pyth_price(102, 6);
+        let oracle_price_key =
+            Pubkey::from_str("J83w4HKfqxwcq3BEMMkPFSppX3gqekLyLJBexebFVkix").unwrap();
+        create_anchor_account_info!(
+            oracle_price,
+            &oracle_price_key,
+            PythLazerOracle,
+            oracle_account_info
+        );
+        let mut oracle_map = OracleMap::load_one(&oracle_account_info, slot, None).unwrap();
+
+        let mut market = PerpMarket {
+            amm: AMM {
+                base_asset_reserve: 100 * AMM_RESERVE_PRECISION,
+                quote_asset_reserve: 100 * AMM_RESERVE_PRECISION,
+                sqrt_k: 100 * AMM_RESERVE_PRECISION,
+                peg_multiplier: 100 * PEG_PRECISION,
+                terminal_quote_asset_reserve: 100 * AMM_RESERVE_PRECISION,
+                concentration_coef: MAX_CONCENTRATION_COEFFICIENT,
+                max_slippage_ratio: 50,
+                max_fill_reserve_fraction: 100,
+                base_spread: 0,
+                max_spread: 1000,
+                curve_update_intensity: 0,
+                ..AMM::default()
+            },
+            margin_ratio_initial: 1000,
+            margin_ratio_maintenance: 500,
+            status: MarketStatus::Initialized,
+            order_step_size: 1000,
+            order_tick_size: 1,
+            oracle: oracle_price_key,
+            oracle_source: crate::state::oracle::OracleSource::PythLazer,
+            market_stats: MarketStats {
+                historical_oracle_data: HistoricalOracleData {
+                    last_oracle_price: (102 * PRICE_PRECISION) as i64,
+                    last_oracle_price_twap: (102 * PRICE_PRECISION) as i64,
+                    last_oracle_price_twap_5min: (102 * PRICE_PRECISION) as i64,
+                    ..HistoricalOracleData::default()
+                },
+                ..MarketStats::default()
+            },
+            ..PerpMarket::default_test()
+        };
+        market.amm.max_base_asset_reserve = u64::MAX as u128;
+        market.amm.min_base_asset_reserve = 0;
+
+        create_anchor_account_info!(market, PerpMarket, market_account_info);
+        let market_map = PerpMarketMap::load_one(&market_account_info, true).unwrap();
+
+        let mut spot_market = SpotMarket {
+            market_index: 0,
+            oracle_source: OracleSource::QuoteAsset,
+            cumulative_deposit_interest: SPOT_CUMULATIVE_INTEREST_PRECISION,
+            decimals: 6,
+            initial_asset_weight: SPOT_WEIGHT_PRECISION,
+            maintenance_asset_weight: SPOT_WEIGHT_PRECISION,
+            historical_oracle_data: HistoricalOracleData::default_price(QUOTE_PRECISION_I64),
+            ..SpotMarket::default()
+        };
+        create_anchor_account_info!(spot_market, SpotMarket, spot_market_account_info);
+        let spot_market_map = SpotMarketMap::load_one(&spot_market_account_info, true).unwrap();
+
+        let mut taker = User {
+            orders: get_orders(Order {
+                market_index: 0,
+                status: OrderStatus::Open,
+                order_type: OrderType::Market,
+                direction: PositionDirection::Short,
+                base_asset_amount: BASE_PRECISION_U64,
+                slot: 0,
+                auction_duration: 0,
+                price: 101_900_000,
+                ..Order::default()
+            }),
+            perp_positions: get_positions(PerpPosition {
+                market_index: 0,
+                open_orders: 1,
+                open_asks: -BASE_PRECISION_I64,
+                ..PerpPosition::default()
+            }),
+            spot_positions: get_spot_positions(SpotPosition {
+                market_index: 0,
+                balance_type: SpotBalanceType::Deposit,
+                scaled_balance: 100 * SPOT_BALANCE_PRECISION_U64,
+                ..SpotPosition::default()
+            }),
+            ..User::default()
+        };
+
+        let mut filler = User::default();
+        let fee_structure = get_fee_structure();
+        let (taker_key, _, filler_key) = get_user_keys();
+        let mut taker_stats = UserStats::default();
+        let mut filler_stats = UserStats::default();
+
+        let order_index = 0;
+        let user_can_skip_auction_duration = taker
+            .can_skip_auction_duration(&taker_stats, false)
+            .unwrap();
+        let is_amm_available = get_amm_is_available(
+            &taker.orders[order_index],
+            0,
+            &market,
+            &mut oracle_map,
+            slot,
+            user_can_skip_auction_duration,
+        );
+
+        let (base_asset_amount, quote_asset_amount) = fulfill_perp_order(
+            &mut taker,
+            order_index,
+            &taker_key,
+            &mut taker_stats,
+            &UserMap::empty(),
+            &UserStatsMap::empty(),
+            &[],
+            &mut Some(&mut filler),
+            &filler_key,
+            &mut Some(&mut filler_stats),
+            &spot_market_map,
+            &market_map,
+            &mut oracle_map,
+            &crate::state::state::OracleGuardRails::default().validity,
+            &fee_structure,
+            100 * PRICE_PRECISION_U64,
+            Some(market.market_stats.historical_oracle_data.last_oracle_price),
+            now,
+            slot,
+            is_amm_available,
+            true,
+            FillMode::Fill,
+            false,
+            &mut None,
+        )
+        .unwrap();
+
+        // No projection, no cross, no fill; pre-change behavior preserved.
+        assert_eq!(base_asset_amount, 0);
+        assert_eq!(quote_asset_amount, 0);
+
+        let market_after = market_map.get_ref(&0).unwrap();
+        let reserve_price_after = market_after.amm.reserve_price().unwrap();
+        assert_eq!(reserve_price_after, 100 * PRICE_PRECISION as u64);
+    }
+
+    #[test]
+    fn fulfill_no_cross_still_refreshes_curve() {
+        // Routing projects and applies the refresh on the real AMM before
+        // selecting a fulfillment method, so a stale-curve fill attempt that
+        // finds no crossing method still snaps the curve toward oracle before
+        // returning zero. This is what lets the first fill step's `setup` skip
+        // re-projecting, and it matches a permissionless `update_amms` crank:
+        // the stored curve at 100 heals toward the oracle at 102 even though
+        // the taker's short at 103 never crosses the projected bid near 102.
+        let now = 0_i64;
+        let slot = 5_u64;
+
+        let mut oracle_price = get_pyth_price(102, 6);
+        let oracle_price_key =
+            Pubkey::from_str("J83w4HKfqxwcq3BEMMkPFSppX3gqekLyLJBexebFVkix").unwrap();
+        create_anchor_account_info!(
+            oracle_price,
+            &oracle_price_key,
+            PythLazerOracle,
+            oracle_account_info
+        );
+        let mut oracle_map = OracleMap::load_one(&oracle_account_info, slot, None).unwrap();
+
+        let mut market = PerpMarket {
+            amm: AMM {
+                base_asset_reserve: 100 * AMM_RESERVE_PRECISION,
+                quote_asset_reserve: 100 * AMM_RESERVE_PRECISION,
+                sqrt_k: 100 * AMM_RESERVE_PRECISION,
+                peg_multiplier: 100 * PEG_PRECISION,
+                terminal_quote_asset_reserve: 100 * AMM_RESERVE_PRECISION,
+                concentration_coef: MAX_CONCENTRATION_COEFFICIENT,
+                max_slippage_ratio: 50,
+                max_fill_reserve_fraction: 100,
+                base_spread: 0,
+                max_spread: 1000,
+                curve_update_intensity: 100,
+                ..AMM::default()
+            },
+            margin_ratio_initial: 1000,
+            margin_ratio_maintenance: 500,
+            status: MarketStatus::Initialized,
+            order_step_size: 1000,
+            order_tick_size: 1,
+            oracle: oracle_price_key,
+            oracle_source: crate::state::oracle::OracleSource::PythLazer,
+            market_stats: MarketStats {
+                historical_oracle_data: HistoricalOracleData {
+                    last_oracle_price: (102 * PRICE_PRECISION) as i64,
+                    last_oracle_price_twap: (102 * PRICE_PRECISION) as i64,
+                    last_oracle_price_twap_5min: (102 * PRICE_PRECISION) as i64,
+                    ..HistoricalOracleData::default()
+                },
+                ..MarketStats::default()
+            },
+            ..PerpMarket::default_test()
+        };
+        market.amm.max_base_asset_reserve = u64::MAX as u128;
+        market.amm.min_base_asset_reserve = 0;
+
+        create_anchor_account_info!(market, PerpMarket, market_account_info);
+        let market_map = PerpMarketMap::load_one(&market_account_info, true).unwrap();
+
+        let mut spot_market = SpotMarket {
+            market_index: 0,
+            oracle_source: OracleSource::QuoteAsset,
+            cumulative_deposit_interest: SPOT_CUMULATIVE_INTEREST_PRECISION,
+            decimals: 6,
+            initial_asset_weight: SPOT_WEIGHT_PRECISION,
+            maintenance_asset_weight: SPOT_WEIGHT_PRECISION,
+            historical_oracle_data: HistoricalOracleData::default_price(QUOTE_PRECISION_I64),
+            ..SpotMarket::default()
+        };
+        create_anchor_account_info!(spot_market, SpotMarket, spot_market_account_info);
+        let spot_market_map = SpotMarketMap::load_one(&spot_market_account_info, true).unwrap();
+
+        let mut taker = User {
+            orders: get_orders(Order {
+                market_index: 0,
+                status: OrderStatus::Open,
+                order_type: OrderType::Market,
+                direction: PositionDirection::Short,
+                base_asset_amount: BASE_PRECISION_U64,
+                slot: 0,
+                auction_duration: 0,
+                price: 103_000_000, // 103: above the projected bid near 102, never crosses
+                ..Order::default()
+            }),
+            perp_positions: get_positions(PerpPosition {
+                market_index: 0,
+                open_orders: 1,
+                open_asks: -BASE_PRECISION_I64,
+                ..PerpPosition::default()
+            }),
+            spot_positions: get_spot_positions(SpotPosition {
+                market_index: 0,
+                balance_type: SpotBalanceType::Deposit,
+                scaled_balance: 100 * SPOT_BALANCE_PRECISION_U64,
+                ..SpotPosition::default()
+            }),
+            ..User::default()
+        };
+
+        let mut filler = User::default();
+        let fee_structure = get_fee_structure();
+        let (taker_key, _, filler_key) = get_user_keys();
+        let mut taker_stats = UserStats::default();
+        let mut filler_stats = UserStats::default();
+
+        let order_index = 0;
+        let user_can_skip_auction_duration = taker
+            .can_skip_auction_duration(&taker_stats, false)
+            .unwrap();
+        let is_amm_available = get_amm_is_available(
+            &taker.orders[order_index],
+            0,
+            &market,
+            &mut oracle_map,
+            slot,
+            user_can_skip_auction_duration,
+        );
+
+        let (base_asset_amount, quote_asset_amount) = fulfill_perp_order(
+            &mut taker,
+            order_index,
+            &taker_key,
+            &mut taker_stats,
+            &UserMap::empty(),
+            &UserStatsMap::empty(),
+            &[],
+            &mut Some(&mut filler),
+            &filler_key,
+            &mut Some(&mut filler_stats),
+            &spot_market_map,
+            &market_map,
+            &mut oracle_map,
+            &crate::state::state::OracleGuardRails::default().validity,
+            &fee_structure,
+            100 * PRICE_PRECISION_U64, // stale stored reserve price
+            Some(market.market_stats.historical_oracle_data.last_oracle_price),
+            now,
+            slot,
+            is_amm_available,
+            true,
+            FillMode::Fill,
+            false,
+            &mut None,
+        )
+        .unwrap();
+
+        // No cross, so no fill.
+        assert_eq!(base_asset_amount, 0);
+        assert_eq!(quote_asset_amount, 0);
+
+        // The curve was still refreshed toward the oracle: reserve price
+        // snapped from the stored 100 to near 102, and `last_update_slot`
+        // advanced to this slot so a subsequent same-slot fill skips the
+        // projection.
+        let market_after = market_map.get_ref(&0).unwrap();
+        let reserve_price_after = market_after.amm.reserve_price().unwrap();
+        assert!(reserve_price_after > 101 * PRICE_PRECISION as u64);
+        assert!(reserve_price_after < 103 * PRICE_PRECISION as u64);
+        assert_eq!(market_after.amm.last_update_slot, slot);
     }
 
     #[test]

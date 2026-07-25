@@ -1443,6 +1443,91 @@ export class VelocityClient {
 	}
 
 	/**
+	 * Grows a zero-copy account (User, PerpMarket, SpotMarket, State, ...) to the size the
+	 * deployed program compiles in for its type, as part of an account-size migration after a
+	 * program upgrade that appended fields. Permissionless; the payer covers the rent-exempt
+	 * shortfall and the program zero-fills the new tail. No-op when the account is already at
+	 * size, so cranking is idempotent. See `docs/ACCOUNT-EXTENSION.md`.
+	 * @param account - The account to extend.
+	 * @param txParams - Optional compute-unit/priority-fee overrides for the transaction.
+	 * @returns The transaction signature.
+	 */
+	public async extendAccount(
+		account: PublicKey,
+		txParams?: TxParams
+	): Promise<TransactionSignature> {
+		const extendAccountIx = await this.getExtendAccountIx(account);
+		const tx = await this.buildTransaction([extendAccountIx], txParams);
+		const { txSig } = await this.sendTransaction(tx, [], this.opts);
+
+		return txSig;
+	}
+
+	/**
+	 * Builds the `extendAccount` instruction. See `extendAccount` for semantics.
+	 * @param account - The account to extend.
+	 * @param payer - Rent payer; defaults to the wallet.
+	 * @returns The extend instruction.
+	 */
+	public async getExtendAccountIx(
+		account: PublicKey,
+		payer?: PublicKey
+	): Promise<TransactionInstruction> {
+		return await this.program.instruction.extendAccount({
+			accounts: {
+				payer: payer ?? this.wallet.publicKey,
+				account,
+				systemProgram: SystemProgram.programId,
+			},
+		});
+	}
+
+	/**
+	 * Devnet/test only: grows a zero-copy account to an arbitrary larger size, simulating the
+	 * state right after a struct-growing program upgrade. The instruction is compiled out of
+	 * mainnet program builds.
+	 * @param account - The account to extend.
+	 * @param newLen - Target account data length in bytes (must be >= the current length).
+	 * @param txParams - Optional compute-unit/priority-fee overrides for the transaction.
+	 * @returns The transaction signature.
+	 */
+	public async extendAccountDevnet(
+		account: PublicKey,
+		newLen: number,
+		txParams?: TxParams
+	): Promise<TransactionSignature> {
+		const extendAccountIx = await this.getExtendAccountDevnetIx(
+			account,
+			newLen
+		);
+		const tx = await this.buildTransaction([extendAccountIx], txParams);
+		const { txSig } = await this.sendTransaction(tx, [], this.opts);
+
+		return txSig;
+	}
+
+	/**
+	 * Builds the `extendAccountDevnet` instruction. See `extendAccountDevnet` for semantics.
+	 * @param account - The account to extend.
+	 * @param newLen - Target account data length in bytes.
+	 * @param payer - Rent payer; defaults to the wallet.
+	 * @returns The extend instruction.
+	 */
+	public async getExtendAccountDevnetIx(
+		account: PublicKey,
+		newLen: number,
+		payer?: PublicKey
+	): Promise<TransactionInstruction> {
+		return await this.program.instruction.extendAccountDevnet(new BN(newLen), {
+			accounts: {
+				payer: payer ?? this.wallet.publicKey,
+				account,
+				systemProgram: SystemProgram.programId,
+			},
+		});
+	}
+
+	/**
 	 * Initializes `authority`'s `SignedMsgWsDelegates` account, which lists wallets authorized to
 	 * co-sign/relay that authority's signed-message ("swift") orders over a websocket connection
 	 * without holding general trading authority.

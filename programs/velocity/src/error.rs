@@ -787,6 +787,8 @@ pub enum ErrorCode {
     ReservedSpotMarketName,
     #[msg("Cannot modify a builder-coded order; cancel and re-place instead")]
     CannotModifyBuilderOrder,
+    #[msg("Invalid account extension")]
+    InvalidAccountExtension,
 }
 
 #[macro_export]

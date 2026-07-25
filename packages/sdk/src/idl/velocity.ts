@@ -16308,6 +16308,11 @@ export type Velocity = {
       "code": 6365,
       "name": "reservedSpotMarketName",
       "msg": "The name 'USDT' is reserved for the quote spot market (index 0)"
+    },
+    {
+      "code": 6366,
+      "name": "cannotModifyBuilderOrder",
+      "msg": "Cannot modify a builder-coded order; cancel and re-place instead"
     }
   ],
   "types": [

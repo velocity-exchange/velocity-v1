@@ -510,9 +510,17 @@ impl<'a> RevenueShareEscrowZeroCopyMut<'a> {
                     continue;
                 }
                 if rev_share_order.is_open() && !rev_share_order.is_completed() {
-                    let user_order = user.orders[rev_share_order.user_order_index as usize];
-                    let still_open = user_order.status == OrderStatus::Open
-                        && user_order.order_id == rev_share_order.order_id;
+                    // Match by (sub_account_id, order_id) across the whole order
+                    // list, not the row's stored `user_order_index`. That index
+                    // is captured at placement and can go stale (the order moves
+                    // to a different slot, or a later order occupies that slot),
+                    // which made this incorrectly mark a still-open fee-bearing
+                    // row Completed and clear it early (OtterSec #82). Order ids
+                    // are unique among a user's open orders, so the scan is exact.
+                    let still_open = user.orders.iter().any(|user_order| {
+                        user_order.status == OrderStatus::Open
+                            && user_order.order_id == rev_share_order.order_id
+                    });
                     if !still_open {
                         if rev_share_order.fees_accrued > 0 {
                             rev_share_order.add_bit_flag(RevenueShareOrderBitFlag::Completed);
@@ -585,6 +593,105 @@ impl<'a> RevenueShareEscrowLoader<'a> for AccountInfo<'a> {
             fixed: RefMut::map(fixed, |b| bytemuck::from_bytes_mut(b)),
             data,
         })
+    }
+}
+
+#[cfg(test)]
+mod revoke_completed_orders_tests {
+    use super::*;
+    use crate::state::user::{Order, OrderStatus, User};
+    use std::cell::RefCell;
+
+    fn open_builder_row(order_id: u32, user_order_index: u8, fees: u64) -> RevenueShareOrder {
+        let mut o = RevenueShareOrder::new(
+            0,
+            0,
+            order_id,
+            100,
+            MarketType::Perp,
+            0,
+            RevenueShareOrderBitFlag::Open as u8,
+            user_order_index,
+        );
+        o.fees_accrued = fees;
+        o
+    }
+
+    /// Build a 16-byte-aligned escrow buffer (so `bytemuck` reads of the
+    /// 8-aligned orders never trip alignment) with `orders` written via the same
+    /// byte path production uses.
+    fn escrow_backing(orders: &[RevenueShareOrder]) -> Vec<u128> {
+        let n = RevenueShareEscrow::space(orders.len(), 0);
+        let mut backing = vec![0u128; (n + 15) / 16];
+        {
+            let full: &mut [u8] = bytemuck::cast_slice_mut(&mut backing);
+            let buf = &mut full[..n];
+            buf[0..8].copy_from_slice(RevenueShareEscrow::DISCRIMINATOR);
+            let hdr = 8 + std::mem::size_of::<RevenueShareEscrowFixed>();
+            buf[hdr + 4..hdr + 8].copy_from_slice(&(orders.len() as u32).to_le_bytes());
+            let osz = std::mem::size_of::<RevenueShareOrder>();
+            for (i, o) in orders.iter().enumerate() {
+                let s = hdr + 8 + i * osz;
+                buf[s..s + osz].copy_from_slice(bytemuck::bytes_of(o));
+            }
+        }
+        backing
+    }
+
+    /// OtterSec #82: `revoke_completed_orders` must decide whether an order is
+    /// still open by its `order_id`, not the row's stored `user_order_index`.
+    /// Here the builder row for order 7 carries a STALE index (5), but order 7
+    /// is actually still open at a different slot (3). The old index-based check
+    /// read `user.orders[5]` (an unrelated/empty slot), concluded the order was
+    /// gone, and marked the still-live fee-bearing row Completed early.
+    #[test]
+    fn revoke_keeps_open_order_row_despite_stale_index() {
+        let n = RevenueShareEscrow::space(1, 0);
+        let mut backing = escrow_backing(&[open_builder_row(7, 5, 50)]);
+        let full: &mut [u8] = bytemuck::cast_slice_mut(&mut backing);
+        let cell = RefCell::new(&mut full[..n]);
+        let data = RefMut::map(cell.borrow_mut(), |d| &mut **d);
+        let (_disc, data) = RefMut::map_split(data, |d| d.split_at_mut(8));
+        let (fixed, data) = RefMut::map_split(data, |d| {
+            d.split_at_mut(std::mem::size_of::<RevenueShareEscrowFixed>())
+        });
+        let mut escrow = RevenueShareEscrowZeroCopyMut {
+            fixed: RefMut::map(fixed, |b| bytemuck::from_bytes_mut(b)),
+            data,
+        };
+
+        let mut orders = [Order::default(); 32];
+        orders[3] = Order {
+            order_id: 7,
+            status: OrderStatus::Open,
+            ..Order::default()
+        };
+        let user = User {
+            sub_account_id: 0,
+            orders,
+            ..User::default()
+        };
+
+        escrow.revoke_completed_orders(&user).unwrap();
+
+        let row = escrow.get_order(0).unwrap();
+        assert!(
+            row.is_open() && !row.is_completed(),
+            "a still-open order's builder row must not be revoked via a stale index"
+        );
+
+        // Negative control: once order 7 is no longer open anywhere, the
+        // fee-bearing row is correctly marked Completed.
+        let user_closed = User {
+            sub_account_id: 0,
+            orders: [Order::default(); 32],
+            ..User::default()
+        };
+        escrow.revoke_completed_orders(&user_closed).unwrap();
+        assert!(
+            escrow.get_order(0).unwrap().is_completed(),
+            "a closed order's fee-bearing row should be marked Completed"
+        );
     }
 }
 

@@ -158,6 +158,13 @@ pub const LP_FEE_SLICE_NUMERATOR: u128 = 8;
 pub const LP_FEE_SLICE_DENOMINATOR: u128 = 10;
 pub const FEE_DENOMINATOR: u32 = 10 * ONE_BPS_DENOMINATOR;
 pub const FEE_PERCENTAGE_DENOMINATOR: u32 = 100;
+/// Global ceiling on a builder-code fee, in tenths of a bps (fee =
+/// quote * fee_tenth_bps / `FEE_DENOMINATOR`, so `FEE_DENOMINATOR` = 100%).
+/// A builder's own `max_fee_tenth_bps` is set at approval with no ceiling (up
+/// to `u16::MAX` ≈ 65.5% of notional); this caps the actual fee charged so the
+/// builder-fee rail can't move collateral-significant value a taker couldn't
+/// withdraw under initial margin (OtterSec #83). 1000 = 1% (100 bps). TUNABLE.
+pub const MAX_BUILDER_FEE_TENTH_BPS: u16 = 1000;
 pub const OPEN_ORDER_MARGIN_REQUIREMENT: u128 = QUOTE_PRECISION / 100;
 pub const FEE_ADJUSTMENT_MAX: u64 = 100;
 pub const FEE_ADJUSTMENT_MAX_I16: i16 = FEE_ADJUSTMENT_MAX as i16;

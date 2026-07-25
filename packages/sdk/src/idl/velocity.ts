@@ -2195,6 +2195,87 @@ export type Velocity = {
       ]
     },
     {
+      "name": "extendAccount",
+      "docs": [
+        "Permissionless: grow a zero-copy account to the size this program build",
+        "compiles in for its type (resolved from the account discriminator). The",
+        "migration crank after an upgrade that appends fields to an account",
+        "struct; no-op when already at size. Payer covers the rent-exempt",
+        "shortfall. See `docs/ACCOUNT-EXTENSION.md`."
+      ],
+      "discriminator": [
+        234,
+        102,
+        194,
+        203,
+        150,
+        72,
+        62,
+        229
+      ],
+      "accounts": [
+        {
+          "name": "payer",
+          "writable": true,
+          "signer": true
+        },
+        {
+          "name": "account",
+          "docs": [
+            "size) from the account discriminator"
+          ],
+          "writable": true
+        },
+        {
+          "name": "systemProgram",
+          "address": "11111111111111111111111111111111"
+        }
+      ],
+      "args": []
+    },
+    {
+      "name": "extendAccountDevnet",
+      "docs": [
+        "Devnet-only: grow a zero-copy account to an arbitrary larger size to",
+        "exercise the extension flow before a real struct extension exists.",
+        "Stripped from mainnet builds via `mainnet-beta`."
+      ],
+      "discriminator": [
+        58,
+        206,
+        231,
+        21,
+        136,
+        141,
+        180,
+        252
+      ],
+      "accounts": [
+        {
+          "name": "payer",
+          "writable": true,
+          "signer": true
+        },
+        {
+          "name": "account",
+          "docs": [
+            "zero-copy discriminator"
+          ],
+          "writable": true
+        },
+        {
+          "name": "systemProgram",
+          "address": "11111111111111111111111111111111"
+        }
+      ],
+      "args": [
+        {
+          "name": "newLen",
+          "type": "u64"
+        }
+      ]
+    },
+    {
       "name": "fillPerpOrder",
       "discriminator": [
         13,
@@ -16303,6 +16384,11 @@ export type Velocity = {
       "code": 6364,
       "name": "dailyDepositLimit",
       "msg": "Spot market daily deposit limit hit"
+    },
+    {
+      "code": 6365,
+      "name": "invalidAccountExtension",
+      "msg": "Invalid account extension"
     }
   ],
   "types": [

@@ -11,6 +11,7 @@ pub use crate::vlp::hedge::admin::*;
 pub use crate::vlp::hedge::instructions::*;
 pub use crate::vlp::hedge::settle::*;
 
+pub use account_extension::*;
 pub use admin::*;
 pub use constraints::*;
 pub use if_staker::*;
@@ -19,6 +20,7 @@ pub use protocol_fees::*;
 pub use pyth_lazer_oracle::*;
 pub use user::*;
 
+mod account_extension;
 mod admin;
 pub mod constraints;
 mod if_staker;

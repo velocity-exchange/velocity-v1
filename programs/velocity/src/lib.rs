@@ -1626,6 +1626,23 @@ pub mod velocity {
         handle_withdraw_protocol_fees_perp(ctx, market_index, amount)
     }
 
+    /// Permissionless: grow a zero-copy account to the size this program build
+    /// compiles in for its type (resolved from the account discriminator). The
+    /// migration crank after an upgrade that appends fields to an account
+    /// struct; no-op when already at size. Payer covers the rent-exempt
+    /// shortfall. See `docs/ACCOUNT-EXTENSION.md`.
+    pub fn extend_account(ctx: Context<ExtendAccount>) -> Result<()> {
+        handle_extend_account(ctx)
+    }
+
+    /// Devnet-only: grow a zero-copy account to an arbitrary larger size to
+    /// exercise the extension flow before a real struct extension exists.
+    /// Stripped from mainnet builds via `mainnet-beta`.
+    #[cfg(not(feature = "mainnet-beta"))]
+    pub fn extend_account_devnet(ctx: Context<ExtendAccountDevnet>, new_len: u64) -> Result<()> {
+        handle_extend_account_devnet(ctx, new_len)
+    }
+
     /// Devnet-only escape hatch: cleans up accounts stranded by a layout-breaking
     /// program upgrade (or by a partial re-init). For each account passed via
     /// `remaining_accounts`:

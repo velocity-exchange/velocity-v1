@@ -783,6 +783,8 @@ pub enum ErrorCode {
     InvalidRevenueShareRecipient,
     #[msg("Spot market daily deposit limit hit")]
     DailyDepositLimit,
+    #[msg("Invalid account extension")]
+    InvalidAccountExtension,
 }
 
 #[macro_export]

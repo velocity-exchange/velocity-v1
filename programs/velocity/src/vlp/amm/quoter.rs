@@ -400,48 +400,25 @@ impl<'a> Quoter for AmmQuoter<'a> {
             crate::msg!("AmmQuoter::setup requires ctx.mm_oracle");
             ErrorCode::DefaultError
         })?;
-        // Slot-idempotency for the curve projection: a prior `setup` (or the
-        // keeper crank) already bumped `last_update_slot` to this slot, which
-        // means the AMM was already projected against this slot's oracle.
-        // Re-running `project_post_refresh_scalar` (peg / reserves / k-budget
-        // math) is the expensive part of `setup` — skip it. Subsequent fills
-        // in the same slot move reserves along the curve but don't trigger
-        // another oracle-driven refresh.
-        let projection_current = self.amm.last_update_slot >= ctx.slot;
-        if !projection_current {
-            // Pull the PerpMarket-level scalars the projection needs from
-            // ctx. The orchestrator populates these once when building the
-            // context; the AMM never reaches back into PerpMarket itself.
-            let projection_inputs = crate::vlp::amm::math::repeg::ProjectionInputs {
-                market_status: ctx.market_status,
-                market_config: ctx.market_config,
-                min_order_size: ctx.stats.min_order_size,
-            };
-            let projection = crate::vlp::amm::math::repeg::project_post_refresh_scalar(
-                self.amm,
-                &projection_inputs,
-                mm_oracle,
-                ctx.oracle_validity,
-            )?;
-            projection.apply_to(self.amm)?;
-            // Match legacy `_update_amm` (and `snap_to_oracle`): bump
-            // `last_update_slot` when the oracle is fresh enough for low-risk
-            // fills and the affordability floor didn't reject the curve update.
-            // Gate on `rejected_due_to_affordability` — a rejected refresh is
-            // returned as a passthrough with `cost == 0` (peg/reserves stay at
-            // current values), so `cost > 0` never catches it and would
-            // otherwise mark stale curve state fresh for downstream same-slot
-            // freshness gates.
-            if let Some(validity) = ctx.oracle_validity {
-                if crate::math::oracle::is_oracle_valid_for_action(
-                    validity,
-                    Some(crate::math::oracle::VelocityAction::FillOrderAmmLowRisk),
-                )? && !projection.rejected_due_to_affordability
-                {
-                    self.amm.last_update_slot = ctx.slot;
-                }
-            }
-        }
+        // Project the curve toward oracle and apply it in place. Slot-idempotent
+        // inside `project_and_apply`: a prior `setup`, keeper crank, or the
+        // routing phase of `fulfill_perp_order` that already bumped
+        // `last_update_slot` to this slot makes this a no-op, so the projection
+        // (peg / reserves / k-budget math, the expensive part) runs at most once
+        // per market per slot. Subsequent fills in the same slot move reserves
+        // along the curve but don't trigger another oracle-driven refresh.
+        let projection_inputs = crate::vlp::amm::math::repeg::ProjectionInputs {
+            market_status: ctx.market_status,
+            market_config: ctx.market_config,
+            min_order_size: ctx.stats.min_order_size,
+        };
+        crate::vlp::amm::refresh::project_and_apply(
+            self.amm,
+            &projection_inputs,
+            mm_oracle,
+            ctx.oracle_validity,
+            ctx.slot,
+        )?;
         // Refresh the cached spread state against the just-projected AMM.
         // Runs after the (projection-idempotent) block above so the cached
         // ask/bid reserves stay consistent with the post-projection curve.

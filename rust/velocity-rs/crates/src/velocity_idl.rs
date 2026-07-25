@@ -2279,6 +2279,7 @@ pub mod instructions {
     #[derive(AnchorSerialize, AnchorDeserialize, Clone, Default)]
     pub struct UpdateUserEquityFloor {
         pub equity_floor: u64,
+        pub equity_floor_buffer: u64,
     }
     #[automatically_derived]
     impl anchor_lang::Discriminator for UpdateUserEquityFloor {
@@ -5250,8 +5251,7 @@ pub mod types {
         #[serde(skip)]
         pub padding: Padding<3>,
         pub equity_floor: u64,
-        #[serde(skip)]
-        pub padding2: Padding<8>,
+        pub equity_floor_buffer: u64,
     }
     #[repr(C)]
     #[derive(
@@ -6511,8 +6511,7 @@ pub mod accounts {
         #[serde(skip)]
         pub padding: Padding<3>,
         pub equity_floor: u64,
-        #[serde(skip)]
-        pub padding2: Padding<8>,
+        pub equity_floor_buffer: u64,
     }
     #[automatically_derived]
     impl anchor_lang::Discriminator for User {
@@ -25954,6 +25953,8 @@ pub mod errors {
         InvalidRevenueShareRecipient,
         #[msg("Spot market daily deposit limit hit")]
         DailyDepositLimit,
+        #[msg("The name 'USDT' is reserved for the quote spot market (index 0)")]
+        ReservedSpotMarketName,
     }
 }
 pub mod events {

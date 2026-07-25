@@ -13,6 +13,7 @@
  * Instruction → on-chain handler mapping: see ARCHITECTURE.md § SDK↔Instruction Mapping.
  */
 import { AnchorProvider, BN, Program } from './isomorphic/anchor';
+import { calculateEquityFloorAutoDelta } from './math/margin';
 import type { ProgramAccount } from '@coral-xyz/anchor';
 import bs58 from 'bs58';
 import {
@@ -4925,14 +4926,15 @@ export class VelocityClient {
 	 * @param equityFloorDelta - Equity floor (QUOTE_PRECISION) to move from the debited to the credited
 	 * sub-account along with the funds, keeping the sum of floors constant. The debited side must not
 	 * already be below the floor being reduced (a below-floor sub-account cannot shed floor to defuse a
-	 * pending equity-breaker trip), must stay at/above its reduced floor, and the credited side's
-	 * collateral (after the transfer lands) must back its increased floor, else the transfer reverts with
-	 * `InvalidEquityFloorTransfer`. Pass `'auto'`
+	 * pending equity-breaker trip), must stay at/above its reduced floor plus its `equityFloorBuffer`,
+	 * and the credited side's collateral (after the transfer lands) must back its increased floor plus
+	 * its own buffer, else the transfer reverts with `InvalidEquityFloorTransfer`. Pass `'auto'`
 	 * (quote market only) to move the minimal floor needed for the debited side to stay at/above its
-	 * floor: `max(0, amount - (collateral - floor))`, capped at the debited side's floor. The auto delta
-	 * never exceeds `amount`, so the credited side stays backed whenever it was before. Client-side
-	 * pricing can differ slightly from the on-chain strict check at the exact boundary; retry with an
-	 * explicit padded delta if an `'auto'` transfer reverts. Defaults to zero.
+	 * buffered floor: `max(0, amount - max(0, collateral - (floor + buffer)))`, capped at the debited
+	 * side's floor (see `calculateEquityFloorAutoDelta`). The auto delta never exceeds `amount`, so the
+	 * credited side stays backed whenever it was before. Client-side pricing can differ slightly from
+	 * the on-chain strict check at the exact boundary; retry with an explicit padded delta if an
+	 * `'auto'` transfer reverts. Defaults to zero.
 	 * @param txParams - Optional compute-unit/priority-fee overrides for the transaction.
 	 * @returns The transaction signature.
 	 * @throws (on-chain) if `allowDelegateTransfer` is not enabled, if the signer is not the delegate on
@@ -5009,16 +5011,13 @@ export class VelocityClient {
 				);
 			}
 			const fromUserClass = this.getUser(fromSubAccountId, this.authority);
-			const floor = fromUserClass.getUserAccountOrThrow().equityFloor;
-			if (floor.lte(ZERO)) {
-				resolvedFloorDelta = ZERO;
-			} else {
-				const excess = BN.max(
-					fromUserClass.getTotalCollateral('Initial', true).sub(floor),
-					ZERO
-				);
-				resolvedFloorDelta = BN.min(BN.max(amount.sub(excess), ZERO), floor);
-			}
+			const fromUserAccount = fromUserClass.getUserAccountOrThrow();
+			resolvedFloorDelta = calculateEquityFloorAutoDelta(
+				amount,
+				fromUserClass.getTotalCollateral('Initial', true),
+				fromUserAccount.equityFloor,
+				fromUserAccount.equityFloorBuffer
+			);
 		} else {
 			resolvedFloorDelta = equityFloorDelta;
 		}

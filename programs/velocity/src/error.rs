@@ -783,6 +783,8 @@ pub enum ErrorCode {
     InvalidRevenueShareRecipient,
     #[msg("Spot market daily deposit limit hit")]
     DailyDepositLimit,
+    #[msg("The name 'USDT' is reserved for the quote spot market (index 0)")]
+    ReservedSpotMarketName,
 }
 
 #[macro_export]

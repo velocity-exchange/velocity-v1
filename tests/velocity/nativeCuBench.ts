@@ -2,7 +2,15 @@ import * as anchor from '@coral-xyz/anchor';
 import { Program } from '@coral-xyz/anchor';
 import { assert } from 'chai';
 import { startAnchor } from 'solana-bankrun';
-import { BN, loadKeypair, TestClient, Wallet } from '../../packages/sdk/src';
+import {
+	BN,
+	BASE_PRECISION,
+	getMarketOrderParams,
+	loadKeypair,
+	PositionDirection,
+	TestClient,
+	Wallet,
+} from '../../packages/sdk/src';
 import {
 	initializeQuoteSpotMarket,
 	mockOracleNoProgram,
@@ -89,6 +97,15 @@ describe('compute units', () => {
 	let acceptedMmOracleSequenceId = new BN(1_000_000);
 	let ammSpreadAdjustment = 0;
 
+	// Dedicated market for the fill bench: oracle, MM oracle, and AMM curve all
+	// aligned at price 1 so a taker fills cleanly against the vAMM, with
+	// curve_update_intensity > 0 so the routing projection actually runs (that
+	// is the path the dedup optimized). Kept separate from market 0, whose MM
+	// oracle sits at 100 for the admin noop benches.
+	const fillMarketIndex = 1;
+	const fillMmOraclePrice = new BN(1_000_000); // price 1, PRICE_PRECISION
+	let fillMmOracleSequenceId = new BN(1_000_000);
+
 	before(async () => {
 		originalConsoleLog = console.log;
 		console.log = (...args: Parameters<typeof console.log>) => {
@@ -124,7 +141,7 @@ describe('compute units', () => {
 				commitment: 'confirmed',
 			},
 			activeSubAccountId: 0,
-			perpMarketIndexes: [0],
+			perpMarketIndexes: [0, 1],
 			spotMarketIndexes: [0],
 			subAccountIds: [],
 			accountSubscription: {
@@ -133,7 +150,7 @@ describe('compute units', () => {
 			},
 		});
 
-		await mockUserUSDCAccount(
+		const userUSDCAccount = await mockUserUSDCAccount(
 			usdcMint,
 			new BN(10 * 10 ** 6),
 			bankrunContextWrapper,
@@ -164,6 +181,33 @@ describe('compute units', () => {
 			acceptedMmOraclePrice,
 			acceptedMmOracleSequenceId
 		);
+
+		// Fill-bench market: real AMM depth, oracle/MM-oracle/curve aligned at 1,
+		// curve_update_intensity engaged so the fill's routing projection runs.
+		const fillAmmReserve = new BN(5 * 10 ** 13).mul(new BN(100_000));
+		await velocityClient.initializePerpMarket(
+			fillMarketIndex,
+			solUsd,
+			fillAmmReserve,
+			fillAmmReserve,
+			new BN(60 * 60)
+		);
+		await velocityClient.updatePerpMarketCurveUpdateIntensity(
+			fillMarketIndex,
+			100
+		);
+		await velocityClient.updatePerpMarketBaseSpread(fillMarketIndex, 500);
+		await velocityClient.updateMmOracleNative(
+			fillMarketIndex,
+			fillMmOraclePrice,
+			fillMmOracleSequenceId
+		);
+		await velocityClient.deposit(
+			new BN(10 * 10 ** 6),
+			0,
+			userUSDCAccount.publicKey
+		);
+		await velocityClient.fetchAccounts();
 	});
 
 	after(async () => {
@@ -317,6 +361,76 @@ describe('compute units', () => {
 			'amm_spread_adjustment_success',
 			ammSpread.measurement,
 			'NATIVE_CU_MAX_AMM_SPREAD'
+		);
+	});
+
+	it('fill perp order against amm', async () => {
+		// Reproduces the production hot path from the CU regression: a taker
+		// order filled against the vAMM alone (`orderFilledWithAmm`), routed
+		// through `fulfill_perp_order`. The AMM has not been cranked this slot,
+		// so routing runs the curve projection before selecting a fulfillment
+		// method. This is the shape the projection dedup targeted; run it on
+		// master and on the optimized branch to read the before/after delta.
+		const fill = await runBench('fill_perp_order', 'amm fill', async () => {
+			// Rest a taker market order (not measured).
+			await velocityClient.placePerpOrder(
+				getMarketOrderParams({
+					marketIndex: fillMarketIndex,
+					direction: PositionDirection.LONG,
+					baseAssetAmount: BASE_PRECISION,
+				})
+			);
+			await velocityClient.fetchAccounts();
+
+			// Resolve the order just placed (most recent on this market).
+			const orders = velocityClient
+				.getUserAccount()
+				.orders.filter((o) => o.marketIndex === fillMarketIndex);
+			const order = orders.reduce((a, b) => (b.orderId > a.orderId ? b : a));
+
+			// Advance the slot, then repost the MM oracle so it is fresh at the
+			// fill slot while the AMM curve's `last_update_slot` still lags (no
+			// keeper crank ran on this market). That is the exact production
+			// shape: oracle moved, curve stale, so routing must project before
+			// it can select a fulfillment method.
+			await advancePastMmOracleRateLimit();
+			fillMmOracleSequenceId = fillMmOracleSequenceId.addn(1);
+			await velocityClient.updateMmOracleNative(
+				fillMarketIndex,
+				fillMmOraclePrice,
+				fillMmOracleSequenceId
+			);
+			await velocityClient.fetchAccounts();
+
+			const userAccountPublicKey =
+				await velocityClient.getUserAccountPublicKey();
+			const txSig = await velocityClient.fillPerpOrder(
+				userAccountPublicKey,
+				velocityClient.getUserAccount(),
+				{ marketIndex: fillMarketIndex, orderId: order.orderId }
+			);
+
+			// Guard the measurement: a fill that silently zero-fills (a tripped
+			// guardrail, a no-cross) would still consume CU but wouldn't exercise
+			// the routing/settlement path this bench exists to measure.
+			await velocityClient.fetchAccounts();
+			const position = velocityClient
+				.getUserAccount()
+				.perpPositions.find((p) => p.marketIndex === fillMarketIndex);
+			assert(
+				position !== undefined && !position.baseAssetAmount.isZero(),
+				'fill bench did not fill: position base is zero'
+			);
+
+			return await getNativeInstructionComputeUnits(txSig);
+		});
+
+		printComputeUnitTable('Fill path', [fill]);
+
+		assertOptionalMax(
+			'fill_perp_order_amm',
+			fill.measurement,
+			'NATIVE_CU_MAX_FILL'
 		);
 	});
 });

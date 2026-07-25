@@ -4423,8 +4423,10 @@ fn dlob_vamm_taker_candidate_requires_fill_path_quote() {
     use crate::math::amm_quote::{
         btc_market_fixture, project_perp_market_for_quoting, validity_guard_rails_fixture,
     };
-    use program::math::orders::calculate_base_asset_amount_for_amm_to_fulfill;
-    use program::state::oracle::OraclePriceData;
+    use program::{
+        math::orders::calculate_base_asset_amount_for_amm_to_fulfill,
+        state::oracle::OraclePriceData,
+    };
 
     let _ = env_logger::try_init();
     let dlob = DLOB::default();
@@ -4575,8 +4577,10 @@ fn post_trigger_price_mirrors_program_trigger_auction_params() {
     use crate::dlob::types::{L3Order, TriggerL3Order};
     use program::{
         math::auction::{calculate_auction_params_for_trigger_order, calculate_auction_price},
-        state::oracle::OraclePriceData,
-        state::user::{Order as VelocityOrder, OrderBitFlag},
+        state::{
+            oracle::OraclePriceData,
+            user::{Order as VelocityOrder, OrderBitFlag},
+        },
     };
 
     let market = vamm_taker_test_market(1);

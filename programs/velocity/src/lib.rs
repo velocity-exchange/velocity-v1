@@ -431,6 +431,15 @@ pub mod velocity {
         handle_update_user_reduce_only(ctx, _sub_account_id, reduce_only)
     }
 
+    /// Mark a User as vault-owned (its authority is a vault PDA and its equity
+    /// prices vault depositor shares). Set-only and authority-gated: only the
+    /// User's authority may call it, and it is CPI'd by the vaults program at
+    /// vault init. A vault-owned User is skipped by the revenue-share sweep so a
+    /// builder/referral reward can never enter vault NAV (OtterSec #91/#92/#93).
+    pub fn update_user_vault_owned(ctx: Context<UpdateUser>, _sub_account_id: u16) -> Result<()> {
+        handle_update_user_vault_owned(ctx, _sub_account_id)
+    }
+
     // pub fn update_user_advanced_lp(
     //     ctx: Context<UpdateUser>,
     //     _sub_account_id: u16,

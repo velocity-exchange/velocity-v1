@@ -3490,6 +3490,19 @@ pub fn handle_update_user_advanced_lp(
     Ok(())
 }
 
+pub fn handle_update_user_vault_owned(
+    ctx: Context<UpdateUser>,
+    _sub_account_id: u16,
+) -> Result<()> {
+    let mut user = load_mut!(ctx.accounts.user)?;
+
+    // Set-only: a vault-owned User must never be un-flagged, or the
+    // revenue-share sweep would resume crediting it and re-open the NAV-capture
+    // vectors (OtterSec #91/#92/#93). Idempotent — re-marking is a no-op.
+    user.add_user_status(crate::state::user::UserStatus::VaultOwned);
+    Ok(())
+}
+
 pub fn handle_delete_user(ctx: Context<DeleteUser>) -> Result<()> {
     let user = &load!(ctx.accounts.user)?;
     let user_stats = &mut load_mut!(ctx.accounts.user_stats)?;

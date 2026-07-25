@@ -6,6 +6,12 @@ pub trait InitializeUserCPI {
     fn velocity_initialize_user_stats(&self, name: [u8; 32], bump: u8) -> Result<()>;
 }
 
+pub trait SetUserVaultOwnedCPI {
+    /// Flag the vault-owned velocity User so the revenue-share sweep never
+    /// credits it (OtterSec #91/#92/#93). Called once at vault init.
+    fn velocity_set_user_vault_owned(&self, name: [u8; 32], bump: u8) -> Result<()>;
+}
+
 pub trait DepositCPI {
     fn velocity_deposit(&self, amount: u64) -> Result<()>;
 }

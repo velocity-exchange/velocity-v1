@@ -38,13 +38,17 @@ use crate::instructions::optional_accounts::{
 };
 use crate::load;
 use crate::math::casting::Cast;
-use crate::math::constants::{MAX_BASE_ASSET_AMOUNT_WITH_AMM, THIRTEEN_DAY};
+use crate::math::constants::{
+    EQUITY_FLOOR_SWAP_MAX_VALUE_LOSS_BPS, MAX_BASE_ASSET_AMOUNT_WITH_AMM, ONE_BPS_DENOMINATOR,
+    THIRTEEN_DAY,
+};
 use crate::math::liquidation::is_cross_margin_being_liquidated;
 use crate::math::margin::calculate_margin_requirement_and_total_collateral_and_liability_info;
 use crate::math::margin::meets_initial_margin_requirement;
 use crate::math::margin::meets_place_order_margin_requirement;
 use crate::math::margin::{
-    calculate_max_withdrawable_amount, validate_spot_margin_trading, MarginRequirementType,
+    calculate_max_withdrawable_amount, calculate_net_equity_for_floor, calculate_user_equity,
+    validate_spot_margin_trading, MarginRequirementType,
 };
 use crate::math::oracle::is_oracle_valid_for_action;
 use crate::math::oracle::LogMode;
@@ -988,21 +992,20 @@ pub fn handle_transfer_deposit_by_delegate<'c: 'info, 'info>(
         // against the reduced floor after the funds move. Deliberately checks
         // the raw floor, not floor + buffer: its only job is trip defusal, and
         // a subaccount inside the buffer band (at/above floor) may still
-        // rebalance floor away.
-        let from_user_margin_calculation =
-            calculate_margin_requirement_and_total_collateral_and_liability_info(
-                from_user,
-                &perp_market_map,
-                &spot_market_map,
-                &mut oracle_map,
-                MarginContext::standard(MarginRequirementType::Initial).strict(true),
-            )?;
+        // rebalance floor away. Measured as net equity, matching the breaker
+        // trip threshold.
+        let (from_user_net_equity, _) = calculate_user_equity(
+            from_user,
+            &perp_market_map,
+            &spot_market_map,
+            &mut oracle_map,
+        )?;
 
         validate!(
-            !from_user.is_below_equity_floor(from_user_margin_calculation.total_collateral),
+            !from_user.is_below_equity_floor(from_user_net_equity),
             ErrorCode::InvalidEquityFloorTransfer,
-            "from_user total collateral {} is below equity floor {}; cannot reduce floor while breached",
-            from_user_margin_calculation.total_collateral,
+            "from_user net equity {} is below equity floor {}; cannot reduce floor while breached",
+            from_user_net_equity,
             from_user.equity_floor
         )?;
 
@@ -1027,20 +1030,14 @@ pub fn handle_transfer_deposit_by_delegate<'c: 'info, 'info>(
     )?;
 
     if equity_floor_delta > 0 {
-        let to_user_margin_calculation =
-            calculate_margin_requirement_and_total_collateral_and_liability_info(
-                to_user,
-                &perp_market_map,
-                &spot_market_map,
-                &mut oracle_map,
-                MarginContext::standard(MarginRequirementType::Initial).strict(true),
-            )?;
+        let (to_user_net_equity, _) =
+            calculate_user_equity(to_user, &perp_market_map, &spot_market_map, &mut oracle_map)?;
 
         validate!(
-            !to_user.is_below_buffered_equity_floor(to_user_margin_calculation.total_collateral),
+            !to_user.is_below_buffered_equity_floor(to_user_net_equity),
             ErrorCode::InvalidEquityFloorTransfer,
-            "to_user total collateral {} does not back new equity floor {} + buffer {}",
-            to_user_margin_calculation.total_collateral,
+            "to_user net equity {} does not back new equity floor {} + buffer {}",
+            to_user_net_equity,
             to_user.equity_floor,
             to_user.equity_floor_buffer
         )?;
@@ -1774,6 +1771,7 @@ pub fn handle_transfer_pools<'c: 'info, 'info>(
         &spot_market_map,
         &mut oracle_map,
         MarginRequirementType::Initial,
+        false,
     )?;
 
     to_user.meets_withdraw_margin_requirement_swap(
@@ -1781,6 +1779,7 @@ pub fn handle_transfer_pools<'c: 'info, 'info>(
         &spot_market_map,
         &mut oracle_map,
         MarginRequirementType::Initial,
+        false,
     )?;
 
     validate_spot_margin_trading(
@@ -2145,14 +2144,21 @@ pub fn handle_transfer_perp_position<'c: 'info, 'info>(
         "from user margin requirement is greater than total collateral"
     )?;
 
-    validate!(
-        !from_user.is_below_buffered_equity_floor(from_user_margin_calculation.total_collateral),
-        ErrorCode::EquityBelowFloor,
-        "from user total collateral {} below equity floor {} + buffer {}",
-        from_user_margin_calculation.total_collateral,
-        from_user.equity_floor,
-        from_user.equity_floor_buffer
-    )?;
+    if let Some(from_user_net_equity) = calculate_net_equity_for_floor(
+        from_user,
+        &perp_market_map,
+        &spot_market_map,
+        &mut oracle_map,
+    )? {
+        validate!(
+            !from_user.is_below_buffered_equity_floor(from_user_net_equity),
+            ErrorCode::EquityBelowFloor,
+            "from user net equity {} below equity floor {} + buffer {}",
+            from_user_net_equity,
+            from_user.equity_floor,
+            from_user.equity_floor_buffer
+        )?;
+    }
 
     let to_user_margin_context = MarginContext::standard(MarginRequirementType::Initial);
 
@@ -2175,14 +2181,21 @@ pub fn handle_transfer_perp_position<'c: 'info, 'info>(
     // or above its own admin-set equity floor (mirrors the from-side check
     // above). A recipient that passes initial margin can still land below its
     // warm-admin floor, which would otherwise leave the floor unenforced.
-    validate!(
-        !to_user.is_below_buffered_equity_floor(to_user_margin_requirement.total_collateral),
-        ErrorCode::EquityBelowFloor,
-        "to user total collateral {} below equity floor {} + buffer {}",
-        to_user_margin_requirement.total_collateral,
-        to_user.equity_floor,
-        to_user.equity_floor_buffer
-    )?;
+    if let Some(to_user_net_equity) = calculate_net_equity_for_floor(
+        to_user,
+        &perp_market_map,
+        &spot_market_map,
+        &mut oracle_map,
+    )? {
+        validate!(
+            !to_user.is_below_buffered_equity_floor(to_user_net_equity),
+            ErrorCode::EquityBelowFloor,
+            "to user net equity {} below equity floor {} + buffer {}",
+            to_user_net_equity,
+            to_user.equity_floor,
+            to_user.equity_floor_buffer
+        )?;
+    }
 
     let mut perp_market = perp_market_map.get_ref_mut(&market_index)?;
     let oi_after = perp_market.get_open_interest();
@@ -4004,17 +4017,6 @@ pub fn handle_end_swap<'c: 'info, 'info>(
 
     let mut user_stats = load_mut!(&ctx.accounts.user_stats)?;
 
-    // A generic spot swap can book new borrow/deposit balances (risk-increasing)
-    // from any of the authority's subaccounts, so it must respect the
-    // authority-wide equity breaker just like withdrawals and transfers out.
-    // The per-subaccount floor is enforced separately in
-    // `meets_withdraw_margin_requirement_swap`.
-    validate!(
-        !user_stats.is_equity_breaker_tripped(),
-        ErrorCode::EquityBelowFloor,
-        "equity floor breaker is tripped for this authority"
-    )?;
-
     let exchange_status = state.get_exchange_status()?;
 
     validate!(
@@ -4275,6 +4277,51 @@ pub fn handle_end_swap<'c: 'info, 'info>(
         )?;
     }
 
+    // Equity-floor gating. A strictly reducing swap (consumes an existing
+    // deposit, repays an existing borrow) stays allowed while the
+    // authority-wide breaker is tripped or the subaccount is below its floor,
+    // so a frozen account can still deleverage instead of being forced into a
+    // liquidation loss. Anything else must respect the breaker like
+    // withdrawals and transfers out; the per-subaccount floor is enforced in
+    // `meets_withdraw_margin_requirement_swap` below.
+    let strictly_reducing = in_position_is_reduced && out_position_is_reduced;
+
+    if user_stats.is_equity_breaker_tripped() {
+        validate!(
+            strictly_reducing,
+            ErrorCode::EquityBelowFloor,
+            "equity floor breaker is tripped for this authority; only a swap consuming an existing deposit to repay an existing borrow is allowed"
+        )?;
+    }
+
+    // While under floor protection, bound the exempted swap's value loss at
+    // oracle so a "reducing" swap cannot leak value through a bad route.
+    if strictly_reducing && (user_stats.is_equity_breaker_tripped() || user.equity_floor > 0) {
+        let in_value =
+            get_token_value(amount_in.cast()?, in_spot_market.decimals, in_oracle_price)?;
+        let out_value = get_token_value(
+            amount_out.cast()?,
+            out_spot_market.decimals,
+            out_oracle_price,
+        )?;
+
+        let min_out_value = in_value
+            .safe_mul(
+                (ONE_BPS_DENOMINATOR as i128)
+                    .safe_sub(EQUITY_FLOOR_SWAP_MAX_VALUE_LOSS_BPS.cast()?)?,
+            )?
+            .safe_div(ONE_BPS_DENOMINATOR as i128)?;
+
+        validate!(
+            out_value >= min_out_value,
+            ErrorCode::InvalidSwap,
+            "swap under equity floor protection: out value {} below min {} (in value {})",
+            out_value,
+            min_out_value,
+            in_value
+        )?;
+    }
+
     math::spot_withdraw::validate_spot_market_vault_amount(&out_spot_market, out_vault.amount)?;
 
     out_spot_market.flash_loan_initial_token_amount = 0;
@@ -4318,6 +4365,7 @@ pub fn handle_end_swap<'c: 'info, 'info>(
         &spot_market_map,
         &mut oracle_map,
         margin_type,
+        strictly_reducing,
     )?;
 
     user.update_last_active_slot(slot);

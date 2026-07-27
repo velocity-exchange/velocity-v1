@@ -732,14 +732,20 @@ pub fn meets_place_order_margin_requirement(
         return Err(ErrorCode::InsufficientCollateral);
     }
 
-    if risk_increasing && user.is_below_buffered_equity_floor(calculation.total_collateral) {
-        msg!(
-            "total collateral {} below equity floor {} + buffer {}",
-            calculation.total_collateral,
-            user.equity_floor,
-            user.equity_floor_buffer
-        );
-        return Err(ErrorCode::EquityBelowFloor);
+    if risk_increasing {
+        if let Some(net_equity) =
+            calculate_net_equity_for_floor(user, perp_market_map, spot_market_map, oracle_map)?
+        {
+            if user.is_below_buffered_equity_floor(net_equity) {
+                msg!(
+                    "net equity {} below equity floor {} + buffer {}",
+                    net_equity,
+                    user.equity_floor,
+                    user.equity_floor_buffer
+                );
+                return Err(ErrorCode::EquityBelowFloor);
+            }
+        }
     }
 
     validate_any_isolated_tier_requirements(user, &calculation)?;
@@ -1045,4 +1051,25 @@ pub fn calculate_user_equity(
     }
 
     Ok((net_usd_value, all_oracles_valid))
+}
+
+/// Net equity for the equity-floor gates: `calculate_user_equity` when the
+/// user has a floor set, `None` otherwise so callers skip the extra position
+/// pass. Unlike the margin numerator (`total_collateral`), this values
+/// assets, perp pnl and spot liabilities at unweighted live oracle prices,
+/// so borrows subtract their full value.
+pub fn calculate_net_equity_for_floor(
+    user: &User,
+    perp_market_map: &PerpMarketMap,
+    spot_market_map: &SpotMarketMap,
+    oracle_map: &mut OracleMap,
+) -> VelocityResult<Option<i128>> {
+    if user.equity_floor == 0 {
+        return Ok(None);
+    }
+
+    let (net_equity, _) =
+        calculate_user_equity(user, perp_market_map, spot_market_map, oracle_map)?;
+
+    Ok(Some(net_equity))
 }

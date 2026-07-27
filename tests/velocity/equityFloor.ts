@@ -295,6 +295,12 @@ describe('equity floor', () => {
 		return velocityClient.getUser(subAccountId).getUserAccount().equityFloor;
 	};
 
+	const bufferOf = async (subAccountId: number): Promise<BN> => {
+		await velocityClient.fetchAccounts();
+		return velocityClient.getUser(subAccountId).getUserAccount()
+			.equityFloorBuffer;
+	};
+
 	it('sets up second subaccount and delegate', async () => {
 		await velocityClient.initializeUserAccount(1);
 		await velocityClient.switchActiveUser(0);
@@ -718,6 +724,7 @@ describe('equity floor', () => {
 		// sub 1: equity ~4, floor 1, buffer 1 -> excess ~2; moving 3.5 wants
 		// ~1.5 of floor but the cap is the 1 of floor sub 1 holds, so the
 		// whole floor migrates and sub 1's check turns off (floor 0)
+		const buffer0Before = await bufferOf(0);
 		await delegateVelocityClient.fetchAccounts();
 		await delegateVelocityClient.transferDepositByDelegate(
 			new BN(3.5 * 10 ** 6),
@@ -729,6 +736,11 @@ describe('equity floor', () => {
 
 		assert((await floorOf(1)).eq(ZERO));
 		assert((await floorOf(0)).eq(new BN(1 * 10 ** 6)));
+
+		// the whole buffer travels with the whole floor: no orphan buffer is
+		// left on the now check-disabled sub 1
+		assert((await bufferOf(1)).eq(ZERO));
+		assert((await bufferOf(0)).eq(buffer0Before.add(new BN(1 * 10 ** 6))));
 
 		// neither side is trippable: sub 0 backs its floor, sub 1 has none
 		const trip0 = await tripAttempt(userAccountPublicKey, 0);
@@ -750,8 +762,9 @@ describe('equity floor', () => {
 	});
 
 	it('floor rebalances without funds, inside the same rules', async () => {
-		// sub 1 (~0.4 equity) cannot take 0.3 of floor while its own buffer is
-		// still 1: the credited side must back floor + buffer
+		// sub 1 (~0.4 equity) cannot take 0.3 of floor: the buffer share the
+		// move carries (0.3 of sub 0's 1 of buffer) makes the credited side
+		// back 0.6 of floor + buffer with only ~0.4 of equity
 		await delegateVelocityClient.fetchAccounts();
 		let err: Error | undefined;
 		try {
@@ -768,8 +781,13 @@ describe('equity floor', () => {
 		assert(err, 'unbacked floor-only move should have been rejected');
 		assert(err.message.includes(INVALID_FLOOR_TRANSFER_HEX));
 
-		// with the buffer cleared, the same zero-amount move is backed and lands
+		// with the buffers cleared, the same zero-amount move is backed and lands
 		await velocityClient.updateUserEquityFloor(sub1UserPublicKey, ZERO, ZERO);
+		await velocityClient.updateUserEquityFloor(
+			userAccountPublicKey,
+			new BN(1 * 10 ** 6),
+			ZERO
+		);
 		await delegateVelocityClient.fetchAccounts();
 		await delegateVelocityClient.transferDepositByDelegate(
 			ZERO,

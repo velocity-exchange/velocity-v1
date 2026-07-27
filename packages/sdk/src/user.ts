@@ -1534,19 +1534,20 @@ export class User {
 	}
 
 	/**
-	 * True when the account has an admin-set `equityFloor` and its cross-margin
-	 * total collateral is below it. This is the trip threshold of the
-	 * permissionless `tripEquityFloorBreaker`; action gating happens at
-	 * `equityFloor + equityFloorBuffer` (see `isBelowBufferedEquityFloor`).
-	 * Mirrors `User::is_below_equity_floor` on-chain.
-	 * @param strict Use TWAP-bounded oracle pricing, matching the withdraw path. Defaults to false.
+	 * True when the account has an admin-set `equityFloor` and its net equity
+	 * (`getNetUsdValue`: unweighted assets and perp PnL minus unweighted spot
+	 * liabilities, at live oracle prices) is below it. This is the trip
+	 * threshold of the permissionless `tripEquityFloorBreaker`; action gating
+	 * happens at `equityFloor + equityFloorBuffer` (see
+	 * `isBelowBufferedEquityFloor`). Mirrors `User::is_below_equity_floor`
+	 * onchain.
 	 */
-	public isBelowEquityFloor(strict = false): boolean {
+	public isBelowEquityFloor(): boolean {
 		const equityFloor = this.getUserAccountOrThrow().equityFloor;
 		if (equityFloor.lte(ZERO)) {
 			return false;
 		}
-		return this.getTotalCollateral('Initial', strict).lt(equityFloor);
+		return this.getNetUsdValue().lt(equityFloor);
 	}
 
 	/**
@@ -1561,58 +1562,48 @@ export class User {
 	}
 
 	/**
-	 * True when the account has an admin-set `equityFloor` and its cross-margin
-	 * total collateral is below `equityFloor + equityFloorBuffer`. While below,
-	 * the program rejects risk-increasing order placement and fills,
+	 * True when the account has an admin-set `equityFloor` and its net equity
+	 * (`getNetUsdValue`) is below `equityFloor + equityFloorBuffer`. While
+	 * below, the program rejects risk-increasing order placement and fills,
 	 * withdrawals, and transfers out of the account (`EquityBelowFloor`);
 	 * reduce-only activity stays allowed. Mirrors
 	 * `User::is_below_buffered_equity_floor` on-chain.
-	 * @param strict Use TWAP-bounded oracle pricing, matching the withdraw path. Defaults to false.
 	 */
-	public isBelowBufferedEquityFloor(strict = false): boolean {
+	public isBelowBufferedEquityFloor(): boolean {
 		const equityFloor = this.getUserAccountOrThrow().equityFloor;
 		if (equityFloor.lte(ZERO)) {
 			return false;
 		}
-		return this.getTotalCollateral('Initial', strict).lt(
-			this.getBufferedEquityFloor()
-		);
+		return this.getNetUsdValue().lt(this.getBufferedEquityFloor());
 	}
 
 	/**
-	 * Cross-margin total collateral in excess of the admin-set `equityFloor`,
+	 * Net equity (`getNetUsdValue`) in excess of the admin-set `equityFloor`,
 	 * floored at zero (QUOTE_PRECISION). Unbounded (`null`) when no floor is set.
 	 * This is headroom above the trip threshold; headroom above the level
 	 * risk-increasing actions must clear is `getEquityAboveBufferedFloor`.
-	 * @param strict Use TWAP-bounded oracle pricing. Defaults to false.
 	 */
-	public getEquityAboveFloor(strict = false): BN | null {
+	public getEquityAboveFloor(): BN | null {
 		const equityFloor = this.getUserAccountOrThrow().equityFloor;
 		if (equityFloor.lte(ZERO)) {
 			return null;
 		}
-		return BN.max(
-			this.getTotalCollateral('Initial', strict).sub(equityFloor),
-			ZERO
-		);
+		return BN.max(this.getNetUsdValue().sub(equityFloor), ZERO);
 	}
 
 	/**
-	 * Cross-margin total collateral in excess of `equityFloor +
+	 * Net equity (`getNetUsdValue`) in excess of `equityFloor +
 	 * equityFloorBuffer`, floored at zero (QUOTE_PRECISION). Unbounded
 	 * (`null`) when no floor is set. When this reaches zero, risk-increasing
 	 * actions start rejecting.
-	 * @param strict Use TWAP-bounded oracle pricing. Defaults to false.
 	 */
-	public getEquityAboveBufferedFloor(strict = false): BN | null {
+	public getEquityAboveBufferedFloor(): BN | null {
 		const equityFloor = this.getUserAccountOrThrow().equityFloor;
 		if (equityFloor.lte(ZERO)) {
 			return null;
 		}
 		return BN.max(
-			this.getTotalCollateral('Initial', strict).sub(
-				this.getBufferedEquityFloor()
-			),
+			this.getNetUsdValue().sub(this.getBufferedEquityFloor()),
 			ZERO
 		);
 	}
@@ -4219,9 +4210,9 @@ export class User {
 			nowTs
 		);
 
-		// the withdraw path enforces the equity floor on post-withdraw total
-		// collateral, so equity above the floor caps free collateral here
-		const equityAboveFloor = this.getEquityAboveFloor(true);
+		// the withdraw path enforces the equity floor on post-withdraw net
+		// equity, so equity above the floor caps free collateral here
+		const equityAboveFloor = this.getEquityAboveFloor();
 		if (equityAboveFloor !== null && equityAboveFloor.eq(ZERO)) {
 			return ZERO;
 		}

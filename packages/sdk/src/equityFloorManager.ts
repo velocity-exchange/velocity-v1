@@ -26,7 +26,7 @@ import { TxParams } from './types';
 /** One subaccount's standing relative to its floor. All BN values QUOTE_PRECISION. */
 export type SubaccountFloorStatus = {
 	subAccountId: number;
-	/** Cross-margin total collateral, strict (TWAP-bounded) pricing — what the on-chain checks see. */
+	/** Net equity (`User.getNetUsdValue`, unweighted live-oracle value), what the onchain checks see. */
 	equity: BN;
 	equityFloor: BN;
 	equityFloorBuffer: BN;
@@ -197,7 +197,7 @@ export type EquityFloorManagerConfig = {
 	subAccountIds?: number[];
 	/**
 	 * Client-side equity haircut (QUOTE_PRECISION) applied when sizing floor
-	 * deltas, absorbing the dust by which strict on-chain pricing can differ
+	 * deltas, absorbing the dust by which onchain oracle pricing can differ
 	 * from the client's. Defaults to 1 quote unit ($1).
 	 */
 	collateralHaircut?: BN;
@@ -242,7 +242,7 @@ export class EquityFloorManager {
 
 	private getSubaccountStatus(user: User): SubaccountFloorStatus {
 		const userAccount = user.getUserAccountOrThrow();
-		const equity = user.getTotalCollateral('Initial', true);
+		const equity = user.getNetUsdValue();
 		const bufferedFloor = userAccount.equityFloor.add(
 			userAccount.equityFloorBuffer
 		);
@@ -360,8 +360,8 @@ export class EquityFloorManager {
 
 	/**
 	 * Resolves a quote transfer into the exact instruction parameters,
-	 * padding the auto floor delta by the haircut so on-chain strict pricing
-	 * dust cannot fail it. The padded delta never exceeds the amount or the
+	 * padding the auto floor delta by the haircut so onchain pricing dust
+	 * cannot fail it. The padded delta never exceeds the amount or the
 	 * debited side's floor, so the credited side stays backed whenever it was
 	 * before.
 	 */
@@ -377,7 +377,7 @@ export class EquityFloorManager {
 		const fromAccount = fromUser.getUserAccountOrThrow();
 		const equityFloorDelta = calculateEquityFloorAutoDelta(
 			amount,
-			fromUser.getTotalCollateral('Initial', true).sub(this.collateralHaircut),
+			fromUser.getNetUsdValue().sub(this.collateralHaircut),
 			fromAccount.equityFloor,
 			fromAccount.equityFloorBuffer
 		);
@@ -420,7 +420,11 @@ export class EquityFloorManager {
 	 * pinned in place and the rest is allocated around them. Throws when the
 	 * pool's equity cannot back the total floor plus buffers — at that point
 	 * no split works and equity must be deposited (or the admin must lower
-	 * the floor).
+	 * the floor). Each onchain move also carries a proportional share of the
+	 * debited side's buffer, so buffers drift toward the same split as the
+	 * floors; the plan sizes against current buffers and the haircut absorbs
+	 * the drift dust, but a move can still revert if a credited side cannot
+	 * back the buffer share it receives.
 	 */
 	public planFloorRebalance(): FloorMove[] {
 		const subaccounts = this.getManagedUsers().map((user) =>

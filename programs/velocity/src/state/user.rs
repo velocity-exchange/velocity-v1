@@ -34,7 +34,7 @@ use std::panic::Location;
 
 use crate::math::margin::{
     calculate_margin_requirement_and_total_collateral_and_liability_info,
-    validate_any_isolated_tier_requirements,
+    calculate_net_equity_for_floor, validate_any_isolated_tier_requirements,
 };
 use crate::state::margin_calculation::{MarginContext, MarginTypeConfig};
 use crate::state::oracle_map::OracleMap;
@@ -142,7 +142,8 @@ pub struct User {
     /// Whether the user is a special user (vamm hedger, etc)
     pub special_user_status: u8,
     pub padding: [u8; 3],
-    /// Minimum account equity (cross-margin total collateral). Below this the
+    /// Minimum account net equity (unweighted assets plus perp pnl minus
+    /// spot liabilities, see `calculate_user_equity`). Below this the
     /// permissionless breaker can trip. Risk-increasing orders, fills,
     /// withdrawals and deposit transfers must clear `equity_floor +
     /// equity_floor_buffer`. Settable only by the warm/cold admin; 0 disables
@@ -189,11 +190,12 @@ impl User {
         self.status & (UserStatus::VaultOwned as u8) > 0
     }
 
-    /// True when the equity floor is enabled and `total_collateral`
-    /// (cross-margin, QUOTE_PRECISION) is below it. This is the breaker trip
-    /// threshold; action gating uses `is_below_buffered_equity_floor`.
-    pub fn is_below_equity_floor(&self, total_collateral: i128) -> bool {
-        self.equity_floor > 0 && total_collateral < self.equity_floor as i128
+    /// True when the equity floor is enabled and `net_equity` (unweighted,
+    /// QUOTE_PRECISION, from `calculate_user_equity`) is below it. This is the
+    /// breaker trip threshold; action gating uses
+    /// `is_below_buffered_equity_floor`.
+    pub fn is_below_equity_floor(&self, net_equity: i128) -> bool {
+        self.equity_floor > 0 && net_equity < self.equity_floor as i128
     }
 
     /// Equity required by risk-increasing actions:
@@ -202,13 +204,14 @@ impl User {
         (self.equity_floor as u128).saturating_add(self.equity_floor_buffer as u128)
     }
 
-    /// True when the equity floor is enabled and `total_collateral` is below
+    /// True when the equity floor is enabled and `net_equity` (unweighted,
+    /// QUOTE_PRECISION, from `calculate_user_equity`) is below
     /// `equity_floor + equity_floor_buffer`. Gates risk-increasing orders,
     /// fills, withdrawals and transfers out, so equity cannot legally be
     /// brought down to the trip threshold; the breaker itself trips on
     /// `is_below_equity_floor`.
-    pub fn is_below_buffered_equity_floor(&self, total_collateral: i128) -> bool {
-        self.equity_floor > 0 && total_collateral < self.buffered_equity_floor() as i128
+    pub fn is_below_buffered_equity_floor(&self, net_equity: i128) -> bool {
+        self.equity_floor > 0 && net_equity < self.buffered_equity_floor() as i128
     }
 
     pub fn add_user_status(&mut self, status: UserStatus) {
@@ -651,12 +654,17 @@ impl User {
         false
     }
 
+    /// `strictly_reducing`: the swap consumed an existing deposit and repaid
+    /// an existing borrow (no new liability, no new deposit exposure). Such a
+    /// swap is exempt from the equity-floor gate so a below-floor account can
+    /// still deleverage; the handler bounds its value loss against oracle.
     pub fn meets_withdraw_margin_requirement_swap(
         &mut self,
         perp_market_map: &PerpMarketMap,
         spot_market_map: &SpotMarketMap,
         oracle_map: &mut OracleMap,
         margin_requirement_type: MarginRequirementType,
+        strictly_reducing: bool,
     ) -> VelocityResult<bool> {
         let strict = margin_requirement_type == MarginRequirementType::Initial;
         let context = MarginContext::standard(margin_requirement_type)
@@ -688,14 +696,20 @@ impl User {
             calculation
         )?;
 
-        validate!(
-            !self.is_below_buffered_equity_floor(calculation.total_collateral),
-            ErrorCode::EquityBelowFloor,
-            "total collateral {} below equity floor {} + buffer {}",
-            calculation.total_collateral,
-            self.equity_floor,
-            self.equity_floor_buffer
-        )?;
+        if !strictly_reducing {
+            if let Some(net_equity) =
+                calculate_net_equity_for_floor(self, perp_market_map, spot_market_map, oracle_map)?
+            {
+                validate!(
+                    !self.is_below_buffered_equity_floor(net_equity),
+                    ErrorCode::EquityBelowFloor,
+                    "net equity {} below equity floor {} + buffer {}",
+                    net_equity,
+                    self.equity_floor,
+                    self.equity_floor_buffer
+                )?;
+            }
+        }
 
         Ok(true)
     }
@@ -737,14 +751,18 @@ impl User {
             calculation
         )?;
 
-        validate!(
-            !self.is_below_buffered_equity_floor(calculation.total_collateral),
-            ErrorCode::EquityBelowFloor,
-            "total collateral {} below equity floor {} + buffer {}",
-            calculation.total_collateral,
-            self.equity_floor,
-            self.equity_floor_buffer
-        )?;
+        if let Some(net_equity) =
+            calculate_net_equity_for_floor(self, perp_market_map, spot_market_map, oracle_map)?
+        {
+            validate!(
+                !self.is_below_buffered_equity_floor(net_equity),
+                ErrorCode::EquityBelowFloor,
+                "net equity {} below equity floor {} + buffer {}",
+                net_equity,
+                self.equity_floor,
+                self.equity_floor_buffer
+            )?;
+        }
 
         Ok(true)
     }
@@ -2146,10 +2164,14 @@ impl UserStatsPausedOperations {
     }
 }
 
-/// Moves `delta` of equity floor from one subaccount to another. The sum of
-/// the two floors is preserved and the update is atomic: on error neither
-/// account is modified. Errors when `from` holds less floor than `delta` or
-/// `to`'s floor would overflow.
+/// Moves `delta` of equity floor from one subaccount to another, carrying a
+/// proportional share of the sender's `equity_floor_buffer` along with it
+/// (rounded up on the from side, so shedding the whole floor also sheds the
+/// whole buffer and no orphan buffer is left behind on a floorless,
+/// check-disabled subaccount). The sums of the floors and of the buffers are
+/// both preserved and the update is atomic: on error neither account is
+/// modified. Errors when `from` holds less floor than `delta` or `to`'s floor
+/// or buffer would overflow.
 pub fn transfer_equity_floor(from: &mut User, to: &mut User, delta: u64) -> VelocityResult {
     let new_from_floor = from
         .equity_floor
@@ -2159,8 +2181,29 @@ pub fn transfer_equity_floor(from: &mut User, to: &mut User, delta: u64) -> Velo
         .equity_floor
         .checked_add(delta)
         .ok_or(ErrorCode::InvalidEquityFloorTransfer)?;
+
+    let buffer_delta = if delta == 0 {
+        0
+    } else {
+        // delta > 0 implies from.equity_floor > 0 (checked_sub above)
+        (from.equity_floor_buffer as u128)
+            .safe_mul(delta as u128)?
+            .safe_div_ceil(from.equity_floor as u128)?
+            .cast::<u64>()?
+    };
+    let new_from_buffer = from
+        .equity_floor_buffer
+        .checked_sub(buffer_delta)
+        .ok_or(ErrorCode::InvalidEquityFloorTransfer)?;
+    let new_to_buffer = to
+        .equity_floor_buffer
+        .checked_add(buffer_delta)
+        .ok_or(ErrorCode::InvalidEquityFloorTransfer)?;
+
     from.equity_floor = new_from_floor;
     to.equity_floor = new_to_floor;
+    from.equity_floor_buffer = new_from_buffer;
+    to.equity_floor_buffer = new_to_buffer;
     Ok(())
 }
 
@@ -2194,16 +2237,19 @@ mod equity_floor_transfer_tests {
 
     /// Hammers `transfer_equity_floor` with a long pseudo-random sequence of
     /// moves (roughly half intentionally invalid) across a set of subaccounts
-    /// and asserts after every step that the sum of floors equals the
-    /// initially assigned total and that failed moves changed nothing.
+    /// and asserts after every step that the sums of floors and buffers equal
+    /// the initially assigned totals, that failed moves changed nothing, and
+    /// that no floorless subaccount is left holding buffer.
     #[test]
     fn floor_sum_is_invariant_over_arbitrary_transfer_sequences() {
         const SUB_ACCOUNTS: usize = 8;
         const TOTAL_FLOOR: u64 = 700_000_000_000; // 700k QUOTE_PRECISION
+        const TOTAL_BUFFER: u64 = 70_000_000_000; // 70k QUOTE_PRECISION
         const STEPS: usize = 100_000;
 
         let mut users: Vec<User> = (0..SUB_ACCOUNTS).map(|_| User::default()).collect();
         users[0].equity_floor = TOTAL_FLOOR;
+        users[0].equity_floor_buffer = TOTAL_BUFFER;
 
         let mut rng = Lcg(0x5EED_CAFE);
 
@@ -2218,6 +2264,8 @@ mod equity_floor_transfer_tests {
 
             let from_floor_before = users[from_index].equity_floor;
             let to_floor_before = users[to_index].equity_floor;
+            let from_buffer_before = users[from_index].equity_floor_buffer;
+            let to_buffer_before = users[to_index].equity_floor_buffer;
 
             let (from, to) = get_pair_mut(&mut users, from_index, to_index);
             let result = transfer_equity_floor(from, to, delta);
@@ -2233,11 +2281,71 @@ mod equity_floor_transfer_tests {
                     "failed move mutated to side at step {}",
                     step
                 );
+                assert_eq!(
+                    users[from_index].equity_floor_buffer, from_buffer_before,
+                    "failed move mutated from buffer at step {}",
+                    step
+                );
+                assert_eq!(
+                    users[to_index].equity_floor_buffer, to_buffer_before,
+                    "failed move mutated to buffer at step {}",
+                    step
+                );
             }
 
             let sum: u64 = users.iter().map(|u| u.equity_floor).sum();
             assert_eq!(sum, TOTAL_FLOOR, "sum of floors drifted at step {}", step);
+            let buffer_sum: u64 = users.iter().map(|u| u.equity_floor_buffer).sum();
+            assert_eq!(
+                buffer_sum, TOTAL_BUFFER,
+                "sum of buffers drifted at step {}",
+                step
+            );
+
+            for (i, user) in users.iter().enumerate() {
+                assert!(
+                    user.equity_floor > 0 || user.equity_floor_buffer == 0,
+                    "orphan buffer on floorless subaccount {} at step {}",
+                    i,
+                    step
+                );
+            }
         }
+    }
+
+    #[test]
+    fn full_floor_shed_carries_whole_buffer() {
+        let mut from = User {
+            equity_floor: 10_000_000,
+            equity_floor_buffer: 3_000_000,
+            ..User::default()
+        };
+        let mut to = User::default();
+
+        transfer_equity_floor(&mut from, &mut to, 10_000_000).unwrap();
+
+        assert_eq!(from.equity_floor, 0);
+        assert_eq!(from.equity_floor_buffer, 0);
+        assert_eq!(to.equity_floor, 10_000_000);
+        assert_eq!(to.equity_floor_buffer, 3_000_000);
+    }
+
+    #[test]
+    fn partial_floor_shed_carries_proportional_buffer_rounded_up() {
+        let mut from = User {
+            equity_floor: 3,
+            equity_floor_buffer: 1,
+            ..User::default()
+        };
+        let mut to = User::default();
+
+        // 1/3 of the floor moves; ceil(1 * 1 / 3) = 1, the whole buffer
+        transfer_equity_floor(&mut from, &mut to, 1).unwrap();
+
+        assert_eq!(from.equity_floor, 2);
+        assert_eq!(from.equity_floor_buffer, 0);
+        assert_eq!(to.equity_floor, 1);
+        assert_eq!(to.equity_floor_buffer, 1);
     }
 
     #[test]

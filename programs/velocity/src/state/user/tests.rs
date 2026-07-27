@@ -2317,6 +2317,7 @@ pub mod meets_withdraw_margin_requirement {
             &spot_market_map,
             &mut oracle_map,
             MarginRequirementType::Initial,
+            false,
         );
 
         assert_eq!(result, Err(ErrorCode::InsufficientCollateral));

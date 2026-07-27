@@ -45,11 +45,7 @@ use crate::{
             BID_ASK_TWAP_MAX_ORACLE_DIVERGENCE_PERCENT, QUOTE_PRECISION_I128, QUOTE_PRECISION_U64,
             QUOTE_SPOT_MARKET_INDEX,
         },
-        margin::{
-            calculate_margin_requirement_and_total_collateral_and_liability_info,
-            calculate_user_equity, meets_settle_pnl_maintenance_margin_requirement,
-            MarginRequirementType,
-        },
+        margin::{calculate_user_equity, meets_settle_pnl_maintenance_margin_requirement},
         oracle::{is_oracle_valid_for_action, VelocityAction},
         orders::{
             estimate_price_from_side, filter_bids_asks_by_oracle_divergence,
@@ -66,7 +62,6 @@ use crate::{
         events::{DeleteUserRecord, OrderActionExplanation, SignedMsgOrderRecord},
         fill_mode::FillMode,
         insurance_fund_stake::InsuranceFundStake,
-        margin_calculation::MarginContext,
         market_status::MarketStatus,
         oracle_map::OracleMap,
         order_params::{OrderParams, PlaceOrderOptions},
@@ -320,27 +315,34 @@ pub fn handle_trip_equity_floor_breaker<'c: 'info, 'info>(
         Some(state.oracle_guard_rails),
     )?;
 
-    let margin_calc = calculate_margin_requirement_and_total_collateral_and_liability_info(
-        &user,
-        &perp_market_map,
-        &spot_market_map,
-        &mut oracle_map,
-        MarginContext::standard(MarginRequirementType::Initial).strict(true),
+    // The trip threshold is real net equity (unweighted assets and pnl minus
+    // unweighted spot liabilities), not the margin numerator: weighted
+    // collateral overstates equity when borrows exist and understates it via
+    // asset weights, strict pricing and the positive-pnl clamp.
+    let (net_equity, all_oracles_valid) =
+        calculate_user_equity(&user, &perp_market_map, &spot_market_map, &mut oracle_map)?;
+
+    // An authority-wide freeze must not arm off an invalid price. The floor
+    // gates on withdrawals/fills still hold independently of the breaker.
+    validate!(
+        all_oracles_valid,
+        ErrorCode::InvalidOracle,
+        "cannot trip equity floor breaker with an invalid oracle"
     )?;
 
     validate!(
-        user.is_below_equity_floor(margin_calc.total_collateral),
+        user.is_below_equity_floor(net_equity),
         ErrorCode::SufficientCollateral,
-        "user total collateral {} not below equity floor {}",
-        margin_calc.total_collateral,
+        "user net equity {} not below equity floor {}",
+        net_equity,
         user.equity_floor
     )?;
 
     msg!(
-        "equity floor breaker tripped for authority {:?}: subaccount {} collateral {} below floor {}",
+        "equity floor breaker tripped for authority {:?}: subaccount {} net equity {} below floor {}",
         user.authority,
         user.sub_account_id,
-        margin_calc.total_collateral,
+        net_equity,
         user.equity_floor
     );
 

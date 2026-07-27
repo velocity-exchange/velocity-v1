@@ -16,8 +16,11 @@ itself is the trip threshold of the breaker; every risk-increasing action must c
 no permitted action can take equity below `floor + buffer`, so the only way to reach the floor is a
 passive drawdown that burns through the entire buffer first.
 
-"Equity" here is the subaccount's cross-margin total collateral: deposits plus unrealized PnL,
-valued at oracle prices (the withdraw and transfer paths use strict, TWAP-bounded oracle pricing).
+"Equity" here is the subaccount's **net equity**: unweighted asset value, plus funding-inclusive
+unrealized PnL, minus unweighted spot liability value, all at live oracle prices (the program's
+`calculate_user_equity`; the SDK mirror is `User.getNetUsdValue()`). This is what the account is
+actually worth, not the weighted margin numerator: borrows subtract their full value, deposits and
+PnL count unweighted and unclamped. Every floor check and the breaker trip use this one metric.
 Floor and buffer are stored on the `User` account in `QUOTE_PRECISION` (1e6), so a 700,000 USDT
 floor is `700_000_000_000`. A floor of `0` disables both checks. Only Velocity's admin can set or
 change the floor and buffer; what the delegate controls is how the floor is split across subaccounts
@@ -33,8 +36,16 @@ bind on actions that could push equity below that line:
 | Risk-increasing order placement and fills (taker or maker side) | Rejected if equity is below floor + buffer                        |
 | Withdrawals                                                     | Rejected if equity would end below floor + buffer                 |
 | Transfers out of a subaccount (deposits, perp positions, pools) | Rejected if the debited side would end below floor + buffer       |
-| Swaps                                                           | Rejected if equity would end below floor + buffer                 |
+| Swaps                                                           | Rejected if equity would end below floor + buffer, except a strictly reducing swap (see below) |
 | Reduce-only orders, closing positions, deposits, settles        | Always allowed, floor or no floor                                 |
+
+A **strictly reducing swap** consumes an existing deposit to repay an existing borrow, no larger
+than either: it creates no new liability and no new exposure, only deleverages. It stays allowed
+below the gate and under the breaker, so an underwater subaccount can cure a borrow itself instead
+of waiting for a liquidator and paying the liquidation discount. While the account is under floor
+protection, the exempted swap's execution price is bounded: the output must be worth at least 99%
+of the input at live oracle prices (`InvalidSwap` otherwise), so the exemption cannot be used to
+route value out of the account through a bad venue.
 
 All of these revert with `EquityBelowFloor` (error code 6358). The checks do not restrict
 de-risking; they only block adding risk or withdrawing funds while equity is at or under the
@@ -48,20 +59,24 @@ The checks above only apply to actions. Equity can also fall below the floor thr
 losses; the breaker covers that case.
 
 `tripEquityFloorBreaker` is a permissionless instruction: any keeper can call it against a
-subaccount, and the on-chain proof is simply a margin calculation showing that subaccount's equity
-is below its floor (not the buffered line: the buffer gates actions, the floor arms the breaker).
-Velocity runs a guard bot that watches every floored account, so once any subaccount drops below
-its floor, expect the breaker to be tripped within seconds.
+subaccount, and the onchain proof is a net-equity calculation showing that subaccount's equity is
+below its floor (not the buffered line: the buffer gates actions, the floor arms the breaker). The
+trip additionally requires every oracle the subaccount's positions depend on to be valid, and
+rejects with `InvalidOracle` otherwise, so an authority-wide freeze can never be armed off a stale
+or degraded price. Velocity runs a guard bot that watches every floored account, so once any
+subaccount drops below its floor, expect the breaker to be tripped within seconds.
 
 Tripping sets the `equityBreakerTripped` flag on the authority's `UserStats` account. This flag is
 authority-wide: it freezes every subaccount under the authority, not just the one that breached.
 While it is set, all subaccounts reject:
 
 - risk-increasing fills (both as taker and as maker; resting risk-increasing trigger orders are
-  cancelled instead of triggered),
+  cancelled instead of triggered, and the triggering keeper is paid no reward on that cancel),
 - withdrawals,
 - transfers out (deposit transfers, perp position transfers, pool transfers),
-- swaps.
+- swaps, except the price-bounded strictly reducing swap described above, which stays available so
+  a frozen account can still repay a borrow out of its own deposits,
+- acting as the liquidator in position-acquiring liquidations.
 
 Reduce-only activity remains allowed: the delegate can still close positions, cancel orders,
 deposit, and settle PnL. The accounts are not liquidated or seized.
@@ -72,7 +87,7 @@ breaker trips, contact Velocity.
 
 Because every permitted action leaves equity at or above `floor + buffer`, the breaker can only be
 armed by losses eating through the buffer. The delegate cannot trade, withdraw, or transfer a
-subaccount into a trippable state; the on-chain checks reject the attempt instead.
+subaccount into a trippable state; the onchain checks reject the attempt instead.
 
 ## Moving funds between subaccounts
 
@@ -108,16 +123,36 @@ the same thresholds Velocity's guard bot monitors.
 
 Every transfer is one `transferDepositByDelegate` instruction whose `equityFloorDelta` argument
 shifts that much floor from the debited subaccount to the credited one, atomically with the funds.
-The sum of floors across the subaccounts never changes; only the split does. Three rules are
-enforced on-chain, and violating any of them reverts the whole transfer with
+A proportional share of the debited side's buffer travels with the floor:
+
+```
+buffer_delta = ceil(buffer_from * floor_delta / floor_from)
+```
+
+so moving 15% of a subaccount's floor also moves ~15% of its buffer, and shedding the whole floor
+sheds the whole buffer. The sums of floors and of buffers across the subaccounts never change;
+only the split does. The rounding is up on the debited side, so no subaccount can end with floor
+`0` while still holding buffer: a check-disabled subaccount holds neither. (The rounding also means
+many tiny floor moves shed buffer slightly faster than proportional; a long sequence of dust-sized
+moves can leave the debited side holding floor with little or no buffer. That subaccount is still
+gated at its raw floor and can never be pushed below it by any permitted action, but its working
+margin against passive drawdown shrinks; the guard bot's headroom metrics make this visible, and
+the admin can restore the split with `updateUserEquityFloor` at any time.)
+
+Three rules are enforced onchain, and violating any of them reverts the whole transfer with
 `InvalidEquityFloorTransfer` (error code 6359):
 
 1. The debited side must not already be below its floor. A subaccount that is already below its
    floor cannot move floor away to avoid a pending breaker trip. (This check uses the raw floor,
    not floor + buffer, so a subaccount inside the buffer band may still rebalance floor away.)
-2. The debited side must end at or above its reduced floor plus its buffer after the funds leave.
-3. The credited side must end at or above its increased floor plus its own buffer after the funds
-   land, so the increased floor is backed by actual equity.
+2. The debited side must end at or above its reduced floor plus its reduced buffer after the funds
+   leave.
+3. The credited side must end at or above its increased floor plus its increased buffer after the
+   funds land, so the increased floor and buffer are backed by actual equity.
+
+Because rules 2 and 3 evaluate against the post-transfer floor **and** buffer on both sides, no
+sequence of permitted transfers can leave any subaccount below its own gate, let alone below its
+trip line: a move that would do so reverts instead.
 
 ### The delta math
 
@@ -125,7 +160,7 @@ enforced on-chain, and violating any of them reverts the whole transfer with
 its buffered floor:
 
 ```
-excess = max(0, collateral_from - (floor_from + buffer_from))
+excess = max(0, net_equity_from - (floor_from + buffer_from))
 delta  = min(max(amount - excess, 0), floor_from)
 ```
 
@@ -139,17 +174,20 @@ excess = 500k - (350k + 20k)         = 130k
 delta  = min(250k - 130k, 350k)      = 120k
 ```
 
-After the transfer the from side holds 250k of equity against a 230k floor and its 20k buffer, and
-the to side gains 250k of equity and 120k of floor. The delta never exceeds `amount`, so the
+The 120k of floor carries `ceil(20k * 120k / 350k) = 6,858` of buffer with it. After the transfer
+the from side holds 250k of equity against a 230k floor and 13,142 of buffer, and the to side
+gains 250k of equity, 120k of floor and 6,858 of buffer. The delta never exceeds `amount`, so the
 credited side stays backed whenever it was backed before.
 
 That minimum would land the debited side exactly on its buffered floor, and exact landings are
-fragile: the SDK prices collateral with the same strict oracle rules as the program, but at the
-boundary the two can disagree by dust and revert the transfer. `transferQuote` therefore evaluates
-the formula against `collateral - $1` (a haircut), landing just above the line instead of on it.
+fragile: the SDK prices equity with the same live-oracle rules as the program, but at the boundary
+the two can disagree by dust and revert the transfer. `transferQuote` therefore evaluates the
+formula against `net_equity - $1` (a haircut), landing just above the line instead of on it.
 (`transferDepositByDelegate` also accepts `'auto'` as the delta, which is this same formula without
 the haircut, quote market only; it works away from the boundary, but `transferQuote` is the
-default for a reason.)
+default for a reason.) The formula sizes the delta against the debited side's current buffer, but
+the move itself sheds a share of that buffer too, so the debited side actually lands slightly above
+its new gate rather than on it, a small conservatism on top of the haircut.
 
 ### Custom floor placement
 
@@ -209,22 +247,24 @@ sub 0     450,000     400,000    410,000     40,000
 sub 1     550,000     300,000    310,000    240,000
 ```
 
-Step 2: a transfer past the slack drags floor along, one for one. Another 100,000 out of
-subaccount 0, same call. Only 40,000 of slack remains, so 60,000 of floor must travel:
+Step 2: a transfer past the slack drags floor along, one for one, and the floor drags its share of
+buffer. Another 100,000 out of subaccount 0, same call. Only 40,000 of slack remains, so 60,000 of
+floor must travel, carrying `ceil(10,000 * 60,000 / 400,000) = 1,500` of buffer:
 
 ```
 excess = max(0, 450,000 - 410,000) = 40,000
 delta  = min(max(100,000 - 40,000, 0), 400,000) = 60,000
+buffer_delta = ceil(10,000 * 60,000 / 400,000) = 1,500
 
-          equity      floor      gate       slack
-sub 0     350,000     340,000    350,000          0   // exactly at its gate
-sub 1     650,000     360,000    370,000    280,000   // check: 650,000 >= 370,000, passes
+          equity      floor      buffer     gate       slack
+sub 0     350,000     340,000     8,500     348,500      1,500
+sub 1     650,000     360,000    11,500     371,500    278,500   // check: 650,000 >= 371,500, passes
 ```
 
-Sub 0 lands on its gate: legal (the check is a strict less-than) but with zero slack, so nothing
-more may leave it. The tables show the unpadded minimum so the arithmetic stays round; in practice
-`transferQuote`'s haircut moves a dollar more floor and parks sub 0 just above the gate instead of
-exactly on it.
+Sub 0 lands just above its gate: the delta was sized against the old 10,000 buffer, but the move
+shed 1,500 of it, so 1,500 of slack remains. The tables show the unpadded minimum so the arithmetic
+stays round; in practice `transferQuote`'s haircut moves a dollar more floor and parks sub 0 a
+little higher still.
 
 Step 3: what a rejection looks like. Withdrawing 50,000 from subaccount 0 (a withdrawal goes to
 the outside, so no floor can travel with it):
@@ -236,12 +276,13 @@ await velocityClient.withdraw(new BN(50_000).mul(QUOTE_PRECISION), 0, tokenAccou
 
 ```
 equity after = 350,000 - 50,000 = 300,000
-gate         = 350,000
-300,000 < 350,000  ->  revert; sub 0's slack is 0, so nothing may leave
+gate         = 348,500
+300,000 < 348,500  ->  revert; sub 0's slack is 1,500, so at most dust may leave
 ```
 
 Step 4: floor can move without funds. Equity now sits mostly on subaccount 1, so the delegate
-shifts 200,000 of floor onto it with a zero-amount transfer. All three rules evaluated:
+shifts 200,000 of floor onto it with a zero-amount transfer. The floor carries
+`ceil(8,500 * 200,000 / 340,000) = 5,000` of buffer. All three rules evaluated:
 
 ```ts
 await velocityClient.transferDepositByDelegate(
@@ -254,20 +295,21 @@ await velocityClient.transferDepositByDelegate(
 ```
 
 ```
-rule 1  sub 0 not below its raw floor:   350,000 >= 340,000                      ok
-rule 2  sub 0 ends at/above new gate:    350,000 >= (340,000 - 200,000) + 10,000  ok
-rule 3  sub 1 ends at/above new gate:    650,000 >= (360,000 + 200,000) + 10,000  ok
+rule 1  sub 0 not below its raw floor:   350,000 >= 340,000                          ok
+rule 2  sub 0 ends at/above new gate:    350,000 >= (340,000 - 200,000) + 3,500      ok
+rule 3  sub 1 ends at/above new gate:    650,000 >= (360,000 + 200,000) + 16,500     ok
 
-          equity      floor      gate       slack
-sub 0     350,000     140,000    150,000    200,000
-sub 1     650,000     560,000    570,000     80,000     floors still sum to 700,000
+          equity      floor      buffer     gate       slack
+sub 0     350,000     140,000     3,500     143,500    206,500
+sub 1     650,000     560,000    16,500     576,500     73,500   // floors sum 700,000, buffers 20,000
 ```
 
 Step 5: and what floor placement cannot do. Pushing another 90,000 of floor onto subaccount 1
-would leave its gate at 660,000 against 650,000 of equity, so rule 3 rejects it with
-`InvalidEquityFloorTransfer`: floor only sits where equity backs it. Note what was conserved
-through every step: total floor (700,000 always) and total slack (280,000 after step 2, just
-reshuffled since). Transfers relocate headroom; only PnL and deposits change its total.
+(carrying `ceil(3,500 * 90,000 / 140,000) = 2,250` of buffer) would leave its gate at 668,750
+against 650,000 of equity, so rule 3 rejects it with `InvalidEquityFloorTransfer`: floor only sits
+where equity backs it. Note what was conserved through every step: total floor (700,000 always),
+total buffer (20,000 always) and total slack (280,000 after step 2, just reshuffled since).
+Transfers relocate headroom; only PnL and deposits change its total.
 
 Step 6: the manager does step 4's thinking automatically. `rebalanceFloors` targets a
 proportional-to-equity split:
@@ -280,11 +322,12 @@ await manager.rebalanceFloors();
 total equity = 350,000 + 650,000 = 1,000,000
 target 0     = 700,000 * 350,000 / 1,000,000 = 245,000
 target 1     = 700,000 * 650,000 / 1,000,000 = 455,000
-move         = 105,000 of floor from sub 1 back to sub 0 (zero-amount transfer)
+move         = 105,000 of floor from sub 1 back to sub 0 (zero-amount transfer),
+               carrying ceil(16,500 * 105,000 / 560,000) = 3,094 of buffer
 
-          equity      floor      gate       equity / floor
-sub 0     350,000     245,000    255,000    1.43
-sub 1     650,000     455,000    465,000    1.43     equal relative headroom
+          equity      floor      buffer     gate       equity / floor
+sub 0     350,000     245,000     6,594     251,594    1.43
+sub 1     650,000     455,000    13,406     468,406    1.43     equal relative headroom
 ```
 
 The manual move in step 4 over-rotated (sub 1 ended with 80,000 of slack against sub 0's
@@ -299,9 +342,9 @@ All of the checks above enforce one rule:
 > Every subaccount's equity must cover its floor plus its buffer, and the floors always sum to the
 > agreed total.
 
-The program pins the sum (only the transfer instruction can move floor, and it conserves it; only
-Velocity's admin can change the total or the buffers), and checks equity against the buffered floor
-per subaccount on every risk-increasing action. The aggregate consequence is that total equity
+The program pins the sums (only the transfer instruction can move floor and buffer between
+subaccounts, and it conserves both; only Velocity's admin can change the totals), and checks net
+equity against the buffered floor per subaccount on every risk-increasing action. The aggregate consequence is that total equity
 across the subaccounts always covers the agreed total floor, e.g. 70% of the loan, with the buffers
 as working margin on top.
 
@@ -311,29 +354,30 @@ subaccounts become reduce-only until a Velocity admin resets the flag.
 
 ## Monitoring
 
-The SDK mirrors the on-chain checks:
+The SDK mirrors the onchain checks. All of them measure net equity (`user.getNetUsdValue()`), the
+same metric the program uses:
 
 | Helper                                    | What it reports                                                                |
 | ----------------------------------------- | ------------------------------------------------------------------------------ |
-| `user.isBelowEquityFloor(strict)`         | `true` when equity is below the floor (trip condition)                         |
-| `user.isBelowBufferedEquityFloor(strict)` | `true` when equity is below floor + buffer (actions rejecting)                 |
+| `user.getNetUsdValue()`                   | Net equity: the value every floor check compares against                       |
+| `user.isBelowEquityFloor()`               | `true` when net equity is below the floor (trip condition)                     |
+| `user.isBelowBufferedEquityFloor()`       | `true` when net equity is below floor + buffer (actions rejecting)             |
 | `user.getBufferedEquityFloor()`           | `floor + buffer`: the line risk-increasing actions must clear                  |
-| `user.getEquityAboveFloor(strict)`        | Headroom above the trip threshold; `null` when no floor is set                 |
-| `user.getEquityAboveBufferedFloor(strict)`| Headroom above the action gate; `null` when no floor is set                    |
+| `user.getEquityAboveFloor()`              | Headroom above the trip threshold; `null` when no floor is set                 |
+| `user.getEquityAboveBufferedFloor()`      | Headroom above the action gate; `null` when no floor is set                    |
 | `getEquityFloorLevel(equity, floor, buf)` | `healthy` / `warning` / `critical` / `breached`                                |
 | `userStatsAccount.equityBreakerTripped`   | Whether the authority-wide breaker is currently set                            |
 
-Pass `strict = true` to match the TWAP-bounded pricing the withdraw/transfer paths use. Alerts
-should fire while a subaccount is still `warning` (inside two buffers of the floor); `critical`
-means risk-increasing actions are already rejecting, and `breached` means the breaker can fire at
-any moment. The breaker is permissionless, so Velocity's guard bot is not the only party that can
-call it.
+Alerts should fire while a subaccount is still `warning` (inside two buffers of the floor);
+`critical` means risk-increasing actions are already rejecting, and `breached` means the breaker
+can fire at any moment. The breaker is permissionless, so Velocity's guard bot is not the only
+party that can call it.
 
 ## Using from Rust
 
 `velocity-rs` carries the same surface for Rust consumers. The generated bindings already include
 `equity_floor_buffer` on the `User` account and the `equity_floor_delta` argument on
-`transfer_deposit_by_delegate`, and the on-chain predicates come straight from the program crate
+`transfer_deposit_by_delegate`, and the onchain predicates come straight from the program crate
 the SDK re-exports. The client-side math mirrors the TypeScript helpers exactly (same thresholds,
 same tests):
 
@@ -347,14 +391,14 @@ use velocity_rs::math::equity_floor::{
 // pad it slightly when the debit side would land near its buffered floor
 let delta = calculate_equity_floor_auto_delta(
 	amount,
-	total_collateral, // i128, from a margin calculation, strict pricing
+	net_equity, // i128, from the program crate's calculate_user_equity
 	user.equity_floor,
 	user.equity_floor_buffer,
 );
 
 // classify for monitoring; levels order by severity, so worst-of is max()
 let level = equity_floor_level(
-	total_collateral,
+	net_equity,
 	user.equity_floor,
 	user.equity_floor_buffer,
 	DEFAULT_WARNING_BUFFER_MULTIPLE,
@@ -363,9 +407,9 @@ if level >= EquityFloorLevel::Critical {
 	// risk-increasing actions are rejecting on this subaccount
 }
 
-// the program's own predicates, for exact on-chain semantics
-let gated = user.is_below_buffered_equity_floor(total_collateral);
-let trippable = user.is_below_equity_floor(total_collateral);
+// the program's own predicates, for exact onchain semantics
+let gated = user.is_below_buffered_equity_floor(net_equity);
+let trippable = user.is_below_equity_floor(net_equity);
 ```
 
 There is no Rust equivalent of the `EquityFloorManager`; a Rust client passes the computed delta
@@ -411,3 +455,4 @@ Lifecycle:
 | ---------------------------- | ---- | ----------------------------------------------------------------------------- |
 | `EquityBelowFloor`           | 6358 | A risk-increasing action was blocked at floor + buffer, or the breaker is set |
 | `InvalidEquityFloorTransfer` | 6359 | A floor transfer broke one of the three transfer rules                        |
+| `InvalidSwap`                | 6248 | Among other swap failures: a strictly reducing swap under floor protection breached the 1% oracle value bound |

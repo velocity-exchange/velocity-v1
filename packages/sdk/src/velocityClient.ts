@@ -4924,16 +4924,19 @@ export class VelocityClient {
 	 * @param fromSubAccountId - Sub-account id to debit.
 	 * @param toSubAccountId - Sub-account id to credit.
 	 * @param equityFloorDelta - Equity floor (QUOTE_PRECISION) to move from the debited to the credited
-	 * sub-account along with the funds, keeping the sum of floors constant. The debited side must not
+	 * sub-account along with the funds, keeping the sum of floors constant. A proportional share of
+	 * the debited side's `equityFloorBuffer` travels with the floor (rounded up on the debited side,
+	 * so shedding the whole floor also sheds the whole buffer; no orphan buffer is left on a
+	 * check-disabled sub-account), keeping the sum of buffers constant too. The debited side must not
 	 * already be below the floor being reduced (a below-floor sub-account cannot shed floor to defuse a
-	 * pending equity-breaker trip), must stay at/above its reduced floor plus its `equityFloorBuffer`,
-	 * and the credited side's collateral (after the transfer lands) must back its increased floor plus
-	 * its own buffer, else the transfer reverts with `InvalidEquityFloorTransfer`. Pass `'auto'`
+	 * pending equity-breaker trip), must stay at/above its reduced floor plus its reduced buffer,
+	 * and the credited side's net equity (after the transfer lands) must back its increased floor plus
+	 * its increased buffer, else the transfer reverts with `InvalidEquityFloorTransfer`. Pass `'auto'`
 	 * (quote market only) to move the minimal floor needed for the debited side to stay at/above its
-	 * buffered floor: `max(0, amount - max(0, collateral - (floor + buffer)))`, capped at the debited
+	 * buffered floor: `max(0, amount - max(0, netEquity - (floor + buffer)))`, capped at the debited
 	 * side's floor (see `calculateEquityFloorAutoDelta`). The auto delta never exceeds `amount`, so the
 	 * credited side stays backed whenever it was before. Client-side pricing can differ slightly from
-	 * the on-chain strict check at the exact boundary; retry with an explicit padded delta if an
+	 * the onchain check at the exact boundary; retry with an explicit padded delta if an
 	 * `'auto'` transfer reverts. Defaults to zero.
 	 * @param txParams - Optional compute-unit/priority-fee overrides for the transaction.
 	 * @returns The transaction signature.
@@ -5014,7 +5017,7 @@ export class VelocityClient {
 			const fromUserAccount = fromUserClass.getUserAccountOrThrow();
 			resolvedFloorDelta = calculateEquityFloorAutoDelta(
 				amount,
-				fromUserClass.getTotalCollateral('Initial', true),
+				fromUserClass.getNetUsdValue(),
 				fromUserAccount.equityFloor,
 				fromUserAccount.equityFloorBuffer
 			);
@@ -8400,11 +8403,12 @@ export class VelocityClient {
 
 	/**
 	 * Keeper instruction: trips the authority-wide equity floor breaker. Proves on-chain that the
-	 * given subaccount's cross-margin total collateral is below its `equityFloor` (reverts with
-	 * `SufficientCollateral` otherwise, or if no floor is set) and sets `equityBreakerTripped` on the
-	 * authority's `UserStats` — every subaccount of the authority then rejects risk-increasing fills,
-	 * withdrawals and transfers out until the warm admin calls `resetEquityFloorBreaker`.
-	 * Permissionless — any signer may trip it; the margin calculation is the proof.
+	 * given subaccount's net equity (unweighted assets and perp PnL minus spot liabilities) is below
+	 * its `equityFloor` (reverts with `SufficientCollateral` otherwise, if no floor is set, or with
+	 * `InvalidOracle` if any of the subaccount's oracles is invalid) and sets `equityBreakerTripped`
+	 * on the authority's `UserStats` — every subaccount of the authority then rejects risk-increasing
+	 * fills, withdrawals and transfers out until the warm admin calls `resetEquityFloorBreaker`.
+	 * Permissionless — any signer may trip it; the equity calculation is the proof.
 	 * @param userAccountPublicKey - Public key of the breached subaccount's user account.
 	 * @param user - Decoded user account of the breached subaccount.
 	 * @param txParams - Optional compute-unit/priority-fee overrides.

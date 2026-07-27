@@ -166,6 +166,12 @@ pub const FEE_PERCENTAGE_DENOMINATOR: u32 = 100;
 /// withdraw under initial margin (OtterSec #83). 1000 = 1% (100 bps). TUNABLE.
 pub const MAX_BUILDER_FEE_TENTH_BPS: u16 = 1000;
 pub const OPEN_ORDER_MARGIN_REQUIREMENT: u128 = QUOTE_PRECISION / 100;
+/// Max oracle-value loss a strictly reducing `end_swap` may realize while the
+/// account is under equity-floor protection (floor set or breaker tripped):
+/// the swap's output value must be at least the input value minus this many
+/// bps at live oracle prices. Bounds how much value a "reducing" swap can
+/// leak through a bad route while the account is frozen. 100 = 1%. TUNABLE.
+pub const EQUITY_FLOOR_SWAP_MAX_VALUE_LOSS_BPS: u128 = 100;
 pub const FEE_ADJUSTMENT_MAX: u64 = 100;
 pub const FEE_ADJUSTMENT_MAX_I16: i16 = FEE_ADJUSTMENT_MAX as i16;
 

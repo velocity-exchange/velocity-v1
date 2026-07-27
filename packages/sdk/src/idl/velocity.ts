@@ -24136,7 +24136,8 @@ export type Velocity = {
           {
             "name": "equityFloor",
             "docs": [
-              "Minimum account equity (cross-margin total collateral). Below this the",
+              "Minimum account net equity (unweighted assets plus perp pnl minus",
+              "spot liabilities, see `calculate_user_equity`). Below this the",
               "permissionless breaker can trip. Risk-increasing orders, fills,",
               "withdrawals and deposit transfers must clear `equity_floor +",
               "equity_floor_buffer`. Settable only by the warm/cold admin; 0 disables",

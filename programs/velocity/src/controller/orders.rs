@@ -2128,18 +2128,24 @@ fn fulfill_perp_order(
             return Err(ErrorCode::InsufficientCollateral);
         }
 
-        if !user_order_position_decreasing
-            && (user.is_below_buffered_equity_floor(taker_margin_calculation.total_collateral)
-                || user_stats.is_equity_breaker_tripped())
-        {
-            msg!(
-                "taker total collateral {} below equity floor {} + buffer {} (breaker tripped: {})",
-                taker_margin_calculation.total_collateral,
-                user.equity_floor,
-                user.equity_floor_buffer,
-                user_stats.is_equity_breaker_tripped()
-            );
-            return Err(ErrorCode::EquityBelowFloor);
+        if !user_order_position_decreasing {
+            let taker_breaker_tripped = user_stats.is_equity_breaker_tripped();
+            let taker_net_equity =
+                calculate_net_equity_for_floor(user, perp_market_map, spot_market_map, oracle_map)?;
+
+            if taker_breaker_tripped
+                || taker_net_equity
+                    .is_some_and(|net_equity| user.is_below_buffered_equity_floor(net_equity))
+            {
+                msg!(
+                    "taker net equity {:?} below equity floor {} + buffer {} (breaker tripped: {})",
+                    taker_net_equity,
+                    user.equity_floor,
+                    user.equity_floor_buffer,
+                    taker_breaker_tripped
+                );
+                return Err(ErrorCode::EquityBelowFloor);
+            }
         }
     }
 
@@ -2222,19 +2228,28 @@ fn fulfill_perp_order(
             return Err(ErrorCode::InsufficientCollateral);
         }
 
-        if maker_risk_increasing
-            && (maker.is_below_buffered_equity_floor(maker_margin_calculation.total_collateral)
-                || maker_breaker_tripped)
-        {
-            msg!(
-                "maker ({}) total collateral {} below equity floor {} + buffer {} (breaker tripped: {})",
-                maker_key,
-                maker_margin_calculation.total_collateral,
-                maker.equity_floor,
-                maker.equity_floor_buffer,
-                maker_breaker_tripped
-            );
-            return Err(ErrorCode::EquityBelowFloor);
+        if maker_risk_increasing {
+            let maker_net_equity = calculate_net_equity_for_floor(
+                &maker,
+                perp_market_map,
+                spot_market_map,
+                oracle_map,
+            )?;
+
+            if maker_breaker_tripped
+                || maker_net_equity
+                    .is_some_and(|net_equity| maker.is_below_buffered_equity_floor(net_equity))
+            {
+                msg!(
+                    "maker ({}) net equity {:?} below equity floor {} + buffer {} (breaker tripped: {})",
+                    maker_key,
+                    maker_net_equity,
+                    maker.equity_floor,
+                    maker.equity_floor_buffer,
+                    maker_breaker_tripped
+                );
+                return Err(ErrorCode::EquityBelowFloor);
+            }
         }
     }
 
@@ -3583,7 +3598,7 @@ pub fn trigger_order(
 
     validate!(!user.is_bankrupt(), ErrorCode::UserBankrupt)?;
 
-    let mut perp_market = perp_market_map.get_ref_mut(&market_index)?;
+    let perp_market = perp_market_map.get_ref_mut(&market_index)?;
 
     // Triggering starts the order's auction (and pays the keeper reward), so it
     // is part of the fill lifecycle: respect the market-scoped fill pause the
@@ -3696,12 +3711,67 @@ pub fn trigger_order(
         }
     }
 
+    let (_, worst_case_liability_value_after) = user
+        .get_perp_position(market_index)?
+        .worst_case_liability_value(oracle_price)?;
+
+    let is_risk_increasing = worst_case_liability_value_after > worst_case_liability_value_before;
+
+    drop(perp_market);
+
+    // If order increases risk and the user is below initial margin, below their
+    // own buffered equity floor, or the authority-wide equity breaker is tripped, cancel
+    // it instead of activating it. The breaker check mirrors the
+    // fill/withdraw/transfer paths: while it is set, no risk-increasing action
+    // is allowed on any of the authority's subaccounts. Evaluated before the
+    // keeper reward is paid, so a keeper cannot farm the trigger reward out of
+    // a frozen or below-floor account by flipping its resting risk-increasing
+    // orders into immediate cancels.
+    if is_risk_increasing && !user.orders[order_index].reduce_only {
+        let margin_calc = calculate_margin_requirement_and_total_collateral_and_liability_info(
+            user,
+            perp_market_map,
+            spot_market_map,
+            oracle_map,
+            MarginContext::standard(MarginRequirementType::Initial),
+        )?;
+
+        let net_equity =
+            calculate_net_equity_for_floor(user, perp_market_map, spot_market_map, oracle_map)?;
+
+        if !margin_calc.meets_margin_requirement()
+            || net_equity.is_some_and(|net_equity| user.is_below_buffered_equity_floor(net_equity))
+            || user_stats.is_equity_breaker_tripped()
+        {
+            cancel_order(
+                order_index,
+                user,
+                &user_key,
+                perp_market_map,
+                spot_market_map,
+                oracle_map,
+                now,
+                slot,
+                OrderActionExplanation::InsufficientFreeCollateral,
+                Some(&filler_key),
+                0,
+                false,
+            )?;
+
+            user.update_last_active_slot(slot);
+
+            return Ok(());
+        }
+    }
+
     let is_filler_taker = user_key == filler_key;
     let mut filler = if !is_filler_taker {
         Some(load_mut!(filler)?)
     } else {
         None
     };
+
+    let mut perp_market = perp_market_map.get_ref_mut(&market_index)?;
 
     let filler_reward = pay_keeper_flat_reward_for_perps(
         user,
@@ -3710,6 +3780,8 @@ pub fn trigger_order(
         state.perp_fee_structure.flat_filler_fee,
         slot,
     )?;
+
+    drop(perp_market);
 
     let order_action_record = get_order_action_record(
         now,
@@ -3741,51 +3813,6 @@ pub fn trigger_order(
         None,
     )?;
     emit!(order_action_record);
-
-    let (_, worst_case_liability_value_after) = user
-        .get_perp_position(market_index)?
-        .worst_case_liability_value(oracle_price)?;
-
-    let is_risk_increasing = worst_case_liability_value_after > worst_case_liability_value_before;
-
-    drop(perp_market);
-
-    // If order increases risk and the user is below initial margin, below their
-    // own buffered equity floor, or the authority-wide equity breaker is tripped, cancel
-    // it. The breaker check mirrors the fill/withdraw/transfer paths: while it is
-    // set, no risk-increasing action is allowed on any of the authority's
-    // subaccounts, so a keeper must not be able to flip a resting risk-increasing
-    // trigger order into a live one (and collect the trigger reward) for a
-    // subaccount that is individually healthy but authority-wide frozen.
-    if is_risk_increasing && !user.orders[order_index].reduce_only {
-        let margin_calc = calculate_margin_requirement_and_total_collateral_and_liability_info(
-            user,
-            perp_market_map,
-            spot_market_map,
-            oracle_map,
-            MarginContext::standard(MarginRequirementType::Initial),
-        )?;
-
-        if !margin_calc.meets_margin_requirement()
-            || user.is_below_buffered_equity_floor(margin_calc.total_collateral)
-            || user_stats.is_equity_breaker_tripped()
-        {
-            cancel_order(
-                order_index,
-                user,
-                &user_key,
-                perp_market_map,
-                spot_market_map,
-                oracle_map,
-                now,
-                slot,
-                OrderActionExplanation::InsufficientFreeCollateral,
-                Some(&filler_key),
-                0,
-                false,
-            )?;
-        }
-    }
 
     user.update_last_active_slot(slot);
 
@@ -3871,7 +3898,9 @@ pub fn force_cancel_orders(
         MarginContext::standard(MarginRequirementType::Initial),
     )?;
 
-    let below_equity_floor = user.is_below_equity_floor(margin_calc.total_collateral);
+    let below_equity_floor =
+        calculate_net_equity_for_floor(user, perp_market_map, spot_market_map, oracle_map)?
+            .is_some_and(|net_equity| user.is_below_equity_floor(net_equity));
     let meets_initial_margin_requirement = margin_calc.meets_margin_requirement();
 
     validate!(

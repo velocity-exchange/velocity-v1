@@ -357,7 +357,7 @@ export class JupiterClient {
 		if (!response.ok || !quote) {
 			throw new Error(
 				`Jupiter quote failed: ${response.status} ${
-					quote?.error ?? response.statusText
+					quote?.error || quote?.errorCode || response.statusText
 				}`
 			);
 		}

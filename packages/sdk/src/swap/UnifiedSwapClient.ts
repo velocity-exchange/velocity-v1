@@ -272,7 +272,13 @@ export class UnifiedSwapClient {
 		} else {
 			const titanClient = this.client as TitanClient;
 
-			// For Titan, get swap directly (it handles quote internally)
+			// For Titan, get swap directly (it handles quote internally).
+			//
+			// NOTE: `getSwap` reads only `userPublicKey` — it replays the route
+			// cached by the preceding `getQuote`, so every other argument here is
+			// inert. The size constraint is therefore enforced at quote time (see
+			// `getQuote` above), which means an explicit `sizeConstraint` passed
+			// only to this method does not affect route selection.
 			const { transactionMessage, lookupTables: titanLookupTables } =
 				await titanClient.getSwap({
 					inputMint,

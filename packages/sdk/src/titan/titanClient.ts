@@ -328,14 +328,13 @@ export class TitanClient {
 		}
 
 		if (route.instructions && route.instructions.length > 0) {
+			// Errors propagate as-is. Replacing them with generic copy here loses
+			// the reason the swap can't be built — an unresolvable lookup table,
+			// say — which the caller needs to decide whether re-quoting will help.
 			try {
 				const { transactionMessage, lookupTables } =
 					await this.getTransactionMessageAndLookupTables(route, userPublicKey);
 				return { transactionMessage, lookupTables };
-			} catch (err) {
-				throw new Error(
-					'Something went wrong with creating the Titan swap transaction. Please try again.'
-				);
 			} finally {
 				// Clear cached quote data after use
 				this.lastQuoteData = undefined;

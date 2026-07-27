@@ -42,7 +42,6 @@ import {
 	BASE_PRECISION,
 	BN_MAX,
 	DUST_POSITION_SIZE,
-	FIVE_MINUTE,
 	MARGIN_PRECISION,
 	MAX_POSITIVE_UPNL_FOR_INITIAL_MARGIN,
 	ONE,
@@ -117,10 +116,7 @@ import {
 	getWorstCaseTokenAmounts,
 	isSpotPositionAvailable,
 } from './math/spotPosition';
-import {
-	calculateLiveOracleTwap,
-	getMultipleBetweenOracleSources,
-} from './math/oracles';
+import { getMultipleBetweenOracleSources } from './math/oracles';
 import { getPerpMarketTierNumber, getSpotMarketTierNumber } from './math/tiers';
 import { StrictOraclePrice } from './oracles/strictOraclePrice';
 
@@ -1158,8 +1154,7 @@ export class User {
 	 * @param marginCategory `'Initial'` or `'Maintenance'` asset/liability weights; omit for unweighted (100%) values.
 	 * @param liquidationBuffer Optional buffer (MARGIN_PRECISION, 1e4) added to the liability weight side.
 	 * @param includeOpenOrders If false, ignores open bids/asks and only counts the current balance (faster, less conservative).
-	 * @param strict Use the worse of live oracle price vs 5-minute TWAP. Defaults to false.
-	 * @param now Unix timestamp (seconds) used for TWAP staleness when `strict` is set; defaults to current time.
+	 * @param strict Use the worse of live oracle price vs the market's stored 5-minute TWAP. Defaults to false.
 	 * @returns `{ totalAssetValue, totalLiabilityValue }`, both QUOTE_PRECISION (1e6) and non-negative.
 	 */
 	public getSpotMarketAssetAndLiabilityValue(
@@ -1168,9 +1163,7 @@ export class User {
 		liquidationBuffer?: BN,
 		includeOpenOrders?: boolean,
 		strict = false,
-		now?: BN
 	): { totalAssetValue: BN; totalLiabilityValue: BN } {
-		now = now || new BN(new Date().getTime() / 1000);
 		let netQuoteValue = ZERO;
 		let totalAssetValue = ZERO;
 		let totalLiabilityValue = ZERO;
@@ -1198,15 +1191,11 @@ export class User {
 				spotPosition.marketIndex
 			);
 
-			let twap5min;
-			if (strict) {
-				twap5min = calculateLiveOracleTwap(
-					spotMarketAccount.historicalOracleData,
-					oraclePriceData,
-					now,
-					FIVE_MINUTE // 5MIN
-				);
-			}
+			// mirrors margin.rs: strict mode prices against the market's *stored*
+			// 5min TWAP, not a live-projected one
+			const twap5min = strict
+				? spotMarketAccount.historicalOracleData.lastOraclePriceTwap5Min
+				: undefined;
 			const strictOraclePrice = new StrictOraclePrice(
 				oraclePriceData.price,
 				twap5min
@@ -1365,7 +1354,6 @@ export class User {
 		liquidationBuffer?: BN,
 		includeOpenOrders?: boolean,
 		strict = false,
-		now?: BN
 	): BN {
 		const { totalLiabilityValue } = this.getSpotMarketAssetAndLiabilityValue(
 			marketIndex,
@@ -1373,7 +1361,6 @@ export class User {
 			liquidationBuffer,
 			includeOpenOrders,
 			strict,
-			now
 		);
 		return totalLiabilityValue;
 	}
@@ -1402,7 +1389,6 @@ export class User {
 		marginCategory?: MarginCategory,
 		includeOpenOrders?: boolean,
 		strict = false,
-		now?: BN
 	): BN {
 		const { totalAssetValue } = this.getSpotMarketAssetAndLiabilityValue(
 			marketIndex,
@@ -1410,7 +1396,6 @@ export class User {
 			undefined,
 			includeOpenOrders,
 			strict,
-			now
 		);
 		return totalAssetValue;
 	}
@@ -1437,7 +1422,6 @@ export class User {
 		marginCategory?: MarginCategory,
 		includeOpenOrders?: boolean,
 		strict = false,
-		now?: BN
 	): BN {
 		const { totalAssetValue, totalLiabilityValue } =
 			this.getSpotMarketAssetAndLiabilityValue(
@@ -1446,7 +1430,6 @@ export class User {
 				undefined,
 				includeOpenOrders,
 				strict,
-				now
 			);
 
 		return totalAssetValue.sub(totalLiabilityValue);
@@ -5039,13 +5022,10 @@ export class User {
 			const oraclePriceData = this.getOracleDataForSpotMarket(
 				spotPosition.marketIndex
 			);
+			// mirrors margin.rs: strict mode prices against the market's *stored*
+			// 5min TWAP, not a live-projected one
 			const twap5 = strict
-				? calculateLiveOracleTwap(
-						spotMarket.historicalOracleData,
-						oraclePriceData,
-						new BN(Math.floor(Date.now() / 1000)),
-						FIVE_MINUTE
-				  )
+				? spotMarket.historicalOracleData.lastOraclePriceTwap5Min
 				: undefined;
 			const strictOracle = new StrictOraclePrice(oraclePriceData.price, twap5);
 

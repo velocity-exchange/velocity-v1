@@ -9,6 +9,7 @@ import {
 import fetch, { RequestInit } from 'node-fetch';
 import { filterRouteInstructions } from '../swap/routeInstructions';
 import {
+	DEFAULT_SWAP_MAX_ACCOUNTS,
 	GetRouteInstructionsParams,
 	SwapMode,
 	SwapProvider,
@@ -234,9 +235,6 @@ export interface QuoteResponse {
 /** A Jupiter quote plus the payload {@link JupiterClient.getRouteInstructions} needs. */
 export type JupiterSwapQuote = QuoteResponse & SwapQuote;
 
-/** Account budget assumed when a caller doesn't specify one. */
-const DEFAULT_MAX_ACCOUNTS = 50;
-
 export const RECOMMENDED_JUPITER_API_VERSION = '/v1';
 /** @deprecated Use RECOMMENDED_JUPITER_API instead. lite-api.jup.ag requires migration to api.jup.ag with API key. */
 export const LEGACY_JUPITER_API = 'https://lite-api.jup.ag/swap';
@@ -297,7 +295,7 @@ export class JupiterClient implements SwapProvider {
 		inputMint,
 		outputMint,
 		amount,
-		maxAccounts = DEFAULT_MAX_ACCOUNTS,
+		maxAccounts = DEFAULT_SWAP_MAX_ACCOUNTS,
 		slippageBps = 50,
 		swapMode = 'ExactIn',
 		onlyDirectRoutes = false,
@@ -383,22 +381,27 @@ export class JupiterClient implements SwapProvider {
 
 	/**
 	 * Get a swap transaction for quote
-	 * @param quoteResponse quote to perform swap
+	 * @param quote quote to perform swap, from {@link getQuote}
 	 * @param userPublicKey the signer's wallet public key
-	 * @param slippageBps the slippage tolerance in basis points
+	 * @param slippageBps slippage tolerance in basis points; defaults to the
+	 * quote's own slippage, which is what the caller was shown
 	 */
 	public async getSwap({
 		quote,
 		userPublicKey,
-		slippageBps = 50,
+		slippageBps,
 	}: {
-		quote: QuoteResponse;
+		quote: QuoteResponse | JupiterSwapQuote;
 		userPublicKey: PublicKey;
 		slippageBps?: number;
 	}): Promise<VersionedTransaction> {
 		if (!quote) {
 			throw new Error('Jupiter swap quote not provided. Please try again.');
 		}
+
+		// `providerRoute` is our own wrapper, not part of Jupiter's quote body.
+		const { providerRoute: _providerRoute, ...quoteResponse } =
+			quote as JupiterSwapQuote;
 
 		const apiVersionParam =
 			this.url === RECOMMENDED_JUPITER_API || this.url === LEGACY_JUPITER_API
@@ -409,9 +412,9 @@ export class JupiterClient implements SwapProvider {
 				method: 'POST',
 				headers: this.getHeaders('application/json'),
 				body: JSON.stringify({
-					quoteResponse: quote,
+					quoteResponse,
 					userPublicKey,
-					slippageBps,
+					slippageBps: slippageBps ?? quoteResponse.slippageBps,
 				}),
 			})
 		).json();
@@ -438,21 +441,20 @@ export class JupiterClient implements SwapProvider {
 	 * Builds the route instructions for a quote returned by {@link getQuote}.
 	 *
 	 * The quote carries its own route payload, so this reads no client state
-	 * and two quotes in flight can never be confused for one another.
-	 * @throws If the quote came from a different provider.
+	 * and two quotes in flight can never be confused for one another. The swap
+	 * is built at the slippage the quote was priced at — re-quote to change it.
+	 * @throws If the quote came from a different provider or a different wallet.
 	 */
 	public async getRouteInstructions({
 		quote,
 		userPublicKey,
-		slippageBps,
 	}: GetRouteInstructionsParams): Promise<SwapRouteInstructions> {
-		const jupiterQuote = expectProviderRoute(quote, 'jupiter')
+		const jupiterQuote = expectProviderRoute(quote, 'jupiter', userPublicKey)
 			.quote as QuoteResponse;
 
 		const transaction = await this.getSwap({
 			quote: jupiterQuote,
 			userPublicKey,
-			slippageBps,
 		});
 
 		const { transactionMessage, lookupTables } =

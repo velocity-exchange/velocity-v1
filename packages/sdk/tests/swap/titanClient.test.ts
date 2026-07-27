@@ -5,6 +5,8 @@ import {
 	Connection,
 	PublicKey,
 } from '@solana/web3.js';
+import { encode } from '@msgpack/msgpack';
+import { BN } from '../../src/isomorphic/anchor';
 import { TitanClient } from '../../src/titan/titanClient';
 import { SwapQuote } from '../../src/swap/types';
 
@@ -102,6 +104,93 @@ describe('TitanClient.fetchLookupTable', () => {
 	});
 });
 
+describe('TitanClient.getQuote', () => {
+	let client: TitanClient;
+
+	/** Titan's msgpack reply for a route that consumes `inAmount`. */
+	const quoteResponse = (inAmount: number, outAmount: number) => ({
+		ok: true,
+		status: 200,
+		arrayBuffer: async () =>
+			encode({
+				id: 'quote-1',
+				inputMint: INPUT_MINT.toBytes(),
+				outputMint: OUTPUT_MINT.toBytes(),
+				swapMode: 'ExactOut',
+				amount: outAmount,
+				quotes: {
+					best: {
+						inAmount,
+						outAmount,
+						slippageBps: 50,
+						steps: [],
+						addressLookupTables: [],
+						instructions: [
+							{ p: USER.toBytes(), a: [], d: new Uint8Array([1]) },
+						],
+					},
+				},
+			}).slice().buffer,
+	});
+
+	beforeEach(() => {
+		client = new TitanClient({
+			connection: sinon.createStubInstance(Connection) as unknown as Connection,
+			authToken: '',
+		});
+	});
+
+	afterEach(() => {
+		sinon.restore();
+	});
+
+	it('reports the route input, not the requested amount, under ExactOut', async () => {
+		// The request is the desired output here. Reporting it as `inAmount` made
+		// callers size `beginSwap` off the output amount.
+		sinon
+			.stub(global, 'fetch')
+			.resolves(quoteResponse(1234567, 2000000) as never);
+
+		const quote = await client.getQuote({
+			inputMint: INPUT_MINT,
+			outputMint: OUTPUT_MINT,
+			amount: new BN(2000000),
+			userPublicKey: USER,
+			swapMode: 'ExactOut',
+		});
+
+		expect(quote.inAmount).to.equal('1234567');
+		expect(quote.outAmount).to.equal('2000000');
+	});
+
+	it('binds the route to the quoting wallet', async () => {
+		sinon
+			.stub(global, 'fetch')
+			.resolves(quoteResponse(1000000, 2000000) as never);
+
+		const quote = await client.getQuote({
+			inputMint: INPUT_MINT,
+			outputMint: OUTPUT_MINT,
+			amount: new BN(1000000),
+			userPublicKey: USER,
+		});
+
+		expect(quote.providerRoute).to.have.property('quotedFor', USER.toString());
+	});
+
+	it('refuses to quote without a wallet', async () => {
+		const err = await captureError(
+			client.getQuote({
+				inputMint: INPUT_MINT,
+				outputMint: OUTPUT_MINT,
+				amount: new BN(1000000),
+			})
+		);
+
+		expect(err.message).to.contain('userPublicKey');
+	});
+});
+
 describe('TitanClient.getRouteInstructions', () => {
 	let connection: sinon.SinonStubbedInstance<Connection>;
 	let client: TitanClient;
@@ -175,6 +264,28 @@ describe('TitanClient.getRouteInstructions', () => {
 
 		expect(err.message).to.contain('jupiter');
 		expect(err.message).to.contain('titan');
+	});
+
+	it('rejects a route quoted for a different wallet', async () => {
+		// Titan resolves the user's token accounts at quote time, so executing
+		// someone else's route moves funds through accounts the signer doesn't
+		// own. Nothing about the route itself makes that visible.
+		const other = new PublicKey('4kSjWQnPCFCkzKnFuNCMhutFsPzWqMbEnJyxgAJLwLjE');
+		const quote = {
+			...quoteWithRoute([]),
+			providerRoute: {
+				provider: 'titan',
+				route: { instructions: [], addressLookupTables: [] },
+				quotedFor: other.toString(),
+			},
+		} as unknown as SwapQuote;
+
+		const err = await captureError(
+			client.getRouteInstructions({ quote, userPublicKey: USER })
+		);
+
+		expect(err.message).to.contain(other.toString());
+		expect(err.message).to.contain(USER.toString());
 	});
 
 	it('rejects a quote with no route payload', async () => {

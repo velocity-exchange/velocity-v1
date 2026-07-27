@@ -7555,6 +7555,7 @@ export class VelocityClient {
 				swapMode,
 				onlyDirectRoutes,
 				reduceOnly,
+				quote,
 			});
 		} else if (clientToUse instanceof JupiterClient) {
 			const quoteToUse = quote ?? v6?.quote;
@@ -7594,9 +7595,39 @@ export class VelocityClient {
 	}
 
 	/**
+	 * Throws unless a quote swaps exactly the pair the `beginSwap`/`endSwap` pair is being built
+	 * for. A mismatched quote routes and executes normally, but deposits its output into a token
+	 * account `endSwap` isn't watching, so it reverts with `InvalidSwap: amount_out must be
+	 * greater than 0` only after the funds have already moved.
+	 */
+	private assertQuoteMatchesMarkets(
+		quote: { inputMint: string; outputMint: string },
+		inMarket: SpotMarketAccount,
+		outMarket: SpotMarketAccount
+	): void {
+		if (!new PublicKey(quote.inputMint).equals(inMarket.mint)) {
+			throw new Error(
+				`Quote sells ${quote.inputMint} but spot market ${
+					inMarket.marketIndex
+				} is ${inMarket.mint.toString()}.`
+			);
+		}
+
+		if (!new PublicKey(quote.outputMint).equals(outMarket.mint)) {
+			throw new Error(
+				`Quote buys ${quote.outputMint} but spot market ${
+					outMarket.marketIndex
+				} is ${outMarket.mint.toString()}.`
+			);
+		}
+	}
+
+	/**
 	 * Builds the instruction list for a Titan-routed swap: creates any missing associated token
 	 * accounts, wraps Titan's routing instructions between `beginSwap`/`endSwap`. See `swap` for
 	 * parameter semantics; `amount` is in the "in" token's mint decimals.
+	 * @param quote - Pre-fetched Titan quote; skips the round-trip and builds exactly the route
+	 * the caller was shown. Must be for this pair and this wallet.
 	 * @param userAccountPublicKey - Optional user account override (e.g. when the account is being
 	 * created in the same transaction and not yet resolvable via `getUserAccountPublicKey`).
 	 * @returns `ixs` — instruction list (ATA creation, `beginSwap`, Titan swap instructions,
@@ -7613,6 +7644,7 @@ export class VelocityClient {
 		swapMode,
 		onlyDirectRoutes,
 		reduceOnly,
+		quote,
 		userAccountPublicKey,
 	}: {
 		titanClient: TitanClient;
@@ -7625,6 +7657,7 @@ export class VelocityClient {
 		swapMode?: string;
 		onlyDirectRoutes?: boolean;
 		reduceOnly?: SwapReduceOnly;
+		quote?: SwapQuote;
 		userAccountPublicKey?: PublicKey;
 	}): Promise<{
 		ixs: TransactionInstruction[];
@@ -7634,7 +7667,27 @@ export class VelocityClient {
 		const inMarket = this.getSpotMarketAccountOrThrow(inMarketIndex);
 
 		const isExactOut = swapMode === 'ExactOut';
-		const exactOutBufferedAmountIn = amount.muln(1001).divn(1000); // Add 10bp buffer
+
+		const quoteToUse =
+			quote ??
+			(await titanClient.getQuote({
+				inputMint: inMarket.mint,
+				outputMint: outMarket.mint,
+				amount,
+				userPublicKey: this.provider.wallet.publicKey,
+				slippageBps,
+				swapMode: isExactOut ? TitanSwapMode.ExactOut : TitanSwapMode.ExactIn,
+				onlyDirectRoutes,
+				sizeConstraint: MAX_TX_BYTE_SIZE - 375, // buffer for velocity instructions
+			}));
+
+		this.assertQuoteMatchesMarkets(quoteToUse, inMarket, outMarket);
+
+		// The quote knows the exact input the route consumes; `amount` is only the
+		// requested output when the mode is ExactOut, so buffering it is a guess.
+		const exactOutBufferedAmountIn = new BN(quoteToUse.inAmount)
+			.muln(1001)
+			.divn(1000); // Add 10bp buffer
 
 		const preInstructions = [];
 		if (!outAssociatedTokenAccount) {
@@ -7695,22 +7748,10 @@ export class VelocityClient {
 			userAccountPublicKey,
 		});
 
-		const quote = await titanClient.getQuote({
-			inputMint: inMarket.mint,
-			outputMint: outMarket.mint,
-			amount,
-			userPublicKey: this.provider.wallet.publicKey,
-			slippageBps,
-			swapMode: isExactOut ? TitanSwapMode.ExactOut : TitanSwapMode.ExactIn,
-			onlyDirectRoutes,
-			sizeConstraint: MAX_TX_BYTE_SIZE - 375, // buffer for velocity instructions
-		});
-
 		const { instructions: titanInstructions, lookupTables } =
 			await titanClient.getRouteInstructions({
-				quote,
+				quote: quoteToUse,
 				userPublicKey: this.provider.wallet.publicKey,
-				slippageBps,
 			});
 
 		const ixs = [
@@ -7784,6 +7825,8 @@ export class VelocityClient {
 			throw new Error('Could not fetch swap quote. Please try again.');
 		}
 
+		this.assertQuoteMatchesMarkets(quote, inMarket, outMarket);
+
 		const isExactOut = swapMode === 'ExactOut' || quote.swapMode === 'ExactOut';
 		const amountIn = new BN(quote.inAmount);
 		const exactOutBufferedAmountIn = amountIn.muln(1001).divn(1000); // Add 10bp buffer
@@ -7792,7 +7835,6 @@ export class VelocityClient {
 			await jupiterClient.getRouteInstructions({
 				quote,
 				userPublicKey: this.provider.wallet.publicKey,
-				slippageBps,
 			});
 
 		const preInstructions = [];
@@ -8120,12 +8162,15 @@ export class VelocityClient {
 			}
 		}
 
+		const suppliedQuote = quote ?? v6?.quote;
+		if (suppliedQuote) {
+			this.assertQuoteMatchesMarkets(suppliedQuote, inMarket, outMarket);
+		}
+
 		let amountInForBeginSwap: BN;
 		if (isExactOut) {
-			if (quote || v6?.quote) {
-				amountInForBeginSwap = v6?.quote
-					? new BN(v6.quote.inAmount)
-					: new BN(quote!.inAmount);
+			if (suppliedQuote) {
+				amountInForBeginSwap = new BN(suppliedQuote.inAmount);
 			} else {
 				amountInForBeginSwap = amount.muln(1001).divn(1000);
 			}
@@ -8153,7 +8198,7 @@ export class VelocityClient {
 			slippageBps,
 			swapMode,
 			onlyDirectRoutes,
-			quote: quote ?? v6?.quote,
+			quote: suppliedQuote,
 		});
 
 		const allInstructions = [
@@ -11044,13 +11089,14 @@ export class VelocityClient {
 			throw new Error('Could not fetch swap quote. Please try again.');
 		}
 
+		this.assertQuoteMatchesMarkets(quote, assetMarket, liabilityMarket);
+
 		const amountIn = new BN(quote.inAmount);
 
 		const { instructions: jupiterInstructions, lookupTables } =
 			await jupiterClient.getRouteInstructions({
 				quote,
 				userPublicKey: this.provider.wallet.publicKey,
-				slippageBps,
 			});
 
 		const preInstructions = [];

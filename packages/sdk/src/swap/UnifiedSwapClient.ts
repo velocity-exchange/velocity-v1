@@ -4,6 +4,7 @@ import { JupiterClient } from '../jupiter/jupiterClient';
 import { TitanClient } from '../titan/titanClient';
 import { MAX_TX_BYTE_SIZE } from '../tx/utils';
 import {
+	GetRouteInstructionsParams,
 	SwapClientType,
 	SwapMode,
 	SwapProvider,
@@ -12,6 +13,8 @@ import {
 	SwapRouteInstructions,
 } from './types';
 
+// Re-exported so deep imports of this module keep resolving; `./types` is the
+// definition site and what the package index exports.
 export type {
 	GetRouteInstructionsParams,
 	ProviderRoute,
@@ -92,28 +95,39 @@ export class UnifiedSwapClient implements SwapProvider {
 	}
 
 	/**
+	 * The configured client, seen only as {@link SwapProvider}.
+	 *
+	 * Forwarding through the interface rather than the concrete union is what
+	 * makes goal of this class enforceable: a provider added to the union that
+	 * implements only part of the contract fails to compile here, instead of
+	 * resolving against whichever call signatures the union happens to share.
+	 */
+	private get provider(): SwapProvider {
+		return this.client;
+	}
+
+	/**
 	 * Get a swap quote from the configured provider.
 	 *
 	 * Provider-specific fields on {@link SwapQuoteParams} are mapped by the
 	 * provider, so the ones it doesn't recognise are simply ignored.
 	 */
 	public async getQuote(params: SwapQuoteParams): Promise<SwapQuote> {
-		return this.client.getQuote({
+		return this.provider.getQuote({
 			...params,
 			sizeConstraint: params.sizeConstraint ?? DEFAULT_ROUTE_SIZE_CONSTRAINT,
 		});
 	}
 
 	/**
-	 * Builds the route instructions for a quote from {@link getQuote}.
-	 * @throws If the quote came from a different provider.
+	 * Builds the route instructions for a quote from {@link getQuote}, at the
+	 * slippage that quote was priced at.
+	 * @throws If the quote came from a different provider or a different wallet.
 	 */
-	public async getRouteInstructions(params: {
-		quote: SwapQuote;
-		userPublicKey: PublicKey;
-		slippageBps?: number;
-	}): Promise<SwapRouteInstructions> {
-		return this.client.getRouteInstructions(params);
+	public async getRouteInstructions(
+		params: GetRouteInstructionsParams
+	): Promise<SwapRouteInstructions> {
+		return this.provider.getRouteInstructions(params);
 	}
 
 	/**
@@ -122,6 +136,9 @@ export class UnifiedSwapClient implements SwapProvider {
 	 * Prefer passing a `quote` you already showed the user — re-quoting here
 	 * builds a route they never saw. Identical for both providers: the quote
 	 * carries its own route, so neither can fall back to a stale one.
+	 *
+	 * `slippageBps` prices the quote. When a `quote` is supplied it is already
+	 * priced, so passing both has no effect beyond the quote's own slippage.
 	 */
 	public async getSwapInstructions({
 		inputMint,
@@ -160,11 +177,7 @@ export class UnifiedSwapClient implements SwapProvider {
 				sizeConstraint,
 			}));
 
-		return this.getRouteInstructions({
-			quote: quoteToUse,
-			userPublicKey,
-			slippageBps,
-		});
+		return this.getRouteInstructions({ quote: quoteToUse, userPublicKey });
 	}
 
 	/**

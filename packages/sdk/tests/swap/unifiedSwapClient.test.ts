@@ -94,8 +94,9 @@ describe('UnifiedSwapClient Titan route size constraint', () => {
 	});
 });
 
-// Both providers have to behave identically here. Running the same assertions
-// against each is what stops one of them growing a path the other doesn't have.
+// Forwarding only — the provider is stubbed out, so these say nothing about the
+// two clients agreeing. That parity is covered in providerParity.test.ts, which
+// runs both real clients over the same route.
 (['jupiter', 'titan'] as const).forEach((provider) => {
 	describe(`UnifiedSwapClient.getSwapInstructions (${provider})`, () => {
 		let client: UnifiedSwapClient;

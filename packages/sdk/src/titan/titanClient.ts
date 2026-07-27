@@ -9,6 +9,7 @@ import { BN } from '../isomorphic/anchor';
 import { decode } from '@msgpack/msgpack';
 import { filterRouteInstructions } from '../swap/routeInstructions';
 import {
+	DEFAULT_SWAP_MAX_ACCOUNTS,
 	GetRouteInstructionsParams,
 	SwapProvider,
 	SwapQuote,
@@ -82,9 +83,6 @@ interface SwapQuotes {
 }
 
 const TITAN_API_URL = 'https://api.titan.exchange';
-
-/** Account budget assumed when a caller doesn't specify one. */
-const DEFAULT_MAX_ACCOUNTS = 50;
 
 /** Retries for a route's lookup tables, which must all resolve for the tx to fit. */
 const LOOKUP_TABLE_FETCH_RETRIES = 2;
@@ -171,17 +169,19 @@ export class TitanClient implements SwapProvider {
 	 * Get the best available route for a swap.
 	 *
 	 * The route is returned on the quote's `providerRoute`, so
-	 * {@link getRouteInstructions} builds exactly what was quoted here.
+	 * {@link getRouteInstructions} builds exactly what was quoted here, at the
+	 * slippage quoted here.
 	 * @throws If `userPublicKey` is missing — Titan bakes the user's token
 	 * accounts into the route, so a route quoted for one wallet cannot be
-	 * executed by another.
+	 * executed by another. The wallet is recorded on the route and enforced
+	 * when the route is built.
 	 */
 	public async getQuote({
 		inputMint,
 		outputMint,
 		amount,
 		userPublicKey,
-		maxAccounts = DEFAULT_MAX_ACCOUNTS,
+		maxAccounts = DEFAULT_SWAP_MAX_ACCOUNTS,
 		slippageBps,
 		swapMode,
 		onlyDirectRoutes,
@@ -253,9 +253,15 @@ export class TitanClient implements SwapProvider {
 		}
 
 		return {
-			providerRoute: { provider: 'titan', route },
+			providerRoute: {
+				provider: 'titan',
+				route,
+				quotedFor: userPublicKey.toString(),
+			},
 			inputMint: inputMint.toString(),
-			inAmount: amount.toString(),
+			// The route's own input, not the requested amount — under ExactOut the
+			// request is the output, and callers size `beginSwap` off `inAmount`.
+			inAmount: (route.inAmount ?? amount).toString(),
 			outputMint: outputMint.toString(),
 			outAmount: route.outAmount.toString(),
 			swapMode: data.swapMode,
@@ -289,15 +295,17 @@ export class TitanClient implements SwapProvider {
 	 * Builds the route instructions for a quote returned by {@link getQuote}.
 	 *
 	 * The route travels on the quote, so this reads no client state and two
-	 * quotes in flight can never be confused for one another.
-	 * @throws If the quote came from a different provider, or if a lookup table
-	 * the route depends on can't be loaded.
+	 * quotes in flight can never be confused for one another. Slippage was
+	 * fixed when Titan built the route, so there is nothing to apply here.
+	 * @throws If the quote came from a different provider or a different wallet,
+	 * or if a lookup table the route depends on can't be loaded.
 	 */
 	public async getRouteInstructions({
 		quote,
 		userPublicKey,
 	}: GetRouteInstructionsParams): Promise<SwapRouteInstructions> {
-		const route = expectProviderRoute(quote, 'titan').route as SwapRoute;
+		const route = expectProviderRoute(quote, 'titan', userPublicKey)
+			.route as SwapRoute;
 
 		if (!route.instructions?.length) {
 			throw new Error('No instructions provided in the route');

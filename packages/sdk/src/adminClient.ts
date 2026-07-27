@@ -7378,7 +7378,6 @@ export class AdminClient extends VelocityClient {
 			await jupiterClient.getRouteInstructions({
 				quote,
 				userPublicKey: this.provider.wallet.publicKey,
-				slippageBps,
 			});
 
 		const preInstructions = [];

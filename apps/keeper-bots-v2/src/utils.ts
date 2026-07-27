@@ -969,7 +969,6 @@ export async function swapFillerHardEarnedUSDCForSOL(
 			await jupiterClient.getRouteInstructions({
 				quote,
 				userPublicKey: velocityClient.provider.wallet.publicKey,
-				slippageBps: JUPITER_SLIPPAGE_BPS,
 			});
 
 		const preInstructions = [];

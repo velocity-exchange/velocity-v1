@@ -1001,7 +1001,6 @@ export class LiquidatorBot implements Bot {
 				'Maintenance',
 				true,
 				undefined,
-				undefined
 			);
 			if (totalAssetValue.abs().gt(maxAssets)) {
 				maxAssets = totalAssetValue.abs();

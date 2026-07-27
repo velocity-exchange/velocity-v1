@@ -89,6 +89,12 @@ export interface QuoteResponse {
 
 const TITAN_API_URL = 'https://api.titan.exchange';
 
+/** Retries for a route's lookup tables, which must all resolve for the tx to fit. */
+const LOOKUP_TABLE_FETCH_RETRIES = 2;
+const LOOKUP_TABLE_RETRY_BASE_DELAY_MS = 150;
+
+const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+
 export class TitanClient {
 	authToken: string;
 	url: string;
@@ -322,14 +328,13 @@ export class TitanClient {
 		}
 
 		if (route.instructions && route.instructions.length > 0) {
+			// Errors propagate as-is. Replacing them with generic copy here loses
+			// the reason the swap can't be built — an unresolvable lookup table,
+			// say — which the caller needs to decide whether re-quoting will help.
 			try {
 				const { transactionMessage, lookupTables } =
 					await this.getTransactionMessageAndLookupTables(route, userPublicKey);
 				return { transactionMessage, lookupTables };
-			} catch (err) {
-				throw new Error(
-					'Something went wrong with creating the Titan swap transaction. Please try again.'
-				);
 			} finally {
 				// Clear cached quote data after use
 				this.lastQuoteData = undefined;
@@ -388,6 +393,49 @@ export class TitanClient {
 		return filteredInstructions;
 	}
 
+	/**
+	 * Fetches a lookup table required by a route, retrying transient RPC
+	 * failures (rate limiting in particular) before giving up.
+	 * @throws If the table still can't be loaded, or doesn't exist on-chain.
+	 */
+	private async fetchLookupTable(
+		altPubkey: PublicKey
+	): Promise<AddressLookupTableAccount> {
+		let lastError: unknown;
+
+		for (let attempt = 0; attempt <= LOOKUP_TABLE_FETCH_RETRIES; attempt++) {
+			if (attempt > 0) {
+				await sleep(LOOKUP_TABLE_RETRY_BASE_DELAY_MS * 2 ** (attempt - 1));
+			}
+
+			let altAccount: Awaited<ReturnType<Connection['getAddressLookupTable']>>;
+
+			try {
+				altAccount = await this.connection.getAddressLookupTable(altPubkey);
+			} catch (err) {
+				// Transient — rate limiting, connection reset. Worth another go.
+				lastError = err;
+				continue;
+			}
+
+			if (altAccount.value) {
+				return altAccount.value;
+			}
+
+			// A successful response with no value means the route references a
+			// table that isn't on-chain. Retrying won't conjure it up.
+			throw new Error(
+				`Address lookup table ${altPubkey.toString()} does not exist`
+			);
+		}
+
+		throw new Error(
+			`Failed to fetch address lookup table ${altPubkey.toString()}: ${
+				lastError instanceof Error ? lastError.message : String(lastError)
+			}`
+		);
+	}
+
 	private async getTransactionMessageAndLookupTables(
 		route: SwapRoute,
 		userPublicKey: PublicKey
@@ -410,20 +458,19 @@ export class TitanClient {
 		// Get recent blockhash
 		const { blockhash } = await this.connection.getLatestBlockhash();
 
-		// Build address lookup tables if provided
+		// Build address lookup tables if provided.
+		//
+		// These all have to resolve. A table that fails to load isn't a slightly
+		// worse route — every account it would have compressed to a 1-byte index
+		// gets inlined as a 32-byte pubkey instead, which pushes the transaction
+		// past the size limit and only surfaces later as an opaque
+		// "encoding overruns Uint8Array". Failing here lets the caller re-quote.
 		const addressLookupTables: AddressLookupTableAccount[] = [];
 		if (route.addressLookupTables && route.addressLookupTables.length > 0) {
 			for (const altPubkey of route.addressLookupTables) {
-				try {
-					const altAccount = await this.connection.getAddressLookupTable(
-						new PublicKey(altPubkey)
-					);
-					if (altAccount.value) {
-						addressLookupTables.push(altAccount.value);
-					}
-				} catch (err) {
-					console.warn(`Failed to fetch address lookup table:`, err);
-				}
+				addressLookupTables.push(
+					await this.fetchLookupTable(new PublicKey(altPubkey))
+				);
 			}
 		}
 

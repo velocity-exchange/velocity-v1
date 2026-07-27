@@ -12,9 +12,20 @@ import {
 	QuoteResponse as JupiterQuoteResponse,
 } from '../jupiter/jupiterClient';
 import { TitanClient, SwapMode as TitanSwapMode } from '../titan/titanClient';
+import { MAX_TX_BYTE_SIZE } from '../tx/utils';
 
 export type SwapMode = 'ExactIn' | 'ExactOut';
 export type SwapClientType = 'jupiter' | 'titan';
+
+/**
+ * Bytes reserved for the velocity begin/end swap instructions that wrap the
+ * route, so the provider only gets the budget actually left for the route.
+ */
+const VELOCITY_SWAP_IX_SIZE_BUFFER = 375;
+
+/** Byte budget handed to a swap provider for the route portion of the tx. */
+const DEFAULT_ROUTE_SIZE_CONSTRAINT =
+	MAX_TX_BYTE_SIZE - VELOCITY_SWAP_IX_SIZE_BUFFER;
 
 /**
  * Unified quote response interface that combines properties from both Jupiter and Titan
@@ -148,7 +159,8 @@ export class UnifiedSwapClient {
 				...titanParams,
 				userPublicKey: titanParams.userPublicKey,
 				swapMode: titanParams.swapMode as string, // Titan expects string
-				sizeConstraint: titanParams.sizeConstraint || 1280 - 375, // Use same default as getSwapInstructions
+				sizeConstraint:
+					titanParams.sizeConstraint || DEFAULT_ROUTE_SIZE_CONSTRAINT,
 			};
 
 			return await titanClient.getQuote(titanParamsWithUser);
@@ -260,7 +272,13 @@ export class UnifiedSwapClient {
 		} else {
 			const titanClient = this.client as TitanClient;
 
-			// For Titan, get swap directly (it handles quote internally)
+			// For Titan, get swap directly (it handles quote internally).
+			//
+			// NOTE: `getSwap` reads only `userPublicKey` — it replays the route
+			// cached by the preceding `getQuote`, so every other argument here is
+			// inert. The size constraint is therefore enforced at quote time (see
+			// `getQuote` above), which means an explicit `sizeConstraint` passed
+			// only to this method does not affect route selection.
 			const { transactionMessage, lookupTables: titanLookupTables } =
 				await titanClient.getSwap({
 					inputMint,
@@ -270,7 +288,7 @@ export class UnifiedSwapClient {
 					slippageBps,
 					swapMode: isExactOut ? TitanSwapMode.ExactOut : TitanSwapMode.ExactIn,
 					onlyDirectRoutes,
-					sizeConstraint: sizeConstraint || 1280 - 375, // MAX_TX_BYTE_SIZE - buffer for velocity instructions
+					sizeConstraint: sizeConstraint || DEFAULT_ROUTE_SIZE_CONSTRAINT,
 				});
 
 			swapInstructions = titanClient.getTitanInstructions({

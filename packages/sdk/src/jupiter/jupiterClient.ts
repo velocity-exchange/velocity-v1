@@ -341,13 +341,38 @@ export class JupiterClient {
 		const headers = this.getHeaders();
 		const fetchOptions: RequestInit =
 			Object.keys(headers).length > 0 ? { headers } : {};
-		const quote = await (
-			await fetch(
-				`${this.url}${apiVersionParam}/quote?${params.toString()}`,
-				fetchOptions
-			)
-		).json();
-		return quote as QuoteResponse;
+		const response = await fetch(
+			`${this.url}${apiVersionParam}/quote?${params.toString()}`,
+			fetchOptions
+		);
+
+		const quote = (await response.json().catch(() => undefined)) as
+			| QuoteResponse
+			| undefined;
+
+		// A failed quote still returns parseable JSON — an `{ error, errorCode }`
+		// body with no mints or amounts. Returning it unchecked pushes the failure
+		// downstream to /swap, which rejects it with an opaque deserialization
+		// error ("missing field `inputMint`") that hides the real cause.
+		if (!response.ok || !quote) {
+			throw new Error(
+				`Jupiter quote failed: ${response.status} ${
+					quote?.error || quote?.errorCode || response.statusText
+				}`
+			);
+		}
+
+		if (quote.error || quote.errorCode) {
+			throw new Error(
+				`Jupiter quote failed: ${quote.error ?? quote.errorCode}`
+			);
+		}
+
+		if (!quote.inputMint || !quote.outputMint || !quote.outAmount) {
+			throw new Error('Jupiter quote failed: response is missing route fields');
+		}
+
+		return quote;
 	}
 
 	/**
@@ -444,10 +469,19 @@ export class JupiterClient {
 			return cached;
 		}
 
-		return (
-			(await this.connection.getAddressLookupTable(accountKey)).value ??
-			undefined
-		);
+		const lookupTable = (
+			await this.connection.getAddressLookupTable(accountKey)
+		).value;
+
+		if (!lookupTable) {
+			return undefined;
+		}
+
+		// Populate the cache — without this every route re-fetches the same tables,
+		// which is a large share of the RPC calls a swap makes.
+		this.lookupTableCahce.set(accountKey.toString(), lookupTable);
+
+		return lookupTable;
 	}
 
 	/**

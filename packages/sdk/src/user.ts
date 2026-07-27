@@ -3430,7 +3430,7 @@ export class User {
 	 * @param outMarketIndex
 	 * @param calculateSwap Optional function to simulate the in-to-out conversion (e.g. to model swap fees/slippage); defaults to a 1:1 oracle-price conversion.
 	 * @param iterationLimit How many binary-search iterations to run before erroring out. Defaults to 1000.
-	 * @returns `inAmount`/`outAmount` in each market's own token decimals, and the resulting `leverage` (TEN_THOUSAND, 1e4 precision) after the swap.
+	 * @returns `inAmount`/`outAmount` in each market's own token decimals, and the resulting `leverage` (TEN_THOUSAND, 1e4 precision) after the swap. Sizing is TWAP-bounded to match the program's margin check; `leverage` is marked at the live oracle price so it stays comparable to `getLeverage()`.
 	 */
 	public getMaxSwapAmount({
 		inMarketIndex,
@@ -3453,8 +3453,8 @@ export class User {
 		const outOraclePriceData = this.getOracleDataForSpotMarket(outMarketIndex);
 		const outOraclePrice = outOraclePriceData.price;
 
-		// mirrors handle_end_swap: both legs are priced strictly, against each
-		// market's stored 5min TWAP
+		// sizing mirrors handle_end_swap: both legs are priced strictly, against
+		// each market's stored 5min TWAP
 		const inStrictOraclePrice = new StrictOraclePrice(
 			inOraclePrice,
 			inMarket.historicalOracleData.lastOraclePriceTwap5Min
@@ -3463,6 +3463,11 @@ export class User {
 			outOraclePrice,
 			outMarket.historicalOracleData.lastOraclePriceTwap5Min
 		);
+
+		// the returned leverage is a delta on top of getLeverageComponents' live-oracle
+		// baseline, so pricing its legs strictly would mix two bases in one figure
+		const inLeveragePrice = new StrictOraclePrice(inOraclePrice);
+		const outLeveragePrice = new StrictOraclePrice(outOraclePrice);
 
 		const inPrecision = new BN(10 ** inMarket.decimals);
 		const outPrecision = new BN(10 ** outMarket.decimals);
@@ -3486,7 +3491,7 @@ export class User {
 			totalLiabilityValue: inTotalLiabilityValueInitial,
 		} = this.calculateSpotPositionLeverageContribution(
 			inSpotPosition,
-			inStrictOraclePrice
+			inLeveragePrice
 		);
 		const outContributionInitial =
 			this.calculateSpotPositionFreeCollateralContribution(
@@ -3498,7 +3503,7 @@ export class User {
 			totalLiabilityValue: outTotalLiabilityValueInitial,
 		} = this.calculateSpotPositionLeverageContribution(
 			outSpotPosition,
-			outStrictOraclePrice
+			outLeveragePrice
 		);
 		const initialContribution = inContributionInitial.add(
 			outContributionInitial
@@ -3619,7 +3624,7 @@ export class User {
 			totalLiabilityValue: inTotalLiabilityValueAfter,
 		} = this.calculateSpotPositionLeverageContribution(
 			inPositionAfter,
-			inStrictOraclePrice
+			inLeveragePrice
 		);
 
 		const {
@@ -3627,7 +3632,7 @@ export class User {
 			totalLiabilityValue: outTotalLiabilityValueAfter,
 		} = this.calculateSpotPositionLeverageContribution(
 			outPositionAfter,
-			outStrictOraclePrice
+			outLeveragePrice
 		);
 
 		const spotAssetValueDelta = inTotalAssetValueAfter
@@ -3773,7 +3778,8 @@ export class User {
 	}
 
 	/**
-	 * Estimates what the user leverage will be after swap
+	 * Estimates what the user leverage will be after swap, marked at the live
+	 * oracle price so it stays comparable to `getLeverage()`.
 	 * @param inMarketIndex Market being sold/paid from.
 	 * @param outMarketIndex Market being bought/received.
 	 * @param inAmount Amount removed from `inMarketIndex`, that market's own token decimals.
@@ -3800,15 +3806,10 @@ export class User {
 		const inOraclePrice = inOraclePriceData.price;
 		const outOraclePriceData = this.getOracleDataForSpotMarket(outMarketIndex);
 		const outOraclePrice = outOraclePriceData.price;
-		// same strict pricing as getMaxSwapAmount, so the two agree on leverage
-		const inStrictOraclePrice = new StrictOraclePrice(
-			inOraclePrice,
-			inMarket.historicalOracleData.lastOraclePriceTwap5Min
-		);
-		const outStrictOraclePrice = new StrictOraclePrice(
-			outOraclePrice,
-			outMarket.historicalOracleData.lastOraclePriceTwap5Min
-		);
+		// same live-oracle basis as getMaxSwapAmount's leverage legs and as the
+		// getLeverageComponents baseline these deltas are applied to
+		const inLeveragePrice = new StrictOraclePrice(inOraclePrice);
+		const outLeveragePrice = new StrictOraclePrice(outOraclePrice);
 
 		const inSpotPosition =
 			this.getSpotPosition(inMarketIndex) ||
@@ -3822,14 +3823,14 @@ export class User {
 			totalLiabilityValue: inTotalLiabilityValueInitial,
 		} = this.calculateSpotPositionLeverageContribution(
 			inSpotPosition,
-			inStrictOraclePrice
+			inLeveragePrice
 		);
 		const {
 			totalAssetValue: outTotalAssetValueInitial,
 			totalLiabilityValue: outTotalLiabilityValueInitial,
 		} = this.calculateSpotPositionLeverageContribution(
 			outSpotPosition,
-			outStrictOraclePrice
+			outLeveragePrice
 		);
 
 		const { perpLiabilityValue, perpPnl, spotAssetValue, spotLiabilityValue } =
@@ -3851,7 +3852,7 @@ export class User {
 			totalLiabilityValue: inTotalLiabilityValueAfter,
 		} = this.calculateSpotPositionLeverageContribution(
 			inPositionAfter,
-			inStrictOraclePrice
+			inLeveragePrice
 		);
 
 		const {
@@ -3859,7 +3860,7 @@ export class User {
 			totalLiabilityValue: outTotalLiabilityValueAfter,
 		} = this.calculateSpotPositionLeverageContribution(
 			outPositionAfter,
-			outStrictOraclePrice
+			outLeveragePrice
 		);
 
 		const spotAssetValueDelta = inTotalAssetValueAfter

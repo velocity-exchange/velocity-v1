@@ -7,6 +7,7 @@ import {
 	SPOT_MARKET_BALANCE_PRECISION,
 	SPOT_MARKET_WEIGHT_PRECISION,
 	SpotBalanceType,
+	ZERO,
 } from '../../src';
 import { mockPerpMarkets, mockSpotMarkets } from '../dlob/helpers';
 import { assert } from '../../src/assert/assert';
@@ -162,7 +163,7 @@ describe('strict swap pricing uses the stored 5min oracle twap', () => {
 		);
 	});
 
-	it('accountLeverageAfterSwap prices both legs off the stored twap', async () => {
+	it('accountLeverageAfterSwap keeps its legs on the live oracle basis', async () => {
 		// 10 SOL deposit against a 500 USDC borrow, selling 2 SOL for 200 USDC
 		const swap = {
 			inMarketIndex: SOL_MARKET_INDEX,
@@ -184,18 +185,73 @@ describe('strict swap pricing uses the stored 5min oracle twap', () => {
 				.toString()}`
 		);
 
-		// stored twap $90 shrinks the SOL leg on both sides of the delta,
-		// leaving $820 of spot assets instead of $800
+		// the leverage readout is a delta on getLeverageComponents' live-oracle
+		// baseline, so the stored twap must not move it — pricing the delta
+		// strictly here would value the remaining 8 SOL at $820, a price that is
+		// neither the $100 oracle nor the $90 twap
 		const discounted = await makeSwapUser({
 			solTwap5Min: 90,
 			solTokens: 10,
 			usdcTokens: -500,
 		});
 		assert(
-			discounted.accountLeverageAfterSwap(swap).eq(new BN(5769)),
+			discounted.accountLeverageAfterSwap(swap).eq(new BN(6000)),
 			`leverage with a discounted stored twap: ${discounted
 				.accountLeverageAfterSwap(swap)
 				.toString()}`
+		);
+
+		// a zero-size swap must agree with the account's current leverage
+		assert(
+			discounted
+				.accountLeverageAfterSwap({ ...swap, inAmount: ZERO, outAmount: ZERO })
+				.eq(discounted.getLeverage()),
+			`zero-size swap diverges from getLeverage: ${discounted
+				.accountLeverageAfterSwap({ ...swap, inAmount: ZERO, outAmount: ZERO })
+				.toString()} vs ${discounted.getLeverage().toString()}`
+		);
+	});
+
+	it('getMaxSwapAmount keeps its leverage readout on the live oracle basis', async () => {
+		const swap = {
+			inMarketIndex: SOL_MARKET_INDEX,
+			outMarketIndex: USDC_MARKET_INDEX,
+		};
+
+		const control = await makeSwapUser({
+			solTwap5Min: SOL_ORACLE_PRICE,
+			solTokens: 10,
+			usdcTokens: -500,
+		});
+		const discounted = await makeSwapUser({
+			solTwap5Min: 90,
+			solTokens: 10,
+			usdcTokens: -500,
+		});
+
+		// the stored twap still bounds how much can be swapped...
+		assert(
+			discounted
+				.getMaxSwapAmount(swap)
+				.inAmount.lt(control.getMaxSwapAmount(swap).inAmount),
+			'a discounted stored twap should shrink the max swap size'
+		);
+
+		// ...but the leverage each max swap lands the account at is measured at
+		// the live oracle price, so both report the same fully-drawn leverage
+		const controlMax = control.getMaxSwapAmount(swap);
+		const discountedMax = discounted.getMaxSwapAmount(swap);
+		assertClose(
+			discounted.accountLeverageAfterSwap({ ...swap, ...discountedMax }),
+			discountedMax.leverage,
+			new BN(2),
+			'getMaxSwapAmount leverage vs accountLeverageAfterSwap'
+		);
+		assertClose(
+			control.accountLeverageAfterSwap({ ...swap, ...controlMax }),
+			controlMax.leverage,
+			new BN(2),
+			'getMaxSwapAmount leverage vs accountLeverageAfterSwap (control)'
 		);
 	});
 });

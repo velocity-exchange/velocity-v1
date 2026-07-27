@@ -469,8 +469,9 @@ export class JupiterClient {
 			return cached;
 		}
 
-		const lookupTable = (await this.connection.getAddressLookupTable(accountKey))
-			.value;
+		const lookupTable = (
+			await this.connection.getAddressLookupTable(accountKey)
+		).value;
 
 		if (!lookupTable) {
 			return undefined;

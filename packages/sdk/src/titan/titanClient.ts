@@ -408,9 +408,7 @@ export class TitanClient {
 				await sleep(LOOKUP_TABLE_RETRY_BASE_DELAY_MS * 2 ** (attempt - 1));
 			}
 
-			let altAccount: Awaited<
-				ReturnType<Connection['getAddressLookupTable']>
-			>;
+			let altAccount: Awaited<ReturnType<Connection['getAddressLookupTable']>>;
 
 			try {
 				altAccount = await this.connection.getAddressLookupTable(altPubkey);

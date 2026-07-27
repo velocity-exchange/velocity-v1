@@ -59,7 +59,9 @@ describe('TitanClient.fetchLookupTable', () => {
 	});
 
 	it('throws with the final error once retries are exhausted', async () => {
-		connection.getAddressLookupTable.rejects(new Error('429 Too Many Requests'));
+		connection.getAddressLookupTable.rejects(
+			new Error('429 Too Many Requests')
+		);
 
 		const err = await captureError(fetchLookupTable());
 

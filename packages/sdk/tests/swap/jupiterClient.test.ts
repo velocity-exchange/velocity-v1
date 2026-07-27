@@ -25,9 +25,7 @@ const captureError = async (promise: Promise<unknown>): Promise<Error> => {
 	throw new Error('expected the promise to reject, but it resolved');
 };
 
-const INPUT_MINT = new PublicKey(
-	'So11111111111111111111111111111111111111112'
-);
+const INPUT_MINT = new PublicKey('So11111111111111111111111111111111111111112');
 const OUTPUT_MINT = new PublicKey(
 	'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v'
 );
@@ -42,7 +40,10 @@ const validQuoteBody = {
 	routePlan: [],
 };
 
-const jsonResponse = (body: unknown, init?: { ok?: boolean; status?: number }) =>
+const jsonResponse = (
+	body: unknown,
+	init?: { ok?: boolean; status?: number }
+) =>
 	({
 		ok: init?.ok ?? true,
 		status: init?.status ?? 200,

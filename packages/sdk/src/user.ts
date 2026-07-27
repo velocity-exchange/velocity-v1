@@ -1162,7 +1162,7 @@ export class User {
 		marginCategory?: MarginCategory,
 		liquidationBuffer?: BN,
 		includeOpenOrders?: boolean,
-		strict = false,
+		strict = false
 	): { totalAssetValue: BN; totalLiabilityValue: BN } {
 		let netQuoteValue = ZERO;
 		let totalAssetValue = ZERO;
@@ -1353,14 +1353,14 @@ export class User {
 		marginCategory?: MarginCategory,
 		liquidationBuffer?: BN,
 		includeOpenOrders?: boolean,
-		strict = false,
+		strict = false
 	): BN {
 		const { totalLiabilityValue } = this.getSpotMarketAssetAndLiabilityValue(
 			marketIndex,
 			marginCategory,
 			liquidationBuffer,
 			includeOpenOrders,
-			strict,
+			strict
 		);
 		return totalLiabilityValue;
 	}
@@ -1388,14 +1388,14 @@ export class User {
 		marketIndex?: number,
 		marginCategory?: MarginCategory,
 		includeOpenOrders?: boolean,
-		strict = false,
+		strict = false
 	): BN {
 		const { totalAssetValue } = this.getSpotMarketAssetAndLiabilityValue(
 			marketIndex,
 			marginCategory,
 			undefined,
 			includeOpenOrders,
-			strict,
+			strict
 		);
 		return totalAssetValue;
 	}
@@ -1421,7 +1421,7 @@ export class User {
 		marketIndex: number,
 		marginCategory?: MarginCategory,
 		includeOpenOrders?: boolean,
-		strict = false,
+		strict = false
 	): BN {
 		const { totalAssetValue, totalLiabilityValue } =
 			this.getSpotMarketAssetAndLiabilityValue(
@@ -1429,7 +1429,7 @@ export class User {
 				marginCategory,
 				undefined,
 				includeOpenOrders,
-				strict,
+				strict
 			);
 
 		return totalAssetValue.sub(totalLiabilityValue);
@@ -3453,8 +3453,16 @@ export class User {
 		const outOraclePriceData = this.getOracleDataForSpotMarket(outMarketIndex);
 		const outOraclePrice = outOraclePriceData.price;
 
-		const inStrictOraclePrice = new StrictOraclePrice(inOraclePrice);
-		const outStrictOraclePrice = new StrictOraclePrice(outOraclePrice);
+		// mirrors handle_end_swap: both legs are priced strictly, against each
+		// market's stored 5min TWAP
+		const inStrictOraclePrice = new StrictOraclePrice(
+			inOraclePrice,
+			inMarket.historicalOracleData.lastOraclePriceTwap5Min
+		);
+		const outStrictOraclePrice = new StrictOraclePrice(
+			outOraclePrice,
+			outMarket.historicalOracleData.lastOraclePriceTwap5Min
+		);
 
 		const inPrecision = new BN(10 ** inMarket.decimals);
 		const outPrecision = new BN(10 ** outMarket.decimals);
@@ -3792,8 +3800,15 @@ export class User {
 		const inOraclePrice = inOraclePriceData.price;
 		const outOraclePriceData = this.getOracleDataForSpotMarket(outMarketIndex);
 		const outOraclePrice = outOraclePriceData.price;
-		const inStrictOraclePrice = new StrictOraclePrice(inOraclePrice);
-		const outStrictOraclePrice = new StrictOraclePrice(outOraclePrice);
+		// same strict pricing as getMaxSwapAmount, so the two agree on leverage
+		const inStrictOraclePrice = new StrictOraclePrice(
+			inOraclePrice,
+			inMarket.historicalOracleData.lastOraclePriceTwap5Min
+		);
+		const outStrictOraclePrice = new StrictOraclePrice(
+			outOraclePrice,
+			outMarket.historicalOracleData.lastOraclePriceTwap5Min
+		);
 
 		const inSpotPosition =
 			this.getSpotPosition(inMarketIndex) ||

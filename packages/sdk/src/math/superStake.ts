@@ -4,7 +4,7 @@ import {
 	PublicKey,
 	TransactionInstruction,
 } from '@solana/web3.js';
-import { JupiterClient, QuoteResponse } from '../jupiter/jupiterClient';
+import { JupiterClient, JupiterSwapQuote } from '../jupiter/jupiterClient';
 import { VelocityClient } from '../velocityClient';
 import { getMarinadeFinanceProgram, getMarinadeMSolPrice } from '../marinade';
 import { BN } from '../isomorphic/anchor';
@@ -78,7 +78,7 @@ export async function fetchBSolVelocityEmissions() {
  * @param {boolean} [params.forceMarinade] - Force the direct Marinade stake path over a Jupiter
  *   swap even if Jupiter would be cheaper (market index 2 only)
  * @param {boolean} [params.onlyDirectRoutes] - Restrict Jupiter routing to direct swaps only
- * @param {QuoteResponse} [params.jupiterQuote] - A pre-fetched Jupiter quote to reuse instead of
+ * @param {JupiterSwapQuote} [params.jupiterQuote] - A pre-fetched Jupiter quote to reuse instead of
  *   fetching a fresh one
  * @return {Promise<{ ixs: TransactionInstruction[]; lookupTables: AddressLookupTableAccount[];
  *   method: 'jupiter' | 'marinade'; price?: number }>} The instructions to submit, any address
@@ -105,7 +105,7 @@ export async function findBestSuperStakeIxs({
 	userAccountPublicKey?: PublicKey;
 	forceMarinade?: boolean;
 	onlyDirectRoutes?: boolean;
-	jupiterQuote?: QuoteResponse;
+	jupiterQuote?: JupiterSwapQuote;
 }): Promise<{
 	ixs: TransactionInstruction[];
 	lookupTables: AddressLookupTableAccount[];
@@ -163,7 +163,7 @@ export async function findBestSuperStakeIxs({
  * @param {PublicKey} [params.userAccountPublicKey] - The target sub-account
  * @param {boolean} [params.forceMarinade] - Force the Marinade path regardless of Jupiter pricing
  * @param {boolean} [params.onlyDirectRoutes] - Restrict Jupiter routing to direct swaps only
- * @param {QuoteResponse} [params.jupiterQuote] - A pre-fetched Jupiter quote to reuse
+ * @param {JupiterSwapQuote} [params.jupiterQuote] - A pre-fetched Jupiter quote to reuse
  * @return {Promise<{ ixs: TransactionInstruction[]; lookupTables: AddressLookupTableAccount[];
  *   method: 'jupiter' | 'marinade'; price: number }>} The chosen route's instructions, required
  *   lookup tables, the method used, and the mSOL/SOL price used for the decision
@@ -185,7 +185,7 @@ export async function findBestMSolSuperStakeIxs({
 	userAccountPublicKey?: PublicKey;
 	forceMarinade?: boolean;
 	onlyDirectRoutes?: boolean;
-	jupiterQuote?: QuoteResponse;
+	jupiterQuote?: JupiterSwapQuote;
 }): Promise<{
 	ixs: TransactionInstruction[];
 	lookupTables: AddressLookupTableAccount[];
@@ -260,7 +260,7 @@ export async function findBestMSolSuperStakeIxs({
  * @param {VelocityClient} params.velocityClient - Velocity client
  * @param {PublicKey} [params.userAccountPublicKey] - The target sub-account
  * @param {boolean} [params.onlyDirectRoutes] - Restrict Jupiter routing to direct swaps only
- * @param {QuoteResponse} [params.jupiterQuote] - A pre-fetched Jupiter quote to reuse
+ * @param {JupiterSwapQuote} [params.jupiterQuote] - A pre-fetched Jupiter quote to reuse
  * @return {Promise<{ ixs: TransactionInstruction[]; lookupTables: AddressLookupTableAccount[];
  *   method: 'jupiter' | 'marinade'; price?: number }>} Always resolves with `method: 'jupiter'`
  */
@@ -277,7 +277,7 @@ export async function findBestJitoSolSuperStakeIxs({
 	velocityClient: VelocityClient;
 	userAccountPublicKey?: PublicKey;
 	onlyDirectRoutes?: boolean;
-	jupiterQuote?: QuoteResponse;
+	jupiterQuote?: JupiterSwapQuote;
 }): Promise<{
 	ixs: TransactionInstruction[];
 	lookupTables: AddressLookupTableAccount[];
@@ -310,7 +310,7 @@ export async function findBestJitoSolSuperStakeIxs({
  * @param {VelocityClient} params.velocityClient - Velocity client
  * @param {PublicKey} [params.userAccountPublicKey] - The target sub-account
  * @param {boolean} [params.onlyDirectRoutes] - Restrict Jupiter routing to direct swaps only
- * @param {QuoteResponse} [params.jupiterQuote] - A pre-fetched Jupiter quote to reuse
+ * @param {JupiterSwapQuote} [params.jupiterQuote] - A pre-fetched Jupiter quote to reuse
  * @return {Promise<{ ixs: TransactionInstruction[]; lookupTables: AddressLookupTableAccount[];
  *   method: 'jupiter' | 'marinade' }>} Always resolves with `method: 'jupiter'`
  */
@@ -330,7 +330,7 @@ export async function findBestLstSuperStakeIxs({
 	velocityClient: VelocityClient;
 	userAccountPublicKey?: PublicKey;
 	onlyDirectRoutes?: boolean;
-	jupiterQuote?: QuoteResponse;
+	jupiterQuote?: JupiterSwapQuote;
 }): Promise<{
 	ixs: TransactionInstruction[];
 	lookupTables: AddressLookupTableAccount[];

@@ -965,22 +965,12 @@ export async function swapFillerHardEarnedUSDCForSOL(
 
 		const velocityLuts = await velocityClient.fetchAllLookupTableAccounts();
 
-		const transaction = await jupiterClient.getSwap({
-			quote,
-			userPublicKey: velocityClient.provider.wallet.publicKey,
-			slippageBps: JUPITER_SLIPPAGE_BPS,
-		});
-
-		const { transactionMessage, lookupTables } =
-			await jupiterClient.getTransactionMessageAndLookupTables({
-				transaction,
+		const { instructions: jupiterInstructions, lookupTables } =
+			await jupiterClient.getRouteInstructions({
+				quote,
+				userPublicKey: velocityClient.provider.wallet.publicKey,
+				slippageBps: JUPITER_SLIPPAGE_BPS,
 			});
-
-		const jupiterInstructions = jupiterClient.getJupiterInstructions({
-			transactionMessage,
-			inputMint: usdcMarket.mint,
-			outputMint: solMarket.mint,
-		});
 
 		const preInstructions = [];
 

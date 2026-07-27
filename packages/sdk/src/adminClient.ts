@@ -87,7 +87,7 @@ import {
 } from './constants/numericConstants';
 import { calculateTargetPriceTrade } from './math/trade';
 import { calculateAmmReservesAfterSwap, getSwapDirection } from './math/amm';
-import { JupiterClient, QuoteResponse } from './jupiter/jupiterClient';
+import { JupiterClient, JupiterSwapQuote } from './jupiter/jupiterClient';
 import { SwapMode } from './swap/UnifiedSwapClient';
 
 export class AdminClient extends VelocityClient {
@@ -7344,7 +7344,7 @@ export class AdminClient extends VelocityClient {
 		slippageBps?: number;
 		swapMode?: SwapMode;
 		onlyDirectRoutes?: boolean;
-		quote?: QuoteResponse;
+		quote?: JupiterSwapQuote;
 		lpPoolId: number;
 	}): Promise<{
 		ixs: TransactionInstruction[];
@@ -7374,22 +7374,12 @@ export class AdminClient extends VelocityClient {
 		const amountIn = new BN(quote.inAmount);
 		const exactOutBufferedAmountIn = amountIn.muln(1001).divn(1000); // Add 10bp buffer
 
-		const transaction = await jupiterClient.getSwap({
-			quote,
-			userPublicKey: this.provider.wallet.publicKey,
-			slippageBps,
-		});
-
-		const { transactionMessage, lookupTables } =
-			await jupiterClient.getTransactionMessageAndLookupTables({
-				transaction,
+		const { instructions: jupiterInstructions, lookupTables } =
+			await jupiterClient.getRouteInstructions({
+				quote,
+				userPublicKey: this.provider.wallet.publicKey,
+				slippageBps,
 			});
-
-		const jupiterInstructions = jupiterClient.getJupiterInstructions({
-			transactionMessage,
-			inputMint: inMarket.mint,
-			outputMint: outMarket.mint,
-		});
 
 		const preInstructions = [];
 		const tokenProgram = this.getTokenProgramForSpotMarket(outMarket);

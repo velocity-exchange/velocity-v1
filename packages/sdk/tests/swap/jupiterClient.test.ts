@@ -84,6 +84,17 @@ describe('JupiterClient.getQuote', () => {
 		expect(quote.outAmount).to.equal('1999997166');
 	});
 
+	it('attaches the route payload the swap step needs', async () => {
+		// Carried on the quote rather than cached on the client, so building a
+		// swap can't pick up a route from some other in-flight quote.
+		fetchStub.resolves(jsonResponse(validQuoteBody));
+
+		const quote = await getQuote();
+
+		expect(quote.providerRoute.provider).to.equal('jupiter');
+		expect(quote.providerRoute).to.have.property('quote');
+	});
+
 	it('throws on a non-OK response, surfacing the provider error', async () => {
 		fetchStub.resolves(
 			jsonResponse(

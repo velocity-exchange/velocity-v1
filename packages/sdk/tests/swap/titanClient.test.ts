@@ -6,8 +6,14 @@ import {
 	PublicKey,
 } from '@solana/web3.js';
 import { TitanClient } from '../../src/titan/titanClient';
+import { SwapQuote } from '../../src/swap/types';
 
 const ALT_KEY = new PublicKey('HxFLKUAmAMLz1jtT3hbvCMELwH5H9tpM2QugP8sKyfhc');
+const INPUT_MINT = new PublicKey('So11111111111111111111111111111111111111112');
+const OUTPUT_MINT = new PublicKey(
+	'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v'
+);
+const USER = new PublicKey('HxFLKUAmAMLz1jtT3hbvCMELwH5H9tpM2QugP8sKyfhc');
 
 /** Resolves to the rejection reason, or fails if the promise resolves. */
 const captureError = async (promise: Promise<unknown>): Promise<Error> => {
@@ -93,5 +99,121 @@ describe('TitanClient.fetchLookupTable', () => {
 		const err = await captureError(fetchLookupTable());
 
 		expect(err).to.be.instanceOf(Error);
+	});
+});
+
+describe('TitanClient.getRouteInstructions', () => {
+	let connection: sinon.SinonStubbedInstance<Connection>;
+	let client: TitanClient;
+
+	/** A quote as `getQuote` would return it, carrying its own route. */
+	const quoteWithRoute = (instructions: unknown[]): SwapQuote =>
+		({
+			inputMint: INPUT_MINT.toString(),
+			outputMint: OUTPUT_MINT.toString(),
+			inAmount: '1000000',
+			outAmount: '13131908',
+			swapMode: 'ExactIn',
+			slippageBps: 50,
+			routePlan: [],
+			providerRoute: {
+				provider: 'titan',
+				route: { instructions, addressLookupTables: [] },
+			},
+		}) as unknown as SwapQuote;
+
+	beforeEach(() => {
+		connection = sinon.createStubInstance(Connection);
+		connection.getLatestBlockhash.resolves({
+			blockhash: '11111111111111111111111111111111',
+			lastValidBlockHeight: 1,
+		});
+		client = new TitanClient({
+			connection: connection as unknown as Connection,
+			authToken: '',
+		});
+	});
+
+	afterEach(() => {
+		sinon.restore();
+	});
+
+	it('builds from the route on the quote it was handed', async () => {
+		const titanProgram = new PublicKey(
+			'T1TANpTeScyeqVzzgNViGDNrkQ6qHz9KrSBS4aNXvGT'
+		);
+		const quote = quoteWithRoute([
+			{
+				p: titanProgram.toBytes(),
+				a: [{ p: USER.toBytes(), s: true, w: true }],
+				d: new Uint8Array([1, 2, 3]),
+			},
+		]);
+
+		const { instructions } = await client.getRouteInstructions({
+			quote,
+			userPublicKey: USER,
+		});
+
+		expect(instructions).to.have.lengthOf(1);
+		expect(instructions[0].programId.equals(titanProgram)).to.be.true;
+	});
+
+	it('rejects a quote produced by a different provider', async () => {
+		// The bug this interface exists to prevent: Titan used to ignore the
+		// quote entirely and replay whatever route it had cached, so a mismatch
+		// like this built a transaction for the wrong swap and only surfaced
+		// on-chain as "amount_out must be greater than 0".
+		const jupiterQuote = {
+			...quoteWithRoute([]),
+			providerRoute: { provider: 'jupiter', quote: {} },
+		} as unknown as SwapQuote;
+
+		const err = await captureError(
+			client.getRouteInstructions({ quote: jupiterQuote, userPublicKey: USER })
+		);
+
+		expect(err.message).to.contain('jupiter');
+		expect(err.message).to.contain('titan');
+	});
+
+	it('rejects a quote with no route payload', async () => {
+		const bareQuote = { ...quoteWithRoute([]) } as Record<string, unknown>;
+		delete bareQuote.providerRoute;
+
+		const err = await captureError(
+			client.getRouteInstructions({
+				quote: bareQuote as unknown as SwapQuote,
+				userPublicKey: USER,
+			})
+		);
+
+		expect(err.message).to.contain('missing its provider route');
+	});
+
+	it('does not depend on a preceding getQuote call', async () => {
+		// Two independent builds from the same quote must both succeed. The old
+		// client cleared its cached route after one use, so the second failed.
+		const quote = quoteWithRoute([
+			{
+				p: new PublicKey(
+					'T1TANpTeScyeqVzzgNViGDNrkQ6qHz9KrSBS4aNXvGT'
+				).toBytes(),
+				a: [],
+				d: new Uint8Array([1]),
+			},
+		]);
+
+		const first = await client.getRouteInstructions({
+			quote,
+			userPublicKey: USER,
+		});
+		const second = await client.getRouteInstructions({
+			quote,
+			userPublicKey: USER,
+		});
+
+		expect(first.instructions).to.have.lengthOf(1);
+		expect(second.instructions).to.have.lengthOf(1);
 	});
 });

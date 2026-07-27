@@ -176,8 +176,8 @@ import { isSpotPositionAvailable } from './math/spotPosition';
 import { calculateMarketMaxAvailableInsurance } from './math/market';
 import { fetchUserStatsAccount } from './accounts/fetch';
 import { castNumberToSpotPrecision } from './math/spotMarket';
-import { JupiterClient, QuoteResponse } from './jupiter/jupiterClient';
-import { SwapMode, UnifiedQuoteResponse } from './swap/UnifiedSwapClient';
+import { JupiterClient, JupiterSwapQuote } from './jupiter/jupiterClient';
+import { SwapMode, SwapQuote } from './swap/UnifiedSwapClient';
 import { getNonIdleUserFilter } from './memcmp';
 import { UserStatsSubscriptionConfig } from './userStatsConfig';
 import { getMarinadeDepositIx, getMarinadeFinanceProgram } from './marinade';
@@ -7511,9 +7511,9 @@ export class VelocityClient {
 		txParams?: TxParams;
 		onlyDirectRoutes?: boolean;
 		v6?: {
-			quote?: QuoteResponse;
+			quote?: JupiterSwapQuote;
 		};
-		quote?: UnifiedQuoteResponse;
+		quote?: SwapQuote;
 	}): Promise<TransactionSignature> {
 		// Handle backward compatibility: use jupiterClient if swapClient is not provided
 		const clientToUse = swapClient || jupiterClient;
@@ -7567,7 +7567,7 @@ export class VelocityClient {
 				amount,
 				slippageBps,
 				swapMode,
-				quote: quoteToUse as QuoteResponse,
+				quote: quoteToUse as JupiterSwapQuote,
 				reduceOnly,
 				onlyDirectRoutes,
 			});
@@ -7695,7 +7695,7 @@ export class VelocityClient {
 			userAccountPublicKey,
 		});
 
-		const { transactionMessage, lookupTables } = await titanClient.getSwap({
+		const quote = await titanClient.getQuote({
 			inputMint: inMarket.mint,
 			outputMint: outMarket.mint,
 			amount,
@@ -7706,11 +7706,12 @@ export class VelocityClient {
 			sizeConstraint: MAX_TX_BYTE_SIZE - 375, // buffer for velocity instructions
 		});
 
-		const titanInstructions = titanClient.getTitanInstructions({
-			transactionMessage,
-			inputMint: inMarket.mint,
-			outputMint: outMarket.mint,
-		});
+		const { instructions: titanInstructions, lookupTables } =
+			await titanClient.getRouteInstructions({
+				quote,
+				userPublicKey: this.provider.wallet.publicKey,
+				slippageBps,
+			});
 
 		const ixs = [
 			...preInstructions,
@@ -7756,7 +7757,7 @@ export class VelocityClient {
 		slippageBps?: number;
 		swapMode?: SwapMode;
 		onlyDirectRoutes?: boolean;
-		quote?: QuoteResponse;
+		quote?: JupiterSwapQuote;
 		reduceOnly?: SwapReduceOnly;
 		userAccountPublicKey?: PublicKey;
 	}): Promise<{
@@ -7787,22 +7788,12 @@ export class VelocityClient {
 		const amountIn = new BN(quote.inAmount);
 		const exactOutBufferedAmountIn = amountIn.muln(1001).divn(1000); // Add 10bp buffer
 
-		const transaction = await jupiterClient.getSwap({
-			quote,
-			userPublicKey: this.provider.wallet.publicKey,
-			slippageBps,
-		});
-
-		const { transactionMessage, lookupTables } =
-			await jupiterClient.getTransactionMessageAndLookupTables({
-				transaction,
+		const { instructions: jupiterInstructions, lookupTables } =
+			await jupiterClient.getRouteInstructions({
+				quote,
+				userPublicKey: this.provider.wallet.publicKey,
+				slippageBps,
 			});
-
-		const jupiterInstructions = jupiterClient.getJupiterInstructions({
-			transactionMessage,
-			inputMint: inMarket.mint,
-			outputMint: outMarket.mint,
-		});
 
 		const preInstructions = [];
 		if (!outAssociatedTokenAccount) {
@@ -8060,9 +8051,9 @@ export class VelocityClient {
 		swapMode?: SwapMode;
 		onlyDirectRoutes?: boolean;
 		reduceOnly?: SwapReduceOnly;
-		quote?: UnifiedQuoteResponse;
+		quote?: SwapQuote;
 		v6?: {
-			quote?: QuoteResponse;
+			quote?: JupiterSwapQuote;
 		};
 		userAccountPublicKey?: PublicKey;
 	}): Promise<{
@@ -11022,7 +11013,7 @@ export class VelocityClient {
 		slippageBps?: number;
 		swapMode?: SwapMode;
 		onlyDirectRoutes?: boolean;
-		quote?: QuoteResponse;
+		quote?: JupiterSwapQuote;
 		userAccount: UserAccount;
 		userAccountPublicKey: PublicKey;
 		liquidatorSubAccountId?: number;
@@ -11055,22 +11046,12 @@ export class VelocityClient {
 
 		const amountIn = new BN(quote.inAmount);
 
-		const transaction = await jupiterClient.getSwap({
-			quote,
-			userPublicKey: this.provider.wallet.publicKey,
-			slippageBps,
-		});
-
-		const { transactionMessage, lookupTables } =
-			await jupiterClient.getTransactionMessageAndLookupTables({
-				transaction,
+		const { instructions: jupiterInstructions, lookupTables } =
+			await jupiterClient.getRouteInstructions({
+				quote,
+				userPublicKey: this.provider.wallet.publicKey,
+				slippageBps,
 			});
-
-		const jupiterInstructions = jupiterClient.getJupiterInstructions({
-			transactionMessage,
-			inputMint: assetMarket.mint,
-			outputMint: liabilityMarket.mint,
-		});
 
 		const preInstructions = [];
 		if (!liabilityTokenAccount) {

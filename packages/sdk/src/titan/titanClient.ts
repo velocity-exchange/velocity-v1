@@ -7,6 +7,15 @@ import {
 } from '@solana/web3.js';
 import { BN } from '../isomorphic/anchor';
 import { decode } from '@msgpack/msgpack';
+import { filterRouteInstructions } from '../swap/routeInstructions';
+import {
+	GetRouteInstructionsParams,
+	SwapProvider,
+	SwapQuote,
+	SwapQuoteParams,
+	SwapRouteInstructions,
+	expectProviderRoute,
+} from '../swap/types';
 
 export enum SwapMode {
 	ExactIn = 'ExactIn',
@@ -72,22 +81,10 @@ interface SwapQuotes {
 	quotes: { [key: string]: SwapRoute };
 }
 
-export interface QuoteResponse {
-	inputMint: string;
-	inAmount: string;
-	outputMint: string;
-	outAmount: string;
-	swapMode: SwapMode;
-	slippageBps: number;
-	platformFee?: { amount?: string; feeBps?: number };
-	routePlan: Array<{ swapInfo: any; percent: number }>;
-	contextSlot?: number;
-	timeTaken?: number;
-	error?: string;
-	errorCode?: string;
-}
-
 const TITAN_API_URL = 'https://api.titan.exchange';
+
+/** Account budget assumed when a caller doesn't specify one. */
+const DEFAULT_MAX_ACCOUNTS = 50;
 
 /** Retries for a route's lookup tables, which must all resolve for the tx to fit. */
 const LOOKUP_TABLE_FETCH_RETRIES = 2;
@@ -95,13 +92,13 @@ const LOOKUP_TABLE_RETRY_BASE_DELAY_MS = 150;
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
-export class TitanClient {
+export class TitanClient implements SwapProvider {
+	public readonly providerName = 'titan' as const;
+
 	authToken: string;
 	url: string;
 	connection: Connection;
 	proxyUrl?: string;
-	private lastQuoteData?: SwapQuotes;
-	private lastQuoteParams?: string;
 
 	constructor({
 		connection,
@@ -171,33 +168,31 @@ export class TitanClient {
 	}
 
 	/**
-	 * Get routes for a swap
+	 * Get the best available route for a swap.
+	 *
+	 * The route is returned on the quote's `providerRoute`, so
+	 * {@link getRouteInstructions} builds exactly what was quoted here.
+	 * @throws If `userPublicKey` is missing — Titan bakes the user's token
+	 * accounts into the route, so a route quoted for one wallet cannot be
+	 * executed by another.
 	 */
 	public async getQuote({
 		inputMint,
 		outputMint,
 		amount,
 		userPublicKey,
-		maxAccounts = 50, // 50 is an estimated amount with buffer
+		maxAccounts = DEFAULT_MAX_ACCOUNTS,
 		slippageBps,
 		swapMode,
 		onlyDirectRoutes,
 		excludeDexes,
 		sizeConstraint,
 		accountsLimitWritable,
-	}: {
-		inputMint: PublicKey;
-		outputMint: PublicKey;
-		amount: BN;
-		userPublicKey: PublicKey;
-		maxAccounts?: number;
-		slippageBps?: number;
-		swapMode?: string;
-		onlyDirectRoutes?: boolean;
-		excludeDexes?: string[];
-		sizeConstraint?: number;
-		accountsLimitWritable?: number;
-	}): Promise<QuoteResponse> {
+	}: SwapQuoteParams): Promise<SwapQuote> {
+		if (!userPublicKey) {
+			throw new Error('Titan quotes require a userPublicKey.');
+		}
+
 		const params = this.buildParams({
 			inputMint,
 			outputMint,
@@ -246,10 +241,6 @@ export class TitanClient {
 		const buffer = await response.arrayBuffer();
 		const data = decode(buffer) as SwapQuotes;
 
-		// Cache the quote data and parameters for later use in getSwap
-		this.lastQuoteData = data;
-		this.lastQuoteParams = params.toString();
-
 		// We are only querying for the best avaiable route so use that
 		const route = data.quotes[Object.keys(data.quotes)[0]];
 
@@ -257,7 +248,12 @@ export class TitanClient {
 			throw new Error('No routes available');
 		}
 
+		if (!route.instructions?.length) {
+			throw new Error('Titan route has no instructions');
+		}
+
 		return {
+			providerRoute: { provider: 'titan', route },
 			inputMint: inputMint.toString(),
 			inAmount: amount.toString(),
 			outputMint: outputMint.toString(),
@@ -290,107 +286,37 @@ export class TitanClient {
 	}
 
 	/**
-	 * Get a swap transaction for quote
+	 * Builds the route instructions for a quote returned by {@link getQuote}.
+	 *
+	 * The route travels on the quote, so this reads no client state and two
+	 * quotes in flight can never be confused for one another.
+	 * @throws If the quote came from a different provider, or if a lookup table
+	 * the route depends on can't be loaded.
 	 */
-	public async getSwap({
+	public async getRouteInstructions({
+		quote,
 		userPublicKey,
-	}: {
-		inputMint?: PublicKey;
-		outputMint?: PublicKey;
-		amount?: BN;
-		userPublicKey: PublicKey;
-		maxAccounts?: number;
-		slippageBps?: number;
-		swapMode?: SwapMode;
-		onlyDirectRoutes?: boolean;
-		excludeDexes?: string[];
-		sizeConstraint?: number;
-		accountsLimitWritable?: number;
-	}): Promise<{
-		transactionMessage: TransactionMessage;
-		lookupTables: AddressLookupTableAccount[];
-	}> {
-		// Check if we have cached quote data that matches the current parameters
-		if (!this.lastQuoteData) {
-			throw new Error(
-				'No matching quote data found. Please get a fresh quote before attempting to swap.'
-			);
+	}: GetRouteInstructionsParams): Promise<SwapRouteInstructions> {
+		const route = expectProviderRoute(quote, 'titan').route as SwapRoute;
+
+		if (!route.instructions?.length) {
+			throw new Error('No instructions provided in the route');
 		}
 
-		// Reuse the cached quote data
-		const data = this.lastQuoteData;
+		// Errors propagate as-is. Replacing them with generic copy here loses
+		// the reason the swap can't be built — an unresolvable lookup table,
+		// say — which the caller needs to decide whether re-quoting will help.
+		const { transactionMessage, lookupTables } =
+			await this.getTransactionMessageAndLookupTables(route, userPublicKey);
 
-		// We are only querying for the best avaiable route so use that
-		const route = data.quotes[Object.keys(data.quotes)[0]];
-
-		if (!route) {
-			throw new Error('No routes available');
-		}
-
-		if (route.instructions && route.instructions.length > 0) {
-			// Errors propagate as-is. Replacing them with generic copy here loses
-			// the reason the swap can't be built — an unresolvable lookup table,
-			// say — which the caller needs to decide whether re-quoting will help.
-			try {
-				const { transactionMessage, lookupTables } =
-					await this.getTransactionMessageAndLookupTables(route, userPublicKey);
-				return { transactionMessage, lookupTables };
-			} finally {
-				// Clear cached quote data after use
-				this.lastQuoteData = undefined;
-				this.lastQuoteParams = undefined;
-			}
-		}
-		throw new Error('No instructions provided in the route');
-	}
-
-	/**
-	 * Get the titan instructions from transaction by filtering out instructions to compute budget and associated token programs
-	 * @param transactionMessage the transaction message
-	 * @param inputMint the input mint
-	 * @param outputMint the output mint
-	 */
-	public getTitanInstructions({
-		transactionMessage,
-		inputMint,
-		outputMint,
-	}: {
-		transactionMessage: TransactionMessage;
-		inputMint: PublicKey;
-		outputMint: PublicKey;
-	}): TransactionInstruction[] {
-		// Filter out common system instructions that can be handled by VelocityClient
-		const filteredInstructions = transactionMessage.instructions.filter(
-			(instruction) => {
-				const programId = instruction.programId.toString();
-
-				// Filter out system programs
-				if (programId === 'ComputeBudget111111111111111111111111111111') {
-					return false;
-				}
-
-				if (programId === 'TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA') {
-					return false;
-				}
-
-				if (programId === '11111111111111111111111111111111') {
-					return false;
-				}
-
-				// Filter out Associated Token Account creation for input/output mints
-				if (programId === 'ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL') {
-					if (instruction.keys.length > 3) {
-						const mint = instruction.keys[3].pubkey;
-						if (mint.equals(inputMint) || mint.equals(outputMint)) {
-							return false;
-						}
-					}
-				}
-
-				return true;
-			}
-		);
-		return filteredInstructions;
+		return {
+			instructions: filterRouteInstructions({
+				transactionMessage,
+				inputMint: new PublicKey(quote.inputMint),
+				outputMint: new PublicKey(quote.outputMint),
+			}),
+			lookupTables,
+		};
 	}
 
 	/**

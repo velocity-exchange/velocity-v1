@@ -21,6 +21,7 @@ pub mod order_params;
 pub mod paused_operations;
 pub mod perp_market;
 pub mod perp_market_map;
+pub mod prop_amm;
 pub mod pyth_lazer_oracle;
 pub mod quoter;
 pub mod revenue_share;

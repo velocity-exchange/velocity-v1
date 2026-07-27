@@ -17,7 +17,9 @@
 #   deploy-scripts/verify-buffer.sh <program> <actions-run-or-job-url> [options]
 #
 #   <program>                 velocity | token_faucet | jit_proxy (cargo library name)
-#   <actions-run-or-job-url>  e.g. https://github.com/<org>/<repo>/actions/runs/<id>[/job/<id>]
+#   <actions-run-or-job-url>  e.g. https://github.com/<org>/<repo>/actions/runs/<id>[/attempts/<n>][/job/<id>]
+#                             (include /attempts/<n> for re-run runs — the log
+#                             of the deploying attempt, not the latest, is read)
 #
 # Options:
 #   --devnet                  strip the mainnet-beta feature (velocity devnet build)
@@ -58,7 +60,7 @@ while [ $# -gt 0 ]; do
 		--program-id) need_value "$@"; program_id="$2"; shift 2 ;;
 		--image) need_value "$@"; image="$2"; shift 2 ;;
 		--skip-build) skip_build=1; shift ;;
-		-h|--help) sed -n '2,30p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+		-h|--help) sed -n '2,32p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
 		-*) die "unknown option: $1" ;;
 		*)
 			if [ -z "$program" ]; then program="$1"
@@ -81,16 +83,29 @@ repo_root="$(cd "$script_dir/.." && pwd)"
 logged_hash=""
 if [ -z "$buffer" ]; then
 	command -v gh >/dev/null || die "gh not found on PATH (needed to read the run log)"
-	# Accept .../runs/<runId>[/job/<jobId>]; prefer the job id when present.
+	# Accept .../runs/<runId>[/attempts/<n>][/job/<jobId>]; prefer the job id
+	# when present. Honoring the attempt matters: `gh run view <runId> --log`
+	# returns the run's LATEST attempt, so if a successful deploy was later
+	# re-run (and e.g. failed), the buffer address would silently be looked for
+	# in the wrong log.
 	job_id="$(printf '%s' "$run_url" | sed -nE 's#.*/job/([0-9]+).*#\1#p')"
 	run_id="$(printf '%s' "$run_url" | sed -nE 's#.*/runs/([0-9]+).*#\1#p')"
+	attempt="$(printf '%s' "$run_url" | sed -nE 's#.*/attempts/([0-9]+).*#\1#p')"
+	repo_slug="$(printf '%s' "$run_url" | sed -nE 's#https?://[^/]+/([^/]+/[^/]+)/actions/.*#\1#p')"
 	[ -n "$job_id" ] || [ -n "$run_id" ] || die "could not parse a run/job id from: $run_url"
 
 	echo ">> fetching deploy log from GitHub Actions..." >&2
-	if [ -n "$job_id" ]; then
-		log="$(gh run view --job "$job_id" --log)"
+	if [ -n "$job_id" ] && [ -n "$repo_slug" ]; then
+		# The jobs/<id>/logs endpoint is attempt-exact; `gh run view --job --log`
+		# can return the latest attempt's log even for a job id from an earlier
+		# attempt.
+		log="$(gh api "repos/$repo_slug/actions/jobs/$job_id/logs")"
+	elif [ -n "$job_id" ]; then
+		log="$(gh run view --job "$job_id" ${repo_slug:+--repo "$repo_slug"} --log)"
+	elif [ -n "$attempt" ]; then
+		log="$(gh run view "$run_id" --attempt "$attempt" ${repo_slug:+--repo "$repo_slug"} --log)"
 	else
-		log="$(gh run view "$run_id" --log)"
+		log="$(gh run view "$run_id" ${repo_slug:+--repo "$repo_slug"} --log)"
 	fi
 
 	# buffer-deploy logs the program (BPF) buffer address as `program buffer: <addr>`.
@@ -99,7 +114,7 @@ if [ -z "$buffer" ]; then
 	# newer consolidated summary). The trailing ":" right after "buffer" keeps this
 	# from matching the "program buffer hash:" line. Take the last match.
 	buffer="$(printf '%s' "$log" | grep -oiE 'program buffer:[[:space:]]+[1-9A-HJ-NP-Za-km-z]{32,44}' | tail -1 | awk '{print $NF}')"
-	[ -n "$buffer" ] || die "could not find a 'program buffer:' address in the run log"
+	[ -n "$buffer" ] || die "could not find a 'program buffer:' address in the run log — if the run has multiple attempts, the deploy may have happened in an earlier one; pass the .../attempts/<n> URL of the attempt that actually deployed"
 	# And the hash CI logged, for an extra cross-check (sha256 hex). Matches both
 	# the old "Buffer hash:" and the new "program buffer hash:" lines.
 	logged_hash="$(printf '%s' "$log" | grep -oiE 'buffer hash:[[:space:]]+[0-9a-f]{64}' | tail -1 | awk '{print $NF}')"

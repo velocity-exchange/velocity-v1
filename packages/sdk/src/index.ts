@@ -116,6 +116,7 @@ export * from './tx/priorityFeeCalculator';
 export * from './tx/types';
 export * from './tx/txHandler';
 export * from './tx/txParamProcessor';
+export * from './tx/utils';
 export * from './util/computeUnits';
 export * from './util/digest';
 export * from './util/promiseTimeout';

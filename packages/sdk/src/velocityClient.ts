@@ -7482,7 +7482,6 @@ export class VelocityClient {
 	 */
 	public async swap({
 		swapClient,
-		jupiterClient,
 		outMarketIndex,
 		inMarketIndex,
 		outAssociatedTokenAccount,
@@ -7496,8 +7495,6 @@ export class VelocityClient {
 		onlyDirectRoutes = false,
 	}: {
 		swapClient?: SwapProvider;
-		/** @deprecated Use swapClient instead. Legacy parameter for backward compatibility */
-		jupiterClient?: JupiterClient;
 		outMarketIndex: number;
 		inMarketIndex: number;
 		outAssociatedTokenAccount?: PublicKey;
@@ -7510,14 +7507,13 @@ export class VelocityClient {
 		onlyDirectRoutes?: boolean;
 		quote?: SwapQuote;
 	}): Promise<TransactionSignature> {
-		const clientToUse = swapClient || jupiterClient;
 
-		if (!clientToUse) {
+		if (!swapClient) {
 			throw new Error('Either swapClient or jupiterClient must be provided');
 		}
 
 		const { ixs, lookupTables } = await this.getProviderSwapIx({
-			swapProvider: clientToUse,
+			swapProvider: swapClient,
 			outMarketIndex,
 			inMarketIndex,
 			outAssociatedTokenAccount,

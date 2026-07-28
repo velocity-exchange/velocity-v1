@@ -129,7 +129,10 @@ export interface GetRouteInstructionsParams {
 	/**
 	 * Wallet the swap executes as. Must be the wallet the quote was requested
 	 * for when the provider binds routes to a wallet — see
-	 * {@link expectProviderRoute}.
+	 * {@link expectProviderRoute}. 
+	 * 
+	 * Don't be confused by the Velocity user account public key, which is different.
+	 * This is usually the Velocity authority.
 	 */
 	userPublicKey: PublicKey;
 }

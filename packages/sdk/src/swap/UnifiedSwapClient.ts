@@ -1,12 +1,10 @@
-import { Connection, PublicKey, VersionedTransaction } from '@solana/web3.js';
-import { BN } from '../isomorphic/anchor';
+import { Connection, VersionedTransaction } from '@solana/web3.js';
 import { JupiterClient } from '../jupiter/jupiterClient';
 import { TitanClient } from '../titan/titanClient';
 import { MAX_TX_BYTE_SIZE } from '../tx/utils';
 import {
 	GetRouteInstructionsParams,
 	SwapClientType,
-	SwapMode,
 	SwapProvider,
 	SwapQuote,
 	SwapQuoteParams,
@@ -141,56 +139,6 @@ export class UnifiedSwapClient implements SwapProvider {
 		params: GetRouteInstructionsParams
 	): Promise<VersionedTransaction> {
 		return this.provider.getSwapTransaction(params);
-	}
-
-	/**
-	 * Quote (if needed) and build in one step.
-	 *
-	 * Prefer passing a `quote` you already showed the user — re-quoting here
-	 * builds a route they never saw. Identical for both providers: the quote
-	 * carries its own route, so neither can fall back to a stale one.
-	 *
-	 * `slippageBps` prices the quote. When a `quote` is supplied it is already
-	 * priced, so passing both has no effect beyond the quote's own slippage.
-	 */
-	public async getSwapInstructions({
-		inputMint,
-		outputMint,
-		amount,
-		userPublicKey,
-		slippageBps,
-		swapMode = 'ExactIn',
-		onlyDirectRoutes = false,
-		maxAccounts,
-		quote,
-		sizeConstraint,
-	}: {
-		inputMint: PublicKey;
-		outputMint: PublicKey;
-		amount: BN;
-		userPublicKey: PublicKey;
-		slippageBps?: number;
-		swapMode?: SwapMode;
-		onlyDirectRoutes?: boolean;
-		maxAccounts?: number;
-		quote?: SwapQuote;
-		sizeConstraint?: number;
-	}): Promise<SwapRouteInstructions> {
-		const quoteToUse =
-			quote ??
-			(await this.getQuote({
-				inputMint,
-				outputMint,
-				amount,
-				userPublicKey,
-				slippageBps,
-				swapMode,
-				onlyDirectRoutes,
-				maxAccounts,
-				sizeConstraint,
-			}));
-
-		return this.getRouteInstructions({ quote: quoteToUse, userPublicKey });
 	}
 
 	/**

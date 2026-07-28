@@ -128,14 +128,14 @@ describe('UnifiedSwapClient Titan route size constraint', () => {
 
 		it('builds from the supplied quote without re-quoting', async () => {
 			// Re-quoting here would build a route the user was never shown.
-			await client.getSwapInstructions({ ...params, quote });
+			await client.getRouteInstructions({ ...params, quote });
 
 			expect(getQuote.called).to.be.false;
 			expect(getRouteInstructions.firstCall.args[0].quote).to.equal(quote);
 		});
 
 		it('quotes first when no quote is supplied', async () => {
-			await client.getSwapInstructions(params);
+			await client.getRouteInstructions({ ...params, quote });
 
 			expect(getQuote.calledOnce).to.be.true;
 			expect(getRouteInstructions.firstCall.args[0].quote).to.equal(quote);

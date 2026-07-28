@@ -414,8 +414,7 @@ export class TitanClient implements SwapProvider {
 	/**
 	 * Fetches a lookup table required by a route, retrying transient RPC
 	 * failures (rate limiting in particular) before giving up. Checks the
-	 * instance cache first and populates it on a fresh fetch, mirroring
-	 * {@link JupiterClient.getLookupTable}'s behavior.
+	 * instance cache first and populates it on a fresh fetch.
 	 * @throws If the table still can't be loaded, or doesn't exist on-chain.
 	 */
 	private async fetchLookupTable(

@@ -24,7 +24,7 @@ use crate::math::constants::PERCENTAGE_PRECISION_U64;
 use crate::math::router::QuoterBook;
 use crate::math::safe_math::SafeMath;
 use crate::state::prop_amm::{Direction, PriceLevel, QuoterType};
-use crate::state::quoter::{QuoteContext, RouterQuoter};
+use crate::state::quoter::{QuoteContext, Quoter, QuoterCommit, QuoterFill, RouterQuoter};
 
 use super::controller::SwapDirection;
 use super::math::amm::{calculate_amm_available_liquidity, calculate_price};
@@ -172,20 +172,33 @@ impl RouterQuoter for AmmQuoter<'_> {
         QuoterType::Vamm.default_priority()
     }
 
-    /// The vAMM's router book is the shaded ladder — `rival_books` is the
-    /// last look.
-    fn book(
+    /// The vAMM's router quote is the shaded ladder — `rival_books` is the
+    /// last look. The AMM's per-fill refresh happens in its own `setup`
+    /// step, which the fill controller runs before the router quotes.
+    fn quote(
         &self,
         ctx: &QuoteContext,
-        side: PositionDirection,
+        direction: Direction,
         size: u64,
         rival_books: &[QuoterBook],
     ) -> VelocityResult<Vec<PriceLevel>> {
-        let direction = match side {
-            PositionDirection::Long => Direction::Long,
-            PositionDirection::Short => Direction::Short,
-        };
         vamm_quote_levels(self.amm, direction, size, ctx.step_size, rival_books)
+    }
+
+    fn execute(
+        &mut self,
+        ctx: &QuoteContext,
+        direction: Direction,
+        size: u64,
+    ) -> VelocityResult<QuoterFill> {
+        let side = direction.to_position_direction();
+        let fill = self
+            .try_fill_solo(ctx, side, size)?
+            .unwrap_or(QuoterFill::ZERO);
+        if fill.base_filled > 0 {
+            self.commit_fill(ctx, &fill)?;
+        }
+        Ok(fill)
     }
 }
 

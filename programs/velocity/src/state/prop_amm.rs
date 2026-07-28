@@ -131,6 +131,15 @@ pub enum Direction {
     Short,
 }
 
+impl Direction {
+    pub fn to_position_direction(self) -> crate::controller::position::PositionDirection {
+        match self {
+            Direction::Long => crate::controller::position::PositionDirection::Long,
+            Direction::Short => crate::controller::position::PositionDirection::Short,
+        }
+    }
+}
+
 #[derive(Clone, AnchorSerialize, AnchorDeserialize, PartialEq, Eq, Debug)]
 pub struct QuoteArgsV0 {
     pub direction: Direction,

@@ -506,7 +506,7 @@ pub fn router_take(
                         }),
                 )
                 .collect();
-            quoters[i].book(ctx, side, target_size, &rivals)?
+            quoters[i].quote(ctx, direction, target_size, &rivals)?
         };
         internal_levels[i] = levels;
     }
@@ -531,19 +531,15 @@ pub fn router_take(
     let allocations = split_across_quoters(direction, target_size, &books)?;
     let (external_allocations, internal_allocations) = allocations.split_at(external_books.len());
 
-    // Settle each internal allocation against its quoter.
+    // Execute each internal allocation against its quoter — the in-program
+    // execute_v0, held to the same at-or-better bar as the CPI leg.
     let mut internal_fills = Vec::with_capacity(quoters.len());
     for (i, allocation) in internal_allocations.iter().enumerate() {
         if allocation.base == 0 {
             internal_fills.push(None);
             continue;
         }
-        let fill = quoters[i]
-            .try_fill_solo(ctx, side, allocation.base)?
-            .ok_or_else(|| {
-                msg!("router quoter {} refused its allocation", i);
-                ErrorCode::DefaultError
-            })?;
+        let fill = quoters[i].execute(ctx, direction, allocation.base)?;
         validate!(
             fill.base_filled <= allocation.base,
             ErrorCode::DefaultError,
@@ -558,8 +554,7 @@ pub fn router_take(
             "router quoter {} filled worse than quoted",
             i
         )?;
-        quoters[i].commit_fill(ctx, &fill)?;
-        internal_fills.push(Some(fill));
+        internal_fills.push((fill.base_filled > 0).then_some(fill));
     }
 
     Ok(RouterTakeOutcome {

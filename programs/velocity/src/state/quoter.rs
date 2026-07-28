@@ -361,53 +361,88 @@ pub trait QuoterCommit: Quoter {
     }
 }
 
-/// A liquidity source the router fill can read as a discrete book and
-/// execute against — the in-program counterpart of the registry's external
-/// `QuoterV0` CPI legs (CLOB, custom PropAMMs). The router
-/// (`controller::matching::router_take`) builds every book, splits the taker
-/// size across the union by priority tier, then settles internal allocations
-/// through `try_fill_solo`/`commit_fill` and returns external allocations
-/// for the CPI execute leg.
-pub trait RouterQuoter: QuoterCommit {
+/// A liquidity source the router fill reads and executes — the in-program
+/// mirror of the registry's external `QuoterV0` CPI legs, deliberately the
+/// same shape: `quote` returns discrete best-first levels, `execute` commits
+/// a fill of the routed allocation and reports it. Implementors that need a
+/// per-fill refresh (the AMM's projection/curve update) do it in their own
+/// setup step before the router quotes them — setup is not part of this
+/// contract, mirroring how external quoters refresh their own state.
+///
+/// The legacy [`Quoter`]/[`QuoterCommit`] surface above remains only for the
+/// legacy fill paths (`fill_amm_only`, `match_take`) and dies with them.
+pub trait RouterQuoter {
     /// Routing tier, same semantics as the registry's `QuoterV0::priority`:
     /// lower fills first at a shared price, pro rata within a tier.
-    /// Generalizes [`Quoter::is_prio`], which the legacy discrete matcher
-    /// (`match_take`) still reads.
     fn priority(&self) -> u8;
 
-    /// Discrete best-first levels for a taker of `side`/`size`. The default
-    /// is the quoter's single `(best_price, level_capacity)` level — exact
-    /// for any single-level maker (a resting DLOB order). Multi-level
-    /// quoters (the vAMM ladder) override. `rival_books` carries the books
-    /// already built this fill (external CPI books + worse-tier internals),
-    /// enabling last look for quoters that want it; the default ignores it.
-    fn book(
+    /// Discrete best-first levels for a taker of `direction`/`size` — the
+    /// in-program `quote_v0`. `rival_books` carries the books already built
+    /// this fill (external CPI books + worse-tier internals), enabling last
+    /// look for quoters that want it; most ignore it.
+    fn quote(
         &self,
         ctx: &QuoteContext,
-        side: PositionDirection,
+        direction: crate::state::prop_amm::Direction,
         size: u64,
-        _rival_books: &[crate::math::router::QuoterBook],
-    ) -> VelocityResult<Vec<crate::state::prop_amm::PriceLevel>> {
-        let price = self.best_price(ctx, side)?;
-        let no_quote = match side {
-            PositionDirection::Long => u64::MAX,
-            PositionDirection::Short => 0,
-        };
-        if price == no_quote {
-            return Ok(vec![]);
-        }
-        let size = self.level_capacity(ctx, side)?.min(size);
-        if size == 0 {
-            return Ok(vec![]);
-        }
-        Ok(vec![crate::state::prop_amm::PriceLevel { price, size }])
-    }
+        rival_books: &[crate::math::router::QuoterBook],
+    ) -> VelocityResult<Vec<crate::state::prop_amm::PriceLevel>>;
+
+    /// Commit a fill of up to `size` (the routed allocation) — the
+    /// in-program `execute_v0`. Applies the quoter's own state changes and
+    /// reports the fill; taker-side settlement stays with the fill
+    /// controller.
+    fn execute(
+        &mut self,
+        ctx: &QuoteContext,
+        direction: crate::state::prop_amm::Direction,
+        size: u64,
+    ) -> VelocityResult<QuoterFill>;
 }
 
 impl RouterQuoter for DlobOrderQuoter<'_> {
     /// The DLOB bridges into the router at the CLOB's tier during migration.
     fn priority(&self) -> u8 {
         crate::state::prop_amm::QuoterType::Clob.default_priority()
+    }
+
+    /// A resting order is a single level: its effective limit price and
+    /// remaining size.
+    fn quote(
+        &self,
+        ctx: &QuoteContext,
+        direction: crate::state::prop_amm::Direction,
+        size: u64,
+        _rival_books: &[crate::math::router::QuoterBook],
+    ) -> VelocityResult<Vec<crate::state::prop_amm::PriceLevel>> {
+        let side = direction.to_position_direction();
+        if !self.quotes_on(side) {
+            return Ok(vec![]);
+        }
+        let Some(price) = self.effective_price(ctx)? else {
+            return Ok(vec![]);
+        };
+        let size = self.remaining().min(size);
+        if size == 0 {
+            return Ok(vec![]);
+        }
+        Ok(vec![crate::state::prop_amm::PriceLevel { price, size }])
+    }
+
+    fn execute(
+        &mut self,
+        ctx: &QuoteContext,
+        direction: crate::state::prop_amm::Direction,
+        size: u64,
+    ) -> VelocityResult<QuoterFill> {
+        let side = direction.to_position_direction();
+        let fill = self
+            .try_fill_solo(ctx, side, size)?
+            .unwrap_or(QuoterFill::ZERO);
+        if fill.base_filled > 0 {
+            self.commit_fill(ctx, &fill)?;
+        }
+        Ok(fill)
     }
 }
 

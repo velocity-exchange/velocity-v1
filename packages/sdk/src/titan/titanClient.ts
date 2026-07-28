@@ -1,9 +1,10 @@
 import {
 	Connection,
 	PublicKey,
-	TransactionMessage,
 	AddressLookupTableAccount,
 	TransactionInstruction,
+	TransactionMessage,
+	VersionedTransaction,
 } from '@solana/web3.js';
 import { BN } from '../isomorphic/anchor';
 import { decode } from '@msgpack/msgpack';
@@ -97,6 +98,7 @@ export class TitanClient implements SwapProvider {
 	url: string;
 	connection: Connection;
 	proxyUrl?: string;
+	lookupTableCache = new Map<string, AddressLookupTableAccount>();
 
 	constructor({
 		connection,
@@ -151,15 +153,21 @@ export class TitanClient implements SwapProvider {
 			outputMint: outputMint.toString(),
 			amount: amount.toString(),
 			userPublicKey: userPublicKey.toString(),
-			...(slippageBps && { slippageBps: slippageBps.toString() }),
-			...(swapMode && { swapMode: normalizedSwapMode.toString() }),
-			...(maxAccounts && { accountsLimitTotal: maxAccounts.toString() }),
-			...(excludeDexes && { excludeDexes: excludeDexes.join(',') }),
-			...(onlyDirectRoutes && {
+			...(slippageBps != null && { slippageBps: slippageBps.toString() }),
+			...(swapMode != null && { swapMode: normalizedSwapMode.toString() }),
+			...(maxAccounts != null && {
+				accountsLimitTotal: maxAccounts.toString(),
+			}),
+			...(excludeDexes != null && { excludeDexes: excludeDexes.join(',') }),
+			// Only sent when explicitly true — Titan treats the field's presence,
+			// not its value, as the toggle.
+			...(onlyDirectRoutes === true && {
 				onlyDirectRoutes: onlyDirectRoutes.toString(),
 			}),
-			...(sizeConstraint && { sizeConstraint: sizeConstraint.toString() }),
-			...(accountsLimitWritable && {
+			...(sizeConstraint != null && {
+				sizeConstraint: sizeConstraint.toString(),
+			}),
+			...(accountsLimitWritable != null && {
 				accountsLimitWritable: accountsLimitWritable.toString(),
 			}),
 		});
@@ -292,6 +300,38 @@ export class TitanClient implements SwapProvider {
 	}
 
 	/**
+	 * The route as Titan built it, compiled into a signable transaction. Titan
+	 * returns instructions rather than a transaction, so unlike Jupiter there is
+	 * nothing to strip — the route already includes its own setup and teardown.
+	 * @throws If the quote came from a different provider or a different wallet,
+	 * or if a lookup table the route depends on can't be loaded.
+	 */
+	public async getSwapTransaction({
+		quote,
+		userPublicKey,
+	}: GetRouteInstructionsParams): Promise<VersionedTransaction> {
+		const route = expectProviderRoute(quote, 'titan', userPublicKey)
+			.route as SwapRoute;
+
+		if (!route.instructions?.length) {
+			throw new Error('No instructions provided in the route');
+		}
+
+		const [{ instructions, lookupTables }, { blockhash }] = await Promise.all([
+			this.getInstructionsAndLookupTables(route),
+			this.connection.getLatestBlockhash(),
+		]);
+
+		return new VersionedTransaction(
+			new TransactionMessage({
+				payerKey: userPublicKey,
+				recentBlockhash: blockhash,
+				instructions,
+			}).compileToV0Message(lookupTables)
+		);
+	}
+
+	/**
 	 * Builds the route instructions for a quote returned by {@link getQuote}.
 	 *
 	 * The route travels on the quote, so this reads no client state and two
@@ -314,12 +354,12 @@ export class TitanClient implements SwapProvider {
 		// Errors propagate as-is. Replacing them with generic copy here loses
 		// the reason the swap can't be built — an unresolvable lookup table,
 		// say — which the caller needs to decide whether re-quoting will help.
-		const { transactionMessage, lookupTables } =
-			await this.getTransactionMessageAndLookupTables(route, userPublicKey);
+		const { instructions, lookupTables } =
+			await this.getInstructionsAndLookupTables(route);
 
 		return {
 			instructions: filterRouteInstructions({
-				transactionMessage,
+				instructions,
 				inputMint: new PublicKey(quote.inputMint),
 				outputMint: new PublicKey(quote.outputMint),
 			}),
@@ -329,12 +369,19 @@ export class TitanClient implements SwapProvider {
 
 	/**
 	 * Fetches a lookup table required by a route, retrying transient RPC
-	 * failures (rate limiting in particular) before giving up.
+	 * failures (rate limiting in particular) before giving up. Checks the
+	 * instance cache first and populates it on a fresh fetch, mirroring
+	 * {@link JupiterClient.getLookupTable}'s behavior.
 	 * @throws If the table still can't be loaded, or doesn't exist on-chain.
 	 */
 	private async fetchLookupTable(
 		altPubkey: PublicKey
 	): Promise<AddressLookupTableAccount> {
+		const cached = this.lookupTableCache.get(altPubkey.toString());
+		if (cached !== undefined) {
+			return cached;
+		}
+
 		let lastError: unknown;
 
 		for (let attempt = 0; attempt <= LOOKUP_TABLE_FETCH_RETRIES; attempt++) {
@@ -353,6 +400,7 @@ export class TitanClient implements SwapProvider {
 			}
 
 			if (altAccount.value) {
+				this.lookupTableCache.set(altPubkey.toString(), altAccount.value);
 				return altAccount.value;
 			}
 
@@ -370,14 +418,11 @@ export class TitanClient implements SwapProvider {
 		);
 	}
 
-	private async getTransactionMessageAndLookupTables(
-		route: SwapRoute,
-		userPublicKey: PublicKey
-	): Promise<{
-		transactionMessage: TransactionMessage;
+	private async getInstructionsAndLookupTables(route: SwapRoute): Promise<{
+		instructions: TransactionInstruction[];
 		lookupTables: AddressLookupTableAccount[];
 	}> {
-		const solanaInstructions: TransactionInstruction[] = route.instructions.map(
+		const instructions: TransactionInstruction[] = route.instructions.map(
 			(instruction) => ({
 				programId: new PublicKey(instruction.p),
 				keys: instruction.a.map((meta) => ({
@@ -389,31 +434,17 @@ export class TitanClient implements SwapProvider {
 			})
 		);
 
-		// Get recent blockhash
-		const { blockhash } = await this.connection.getLatestBlockhash();
-
-		// Build address lookup tables if provided.
-		//
 		// These all have to resolve. A table that fails to load isn't a slightly
 		// worse route — every account it would have compressed to a 1-byte index
 		// gets inlined as a 32-byte pubkey instead, which pushes the transaction
 		// past the size limit and only surfaces later as an opaque
 		// "encoding overruns Uint8Array". Failing here lets the caller re-quote.
-		const addressLookupTables: AddressLookupTableAccount[] = [];
-		if (route.addressLookupTables && route.addressLookupTables.length > 0) {
-			for (const altPubkey of route.addressLookupTables) {
-				addressLookupTables.push(
-					await this.fetchLookupTable(new PublicKey(altPubkey))
-				);
-			}
-		}
+		const lookupTables = await Promise.all(
+			(route.addressLookupTables ?? []).map((altPubkey) =>
+				this.fetchLookupTable(new PublicKey(altPubkey))
+			)
+		);
 
-		const transactionMessage = new TransactionMessage({
-			payerKey: userPublicKey,
-			recentBlockhash: blockhash,
-			instructions: solanaInstructions,
-		});
-
-		return { transactionMessage, lookupTables: addressLookupTables };
+		return { instructions, lookupTables };
 	}
 }

@@ -7370,6 +7370,8 @@ export class AdminClient extends VelocityClient {
 			throw new Error('Could not fetch swap quote. Please try again.');
 		}
 
+		this.assertQuoteMatchesMarkets(quote, inMarket, outMarket);
+
 		const isExactOut = swapMode === 'ExactOut' || quote.swapMode === 'ExactOut';
 		const amountIn = new BN(quote.inAmount);
 		const exactOutBufferedAmountIn = amountIn.muln(1001).divn(1000); // Add 10bp buffer
@@ -7420,7 +7422,7 @@ export class AdminClient extends VelocityClient {
 					this.provider.wallet.publicKey,
 					this.provider.wallet.publicKey,
 					inMarket.mint,
-					tokenProgram
+					inTokenProgram
 				)
 			);
 		}

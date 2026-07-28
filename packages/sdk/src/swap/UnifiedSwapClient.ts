@@ -1,4 +1,4 @@
-import { Connection, PublicKey } from '@solana/web3.js';
+import { Connection, PublicKey, VersionedTransaction } from '@solana/web3.js';
 import { BN } from '../isomorphic/anchor';
 import { JupiterClient } from '../jupiter/jupiterClient';
 import { TitanClient } from '../titan/titanClient';
@@ -128,6 +128,19 @@ export class UnifiedSwapClient implements SwapProvider {
 		params: GetRouteInstructionsParams
 	): Promise<SwapRouteInstructions> {
 		return this.provider.getRouteInstructions(params);
+	}
+
+	/**
+	 * Builds a standalone swap transaction for a quote from {@link getQuote},
+	 * keeping the provider's own compute budget, token account creation and SOL
+	 * wrapping. Use {@link getRouteInstructions} for a swap that runs inside
+	 * velocity's `beginSwap`/`endSwap` bracket.
+	 * @throws If the quote came from a different provider or a different wallet.
+	 */
+	public async getSwapTransaction(
+		params: GetRouteInstructionsParams
+	): Promise<VersionedTransaction> {
+		return this.provider.getSwapTransaction(params);
 	}
 
 	/**

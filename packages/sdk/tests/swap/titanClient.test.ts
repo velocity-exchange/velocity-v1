@@ -213,10 +213,6 @@ describe('TitanClient.getRouteInstructions', () => {
 
 	beforeEach(() => {
 		connection = sinon.createStubInstance(Connection);
-		connection.getLatestBlockhash.resolves({
-			blockhash: '11111111111111111111111111111111',
-			lastValidBlockHeight: 1,
-		});
 		client = new TitanClient({
 			connection: connection as unknown as Connection,
 			authToken: '',
@@ -246,6 +242,66 @@ describe('TitanClient.getRouteInstructions', () => {
 
 		expect(instructions).to.have.lengthOf(1);
 		expect(instructions[0].programId.equals(titanProgram)).to.be.true;
+	});
+
+	it('does not fetch a blockhash to build a route', async () => {
+		// The route's instructions are used as-is; no TransactionMessage is
+		// constructed, so there is nothing that needs a blockhash.
+		const quote = quoteWithRoute([
+			{
+				p: new PublicKey(
+					'T1TANpTeScyeqVzzgNViGDNrkQ6qHz9KrSBS4aNXvGT'
+				).toBytes(),
+				a: [],
+				d: new Uint8Array([1]),
+			},
+		]);
+
+		await client.getRouteInstructions({ quote, userPublicKey: USER });
+
+		expect(connection.getLatestBlockhash.called).to.be.false;
+	});
+
+	it('reuses a cached lookup table on a second build', async () => {
+		const altKey = new PublicKey(
+			'HxFLKUAmAMLz1jtT3hbvCMELwH5H9tpM2QugP8sKyfhc'
+		);
+		connection.getAddressLookupTable.resolves({
+			context: { slot: 1 },
+			value: { key: altKey } as AddressLookupTableAccount,
+		});
+
+		const quote = {
+			...quoteWithRoute([
+				{
+					p: new PublicKey(
+						'T1TANpTeScyeqVzzgNViGDNrkQ6qHz9KrSBS4aNXvGT'
+					).toBytes(),
+					a: [],
+					d: new Uint8Array([1]),
+				},
+			]),
+			providerRoute: {
+				provider: 'titan',
+				route: {
+					instructions: [
+						{
+							p: new PublicKey(
+								'T1TANpTeScyeqVzzgNViGDNrkQ6qHz9KrSBS4aNXvGT'
+							).toBytes(),
+							a: [],
+							d: new Uint8Array([1]),
+						},
+					],
+					addressLookupTables: [altKey.toBytes()],
+				},
+			},
+		} as unknown as SwapQuote;
+
+		await client.getRouteInstructions({ quote, userPublicKey: USER });
+		await client.getRouteInstructions({ quote, userPublicKey: USER });
+
+		expect(connection.getAddressLookupTable.calledOnce).to.be.true;
 	});
 
 	it('rejects a quote produced by a different provider', async () => {

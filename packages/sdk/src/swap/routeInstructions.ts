@@ -1,8 +1,4 @@
-import {
-	PublicKey,
-	TransactionInstruction,
-	TransactionMessage,
-} from '@solana/web3.js';
+import { PublicKey, TransactionInstruction } from '@solana/web3.js';
 
 const COMPUTE_BUDGET_PROGRAM_ID = 'ComputeBudget111111111111111111111111111111';
 const TOKEN_PROGRAM_ID = 'TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA';
@@ -27,15 +23,15 @@ const ATA_IX_MINT_KEY_INDEX = 3;
  * copies drifted, and the difference only showed up as a malformed transaction.
  */
 export function filterRouteInstructions({
-	transactionMessage,
+	instructions,
 	inputMint,
 	outputMint,
 }: {
-	transactionMessage: TransactionMessage;
+	instructions: TransactionInstruction[];
 	inputMint: PublicKey;
 	outputMint: PublicKey;
 }): TransactionInstruction[] {
-	return transactionMessage.instructions.filter((instruction) => {
+	return instructions.filter((instruction) => {
 		const programId = instruction.programId.toString();
 
 		if (

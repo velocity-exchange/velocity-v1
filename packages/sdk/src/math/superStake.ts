@@ -232,10 +232,10 @@ export async function findBestMSolSuperStakeIxs({
 			price: price,
 		};
 	} else {
-		const { ixs, lookupTables } = await velocityClient.getJupiterSwapIxV6({
+		const { ixs, lookupTables } = await velocityClient.getProviderSwapIx({
 			inMarketIndex: 1,
 			outMarketIndex: 2,
-			jupiterClient,
+			swapProvider: jupiterClient,
 			amount,
 			userAccountPublicKey,
 			onlyDirectRoutes,
@@ -336,10 +336,10 @@ export async function findBestLstSuperStakeIxs({
 	lookupTables: AddressLookupTableAccount[];
 	method: 'jupiter' | 'marinade';
 }> {
-	const { ixs, lookupTables } = await velocityClient.getJupiterSwapIxV6({
+	const { ixs, lookupTables } = await velocityClient.getProviderSwapIx({
 		inMarketIndex: 1,
 		outMarketIndex: lstMarketIndex,
-		jupiterClient,
+		swapProvider: jupiterClient,
 		amount,
 		userAccountPublicKey,
 		onlyDirectRoutes,

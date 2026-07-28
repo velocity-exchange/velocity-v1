@@ -177,7 +177,8 @@ import { calculateMarketMaxAvailableInsurance } from './math/market';
 import { fetchUserStatsAccount } from './accounts/fetch';
 import { castNumberToSpotPrecision } from './math/spotMarket';
 import { JupiterClient, JupiterSwapQuote } from './jupiter/jupiterClient';
-import { DEFAULT_ROUTE_SIZE_CONSTRAINT, SwapMode, SwapQuote } from './swap/UnifiedSwapClient';
+import { DEFAULT_ROUTE_SIZE_CONSTRAINT } from './swap/UnifiedSwapClient';
+import { SwapMode, SwapProvider, SwapQuote } from './swap/types';
 import { getNonIdleUserFilter } from './memcmp';
 import { UserStatsSubscriptionConfig } from './userStatsConfig';
 import { getMarinadeDepositIx, getMarinadeFinanceProgram } from './marinade';
@@ -206,8 +207,7 @@ import {
 	escrowHasReferrer,
 	hasBuilderParams,
 } from './math/builder';
-import { TitanClient, SwapMode as TitanSwapMode } from './titan/titanClient';
-import { UnifiedSwapClient } from './swap/UnifiedSwapClient';
+import { TitanClient } from './titan/titanClient';
 /**
  * Union type for swap clients (Titan and Jupiter) - Legacy type
  * @deprecated Use UnifiedSwapClient class instead
@@ -7456,27 +7456,28 @@ export class VelocityClient {
 	 * instructions in a single transaction, so the swap is settled directly against the user's
 	 * deposits/vault balances rather than the wallet's own token accounts. Sends and confirms the
 	 * transaction.
-	 * @param swapClient - Swap client used to fetch routes/instructions (`UnifiedSwapClient` or a
-	 * `TitanClient`); dispatches to `getSwapIxV2` or `getTitanSwapIx` respectively.
-	 * @param jupiterClient - @deprecated Use `swapClient` instead. When passed (and `swapClient` is
-	 * not), dispatches to `getJupiterSwapIxV6`.
+	 * @param swapClient - Provider used to quote the swap and build its route: a
+	 * `UnifiedSwapClient`, or a `TitanClient`/`JupiterClient` directly. See `getProviderSwapIx`.
+	 * @param jupiterClient - @deprecated Use `swapClient` instead. Used only when `swapClient` is
+	 * not passed.
 	 * @param outMarketIndex - Spot market index of the token being bought.
 	 * @param inMarketIndex - Spot market index of the token being sold.
 	 * @param outAssociatedTokenAccount - Token account to receive the bought token; created
 	 * idempotently if omitted.
 	 * @param inAssociatedTokenAccount - Token account to source the sold token from; created
 	 * idempotently if omitted.
-	 * @param amount - Amount of the "in" token (or "out" token when `swapMode` is `ExactOut`, in
-	 * which case this is the desired output amount), in the token's own mint decimals — not a
-	 * fixed protocol precision.
+	 * @param amount - Amount of the "in" token (or "out" token when the effective mode is
+	 * `ExactOut`, in which case this is the desired output amount), in the token's own mint
+	 * decimals — not a fixed protocol precision.
 	 * @param slippageBps - Max slippage in basis points passed to the swap provider's routing API.
-	 * @param swapMode - `ExactIn` (default) or `ExactOut`.
+	 * @param swapMode - `ExactIn` (default) or `ExactOut`. Ignored when `quote` is passed — the
+	 * quote's own mode wins.
 	 * @param reduceOnly - Whether the in/out token's position on the velocity account must reduce
 	 * (not flip sign); enforced by `endSwap` after the swap completes.
-	 * @param quote - Pre-fetched quote response (skips an extra round-trip to the swap provider).
+	 * @param quote - Pre-fetched quote (skips an extra round-trip to the swap provider). Must be
+	 * for this pair and this `amount`.
 	 * @param txParams - Optional compute-unit/priority-fee overrides.
-	 * @throws If neither `swapClient` nor `jupiterClient` is provided, or if `swapClient` is not a
-	 * recognized client type.
+	 * @throws If neither `swapClient` nor `jupiterClient` is provided.
 	 * @returns The transaction signature.
 	 */
 	public async swap({
@@ -7494,7 +7495,7 @@ export class VelocityClient {
 		quote,
 		onlyDirectRoutes = false,
 	}: {
-		swapClient?: UnifiedSwapClient | SwapClient;
+		swapClient?: SwapProvider;
 		/** @deprecated Use swapClient instead. Legacy parameter for backward compatibility */
 		jupiterClient?: JupiterClient;
 		outMarketIndex: number;
@@ -7509,70 +7510,25 @@ export class VelocityClient {
 		onlyDirectRoutes?: boolean;
 		quote?: SwapQuote;
 	}): Promise<TransactionSignature> {
-		// Handle backward compatibility: use jupiterClient if swapClient is not provided
 		const clientToUse = swapClient || jupiterClient;
 
 		if (!clientToUse) {
 			throw new Error('Either swapClient or jupiterClient must be provided');
 		}
 
-		let res: {
-			ixs: TransactionInstruction[];
-			lookupTables: AddressLookupTableAccount[];
-		};
-
-		// Use unified SwapClient if available
-		if (clientToUse instanceof UnifiedSwapClient) {
-			res = await this.getSwapIxV2({
-				swapClient: clientToUse,
-				outMarketIndex,
-				inMarketIndex,
-				outAssociatedTokenAccount,
-				inAssociatedTokenAccount,
-				amount,
-				slippageBps,
-				swapMode,
-				onlyDirectRoutes,
-				reduceOnly,
-				quote,
-			});
-		} else if (clientToUse instanceof TitanClient) {
-			res = await this.getTitanSwapIx({
-				titanClient: clientToUse,
-				outMarketIndex,
-				inMarketIndex,
-				outAssociatedTokenAccount,
-				inAssociatedTokenAccount,
-				amount,
-				slippageBps,
-				swapMode,
-				onlyDirectRoutes,
-				reduceOnly,
-				quote,
-			});
-		} else if (clientToUse instanceof JupiterClient) {
-			const quoteToUse = quote;
-			res = await this.getJupiterSwapIxV6({
-				jupiterClient: clientToUse,
-				outMarketIndex,
-				inMarketIndex,
-				outAssociatedTokenAccount,
-				inAssociatedTokenAccount,
-				amount,
-				slippageBps,
-				swapMode,
-				quote: quoteToUse as JupiterSwapQuote,
-				reduceOnly,
-				onlyDirectRoutes,
-			});
-		} else {
-			throw new Error(
-				'Invalid swap client type. Must be SwapClient, TitanClient, or JupiterClient.'
-			);
-		}
-
-		const ixs = res.ixs;
-		const lookupTables = res.lookupTables;
+		const { ixs, lookupTables } = await this.getProviderSwapIx({
+			swapProvider: clientToUse,
+			outMarketIndex,
+			inMarketIndex,
+			outAssociatedTokenAccount,
+			inAssociatedTokenAccount,
+			amount,
+			slippageBps,
+			swapMode,
+			onlyDirectRoutes,
+			reduceOnly,
+			quote,
+		});
 
 		const tx = (await this.buildTransaction(
 			ixs,
@@ -7593,7 +7549,7 @@ export class VelocityClient {
 	 * account `endSwap` isn't watching, so it reverts with `InvalidSwap: amount_out must be
 	 * greater than 0` only after the funds have already moved.
 	 */
-	private assertQuoteMatchesMarkets(
+	protected assertQuoteMatchesMarkets(
 		quote: { inputMint: string; outputMint: string },
 		inMarket: SpotMarketAccount,
 		outMarket: SpotMarketAccount
@@ -7616,18 +7572,88 @@ export class VelocityClient {
 	}
 
 	/**
-	 * Builds the instruction list for a Titan-routed swap: creates any missing associated token
-	 * accounts, wraps Titan's routing instructions between `beginSwap`/`endSwap`. See `swap` for
-	 * parameter semantics; `amount` is in the "in" token's mint decimals.
-	 * @param quote - Pre-fetched Titan quote; skips the round-trip and builds exactly the route
-	 * the caller was shown. Must be for this pair and this wallet.
+	 * Throws unless a quote is for the size the caller asked to swap. `beginSwap` releases funds
+	 * sized off the quote, so a quote for a different size moves the wrong amount out of the user's
+	 * deposits.
+	 */
+	private assertQuoteMatchesAmount(
+		quote: { inAmount: string; outAmount: string },
+		amount: BN,
+		swapMode: SwapMode
+	): void {
+		const isExactOut = swapMode === 'ExactOut';
+		const quoted = isExactOut ? quote.outAmount : quote.inAmount;
+
+		if (quoted !== amount.toString()) {
+			throw new Error(
+				`Quote is for ${quoted} ${
+					isExactOut ? 'out' : 'in'
+				} but the swap asked for ${amount.toString()} (${swapMode}).`
+			);
+		}
+	}
+
+	/**
+	 * Resolves the wallet's associated token account for a spot market, plus the instruction that
+	 * creates it when it doesn't exist yet.
+	 */
+	private async getOrCreateSwapTokenAccount(
+		market: SpotMarketAccount
+	): Promise<{
+		tokenAccount: PublicKey;
+		createIx?: TransactionInstruction;
+	}> {
+		const tokenProgram = this.getTokenProgramForSpotMarket(market);
+		const tokenAccount = await this.getAssociatedTokenAccount(
+			market.marketIndex,
+			false,
+			tokenProgram
+		);
+
+		if (await this.connection.getAccountInfo(tokenAccount)) {
+			return { tokenAccount };
+		}
+
+		return {
+			tokenAccount,
+			createIx: this.createAssociatedTokenAccountIdempotentInstruction(
+				tokenAccount,
+				this.provider.wallet.publicKey,
+				this.provider.wallet.publicKey,
+				market.mint,
+				tokenProgram
+			),
+		};
+	}
+
+	/**
+	 * Builds the instruction list for a swap routed through any `SwapProvider` (Jupiter, Titan, or
+	 * a `UnifiedSwapClient` wrapping either): creates any missing associated token accounts and
+	 * wraps the provider's routing instructions between `beginSwap`/`endSwap`.
+	 * @param swapProvider - Provider that quotes the swap and builds its route instructions.
+	 * @param outMarketIndex - Spot market index of the token being bought.
+	 * @param inMarketIndex - Spot market index of the token being sold.
+	 * @param outAssociatedTokenAccount - Token account to receive the bought token; created
+	 * idempotently if omitted.
+	 * @param inAssociatedTokenAccount - Token account to source the sold token from; created
+	 * idempotently if omitted.
+	 * @param amount - Amount in the "in" token's mint decimals, or the "out" token's when the
+	 * effective mode is `ExactOut`.
+	 * @param slippageBps - Max slippage in basis points; only used when a quote has to be fetched.
+	 * @param swapMode - `ExactIn` (default) or `ExactOut`. Ignored when `quote` is passed.
+	 * @param onlyDirectRoutes - Restricts a fetched quote to single-hop routes.
+	 * @param maxAccounts - Account budget for a fetched route.
+	 * @param reduceOnly - Which side must not increase in magnitude; enforced by `endSwap`.
+	 * @param quote - Pre-fetched quote. Authoritative when passed: its `swapMode` is the effective
+	 * mode, and it must be for this pair and this `amount`.
 	 * @param userAccountPublicKey - Optional user account override (e.g. when the account is being
 	 * created in the same transaction and not yet resolvable via `getUserAccountPublicKey`).
-	 * @returns `ixs` — instruction list (ATA creation, `beginSwap`, Titan swap instructions,
-	 * `endSwap`, in order) and `lookupTables` needed to fit it in a versioned transaction.
+	 * @throws If the quote is for a different pair or a different size than the swap being built.
+	 * @returns `ixs` — ATA creation, `beginSwap`, the route's instructions, `endSwap`, in order —
+	 * and the `lookupTables` needed to fit them in a versioned transaction.
 	 */
-	public async getTitanSwapIx({
-		titanClient,
+	public async getProviderSwapIx({
+		swapProvider,
 		outMarketIndex,
 		inMarketIndex,
 		outAssociatedTokenAccount,
@@ -7636,19 +7662,21 @@ export class VelocityClient {
 		slippageBps,
 		swapMode,
 		onlyDirectRoutes,
+		maxAccounts,
 		reduceOnly,
 		quote,
 		userAccountPublicKey,
 	}: {
-		titanClient: TitanClient;
+		swapProvider: SwapProvider;
 		outMarketIndex: number;
 		inMarketIndex: number;
 		outAssociatedTokenAccount?: PublicKey;
 		inAssociatedTokenAccount?: PublicKey;
 		amount: BN;
 		slippageBps?: number;
-		swapMode?: string;
+		swapMode?: SwapMode;
 		onlyDirectRoutes?: boolean;
+		maxAccounts?: number;
 		reduceOnly?: SwapReduceOnly;
 		quote?: SwapQuote;
 		userAccountPublicKey?: PublicKey;
@@ -7659,244 +7687,78 @@ export class VelocityClient {
 		const outMarket = this.getSpotMarketAccountOrThrow(outMarketIndex);
 		const inMarket = this.getSpotMarketAccountOrThrow(inMarketIndex);
 
-		const isExactOut = swapMode === 'ExactOut';
+		const effectiveSwapMode = quote?.swapMode ?? swapMode ?? 'ExactIn';
 
-		const quoteToUse =
-			quote ??
-			(await titanClient.getQuote({
+		let quoteToUse: SwapQuote;
+		if (quote) {
+			this.assertQuoteMatchesMarkets(quote, inMarket, outMarket);
+			this.assertQuoteMatchesAmount(quote, amount, effectiveSwapMode);
+			quoteToUse = quote;
+		} else {
+			quoteToUse = await swapProvider.getQuote({
 				inputMint: inMarket.mint,
 				outputMint: outMarket.mint,
 				amount,
 				userPublicKey: this.provider.wallet.publicKey,
 				slippageBps,
-				swapMode: isExactOut ? TitanSwapMode.ExactOut : TitanSwapMode.ExactIn,
+				swapMode: effectiveSwapMode,
 				onlyDirectRoutes,
+				maxAccounts,
 				sizeConstraint: DEFAULT_ROUTE_SIZE_CONSTRAINT,
-			}));
+			});
+			this.assertQuoteMatchesMarkets(quoteToUse, inMarket, outMarket);
+		}
 
-		this.assertQuoteMatchesMarkets(quoteToUse, inMarket, outMarket);
+		// Size `beginSwap` off the quote's own input: under ExactOut `amount` is the requested
+		// output, so buffering it would be a guess at what the route consumes.
+		const quotedAmountIn = new BN(quoteToUse.inAmount);
+		const amountIn =
+			effectiveSwapMode === 'ExactOut'
+				? quotedAmountIn.muln(1001).divn(1000) // Add 10bp buffer
+				: quotedAmountIn;
 
-		// The quote knows the exact input the route consumes; `amount` is only the
-		// requested output when the mode is ExactOut, so buffering it is a guess.
-		const exactOutBufferedAmountIn = new BN(quoteToUse.inAmount)
-			.muln(1001)
-			.divn(1000); // Add 10bp buffer
+		const preInstructions: TransactionInstruction[] = [];
 
-		const preInstructions = [];
 		if (!outAssociatedTokenAccount) {
-			const tokenProgram = this.getTokenProgramForSpotMarket(outMarket);
-			outAssociatedTokenAccount = await this.getAssociatedTokenAccount(
-				outMarket.marketIndex,
-				false,
-				tokenProgram
+			const { tokenAccount, createIx } = await this.getOrCreateSwapTokenAccount(
+				outMarket
 			);
-
-			const accountInfo = await this.connection.getAccountInfo(
-				outAssociatedTokenAccount
-			);
-			if (!accountInfo) {
-				preInstructions.push(
-					this.createAssociatedTokenAccountIdempotentInstruction(
-						outAssociatedTokenAccount,
-						this.provider.wallet.publicKey,
-						this.provider.wallet.publicKey,
-						outMarket.mint,
-						tokenProgram
-					)
-				);
+			outAssociatedTokenAccount = tokenAccount;
+			if (createIx) {
+				preInstructions.push(createIx);
 			}
 		}
 
 		if (!inAssociatedTokenAccount) {
-			const tokenProgram = this.getTokenProgramForSpotMarket(inMarket);
-			inAssociatedTokenAccount = await this.getAssociatedTokenAccount(
-				inMarket.marketIndex,
-				false,
-				tokenProgram
+			const { tokenAccount, createIx } = await this.getOrCreateSwapTokenAccount(
+				inMarket
 			);
-
-			const accountInfo = await this.connection.getAccountInfo(
-				inAssociatedTokenAccount
-			);
-			if (!accountInfo) {
-				preInstructions.push(
-					this.createAssociatedTokenAccountIdempotentInstruction(
-						inAssociatedTokenAccount,
-						this.provider.wallet.publicKey,
-						this.provider.wallet.publicKey,
-						inMarket.mint,
-						tokenProgram
-					)
-				);
+			inAssociatedTokenAccount = tokenAccount;
+			if (createIx) {
+				preInstructions.push(createIx);
 			}
 		}
 
 		const { beginSwapIx, endSwapIx } = await this.getSwapIx({
 			outMarketIndex,
 			inMarketIndex,
-			amountIn: isExactOut ? exactOutBufferedAmountIn : amount,
+			amountIn,
 			inTokenAccount: inAssociatedTokenAccount,
 			outTokenAccount: outAssociatedTokenAccount,
 			reduceOnly,
 			userAccountPublicKey,
 		});
 
-		const { instructions: titanInstructions, lookupTables } =
-			await titanClient.getRouteInstructions({
+		const { instructions: routeInstructions, lookupTables } =
+			await swapProvider.getRouteInstructions({
 				quote: quoteToUse,
 				userPublicKey: this.provider.wallet.publicKey,
 			});
 
-		const ixs = [
-			...preInstructions,
-			beginSwapIx,
-			...titanInstructions,
-			endSwapIx,
-		];
-
-		return { ixs, lookupTables };
-	}
-
-	/**
-	 * Builds the instruction list for a Jupiter v6-routed swap: fetches a quote if none is passed,
-	 * creates any missing associated token accounts, and wraps Jupiter's routing instructions
-	 * between `beginSwap`/`endSwap`. See `swap` for parameter semantics; `amount` is in the "in"
-	 * token's mint decimals.
-	 * @param userAccountPublicKey - Optional user account override (e.g. when the account is being
-	 * created in the same transaction).
-	 * @throws If no quote is passed and Jupiter's quote API returns none.
-	 * @returns `ixs` — instruction list (ATA creation, `beginSwap`, Jupiter swap instructions,
-	 * `endSwap`, in order) and `lookupTables` needed to fit it in a versioned transaction.
-	 */
-	public async getJupiterSwapIxV6({
-		jupiterClient,
-		outMarketIndex,
-		inMarketIndex,
-		outAssociatedTokenAccount,
-		inAssociatedTokenAccount,
-		amount,
-		slippageBps,
-		swapMode,
-		onlyDirectRoutes,
-		quote,
-		reduceOnly,
-		userAccountPublicKey,
-	}: {
-		jupiterClient: JupiterClient;
-		outMarketIndex: number;
-		inMarketIndex: number;
-		outAssociatedTokenAccount?: PublicKey;
-		inAssociatedTokenAccount?: PublicKey;
-		amount: BN;
-		slippageBps?: number;
-		swapMode?: SwapMode;
-		onlyDirectRoutes?: boolean;
-		quote?: JupiterSwapQuote;
-		reduceOnly?: SwapReduceOnly;
-		userAccountPublicKey?: PublicKey;
-	}): Promise<{
-		ixs: TransactionInstruction[];
-		lookupTables: AddressLookupTableAccount[];
-	}> {
-		const outMarket = this.getSpotMarketAccountOrThrow(outMarketIndex);
-		const inMarket = this.getSpotMarketAccountOrThrow(inMarketIndex);
-
-		if (!quote) {
-			const fetchedQuote = await jupiterClient.getQuote({
-				inputMint: inMarket.mint,
-				outputMint: outMarket.mint,
-				amount,
-				slippageBps,
-				swapMode,
-				onlyDirectRoutes,
-			});
-
-			quote = fetchedQuote;
-		}
-
-		if (!quote) {
-			throw new Error('Could not fetch swap quote. Please try again.');
-		}
-
-		this.assertQuoteMatchesMarkets(quote, inMarket, outMarket);
-
-		const isExactOut = swapMode === 'ExactOut' || quote.swapMode === 'ExactOut';
-		const amountIn = new BN(quote.inAmount);
-		const exactOutBufferedAmountIn = amountIn.muln(1001).divn(1000); // Add 10bp buffer
-
-		const { instructions: jupiterInstructions, lookupTables } =
-			await jupiterClient.getRouteInstructions({
-				quote,
-				userPublicKey: this.provider.wallet.publicKey,
-			});
-
-		const preInstructions = [];
-		if (!outAssociatedTokenAccount) {
-			const tokenProgram = this.getTokenProgramForSpotMarket(outMarket);
-			outAssociatedTokenAccount = await this.getAssociatedTokenAccount(
-				outMarket.marketIndex,
-				false,
-				tokenProgram
-			);
-
-			const accountInfo = await this.connection.getAccountInfo(
-				outAssociatedTokenAccount
-			);
-			if (!accountInfo) {
-				preInstructions.push(
-					this.createAssociatedTokenAccountIdempotentInstruction(
-						outAssociatedTokenAccount,
-						this.provider.wallet.publicKey,
-						this.provider.wallet.publicKey,
-						outMarket.mint,
-						tokenProgram
-					)
-				);
-			}
-		}
-
-		if (!inAssociatedTokenAccount) {
-			const tokenProgram = this.getTokenProgramForSpotMarket(inMarket);
-			inAssociatedTokenAccount = await this.getAssociatedTokenAccount(
-				inMarket.marketIndex,
-				false,
-				tokenProgram
-			);
-
-			const accountInfo = await this.connection.getAccountInfo(
-				inAssociatedTokenAccount
-			);
-			if (!accountInfo) {
-				preInstructions.push(
-					this.createAssociatedTokenAccountIdempotentInstruction(
-						inAssociatedTokenAccount,
-						this.provider.wallet.publicKey,
-						this.provider.wallet.publicKey,
-						inMarket.mint,
-						tokenProgram
-					)
-				);
-			}
-		}
-
-		const { beginSwapIx, endSwapIx } = await this.getSwapIx({
-			outMarketIndex,
-			inMarketIndex,
-			amountIn: isExactOut ? exactOutBufferedAmountIn : amountIn,
-			inTokenAccount: inAssociatedTokenAccount,
-			outTokenAccount: outAssociatedTokenAccount,
-			reduceOnly,
-			userAccountPublicKey,
-		});
-
-		const ixs = [
-			...preInstructions,
-			beginSwapIx,
-			...jupiterInstructions,
-			endSwapIx,
-		];
-
-		return { ixs, lookupTables };
+		return {
+			ixs: [...preInstructions, beginSwapIx, ...routeInstructions, endSwapIx],
+			lookupTables,
+		};
 	}
 
 	/**
@@ -8048,158 +7910,6 @@ export class VelocityClient {
 		);
 
 		return { beginSwapIx, endSwapIx };
-	}
-
-	/**
-	 * Builds the instruction list for a swap routed through a `UnifiedSwapClient` (the current
-	 * preferred swap path). Creates any missing associated token accounts and wraps the client's
-	 * routing instructions between `beginSwap`/`endSwap`. See `swap` for parameter semantics;
-	 * `amount` is in the "in" token's mint decimals (or "out" token's decimals when `swapMode` is
-	 * `ExactOut`).
-	 * @param userAccountPublicKey - Optional user account override (e.g. when the account is being
-	 * created in the same transaction).
-	 * @returns `ixs` — instruction list (ATA creation, `beginSwap`, routed swap instructions,
-	 * `endSwap`, in order) and `lookupTables` needed to fit it in a versioned transaction.
-	 */
-	public async getSwapIxV2({
-		swapClient,
-		outMarketIndex,
-		inMarketIndex,
-		outAssociatedTokenAccount,
-		inAssociatedTokenAccount,
-		amount,
-		slippageBps,
-		swapMode,
-		onlyDirectRoutes,
-		reduceOnly,
-		quote,
-		userAccountPublicKey,
-	}: {
-		swapClient: UnifiedSwapClient;
-		outMarketIndex: number;
-		inMarketIndex: number;
-		outAssociatedTokenAccount?: PublicKey;
-		inAssociatedTokenAccount?: PublicKey;
-		amount: BN;
-		slippageBps?: number;
-		swapMode?: SwapMode;
-		onlyDirectRoutes?: boolean;
-		reduceOnly?: SwapReduceOnly;
-		quote?: SwapQuote;
-		userAccountPublicKey?: PublicKey;
-	}): Promise<{
-		ixs: TransactionInstruction[];
-		lookupTables: AddressLookupTableAccount[];
-	}> {
-		// Get market accounts to determine mints
-		const outMarket = this.getSpotMarketAccountOrThrow(outMarketIndex);
-		const inMarket = this.getSpotMarketAccountOrThrow(inMarketIndex);
-
-		const isExactOut = swapMode === 'ExactOut';
-
-		const preInstructions: TransactionInstruction[] = [];
-
-		// Handle token accounts if not provided
-		let finalOutAssociatedTokenAccount = outAssociatedTokenAccount;
-		let finalInAssociatedTokenAccount = inAssociatedTokenAccount;
-
-		if (!finalOutAssociatedTokenAccount) {
-			const tokenProgram = this.getTokenProgramForSpotMarket(outMarket);
-			finalOutAssociatedTokenAccount = await this.getAssociatedTokenAccount(
-				outMarket.marketIndex,
-				false,
-				tokenProgram
-			);
-
-			const accountInfo = await this.connection.getAccountInfo(
-				finalOutAssociatedTokenAccount
-			);
-			if (!accountInfo) {
-				preInstructions.push(
-					this.createAssociatedTokenAccountIdempotentInstruction(
-						finalOutAssociatedTokenAccount,
-						this.provider.wallet.publicKey,
-						this.provider.wallet.publicKey,
-						outMarket.mint,
-						tokenProgram
-					)
-				);
-			}
-		}
-
-		if (!finalInAssociatedTokenAccount) {
-			const tokenProgram = this.getTokenProgramForSpotMarket(inMarket);
-			finalInAssociatedTokenAccount = await this.getAssociatedTokenAccount(
-				inMarket.marketIndex,
-				false,
-				tokenProgram
-			);
-
-			const accountInfo = await this.connection.getAccountInfo(
-				finalInAssociatedTokenAccount
-			);
-			if (!accountInfo) {
-				preInstructions.push(
-					this.createAssociatedTokenAccountIdempotentInstruction(
-						finalInAssociatedTokenAccount,
-						this.provider.wallet.publicKey,
-						this.provider.wallet.publicKey,
-						inMarket.mint,
-						tokenProgram
-					)
-				);
-			}
-		}
-
-		if (quote) {
-			this.assertQuoteMatchesMarkets(quote, inMarket, outMarket);
-		}
-
-		let amountInForBeginSwap: BN;
-		if (isExactOut) {
-			if (quote) {
-				amountInForBeginSwap = new BN(quote.inAmount);
-			} else {
-				amountInForBeginSwap = amount.muln(1001).divn(1000);
-			}
-		} else {
-			amountInForBeginSwap = amount;
-		}
-
-		// Get velocity swap instructions for begin and end
-		const { beginSwapIx, endSwapIx } = await this.getSwapIx({
-			outMarketIndex,
-			inMarketIndex,
-			amountIn: amountInForBeginSwap,
-			inTokenAccount: finalInAssociatedTokenAccount,
-			outTokenAccount: finalOutAssociatedTokenAccount,
-			reduceOnly,
-			userAccountPublicKey,
-		});
-
-		// Get core swap instructions from SwapClient
-		const swapResult = await swapClient.getSwapInstructions({
-			inputMint: inMarket.mint,
-			outputMint: outMarket.mint,
-			amount,
-			userPublicKey: this.provider.wallet.publicKey,
-			slippageBps,
-			swapMode,
-			onlyDirectRoutes,
-			quote,
-		});
-
-		const allInstructions = [
-			...preInstructions,
-			beginSwapIx,
-			...swapResult.instructions,
-			endSwapIx,
-		];
-
-		return {
-			ixs: allInstructions,
-			lookupTables: swapResult.lookupTables,
-		};
 	}
 
 	/**

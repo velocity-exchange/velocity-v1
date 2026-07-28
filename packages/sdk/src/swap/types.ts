@@ -2,6 +2,7 @@ import {
 	AddressLookupTableAccount,
 	PublicKey,
 	TransactionInstruction,
+	VersionedTransaction,
 } from '@solana/web3.js';
 import { BN } from '../isomorphic/anchor';
 
@@ -114,9 +115,10 @@ export interface GetRouteInstructionsParams {
 /**
  * The contract every swap provider implements.
  *
- * Deliberately two methods: quote, then build. Both clients satisfying the same
- * interface is what stops one provider growing behaviour the other doesn't
- * have — callers get identical semantics regardless of which is configured.
+ * Quote, then build — either into velocity's swap bracket, or into a standalone
+ * transaction. Both clients satisfying the same interface is what stops one
+ * provider growing behaviour the other doesn't have; callers get identical
+ * semantics regardless of which is configured.
  *
  * Provider-specific request fields live on {@link SwapQuoteParams} and are
  * mapped by the provider itself, so adding one never means editing the unified
@@ -137,6 +139,22 @@ export interface SwapProvider {
 	getRouteInstructions(
 		params: GetRouteInstructionsParams
 	): Promise<SwapRouteInstructions>;
+
+	/**
+	 * Builds a complete, self-contained swap transaction — the setup and
+	 * teardown `getRouteInstructions` strips are still attached: compute budget,
+	 * token account creation, and SOL wrapping.
+	 *
+	 * For swaps the caller signs and sends on its own. A swap running inside
+	 * velocity's `beginSwap`/`endSwap` bracket wants `getRouteInstructions`
+	 * instead — velocity supplies all three itself, and a second copy wraps SOL
+	 * that nothing then unwraps.
+	 *
+	 * @throws If the quote came from a different provider or a different wallet.
+	 */
+	getSwapTransaction(
+		params: GetRouteInstructionsParams
+	): Promise<VersionedTransaction>;
 }
 
 /**
@@ -154,7 +172,7 @@ export interface SwapProvider {
 export function expectProviderRoute<T extends SwapClientType>(
 	quote: SwapQuote,
 	provider: T,
-	userPublicKey?: PublicKey
+	userPublicKey: PublicKey
 ): Extract<SwapProviderRoute, { provider: T }> {
 	const route = quote?.providerRoute;
 
@@ -170,11 +188,7 @@ export function expectProviderRoute<T extends SwapClientType>(
 		);
 	}
 
-	if (
-		route.quotedFor &&
-		userPublicKey &&
-		route.quotedFor !== userPublicKey.toString()
-	) {
+	if (route.quotedFor && route.quotedFor !== userPublicKey.toString()) {
 		throw new Error(
 			`Quote was requested for ${
 				route.quotedFor

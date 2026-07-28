@@ -1,9 +1,5 @@
 import { expect } from 'chai';
-import {
-	PublicKey,
-	TransactionInstruction,
-	TransactionMessage,
-} from '@solana/web3.js';
+import { PublicKey, TransactionInstruction } from '@solana/web3.js';
 import { filterRouteInstructions } from '../../src/swap/routeInstructions';
 
 const INPUT_MINT = new PublicKey('So11111111111111111111111111111111111111112');
@@ -39,11 +35,7 @@ const ataIx = (mint: PublicKey) => ix(ATA_PROGRAM, [PAYER, PAYER, PAYER, mint]);
 
 const filter = (instructions: TransactionInstruction[]) =>
 	filterRouteInstructions({
-		transactionMessage: new TransactionMessage({
-			payerKey: PAYER,
-			recentBlockhash: '11111111111111111111111111111111',
-			instructions,
-		}),
+		instructions,
 		inputMint: INPUT_MINT,
 		outputMint: OUTPUT_MINT,
 	});

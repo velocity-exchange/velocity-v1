@@ -159,10 +159,6 @@ describe('SwapProvider parity', () => {
 
 	beforeEach(() => {
 		connection = sinon.createStubInstance(Connection);
-		connection.getLatestBlockhash.resolves({
-			blockhash: BLOCKHASH,
-			lastValidBlockHeight: 1,
-		});
 
 		sinon.stub(nodeFetch, 'default').callsFake(async (url: unknown) => {
 			const body = String(url).includes('/quote')
@@ -244,6 +240,38 @@ describe('SwapProvider parity', () => {
 			ATA_PROGRAM.toString(),
 			AMM_PROGRAM.toString(),
 		]);
+	});
+
+	it('builds the same standalone transaction, setup included, from either provider', async () => {
+		// Unlike getRouteInstructions, nothing is stripped — the caller signs and
+		// sends this transaction itself, so it needs the provider's own setup.
+		connection.getLatestBlockhash.resolves({
+			blockhash: BLOCKHASH,
+			lastValidBlockHeight: 1,
+		});
+
+		const [fromJupiter, fromTitan] = await Promise.all(
+			providers.map(async ({ provider }) => {
+				const quote = await quoteFor(provider);
+				const transaction = await provider.getSwapTransaction({
+					quote,
+					userPublicKey: USER,
+				});
+
+				expect(transaction.message.staticAccountKeys[0].equals(USER)).to.equal(
+					true
+				);
+
+				return summarize(
+					TransactionMessage.decompile(transaction.message).instructions
+				);
+			})
+		);
+
+		expect(fromJupiter).to.deep.equal(fromTitan);
+		expect(fromJupiter.map((ix) => ix.programId)).to.deep.equal(
+			ROUTE.map((ix) => ix.programId.toString())
+		);
 	});
 
 	it('builds at the quoted slippage, not a provider default', async () => {

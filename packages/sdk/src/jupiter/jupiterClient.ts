@@ -245,7 +245,7 @@ export class JupiterClient implements SwapProvider {
 
 	url: string;
 	connection: Connection;
-	lookupTableCahce = new Map<string, AddressLookupTableAccount>();
+	lookupTableCache = new Map<string, AddressLookupTableAccount>();
 	private apiKey?: string;
 
 	/**
@@ -383,17 +383,16 @@ export class JupiterClient implements SwapProvider {
 	 * Get a swap transaction for quote
 	 * @param quote quote to perform swap, from {@link getQuote}
 	 * @param userPublicKey the signer's wallet public key
-	 * @param slippageBps slippage tolerance in basis points; defaults to the
-	 * quote's own slippage, which is what the caller was shown
+	 *
+	 * Always builds at the quote's own slippage — the price the caller was
+	 * shown. Re-quote to change it rather than overriding it here.
 	 */
 	public async getSwap({
 		quote,
 		userPublicKey,
-		slippageBps,
 	}: {
 		quote: QuoteResponse | JupiterSwapQuote;
 		userPublicKey: PublicKey;
-		slippageBps?: number;
 	}): Promise<VersionedTransaction> {
 		if (!quote) {
 			throw new Error('Jupiter swap quote not provided. Please try again.');
@@ -414,7 +413,7 @@ export class JupiterClient implements SwapProvider {
 				body: JSON.stringify({
 					quoteResponse,
 					userPublicKey,
-					slippageBps: slippageBps ?? quoteResponse.slippageBps,
+					slippageBps: quoteResponse.slippageBps,
 				}),
 			})
 		).json();
@@ -435,6 +434,21 @@ export class JupiterClient implements SwapProvider {
 				'Something went wrong with creating the Jupiter swap transaction. Please try again.'
 			);
 		}
+	}
+
+	/**
+	 * The standalone transaction Jupiter's `/swap` endpoint returns, setup and
+	 * teardown included.
+	 * @throws If the quote came from a different provider or a different wallet.
+	 */
+	public async getSwapTransaction({
+		quote,
+		userPublicKey,
+	}: GetRouteInstructionsParams): Promise<VersionedTransaction> {
+		const jupiterQuote = expectProviderRoute(quote, 'jupiter', userPublicKey)
+			.quote as QuoteResponse;
+
+		return this.getSwap({ quote: jupiterQuote, userPublicKey });
 	}
 
 	/**
@@ -462,7 +476,7 @@ export class JupiterClient implements SwapProvider {
 
 		return {
 			instructions: filterRouteInstructions({
-				transactionMessage,
+				instructions: transactionMessage.instructions,
 				inputMint: new PublicKey(quote.inputMint),
 				outputMint: new PublicKey(quote.outputMint),
 			}),
@@ -506,7 +520,7 @@ export class JupiterClient implements SwapProvider {
 	async getLookupTable(
 		accountKey: PublicKey
 	): Promise<AddressLookupTableAccount | undefined> {
-		const cached = this.lookupTableCahce.get(accountKey.toString());
+		const cached = this.lookupTableCache.get(accountKey.toString());
 		if (cached !== undefined) {
 			return cached;
 		}
@@ -521,7 +535,7 @@ export class JupiterClient implements SwapProvider {
 
 		// Populate the cache — without this every route re-fetches the same tables,
 		// which is a large share of the RPC calls a swap makes.
-		this.lookupTableCahce.set(accountKey.toString(), lookupTable);
+		this.lookupTableCache.set(accountKey.toString(), lookupTable);
 
 		return lookupTable;
 	}
@@ -541,7 +555,7 @@ export class JupiterClient implements SwapProvider {
 		outputMint: PublicKey;
 	}): TransactionInstruction[] {
 		return filterRouteInstructions({
-			transactionMessage,
+			instructions: transactionMessage.instructions,
 			inputMint,
 			outputMint,
 		});

@@ -98,7 +98,7 @@ describe('UnifiedSwapClient Titan route size constraint', () => {
 // two clients agreeing. That parity is covered in providerParity.test.ts, which
 // runs both real clients over the same route.
 (['jupiter', 'titan'] as const).forEach((provider) => {
-	describe(`UnifiedSwapClient.getSwapInstructions (${provider})`, () => {
+	describe(`UnifiedSwapClient.getRouteInstructions (${provider})`, () => {
 		let client: UnifiedSwapClient;
 		let quote: SwapQuote;
 		let getQuote: sinon.SinonStub;
@@ -127,17 +127,11 @@ describe('UnifiedSwapClient Titan route size constraint', () => {
 		});
 
 		it('builds from the supplied quote without re-quoting', async () => {
-			// Re-quoting here would build a route the user was never shown.
+			// Building must be a pure function of the quote passed in: quoting here
+			// would build a route the user was never shown.
 			await client.getRouteInstructions({ ...params, quote });
 
 			expect(getQuote.called).to.be.false;
-			expect(getRouteInstructions.firstCall.args[0].quote).to.equal(quote);
-		});
-
-		it('quotes first when no quote is supplied', async () => {
-			await client.getRouteInstructions({ ...params, quote });
-
-			expect(getQuote.calledOnce).to.be.true;
 			expect(getRouteInstructions.firstCall.args[0].quote).to.equal(quote);
 		});
 

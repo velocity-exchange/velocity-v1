@@ -7507,7 +7507,6 @@ export class VelocityClient {
 		onlyDirectRoutes?: boolean;
 		quote?: SwapQuote;
 	}): Promise<TransactionSignature> {
-
 		if (!swapClient) {
 			throw new Error('Either swapClient or jupiterClient must be provided');
 		}

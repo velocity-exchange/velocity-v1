@@ -83,6 +83,15 @@ export type SwapProviderRoute =
 	  };
 
 /**
+ * A {@link SwapProviderRoute} as a provider hands it to {@link buildSwapQuote} —
+ * the payload without the `routed` fields, which `buildSwapQuote` records itself.
+ */
+export type SwapProviderRoutePayload = OmitRouted<SwapProviderRoute>;
+
+/** Distributes over the union, so each member keeps its own payload field. */
+type OmitRouted<R> = R extends unknown ? Omit<R, 'routed'> : never;
+
+/**
  * A quote plus the provider payload needed to execute it. Always pass the quote
  * you intend to swap on; providers will not fall back to a previous one.
  *
@@ -129,8 +138,8 @@ export interface GetRouteInstructionsParams {
 	/**
 	 * Wallet the swap executes as. Must be the wallet the quote was requested
 	 * for when the provider binds routes to a wallet — see
-	 * {@link expectProviderRoute}. 
-	 * 
+	 * {@link expectProviderRoute}.
+	 *
 	 * Don't be confused by the Velocity user account public key, which is different.
 	 * This is usually the Velocity authority.
 	 */
@@ -191,29 +200,25 @@ export interface SwapProvider {
  * {@link expectProviderRoute} reject a quote edited after it was returned — so
  * that check needs no cooperation from the provider beyond calling this.
  */
-export function buildSwapQuote<
-	Q extends UnifiedQuoteResponse,
-	P extends { readonly provider: SwapClientType; readonly quotedFor?: string },
->(quote: Q, providerRoute: P): Q & SwapQuote {
+export function buildSwapQuote<Q extends UnifiedQuoteResponse>(
+	quote: Q,
+	providerRoute: SwapProviderRoutePayload
+): Q & SwapQuote {
 	const { inputMint, outputMint, inAmount, outAmount, swapMode, slippageBps } =
 		quote;
 
+	const routed: SwapRouteFields = {
+		inputMint,
+		outputMint,
+		inAmount,
+		outAmount,
+		swapMode,
+		slippageBps,
+	};
+
 	return {
 		...quote,
-		// Cast: `P` is only constrained to the fields both members of
-		// `SwapProviderRoute` share, so the spread can't be proven to reconstitute
-		// one — the payload field it carries is the caller's to get right.
-		providerRoute: {
-			...providerRoute,
-			routed: {
-				inputMint,
-				outputMint,
-				inAmount,
-				outAmount,
-				swapMode,
-				slippageBps,
-			},
-		} as unknown as SwapProviderRoute,
+		providerRoute: { ...providerRoute, routed },
 	};
 }
 

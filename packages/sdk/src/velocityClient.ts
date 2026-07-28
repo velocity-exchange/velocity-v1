@@ -177,7 +177,7 @@ import { calculateMarketMaxAvailableInsurance } from './math/market';
 import { fetchUserStatsAccount } from './accounts/fetch';
 import { castNumberToSpotPrecision } from './math/spotMarket';
 import { JupiterClient, JupiterSwapQuote } from './jupiter/jupiterClient';
-import { SwapMode, SwapQuote } from './swap/UnifiedSwapClient';
+import { DEFAULT_ROUTE_SIZE_CONSTRAINT, SwapMode, SwapQuote } from './swap/UnifiedSwapClient';
 import { getNonIdleUserFilter } from './memcmp';
 import { UserStatsSubscriptionConfig } from './userStatsConfig';
 import { getMarinadeDepositIx, getMarinadeFinanceProgram } from './marinade';
@@ -190,7 +190,6 @@ import { createMinimalEd25519VerifyIx } from './util/ed25519Utils';
 import {
 	createNativeInstructionDiscriminatorBuffer,
 	isVersionedTransaction,
-	MAX_TX_BYTE_SIZE,
 } from './tx/utils';
 import { grpcVelocityClientAccountSubscriber } from './accounts/grpcVelocityClientAccountSubscriber';
 import nacl from 'tweetnacl';
@@ -7474,7 +7473,6 @@ export class VelocityClient {
 	 * @param swapMode - `ExactIn` (default) or `ExactOut`.
 	 * @param reduceOnly - Whether the in/out token's position on the velocity account must reduce
 	 * (not flip sign); enforced by `endSwap` after the swap completes.
-	 * @param v6 - @deprecated Use `quote` instead. Pre-fetched Jupiter v6 quote response.
 	 * @param quote - Pre-fetched quote response (skips an extra round-trip to the swap provider).
 	 * @param txParams - Optional compute-unit/priority-fee overrides.
 	 * @throws If neither `swapClient` nor `jupiterClient` is provided, or if `swapClient` is not a
@@ -7493,7 +7491,6 @@ export class VelocityClient {
 		swapMode,
 		reduceOnly,
 		txParams,
-		v6,
 		quote,
 		onlyDirectRoutes = false,
 	}: {
@@ -7510,9 +7507,6 @@ export class VelocityClient {
 		reduceOnly?: SwapReduceOnly;
 		txParams?: TxParams;
 		onlyDirectRoutes?: boolean;
-		v6?: {
-			quote?: JupiterSwapQuote;
-		};
 		quote?: SwapQuote;
 	}): Promise<TransactionSignature> {
 		// Handle backward compatibility: use jupiterClient if swapClient is not provided
@@ -7541,7 +7535,6 @@ export class VelocityClient {
 				onlyDirectRoutes,
 				reduceOnly,
 				quote,
-				v6,
 			});
 		} else if (clientToUse instanceof TitanClient) {
 			res = await this.getTitanSwapIx({
@@ -7558,7 +7551,7 @@ export class VelocityClient {
 				quote,
 			});
 		} else if (clientToUse instanceof JupiterClient) {
-			const quoteToUse = quote ?? v6?.quote;
+			const quoteToUse = quote;
 			res = await this.getJupiterSwapIxV6({
 				jupiterClient: clientToUse,
 				outMarketIndex,
@@ -7678,7 +7671,7 @@ export class VelocityClient {
 				slippageBps,
 				swapMode: isExactOut ? TitanSwapMode.ExactOut : TitanSwapMode.ExactIn,
 				onlyDirectRoutes,
-				sizeConstraint: MAX_TX_BYTE_SIZE - 375, // buffer for velocity instructions
+				sizeConstraint: DEFAULT_ROUTE_SIZE_CONSTRAINT,
 			}));
 
 		this.assertQuoteMatchesMarkets(quoteToUse, inMarket, outMarket);
@@ -8080,7 +8073,6 @@ export class VelocityClient {
 		onlyDirectRoutes,
 		reduceOnly,
 		quote,
-		v6,
 		userAccountPublicKey,
 	}: {
 		swapClient: UnifiedSwapClient;
@@ -8094,9 +8086,6 @@ export class VelocityClient {
 		onlyDirectRoutes?: boolean;
 		reduceOnly?: SwapReduceOnly;
 		quote?: SwapQuote;
-		v6?: {
-			quote?: JupiterSwapQuote;
-		};
 		userAccountPublicKey?: PublicKey;
 	}): Promise<{
 		ixs: TransactionInstruction[];
@@ -8162,15 +8151,14 @@ export class VelocityClient {
 			}
 		}
 
-		const suppliedQuote = quote ?? v6?.quote;
-		if (suppliedQuote) {
-			this.assertQuoteMatchesMarkets(suppliedQuote, inMarket, outMarket);
+		if (quote) {
+			this.assertQuoteMatchesMarkets(quote, inMarket, outMarket);
 		}
 
 		let amountInForBeginSwap: BN;
 		if (isExactOut) {
-			if (suppliedQuote) {
-				amountInForBeginSwap = new BN(suppliedQuote.inAmount);
+			if (quote) {
+				amountInForBeginSwap = new BN(quote.inAmount);
 			} else {
 				amountInForBeginSwap = amount.muln(1001).divn(1000);
 			}
@@ -8198,7 +8186,7 @@ export class VelocityClient {
 			slippageBps,
 			swapMode,
 			onlyDirectRoutes,
-			quote: suppliedQuote,
+			quote,
 		});
 
 		const allInstructions = [

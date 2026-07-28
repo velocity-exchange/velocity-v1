@@ -91,7 +91,7 @@ const LOOKUP_TABLE_RETRY_BASE_DELAY_MS = 150;
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
 export class TitanClient implements SwapProvider {
-	public readonly providerName = 'titan' as const;
+	public readonly providerName = 'titan';
 
 	authToken: string;
 	url: string;

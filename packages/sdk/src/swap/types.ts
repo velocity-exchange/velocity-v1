@@ -51,7 +51,7 @@ export interface UnifiedQuoteResponse {
  *
  * Opaque — read the normalized fields on {@link SwapQuote} instead.
  */
-export type ProviderRoute =
+export type SwapProviderRoute =
 	| {
 			readonly provider: 'jupiter';
 			readonly quote: unknown;
@@ -68,7 +68,7 @@ export type ProviderRoute =
  * you intend to swap on; providers will not fall back to a previous one.
  */
 export type SwapQuote = UnifiedQuoteResponse & {
-	readonly providerRoute: ProviderRoute;
+	readonly providerRoute: SwapProviderRoute;
 };
 
 export interface SwapQuoteParams {
@@ -155,7 +155,7 @@ export function expectProviderRoute<T extends SwapClientType>(
 	quote: SwapQuote,
 	provider: T,
 	userPublicKey?: PublicKey
-): Extract<ProviderRoute, { provider: T }> {
+): Extract<SwapProviderRoute, { provider: T }> {
 	const route = quote?.providerRoute;
 
 	if (!route) {
@@ -182,5 +182,5 @@ export function expectProviderRoute<T extends SwapClientType>(
 		);
 	}
 
-	return route as Extract<ProviderRoute, { provider: T }>;
+	return route as Extract<SwapProviderRoute, { provider: T }>;
 }

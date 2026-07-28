@@ -17,7 +17,7 @@ import {
 // definition site and what the package index exports.
 export type {
 	GetRouteInstructionsParams,
-	ProviderRoute,
+	SwapProviderRoute,
 	SwapClientType,
 	SwapMode,
 	SwapProvider,
@@ -34,7 +34,7 @@ export type {
 const VELOCITY_SWAP_IX_SIZE_BUFFER = 375;
 
 /** Byte budget handed to a swap provider for the route portion of the tx. */
-const DEFAULT_ROUTE_SIZE_CONSTRAINT =
+export const DEFAULT_ROUTE_SIZE_CONSTRAINT =
 	MAX_TX_BYTE_SIZE - VELOCITY_SWAP_IX_SIZE_BUFFER;
 
 /**

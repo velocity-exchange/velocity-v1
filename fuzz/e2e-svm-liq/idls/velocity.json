@@ -2241,6 +2241,52 @@
       ]
     },
     {
+      "name": "fill_perp_order_router",
+      "discriminator": [
+        48,
+        193,
+        140,
+        99,
+        146,
+        115,
+        19,
+        82
+      ],
+      "accounts": [
+        {
+          "name": "state"
+        },
+        {
+          "name": "authority",
+          "signer": true
+        },
+        {
+          "name": "filler",
+          "writable": true
+        },
+        {
+          "name": "filler_stats",
+          "writable": true
+        },
+        {
+          "name": "user",
+          "writable": true
+        },
+        {
+          "name": "user_stats",
+          "writable": true
+        }
+      ],
+      "args": [
+        {
+          "name": "order_id",
+          "type": {
+            "option": "u32"
+          }
+        }
+      ]
+    },
+    {
       "name": "force_cancel_orders",
       "discriminator": [
         64,

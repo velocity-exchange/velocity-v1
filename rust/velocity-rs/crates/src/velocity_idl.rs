@@ -329,6 +329,16 @@ pub mod instructions {
     #[automatically_derived]
     impl anchor_lang::InstructionData for FillPerpOrder {}
     #[derive(AnchorSerialize, AnchorDeserialize, Clone, Default)]
+    pub struct FillPerpOrderRouter {
+        pub order_id: Option<u32>,
+    }
+    #[automatically_derived]
+    impl anchor_lang::Discriminator for FillPerpOrderRouter {
+        const DISCRIMINATOR: &[u8] = &[48, 193, 140, 99, 146, 115, 19, 82];
+    }
+    #[automatically_derived]
+    impl anchor_lang::InstructionData for FillPerpOrderRouter {}
+    #[derive(AnchorSerialize, AnchorDeserialize, Clone, Default)]
     pub struct ForceCancelOrders {}
     #[automatically_derived]
     impl anchor_lang::Discriminator for ForceCancelOrders {
@@ -9461,6 +9471,94 @@ pub mod accounts {
     }
     #[automatically_derived]
     impl anchor_lang::AccountDeserialize for FillPerpOrder {
+        fn try_deserialize(buf: &mut &[u8]) -> anchor_lang::Result<Self> {
+            let given_disc = &buf[..8];
+            if Self::DISCRIMINATOR != given_disc {
+                return Err(anchor_lang::error!(
+                    anchor_lang::error::ErrorCode::AccountDiscriminatorMismatch
+                ));
+            }
+            Self::try_deserialize_unchecked(buf)
+        }
+        fn try_deserialize_unchecked(buf: &mut &[u8]) -> anchor_lang::Result<Self> {
+            let mut data: &[u8] = &buf[8..];
+            AnchorDeserialize::deserialize(&mut data)
+                .map_err(|_| anchor_lang::error::ErrorCode::AccountDidNotDeserialize.into())
+        }
+    }
+    #[repr(C)]
+    #[derive(Copy, Clone, Default, AnchorSerialize, AnchorDeserialize, Serialize, Deserialize)]
+    pub struct FillPerpOrderRouter {
+        pub state: Pubkey,
+        pub authority: Pubkey,
+        pub filler: Pubkey,
+        pub filler_stats: Pubkey,
+        pub user: Pubkey,
+        pub user_stats: Pubkey,
+    }
+    #[automatically_derived]
+    impl anchor_lang::Discriminator for FillPerpOrderRouter {
+        const DISCRIMINATOR: &[u8] = &[89, 162, 175, 222, 88, 233, 149, 244];
+    }
+    #[automatically_derived]
+    unsafe impl anchor_lang::__private::bytemuck::Pod for FillPerpOrderRouter {}
+    #[automatically_derived]
+    unsafe impl anchor_lang::__private::bytemuck::Zeroable for FillPerpOrderRouter {}
+    #[automatically_derived]
+    impl anchor_lang::ZeroCopy for FillPerpOrderRouter {}
+    #[automatically_derived]
+    impl anchor_lang::InstructionData for FillPerpOrderRouter {}
+    #[automatically_derived]
+    impl ToAccountMetas for FillPerpOrderRouter {
+        fn to_account_metas(&self) -> Vec<AccountMeta> {
+            vec![
+                AccountMeta {
+                    pubkey: self.state,
+                    is_signer: false,
+                    is_writable: false,
+                },
+                AccountMeta {
+                    pubkey: self.authority,
+                    is_signer: true,
+                    is_writable: false,
+                },
+                AccountMeta {
+                    pubkey: self.filler,
+                    is_signer: false,
+                    is_writable: true,
+                },
+                AccountMeta {
+                    pubkey: self.filler_stats,
+                    is_signer: false,
+                    is_writable: true,
+                },
+                AccountMeta {
+                    pubkey: self.user,
+                    is_signer: false,
+                    is_writable: true,
+                },
+                AccountMeta {
+                    pubkey: self.user_stats,
+                    is_signer: false,
+                    is_writable: true,
+                },
+            ]
+        }
+    }
+    #[automatically_derived]
+    impl anchor_lang::AccountSerialize for FillPerpOrderRouter {
+        fn try_serialize<W: std::io::Write>(&self, writer: &mut W) -> anchor_lang::Result<()> {
+            if writer.write_all(Self::DISCRIMINATOR).is_err() {
+                return Err(anchor_lang::error::ErrorCode::AccountDidNotSerialize.into());
+            }
+            if AnchorSerialize::serialize(self, writer).is_err() {
+                return Err(anchor_lang::error::ErrorCode::AccountDidNotSerialize.into());
+            }
+            Ok(())
+        }
+    }
+    #[automatically_derived]
+    impl anchor_lang::AccountDeserialize for FillPerpOrderRouter {
         fn try_deserialize(buf: &mut &[u8]) -> anchor_lang::Result<Self> {
             let given_disc = &buf[..8];
             if Self::DISCRIMINATOR != given_disc {

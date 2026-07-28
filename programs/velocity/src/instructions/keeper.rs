@@ -56,6 +56,7 @@ use crate::{
             find_bids_and_asks_from_users,
         },
         position::calculate_base_asset_value_and_pnl_with_oracle_price,
+        router::QuoterBook,
         safe_math::SafeMath,
         spot_withdraw::validate_spot_market_vault_amount,
     },
@@ -110,6 +111,30 @@ pub fn handle_fill_perp_order<'c: 'info, 'info>(
     ctx: Context<'info, FillOrder<'info>>,
     order_id: Option<u32>,
 ) -> Result<()> {
+    fill_perp_order_common(ctx, order_id, None)
+}
+
+/// [`handle_fill_perp_order`] through the router pass: one quote → split →
+/// execute sweep across the vAMM ladder (with last look over the rival books)
+/// and any DLOB makers in `remaining_accounts`, instead of the legacy
+/// fulfillment-method loop. External quoters (CLOB, PropAMMs) will join the
+/// split once their registry entries + CPI accounts are threaded through
+/// `remaining_accounts`; until then this ix routes vAMM + DLOB only.
+#[access_control(
+    fill_not_paused(&ctx.accounts.state)
+)]
+pub fn handle_fill_perp_order_router<'c: 'info, 'info>(
+    ctx: Context<'info, FillOrder<'info>>,
+    order_id: Option<u32>,
+) -> Result<()> {
+    fill_perp_order_common(ctx, order_id, Some(&[]))
+}
+
+fn fill_perp_order_common<'c: 'info, 'info>(
+    ctx: Context<'info, FillOrder<'info>>,
+    order_id: Option<u32>,
+    router_books: Option<&[QuoterBook]>,
+) -> Result<()> {
     let (order_id, market_index) = {
         let user = &load!(ctx.accounts.user)?;
         // if there is no order id, use the users last order id
@@ -125,7 +150,7 @@ pub fn handle_fill_perp_order<'c: 'info, 'info>(
     };
 
     let user_key = &ctx.accounts.user.key();
-    fill_order(ctx, order_id, market_index).inspect_err(|_e| {
+    fill_order(ctx, order_id, market_index, router_books).inspect_err(|_e| {
         msg!(
             "Err filling order id {} for user {} for market index {}",
             order_id,
@@ -141,6 +166,7 @@ fn fill_order<'c: 'info, 'info>(
     ctx: Context<'info, FillOrder<'info>>,
     order_id: u32,
     market_index: u16,
+    router_books: Option<&[QuoterBook]>,
 ) -> Result<()> {
     let clock = &Clock::get()?;
     let state = ctx.accounts.state.load()?;
@@ -174,7 +200,7 @@ fn fill_order<'c: 'info, 'info>(
     // No `update_amm` here: `fill_perp_order` snaps the AMM and refreshes
     // PerpMarket-level oracle stats internally before quoting.
 
-    controller::orders::fill_perp_order(
+    controller::orders::fill_perp_order_with_router(
         order_id,
         &*ctx.accounts.state.load()?,
         &ctx.accounts.user,
@@ -189,6 +215,7 @@ fn fill_order<'c: 'info, 'info>(
         None,
         clock,
         FillMode::Fill,
+        router_books,
         &mut escrow.as_mut(),
     )?;
 

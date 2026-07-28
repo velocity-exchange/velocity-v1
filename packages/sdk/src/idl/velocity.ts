@@ -2247,6 +2247,52 @@ export type Velocity = {
       ]
     },
     {
+      "name": "fillPerpOrderRouter",
+      "discriminator": [
+        48,
+        193,
+        140,
+        99,
+        146,
+        115,
+        19,
+        82
+      ],
+      "accounts": [
+        {
+          "name": "state"
+        },
+        {
+          "name": "authority",
+          "signer": true
+        },
+        {
+          "name": "filler",
+          "writable": true
+        },
+        {
+          "name": "fillerStats",
+          "writable": true
+        },
+        {
+          "name": "user",
+          "writable": true
+        },
+        {
+          "name": "userStats",
+          "writable": true
+        }
+      ],
+      "args": [
+        {
+          "name": "orderId",
+          "type": {
+            "option": "u32"
+          }
+        }
+      ]
+    },
+    {
       "name": "forceCancelOrders",
       "discriminator": [
         64,

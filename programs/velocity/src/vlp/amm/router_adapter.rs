@@ -1,53 +1,68 @@
 //! vAMM leg of the router's quoter interface: turn the AMM curve into
-//! discrete [`PriceLevel`]s for the router split. In-program — the vAMM never
-//! goes through the CPI legs; the router reads this directly and executes
-//! via the existing `AmmQuoter` fill path.
+//! discrete [`PriceLevel`]s for the router split. In-program — the vAMM
+//! never goes through the CPI legs, which is what makes last look possible:
+//! the router quotes every CPI book first and hands them here, and rival
+//! prices become ladder rungs. The slice of curve that is cheaper than a
+//! rival's price is quoted AT the rival's price — the vAMM wins the tie by
+//! tier priority and captures the difference for the LPs instead of
+//! donating it as taker price improvement.
 //!
-//! Slicing: the capped size divides into equal base chunks, each priced at
-//! its exact average swap cost against the cached spread reserves. Rounding
-//! goes against the taker (ceil for Long, floor for Short), so the split's
-//! floored per-level notionals stay at-or-better against the exact swap the
-//! execute leg performs; partial consumption of a level is conservative by
-//! curve convexity.
+//! Every checkpoint is priced at the curve's exact marginal price at that
+//! cumulative size (rival rungs land there by construction — the inversion
+//! finds the cumulative where the marginal price equals the rival's), so
+//! levels are monotone and each upper-bounds (long) / lower-bounds (short)
+//! its slice's true average cost: at-or-better against the execute swap
+//! holds with slack, no rounding tricks. Rival rungs are only honored
+//! within [`LAST_LOOK_BAND`] of the vAMM's top — a garbage price from a
+//! malicious-but-approved quoter can't inflate this book; beyond the band
+//! the curve is priced honestly by equal-size checkpoints.
 
 use crate::controller::position::PositionDirection;
 use crate::error::VelocityResult;
-use crate::math::casting::Cast;
+use crate::math::bn::U192;
+use crate::math::constants::PERCENTAGE_PRECISION_U64;
+use crate::math::router::QuoterBook;
 use crate::math::safe_math::SafeMath;
 use crate::state::prop_amm::{Direction, PriceLevel};
 
-use super::controller::{calculate_base_swap_output, SwapDirection};
-use super::math::amm::calculate_amm_available_liquidity;
+use super::controller::SwapDirection;
+use super::math::amm::{calculate_amm_available_liquidity, calculate_price};
+use super::math::spread::calculate_base_asset_amount_to_trade_to_price;
 use super::state::AMM;
 
-/// Levels a vAMM quote is sliced into.
-pub const VAMM_QUOTE_LEVELS: u64 = 8;
+/// Ladder checkpoints per quote (rival rungs + equal-size filler).
+pub const VAMM_QUOTE_CHECKPOINTS: usize = 8;
 
-fn level_price(
-    quote: u64,
-    base: u64,
-    base_precision: u64,
-    direction: Direction,
+/// Rival prices are honored as shading rungs only within this fraction of
+/// the vAMM's top price (PERCENTAGE_PRECISION): 5%.
+pub const LAST_LOOK_BAND: u64 = PERCENTAGE_PRECISION_U64 / 20;
+
+/// The curve's marginal price after `cumulative` base has traded, on the
+/// same raw-invariant + spread-reserve basis as
+/// [`calculate_base_asset_amount_to_trade_to_price`].
+fn marginal_price_after(
+    amm: &AMM,
+    spread_base_reserve: u128,
+    cumulative: u64,
+    swap_direction: SwapDirection,
 ) -> VelocityResult<u64> {
-    let numerator = (quote as u128).safe_mul(base_precision as u128)?;
-    let price = match direction {
-        // Round against the taker: a long pays, so quote the ceiling…
-        Direction::Long => numerator
-            .safe_add((base as u128).safe_sub(1)?)?
-            .safe_div(base as u128)?,
-        // …a short receives, so quote the floor.
-        Direction::Short => numerator.safe_div(base as u128)?,
+    let base_after = match swap_direction {
+        SwapDirection::Remove => spread_base_reserve.safe_sub(cumulative as u128)?,
+        SwapDirection::Add => spread_base_reserve.safe_add(cumulative as u128)?,
     };
-    price.cast::<u64>()
+    let invariant = U192::from(amm.sqrt_k).safe_mul(U192::from(amm.sqrt_k))?;
+    let quote_after = invariant.safe_div(U192::from(base_after))?.try_to_u128()?;
+    calculate_price(quote_after, base_after, amm.peg_multiplier)
 }
 
-/// Quote the vAMM: best-first levels covering `min(size, available)`.
+/// Quote the vAMM: best-first ladder levels covering `min(size, available)`,
+/// shaded toward `rival_books` within the last-look band.
 pub fn vamm_quote_levels(
     amm: &AMM,
     direction: Direction,
     size: u64,
     step_size: u64,
-    base_precision: u64,
+    rival_books: &[QuoterBook],
 ) -> VelocityResult<Vec<PriceLevel>> {
     let (position_direction, swap_direction) = match direction {
         Direction::Long => (PositionDirection::Long, SwapDirection::Remove),
@@ -59,29 +74,93 @@ pub fn vamm_quote_levels(
         return Ok(vec![]);
     }
 
-    let chunk = (total / VAMM_QUOTE_LEVELS).max(1);
-    let mut levels = Vec::with_capacity(VAMM_QUOTE_LEVELS as usize);
-    let mut prev_base: u64 = 0;
-    let mut prev_quote: u64 = 0;
-    for k in 1..=VAMM_QUOTE_LEVELS {
-        // The last chunk absorbs the division remainder.
-        let cumulative_base = if k == VAMM_QUOTE_LEVELS {
-            total
-        } else {
-            total.min(chunk.safe_mul(k)?)
-        };
-        let level_base = cumulative_base.safe_sub(prev_base)?;
-        if level_base == 0 {
+    let spread_base_reserve = match direction {
+        Direction::Long => amm.ask_base_asset_reserve,
+        Direction::Short => amm.bid_base_asset_reserve,
+    };
+    let reserve_price = amm.reserve_price()?;
+    let top = match direction {
+        Direction::Long => {
+            amm.ask_price(reserve_price, amm.long_spread, amm.reference_price_offset)?
+        }
+        Direction::Short => {
+            amm.bid_price(reserve_price, amm.short_spread, amm.reference_price_offset)?
+        }
+    };
+    let band_edge = {
+        let band = (top as u128)
+            .safe_mul(LAST_LOOK_BAND as u128)?
+            .safe_div(PERCENTAGE_PRECISION_U64 as u128)? as u64;
+        match direction {
+            Direction::Long => top.safe_add(band)?,
+            Direction::Short => top.safe_sub(band)?,
+        }
+    };
+
+    // Last look: rival prices beyond our top (but within the band) become
+    // shading rungs, best-first.
+    let mut rival_rungs: Vec<u64> = rival_books
+        .iter()
+        .flat_map(|book| book.levels.iter().map(|level| level.price))
+        .filter(|&price| match direction {
+            Direction::Long => price > top && price <= band_edge,
+            Direction::Short => price < top && price >= band_edge && price > 0,
+        })
+        .collect();
+    rival_rungs.sort_unstable();
+    if direction == Direction::Short {
+        rival_rungs.reverse();
+    }
+    rival_rungs.dedup();
+    rival_rungs.truncate(VAMM_QUOTE_CHECKPOINTS);
+
+    // Checkpoints: (cumulative base, price for the slice ending there).
+    let mut checkpoints: Vec<(u64, u64)> = Vec::with_capacity(VAMM_QUOTE_CHECKPOINTS + 1);
+    for price in rival_rungs {
+        let (cumulative, trade_direction) =
+            calculate_base_asset_amount_to_trade_to_price(amm, price, position_direction)?;
+        if trade_direction != position_direction {
             continue;
         }
-        let output = calculate_base_swap_output(amm, cumulative_base, swap_direction)?;
-        let level_quote = output.quote_asset_amount.safe_sub(prev_quote)?;
+        let cumulative = cumulative.min(total);
+        checkpoints.push((cumulative, price));
+        if cumulative == total {
+            break;
+        }
+    }
+    // Beyond the last rival rung the curve is priced honestly: equal-size
+    // checkpoints at their exact marginal price.
+    let covered = checkpoints.last().map(|c| c.0).unwrap_or(0);
+    if covered < total {
+        let filler = VAMM_QUOTE_CHECKPOINTS
+            .saturating_sub(checkpoints.len())
+            .max(1) as u64;
+        let chunk = ((total - covered) / filler).max(1);
+        for k in 1..=filler {
+            let cumulative = if k == filler {
+                total
+            } else {
+                total.min(covered.safe_add(chunk.safe_mul(k)?)?)
+            };
+            let price = marginal_price_after(amm, spread_base_reserve, cumulative, swap_direction)?;
+            checkpoints.push((cumulative, price));
+            if cumulative == total {
+                break;
+            }
+        }
+    }
+
+    let mut levels = Vec::with_capacity(checkpoints.len());
+    let mut previous = 0u64;
+    for (cumulative, price) in checkpoints {
+        if cumulative <= previous {
+            continue;
+        }
         levels.push(PriceLevel {
-            price: level_price(level_quote, level_base, base_precision, direction)?,
-            size: level_base,
+            price,
+            size: cumulative.safe_sub(previous)?,
         });
-        prev_base = cumulative_base;
-        prev_quote = output.quote_asset_amount;
+        previous = cumulative;
     }
     Ok(levels)
 }
@@ -90,6 +169,7 @@ pub fn vamm_quote_levels(
 mod tests {
     use super::*;
     use crate::math::constants::{AMM_RESERVE_PRECISION, BASE_PRECISION_U64, PEG_PRECISION};
+    use crate::vlp::amm::controller::calculate_base_swap_output;
 
     fn amm_fixture() -> AMM {
         let mut amm = AMM {
@@ -108,6 +188,13 @@ mod tests {
         amm
     }
 
+    fn rival_book(levels: &[PriceLevel]) -> Vec<QuoterBook> {
+        vec![QuoterBook {
+            priority: 10,
+            levels,
+        }]
+    }
+
     /// The split's floored per-level notional, as `math::router` computes it.
     fn split_notional(levels: &[PriceLevel]) -> u64 {
         levels
@@ -116,19 +203,20 @@ mod tests {
             .sum()
     }
 
+    const TOP: u64 = 50 * PEG_PRECISION as u64; // no-spread reserve price
+
     #[test]
-    fn long_levels_are_monotone_and_at_or_better() {
+    fn long_ladder_is_monotone_and_at_or_better() {
         let amm = amm_fixture();
         let size = 10 * BASE_PRECISION_U64;
-        let levels = vamm_quote_levels(&amm, Direction::Long, size, 1, BASE_PRECISION_U64).unwrap();
+        let levels = vamm_quote_levels(&amm, Direction::Long, size, 1, &[]).unwrap();
 
         assert_eq!(levels.iter().map(|l| l.size).sum::<u64>(), size);
         assert!(levels.windows(2).all(|w| w[0].price <= w[1].price));
-        // First chunk averages above the no-spread reserve price ($50).
-        assert!(levels[0].price >= 50 * PEG_PRECISION as u64);
+        assert!(levels[0].price >= TOP);
 
-        // Quoted (floored) notional must cover the exact swap cost of the
-        // whole size — the at-or-better invariant a long execute is held to.
+        // Marginal-end pricing upper-bounds each slice's true average cost,
+        // so the quoted (floored) notional covers the exact one-shot swap.
         let exact = calculate_base_swap_output(&amm, size, SwapDirection::Remove)
             .unwrap()
             .quote_asset_amount;
@@ -136,17 +224,15 @@ mod tests {
     }
 
     #[test]
-    fn short_levels_are_monotone_and_at_or_better() {
+    fn short_ladder_is_monotone_and_at_or_better() {
         let amm = amm_fixture();
         let size = 10 * BASE_PRECISION_U64;
-        let levels =
-            vamm_quote_levels(&amm, Direction::Short, size, 1, BASE_PRECISION_U64).unwrap();
+        let levels = vamm_quote_levels(&amm, Direction::Short, size, 1, &[]).unwrap();
 
         assert_eq!(levels.iter().map(|l| l.size).sum::<u64>(), size);
         assert!(levels.windows(2).all(|w| w[0].price >= w[1].price));
-        assert!(levels[0].price <= 50 * PEG_PRECISION as u64);
+        assert!(levels[0].price <= TOP);
 
-        // Quoted notional must not overpromise what the exact swap pays out.
         let exact = calculate_base_swap_output(&amm, size, SwapDirection::Add)
             .unwrap()
             .quote_asset_amount;
@@ -154,10 +240,57 @@ mod tests {
     }
 
     #[test]
+    fn last_look_shades_to_an_in_band_rival() {
+        let amm = amm_fixture();
+        let size = 10 * BASE_PRECISION_U64;
+        let rival_price = TOP + TOP / 100; // +1%, inside the 5% band
+        let rival_levels = [PriceLevel {
+            price: rival_price,
+            size: BASE_PRECISION_U64,
+        }];
+        let levels =
+            vamm_quote_levels(&amm, Direction::Long, size, 1, &rival_book(&rival_levels)).unwrap();
+
+        // The slice of curve cheaper than the rival is quoted AT the rival's
+        // price (winning the tie by tier priority), and it comes first.
+        assert_eq!(levels[0].price, rival_price);
+        assert!(levels[0].size > 0);
+        assert_eq!(levels.iter().map(|l| l.size).sum::<u64>(), size);
+        assert!(levels.windows(2).all(|w| w[0].price <= w[1].price));
+
+        // Shading only raises quoted notional: still at-or-better.
+        let exact = calculate_base_swap_output(&amm, size, SwapDirection::Remove)
+            .unwrap()
+            .quote_asset_amount;
+        assert!(split_notional(&levels) >= exact);
+    }
+
+    #[test]
+    fn out_of_band_and_crossing_rivals_are_ignored() {
+        let amm = amm_fixture();
+        let size = 10 * BASE_PRECISION_U64;
+        let garbage = [
+            // 10x the top: outside the band — must not inflate the book.
+            PriceLevel {
+                price: TOP * 10,
+                size: BASE_PRECISION_U64,
+            },
+            // Below our top (crossing): not a shading target.
+            PriceLevel {
+                price: TOP - TOP / 100,
+                size: BASE_PRECISION_U64,
+            },
+        ];
+        let shaded =
+            vamm_quote_levels(&amm, Direction::Long, size, 1, &rival_book(&garbage)).unwrap();
+        let honest = vamm_quote_levels(&amm, Direction::Long, size, 1, &[]).unwrap();
+        assert_eq!(shaded, honest);
+    }
+
+    #[test]
     fn size_caps_at_available_liquidity() {
         let amm = amm_fixture();
-        let levels =
-            vamm_quote_levels(&amm, Direction::Long, u64::MAX, 1, BASE_PRECISION_U64).unwrap();
+        let levels = vamm_quote_levels(&amm, Direction::Long, u64::MAX, 1, &[]).unwrap();
         let available =
             calculate_amm_available_liquidity(&amm, &PositionDirection::Long, 1).unwrap();
         assert_eq!(levels.iter().map(|l| l.size).sum::<u64>(), available);
@@ -166,10 +299,8 @@ mod tests {
     #[test]
     fn zero_size_is_empty() {
         let amm = amm_fixture();
-        assert!(
-            vamm_quote_levels(&amm, Direction::Long, 0, 1, BASE_PRECISION_U64)
-                .unwrap()
-                .is_empty()
-        );
+        assert!(vamm_quote_levels(&amm, Direction::Long, 0, 1, &[])
+            .unwrap()
+            .is_empty());
     }
 }

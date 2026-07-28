@@ -2157,11 +2157,11 @@ pub mod velocity {
     }
 
     #[cfg(feature = "anchor-test")]
-    pub fn probe_quoter<'info>(
-        ctx: Context<'info, ProbeQuoter<'info>>,
-        args: ProbeQuoterArgs,
+    pub fn probe_router<'info>(
+        ctx: Context<'info, ProbeRouter<'info>>,
+        args: ProbeRouterArgs,
     ) -> Result<()> {
-        handle_probe_quoter(ctx, args)
+        handle_probe_router(ctx, args)
     }
 }
 

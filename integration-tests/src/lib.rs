@@ -149,16 +149,15 @@ pub fn send(
     svm.expire_blockhash();
     let blockhash = svm.latest_blockhash();
     let msg = Message::new_with_blockhash(&[ix.clone()], Some(&payer.pubkey()), &blockhash);
-    let mut signers: Vec<&Keypair> = vec![payer];
-    for kp in extra_signers {
-        let needed = ix
-            .accounts
-            .iter()
-            .any(|m| m.is_signer && m.pubkey == kp.pubkey());
-        if needed && kp.pubkey() != payer.pubkey() {
-            signers.push(kp);
-        }
-    }
+    let signers: Vec<&Keypair> = std::iter::once(payer)
+        .chain(extra_signers.iter().copied().filter(|kp| {
+            kp.pubkey() != payer.pubkey()
+                && ix
+                    .accounts
+                    .iter()
+                    .any(|m| m.is_signer && m.pubkey == kp.pubkey())
+        }))
+        .collect();
     let tx = VersionedTransaction::try_new(VersionedMessage::Legacy(msg), &signers).unwrap();
     svm.send_transaction(tx)
 }

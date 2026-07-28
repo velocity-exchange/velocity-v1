@@ -26,6 +26,7 @@ pub mod orders;
 pub mod perp_market;
 pub mod position;
 pub mod quote_asset;
+pub mod router;
 pub mod safe_math;
 pub mod safe_unwrap;
 pub mod spot_balance;

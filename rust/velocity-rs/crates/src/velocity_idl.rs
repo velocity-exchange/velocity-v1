@@ -848,6 +848,16 @@ pub mod instructions {
     #[automatically_derived]
     impl anchor_lang::InstructionData for PostPythLazerOracleUpdate {}
     #[derive(AnchorSerialize, AnchorDeserialize, Clone, Default)]
+    pub struct ProbeQuoter {
+        pub args: ProbeQuoterArgs,
+    }
+    #[automatically_derived]
+    impl anchor_lang::Discriminator for ProbeQuoter {
+        const DISCRIMINATOR: &[u8] = &[215, 146, 162, 139, 111, 188, 143, 93];
+    }
+    #[automatically_derived]
+    impl anchor_lang::InstructionData for ProbeQuoter {}
+    #[derive(AnchorSerialize, AnchorDeserialize, Clone, Default)]
     pub struct RecenterPerpMarketAmm {
         pub peg_multiplier: u128,
         pub sqrt_k: u128,
@@ -3128,6 +3138,23 @@ pub mod types {
         pub signer: Option<Pubkey>,
         pub user_token_amount_after: i128,
     }
+    #[derive(
+        AnchorSerialize,
+        AnchorDeserialize,
+        InitSpace,
+        Serialize,
+        Deserialize,
+        Copy,
+        Clone,
+        Default,
+        Debug,
+        PartialEq,
+    )]
+    pub enum Direction {
+        #[default]
+        Long,
+        Short,
+    }
     #[repr(C)]
     #[derive(
         AnchorSerialize,
@@ -4538,6 +4565,16 @@ pub mod types {
     pub struct PriceDivergenceGuardRails {
         pub mark_oracle_percent_divergence: u64,
         pub oracle_twap_5min_percent_divergence: u64,
+    }
+    #[repr(C)]
+    #[derive(
+        AnchorSerialize, AnchorDeserialize, Serialize, Deserialize, Clone, Default, Debug, PartialEq,
+    )]
+    pub struct ProbeQuoterArgs {
+        pub direction: Direction,
+        pub size: u64,
+        pub users: Option<Vec<Pubkey>>,
+        pub execute: bool,
     }
     #[repr(C)]
     #[derive(
@@ -13373,6 +13410,70 @@ pub mod accounts {
     }
     #[automatically_derived]
     impl anchor_lang::AccountDeserialize for PostPythLazerOracleUpdate {
+        fn try_deserialize(buf: &mut &[u8]) -> anchor_lang::Result<Self> {
+            let given_disc = &buf[..8];
+            if Self::DISCRIMINATOR != given_disc {
+                return Err(anchor_lang::error!(
+                    anchor_lang::error::ErrorCode::AccountDiscriminatorMismatch
+                ));
+            }
+            Self::try_deserialize_unchecked(buf)
+        }
+        fn try_deserialize_unchecked(buf: &mut &[u8]) -> anchor_lang::Result<Self> {
+            let mut data: &[u8] = &buf[8..];
+            AnchorDeserialize::deserialize(&mut data)
+                .map_err(|_| anchor_lang::error::ErrorCode::AccountDidNotDeserialize.into())
+        }
+    }
+    #[repr(C)]
+    #[derive(Copy, Clone, Default, AnchorSerialize, AnchorDeserialize, Serialize, Deserialize)]
+    pub struct ProbeQuoter {
+        pub state: Pubkey,
+        pub quoter: Pubkey,
+    }
+    #[automatically_derived]
+    impl anchor_lang::Discriminator for ProbeQuoter {
+        const DISCRIMINATOR: &[u8] = &[22, 68, 93, 21, 251, 53, 156, 64];
+    }
+    #[automatically_derived]
+    unsafe impl anchor_lang::__private::bytemuck::Pod for ProbeQuoter {}
+    #[automatically_derived]
+    unsafe impl anchor_lang::__private::bytemuck::Zeroable for ProbeQuoter {}
+    #[automatically_derived]
+    impl anchor_lang::ZeroCopy for ProbeQuoter {}
+    #[automatically_derived]
+    impl anchor_lang::InstructionData for ProbeQuoter {}
+    #[automatically_derived]
+    impl ToAccountMetas for ProbeQuoter {
+        fn to_account_metas(&self) -> Vec<AccountMeta> {
+            vec![
+                AccountMeta {
+                    pubkey: self.state,
+                    is_signer: false,
+                    is_writable: false,
+                },
+                AccountMeta {
+                    pubkey: self.quoter,
+                    is_signer: false,
+                    is_writable: false,
+                },
+            ]
+        }
+    }
+    #[automatically_derived]
+    impl anchor_lang::AccountSerialize for ProbeQuoter {
+        fn try_serialize<W: std::io::Write>(&self, writer: &mut W) -> anchor_lang::Result<()> {
+            if writer.write_all(Self::DISCRIMINATOR).is_err() {
+                return Err(anchor_lang::error::ErrorCode::AccountDidNotSerialize.into());
+            }
+            if AnchorSerialize::serialize(self, writer).is_err() {
+                return Err(anchor_lang::error::ErrorCode::AccountDidNotSerialize.into());
+            }
+            Ok(())
+        }
+    }
+    #[automatically_derived]
+    impl anchor_lang::AccountDeserialize for ProbeQuoter {
         fn try_deserialize(buf: &mut &[u8]) -> anchor_lang::Result<Self> {
             let given_disc = &buf[..8];
             if Self::DISCRIMINATOR != given_disc {

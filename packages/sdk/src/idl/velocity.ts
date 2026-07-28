@@ -6040,23 +6040,20 @@ export type Velocity = {
       ]
     },
     {
-      "name": "probeQuoter",
+      "name": "probeRouter",
       "discriminator": [
-        215,
-        146,
-        162,
-        139,
-        111,
-        188,
-        143,
-        93
+        220,
+        10,
+        160,
+        221,
+        46,
+        75,
+        30,
+        31
       ],
       "accounts": [
         {
           "name": "state"
-        },
-        {
-          "name": "quoter"
         }
       ],
       "args": [
@@ -6064,7 +6061,7 @@ export type Velocity = {
           "name": "args",
           "type": {
             "defined": {
-              "name": "probeQuoterArgs"
+              "name": "probeRouterArgs"
             }
           }
         }
@@ -22112,7 +22109,7 @@ export type Velocity = {
       }
     },
     {
-      "name": "probeQuoterArgs",
+      "name": "probeRouterArgs",
       "type": {
         "kind": "struct",
         "fields": [
@@ -22135,6 +22132,15 @@ export type Velocity = {
                 "vec": "pubkey"
               }
             }
+          },
+          {
+            "name": "quoterCount",
+            "docs": [
+              "The first `quoter_count` remaining accounts are `QuoterV0` entries;",
+              "the rest are the union of their registered CPI accounts (plus the",
+              "quoter programs)."
+            ],
+            "type": "u8"
           },
           {
             "name": "execute",

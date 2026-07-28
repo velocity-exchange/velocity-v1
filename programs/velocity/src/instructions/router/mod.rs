@@ -3,6 +3,6 @@
 //! (quote CPIs → split → clamp → execute CPIs → apply balance changes)
 //! grows here and the probe dies when it lands.
 
-pub mod probe_quoter;
+pub mod probe_router;
 
-pub use probe_quoter::*;
+pub use probe_router::*;

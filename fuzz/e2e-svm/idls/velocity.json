@@ -6034,23 +6034,20 @@
       ]
     },
     {
-      "name": "probe_quoter",
+      "name": "probe_router",
       "discriminator": [
-        215,
-        146,
-        162,
-        139,
-        111,
-        188,
-        143,
-        93
+        220,
+        10,
+        160,
+        221,
+        46,
+        75,
+        30,
+        31
       ],
       "accounts": [
         {
           "name": "state"
-        },
-        {
-          "name": "quoter"
         }
       ],
       "args": [
@@ -6058,7 +6055,7 @@
           "name": "args",
           "type": {
             "defined": {
-              "name": "ProbeQuoterArgs"
+              "name": "ProbeRouterArgs"
             }
           }
         }
@@ -22106,7 +22103,7 @@
       }
     },
     {
-      "name": "ProbeQuoterArgs",
+      "name": "ProbeRouterArgs",
       "type": {
         "kind": "struct",
         "fields": [
@@ -22129,6 +22126,15 @@
                 "vec": "pubkey"
               }
             }
+          },
+          {
+            "name": "quoter_count",
+            "docs": [
+              "The first `quoter_count` remaining accounts are `QuoterV0` entries;",
+              "the rest are the union of their registered CPI accounts (plus the",
+              "quoter programs)."
+            ],
+            "type": "u8"
           },
           {
             "name": "execute",

@@ -1,5 +1,5 @@
-//! Cross-program litesvm harness (phase 2 of the PropAMM/router work): loads
-//! the compiled velocity + CLOB `.so` fixtures and drives real instructions.
+//! Cross-program litesvm harness for the PropAMM/router work: loads the
+//! compiled velocity + CLOB `.so` fixtures and drives real instructions.
 //! Heavy protocol state (State, PerpMarket, User) is synthesized directly via
 //! `set_account` where a test only needs account identity, not the init flow.
 

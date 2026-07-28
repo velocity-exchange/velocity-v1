@@ -1,5 +1,5 @@
-//! Router split (S6 waterfall): combine quoter books into per-quoter
-//! allocations for a taker of `direction`/`size`. At each price, priority
+//! Router split: combine quoter books into per-quoter allocations for a
+//! taker of `direction`/`size`. At each price, priority
 //! tiers fill in ascending order (vAMM, then CLOB — whose internal
 //! price-time ordering its own book preserves — then customs), pro rata
 //! within a tier; a single-member tier degenerates to filling it outright.

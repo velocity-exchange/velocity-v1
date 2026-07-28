@@ -1,5 +1,5 @@
-//! vAMM leg of the router quoter interface (S1): turn the AMM curve into
-//! discrete [`PriceLevel`]s for the S6 split. In-program — the vAMM never
+//! vAMM leg of the router's quoter interface: turn the AMM curve into
+//! discrete [`PriceLevel`]s for the router split. In-program — the vAMM never
 //! goes through the CPI legs; the router reads this directly and executes
 //! via the existing `AmmQuoter` fill path.
 //!

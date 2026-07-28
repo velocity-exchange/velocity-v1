@@ -1,7 +1,7 @@
 //! Cross-program router probe: velocity's `probe_router` (anchor-test builds
 //! only) quotes three CLOB books through their `QuoterV0` entries, splits
-//! the taker size per the S6 waterfall (CLOB-typed entry first at a price,
-//! customs pro rata), executes each allocation, and enforces
+//! the taker size per the priority-tier waterfall (CLOB-typed entry first at
+//! a price, customs pro rata), executes each allocation, and enforces
 //! at-or-better-than-quote — validating the whole wire protocol and
 //! measuring a realistic 3-quoter fill's CPI cost.
 //!

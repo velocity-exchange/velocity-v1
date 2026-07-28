@@ -1,7 +1,7 @@
 //! Test-build-only router probe: quote N registered quoters, split the taker
-//! size across their books (S6 waterfall), optionally execute each
-//! allocation and enforce at-or-better-than-quote on the returned balance
-//! changes. Compiled only with `anchor-test` — never in devnet or mainnet
+//! size across their books (priority-tier waterfall), optionally execute
+//! each allocation and enforce at-or-better-than-quote on the returned
+//! balance changes. Compiled only with `anchor-test` — never in devnet or mainnet
 //! builds (an execute without balance-change settlement must not be landable
 //! anywhere real). Dies when the real router fill lands.
 

@@ -1992,6 +1992,16 @@ pub mod instructions {
     #[automatically_derived]
     impl anchor_lang::InstructionData for UpdateQuoterConfig {}
     #[derive(AnchorSerialize, AnchorDeserialize, Clone, Default)]
+    pub struct UpdateQuoterPriority {
+        pub priority: u8,
+    }
+    #[automatically_derived]
+    impl anchor_lang::Discriminator for UpdateQuoterPriority {
+        const DISCRIMINATOR: &[u8] = &[192, 118, 16, 53, 87, 232, 85, 234];
+    }
+    #[automatically_derived]
+    impl anchor_lang::InstructionData for UpdateQuoterPriority {}
+    #[derive(AnchorSerialize, AnchorDeserialize, Clone, Default)]
     pub struct UpdateSolvencyStatus {
         pub solvency_status: u8,
     }
@@ -4698,10 +4708,11 @@ pub mod types {
         pub quoter_type: QuoterType,
         pub is_active: bool,
         pub is_approved: bool,
+        pub priority: u8,
         pub quote_accounts_count: u8,
         pub execute_accounts_count: u8,
         #[serde(skip)]
-        pub padding: Padding<9>,
+        pub padding: Padding<8>,
     }
     #[repr(C)]
     #[derive(
@@ -6258,10 +6269,11 @@ pub mod accounts {
         pub quoter_type: QuoterType,
         pub is_active: bool,
         pub is_approved: bool,
+        pub priority: u8,
         pub quote_accounts_count: u8,
         pub execute_accounts_count: u8,
         #[serde(skip)]
-        pub padding: Padding<9>,
+        pub padding: Padding<8>,
     }
     #[automatically_derived]
     impl anchor_lang::Discriminator for QuoterV0 {
@@ -21869,6 +21881,76 @@ pub mod accounts {
     }
     #[automatically_derived]
     impl anchor_lang::AccountDeserialize for UpdateQuoterConfig {
+        fn try_deserialize(buf: &mut &[u8]) -> anchor_lang::Result<Self> {
+            let given_disc = &buf[..8];
+            if Self::DISCRIMINATOR != given_disc {
+                return Err(anchor_lang::error!(
+                    anchor_lang::error::ErrorCode::AccountDiscriminatorMismatch
+                ));
+            }
+            Self::try_deserialize_unchecked(buf)
+        }
+        fn try_deserialize_unchecked(buf: &mut &[u8]) -> anchor_lang::Result<Self> {
+            let mut data: &[u8] = &buf[8..];
+            AnchorDeserialize::deserialize(&mut data)
+                .map_err(|_| anchor_lang::error::ErrorCode::AccountDidNotDeserialize.into())
+        }
+    }
+    #[repr(C)]
+    #[derive(Copy, Clone, Default, AnchorSerialize, AnchorDeserialize, Serialize, Deserialize)]
+    pub struct UpdateQuoterPriority {
+        pub admin: Pubkey,
+        pub state: Pubkey,
+        pub quoter: Pubkey,
+    }
+    #[automatically_derived]
+    impl anchor_lang::Discriminator for UpdateQuoterPriority {
+        const DISCRIMINATOR: &[u8] = &[100, 163, 182, 118, 181, 81, 248, 196];
+    }
+    #[automatically_derived]
+    unsafe impl anchor_lang::__private::bytemuck::Pod for UpdateQuoterPriority {}
+    #[automatically_derived]
+    unsafe impl anchor_lang::__private::bytemuck::Zeroable for UpdateQuoterPriority {}
+    #[automatically_derived]
+    impl anchor_lang::ZeroCopy for UpdateQuoterPriority {}
+    #[automatically_derived]
+    impl anchor_lang::InstructionData for UpdateQuoterPriority {}
+    #[automatically_derived]
+    impl ToAccountMetas for UpdateQuoterPriority {
+        fn to_account_metas(&self) -> Vec<AccountMeta> {
+            vec![
+                AccountMeta {
+                    pubkey: self.admin,
+                    is_signer: true,
+                    is_writable: false,
+                },
+                AccountMeta {
+                    pubkey: self.state,
+                    is_signer: false,
+                    is_writable: false,
+                },
+                AccountMeta {
+                    pubkey: self.quoter,
+                    is_signer: false,
+                    is_writable: true,
+                },
+            ]
+        }
+    }
+    #[automatically_derived]
+    impl anchor_lang::AccountSerialize for UpdateQuoterPriority {
+        fn try_serialize<W: std::io::Write>(&self, writer: &mut W) -> anchor_lang::Result<()> {
+            if writer.write_all(Self::DISCRIMINATOR).is_err() {
+                return Err(anchor_lang::error::ErrorCode::AccountDidNotSerialize.into());
+            }
+            if AnchorSerialize::serialize(self, writer).is_err() {
+                return Err(anchor_lang::error::ErrorCode::AccountDidNotSerialize.into());
+            }
+            Ok(())
+        }
+    }
+    #[automatically_derived]
+    impl anchor_lang::AccountDeserialize for UpdateQuoterPriority {
         fn try_deserialize(buf: &mut &[u8]) -> anchor_lang::Result<Self> {
             let given_disc = &buf[..8];
             if Self::DISCRIMINATOR != given_disc {

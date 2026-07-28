@@ -73,7 +73,7 @@ Quoter registry + on-chain router inside velocity. Tests in litesvm, cross-progr
 - [ ] Router fill ix: taker-order integration around the probe skeleton — clamp → apply balance changes; passes the loaded-user set into quote/execute CPIs and rejects balance changes for unloaded users; `probe_router` dies when this lands (S1)
 - [ ] Fill-time validation (S3): per-maker margin clamp before execute; categorical gates; at-or-better-than-quote check; oracle validity gating (mirror settle_pnl-style gates)
 - [ ] Mandatory baseline enforcement: fill fails without CLOB + vAMM (S4)
-- [ ] vAMM as quoter (adapt existing `Quoter` trait impls; delete AMM-JIT participation path per S7)
+- [~] vAMM as quoter: quote leg done — `vlp/amm/router_adapter.rs::vamm_quote_levels` slices `min(size, calculate_amm_available_liquidity)` into 8 equal base chunks priced at exact average swap cost against the cached spread reserves, rounding against the taker (ceil long / floor short) so the split's floored notionals stay at-or-better vs the exact execute swap (unit-tested both directions + cap + empty). Execute leg = the existing `AmmQuoter` fill path (`fill_amm_only` + `settle_amm_house_fill`), wired during the router fill ix; AMM-JIT deletion per S7 still pending
 - [ ] DLOB as quoter (legacy bridge for migration, S7)
 - [ ] CLOB adapter: velocity-mediated place/cancel (`place_authority` CPI), placement margin gate + `open_bids`/`open_asks` upkeep incl. execute-response culls (S3)
 - [ ] Velocity crank ixs wrapping `evict_worst_v0`/`remove_expired_v0`: apply `RemovedOrderV0` to the maker's aggregates, eager trigger re-arm, flat keeper reward from the maker (mirror today's expiry reward) (S3/S5)

@@ -8,7 +8,7 @@ use {
             vault::validate_fee_policy,
             FeeUpdate, FeeUpdateStatus,
         },
-        validate, Vault,
+        validate, Vault, VaultProtocolProvider,
     },
     anchor_lang::prelude::*,
     velocity::math::safe_math::SafeMath,
@@ -39,6 +39,32 @@ pub fn manager_update_fees<'info>(
             ErrorCode::InvalidFeeUpdateStatus,
             "Vault has pending fee status but FeeUpdate is not in a pending state"
         )?;
+
+        // #97: this branch is a maturity path (try_update_vault_fees installs the update once
+        // the timelock has passed), so it must validate the queued policy against live protocol
+        // state exactly like the apply_fee maturity path; otherwise it is an escape that can
+        // install combined manager+protocol sums no initialization could create. Protocol vaults
+        // pass the VaultProtocol account in remaining_accounts (same convention as other paths).
+        let vp = ctx.vault_protocol();
+        vault.validate_vault_protocol(&vp)?;
+        if now >= fee_update.incoming_update_ts {
+            let (is_protocol_vault, protocol_fee, protocol_profit_share) = match &vp {
+                Some(vp) => {
+                    let vp = vp.load()?;
+                    (true, vp.protocol_fee, vp.protocol_profit_share)
+                }
+                None => (false, 0, 0),
+            };
+            validate_fee_policy(
+                fee_update.incoming_management_fee,
+                fee_update.incoming_profit_share,
+                fee_update.incoming_hurdle_rate,
+                is_protocol_vault,
+                protocol_fee,
+                protocol_profit_share,
+            )?;
+        }
+
         fee_update.try_update_vault_fees(now, &mut vault)?;
     } else {
         validate!(

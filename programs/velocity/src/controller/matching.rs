@@ -419,7 +419,7 @@ pub struct RouterTakeOutcome {
 /// internal quoters legitimately round quote amounts by one unit against
 /// the taker (DLOB maker-favored rounding, the AMM's +1 on Remove), which a
 /// notional cross-multiply would reject as dust violations.
-fn fill_at_or_better(
+pub(crate) fn fill_at_or_better(
     side: PositionDirection,
     fill: &QuoterFill,
     allocation: &QuoterAllocation,

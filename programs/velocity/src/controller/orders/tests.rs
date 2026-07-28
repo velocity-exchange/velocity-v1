@@ -3143,6 +3143,7 @@ pub mod fulfill_order {
             true,
             FillMode::Fill,
             false,
+            None,
             &mut None,
         )
         .unwrap();
@@ -3346,6 +3347,7 @@ pub mod fulfill_order {
             true,
             FillMode::Fill,
             false,
+            None,
             &mut None,
         )
         .unwrap();
@@ -3509,6 +3511,7 @@ pub mod fulfill_order {
             true,
             FillMode::Fill,
             false,
+            None,
             &mut None,
         )
         .unwrap();
@@ -3716,6 +3719,7 @@ pub mod fulfill_order {
             true,
             FillMode::Fill,
             false,
+            None,
             &mut None,
         )
         .unwrap();
@@ -3920,6 +3924,7 @@ pub mod fulfill_order {
             true,
             FillMode::Fill,
             false,
+            None,
             &mut None,
         )
         .unwrap();
@@ -4139,6 +4144,7 @@ pub mod fulfill_order {
             true,
             FillMode::Fill,
             false,
+            None,
             &mut None,
         )
         .unwrap();
@@ -4322,6 +4328,7 @@ pub mod fulfill_order {
             true,
             FillMode::Fill,
             false,
+            None,
             &mut None,
         )
         .unwrap();
@@ -4537,6 +4544,7 @@ pub mod fulfill_order {
             true,
             FillMode::Fill,
             false,
+            None,
             &mut None,
         );
 
@@ -4738,6 +4746,7 @@ pub mod fulfill_order {
             true,
             FillMode::Fill,
             false,
+            None,
             &mut None,
         );
 
@@ -4892,6 +4901,7 @@ pub mod fulfill_order {
             true,
             FillMode::Fill,
             false,
+            None,
             &mut None,
         )
         .unwrap();
@@ -5076,6 +5086,7 @@ pub mod fulfill_order {
             true,
             FillMode::Fill,
             false,
+            None,
             &mut None,
         )
         .unwrap();
@@ -5677,6 +5688,7 @@ pub mod fulfill_order {
             true,
             FillMode::Fill,
             false,
+            None,
             &mut None,
         )
         .unwrap();
@@ -5938,6 +5950,7 @@ pub mod fulfill_order {
             true,
             FillMode::Fill,
             false,
+            None,
             &mut None,
         )
         .unwrap();
@@ -6146,6 +6159,7 @@ pub mod fulfill_order {
             amm_jit_allowed,
             FillMode::Fill,
             false,
+            None,
             &mut None,
         )
         .unwrap();
@@ -6322,6 +6336,7 @@ pub mod fulfill_order {
             true,
             FillMode::Fill,
             false,
+            None,
             &mut None,
         )
         .unwrap();

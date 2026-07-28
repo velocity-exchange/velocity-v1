@@ -225,7 +225,7 @@ mod tests {
         amm
     }
 
-    fn rival_book(levels: &[PriceLevel]) -> Vec<QuoterBook> {
+    fn rival_book(levels: &[PriceLevel]) -> Vec<QuoterBook<'_>> {
         vec![QuoterBook {
             priority: 10,
             levels,

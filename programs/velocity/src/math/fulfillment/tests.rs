@@ -1,15 +1,23 @@
 mod determine_perp_fulfillment_methods {
-    use crate::controller::position::PositionDirection;
-    use crate::math::constants::{
-        AMM_RESERVE_PRECISION, PEG_PRECISION, PRICE_PRECISION, PRICE_PRECISION_U64,
+    use {
+        crate::{
+            controller::position::PositionDirection,
+            math::{
+                constants::{
+                    AMM_RESERVE_PRECISION, PEG_PRECISION, PRICE_PRECISION, PRICE_PRECISION_U64,
+                },
+                fulfillment::determine_perp_fulfillment_methods,
+            },
+            state::{
+                fulfillment::PerpFulfillmentMethod,
+                market_status::MarketStatus,
+                oracle::HistoricalOracleData,
+                perp_market::{MarketStats, PerpMarket, AMM},
+                user::Order,
+            },
+        },
+        solana_program::pubkey::Pubkey,
     };
-    use crate::math::fulfillment::determine_perp_fulfillment_methods;
-    use crate::state::fulfillment::PerpFulfillmentMethod;
-    use crate::state::market_status::MarketStatus;
-    use crate::state::oracle::HistoricalOracleData;
-    use crate::state::perp_market::{MarketStats, PerpMarket, AMM};
-    use crate::state::user::Order;
-    use solana_program::pubkey::Pubkey;
 
     #[test]
     fn amm_available_and_taker_doesnt_cross_maker() {

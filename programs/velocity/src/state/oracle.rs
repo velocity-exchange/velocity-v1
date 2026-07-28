@@ -1,7 +1,8 @@
-use anchor_lang::prelude::*;
-use borsh::{BorshDeserialize, BorshSerialize};
-use std::cell::Ref;
-use std::convert::TryFrom;
+use {
+    anchor_lang::prelude::*,
+    borsh::{BorshDeserialize, BorshSerialize},
+    std::{cell::Ref, convert::TryFrom},
+};
 
 /// Inlined from pyth-solana-receiver-sdk to avoid borsh version conflicts
 #[derive(BorshSerialize, BorshDeserialize, Debug, Clone)]
@@ -30,21 +31,26 @@ pub struct InlinePriceFeedMessage {
     pub ema_conf: u64,
 }
 
-use crate::error::{ErrorCode, VelocityResult};
-use crate::math::casting::Cast;
-use crate::math::constants::{
-    PERCENTAGE_PRECISION, PRICE_PRECISION, PRICE_PRECISION_I64, PRICE_PRECISION_U64,
+use crate::{
+    error::{
+        ErrorCode::{self, InvalidOracle, UnableToLoadOracle},
+        VelocityResult,
+    },
+    math::{
+        casting::Cast,
+        constants::{
+            PERCENTAGE_PRECISION, PRICE_PRECISION, PRICE_PRECISION_I64, PRICE_PRECISION_U64,
+        },
+        oracle::{is_oracle_valid_for_action, OracleValidity, VelocityAction},
+        safe_math::SafeMath,
+        safe_unwrap::SafeUnwrap,
+    },
+    state::{
+        load_ref::load_ref, perp_market::PerpMarket, pyth_lazer_oracle::PythLazerOracle,
+        traits::Size,
+    },
+    validate,
 };
-use crate::math::safe_math::SafeMath;
-
-use crate::error::ErrorCode::{InvalidOracle, UnableToLoadOracle};
-use crate::math::oracle::{is_oracle_valid_for_action, OracleValidity, VelocityAction};
-use crate::math::safe_unwrap::SafeUnwrap;
-use crate::state::load_ref::load_ref;
-use crate::state::perp_market::PerpMarket;
-use crate::state::pyth_lazer_oracle::PythLazerOracle;
-use crate::state::traits::Size;
-use crate::validate;
 
 #[cfg(test)]
 mod tests;
@@ -103,9 +109,9 @@ impl HistoricalOracleData {
     /// Spread between `other_price` and the 5-minute oracle TWAP, expressed
     /// in `BID_ASK_SPREAD_PRECISION`. Pure read against `self`; no AMM state.
     pub fn twap_5min_spread_pct(&self, other_price: u64) -> VelocityResult<i64> {
-        use crate::math::casting::Cast;
-        use crate::math::constants::BID_ASK_SPREAD_PRECISION_I128;
-        use crate::math::safe_math::SafeMath;
+        use crate::math::{
+            casting::Cast, constants::BID_ASK_SPREAD_PRECISION_I128, safe_math::SafeMath,
+        };
 
         let price_spread = other_price
             .cast::<i64>()?

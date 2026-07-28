@@ -1,18 +1,19 @@
-use std::str::FromStr;
-
-use anchor_lang::{AnchorDeserialize, AnchorSerialize, Space};
-use anyhow::{Context, Result};
-use arrayvec::ArrayVec;
-use base64::Engine;
-use ed25519_dalek::{PublicKey, Signature, Verifier};
-use serde::de::value::StrDeserializer;
-use serde_json::json;
-use solana_pubkey::Pubkey;
-use solana_transaction::versioned::VersionedTransaction;
-use velocity_rs::{
-    swift_order_subscriber::{deser_signed_msg_type, SignedMessageInfo, SignedOrderType},
-    types::{market_type_from_str, MarketType},
-    velocity_idl::types::SignedMsgOrderParamsDelegateMessage as IdlSignedMsgOrderParamsDelegateMessage,
+use {
+    anchor_lang::{AnchorDeserialize, AnchorSerialize, Space},
+    anyhow::{Context, Result},
+    arrayvec::ArrayVec,
+    base64::Engine,
+    ed25519_dalek::{PublicKey, Signature, Verifier},
+    serde::de::value::StrDeserializer,
+    serde_json::json,
+    solana_pubkey::Pubkey,
+    solana_transaction::versioned::VersionedTransaction,
+    std::str::FromStr,
+    velocity_rs::{
+        swift_order_subscriber::{deser_signed_msg_type, SignedMessageInfo, SignedOrderType},
+        types::{market_type_from_str, MarketType},
+        velocity_idl::types::SignedMsgOrderParamsDelegateMessage as IdlSignedMsgOrderParamsDelegateMessage,
+    },
 };
 
 pub const MAX_SIGNED_MSG_BORSH_LEN: usize = IdlSignedMsgOrderParamsDelegateMessage::INIT_SPACE + 8;
@@ -329,16 +330,17 @@ where
 
 #[cfg(test)]
 mod tests {
-    use nanoid::nanoid;
-    use solana_keypair::Keypair;
-    use solana_signer::Signer;
-    use velocity_rs::types::{
-        OrderParams, OrderTriggerCondition, OrderType, PositionDirection, PostOnlyParam,
-        SignedMsgOrderParamsDelegateMessage, SignedMsgOrderParamsMessage,
-        SignedMsgTriggerOrderParams,
+    use {
+        super::*,
+        nanoid::nanoid,
+        solana_keypair::Keypair,
+        solana_signer::Signer,
+        velocity_rs::types::{
+            OrderParams, OrderTriggerCondition, OrderType, PositionDirection, PostOnlyParam,
+            SignedMsgOrderParamsDelegateMessage, SignedMsgOrderParamsMessage,
+            SignedMsgTriggerOrderParams,
+        },
     };
-
-    use super::*;
 
     /// Build a deterministic keypair from a 32-byte seed for reproducible signatures.
     fn test_keypair(seed: u8) -> Keypair {

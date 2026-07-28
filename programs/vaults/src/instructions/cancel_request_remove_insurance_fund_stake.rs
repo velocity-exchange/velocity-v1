@@ -1,13 +1,18 @@
-use anchor_lang::prelude::*;
-use anchor_spl::token_interface::TokenAccount;
-use velocity::cpi::accounts::CancelRequestRemoveInsuranceFundStake as VelocityCancelRequestRemoveInsuranceFundStake;
-use velocity::program::Velocity;
-use velocity::state::insurance_fund_stake::InsuranceFundStake;
-use velocity::state::spot_market::SpotMarket;
-
-use crate::constraints::{is_if_stake_for_vault, is_manager_for_vault, is_user_stats_for_vault};
-use crate::velocity_cpi::CancelRequestRemoveInsuranceFundStakeCPI;
-use crate::{declare_vault_seeds, Vault};
+use {
+    crate::{
+        constraints::{is_if_stake_for_vault, is_manager_for_vault, is_user_stats_for_vault},
+        declare_vault_seeds,
+        velocity_cpi::CancelRequestRemoveInsuranceFundStakeCPI,
+        Vault,
+    },
+    anchor_lang::prelude::*,
+    anchor_spl::token_interface::TokenAccount,
+    velocity::{
+        cpi::accounts::CancelRequestRemoveInsuranceFundStake as VelocityCancelRequestRemoveInsuranceFundStake,
+        program::Velocity,
+        state::{insurance_fund_stake::InsuranceFundStake, spot_market::SpotMarket},
+    },
+};
 
 pub fn cancel_request_remove_insurance_fund_stake<'info>(
     ctx: Context<'info, CancelRequestRemoveInsuranceFundStake<'info>>,

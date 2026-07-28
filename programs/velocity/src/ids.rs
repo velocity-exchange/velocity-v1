@@ -1,5 +1,4 @@
-use anchor_lang::prelude::Pubkey;
-use solana_program::pubkey;
+use {anchor_lang::prelude::Pubkey, solana_program::pubkey};
 
 pub mod pyth_program {
     use solana_program::declare_id;

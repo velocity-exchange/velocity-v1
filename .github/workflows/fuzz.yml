@@ -18,6 +18,7 @@ on:
     branches: [master, devnet, feat/monorepo-consolidation]
     paths:
       - 'fuzz/**'
+      - 'rustfmt.toml'
       - 'programs/velocity/Cargo.toml'
       - 'programs/velocity/src/lib.rs'
       - 'programs/velocity/src/test_utils/**'
@@ -40,6 +41,9 @@ concurrency:
 env:
   CARGO_TERM_COLOR: always
   RUST_TOOLCHAIN: 1.91.1
+  # Pinned nightly for `cargo fmt` only (rustfmt.toml uses nightly-only import
+  # merging options). Must match RUST_NIGHTLY_TOOLCHAIN in main.yml.
+  RUST_NIGHTLY_TOOLCHAIN: nightly-2026-07-25
   DO_NOT_TRACK: 1
   # The fuzz-build job compiles each harness feature in turn within one target
   # dir. Crucible's proc-macros emit a per-feature `main`/`__CRUCIBLE_ALLOC`;
@@ -108,10 +112,23 @@ jobs:
           components: rustfmt
           override: true
 
+      # Nightly rustfmt for the fmt gate only (the codegen rustfmt above stays
+      # stable). The fuzz crates are standalone workspaces, so the main.yml fmt
+      # gates never see them; each matrix crate checks itself here.
+      - name: Install Rust nightly (rustfmt only)
+        uses: actions-rs/toolchain@16499b5e05bf2e26879000db0c1d13f7e13fa3af # v1
+        with:
+          toolchain: ${{ env.RUST_NIGHTLY_TOOLCHAIN }}
+          profile: minimal
+          components: rustfmt
+
       - name: Cache cargo
         uses: Swatinem/rust-cache@f13886b937689c021905a6b90929199931d60db1 # v2.8.1
         with:
           workspaces: fuzz/${{ matrix.crate }}
+
+      - name: Cargo fmt
+        run: cargo +${{ env.RUST_NIGHTLY_TOOLCHAIN }} fmt --manifest-path fuzz/${{ matrix.crate }}/Cargo.toml --all -- --check
 
       # Required: a representative harness (the crate's first feature) must
       # compile from a clean bin state. `cargo clean -p <pkg>` drops only this

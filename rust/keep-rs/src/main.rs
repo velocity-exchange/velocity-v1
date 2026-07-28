@@ -9,20 +9,21 @@ mod relayer;
 mod taker;
 mod util;
 
-use crate::{
-    filler::FillerBot,
-    http::{
-        dashboard_api_handler, dashboard_handler, health_handler, metrics_handler,
-        DashboardStateRef, Metrics,
+use {
+    crate::{
+        filler::FillerBot,
+        http::{
+            dashboard_api_handler, dashboard_handler, health_handler, metrics_handler,
+            DashboardStateRef, Metrics,
+        },
+        liquidator::LiquidatorBot,
+        quoter::QuoterBot,
+        taker::TakerBot,
     },
-    liquidator::LiquidatorBot,
-    quoter::QuoterBot,
-    taker::TakerBot,
+    clap::Parser,
+    mimalloc::MiMalloc,
+    velocity_rs::{types::MarketId, RpcClient, VelocityClient, Wallet},
 };
-use clap::Parser;
-
-use mimalloc::MiMalloc;
-use velocity_rs::{types::MarketId, RpcClient, VelocityClient, Wallet};
 
 #[global_allocator]
 static GLOBAL: MiMalloc = MiMalloc;

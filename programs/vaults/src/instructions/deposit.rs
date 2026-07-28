@@ -1,20 +1,26 @@
-use anchor_lang::prelude::*;
-use anchor_spl::token::{self, Token, TokenAccount, Transfer};
-use velocity::cpi::accounts::Deposit as VelocityDeposit;
-use velocity::instructions::optional_accounts::AccountMaps;
-use velocity::program::Velocity;
-use velocity::state::user::{User, UserStats};
-
-use crate::constraints::{
-    is_authority_for_vault_depositor, is_user_for_vault, is_user_stats_for_vault,
+use {
+    crate::{
+        constraints::{
+            is_authority_for_vault_depositor, is_user_for_vault, is_user_stats_for_vault,
+        },
+        declare_vault_seeds,
+        error::ErrorCode,
+        implement_deposit,
+        state::{FeeUpdateProvider, FeeUpdateStatus, Vault, VaultDepositor, VaultProtocolProvider},
+        token_cpi::TokenTransferCPI,
+        validate,
+        velocity_cpi::DepositCPI,
+        AccountMapProvider,
+    },
+    anchor_lang::prelude::*,
+    anchor_spl::token::{self, Token, TokenAccount, Transfer},
+    velocity::{
+        cpi::accounts::Deposit as VelocityDeposit,
+        instructions::optional_accounts::AccountMaps,
+        program::Velocity,
+        state::user::{User, UserStats},
+    },
 };
-use crate::error::ErrorCode;
-use crate::state::{
-    FeeUpdateProvider, FeeUpdateStatus, Vault, VaultDepositor, VaultProtocolProvider,
-};
-use crate::token_cpi::TokenTransferCPI;
-use crate::velocity_cpi::DepositCPI;
-use crate::{declare_vault_seeds, implement_deposit, validate, AccountMapProvider};
 
 pub fn deposit<'info>(ctx: Context<'info, Deposit<'info>>, amount: u64) -> Result<()> {
     let clock = &Clock::get()?;

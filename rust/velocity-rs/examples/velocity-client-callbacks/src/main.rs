@@ -3,12 +3,16 @@ use dotenv;
 use env_logger;
 use futures_util::future::FutureExt;
 use rust_decimal::Decimal;
-use std::env;
-use std::time::{Duration, Instant};
+use std::{
+    env,
+    time::{Duration, Instant},
+};
 use tokio::time::timeout;
-use velocity_rs::math::constants::BASE_PRECISION_I128;
-use velocity_rs::types::{accounts::PerpMarket, AccountUpdate, Context};
-use velocity_rs::{RpcClient, VelocityClient, Wallet};
+use velocity_rs::{
+    math::constants::BASE_PRECISION_I128,
+    types::{accounts::PerpMarket, AccountUpdate, Context},
+    RpcClient, VelocityClient, Wallet,
+};
 
 #[derive(Parser, Debug)]
 #[clap(author, version, about, long_about = None)]

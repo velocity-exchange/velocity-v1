@@ -3,81 +3,88 @@
 //! `liquidate_perp` = perp position reduction with liquidation fee. `liquidate_spot` = spot borrow resolution.
 //! `resolve_perp_bankruptcy` / `resolve_spot_bankruptcy` = social loss and insurance draws.
 
-use std::ops::{Deref, DerefMut};
-
-use crate::msg;
-use crate::state::liquidation_mode::{get_perp_liquidation_mode, LiquidatePerpMode};
-use anchor_lang::prelude::*;
-
-use crate::controller::funding::settle_funding_payment;
-use crate::controller::orders;
-use crate::controller::orders::{cancel_order, fill_perp_order, place_perp_order};
-use crate::controller::position::{
-    get_position_index, update_position_and_market, update_quote_asset_amount,
-    update_quote_asset_and_break_even_amount, PositionDirection,
+use {
+    crate::{
+        controller::{
+            funding::settle_funding_payment,
+            orders::{self, cancel_order, fill_perp_order, place_perp_order},
+            position::{
+                get_position_index, update_position_and_market, update_quote_asset_amount,
+                update_quote_asset_and_break_even_amount, PositionDirection,
+            },
+            spot_balance::{
+                transfer_spot_balances, update_protocol_fee_pool_balances,
+                update_revenue_pool_balances, update_spot_balances,
+                update_spot_market_and_check_validity, update_spot_market_cumulative_interest,
+            },
+            spot_position::update_spot_balances_and_cumulative_deposits,
+        },
+        error::{ErrorCode, VelocityResult},
+        get_then_update_id, load_mut,
+        math::{
+            bankruptcy::{has_pending_cross_margin_perp_bankruptcy, is_cross_margin_bankrupt},
+            casting::Cast,
+            constants::{
+                LIQUIDATION_FEE_PRECISION, LIQUIDATION_FEE_PRECISION_U128,
+                LIQUIDATION_PCT_PRECISION, LST_POOL_ID, QUOTE_PRECISION, QUOTE_PRECISION_I128,
+                QUOTE_PRECISION_U64, QUOTE_SPOT_MARKET_INDEX, SPOT_WEIGHT_PRECISION,
+            },
+            liquidation::{
+                calculate_asset_transfer_for_liability_transfer,
+                calculate_base_asset_amount_to_cover_margin_shortage,
+                calculate_cumulative_deposit_interest_delta_to_resolve_bankruptcy,
+                calculate_funding_rate_deltas_to_resolve_bankruptcy,
+                calculate_liability_transfer_implied_by_asset_amount,
+                calculate_liability_transfer_to_cover_margin_shortage,
+                calculate_liquidation_multiplier, calculate_max_pct_to_liquidate,
+                calculate_perp_if_fee, calculate_spot_if_fee,
+                calculate_user_protective_asset_price, calculate_user_protective_liability_price,
+                get_liquidation_fee, get_liquidation_order_params,
+                validate_swap_within_liquidation_boundaries,
+                validate_transfer_satisfies_limit_price, LiquidationMultiplierType,
+            },
+            margin::{
+                calculate_margin_requirement_and_total_collateral_and_liability_info,
+                meets_initial_margin_requirement, MarginRequirementType,
+            },
+            oracle::{is_oracle_valid_for_action, oracle_validity, LogMode, VelocityAction},
+            orders::{
+                calculate_existing_position_fields_for_order_action, get_position_delta_for_fill,
+                is_multiple_of_step_size, is_oracle_too_divergent_with_twap_5min,
+                standardize_base_asset_amount, standardize_base_asset_amount_ceil,
+            },
+            position::calculate_base_asset_value_with_oracle_price,
+            safe_math::SafeMath,
+            spot_balance::{get_token_amount, get_token_value},
+        },
+        msg,
+        state::{
+            events::{
+                LiquidateBorrowForPerpPnlRecord, LiquidatePerpPnlForDepositRecord,
+                LiquidatePerpRecord, LiquidateSpotRecord, LiquidationRecord, LiquidationType,
+                OrderAction, OrderActionExplanation, OrderActionRecord, OrderRecord,
+                PerpBankruptcyRecord, SpotBankruptcyRecord,
+            },
+            fill_mode::FillMode,
+            liquidation_mode::{get_perp_liquidation_mode, LiquidatePerpMode},
+            margin_calculation::{MarginCalculation, MarginContext, MarketIdentifier},
+            market_status::MarketStatus,
+            oracle_map::OracleMap,
+            order_params::PlaceOrderOptions,
+            paused_operations::{PerpOperation, SpotOperation},
+            perp_market_map::PerpMarketMap,
+            spot_market::SpotBalanceType,
+            spot_market_map::SpotMarketMap,
+            state::State,
+            user::{MarketType, Order, OrderStatus, OrderType, User, UserStats},
+            user_map::{UserMap, UserStatsMap},
+        },
+        validate,
+        vlp::amm::{controller::get_fee_pool_tokens, refresh::update_amm_and_check_validity},
+    },
+    anchor_lang::prelude::*,
+    std::ops::{Deref, DerefMut},
 };
-use crate::controller::spot_balance::{
-    transfer_spot_balances, update_protocol_fee_pool_balances, update_revenue_pool_balances,
-    update_spot_balances, update_spot_market_and_check_validity,
-    update_spot_market_cumulative_interest,
-};
-use crate::controller::spot_position::update_spot_balances_and_cumulative_deposits;
-use crate::error::{ErrorCode, VelocityResult};
-use crate::math::bankruptcy::{has_pending_cross_margin_perp_bankruptcy, is_cross_margin_bankrupt};
-use crate::math::casting::Cast;
-use crate::math::constants::{
-    LIQUIDATION_FEE_PRECISION, LIQUIDATION_FEE_PRECISION_U128, LIQUIDATION_PCT_PRECISION,
-    QUOTE_PRECISION, QUOTE_PRECISION_I128, QUOTE_PRECISION_U64, QUOTE_SPOT_MARKET_INDEX,
-    SPOT_WEIGHT_PRECISION,
-};
-use crate::math::liquidation::{
-    calculate_asset_transfer_for_liability_transfer,
-    calculate_base_asset_amount_to_cover_margin_shortage,
-    calculate_cumulative_deposit_interest_delta_to_resolve_bankruptcy,
-    calculate_funding_rate_deltas_to_resolve_bankruptcy,
-    calculate_liability_transfer_implied_by_asset_amount,
-    calculate_liability_transfer_to_cover_margin_shortage, calculate_liquidation_multiplier,
-    calculate_max_pct_to_liquidate, calculate_perp_if_fee, calculate_spot_if_fee,
-    calculate_user_protective_asset_price, calculate_user_protective_liability_price,
-    get_liquidation_fee, get_liquidation_order_params, validate_swap_within_liquidation_boundaries,
-    validate_transfer_satisfies_limit_price, LiquidationMultiplierType,
-};
-use crate::math::margin::{
-    calculate_margin_requirement_and_total_collateral_and_liability_info,
-    meets_initial_margin_requirement, MarginRequirementType,
-};
-use crate::math::oracle::{is_oracle_valid_for_action, oracle_validity, LogMode, VelocityAction};
-use crate::math::orders::{
-    calculate_existing_position_fields_for_order_action, get_position_delta_for_fill,
-    is_multiple_of_step_size, is_oracle_too_divergent_with_twap_5min,
-    standardize_base_asset_amount, standardize_base_asset_amount_ceil,
-};
-use crate::math::position::calculate_base_asset_value_with_oracle_price;
-use crate::math::safe_math::SafeMath;
-use crate::vlp::amm::controller::get_fee_pool_tokens;
-use crate::vlp::amm::refresh::update_amm_and_check_validity;
-
-use crate::math::constants::LST_POOL_ID;
-use crate::math::spot_balance::{get_token_amount, get_token_value};
-use crate::state::events::{
-    LiquidateBorrowForPerpPnlRecord, LiquidatePerpPnlForDepositRecord, LiquidatePerpRecord,
-    LiquidateSpotRecord, LiquidationRecord, LiquidationType, OrderAction, OrderActionExplanation,
-    OrderActionRecord, OrderRecord, PerpBankruptcyRecord, SpotBankruptcyRecord,
-};
-use crate::state::fill_mode::FillMode;
-use crate::state::margin_calculation::{MarginCalculation, MarginContext, MarketIdentifier};
-use crate::state::market_status::MarketStatus;
-use crate::state::oracle_map::OracleMap;
-use crate::state::order_params::PlaceOrderOptions;
-use crate::state::paused_operations::{PerpOperation, SpotOperation};
-use crate::state::perp_market_map::PerpMarketMap;
-use crate::state::spot_market::SpotBalanceType;
-use crate::state::spot_market_map::SpotMarketMap;
-use crate::state::state::State;
-use crate::state::user::{MarketType, Order, OrderStatus, OrderType, User, UserStats};
-use crate::state::user_map::{UserMap, UserStatsMap};
-use crate::validate;
-use crate::{get_then_update_id, load_mut};
 
 #[cfg(test)]
 mod tests;

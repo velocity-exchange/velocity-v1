@@ -1,126 +1,123 @@
-use std::collections::BTreeSet;
-use std::convert::TryFrom;
-use std::ops::DerefMut;
-
-use anchor_lang::prelude::*;
-use anchor_lang::solana_program::system_instruction::transfer;
-use anchor_lang::Discriminator;
-use anchor_spl::associated_token::AssociatedToken;
-use anchor_spl::{
-    token::Token,
-    token_2022::Token2022,
-    token_interface::{TokenAccount, TokenInterface},
+use {
+    crate::{
+        controller::{
+            self,
+            funding::settle_funding_payment,
+            orders::{
+                cancel_orders, validate_spot_dlob_trading_enabled_for_market_type, ModifyOrderId,
+                PlaceOrderResult,
+            },
+            position::{update_position_and_market, PositionDirection},
+            spot_balance::update_revenue_pool_balances,
+            spot_position::{
+                update_spot_balances_and_cumulative_deposits,
+                update_spot_balances_and_cumulative_deposits_with_limits,
+            },
+        },
+        error::ErrorCode,
+        get_then_update_id,
+        ids::{
+            lighthouse, marinade_mainnet, WHITELISTED_EXTERNAL_DEPOSITORS,
+            WHITELISTED_SWAP_PROGRAMS,
+        },
+        instructions::{
+            constraints::*,
+            optional_accounts::{
+                add_builder_order, get_referrer_and_referrer_stats,
+                get_revenue_share_escrow_account, get_whitelist_token, load_maps,
+                validate_and_load_builder, validate_builder_fee, AccountMaps,
+            },
+        },
+        load, load_mut,
+        math::{
+            self,
+            casting::Cast,
+            constants::{
+                EQUITY_FLOOR_SWAP_MAX_VALUE_LOSS_BPS, MAX_BASE_ASSET_AMOUNT_WITH_AMM,
+                ONE_BPS_DENOMINATOR, THIRTEEN_DAY,
+            },
+            liquidation::is_cross_margin_being_liquidated,
+            margin::{
+                calculate_margin_requirement_and_total_collateral_and_liability_info,
+                calculate_max_withdrawable_amount, calculate_net_equity_for_floor,
+                calculate_user_equity, meets_initial_margin_requirement,
+                meets_place_order_margin_requirement, validate_spot_margin_trading,
+                MarginRequirementType,
+            },
+            oracle::{is_oracle_valid_for_action, LogMode, VelocityAction},
+            orders::{
+                calculate_existing_position_fields_for_order_action, get_position_delta_for_fill,
+                is_multiple_of_step_size, standardize_price_i64,
+            },
+            position::calculate_base_asset_value_with_oracle_price,
+            safe_math::SafeMath,
+            spot_balance::get_token_value,
+            spot_swap::{self, calculate_swap_price, validate_price_bands_for_swap},
+        },
+        math_error,
+        optional_accounts::{get_token_interface, get_token_mint},
+        print_error, safe_decrement, safe_increment,
+        state::{
+            events::{
+                emit_stack, DepositDirection, DepositExplanation, DepositRecord, NewUserRecord,
+                OrderAction, OrderActionExplanation, OrderActionRecord, OrderRecord, SwapRecord,
+            },
+            fill_mode::FillMode,
+            margin_calculation::MarginContext,
+            market_status::MarketStatus,
+            oracle::StrictOraclePrice,
+            oracle_map::OracleMap,
+            order_params::{
+                parse_optional_params, ModifyOrderParams, OrderParams,
+                PlaceAndTakeOrderSuccessCondition, PlaceOrderOptions, PostOnlyParam,
+            },
+            paused_operations::{PerpOperation, SpotOperation},
+            perp_market_map::{get_writable_perp_market_set, MarketSet, PerpMarketMap},
+            revenue_share::{
+                BuilderInfo, RevenueShare, RevenueShareEscrow, RevenueShareOrder,
+                REVENUE_SHARE_ESCROW_PDA_SEED, REVENUE_SHARE_PDA_SEED,
+            },
+            scale_order_params::ScaleOrderParams,
+            signed_msg_user::{
+                SignedMsgOrderId, SignedMsgUserOrders, SignedMsgUserOrdersLoader,
+                SignedMsgWsDelegates, SIGNED_MSG_PDA_SEED, SIGNED_MSG_WS_PDA_SEED,
+            },
+            spot_market::{SpotBalanceType, SpotMarket},
+            spot_market_map::{
+                get_writable_spot_market_set, get_writable_spot_market_set_from_many, SpotMarketMap,
+            },
+            state::State,
+            traits::Size,
+            user::{
+                transfer_equity_floor, MarketType, Order, OrderStatus, OrderType, ReferrerName,
+                ReferrerStatus, SpecialUserStatus, User, UserStats,
+            },
+            user_map::load_user_maps,
+        },
+        validate,
+        validation::{
+            position::validate_perp_position_with_perp_market, user::validate_user_deletion,
+            whitelist::validate_whitelist_token,
+        },
+        ExchangeStatus,
+    },
+    anchor_lang::{
+        prelude::{borsh::BorshDeserialize, *},
+        solana_program::system_instruction::transfer,
+        Discriminator,
+    },
+    anchor_spl::{
+        associated_token::AssociatedToken,
+        token::Token,
+        token_2022::Token2022,
+        token_interface::{TokenAccount, TokenInterface},
+    },
+    solana_program::{
+        program::invoke,
+        sysvar::{instructions, instructions::ID as IX_ID},
+    },
+    std::{collections::BTreeSet, convert::TryFrom, ops::DerefMut},
 };
-use solana_program::program::invoke;
-
-use crate::controller::funding::settle_funding_payment;
-use crate::controller::orders::{
-    cancel_orders, validate_spot_dlob_trading_enabled_for_market_type, ModifyOrderId,
-    PlaceOrderResult,
-};
-use crate::controller::position::update_position_and_market;
-use crate::controller::position::PositionDirection;
-use crate::controller::spot_balance::update_revenue_pool_balances;
-use crate::controller::spot_position::{
-    update_spot_balances_and_cumulative_deposits,
-    update_spot_balances_and_cumulative_deposits_with_limits,
-};
-use crate::error::ErrorCode;
-use crate::get_then_update_id;
-use crate::ids::{
-    lighthouse, marinade_mainnet, WHITELISTED_EXTERNAL_DEPOSITORS, WHITELISTED_SWAP_PROGRAMS,
-};
-use crate::instructions::constraints::*;
-use crate::instructions::optional_accounts::get_revenue_share_escrow_account;
-use crate::instructions::optional_accounts::{
-    add_builder_order, get_referrer_and_referrer_stats, get_whitelist_token, load_maps,
-    validate_and_load_builder, validate_builder_fee, AccountMaps,
-};
-use crate::load;
-use crate::math::casting::Cast;
-use crate::math::constants::{
-    EQUITY_FLOOR_SWAP_MAX_VALUE_LOSS_BPS, MAX_BASE_ASSET_AMOUNT_WITH_AMM, ONE_BPS_DENOMINATOR,
-    THIRTEEN_DAY,
-};
-use crate::math::liquidation::is_cross_margin_being_liquidated;
-use crate::math::margin::calculate_margin_requirement_and_total_collateral_and_liability_info;
-use crate::math::margin::meets_initial_margin_requirement;
-use crate::math::margin::meets_place_order_margin_requirement;
-use crate::math::margin::{
-    calculate_max_withdrawable_amount, calculate_net_equity_for_floor, calculate_user_equity,
-    validate_spot_margin_trading, MarginRequirementType,
-};
-use crate::math::oracle::is_oracle_valid_for_action;
-use crate::math::oracle::LogMode;
-use crate::math::oracle::VelocityAction;
-use crate::math::orders::calculate_existing_position_fields_for_order_action;
-use crate::math::orders::get_position_delta_for_fill;
-use crate::math::orders::is_multiple_of_step_size;
-use crate::math::orders::standardize_price_i64;
-use crate::math::position::calculate_base_asset_value_with_oracle_price;
-use crate::math::safe_math::SafeMath;
-use crate::math::spot_balance::get_token_value;
-use crate::math::spot_swap;
-use crate::math::spot_swap::{calculate_swap_price, validate_price_bands_for_swap};
-use crate::math_error;
-use crate::optional_accounts::{get_token_interface, get_token_mint};
-use crate::print_error;
-use crate::safe_decrement;
-use crate::safe_increment;
-use crate::state::events::emit_stack;
-use crate::state::events::OrderAction;
-use crate::state::events::OrderActionRecord;
-use crate::state::events::OrderRecord;
-use crate::state::events::{
-    DepositDirection, DepositExplanation, DepositRecord, NewUserRecord, OrderActionExplanation,
-    SwapRecord,
-};
-use crate::state::fill_mode::FillMode;
-use crate::state::margin_calculation::MarginContext;
-use crate::state::market_status::MarketStatus;
-use crate::state::oracle::StrictOraclePrice;
-use crate::state::oracle_map::OracleMap;
-use crate::state::order_params::{
-    parse_optional_params, ModifyOrderParams, OrderParams, PlaceAndTakeOrderSuccessCondition,
-    PlaceOrderOptions, PostOnlyParam,
-};
-use crate::state::paused_operations::{PerpOperation, SpotOperation};
-use crate::state::perp_market_map::{get_writable_perp_market_set, MarketSet, PerpMarketMap};
-use crate::state::revenue_share::BuilderInfo;
-use crate::state::revenue_share::RevenueShare;
-use crate::state::revenue_share::RevenueShareEscrow;
-use crate::state::revenue_share::RevenueShareOrder;
-use crate::state::revenue_share::REVENUE_SHARE_ESCROW_PDA_SEED;
-use crate::state::revenue_share::REVENUE_SHARE_PDA_SEED;
-use crate::state::scale_order_params::ScaleOrderParams;
-use crate::state::signed_msg_user::SignedMsgOrderId;
-use crate::state::signed_msg_user::SignedMsgUserOrdersLoader;
-use crate::state::signed_msg_user::SignedMsgWsDelegates;
-use crate::state::signed_msg_user::SIGNED_MSG_WS_PDA_SEED;
-use crate::state::signed_msg_user::{SignedMsgUserOrders, SIGNED_MSG_PDA_SEED};
-use crate::state::spot_market::SpotBalanceType;
-use crate::state::spot_market::SpotMarket;
-use crate::state::spot_market_map::{
-    get_writable_spot_market_set, get_writable_spot_market_set_from_many, SpotMarketMap,
-};
-use crate::state::state::State;
-use crate::state::traits::Size;
-use crate::state::user::OrderStatus;
-use crate::state::user::ReferrerStatus;
-use crate::state::user::{
-    transfer_equity_floor, MarketType, OrderType, ReferrerName, User, UserStats,
-};
-use crate::state::user::{Order, SpecialUserStatus};
-use crate::state::user_map::load_user_maps;
-use crate::validate;
-use crate::validation::position::validate_perp_position_with_perp_market;
-use crate::validation::user::validate_user_deletion;
-use crate::validation::whitelist::validate_whitelist_token;
-use crate::{controller, math};
-use crate::{load_mut, ExchangeStatus};
-use anchor_lang::prelude::borsh::BorshDeserialize;
-use solana_program::sysvar::instructions;
-use solana_program::sysvar::instructions::ID as IX_ID;
 
 pub fn handle_initialize_user<'c: 'info, 'info>(
     ctx: Context<'info, InitializeUser<'info>>,

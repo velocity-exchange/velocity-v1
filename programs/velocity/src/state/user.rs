@@ -1,45 +1,50 @@
-use crate::controller::position::{add_new_position, get_position_index, PositionDirection};
-use crate::error::{ErrorCode, VelocityResult};
-use crate::math::auction::{calculate_auction_price, is_auction_complete};
-use crate::math::casting::Cast;
-use crate::math::constants::{
-    OPEN_ORDER_MARGIN_REQUIREMENT, QUOTE_SPOT_MARKET_INDEX, SPOT_WEIGHT_PRECISION,
-    SPOT_WEIGHT_PRECISION_I128, THIRTY_DAY,
+use {
+    crate::{
+        controller::position::{add_new_position, get_position_index, PositionDirection},
+        error::{ErrorCode, VelocityResult},
+        get_then_update_id,
+        math::{
+            auction::{calculate_auction_price, is_auction_complete},
+            casting::Cast,
+            constants::{
+                OPEN_ORDER_MARGIN_REQUIREMENT, QUOTE_SPOT_MARKET_INDEX, SPOT_WEIGHT_PRECISION,
+                SPOT_WEIGHT_PRECISION_I128, THIRTY_DAY,
+            },
+            margin::{
+                calculate_margin_requirement_and_total_collateral_and_liability_info,
+                calculate_net_equity_for_floor, validate_any_isolated_tier_requirements,
+                MarginRequirementType,
+            },
+            orders::{standardize_base_asset_amount, standardize_price},
+            position::{
+                calculate_base_asset_value_and_pnl_with_oracle_price,
+                calculate_perp_liability_value,
+            },
+            safe_math::SafeMath,
+            spot_balance::{
+                get_signed_token_amount, get_strict_token_value, get_token_amount, get_token_value,
+            },
+            stats::calculate_rolling_sum,
+        },
+        math_error, msg, safe_increment,
+        state::{
+            margin_calculation::{MarginContext, MarginTypeConfig},
+            oracle::StrictOraclePrice,
+            oracle_map::OracleMap,
+            perp_market_map::PerpMarketMap,
+            spot_market::{SpotBalance, SpotBalanceType, SpotMarket},
+            spot_market_map::SpotMarketMap,
+            traits::Size,
+        },
+        validate, ID,
+    },
+    anchor_lang::prelude::{
+        borsh::{BorshDeserialize, BorshSerialize},
+        *,
+    },
+    bytemuck::{Pod, Zeroable},
+    std::{cmp::max, fmt, ops::Neg, panic::Location},
 };
-use crate::math::margin::MarginRequirementType;
-use crate::math::orders::{standardize_base_asset_amount, standardize_price};
-use crate::math::position::{
-    calculate_base_asset_value_and_pnl_with_oracle_price, calculate_perp_liability_value,
-};
-use crate::math::safe_math::SafeMath;
-use crate::math::spot_balance::{
-    get_signed_token_amount, get_strict_token_value, get_token_amount, get_token_value,
-};
-use crate::math::stats::calculate_rolling_sum;
-use crate::math_error;
-use crate::msg;
-use crate::safe_increment;
-use crate::state::oracle::StrictOraclePrice;
-use crate::state::spot_market::{SpotBalance, SpotBalanceType, SpotMarket};
-use crate::state::traits::Size;
-use crate::validate;
-use crate::{get_then_update_id, ID};
-use anchor_lang::prelude::borsh::{BorshDeserialize, BorshSerialize};
-use anchor_lang::prelude::*;
-use bytemuck::{Pod, Zeroable};
-use std::cmp::max;
-use std::fmt;
-use std::ops::Neg;
-use std::panic::Location;
-
-use crate::math::margin::{
-    calculate_margin_requirement_and_total_collateral_and_liability_info,
-    calculate_net_equity_for_floor, validate_any_isolated_tier_requirements,
-};
-use crate::state::margin_calculation::{MarginContext, MarginTypeConfig};
-use crate::state::oracle_map::OracleMap;
-use crate::state::perp_market_map::PerpMarketMap;
-use crate::state::spot_market_map::SpotMarketMap;
 
 #[cfg(test)]
 mod isolated_transfer_tests;

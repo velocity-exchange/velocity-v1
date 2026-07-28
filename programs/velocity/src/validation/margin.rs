@@ -1,10 +1,11 @@
-use crate::error::{ErrorCode, VelocityResult};
-use crate::math::constants::{
-    LIQUIDATION_FEE_TO_MARGIN_PRECISION_RATIO, MAX_MARGIN_RATIO, MIN_MARGIN_RATIO,
-    SPOT_IMF_PRECISION, SPOT_WEIGHT_PRECISION,
+use crate::{
+    error::{ErrorCode, VelocityResult},
+    math::constants::{
+        LIQUIDATION_FEE_TO_MARGIN_PRECISION_RATIO, MAX_MARGIN_RATIO, MIN_MARGIN_RATIO,
+        SPOT_IMF_PRECISION, SPOT_WEIGHT_PRECISION,
+    },
+    msg, validate,
 };
-use crate::msg;
-use crate::validate;
 
 /// Total liquidation fees (`liquidator_fee + if_liquidation_fee`) must fit
 /// strictly inside `margin_ratio_maintenance`: both fees are paid out of the

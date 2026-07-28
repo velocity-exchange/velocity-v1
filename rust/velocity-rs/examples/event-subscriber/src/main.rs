@@ -1,12 +1,14 @@
 use clap::Parser;
 use dotenv;
-use velocity_rs::event_subscriber::{VelocityEvent, EventSubscriber};
-use velocity_rs::{PubsubClient, constants::PROGRAM_ID};
 use env_logger;
 use futures_util::StreamExt;
-use std::env;
-use std::sync::Arc;
+use std::{env, sync::Arc};
 use tokio;
+use velocity_rs::{
+    PubsubClient,
+    constants::PROGRAM_ID,
+    event_subscriber::{EventSubscriber, VelocityEvent},
+};
 
 #[derive(Parser, Debug)]
 #[clap(author, version, about, long_about = None)]

@@ -1,13 +1,16 @@
-use crate::error::VelocityResult;
-use crate::math::casting::Cast;
-use crate::math::constants::{PRICE_PRECISION, SPOT_WEIGHT_PRECISION_U128};
-use crate::math::margin::MarginRequirementType;
-use crate::math::orders::{calculate_fill_price, validate_fill_price_within_price_bands};
-use crate::math::safe_math::SafeMath;
-use crate::math::spot_balance::{get_strict_token_value, get_token_value};
-use crate::state::oracle::StrictOraclePrice;
-use crate::state::spot_market::SpotMarket;
-use crate::PositionDirection;
+use crate::{
+    error::VelocityResult,
+    math::{
+        casting::Cast,
+        constants::{PRICE_PRECISION, SPOT_WEIGHT_PRECISION_U128},
+        margin::MarginRequirementType,
+        orders::{calculate_fill_price, validate_fill_price_within_price_bands},
+        safe_math::SafeMath,
+        spot_balance::{get_strict_token_value, get_token_value},
+    },
+    state::{oracle::StrictOraclePrice, spot_market::SpotMarket},
+    PositionDirection,
+};
 
 #[cfg(test)]
 mod tests;

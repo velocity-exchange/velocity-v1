@@ -1,7 +1,11 @@
-use crate::error::{ErrorCode, VelocityResult};
-use crate::msg;
-use anchor_lang::prelude::*;
-use std::panic::Location;
+use {
+    crate::{
+        error::{ErrorCode, VelocityResult},
+        msg,
+    },
+    anchor_lang::prelude::*,
+    std::panic::Location,
+};
 
 #[cfg(test)]
 mod tests;

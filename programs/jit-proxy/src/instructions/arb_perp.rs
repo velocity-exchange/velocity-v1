@@ -1,24 +1,29 @@
-use anchor_lang::prelude::*;
-use std::collections::BTreeSet;
-use std::ops::Deref;
-use velocity::controller::position::PositionDirection;
-use velocity::cpi::accounts::PlaceAndTake;
-use velocity::error::VelocityResult;
-use velocity::instructions::optional_accounts::{load_maps, AccountMaps};
-use velocity::math::casting::Cast;
-use velocity::math::constants::{BASE_PRECISION, MARGIN_PRECISION_U128, QUOTE_PRECISION};
-use velocity::math::margin::MarginRequirementType;
-use velocity::program::Velocity;
-use velocity::state::order_params::{OrderParams, OrderParamsBitFlag, PostOnlyParam};
-
-use velocity::math::orders::find_bids_and_asks_from_users;
-use velocity::math::safe_math::SafeMath;
-use velocity::state::oracle::OraclePriceData;
-use velocity::state::state::State;
-use velocity::state::user::{MarketType, OrderTriggerCondition, OrderType, User, UserStats};
-use velocity::state::user_map::load_user_maps;
-
-use crate::error::ErrorCode;
+use {
+    crate::error::ErrorCode,
+    anchor_lang::prelude::*,
+    std::{collections::BTreeSet, ops::Deref},
+    velocity::{
+        controller::position::PositionDirection,
+        cpi::accounts::PlaceAndTake,
+        error::VelocityResult,
+        instructions::optional_accounts::{load_maps, AccountMaps},
+        math::{
+            casting::Cast,
+            constants::{BASE_PRECISION, MARGIN_PRECISION_U128, QUOTE_PRECISION},
+            margin::MarginRequirementType,
+            orders::find_bids_and_asks_from_users,
+            safe_math::SafeMath,
+        },
+        program::Velocity,
+        state::{
+            oracle::OraclePriceData,
+            order_params::{OrderParams, OrderParamsBitFlag, PostOnlyParam},
+            state::State,
+            user::{MarketType, OrderTriggerCondition, OrderType, User, UserStats},
+            user_map::load_user_maps,
+        },
+    },
+};
 
 pub fn arb_perp<'c: 'info, 'info>(
     ctx: Context<'info, ArbPerp<'info>>,
@@ -201,8 +206,10 @@ fn place_and_take<'info>(
 
 #[cfg(test)]
 mod test {
-    use velocity::math::constants::{MARGIN_PRECISION, PRICE_PRECISION_I64, QUOTE_PRECISION};
-    use velocity::state::oracle::OraclePriceData;
+    use velocity::{
+        math::constants::{MARGIN_PRECISION, PRICE_PRECISION_I64, QUOTE_PRECISION},
+        state::oracle::OraclePriceData,
+    };
 
     #[test]
     pub fn calculate_max_base_asset_amount() {

@@ -1,25 +1,31 @@
-use std::convert::TryFrom;
-
-use crate::error::{ErrorCode, VelocityResult};
-use crate::math::casting::Cast;
-use crate::math::oracle::{is_oracle_valid_for_action, oracle_validity, LogMode, VelocityAction};
-use crate::math::safe_math::SafeMath;
-use crate::math::spot_balance::get_token_amount;
-use crate::state::oracle::MMOraclePriceData;
-use crate::state::oracle_map::OracleIdentifier;
-use crate::state::perp_market::PerpMarket;
-use crate::state::spot_market::{SpotBalance, SpotMarket};
-use crate::state::traits::Size;
-use crate::state::zero_copy::HasLen;
-use crate::state::zero_copy::{AccountZeroCopy, AccountZeroCopyMut};
-use crate::vlp::amm::math::amm::calculate_net_user_pnl;
-use crate::OracleSource;
-use crate::{impl_zero_copy_loader, OracleGuardRails};
-
-use anchor_lang::prelude::borsh::{BorshDeserialize, BorshSerialize};
-use anchor_lang::prelude::*;
-
-use crate::state::user::MarketType;
+use {
+    crate::{
+        error::{ErrorCode, VelocityResult},
+        impl_zero_copy_loader,
+        math::{
+            casting::Cast,
+            oracle::{is_oracle_valid_for_action, oracle_validity, LogMode, VelocityAction},
+            safe_math::SafeMath,
+            spot_balance::get_token_amount,
+        },
+        state::{
+            oracle::MMOraclePriceData,
+            oracle_map::OracleIdentifier,
+            perp_market::PerpMarket,
+            spot_market::{SpotBalance, SpotMarket},
+            traits::Size,
+            user::MarketType,
+            zero_copy::{AccountZeroCopy, AccountZeroCopyMut, HasLen},
+        },
+        vlp::amm::math::amm::calculate_net_user_pnl,
+        OracleGuardRails, OracleSource,
+    },
+    anchor_lang::prelude::{
+        borsh::{BorshDeserialize, BorshSerialize},
+        *,
+    },
+    std::convert::TryFrom,
+};
 
 pub const AMM_POSITIONS_CACHE: &str = "amm_cache_seed";
 

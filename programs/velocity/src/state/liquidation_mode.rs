@@ -1,29 +1,29 @@
-use solana_program::msg;
-
-use crate::{
-    controller::{
-        spot_balance::update_spot_balances,
-        spot_position::update_spot_balances_and_cumulative_deposits,
+use {
+    super::{
+        events::LiquidationBitFlag,
+        perp_market::ContractTier,
+        perp_market_map::PerpMarketMap,
+        spot_market::{AssetTier, SpotBalanceType, SpotMarket},
+        spot_market_map::SpotMarketMap,
+        user::{MarketType, User},
     },
-    error::{ErrorCode, VelocityResult},
-    math::constants::{LIQUIDATION_PCT_PRECISION, QUOTE_SPOT_MARKET_INDEX},
-    math::{
-        bankruptcy::{is_cross_margin_bankrupt, is_isolated_margin_bankrupt},
-        liquidation::calculate_max_pct_to_liquidate,
-        margin::calculate_user_safest_position_tiers,
-        safe_unwrap::SafeUnwrap,
+    crate::{
+        controller::{
+            spot_balance::update_spot_balances,
+            spot_position::update_spot_balances_and_cumulative_deposits,
+        },
+        error::{ErrorCode, VelocityResult},
+        math::{
+            bankruptcy::{is_cross_margin_bankrupt, is_isolated_margin_bankrupt},
+            constants::{LIQUIDATION_PCT_PRECISION, QUOTE_SPOT_MARKET_INDEX},
+            liquidation::calculate_max_pct_to_liquidate,
+            margin::calculate_user_safest_position_tiers,
+            safe_unwrap::SafeUnwrap,
+        },
+        state::margin_calculation::MarginCalculation,
+        validate,
     },
-    state::margin_calculation::MarginCalculation,
-    validate,
-};
-
-use super::{
-    events::LiquidationBitFlag,
-    perp_market::ContractTier,
-    perp_market_map::PerpMarketMap,
-    spot_market::{AssetTier, SpotBalanceType, SpotMarket},
-    spot_market_map::SpotMarketMap,
-    user::{MarketType, User},
+    solana_program::msg,
 };
 
 pub trait LiquidatePerpMode {

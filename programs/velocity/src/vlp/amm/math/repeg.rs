@@ -1,28 +1,28 @@
-use std::cmp::{max, min};
-
-use crate::msg;
-use crate::state::oracle::MMOraclePriceData;
-use crate::state::perp_market::MarketConfigFlag;
-use anchor_lang::prelude::AccountInfo;
-
-use crate::error::*;
-use crate::math::bn;
-use crate::math::casting::Cast;
-use crate::math::constants::{
-    AMM_RESERVE_PRECISION_I128, BID_ASK_SPREAD_PRECISION_U128, PEG_PRECISION_I128,
-    PRICE_TO_PEG_PRECISION_RATIO,
+use {
+    crate::{
+        error::*,
+        math::{
+            bn,
+            casting::Cast,
+            constants::{
+                AMM_RESERVE_PRECISION_I128, BID_ASK_SPREAD_PRECISION_U128, PEG_PRECISION_I128,
+                PRICE_TO_PEG_PRECISION_RATIO,
+            },
+            oracle::{self, OracleValidity},
+            safe_math::SafeMath,
+        },
+        msg,
+        state::{
+            oracle::{get_oracle_price, MMOraclePriceData, OraclePriceData},
+            perp_market::{MarketConfigFlag, PerpMarket, AMM},
+            state::OracleGuardRails,
+            user::MarketType,
+        },
+        vlp::amm::math::{amm, cp_curve},
+    },
+    anchor_lang::prelude::AccountInfo,
+    std::cmp::{max, min},
 };
-use crate::math::oracle;
-use crate::math::oracle::OracleValidity;
-use crate::math::safe_math::SafeMath;
-use crate::vlp::amm::math::amm;
-use crate::vlp::amm::math::cp_curve;
-
-use crate::state::oracle::get_oracle_price;
-use crate::state::oracle::OraclePriceData;
-use crate::state::perp_market::{PerpMarket, AMM};
-use crate::state::state::OracleGuardRails;
-use crate::state::user::MarketType;
 
 #[cfg(test)]
 mod tests;

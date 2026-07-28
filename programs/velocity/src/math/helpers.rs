@@ -1,10 +1,8 @@
-use crate::msg;
-
-use crate::error::VelocityResult;
-use crate::math::bn::U192;
-use crate::math::casting::Cast;
-use crate::math::safe_math::SafeMath;
-use crate::math_error;
+use crate::{
+    error::VelocityResult,
+    math::{bn::U192, casting::Cast, safe_math::SafeMath},
+    math_error, msg,
+};
 
 #[cfg(test)]
 mod tests;

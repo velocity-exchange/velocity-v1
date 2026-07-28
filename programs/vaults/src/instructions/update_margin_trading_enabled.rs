@@ -1,13 +1,15 @@
-use anchor_lang::prelude::*;
-use velocity::cpi::accounts::UpdateUser;
-use velocity::program::Velocity;
-use velocity::state::user::User;
-
-use crate::constraints::{is_manager_for_vault, is_user_for_vault};
-use crate::error::ErrorCode;
-use crate::velocity_cpi::UpdateUserMarginTradingEnabledCPI;
-use crate::Vault;
-use crate::{declare_vault_seeds, validate};
+use {
+    crate::{
+        constraints::{is_manager_for_vault, is_user_for_vault},
+        declare_vault_seeds,
+        error::ErrorCode,
+        validate,
+        velocity_cpi::UpdateUserMarginTradingEnabledCPI,
+        Vault,
+    },
+    anchor_lang::prelude::*,
+    velocity::{cpi::accounts::UpdateUser, program::Velocity, state::user::User},
+};
 
 pub fn update_margin_trading_enabled<'info>(
     ctx: Context<'info, UpdateMarginTradingEnabled<'info>>,

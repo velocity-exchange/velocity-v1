@@ -1,7 +1,11 @@
-use crate::state::order_params::PostOnlyParam;
-use crate::state::scale_order_params::{ScaleOrderParams, SizeDistribution};
-use crate::state::user::{MarketType, OrderBitFlag};
-use crate::{PositionDirection, BASE_PRECISION_U64, PRICE_PRECISION_U64};
+use crate::{
+    state::{
+        order_params::PostOnlyParam,
+        scale_order_params::{ScaleOrderParams, SizeDistribution},
+        user::{MarketType, OrderBitFlag},
+    },
+    PositionDirection, BASE_PRECISION_U64, PRICE_PRECISION_U64,
+};
 
 #[test]
 fn test_validate_order_count_bounds() {

@@ -1,14 +1,14 @@
 #[cfg(test)]
 mod signed_msg_order_id_eviction {
-    use std::cell::RefCell;
-
-    use anchor_lang::prelude::Pubkey;
-
-    use crate::{
-        error::ErrorCode,
-        state::signed_msg_user::{
-            SignedMsgOrderId, SignedMsgUserOrdersFixed, SignedMsgUserOrdersZeroCopyMut,
+    use {
+        crate::{
+            error::ErrorCode,
+            state::signed_msg_user::{
+                SignedMsgOrderId, SignedMsgUserOrdersFixed, SignedMsgUserOrdersZeroCopyMut,
+            },
         },
+        anchor_lang::prelude::Pubkey,
+        std::cell::RefCell,
     };
 
     #[test]
@@ -138,16 +138,16 @@ mod signed_msg_order_id_eviction {
 
 #[cfg(test)]
 mod zero_copy {
-    use crate::test_utils::create_account_info;
-    use crate::ID;
-
-    use anchor_lang::{prelude::Pubkey, Discriminator};
-
-    use crate::{
-        error::ErrorCode,
-        state::signed_msg_user::{
-            SignedMsgOrderId, SignedMsgUserOrders, SignedMsgUserOrdersLoader,
+    use {
+        crate::{
+            error::ErrorCode,
+            state::signed_msg_user::{
+                SignedMsgOrderId, SignedMsgUserOrders, SignedMsgUserOrdersLoader,
+            },
+            test_utils::create_account_info,
+            ID,
         },
+        anchor_lang::{prelude::Pubkey, Discriminator},
     };
 
     #[test]

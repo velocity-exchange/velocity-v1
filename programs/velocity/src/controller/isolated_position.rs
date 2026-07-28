@@ -1,25 +1,34 @@
-use crate::controller;
-use crate::controller::spot_balance::update_spot_balances;
-use crate::controller::spot_position::update_spot_balances_and_cumulative_deposits;
-use crate::error::{ErrorCode, VelocityResult};
-use crate::get_then_update_id;
-use crate::math::casting::Cast;
-use crate::math::liquidation::is_isolated_margin_being_liquidated;
-use crate::math::margin::{validate_spot_margin_trading, MarginRequirementType};
-use crate::math::safe_math::SafeMath;
-use crate::state::events::{DepositDirection, DepositExplanation, DepositRecord};
-use crate::state::margin_calculation::MarginTypeConfig;
-use crate::state::market_status::MarketStatus;
-use crate::state::oracle_map::OracleMap;
-use crate::state::perp_market_map::PerpMarketMap;
-use crate::state::spot_market::SpotBalanceType;
-use crate::state::spot_market_map::SpotMarketMap;
-use crate::state::state::State;
-use crate::state::user::{User, UserStats};
-use crate::validate;
-use anchor_lang::prelude::*;
-
-use super::position::get_position_index;
+use {
+    super::position::get_position_index,
+    crate::{
+        controller,
+        controller::{
+            spot_balance::update_spot_balances,
+            spot_position::update_spot_balances_and_cumulative_deposits,
+        },
+        error::{ErrorCode, VelocityResult},
+        get_then_update_id,
+        math::{
+            casting::Cast,
+            liquidation::is_isolated_margin_being_liquidated,
+            margin::{validate_spot_margin_trading, MarginRequirementType},
+            safe_math::SafeMath,
+        },
+        state::{
+            events::{DepositDirection, DepositExplanation, DepositRecord},
+            margin_calculation::MarginTypeConfig,
+            market_status::MarketStatus,
+            oracle_map::OracleMap,
+            perp_market_map::PerpMarketMap,
+            spot_market::SpotBalanceType,
+            spot_market_map::SpotMarketMap,
+            state::State,
+            user::{User, UserStats},
+        },
+        validate,
+    },
+    anchor_lang::prelude::*,
+};
 
 #[cfg(test)]
 mod tests;

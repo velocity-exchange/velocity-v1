@@ -27,25 +27,29 @@
 //!    else div-by-zero), `withdraw_guard_threshold = u64::MAX` (disables the twap
 //!    withdraw limiter). Vault token authority = the `velocity_signer` PDA.
 
-use crucible_fuzzer::*;
-use solana_instruction::{AccountMeta, Instruction};
-use solana_keypair::Keypair;
-use solana_pubkey::Pubkey;
-use solana_signer::Signer;
-use std::rc::Rc;
-
-use anchor_lang::AnchorSerialize;
-use velocity::math::constants::{
-    QUOTE_PRECISION, SPOT_BALANCE_PRECISION, SPOT_CUMULATIVE_INTEREST_PRECISION,
-    SPOT_WEIGHT_PRECISION,
+use {
+    anchor_lang::AnchorSerialize,
+    crucible_fuzzer::*,
+    solana_instruction::{AccountMeta, Instruction},
+    solana_keypair::Keypair,
+    solana_pubkey::Pubkey,
+    solana_signer::Signer,
+    std::rc::Rc,
+    velocity::{
+        math::constants::{
+            QUOTE_PRECISION, SPOT_BALANCE_PRECISION, SPOT_CUMULATIVE_INTEREST_PRECISION,
+            SPOT_WEIGHT_PRECISION,
+        },
+        state::{
+            market_status::MarketStatus,
+            oracle::OracleSource,
+            perp_market::PerpMarket,
+            spot_market::{SpotBalanceType, SpotMarket},
+            state::State,
+            user::User,
+        },
+    },
 };
-use velocity::state::market_status::MarketStatus;
-use velocity::state::oracle::OracleSource;
-use velocity::state::perp_market::PerpMarket;
-use velocity::state::spot_market::SpotBalanceType;
-use velocity::state::spot_market::SpotMarket;
-use velocity::state::state::State;
-use velocity::state::user::User;
 
 // Generated types/schemas from the canonical velocity IDL. We only use
 // `register_schemas()`; instruction building goes through `raw_call`.
@@ -469,9 +473,13 @@ impl Fixture {
         #[range(0..2u8)] dir: u8,
         #[range(1..1_000_000_000u64)] base: u64,
     ) -> bool {
-        use velocity::controller::position::PositionDirection;
-        use velocity::state::order_params::{OrderParams, PostOnlyParam};
-        use velocity::state::user::{MarketType, OrderType};
+        use velocity::{
+            controller::position::PositionDirection,
+            state::{
+                order_params::{OrderParams, PostOnlyParam},
+                user::{MarketType, OrderType},
+            },
+        };
 
         let user = self.users[user_idx].clone();
         let (direction, price) = if dir == 0 {

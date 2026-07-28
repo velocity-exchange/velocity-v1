@@ -1,22 +1,26 @@
-use anchor_lang::accounts::account_loader::AccountLoader;
-use std::cell::{Ref, RefMut};
-use std::collections::{BTreeMap, BTreeSet};
-use std::iter::Peekable;
-use std::slice::Iter;
-
-use anchor_lang::prelude::{AccountInfo, Pubkey};
-
-use anchor_lang::Discriminator;
-use arrayref::array_ref;
-
-use crate::error::{ErrorCode, VelocityResult};
-
-use crate::math::safe_unwrap::SafeUnwrap;
-use crate::state::traits::Size;
-use crate::{msg, validate};
-use std::panic::Location;
-
-use super::state::Constituent;
+use {
+    super::state::Constituent,
+    crate::{
+        error::{ErrorCode, VelocityResult},
+        math::safe_unwrap::SafeUnwrap,
+        msg,
+        state::traits::Size,
+        validate,
+    },
+    anchor_lang::{
+        accounts::account_loader::AccountLoader,
+        prelude::{AccountInfo, Pubkey},
+        Discriminator,
+    },
+    arrayref::array_ref,
+    std::{
+        cell::{Ref, RefMut},
+        collections::{BTreeMap, BTreeSet},
+        iter::Peekable,
+        panic::Location,
+        slice::Iter,
+    },
+};
 
 pub struct ConstituentMap<'a>(pub BTreeMap<u16, AccountLoader<'a, Constituent>>);
 

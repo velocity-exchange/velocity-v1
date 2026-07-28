@@ -1,60 +1,60 @@
-use std::{
-    cell::LazyCell,
-    collections::HashMap,
-    env,
-    net::SocketAddr,
-    str::FromStr,
-    sync::{
-        atomic::{AtomicBool, AtomicU64, Ordering},
-        Arc,
-    },
-    time::Duration,
-};
-
-use anchor_lang::AccountDeserialize;
-use anyhow::{Context, Result};
-use axum::{routing::get, Router};
-use dashmap::DashMap;
-use dotenv::dotenv;
-use ed25519_dalek::{PublicKey, Signature, Verifier};
-use futures_util::{
-    stream::{self, FuturesUnordered},
-    Sink, SinkExt, Stream, StreamExt, TryStreamExt,
-};
-use log::{debug, warn};
-use prometheus::Registry;
-use rand::Rng;
-use serde::Deserialize;
-use tokio::{
-    io::AsyncWriteExt,
-    sync::{
-        broadcast::{self},
-        mpsc::{self, error::TrySendError},
-    },
-    time::timeout,
-};
-use tokio_tungstenite::tungstenite::{
-    self, extensions::DeflateConfig, protocol::WebSocketConfig, Message,
-};
-use velocity_rs::{
-    constants::MarketExt,
-    swift_order_subscriber::SignedMessageInfo,
-    types::{
-        accounts::{PerpMarket, SignedMsgWsDelegates, UserStats},
-        MarketType, MarketTypeExt,
-    },
-    Pubkey, RpcClient, Wallet,
-};
-
-use crate::{
-    types::{
-        messages::{
-            OrderMetadataAndMessage, SubscribeActions, WsAuthMessage, WsClientMessage, WsMessage,
-            WsSubscribeMessage,
+use {
+    crate::{
+        types::{
+            messages::{
+                OrderMetadataAndMessage, SubscribeActions, WsAuthMessage, WsClientMessage,
+                WsMessage, WsSubscribeMessage,
+            },
+            types::{unix_now_ms, WsError},
         },
-        types::{unix_now_ms, WsError},
+        util::metrics::{metrics_handler, MetricsServerParams, WsServerMetrics},
     },
-    util::metrics::{metrics_handler, MetricsServerParams, WsServerMetrics},
+    anchor_lang::AccountDeserialize,
+    anyhow::{Context, Result},
+    axum::{routing::get, Router},
+    dashmap::DashMap,
+    dotenv::dotenv,
+    ed25519_dalek::{PublicKey, Signature, Verifier},
+    futures_util::{
+        stream::{self, FuturesUnordered},
+        Sink, SinkExt, Stream, StreamExt, TryStreamExt,
+    },
+    log::{debug, warn},
+    prometheus::Registry,
+    rand::Rng,
+    serde::Deserialize,
+    std::{
+        cell::LazyCell,
+        collections::HashMap,
+        env,
+        net::SocketAddr,
+        str::FromStr,
+        sync::{
+            atomic::{AtomicBool, AtomicU64, Ordering},
+            Arc,
+        },
+        time::Duration,
+    },
+    tokio::{
+        io::AsyncWriteExt,
+        sync::{
+            broadcast::{self},
+            mpsc::{self, error::TrySendError},
+        },
+        time::timeout,
+    },
+    tokio_tungstenite::tungstenite::{
+        self, extensions::DeflateConfig, protocol::WebSocketConfig, Message,
+    },
+    velocity_rs::{
+        constants::MarketExt,
+        swift_order_subscriber::SignedMessageInfo,
+        types::{
+            accounts::{PerpMarket, SignedMsgWsDelegates, UserStats},
+            MarketType, MarketTypeExt,
+        },
+        Pubkey, RpcClient, Wallet,
+    },
 };
 
 #[cfg(test)]
@@ -1052,10 +1052,11 @@ fn decode_pubkey(request: &str) -> Result<Pubkey, &'static str> {
 
 #[cfg(test)]
 mod test {
-    use serde_json::{json, Value};
-    use solana_keypair::Keypair;
-
-    use super::*;
+    use {
+        super::*,
+        serde_json::{json, Value},
+        solana_keypair::Keypair,
+    };
 
     fn sol_perp_market() -> PerpMarket {
         let mut sol_perp_name = [0x20; 32];

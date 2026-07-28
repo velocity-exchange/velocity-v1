@@ -1,6 +1,4 @@
-use anchor_lang::prelude::*;
-
-use velocity::error::ErrorCode as VelocityErrorCode;
+use {anchor_lang::prelude::*, velocity::error::ErrorCode as VelocityErrorCode};
 
 pub type VaultResult<T = ()> = std::result::Result<T, ErrorCode>;
 

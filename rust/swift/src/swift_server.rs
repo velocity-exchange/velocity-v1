@@ -1,75 +1,77 @@
-use std::{
-    collections::HashSet,
-    env,
-    net::SocketAddr,
-    sync::{
-        atomic::{AtomicBool, AtomicU64, Ordering},
-        Arc,
-    },
-    time::{Duration, SystemTime},
-};
-
-use crate::{
-    super_slot_subscriber::SuperSlotSubscriber,
-    types::{
-        messages::{
-            DepositAndPlaceRequest, IncomingSignedMessage, OrderMetadataAndMessage,
-            ProcessOrderResponse, PROCESS_ORDER_RESPONSE_ERROR_MSG_AUCTION_OUTSIDE_ORACLE_BAND,
-            PROCESS_ORDER_RESPONSE_ERROR_MSG_DELISTED_MARKET,
-            PROCESS_ORDER_RESPONSE_ERROR_MSG_DELIVERY_FAILED,
-            PROCESS_ORDER_RESPONSE_ERROR_MSG_INVALID_ORDER,
-            PROCESS_ORDER_RESPONSE_ERROR_MSG_INVALID_ORDER_AMOUNT,
-            PROCESS_ORDER_RESPONSE_ERROR_MSG_ORDER_SLOT_TOO_OLD,
-            PROCESS_ORDER_RESPONSE_ERROR_MSG_VERIFY_SIGNATURE,
-            PROCESS_ORDER_RESPONSE_IGNORE_PUBKEY, PROCESS_ORDER_RESPONSE_INVALID_UUID_UTF8,
-            PROCESS_ORDER_RESPONSE_MESSAGE_SUCCESS,
+use {
+    crate::{
+        super_slot_subscriber::SuperSlotSubscriber,
+        types::{
+            messages::{
+                DepositAndPlaceRequest, IncomingSignedMessage, OrderMetadataAndMessage,
+                ProcessOrderResponse, PROCESS_ORDER_RESPONSE_ERROR_MSG_AUCTION_OUTSIDE_ORACLE_BAND,
+                PROCESS_ORDER_RESPONSE_ERROR_MSG_DELISTED_MARKET,
+                PROCESS_ORDER_RESPONSE_ERROR_MSG_DELIVERY_FAILED,
+                PROCESS_ORDER_RESPONSE_ERROR_MSG_INVALID_ORDER,
+                PROCESS_ORDER_RESPONSE_ERROR_MSG_INVALID_ORDER_AMOUNT,
+                PROCESS_ORDER_RESPONSE_ERROR_MSG_ORDER_SLOT_TOO_OLD,
+                PROCESS_ORDER_RESPONSE_ERROR_MSG_VERIFY_SIGNATURE,
+                PROCESS_ORDER_RESPONSE_IGNORE_PUBKEY, PROCESS_ORDER_RESPONSE_INVALID_UUID_UTF8,
+                PROCESS_ORDER_RESPONSE_MESSAGE_SUCCESS,
+            },
+            types::{unix_now_ms, RequestContext},
         },
-        types::{unix_now_ms, RequestContext},
+        user_account_fetcher::UserAccountFetcher,
+        util::{
+            headers::XSwiftClientConsumer,
+            metrics::{metrics_handler, MetricsServerParams, SwiftServerMetrics},
+        },
     },
-    user_account_fetcher::UserAccountFetcher,
-    util::{
-        headers::XSwiftClientConsumer,
-        metrics::{metrics_handler, MetricsServerParams, SwiftServerMetrics},
+    anchor_lang::{AccountDeserialize, Discriminator},
+    axum::{
+        extract::State,
+        http::{self, Method, StatusCode},
+        routing::{get, post},
+        Json, Router,
     },
-};
-use anchor_lang::{AccountDeserialize, Discriminator};
-use axum::{
-    extract::State,
-    http::{self, Method, StatusCode},
-    routing::{get, post},
-    Json, Router,
-};
-use base64::Engine;
-use dotenv::dotenv;
-use log::warn;
-use prometheus::Registry;
-use redis::{aio::MultiplexedConnection, AsyncCommands};
-use solana_account_decoder_client_types::UiAccountEncoding;
-use solana_clock::Slot;
-use solana_hash::Hash;
-use solana_keypair::Keypair;
-use solana_message::v0::Message;
-use solana_pubkey::Pubkey;
-use solana_rpc_client_api::{
-    client_error,
-    config::{RpcSimulateTransactionAccountsConfig, RpcSimulateTransactionConfig},
-    response::RpcSimulateTransactionResult,
-};
-use solana_signature::Signature;
-use solana_signer::Signer;
-use solana_system_interface::instruction as system_instruction;
-use tower_http::cors::{Any, CorsLayer};
-use velocity_rs::{
-    constants::state_account,
-    event_subscriber::PubsubClient,
-    math::account_list_builder::AccountsListBuilder,
-    swift_order_subscriber::{SignedMessageInfo, SignedOrderType},
-    types::{
-        accounts::User, errors::ErrorCode, CommitmentConfig, MarketId, MarketStatus, MarketType,
-        MarketTypeExt, OrderParams, OrderParamsExt, OrderType, PositionDirection, ProgramError,
-        SdkError, SdkResult, SignedMsgTriggerOrderParams, VersionedMessage, VersionedTransaction,
+    base64::Engine,
+    dotenv::dotenv,
+    log::warn,
+    prometheus::Registry,
+    redis::{aio::MultiplexedConnection, AsyncCommands},
+    solana_account_decoder_client_types::UiAccountEncoding,
+    solana_clock::Slot,
+    solana_hash::Hash,
+    solana_keypair::Keypair,
+    solana_message::v0::Message,
+    solana_pubkey::Pubkey,
+    solana_rpc_client_api::{
+        client_error,
+        config::{RpcSimulateTransactionAccountsConfig, RpcSimulateTransactionConfig},
+        response::RpcSimulateTransactionResult,
     },
-    velocity_idl, Context, RpcClient, TransactionBuilder, VelocityClient, Wallet,
+    solana_signature::Signature,
+    solana_signer::Signer,
+    solana_system_interface::instruction as system_instruction,
+    std::{
+        collections::HashSet,
+        env,
+        net::SocketAddr,
+        sync::{
+            atomic::{AtomicBool, AtomicU64, Ordering},
+            Arc,
+        },
+        time::{Duration, SystemTime},
+    },
+    tower_http::cors::{Any, CorsLayer},
+    velocity_rs::{
+        constants::state_account,
+        event_subscriber::PubsubClient,
+        math::account_list_builder::AccountsListBuilder,
+        swift_order_subscriber::{SignedMessageInfo, SignedOrderType},
+        types::{
+            accounts::User, errors::ErrorCode, CommitmentConfig, MarketId, MarketStatus,
+            MarketType, MarketTypeExt, OrderParams, OrderParamsExt, OrderType, PositionDirection,
+            ProgramError, SdkError, SdkResult, SignedMsgTriggerOrderParams, VersionedMessage,
+            VersionedTransaction,
+        },
+        velocity_idl, Context, RpcClient, TransactionBuilder, VelocityClient, Wallet,
+    },
 };
 
 /// Accept orders under-collaterized upto this ratio.
@@ -1903,14 +1905,15 @@ pub async fn simulate_tx(
 
 #[cfg(test)]
 mod tests {
-    use std::collections::HashMap;
-
-    use super::*;
-    use ed25519_dalek::Signature as Ed25519Signature;
-    use solana_native_token::LAMPORTS_PER_SOL;
-    use velocity_rs::types::{
-        accounts::User, SignedMsgOrderParamsDelegateMessage, SignedMsgOrderParamsMessage,
-        SignedMsgTriggerOrderParams,
+    use {
+        super::*,
+        ed25519_dalek::Signature as Ed25519Signature,
+        solana_native_token::LAMPORTS_PER_SOL,
+        std::collections::HashMap,
+        velocity_rs::types::{
+            accounts::User, SignedMsgOrderParamsDelegateMessage, SignedMsgOrderParamsMessage,
+            SignedMsgTriggerOrderParams,
+        },
     };
 
     fn is_isolated_deposit(signed_msg: &SignedOrderType) -> bool {

@@ -1,33 +1,41 @@
-use crate::state::perp_market::MarketStats;
-use std::str::FromStr;
-
-use solana_program::pubkey::Pubkey;
-
-use crate::controller::pnl::settle_pnl;
-use crate::error::ErrorCode;
-use crate::math::casting::Cast;
-use crate::math::constants::{
-    AMM_RESERVE_PRECISION, BASE_PRECISION_I128, BASE_PRECISION_I64, LIQUIDATION_FEE_PRECISION,
-    PEG_PRECISION, QUOTE_PRECISION_I128, QUOTE_PRECISION_I64, QUOTE_SPOT_MARKET_INDEX,
-    SPOT_BALANCE_PRECISION, SPOT_BALANCE_PRECISION_U64, SPOT_CUMULATIVE_INTEREST_PRECISION,
-    SPOT_WEIGHT_PRECISION,
+use {
+    crate::{
+        controller::pnl::settle_pnl,
+        create_anchor_account_info,
+        error::ErrorCode,
+        math::{
+            casting::Cast,
+            constants::{
+                AMM_RESERVE_PRECISION, BASE_PRECISION_I128, BASE_PRECISION_I64,
+                LIQUIDATION_FEE_PRECISION, PEG_PRECISION, QUOTE_PRECISION_I128,
+                QUOTE_PRECISION_I64, QUOTE_SPOT_MARKET_INDEX, SPOT_BALANCE_PRECISION,
+                SPOT_BALANCE_PRECISION_U64, SPOT_CUMULATIVE_INTEREST_PRECISION,
+                SPOT_WEIGHT_PRECISION,
+            },
+            margin::{
+                meets_maintenance_margin_requirement,
+                meets_settle_pnl_maintenance_margin_requirement,
+            },
+        },
+        state::{
+            market_status::MarketStatus,
+            oracle::{HistoricalOracleData, OracleSource},
+            oracle_map::OracleMap,
+            perp_market::{MarketStats, PerpMarket, PoolBalance, AMM},
+            perp_market_map::PerpMarketMap,
+            pyth_lazer_oracle::PythLazerOracle,
+            spot_market::{SpotBalanceType, SpotMarket},
+            spot_market_map::SpotMarketMap,
+            state::{OracleGuardRails, State, ValidityGuardRails},
+            user::{PerpPosition, PositionFlag, SpotPosition, User},
+        },
+        test_utils::{get_positions, get_pyth_price, get_spot_positions},
+        SettlePnlMode, PRICE_PRECISION_I64,
+    },
+    anchor_lang::prelude::Clock,
+    solana_program::pubkey::Pubkey,
+    std::str::FromStr,
 };
-use crate::math::margin::{
-    meets_maintenance_margin_requirement, meets_settle_pnl_maintenance_margin_requirement,
-};
-use crate::state::market_status::MarketStatus;
-use crate::state::oracle::{HistoricalOracleData, OracleSource};
-use crate::state::oracle_map::OracleMap;
-use crate::state::perp_market::{PerpMarket, PoolBalance, AMM};
-use crate::state::perp_market_map::PerpMarketMap;
-use crate::state::pyth_lazer_oracle::PythLazerOracle;
-use crate::state::spot_market::{SpotBalanceType, SpotMarket};
-use crate::state::spot_market_map::SpotMarketMap;
-use crate::state::state::{OracleGuardRails, State, ValidityGuardRails};
-use crate::state::user::{PerpPosition, PositionFlag, SpotPosition, User};
-use crate::test_utils::{get_positions, get_pyth_price, get_spot_positions};
-use crate::{create_anchor_account_info, SettlePnlMode, PRICE_PRECISION_I64};
-use anchor_lang::prelude::Clock;
 
 #[test]
 pub fn user_no_position() {

@@ -1,25 +1,27 @@
-use anchor_lang::prelude::Pubkey;
-use anchor_lang::prelude::*;
-use std::collections::BTreeSet;
-use velocity::controller::position::PositionDirection;
-use velocity::cpi::accounts::{PlaceAndMake, PlaceAndMakeSignedMsg};
-use velocity::error::VelocityResult;
-use velocity::instructions::optional_accounts::{load_maps, AccountMaps};
-use velocity::math::casting::Cast;
-use velocity::math::safe_math::SafeMath;
-use velocity::program::Velocity;
-use velocity::state::order_params::{OrderParams, OrderParamsBitFlag};
-use velocity::state::perp_market_map::PerpMarketMap;
-use velocity::state::signed_msg_user::SignedMsgUserOrdersLoader;
-use velocity::state::spot_market_map::SpotMarketMap;
-use velocity::state::state::State;
-use velocity::state::user::Order;
-use velocity::state::user::{MarketType as VelocityMarketType, OrderTriggerCondition, OrderType};
-use velocity::state::user::{User, UserStats};
-
-use crate::error::ErrorCode;
-use crate::state::PriceType;
-use velocity::state::order_params::PostOnlyParam;
+use {
+    crate::{error::ErrorCode, state::PriceType},
+    anchor_lang::prelude::{Pubkey, *},
+    std::collections::BTreeSet,
+    velocity::{
+        controller::position::PositionDirection,
+        cpi::accounts::{PlaceAndMake, PlaceAndMakeSignedMsg},
+        error::VelocityResult,
+        instructions::optional_accounts::{load_maps, AccountMaps},
+        math::{casting::Cast, safe_math::SafeMath},
+        program::Velocity,
+        state::{
+            order_params::{OrderParams, OrderParamsBitFlag, PostOnlyParam},
+            perp_market_map::PerpMarketMap,
+            signed_msg_user::SignedMsgUserOrdersLoader,
+            spot_market_map::SpotMarketMap,
+            state::State,
+            user::{
+                MarketType as VelocityMarketType, Order, OrderTriggerCondition, OrderType, User,
+                UserStats,
+            },
+        },
+    },
+};
 
 pub fn jit<'c: 'info, 'info>(ctx: Context<'info, Jit<'info>>, params: JitParams) -> Result<()> {
     let clock = Clock::get()?;

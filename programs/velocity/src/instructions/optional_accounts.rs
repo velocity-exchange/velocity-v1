@@ -1,37 +1,41 @@
-use crate::error::{ErrorCode, VelocityResult};
-use crate::state::revenue_share::{
-    RevenueShareEscrow, RevenueShareEscrowLoader, RevenueShareEscrowZeroCopyMut, RevenueShareOrder,
-    RevenueShareOrderBitFlag,
+use {
+    crate::{
+        error::{
+            ErrorCode::{self, UnableToLoadOracle},
+            VelocityResult,
+        },
+        math::safe_unwrap::SafeUnwrap,
+        msg,
+        state::{
+            load_ref::load_ref_mut,
+            oracle::PrelaunchOracle,
+            oracle_map::OracleMap,
+            perp_market::PerpMarket,
+            perp_market_map::{MarketSet, PerpMarketMap},
+            revenue_share::{
+                RevenueShareEscrow, RevenueShareEscrowLoader, RevenueShareEscrowZeroCopyMut,
+                RevenueShareOrder, RevenueShareOrderBitFlag,
+            },
+            spot_market_map::SpotMarketMap,
+            state::{OracleGuardRails, State},
+            traits::Size,
+            user::{MarketType, User, UserStats},
+        },
+        validate, OracleSource,
+    },
+    anchor_lang::{
+        accounts::account::Account,
+        prelude::{AccountInfo, AccountLoader, Interface, InterfaceAccount, Pubkey},
+        Discriminator,
+    },
+    anchor_spl::{
+        token::TokenAccount,
+        token_interface::{Mint, TokenInterface},
+    },
+    arrayref::array_ref,
+    solana_program::account_info::next_account_info,
+    std::{cell::RefMut, convert::TryFrom, iter::Peekable, ops::Deref, slice::Iter},
 };
-use crate::state::state::State;
-use crate::state::user::MarketType;
-use std::cell::RefMut;
-use std::convert::TryFrom;
-
-use crate::error::ErrorCode::UnableToLoadOracle;
-use crate::math::safe_unwrap::SafeUnwrap;
-use crate::msg;
-use crate::state::load_ref::load_ref_mut;
-use crate::state::oracle::PrelaunchOracle;
-use crate::state::oracle_map::OracleMap;
-use crate::state::perp_market::PerpMarket;
-use crate::state::perp_market_map::{MarketSet, PerpMarketMap};
-use crate::state::spot_market_map::SpotMarketMap;
-use crate::state::state::OracleGuardRails;
-use crate::state::traits::Size;
-use crate::state::user::{User, UserStats};
-use crate::{validate, OracleSource};
-use anchor_lang::accounts::account::Account;
-use anchor_lang::prelude::{AccountInfo, Interface, Pubkey};
-use anchor_lang::prelude::{AccountLoader, InterfaceAccount};
-use anchor_lang::Discriminator;
-use anchor_spl::token::TokenAccount;
-use anchor_spl::token_interface::{Mint, TokenInterface};
-use arrayref::array_ref;
-use solana_program::account_info::next_account_info;
-use std::iter::Peekable;
-use std::ops::Deref;
-use std::slice::Iter;
 
 pub struct AccountMaps<'a> {
     pub perp_market_map: PerpMarketMap<'a>,

@@ -1,19 +1,22 @@
-use crate::constraints::{
-    is_authority_for_vault_depositor, is_mint_for_tokenized_depositor,
-    is_tokenized_depositor_for_vault, is_user_for_vault,
+use {
+    super::constraints::is_vault_shares_base_for_tokenized_depositor,
+    crate::{
+        constraints::{
+            is_authority_for_vault_depositor, is_mint_for_tokenized_depositor,
+            is_tokenized_depositor_for_vault, is_user_for_vault,
+        },
+        error::ErrorCode,
+        state::traits::VaultDepositorBase,
+        token_cpi::MintTokensCPI,
+        validate, AccountMapProvider, TokenizedVaultDepositor, Vault, VaultDepositor,
+        VaultProtocolProvider, WithdrawUnit,
+    },
+    anchor_lang::prelude::*,
+    anchor_spl::token::{mint_to, Mint, MintTo, Token, TokenAccount},
+    velocity::{
+        instructions::optional_accounts::AccountMaps, math::safe_math::SafeMath, state::user::User,
+    },
 };
-use crate::error::ErrorCode;
-use crate::state::traits::VaultDepositorBase;
-use crate::token_cpi::MintTokensCPI;
-use crate::{validate, AccountMapProvider};
-use crate::{TokenizedVaultDepositor, Vault, VaultDepositor, VaultProtocolProvider, WithdrawUnit};
-use anchor_lang::prelude::*;
-use anchor_spl::token::{mint_to, Mint, MintTo, Token, TokenAccount};
-use velocity::instructions::optional_accounts::AccountMaps;
-use velocity::math::safe_math::SafeMath;
-use velocity::state::user::User;
-
-use super::constraints::is_vault_shares_base_for_tokenized_depositor;
 
 pub fn tokenize_shares<'info>(
     ctx: Context<'info, TokenizeShares<'info>>,

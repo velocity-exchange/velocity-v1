@@ -1,7 +1,10 @@
-use crate::error::VelocityResult;
-use crate::math::casting::Cast;
-use crate::math::safe_math::SafeMath;
-use std::cmp::max;
+use {
+    crate::{
+        error::VelocityResult,
+        math::{casting::Cast, safe_math::SafeMath},
+    },
+    std::cmp::max,
+};
 
 pub fn calculate_rolling_sum(
     data1: u64,

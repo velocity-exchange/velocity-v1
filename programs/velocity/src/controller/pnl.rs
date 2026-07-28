@@ -1,44 +1,54 @@
-use crate::controller::funding::settle_funding_payment;
-use crate::controller::orders::{cancel_orders, validate_market_within_price_band};
-use crate::controller::position::{
-    get_position_index, update_position_and_market, update_quote_asset_amount,
-    update_quote_asset_and_break_even_amount, update_settled_pnl, PositionDelta,
+use {
+    crate::{
+        controller::{
+            funding::settle_funding_payment,
+            orders::{cancel_orders, validate_market_within_price_band},
+            position::{
+                get_position_index, update_position_and_market, update_quote_asset_amount,
+                update_quote_asset_and_break_even_amount, update_settled_pnl, PositionDelta,
+            },
+            spot_balance::{update_spot_balances, update_spot_market_cumulative_interest},
+        },
+        error::{ErrorCode, VelocityResult},
+        get_then_update_id,
+        math::{
+            casting::Cast,
+            fees::split_fee_remainder,
+            margin::{
+                meets_maintenance_margin_requirement,
+                meets_settle_pnl_maintenance_margin_requirement,
+            },
+            oracle::{is_oracle_valid_for_action, OracleValidity, VelocityAction},
+            orders::calculate_existing_position_fields_for_order_action,
+            position::calculate_base_asset_value_with_expiry_price,
+            safe_math::SafeMath,
+            spot_balance::get_token_amount,
+        },
+        msg,
+        state::{
+            events::{
+                OrderAction, OrderActionExplanation, OrderActionRecord, OrderRecord,
+                SettlePnlExplanation, SettlePnlRecord,
+            },
+            market_status::MarketStatus,
+            oracle_map::OracleMap,
+            paused_operations::PerpOperation,
+            perp_market_map::PerpMarketMap,
+            settle_pnl_mode::SettlePnlMode,
+            spot_market::{SpotBalance, SpotBalanceType},
+            spot_market_map::SpotMarketMap,
+            state::State,
+            user::{MarketType, Order, OrderStatus, OrderType, User},
+        },
+        validate,
+        vlp::amm::{
+            controller::{update_pnl_pool_and_user_balance, update_pool_balances},
+            math::amm::calculate_net_user_pnl,
+        },
+    },
+    anchor_lang::prelude::{Pubkey, *},
+    std::ops::DerefMut,
 };
-use crate::controller::spot_balance::{
-    update_spot_balances, update_spot_market_cumulative_interest,
-};
-use crate::error::{ErrorCode, VelocityResult};
-use crate::math::oracle::{is_oracle_valid_for_action, OracleValidity, VelocityAction};
-use crate::vlp::amm::controller::{update_pnl_pool_and_user_balance, update_pool_balances};
-use crate::vlp::amm::math::amm::calculate_net_user_pnl;
-
-use crate::math::casting::Cast;
-use crate::math::fees::split_fee_remainder;
-use crate::math::margin::{
-    meets_maintenance_margin_requirement, meets_settle_pnl_maintenance_margin_requirement,
-};
-use crate::math::position::calculate_base_asset_value_with_expiry_price;
-use crate::math::safe_math::SafeMath;
-use crate::math::spot_balance::get_token_amount;
-
-use crate::get_then_update_id;
-use crate::math::orders::calculate_existing_position_fields_for_order_action;
-use crate::msg;
-use crate::state::events::{OrderAction, OrderActionRecord, OrderRecord};
-use crate::state::events::{OrderActionExplanation, SettlePnlExplanation, SettlePnlRecord};
-use crate::state::market_status::MarketStatus;
-use crate::state::oracle_map::OracleMap;
-use crate::state::paused_operations::PerpOperation;
-use crate::state::perp_market_map::PerpMarketMap;
-use crate::state::settle_pnl_mode::SettlePnlMode;
-use crate::state::spot_market::{SpotBalance, SpotBalanceType};
-use crate::state::spot_market_map::SpotMarketMap;
-use crate::state::state::State;
-use crate::state::user::{MarketType, Order, OrderStatus, OrderType, User};
-use crate::validate;
-use anchor_lang::prelude::Pubkey;
-use anchor_lang::prelude::*;
-use std::ops::DerefMut;
 
 #[cfg(test)]
 mod tests;

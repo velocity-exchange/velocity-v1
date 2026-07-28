@@ -1,8 +1,7 @@
 use crate::state::order_params::parse_optional_params;
 
 mod get_auction_duration {
-    use crate::state::order_params::get_auction_duration;
-    use crate::{ContractTier, PRICE_PRECISION_U64};
+    use crate::{state::order_params::get_auction_duration, ContractTier, PRICE_PRECISION_U64};
 
     #[test]
     fn test() {
@@ -40,10 +39,12 @@ mod get_auction_duration {
 }
 
 mod update_perp_auction_params {
-    use crate::state::order_params::PostOnlyParam;
-    use crate::state::perp_market::{ContractTier, MarketStats, PerpMarket, AMM};
-    use crate::state::user::OrderType;
     use crate::{
+        state::{
+            order_params::PostOnlyParam,
+            perp_market::{ContractTier, MarketStats, PerpMarket, AMM},
+            user::OrderType,
+        },
         OracleSource, OrderParams, PositionDirection, AMM_RESERVE_PRECISION, PEG_PRECISION,
         PRICE_PRECISION_I64, PRICE_PRECISION_U64, QUOTE_PRECISION_U64,
     };
@@ -1762,22 +1763,24 @@ mod update_perp_auction_params {
 }
 
 mod get_close_perp_params {
-    use crate::math::orders::get_posted_slot_from_clock_slot;
-    use crate::state::oracle::HistoricalOracleData;
-    use crate::state::order_params::PostOnlyParam;
-    use crate::state::perp_market::{MarketStats, PerpMarket, AMM};
-    use crate::{ContractTier, PRICE_PRECISION_U64};
-
-    use crate::state::user::{Order, OrderStatus};
-    use crate::test_utils::create_account_info;
-    use crate::validation::order::validate_order;
-    use crate::{
-        OrderParams, PositionDirection, BASE_PRECISION_U64, PRICE_PRECISION_I64,
-        QUOTE_PRECISION_U64,
+    use {
+        crate::{
+            math::orders::get_posted_slot_from_clock_slot,
+            state::{
+                oracle::HistoricalOracleData,
+                order_params::PostOnlyParam,
+                perp_market::{MarketStats, PerpMarket, AMM},
+                user::{Order, OrderStatus},
+            },
+            test_utils::create_account_info,
+            validation::order::validate_order,
+            ContractTier, OrderParams, PositionDirection, BASE_PRECISION_U64, PRICE_PRECISION_I64,
+            PRICE_PRECISION_U64, QUOTE_PRECISION_U64,
+        },
+        anchor_lang::prelude::AccountLoader,
+        solana_program::pubkey::Pubkey,
+        std::str::FromStr,
     };
-    use anchor_lang::prelude::AccountLoader;
-    use solana_program::pubkey::Pubkey;
-    use std::str::FromStr;
 
     #[test]
     fn bid() {

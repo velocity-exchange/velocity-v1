@@ -1,21 +1,24 @@
-use std::cmp::{max, min};
-
-use num_integer::Roots;
-
-use crate::error::VelocityResult;
-use crate::math::casting::Cast;
-
-use crate::math::constants::{
-    FIVE_MILLION_QUOTE, ONE_HUNDRED_MILLION_QUOTE, ONE_MILLION_QUOTE, TEN_BPS, TEN_MILLION_QUOTE,
+use {
+    crate::{
+        error::VelocityResult,
+        math::{
+            casting::Cast,
+            constants::{
+                FEE_ADJUSTMENT_MAX, FEE_PERCENTAGE_DENOMINATOR, FIVE_MILLION_QUOTE,
+                ONE_HUNDRED_MILLION_QUOTE, ONE_MILLION_QUOTE, TEN_BPS, TEN_MILLION_QUOTE,
+            },
+            helpers::get_proportion_u128,
+            safe_math::SafeMath,
+        },
+        msg,
+        state::{
+            state::{FeeStructure, FeeTier, OrderFillerRewardStructure},
+            user::{MarketType, UserStats},
+        },
+    },
+    num_integer::Roots,
+    std::cmp::{max, min},
 };
-use crate::math::helpers::get_proportion_u128;
-use crate::math::safe_math::SafeMath;
-
-use crate::state::state::{FeeStructure, FeeTier, OrderFillerRewardStructure};
-use crate::state::user::{MarketType, UserStats};
-
-use crate::math::constants::{FEE_ADJUSTMENT_MAX, FEE_PERCENTAGE_DENOMINATOR};
-use crate::msg;
 
 #[cfg(test)]
 mod tests;

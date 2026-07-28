@@ -1,17 +1,21 @@
-use std::cmp::max;
-
-use crate::msg;
-
-use crate::error::{ErrorCode, VelocityResult};
-use crate::math::bn;
-use crate::math::casting::Cast;
-use crate::math::constants::{
-    AMM_TO_QUOTE_PRECISION_RATIO, AMM_TO_QUOTE_PRECISION_RATIO_I128, FUNDING_RATE_BUFFER,
-    PERCENTAGE_PRECISION_I128, PRICE_PRECISION, QUOTE_TO_BASE_AMT_FUNDING_PRECISION,
+use {
+    crate::{
+        error::{ErrorCode, VelocityResult},
+        math::{
+            bn,
+            casting::Cast,
+            constants::{
+                AMM_TO_QUOTE_PRECISION_RATIO, AMM_TO_QUOTE_PRECISION_RATIO_I128,
+                FUNDING_RATE_BUFFER, PERCENTAGE_PRECISION_I128, PRICE_PRECISION,
+                QUOTE_TO_BASE_AMT_FUNDING_PRECISION,
+            },
+            safe_math::SafeMath,
+        },
+        msg,
+        state::user::PerpPosition,
+    },
+    std::cmp::max,
 };
-use crate::math::safe_math::SafeMath;
-
-use crate::state::user::PerpPosition;
 
 #[cfg(test)]
 mod tests;

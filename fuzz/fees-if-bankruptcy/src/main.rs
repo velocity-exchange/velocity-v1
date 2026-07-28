@@ -98,11 +98,15 @@ fn inv_socialization_funding_delta(
     #[range(0..100_000_000_000_000u64)] base_short: u64,
 ) {
     let _ = &fixture.ctx;
-    use velocity::math::constants::{
-        AMM_RESERVE_PRECISION_I128, FUNDING_RATE_TO_QUOTE_PRECISION_PRECISION_RATIO,
+    use velocity::{
+        math::{
+            constants::{
+                AMM_RESERVE_PRECISION_I128, FUNDING_RATE_TO_QUOTE_PRECISION_PRECISION_RATIO,
+            },
+            liquidation::calculate_funding_rate_deltas_to_resolve_bankruptcy,
+        },
+        state::perp_market::PerpMarket,
     };
-    use velocity::math::liquidation::calculate_funding_rate_deltas_to_resolve_bankruptcy;
-    use velocity::state::perp_market::PerpMarket;
 
     let mut market = PerpMarket::default();
     market.base_asset_amount_long = base_long as i128;
@@ -140,10 +144,14 @@ fn inv_socialization_deposit_interest_delta(
     #[range(0..1_000_000_000_000u64)] cdi_extra: u64,
 ) {
     let _ = &fixture.ctx;
-    use velocity::math::constants::SPOT_CUMULATIVE_INTEREST_PRECISION;
-    use velocity::math::liquidation::calculate_cumulative_deposit_interest_delta_to_resolve_bankruptcy;
-    use velocity::math::spot_balance::get_token_amount;
-    use velocity::state::spot_market::{SpotBalanceType, SpotMarket};
+    use velocity::{
+        math::{
+            constants::SPOT_CUMULATIVE_INTEREST_PRECISION,
+            liquidation::calculate_cumulative_deposit_interest_delta_to_resolve_bankruptcy,
+            spot_balance::get_token_amount,
+        },
+        state::spot_market::{SpotBalanceType, SpotMarket},
+    };
 
     let cdi = SPOT_CUMULATIVE_INTEREST_PRECISION + cdi_extra as u128;
 
@@ -152,12 +160,14 @@ fn inv_socialization_deposit_interest_delta(
     spot_market.deposit_balance = deposit_balance as u128;
     spot_market.cumulative_deposit_interest = cdi;
 
-    let total_deposits =
-        match get_token_amount(spot_market.deposit_balance, &spot_market, &SpotBalanceType::Deposit)
-        {
-            Ok(t) => t,
-            Err(_) => return,
-        };
+    let total_deposits = match get_token_amount(
+        spot_market.deposit_balance,
+        &spot_market,
+        &SpotBalanceType::Deposit,
+    ) {
+        Ok(t) => t,
+        Err(_) => return,
+    };
 
     let delta = match calculate_cumulative_deposit_interest_delta_to_resolve_bankruptcy(
         borrow as u128,
@@ -200,8 +210,7 @@ fn inv_split_fee_conserves(
     #[range(0..101u64)] if_num: u64,
 ) {
     let _ = &fixture.ctx;
-    use velocity::math::fees::split_fee_remainder;
-    use velocity::state::state::FeeStructure;
+    use velocity::{math::fees::split_fee_remainder, state::state::FeeStructure};
 
     // amm + if <= FEE_PERCENTAGE_DENOMINATOR (100) is a fee-structure-update
     // invariant; skip invalid configs so the residual can't underflow.
@@ -238,10 +247,13 @@ fn inv_if_shares_lost_bounded(
     #[range(1..1_000_000_000_000u64)] vault: u64,
 ) {
     let _ = &fixture.ctx;
-    use anchor_lang::prelude::Pubkey;
-    use velocity::math::insurance::calculate_if_shares_lost;
-    use velocity::state::insurance_fund_stake::InsuranceFundStake;
-    use velocity::state::spot_market::SpotMarket;
+    use {
+        anchor_lang::prelude::Pubkey,
+        velocity::{
+            math::insurance::calculate_if_shares_lost,
+            state::{insurance_fund_stake::InsuranceFundStake, spot_market::SpotMarket},
+        },
+    };
 
     let req_shares = req_shares as u128;
     let total_shares = total_shares as u128;
@@ -334,9 +346,13 @@ fn inv_fee_tier_monotone(
     #[range(0..2_000_000_000_000u64)] vol_b: u64,
 ) {
     let _ = &fixture.ctx;
-    use velocity::math::fees::determine_user_fee_tier;
-    use velocity::state::state::FeeStructure;
-    use velocity::state::user::{MarketType, UserStats};
+    use velocity::{
+        math::fees::determine_user_fee_tier,
+        state::{
+            state::FeeStructure,
+            user::{MarketType, UserStats},
+        },
+    };
 
     let (lo, hi) = if vol_a <= vol_b {
         (vol_a, vol_b)
@@ -428,10 +444,13 @@ fn regr_266_cancel_after_rebase(
     #[range(0..1_000_000u64)] req_value: u64,
 ) {
     let _ = &fixture.ctx;
-    use anchor_lang::prelude::Pubkey;
-    use velocity::math::insurance::{calculate_if_shares_lost, calculate_rebase_info};
-    use velocity::state::insurance_fund_stake::InsuranceFundStake;
-    use velocity::state::spot_market::SpotMarket;
+    use {
+        anchor_lang::prelude::Pubkey,
+        velocity::{
+            math::insurance::{calculate_if_shares_lost, calculate_rebase_info},
+            state::{insurance_fund_stake::InsuranceFundStake, spot_market::SpotMarket},
+        },
+    };
 
     let total_shares = total_shares as u128;
 
@@ -490,8 +509,10 @@ fn regr_255_floored_if_tranche(
     #[range(0..1_000_001u64)] pct_hi: u64,
 ) {
     let _ = &fixture.ctx;
-    use velocity::math::constants::{BASE_PRECISION, PERCENTAGE_PRECISION};
-    use velocity::state::perp_market::PerpMarket;
+    use velocity::{
+        math::constants::{BASE_PRECISION, PERCENTAGE_PRECISION},
+        state::perp_market::PerpMarket,
+    };
 
     let (pct_lo, pct_hi) = if pct_lo <= pct_hi {
         (pct_lo, pct_hi)
@@ -559,9 +580,10 @@ fn prop_borrow_debt_monotonic_in_index(
     #[range(0..1_000_000_000_000u64)] interest_accrued: u64,
 ) {
     let _ = &fixture.ctx;
-    use velocity::math::constants::SPOT_CUMULATIVE_INTEREST_PRECISION;
-    use velocity::math::spot_balance::get_token_amount;
-    use velocity::state::spot_market::{SpotBalanceType, SpotMarket};
+    use velocity::{
+        math::{constants::SPOT_CUMULATIVE_INTEREST_PRECISION, spot_balance::get_token_amount},
+        state::spot_market::{SpotBalanceType, SpotMarket},
+    };
 
     let stale_index = SPOT_CUMULATIVE_INTEREST_PRECISION;
     let fresh_index = stale_index + interest_accrued as u128;

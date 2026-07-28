@@ -1,12 +1,17 @@
-use anchor_lang::prelude::*;
-use anchor_spl::token::{Mint, Token, TokenAccount};
-use velocity::cpi::accounts::InitializeInsuranceFundStake as VelocityInitializeInsuranceFundStake;
-use velocity::program::Velocity;
-use velocity::state::spot_market::SpotMarket;
-
-use crate::constraints::{is_manager_for_vault, is_user_stats_for_vault};
-use crate::velocity_cpi::InitializeInsuranceFundStakeCPI;
-use crate::{declare_vault_seeds, Vault};
+use {
+    crate::{
+        constraints::{is_manager_for_vault, is_user_stats_for_vault},
+        declare_vault_seeds,
+        velocity_cpi::InitializeInsuranceFundStakeCPI,
+        Vault,
+    },
+    anchor_lang::prelude::*,
+    anchor_spl::token::{Mint, Token, TokenAccount},
+    velocity::{
+        cpi::accounts::InitializeInsuranceFundStake as VelocityInitializeInsuranceFundStake,
+        program::Velocity, state::spot_market::SpotMarket,
+    },
+};
 
 pub fn initialize_insurance_fund_stake<'info>(
     ctx: Context<'info, InitializeInsuranceFundStake<'info>>,

@@ -1,14 +1,18 @@
-use crate::state::perp_market::MarketStats;
-use solana_program::pubkey::Pubkey;
-use std::str::FromStr;
-
-use crate::create_account_info;
-use crate::error::ErrorCode;
-use crate::math::constants::{AMM_RESERVE_PRECISION, PRICE_PRECISION_I64, PRICE_PRECISION_U64};
-use crate::state::oracle::{get_oracle_price, HistoricalOracleData, OraclePriceData, OracleSource};
-use crate::state::perp_market::{PerpMarket, AMM};
-use crate::state::state::State;
-use crate::test_utils::*;
+use {
+    crate::{
+        create_account_info,
+        error::ErrorCode,
+        math::constants::{AMM_RESERVE_PRECISION, PRICE_PRECISION_I64, PRICE_PRECISION_U64},
+        state::{
+            oracle::{get_oracle_price, HistoricalOracleData, OraclePriceData, OracleSource},
+            perp_market::{MarketStats, PerpMarket, AMM},
+            state::State,
+        },
+        test_utils::*,
+    },
+    solana_program::pubkey::Pubkey,
+    std::str::FromStr,
+};
 
 #[test]
 fn pyth_1k() {

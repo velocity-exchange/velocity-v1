@@ -1,8 +1,12 @@
-use anchor_lang::prelude::*;
-
-use crate::constraints::{is_protocol_for_vault, is_vault_protocol_for_vault};
-use crate::state::{Vault, VaultProtocol};
-use crate::{error::ErrorCode, validate};
+use {
+    crate::{
+        constraints::{is_protocol_for_vault, is_vault_protocol_for_vault},
+        error::ErrorCode,
+        state::{Vault, VaultProtocol},
+        validate,
+    },
+    anchor_lang::prelude::*,
+};
 
 pub fn update_vault_protocol<'info>(
     ctx: Context<'info, UpdateVaultProtocol<'info>>,

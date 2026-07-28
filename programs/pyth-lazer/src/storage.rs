@@ -1,11 +1,10 @@
+pub use crate::signature::{ed25519_program_args, Ed25519SignatureOffsets};
 use {
     crate::{signature, signature::VerifiedMessage},
     anchor_lang::{prelude::*, solana_program::pubkey::PUBKEY_BYTES},
     solana_program::pubkey,
     std::mem::size_of,
 };
-
-pub use crate::signature::{ed25519_program_args, Ed25519SignatureOffsets};
 
 pub const STORAGE_ID: Pubkey = pubkey!("3rdJbqfnagQ4yx9HXJViD4zc4xpiSqmFsKpPuSCQVyQL");
 

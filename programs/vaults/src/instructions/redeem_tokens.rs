@@ -1,17 +1,21 @@
-use crate::constraints::{
-    is_ata, is_authority_for_vault_depositor, is_mint_for_tokenized_depositor,
-    is_tokenized_depositor_for_vault, is_user_for_vault,
+use {
+    crate::{
+        constraints::{
+            is_ata, is_authority_for_vault_depositor, is_mint_for_tokenized_depositor,
+            is_tokenized_depositor_for_vault, is_user_for_vault,
+        },
+        error::ErrorCode,
+        state::traits::VaultDepositorBase,
+        token_cpi::{BurnTokensCPI, TokenTransferCPI},
+        validate, AccountMapProvider, TokenizedVaultDepositor, Vault, VaultDepositor,
+        VaultProtocolProvider, WithdrawUnit,
+    },
+    anchor_lang::prelude::*,
+    anchor_spl::token::{burn, transfer, Burn, Mint, Token, TokenAccount, Transfer},
+    velocity::{
+        instructions::optional_accounts::AccountMaps, math::safe_math::SafeMath, state::user::User,
+    },
 };
-use crate::error::ErrorCode;
-use crate::state::traits::VaultDepositorBase;
-use crate::token_cpi::{BurnTokensCPI, TokenTransferCPI};
-use crate::{validate, AccountMapProvider};
-use crate::{TokenizedVaultDepositor, Vault, VaultDepositor, VaultProtocolProvider, WithdrawUnit};
-use anchor_lang::prelude::*;
-use anchor_spl::token::{burn, transfer, Burn, Mint, Token, TokenAccount, Transfer};
-use velocity::instructions::optional_accounts::AccountMaps;
-use velocity::math::safe_math::SafeMath;
-use velocity::state::user::User;
 
 pub fn redeem_tokens<'info>(
     ctx: Context<'info, RedeemTokens<'info>>,

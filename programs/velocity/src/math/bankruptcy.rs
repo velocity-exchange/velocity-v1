@@ -1,6 +1,7 @@
-use crate::error::VelocityResult;
-use crate::state::spot_market::SpotBalanceType;
-use crate::state::user::User;
+use crate::{
+    error::VelocityResult,
+    state::{spot_market::SpotBalanceType, user::User},
+};
 
 #[cfg(test)]
 mod tests;

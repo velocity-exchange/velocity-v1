@@ -9,21 +9,22 @@
 //!   non-matching subsystems (insurance, revenue-pool transfers, settlement)
 //!   so they don't reach into AMM fields directly.
 
-use anchor_lang::prelude::*;
-
 #[cfg(test)]
 use crate::state::perp_market::MarketStats;
-use crate::{
-    controller::position::PositionDirection,
-    error::{ErrorCode, VelocityResult},
-    math::{casting::Cast, safe_math::SafeMath},
-    state::{
-        oracle::OraclePriceData,
-        quoter::{FillFeePolicy, MarketEvent, QuoteContext, Quoter, QuoterCommit, QuoterFill},
+use {
+    crate::{
+        controller::position::PositionDirection,
+        error::{ErrorCode, VelocityResult},
+        math::{casting::Cast, safe_math::SafeMath},
+        state::{
+            oracle::OraclePriceData,
+            quoter::{FillFeePolicy, MarketEvent, QuoteContext, Quoter, QuoterCommit, QuoterFill},
+        },
+        vlp::amm::{
+            controller as amm_controller, controller::SwapDirection, math::amm as amm_math, AMM,
+        },
     },
-    vlp::amm::{
-        controller as amm_controller, controller::SwapDirection, math::amm as amm_math, AMM,
-    },
+    anchor_lang::prelude::*,
 };
 
 /// The contract boundary between Velocity's general logic and the AMM module.
@@ -1020,10 +1021,12 @@ impl<'a> QuoterCommit for AmmJitQuoter<'a> {
 
 #[cfg(test)]
 mod amm_maker_tests {
-    use super::*;
-    use crate::{
-        math::constants::{AMM_RESERVE_PRECISION, PEG_PRECISION},
-        vlp::amm::AMM,
+    use {
+        super::*,
+        crate::{
+            math::constants::{AMM_RESERVE_PRECISION, PEG_PRECISION},
+            vlp::amm::AMM,
+        },
     };
 
     fn make_amm() -> AMM {
@@ -1334,10 +1337,12 @@ mod amm_maker_tests {
 
 #[cfg(test)]
 mod amm_jit_maker_tests {
-    use super::*;
-    use crate::{
-        math::constants::{AMM_RESERVE_PRECISION, BASE_PRECISION, PEG_PRECISION},
-        vlp::amm::AMM,
+    use {
+        super::*,
+        crate::{
+            math::constants::{AMM_RESERVE_PRECISION, BASE_PRECISION, PEG_PRECISION},
+            vlp::amm::AMM,
+        },
     };
 
     fn make_amm() -> AMM {

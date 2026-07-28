@@ -1,14 +1,16 @@
 //! Example demonstrating the simplified margin calculation API
-//! 
+//!
 //! This example shows how to use the MarketState struct
 //! to calculate simplified margin requirements.
 
-use velocity_rs::MarketState;
-use velocity_rs::velocity_idl::{
-    accounts::{SpotMarket, PerpMarket, User},
-    types::MarginRequirementType,
+use velocity_rs::{
+    ffi::OraclePriceData,
+    velocity_idl::{
+        accounts::{PerpMarket, SpotMarket, User},
+        types::MarginRequirementType,
+    },
+    MarketState,
 };
-use velocity_rs::ffi::OraclePriceData;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("Velocity Simplified Margin Calculation Example");
@@ -58,6 +60,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("Margin Calculation Results:");
     println!("  Total Collateral: {}", margin_calc.total_collateral);
     println!("  Margin Requirement: {}", margin_calc.margin_requirement);
-    
+
     Ok(())
 }

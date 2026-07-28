@@ -16,5 +16,4 @@
 mod withdraw_protocol_fees_perp;
 mod withdraw_protocol_fees_spot;
 
-pub use withdraw_protocol_fees_perp::*;
-pub use withdraw_protocol_fees_spot::*;
+pub use {withdraw_protocol_fees_perp::*, withdraw_protocol_fees_spot::*};

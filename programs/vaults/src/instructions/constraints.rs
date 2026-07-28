@@ -1,10 +1,11 @@
-use anchor_lang::prelude::*;
-use anchor_spl::associated_token::get_associated_token_address;
-use velocity::state::insurance_fund_stake::InsuranceFundStake;
-
-use crate::constants::admin;
-use crate::state::VaultProtocol;
-use crate::{TokenizedVaultDepositor, Vault, VaultDepositor};
+use {
+    crate::{
+        constants::admin, state::VaultProtocol, TokenizedVaultDepositor, Vault, VaultDepositor,
+    },
+    anchor_lang::prelude::*,
+    anchor_spl::associated_token::get_associated_token_address,
+    velocity::state::insurance_fund_stake::InsuranceFundStake,
+};
 
 pub fn is_vault_for_vault_depositor(
     vault_depositor: &AccountLoader<VaultDepositor>,

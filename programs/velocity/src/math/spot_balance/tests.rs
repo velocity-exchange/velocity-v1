@@ -1,8 +1,10 @@
 #[cfg(test)]
 mod test {
-    use crate::math::spot_balance::{get_spot_balance, get_token_amount};
-    use crate::state::spot_market::{SpotBalanceType, SpotMarket};
-    use crate::SPOT_CUMULATIVE_INTEREST_PRECISION;
+    use crate::{
+        math::spot_balance::{get_spot_balance, get_token_amount},
+        state::spot_market::{SpotBalanceType, SpotMarket},
+        SPOT_CUMULATIVE_INTEREST_PRECISION,
+    };
 
     #[test]
     fn bonk() {

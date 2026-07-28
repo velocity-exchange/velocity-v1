@@ -1,19 +1,25 @@
-use crate::error::{ErrorCode, VelocityResult};
-use crate::math::safe_unwrap::SafeUnwrap;
-use crate::msg;
-use crate::state::traits::Size;
-use crate::state::user::{User, UserStats};
-use crate::validate;
-use anchor_lang::prelude::AccountLoader;
-use anchor_lang::Discriminator;
-use arrayref::array_ref;
-use solana_program::account_info::AccountInfo;
-use solana_program::pubkey::Pubkey;
-use std::cell::{Ref, RefMut};
-use std::collections::BTreeMap;
-use std::iter::Peekable;
-use std::panic::Location;
-use std::slice::Iter;
+use {
+    crate::{
+        error::{ErrorCode, VelocityResult},
+        math::safe_unwrap::SafeUnwrap,
+        msg,
+        state::{
+            traits::Size,
+            user::{User, UserStats},
+        },
+        validate,
+    },
+    anchor_lang::{prelude::AccountLoader, Discriminator},
+    arrayref::array_ref,
+    solana_program::{account_info::AccountInfo, pubkey::Pubkey},
+    std::{
+        cell::{Ref, RefMut},
+        collections::BTreeMap,
+        iter::Peekable,
+        panic::Location,
+        slice::Iter,
+    },
+};
 
 pub struct UserMap<'a>(pub BTreeMap<Pubkey, AccountLoader<'a, User>>);
 

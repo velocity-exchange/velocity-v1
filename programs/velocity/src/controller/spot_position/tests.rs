@@ -1,12 +1,16 @@
 mod update_spot_position_balance {
-    use crate::controller::spot_position::{
-        transfer_spot_position_deposit, update_spot_balances_and_cumulative_deposits,
+    use crate::{
+        controller::spot_position::{
+            transfer_spot_position_deposit, update_spot_balances_and_cumulative_deposits,
+        },
+        math::constants::{
+            LAMPORTS_PER_SOL_I64, SPOT_BALANCE_PRECISION, SPOT_BALANCE_PRECISION_U64,
+        },
+        state::{
+            spot_market::{SpotBalanceType, SpotMarket},
+            user::{SpotPosition, User},
+        },
     };
-    use crate::math::constants::{
-        LAMPORTS_PER_SOL_I64, SPOT_BALANCE_PRECISION, SPOT_BALANCE_PRECISION_U64,
-    };
-    use crate::state::spot_market::{SpotBalanceType, SpotMarket};
-    use crate::state::user::{SpotPosition, User};
 
     #[test]
     fn deposit() {

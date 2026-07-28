@@ -1,27 +1,28 @@
-use std::cmp::{max, min};
-
-use crate::{
-    controller::position::PositionDirection,
-    error::{ErrorCode, VelocityResult},
-    math::{
-        bn::U192,
-        casting::Cast,
-        constants::{
-            BID_ASK_SPREAD_PRECISION_I128, CONCENTRATION_PRECISION,
-            DEFAULT_MAX_TWAP_UPDATE_PRICE_BAND_DENOMINATOR, FIVE_MINUTE,
-            PRICE_TIMES_AMM_TO_QUOTE_PRECISION_RATIO,
-            PRICE_TIMES_AMM_TO_QUOTE_PRECISION_RATIO_I128, PRICE_TO_PEG_PRECISION_RATIO,
+use {
+    crate::{
+        controller::position::PositionDirection,
+        error::{ErrorCode, VelocityResult},
+        math::{
+            bn::U192,
+            casting::Cast,
+            constants::{
+                BID_ASK_SPREAD_PRECISION_I128, CONCENTRATION_PRECISION,
+                DEFAULT_MAX_TWAP_UPDATE_PRICE_BAND_DENOMINATOR, FIVE_MINUTE,
+                PRICE_TIMES_AMM_TO_QUOTE_PRECISION_RATIO,
+                PRICE_TIMES_AMM_TO_QUOTE_PRECISION_RATIO_I128, PRICE_TO_PEG_PRECISION_RATIO,
+            },
+            helpers::get_proportion_u128,
+            orders::standardize_base_asset_amount,
+            quote_asset::reserve_to_asset_amount,
+            safe_math::SafeMath,
+            stats::calculate_weighted_average,
         },
-        helpers::get_proportion_u128,
-        orders::standardize_base_asset_amount,
-        quote_asset::reserve_to_asset_amount,
-        safe_math::SafeMath,
-        stats::calculate_weighted_average,
+        msg,
+        state::oracle::MMOraclePriceData,
+        validate,
+        vlp::amm::{controller::SwapDirection, AMM},
     },
-    msg,
-    state::oracle::MMOraclePriceData,
-    validate,
-    vlp::amm::{controller::SwapDirection, AMM},
+    std::cmp::{max, min},
 };
 
 #[cfg(test)]

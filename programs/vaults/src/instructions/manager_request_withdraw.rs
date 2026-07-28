@@ -1,11 +1,12 @@
-use anchor_lang::prelude::*;
-use velocity::instructions::optional_accounts::AccountMaps;
-use velocity::state::user::User;
-
-use crate::constraints::{is_manager_for_vault, is_user_for_vault, is_user_stats_for_vault};
-use crate::state::VaultProtocolProvider;
-use crate::AccountMapProvider;
-use crate::{Vault, WithdrawUnit};
+use {
+    crate::{
+        constraints::{is_manager_for_vault, is_user_for_vault, is_user_stats_for_vault},
+        state::VaultProtocolProvider,
+        AccountMapProvider, Vault, WithdrawUnit,
+    },
+    anchor_lang::prelude::*,
+    velocity::{instructions::optional_accounts::AccountMaps, state::user::User},
+};
 
 pub fn manager_request_withdraw<'info>(
     ctx: Context<'info, ManagerRequestWithdraw<'info>>,

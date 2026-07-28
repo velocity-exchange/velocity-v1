@@ -1,17 +1,18 @@
-use anchor_lang::prelude::*;
-use enumflags2::BitFlags;
-
-use crate::{
-    error::VelocityResult,
-    math::{
-        constants::{
-            FEE_DENOMINATOR, FEE_PERCENTAGE_DENOMINATOR, LAMPORTS_PER_SOL_U64,
-            PERCENTAGE_PRECISION_U64,
+use {
+    crate::{
+        error::VelocityResult,
+        math::{
+            constants::{
+                FEE_DENOMINATOR, FEE_PERCENTAGE_DENOMINATOR, LAMPORTS_PER_SOL_U64,
+                PERCENTAGE_PRECISION_U64,
+            },
+            safe_math::SafeMath,
+            safe_unwrap::SafeUnwrap,
         },
-        safe_math::SafeMath,
-        safe_unwrap::SafeUnwrap,
+        state::traits::Size,
     },
-    state::traits::Size,
+    anchor_lang::prelude::*,
+    enumflags2::BitFlags,
 };
 
 #[cfg(test)]

@@ -1,24 +1,25 @@
-use anchor_lang::accounts::account_loader::AccountLoader;
-use std::cell::{Ref, RefMut};
-use std::collections::{BTreeMap, BTreeSet};
-use std::iter::Peekable;
-use std::slice::Iter;
-
-use anchor_lang::prelude::AccountInfo;
-
-use anchor_lang::Discriminator;
-use arrayref::array_ref;
-
-use crate::error::{ErrorCode, VelocityResult};
-use crate::state::perp_market::PerpMarket;
-use crate::state::user::PerpPositions;
-
-use crate::math::safe_unwrap::SafeUnwrap;
-use crate::msg;
-use crate::state::traits::{MarketIndexOffset, Size};
-use std::panic::Location;
-
-use super::user::SpotPosition;
+use {
+    super::user::SpotPosition,
+    crate::{
+        error::{ErrorCode, VelocityResult},
+        math::safe_unwrap::SafeUnwrap,
+        msg,
+        state::{
+            perp_market::PerpMarket,
+            traits::{MarketIndexOffset, Size},
+            user::PerpPositions,
+        },
+    },
+    anchor_lang::{accounts::account_loader::AccountLoader, prelude::AccountInfo, Discriminator},
+    arrayref::array_ref,
+    std::{
+        cell::{Ref, RefMut},
+        collections::{BTreeMap, BTreeSet},
+        iter::Peekable,
+        panic::Location,
+        slice::Iter,
+    },
+};
 
 pub struct PerpMarketMap<'a>(pub BTreeMap<u16, AccountLoader<'a, PerpMarket>>);
 

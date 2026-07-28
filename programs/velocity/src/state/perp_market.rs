@@ -1,46 +1,49 @@
-use std::cmp::{max, min};
-
-use anchor_lang::prelude::{
-    borsh::{BorshDeserialize, BorshSerialize},
-    *,
-};
-
-use super::oracle_map::OracleIdentifier;
-use crate::{
-    error::{ErrorCode, VelocityResult},
-    math::{
-        casting::Cast,
-        constants::{
-            AMM_TO_QUOTE_PRECISION_RATIO, BASE_PRECISION,
-            DEFAULT_REVENUE_SINCE_LAST_FUNDING_SPREAD_RETREAT, FUNDING_RATE_BUFFER_I128,
-            FUNDING_RATE_OFFSET_PERCENTAGE, LIQUIDATION_FEE_PRECISION, MARGIN_PRECISION,
-            MARGIN_PRECISION_U128, MAX_LIQUIDATION_MULTIPLIER, PERCENTAGE_PRECISION,
-            PERCENTAGE_PRECISION_I128, PERCENTAGE_PRECISION_I64, PERCENTAGE_PRECISION_U32,
-            PERCENTAGE_PRECISION_U64, PRICE_PRECISION_I128, SPOT_WEIGHT_PRECISION,
-            TRIGGER_PRICE_LAST_FILL_MAX_AGE,
+use {
+    super::oracle_map::OracleIdentifier,
+    crate::{
+        error::{ErrorCode, VelocityResult},
+        math::{
+            casting::Cast,
+            constants::{
+                AMM_TO_QUOTE_PRECISION_RATIO, BASE_PRECISION,
+                DEFAULT_REVENUE_SINCE_LAST_FUNDING_SPREAD_RETREAT, FUNDING_RATE_BUFFER_I128,
+                FUNDING_RATE_OFFSET_PERCENTAGE, LIQUIDATION_FEE_PRECISION, MARGIN_PRECISION,
+                MARGIN_PRECISION_U128, MAX_LIQUIDATION_MULTIPLIER, PERCENTAGE_PRECISION,
+                PERCENTAGE_PRECISION_I128, PERCENTAGE_PRECISION_I64, PERCENTAGE_PRECISION_U32,
+                PERCENTAGE_PRECISION_U64, PRICE_PRECISION_I128, SPOT_WEIGHT_PRECISION,
+                TRIGGER_PRICE_LAST_FILL_MAX_AGE,
+            },
+            margin::{
+                calculate_size_discount_asset_weight, calculate_size_premium_liability_weight,
+                MarginRequirementType,
+            },
+            oracle::{
+                is_oracle_valid_for_action, oracle_validity, LogMode, OracleValidity,
+                VelocityAction,
+            },
+            safe_math::SafeMath,
         },
-        margin::{
-            calculate_size_discount_asset_weight, calculate_size_premium_liability_weight,
-            MarginRequirementType,
+        msg,
+        state::{
+            fill_mode::FillMode,
+            market_status::MarketStatus,
+            oracle::{HistoricalOracleData, MMOraclePriceData, OraclePriceData, OracleSource},
+            paused_operations::PerpOperation,
+            spot_market::{AssetTier, SpotBalance, SpotBalanceType},
+            state::{State, ValidityGuardRails},
+            traits::{MarketIndexOffset, Size},
+            user::{MarketType, Order},
         },
-        oracle::{
-            is_oracle_valid_for_action, oracle_validity, LogMode, OracleValidity, VelocityAction,
+        validate,
+        vlp::amm::math::amm::{
+            self, calculate_new_oracle_price_twap, sanitize_new_price, TwapPeriod,
         },
-        safe_math::SafeMath,
     },
-    msg,
-    state::{
-        fill_mode::FillMode,
-        market_status::MarketStatus,
-        oracle::{HistoricalOracleData, MMOraclePriceData, OraclePriceData, OracleSource},
-        paused_operations::PerpOperation,
-        spot_market::{AssetTier, SpotBalance, SpotBalanceType},
-        state::{State, ValidityGuardRails},
-        traits::{MarketIndexOffset, Size},
-        user::{MarketType, Order},
+    anchor_lang::prelude::{
+        borsh::{BorshDeserialize, BorshSerialize},
+        *,
     },
-    validate,
-    vlp::amm::math::amm::{self, calculate_new_oracle_price_twap, sanitize_new_price, TwapPeriod},
+    std::cmp::{max, min},
 };
 
 #[cfg(test)]
@@ -1737,17 +1740,18 @@ impl MarketStats {
         sanitize_clamp: Option<i64>,
     ) -> crate::error::VelocityResult<u64> {
         let funding_period = self.funding_period;
-        use core::cmp::max;
-
-        use crate::{
-            math::{
-                casting::Cast,
-                constants::{FIVE_MINUTE, ONE_MINUTE},
-                safe_math::SafeMath,
-                stats::{calculate_new_twap, calculate_weighted_average},
+        use {
+            crate::{
+                math::{
+                    casting::Cast,
+                    constants::{FIVE_MINUTE, ONE_MINUTE},
+                    safe_math::SafeMath,
+                    stats::{calculate_new_twap, calculate_weighted_average},
+                },
+                validate,
+                vlp::amm::math::amm::sanitize_new_price,
             },
-            validate,
-            vlp::amm::math::amm::sanitize_new_price,
+            core::cmp::max,
         };
 
         let (bid_price_capped_update, ask_price_capped_update) = (

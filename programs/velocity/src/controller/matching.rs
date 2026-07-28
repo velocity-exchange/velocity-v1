@@ -21,11 +21,13 @@
 //! quote is recomputed ONCE against each maker's total filled base via
 //! `try_fill_solo` (never summed per slice).
 
-use crate::controller::position::PositionDirection;
-use crate::error::{ErrorCode, VelocityResult};
-use crate::math::safe_math::SafeMath;
-use crate::state::quoter::{QuoteContext, Quoter, QuoterCommit, QuoterFill};
-use crate::vlp::amm::AmmQuoter;
+use crate::{
+    controller::position::PositionDirection,
+    error::{ErrorCode, VelocityResult},
+    math::safe_math::SafeMath,
+    state::quoter::{QuoteContext, Quoter, QuoterCommit, QuoterFill},
+    vlp::amm::AmmQuoter,
+};
 
 /// Index into the `makers` slice passed to [`match_take`].
 pub type QuoterId = u16;
@@ -396,10 +398,14 @@ pub fn fill_perp_market_against_amm(
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-    use crate::state::oracle::OraclePriceData;
-    use crate::state::perp_market::MarketStats;
-    use crate::state::quoter::{FillFeePolicy, QuoteContext, Quoter};
+    use {
+        super::*,
+        crate::state::{
+            oracle::OraclePriceData,
+            perp_market::MarketStats,
+            quoter::{FillFeePolicy, QuoteContext, Quoter},
+        },
+    };
 
     /// A trivial single-price-step maker for unit tests — emulates a DLOB
     /// resting order.
@@ -576,8 +582,10 @@ mod tests {
         // wrapper around match_take for the sole-AMM case. Verifies one call
         // mutates AMM curve reserves and re-derives the cached spread reserves
         // (via AmmQuoter::commit_fill) while leaving MarketStats untouched.
-        use crate::math::constants::{AMM_RESERVE_PRECISION, PEG_PRECISION};
-        use crate::state::perp_market::{PerpMarket, AMM};
+        use crate::{
+            math::constants::{AMM_RESERVE_PRECISION, PEG_PRECISION},
+            state::perp_market::{PerpMarket, AMM},
+        };
 
         let stats = MarketStats::default();
         let oracle = OraclePriceData::default();
@@ -631,9 +639,11 @@ mod tests {
         // Full architecture exercised: construct a PerpMarket, wrap its AMM
         // as a Quoter, run match_take. Verify the AMM curve mutated and the
         // MarketStats fields are left untouched by the fill.
-        use crate::math::constants::{AMM_RESERVE_PRECISION, PEG_PRECISION};
-        use crate::state::perp_market::{PerpMarket, AMM};
-        use crate::vlp::amm::AmmQuoter;
+        use crate::{
+            math::constants::{AMM_RESERVE_PRECISION, PEG_PRECISION},
+            state::perp_market::{PerpMarket, AMM},
+            vlp::amm::AmmQuoter,
+        };
 
         let stats = MarketStats::default();
         let oracle = OraclePriceData::default();
@@ -740,13 +750,14 @@ mod tests {
         // Expected: AmmJitQuoter is priority (is_prio: true), so at the tied
         // price the AMM takes its full throttled max_jit_base first and the
         // DLOB maker fills the residual.
-        use crate::math::constants::{AMM_RESERVE_PRECISION, PEG_PRECISION};
-        use crate::state::quoter::DlobOrderQuoter;
-        use crate::state::user::{
-            MarketType, Order, OrderStatus, OrderTriggerCondition, OrderType,
+        use crate::{
+            math::constants::{AMM_RESERVE_PRECISION, PEG_PRECISION},
+            state::{
+                quoter::DlobOrderQuoter,
+                user::{MarketType, Order, OrderStatus, OrderTriggerCondition, OrderType},
+            },
+            vlp::amm::{AmmJitQuoter, AMM},
         };
-        use crate::vlp::amm::AmmJitQuoter;
-        use crate::vlp::amm::AMM;
 
         let stats = MarketStats::default();
         let oracle = OraclePriceData::default();
@@ -845,9 +856,10 @@ mod tests {
 
     #[test]
     fn matcher_works_with_amm_maker() {
-        use crate::math::constants::{AMM_RESERVE_PRECISION, PEG_PRECISION};
-        use crate::vlp::amm::AmmQuoter;
-        use crate::vlp::amm::AMM;
+        use crate::{
+            math::constants::{AMM_RESERVE_PRECISION, PEG_PRECISION},
+            vlp::amm::{AmmQuoter, AMM},
+        };
 
         let stats = MarketStats::default();
         let oracle = OraclePriceData::default();
@@ -889,9 +901,9 @@ mod tests {
 
     #[test]
     fn matcher_works_with_real_dlob_orders() {
-        use crate::state::quoter::DlobOrderQuoter;
-        use crate::state::user::{
-            MarketType, Order, OrderStatus, OrderTriggerCondition, OrderType,
+        use crate::state::{
+            quoter::DlobOrderQuoter,
+            user::{MarketType, Order, OrderStatus, OrderTriggerCondition, OrderType},
         };
 
         let stats = MarketStats::default();
@@ -949,9 +961,9 @@ mod tests {
 
     #[test]
     fn reduce_only_maker_fill_capped_at_position() {
-        use crate::state::quoter::DlobOrderQuoter;
-        use crate::state::user::{
-            MarketType, Order, OrderStatus, OrderTriggerCondition, OrderType,
+        use crate::state::{
+            quoter::DlobOrderQuoter,
+            user::{MarketType, Order, OrderStatus, OrderTriggerCondition, OrderType},
         };
 
         let stats = MarketStats::default();

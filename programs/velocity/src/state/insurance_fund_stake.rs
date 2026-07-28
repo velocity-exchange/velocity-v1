@@ -1,12 +1,12 @@
-use crate::error::ErrorCode;
-use crate::error::VelocityResult;
-use crate::math_error;
-use crate::safe_decrement;
-use crate::safe_increment;
-use crate::state::spot_market::SpotMarket;
-use crate::state::traits::Size;
-use crate::validate;
-use anchor_lang::prelude::*;
+use {
+    crate::{
+        error::{ErrorCode, VelocityResult},
+        math_error, safe_decrement, safe_increment,
+        state::{spot_market::SpotMarket, traits::Size},
+        validate,
+    },
+    anchor_lang::prelude::*,
+};
 
 #[account(zero_copy(unsafe))]
 #[derive(Default, Eq, PartialEq, Debug)]

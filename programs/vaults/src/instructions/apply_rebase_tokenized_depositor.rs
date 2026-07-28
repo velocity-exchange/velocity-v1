@@ -1,10 +1,12 @@
-use anchor_lang::prelude::*;
-use velocity::instructions::optional_accounts::AccountMaps;
-use velocity::state::user::User;
-
-use crate::constraints::{is_tokenized_depositor_for_vault, is_user_for_vault};
-use crate::state::traits::VaultDepositorBase;
-use crate::{AccountMapProvider, TokenizedVaultDepositor, Vault, VaultProtocolProvider};
+use {
+    crate::{
+        constraints::{is_tokenized_depositor_for_vault, is_user_for_vault},
+        state::traits::VaultDepositorBase,
+        AccountMapProvider, TokenizedVaultDepositor, Vault, VaultProtocolProvider,
+    },
+    anchor_lang::prelude::*,
+    velocity::{instructions::optional_accounts::AccountMaps, state::user::User},
+};
 
 pub fn apply_rebase_tokenized_depositor<'info>(
     ctx: Context<'info, ApplyRebaseTokenizedDepositor<'info>>,

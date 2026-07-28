@@ -21,7 +21,12 @@ packages/*/dist
 apps/*/lib
 apps/*/dist
 .DS_STORE
-.vscode
+# editor dirs stay personal, but the shared format-on-save config is committed
+# (nightly rustfmt for the merged-import style; Cursor reads .vscode too)
+.vscode/*
+!.vscode/settings.json
+.zed/*
+!.zed/settings.json
 .claude
 migrations
 /**/*.env

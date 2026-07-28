@@ -1,8 +1,10 @@
 use {
     anyhow::Context,
     serde::{Deserialize, Serialize},
-    std::convert::TryFrom,
-    std::time::{Duration, SystemTime},
+    std::{
+        convert::TryFrom,
+        time::{Duration, SystemTime},
+    },
 };
 
 /// Unix timestamp with microsecond resolution.
@@ -340,11 +342,11 @@ impl TryFrom<Duration> for DurationUs {
 }
 
 pub mod duration_us_serde_humantime {
-    use std::time::Duration;
-
-    use serde::{de::Error, Deserialize, Serialize};
-
-    use crate::time::DurationUs;
+    use {
+        crate::time::DurationUs,
+        serde::{de::Error, Deserialize, Serialize},
+        std::time::Duration,
+    };
 
     pub fn serialize<S>(value: &DurationUs, serializer: S) -> Result<S::Ok, S::Error>
     where

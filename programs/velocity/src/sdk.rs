@@ -10,24 +10,26 @@
 //! It is gated behind `feature = "velocity-rs"` and compiled out for BPF
 //! builds.
 
-use std::{cell::RefCell, rc::Rc};
-
-use anchor_lang::prelude::{AccountInfo, Pubkey};
-use anchor_lang::Discriminator;
-use bytemuck::Pod;
-
-use crate::{
-    error::VelocityResult,
-    math::margin::calculate_margin_requirement_and_total_collateral_and_liability_info as _calc_margin,
-    state::{
-        margin_calculation::{MarginCalculation, MarginContext},
-        oracle::{get_oracle_price as _get_oracle_price, OraclePriceData, OracleSource},
-        oracle_map::OracleMap,
-        perp_market_map::PerpMarketMap,
-        spot_market_map::SpotMarketMap,
-        state::OracleGuardRails,
-        user::User,
+use {
+    crate::{
+        error::VelocityResult,
+        math::margin::calculate_margin_requirement_and_total_collateral_and_liability_info as _calc_margin,
+        state::{
+            margin_calculation::{MarginCalculation, MarginContext},
+            oracle::{get_oracle_price as _get_oracle_price, OraclePriceData, OracleSource},
+            oracle_map::OracleMap,
+            perp_market_map::PerpMarketMap,
+            spot_market_map::SpotMarketMap,
+            state::OracleGuardRails,
+            user::User,
+        },
     },
+    anchor_lang::{
+        prelude::{AccountInfo, Pubkey},
+        Discriminator,
+    },
+    bytemuck::Pod,
+    std::{cell::RefCell, rc::Rc},
 };
 
 /// Owns an Anchor account's raw bytes (8-byte discriminator + zero-copy body)

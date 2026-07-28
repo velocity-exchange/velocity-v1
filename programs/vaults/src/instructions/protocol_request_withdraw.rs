@@ -1,11 +1,14 @@
-use anchor_lang::prelude::*;
-use velocity::instructions::optional_accounts::AccountMaps;
-use velocity::state::user::User;
-
-use crate::constraints::{
-    is_protocol_for_vault, is_user_for_vault, is_user_stats_for_vault, is_vault_protocol_for_vault,
+use {
+    crate::{
+        constraints::{
+            is_protocol_for_vault, is_user_for_vault, is_user_stats_for_vault,
+            is_vault_protocol_for_vault,
+        },
+        AccountMapProvider, Vault, VaultProtocol, WithdrawUnit,
+    },
+    anchor_lang::prelude::*,
+    velocity::{instructions::optional_accounts::AccountMaps, state::user::User},
 };
-use crate::{AccountMapProvider, Vault, VaultProtocol, WithdrawUnit};
 
 pub fn protocol_request_withdraw<'info>(
     ctx: Context<'info, ProtocolRequestWithdraw<'info>>,

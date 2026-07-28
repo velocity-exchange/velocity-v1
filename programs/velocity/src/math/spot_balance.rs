@@ -1,14 +1,21 @@
-use crate::error::{ErrorCode, VelocityResult};
-use crate::math::casting::Cast;
 #[cfg(feature = "velocity-rs")]
 use crate::math::constants::PERCENTAGE_PRECISION;
-use crate::math::constants::{
-    INTEREST_RATE_SEGMENT_AND_WEIGHTS, ONE_YEAR, SPOT_RATE_PRECISION, SPOT_UTILIZATION_PRECISION,
+use crate::{
+    error::{ErrorCode, VelocityResult},
+    math::{
+        casting::Cast,
+        constants::{
+            INTEREST_RATE_SEGMENT_AND_WEIGHTS, ONE_YEAR, SPOT_RATE_PRECISION,
+            SPOT_UTILIZATION_PRECISION,
+        },
+        safe_math::{SafeDivFloor, SafeMath},
+    },
+    state::{
+        oracle::{OraclePriceData, StrictOraclePrice},
+        spot_market::{SpotBalanceType, SpotMarket},
+        user::SpotPosition,
+    },
 };
-use crate::math::safe_math::{SafeDivFloor, SafeMath};
-use crate::state::oracle::{OraclePriceData, StrictOraclePrice};
-use crate::state::spot_market::{SpotBalanceType, SpotMarket};
-use crate::state::user::SpotPosition;
 
 #[cfg(test)]
 mod tests;

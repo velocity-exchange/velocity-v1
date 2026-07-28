@@ -1,11 +1,12 @@
 #[cfg(test)]
 mod test {
-    use crate::math::constants::PRICE_PRECISION_I64;
-    use crate::math::margin::MarginRequirementType;
-
-    use crate::math::spot_swap::select_margin_type_for_swap;
-    use crate::state::oracle::StrictOraclePrice;
-    use crate::state::spot_market::SpotMarket;
+    use crate::{
+        math::{
+            constants::PRICE_PRECISION_I64, margin::MarginRequirementType,
+            spot_swap::select_margin_type_for_swap,
+        },
+        state::{oracle::StrictOraclePrice, spot_market::SpotMarket},
+    };
 
     #[test]
     pub fn sell_usdc_buy_sol_decrease_health() {
@@ -151,14 +152,16 @@ mod test {
 
 #[cfg(test)]
 mod validate_price_bands_for_swap {
-    use crate::error::ErrorCode;
-    use crate::math::spot_swap::validate_price_bands_for_swap;
-    use crate::state::oracle::HistoricalOracleData;
-    use crate::state::spot_market::SpotMarket;
-    use crate::{
-        LAMPORTS_PER_SOL_U64, PERCENTAGE_PRECISION_U64, PRICE_PRECISION_I64, QUOTE_PRECISION_U64,
+    use {
+        crate::{
+            error::ErrorCode,
+            math::spot_swap::validate_price_bands_for_swap,
+            state::{oracle::HistoricalOracleData, spot_market::SpotMarket},
+            LAMPORTS_PER_SOL_U64, PERCENTAGE_PRECISION_U64, PRICE_PRECISION_I64,
+            QUOTE_PRECISION_U64,
+        },
+        solana_program::native_token::LAMPORTS_PER_SOL,
     };
-    use solana_program::native_token::LAMPORTS_PER_SOL;
 
     #[test]
     fn sol_in_usdc_out() {

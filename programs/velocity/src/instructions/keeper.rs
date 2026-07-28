@@ -1,101 +1,101 @@
-use std::{cell::RefMut, convert::TryFrom};
-
-use anchor_lang::{prelude::*, Discriminator};
-use anchor_spl::{
-    associated_token::{get_associated_token_address_with_program_id, AssociatedToken},
-    token_interface::{TokenAccount, TokenInterface},
-};
-use solana_program::{
-    instruction::Instruction,
-    pubkey,
-    sysvar::instructions::{
-        self, load_current_index_checked, load_instruction_at_checked, ID as IX_ID,
+use {
+    super::optional_accounts::get_token_interface,
+    crate::{
+        auth::check_hot,
+        controller::{
+            self,
+            insurance::update_user_stats_if_stake_amount,
+            isolated_position::transfer_isolated_perp_position_deposit,
+            liquidation::{liquidate_spot_with_swap_begin, liquidate_spot_with_swap_end},
+            orders::{cancel_orders, validate_spot_dlob_trading_enabled_for_market_type},
+            position::{get_position_index, PositionDirection},
+            spot_balance::update_spot_balances,
+            token::{receive, send_from_program_vault},
+        },
+        error::ErrorCode,
+        ids::{
+            dflow_mainnet_aggregator_4, jupiter_mainnet_3, jupiter_mainnet_4, jupiter_mainnet_6,
+            serum_program, titan_mainnet_argos_v1,
+        },
+        instructions::{
+            constraints::*,
+            optional_accounts::{
+                add_builder_order, get_revenue_share_escrow_account, load_maps,
+                validate_and_load_builder, AccountMaps,
+            },
+        },
+        load, load_mut,
+        math::{
+            self,
+            casting::Cast,
+            constants::{
+                BID_ASK_TWAP_MAX_ORACLE_DIVERGENCE_PERCENT, QUOTE_PRECISION_I128,
+                QUOTE_PRECISION_U64, QUOTE_SPOT_MARKET_INDEX,
+            },
+            margin::{calculate_user_equity, meets_settle_pnl_maintenance_margin_requirement},
+            oracle::{is_oracle_valid_for_action, VelocityAction},
+            orders::{
+                estimate_price_from_side, filter_bids_asks_by_oracle_divergence,
+                find_bids_and_asks_from_users,
+            },
+            position::calculate_base_asset_value_and_pnl_with_oracle_price,
+            safe_math::SafeMath,
+            spot_withdraw::validate_spot_market_vault_amount,
+        },
+        math_error,
+        optional_accounts::{get_token_mint, update_prelaunch_oracle},
+        print_error, safe_decrement,
+        state::{
+            events::{DeleteUserRecord, OrderActionExplanation, SignedMsgOrderRecord},
+            fill_mode::FillMode,
+            insurance_fund_stake::InsuranceFundStake,
+            market_status::MarketStatus,
+            oracle_map::OracleMap,
+            order_params::{OrderParams, PlaceOrderOptions},
+            paused_operations::{PerpLpOperation, PerpOperation, SpotOperation},
+            perp_market::PerpMarket,
+            perp_market_map::{
+                get_market_set_for_spot_positions, get_market_set_for_user_positions,
+                get_market_set_from_list, get_writable_perp_market_set,
+                get_writable_perp_market_set_from_vec, MarketSet, PerpMarketMap,
+            },
+            revenue_share::RevenueShareEscrowZeroCopyMut,
+            revenue_share_map::load_revenue_share_map,
+            settle_pnl_mode::SettlePnlMode,
+            signed_msg_user::{
+                SignedMsgOrderId, SignedMsgUserOrdersLoader, SignedMsgUserOrdersZeroCopyMut,
+                SIGNED_MSG_PDA_SEED,
+            },
+            spot_market::{SpotBalanceType, SpotMarket},
+            spot_market_map::{
+                get_writable_spot_market_set, get_writable_spot_market_set_from_many, SpotMarketMap,
+            },
+            state::{HotRole, State},
+            user::{MarketType, OrderStatus, OrderTriggerCondition, OrderType, User, UserStats},
+            user_map::{load_user_map, load_user_maps},
+            zero_copy::{AccountZeroCopyMut, ZeroCopyLoader},
+        },
+        validate,
+        validation::{
+            sig_verification::verify_and_decode_ed25519_msg,
+            user::{validate_user_deletion, validate_user_is_idle},
+        },
+        vlp::{amm::math::amm::calculate_net_user_pnl, amm_cache::CacheInfo},
+        OracleSource, ID,
     },
-};
-
-use super::optional_accounts::get_token_interface;
-use crate::{
-    auth::check_hot,
-    controller,
-    controller::{
-        insurance::update_user_stats_if_stake_amount,
-        isolated_position::transfer_isolated_perp_position_deposit,
-        liquidation::{liquidate_spot_with_swap_begin, liquidate_spot_with_swap_end},
-        orders::{cancel_orders, validate_spot_dlob_trading_enabled_for_market_type},
-        position::{get_position_index, PositionDirection},
-        spot_balance::update_spot_balances,
-        token::{receive, send_from_program_vault},
+    anchor_lang::{prelude::*, Discriminator},
+    anchor_spl::{
+        associated_token::{get_associated_token_address_with_program_id, AssociatedToken},
+        token_interface::{TokenAccount, TokenInterface},
     },
-    error::ErrorCode,
-    ids::{
-        dflow_mainnet_aggregator_4, jupiter_mainnet_3, jupiter_mainnet_4, jupiter_mainnet_6,
-        serum_program, titan_mainnet_argos_v1,
-    },
-    instructions::{
-        constraints::*,
-        optional_accounts::{
-            add_builder_order, get_revenue_share_escrow_account, load_maps,
-            validate_and_load_builder, AccountMaps,
+    solana_program::{
+        instruction::Instruction,
+        pubkey,
+        sysvar::instructions::{
+            self, load_current_index_checked, load_instruction_at_checked, ID as IX_ID,
         },
     },
-    load, load_mut, math,
-    math::{
-        casting::Cast,
-        constants::{
-            BID_ASK_TWAP_MAX_ORACLE_DIVERGENCE_PERCENT, QUOTE_PRECISION_I128, QUOTE_PRECISION_U64,
-            QUOTE_SPOT_MARKET_INDEX,
-        },
-        margin::{calculate_user_equity, meets_settle_pnl_maintenance_margin_requirement},
-        oracle::{is_oracle_valid_for_action, VelocityAction},
-        orders::{
-            estimate_price_from_side, filter_bids_asks_by_oracle_divergence,
-            find_bids_and_asks_from_users,
-        },
-        position::calculate_base_asset_value_and_pnl_with_oracle_price,
-        safe_math::SafeMath,
-        spot_withdraw::validate_spot_market_vault_amount,
-    },
-    math_error,
-    optional_accounts::{get_token_mint, update_prelaunch_oracle},
-    print_error, safe_decrement,
-    state::{
-        events::{DeleteUserRecord, OrderActionExplanation, SignedMsgOrderRecord},
-        fill_mode::FillMode,
-        insurance_fund_stake::InsuranceFundStake,
-        market_status::MarketStatus,
-        oracle_map::OracleMap,
-        order_params::{OrderParams, PlaceOrderOptions},
-        paused_operations::{PerpLpOperation, PerpOperation, SpotOperation},
-        perp_market::PerpMarket,
-        perp_market_map::{
-            get_market_set_for_spot_positions, get_market_set_for_user_positions,
-            get_market_set_from_list, get_writable_perp_market_set,
-            get_writable_perp_market_set_from_vec, MarketSet, PerpMarketMap,
-        },
-        revenue_share::RevenueShareEscrowZeroCopyMut,
-        revenue_share_map::load_revenue_share_map,
-        settle_pnl_mode::SettlePnlMode,
-        signed_msg_user::{
-            SignedMsgOrderId, SignedMsgUserOrdersLoader, SignedMsgUserOrdersZeroCopyMut,
-            SIGNED_MSG_PDA_SEED,
-        },
-        spot_market::{SpotBalanceType, SpotMarket},
-        spot_market_map::{
-            get_writable_spot_market_set, get_writable_spot_market_set_from_many, SpotMarketMap,
-        },
-        state::{HotRole, State},
-        user::{MarketType, OrderStatus, OrderTriggerCondition, OrderType, User, UserStats},
-        user_map::{load_user_map, load_user_maps},
-        zero_copy::{AccountZeroCopyMut, ZeroCopyLoader},
-    },
-    validate,
-    validation::{
-        sig_verification::verify_and_decode_ed25519_msg,
-        user::{validate_user_deletion, validate_user_is_idle},
-    },
-    vlp::amm::math::amm::calculate_net_user_pnl,
-    vlp::amm_cache::CacheInfo,
-    OracleSource, ID,
+    std::{cell::RefMut, convert::TryFrom},
 };
 
 #[access_control(

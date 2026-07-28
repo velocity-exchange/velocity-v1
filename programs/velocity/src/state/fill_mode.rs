@@ -1,8 +1,8 @@
-use crate::error::VelocityResult;
-use crate::math::auction::calculate_auction_price;
-use crate::math::casting::Cast;
-use crate::math::safe_math::SafeMath;
-use crate::state::user::Order;
+use crate::{
+    error::VelocityResult,
+    math::{auction::calculate_auction_price, casting::Cast, safe_math::SafeMath},
+    state::user::Order,
+};
 
 #[cfg(test)]
 mod tests;

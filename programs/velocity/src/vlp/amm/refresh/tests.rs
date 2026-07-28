@@ -1,18 +1,25 @@
-use crate::math::constants::{
-    AMM_RESERVE_PRECISION, PEG_PRECISION, PRICE_PRECISION, PRICE_PRECISION_I64,
-    PRICE_PRECISION_U64, QUOTE_PRECISION,
+use crate::{
+    math::{
+        constants::{
+            AMM_RESERVE_PRECISION, PEG_PRECISION, PRICE_PRECISION, PRICE_PRECISION_I64,
+            PRICE_PRECISION_U64, QUOTE_PRECISION,
+        },
+        oracle::OracleValidity,
+    },
+    state::{
+        oracle::{HistoricalOracleData, OraclePriceData},
+        perp_market::{ContractTier, MarketStats, AMM},
+        state::{PriceDivergenceGuardRails, ValidityGuardRails},
+        user::MarketType,
+    },
+    vlp::amm::{
+        math::{
+            repeg::{calculate_fee_pool, calculate_peg_from_target_price, calculate_repeg_cost},
+            spread::calculate_max_target_spread,
+        },
+        refresh::*,
+    },
 };
-use crate::math::oracle::OracleValidity;
-use crate::state::oracle::HistoricalOracleData;
-use crate::state::oracle::OraclePriceData;
-use crate::state::perp_market::{ContractTier, MarketStats, AMM};
-use crate::state::state::{PriceDivergenceGuardRails, ValidityGuardRails};
-use crate::state::user::MarketType;
-use crate::vlp::amm::math::repeg::{
-    calculate_fee_pool, calculate_peg_from_target_price, calculate_repeg_cost,
-};
-use crate::vlp::amm::math::spread::calculate_max_target_spread;
-use crate::vlp::amm::refresh::*;
 
 #[test]
 pub fn update_amm_test() {

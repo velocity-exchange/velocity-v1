@@ -1,6 +1,10 @@
-use crate::state::fill_mode::FillMode;
-use crate::state::user::{Order, OrderType};
-use crate::{PositionDirection, PRICE_PRECISION_I64, PRICE_PRECISION_U64};
+use crate::{
+    state::{
+        fill_mode::FillMode,
+        user::{Order, OrderType},
+    },
+    PositionDirection, PRICE_PRECISION_I64, PRICE_PRECISION_U64,
+};
 
 #[test]
 fn test() {

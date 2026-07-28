@@ -1,7 +1,10 @@
-use anchor_lang::prelude::*;
-use anchor_lang::ZeroCopy;
-use std::cell::{Ref, RefMut};
-use std::mem;
+use {
+    anchor_lang::{prelude::*, ZeroCopy},
+    std::{
+        cell::{Ref, RefMut},
+        mem,
+    },
+};
 
 pub fn load_ref<'a, T: ZeroCopy + Owner>(account_info: &'a AccountInfo) -> Result<Ref<'a, T>> {
     let data = account_info.try_borrow_data()?;

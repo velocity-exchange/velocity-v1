@@ -1,12 +1,13 @@
-use anchor_lang::prelude::Context;
-use std::collections::BTreeSet;
-use velocity::error::VelocityResult;
-use velocity::instructions::optional_accounts::{load_maps, AccountMaps};
-use velocity::state::spot_market_map::get_writable_spot_market_set;
-
-use crate::state::FeeUpdate;
-use crate::state::VaultProtocol;
-use anchor_lang::prelude::*;
+use {
+    crate::state::{FeeUpdate, VaultProtocol},
+    anchor_lang::prelude::{Context, *},
+    std::collections::BTreeSet,
+    velocity::{
+        error::VelocityResult,
+        instructions::optional_accounts::{load_maps, AccountMaps},
+        state::spot_market_map::get_writable_spot_market_set,
+    },
+};
 
 pub trait AccountMapProvider<'a> {
     fn load_maps(

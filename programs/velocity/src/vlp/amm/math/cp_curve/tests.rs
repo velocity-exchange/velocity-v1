@@ -1,11 +1,12 @@
-use crate::controller::position::PositionDirection;
-use crate::math::constants::{
-    AMM_RESERVE_PRECISION, MAX_CONCENTRATION_COEFFICIENT, MAX_K_BPS_INCREASE,
+use crate::{
+    controller::position::PositionDirection,
+    math::constants::{AMM_RESERVE_PRECISION, MAX_CONCENTRATION_COEFFICIENT, MAX_K_BPS_INCREASE},
+    state::perp_market::PerpMarket,
+    vlp::amm::{
+        math::{amm, cp_curve::*},
+        AMM,
+    },
 };
-use crate::state::perp_market::PerpMarket;
-use crate::vlp::amm::math::amm;
-use crate::vlp::amm::math::cp_curve::*;
-use crate::vlp::amm::AMM;
 
 #[test]
 fn k_update_results_bound_flag() {

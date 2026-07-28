@@ -31,18 +31,18 @@
 //! and adds a `reduce_only` **market** order on the reducing side to actively
 //! cross and walk the position back toward flat — one quote-size chunk per tick.
 
-use std::time::Duration;
-
-use velocity_rs::{
-    math::constants::{BASE_PRECISION_U64, PRICE_PRECISION_U64, QUOTE_PRECISION},
-    types::{
-        accounts::User, MarketId, MarketType, OrderParams, OrderType, PerpPosition,
-        PositionDirection, PostOnlyParam, SpotBalanceType,
+use {
+    crate::{Config, UseMarkets},
+    std::time::Duration,
+    velocity_rs::{
+        math::constants::{BASE_PRECISION_U64, PRICE_PRECISION_U64, QUOTE_PRECISION},
+        types::{
+            accounts::User, MarketId, MarketType, OrderParams, OrderType, PerpPosition,
+            PositionDirection, PostOnlyParam, SpotBalanceType,
+        },
+        Pubkey, TransactionBuilder, VelocityClient,
     },
-    Pubkey, TransactionBuilder, VelocityClient,
 };
-
-use crate::{Config, UseMarkets};
 
 const TARGET: &str = "quoter";
 const USER_ORDER_ID_BID: u8 = 201;

@@ -1,11 +1,19 @@
-use crate::constraints::{is_manager_for_vault, is_user_for_vault, is_user_stats_for_vault};
-use crate::state::events::ManagerUpdateBorrowRecord;
-use crate::state::{FeeUpdateProvider, FeeUpdateStatus, VaultProtocolProvider};
-use crate::AccountMapProvider;
-use crate::{error::ErrorCode, validate, Vault};
-use anchor_lang::prelude::*;
-use velocity::instructions::optional_accounts::AccountMaps;
-use velocity::state::user::{User, UserStats};
+use {
+    crate::{
+        constraints::{is_manager_for_vault, is_user_for_vault, is_user_stats_for_vault},
+        error::ErrorCode,
+        state::{
+            events::ManagerUpdateBorrowRecord, FeeUpdateProvider, FeeUpdateStatus,
+            VaultProtocolProvider,
+        },
+        validate, AccountMapProvider, Vault,
+    },
+    anchor_lang::prelude::*,
+    velocity::{
+        instructions::optional_accounts::AccountMaps,
+        state::user::{User, UserStats},
+    },
+};
 
 pub fn manager_update_borrow<'info>(
     ctx: Context<'info, ManagerUpdateBorrow<'info>>,

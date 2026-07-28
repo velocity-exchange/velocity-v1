@@ -7,25 +7,28 @@
 #![allow(clippy::bool_assert_comparison)]
 #![allow(clippy::comparison_chain)]
 
-use anchor_lang::prelude::*;
-
-use instructions::*;
 #[cfg(test)]
 use math::{bn, constants::*};
-use state::oracle::OracleSource;
-
-use crate::controller::position::PositionDirection;
-use crate::state::events::TransferFeeAndPnlPoolDirection;
-use crate::state::market_status::MarketStatus;
-use crate::state::oracle::PrelaunchOracleParams;
-use crate::state::order_params::{ModifyOrderParams, OrderParams};
-use crate::state::perp_market::ContractTier;
-use crate::state::scale_order_params::ScaleOrderParams;
-use crate::state::settle_pnl_mode::SettlePnlMode;
-use crate::state::spot_market::AssetTier;
-use crate::state::state::FeeStructure;
-use crate::state::state::*;
-use crate::state::user::MarketType;
+use {
+    crate::{
+        controller::position::PositionDirection,
+        state::{
+            events::TransferFeeAndPnlPoolDirection,
+            market_status::MarketStatus,
+            oracle::PrelaunchOracleParams,
+            order_params::{ModifyOrderParams, OrderParams},
+            perp_market::ContractTier,
+            scale_order_params::ScaleOrderParams,
+            settle_pnl_mode::SettlePnlMode,
+            spot_market::AssetTier,
+            state::{FeeStructure, *},
+            user::MarketType,
+        },
+    },
+    anchor_lang::prelude::*,
+    instructions::*,
+    state::oracle::OracleSource,
+};
 pub mod auth;
 pub mod controller;
 pub mod error;

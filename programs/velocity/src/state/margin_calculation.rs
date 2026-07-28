@@ -1,13 +1,18 @@
-use std::collections::BTreeMap;
-
-use crate::error::{ErrorCode, VelocityResult};
-use crate::math::casting::Cast;
-use crate::math::constants::{MARGIN_PRECISION_I128, MARGIN_PRECISION_U128};
-use crate::math::margin::MarginRequirementType;
-use crate::math::safe_math::SafeMath;
-use crate::math::safe_unwrap::SafeUnwrap;
-use crate::{validate, MarketType};
-use anchor_lang::{prelude::*, solana_program::msg};
+use {
+    crate::{
+        error::{ErrorCode, VelocityResult},
+        math::{
+            casting::Cast,
+            constants::{MARGIN_PRECISION_I128, MARGIN_PRECISION_U128},
+            margin::MarginRequirementType,
+            safe_math::SafeMath,
+            safe_unwrap::SafeUnwrap,
+        },
+        validate, MarketType,
+    },
+    anchor_lang::{prelude::*, solana_program::msg},
+    std::collections::BTreeMap,
+};
 
 #[derive(Clone, Copy, Debug)]
 pub enum MarginCalculationMode {

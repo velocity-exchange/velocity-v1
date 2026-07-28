@@ -20,38 +20,46 @@
 //!    authoritative reproduction of the controller-level guards lives at the
 //!    SVM tier (P8); see the per-fn notes.
 
-use crucible_fuzzer::*;
-
-use anchor_lang::prelude::Pubkey;
-
-use velocity::create_anchor_account_info;
-use velocity::math::constants::{
-    AMM_RESERVE_PRECISION, BASE_PRECISION_U64, LIQUIDATION_FEE_PRECISION, MARGIN_PRECISION,
-    MAX_POSITIVE_UPNL_FOR_INITIAL_MARGIN, PEG_PRECISION, PRICE_PRECISION_I64, QUOTE_PRECISION,
-    SPOT_CUMULATIVE_INTEREST_PRECISION, SPOT_WEIGHT_PRECISION, SPOT_WEIGHT_PRECISION_U128,
+use {
+    anchor_lang::prelude::Pubkey,
+    crucible_fuzzer::*,
+    velocity::{
+        create_anchor_account_info,
+        math::{
+            constants::{
+                AMM_RESERVE_PRECISION, BASE_PRECISION_U64, LIQUIDATION_FEE_PRECISION,
+                MARGIN_PRECISION, MAX_POSITIVE_UPNL_FOR_INITIAL_MARGIN, PEG_PRECISION,
+                PRICE_PRECISION_I64, QUOTE_PRECISION, SPOT_CUMULATIVE_INTEREST_PRECISION,
+                SPOT_WEIGHT_PRECISION, SPOT_WEIGHT_PRECISION_U128,
+            },
+            liquidation::{
+                calculate_asset_transfer_for_liability_transfer,
+                calculate_base_asset_amount_to_cover_margin_shortage,
+                calculate_liquidation_multiplier, calculate_perp_if_fee, calculate_spot_if_fee,
+                get_liquidation_fee, LiquidationMultiplierType,
+            },
+            margin::{
+                calculate_margin_requirement_and_total_collateral_and_liability_info,
+                calculate_perp_position_value_and_pnl, calculate_size_discount_asset_weight,
+                calculate_size_premium_liability_weight, meets_initial_margin_requirement,
+                meets_maintenance_margin_requirement, MarginRequirementType,
+            },
+        },
+        state::{
+            margin_calculation::MarginContext,
+            market_status::MarketStatus,
+            oracle::{HistoricalOracleData, OraclePriceData, OracleSource, StrictOraclePrice},
+            oracle_map::OracleMap,
+            perp_market::{PerpMarket, AMM},
+            perp_market_map::PerpMarketMap,
+            pyth_lazer_oracle::PythLazerOracle,
+            spot_market::{SpotBalanceType, SpotMarket},
+            spot_market_map::SpotMarketMap,
+            user::{PerpPosition, SpotPosition, User},
+        },
+        test_utils::get_pyth_price,
+    },
 };
-use velocity::math::liquidation::{
-    calculate_asset_transfer_for_liability_transfer,
-    calculate_base_asset_amount_to_cover_margin_shortage, calculate_liquidation_multiplier,
-    calculate_perp_if_fee, calculate_spot_if_fee, get_liquidation_fee, LiquidationMultiplierType,
-};
-use velocity::math::margin::{
-    calculate_margin_requirement_and_total_collateral_and_liability_info,
-    calculate_perp_position_value_and_pnl, calculate_size_discount_asset_weight,
-    calculate_size_premium_liability_weight, meets_initial_margin_requirement,
-    meets_maintenance_margin_requirement, MarginRequirementType,
-};
-use velocity::state::margin_calculation::MarginContext;
-use velocity::state::market_status::MarketStatus;
-use velocity::state::oracle::{HistoricalOracleData, OraclePriceData, OracleSource, StrictOraclePrice};
-use velocity::state::oracle_map::OracleMap;
-use velocity::state::perp_market::{PerpMarket, AMM};
-use velocity::state::perp_market_map::PerpMarketMap;
-use velocity::state::pyth_lazer_oracle::PythLazerOracle;
-use velocity::state::spot_market::{SpotBalanceType, SpotMarket};
-use velocity::state::spot_market_map::SpotMarketMap;
-use velocity::state::user::{PerpPosition, SpotPosition, User};
-use velocity::test_utils::get_pyth_price;
 
 // ---------------------------------------------------------------------------
 // Fixture (host-tier: the ctx is unused, but #[fuzz_fixture] requires a
@@ -213,14 +221,16 @@ fn prop_margin_value_totality(
     // quote (USDC) valued at $1.
     let sqp = StrictOraclePrice::new(PRICE_PRECISION_I64, PRICE_PRECISION_I64, true);
 
-    if let Ok((_margin_req, weighted_pnl, _liab_val, _base_val)) = calculate_perp_position_value_and_pnl(
-        &position,
-        &market,
-        &opd,
-        &sqp,
-        MarginRequirementType::Initial,
-        0,
-    ) {
+    if let Ok((_margin_req, weighted_pnl, _liab_val, _base_val)) =
+        calculate_perp_position_value_and_pnl(
+            &position,
+            &market,
+            &opd,
+            &sqp,
+            MarginRequirementType::Initial,
+            0,
+        )
+    {
         // Safety clamp from margin.rs (line ~187) for the Initial calc.
         fuzz_assert_le!(weighted_pnl, MAX_POSITIVE_UPNL_FOR_INITIAL_MARGIN);
     }
@@ -329,9 +339,14 @@ fn prop_liquidation_sizing_healthy(
 
     // (a) zero shortage => nothing to liquidate (u64::MAX is the "refuse"
     // sentinel when margin_ratio <= liquidation_fee, not a real amount).
-    if let Ok(b0) =
-        calculate_base_asset_amount_to_cover_margin_shortage(0, margin_ratio, liq_fee, 0, oracle_price, quote_price)
-    {
+    if let Ok(b0) = calculate_base_asset_amount_to_cover_margin_shortage(
+        0,
+        margin_ratio,
+        liq_fee,
+        0,
+        oracle_price,
+        quote_price,
+    ) {
         if b0 != u64::MAX {
             fuzz_assert_eq!(b0, 0u64);
         }
@@ -339,7 +354,12 @@ fn prop_liquidation_sizing_healthy(
 
     // (b) monotone in shortage.
     let a = calculate_base_asset_amount_to_cover_margin_shortage(
-        shortage, margin_ratio, liq_fee, 0, oracle_price, quote_price,
+        shortage,
+        margin_ratio,
+        liq_fee,
+        0,
+        oracle_price,
+        quote_price,
     );
     let b = calculate_base_asset_amount_to_cover_margin_shortage(
         shortage.saturating_add(1_000_000),
@@ -450,9 +470,13 @@ fn prop_asset_never_lowers_collateral(
 
     // (b) liability weight bounded below by input weight (>= SPOT_WEIGHT_PRECISION).
     let liability_weight = SPOT_WEIGHT_PRECISION + weight;
-    if let Ok(premium) =
-        calculate_size_premium_liability_weight(size, imf, liability_weight, SPOT_WEIGHT_PRECISION_U128, true)
-    {
+    if let Ok(premium) = calculate_size_premium_liability_weight(
+        size,
+        imf,
+        liability_weight,
+        SPOT_WEIGHT_PRECISION_U128,
+        true,
+    ) {
         fuzz_assert_ge!(premium, liability_weight);
         fuzz_assert_ge!(premium, SPOT_WEIGHT_PRECISION);
     }

@@ -1,10 +1,14 @@
-use crate::controller::position::PositionDirection;
-use crate::error::VelocityResult;
-use crate::math::casting::Cast;
-use crate::math::constants::{AMM_RESERVE_PRECISION, PERCENTAGE_PRECISION_U64};
-use crate::math::orders::standardize_base_asset_amount;
-use crate::math::safe_math::SafeMath;
-use crate::state::perp_market::PerpMarket;
+use crate::{
+    controller::position::PositionDirection,
+    error::VelocityResult,
+    math::{
+        casting::Cast,
+        constants::{AMM_RESERVE_PRECISION, PERCENTAGE_PRECISION_U64},
+        orders::standardize_base_asset_amount,
+        safe_math::SafeMath,
+    },
+    state::perp_market::PerpMarket,
+};
 #[cfg(test)]
 mod tests;
 

@@ -1,10 +1,14 @@
 #[cfg(test)]
 mod tests {
-    use crate::math::constants::{
-        BASE_PRECISION_I64, PERCENTAGE_PRECISION_I64, PRICE_PRECISION_I64, QUOTE_PRECISION,
+    use {
+        crate::{
+            math::constants::{
+                BASE_PRECISION_I64, PERCENTAGE_PRECISION_I64, PRICE_PRECISION_I64, QUOTE_PRECISION,
+            },
+            vlp::hedge::state::*,
+        },
+        std::{cell::RefCell, collections::BTreeMap, marker::PhantomData, vec},
     };
-    use crate::vlp::hedge::state::*;
-    use std::{cell::RefCell, collections::BTreeMap, marker::PhantomData, vec};
 
     fn amm_const_datum(
         perp_market_index: u16,
@@ -524,11 +528,13 @@ mod tests {
 
 #[cfg(test)]
 mod swap_tests {
-    use crate::math::constants::{
-        PERCENTAGE_PRECISION, PERCENTAGE_PRECISION_I64, PRICE_PRECISION_I128, PRICE_PRECISION_I64,
-        SPOT_BALANCE_PRECISION,
+    use crate::{
+        math::constants::{
+            PERCENTAGE_PRECISION, PERCENTAGE_PRECISION_I64, PRICE_PRECISION_I128,
+            PRICE_PRECISION_I64, SPOT_BALANCE_PRECISION,
+        },
+        vlp::hedge::state::*,
     };
-    use crate::vlp::hedge::state::*;
 
     #[test]
     fn test_get_swap_price() {
@@ -1567,10 +1573,10 @@ mod swap_tests {
 
 #[cfg(test)]
 mod swap_fee_tests {
-    use crate::math::constants::{
-        PERCENTAGE_PRECISION_I64, PERCENTAGE_PRECISION_U64, QUOTE_PRECISION,
+    use crate::{
+        math::constants::{PERCENTAGE_PRECISION_I64, PERCENTAGE_PRECISION_U64, QUOTE_PRECISION},
+        vlp::hedge::state::*,
     };
-    use crate::vlp::hedge::state::*;
 
     #[test]
     fn test_get_gamma_covar_matrix() {
@@ -1675,12 +1681,16 @@ mod swap_fee_tests {
 
 #[cfg(test)]
 mod settle_tests {
-    use crate::math::constants::{QUOTE_PRECISION, QUOTE_PRECISION_I64, QUOTE_PRECISION_U64};
-    use crate::state::spot_market::SpotMarket;
-    use crate::vlp::amm_cache::CacheInfo;
-    use crate::vlp::hedge::math::perp_lp_pool_settlement::{
-        calculate_settlement_amount, update_cache_info, SettlementContext, SettlementDirection,
-        SettlementResult,
+    use crate::{
+        math::constants::{QUOTE_PRECISION, QUOTE_PRECISION_I64, QUOTE_PRECISION_U64},
+        state::spot_market::SpotMarket,
+        vlp::{
+            amm_cache::CacheInfo,
+            hedge::math::perp_lp_pool_settlement::{
+                calculate_settlement_amount, update_cache_info, SettlementContext,
+                SettlementDirection, SettlementResult,
+            },
+        },
     };
 
     fn create_mock_spot_market() -> SpotMarket {
@@ -2386,22 +2396,28 @@ mod settle_tests {
 
 #[cfg(test)]
 mod update_aum_tests {
-    use crate::{
-        create_anchor_account_info,
-        math::constants::SPOT_CUMULATIVE_INTEREST_PRECISION,
-        math::constants::{PRICE_PRECISION_I64, QUOTE_PRECISION},
-        state::oracle::HistoricalOracleData,
-        state::oracle::OracleSource,
-        state::oracle_map::OracleMap,
-        state::pyth_lazer_oracle::PythLazerOracle,
-        state::spot_market::SpotMarket,
-        state::spot_market_map::SpotMarketMap,
-        state::zero_copy::AccountZeroCopyMut,
-        vlp::amm_cache::{AmmCacheFixed, CacheInfo},
-        vlp::hedge::state::*,
+    use {
+        crate::{
+            create_anchor_account_info,
+            math::constants::{
+                PRICE_PRECISION_I64, QUOTE_PRECISION, SPOT_CUMULATIVE_INTEREST_PRECISION,
+            },
+            state::{
+                oracle::{HistoricalOracleData, OracleSource},
+                oracle_map::OracleMap,
+                pyth_lazer_oracle::PythLazerOracle,
+                spot_market::SpotMarket,
+                spot_market_map::SpotMarketMap,
+                zero_copy::AccountZeroCopyMut,
+            },
+            vlp::{
+                amm_cache::{AmmCacheFixed, CacheInfo},
+                hedge::state::*,
+            },
+        },
+        anchor_lang::prelude::Pubkey,
+        std::{cell::RefCell, marker::PhantomData},
     };
-    use anchor_lang::prelude::Pubkey;
-    use std::{cell::RefCell, marker::PhantomData};
 
     fn test_aum_with_balances(
         usdc_balance: u64, // USDC balance in tokens (6 decimals)
@@ -2752,23 +2768,30 @@ mod update_aum_tests {
 
 #[cfg(test)]
 mod update_constituent_target_base_for_derivatives_tests {
-    use super::super::update_constituent_target_base_for_derivatives;
-    use crate::create_anchor_account_info;
-    use crate::math::constants::{
-        PERCENTAGE_PRECISION_I64, PERCENTAGE_PRECISION_U64, PRICE_PRECISION_I64, QUOTE_PRECISION,
-        SPOT_CUMULATIVE_INTEREST_PRECISION,
+    use {
+        super::super::update_constituent_target_base_for_derivatives,
+        crate::{
+            create_anchor_account_info,
+            math::constants::{
+                PERCENTAGE_PRECISION_I64, PERCENTAGE_PRECISION_U64, PRICE_PRECISION_I64,
+                QUOTE_PRECISION, SPOT_CUMULATIVE_INTEREST_PRECISION,
+            },
+            state::{
+                oracle::{HistoricalOracleData, OracleSource},
+                oracle_map::OracleMap,
+                pyth_lazer_oracle::PythLazerOracle,
+                spot_market::SpotMarket,
+                spot_market_map::SpotMarketMap,
+                zero_copy::AccountZeroCopyMut,
+            },
+            vlp::hedge::{
+                constituent_map::ConstituentMap,
+                state::{Constituent, ConstituentTargetBaseFixed, TargetsDatum},
+            },
+        },
+        anchor_lang::prelude::Pubkey,
+        std::{cell::RefCell, collections::BTreeMap, marker::PhantomData},
     };
-    use crate::state::oracle::{HistoricalOracleData, OracleSource};
-    use crate::state::oracle_map::OracleMap;
-    use crate::state::pyth_lazer_oracle::PythLazerOracle;
-    use crate::state::spot_market::SpotMarket;
-    use crate::state::spot_market_map::SpotMarketMap;
-    use crate::state::zero_copy::AccountZeroCopyMut;
-    use crate::vlp::hedge::constituent_map::ConstituentMap;
-    use crate::vlp::hedge::state::{Constituent, ConstituentTargetBaseFixed, TargetsDatum};
-    use anchor_lang::prelude::Pubkey;
-    use std::collections::BTreeMap;
-    use std::{cell::RefCell, marker::PhantomData};
 
     fn test_derivative_weights_scenario(
         derivative_weights: Vec<u64>,

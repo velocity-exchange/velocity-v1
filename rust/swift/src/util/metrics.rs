@@ -1,9 +1,10 @@
-use std::sync::Arc;
-
-use axum::extract::State;
-use prometheus::{
-    Counter, CounterVec, Encoder, Gauge, GaugeVec, Histogram, HistogramOpts, HistogramVec,
-    IntGaugeVec, Opts, Registry, TextEncoder,
+use {
+    axum::extract::State,
+    prometheus::{
+        Counter, CounterVec, Encoder, Gauge, GaugeVec, Histogram, HistogramOpts, HistogramVec,
+        IntGaugeVec, Opts, Registry, TextEncoder,
+    },
+    std::sync::Arc,
 };
 
 #[derive(Clone)]

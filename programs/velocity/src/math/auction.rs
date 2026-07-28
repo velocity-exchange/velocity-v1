@@ -1,17 +1,21 @@
-use crate::controller::position::PositionDirection;
-use crate::error::{ErrorCode, VelocityResult};
-use crate::math::casting::Cast;
-use crate::math::constants::AUCTION_DERIVE_PRICE_FRACTION;
-use crate::math::orders::standardize_price;
-use crate::math::safe_math::SafeMath;
-use crate::msg;
-use crate::state::oracle::OraclePriceData;
-use crate::state::perp_market::ContractTier;
-use crate::state::user::{Order, OrderBitFlag, OrderType};
-
-use crate::state::perp_market::PerpMarket;
-use crate::OrderParams;
-use std::cmp::min;
+use {
+    crate::{
+        controller::position::PositionDirection,
+        error::{ErrorCode, VelocityResult},
+        math::{
+            casting::Cast, constants::AUCTION_DERIVE_PRICE_FRACTION, orders::standardize_price,
+            safe_math::SafeMath,
+        },
+        msg,
+        state::{
+            oracle::OraclePriceData,
+            perp_market::{ContractTier, PerpMarket},
+            user::{Order, OrderBitFlag, OrderType},
+        },
+        OrderParams,
+    },
+    std::cmp::min,
+};
 
 #[cfg(test)]
 mod tests;

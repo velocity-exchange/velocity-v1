@@ -1,8 +1,11 @@
-use crate::error::{ErrorCode, VelocityResult};
-use crate::math::bn::U192;
-use crate::msg;
-use std::convert::TryInto;
-use std::panic::Location;
+use {
+    crate::{
+        error::{ErrorCode, VelocityResult},
+        math::bn::U192,
+        msg,
+    },
+    std::{convert::TryInto, panic::Location},
+};
 
 pub trait Cast: Sized {
     #[track_caller]

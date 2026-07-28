@@ -1,9 +1,12 @@
-use anchor_lang::prelude::*;
-
-use crate::constraints::is_admin;
-use crate::state::traits::Size;
-use crate::state::{FeeUpdate, FeeUpdateStatus, Vault};
-use crate::{error::ErrorCode, validate};
+use {
+    crate::{
+        constraints::is_admin,
+        error::ErrorCode,
+        state::{traits::Size, FeeUpdate, FeeUpdateStatus, Vault},
+        validate,
+    },
+    anchor_lang::prelude::*,
+};
 
 pub fn admin_init_fee_update<'info>(ctx: Context<'info, AdminInitFeeUpdate<'info>>) -> Result<()> {
     let vault = ctx.accounts.vault.load_mut()?;

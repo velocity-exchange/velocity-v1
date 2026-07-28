@@ -1,8 +1,9 @@
 mod calculate_auction_prices {
-    use crate::controller::position::PositionDirection;
-    use crate::math::auction::calculate_auction_prices;
-    use crate::math::constants::PRICE_PRECISION_I64;
-    use crate::state::oracle::OraclePriceData;
+    use crate::{
+        controller::position::PositionDirection,
+        math::{auction::calculate_auction_prices, constants::PRICE_PRECISION_I64},
+        state::oracle::OraclePriceData,
+    };
 
     #[test]
     fn no_limit_price_long() {
@@ -166,10 +167,14 @@ mod calculate_auction_prices {
 }
 
 mod calculate_auction_price {
-    use crate::math::auction::calculate_auction_price;
-    use crate::math::constants::{PRICE_PRECISION_I64, PRICE_PRECISION_U64};
-    use crate::state::user::{Order, OrderType};
-    use crate::PositionDirection;
+    use crate::{
+        math::{
+            auction::calculate_auction_price,
+            constants::{PRICE_PRECISION_I64, PRICE_PRECISION_U64},
+        },
+        state::user::{Order, OrderType},
+        PositionDirection,
+    };
 
     #[test]
     fn long_oracle_order() {
@@ -431,10 +436,14 @@ mod calculate_auction_price {
 }
 
 mod calculate_auction_params_for_trigger_order {
-    use crate::math::auction::calculate_auction_params_for_trigger_order;
-    use crate::state::oracle::OraclePriceData;
-    use crate::state::user::{Order, OrderType};
-    use crate::{PositionDirection, PRICE_PRECISION_I64, PRICE_PRECISION_U64};
+    use crate::{
+        math::auction::calculate_auction_params_for_trigger_order,
+        state::{
+            oracle::OraclePriceData,
+            user::{Order, OrderType},
+        },
+        PositionDirection, PRICE_PRECISION_I64, PRICE_PRECISION_U64,
+    };
 
     #[test]
     fn trigger_limit() {

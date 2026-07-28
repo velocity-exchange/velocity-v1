@@ -1,14 +1,17 @@
-use crate::error::{ErrorCode, VaultResult};
-use crate::validate;
-use anchor_lang::prelude::*;
-use anchor_lang::solana_program::msg;
-
-use velocity::math::casting::Cast;
-use velocity::math::safe_math::SafeMath;
-
-use velocity::math::insurance::{
-    if_shares_to_vault_amount as depositor_shares_to_vault_amount,
-    vault_amount_to_if_shares as vault_amount_to_depositor_shares,
+use {
+    crate::{
+        error::{ErrorCode, VaultResult},
+        validate,
+    },
+    anchor_lang::{prelude::*, solana_program::msg},
+    velocity::math::{
+        casting::Cast,
+        insurance::{
+            if_shares_to_vault_amount as depositor_shares_to_vault_amount,
+            vault_amount_to_if_shares as vault_amount_to_depositor_shares,
+        },
+        safe_math::SafeMath,
+    },
 };
 
 #[derive(Debug, Clone, Copy, AnchorSerialize, AnchorDeserialize, PartialEq, Eq)]

@@ -1,9 +1,9 @@
-use anchor_lang::prelude::*;
-use static_assertions::const_assert_eq;
-use velocity_macros::assert_no_slop;
-
-use crate::state::withdraw_request::WithdrawRequest;
-use crate::state::Size;
+use {
+    crate::state::{withdraw_request::WithdrawRequest, Size},
+    anchor_lang::prelude::*,
+    static_assertions::const_assert_eq,
+    velocity_macros::assert_no_slop,
+};
 
 pub struct VaultFee {
     pub management_fee_payment: i64,

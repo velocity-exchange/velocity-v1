@@ -1,20 +1,23 @@
-use crate::error::{ErrorCode, VelocityResult};
-use crate::state::spot_market::SpotMarket;
-use anchor_lang::prelude::{AccountInfo, AccountLoader};
-use std::cell::{Ref, RefMut};
-use std::collections::{BTreeMap, BTreeSet};
-
-use std::iter::Peekable;
-use std::slice::Iter;
-
-use crate::math::constants::QUOTE_SPOT_MARKET_INDEX;
-use anchor_lang::Discriminator;
-use arrayref::array_ref;
-
-use crate::math::safe_unwrap::SafeUnwrap;
-use crate::msg;
-use crate::state::traits::Size;
-use std::panic::Location;
+use {
+    crate::{
+        error::{ErrorCode, VelocityResult},
+        math::{constants::QUOTE_SPOT_MARKET_INDEX, safe_unwrap::SafeUnwrap},
+        msg,
+        state::{spot_market::SpotMarket, traits::Size},
+    },
+    anchor_lang::{
+        prelude::{AccountInfo, AccountLoader},
+        Discriminator,
+    },
+    arrayref::array_ref,
+    std::{
+        cell::{Ref, RefMut},
+        collections::{BTreeMap, BTreeSet},
+        iter::Peekable,
+        panic::Location,
+        slice::Iter,
+    },
+};
 
 pub struct SpotMarketMap<'a>(
     pub BTreeMap<u16, AccountLoader<'a, SpotMarket>>,

@@ -1,11 +1,12 @@
-use std::collections::HashMap;
-
-use anchor_lang::AccountDeserialize;
-use base64::Engine;
-use redis::{aio::MultiplexedConnection, AsyncCommands};
-use solana_clock::Slot;
-use solana_pubkey::Pubkey;
-use velocity_rs::{types::accounts::User, VelocityClient};
+use {
+    anchor_lang::AccountDeserialize,
+    base64::Engine,
+    redis::{aio::MultiplexedConnection, AsyncCommands},
+    solana_clock::Slot,
+    solana_pubkey::Pubkey,
+    std::collections::HashMap,
+    velocity_rs::{types::accounts::User, VelocityClient},
+};
 
 /// Max age (in slots, ~90s at Solana's ~2.5 slots/s) of a redis-cached user
 /// account before it's treated as too stale to simulate against. This is a
@@ -149,10 +150,11 @@ impl UserAccountFetcher {
 
 #[cfg(test)]
 mod tests {
-    use solana_keypair::Keypair;
-    use velocity_rs::{Context, RpcClient};
-
-    use super::*;
+    use {
+        super::*,
+        solana_keypair::Keypair,
+        velocity_rs::{Context, RpcClient},
+    };
 
     #[ignore]
     #[cfg(feature = "rpc_tests")]

@@ -1,21 +1,29 @@
-import {
-	Connection,
-	PublicKey,
-	TransactionMessage,
-	AddressLookupTableAccount,
-	VersionedTransaction,
-	TransactionInstruction,
-} from '@solana/web3.js';
-import { BN } from '../isomorphic/anchor';
-import {
-	JupiterClient,
-	QuoteResponse as JupiterQuoteResponse,
-} from '../jupiter/jupiterClient';
-import { TitanClient, SwapMode as TitanSwapMode } from '../titan/titanClient';
+import { Connection, VersionedTransaction } from '@solana/web3.js';
+import { JupiterClient } from '../jupiter/jupiterClient';
+import { TitanClient } from '../titan/titanClient';
 import { MAX_TX_BYTE_SIZE } from '../tx/utils';
+import {
+	GetRouteInstructionsParams,
+	SwapClientType,
+	SwapProvider,
+	SwapQuote,
+	SwapQuoteParams,
+	SwapRouteInstructions,
+} from './types';
 
-export type SwapMode = 'ExactIn' | 'ExactOut';
-export type SwapClientType = 'jupiter' | 'titan';
+// Re-exported so deep imports of this module keep resolving; `./types` is the
+// definition site and what the package index exports.
+export type {
+	GetRouteInstructionsParams,
+	SwapProviderRoute,
+	SwapClientType,
+	SwapMode,
+	SwapProvider,
+	SwapQuote,
+	SwapQuoteParams,
+	SwapRouteInstructions,
+	UnifiedQuoteResponse,
+} from './types';
 
 /**
  * Bytes reserved for the velocity begin/end swap instructions that wrap the
@@ -24,68 +32,23 @@ export type SwapClientType = 'jupiter' | 'titan';
 const VELOCITY_SWAP_IX_SIZE_BUFFER = 375;
 
 /** Byte budget handed to a swap provider for the route portion of the tx. */
-const DEFAULT_ROUTE_SIZE_CONSTRAINT =
+export const DEFAULT_ROUTE_SIZE_CONSTRAINT =
 	MAX_TX_BYTE_SIZE - VELOCITY_SWAP_IX_SIZE_BUFFER;
 
 /**
- * Unified quote response interface that combines properties from both Jupiter and Titan
- * This provides a consistent interface while allowing for provider-specific fields
+ * Routes swap calls to the configured provider.
+ *
+ * Intentionally thin: it picks a provider and forwards. Anything that varies
+ * between Jupiter and Titan belongs in the provider, behind
+ * {@link SwapProvider} — branching on the provider here is how the two paths
+ * drifted apart previously, since nothing forced them to keep the same
+ * semantics.
  */
-export interface UnifiedQuoteResponse {
-	// Core properties available in both providers
-	inputMint: string;
-	inAmount: string;
-	outputMint: string;
-	outAmount: string;
-	swapMode: SwapMode;
-	slippageBps: number;
-	routePlan: Array<{ swapInfo: any; percent: number }>;
-
-	// Optional properties that may not be available in all providers
-	otherAmountThreshold?: string; // Jupiter has this, Titan doesn't
-	priceImpactPct?: string; // Jupiter provides this, Titan doesn't (we calculate it)
-	platformFee?: { amount?: string; feeBps?: number }; // Format varies between providers
-	contextSlot?: number;
-	timeTaken?: number;
-	error?: string;
-	errorCode?: string;
-}
-
-export interface SwapQuoteParams {
-	inputMint: PublicKey;
-	outputMint: PublicKey;
-	amount: BN;
-	userPublicKey?: PublicKey; // Required for Titan, optional for Jupiter
-	maxAccounts?: number;
-	slippageBps?: number;
-	swapMode?: SwapMode;
-	onlyDirectRoutes?: boolean;
-	excludeDexes?: string[];
-	sizeConstraint?: number; // Titan-specific
-	accountsLimitWritable?: number; // Titan-specific
-	autoSlippage?: boolean; // Jupiter-specific
-	maxAutoSlippageBps?: number; // Jupiter-specific
-	usdEstimate?: number; // Jupiter-specific
-}
-
-export interface SwapTransactionParams {
-	quote: UnifiedQuoteResponse;
-	userPublicKey: PublicKey;
-	slippageBps?: number;
-}
-
-export interface SwapTransactionResult {
-	transaction?: VersionedTransaction; // Jupiter returns this
-	transactionMessage?: TransactionMessage; // Titan returns this
-	lookupTables?: AddressLookupTableAccount[]; // Titan returns this
-}
-
-export class UnifiedSwapClient {
+export class UnifiedSwapClient implements SwapProvider {
 	private client: JupiterClient | TitanClient;
 	private clientType: SwapClientType;
 
 	/**
-	 * Create a unified swap client
 	 * @param clientType - 'jupiter' or 'titan'
 	 * @param connection - Solana connection
 	 * @param authToken - For Titan: auth token (required when not using proxy). For Jupiter: API key (required for api.jup.ag, get free key at https://portal.jup.ag)
@@ -101,9 +64,9 @@ export class UnifiedSwapClient {
 	}: {
 		clientType: SwapClientType;
 		connection: Connection;
-		authToken?: string; // For Titan: auth token. For Jupiter: API key (required for api.jup.ag)
-		url?: string; // Optional custom URL
-		proxyUrl?: string; // Optional proxy URL for Titan
+		authToken?: string;
+		url?: string;
+		proxyUrl?: string;
 	}) {
 		this.clientType = clientType;
 
@@ -125,182 +88,57 @@ export class UnifiedSwapClient {
 		}
 	}
 
-	/**
-	 * Get a swap quote from the underlying client
-	 */
-	public async getQuote(
-		params: SwapQuoteParams
-	): Promise<UnifiedQuoteResponse> {
-		if (this.clientType === 'jupiter') {
-			const jupiterClient = this.client as JupiterClient;
-			const {
-				userPublicKey: _userPublicKey, // Not needed for Jupiter
-				sizeConstraint: _sizeConstraint, // Jupiter-specific params to exclude
-				accountsLimitWritable: _accountsLimitWritable,
-				...jupiterParams
-			} = params;
-
-			return await jupiterClient.getQuote(jupiterParams);
-		} else {
-			const titanClient = this.client as TitanClient;
-			const {
-				autoSlippage: _autoSlippage, // Titan-specific params to exclude
-				maxAutoSlippageBps: _maxAutoSlippageBps,
-				usdEstimate: _usdEstimate,
-				...titanParams
-			} = params;
-
-			if (!titanParams.userPublicKey) {
-				throw new Error('userPublicKey is required for Titan quotes');
-			}
-
-			// Cast to ensure TypeScript knows userPublicKey is defined
-			const titanParamsWithUser = {
-				...titanParams,
-				userPublicKey: titanParams.userPublicKey,
-				swapMode: titanParams.swapMode as string, // Titan expects string
-				sizeConstraint:
-					titanParams.sizeConstraint || DEFAULT_ROUTE_SIZE_CONSTRAINT,
-			};
-
-			return await titanClient.getQuote(titanParamsWithUser);
-		}
+	public get providerName(): SwapClientType {
+		return this.clientType;
 	}
 
 	/**
-	 * Get a swap transaction from the underlying client
+	 * The configured client, seen only as {@link SwapProvider}.
+	 *
+	 * Forwarding through the interface rather than the concrete union is what
+	 * makes goal of this class enforceable: a provider added to the union that
+	 * implements only part of the contract fails to compile here, instead of
+	 * resolving against whichever call signatures the union happens to share.
 	 */
-	public async getSwap(
-		params: SwapTransactionParams
-	): Promise<SwapTransactionResult> {
-		if (this.clientType === 'jupiter') {
-			const jupiterClient = this.client as JupiterClient;
-			// Cast the quote to Jupiter's specific QuoteResponse type
-			const jupiterParams = {
-				...params,
-				quote: params.quote as JupiterQuoteResponse,
-			};
-			const transaction = await jupiterClient.getSwap(jupiterParams);
-			return { transaction };
-		} else {
-			const titanClient = this.client as TitanClient;
-			const { userPublicKey } = params;
-
-			// For Titan, we need to reconstruct the parameters from the quote
-			const result = await titanClient.getSwap({
-				userPublicKey,
-			});
-
-			return {
-				transactionMessage: result.transactionMessage,
-				lookupTables: result.lookupTables,
-			};
-		}
+	private get provider(): SwapProvider {
+		return this.client;
 	}
 
 	/**
-	 * Get swap instructions from the underlying client (Jupiter or Titan)
-	 * This is the core swap logic without any context preparation
+	 * Get a swap quote from the configured provider.
+	 *
+	 * Provider-specific fields on {@link SwapQuoteParams} are mapped by the
+	 * provider, so the ones it doesn't recognise are simply ignored.
 	 */
-	public async getSwapInstructions({
-		inputMint,
-		outputMint,
-		amount,
-		userPublicKey,
-		slippageBps,
-		swapMode = 'ExactIn',
-		onlyDirectRoutes = false,
-		quote,
-		sizeConstraint,
-	}: {
-		inputMint: PublicKey;
-		outputMint: PublicKey;
-		amount: BN;
-		userPublicKey: PublicKey;
-		slippageBps?: number;
-		swapMode?: SwapMode;
-		onlyDirectRoutes?: boolean;
-		quote?: UnifiedQuoteResponse;
-		sizeConstraint?: number;
-	}): Promise<{
-		instructions: TransactionInstruction[];
-		lookupTables: AddressLookupTableAccount[];
-	}> {
-		const isExactOut = swapMode === 'ExactOut';
-		let swapInstructions: TransactionInstruction[];
-		let lookupTables: AddressLookupTableAccount[];
+	public async getQuote(params: SwapQuoteParams): Promise<SwapQuote> {
+		return this.provider.getQuote({
+			...params,
+			sizeConstraint: params.sizeConstraint ?? DEFAULT_ROUTE_SIZE_CONSTRAINT,
+		});
+	}
 
-		if (this.clientType === 'jupiter') {
-			const jupiterClient = this.client as JupiterClient;
+	/**
+	 * Builds the route instructions for a quote from {@link getQuote}, at the
+	 * slippage that quote was priced at.
+	 * @throws If the quote came from a different provider or a different wallet.
+	 */
+	public async getRouteInstructions(
+		params: GetRouteInstructionsParams
+	): Promise<SwapRouteInstructions> {
+		return this.provider.getRouteInstructions(params);
+	}
 
-			// Get quote if not provided
-			let finalQuote = quote as JupiterQuoteResponse;
-			if (!finalQuote) {
-				finalQuote = await jupiterClient.getQuote({
-					inputMint,
-					outputMint,
-					amount,
-					slippageBps,
-					swapMode,
-					onlyDirectRoutes,
-				});
-			}
-
-			if (!finalQuote) {
-				throw new Error('Could not fetch swap quote. Please try again.');
-			}
-
-			// Get swap transaction and extract instructions
-			const transaction = await jupiterClient.getSwap({
-				quote: finalQuote,
-				userPublicKey,
-				slippageBps,
-			});
-
-			const { transactionMessage, lookupTables: jupiterLookupTables } =
-				await jupiterClient.getTransactionMessageAndLookupTables({
-					transaction,
-				});
-
-			swapInstructions = jupiterClient.getJupiterInstructions({
-				transactionMessage,
-				inputMint,
-				outputMint,
-			});
-
-			lookupTables = jupiterLookupTables;
-		} else {
-			const titanClient = this.client as TitanClient;
-
-			// For Titan, get swap directly (it handles quote internally).
-			//
-			// NOTE: `getSwap` reads only `userPublicKey` — it replays the route
-			// cached by the preceding `getQuote`, so every other argument here is
-			// inert. The size constraint is therefore enforced at quote time (see
-			// `getQuote` above), which means an explicit `sizeConstraint` passed
-			// only to this method does not affect route selection.
-			const { transactionMessage, lookupTables: titanLookupTables } =
-				await titanClient.getSwap({
-					inputMint,
-					outputMint,
-					amount,
-					userPublicKey,
-					slippageBps,
-					swapMode: isExactOut ? TitanSwapMode.ExactOut : TitanSwapMode.ExactIn,
-					onlyDirectRoutes,
-					sizeConstraint: sizeConstraint || DEFAULT_ROUTE_SIZE_CONSTRAINT,
-				});
-
-			swapInstructions = titanClient.getTitanInstructions({
-				transactionMessage,
-				inputMint,
-				outputMint,
-			});
-
-			lookupTables = titanLookupTables;
-		}
-
-		return { instructions: swapInstructions, lookupTables };
+	/**
+	 * Builds a standalone swap transaction for a quote from {@link getQuote},
+	 * keeping the provider's own compute budget, token account creation and SOL
+	 * wrapping. Use {@link getRouteInstructions} for a swap that runs inside
+	 * velocity's `beginSwap`/`endSwap` bracket.
+	 * @throws If the quote came from a different provider or a different wallet.
+	 */
+	public async getSwapTransaction(
+		params: GetRouteInstructionsParams
+	): Promise<VersionedTransaction> {
+		return this.provider.getSwapTransaction(params);
 	}
 
 	/**

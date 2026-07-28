@@ -19,7 +19,7 @@ import {
 	UserAccount,
 	OptionalOrderParams,
 	TEN,
-	QuoteResponse,
+	JupiterSwapQuote,
 	getLimitOrderParams,
 	PERCENTAGE_PRECISION,
 	DLOB,
@@ -307,13 +307,13 @@ export class LiquidatorDerisk {
 		orderDirection: PositionDirection,
 		inMarketIndex: number,
 		outMarketIndex: number,
-		quote: QuoteResponse,
+		quote: JupiterSwapQuote,
 		slippageBps: number,
 		subAccountId: number
 	): Promise<boolean> {
 		if (!this.jupiterClient) return false;
-		const swapIx = await this.velocityClient.getJupiterSwapIxV6({
-			jupiterClient: this.jupiterClient!,
+		const swapIx = await this.velocityClient.getProviderSwapIx({
+			swapProvider: this.jupiterClient!,
 			outMarketIndex,
 			inMarketIndex,
 			amount: new BN(quote.inAmount),
@@ -364,7 +364,7 @@ export class LiquidatorDerisk {
 		baseAmountIn: BN,
 		slippageBps: number
 	): Promise<
-		| { quote: QuoteResponse; inMarketIndex: number; outMarketIndex: number }
+		| { quote: JupiterSwapQuote; inMarketIndex: number; outMarketIndex: number }
 		| undefined
 	> {
 		if (!this.jupiterClient) {
@@ -439,7 +439,7 @@ export class LiquidatorDerisk {
 				inMarket.marketIndex
 			}, outMarketIdx: ${outMarket.marketIndex}, slippageBps: ${slippageBps}`
 		);
-		let quote: QuoteResponse | undefined;
+		let quote: JupiterSwapQuote | undefined;
 		try {
 			quote = await this.jupiterClient.getQuote({
 				inputMint: inMarket.mint,

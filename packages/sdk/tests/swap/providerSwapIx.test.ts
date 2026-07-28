@@ -226,4 +226,29 @@ describe('VelocityClient.getProviderSwapIx', () => {
 
 		expect(err.message).to.contain(OTHER_MINT.toString());
 	});
+
+	it('rejects a fetched quote for a different amount', async () => {
+		// A fetched quote is checked exactly like a passed-in one — the provider
+		// answering with a size we didn't ask for is the same swap-the-wrong-amount
+		// bug as being handed a stale quote.
+		getQuote.resolves(quoteFor('ExactIn', { inAmount: '999' }));
+
+		const err = await captureError(build({ amount: new BN(AMOUNT_IN) }));
+
+		expect(err.message).to.contain('999');
+		expect(err.message).to.contain(AMOUNT_IN);
+	});
+
+	it('takes the effective mode from a fetched quote, not the requested mode', async () => {
+		// Asked for ExactIn, answered ExactOut. The quote decides how `beginSwap`
+		// is sized, so the mode has to be re-read from it after the fetch.
+		getQuote.resolves(quoteFor('ExactOut'));
+
+		await build({ amount: new BN(AMOUNT_OUT), swapMode: 'ExactIn' });
+
+		expect(getQuote.firstCall.args[0].swapMode).to.equal('ExactIn');
+		expect(getSwapIx.firstCall.args[0].amountIn.toString()).to.equal(
+			new BN(AMOUNT_IN).muln(1001).divn(1000).toString()
+		);
+	});
 });

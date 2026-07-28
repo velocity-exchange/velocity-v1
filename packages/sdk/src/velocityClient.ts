@@ -7640,7 +7640,8 @@ export class VelocityClient {
 	 * @param amount - Amount in the "in" token's mint decimals, or the "out" token's when the
 	 * effective mode is `ExactOut`.
 	 * @param slippageBps - Max slippage in basis points; only used when a quote has to be fetched.
-	 * @param swapMode - `ExactIn` (default) or `ExactOut`. Ignored when `quote` is passed.
+	 * @param swapMode - `ExactIn` (default) or `ExactOut`. The mode a quote is fetched at; the
+	 * resulting quote's own mode is what sizes the swap, so it is ignored when `quote` is passed.
 	 * @param onlyDirectRoutes - Restricts a fetched quote to single-hop routes.
 	 * @param maxAccounts - Account budget for a fetched route.
 	 * @param reduceOnly - Which side must not increase in magnitude; enforced by `endSwap`.
@@ -7648,7 +7649,8 @@ export class VelocityClient {
 	 * mode, and it must be for this pair and this `amount`.
 	 * @param userAccountPublicKey - Optional user account override (e.g. when the account is being
 	 * created in the same transaction and not yet resolvable via `getUserAccountPublicKey`).
-	 * @throws If the quote is for a different pair or a different size than the swap being built.
+	 * @throws If the quote — passed in or freshly fetched — is for a different pair or a different
+	 * size than the swap being built.
 	 * @returns `ixs` — ATA creation, `beginSwap`, the route's instructions, `endSwap`, in order —
 	 * and the `lookupTables` needed to fit them in a versioned transaction.
 	 */
@@ -7687,27 +7689,29 @@ export class VelocityClient {
 		const outMarket = this.getSpotMarketAccountOrThrow(outMarketIndex);
 		const inMarket = this.getSpotMarketAccountOrThrow(inMarketIndex);
 
-		const effectiveSwapMode = quote?.swapMode ?? swapMode ?? 'ExactIn';
-
-		let quoteToUse: SwapQuote;
-		if (quote) {
-			this.assertQuoteMatchesMarkets(quote, inMarket, outMarket);
-			this.assertQuoteMatchesAmount(quote, amount, effectiveSwapMode);
-			quoteToUse = quote;
-		} else {
-			quoteToUse = await swapProvider.getQuote({
+		const quoteToUse =
+			quote ??
+			(await swapProvider.getQuote({
 				inputMint: inMarket.mint,
 				outputMint: outMarket.mint,
 				amount,
 				userPublicKey: this.provider.wallet.publicKey,
 				slippageBps,
-				swapMode: effectiveSwapMode,
+				swapMode: swapMode ?? 'ExactIn',
 				onlyDirectRoutes,
 				maxAccounts,
 				sizeConstraint: DEFAULT_ROUTE_SIZE_CONSTRAINT,
-			});
-			this.assertQuoteMatchesMarkets(quoteToUse, inMarket, outMarket);
-		}
+			}));
+
+		// The quote's own mode decides which side `amount` names and how `beginSwap` is sized, so it
+		// wins over `swapMode` whether the quote was passed in or just fetched — a provider that
+		// answers in the other mode is then caught by the size check rather than sizing the wrong side.
+		const effectiveSwapMode = quoteToUse.swapMode ?? swapMode ?? 'ExactIn';
+
+		// Both paths, identically: a freshly fetched quote is no more trustworthy about what it
+		// priced than one handed to us.
+		this.assertQuoteMatchesMarkets(quoteToUse, inMarket, outMarket);
+		this.assertQuoteMatchesAmount(quoteToUse, amount, effectiveSwapMode);
 
 		// Size `beginSwap` off the quote's own input: under ExactOut `amount` is the requested
 		// output, so buffering it would be a guess at what the route consumes.
@@ -10727,7 +10731,8 @@ export class VelocityClient {
 	 * @param userAccountPublicKey - Public key of the user account being liquidated.
 	 * @param liquidatorSubAccountId - Liquidator's sub-account to credit; defaults to the active sub-account.
 	 * @param maxAccounts - Caps the number of accounts Jupiter's route may use.
-	 * @throws If no quote can be fetched and `quote` was not supplied.
+	 * @throws If no quote can be fetched and `quote` was not supplied, or if the quote — passed in or
+	 * freshly fetched — is for a different pair or a different size than the swap being built.
 	 * @returns The ordered instructions (pre-instructions, `beginSwap`, Jupiter swap, `endSwap`) and
 	 * any address lookup tables the Jupiter route requires.
 	 */
@@ -10788,6 +10793,11 @@ export class VelocityClient {
 		}
 
 		this.assertQuoteMatchesMarkets(quote, assetMarket, liabilityMarket);
+		this.assertQuoteMatchesAmount(
+			quote,
+			swapAmount,
+			quote.swapMode ?? swapMode ?? 'ExactIn'
+		);
 
 		const amountIn = new BN(quote.inAmount);
 

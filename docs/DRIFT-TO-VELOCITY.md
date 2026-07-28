@@ -205,7 +205,11 @@ favour of the shared `filterRouteInstructions`. Quote parameters typed `QuoteRes
 `UnifiedQuoteResponse` (`swap`, the `AdminClient` swap helper, the
 `superStake` `jupiterQuote` arguments) now take `JupiterSwapQuote` or `SwapQuote` — a quote
 must come from the client that will execute it, be for the pair the swap brackets, be for the
-amount being swapped, and (on Titan) be for the executing wallet. The three per-provider
+amount being swapped, and (on Titan) be for the executing wallet. Those checks apply to a quote
+`getProviderSwapIx` fetches itself as well as one passed in, and the quote's own `swapMode` is
+the effective mode either way. A quote is also checked against the route it carries, so a
+modified copy of a returned quote is rejected rather than executed as the swap it was
+originally quoted for. The three per-provider
 builders `VelocityClient.getSwapIxV2` / `getJupiterSwapIxV6` / `getTitanSwapIx` were removed
 in favour of a single `getProviderSwapIx({ swapProvider, ... })` that accepts any
 `SwapProvider`; `swap`'s `swapClient` parameter is typed `SwapProvider` and no longer
@@ -365,13 +369,18 @@ These public exports were **added** (or restored) relative to the fork point:
   `max(oracle, 5min twap, oracle+conf)`, liability leg `min(oracle, 5min twap, oracle−conf)`
   floored at 1. Feed the result as `assetPrice`/`liabilityPrice` to
   `calculateAssetTransferForLiabilityTransfer` to predict on-chain transfer amounts in that case.
-- `SwapProvider`, `SwapQuote`, `SwapProviderRoute`, `GetRouteInstructionsParams`,
-  `SwapRouteInstructions`, `expectProviderRoute`, `DEFAULT_SWAP_MAX_ACCOUNTS` (`swap/types`) and
+- `SwapProvider`, `SwapQuote`, `SwapProviderRoute`, `SwapRouteFields`,
+  `GetRouteInstructionsParams`, `SwapRouteInstructions`, `buildSwapQuote`,
+  `expectProviderRoute`, `DEFAULT_SWAP_MAX_ACCOUNTS` (`swap/types`) and
   `filterRouteInstructions` (`swap/routeInstructions`) (#331) — the shared swap-provider
   contract. `JupiterClient` and `TitanClient` both implement `SwapProvider`, and
   `UnifiedSwapClient` forwards to whichever is configured. Implement `SwapProvider` to add a
   provider; the three methods (`getQuote`, `getRouteInstructions`, `getSwapTransaction`)
-  plus the route-on-the-quote convention are the whole surface.
+  plus the route-on-the-quote convention are the whole surface. Return `getQuote`'s result
+  through `buildSwapQuote(normalizedQuote, providerRoute)` rather than assembling the object
+  by hand — it records the `SwapRouteFields` that let `expectProviderRoute` reject a quote
+  whose pair, size, mode or slippage no longer matches the route it carries. Treat a returned
+  `SwapQuote` as immutable and re-quote instead of editing one.
   `JupiterSwapQuote` (`jupiter/jupiterClient`) is Jupiter's `QuoteResponse` widened to a
   `SwapQuote`. See §4.3 for what this replaced.
 - Several types were added by the `types.ts` ↔ IDL reconciliation — see §4.7.

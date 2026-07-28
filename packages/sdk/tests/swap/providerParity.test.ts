@@ -305,6 +305,43 @@ describe('SwapProvider parity', () => {
 			expect(err.message).to.contain(name);
 		});
 
+		it(`${name} rejects a quote whose pair was rewritten after quoting`, async () => {
+			const provider: SwapProvider = name === 'jupiter' ? jupiter : titan;
+
+			// The route is untouched, so it still swaps the pair it was quoted for
+			// — but every guard that reads the quote's own mints (velocity's spot
+			// market check, the instruction filter) now sees a different pair.
+			const edited = {
+				...(await quoteFor(provider)),
+				outputMint: HOP_MINT.toString(),
+			} as SwapQuote;
+
+			const err = await captureError(
+				provider.getRouteInstructions({ quote: edited, userPublicKey: USER })
+			);
+
+			expect(err.message).to.contain('outputMint');
+			expect(err.message).to.contain('modified after it was returned');
+		});
+
+		it(`${name} rejects a quote whose size was rewritten after quoting`, async () => {
+			const provider: SwapProvider = name === 'jupiter' ? jupiter : titan;
+
+			// `beginSwap` is funded from the quote's `inAmount`, so a rewritten one
+			// releases an amount the route was never priced to consume.
+			const edited = {
+				...(await quoteFor(provider)),
+				inAmount: '1',
+			} as SwapQuote;
+
+			const err = await captureError(
+				provider.getRouteInstructions({ quote: edited, userPublicKey: USER })
+			);
+
+			expect(err.message).to.contain('inAmount');
+			expect(err.message).to.contain(AMOUNT_IN);
+		});
+
 		it(`${name} rejects a quote with no route payload`, async () => {
 			const provider: SwapProvider = name === 'jupiter' ? jupiter : titan;
 

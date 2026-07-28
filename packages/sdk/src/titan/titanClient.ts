@@ -16,6 +16,7 @@ import {
 	SwapQuote,
 	SwapQuoteParams,
 	SwapRouteInstructions,
+	buildSwapQuote,
 	expectProviderRoute,
 } from '../swap/types';
 
@@ -24,22 +25,33 @@ export enum SwapMode {
 	ExactOut = 'ExactOut',
 }
 
+/**
+ * A u64 as msgpack decodes it under `useBigInt64`: `bigint` when the server
+ * encoded a full 64-bit int, `number` for the narrower encodings it uses for
+ * small values.
+ *
+ * Never route one through `Number()` or arithmetic to produce an amount — u64
+ * token amounts above 2^53 don't survive the conversion, and the loss is silent.
+ * `String()`/`.toString()` is exact for both halves of the union.
+ */
+type U64 = bigint | number;
+
 interface RoutePlanStep {
 	ammKey: Uint8Array;
 	label: string;
 	inputMint: Uint8Array;
 	outputMint: Uint8Array;
-	inAmount: number;
-	outAmount: number;
-	allocPpb: number;
+	inAmount: U64;
+	outAmount: U64;
+	allocPpb: U64;
 	feeMint?: Uint8Array;
-	feeAmount?: number;
-	contextSlot?: number;
+	feeAmount?: U64;
+	contextSlot?: U64;
 }
 
 interface PlatformFee {
-	amount: number;
-	fee_bps: number;
+	amount: U64;
+	fee_bps: U64;
 }
 
 type Pubkey = Uint8Array;
@@ -57,29 +69,29 @@ interface Instruction {
 }
 
 interface SwapRoute {
-	inAmount: number;
-	outAmount: number;
-	slippageBps: number;
+	inAmount: U64;
+	outAmount: U64;
+	slippageBps: U64;
 	platformFee?: PlatformFee;
 	steps: RoutePlanStep[];
 	instructions: Instruction[];
 	addressLookupTables: Pubkey[];
-	contextSlot?: number;
-	timeTaken?: number;
-	expiresAtMs?: number;
-	expiresAfterSlot?: number;
-	computeUnits?: number;
-	computeUnitsSafe?: number;
+	contextSlot?: U64;
+	timeTaken?: U64;
+	expiresAtMs?: U64;
+	expiresAfterSlot?: U64;
+	computeUnits?: U64;
+	computeUnitsSafe?: U64;
 	transaction?: Uint8Array;
 	referenceId?: string;
 }
 
 interface SwapQuotes {
 	id: string;
-	inputMint: Uint8Array;
-	outputMint: Uint8Array;
+	inputMint?: Uint8Array;
+	outputMint?: Uint8Array;
 	swapMode: SwapMode;
-	amount: number;
+	amount: U64;
 	quotes: { [key: string]: SwapRoute };
 }
 
@@ -90,6 +102,18 @@ const LOOKUP_TABLE_FETCH_RETRIES = 2;
 const LOOKUP_TABLE_RETRY_BASE_DELAY_MS = 150;
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+
+/** Titan sends pubkeys as raw bytes. Absent fields decode to `undefined`. */
+const decodePubkey = (bytes?: Uint8Array): string | undefined =>
+	bytes ? new PublicKey(bytes).toString() : undefined;
+
+/**
+ * For the normalized quote's small metadata fields, which are typed `number`.
+ * Only safe because slots, durations and bps are far below 2^53 — never use it
+ * on a token amount.
+ */
+const toNumber = (value?: U64): number | undefined =>
+	value === undefined ? undefined : Number(value);
 
 export class TitanClient implements SwapProvider {
 	public readonly providerName = 'titan';
@@ -247,7 +271,9 @@ export class TitanClient implements SwapProvider {
 		}
 
 		const buffer = await response.arrayBuffer();
-		const data = decode(buffer) as SwapQuotes;
+		// `useBigInt64` or every u64 above 2^53 is silently rounded on the way in,
+		// including the `inAmount` callers size `beginSwap` off.
+		const data = decode(buffer, { useBigInt64: true }) as SwapQuotes;
 
 		// We are only querying for the best avaiable route so use that
 		const route = data.quotes[Object.keys(data.quotes)[0]];
@@ -260,43 +286,61 @@ export class TitanClient implements SwapProvider {
 			throw new Error('Titan route has no instructions');
 		}
 
-		return {
-			providerRoute: {
-				provider: 'titan',
-				route,
-				quotedFor: userPublicKey.toString(),
+		// Titan echoes the pair it routed. Take the pair from the response rather
+		// than assuming the request was honoured — a route for another pair pays
+		// out into a token account `endSwap` isn't watching, and only fails
+		// on-chain once the funds have already moved.
+		const routedInputMint =
+			decodePubkey(data.inputMint) ?? inputMint.toString();
+		const routedOutputMint =
+			decodePubkey(data.outputMint) ?? outputMint.toString();
+
+		if (
+			routedInputMint !== inputMint.toString() ||
+			routedOutputMint !== outputMint.toString()
+		) {
+			throw new Error(
+				`Titan quoted ${routedInputMint} -> ${routedOutputMint} but the swap asked for ${inputMint.toString()} -> ${outputMint.toString()}.`
+			);
+		}
+
+		return buildSwapQuote(
+			{
+				inputMint: routedInputMint,
+				outputMint: routedOutputMint,
+				// The route's own input, not the requested amount — under ExactOut the
+				// request is the output, and callers size `beginSwap` off `inAmount`.
+				inAmount: (route.inAmount ?? amount).toString(),
+				outAmount: route.outAmount.toString(),
+				swapMode: data.swapMode,
+				slippageBps: Number(route.slippageBps),
+				platformFee: route.platformFee
+					? {
+							amount: route.platformFee.amount.toString(),
+							feeBps: Number(route.platformFee.fee_bps),
+					  }
+					: undefined,
+				routePlan:
+					route.steps?.map((step) => ({
+						swapInfo: {
+							ammKey: new PublicKey(step.ammKey).toString(),
+							label: step.label,
+							inputMint: new PublicKey(step.inputMint).toString(),
+							outputMint: new PublicKey(step.outputMint).toString(),
+							inAmount: step.inAmount.toString(),
+							outAmount: step.outAmount.toString(),
+							feeAmount: step.feeAmount?.toString() || '0',
+							feeMint: step.feeMint
+								? new PublicKey(step.feeMint).toString()
+								: '',
+						},
+						percent: 100,
+					})) || [],
+				contextSlot: toNumber(route.contextSlot),
+				timeTaken: toNumber(route.timeTaken),
 			},
-			inputMint: inputMint.toString(),
-			// The route's own input, not the requested amount — under ExactOut the
-			// request is the output, and callers size `beginSwap` off `inAmount`.
-			inAmount: (route.inAmount ?? amount).toString(),
-			outputMint: outputMint.toString(),
-			outAmount: route.outAmount.toString(),
-			swapMode: data.swapMode,
-			slippageBps: route.slippageBps,
-			platformFee: route.platformFee
-				? {
-						amount: route.platformFee.amount.toString(),
-						feeBps: route.platformFee.fee_bps,
-				  }
-				: undefined,
-			routePlan:
-				route.steps?.map((step: any) => ({
-					swapInfo: {
-						ammKey: new PublicKey(step.ammKey).toString(),
-						label: step.label,
-						inputMint: new PublicKey(step.inputMint).toString(),
-						outputMint: new PublicKey(step.outputMint).toString(),
-						inAmount: step.inAmount.toString(),
-						outAmount: step.outAmount.toString(),
-						feeAmount: step.feeAmount?.toString() || '0',
-						feeMint: step.feeMint ? new PublicKey(step.feeMint).toString() : '',
-					},
-					percent: 100,
-				})) || [],
-			contextSlot: route.contextSlot,
-			timeTaken: route.timeTaken,
-		};
+			{ provider: 'titan', route, quotedFor: userPublicKey.toString() }
+		);
 	}
 
 	/**

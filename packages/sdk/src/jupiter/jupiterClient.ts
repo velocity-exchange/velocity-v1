@@ -16,6 +16,7 @@ import {
 	SwapQuote,
 	SwapQuoteParams,
 	SwapRouteInstructions,
+	buildSwapQuote,
 	expectProviderRoute,
 } from '../swap/types';
 
@@ -376,7 +377,7 @@ export class JupiterClient implements SwapProvider {
 
 		// Jupiter's /swap endpoint takes the quote body back verbatim, so the
 		// quote is its own route payload.
-		return { ...quote, providerRoute: { provider: 'jupiter', quote } };
+		return buildSwapQuote(quote, { provider: 'jupiter', quote });
 	}
 
 	/**

@@ -8,7 +8,7 @@ import {
 import { encode } from '@msgpack/msgpack';
 import { BN } from '../../src/isomorphic/anchor';
 import { TitanClient } from '../../src/titan/titanClient';
-import { SwapQuote } from '../../src/swap/types';
+import { SwapQuote, buildSwapQuote } from '../../src/swap/types';
 
 const ALT_KEY = new PublicKey('HxFLKUAmAMLz1jtT3hbvCMELwH5H9tpM2QugP8sKyfhc');
 const INPUT_MINT = new PublicKey('So11111111111111111111111111111111111111112');
@@ -108,29 +108,37 @@ describe('TitanClient.getQuote', () => {
 	let client: TitanClient;
 
 	/** Titan's msgpack reply for a route that consumes `inAmount`. */
-	const quoteResponse = (inAmount: number, outAmount: number) => ({
+	const quoteResponse = (
+		inAmount: number | bigint,
+		outAmount: number | bigint,
+		envelope: Record<string, unknown> = {}
+	) => ({
 		ok: true,
 		status: 200,
 		arrayBuffer: async () =>
-			encode({
-				id: 'quote-1',
-				inputMint: INPUT_MINT.toBytes(),
-				outputMint: OUTPUT_MINT.toBytes(),
-				swapMode: 'ExactOut',
-				amount: outAmount,
-				quotes: {
-					best: {
-						inAmount,
-						outAmount,
-						slippageBps: 50,
-						steps: [],
-						addressLookupTables: [],
-						instructions: [
-							{ p: USER.toBytes(), a: [], d: new Uint8Array([1]) },
-						],
+			encode(
+				{
+					id: 'quote-1',
+					inputMint: INPUT_MINT.toBytes(),
+					outputMint: OUTPUT_MINT.toBytes(),
+					swapMode: 'ExactOut',
+					amount: outAmount,
+					quotes: {
+						best: {
+							inAmount,
+							outAmount,
+							slippageBps: 50,
+							steps: [],
+							addressLookupTables: [],
+							instructions: [
+								{ p: USER.toBytes(), a: [], d: new Uint8Array([1]) },
+							],
+						},
 					},
+					...envelope,
 				},
-			}).slice().buffer,
+				{ useBigInt64: true }
+			).slice().buffer,
 	});
 
 	beforeEach(() => {
@@ -178,6 +186,55 @@ describe('TitanClient.getQuote', () => {
 		expect(quote.providerRoute).to.have.property('quotedFor', USER.toString());
 	});
 
+	it('decodes a u64 amount that does not fit a double', async () => {
+		// Decoded without `useBigInt64` these round to the nearest double, and the
+		// rounding is silent: 9007199254740993 comes back as ...992. `beginSwap` is
+		// funded from `inAmount`, so the release would be short of what the route
+		// consumes.
+		const inAmount = BigInt('9007199254740993');
+		sinon
+			.stub(global, 'fetch')
+			.resolves(
+				quoteResponse(inAmount, BigInt('18446744073709551615')) as never
+			);
+
+		const quote = await client.getQuote({
+			inputMint: INPUT_MINT,
+			outputMint: OUTPUT_MINT,
+			amount: new BN('18446744073709551615'),
+			userPublicKey: USER,
+			swapMode: 'ExactOut',
+		});
+
+		expect(quote.inAmount).to.equal('9007199254740993');
+		expect(quote.outAmount).to.equal('18446744073709551615');
+	});
+
+	it('rejects a route for a pair other than the one requested', async () => {
+		// A route for another pair pays out into a token account `endSwap` isn't
+		// watching, and only fails on-chain after the funds have moved.
+		const otherMint = new PublicKey(
+			'mSoLzYCxHdYgdzU16g5QSh3i5K3z3KZK7ytfqcJm7So'
+		);
+		sinon.stub(global, 'fetch').resolves(
+			quoteResponse(1000000, 2000000, {
+				outputMint: otherMint.toBytes(),
+			}) as never
+		);
+
+		const err = await captureError(
+			client.getQuote({
+				inputMint: INPUT_MINT,
+				outputMint: OUTPUT_MINT,
+				amount: new BN(1000000),
+				userPublicKey: USER,
+			})
+		);
+
+		expect(err.message).to.contain(otherMint.toString());
+		expect(err.message).to.contain(OUTPUT_MINT.toString());
+	});
+
 	it('refuses to quote without a wallet', async () => {
 		const err = await captureError(
 			client.getQuote({
@@ -195,21 +252,27 @@ describe('TitanClient.getRouteInstructions', () => {
 	let connection: sinon.SinonStubbedInstance<Connection>;
 	let client: TitanClient;
 
+	const QUOTE_FIELDS = {
+		inputMint: INPUT_MINT.toString(),
+		outputMint: OUTPUT_MINT.toString(),
+		inAmount: '1000000',
+		outAmount: '13131908',
+		swapMode: 'ExactIn' as const,
+		slippageBps: 50,
+		routePlan: [],
+	};
+
 	/** A quote as `getQuote` would return it, carrying its own route. */
-	const quoteWithRoute = (instructions: unknown[]): SwapQuote =>
-		({
-			inputMint: INPUT_MINT.toString(),
-			outputMint: OUTPUT_MINT.toString(),
-			inAmount: '1000000',
-			outAmount: '13131908',
-			swapMode: 'ExactIn',
-			slippageBps: 50,
-			routePlan: [],
-			providerRoute: {
-				provider: 'titan',
-				route: { instructions, addressLookupTables: [] },
-			},
-		}) as unknown as SwapQuote;
+	const quoteWithRoute = (
+		instructions: unknown[],
+		route: Record<string, unknown> = {},
+		quotedFor?: string
+	): SwapQuote =>
+		buildSwapQuote(QUOTE_FIELDS, {
+			provider: 'titan',
+			route: { instructions, addressLookupTables: [], ...route },
+			quotedFor,
+		});
 
 	beforeEach(() => {
 		connection = sinon.createStubInstance(Connection);
@@ -271,8 +334,8 @@ describe('TitanClient.getRouteInstructions', () => {
 			value: { key: altKey } as AddressLookupTableAccount,
 		});
 
-		const quote = {
-			...quoteWithRoute([
+		const quote = quoteWithRoute(
+			[
 				{
 					p: new PublicKey(
 						'T1TANpTeScyeqVzzgNViGDNrkQ6qHz9KrSBS4aNXvGT'
@@ -280,23 +343,9 @@ describe('TitanClient.getRouteInstructions', () => {
 					a: [],
 					d: new Uint8Array([1]),
 				},
-			]),
-			providerRoute: {
-				provider: 'titan',
-				route: {
-					instructions: [
-						{
-							p: new PublicKey(
-								'T1TANpTeScyeqVzzgNViGDNrkQ6qHz9KrSBS4aNXvGT'
-							).toBytes(),
-							a: [],
-							d: new Uint8Array([1]),
-						},
-					],
-					addressLookupTables: [altKey.toBytes()],
-				},
-			},
-		} as unknown as SwapQuote;
+			],
+			{ addressLookupTables: [altKey.toBytes()] }
+		);
 
 		await client.getRouteInstructions({ quote, userPublicKey: USER });
 		await client.getRouteInstructions({ quote, userPublicKey: USER });
@@ -327,14 +376,7 @@ describe('TitanClient.getRouteInstructions', () => {
 		// someone else's route moves funds through accounts the signer doesn't
 		// own. Nothing about the route itself makes that visible.
 		const other = new PublicKey('4kSjWQnPCFCkzKnFuNCMhutFsPzWqMbEnJyxgAJLwLjE');
-		const quote = {
-			...quoteWithRoute([]),
-			providerRoute: {
-				provider: 'titan',
-				route: { instructions: [], addressLookupTables: [] },
-				quotedFor: other.toString(),
-			},
-		} as unknown as SwapQuote;
+		const quote = quoteWithRoute([], {}, other.toString());
 
 		const err = await captureError(
 			client.getRouteInstructions({ quote, userPublicKey: USER })

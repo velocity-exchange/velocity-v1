@@ -2598,7 +2598,7 @@ export type TransferFeeAndPnlPoolRecord = {
 	amount: BN;
 };
 
-/** Kind of quoter a `QuoterV0Account` registry entry names: the in-program vAMM, an external CLOB, or a custom quoter program that quotes for a single approved user. */
+/** Kind of quoter a `QuoterV0Account` registry entry names: the in-program vAMM, an external CLOB, or a custom quoter program that quotes for a single user (whose authority creates the entry — creation is consent). */
 export class QuoterType {
 	static readonly VAMM = { vamm: {} };
 	static readonly CLOB = { clob: {} };
@@ -2619,15 +2619,15 @@ export type AmmAccountMeta = {
 	padding: number[];
 };
 
-/** Decoded mirror of the on-chain `QuoterV0` account: one quoter-registry entry per (perp market, quoter program, quoted user), naming the external quoter program plus the CPI surface velocity needs to call it (discriminators, account lists, response account). Entries are inert until the admin activates them (`isActive`) and — for Custom quoters — the quoted user approves them (`isApproved`). */
+/** Decoded mirror of the on-chain `QuoterV0` account: one quoter-registry entry per (perp market, quoter program, quoted user), naming the external quoter program plus the CPI surface velocity needs to call it (discriminators, account lists, response account). Entries are born active but unapproved: `isActive` is the maker's own kill switch, `isApproved` is the admin's vetting of the CPI surface (cleared by any config or account-list change). */
 export type QuoterV0Account = {
-	/** for Custom quoters, the user this quoter is allowed to quote for (must approve); for vAMM, the vAMM user; for CLOB, ignored */
+	/** for Custom quoters, the user this quoter is allowed to quote for (that user's authority creates the entry — creation is consent); for vAMM, the vAMM user; for CLOB, ignored */
 	user: PublicKey;
 	/** the external program invoked for `quoteV0` / `executeV0` */
 	programId: PublicKey;
 	/** account owned by `programId` that quote/execute responses are written into; must be registered in both account lists */
 	responseAccount: PublicKey;
-	/** manages this registry entry (config/account-list updates) */
+	/** manages this registry entry; for Custom quoters the quoted user's authority (enforced at creation, no handoff), so the maker can always kill their own quoter */
 	authority: PublicKey;
 	/** raw 8-byte instruction discriminator of `quoteV0` on `programId` */
 	quoteV0Discriminator: number[];
@@ -2640,7 +2640,9 @@ export type QuoterV0Account = {
 	/** perp market index this quoter serves */
 	market: number;
 	quoterType: QuoterType;
+	/** the maker's own on/off switch — always settable by the entry authority */
 	isActive: boolean;
+	/** admin vetting of the CPI surface; reset by any config or account-list change */
 	isApproved: boolean;
 	quoteAccountsCount: number;
 	executeAccountsCount: number;

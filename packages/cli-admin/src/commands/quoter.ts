@@ -93,16 +93,16 @@ function getQuoterPublicKey(
 /**
  * Quoter registry operations (PropAMM order flow, see `state::prop_amm`).
  *
- * Registration is permissionless and inert: an entry quotes/fills nothing
- * until the admin activates it (`set-active`) and — for Custom quoters — the
- * quoted user's authority approves it (`approve`). Any config or account-list
- * change deactivates the entry so the admin re-vets the CPI surface.
+ * For Custom quoters the quoted user's authority creates the entry — creation
+ * is consent — and keeps a permanent kill switch (`set-active`). Nothing
+ * fills until the admin vets the CPI surface (`set-approved`), and any config
+ * or account-list change clears that approval for re-vetting.
  */
 export function registerQuoter(parent: Command): void {
 	const quoter = parent
 		.command('quoter')
 		.description(
-			'Quoter registry: register external quoter programs (PropAMM order flow), update their CPI surface, approve and activate entries.'
+			'Quoter registry: register external quoter programs (PropAMM order flow), update their CPI surface, toggle the maker kill switch, admin-approve entries.'
 		);
 
 	withGlobalOptions(
@@ -111,7 +111,7 @@ export function registerQuoter(parent: Command): void {
 				'init <market> <quoterProgram> <user> <responseAccount> <quoteDisc> <executeDisc>'
 			)
 			.description(
-				'Initialize a QuoterV0 registry entry for (perp market, quoter program, quoted user). Permissionless; born inactive. <quoteDisc>/<executeDisc> are the 8-byte instruction discriminators on the quoter program, as 16 hex chars. Set account lists afterwards via update-accounts.'
+				"Initialize a QuoterV0 registry entry for (perp market, quoter program, quoted user). Born active but unapproved — nothing fills until the admin vets it (set-approved). For custom-type entries the signing authority must be the quoted user's authority (creation is consent). <quoteDisc>/<executeDisc> are the 8-byte instruction discriminators on the quoter program, as 16 hex chars. Set account lists afterwards via update-accounts."
 			)
 			.option(
 				'-t, --type <type>',
@@ -195,7 +195,7 @@ export function registerQuoter(parent: Command): void {
 		quoter
 			.command('update-accounts <quoter> <leg> <index> <metas...>')
 			.description(
-				'Write a slice of a quoter\'s registered CPI account list, starting at <index>. <leg> is "quote" or "execute"; each meta is "<pubkey>" (readonly) or "<pubkey>:w" (writable). Truncates the list to the end of the slice and deactivates the entry (admin re-vets). Signer must be the entry authority.'
+				'Write a slice of a quoter\'s registered CPI account list, starting at <index>. <leg> is "quote" or "execute"; each meta is "<pubkey>" (readonly) or "<pubkey>:w" (writable). Truncates the list to the end of the slice and clears admin approval (admin re-vets). Signer must be the entry authority.'
 			)
 			.option(
 				'-a, --authority <pubkey>',
@@ -238,7 +238,7 @@ export function registerQuoter(parent: Command): void {
 				reportDispatch(
 					`quoter ${quoterArg} ${leg.toLowerCase()} accounts [${index}, ${
 						Number.parseInt(index, 10) + metas.length
-					}) updated (entry deactivated)`,
+					}) updated (approval cleared)`,
 					result
 				);
 			} finally {
@@ -253,7 +253,7 @@ export function registerQuoter(parent: Command): void {
 		quoter
 			.command('update-config <quoter>')
 			.description(
-				"Update a quoter's scalar CPI config; only the passed options change. Deactivates the entry (admin re-vets). Signer must be the entry authority."
+				"Update a quoter's scalar CPI config; only the passed options change. Clears admin approval (admin re-vets). Signer must be the entry authority."
 			)
 			.option('--response-account <pubkey>', 'new response account')
 			.option('--quote-disc <hex>', 'new quote_v0 discriminator (16 hex chars)')
@@ -261,10 +261,9 @@ export function registerQuoter(parent: Command): void {
 				'--execute-disc <hex>',
 				'new execute_v0 discriminator (16 hex chars)'
 			)
-			.option('--new-authority <pubkey>', 'hand the entry to a new authority')
 			.option(
 				'-a, --authority <pubkey>',
-				'current entry authority (must sign; defaults to the wallet)'
+				'entry authority (must sign; defaults to the wallet)'
 			)
 	).action(
 		async (
@@ -273,19 +272,13 @@ export function registerQuoter(parent: Command): void {
 				responseAccount?: string;
 				quoteDisc?: string;
 				executeDisc?: string;
-				newAuthority?: string;
 				authority?: string;
 			},
 			cmd: Command
 		) => {
-			if (
-				!flags.responseAccount &&
-				!flags.quoteDisc &&
-				!flags.executeDisc &&
-				!flags.newAuthority
-			) {
+			if (!flags.responseAccount && !flags.quoteDisc && !flags.executeDisc) {
 				throw new Error(
-					'nothing to update — pass at least one of --response-account, --quote-disc, --execute-disc, --new-authority'
+					'nothing to update — pass at least one of --response-account, --quote-disc, --execute-disc'
 				);
 			}
 			const opts = readGlobalOpts(cmd);
@@ -302,9 +295,6 @@ export function registerQuoter(parent: Command): void {
 							: null,
 						executeV0Discriminator: flags.executeDisc
 							? parseDiscriminator(flags.executeDisc)
-							: null,
-						newAuthority: flags.newAuthority
-							? new PublicKey(flags.newAuthority)
 							: null,
 					},
 					{
@@ -323,62 +313,7 @@ export function registerQuoter(parent: Command): void {
 					'velocity-admin quoter update-config'
 				);
 				reportDispatch(
-					`quoter ${quoterArg} config updated (entry deactivated)`,
-					result
-				);
-			} finally {
-				if ((client as any).isSubscribed) {
-					await client.unsubscribe();
-				}
-			}
-		}
-	);
-
-	withGlobalOptions(
-		quoter
-			.command('approve <quoter> <approve>')
-			.description(
-				"Grant (or revoke) the quoted user's consent for this quoter's fills to settle on their account. Custom quoters only. Signer must be the user's authority. <approve> = true|false."
-			)
-			.option(
-				'-a, --authority <pubkey>',
-				"the user's authority (must sign; defaults to the wallet)"
-			)
-	).action(
-		async (
-			quoterArg: string,
-			approve: string,
-			flags: { authority?: string },
-			cmd: Command
-		) => {
-			const on = parseEnable(approve);
-			const opts = readGlobalOpts(cmd);
-			const provider = buildProvider(opts);
-			const client = await buildAdminClient(opts, false);
-			try {
-				const quoterPk = new PublicKey(quoterArg);
-				const entry = await (client.program.account as any).quoterV0.fetch(
-					quoterPk
-				);
-				const ix = client.program.instruction.approveQuoter(on, {
-					accounts: {
-						authority: flags.authority
-							? new PublicKey(flags.authority)
-							: provider.wallet.publicKey,
-						quoter: quoterPk,
-						user: entry.user,
-					},
-				});
-				const result = await sendOrPropose(
-					provider,
-					[ix],
-					opts.multisig ? new PublicKey(opts.multisig) : undefined,
-					'velocity-admin quoter approve'
-				);
-				reportDispatch(
-					`quoter ${quoterArg} ${
-						on ? 'approved' : 'unapproved'
-					} by user authority`,
+					`quoter ${quoterArg} config updated (approval cleared)`,
 					result
 				);
 			} finally {
@@ -393,17 +328,17 @@ export function registerQuoter(parent: Command): void {
 		quoter
 			.command('set-active <quoter> <active>')
 			.description(
-				'Activate (admin vetting gate; warm/cold admin) or deactivate a quoter registry entry. Activation validates non-empty account lists on both legs, each containing the response account. <active> = true|false.'
+				"The maker's own kill switch: enable or disable the entry. Always available to the entry authority — for Custom quoters the quoted user's authority. <active> = true|false."
 			)
 			.option(
-				'--admin <pubkey>',
-				'admin signer (defaults to the wallet; pass the vault PDA with --multisig)'
+				'-a, --authority <pubkey>',
+				'entry authority (must sign; defaults to the wallet)'
 			)
 	).action(
 		async (
 			quoterArg: string,
 			active: string,
-			flags: { admin?: string },
+			flags: { authority?: string },
 			cmd: Command
 		) => {
 			const on = parseEnable(active);
@@ -412,6 +347,54 @@ export function registerQuoter(parent: Command): void {
 			const client = await buildAdminClient(opts, false);
 			try {
 				const ix = client.program.instruction.updateQuoterActive(on, {
+					accounts: {
+						authority: flags.authority
+							? new PublicKey(flags.authority)
+							: provider.wallet.publicKey,
+						quoter: new PublicKey(quoterArg),
+					},
+				});
+				const result = await sendOrPropose(
+					provider,
+					[ix],
+					opts.multisig ? new PublicKey(opts.multisig) : undefined,
+					'velocity-admin quoter set-active'
+				);
+				reportDispatch(
+					`quoter ${quoterArg} ${on ? 'activated' : 'deactivated'}`,
+					result
+				);
+			} finally {
+				if ((client as any).isSubscribed) {
+					await client.unsubscribe();
+				}
+			}
+		}
+	);
+
+	withGlobalOptions(
+		quoter
+			.command('set-approved <quoter> <approved>')
+			.description(
+				'Admin vetting gate (warm/cold admin): approve or unapprove a quoter registry entry. Approving validates non-empty account lists on both legs, each containing the response account. Any config or account-list change clears approval. <approved> = true|false.'
+			)
+			.option(
+				'--admin <pubkey>',
+				'admin signer (defaults to the wallet; pass the vault PDA with --multisig)'
+			)
+	).action(
+		async (
+			quoterArg: string,
+			approved: string,
+			flags: { admin?: string },
+			cmd: Command
+		) => {
+			const on = parseEnable(approved);
+			const opts = readGlobalOpts(cmd);
+			const provider = buildProvider(opts);
+			const client = await buildAdminClient(opts, false);
+			try {
+				const ix = client.program.instruction.updateQuoterApproved(on, {
 					accounts: {
 						admin: flags.admin
 							? new PublicKey(flags.admin)
@@ -424,10 +407,10 @@ export function registerQuoter(parent: Command): void {
 					provider,
 					[ix],
 					opts.multisig ? new PublicKey(opts.multisig) : undefined,
-					'velocity-admin quoter set-active'
+					'velocity-admin quoter set-approved'
 				);
 				reportDispatch(
-					`quoter ${quoterArg} ${on ? 'activated' : 'deactivated'}`,
+					`quoter ${quoterArg} ${on ? 'approved' : 'unapproved'}`,
 					result
 				);
 			} finally {

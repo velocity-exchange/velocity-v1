@@ -49,6 +49,17 @@ pub fn state_pda() -> Pubkey {
     Pubkey::find_program_address(&[b"velocity_state"], &velocity_id()).0
 }
 
+pub fn velocity_signer_pda() -> (Pubkey, u8) {
+    Pubkey::find_program_address(&[b"velocity_signer"], &velocity_id())
+}
+
+/// Anchor default instruction discriminator: sha256("global:<name>")[..8].
+pub fn ix_discriminator(name: &str) -> [u8; 8] {
+    use sha2::{Digest, Sha256};
+    let hash = Sha256::digest(format!("global:{name}").as_bytes());
+    hash[..8].try_into().unwrap()
+}
+
 pub fn perp_market_pda(market_index: u16) -> Pubkey {
     Pubkey::find_program_address(
         &[b"perp_market", market_index.to_le_bytes().as_ref()],
@@ -95,12 +106,15 @@ pub fn set_zero_copy_account<T: bytemuck::Pod>(
     .unwrap();
 }
 
-/// Minimal `State` at the canonical PDA: just enough for admin gating
-/// (`warm_admin`) — tests that need real protocol config should run the init
-/// flow instead.
+/// Minimal `State` at the canonical PDA: admin gating (`warm_admin`) plus the
+/// velocity signer PDA (quoter CPIs `invoke_signed` as it) — tests that need
+/// real protocol config should run the init flow instead.
 pub fn set_state(svm: &mut LiteSVM, warm_admin: &Pubkey) {
     let mut state: State = Zeroable::zeroed();
     state.warm_admin = anchor_lang::prelude::Pubkey::new_from_array(warm_admin.to_bytes());
+    let (signer, nonce) = velocity_signer_pda();
+    state.signer = anchor_lang::prelude::Pubkey::new_from_array(signer.to_bytes());
+    state.signer_nonce = nonce;
     set_zero_copy_account(svm, state_pda(), State::DISCRIMINATOR, &state, State::SIZE);
 }
 

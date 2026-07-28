@@ -18,6 +18,8 @@ pub use keeper::*;
 pub use protocol_fees::*;
 pub use pyth_lazer_oracle::*;
 pub use quoter_registry::*;
+#[cfg(feature = "anchor-test")]
+pub use router::*;
 pub use user::*;
 
 mod admin;
@@ -28,4 +30,6 @@ pub mod optional_accounts;
 mod protocol_fees;
 mod pyth_lazer_oracle;
 mod quoter_registry;
+#[cfg(feature = "anchor-test")]
+mod router;
 mod user;

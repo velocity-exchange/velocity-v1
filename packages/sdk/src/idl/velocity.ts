@@ -450,41 +450,6 @@ export type Velocity = {
       ]
     },
     {
-      "name": "approveQuoter",
-      "discriminator": [
-        228,
-        51,
-        77,
-        196,
-        73,
-        12,
-        174,
-        83
-      ],
-      "accounts": [
-        {
-          "name": "authority",
-          "signer": true,
-          "relations": [
-            "user"
-          ]
-        },
-        {
-          "name": "quoter",
-          "writable": true
-        },
-        {
-          "name": "user"
-        }
-      ],
-      "args": [
-        {
-          "name": "approve",
-          "type": "bool"
-        }
-      ]
-    },
-    {
       "name": "beginLpSwap",
       "discriminator": [
         64,
@@ -3590,7 +3555,8 @@ export type Velocity = {
         {
           "name": "user",
           "docs": [
-            "approves the entry (Custom). Ignored for Vamm/Clob-type entries."
+            "loads it and requires `authority` to be its authority (creation is",
+            "consent). Ignored for Vamm/Clob-type entries."
           ]
         },
         {
@@ -6070,6 +6036,37 @@ export type Velocity = {
         {
           "name": "pythMessage",
           "type": "bytes"
+        }
+      ]
+    },
+    {
+      "name": "probeQuoter",
+      "discriminator": [
+        215,
+        146,
+        162,
+        139,
+        111,
+        188,
+        143,
+        93
+      ],
+      "accounts": [
+        {
+          "name": "state"
+        },
+        {
+          "name": "quoter"
+        }
+      ],
+      "args": [
+        {
+          "name": "args",
+          "type": {
+            "defined": {
+              "name": "probeQuoterArgs"
+            }
+          }
         }
       ]
     },
@@ -11410,6 +11407,35 @@ export type Velocity = {
       ],
       "accounts": [
         {
+          "name": "authority",
+          "signer": true
+        },
+        {
+          "name": "quoter",
+          "writable": true
+        }
+      ],
+      "args": [
+        {
+          "name": "active",
+          "type": "bool"
+        }
+      ]
+    },
+    {
+      "name": "updateQuoterApproved",
+      "discriminator": [
+        170,
+        62,
+        247,
+        58,
+        166,
+        107,
+        153,
+        92
+      ],
+      "accounts": [
+        {
           "name": "admin",
           "signer": true
         },
@@ -11423,7 +11449,7 @@ export type Velocity = {
       ],
       "args": [
         {
-          "name": "active",
+          "name": "approved",
           "type": "bool"
         }
       ]
@@ -17946,6 +17972,26 @@ export type Velocity = {
       }
     },
     {
+      "name": "direction",
+      "docs": [
+        "Taker direction, from the taker's perspective. Borsh wire encoding",
+        "(Long = 0, Short = 1) deliberately matches",
+        "[`crate::controller::position::PositionDirection`], but the CPI ABI gets",
+        "its own enum so it can never drift with internal refactors."
+      ],
+      "type": {
+        "kind": "enum",
+        "variants": [
+          {
+            "name": "long"
+          },
+          {
+            "name": "short"
+          }
+        ]
+      }
+    },
+    {
       "name": "feeLedger",
       "docs": [
         "All of a perp market's fee-split accounting in one ledger.",
@@ -22066,6 +22112,38 @@ export type Velocity = {
       }
     },
     {
+      "name": "probeQuoterArgs",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "direction",
+            "type": {
+              "defined": {
+                "name": "direction"
+              }
+            }
+          },
+          {
+            "name": "size",
+            "type": "u64"
+          },
+          {
+            "name": "users",
+            "type": {
+              "option": {
+                "vec": "pubkey"
+              }
+            }
+          },
+          {
+            "name": "execute",
+            "type": "bool"
+          }
+        ]
+      }
+    },
+    {
       "name": "protocolFeeWithdrawRecord",
       "type": {
         "kind": "struct",
@@ -22216,10 +22294,10 @@ export type Velocity = {
           {
             "name": "user",
             "docs": [
-              "For Custom quoters, the User this quoter is allowed to quote for —",
-              "that user must approve the quoter (`is_approved`). For vAMM, the vAMM",
-              "user. For CLOB, ignored: execute may return balance changes for any",
-              "user with resting orders on the CLOB."
+              "For Custom quoters, the User this quoter is allowed to quote for.",
+              "That user's authority creates the entry, so creation is consent. For",
+              "vAMM, the vAMM user. For CLOB, ignored: execute may return balance",
+              "changes for any user with resting orders on the CLOB."
             ],
             "type": "pubkey"
           },
@@ -22243,9 +22321,10 @@ export type Velocity = {
           {
             "name": "authority",
             "docs": [
-              "Manages this registry entry (config/account-list updates). Distinct",
-              "roles: the authority configures, the quoted `user` consents",
-              "(`is_approved`), the admin vets (`is_active`)."
+              "Manages this registry entry. For Custom quoters this is the quoted",
+              "user's authority (enforced at creation, no handoff), so the maker can",
+              "always kill their own quoter (`is_active`); the admin vets the CPI",
+              "surface (`is_approved`), which any config change resets."
             ],
             "type": "pubkey"
           },
@@ -22322,10 +22401,16 @@ export type Velocity = {
           },
           {
             "name": "isActive",
+            "docs": [
+              "The authority's own on/off switch — always settable by the maker."
+            ],
             "type": "bool"
           },
           {
             "name": "isApproved",
+            "docs": [
+              "Admin vetting of the CPI surface; reset by any config change."
+            ],
             "type": "bool"
           },
           {
@@ -24426,12 +24511,6 @@ export type Velocity = {
                   8
                 ]
               }
-            }
-          },
-          {
-            "name": "newAuthority",
-            "type": {
-              "option": "pubkey"
             }
           }
         ]

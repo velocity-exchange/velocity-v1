@@ -10,11 +10,11 @@ use std::collections::BTreeMap;
 use anchor_lang::prelude::*;
 use solana_program::{
     instruction::{AccountMeta, Instruction},
-    program::{get_return_data, invoke},
+    program::{get_return_data, invoke_signed},
 };
 use static_assertions::const_assert_eq;
 
-use crate::{error::ErrorCode, msg, state::traits::Size, validate};
+use crate::{error::ErrorCode, msg, signer::get_signer_seeds, state::traits::Size, validate};
 
 /// Max accounts that can be registered per CPI leg (quote / execute).
 pub const MAX_QUOTER_ACCOUNTS: usize = 32;
@@ -196,6 +196,8 @@ impl QuoterV0 {
     pub fn quote<'info>(
         &self,
         args: QuoteArgsV0,
+        velocity_signer: &Pubkey,
+        signer_nonce: u8,
         account_map: &BTreeMap<Pubkey, AccountInfo<'info>>,
     ) -> Result<Vec<PriceLevel>> {
         validate!(
@@ -208,6 +210,8 @@ impl QuoterV0 {
             &self.quote_accounts,
             self.quote_accounts_count,
             &args,
+            velocity_signer,
+            signer_nonce,
             account_map,
         )?;
         Ok(response.levels)
@@ -220,6 +224,8 @@ impl QuoterV0 {
     pub fn execute<'info>(
         &self,
         args: ExecuteArgsV0,
+        velocity_signer: &Pubkey,
+        signer_nonce: u8,
         account_map: &BTreeMap<Pubkey, AccountInfo<'info>>,
     ) -> Result<ExecuteResponseV0> {
         validate!(
@@ -232,6 +238,8 @@ impl QuoterV0 {
             &self.execute_accounts,
             self.execute_accounts_count,
             &args,
+            velocity_signer,
+            signer_nonce,
             account_map,
         )
     }
@@ -245,6 +253,8 @@ impl QuoterV0 {
         registered: &[AmmAccountMeta],
         count: u8,
         args: &A,
+        velocity_signer: &Pubkey,
+        signer_nonce: u8,
         account_map: &BTreeMap<Pubkey, AccountInfo<'info>>,
     ) -> Result<R> {
         validate!(
@@ -265,17 +275,27 @@ impl QuoterV0 {
             })?;
             account_metas.push(AccountMeta {
                 pubkey: meta.pubkey,
-                // NEVER forward signer privilege. Signer status propagates
-                // through CPI, so a quoter handed the taker's wallet as a
-                // signer could CPI to the system/token program and drain it.
-                // Quoters that need to know who signed the outer transaction
-                // (e.g. the `flow_authority` attestation) introspect the
-                // instructions sysvar instead.
-                is_signer: false,
+                // NEVER forward outer signer privilege. Signer status
+                // propagates through CPI, so a quoter handed the taker's
+                // wallet as a signer could CPI to the system/token program
+                // and drain it. Quoters that need to know who signed the
+                // outer transaction (e.g. the `flow_authority` attestation)
+                // introspect the instructions sysvar instead. The single
+                // exception is velocity's own signer PDA (invoke_signed
+                // below — velocity signing as itself): a registered signer
+                // slot for it is how a quoter authenticates that velocity,
+                // not an arbitrary caller, is invoking execute.
+                is_signer: meta.pubkey == *velocity_signer,
                 is_writable: meta.is_writable,
             });
             account_infos.push(info.clone());
         }
+        // CPI needs the callee program's account info too.
+        let program_info = account_map.get(&self.program_id).ok_or_else(|| {
+            msg!("quoter program account missing from account map");
+            ErrorCode::DefaultError
+        })?;
+        account_infos.push(program_info.clone());
 
         let mut data = discriminator.to_vec();
         args.serialize(&mut data).map_err(|_| {
@@ -283,13 +303,14 @@ impl QuoterV0 {
             ErrorCode::DefaultError
         })?;
 
-        invoke(
+        invoke_signed(
             &Instruction {
                 program_id: self.program_id,
                 accounts: account_metas,
                 data,
             },
             &account_infos,
+            &[&get_signer_seeds(&signer_nonce)],
         )?;
 
         // The payload lives in the quoter's response account; return data

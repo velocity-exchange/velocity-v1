@@ -2155,6 +2155,14 @@ pub mod velocity {
     ) -> Result<()> {
         handle_update_quoter_approved(ctx, approved)
     }
+
+    #[cfg(feature = "anchor-test")]
+    pub fn probe_quoter<'info>(
+        ctx: Context<'info, ProbeQuoter<'info>>,
+        args: ProbeQuoterArgs,
+    ) -> Result<()> {
+        handle_probe_quoter(ctx, args)
+    }
 }
 
 #[cfg(not(feature = "no-entrypoint"))]

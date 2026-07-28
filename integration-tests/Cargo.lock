@@ -4663,6 +4663,7 @@ dependencies = [
  "anchor-lang",
  "bytemuck",
  "litesvm",
+ "sha2 0.10.9",
  "solana-account",
  "solana-instruction",
  "solana-keypair",

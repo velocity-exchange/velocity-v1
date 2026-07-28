@@ -64,11 +64,27 @@ pub fn handle_initialize_quoter(
 ) -> Result<()> {
     if args.quoter_type == QuoterType::Custom {
         // Creation is consent: only the quoted user's authority may register
-        // a quoter that settles fills on that user's account.
-        let user_info = ctx.accounts.user.to_account_info();
-        let user = AccountLoader::<User>::try_from(&user_info)?;
+        // a quoter that settles fills on that user's account. Verified
+        // manually (owner + discriminator + `User.authority` at offset 8,
+        // the struct's first field) because the account is only required to
+        // be a `User` for Custom entries.
+        let info = &ctx.accounts.user;
         validate!(
-            user.load()?.authority == ctx.accounts.authority.key(),
+            info.owner == &crate::ID,
+            ErrorCode::InvalidQuoterConfig,
+            "quoted user is not a velocity account"
+        )?;
+        let data = info.try_borrow_data()?;
+        validate!(
+            data.len() >= 40 && &data[..8] == User::DISCRIMINATOR,
+            ErrorCode::InvalidQuoterConfig,
+            "quoted user is not a User account"
+        )?;
+        let mut authority_bytes = [0u8; 32];
+        authority_bytes.copy_from_slice(&data[8..40]);
+        let user_authority = Pubkey::new_from_array(authority_bytes);
+        validate!(
+            user_authority == ctx.accounts.authority.key(),
             ErrorCode::InvalidQuoterAuthority,
             "custom quoters must be created by the quoted user's authority"
         )?;

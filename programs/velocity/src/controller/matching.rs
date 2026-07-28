@@ -470,6 +470,7 @@ pub fn router_take(
     side: PositionDirection,
     target_size: u64,
     external_books: &[QuoterBook],
+    taker_limit_price: Option<u64>,
 ) -> VelocityResult<RouterTakeOutcome> {
     if quoters.is_empty() && external_books.is_empty() {
         return Ok(RouterTakeOutcome {
@@ -480,6 +481,22 @@ pub fn router_take(
     let direction = match side {
         PositionDirection::Long => Direction::Long,
         PositionDirection::Short => Direction::Short,
+    };
+    // Books are truncated at the taker's limit before the split, so no
+    // allocation can clear past it (the counterpart of the legacy paths'
+    // `cumulative_size` cap / `taker_price_for_match`). Books are
+    // best-first, so cutting at the first out-of-limit level is exact.
+    let within_limit = |levels: &[PriceLevel]| -> usize {
+        let Some(limit) = taker_limit_price else {
+            return levels.len();
+        };
+        levels
+            .iter()
+            .position(|level| match side {
+                PositionDirection::Long => level.price > limit,
+                PositionDirection::Short => level.price < limit,
+            })
+            .unwrap_or(levels.len())
     };
 
     // Build internal books worst tier first, handing each quoter everything
@@ -493,7 +510,7 @@ pub fn router_take(
                 .iter()
                 .map(|book| QuoterBook {
                     priority: book.priority,
-                    levels: book.levels,
+                    levels: &book.levels[..within_limit(book.levels)],
                 })
                 .chain(
                     quoters
@@ -506,17 +523,20 @@ pub fn router_take(
                         }),
                 )
                 .collect();
-            quoters[i].quote(ctx, direction, target_size, &rivals)?
+            let mut levels = quoters[i].quote(ctx, direction, target_size, &rivals)?;
+            levels.truncate(within_limit(&levels));
+            levels
         };
         internal_levels[i] = levels;
     }
 
-    // Split across the union: external books first, then internals.
+    // Split across the union: external books first, then internals — all
+    // truncated at the taker's limit.
     let books: Vec<QuoterBook> = external_books
         .iter()
         .map(|book| QuoterBook {
             priority: book.priority,
-            levels: book.levels,
+            levels: &book.levels[..within_limit(book.levels)],
         })
         .chain(
             quoters
@@ -1160,6 +1180,7 @@ mod tests {
                 PositionDirection::Long,
                 4 * BASE_PRECISION_U64,
                 &external_books,
+                None,
             )
             .unwrap()
         };
@@ -1209,7 +1230,7 @@ mod tests {
             let mut amm_quoter = AmmQuoter::new_no_spread(&mut amm);
             let mut dlob_quoter = DlobOrderQuoter::new(&mut dlob, u64::MAX);
             let mut quoters: Vec<&mut dyn RouterQuoter> = vec![&mut amm_quoter, &mut dlob_quoter];
-            router_take(&mut quoters, &ctx, PositionDirection::Long, take, &[]).unwrap()
+            router_take(&mut quoters, &ctx, PositionDirection::Long, take, &[], None).unwrap()
         };
 
         // The vAMM's shaded rung fills first at the rival's price; the DLOB
@@ -1227,12 +1248,62 @@ mod tests {
     }
 
     #[test]
+    fn router_take_truncates_books_at_the_taker_limit() {
+        use crate::math::constants::{AMM_RESERVE_PRECISION, BASE_PRECISION_U64, PEG_PRECISION};
+        use crate::vlp::amm::AMM;
+
+        let stats = MarketStats::default();
+        let oracle = OraclePriceData::default();
+        let mut ctx = make_ctx(&stats, &oracle, 1);
+        ctx.base_precision = BASE_PRECISION_U64;
+
+        let mut amm = AMM {
+            base_asset_reserve: 100 * AMM_RESERVE_PRECISION,
+            quote_asset_reserve: 100 * AMM_RESERVE_PRECISION,
+            sqrt_k: 100 * AMM_RESERVE_PRECISION,
+            peg_multiplier: 100 * PEG_PRECISION,
+            min_base_asset_reserve: 50 * AMM_RESERVE_PRECISION,
+            max_base_asset_reserve: 200 * AMM_RESERVE_PRECISION,
+            max_fill_reserve_fraction: 4,
+            ..AMM::default()
+        };
+        // Limit below the ladder's tail: only the cheapest rungs are
+        // fillable, so a large take comes up short instead of clearing
+        // through the limit. (Rungs are marginal-end prices of
+        // request-sized chunks — a 20-unit take on 100-unit reserves puts
+        // the first rung near 105.2 and the tail near 110.)
+        let limit = 106 * PEG_PRECISION as u64;
+        let take = 20 * BASE_PRECISION_U64;
+        let outcome = {
+            let mut amm_quoter = AmmQuoter::new_no_spread(&mut amm);
+            let mut quoters: Vec<&mut dyn RouterQuoter> = vec![&mut amm_quoter];
+            router_take(
+                &mut quoters,
+                &ctx,
+                PositionDirection::Long,
+                take,
+                &[],
+                Some(limit),
+            )
+            .unwrap()
+        };
+        let fill = outcome.internal_fills[0].unwrap();
+        assert!(fill.base_filled > 0);
+        assert!(fill.base_filled < take);
+        // Per-unit cost never exceeds the limit.
+        let per_unit =
+            (fill.quote_filled as u128) * BASE_PRECISION_U64 as u128 / fill.base_filled as u128;
+        assert!(per_unit <= limit as u128);
+    }
+
+    #[test]
     fn router_take_with_nothing_is_empty() {
         let stats = MarketStats::default();
         let oracle = OraclePriceData::default();
         let ctx = make_ctx(&stats, &oracle, 1);
         let mut quoters: Vec<&mut dyn RouterQuoter> = vec![];
-        let outcome = router_take(&mut quoters, &ctx, PositionDirection::Long, 100, &[]).unwrap();
+        let outcome =
+            router_take(&mut quoters, &ctx, PositionDirection::Long, 100, &[], None).unwrap();
         assert!(outcome.internal_fills.is_empty());
         assert!(outcome.external_allocations.is_empty());
     }

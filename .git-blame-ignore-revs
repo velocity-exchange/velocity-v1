@@ -4,3 +4,4 @@
 #
 # rustfmt imports_granularity=One repo-wide reformat (append the commit hash
 # of the reformat commit below once it lands):
+194e52072d5bc4c3aa27b5e3d1187349e11c77ef

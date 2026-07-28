@@ -1,0 +1,100 @@
+# PropAMM + Order Flow — Implementation Plan
+
+Living doc. Design source of truth: [PropAMM + Order Flow Design (NEW)](https://app.notion.com/p/3aa9833913f38099a30fc395fabb1d26) — if this doc and the Notion disagree, the Notion wins.
+Last synced with Notion: **2026-07-28**.
+
+## How to use
+
+- `[ ]` todo, `[~]` in progress, `[x]` done.
+- When the Notion changes: diff it against the Design Snapshot below, update the snapshot and any affected tasks, add a Sync Log row, bump the sync date above.
+
+## Sync log
+
+| Date       | Notion change                    | Plan impact |
+| ---------- | -------------------------------- | ----------- |
+| 2026-07-27 | Initial plan authored from design | —           |
+| 2026-07-27 | Quoter CPIs pass is_signer:false; attestation verified by instructions-sysvar introspection | S1 updated; prop_amm.rs fixed (was forwarding outer-tx signer status — a quoter could have signed for the taker's wallet) |
+| 2026-07-27 | — (implementation) | CLOB: flow_authority removed (velocity dictates activation delay incl. 0 — attestation policy is router-fill policy); arena converted to `Slab<ClobHeaderV0, OrderNodeV0>` — per-market capacity from account size at creation, growable via realloc (Phoenix v1 tiers: 512–4096/side) |
+| 2026-07-27 | — (implementation) | CLOB migrated to Anchor v2 (anchor-next alpha, otter-sec/anchor pinned rev 4fbe613); response buffer folded into the market account tail + ResponsePointerV0; all 9 litesvm tests green |
+| 2026-07-27 | Standardized on clamp-at-fill + notional counter (option 2); consistency-rule paragraph removed from User Orders | None — plan S3/S5 and the built CLOB already match |
+| 2026-07-27 | Quoter responses moved from return data to a per-quoter response account + pointer | S1 updated; CLOB quote_v0/execute_v0 gain a response account; caps become heap/CU bounds, not ABI bounds |
+| 2026-07-27 | — (plan-side decision)           | Anchor v2 programs get their own workspace (`anchor-v2/`); `.so` fixture build feeds velocity-workspace litesvm tests |
+| 2026-07-28 | Review comment: OrderNode needs a min-size predicate for the cancel crank (partial fills leave sub-min remainders) | S2/S3 updated; execute now culls sub-`min_order_size` remainders in place (`meets_min_order_size` helper on OrderNodeV0); crank predicate extended to orders stranded below a raised min |
+| 2026-07-28 | Account-set race decided: quote/execute take the loaded-user set; absent-user orders skipped within a grace window, `StaleUserSet` past it; deferred settlement rejected (maker free option); speed bump may go to 0, so grace — not activation delay — carries the anti-grief load | S1/S2 updated; CLOB implements `users` + `placed_slot` + `unknown_user_grace_slots`; Phase 2 router passes loaded users + rejects unloaded-user balance changes; keep-rs over-allocation + maker ALT noted |
+| 2026-07-28 | CLOB margin decided: keep the DLOB model — gate at placement, count resting orders via worst-case `open_bids`/`open_asks`; `open_order_notional` + margin-floor scheme dropped; `quoting_reserve` is PropAMM-only. Trigger-time gate mirrors `trigger_order` (margin-fail → cancel `InsufficientFreeCollateral`, no re-arm) | S3/S5 updated; Phase 2 adapter + trigger + test tasks reworded |
+| 2026-07-28 | Evict/expiry made velocity-mediated so aggregates are exact: inline tail-evict replaced by soft-cap crank (`evict_worst_v0`, hard cap rejects all placements), expiry skip-only in execute + `remove_expired_v0` crank (mirrors today's keeper-cranked DLOB expiry), execute-response carries sub-min culls; reconcile ix dropped; trigger re-arm becomes eager | S2/S3/S5 updated; CLOB implements it (12 tests green); Phase 2 crank-wrapper task added |
+| 2026-07-28 | `quoting_reserve` dropped — vestige of the margin floor; routers read the PropAMM user's account and margin-truncate depth (already the Risk Assessment mechanism), fill-time clamp enforces | S3 updated; Phase 2/3 tasks reworded |
+| 2026-07-28 | No new unbacked-order crank: the existing `force_cancel_orders` keeper ix extends to CLOB orders; stranded-below-raised-min sweep dropped (those orders are margin-backed and just rest) | S3 updated; Phase 2 task reworded; unused `meets_min_order_size` helper removed from the CLOB |
+| 2026-07-28 | — (implementation) | Phase 2 started: `integration-tests/` litesvm workspace (velocity.so + clob.so fixtures) + `QuoterV0` registry live in velocity (5 ixs, IDL regenerated, fuzz IDLs synced, 932 unit tests + registry lifecycle test green). `QuoterV0` gains an `authority` field (entry manager, distinct from the consenting `user` and vetting admin) — Notion interface sketch needs the field added |
+
+## Design snapshot
+
+Terse restatement of decided design, for cross-referencing. Numbered so tasks can cite it (S1–S7).
+
+1. **Quoter interface**: program exposing `quote_v0`/`execute_v0`; raw 8-byte discriminators; borsh args after discriminator. Responses are written into the quoter's registered response account (owned by the quoter program); return data carries only a ResponsePointerV0 (offset, len) into it (writer must be the quoter program), so payloads are not bound by the 1024-byte return-data cap. Quote/execute args carry the set of `User`s velocity has loaded (`users: Option<Vec<Pubkey>>`, `None` = unrestricted off-chain discovery); quoters must not fill anyone else, and velocity rejects returned balance changes for unloaded users. CPI data cost is ~32 B/user and the list is bounded by the tx account budget anyway (every listed user is a writable account in the tx), so size is a non-issue. Registered in a `QuoterV0` registry entry (user, program_id, response_account, discriminators, account lists, type, is_active/is_approved). **Quoter CPIs never receive signer privilege** — every forwarded account is `is_signer: false`, because signer status propagates through CPI and an untrusted quoter handed a taker wallet could drain it. Quoters verify who signed the outer transaction (e.g. the `flow_authority` attestation) via instructions-sysvar introspection. Velocity may still sign as its own PDA with `invoke_signed` (that is velocity signing as itself, not forwarding).
+2. **CLOB**: standalone program. Node arena + free list + two best-first sorted intrusive linked lists; `NIL = u32::MAX`; velocity `User` pubkey inline on the node (no seat table). Velocity price/size units; tick/step/min enforced at place, not in storage. Per-side reserved capacity; eviction is crank-mediated (decided 2026-07-28, replacing inline better-price tail eviction): `evict_worst_v0` removes the side's tail once the side is at/above `evict_threshold_per_side` (soft cap), and a full side rejects every placement — even better-priced — until the crank catches up (hard cap = ops failure; the buffer + keeper reward keep it clear). `activation_slot` speed bump (default +1 slot, may be set to 0 — dropping the bump is under consideration; max 20 = auction) — this replaces JIT. `flow_authority`-signed attestation (200–400ms API hold) bypasses the delay; quoters introspect the signer, no args flag. Expiry (`max_ts`) only skipped by quote/execute, reclaimed by the `remove_expired_v0` crank (mirrors today's keeper-cranked DLOB expiry); a partial fill leaving a remainder below `min_order_size` culls the order in the same pass, reported on the wire (`ExecuteResponseV0.cancelled`) so velocity decrements aggregates — that maker was just filled, so their `User` is loaded. Cancel by verified node hint (`OrderRef`), fails closed. Fills race the tx's fixed account set: quote/execute take the loaded-user set; a matchable order whose user is absent is skipped while at most `unknown_user_grace_slots` old (keeper couldn't have known it — also kills the grief of bricking fills with fresh top-of-book orders) and fails with `StaleUserSet` once older (keeper is stale or pruning makers; queue-jumping is bounded to the grace window, so users need not be signed into the swift message). `placed_slot` on the node feeds the age check; keepers best-effort over-allocate users past quoted depth and retry on failure.
+3. **Risk**: no placement-time gating for PropAMM liquidity; validation at fill. Clamp size to margin-supported max *before* the execute CPI (can't unwind external state); categorical gates (reduce-only, liquidation, equity floor, oracle validity) at the same point; returned balance changes must be at-or-better than quoted levels. Quote-time truncation is advisory. CLOB orders keep the DLOB margin model (decided 2026-07-28; `open_order_notional` + margin-floor scheme dropped): `meets_place_order_margin_requirement` at placement, resting orders counted via the existing worst-case `open_bids`/`open_asks` machinery — every path that changes exposure is velocity-mediated — place/cancel/fill directly, sub-min culls via the execute response, evict/expiry via permissionless cranks that CPI through velocity with the maker's `User` loaded — so the aggregates are exact: no drift, no reconcile ix (dropped 2026-07-28). PropAMM depth needs no declaration (`quoting_reserve` dropped 2026-07-28 — it was only load-bearing under the margin floor): routers margin-truncate quoted levels against the PropAMM user's account (the quote-time truncation above) and the fill-time clamp enforces the same bound on-chain; overquoting only degrades that maker's fill guarantee. Fill-time clamp stays for staleness, but for CLOB makers it's the edge, not the primary defense. No new crank for deteriorated accounts: the existing `force_cancel_orders` keeper ix (controller/orders.rs:3820 — fires on initial-margin/equity-floor failure pre-liquidation, skips risk-reducing orders, flat fee from the user) extends to CLOB orders via keeper-passed `OrderRef`s. Orders stranded below a raised `min_order_size` need no sweep — they were margin-gated in and just rest (tail eviction takes them if uncompetitive; execute's cull removes sub-min remainders on partial fill).
+4. **Router**: off-chain `/route` picks N quoters + accounts (advisory); on-chain router computes the split from live quote CPIs. Mandatory baseline: CLOB + vAMM always in the split. Optional signed route in the swift message: every signed quoter must be present (skip if registry-deactivated); keeper is relayer for routed orders.
+5. **User orders**: plain limits live only on the CLOB. `User.orders` = conditional store (needs a trigger event to become matchable). Lifecycle `Armed → Placed` (slot keeps trigger params + CLOB `OrderRef`) `→ freed | back to Armed`. Re-arm is eager — the evict crank runs through velocity with the maker's `User` loaded, so it flips the trigger slot holding that `OrderRef` back to Armed in the same tx — and edge-triggered (price must recross). Trigger-time gate mirrors today's `trigger_order` (controller/orders.rs:3738): risk-increasing + non-reduce-only + account fails initial margin / buffered equity floor / equity breaker → cancel with `InsufficientFreeCollateral`, never re-arm (checked before the place CPI instead of after going live — same outcome). UI open orders = dlob-server index over CLOB accounts; chain is truth.
+6. **Priority**: CLOB orders first at a level (price-time), then transaction-passed MMs pro rata.
+7. **Migration**: DLOB wraps as a quoter for side-by-side; JIT dies at the taker-default flip (CLOB auction replaces it); phases per Notion Migration Plan.
+
+---
+
+## Phase 1 — CLOB program
+
+Standalone, tested CLOB. **Anchor v2 = the `anchor-next` alpha (git deps `anchor-lang-v2`/`anchor-v2-testing` from otter-sec/anchor). Tests in litesvm (not bankrun).**
+
+- [x] New Anchor v2 workspace `anchor-v2/` (hosts CLOB, Midpoint in phase 3, and any future v2 programs): own `Cargo.toml` + lockfile + `Anchor.toml`, own `target/` via `.cargo/config.toml`, `exclude`d from the root workspace (mirror the `rust/` precedent)
+- [x] `.so` fixture tooling: `program:build:clob`-style script builds with the v2 toolchain and copies `clob.so` to a fixtures dir the velocity workspace can load (litesvm `add_program_from_file`, needs only the `declare_id` pubkey — the deploy keypair lives OUTSIDE the repo, ~/.config/solana/velocity-keys/); CI orders the anchor-v2 workspace build before velocity integration tests
+- [x] Port state from the `programs/velocity/src/state/clob.rs` sketch; delete the sketch from velocity's tree (S2)
+- [x] Instructions (all V0-suffixed): `initialize_market_v0`, `update_market_v0` (admin: tick/step/min, delays, grace, evict threshold, authorities), `place_order_v0`, `cancel_order_v0`, `quote_v0`, `execute_v0`, `evict_worst_v0`, `remove_expired_v0`
+- [x] `place_order_v0`: grid/min validation, activation_slot computation (default/chosen/zero), hard-cap reject (S2)
+- [x] `execute_v0`: best-first consume, partial fill in place, expired skipped (crank reclaims), sub-`min_order_size` remainder cull on the wire response, `ExecuteResponseV0` via return data (S1)
+- [x] Crank ixs `evict_worst_v0` (soft-cap tail eviction) + `remove_expired_v0`: velocity-mediated removal returning `RemovedOrderV0` so aggregates stay exact (S2/S3)
+- [x] `quote_v0`/`execute_v0` loaded-user set: absent-user orders skipped while ≤ `unknown_user_grace_slots` old, `StaleUserSet` past it; `placed_slot` on the node (S2)
+- [x] Events: place/fill/cancel/evict/expire records (evict distinct from cancel — UI + lazy re-arm depend on it, S5)
+- [x] litesvm harness + tests: price-time priority, level aggregation, quote size cap, eviction (equal price rejected, per-side isolation), stale cancel hint fails closed, speed bump gates quote+execute, attestation bypass, expiry reclamation
+- [x] CU benchmarks (anchor v2): place(evict, full book) 1,618 CU (was 2,690 on v1); quote(full side, 128-level cap + response write) 9,309; execute(50 orders) ~26.7k with the compact ExecuteRecord event (single event: fills as (order_id, base) pairs + expired ids); place(evict) 1,791; quote 10,220 — slab indexing adds ~10-15% vs the fixed array, in exchange for per-market capacity. Binary 92KB (v1 was 150KB). Crank-evict redesign: place(best, full book) 1,257 (no inline evict walk), evict_worst 1,042, quote(full side) 10,683, execute(50) 27,726
+- [ ] Exit: `quote_v0`/`execute_v0` ABI frozen + documented; CU budget known per op
+
+## Phase 2 — Router in velocity (CLOB + DLOB + vAMM)
+
+Quoter registry + on-chain router inside velocity. Tests in litesvm, cross-program.
+
+- [x] litesvm harness: standalone `integration-tests/` workspace (fuzz/e2e-svm isolation model) loading `velocity.so` + `clob.so` fixtures with clear build-first errors; `bun run test:integration[:full]`; heavy state (State/PerpMarket/User) synthesizable via `set_account` where a test needs identity, not the init flow
+- [x] `QuoterV0` registry: `prop_amm.rs` promoted (gains `authority` — configures; `user` consents via `is_approved`; admin vets via `is_active`; SIZE 2728, PDA ["quoter", market u16, program, user]); ixs `initialize_quoter` (permissionless, born inactive; Custom born unapproved), `update_quoter_accounts` (chunked slice writes, deactivates), `update_quoter_config` (deactivates), `approve_quoter` (user authority, Custom only), `update_quoter_active` (warm admin; validates non-empty lists containing the response account); lifecycle covered end-to-end in `integration-tests/tests/quoter_registry.rs` (S1)
+- [ ] Router fill ix: quote CPIs → split (S6 waterfall) → clamp → execute CPIs → apply balance changes; passes the loaded-user set into quote/execute CPIs and rejects balance changes for unloaded users (S1)
+- [ ] Fill-time validation (S3): per-maker margin clamp before execute; categorical gates; at-or-better-than-quote check; oracle validity gating (mirror settle_pnl-style gates)
+- [ ] Mandatory baseline enforcement: fill fails without CLOB + vAMM (S4)
+- [ ] vAMM as quoter (adapt existing `Quoter` trait impls; delete AMM-JIT participation path per S7)
+- [ ] DLOB as quoter (legacy bridge for migration, S7)
+- [ ] CLOB adapter: velocity-mediated place/cancel (`place_authority` CPI), placement margin gate + `open_bids`/`open_asks` upkeep incl. execute-response culls (S3)
+- [ ] Velocity crank ixs wrapping `evict_worst_v0`/`remove_expired_v0`: apply `RemovedOrderV0` to the maker's aggregates, eager trigger re-arm, flat keeper reward from the maker (mirror today's expiry reward) (S3/S5)
+- [ ] Trigger orders: Armed/Placed lifecycle, `OrderRef` on the `User` slot, eager re-arm via the evict crank (edge-triggered re-fire), trigger-time margin gate per S5 (cancel `InsufficientFreeCollateral`, mirror `trigger_order`), stop-market → speed-bumped taker flow (S5)
+- [ ] Extend `force_cancel_orders` to CLOB orders: keeper-passed `OrderRef`s, cancel CPI + aggregate decrement, same margin gate and flat fee (S3)
+- [ ] `place_and_take`: remainder placed on CLOB
+- [ ] litesvm tests: split across all three quoters, margin clamping (incl. risk-reducing fills at zero free collateral), baseline enforcement, sequential multi-quoter fills against shared margin, trigger lifecycle incl. evict→eager-re-arm + margin-fail cancel, aggregate exactness across place/cancel/fill/cull/evict/expire
+- [ ] Housekeeping: Error enum append-only; `DRIFT-TO-VELOCITY.md` + admin CLI + TS SDK mirrors updated per repo conventions
+- [ ] Exit: full fill flow across CLOB + DLOB + vAMM under litesvm
+
+## Phase 3 — Midpoint PropAMM
+
+Reference PropAMM. **Anchor v2, litesvm**, plus integration tests of everything together.
+
+- [ ] Scaffold in the anchor-v2 workspace (+ `.so` fixture wiring like the CLOB); `MidpointQuoterV0` state (name seed, config/hot authorities, mid_price, 64 bid/ask levels with filled_size)
+- [ ] `set_mid_price_v0` / `set_bid_levels_v0` / `set_ask_levels_v0` — CU-optimized hot path
+- [ ] `quote_v0` / `execute_v0` (S1 ABI)
+- [ ] `flow_authority` signer introspection (toxic vs attested flow quoting example)
+- [ ] Register as Custom quoter; user approval flow (`is_approved`)
+- [ ] Integration tests: router split across CLOB + vAMM + Midpoint; Midpoint margin clamp incl. depth truncation against the quoter's user account; attested vs unattested quoting
+- [ ] Exit: end-to-end fill splitting across all quoter types in litesvm
+
+## Later (not yet scheduled)
+
+- Signed route field in the swift message + on-chain enforcement (S4)
+- swift: hold window + attestation signing; route hint in WS payload
+- dlob-server: CLOB/PropAMM sources, `/route`, `/openOrders?user=`, L3 v2 (global order ids)
+- keep-rs: relayer mode for routed orders, margin-truncated fill building, user over-allocation past quoted depth (per-market ALT of resting makers) + retry on `StaleUserSet`, evict/expire cranking (soft-cap watch + expiry sweep, rewarded from the maker)
+- Events pipeline + order history for CLOB records
+- Migration execution (S7): devnet rehearsal → mainnet additive → metrics-gated default flip → DLOB cancel-only → legacy removal

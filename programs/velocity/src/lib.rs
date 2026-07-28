@@ -2123,6 +2123,38 @@ pub mod velocity {
     ) -> Result<()> {
         handle_special_transfer_perp_position_to_vamm(ctx, market_index, amount)
     }
+
+    pub fn initialize_quoter(
+        ctx: Context<InitializeQuoter>,
+        args: InitializeQuoterArgs,
+    ) -> Result<()> {
+        handle_initialize_quoter(ctx, args)
+    }
+
+    pub fn update_quoter_accounts(
+        ctx: Context<UpdateQuoterAccounts>,
+        args: UpdateQuoterAccountsArgs,
+    ) -> Result<()> {
+        handle_update_quoter_accounts(ctx, args)
+    }
+
+    pub fn update_quoter_config(
+        ctx: Context<UpdateQuoterConfig>,
+        args: UpdateQuoterConfigArgs,
+    ) -> Result<()> {
+        handle_update_quoter_config(ctx, args)
+    }
+
+    pub fn update_quoter_active(ctx: Context<UpdateQuoterActive>, active: bool) -> Result<()> {
+        handle_update_quoter_active(ctx, active)
+    }
+
+    pub fn update_quoter_approved(
+        ctx: Context<UpdateQuoterApproved>,
+        approved: bool,
+    ) -> Result<()> {
+        handle_update_quoter_approved(ctx, approved)
+    }
 }
 
 #[cfg(not(feature = "no-entrypoint"))]

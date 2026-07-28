@@ -1,0 +1,30 @@
+[package]
+name = "velocity-integration-tests"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+# Standalone workspace — excluded from the repo root (see root Cargo.toml) so
+# this host-side litesvm/solana-sdk tree never unifies with the program (SBF)
+# build. Same isolation model as `rust/` and `fuzz/*`.
+[workspace]
+
+[dependencies]
+# velocity as a HOST library, same feature flavor as the tested .so
+# (`bun run program:build` = no-entrypoint + anchor-test) so host structs
+# match the loaded layout.
+velocity = { path = "../programs/velocity", default-features = false, features = [
+  "no-entrypoint",
+  "anchor-test",
+] }
+anchor-lang = { version = "1.0.2", features = ["init-if-needed"] }
+bytemuck = "1.14"
+
+litesvm = "0.11"
+solana-account = "3"
+solana-instruction = "3"
+solana-keypair = "3"
+solana-message = "3"
+solana-pubkey = "3"
+solana-signer = "3"
+solana-transaction = "3"

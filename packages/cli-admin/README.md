@@ -66,6 +66,12 @@ velocity-admin user admin-deposit <market> <amount> --user <pk> --user-token-acc
 velocity-admin user deposit <market> <amount> [--authority <pk>] [--vault-index <i>] [--sub-account <id>] [--user-token-account <pk>] [--reduce-only] [--dry-run]
 velocity-admin user withdraw <market> <amount> [--authority <pk>] [--vault-index <i>] [--sub-account <id>] [--user-token-account <pk>] [--reduce-only] [--dry-run]
 
+velocity-admin quoter init <market> <quoterProgram> <user> <responseAccount> <quoteDisc> <executeDisc> [--type <vamm|clob|custom>] [--authority <pk>]  # permissionless; entry born inactive; discs = 16 hex chars
+velocity-admin quoter update-accounts <quoter> <quote|execute> <index> <metas...> [--authority <pk>]  # meta = "<pubkey>" or "<pubkey>:w"; deactivates the entry
+velocity-admin quoter update-config <quoter> [--response-account <pk>] [--quote-disc <hex>] [--execute-disc <hex>] [--new-authority <pk>] [--authority <pk>]  # deactivates the entry
+velocity-admin quoter approve <quoter> <true|false> [--authority <pk>]  # quoted user's authority signs; Custom quoters only
+velocity-admin quoter set-active <quoter> <true|false> [--admin <pk>]   # warm/cold admin vetting gate
+
 velocity-admin if stake <market> <amount> [--authority <pk>] [--user-token-account <pk>]  # inits the stake account if missing
 
 velocity-admin program upgrade --buffer <pk> [--spill <pk>] [--dry-run]  # propose an upgrade from an existing on-chain buffer

@@ -1,0 +1,15 @@
+[toolchain]
+
+[programs.localnet]
+clob = "BPX47ur8TbgZQgtJcGJvdcQMMFbmBP7ZrhpiUmLuHKqU"
+
+[registry]
+url = "https://api.apr.dev"
+
+[provider]
+cluster = "Localnet"
+wallet = "~/.config/solana/id.json"
+
+# Tests are Rust litesvm (`cargo test -p clob`), not ts-mocha.
+[scripts]
+test = "cargo test"

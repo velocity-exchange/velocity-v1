@@ -17,7 +17,11 @@ members = [
 # fuzz harnesses). Each `fuzz/<crate>/` is its own standalone workspace (there is
 # no `fuzz/Cargo.toml` root) so their solana-sdk 3.x / libafl trees never unify
 # with the program (SBF) build; see fuzz/README.md.
-exclude = ["rust", "fuzz"]
+# `anchor-v2/` is the Anchor v2-line program workspace (CLOB, Midpoint, future
+# quoters) — excluded for the same reasons; see anchor-v2/Cargo.toml.
+# `integration-tests/` is the phase-2 cross-program litesvm harness (velocity.so
+# + clob.so fixtures) — excluded for the same host-tree isolation reasons.
+exclude = ["rust", "fuzz", "anchor-v2", "integration-tests"]
 resolver = "2"
 
 [profile.release]

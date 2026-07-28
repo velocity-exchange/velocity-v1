@@ -450,6 +450,41 @@ export type Velocity = {
       ]
     },
     {
+      "name": "approveQuoter",
+      "discriminator": [
+        228,
+        51,
+        77,
+        196,
+        73,
+        12,
+        174,
+        83
+      ],
+      "accounts": [
+        {
+          "name": "authority",
+          "signer": true,
+          "relations": [
+            "user"
+          ]
+        },
+        {
+          "name": "quoter",
+          "writable": true
+        },
+        {
+          "name": "user"
+        }
+      ],
+      "args": [
+        {
+          "name": "approve",
+          "type": "bool"
+        }
+      ]
+    },
+    {
       "name": "beginLpSwap",
       "discriminator": [
         64,
@@ -3463,6 +3498,118 @@ export type Velocity = {
         {
           "name": "feedId",
           "type": "u32"
+        }
+      ]
+    },
+    {
+      "name": "initializeQuoter",
+      "discriminator": [
+        95,
+        22,
+        79,
+        28,
+        163,
+        15,
+        117,
+        109
+      ],
+      "accounts": [
+        {
+          "name": "payer",
+          "writable": true,
+          "signer": true
+        },
+        {
+          "name": "authority",
+          "docs": [
+            "Becomes `QuoterV0::authority` — manages the entry's config."
+          ],
+          "signer": true
+        },
+        {
+          "name": "quoter",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  113,
+                  117,
+                  111,
+                  116,
+                  101,
+                  114
+                ]
+              },
+              {
+                "kind": "arg",
+                "path": "args.market_index"
+              },
+              {
+                "kind": "account",
+                "path": "quoterProgram"
+              },
+              {
+                "kind": "account",
+                "path": "user"
+              }
+            ]
+          }
+        },
+        {
+          "name": "perpMarket",
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  112,
+                  101,
+                  114,
+                  112,
+                  95,
+                  109,
+                  97,
+                  114,
+                  107,
+                  101,
+                  116
+                ]
+              },
+              {
+                "kind": "arg",
+                "path": "args.market_index"
+              }
+            ]
+          }
+        },
+        {
+          "name": "quoterProgram"
+        },
+        {
+          "name": "user",
+          "docs": [
+            "approves the entry (Custom). Ignored for Vamm/Clob-type entries."
+          ]
+        },
+        {
+          "name": "rent",
+          "address": "SysvarRent111111111111111111111111111111111"
+        },
+        {
+          "name": "systemProgram",
+          "address": "11111111111111111111111111111111"
+        }
+      ],
+      "args": [
+        {
+          "name": "args",
+          "type": {
+            "defined": {
+              "name": "initializeQuoterArgs"
+            }
+          }
         }
       ]
     },
@@ -11217,6 +11364,104 @@ export type Velocity = {
       ]
     },
     {
+      "name": "updateQuoterAccounts",
+      "discriminator": [
+        60,
+        210,
+        110,
+        134,
+        146,
+        21,
+        140,
+        220
+      ],
+      "accounts": [
+        {
+          "name": "authority",
+          "signer": true
+        },
+        {
+          "name": "quoter",
+          "writable": true
+        }
+      ],
+      "args": [
+        {
+          "name": "args",
+          "type": {
+            "defined": {
+              "name": "updateQuoterAccountsArgs"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "updateQuoterActive",
+      "discriminator": [
+        62,
+        158,
+        7,
+        155,
+        123,
+        213,
+        219,
+        237
+      ],
+      "accounts": [
+        {
+          "name": "admin",
+          "signer": true
+        },
+        {
+          "name": "state"
+        },
+        {
+          "name": "quoter",
+          "writable": true
+        }
+      ],
+      "args": [
+        {
+          "name": "active",
+          "type": "bool"
+        }
+      ]
+    },
+    {
+      "name": "updateQuoterConfig",
+      "discriminator": [
+        210,
+        218,
+        133,
+        195,
+        87,
+        215,
+        7,
+        209
+      ],
+      "accounts": [
+        {
+          "name": "authority",
+          "signer": true
+        },
+        {
+          "name": "quoter",
+          "writable": true
+        }
+      ],
+      "args": [
+        {
+          "name": "args",
+          "type": {
+            "defined": {
+              "name": "updateQuoterConfigArgs"
+            }
+          }
+        }
+      ]
+    },
+    {
       "name": "updateSolvencyStatus",
       "discriminator": [
         81,
@@ -14034,6 +14279,19 @@ export type Velocity = {
       ]
     },
     {
+      "name": "quoterV0",
+      "discriminator": [
+        71,
+        216,
+        164,
+        77,
+        121,
+        15,
+        57,
+        124
+      ]
+    },
+    {
       "name": "referrerName",
       "discriminator": [
         105,
@@ -16303,6 +16561,16 @@ export type Velocity = {
       "code": 6364,
       "name": "dailyDepositLimit",
       "msg": "Spot market daily deposit limit hit"
+    },
+    {
+      "code": 6365,
+      "name": "invalidQuoterConfig",
+      "msg": "Quoter registry entry config is invalid"
+    },
+    {
+      "code": 6366,
+      "name": "invalidQuoterAuthority",
+      "msg": "Signer does not control this quoter registry entry"
     }
   ],
   "types": [
@@ -16660,6 +16928,40 @@ export type Velocity = {
           {
             "name": "weight",
             "type": "i64"
+          }
+        ]
+      }
+    },
+    {
+      "name": "ammAccountMeta",
+      "serialization": "bytemuckunsafe",
+      "repr": {
+        "kind": "c"
+      },
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "pubkey",
+            "type": "pubkey"
+          },
+          {
+            "name": "isWritable",
+            "docs": [
+              "Whether the account is passed writable to the quoter program.",
+              "`is_signer` is intentionally not stored: quoter CPIs never receive",
+              "signer privilege at all (see `invoke_quoter`)."
+            ],
+            "type": "bool"
+          },
+          {
+            "name": "padding",
+            "type": {
+              "array": [
+                "u8",
+                7
+              ]
+            }
           }
         ]
       }
@@ -18150,6 +18452,48 @@ export type Velocity = {
           },
           {
             "name": "feeWithdraw"
+          }
+        ]
+      }
+    },
+    {
+      "name": "initializeQuoterArgs",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "marketIndex",
+            "type": "u16"
+          },
+          {
+            "name": "quoterType",
+            "type": {
+              "defined": {
+                "name": "quoterType"
+              }
+            }
+          },
+          {
+            "name": "responseAccount",
+            "type": "pubkey"
+          },
+          {
+            "name": "quoteV0Discriminator",
+            "type": {
+              "array": [
+                "u8",
+                8
+              ]
+            }
+          },
+          {
+            "name": "executeV0Discriminator",
+            "type": {
+              "array": [
+                "u8",
+                8
+              ]
+            }
           }
         ]
       }
@@ -21808,6 +22152,203 @@ export type Velocity = {
       }
     },
     {
+      "name": "quoterAccountMetaArg",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "pubkey",
+            "type": "pubkey"
+          },
+          {
+            "name": "isWritable",
+            "type": "bool"
+          }
+        ]
+      }
+    },
+    {
+      "name": "quoterCpiLeg",
+      "docs": [
+        "Which CPI leg an account-list update targets."
+      ],
+      "type": {
+        "kind": "enum",
+        "variants": [
+          {
+            "name": "quote"
+          },
+          {
+            "name": "execute"
+          }
+        ]
+      }
+    },
+    {
+      "name": "quoterType",
+      "repr": {
+        "kind": "rust"
+      },
+      "type": {
+        "kind": "enum",
+        "variants": [
+          {
+            "name": "vamm"
+          },
+          {
+            "name": "clob"
+          },
+          {
+            "name": "custom"
+          }
+        ]
+      }
+    },
+    {
+      "name": "quoterV0",
+      "serialization": "bytemuckunsafe",
+      "repr": {
+        "kind": "c"
+      },
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "user",
+            "docs": [
+              "For Custom quoters, the User this quoter is allowed to quote for —",
+              "that user must approve the quoter (`is_approved`). For vAMM, the vAMM",
+              "user. For CLOB, ignored: execute may return balance changes for any",
+              "user with resting orders on the CLOB."
+            ],
+            "type": "pubkey"
+          },
+          {
+            "name": "programId",
+            "docs": [
+              "The external program invoked for `quote_v0` / `execute_v0`."
+            ],
+            "type": "pubkey"
+          },
+          {
+            "name": "responseAccount",
+            "docs": [
+              "Account owned by `program_id` that quote/execute responses are written",
+              "into; must be registered in both account lists. Responses are read at",
+              "the pointer returned via return data, so payloads aren't bound by the",
+              "1024-byte return-data cap."
+            ],
+            "type": "pubkey"
+          },
+          {
+            "name": "authority",
+            "docs": [
+              "Manages this registry entry (config/account-list updates). Distinct",
+              "roles: the authority configures, the quoted `user` consents",
+              "(`is_approved`), the admin vets (`is_active`)."
+            ],
+            "type": "pubkey"
+          },
+          {
+            "name": "quoteV0Discriminator",
+            "docs": [
+              "Raw instruction discriminators on `program_id`. Stored rather than",
+              "derived so non-Anchor programs can participate."
+            ],
+            "type": {
+              "array": [
+                "u8",
+                8
+              ]
+            }
+          },
+          {
+            "name": "executeV0Discriminator",
+            "type": {
+              "array": [
+                "u8",
+                8
+              ]
+            }
+          },
+          {
+            "name": "quoteAccounts",
+            "docs": [
+              "Accounts forwarded to `quote_v0`, in order. Only the first",
+              "`quote_accounts_count` entries are live."
+            ],
+            "type": {
+              "array": [
+                {
+                  "defined": {
+                    "name": "ammAccountMeta"
+                  }
+                },
+                32
+              ]
+            }
+          },
+          {
+            "name": "executeAccounts",
+            "docs": [
+              "Accounts forwarded to `execute_v0`, in order. Only the first",
+              "`execute_accounts_count` entries are live."
+            ],
+            "type": {
+              "array": [
+                {
+                  "defined": {
+                    "name": "ammAccountMeta"
+                  }
+                },
+                32
+              ]
+            }
+          },
+          {
+            "name": "market",
+            "docs": [
+              "Perp market index this quoter serves."
+            ],
+            "type": "u16"
+          },
+          {
+            "name": "quoterType",
+            "type": {
+              "defined": {
+                "name": "quoterType"
+              }
+            }
+          },
+          {
+            "name": "isActive",
+            "type": "bool"
+          },
+          {
+            "name": "isApproved",
+            "type": "bool"
+          },
+          {
+            "name": "quoteAccountsCount",
+            "type": "u8"
+          },
+          {
+            "name": "executeAccountsCount",
+            "type": "u8"
+          },
+          {
+            "name": "padding",
+            "type": {
+              "array": [
+                "u8",
+                9
+              ]
+            }
+          }
+        ]
+      }
+    },
+    {
       "name": "referrerName",
       "serialization": "bytemuckunsafe",
       "repr": {
@@ -23816,6 +24357,81 @@ export type Velocity = {
             "name": "updateAmmSummaryStats",
             "type": {
               "option": "bool"
+            }
+          }
+        ]
+      }
+    },
+    {
+      "name": "updateQuoterAccountsArgs",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "leg",
+            "type": {
+              "defined": {
+                "name": "quoterCpiLeg"
+              }
+            }
+          },
+          {
+            "name": "index",
+            "docs": [
+              "Slot in the registered list this slice starts at."
+            ],
+            "type": "u8"
+          },
+          {
+            "name": "metas",
+            "type": {
+              "vec": {
+                "defined": {
+                  "name": "quoterAccountMetaArg"
+                }
+              }
+            }
+          }
+        ]
+      }
+    },
+    {
+      "name": "updateQuoterConfigArgs",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "responseAccount",
+            "type": {
+              "option": "pubkey"
+            }
+          },
+          {
+            "name": "quoteV0Discriminator",
+            "type": {
+              "option": {
+                "array": [
+                  "u8",
+                  8
+                ]
+              }
+            }
+          },
+          {
+            "name": "executeV0Discriminator",
+            "type": {
+              "option": {
+                "array": [
+                  "u8",
+                  8
+                ]
+              }
+            }
+          },
+          {
+            "name": "newAuthority",
+            "type": {
+              "option": "pubkey"
             }
           }
         ]

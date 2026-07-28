@@ -77,6 +77,16 @@ pub mod instructions {
     #[automatically_derived]
     impl anchor_lang::InstructionData for AdminUpdateUserStatsPausedOperations {}
     #[derive(AnchorSerialize, AnchorDeserialize, Clone, Default)]
+    pub struct ApproveQuoter {
+        pub approve: bool,
+    }
+    #[automatically_derived]
+    impl anchor_lang::Discriminator for ApproveQuoter {
+        const DISCRIMINATOR: &[u8] = &[228, 51, 77, 196, 73, 12, 174, 83];
+    }
+    #[automatically_derived]
+    impl anchor_lang::InstructionData for ApproveQuoter {}
+    #[derive(AnchorSerialize, AnchorDeserialize, Clone, Default)]
     pub struct BeginLpSwap {
         pub in_market_index: u16,
         pub out_market_index: u16,
@@ -476,6 +486,16 @@ pub mod instructions {
     }
     #[automatically_derived]
     impl anchor_lang::InstructionData for InitializePythLazerOracle {}
+    #[derive(AnchorSerialize, AnchorDeserialize, Clone, Default)]
+    pub struct InitializeQuoter {
+        pub args: InitializeQuoterArgs,
+    }
+    #[automatically_derived]
+    impl anchor_lang::Discriminator for InitializeQuoter {
+        const DISCRIMINATOR: &[u8] = &[95, 22, 79, 28, 163, 15, 117, 109];
+    }
+    #[automatically_derived]
+    impl anchor_lang::InstructionData for InitializeQuoter {}
     #[derive(AnchorSerialize, AnchorDeserialize, Clone, Default)]
     pub struct InitializeReferrerName {
         pub name: [u8; 32],
@@ -1932,6 +1952,36 @@ pub mod instructions {
     #[automatically_derived]
     impl anchor_lang::InstructionData for UpdateProtocolFeeRecipient {}
     #[derive(AnchorSerialize, AnchorDeserialize, Clone, Default)]
+    pub struct UpdateQuoterAccounts {
+        pub args: UpdateQuoterAccountsArgs,
+    }
+    #[automatically_derived]
+    impl anchor_lang::Discriminator for UpdateQuoterAccounts {
+        const DISCRIMINATOR: &[u8] = &[60, 210, 110, 134, 146, 21, 140, 220];
+    }
+    #[automatically_derived]
+    impl anchor_lang::InstructionData for UpdateQuoterAccounts {}
+    #[derive(AnchorSerialize, AnchorDeserialize, Clone, Default)]
+    pub struct UpdateQuoterActive {
+        pub active: bool,
+    }
+    #[automatically_derived]
+    impl anchor_lang::Discriminator for UpdateQuoterActive {
+        const DISCRIMINATOR: &[u8] = &[62, 158, 7, 155, 123, 213, 219, 237];
+    }
+    #[automatically_derived]
+    impl anchor_lang::InstructionData for UpdateQuoterActive {}
+    #[derive(AnchorSerialize, AnchorDeserialize, Clone, Default)]
+    pub struct UpdateQuoterConfig {
+        pub args: UpdateQuoterConfigArgs,
+    }
+    #[automatically_derived]
+    impl anchor_lang::Discriminator for UpdateQuoterConfig {
+        const DISCRIMINATOR: &[u8] = &[210, 218, 133, 195, 87, 215, 7, 209];
+    }
+    #[automatically_derived]
+    impl anchor_lang::InstructionData for UpdateQuoterConfig {}
+    #[derive(AnchorSerialize, AnchorDeserialize, Clone, Default)]
     pub struct UpdateSolvencyStatus {
         pub solvency_status: u8,
     }
@@ -2667,6 +2717,25 @@ pub mod types {
     }
     #[repr(C)]
     #[derive(
+        AnchorSerialize,
+        AnchorDeserialize,
+        InitSpace,
+        Serialize,
+        Deserialize,
+        Copy,
+        Clone,
+        Default,
+        Debug,
+        PartialEq,
+    )]
+    pub struct AmmAccountMeta {
+        pub pubkey: Pubkey,
+        pub is_writable: bool,
+        #[serde(skip)]
+        pub padding: Padding<7>,
+    }
+    #[repr(C)]
+    #[derive(
         AnchorSerialize, AnchorDeserialize, Serialize, Deserialize, Clone, Default, Debug, PartialEq,
     )]
     pub struct AmmCache {
@@ -3261,6 +3330,26 @@ pub mod types {
         MmOracleCrank,
         AmmSpreadAdjust,
         FeeWithdraw,
+    }
+    #[repr(C)]
+    #[derive(
+        AnchorSerialize,
+        AnchorDeserialize,
+        InitSpace,
+        Serialize,
+        Deserialize,
+        Copy,
+        Clone,
+        Default,
+        Debug,
+        PartialEq,
+    )]
+    pub struct InitializeQuoterArgs {
+        pub market_index: u16,
+        pub quoter_type: QuoterType,
+        pub response_account: Pubkey,
+        pub quote_v0_discriminator: [u8; 8],
+        pub execute_v0_discriminator: [u8; 8],
     }
     #[repr(C)]
     #[derive(
@@ -4506,6 +4595,89 @@ pub mod types {
         Debug,
         PartialEq,
     )]
+    pub struct QuoterAccountMetaArg {
+        pub pubkey: Pubkey,
+        pub is_writable: bool,
+    }
+    #[derive(
+        AnchorSerialize,
+        AnchorDeserialize,
+        InitSpace,
+        Serialize,
+        Deserialize,
+        Copy,
+        Clone,
+        Default,
+        Debug,
+        PartialEq,
+    )]
+    pub enum QuoterCpiLeg {
+        #[default]
+        Quote,
+        Execute,
+    }
+    #[derive(
+        AnchorSerialize,
+        AnchorDeserialize,
+        InitSpace,
+        Serialize,
+        Deserialize,
+        Copy,
+        Clone,
+        Default,
+        Debug,
+        PartialEq,
+    )]
+    pub enum QuoterType {
+        #[default]
+        Vamm,
+        Clob,
+        Custom,
+    }
+    #[repr(C)]
+    #[derive(
+        AnchorSerialize,
+        AnchorDeserialize,
+        InitSpace,
+        Serialize,
+        Deserialize,
+        Copy,
+        Clone,
+        Default,
+        Debug,
+        PartialEq,
+    )]
+    pub struct QuoterV0 {
+        pub user: Pubkey,
+        pub program_id: Pubkey,
+        pub response_account: Pubkey,
+        pub authority: Pubkey,
+        pub quote_v0_discriminator: [u8; 8],
+        pub execute_v0_discriminator: [u8; 8],
+        pub quote_accounts: [AmmAccountMeta; 32],
+        pub execute_accounts: [AmmAccountMeta; 32],
+        pub market: u16,
+        pub quoter_type: QuoterType,
+        pub is_active: bool,
+        pub is_approved: bool,
+        pub quote_accounts_count: u8,
+        pub execute_accounts_count: u8,
+        #[serde(skip)]
+        pub padding: Padding<9>,
+    }
+    #[repr(C)]
+    #[derive(
+        AnchorSerialize,
+        AnchorDeserialize,
+        InitSpace,
+        Serialize,
+        Deserialize,
+        Copy,
+        Clone,
+        Default,
+        Debug,
+        PartialEq,
+    )]
     pub struct ReferrerName {
         pub authority: Pubkey,
         pub user: Pubkey,
@@ -5196,6 +5368,34 @@ pub mod types {
     pub struct UpdatePerpMarketSummaryStatsParams {
         pub net_unsettled_funding_pnl: Option<i64>,
         pub update_amm_summary_stats: Option<bool>,
+    }
+    #[repr(C)]
+    #[derive(
+        AnchorSerialize, AnchorDeserialize, Serialize, Deserialize, Clone, Default, Debug, PartialEq,
+    )]
+    pub struct UpdateQuoterAccountsArgs {
+        pub leg: QuoterCpiLeg,
+        pub index: u8,
+        pub metas: Vec<QuoterAccountMetaArg>,
+    }
+    #[repr(C)]
+    #[derive(
+        AnchorSerialize,
+        AnchorDeserialize,
+        InitSpace,
+        Serialize,
+        Deserialize,
+        Copy,
+        Clone,
+        Default,
+        Debug,
+        PartialEq,
+    )]
+    pub struct UpdateQuoterConfigArgs {
+        pub response_account: Option<Pubkey>,
+        pub quote_v0_discriminator: Option<[u8; 8]>,
+        pub execute_v0_discriminator: Option<[u8; 8]>,
+        pub new_authority: Option<Pubkey>,
     }
     #[repr(C)]
     #[derive(
@@ -5980,6 +6180,76 @@ pub mod accounts {
     }
     #[automatically_derived]
     impl anchor_lang::AccountDeserialize for PythLazerOracle {
+        fn try_deserialize(buf: &mut &[u8]) -> anchor_lang::Result<Self> {
+            let given_disc = &buf[..8];
+            if Self::DISCRIMINATOR != given_disc {
+                return Err(anchor_lang::error!(
+                    anchor_lang::error::ErrorCode::AccountDiscriminatorMismatch
+                ));
+            }
+            Self::try_deserialize_unchecked(buf)
+        }
+        fn try_deserialize_unchecked(buf: &mut &[u8]) -> anchor_lang::Result<Self> {
+            let mut data: &[u8] = &buf[8..];
+            AnchorDeserialize::deserialize(&mut data)
+                .map_err(|_| anchor_lang::error::ErrorCode::AccountDidNotDeserialize.into())
+        }
+    }
+    #[repr(C)]
+    #[derive(
+        AnchorSerialize,
+        AnchorDeserialize,
+        InitSpace,
+        Serialize,
+        Deserialize,
+        Copy,
+        Clone,
+        Default,
+        Debug,
+        PartialEq,
+    )]
+    pub struct QuoterV0 {
+        pub user: Pubkey,
+        pub program_id: Pubkey,
+        pub response_account: Pubkey,
+        pub authority: Pubkey,
+        pub quote_v0_discriminator: [u8; 8],
+        pub execute_v0_discriminator: [u8; 8],
+        pub quote_accounts: [AmmAccountMeta; 32],
+        pub execute_accounts: [AmmAccountMeta; 32],
+        pub market: u16,
+        pub quoter_type: QuoterType,
+        pub is_active: bool,
+        pub is_approved: bool,
+        pub quote_accounts_count: u8,
+        pub execute_accounts_count: u8,
+        #[serde(skip)]
+        pub padding: Padding<9>,
+    }
+    #[automatically_derived]
+    impl anchor_lang::Discriminator for QuoterV0 {
+        const DISCRIMINATOR: &[u8] = &[71, 216, 164, 77, 121, 15, 57, 124];
+    }
+    #[automatically_derived]
+    unsafe impl anchor_lang::__private::bytemuck::Pod for QuoterV0 {}
+    #[automatically_derived]
+    unsafe impl anchor_lang::__private::bytemuck::Zeroable for QuoterV0 {}
+    #[automatically_derived]
+    impl anchor_lang::ZeroCopy for QuoterV0 {}
+    #[automatically_derived]
+    impl anchor_lang::AccountSerialize for QuoterV0 {
+        fn try_serialize<W: std::io::Write>(&self, writer: &mut W) -> anchor_lang::Result<()> {
+            if writer.write_all(Self::DISCRIMINATOR).is_err() {
+                return Err(anchor_lang::error::ErrorCode::AccountDidNotSerialize.into());
+            }
+            if AnchorSerialize::serialize(self, writer).is_err() {
+                return Err(anchor_lang::error::ErrorCode::AccountDidNotSerialize.into());
+            }
+            Ok(())
+        }
+    }
+    #[automatically_derived]
+    impl anchor_lang::AccountDeserialize for QuoterV0 {
         fn try_deserialize(buf: &mut &[u8]) -> anchor_lang::Result<Self> {
             let given_disc = &buf[..8];
             if Self::DISCRIMINATOR != given_disc {
@@ -7048,6 +7318,76 @@ pub mod accounts {
     }
     #[automatically_derived]
     impl anchor_lang::AccountDeserialize for AdminUpdateUserStatsPausedOperations {
+        fn try_deserialize(buf: &mut &[u8]) -> anchor_lang::Result<Self> {
+            let given_disc = &buf[..8];
+            if Self::DISCRIMINATOR != given_disc {
+                return Err(anchor_lang::error!(
+                    anchor_lang::error::ErrorCode::AccountDiscriminatorMismatch
+                ));
+            }
+            Self::try_deserialize_unchecked(buf)
+        }
+        fn try_deserialize_unchecked(buf: &mut &[u8]) -> anchor_lang::Result<Self> {
+            let mut data: &[u8] = &buf[8..];
+            AnchorDeserialize::deserialize(&mut data)
+                .map_err(|_| anchor_lang::error::ErrorCode::AccountDidNotDeserialize.into())
+        }
+    }
+    #[repr(C)]
+    #[derive(Copy, Clone, Default, AnchorSerialize, AnchorDeserialize, Serialize, Deserialize)]
+    pub struct ApproveQuoter {
+        pub authority: Pubkey,
+        pub quoter: Pubkey,
+        pub user: Pubkey,
+    }
+    #[automatically_derived]
+    impl anchor_lang::Discriminator for ApproveQuoter {
+        const DISCRIMINATOR: &[u8] = &[240, 171, 195, 50, 49, 167, 51, 155];
+    }
+    #[automatically_derived]
+    unsafe impl anchor_lang::__private::bytemuck::Pod for ApproveQuoter {}
+    #[automatically_derived]
+    unsafe impl anchor_lang::__private::bytemuck::Zeroable for ApproveQuoter {}
+    #[automatically_derived]
+    impl anchor_lang::ZeroCopy for ApproveQuoter {}
+    #[automatically_derived]
+    impl anchor_lang::InstructionData for ApproveQuoter {}
+    #[automatically_derived]
+    impl ToAccountMetas for ApproveQuoter {
+        fn to_account_metas(&self) -> Vec<AccountMeta> {
+            vec![
+                AccountMeta {
+                    pubkey: self.authority,
+                    is_signer: true,
+                    is_writable: false,
+                },
+                AccountMeta {
+                    pubkey: self.quoter,
+                    is_signer: false,
+                    is_writable: true,
+                },
+                AccountMeta {
+                    pubkey: self.user,
+                    is_signer: false,
+                    is_writable: false,
+                },
+            ]
+        }
+    }
+    #[automatically_derived]
+    impl anchor_lang::AccountSerialize for ApproveQuoter {
+        fn try_serialize<W: std::io::Write>(&self, writer: &mut W) -> anchor_lang::Result<()> {
+            if writer.write_all(Self::DISCRIMINATOR).is_err() {
+                return Err(anchor_lang::error::ErrorCode::AccountDidNotSerialize.into());
+            }
+            if AnchorSerialize::serialize(self, writer).is_err() {
+                return Err(anchor_lang::error::ErrorCode::AccountDidNotSerialize.into());
+            }
+            Ok(())
+        }
+    }
+    #[automatically_derived]
+    impl anchor_lang::AccountDeserialize for ApproveQuoter {
         fn try_deserialize(buf: &mut &[u8]) -> anchor_lang::Result<Self> {
             let given_disc = &buf[..8];
             if Self::DISCRIMINATOR != given_disc {
@@ -10152,6 +10492,106 @@ pub mod accounts {
     }
     #[automatically_derived]
     impl anchor_lang::AccountDeserialize for InitializePythLazerOracle {
+        fn try_deserialize(buf: &mut &[u8]) -> anchor_lang::Result<Self> {
+            let given_disc = &buf[..8];
+            if Self::DISCRIMINATOR != given_disc {
+                return Err(anchor_lang::error!(
+                    anchor_lang::error::ErrorCode::AccountDiscriminatorMismatch
+                ));
+            }
+            Self::try_deserialize_unchecked(buf)
+        }
+        fn try_deserialize_unchecked(buf: &mut &[u8]) -> anchor_lang::Result<Self> {
+            let mut data: &[u8] = &buf[8..];
+            AnchorDeserialize::deserialize(&mut data)
+                .map_err(|_| anchor_lang::error::ErrorCode::AccountDidNotDeserialize.into())
+        }
+    }
+    #[repr(C)]
+    #[derive(Copy, Clone, Default, AnchorSerialize, AnchorDeserialize, Serialize, Deserialize)]
+    pub struct InitializeQuoter {
+        pub payer: Pubkey,
+        pub authority: Pubkey,
+        pub quoter: Pubkey,
+        pub perp_market: Pubkey,
+        pub quoter_program: Pubkey,
+        pub user: Pubkey,
+        pub rent: Pubkey,
+        pub system_program: Pubkey,
+    }
+    #[automatically_derived]
+    impl anchor_lang::Discriminator for InitializeQuoter {
+        const DISCRIMINATOR: &[u8] = &[175, 157, 34, 69, 222, 220, 69, 13];
+    }
+    #[automatically_derived]
+    unsafe impl anchor_lang::__private::bytemuck::Pod for InitializeQuoter {}
+    #[automatically_derived]
+    unsafe impl anchor_lang::__private::bytemuck::Zeroable for InitializeQuoter {}
+    #[automatically_derived]
+    impl anchor_lang::ZeroCopy for InitializeQuoter {}
+    #[automatically_derived]
+    impl anchor_lang::InstructionData for InitializeQuoter {}
+    #[automatically_derived]
+    impl ToAccountMetas for InitializeQuoter {
+        fn to_account_metas(&self) -> Vec<AccountMeta> {
+            vec![
+                AccountMeta {
+                    pubkey: self.payer,
+                    is_signer: true,
+                    is_writable: true,
+                },
+                AccountMeta {
+                    pubkey: self.authority,
+                    is_signer: true,
+                    is_writable: false,
+                },
+                AccountMeta {
+                    pubkey: self.quoter,
+                    is_signer: false,
+                    is_writable: true,
+                },
+                AccountMeta {
+                    pubkey: self.perp_market,
+                    is_signer: false,
+                    is_writable: false,
+                },
+                AccountMeta {
+                    pubkey: self.quoter_program,
+                    is_signer: false,
+                    is_writable: false,
+                },
+                AccountMeta {
+                    pubkey: self.user,
+                    is_signer: false,
+                    is_writable: false,
+                },
+                AccountMeta {
+                    pubkey: self.rent,
+                    is_signer: false,
+                    is_writable: false,
+                },
+                AccountMeta {
+                    pubkey: self.system_program,
+                    is_signer: false,
+                    is_writable: false,
+                },
+            ]
+        }
+    }
+    #[automatically_derived]
+    impl anchor_lang::AccountSerialize for InitializeQuoter {
+        fn try_serialize<W: std::io::Write>(&self, writer: &mut W) -> anchor_lang::Result<()> {
+            if writer.write_all(Self::DISCRIMINATOR).is_err() {
+                return Err(anchor_lang::error::ErrorCode::AccountDidNotSerialize.into());
+            }
+            if AnchorSerialize::serialize(self, writer).is_err() {
+                return Err(anchor_lang::error::ErrorCode::AccountDidNotSerialize.into());
+            }
+            Ok(())
+        }
+    }
+    #[automatically_derived]
+    impl anchor_lang::AccountDeserialize for InitializeQuoter {
         fn try_deserialize(buf: &mut &[u8]) -> anchor_lang::Result<Self> {
             let given_disc = &buf[..8];
             if Self::DISCRIMINATOR != given_disc {
@@ -21161,6 +21601,204 @@ pub mod accounts {
     }
     #[repr(C)]
     #[derive(Copy, Clone, Default, AnchorSerialize, AnchorDeserialize, Serialize, Deserialize)]
+    pub struct UpdateQuoterAccounts {
+        pub authority: Pubkey,
+        pub quoter: Pubkey,
+    }
+    #[automatically_derived]
+    impl anchor_lang::Discriminator for UpdateQuoterAccounts {
+        const DISCRIMINATOR: &[u8] = &[219, 10, 224, 119, 7, 110, 70, 126];
+    }
+    #[automatically_derived]
+    unsafe impl anchor_lang::__private::bytemuck::Pod for UpdateQuoterAccounts {}
+    #[automatically_derived]
+    unsafe impl anchor_lang::__private::bytemuck::Zeroable for UpdateQuoterAccounts {}
+    #[automatically_derived]
+    impl anchor_lang::ZeroCopy for UpdateQuoterAccounts {}
+    #[automatically_derived]
+    impl anchor_lang::InstructionData for UpdateQuoterAccounts {}
+    #[automatically_derived]
+    impl ToAccountMetas for UpdateQuoterAccounts {
+        fn to_account_metas(&self) -> Vec<AccountMeta> {
+            vec![
+                AccountMeta {
+                    pubkey: self.authority,
+                    is_signer: true,
+                    is_writable: false,
+                },
+                AccountMeta {
+                    pubkey: self.quoter,
+                    is_signer: false,
+                    is_writable: true,
+                },
+            ]
+        }
+    }
+    #[automatically_derived]
+    impl anchor_lang::AccountSerialize for UpdateQuoterAccounts {
+        fn try_serialize<W: std::io::Write>(&self, writer: &mut W) -> anchor_lang::Result<()> {
+            if writer.write_all(Self::DISCRIMINATOR).is_err() {
+                return Err(anchor_lang::error::ErrorCode::AccountDidNotSerialize.into());
+            }
+            if AnchorSerialize::serialize(self, writer).is_err() {
+                return Err(anchor_lang::error::ErrorCode::AccountDidNotSerialize.into());
+            }
+            Ok(())
+        }
+    }
+    #[automatically_derived]
+    impl anchor_lang::AccountDeserialize for UpdateQuoterAccounts {
+        fn try_deserialize(buf: &mut &[u8]) -> anchor_lang::Result<Self> {
+            let given_disc = &buf[..8];
+            if Self::DISCRIMINATOR != given_disc {
+                return Err(anchor_lang::error!(
+                    anchor_lang::error::ErrorCode::AccountDiscriminatorMismatch
+                ));
+            }
+            Self::try_deserialize_unchecked(buf)
+        }
+        fn try_deserialize_unchecked(buf: &mut &[u8]) -> anchor_lang::Result<Self> {
+            let mut data: &[u8] = &buf[8..];
+            AnchorDeserialize::deserialize(&mut data)
+                .map_err(|_| anchor_lang::error::ErrorCode::AccountDidNotDeserialize.into())
+        }
+    }
+    #[repr(C)]
+    #[derive(Copy, Clone, Default, AnchorSerialize, AnchorDeserialize, Serialize, Deserialize)]
+    pub struct UpdateQuoterActive {
+        pub admin: Pubkey,
+        pub state: Pubkey,
+        pub quoter: Pubkey,
+    }
+    #[automatically_derived]
+    impl anchor_lang::Discriminator for UpdateQuoterActive {
+        const DISCRIMINATOR: &[u8] = &[68, 217, 195, 220, 18, 38, 73, 87];
+    }
+    #[automatically_derived]
+    unsafe impl anchor_lang::__private::bytemuck::Pod for UpdateQuoterActive {}
+    #[automatically_derived]
+    unsafe impl anchor_lang::__private::bytemuck::Zeroable for UpdateQuoterActive {}
+    #[automatically_derived]
+    impl anchor_lang::ZeroCopy for UpdateQuoterActive {}
+    #[automatically_derived]
+    impl anchor_lang::InstructionData for UpdateQuoterActive {}
+    #[automatically_derived]
+    impl ToAccountMetas for UpdateQuoterActive {
+        fn to_account_metas(&self) -> Vec<AccountMeta> {
+            vec![
+                AccountMeta {
+                    pubkey: self.admin,
+                    is_signer: true,
+                    is_writable: false,
+                },
+                AccountMeta {
+                    pubkey: self.state,
+                    is_signer: false,
+                    is_writable: false,
+                },
+                AccountMeta {
+                    pubkey: self.quoter,
+                    is_signer: false,
+                    is_writable: true,
+                },
+            ]
+        }
+    }
+    #[automatically_derived]
+    impl anchor_lang::AccountSerialize for UpdateQuoterActive {
+        fn try_serialize<W: std::io::Write>(&self, writer: &mut W) -> anchor_lang::Result<()> {
+            if writer.write_all(Self::DISCRIMINATOR).is_err() {
+                return Err(anchor_lang::error::ErrorCode::AccountDidNotSerialize.into());
+            }
+            if AnchorSerialize::serialize(self, writer).is_err() {
+                return Err(anchor_lang::error::ErrorCode::AccountDidNotSerialize.into());
+            }
+            Ok(())
+        }
+    }
+    #[automatically_derived]
+    impl anchor_lang::AccountDeserialize for UpdateQuoterActive {
+        fn try_deserialize(buf: &mut &[u8]) -> anchor_lang::Result<Self> {
+            let given_disc = &buf[..8];
+            if Self::DISCRIMINATOR != given_disc {
+                return Err(anchor_lang::error!(
+                    anchor_lang::error::ErrorCode::AccountDiscriminatorMismatch
+                ));
+            }
+            Self::try_deserialize_unchecked(buf)
+        }
+        fn try_deserialize_unchecked(buf: &mut &[u8]) -> anchor_lang::Result<Self> {
+            let mut data: &[u8] = &buf[8..];
+            AnchorDeserialize::deserialize(&mut data)
+                .map_err(|_| anchor_lang::error::ErrorCode::AccountDidNotDeserialize.into())
+        }
+    }
+    #[repr(C)]
+    #[derive(Copy, Clone, Default, AnchorSerialize, AnchorDeserialize, Serialize, Deserialize)]
+    pub struct UpdateQuoterConfig {
+        pub authority: Pubkey,
+        pub quoter: Pubkey,
+    }
+    #[automatically_derived]
+    impl anchor_lang::Discriminator for UpdateQuoterConfig {
+        const DISCRIMINATOR: &[u8] = &[248, 44, 11, 13, 5, 117, 137, 121];
+    }
+    #[automatically_derived]
+    unsafe impl anchor_lang::__private::bytemuck::Pod for UpdateQuoterConfig {}
+    #[automatically_derived]
+    unsafe impl anchor_lang::__private::bytemuck::Zeroable for UpdateQuoterConfig {}
+    #[automatically_derived]
+    impl anchor_lang::ZeroCopy for UpdateQuoterConfig {}
+    #[automatically_derived]
+    impl anchor_lang::InstructionData for UpdateQuoterConfig {}
+    #[automatically_derived]
+    impl ToAccountMetas for UpdateQuoterConfig {
+        fn to_account_metas(&self) -> Vec<AccountMeta> {
+            vec![
+                AccountMeta {
+                    pubkey: self.authority,
+                    is_signer: true,
+                    is_writable: false,
+                },
+                AccountMeta {
+                    pubkey: self.quoter,
+                    is_signer: false,
+                    is_writable: true,
+                },
+            ]
+        }
+    }
+    #[automatically_derived]
+    impl anchor_lang::AccountSerialize for UpdateQuoterConfig {
+        fn try_serialize<W: std::io::Write>(&self, writer: &mut W) -> anchor_lang::Result<()> {
+            if writer.write_all(Self::DISCRIMINATOR).is_err() {
+                return Err(anchor_lang::error::ErrorCode::AccountDidNotSerialize.into());
+            }
+            if AnchorSerialize::serialize(self, writer).is_err() {
+                return Err(anchor_lang::error::ErrorCode::AccountDidNotSerialize.into());
+            }
+            Ok(())
+        }
+    }
+    #[automatically_derived]
+    impl anchor_lang::AccountDeserialize for UpdateQuoterConfig {
+        fn try_deserialize(buf: &mut &[u8]) -> anchor_lang::Result<Self> {
+            let given_disc = &buf[..8];
+            if Self::DISCRIMINATOR != given_disc {
+                return Err(anchor_lang::error!(
+                    anchor_lang::error::ErrorCode::AccountDiscriminatorMismatch
+                ));
+            }
+            Self::try_deserialize_unchecked(buf)
+        }
+        fn try_deserialize_unchecked(buf: &mut &[u8]) -> anchor_lang::Result<Self> {
+            let mut data: &[u8] = &buf[8..];
+            AnchorDeserialize::deserialize(&mut data)
+                .map_err(|_| anchor_lang::error::ErrorCode::AccountDidNotDeserialize.into())
+        }
+    }
+    #[repr(C)]
+    #[derive(Copy, Clone, Default, AnchorSerialize, AnchorDeserialize, Serialize, Deserialize)]
     pub struct UpdateSolvencyStatus {
         pub state: Pubkey,
         pub admin: Pubkey,
@@ -25879,6 +26517,10 @@ pub mod errors {
         InvalidRevenueShareRecipient,
         #[msg("Spot market daily deposit limit hit")]
         DailyDepositLimit,
+        #[msg("Quoter registry entry config is invalid")]
+        InvalidQuoterConfig,
+        #[msg("Signer does not control this quoter registry entry")]
+        InvalidQuoterAuthority,
     }
 }
 pub mod events {

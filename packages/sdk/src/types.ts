@@ -2597,3 +2597,52 @@ export type TransferFeeAndPnlPoolRecord = {
 	/** QUOTE_PRECISION (1e6) */
 	amount: BN;
 };
+
+/** Kind of quoter a `QuoterV0Account` registry entry names: the in-program vAMM, an external CLOB, or a custom quoter program that quotes for a single approved user. */
+export class QuoterType {
+	static readonly VAMM = { vamm: {} };
+	static readonly CLOB = { clob: {} };
+	static readonly CUSTOM = { custom: {} };
+}
+
+/** Which CPI leg (`quoteV0` / `executeV0`) an `updateQuoterAccounts` slice targets. */
+export class QuoterCpiLeg {
+	static readonly QUOTE = { quote: {} };
+	static readonly EXECUTE = { execute: {} };
+}
+
+/** One registered account forwarded to a quoter program's CPI leg. `isSigner` is intentionally not stored — quoter CPIs never receive signer privilege. */
+export type AmmAccountMeta = {
+	pubkey: PublicKey;
+	/** whether the account is passed writable to the quoter program */
+	isWritable: boolean;
+	padding: number[];
+};
+
+/** Decoded mirror of the on-chain `QuoterV0` account: one quoter-registry entry per (perp market, quoter program, quoted user), naming the external quoter program plus the CPI surface velocity needs to call it (discriminators, account lists, response account). Entries are inert until the admin activates them (`isActive`) and — for Custom quoters — the quoted user approves them (`isApproved`). */
+export type QuoterV0Account = {
+	/** for Custom quoters, the user this quoter is allowed to quote for (must approve); for vAMM, the vAMM user; for CLOB, ignored */
+	user: PublicKey;
+	/** the external program invoked for `quoteV0` / `executeV0` */
+	programId: PublicKey;
+	/** account owned by `programId` that quote/execute responses are written into; must be registered in both account lists */
+	responseAccount: PublicKey;
+	/** manages this registry entry (config/account-list updates) */
+	authority: PublicKey;
+	/** raw 8-byte instruction discriminator of `quoteV0` on `programId` */
+	quoteV0Discriminator: number[];
+	/** raw 8-byte instruction discriminator of `executeV0` on `programId` */
+	executeV0Discriminator: number[];
+	/** accounts forwarded to `quoteV0`, in order; only the first `quoteAccountsCount` entries are live */
+	quoteAccounts: AmmAccountMeta[];
+	/** accounts forwarded to `executeV0`, in order; only the first `executeAccountsCount` entries are live */
+	executeAccounts: AmmAccountMeta[];
+	/** perp market index this quoter serves */
+	market: number;
+	quoterType: QuoterType;
+	isActive: boolean;
+	isApproved: boolean;
+	quoteAccountsCount: number;
+	executeAccountsCount: number;
+	padding: number[];
+};

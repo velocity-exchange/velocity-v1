@@ -783,6 +783,10 @@ pub enum ErrorCode {
     InvalidRevenueShareRecipient,
     #[msg("Spot market daily deposit limit hit")]
     DailyDepositLimit,
+    #[msg("Quoter registry entry config is invalid")]
+    InvalidQuoterConfig,
+    #[msg("Signer does not control this quoter registry entry")]
+    InvalidQuoterAuthority,
 }
 
 #[macro_export]

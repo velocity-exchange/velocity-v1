@@ -1,18 +1,24 @@
 mod get_claimable_pnl {
-    use crate::math::constants::{
-        AMM_RESERVE_PRECISION, BASE_PRECISION_I64, MAX_CONCENTRATION_COEFFICIENT,
-        PRICE_PRECISION_I64, QUOTE_PRECISION, QUOTE_PRECISION_I128, QUOTE_PRECISION_I64,
-        QUOTE_SPOT_MARKET_INDEX, SPOT_BALANCE_PRECISION, SPOT_CUMULATIVE_INTEREST_PRECISION,
-        SPOT_WEIGHT_PRECISION,
+    use crate::{
+        math::{
+            constants::{
+                AMM_RESERVE_PRECISION, BASE_PRECISION_I64, MAX_CONCENTRATION_COEFFICIENT,
+                PRICE_PRECISION_I64, QUOTE_PRECISION, QUOTE_PRECISION_I128, QUOTE_PRECISION_I64,
+                QUOTE_SPOT_MARKET_INDEX, SPOT_BALANCE_PRECISION,
+                SPOT_CUMULATIVE_INTEREST_PRECISION, SPOT_WEIGHT_PRECISION,
+            },
+            position::calculate_base_asset_value_and_pnl_with_oracle_price,
+            spot_balance::get_token_amount,
+        },
+        state::{
+            oracle::OracleSource,
+            perp_market::{PerpMarket, PoolBalance, AMM},
+            spot_market::{SpotBalance, SpotMarket},
+            user::{PerpPosition, User},
+        },
+        test_utils::get_positions,
+        vlp::amm::math::amm::calculate_net_user_pnl,
     };
-    use crate::math::position::calculate_base_asset_value_and_pnl_with_oracle_price;
-    use crate::math::spot_balance::get_token_amount;
-    use crate::state::oracle::OracleSource;
-    use crate::state::perp_market::{PerpMarket, PoolBalance, AMM};
-    use crate::state::spot_market::{SpotBalance, SpotMarket};
-    use crate::state::user::{PerpPosition, User};
-    use crate::test_utils::get_positions;
-    use crate::vlp::amm::math::amm::calculate_net_user_pnl;
 
     #[test]
     fn long_negative_unrealized_pnl() {
@@ -618,13 +624,17 @@ mod get_claimable_pnl {
 }
 
 mod get_worst_case_fill_simulation {
-    use crate::math::constants::{
-        PRICE_PRECISION_I64, QUOTE_PRECISION_I128, SPOT_BALANCE_PRECISION_U64,
+    use crate::{
+        math::{
+            constants::{PRICE_PRECISION_I64, QUOTE_PRECISION_I128, SPOT_BALANCE_PRECISION_U64},
+            margin::MarginRequirementType,
+        },
+        state::{
+            oracle::{OraclePriceData, StrictOraclePrice},
+            spot_market::{SpotBalanceType, SpotMarket},
+            user::{OrderFillSimulation, SpotPosition},
+        },
     };
-    use crate::math::margin::MarginRequirementType;
-    use crate::state::oracle::{OraclePriceData, StrictOraclePrice};
-    use crate::state::spot_market::{SpotBalanceType, SpotMarket};
-    use crate::state::user::{OrderFillSimulation, SpotPosition};
 
     #[test]
     fn no_token_open_bid() {
@@ -1415,10 +1425,11 @@ mod get_worst_case_fill_simulation {
 }
 
 mod apply_user_custom_margin_ratio {
-    use crate::math::constants::{PRICE_PRECISION_I64, QUOTE_PRECISION_I128};
-    use crate::state::spot_market::SpotMarket;
-    use crate::state::user::OrderFillSimulation;
-    use crate::MARGIN_PRECISION;
+    use crate::{
+        math::constants::{PRICE_PRECISION_I64, QUOTE_PRECISION_I128},
+        state::{spot_market::SpotMarket, user::OrderFillSimulation},
+        MARGIN_PRECISION,
+    };
 
     #[test]
     fn test() {
@@ -1528,8 +1539,7 @@ mod apply_user_custom_margin_ratio {
 }
 
 mod get_base_asset_amount_unfilled {
-    use crate::controller::position::PositionDirection;
-    use crate::state::user::Order;
+    use crate::{controller::position::PositionDirection, state::user::Order};
 
     #[test]
     fn existing_position_is_none() {
@@ -1738,8 +1748,10 @@ mod update_user_status {
 }
 
 mod resting_limit_order {
-    use crate::state::user::{Order, OrderType};
-    use crate::PositionDirection;
+    use crate::{
+        state::user::{Order, OrderType},
+        PositionDirection,
+    };
 
     #[test]
     fn test() {
@@ -1892,9 +1904,10 @@ mod get_user_stats_age_ts {
 }
 
 mod worst_case_liability_value {
-    use crate::state::perp_market::ContractType;
-    use crate::state::user::PerpPosition;
-    use crate::{BASE_PRECISION_I128, BASE_PRECISION_I64, PRICE_PRECISION_I64, QUOTE_PRECISION};
+    use crate::{
+        state::{perp_market::ContractType, user::PerpPosition},
+        BASE_PRECISION_I128, BASE_PRECISION_I64, PRICE_PRECISION_I64, QUOTE_PRECISION,
+    };
 
     #[test]
     fn perp() {
@@ -1963,9 +1976,10 @@ mod worst_case_liability_value {
 }
 
 mod update_referrer_status {
-    use anchor_lang::prelude::Pubkey;
-
-    use crate::state::user::{ReferrerStatus, UserStats};
+    use {
+        crate::state::user::{ReferrerStatus, UserStats},
+        anchor_lang::prelude::Pubkey,
+    };
 
     #[test]
     fn test() {
@@ -2142,33 +2156,39 @@ mod force_get_isolated_perp_position_mut {
 }
 
 pub mod meets_withdraw_margin_requirement {
-    use std::collections::BTreeSet;
-    use std::str::FromStr;
-
-    use solana_program::pubkey::Pubkey;
-
-    use crate::controller::position::PositionDirection;
-    use crate::create_anchor_account_info;
-    use crate::error::ErrorCode;
-    use crate::math::constants::{
-        AMM_RESERVE_PRECISION, BASE_PRECISION_I128, BASE_PRECISION_I64, BASE_PRECISION_U64,
-        LIQUIDATION_FEE_PRECISION, PEG_PRECISION, QUOTE_PRECISION_I128, QUOTE_PRECISION_I64,
-        SPOT_BALANCE_PRECISION_U64, SPOT_CUMULATIVE_INTEREST_PRECISION, SPOT_WEIGHT_PRECISION,
+    use {
+        crate::{
+            controller::position::PositionDirection,
+            create_anchor_account_info,
+            error::ErrorCode,
+            math::{
+                constants::{
+                    AMM_RESERVE_PRECISION, BASE_PRECISION_I128, BASE_PRECISION_I64,
+                    BASE_PRECISION_U64, LIQUIDATION_FEE_PRECISION, PEG_PRECISION,
+                    QUOTE_PRECISION_I128, QUOTE_PRECISION_I64, SPOT_BALANCE_PRECISION_U64,
+                    SPOT_CUMULATIVE_INTEREST_PRECISION, SPOT_WEIGHT_PRECISION,
+                },
+                margin::MarginRequirementType,
+            },
+            state::{
+                market_status::MarketStatus,
+                oracle::{HistoricalOracleData, OracleSource},
+                oracle_map::OracleMap,
+                perp_market::{MarketStats, PerpMarket, AMM},
+                perp_market_map::PerpMarketMap,
+                pyth_lazer_oracle::PythLazerOracle,
+                spot_market::{SpotBalanceType, SpotMarket},
+                spot_market_map::SpotMarketMap,
+                user::{
+                    Order, OrderStatus, OrderType, PerpPosition, PositionFlag, SpotPosition, User,
+                },
+            },
+            test_utils::{get_orders, get_positions, get_pyth_price, get_spot_positions},
+            PRICE_PRECISION_I64,
+        },
+        solana_program::pubkey::Pubkey,
+        std::{collections::BTreeSet, str::FromStr},
     };
-    use crate::math::margin::MarginRequirementType;
-    use crate::state::market_status::MarketStatus;
-    use crate::state::oracle::{HistoricalOracleData, OracleSource};
-    use crate::state::oracle_map::OracleMap;
-    use crate::state::perp_market::{MarketStats, PerpMarket, AMM};
-    use crate::state::perp_market_map::PerpMarketMap;
-    use crate::state::pyth_lazer_oracle::PythLazerOracle;
-    use crate::state::spot_market::{SpotBalanceType, SpotMarket};
-    use crate::state::spot_market_map::SpotMarketMap;
-    use crate::state::user::{
-        Order, OrderStatus, OrderType, PerpPosition, PositionFlag, SpotPosition, User,
-    };
-    use crate::test_utils::{get_orders, get_positions, get_pyth_price, get_spot_positions};
-    use crate::PRICE_PRECISION_I64;
 
     #[test]
     pub fn unhealthy_isolated_perp_blocks_withdraw() {
@@ -2537,8 +2557,10 @@ mod force_get_user_perp_position_mut {
 }
 
 mod bankruptcy_entry_liquidation_id {
-    use crate::state::user::{PerpPosition, User, UserStatus};
-    use crate::test_utils::get_positions;
+    use crate::{
+        state::user::{PerpPosition, User, UserStatus},
+        test_utils::get_positions,
+    };
 
     #[test]
     fn cross_margin_fresh_user_allocates_id() {

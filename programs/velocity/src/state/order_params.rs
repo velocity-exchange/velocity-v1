@@ -1,18 +1,28 @@
-use crate::controller::position::PositionDirection;
-use crate::error::VelocityResult;
-use crate::math::casting::Cast;
-use crate::math::constants::{
-    ONE_HUNDRED_THOUSAND_QUOTE, PERCENTAGE_PRECISION_I64, PERCENTAGE_PRECISION_U64,
-    PRICE_PRECISION_I64,
+use {
+    crate::{
+        controller::position::PositionDirection,
+        error::VelocityResult,
+        math::{
+            casting::Cast,
+            constants::{
+                ONE_HUNDRED_THOUSAND_QUOTE, PERCENTAGE_PRECISION_I64, PERCENTAGE_PRECISION_U64,
+                PRICE_PRECISION_I64,
+            },
+            safe_math::SafeMath,
+            safe_unwrap::SafeUnwrap,
+        },
+        state::{
+            events::OrderActionExplanation,
+            perp_market::{ContractTier, PerpMarket},
+            user::{MarketType, OrderTriggerCondition, OrderType},
+        },
+    },
+    anchor_lang::prelude::{
+        borsh::{BorshDeserialize, BorshSerialize},
+        *,
+    },
+    std::ops::Div,
 };
-use crate::math::safe_math::SafeMath;
-use crate::math::safe_unwrap::SafeUnwrap;
-use crate::state::events::OrderActionExplanation;
-use crate::state::perp_market::{ContractTier, PerpMarket};
-use crate::state::user::{MarketType, OrderTriggerCondition, OrderType};
-use anchor_lang::prelude::borsh::{BorshDeserialize, BorshSerialize};
-use anchor_lang::prelude::*;
-use std::ops::Div;
 
 #[cfg(test)]
 mod tests;

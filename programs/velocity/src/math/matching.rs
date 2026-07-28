@@ -1,13 +1,17 @@
-use std::cmp::min;
-
-use crate::controller::position::PositionDirection;
-use crate::error::VelocityResult;
-use crate::math::casting::Cast;
-use crate::math::constants::{BID_ASK_SPREAD_PRECISION_I128, TEN_BPS_I64};
-use crate::math::orders::calculate_quote_asset_amount_for_maker_order;
-use crate::math::safe_math::SafeMath;
-
-use crate::state::user::Order;
+use {
+    crate::{
+        controller::position::PositionDirection,
+        error::VelocityResult,
+        math::{
+            casting::Cast,
+            constants::{BID_ASK_SPREAD_PRECISION_I128, TEN_BPS_I64},
+            orders::calculate_quote_asset_amount_for_maker_order,
+            safe_math::SafeMath,
+        },
+        state::user::Order,
+    },
+    std::cmp::min,
+};
 
 #[cfg(test)]
 mod tests;

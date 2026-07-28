@@ -1,13 +1,14 @@
-use std::{
-    sync::{
-        atomic::{AtomicBool, AtomicU64},
-        Arc,
+use {
+    solana_clock::Slot,
+    std::{
+        sync::{
+            atomic::{AtomicBool, AtomicU64},
+            Arc,
+        },
+        time::Duration,
     },
-    time::Duration,
+    velocity_rs::{event_subscriber::PubsubClient, slot_subscriber::SlotSubscriber, RpcClient},
 };
-
-use solana_clock::Slot;
-use velocity_rs::{event_subscriber::PubsubClient, slot_subscriber::SlotSubscriber, RpcClient};
 
 /// Combines multiple slot subscribers for redundancy
 /// Tracks the latest slot known by its constituents

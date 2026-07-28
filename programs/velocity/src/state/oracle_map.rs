@@ -1,24 +1,28 @@
-use crate::error::ErrorCode::UnableToLoadOracle;
-use crate::error::{ErrorCode, VelocityResult};
-use crate::ids::pyth_program;
-use crate::math::constants::PRICE_PRECISION_I64;
-use crate::math::oracle::{oracle_validity, LogMode, OracleValidity};
-use crate::msg;
-use crate::state::oracle::{get_oracle_price, OraclePriceData, OracleSource, PrelaunchOracle};
-use crate::state::state::OracleGuardRails;
-use crate::state::user::MarketType;
-use anchor_lang::prelude::{AccountInfo, Pubkey};
-use anchor_lang::Discriminator;
-use anchor_lang::Key;
-use std::collections::BTreeMap;
-use std::iter::Peekable;
-use std::slice::Iter;
-
-use super::pyth_lazer_oracle::PythLazerOracle;
-use super::state::ValidityGuardRails;
-use crate::math::safe_unwrap::SafeUnwrap;
-use crate::state::traits::Size;
-use crate::validate;
+use {
+    super::{pyth_lazer_oracle::PythLazerOracle, state::ValidityGuardRails},
+    crate::{
+        error::{ErrorCode, ErrorCode::UnableToLoadOracle, VelocityResult},
+        ids::pyth_program,
+        math::{
+            constants::PRICE_PRECISION_I64,
+            oracle::{oracle_validity, LogMode, OracleValidity},
+            safe_unwrap::SafeUnwrap,
+        },
+        msg,
+        state::{
+            oracle::{get_oracle_price, OraclePriceData, OracleSource, PrelaunchOracle},
+            state::OracleGuardRails,
+            traits::Size,
+            user::MarketType,
+        },
+        validate,
+    },
+    anchor_lang::{
+        prelude::{AccountInfo, Pubkey},
+        Discriminator, Key,
+    },
+    std::{collections::BTreeMap, iter::Peekable, slice::Iter},
+};
 
 pub(crate) type OracleIdentifier = (Pubkey, OracleSource);
 

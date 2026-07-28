@@ -18,15 +18,14 @@ pub mod signature;
 pub mod storage;
 pub mod time;
 
-use serde::{Deserialize, Serialize};
-use {
-    derive_more::{From, Into},
-    strum::FromRepr,
-};
-
 pub use crate::{
     price::{Price, PriceError},
     rate::{Rate, RateError},
+};
+use {
+    derive_more::{From, Into},
+    serde::{Deserialize, Serialize},
+    strum::FromRepr,
 };
 
 #[derive(

@@ -35,26 +35,30 @@
 
 #![allow(dead_code, unused_imports)]
 
-use crucible_fuzzer::*;
-use solana_instruction::{AccountMeta, Instruction};
-use solana_keypair::Keypair;
-use solana_pubkey::Pubkey;
-use solana_signer::Signer;
-use std::rc::Rc;
-
-use anchor_lang::AnchorSerialize;
-use velocity::math::constants::{
-    ONE_YEAR, QUOTE_PRECISION, SPOT_BALANCE_PRECISION, SPOT_CUMULATIVE_INTEREST_PRECISION,
-    SPOT_RATE_PRECISION, SPOT_UTILIZATION_PRECISION, SPOT_WEIGHT_PRECISION,
+use {
+    anchor_lang::AnchorSerialize,
+    crucible_fuzzer::*,
+    solana_instruction::{AccountMeta, Instruction},
+    solana_keypair::Keypair,
+    solana_pubkey::Pubkey,
+    solana_signer::Signer,
+    std::rc::Rc,
+    velocity::{
+        math::constants::{
+            ONE_YEAR, QUOTE_PRECISION, SPOT_BALANCE_PRECISION, SPOT_CUMULATIVE_INTEREST_PRECISION,
+            SPOT_RATE_PRECISION, SPOT_UTILIZATION_PRECISION, SPOT_WEIGHT_PRECISION,
+        },
+        state::{
+            market_status::MarketStatus,
+            oracle::OracleSource,
+            paused_operations::{PerpOperation, SpotOperation},
+            perp_market::PerpMarket,
+            spot_market::{SpotBalanceType, SpotMarket},
+            state::State,
+            user::{User, UserStats},
+        },
+    },
 };
-use velocity::state::market_status::MarketStatus;
-use velocity::state::oracle::OracleSource;
-use velocity::state::paused_operations::{PerpOperation, SpotOperation};
-use velocity::state::perp_market::PerpMarket;
-use velocity::state::spot_market::SpotBalanceType;
-use velocity::state::spot_market::SpotMarket;
-use velocity::state::state::State;
-use velocity::state::user::{User, UserStats};
 
 // Generated types/schemas from the canonical velocity IDL. We only use
 // `register_schemas()`; instruction building goes through `raw_call`.

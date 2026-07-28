@@ -1,9 +1,14 @@
-use anchor_lang::prelude::Pubkey;
-
-use crate::math::constants::{QUOTE_PRECISION, SPOT_CUMULATIVE_INTEREST_PRECISION};
-use crate::math::helpers::log10;
-use crate::math::insurance::*;
-use crate::state::spot_market::InsuranceFund;
+use {
+    crate::{
+        math::{
+            constants::{QUOTE_PRECISION, SPOT_CUMULATIVE_INTEREST_PRECISION},
+            helpers::log10,
+            insurance::*,
+        },
+        state::spot_market::InsuranceFund,
+    },
+    anchor_lang::prelude::Pubkey,
+};
 
 #[test]
 pub fn basic_stake_if_test() {

@@ -1,17 +1,22 @@
-use anchor_lang::prelude::*;
-use velocity::cpi::accounts::UpdateUser;
-use velocity::instructions::optional_accounts::AccountMaps;
-use velocity::program::Velocity;
-use velocity::state::user::User;
-
-use crate::constants::admin;
-use crate::constraints::{
-    is_admin, is_authority_key_for_vault_depositor, is_user_for_vault, is_user_stats_for_vault,
+use {
+    crate::{
+        constants::admin,
+        constraints::{
+            is_admin, is_authority_key_for_vault_depositor, is_user_for_vault,
+            is_user_stats_for_vault,
+        },
+        declare_vault_seeds, implement_update_user_delegate_cpi,
+        implement_update_user_reduce_only_cpi,
+        state::{Vault, VaultDepositor},
+        velocity_cpi::{UpdateUserDelegateCPI, UpdateUserReduceOnlyCPI},
+        AccountMapProvider, VaultProtocolProvider,
+    },
+    anchor_lang::prelude::*,
+    velocity::{
+        cpi::accounts::UpdateUser, instructions::optional_accounts::AccountMaps, program::Velocity,
+        state::user::User,
+    },
 };
-use crate::state::{Vault, VaultDepositor};
-use crate::velocity_cpi::{UpdateUserDelegateCPI, UpdateUserReduceOnlyCPI};
-use crate::{declare_vault_seeds, implement_update_user_delegate_cpi};
-use crate::{implement_update_user_reduce_only_cpi, AccountMapProvider, VaultProtocolProvider};
 
 pub fn liquidate<'info>(ctx: Context<'info, Liquidate<'info>>) -> Result<()> {
     let clock = &Clock::get()?;

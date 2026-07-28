@@ -1,43 +1,43 @@
-use crate::math::oracle::LogMode;
-use crate::msg;
-use crate::state::oracle::MMOraclePriceData;
-use anchor_lang::prelude::AccountInfo;
-use anchor_lang::prelude::*;
-
 // `update_spreads`/`update_spread_reserves` folded into
 // `math::spread::update_amm_quote_state`, which refreshes the AMM's cached
 // spread state in place on each crank.
-use crate::controller::spot_balance::update_spot_balances;
-use crate::error::ErrorCode;
-use crate::error::*;
-use crate::load_mut;
-use crate::math::bn;
-use crate::math::casting::Cast;
-use crate::math::constants::{
-    K_BPS_UPDATE_SCALE, MAX_SQRT_K, QUOTE_PRECISION, QUOTE_SPOT_MARKET_INDEX,
+use {
+    crate::{
+        controller::spot_balance::update_spot_balances,
+        error::{ErrorCode, *},
+        load_mut,
+        math::{
+            bn,
+            casting::Cast,
+            constants::{K_BPS_UPDATE_SCALE, MAX_SQRT_K, QUOTE_PRECISION, QUOTE_SPOT_MARKET_INDEX},
+            oracle::{
+                self, is_oracle_valid_for_action, oracle_validity, LogMode, OracleValidity,
+                VelocityAction,
+            },
+            safe_math::SafeMath,
+            spot_balance::get_token_amount,
+        },
+        msg,
+        state::{
+            market_status::MarketStatus,
+            oracle::{MMOraclePriceData, OracleSource},
+            oracle_map::OracleMap,
+            perp_market::PerpMarket,
+            perp_market_map::PerpMarketMap,
+            spot_market::{SpotBalance, SpotBalanceType},
+            spot_market_map::SpotMarketMap,
+            state::{OracleGuardRails, State},
+            user::MarketType,
+        },
+        validate,
+        vlp::amm::math::{
+            amm,
+            cp_curve::{self, get_update_k_result},
+            repeg,
+        },
+    },
+    anchor_lang::prelude::{AccountInfo, *},
 };
-use crate::math::oracle;
-use crate::math::oracle::{
-    is_oracle_valid_for_action, oracle_validity, OracleValidity, VelocityAction,
-};
-use crate::math::safe_math::SafeMath;
-use crate::math::spot_balance::get_token_amount;
-use crate::vlp::amm::math::amm;
-use crate::vlp::amm::math::cp_curve;
-use crate::vlp::amm::math::cp_curve::get_update_k_result;
-use crate::vlp::amm::math::repeg;
-
-use crate::state::market_status::MarketStatus;
-use crate::state::oracle::OracleSource;
-use crate::state::oracle_map::OracleMap;
-use crate::state::perp_market::PerpMarket;
-use crate::state::perp_market_map::PerpMarketMap;
-use crate::state::spot_market::SpotBalance;
-use crate::state::spot_market::SpotBalanceType;
-use crate::state::spot_market_map::SpotMarketMap;
-use crate::state::state::{OracleGuardRails, State};
-use crate::state::user::MarketType;
-use crate::validate;
 
 #[cfg(test)]
 mod tests;

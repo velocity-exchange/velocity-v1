@@ -1,5 +1,7 @@
-use axum::http::{HeaderName, HeaderValue};
-use axum_extra::headers::{self, Header};
+use {
+    axum::http::{HeaderName, HeaderValue},
+    axum_extra::headers::{self, Header},
+};
 
 /// Custom header for swift client
 static X_SWIFT_CLIENT_CONSUMER: HeaderName = HeaderName::from_static("x-swift-client-consumer");

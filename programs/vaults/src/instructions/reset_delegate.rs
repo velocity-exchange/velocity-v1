@@ -1,15 +1,15 @@
-use anchor_lang::prelude::*;
-use velocity::cpi::accounts::UpdateUser;
-use velocity::program::Velocity;
-use velocity::state::user::User;
-
-use crate::constraints::is_user_for_vault;
-use crate::error::ErrorCode;
-use crate::state::Vault;
-use crate::validate;
-use crate::velocity_cpi::{UpdateUserDelegateCPI, UpdateUserReduceOnlyCPI};
-use crate::{
-    declare_vault_seeds, implement_update_user_delegate_cpi, implement_update_user_reduce_only_cpi,
+use {
+    crate::{
+        constraints::is_user_for_vault,
+        declare_vault_seeds,
+        error::ErrorCode,
+        implement_update_user_delegate_cpi, implement_update_user_reduce_only_cpi,
+        state::Vault,
+        validate,
+        velocity_cpi::{UpdateUserDelegateCPI, UpdateUserReduceOnlyCPI},
+    },
+    anchor_lang::prelude::*,
+    velocity::{cpi::accounts::UpdateUser, program::Velocity, state::user::User},
 };
 
 pub fn reset_delegate<'info>(ctx: Context<'info, ResetDelegate<'info>>) -> Result<()> {

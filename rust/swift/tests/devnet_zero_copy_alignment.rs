@@ -38,20 +38,27 @@
 //!
 //! Run: `cargo test -p swift-server --test devnet_zero_copy_alignment`
 
-use std::mem::{align_of, size_of};
-use std::panic::{self, AssertUnwindSafe};
-
-use anchor_lang::{AccountDeserialize, Discriminator};
-use velocity_rs::program::sdk::{build_infos, AlignedAccountData, OwnedAccount};
-use velocity_rs::program::state::{
-    perp_market::PerpMarket,
-    perp_market_map::PerpMarketMap,
-    spot_market::SpotMarket,
-    spot_market_map::SpotMarketMap,
-    state::State,
-    traits::{MarketIndexOffset, Size},
+use {
+    anchor_lang::{AccountDeserialize, Discriminator},
+    std::{
+        mem::{align_of, size_of},
+        panic::{self, AssertUnwindSafe},
+    },
+    velocity_rs::{
+        program::{
+            sdk::{build_infos, AlignedAccountData, OwnedAccount},
+            state::{
+                perp_market::PerpMarket,
+                perp_market_map::PerpMarketMap,
+                spot_market::SpotMarket,
+                spot_market_map::SpotMarketMap,
+                state::State,
+                traits::{MarketIndexOffset, Size},
+            },
+        },
+        Pubkey,
+    },
 };
-use velocity_rs::Pubkey;
 
 /// Run `f`, swallowing the default backtrace print, returning the panic payload
 /// as a `String` if it panicked.

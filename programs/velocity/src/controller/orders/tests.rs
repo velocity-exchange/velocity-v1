@@ -1,12 +1,17 @@
-use anchor_lang::prelude::Pubkey;
-
-use crate::math::oracle::oracle_validity;
-use crate::state::fill_mode::FillMode;
-use crate::state::market_status::MarketStatus;
-use crate::state::oracle_map::OracleMap;
-use crate::state::perp_market::PerpMarket;
-use crate::state::state::{FeeStructure, FeeTier, State};
-use crate::state::user::{MarketType, Order, PerpPosition};
+use {
+    crate::{
+        math::oracle::oracle_validity,
+        state::{
+            fill_mode::FillMode,
+            market_status::MarketStatus,
+            oracle_map::OracleMap,
+            perp_market::PerpMarket,
+            state::{FeeStructure, FeeTier, State},
+            user::{MarketType, Order, PerpPosition},
+        },
+    },
+    anchor_lang::prelude::Pubkey,
+};
 
 #[test]
 fn validate_spot_dlob_trading_enabled_for_market_type_rejects_spot() {
@@ -97,30 +102,36 @@ pub fn get_amm_is_available(
 }
 
 pub mod fulfill_order_with_maker_order {
-    use crate::controller::orders::fulfill_perp_order_step;
-    use crate::controller::position::PositionDirection;
-    use crate::math::constants::{
-        AMM_RESERVE_PRECISION, BASE_PRECISION_I128, BASE_PRECISION_I64, BASE_PRECISION_U64,
-        BID_ASK_SPREAD_PRECISION, PEG_PRECISION, PRICE_PRECISION, PRICE_PRECISION_I64,
-        PRICE_PRECISION_U64, QUOTE_PRECISION_I64, QUOTE_PRECISION_U64,
+    use {
+        super::*,
+        crate::{
+            controller::{orders::fulfill_perp_order_step, position::PositionDirection},
+            create_anchor_account_info,
+            error::VelocityResult,
+            math::{
+                constants::{
+                    AMM_RESERVE_PRECISION, BASE_PRECISION_I128, BASE_PRECISION_I64,
+                    BASE_PRECISION_U64, BID_ASK_SPREAD_PRECISION, PEG_PRECISION, PRICE_PRECISION,
+                    PRICE_PRECISION_I64, PRICE_PRECISION_U64, QUOTE_PRECISION_I64,
+                    QUOTE_PRECISION_U64,
+                },
+                oracle::OracleValidity,
+            },
+            state::{
+                fulfillment::PerpFulfillmentMethod,
+                oracle::HistoricalOracleData,
+                oracle_map::OracleMap,
+                perp_market::{MarketStats, PerpMarket, AMM},
+                pyth_lazer_oracle::PythLazerOracle,
+                revenue_share::RevenueShareEscrowZeroCopyMut,
+                state::{FeeStructure, ValidityGuardRails},
+                user::{Order, OrderType, PerpPosition, User, UserStats},
+            },
+            test_utils::{get_orders, get_positions, get_pyth_price},
+        },
+        anchor_lang::prelude::Pubkey,
+        std::str::FromStr,
     };
-    use crate::math::oracle::OracleValidity;
-    use crate::state::perp_market::{MarketStats, PerpMarket, AMM};
-    use crate::state::user::{Order, OrderType, PerpPosition, User, UserStats};
-
-    use crate::create_anchor_account_info;
-    use crate::state::pyth_lazer_oracle::PythLazerOracle;
-    use crate::test_utils::{get_orders, get_positions, get_pyth_price};
-
-    use super::*;
-    use crate::error::VelocityResult;
-    use crate::state::fulfillment::PerpFulfillmentMethod;
-    use crate::state::oracle::HistoricalOracleData;
-    use crate::state::oracle_map::OracleMap;
-    use crate::state::revenue_share::RevenueShareEscrowZeroCopyMut;
-    use crate::state::state::{FeeStructure, ValidityGuardRails};
-    use anchor_lang::prelude::Pubkey;
-    use std::str::FromStr;
 
     /// Test-only shim that preserves the legacy `fulfill_perp_order_with_match`
     /// signature on top of the unified `fulfill_perp_order_step`. Lets the
@@ -2784,38 +2795,44 @@ pub mod fulfill_order_with_maker_order {
 }
 
 pub mod fulfill_order {
-    use std::str::FromStr;
-    use std::u64;
-
-    use crate::controller::orders::{
-        fill_perp_order, fulfill_perp_order, validate_market_within_price_band,
+    use {
+        super::*,
+        crate::{
+            controller::{
+                orders::{fill_perp_order, fulfill_perp_order, validate_market_within_price_band},
+                position::PositionDirection,
+            },
+            create_anchor_account_info,
+            error::ErrorCode,
+            get_orders,
+            math::{
+                constants::{
+                    AMM_RESERVE_PRECISION, BASE_PRECISION_I64, BASE_PRECISION_U64,
+                    MAX_CONCENTRATION_COEFFICIENT, PEG_PRECISION, PRICE_PRECISION,
+                    PRICE_PRECISION_I64, PRICE_PRECISION_U64, QUOTE_PRECISION_I64,
+                    QUOTE_PRECISION_U64, SPOT_BALANCE_PRECISION_U64,
+                    SPOT_CUMULATIVE_INTEREST_PRECISION, SPOT_WEIGHT_PRECISION,
+                },
+                margin::calculate_margin_requirement_and_total_collateral_and_liability_info,
+            },
+            state::{
+                fill_mode::FillMode,
+                margin_calculation::MarginContext,
+                oracle::{HistoricalOracleData, OracleSource},
+                perp_market::{MarketStats, PerpMarket, AMM},
+                perp_market_map::PerpMarketMap,
+                pyth_lazer_oracle::PythLazerOracle,
+                spot_market::{SpotBalanceType, SpotMarket},
+                spot_market_map::SpotMarketMap,
+                state::{OracleGuardRails, State, ValidityGuardRails},
+                user::{OrderStatus, OrderType, SpotPosition, User, UserStats},
+                user_map::{UserMap, UserStatsMap},
+            },
+            test_utils::{get_orders, get_positions, get_pyth_price, get_spot_positions},
+            PERCENTAGE_PRECISION_U64,
+        },
+        std::{str::FromStr, u64},
     };
-    use crate::controller::position::PositionDirection;
-    use crate::create_anchor_account_info;
-    use crate::error::ErrorCode;
-    use crate::get_orders;
-    use crate::math::constants::{
-        AMM_RESERVE_PRECISION, BASE_PRECISION_I64, BASE_PRECISION_U64,
-        MAX_CONCENTRATION_COEFFICIENT, PEG_PRECISION, PRICE_PRECISION, PRICE_PRECISION_I64,
-        PRICE_PRECISION_U64, QUOTE_PRECISION_I64, QUOTE_PRECISION_U64, SPOT_BALANCE_PRECISION_U64,
-        SPOT_CUMULATIVE_INTEREST_PRECISION, SPOT_WEIGHT_PRECISION,
-    };
-    use crate::math::margin::calculate_margin_requirement_and_total_collateral_and_liability_info;
-    use crate::state::fill_mode::FillMode;
-    use crate::state::margin_calculation::MarginContext;
-    use crate::state::oracle::{HistoricalOracleData, OracleSource};
-    use crate::state::perp_market::{MarketStats, PerpMarket, AMM};
-    use crate::state::perp_market_map::PerpMarketMap;
-    use crate::state::pyth_lazer_oracle::PythLazerOracle;
-    use crate::state::spot_market::{SpotBalanceType, SpotMarket};
-    use crate::state::spot_market_map::SpotMarketMap;
-    use crate::state::state::{OracleGuardRails, State, ValidityGuardRails};
-    use crate::state::user::{OrderStatus, OrderType, SpotPosition, User, UserStats};
-    use crate::state::user_map::{UserMap, UserStatsMap};
-    use crate::test_utils::{get_orders, get_positions, get_pyth_price, get_spot_positions};
-    use crate::PERCENTAGE_PRECISION_U64;
-
-    use super::*;
 
     #[test]
     fn validate_market_within_price_band_tests() {
@@ -6499,34 +6516,35 @@ pub mod fulfill_order {
 }
 
 pub mod fill_order {
-    use std::str::FromStr;
-
-    use anchor_lang::prelude::{AccountLoader, Clock};
-
-    use crate::controller::orders::fill_perp_order;
-    use crate::controller::position::PositionDirection;
-    use crate::create_anchor_account_info;
-    use crate::math::constants::{
-        AMM_RESERVE_PRECISION, BASE_PRECISION_I64, BASE_PRECISION_U64, PEG_PRECISION,
-        PRICE_PRECISION_I64, PRICE_PRECISION_U64, SPOT_BALANCE_PRECISION_U64,
-        SPOT_CUMULATIVE_INTEREST_PRECISION, SPOT_WEIGHT_PRECISION,
+    use {
+        super::*,
+        crate::{
+            controller::{orders::fill_perp_order, position::PositionDirection},
+            create_anchor_account_info,
+            error::ErrorCode,
+            math::constants::{
+                AMM_RESERVE_PRECISION, BASE_PRECISION_I64, BASE_PRECISION_U64, PEG_PRECISION,
+                PRICE_PRECISION_I64, PRICE_PRECISION_U64, SPOT_BALANCE_PRECISION_U64,
+                SPOT_CUMULATIVE_INTEREST_PRECISION, SPOT_WEIGHT_PRECISION,
+            },
+            state::{
+                fill_mode::FillMode,
+                oracle::{HistoricalOracleData, OracleSource},
+                perp_market::{MarketStats, PerpMarket, AMM},
+                perp_market_map::PerpMarketMap,
+                pyth_lazer_oracle::PythLazerOracle,
+                spot_market::{SpotBalanceType, SpotMarket},
+                spot_market_map::SpotMarketMap,
+                state::State,
+                user::{MarketType, OrderStatus, OrderType, SpotPosition, User, UserStats},
+                user_map::{UserMap, UserStatsMap},
+            },
+            test_utils::{get_orders, get_positions, get_pyth_price, get_spot_positions},
+            QUOTE_PRECISION_I64,
+        },
+        anchor_lang::prelude::{AccountLoader, Clock},
+        std::str::FromStr,
     };
-    use crate::state::oracle::HistoricalOracleData;
-    use crate::state::oracle::OracleSource;
-    use crate::state::perp_market::{MarketStats, PerpMarket, AMM};
-    use crate::state::perp_market_map::PerpMarketMap;
-    use crate::state::pyth_lazer_oracle::PythLazerOracle;
-    use crate::state::spot_market::{SpotBalanceType, SpotMarket};
-    use crate::state::spot_market_map::SpotMarketMap;
-    use crate::state::state::State;
-    use crate::state::user::{MarketType, OrderStatus, OrderType, SpotPosition, User, UserStats};
-    use crate::test_utils::{get_orders, get_positions, get_pyth_price, get_spot_positions};
-    use crate::QUOTE_PRECISION_I64;
-
-    use super::*;
-    use crate::error::ErrorCode;
-    use crate::state::fill_mode::FillMode;
-    use crate::state::user_map::{UserMap, UserStatsMap};
 
     #[test]
     fn maker_order_canceled_for_breaching_oracle_price_band() {
@@ -7229,30 +7247,32 @@ pub mod fill_order {
 }
 
 pub mod force_cancel_orders {
-    use std::str::FromStr;
-
-    use anchor_lang::prelude::{AccountLoader, Clock};
-
-    use crate::controller::orders::force_cancel_orders;
-    use crate::controller::position::PositionDirection;
-    use crate::create_anchor_account_info;
-    use crate::math::constants::{
-        AMM_RESERVE_PRECISION, BASE_PRECISION_I64, BASE_PRECISION_U64, LAMPORTS_PER_SOL_I64,
-        LAMPORTS_PER_SOL_U64, PEG_PRECISION, PRICE_PRECISION_U64, SPOT_BALANCE_PRECISION,
-        SPOT_BALANCE_PRECISION_U64, SPOT_CUMULATIVE_INTEREST_PRECISION, SPOT_WEIGHT_PRECISION,
+    use {
+        super::*,
+        crate::{
+            controller::{orders::force_cancel_orders, position::PositionDirection},
+            create_anchor_account_info,
+            math::constants::{
+                AMM_RESERVE_PRECISION, BASE_PRECISION_I64, BASE_PRECISION_U64,
+                LAMPORTS_PER_SOL_I64, LAMPORTS_PER_SOL_U64, PEG_PRECISION, PRICE_PRECISION_U64,
+                SPOT_BALANCE_PRECISION, SPOT_BALANCE_PRECISION_U64,
+                SPOT_CUMULATIVE_INTEREST_PRECISION, SPOT_WEIGHT_PRECISION,
+            },
+            state::{
+                oracle::{HistoricalOracleData, OracleSource},
+                perp_market::{MarketStats, PerpMarket, AMM},
+                perp_market_map::PerpMarketMap,
+                pyth_lazer_oracle::PythLazerOracle,
+                spot_market::{SpotBalanceType, SpotMarket},
+                spot_market_map::SpotMarketMap,
+                state::State,
+                user::{MarketType, OrderStatus, OrderType, SpotPosition, User, UserStats},
+            },
+            test_utils::{get_positions, get_pyth_price, get_spot_positions},
+        },
+        anchor_lang::prelude::{AccountLoader, Clock},
+        std::str::FromStr,
     };
-    use crate::state::oracle::HistoricalOracleData;
-    use crate::state::oracle::OracleSource;
-    use crate::state::perp_market::{MarketStats, PerpMarket, AMM};
-    use crate::state::perp_market_map::PerpMarketMap;
-    use crate::state::pyth_lazer_oracle::PythLazerOracle;
-    use crate::state::spot_market::{SpotBalanceType, SpotMarket};
-    use crate::state::spot_market_map::SpotMarketMap;
-    use crate::state::state::State;
-    use crate::state::user::{MarketType, OrderStatus, OrderType, SpotPosition, User, UserStats};
-    use crate::test_utils::{get_positions, get_pyth_price, get_spot_positions};
-
-    use super::*;
 
     #[test]
     fn cancel_order_after_fulfill() {
@@ -7479,29 +7499,30 @@ pub mod force_cancel_orders {
 }
 
 pub mod cancel_reduce_only_trigger_orders {
-    use std::str::FromStr;
-
-    use anchor_lang::prelude::Clock;
-
-    use crate::controller::orders::cancel_reduce_only_trigger_orders;
-    use crate::controller::position::PositionDirection;
-    use crate::create_anchor_account_info;
-    use crate::math::constants::{
-        AMM_RESERVE_PRECISION, BASE_PRECISION_I64, LAMPORTS_PER_SOL_I64, PEG_PRECISION,
-        SPOT_BALANCE_PRECISION, SPOT_BALANCE_PRECISION_U64, SPOT_CUMULATIVE_INTEREST_PRECISION,
-        SPOT_WEIGHT_PRECISION,
+    use {
+        super::*,
+        crate::{
+            controller::{orders::cancel_reduce_only_trigger_orders, position::PositionDirection},
+            create_anchor_account_info,
+            math::constants::{
+                AMM_RESERVE_PRECISION, BASE_PRECISION_I64, LAMPORTS_PER_SOL_I64, PEG_PRECISION,
+                SPOT_BALANCE_PRECISION, SPOT_BALANCE_PRECISION_U64,
+                SPOT_CUMULATIVE_INTEREST_PRECISION, SPOT_WEIGHT_PRECISION,
+            },
+            state::{
+                oracle::{HistoricalOracleData, OracleSource},
+                perp_market::{MarketStats, PerpMarket, AMM},
+                perp_market_map::PerpMarketMap,
+                pyth_lazer_oracle::PythLazerOracle,
+                spot_market::{SpotBalanceType, SpotMarket},
+                spot_market_map::SpotMarketMap,
+                user::{MarketType, OrderStatus, OrderType, SpotPosition, User},
+            },
+            test_utils::{get_positions, get_pyth_price, get_spot_positions},
+        },
+        anchor_lang::prelude::Clock,
+        std::str::FromStr,
     };
-    use crate::state::oracle::HistoricalOracleData;
-    use crate::state::oracle::OracleSource;
-    use crate::state::perp_market::{MarketStats, PerpMarket, AMM};
-    use crate::state::perp_market_map::PerpMarketMap;
-    use crate::state::pyth_lazer_oracle::PythLazerOracle;
-    use crate::state::spot_market::{SpotBalanceType, SpotMarket};
-    use crate::state::spot_market_map::SpotMarketMap;
-    use crate::state::user::{MarketType, OrderStatus, OrderType, SpotPosition, User};
-    use crate::test_utils::{get_positions, get_pyth_price, get_spot_positions};
-
-    use super::*;
 
     #[test]
     fn test() {
@@ -7701,9 +7722,10 @@ pub mod cancel_reduce_only_trigger_orders {
 }
 
 pub mod insert_maker_order_info {
-    use crate::controller::orders::insert_maker_order_info;
-    use crate::controller::position::PositionDirection;
-    use solana_program::pubkey::Pubkey;
+    use {
+        crate::controller::{orders::insert_maker_order_info, position::PositionDirection},
+        solana_program::pubkey::Pubkey,
+    };
 
     #[test]
     fn bids() {
@@ -7745,30 +7767,32 @@ pub mod insert_maker_order_info {
 }
 
 pub mod get_maker_orders_info {
-    use std::str::FromStr;
-
-    use anchor_lang::prelude::{AccountLoader, Clock};
-
-    use crate::controller::orders::get_maker_orders_info;
-    use crate::controller::position::PositionDirection;
-    use crate::math::constants::{
-        AMM_RESERVE_PRECISION, BASE_PRECISION_I64, BASE_PRECISION_U64, PEG_PRECISION,
-        PRICE_PRECISION_I64, PRICE_PRECISION_U64, SPOT_BALANCE_PRECISION_U64,
-        SPOT_CUMULATIVE_INTEREST_PRECISION, SPOT_WEIGHT_PRECISION,
+    use {
+        super::*,
+        crate::{
+            controller::{orders::get_maker_orders_info, position::PositionDirection},
+            create_anchor_account_info, get_orders,
+            math::constants::{
+                AMM_RESERVE_PRECISION, BASE_PRECISION_I64, BASE_PRECISION_U64, PEG_PRECISION,
+                PRICE_PRECISION_I64, PRICE_PRECISION_U64, SPOT_BALANCE_PRECISION_U64,
+                SPOT_CUMULATIVE_INTEREST_PRECISION, SPOT_WEIGHT_PRECISION,
+            },
+            state::{
+                oracle::{HistoricalOracleData, OracleSource},
+                perp_market::{MarketStats, PerpMarket, AMM},
+                perp_market_map::PerpMarketMap,
+                pyth_lazer_oracle::PythLazerOracle,
+                spot_market::{SpotBalanceType, SpotMarket},
+                spot_market_map::SpotMarketMap,
+                user::{OrderStatus, OrderType, SpotPosition, User},
+                user_map::UserMap,
+            },
+            test_utils::{get_orders, get_positions, get_pyth_price, get_spot_positions},
+            QUOTE_PRECISION_I64,
+        },
+        anchor_lang::prelude::{AccountLoader, Clock},
+        std::str::FromStr,
     };
-    use crate::state::oracle::HistoricalOracleData;
-    use crate::state::oracle::OracleSource;
-    use crate::state::perp_market::{MarketStats, PerpMarket, AMM};
-    use crate::state::perp_market_map::PerpMarketMap;
-    use crate::state::pyth_lazer_oracle::PythLazerOracle;
-    use crate::state::spot_market::{SpotBalanceType, SpotMarket};
-    use crate::state::spot_market_map::SpotMarketMap;
-    use crate::state::user::{OrderStatus, OrderType, SpotPosition, User};
-    use crate::state::user_map::UserMap;
-    use crate::test_utils::{get_orders, get_positions, get_pyth_price, get_spot_positions};
-    use crate::{create_anchor_account_info, get_orders, QUOTE_PRECISION_I64};
-
-    use super::*;
 
     #[test]
     fn one_maker_order_canceled_for_breaching_oracle_price_band() {
@@ -8997,10 +9021,14 @@ pub mod get_maker_orders_info {
 }
 
 pub mod update_trigger_order_params {
-    use crate::controller::orders::update_trigger_order_params;
-    use crate::state::oracle::OraclePriceData;
-    use crate::state::user::{Order, OrderTriggerCondition, OrderType};
-    use crate::{PositionDirection, PRICE_PRECISION_I64, PRICE_PRECISION_U64};
+    use crate::{
+        controller::orders::update_trigger_order_params,
+        state::{
+            oracle::OraclePriceData,
+            user::{Order, OrderTriggerCondition, OrderType},
+        },
+        PositionDirection, PRICE_PRECISION_I64, PRICE_PRECISION_U64,
+    };
 
     #[test]
     fn test() {
@@ -9096,10 +9124,11 @@ pub mod update_trigger_order_params {
 }
 
 mod update_maker_fills_map {
-    use crate::controller::orders::update_maker_fills_map;
-    use crate::PositionDirection;
-    use solana_program::pubkey::Pubkey;
-    use std::collections::BTreeMap;
+    use {
+        crate::{controller::orders::update_maker_fills_map, PositionDirection},
+        solana_program::pubkey::Pubkey,
+        std::collections::BTreeMap,
+    };
 
     #[test]
     fn test() {
@@ -9160,8 +9189,10 @@ mod update_maker_fills_map {
 }
 
 mod order_is_low_risk_for_amm {
-    use super::*;
-    use crate::state::user::{OrderBitFlag, OrderStatus};
+    use {
+        super::*,
+        crate::state::user::{OrderBitFlag, OrderStatus},
+    };
 
     fn base_perp_order() -> Order {
         Order {
@@ -9246,11 +9277,11 @@ mod order_is_low_risk_for_amm {
 /// 10-slot auction. These tests pin that end-to-end behavior so the "5 stays 5"
 /// unit tests in `state::order_params::tests` don't read as the whole story.
 mod get_auction_params_min_duration_floor {
-    use crate::controller::orders::get_auction_params;
-    use crate::state::oracle::OraclePriceData;
-    use crate::state::order_params::OrderParams;
-    use crate::state::user::OrderType;
-    use crate::{PositionDirection, PRICE_PRECISION_I64};
+    use crate::{
+        controller::orders::get_auction_params,
+        state::{oracle::OraclePriceData, order_params::OrderParams, user::OrderType},
+        PositionDirection, PRICE_PRECISION_I64,
+    };
 
     fn oracle() -> OraclePriceData {
         OraclePriceData {

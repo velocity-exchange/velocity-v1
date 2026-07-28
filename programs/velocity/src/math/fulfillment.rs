@@ -1,13 +1,14 @@
-use crate::controller::position::PositionDirection;
-use crate::error::VelocityResult;
-use crate::math::casting::Cast;
-use crate::math::matching::do_orders_cross;
-use crate::math::safe_unwrap::SafeUnwrap;
-use crate::msg;
-use crate::state::fulfillment::PerpFulfillmentMethod;
-use crate::state::user::Order;
-use crate::vlp::amm::AMM;
-use solana_program::pubkey::Pubkey;
+use {
+    crate::{
+        controller::position::PositionDirection,
+        error::VelocityResult,
+        math::{casting::Cast, matching::do_orders_cross, safe_unwrap::SafeUnwrap},
+        msg,
+        state::{fulfillment::PerpFulfillmentMethod, user::Order},
+        vlp::amm::AMM,
+    },
+    solana_program::pubkey::Pubkey,
+};
 
 #[cfg(test)]
 mod tests;

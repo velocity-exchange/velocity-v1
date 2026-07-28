@@ -1,6 +1,8 @@
 //! Token faucet — test/devnet utility for minting tokens. Not deployed on mainnet.
-use anchor_lang::prelude::*;
-use anchor_spl::token::{self, Mint, Token, TokenAccount};
+use {
+    anchor_lang::prelude::*,
+    anchor_spl::token::{self, Mint, Token, TokenAccount},
+};
 
 #[cfg(feature = "mainnet-beta")]
 declare_id!("AmNeSW4UMPFBodCjEJD22G3kA8EraUGkhxr3GmdyEF4f");
@@ -9,10 +11,10 @@ declare_id!("V4v1mQiAdLz4qwckEb45WqHYceYizoib39cDBHSWfaB");
 
 #[program]
 pub mod token_faucet {
-    use super::*;
-    use anchor_spl::token::spl_token::instruction::AuthorityType;
-    use anchor_spl::token::MintTo;
-    use anchor_spl::token::SetAuthority;
+    use {
+        super::*,
+        anchor_spl::token::{spl_token::instruction::AuthorityType, MintTo, SetAuthority},
+    };
 
     pub fn initialize(ctx: Context<InitializeFaucet>) -> Result<()> {
         let mint_account_key = ctx.accounts.mint_account.to_account_info().key;

@@ -1,10 +1,10 @@
-use crate::error::{ErrorCode, VelocityResult};
-use crate::math::casting::Cast;
-use crate::math::safe_math::SafeMath;
-
-use crate::msg;
-use crate::state::perp_market::PerpMarket;
-use crate::validate;
+use crate::{
+    error::{ErrorCode, VelocityResult},
+    math::{casting::Cast, safe_math::SafeMath},
+    msg,
+    state::perp_market::PerpMarket,
+    validate,
+};
 
 pub fn validate_perp_market(market: &PerpMarket) -> VelocityResult {
     // PerpMarket-level invariants: the position counters must standardize

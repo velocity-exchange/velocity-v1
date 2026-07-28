@@ -1,16 +1,17 @@
 #[cfg(test)]
 mod vault_fcn {
-    use std::str::FromStr;
-
-    use crate::state::traits::VaultDepositorBase;
-    use crate::test_utils::create_account_info;
-    use crate::withdraw_request::WithdrawRequest;
-    use crate::{assert_eq_within, Vault, VaultDepositor, WithdrawUnit};
-    use anchor_lang::prelude::{AccountLoader, Pubkey};
-    use velocity::math::constants::{
-        ONE_YEAR, QUOTE_PRECISION, QUOTE_PRECISION_I64, QUOTE_PRECISION_U64,
+    use {
+        crate::{
+            assert_eq_within, state::traits::VaultDepositorBase, test_utils::create_account_info,
+            withdraw_request::WithdrawRequest, Vault, VaultDepositor, WithdrawUnit,
+        },
+        anchor_lang::prelude::{AccountLoader, Pubkey},
+        std::str::FromStr,
+        velocity::math::{
+            constants::{ONE_YEAR, QUOTE_PRECISION, QUOTE_PRECISION_I64, QUOTE_PRECISION_U64},
+            insurance::if_shares_to_vault_amount as depositor_shares_to_vault_amount,
+        },
     };
-    use velocity::math::insurance::if_shares_to_vault_amount as depositor_shares_to_vault_amount;
 
     #[test]
     fn test_manager_withdraw() {
@@ -1062,14 +1063,18 @@ mod vault_fcn {
 
 #[cfg(test)]
 mod vault_v1_fcn {
-    use std::cell::RefCell;
-
-    use anchor_lang::prelude::Pubkey;
-    use velocity::math::constants::{ONE_YEAR, QUOTE_PRECISION_U64};
-    use velocity::math::insurance::if_shares_to_vault_amount as depositor_shares_to_vault_amount;
-
-    use crate::state::{Vault, VaultDepositorBase, VaultProtocol};
-    use crate::{VaultDepositor, WithdrawUnit};
+    use {
+        crate::{
+            state::{Vault, VaultDepositorBase, VaultProtocol},
+            VaultDepositor, WithdrawUnit,
+        },
+        anchor_lang::prelude::Pubkey,
+        std::cell::RefCell,
+        velocity::math::{
+            constants::{ONE_YEAR, QUOTE_PRECISION_U64},
+            insurance::if_shares_to_vault_amount as depositor_shares_to_vault_amount,
+        },
+    };
 
     const USER_SHARES_AFTER_1500_BPS_FEE: u64 = 99_850_025;
 
@@ -2233,17 +2238,19 @@ enum EntityType {
 
 #[cfg(test)]
 mod request_withdraw_cancel_tests {
-    use super::EntityType;
-    use crate::{
-        assert_eq_within,
-        state::{vault::Vault, VaultDepositor, VaultProtocol},
-        WithdrawUnit,
-    };
-    use std::cell::RefCell;
-    use velocity::math::{
-        casting::Cast,
-        constants::{PERCENTAGE_PRECISION_U64, QUOTE_PRECISION, QUOTE_PRECISION_U64},
-        safe_math::SafeMath,
+    use {
+        super::EntityType,
+        crate::{
+            assert_eq_within,
+            state::{vault::Vault, VaultDepositor, VaultProtocol},
+            WithdrawUnit,
+        },
+        std::cell::RefCell,
+        velocity::math::{
+            casting::Cast,
+            constants::{PERCENTAGE_PRECISION_U64, QUOTE_PRECISION, QUOTE_PRECISION_U64},
+            safe_math::SafeMath,
+        },
     };
 
     struct DepositsInWithdrawWindow {
@@ -3422,13 +3429,15 @@ mod request_withdraw_cancel_tests {
 #[cfg(test)]
 mod full_vault_withdraw_tests {
 
-    use super::EntityType;
-    use crate::{
-        state::{vault::Vault, VaultDepositor, VaultProtocol},
-        WithdrawUnit,
+    use {
+        super::EntityType,
+        crate::{
+            state::{vault::Vault, VaultDepositor, VaultProtocol},
+            WithdrawUnit,
+        },
+        std::cell::RefCell,
+        velocity::math::constants::{PERCENTAGE_PRECISION_U64, QUOTE_PRECISION_U64},
     };
-    use std::cell::RefCell;
-    use velocity::math::constants::{PERCENTAGE_PRECISION_U64, QUOTE_PRECISION_U64};
 
     #[derive(Debug)]
     struct WithdrawParam {

@@ -1,15 +1,20 @@
-use anchor_lang::prelude::*;
-use anchor_spl::token::{self, Token, TokenAccount, Transfer};
-use velocity::cpi::accounts::RemoveInsuranceFundStake as VelocityRemoveInsuranceFundStake;
-use velocity::math::safe_math::SafeMath;
-use velocity::program::Velocity;
-use velocity::state::insurance_fund_stake::InsuranceFundStake;
-use velocity::state::spot_market::SpotMarket;
-
-use crate::constraints::{is_if_stake_for_vault, is_manager_for_vault, is_user_stats_for_vault};
-use crate::token_cpi::TokenTransferCPI;
-use crate::velocity_cpi::RemoveInsuranceFundStakeCPI;
-use crate::{declare_vault_seeds, Vault};
+use {
+    crate::{
+        constraints::{is_if_stake_for_vault, is_manager_for_vault, is_user_stats_for_vault},
+        declare_vault_seeds,
+        token_cpi::TokenTransferCPI,
+        velocity_cpi::RemoveInsuranceFundStakeCPI,
+        Vault,
+    },
+    anchor_lang::prelude::*,
+    anchor_spl::token::{self, Token, TokenAccount, Transfer},
+    velocity::{
+        cpi::accounts::RemoveInsuranceFundStake as VelocityRemoveInsuranceFundStake,
+        math::safe_math::SafeMath,
+        program::Velocity,
+        state::{insurance_fund_stake::InsuranceFundStake, spot_market::SpotMarket},
+    },
+};
 
 pub fn remove_insurance_fund_stake<'info>(
     ctx: Context<'info, RemoveInsuranceFundStake<'info>>,

@@ -1,36 +1,45 @@
-use crate::auth::{check_hot, check_warm};
-use crate::controller::token::{receive, send_from_program_vault_with_signature_seeds};
-use crate::error::ErrorCode;
-use crate::ids::WHITELISTED_SWAP_PROGRAMS;
-use crate::instructions::optional_accounts::get_token_mint;
-use crate::math::constants::{PRICE_PRECISION_U64, QUOTE_SPOT_MARKET_INDEX};
-use crate::math::safe_math::SafeMath;
-use crate::perp_market_valid;
-use crate::state::perp_market::PerpMarket;
-use crate::state::spot_market::SpotMarket;
-use crate::state::state::HotRole;
-use crate::state::state::State;
-use crate::validate;
-use crate::vlp::amm_cache::{AmmCache, AMM_POSITIONS_CACHE};
-use crate::vlp::hedge::state::{
-    AmmConstituentDatum, AmmConstituentMapping, Constituent, ConstituentCorrelations,
-    ConstituentTargetBase, LPPool, TargetsDatum, AMM_MAP_PDA_SEED,
-    CONSTITUENT_CORRELATIONS_PDA_SEED, CONSTITUENT_PDA_SEED, CONSTITUENT_TARGET_BASE_PDA_SEED,
-    CONSTITUENT_VAULT_PDA_SEED,
+use {
+    crate::{
+        auth::{check_hot, check_warm},
+        controller::{
+            self,
+            token::{receive, send_from_program_vault_with_signature_seeds},
+        },
+        error::ErrorCode,
+        ids::{lighthouse, marinade_mainnet, WHITELISTED_SWAP_PROGRAMS},
+        instructions::optional_accounts::{get_token_interface, get_token_mint},
+        load_mut,
+        math::{
+            constants::{PRICE_PRECISION_U64, QUOTE_SPOT_MARKET_INDEX},
+            safe_math::SafeMath,
+        },
+        perp_market_valid,
+        state::{
+            perp_market::PerpMarket,
+            spot_market::SpotMarket,
+            state::{HotRole, State},
+            traits::Size,
+        },
+        validate,
+        vlp::{
+            amm_cache::{AmmCache, AMM_POSITIONS_CACHE},
+            hedge::state::{
+                AmmConstituentDatum, AmmConstituentMapping, Constituent, ConstituentCorrelations,
+                ConstituentTargetBase, LPPool, TargetsDatum, AMM_MAP_PDA_SEED,
+                CONSTITUENT_CORRELATIONS_PDA_SEED, CONSTITUENT_PDA_SEED,
+                CONSTITUENT_TARGET_BASE_PDA_SEED, CONSTITUENT_VAULT_PDA_SEED,
+            },
+        },
+    },
+    anchor_lang::prelude::*,
+    anchor_spl::{
+        associated_token::AssociatedToken,
+        token::Token,
+        token_2022::Token2022,
+        token_interface::{Mint, TokenAccount, TokenInterface},
+    },
+    solana_program::sysvar::instructions,
 };
-use crate::{controller, load_mut};
-use anchor_lang::prelude::*;
-use anchor_spl::associated_token::AssociatedToken;
-use anchor_spl::token::Token;
-use anchor_spl::token_2022::Token2022;
-use anchor_spl::token_interface::{Mint, TokenAccount, TokenInterface};
-
-use crate::ids::{lighthouse, marinade_mainnet};
-
-use crate::state::traits::Size;
-use solana_program::sysvar::instructions;
-
-use crate::instructions::optional_accounts::get_token_interface;
 
 /// Discriminator of the `end_lp_swap` instruction (`sha256("global:end_lp_swap")[..8]`),
 /// spelled out so this module compiles when the `vlp-hedge` entry points are gated out.

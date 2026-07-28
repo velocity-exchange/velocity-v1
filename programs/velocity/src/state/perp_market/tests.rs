@@ -1,6 +1,8 @@
 mod amm {
-    use crate::state::perp_market::{MarketStats, AMM};
-    use crate::{AMM_RESERVE_PRECISION, PEG_PRECISION, PRICE_PRECISION_I64};
+    use crate::{
+        state::perp_market::{MarketStats, AMM},
+        AMM_RESERVE_PRECISION, PEG_PRECISION, PRICE_PRECISION_I64,
+    };
 
     /// AMM with a non-trivial long_spread / short_spread so the premium /
     /// discount helpers compute non-zero values. Spread of 100000 (1%) on a
@@ -62,9 +64,10 @@ mod pending_revenue_share {
 }
 
 mod get_margin_ratio {
-    use crate::math::margin::MarginRequirementType;
-    use crate::state::perp_market::PerpMarket;
-    use crate::{BASE_PRECISION, MARGIN_PRECISION};
+    use crate::{
+        math::margin::MarginRequirementType, state::perp_market::PerpMarket, BASE_PRECISION,
+        MARGIN_PRECISION,
+    };
 
     #[test]
     fn test() {
@@ -96,8 +99,7 @@ mod get_margin_ratio {
 }
 
 mod get_trigger_price {
-    use crate::state::perp_market::HistoricalOracleData;
-    use crate::state::perp_market::{MarketStats, PerpMarket, AMM};
+    use crate::state::perp_market::{HistoricalOracleData, MarketStats, PerpMarket, AMM};
 
     #[test]
     fn test_get_last_funding_basis() {
@@ -316,15 +318,19 @@ mod get_trigger_price {
 }
 
 mod amm_can_fill_order_tests {
-    use crate::controller::position::PositionDirection;
-    use crate::math::oracle::OracleValidity;
-    use crate::state::fill_mode::FillMode;
-    use crate::state::oracle::{MMOraclePriceData, OraclePriceData};
-    use crate::state::paused_operations::PerpOperation;
-    use crate::state::perp_market::{MarketStats, PerpMarket, AMM};
-    use crate::state::state::{State, ValidityGuardRails};
-    use crate::state::user::{Order, OrderStatus, User, UserStats};
-    use crate::PRICE_PRECISION_I64;
+    use crate::{
+        controller::position::PositionDirection,
+        math::oracle::OracleValidity,
+        state::{
+            fill_mode::FillMode,
+            oracle::{MMOraclePriceData, OraclePriceData},
+            paused_operations::PerpOperation,
+            perp_market::{MarketStats, PerpMarket, AMM},
+            state::{State, ValidityGuardRails},
+            user::{Order, OrderStatus, User, UserStats},
+        },
+        PRICE_PRECISION_I64,
+    };
 
     fn base_state() -> State {
         State {

@@ -1,14 +1,19 @@
-use anchor_lang::prelude::Pubkey;
-
-use crate::controller::insurance::*;
-use crate::math::constants::{
-    PRICE_PRECISION_I64, QUOTE_PRECISION, QUOTE_PRECISION_I128, SPOT_BALANCE_PRECISION,
-    SPOT_CUMULATIVE_INTEREST_PRECISION,
+use {
+    crate::{
+        controller::insurance::*,
+        math::constants::{
+            PRICE_PRECISION_I64, QUOTE_PRECISION, QUOTE_PRECISION_I128, SPOT_BALANCE_PRECISION,
+            SPOT_CUMULATIVE_INTEREST_PRECISION,
+        },
+        state::{
+            oracle::OracleSource,
+            perp_market::{InsuranceClaim, PerpMarket, PoolBalance, AMM},
+            spot_market::InsuranceFund,
+            user::UserStats,
+        },
+    },
+    anchor_lang::prelude::Pubkey,
 };
-use crate::state::oracle::OracleSource;
-use crate::state::perp_market::{InsuranceClaim, PerpMarket, PoolBalance, AMM};
-use crate::state::spot_market::InsuranceFund;
-use crate::state::user::UserStats;
 #[test]
 pub fn basic_stake_if_test() {
     assert_eq!(0_i32.signum(), 0);

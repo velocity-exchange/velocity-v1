@@ -1,38 +1,39 @@
-use crate::error::ErrorCode;
-use crate::error::VelocityResult;
-use crate::math::constants::{
-    MARGIN_PRECISION_U128, MAX_POSITIVE_UPNL_FOR_INITIAL_MARGIN, PRICE_PRECISION,
-    SPOT_IMF_PRECISION_U128, SPOT_WEIGHT_PRECISION, SPOT_WEIGHT_PRECISION_U128,
+use {
+    super::spot_balance::get_token_amount,
+    crate::{
+        error::{ErrorCode, VelocityResult},
+        math::{
+            casting::Cast,
+            constants::{
+                MARGIN_PRECISION_U128, MAX_POSITIVE_UPNL_FOR_INITIAL_MARGIN, PRICE_PRECISION,
+                PRICE_PRECISION_I128, PRICE_PRECISION_I64, SPOT_IMF_PRECISION_U128,
+                SPOT_WEIGHT_PRECISION, SPOT_WEIGHT_PRECISION_U128,
+            },
+            funding::calculate_funding_payment,
+            oracle::{is_oracle_valid_for_action, LogMode, VelocityAction},
+            position::calculate_base_asset_value_and_pnl_with_oracle_price,
+            safe_math::SafeMath,
+            spot_balance::{get_strict_token_value, get_token_value},
+        },
+        msg,
+        state::{
+            margin_calculation::{
+                MarginCalculation, MarginContext, MarginTypeConfig, MarketIdentifier,
+            },
+            market_status::MarketStatus,
+            oracle::{OraclePriceData, StrictOraclePrice},
+            oracle_map::OracleMap,
+            perp_market::{ContractTier, PerpMarket},
+            perp_market_map::PerpMarketMap,
+            spot_market::{AssetTier, SpotBalanceType},
+            spot_market_map::SpotMarketMap,
+            user::{MarketType, OrderFillSimulation, PerpPosition, User},
+        },
+        validate, validation,
+    },
+    num_integer::Roots,
+    std::cmp::{max, min, Ordering},
 };
-use crate::math::oracle::LogMode;
-use crate::math::position::calculate_base_asset_value_and_pnl_with_oracle_price;
-
-use crate::math::constants::{PRICE_PRECISION_I128, PRICE_PRECISION_I64};
-use crate::validate;
-use crate::validation;
-
-use crate::math::casting::Cast;
-use crate::math::funding::calculate_funding_payment;
-use crate::math::oracle::{is_oracle_valid_for_action, VelocityAction};
-
-use crate::math::safe_math::SafeMath;
-use crate::math::spot_balance::{get_strict_token_value, get_token_value};
-use crate::msg;
-use crate::state::margin_calculation::{
-    MarginCalculation, MarginContext, MarginTypeConfig, MarketIdentifier,
-};
-use crate::state::market_status::MarketStatus;
-use crate::state::oracle::{OraclePriceData, StrictOraclePrice};
-use crate::state::oracle_map::OracleMap;
-use crate::state::perp_market::{ContractTier, PerpMarket};
-use crate::state::perp_market_map::PerpMarketMap;
-use crate::state::spot_market::{AssetTier, SpotBalanceType};
-use crate::state::spot_market_map::SpotMarketMap;
-use crate::state::user::{MarketType, OrderFillSimulation, PerpPosition, User};
-use num_integer::Roots;
-use std::cmp::{max, min, Ordering};
-
-use super::spot_balance::get_token_amount;
 
 #[cfg(test)]
 mod tests;

@@ -1,10 +1,12 @@
 mod calculate_base_asset_amount_to_cover_margin_shortage {
-    use crate::math::constants::{
-        AMM_TO_QUOTE_PRECISION_RATIO, BASE_PRECISION_U64, LIQUIDATION_FEE_PRECISION,
-        LIQUIDATION_FEE_PRECISION_U128, MARGIN_PRECISION, MARGIN_PRECISION_U128, PRICE_PRECISION,
-        PRICE_PRECISION_I64, QUOTE_PRECISION,
+    use crate::math::{
+        constants::{
+            AMM_TO_QUOTE_PRECISION_RATIO, BASE_PRECISION_U64, LIQUIDATION_FEE_PRECISION,
+            LIQUIDATION_FEE_PRECISION_U128, MARGIN_PRECISION, MARGIN_PRECISION_U128,
+            PRICE_PRECISION, PRICE_PRECISION_I64, QUOTE_PRECISION,
+        },
+        liquidation::calculate_base_asset_amount_to_cover_margin_shortage,
     };
-    use crate::math::liquidation::calculate_base_asset_amount_to_cover_margin_shortage;
 
     #[test]
     pub fn zero_percent_liquidation_fee() {
@@ -138,11 +140,14 @@ mod calculate_base_asset_amount_to_cover_margin_shortage {
 }
 
 mod calculate_liability_transfer_to_cover_margin_shortage {
-    use crate::math::constants::{
-        LIQUIDATION_FEE_PRECISION, LIQUIDATION_FEE_PRECISION_U128, PRICE_PRECISION,
-        PRICE_PRECISION_I64, QUOTE_PRECISION, SPOT_WEIGHT_PRECISION, SPOT_WEIGHT_PRECISION_U128,
+    use crate::math::{
+        constants::{
+            LIQUIDATION_FEE_PRECISION, LIQUIDATION_FEE_PRECISION_U128, PRICE_PRECISION,
+            PRICE_PRECISION_I64, QUOTE_PRECISION, SPOT_WEIGHT_PRECISION,
+            SPOT_WEIGHT_PRECISION_U128,
+        },
+        liquidation::calculate_liability_transfer_to_cover_margin_shortage,
     };
-    use crate::math::liquidation::calculate_liability_transfer_to_cover_margin_shortage;
 
     #[test]
     pub fn zero_asset_and_liability_fee() {
@@ -308,8 +313,10 @@ mod calculate_liability_transfer_to_cover_margin_shortage {
 }
 
 mod calculate_liability_transfer_implied_by_asset_amount {
-    use crate::math::constants::{LIQUIDATION_FEE_PRECISION, PRICE_PRECISION_I64, QUOTE_PRECISION};
-    use crate::math::liquidation::calculate_liability_transfer_implied_by_asset_amount;
+    use crate::math::{
+        constants::{LIQUIDATION_FEE_PRECISION, PRICE_PRECISION_I64, QUOTE_PRECISION},
+        liquidation::calculate_liability_transfer_implied_by_asset_amount,
+    };
 
     #[test]
     pub fn zero_asset_and_liability_fee() {
@@ -359,9 +366,12 @@ mod calculate_liability_transfer_implied_by_asset_amount {
 }
 
 mod calculate_user_protective_asset_price {
-    use crate::math::constants::PRICE_PRECISION_I64;
-    use crate::math::liquidation::calculate_user_protective_asset_price;
-    use crate::state::oracle::OraclePriceData;
+    use crate::{
+        math::{
+            constants::PRICE_PRECISION_I64, liquidation::calculate_user_protective_asset_price,
+        },
+        state::oracle::OraclePriceData,
+    };
 
     #[test]
     pub fn stale_price_below_twap_uses_twap() {
@@ -416,9 +426,12 @@ mod calculate_user_protective_asset_price {
 }
 
 mod calculate_user_protective_liability_price {
-    use crate::math::constants::PRICE_PRECISION_I64;
-    use crate::math::liquidation::calculate_user_protective_liability_price;
-    use crate::state::oracle::OraclePriceData;
+    use crate::{
+        math::{
+            constants::PRICE_PRECISION_I64, liquidation::calculate_user_protective_liability_price,
+        },
+        state::oracle::OraclePriceData,
+    };
 
     #[test]
     pub fn stale_price_above_twap_uses_twap() {
@@ -498,10 +511,12 @@ mod calculate_user_protective_liability_price {
 }
 
 mod calculate_asset_transfer_for_liability_transfer {
-    use crate::math::constants::{
-        BASE_PRECISION, LIQUIDATION_FEE_PRECISION, PRICE_PRECISION_I64, QUOTE_PRECISION,
+    use crate::math::{
+        constants::{
+            BASE_PRECISION, LIQUIDATION_FEE_PRECISION, PRICE_PRECISION_I64, QUOTE_PRECISION,
+        },
+        liquidation::calculate_asset_transfer_for_liability_transfer,
     };
-    use crate::math::liquidation::calculate_asset_transfer_for_liability_transfer;
 
     #[test]
     pub fn zero_asset_and_liability_fee() {
@@ -633,9 +648,13 @@ mod calculate_asset_transfer_for_liability_transfer {
 }
 
 mod calculate_funding_rate_deltas_to_resolve_bankruptcy {
-    use crate::math::constants::{BASE_PRECISION_I128, QUOTE_PRECISION_I128};
-    use crate::math::liquidation::calculate_funding_rate_deltas_to_resolve_bankruptcy;
-    use crate::state::perp_market::{PerpMarket, AMM};
+    use crate::{
+        math::{
+            constants::{BASE_PRECISION_I128, QUOTE_PRECISION_I128},
+            liquidation::calculate_funding_rate_deltas_to_resolve_bankruptcy,
+        },
+        state::perp_market::{PerpMarket, AMM},
+    };
 
     #[test]
     fn total_base_asset_amount_is_zero() {
@@ -668,11 +687,15 @@ mod calculate_funding_rate_deltas_to_resolve_bankruptcy {
 }
 
 mod calculate_cumulative_deposit_interest_delta_to_resolve_bankruptcy {
-    use crate::math::constants::{
-        QUOTE_PRECISION, SPOT_BALANCE_PRECISION, SPOT_CUMULATIVE_INTEREST_PRECISION,
+    use crate::{
+        math::{
+            constants::{
+                QUOTE_PRECISION, SPOT_BALANCE_PRECISION, SPOT_CUMULATIVE_INTEREST_PRECISION,
+            },
+            liquidation::calculate_cumulative_deposit_interest_delta_to_resolve_bankruptcy,
+        },
+        state::spot_market::SpotMarket,
     };
-    use crate::math::liquidation::calculate_cumulative_deposit_interest_delta_to_resolve_bankruptcy;
-    use crate::state::spot_market::SpotMarket;
 
     #[test]
     fn zero_total_deposits() {
@@ -784,8 +807,10 @@ mod calculate_cumulative_deposit_interest_delta_to_resolve_bankruptcy {
 }
 
 mod validate_transfer_satisfies_limit_price {
-    use crate::math::constants::{PRICE_PRECISION_U64, QUOTE_PRECISION};
-    use crate::math::liquidation::validate_transfer_satisfies_limit_price;
+    use crate::math::{
+        constants::{PRICE_PRECISION_U64, QUOTE_PRECISION},
+        liquidation::validate_transfer_satisfies_limit_price,
+    };
     const LAMPORTS_PER_SOL: u64 = 1_000_000_000;
 
     #[test]
@@ -846,10 +871,9 @@ mod validate_transfer_satisfies_limit_price {
 }
 
 mod calculate_perp_if_fee {
-    use crate::math::liquidation::calculate_perp_if_fee;
     use crate::{
-        BASE_PRECISION_U64, LIQUIDATION_FEE_PRECISION, MARGIN_PRECISION, PRICE_PRECISION_I64,
-        QUOTE_PRECISION,
+        math::liquidation::calculate_perp_if_fee, BASE_PRECISION_U64, LIQUIDATION_FEE_PRECISION,
+        MARGIN_PRECISION, PRICE_PRECISION_I64, QUOTE_PRECISION,
     };
 
     #[test]
@@ -962,9 +986,9 @@ mod calculate_perp_if_fee {
 }
 
 mod calculate_spot_if_fee {
-    use crate::math::liquidation::calculate_spot_if_fee;
     use crate::{
-        LIQUIDATION_FEE_PRECISION, PRICE_PRECISION_I64, QUOTE_PRECISION, SPOT_WEIGHT_PRECISION,
+        math::liquidation::calculate_spot_if_fee, LIQUIDATION_FEE_PRECISION, PRICE_PRECISION_I64,
+        QUOTE_PRECISION, SPOT_WEIGHT_PRECISION,
     };
 
     #[test]
@@ -1093,9 +1117,10 @@ mod calculate_spot_if_fee {
 }
 
 mod calculate_max_pct_to_liquidate {
-    use crate::math::liquidation::calculate_max_pct_to_liquidate;
-    use crate::state::user::User;
-    use crate::{LIQUIDATION_PCT_PRECISION, QUOTE_PRECISION};
+    use crate::{
+        math::liquidation::calculate_max_pct_to_liquidate, state::user::User,
+        LIQUIDATION_PCT_PRECISION, QUOTE_PRECISION,
+    };
 
     #[test]
     fn test() {
@@ -1116,8 +1141,7 @@ mod calculate_max_pct_to_liquidate {
 }
 
 mod get_liquidation_fee {
-    use crate::math::liquidation::get_liquidation_fee;
-    use crate::LIQUIDATION_FEE_PRECISION;
+    use crate::{math::liquidation::get_liquidation_fee, LIQUIDATION_FEE_PRECISION};
 
     #[test]
     fn test() {
@@ -1144,8 +1168,10 @@ mod get_liquidation_fee {
 }
 
 mod validate_swap_within_liquidation_boundaries {
-    use crate::math::liquidation::validate_swap_within_liquidation_boundaries;
-    use crate::{LIQUIDATION_FEE_PRECISION, PRICE_PRECISION_I64};
+    use crate::{
+        math::liquidation::validate_swap_within_liquidation_boundaries, LIQUIDATION_FEE_PRECISION,
+        PRICE_PRECISION_I64,
+    };
 
     #[test]
     fn success() {

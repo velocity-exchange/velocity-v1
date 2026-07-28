@@ -1,25 +1,28 @@
-use crate::controller::funding::update_funding_rate;
-use crate::math::helpers::on_the_hour_update;
-use crate::math::oracle::{block_operation, OracleValidity};
-use crate::state::perp_market::MarketStats;
-use crate::vlp::amm::refresh::_update_amm;
-
-use crate::math::constants::{
-    AMM_RESERVE_PRECISION, BPS_PRECISION, ONE_HOUR_I128, PERCENTAGE_PRECISION_U32, PRICE_PRECISION,
-    PRICE_PRECISION_U64, QUOTE_PRECISION,
-};
-use crate::math::funding::*;
-use std::cmp::min;
-
-use crate::test_utils::get_pyth_price;
-
 // use crate::create_anchor_account_info;
-use crate::state::oracle::{HistoricalOracleData, MMOraclePriceData};
-use crate::state::oracle_map::OracleMap;
-use crate::state::perp_market::{ContractTier, FeeLedger, PerpMarket, AMM};
-use crate::state::state::{OracleGuardRails, State, ValidityGuardRails};
-use solana_program::pubkey::Pubkey;
-use std::str::FromStr;
+use {
+    crate::{
+        controller::funding::update_funding_rate,
+        math::{
+            constants::{
+                AMM_RESERVE_PRECISION, BPS_PRECISION, ONE_HOUR_I128, PERCENTAGE_PRECISION_U32,
+                PRICE_PRECISION, PRICE_PRECISION_U64, QUOTE_PRECISION,
+            },
+            funding::*,
+            helpers::on_the_hour_update,
+            oracle::{block_operation, OracleValidity},
+        },
+        state::{
+            oracle::{HistoricalOracleData, MMOraclePriceData},
+            oracle_map::OracleMap,
+            perp_market::{ContractTier, FeeLedger, MarketStats, PerpMarket, AMM},
+            state::{OracleGuardRails, State, ValidityGuardRails},
+        },
+        test_utils::get_pyth_price,
+        vlp::amm::refresh::_update_amm,
+    },
+    solana_program::pubkey::Pubkey,
+    std::{cmp::min, str::FromStr},
+};
 
 fn calculate_funding_rate(
     mid_price_twap: u128,
@@ -46,8 +49,7 @@ fn calculate_funding_rate(
     Ok(funding_rate)
 }
 
-use crate::create_anchor_account_info;
-use crate::state::pyth_lazer_oracle::PythLazerOracle;
+use crate::{create_anchor_account_info, state::pyth_lazer_oracle::PythLazerOracle};
 
 #[test]
 fn balanced_funding_test() {
@@ -642,9 +644,11 @@ fn funding_premium_continuous_across_dead_zone() {
 /// has to satisfy so the migration to "AMM is just another user position"
 /// can't silently drift.
 mod amm_funding_payment {
-    use super::*;
-    use crate::math::constants::{
-        AMM_TO_QUOTE_PRECISION_RATIO, FUNDING_RATE_BUFFER, PRICE_PRECISION,
+    use {
+        super::*,
+        crate::math::constants::{
+            AMM_TO_QUOTE_PRECISION_RATIO, FUNDING_RATE_BUFFER, PRICE_PRECISION,
+        },
     };
 
     /// Zero deltas → zero payment, regardless of position sizes.

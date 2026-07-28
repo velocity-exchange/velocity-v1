@@ -1,10 +1,17 @@
-use crate::constants::ONE_WEEK;
-use crate::constraints::{is_admin, is_manager_for_vault};
-use crate::state::events::{FeeUpdateAction, FeeUpdateRecord};
-use crate::state::{FeeUpdate, FeeUpdateStatus};
-use crate::{error::ErrorCode, validate, Vault};
-use anchor_lang::prelude::*;
-use velocity::math::safe_math::SafeMath;
+use {
+    crate::{
+        constants::ONE_WEEK,
+        constraints::{is_admin, is_manager_for_vault},
+        error::ErrorCode,
+        state::{
+            events::{FeeUpdateAction, FeeUpdateRecord},
+            FeeUpdate, FeeUpdateStatus,
+        },
+        validate, Vault,
+    },
+    anchor_lang::prelude::*,
+    velocity::math::safe_math::SafeMath,
+};
 
 pub fn manager_update_fees<'info>(
     ctx: Context<'info, ManagerUpdateFees<'info>>,

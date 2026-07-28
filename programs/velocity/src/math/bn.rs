@@ -4,13 +4,11 @@
 #![allow(clippy::ptr_offset_with_cast)]
 #![allow(clippy::manual_range_contains)]
 
-use crate::error::ErrorCode::BnConversionError;
-use std::borrow::BorrowMut;
-use std::convert::TryInto;
-use std::mem::size_of;
-use uint::construct_uint;
-
-use crate::error::VelocityResult;
+use {
+    crate::error::{ErrorCode::BnConversionError, VelocityResult},
+    std::{borrow::BorrowMut, convert::TryInto, mem::size_of},
+    uint::construct_uint,
+};
 
 construct_uint! {
     /// 256-bit unsigned integer.

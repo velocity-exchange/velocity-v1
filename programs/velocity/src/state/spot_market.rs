@@ -1,34 +1,42 @@
-use std::fmt;
-use std::fmt::{Display, Formatter};
-
-use anchor_lang::prelude::borsh::{BorshDeserialize, BorshSerialize};
-use anchor_lang::prelude::*;
-use anchor_spl::token::spl_token;
-use anchor_spl::token_2022::spl_token_2022;
-
-use crate::error::{ErrorCode, VelocityResult};
-use crate::math::casting::Cast;
-use crate::math::constants::{
-    AMM_RESERVE_PRECISION, FIVE_MINUTE, MARGIN_PRECISION, ONE_HOUR, PERCENTAGE_PRECISION,
-    SPOT_WEIGHT_PRECISION_U128,
-};
 #[cfg(test)]
 use crate::math::constants::{PRICE_PRECISION_I64, SPOT_CUMULATIVE_INTEREST_PRECISION};
-use crate::math::margin::{
-    calculate_size_discount_asset_weight, calculate_size_premium_liability_weight,
-    MarginRequirementType,
+use {
+    super::oracle_map::OracleIdentifier,
+    crate::{
+        error::{ErrorCode, VelocityResult},
+        math::{
+            casting::Cast,
+            constants::{
+                AMM_RESERVE_PRECISION, FIVE_MINUTE, MARGIN_PRECISION, ONE_HOUR,
+                PERCENTAGE_PRECISION, SPOT_WEIGHT_PRECISION_U128,
+            },
+            margin::{
+                calculate_size_discount_asset_weight, calculate_size_premium_liability_weight,
+                MarginRequirementType,
+            },
+            safe_math::SafeMath,
+            spot_balance::{calculate_utilization, get_token_amount, get_token_value},
+            stats::calculate_new_twap,
+        },
+        state::{
+            market_status::MarketStatus,
+            oracle::{HistoricalIndexData, HistoricalOracleData, OracleSource},
+            paused_operations::{InsuranceFundOperation, SpotOperation},
+            perp_market::PoolBalance,
+            traits::{MarketIndexOffset, Size},
+        },
+        validate,
+    },
+    anchor_lang::prelude::{
+        borsh::{BorshDeserialize, BorshSerialize},
+        *,
+    },
+    anchor_spl::{token::spl_token, token_2022::spl_token_2022},
+    std::{
+        fmt,
+        fmt::{Display, Formatter},
+    },
 };
-use crate::math::safe_math::SafeMath;
-use crate::math::spot_balance::{calculate_utilization, get_token_amount, get_token_value};
-
-use super::oracle_map::OracleIdentifier;
-use crate::math::stats::calculate_new_twap;
-use crate::state::market_status::MarketStatus;
-use crate::state::oracle::{HistoricalIndexData, HistoricalOracleData, OracleSource};
-use crate::state::paused_operations::{InsuranceFundOperation, SpotOperation};
-use crate::state::perp_market::PoolBalance;
-use crate::state::traits::{MarketIndexOffset, Size};
-use crate::validate;
 
 #[account(zero_copy(unsafe))]
 #[derive(PartialEq, Eq, Debug)]

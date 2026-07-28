@@ -1,7 +1,8 @@
-use crate::{error::ErrorCode, validate};
-use anchor_lang::prelude::*;
-
-use super::UpdateVault;
+use {
+    super::UpdateVault,
+    crate::{error::ErrorCode, validate},
+    anchor_lang::prelude::*,
+};
 
 pub fn update_vault_manager<'info>(
     ctx: Context<'info, UpdateVault<'info>>,

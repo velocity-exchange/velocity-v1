@@ -12,5 +12,7 @@ pub mod quoter;
 pub mod refresh;
 pub mod state;
 
-pub use quoter::{AmmJitQuoter, AmmQuoter};
-pub use state::{AmmFeePoolSnapshot, AMM};
+pub use {
+    quoter::{AmmJitQuoter, AmmQuoter},
+    state::{AmmFeePoolSnapshot, AMM},
+};

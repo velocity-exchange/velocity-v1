@@ -1,17 +1,22 @@
-use anchor_lang::prelude::{AnchorDeserialize, AnchorSerialize};
-
-use crate::error::{ErrorCode, VelocityResult};
-use crate::math::casting::Cast;
-use crate::math::constants::{BID_ASK_SPREAD_PRECISION, PERCENTAGE_PRECISION_U64};
-use crate::math::safe_math::SafeMath;
-
-use crate::state::oracle::{OraclePriceData, OracleSource};
-use crate::state::paused_operations::PerpOperation;
-use crate::state::perp_market::PerpMarket;
-use crate::state::state::{OracleGuardRails, PriceDivergenceGuardRails, ValidityGuardRails};
-use crate::state::user::MarketType;
-use std::convert::TryFrom;
-use std::fmt;
+use {
+    crate::{
+        error::{ErrorCode, VelocityResult},
+        math::{
+            casting::Cast,
+            constants::{BID_ASK_SPREAD_PRECISION, PERCENTAGE_PRECISION_U64},
+            safe_math::SafeMath,
+        },
+        state::{
+            oracle::{OraclePriceData, OracleSource},
+            paused_operations::PerpOperation,
+            perp_market::PerpMarket,
+            state::{OracleGuardRails, PriceDivergenceGuardRails, ValidityGuardRails},
+            user::MarketType,
+        },
+    },
+    anchor_lang::prelude::{AnchorDeserialize, AnchorSerialize},
+    std::{convert::TryFrom, fmt},
+};
 
 /// True when |spread_pct| exceeds the configured divergence threshold (with
 /// a 10% safety floor). Pure decision helper — no AMM, no oracle state.

@@ -1,20 +1,24 @@
-use std::cell::RefMut;
-
-use crate::error::ErrorCode;
-use crate::events::{
-    ShareTransferRecord, VaultDepositorAction, VaultDepositorRecord, VaultDepositorV1Record,
+use {
+    crate::{
+        error::ErrorCode,
+        events::{
+            ShareTransferRecord, VaultDepositorAction, VaultDepositorRecord, VaultDepositorV1Record,
+        },
+        state::vault::Vault,
+        validate, FeeUpdate, VaultFee, VaultProtocol, WithdrawUnit,
+    },
+    anchor_lang::prelude::*,
+    std::cell::RefMut,
+    velocity::math::{
+        casting::Cast,
+        constants::{PERCENTAGE_PRECISION, PERCENTAGE_PRECISION_I64},
+        insurance::{
+            if_shares_to_vault_amount as depositor_shares_to_vault_amount,
+            vault_amount_to_if_shares as vault_amount_to_depositor_shares,
+        },
+        safe_math::SafeMath,
+    },
 };
-use crate::state::vault::Vault;
-use crate::{validate, FeeUpdate, VaultFee, VaultProtocol, WithdrawUnit};
-use anchor_lang::prelude::*;
-
-use velocity::math::casting::Cast;
-use velocity::math::constants::{PERCENTAGE_PRECISION, PERCENTAGE_PRECISION_I64};
-use velocity::math::insurance::{
-    if_shares_to_vault_amount as depositor_shares_to_vault_amount,
-    vault_amount_to_if_shares as vault_amount_to_depositor_shares,
-};
-use velocity::math::safe_math::SafeMath;
 
 pub trait Size {
     const SIZE: usize;

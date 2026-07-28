@@ -1,32 +1,38 @@
-use std::cell::RefMut;
-
-use anchor_lang::prelude::*;
-use static_assertions::const_assert_eq;
-use velocity::controller::spot_balance::update_spot_balances;
-use velocity::error::ErrorCode as VelocityErrorCode;
-use velocity::math::casting::Cast;
-use velocity::math::constants::PERCENTAGE_PRECISION;
-use velocity::math::insurance::{
-    if_shares_to_vault_amount as depositor_shares_to_vault_amount,
-    vault_amount_to_if_shares as vault_amount_to_depositor_shares,
+use {
+    crate::{
+        error::ErrorCode,
+        events::VaultDepositorAction,
+        state::{
+            events::{VaultDepositorRecord, VaultDepositorV1Record},
+            withdraw_request::WithdrawRequest,
+            withdraw_unit::WithdrawUnit,
+            FeeUpdate, Vault, VaultDepositorBase, VaultFee, VaultProtocol,
+        },
+        validate, Size,
+    },
+    anchor_lang::prelude::*,
+    static_assertions::const_assert_eq,
+    std::cell::RefMut,
+    velocity::{
+        controller::spot_balance::update_spot_balances,
+        error::ErrorCode as VelocityErrorCode,
+        math::{
+            casting::Cast,
+            constants::PERCENTAGE_PRECISION,
+            insurance::{
+                if_shares_to_vault_amount as depositor_shares_to_vault_amount,
+                vault_amount_to_if_shares as vault_amount_to_depositor_shares,
+            },
+            margin::{meets_initial_margin_requirement, validate_spot_margin_trading},
+            safe_math::SafeMath,
+        },
+        state::{
+            oracle_map::OracleMap, perp_market_map::PerpMarketMap, spot_market::SpotBalanceType,
+            spot_market_map::SpotMarketMap, user::User,
+        },
+    },
+    velocity_macros::assert_no_slop,
 };
-use velocity::math::margin::{meets_initial_margin_requirement, validate_spot_margin_trading};
-use velocity::math::safe_math::SafeMath;
-use velocity::state::oracle_map::OracleMap;
-use velocity::state::perp_market_map::PerpMarketMap;
-use velocity::state::spot_market::SpotBalanceType;
-use velocity::state::spot_market_map::SpotMarketMap;
-use velocity::state::user::User;
-use velocity_macros::assert_no_slop;
-
-use crate::error::ErrorCode;
-use crate::events::VaultDepositorAction;
-use crate::state::events::{VaultDepositorRecord, VaultDepositorV1Record};
-use crate::state::withdraw_request::WithdrawRequest;
-use crate::state::withdraw_unit::WithdrawUnit;
-use crate::state::{FeeUpdate, Vault, VaultDepositorBase, VaultFee, VaultProtocol};
-use crate::validate;
-use crate::Size;
 
 #[assert_no_slop]
 #[account(zero_copy(unsafe))]
@@ -870,14 +876,16 @@ impl VaultDepositor {
 
 #[cfg(test)]
 mod vault_v1_tests {
-    use std::cell::RefCell;
-
-    use anchor_lang::prelude::Pubkey;
-    use velocity::math::casting::Cast;
-    use velocity::math::constants::{PERCENTAGE_PRECISION_U64, QUOTE_PRECISION_U64};
-    use velocity::math::insurance::if_shares_to_vault_amount;
-
-    use crate::{Vault, VaultDepositor, VaultProtocol, WithdrawUnit};
+    use {
+        crate::{Vault, VaultDepositor, VaultProtocol, WithdrawUnit},
+        anchor_lang::prelude::Pubkey,
+        std::cell::RefCell,
+        velocity::math::{
+            casting::Cast,
+            constants::{PERCENTAGE_PRECISION_U64, QUOTE_PRECISION_U64},
+            insurance::if_shares_to_vault_amount,
+        },
+    };
 
     #[test]
     fn base_init() {

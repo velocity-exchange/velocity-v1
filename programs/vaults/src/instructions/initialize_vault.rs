@@ -1,13 +1,20 @@
-use crate::constants::ONE_DAY;
-use crate::velocity_cpi::{InitializeUserCPI, SetUserVaultOwnedCPI};
-use crate::{error::ErrorCode, validate, Size, Vault};
-use anchor_lang::prelude::*;
-use anchor_spl::token::{Mint, Token, TokenAccount};
-use velocity::cpi::accounts::{InitializeUser, InitializeUserStats, UpdateUser};
-use velocity::math::casting::Cast;
-use velocity::math::constants::PERCENTAGE_PRECISION_U64;
-use velocity::program::Velocity;
-use velocity::state::spot_market::SpotMarket;
+use {
+    crate::{
+        constants::ONE_DAY,
+        error::ErrorCode,
+        validate,
+        velocity_cpi::{InitializeUserCPI, SetUserVaultOwnedCPI},
+        Size, Vault,
+    },
+    anchor_lang::prelude::*,
+    anchor_spl::token::{Mint, Token, TokenAccount},
+    velocity::{
+        cpi::accounts::{InitializeUser, InitializeUserStats, UpdateUser},
+        math::{casting::Cast, constants::PERCENTAGE_PRECISION_U64},
+        program::Velocity,
+        state::spot_market::SpotMarket,
+    },
+};
 
 pub fn initialize_vault<'info>(
     ctx: Context<'info, InitializeVault<'info>>,

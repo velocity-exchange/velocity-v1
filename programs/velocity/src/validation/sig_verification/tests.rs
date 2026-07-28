@@ -1,10 +1,12 @@
 mod sig_verification {
-    use std::str::FromStr;
-
-    use anchor_lang::prelude::Pubkey;
-
-    use crate::controller::position::PositionDirection;
-    use crate::validation::sig_verification::deserialize_into_verified_message;
+    use {
+        crate::{
+            controller::position::PositionDirection,
+            validation::sig_verification::deserialize_into_verified_message,
+        },
+        anchor_lang::prelude::Pubkey,
+        std::str::FromStr,
+    };
 
     /// The fixtures below encode the embedded `OrderParams` with its pre-builder-codes layout.
     /// Builder-codes support appended two trailing `Option` fields (`builder_idx`,

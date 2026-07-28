@@ -1,15 +1,17 @@
-use anchor_lang::prelude::*;
-use velocity::instructions::optional_accounts::AccountMaps;
-use velocity::math::safe_math::SafeMath;
-use velocity::state::user::User;
-
-use crate::constraints::{
-    is_authority_for_vault_depositor, is_user_for_vault, is_vault_for_vault_depositor,
+use {
+    crate::{
+        constraints::{
+            is_authority_for_vault_depositor, is_user_for_vault, is_vault_for_vault_depositor,
+        },
+        error::ErrorCode,
+        state::traits::VaultDepositorBase,
+        validate, AccountMapProvider, Vault, VaultDepositor, VaultProtocolProvider, WithdrawUnit,
+    },
+    anchor_lang::prelude::*,
+    velocity::{
+        instructions::optional_accounts::AccountMaps, math::safe_math::SafeMath, state::user::User,
+    },
 };
-use crate::error::ErrorCode;
-use crate::state::traits::VaultDepositorBase;
-use crate::{validate, AccountMapProvider};
-use crate::{Vault, VaultDepositor, VaultProtocolProvider, WithdrawUnit};
 
 pub fn transfer_vault_depositor_shares<'info>(
     ctx: Context<'info, TransferVaultDepositorShares<'info>>,

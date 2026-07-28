@@ -1,14 +1,16 @@
-use crate::error::ErrorCode;
-use crate::math::safe_unwrap::SafeUnwrap;
-use anchor_lang::prelude::{AccountInfo, Pubkey};
-use bytemuck::{from_bytes, from_bytes_mut};
-use bytemuck::{Pod, Zeroable};
-use std::cell::{Ref, RefMut};
-use std::marker::PhantomData;
-
-use crate::error::VelocityResult;
-use crate::msg;
-use crate::validate;
+use {
+    crate::{
+        error::{ErrorCode, VelocityResult},
+        math::safe_unwrap::SafeUnwrap,
+        msg, validate,
+    },
+    anchor_lang::prelude::{AccountInfo, Pubkey},
+    bytemuck::{from_bytes, from_bytes_mut, Pod, Zeroable},
+    std::{
+        cell::{Ref, RefMut},
+        marker::PhantomData,
+    },
+};
 
 pub trait HasLen {
     fn len(&self) -> u32;

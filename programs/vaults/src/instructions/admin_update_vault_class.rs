@@ -1,8 +1,7 @@
-use anchor_lang::prelude::*;
-
-use crate::constraints::is_admin;
-use crate::state::Vault;
-use crate::{error::ErrorCode, validate};
+use {
+    crate::{constraints::is_admin, error::ErrorCode, state::Vault, validate},
+    anchor_lang::prelude::*,
+};
 
 pub fn admin_update_vault_class<'info>(
     ctx: Context<'info, AdminUpdateVaultClass<'info>>,

@@ -1,12 +1,13 @@
-use anchor_lang::prelude::*;
-use velocity::cpi::accounts::UpdateUser;
-use velocity::program::Velocity;
-use velocity::state::user::User;
-
-use crate::constraints::{is_manager_for_vault, is_user_for_vault};
-use crate::velocity_cpi::UpdateUserDelegateCPI;
-use crate::Vault;
-use crate::{declare_vault_seeds, implement_update_user_delegate_cpi};
+use {
+    crate::{
+        constraints::{is_manager_for_vault, is_user_for_vault},
+        declare_vault_seeds, implement_update_user_delegate_cpi,
+        velocity_cpi::UpdateUserDelegateCPI,
+        Vault,
+    },
+    anchor_lang::prelude::*,
+    velocity::{cpi::accounts::UpdateUser, program::Velocity, state::user::User},
+};
 
 pub fn update_delegate<'info>(
     ctx: Context<'info, UpdateDelegate<'info>>,

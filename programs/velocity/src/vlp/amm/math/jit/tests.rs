@@ -1,5 +1,4 @@
-use crate::vlp::amm::math::jit::*;
-use crate::vlp::amm::AMM;
+use crate::vlp::amm::{math::jit::*, AMM};
 
 #[test]
 fn balanced_market_zero_jit() {

@@ -1,17 +1,22 @@
-use std::cell::{Ref, RefMut};
-
-use anchor_lang::prelude::borsh::{BorshDeserialize, BorshSerialize};
-use anchor_lang::prelude::Pubkey;
-use anchor_lang::*;
-use anchor_lang::{account, zero_copy};
-use prelude::AccountInfo;
-
-use crate::error::{ErrorCode, VelocityResult};
-use crate::math::casting::Cast;
-use crate::math::safe_unwrap::SafeUnwrap;
-use crate::state::user::{MarketType, OrderStatus, User};
-use crate::validate;
-use crate::{msg, ID};
+use {
+    crate::{
+        error::{ErrorCode, VelocityResult},
+        math::{casting::Cast, safe_unwrap::SafeUnwrap},
+        msg,
+        state::user::{MarketType, OrderStatus, User},
+        validate, ID,
+    },
+    anchor_lang::{
+        account,
+        prelude::{
+            borsh::{BorshDeserialize, BorshSerialize},
+            Pubkey,
+        },
+        zero_copy, *,
+    },
+    prelude::AccountInfo,
+    std::cell::{Ref, RefMut},
+};
 
 pub const REVENUE_SHARE_PDA_SEED: &str = "REV_SHARE";
 pub const REVENUE_SHARE_ESCROW_PDA_SEED: &str = "REV_ESCROW";
@@ -598,9 +603,11 @@ impl<'a> RevenueShareEscrowLoader<'a> for AccountInfo<'a> {
 
 #[cfg(test)]
 mod revoke_completed_orders_tests {
-    use super::*;
-    use crate::state::user::{Order, OrderStatus, User};
-    use std::cell::RefCell;
+    use {
+        super::*,
+        crate::state::user::{Order, OrderStatus, User},
+        std::cell::RefCell,
+    };
 
     fn open_builder_row(order_id: u32, user_order_index: u8, fees: u64) -> RevenueShareOrder {
         let mut o = RevenueShareOrder::new(
@@ -697,8 +704,10 @@ mod revoke_completed_orders_tests {
 
 #[cfg(test)]
 mod builder_order_index_tests {
-    use super::*;
-    use std::cell::{RefCell, RefMut};
+    use {
+        super::*,
+        std::cell::{RefCell, RefMut},
+    };
 
     fn open_builder(order_id: u32, sub_account_id: u16, market_index: u16) -> RevenueShareOrder {
         RevenueShareOrder::new(

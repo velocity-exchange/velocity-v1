@@ -1,7 +1,12 @@
-use crate::constraints::is_manager_for_vault;
-use crate::state::events::{FeeUpdateAction, FeeUpdateRecord};
-use crate::{error::ErrorCode, validate, Vault};
-use anchor_lang::prelude::*;
+use {
+    crate::{
+        constraints::is_manager_for_vault,
+        error::ErrorCode,
+        state::events::{FeeUpdateAction, FeeUpdateRecord},
+        validate, Vault,
+    },
+    anchor_lang::prelude::*,
+};
 
 pub fn update_vault<'info>(
     ctx: Context<'info, UpdateVault<'info>>,

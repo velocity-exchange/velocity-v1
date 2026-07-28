@@ -1,19 +1,22 @@
 pub mod perp_lp_pool_settlement {
-    use core::slice::Iter;
-    use std::iter::Peekable;
-
-    use crate::error::ErrorCode;
-    use crate::math::casting::Cast;
-    use crate::math::constants::QUOTE_PRECISION_U64;
-    use crate::math::spot_balance::get_token_amount;
-    use crate::state::spot_market::{SpotBalance, SpotBalanceType};
-    use crate::{
-        math::safe_math::SafeMath,
-        state::{perp_market::PerpMarket, spot_market::SpotMarket},
-        vlp::amm_cache::CacheInfo,
-        *,
+    use {
+        crate::{
+            error::ErrorCode,
+            math::{
+                casting::Cast, constants::QUOTE_PRECISION_U64, safe_math::SafeMath,
+                spot_balance::get_token_amount,
+            },
+            state::{
+                perp_market::PerpMarket,
+                spot_market::{SpotBalance, SpotBalanceType, SpotMarket},
+            },
+            vlp::amm_cache::CacheInfo,
+            *,
+        },
+        anchor_spl::token_interface::{TokenAccount, TokenInterface},
+        core::slice::Iter,
+        std::iter::Peekable,
     };
-    use anchor_spl::token_interface::{TokenAccount, TokenInterface};
 
     #[derive(Debug, Clone, Copy)]
     pub struct SettlementResult {

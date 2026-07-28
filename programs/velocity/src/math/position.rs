@@ -1,14 +1,17 @@
-use crate::controller::position::PositionDelta;
-use crate::error::VelocityResult;
-use crate::math::casting::Cast;
-use crate::math::constants::{
-    AMM_RESERVE_PRECISION_I128, PRICE_TIMES_AMM_TO_QUOTE_PRECISION_RATIO,
-    PRICE_TIMES_AMM_TO_QUOTE_PRECISION_RATIO_I128,
+use crate::{
+    controller::position::PositionDelta,
+    error::VelocityResult,
+    math::{
+        casting::Cast,
+        constants::{
+            AMM_RESERVE_PRECISION_I128, PRICE_TIMES_AMM_TO_QUOTE_PRECISION_RATIO,
+            PRICE_TIMES_AMM_TO_QUOTE_PRECISION_RATIO_I128,
+        },
+        safe_math::SafeMath,
+    },
+    state::user::PerpPosition,
+    vlp::amm::controller::SwapDirection,
 };
-use crate::math::safe_math::SafeMath;
-use crate::vlp::amm::controller::SwapDirection;
-
-use crate::state::user::PerpPosition;
 
 pub fn calculate_base_asset_value_with_oracle_price(
     base_asset_amount: i128,

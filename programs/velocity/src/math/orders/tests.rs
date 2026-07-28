@@ -130,11 +130,14 @@ pub mod is_multiple_of_step_size {
 }
 
 mod order_breaches_oracle_price_limits {
-    use crate::controller::position::PositionDirection;
-    use crate::math::constants::{MARGIN_PRECISION, PRICE_PRECISION_I64, PRICE_PRECISION_U64};
-    use crate::math::orders::order_breaches_maker_oracle_price_bands;
-    use crate::state::perp_market::PerpMarket;
-    use crate::state::user::Order;
+    use crate::{
+        controller::position::PositionDirection,
+        math::{
+            constants::{MARGIN_PRECISION, PRICE_PRECISION_I64, PRICE_PRECISION_U64},
+            orders::order_breaches_maker_oracle_price_bands,
+        },
+        state::{perp_market::PerpMarket, user::Order},
+    };
 
     #[test]
     fn bid_does_not_breach() {
@@ -326,9 +329,11 @@ mod order_breaches_oracle_price_limits {
 }
 
 mod should_expire_order {
-    use crate::math::orders::should_expire_order;
-    use crate::state::user::{Order, OrderStatus, OrderType, User};
-    use crate::test_utils::get_orders;
+    use crate::{
+        math::orders::should_expire_order,
+        state::user::{Order, OrderStatus, OrderType, User},
+        test_utils::get_orders,
+    };
 
     #[test]
     fn max_ts_is_zero() {
@@ -446,16 +451,22 @@ mod should_expire_order {
 }
 
 mod get_max_fill_amounts {
-    use crate::controller::position::PositionDirection;
-    use crate::math::constants::{
-        LAMPORTS_PER_SOL_I64, QUOTE_PRECISION_U64, SPOT_BALANCE_PRECISION,
-        SPOT_BALANCE_PRECISION_U64,
+    use crate::{
+        controller::position::PositionDirection,
+        math::{
+            constants::{
+                LAMPORTS_PER_SOL_I64, QUOTE_PRECISION_U64, SPOT_BALANCE_PRECISION,
+                SPOT_BALANCE_PRECISION_U64,
+            },
+            orders::get_max_fill_amounts,
+        },
+        state::{
+            spot_market::{SpotBalanceType, SpotMarket},
+            user::{Order, SpotPosition, User},
+        },
+        test_utils::get_orders,
+        LAMPORTS_PER_SOL_U64,
     };
-    use crate::math::orders::get_max_fill_amounts;
-    use crate::state::spot_market::{SpotBalanceType, SpotMarket};
-    use crate::state::user::{Order, SpotPosition, User};
-    use crate::test_utils::get_orders;
-    use crate::LAMPORTS_PER_SOL_U64;
     const LAMPORTS_PER_SOL: u64 = 1_000_000_000;
 
     #[test]
@@ -703,11 +714,13 @@ mod get_max_fill_amounts {
 }
 
 mod find_maker_orders {
-    use crate::controller::position::PositionDirection;
-    use crate::math::constants::{PRICE_PRECISION_I64, PRICE_PRECISION_U64};
-    use crate::math::orders::find_maker_orders;
-    use crate::state::user::{
-        MarketType, Order, OrderStatus, OrderTriggerCondition, OrderType, User,
+    use crate::{
+        controller::position::PositionDirection,
+        math::{
+            constants::{PRICE_PRECISION_I64, PRICE_PRECISION_U64},
+            orders::find_maker_orders,
+        },
+        state::user::{MarketType, Order, OrderStatus, OrderTriggerCondition, OrderType, User},
     };
 
     #[test]
@@ -1038,31 +1051,36 @@ mod find_maker_orders {
 }
 
 mod calculate_max_spot_order_size {
-    use std::str::FromStr;
-
-    use solana_program::pubkey::Pubkey;
-
-    use crate::math::constants::{
-        LIQUIDATION_FEE_PRECISION, PRICE_PRECISION_I64, SPOT_BALANCE_PRECISION,
-        SPOT_BALANCE_PRECISION_U64, SPOT_CUMULATIVE_INTEREST_PRECISION, SPOT_WEIGHT_PRECISION,
-    };
-    use crate::math::margin::{
-        calculate_margin_requirement_and_total_collateral_and_liability_info, MarginRequirementType,
-    };
-    use crate::math::orders::calculate_max_spot_order_size;
-    use crate::state::oracle::{HistoricalOracleData, OracleSource};
-    use crate::state::oracle_map::OracleMap;
-
-    use crate::state::margin_calculation::{MarginCalculation, MarginContext};
-    use crate::state::perp_market_map::PerpMarketMap;
-    use crate::state::pyth_lazer_oracle::PythLazerOracle;
-    use crate::state::spot_market::{SpotBalanceType, SpotMarket};
-    use crate::state::spot_market_map::SpotMarketMap;
-    use crate::state::user::{Order, PerpPosition, SpotPosition, User};
-    use crate::test_utils::get_pyth_price;
-    use crate::MARGIN_PRECISION;
-    use crate::{
-        create_anchor_account_info, PositionDirection, QUOTE_PRECISION, SPOT_IMF_PRECISION,
+    use {
+        crate::{
+            create_anchor_account_info,
+            math::{
+                constants::{
+                    LIQUIDATION_FEE_PRECISION, PRICE_PRECISION_I64, SPOT_BALANCE_PRECISION,
+                    SPOT_BALANCE_PRECISION_U64, SPOT_CUMULATIVE_INTEREST_PRECISION,
+                    SPOT_WEIGHT_PRECISION,
+                },
+                margin::{
+                    calculate_margin_requirement_and_total_collateral_and_liability_info,
+                    MarginRequirementType,
+                },
+                orders::calculate_max_spot_order_size,
+            },
+            state::{
+                margin_calculation::{MarginCalculation, MarginContext},
+                oracle::{HistoricalOracleData, OracleSource},
+                oracle_map::OracleMap,
+                perp_market_map::PerpMarketMap,
+                pyth_lazer_oracle::PythLazerOracle,
+                spot_market::{SpotBalanceType, SpotMarket},
+                spot_market_map::SpotMarketMap,
+                user::{Order, PerpPosition, SpotPosition, User},
+            },
+            test_utils::get_pyth_price,
+            PositionDirection, MARGIN_PRECISION, QUOTE_PRECISION, SPOT_IMF_PRECISION,
+        },
+        solana_program::pubkey::Pubkey,
+        std::str::FromStr,
     };
 
     #[test]
@@ -1903,36 +1921,40 @@ mod calculate_max_spot_order_size {
 }
 
 mod calculate_max_perp_order_size {
-    use std::str::FromStr;
-
-    use anchor_lang::prelude::AccountLoader;
-    use solana_program::pubkey::Pubkey;
-
-    use crate::math::constants::{
-        SPOT_BALANCE_PRECISION, SPOT_BALANCE_PRECISION_U64, SPOT_CUMULATIVE_INTEREST_PRECISION,
-        SPOT_WEIGHT_PRECISION,
+    use {
+        crate::{
+            create_anchor_account_info,
+            math::{
+                constants::{
+                    SPOT_BALANCE_PRECISION, SPOT_BALANCE_PRECISION_U64,
+                    SPOT_CUMULATIVE_INTEREST_PRECISION, SPOT_WEIGHT_PRECISION,
+                },
+                margin::{
+                    calculate_margin_requirement_and_total_collateral_and_liability_info,
+                    MarginRequirementType,
+                },
+                orders::calculate_max_perp_order_size,
+            },
+            state::{
+                margin_calculation::{MarginCalculation, MarginContext},
+                oracle::{HistoricalOracleData, OracleSource},
+                oracle_map::OracleMap,
+                perp_market::{MarketStats, PerpMarket, AMM},
+                perp_market_map::PerpMarketMap,
+                pyth_lazer_oracle::PythLazerOracle,
+                spot_market::{SpotBalanceType, SpotMarket},
+                spot_market_map::SpotMarketMap,
+                user::{Order, PerpPosition, SpotPosition, User},
+            },
+            test_utils::{get_pyth_price, *},
+            MarketStatus, PositionDirection, AMM_RESERVE_PRECISION, MARGIN_PRECISION,
+            PEG_PRECISION, PRICE_PRECISION, PRICE_PRECISION_I64, QUOTE_PRECISION,
+            SPOT_IMF_PRECISION,
+        },
+        anchor_lang::prelude::AccountLoader,
+        solana_program::pubkey::Pubkey,
+        std::str::FromStr,
     };
-    use crate::math::margin::{
-        calculate_margin_requirement_and_total_collateral_and_liability_info, MarginRequirementType,
-    };
-    use crate::math::orders::calculate_max_perp_order_size;
-    use crate::state::oracle::{HistoricalOracleData, OracleSource};
-    use crate::state::oracle_map::OracleMap;
-
-    use crate::state::margin_calculation::{MarginCalculation, MarginContext};
-    use crate::state::perp_market::{MarketStats, PerpMarket, AMM};
-    use crate::state::perp_market_map::PerpMarketMap;
-    use crate::state::pyth_lazer_oracle::PythLazerOracle;
-    use crate::state::spot_market::{SpotBalanceType, SpotMarket};
-    use crate::state::spot_market_map::SpotMarketMap;
-    use crate::state::user::{Order, PerpPosition, SpotPosition, User};
-    use crate::test_utils::get_pyth_price;
-    use crate::test_utils::*;
-    use crate::{
-        create_anchor_account_info, PositionDirection, MARGIN_PRECISION, PRICE_PRECISION_I64,
-        QUOTE_PRECISION, SPOT_IMF_PRECISION,
-    };
-    use crate::{MarketStatus, AMM_RESERVE_PRECISION, PEG_PRECISION, PRICE_PRECISION};
 
     #[test]
     pub fn sol_perp_5x_bid() {
@@ -3401,8 +3423,10 @@ mod calculate_max_perp_order_size {
 }
 
 pub mod validate_fill_price_within_price_bands {
-    use crate::math::orders::validate_fill_price_within_price_bands;
-    use crate::{MARGIN_PRECISION, PERCENTAGE_PRECISION, PRICE_PRECISION_I64, PRICE_PRECISION_U64};
+    use crate::{
+        math::orders::validate_fill_price_within_price_bands, MARGIN_PRECISION,
+        PERCENTAGE_PRECISION, PRICE_PRECISION_I64, PRICE_PRECISION_U64,
+    };
 
     #[test]
     fn valid_long() {
@@ -3556,8 +3580,10 @@ pub mod validate_fill_price_within_price_bands {
 }
 
 pub mod is_oracle_too_divergent_with_twap_5min {
-    use crate::math::orders::is_oracle_too_divergent_with_twap_5min;
-    use crate::{PERCENTAGE_PRECISION_U64, PRICE_PRECISION_I64};
+    use crate::{
+        math::orders::is_oracle_too_divergent_with_twap_5min, PERCENTAGE_PRECISION_U64,
+        PRICE_PRECISION_I64,
+    };
 
     #[test]
     pub fn valid_above() {
@@ -3601,9 +3627,9 @@ pub mod is_oracle_too_divergent_with_twap_5min {
 }
 
 pub mod is_new_order_risk_increasing {
-    use crate::math::orders::is_new_order_risk_increasing;
-    use crate::state::user::Order;
-    use crate::PositionDirection;
+    use crate::{
+        math::orders::is_new_order_risk_increasing, state::user::Order, PositionDirection,
+    };
 
     #[test]
     fn test() {
@@ -3762,12 +3788,10 @@ pub mod is_new_order_risk_increasing {
 }
 
 pub mod get_price_for_perp_order {
-    use crate::math::orders::get_price_for_perp_order;
-
-    use crate::state::order_params::PostOnlyParam;
-    use crate::vlp::amm::AMM;
-    use crate::PositionDirection;
-    use crate::{AMM_RESERVE_PRECISION, PEG_PRECISION};
+    use crate::{
+        math::orders::get_price_for_perp_order, state::order_params::PostOnlyParam, vlp::amm::AMM,
+        PositionDirection, AMM_RESERVE_PRECISION, PEG_PRECISION,
+    };
 
     #[test]
     fn bid_crosses_vamm_ask() {
@@ -3895,8 +3919,10 @@ pub mod get_price_for_perp_order {
 }
 
 pub mod estimate_price_from_side {
-    use crate::math::orders::{estimate_price_from_side, Level};
-    use crate::{BASE_PRECISION_U64, PRICE_PRECISION_U64};
+    use crate::{
+        math::orders::{estimate_price_from_side, Level},
+        BASE_PRECISION_U64, PRICE_PRECISION_U64,
+    };
 
     #[test]
     fn ask() {
@@ -3942,18 +3968,25 @@ pub mod estimate_price_from_side {
 }
 
 pub mod find_bids_and_asks_from_users {
-    use solana_program::pubkey::Pubkey;
-
-    use crate::controller::position::PositionDirection;
-    use crate::create_anchor_account_info;
-    use crate::math::constants::{BASE_PRECISION_U64, PRICE_PRECISION_I64, PRICE_PRECISION_U64};
-    use crate::math::orders::{find_bids_and_asks_from_users, Level};
-    use crate::state::oracle::OraclePriceData;
-    use crate::state::perp_market::PerpMarket;
-    use crate::state::user::{Order, OrderStatus, OrderType, PerpPosition, User};
-    use crate::state::user_map::UserMap;
-    use crate::test_utils::get_positions;
-    use crate::MarketType;
+    use {
+        crate::{
+            controller::position::PositionDirection,
+            create_anchor_account_info,
+            math::{
+                constants::{BASE_PRECISION_U64, PRICE_PRECISION_I64, PRICE_PRECISION_U64},
+                orders::{find_bids_and_asks_from_users, Level},
+            },
+            state::{
+                oracle::OraclePriceData,
+                perp_market::PerpMarket,
+                user::{Order, OrderStatus, OrderType, PerpPosition, User},
+                user_map::UserMap,
+            },
+            test_utils::get_positions,
+            MarketType,
+        },
+        solana_program::pubkey::Pubkey,
+    };
 
     #[test]
     fn test() {
@@ -4109,10 +4142,12 @@ pub mod find_bids_and_asks_from_users {
 }
 
 pub mod filter_bids_asks_by_oracle_divergence {
-    use crate::math::constants::{
-        BID_ASK_TWAP_MAX_ORACLE_DIVERGENCE_PERCENT, PRICE_PRECISION_I64, PRICE_PRECISION_U64,
+    use crate::math::{
+        constants::{
+            BID_ASK_TWAP_MAX_ORACLE_DIVERGENCE_PERCENT, PRICE_PRECISION_I64, PRICE_PRECISION_U64,
+        },
+        orders::{filter_bids_asks_by_oracle_divergence, Level},
     };
-    use crate::math::orders::{filter_bids_asks_by_oracle_divergence, Level};
 
     #[test]
     fn test_filters_bids_below_oracle_band() {
@@ -4275,9 +4310,10 @@ pub mod filter_bids_asks_by_oracle_divergence {
 }
 
 pub mod calculate_limit_price_with_buffer {
-    use crate::math::orders::calculate_limit_price_with_buffer;
-    use crate::state::user::Order;
-    use crate::{FeeTier, PositionDirection, PRICE_PRECISION_U64};
+    use crate::{
+        math::orders::calculate_limit_price_with_buffer, state::user::Order, FeeTier,
+        PositionDirection, PRICE_PRECISION_U64,
+    };
 
     #[test]
     fn test() {
@@ -4430,10 +4466,11 @@ pub mod calculate_limit_price_with_buffer {
 }
 
 mod select_margin_type_for_perp_maker {
-    use crate::math::margin::MarginRequirementType;
-    use crate::math::orders::select_margin_type_for_perp_maker;
-    use crate::state::user::{PerpPosition, User};
-    use crate::test_utils::get_positions;
+    use crate::{
+        math::{margin::MarginRequirementType, orders::select_margin_type_for_perp_maker},
+        state::user::{PerpPosition, User},
+        test_utils::get_positions,
+    };
 
     #[test]
     fn test() {
@@ -4538,12 +4575,16 @@ mod select_margin_type_for_perp_maker {
 }
 
 mod fallback_price_logic {
-    use crate::math::constants::{
-        AMM_RESERVE_PRECISION, PEG_PRECISION, PRICE_PRECISION, PRICE_PRECISION_I64,
+    use crate::{
+        math::constants::{
+            AMM_RESERVE_PRECISION, PEG_PRECISION, PRICE_PRECISION, PRICE_PRECISION_I64,
+        },
+        state::{
+            oracle::HistoricalOracleData,
+            perp_market::{MarketStats, PerpMarket, AMM},
+        },
+        MarketStatus, PositionDirection,
     };
-    use crate::state::oracle::HistoricalOracleData;
-    use crate::state::perp_market::{MarketStats, PerpMarket, AMM};
-    use crate::{MarketStatus, PositionDirection};
 
     #[test]
     fn test() {
@@ -4779,8 +4820,7 @@ mod posted_slot_tail {
 }
 
 mod order_bit_flags {
-    use crate::math::orders::set_order_bit_flag;
-    use crate::state::user::OrderBitFlag;
+    use crate::{math::orders::set_order_bit_flag, state::user::OrderBitFlag};
 
     #[test]
     fn test_set_order_bit_flag() {

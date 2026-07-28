@@ -1,11 +1,11 @@
 use anchor_lang::AccountDeserialize;
-use velocity_rs::{
-    Context, VelocityClient, RpcClient, TransactionBuilder, Wallet,
-    types::{MarketType, OrderParams, OrderType, PositionDirection, PostOnlyParam, accounts::User},
-};
 use serde::Deserialize;
 use solana_pubkey::Pubkey;
 use std::str::FromStr;
+use velocity_rs::{
+    Context, RpcClient, TransactionBuilder, VelocityClient, Wallet,
+    types::{MarketType, OrderParams, OrderType, PositionDirection, PostOnlyParam, accounts::User},
+};
 
 #[derive(Debug, Deserialize)]
 struct TopMakerResponse {
@@ -62,8 +62,8 @@ async fn get_top_makers(
             &base64::engine::general_purpose::STANDARD,
             &maker.account_base64,
         )?;
-        let user_account = User::try_deserialize(&mut account_bytes.as_slice())
-            .expect("User deserializes");
+        let user_account =
+            User::try_deserialize(&mut account_bytes.as_slice()).expect("User deserializes");
         let maker_pubkey = Pubkey::from_str(&maker.user_account_pubkey)?;
 
         maker_infos.push((maker_pubkey, user_account));

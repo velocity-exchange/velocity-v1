@@ -1,18 +1,18 @@
-use std::{
-    cmp::Ordering,
-    convert::TryFrom,
-    fmt::Display,
-    ops::{Deref, DerefMut},
-};
-
-use derive_more::From;
-use itertools::Itertools as _;
-use serde::{de::Error, Deserialize, Serialize};
-
-use crate::{
-    payload::AggregatedPriceFeedData,
-    time::{DurationUs, FixedRate, TimestampUs},
-    ChannelId, Price, PriceFeedId, PriceFeedProperty, Rate,
+use {
+    crate::{
+        payload::AggregatedPriceFeedData,
+        time::{DurationUs, FixedRate, TimestampUs},
+        ChannelId, Price, PriceFeedId, PriceFeedProperty, Rate,
+    },
+    derive_more::From,
+    itertools::Itertools as _,
+    serde::{de::Error, Deserialize, Serialize},
+    std::{
+        cmp::Ordering,
+        convert::TryFrom,
+        fmt::Display,
+        ops::{Deref, DerefMut},
+    },
 };
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]

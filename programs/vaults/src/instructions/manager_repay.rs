@@ -1,18 +1,27 @@
-use crate::constraints::{is_manager_for_vault, is_user_for_vault, is_user_stats_for_vault};
-use crate::state::events::{ManagerRepayRecord, ManagerUpdateBorrowRecord};
-use crate::state::{FeeUpdateProvider, FeeUpdateStatus, VaultProtocolProvider};
-use crate::token_cpi::TokenTransferCPI;
-use crate::velocity_cpi::ManagerRepayCPI;
-use crate::{declare_vault_seeds, AccountMapProvider};
-use crate::{error::ErrorCode, validate, Vault};
-use anchor_lang::prelude::*;
-use anchor_spl::token::{self, Transfer};
-use anchor_spl::token::{Token, TokenAccount};
-use velocity::cpi::accounts::Deposit as VelocityDeposit;
-use velocity::instructions::optional_accounts::AccountMaps;
-use velocity::math::safe_math::SafeMath;
-use velocity::program::Velocity;
-use velocity::state::user::{User, UserStats};
+use {
+    crate::{
+        constraints::{is_manager_for_vault, is_user_for_vault, is_user_stats_for_vault},
+        declare_vault_seeds,
+        error::ErrorCode,
+        state::{
+            events::{ManagerRepayRecord, ManagerUpdateBorrowRecord},
+            FeeUpdateProvider, FeeUpdateStatus, VaultProtocolProvider,
+        },
+        token_cpi::TokenTransferCPI,
+        validate,
+        velocity_cpi::ManagerRepayCPI,
+        AccountMapProvider, Vault,
+    },
+    anchor_lang::prelude::*,
+    anchor_spl::token::{self, Token, TokenAccount, Transfer},
+    velocity::{
+        cpi::accounts::Deposit as VelocityDeposit,
+        instructions::optional_accounts::AccountMaps,
+        math::safe_math::SafeMath,
+        program::Velocity,
+        state::user::{User, UserStats},
+    },
+};
 
 pub fn manager_repay<'info>(
     ctx: Context<'info, ManagerRepay<'info>>,

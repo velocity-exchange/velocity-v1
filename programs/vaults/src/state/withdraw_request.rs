@@ -1,17 +1,21 @@
-use crate::error::ErrorCode;
-use crate::error::VaultResult;
-use crate::{validate, Vault};
-use anchor_lang::prelude::*;
-use anchor_lang::solana_program;
-use bytemuck::Zeroable;
-use solana_program::msg;
-use static_assertions::const_assert_eq;
-use velocity::math::insurance::{
-    if_shares_to_vault_amount as depositor_shares_to_vault_amount,
-    vault_amount_to_if_shares as vault_amount_to_depositor_shares,
+use {
+    crate::{
+        error::{ErrorCode, VaultResult},
+        validate, Vault,
+    },
+    anchor_lang::{prelude::*, solana_program},
+    bytemuck::Zeroable,
+    solana_program::msg,
+    static_assertions::const_assert_eq,
+    velocity::math::{
+        insurance::{
+            if_shares_to_vault_amount as depositor_shares_to_vault_amount,
+            vault_amount_to_if_shares as vault_amount_to_depositor_shares,
+        },
+        safe_math::SafeMath,
+    },
+    velocity_macros::assert_no_slop,
 };
-use velocity::math::safe_math::SafeMath;
-use velocity_macros::assert_no_slop;
 
 #[assert_no_slop]
 #[derive(

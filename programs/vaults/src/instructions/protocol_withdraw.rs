@@ -1,18 +1,24 @@
-use anchor_lang::prelude::*;
-use anchor_spl::token::{self, Transfer};
-use anchor_spl::token::{Token, TokenAccount};
-use velocity::cpi::accounts::Withdraw as VelocityWithdraw;
-use velocity::instructions::optional_accounts::AccountMaps;
-use velocity::program::Velocity;
-use velocity::state::user::{User, UserStats};
-
-use crate::constraints::{
-    is_protocol_for_vault, is_user_for_vault, is_user_stats_for_vault, is_vault_protocol_for_vault,
+use {
+    crate::{
+        constraints::{
+            is_protocol_for_vault, is_user_for_vault, is_user_stats_for_vault,
+            is_vault_protocol_for_vault,
+        },
+        declare_vault_seeds,
+        state::{Vault, VaultProtocol},
+        token_cpi::TokenTransferCPI,
+        velocity_cpi::WithdrawCPI,
+        AccountMapProvider,
+    },
+    anchor_lang::prelude::*,
+    anchor_spl::token::{self, Token, TokenAccount, Transfer},
+    velocity::{
+        cpi::accounts::Withdraw as VelocityWithdraw,
+        instructions::optional_accounts::AccountMaps,
+        program::Velocity,
+        state::user::{User, UserStats},
+    },
 };
-use crate::state::{Vault, VaultProtocol};
-use crate::token_cpi::TokenTransferCPI;
-use crate::velocity_cpi::WithdrawCPI;
-use crate::{declare_vault_seeds, AccountMapProvider};
 
 pub fn protocol_withdraw<'info>(ctx: Context<'info, ProtocolWithdraw<'info>>) -> Result<()> {
     let clock = &Clock::get()?;

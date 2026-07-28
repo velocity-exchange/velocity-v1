@@ -11,27 +11,33 @@
 //! Re-exported from `crate::vlp::amm::controller::*` so `use crate::vlp::amm::controller::*`
 //! still resolves these symbols.
 
-use std::cmp::min;
-
-use anchor_lang::prelude::*;
-
-use crate::controller::spot_balance::{
-    transfer_spot_balance_to_revenue_pool, transfer_spot_balances, update_spot_balances,
+use {
+    crate::{
+        controller::spot_balance::{
+            transfer_spot_balance_to_revenue_pool, transfer_spot_balances, update_spot_balances,
+        },
+        error::{ErrorCode, VelocityResult},
+        math::{
+            casting::Cast,
+            safe_math::SafeMath,
+            spot_balance::get_token_amount,
+            spot_withdraw::{
+                get_max_withdraw_for_market_with_token_amount, validate_spot_balances,
+            },
+        },
+        msg,
+        state::{
+            events::PerpMarketFeeSweepRecord,
+            paused_operations::PerpOperation,
+            perp_market::PerpMarket,
+            spot_market::{SpotBalance, SpotBalanceType, SpotMarket},
+            user::User,
+        },
+        validate,
+    },
+    anchor_lang::prelude::*,
+    std::cmp::min,
 };
-use crate::error::{ErrorCode, VelocityResult};
-use crate::math::casting::Cast;
-use crate::math::safe_math::SafeMath;
-use crate::math::spot_balance::get_token_amount;
-use crate::math::spot_withdraw::{
-    get_max_withdraw_for_market_with_token_amount, validate_spot_balances,
-};
-use crate::msg;
-use crate::state::events::PerpMarketFeeSweepRecord;
-use crate::state::paused_operations::PerpOperation;
-use crate::state::perp_market::PerpMarket;
-use crate::state::spot_market::{SpotBalance, SpotBalanceType, SpotMarket};
-use crate::state::user::User;
-use crate::validate;
 
 /// Materialize accrued pending fees out of the pnl pool — the streaming
 /// sweep. The pnl pool is where fee value lands (fees debit the payer's

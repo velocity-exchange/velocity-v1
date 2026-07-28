@@ -3,17 +3,17 @@
 //! Resubmits quotes on a fixed interval
 use std::time::Duration;
 
+use futures_util::StreamExt;
+use solana_keypair::Keypair;
 use velocity_rs::{
-    event_subscriber::{VelocityEvent, EventSubscriber},
+    event_subscriber::{EventSubscriber, VelocityEvent},
     math::constants::{BASE_PRECISION_U64, PRICE_PRECISION_U64},
     types::{
         accounts::{PerpMarket, User},
         MarketPrecision, MarketType, OrderParams, OrderType, PositionDirection, PostOnlyParam,
     },
-    Context, VelocityClient, Pubkey, RpcClient, TransactionBuilder, Wallet,
+    Context, Pubkey, RpcClient, TransactionBuilder, VelocityClient, Wallet,
 };
-use futures_util::StreamExt;
-use solana_keypair::Keypair;
 
 pub async fn ws_maker(context: Context, wallet: Wallet) {
     let rpc_url = std::env::var("RPC_URL")

@@ -1,54 +1,54 @@
 //! Filler Bot
-use std::{
-    collections::{BTreeMap, HashSet},
-    sync::Arc,
-    time::{Duration, SystemTime, UNIX_EPOCH},
-};
-
-use anchor_lang::Discriminator;
-use dashmap::DashMap;
-use futures_util::StreamExt;
-use pyth_lazer_protocol::router::TimestampUs;
-use solana_account_decoder_client_types::UiAccountEncoding;
-use solana_compute_budget_interface::ComputeBudgetInstruction;
-use solana_rpc_client_api::config::{
-    RpcAccountInfoConfig, RpcProgramAccountsConfig, RpcTransactionConfig,
-};
-use solana_sdk::{
-    instruction::InstructionError, signature::Signature, transaction::TransactionError,
-};
-use solana_transaction_status_client_types::{UiTransactionEncoding, UiTransactionError};
-use tokio::{runtime::Handle, sync::RwLock};
-use velocity_rs::program::math::auction::calculate_auction_price;
-use velocity_rs::{
-    constants::PROGRAM_ID,
-    dlob::{
-        CrossesAndTopMakers, CrossingRegion, DLOBNotifier, L3Order, MakerCrosses, OrderKind,
-        TakerOrder, DLOB,
+use {
+    crate::{
+        http::{FeedHealth, Metrics},
+        util::{
+            pyth_update_is_fresh, swift_placement_expired, OrderSlotLimiter, PendingTxMeta,
+            PendingTxs, PythPriceUpdate, TxIntent,
+        },
+        Config, UseMarkets,
     },
-    event_subscriber::VelocityEvent,
-    grpc::{
-        grpc_subscriber::{AccountFilter, GrpcConnectionOpts},
-        AccountUpdate, TransactionUpdate,
+    anchor_lang::Discriminator,
+    dashmap::DashMap,
+    futures_util::StreamExt,
+    pyth_lazer_protocol::router::TimestampUs,
+    solana_account_decoder_client_types::UiAccountEncoding,
+    solana_compute_budget_interface::ComputeBudgetInstruction,
+    solana_rpc_client_api::config::{
+        RpcAccountInfoConfig, RpcProgramAccountsConfig, RpcTransactionConfig,
     },
-    priority_fee_subscriber::PriorityFeeSubscriber,
-    swift_order_subscriber::{SignedOrderInfo, SwiftOrderStream},
-    types::{
-        accounts::{PerpMarket, User, UserStats},
-        CommitmentConfig, FeeTier, MarketId, MarketPrecision, MarketStatus, MarketType, Order,
-        OrderParamsExt, OrderTriggerCondition, OrderType, PositionDirection, PostOnlyParam,
-        RpcSendTransactionConfig, StateExt, VersionedMessage, VersionedTransaction, AMM,
+    solana_sdk::{
+        instruction::InstructionError, signature::Signature, transaction::TransactionError,
     },
-    GrpcSubscribeOpts, Pubkey, TransactionBuilder, VelocityClient, Wallet,
-};
-
-use crate::{
-    http::{FeedHealth, Metrics},
-    util::{
-        pyth_update_is_fresh, swift_placement_expired, OrderSlotLimiter, PendingTxMeta, PendingTxs,
-        PythPriceUpdate, TxIntent,
+    solana_transaction_status_client_types::{UiTransactionEncoding, UiTransactionError},
+    std::{
+        collections::{BTreeMap, HashSet},
+        sync::Arc,
+        time::{Duration, SystemTime, UNIX_EPOCH},
     },
-    Config, UseMarkets,
+    tokio::{runtime::Handle, sync::RwLock},
+    velocity_rs::{
+        constants::PROGRAM_ID,
+        dlob::{
+            CrossesAndTopMakers, CrossingRegion, DLOBNotifier, L3Order, MakerCrosses, OrderKind,
+            TakerOrder, DLOB,
+        },
+        event_subscriber::VelocityEvent,
+        grpc::{
+            grpc_subscriber::{AccountFilter, GrpcConnectionOpts},
+            AccountUpdate, TransactionUpdate,
+        },
+        priority_fee_subscriber::PriorityFeeSubscriber,
+        program::math::auction::calculate_auction_price,
+        swift_order_subscriber::{SignedOrderInfo, SwiftOrderStream},
+        types::{
+            accounts::{PerpMarket, User, UserStats},
+            CommitmentConfig, FeeTier, MarketId, MarketPrecision, MarketStatus, MarketType, Order,
+            OrderParamsExt, OrderTriggerCondition, OrderType, PositionDirection, PostOnlyParam,
+            RpcSendTransactionConfig, StateExt, VersionedMessage, VersionedTransaction, AMM,
+        },
+        GrpcSubscribeOpts, Pubkey, TransactionBuilder, VelocityClient, Wallet,
+    },
 };
 
 const TARGET: &str = "filler";
@@ -3015,19 +3015,19 @@ impl TxSender {
 
 #[cfg(test)]
 mod tests {
-    use std::borrow::Cow;
-
-    use solana_sdk::{instruction::InstructionError, transaction::TransactionError};
-    use velocity_rs::{
-        constants::ProgramData,
-        types::accounts::{PerpMarket, SpotMarket, State, User},
-        velocity_idl::types::MarketType as EventMarketType,
-        TransactionBuilder,
-    };
-
-    use super::{
-        build_fill_tx, classify_cross, is_expected_fill_event, is_revert_fill_error,
-        order_dedup_key, vamm_can_fill_taker, CrossAction, Pubkey, TxIntent, VelocityEvent,
+    use {
+        super::{
+            build_fill_tx, classify_cross, is_expected_fill_event, is_revert_fill_error,
+            order_dedup_key, vamm_can_fill_taker, CrossAction, Pubkey, TxIntent, VelocityEvent,
+        },
+        solana_sdk::{instruction::InstructionError, transaction::TransactionError},
+        std::borrow::Cow,
+        velocity_rs::{
+            constants::ProgramData,
+            types::accounts::{PerpMarket, SpotMarket, State, User},
+            velocity_idl::types::MarketType as EventMarketType,
+            TransactionBuilder,
+        },
     };
 
     fn order_fill_event(taker: Pubkey, order_id: u32, base_filled: u64) -> VelocityEvent {

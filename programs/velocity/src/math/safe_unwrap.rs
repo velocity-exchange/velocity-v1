@@ -1,6 +1,10 @@
-use crate::error::{ErrorCode, VelocityResult};
-use crate::msg;
-use std::panic::Location;
+use {
+    crate::{
+        error::{ErrorCode, VelocityResult},
+        msg,
+    },
+    std::panic::Location,
+};
 
 pub trait SafeUnwrap {
     type Item;

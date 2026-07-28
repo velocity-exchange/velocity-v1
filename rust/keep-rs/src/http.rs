@@ -1,16 +1,18 @@
 //! HTTP and metrics server
-use std::sync::Arc;
-
-use axum::{
-    extract::State,
-    http::{header::CONTENT_TYPE, Response, StatusCode},
-    response::{Html, IntoResponse, Json},
+use {
+    axum::{
+        extract::State,
+        http::{header::CONTENT_TYPE, Response, StatusCode},
+        response::{Html, IntoResponse, Json},
+    },
+    prometheus::{
+        Encoder, HistogramVec, IntCounter, IntCounterVec, IntGauge, IntGaugeVec, Registry,
+        TextEncoder,
+    },
+    serde::{Deserialize, Serialize},
+    std::sync::Arc,
+    tokio::sync::RwLock,
 };
-use prometheus::{
-    Encoder, HistogramVec, IntCounter, IntCounterVec, IntGauge, IntGaugeVec, Registry, TextEncoder,
-};
-use serde::{Deserialize, Serialize};
-use tokio::sync::RwLock;
 
 /// Margin status indicating liquidation risk level
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

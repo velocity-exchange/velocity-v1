@@ -1,5 +1,4 @@
-use crate::state::state::FeeStructure;
-use crate::validation::fee_structure::validate_fee_structure;
+use crate::{state::state::FeeStructure, validation::fee_structure::validate_fee_structure};
 
 #[test]
 fn default_fee_structures() {

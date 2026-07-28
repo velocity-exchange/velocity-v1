@@ -1,88 +1,97 @@
-use std::convert::TryInto;
-
-use crate::state::state::LpPoolFeatureBitFlags;
-
-use anchor_lang::prelude::*;
-use anchor_lang::Discriminator;
-use anchor_spl::{
-    token_2022::{
-        spl_token_2022::{
-            extension::{
-                transfer_hook::TransferHook, BaseStateWithExtensions, StateWithExtensions,
+use {
+    crate::{
+        auth::{check_cold, check_hot, check_pause, check_warm, require_pause_only_added},
+        controller::{
+            self,
+            token::{close_vault, initialize_immutable_owner, initialize_token_account},
+        },
+        error::ErrorCode,
+        get_then_update_id,
+        instructions::{
+            constraints::*,
+            optional_accounts::{load_maps, AccountMaps},
+        },
+        load_mut,
+        math::{
+            self, bn,
+            casting::Cast,
+            constants::{
+                BPS_PRECISION, DEFAULT_BANKRUPTCY_IF_FLOOR_PCT,
+                DEFAULT_LIQUIDATION_MARGIN_BUFFER_RATIO, FEE_ADJUSTMENT_MAX,
+                FEE_POOL_TO_REVENUE_POOL_THRESHOLD, IF_FACTOR_PRECISION, INSURANCE_A_MAX,
+                INSURANCE_B_MAX, INSURANCE_C_MAX, INSURANCE_SPECULATIVE_MAX,
+                LIQUIDATION_FEE_PRECISION, MAX_CONCENTRATION_COEFFICIENT,
+                MM_ORACLE_MAX_STEP_PCT_PRECISION, MM_ORACLE_MIN_SLOT_GAP, PERCENTAGE_PRECISION,
+                PERCENTAGE_PRECISION_I128, PERCENTAGE_PRECISION_I64, PERCENTAGE_PRECISION_U32,
+                QUOTE_PRECISION_I64, QUOTE_SPOT_MARKET_INDEX, SPOT_BALANCE_PRECISION,
+                SPOT_CUMULATIVE_INTEREST_PRECISION, SPOT_IMF_PRECISION, SPOT_WEIGHT_PRECISION,
+                THIRTEEN_DAY, TWENTY_FOUR_HOUR,
             },
-            state::Mint as MintInner,
+            orders::is_multiple_of_step_size,
+            safe_math::SafeMath,
+            spot_balance::get_token_amount,
+            spot_withdraw::{
+                validate_spot_market_vault_amount, DEFAULT_WITHDRAW_CIRCUIT_BREAKER_BPS,
+            },
         },
-        Token2022,
-    },
-    token_interface::{Mint, TokenAccount, TokenInterface},
-};
-
-use crate::{
-    auth::{check_cold, check_hot, check_pause, check_warm, require_pause_only_added},
-    controller,
-    controller::token::{close_vault, initialize_immutable_owner, initialize_token_account},
-    error::ErrorCode,
-    get_then_update_id,
-    instructions::{
-        constraints::*,
-        optional_accounts::{load_maps, AccountMaps},
-    },
-    load_mut, math,
-    math::{
-        bn,
-        casting::Cast,
-        constants::{
-            BPS_PRECISION, DEFAULT_BANKRUPTCY_IF_FLOOR_PCT,
-            DEFAULT_LIQUIDATION_MARGIN_BUFFER_RATIO, FEE_ADJUSTMENT_MAX,
-            FEE_POOL_TO_REVENUE_POOL_THRESHOLD, IF_FACTOR_PRECISION, INSURANCE_A_MAX,
-            INSURANCE_B_MAX, INSURANCE_C_MAX, INSURANCE_SPECULATIVE_MAX, LIQUIDATION_FEE_PRECISION,
-            MAX_CONCENTRATION_COEFFICIENT, MM_ORACLE_MAX_STEP_PCT_PRECISION,
-            MM_ORACLE_MIN_SLOT_GAP, PERCENTAGE_PRECISION, PERCENTAGE_PRECISION_I128,
-            PERCENTAGE_PRECISION_I64, PERCENTAGE_PRECISION_U32, QUOTE_PRECISION_I64,
-            QUOTE_SPOT_MARKET_INDEX, SPOT_BALANCE_PRECISION, SPOT_CUMULATIVE_INTEREST_PRECISION,
-            SPOT_IMF_PRECISION, SPOT_WEIGHT_PRECISION, THIRTEEN_DAY, TWENTY_FOUR_HOUR,
+        math_error, msg,
+        optional_accounts::get_token_mint,
+        safe_decrement, safe_increment,
+        state::{
+            events::{
+                DepositDirection, DepositExplanation, DepositRecord, SpotMarketVaultDepositRecord,
+            },
+            market_status::MarketStatus,
+            oracle::{
+                get_oracle_price, get_prelaunch_price, get_pyth_price, HistoricalIndexData,
+                HistoricalOracleData, OraclePriceData, OracleSource, PrelaunchOracle,
+                PrelaunchOracleParams, StrictOraclePrice,
+            },
+            oracle_map::OracleMap,
+            paused_operations::{InsuranceFundOperation, PerpOperation, SpotOperation},
+            perp_market::{
+                ContractTier, ContractType, FeeLedger, HedgeConfig, InsuranceClaim,
+                MarketConfigFlag, MarketStats, PerpMarket, PoolBalance, AMM,
+            },
+            perp_market_map::{get_writable_perp_market_set, MarketSet},
+            pyth_lazer_oracle::{PythLazerOracle, PYTH_LAZER_ORACLE_SEED},
+            spot_market::{
+                AssetTier, InsuranceFund, SpotBalanceType, SpotMarket, TokenProgramFlag,
+            },
+            spot_market_map::get_writable_spot_market_set,
+            state::{
+                ExchangeStatus, FeeStructure, HotRole, LpPoolFeatureBitFlags, OracleGuardRails,
+                SolvencyStatus, State,
+            },
+            traits::Size,
+            user::{MarketType, SpecialUserStatus, User, UserStats},
         },
-        orders::is_multiple_of_step_size,
-        safe_math::SafeMath,
-        spot_balance::get_token_amount,
-        spot_withdraw::{validate_spot_market_vault_amount, DEFAULT_WITHDRAW_CIRCUIT_BREAKER_BPS},
-    },
-    math_error, msg,
-    optional_accounts::get_token_mint,
-    safe_decrement, safe_increment,
-    state::{
-        events::{
-            DepositDirection, DepositExplanation, DepositRecord, SpotMarketVaultDepositRecord,
+        validate,
+        validation::{
+            fee_structure::validate_fee_structure,
+            margin::{validate_margin, validate_margin_weights},
+            spot_market::{validate_borrow_rate, validate_withdraw_guard_threshold},
         },
-        market_status::MarketStatus,
-        oracle::{
-            get_oracle_price, get_prelaunch_price, get_pyth_price, HistoricalIndexData,
-            HistoricalOracleData, OraclePriceData, OracleSource, PrelaunchOracle,
-            PrelaunchOracleParams, StrictOraclePrice,
+        vlp::{
+            amm::math::amm,
+            amm_cache::{AmmCache, AMM_POSITIONS_CACHE},
         },
-        oracle_map::OracleMap,
-        paused_operations::{InsuranceFundOperation, PerpOperation, SpotOperation},
-        perp_market::{
-            ContractTier, ContractType, FeeLedger, HedgeConfig, InsuranceClaim, MarketConfigFlag,
-            MarketStats, PerpMarket, PoolBalance, AMM,
+        FeatureBitFlags,
+    },
+    anchor_lang::{prelude::*, Discriminator},
+    anchor_spl::{
+        token_2022::{
+            spl_token_2022::{
+                extension::{
+                    transfer_hook::TransferHook, BaseStateWithExtensions, StateWithExtensions,
+                },
+                state::Mint as MintInner,
+            },
+            Token2022,
         },
-        perp_market_map::{get_writable_perp_market_set, MarketSet},
-        pyth_lazer_oracle::{PythLazerOracle, PYTH_LAZER_ORACLE_SEED},
-        spot_market::{AssetTier, InsuranceFund, SpotBalanceType, SpotMarket, TokenProgramFlag},
-        spot_market_map::get_writable_spot_market_set,
-        state::{ExchangeStatus, FeeStructure, HotRole, OracleGuardRails, SolvencyStatus, State},
-        traits::Size,
-        user::{MarketType, SpecialUserStatus, User, UserStats},
+        token_interface::{Mint, TokenAccount, TokenInterface},
     },
-    validate,
-    validation::{
-        fee_structure::validate_fee_structure,
-        margin::{validate_margin, validate_margin_weights},
-        spot_market::{validate_borrow_rate, validate_withdraw_guard_threshold},
-    },
-    vlp::amm::math::amm,
-    vlp::amm_cache::{AmmCache, AMM_POSITIONS_CACHE},
-    FeatureBitFlags,
+    std::convert::TryInto,
 };
 
 fn validate_supported_market_oracle_source(oracle_source: OracleSource) -> Result<()> {
@@ -4427,8 +4436,7 @@ pub fn handle_force_wipe_accounts_devnet<'info>(
     ctx: Context<'info, ForceWipeAccountsDevnet<'info>>,
     velocity_signer_nonce: u8,
 ) -> Result<()> {
-    use anchor_lang::solana_program::system_program;
-    use anchor_spl::token_interface;
+    use {anchor_lang::solana_program::system_program, anchor_spl::token_interface};
 
     let state_ai = ctx.accounts.state.to_account_info();
     require_keys_eq!(*state_ai.owner, crate::ID, ErrorCode::DefaultError);
@@ -4552,12 +4560,18 @@ mod native_auth_tests {
     //! `handle_update_mm_oracle_native`. These run under `cargo test` (default
     //! features, no `anchor-test`), so the signer check is compiled in. The
     //! structural account checks are always compiled in regardless of feature.
-    use super::*;
-    use crate::create_anchor_account_info;
-    use crate::state::perp_market::PerpMarket;
-    use crate::state::state::{FeatureBitFlags, State};
-    use crate::test_utils::get_anchor_account_bytes;
-    use anchor_lang::prelude::{AccountInfo, Pubkey};
+    use {
+        super::*,
+        crate::{
+            create_anchor_account_info,
+            state::{
+                perp_market::PerpMarket,
+                state::{FeatureBitFlags, State},
+            },
+            test_utils::get_anchor_account_bytes,
+        },
+        anchor_lang::prelude::{AccountInfo, Pubkey},
+    };
 
     // mm-oracle payload: 8-byte price + 8-byte sequence id (both non-zero so the
     // happy path would proceed past the early-out checks).

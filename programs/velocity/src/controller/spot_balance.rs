@@ -1,32 +1,39 @@
-use crate::math::oracle::{oracle_validity, LogMode, OracleValidity};
-use crate::state::perp_market::PoolBalance;
-use crate::state::state::ValidityGuardRails;
-use std::cmp::max;
-
-use crate::msg;
-use anchor_lang::prelude::*;
-
-use crate::error::{ErrorCode, VelocityResult};
-use crate::math::casting::Cast;
-use crate::math::constants::{
-    FIVE_MINUTE, IF_FACTOR_PRECISION, ONE_HOUR, ONE_MINUTE, QUOTE_SPOT_MARKET_INDEX,
-    SPOT_MARKET_TOKEN_TWAP_WINDOW,
+use {
+    crate::{
+        error::{ErrorCode, VelocityResult},
+        math::{
+            casting::Cast,
+            constants::{
+                FIVE_MINUTE, IF_FACTOR_PRECISION, ONE_HOUR, ONE_MINUTE, QUOTE_SPOT_MARKET_INDEX,
+                SPOT_MARKET_TOKEN_TWAP_WINDOW,
+            },
+            oracle::{
+                is_oracle_valid_for_action, oracle_validity, LogMode, OracleValidity,
+                VelocityAction,
+            },
+            safe_math::SafeMath,
+            spot_balance::{
+                calculate_accumulated_interest, calculate_utilization, get_interest_token_amount,
+                get_spot_balance, get_token_amount, InterestAccumulated,
+            },
+            stats::{calculate_new_twap, calculate_weighted_average},
+        },
+        msg,
+        state::{
+            events::{SpotInterestRecord, TransferFeeAndPnlPoolDirection},
+            oracle::OraclePriceData,
+            paused_operations::SpotOperation,
+            perp_market::PoolBalance,
+            spot_market::{SpotBalance, SpotBalanceType, SpotMarket},
+            state::ValidityGuardRails,
+            user::MarketType,
+        },
+        validate,
+        vlp::amm::math::amm::sanitize_new_price,
+    },
+    anchor_lang::prelude::*,
+    std::cmp::max,
 };
-use crate::math::spot_balance::{
-    calculate_accumulated_interest, calculate_utilization, get_interest_token_amount,
-    get_spot_balance, get_token_amount, InterestAccumulated,
-};
-use crate::math::stats::{calculate_new_twap, calculate_weighted_average};
-use crate::vlp::amm::math::amm::sanitize_new_price;
-
-use crate::math::oracle::{is_oracle_valid_for_action, VelocityAction};
-use crate::math::safe_math::SafeMath;
-use crate::state::events::{SpotInterestRecord, TransferFeeAndPnlPoolDirection};
-use crate::state::oracle::OraclePriceData;
-use crate::state::paused_operations::SpotOperation;
-use crate::state::spot_market::{SpotBalance, SpotBalanceType, SpotMarket};
-use crate::state::user::MarketType;
-use crate::validate;
 
 #[cfg(test)]
 mod tests;

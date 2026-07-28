@@ -1,30 +1,39 @@
-use std::cell::RefMut;
-
-use anchor_lang::prelude::*;
-use static_assertions::const_assert_eq;
-use velocity::math::casting::Cast;
-use velocity::math::constants::{ONE_YEAR, PERCENTAGE_PRECISION, PERCENTAGE_PRECISION_I128};
-use velocity::math::insurance::calculate_rebase_info;
-use velocity::math::insurance::{
-    if_shares_to_vault_amount as depositor_shares_to_vault_amount,
-    vault_amount_to_if_shares as vault_amount_to_depositor_shares,
+use {
+    crate::{
+        constants::TIME_FOR_LIQUIDATION,
+        error::{ErrorCode, VaultResult},
+        events::{VaultDepositorAction, VaultDepositorV1Record},
+        state::{
+            events::VaultDepositorRecord, withdraw_request::WithdrawRequest, FeeUpdate, VaultFee,
+            VaultProtocol,
+        },
+        validate, Size, WithdrawUnit,
+    },
+    anchor_lang::prelude::*,
+    static_assertions::const_assert_eq,
+    std::cell::RefMut,
+    velocity::{
+        math::{
+            casting::Cast,
+            constants::{ONE_YEAR, PERCENTAGE_PRECISION, PERCENTAGE_PRECISION_I128},
+            insurance::{
+                calculate_rebase_info,
+                if_shares_to_vault_amount as depositor_shares_to_vault_amount,
+                vault_amount_to_if_shares as vault_amount_to_depositor_shares,
+            },
+            margin::calculate_user_equity,
+            oracle::{is_oracle_valid_for_action, LogMode, VelocityAction},
+            safe_math::SafeMath,
+        },
+        state::{
+            oracle_map::OracleMap,
+            perp_market_map::PerpMarketMap,
+            spot_market_map::SpotMarketMap,
+            user::{MarketType, User},
+        },
+    },
+    velocity_macros::assert_no_slop,
 };
-use velocity::math::margin::calculate_user_equity;
-use velocity::math::oracle::{is_oracle_valid_for_action, LogMode, VelocityAction};
-use velocity::math::safe_math::SafeMath;
-use velocity::state::oracle_map::OracleMap;
-use velocity::state::perp_market_map::PerpMarketMap;
-use velocity::state::spot_market_map::SpotMarketMap;
-use velocity::state::user::{MarketType, User};
-use velocity_macros::assert_no_slop;
-
-use crate::constants::TIME_FOR_LIQUIDATION;
-use crate::error::{ErrorCode, VaultResult};
-use crate::events::{VaultDepositorAction, VaultDepositorV1Record};
-use crate::state::events::VaultDepositorRecord;
-use crate::state::withdraw_request::WithdrawRequest;
-use crate::state::{FeeUpdate, VaultFee, VaultProtocol};
-use crate::{validate, Size, WithdrawUnit};
 
 #[assert_no_slop]
 #[account(zero_copy(unsafe))]

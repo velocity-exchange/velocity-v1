@@ -1,18 +1,20 @@
-use crate::msg;
-
-use crate::error::{ErrorCode, VelocityResult};
-use crate::math::bn;
-use crate::math::bn::U192;
-use crate::math::casting::Cast;
-use crate::math::constants::{
-    AMM_RESERVE_PRECISION, AMM_TO_QUOTE_PRECISION_RATIO_I128, K_BPS_UPDATE_SCALE,
-    MAX_K_BPS_DECREASE, MAX_SQRT_K, PEG_PRECISION, PERCENTAGE_PRECISION_I128, QUOTE_PRECISION,
+use crate::{
+    error::{ErrorCode, VelocityResult},
+    math::{
+        bn,
+        bn::U192,
+        casting::Cast,
+        constants::{
+            AMM_RESERVE_PRECISION, AMM_TO_QUOTE_PRECISION_RATIO_I128, K_BPS_UPDATE_SCALE,
+            MAX_K_BPS_DECREASE, MAX_SQRT_K, PEG_PRECISION, PERCENTAGE_PRECISION_I128,
+            QUOTE_PRECISION,
+        },
+        safe_math::SafeMath,
+    },
+    msg,
+    state::{market_status::MarketStatus, perp_market::AMM},
+    validate,
 };
-use crate::math::safe_math::SafeMath;
-
-use crate::state::market_status::MarketStatus;
-use crate::state::perp_market::AMM;
-use crate::validate;
 
 #[cfg(test)]
 mod tests;

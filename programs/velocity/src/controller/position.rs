@@ -1,23 +1,26 @@
-use crate::msg;
-use anchor_lang::prelude::*;
-
-use crate::error::{ErrorCode, VelocityResult};
-use crate::math::casting::Cast;
-use crate::math::constants::{BASE_PRECISION_U64, MAX_BASE_ASSET_AMOUNT_WITH_AMM, PERP_DECIMALS};
-use crate::math::orders::{
-    calculate_quote_asset_amount_for_maker_order, get_position_delta_for_fill,
-    is_multiple_of_step_size,
+use {
+    crate::{
+        error::{ErrorCode, VelocityResult},
+        math::{
+            casting::Cast,
+            constants::{BASE_PRECISION_U64, MAX_BASE_ASSET_AMOUNT_WITH_AMM, PERP_DECIMALS},
+            orders::{
+                calculate_quote_asset_amount_for_maker_order, get_position_delta_for_fill,
+                is_multiple_of_step_size,
+            },
+            position::{get_new_position_amounts, get_position_update_type, PositionUpdateType},
+            safe_math::SafeMath,
+        },
+        math_error, msg, safe_increment,
+        state::{
+            perp_market::PerpMarket,
+            quoter::QuoteContext,
+            user::{PerpPosition, PerpPositions, User},
+        },
+        validate,
+    },
+    anchor_lang::prelude::*,
 };
-use crate::math::position::{
-    get_new_position_amounts, get_position_update_type, PositionUpdateType,
-};
-use crate::math::safe_math::SafeMath;
-use crate::math_error;
-use crate::safe_increment;
-use crate::state::perp_market::PerpMarket;
-use crate::state::quoter::QuoteContext;
-use crate::state::user::{PerpPosition, PerpPositions, User};
-use crate::validate;
 
 #[cfg(test)]
 mod tests;

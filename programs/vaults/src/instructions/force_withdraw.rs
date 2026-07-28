@@ -1,17 +1,21 @@
-use anchor_lang::prelude::*;
-use anchor_spl::token::{self, Transfer};
-use anchor_spl::token::{Token, TokenAccount};
-use velocity::cpi::accounts::Withdraw as VelocityWithdraw;
-use velocity::instructions::optional_accounts::AccountMaps;
-use velocity::program::Velocity;
-use velocity::state::user::{User, UserStats};
-
-use crate::constraints::*;
-use crate::state::{FeeUpdateProvider, FeeUpdateStatus, Vault, VaultDepositor};
-use crate::token_cpi::TokenTransferCPI;
-use crate::velocity_cpi::WithdrawCPI;
-use crate::VaultProtocolProvider;
-use crate::{declare_vault_seeds, AccountMapProvider};
+use {
+    crate::{
+        constraints::*,
+        declare_vault_seeds,
+        state::{FeeUpdateProvider, FeeUpdateStatus, Vault, VaultDepositor},
+        token_cpi::TokenTransferCPI,
+        velocity_cpi::WithdrawCPI,
+        AccountMapProvider, VaultProtocolProvider,
+    },
+    anchor_lang::prelude::*,
+    anchor_spl::token::{self, Token, TokenAccount, Transfer},
+    velocity::{
+        cpi::accounts::Withdraw as VelocityWithdraw,
+        instructions::optional_accounts::AccountMaps,
+        program::Velocity,
+        state::user::{User, UserStats},
+    },
+};
 
 pub fn force_withdraw<'info>(ctx: Context<'info, ForceWithdraw<'info>>) -> Result<()> {
     let clock = &Clock::get()?;

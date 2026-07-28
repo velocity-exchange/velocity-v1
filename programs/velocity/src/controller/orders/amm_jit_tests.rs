@@ -1,15 +1,19 @@
-use anchor_lang::prelude::Pubkey;
-
-use crate::math::constants::ONE_BPS_DENOMINATOR;
-use crate::math::oracle;
-use crate::math::oracle::oracle_validity;
-use crate::state::fill_mode::FillMode;
-use crate::state::oracle_map::OracleMap;
-use crate::state::perp_market::PerpMarket;
-use crate::state::state::State;
-use crate::state::state::{FeeStructure, FeeTier};
-use crate::state::user::MarketType;
-use crate::state::user::{Order, PerpPosition};
+use {
+    crate::{
+        math::{
+            constants::ONE_BPS_DENOMINATOR,
+            oracle::{self, oracle_validity},
+        },
+        state::{
+            fill_mode::FillMode,
+            oracle_map::OracleMap,
+            perp_market::PerpMarket,
+            state::{FeeStructure, FeeTier, State},
+            user::{MarketType, Order, PerpPosition},
+        },
+    },
+    anchor_lang::prelude::Pubkey,
+};
 
 fn get_fee_structure() -> FeeStructure {
     let mut fee_tiers = [FeeTier::default(); 10];
@@ -82,33 +86,33 @@ pub fn get_amm_is_available(
 
 #[cfg(test)]
 pub mod amm_jit {
-    use std::str::FromStr;
-
-    use crate::controller::orders::fulfill_perp_order;
-    use crate::controller::position::PositionDirection;
-    use crate::create_anchor_account_info;
-    use crate::math::constants::{PRICE_PRECISION_I64, QUOTE_PRECISION_I64};
-    use crate::state::pyth_lazer_oracle::PythLazerOracle;
-
-    use crate::math::constants::{
-        AMM_RESERVE_PRECISION, BASE_PRECISION_I128, BASE_PRECISION_I64, BASE_PRECISION_U64,
-        PEG_PRECISION, PRICE_PRECISION, SPOT_BALANCE_PRECISION_U64,
-        SPOT_CUMULATIVE_INTEREST_PRECISION, SPOT_WEIGHT_PRECISION,
+    use {
+        super::*,
+        crate::{
+            controller::{orders::fulfill_perp_order, position::PositionDirection},
+            create_anchor_account_info,
+            math::constants::{
+                AMM_RESERVE_PRECISION, BASE_PRECISION_I128, BASE_PRECISION_I64, BASE_PRECISION_U64,
+                CONCENTRATION_PRECISION, PEG_PRECISION, PRICE_PRECISION, PRICE_PRECISION_I64,
+                PRICE_PRECISION_U64, QUOTE_PRECISION_I64, SPOT_BALANCE_PRECISION_U64,
+                SPOT_CUMULATIVE_INTEREST_PRECISION, SPOT_WEIGHT_PRECISION,
+            },
+            state::{
+                fill_mode::FillMode,
+                market_status::MarketStatus,
+                oracle::{HistoricalOracleData, OracleSource},
+                perp_market::{MarketStats, PerpMarket, AMM},
+                perp_market_map::PerpMarketMap,
+                pyth_lazer_oracle::PythLazerOracle,
+                spot_market::{SpotBalanceType, SpotMarket},
+                spot_market_map::SpotMarketMap,
+                user::{OrderStatus, OrderType, SpotPosition, User, UserStats},
+                user_map::{UserMap, UserStatsMap},
+            },
+            test_utils::{get_orders, get_positions, get_pyth_price, get_spot_positions},
+        },
+        std::str::FromStr,
     };
-    use crate::math::constants::{CONCENTRATION_PRECISION, PRICE_PRECISION_U64};
-
-    use crate::state::fill_mode::FillMode;
-    use crate::state::market_status::MarketStatus;
-    use crate::state::oracle::{HistoricalOracleData, OracleSource};
-    use crate::state::perp_market::{MarketStats, PerpMarket, AMM};
-    use crate::state::perp_market_map::PerpMarketMap;
-    use crate::state::spot_market::{SpotBalanceType, SpotMarket};
-    use crate::state::spot_market_map::SpotMarketMap;
-    use crate::state::user::{OrderStatus, OrderType, SpotPosition, User, UserStats};
-    use crate::state::user_map::{UserMap, UserStatsMap};
-    use crate::test_utils::{get_orders, get_positions, get_pyth_price, get_spot_positions};
-
-    use super::*;
 
     #[test]
     fn zero_asks_with_amm_jit_taker_long() {

@@ -1,22 +1,23 @@
-use anchor_lang::prelude::*;
-use anchor_spl::token::{self, Transfer};
-use anchor_spl::token::{Token, TokenAccount};
-use velocity::cpi::accounts::{UpdateUser, Withdraw as VelocityWithdraw};
-use velocity::instructions::optional_accounts::AccountMaps;
-use velocity::program::Velocity;
-use velocity::state::user::{User, UserStats};
-
-use crate::constraints::{
-    is_authority_for_vault_depositor, is_user_for_vault, is_user_stats_for_vault,
-};
-use crate::state::{
-    FeeUpdateProvider, FeeUpdateStatus, Vault, VaultDepositor, VaultProtocolProvider,
-};
-use crate::token_cpi::TokenTransferCPI;
-use crate::velocity_cpi::{UpdateUserDelegateCPI, UpdateUserReduceOnlyCPI, WithdrawCPI};
-use crate::{
-    declare_vault_seeds, implement_update_user_delegate_cpi, implement_update_user_reduce_only_cpi,
-    implement_withdraw, AccountMapProvider,
+use {
+    crate::{
+        constraints::{
+            is_authority_for_vault_depositor, is_user_for_vault, is_user_stats_for_vault,
+        },
+        declare_vault_seeds, implement_update_user_delegate_cpi,
+        implement_update_user_reduce_only_cpi, implement_withdraw,
+        state::{FeeUpdateProvider, FeeUpdateStatus, Vault, VaultDepositor, VaultProtocolProvider},
+        token_cpi::TokenTransferCPI,
+        velocity_cpi::{UpdateUserDelegateCPI, UpdateUserReduceOnlyCPI, WithdrawCPI},
+        AccountMapProvider,
+    },
+    anchor_lang::prelude::*,
+    anchor_spl::token::{self, Token, TokenAccount, Transfer},
+    velocity::{
+        cpi::accounts::{UpdateUser, Withdraw as VelocityWithdraw},
+        instructions::optional_accounts::AccountMaps,
+        program::Velocity,
+        state::user::{User, UserStats},
+    },
 };
 
 pub fn withdraw<'info>(ctx: Context<'info, Withdraw<'info>>) -> Result<()> {

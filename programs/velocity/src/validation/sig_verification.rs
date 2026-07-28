@@ -1,18 +1,20 @@
-use crate::error::ErrorCode;
-use crate::state::order_params::{
-    OrderParams, SignedMsgOrderParamsDelegateMessage, SignedMsgOrderParamsMessage,
-    SignedMsgTriggerOrderParams,
+use {
+    crate::{
+        error::ErrorCode,
+        state::order_params::{
+            OrderParams, SignedMsgOrderParamsDelegateMessage, SignedMsgOrderParamsMessage,
+            SignedMsgTriggerOrderParams,
+        },
+    },
+    anchor_lang::prelude::*,
+    bytemuck::{try_cast_slice, Pod, Zeroable},
+    byteorder::{ByteOrder, LE},
+    solana_program::{
+        ed25519_program::ID as ED25519_ID, instruction::Instruction, program_memory::sol_memcmp,
+        sysvar,
+    },
+    std::convert::TryInto,
 };
-use anchor_lang::prelude::*;
-use bytemuck::try_cast_slice;
-use bytemuck::{Pod, Zeroable};
-use byteorder::ByteOrder;
-use byteorder::LE;
-use solana_program::ed25519_program::ID as ED25519_ID;
-use solana_program::instruction::Instruction;
-use solana_program::program_memory::sol_memcmp;
-use solana_program::sysvar;
-use std::convert::TryInto;
 
 #[cfg(test)]
 mod tests;

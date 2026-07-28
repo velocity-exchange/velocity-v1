@@ -1,12 +1,13 @@
-use crate::constraints::is_manager_for_vault;
-use crate::{Size, TokenizedVaultDepositor, Vault};
-use anchor_lang::prelude::*;
-use anchor_spl::{
-    metadata::{
-        create_metadata_accounts_v3, mpl_token_metadata::types::DataV2, CreateMetadataAccountsV3,
-        Metadata,
+use {
+    crate::{constraints::is_manager_for_vault, Size, TokenizedVaultDepositor, Vault},
+    anchor_lang::prelude::*,
+    anchor_spl::{
+        metadata::{
+            create_metadata_accounts_v3, mpl_token_metadata::types::DataV2,
+            CreateMetadataAccountsV3, Metadata,
+        },
+        token::{Mint, Token},
     },
-    token::{Mint, Token},
 };
 
 pub fn initialize_tokenized_vault_depositor(

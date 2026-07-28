@@ -3,18 +3,18 @@
 //! Resubmits quotes on a fixed interval
 use std::time::Duration;
 
+use futures_util::StreamExt;
+use solana_commitment_config::CommitmentLevel;
+use solana_keypair::Keypair;
 use velocity_rs::{
-    event_subscriber::{VelocityEvent, EventSubscriber},
+    event_subscriber::{EventSubscriber, VelocityEvent},
     math::constants::{BASE_PRECISION_U64, PRICE_PRECISION_U64},
     types::{
         accounts::{PerpMarket, User},
         MarketPrecision, MarketType, OrderParams, OrderType, PositionDirection, PostOnlyParam,
     },
-    Context, VelocityClient, GrpcSubscribeOpts, Pubkey, RpcClient, TransactionBuilder, Wallet,
+    Context, GrpcSubscribeOpts, Pubkey, RpcClient, TransactionBuilder, VelocityClient, Wallet,
 };
-use futures_util::StreamExt;
-use solana_commitment_config::CommitmentLevel;
-use solana_keypair::Keypair;
 
 pub async fn grpc_marker(context: Context, wallet: Wallet) {
     let rpc_url = std::env::var("RPC_URL")

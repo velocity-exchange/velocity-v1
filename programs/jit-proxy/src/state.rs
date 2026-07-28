@@ -1,6 +1,10 @@
-use anchor_lang::prelude::*;
-use velocity::state::order_params::PostOnlyParam as VelocityPostOnlyParam;
-use velocity::state::user::MarketType as VelocityMarketType;
+use {
+    anchor_lang::prelude::*,
+    velocity::state::{
+        order_params::PostOnlyParam as VelocityPostOnlyParam,
+        user::MarketType as VelocityMarketType,
+    },
+};
 
 #[derive(Clone, Copy, AnchorSerialize, AnchorDeserialize, PartialEq, Debug, Eq)]
 pub enum PostOnlyParam {

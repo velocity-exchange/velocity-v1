@@ -1,19 +1,22 @@
-use anchor_lang::prelude::*;
-
-use crate::controller::spot_balance;
-use crate::math::casting::Cast;
-use crate::math::safe_math::SafeMath;
-use crate::math::spot_balance::get_token_amount;
-use crate::state::events::{emit_stack, RevenueShareSettleRecord};
-use crate::state::paused_operations::PerpOperation;
-use crate::state::perp_market_map::PerpMarketMap;
-use crate::state::revenue_share::{RevenueShareEscrowZeroCopyMut, RevenueShareOrder};
-use crate::state::revenue_share_map::RevenueShareMap;
-use crate::state::spot_market::SpotBalance;
-use crate::state::spot_market_map::SpotMarketMap;
-use crate::state::traits::Size;
-use crate::state::user::MarketType;
-use crate::vlp::amm::math::amm::calculate_net_user_pnl;
+use {
+    crate::{
+        controller::spot_balance,
+        math::{casting::Cast, safe_math::SafeMath, spot_balance::get_token_amount},
+        state::{
+            events::{emit_stack, RevenueShareSettleRecord},
+            paused_operations::PerpOperation,
+            perp_market_map::PerpMarketMap,
+            revenue_share::{RevenueShareEscrowZeroCopyMut, RevenueShareOrder},
+            revenue_share_map::RevenueShareMap,
+            spot_market::SpotBalance,
+            spot_market_map::SpotMarketMap,
+            traits::Size,
+            user::MarketType,
+        },
+        vlp::amm::math::amm::calculate_net_user_pnl,
+    },
+    anchor_lang::prelude::*,
+};
 
 /// Runs through the user's RevenueShareEscrow account and sweeps any accrued fees to the corresponding
 /// builders and referrer.

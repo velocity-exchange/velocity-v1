@@ -1,8 +1,15 @@
-use crate::constraints::is_manager_for_vault;
-use crate::state::events::{FeeUpdateAction, FeeUpdateRecord};
-use crate::state::{FeeUpdate, FeeUpdateStatus};
-use crate::{error::ErrorCode, validate, Vault};
-use anchor_lang::prelude::*;
+use {
+    crate::{
+        constraints::is_manager_for_vault,
+        error::ErrorCode,
+        state::{
+            events::{FeeUpdateAction, FeeUpdateRecord},
+            FeeUpdate, FeeUpdateStatus,
+        },
+        validate, Vault,
+    },
+    anchor_lang::prelude::*,
+};
 
 pub fn manager_cancel_fee_update<'info>(
     ctx: Context<'info, ManagerCancelFeeUpdate<'info>>,

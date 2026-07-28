@@ -7,21 +7,22 @@
 //!
 //! Replaces the deleted `velocity_rs::ffi::simulate_place_perp_order`.
 
-use std::time::{SystemTime, UNIX_EPOCH};
-
-use anchor_lang::AccountDeserialize;
-use solana_clock::Clock;
-use velocity_rs::program::{
-    controller::orders::place_perp_order,
-    error::{ErrorCode, VelocityResult},
-    sdk::{build_infos, AlignedAccountData, VelocityAccounts},
-    state::{
-        oracle_map::OracleMap,
-        order_params::{OrderParams, PlaceOrderOptions},
-        perp_market_map::PerpMarketMap,
-        spot_market_map::SpotMarketMap,
-        state::State as NativeState,
-        user::User,
+use {
+    anchor_lang::AccountDeserialize,
+    solana_clock::Clock,
+    std::time::{SystemTime, UNIX_EPOCH},
+    velocity_rs::program::{
+        controller::orders::place_perp_order,
+        error::{ErrorCode, VelocityResult},
+        sdk::{build_infos, AlignedAccountData, VelocityAccounts},
+        state::{
+            oracle_map::OracleMap,
+            order_params::{OrderParams, PlaceOrderOptions},
+            perp_market_map::PerpMarketMap,
+            spot_market_map::SpotMarketMap,
+            state::State as NativeState,
+            user::User,
+        },
     },
 };
 

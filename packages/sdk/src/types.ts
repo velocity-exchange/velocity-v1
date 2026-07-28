@@ -2644,6 +2644,8 @@ export type QuoterV0Account = {
 	isActive: boolean;
 	/** admin vetting of the CPI surface; reset by any config or account-list change */
 	isApproved: boolean;
+	/** routing priority: at a price, lower-priority tiers fill first, pro rata within a tier; defaults by type (vAMM 0, CLOB 10, Custom 20), admin-set thereafter — never by the maker */
+	priority: number;
 	quoteAccountsCount: number;
 	executeAccountsCount: number;
 	padding: number[];

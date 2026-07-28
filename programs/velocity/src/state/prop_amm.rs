@@ -28,6 +28,19 @@ pub enum QuoterType {
     Custom,
 }
 
+impl QuoterType {
+    /// Default routing priority at registration (lower fills first). Gaps
+    /// leave room to slot e.g. the DLOB migration bridge or promoted
+    /// quoters; admin-adjustable afterwards.
+    pub fn default_priority(self) -> u8 {
+        match self {
+            QuoterType::Vamm => 0,
+            QuoterType::Clob => 10,
+            QuoterType::Custom => 20,
+        }
+    }
+}
+
 #[account(zero_copy(unsafe))]
 #[derive(Eq, PartialEq, Debug, Default)]
 #[repr(C)]
@@ -66,9 +79,13 @@ pub struct QuoterV0 {
     pub is_active: bool,
     /// Admin vetting of the CPI surface; reset by any config change.
     pub is_approved: bool,
+    /// Routing priority: at a price, lower-priority tiers fill first, pro
+    /// rata within a tier. Defaults by type (vAMM 0, CLOB 10, Custom 20);
+    /// admin-set thereafter — never by the maker.
+    pub priority: u8,
     pub quote_accounts_count: u8,
     pub execute_accounts_count: u8,
-    pub padding: [u8; 9],
+    pub padding: [u8; 8],
 }
 
 // Zero-copy layout invariant (see docs/alignment-and-native-offsets.md):

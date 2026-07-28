@@ -71,6 +71,7 @@ velocity-admin quoter update-accounts <quoter> <quote|execute> <index> <metas...
 velocity-admin quoter update-config <quoter> [--response-account <pk>] [--quote-disc <hex>] [--execute-disc <hex>] [--authority <pk>]  # clears admin approval
 velocity-admin quoter set-active <quoter> <true|false> [--authority <pk>]  # maker kill switch; entry authority signs
 velocity-admin quoter set-approved <quoter> <true|false> [--admin <pk>]    # warm/cold admin vetting gate
+velocity-admin quoter set-priority <quoter> <0-255> [--admin <pk>]         # warm/cold admin; lower fills first, pro rata within a tier
 
 velocity-admin if stake <market> <amount> [--authority <pk>] [--user-token-account <pk>]  # inits the stake account if missing
 

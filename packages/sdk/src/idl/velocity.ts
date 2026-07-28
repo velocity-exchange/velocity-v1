@@ -11485,6 +11485,38 @@ export type Velocity = {
       ]
     },
     {
+      "name": "updateQuoterPriority",
+      "discriminator": [
+        192,
+        118,
+        16,
+        53,
+        87,
+        232,
+        85,
+        234
+      ],
+      "accounts": [
+        {
+          "name": "admin",
+          "signer": true
+        },
+        {
+          "name": "state"
+        },
+        {
+          "name": "quoter",
+          "writable": true
+        }
+      ],
+      "args": [
+        {
+          "name": "priority",
+          "type": "u8"
+        }
+      ]
+    },
+    {
       "name": "updateSolvencyStatus",
       "discriminator": [
         81,
@@ -22420,6 +22452,15 @@ export type Velocity = {
             "type": "bool"
           },
           {
+            "name": "priority",
+            "docs": [
+              "Routing priority: at a price, lower-priority tiers fill first, pro",
+              "rata within a tier. Defaults by type (vAMM 0, CLOB 10, Custom 20);",
+              "admin-set thereafter — never by the maker."
+            ],
+            "type": "u8"
+          },
+          {
             "name": "quoteAccountsCount",
             "type": "u8"
           },
@@ -22432,7 +22473,7 @@ export type Velocity = {
             "type": {
               "array": [
                 "u8",
-                9
+                8
               ]
             }
           }

@@ -848,15 +848,15 @@ pub mod instructions {
     #[automatically_derived]
     impl anchor_lang::InstructionData for PostPythLazerOracleUpdate {}
     #[derive(AnchorSerialize, AnchorDeserialize, Clone, Default)]
-    pub struct ProbeQuoter {
-        pub args: ProbeQuoterArgs,
+    pub struct ProbeRouter {
+        pub args: ProbeRouterArgs,
     }
     #[automatically_derived]
-    impl anchor_lang::Discriminator for ProbeQuoter {
-        const DISCRIMINATOR: &[u8] = &[215, 146, 162, 139, 111, 188, 143, 93];
+    impl anchor_lang::Discriminator for ProbeRouter {
+        const DISCRIMINATOR: &[u8] = &[220, 10, 160, 221, 46, 75, 30, 31];
     }
     #[automatically_derived]
-    impl anchor_lang::InstructionData for ProbeQuoter {}
+    impl anchor_lang::InstructionData for ProbeRouter {}
     #[derive(AnchorSerialize, AnchorDeserialize, Clone, Default)]
     pub struct RecenterPerpMarketAmm {
         pub peg_multiplier: u128,
@@ -4570,10 +4570,11 @@ pub mod types {
     #[derive(
         AnchorSerialize, AnchorDeserialize, Serialize, Deserialize, Clone, Default, Debug, PartialEq,
     )]
-    pub struct ProbeQuoterArgs {
+    pub struct ProbeRouterArgs {
         pub direction: Direction,
         pub size: u64,
         pub users: Option<Vec<Pubkey>>,
+        pub quoter_count: u8,
         pub execute: bool,
     }
     #[repr(C)]
@@ -13427,41 +13428,33 @@ pub mod accounts {
     }
     #[repr(C)]
     #[derive(Copy, Clone, Default, AnchorSerialize, AnchorDeserialize, Serialize, Deserialize)]
-    pub struct ProbeQuoter {
+    pub struct ProbeRouter {
         pub state: Pubkey,
-        pub quoter: Pubkey,
     }
     #[automatically_derived]
-    impl anchor_lang::Discriminator for ProbeQuoter {
-        const DISCRIMINATOR: &[u8] = &[22, 68, 93, 21, 251, 53, 156, 64];
+    impl anchor_lang::Discriminator for ProbeRouter {
+        const DISCRIMINATOR: &[u8] = &[227, 202, 252, 189, 70, 58, 55, 217];
     }
     #[automatically_derived]
-    unsafe impl anchor_lang::__private::bytemuck::Pod for ProbeQuoter {}
+    unsafe impl anchor_lang::__private::bytemuck::Pod for ProbeRouter {}
     #[automatically_derived]
-    unsafe impl anchor_lang::__private::bytemuck::Zeroable for ProbeQuoter {}
+    unsafe impl anchor_lang::__private::bytemuck::Zeroable for ProbeRouter {}
     #[automatically_derived]
-    impl anchor_lang::ZeroCopy for ProbeQuoter {}
+    impl anchor_lang::ZeroCopy for ProbeRouter {}
     #[automatically_derived]
-    impl anchor_lang::InstructionData for ProbeQuoter {}
+    impl anchor_lang::InstructionData for ProbeRouter {}
     #[automatically_derived]
-    impl ToAccountMetas for ProbeQuoter {
+    impl ToAccountMetas for ProbeRouter {
         fn to_account_metas(&self) -> Vec<AccountMeta> {
-            vec![
-                AccountMeta {
-                    pubkey: self.state,
-                    is_signer: false,
-                    is_writable: false,
-                },
-                AccountMeta {
-                    pubkey: self.quoter,
-                    is_signer: false,
-                    is_writable: false,
-                },
-            ]
+            vec![AccountMeta {
+                pubkey: self.state,
+                is_signer: false,
+                is_writable: false,
+            }]
         }
     }
     #[automatically_derived]
-    impl anchor_lang::AccountSerialize for ProbeQuoter {
+    impl anchor_lang::AccountSerialize for ProbeRouter {
         fn try_serialize<W: std::io::Write>(&self, writer: &mut W) -> anchor_lang::Result<()> {
             if writer.write_all(Self::DISCRIMINATOR).is_err() {
                 return Err(anchor_lang::error::ErrorCode::AccountDidNotSerialize.into());
@@ -13473,7 +13466,7 @@ pub mod accounts {
         }
     }
     #[automatically_derived]
-    impl anchor_lang::AccountDeserialize for ProbeQuoter {
+    impl anchor_lang::AccountDeserialize for ProbeRouter {
         fn try_deserialize(buf: &mut &[u8]) -> anchor_lang::Result<Self> {
             let given_disc = &buf[..8];
             if Self::DISCRIMINATOR != given_disc {

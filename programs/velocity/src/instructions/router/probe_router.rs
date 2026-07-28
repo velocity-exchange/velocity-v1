@@ -11,7 +11,7 @@ use anchor_lang::prelude::*;
 
 use crate::error::ErrorCode;
 use crate::math::router::{split_across_quoters, QuoterBook};
-use crate::state::prop_amm::{Direction, ExecuteArgsV0, QuoteArgsV0, QuoterType, QuoterV0};
+use crate::state::prop_amm::{Direction, ExecuteArgsV0, QuoteArgsV0, QuoterV0};
 use crate::state::state::State;
 use crate::validate;
 
@@ -54,7 +54,7 @@ pub fn handle_probe_router<'info>(
         .map(AccountLoader::try_from)
         .collect::<Result<_>>()?;
 
-    let books: Vec<(bool, Vec<_>)> = quoters
+    let books: Vec<(u8, Vec<_>)> = quoters
         .iter()
         .map(|loader| {
             let quoter = loader.load()?;
@@ -68,13 +68,13 @@ pub fn handle_probe_router<'info>(
                 state.signer_nonce,
                 &account_map,
             )?;
-            Ok((quoter.quoter_type == QuoterType::Clob, levels))
+            Ok((quoter.priority, levels))
         })
         .collect::<Result<_>>()?;
     let book_refs: Vec<QuoterBook> = books
         .iter()
-        .map(|(is_clob, levels)| QuoterBook {
-            is_clob: *is_clob,
+        .map(|(priority, levels)| QuoterBook {
+            priority: *priority,
             levels,
         })
         .collect();

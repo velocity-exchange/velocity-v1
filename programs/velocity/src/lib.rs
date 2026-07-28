@@ -2156,6 +2156,10 @@ pub mod velocity {
         handle_update_quoter_approved(ctx, approved)
     }
 
+    pub fn update_quoter_priority(ctx: Context<UpdateQuoterPriority>, priority: u8) -> Result<()> {
+        handle_update_quoter_priority(ctx, priority)
+    }
+
     #[cfg(feature = "anchor-test")]
     pub fn probe_router<'info>(
         ctx: Context<'info, ProbeRouter<'info>>,

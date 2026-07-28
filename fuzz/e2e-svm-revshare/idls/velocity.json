@@ -11479,6 +11479,38 @@
       ]
     },
     {
+      "name": "update_quoter_priority",
+      "discriminator": [
+        192,
+        118,
+        16,
+        53,
+        87,
+        232,
+        85,
+        234
+      ],
+      "accounts": [
+        {
+          "name": "admin",
+          "signer": true
+        },
+        {
+          "name": "state"
+        },
+        {
+          "name": "quoter",
+          "writable": true
+        }
+      ],
+      "args": [
+        {
+          "name": "priority",
+          "type": "u8"
+        }
+      ]
+    },
+    {
       "name": "update_solvency_status",
       "discriminator": [
         81,
@@ -22414,6 +22446,15 @@
             "type": "bool"
           },
           {
+            "name": "priority",
+            "docs": [
+              "Routing priority: at a price, lower-priority tiers fill first, pro",
+              "rata within a tier. Defaults by type (vAMM 0, CLOB 10, Custom 20);",
+              "admin-set thereafter — never by the maker."
+            ],
+            "type": "u8"
+          },
+          {
             "name": "quote_accounts_count",
             "type": "u8"
           },
@@ -22426,7 +22467,7 @@
             "type": {
               "array": [
                 "u8",
-                9
+                8
               ]
             }
           }

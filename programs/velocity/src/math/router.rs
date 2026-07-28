@@ -1,7 +1,8 @@
 //! Router split (S6 waterfall): combine quoter books into per-quoter
-//! allocations for a taker of `direction`/`size`. At each price, CLOB depth
-//! fills first (price-time priority lives inside the CLOB); the remaining
-//! demand at that price splits pro rata across the other quoters' depth.
+//! allocations for a taker of `direction`/`size`. At each price, priority
+//! tiers fill in ascending order (vAMM, then CLOB — whose internal
+//! price-time ordering its own book preserves — then customs), pro rata
+//! within a tier; a single-member tier degenerates to filling it outright.
 //!
 //! Books come from untrusted `quote_v0` responses, so each is sanitized to
 //! its longest usable best-first prefix (capped, monotone, non-degenerate) —
@@ -20,8 +21,8 @@ use crate::{msg, validate};
 pub const MAX_LEVELS_PER_BOOK: usize = 128;
 
 pub struct QuoterBook<'a> {
-    /// CLOB books take priority at a price level.
-    pub is_clob: bool,
+    /// Routing tier at a shared price: lower fills first, pro rata within.
+    pub priority: u8,
     /// Best price first (ascending asks for a long taker, descending bids
     /// for a short taker).
     pub levels: &'a [PriceLevel],
@@ -38,7 +39,7 @@ pub struct QuoterAllocation {
 
 /// One book's sanitized read cursor.
 struct Cursor<'a> {
-    is_clob: bool,
+    priority: u8,
     levels: &'a [PriceLevel],
     index: usize,
     /// Consumed within `levels[index]`.
@@ -102,10 +103,10 @@ fn take(
     Ok(())
 }
 
-/// Book `i`'s cached available depth, iff it's a non-clob book quoting
+/// A book's cached available depth, iff it sits in `tier` and quotes
 /// exactly `price`.
-fn other_available_at(top: Option<(u64, u64)>, is_clob: bool, price: u64) -> Option<u64> {
-    if is_clob {
+fn available_at(top: Option<(u64, u64)>, priority: u8, tier: u8, price: u64) -> Option<u64> {
+    if priority != tier {
         return None;
     }
     top.and_then(|(p, available)| (p == price).then_some(available))
@@ -126,7 +127,7 @@ pub fn split_across_quoters(
     let mut cursors: Vec<Cursor> = books
         .iter()
         .map(|book| Cursor {
-            is_clob: book.is_clob,
+            priority: book.priority,
             levels: book.levels,
             index: 0,
             consumed: 0,
@@ -148,48 +149,38 @@ pub fn split_across_quoters(
             break;
         };
 
-        // CLOB depth at this price fills first. Indexed loops here and
-        // below: `take` mutates three parallel structures.
-        for i in 0..cursors.len() {
+        // Priority tiers quoting this price, ascending; pro rata within a
+        // tier (a single-member tier degenerates to filling it outright).
+        let mut tiers: Vec<u8> = cursors
+            .iter()
+            .zip(&tops)
+            .filter_map(|(cursor, top)| {
+                top.and_then(|(p, _)| (p == price).then_some(cursor.priority))
+            })
+            .collect();
+        tiers.sort_unstable();
+        tiers.dedup();
+
+        for tier in tiers {
             if remaining == 0 {
                 break;
             }
-            if !cursors[i].is_clob {
-                continue;
-            }
-            let Some((p, available)) = tops[i] else {
-                continue;
-            };
-            if p != price {
-                continue;
-            }
-            let amount = remaining.min(available);
-            take(
-                &mut cursors[i],
-                &mut tops[i],
-                &mut allocations[i],
-                price,
-                amount,
-            )?;
-            remaining = remaining.safe_sub(amount)?;
-        }
-
-        // Remaining demand at this price splits pro rata across the others.
-        let total_other = cursors
-            .iter()
-            .zip(&tops)
-            .filter_map(|(cursor, top)| other_available_at(*top, cursor.is_clob, price))
-            .try_fold(0u64, |acc, available| acc.safe_add(available))?;
-        if remaining > 0 && total_other > 0 {
-            let demand = remaining.min(total_other);
+            let total = cursors
+                .iter()
+                .zip(&tops)
+                .filter_map(|(cursor, top)| available_at(*top, cursor.priority, tier, price))
+                .try_fold(0u64, |acc, available| acc.safe_add(available))?;
+            let demand = remaining.min(total);
+            // Indexed loops: `take` mutates three parallel structures.
             let mut given: u64 = 0;
             for i in 0..cursors.len() {
-                let Some(available) = other_available_at(tops[i], cursors[i].is_clob, price) else {
+                let Some(available) = available_at(tops[i], cursors[i].priority, tier, price)
+                else {
                     continue;
                 };
                 let share = (demand as u128)
                     .safe_mul(available as u128)?
-                    .safe_div(total_other as u128)?
+                    .safe_div(total as u128)?
                     .cast::<u64>()?;
                 take(
                     &mut cursors[i],
@@ -201,13 +192,14 @@ pub fn split_across_quoters(
                 given = given.safe_add(share)?;
             }
             // Floor-division dust (< books.len() units): hand it to the
-            // first non-clob quoter at this price with spare depth.
+            // first quoter in the tier with spare depth.
             let mut dust = demand.safe_sub(given)?;
             for i in 0..cursors.len() {
                 if dust == 0 {
                     break;
                 }
-                let Some(available) = other_available_at(tops[i], cursors[i].is_clob, price) else {
+                let Some(available) = available_at(tops[i], cursors[i].priority, tier, price)
+                else {
                     continue;
                 };
                 let amount = dust.min(available);
@@ -235,15 +227,19 @@ mod tests {
         PriceLevel { price, size }
     }
 
+    const VAMM: u8 = 0;
+    const CLOB: u8 = 10;
+    const CUSTOM: u8 = 20;
+
     fn split(
         direction: Direction,
         size: u64,
-        books: &[(bool, Vec<PriceLevel>)],
+        books: &[(u8, Vec<PriceLevel>)],
     ) -> Vec<QuoterAllocation> {
         let books: Vec<QuoterBook> = books
             .iter()
-            .map(|(is_clob, levels)| QuoterBook {
-                is_clob: *is_clob,
+            .map(|(priority, levels)| QuoterBook {
+                priority: *priority,
                 levels,
             })
             .collect();
@@ -257,39 +253,53 @@ mod tests {
         let out = split(
             Direction::Long,
             3 * B,
-            &[(true, vec![level(100, 2 * B), level(101, 2 * B)])],
+            &[(CLOB, vec![level(100, 2 * B), level(101, 2 * B)])],
         );
         assert_eq!(out[0].base, 3 * B);
         // 2 @ 100 + 1 @ 101, prices are per base unit at BASE_PRECISION.
         assert_eq!(out[0].quote, 2 * 100 + 101);
 
-        let out = split(Direction::Long, 10 * B, &[(true, vec![level(100, 2 * B)])]);
+        let out = split(Direction::Long, 10 * B, &[(CLOB, vec![level(100, 2 * B)])]);
         assert_eq!(out[0].base, 2 * B); // capped at depth
     }
 
     #[test]
-    fn clob_priority_at_a_shared_price() {
+    fn tiers_fill_in_priority_order_at_a_shared_price() {
         let out = split(
             Direction::Long,
             3 * B,
             &[
-                (false, vec![level(100, 4 * B)]),
-                (true, vec![level(100, 2 * B)]),
+                (CUSTOM, vec![level(100, 4 * B)]),
+                (CLOB, vec![level(100, 2 * B)]),
             ],
         );
-        // CLOB's 2 first, custom gets the remaining 1.
+        // CLOB tier first, custom gets the remaining 1.
         assert_eq!(out[1].base, 2 * B);
         assert_eq!(out[0].base, B);
+
+        // The vAMM tier outranks both.
+        let out = split(
+            Direction::Long,
+            2 * B,
+            &[
+                (CUSTOM, vec![level(100, 4 * B)]),
+                (CLOB, vec![level(100, 2 * B)]),
+                (VAMM, vec![level(100, B)]),
+            ],
+        );
+        assert_eq!(out[2].base, B); // vAMM drained first
+        assert_eq!(out[1].base, B); // then CLOB
+        assert_eq!(out[0].base, 0); // custom sees nothing
     }
 
     #[test]
-    fn pro_rata_across_customs_with_dust() {
+    fn pro_rata_within_a_tier_with_dust() {
         let out = split(
             Direction::Long,
             3 * B,
             &[
-                (false, vec![level(100, 2 * B)]),
-                (false, vec![level(100, 4 * B)]),
+                (CUSTOM, vec![level(100, 2 * B)]),
+                (CUSTOM, vec![level(100, 4 * B)]),
             ],
         );
         // Demand 3 across depth 6 → 1 and 2.
@@ -301,7 +311,7 @@ mod tests {
         let out = split(
             Direction::Long,
             5,
-            &[(false, vec![level(100, 3)]), (false, vec![level(100, 3)])],
+            &[(CUSTOM, vec![level(100, 3)]), (CUSTOM, vec![level(100, 3)])],
         );
         assert_eq!(out[0].base + out[1].base, 5);
     }
@@ -312,11 +322,12 @@ mod tests {
             Direction::Long,
             3 * B,
             &[
-                (true, vec![level(101, 2 * B)]),
-                (false, vec![level(100, B), level(102, 5 * B)]),
+                (CLOB, vec![level(101, 2 * B)]),
+                (CUSTOM, vec![level(100, B), level(102, 5 * B)]),
             ],
         );
-        // 1 @ 100 (custom), 2 @ 101 (clob); 102 never reached.
+        // 1 @ 100 (custom), 2 @ 101 (clob); 102 never reached. A better
+        // price always beats a better tier.
         assert_eq!(out[1].base, B);
         assert_eq!(out[0].base, 2 * B);
 
@@ -325,8 +336,8 @@ mod tests {
             Direction::Short,
             2 * B,
             &[
-                (true, vec![level(99, B)]),
-                (false, vec![level(100, B), level(98, B)]),
+                (CLOB, vec![level(99, B)]),
+                (CUSTOM, vec![level(100, B), level(98, B)]),
             ],
         );
         assert_eq!(out[1].base, B); // 100 first
@@ -340,10 +351,10 @@ mod tests {
             4 * B,
             &[
                 // Non-monotone: truncated after the first level.
-                (false, vec![level(100, B), level(90, 100 * B)]),
+                (CUSTOM, vec![level(100, B), level(90, 100 * B)]),
                 // Degenerate levels skipped.
-                (false, vec![level(0, 5 * B), level(101, B), level(102, 0)]),
-                (true, vec![level(103, 10 * B)]),
+                (CUSTOM, vec![level(0, 5 * B), level(101, B), level(102, 0)]),
+                (CLOB, vec![level(103, 10 * B)]),
             ],
         );
         assert_eq!(out[0].base, B); // only its monotone prefix
@@ -353,9 +364,9 @@ mod tests {
 
     #[test]
     fn empty_books_and_zero_size() {
-        let out = split(Direction::Long, B, &[(true, vec![])]);
+        let out = split(Direction::Long, B, &[(CLOB, vec![])]);
         assert_eq!(out[0], QuoterAllocation::default());
-        let out = split(Direction::Long, 0, &[(true, vec![level(100, B)])]);
+        let out = split(Direction::Long, 0, &[(CLOB, vec![level(100, B)])]);
         assert_eq!(out[0], QuoterAllocation::default());
     }
 }

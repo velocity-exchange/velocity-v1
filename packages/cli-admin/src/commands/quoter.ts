@@ -111,7 +111,7 @@ export function registerQuoter(parent: Command): void {
 				'init <market> <quoterProgram> <user> <responseAccount> <quoteDisc> <executeDisc>'
 			)
 			.description(
-				"Initialize a QuoterV0 registry entry for (perp market, quoter program, quoted user). Born active but unapproved — nothing fills until the admin vets it (set-approved). For custom-type entries the signing authority must be the quoted user's authority (creation is consent). <quoteDisc>/<executeDisc> are the 8-byte instruction discriminators on the quoter program, as 16 hex chars. Set account lists afterwards via update-accounts."
+				"Initialize a QuoterV0 registry entry for (perp market, quoter program, quoted user). Born active but unapproved — nothing fills until the admin vets it (set-approved). For custom-type entries the signing authority must be the quoted user's authority (creation is consent). Routing priority defaults by type (vamm 0, clob 10, custom 20); admin-adjustable via set-priority. <quoteDisc>/<executeDisc> are the 8-byte instruction discriminators on the quoter program, as 16 hex chars. Set account lists afterwards via update-accounts."
 			)
 			.option(
 				'-t, --type <type>',
@@ -413,6 +413,55 @@ export function registerQuoter(parent: Command): void {
 					`quoter ${quoterArg} ${on ? 'approved' : 'unapproved'}`,
 					result
 				);
+			} finally {
+				if ((client as any).isSubscribed) {
+					await client.unsubscribe();
+				}
+			}
+		}
+	);
+
+	withGlobalOptions(
+		quoter
+			.command('set-priority <quoter> <priority>')
+			.description(
+				'Set a quoter registry entry\'s routing priority (warm/cold admin): at a price, lower-priority tiers fill first, pro rata within a tier. Registration defaults by type (vamm 0, clob 10, custom 20). Admin-only — a maker choosing their own priority could jump the vAMM/CLOB. <priority> = 0-255.'
+			)
+			.option(
+				'--admin <pubkey>',
+				'admin signer (defaults to the wallet; pass the vault PDA with --multisig)'
+			)
+	).action(
+		async (
+			quoterArg: string,
+			priorityArg: string,
+			flags: { admin?: string },
+			cmd: Command
+		) => {
+			const priority = Number.parseInt(priorityArg, 10);
+			if (!Number.isInteger(priority) || priority < 0 || priority > 255) {
+				throw new Error(`priority must be 0-255, got "${priorityArg}"`);
+			}
+			const opts = readGlobalOpts(cmd);
+			const provider = buildProvider(opts);
+			const client = await buildAdminClient(opts, false);
+			try {
+				const ix = client.program.instruction.updateQuoterPriority(priority, {
+					accounts: {
+						admin: flags.admin
+							? new PublicKey(flags.admin)
+							: provider.wallet.publicKey,
+						state: await client.getStatePublicKey(),
+						quoter: new PublicKey(quoterArg),
+					},
+				});
+				const result = await sendOrPropose(
+					provider,
+					[ix],
+					opts.multisig ? new PublicKey(opts.multisig) : undefined,
+					'velocity-admin quoter set-priority'
+				);
+				reportDispatch(`quoter ${quoterArg} priority = ${priority}`, result);
 			} finally {
 				if ((client as any).isSubscribed) {
 					await client.unsubscribe();

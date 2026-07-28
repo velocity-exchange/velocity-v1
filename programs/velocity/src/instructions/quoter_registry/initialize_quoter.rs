@@ -99,6 +99,7 @@ pub fn handle_initialize_quoter(
     quoter.execute_v0_discriminator = args.execute_v0_discriminator;
     quoter.market = args.market_index;
     quoter.quoter_type = args.quoter_type;
+    quoter.priority = args.quoter_type.default_priority();
     // The maker's own switch is on from birth; nothing fills until the admin
     // vets the CPI surface (`is_approved`).
     quoter.is_active = true;

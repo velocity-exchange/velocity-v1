@@ -23,11 +23,13 @@ use crate::math::bn::U192;
 use crate::math::constants::PERCENTAGE_PRECISION_U64;
 use crate::math::router::QuoterBook;
 use crate::math::safe_math::SafeMath;
-use crate::state::prop_amm::{Direction, PriceLevel};
+use crate::state::prop_amm::{Direction, PriceLevel, QuoterType};
+use crate::state::quoter::{QuoteContext, RouterQuoter};
 
 use super::controller::SwapDirection;
 use super::math::amm::{calculate_amm_available_liquidity, calculate_price};
 use super::math::spread::calculate_base_asset_amount_to_trade_to_price;
+use super::quoter::AmmQuoter;
 use super::state::AMM;
 
 /// Ladder checkpoints per quote (rival rungs + equal-size filler).
@@ -163,6 +165,28 @@ pub fn vamm_quote_levels(
         previous = cumulative;
     }
     Ok(levels)
+}
+
+impl RouterQuoter for AmmQuoter<'_> {
+    fn priority(&self) -> u8 {
+        QuoterType::Vamm.default_priority()
+    }
+
+    /// The vAMM's router book is the shaded ladder — `rival_books` is the
+    /// last look.
+    fn book(
+        &self,
+        ctx: &QuoteContext,
+        side: PositionDirection,
+        size: u64,
+        rival_books: &[QuoterBook],
+    ) -> VelocityResult<Vec<PriceLevel>> {
+        let direction = match side {
+            PositionDirection::Long => Direction::Long,
+            PositionDirection::Short => Direction::Short,
+        };
+        vamm_quote_levels(self.amm, direction, size, ctx.step_size, rival_books)
+    }
 }
 
 #[cfg(test)]

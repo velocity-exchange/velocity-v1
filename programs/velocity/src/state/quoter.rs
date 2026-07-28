@@ -361,6 +361,56 @@ pub trait QuoterCommit: Quoter {
     }
 }
 
+/// A liquidity source the router fill can read as a discrete book and
+/// execute against — the in-program counterpart of the registry's external
+/// `QuoterV0` CPI legs (CLOB, custom PropAMMs). The router
+/// (`controller::matching::router_take`) builds every book, splits the taker
+/// size across the union by priority tier, then settles internal allocations
+/// through `try_fill_solo`/`commit_fill` and returns external allocations
+/// for the CPI execute leg.
+pub trait RouterQuoter: QuoterCommit {
+    /// Routing tier, same semantics as the registry's `QuoterV0::priority`:
+    /// lower fills first at a shared price, pro rata within a tier.
+    /// Generalizes [`Quoter::is_prio`], which the legacy discrete matcher
+    /// (`match_take`) still reads.
+    fn priority(&self) -> u8;
+
+    /// Discrete best-first levels for a taker of `side`/`size`. The default
+    /// is the quoter's single `(best_price, level_capacity)` level — exact
+    /// for any single-level maker (a resting DLOB order). Multi-level
+    /// quoters (the vAMM ladder) override. `rival_books` carries the books
+    /// already built this fill (external CPI books + worse-tier internals),
+    /// enabling last look for quoters that want it; the default ignores it.
+    fn book(
+        &self,
+        ctx: &QuoteContext,
+        side: PositionDirection,
+        size: u64,
+        _rival_books: &[crate::math::router::QuoterBook],
+    ) -> VelocityResult<Vec<crate::state::prop_amm::PriceLevel>> {
+        let price = self.best_price(ctx, side)?;
+        let no_quote = match side {
+            PositionDirection::Long => u64::MAX,
+            PositionDirection::Short => 0,
+        };
+        if price == no_quote {
+            return Ok(vec![]);
+        }
+        let size = self.level_capacity(ctx, side)?.min(size);
+        if size == 0 {
+            return Ok(vec![]);
+        }
+        Ok(vec![crate::state::prop_amm::PriceLevel { price, size }])
+    }
+}
+
+impl RouterQuoter for DlobOrderQuoter<'_> {
+    /// The DLOB bridges into the router at the CLOB's tier during migration.
+    fn priority(&self) -> u8 {
+        crate::state::prop_amm::QuoterType::Clob.default_priority()
+    }
+}
+
 // ============================================================================
 // DLOB resting-order Quoter impl
 // ============================================================================

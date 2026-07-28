@@ -1,0 +1,6 @@
+# Mechanical reformat commits, hidden from blame. GitHub's blame view picks
+# this file up automatically; locally, enable with:
+#   git config blame.ignoreRevsFile .git-blame-ignore-revs
+#
+# rustfmt imports_granularity=One repo-wide reformat (append the commit hash
+# of the reformat commit below once it lands):

@@ -27,6 +27,9 @@ defaults:
 env:
   CARGO_TERM_COLOR: always
   RUST_TOOLCHAIN: 1.91.1
+  # Pinned nightly for `cargo fmt` only (rustfmt.toml uses the nightly-only
+  # imports_granularity/group_imports options). Builds/clippy stay on stable.
+  RUST_NIGHTLY_TOOLCHAIN: nightly-2026-07-25
   SOLANA_VERSION: 2.3.11
   ANCHOR_VERSION: 1.0.2
   NODE_VERSION: '24.x.x'
@@ -120,17 +123,23 @@ jobs:
     runs-on: ubicloud
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
-      - name: Install Rust nightly
+      - name: Install Rust
         uses: actions-rs/toolchain@16499b5e05bf2e26879000db0c1d13f7e13fa3af # v1
         with:
           toolchain: ${{ env.RUST_TOOLCHAIN }}
           profile: minimal
           override: true
           components: rustfmt, clippy
+      - name: Install Rust nightly (rustfmt only)
+        uses: actions-rs/toolchain@16499b5e05bf2e26879000db0c1d13f7e13fa3af # v1
+        with:
+          toolchain: ${{ env.RUST_NIGHTLY_TOOLCHAIN }}
+          profile: minimal
+          components: rustfmt
       - name: Cache build files
         uses: Swatinem/rust-cache@f13886b937689c021905a6b90929199931d60db1 # v2.8.1
       - name: Cargo fmt
-        run: cargo fmt -- --check
+        run: cargo +${{ env.RUST_NIGHTLY_TOOLCHAIN }} fmt -- --check
       - name: Cargo clippy
         run: cargo clippy -p velocity
   unit-tests:
@@ -355,6 +364,15 @@ jobs:
           profile: minimal
           components: rustfmt
           override: true
+      # The stable rustfmt above stays: velocity-rs's build.rs shells out to the
+      # default-toolchain rustfmt when regenerating velocity_idl.rs. The nightly
+      # one is only for the fmt gate (nightly-only rustfmt.toml options).
+      - name: Install Rust nightly (rustfmt only)
+        uses: actions-rs/toolchain@16499b5e05bf2e26879000db0c1d13f7e13fa3af # v1
+        with:
+          toolchain: ${{ env.RUST_NIGHTLY_TOOLCHAIN }}
+          profile: minimal
+          components: rustfmt
       - name: Cache build artefacts
         uses: Swatinem/rust-cache@81d053bdb0871dcd3f10763c8cc60d0adc41762b # v1
         with:
@@ -363,7 +381,18 @@ jobs:
       # Restores the `cargo fmt --check` gate velocity-rs ran upstream (keep-rs/swift
       # only ran a non-blocking `cargo fmt`); covers the whole rust workspace.
       - name: cargo fmt rust workspace
-        run: cargo fmt --manifest-path rust/Cargo.toml --all -- --check
+        run: cargo +${{ env.RUST_NIGHTLY_TOOLCHAIN }} fmt --manifest-path rust/Cargo.toml --all -- --check
+      # The velocity-rs example crates (all but dlob-builder) are not workspace
+      # members and don't resolve under cargo, so `cargo fmt --all` above never
+      # sees them; check each with raw rustfmt at the crate's own edition.
+      - name: rustfmt velocity-rs examples
+        run: |
+          set -euo pipefail
+          for d in rust/velocity-rs/examples/*/; do
+            ed=$(sed -nE 's/^edition = "([0-9]+)"$/\1/p' "$d/Cargo.toml" | head -1)
+            files=$(git ls-files "${d}**/*.rs" "${d}*.rs")
+            [ -n "$files" ] && echo "$files" | xargs rustup run ${{ env.RUST_NIGHTLY_TOOLCHAIN }} rustfmt --edition "${ed:-2021}" --check
+          done
       # The velocity-rs build.rs regenerates crates/src/velocity_idl.rs from the canonical
       # packages/sdk/src/idl/velocity.json; the velocity program crate is compiled as a host lib path-dep.
       - name: cargo check rust workspace

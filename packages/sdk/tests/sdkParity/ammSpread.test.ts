@@ -175,4 +175,34 @@ describe('AMM spread parity with update_spreads', () => {
 		assert(longSpread === 150, `expected 150, got ${longSpread}`);
 		assert(shortSpread === 150, `expected 150, got ${shortSpread}`);
 	});
+
+	it('requires oracle data whenever curveUpdateIntensity is nonzero', () => {
+		const market = devnetSolPerp();
+
+		// A baseSpread of 0 used to short-circuit to [0, 0] without an oracle,
+		// handing callers a zero-width spread instead of asking for the input the
+		// dynamic branch needs.
+		assert.throws(
+			() => calculateSpread(market.amm, market.marketStats),
+			/oraclePriceData is required/
+		);
+		assert.throws(
+			() => calculateSpreadReserves(market.amm, market.marketStats),
+			/oraclePriceData is required/
+		);
+	});
+
+	it('does not require oracle data when curveUpdateIntensity is 0', () => {
+		const market = devnetSolPerp();
+		market.amm.curveUpdateIntensity = 0;
+		market.amm.baseSpread = 175;
+
+		const [longSpread, shortSpread] = calculateSpread(
+			market.amm,
+			market.marketStats
+		);
+
+		assert(longSpread === 87, `expected 87, got ${longSpread}`);
+		assert(shortSpread === 87, `expected 87, got ${shortSpread}`);
+	});
 });

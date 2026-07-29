@@ -1280,7 +1280,10 @@ function applyAmmSpreadAdjustment(
 	}
 	if (amm.ammSpreadAdjustment < 0) {
 		const shrink = (spread: number) =>
-			Math.max(spread - Math.floor((spread * -amm.ammSpreadAdjustment) / 100), 1);
+			Math.max(
+				spread - Math.floor((spread * -amm.ammSpreadAdjustment) / 100),
+				1
+			);
 		return [shrink(longSpread), shrink(shortSpread)];
 	}
 	return [longSpread, shortSpread];

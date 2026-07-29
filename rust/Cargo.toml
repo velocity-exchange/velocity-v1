@@ -37,6 +37,9 @@ solana-program = { opt-level = 0 }
 pyth-lazer-protocol = { path = "keep-rs/vendor/pyth-lazer-protocol" }
 
 # `router-sim` depends on `relay-chain-source` (relay's extracted chain-access
-# + in-process simulation layer) by relative path, because that crate is not
-# published yet — so a checkout of `relay` must sit beside this repo. When it
-# is published, drop the path dep for a version and this note goes away.
+# + in-process simulation layer) as a git dep pinned by rev — see
+# router-sim/Cargo.toml. To develop the two together, add a path override
+# here rather than editing the dep:
+#   [patch."https://github.com/velocity-exchange/relay"]
+#   relay-chain-source = { path = "../../relay/chain-source" }
+# then drop it (and bump the rev) before committing.

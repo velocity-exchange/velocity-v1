@@ -6,9 +6,9 @@ publish = false
 
 [dependencies]
 # Chain access + in-process simulation, extracted from relay's crank turner.
-# Local path until the crate is published; see the workspace note in
-# rust/Cargo.toml.
-relay-chain-source = { path = "../../../relay/chain-source" }
+# Pinned by rev rather than tracking a branch: this crate decides what a fill
+# would do, so the simulation layer under it should only move deliberately.
+relay-chain-source = { git = "https://github.com/velocity-exchange/relay", rev = "b8c6ecd0bb65f5dcad929fc7972a4a4241232fd0" }
 # The program as a host library, same flavor velocity-rs uses — so account
 # layout constants are derived from the struct rather than transcribed.
 program = { package = "velocity", path = "../../programs/velocity", default-features = false, features = [

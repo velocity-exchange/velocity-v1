@@ -4222,6 +4222,12 @@ pub fn handle_end_swap<'c: 'info, 'info>(
         .force_get_spot_position_mut(out_market_index)?
         .get_signed_token_amount(&out_spot_market)?;
 
+    let out_deposit_token_amount_before = math::spot_balance::get_token_amount(
+        out_spot_market.deposit_balance,
+        &out_spot_market,
+        &SpotBalanceType::Deposit,
+    )?;
+
     update_spot_balances_and_cumulative_deposits(
         amount_out_after_fee.cast()?,
         &SpotBalanceType::Deposit,
@@ -4241,6 +4247,18 @@ pub fn handle_end_swap<'c: 'info, 'info>(
         &SpotBalanceType::Deposit,
         &mut out_spot_market,
         false,
+    )?;
+
+    // The swap's out leg credits deposits through the plain balance update rather than the shared
+    // `_with_limits` path, so before this the daily deposit cap did not apply to it at all: a
+    // swapper could lift a market's deposit level arbitrarily far above its cap, and (until the
+    // growth gate above) thereby lock every other user out of withdrawing or repaying in that
+    // market while liquidation stayed live against them (finding #118). Capped here, after the
+    // revenue-pool fee credit so the whole out-side increase is accounted, and gated on real
+    // growth so a swap that merely repays an existing borrow is never rejected.
+    math::spot_withdraw::validate_deposit_cap_after_increase(
+        &out_spot_market,
+        out_deposit_token_amount_before,
     )?;
 
     let out_position_is_reduced = out_token_amount_before < 0

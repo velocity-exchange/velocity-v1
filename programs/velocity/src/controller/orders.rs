@@ -4172,22 +4172,12 @@ fn fulfill_perp_order_router_pass(
             levels: &amm_levels[..within_limit(&amm_levels)],
         }))
         .collect();
-    let allocations = split_across_quoters(direction, target_size, &books)?;
+    let allocations = split_across_quoters(direction, target_size, &books, order_step_size)?;
     let externals_end = external_books.len();
     let makers_end = externals_end + maker_levels.len();
 
-    // Every executed size must be an `order_step_size` multiple — the
-    // market's position counters are validated against the step, and ladder
-    // chunks / pro-rata clearing slices / limit-capped totals aren't
-    // naturally aligned. Flooring drops at most step-1 of dust per quoter;
-    // the allocation's quote stays as quoted (a smaller fill against the
-    // same per-unit bound still validates).
-    let standardize =
-        |base: u64| crate::math::orders::standardize_base_asset_amount(base, order_step_size);
-
     // ---- Execute the vAMM allocation, then release &mut market.amm. ----
-    let mut amm_allocation = allocations[makers_end];
-    amm_allocation.base = standardize(amm_allocation.base)?;
+    let amm_allocation = allocations[makers_end];
     let amm_fill = if amm_allocation.base > 0 {
         let fill =
             RouterQuoter::execute(&mut amm_quoter, &setup_ctx, direction, amm_allocation.base)?;
@@ -4235,8 +4225,7 @@ fn fulfill_perp_order_router_pass(
     let mut total_base = 0u64;
     let mut total_quote = 0u64;
     for (i, router_maker) in router_makers.iter().enumerate() {
-        let mut allocation = allocations[externals_end + i];
-        allocation.base = standardize(allocation.base)?;
+        let allocation = allocations[externals_end + i];
         if allocation.base == 0 {
             continue;
         }
@@ -4367,8 +4356,6 @@ fn fulfill_perp_order_router_pass(
     // at-or-better against the quoted levels, and settle only against loaded
     // makers (`get_ref_mut` fails for anyone outside the tx's user set).
     for (i, allocation) in allocations[..externals_end].iter().enumerate() {
-        let mut allocation = *allocation;
-        allocation.base = standardize(allocation.base)?;
         if allocation.base == 0 {
             continue;
         }
@@ -4413,7 +4400,7 @@ fn fulfill_perp_order_router_pass(
             crate::controller::matching::fill_at_or_better(
                 taker_direction,
                 &aggregate_fill,
-                &allocation,
+                allocation,
                 BASE_PRECISION_U64
             )?,
             ErrorCode::DefaultError,

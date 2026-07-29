@@ -52,15 +52,22 @@ struct Cursor<'a> {
     index: usize,
     /// Consumed within `levels[index]`.
     consumed: u64,
+    /// Availability is quantized to this step: allocations must be
+    /// `order_step_size` multiples (the market's position counters are
+    /// validated against it), so each level's sub-step tail is unfillable
+    /// dust the cursor skips past rather than stranding the walk on it.
+    step: u64,
 }
 
 impl Cursor<'_> {
-    /// Advance past degenerate/out-of-order/over-cap levels; return the
-    /// current (price, available) or None when exhausted.
+    /// Advance past degenerate/out-of-order/over-cap/sub-step levels; return
+    /// the current (price, step-aligned available) or None when exhausted.
     fn peek(&mut self, direction: Direction) -> Option<(u64, u64)> {
         while self.index < self.levels.len().min(MAX_LEVELS_PER_BOOK) {
             let level = self.levels[self.index];
-            let degenerate = level.price == 0 || level.size <= self.consumed;
+            let available = level.size.saturating_sub(self.consumed);
+            let usable = available - available % self.step;
+            let degenerate = level.price == 0 || usable == 0;
             let out_of_order = self.index > 0 && {
                 let prev = self.levels[self.index - 1].price;
                 match direction {
@@ -78,7 +85,7 @@ impl Cursor<'_> {
                 self.consumed = 0;
                 continue;
             }
-            return Some((level.price, level.size - self.consumed));
+            return Some((level.price, usable));
         }
         None
     }
@@ -132,18 +139,23 @@ fn available_at(top: Option<(u64, u64)>, priority: u8, tier: u8, price: u64) -> 
     top.and_then(|(p, available)| (p == price).then_some(available))
 }
 
-/// Split `taker_size` across the books. Returns one allocation per book (same
-/// order); the sum of allocated base is `min(taker_size, total usable depth)`.
+/// Split `taker_size` across the books in `step_size` quanta. Returns one
+/// allocation per book (same order); the sum of allocated base is
+/// `min(taker_size, total usable depth)` rounded down to the step — every
+/// allocation is a step multiple by construction, so execution never drops
+/// dust the taker was promised.
 pub fn split_across_quoters(
     direction: Direction,
     taker_size: u64,
     books: &[QuoterBook],
+    step_size: u64,
 ) -> VelocityResult<Vec<QuoterAllocation>> {
     validate!(
         !books.is_empty(),
         ErrorCode::DefaultError,
         "router split needs at least one book"
     )?;
+    let step = step_size.max(1);
     let mut cursors: Vec<Cursor> = books
         .iter()
         .map(|book| Cursor {
@@ -151,16 +163,23 @@ pub fn split_across_quoters(
             levels: book.levels,
             index: 0,
             consumed: 0,
+            step,
         })
         .collect();
     let mut allocations = vec![QuoterAllocation::default(); books.len()];
     let mut remaining = taker_size;
 
+    // Round-scratch buffers hoisted out of the loop: Solana's bump allocator
+    // never frees, so per-round Vecs would leak O(rounds × books) heap and
+    // OOM a many-maker fill inside the 32KB budget.
+    let mut tops: Vec<Option<(u64, u64)>> = vec![None; cursors.len()];
+    let mut tiers: Vec<u8> = Vec::with_capacity(cursors.len());
     while remaining > 0 {
         // One peek per book per price round; consumption below updates the
         // cached top in place instead of re-walking the levels.
-        let mut tops: Vec<Option<(u64, u64)>> =
-            cursors.iter_mut().map(|c| c.peek(direction)).collect();
+        for (top, cursor) in tops.iter_mut().zip(cursors.iter_mut()) {
+            *top = cursor.peek(direction);
+        }
         let live = tops.iter().flatten().map(|&(price, _)| price);
         let Some(price) = (match direction {
             Direction::Long => live.min(),
@@ -171,17 +190,15 @@ pub fn split_across_quoters(
 
         // Priority tiers quoting this price, ascending; pro rata within a
         // tier (a single-member tier degenerates to filling it outright).
-        let mut tiers: Vec<u8> = cursors
-            .iter()
-            .zip(&tops)
-            .filter_map(|(cursor, top)| {
-                top.and_then(|(p, _)| (p == price).then_some(cursor.priority))
-            })
-            .collect();
+        tiers.clear();
+        tiers.extend(cursors.iter().zip(&tops).filter_map(|(cursor, top)| {
+            top.and_then(|(p, _)| (p == price).then_some(cursor.priority))
+        }));
         tiers.sort_unstable();
         tiers.dedup();
 
-        for tier in tiers {
+        for tier_index in 0..tiers.len() {
+            let tier = tiers[tier_index];
             if remaining == 0 {
                 break;
             }
@@ -190,7 +207,10 @@ pub fn split_across_quoters(
                 .zip(&tops)
                 .filter_map(|(cursor, top)| available_at(*top, cursor.priority, tier, price))
                 .try_fold(0u64, |acc, available| acc.safe_add(available))?;
-            let demand = remaining.min(total);
+            let demand = {
+                let d = remaining.min(total);
+                d - d % step
+            };
             // Indexed loops: `take` mutates three parallel structures.
             let mut given: u64 = 0;
             for i in 0..cursors.len() {
@@ -202,6 +222,7 @@ pub fn split_across_quoters(
                     .safe_mul(available as u128)?
                     .safe_div(total as u128)?
                     .cast::<u64>()?;
+                let share = share - share % step;
                 take(
                     direction,
                     &mut cursors[i],
@@ -223,7 +244,13 @@ pub fn split_across_quoters(
                 else {
                     continue;
                 };
-                let amount = dust.min(available);
+                let amount = {
+                    let a = dust.min(available);
+                    a - a % step
+                };
+                if amount == 0 {
+                    continue;
+                }
                 take(
                     direction,
                     &mut cursors[i],
@@ -265,7 +292,7 @@ mod tests {
                 levels,
             })
             .collect();
-        split_across_quoters(direction, size, &books).unwrap()
+        split_across_quoters(direction, size, &books, 1).unwrap()
     }
 
     const B: u64 = 1_000_000_000; // one base unit

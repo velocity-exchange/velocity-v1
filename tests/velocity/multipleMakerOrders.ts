@@ -500,7 +500,9 @@ describe('multiple maker orders', () => {
 			.getEventsArray('OrderActionRecord')
 			.filter((record) => isVariant(record.action, 'fill'));
 		console.log('orderActionRecords.length=', orderActionRecords.length);
-		assert(orderActionRecords.length === 20);
+		// The router pass fills every crossing maker order in one sweep (the
+		// legacy loop stopped at its per-ix fulfillment-method cap).
+		assert(orderActionRecords.length === 30);
 
 		const takerPosition = takerVelocityClient.getUser().getPerpPosition(1);
 		console.log(
@@ -511,8 +513,8 @@ describe('multiple maker orders', () => {
 			'takerPosition.quoteAssetAmount=',
 			takerPosition.quoteAssetAmount.toString()
 		);
-		assert(takerPosition.baseAssetAmount.eq(new BN('-402388600000')));
-		assert(takerPosition.quoteAssetAmount.eq(new BN('273539365')));
+		assert(takerPosition.baseAssetAmount.eq(new BN('-412763100000')));
+		assert(takerPosition.quoteAssetAmount.eq(new BN('280585003')));
 
 		const makerPosition = makerVelocityClient.getUser().getPerpPosition(1);
 		console.log(
@@ -537,8 +539,8 @@ describe('multiple maker orders', () => {
 			'secondMakerPosition.quoteAssetAmount=',
 			secondMakerPosition.quoteAssetAmount.toString()
 		);
-		assert(secondMakerPosition.baseAssetAmount.eq(new BN('3000000000')));
-		assert(secondMakerPosition.quoteAssetAmount.eq(new BN('-2063588')));
+		assert(secondMakerPosition.baseAssetAmount.eq(new BN('8000000000')));
+		assert(secondMakerPosition.quoteAssetAmount.eq(new BN('-5462861')));
 
 		const thirdMakerPosition = thirdMakerVelocityClient
 			.getUser()
@@ -551,15 +553,15 @@ describe('multiple maker orders', () => {
 			'thirdMakerPosition.quoteAssetAmount=',
 			thirdMakerPosition.quoteAssetAmount.toString()
 		);
-		assert(thirdMakerPosition.baseAssetAmount.eq(new BN('3000000000')));
-		assert(thirdMakerPosition.quoteAssetAmount.eq(new BN('-2063588')));
+		assert(thirdMakerPosition.baseAssetAmount.eq(new BN('8000000000')));
+		assert(thirdMakerPosition.quoteAssetAmount.eq(new BN('-5462861')));
 
 		const dogMarket = takerVelocityClient.getPerpMarketAccount(1);
 		console.log(
 			'dogMarket.amm.baseAssetAmountWithAmm=',
 			dogMarket.amm.baseAssetAmountWithAmm.toString()
 		);
-		assert(dogMarket.amm.baseAssetAmountWithAmm.eq(new BN('-395388600000')));
+		assert(dogMarket.amm.baseAssetAmountWithAmm.eq(new BN('-395763100000')));
 
 		// close position
 
@@ -612,7 +614,7 @@ describe('multiple maker orders', () => {
 			dogMarketAfter.amm.baseAssetAmountWithAmm.toString()
 		);
 		assert(
-			dogMarketAfter.amm.baseAssetAmountWithAmm.eq(new BN('-66279600000'))
+			dogMarketAfter.amm.baseAssetAmountWithAmm.eq(new BN('-66661900000'))
 		);
 
 		bankrunContextWrapper.printTxLogs(txSig2);

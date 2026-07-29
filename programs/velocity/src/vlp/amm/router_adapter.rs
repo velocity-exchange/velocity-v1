@@ -187,9 +187,16 @@ pub fn vamm_quote_levels(
         }
     }
 
+    // Emit step-aligned rungs: the split allocates in `step_size` quanta, so
+    // a rung whose size isn't a step multiple would have its tail floored
+    // away — with several rungs that silently shrinks the vAMM's quote. The
+    // ladder owns its checkpoint boundaries, so align the cumulatives here
+    // and no depth is lost between quote and allocation.
+    let step = step_size.max(1);
     let mut levels = Vec::with_capacity(checkpoints.len());
     let mut previous = 0u64;
     for (cumulative, price) in checkpoints {
+        let cumulative = cumulative - cumulative % step;
         if cumulative <= previous {
             continue;
         }

@@ -202,7 +202,48 @@ pub fn update_spot_market_cumulative_interest(
             .safe_sub(deposit_interest_for_if)?
             .safe_sub(deposit_interest_for_protocol)?;
 
-        if deposit_interest_for_lenders > 0 {
+        // convert both carveouts to tokens against the SAME pre-credit
+        // deposit_balance — crediting the first pool grows deposit_balance,
+        // and converting the second cut against the grown balance would
+        // skew it above its stated factor (order-dependence)
+        let if_token_amount = get_interest_token_amount(
+            spot_market.deposit_balance,
+            spot_market,
+            deposit_interest_for_if,
+        )?;
+        let protocol_token_amount = get_interest_token_amount(
+            spot_market.deposit_balance,
+            spot_market,
+            deposit_interest_for_protocol,
+        )?;
+
+        // A configured carveout must actually reach its pool before the interval is committed.
+        //
+        // The cuts are withheld from lenders in *index* terms (`deposit_interest_for_lenders`
+        // is net of both), but only reach `revenue_pool` / `protocol_fee_pool` if they convert
+        // to at least one token: `deposit_balance * cut / 10^(19 - decimals)`. When a cut
+        // converted to zero the value was withheld from lenders and credited to nobody — it
+        // became unattributed slack in the vault — and `last_interest_ts` advanced anyway, so
+        // the interval could never be retried. Cranking this (permissionless) accrual at short
+        // enough intervals kept every cut under one token indefinitely, permanently forfeiting
+        // the insurance fund's and the protocol's entire share of lending yield (finding #127).
+        //
+        // Deferring is safe from liveness: the cut grows linearly with the un-stamped interval
+        // and the clock only advances on commit, so frequent cranking cannot hold the interval
+        // short — every configured cut eventually clears a token. The tradeoff is that accrual
+        // lands in coarser steps on very small markets (on a $1M market at a 0.1% factor a cut
+        // clears a token in ~16s; on a dust-sized market it can defer for hours). This is the
+        // mirror image of the #117 treatment: an interval nobody owes anything for is stamped
+        // and dropped, an interval that *is* owed is deferred until it can be paid in full.
+        //
+        // Exempt `deposit_balance == 0`, the one case where the conversion is structurally zero
+        // regardless of how long the interval grows — deferring there would never converge and
+        // would leave borrowers uncharged forever.
+        let carveouts_payable = spot_market.deposit_balance == 0
+            || ((spot_market.insurance_fund.if_fee_factor == 0 || if_token_amount > 0)
+                && (spot_market.protocol_fee_factor == 0 || protocol_token_amount > 0));
+
+        if deposit_interest_for_lenders > 0 && carveouts_payable {
             spot_market.cumulative_deposit_interest = spot_market
                 .cumulative_deposit_interest
                 .safe_add(deposit_interest_for_lenders)?;
@@ -211,21 +252,6 @@ pub fn update_spot_market_cumulative_interest(
                 .cumulative_borrow_interest
                 .safe_add(borrow_interest)?;
             spot_market.last_interest_ts = now.cast()?;
-
-            // convert both carveouts to tokens against the SAME pre-credit
-            // deposit_balance — crediting the first pool grows deposit_balance,
-            // and converting the second cut against the grown balance would
-            // skew it above its stated factor (order-dependence)
-            let if_token_amount = get_interest_token_amount(
-                spot_market.deposit_balance,
-                spot_market,
-                deposit_interest_for_if,
-            )?;
-            let protocol_token_amount = get_interest_token_amount(
-                spot_market.deposit_balance,
-                spot_market,
-                deposit_interest_for_protocol,
-            )?;
 
             // IF cut -> revenue_pool (settles to IF vault for stakers)
             if if_token_amount > 0 {
@@ -273,9 +299,10 @@ pub fn update_spot_market_cumulative_interest(
         // borrow can only ever be charged from its own creation.
         //
         // Deliberately narrow: only the genuinely-nothing-owed case stamps. When utilization
-        // is non-zero but the interval is too short for the split to clear a unit, the clock
-        // is left alone so the accrual is deferred, not forgiven — stamping there would let
-        // frequent cranking zero out borrowers' interest, the mirror image of #127.
+        // is non-zero but the interval is too short for the split (or for a configured
+        // carveout, see above) to clear a unit, the clock is left alone so the accrual is
+        // deferred, not forgiven — stamping there would let frequent cranking zero out
+        // borrowers' interest, which is the shape of #127.
         stamp_interest_ts_without_accrual(spot_market, now)?;
     }
 

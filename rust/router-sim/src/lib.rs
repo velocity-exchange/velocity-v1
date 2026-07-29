@@ -22,13 +22,13 @@
 //! [`relay_chain_source::ProgramSubscription`]) and every account a fill
 //! touches is already resident, so a quote costs microseconds and no RPC.
 
-use anchor_lang::Discriminator;
-use anyhow::{Context, Result};
-use program::state::prop_amm::QuoterV0;
-use program::state::traits::Size;
-use relay_chain_source::{AccountFilter, ChainSource, ProgramSubscription, SimOutcome};
-use solana_sdk::pubkey::Pubkey;
-use solana_sdk::transaction::Transaction;
+use {
+    anchor_lang::Discriminator,
+    anyhow::{Context, Result},
+    program::state::{prop_amm::QuoterV0, traits::Size},
+    relay_chain_source::{AccountFilter, ChainSource, ProgramSubscription, SimOutcome},
+    solana_sdk::{pubkey::Pubkey, transaction::Transaction},
+};
 
 /// Byte length of a `QuoterV0` account, from the program.
 pub fn quoter_v0_len() -> u64 {

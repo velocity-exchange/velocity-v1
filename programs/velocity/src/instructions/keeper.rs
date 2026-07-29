@@ -1,8 +1,5 @@
 use {
     super::optional_accounts::get_token_interface,
-    crate::instructions::router::cpi_executor::CpiQuoterExecutor,
-    crate::math::router::{QuoterBook, RouterFillInputs},
-    crate::state::prop_amm::{Direction, PriceLevel, QuoteArgsV0, QuoterType, QuoterV0},
     crate::{
         auth::check_hot,
         controller::{
@@ -26,6 +23,7 @@ use {
                 add_builder_order, get_revenue_share_escrow_account, load_maps,
                 validate_and_load_builder, AccountMaps,
             },
+            router::cpi_executor::CpiQuoterExecutor,
         },
         load, load_mut,
         math::{
@@ -42,6 +40,7 @@ use {
                 find_bids_and_asks_from_users,
             },
             position::calculate_base_asset_value_and_pnl_with_oracle_price,
+            router::{QuoterBook, RouterFillInputs},
             safe_math::SafeMath,
             spot_withdraw::validate_spot_market_vault_amount,
         },
@@ -62,6 +61,7 @@ use {
                 get_market_set_from_list, get_writable_perp_market_set,
                 get_writable_perp_market_set_from_vec, MarketSet, PerpMarketMap,
             },
+            prop_amm::{Direction, PriceLevel, QuoteArgsV0, QuoterType, QuoterV0},
             revenue_share::RevenueShareEscrowZeroCopyMut,
             revenue_share_map::load_revenue_share_map,
             settle_pnl_mode::SettlePnlMode,
@@ -98,8 +98,7 @@ use {
             self, load_current_index_checked, load_instruction_at_checked, ID as IX_ID,
         },
     },
-    std::collections::BTreeMap,
-    std::{cell::RefMut, convert::TryFrom},
+    std::{cell::RefMut, collections::BTreeMap, convert::TryFrom},
 };
 
 /// The router fill: one quote → split → execute sweep across the vAMM

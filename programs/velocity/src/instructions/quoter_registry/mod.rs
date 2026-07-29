@@ -11,9 +11,7 @@ pub mod update_quoter_approved;
 pub mod update_quoter_config;
 pub mod update_quoter_priority;
 
-pub use initialize_quoter::*;
-pub use update_quoter_accounts::*;
-pub use update_quoter_active::*;
-pub use update_quoter_approved::*;
-pub use update_quoter_config::*;
-pub use update_quoter_priority::*;
+pub use {
+    initialize_quoter::*, update_quoter_accounts::*, update_quoter_active::*,
+    update_quoter_approved::*, update_quoter_config::*, update_quoter_priority::*,
+};

@@ -30,26 +30,27 @@
 //! the union of their registered CPI accounts (response accounts, quoter
 //! programs, the velocity signer).
 
-use std::collections::BTreeMap;
-
-use anchor_lang::prelude::*;
-
-use crate::controller::position::PositionDirection;
-use crate::error::ErrorCode;
-use crate::instructions::optional_accounts::{load_maps, AccountMaps};
-use crate::math::orders::calculate_max_perp_order_size;
-use crate::math::router::QuoterBook;
-use crate::msg;
-use crate::state::perp_market_map::{get_writable_perp_market_set, MarketSet};
-use crate::state::prop_amm::{Direction, PriceLevel, QuoteArgsV0, QuoterType, QuoterV0};
-use crate::state::quoter::MarketQuoteInputs;
-use crate::state::router_quote::{QuotedSourceKind, RouterQuoteBufferV0};
-use crate::state::state::State;
-use crate::state::user_map::load_user_maps;
-use crate::validate;
-use crate::vlp::amm::quoter::AmmQuoter;
-use crate::vlp::amm::router_adapter::vamm_quote_levels;
-use crate::vlp::amm::AMM;
+use {
+    crate::{
+        controller::position::PositionDirection,
+        error::ErrorCode,
+        instructions::optional_accounts::{load_maps, AccountMaps},
+        math::{orders::calculate_max_perp_order_size, router::QuoterBook},
+        msg,
+        state::{
+            perp_market_map::{get_writable_perp_market_set, MarketSet},
+            prop_amm::{Direction, PriceLevel, QuoteArgsV0, QuoterType, QuoterV0},
+            quoter::MarketQuoteInputs,
+            router_quote::{QuotedSourceKind, RouterQuoteBufferV0},
+            state::State,
+            user_map::load_user_maps,
+        },
+        validate,
+        vlp::amm::{quoter::AmmQuoter, router_adapter::vamm_quote_levels, AMM},
+    },
+    anchor_lang::prelude::*,
+    std::collections::BTreeMap,
+};
 
 #[derive(Accounts)]
 pub struct QuoteRouter<'info> {

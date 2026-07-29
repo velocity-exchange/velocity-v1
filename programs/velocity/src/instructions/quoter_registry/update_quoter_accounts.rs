@@ -2,11 +2,14 @@
 //! `index` so a full 32-entry list never has to fit in one transaction.
 //! Clears `is_approved` — the CPI surface changed, the admin re-vets.
 
-use anchor_lang::prelude::*;
-
-use crate::error::ErrorCode;
-use crate::state::prop_amm::{QuoterCpiLeg, QuoterV0, MAX_QUOTER_ACCOUNTS};
-use crate::validate;
+use {
+    crate::{
+        error::ErrorCode,
+        state::prop_amm::{QuoterCpiLeg, QuoterV0, MAX_QUOTER_ACCOUNTS},
+        validate,
+    },
+    anchor_lang::prelude::*,
+};
 
 #[derive(Accounts)]
 pub struct UpdateQuoterAccounts<'info> {

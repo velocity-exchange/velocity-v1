@@ -2,11 +2,13 @@
 //! Admin-only — a maker choosing their own priority could jump the vAMM and
 //! CLOB in the fill waterfall.
 
-use anchor_lang::prelude::*;
-
-use crate::auth::check_warm;
-use crate::state::prop_amm::QuoterV0;
-use crate::state::state::State;
+use {
+    crate::{
+        auth::check_warm,
+        state::{prop_amm::QuoterV0, state::State},
+    },
+    anchor_lang::prelude::*,
+};
 
 #[derive(Accounts)]
 pub struct UpdateQuoterPriority<'info> {

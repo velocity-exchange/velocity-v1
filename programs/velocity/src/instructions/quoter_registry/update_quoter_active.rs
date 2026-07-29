@@ -2,10 +2,10 @@
 //! for Custom quoters that is the quoted user's authority (enforced at
 //! creation, no handoff), so a maker can always shut their quoter down.
 
-use anchor_lang::prelude::*;
-
-use crate::error::ErrorCode;
-use crate::state::prop_amm::QuoterV0;
+use {
+    crate::{error::ErrorCode, state::prop_amm::QuoterV0},
+    anchor_lang::prelude::*,
+};
 
 #[derive(Accounts)]
 pub struct UpdateQuoterActive<'info> {

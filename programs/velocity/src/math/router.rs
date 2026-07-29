@@ -10,12 +10,13 @@
 //! alignment of allocations is not handled here: execute may partially fill
 //! and the fill-time validation clamps, so dust misalignment errs safe.
 
-use crate::error::{ErrorCode, VelocityResult};
-use crate::math::casting::Cast;
-use crate::math::constants::BASE_PRECISION;
-use crate::math::safe_math::SafeMath;
-use crate::state::prop_amm::{Direction, PriceLevel};
-use crate::{msg, validate};
+use crate::{
+    error::{ErrorCode, VelocityResult},
+    math::{casting::Cast, constants::BASE_PRECISION, safe_math::SafeMath},
+    msg,
+    state::prop_amm::{Direction, PriceLevel},
+    validate,
+};
 
 /// Levels processed per book; anything past this is ignored.
 pub const MAX_LEVELS_PER_BOOK: usize = 128;

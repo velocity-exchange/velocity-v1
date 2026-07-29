@@ -4,14 +4,19 @@
 //! so it can never be filled against until the admin vets the CPI surface;
 //! account lists are set afterwards via `update_quoter_accounts`.
 
-use anchor_lang::prelude::*;
-
-use crate::error::ErrorCode;
-use crate::state::perp_market::PerpMarket;
-use crate::state::prop_amm::{QuoterType, QuoterV0, QUOTER_PDA_SEED};
-use crate::state::traits::Size;
-use crate::state::user::User;
-use crate::validate;
+use {
+    crate::{
+        error::ErrorCode,
+        state::{
+            perp_market::PerpMarket,
+            prop_amm::{QuoterType, QuoterV0, QUOTER_PDA_SEED},
+            traits::Size,
+            user::User,
+        },
+        validate,
+    },
+    anchor_lang::prelude::*,
+};
 
 #[derive(Accounts)]
 #[instruction(args: InitializeQuoterArgs)]

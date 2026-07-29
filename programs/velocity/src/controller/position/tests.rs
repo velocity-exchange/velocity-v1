@@ -1,9 +1,11 @@
-use crate::controller::position::{update_position_and_market, PositionDelta, PositionDirection};
-use crate::state::prop_amm::Direction;
-use crate::state::quoter::{QuoteContext, RouterQuoter};
-use crate::vlp::amm::controller::SwapDirection;
-use crate::vlp::amm::refresh::_update_amm;
-use crate::vlp::amm::AmmQuoter;
+use crate::{
+    controller::position::{update_position_and_market, PositionDelta, PositionDirection},
+    state::{
+        prop_amm::Direction,
+        quoter::{QuoteContext, RouterQuoter},
+    },
+    vlp::amm::{controller::SwapDirection, refresh::_update_amm, AmmQuoter},
+};
 
 /// Replacement for the deleted `swap_base_asset` test-only entry point.
 /// Runs the vAMM as a lone router quoter against a zero-spread quote state

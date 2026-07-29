@@ -4,74 +4,77 @@
 //! `place_perp_order` / `place_spot_order` = user-facing placement with auction parameter derivation.
 //! `cancel_order` / `cancel_orders_by_*` = cancellation paths (user-initiated and expiry).
 
-use anchor_lang::prelude::*;
-use std::{collections::BTreeMap, ops::DerefMut};
-
-use crate::controller;
-use crate::controller::funding::settle_funding_payment;
-use crate::controller::position;
-use crate::controller::position::{
-    add_new_position, decrease_open_bids_and_asks, get_position_index, increase_open_bids_and_asks,
-    update_position_and_market, PositionDirection,
+use {
+    crate::{
+        controller,
+        controller::{
+            funding::settle_funding_payment,
+            position::{
+                self, add_new_position, decrease_open_bids_and_asks, get_position_index,
+                increase_open_bids_and_asks, update_position_and_market, PositionDirection,
+            },
+            spot_balance::update_spot_balances,
+            spot_position::decrease_spot_open_bids_and_asks,
+        },
+        error::{ErrorCode, VelocityResult},
+        get_struct_values, get_then_update_id, load, load_mut,
+        math::{
+            auction::{calculate_auction_params_for_trigger_order, calculate_auction_prices},
+            casting::Cast,
+            constants::{BASE_PRECISION_U64, MARGIN_PRECISION},
+            fees::{self, FillFees},
+            liquidation::validate_user_not_being_liquidated,
+            margin::*,
+            matching::{
+                are_orders_same_market_but_different_sides,
+                calculate_filler_multiplier_for_matched_orders, is_maker_for_taker,
+            },
+            oracle::{
+                self, is_oracle_valid_for_action, oracle_validity, OracleValidity, VelocityAction,
+            },
+            orders::*,
+            safe_math::SafeMath,
+            safe_unwrap::SafeUnwrap,
+        },
+        print_error,
+        state::{
+            events::{
+                emit_stack, get_order_action_record, OrderAction, OrderActionExplanation,
+                OrderActionRecord, OrderRecord,
+            },
+            fill_mode::FillMode,
+            margin_calculation::{MarginContext, MarginTypeConfig},
+            market_status::MarketStatus,
+            oracle::OraclePriceData,
+            oracle_map::OracleMap,
+            order_params::{ModifyOrderParams, OrderParams, PlaceOrderOptions, PostOnlyParam},
+            paused_operations::PerpOperation,
+            perp_market::PerpMarket,
+            perp_market_map::PerpMarketMap,
+            quoter::{DlobOrderQuoter, MarketQuoteInputs as QuoteInputs, QuoteContext, QuoterFill},
+            revenue_share::{
+                RevenueShareEscrowZeroCopyMut, RevenueShareOrder, RevenueShareOrderBitFlag,
+            },
+            spot_market::{SpotBalanceType, SpotMarket},
+            spot_market_map::SpotMarketMap,
+            state::{FeeStructure, *},
+            traits::Size,
+            user::{
+                MarketType, Order, OrderBitFlag, OrderStatus, OrderTriggerCondition, OrderType,
+                ReferrerStatus, User, UserStats,
+            },
+            user_map::{UserMap, UserStatsMap},
+        },
+        validate,
+        validation::{
+            self,
+            order::{validate_order, validate_order_for_force_reduce_only},
+        },
+        vlp::amm::{math::amm::calculate_amm_available_liquidity, AmmQuoter},
+    },
+    anchor_lang::prelude::*,
+    std::{collections::BTreeMap, ops::DerefMut},
 };
-use crate::controller::spot_balance::update_spot_balances;
-use crate::controller::spot_position::decrease_spot_open_bids_and_asks;
-use crate::error::ErrorCode;
-use crate::error::VelocityResult;
-use crate::get_struct_values;
-use crate::get_then_update_id;
-use crate::load;
-use crate::load_mut;
-use crate::math::auction::{calculate_auction_params_for_trigger_order, calculate_auction_prices};
-use crate::math::casting::Cast;
-use crate::math::constants::{BASE_PRECISION_U64, MARGIN_PRECISION};
-use crate::math::fees::FillFees;
-use crate::math::liquidation::validate_user_not_being_liquidated;
-use crate::math::matching::{
-    are_orders_same_market_but_different_sides, calculate_filler_multiplier_for_matched_orders,
-    is_maker_for_taker,
-};
-use crate::math::oracle::{
-    self, is_oracle_valid_for_action, oracle_validity, OracleValidity, VelocityAction,
-};
-use crate::math::safe_math::SafeMath;
-use crate::math::safe_unwrap::SafeUnwrap;
-use crate::math::{fees, margin::*, orders::*};
-use crate::print_error;
-use crate::state::events::{emit_stack, get_order_action_record, OrderActionRecord, OrderRecord};
-use crate::state::events::{OrderAction, OrderActionExplanation};
-use crate::state::fill_mode::FillMode;
-use crate::state::margin_calculation::{MarginContext, MarginTypeConfig};
-use crate::state::market_status::MarketStatus;
-use crate::state::oracle::OraclePriceData;
-use crate::state::oracle_map::OracleMap;
-use crate::state::order_params::{
-    ModifyOrderParams, OrderParams, PlaceOrderOptions, PostOnlyParam,
-};
-use crate::state::paused_operations::PerpOperation;
-use crate::state::perp_market::PerpMarket;
-use crate::state::perp_market_map::PerpMarketMap;
-use crate::state::quoter::{
-    DlobOrderQuoter, MarketQuoteInputs as QuoteInputs, QuoteContext, QuoterFill,
-};
-use crate::state::revenue_share::{
-    RevenueShareEscrowZeroCopyMut, RevenueShareOrder, RevenueShareOrderBitFlag,
-};
-use crate::state::spot_market::{SpotBalanceType, SpotMarket};
-use crate::state::spot_market_map::SpotMarketMap;
-use crate::state::state::FeeStructure;
-use crate::state::state::*;
-use crate::state::traits::Size;
-use crate::state::user::{MarketType, User};
-use crate::state::user::{
-    Order, OrderBitFlag, OrderStatus, OrderTriggerCondition, OrderType, ReferrerStatus, UserStats,
-};
-use crate::state::user_map::{UserMap, UserStatsMap};
-use crate::validate;
-use crate::validation;
-use crate::validation::order::{validate_order, validate_order_for_force_reduce_only};
-use crate::vlp::amm::math::amm::calculate_amm_available_liquidity;
-use crate::vlp::amm::AmmQuoter;
 
 #[cfg(test)]
 mod tests;
@@ -3292,10 +3295,14 @@ fn fulfill_perp_order_router_pass(
     rev_share_escrow: &mut Option<&mut RevenueShareEscrowZeroCopyMut>,
     maker_fills: &mut BTreeMap<Pubkey, (i64, bool)>,
 ) -> VelocityResult<(u64, u64)> {
-    use crate::math::router::{split_across_quoters, QuoterBook};
-    use crate::state::prop_amm::{Direction, PriceLevel, QuoterType};
-    use crate::state::quoter::RouterQuoter;
-    use crate::vlp::amm::router_adapter::vamm_quote_levels;
+    use crate::{
+        math::router::{split_across_quoters, QuoterBook},
+        state::{
+            prop_amm::{Direction, PriceLevel, QuoterType},
+            quoter::RouterQuoter,
+        },
+        vlp::amm::router_adapter::vamm_quote_levels,
+    };
 
     let external_books = router.books;
 

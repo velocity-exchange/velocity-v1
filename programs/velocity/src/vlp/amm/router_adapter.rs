@@ -19,20 +19,31 @@
 //! malicious-but-approved quoter can't inflate this book; beyond the band
 //! the curve is priced honestly by equal-size checkpoints.
 
-use crate::controller::position::PositionDirection;
-use crate::error::VelocityResult;
-use crate::math::casting::Cast;
-use crate::math::constants::{BASE_PRECISION_U64, PERCENTAGE_PRECISION_U64};
-use crate::math::router::QuoterBook;
-use crate::math::safe_math::SafeMath;
-use crate::state::prop_amm::{Direction, PriceLevel, QuoterType};
-use crate::state::quoter::{QuoteContext, QuoterFill, RouterQuoter};
-
-use super::controller::{calculate_base_swap_output, SwapDirection};
-use super::math::amm::calculate_amm_available_liquidity;
-use super::math::spread::calculate_base_asset_amount_to_trade_to_price;
-use super::quoter::AmmQuoter;
-use super::state::AMM;
+use {
+    super::{
+        controller::{calculate_base_swap_output, SwapDirection},
+        math::{
+            amm::calculate_amm_available_liquidity,
+            spread::calculate_base_asset_amount_to_trade_to_price,
+        },
+        quoter::AmmQuoter,
+        state::AMM,
+    },
+    crate::{
+        controller::position::PositionDirection,
+        error::VelocityResult,
+        math::{
+            casting::Cast,
+            constants::{BASE_PRECISION_U64, PERCENTAGE_PRECISION_U64},
+            router::QuoterBook,
+            safe_math::SafeMath,
+        },
+        state::{
+            prop_amm::{Direction, PriceLevel, QuoterType},
+            quoter::{QuoteContext, QuoterFill, RouterQuoter},
+        },
+    },
+};
 
 /// Ladder checkpoints per quote (rival rungs + equal-size filler).
 pub const VAMM_QUOTE_CHECKPOINTS: usize = 8;
@@ -262,9 +273,13 @@ impl RouterQuoter for AmmQuoter<'_> {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-    use crate::math::constants::{AMM_RESERVE_PRECISION, BASE_PRECISION_U64, PEG_PRECISION};
-    use crate::vlp::amm::controller::calculate_base_swap_output;
+    use {
+        super::*,
+        crate::{
+            math::constants::{AMM_RESERVE_PRECISION, BASE_PRECISION_U64, PEG_PRECISION},
+            vlp::amm::controller::calculate_base_swap_output,
+        },
+    };
 
     fn amm_fixture() -> AMM {
         let mut amm = AMM {
@@ -476,8 +491,10 @@ mod ts_mirror_fixture {
     //! (`packages/sdk/src/math/vammLadder.ts`) can be checked against the
     //! program's own numbers rather than against a reading of this file.
     //! Run: `cargo test -p velocity --lib ts_mirror_fixture -- --nocapture`
-    use super::*;
-    use crate::math::constants::{AMM_RESERVE_PRECISION, BASE_PRECISION_U64, PEG_PRECISION};
+    use {
+        super::*,
+        crate::math::constants::{AMM_RESERVE_PRECISION, BASE_PRECISION_U64, PEG_PRECISION},
+    };
 
     #[test]
     fn amm_is_copy_so_a_view_ix_can_quote_without_mutating() {

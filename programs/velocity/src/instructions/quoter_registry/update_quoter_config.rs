@@ -3,10 +3,10 @@
 //! Custom quoters the authority is the quoted user's authority by
 //! construction, which is what guarantees the maker's kill switch.
 
-use anchor_lang::prelude::*;
-
-use crate::error::ErrorCode;
-use crate::state::prop_amm::QuoterV0;
+use {
+    crate::{error::ErrorCode, state::prop_amm::QuoterV0},
+    anchor_lang::prelude::*,
+};
 
 #[derive(Accounts)]
 pub struct UpdateQuoterConfig<'info> {

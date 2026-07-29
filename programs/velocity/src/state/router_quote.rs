@@ -18,13 +18,16 @@
 //! This account is only ever written under simulation. Landing the
 //! instruction is harmless — it mutates nothing else — but pointless.
 
-use anchor_lang::prelude::*;
-use static_assertions::const_assert_eq;
-
-use crate::error::{ErrorCode, VelocityResult};
-use crate::state::prop_amm::PriceLevel;
-use crate::state::traits::Size;
-use crate::{msg, validate};
+use {
+    crate::{
+        error::{ErrorCode, VelocityResult},
+        msg,
+        state::{prop_amm::PriceLevel, traits::Size},
+        validate,
+    },
+    anchor_lang::prelude::*,
+    static_assertions::const_assert_eq,
+};
 
 /// Sources quotable in one view call. Bounded by what fits in a transaction's
 /// account list anyway (each external quoter brings its own CPI accounts), so

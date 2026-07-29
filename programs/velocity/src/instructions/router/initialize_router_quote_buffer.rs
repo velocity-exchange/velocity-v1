@@ -11,9 +11,7 @@
 //! Permissionless: the buffer holds no protocol state, only the caller's own
 //! view of available liquidity, and it is written under simulation.
 
-use anchor_lang::prelude::*;
-
-use crate::state::router_quote::RouterQuoteBufferV0;
+use {crate::state::router_quote::RouterQuoteBufferV0, anchor_lang::prelude::*};
 
 #[derive(Accounts)]
 pub struct InitializeRouterQuoteBuffer<'info> {

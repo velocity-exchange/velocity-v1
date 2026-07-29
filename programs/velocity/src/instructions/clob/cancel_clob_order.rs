@@ -5,24 +5,29 @@
 //! quoter entry's active/approved flags — a maker must always be able to
 //! pull their orders off a killed or de-listed book.
 
-use anchor_lang::prelude::*;
-use solana_program::{
-    instruction::{AccountMeta, Instruction},
-    program::{get_return_data, invoke_signed},
+use {
+    crate::{
+        controller::position::{decrease_open_bids_and_asks, get_position_index},
+        error::ErrorCode,
+        instructions::constraints::*,
+        load_mut, msg,
+        signer::get_signer_seeds,
+        state::{
+            prop_amm::{
+                ClobCancelOrderArgsV0, ClobOrderRefV0, ClobRemovedOrderV0, QuoterType, QuoterV0,
+                CLOB_CANCEL_ORDER_V0_DISCRIMINATOR,
+            },
+            state::State,
+            user::User,
+        },
+        validate,
+    },
+    anchor_lang::prelude::*,
+    solana_program::{
+        instruction::{AccountMeta, Instruction},
+        program::{get_return_data, invoke_signed},
+    },
 };
-
-use crate::controller::position::{decrease_open_bids_and_asks, get_position_index};
-use crate::error::ErrorCode;
-use crate::instructions::constraints::*;
-use crate::msg;
-use crate::signer::get_signer_seeds;
-use crate::state::prop_amm::{
-    ClobCancelOrderArgsV0, ClobOrderRefV0, ClobRemovedOrderV0, QuoterType, QuoterV0,
-    CLOB_CANCEL_ORDER_V0_DISCRIMINATOR,
-};
-use crate::state::state::State;
-use crate::state::user::User;
-use crate::{load_mut, validate};
 
 #[derive(Accounts)]
 pub struct CancelClobOrder<'info> {

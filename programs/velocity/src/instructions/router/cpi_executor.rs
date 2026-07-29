@@ -4,14 +4,17 @@
 //! land on those books commit through the quoter's `execute_v0`. Indexing
 //! matches the books the entrypoint built: quoter `i` produced book `i`.
 
-use std::collections::BTreeMap;
-
-use anchor_lang::prelude::*;
-
-use crate::error::{ErrorCode, VelocityResult};
-use crate::msg;
-use crate::state::prop_amm::{
-    Direction, ExecuteArgsV0, ExecuteResponseV0, ExternalQuoterExecutor, QuoterType, QuoterV0,
+use {
+    crate::{
+        error::{ErrorCode, VelocityResult},
+        msg,
+        state::prop_amm::{
+            Direction, ExecuteArgsV0, ExecuteResponseV0, ExternalQuoterExecutor, QuoterType,
+            QuoterV0,
+        },
+    },
+    anchor_lang::prelude::*,
+    std::collections::BTreeMap,
 };
 
 pub struct CpiQuoterExecutor<'a, 'info> {

@@ -20,13 +20,20 @@
 //! the router subsumes both, and the AMM-JIT-inside-a-match mode they existed
 //! to serve no longer exists.
 
-use crate::controller::position::PositionDirection;
-use crate::error::{ErrorCode, VelocityResult};
-use crate::math::router::{split_across_quoters, QuoterAllocation, QuoterBook};
-use crate::math::safe_math::SafeMath;
-use crate::state::prop_amm::{Direction, PriceLevel};
-use crate::state::quoter::{QuoteContext, QuoterFill, RouterQuoter};
-use crate::{msg, validate};
+use crate::{
+    controller::position::PositionDirection,
+    error::{ErrorCode, VelocityResult},
+    math::{
+        router::{split_across_quoters, QuoterAllocation, QuoterBook},
+        safe_math::SafeMath,
+    },
+    msg,
+    state::{
+        prop_amm::{Direction, PriceLevel},
+        quoter::{QuoteContext, QuoterFill, RouterQuoter},
+    },
+    validate,
+};
 
 /// Result of [`router_take`].
 #[derive(Debug)]
@@ -228,11 +235,17 @@ pub fn router_take(
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-    use crate::state::oracle::OraclePriceData;
-    use crate::state::perp_market::MarketStats;
-    use crate::state::quoter::{FillFeePolicy, QuoteContext};
-    use crate::vlp::amm::AmmQuoter;
+    use {
+        super::*,
+        crate::{
+            state::{
+                oracle::OraclePriceData,
+                perp_market::MarketStats,
+                quoter::{FillFeePolicy, QuoteContext},
+            },
+            vlp::amm::AmmQuoter,
+        },
+    };
 
     fn make_ctx<'a>(
         stats: &'a MarketStats,
@@ -259,9 +272,11 @@ mod tests {
 
     #[test]
     fn router_take_splits_across_amm_dlob_and_external_books() {
-        use crate::math::constants::{AMM_RESERVE_PRECISION, BASE_PRECISION_U64, PEG_PRECISION};
-        use crate::state::quoter::DlobOrderQuoter;
-        use crate::vlp::amm::AMM;
+        use crate::{
+            math::constants::{AMM_RESERVE_PRECISION, BASE_PRECISION_U64, PEG_PRECISION},
+            state::quoter::DlobOrderQuoter,
+            vlp::amm::AMM,
+        };
 
         let stats = MarketStats::default();
         let oracle = OraclePriceData::default();
@@ -321,9 +336,11 @@ mod tests {
 
     #[test]
     fn router_take_vamm_last_look_shades_over_a_worse_dlob_ask() {
-        use crate::math::constants::{AMM_RESERVE_PRECISION, BASE_PRECISION_U64, PEG_PRECISION};
-        use crate::state::quoter::DlobOrderQuoter;
-        use crate::vlp::amm::AMM;
+        use crate::{
+            math::constants::{AMM_RESERVE_PRECISION, BASE_PRECISION_U64, PEG_PRECISION},
+            state::quoter::DlobOrderQuoter,
+            vlp::amm::AMM,
+        };
 
         let stats = MarketStats::default();
         let oracle = OraclePriceData::default();
@@ -370,8 +387,10 @@ mod tests {
 
     #[test]
     fn router_take_truncates_books_at_the_taker_limit() {
-        use crate::math::constants::{AMM_RESERVE_PRECISION, BASE_PRECISION_U64, PEG_PRECISION};
-        use crate::vlp::amm::AMM;
+        use crate::{
+            math::constants::{AMM_RESERVE_PRECISION, BASE_PRECISION_U64, PEG_PRECISION},
+            vlp::amm::AMM,
+        };
 
         let stats = MarketStats::default();
         let oracle = OraclePriceData::default();

@@ -1,20 +1,21 @@
-use std::{
-    collections::HashMap,
-    hash::BuildHasher,
-    io,
-    ops::Deref,
-    sync::{
-        Arc,
-        atomic::{AtomicI64, AtomicU64, Ordering},
+use {
+    serde::{Deserialize, Serialize},
+    solana_account::{Account, ReadableAccount},
+    solana_clock::Clock,
+    solana_program_error::ProgramError,
+    solana_pubkey::Pubkey,
+    std::{
+        collections::HashMap,
+        hash::BuildHasher,
+        io,
+        ops::Deref,
+        sync::{
+            Arc,
+            atomic::{AtomicI64, AtomicU64, Ordering},
+        },
     },
+    thiserror::Error,
 };
-
-use serde::{Deserialize, Serialize};
-use solana_account::{Account, ReadableAccount};
-use solana_clock::Clock;
-use solana_program_error::ProgramError;
-use solana_pubkey::Pubkey;
-use thiserror::Error;
 
 pub mod serde_utils;
 mod swap;
@@ -269,9 +270,7 @@ impl From<Clock> for ClockRef {
 
 #[cfg(test)]
 mod tests {
-    use solana_pubkey::pubkey;
-
-    use super::*;
+    use {super::*, solana_pubkey::pubkey};
 
     #[test]
     fn test_market_deserialization() {

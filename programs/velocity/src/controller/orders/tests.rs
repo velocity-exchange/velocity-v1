@@ -123,28 +123,35 @@ macro_rules! no_router {
 }
 
 pub mod fulfill_order_with_maker_order {
-    use crate::controller::position::PositionDirection;
-    use crate::math::constants::{
-        AMM_RESERVE_PRECISION, BASE_PRECISION_I128, BASE_PRECISION_I64, BASE_PRECISION_U64,
-        BID_ASK_SPREAD_PRECISION, PEG_PRECISION, PRICE_PRECISION, PRICE_PRECISION_I64,
-        PRICE_PRECISION_U64, QUOTE_PRECISION_I64, QUOTE_PRECISION_U64,
+    use {
+        super::*,
+        crate::{
+            controller::position::PositionDirection,
+            create_anchor_account_info,
+            error::VelocityResult,
+            math::{
+                constants::{
+                    AMM_RESERVE_PRECISION, BASE_PRECISION_I128, BASE_PRECISION_I64,
+                    BASE_PRECISION_U64, BID_ASK_SPREAD_PRECISION, PEG_PRECISION, PRICE_PRECISION,
+                    PRICE_PRECISION_I64, PRICE_PRECISION_U64, QUOTE_PRECISION_I64,
+                    QUOTE_PRECISION_U64,
+                },
+                oracle::OracleValidity,
+            },
+            state::{
+                oracle::HistoricalOracleData,
+                oracle_map::OracleMap,
+                perp_market::{MarketStats, PerpMarket, AMM},
+                pyth_lazer_oracle::PythLazerOracle,
+                revenue_share::RevenueShareEscrowZeroCopyMut,
+                state::{FeeStructure, ValidityGuardRails},
+                user::{Order, OrderType, PerpPosition, User, UserStats},
+            },
+            test_utils::{get_orders, get_positions, get_pyth_price},
+        },
+        anchor_lang::prelude::Pubkey,
+        std::str::FromStr,
     };
-    use crate::math::oracle::OracleValidity;
-    use crate::state::perp_market::{MarketStats, PerpMarket, AMM};
-    use crate::state::user::{Order, OrderType, PerpPosition, User, UserStats};
-
-    use crate::create_anchor_account_info;
-    use crate::state::pyth_lazer_oracle::PythLazerOracle;
-    use crate::test_utils::{get_orders, get_positions, get_pyth_price};
-
-    use super::*;
-    use crate::error::VelocityResult;
-    use crate::state::oracle::HistoricalOracleData;
-    use crate::state::oracle_map::OracleMap;
-    use crate::state::revenue_share::RevenueShareEscrowZeroCopyMut;
-    use crate::state::state::{FeeStructure, ValidityGuardRails};
-    use anchor_lang::prelude::Pubkey;
-    use std::str::FromStr;
 
     /// Drives one maker match the way the router pass does — quote the
     /// resting order, then settle through [`settle_dlob_match_fill`] — behind
@@ -179,9 +186,11 @@ pub mod fulfill_order_with_maker_order {
         is_liquidation: bool,
         rev_share_escrow: &mut Option<&mut RevenueShareEscrowZeroCopyMut>,
     ) -> VelocityResult<(u64, u64, u64)> {
-        use crate::controller::position::get_position_index;
-        use crate::math::constants::BASE_PRECISION_U64;
-        use crate::state::quoter::{DlobOrderQuoter, QuoteContext};
+        use crate::{
+            controller::position::get_position_index,
+            math::constants::BASE_PRECISION_U64,
+            state::quoter::{DlobOrderQuoter, QuoteContext},
+        };
 
         let market_index = market.market_index;
         let taker_position_index = get_position_index(&taker.perp_positions, market_index)?;

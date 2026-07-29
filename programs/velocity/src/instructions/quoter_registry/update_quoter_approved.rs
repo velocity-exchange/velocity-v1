@@ -2,13 +2,15 @@
 //! CPI: non-empty account lists on both legs, each containing the response
 //! account (the router reads responses from it, so it must be forwarded).
 
-use anchor_lang::prelude::*;
-
-use crate::auth::check_warm;
-use crate::error::ErrorCode;
-use crate::state::prop_amm::QuoterV0;
-use crate::state::state::State;
-use crate::validate;
+use {
+    crate::{
+        auth::check_warm,
+        error::ErrorCode,
+        state::{prop_amm::QuoterV0, state::State},
+        validate,
+    },
+    anchor_lang::prelude::*,
+};
 
 #[derive(Accounts)]
 pub struct UpdateQuoterApproved<'info> {

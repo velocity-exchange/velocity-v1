@@ -15,7 +15,10 @@ use {
     velocity::{
         math::{
             casting::Cast,
-            constants::{ONE_YEAR, PERCENTAGE_PRECISION, PERCENTAGE_PRECISION_I128},
+            constants::{
+                ONE_YEAR, PERCENTAGE_PRECISION, PERCENTAGE_PRECISION_I128,
+                PERCENTAGE_PRECISION_I64, PERCENTAGE_PRECISION_U32, PERCENTAGE_PRECISION_U64,
+            },
             insurance::{
                 calculate_rebase_info,
                 if_shares_to_vault_amount as depositor_shares_to_vault_amount,
@@ -34,6 +37,56 @@ use {
     },
     velocity_macros::assert_no_slop,
 };
+
+/// Shared fee-policy bounds enforced at vault initialization and on every fee-update path
+/// (queue + maturity). Centralizes the init bounds so the timelocked fee-update path cannot
+/// install a state no initialization could create (OtterSec #97):
+/// - management fee < 100%
+/// - profit share < 100%
+/// - for protocol vaults: manager+protocol fee sum < 100%, manager+protocol profit-share sum
+///   < 100%, and hurdle rate must be 0 (protocol-vault hurdle mode is unimplemented).
+///
+/// `protocol_fee`/`protocol_profit_share` are ignored for non-protocol vaults (pass 0).
+pub fn validate_fee_policy(
+    management_fee: i64,
+    profit_share: u32,
+    hurdle_rate: u32,
+    is_protocol_vault: bool,
+    protocol_fee: u64,
+    protocol_profit_share: u32,
+) -> Result<()> {
+    validate!(
+        management_fee < PERCENTAGE_PRECISION_I64,
+        ErrorCode::InvalidVaultUpdate,
+        "management fee must be < 100%"
+    )?;
+    validate!(
+        profit_share < PERCENTAGE_PRECISION_U32,
+        ErrorCode::InvalidVaultUpdate,
+        "profit share must be < 100%"
+    )?;
+
+    if is_protocol_vault {
+        validate!(
+            management_fee.saturating_add(protocol_fee.cast()?) < PERCENTAGE_PRECISION_I64,
+            ErrorCode::InvalidVaultUpdate,
+            "management fee plus protocol fee must be < 100%"
+        )?;
+        validate!(
+            (profit_share as u64).saturating_add(protocol_profit_share as u64)
+                < PERCENTAGE_PRECISION_U64,
+            ErrorCode::InvalidVaultUpdate,
+            "manager profit share plus protocol profit share must be < 100%"
+        )?;
+        validate!(
+            hurdle_rate == 0,
+            ErrorCode::InvalidVaultUpdate,
+            "hurdle rate not implemented for protocol vaults"
+        )?;
+    }
+
+    Ok(())
+}
 
 #[assert_no_slop]
 #[account(zero_copy(unsafe))]
@@ -152,6 +205,28 @@ impl Vault {
         now: i64,
     ) -> Result<VaultFee> {
         if let Some(ref mut fee_update) = fee_update {
+            // #97: before a matured update takes effect, validate it against the live protocol
+            // state (queue-time validation can only see the manager fields, not the protocol
+            // combined sums). Reverts here leave the pending update in place, recoverable via
+            // manager_cancel_fee_update.
+            {
+                let fu = fee_update.load()?;
+                if fu.is_pending() && now >= fu.incoming_update_ts {
+                    let (is_protocol_vault, protocol_fee, protocol_profit_share) =
+                        match vault_protocol.as_deref() {
+                            Some(vp) => (true, vp.protocol_fee, vp.protocol_profit_share),
+                            None => (false, 0, 0),
+                        };
+                    validate_fee_policy(
+                        fu.incoming_management_fee,
+                        fu.incoming_profit_share,
+                        fu.incoming_hurdle_rate,
+                        is_protocol_vault,
+                        protocol_fee,
+                        protocol_profit_share,
+                    )?;
+                }
+            }
             fee_update.load_mut()?.try_update_vault_fees(now, self)?;
         }
 
@@ -164,73 +239,48 @@ impl Vault {
         let mut protocol_fee_shares: i128 = 0;
         let mut skip_ts_update = false;
 
-        let mut handle_no_protocol_fee = |vault: &mut Vault| -> Result<()> {
-            let since_last = now.safe_sub(vault.last_fee_update_ts)?;
-
-            // default behavior in legacy [`Vault`], manager taxes equity - 1 if tax is >= equity
-            let management_fee_payment = depositor_equity
-                .safe_mul(vault.management_fee.cast()?)?
-                .safe_div(PERCENTAGE_PRECISION_I128)?
-                .safe_mul(since_last.cast()?)?
-                .safe_div(ONE_YEAR.cast()?)?
-                .min(depositor_equity.saturating_sub(1));
-
-            let new_total_shares_factor: u128 = depositor_equity
-                .safe_mul(PERCENTAGE_PRECISION_I128)?
-                .safe_div(depositor_equity.safe_sub(management_fee_payment)?)?
-                .cast()?;
-
-            let new_total_shares = vault
-                .total_shares
-                .safe_mul(new_total_shares_factor.cast()?)?
-                .safe_div(PERCENTAGE_PRECISION)?
-                .max(vault.user_shares);
-
-            if management_fee_payment == 0 || vault.total_shares == new_total_shares {
-                // time delta wasn't large enough to pay any management/protocol fee
-                skip_ts_update = true;
-            }
-
-            management_fee_shares = new_total_shares
-                .cast::<i128>()?
-                .safe_sub(vault.total_shares.cast()?)?;
-            vault.total_shares = new_total_shares;
-            vault.manager_total_fee = vault
-                .manager_total_fee
-                .saturating_add(management_fee_payment.cast()?);
-
-            // in case total_shares is pushed to level that warrants a rebase
-            vault.apply_rebase(&mut None, vault_equity)?;
-            Ok(())
-        };
-
         match vault_protocol {
             None => {
                 if self.management_fee != 0 && depositor_equity > 0 {
-                    handle_no_protocol_fee(self)?;
+                    // legacy vault: no protocol state, so rebase with &mut None
+                    let (mgmt_fee_shares, skip) = self.apply_management_fee_only(
+                        &mut None,
+                        depositor_equity,
+                        vault_equity,
+                        now,
+                    )?;
+                    management_fee_shares = mgmt_fee_shares;
+                    skip_ts_update = skip;
                 }
             }
             Some(vp) => {
-                if self.management_fee != 0 && vp.protocol_fee != 0 && depositor_equity > 0 {
+                let vp_protocol_fee = vp.protocol_fee;
+                if self.management_fee != 0 && vp_protocol_fee != 0 && depositor_equity > 0 {
                     let since_last = now.safe_sub(self.last_fee_update_ts)?;
                     let total_fee = self
                         .management_fee
                         .safe_add(vp.protocol_fee.cast()?)?
                         .cast::<i128>()?;
 
-                    // if protocol fee is non-zero and total fee would lead to zero equity remaining,
-                    // so tax equity - 1 but only for the protocol, so that the user is left with 1 and the manager retains their full fee.
+                    // #102: cap the *combined* fee to equity - 1 first, then split it between
+                    // manager and protocol. This guarantees management_fee_payment,
+                    // protocol_fee_payment, and their sum each stay <= equity - 1, so every
+                    // fee-share-factor denominator (equity - payment) stays >= 1 and the u128
+                    // casts below can never abort on a negative value. The manager keeps its
+                    // full slice whenever that slice fits under the cap; only in the extreme
+                    // (manager slice alone exceeds equity) does the protocol absorb the shortfall.
                     let total_fee_payment = depositor_equity
                         .safe_mul(total_fee)?
                         .safe_div(PERCENTAGE_PRECISION_I128)?
                         .safe_mul(since_last.cast()?)?
-                        .safe_div(ONE_YEAR.cast()?)?;
+                        .safe_div(ONE_YEAR.cast()?)?
+                        .min(depositor_equity.saturating_sub(1));
                     let management_fee_payment = total_fee_payment
                         .safe_mul(self.management_fee.cast()?)?
-                        .safe_div(total_fee)?;
-                    let protocol_fee_payment = total_fee_payment
-                        .min(depositor_equity.saturating_sub(1))
-                        .safe_sub(management_fee_payment)?;
+                        .safe_div(total_fee)?
+                        .min(total_fee_payment);
+                    let protocol_fee_payment =
+                        total_fee_payment.safe_sub(management_fee_payment)?;
 
                     let new_total_shares_factor: u128 = depositor_equity
                         .safe_mul(PERCENTAGE_PRECISION_I128)?
@@ -292,7 +342,7 @@ impl Vault {
 
                     // in case total_shares is pushed to level that warrants a rebase
                     self.apply_rebase(vault_protocol, vault_equity)?;
-                } else if self.management_fee == 0 && vp.protocol_fee != 0 && depositor_equity > 0 {
+                } else if self.management_fee == 0 && vp_protocol_fee != 0 && depositor_equity > 0 {
                     let since_last = now.safe_sub(self.last_fee_update_ts)?;
 
                     // default behavior in legacy [`Vault`], manager taxes equity - 1 if tax is >= equity
@@ -332,8 +382,20 @@ impl Vault {
 
                     // in case total_shares is pushed to level that warrants a rebase
                     self.apply_rebase(vault_protocol, vault_equity)?;
-                } else if self.management_fee != 0 && vp.protocol_fee == 0 && depositor_equity > 0 {
-                    handle_no_protocol_fee(self)?;
+                } else if self.management_fee != 0 && vp_protocol_fee == 0 && depositor_equity > 0 {
+                    // #96: a protocol vault with a management fee but zero *current* protocol fee
+                    // may still hold protocol shares (from profit share or a prior protocol fee).
+                    // Pass the real vault_protocol into the rebase so those protocol shares scale
+                    // by the same divisor as total/user shares, instead of the old &mut None path
+                    // that left them in a stale denomination.
+                    let (mgmt_fee_shares, skip) = self.apply_management_fee_only(
+                        vault_protocol,
+                        depositor_equity,
+                        vault_equity,
+                        now,
+                    )?;
+                    management_fee_shares = mgmt_fee_shares;
+                    skip_ts_update = skip;
                 }
             }
         }
@@ -357,6 +419,56 @@ impl Vault {
             protocol_fee_payment: protocol_fee_payment.cast::<i64>()?,
             protocol_fee_shares: protocol_fee_shares.cast::<i64>()?,
         })
+    }
+
+    /// Accrue a management-fee-only interval (no protocol fee). Returns
+    /// `(management_fee_shares, skip_ts_update)`. The `vault_protocol` argument is passed through
+    /// to [`Vault::apply_rebase`] so that, when the fee inflates total_shares enough to warrant a
+    /// rebase, any protocol shares scale by the same divisor (OtterSec #96). Callers that are
+    /// legacy (non-protocol) vaults pass `&mut None`.
+    fn apply_management_fee_only(
+        &mut self,
+        vault_protocol: &mut Option<RefMut<VaultProtocol>>,
+        depositor_equity: i128,
+        vault_equity: u64,
+        now: i64,
+    ) -> Result<(i128, bool)> {
+        let since_last = now.safe_sub(self.last_fee_update_ts)?;
+
+        // default behavior in legacy [`Vault`], manager taxes equity - 1 if tax is >= equity
+        let management_fee_payment = depositor_equity
+            .safe_mul(self.management_fee.cast()?)?
+            .safe_div(PERCENTAGE_PRECISION_I128)?
+            .safe_mul(since_last.cast()?)?
+            .safe_div(ONE_YEAR.cast()?)?
+            .min(depositor_equity.saturating_sub(1));
+
+        let new_total_shares_factor: u128 = depositor_equity
+            .safe_mul(PERCENTAGE_PRECISION_I128)?
+            .safe_div(depositor_equity.safe_sub(management_fee_payment)?)?
+            .cast()?;
+
+        let new_total_shares = self
+            .total_shares
+            .safe_mul(new_total_shares_factor.cast()?)?
+            .safe_div(PERCENTAGE_PRECISION)?
+            .max(self.user_shares);
+
+        // time delta wasn't large enough to pay any management fee
+        let skip_ts_update = management_fee_payment == 0 || self.total_shares == new_total_shares;
+
+        let management_fee_shares = new_total_shares
+            .cast::<i128>()?
+            .safe_sub(self.total_shares.cast()?)?;
+        self.total_shares = new_total_shares;
+        self.manager_total_fee = self
+            .manager_total_fee
+            .saturating_add(management_fee_payment.cast()?);
+
+        // in case total_shares is pushed to a level that warrants a rebase
+        self.apply_rebase(vault_protocol, vault_equity)?;
+
+        Ok((management_fee_shares, skip_ts_update))
     }
 
     pub fn get_manager_shares(
@@ -404,6 +516,14 @@ impl Vault {
                     vp.protocol_profit_and_fee_shares = vp
                         .protocol_profit_and_fee_shares
                         .safe_div(_rebase_divisor)?;
+
+                    // #99: the outstanding protocol withdraw request is stored in
+                    // last_protocol_withdraw_request.shares; it must scale by the same divisor,
+                    // otherwise a stale request exceeds the rebased supply and permanently locks
+                    // the protocol's cancel/execute/replace paths.
+                    if vp.last_protocol_withdraw_request.shares != 0 {
+                        vp.last_protocol_withdraw_request.rebase(_rebase_divisor)?;
+                    }
                 }
 
                 if self.last_manager_withdraw_request.shares != 0 {

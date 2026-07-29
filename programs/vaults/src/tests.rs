@@ -2226,6 +2226,322 @@ mod vault_v1_fcn {
         let user_equity = vault_equity_final * vault.user_shares as u64 / vault.total_shares as u64;
         assert_eq!(user_equity, 119_574_225); // 109.35 + (121.3785 - 109.35) * 0.85 = 119.574225
     }
+
+    // OtterSec #96: management fee active, protocol fee == 0, but protocol shares already exist
+    // (e.g. from profit share or a prior protocol fee). A fee-induced rebase must scale the
+    // protocol shares by the same divisor as total/user shares; otherwise get_manager_shares
+    // mis-scales (or underflows) the manager-vs-protocol split.
+    #[test]
+    fn test_apply_fee_rebases_protocol_shares_with_zero_protocol_fee() {
+        let now = 0;
+        let mut vault = Vault::default();
+        let vp = RefCell::new(VaultProtocol::default());
+        vault.management_fee = 990_000; // 99%, large enough to force a rebase over a year
+        vault.last_fee_update_ts = 0;
+
+        // user 100M, manager 90M, protocol 10M (protocol_fee stays 0)
+        vault.user_shares = 100_000_000;
+        vault.total_shares = 200_000_000;
+        vp.borrow_mut().protocol_profit_and_fee_shares = 10_000_000;
+
+        let vault_equity: u64 = 200 * QUOTE_PRECISION_U64;
+        let protocol_shares_before = vp.borrow().protocol_profit_and_fee_shares;
+        let shares_base_before = vault.shares_base;
+
+        vault
+            .apply_fee(
+                &mut Some(vp.borrow_mut()),
+                &mut None,
+                vault_equity,
+                now + ONE_YEAR as i64,
+            )
+            .unwrap();
+
+        let expo_diff = vault.shares_base - shares_base_before;
+        assert!(expo_diff > 0, "expected a fee-induced rebase");
+        let divisor = 10u128.pow(expo_diff);
+
+        assert_eq!(
+            vp.borrow().protocol_profit_and_fee_shares,
+            protocol_shares_before / divisor,
+            "protocol shares must scale by the same rebase divisor"
+        );
+        // must not underflow (the bug froze the fee path here for some distributions)
+        assert!(vault.get_manager_shares(&mut Some(vp.borrow_mut())).is_ok());
+        assert!(
+            vault.total_shares
+                >= vault
+                    .user_shares
+                    .saturating_add(vp.borrow().protocol_profit_and_fee_shares)
+        );
+    }
+
+    // OtterSec #99: Vault::apply_rebase must also divide VaultProtocol.last_protocol_withdraw_request.shares.
+    #[test]
+    fn test_apply_rebase_rebases_protocol_withdraw_request() {
+        let mut vault = Vault::default();
+        let vp = RefCell::new(VaultProtocol::default());
+        vault.user_shares = 100_000_000;
+        vault.total_shares = 200_000_000;
+        vp.borrow_mut().protocol_profit_and_fee_shares = 50_000_000;
+        vp.borrow_mut().last_protocol_withdraw_request.shares = 10_000_000;
+        vp.borrow_mut().last_protocol_withdraw_request.value = 5_000_000;
+
+        // equity far below total_shares to force a rebase
+        let vault_equity: u64 = 200_000;
+        let shares_base_before = vault.shares_base;
+        vault
+            .apply_rebase(&mut Some(vp.borrow_mut()), vault_equity)
+            .unwrap();
+        let expo_diff = vault.shares_base - shares_base_before;
+        assert!(expo_diff > 0, "expected a rebase");
+        let divisor = 10u128.pow(expo_diff);
+
+        assert_eq!(
+            vp.borrow().last_protocol_withdraw_request.shares,
+            10_000_000 / divisor,
+            "protocol withdraw request shares must be rebased"
+        );
+        assert_eq!(
+            vp.borrow().protocol_profit_and_fee_shares,
+            50_000_000 / divisor
+        );
+    }
+
+    // OtterSec #102: combined manager+protocol fee over a large idle interval must not abort with
+    // a u128 cast on a negative denominator; public actions must stay available.
+    #[test]
+    fn test_combined_fee_multi_year_does_not_freeze() {
+        let now = 0;
+        let mut vault = Vault::default();
+        let vp = RefCell::new(VaultProtocol::default());
+        vault.management_fee = 700_000; // 70%
+        vp.borrow_mut().protocol_fee = 200_000; // 20%
+        vault.last_fee_update_ts = 0;
+
+        let vd =
+            &mut VaultDepositor::new(Pubkey::default(), Pubkey::default(), Pubkey::default(), now);
+        let vault_equity: u64 = 100 * QUOTE_PRECISION_U64;
+        let amount: u64 = 100 * QUOTE_PRECISION_U64;
+        vd.deposit(
+            amount,
+            vault_equity,
+            &mut vault,
+            &mut Some(vp.borrow_mut()),
+            &mut None,
+            now,
+            0,
+        )
+        .unwrap();
+        let vault_equity = 200 * QUOTE_PRECISION_U64;
+
+        // ~2 years: the manager slice alone (70% * 2 ~ 140%) exceeds equity -> previously overflowed
+        let res = vault.apply_fee(
+            &mut Some(vp.borrow_mut()),
+            &mut None,
+            vault_equity,
+            now + 2 * ONE_YEAR as i64,
+        );
+        assert!(
+            res.is_ok(),
+            "combined fee accrual should not freeze: {:?}",
+            res.err()
+        );
+        let user_amount =
+            depositor_shares_to_vault_amount(vault.user_shares, vault.total_shares, vault_equity)
+                .unwrap();
+        assert!(
+            user_amount >= 1,
+            "at least 1 unit of depositor equity remains"
+        );
+        assert!(vault.get_manager_shares(&mut Some(vp.borrow_mut())).is_ok());
+    }
+
+    // OtterSec #98: a matured fee update stamps last_fee_update_ts to the activation boundary so
+    // the new rate never prices the pre-activation interval.
+    #[test]
+    fn test_fee_update_stamps_activation_boundary() {
+        use crate::state::{FeeUpdate, FeeUpdateStatus};
+        let mut vault = Vault::default();
+        vault.management_fee = 0;
+        vault.last_fee_update_ts = 0;
+        vault.fee_update_status = FeeUpdateStatus::PendingFeeUpdate as u8;
+
+        let mut fee_update = FeeUpdate::default();
+        let activation_ts = 1_000_000;
+        fee_update.incoming_update_ts = activation_ts;
+        fee_update.incoming_management_fee = 500_000; // 50%
+        fee_update.incoming_profit_share = 0;
+        fee_update.incoming_hurdle_rate = 0;
+
+        let now = activation_ts + 100; // matured
+        fee_update.try_update_vault_fees(now, &mut vault).unwrap();
+
+        assert_eq!(vault.management_fee, 500_000);
+        assert_eq!(
+            vault.last_fee_update_ts, activation_ts,
+            "last_fee_update_ts must stamp the activation boundary, not stay before it"
+        );
+        assert_eq!(vault.fee_update_status, FeeUpdateStatus::None as u8);
+        assert!(!fee_update.is_pending());
+    }
+
+    // OtterSec #97: shared bounds enforced on the fee-update path (and at maturity).
+    #[test]
+    fn test_validate_fee_policy_bounds() {
+        use crate::state::vault::validate_fee_policy;
+        // individual bounds
+        assert!(validate_fee_policy(1_000_000, 0, 0, false, 0, 0).is_err()); // mgmt == 100%
+        assert!(validate_fee_policy(0, 1_000_000, 0, false, 0, 0).is_err()); // profit == 100%
+        assert!(validate_fee_policy(999_999, 999_999, 500_000, false, 0, 0).is_ok());
+        assert!(validate_fee_policy(i64::MAX, 0, 0, false, 0, 0).is_err());
+        // protocol-vault bounds
+        assert!(validate_fee_policy(0, 0, 1, true, 0, 0).is_err()); // nonzero hurdle
+        assert!(validate_fee_policy(600_000, 0, 0, true, 400_000, 0).is_err()); // fee sum == 100%
+        assert!(validate_fee_policy(0, 600_000, 0, true, 0, 400_000).is_err()); // profit sum == 100%
+        assert!(validate_fee_policy(300_000, 300_000, 0, true, 200_000, 400_000).is_ok());
+    }
+
+    // OtterSec #97: maturity application rejects an out-of-bounds queued policy (defense-in-depth),
+    // leaving the old rate in place (recoverable via manager_cancel_fee_update).
+    #[test]
+    fn test_fee_update_maturity_rejects_out_of_bounds() {
+        use crate::state::{FeeUpdate, FeeUpdateStatus};
+        let mut vault = Vault::default();
+        vault.fee_update_status = FeeUpdateStatus::PendingFeeUpdate as u8;
+        let mut fee_update = FeeUpdate::default();
+        fee_update.incoming_update_ts = 1000;
+        fee_update.incoming_management_fee = i64::MAX; // out of bounds
+
+        let res = fee_update.try_update_vault_fees(2000, &mut vault);
+        assert!(res.is_err());
+        assert_eq!(vault.management_fee, 0, "bad rate must not be applied");
+    }
+
+    // OtterSec #107: a lifecycle action where apply_fee mints fee shares and triggers a vault
+    // rebase must re-sync the depositor (and pending request) rather than abort with
+    // InvalidVaultRebase. Covers deposit -> request_withdraw -> withdraw.
+    #[test]
+    fn test_lifecycle_after_fee_induced_rebase() {
+        let now = 0;
+        let mut vault = Vault::default();
+        let vp = RefCell::new(VaultProtocol::default());
+        vault.management_fee = 990_000; // 99%, forces a fee-induced rebase over a year
+        vault.last_fee_update_ts = 0;
+        vault.redeem_period = 0;
+
+        let vd =
+            &mut VaultDepositor::new(Pubkey::default(), Pubkey::default(), Pubkey::default(), now);
+        let vault_equity: u64 = 100 * QUOTE_PRECISION_U64;
+        let amount: u64 = 100 * QUOTE_PRECISION_U64;
+        vd.deposit(
+            amount,
+            vault_equity,
+            &mut vault,
+            &mut Some(vp.borrow_mut()),
+            &mut None,
+            now,
+            0,
+        )
+        .unwrap();
+        assert_eq!(vault.shares_base, 0);
+
+        let vault_equity = 200 * QUOTE_PRECISION_U64;
+        let t1 = now + ONE_YEAR as i64;
+
+        // request_withdraw: apply_fee mints ~99% fee shares -> vault rebase
+        let res = vd.request_withdraw(
+            velocity::math::constants::PERCENTAGE_PRECISION_U64,
+            WithdrawUnit::SharesPercent,
+            vault_equity,
+            &mut vault,
+            &mut Some(vp.borrow_mut()),
+            &mut None,
+            t1,
+            0,
+        );
+        assert!(
+            res.is_ok(),
+            "request_withdraw froze after fee rebase: {:?}",
+            res.err()
+        );
+        assert!(vault.shares_base > 0, "expected a fee-induced rebase");
+        assert_eq!(vd.vault_shares_base, vault.shares_base);
+
+        // withdraw (redeem period 0): depositor base stays synced
+        let res = vd.withdraw(
+            vault_equity,
+            &mut vault,
+            &mut Some(vp.borrow_mut()),
+            &mut None,
+            t1,
+            0,
+        );
+        assert!(
+            res.is_ok(),
+            "withdraw froze after fee rebase: {:?}",
+            res.err()
+        );
+        assert_eq!(vd.vault_shares_base, vault.shares_base);
+    }
+
+    // OtterSec #107: cancel_withdraw_request must also survive a fee-induced rebase.
+    #[test]
+    fn test_cancel_withdraw_after_fee_induced_rebase() {
+        let now = 0;
+        let mut vault = Vault::default();
+        let vp = RefCell::new(VaultProtocol::default());
+        vault.management_fee = 990_000;
+        vault.last_fee_update_ts = 0;
+        vault.redeem_period = 1_000_000_000; // long, so we cancel rather than withdraw
+
+        let vd =
+            &mut VaultDepositor::new(Pubkey::default(), Pubkey::default(), Pubkey::default(), now);
+        let vault_equity: u64 = 100 * QUOTE_PRECISION_U64;
+        let amount: u64 = 100 * QUOTE_PRECISION_U64;
+        vd.deposit(
+            amount,
+            vault_equity,
+            &mut vault,
+            &mut Some(vp.borrow_mut()),
+            &mut None,
+            now,
+            0,
+        )
+        .unwrap();
+
+        let vault_equity = 200 * QUOTE_PRECISION_U64;
+        // request now (no elapsed time -> no fee/rebase)
+        vd.request_withdraw(
+            velocity::math::constants::PERCENTAGE_PRECISION_U64,
+            WithdrawUnit::SharesPercent,
+            vault_equity,
+            &mut vault,
+            &mut Some(vp.borrow_mut()),
+            &mut None,
+            now,
+            0,
+        )
+        .unwrap();
+        assert_eq!(vault.shares_base, 0);
+
+        // cancel a year later: apply_fee induces a rebase during cancel
+        let res = vd.cancel_withdraw_request(
+            vault_equity,
+            &mut vault,
+            &mut Some(vp.borrow_mut()),
+            &mut None,
+            now + ONE_YEAR as i64,
+            0,
+        );
+        assert!(
+            res.is_ok(),
+            "cancel froze after fee rebase: {:?}",
+            res.err()
+        );
+        assert!(vault.shares_base > 0);
+        assert_eq!(vd.vault_shares_base, vault.shares_base);
+    }
 }
 
 #[cfg(test)]

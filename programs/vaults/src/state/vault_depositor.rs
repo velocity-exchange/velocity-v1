@@ -195,6 +195,43 @@ impl VaultDepositor {
         }
     }
 
+    /// Permissionless lazy rebase used by the signerless `apply_rebase` instruction.
+    ///
+    /// #106: the base rebase floors `vault_shares` (and a pending request's shares) by integer
+    /// division. A third party could commit the lazy rebase on a small depositor whose shares or
+    /// pending-request shares floor to zero while the request's `value` stays nonzero, freezing the
+    /// position (withdraw needs n_shares > 0; cancel clears value without restoring shares). To
+    /// prevent a third party from destroying a claim, reject the public rebase when it would floor
+    /// an active depositor's shares or a pending request's shares to zero. The depositor can still
+    /// rebase via their own signed lifecycle actions.
+    pub fn apply_rebase_public(
+        &mut self,
+        vault: &mut Vault,
+        vault_protocol: &mut Option<RefMut<VaultProtocol>>,
+        vault_equity: u64,
+    ) -> Result<Option<u128>> {
+        let vault_shares_before = self.unchecked_vault_shares();
+        let request_shares_before = self.last_withdraw_request.shares;
+        let request_value_before = self.last_withdraw_request.value;
+
+        let rebase_divisor = self.apply_rebase(vault, vault_protocol, vault_equity)?;
+
+        validate!(
+            !(vault_shares_before > 0 && self.unchecked_vault_shares() == 0),
+            ErrorCode::InvalidVaultRebase,
+            "public rebase would floor depositor shares to zero; depositor must rebase via a signed action"
+        )?;
+        validate!(
+            !(request_value_before > 0
+                && request_shares_before > 0
+                && self.last_withdraw_request.shares == 0),
+            ErrorCode::InvalidVaultRebase,
+            "public rebase would floor a pending withdraw request's shares to zero while value remains"
+        )?;
+
+        Ok(rebase_divisor)
+    }
+
     pub fn calculate_profit_share_and_update(
         &mut self,
         total_amount: u64,
@@ -283,6 +320,11 @@ impl VaultDepositor {
             protocol_fee_payment,
             protocol_fee_shares,
         } = vault.apply_fee(vault_protocol, fee_update, vault_equity, now)?;
+        // #107: apply_fee may mint fee shares that push total_shares above equity and trigger a
+        // second vault rebase, bumping vault.shares_base without re-syncing this depositor. Re-run
+        // the depositor rebase so the base-checked ops below (apply_profit_share, increase_vault_shares)
+        // don't abort with InvalidVaultRebase.
+        self.apply_rebase(vault, vault_protocol, vault_equity)?;
         let (manager_profit_share, protocol_profit_share) =
             self.apply_profit_share(vault_equity, vault, vault_protocol, now)?;
 
@@ -382,13 +424,19 @@ impl VaultDepositor {
         now: i64,
         deposit_oracle_price: i64,
     ) -> Result<()> {
-        let rebase_divisor = self.apply_rebase(vault, vault_protocol, vault_equity)?;
+        let mut rebase_divisor = self.apply_rebase(vault, vault_protocol, vault_equity)?;
         let VaultFee {
             management_fee_payment,
             management_fee_shares,
             protocol_fee_payment,
             protocol_fee_shares,
         } = vault.apply_fee(vault_protocol, fee_update, vault_equity, now)?;
+        // #107: apply_fee may induce a further vault rebase. Re-sync this depositor (and its
+        // pending request), and fold any extra divisor into rebase_divisor so a Shares-unit
+        // request still converts the caller's original-base share count correctly.
+        if let Some(extra) = self.apply_rebase(vault, vault_protocol, vault_equity)? {
+            rebase_divisor = Some(rebase_divisor.unwrap_or(1).safe_mul(extra)?);
+        }
         let (manager_profit_share, protocol_profit_share) =
             self.apply_profit_share(vault_equity, vault, vault_protocol, now)?;
 
@@ -499,6 +547,9 @@ impl VaultDepositor {
             protocol_fee_payment,
             protocol_fee_shares,
         } = vault.apply_fee(vault_protocol, fee_update, vault_equity, now)?;
+        // #107: re-sync depositor (and its pending request) in case apply_fee bumped the vault
+        // base, so calculate_shares_lost/decrease_vault_shares operate in the current base.
+        self.apply_rebase(vault, vault_protocol, vault_equity)?;
 
         let vault_shares_lost = self
             .last_withdraw_request
@@ -591,6 +642,18 @@ impl VaultDepositor {
 
         self.apply_rebase(vault, vault_protocol, vault_equity)?;
 
+        // #107: apply the fee before reading the request shares. apply_fee may mint fee shares
+        // and trigger a second vault rebase; re-sync the depositor (and its pending request) so
+        // n_shares below is read in the same base as vault.total_shares and the base-checked
+        // decrease_vault_shares does not abort with InvalidVaultRebase.
+        let VaultFee {
+            management_fee_payment,
+            management_fee_shares,
+            protocol_fee_payment,
+            protocol_fee_shares,
+        } = vault.apply_fee(vault_protocol, fee_update, vault_equity, now)?;
+        self.apply_rebase(vault, vault_protocol, vault_equity)?;
+
         let vault_shares_before: u128 = self.checked_vault_shares(vault)?;
         let total_vault_shares_before = vault.total_shares;
         let user_vault_shares_before = vault.user_shares;
@@ -608,14 +671,6 @@ impl VaultDepositor {
             vault_shares_before >= n_shares,
             ErrorCode::InsufficientVaultShares
         )?;
-
-        let VaultFee {
-            management_fee_payment,
-            management_fee_shares,
-            protocol_fee_payment,
-            protocol_fee_shares,
-        } = vault.apply_fee(vault_protocol, fee_update, vault_equity, now)?;
-        msg!("after management_fee vault_shares={}", self.vault_shares);
 
         let amount: u64 =
             depositor_shares_to_vault_amount(n_shares, vault.total_shares, vault_equity)?;
@@ -1722,5 +1777,179 @@ mod vault_v1_tests {
             "cum profit share amount: {}",
             vd.cumulative_profit_share_amount
         );
+    }
+
+    // OtterSec #104: at a high share price a positive profit-share fee can floor to zero shares.
+    // The fee must NOT be crystallized in that case — neither by silently moving zero shares (fee
+    // recorded paid, nothing transferred) nor by confiscating a whole share worth far more than the
+    // fee owed. It must be deferred: transfer nothing, leave the high-water mark untouched, and
+    // charge the fee later once accrued profit makes it worth at least one share.
+    #[test]
+    fn test_apply_profit_share_defers_sub_share_fee() {
+        use crate::state::VaultDepositorBase;
+        let now = 1000;
+
+        // --- sub-share fee: must be deferred (no share taken, HWM not advanced) ---
+        let mut vault = Vault::default();
+        let mut vp = None;
+        vault.profit_share = 100_000; // 10%
+        vault.total_shares = 100; // high share price: few shares, huge equity
+        vault.user_shares = 100;
+
+        let vd =
+            &mut VaultDepositor::new(Pubkey::default(), Pubkey::default(), Pubkey::default(), now);
+        vd.set_vault_shares(100);
+        vd.net_deposits = 999_999_900; // profit of 100 tokens -> fee of 10 tokens
+
+        let vault_equity: u64 = 1_000_000_000; // ~1e7 per share; 10-token fee floors to 0 shares
+        let shares_before = vd.get_vault_shares();
+        let (mgr, proto) = vd
+            .apply_profit_share(vault_equity, &mut vault, &mut vp, now)
+            .unwrap();
+
+        assert_eq!(
+            shares_before,
+            vd.get_vault_shares(),
+            "a sub-share profit-share fee must not confiscate a whole share"
+        );
+        assert_eq!((mgr, proto), (0, 0), "deferred fee reports zero charged");
+        assert_eq!(
+            vd.profit_share_fee_paid, 0,
+            "deferred fee must not be recorded as paid"
+        );
+        assert_eq!(
+            vd.cumulative_profit_share_amount, 0,
+            "deferred fee must not advance the high-water mark"
+        );
+        assert_eq!(vault.user_shares, 100, "vault.user_shares unchanged");
+
+        // --- fee worth >= 1 share: charged normally ---
+        let mut vault2 = Vault::default();
+        let mut vp2 = None;
+        vault2.profit_share = 100_000; // 10%
+        vault2.total_shares = 100;
+        vault2.user_shares = 100;
+
+        let vd2 =
+            &mut VaultDepositor::new(Pubkey::default(), Pubkey::default(), Pubkey::default(), now);
+        vd2.set_vault_shares(100);
+        vd2.net_deposits = 0; // profit of 1e9 -> fee of 1e8 tokens = 10 shares
+
+        let shares_before2 = vd2.get_vault_shares();
+        let (mgr2, _) = vd2
+            .apply_profit_share(vault_equity, &mut vault2, &mut vp2, now)
+            .unwrap();
+        assert_eq!(
+            shares_before2 - vd2.get_vault_shares(),
+            10,
+            "a fee worth >= 1 share transfers the floored share count"
+        );
+        assert!(mgr2 > 0 && vd2.profit_share_fee_paid > 0);
+    }
+
+    // OtterSec #106: the signerless apply_rebase (apply_rebase_public) must not floor an active
+    // depositor's shares to zero.
+    #[test]
+    fn test_apply_rebase_public_rejects_flooring_to_zero() {
+        use crate::state::VaultDepositorBase;
+        let now = 1000;
+
+        // tiny share balance: floored to zero -> reject
+        {
+            let mut vault = Vault::default();
+            let mut vp = None;
+            vault.total_shares = 200_000_000;
+            vault.user_shares = 200_000_000;
+            let vd = &mut VaultDepositor::new(
+                Pubkey::default(),
+                Pubkey::default(),
+                Pubkey::default(),
+                now,
+            );
+            vd.set_vault_shares(10);
+            let vault_equity: u64 = 2; // divisor 1e7 -> 10 shares floor to 0
+            let res = vd.apply_rebase_public(&mut vault, &mut vp, vault_equity);
+            assert!(
+                res.is_err(),
+                "public rebase must reject flooring a nonzero depositor to zero"
+            );
+        }
+
+        // large enough balance: fine
+        {
+            let mut vault = Vault::default();
+            let mut vp = None;
+            vault.total_shares = 200_000_000;
+            vault.user_shares = 200_000_000;
+            let vd = &mut VaultDepositor::new(
+                Pubkey::default(),
+                Pubkey::default(),
+                Pubkey::default(),
+                now,
+            );
+            vd.set_vault_shares(100_000_000);
+            let vault_equity: u64 = 2; // divisor 1e7 -> 1e8 shares -> 10 (nonzero)
+            let res = vd.apply_rebase_public(&mut vault, &mut vp, vault_equity);
+            assert!(res.is_ok(), "public rebase should succeed: {:?}", res.err());
+            assert_eq!(vd.get_vault_shares_base(), vault.shares_base);
+        }
+    }
+
+    // OtterSec #107: transfer_shares must survive a fee-induced vault rebase.
+    #[test]
+    fn test_transfer_shares_after_fee_induced_rebase() {
+        use crate::state::VaultDepositorBase;
+        let now = 0;
+        let mut vault = Vault::default();
+        let vp = RefCell::new(VaultProtocol::default());
+        vault.management_fee = 990_000; // 99%
+        vault.last_fee_update_ts = 0;
+
+        let vd1 = &mut VaultDepositor::new(
+            Pubkey::default(),
+            Pubkey::new_unique(),
+            Pubkey::new_unique(),
+            now,
+        );
+        let vd2 = &mut VaultDepositor::new(
+            Pubkey::default(),
+            Pubkey::new_unique(),
+            Pubkey::new_unique(),
+            now,
+        );
+
+        let vault_equity: u64 = 100 * QUOTE_PRECISION_U64;
+        let amount: u64 = 100 * QUOTE_PRECISION_U64;
+        vd1.deposit(
+            amount,
+            vault_equity,
+            &mut vault,
+            &mut Some(vp.borrow_mut()),
+            &mut None,
+            now,
+            0,
+        )
+        .unwrap();
+
+        let vault_equity = 200 * QUOTE_PRECISION_U64;
+        let res = vd1.transfer_shares(
+            vd2,
+            &mut vault,
+            &mut Some(vp.borrow_mut()),
+            &mut None,
+            PERCENTAGE_PRECISION_U64 / 2, // 50%
+            WithdrawUnit::SharesPercent,
+            vault_equity,
+            now + 31_536_000, // ~1 year
+            0,
+        );
+        assert!(
+            res.is_ok(),
+            "transfer_shares froze after fee rebase: {:?}",
+            res.err()
+        );
+        assert!(vault.shares_base > 0);
+        assert_eq!(vd1.get_vault_shares_base(), vault.shares_base);
+        assert_eq!(vd2.get_vault_shares_base(), vault.shares_base);
     }
 }

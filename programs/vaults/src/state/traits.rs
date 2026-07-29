@@ -149,6 +149,12 @@ pub trait VaultDepositorBase {
             vault_equity,
         )?;
 
+        // #104: calculate_profit_share_and_update advances the depositor's high-water mark and
+        // profit_share_fee_paid by the computed fee. Snapshot both first so we can undo that
+        // advance if the fee is too small to move a whole share (see the defer branch below).
+        let cumulative_profit_share_before = self.get_cumulative_profit_share_amount();
+        let profit_share_fee_paid_before = self.get_profit_share_fee_paid();
+
         let (manager_profit_share, protocol_profit_share) =
             self.calculate_profit_share_and_update(total_amount, vault, vault_protocol)?;
         let manager_profit_share: u64 = manager_profit_share.cast()?;
@@ -159,6 +165,20 @@ pub trait VaultDepositorBase {
 
         let profit_share_shares: u128 =
             vault_amount_to_depositor_shares(profit_share, vault.total_shares, vault_equity)?;
+
+        // #104: shares are indivisible. A fee worth less than one share must not be crystallized:
+        // moving zero shares would record the fee as paid while nothing transfers, and rounding
+        // up to one whole share would confiscate value far exceeding the fee owed — at a high
+        // share price (e.g. after a rebase-then-recovery cycle) a manager-cranked apply_profit_share
+        // could take a full share of near-unbounded value per small gain, capturing ~100% of a
+        // depositor's profit instead of the contracted rate. Defer instead: transfer nothing and
+        // roll back the high-water mark / fee-paid advance, so this profit is charged later once it
+        // has grown enough that the fee is worth at least one share.
+        if profit_share > 0 && profit_share_shares == 0 {
+            self.set_cumulative_profit_share_amount(cumulative_profit_share_before);
+            self.set_profit_share_fee_paid(profit_share_fee_paid_before);
+            return Ok((0, 0));
+        }
 
         self.decrease_vault_shares(profit_share_shares, vault)?;
 
@@ -257,7 +277,7 @@ pub trait VaultDepositorBase {
         now: i64,
         deposit_oracle_price: i64,
     ) -> Result<(u128, Option<RefMut<'a, VaultProtocol>>)> {
-        let from_rebase_divisor = self.apply_rebase(vault, vault_protocol, vault_equity)?;
+        let mut from_rebase_divisor = self.apply_rebase(vault, vault_protocol, vault_equity)?;
         let to_rebase_divisor = to.apply_rebase(vault, vault_protocol, vault_equity)?;
 
         validate!(
@@ -272,6 +292,21 @@ pub trait VaultDepositorBase {
             protocol_fee_payment,
             protocol_fee_shares,
         } = vault.apply_fee(vault_protocol, fee_update, vault_equity, now)?;
+
+        // #107: apply_fee may induce a further vault rebase. Re-sync both depositors before the
+        // base-checked apply_profit_share / share-transfer ops, and fold any extra divisor into
+        // from_rebase_divisor so a Shares-unit transfer converts the caller's original-base share
+        // count correctly.
+        let from_extra = self.apply_rebase(vault, vault_protocol, vault_equity)?;
+        let to_extra = to.apply_rebase(vault, vault_protocol, vault_equity)?;
+        validate!(
+            from_extra == to_extra,
+            ErrorCode::InvalidVaultRebase,
+            "from and to vault depositors rebase divisors mismatch after fee"
+        )?;
+        if let Some(extra) = from_extra {
+            from_rebase_divisor = Some(from_rebase_divisor.unwrap_or(1).safe_mul(extra)?);
+        }
 
         let (from_manager_profit_share, from_protocol_profit_share) =
             self.apply_profit_share(vault_equity, vault, vault_protocol)?;

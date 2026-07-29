@@ -61,7 +61,6 @@ pub use program::math::margin::MarginRequirementType;
 pub use program::math::oracle::OracleValidity;
 pub use program::state::events::OrderActionExplanation;
 pub use program::state::fill_mode::FillMode;
-pub use program::state::fulfillment::PerpFulfillmentMethod;
 pub use program::state::margin_calculation::{
     MarginCalculationMode, MarginContext, MarketIdentifier,
 };

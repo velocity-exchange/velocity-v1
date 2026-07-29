@@ -31,8 +31,7 @@ use crate::load_mut;
 use crate::math::auction::{calculate_auction_params_for_trigger_order, calculate_auction_prices};
 use crate::math::casting::Cast;
 use crate::math::constants::{BASE_PRECISION_U64, MARGIN_PRECISION};
-use crate::math::fees::{determine_user_fee_tier, FillFees};
-use crate::math::fulfillment::determine_perp_fulfillment_methods;
+use crate::math::fees::FillFees;
 use crate::math::liquidation::validate_user_not_being_liquidated;
 use crate::math::matching::{
     are_orders_same_market_but_different_sides, calculate_filler_multiplier_for_matched_orders,
@@ -48,7 +47,6 @@ use crate::print_error;
 use crate::state::events::{emit_stack, get_order_action_record, OrderActionRecord, OrderRecord};
 use crate::state::events::{OrderAction, OrderActionExplanation};
 use crate::state::fill_mode::FillMode;
-use crate::state::fulfillment::PerpFulfillmentMethod;
 use crate::state::margin_calculation::{MarginContext, MarginTypeConfig};
 use crate::state::market_status::MarketStatus;
 use crate::state::oracle::OraclePriceData;
@@ -59,9 +57,7 @@ use crate::state::order_params::{
 use crate::state::paused_operations::PerpOperation;
 use crate::state::perp_market::PerpMarket;
 use crate::state::perp_market_map::PerpMarketMap;
-use crate::state::quoter::{
-    DlobOrderQuoter, FillFeePolicy, QuoteContext, Quoter, QuoterCommit, QuoterFill,
-};
+use crate::state::quoter::{DlobOrderQuoter, QuoteContext, QuoterFill};
 use crate::state::spot_market::{SpotBalanceType, SpotMarket};
 use crate::state::spot_market_map::SpotMarketMap;
 use crate::state::state::FeeStructure;
@@ -82,7 +78,7 @@ use crate::vlp::amm::AmmQuoter;
 mod tests;
 
 #[cfg(test)]
-mod amm_jit_tests;
+mod router_pass_tests;
 
 /// Outcome of a single [`place_perp_order`] call.
 ///
@@ -1056,15 +1052,13 @@ pub fn fill_perp_order(
         jit_maker_order_id,
         clock,
         fill_mode,
-        Some(&mut router_inputs),
+        &mut router_inputs,
         rev_share_escrow,
     )
 }
 
-/// [`fill_perp_order`] with the router-mode selector: `Some(inputs)` runs the
-/// single-pass router fulfillment over the vAMM, the passed DLOB makers, and
-/// the external books in `inputs` (executed via `inputs.executor`, the CPI
-/// leg the entrypoint supplies); `None` runs the legacy method loop.
+/// [`fill_perp_order`] taking the caller's external quoter books explicitly.
+/// The fill routes across the vAMM, the passed DLOB makers, and those books.
 #[allow(clippy::too_many_arguments)]
 pub fn fill_perp_order_with_router(
     order_id: u32,
@@ -1081,7 +1075,7 @@ pub fn fill_perp_order_with_router(
     jit_maker_order_id: Option<u32>,
     clock: &Clock,
     fill_mode: FillMode,
-    router: Option<&mut crate::math::router::RouterFillInputs>,
+    router: &mut crate::math::router::RouterFillInputs,
     rev_share_escrow: &mut Option<&mut RevenueShareEscrowZeroCopyMut>,
 ) -> VelocityResult<(u64, u64)> {
     let now = clock.unix_timestamp;
@@ -1207,7 +1201,6 @@ pub fn fill_perp_order_with_router(
         )?;
     }
 
-    let reserve_price_before: u64;
     let safe_oracle_validity: OracleValidity;
     let oracle_price: i64;
     let oracle_twap_5min: i64;
@@ -1215,9 +1208,6 @@ pub fn fill_perp_order_with_router(
     let oracle_stale_for_margin: bool;
     let amm_not_globally_paused: bool = !state.amm_paused()?;
     let mut amm_is_available: bool = amm_not_globally_paused;
-    // AMM JIT in a DLOB match: honors the hard gates but, unlike
-    // `amm_is_available`, not the auction-timing gates (JIT feeds the auction).
-    let amm_jit_allowed: bool;
     {
         let market = &mut perp_market_map.get_ref_mut(&market_index)?;
         validation::perp_market::validate_perp_market(market)?;
@@ -1260,18 +1250,15 @@ pub fn fill_perp_order_with_router(
             user_can_skip_duration,
             &mm_oracle_price_data,
         )?;
-        amm_jit_allowed = amm_not_globally_paused
-            && market.amm_fill_gates_ok(safe_oracle_validity, &mm_oracle_price_data)?;
-
         oracle_stale_for_margin = mm_oracle_price_data.get_delay()
             > state
                 .oracle_guard_rails
                 .validity
                 .slots_before_stale_for_margin;
 
-        // No AMM mutation here — `fulfill_perp_order_step` constructs an
-        // `AmmQuoter` and calls `Quoter::setup` before quoting, which is
-        // the sole non-admin AMM-refresh entrypoint. PerpMarket-level
+        // No AMM mutation here — the fulfillment pass constructs an
+        // `AmmQuoter` and calls `refresh` before quoting, which is the sole
+        // non-admin AMM-refresh entrypoint. PerpMarket-level
         // oracle bookkeeping (TWAPs, reference-price-offset,
         // last_oracle_valid) is PerpMarket's own concern and stays here
         // (no AMM reacharound — PerpMarket reading its own AMM field).
@@ -1288,7 +1275,6 @@ pub fn fill_perp_order_with_router(
             slot,
         )?;
 
-        reserve_price_before = market.amm.reserve_price()?;
         oracle_price = mm_oracle_price_data.get_price();
         oracle_twap_5min = market
             .market_stats
@@ -1424,12 +1410,10 @@ pub fn fill_perp_order_with_router(
         oracle_map,
         &state.oracle_guard_rails.validity,
         &state.perp_fee_structure,
-        reserve_price_before,
         valid_oracle_price,
         now,
         slot,
         amm_is_available,
-        amm_jit_allowed,
         fill_mode,
         oracle_stale_for_margin,
         router,
@@ -1870,18 +1854,15 @@ fn fulfill_perp_order(
     oracle_map: &mut OracleMap,
     validity_guard_rails: &ValidityGuardRails,
     fee_structure: &FeeStructure,
-    reserve_price_before: u64,
     valid_oracle_price: Option<i64>,
     now: i64,
     slot: u64,
     amm_is_available: bool,
-    amm_jit_allowed: bool,
     fill_mode: FillMode,
     oracle_stale_for_margin: bool,
-    // `Some` selects the single-pass router fulfillment (the books may be
-    // empty — vAMM + passed DLOB makers only); `None` runs the legacy
-    // method-determination + step loop.
-    router: Option<&mut crate::math::router::RouterFillInputs>,
+    // The external quoter books and their execute leg. Empty books are
+    // normal — that is a fill against the vAMM and the passed DLOB makers.
+    router: &mut crate::math::router::RouterFillInputs,
     rev_share_escrow: &mut Option<&mut RevenueShareEscrowZeroCopyMut>,
 ) -> VelocityResult<(u64, u64)> {
     let market_index = user.orders[user_order_index].market_index;
@@ -1900,255 +1881,32 @@ fn fulfill_perp_order(
     let perp_market_oi_before = perp_market.get_open_interest();
     drop(perp_market);
 
-    if let Some(router) = router {
-        let mut maker_fills: BTreeMap<Pubkey, (i64, bool)> = BTreeMap::new();
-        let (base_asset_amount, quote_asset_amount) = fulfill_perp_order_router_pass(
-            user,
-            user_order_index,
-            user_key,
-            user_stats,
-            makers_and_referrer,
-            makers_and_referrer_stats,
-            maker_orders_info,
-            filler,
-            filler_key,
-            filler_stats,
-            spot_market_map,
-            perp_market_map,
-            oracle_map,
-            validity_guard_rails,
-            fee_structure,
-            limit_price,
-            now,
-            slot,
-            amm_is_available,
-            fill_mode.is_liquidation(),
-            router,
-            rev_share_escrow,
-            &mut maker_fills,
-        )?;
-        return fulfill_perp_order_post_checks(
-            user,
-            user_stats,
-            makers_and_referrer,
-            makers_and_referrer_stats,
-            spot_market_map,
-            perp_market_map,
-            oracle_map,
-            market_index,
-            base_asset_amount,
-            quote_asset_amount,
-            &maker_fills,
-            user_order_position_decreasing,
-            user_is_isolated_position,
-            perp_market_oi_before,
-            oracle_stale_for_margin,
-            fill_mode.is_liquidation(),
-        );
-    }
-
-    let fulfillment_methods = {
-        let mut market = perp_market_map.get_ref_mut(&market_index)?;
-        // Refresh the AMM's cached spread state (off the current reserves)
-        // before routing so fulfillment decisions quote off live spread —
-        // even on the very first fill of a slot before any keeper crank. The
-        // matcher's `setup` re-refreshes against the post-projection curve.
-        let oracle_pd = *oracle_map.get_price_data(&market.oracle_id())?;
-        let mm_oracle_pd =
-            market.get_mm_oracle_price_data(oracle_pd, slot, validity_guard_rails)?;
-        {
-            let crate::state::perp_market::PerpMarket {
-                amm, market_stats, ..
-            } = &mut *market;
-            crate::vlp::amm::math::spread::update_amm_quote_state(
-                amm,
-                market_stats,
-                &mm_oracle_pd,
-                reserve_price_before,
-                slot,
-            )?;
-        }
-        // Route off the PROJECTED curve, not the stored one. `Quoter::setup`
-        // snaps the AMM toward oracle only after a fulfillment method is
-        // selected, so routing off the stored reserve price lets a stale
-        // curve block the very fill that would refresh it: the taker fails
-        // to cross the stale quote, no method is selected, setup never runs.
-        // Project the refresh onto a scratch copy (same inputs and same
-        // slot-idempotency gate as `setup`, so the routing price equals the
-        // price the first step will quote) and leave the real AMM
-        // untouched: curve mutation stays in `Quoter::setup`. When the
-        // projection is a passthrough (oracle invalid for curve updates,
-        // zero intensity, or the affordability floor rejected it), the
-        // scratch copy equals the stored curve and routing behaves exactly
-        // as before.
-        let (projected_amm, projected_reserve_price) = if market.amm.last_update_slot >= slot {
-            // Already projected against this slot's oracle (a prior fill or
-            // keeper crank); `setup` skips re-projection in this case, so
-            // route off the stored curve for exact parity.
-            (market.amm, reserve_price_before)
-        } else {
-            let amm_refresh_validity =
-                crate::vlp::amm::refresh::compute_amm_refresh_validity_with_guard_rails(
-                    &market,
-                    &mm_oracle_pd,
-                    validity_guard_rails,
-                )?;
-            let projection = crate::vlp::amm::math::repeg::project_post_refresh_scalar(
-                &market.amm,
-                &crate::vlp::amm::math::repeg::ProjectionInputs::from_market(&market),
-                &mm_oracle_pd,
-                amm_refresh_validity,
-            )?;
-            let mut projected_amm = projection.projected_amm(&market.amm)?;
-            let projected_reserve_price = projected_amm.reserve_price()?;
-            crate::vlp::amm::math::spread::update_amm_quote_state(
-                &mut projected_amm,
-                &market.market_stats,
-                &mm_oracle_pd,
-                projected_reserve_price,
-                slot,
-            )?;
-            (projected_amm, projected_reserve_price)
-        };
-        determine_perp_fulfillment_methods(
-            &user.orders[user_order_index],
-            maker_orders_info,
-            &projected_amm,
-            projected_reserve_price,
-            limit_price,
-            amm_is_available,
-        )?
-    };
-
-    if fulfillment_methods.is_empty() {
-        msg!("no fulfillment methods found");
-        return Ok((0, 0));
-    }
-
-    let mut base_asset_amount = 0_u64;
-    let mut quote_asset_amount = 0_u64;
     let mut maker_fills: BTreeMap<Pubkey, (i64, bool)> = BTreeMap::new();
-    let maker_direction = user.orders[user_order_index].direction.opposite();
-    for fulfillment_method in fulfillment_methods.iter() {
-        if user.orders[user_order_index].status != OrderStatus::Open {
-            break;
-        }
-        let mut market = perp_market_map.get_ref_mut(&market_index)?;
-        let user_order_direction: PositionDirection = user.orders[user_order_index].direction;
-
-        let (fill_base_asset_amount, fill_quote_asset_amount) = match fulfillment_method {
-            PerpFulfillmentMethod::AMM(maker_price) => {
-                // maker may try to fill their own order (e.g. via jit)
-                // if amm takes fill, give maker filler reward
-                let (mut maker, mut maker_stats) =
-                    if makers_and_referrer.0.contains_key(filler_key) && filler.is_none() {
-                        let maker = makers_and_referrer.get_ref_mut(filler_key)?;
-                        if maker.authority == user.authority {
-                            (None, None)
-                        } else {
-                            let maker_stats =
-                                makers_and_referrer_stats.get_ref_mut(&maker.authority)?;
-                            (Some(maker), Some(maker_stats))
-                        }
-                    } else {
-                        (None, None)
-                    };
-
-                let (fill_base, fill_quote, _) = fulfill_perp_order_step(
-                    market.deref_mut(),
-                    user,
-                    user_stats,
-                    user_order_index,
-                    user_key,
-                    PerpFulfillmentMethod::AMM(*maker_price),
-                    &mut maker.as_deref_mut(),
-                    &mut maker_stats.as_deref_mut(),
-                    None,
-                    None,
-                    filler,
-                    filler_stats,
-                    filler_key,
-                    reserve_price_before,
-                    valid_oracle_price,
-                    limit_price,
-                    now,
-                    slot,
-                    validity_guard_rails,
-                    fee_structure,
-                    oracle_map,
-                    fill_mode.is_liquidation(),
-                    amm_jit_allowed,
-                    rev_share_escrow,
-                )?;
-                (fill_base, fill_quote)
-            }
-            PerpFulfillmentMethod::Match(maker_key, maker_order_index, maker_price) => {
-                let mut maker = makers_and_referrer.get_ref_mut(maker_key)?;
-                let maker_is_isolated_position =
-                    maker.get_perp_position(market_index)?.is_isolated();
-                let mut maker_stats = if maker.authority == user.authority {
-                    None
-                } else {
-                    Some(makers_and_referrer_stats.get_ref_mut(&maker.authority)?)
-                };
-
-                let mut maker_opt: Option<&mut User> = Some(&mut *maker);
-                let mut maker_stats_opt: Option<&mut UserStats> = maker_stats.as_deref_mut();
-                let (fill_base, fill_quote, maker_fill_base) = fulfill_perp_order_step(
-                    market.deref_mut(),
-                    user,
-                    user_stats,
-                    user_order_index,
-                    user_key,
-                    PerpFulfillmentMethod::Match(*maker_key, *maker_order_index, *maker_price),
-                    &mut maker_opt,
-                    &mut maker_stats_opt,
-                    Some(*maker_order_index as usize),
-                    Some(maker_key),
-                    filler,
-                    filler_stats,
-                    filler_key,
-                    reserve_price_before,
-                    valid_oracle_price,
-                    limit_price,
-                    now,
-                    slot,
-                    validity_guard_rails,
-                    fee_structure,
-                    oracle_map,
-                    fill_mode.is_liquidation(),
-                    amm_jit_allowed,
-                    rev_share_escrow,
-                )?;
-
-                if maker_fill_base != 0 {
-                    update_maker_fills_map(
-                        &mut maker_fills,
-                        maker_key,
-                        maker_direction,
-                        maker_fill_base,
-                        maker_is_isolated_position,
-                    )?;
-                }
-
-                (fill_base, fill_quote)
-            }
-        };
-
-        base_asset_amount = base_asset_amount.safe_add(fill_base_asset_amount)?;
-        quote_asset_amount = quote_asset_amount.safe_add(fill_quote_asset_amount)?;
-        // Only real fills update volume stats and stamp `last_trade_ts`; a
-        // zero-fill step must not refresh the last-trade timestamp (it gates
-        // the trigger-price last-fill leg).
-        if fill_base_asset_amount != 0 {
-            market.market_stats.update_volume_24h(
-                fill_quote_asset_amount,
-                user_order_direction,
-                now,
-            )?;
-        }
-    }
-
+    let (base_asset_amount, quote_asset_amount) = fulfill_perp_order_router_pass(
+        user,
+        user_order_index,
+        user_key,
+        user_stats,
+        makers_and_referrer,
+        makers_and_referrer_stats,
+        maker_orders_info,
+        filler,
+        filler_key,
+        filler_stats,
+        spot_market_map,
+        perp_market_map,
+        oracle_map,
+        validity_guard_rails,
+        fee_structure,
+        limit_price,
+        now,
+        slot,
+        amm_is_available,
+        fill_mode.is_liquidation(),
+        router,
+        rev_share_escrow,
+        &mut maker_fills,
+    )?;
     fulfill_perp_order_post_checks(
         user,
         user_stats,
@@ -3424,462 +3182,18 @@ fn settle_external_match_fill(
     Ok((base_filled, quote_filled))
 }
 
-/// Unified fulfill step. Replaces `fulfill_perp_order_with_amm` and
-/// `fulfill_perp_order_with_match` with a single matcher-driven path: build
-/// the right quoter set from the `PerpFulfillmentMethod`, run `match_take`
-/// once, then walk `match.fills` and dispatch per-fill on `FillFeePolicy`.
+/// Fulfillment: one pass over every liquidity source.
 ///
-/// Returns `(taker_base_filled, taker_quote_filled, maker_base_filled)`.
-/// `maker_base_filled` is the sum of base across `DlobMatch` fills (zero for
-/// AMM-only steps).
-#[allow(clippy::too_many_arguments)]
-pub fn fulfill_perp_order_step(
-    market: &mut PerpMarket,
-    taker: &mut User,
-    taker_stats: &mut UserStats,
-    taker_order_index: usize,
-    taker_key: &Pubkey,
-    method: PerpFulfillmentMethod,
-    maker: &mut Option<&mut User>,
-    maker_stats: &mut Option<&mut UserStats>,
-    maker_order_index: Option<usize>,
-    maker_key_opt: Option<&Pubkey>,
-    filler: &mut Option<&mut User>,
-    filler_stats: &mut Option<&mut UserStats>,
-    filler_key: &Pubkey,
-    // AmmQuoter::setup is what materialises the pre-quote reserves now;
-    // this orchestrator-supplied value is informational only. Kept on the
-    // signature to avoid churning all call sites.
-    _reserve_price_before: u64,
-    valid_oracle_price: Option<i64>,
-    taker_limit_price: Option<u64>,
-    now: i64,
-    slot: u64,
-    validity_guard_rails: &ValidityGuardRails,
-    fee_structure: &FeeStructure,
-    oracle_map: &mut OracleMap,
-    is_liquidation: bool,
-    // False when a hard gate fires (pause/drawdown/volatility/oracle); blocks
-    // AMM JIT in the Match branch. Excludes auction-timing gates.
-    amm_jit_allowed: bool,
-    rev_share_escrow: &mut Option<&mut RevenueShareEscrowZeroCopyMut>,
-) -> VelocityResult<(u64, u64, u64)> {
-    // ---- 1. Capture taker order fields. ----
-    let market_index = market.market_index;
-    let taker_position_index = get_position_index(&taker.perp_positions, market_index)?;
-    let taker_existing_position_before =
-        taker.perp_positions[taker_position_index].base_asset_amount;
-    let taker_existing_position_params_before = taker.perp_positions[taker_position_index]
-        .get_existing_position_params_for_order_action(taker.orders[taker_order_index].direction);
-    let (order_post_only, order_slot, taker_direction, order_id) = get_struct_values!(
-        taker.orders[taker_order_index],
-        post_only,
-        slot,
-        direction,
-        order_id
-    );
-    let taker_order_has_builder = taker.orders[taker_order_index].is_has_builder();
-    if taker_order_has_builder && rev_share_escrow.is_none() {
-        // `fill_perp_order` rejects this case up front when builder codes are
-        // enabled outside of liquidation, so reaching here means either the
-        // feature is globally disabled or this is a liquidation fill — in both
-        // the builder fee is intentionally skipped.
-        msg!("Order has builder but no escrow account included; builder fee skipped.");
-    }
-
-    let oracle_pd = *oracle_map.get_price_data(&market.oracle_id())?;
-    let oracle_price = oracle_pd.price;
-    let mm_oracle_price_data =
-        market.get_mm_oracle_price_data(oracle_pd, slot, validity_guard_rails)?;
-    let sanitize_clamp_denom = market.get_sanitize_clamp_denominator()?;
-
-    // Construct the AMM-side `Quoter` and run setup once. `Quoter::setup`
-    // is the sole non-admin AMM-refresh path. The quoter lives until the
-    // end of this function — the AMM-match arm uses it directly; the
-    // DLOB-Match arm explicitly drops it before constructing an
-    // `AmmJitQuoter` over the same `&mut market`.
-    let amm_refresh_validity =
-        crate::vlp::amm::refresh::compute_amm_refresh_validity_with_guard_rails(
-            market,
-            &mm_oracle_price_data,
-            validity_guard_rails,
-        )?;
-    let market_stats_snapshot = market.market_stats;
-    let safe_oracle = mm_oracle_price_data.get_safe_oracle_price_data();
-    let order_tick_size = market.order_tick_size;
-    let order_step_size = market.order_step_size;
-    let market_status_local = market.status;
-    let market_config_local = market.market_config;
-    let setup_ctx = QuoteContext {
-        stats: &market_stats_snapshot,
-        oracle: &safe_oracle,
-        mm_oracle: Some(&mm_oracle_price_data),
-        oracle_validity: amm_refresh_validity,
-        fee_budget: 0,
-        tick: order_tick_size,
-        step_size: order_step_size,
-        slot,
-        base_precision: BASE_PRECISION_U64,
-        market_status: market_status_local,
-        market_config: market_config_local,
-    };
-    let mut amm_quoter = AmmQuoter::for_amm(&mut market.amm);
-    amm_quoter.refresh(&setup_ctx)?;
-    let reserve_after_setup = amm_quoter.amm.reserve_price()?;
-    let (amm_bid_price, amm_ask_price) = amm_quoter.amm_bid_ask(reserve_after_setup)?;
-    let amm_base_spread = amm_quoter.amm_base_spread();
-    // Snapshot the just-refreshed cached spreads for the mark-twap update
-    // below (which takes scalars, not an `&AMM` borrow).
-    let amm_long_spread = amm_quoter.amm.long_spread;
-    let amm_short_spread = amm_quoter.amm.short_spread;
-
-    // ---- 2. Per-fill validate / event metadata. ----
-    let taker_base_unfilled = taker.orders[taker_order_index]
-        .get_base_asset_amount_unfilled(Some(taker_existing_position_before))?;
-    let taker_price_for_match: Option<u64>;
-    let match_maker_price: Option<u64>;
-    let maker_existing_position_params: Option<(u64, u64)>;
-    match method {
-        PerpFulfillmentMethod::AMM(_) => {
-            taker_price_for_match = None;
-            match_maker_price = None;
-            maker_existing_position_params = None;
-        }
-        PerpFulfillmentMethod::Match(_, m_idx, maker_price) => {
-            let m_idx = m_idx as usize;
-            let maker_ref = maker
-                .as_deref()
-                .ok_or_else(print_error!(ErrorCode::DefaultError))?;
-            if !are_orders_same_market_but_different_sides(
-                &maker_ref.orders[m_idx],
-                &taker.orders[taker_order_index],
-            ) {
-                return Ok((0, 0, 0));
-            }
-            // Taker's price ceiling for the matcher + per-fill validate:
-            // explicit limit, or the auction fallback for market orders.
-            let taker_price = match taker_limit_price {
-                Some(p) => p,
-                None => {
-                    // Reborrow `amm_quoter.amm` immutably to read AMM-side
-                    // fields without dropping the quoter (it still owns the
-                    // &mut for the matcher below). `market.market_stats` is
-                    // a disjoint PerpMarket field.
-                    let amm_ref: &crate::vlp::amm::AMM = amm_quoter.amm;
-                    let amm_available = calculate_amm_available_liquidity(
-                        amm_ref,
-                        &taker_direction,
-                        order_step_size,
-                    )?;
-                    let min_order_size = market.market_stats.min_order_size;
-                    amm_ref.get_fallback_price(
-                        &market.market_stats,
-                        &taker_direction,
-                        amm_available,
-                        oracle_price,
-                        taker.orders[taker_order_index].seconds_til_expiry(now),
-                        min_order_size,
-                    )?
-                }
-            };
-            let maker_direction = maker_ref.orders[m_idx].direction;
-            let maker_position = maker_ref.get_perp_position(market_index)?;
-            taker_price_for_match = Some(taker_price);
-            match_maker_price = Some(maker_price);
-            maker_existing_position_params =
-                maker_position.get_existing_position_params_for_order_action(maker_direction);
-        }
-    }
-
-    let target_size = taker_base_unfilled;
-    if target_size == 0 {
-        return Ok((0, 0, 0));
-    }
-
-    // ---- 3. Mark-TWAP trade-price hint (deferred update). ----
-    // Snapshot the trade-price hint from the pre-fill AMM quote: the AMM's
-    // natural ask/bid for AMM-only steps, the maker price for Match steps.
-    // The actual `update_mark_twap_with_amm_bid_ask` mutation is deferred
-    // until *after* the fill is confirmed non-zero (step 3b): the mark-TWAP is
-    // `first-write-wins` within a single `now` timestamp (a same-`now` update
-    // sees `since_last == 0` and is a no-op), so a step that quotes but fills
-    // zero base — e.g. an AMM-override step the matcher passes over — must not
-    // stamp its price and pre-empt a real, same-timestamp maker trade that
-    // fills afterwards. The AMM-derived inputs are all captured as scalars
-    // here (no `&AMM` borrow), shaped for the target architecture where the
-    // AMM is an isolated module surfacing bid/ask/base-spread via its contract.
-    let twap_trade_price = match_maker_price.unwrap_or(match taker_direction {
-        PositionDirection::Long => amm_ask_price,
-        PositionDirection::Short => amm_bid_price,
-    });
-
-    // ---- 4. Build QuoteContext for the matcher. AMM-projection fields
-    // not needed here — setup has already run on amm_quoter.
-    //
-    // The matcher reprices DLOB makers off `ctx.oracle.price`
-    // (`DlobOrderQuoter::effective_price`), so oracle-offset limit orders
-    // must be requoted against the *same* oracle that maker discovery froze
-    // their `match_maker_price` at. Discovery prices makers at
-    // `mm_oracle_price_data.get_price()`, which is exactly `safe_oracle.price`
-    // (`get_price()` returns `safe_oracle_price_data.price`). Passing a
-    // default (zero-price) oracle here would reprice an oracle-offset maker to
-    // just its offset, so its fill would disagree with the frozen maker price
-    // and revert in `validate_fill_price`.
-    let stats_snapshot = market.market_stats;
-    let ctx = QuoteContext {
-        stats: &stats_snapshot,
-        oracle: &safe_oracle,
-        mm_oracle: None,
-        oracle_validity: None,
-        fee_budget: 0,
-        tick: order_tick_size,
-        step_size: order_step_size,
-        slot,
-        base_precision: BASE_PRECISION_U64,
-        market_status: MarketStatus::default(),
-        market_config: 0,
-    };
-
-    // ---- 5. Build quoters + match_take. ----
-    let match_result = match method {
-        PerpFulfillmentMethod::AMM(override_fill_price) => {
-            // Effective price ceiling for the AMM: the order's limit
-            // (buffered by maker rebate if post_only), `min`-ed with any
-            // override price from the FFM payload, stepped one tick inside
-            // the limit. Computed at the orchestrator — the AMM Quoter
-            // itself is taker-agnostic.
-            let fee_tier = determine_user_fee_tier(taker_stats, fee_structure, &MarketType::Perp)?;
-            let effective_taker_limit = crate::math::orders::calculate_effective_amm_taker_limit(
-                &taker.orders[taker_order_index],
-                taker_limit_price,
-                override_fill_price,
-                &fee_tier,
-                market.fee_adjustment,
-                market.order_tick_size,
-            )?;
-            // Reuse the `amm_quoter` constructed at the top of this fn —
-            // it's already been setup and holds &mut market.amm. The AMM is
-            // the sole continuous maker, so it takes the dedicated analytical
-            // fill path rather than the discrete level walk.
-            amm_quoter.validate_for_fill(taker_direction)?;
-            // An AMM fill takes at most the per-fill available liquidity: half
-            // of the side's depth, capped by `max_fill_reserve_fraction`. The
-            // continuous fill below further clamps to the taker's limit price
-            // and the AMM's hard reserve bound.
-            let amm_available = {
-                let amm_ref: &crate::vlp::amm::AMM = amm_quoter.amm;
-                calculate_amm_available_liquidity(amm_ref, &taker_direction, order_step_size)?
-            };
-            crate::controller::matching::fill_amm_only(
-                &mut amm_quoter,
-                &ctx,
-                taker_direction,
-                target_size.min(amm_available),
-                effective_taker_limit,
-            )?
-        }
-        PerpFulfillmentMethod::Match(_, m_idx, maker_price) => {
-            // Release the AMM-only quoter so `AmmJitQuoter::from_match_context`
-            // can take `&mut market` (`amm_quoter` holds `&mut market.amm`).
-            // The AMM has already been refreshed by `amm_quoter`'s setup; the
-            // JIT quoter doesn't re-refresh. Discarding the binding ends the
-            // borrow scope (no `Drop` impl to run).
-            let _ = amm_quoter;
-            let m_idx = m_idx as usize;
-            let maker_user = maker
-                .as_deref_mut()
-                .ok_or_else(print_error!(ErrorCode::DefaultError))?;
-            // Position-capped unfilled: for a reduce-only maker this is
-            // min(order unfilled, |position|), so the fill can never grow
-            // or flip the maker's position. Sizes both the JIT split and
-            // the DLOB quoter's capacity.
-            let maker_unfilled = maker_user.orders[m_idx].get_base_asset_amount_unfilled(Some(
-                maker_user
-                    .get_perp_position(market_index)?
-                    .base_asset_amount,
-            ))?;
-            // Add the AMM as a JIT maker only when allowed; a hard gate
-            // (pause/drawdown) must keep it off the reserves. Else: DLOB only.
-            if amm_jit_allowed {
-                let taker_has_limit_price =
-                    taker.orders[taker_order_index].has_limit_price(slot)?;
-                let mut amm_jit = crate::vlp::amm::AmmJitQuoter::from_match_context(
-                    market,
-                    maker_price,
-                    taker_direction,
-                    valid_oracle_price,
-                    target_size,
-                    maker_unfilled,
-                    taker_has_limit_price,
-                )?;
-                let mut dlob = DlobOrderQuoter::new(&mut maker_user.orders[m_idx], maker_unfilled);
-                let mut quoters: Vec<&mut dyn QuoterCommit> = vec![&mut amm_jit, &mut dlob];
-                crate::controller::matching::match_take(
-                    &mut quoters,
-                    &ctx,
-                    taker_direction,
-                    target_size,
-                    taker_price_for_match,
-                )?
-            } else {
-                let mut dlob = DlobOrderQuoter::new(&mut maker_user.orders[m_idx], maker_unfilled);
-                let mut quoters: Vec<&mut dyn QuoterCommit> = vec![&mut dlob];
-                crate::controller::matching::match_take(
-                    &mut quoters,
-                    &ctx,
-                    taker_direction,
-                    target_size,
-                    taker_price_for_match,
-                )?
-            }
-        }
-    };
-
-    if match_result.total_base_filled == 0 {
-        return Ok((0, 0, 0));
-    }
-
-    // ---- 3b. Deferred Mark-TWAP update (see step 3). ----
-    // Reached only once this step actually traded, so a zero-fill quote can
-    // never stamp the TWAP ahead of a real same-`now` maker trade. Uses the
-    // pre-fill AMM scalars captured above — the fill does not touch the
-    // mark/oracle TWAP inputs read here, so the stamped value is identical to
-    // computing it before the swap, just gated on a real fill.
-    market.market_stats.update_mark_twap_with_amm_bid_ask(
-        amm_bid_price,
-        amm_ask_price,
-        amm_base_spread,
-        amm_long_spread,
-        amm_short_spread,
-        now,
-        Some(twap_trade_price),
-        Some(taker_direction),
-        sanitize_clamp_denom,
-        order_tick_size,
-    )?;
-
-    // An AmmHouse fill emitted from a Match step is always a JIT slice
-    // (the only AMM-side quoter present in a Match step is `AmmJitQuoter`),
-    // so we map the explanation off the method alone.
-    let is_jit_within_match = matches!(method, PerpFulfillmentMethod::Match(..));
-
-    // ---- 7. Per-fill dispatch. ----
-    let mut total_base_filled = 0u64;
-    let mut total_quote_filled = 0u64;
-    let mut maker_base_filled = 0u64;
-
-    for (_quoter_id, fill) in match_result.fills.iter() {
-        if fill.base_filled == 0 {
-            continue;
-        }
-        match fill.fee_policy {
-            FillFeePolicy::AmmHouse => {
-                let (base_filled, quote_filled) = settle_amm_house_fill(
-                    fill,
-                    market,
-                    taker,
-                    taker_stats,
-                    taker_position_index,
-                    taker_order_index,
-                    taker_key,
-                    taker_direction,
-                    taker_existing_position_params_before,
-                    order_post_only,
-                    order_slot,
-                    order_id,
-                    taker_limit_price,
-                    is_jit_within_match,
-                    is_liquidation,
-                    maker,
-                    maker_stats,
-                    filler,
-                    filler_stats,
-                    filler_key,
-                    rev_share_escrow,
-                    fee_structure,
-                    oracle_map,
-                    now,
-                    slot,
-                )?;
-                total_base_filled = total_base_filled.safe_add(base_filled)?;
-                total_quote_filled = total_quote_filled.safe_add(quote_filled)?;
-            }
-            FillFeePolicy::DlobMatch => {
-                let (base_filled, quote_filled, maker_filled) = settle_dlob_match_fill(
-                    fill,
-                    market,
-                    taker,
-                    taker_stats,
-                    taker_position_index,
-                    taker_order_index,
-                    taker_key,
-                    taker_direction,
-                    taker_existing_position_params_before,
-                    maker,
-                    maker_stats,
-                    maker_order_index,
-                    maker_key_opt,
-                    maker_existing_position_params,
-                    match_maker_price,
-                    taker_price_for_match,
-                    oracle_price,
-                    filler,
-                    filler_stats,
-                    filler_key,
-                    rev_share_escrow,
-                    fee_structure,
-                    oracle_map,
-                    is_liquidation,
-                    now,
-                    slot,
-                )?;
-                total_base_filled = total_base_filled.safe_add(base_filled)?;
-                total_quote_filled = total_quote_filled.safe_add(quote_filled)?;
-                maker_base_filled = maker_base_filled.safe_add(maker_filled)?;
-            }
-        }
-    }
-
-    if total_base_filled == 0 {
-        return Ok((0, 0, 0));
-    }
-
-    // ---- 9. Finalize open-orders counters once-per-order. ----
-    if taker.orders[taker_order_index].get_base_asset_amount_unfilled(None)? == 0 {
-        taker.decrement_open_orders(taker.orders[taker_order_index].has_auction());
-        taker.perp_positions[taker_position_index].open_orders -= 1;
-    }
-
-    if maker_base_filled > 0 {
-        if let Some(m_idx) = maker_order_index {
-            if let Some(maker_user) = maker.as_deref_mut() {
-                let maker_position_index =
-                    get_position_index(&maker_user.perp_positions, market.market_index)?;
-                if maker_user.orders[m_idx].get_base_asset_amount_unfilled(None)? == 0 {
-                    maker_user.decrement_open_orders(maker_user.orders[m_idx].has_auction());
-                    maker_user.perp_positions[maker_position_index].open_orders -= 1;
-                }
-            }
-        }
-    }
-
-    Ok((total_base_filled, total_quote_filled, maker_base_filled))
-}
-
-/// Single-pass router fulfillment — replaces `determine_perp_fulfillment_methods`
-/// and the per-method step loop when the caller selects the router path. One
-/// pass: quote every liquidity source (sanitized DLOB makers as single-level
-/// books, external CPI books, the vAMM ladder last with everything as its
-/// last look), split the taker's unfilled size across the union by priority
-/// tier, then execute + settle each allocation through the same
-/// fee-policy-keyed settle functions the step loop uses.
+/// Quote (sanitized DLOB makers as single-level books, external CPI books,
+/// the vAMM ladder last with everything else as its last look), split the
+/// taker's unfilled size across the union by priority tier, then execute and
+/// settle each allocation through the fee-policy-keyed settle functions.
 ///
-/// What the legacy path needed that this one doesn't: the scratch-AMM routing
-/// projection (routing and quoting are the same pass here, and
-/// `AmmQuoter::setup` runs before the quote), `AmmJitQuoter`/`amm_jit_allowed`
-/// (the vAMM's last-look shading is the general form of AMM-JIT), and the
-/// per-step fallback-price recompute (one effective taker limit bounds every
-/// book up front).
+/// One quote/route pass rather than the route-then-quote-per-method loop this
+/// replaced, which is why there is no scratch-AMM projection (routing and
+/// quoting see the same curve), no separate JIT participant (the vAMM's
+/// last-look shading is its general form), and no per-step fallback recompute
+/// (one effective taker limit bounds every book up front).
 ///
 /// External books are priced into the split; allocations that land on them
 /// execute through `RouterFillInputs::executor` (the CPI leg the fill

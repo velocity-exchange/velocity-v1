@@ -332,7 +332,7 @@ fn fill_order<'c: 'info, 'info>(
         None,
         clock,
         FillMode::Fill,
-        Some(&mut router_inputs),
+        &mut router_inputs,
         &mut escrow.as_mut(),
     )?;
 

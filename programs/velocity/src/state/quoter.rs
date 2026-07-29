@@ -435,14 +435,7 @@ impl RouterQuoter for DlobOrderQuoter<'_> {
         direction: crate::state::prop_amm::Direction,
         size: u64,
     ) -> VelocityResult<QuoterFill> {
-        let side = direction.to_position_direction();
-        let fill = self
-            .try_fill_solo(ctx, side, size)?
-            .unwrap_or(QuoterFill::ZERO);
-        if fill.base_filled > 0 {
-            self.commit_fill(ctx, &fill)?;
-        }
-        Ok(fill)
+        self.fill(ctx, direction.to_position_direction(), size)
     }
 }
 
@@ -481,6 +474,39 @@ pub struct DlobOrderQuoter<'a> {
 impl<'a> DlobOrderQuoter<'a> {
     pub fn new(order: &'a mut Order, max_fill: u64) -> Self {
         DlobOrderQuoter { order, max_fill }
+    }
+
+    /// Fill up to `size` at this order's price and apply it to the order —
+    /// the whole of what a router allocation does to a resting maker. Returns
+    /// [`QuoterFill::ZERO`] when the order doesn't quote this side or has
+    /// nothing left.
+    pub fn fill(
+        &mut self,
+        ctx: &QuoteContext,
+        taker_side: PositionDirection,
+        size: u64,
+    ) -> VelocityResult<QuoterFill> {
+        let fill = self
+            .solo_fill(ctx, taker_side, size)?
+            .unwrap_or(QuoterFill::ZERO);
+        if fill.base_filled > 0 {
+            self.apply_fill(&fill)?;
+        }
+        Ok(fill)
+    }
+
+    /// Apply a fill to the order's own counters. Position and fee accounting
+    /// belong to the fill controller.
+    pub fn apply_fill(&mut self, fill: &QuoterFill) -> VelocityResult {
+        self.order.base_asset_amount_filled = self
+            .order
+            .base_asset_amount_filled
+            .safe_add(fill.base_filled)?;
+        self.order.quote_asset_amount_filled = self
+            .order
+            .quote_asset_amount_filled
+            .safe_add(fill.quote_filled)?;
+        Ok(())
     }
 
     /// Sentinel "doesn't quote on this side" price.
@@ -530,6 +556,20 @@ impl<'a> Quoter for DlobOrderQuoter<'a> {
     }
 
     fn try_fill_solo(
+        &self,
+        ctx: &QuoteContext,
+        side: PositionDirection,
+        target_size: u64,
+    ) -> VelocityResult<Option<QuoterFill>> {
+        self.solo_fill(ctx, side, target_size)
+    }
+}
+
+impl DlobOrderQuoter<'_> {
+    /// Closed-form fill of `target_size` at this order's effective limit
+    /// price: `min(target, remaining)`, with the quote rounded in the maker's
+    /// favor. `None` when the order doesn't quote this side.
+    fn solo_fill(
         &self,
         ctx: &QuoteContext,
         side: PositionDirection,

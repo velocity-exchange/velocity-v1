@@ -2197,11 +2197,12 @@ export type Velocity = {
     {
       "name": "extendAccount",
       "docs": [
-        "Permissionless: grow a zero-copy account to the size this program build",
-        "compiles in for its type (resolved from the account discriminator). The",
-        "migration crank after an upgrade that appends fields to an account",
-        "struct; no-op when already at size. Payer covers the rent-exempt",
-        "shortfall. See `docs/ACCOUNT-EXTENSION.md`."
+        "Grow a zero-copy account to the size this program build compiles in",
+        "for its type (resolved from the account discriminator). The migration",
+        "crank after an upgrade that appends fields to an account struct; no-op",
+        "when already at size. Payer covers the rent-exempt shortfall (auth:",
+        "`AccountExtension` hot key, or warm/cold admin). See",
+        "`docs/ACCOUNT-EXTENSION.md`."
       ],
       "discriminator": [
         234,
@@ -2215,8 +2216,15 @@ export type Velocity = {
       ],
       "accounts": [
         {
+          "name": "state"
+        },
+        {
           "name": "payer",
           "writable": true,
+          "signer": true
+        },
+        {
+          "name": "authority",
           "signer": true
         },
         {
@@ -2252,8 +2260,15 @@ export type Velocity = {
       ],
       "accounts": [
         {
+          "name": "state"
+        },
+        {
           "name": "payer",
           "writable": true,
+          "signer": true
+        },
+        {
+          "name": "authority",
           "signer": true
         },
         {
@@ -18236,6 +18251,9 @@ export type Velocity = {
           },
           {
             "name": "feeWithdraw"
+          },
+          {
+            "name": "accountExtension"
           }
         ]
       }
@@ -23719,11 +23737,20 @@ export type Velocity = {
             "type": "pubkey"
           },
           {
+            "name": "hotAccountExtension",
+            "docs": [
+              "Hot key authorized for the `AccountExtension` role (grows zero-copy",
+              "accounts to the deployed program's size after a struct-extending",
+              "upgrade)."
+            ],
+            "type": "pubkey"
+          },
+          {
             "name": "padding",
             "type": {
               "array": [
                 "u8",
-                271
+                239
               ]
             }
           }

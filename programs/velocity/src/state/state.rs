@@ -88,7 +88,11 @@ pub struct State {
     /// Hot key authorized for the `FeeWithdraw` role (triggers protocol-fee
     /// withdrawals to the configured recipients).
     pub hot_fee_withdraw: Pubkey,
-    pub padding: [u8; 271],
+    /// Hot key authorized for the `AccountExtension` role (grows zero-copy
+    /// accounts to the deployed program's size after a struct-extending
+    /// upgrade).
+    pub hot_account_extension: Pubkey,
+    pub padding: [u8; 239],
 }
 
 /// Purpose-specific hot role keys held on `State`. Each variant maps to one of the
@@ -106,6 +110,7 @@ pub enum HotRole {
     MmOracleCrank,
     AmmSpreadAdjust,
     FeeWithdraw,
+    AccountExtension,
 }
 
 #[derive(BitFlags, Clone, Copy, PartialEq, Debug, Eq)]
@@ -166,6 +171,7 @@ impl Default for State {
             srm_vault: Pubkey::default(),
             protocol_fee_recipient_perp: Pubkey::default(),
             hot_fee_withdraw: Pubkey::default(),
+            hot_account_extension: Pubkey::default(),
             protocol_fee_recipient_spot: Pubkey::default(),
             perp_fee_structure: FeeStructure::default(),
             spot_fee_structure: FeeStructure::default(),
@@ -188,7 +194,7 @@ impl Default for State {
             feature_bit_flags: 0,
             lp_pool_feature_bit_flags: 0,
             solvency_status: 0,
-            padding: [0; 271],
+            padding: [0; 239],
         }
     }
 }
@@ -301,6 +307,7 @@ impl State {
             HotRole::MmOracleCrank => self.hot_mm_oracle_crank,
             HotRole::AmmSpreadAdjust => self.hot_amm_spread_adjust,
             HotRole::FeeWithdraw => self.hot_fee_withdraw,
+            HotRole::AccountExtension => self.hot_account_extension,
         }
     }
 
@@ -317,6 +324,7 @@ impl State {
             HotRole::MmOracleCrank => self.hot_mm_oracle_crank = key,
             HotRole::AmmSpreadAdjust => self.hot_amm_spread_adjust = key,
             HotRole::FeeWithdraw => self.hot_fee_withdraw = key,
+            HotRole::AccountExtension => self.hot_account_extension = key,
         }
     }
 
@@ -397,12 +405,13 @@ pub enum LpPoolFeatureBitFlags {
 }
 
 impl Size for State {
-    // 8 (disc) + 13 Pubkey (cold + warm + pause + 10 hot, 416 B) + 7 Pubkey (mint/signer/srm
-    // + protocol_fee_recipient_perp/_spot + hot_fee_withdraw, 224 B) + 2*FeeStructure
-    // + OracleGuardRails + scalars + solvency_status[1] + padding[271] = 1752 B.
+    // 8 (disc) + 13 Pubkey (cold + warm + pause + 10 hot, 416 B) + 8 Pubkey (mint/signer/srm
+    // + protocol_fee_recipient_perp/_spot + hot_fee_withdraw + hot_account_extension, 256 B)
+    // + 2*FeeStructure + OracleGuardRails + scalars + solvency_status[1] + padding[239] = 1752 B.
     // hot_if_rebalance was removed with the if-rebalance machinery (its 32 B went into
     // the padding); protocol_fee_recipient_spot later took 32 B back out; solvency_status
-    // took 1 B out of the padding. SIZE stays constant and (SIZE - 8) % 16 == 0 holds (1744).
+    // took 1 B out of the padding; hot_account_extension took another 32 B out.
+    // SIZE stays constant and (SIZE - 8) % 16 == 0 holds (1744).
     const SIZE: usize = 1752;
 }
 

@@ -1446,9 +1446,10 @@ export class VelocityClient {
 	/**
 	 * Grows a zero-copy account (User, PerpMarket, SpotMarket, State, ...) to the size the
 	 * deployed program compiles in for its type, as part of an account-size migration after a
-	 * program upgrade that appended fields. Permissionless; the payer covers the rent-exempt
-	 * shortfall and the program zero-fills the new tail. No-op when the account is already at
-	 * size, so cranking is idempotent. See `docs/ACCOUNT-EXTENSION.md`.
+	 * program upgrade that appended fields. Requires `HotRole.AccountExtension` (cold, warm, or
+	 * the configured account-extension hot key) — the wallet must hold that role. The payer
+	 * covers the rent-exempt shortfall and the program zero-fills the new tail. No-op when the
+	 * account is already at size, so cranking is idempotent. See `docs/ACCOUNT-EXTENSION.md`.
 	 * @param account - The account to extend.
 	 * @param txParams - Optional compute-unit/priority-fee overrides for the transaction.
 	 * @returns The transaction signature.
@@ -1468,15 +1469,19 @@ export class VelocityClient {
 	 * Builds the `extendAccount` instruction. See `extendAccount` for semantics.
 	 * @param account - The account to extend.
 	 * @param payer - Rent payer; defaults to the wallet.
+	 * @param authority - `HotRole.AccountExtension` holder; defaults to the wallet.
 	 * @returns The extend instruction.
 	 */
 	public async getExtendAccountIx(
 		account: PublicKey,
-		payer?: PublicKey
+		payer?: PublicKey,
+		authority?: PublicKey
 	): Promise<TransactionInstruction> {
 		return await this.program.instruction.extendAccount({
 			accounts: {
+				state: await this.getStatePublicKey(),
 				payer: payer ?? this.wallet.publicKey,
+				authority: authority ?? this.wallet.publicKey,
 				account,
 				systemProgram: SystemProgram.programId,
 			},
@@ -1485,8 +1490,8 @@ export class VelocityClient {
 
 	/**
 	 * Devnet/test only: grows a zero-copy account to an arbitrary larger size, simulating the
-	 * state right after a struct-growing program upgrade. The instruction is compiled out of
-	 * mainnet program builds.
+	 * state right after a struct-growing program upgrade. Requires `HotRole.AccountExtension`
+	 * like `extendAccount`. The instruction is compiled out of mainnet program builds.
 	 * @param account - The account to extend.
 	 * @param newLen - Target account data length in bytes (must be >= the current length).
 	 * @param txParams - Optional compute-unit/priority-fee overrides for the transaction.
@@ -1512,16 +1517,20 @@ export class VelocityClient {
 	 * @param account - The account to extend.
 	 * @param newLen - Target account data length in bytes.
 	 * @param payer - Rent payer; defaults to the wallet.
+	 * @param authority - `HotRole.AccountExtension` holder; defaults to the wallet.
 	 * @returns The extend instruction.
 	 */
 	public async getExtendAccountDevnetIx(
 		account: PublicKey,
 		newLen: number,
-		payer?: PublicKey
+		payer?: PublicKey,
+		authority?: PublicKey
 	): Promise<TransactionInstruction> {
 		return await this.program.instruction.extendAccountDevnet(new BN(newLen), {
 			accounts: {
+				state: await this.getStatePublicKey(),
 				payer: payer ?? this.wallet.publicKey,
+				authority: authority ?? this.wallet.publicKey,
 				account,
 				systemProgram: SystemProgram.programId,
 			},

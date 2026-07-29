@@ -5,14 +5,19 @@
 use anchor_lang::prelude::*;
 use anchor_lang::system_program::{transfer, Transfer};
 
+use crate::auth::check_hot;
 use crate::error::ErrorCode;
 use crate::instructions::account_extension::extension_target_len;
+use crate::state::state::{HotRole, State};
 use crate::validate;
 
 #[derive(Accounts)]
 pub struct ExtendAccountDevnet<'info> {
+    pub state: AccountLoader<'info, State>,
     #[account(mut)]
     pub payer: Signer<'info>,
+    #[account(constraint = check_hot(&authority.key(), &state, HotRole::AccountExtension)?)]
+    pub authority: Signer<'info>,
     /// CHECK: must be velocity-owned; the handler requires a supported
     /// zero-copy discriminator
     #[account(mut, owner = crate::ID)]

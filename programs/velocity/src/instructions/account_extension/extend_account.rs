@@ -1,10 +1,11 @@
-//! Permissionless grow of a zero-copy account to the size the deployed
-//! program compiles in for its type.
+//! Grow a zero-copy account to the size the deployed program compiles in for
+//! its type (auth: `AccountExtension` hot key, or warm/cold admin).
 
 use anchor_lang::prelude::*;
 use anchor_lang::system_program::{transfer, Transfer};
 use anchor_lang::Discriminator;
 
+use crate::auth::check_hot;
 use crate::error::ErrorCode;
 use crate::state::insurance_fund_stake::InsuranceFundStake;
 use crate::state::oracle::PrelaunchOracle;
@@ -12,15 +13,18 @@ use crate::state::perp_market::PerpMarket;
 use crate::state::pyth_lazer_oracle::PythLazerOracle;
 use crate::state::revenue_share::RevenueShare;
 use crate::state::spot_market::SpotMarket;
-use crate::state::state::State;
+use crate::state::state::{HotRole, State};
 use crate::state::user::{ReferrerName, User, UserStats};
 use crate::validate;
 use crate::vlp::hedge::state::{Constituent, LPPool};
 
 #[derive(Accounts)]
 pub struct ExtendAccount<'info> {
+    pub state: AccountLoader<'info, State>,
     #[account(mut)]
     pub payer: Signer<'info>,
+    #[account(constraint = check_hot(&authority.key(), &state, HotRole::AccountExtension)?)]
+    pub authority: Signer<'info>,
     /// CHECK: must be velocity-owned; the handler resolves its type (and target
     /// size) from the account discriminator
     #[account(mut, owner = crate::ID)]
@@ -29,6 +33,11 @@ pub struct ExtendAccount<'info> {
 }
 
 /// Grow `account` to `8 + size_of::<T>()` for its discriminator's type `T`.
+///
+/// Auth: the `AccountExtension` hot key (or warm/cold admin fallback while the
+/// role is unset). Extension is harmless to account contents, but growing
+/// accounts inflates fetch bandwidth and any future per-byte transaction
+/// costs, so when it happens is the protocol's call, not the public's.
 ///
 /// Grow-only: an account already at (or beyond) the target size is a no-op so
 /// repeated cranking and races are harmless. The payer covers the rent-exempt

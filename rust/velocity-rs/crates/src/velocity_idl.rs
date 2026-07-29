@@ -3279,6 +3279,7 @@ pub mod types {
         MmOracleCrank,
         AmmSpreadAdjust,
         FeeWithdraw,
+        AccountExtension,
     }
     #[repr(C)]
     #[derive(
@@ -5095,8 +5096,9 @@ pub mod types {
         pub protocol_fee_recipient_perp: Pubkey,
         pub protocol_fee_recipient_spot: Pubkey,
         pub hot_fee_withdraw: Pubkey,
+        pub hot_account_extension: Pubkey,
         #[serde(skip)]
-        pub padding: Padding<271>,
+        pub padding: Padding<239>,
     }
     #[repr(C)]
     #[derive(
@@ -6433,8 +6435,9 @@ pub mod accounts {
         pub protocol_fee_recipient_perp: Pubkey,
         pub protocol_fee_recipient_spot: Pubkey,
         pub hot_fee_withdraw: Pubkey,
+        pub hot_account_extension: Pubkey,
         #[serde(skip)]
-        pub padding: Padding<271>,
+        pub padding: Padding<239>,
     }
     #[automatically_derived]
     impl anchor_lang::Discriminator for State {
@@ -9090,7 +9093,9 @@ pub mod accounts {
     #[repr(C)]
     #[derive(Copy, Clone, Default, AnchorSerialize, AnchorDeserialize, Serialize, Deserialize)]
     pub struct ExtendAccount {
+        pub state: Pubkey,
         pub payer: Pubkey,
+        pub authority: Pubkey,
         pub account: Pubkey,
         pub system_program: Pubkey,
     }
@@ -9111,9 +9116,19 @@ pub mod accounts {
         fn to_account_metas(&self) -> Vec<AccountMeta> {
             vec![
                 AccountMeta {
+                    pubkey: self.state,
+                    is_signer: false,
+                    is_writable: false,
+                },
+                AccountMeta {
                     pubkey: self.payer,
                     is_signer: true,
                     is_writable: true,
+                },
+                AccountMeta {
+                    pubkey: self.authority,
+                    is_signer: true,
+                    is_writable: false,
                 },
                 AccountMeta {
                     pubkey: self.account,
@@ -9160,7 +9175,9 @@ pub mod accounts {
     #[repr(C)]
     #[derive(Copy, Clone, Default, AnchorSerialize, AnchorDeserialize, Serialize, Deserialize)]
     pub struct ExtendAccountDevnet {
+        pub state: Pubkey,
         pub payer: Pubkey,
+        pub authority: Pubkey,
         pub account: Pubkey,
         pub system_program: Pubkey,
     }
@@ -9181,9 +9198,19 @@ pub mod accounts {
         fn to_account_metas(&self) -> Vec<AccountMeta> {
             vec![
                 AccountMeta {
+                    pubkey: self.state,
+                    is_signer: false,
+                    is_writable: false,
+                },
+                AccountMeta {
                     pubkey: self.payer,
                     is_signer: true,
                     is_writable: true,
+                },
+                AccountMeta {
+                    pubkey: self.authority,
+                    is_signer: true,
+                    is_writable: false,
                 },
                 AccountMeta {
                     pubkey: self.account,

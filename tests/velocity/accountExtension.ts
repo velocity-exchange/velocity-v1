@@ -1,12 +1,13 @@
 import * as anchor from '@coral-xyz/anchor';
 import { expect } from 'chai';
 
-import { Program } from '@coral-xyz/anchor';
+import { Program, Wallet } from '@coral-xyz/anchor';
 
 import { Keypair, PublicKey } from '@solana/web3.js';
 
 import {
 	BN,
+	HotRole,
 	TestClient,
 	decodeUser,
 	getTokenAmount,
@@ -14,6 +15,7 @@ import {
 } from '../../packages/sdk/src';
 
 import {
+	createFundedKeyPair,
 	initializeQuoteSpotMarket,
 	mockUSDCMint,
 	mockUserUSDCAccount,
@@ -39,6 +41,9 @@ describe('account extension', () => {
 	let velocityClient: TestClient;
 	let usdcAccount: Keypair;
 	let userAccountPublicKey: PublicKey;
+
+	let hotKeyPair: Keypair;
+	let hotVelocityClient: TestClient;
 
 	let usdcMint;
 	const usdcAmount = new BN(100 * 10 ** 6);
@@ -91,10 +96,31 @@ describe('account extension', () => {
 				depositAmount,
 				usdcAccount.publicKey
 			);
+
+		hotKeyPair = await createFundedKeyPair(bankrunContextWrapper);
+		hotVelocityClient = new TestClient({
+			connection: bankrunContextWrapper.connection.toConnection(),
+			wallet: new Wallet(hotKeyPair),
+			programID: chProgram.programId,
+			opts: {
+				commitment: 'confirmed',
+			},
+			activeSubAccountId: 0,
+			subAccountIds: [],
+			perpMarketIndexes: [],
+			spotMarketIndexes: [0],
+			oracleInfos: [],
+			accountSubscription: {
+				type: 'polling',
+				accountLoader: bulkAccountLoader,
+			},
+		});
+		await hotVelocityClient.subscribe();
 	});
 
 	after(async () => {
 		await velocityClient.unsubscribe();
+		await hotVelocityClient.unsubscribe();
 	});
 
 	it('extend_account_devnet grows a user account and zero-fills the tail', async () => {
@@ -203,5 +229,29 @@ describe('account extension', () => {
 			failed = true;
 		}
 		expect(failed).to.equal(true);
+	});
+
+	it('extend_account requires the AccountExtension role', async () => {
+		// unassigned role, non-admin signer -> rejected
+		let failed = false;
+		try {
+			await hotVelocityClient.extendAccount(userAccountPublicKey);
+		} catch (e) {
+			failed = true;
+		}
+		expect(failed).to.equal(true);
+
+		// warm admin assigns the hot key; same signer now passes (no-op at size)
+		await velocityClient.updateHotAdmin(
+			HotRole.AccountExtension,
+			hotKeyPair.publicKey
+		);
+		await velocityClient.fetchAccounts();
+		expect(
+			velocityClient
+				.getStateAccount()
+				.hotAccountExtension.equals(hotKeyPair.publicKey)
+		).to.equal(true);
+		await hotVelocityClient.extendAccount(userAccountPublicKey);
 	});
 });

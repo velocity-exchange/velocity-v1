@@ -8383,6 +8383,7 @@ export enum HotRole {
 	MmOracleCrank = 'mmOracleCrank',
 	AmmSpreadAdjust = 'ammSpreadAdjust',
 	FeeWithdraw = 'feeWithdraw',
+	AccountExtension = 'accountExtension',
 }
 
 /** Anchor encodes Rust enums as `{ <variant>: {} }`. */

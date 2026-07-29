@@ -2170,3 +2170,103 @@ fn lending_interest_carveout_three_way_split() {
     // the combined corruption tripwire must accept the post-accrual state
     crate::math::spot_withdraw::validate_spot_balances(&spot_market).unwrap();
 }
+
+/// OtterSec #110 / #111 — the swap-backed spot lanes must not advance the very
+/// oracle TWAP they then gate on.
+///
+/// `begin_swap` (#110) and `liquidate_spot_with_swap_begin` (#111) both used to
+/// pass `Some(oracle_price_data)` here, refreshing `last_oracle_price_twap_5min`
+/// before the price-band / divergence check that reads it. Passing `None` is the
+/// fix, so pin the contract it depends on: `None` must still accrue interest and
+/// advance the deposit/borrow/utilization TWAPs, and must leave every oracle-TWAP
+/// field — including `last_oracle_price_twap_ts`, so the next real refresh still
+/// sees the full elapsed interval — untouched.
+#[test]
+fn spot_cumulative_interest_with_no_oracle_leaves_oracle_twaps_alone() {
+    let now = 0_i64;
+
+    let before = SpotMarket {
+        market_index: 0,
+        oracle_source: OracleSource::QuoteAsset,
+        cumulative_deposit_interest: SPOT_CUMULATIVE_INTEREST_PRECISION,
+        cumulative_borrow_interest: SPOT_CUMULATIVE_INTEREST_PRECISION,
+        decimals: 6,
+        initial_asset_weight: SPOT_WEIGHT_PRECISION,
+        deposit_balance: 1000 * SPOT_BALANCE_PRECISION,
+        borrow_balance: 500 * SPOT_BALANCE_PRECISION,
+        optimal_utilization: SPOT_UTILIZATION_PRECISION_U32 / 2,
+        optimal_borrow_rate: SPOT_RATE_PRECISION_U32 * 20,
+        max_borrow_rate: SPOT_RATE_PRECISION_U32 * 50,
+        status: MarketStatus::Active,
+        historical_oracle_data: HistoricalOracleData {
+            last_oracle_price: 100 * PRICE_PRECISION_I64,
+            last_oracle_price_twap: 40 * PRICE_PRECISION_I64,
+            last_oracle_price_twap_5min: 40 * PRICE_PRECISION_I64,
+            last_oracle_price_twap_ts: now,
+            ..HistoricalOracleData::default()
+        },
+        ..SpotMarket::default()
+    };
+
+    // A live price far above the stored TWAPs, i.e. exactly the state a caller
+    // would want to normalize away before its own band check.
+    let oracle_price_data = OraclePriceData {
+        price: 100 * PRICE_PRECISION_I64,
+        confidence: 0,
+        delay: 0,
+        has_sufficient_number_of_data_points: true,
+        ..OraclePriceData::default()
+    };
+
+    let later = now + 3600;
+
+    // Control: with `Some(..)` the oracle TWAP is dragged toward the live price —
+    // the pre-fix behavior, and the reason the band checks could be neutered.
+    let mut refreshed = before;
+    update_spot_market_cumulative_interest(&mut refreshed, Some(&oracle_price_data), later, false)
+        .unwrap();
+    assert!(
+        refreshed.historical_oracle_data.last_oracle_price_twap_5min
+            > before.historical_oracle_data.last_oracle_price_twap_5min,
+        "expected Some(..) to advance the 5min oracle TWAP — if this trips, the \
+         fixture no longer reproduces #110/#111"
+    );
+    assert_eq!(
+        refreshed.historical_oracle_data.last_oracle_price_twap_ts,
+        later
+    );
+
+    // Fixed: `None` leaves every oracle-TWAP field exactly where it was.
+    let mut unrefreshed = before;
+    update_spot_market_cumulative_interest(&mut unrefreshed, None, later, false).unwrap();
+    let historical = unrefreshed.historical_oracle_data;
+    assert_eq!(
+        historical.last_oracle_price_twap,
+        before.historical_oracle_data.last_oracle_price_twap
+    );
+    assert_eq!(
+        historical.last_oracle_price_twap_5min,
+        before.historical_oracle_data.last_oracle_price_twap_5min
+    );
+    assert_eq!(
+        historical.last_oracle_price_twap_ts,
+        before.historical_oracle_data.last_oracle_price_twap_ts,
+        "the timestamp must not move either, or the next real refresh would \
+         under-weight the elapsed interval"
+    );
+    assert_eq!(
+        historical.last_oracle_price,
+        before.historical_oracle_data.last_oracle_price
+    );
+
+    // ...while the rest of the work still happened: interest accrued and the
+    // balance TWAPs advanced.
+    assert!(
+        unrefreshed.cumulative_borrow_interest > before.cumulative_borrow_interest,
+        "interest accrual must not be skipped along with the oracle TWAP"
+    );
+    assert!(unrefreshed.cumulative_deposit_interest > before.cumulative_deposit_interest);
+    assert!(unrefreshed.deposit_token_twap > before.deposit_token_twap);
+    assert!(unrefreshed.borrow_token_twap > before.borrow_token_twap);
+    assert_eq!(unrefreshed.last_twap_ts, later as u64);
+}

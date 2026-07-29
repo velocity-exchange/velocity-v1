@@ -3745,10 +3745,24 @@ pub fn handle_begin_swap<'c: 'info, 'info>(
         "begin_swap ended in invalid state"
     )?;
 
-    let in_oracle_data = oracle_map.get_price_data(&in_spot_market.oracle_id())?;
+    // Accrue interest and advance the deposit/borrow/utilization TWAPs, but pass
+    // `None` so this swap does NOT advance the market's *oracle* TWAPs.
+    // `end_swap`'s `validate_price_bands_for_swap` measures the realized fill
+    // against `last_oracle_price_twap_5min` on this very market; refreshing it
+    // here — in the same transaction, from an instruction the swapper controls —
+    // pulls it toward the live oracle price and widens the band the swap is then
+    // checked against, letting an underpriced swap through that the pre-refresh
+    // TWAP rejects (OtterSec #110).
+    //
+    // begin_swap and end_swap are separate instructions, so there is nowhere to
+    // hold an in-memory snapshot across the check the way the perp fill does for
+    // #112; not moving the value is the fix. The oracle TWAP keeps advancing on
+    // every other spot path (deposit, withdraw, liquidation) and via the
+    // dedicated permissionless `update_spot_market_cumulative_interest` crank,
+    // so the EMA is not stranded.
     controller::spot_balance::update_spot_market_cumulative_interest(
         &mut in_spot_market,
-        Some(in_oracle_data),
+        None,
         now,
         state.funding_paused()?,
     )?;
@@ -3784,10 +3798,12 @@ pub fn handle_begin_swap<'c: 'info, 'info>(
         "begin_swap ended in invalid state"
     )?;
 
-    let out_oracle_data = oracle_map.get_price_data(&out_spot_market.oracle_id())?;
+    // `None` for the same reason as the in market above (OtterSec #110):
+    // `validate_price_bands_for_swap` reads whichever of the two markets has a
+    // zero initial margin ratio, so both sides must stay unrefreshed.
     controller::spot_balance::update_spot_market_cumulative_interest(
         &mut out_spot_market,
-        Some(out_oracle_data),
+        None,
         now,
         state.funding_paused()?,
     )?;

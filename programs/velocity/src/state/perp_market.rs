@@ -621,10 +621,13 @@ impl PerpMarket {
     /// PerpMarket-level oracle bookkeeping: refresh the oracle TWAPs,
     /// cache the latest reference-price-offset (used by the next quote's
     /// smoothing branch), and stamp `last_oracle_valid`. Called from the
-    /// `update_amms` keeper crank and the funding-rate / bid-ask-twap
-    /// keeper ixs. This is a PerpMarket-side concern — it does NOT
-    /// mutate AMM fields. It does read the AMM (for `reserve_price` and
-    /// the spread snapshot used to derive the offset).
+    /// `update_amms` keeper crank and the bid-ask-twap keeper ix. This is a
+    /// PerpMarket-side concern — it does NOT mutate AMM fields. It does read
+    /// the AMM (for `reserve_price` and the spread snapshot used to derive
+    /// the offset).
+    ///
+    /// Callers that then *gate* on a TWAP this would move must not use this
+    /// composed form — see [`Self::refresh_amm_quote_state`].
     pub fn update_oracle_derived_stats(
         &mut self,
         mm_oracle_price_data: &crate::state::oracle::MMOraclePriceData,
@@ -638,6 +641,34 @@ impl PerpMarket {
 
         let reserve_price_after = self.amm.reserve_price()?;
 
+        self.refresh_oracle_twaps(
+            mm_oracle_price_data,
+            oracle_validity,
+            now,
+            reserve_price_after,
+        )?;
+        self.refresh_amm_quote_state_inner(
+            mm_oracle_price_data,
+            oracle_validity,
+            clock_slot,
+            reserve_price_after,
+        )
+    }
+
+    /// Advance the funding-period and 5-minute oracle TWAPs, when the oracle is
+    /// valid for `UpdateTwap`.
+    ///
+    /// Split out of [`Self::update_oracle_derived_stats`] so a caller that gates
+    /// on the *pre-refresh* TWAP can skip it. Refreshing first would drag the
+    /// TWAP toward the live price and let a too-volatile / too-divergent oracle
+    /// clear its own gate inside the same instruction (OtterSec #109).
+    fn refresh_oracle_twaps(
+        &mut self,
+        mm_oracle_price_data: &crate::state::oracle::MMOraclePriceData,
+        oracle_validity: crate::math::oracle::OracleValidity,
+        now: i64,
+        reserve_price: u64,
+    ) -> VelocityResult<()> {
         if crate::math::oracle::is_oracle_valid_for_action(
             oracle_validity,
             Some(crate::math::oracle::VelocityAction::UpdateTwap),
@@ -650,11 +681,46 @@ impl PerpMarket {
                 amm,
                 now,
                 mm_oracle_price_data,
-                Some(reserve_price_after),
+                Some(reserve_price),
                 sanitize_clamp_denominator,
             )?;
         }
 
+        Ok(())
+    }
+
+    /// Refresh the AMM's cached quote state and stamp `last_oracle_valid`,
+    /// **without** touching the oracle TWAPs.
+    ///
+    /// This is the half of [`Self::update_oracle_derived_stats`] that is safe to
+    /// run ahead of a check that reads `last_oracle_price_twap` /
+    /// `last_oracle_price_twap_5min`.
+    pub fn refresh_amm_quote_state(
+        &mut self,
+        mm_oracle_price_data: &crate::state::oracle::MMOraclePriceData,
+        oracle_validity: Option<crate::math::oracle::OracleValidity>,
+        clock_slot: u64,
+    ) -> VelocityResult<()> {
+        let Some(oracle_validity) = oracle_validity else {
+            return Ok(());
+        };
+
+        let reserve_price_after = self.amm.reserve_price()?;
+        self.refresh_amm_quote_state_inner(
+            mm_oracle_price_data,
+            oracle_validity,
+            clock_slot,
+            reserve_price_after,
+        )
+    }
+
+    fn refresh_amm_quote_state_inner(
+        &mut self,
+        mm_oracle_price_data: &crate::state::oracle::MMOraclePriceData,
+        oracle_validity: crate::math::oracle::OracleValidity,
+        clock_slot: u64,
+        reserve_price: u64,
+    ) -> VelocityResult<()> {
         // Refresh the AMM's cached spread state (long/short spread, reference
         // offset, oracle-reserve spread pct, ask/bid reserves) in place, then
         // mirror the fresh reference offset into market_stats so the next
@@ -666,7 +732,7 @@ impl PerpMarket {
             amm,
             market_stats,
             mm_oracle_price_data,
-            reserve_price_after,
+            reserve_price,
             clock_slot,
         )?;
         market_stats.last_reference_price_offset = amm.reference_price_offset;

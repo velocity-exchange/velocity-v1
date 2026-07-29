@@ -4167,9 +4167,13 @@ fn fulfill_perp_order_router_pass(
             priority: clob_tier,
             levels: &levels[..within_limit(levels.as_slice())],
         }))
+        // The vAMM book is NOT re-truncated: `vamm_quote_levels` already
+        // capped the ladder at the limit, and its per-rung prices are
+        // rounded slice averages — comparing those to the limit would drop
+        // dust rungs whose true cost is inside it.
         .chain(core::iter::once(QuoterBook {
             priority: QuoterType::Vamm.default_priority(),
-            levels: &amm_levels[..within_limit(&amm_levels)],
+            levels: &amm_levels,
         }))
         .collect();
     let allocations = split_across_quoters(direction, target_size, &books, order_step_size)?;

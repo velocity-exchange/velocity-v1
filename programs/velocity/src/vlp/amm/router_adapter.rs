@@ -45,11 +45,16 @@ pub const LAST_LOOK_BAND: u64 = PERCENTAGE_PRECISION_U64 / 20;
 /// shaded toward `rival_books` within the last-look band.
 ///
 /// `taker_limit` bounds the ladder honestly: the curve inversion finds the
-/// cumulative where the marginal price reaches the limit, the total is capped
-/// there, and the final rung lands exactly at the limit price. Without it,
-/// equal-size chunk pricing would push whole rungs past a tight limit and the
-/// pass's truncation would zero the vAMM's book even though part of the curve
-/// was fillable. This is the taker's own price — no shading-band question.
+/// cumulative where the marginal price reaches the limit and the total is
+/// capped there, so every rung's true cost is inside the limit (a slice's
+/// average never exceeds its end marginal). This is the taker's own price —
+/// no shading-band question.
+///
+/// Because the cap happens here, the ladder's book is authoritative for the
+/// limit and callers must NOT re-truncate it by comparing rung prices to the
+/// limit: a dust rung's notional rounds up to a whole lamport, which inflates
+/// its quoted per-unit price past the very limit that admitted it, and
+/// dropping it would cost the taker liquidity they can afford.
 pub fn vamm_quote_levels(
     amm: &AMM,
     direction: Direction,
@@ -208,20 +213,6 @@ pub fn vamm_quote_levels(
                 .unwrap_or(u64::MAX)
                 .min(honest)
                 .min(bound.unwrap_or(u64::MAX)),
-        };
-        // Clamp to the taker's limit. `total` was already capped where the
-        // curve's marginal price reaches the limit, and a slice's average
-        // cost never exceeds its end marginal — so the true cost is inside
-        // the limit and only integer rounding can push the quoted per-unit
-        // price past it (a dust rung whose notional rounds up to a whole
-        // lamport). Without the clamp such a rung prices itself out of the
-        // taker's own limit and the fill's truncation drops liquidity the
-        // taker could afford; the fill-side lamport of slack covers the
-        // rounding gap.
-        let price = match (taker_limit, direction) {
-            (Some(limit), Direction::Long) => price.min(limit),
-            (Some(limit), Direction::Short) => price.max(limit),
-            (None, _) => price,
         };
         if price == 0 {
             break;

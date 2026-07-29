@@ -1,5 +1,12 @@
 # @velocity-exchange/usermap-server
 
+## 0.1.13
+
+### Patch Changes
+
+- Updated dependencies [[`2a73aa7`](https://github.com/velocity-exchange/velocity-v1/commit/2a73aa716aed4f5910893c0ad9012bd598f72844), [`6e29daf`](https://github.com/velocity-exchange/velocity-v1/commit/6e29daf0ef781986dbe3bbf79f1c9bd2e25eb646)]:
+  - @velocity-exchange/sdk@0.11.0
+
 ## 0.1.12
 
 ### Patch Changes

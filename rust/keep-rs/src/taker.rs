@@ -31,17 +31,17 @@
 //! with the market index — good enough for direction coin-flips; the
 //! mean-reversion bound, not the RNG quality, is what bounds risk.
 
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
-
-use velocity_rs::{
-    types::{
-        accounts::User, MarketId, MarketType, OrderParams, OrderType, PerpPosition,
-        PositionDirection,
+use {
+    crate::{Config, UseMarkets},
+    std::time::{Duration, SystemTime, UNIX_EPOCH},
+    velocity_rs::{
+        types::{
+            accounts::User, MarketId, MarketType, OrderParams, OrderType, PerpPosition,
+            PositionDirection,
+        },
+        Pubkey, TransactionBuilder, VelocityClient,
     },
-    Pubkey, TransactionBuilder, VelocityClient,
 };
-
-use crate::{Config, UseMarkets};
 
 const TARGET: &str = "taker";
 

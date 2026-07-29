@@ -87,7 +87,7 @@ import {
 } from './constants/numericConstants';
 import { calculateTargetPriceTrade } from './math/trade';
 import { calculateAmmReservesAfterSwap, getSwapDirection } from './math/amm';
-import { JupiterClient, QuoteResponse } from './jupiter/jupiterClient';
+import { JupiterClient, JupiterSwapQuote } from './jupiter/jupiterClient';
 import { SwapMode } from './swap/UnifiedSwapClient';
 
 export class AdminClient extends VelocityClient {
@@ -1378,7 +1378,7 @@ export class AdminClient extends VelocityClient {
 			targetPrice,
 			new BN(1000),
 			'quote',
-			undefined //todo
+			this.getMMOracleDataForPerpMarket(perpMarketIndex)
 		);
 
 		const [newQuoteAssetAmount, newBaseAssetAmount] =
@@ -7344,7 +7344,7 @@ export class AdminClient extends VelocityClient {
 		slippageBps?: number;
 		swapMode?: SwapMode;
 		onlyDirectRoutes?: boolean;
-		quote?: QuoteResponse;
+		quote?: JupiterSwapQuote;
 		lpPoolId: number;
 	}): Promise<{
 		ixs: TransactionInstruction[];
@@ -7370,26 +7370,17 @@ export class AdminClient extends VelocityClient {
 			throw new Error('Could not fetch swap quote. Please try again.');
 		}
 
+		this.assertQuoteMatchesMarkets(quote, inMarket, outMarket);
+
 		const isExactOut = swapMode === 'ExactOut' || quote.swapMode === 'ExactOut';
 		const amountIn = new BN(quote.inAmount);
 		const exactOutBufferedAmountIn = amountIn.muln(1001).divn(1000); // Add 10bp buffer
 
-		const transaction = await jupiterClient.getSwap({
-			quote,
-			userPublicKey: this.provider.wallet.publicKey,
-			slippageBps,
-		});
-
-		const { transactionMessage, lookupTables } =
-			await jupiterClient.getTransactionMessageAndLookupTables({
-				transaction,
+		const { instructions: jupiterInstructions, lookupTables } =
+			await jupiterClient.getRouteInstructions({
+				quote,
+				userPublicKey: this.provider.wallet.publicKey,
 			});
-
-		const jupiterInstructions = jupiterClient.getJupiterInstructions({
-			transactionMessage,
-			inputMint: inMarket.mint,
-			outputMint: outMarket.mint,
-		});
 
 		const preInstructions = [];
 		const tokenProgram = this.getTokenProgramForSpotMarket(outMarket);
@@ -7431,7 +7422,7 @@ export class AdminClient extends VelocityClient {
 					this.provider.wallet.publicKey,
 					this.provider.wallet.publicKey,
 					inMarket.mint,
-					tokenProgram
+					inTokenProgram
 				)
 			);
 		}
@@ -8383,6 +8374,7 @@ export enum HotRole {
 	MmOracleCrank = 'mmOracleCrank',
 	AmmSpreadAdjust = 'ammSpreadAdjust',
 	FeeWithdraw = 'feeWithdraw',
+	AccountExtension = 'accountExtension',
 }
 
 /** Anchor encodes Rust enums as `{ <variant>: {} }`. */

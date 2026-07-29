@@ -2,7 +2,7 @@
   "address": "vAuLTsyrvSfZRuRB3XgvkPwNGgYSs9YRYymVebLKoxR",
   "metadata": {
     "name": "vaults",
-    "version": "0.11.0",
+    "version": "0.11.1",
     "spec": "0.1.0",
     "description": "Velocity vaults program"
   },
@@ -5526,15 +5526,44 @@
           {
             "name": "_padding_align_pfp",
             "docs": [
-              "Aligns `protocol_fee_pool`'s leading u128 to a 16-byte struct offset so",
-              "host (x86_64, align 16) and SBF (align 8) layouts agree. Do not reorder."
+              "Explicit filler carved from the alignment gap before `protocol_fee_pool`",
+              "(which must stay at struct offset 752 so host/SBF layouts agree and the",
+              "borsh/IDL packed offset matches). The gap is 13 bytes; the three",
+              "configurable-limit fields below plus this 1-byte filler fill it exactly,",
+              "so `protocol_fee_pool` and every field after it keep their offsets and the",
+              "account size is unchanged. Reads 0 on markets created before these fields",
+              "existed. Every byte is explicit so no implicit `#[repr(C)]` pad desyncs",
+              "off-chain borsh decoders. Do not reorder or resize."
             ],
-            "type": {
-              "array": [
-                "u8",
-                8
-              ]
-            }
+            "type": "u8"
+          },
+          {
+            "name": "withdraw_circuit_breaker_bps",
+            "docs": [
+              "Daily withdraw circuit-breaker size: the max fraction of the 24h deposit",
+              "TWAP that may be withdrawn per 24h window. `0` is treated as the default",
+              "(2500 bps = 25%) so markets created before this field existed keep prior",
+              "behavior. precision: basis points (10_000 = 100%)"
+            ],
+            "type": "u16"
+          },
+          {
+            "name": "max_deposit_bps_per_day",
+            "docs": [
+              "Daily deposit rate limit: the max fraction above the 24h deposit TWAP that",
+              "resulting deposits may reach per 24h window. Disabled when `0`.",
+              "precision: basis points (10_000 = 100%)"
+            ],
+            "type": "u16"
+          },
+          {
+            "name": "deposit_guard_threshold",
+            "docs": [
+              "No deposit rate limit when resulting deposits are below this threshold.",
+              "Mirrors `withdraw_guard_threshold` on the deposit side.",
+              "precision: token mint precision"
+            ],
+            "type": "u64"
           },
           {
             "name": "protocol_fee_pool",
@@ -5570,13 +5599,33 @@
             "type": "u32"
           },
           {
-            "name": "padding",
-            "type": {
-              "array": [
-                "u8",
-                8
-              ]
-            }
+            "name": "if_last_settle_vault_amount",
+            "docs": [
+              "Donation-proof accounted balance of the insurance-fund vault. It is moved",
+              "by the same signed delta as the real SPL vault on *every* instruction that",
+              "moves the vault, so it stays a faithful shadow of the vault minus raw",
+              "donations. Inflows grow it: staker deposits (`add_insurance_fund_stake`)",
+              "and settled revenue (`settle_revenue_to_insurance_fund`). Outflows/draws",
+              "shrink it (saturating at 0): staker withdrawals",
+              "(`remove_insurance_fund_stake`) and every IF draw that covers a loss —",
+              "`resolve_perp_pnl_deficit`, `resolve_perp_bankruptcy`,",
+              "`resolve_spot_bankruptcy`. The one movement deliberately *excluded* is a",
+              "raw SPL transfer straight into the vault: it runs no instruction, so it",
+              "never enters this balance — that is exactly the donation the shadow must",
+              "not see. Consumed by the per-period revenue-settle APR cap in",
+              "`settle_revenue_to_insurance_fund`, sized off `min(live_if_vault, this)`,",
+              "so a donation spiked into the live vault right before a settle cannot",
+              "inflate the cap while legitimate stakes and real settled revenue (which",
+              "this balance tracks) still do. (The unstake-cancel share forfeiture is",
+              "donation-proofed differently — by withdraw-and-restake at the active share",
+              "price — and does *not* read this field.) Repurposed from trailing padding —",
+              "layout/size unchanged; `0` means \"uninitialized\" (existing account",
+              "pre-upgrade, or an accounted balance legitimately drained to empty — an",
+              "empty IF vault has no user shares, so this is safe), and is seeded from the",
+              "live balance on the next add/settle and treated as \"fall back to live\" by",
+              "the consumers."
+            ],
+            "type": "u64"
           }
         ]
       }
@@ -6099,21 +6148,25 @@
           {
             "name": "equity_floor",
             "docs": [
-              "Minimum account equity (cross-margin total collateral) required for",
-              "risk-increasing orders, fills, withdrawals and deposit transfers.",
-              "Settable only by the warm/cold admin; 0 disables the check.",
+              "Minimum account net equity (unweighted assets plus perp pnl minus",
+              "spot liabilities, see `calculate_user_equity`). Below this the",
+              "permissionless breaker can trip. Risk-increasing orders, fills,",
+              "withdrawals and deposit transfers must clear `equity_floor +",
+              "equity_floor_buffer`. Settable only by the warm/cold admin; 0 disables",
+              "both checks.",
               "precision: QUOTE_PRECISION"
             ],
             "type": "u64"
           },
           {
-            "name": "padding2",
-            "type": {
-              "array": [
-                "u8",
-                8
-              ]
-            }
+            "name": "equity_floor_buffer",
+            "docs": [
+              "Extra headroom above `equity_floor` required by risk-increasing",
+              "actions, so an account cannot legally end an action at the trip",
+              "threshold. No effect while `equity_floor` is 0.",
+              "precision: QUOTE_PRECISION"
+            ],
+            "type": "u64"
           }
         ]
       }

@@ -1,11 +1,12 @@
-use crate::error::{ErrorCode, VelocityResult};
-use crate::math::casting::Cast;
-use crate::math::constants::{
-    MAX_WITHDRAW_GUARD_THRESHOLD_NOTIONAL, SPOT_UTILIZATION_PRECISION_U32,
+use crate::{
+    error::{ErrorCode, VelocityResult},
+    math::{
+        casting::Cast,
+        constants::{MAX_WITHDRAW_GUARD_THRESHOLD_NOTIONAL, SPOT_UTILIZATION_PRECISION_U32},
+        spot_balance::get_token_value,
+    },
+    msg, validate,
 };
-use crate::math::spot_balance::get_token_value;
-use crate::msg;
-use crate::validate;
 
 pub fn validate_borrow_rate(
     optimal_utilization: u32,
@@ -74,8 +75,7 @@ pub fn validate_withdraw_guard_threshold(
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-    use crate::math::constants::PRICE_PRECISION_I64;
+    use {super::*, crate::math::constants::PRICE_PRECISION_I64};
 
     #[test]
     fn withdraw_guard_threshold_notional_cap() {

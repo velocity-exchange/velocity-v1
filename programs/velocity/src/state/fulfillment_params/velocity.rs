@@ -1,21 +1,21 @@
-use crate::error::{ErrorCode, VelocityResult};
-
-use crate::math::spot_withdraw::validate_spot_market_vault_amount;
-use crate::state::events::OrderActionExplanation;
-
-use crate::state::spot_fulfillment_params::{ExternalSpotFill, SpotFulfillmentParams};
-use crate::state::spot_market::SpotMarket;
-
-use crate::{validate, PositionDirection};
-
-use anchor_lang::prelude::InterfaceAccount;
-
-use anchor_spl::token_interface::TokenAccount;
-use arrayref::array_ref;
-
-use crate::msg;
-use solana_program::account_info::AccountInfo;
-use std::cell::Ref;
+use {
+    crate::{
+        error::{ErrorCode, VelocityResult},
+        math::spot_withdraw::validate_spot_market_vault_amount,
+        msg,
+        state::{
+            events::OrderActionExplanation,
+            spot_fulfillment_params::{ExternalSpotFill, SpotFulfillmentParams},
+            spot_market::SpotMarket,
+        },
+        validate, PositionDirection,
+    },
+    anchor_lang::prelude::InterfaceAccount,
+    anchor_spl::token_interface::TokenAccount,
+    arrayref::array_ref,
+    solana_program::account_info::AccountInfo,
+    std::cell::Ref,
+};
 
 pub struct MatchFulfillmentParams<'a> {
     pub base_market_vault: Box<InterfaceAccount<'a, TokenAccount>>,

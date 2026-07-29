@@ -1,21 +1,20 @@
-use crate::msg;
-
-use crate::controller::position::PositionDirection;
-use crate::controller::spot_balance::update_spot_balances;
-use crate::error::ErrorCode;
-use crate::error::VelocityResult;
-use crate::math::casting::Cast;
-use crate::math::safe_math::SafeMath;
-use crate::math::spot_withdraw::{check_deposit_limits, check_withdraw_limits};
-use crate::math_error;
-use crate::safe_decrement;
-use crate::safe_increment;
-use crate::state::market_status::MarketStatus;
-use crate::state::paused_operations::SpotOperation;
-use crate::state::spot_market::{AssetTier, SpotBalance, SpotBalanceType, SpotMarket};
-use crate::state::user::{SpotPosition, User};
-
-use crate::validate;
+use crate::{
+    controller::{position::PositionDirection, spot_balance::update_spot_balances},
+    error::{ErrorCode, VelocityResult},
+    math::{
+        casting::Cast,
+        safe_math::SafeMath,
+        spot_withdraw::{check_deposit_limits, check_withdraw_limits},
+    },
+    math_error, msg, safe_decrement, safe_increment,
+    state::{
+        market_status::MarketStatus,
+        paused_operations::SpotOperation,
+        spot_market::{AssetTier, SpotBalance, SpotBalanceType, SpotMarket},
+        user::{SpotPosition, User},
+    },
+    validate,
+};
 
 #[cfg(test)]
 mod tests;

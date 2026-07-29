@@ -149,6 +149,10 @@ pub fn zero_account_to_bytes<T: bytemuck::Pod + anchor_lang::Discriminator>(acco
 
 /// zero-copy deserialize anchor account `data` as T
 ///
+/// Reads exactly `size_of::<T>()` bytes after the discriminator, so a buffer
+/// longer than the compiled-in struct (an account extended by a program
+/// upgrade) still decodes instead of panicking on the size mismatch.
+///
 /// ## Params
 /// - * `data` - Anchor borsh encoded buffer (including discriminator)
 ///
@@ -157,7 +161,7 @@ pub fn deser_zero_copy<T: Discriminator + Pod>(data: &[u8]) -> T {
     // `pod_read_unaligned` instead of `from_bytes` because `data` originates
     // from `Vec<u8>`/`Arc<[u8]>` allocations that are only byte-aligned, and
     // T may require >1-byte alignment (u64/u128 fields).
-    bytemuck::pod_read_unaligned::<T>(&data[8..])
+    bytemuck::pod_read_unaligned::<T>(&data[8..8 + std::mem::size_of::<T>()])
 }
 
 /// Fallible variant of [`deser_zero_copy`] for data that may not be a well-formed
@@ -170,7 +174,9 @@ pub fn try_deser_zero_copy<T: Discriminator + Pod>(data: &[u8]) -> Option<T> {
     if data.len() < 8 + std::mem::size_of::<T>() {
         return None;
     }
-    Some(bytemuck::pod_read_unaligned::<T>(&data[8..]))
+    Some(bytemuck::pod_read_unaligned::<T>(
+        &data[8..8 + std::mem::size_of::<T>()],
+    ))
 }
 
 /// Derive pyth lazer oracle pubkey for Velocity program
@@ -451,5 +457,25 @@ mod tests {
         // well-formed (discriminator + zeroed body) buffer -> Some
         let bytes = zero_account_to_bytes(PerpMarket::zeroed());
         assert!(try_deser_zero_copy::<PerpMarket>(&bytes).is_some());
+    }
+
+    #[test]
+    fn test_deser_zero_copy_tolerates_extended_account() {
+        use crate::PerpMarket;
+        use bytemuck::Zeroable;
+
+        // buffer longer than the compiled-in struct (account extended by a
+        // program upgrade): decode reads exactly size_of::<T>() bytes and
+        // ignores the tail
+        let mut market = PerpMarket::zeroed();
+        market.market_index = 7;
+        let mut bytes = zero_account_to_bytes(market);
+        bytes.extend_from_slice(&[0xAA; 128]);
+
+        let decoded = deser_zero_copy::<PerpMarket>(&bytes);
+        assert!(bytemuck::bytes_of(&decoded) == bytemuck::bytes_of(&market));
+
+        let decoded = try_deser_zero_copy::<PerpMarket>(&bytes).expect("decodes");
+        assert!(bytemuck::bytes_of(&decoded) == bytemuck::bytes_of(&market));
     }
 }

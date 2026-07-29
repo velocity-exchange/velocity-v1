@@ -7,9 +7,11 @@
 
 extern crate proc_macro;
 
-use proc_macro::TokenStream;
-use quote::{format_ident, quote};
-use syn::{parse_macro_input, Data, DeriveInput, Fields};
+use {
+    proc_macro::TokenStream,
+    quote::{format_ident, quote},
+    syn::{parse_macro_input, Data, DeriveInput, Fields},
+};
 
 /// Compile-time guard that a struct carries no implicit padding ("slop") between
 /// its fields: it asserts `size_of::<Struct>() == sum(size_of::<field>())`.

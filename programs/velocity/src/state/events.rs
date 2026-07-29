@@ -1,24 +1,24 @@
-use std::io::Write;
-
-use anchor_lang::{
-    prelude::{
-        borsh::{BorshDeserialize, BorshSerialize},
-        *,
-    },
-    Discriminator,
-};
-
-use crate::{
-    controller::position::PositionDirection,
-    error::{ErrorCode::InvalidOrder, VelocityResult},
-    math::{casting::Cast, safe_unwrap::SafeUnwrap},
-    state::{
-        order_params::{
-            OrderParams, SignedMsgOrderParamsDelegateMessage, SignedMsgOrderParamsMessage,
+use {
+    crate::{
+        controller::position::PositionDirection,
+        error::{ErrorCode::InvalidOrder, VelocityResult},
+        math::{casting::Cast, safe_unwrap::SafeUnwrap},
+        state::{
+            order_params::{
+                OrderParams, SignedMsgOrderParamsDelegateMessage, SignedMsgOrderParamsMessage,
+            },
+            traits::Size,
+            user::{MarketType, Order},
         },
-        traits::Size,
-        user::{MarketType, Order},
     },
+    anchor_lang::{
+        prelude::{
+            borsh::{BorshDeserialize, BorshSerialize},
+            *,
+        },
+        Discriminator,
+    },
+    std::io::Write,
 };
 
 #[event]

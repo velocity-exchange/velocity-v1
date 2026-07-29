@@ -594,6 +594,13 @@ mod tests {
         let mut bad = bytes.clone();
         bad[0] ^= 0xff;
         assert!(AccountRef::<User>::try_new(&bad).is_none());
+
+        // Longer than a `User` (account extended by a program upgrade) =>
+        // accepted; deref reads exactly `size_of::<User>()` bytes.
+        let mut extended = bytes.clone();
+        extended.extend_from_slice(&[0xaa; 128]);
+        let r = AccountRef::<User>::try_new(&extended).expect("extended User bytes");
+        assert_eq!(*r, User::default());
     }
 
     #[cfg(feature = "rpc_tests")]

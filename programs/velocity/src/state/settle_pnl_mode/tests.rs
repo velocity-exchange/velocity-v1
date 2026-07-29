@@ -1,6 +1,5 @@
 mod test {
-    use crate::error::ErrorCode;
-    use crate::SettlePnlMode;
+    use crate::{error::ErrorCode, SettlePnlMode};
 
     #[test]
     fn test_must_settle_returns_err() {

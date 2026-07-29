@@ -1,12 +1,13 @@
-use anchor_lang::prelude::*;
-use velocity::cpi::accounts::UpdateUser;
-use velocity::program::Velocity;
-use velocity::state::user::User;
-
-use crate::constraints::{is_manager_for_vault, is_user_for_vault};
-use crate::declare_vault_seeds;
-use crate::velocity_cpi::UpdatePoolIdCPI;
-use crate::Vault;
+use {
+    crate::{
+        constraints::{is_manager_for_vault, is_user_for_vault},
+        declare_vault_seeds,
+        velocity_cpi::UpdatePoolIdCPI,
+        Vault,
+    },
+    anchor_lang::prelude::*,
+    velocity::{cpi::accounts::UpdateUser, program::Velocity, state::user::User},
+};
 
 pub fn update_pool_id<'info>(ctx: Context<'info, UpdatePoolId<'info>>, pool_id: u8) -> Result<()> {
     ctx.velocity_update_pool_id(pool_id)?;

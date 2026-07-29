@@ -10,32 +10,42 @@
 //!  * `regr_269_*` — PENDING PR #269 (OtterSec F7). Each asserts the FIXED
 //!    invariant, so it reports a violation on current (pre-fix) master.
 
-use crucible_fuzzer::*;
-
-use velocity::controller::position::PositionDirection;
-use velocity::math::bn::U192;
-use velocity::math::constants::{
-    AMM_RESERVE_PRECISION, MAX_CONCENTRATION_COEFFICIENT, PEG_PRECISION, PRICE_PRECISION,
-};
-use velocity::math::oracle::OracleValidity;
-use velocity::math::safe_math::SafeMath;
-use velocity::state::market_status::MarketStatus;
-use velocity::state::oracle::{MMOraclePriceData, OraclePriceData};
-use velocity::state::perp_market::{PerpMarket, AMM};
-use velocity::vlp::amm::controller::SwapDirection;
-use velocity::vlp::amm::math::amm::{
-    calculate_amm_available_liquidity, calculate_bid_ask_bounds, calculate_price,
-    calculate_quote_asset_amount_swapped, calculate_swap_output, sanitize_new_price,
-};
-use velocity::vlp::amm::math::cp_curve::{adjust_k_cost, get_update_k_result};
-use velocity::vlp::amm::math::jit::{
-    calculate_amm_jit_liquidity, calculate_clamped_jit_base_asset_amount,
-};
-use velocity::vlp::amm::math::repeg::{
-    calculate_repeg_cost, project_post_refresh, project_post_refresh_scalar, ProjectionInputs,
-};
-use velocity::vlp::amm::math::spread::{
-    calculate_base_asset_amount_to_trade_to_price, cap_to_max_spread,
+use {
+    crucible_fuzzer::*,
+    velocity::{
+        controller::position::PositionDirection,
+        math::{
+            bn::U192,
+            constants::{
+                AMM_RESERVE_PRECISION, MAX_CONCENTRATION_COEFFICIENT, PEG_PRECISION,
+                PRICE_PRECISION,
+            },
+            oracle::OracleValidity,
+            safe_math::SafeMath,
+        },
+        state::{
+            market_status::MarketStatus,
+            oracle::{MMOraclePriceData, OraclePriceData},
+            perp_market::{PerpMarket, AMM},
+        },
+        vlp::amm::{
+            controller::SwapDirection,
+            math::{
+                amm::{
+                    calculate_amm_available_liquidity, calculate_bid_ask_bounds, calculate_price,
+                    calculate_quote_asset_amount_swapped, calculate_swap_output,
+                    sanitize_new_price,
+                },
+                cp_curve::{adjust_k_cost, get_update_k_result},
+                jit::{calculate_amm_jit_liquidity, calculate_clamped_jit_base_asset_amount},
+                repeg::{
+                    calculate_repeg_cost, project_post_refresh, project_post_refresh_scalar,
+                    ProjectionInputs,
+                },
+                spread::{calculate_base_asset_amount_to_trade_to_price, cap_to_max_spread},
+            },
+        },
+    },
 };
 
 #[derive(Clone)]

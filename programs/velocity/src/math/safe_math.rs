@@ -1,9 +1,15 @@
-use crate::error::{ErrorCode, VelocityResult};
-use crate::math::bn::{U192, U256};
-use crate::math::ceil_div::CheckedCeilDiv;
-use crate::math::floor_div::CheckedFloorDiv;
-use crate::msg;
-use std::panic::Location;
+use {
+    crate::{
+        error::{ErrorCode, VelocityResult},
+        math::{
+            bn::{U192, U256},
+            ceil_div::CheckedCeilDiv,
+            floor_div::CheckedFloorDiv,
+        },
+        msg,
+    },
+    std::panic::Location,
+};
 
 pub trait SafeMath: Sized {
     fn safe_add(self, rhs: Self) -> VelocityResult<Self>;
@@ -129,8 +135,10 @@ div_floor_impl!(i8);
 
 #[cfg(test)]
 mod test {
-    use crate::error::ErrorCode;
-    use crate::math::safe_math::{SafeDivFloor, SafeMath};
+    use crate::{
+        error::ErrorCode,
+        math::safe_math::{SafeDivFloor, SafeMath},
+    };
 
     #[test]
     fn safe_add() {

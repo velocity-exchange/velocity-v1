@@ -1,36 +1,41 @@
-use std::cmp::max;
-
-use anchor_lang::prelude::*;
-use solana_program::clock::UnixTimestamp;
-
-use crate::controller::position::{
-    get_position_index, update_quote_asset_and_break_even_amount, PositionDirection,
+use {
+    crate::{
+        controller::position::{
+            get_position_index, update_quote_asset_and_break_even_amount, PositionDirection,
+        },
+        error::VelocityResult,
+        math::{
+            casting::Cast,
+            constants::{
+                BASE_PRECISION_U64, BPS_PRECISION, FUNDING_RATE_BUFFER,
+                FUNDING_RATE_OFFSET_DENOMINATOR, ONE_HOUR_I128, TWENTY_FOUR_HOUR,
+            },
+            funding::{
+                calculate_funding_payment, calculate_funding_premium_with_offset,
+                calculate_funding_rate_long_short, validate_funding_pnl_profitability,
+                FundingMarketInputs,
+            },
+            helpers::on_the_hour_update,
+            oracle,
+            safe_math::SafeMath,
+            stats::calculate_new_twap,
+        },
+        state::{
+            events::{FundingPaymentRecord, FundingRateRecord},
+            market_status::MarketStatus,
+            oracle_map::OracleMap,
+            perp_market::{MarketConfigFlag, PerpMarket},
+            perp_market_map::PerpMarketMap,
+            quoter::{MarketEvent, QuoteContext},
+            state::OracleGuardRails,
+            user::User,
+        },
+        vlp::amm::{refresh::compute_amm_refresh_validity_with_guard_rails, AmmQuoter},
+    },
+    anchor_lang::prelude::*,
+    solana_program::clock::UnixTimestamp,
+    std::cmp::max,
 };
-use crate::error::VelocityResult;
-use crate::math::casting::Cast;
-use crate::math::constants::{
-    BASE_PRECISION_U64, BPS_PRECISION, FUNDING_RATE_BUFFER, FUNDING_RATE_OFFSET_DENOMINATOR,
-    ONE_HOUR_I128, TWENTY_FOUR_HOUR,
-};
-use crate::math::funding::{
-    calculate_funding_payment, calculate_funding_premium_with_offset,
-    calculate_funding_rate_long_short, validate_funding_pnl_profitability, FundingMarketInputs,
-};
-use crate::math::helpers::on_the_hour_update;
-use crate::math::oracle;
-use crate::math::safe_math::SafeMath;
-use crate::math::stats::calculate_new_twap;
-use crate::vlp::amm::refresh::compute_amm_refresh_validity_with_guard_rails;
-use crate::vlp::amm::AmmQuoter;
-
-use crate::state::events::{FundingPaymentRecord, FundingRateRecord};
-use crate::state::market_status::MarketStatus;
-use crate::state::oracle_map::OracleMap;
-use crate::state::perp_market::{MarketConfigFlag, PerpMarket};
-use crate::state::perp_market_map::PerpMarketMap;
-use crate::state::quoter::{MarketEvent, QuoteContext};
-use crate::state::state::OracleGuardRails;
-use crate::state::user::User;
 
 /// NOTE: this must run UNCONDITIONALLY on every position-mutating path (fills,
 /// liquidations, transfers, expiry settlement), including while the exchange-wide

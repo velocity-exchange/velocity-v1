@@ -1,8 +1,7 @@
-use anchor_lang::prelude::*;
-
-use crate::error::ErrorCode;
-use crate::state::Vault;
-use crate::{validate, Size, VaultDepositor};
+use {
+    crate::{error::ErrorCode, state::Vault, validate, Size, VaultDepositor},
+    anchor_lang::prelude::*,
+};
 
 pub fn initialize_vault_depositor(ctx: Context<InitializeVaultDepositor>) -> Result<()> {
     let mut vault_depositor = ctx.accounts.vault_depositor.load_init()?;

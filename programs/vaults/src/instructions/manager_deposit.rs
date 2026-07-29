@@ -1,15 +1,19 @@
-use anchor_lang::prelude::*;
-use anchor_spl::token::{self, Token, TokenAccount, Transfer};
-use velocity::cpi::accounts::Deposit as VelocityDeposit;
-use velocity::instructions::optional_accounts::AccountMaps;
-use velocity::program::Velocity;
-use velocity::state::user::User;
-
-use crate::constraints::{is_manager_for_vault, is_user_for_vault, is_user_stats_for_vault};
-use crate::state::{Vault, VaultProtocolProvider};
-use crate::token_cpi::TokenTransferCPI;
-use crate::velocity_cpi::DepositCPI;
-use crate::{declare_vault_seeds, AccountMapProvider};
+use {
+    crate::{
+        constraints::{is_manager_for_vault, is_user_for_vault, is_user_stats_for_vault},
+        declare_vault_seeds,
+        state::{Vault, VaultProtocolProvider},
+        token_cpi::TokenTransferCPI,
+        velocity_cpi::DepositCPI,
+        AccountMapProvider,
+    },
+    anchor_lang::prelude::*,
+    anchor_spl::token::{self, Token, TokenAccount, Transfer},
+    velocity::{
+        cpi::accounts::Deposit as VelocityDeposit, instructions::optional_accounts::AccountMaps,
+        program::Velocity, state::user::User,
+    },
+};
 
 pub fn manager_deposit<'info>(
     ctx: Context<'info, ManagerDeposit<'info>>,

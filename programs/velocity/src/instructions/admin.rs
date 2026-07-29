@@ -1,88 +1,97 @@
-use std::convert::TryInto;
-
-use crate::state::state::LpPoolFeatureBitFlags;
-
-use anchor_lang::prelude::*;
-use anchor_lang::Discriminator;
-use anchor_spl::{
-    token_2022::{
-        spl_token_2022::{
-            extension::{
-                transfer_hook::TransferHook, BaseStateWithExtensions, StateWithExtensions,
+use {
+    crate::{
+        auth::{check_cold, check_hot, check_pause, check_warm, require_pause_only_added},
+        controller::{
+            self,
+            token::{close_vault, initialize_immutable_owner, initialize_token_account},
+        },
+        error::ErrorCode,
+        get_then_update_id,
+        instructions::{
+            constraints::*,
+            optional_accounts::{load_maps, AccountMaps},
+        },
+        load_mut,
+        math::{
+            self, bn,
+            casting::Cast,
+            constants::{
+                BPS_PRECISION, DEFAULT_BANKRUPTCY_IF_FLOOR_PCT,
+                DEFAULT_LIQUIDATION_MARGIN_BUFFER_RATIO, FEE_ADJUSTMENT_MAX,
+                FEE_POOL_TO_REVENUE_POOL_THRESHOLD, IF_FACTOR_PRECISION, INSURANCE_A_MAX,
+                INSURANCE_B_MAX, INSURANCE_C_MAX, INSURANCE_SPECULATIVE_MAX,
+                LIQUIDATION_FEE_PRECISION, MAX_CONCENTRATION_COEFFICIENT,
+                MM_ORACLE_MAX_STEP_PCT_PRECISION, MM_ORACLE_MIN_SLOT_GAP, PERCENTAGE_PRECISION,
+                PERCENTAGE_PRECISION_I128, PERCENTAGE_PRECISION_I64, PERCENTAGE_PRECISION_U32,
+                QUOTE_PRECISION_I64, QUOTE_SPOT_MARKET_INDEX, SPOT_BALANCE_PRECISION,
+                SPOT_CUMULATIVE_INTEREST_PRECISION, SPOT_IMF_PRECISION, SPOT_WEIGHT_PRECISION,
+                THIRTEEN_DAY, TWENTY_FOUR_HOUR,
             },
-            state::Mint as MintInner,
+            orders::is_multiple_of_step_size,
+            safe_math::SafeMath,
+            spot_balance::get_token_amount,
+            spot_withdraw::{
+                validate_spot_market_vault_amount, DEFAULT_WITHDRAW_CIRCUIT_BREAKER_BPS,
+            },
         },
-        Token2022,
-    },
-    token_interface::{Mint, TokenAccount, TokenInterface},
-};
-
-use crate::{
-    auth::{check_cold, check_hot, check_pause, check_warm, require_pause_only_added},
-    controller,
-    controller::token::{close_vault, initialize_immutable_owner, initialize_token_account},
-    error::ErrorCode,
-    get_then_update_id,
-    instructions::{
-        constraints::*,
-        optional_accounts::{load_maps, AccountMaps},
-    },
-    load_mut, math,
-    math::{
-        bn,
-        casting::Cast,
-        constants::{
-            BPS_PRECISION, DEFAULT_BANKRUPTCY_IF_FLOOR_PCT,
-            DEFAULT_LIQUIDATION_MARGIN_BUFFER_RATIO, FEE_ADJUSTMENT_MAX,
-            FEE_POOL_TO_REVENUE_POOL_THRESHOLD, IF_FACTOR_PRECISION, INSURANCE_A_MAX,
-            INSURANCE_B_MAX, INSURANCE_C_MAX, INSURANCE_SPECULATIVE_MAX, LIQUIDATION_FEE_PRECISION,
-            MAX_CONCENTRATION_COEFFICIENT, MM_ORACLE_MAX_STEP_PCT_PRECISION,
-            MM_ORACLE_MIN_SLOT_GAP, PERCENTAGE_PRECISION, PERCENTAGE_PRECISION_I128,
-            PERCENTAGE_PRECISION_I64, PERCENTAGE_PRECISION_U32, QUOTE_PRECISION_I64,
-            QUOTE_SPOT_MARKET_INDEX, SPOT_BALANCE_PRECISION, SPOT_CUMULATIVE_INTEREST_PRECISION,
-            SPOT_IMF_PRECISION, SPOT_WEIGHT_PRECISION, THIRTEEN_DAY, TWENTY_FOUR_HOUR,
+        math_error, msg,
+        optional_accounts::get_token_mint,
+        safe_decrement, safe_increment,
+        state::{
+            events::{
+                DepositDirection, DepositExplanation, DepositRecord, SpotMarketVaultDepositRecord,
+            },
+            market_status::MarketStatus,
+            oracle::{
+                get_oracle_price, get_prelaunch_price, get_pyth_price, HistoricalIndexData,
+                HistoricalOracleData, OraclePriceData, OracleSource, PrelaunchOracle,
+                PrelaunchOracleParams, StrictOraclePrice,
+            },
+            oracle_map::OracleMap,
+            paused_operations::{InsuranceFundOperation, PerpOperation, SpotOperation},
+            perp_market::{
+                ContractTier, ContractType, FeeLedger, HedgeConfig, InsuranceClaim,
+                MarketConfigFlag, MarketStats, PerpMarket, PoolBalance, AMM,
+            },
+            perp_market_map::{get_writable_perp_market_set, MarketSet},
+            pyth_lazer_oracle::{PythLazerOracle, PYTH_LAZER_ORACLE_SEED},
+            spot_market::{
+                AssetTier, InsuranceFund, SpotBalanceType, SpotMarket, TokenProgramFlag,
+            },
+            spot_market_map::get_writable_spot_market_set,
+            state::{
+                ExchangeStatus, FeeStructure, HotRole, LpPoolFeatureBitFlags, OracleGuardRails,
+                SolvencyStatus, State,
+            },
+            traits::Size,
+            user::{MarketType, SpecialUserStatus, User, UserStats},
         },
-        orders::is_multiple_of_step_size,
-        safe_math::SafeMath,
-        spot_balance::get_token_amount,
-        spot_withdraw::{validate_spot_market_vault_amount, DEFAULT_WITHDRAW_CIRCUIT_BREAKER_BPS},
-    },
-    math_error, msg,
-    optional_accounts::get_token_mint,
-    safe_decrement, safe_increment,
-    state::{
-        events::{
-            DepositDirection, DepositExplanation, DepositRecord, SpotMarketVaultDepositRecord,
+        validate,
+        validation::{
+            fee_structure::validate_fee_structure,
+            margin::{validate_margin, validate_margin_weights},
+            spot_market::{validate_borrow_rate, validate_withdraw_guard_threshold},
         },
-        market_status::MarketStatus,
-        oracle::{
-            get_oracle_price, get_prelaunch_price, get_pyth_price, HistoricalIndexData,
-            HistoricalOracleData, OraclePriceData, OracleSource, PrelaunchOracle,
-            PrelaunchOracleParams, StrictOraclePrice,
+        vlp::{
+            amm::math::amm,
+            amm_cache::{AmmCache, AMM_POSITIONS_CACHE},
         },
-        oracle_map::OracleMap,
-        paused_operations::{InsuranceFundOperation, PerpOperation, SpotOperation},
-        perp_market::{
-            ContractTier, ContractType, FeeLedger, HedgeConfig, InsuranceClaim, MarketConfigFlag,
-            MarketStats, PerpMarket, PoolBalance, AMM,
+        FeatureBitFlags,
+    },
+    anchor_lang::{prelude::*, Discriminator},
+    anchor_spl::{
+        token_2022::{
+            spl_token_2022::{
+                extension::{
+                    transfer_hook::TransferHook, BaseStateWithExtensions, StateWithExtensions,
+                },
+                state::Mint as MintInner,
+            },
+            Token2022,
         },
-        perp_market_map::{get_writable_perp_market_set, MarketSet},
-        pyth_lazer_oracle::{PythLazerOracle, PYTH_LAZER_ORACLE_SEED},
-        spot_market::{AssetTier, InsuranceFund, SpotBalanceType, SpotMarket, TokenProgramFlag},
-        spot_market_map::get_writable_spot_market_set,
-        state::{ExchangeStatus, FeeStructure, HotRole, OracleGuardRails, SolvencyStatus, State},
-        traits::Size,
-        user::{MarketType, SpecialUserStatus, User, UserStats},
+        token_interface::{Mint, TokenAccount, TokenInterface},
     },
-    validate,
-    validation::{
-        fee_structure::validate_fee_structure,
-        margin::{validate_margin, validate_margin_weights},
-        spot_market::{validate_borrow_rate, validate_withdraw_guard_threshold},
-    },
-    vlp::amm::math::amm,
-    vlp::amm_cache::{AmmCache, AMM_POSITIONS_CACHE},
-    FeatureBitFlags,
+    std::convert::TryInto,
 };
 
 fn validate_supported_market_oracle_source(oracle_source: OracleSource) -> Result<()> {
@@ -139,6 +148,7 @@ pub fn handle_initialize(ctx: Context<Initialize>) -> Result<()> {
         srm_vault: Pubkey::default(),
         protocol_fee_recipient_perp: Pubkey::default(),
         hot_fee_withdraw: Pubkey::default(),
+        hot_account_extension: Pubkey::default(),
         protocol_fee_recipient_spot: Pubkey::default(),
         perp_fee_structure: FeeStructure::perps_default(),
         spot_fee_structure: FeeStructure::spot_default(),
@@ -149,10 +159,32 @@ pub fn handle_initialize(ctx: Context<Initialize>) -> Result<()> {
         feature_bit_flags: 0,
         lp_pool_feature_bit_flags: 0,
         solvency_status: SolvencyStatus::active(),
-        padding: [0; 271],
+        padding: [0; 239],
     };
 
     Ok(())
+}
+
+/// Names reserved to the quote spot market (index 0). Monitoring keys the
+/// stablecoin exemption in the deposit-concentration alert off the decoded
+/// market name (`decodeName` = utf8 + trim), so if any *other* market could be
+/// named "USDT" it would silently inherit that exemption and hide TVL
+/// concentration. Reserving the name on-chain makes the name↔index binding
+/// trustworthy: only market 0 can ever be "USDT".
+const RESERVED_QUOTE_NAMES: &[&[u8]] = &[b"USDT"];
+
+/// True if `name` decodes to one of the reserved quote names after trimming
+/// leading/trailing whitespace. Trims a superset of what the off-chain
+/// `decodeName().trim()` strips: all Unicode whitespace (`char::is_whitespace`)
+/// plus U+FEFF (BOM, trimmed by JS but not Rust) and NUL. Invalid UTF-8 is
+/// never reserved: it decodes to U+FFFD off-chain, which `trim()` keeps, so it
+/// cannot decode to a reserved name.
+fn name_is_reserved_quote(name: &[u8; 32]) -> bool {
+    let is_trim = |c: char| c.is_whitespace() || c == '\0' || c == '\u{feff}';
+    match core::str::from_utf8(name) {
+        Ok(s) => RESERVED_QUOTE_NAMES.contains(&s.trim_matches(is_trim).as_bytes()),
+        Err(_) => false,
+    }
 }
 
 pub fn handle_initialize_spot_market(
@@ -211,6 +243,13 @@ pub fn handle_initialize_spot_market(
     let spot_market_index = get_then_update_id!(state, number_of_spot_markets);
 
     msg!("initializing spot market {}", spot_market_index);
+
+    validate!(
+        !name_is_reserved_quote(&name) || spot_market_index == QUOTE_SPOT_MARKET_INDEX,
+        ErrorCode::ReservedSpotMarketName,
+        "reserved quote name (USDT) may only be used by spot market {}",
+        QUOTE_SPOT_MARKET_INDEX
+    )?;
 
     if oracle_source == OracleSource::QuoteAsset {
         // catches inconsistent parameters
@@ -1587,6 +1626,12 @@ pub fn handle_update_spot_market_name(
     name: [u8; 32],
 ) -> Result<()> {
     let mut spot_market = load_mut!(ctx.accounts.spot_market)?;
+    validate!(
+        !name_is_reserved_quote(&name) || spot_market.market_index == QUOTE_SPOT_MARKET_INDEX,
+        ErrorCode::ReservedSpotMarketName,
+        "reserved quote name (USDT) may only be used by spot market {}",
+        QUOTE_SPOT_MARKET_INDEX
+    )?;
     msg!("spot_market.name: {:?} -> {:?}", spot_market.name, name);
     spot_market.name = name;
     Ok(())
@@ -4444,8 +4489,7 @@ pub fn handle_force_wipe_accounts_devnet<'info>(
     ctx: Context<'info, ForceWipeAccountsDevnet<'info>>,
     velocity_signer_nonce: u8,
 ) -> Result<()> {
-    use anchor_lang::solana_program::system_program;
-    use anchor_spl::token_interface;
+    use {anchor_lang::solana_program::system_program, anchor_spl::token_interface};
 
     let state_ai = ctx.accounts.state.to_account_info();
     require_keys_eq!(*state_ai.owner, crate::ID, ErrorCode::DefaultError);
@@ -4569,12 +4613,18 @@ mod native_auth_tests {
     //! `handle_update_mm_oracle_native`. These run under `cargo test` (default
     //! features, no `anchor-test`), so the signer check is compiled in. The
     //! structural account checks are always compiled in regardless of feature.
-    use super::*;
-    use crate::create_anchor_account_info;
-    use crate::state::perp_market::PerpMarket;
-    use crate::state::state::{FeatureBitFlags, State};
-    use crate::test_utils::get_anchor_account_bytes;
-    use anchor_lang::prelude::{AccountInfo, Pubkey};
+    use {
+        super::*,
+        crate::{
+            create_anchor_account_info,
+            state::{
+                perp_market::PerpMarket,
+                state::{FeatureBitFlags, State},
+            },
+            test_utils::get_anchor_account_bytes,
+        },
+        anchor_lang::prelude::{AccountInfo, Pubkey},
+    };
 
     // mm-oracle payload: 8-byte price + 8-byte sequence id (both non-zero so the
     // happy path would proceed past the early-out checks).
@@ -4728,5 +4778,70 @@ mod native_auth_tests {
         let accounts = [perp_market_info, signer, clock_info, state_info];
         let err = handle_update_mm_oracle_native(&accounts, &mm_payload()).unwrap_err();
         assert_eq!(err, ErrorCode::Unauthorized.into());
+    }
+}
+
+#[cfg(test)]
+mod reserved_quote_name_tests {
+    //! The "USDT" name is reserved to spot market 0 so the monitoring
+    //! stablecoin-exemption (keyed off decodeName) can't be inherited by any
+    //! other market. These lock the trim semantics (must be at least as
+    //! aggressive as off-chain `decodeName().trim()`).
+    use super::name_is_reserved_quote;
+
+    fn padded(s: &str) -> [u8; 32] {
+        let mut n = [b' '; 32];
+        n[..s.len()].copy_from_slice(s.as_bytes());
+        n
+    }
+
+    #[test]
+    fn reserved_variants_match() {
+        // exact + the SDK's space padding
+        assert!(name_is_reserved_quote(&padded("USDT")));
+        // leading/trailing whitespace + NUL padding all still decode to USDT
+        assert!(name_is_reserved_quote(&padded("  USDT")));
+        let mut nul = [0u8; 32];
+        nul[..4].copy_from_slice(b"USDT");
+        assert!(name_is_reserved_quote(&nul));
+        let mut mixed = [0u8; 32];
+        mixed[..6].copy_from_slice(b"\tUSDT\n");
+        assert!(name_is_reserved_quote(&mixed));
+    }
+
+    #[test]
+    fn unicode_whitespace_padding_is_reserved() {
+        // JS trim() strips these, so they decode to "USDT" off-chain and must
+        // be reserved on-chain: NBSP, ogham space, en quad, line/paragraph
+        // separators, narrow NBSP, medium math space, ideographic space, BOM
+        for pad in [
+            "\u{00a0}", "\u{1680}", "\u{2000}", "\u{200a}", "\u{2028}", "\u{2029}", "\u{202f}",
+            "\u{205f}", "\u{3000}", "\u{feff}",
+        ] {
+            let s = format!("{pad}USDT{pad}");
+            assert!(
+                name_is_reserved_quote(&padded(&s)),
+                "{:?} padding not reserved",
+                pad
+            );
+        }
+    }
+
+    #[test]
+    fn non_reserved_names_pass() {
+        // devnet stable, other stable, and volatile tokens must NOT be reserved
+        assert!(!name_is_reserved_quote(&padded("dUSDT")));
+        assert!(!name_is_reserved_quote(&padded("USDC")));
+        assert!(!name_is_reserved_quote(&padded("SOL")));
+        assert!(!name_is_reserved_quote(&padded("USDT.e")));
+        assert!(!name_is_reserved_quote(&padded("USD")));
+        assert!(!name_is_reserved_quote(&[b' '; 32])); // all blank
+                                                       // ZWSP is not trimmed by JS trim(), so "\u{200b}USDT" does not decode
+                                                       // to "USDT" off-chain and must not be reserved
+        assert!(!name_is_reserved_quote(&padded("\u{200b}USDT")));
+        // invalid UTF-8 decodes with U+FFFD, which trim() keeps
+        let mut invalid = [b' '; 32];
+        invalid[..5].copy_from_slice(&[0xff, b'U', b'S', b'D', b'T']);
+        assert!(!name_is_reserved_quote(&invalid));
     }
 }

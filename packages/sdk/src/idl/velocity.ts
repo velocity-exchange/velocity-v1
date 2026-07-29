@@ -8,7 +8,7 @@ export type Velocity = {
   "address": "vELoC1audYbSYVRXn1vPaV8Axoa9oU6BYmNGZZBDZ1P",
   "metadata": {
     "name": "velocity",
-    "version": "2.164.0",
+    "version": "2.165.0",
     "spec": "0.1.0",
     "description": "Created with Anchor"
   },
@@ -2397,6 +2397,104 @@ export type Velocity = {
               }
             }
           }
+        }
+      ]
+    },
+    {
+      "name": "extendAccount",
+      "docs": [
+        "Grow a zero-copy account to the size this program build compiles in",
+        "for its type (resolved from the account discriminator). The migration",
+        "crank after an upgrade that appends fields to an account struct; no-op",
+        "when already at size. Payer covers the rent-exempt shortfall (auth:",
+        "`AccountExtension` hot key, or warm/cold admin). See",
+        "`docs/ACCOUNT-EXTENSION.md`."
+      ],
+      "discriminator": [
+        234,
+        102,
+        194,
+        203,
+        150,
+        72,
+        62,
+        229
+      ],
+      "accounts": [
+        {
+          "name": "state"
+        },
+        {
+          "name": "payer",
+          "writable": true,
+          "signer": true
+        },
+        {
+          "name": "authority",
+          "signer": true
+        },
+        {
+          "name": "account",
+          "docs": [
+            "size) from the account discriminator"
+          ],
+          "writable": true
+        },
+        {
+          "name": "systemProgram",
+          "address": "11111111111111111111111111111111"
+        }
+      ],
+      "args": []
+    },
+    {
+      "name": "extendAccountDevnet",
+      "docs": [
+        "Devnet/test-only: grow a zero-copy account to an arbitrary larger size",
+        "to exercise the extension flow before a real struct extension exists.",
+        "Stripped from production mainnet builds; `anchor-test` keeps it so the",
+        "integration suite (which builds with default features + `anchor-test`)",
+        "can exercise extension end to end."
+      ],
+      "discriminator": [
+        58,
+        206,
+        231,
+        21,
+        136,
+        141,
+        180,
+        252
+      ],
+      "accounts": [
+        {
+          "name": "state"
+        },
+        {
+          "name": "payer",
+          "writable": true,
+          "signer": true
+        },
+        {
+          "name": "authority",
+          "signer": true
+        },
+        {
+          "name": "account",
+          "docs": [
+            "zero-copy discriminator"
+          ],
+          "writable": true
+        },
+        {
+          "name": "systemProgram",
+          "address": "11111111111111111111111111111111"
+        }
+      ],
+      "args": [
+        {
+          "name": "newLen",
+          "type": "u64"
         }
       ]
     },
@@ -13538,6 +13636,63 @@ export type Velocity = {
       "args": []
     },
     {
+      "name": "updateUserVaultOwned",
+      "docs": [
+        "Mark a User as vault-owned (its authority is a vault PDA and its equity",
+        "prices vault depositor shares). Set-only and authority-gated: only the",
+        "User's authority may call it, and it is CPI'd by the vaults program at",
+        "vault init. A vault-owned User is skipped by the revenue-share sweep so a",
+        "builder/referral reward can never enter vault NAV (OtterSec #91/#92/#93)."
+      ],
+      "discriminator": [
+        50,
+        156,
+        218,
+        143,
+        216,
+        94,
+        68,
+        93
+      ],
+      "accounts": [
+        {
+          "name": "user",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  117,
+                  115,
+                  101,
+                  114
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "authority"
+              },
+              {
+                "kind": "arg",
+                "path": "subAccountId"
+              }
+            ]
+          }
+        },
+        {
+          "name": "authority",
+          "signer": true
+        }
+      ],
+      "args": [
+        {
+          "name": "subAccountId",
+          "type": "u16"
+        }
+      ]
+    },
+    {
       "name": "updateWarmAdmin",
       "discriminator": [
         35,
@@ -16978,11 +17133,26 @@ export type Velocity = {
     },
     {
       "code": 6365,
+      "name": "reservedSpotMarketName",
+      "msg": "The name 'USDT' is reserved for the quote spot market (index 0)"
+    },
+    {
+      "code": 6366,
+      "name": "cannotModifyBuilderOrder",
+      "msg": "Cannot modify a builder-coded order; cancel and re-place instead"
+    },
+    {
+      "code": 6367,
+      "name": "invalidAccountExtension",
+      "msg": "Invalid account extension"
+    },
+    {
+      "code": 6368,
       "name": "invalidQuoterConfig",
       "msg": "Quoter registry entry config is invalid"
     },
     {
-      "code": 6366,
+      "code": 6369,
       "name": "invalidQuoterAuthority",
       "msg": "Signer does not control this quoter registry entry"
     }
@@ -18946,6 +19116,9 @@ export type Velocity = {
           },
           {
             "name": "feeWithdraw"
+          },
+          {
+            "name": "accountExtension"
           }
         ]
       }
@@ -24999,11 +25172,20 @@ export type Velocity = {
             "type": "pubkey"
           },
           {
+            "name": "hotAccountExtension",
+            "docs": [
+              "Hot key authorized for the `AccountExtension` role (grows zero-copy",
+              "accounts to the deployed program's size after a struct-extending",
+              "upgrade)."
+            ],
+            "type": "pubkey"
+          },
+          {
             "name": "padding",
             "type": {
               "array": [
                 "u8",
-                271
+                239
               ]
             }
           }
@@ -25504,7 +25686,8 @@ export type Velocity = {
           {
             "name": "equityFloor",
             "docs": [
-              "Minimum account equity (cross-margin total collateral). Below this the",
+              "Minimum account net equity (unweighted assets plus perp pnl minus",
+              "spot liabilities, see `calculate_user_equity`). Below this the",
               "permissionless breaker can trip. Risk-increasing orders, fills,",
               "withdrawals and deposit transfers must clear `equity_floor +",
               "equity_floor_buffer`. Settable only by the warm/cold admin; 0 disables",

@@ -1,31 +1,40 @@
-use std::collections::BTreeMap;
-
-use crate::error::{ErrorCode, VelocityResult};
-use crate::math::casting::Cast;
-use crate::math::constants::{
-    BASE_PRECISION_I128, PERCENTAGE_PRECISION, PERCENTAGE_PRECISION_I128, PERCENTAGE_PRECISION_I64,
-    PERCENTAGE_PRECISION_U64, PRICE_PRECISION, QUOTE_PRECISION_I128, QUOTE_PRECISION_U64,
+use {
+    crate::{
+        error::{ErrorCode, VelocityResult},
+        impl_zero_copy_loader,
+        math::{
+            casting::Cast,
+            constants::{
+                BASE_PRECISION_I128, PERCENTAGE_PRECISION, PERCENTAGE_PRECISION_I128,
+                PERCENTAGE_PRECISION_I64, PERCENTAGE_PRECISION_U64, PRICE_PRECISION,
+                QUOTE_PRECISION_I128, QUOTE_PRECISION_U64,
+            },
+            oracle::{is_oracle_valid_for_action, VelocityAction},
+            safe_math::SafeMath,
+            safe_unwrap::SafeUnwrap,
+            spot_balance::{get_signed_token_amount, get_token_amount},
+        },
+        state::{
+            oracle::OraclePriceData,
+            oracle_map::OracleMap,
+            paused_operations::ConstituentLpOperation,
+            spot_market::{SpotBalance, SpotBalanceType, SpotMarket},
+            spot_market_map::SpotMarketMap,
+            traits::Size,
+            user::MarketType,
+            zero_copy::{AccountZeroCopy, AccountZeroCopyMut, HasLen},
+        },
+        validate,
+        vlp::{
+            amm_cache::{AmmCacheFixed, CacheInfo},
+            hedge::constituent_map::ConstituentMap,
+        },
+    },
+    anchor_lang::prelude::*,
+    borsh::{BorshDeserialize, BorshSerialize},
+    enumflags2::BitFlags,
+    std::collections::BTreeMap,
 };
-use crate::math::oracle::{is_oracle_valid_for_action, VelocityAction};
-use crate::math::safe_math::SafeMath;
-use crate::math::safe_unwrap::SafeUnwrap;
-use crate::math::spot_balance::{get_signed_token_amount, get_token_amount};
-use crate::state::oracle_map::OracleMap;
-use crate::state::paused_operations::ConstituentLpOperation;
-use crate::state::spot_market_map::SpotMarketMap;
-use crate::state::user::MarketType;
-use crate::vlp::amm_cache::{AmmCacheFixed, CacheInfo};
-use crate::vlp::hedge::constituent_map::ConstituentMap;
-use anchor_lang::prelude::*;
-use borsh::{BorshDeserialize, BorshSerialize};
-use enumflags2::BitFlags;
-
-use crate::state::oracle::OraclePriceData;
-use crate::state::spot_market::SpotMarket;
-use crate::state::spot_market::{SpotBalance, SpotBalanceType};
-use crate::state::traits::Size;
-use crate::state::zero_copy::{AccountZeroCopy, AccountZeroCopyMut, HasLen};
-use crate::{impl_zero_copy_loader, validate};
 pub const LP_POOL_PDA_SEED: &str = "lp_pool";
 pub const AMM_MAP_PDA_SEED: &str = "AMM_MAP";
 pub const CONSTITUENT_PDA_SEED: &str = "CONSTITUENT";

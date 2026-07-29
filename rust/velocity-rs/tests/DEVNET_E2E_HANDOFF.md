@@ -87,7 +87,7 @@ established on devnet right now** (so the test can't even reach its warn-skip).
 | `withdraw_from_spot_market` | pure user action; exact balance assert |
 | `dlob_maker_taker_filled_by_filler` | matched maker↔taker; deployed filler reliably matches crossing limit orders (the limit path, unlike a market-order auction, is not sanitized out — see Root cause) |
 | `mark_twap_crank_advances` | the mark-twap crank runs ~every 10s; asserts a bounded ts advance |
-| `taker_fills_against_amm` (the **assertions**) | the sanitization regression locks always run and are deterministic; only the *fill* is gated (next table) |
+| `taker_fills_against_amm` (the **assertions**) | the sanitization regression locks always run; only the *fill* is gated (next table). They are deterministic **only because the requested band is built from the live baseline** — see the note below |
 
 ## Unreliable scenarios — what each depends on and how to orchestrate it
 
@@ -104,6 +104,26 @@ can't set. "Orchestrate" = what it would take to make the outcome deterministic.
   oracle**, while `vamm_ask` tracks the **live** reserve price → sanitized end
   (~oracle+0.5%) sits *below* `vamm_ask` (~oracle+0.73%), so the cross never
   happens. (Observed: `start==end==oracle+0.50%`, `vamm_ask=oracle+0.73%`.)
+- **The baseline is not stable — never hardcode a band against it.** The same
+  formula also produces a baseline END around **oracle+21%**: it is
+  `(last_ask_price_twap - oracle_twap) + baseline_end_price_buffer`, and the buffer
+  is `2 * max(mark_std, oracle_std, amm_spread * twap)` clamped by the contract tier
+  (`get_auction_end_min_max_divisors`, 1%..10% of price for Speculative). Devnet
+  market 0 has sat with its mark TWAP ~10% above the oracle TWAP and
+  `amm.long_spread` at ~11%, which pins the buffer to the 10% ceiling. The old test
+  hardcoded `+2% → +15%` as "aggressive"; with the baseline end at +19.6% the top of
+  the band was *milder* than the baseline, so only the start was clamped and the
+  spread assertion failed every night from 17 July with the misleading message
+  "sanitization logic changed". The test now reads the market first and offsets past
+  the live baseline by the tier's buffer ceiling plus 4% on both ends, so the request
+  still clears the threshold if the baseline rises before the placement slot.
+- **Reads that must be ordered against a tx cannot come from the cache.** `TestCtx`
+  subscribes to all three markets, so `get_perp_market_account` serves the websocket
+  cache, whose slot has no ordering guarantee against a just-confirmed tx. The
+  baseline bracket needs one read strictly before placement and one strictly after,
+  so it uses `fetch_perp_market` (raw `rpc().get_account_data` + `try_deser_zero_copy`,
+  not anchor's `try_deserialize`, which panics on 16-aligned zero-copy structs
+  off-chain). Cache reads are fine everywhere the ordering does not matter.
 - **To orchestrate (any one):**
   1. **Warm the TWAPs** to the live price first — loop matched maker↔taker fills
      (the reliable `dlob_maker_taker_filled_by_filler` path) at ~oracle. Slow: the

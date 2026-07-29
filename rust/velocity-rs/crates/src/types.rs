@@ -36,16 +36,21 @@ pub mod accounts {
     // NOTE: velocity removed the IF-rebalance feature (`if_rebalance_config`
     // module / `IfRebalanceConfig`) and `ProtocolIfSharesTransferConfig` that
     // upstream drift exposes, so those re-exports are dropped here.
-    pub use program::state::insurance_fund_stake::InsuranceFundStake;
-    pub use program::state::oracle::PrelaunchOracle;
-    pub use program::state::perp_market::PerpMarket;
-    pub use program::state::pyth_lazer_oracle::PythLazerOracle;
-    pub use program::state::revenue_share::{RevenueShare, RevenueShareEscrow};
-    pub use program::state::signed_msg_user::{SignedMsgUserOrders, SignedMsgWsDelegates};
-    pub use program::state::spot_market::SpotMarket;
-    pub use program::state::user::{ReferrerName, User, UserStats};
-    pub use program::vlp::hedge::state::{
-        AmmConstituentMapping, Constituent, ConstituentCorrelations, ConstituentTargetBase, LPPool,
+    pub use program::{
+        state::{
+            insurance_fund_stake::InsuranceFundStake,
+            oracle::PrelaunchOracle,
+            perp_market::PerpMarket,
+            pyth_lazer_oracle::PythLazerOracle,
+            revenue_share::{RevenueShare, RevenueShareEscrow},
+            signed_msg_user::{SignedMsgUserOrders, SignedMsgWsDelegates},
+            spot_market::SpotMarket,
+            user::{ReferrerName, User, UserStats},
+        },
+        vlp::hedge::state::{
+            AmmConstituentMapping, Constituent, ConstituentCorrelations, ConstituentTargetBase,
+            LPPool,
+        },
     };
 }
 pub mod events {
@@ -55,42 +60,38 @@ pub mod events {
 pub mod errors {
     pub use program::error::ErrorCode;
 }
-pub use program::controller::position::PositionDirection;
-pub use program::error::ErrorCode;
-pub use program::math::margin::MarginRequirementType;
-pub use program::math::oracle::OracleValidity;
-pub use program::state::events::OrderActionExplanation;
-pub use program::state::fill_mode::FillMode;
-pub use program::state::margin_calculation::{
-    MarginCalculationMode, MarginContext, MarketIdentifier,
-};
-pub use program::state::market_status::MarketStatus;
-pub use program::state::oracle::{
-    HistoricalIndexData, HistoricalOracleData, MMOraclePriceData, OraclePriceData, OracleSource,
-    PrelaunchOracleParams, StrictOraclePrice,
-};
-pub use program::state::order_params::{
-    ModifyOrderParams, ModifyOrderPolicy, OrderParams, SignedMsgOrderParamsDelegateMessage,
-    SignedMsgOrderParamsMessage,
-};
-pub use program::state::order_params::{
-    OrderParamsBitFlag, PlaceAndTakeOrderSuccessCondition, PostOnlyParam,
-    SignedMsgTriggerOrderParams,
-};
-pub use program::state::paused_operations::{InsuranceFundOperation, PerpOperation, SpotOperation};
-pub use program::state::perp_market::{
-    ContractTier, ContractType, InsuranceClaim, PoolBalance, AMM,
-};
-pub use program::state::revenue_share::{BuilderInfo, RevenueShareOrder};
-pub use program::state::settle_pnl_mode::SettlePnlMode;
-pub use program::state::spot_market::{AssetTier, SpotBalanceType, TokenProgramFlag};
-pub use program::state::state::{
-    ExchangeStatus, FeeStructure, FeeTier, OracleGuardRails, PriceDivergenceGuardRails,
-    ValidityGuardRails,
-};
-pub use program::state::user::{
-    AssetType, MarketType, Order, OrderStatus, OrderTriggerCondition, OrderType, PerpPosition,
-    SpotPosition, UserStatus,
+pub use program::{
+    controller::position::PositionDirection,
+    error::ErrorCode,
+    math::{margin::MarginRequirementType, oracle::OracleValidity},
+    state::{
+        events::OrderActionExplanation,
+        fill_mode::FillMode,
+        margin_calculation::{MarginCalculationMode, MarginContext, MarketIdentifier},
+        market_status::MarketStatus,
+        oracle::{
+            HistoricalIndexData, HistoricalOracleData, MMOraclePriceData, OraclePriceData,
+            OracleSource, PrelaunchOracleParams, StrictOraclePrice,
+        },
+        order_params::{
+            ModifyOrderParams, ModifyOrderPolicy, OrderParams, OrderParamsBitFlag,
+            PlaceAndTakeOrderSuccessCondition, PostOnlyParam, SignedMsgOrderParamsDelegateMessage,
+            SignedMsgOrderParamsMessage, SignedMsgTriggerOrderParams,
+        },
+        paused_operations::{InsuranceFundOperation, PerpOperation, SpotOperation},
+        perp_market::{ContractTier, ContractType, InsuranceClaim, PoolBalance, AMM},
+        revenue_share::{BuilderInfo, RevenueShareOrder},
+        settle_pnl_mode::SettlePnlMode,
+        spot_market::{AssetTier, SpotBalanceType, TokenProgramFlag},
+        state::{
+            ExchangeStatus, FeeStructure, FeeTier, OracleGuardRails, PriceDivergenceGuardRails,
+            ValidityGuardRails,
+        },
+        user::{
+            AssetType, MarketType, Order, OrderStatus, OrderTriggerCondition, OrderType,
+            PerpPosition, SpotPosition, UserStatus,
+        },
+    },
 };
 // SwapReduceOnly is IDL-only from velocity-rs's perspective — velocity puts it
 // under `instructions::user` which is not `pub mod`-visible externally.

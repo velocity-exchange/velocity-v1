@@ -7,8 +7,6 @@
 //! satisfy `#[fuzz_fixture]`'s ≥1-action requirement even though these are
 //! stateless single-op properties.
 
-use crucible_fuzzer::*;
-
 // Imports are shared across the cfg-gated harness fns; only the enabled
 // feature's fn uses its subset, so suppress the per-build unused warnings.
 #[allow(unused_imports)]
@@ -19,7 +17,7 @@ use velocity::math::funding::{
     calculate_funding_payment_in_quote_precision, calculate_funding_premium_with_offset,
     calculate_funding_rate_long_short, validate_funding_pnl_profitability, FundingMarketInputs,
 };
-use velocity::state::user::PerpPosition;
+use {crucible_fuzzer::*, velocity::state::user::PerpPosition};
 
 #[derive(Clone)]
 struct FundingFixture {
@@ -102,12 +100,11 @@ fn prop_funding_zero_sum(
 
     // The AMM settles from the same cum-rate deltas, decomposed across the two
     // sides it is counterparty to (last_* = 0 → deltas == the period rates).
-    let amm = match calculate_amm_funding_payment(
-        base_long, base_short, rate_long, rate_short, 0, 0,
-    ) {
-        Ok(v) => v,
-        Err(_) => return,
-    };
+    let amm =
+        match calculate_amm_funding_payment(base_long, base_short, rate_long, rate_short, 0, 0) {
+            Ok(v) => v,
+            Err(_) => return,
+        };
 
     // Users + AMM net to zero. The user side divides by the quote ratio per
     // side while the AMM divides once at the end, so allow a small rounding
@@ -278,10 +275,8 @@ fn prop_funding_premium_bounded(
         // Outside: |ramped| ≤ |spread| * slope / PERCENTAGE_PRECISION (+1 for
         // truncation).
         let ramped = premium as i128 - offset as i128;
-        let bound = (spread.abs() as i128)
-            .saturating_mul(slope as i128)
-            / PERCENTAGE_PRECISION_I128
-            + 1;
+        let bound =
+            (spread.abs() as i128).saturating_mul(slope as i128) / PERCENTAGE_PRECISION_I128 + 1;
         fuzz_assert!(
             ramped.abs() <= bound,
             "ramped {} exceeds bound {} (spread {} slope {})",
@@ -333,23 +328,17 @@ fn prop_amm_funding_antisymmetry(
     let long_delta = signed(long_delta_mag, long_delta_neg);
     let short_delta = signed(short_delta_mag, short_delta_neg);
 
-    let pos = match calculate_amm_funding_payment(
-        base_long, base_short, long_delta, short_delta, 0, 0,
-    ) {
-        Ok(v) => v,
-        Err(_) => return,
-    };
-    let neg = match calculate_amm_funding_payment(
-        base_long,
-        base_short,
-        -long_delta,
-        -short_delta,
-        0,
-        0,
-    ) {
-        Ok(v) => v,
-        Err(_) => return,
-    };
+    let pos =
+        match calculate_amm_funding_payment(base_long, base_short, long_delta, short_delta, 0, 0) {
+            Ok(v) => v,
+            Err(_) => return,
+        };
+    let neg =
+        match calculate_amm_funding_payment(base_long, base_short, -long_delta, -short_delta, 0, 0)
+        {
+            Ok(v) => v,
+            Err(_) => return,
+        };
 
     fuzz_assert_eq!(pos, -neg);
 

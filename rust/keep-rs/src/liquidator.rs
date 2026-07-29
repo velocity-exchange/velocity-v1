@@ -6,53 +6,53 @@
 //!
 //! The default strategy tries to liquidate perp positions against resting orders
 //!
-use anchor_lang::Discriminator;
-use dashmap::DashMap;
-use futures_util::FutureExt;
-use std::{
-    collections::{BTreeMap, HashMap, HashSet},
-    sync::{Arc, RwLock},
-    time::{Duration, SystemTime, UNIX_EPOCH},
-};
-use tokio::sync::mpsc::error::TryRecvError;
-
-use solana_compute_budget_interface::ComputeBudgetInstruction;
-use solana_sdk::{clock::Slot, signature::Signature};
-use velocity_rs::{
-    dlob::{DLOBNotifier, DLOB},
-    grpc::{
-        grpc_subscriber::{AccountFilter, GrpcConnectionOpts},
-        TransactionUpdate,
-    },
-    jupiter::SwapMode,
-    market_state::{MarketStateData, SimplifiedMarginCalculation},
-    math::{
-        constants::{
-            BASE_PRECISION, MARGIN_PRECISION_U128, PRICE_PRECISION, QUOTE_PRECISION,
-            SPOT_WEIGHT_PRECISION_U128,
+use {
+    crate::{
+        filler::{TxSender, TxWorker},
+        http::{
+            DashboardState, DashboardStateRef, HighRiskUser, MarginStatus, Metrics,
+            OraclePriceInfo, UserMarginStatus,
         },
-        liquidation::{calculate_collateral, CollateralInfo},
-        tiers::{perp_tier_is_as_safe_as, AssetTierExt, ContractTierExt},
+        util::{PythPriceUpdate, TxIntent},
+        Config, UseMarkets,
     },
-    priority_fee_subscriber::PriorityFeeSubscriber,
-    titan,
-    types::{
-        accounts::{PerpMarket, SpotMarket, User},
-        MarginRequirementType, MarketId, MarketStatus, MarketType, OraclePriceData, OracleSource,
-        OrderParams, OrderType, PerpPosition, PositionDirection, SpotBalanceType, SpotPosition,
+    anchor_lang::Discriminator,
+    dashmap::DashMap,
+    futures_util::FutureExt,
+    solana_compute_budget_interface::ComputeBudgetInstruction,
+    solana_sdk::{clock::Slot, signature::Signature},
+    std::{
+        collections::{BTreeMap, HashMap, HashSet},
+        sync::{Arc, RwLock},
+        time::{Duration, SystemTime, UNIX_EPOCH},
     },
-    GrpcSubscribeOpts, MarketState, Pubkey, TransactionBuilder, VelocityClient,
-};
-use velocity_rs::{jupiter::JupiterSwapApi, titan::TitanSwapApi};
-
-use crate::{
-    filler::{TxSender, TxWorker},
-    http::{
-        DashboardState, DashboardStateRef, HighRiskUser, MarginStatus, Metrics, OraclePriceInfo,
-        UserMarginStatus,
+    tokio::sync::mpsc::error::TryRecvError,
+    velocity_rs::{
+        dlob::{DLOBNotifier, DLOB},
+        grpc::{
+            grpc_subscriber::{AccountFilter, GrpcConnectionOpts},
+            TransactionUpdate,
+        },
+        jupiter::{JupiterSwapApi, SwapMode},
+        market_state::{MarketStateData, SimplifiedMarginCalculation},
+        math::{
+            constants::{
+                BASE_PRECISION, MARGIN_PRECISION_U128, PRICE_PRECISION, QUOTE_PRECISION,
+                SPOT_WEIGHT_PRECISION_U128,
+            },
+            liquidation::{calculate_collateral, CollateralInfo},
+            tiers::{perp_tier_is_as_safe_as, AssetTierExt, ContractTierExt},
+        },
+        priority_fee_subscriber::PriorityFeeSubscriber,
+        titan::{self, TitanSwapApi},
+        types::{
+            accounts::{PerpMarket, SpotMarket, User},
+            MarginRequirementType, MarketId, MarketStatus, MarketType, OraclePriceData,
+            OracleSource, OrderParams, OrderType, PerpPosition, PositionDirection, SpotBalanceType,
+            SpotPosition,
+        },
+        GrpcSubscribeOpts, MarketState, Pubkey, TransactionBuilder, VelocityClient,
     },
-    util::{PythPriceUpdate, TxIntent},
-    Config, UseMarkets,
 };
 
 /// min slots between successive liquidation attempts on same user
@@ -3677,8 +3677,7 @@ fn has_settleable_pnl_only(
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-    use velocity_rs::market_state::IsolatedMarginCalculation;
+    use {super::*, velocity_rs::market_state::IsolatedMarginCalculation};
 
     fn margin_calc(
         total_collateral: i128,

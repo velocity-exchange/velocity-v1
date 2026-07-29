@@ -1,11 +1,16 @@
-use crate::controller::position::PositionDirection;
-use crate::error::{ErrorCode, VelocityResult};
-use crate::math::constants::MAX_OPEN_ORDERS;
-use crate::math::safe_math::SafeMath;
-use crate::state::order_params::{OrderParams, PostOnlyParam};
-use crate::state::user::{MarketType, OrderTriggerCondition, OrderType};
-use crate::validate;
-use anchor_lang::prelude::*;
+use {
+    crate::{
+        controller::position::PositionDirection,
+        error::{ErrorCode, VelocityResult},
+        math::{constants::MAX_OPEN_ORDERS, safe_math::SafeMath},
+        state::{
+            order_params::{OrderParams, PostOnlyParam},
+            user::{MarketType, OrderTriggerCondition, OrderType},
+        },
+        validate,
+    },
+    anchor_lang::prelude::*,
+};
 
 #[cfg(test)]
 mod tests;

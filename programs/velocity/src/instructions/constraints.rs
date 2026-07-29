@@ -1,18 +1,23 @@
-use anchor_lang::accounts::account_loader::AccountLoader;
-use anchor_lang::accounts::signer::Signer;
-use anchor_lang::prelude::*;
-use anchor_lang::prelude::{AccountInfo, Pubkey};
-use anchor_spl::token_interface::Mint;
-
-use crate::error::ErrorCode;
-use crate::msg;
-use crate::state::insurance_fund_stake::InsuranceFundStake;
-use crate::state::market_status::MarketStatus;
-use crate::state::perp_market::PerpMarket;
-use crate::state::spot_market::SpotMarket;
-use crate::state::state::{ExchangeStatus, State};
-use crate::state::user::{User, UserStats};
-use crate::validate;
+use {
+    crate::{
+        error::ErrorCode,
+        msg,
+        state::{
+            insurance_fund_stake::InsuranceFundStake,
+            market_status::MarketStatus,
+            perp_market::PerpMarket,
+            spot_market::SpotMarket,
+            state::{ExchangeStatus, State},
+            user::{User, UserStats},
+        },
+        validate,
+    },
+    anchor_lang::{
+        accounts::{account_loader::AccountLoader, signer::Signer},
+        prelude::{AccountInfo, Pubkey, *},
+    },
+    anchor_spl::token_interface::Mint,
+};
 
 pub fn can_sign_for_user(user: &AccountLoader<User>, signer: &Signer) -> anchor_lang::Result<bool> {
     user.load().map(|user| {
@@ -167,10 +172,10 @@ pub fn exchange_not_paused(state: &AccountLoader<State>) -> anchor_lang::Result<
 pub fn get_vault_len(mint: &InterfaceAccount<Mint>) -> anchor_lang::Result<usize> {
     let mint_info = mint.to_account_info();
     let len = if *mint_info.owner == ::anchor_spl::token_2022::Token2022::id() {
-        use ::anchor_spl::token_2022::spl_token_2022::extension::{
-            BaseStateWithExtensions, ExtensionType, StateWithExtensions,
+        use ::anchor_spl::token_2022::spl_token_2022::{
+            extension::{BaseStateWithExtensions, ExtensionType, StateWithExtensions},
+            state::{Account, Mint},
         };
-        use ::anchor_spl::token_2022::spl_token_2022::state::{Account, Mint};
         let mint_data = mint_info.try_borrow_data()?;
         let mint_state = StateWithExtensions::<Mint>::unpack(&mint_data)?;
         let mint_extensions = match mint_state.get_extension_types() {

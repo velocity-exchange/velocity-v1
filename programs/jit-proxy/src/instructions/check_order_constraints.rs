@@ -1,12 +1,13 @@
-use anchor_lang::prelude::*;
-use std::collections::BTreeSet;
-use velocity::instructions::optional_accounts::{load_maps, AccountMaps};
-use velocity::math::casting::Cast;
-use velocity::math::safe_math::SafeMath;
-use velocity::state::user::User;
-
-use crate::error::ErrorCode;
-use crate::state::MarketType;
+use {
+    crate::{error::ErrorCode, state::MarketType},
+    anchor_lang::prelude::*,
+    std::collections::BTreeSet,
+    velocity::{
+        instructions::optional_accounts::{load_maps, AccountMaps},
+        math::{casting::Cast, safe_math::SafeMath},
+        state::user::User,
+    },
+};
 
 pub fn check_order_constraints<'c: 'info, 'info>(
     ctx: Context<'info, CheckOrderConstraints<'info>>,

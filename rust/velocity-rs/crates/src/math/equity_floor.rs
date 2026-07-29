@@ -1,10 +1,14 @@
 //! Client-side equity floor helpers, the Rust mirror of the TypeScript SDK's
 //! `calculateEquityFloorAutoDelta` and `getEquityFloorLevel` (`math/margin.ts`).
-//! The on-chain predicates live on `User` in the program crate
+//! The onchain predicates live on `User` in the program crate
 //! (`is_below_equity_floor`, `is_below_buffered_equity_floor`); this module
 //! covers the two computations a client performs off-chain: sizing the floor
 //! delta a quote transfer must carry, and classifying a subaccount's equity
-//! against its floor thresholds for monitoring.
+//! against its floor thresholds for monitoring. The equity these helpers
+//! expect is **net equity**, the metric the onchain floor checks use
+//! (`calculate_user_equity` in the program crate: unweighted asset value plus
+//! funding-inclusive perp pnl minus unweighted spot liability value, at live
+//! oracle prices), not the weighted margin numerator (`total_collateral`).
 
 /// Warning threshold multiple used when none is specified: warn while equity
 /// is inside `floor + 2 * buffer`.
@@ -13,14 +17,14 @@ pub const DEFAULT_WARNING_BUFFER_MULTIPLE: u64 = 2;
 /// Minimal equity floor to carry along with a quote transfer of `amount` out
 /// of a subaccount so the debited side ends at/above its buffered floor
 /// (`equity_floor + equity_floor_buffer`): the first
-/// `total_collateral - (floor + buffer)` of the transfer carries no floor, the
+/// `net_equity - (floor + buffer)` of the transfer carries no floor, the
 /// remainder carries floor one-for-one, capped at the floor the subaccount
 /// holds. Returns zero when no floor is set. The result never exceeds
 /// `amount`, so a credited side that met its own buffered floor before the
 /// transfer still meets it after. All values QUOTE_PRECISION.
 pub fn calculate_equity_floor_auto_delta(
     amount: u64,
-    total_collateral: i128,
+    net_equity: i128,
     equity_floor: u64,
     equity_floor_buffer: u64,
 ) -> u64 {
@@ -28,7 +32,7 @@ pub fn calculate_equity_floor_auto_delta(
         return 0;
     }
     let buffered_floor = (equity_floor as i128).saturating_add(equity_floor_buffer as i128);
-    let excess = total_collateral.saturating_sub(buffered_floor).max(0);
+    let excess = net_equity.saturating_sub(buffered_floor).max(0);
     let shortfall = (amount as i128).saturating_sub(excess).max(0) as u128;
     shortfall.min(equity_floor as u128) as u64
 }
@@ -50,12 +54,12 @@ pub enum EquityFloorLevel {
     Breached,
 }
 
-/// Classifies `total_collateral` against the floor thresholds, mirroring the
+/// Classifies `net_equity` against the floor thresholds, mirroring the
 /// TypeScript `getEquityFloorLevel` so Rust and TS consumers report identical
 /// levels. All comparisons are strict less-thans, matching the program's own
 /// checks. All values QUOTE_PRECISION.
 pub fn equity_floor_level(
-    total_collateral: i128,
+    net_equity: i128,
     equity_floor: u64,
     equity_floor_buffer: u64,
     warning_buffer_multiple: u64,
@@ -63,17 +67,17 @@ pub fn equity_floor_level(
     if equity_floor == 0 {
         return EquityFloorLevel::Disabled;
     }
-    if total_collateral < equity_floor as i128 {
+    if net_equity < equity_floor as i128 {
         return EquityFloorLevel::Breached;
     }
     let buffered_floor = (equity_floor as i128).saturating_add(equity_floor_buffer as i128);
-    if total_collateral < buffered_floor {
+    if net_equity < buffered_floor {
         return EquityFloorLevel::Critical;
     }
     let warning_line = (equity_floor as i128).saturating_add(
         (equity_floor_buffer as i128).saturating_mul(warning_buffer_multiple as i128),
     );
-    if total_collateral < warning_line {
+    if net_equity < warning_line {
         return EquityFloorLevel::Warning;
     }
     EquityFloorLevel::Healthy
@@ -137,12 +141,12 @@ mod tests {
         };
 
         for i in 0..20_000 {
-            let collateral = next(2_000_000) as i128;
+            let net_equity = next(2_000_000) as i128;
             let floor = next(1_000_000);
             let buffer = next(200_000);
             let amount = next(2_000_000);
 
-            let delta = calculate_equity_floor_auto_delta(amount, collateral, floor, buffer);
+            let delta = calculate_equity_floor_auto_delta(amount, net_equity, floor, buffer);
 
             assert!(delta <= amount, "delta above amount at iteration {}", i);
             assert!(delta <= floor, "delta above floor at iteration {}", i);
@@ -151,18 +155,18 @@ mod tests {
                 continue;
             }
 
-            let collateral_after = collateral - amount as i128;
+            let net_equity_after = net_equity - amount as i128;
             let floor_after = floor - delta;
-            let started_above = collateral >= (floor + buffer) as i128;
-            if started_above && delta < floor && amount as i128 <= collateral {
+            let started_above = net_equity >= (floor + buffer) as i128;
+            if started_above && delta < floor && amount as i128 <= net_equity {
                 assert!(
-                    collateral_after >= (floor_after + buffer) as i128,
+                    net_equity_after >= (floor_after + buffer) as i128,
                     "auto delta leaves debit side below buffered floor at iteration {}",
                     i
                 );
                 if delta > 0 {
                     assert!(
-                        collateral_after < (floor_after + 1 + buffer) as i128,
+                        net_equity_after < (floor_after + 1 + buffer) as i128,
                         "auto delta is not minimal at iteration {}",
                         i
                     );

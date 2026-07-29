@@ -69,8 +69,8 @@ type TrackedUserState = {
  * `tripEquityFloorBreaker` instruction, freezing all of the authority's
  * subaccounts on-chain.
  *
- * Levels mirror the SDK's `getEquityFloorLevel`, using the same strict oracle
- * pricing the on-chain checks use: `breached` (below the floor, trippable),
+ * Levels mirror the SDK's `getEquityFloorLevel`, using the same net-equity
+ * metric the onchain checks use: `breached` (below the floor, trippable),
  * `critical` (below floor + buffer, risk-increasing actions rejecting),
  * `warning` (inside `warningBufferMultiple` buffers of the floor), `healthy`.
  *
@@ -298,8 +298,8 @@ export class EquityFloorGuardBot implements Bot {
 				const authorityKey = userAccount.authority.toBase58();
 				seen.add(userKey);
 
-				// strict pricing: what the on-chain checks and the trip proof see
-				const equity = user.getTotalCollateral('Initial', true);
+				// net equity: what the onchain checks and the trip proof see
+				const equity = user.getNetUsdValue();
 				const headroom = equity.sub(userAccount.equityFloor);
 				const bufferedHeadroom = headroom.sub(userAccount.equityFloorBuffer);
 				const level = getEquityFloorLevel(

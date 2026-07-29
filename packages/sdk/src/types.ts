@@ -124,6 +124,8 @@ export enum UserStatus {
 	REDUCE_ONLY = 4,
 	ADVANCED_LP = 8,
 	// 16 reserved (was PROTECTED_MAKER)
+	/** Owned by a Strategy Vault (authority is a vault PDA; equity prices vault shares). Revenue-share sweeps skip such Users so a builder/referral reward can't enter vault NAV. */
+	VAULT_OWNED = 32,
 }
 
 /** Bitmask mirror of `UserAccount.specialUserStatus`. `VAMM_HEDGER` marks the account used by the protocol's own vAMM-hedging bot. */
@@ -1109,6 +1111,8 @@ export type StateAccount = {
 	hotAmmSpreadAdjust: PublicKey;
 	/** hot key authorized to trigger protocol-fee withdrawals to `protocolFeeRecipientPerp`/`protocolFeeRecipientSpot` */
 	hotFeeWithdraw: PublicKey;
+	/** hot key authorized to grow zero-copy accounts to the deployed program's size (`extendAccount`) */
+	hotAccountExtension: PublicKey;
 	/** treasury PERP protocol fees are withdrawn to (settable only by `coldAdmin`); `PublicKey.default()` makes perp fee withdrawals inert */
 	protocolFeeRecipientPerp: PublicKey;
 	/** treasury SPOT protocol fees are withdrawn to (settable only by `coldAdmin`); `PublicKey.default()` makes spot fee withdrawals inert */

@@ -1,14 +1,21 @@
-use anchor_lang::prelude::{AccountInfo, Pubkey};
-use anchor_lang::{Owner, ZeroCopy};
-use bytes::BytesMut;
+use {
+    anchor_lang::{
+        prelude::{AccountInfo, Pubkey},
+        Owner, ZeroCopy,
+    },
+    bytes::BytesMut,
+};
 
 #[cfg(any(test, feature = "fuzz-fixtures"))]
 pub mod legacy_snapshot;
 
-use crate::state::pyth_lazer_oracle::PythLazerOracle;
-use pyth::pc::Price;
-
-use crate::state::user::{Order, PerpPosition, SpotPosition};
+use {
+    crate::state::{
+        pyth_lazer_oracle::PythLazerOracle,
+        user::{Order, PerpPosition, SpotPosition},
+    },
+    pyth::pc::Price,
+};
 
 pub fn get_positions(position: PerpPosition) -> [PerpPosition; 8] {
     let mut positions = [PerpPosition::default(); 8];

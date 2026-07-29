@@ -1,8 +1,13 @@
-use anchor_lang::prelude::*;
-
-use crate::constraints::is_admin;
-use crate::state::events::{FeeUpdateAction, FeeUpdateRecord};
-use crate::state::{FeeUpdate, FeeUpdateStatus, Vault};
+use {
+    crate::{
+        constraints::is_admin,
+        state::{
+            events::{FeeUpdateAction, FeeUpdateRecord},
+            FeeUpdate, FeeUpdateStatus, Vault,
+        },
+    },
+    anchor_lang::prelude::*,
+};
 
 pub fn admin_delete_fee_update<'info>(
     ctx: Context<'info, AdminDeleteFeeUpdate<'info>>,

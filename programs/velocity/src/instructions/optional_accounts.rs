@@ -1,37 +1,41 @@
-use crate::error::{ErrorCode, VelocityResult};
-use crate::state::revenue_share::{
-    RevenueShareEscrow, RevenueShareEscrowLoader, RevenueShareEscrowZeroCopyMut, RevenueShareOrder,
-    RevenueShareOrderBitFlag,
+use {
+    crate::{
+        error::{
+            ErrorCode::{self, UnableToLoadOracle},
+            VelocityResult,
+        },
+        math::safe_unwrap::SafeUnwrap,
+        msg,
+        state::{
+            load_ref::load_ref_mut,
+            oracle::PrelaunchOracle,
+            oracle_map::OracleMap,
+            perp_market::PerpMarket,
+            perp_market_map::{MarketSet, PerpMarketMap},
+            revenue_share::{
+                RevenueShareEscrow, RevenueShareEscrowLoader, RevenueShareEscrowZeroCopyMut,
+                RevenueShareOrder, RevenueShareOrderBitFlag,
+            },
+            spot_market_map::SpotMarketMap,
+            state::{OracleGuardRails, State},
+            traits::Size,
+            user::{MarketType, User, UserStats},
+        },
+        validate, OracleSource,
+    },
+    anchor_lang::{
+        accounts::account::Account,
+        prelude::{AccountInfo, AccountLoader, Interface, InterfaceAccount, Pubkey},
+        Discriminator,
+    },
+    anchor_spl::{
+        token::TokenAccount,
+        token_interface::{Mint, TokenInterface},
+    },
+    arrayref::array_ref,
+    solana_program::account_info::next_account_info,
+    std::{cell::RefMut, convert::TryFrom, iter::Peekable, ops::Deref, slice::Iter},
 };
-use crate::state::state::State;
-use crate::state::user::MarketType;
-use std::cell::RefMut;
-use std::convert::TryFrom;
-
-use crate::error::ErrorCode::UnableToLoadOracle;
-use crate::math::safe_unwrap::SafeUnwrap;
-use crate::msg;
-use crate::state::load_ref::load_ref_mut;
-use crate::state::oracle::PrelaunchOracle;
-use crate::state::oracle_map::OracleMap;
-use crate::state::perp_market::PerpMarket;
-use crate::state::perp_market_map::{MarketSet, PerpMarketMap};
-use crate::state::spot_market_map::SpotMarketMap;
-use crate::state::state::OracleGuardRails;
-use crate::state::traits::Size;
-use crate::state::user::{User, UserStats};
-use crate::{validate, OracleSource};
-use anchor_lang::accounts::account::Account;
-use anchor_lang::prelude::{AccountInfo, Interface, Pubkey};
-use anchor_lang::prelude::{AccountLoader, InterfaceAccount};
-use anchor_lang::Discriminator;
-use anchor_spl::token::TokenAccount;
-use anchor_spl::token_interface::{Mint, TokenInterface};
-use arrayref::array_ref;
-use solana_program::account_info::next_account_info;
-use std::iter::Peekable;
-use std::ops::Deref;
-use std::slice::Iter;
 
 pub struct AccountMaps<'a> {
     pub perp_market_map: PerpMarketMap<'a>,
@@ -300,6 +304,19 @@ pub fn validate_builder_fee(
         _ => return Ok(None),
     };
 
+    // Global ceiling on the builder fee, independent of the builder's own
+    // configured `max_fee_tenth_bps` (accepted at approval with no ceiling).
+    // Bounds how much value a fill can route to a builder so the fee rail can't
+    // move collateral-significant amounts a taker couldn't withdraw under
+    // initial margin (OtterSec #83).
+    validate!(
+        builder_fee <= crate::math::constants::MAX_BUILDER_FEE_TENTH_BPS,
+        ErrorCode::InvalidBuilderFee,
+        "builder fee {} exceeds global max {} (tenth-bps)",
+        builder_fee,
+        crate::math::constants::MAX_BUILDER_FEE_TENTH_BPS
+    )?;
+
     let escrow = match escrow {
         Some(escrow) => escrow,
         None => {
@@ -375,12 +392,19 @@ pub fn add_builder_order<'a, 'b>(
 ) -> VelocityResult<Option<&'b mut RevenueShareOrder>> {
     let (builder_idx, builder_fee_bps) = match (builder_idx, builder_fee_bps) {
         (Some(idx), Some(fee)) => (idx, fee),
+        // No builder requested — nothing to attach.
         _ => return Ok(None),
     };
-    let escrow = match escrow.as_mut() {
-        Some(escrow) => escrow,
-        None => return Ok(None),
-    };
+    // A builder fee WAS requested, so a row MUST be reserved. Previously an
+    // absent or full escrow returned `Ok(None)`, dropping the `HasBuilder` bit
+    // so the fill silently charged no builder fee — a taker could dodge the fee
+    // by zero-sizing or filling their escrow's order list. Reject the placement
+    // instead of silently downgrading it (OtterSec #82). `validate_builder_fee`
+    // already errors on an absent escrow when a fee is requested, so the `None`
+    // case here is defensive.
+    let escrow = escrow
+        .as_mut()
+        .ok_or(ErrorCode::UnableToLoadRevenueShareAccount)?;
 
     let new_order_index = user
         .orders
@@ -388,7 +412,9 @@ pub fn add_builder_order<'a, 'b>(
         .position(|order| order.is_available())
         .ok_or(ErrorCode::MaxNumberOfOrders)?;
 
-    match escrow.add_order(RevenueShareOrder::new(
+    // `add_order` returns `RevenueShareEscrowOrdersAccountFull` when no slot is
+    // free; propagate it rather than swallowing it into a no-builder placement.
+    let order_idx = escrow.add_order(RevenueShareOrder::new(
         builder_idx,
         user.sub_account_id,
         order_id,
@@ -397,11 +423,6 @@ pub fn add_builder_order<'a, 'b>(
         market_index,
         RevenueShareOrderBitFlag::Open as u8,
         new_order_index as u8,
-    )) {
-        Ok(order_idx) => Ok(escrow.get_order_mut(order_idx).ok()),
-        Err(_) => {
-            msg!("Failed to add builder order, RevenueShareEscrow is full");
-            Ok(None)
-        }
-    }
+    ))?;
+    Ok(escrow.get_order_mut(order_idx).ok())
 }

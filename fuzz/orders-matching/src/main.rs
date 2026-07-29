@@ -10,18 +10,24 @@
 //! function bodies themselves are always compiled, so all properties live in
 //! this one file and `crucible run orders-matching <prop>` selects one.
 
-use crucible_fuzzer::*;
-
-use velocity::controller::position::PositionDirection;
-use velocity::math::auction::{calculate_auction_price, is_auction_complete};
-use velocity::math::constants::BASE_PRECISION_U64;
-use velocity::math::matching::{calculate_fill_for_matched_orders, do_orders_cross};
-use velocity::math::orders::{
-    is_multiple_of_step_size, is_new_order_risk_increasing, is_order_position_reducing,
-    standardize_base_asset_amount, standardize_base_asset_amount_ceil,
-    standardize_base_asset_amount_with_remainder_i128, standardize_price, validate_fill_price,
+use {
+    crucible_fuzzer::*,
+    velocity::{
+        controller::position::PositionDirection,
+        math::{
+            auction::{calculate_auction_price, is_auction_complete},
+            constants::BASE_PRECISION_U64,
+            matching::{calculate_fill_for_matched_orders, do_orders_cross},
+            orders::{
+                is_multiple_of_step_size, is_new_order_risk_increasing, is_order_position_reducing,
+                standardize_base_asset_amount, standardize_base_asset_amount_ceil,
+                standardize_base_asset_amount_with_remainder_i128, standardize_price,
+                validate_fill_price,
+            },
+        },
+        state::user::{Order, OrderType},
+    },
 };
-use velocity::state::user::{Order, OrderType};
 
 #[derive(Clone)]
 struct StdFixture {
@@ -82,7 +88,10 @@ fn prop_standardize_base(
     // Idempotence: standardizing an already-standard value is a no-op.
     let floor2 = standardize_base_asset_amount(floor, step).unwrap();
     fuzz_assert_eq!(floor2, floor);
-    fuzz_assert_eq!(standardize_base_asset_amount_ceil(floor, step).unwrap(), floor);
+    fuzz_assert_eq!(
+        standardize_base_asset_amount_ceil(floor, step).unwrap(),
+        floor
+    );
 
     // ceil − floor is 0 (already aligned) or exactly one step.
     let gap = ceil - floor;
@@ -289,7 +298,9 @@ fn prop_fill_bounds_reduce_only(
     };
 
     // Remaining unfilled size never exceeds base − filled.
-    let unfilled = order.get_base_asset_amount_unfilled(Some(position)).unwrap();
+    let unfilled = order
+        .get_base_asset_amount_unfilled(Some(position))
+        .unwrap();
     fuzz_assert_le!(unfilled, order_base - filled);
 
     // A matched fill against this remaining size can never exceed it.

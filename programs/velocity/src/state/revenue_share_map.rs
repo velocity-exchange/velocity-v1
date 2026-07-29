@@ -1,20 +1,16 @@
-use crate::error::{ErrorCode, VelocityResult};
-use crate::math::safe_unwrap::SafeUnwrap;
-use crate::msg;
-use crate::state::revenue_share::RevenueShare;
-use crate::state::traits::Size;
-use crate::state::user::User;
-use crate::validate;
-use anchor_lang::prelude::AccountLoader;
-use anchor_lang::Discriminator;
-use arrayref::array_ref;
-use solana_program::account_info::AccountInfo;
-use solana_program::pubkey::Pubkey;
-use std::cell::RefMut;
-use std::collections::BTreeMap;
-use std::iter::Peekable;
-use std::panic::Location;
-use std::slice::Iter;
+use {
+    crate::{
+        error::{ErrorCode, VelocityResult},
+        math::safe_unwrap::SafeUnwrap,
+        msg,
+        state::{revenue_share::RevenueShare, traits::Size, user::User},
+        validate,
+    },
+    anchor_lang::{prelude::AccountLoader, Discriminator},
+    arrayref::array_ref,
+    solana_program::{account_info::AccountInfo, pubkey::Pubkey},
+    std::{cell::RefMut, collections::BTreeMap, iter::Peekable, panic::Location, slice::Iter},
+};
 
 #[derive(Default)]
 pub struct RevenueShareEntry<'a> {

@@ -1,10 +1,16 @@
-use crate::controller::position::PositionDirection;
-use crate::math::constants::{PRICE_PRECISION_I64, PRICE_PRECISION_U64};
-use crate::math::matching::*;
+use crate::{
+    controller::position::PositionDirection,
+    math::{
+        constants::{PRICE_PRECISION_I64, PRICE_PRECISION_U64},
+        matching::*,
+    },
+};
 
 mod is_maker_for_taker {
-    use crate::math::matching::is_maker_for_taker;
-    use crate::state::user::{Order, OrderType};
+    use crate::{
+        math::matching::is_maker_for_taker,
+        state::user::{Order, OrderType},
+    };
 
     #[test]
     fn taker_is_post_only() {

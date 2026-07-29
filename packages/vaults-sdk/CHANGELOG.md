@@ -1,5 +1,52 @@
 # @velocity-exchange/vaults-sdk
 
+## 0.1.17
+
+### Patch Changes
+
+- [#310](https://github.com/velocity-exchange/velocity-v1/pull/310) [`2c71959`](https://github.com/velocity-exchange/velocity-v1/commit/2c719596fda2aaedf6b13988ec13ddcc6293596e) Thanks [@ChewingGlass](https://github.com/ChewingGlass)! - Vaults fee / rebase / share-accounting hardening (eleven Medium audit fixes). Program-internal behavior changes; no account-layout, IDL, or error-code change (reuses existing `InvalidVaultUpdate` / `InvalidVaultRebase`).
+
+  - **#96** — a protocol vault paying only a management fee rebased with `&mut None`, leaving `protocol_profit_and_fee_shares` in the old denomination. The management-fee-only path now passes the real `vault_protocol` into `apply_rebase` so protocol shares scale by the same divisor.
+  - **#97** — the timelocked fee-update path copied raw management-fee/profit-share/hurdle values, bypassing the init bounds. New shared `validate_fee_policy` is enforced when queueing (`manager_update_fees`) and on both maturity paths (`apply_fee` and the pending branch of `manager_update_fees`, each against live protocol state), so no update can install a policy init couldn't create. For protocol vaults, `manager_update_fees` with a pending update now takes the `VaultProtocol` account in `remaining_accounts` (the SDK's `getManagerUpdateFeesIx` appends it).
+  - **#98** — a matured fee update stamped no epoch boundary, so a raised rate retroactively priced the pre-activation interval. `try_update_vault_fees` now stamps `last_fee_update_ts` to the activation instant (rate epochs).
+  - **#99** — `apply_rebase` skipped `VaultProtocol.last_protocol_withdraw_request.shares`, stranding a protocol request after a public rebase. It's now rebased by the same divisor.
+  - **#100** — `redeem_tokens`' conservation check compared inconsistent share domains (protocol shares miscounted after the provider was consumed). It now snapshots the complete domain (including protocol shares) and keeps the `VaultProtocol` provider alive across the before/after.
+  - **#101** — `transfer`/`tokenize`/`redeem` passed `&mut None` for the fee update, skipping a matured update (a basis-reset escape). They now thread the `FeeUpdate` PDA and apply a matured update, mirroring deposit/withdraw.
+  - **#102** — the protocol-vault combined-fee branch derived the manager slice from the uncapped total then capped only the total, so a long idle interval drove the fee-share denominator negative and froze all public actions. The combined fee is now capped to `equity - 1` before splitting.
+  - **#104** — a positive profit-share fee that floored to zero shares advanced the high-water mark while transferring nothing; rounding it up to a whole share instead would confiscate value far exceeding the fee (unbounded at a high share price, e.g. after a rebase-then-recovery cycle), letting a manager-cranked crystallization capture ~100% of a small depositor's profit. `apply_profit_share` now defers such a fee — transfers nothing and rolls back the high-water mark / `profit_share_fee_paid` advance — so it is charged later once accrued profit makes it worth at least one share.
+  - **#105** — `redeem_tokens` left `TokenizedVaultDepositor.last_vault_shares` at the pre-transfer balance, permanently breaking future `tokenize_shares`. The checkpoint is now refreshed to the post-transfer balance.
+  - **#106** — the signerless `apply_rebase` could floor a small depositor's shares (or a pending request's shares) to zero, freezing the position. The public path (`apply_rebase_public`) now rejects a rebase that would zero a nonzero claim; the depositor can still rebase via a signed action.
+  - **#107** — lifecycle paths rebased the depositor, then `apply_fee` could rebase the vault again, leaving the depositor at a stale base and aborting `InvalidVaultRebase`. Depositors (and pending requests) are now re-synced after `apply_fee`.
+
+  Note: **#95** (late reward → manager shares) is closed at the root by PR #307's revenue-share sweep block (no reward can reach the vault-owned User); its zero-supply-repair defense-in-depth is not added here.
+
+- Updated dependencies [[`2a73aa7`](https://github.com/velocity-exchange/velocity-v1/commit/2a73aa716aed4f5910893c0ad9012bd598f72844), [`6e29daf`](https://github.com/velocity-exchange/velocity-v1/commit/6e29daf0ef781986dbe3bbf79f1c9bd2e25eb646)]:
+  - @velocity-exchange/sdk@0.11.0
+
+## 0.1.16
+
+### Patch Changes
+
+- Updated dependencies [[`63a580e`](https://github.com/velocity-exchange/velocity-v1/commit/63a580ea3c31a21fb8820fe75075d799cc8dc3da), [`2219857`](https://github.com/velocity-exchange/velocity-v1/commit/2219857615aeb4cd11b5ace8a203279797f41c88)]:
+  - @velocity-exchange/sdk@0.10.0
+
+## 0.1.15
+
+### Patch Changes
+
+- [#307](https://github.com/velocity-exchange/velocity-v1/pull/307) [`0ac1f73`](https://github.com/velocity-exchange/velocity-v1/commit/0ac1f730d0bdc5420ae0efd0ec12a1eb017fa542) Thanks [@ChewingGlass](https://github.com/ChewingGlass)! - Vault share-pricing hardening (four High audit fixes, #91/#92/#93/#94).
+
+  Builder/referral rewards owed to a vault PDA accrue in arbitrary third-party escrows and only enter the vault-owned Velocity User's equity via a permissionless revenue-share sweep — at a time an attacker controls. Because the vault can't see or enumerate those rewards (and no legitimate flow has a vault earn revenue share — a third party can name a vault PDA as their builder with no signature), the reward is blocked at the source instead:
+
+  - **#91/#92/#93** — new `UserStatus::VaultOwned` bit (`UserStatus.VAULT_OWNED = 32`) marks a vault-owned User; the vaults program sets it at `initialize_vault` via a new CPI to the new velocity instruction `update_user_vault_owned` (authority-gated, set-only). `sweep_completed_revenue_share_for_market` now skips crediting a builder/referral reward to a vault-owned User — draining the liability counter and clearing the row without transferring, so the reward stays in the market's PnL pool and can never enter vault NAV. This closes late-entrant dilution (#91), the stranded pending-withdrawer (#92), and the reward-donation-burns-a-canceller's-claim vector (#93) at the root.
+  - **#93 (defense-in-depth)** — `VaultDepositor::deposit` now rejects a positive deposit that mints zero shares (mirrors `request_withdraw`'s guard and the IF `IFDepositMintsZeroShares` path); `WithdrawRequest::calculate_shares_lost` rejects a cancel that would floor a positive claim's retained shares to zero purely because equity rose.
+  - **#94** — `Vault::calculate_equity` now fetches the denomination-market oracle with `get_price_data_and_validity` and gates it with `VelocityAction::MarginCalc` (rejecting NonPositive/TooVolatile/TooUncertain/StaleForMargin), instead of a raw unchecked `get_price_data`. Previously a stale-high denomination oracle could shrink NAV and overmint shares whenever the vault held no denomination position (so the margin walk never validated that oracle).
+
+  SDK: adds `UserStatus.VAULT_OWNED` and the `updateUserVaultOwned` instruction to the IDL. No account-layout change (`VaultOwned` reuses a spare `status` bit; existing accounts read 0). `update_user_vault_owned` is CPI-only (called by the vaults program at vault init), not a client-facing builder.
+
+- Updated dependencies [[`d142320`](https://github.com/velocity-exchange/velocity-v1/commit/d14232017da7b09be1a71af8c5f6ee889ccac745), [`25da8e1`](https://github.com/velocity-exchange/velocity-v1/commit/25da8e1e39ccbb8310de32dd0da29041f2a93a0c), [`c16315e`](https://github.com/velocity-exchange/velocity-v1/commit/c16315e594120afdeb10f832c64914da01cbddcb), [`e34c623`](https://github.com/velocity-exchange/velocity-v1/commit/e34c6233afa1e04c7a4ff4a3f088405508f85790), [`edfc846`](https://github.com/velocity-exchange/velocity-v1/commit/edfc8469b5b4058f8767f1e48075b384fb809b4f), [`5fac99b`](https://github.com/velocity-exchange/velocity-v1/commit/5fac99bb93343d93c2a58e776fdba888588f89a2), [`5fac99b`](https://github.com/velocity-exchange/velocity-v1/commit/5fac99bb93343d93c2a58e776fdba888588f89a2), [`0ac1f73`](https://github.com/velocity-exchange/velocity-v1/commit/0ac1f730d0bdc5420ae0efd0ec12a1eb017fa542)]:
+  - @velocity-exchange/sdk@0.9.0
+
 ## 0.1.14
 
 ### Patch Changes

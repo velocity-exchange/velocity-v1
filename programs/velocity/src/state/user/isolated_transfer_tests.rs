@@ -1,31 +1,37 @@
 //! Tests for `User::meets_transfer_isolated_position_deposit_margin_requirement`.
 //! Covers transfer-to-isolated and transfer-from-isolated flows with pass/fail scenarios.
 
-use crate::state::perp_market::MarketStats;
-use std::collections::BTreeSet;
-use std::str::FromStr;
-
-use solana_program::pubkey::Pubkey;
-
-use crate::error::ErrorCode;
-use crate::math::constants::{
-    AMM_RESERVE_PRECISION, BASE_PRECISION_I64, LIQUIDATION_FEE_PRECISION, PEG_PRECISION,
-    QUOTE_PRECISION_I128, QUOTE_PRECISION_I64, SPOT_BALANCE_PRECISION_U64,
-    SPOT_CUMULATIVE_INTEREST_PRECISION, SPOT_WEIGHT_PRECISION,
+use {
+    crate::{
+        create_anchor_account_info,
+        error::ErrorCode,
+        math::{
+            constants::{
+                AMM_RESERVE_PRECISION, BASE_PRECISION_I64, LIQUIDATION_FEE_PRECISION,
+                PEG_PRECISION, QUOTE_PRECISION_I128, QUOTE_PRECISION_I64,
+                SPOT_BALANCE_PRECISION_U64, SPOT_CUMULATIVE_INTEREST_PRECISION,
+                SPOT_WEIGHT_PRECISION,
+            },
+            margin::MarginRequirementType,
+        },
+        state::{
+            margin_calculation::MarginTypeConfig,
+            market_status::MarketStatus,
+            oracle::{HistoricalOracleData, OracleSource},
+            oracle_map::OracleMap,
+            perp_market::{MarketStats, PerpMarket, AMM},
+            perp_market_map::PerpMarketMap,
+            pyth_lazer_oracle::PythLazerOracle,
+            spot_market::{SpotBalanceType, SpotMarket},
+            spot_market_map::SpotMarketMap,
+            user::{PerpPosition, PositionFlag, SpotPosition, User, UserStats},
+        },
+        test_utils::{get_positions, get_pyth_price, get_spot_positions},
+        PRICE_PRECISION_I64,
+    },
+    solana_program::pubkey::Pubkey,
+    std::{collections::BTreeSet, str::FromStr},
 };
-use crate::math::margin::MarginRequirementType;
-use crate::state::margin_calculation::MarginTypeConfig;
-use crate::state::market_status::MarketStatus;
-use crate::state::oracle::{HistoricalOracleData, OracleSource};
-use crate::state::oracle_map::OracleMap;
-use crate::state::perp_market::{PerpMarket, AMM};
-use crate::state::perp_market_map::PerpMarketMap;
-use crate::state::pyth_lazer_oracle::PythLazerOracle;
-use crate::state::spot_market::{SpotBalanceType, SpotMarket};
-use crate::state::spot_market_map::SpotMarketMap;
-use crate::state::user::{PerpPosition, PositionFlag, SpotPosition, User, UserStats};
-use crate::test_utils::{get_positions, get_pyth_price, get_spot_positions};
-use crate::{create_anchor_account_info, PRICE_PRECISION_I64};
 
 #[test]
 fn can_transfer_to_isolated_when_cross_still_meets_after_withdraw() {

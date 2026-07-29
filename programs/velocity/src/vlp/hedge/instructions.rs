@@ -1,61 +1,62 @@
-use anchor_lang::{prelude::*, Accounts, Key, Result};
-use anchor_spl::token_interface::{Mint, TokenAccount, TokenInterface};
-
-use crate::auth::check_hot;
-use crate::math::constants::PRICE_PRECISION_I64;
-use crate::state::events::{DepositDirection, LPBorrowLendDepositRecord};
-use crate::state::paused_operations::ConstituentLpOperation;
-use crate::state::state::HotRole;
-use crate::validation::whitelist::validate_whitelist_token;
-use crate::{
-    controller::{
-        self,
-        spot_balance::update_spot_balances,
-        token::{burn_tokens, mint_tokens},
+use {
+    crate::{
+        auth::check_hot,
+        controller::{
+            self,
+            spot_balance::{update_spot_balances, update_spot_market_cumulative_interest},
+            token::{
+                burn_tokens, mint_tokens, receive, send_from_program_vault_with_signature_seeds,
+            },
+        },
+        error::ErrorCode,
+        get_then_update_id,
+        instructions::{
+            constraints::*,
+            optional_accounts::{get_whitelist_token, load_maps, AccountMaps},
+        },
+        math::{
+            self,
+            casting::Cast,
+            constants::{PERCENTAGE_PRECISION_I64, PRICE_PRECISION_I64},
+            oracle::{is_oracle_valid_for_action, VelocityAction},
+            safe_math::SafeMath,
+        },
+        math_error, msg, safe_decrement, safe_increment,
+        state::{
+            events::{
+                emit_stack, DepositDirection, LPBorrowLendDepositRecord, LPMintRedeemRecord,
+                LPSwapRecord,
+            },
+            oracle_map::OracleMap,
+            paused_operations::ConstituentLpOperation,
+            perp_market_map::MarketSet,
+            spot_market::{SpotBalanceType, SpotMarket},
+            spot_market_map::get_writable_spot_market_set_from_many,
+            state::{HotRole, State},
+            traits::Size,
+            user::MarketType,
+            zero_copy::{AccountZeroCopy, AccountZeroCopyMut, ZeroCopyLoader},
+        },
+        validate,
+        validation::whitelist::validate_whitelist_token,
+        vlp::{
+            amm_cache::{AmmCacheFixed, CacheInfo, AMM_POSITIONS_CACHE},
+            hedge::{
+                constituent_map::{ConstituentMap, ConstituentSet},
+                state::{
+                    update_constituent_target_base_for_derivatives, AmmConstituentDatum,
+                    AmmConstituentMappingFixed, AmmInventoryAndPricesAndSlots, Constituent,
+                    ConstituentCorrelationsFixed, ConstituentIndexAndDecimalAndPrice,
+                    ConstituentTargetBaseFixed, LPPool, TargetsDatum, CONSTITUENT_PDA_SEED,
+                    LP_POOL_SWAP_AUM_UPDATE_DELAY, LP_POOL_TOKEN_VAULT_PDA_SEED,
+                },
+            },
+        },
     },
-    error::ErrorCode,
-    get_then_update_id,
-    math::{
-        self,
-        casting::Cast,
-        constants::PERCENTAGE_PRECISION_I64,
-        oracle::{is_oracle_valid_for_action, VelocityAction},
-        safe_math::SafeMath,
-    },
-    math_error, msg, safe_decrement, safe_increment,
-    state::{
-        events::{emit_stack, LPMintRedeemRecord, LPSwapRecord},
-        oracle_map::OracleMap,
-        perp_market_map::MarketSet,
-        spot_market::{SpotBalanceType, SpotMarket},
-        spot_market_map::get_writable_spot_market_set_from_many,
-        state::State,
-        traits::Size,
-        user::MarketType,
-        zero_copy::{AccountZeroCopy, AccountZeroCopyMut, ZeroCopyLoader},
-    },
-    validate,
-    vlp::amm_cache::{AmmCacheFixed, CacheInfo, AMM_POSITIONS_CACHE},
-    vlp::hedge::constituent_map::{ConstituentMap, ConstituentSet},
-    vlp::hedge::state::{
-        update_constituent_target_base_for_derivatives, AmmConstituentDatum,
-        AmmConstituentMappingFixed, Constituent, ConstituentCorrelationsFixed,
-        ConstituentTargetBaseFixed, LPPool, TargetsDatum, LP_POOL_SWAP_AUM_UPDATE_DELAY,
-    },
-};
-use std::collections::BTreeMap;
-use std::iter::Peekable;
-use std::slice::Iter;
-
-use solana_program::sysvar::clock::Clock;
-
-use crate::controller::spot_balance::update_spot_market_cumulative_interest;
-use crate::controller::token::{receive, send_from_program_vault_with_signature_seeds};
-use crate::instructions::constraints::*;
-use crate::instructions::optional_accounts::{get_whitelist_token, load_maps, AccountMaps};
-use crate::vlp::hedge::state::{
-    AmmInventoryAndPricesAndSlots, ConstituentIndexAndDecimalAndPrice, CONSTITUENT_PDA_SEED,
-    LP_POOL_TOKEN_VAULT_PDA_SEED,
+    anchor_lang::{prelude::*, Accounts, Key, Result},
+    anchor_spl::token_interface::{Mint, TokenAccount, TokenInterface},
+    solana_program::sysvar::clock::Clock,
+    std::{collections::BTreeMap, iter::Peekable, slice::Iter},
 };
 
 pub fn handle_update_constituent_target_base<'c: 'info, 'info>(

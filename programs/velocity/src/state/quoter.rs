@@ -33,11 +33,15 @@
 //! See `docs/amm-decoupling-and-maker-interface.md` for the full design,
 //! including pro-rata policy and snapshot consistency rules.
 
-use crate::controller::position::PositionDirection;
-use crate::error::{ErrorCode, VelocityResult};
-use crate::math::safe_math::SafeMath;
-use crate::state::oracle::{MMOraclePriceData, OraclePriceData};
-use crate::state::perp_market::MarketStats;
+use crate::{
+    controller::position::PositionDirection,
+    error::{ErrorCode, VelocityResult},
+    math::safe_math::SafeMath,
+    state::{
+        oracle::{MMOraclePriceData, OraclePriceData},
+        perp_market::MarketStats,
+    },
+};
 
 /// Inputs the matcher shares with every maker during a single match.
 ///
@@ -552,9 +556,10 @@ impl<'a> DlobOrderQuoter<'a> {
 // re-open this design choice.
 #[cfg(test)]
 mod dlob_order_maker_tests {
-    use super::*;
-    use crate::state::user::MarketType;
-    use crate::state::user::{Order, OrderStatus, OrderType};
+    use {
+        super::*,
+        crate::state::user::{MarketType, Order, OrderStatus, OrderType},
+    };
 
     fn make_ctx<'a>(stats: &'a MarketStats, oracle: &'a OraclePriceData) -> QuoteContext<'a> {
         QuoteContext {

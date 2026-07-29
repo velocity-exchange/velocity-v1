@@ -1,20 +1,23 @@
-use std::cell::RefMut;
-
-use crate::error::ErrorCode;
-use crate::events::{VaultDepositorAction, VaultDepositorRecord, VaultDepositorV1Record};
-use crate::state::vault::Vault;
-use crate::{validate, FeeUpdate, VaultFee, VaultProtocol};
-use crate::{Size, VaultDepositorBase};
-use static_assertions::const_assert_eq;
-
-use anchor_lang::prelude::*;
-use velocity::math::casting::Cast;
-use velocity::math::insurance::{
-    if_shares_to_vault_amount as depositor_shares_to_vault_amount,
-    vault_amount_to_if_shares as vault_amount_to_depositor_shares,
+use {
+    crate::{
+        error::ErrorCode,
+        events::{VaultDepositorAction, VaultDepositorRecord, VaultDepositorV1Record},
+        state::vault::Vault,
+        validate, FeeUpdate, Size, VaultDepositorBase, VaultFee, VaultProtocol,
+    },
+    anchor_lang::prelude::*,
+    static_assertions::const_assert_eq,
+    std::cell::RefMut,
+    velocity::math::{
+        casting::Cast,
+        insurance::{
+            if_shares_to_vault_amount as depositor_shares_to_vault_amount,
+            vault_amount_to_if_shares as vault_amount_to_depositor_shares,
+        },
+        safe_math::SafeMath,
+    },
+    velocity_macros::assert_no_slop,
 };
-use velocity::math::safe_math::SafeMath;
-use velocity_macros::assert_no_slop;
 
 #[assert_no_slop]
 #[account(zero_copy(unsafe))]
@@ -163,17 +166,19 @@ impl TokenizedVaultDepositor {
         now: i64,
         deposit_oracle_price: i64,
     ) -> Result<u64> {
-        let rebase_divisor = self.apply_rebase(vault, vault_protocol, vault_equity)?;
-        if rebase_divisor.is_some() {
-            return Err(ErrorCode::InvalidVaultRebase.into());
-        }
-
+        // #107: apply the fee before the rebase check so a fee-induced vault rebase is caught by
+        // the same guard (tokenization is disallowed once a rebase occurs) rather than aborting
+        // the later base-checked ops with InvalidVaultRebase.
         let VaultFee {
             management_fee_payment,
             management_fee_shares,
             protocol_fee_payment,
             protocol_fee_shares,
         } = vault.apply_fee(vault_protocol, fee_update, vault_equity, now)?;
+        let rebase_divisor = self.apply_rebase(vault, vault_protocol, vault_equity)?;
+        if rebase_divisor.is_some() {
+            return Err(ErrorCode::InvalidVaultRebase.into());
+        }
         let (manager_profit_share, protocol_profit_share) =
             self.apply_profit_share(vault_equity, vault, vault_protocol)?;
 
@@ -283,6 +288,9 @@ impl TokenizedVaultDepositor {
             protocol_fee_payment,
             protocol_fee_shares,
         } = vault.apply_fee(vault_protocol, fee_update, vault_equity, now)?;
+        // #107: re-sync in case apply_fee induced a vault rebase, so the base-checked
+        // apply_profit_share below does not abort with InvalidVaultRebase.
+        self.apply_rebase(vault, vault_protocol, vault_equity)?;
         let (manager_profit_share, protocol_profit_share) =
             self.apply_profit_share(vault_equity, vault, vault_protocol)?;
 
@@ -361,14 +369,25 @@ impl TokenizedVaultDepositor {
 
         Ok((shares_to_redeem, vault_protocol.take()))
     }
+
+    /// #105: re-checkpoint `last_vault_shares` to the current `vault_shares`. The redeem
+    /// instruction moves shares out of this tokenized depositor via `transfer_shares` *after*
+    /// [`TokenizedVaultDepositor::redeem_tokens`] returns; without lowering the checkpoint to the
+    /// post-transfer balance, the stale (pre-transfer) checkpoint permanently breaks future
+    /// `tokenize_shares` (the `last_vault_shares + shares_transferred == vault_shares` invariant
+    /// can no longer hold). Callers must invoke this after the redeem share transfer completes.
+    pub fn checkpoint_vault_shares(&mut self) {
+        self.last_vault_shares = self.vault_shares;
+    }
 }
 
 #[cfg(test)]
 mod tests {
-    use crate::{TokenizedVaultDepositor, Vault, VaultDepositorBase};
-    use anchor_lang::prelude::Pubkey;
-    use velocity::math::constants::PERCENTAGE_PRECISION;
-    use velocity::math::safe_math::SafeMath;
+    use {
+        crate::{TokenizedVaultDepositor, Vault, VaultDepositorBase},
+        anchor_lang::prelude::Pubkey,
+        velocity::math::{constants::PERCENTAGE_PRECISION, safe_math::SafeMath},
+    };
 
     #[test]
     fn test_tokenize_shares() {
@@ -603,6 +622,111 @@ mod tests {
         assert!(
             tvd_shares_after < tvd_shares_before,
             "tvd shares should decrease after profit share"
+        );
+    }
+
+    // OtterSec #105: after a redeem moves shares out, checkpoint_vault_shares must lower the
+    // last_vault_shares checkpoint so a later tokenize still satisfies
+    // last_vault_shares + shares_transferred == vault_shares.
+    #[test]
+    fn test_redeem_then_tokenize_after_checkpoint() {
+        let now = 1337;
+        let vault = &mut Vault::default();
+        let mut tvd = TokenizedVaultDepositor::new(
+            Pubkey::default(),
+            Pubkey::default(),
+            Pubkey::default(),
+            0,
+            0,
+            now,
+        );
+        let shares_transferred = 500_000u128;
+        tvd.vault_shares = shares_transferred;
+        tvd.last_vault_shares = shares_transferred;
+
+        let total_supply = shares_transferred as u64;
+        let vault_equity = 1_000_000;
+
+        // redeem 50%
+        let tokens_to_burn = total_supply / 2;
+        let (shares_to_redeem, _) = tvd
+            .redeem_tokens(
+                vault,
+                &mut None,
+                &mut None,
+                total_supply,
+                vault_equity,
+                tokens_to_burn,
+                now,
+                0,
+            )
+            .expect("redeem_tokens");
+
+        // simulate the instruction moving the shares out and re-checkpointing (#105)
+        tvd.vault_shares -= shares_to_redeem as u128;
+        tvd.checkpoint_vault_shares();
+        assert_eq!(tvd.last_vault_shares, tvd.vault_shares);
+
+        // a new tokenization into the same tokenized depositor must now succeed
+        let new_shares = 100_000u128;
+        tvd.vault_shares += new_shares;
+        let res = tvd.tokenize_shares(
+            vault,
+            &mut None,
+            &mut None,
+            total_supply - tokens_to_burn,
+            vault_equity,
+            new_shares,
+            now,
+            0,
+        );
+        assert!(
+            res.is_ok(),
+            "tokenize after redeem must succeed once the checkpoint is refreshed: {:?}",
+            res.err()
+        );
+        assert_eq!(tvd.last_vault_shares, tvd.vault_shares);
+    }
+
+    // OtterSec #100 (contract): redeem_tokens returns the VaultProtocol provider (via take()) so
+    // the instruction can keep it alive across the before/after conservation snapshots instead of
+    // discarding it and having get_manager_shares switch to counting protocol shares as manager.
+    #[test]
+    fn test_redeem_tokens_returns_provider() {
+        use {crate::VaultProtocol, std::cell::RefCell};
+
+        let now = 1337;
+        let vault = &mut Vault::default();
+        let vp = RefCell::new(VaultProtocol::default());
+        let mut tvd = TokenizedVaultDepositor::new(
+            Pubkey::default(),
+            Pubkey::default(),
+            Pubkey::default(),
+            0,
+            0,
+            now,
+        );
+        let shares = 500_000u128;
+        tvd.vault_shares = shares;
+        tvd.last_vault_shares = shares;
+        vault.total_shares = shares;
+        vault.user_shares = shares;
+
+        let (_, returned_vp) = tvd
+            .redeem_tokens(
+                vault,
+                &mut Some(vp.borrow_mut()),
+                &mut None,
+                shares as u64,
+                1_000_000,
+                (shares / 2) as u64,
+                now,
+                0,
+            )
+            .expect("redeem_tokens");
+        assert!(
+            returned_vp.is_some(),
+            "redeem_tokens must return the provider for the instruction to keep alive"
         );
     }
 }

@@ -1,18 +1,21 @@
-use anchor_lang::prelude::*;
-use velocity::instructions::optional_accounts::AccountMaps;
-use velocity::program::Velocity;
-use velocity::state::user::{User, UserStats};
-
-use crate::constraints::{
-    is_delegate_for_vault, is_manager_for_vault, is_user_for_vault, is_user_stats_for_vault,
-    is_vault_for_vault_depositor,
+use {
+    super::constraints::is_admin,
+    crate::{
+        constraints::{
+            is_delegate_for_vault, is_manager_for_vault, is_user_for_vault,
+            is_user_stats_for_vault, is_vault_for_vault_depositor,
+        },
+        error::ErrorCode,
+        state::{FeeUpdateProvider, FeeUpdateStatus, Vault, VaultProtocolProvider},
+        validate, AccountMapProvider, VaultDepositor,
+    },
+    anchor_lang::prelude::*,
+    velocity::{
+        instructions::optional_accounts::AccountMaps,
+        program::Velocity,
+        state::user::{User, UserStats},
+    },
 };
-use crate::error::ErrorCode;
-use crate::state::{FeeUpdateProvider, FeeUpdateStatus, Vault, VaultProtocolProvider};
-use crate::VaultDepositor;
-use crate::{validate, AccountMapProvider};
-
-use super::constraints::is_admin;
 
 pub fn apply_profit_share<'info>(ctx: Context<'info, ApplyProfitShare<'info>>) -> Result<()> {
     let clock = &Clock::get()?;

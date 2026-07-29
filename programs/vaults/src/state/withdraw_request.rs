@@ -1,17 +1,21 @@
-use crate::error::ErrorCode;
-use crate::error::VaultResult;
-use crate::{validate, Vault};
-use anchor_lang::prelude::*;
-use anchor_lang::solana_program;
-use bytemuck::Zeroable;
-use solana_program::msg;
-use static_assertions::const_assert_eq;
-use velocity::math::insurance::{
-    if_shares_to_vault_amount as depositor_shares_to_vault_amount,
-    vault_amount_to_if_shares as vault_amount_to_depositor_shares,
+use {
+    crate::{
+        error::{ErrorCode, VaultResult},
+        validate, Vault,
+    },
+    anchor_lang::{prelude::*, solana_program},
+    bytemuck::Zeroable,
+    solana_program::msg,
+    static_assertions::const_assert_eq,
+    velocity::math::{
+        insurance::{
+            if_shares_to_vault_amount as depositor_shares_to_vault_amount,
+            vault_amount_to_if_shares as vault_amount_to_depositor_shares,
+        },
+        safe_math::SafeMath,
+    },
+    velocity_macros::assert_no_slop,
 };
-use velocity::math::safe_math::SafeMath;
-use velocity_macros::assert_no_slop;
 
 #[assert_no_slop]
 #[derive(
@@ -55,6 +59,26 @@ impl WithdrawRequest {
                 "Issue calculating delta if_shares after canceling request {} < {}",
                 new_n_shares,
                 n_shares
+            )?;
+
+            // Conservation-aware guard: a positive frozen request value must not
+            // floor the retained shares to zero. When equity rises far enough
+            // that `self.value` rounds to <1 share of the post-removal pool,
+            // `new_n_shares` floors to 0 and the depositor would forfeit its
+            // ENTIRE stake on cancel — not just the gain the redeem-period
+            // forfeiture is meant to claw back. The block on vault-owned
+            // revenue-share sweeps removes the donation vector that made this
+            // reachable cheaply (OtterSec #93), but reject the transition
+            // outright so no equity increase (donated or genuine) can burn a
+            // positive claim. The depositor can still `withdraw` at its frozen
+            // value instead.
+            validate!(
+                new_n_shares > 0 || self.value == 0,
+                ErrorCode::InvalidVaultSharesDetected,
+                "canceling would burn the entire {}-share claim (frozen value {}, equity {})",
+                n_shares,
+                self.value,
+                vault_equity
             )?;
 
             n_shares.safe_sub(new_n_shares)?
@@ -122,5 +146,47 @@ impl WithdrawRequest {
         )?;
 
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// OtterSec #93 (defense-in-depth): when equity rises far enough that a
+    /// pending request's frozen value rounds to < 1 share of the post-removal
+    /// pool, the retained-share calc floors to zero and cancel would burn the
+    /// depositor's ENTIRE stake. That transition must revert, not silently
+    /// forfeit a positive claim.
+    #[test]
+    fn calculate_shares_lost_rejects_full_claim_burn() {
+        let mut vault = Vault::default();
+        vault.total_shares = 2;
+        let req = WithdrawRequest {
+            shares: 1,
+            value: 100, // small frozen request value
+            ts: 0,
+        };
+        // Huge equity: the 1 frozen share is worth ~equity/2 (>> 100), and the
+        // shares worth `value` at the post-removal pool floor to 0.
+        let vault_equity: u64 = 1_000_000_000_000;
+        assert!(
+            req.calculate_shares_lost(&vault, vault_equity).is_err(),
+            "cancel that would burn the entire claim must revert"
+        );
+    }
+
+    /// Sanity: an ordinary cancel with no equity gain forfeits nothing.
+    #[test]
+    fn calculate_shares_lost_no_gain_forfeits_nothing() {
+        let mut vault = Vault::default();
+        vault.total_shares = 200;
+        let req = WithdrawRequest {
+            shares: 100,
+            value: 100,
+            ts: 0,
+        };
+        // amount == value (no gain) -> else branch -> zero shares lost.
+        assert_eq!(req.calculate_shares_lost(&vault, 200).unwrap(), 0);
     }
 }

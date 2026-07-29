@@ -1,17 +1,21 @@
-use crate::constraints::{
-    is_ata, is_authority_for_vault_depositor, is_mint_for_tokenized_depositor,
-    is_tokenized_depositor_for_vault, is_user_for_vault,
+use {
+    crate::{
+        constraints::{
+            is_ata, is_authority_for_vault_depositor, is_mint_for_tokenized_depositor,
+            is_tokenized_depositor_for_vault, is_user_for_vault,
+        },
+        error::ErrorCode,
+        state::{traits::VaultDepositorBase, FeeUpdateProvider, FeeUpdateStatus},
+        token_cpi::{BurnTokensCPI, TokenTransferCPI},
+        validate, AccountMapProvider, TokenizedVaultDepositor, Vault, VaultDepositor,
+        VaultProtocolProvider, WithdrawUnit,
+    },
+    anchor_lang::prelude::*,
+    anchor_spl::token::{burn, transfer, Burn, Mint, Token, TokenAccount, Transfer},
+    velocity::{
+        instructions::optional_accounts::AccountMaps, math::safe_math::SafeMath, state::user::User,
+    },
 };
-use crate::error::ErrorCode;
-use crate::state::traits::VaultDepositorBase;
-use crate::token_cpi::{BurnTokensCPI, TokenTransferCPI};
-use crate::{validate, AccountMapProvider};
-use crate::{TokenizedVaultDepositor, Vault, VaultDepositor, VaultProtocolProvider, WithdrawUnit};
-use anchor_lang::prelude::*;
-use anchor_spl::token::{burn, transfer, Burn, Mint, Token, TokenAccount, Transfer};
-use velocity::instructions::optional_accounts::AccountMaps;
-use velocity::math::safe_math::SafeMath;
-use velocity::state::user::User;
 
 pub fn redeem_tokens<'info>(
     ctx: Context<'info, RedeemTokens<'info>>,
@@ -31,11 +35,11 @@ pub fn redeem_tokens<'info>(
     vault.validate_vault_protocol(&vp)?;
     let mut vp = vp.as_mut().map(|vp| vp.load_mut()).transpose()?;
 
-    let manager_shares_before = vault.get_manager_shares(&mut vp)?;
-    let total_shares_before = vault_depositor
-        .get_vault_shares()
-        .safe_add(tokenized_vault_depositor.get_vault_shares())?
-        .safe_add(manager_shares_before)?;
+    // #101: apply a matured fee update on this share-movement path (mirrors deposit/withdraw),
+    // so the redeem doesn't run under stale fee terms.
+    let has_fee_update = FeeUpdateStatus::has_pending_fee_update(vault.fee_update_status);
+    let mut fee_update = ctx.fee_update(vp.is_some(), has_fee_update);
+    vault.validate_fee_update(&fee_update)?;
 
     let user = ctx.accounts.velocity_user.load()?;
     let spot_market_index = vault.spot_market_index;
@@ -43,7 +47,12 @@ pub fn redeem_tokens<'info>(
         perp_market_map,
         spot_market_map,
         mut oracle_map,
-    } = ctx.load_maps(clock.slot, Some(spot_market_index), vp.is_some(), false)?;
+    } = ctx.load_maps(
+        clock.slot,
+        Some(spot_market_index),
+        vp.is_some(),
+        has_fee_update,
+    )?;
 
     let vault_equity =
         vault.calculate_equity(&user, &perp_market_map, &spot_market_map, &mut oracle_map)?;
@@ -57,17 +66,33 @@ pub fn redeem_tokens<'info>(
     let total_supply_before = ctx.accounts.mint.supply;
     let spot_market = spot_market_map.get_ref(&spot_market_index)?;
     let oracle = oracle_map.get_price_data(&spot_market.oracle_id())?;
+    // redeem_tokens crystallizes the management fee and the tokenized depositor's profit share.
     let (shares_to_transfer, mut vp) = tokenized_vault_depositor.redeem_tokens(
         &mut vault,
         &mut vp,
-        &mut None,
+        &mut fee_update,
         total_supply_before,
         vault_equity,
         tokens_to_burn,
         clock.unix_timestamp,
         oracle.price,
     )?;
-    let (shares_transferred, _) = tokenized_vault_depositor.transfer_shares(
+
+    // #100: snapshot the *complete* share domain (including protocol shares) AFTER fees are
+    // crystallized (above) but BEFORE the transfer, and keep the VaultProtocol provider alive
+    // across the transfer (capture transfer_shares' returned provider instead of discarding it).
+    // Including protocol shares lets the receiving depositor's profit share (which may mint to
+    // both manager and protocol) net to zero across the snapshots, and a live provider keeps
+    // get_manager_shares consistently excluding protocol shares before and after.
+    let manager_shares_before = vault.get_manager_shares(&mut vp)?;
+    let protocol_shares_before = vault.get_protocol_shares(&mut vp);
+    let total_shares_before = vault_depositor
+        .get_vault_shares()
+        .safe_add(tokenized_vault_depositor.get_vault_shares())?
+        .safe_add(manager_shares_before)?
+        .safe_add(protocol_shares_before)?;
+
+    let (shares_transferred, mut vp) = tokenized_vault_depositor.transfer_shares(
         &mut *vault_depositor,
         &mut vault,
         &mut vp,
@@ -79,11 +104,17 @@ pub fn redeem_tokens<'info>(
         oracle.price,
     )?;
 
+    // #105: the transfer above moved shares out of the tokenized depositor; re-checkpoint its
+    // last_vault_shares to the post-transfer balance so future tokenize_shares still works.
+    tokenized_vault_depositor.checkpoint_vault_shares();
+
     let manager_shares_after = vault.get_manager_shares(&mut vp)?;
+    let protocol_shares_after = vault.get_protocol_shares(&mut vp);
     let total_shares_after = vault_depositor
         .get_vault_shares()
         .safe_add(tokenized_vault_depositor.get_vault_shares())?
-        .safe_add(manager_shares_after)?;
+        .safe_add(manager_shares_after)?
+        .safe_add(protocol_shares_after)?;
 
     validate!(
         total_shares_after.eq(&total_shares_before),

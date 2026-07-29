@@ -6,22 +6,25 @@
 //! LP-pool management ixs live in `crate::vlp::hedge::{admin, instructions}`.
 //! `constraints.rs` = shared Anchor account constraint helpers.
 
-pub use crate::vlp::amm::admin::*;
-pub use crate::vlp::hedge::admin::*;
-pub use crate::vlp::hedge::instructions::*;
-pub use crate::vlp::hedge::settle::*;
+pub use {
+    crate::vlp::{
+        amm::admin::*,
+        hedge::{admin::*, instructions::*, settle::*},
+    },
+    account_extension::*,
+    admin::*,
+    clob::*,
+    constraints::*,
+    if_staker::*,
+    keeper::*,
+    protocol_fees::*,
+    pyth_lazer_oracle::*,
+    quoter_registry::*,
+    router::*,
+    user::*,
+};
 
-pub use admin::*;
-pub use clob::*;
-pub use constraints::*;
-pub use if_staker::*;
-pub use keeper::*;
-pub use protocol_fees::*;
-pub use pyth_lazer_oracle::*;
-pub use quoter_registry::*;
-pub use router::*;
-pub use user::*;
-
+mod account_extension;
 mod admin;
 mod clob;
 pub mod constraints;

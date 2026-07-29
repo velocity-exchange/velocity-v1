@@ -7,26 +7,29 @@
 #![allow(clippy::bool_assert_comparison)]
 #![allow(clippy::comparison_chain)]
 
-use anchor_lang::prelude::*;
-
-use instructions::*;
 #[cfg(test)]
 use math::{bn, constants::*};
-use state::oracle::OracleSource;
-
-use crate::controller::position::PositionDirection;
-use crate::state::events::TransferFeeAndPnlPoolDirection;
-use crate::state::market_status::MarketStatus;
-use crate::state::oracle::PrelaunchOracleParams;
-use crate::state::order_params::{ModifyOrderParams, OrderParams};
-use crate::state::perp_market::ContractTier;
-use crate::state::prop_amm::{ClobOrderRefV0, ClobSide};
-use crate::state::scale_order_params::ScaleOrderParams;
-use crate::state::settle_pnl_mode::SettlePnlMode;
-use crate::state::spot_market::AssetTier;
-use crate::state::state::FeeStructure;
-use crate::state::state::*;
-use crate::state::user::MarketType;
+use {
+    crate::{
+        controller::position::PositionDirection,
+        state::{
+            events::TransferFeeAndPnlPoolDirection,
+            market_status::MarketStatus,
+            oracle::PrelaunchOracleParams,
+            order_params::{ModifyOrderParams, OrderParams},
+            perp_market::ContractTier,
+            prop_amm::{ClobOrderRefV0, ClobSide},
+            scale_order_params::ScaleOrderParams,
+            settle_pnl_mode::SettlePnlMode,
+            spot_market::AssetTier,
+            state::{FeeStructure, *},
+            user::MarketType,
+        },
+    },
+    anchor_lang::prelude::*,
+    instructions::*,
+    state::oracle::OracleSource,
+};
 pub mod auth;
 pub mod controller;
 pub mod error;
@@ -430,6 +433,15 @@ pub mod velocity {
         reduce_only: bool,
     ) -> Result<()> {
         handle_update_user_reduce_only(ctx, _sub_account_id, reduce_only)
+    }
+
+    /// Mark a User as vault-owned (its authority is a vault PDA and its equity
+    /// prices vault depositor shares). Set-only and authority-gated: only the
+    /// User's authority may call it, and it is CPI'd by the vaults program at
+    /// vault init. A vault-owned User is skipped by the revenue-share sweep so a
+    /// builder/referral reward can never enter vault NAV (OtterSec #91/#92/#93).
+    pub fn update_user_vault_owned(ctx: Context<UpdateUser>, _sub_account_id: u16) -> Result<()> {
+        handle_update_user_vault_owned(ctx, _sub_account_id)
     }
 
     // pub fn update_user_advanced_lp(
@@ -1631,6 +1643,26 @@ pub mod velocity {
         amount: u64,
     ) -> Result<()> {
         handle_withdraw_protocol_fees_perp(ctx, market_index, amount)
+    }
+
+    /// Grow a zero-copy account to the size this program build compiles in
+    /// for its type (resolved from the account discriminator). The migration
+    /// crank after an upgrade that appends fields to an account struct; no-op
+    /// when already at size. Payer covers the rent-exempt shortfall (auth:
+    /// `AccountExtension` hot key, or warm/cold admin). See
+    /// `docs/ACCOUNT-EXTENSION.md`.
+    pub fn extend_account(ctx: Context<ExtendAccount>) -> Result<()> {
+        handle_extend_account(ctx)
+    }
+
+    /// Devnet/test-only: grow a zero-copy account to an arbitrary larger size
+    /// to exercise the extension flow before a real struct extension exists.
+    /// Stripped from production mainnet builds; `anchor-test` keeps it so the
+    /// integration suite (which builds with default features + `anchor-test`)
+    /// can exercise extension end to end.
+    #[cfg(any(feature = "anchor-test", not(feature = "mainnet-beta")))]
+    pub fn extend_account_devnet(ctx: Context<ExtendAccountDevnet>, new_len: u64) -> Result<()> {
+        handle_extend_account_devnet(ctx, new_len)
     }
 
     /// Devnet-only escape hatch: cleans up accounts stranded by a layout-breaking

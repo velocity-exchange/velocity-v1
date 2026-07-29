@@ -1,19 +1,22 @@
-use anchor_lang::prelude::*;
-
-use crate::controller::spot_balance;
-use crate::math::casting::Cast;
-use crate::math::safe_math::SafeMath;
-use crate::math::spot_balance::get_token_amount;
-use crate::state::events::{emit_stack, RevenueShareSettleRecord};
-use crate::state::paused_operations::PerpOperation;
-use crate::state::perp_market_map::PerpMarketMap;
-use crate::state::revenue_share::{RevenueShareEscrowZeroCopyMut, RevenueShareOrder};
-use crate::state::revenue_share_map::RevenueShareMap;
-use crate::state::spot_market::SpotBalance;
-use crate::state::spot_market_map::SpotMarketMap;
-use crate::state::traits::Size;
-use crate::state::user::MarketType;
-use crate::vlp::amm::math::amm::calculate_net_user_pnl;
+use {
+    crate::{
+        controller::spot_balance,
+        math::{casting::Cast, safe_math::SafeMath, spot_balance::get_token_amount},
+        state::{
+            events::{emit_stack, RevenueShareSettleRecord},
+            paused_operations::PerpOperation,
+            perp_market_map::PerpMarketMap,
+            revenue_share::{RevenueShareEscrowZeroCopyMut, RevenueShareOrder},
+            revenue_share_map::RevenueShareMap,
+            spot_market::SpotBalance,
+            spot_market_map::SpotMarketMap,
+            traits::Size,
+            user::MarketType,
+        },
+        vlp::amm::math::amm::calculate_net_user_pnl,
+    },
+    anchor_lang::prelude::*,
+};
 
 /// Runs through the user's RevenueShareEscrow account and sweeps any accrued fees to the corresponding
 /// builders and referrer.
@@ -152,6 +155,22 @@ pub fn sweep_completed_revenue_share_for_market<'a>(
             if let (Ok(mut referrer_user), Ok(mut referrer_rev_share)) =
                 (referrer_user, referrer_rev_share)
             {
+                // A vault-owned beneficiary must never receive revenue share into
+                // its NAV-priced User: the reward would enter vault equity at this
+                // attacker-controlled sweep time and mis-split depositor value —
+                // late-entrant dilution, stranded withdrawer, or a donation that
+                // burns a canceller's claim (OtterSec #91/#92/#93). There is no
+                // legitimate flow where a vault earns revenue share, so forfeit the
+                // reward to the market's pnl pool: drain the liability counter and
+                // clear the row without transferring.
+                if referrer_user.is_vault_owned() {
+                    perp_market.settle_pending_revenue_share(fees_accrued)?;
+                    if let Ok(builder_order) = revenue_share_escrow.get_order_mut(i) {
+                        builder_order.fees_accrued = 0;
+                    }
+                    continue;
+                }
+
                 spot_balance::transfer_spot_balances(
                     fees_accrued as i128,
                     quote_spot_market,
@@ -201,6 +220,17 @@ pub fn sweep_completed_revenue_share_for_market<'a>(
             if let (Ok(mut builder_user), Ok(mut builder_revenue_share)) =
                 (builder_user, builder_rev_share)
             {
+                // See the referral branch: a vault-owned beneficiary is never
+                // credited (OtterSec #91/#92/#93). Forfeit to the pnl pool — drain
+                // the liability counter and clear the row without transferring.
+                if builder_user.is_vault_owned() {
+                    perp_market.settle_pending_revenue_share(fees_accrued)?;
+                    if let Ok(builder_order) = revenue_share_escrow.get_order_mut(i) {
+                        *builder_order = RevenueShareOrder::default();
+                    }
+                    continue;
+                }
+
                 spot_balance::transfer_spot_balances(
                     fees_accrued as i128,
                     quote_spot_market,

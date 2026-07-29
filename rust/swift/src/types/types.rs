@@ -1,9 +1,7 @@
-use std::time::UNIX_EPOCH;
-
-use solana_pubkey::Pubkey;
-use velocity_rs::types::MarketType;
-
-use crate::types::messages::IncomingSignedMessage;
+use {
+    crate::types::messages::IncomingSignedMessage, solana_pubkey::Pubkey, std::time::UNIX_EPOCH,
+    velocity_rs::types::MarketType,
+};
 
 #[derive(PartialEq, Debug, strum_macros::AsRefStr)]
 pub enum WsError {
@@ -94,15 +92,16 @@ impl RequestContext {
 
 #[cfg(test)]
 mod tests {
-    use velocity_rs::{
-        swift_order_subscriber::SignedOrderType,
-        types::{
-            OrderParams, OrderTriggerCondition, OrderType, PositionDirection, PostOnlyParam,
-            SignedMsgOrderParamsMessage,
+    use {
+        super::*,
+        velocity_rs::{
+            swift_order_subscriber::SignedOrderType,
+            types::{
+                OrderParams, OrderTriggerCondition, OrderType, PositionDirection, PostOnlyParam,
+                SignedMsgOrderParamsMessage,
+            },
         },
     };
-
-    use super::*;
 
     #[test]
     fn from_incoming_message_valid_utf8_uuid() {

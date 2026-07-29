@@ -1,15 +1,17 @@
-use anchor_lang::prelude::*;
-use velocity::instructions::optional_accounts::AccountMaps;
-use velocity::math::safe_math::SafeMath;
-use velocity::state::user::User;
-
-use crate::constraints::{
-    is_authority_for_vault_depositor, is_user_for_vault, is_vault_for_vault_depositor,
+use {
+    crate::{
+        constraints::{
+            is_authority_for_vault_depositor, is_user_for_vault, is_vault_for_vault_depositor,
+        },
+        error::ErrorCode,
+        state::{traits::VaultDepositorBase, FeeUpdateProvider, FeeUpdateStatus},
+        validate, AccountMapProvider, Vault, VaultDepositor, VaultProtocolProvider, WithdrawUnit,
+    },
+    anchor_lang::prelude::*,
+    velocity::{
+        instructions::optional_accounts::AccountMaps, math::safe_math::SafeMath, state::user::User,
+    },
 };
-use crate::error::ErrorCode;
-use crate::state::traits::VaultDepositorBase;
-use crate::{validate, AccountMapProvider};
-use crate::{Vault, VaultDepositor, VaultProtocolProvider, WithdrawUnit};
 
 pub fn transfer_vault_depositor_shares<'info>(
     ctx: Context<'info, TransferVaultDepositorShares<'info>>,
@@ -42,6 +44,13 @@ pub fn transfer_vault_depositor_shares<'info>(
     vault.validate_vault_protocol(&vp)?;
     let mut vp = vp.as_mut().map(|vp| vp.load_mut()).transpose()?;
 
+    // #101: apply a matured fee update on this share-movement path (mirrors deposit/withdraw), so
+    // a queued profit-share/management-fee increase can't be escaped by moving shares and resetting
+    // the recipient's cost basis under stale fee terms.
+    let has_fee_update = FeeUpdateStatus::has_pending_fee_update(vault.fee_update_status);
+    let mut fee_update = ctx.fee_update(vp.is_some(), has_fee_update);
+    vault.validate_fee_update(&fee_update)?;
+
     let user = ctx.accounts.velocity_user.load()?;
     let spot_market_index = vault.spot_market_index;
 
@@ -49,7 +58,12 @@ pub fn transfer_vault_depositor_shares<'info>(
         perp_market_map,
         spot_market_map,
         mut oracle_map,
-    } = ctx.load_maps(clock.slot, Some(spot_market_index), vp.is_some(), false)?;
+    } = ctx.load_maps(
+        clock.slot,
+        Some(spot_market_index),
+        vp.is_some(),
+        has_fee_update,
+    )?;
 
     let vault_equity =
         vault.calculate_equity(&user, &perp_market_map, &spot_market_map, &mut oracle_map)?;
@@ -77,7 +91,7 @@ pub fn transfer_vault_depositor_shares<'info>(
         &mut *to_vault_depositor,
         &mut vault,
         &mut vp,
-        &mut None,
+        &mut fee_update,
         amount,
         withdraw_unit,
         vault_equity,

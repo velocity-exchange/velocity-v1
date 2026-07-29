@@ -1,14 +1,15 @@
-use crate::msg;
-
-use crate::error::{ErrorCode, VelocityResult};
-use crate::math::casting::Cast;
-use crate::math::constants::PRICE_PRECISION;
-use crate::math::helpers::{get_proportion_u128, log10_iter};
-use crate::math::safe_math::SafeMath;
-
-use crate::state::insurance_fund_stake::InsuranceFundStake;
-use crate::state::spot_market::SpotMarket;
-use crate::validate;
+use crate::{
+    error::{ErrorCode, VelocityResult},
+    math::{
+        casting::Cast,
+        constants::PRICE_PRECISION,
+        helpers::{get_proportion_u128, log10_iter},
+        safe_math::SafeMath,
+    },
+    msg,
+    state::{insurance_fund_stake::InsuranceFundStake, spot_market::SpotMarket},
+    validate,
+};
 
 #[cfg(test)]
 mod tests;

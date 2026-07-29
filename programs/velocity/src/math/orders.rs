@@ -1,42 +1,46 @@
-use std::cmp::min;
-use std::ops::Sub;
-
-use crate::msg;
-
-use crate::controller::position::PositionDelta;
-use crate::controller::position::PositionDirection;
-use crate::error::{ErrorCode, VelocityResult};
-use crate::math::casting::Cast;
-use crate::math::constants::{
-    BASE_PRECISION_I128, FEE_ADJUSTMENT_MAX, MARGIN_PRECISION_I128, MARGIN_PRECISION_U128,
-    OPEN_ORDER_MARGIN_REQUIREMENT, PERCENTAGE_PRECISION_I128, PERCENTAGE_PRECISION_U64,
-    PRICE_PRECISION_I128, QUOTE_PRECISION_I128, SPOT_WEIGHT_PRECISION, SPOT_WEIGHT_PRECISION_I128,
+use {
+    crate::{
+        controller::position::{PositionDelta, PositionDirection},
+        error::{ErrorCode, VelocityResult},
+        load,
+        math::{
+            casting::Cast,
+            constants::{
+                BASE_PRECISION_I128, FEE_ADJUSTMENT_MAX, MARGIN_PRECISION_I128,
+                MARGIN_PRECISION_U128, OPEN_ORDER_MARGIN_REQUIREMENT, PERCENTAGE_PRECISION_I128,
+                PERCENTAGE_PRECISION_U64, PRICE_PRECISION_I128, QUOTE_PRECISION_I128,
+                SPOT_WEIGHT_PRECISION, SPOT_WEIGHT_PRECISION_I128,
+            },
+            margin::{
+                calculate_margin_requirement_and_total_collateral_and_liability_info,
+                MarginRequirementType,
+            },
+            safe_math::SafeMath,
+            spot_balance::get_strict_token_value,
+            spot_withdraw::get_max_withdraw_for_market_with_token_amount,
+        },
+        math_error, msg, print_error,
+        state::{
+            margin_calculation::{MarginCalculation, MarginContext},
+            oracle::{OraclePriceData, StrictOraclePrice},
+            oracle_map::OracleMap,
+            order_params::PostOnlyParam,
+            perp_market::{PerpMarket, AMM},
+            perp_market_map::PerpMarketMap,
+            spot_market::SpotMarket,
+            spot_market_map::SpotMarketMap,
+            user::{
+                MarketType, Order, OrderBitFlag, OrderFillSimulation, OrderStatus,
+                OrderTriggerCondition, PerpPosition, User,
+            },
+            user_map::UserMap,
+        },
+        validate,
+        vlp::amm::math::amm::calculate_amm_available_liquidity,
+        FeeTier,
+    },
+    std::{cmp::min, ops::Sub},
 };
-use crate::state::user::OrderBitFlag;
-use crate::vlp::amm::math::amm::calculate_amm_available_liquidity;
-use crate::{load, FeeTier};
-
-use crate::math::margin::{
-    calculate_margin_requirement_and_total_collateral_and_liability_info, MarginRequirementType,
-};
-use crate::math::safe_math::SafeMath;
-use crate::math::spot_balance::get_strict_token_value;
-use crate::math::spot_withdraw::get_max_withdraw_for_market_with_token_amount;
-use crate::math_error;
-use crate::print_error;
-use crate::state::margin_calculation::{MarginCalculation, MarginContext};
-use crate::state::oracle::{OraclePriceData, StrictOraclePrice};
-use crate::state::oracle_map::OracleMap;
-use crate::state::order_params::PostOnlyParam;
-use crate::state::perp_market::{PerpMarket, AMM};
-use crate::state::perp_market_map::PerpMarketMap;
-use crate::state::spot_market::SpotMarket;
-use crate::state::spot_market_map::SpotMarketMap;
-use crate::state::user::{
-    MarketType, Order, OrderFillSimulation, OrderStatus, OrderTriggerCondition, PerpPosition, User,
-};
-use crate::state::user_map::UserMap;
-use crate::validate;
 
 #[cfg(test)]
 mod tests;

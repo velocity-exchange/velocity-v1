@@ -26,19 +26,25 @@
 //! dead code — allow it crate-wide rather than warn per build.
 #![allow(dead_code)]
 
-use crucible_fuzzer::*;
-
-use velocity::controller::position::PositionDirection;
-use velocity::math::constants::{
-    AMM_RESERVE_PRECISION, PEG_PRECISION, PRICE_PRECISION_I64, PRICE_PRECISION_U64,
+use {
+    crucible_fuzzer::*,
+    velocity::{
+        controller::position::PositionDirection,
+        create_anchor_account_info,
+        math::{
+            constants::{
+                AMM_RESERVE_PRECISION, PEG_PRECISION, PRICE_PRECISION_I64, PRICE_PRECISION_U64,
+            },
+            oracle::{is_oracle_valid_for_action, OracleValidity, VelocityAction},
+        },
+        state::{
+            oracle::{get_prelaunch_price, HistoricalOracleData, OraclePriceData, PrelaunchOracle},
+            perp_market::{ContractTier, MarketStats, PerpMarket, AMM},
+            state::ValidityGuardRails,
+        },
+        vlp::amm::math::amm::{calculate_new_oracle_price_twap, TwapPeriod},
+    },
 };
-use velocity::math::oracle::{is_oracle_valid_for_action, OracleValidity, VelocityAction};
-use velocity::state::oracle::{get_prelaunch_price, HistoricalOracleData, OraclePriceData, PrelaunchOracle};
-use velocity::state::perp_market::{ContractTier, MarketStats, PerpMarket, AMM};
-use velocity::state::state::ValidityGuardRails;
-use velocity::vlp::amm::math::amm::{calculate_new_oracle_price_twap, TwapPeriod};
-
-use velocity::create_anchor_account_info;
 
 // ---------------------------------------------------------------------------
 // Fixture (host-tier: ctx is unused, present only for #[fuzz_fixture] wiring).
@@ -237,7 +243,10 @@ fn inv_confidence_floor(
     };
     market.market_stats.mm_oracle_price = mm_price as i64;
     market.market_stats.mm_oracle_slot = mm_slot;
-    market.market_stats.historical_oracle_data.last_oracle_price_twap = mm_price as i64;
+    market
+        .market_stats
+        .historical_oracle_data
+        .last_oracle_price_twap = mm_price as i64;
 
     let exchange = OraclePriceData {
         price: exch_price as i64,
@@ -276,10 +285,7 @@ fn inv_confidence_floor(
 /// fill. The fix clamps the seconds operand first. Expected: PASS (no crash).
 #[cfg(feature = "regr_fallback_price_overflow")]
 #[crucible_fuzz]
-fn regr_fallback_price_overflow(
-    fixture: &mut OracleFixture,
-    #[range(0..u64::MAX)] secs_bits: u64,
-) {
+fn regr_fallback_price_overflow(fixture: &mut OracleFixture, #[range(0..u64::MAX)] secs_bits: u64) {
     let _ = &fixture.ctx;
     let amm = healthy_amm();
     let min_order_size = 1_000_000_000u64; // BASE_PRECISION

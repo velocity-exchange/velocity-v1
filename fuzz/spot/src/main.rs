@@ -16,20 +16,27 @@
 // (imports, the local reference helpers) are legitimately dead in that build.
 #![allow(unused_imports, dead_code, unused_variables)]
 
-use crucible_fuzzer::*;
-
-use velocity::math::constants::{
-    PERCENTAGE_PRECISION, SPOT_CUMULATIVE_INTEREST_PRECISION, SPOT_UTILIZATION_PRECISION,
+use {
+    crucible_fuzzer::*,
+    velocity::{
+        math::{
+            constants::{
+                PERCENTAGE_PRECISION, SPOT_CUMULATIVE_INTEREST_PRECISION,
+                SPOT_UTILIZATION_PRECISION,
+            },
+            spot_balance::{
+                calculate_accumulated_interest, calculate_borrow_rate, calculate_utilization,
+                get_signed_token_amount, get_spot_balance, get_token_amount,
+            },
+            spot_swap::calculate_swap_price,
+            spot_withdraw::{
+                calculate_max_borrow_token_amount, calculate_min_deposit_token_amount,
+                check_withdraw_limits,
+            },
+        },
+        state::spot_market::{SpotBalanceType, SpotMarket},
+    },
 };
-use velocity::math::spot_balance::{
-    calculate_accumulated_interest, calculate_borrow_rate, calculate_utilization,
-    get_signed_token_amount, get_spot_balance, get_token_amount,
-};
-use velocity::math::spot_swap::calculate_swap_price;
-use velocity::math::spot_withdraw::{
-    calculate_max_borrow_token_amount, calculate_min_deposit_token_amount, check_withdraw_limits,
-};
-use velocity::state::spot_market::{SpotBalanceType, SpotMarket};
 
 #[derive(Clone)]
 struct SpotFixture {
@@ -116,10 +123,10 @@ fn prop_scaled_token_roundtrip(
 #[crucible_fuzz]
 fn prop_interest_monotone(
     fixture: &mut SpotFixture,
-    #[range(1..1_000_001u64)] opt_util: u64,   // (0, PERCENTAGE_PRECISION]
-    #[range(0..1_000_001u64)] opt_rate: u64,   // <= max via extra below
-    #[range(0..5_000_001u64)] max_extra: u64,  // max_rate = opt_rate + extra
-    #[range(0..256u64)] min_rate: u64,         // SpotMarket.min_borrow_rate: u8
+    #[range(1..1_000_001u64)] opt_util: u64, // (0, PERCENTAGE_PRECISION]
+    #[range(0..1_000_001u64)] opt_rate: u64, // <= max via extra below
+    #[range(0..5_000_001u64)] max_extra: u64, // max_rate = opt_rate + extra
+    #[range(0..256u64)] min_rate: u64,       // SpotMarket.min_borrow_rate: u8
     #[range(0..1_000_001u64)] util_a: u64,
     #[range(0..1_000_001u64)] util_b: u64,
     #[range(0..1_000_001u64)] borrow_frac: u64,
@@ -160,7 +167,8 @@ fn prop_interest_monotone(
     // (deposit_balance >= borrow_balance keeps utilization <= 100%).
     let cum = SPOT_CUMULATIVE_INTEREST_PRECISION;
     let deposit_balance = 1_000_000_000_000_000u128;
-    let borrow_balance = deposit_balance.saturating_mul(borrow_frac as u128) / SPOT_UTILIZATION_PRECISION;
+    let borrow_balance =
+        deposit_balance.saturating_mul(borrow_frac as u128) / SPOT_UTILIZATION_PRECISION;
     let accrual_market = SpotMarket {
         decimals: 6,
         cumulative_deposit_interest: cum,

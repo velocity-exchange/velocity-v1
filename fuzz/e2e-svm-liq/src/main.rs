@@ -37,24 +37,28 @@
 //!    socializing bankruptcy, then computes the AMM's next funding payment from
 //!    the post-resolve state and asserts it is zero.
 
-use crucible_fuzzer::*;
-use solana_instruction::{AccountMeta, Instruction};
-use solana_keypair::Keypair;
-use solana_pubkey::Pubkey;
-use solana_signer::Signer;
-use std::rc::Rc;
-
-use velocity::math::constants::{
-    BASE_PRECISION, PEG_PRECISION, PRICE_PRECISION, QUOTE_PRECISION, SPOT_BALANCE_PRECISION,
-    SPOT_CUMULATIVE_INTEREST_PRECISION, SPOT_WEIGHT_PRECISION,
+use {
+    crucible_fuzzer::*,
+    solana_instruction::{AccountMeta, Instruction},
+    solana_keypair::Keypair,
+    solana_pubkey::Pubkey,
+    solana_signer::Signer,
+    std::rc::Rc,
+    velocity::{
+        math::constants::{
+            BASE_PRECISION, PEG_PRECISION, PRICE_PRECISION, QUOTE_PRECISION,
+            SPOT_BALANCE_PRECISION, SPOT_CUMULATIVE_INTEREST_PRECISION, SPOT_WEIGHT_PRECISION,
+        },
+        state::{
+            market_status::MarketStatus,
+            oracle::OracleSource,
+            perp_market::PerpMarket,
+            spot_market::{SpotBalanceType, SpotMarket},
+            state::State,
+            user::{User, UserStatus},
+        },
+    },
 };
-use velocity::state::market_status::MarketStatus;
-use velocity::state::oracle::OracleSource;
-use velocity::state::perp_market::PerpMarket;
-use velocity::state::spot_market::SpotBalanceType;
-use velocity::state::spot_market::SpotMarket;
-use velocity::state::state::State;
-use velocity::state::user::{User, UserStatus};
 
 // Generated types/schemas from the canonical velocity IDL (identical file to
 // P7). We only use `register_schemas()` for richer crash output; instruction
@@ -310,8 +314,7 @@ fn build_victim_user(authority: Pubkey, base_seed: &User) -> User {
     // Spot position 0: borrow.
     u.spot_positions[0].market_index = 0;
     u.spot_positions[0].balance_type = SpotBalanceType::Borrow;
-    u.spot_positions[0].scaled_balance =
-        tokens_to_scaled(VICTIM_BORROW_TOKENS as u128) as u64;
+    u.spot_positions[0].scaled_balance = tokens_to_scaled(VICTIM_BORROW_TOKENS as u128) as u64;
     u.spot_positions[0].open_orders = 0;
     u.spot_positions[0].open_bids = 0;
     u.spot_positions[0].open_asks = 0;
@@ -564,10 +567,7 @@ impl Fixture {
     }
 
     /// Flag a user as being-liquidated (permissionless keeper action).
-    pub fn action_set_being_liquidated(
-        &mut self,
-        #[range(0..NUM_USERS)] user_idx: usize,
-    ) -> bool {
+    pub fn action_set_being_liquidated(&mut self, #[range(0..NUM_USERS)] user_idx: usize) -> bool {
         let user = self.users[user_idx].clone();
         let liquidator = self.users[LIQUIDATOR_IDX].clone();
         self.ctx
@@ -597,10 +597,7 @@ impl Fixture {
     }
 
     /// liquidate_perp against the victim.
-    pub fn action_liquidate_perp(
-        &mut self,
-        #[range(1..1_000_000_000u64)] max_base: u64,
-    ) -> bool {
+    pub fn action_liquidate_perp(&mut self, #[range(1..1_000_000_000u64)] max_base: u64) -> bool {
         let (liq, victim) = self.liquidator_meta();
         let mut args = Vec::new();
         args.extend_from_slice(&0u16.to_le_bytes()); // market_index
@@ -631,10 +628,7 @@ impl Fixture {
     /// liquidate_spot (asset market 0, liability market 0 — a self-market call
     /// that the program rejects; kept for coverage of the reject path since the
     /// harness only injects a single spot market).
-    pub fn action_liquidate_spot(
-        &mut self,
-        #[range(1..1_000_000u64)] max_liab: u64,
-    ) -> bool {
+    pub fn action_liquidate_spot(&mut self, #[range(1..1_000_000u64)] max_liab: u64) -> bool {
         let (liq, victim) = self.liquidator_meta();
         let mut args = Vec::new();
         args.extend_from_slice(&0u16.to_le_bytes()); // asset market
@@ -1333,8 +1327,14 @@ mod smoke {
 
         // Victim carries the injected bankrupt state.
         let victim = f.read_user(&f.users[VICTIM_IDX].user_pda).unwrap();
-        assert!(victim.is_cross_margin_bankrupt(), "victim should be bankrupt");
-        assert!(victim.is_being_liquidated(), "victim flagged being-liquidated");
+        assert!(
+            victim.is_cross_margin_bankrupt(),
+            "victim should be bankrupt"
+        );
+        assert!(
+            victim.is_being_liquidated(),
+            "victim flagged being-liquidated"
+        );
 
         // Setup solvency invariants hold before any action.
         f.check_all_invariants();

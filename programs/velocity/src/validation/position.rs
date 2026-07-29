@@ -1,11 +1,13 @@
-use crate::error::{ErrorCode, VelocityResult};
-use crate::math::casting::Cast;
-use crate::math::constants::MAX_OPEN_ORDERS;
-use crate::math::orders::is_multiple_of_step_size;
-use crate::msg;
-use crate::state::perp_market::PerpMarket;
-use crate::state::user::{PerpPosition, SpotPosition};
-use crate::validate;
+use crate::{
+    error::{ErrorCode, VelocityResult},
+    math::{casting::Cast, constants::MAX_OPEN_ORDERS, orders::is_multiple_of_step_size},
+    msg,
+    state::{
+        perp_market::PerpMarket,
+        user::{PerpPosition, SpotPosition},
+    },
+    validate,
+};
 
 pub fn validate_perp_position_with_perp_market(
     position: &PerpPosition,

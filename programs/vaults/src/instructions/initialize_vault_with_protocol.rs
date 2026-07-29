@@ -1,15 +1,21 @@
-use anchor_lang::prelude::*;
-use anchor_spl::token::{Mint, Token, TokenAccount};
-use velocity::cpi::accounts::{InitializeUser, InitializeUserStats};
-use velocity::math::casting::Cast;
-use velocity::math::constants::PERCENTAGE_PRECISION_U64;
-use velocity::program::Velocity;
-use velocity::state::spot_market::SpotMarket;
-
-use crate::constants::ONE_DAY;
-use crate::state::{Vault, VaultProtocol};
-use crate::velocity_cpi::InitializeUserCPI;
-use crate::{error::ErrorCode, validate, Size};
+use {
+    crate::{
+        constants::ONE_DAY,
+        error::ErrorCode,
+        state::{Vault, VaultProtocol},
+        validate,
+        velocity_cpi::InitializeUserCPI,
+        Size,
+    },
+    anchor_lang::prelude::*,
+    anchor_spl::token::{Mint, Token, TokenAccount},
+    velocity::{
+        cpi::accounts::{InitializeUser, InitializeUserStats},
+        math::{casting::Cast, constants::PERCENTAGE_PRECISION_U64},
+        program::Velocity,
+        state::spot_market::SpotMarket,
+    },
+};
 
 pub fn initialize_vault_with_protocol<'info>(
     ctx: Context<'info, InitializeVaultWithProtocol<'info>>,

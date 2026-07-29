@@ -1,38 +1,39 @@
-use crate::error::ErrorCode;
-use crate::error::VelocityResult;
-use crate::math::constants::{
-    MARGIN_PRECISION_U128, MAX_POSITIVE_UPNL_FOR_INITIAL_MARGIN, PRICE_PRECISION,
-    SPOT_IMF_PRECISION_U128, SPOT_WEIGHT_PRECISION, SPOT_WEIGHT_PRECISION_U128,
+use {
+    super::spot_balance::get_token_amount,
+    crate::{
+        error::{ErrorCode, VelocityResult},
+        math::{
+            casting::Cast,
+            constants::{
+                MARGIN_PRECISION_U128, MAX_POSITIVE_UPNL_FOR_INITIAL_MARGIN, PRICE_PRECISION,
+                PRICE_PRECISION_I128, PRICE_PRECISION_I64, SPOT_IMF_PRECISION_U128,
+                SPOT_WEIGHT_PRECISION, SPOT_WEIGHT_PRECISION_U128,
+            },
+            funding::calculate_funding_payment,
+            oracle::{is_oracle_valid_for_action, LogMode, VelocityAction},
+            position::calculate_base_asset_value_and_pnl_with_oracle_price,
+            safe_math::SafeMath,
+            spot_balance::{get_strict_token_value, get_token_value},
+        },
+        msg,
+        state::{
+            margin_calculation::{
+                MarginCalculation, MarginContext, MarginTypeConfig, MarketIdentifier,
+            },
+            market_status::MarketStatus,
+            oracle::{OraclePriceData, StrictOraclePrice},
+            oracle_map::OracleMap,
+            perp_market::{ContractTier, PerpMarket},
+            perp_market_map::PerpMarketMap,
+            spot_market::{AssetTier, SpotBalanceType},
+            spot_market_map::SpotMarketMap,
+            user::{MarketType, OrderFillSimulation, PerpPosition, User},
+        },
+        validate, validation,
+    },
+    num_integer::Roots,
+    std::cmp::{max, min, Ordering},
 };
-use crate::math::oracle::LogMode;
-use crate::math::position::calculate_base_asset_value_and_pnl_with_oracle_price;
-
-use crate::math::constants::{PRICE_PRECISION_I128, PRICE_PRECISION_I64};
-use crate::validate;
-use crate::validation;
-
-use crate::math::casting::Cast;
-use crate::math::funding::calculate_funding_payment;
-use crate::math::oracle::{is_oracle_valid_for_action, VelocityAction};
-
-use crate::math::safe_math::SafeMath;
-use crate::math::spot_balance::{get_strict_token_value, get_token_value};
-use crate::msg;
-use crate::state::margin_calculation::{
-    MarginCalculation, MarginContext, MarginTypeConfig, MarketIdentifier,
-};
-use crate::state::market_status::MarketStatus;
-use crate::state::oracle::{OraclePriceData, StrictOraclePrice};
-use crate::state::oracle_map::OracleMap;
-use crate::state::perp_market::{ContractTier, PerpMarket};
-use crate::state::perp_market_map::PerpMarketMap;
-use crate::state::spot_market::{AssetTier, SpotBalanceType};
-use crate::state::spot_market_map::SpotMarketMap;
-use crate::state::user::{MarketType, OrderFillSimulation, PerpPosition, User};
-use num_integer::Roots;
-use std::cmp::{max, min, Ordering};
-
-use super::spot_balance::get_token_amount;
 
 #[cfg(test)]
 mod tests;
@@ -732,14 +733,20 @@ pub fn meets_place_order_margin_requirement(
         return Err(ErrorCode::InsufficientCollateral);
     }
 
-    if risk_increasing && user.is_below_buffered_equity_floor(calculation.total_collateral) {
-        msg!(
-            "total collateral {} below equity floor {} + buffer {}",
-            calculation.total_collateral,
-            user.equity_floor,
-            user.equity_floor_buffer
-        );
-        return Err(ErrorCode::EquityBelowFloor);
+    if risk_increasing {
+        if let Some(net_equity) =
+            calculate_net_equity_for_floor(user, perp_market_map, spot_market_map, oracle_map)?
+        {
+            if user.is_below_buffered_equity_floor(net_equity) {
+                msg!(
+                    "net equity {} below equity floor {} + buffer {}",
+                    net_equity,
+                    user.equity_floor,
+                    user.equity_floor_buffer
+                );
+                return Err(ErrorCode::EquityBelowFloor);
+            }
+        }
     }
 
     validate_any_isolated_tier_requirements(user, &calculation)?;
@@ -1045,4 +1052,25 @@ pub fn calculate_user_equity(
     }
 
     Ok((net_usd_value, all_oracles_valid))
+}
+
+/// Net equity for the equity-floor gates: `calculate_user_equity` when the
+/// user has a floor set, `None` otherwise so callers skip the extra position
+/// pass. Unlike the margin numerator (`total_collateral`), this values
+/// assets, perp pnl and spot liabilities at unweighted live oracle prices,
+/// so borrows subtract their full value.
+pub fn calculate_net_equity_for_floor(
+    user: &User,
+    perp_market_map: &PerpMarketMap,
+    spot_market_map: &SpotMarketMap,
+    oracle_map: &mut OracleMap,
+) -> VelocityResult<Option<i128>> {
+    if user.equity_floor == 0 {
+        return Ok(None);
+    }
+
+    let (net_equity, _) =
+        calculate_user_equity(user, perp_market_map, spot_market_map, oracle_map)?;
+
+    Ok(Some(net_equity))
 }

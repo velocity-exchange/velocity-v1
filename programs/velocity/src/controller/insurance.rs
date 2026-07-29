@@ -1,40 +1,48 @@
-use crate::msg;
-use anchor_lang::prelude::*;
-use anchor_spl::token_interface::{Mint, TokenAccount, TokenInterface};
-
-use std::iter::Peekable;
-use std::slice::Iter;
-
-use crate::controller::spot_balance::{
-    update_revenue_pool_balances, update_spot_balances, update_spot_market_cumulative_interest,
+use {
+    crate::{
+        controller::{
+            spot_balance::{
+                update_revenue_pool_balances, update_spot_balances,
+                update_spot_market_cumulative_interest,
+            },
+            token::send_from_program_vault,
+        },
+        emit,
+        error::{ErrorCode, VelocityResult},
+        math::{
+            casting::Cast,
+            constants::{
+                MAX_APR_PER_REVENUE_SETTLE_TO_INSURANCE_FUND_VAULT, ONE_YEAR, PERCENTAGE_PRECISION,
+                QUOTE_SPOT_MARKET_INDEX,
+                SHARE_OF_REVENUE_ALLOCATED_TO_INSURANCE_FUND_VAULT_DENOMINATOR,
+                SHARE_OF_REVENUE_ALLOCATED_TO_INSURANCE_FUND_VAULT_NUMERATOR,
+            },
+            helpers::{get_proportion_u128, on_the_hour_update},
+            insurance::{
+                calculate_if_shares_lost, calculate_rebase_info, if_shares_to_vault_amount,
+                vault_amount_to_if_shares,
+            },
+            safe_math::SafeMath,
+            spot_balance::get_token_amount,
+            spot_withdraw::validate_spot_market_vault_amount,
+        },
+        msg,
+        state::{
+            events::{InsuranceFundRecord, InsuranceFundStakeRecord, StakeAction},
+            insurance_fund_stake::InsuranceFundStake,
+            paused_operations::SpotOperation,
+            perp_market::PerpMarket,
+            spot_market::{SpotBalanceType, SpotMarket},
+            state::State,
+            user::UserStats,
+        },
+        validate,
+        vlp::amm::math::amm::calculate_net_user_pnl,
+    },
+    anchor_lang::prelude::*,
+    anchor_spl::token_interface::{Mint, TokenAccount, TokenInterface},
+    std::{iter::Peekable, slice::Iter},
 };
-use crate::controller::token::send_from_program_vault;
-use crate::error::ErrorCode;
-use crate::error::VelocityResult;
-use crate::math::casting::Cast;
-use crate::math::constants::{
-    MAX_APR_PER_REVENUE_SETTLE_TO_INSURANCE_FUND_VAULT, ONE_YEAR, PERCENTAGE_PRECISION,
-    QUOTE_SPOT_MARKET_INDEX, SHARE_OF_REVENUE_ALLOCATED_TO_INSURANCE_FUND_VAULT_DENOMINATOR,
-    SHARE_OF_REVENUE_ALLOCATED_TO_INSURANCE_FUND_VAULT_NUMERATOR,
-};
-use crate::math::helpers::get_proportion_u128;
-use crate::math::helpers::on_the_hour_update;
-use crate::math::insurance::{
-    calculate_if_shares_lost, calculate_rebase_info, if_shares_to_vault_amount,
-    vault_amount_to_if_shares,
-};
-use crate::math::safe_math::SafeMath;
-use crate::math::spot_balance::get_token_amount;
-use crate::math::spot_withdraw::validate_spot_market_vault_amount;
-use crate::state::events::{InsuranceFundRecord, InsuranceFundStakeRecord, StakeAction};
-use crate::state::insurance_fund_stake::InsuranceFundStake;
-use crate::state::paused_operations::SpotOperation;
-use crate::state::perp_market::PerpMarket;
-use crate::state::spot_market::{SpotBalanceType, SpotMarket};
-use crate::state::state::State;
-use crate::state::user::UserStats;
-use crate::vlp::amm::math::amm::calculate_net_user_pnl;
-use crate::{emit, validate};
 
 #[cfg(test)]
 mod tests;

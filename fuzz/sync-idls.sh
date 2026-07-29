@@ -7,8 +7,9 @@
 # artifact at build time. That copy MUST match the canonical
 # `packages/sdk/src/idl/velocity.json`, or the harnesses fuzz a stale ABI.
 #
-# Run this after any `bun run program:idl` / program change that regenerates the
-# IDL. CI (`.github/workflows/fuzz.yml` -> idl-sync) fails if a copy is stale.
+# `bun run program:idl` and `bun run program:build` (via program:sync-idl) run
+# this automatically after regenerating the IDL. CI
+# (`.github/workflows/fuzz.yml` -> idl-sync) fails if a copy is stale.
 set -euo pipefail
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"

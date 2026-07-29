@@ -18,13 +18,13 @@
 //! - If the oracle is $50,000, the order appears at $49,900
 //! - If you provide the wrong oracle price (e.g., $51,000), the order will appear at $50,900 (wrong!)
 
+use solana_commitment_config::CommitmentLevel;
+use solana_keypair::Keypair;
 use velocity_rs::{
     dlob::builder::DLOBBuilder,
     types::{MarketId, MarketType},
-    Context, VelocityClient, GrpcSubscribeOpts, RpcClient,
+    Context, GrpcSubscribeOpts, RpcClient, VelocityClient,
 };
-use solana_commitment_config::CommitmentLevel;
-use solana_keypair::Keypair;
 
 #[tokio::main]
 async fn main() {
@@ -83,7 +83,7 @@ async fn main() {
     // Without fresh prices, you'll see stale/incorrect order prices and miss opportunities
     let market_index = 0u16;
     let market_type = MarketType::Perp;
-    
+
     // this is the most update to date oracle price from gRPC
     // however more advanced setups may query from pyth price feeds directly
     let oracle_data = velocity
@@ -91,7 +91,11 @@ async fn main() {
         .expect("oracle data exists");
     let oracle_price = oracle_data.data.price as u64;
 
-    println!("Oracle Price: ${}.{:08}", oracle_price / 100_000_000, oracle_price % 100_000_000);
+    println!(
+        "Oracle Price: ${}.{:08}",
+        oracle_price / 100_000_000,
+        oracle_price % 100_000_000
+    );
     println!("Slot: {}", oracle_data.slot);
     println!();
 
@@ -103,7 +107,7 @@ async fn main() {
     let trigger_price = oracle_price;
 
     // Demonstrate the 4 L3 methods
-    
+
     // 1. Maker bids - resting limit buy orders
     let maker_bids = dlob.get_maker_bids_l3(market_index, market_type, oracle_price);
     println!("Maker Bids (top 5):");
@@ -111,7 +115,11 @@ async fn main() {
         let price_usd = (order.price as f64) / 100_000_000.0;
         println!(
             "  {}. ${:.2} @ {} (user: {}, kind: {:?})",
-            i + 1, price_usd, order.size, &order.user.to_string()[..8], order.kind
+            i + 1,
+            price_usd,
+            order.size,
+            &order.user.to_string()[..8],
+            order.kind
         );
     }
 
@@ -122,7 +130,11 @@ async fn main() {
         let price_usd = (order.price as f64) / 100_000_000.0;
         println!(
             "  {}. ${:.2} @ {} (user: {}, kind: {:?})",
-            i + 1, price_usd, order.size, &order.user.to_string()[..8], order.kind
+            i + 1,
+            price_usd,
+            order.size,
+            &order.user.to_string()[..8],
+            order.kind
         );
     }
 
@@ -139,7 +151,11 @@ async fn main() {
         let price_usd = (order.price as f64) / 100_000_000.0;
         println!(
             "  {}. ${:.2} @ {} (user: {}, kind: {:?})",
-            i + 1, price_usd, order.size, &order.user.to_string()[..8], order.kind
+            i + 1,
+            price_usd,
+            order.size,
+            &order.user.to_string()[..8],
+            order.kind
         );
     }
 
@@ -156,12 +172,21 @@ async fn main() {
         let price_usd = (order.price as f64) / 100_000_000.0;
         println!(
             "  {}. ${:.2} @ {} (user: {}, kind: {:?})",
-            i + 1, price_usd, order.size, &order.user.to_string()[..8], order.kind
+            i + 1,
+            price_usd,
+            order.size,
+            &order.user.to_string()[..8],
+            order.kind
         );
     }
 
-    println!("\nTotal: {} maker bids, {} maker asks, {} taker bids, {} taker asks",
-        maker_bids.len(), maker_asks.len(), taker_bids.len(), taker_asks.len());
+    println!(
+        "\nTotal: {} maker bids, {} maker asks, {} taker bids, {} taker asks",
+        maker_bids.len(),
+        maker_asks.len(),
+        taker_bids.len(),
+        taker_asks.len()
+    );
 
     println!("\nKeeping gRPC subscription running. Press Ctrl+C to exit...");
     let _ = grpc_handle.await;

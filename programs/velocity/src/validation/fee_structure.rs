@@ -1,12 +1,13 @@
-use crate::msg;
-
-use crate::error::{ErrorCode, VelocityResult};
-use crate::math::constants::{
-    FEE_DENOMINATOR, FEE_PERCENTAGE_DENOMINATOR, OPEN_ORDER_MARGIN_REQUIREMENT,
-    PERCENTAGE_PRECISION,
+use crate::{
+    error::{ErrorCode, VelocityResult},
+    math::constants::{
+        FEE_DENOMINATOR, FEE_PERCENTAGE_DENOMINATOR, OPEN_ORDER_MARGIN_REQUIREMENT,
+        PERCENTAGE_PRECISION,
+    },
+    msg,
+    state::state::{FeeStructure, FeeTier},
+    validate,
 };
-use crate::state::state::{FeeStructure, FeeTier};
-use crate::validate;
 
 #[cfg(test)]
 mod tests;

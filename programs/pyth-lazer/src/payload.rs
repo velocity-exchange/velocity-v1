@@ -6,10 +6,7 @@ use {
         time::{DurationUs, TimestampUs},
         ChannelId, PriceFeedId, PriceFeedProperty,
     },
-    anyhow::Context,
-};
-use {
-    anyhow::bail,
+    anyhow::{bail, Context},
     byteorder::{ByteOrder, ReadBytesExt, WriteBytesExt, BE, LE},
     serde::{Deserialize, Serialize},
     std::{

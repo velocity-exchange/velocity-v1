@@ -1,13 +1,18 @@
-use anchor_lang::prelude::*;
-use velocity::instructions::optional_accounts::AccountMaps;
-use velocity::math::casting::Cast;
-use velocity::state::user::{User, UserStats};
-
-use crate::constraints::{
-    is_authority_for_vault_depositor, is_user_for_vault, is_user_stats_for_vault,
+use {
+    crate::{
+        constraints::{
+            is_authority_for_vault_depositor, is_user_for_vault, is_user_stats_for_vault,
+        },
+        AccountMapProvider, FeeUpdateProvider, FeeUpdateStatus, Vault, VaultDepositor,
+        VaultProtocolProvider,
+    },
+    anchor_lang::prelude::*,
+    velocity::{
+        instructions::optional_accounts::AccountMaps,
+        math::casting::Cast,
+        state::user::{User, UserStats},
+    },
 };
-use crate::AccountMapProvider;
-use crate::{FeeUpdateProvider, FeeUpdateStatus, Vault, VaultDepositor, VaultProtocolProvider};
 
 pub fn cancel_withdraw_request<'info>(
     ctx: Context<'info, CancelWithdrawRequest<'info>>,

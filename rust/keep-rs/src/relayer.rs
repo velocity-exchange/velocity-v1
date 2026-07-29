@@ -3,26 +3,27 @@
 //! Subscribes to Lazer price feeds for the configured perp (and optionally
 //! spot) markets, and posts each price update on-chain via Velocity's
 //! `post_pyth_lazer_oracle_update` instruction.
-use std::{
-    borrow::Cow,
-    collections::HashMap,
-    sync::{
-        atomic::{AtomicU64, Ordering},
-        Arc,
+use {
+    crate::{Config, UseMarkets},
+    std::{
+        borrow::Cow,
+        collections::HashMap,
+        sync::{
+            atomic::{AtomicU64, Ordering},
+            Arc,
+        },
+        time::{Duration, Instant},
     },
-    time::{Duration, Instant},
-};
-
-use tokio::time::sleep;
-use velocity_rs::{
-    math::liquidation::calculate_collateral,
-    types::{
-        accounts::User, MarginRequirementType, MarketId, RpcSendTransactionConfig, SpotBalanceType,
+    tokio::time::sleep,
+    velocity_rs::{
+        math::liquidation::calculate_collateral,
+        types::{
+            accounts::User, MarginRequirementType, MarketId, RpcSendTransactionConfig,
+            SpotBalanceType,
+        },
+        TransactionBuilder, VelocityClient, Wallet,
     },
-    TransactionBuilder, VelocityClient, Wallet,
 };
-
-use crate::{Config, UseMarkets};
 
 const TARGET: &str = "relayer";
 const CU_LIMIT: u32 = 80_000;

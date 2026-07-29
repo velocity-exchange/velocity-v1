@@ -45,6 +45,7 @@ programs (SBF), while `rust/` consumes the program as a host library with its ow
 | Tool                       | Version                | Notes                                                                                                     |
 | -------------------------- | ---------------------- | --------------------------------------------------------------------------------------------------------- |
 | Rust                       | **≥ 1.89**             | Anchor 1.0 MSRV. Develop with ≥ 1.77 so the 16-byte `u128` alignment guards are exercised locally          |
+| Rust nightly (rustfmt only) | any recent             | `rustup toolchain install nightly --component rustfmt`. Formatting only; builds/clippy/tests stay on stable |
 | Solana platform-tools      | **≥ v1.54**            | Older bundled cargo (≤ 1.84) cannot parse `edition2024` dependencies; see [Troubleshooting](#troubleshooting) |
 | Anchor CLI                 | **1.0.2**              | Matches the `anchor-lang` version pinned in the programs                                                    |
 | Bun                        | ≥ 1.x                  | The only supported JS package manager here (not yarn/npm)                                                   |
@@ -121,10 +122,19 @@ After a program change, run `bash fuzz/sync-idls.sh` to re-sync the vendored IDL
 | One integration test                          | `ts-mocha -t 300000 ./tests/<test_file>.ts`                                 |
 | Full integration suite (skip rebuild)         | `bash test-scripts/run-anchor-tests.sh --skip-build`                        |
 | SDK unit tests                                | `cd packages/sdk && bun run test:ci` (DLOB: `bun run test:dlob`)            |
-| Rust lint/format                              | `cargo fmt && cargo clippy -p velocity` (CI enforces both)                  |
+| Rust lint/format                              | `bun run fmt:rust && cargo clippy -p velocity` (CI enforces both)           |
 | SDK lint/format                               | `cd packages/sdk && bun run prettify:fix && bun run lint`                   |
 
-Two rules that save a lot of pain:
+Three rules that save a lot of pain:
+
+- **Format Rust with `bun run fmt:rust`, never plain `cargo fmt`.** `rustfmt.toml` merges all of a
+  module's imports into a single `use { ... }` block via nightly-only options; stable `cargo fmt`
+  ignores them, so imports you add stay unmerged and CI's nightly check fails. The script wraps
+  nightly rustfmt across every Rust codebase in the repo (program workspace, `rust/` workspace,
+  fuzz crates, examples); `bun run fmt:rust:check` verifies without writing. Format-on-save is
+  preconfigured via the committed `.vscode/settings.json` (VS Code and Cursor) and
+  `.zed/settings.json` (Zed), which point rust-analyzer's rustfmt at nightly. Generated
+  (`velocity_idl.rs`) and vendored code are excluded on purpose.
 
 - **Never hand-edit generated artifacts.** `packages/sdk/src/idl/velocity.json`/`velocity.ts` and
   `rust/velocity-rs/crates/src/velocity_idl.rs` are all generated from the Rust program. Change the
@@ -200,6 +210,7 @@ not manually edit `package.json` versions; changesets and the bot own those fiel
 | [FEES.md](./FEES.md)                                                          | The fee architecture: per-fill splits, fee ledger, sweeps, carveouts          |
 | [deploy-scripts/README.md](./deploy-scripts/README.md)                        | Devnet upgrade runbook (two-phase buffer deploys, wipe/reinit)                |
 | [docs/alignment-and-native-offsets.md](./docs/alignment-and-native-offsets.md) | Zero-copy struct alignment invariants; read before adding fields to accounts  |
+| [docs/ACCOUNT-EXTENSION.md](./docs/ACCOUNT-EXTENSION.md)                      | Growing zero-copy accounts past their padding: the `extend_account` crank, migration runbook, client rules |
 
 ## Bug bounty
 

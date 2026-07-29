@@ -4,13 +4,15 @@
 //! pure-AMM curve math (reserves, spread, swap) see `crate::vlp::amm::math`; for
 //! AMM account-level mutations see `crate::vlp::amm::controller`.
 
-use crate::error::VelocityResult;
-use crate::math::casting::Cast;
-use crate::math::safe_math::SafeMath;
-use crate::math::spot_balance::get_token_amount;
-use crate::state::perp_market::PerpMarket;
-use crate::state::spot_market::{SpotBalance, SpotMarket};
-use crate::vlp::amm::math::amm::calculate_net_user_pnl;
+use crate::{
+    error::VelocityResult,
+    math::{casting::Cast, safe_math::SafeMath, spot_balance::get_token_amount},
+    state::{
+        perp_market::PerpMarket,
+        spot_market::{SpotBalance, SpotMarket},
+    },
+    vlp::amm::math::amm::calculate_net_user_pnl,
+};
 
 /// Recompute the AMM's `total_fee_minus_distributions` summary value from the
 /// market's balance-sheet identity. Used by admin paths to correct

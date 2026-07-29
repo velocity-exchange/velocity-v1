@@ -1,8 +1,14 @@
 mod calculate_fee_for_taker_and_maker {
-    use crate::math::constants::QUOTE_PRECISION_U64;
-    use crate::math::fees::{calculate_fee_for_fulfillment_with_match, FillFees};
-    use crate::state::state::FeeStructure;
-    use crate::state::user::{MarketType, UserStats};
+    use crate::{
+        math::{
+            constants::QUOTE_PRECISION_U64,
+            fees::{calculate_fee_for_fulfillment_with_match, FillFees},
+        },
+        state::{
+            state::FeeStructure,
+            user::{MarketType, UserStats},
+        },
+    };
 
     #[test]
     fn no_filler() {
@@ -568,10 +574,13 @@ mod calculate_fee_for_taker_and_maker {
 }
 
 mod calculate_fee_for_order_fulfill_against_amm {
-    use crate::math::constants::QUOTE_PRECISION_U64;
-    use crate::math::fees::{calculate_fee_for_fulfillment_with_amm, FillFees};
-    use crate::state::state::FeeStructure;
-    use crate::state::user::UserStats;
+    use crate::{
+        math::{
+            constants::QUOTE_PRECISION_U64,
+            fees::{calculate_fee_for_fulfillment_with_amm, FillFees},
+        },
+        state::{state::FeeStructure, user::UserStats},
+    };
 
     #[test]
     fn referrer() {
@@ -755,12 +764,16 @@ mod calculate_fee_for_order_fulfill_against_amm {
 
 mod calcuate_fee_tiers {
 
-    use crate::math::constants::QUOTE_PRECISION_U64;
-    use crate::math::constants::{FEE_DENOMINATOR, FEE_PERCENTAGE_DENOMINATOR};
-    use crate::math::fees::{determine_user_fee_tier, OrderFillerRewardStructure};
-    use crate::state::state::{FeeStructure, FeeTier};
-    use crate::state::user::MarketType;
-    use crate::state::user::UserStats;
+    use crate::{
+        math::{
+            constants::{FEE_DENOMINATOR, FEE_PERCENTAGE_DENOMINATOR, QUOTE_PRECISION_U64},
+            fees::{determine_user_fee_tier, OrderFillerRewardStructure},
+        },
+        state::{
+            state::{FeeStructure, FeeTier},
+            user::{MarketType, UserStats},
+        },
+    };
 
     #[test]
     fn test_calc_taker_tiers() {

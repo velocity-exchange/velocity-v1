@@ -1,43 +1,48 @@
-use crate::state::perp_market::MarketStats;
-use std::str::FromStr;
-
-use solana_program::pubkey::Pubkey;
-
-use crate::controller::insurance::settle_revenue_to_insurance_fund;
-use crate::controller::spot_balance::*;
-use crate::controller::spot_position::update_spot_balances_and_cumulative_deposits_with_limits;
-use crate::create_anchor_account_info;
-use crate::error::ErrorCode;
-use crate::math::constants::{
-    AMM_RESERVE_PRECISION, BASE_PRECISION_I128, BASE_PRECISION_I64, BPS_PRECISION,
-    IF_FACTOR_PRECISION, LIQUIDATION_FEE_PRECISION, PEG_PRECISION, PRICE_PRECISION_I64,
-    PRICE_PRECISION_U64, QUOTE_PRECISION, QUOTE_PRECISION_I128, QUOTE_PRECISION_I64,
-    QUOTE_PRECISION_U64, SPOT_BALANCE_PRECISION, SPOT_BALANCE_PRECISION_U64,
-    SPOT_CUMULATIVE_INTEREST_PRECISION, SPOT_RATE_PRECISION_U32, SPOT_UTILIZATION_PRECISION,
-    SPOT_UTILIZATION_PRECISION_U32, SPOT_WEIGHT_PRECISION,
+use {
+    crate::{
+        controller::{
+            insurance::settle_revenue_to_insurance_fund, spot_balance::*,
+            spot_position::update_spot_balances_and_cumulative_deposits_with_limits,
+        },
+        create_anchor_account_info,
+        error::ErrorCode,
+        math::{
+            constants::{
+                AMM_RESERVE_PRECISION, BASE_PRECISION_I128, BASE_PRECISION_I64, BPS_PRECISION,
+                IF_FACTOR_PRECISION, LIQUIDATION_FEE_PRECISION, PEG_PRECISION, PRICE_PRECISION_I64,
+                PRICE_PRECISION_U64, QUOTE_PRECISION, QUOTE_PRECISION_I128, QUOTE_PRECISION_I64,
+                QUOTE_PRECISION_U64, SPOT_BALANCE_PRECISION, SPOT_BALANCE_PRECISION_U64,
+                SPOT_CUMULATIVE_INTEREST_PRECISION, SPOT_RATE_PRECISION_U32,
+                SPOT_UTILIZATION_PRECISION, SPOT_UTILIZATION_PRECISION_U32, SPOT_WEIGHT_PRECISION,
+            },
+            margin::{
+                calculate_margin_requirement_and_total_collateral_and_liability_info,
+                MarginRequirementType,
+            },
+            spot_balance::calculate_borrow_rate,
+            spot_withdraw::{
+                calculate_max_borrow_token_amount, calculate_min_deposit_token_amount,
+                calculate_token_utilization_limits, check_deposit_limits, check_withdraw_limits,
+            },
+            stats::calculate_weighted_average,
+        },
+        state::{
+            margin_calculation::{MarginCalculation, MarginContext},
+            market_status::MarketStatus,
+            oracle::{HistoricalOracleData, OracleSource},
+            oracle_map::OracleMap,
+            perp_market::{MarketStats, PerpMarket, AMM},
+            perp_market_map::PerpMarketMap,
+            pyth_lazer_oracle::PythLazerOracle,
+            spot_market::{InsuranceFund, SpotBalanceType, SpotMarket},
+            spot_market_map::SpotMarketMap,
+            user::{Order, PerpPosition, PositionFlag, SpotPosition, User},
+        },
+        test_utils::{get_pyth_price, get_spot_positions, *},
+    },
+    solana_program::pubkey::Pubkey,
+    std::str::FromStr,
 };
-use crate::math::margin::{
-    calculate_margin_requirement_and_total_collateral_and_liability_info, MarginRequirementType,
-};
-use crate::math::spot_balance::calculate_borrow_rate;
-use crate::math::spot_withdraw::{
-    calculate_max_borrow_token_amount, calculate_min_deposit_token_amount,
-    calculate_token_utilization_limits, check_deposit_limits, check_withdraw_limits,
-};
-use crate::math::stats::calculate_weighted_average;
-use crate::state::margin_calculation::{MarginCalculation, MarginContext};
-use crate::state::market_status::MarketStatus;
-use crate::state::oracle::{HistoricalOracleData, OracleSource};
-use crate::state::oracle_map::OracleMap;
-use crate::state::perp_market::{PerpMarket, AMM};
-use crate::state::perp_market_map::PerpMarketMap;
-use crate::state::pyth_lazer_oracle::PythLazerOracle;
-use crate::state::spot_market::{InsuranceFund, SpotBalanceType, SpotMarket};
-use crate::state::spot_market_map::SpotMarketMap;
-use crate::state::user::PositionFlag;
-use crate::state::user::{Order, PerpPosition, SpotPosition, User};
-use crate::test_utils::*;
-use crate::test_utils::{get_pyth_price, get_spot_positions};
 
 pub fn check_perp_market_valid(
     perp_market: &PerpMarket,

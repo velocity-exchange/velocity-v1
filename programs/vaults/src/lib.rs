@@ -1,9 +1,7 @@
 #![allow(clippy::diverging_sub_expression, unexpected_cfgs)]
 #![allow(deprecated)]
 
-use anchor_lang::prelude::*;
-use instructions::*;
-use state::*;
+use {anchor_lang::prelude::*, instructions::*, state::*};
 
 mod constants;
 mod error;

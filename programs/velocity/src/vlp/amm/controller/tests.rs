@@ -1,31 +1,36 @@
-use std::str::FromStr;
-
-use crate::{
-    controller::spot_balance::{execute_transfer_between_pools, update_spot_balances},
-    math::{
-        bn,
-        constants::{
-            AMM_RESERVE_PRECISION, BASE_PRECISION_I128, MAX_CONCENTRATION_COEFFICIENT, MAX_SQRT_K,
-            PERCENTAGE_PRECISION_U32, PRICE_PRECISION_I64, QUOTE_PRECISION,
-            QUOTE_SPOT_MARKET_INDEX, SPOT_BALANCE_PRECISION, SPOT_CUMULATIVE_INTEREST_PRECISION,
+use {
+    crate::{
+        controller::spot_balance::{execute_transfer_between_pools, update_spot_balances},
+        math::{
+            bn,
+            constants::{
+                AMM_RESERVE_PRECISION, BASE_PRECISION_I128, MAX_CONCENTRATION_COEFFICIENT,
+                MAX_SQRT_K, PERCENTAGE_PRECISION_U32, PRICE_PRECISION_I64, QUOTE_PRECISION,
+                QUOTE_SPOT_MARKET_INDEX, SPOT_BALANCE_PRECISION,
+                SPOT_CUMULATIVE_INTEREST_PRECISION,
+            },
+        },
+        state::{
+            events::TransferFeeAndPnlPoolDirection,
+            oracle::{HistoricalOracleData, OraclePriceData},
+            paused_operations::PerpOperation,
+            perp_market::{
+                FeeLedger, InsuranceClaim, MarketConfigFlag, MarketStats, PerpMarket, PoolBalance,
+            },
+            spot_market::SpotBalanceType,
+            user::SpotPosition,
+        },
+        test_utils::create_account_info,
+        vlp::amm::{
+            controller::*,
+            math::{
+                amm,
+                cp_curve::{self, get_update_k_result},
+            },
+            AMM,
         },
     },
-    state::{
-        events::TransferFeeAndPnlPoolDirection,
-        oracle::{HistoricalOracleData, OraclePriceData},
-        paused_operations::PerpOperation,
-        perp_market::{
-            FeeLedger, InsuranceClaim, MarketConfigFlag, MarketStats, PerpMarket, PoolBalance,
-        },
-        spot_market::SpotBalanceType,
-        user::SpotPosition,
-    },
-    test_utils::create_account_info,
-    vlp::amm::{
-        controller::*,
-        math::{amm, cp_curve, cp_curve::get_update_k_result},
-        AMM,
-    },
+    std::str::FromStr,
 };
 
 #[test]

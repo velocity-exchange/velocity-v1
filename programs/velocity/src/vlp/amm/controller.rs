@@ -1,18 +1,21 @@
-use anchor_lang::prelude::*;
-
 #[cfg(test)]
 #[cfg(test)]
 use crate::state::oracle::OraclePriceData;
 #[cfg(test)]
 use crate::state::perp_market::{MarketConfigFlag, PerpMarket};
-use crate::{
-    error::VelocityResult,
-    math::{casting::Cast, quote_asset::*, safe_math::SafeMath, spot_balance::get_token_amount},
-    state::{
-        perp_market::AMM,
-        spot_market::{SpotBalance, SpotMarket},
+use {
+    crate::{
+        error::VelocityResult,
+        math::{
+            casting::Cast, quote_asset::*, safe_math::SafeMath, spot_balance::get_token_amount,
+        },
+        state::{
+            perp_market::AMM,
+            spot_market::{SpotBalance, SpotMarket},
+        },
+        vlp::amm::math::{amm, amm::calculate_quote_asset_amount_swapped},
     },
-    vlp::amm::math::{amm, amm::calculate_quote_asset_amount_swapped},
+    anchor_lang::prelude::*,
 };
 
 #[cfg(test)]

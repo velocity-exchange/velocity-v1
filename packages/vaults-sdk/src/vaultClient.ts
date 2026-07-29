@@ -3583,12 +3583,25 @@ export class VaultClient {
 		const vaultAccount = await this.program.account.vault.fetch(vault);
 		const feeUpdate = getFeeUpdateAddressSync(this.program.programId, vault);
 
+		// protocol vaults must pass VaultProtocol so a matured update is validated
+		// against the live combined manager+protocol fee bounds
+		const remainingAccounts: AccountMeta[] = vaultAccount.vaultProtocol
+			? [
+					{
+						pubkey: getVaultProtocolAddressSync(this.program.programId, vault),
+						isSigner: false,
+						isWritable: false,
+					},
+			  ]
+			: [];
+
 		return this.program.instruction.managerUpdateFees(params, {
 			accounts: {
 				vault,
 				manager: vaultAccount.manager,
 				feeUpdate,
 			},
+			remainingAccounts,
 		});
 	}
 

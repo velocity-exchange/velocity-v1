@@ -1,25 +1,31 @@
-use std::cmp::{max, min};
-
-use crate::msg;
-
-use crate::controller::position::PositionDirection;
-use crate::error::{ErrorCode, VelocityResult};
-use crate::math::bn::U192;
-use crate::math::casting::Cast;
-use crate::math::constants::{
-    AMM_TIMES_PEG_TO_QUOTE_PRECISION_RATIO_I128, AMM_TO_QUOTE_PRECISION_RATIO_I128,
-    BID_ASK_SPREAD_PRECISION, BID_ASK_SPREAD_PRECISION_I128, DEFAULT_LARGE_BID_ASK_FACTOR,
-    DEFAULT_REVENUE_SINCE_LAST_FUNDING_SPREAD_RETREAT, FUNDING_RATE_BUFFER,
-    FUNDING_RATE_OFFSET_DENOMINATOR, FUNDING_RATE_OFFSET_PERCENTAGE,
-    MAX_BID_ASK_INVENTORY_SKEW_FACTOR, PEG_PRECISION, PERCENTAGE_PRECISION,
-    PERCENTAGE_PRECISION_I128, PERCENTAGE_PRECISION_U64, PRICE_PRECISION, PRICE_PRECISION_I128,
-    PRICE_PRECISION_I64,
+use {
+    crate::{
+        controller::position::PositionDirection,
+        error::{ErrorCode, VelocityResult},
+        math::{
+            bn::U192,
+            casting::Cast,
+            constants::{
+                AMM_TIMES_PEG_TO_QUOTE_PRECISION_RATIO_I128, AMM_TO_QUOTE_PRECISION_RATIO_I128,
+                BID_ASK_SPREAD_PRECISION, BID_ASK_SPREAD_PRECISION_I128,
+                DEFAULT_LARGE_BID_ASK_FACTOR, DEFAULT_REVENUE_SINCE_LAST_FUNDING_SPREAD_RETREAT,
+                FUNDING_RATE_BUFFER, FUNDING_RATE_OFFSET_DENOMINATOR,
+                FUNDING_RATE_OFFSET_PERCENTAGE, MAX_BID_ASK_INVENTORY_SKEW_FACTOR, PEG_PRECISION,
+                PERCENTAGE_PRECISION, PERCENTAGE_PRECISION_I128, PERCENTAGE_PRECISION_U64,
+                PRICE_PRECISION, PRICE_PRECISION_I128, PRICE_PRECISION_I64,
+            },
+            safe_math::SafeMath,
+        },
+        msg,
+        state::{
+            oracle::MMOraclePriceData,
+            perp_market::{MarketStats, AMM},
+        },
+        validate,
+        vlp::amm::math::amm::_calculate_market_open_bids_asks,
+    },
+    std::cmp::{max, min},
 };
-use crate::math::safe_math::SafeMath;
-use crate::state::oracle::MMOraclePriceData;
-use crate::state::perp_market::{MarketStats, AMM};
-use crate::validate;
-use crate::vlp::amm::math::amm::_calculate_market_open_bids_asks;
 
 #[cfg(test)]
 mod tests;

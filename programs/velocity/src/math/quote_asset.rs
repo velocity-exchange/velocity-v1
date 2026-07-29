@@ -1,8 +1,10 @@
-use crate::error::VelocityResult;
-use crate::math::constants::AMM_TIMES_PEG_TO_QUOTE_PRECISION_RATIO;
-use crate::math::safe_math::SafeMath;
-
-use std::ops::Div;
+use {
+    crate::{
+        error::VelocityResult,
+        math::{constants::AMM_TIMES_PEG_TO_QUOTE_PRECISION_RATIO, safe_math::SafeMath},
+    },
+    std::ops::Div,
+};
 
 pub fn reserve_to_asset_amount(
     quote_asset_reserve: u128,

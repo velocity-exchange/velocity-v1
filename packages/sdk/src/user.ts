@@ -42,7 +42,6 @@ import {
 	BASE_PRECISION,
 	BN_MAX,
 	DUST_POSITION_SIZE,
-	FIVE_MINUTE,
 	MARGIN_PRECISION,
 	MAX_POSITIVE_UPNL_FOR_INITIAL_MARGIN,
 	ONE,
@@ -117,10 +116,7 @@ import {
 	getWorstCaseTokenAmounts,
 	isSpotPositionAvailable,
 } from './math/spotPosition';
-import {
-	calculateLiveOracleTwap,
-	getMultipleBetweenOracleSources,
-} from './math/oracles';
+import { getMultipleBetweenOracleSources } from './math/oracles';
 import { getPerpMarketTierNumber, getSpotMarketTierNumber } from './math/tiers';
 import { StrictOraclePrice } from './oracles/strictOraclePrice';
 
@@ -1158,8 +1154,7 @@ export class User {
 	 * @param marginCategory `'Initial'` or `'Maintenance'` asset/liability weights; omit for unweighted (100%) values.
 	 * @param liquidationBuffer Optional buffer (MARGIN_PRECISION, 1e4) added to the liability weight side.
 	 * @param includeOpenOrders If false, ignores open bids/asks and only counts the current balance (faster, less conservative).
-	 * @param strict Use the worse of live oracle price vs 5-minute TWAP. Defaults to false.
-	 * @param now Unix timestamp (seconds) used for TWAP staleness when `strict` is set; defaults to current time.
+	 * @param strict Use the worse of live oracle price vs the market's stored 5-minute TWAP. Defaults to false.
 	 * @returns `{ totalAssetValue, totalLiabilityValue }`, both QUOTE_PRECISION (1e6) and non-negative.
 	 */
 	public getSpotMarketAssetAndLiabilityValue(
@@ -1167,10 +1162,8 @@ export class User {
 		marginCategory?: MarginCategory,
 		liquidationBuffer?: BN,
 		includeOpenOrders?: boolean,
-		strict = false,
-		now?: BN
+		strict = false
 	): { totalAssetValue: BN; totalLiabilityValue: BN } {
-		now = now || new BN(new Date().getTime() / 1000);
 		let netQuoteValue = ZERO;
 		let totalAssetValue = ZERO;
 		let totalLiabilityValue = ZERO;
@@ -1198,15 +1191,11 @@ export class User {
 				spotPosition.marketIndex
 			);
 
-			let twap5min;
-			if (strict) {
-				twap5min = calculateLiveOracleTwap(
-					spotMarketAccount.historicalOracleData,
-					oraclePriceData,
-					now,
-					FIVE_MINUTE // 5MIN
-				);
-			}
+			// mirrors margin.rs: strict mode prices against the market's *stored*
+			// 5min TWAP, not a live-projected one
+			const twap5min = strict
+				? spotMarketAccount.historicalOracleData.lastOraclePriceTwap5Min
+				: undefined;
 			const strictOraclePrice = new StrictOraclePrice(
 				oraclePriceData.price,
 				twap5min
@@ -1364,16 +1353,14 @@ export class User {
 		marginCategory?: MarginCategory,
 		liquidationBuffer?: BN,
 		includeOpenOrders?: boolean,
-		strict = false,
-		now?: BN
+		strict = false
 	): BN {
 		const { totalLiabilityValue } = this.getSpotMarketAssetAndLiabilityValue(
 			marketIndex,
 			marginCategory,
 			liquidationBuffer,
 			includeOpenOrders,
-			strict,
-			now
+			strict
 		);
 		return totalLiabilityValue;
 	}
@@ -1401,16 +1388,14 @@ export class User {
 		marketIndex?: number,
 		marginCategory?: MarginCategory,
 		includeOpenOrders?: boolean,
-		strict = false,
-		now?: BN
+		strict = false
 	): BN {
 		const { totalAssetValue } = this.getSpotMarketAssetAndLiabilityValue(
 			marketIndex,
 			marginCategory,
 			undefined,
 			includeOpenOrders,
-			strict,
-			now
+			strict
 		);
 		return totalAssetValue;
 	}
@@ -1436,8 +1421,7 @@ export class User {
 		marketIndex: number,
 		marginCategory?: MarginCategory,
 		includeOpenOrders?: boolean,
-		strict = false,
-		now?: BN
+		strict = false
 	): BN {
 		const { totalAssetValue, totalLiabilityValue } =
 			this.getSpotMarketAssetAndLiabilityValue(
@@ -1445,8 +1429,7 @@ export class User {
 				marginCategory,
 				undefined,
 				includeOpenOrders,
-				strict,
-				now
+				strict
 			);
 
 		return totalAssetValue.sub(totalLiabilityValue);
@@ -1534,19 +1517,20 @@ export class User {
 	}
 
 	/**
-	 * True when the account has an admin-set `equityFloor` and its cross-margin
-	 * total collateral is below it. This is the trip threshold of the
-	 * permissionless `tripEquityFloorBreaker`; action gating happens at
-	 * `equityFloor + equityFloorBuffer` (see `isBelowBufferedEquityFloor`).
-	 * Mirrors `User::is_below_equity_floor` on-chain.
-	 * @param strict Use TWAP-bounded oracle pricing, matching the withdraw path. Defaults to false.
+	 * True when the account has an admin-set `equityFloor` and its net equity
+	 * (`getNetUsdValue`: unweighted assets and perp PnL minus unweighted spot
+	 * liabilities, at live oracle prices) is below it. This is the trip
+	 * threshold of the permissionless `tripEquityFloorBreaker`; action gating
+	 * happens at `equityFloor + equityFloorBuffer` (see
+	 * `isBelowBufferedEquityFloor`). Mirrors `User::is_below_equity_floor`
+	 * onchain.
 	 */
-	public isBelowEquityFloor(strict = false): boolean {
+	public isBelowEquityFloor(): boolean {
 		const equityFloor = this.getUserAccountOrThrow().equityFloor;
 		if (equityFloor.lte(ZERO)) {
 			return false;
 		}
-		return this.getTotalCollateral('Initial', strict).lt(equityFloor);
+		return this.getNetUsdValue().lt(equityFloor);
 	}
 
 	/**
@@ -1561,58 +1545,48 @@ export class User {
 	}
 
 	/**
-	 * True when the account has an admin-set `equityFloor` and its cross-margin
-	 * total collateral is below `equityFloor + equityFloorBuffer`. While below,
-	 * the program rejects risk-increasing order placement and fills,
+	 * True when the account has an admin-set `equityFloor` and its net equity
+	 * (`getNetUsdValue`) is below `equityFloor + equityFloorBuffer`. While
+	 * below, the program rejects risk-increasing order placement and fills,
 	 * withdrawals, and transfers out of the account (`EquityBelowFloor`);
 	 * reduce-only activity stays allowed. Mirrors
 	 * `User::is_below_buffered_equity_floor` on-chain.
-	 * @param strict Use TWAP-bounded oracle pricing, matching the withdraw path. Defaults to false.
 	 */
-	public isBelowBufferedEquityFloor(strict = false): boolean {
+	public isBelowBufferedEquityFloor(): boolean {
 		const equityFloor = this.getUserAccountOrThrow().equityFloor;
 		if (equityFloor.lte(ZERO)) {
 			return false;
 		}
-		return this.getTotalCollateral('Initial', strict).lt(
-			this.getBufferedEquityFloor()
-		);
+		return this.getNetUsdValue().lt(this.getBufferedEquityFloor());
 	}
 
 	/**
-	 * Cross-margin total collateral in excess of the admin-set `equityFloor`,
+	 * Net equity (`getNetUsdValue`) in excess of the admin-set `equityFloor`,
 	 * floored at zero (QUOTE_PRECISION). Unbounded (`null`) when no floor is set.
 	 * This is headroom above the trip threshold; headroom above the level
 	 * risk-increasing actions must clear is `getEquityAboveBufferedFloor`.
-	 * @param strict Use TWAP-bounded oracle pricing. Defaults to false.
 	 */
-	public getEquityAboveFloor(strict = false): BN | null {
+	public getEquityAboveFloor(): BN | null {
 		const equityFloor = this.getUserAccountOrThrow().equityFloor;
 		if (equityFloor.lte(ZERO)) {
 			return null;
 		}
-		return BN.max(
-			this.getTotalCollateral('Initial', strict).sub(equityFloor),
-			ZERO
-		);
+		return BN.max(this.getNetUsdValue().sub(equityFloor), ZERO);
 	}
 
 	/**
-	 * Cross-margin total collateral in excess of `equityFloor +
+	 * Net equity (`getNetUsdValue`) in excess of `equityFloor +
 	 * equityFloorBuffer`, floored at zero (QUOTE_PRECISION). Unbounded
 	 * (`null`) when no floor is set. When this reaches zero, risk-increasing
 	 * actions start rejecting.
-	 * @param strict Use TWAP-bounded oracle pricing. Defaults to false.
 	 */
-	public getEquityAboveBufferedFloor(strict = false): BN | null {
+	public getEquityAboveBufferedFloor(): BN | null {
 		const equityFloor = this.getUserAccountOrThrow().equityFloor;
 		if (equityFloor.lte(ZERO)) {
 			return null;
 		}
 		return BN.max(
-			this.getTotalCollateral('Initial', strict).sub(
-				this.getBufferedEquityFloor()
-			),
+			this.getNetUsdValue().sub(this.getBufferedEquityFloor()),
 			ZERO
 		);
 	}
@@ -3447,7 +3421,7 @@ export class User {
 	 * @param outMarketIndex
 	 * @param calculateSwap Optional function to simulate the in-to-out conversion (e.g. to model swap fees/slippage); defaults to a 1:1 oracle-price conversion.
 	 * @param iterationLimit How many binary-search iterations to run before erroring out. Defaults to 1000.
-	 * @returns `inAmount`/`outAmount` in each market's own token decimals, and the resulting `leverage` (TEN_THOUSAND, 1e4 precision) after the swap.
+	 * @returns `inAmount`/`outAmount` in each market's own token decimals, and the resulting `leverage` (TEN_THOUSAND, 1e4 precision) after the swap. Sizing is TWAP-bounded to match the program's margin check; `leverage` is marked at the live oracle price so it stays comparable to `getLeverage()`.
 	 */
 	public getMaxSwapAmount({
 		inMarketIndex,
@@ -3470,8 +3444,21 @@ export class User {
 		const outOraclePriceData = this.getOracleDataForSpotMarket(outMarketIndex);
 		const outOraclePrice = outOraclePriceData.price;
 
-		const inStrictOraclePrice = new StrictOraclePrice(inOraclePrice);
-		const outStrictOraclePrice = new StrictOraclePrice(outOraclePrice);
+		// sizing mirrors handle_end_swap: both legs are priced strictly, against
+		// each market's stored 5min TWAP
+		const inStrictOraclePrice = new StrictOraclePrice(
+			inOraclePrice,
+			inMarket.historicalOracleData.lastOraclePriceTwap5Min
+		);
+		const outStrictOraclePrice = new StrictOraclePrice(
+			outOraclePrice,
+			outMarket.historicalOracleData.lastOraclePriceTwap5Min
+		);
+
+		// the returned leverage is a delta on top of getLeverageComponents' live-oracle
+		// baseline, so pricing its legs strictly would mix two bases in one figure
+		const inLeveragePrice = new StrictOraclePrice(inOraclePrice);
+		const outLeveragePrice = new StrictOraclePrice(outOraclePrice);
 
 		const inPrecision = new BN(10 ** inMarket.decimals);
 		const outPrecision = new BN(10 ** outMarket.decimals);
@@ -3495,7 +3482,7 @@ export class User {
 			totalLiabilityValue: inTotalLiabilityValueInitial,
 		} = this.calculateSpotPositionLeverageContribution(
 			inSpotPosition,
-			inStrictOraclePrice
+			inLeveragePrice
 		);
 		const outContributionInitial =
 			this.calculateSpotPositionFreeCollateralContribution(
@@ -3507,7 +3494,7 @@ export class User {
 			totalLiabilityValue: outTotalLiabilityValueInitial,
 		} = this.calculateSpotPositionLeverageContribution(
 			outSpotPosition,
-			outStrictOraclePrice
+			outLeveragePrice
 		);
 		const initialContribution = inContributionInitial.add(
 			outContributionInitial
@@ -3628,7 +3615,7 @@ export class User {
 			totalLiabilityValue: inTotalLiabilityValueAfter,
 		} = this.calculateSpotPositionLeverageContribution(
 			inPositionAfter,
-			inStrictOraclePrice
+			inLeveragePrice
 		);
 
 		const {
@@ -3636,7 +3623,7 @@ export class User {
 			totalLiabilityValue: outTotalLiabilityValueAfter,
 		} = this.calculateSpotPositionLeverageContribution(
 			outPositionAfter,
-			outStrictOraclePrice
+			outLeveragePrice
 		);
 
 		const spotAssetValueDelta = inTotalAssetValueAfter
@@ -3782,7 +3769,8 @@ export class User {
 	}
 
 	/**
-	 * Estimates what the user leverage will be after swap
+	 * Estimates what the user leverage will be after swap, marked at the live
+	 * oracle price so it stays comparable to `getLeverage()`.
 	 * @param inMarketIndex Market being sold/paid from.
 	 * @param outMarketIndex Market being bought/received.
 	 * @param inAmount Amount removed from `inMarketIndex`, that market's own token decimals.
@@ -3809,8 +3797,10 @@ export class User {
 		const inOraclePrice = inOraclePriceData.price;
 		const outOraclePriceData = this.getOracleDataForSpotMarket(outMarketIndex);
 		const outOraclePrice = outOraclePriceData.price;
-		const inStrictOraclePrice = new StrictOraclePrice(inOraclePrice);
-		const outStrictOraclePrice = new StrictOraclePrice(outOraclePrice);
+		// same live-oracle basis as getMaxSwapAmount's leverage legs and as the
+		// getLeverageComponents baseline these deltas are applied to
+		const inLeveragePrice = new StrictOraclePrice(inOraclePrice);
+		const outLeveragePrice = new StrictOraclePrice(outOraclePrice);
 
 		const inSpotPosition =
 			this.getSpotPosition(inMarketIndex) ||
@@ -3824,14 +3814,14 @@ export class User {
 			totalLiabilityValue: inTotalLiabilityValueInitial,
 		} = this.calculateSpotPositionLeverageContribution(
 			inSpotPosition,
-			inStrictOraclePrice
+			inLeveragePrice
 		);
 		const {
 			totalAssetValue: outTotalAssetValueInitial,
 			totalLiabilityValue: outTotalLiabilityValueInitial,
 		} = this.calculateSpotPositionLeverageContribution(
 			outSpotPosition,
-			outStrictOraclePrice
+			outLeveragePrice
 		);
 
 		const { perpLiabilityValue, perpPnl, spotAssetValue, spotLiabilityValue } =
@@ -3853,7 +3843,7 @@ export class User {
 			totalLiabilityValue: inTotalLiabilityValueAfter,
 		} = this.calculateSpotPositionLeverageContribution(
 			inPositionAfter,
-			inStrictOraclePrice
+			inLeveragePrice
 		);
 
 		const {
@@ -3861,7 +3851,7 @@ export class User {
 			totalLiabilityValue: outTotalLiabilityValueAfter,
 		} = this.calculateSpotPositionLeverageContribution(
 			outPositionAfter,
-			outStrictOraclePrice
+			outLeveragePrice
 		);
 
 		const spotAssetValueDelta = inTotalAssetValueAfter
@@ -4219,9 +4209,9 @@ export class User {
 			nowTs
 		);
 
-		// the withdraw path enforces the equity floor on post-withdraw total
-		// collateral, so equity above the floor caps free collateral here
-		const equityAboveFloor = this.getEquityAboveFloor(true);
+		// the withdraw path enforces the equity floor on post-withdraw net
+		// equity, so equity above the floor caps free collateral here
+		const equityAboveFloor = this.getEquityAboveFloor();
 		if (equityAboveFloor !== null && equityAboveFloor.eq(ZERO)) {
 			return ZERO;
 		}
@@ -5039,13 +5029,10 @@ export class User {
 			const oraclePriceData = this.getOracleDataForSpotMarket(
 				spotPosition.marketIndex
 			);
+			// mirrors margin.rs: strict mode prices against the market's *stored*
+			// 5min TWAP, not a live-projected one
 			const twap5 = strict
-				? calculateLiveOracleTwap(
-						spotMarket.historicalOracleData,
-						oraclePriceData,
-						new BN(Math.floor(Date.now() / 1000)),
-						FIVE_MINUTE
-				  )
+				? spotMarket.historicalOracleData.lastOraclePriceTwap5Min
 				: undefined;
 			const strictOracle = new StrictOraclePrice(oraclePriceData.price, twap5);
 

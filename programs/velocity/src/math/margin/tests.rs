@@ -1,20 +1,26 @@
 #[cfg(test)]
 mod test {
-    use crate::math::constants::{
-        AMM_RESERVE_PRECISION, PRICE_PRECISION, PRICE_PRECISION_U64, QUOTE_PRECISION,
-        QUOTE_PRECISION_I64, SPOT_IMF_PRECISION,
+    use {
+        crate::{
+            math::{
+                constants::{
+                    AMM_RESERVE_PRECISION, PRICE_PRECISION, PRICE_PRECISION_U64, QUOTE_PRECISION,
+                    QUOTE_PRECISION_I64, SPOT_IMF_PRECISION,
+                },
+                margin::{calculate_perp_position_value_and_pnl, MarginRequirementType},
+                position::calculate_base_asset_value_and_pnl_with_oracle_price,
+            },
+            state::{
+                oracle::{OraclePriceData, StrictOraclePrice},
+                perp_market::{ContractTier, PerpMarket, AMM},
+                spot_market::{AssetTier, SpotMarket},
+                user::PerpPosition,
+            },
+            PRICE_PRECISION_I64, QUOTE_PRECISION_U64, SPOT_BALANCE_PRECISION,
+            SPOT_CUMULATIVE_INTEREST_PRECISION,
+        },
+        num_integer::Roots,
     };
-    use crate::math::margin::{calculate_perp_position_value_and_pnl, MarginRequirementType};
-    use crate::math::position::calculate_base_asset_value_and_pnl_with_oracle_price;
-    use crate::state::oracle::{OraclePriceData, StrictOraclePrice};
-    use crate::state::perp_market::{ContractTier, PerpMarket, AMM};
-    use crate::state::spot_market::{AssetTier, SpotMarket};
-    use crate::state::user::PerpPosition;
-    use crate::{
-        PRICE_PRECISION_I64, QUOTE_PRECISION_U64, SPOT_BALANCE_PRECISION,
-        SPOT_CUMULATIVE_INTEREST_PRECISION,
-    };
-    use num_integer::Roots;
 
     #[test]
     fn asset_tier_checks() {
@@ -392,31 +398,39 @@ mod test {
 
 #[cfg(test)]
 mod calculate_margin_requirement_and_total_collateral {
-    use std::str::FromStr;
-
-    use solana_program::pubkey::Pubkey;
-
-    use crate::create_anchor_account_info;
-    use crate::math::constants::{
-        AMM_RESERVE_PRECISION, BASE_PRECISION_I64, LIQUIDATION_FEE_PRECISION, MARGIN_PRECISION,
-        PEG_PRECISION, SPOT_BALANCE_PRECISION, SPOT_BALANCE_PRECISION_U64,
-        SPOT_CUMULATIVE_INTEREST_PRECISION, SPOT_WEIGHT_PRECISION,
+    use {
+        crate::{
+            create_anchor_account_info,
+            math::{
+                constants::{
+                    AMM_RESERVE_PRECISION, BASE_PRECISION_I64, LIQUIDATION_FEE_PRECISION,
+                    MARGIN_PRECISION, PEG_PRECISION, SPOT_BALANCE_PRECISION,
+                    SPOT_BALANCE_PRECISION_U64, SPOT_CUMULATIVE_INTEREST_PRECISION,
+                    SPOT_WEIGHT_PRECISION,
+                },
+                margin::{
+                    calculate_margin_requirement_and_total_collateral_and_liability_info,
+                    MarginRequirementType,
+                },
+            },
+            state::{
+                margin_calculation::{MarginCalculation, MarginContext},
+                market_status::MarketStatus,
+                oracle::{HistoricalOracleData, OracleSource},
+                oracle_map::OracleMap,
+                perp_market::{PerpMarket, AMM},
+                perp_market_map::PerpMarketMap,
+                pyth_lazer_oracle::PythLazerOracle,
+                spot_market::{SpotBalanceType, SpotMarket},
+                spot_market_map::SpotMarketMap,
+                user::{Order, PerpPosition, SpotPosition, User},
+            },
+            test_utils::{get_positions, get_pyth_price},
+            PRICE_PRECISION_I64,
+        },
+        solana_program::pubkey::Pubkey,
+        std::str::FromStr,
     };
-    use crate::math::margin::{
-        calculate_margin_requirement_and_total_collateral_and_liability_info, MarginRequirementType,
-    };
-    use crate::state::margin_calculation::{MarginCalculation, MarginContext};
-    use crate::state::market_status::MarketStatus;
-    use crate::state::oracle::{HistoricalOracleData, OracleSource};
-    use crate::state::oracle_map::OracleMap;
-    use crate::state::perp_market::{PerpMarket, AMM};
-    use crate::state::perp_market_map::PerpMarketMap;
-    use crate::state::pyth_lazer_oracle::PythLazerOracle;
-    use crate::state::spot_market::{SpotBalanceType, SpotMarket};
-    use crate::state::spot_market_map::SpotMarketMap;
-    use crate::state::user::{Order, PerpPosition, SpotPosition, User};
-    use crate::test_utils::{get_positions, get_pyth_price};
-    use crate::PRICE_PRECISION_I64;
 
     #[test]
     pub fn usdc_deposit_and_5x_sol_bid() {
@@ -2093,33 +2107,40 @@ mod calculate_margin_requirement_and_total_collateral {
 
 #[cfg(test)]
 mod calculate_margin_requirement_and_total_collateral_and_liability_info {
-    use std::str::FromStr;
-
-    use solana_program::pubkey::Pubkey;
-
-    use crate::controller::position::PositionDirection;
-    use crate::math::constants::{
-        AMM_RESERVE_PRECISION, LIQUIDATION_FEE_PRECISION, MARGIN_PRECISION, PEG_PRECISION,
-        QUOTE_PRECISION, SPOT_BALANCE_PRECISION, SPOT_BALANCE_PRECISION_U64,
-        SPOT_CUMULATIVE_INTEREST_PRECISION, SPOT_WEIGHT_PRECISION,
+    use {
+        crate::{
+            controller::position::PositionDirection,
+            create_anchor_account_info,
+            math::{
+                constants::{
+                    AMM_RESERVE_PRECISION, LIQUIDATION_FEE_PRECISION, MARGIN_PRECISION,
+                    PEG_PRECISION, QUOTE_PRECISION, SPOT_BALANCE_PRECISION,
+                    SPOT_BALANCE_PRECISION_U64, SPOT_CUMULATIVE_INTEREST_PRECISION,
+                    SPOT_WEIGHT_PRECISION,
+                },
+                margin::{
+                    calculate_margin_requirement_and_total_collateral_and_liability_info,
+                    MarginRequirementType,
+                },
+            },
+            state::{
+                margin_calculation::{MarginCalculation, MarginContext},
+                market_status::MarketStatus,
+                oracle::{HistoricalOracleData, OracleSource},
+                oracle_map::OracleMap,
+                perp_market::{ContractTier, PerpMarket, AMM},
+                perp_market_map::PerpMarketMap,
+                pyth_lazer_oracle::PythLazerOracle,
+                spot_market::{SpotBalanceType, SpotMarket},
+                spot_market_map::SpotMarketMap,
+                user::{Order, OrderType, PerpPosition, SpotPosition, User},
+            },
+            test_utils::{get_positions, get_pyth_price, get_pyth_price_mantissa, *},
+            BASE_PRECISION_I64, PRICE_PRECISION_I64, QUOTE_PRECISION_I128, QUOTE_PRECISION_I64,
+        },
+        solana_program::pubkey::Pubkey,
+        std::str::FromStr,
     };
-    use crate::math::margin::{
-        calculate_margin_requirement_and_total_collateral_and_liability_info, MarginRequirementType,
-    };
-    use crate::state::margin_calculation::{MarginCalculation, MarginContext};
-    use crate::state::market_status::MarketStatus;
-    use crate::state::oracle::{HistoricalOracleData, OracleSource};
-    use crate::state::oracle_map::OracleMap;
-    use crate::state::perp_market::{ContractTier, PerpMarket, AMM};
-    use crate::state::perp_market_map::PerpMarketMap;
-    use crate::state::pyth_lazer_oracle::PythLazerOracle;
-    use crate::state::spot_market::{SpotBalanceType, SpotMarket};
-    use crate::state::spot_market_map::SpotMarketMap;
-    use crate::state::user::{Order, OrderType, PerpPosition, SpotPosition, User};
-    use crate::test_utils::{get_positions, get_pyth_price, get_pyth_price_mantissa};
-    use crate::PRICE_PRECISION_I64;
-    use crate::{create_anchor_account_info, BASE_PRECISION_I64};
-    use crate::{test_utils::*, QUOTE_PRECISION_I128, QUOTE_PRECISION_I64};
 
     #[test]
     fn no_perp_position_but_trigger_order() {
@@ -3057,24 +3078,30 @@ mod calculate_margin_requirement_and_total_collateral_and_liability_info {
 
 #[cfg(test)]
 mod calculate_max_withdrawable_amount {
-    use std::str::FromStr;
-
-    use solana_program::pubkey::Pubkey;
-
-    use crate::create_anchor_account_info;
-    use crate::math::constants::{
-        LIQUIDATION_FEE_PRECISION, SPOT_BALANCE_PRECISION, SPOT_BALANCE_PRECISION_U64,
-        SPOT_CUMULATIVE_INTEREST_PRECISION, SPOT_WEIGHT_PRECISION,
+    use {
+        crate::{
+            create_anchor_account_info,
+            math::{
+                constants::{
+                    LIQUIDATION_FEE_PRECISION, SPOT_BALANCE_PRECISION, SPOT_BALANCE_PRECISION_U64,
+                    SPOT_CUMULATIVE_INTEREST_PRECISION, SPOT_WEIGHT_PRECISION,
+                },
+                margin::calculate_max_withdrawable_amount,
+            },
+            state::{
+                oracle::{HistoricalOracleData, OracleSource},
+                oracle_map::OracleMap,
+                perp_market_map::PerpMarketMap,
+                pyth_lazer_oracle::PythLazerOracle,
+                spot_market::{SpotBalanceType, SpotMarket},
+                spot_market_map::SpotMarketMap,
+                user::{Order, PerpPosition, SpotPosition, User},
+            },
+            test_utils::get_pyth_price,
+        },
+        solana_program::pubkey::Pubkey,
+        std::str::FromStr,
     };
-    use crate::math::margin::calculate_max_withdrawable_amount;
-    use crate::state::oracle::{HistoricalOracleData, OracleSource};
-    use crate::state::oracle_map::OracleMap;
-    use crate::state::perp_market_map::PerpMarketMap;
-    use crate::state::pyth_lazer_oracle::PythLazerOracle;
-    use crate::state::spot_market::{SpotBalanceType, SpotMarket};
-    use crate::state::spot_market_map::SpotMarketMap;
-    use crate::state::user::{Order, PerpPosition, SpotPosition, User};
-    use crate::test_utils::get_pyth_price;
 
     #[test]
     pub fn usdc_withdraw() {
@@ -3338,30 +3365,34 @@ mod calculate_max_withdrawable_amount {
 
 #[cfg(test)]
 mod validate_spot_margin_trading {
-    use std::str::FromStr;
-
-    use solana_program::pubkey::Pubkey;
-
-    use crate::create_anchor_account_info;
-    use crate::error::ErrorCode;
-    use crate::math::constants::{
-        LIQUIDATION_FEE_PRECISION, SPOT_BALANCE_PRECISION, SPOT_BALANCE_PRECISION_U64,
-        SPOT_CUMULATIVE_INTEREST_PRECISION, SPOT_WEIGHT_PRECISION,
+    use {
+        crate::{
+            create_anchor_account_info,
+            error::ErrorCode,
+            math::{
+                constants::{
+                    LIQUIDATION_FEE_PRECISION, SPOT_BALANCE_PRECISION, SPOT_BALANCE_PRECISION_U64,
+                    SPOT_CUMULATIVE_INTEREST_PRECISION, SPOT_WEIGHT_PRECISION,
+                },
+                margin::validate_spot_margin_trading,
+            },
+            state::{
+                market_status::MarketStatus,
+                oracle::OracleSource,
+                oracle_map::OracleMap,
+                perp_market::{ContractTier, PerpMarket, AMM},
+                perp_market_map::PerpMarketMap,
+                pyth_lazer_oracle::PythLazerOracle,
+                spot_market::{SpotBalanceType, SpotMarket},
+                spot_market_map::SpotMarketMap,
+                user::{Order, PerpPosition, SpotPosition, User},
+            },
+            test_utils::{get_pyth_price, *},
+            AMM_RESERVE_PRECISION, BASE_PRECISION_I64, PEG_PRECISION, QUOTE_PRECISION_I64,
+        },
+        solana_program::pubkey::Pubkey,
+        std::str::FromStr,
     };
-    use crate::math::margin::validate_spot_margin_trading;
-    use crate::state::oracle::OracleSource;
-    use crate::state::oracle_map::OracleMap;
-    use crate::state::perp_market_map::PerpMarketMap;
-    use crate::state::pyth_lazer_oracle::PythLazerOracle;
-    use crate::state::spot_market::{SpotBalanceType, SpotMarket};
-    use crate::state::spot_market_map::SpotMarketMap;
-    use crate::state::user::{Order, PerpPosition, SpotPosition, User};
-    use crate::test_utils::get_pyth_price;
-    use crate::test_utils::*;
-
-    use crate::state::market_status::MarketStatus;
-    use crate::state::perp_market::{ContractTier, PerpMarket, AMM};
-    use crate::{AMM_RESERVE_PRECISION, BASE_PRECISION_I64, PEG_PRECISION, QUOTE_PRECISION_I64};
 
     #[test]
     pub fn sol_ask_larger_than_deposit() {
@@ -3969,32 +4000,32 @@ mod validate_spot_margin_trading {
 
 #[cfg(test)]
 mod calculate_user_equity {
-    use std::str::FromStr;
-
-    use solana_program::pubkey::Pubkey;
-
-    use crate::math::constants::{
-        SPOT_BALANCE_PRECISION, SPOT_BALANCE_PRECISION_U64, SPOT_CUMULATIVE_INTEREST_PRECISION,
-        SPOT_WEIGHT_PRECISION,
-    };
-    use crate::math::margin::calculate_user_equity;
-    use crate::state::oracle::{HistoricalOracleData, OracleSource};
-    use crate::state::oracle_map::OracleMap;
-
-    use crate::state::perp_market::{MarketStats, PerpMarket, AMM};
-    use crate::state::perp_market_map::PerpMarketMap;
-    use crate::state::pyth_lazer_oracle::PythLazerOracle;
-    use crate::state::spot_market::{SpotBalanceType, SpotMarket};
-    use crate::state::spot_market_map::SpotMarketMap;
-    use crate::state::user::{Order, PerpPosition, SpotPosition, User};
-    use crate::test_utils::get_pyth_price;
-    use crate::test_utils::*;
-    use crate::{
-        create_anchor_account_info, MarketStatus, AMM_RESERVE_PRECISION, PEG_PRECISION,
-        PRICE_PRECISION,
-    };
-    use crate::{
-        BASE_PRECISION_I64, LIQUIDATION_FEE_PRECISION, PRICE_PRECISION_I64, QUOTE_PRECISION_I64,
+    use {
+        crate::{
+            create_anchor_account_info,
+            math::{
+                constants::{
+                    SPOT_BALANCE_PRECISION, SPOT_BALANCE_PRECISION_U64,
+                    SPOT_CUMULATIVE_INTEREST_PRECISION, SPOT_WEIGHT_PRECISION,
+                },
+                margin::calculate_user_equity,
+            },
+            state::{
+                oracle::{HistoricalOracleData, OracleSource},
+                oracle_map::OracleMap,
+                perp_market::{MarketStats, PerpMarket, AMM},
+                perp_market_map::PerpMarketMap,
+                pyth_lazer_oracle::PythLazerOracle,
+                spot_market::{SpotBalanceType, SpotMarket},
+                spot_market_map::SpotMarketMap,
+                user::{Order, PerpPosition, SpotPosition, User},
+            },
+            test_utils::{get_pyth_price, *},
+            MarketStatus, AMM_RESERVE_PRECISION, BASE_PRECISION_I64, LIQUIDATION_FEE_PRECISION,
+            PEG_PRECISION, PRICE_PRECISION, PRICE_PRECISION_I64, QUOTE_PRECISION_I64,
+        },
+        solana_program::pubkey::Pubkey,
+        std::str::FromStr,
     };
 
     #[test]
@@ -4276,30 +4307,37 @@ mod calculate_user_equity {
 
 #[cfg(test)]
 mod pools {
-    use std::str::FromStr;
-
-    use solana_program::pubkey::Pubkey;
-
-    use crate::create_anchor_account_info;
-    use crate::error::ErrorCode;
-    use crate::math::constants::{
-        BASE_PRECISION_I64, SPOT_BALANCE_PRECISION, SPOT_BALANCE_PRECISION_U64,
-        SPOT_CUMULATIVE_INTEREST_PRECISION, SPOT_WEIGHT_PRECISION,
+    use {
+        crate::{
+            create_anchor_account_info,
+            error::ErrorCode,
+            math::{
+                constants::{
+                    BASE_PRECISION_I64, SPOT_BALANCE_PRECISION, SPOT_BALANCE_PRECISION_U64,
+                    SPOT_CUMULATIVE_INTEREST_PRECISION, SPOT_WEIGHT_PRECISION,
+                },
+                margin::{
+                    calculate_margin_requirement_and_total_collateral_and_liability_info,
+                    MarginRequirementType,
+                },
+            },
+            state::{
+                margin_calculation::MarginContext,
+                market_status::MarketStatus,
+                oracle::{HistoricalOracleData, OracleSource},
+                oracle_map::OracleMap,
+                perp_market::{PerpMarket, AMM},
+                perp_market_map::PerpMarketMap,
+                pyth_lazer_oracle::PythLazerOracle,
+                spot_market::{SpotBalanceType, SpotMarket},
+                spot_market_map::SpotMarketMap,
+                user::{PerpPosition, SpotPosition, User},
+            },
+            test_utils::{get_positions, get_pyth_price},
+        },
+        solana_program::pubkey::Pubkey,
+        std::str::FromStr,
     };
-    use crate::math::margin::{
-        calculate_margin_requirement_and_total_collateral_and_liability_info, MarginRequirementType,
-    };
-    use crate::state::margin_calculation::MarginContext;
-    use crate::state::market_status::MarketStatus;
-    use crate::state::oracle::{HistoricalOracleData, OracleSource};
-    use crate::state::oracle_map::OracleMap;
-    use crate::state::perp_market::{PerpMarket, AMM};
-    use crate::state::perp_market_map::PerpMarketMap;
-    use crate::state::pyth_lazer_oracle::PythLazerOracle;
-    use crate::state::spot_market::{SpotBalanceType, SpotMarket};
-    use crate::state::spot_market_map::SpotMarketMap;
-    use crate::state::user::{PerpPosition, SpotPosition, User};
-    use crate::test_utils::{get_positions, get_pyth_price};
 
     #[test]
     pub fn spot() {
@@ -4412,30 +4450,38 @@ mod pools {
 
 #[cfg(test)]
 mod isolated_position {
-    use std::str::FromStr;
-
-    use solana_program::pubkey::Pubkey;
-
-    use crate::math::constants::{
-        AMM_RESERVE_PRECISION, BASE_PRECISION_I64, LIQUIDATION_FEE_PRECISION, PEG_PRECISION,
-        SPOT_BALANCE_PRECISION, SPOT_BALANCE_PRECISION_U64, SPOT_CUMULATIVE_INTEREST_PRECISION,
-        SPOT_WEIGHT_PRECISION,
+    use {
+        crate::{
+            create_anchor_account_info,
+            math::{
+                constants::{
+                    AMM_RESERVE_PRECISION, BASE_PRECISION_I64, LIQUIDATION_FEE_PRECISION,
+                    PEG_PRECISION, SPOT_BALANCE_PRECISION, SPOT_BALANCE_PRECISION_U64,
+                    SPOT_CUMULATIVE_INTEREST_PRECISION, SPOT_WEIGHT_PRECISION,
+                },
+                margin::{
+                    calculate_margin_requirement_and_total_collateral_and_liability_info,
+                    MarginRequirementType,
+                },
+            },
+            state::{
+                margin_calculation::MarginContext,
+                market_status::MarketStatus,
+                oracle::{HistoricalOracleData, OracleSource},
+                oracle_map::OracleMap,
+                perp_market::{PerpMarket, AMM},
+                perp_market_map::PerpMarketMap,
+                pyth_lazer_oracle::PythLazerOracle,
+                spot_market::{SpotBalanceType, SpotMarket},
+                spot_market_map::SpotMarketMap,
+                user::{Order, PerpPosition, PositionFlag, SpotPosition, User},
+            },
+            test_utils::{get_positions, get_pyth_price},
+            QUOTE_PRECISION_I64,
+        },
+        solana_program::pubkey::Pubkey,
+        std::str::FromStr,
     };
-    use crate::math::margin::{
-        calculate_margin_requirement_and_total_collateral_and_liability_info, MarginRequirementType,
-    };
-    use crate::state::margin_calculation::MarginContext;
-    use crate::state::market_status::MarketStatus;
-    use crate::state::oracle::{HistoricalOracleData, OracleSource};
-    use crate::state::oracle_map::OracleMap;
-    use crate::state::perp_market::{PerpMarket, AMM};
-    use crate::state::perp_market_map::PerpMarketMap;
-    use crate::state::pyth_lazer_oracle::PythLazerOracle;
-    use crate::state::spot_market::{SpotBalanceType, SpotMarket};
-    use crate::state::spot_market_map::SpotMarketMap;
-    use crate::state::user::{Order, PerpPosition, PositionFlag, SpotPosition, User};
-    use crate::test_utils::{get_positions, get_pyth_price};
-    use crate::{create_anchor_account_info, QUOTE_PRECISION_I64};
 
     #[test]
     pub fn isolated_position_margin_requirement() {
@@ -4600,30 +4646,38 @@ mod isolated_position {
 
 #[cfg(test)]
 mod meets_place_order_margin_requirement_with_isolated {
-    use std::str::FromStr;
-
-    use anchor_lang::prelude::Pubkey;
-
-    use crate::controller::position::PositionDirection;
-    use crate::math::constants::{
-        AMM_RESERVE_PRECISION, BASE_PRECISION_I64, BASE_PRECISION_U64, PEG_PRECISION,
-        SPOT_BALANCE_PRECISION, SPOT_BALANCE_PRECISION_U64, SPOT_CUMULATIVE_INTEREST_PRECISION,
-        SPOT_WEIGHT_PRECISION,
+    use {
+        crate::{
+            controller::position::PositionDirection,
+            create_anchor_account_info,
+            math::{
+                constants::{
+                    AMM_RESERVE_PRECISION, BASE_PRECISION_I64, BASE_PRECISION_U64, PEG_PRECISION,
+                    SPOT_BALANCE_PRECISION, SPOT_BALANCE_PRECISION_U64,
+                    SPOT_CUMULATIVE_INTEREST_PRECISION, SPOT_WEIGHT_PRECISION,
+                },
+                margin::meets_place_order_margin_requirement,
+            },
+            state::{
+                market_status::MarketStatus,
+                oracle::{HistoricalOracleData, OracleSource},
+                oracle_map::OracleMap,
+                perp_market::{PerpMarket, AMM},
+                perp_market_map::PerpMarketMap,
+                pyth_lazer_oracle::PythLazerOracle,
+                spot_market::{SpotBalanceType, SpotMarket},
+                spot_market_map::SpotMarketMap,
+                user::{
+                    MarketType, Order, OrderStatus, OrderType, PerpPosition, PositionFlag,
+                    SpotPosition, User,
+                },
+            },
+            test_utils::get_pyth_price,
+            QUOTE_PRECISION_I64,
+        },
+        anchor_lang::prelude::Pubkey,
+        std::str::FromStr,
     };
-    use crate::math::margin::meets_place_order_margin_requirement;
-    use crate::state::market_status::MarketStatus;
-    use crate::state::oracle::{HistoricalOracleData, OracleSource};
-    use crate::state::oracle_map::OracleMap;
-    use crate::state::perp_market::{PerpMarket, AMM};
-    use crate::state::perp_market_map::PerpMarketMap;
-    use crate::state::pyth_lazer_oracle::PythLazerOracle;
-    use crate::state::spot_market::{SpotBalanceType, SpotMarket};
-    use crate::state::spot_market_map::SpotMarketMap;
-    use crate::state::user::{
-        MarketType, Order, OrderStatus, OrderType, PerpPosition, PositionFlag, SpotPosition, User,
-    };
-    use crate::test_utils::get_pyth_price;
-    use crate::{create_anchor_account_info, QUOTE_PRECISION_I64};
 
     #[test]
     fn cross_order_passes_when_isolated_fails_initial_but_passes_maintenance() {
@@ -6751,29 +6805,38 @@ mod meets_place_order_margin_requirement_with_isolated {
 }
 
 mod fill_perp_order_margin_requirement_with_isolated {
-    use std::str::FromStr;
-
-    use anchor_lang::prelude::Pubkey;
-
-    use crate::math::constants::{
-        AMM_RESERVE_PRECISION, BASE_PRECISION_I64, PEG_PRECISION, SPOT_BALANCE_PRECISION,
-        SPOT_BALANCE_PRECISION_U64, SPOT_CUMULATIVE_INTEREST_PRECISION, SPOT_WEIGHT_PRECISION,
+    use {
+        crate::{
+            create_anchor_account_info,
+            math::{
+                constants::{
+                    AMM_RESERVE_PRECISION, BASE_PRECISION_I64, PEG_PRECISION,
+                    SPOT_BALANCE_PRECISION, SPOT_BALANCE_PRECISION_U64,
+                    SPOT_CUMULATIVE_INTEREST_PRECISION, SPOT_WEIGHT_PRECISION,
+                },
+                margin::{
+                    calculate_margin_requirement_and_total_collateral_and_liability_info,
+                    MarginRequirementType,
+                },
+            },
+            state::{
+                margin_calculation::{MarginContext, MarginTypeConfig},
+                market_status::MarketStatus,
+                oracle::{HistoricalOracleData, OracleSource},
+                oracle_map::OracleMap,
+                perp_market::{PerpMarket, AMM},
+                perp_market_map::PerpMarketMap,
+                pyth_lazer_oracle::PythLazerOracle,
+                spot_market::{SpotBalanceType, SpotMarket},
+                spot_market_map::SpotMarketMap,
+                user::{Order, PerpPosition, PositionFlag, SpotPosition, User},
+            },
+            test_utils::get_pyth_price,
+            QUOTE_PRECISION_I64,
+        },
+        anchor_lang::prelude::Pubkey,
+        std::str::FromStr,
     };
-    use crate::math::margin::{
-        calculate_margin_requirement_and_total_collateral_and_liability_info, MarginRequirementType,
-    };
-    use crate::state::margin_calculation::{MarginContext, MarginTypeConfig};
-    use crate::state::market_status::MarketStatus;
-    use crate::state::oracle::{HistoricalOracleData, OracleSource};
-    use crate::state::oracle_map::OracleMap;
-    use crate::state::perp_market::{PerpMarket, AMM};
-    use crate::state::perp_market_map::PerpMarketMap;
-    use crate::state::pyth_lazer_oracle::PythLazerOracle;
-    use crate::state::spot_market::{SpotBalanceType, SpotMarket};
-    use crate::state::spot_market_map::SpotMarketMap;
-    use crate::state::user::{Order, PerpPosition, PositionFlag, SpotPosition, User};
-    use crate::test_utils::get_pyth_price;
-    use crate::{create_anchor_account_info, QUOTE_PRECISION_I64};
 
     fn with_sol_eth_setup<F, R>(slot: u64, f: F) -> R
     where

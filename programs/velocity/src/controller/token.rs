@@ -1,18 +1,23 @@
-use crate::error::ErrorCode;
-use crate::signer::get_signer_seeds;
-use crate::validate;
-use anchor_lang::prelude::*;
-use anchor_spl::token_2022::spl_token_2022;
-use anchor_spl::token_2022::spl_token_2022::extension::transfer_fee::TransferFeeConfig;
-use anchor_spl::token_2022::spl_token_2022::extension::{
-    BaseStateWithExtensions, StateWithExtensions,
+use {
+    crate::{error::ErrorCode, signer::get_signer_seeds, validate},
+    anchor_lang::prelude::*,
+    anchor_spl::{
+        token_2022::{
+            spl_token_2022,
+            spl_token_2022::{
+                extension::{
+                    transfer_fee::TransferFeeConfig, BaseStateWithExtensions, StateWithExtensions,
+                },
+                state::Mint as MintInner,
+            },
+        },
+        token_interface::{
+            self, Burn, CloseAccount, Mint, MintTo, TokenAccount, TokenInterface, Transfer,
+            TransferChecked,
+        },
+    },
+    std::{iter::Peekable, slice::Iter},
 };
-use anchor_spl::token_2022::spl_token_2022::state::Mint as MintInner;
-use anchor_spl::token_interface::{
-    self, Burn, CloseAccount, Mint, MintTo, TokenAccount, TokenInterface, Transfer, TransferChecked,
-};
-use std::iter::Peekable;
-use std::slice::Iter;
 
 pub fn send_from_program_vault<'info>(
     token_program: &Interface<'info, TokenInterface>,

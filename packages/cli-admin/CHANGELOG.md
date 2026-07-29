@@ -1,5 +1,34 @@
 # @velocity-exchange/admin-cli
 
+## 0.10.0
+
+### Minor Changes
+
+- [#325](https://github.com/velocity-exchange/velocity-v1/pull/325) [`2a73aa7`](https://github.com/velocity-exchange/velocity-v1/commit/2a73aa716aed4f5910893c0ad9012bd598f72844) Thanks [@0xahzam](https://github.com/0xahzam)! - Account extension: new `extend_account` instruction grows a zero-copy account (`User`, `UserStats`, `PerpMarket`, `SpotMarket`, `State`, ...) to the size the deployed program compiles in for its discriminator's type, as the migration crank for a future upgrade that appends fields to an account struct (see `docs/ACCOUNT-EXTENSION.md`). Gated on the new `HotRole.AccountExtension` (cold, warm, or the configured hot key; `StateAccount` gains `hotAccountExtension`, carved from tail padding with the account size unchanged). Grow-only with the target compiled in, payer covers the rent-exempt shortfall, tail zero-filled by the runtime, no-op when already at size; borsh accounts and unknown discriminators are rejected with the new `InvalidAccountExtension` error (6367). A devnet/test-only `extend_account_devnet(new_len)` (compiled out of production mainnet builds, kept by `anchor-test`; same role gate) grows to an arbitrary larger size so the flow can be exercised before a real extension exists. SDK: `VelocityClient.extendAccount`/`getExtendAccountIx` and the devnet variants. Admin CLI: new `extend-account` command, single-account mode plus a `--type <t>` batch crank that scans by discriminator, skips at-size accounts, and supports `--dry-run` and `--batch-size`; assign the role with `auth set-hot-admin accountExtension <pubkey>`.
+
+### Patch Changes
+
+- Updated dependencies [[`2a73aa7`](https://github.com/velocity-exchange/velocity-v1/commit/2a73aa716aed4f5910893c0ad9012bd598f72844), [`6e29daf`](https://github.com/velocity-exchange/velocity-v1/commit/6e29daf0ef781986dbe3bbf79f1c9bd2e25eb646)]:
+  - @velocity-exchange/sdk@0.11.0
+
+## 0.9.1
+
+### Patch Changes
+
+- Updated dependencies [[`63a580e`](https://github.com/velocity-exchange/velocity-v1/commit/63a580ea3c31a21fb8820fe75075d799cc8dc3da), [`2219857`](https://github.com/velocity-exchange/velocity-v1/commit/2219857615aeb4cd11b5ace8a203279797f41c88)]:
+  - @velocity-exchange/sdk@0.10.0
+
+## 0.9.0
+
+### Minor Changes
+
+- [#322](https://github.com/velocity-exchange/velocity-v1/pull/322) [`c16315e`](https://github.com/velocity-exchange/velocity-v1/commit/c16315e594120afdeb10f832c64914da01cbddcb) Thanks [@0xahzam](https://github.com/0xahzam)! - Equity floor buffer: `User.equity_floor_buffer` (carved from the last 8 tail-padding bytes, account size unchanged) adds admin-set headroom above the equity floor. Every risk-increasing gate (order placement/fills, withdrawals, swaps, deposit/position transfers out, trigger activation, floor-transfer to-side) now enforces `total_collateral >= equity_floor + equity_floor_buffer`, while the permissionless breaker still trips at the raw floor — so no permitted action can leave a subaccount trippable; only a passive drawdown through the whole buffer can arm the breaker. `updateUserEquityFloor(user, equityFloor, equityFloorBuffer)` sets both (breaking signature change, on-chain and in `AdminClient`). SDK: `UserAccount.equityFloorBuffer`, `User.isBelowBufferedEquityFloor`/`getBufferedEquityFloor`/`getEquityAboveBufferedFloor`, pure `calculateEquityFloorAutoDelta` and `getEquityFloorLevel` helpers, and a new `EquityFloorManager` that abstracts the per-subaccount mechanics for delegates: aggregate status + levels, haircut-padded `transferQuote`/`planQuoteTransfer`, `getMaxWithdrawable`/`getMaxQuoteTransferable`, and proportional-to-equity `rebalanceFloors` via zero-amount floor moves. `transferDepositByDelegate` `'auto'` now targets `floor + buffer`. Admin CLI: `user set-equity-floor <user> <floor> <buffer>` (breaking), new `user equity-floor-status <authority>` and `user close-positions` closure sweep.
+
+### Patch Changes
+
+- Updated dependencies [[`d142320`](https://github.com/velocity-exchange/velocity-v1/commit/d14232017da7b09be1a71af8c5f6ee889ccac745), [`25da8e1`](https://github.com/velocity-exchange/velocity-v1/commit/25da8e1e39ccbb8310de32dd0da29041f2a93a0c), [`c16315e`](https://github.com/velocity-exchange/velocity-v1/commit/c16315e594120afdeb10f832c64914da01cbddcb), [`e34c623`](https://github.com/velocity-exchange/velocity-v1/commit/e34c6233afa1e04c7a4ff4a3f088405508f85790), [`edfc846`](https://github.com/velocity-exchange/velocity-v1/commit/edfc8469b5b4058f8767f1e48075b384fb809b4f), [`5fac99b`](https://github.com/velocity-exchange/velocity-v1/commit/5fac99bb93343d93c2a58e776fdba888588f89a2), [`5fac99b`](https://github.com/velocity-exchange/velocity-v1/commit/5fac99bb93343d93c2a58e776fdba888588f89a2), [`0ac1f73`](https://github.com/velocity-exchange/velocity-v1/commit/0ac1f730d0bdc5420ae0efd0ec12a1eb017fa542)]:
+  - @velocity-exchange/sdk@0.9.0
+
 ## 0.8.0
 
 ### Minor Changes

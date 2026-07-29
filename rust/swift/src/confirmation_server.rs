@@ -1,17 +1,18 @@
-use std::{borrow::Cow, env, net::SocketAddr};
-
-use axum::{
-    extract::{Query, State},
-    http::Method,
-    routing::get,
-    Router,
+use {
+    axum::{
+        extract::{Query, State},
+        http::Method,
+        routing::get,
+        Router,
+    },
+    axum_prometheus::PrometheusMetricLayer,
+    dotenv::dotenv,
+    futures_util::StreamExt,
+    redis::{AsyncCommands, ScanOptions},
+    serde_json::Value,
+    std::{borrow::Cow, env, net::SocketAddr},
+    tower_http::cors::{Any, CorsLayer},
 };
-use axum_prometheus::PrometheusMetricLayer;
-use dotenv::dotenv;
-use futures_util::StreamExt;
-use redis::{AsyncCommands, ScanOptions};
-use serde_json::Value;
-use tower_http::cors::{Any, CorsLayer};
 
 /// Literal prefix every confirmation key carries in Redis (`swift-hashes::<hash>`).
 const HASH_KEY_PREFIX: &str = "swift-hashes::";
@@ -224,16 +225,16 @@ pub async fn start_server() {
 
 #[cfg(test)]
 mod tests {
-    use std::str::from_utf8;
-
-    use axum::{body::to_bytes, http::StatusCode, response::IntoResponse};
-    use futures_util::FutureExt;
-    use redis::{
-        aio::{ConnectionLike, MultiplexedConnection},
-        RedisFuture,
+    use {
+        super::*,
+        axum::{body::to_bytes, http::StatusCode, response::IntoResponse},
+        futures_util::FutureExt,
+        redis::{
+            aio::{ConnectionLike, MultiplexedConnection},
+            RedisFuture,
+        },
+        std::str::from_utf8,
     };
-
-    use super::*;
 
     /// Mock redis client with broken pipe
     #[derive(Clone)]

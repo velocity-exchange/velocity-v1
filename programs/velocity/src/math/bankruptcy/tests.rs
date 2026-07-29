@@ -1,8 +1,11 @@
-use crate::math::bankruptcy::is_cross_margin_bankrupt;
-use crate::math::bankruptcy::is_isolated_margin_bankrupt;
-use crate::state::spot_market::SpotBalanceType;
-use crate::state::user::{PerpPosition, PositionFlag, SpotPosition, User};
-use crate::test_utils::{get_positions, get_spot_positions};
+use crate::{
+    math::bankruptcy::{is_cross_margin_bankrupt, is_isolated_margin_bankrupt},
+    state::{
+        spot_market::SpotBalanceType,
+        user::{PerpPosition, PositionFlag, SpotPosition, User},
+    },
+    test_utils::{get_positions, get_spot_positions},
+};
 
 #[test]
 fn user_has_position_with_base() {

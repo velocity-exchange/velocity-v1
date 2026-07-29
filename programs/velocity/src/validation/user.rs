@@ -1,9 +1,13 @@
-use crate::error::{ErrorCode, VelocityResult};
-use crate::math::constants::THIRTEEN_DAY;
-use crate::msg;
-use crate::state::spot_market::SpotBalanceType;
-use crate::state::user::{User, UserStats};
-use crate::{validate, State};
+use crate::{
+    error::{ErrorCode, VelocityResult},
+    math::constants::THIRTEEN_DAY,
+    msg,
+    state::{
+        spot_market::SpotBalanceType,
+        user::{User, UserStats},
+    },
+    validate, State,
+};
 
 pub fn validate_user_deletion(
     user: &User,

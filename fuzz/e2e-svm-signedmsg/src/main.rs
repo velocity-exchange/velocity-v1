@@ -32,14 +32,15 @@
 
 #![allow(dead_code)]
 
-use crucible_fuzzer::*;
-use solana_instruction::{AccountMeta, Instruction};
-use solana_keypair::Keypair;
-use solana_pubkey::Pubkey;
-use solana_signer::Signer;
-use std::rc::Rc;
-
-use velocity::state::user::User;
+use {
+    crucible_fuzzer::*,
+    solana_instruction::{AccountMeta, Instruction},
+    solana_keypair::Keypair,
+    solana_pubkey::Pubkey,
+    solana_signer::Signer,
+    std::rc::Rc,
+    velocity::state::user::User,
+};
 
 // Generated types/schemas from the canonical velocity IDL. We only use
 // `register_schemas()`; instruction building goes through `raw_call`.
@@ -242,8 +243,10 @@ mod regr_271_resize {
                 .unwrap();
 
             // SignedMsgUserOrders PDA = [SIGNED_MSG, authority].
-            let (signed_msg_pda, _) =
-                Pubkey::find_program_address(&[SIGNED_MSG_PDA_SEED, authority.as_ref()], &program_id);
+            let (signed_msg_pda, _) = Pubkey::find_program_address(
+                &[SIGNED_MSG_PDA_SEED, authority.as_ref()],
+                &program_id,
+            );
             create_signed_msg_account(&mut ctx, signed_msg_pda, authority, INITIAL_ORDERS);
 
             // User (sub-account 0) with authority = authority and delegate = delegate.
@@ -360,15 +363,22 @@ fn regr_271_replay_resize_authority(fixture: &mut Regr271Resize, #[range(0..1u8)
 //           so the assertion fails, reproducing the bug.
 #[cfg(feature = "regr_271_signed_msg_taker_pause")]
 mod regr_271_pause {
-    use super::*;
-    use anchor_lang::AnchorSerialize;
-    use solana_program_runtime::invoke_context::InvokeContext;
-    use solana_program_runtime::solana_sbpf::declare_builtin_function;
-    use solana_program_runtime::solana_sbpf::memory_region::MemoryMapping;
-    use velocity::controller::position::PositionDirection;
-    use velocity::state::order_params::{OrderParams, PostOnlyParam, SignedMsgOrderParamsMessage};
-    use velocity::state::state::State;
-    use velocity::state::user::{MarketType, OrderType};
+    use {
+        super::*,
+        anchor_lang::AnchorSerialize,
+        solana_program_runtime::{
+            invoke_context::InvokeContext,
+            solana_sbpf::{declare_builtin_function, memory_region::MemoryMapping},
+        },
+        velocity::{
+            controller::position::PositionDirection,
+            state::{
+                order_params::{OrderParams, PostOnlyParam, SignedMsgOrderParamsMessage},
+                state::State,
+                user::{MarketType, OrderType},
+            },
+        },
+    };
 
     // A no-op builtin registered at the native Ed25519 program id. Crucible builds
     // litesvm WITHOUT the `precompiles` feature, so `is_precompile()` returns false
@@ -404,7 +414,11 @@ mod regr_271_pause {
     ///   manual_discriminator[8] || borsh(SignedMsgOrderParamsMessage)
     ///
     /// Returns (envelope, message_size).
-    fn build_envelope(signer_kp: &Keypair, sub_account_id: u16, current_slot: u64) -> (Vec<u8>, u16) {
+    fn build_envelope(
+        signer_kp: &Keypair,
+        sub_account_id: u16,
+        current_slot: u64,
+    ) -> (Vec<u8>, u16) {
         let signer = signer_kp.pubkey();
         // A valid perp taker order with well-formed auction params.
         let order = OrderParams {
@@ -593,14 +607,18 @@ mod regr_271_pause {
 
             // UserStats (authority-scoped) + User (sub 0) with a quote deposit so
             // the margin check has collateral on master's placement path.
-            let (user_stats_pda, _) =
-                Pubkey::find_program_address(&[b"user_stats", authority.pubkey().as_ref()], &program_id);
+            let (user_stats_pda, _) = Pubkey::find_program_address(
+                &[b"user_stats", authority.pubkey().as_ref()],
+                &program_id,
+            );
             let mut user_stats: velocity::state::user::UserStats = bytemuck::Zeroable::zeroed();
             user_stats.authority = anchor_pk(authority.pubkey());
             inject(&mut ctx, user_stats_pda, &mut user_stats);
 
-            let (user_pda, _) =
-                Pubkey::find_program_address(&[b"user", authority.pubkey().as_ref(), &mi0], &program_id);
+            let (user_pda, _) = Pubkey::find_program_address(
+                &[b"user", authority.pubkey().as_ref(), &mi0],
+                &program_id,
+            );
             let mut user = User::default();
             user.authority = anchor_pk(authority.pubkey());
             user.sub_account_id = 0;
@@ -609,7 +627,8 @@ mod regr_271_pause {
             user.spot_positions[0].market_index = 0;
             user.spot_positions[0].scaled_balance =
                 1_000_000 * velocity::math::constants::SPOT_BALANCE_PRECISION as u64;
-            user.spot_positions[0].balance_type = velocity::state::spot_market::SpotBalanceType::Deposit;
+            user.spot_positions[0].balance_type =
+                velocity::state::spot_market::SpotBalanceType::Deposit;
             inject(&mut ctx, user_pda, &mut user);
 
             // SignedMsgUserOrders PDA (8 empty slots) at [SIGNED_MSG, authority].
@@ -691,10 +710,14 @@ mod regr_271_pause {
         vault: Pubkey,
         if_vault: Pubkey,
     ) -> velocity::state::spot_market::SpotMarket {
-        use velocity::math::constants::{SPOT_CUMULATIVE_INTEREST_PRECISION, SPOT_WEIGHT_PRECISION};
-        use velocity::state::market_status::MarketStatus;
-        use velocity::state::oracle::{HistoricalOracleData, OracleSource};
-        use velocity::state::spot_market::SpotMarket;
+        use velocity::{
+            math::constants::{SPOT_CUMULATIVE_INTEREST_PRECISION, SPOT_WEIGHT_PRECISION},
+            state::{
+                market_status::MarketStatus,
+                oracle::{HistoricalOracleData, OracleSource},
+                spot_market::SpotMarket,
+            },
+        };
         let mut m = SpotMarket::default();
         m.pubkey = anchor_pk(pubkey);
         m.oracle = anchor_pk(Pubkey::new_from_array([0u8; 32]));
@@ -719,9 +742,11 @@ mod regr_271_pause {
     }
 
     fn build_perp_market(pubkey: Pubkey) -> velocity::state::perp_market::PerpMarket {
-        use velocity::state::market_status::MarketStatus;
-        use velocity::state::oracle::{HistoricalOracleData, OracleSource};
-        use velocity::state::perp_market::PerpMarket;
+        use velocity::state::{
+            market_status::MarketStatus,
+            oracle::{HistoricalOracleData, OracleSource},
+            perp_market::PerpMarket,
+        };
         let mut m = PerpMarket::default();
         m.pubkey = anchor_pk(pubkey);
         m.oracle = anchor_pk(Pubkey::new_from_array([0u8; 32]));
@@ -746,7 +771,10 @@ mod regr_271_pause {
         fn place_while_paused_reproduces() {
             let mut f = Regr271Pause::setup();
             let code = f.place_while_paused();
-            eprintln!("[SMOKE] place_signed_msg_taker (paused) error_code = {:?}", code);
+            eprintln!(
+                "[SMOKE] place_signed_msg_taker (paused) error_code = {:?}",
+                code
+            );
             // On master this should NOT be ExchangePaused (6024).
         }
     }

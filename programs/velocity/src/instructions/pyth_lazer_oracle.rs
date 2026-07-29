@@ -1,18 +1,23 @@
-use crate::error::ErrorCode;
-use crate::math::casting::Cast;
-use crate::math::safe_math::SafeMath;
-use crate::state::pyth_lazer_oracle::{
-    PythLazerOracle, PYTH_LAZER_MAX_STALENESS_SECONDS, PYTH_LAZER_ORACLE_SEED,
-    PYTH_LAZER_STORAGE_ID,
+use {
+    crate::{
+        error::ErrorCode,
+        math::{casting::Cast, safe_math::SafeMath},
+        state::pyth_lazer_oracle::{
+            PythLazerOracle, PYTH_LAZER_MAX_STALENESS_SECONDS, PYTH_LAZER_ORACLE_SEED,
+            PYTH_LAZER_STORAGE_ID,
+        },
+        validate,
+    },
+    anchor_lang::prelude::*,
+    pyth_lazer::{
+        message::SolanaMessage,
+        payload::{PayloadData, PayloadPropertyValue},
+        price::Price,
+        signature,
+        storage::Storage,
+    },
+    solana_program::sysvar::instructions::load_current_index_checked,
 };
-use crate::validate;
-use anchor_lang::prelude::*;
-use pyth_lazer::message::SolanaMessage;
-use pyth_lazer::payload::{PayloadData, PayloadPropertyValue};
-use pyth_lazer::price::Price;
-use pyth_lazer::signature;
-use pyth_lazer::storage::Storage;
-use solana_program::sysvar::instructions::load_current_index_checked;
 
 pub fn handle_update_pyth_lazer_oracle<'c: 'info, 'info>(
     ctx: Context<'info, UpdatePythLazerOracle>,

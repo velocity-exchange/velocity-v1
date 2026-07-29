@@ -30,24 +30,25 @@
 
 #![allow(dead_code)]
 
-use crucible_fuzzer::*;
-use solana_instruction::{AccountMeta, Instruction};
-use solana_keypair::Keypair;
-use solana_pubkey::Pubkey;
-use solana_signer::Signer;
-use std::rc::Rc;
-
-use anchor_lang::{AnchorSerialize, Discriminator};
-use velocity::math::constants::{
-    AMM_RESERVE_PRECISION, PEG_PRECISION, QUOTE_PRECISION, SPOT_BALANCE_PRECISION,
-    SPOT_CUMULATIVE_INTEREST_PRECISION, SPOT_WEIGHT_PRECISION,
+use {
+    anchor_lang::{AnchorSerialize, Discriminator},
+    crucible_fuzzer::*,
+    solana_instruction::{AccountMeta, Instruction},
+    solana_keypair::Keypair,
+    solana_pubkey::Pubkey,
+    solana_signer::Signer,
+    std::rc::Rc,
+    velocity::{
+        math::constants::{
+            AMM_RESERVE_PRECISION, PEG_PRECISION, QUOTE_PRECISION, SPOT_BALANCE_PRECISION,
+            SPOT_CUMULATIVE_INTEREST_PRECISION, SPOT_WEIGHT_PRECISION,
+        },
+        state::{
+            market_status::MarketStatus, oracle::OracleSource, perp_market::PerpMarket,
+            spot_market::SpotMarket, state::State, user::User,
+        },
+    },
 };
-use velocity::state::market_status::MarketStatus;
-use velocity::state::oracle::OracleSource;
-use velocity::state::perp_market::PerpMarket;
-use velocity::state::spot_market::SpotMarket;
-use velocity::state::state::State;
-use velocity::state::user::User;
 
 // Generated types/schemas from the canonical velocity IDL. We only use
 // `register_schemas()`; instruction building goes through `raw_call`.
@@ -246,12 +247,17 @@ fn build_perp_market(pubkey: Pubkey, quote_spot_index: u16) -> PerpMarket {
 
 #[cfg(feature = "regr_273_revenue_share_subaccount_redirect")]
 mod regr_273 {
-    use super::*;
-    use velocity::state::revenue_share::{
-        BuilderInfo, RevenueShare, RevenueShareEscrow, RevenueShareOrder, RevenueShareOrderBitFlag,
+    use {
+        super::*,
+        velocity::state::{
+            revenue_share::{
+                BuilderInfo, RevenueShare, RevenueShareEscrow, RevenueShareOrder,
+                RevenueShareOrderBitFlag,
+            },
+            spot_market::SpotBalanceType,
+            user::MarketType,
+        },
     };
-    use velocity::state::spot_market::SpotBalanceType;
-    use velocity::state::user::MarketType;
 
     /// Builder fee accrued in the escrow's completed order (tiny; just needs > 0).
     const FEES_ACCRUED: u64 = 5_000;
@@ -525,9 +531,11 @@ fn regr_273_revenue_share_subaccount_redirect(fixture: &mut Regr273, #[range(0..
 
 #[cfg(feature = "regr_256_reused_order_id_stale_builder_fee")]
 mod regr_256 {
-    use super::*;
-    use velocity::state::revenue_share::{
-        BuilderInfo, RevenueShare, RevenueShareEscrow, RevenueShareOrder,
+    use {
+        super::*,
+        velocity::state::revenue_share::{
+            BuilderInfo, RevenueShare, RevenueShareEscrow, RevenueShareOrder,
+        },
     };
 
     #[derive(Clone)]
@@ -812,10 +820,16 @@ use regr_256::Regr256;
 #[cfg(feature = "regr_256_reused_order_id_stale_builder_fee")]
 #[crucible_fuzz]
 fn regr_256_reused_order_id_stale_builder_fee(fixture: &mut Regr256, #[range(0..1u8)] _unused: u8) {
-    use anchor_lang::AnchorSerialize as _;
-    use velocity::controller::position::PositionDirection;
-    use velocity::state::order_params::{OrderParams, PostOnlyParam};
-    use velocity::state::user::{MarketType, OrderType};
+    use {
+        anchor_lang::AnchorSerialize as _,
+        velocity::{
+            controller::position::PositionDirection,
+            state::{
+                order_params::{OrderParams, PostOnlyParam},
+                user::{MarketType, OrderType},
+            },
+        },
+    };
 
     // --- Step 1: place a BUILDER order with an expired `max_ts`. ---
     // `add_builder_order` writes a RevenueShareOrder keyed to next_order_id (=1);

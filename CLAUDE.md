@@ -33,8 +33,8 @@ There is also a **second, separate Cargo workspace** at `rust/` (velocity-rs, ke
 **Solana programs (Rust/Anchor):** use the `program:*` scripts in the root package.json — they encode the correct feature flags so you don't have to remember them.
 
 ```bash
-bun run program:build           # program + IDL/types synced into packages/sdk/src/idl/ (devnet/test flavor)
-bun run program:idl             # IDL/types only, no SBF build — fast path for layout/name changes
+bun run program:build           # program + IDL/types synced into packages/sdk/src/idl/ + vendored fuzz IDLs (devnet/test flavor)
+bun run program:idl             # IDL/types + vendored fuzz IDLs, no SBF build — fast path for layout/name changes
 bun run program:build:devnet    # deployable devnet .so (wraps deploy-scripts/build-devnet.sh)
 bun run program:build:mainnet   # mainnet .so (default features: production gates on, devnet ixs compiled out)
 ```
@@ -139,11 +139,30 @@ cd packages/sdk/ && bun run test:ci      # CI subset
 **Lint/format:**
 
 ```bash
-cargo fmt                        # Rust
+bun run fmt:rust                 # all Rust in the repo (wraps nightly rustfmt — see below)
+bun run fmt:rust:check           # verify without writing (what CI enforces)
 cd packages/sdk/ && bun run prettify:fix  # SDK (TypeScript)
 ```
 
-**Always run `cargo fmt` and `cargo clippy -p velocity` before declaring Rust work complete.** CI runs `cargo fmt -- --check` and `cargo clippy -p velocity` (see `.github/workflows/main.yml`) and will fail the PR otherwise. The equivalent SDK gate is `cd packages/sdk/ && bun run prettify` + `bun run lint`. Do not hand off a change until those commands are clean.
+**Rust formatting requires nightly rustfmt.** The repo's `rustfmt.toml` sets
+`imports_granularity = "One"` / `group_imports = "One"` (all `use` items in a module merged into a
+single `use { ... }` block, solana-labs style), which are nightly-only options — stable `cargo fmt`
+warns and ignores them, so newly added imports stay unmerged and CI's nightly fmt check fails.
+Install once with `rustup toolchain install nightly --component rustfmt` and always format via
+`bun run fmt:rust` (wraps `scripts/fmt-rust.sh`, which covers every Rust codebase in the repo).
+Only formatting uses nightly; builds, clippy, and tests stay on the stable toolchains above. CI pins the exact nightly in `RUST_NIGHTLY_TOOLCHAIN` (`.github/workflows/main.yml`).
+The generated `rust/velocity-rs/crates/src/velocity_idl.rs` and `rust/keep-rs/vendor/` are on the
+rustfmt ignore list (codegen pipes through stable rustfmt; vendored code keeps upstream formatting) —
+keep them stable-formatted.
+
+The style is enforced on every Rust codebase in the repo, including the standalone workspaces the
+two `cargo +nightly fmt` invocations above don't reach: each `fuzz/<crate>/` is fmt-checked by its
+`fuzz-build` CI matrix job (format one locally with
+`cargo +nightly fmt --manifest-path fuzz/<crate>/Cargo.toml --all`), and the non-member
+`rust/velocity-rs/examples/*` crates (which don't resolve under cargo) are checked with raw
+`rustup run <nightly> rustfmt --edition <crate edition>` in the rust-workspace CI job.
+
+**Always run `bun run fmt:rust` and `cargo clippy -p velocity` before declaring Rust work complete.** CI runs the equivalent of `bun run fmt:rust:check` (spread across jobs) and `cargo clippy -p velocity` (see `.github/workflows/main.yml`) and will fail the PR otherwise. The equivalent SDK gate is `cd packages/sdk/ && bun run prettify` + `bun run lint`. Do not hand off a change until those commands are clean.
 
 ## Rust SDK + keeper workspace (`rust/`)
 

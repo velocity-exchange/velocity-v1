@@ -1,9 +1,11 @@
-use anchor_lang::prelude::*;
-use velocity::instructions::optional_accounts::AccountMaps;
-use velocity::state::user::User;
-
-use crate::constraints::{is_user_for_vault, is_vault_for_vault_depositor};
-use crate::{AccountMapProvider, Vault, VaultDepositor, VaultProtocolProvider};
+use {
+    crate::{
+        constraints::{is_user_for_vault, is_vault_for_vault_depositor},
+        AccountMapProvider, Vault, VaultDepositor, VaultProtocolProvider,
+    },
+    anchor_lang::prelude::*,
+    velocity::{instructions::optional_accounts::AccountMaps, state::user::User},
+};
 
 pub fn apply_rebase<'info>(ctx: Context<'info, ApplyRebase<'info>>) -> Result<()> {
     let clock = &Clock::get()?;
@@ -28,7 +30,7 @@ pub fn apply_rebase<'info>(ctx: Context<'info, ApplyRebase<'info>>) -> Result<()
     let vault_equity =
         vault.calculate_equity(&user, &perp_market_map, &spot_market_map, &mut oracle_map)?;
 
-    vault_depositor.apply_rebase(&mut vault, &mut vp, vault_equity)?;
+    vault_depositor.apply_rebase_public(&mut vault, &mut vp, vault_equity)?;
 
     Ok(())
 }

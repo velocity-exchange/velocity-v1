@@ -7,42 +7,44 @@
 //! `#[derive(Accounts)]` structs are shared with non-AMM perp-market admin
 //! instructions and continue to live in `admin.rs`.
 
-use std::convert::TryInto;
-
-use anchor_lang::prelude::*;
-use anchor_lang::Discriminator;
-use anchor_spl::token_interface::{TokenAccount, TokenInterface};
-
-use crate::instructions::optional_accounts::{get_token_mint, load_maps, AccountMaps};
-use crate::instructions::*;
-use crate::{
-    auth::{check_hot, check_warm},
-    controller,
-    controller::spot_balance::execute_transfer_between_pools,
-    error::ErrorCode,
-    load, load_mut,
-    math::{
-        bn,
-        casting::Cast,
-        constants::{
-            AMM_TIMES_PEG_TO_QUOTE_PRECISION_RATIO, MAX_SQRT_K, MAX_UPDATE_K_PRICE_CHANGE,
+use {
+    crate::{
+        auth::{check_hot, check_warm},
+        controller::{self, spot_balance::execute_transfer_between_pools},
+        error::ErrorCode,
+        instructions::{
+            optional_accounts::{get_token_mint, load_maps, AccountMaps},
+            *,
         },
-        helpers::get_proportion_u128,
-        safe_math::SafeMath,
+        load, load_mut,
+        math::{
+            bn,
+            casting::Cast,
+            constants::{
+                AMM_TIMES_PEG_TO_QUOTE_PRECISION_RATIO, MAX_SQRT_K, MAX_UPDATE_K_PRICE_CHANGE,
+            },
+            helpers::get_proportion_u128,
+            safe_math::SafeMath,
+        },
+        msg,
+        state::{
+            events::{TransferFeeAndPnlPoolDirection, TransferFeeAndPnlPoolRecord},
+            oracle::{get_oracle_price, OraclePriceData},
+            perp_market::{PerpMarket, PoolBalance},
+            perp_market_map::MarketSet,
+            spot_market::{SpotBalanceType, SpotMarket},
+            state::{HotRole, State},
+        },
+        validate,
+        validation::perp_market::validate_perp_market,
+        vlp::{
+            amm::math::{amm, cp_curve::get_update_k_result},
+            amm_cache::{AmmCache, CacheInfo, AMM_POSITIONS_CACHE},
+        },
     },
-    msg,
-    state::{
-        events::{TransferFeeAndPnlPoolDirection, TransferFeeAndPnlPoolRecord},
-        oracle::{get_oracle_price, OraclePriceData},
-        perp_market::{PerpMarket, PoolBalance},
-        perp_market_map::MarketSet,
-        spot_market::{SpotBalanceType, SpotMarket},
-        state::{HotRole, State},
-    },
-    validate,
-    validation::perp_market::validate_perp_market,
-    vlp::amm::math::{amm, cp_curve::get_update_k_result},
-    vlp::amm_cache::{AmmCache, CacheInfo, AMM_POSITIONS_CACHE},
+    anchor_lang::{prelude::*, Discriminator},
+    anchor_spl::token_interface::{TokenAccount, TokenInterface},
+    std::convert::TryInto,
 };
 
 pub fn handle_initialize_amm_cache(ctx: Context<InitializeAmmCache>) -> Result<()> {
@@ -1566,12 +1568,15 @@ mod native_auth_tests {
     //! Tests for the pre-Anchor native dispatch authentication on
     //! `handle_update_amm_spread_adjustment_native`. Run under `cargo test`
     //! (default features, no `anchor-test`), so the signer check is compiled in.
-    use super::*;
-    use crate::create_anchor_account_info;
-    use crate::state::perp_market::PerpMarket;
-    use crate::state::state::State;
-    use crate::test_utils::get_anchor_account_bytes;
-    use anchor_lang::prelude::{AccountInfo, Pubkey};
+    use {
+        super::*,
+        crate::{
+            create_anchor_account_info,
+            state::{perp_market::PerpMarket, state::State},
+            test_utils::get_anchor_account_bytes,
+        },
+        anchor_lang::prelude::{AccountInfo, Pubkey},
+    };
 
     fn signer_info<'a>(
         key: &'a Pubkey,

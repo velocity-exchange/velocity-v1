@@ -1,8 +1,14 @@
-use crate::error::VelocityResult;
-use crate::state::events::OrderActionExplanation;
-use crate::state::spot_market::{SpotBalanceType, SpotMarket};
-use crate::PositionDirection;
-use std::cell::Ref;
+use {
+    crate::{
+        error::VelocityResult,
+        state::{
+            events::OrderActionExplanation,
+            spot_market::{SpotBalanceType, SpotMarket},
+        },
+        PositionDirection,
+    },
+    std::cell::Ref,
+};
 
 pub trait SpotFulfillmentParams {
     /// Where or not the taker order is filled externally using another solana program

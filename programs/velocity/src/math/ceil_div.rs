@@ -1,5 +1,7 @@
-use crate::math::bn::{U192, U256};
-use num_traits::{One, Zero};
+use {
+    crate::math::bn::{U192, U256},
+    num_traits::{One, Zero},
+};
 
 pub trait CheckedCeilDiv: Sized {
     /// Perform ceiling division

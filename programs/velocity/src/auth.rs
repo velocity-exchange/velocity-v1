@@ -13,10 +13,13 @@
 //! `Pubkey::default()` in any role field means the role is unassigned and falls
 //! through to warm-or-cold only.
 
-use anchor_lang::prelude::*;
-
-use crate::error::ErrorCode;
-use crate::state::state::{HotRole, State};
+use {
+    crate::{
+        error::ErrorCode,
+        state::state::{HotRole, State},
+    },
+    anchor_lang::prelude::*,
+};
 
 /// Structural authentication for the pre-Anchor native dispatch handlers
 /// (`lib.rs::program_entry`, discriminator `[0xFF; 4]`).

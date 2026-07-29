@@ -4,32 +4,37 @@
 //! quote constituent, bounded by the LP pool's settle cap, and emits an
 //! `LPSettleRecord` per settled market.
 
-use anchor_lang::prelude::*;
-use anchor_spl::token_interface::{TokenAccount, TokenInterface};
-
-use crate::auth::check_hot;
-use crate::controller;
-use crate::controller::orders::validate_market_within_price_band;
-use crate::error::ErrorCode;
-use crate::get_then_update_id;
-use crate::instructions::optional_accounts::{load_maps, AccountMaps};
-use crate::math;
-use crate::math::casting::Cast;
-use crate::math::constants::QUOTE_SPOT_MARKET_INDEX;
-use crate::math::safe_math::SafeMath;
-use crate::math::spot_balance::get_token_amount;
-use crate::signer::get_signer_seeds;
-use crate::state::events::LPSettleRecord;
-use crate::state::paused_operations::{PerpLpOperation, PerpOperation};
-use crate::state::perp_market_map::MarketSet;
-use crate::state::spot_market::{SpotBalanceType, SpotMarket};
-use crate::state::state::{HotRole, State};
-use crate::state::zero_copy::{AccountZeroCopyMut, ZeroCopyLoader};
-use crate::validate;
-use crate::vlp::amm_cache::CacheInfo;
-use crate::vlp::hedge::math::perp_lp_pool_settlement;
-use crate::vlp::hedge::state::{
-    Constituent, LPPool, CONSTITUENT_PDA_SEED, SETTLE_AMM_ORACLE_MAX_DELAY,
+use {
+    crate::{
+        auth::check_hot,
+        controller::{self, orders::validate_market_within_price_band},
+        error::ErrorCode,
+        get_then_update_id,
+        instructions::optional_accounts::{load_maps, AccountMaps},
+        math::{
+            self, casting::Cast, constants::QUOTE_SPOT_MARKET_INDEX, safe_math::SafeMath,
+            spot_balance::get_token_amount,
+        },
+        signer::get_signer_seeds,
+        state::{
+            events::LPSettleRecord,
+            paused_operations::{PerpLpOperation, PerpOperation},
+            perp_market_map::MarketSet,
+            spot_market::{SpotBalanceType, SpotMarket},
+            state::{HotRole, State},
+            zero_copy::{AccountZeroCopyMut, ZeroCopyLoader},
+        },
+        validate,
+        vlp::{
+            amm_cache::CacheInfo,
+            hedge::{
+                math::perp_lp_pool_settlement,
+                state::{Constituent, LPPool, CONSTITUENT_PDA_SEED, SETTLE_AMM_ORACLE_MAX_DELAY},
+            },
+        },
+    },
+    anchor_lang::prelude::*,
+    anchor_spl::token_interface::{TokenAccount, TokenInterface},
 };
 
 pub fn handle_settle_perp_to_lp_pool<'c: 'info, 'info>(

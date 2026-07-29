@@ -5,29 +5,30 @@
 //!   struct for the write-access policy that keeps mutations funneled through
 //!   `AmmContract` / `AmmQuoter` rather than direct field writes.
 
-use anchor_lang::prelude::*;
-
 #[cfg(test)]
 use crate::math::constants::{AMM_RESERVE_PRECISION, MAX_CONCENTRATION_COEFFICIENT};
-use crate::{
-    controller::position::PositionDirection,
-    error::{ErrorCode, VelocityResult},
-    math::{
-        casting::Cast,
-        constants::{
-            BID_ASK_SPREAD_PRECISION_I128, BID_ASK_SPREAD_PRECISION_U128,
-            DEFAULT_REVENUE_SINCE_LAST_FUNDING_SPREAD_RETREAT, PERCENTAGE_PRECISION,
-            PERCENTAGE_PRECISION_I128, PRICE_PRECISION,
+use {
+    crate::{
+        controller::position::PositionDirection,
+        error::{ErrorCode, VelocityResult},
+        math::{
+            casting::Cast,
+            constants::{
+                BID_ASK_SPREAD_PRECISION_I128, BID_ASK_SPREAD_PRECISION_U128,
+                DEFAULT_REVENUE_SINCE_LAST_FUNDING_SPREAD_RETREAT, PERCENTAGE_PRECISION,
+                PERCENTAGE_PRECISION_I128, PRICE_PRECISION,
+            },
+            safe_math::SafeMath,
         },
-        safe_math::SafeMath,
+        msg,
+        state::{
+            oracle::{get_prelaunch_price, OracleSource},
+            perp_market::{MarketStats, PoolBalance},
+            pyth_lazer_oracle::PythLazerOracle,
+        },
+        vlp::amm::math::amm::{self},
     },
-    msg,
-    state::{
-        oracle::{get_prelaunch_price, OracleSource},
-        perp_market::{MarketStats, PoolBalance},
-        pyth_lazer_oracle::PythLazerOracle,
-    },
-    vlp::amm::math::amm::{self},
+    anchor_lang::prelude::*,
 };
 
 /// Constant-product virtual AMM state.
@@ -229,10 +230,10 @@ impl AMM {
         net_user_position: i128,
         market_index: u16,
     ) -> VelocityResult {
-        use crate::error::ErrorCode;
-        use crate::math::constants::MAX_BASE_ASSET_AMOUNT_WITH_AMM;
-        use crate::state::market_status::MarketStatus;
-        use crate::{msg, validate};
+        use crate::{
+            error::ErrorCode, math::constants::MAX_BASE_ASSET_AMOUNT_WITH_AMM, msg,
+            state::market_status::MarketStatus, validate,
+        };
 
         validate!(
             net_user_position == self.base_asset_amount_with_amm,
@@ -344,9 +345,7 @@ impl AMM {
         &self,
         direction: crate::controller::position::PositionDirection,
     ) -> VelocityResult {
-        use crate::controller::position::PositionDirection;
-        use crate::error::ErrorCode;
-        use crate::{msg, validate};
+        use crate::{controller::position::PositionDirection, error::ErrorCode, msg, validate};
 
         if direction == PositionDirection::Long {
             validate!(
@@ -455,8 +454,7 @@ impl AMM {
         &self,
         spot_market: &crate::state::spot_market::SpotMarket,
     ) -> VelocityResult<u128> {
-        use crate::math::spot_balance::get_token_amount;
-        use crate::state::spot_market::SpotBalance;
+        use crate::{math::spot_balance::get_token_amount, state::spot_market::SpotBalance};
         get_token_amount(
             self.fee_pool.balance(),
             spot_market,
@@ -970,8 +968,7 @@ impl AMM {
     /// reserves. Closes the AMM's outstanding inventory (`base_asset_amount_with_amm`)
     /// against the new `sqrt_k`, then writes the new peg and reserve bounds.
     pub fn recenter(&mut self, peg_multiplier: u128, sqrt_k: u128) -> VelocityResult {
-        use crate::math::bn;
-        use crate::vlp::amm::controller::SwapDirection;
+        use crate::{math::bn, vlp::amm::controller::SwapDirection};
         let swap_direction = if self.base_asset_amount_with_amm > 0 {
             SwapDirection::Remove
         } else {

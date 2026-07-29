@@ -52,37 +52,48 @@ fn quote_amm_swap_for_test(
     run_amm_swap_for_test(&mut clone, base_amount, swap_direction)
 }
 
-use crate::bn::U192;
-use crate::create_anchor_account_info;
-use crate::math::constants::{
-    BASE_PRECISION, BASE_PRECISION_I64, PRICE_PRECISION_I64, PRICE_PRECISION_U64,
-    SPOT_CUMULATIVE_INTEREST_PRECISION, SPOT_WEIGHT_PRECISION,
+use {
+    crate::{
+        bn::U192,
+        create_anchor_account_info,
+        math::{
+            constants::{
+                BASE_PRECISION, BASE_PRECISION_I64, PRICE_PRECISION_I64, PRICE_PRECISION_U64,
+                SPOT_CUMULATIVE_INTEREST_PRECISION, SPOT_WEIGHT_PRECISION,
+            },
+            oracle::OracleValidity,
+            position::swap_direction_to_close_position,
+            safe_math::SafeMath,
+            spot_balance::get_token_amount,
+        },
+        state::{
+            oracle::{
+                HistoricalOracleData, MMOraclePriceData, OraclePriceData, OracleSource,
+                PrelaunchOracle,
+            },
+            oracle_map::OracleMap,
+            perp_market::{PerpMarket, AMM},
+            perp_market_map::PerpMarketMap,
+            pyth_lazer_oracle::PythLazerOracle,
+            spot_market::{SpotBalance, SpotMarket},
+            spot_market_map::SpotMarketMap,
+            state::State,
+            user::{PerpPosition, SpotPosition},
+        },
+        test_utils::{create_account_info, get_pyth_price_mantissa},
+        vlp::amm::{
+            controller::update_pool_balances,
+            math::{
+                amm::calculate_market_open_bids_asks,
+                cp_curve::{adjust_k_cost, get_update_k_result},
+                repeg,
+            },
+        },
+    },
+    anchor_lang::prelude::{AccountLoader, Clock},
+    solana_program::pubkey::Pubkey,
+    std::str::FromStr,
 };
-use crate::math::oracle::OracleValidity;
-use crate::math::position::swap_direction_to_close_position;
-use crate::math::safe_math::SafeMath;
-use crate::math::spot_balance::get_token_amount;
-use crate::state::oracle::{HistoricalOracleData, OracleSource};
-use crate::state::oracle::{MMOraclePriceData, OraclePriceData, PrelaunchOracle};
-use crate::state::oracle_map::OracleMap;
-use crate::state::perp_market::{PerpMarket, AMM};
-use crate::state::perp_market_map::PerpMarketMap;
-use crate::state::pyth_lazer_oracle::PythLazerOracle;
-use crate::state::spot_market::SpotBalance;
-use crate::state::spot_market::SpotMarket;
-use crate::state::spot_market_map::SpotMarketMap;
-use crate::state::state::State;
-use crate::state::user::PerpPosition;
-use crate::state::user::SpotPosition;
-use crate::test_utils::create_account_info;
-use crate::test_utils::get_pyth_price_mantissa;
-use crate::vlp::amm::controller::update_pool_balances;
-use crate::vlp::amm::math::amm::calculate_market_open_bids_asks;
-use crate::vlp::amm::math::cp_curve::{adjust_k_cost, get_update_k_result};
-use crate::vlp::amm::math::repeg;
-use anchor_lang::prelude::{AccountLoader, Clock};
-use solana_program::pubkey::Pubkey;
-use std::str::FromStr;
 
 #[test]
 fn amm_pool_balance_liq_fees_example() {

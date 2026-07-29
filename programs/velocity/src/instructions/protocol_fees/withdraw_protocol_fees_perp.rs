@@ -1,28 +1,29 @@
 //! Withdraw a perp market's accrued protocol fees (quote-denominated)
 //! from the quote spot market's vault to the protocol fee recipient's ATA.
 
-use anchor_lang::prelude::*;
-use anchor_spl::{
-    associated_token::AssociatedToken,
-    token_interface::{Mint, TokenAccount, TokenInterface},
-};
-
-use crate::{
-    auth::check_hot,
-    controller,
-    error::ErrorCode,
-    load_mut,
-    math::{
-        casting::Cast, safe_math::SafeMath, spot_balance::get_token_amount,
-        spot_withdraw::validate_spot_market_vault_amount,
+use {
+    crate::{
+        auth::check_hot,
+        controller,
+        error::ErrorCode,
+        load_mut,
+        math::{
+            casting::Cast, safe_math::SafeMath, spot_balance::get_token_amount,
+            spot_withdraw::validate_spot_market_vault_amount,
+        },
+        state::{
+            events::ProtocolFeeWithdrawRecord,
+            perp_market::PerpMarket,
+            spot_market::{SpotBalanceType, SpotMarket},
+            state::{HotRole, State},
+        },
+        validate,
     },
-    state::{
-        events::ProtocolFeeWithdrawRecord,
-        perp_market::PerpMarket,
-        spot_market::{SpotBalanceType, SpotMarket},
-        state::{HotRole, State},
+    anchor_lang::prelude::*,
+    anchor_spl::{
+        associated_token::AssociatedToken,
+        token_interface::{Mint, TokenAccount, TokenInterface},
     },
-    validate,
 };
 
 #[derive(Accounts)]

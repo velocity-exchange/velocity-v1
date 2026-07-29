@@ -1,122 +1,123 @@
-use std::collections::BTreeSet;
-use std::convert::TryFrom;
-use std::ops::DerefMut;
-
-use anchor_lang::prelude::*;
-use anchor_lang::solana_program::system_instruction::transfer;
-use anchor_lang::Discriminator;
-use anchor_spl::associated_token::AssociatedToken;
-use anchor_spl::{
-    token::Token,
-    token_2022::Token2022,
-    token_interface::{TokenAccount, TokenInterface},
+use {
+    crate::{
+        controller::{
+            self,
+            funding::settle_funding_payment,
+            orders::{
+                cancel_orders, validate_spot_dlob_trading_enabled_for_market_type, ModifyOrderId,
+                PlaceOrderResult,
+            },
+            position::{update_position_and_market, PositionDirection},
+            spot_balance::update_revenue_pool_balances,
+            spot_position::{
+                update_spot_balances_and_cumulative_deposits,
+                update_spot_balances_and_cumulative_deposits_with_limits,
+            },
+        },
+        error::ErrorCode,
+        get_then_update_id,
+        ids::{
+            lighthouse, marinade_mainnet, WHITELISTED_EXTERNAL_DEPOSITORS,
+            WHITELISTED_SWAP_PROGRAMS,
+        },
+        instructions::{
+            constraints::*,
+            optional_accounts::{
+                add_builder_order, get_referrer_and_referrer_stats,
+                get_revenue_share_escrow_account, get_whitelist_token, load_maps,
+                validate_and_load_builder, validate_builder_fee, AccountMaps,
+            },
+        },
+        load, load_mut,
+        math::{
+            self,
+            casting::Cast,
+            constants::{
+                EQUITY_FLOOR_SWAP_MAX_VALUE_LOSS_BPS, MAX_BASE_ASSET_AMOUNT_WITH_AMM,
+                ONE_BPS_DENOMINATOR, THIRTEEN_DAY,
+            },
+            liquidation::is_cross_margin_being_liquidated,
+            margin::{
+                calculate_margin_requirement_and_total_collateral_and_liability_info,
+                calculate_max_withdrawable_amount, calculate_net_equity_for_floor,
+                calculate_user_equity, meets_initial_margin_requirement,
+                meets_place_order_margin_requirement, validate_spot_margin_trading,
+                MarginRequirementType,
+            },
+            oracle::{is_oracle_valid_for_action, LogMode, VelocityAction},
+            orders::{
+                calculate_existing_position_fields_for_order_action, get_position_delta_for_fill,
+                is_multiple_of_step_size, standardize_price_i64,
+            },
+            position::calculate_base_asset_value_with_oracle_price,
+            safe_math::SafeMath,
+            spot_balance::get_token_value,
+            spot_swap::{self, calculate_swap_price, validate_price_bands_for_swap},
+        },
+        math_error,
+        optional_accounts::{get_token_interface, get_token_mint},
+        print_error, safe_decrement, safe_increment,
+        state::{
+            events::{
+                emit_stack, DepositDirection, DepositExplanation, DepositRecord, NewUserRecord,
+                OrderAction, OrderActionExplanation, OrderActionRecord, OrderRecord, SwapRecord,
+            },
+            fill_mode::FillMode,
+            margin_calculation::MarginContext,
+            market_status::MarketStatus,
+            oracle::StrictOraclePrice,
+            oracle_map::OracleMap,
+            order_params::{
+                parse_optional_params, ModifyOrderParams, OrderParams,
+                PlaceAndTakeOrderSuccessCondition, PlaceOrderOptions, PostOnlyParam,
+            },
+            paused_operations::{PerpOperation, SpotOperation},
+            perp_market_map::{get_writable_perp_market_set, MarketSet, PerpMarketMap},
+            revenue_share::{
+                BuilderInfo, RevenueShare, RevenueShareEscrow, RevenueShareOrder,
+                REVENUE_SHARE_ESCROW_PDA_SEED, REVENUE_SHARE_PDA_SEED,
+            },
+            scale_order_params::ScaleOrderParams,
+            signed_msg_user::{
+                SignedMsgOrderId, SignedMsgUserOrders, SignedMsgUserOrdersLoader,
+                SignedMsgWsDelegates, SIGNED_MSG_PDA_SEED, SIGNED_MSG_WS_PDA_SEED,
+            },
+            spot_market::{SpotBalanceType, SpotMarket},
+            spot_market_map::{
+                get_writable_spot_market_set, get_writable_spot_market_set_from_many, SpotMarketMap,
+            },
+            state::State,
+            traits::Size,
+            user::{
+                transfer_equity_floor, MarketType, Order, OrderStatus, OrderType, ReferrerName,
+                ReferrerStatus, SpecialUserStatus, User, UserStats,
+            },
+            user_map::load_user_maps,
+        },
+        validate,
+        validation::{
+            position::validate_perp_position_with_perp_market, user::validate_user_deletion,
+            whitelist::validate_whitelist_token,
+        },
+        ExchangeStatus,
+    },
+    anchor_lang::{
+        prelude::{borsh::BorshDeserialize, *},
+        solana_program::system_instruction::transfer,
+        Discriminator,
+    },
+    anchor_spl::{
+        associated_token::AssociatedToken,
+        token::Token,
+        token_2022::Token2022,
+        token_interface::{TokenAccount, TokenInterface},
+    },
+    solana_program::{
+        program::invoke,
+        sysvar::{instructions, instructions::ID as IX_ID},
+    },
+    std::{collections::BTreeSet, convert::TryFrom, ops::DerefMut},
 };
-use solana_program::program::invoke;
-
-use crate::controller::funding::settle_funding_payment;
-use crate::controller::orders::{
-    cancel_orders, validate_spot_dlob_trading_enabled_for_market_type, ModifyOrderId,
-    PlaceOrderResult,
-};
-use crate::controller::position::update_position_and_market;
-use crate::controller::position::PositionDirection;
-use crate::controller::spot_balance::update_revenue_pool_balances;
-use crate::controller::spot_position::{
-    update_spot_balances_and_cumulative_deposits,
-    update_spot_balances_and_cumulative_deposits_with_limits,
-};
-use crate::error::ErrorCode;
-use crate::get_then_update_id;
-use crate::ids::{
-    lighthouse, marinade_mainnet, WHITELISTED_EXTERNAL_DEPOSITORS, WHITELISTED_SWAP_PROGRAMS,
-};
-use crate::instructions::constraints::*;
-use crate::instructions::optional_accounts::get_revenue_share_escrow_account;
-use crate::instructions::optional_accounts::{
-    add_builder_order, get_referrer_and_referrer_stats, get_whitelist_token, load_maps,
-    validate_and_load_builder, validate_builder_fee, AccountMaps,
-};
-use crate::load;
-use crate::math::casting::Cast;
-use crate::math::constants::{MAX_BASE_ASSET_AMOUNT_WITH_AMM, THIRTEEN_DAY};
-use crate::math::liquidation::is_cross_margin_being_liquidated;
-use crate::math::margin::calculate_margin_requirement_and_total_collateral_and_liability_info;
-use crate::math::margin::meets_initial_margin_requirement;
-use crate::math::margin::meets_place_order_margin_requirement;
-use crate::math::margin::{
-    calculate_max_withdrawable_amount, validate_spot_margin_trading, MarginRequirementType,
-};
-use crate::math::oracle::is_oracle_valid_for_action;
-use crate::math::oracle::LogMode;
-use crate::math::oracle::VelocityAction;
-use crate::math::orders::calculate_existing_position_fields_for_order_action;
-use crate::math::orders::get_position_delta_for_fill;
-use crate::math::orders::is_multiple_of_step_size;
-use crate::math::orders::standardize_price_i64;
-use crate::math::position::calculate_base_asset_value_with_oracle_price;
-use crate::math::safe_math::SafeMath;
-use crate::math::spot_balance::get_token_value;
-use crate::math::spot_swap;
-use crate::math::spot_swap::{calculate_swap_price, validate_price_bands_for_swap};
-use crate::math_error;
-use crate::optional_accounts::{get_token_interface, get_token_mint};
-use crate::print_error;
-use crate::safe_decrement;
-use crate::safe_increment;
-use crate::state::events::emit_stack;
-use crate::state::events::OrderAction;
-use crate::state::events::OrderActionRecord;
-use crate::state::events::OrderRecord;
-use crate::state::events::{
-    DepositDirection, DepositExplanation, DepositRecord, NewUserRecord, OrderActionExplanation,
-    SwapRecord,
-};
-use crate::state::fill_mode::FillMode;
-use crate::state::margin_calculation::MarginContext;
-use crate::state::market_status::MarketStatus;
-use crate::state::oracle::StrictOraclePrice;
-use crate::state::oracle_map::OracleMap;
-use crate::state::order_params::{
-    parse_optional_params, ModifyOrderParams, OrderParams, PlaceAndTakeOrderSuccessCondition,
-    PlaceOrderOptions, PostOnlyParam,
-};
-use crate::state::paused_operations::{PerpOperation, SpotOperation};
-use crate::state::perp_market_map::{get_writable_perp_market_set, MarketSet, PerpMarketMap};
-use crate::state::revenue_share::BuilderInfo;
-use crate::state::revenue_share::RevenueShare;
-use crate::state::revenue_share::RevenueShareEscrow;
-use crate::state::revenue_share::RevenueShareOrder;
-use crate::state::revenue_share::REVENUE_SHARE_ESCROW_PDA_SEED;
-use crate::state::revenue_share::REVENUE_SHARE_PDA_SEED;
-use crate::state::scale_order_params::ScaleOrderParams;
-use crate::state::signed_msg_user::SignedMsgOrderId;
-use crate::state::signed_msg_user::SignedMsgUserOrdersLoader;
-use crate::state::signed_msg_user::SignedMsgWsDelegates;
-use crate::state::signed_msg_user::SIGNED_MSG_WS_PDA_SEED;
-use crate::state::signed_msg_user::{SignedMsgUserOrders, SIGNED_MSG_PDA_SEED};
-use crate::state::spot_market::SpotBalanceType;
-use crate::state::spot_market::SpotMarket;
-use crate::state::spot_market_map::{
-    get_writable_spot_market_set, get_writable_spot_market_set_from_many, SpotMarketMap,
-};
-use crate::state::state::State;
-use crate::state::traits::Size;
-use crate::state::user::OrderStatus;
-use crate::state::user::ReferrerStatus;
-use crate::state::user::{
-    transfer_equity_floor, MarketType, OrderType, ReferrerName, User, UserStats,
-};
-use crate::state::user::{Order, SpecialUserStatus};
-use crate::state::user_map::load_user_maps;
-use crate::validate;
-use crate::validation::position::validate_perp_position_with_perp_market;
-use crate::validation::user::validate_user_deletion;
-use crate::validation::whitelist::validate_whitelist_token;
-use crate::{controller, math};
-use crate::{load_mut, ExchangeStatus};
-use anchor_lang::prelude::borsh::BorshDeserialize;
-use solana_program::sysvar::instructions;
-use solana_program::sysvar::instructions::ID as IX_ID;
 
 pub fn handle_initialize_user<'c: 'info, 'info>(
     ctx: Context<'info, InitializeUser<'info>>,
@@ -988,21 +989,20 @@ pub fn handle_transfer_deposit_by_delegate<'c: 'info, 'info>(
         // against the reduced floor after the funds move. Deliberately checks
         // the raw floor, not floor + buffer: its only job is trip defusal, and
         // a subaccount inside the buffer band (at/above floor) may still
-        // rebalance floor away.
-        let from_user_margin_calculation =
-            calculate_margin_requirement_and_total_collateral_and_liability_info(
-                from_user,
-                &perp_market_map,
-                &spot_market_map,
-                &mut oracle_map,
-                MarginContext::standard(MarginRequirementType::Initial).strict(true),
-            )?;
+        // rebalance floor away. Measured as net equity, matching the breaker
+        // trip threshold.
+        let (from_user_net_equity, _) = calculate_user_equity(
+            from_user,
+            &perp_market_map,
+            &spot_market_map,
+            &mut oracle_map,
+        )?;
 
         validate!(
-            !from_user.is_below_equity_floor(from_user_margin_calculation.total_collateral),
+            !from_user.is_below_equity_floor(from_user_net_equity),
             ErrorCode::InvalidEquityFloorTransfer,
-            "from_user total collateral {} is below equity floor {}; cannot reduce floor while breached",
-            from_user_margin_calculation.total_collateral,
+            "from_user net equity {} is below equity floor {}; cannot reduce floor while breached",
+            from_user_net_equity,
             from_user.equity_floor
         )?;
 
@@ -1027,20 +1027,14 @@ pub fn handle_transfer_deposit_by_delegate<'c: 'info, 'info>(
     )?;
 
     if equity_floor_delta > 0 {
-        let to_user_margin_calculation =
-            calculate_margin_requirement_and_total_collateral_and_liability_info(
-                to_user,
-                &perp_market_map,
-                &spot_market_map,
-                &mut oracle_map,
-                MarginContext::standard(MarginRequirementType::Initial).strict(true),
-            )?;
+        let (to_user_net_equity, _) =
+            calculate_user_equity(to_user, &perp_market_map, &spot_market_map, &mut oracle_map)?;
 
         validate!(
-            !to_user.is_below_buffered_equity_floor(to_user_margin_calculation.total_collateral),
+            !to_user.is_below_buffered_equity_floor(to_user_net_equity),
             ErrorCode::InvalidEquityFloorTransfer,
-            "to_user total collateral {} does not back new equity floor {} + buffer {}",
-            to_user_margin_calculation.total_collateral,
+            "to_user net equity {} does not back new equity floor {} + buffer {}",
+            to_user_net_equity,
             to_user.equity_floor,
             to_user.equity_floor_buffer
         )?;
@@ -1774,6 +1768,7 @@ pub fn handle_transfer_pools<'c: 'info, 'info>(
         &spot_market_map,
         &mut oracle_map,
         MarginRequirementType::Initial,
+        false,
     )?;
 
     to_user.meets_withdraw_margin_requirement_swap(
@@ -1781,6 +1776,7 @@ pub fn handle_transfer_pools<'c: 'info, 'info>(
         &spot_market_map,
         &mut oracle_map,
         MarginRequirementType::Initial,
+        false,
     )?;
 
     validate_spot_margin_trading(
@@ -2008,6 +2004,20 @@ pub fn handle_transfer_perp_position<'c: 'info, 'info>(
             "perp market fills paused"
         )?;
 
+        // Reject transfers once the market is expired / in settlement. The
+        // transfer prices its deltas at the LIVE oracle below, but expired
+        // positions settle at the market's fixed `expiry_price`; permitting a
+        // post-expiry transfer lets an authority split a live-oracle gain from
+        // the matching fixed-expiry loss across two of its own subaccounts,
+        // leaving the source a positive zero-base quote claim while the
+        // destination settles the base lower (OtterSec #87). Mirrors the
+        // settlement gate the place/fill/trigger paths enforce.
+        validate!(
+            !perp_market.is_in_settlement(now),
+            ErrorCode::InvalidTransferPerpPosition,
+            "market is in settlement mode"
+        )?;
+
         oracle_price = oracle_price_data.price;
     }
 
@@ -2131,14 +2141,21 @@ pub fn handle_transfer_perp_position<'c: 'info, 'info>(
         "from user margin requirement is greater than total collateral"
     )?;
 
-    validate!(
-        !from_user.is_below_buffered_equity_floor(from_user_margin_calculation.total_collateral),
-        ErrorCode::EquityBelowFloor,
-        "from user total collateral {} below equity floor {} + buffer {}",
-        from_user_margin_calculation.total_collateral,
-        from_user.equity_floor,
-        from_user.equity_floor_buffer
-    )?;
+    if let Some(from_user_net_equity) = calculate_net_equity_for_floor(
+        from_user,
+        &perp_market_map,
+        &spot_market_map,
+        &mut oracle_map,
+    )? {
+        validate!(
+            !from_user.is_below_buffered_equity_floor(from_user_net_equity),
+            ErrorCode::EquityBelowFloor,
+            "from user net equity {} below equity floor {} + buffer {}",
+            from_user_net_equity,
+            from_user.equity_floor,
+            from_user.equity_floor_buffer
+        )?;
+    }
 
     let to_user_margin_context = MarginContext::standard(MarginRequirementType::Initial);
 
@@ -2161,14 +2178,21 @@ pub fn handle_transfer_perp_position<'c: 'info, 'info>(
     // or above its own admin-set equity floor (mirrors the from-side check
     // above). A recipient that passes initial margin can still land below its
     // warm-admin floor, which would otherwise leave the floor unenforced.
-    validate!(
-        !to_user.is_below_buffered_equity_floor(to_user_margin_requirement.total_collateral),
-        ErrorCode::EquityBelowFloor,
-        "to user total collateral {} below equity floor {} + buffer {}",
-        to_user_margin_requirement.total_collateral,
-        to_user.equity_floor,
-        to_user.equity_floor_buffer
-    )?;
+    if let Some(to_user_net_equity) = calculate_net_equity_for_floor(
+        to_user,
+        &perp_market_map,
+        &spot_market_map,
+        &mut oracle_map,
+    )? {
+        validate!(
+            !to_user.is_below_buffered_equity_floor(to_user_net_equity),
+            ErrorCode::EquityBelowFloor,
+            "to user net equity {} below equity floor {} + buffer {}",
+            to_user_net_equity,
+            to_user.equity_floor,
+            to_user.equity_floor_buffer
+        )?;
+    }
 
     let mut perp_market = perp_market_map.get_ref_mut(&market_index)?;
     let oi_after = perp_market.get_open_interest();
@@ -3476,6 +3500,19 @@ pub fn handle_update_user_advanced_lp(
     Ok(())
 }
 
+pub fn handle_update_user_vault_owned(
+    ctx: Context<UpdateUser>,
+    _sub_account_id: u16,
+) -> Result<()> {
+    let mut user = load_mut!(ctx.accounts.user)?;
+
+    // Set-only: a vault-owned User must never be un-flagged, or the
+    // revenue-share sweep would resume crediting it and re-open the NAV-capture
+    // vectors (OtterSec #91/#92/#93). Idempotent — re-marking is a no-op.
+    user.add_user_status(crate::state::user::UserStatus::VaultOwned);
+    Ok(())
+}
+
 pub fn handle_delete_user(ctx: Context<DeleteUser>) -> Result<()> {
     let user = &load!(ctx.accounts.user)?;
     let user_stats = &mut load_mut!(ctx.accounts.user_stats)?;
@@ -3799,9 +3836,8 @@ pub fn handle_begin_swap<'c: 'info, 'info>(
     )?;
 
     // The only other velocity program allowed is SwapEnd
-    let mut index = current_index + 1;
     let mut found_end = false;
-    loop {
+    for index in current_index + 1.. {
         let ix = match instructions::load_instruction_at_checked(index, ixs) {
             Ok(ix) => ix,
             Err(ProgramError::InvalidArgument) => break,
@@ -3921,8 +3957,6 @@ pub fn handle_begin_swap<'c: 'info, 'info>(
                 )?;
             }
         }
-
-        index += 1;
     }
 
     validate!(
@@ -3976,17 +4010,6 @@ pub fn handle_end_swap<'c: 'info, 'info>(
     let mut user = load_mut!(&ctx.accounts.user)?;
 
     let mut user_stats = load_mut!(&ctx.accounts.user_stats)?;
-
-    // A generic spot swap can book new borrow/deposit balances (risk-increasing)
-    // from any of the authority's subaccounts, so it must respect the
-    // authority-wide equity breaker just like withdrawals and transfers out.
-    // The per-subaccount floor is enforced separately in
-    // `meets_withdraw_margin_requirement_swap`.
-    validate!(
-        !user_stats.is_equity_breaker_tripped(),
-        ErrorCode::EquityBelowFloor,
-        "equity floor breaker is tripped for this authority"
-    )?;
 
     let exchange_status = state.get_exchange_status()?;
 
@@ -4248,6 +4271,51 @@ pub fn handle_end_swap<'c: 'info, 'info>(
         )?;
     }
 
+    // Equity-floor gating. A strictly reducing swap (consumes an existing
+    // deposit, repays an existing borrow) stays allowed while the
+    // authority-wide breaker is tripped or the subaccount is below its floor,
+    // so a frozen account can still deleverage instead of being forced into a
+    // liquidation loss. Anything else must respect the breaker like
+    // withdrawals and transfers out; the per-subaccount floor is enforced in
+    // `meets_withdraw_margin_requirement_swap` below.
+    let strictly_reducing = in_position_is_reduced && out_position_is_reduced;
+
+    if user_stats.is_equity_breaker_tripped() {
+        validate!(
+            strictly_reducing,
+            ErrorCode::EquityBelowFloor,
+            "equity floor breaker is tripped for this authority; only a swap consuming an existing deposit to repay an existing borrow is allowed"
+        )?;
+    }
+
+    // While under floor protection, bound the exempted swap's value loss at
+    // oracle so a "reducing" swap cannot leak value through a bad route.
+    if strictly_reducing && (user_stats.is_equity_breaker_tripped() || user.equity_floor > 0) {
+        let in_value =
+            get_token_value(amount_in.cast()?, in_spot_market.decimals, in_oracle_price)?;
+        let out_value = get_token_value(
+            amount_out.cast()?,
+            out_spot_market.decimals,
+            out_oracle_price,
+        )?;
+
+        let min_out_value = in_value
+            .safe_mul(
+                (ONE_BPS_DENOMINATOR as i128)
+                    .safe_sub(EQUITY_FLOOR_SWAP_MAX_VALUE_LOSS_BPS.cast()?)?,
+            )?
+            .safe_div(ONE_BPS_DENOMINATOR as i128)?;
+
+        validate!(
+            out_value >= min_out_value,
+            ErrorCode::InvalidSwap,
+            "swap under equity floor protection: out value {} below min {} (in value {})",
+            out_value,
+            min_out_value,
+            in_value
+        )?;
+    }
+
     math::spot_withdraw::validate_spot_market_vault_amount(&out_spot_market, out_vault.amount)?;
 
     out_spot_market.flash_loan_initial_token_amount = 0;
@@ -4291,6 +4359,7 @@ pub fn handle_end_swap<'c: 'info, 'info>(
         &spot_market_map,
         &mut oracle_map,
         margin_type,
+        strictly_reducing,
     )?;
 
     user.update_last_active_slot(slot);

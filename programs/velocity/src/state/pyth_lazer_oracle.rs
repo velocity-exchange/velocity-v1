@@ -1,6 +1,4 @@
-use crate::state::traits::Size;
-use anchor_lang::prelude::*;
-use solana_program::pubkey;
+use {crate::state::traits::Size, anchor_lang::prelude::*, solana_program::pubkey};
 
 pub const PYTH_LAZER_ORACLE_SEED: &[u8] = b"pyth_lazer";
 pub const PYTH_LAZER_STORAGE_ID: Pubkey = pubkey!("3rdJbqfnagQ4yx9HXJViD4zc4xpiSqmFsKpPuSCQVyQL");

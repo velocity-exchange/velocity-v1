@@ -67,8 +67,8 @@
 		"typecheck": "turbo run typecheck",
 		"changeset": "changeset",
 		"version-packages": "changeset version",
-		"bench:native-cu": "RUST_LOG=error ts-mocha -t 1000000 ./tests/nativeCuBench.ts",
-		"program:sync-idl": "cp target/idl/velocity.json packages/sdk/src/idl/velocity.json && cp target/types/velocity.ts packages/sdk/src/idl/velocity.ts",
+		"bench:native-cu": "RUST_LOG=error ts-mocha -t 1000000 ./tests/velocity/nativeCuBench.ts",
+		"program:sync-idl": "cp target/idl/velocity.json packages/sdk/src/idl/velocity.json && cp target/types/velocity.ts packages/sdk/src/idl/velocity.ts && bash fuzz/sync-idls.sh",
 		"program:build": "anchor build --skip-lint --ignore-keys -- --no-default-features --features no-entrypoint,anchor-test && bun run program:sync-idl",
 		"program:build:devnet": "bash deploy-scripts/build-devnet.sh",
 		"program:build:mainnet": "anchor build --skip-lint",
@@ -76,10 +76,12 @@
 		"test:clob": "bun run program:build:clob && cd anchor-v2 && cargo test -p clob",
 		"test:integration": "cd integration-tests && cargo test",
 		"test:integration:full": "bun run program:build && bun run program:build:clob && cd integration-tests && cargo test",
-		"program:idl": "anchor idl build --skip-lint -p velocity -o target/idl/velocity.json -- --no-default-features --features no-entrypoint,anchor-test && cp target/idl/velocity.json packages/sdk/src/idl/velocity.json && anchor idl type packages/sdk/src/idl/velocity.json --out packages/sdk/src/idl/velocity.ts",
+		"program:idl": "anchor idl build --skip-lint -p velocity -o target/idl/velocity.json -- --no-default-features --features no-entrypoint,anchor-test && cp target/idl/velocity.json packages/sdk/src/idl/velocity.json && anchor idl type packages/sdk/src/idl/velocity.json --out packages/sdk/src/idl/velocity.ts && bash fuzz/sync-idls.sh",
 		"program:idl:vaults": "anchor idl build --skip-lint -p vaults -o packages/vaults-sdk/src/idl/vaults.json && anchor idl type packages/vaults-sdk/src/idl/vaults.json --out packages/vaults-sdk/src/types/vaults.ts && bun run prettify:fix",
 		"program:idl:jit-proxy": "anchor idl build --skip-lint -p jit-proxy -o packages/jit-proxy/src/idl/jit_proxy.json && anchor idl type packages/jit-proxy/src/idl/jit_proxy.json --out packages/jit-proxy/src/types/jit_proxy.ts && bun run prettify:fix",
-		"rust:build": "cargo build --locked --manifest-path rust/Cargo.toml"
+		"rust:build": "cargo build --locked --manifest-path rust/Cargo.toml",
+		"fmt:rust": "bash scripts/fmt-rust.sh",
+		"fmt:rust:check": "bash scripts/fmt-rust.sh --check"
 	},
 	"workspaces": [
 		"packages/*",

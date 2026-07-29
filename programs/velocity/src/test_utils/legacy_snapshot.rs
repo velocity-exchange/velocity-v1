@@ -14,12 +14,16 @@
 //! committed pre-refactor layout the snapshots were generated against).
 #![allow(dead_code)]
 #![cfg(test)]
-use crate::state::market_status::MarketStatus;
-use crate::state::oracle::{HistoricalIndexData, HistoricalOracleData, OracleSource};
-use crate::state::perp_market::{InsuranceClaim, MarketStats, PerpMarket, PoolBalance, AMM};
-use crate::state::spot_market::{AssetTier, InsuranceFund, SpotMarket};
-use crate::state::traits::Size;
-use anchor_lang::prelude::Pubkey;
+use {
+    crate::state::{
+        market_status::MarketStatus,
+        oracle::{HistoricalIndexData, HistoricalOracleData, OracleSource},
+        perp_market::{InsuranceClaim, MarketStats, PerpMarket, PoolBalance, AMM},
+        spot_market::{AssetTier, InsuranceFund, SpotMarket},
+        traits::Size,
+    },
+    anchor_lang::prelude::Pubkey,
+};
 
 // ---- Legacy AMM (pre-decoupling) layout ----------------------------------
 //

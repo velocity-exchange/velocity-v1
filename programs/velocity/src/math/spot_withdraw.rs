@@ -1,15 +1,16 @@
-use crate::msg;
-
-use crate::error::{ErrorCode, VelocityResult};
-use crate::math::casting::Cast;
-use crate::math::safe_math::SafeMath;
-
-use crate::math::spot_balance::get_token_amount;
-use crate::state::spot_market::{SpotBalance, SpotBalanceType, SpotMarket};
-use crate::state::user::User;
-use crate::validate;
-
-use super::constants::{BPS_PRECISION, SPOT_UTILIZATION_PRECISION};
+use {
+    super::constants::{BPS_PRECISION, SPOT_UTILIZATION_PRECISION},
+    crate::{
+        error::{ErrorCode, VelocityResult},
+        math::{casting::Cast, safe_math::SafeMath, spot_balance::get_token_amount},
+        msg,
+        state::{
+            spot_market::{SpotBalance, SpotBalanceType, SpotMarket},
+            user::User,
+        },
+        validate,
+    },
+};
 
 /// Default withdraw circuit-breaker size when a market has not configured one
 /// (i.e. `withdraw_circuit_breaker_bps == 0`): 25% of the 24h deposit TWAP.
@@ -453,8 +454,7 @@ pub fn validate_spot_market_vault_amount(
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-    use crate::math::constants::QUOTE_PRECISION;
+    use {super::*, crate::math::constants::QUOTE_PRECISION};
 
     #[test]
     fn min_deposit_zero_pct_defaults_to_25_percent() {

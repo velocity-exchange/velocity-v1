@@ -1,11 +1,13 @@
 mod size {
-    use crate::state::events::OrderActionRecord;
-    use crate::state::insurance_fund_stake::InsuranceFundStake;
-    use crate::state::perp_market::PerpMarket;
-    use crate::state::spot_market::SpotMarket;
-    use crate::state::state::State;
-    use crate::state::traits::Size;
-    use crate::state::user::{User, UserStats};
+    use crate::state::{
+        events::OrderActionRecord,
+        insurance_fund_stake::InsuranceFundStake,
+        perp_market::PerpMarket,
+        spot_market::SpotMarket,
+        state::State,
+        traits::Size,
+        user::{User, UserStats},
+    };
 
     #[test]
     fn order_action_records() {
@@ -81,8 +83,10 @@ mod size {
 /// use `std::mem::offset_of!(_, field) + 8` (discriminator). If any test fails
 /// after a struct change, update the literal in the handler AND here together.
 mod native_instruction_offsets {
-    use crate::state::perp_market::{MarketStats, PerpMarket, AMM};
-    use crate::state::state::State;
+    use crate::state::{
+        perp_market::{MarketStats, PerpMarket, AMM},
+        state::State,
+    };
 
     const DISC: usize = 8; // Anchor 8-byte account discriminator
 
@@ -163,11 +167,13 @@ mod market_index_offset {
     // types appear before the PoolBalance fields, eliminating architecture-
     // specific alignment gaps.  MARKET_INDEX_OFFSET is now the same value on
     // both architectures and these tests can run everywhere.
-    use crate::create_anchor_account_info;
-    use crate::state::perp_market::PerpMarket;
-    use crate::state::spot_market::SpotMarket;
-    use crate::state::traits::MarketIndexOffset;
-    use arrayref::array_ref;
+    use {
+        crate::{
+            create_anchor_account_info,
+            state::{perp_market::PerpMarket, spot_market::SpotMarket, traits::MarketIndexOffset},
+        },
+        arrayref::array_ref,
+    };
 
     #[test]
     fn spot_market() {

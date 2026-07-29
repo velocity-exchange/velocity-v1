@@ -2,15 +2,15 @@
 //!
 //! The `TODO:` comments should be altered depending on individual maker strategy
 //!
+use futures_util::StreamExt;
+use solana_pubkey::Pubkey;
 use velocity_rs::{
     swift_order_subscriber::SignedOrderInfo,
     types::{
         MarketId, OrderParams, OrderParamsBitFlag, OrderType, PositionDirection, PostOnlyParam,
     },
-    VelocityClient, RpcClient, Wallet,
+    RpcClient, VelocityClient, Wallet,
 };
-use futures_util::StreamExt;
-use solana_pubkey::Pubkey;
 
 #[tokio::main]
 async fn main() {
@@ -82,7 +82,11 @@ async fn main() {
 }
 
 /// Try to fill a swift order
-async fn try_fill(velocity: VelocityClient, filler_subaccount: Pubkey, swift_order: SignedOrderInfo) {
+async fn try_fill(
+    velocity: VelocityClient,
+    filler_subaccount: Pubkey,
+    swift_order: SignedOrderInfo,
+) {
     // TODO: filter `swift_order.order_params()` depending on strategy params
     println!("new swift order: {swift_order:?}");
     let taker_order = swift_order.order_params();

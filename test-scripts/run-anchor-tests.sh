@@ -54,6 +54,7 @@ test_files=(
   decodeUser.ts
   scaleOrders.ts
   admin.ts
+  accountExtension.ts
   assetTier.ts
   cancelAllOrders.ts
   curve.ts
@@ -106,6 +107,7 @@ test_files=(
   spotMarketPoolIds.ts
   # spotSwap.ts # broken by spot fulfillment purge — needs migration to read serum vaults directly off the Market
   # spotSwap22.ts # broken by spot fulfillment purge — needs migration to read serum vaults directly off the Market
+  swapPostEndIxs.ts
   stopLimits.ts
   subaccounts.ts
   surgePricing.ts

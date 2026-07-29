@@ -1,9 +1,14 @@
-use crate::error::{ErrorCode, VelocityResult};
-use crate::msg;
-use crate::validate;
-use anchor_lang::prelude::{AccountInfo, Pubkey};
-use anchor_lang::solana_program::system_instruction;
-use solana_program::rent::Rent;
+use {
+    crate::{
+        error::{ErrorCode, VelocityResult},
+        msg, validate,
+    },
+    anchor_lang::{
+        prelude::{AccountInfo, Pubkey},
+        solana_program::system_instruction,
+    },
+    solana_program::rent::Rent,
+};
 
 pub fn seed_and_create_pda<'a>(
     program_id: &Pubkey,

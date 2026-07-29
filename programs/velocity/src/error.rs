@@ -783,6 +783,12 @@ pub enum ErrorCode {
     InvalidRevenueShareRecipient,
     #[msg("Spot market daily deposit limit hit")]
     DailyDepositLimit,
+    #[msg("The name 'USDT' is reserved for the quote spot market (index 0)")]
+    ReservedSpotMarketName,
+    #[msg("Cannot modify a builder-coded order; cancel and re-place instead")]
+    CannotModifyBuilderOrder,
+    #[msg("Invalid account extension")]
+    InvalidAccountExtension,
     #[msg("Quoter registry entry config is invalid")]
     InvalidQuoterConfig,
     #[msg("Signer does not control this quoter registry entry")]

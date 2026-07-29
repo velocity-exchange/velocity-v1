@@ -1,27 +1,32 @@
-use crate::error::{ErrorCode, VelocityResult};
-use crate::math::casting::Cast;
-use crate::math::constants::{
-    AMM_RESERVE_PRECISION_I128, FUNDING_RATE_TO_QUOTE_PRECISION_PRECISION_RATIO,
-    LIQUIDATION_FEE_PRECISION, LIQUIDATION_FEE_PRECISION_U128,
-    LIQUIDATION_FEE_TO_MARGIN_PRECISION_RATIO, LIQUIDATION_PCT_PRECISION, PRICE_PRECISION,
-    PRICE_TIMES_AMM_TO_QUOTE_PRECISION_RATIO, QUOTE_PRECISION, SPOT_WEIGHT_PRECISION_U128,
+use crate::{
+    error::{ErrorCode, VelocityResult},
+    math::{
+        casting::Cast,
+        constants::{
+            AMM_RESERVE_PRECISION_I128, BASE_PRECISION,
+            FUNDING_RATE_TO_QUOTE_PRECISION_PRECISION_RATIO, LIQUIDATION_FEE_INCREASE_PER_SLOT,
+            LIQUIDATION_FEE_PRECISION, LIQUIDATION_FEE_PRECISION_U128,
+            LIQUIDATION_FEE_TO_MARGIN_PRECISION_RATIO, LIQUIDATION_PCT_PRECISION, PRICE_PRECISION,
+            PRICE_TIMES_AMM_TO_QUOTE_PRECISION_RATIO, QUOTE_PRECISION, SPOT_WEIGHT_PRECISION_U128,
+        },
+        margin::calculate_margin_requirement_and_total_collateral_and_liability_info,
+        safe_math::SafeMath,
+        spot_balance::get_token_amount,
+        spot_swap::calculate_swap_price,
+    },
+    msg,
+    state::{
+        margin_calculation::MarginContext,
+        oracle::OraclePriceData,
+        oracle_map::OracleMap,
+        perp_market::PerpMarket,
+        perp_market_map::PerpMarketMap,
+        spot_market::{SpotBalanceType, SpotMarket},
+        spot_market_map::SpotMarketMap,
+        user::{OrderType, User},
+    },
+    validate, MarketType, OrderParams, PositionDirection,
 };
-use crate::math::margin::calculate_margin_requirement_and_total_collateral_and_liability_info;
-use crate::math::safe_math::SafeMath;
-use crate::math::spot_balance::get_token_amount;
-
-use crate::math::constants::{BASE_PRECISION, LIQUIDATION_FEE_INCREASE_PER_SLOT};
-use crate::math::spot_swap::calculate_swap_price;
-use crate::msg;
-use crate::state::margin_calculation::MarginContext;
-use crate::state::oracle::OraclePriceData;
-use crate::state::oracle_map::OracleMap;
-use crate::state::perp_market::PerpMarket;
-use crate::state::perp_market_map::PerpMarketMap;
-use crate::state::spot_market::{SpotBalanceType, SpotMarket};
-use crate::state::spot_market_map::SpotMarketMap;
-use crate::state::user::{OrderType, User};
-use crate::{validate, MarketType, OrderParams, PositionDirection};
 
 pub const LIQUIDATION_FEE_ADJUST_GRACE_PERIOD_SLOTS: u64 = 1_500; // ~10 minutes
 

@@ -1,19 +1,24 @@
-use anchor_lang::prelude::*;
-use anchor_spl::token_interface::{TokenAccount, TokenInterface};
-
-use crate::error::ErrorCode;
-use crate::instructions::constraints::*;
-use crate::load_mut;
-use crate::optional_accounts::get_token_mint;
-use crate::state::insurance_fund_stake::InsuranceFundStake;
-use crate::state::market_status::MarketStatus;
-use crate::state::paused_operations::{InsuranceFundOperation, SpotOperation};
-use crate::state::spot_market::SpotMarket;
-use crate::state::state::State;
-use crate::state::traits::Size;
-use crate::state::user::UserStats;
-use crate::validate;
-use crate::{controller, math};
+use {
+    crate::{
+        controller,
+        error::ErrorCode,
+        instructions::constraints::*,
+        load_mut, math,
+        optional_accounts::get_token_mint,
+        state::{
+            insurance_fund_stake::InsuranceFundStake,
+            market_status::MarketStatus,
+            paused_operations::{InsuranceFundOperation, SpotOperation},
+            spot_market::SpotMarket,
+            state::State,
+            traits::Size,
+            user::UserStats,
+        },
+        validate,
+    },
+    anchor_lang::prelude::*,
+    anchor_spl::token_interface::{TokenAccount, TokenInterface},
+};
 
 pub fn handle_initialize_insurance_fund_stake(
     ctx: Context<InitializeInsuranceFundStake>,

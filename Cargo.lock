@@ -1594,6 +1594,14 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "dc897dd8d9e8bd1ed8cdad82b5966c3e0ecae09fb1907d58efaa013543185d0a"
 
 [[package]]
+name = "relay-spec"
+version = "0.1.0"
+source = "git+https://github.com/velocity-exchange/relay?rev=b8c6ecd0bb65f5dcad929fc7972a4a4241232fd0#b8c6ecd0bb65f5dcad929fc7972a4a4241232fd0"
+dependencies = [
+ "bytemuck",
+]
+
+[[package]]
 name = "rend"
 version = "0.4.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3221,6 +3229,7 @@ dependencies = [
  "pyth",
  "pyth-client",
  "pyth_lazer",
+ "relay-spec",
  "solana-program",
  "solana-security-txt",
  "static_assertions",

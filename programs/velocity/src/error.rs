@@ -793,6 +793,8 @@ pub enum ErrorCode {
     InvalidQuoterConfig,
     #[msg("Signer does not control this quoter registry entry")]
     InvalidQuoterAuthority,
+    #[msg("CLOB crank condition account cannot cover the keeper payment")]
+    InsufficientCrankReservoir,
 }
 
 #[macro_export]

@@ -209,6 +209,20 @@ pub fn vamm_quote_levels(
                 .min(honest)
                 .min(bound.unwrap_or(u64::MAX)),
         };
+        // Clamp to the taker's limit. `total` was already capped where the
+        // curve's marginal price reaches the limit, and a slice's average
+        // cost never exceeds its end marginal — so the true cost is inside
+        // the limit and only integer rounding can push the quoted per-unit
+        // price past it (a dust rung whose notional rounds up to a whole
+        // lamport). Without the clamp such a rung prices itself out of the
+        // taker's own limit and the fill's truncation drops liquidity the
+        // taker could afford; the fill-side lamport of slack covers the
+        // rounding gap.
+        let price = match (taker_limit, direction) {
+            (Some(limit), Direction::Long) => price.min(limit),
+            (Some(limit), Direction::Short) => price.max(limit),
+            (None, _) => price,
+        };
         if price == 0 {
             break;
         }

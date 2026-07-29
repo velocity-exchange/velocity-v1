@@ -197,8 +197,7 @@ pub fn split_across_quoters(
         tiers.sort_unstable();
         tiers.dedup();
 
-        for tier_index in 0..tiers.len() {
-            let tier = tiers[tier_index];
+        for &tier in &tiers {
             if remaining == 0 {
                 break;
             }

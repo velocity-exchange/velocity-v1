@@ -31,16 +31,15 @@ use crate::{msg, validate};
 /// callers batch across several calls for a market with more quoters.
 pub const MAX_QUOTED_SOURCES: usize = 16;
 
-/// Levels kept per source. Each source gets its own fixed slot rather than
-/// sharing one region, so there is no offset arithmetic to get wrong — and
-/// arrays this shape stay inside what the IDL's serde derives support
-/// (nothing longer than 32).
+/// Levels kept per source, in its own fixed slot — no shared region, so no
+/// offset arithmetic to get wrong.
 ///
-/// Deep enough in practice: the vAMM quotes 8 checkpoints, a DLOB order is
-/// one level, and a quote bounded by `quoted_size` stops as soon as the size
-/// is covered. A book with more than this many distinct prices inside the
-/// quoted size is truncated, which understates depth — never overstates it.
-pub const MAX_LEVELS_PER_SOURCE: usize = 32;
+/// Set to [`crate::math::router::MAX_LEVELS_PER_BOOK`] deliberately: that is
+/// the most the split will ever consume from one book, so a deeper slot could
+/// hold levels no fill could route against. Deep for display too — a book
+/// with more than this many distinct prices inside `quoted_size` truncates,
+/// which understates depth, never overstates it.
+pub const MAX_LEVELS_PER_SOURCE: usize = crate::math::router::MAX_LEVELS_PER_BOOK;
 
 /// Which kind of liquidity a quoted book came from. The router needs this to
 /// know how to *execute* the allocation (a CPI leg, an in-program DLOB order,
@@ -121,16 +120,12 @@ pub struct RouterQuoteBufferV0 {
 
 // Zero-copy layout invariant (docs/alignment-and-native-offsets.md): no u128
 // fields, and size including the 8-byte discriminator is ≡ 8 (mod 16).
-const_assert_eq!(std::mem::size_of::<RouterQuoteBufferV0>(), 8896);
+const_assert_eq!(std::mem::size_of::<RouterQuoteBufferV0>(), 33472);
 const_assert_eq!((RouterQuoteBufferV0::SIZE - 8) % 16, 0);
 
 impl Size for RouterQuoteBufferV0 {
-    const SIZE: usize = 8904;
+    const SIZE: usize = 33480;
 }
-
-/// PDA: one buffer per (authority, market), so a router can quote every
-/// market concurrently without contending with itself.
-pub const ROUTER_QUOTE_PDA_SEED: &[u8] = b"router_quote";
 
 impl RouterQuoteBufferV0 {
     /// Reset the buffer for a fresh quote round.

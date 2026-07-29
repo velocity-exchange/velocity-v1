@@ -42,7 +42,7 @@ use crate::math::router::QuoterBook;
 use crate::msg;
 use crate::state::perp_market_map::{get_writable_perp_market_set, MarketSet};
 use crate::state::prop_amm::{Direction, PriceLevel, QuoteArgsV0, QuoterType, QuoterV0};
-use crate::state::quoter::{QuoteContext, Quoter};
+use crate::state::quoter::QuoteContext;
 use crate::state::router_quote::{QuotedSourceKind, RouterQuoteBufferV0};
 use crate::state::state::State;
 use crate::state::user_map::load_user_maps;
@@ -281,7 +281,7 @@ pub fn handle_quote_router<'c: 'info, 'info>(
         .collect();
     let amm_levels = {
         let mut amm_quoter = AmmQuoter::for_amm(&mut amm);
-        <AmmQuoter as Quoter>::setup(&mut amm_quoter, &setup_ctx)?;
+        amm_quoter.refresh(&setup_ctx)?;
         vamm_quote_levels(
             amm_quoter.amm,
             args.direction,

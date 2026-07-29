@@ -4012,50 +4012,18 @@ export type Velocity = {
       ],
       "accounts": [
         {
-          "name": "payer",
-          "writable": true,
-          "signer": true
+          "name": "quoteBuffer",
+          "docs": [
+            "Pre-created, zeroed, velocity-owned, and sized `RouterQuoteBufferV0::SIZE`."
+          ],
+          "writable": true
         },
         {
           "name": "authority",
+          "docs": [
+            "The only signer that may later quote into this buffer."
+          ],
           "signer": true
-        },
-        {
-          "name": "quoteBuffer",
-          "writable": true,
-          "pda": {
-            "seeds": [
-              {
-                "kind": "const",
-                "value": [
-                  114,
-                  111,
-                  117,
-                  116,
-                  101,
-                  114,
-                  95,
-                  113,
-                  117,
-                  111,
-                  116,
-                  101
-                ]
-              },
-              {
-                "kind": "account",
-                "path": "authority"
-              },
-              {
-                "kind": "arg",
-                "path": "marketIndex"
-              }
-            ]
-          }
-        },
-        {
-          "name": "systemProgram",
-          "address": "11111111111111111111111111111111"
         }
       ],
       "args": [
@@ -23463,7 +23431,7 @@ export type Velocity = {
                         "name": "quotedLevelV0"
                       }
                     },
-                    32
+                    128
                   ]
                 },
                 16

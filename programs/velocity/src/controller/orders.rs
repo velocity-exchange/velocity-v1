@@ -3524,7 +3524,7 @@ pub fn fulfill_perp_order_step(
         market_config: market_config_local,
     };
     let mut amm_quoter = AmmQuoter::for_amm(&mut market.amm);
-    <AmmQuoter as Quoter>::setup(&mut amm_quoter, &setup_ctx)?;
+    amm_quoter.refresh(&setup_ctx)?;
     let reserve_after_setup = amm_quoter.amm.reserve_price()?;
     let (amm_bid_price, amm_ask_price) = amm_quoter.amm_bid_ask(reserve_after_setup)?;
     let amm_base_spread = amm_quoter.amm_base_spread();
@@ -4048,7 +4048,7 @@ fn fulfill_perp_order_router_pass(
         market_config: market_config_local,
     };
     let mut amm_quoter = AmmQuoter::for_amm(&mut market.amm);
-    <AmmQuoter as Quoter>::setup(&mut amm_quoter, &setup_ctx)?;
+    amm_quoter.refresh(&setup_ctx)?;
     let reserve_after_setup = amm_quoter.amm.reserve_price()?;
     let (amm_bid_price, amm_ask_price) = amm_quoter.amm_bid_ask(reserve_after_setup)?;
     let amm_base_spread = amm_quoter.amm_base_spread();

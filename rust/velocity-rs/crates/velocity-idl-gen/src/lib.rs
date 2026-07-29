@@ -19,6 +19,10 @@ use syn::{Ident, Type};
 ///
 /// Defined references collapse to just `Name` — generics are not currently
 /// surfaced; if velocity starts using generic types this needs revisiting.
+/// Longest array serde's own derives cover; past this a field needs
+/// [`custom_types::BigArray`].
+const SERDE_MAX_ARRAY_LEN: usize = 32;
+
 fn idl_type_to_rust(t: &IdlType) -> String {
     match t {
         IdlType::Bool => "bool".into(),
@@ -47,6 +51,11 @@ fn idl_type_to_rust(t: &IdlType) -> String {
                 // [u8; 64] is the signature shape; alias to the Default-having `Signature` newtype.
                 if *n == 64 && rust == "u8" {
                     "Signature".into()
+                } else if *n > SERDE_MAX_ARRAY_LEN {
+                    // serde only derives for `[T; N]` up to N = 32. Applied at
+                    // every depth, so a nested `[[T; 128]; 16]` has its inner
+                    // array wrapped even though the outer one is short.
+                    format!("BigArray<{rust}, {n}>")
                 } else {
                     format!("[{}; {}]", rust, n)
                 }

@@ -936,21 +936,29 @@ fn quote_router_returns_verified_books_for_every_source() {
         12,
     );
 
-    // The router's own quote buffer.
+    // The router's own quote buffer. Pre-created by the caller because it is
+    // larger than a CPI can allocate (the CLOB market is created the same way).
     let router = Keypair::new();
     fixture.svm.airdrop(&router.pubkey(), 10_000_000_000).unwrap();
-    let quote_buffer = Pubkey::find_program_address(
-        &[b"router_quote", router.pubkey().as_ref(), 0u16.to_le_bytes().as_ref()],
-        &velocity_id(),
-    )
-    .0;
+    let quote_buffer = Pubkey::new_unique();
+    fixture
+        .svm
+        .set_account(
+            quote_buffer,
+            Account {
+                lamports: 10_000_000_000,
+                data: vec![0u8; velocity::state::router_quote::RouterQuoteBufferV0::SIZE],
+                owner: velocity_id(),
+                executable: false,
+                rent_epoch: 0,
+            },
+        )
+        .unwrap();
     let ix = Instruction {
         program_id: velocity_id(),
         accounts: velocity::accounts::InitializeRouterQuoteBuffer {
-            payer: router.pubkey(),
-            authority: router.pubkey(),
             quote_buffer,
-            system_program: "11111111111111111111111111111111".parse().unwrap(),
+            authority: router.pubkey(),
         }
         .to_account_metas(None),
         data: velocity::instruction::InitializeRouterQuoteBuffer { market_index: 0 }.data(),

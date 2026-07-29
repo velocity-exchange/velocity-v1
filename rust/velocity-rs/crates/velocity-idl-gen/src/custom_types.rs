@@ -115,3 +115,58 @@ impl<const N: usize> std::fmt::Debug for Padding<N> {
 impl<const N: usize> anchor_lang::Space for Padding<N> {
     const INIT_SPACE: usize = 8 * N;
 }
+
+/// Fixed-size array wrapper for lengths serde's derives don't cover.
+///
+/// serde implements `Serialize`/`Deserialize` for `[T; N]` only up to N = 32,
+/// so a generated account holding a longer array (a quote buffer's level
+/// slots, say) would fail to compile the moment it entered the IDL. The
+/// wrapper carries the array and serializes it as a sequence, which is what
+/// serde would have done anyway.
+#[derive(AnchorSerialize, AnchorDeserialize, Copy, Clone, PartialEq, Debug)]
+pub struct BigArray<T: Copy, const N: usize>(pub [T; N]);
+
+impl<T: Copy + Default, const N: usize> Default for BigArray<T, N> {
+    fn default() -> Self {
+        Self([T::default(); N])
+    }
+}
+
+impl<T: Copy, const N: usize> std::ops::Deref for BigArray<T, N> {
+    type Target = [T; N];
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
+impl<T: Copy, const N: usize> std::ops::DerefMut for BigArray<T, N> {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.0
+    }
+}
+
+impl<T: Copy + serde::Serialize, const N: usize> serde::Serialize for BigArray<T, N> {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> std::result::Result<S::Ok, S::Error> {
+        serializer.collect_seq(self.0.iter())
+    }
+}
+
+impl<'de, T: Copy + Default + serde::Deserialize<'de>, const N: usize> serde::Deserialize<'de>
+    for BigArray<T, N>
+{
+    fn deserialize<D: serde::Deserializer<'de>>(
+        deserializer: D,
+    ) -> std::result::Result<Self, D::Error> {
+        let values: Vec<T> = <Vec<T> as serde::Deserialize>::deserialize(deserializer)?;
+        if values.len() != N {
+            return Err(serde::de::Error::invalid_length(values.len(), &"N elements"));
+        }
+        let mut out = [T::default(); N];
+        out.copy_from_slice(&values);
+        Ok(Self(out))
+    }
+}
+
+impl<T: Copy + anchor_lang::Space, const N: usize> anchor_lang::Space for BigArray<T, N> {
+    const INIT_SPACE: usize = T::INIT_SPACE * N;
+}

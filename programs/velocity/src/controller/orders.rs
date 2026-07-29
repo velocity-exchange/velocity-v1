@@ -3506,9 +3506,18 @@ fn fulfill_perp_order_router_pass(
     let _ = amm_quoter;
 
     // ---- Execute + settle each maker allocation. ----
+    // Re-quote against the *same* oracle price discovery froze the book at
+    // (the MM price), not the confidence-bounded safe price. An oracle-offset
+    // maker prices off `ctx.oracle`, so using a different price here would
+    // re-quote it away from its quoted level and trip the at-or-better check —
+    // failing the whole fill closed instead of filling.
+    let discovery_oracle = OraclePriceData {
+        price: quote_inputs.mm_oracle.get_price(),
+        ..quote_inputs.safe_oracle
+    };
     let ctx = QuoteContext {
         stats: &quote_inputs.stats,
-        oracle: &quote_inputs.safe_oracle,
+        oracle: &discovery_oracle,
         mm_oracle: None,
         oracle_validity: None,
         fee_budget: 0,

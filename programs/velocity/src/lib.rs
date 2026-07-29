@@ -2181,6 +2181,22 @@ pub mod velocity {
         handle_cancel_clob_order(ctx, params)
     }
 
+    pub fn initialize_router_quote_buffer(
+        ctx: Context<InitializeRouterQuoteBuffer>,
+        market_index: u16,
+    ) -> Result<()> {
+        handle_initialize_router_quote_buffer(ctx, market_index)
+    }
+
+    /// Read-only router quote: writes per-source verified books into the
+    /// caller's quote buffer. Meant to be simulated, not landed.
+    pub fn quote_router<'c: 'info, 'info>(
+        ctx: Context<'info, QuoteRouter<'info>>,
+        args: QuoteRouterArgs,
+    ) -> Result<()> {
+        handle_quote_router(ctx, args)
+    }
+
     pub fn crank_clob_evict(
         ctx: Context<CrankClobOrderRemoval>,
         market_index: u16,

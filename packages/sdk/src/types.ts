@@ -382,6 +382,57 @@ export class OrderActionExplanation {
 	};
 }
 
+/** Which kind of liquidity a quoted book came from (`QuotedSourceKind` on-chain). A `quoter` source executes through a CPI leg, a `dlobOrder` in-program, `vamm` off the curve — and a UI needs the distinction because a PropAMM's levels are a quote at a size, not resting orders. */
+export class QuotedSourceKind {
+	static readonly VAMM = { vamm: {} };
+	static readonly DLOB_ORDER = { dlobOrder: {} };
+	static readonly QUOTER = { quoter: {} };
+}
+
+/** One quoted level in a `RouterQuoteBufferV0` slot. */
+export type QuotedLevelV0 = {
+	/** PRICE_PRECISION */
+	price: BN;
+	/** base precision */
+	size: BN;
+};
+
+/** One source's entry in a `RouterQuoteBufferV0`, parallel to its `levels` slot. */
+export type QuotedSourceV0 = {
+	/** the `QuoterV0` entry for a quoter, the maker's `User` for a DLOB order, the perp market for the vAMM */
+	key: PublicKey;
+	levelCount: number;
+	/** routing tier the split applies (lower fills first at a price) */
+	priority: number;
+	kind: QuotedSourceKind;
+	/** verification reduced this book — a Custom quoter advertised more depth than its `User`'s margin supports */
+	clamped: boolean;
+	padding: number[];
+};
+
+/**
+ * Output of the `quoteRouter` view instruction: per-source verified books for a
+ * taker of `(direction, quotedSize)`. Written only under simulation — read it
+ * out of post-simulation account state, never by landing the instruction.
+ *
+ * `quotedSize` is part of the answer, not an echo: resting sources (CLOB, DLOB)
+ * are merely truncated by it, while the vAMM's and a PropAMM's levels genuinely
+ * price against it. `slot` makes a cached book's staleness checkable.
+ */
+export type RouterQuoteBufferV0Account = {
+	authority: PublicKey;
+	quotedSize: BN;
+	slot: BN;
+	market: number;
+	sourceCount: number;
+	/** taker direction quoted: 0 = long, 1 = short */
+	direction: number;
+	padding: number[];
+	sources: QuotedSourceV0[];
+	/** one 32-level slot per source, parallel to `sources` */
+	levels: QuotedLevelV0[][];
+};
+
 /** Trigger-order condition on `Order.triggerCondition`. `ABOVE`/`BELOW` are the pending (not-yet-triggered) states; `TRIGGERED_ABOVE`/`TRIGGERED_BELOW` record that the condition has already fired, so the order is now live for filling. */
 export class OrderTriggerCondition {
 	static readonly ABOVE = { above: {} };

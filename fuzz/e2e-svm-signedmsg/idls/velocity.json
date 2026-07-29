@@ -3993,6 +3993,73 @@
       ]
     },
     {
+      "name": "initialize_router_quote_buffer",
+      "discriminator": [
+        19,
+        61,
+        93,
+        219,
+        121,
+        124,
+        63,
+        187
+      ],
+      "accounts": [
+        {
+          "name": "payer",
+          "writable": true,
+          "signer": true
+        },
+        {
+          "name": "authority",
+          "signer": true
+        },
+        {
+          "name": "quote_buffer",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  114,
+                  111,
+                  117,
+                  116,
+                  101,
+                  114,
+                  95,
+                  113,
+                  117,
+                  111,
+                  116,
+                  101
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "authority"
+              },
+              {
+                "kind": "arg",
+                "path": "market_index"
+              }
+            ]
+          }
+        },
+        {
+          "name": "system_program",
+          "address": "11111111111111111111111111111111"
+        }
+      ],
+      "args": [
+        {
+          "name": "market_index",
+          "type": "u16"
+        }
+      ]
+    },
+    {
       "name": "initialize_signed_msg_user_orders",
       "discriminator": [
         164,
@@ -6292,6 +6359,53 @@
         {
           "name": "pyth_message",
           "type": "bytes"
+        }
+      ]
+    },
+    {
+      "name": "quote_router",
+      "docs": [
+        "Read-only router quote: writes per-source verified books into the",
+        "caller's quote buffer. Meant to be simulated, not landed."
+      ],
+      "discriminator": [
+        130,
+        18,
+        102,
+        250,
+        85,
+        231,
+        54,
+        71
+      ],
+      "accounts": [
+        {
+          "name": "state"
+        },
+        {
+          "name": "authority",
+          "signer": true,
+          "relations": [
+            "quote_buffer"
+          ]
+        },
+        {
+          "name": "quote_buffer",
+          "docs": [
+            "`has_one` pins the writer; the market is checked in the handler",
+            "because it comes in as an argument, not an account."
+          ],
+          "writable": true
+        }
+      ],
+      "args": [
+        {
+          "name": "args",
+          "type": {
+            "defined": {
+              "name": "QuoteRouterArgs"
+            }
+          }
         }
       ]
     },
@@ -14644,6 +14758,19 @@
       ]
     },
     {
+      "name": "RouterQuoteBufferV0",
+      "discriminator": [
+        226,
+        115,
+        111,
+        70,
+        54,
+        54,
+        253,
+        75
+      ]
+    },
+    {
       "name": "SignedMsgUserOrders",
       "discriminator": [
         70,
@@ -18314,6 +18441,26 @@
               "precision: token mint precision"
             ],
             "type": "i128"
+          }
+        ]
+      }
+    },
+    {
+      "name": "Direction",
+      "docs": [
+        "Taker direction, from the taker's perspective. Borsh wire encoding",
+        "(Long = 0, Short = 1) deliberately matches",
+        "[`crate::controller::position::PositionDirection`], but the CPI ABI gets",
+        "its own enum so it can never drift with internal refactors."
+      ],
+      "type": {
+        "kind": "enum",
+        "variants": [
+          {
+            "name": "Long"
+          },
+          {
+            "name": "Short"
           }
         ]
       }
@@ -22588,6 +22735,157 @@
       }
     },
     {
+      "name": "QuoteRouterArgs",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "market_index",
+            "type": "u16"
+          },
+          {
+            "name": "direction",
+            "type": {
+              "defined": {
+                "name": "Direction"
+              }
+            }
+          },
+          {
+            "name": "size",
+            "docs": [
+              "Size to quote up to. The books returned are what's available for a",
+              "taker of this size — resting sources are merely truncated by it, the",
+              "vAMM and PropAMMs genuinely price against it."
+            ],
+            "type": "u64"
+          },
+          {
+            "name": "quoter_count",
+            "docs": [
+              "`QuoterV0` entries at the head of the quoter section of",
+              "`remaining_accounts`; the rest of that section is their CPI accounts."
+            ],
+            "type": "u8"
+          }
+        ]
+      }
+    },
+    {
+      "name": "QuotedLevelV0",
+      "docs": [
+        "A quoted level, in the buffer's Pod form (the wire `PriceLevel` is borsh)."
+      ],
+      "serialization": "bytemuckunsafe",
+      "repr": {
+        "kind": "c"
+      },
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "price",
+            "type": "u64"
+          },
+          {
+            "name": "size",
+            "type": "u64"
+          }
+        ]
+      }
+    },
+    {
+      "name": "QuotedSourceKind",
+      "docs": [
+        "Which kind of liquidity a quoted book came from. The router needs this to",
+        "know how to *execute* the allocation (a CPI leg, an in-program DLOB order,",
+        "or the vAMM), and a UI needs it to label depth honestly — a PropAMM's",
+        "levels are a quote at a size, not resting orders."
+      ],
+      "repr": {
+        "kind": "rust"
+      },
+      "type": {
+        "kind": "enum",
+        "variants": [
+          {
+            "name": "Vamm"
+          },
+          {
+            "name": "DlobOrder"
+          },
+          {
+            "name": "Quoter"
+          }
+        ]
+      }
+    },
+    {
+      "name": "QuotedSourceV0",
+      "docs": [
+        "One source's slice of the buffer's level region."
+      ],
+      "serialization": "bytemuckunsafe",
+      "repr": {
+        "kind": "c"
+      },
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "key",
+            "docs": [
+              "The `QuoterV0` entry for a `Quoter`, the maker's `User` for a",
+              "`DlobOrder`, the perp market for `Vamm`."
+            ],
+            "type": "pubkey"
+          },
+          {
+            "name": "level_count",
+            "docs": [
+              "Live levels in this source's slot of `levels`."
+            ],
+            "type": "u16"
+          },
+          {
+            "name": "priority",
+            "docs": [
+              "Routing tier the split will apply (`QuoterV0::priority`, or the",
+              "type default for the in-program sources)."
+            ],
+            "type": "u8"
+          },
+          {
+            "name": "kind",
+            "type": {
+              "defined": {
+                "name": "QuotedSourceKind"
+              }
+            }
+          },
+          {
+            "name": "clamped",
+            "docs": [
+              "Set when verification reduced this book — a Custom quoter advertising",
+              "more depth than its `User`'s margin supports gets truncated here, so",
+              "the caller never routes against or displays phantom depth. The",
+              "difference between what the quoter said and what came back."
+            ],
+            "type": "bool"
+          },
+          {
+            "name": "padding",
+            "type": {
+              "array": [
+                "u8",
+                3
+              ]
+            }
+          }
+        ]
+      }
+    },
+    {
       "name": "QuoterAccountMetaArg",
       "type": {
         "kind": "struct",
@@ -23064,6 +23362,107 @@
           {
             "name": "builder_total_builder_rewards",
             "type": "u64"
+          }
+        ]
+      }
+    },
+    {
+      "name": "RouterQuoteBufferV0",
+      "serialization": "bytemuckunsafe",
+      "repr": {
+        "kind": "c"
+      },
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "authority",
+            "docs": [
+              "Only this signer may quote into the buffer, so two routers sharing a",
+              "market don't overwrite each other's reads."
+            ],
+            "type": "pubkey"
+          },
+          {
+            "name": "quoted_size",
+            "docs": [
+              "Taker size the books were quoted at. Meaningful output, not an echo:",
+              "resting books (CLOB, DLOB) are size-independent and merely truncated",
+              "by it, while the vAMM's and a PropAMM's levels genuinely depend on it."
+            ],
+            "type": "u64"
+          },
+          {
+            "name": "slot",
+            "docs": [
+              "Slot the quote ran at, so a cached book's staleness is checkable."
+            ],
+            "type": "u64"
+          },
+          {
+            "name": "market",
+            "type": "u16"
+          },
+          {
+            "name": "source_count",
+            "docs": [
+              "Live entries in `sources`."
+            ],
+            "type": "u8"
+          },
+          {
+            "name": "direction",
+            "docs": [
+              "Taker direction quoted (`Direction` as u8: 0 = long, 1 = short)."
+            ],
+            "type": "u8"
+          },
+          {
+            "name": "padding",
+            "docs": [
+              "Pads the header to 64 bytes so the struct stays a multiple of 16 and",
+              "`(SIZE - 8) % 16 == 0` holds (docs/alignment-and-native-offsets.md)."
+            ],
+            "type": {
+              "array": [
+                "u8",
+                12
+              ]
+            }
+          },
+          {
+            "name": "sources",
+            "type": {
+              "array": [
+                {
+                  "defined": {
+                    "name": "QuotedSourceV0"
+                  }
+                },
+                16
+              ]
+            }
+          },
+          {
+            "name": "levels",
+            "docs": [
+              "One slot per source, parallel to `sources`."
+            ],
+            "type": {
+              "array": [
+                {
+                  "array": [
+                    {
+                      "defined": {
+                        "name": "QuotedLevelV0"
+                      }
+                    },
+                    32
+                  ]
+                },
+                16
+              ]
+            }
           }
         ]
       }

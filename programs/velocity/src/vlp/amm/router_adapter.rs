@@ -480,6 +480,12 @@ mod ts_mirror_fixture {
     use crate::math::constants::{AMM_RESERVE_PRECISION, BASE_PRECISION_U64, PEG_PRECISION};
 
     #[test]
+    fn amm_is_copy_so_a_view_ix_can_quote_without_mutating() {
+        fn assert_copy<T: Copy>() {}
+        assert_copy::<AMM>();
+    }
+
+    #[test]
     fn print_ladder_for_ts_mirror() {
         let mut amm = AMM {
             base_asset_reserve: 100 * AMM_RESERVE_PRECISION,

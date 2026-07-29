@@ -887,3 +887,156 @@ fn crank_evict_unwinds_the_tails_aggregates() {
     assert_eq!(maker.perp_positions[0].open_orders, 0);
     assert_eq!(clob_ask_count(&fixture.svm, &fixture.clob_market), 0);
 }
+
+/// The quote view, end to end: one simulated instruction returns verified
+/// books for every source — the CLOB (via a real `quote_v0` CPI), the DLOB
+/// maker (bridged in-program), and the vAMM (quoted off a copy) — in fill
+/// order, so the vAMM's last-look shading is already applied.
+#[test]
+fn quote_router_returns_verified_books_for_every_source() {
+    let mut fixture = setup();
+
+    // CLOB ask 0.5 @ 99 through the adapter.
+    place_clob_ask(&mut fixture, 99 * PRICE, UNIT / 2);
+
+    // DLOB maker: post-only ask 0.5 @ 100.
+    let dlob_maker_authority = Keypair::new();
+    let dlob_maker_user = Pubkey::new_unique();
+    let dlob_maker_stats = Pubkey::new_unique();
+    let mut dlob_order = Order::default();
+    dlob_order.order_id = 1;
+    dlob_order.status = OrderStatus::Open;
+    dlob_order.order_type = OrderType::Limit;
+    dlob_order.market_type = MarketType::Perp;
+    dlob_order.market_index = 0;
+    dlob_order.direction = PositionDirection::Short;
+    dlob_order.post_only = true;
+    dlob_order.base_asset_amount = UNIT / 2;
+    dlob_order.price = 100 * PRICE;
+    set_user_account(
+        &mut fixture.svm,
+        dlob_maker_user,
+        &trading_user(
+            &dlob_maker_authority.pubkey(),
+            10_000 * SPOT_BALANCE_PRECISION_U64,
+            Some(dlob_order),
+        ),
+    );
+    set_user_stats_account(
+        &mut fixture.svm,
+        dlob_maker_stats,
+        &dlob_maker_authority.pubkey(),
+    );
+
+    fixture.svm.warp_to_slot(12);
+    set_oracle(
+        &mut fixture.svm,
+        fixture.oracle,
+        (100 * PRICE_PRECISION) as i64,
+        12,
+    );
+
+    // The router's own quote buffer.
+    let router = Keypair::new();
+    fixture.svm.airdrop(&router.pubkey(), 10_000_000_000).unwrap();
+    let quote_buffer = Pubkey::find_program_address(
+        &[b"router_quote", router.pubkey().as_ref(), 0u16.to_le_bytes().as_ref()],
+        &velocity_id(),
+    )
+    .0;
+    let ix = Instruction {
+        program_id: velocity_id(),
+        accounts: velocity::accounts::InitializeRouterQuoteBuffer {
+            payer: router.pubkey(),
+            authority: router.pubkey(),
+            quote_buffer,
+            system_program: "11111111111111111111111111111111".parse().unwrap(),
+        }
+        .to_account_metas(None),
+        data: velocity::instruction::InitializeRouterQuoteBuffer { market_index: 0 }.data(),
+    };
+    send(&mut fixture.svm, &router, ix, &[]).unwrap();
+
+    let (velocity_signer, _) = velocity_signer_pda();
+    let mut accounts = velocity::accounts::QuoteRouter {
+        state: state_pda(),
+        authority: router.pubkey(),
+        quote_buffer,
+    }
+    .to_account_metas(None);
+    // Maps.
+    accounts.push(AccountMeta::new_readonly(fixture.oracle, false));
+    accounts.push(AccountMeta::new(spot_market_pda(0), false));
+    accounts.push(AccountMeta::new(perp_market_pda(0), false));
+    // Maker section: the DLOB maker (read-only is fine for a quote).
+    accounts.push(AccountMeta::new_readonly(dlob_maker_user, false));
+    accounts.push(AccountMeta::new_readonly(dlob_maker_stats, false));
+    // Quoter section: the CLOB entry + its CPI accounts.
+    accounts.push(AccountMeta::new_readonly(fixture.quoter, false));
+    accounts.push(AccountMeta::new(fixture.clob_market, false));
+    accounts.push(AccountMeta::new_readonly(velocity_signer, false));
+    accounts.push(AccountMeta::new_readonly(clob_id(), false));
+
+    let ix = Instruction {
+        program_id: velocity_id(),
+        accounts,
+        data: velocity::instruction::QuoteRouter {
+            args: velocity::instructions::QuoteRouterArgs {
+                market_index: 0,
+                direction: velocity::state::prop_amm::Direction::Long,
+                size: 2 * UNIT,
+                quoter_count: 1,
+            },
+        }
+        .data(),
+    };
+    let meta = send(&mut fixture.svm, &router, ix, &[]).unwrap();
+
+    let buffer: velocity::state::router_quote::RouterQuoteBufferV0 =
+        read_zero_copy(&fixture.svm, &quote_buffer);
+    assert_eq!(buffer.market, 0);
+    assert_eq!(buffer.quoted_size, 2 * UNIT);
+    assert_eq!(buffer.direction, 0, "long");
+
+    // Three sources, in fill order: CLOB quoter, DLOB order, vAMM last.
+    assert_eq!(buffer.source_count, 3, "clob + dlob + vamm");
+    let sources = &buffer.sources[..3];
+    use velocity::state::router_quote::QuotedSourceKind;
+    assert_eq!(sources[0].kind, QuotedSourceKind::Quoter);
+    assert_eq!(sources[0].key, fixture.quoter);
+    assert_eq!(sources[1].kind, QuotedSourceKind::DlobOrder);
+    assert_eq!(sources[1].key, dlob_maker_user);
+    assert_eq!(sources[2].kind, QuotedSourceKind::Vamm);
+
+    // The CLOB's book came back through a real quote_v0 CPI: 0.5 @ 99.
+    let clob_levels = &buffer.levels[0][..sources[0].level_count as usize];
+    assert_eq!(clob_levels.len(), 1);
+    assert_eq!(clob_levels[0].price, 99 * PRICE);
+    assert_eq!(clob_levels[0].size, UNIT / 2);
+
+    // The DLOB maker's resting order: 0.5 @ 100.
+    let dlob_levels = &buffer.levels[1][..sources[1].level_count as usize];
+    assert_eq!(dlob_levels.len(), 1);
+    assert_eq!(dlob_levels[0].price, 100 * PRICE);
+    assert_eq!(dlob_levels[0].size, UNIT / 2);
+
+    // The vAMM ladder priced against both as rivals, and every rung is
+    // monotone at or above its top.
+    let amm_levels = &buffer.levels[2][..sources[2].level_count as usize];
+    assert!(!amm_levels.is_empty(), "vamm quoted something");
+    assert!(amm_levels.windows(2).all(|w| w[0].price <= w[1].price));
+
+    // Quoting must not move the market: the AMM is quoted off a copy.
+    let market: velocity::state::perp_market::PerpMarket =
+        read_zero_copy(&fixture.svm, &perp_market_pda(0));
+    assert_eq!(
+        market.amm.base_asset_amount_with_amm,
+        (AMM_RESERVE_PRECISION / 2) as i128,
+        "quote is read-only"
+    );
+
+    println!(
+        "CU — quote_router across CLOB + DLOB + vAMM: {}",
+        meta.compute_units_consumed
+    );
+}

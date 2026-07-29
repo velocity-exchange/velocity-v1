@@ -547,6 +547,16 @@ pub mod instructions {
     #[automatically_derived]
     impl anchor_lang::InstructionData for InitializeRevenueShareEscrow {}
     #[derive(AnchorSerialize, AnchorDeserialize, Clone, Default)]
+    pub struct InitializeRouterQuoteBuffer {
+        pub market_index: u16,
+    }
+    #[automatically_derived]
+    impl anchor_lang::Discriminator for InitializeRouterQuoteBuffer {
+        const DISCRIMINATOR: &[u8] = &[19, 61, 93, 219, 121, 124, 63, 187];
+    }
+    #[automatically_derived]
+    impl anchor_lang::InstructionData for InitializeRouterQuoteBuffer {}
+    #[derive(AnchorSerialize, AnchorDeserialize, Clone, Default)]
     pub struct InitializeSignedMsgUserOrders {
         pub num_orders: u16,
     }
@@ -889,6 +899,16 @@ pub mod instructions {
     }
     #[automatically_derived]
     impl anchor_lang::InstructionData for PostPythLazerOracleUpdate {}
+    #[derive(AnchorSerialize, AnchorDeserialize, Clone, Default)]
+    pub struct QuoteRouter {
+        pub args: QuoteRouterArgs,
+    }
+    #[automatically_derived]
+    impl anchor_lang::Discriminator for QuoteRouter {
+        const DISCRIMINATOR: &[u8] = &[130, 18, 102, 250, 85, 231, 54, 71];
+    }
+    #[automatically_derived]
+    impl anchor_lang::InstructionData for QuoteRouter {}
     #[derive(AnchorSerialize, AnchorDeserialize, Clone, Default)]
     pub struct RecenterPerpMarketAmm {
         pub peg_multiplier: u128,
@@ -3239,6 +3259,23 @@ pub mod types {
         pub signer: Option<Pubkey>,
         pub user_token_amount_after: i128,
     }
+    #[derive(
+        AnchorSerialize,
+        AnchorDeserialize,
+        InitSpace,
+        Serialize,
+        Deserialize,
+        Copy,
+        Clone,
+        Default,
+        Debug,
+        PartialEq,
+    )]
+    pub enum Direction {
+        #[default]
+        Long,
+        Short,
+    }
     #[repr(C)]
     #[derive(
         AnchorSerialize,
@@ -4729,6 +4766,82 @@ pub mod types {
         Debug,
         PartialEq,
     )]
+    pub struct QuoteRouterArgs {
+        pub market_index: u16,
+        pub direction: Direction,
+        pub size: u64,
+        pub quoter_count: u8,
+    }
+    #[repr(C)]
+    #[derive(
+        AnchorSerialize,
+        AnchorDeserialize,
+        InitSpace,
+        Serialize,
+        Deserialize,
+        Copy,
+        Clone,
+        Default,
+        Debug,
+        PartialEq,
+    )]
+    pub struct QuotedLevelV0 {
+        pub price: u64,
+        pub size: u64,
+    }
+    #[derive(
+        AnchorSerialize,
+        AnchorDeserialize,
+        InitSpace,
+        Serialize,
+        Deserialize,
+        Copy,
+        Clone,
+        Default,
+        Debug,
+        PartialEq,
+    )]
+    pub enum QuotedSourceKind {
+        #[default]
+        Vamm,
+        DlobOrder,
+        Quoter,
+    }
+    #[repr(C)]
+    #[derive(
+        AnchorSerialize,
+        AnchorDeserialize,
+        InitSpace,
+        Serialize,
+        Deserialize,
+        Copy,
+        Clone,
+        Default,
+        Debug,
+        PartialEq,
+    )]
+    pub struct QuotedSourceV0 {
+        pub key: Pubkey,
+        pub level_count: u16,
+        pub priority: u8,
+        pub kind: QuotedSourceKind,
+        pub clamped: bool,
+        #[serde(skip)]
+        pub padding: Padding<3>,
+    }
+    #[repr(C)]
+    #[derive(
+        AnchorSerialize,
+        AnchorDeserialize,
+        InitSpace,
+        Serialize,
+        Deserialize,
+        Copy,
+        Clone,
+        Default,
+        Debug,
+        PartialEq,
+    )]
     pub struct QuoterAccountMetaArg {
         pub pubkey: Pubkey,
         pub is_writable: bool,
@@ -4901,6 +5014,31 @@ pub mod types {
         pub builder_sub_account_id: u16,
         pub builder_total_referrer_rewards: u64,
         pub builder_total_builder_rewards: u64,
+    }
+    #[repr(C)]
+    #[derive(
+        AnchorSerialize,
+        AnchorDeserialize,
+        InitSpace,
+        Serialize,
+        Deserialize,
+        Copy,
+        Clone,
+        Default,
+        Debug,
+        PartialEq,
+    )]
+    pub struct RouterQuoteBufferV0 {
+        pub authority: Pubkey,
+        pub quoted_size: u64,
+        pub slot: u64,
+        pub market: u16,
+        pub source_count: u8,
+        pub direction: u8,
+        #[serde(skip)]
+        pub padding: Padding<12>,
+        pub sources: [QuotedSourceV0; 16],
+        pub levels: [[QuotedLevelV0; 32]; 16],
     }
     #[repr(C)]
     #[derive(
@@ -6549,6 +6687,70 @@ pub mod accounts {
     }
     #[automatically_derived]
     impl anchor_lang::AccountDeserialize for RevenueShareEscrow {
+        fn try_deserialize(buf: &mut &[u8]) -> anchor_lang::Result<Self> {
+            let given_disc = &buf[..8];
+            if Self::DISCRIMINATOR != given_disc {
+                return Err(anchor_lang::error!(
+                    anchor_lang::error::ErrorCode::AccountDiscriminatorMismatch
+                ));
+            }
+            Self::try_deserialize_unchecked(buf)
+        }
+        fn try_deserialize_unchecked(buf: &mut &[u8]) -> anchor_lang::Result<Self> {
+            let mut data: &[u8] = &buf[8..];
+            AnchorDeserialize::deserialize(&mut data)
+                .map_err(|_| anchor_lang::error::ErrorCode::AccountDidNotDeserialize.into())
+        }
+    }
+    #[repr(C)]
+    #[derive(
+        AnchorSerialize,
+        AnchorDeserialize,
+        InitSpace,
+        Serialize,
+        Deserialize,
+        Copy,
+        Clone,
+        Default,
+        Debug,
+        PartialEq,
+    )]
+    pub struct RouterQuoteBufferV0 {
+        pub authority: Pubkey,
+        pub quoted_size: u64,
+        pub slot: u64,
+        pub market: u16,
+        pub source_count: u8,
+        pub direction: u8,
+        #[serde(skip)]
+        pub padding: Padding<12>,
+        pub sources: [QuotedSourceV0; 16],
+        pub levels: [[QuotedLevelV0; 32]; 16],
+    }
+    #[automatically_derived]
+    impl anchor_lang::Discriminator for RouterQuoteBufferV0 {
+        const DISCRIMINATOR: &[u8] = &[226, 115, 111, 70, 54, 54, 253, 75];
+    }
+    #[automatically_derived]
+    unsafe impl anchor_lang::__private::bytemuck::Pod for RouterQuoteBufferV0 {}
+    #[automatically_derived]
+    unsafe impl anchor_lang::__private::bytemuck::Zeroable for RouterQuoteBufferV0 {}
+    #[automatically_derived]
+    impl anchor_lang::ZeroCopy for RouterQuoteBufferV0 {}
+    #[automatically_derived]
+    impl anchor_lang::AccountSerialize for RouterQuoteBufferV0 {
+        fn try_serialize<W: std::io::Write>(&self, writer: &mut W) -> anchor_lang::Result<()> {
+            if writer.write_all(Self::DISCRIMINATOR).is_err() {
+                return Err(anchor_lang::error::ErrorCode::AccountDidNotSerialize.into());
+            }
+            if AnchorSerialize::serialize(self, writer).is_err() {
+                return Err(anchor_lang::error::ErrorCode::AccountDidNotSerialize.into());
+            }
+            Ok(())
+        }
+    }
+    #[automatically_derived]
+    impl anchor_lang::AccountDeserialize for RouterQuoteBufferV0 {
         fn try_deserialize(buf: &mut &[u8]) -> anchor_lang::Result<Self> {
             let given_disc = &buf[..8];
             if Self::DISCRIMINATOR != given_disc {
@@ -11263,6 +11465,82 @@ pub mod accounts {
     }
     #[repr(C)]
     #[derive(Copy, Clone, Default, AnchorSerialize, AnchorDeserialize, Serialize, Deserialize)]
+    pub struct InitializeRouterQuoteBuffer {
+        pub payer: Pubkey,
+        pub authority: Pubkey,
+        pub quote_buffer: Pubkey,
+        pub system_program: Pubkey,
+    }
+    #[automatically_derived]
+    impl anchor_lang::Discriminator for InitializeRouterQuoteBuffer {
+        const DISCRIMINATOR: &[u8] = &[20, 124, 180, 20, 60, 18, 48, 144];
+    }
+    #[automatically_derived]
+    unsafe impl anchor_lang::__private::bytemuck::Pod for InitializeRouterQuoteBuffer {}
+    #[automatically_derived]
+    unsafe impl anchor_lang::__private::bytemuck::Zeroable for InitializeRouterQuoteBuffer {}
+    #[automatically_derived]
+    impl anchor_lang::ZeroCopy for InitializeRouterQuoteBuffer {}
+    #[automatically_derived]
+    impl anchor_lang::InstructionData for InitializeRouterQuoteBuffer {}
+    #[automatically_derived]
+    impl ToAccountMetas for InitializeRouterQuoteBuffer {
+        fn to_account_metas(&self) -> Vec<AccountMeta> {
+            vec![
+                AccountMeta {
+                    pubkey: self.payer,
+                    is_signer: true,
+                    is_writable: true,
+                },
+                AccountMeta {
+                    pubkey: self.authority,
+                    is_signer: true,
+                    is_writable: false,
+                },
+                AccountMeta {
+                    pubkey: self.quote_buffer,
+                    is_signer: false,
+                    is_writable: true,
+                },
+                AccountMeta {
+                    pubkey: self.system_program,
+                    is_signer: false,
+                    is_writable: false,
+                },
+            ]
+        }
+    }
+    #[automatically_derived]
+    impl anchor_lang::AccountSerialize for InitializeRouterQuoteBuffer {
+        fn try_serialize<W: std::io::Write>(&self, writer: &mut W) -> anchor_lang::Result<()> {
+            if writer.write_all(Self::DISCRIMINATOR).is_err() {
+                return Err(anchor_lang::error::ErrorCode::AccountDidNotSerialize.into());
+            }
+            if AnchorSerialize::serialize(self, writer).is_err() {
+                return Err(anchor_lang::error::ErrorCode::AccountDidNotSerialize.into());
+            }
+            Ok(())
+        }
+    }
+    #[automatically_derived]
+    impl anchor_lang::AccountDeserialize for InitializeRouterQuoteBuffer {
+        fn try_deserialize(buf: &mut &[u8]) -> anchor_lang::Result<Self> {
+            let given_disc = &buf[..8];
+            if Self::DISCRIMINATOR != given_disc {
+                return Err(anchor_lang::error!(
+                    anchor_lang::error::ErrorCode::AccountDiscriminatorMismatch
+                ));
+            }
+            Self::try_deserialize_unchecked(buf)
+        }
+        fn try_deserialize_unchecked(buf: &mut &[u8]) -> anchor_lang::Result<Self> {
+            let mut data: &[u8] = &buf[8..];
+            AnchorDeserialize::deserialize(&mut data)
+                .map_err(|_| anchor_lang::error::ErrorCode::AccountDidNotDeserialize.into())
+        }
+    }
+    #[repr(C)]
+    #[derive(Copy, Clone, Default, AnchorSerialize, AnchorDeserialize, Serialize, Deserialize)]
     pub struct InitializeSignedMsgUserOrders {
         pub signed_msg_user_orders: Pubkey,
         pub authority: Pubkey,
@@ -13922,6 +14200,76 @@ pub mod accounts {
     }
     #[automatically_derived]
     impl anchor_lang::AccountDeserialize for PostPythLazerOracleUpdate {
+        fn try_deserialize(buf: &mut &[u8]) -> anchor_lang::Result<Self> {
+            let given_disc = &buf[..8];
+            if Self::DISCRIMINATOR != given_disc {
+                return Err(anchor_lang::error!(
+                    anchor_lang::error::ErrorCode::AccountDiscriminatorMismatch
+                ));
+            }
+            Self::try_deserialize_unchecked(buf)
+        }
+        fn try_deserialize_unchecked(buf: &mut &[u8]) -> anchor_lang::Result<Self> {
+            let mut data: &[u8] = &buf[8..];
+            AnchorDeserialize::deserialize(&mut data)
+                .map_err(|_| anchor_lang::error::ErrorCode::AccountDidNotDeserialize.into())
+        }
+    }
+    #[repr(C)]
+    #[derive(Copy, Clone, Default, AnchorSerialize, AnchorDeserialize, Serialize, Deserialize)]
+    pub struct QuoteRouter {
+        pub state: Pubkey,
+        pub authority: Pubkey,
+        pub quote_buffer: Pubkey,
+    }
+    #[automatically_derived]
+    impl anchor_lang::Discriminator for QuoteRouter {
+        const DISCRIMINATOR: &[u8] = &[137, 42, 89, 106, 188, 93, 189, 84];
+    }
+    #[automatically_derived]
+    unsafe impl anchor_lang::__private::bytemuck::Pod for QuoteRouter {}
+    #[automatically_derived]
+    unsafe impl anchor_lang::__private::bytemuck::Zeroable for QuoteRouter {}
+    #[automatically_derived]
+    impl anchor_lang::ZeroCopy for QuoteRouter {}
+    #[automatically_derived]
+    impl anchor_lang::InstructionData for QuoteRouter {}
+    #[automatically_derived]
+    impl ToAccountMetas for QuoteRouter {
+        fn to_account_metas(&self) -> Vec<AccountMeta> {
+            vec![
+                AccountMeta {
+                    pubkey: self.state,
+                    is_signer: false,
+                    is_writable: false,
+                },
+                AccountMeta {
+                    pubkey: self.authority,
+                    is_signer: true,
+                    is_writable: false,
+                },
+                AccountMeta {
+                    pubkey: self.quote_buffer,
+                    is_signer: false,
+                    is_writable: true,
+                },
+            ]
+        }
+    }
+    #[automatically_derived]
+    impl anchor_lang::AccountSerialize for QuoteRouter {
+        fn try_serialize<W: std::io::Write>(&self, writer: &mut W) -> anchor_lang::Result<()> {
+            if writer.write_all(Self::DISCRIMINATOR).is_err() {
+                return Err(anchor_lang::error::ErrorCode::AccountDidNotSerialize.into());
+            }
+            if AnchorSerialize::serialize(self, writer).is_err() {
+                return Err(anchor_lang::error::ErrorCode::AccountDidNotSerialize.into());
+            }
+            Ok(())
+        }
+    }
+    #[automatically_derived]
+    impl anchor_lang::AccountDeserialize for QuoteRouter {
         fn try_deserialize(buf: &mut &[u8]) -> anchor_lang::Result<Self> {
             let given_disc = &buf[..8];
             if Self::DISCRIMINATOR != given_disc {

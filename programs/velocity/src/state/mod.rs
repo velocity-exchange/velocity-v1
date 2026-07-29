@@ -26,6 +26,7 @@ pub mod pyth_lazer_oracle;
 pub mod quoter;
 pub mod revenue_share;
 pub mod revenue_share_map;
+pub mod router_quote;
 pub mod scale_order_params;
 pub mod settle_pnl_mode;
 pub mod signed_msg_user;

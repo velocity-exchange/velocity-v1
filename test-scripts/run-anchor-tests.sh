@@ -106,6 +106,7 @@ test_files=(
   spotMarketPoolIds.ts
   # spotSwap.ts # broken by spot fulfillment purge — needs migration to read serum vaults directly off the Market
   # spotSwap22.ts # broken by spot fulfillment purge — needs migration to read serum vaults directly off the Market
+  swapPostEndIxs.ts
   stopLimits.ts
   subaccounts.ts
   surgePricing.ts

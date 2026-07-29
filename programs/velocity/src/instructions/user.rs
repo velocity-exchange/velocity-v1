@@ -3836,9 +3836,8 @@ pub fn handle_begin_swap<'c: 'info, 'info>(
     )?;
 
     // The only other velocity program allowed is SwapEnd
-    let mut index = current_index + 1;
     let mut found_end = false;
-    loop {
+    for index in current_index + 1.. {
         let ix = match instructions::load_instruction_at_checked(index, ixs) {
             Ok(ix) => ix,
             Err(ProgramError::InvalidArgument) => break,
@@ -3958,8 +3957,6 @@ pub fn handle_begin_swap<'c: 'info, 'info>(
                 )?;
             }
         }
-
-        index += 1;
     }
 
     validate!(

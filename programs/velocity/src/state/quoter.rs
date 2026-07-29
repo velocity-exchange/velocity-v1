@@ -774,12 +774,20 @@ impl MarketQuoteInputs {
     ) -> VelocityResult<Self> {
         let mm_oracle =
             market.get_mm_oracle_price_data(oracle_price_data, slot, validity_guard_rails)?;
-        let oracle_validity =
+        // `oracle_validity` is read only inside `project_and_apply`, which
+        // returns early when the curve was already refreshed at this slot (by
+        // the router's own projection, an earlier fill, or a keeper crank). In
+        // that dominant case the value is never looked at, so skip the
+        // recompute — it is not cheap — and pass `None`.
+        let oracle_validity = if market.amm.last_update_slot < slot {
             crate::vlp::amm::refresh::compute_amm_refresh_validity_with_guard_rails(
                 market,
                 &mm_oracle,
                 validity_guard_rails,
-            )?;
+            )?
+        } else {
+            None
+        };
         Ok(MarketQuoteInputs {
             stats: market.market_stats,
             safe_oracle: mm_oracle.get_safe_oracle_price_data(),

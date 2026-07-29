@@ -100,23 +100,17 @@ pub fn vamm_quote_levels(
     };
 
     // Last look: rival prices beyond our top (but within the band) become
-    // shading rungs, best-first. Gated on the market's `amm_jit_intensity`:
-    // the last look is AMM-JIT's general form, and this keeps that
-    // per-market dial — zero means the taker always gets the honest curve,
-    // nonzero means the vAMM captures the curve↔rival gap for the LPs.
-    // Graduated intensities collapse to on/off; sizing is the ladder's job.
-    let mut rival_rungs: Vec<u64> = if amm.amm_jit_intensity > 0 {
-        rival_books
-            .iter()
-            .flat_map(|book| book.levels.iter().map(|level| level.price))
-            .filter(|&price| match direction {
-                Direction::Long => price > top && price <= band_edge,
-                Direction::Short => price < top && price >= band_edge && price > 0,
-            })
-            .collect()
-    } else {
-        vec![]
-    };
+    // shading rungs, best-first. Always on — the vAMM was winning this flow
+    // at its honest price anyway (price priority), so filling at the rival's
+    // price instead is strictly LP surplus with no cost to any maker.
+    let mut rival_rungs: Vec<u64> = rival_books
+        .iter()
+        .flat_map(|book| book.levels.iter().map(|level| level.price))
+        .filter(|&price| match direction {
+            Direction::Long => price > top && price <= band_edge,
+            Direction::Short => price < top && price >= band_edge && price > 0,
+        })
+        .collect();
     rival_rungs.sort_unstable();
     if direction == Direction::Short {
         rival_rungs.reverse();
@@ -227,8 +221,6 @@ mod tests {
             max_base_asset_reserve: 200 * AMM_RESERVE_PRECISION,
             // reserve/4 per fill so a 10-unit test size clears the cap
             max_fill_reserve_fraction: 4,
-            // last-look shading on (its per-market dial)
-            amm_jit_intensity: 100,
             ..AMM::default()
         };
         amm.seed_no_spread_quote_state();
@@ -310,21 +302,6 @@ mod tests {
             .unwrap()
             .quote_asset_amount;
         assert!(split_notional(&levels) >= exact);
-    }
-
-    #[test]
-    fn zero_jit_intensity_disables_shading() {
-        let mut amm = amm_fixture();
-        amm.amm_jit_intensity = 0;
-        let size = 10 * BASE_PRECISION_U64;
-        let rival_levels = [PriceLevel {
-            price: TOP + TOP / 100, // in band — would shade if enabled
-            size: BASE_PRECISION_U64,
-        }];
-        let quoted =
-            vamm_quote_levels(&amm, Direction::Long, size, 1, &rival_book(&rival_levels)).unwrap();
-        let honest = vamm_quote_levels(&amm, Direction::Long, size, 1, &[]).unwrap();
-        assert_eq!(quoted, honest);
     }
 
     #[test]

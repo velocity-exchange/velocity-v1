@@ -1217,8 +1217,6 @@ mod tests {
             min_base_asset_reserve: 50 * AMM_RESERVE_PRECISION,
             max_base_asset_reserve: 200 * AMM_RESERVE_PRECISION,
             max_fill_reserve_fraction: 4,
-            // last-look shading on (its per-market dial)
-            amm_jit_intensity: 100,
             ..AMM::default()
         };
         // DLOB ask 0.5% above the AMM top — inside the last-look band, so

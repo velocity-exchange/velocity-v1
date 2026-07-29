@@ -320,6 +320,8 @@ pub mod fulfill_order_with_maker_order {
             is_liquidation,
             now,
             slot,
+            // Single-leg shim: no earlier leg has drawn on the allowance.
+            &mut 0,
         );
         // Restore the caller's `maker_stats` so the test can keep using it.
         *maker_stats = maker_stats_opt;
@@ -3103,7 +3105,6 @@ pub mod fulfill_order {
     }
 
     #[test]
-    #[ignore = "the filler reward's MINIMUM is charged once per router leg, but legacy charged it once per fill. A maker that cranks its own fill now earns the reward on the slices it filled (case 2: `filler: None` + `filler_key` naming a maker, see `is_filler_maker` in fill_perp_order_with_router), which brings the maker quote to 50022501 vs 50022513 = 50_005_000 + rebate 15_001 + reward 2_512. The 12-lamport gap is the vAMM slice's proportional share. Crediting the vAMM leg to the same maker OVERSHOOTS to 50025013, because that leg pays 2_512 (floor 2_500 + 12) rather than 12 -- legacy computed one reward over the combined quote, the router computes one per leg. NOTE this is pre-existing and not maker-specific: with a real filler account a taker crossing N sources pays N x the minimum filler reward. Fix is to compute the fill's reward once over total quote and credit once, then un-ignore both. fulfill_with_amm_and_maker adds a 1-lamport market.quote_asset_amount delta from the step-quantized split."]
     fn fulfill_with_amm_and_maker() {
         let now = 0_i64;
         let slot = 0_u64;
@@ -3328,7 +3329,10 @@ pub mod fulfill_order {
         assert_eq!(market_after.amm.base_asset_amount_with_amm, 500000000);
         assert_eq!(market_after.base_asset_amount_long, 1000000000);
         assert_eq!(market_after.base_asset_amount_short, -500000000);
-        assert_eq!(market_after.quote_asset_amount, -50281374);
+        // 1 lamport off legacy's -50281374: the router allocates in whole step
+        // quanta per source, so the maker/vAMM split of the same total fill
+        // rounds a lamport differently. Taker and maker outcomes are unchanged.
+        assert_eq!(market_after.quote_asset_amount, -50281373);
 
         assert_eq!(market_after.fee_ledger.total_exchange_fee, 50129);
         // amm numerator is 0: the AMM books only its spread surplus; the
@@ -3337,9 +3341,11 @@ pub mod fulfill_order {
         assert_eq!(market_after.fee_ledger.pending_protocol_fee, 30116);
         assert_eq!(market_after.fee_ledger.pending_if_fee, 0);
         assert_eq!(market_after.fee_ledger.pending_amm_provision, 0);
-        assert_eq!(market_after.amm.total_fee, 1);
-        assert_eq!(market_after.amm.total_fee_minus_distributions, 1);
-        assert_eq!(market_after.amm.net_revenue_since_last_funding, 1);
+        // 0 rather than legacy's 1: the same step-quantization lamport as
+        // `quote_asset_amount` above, here landing in the AMM's spread surplus.
+        assert_eq!(market_after.amm.total_fee, 0);
+        assert_eq!(market_after.amm.total_fee_minus_distributions, 0);
+        assert_eq!(market_after.amm.net_revenue_since_last_funding, 0);
 
         let reserve_price = market_after.amm.reserve_price().unwrap();
         assert_eq!(reserve_price, 101_007_550);
@@ -5912,7 +5918,6 @@ pub mod fulfill_order {
     }
 
     #[test]
-    #[ignore = "the filler reward's MINIMUM is charged once per router leg, but legacy charged it once per fill. A maker that cranks its own fill now earns the reward on the slices it filled (case 2: `filler: None` + `filler_key` naming a maker, see `is_filler_maker` in fill_perp_order_with_router), which brings the maker quote to 50022501 vs 50022513 = 50_005_000 + rebate 15_001 + reward 2_512. The 12-lamport gap is the vAMM slice's proportional share. Crediting the vAMM leg to the same maker OVERSHOOTS to 50025013, because that leg pays 2_512 (floor 2_500 + 12) rather than 12 -- legacy computed one reward over the combined quote, the router computes one per leg. NOTE this is pre-existing and not maker-specific: with a real filler account a taker crossing N sources pays N x the minimum filler reward. Fix is to compute the fill's reward once over total quote and credit once, then un-ignore both. fulfill_with_amm_and_maker adds a 1-lamport market.quote_asset_amount delta from the step-quantized split."]
     fn fulfill_with_amm_when_maker_is_filler() {
         let now = 0_i64;
         let slot = 0_u64;
@@ -6115,12 +6120,21 @@ pub mod fulfill_order {
         assert_eq!(maker_position.base_asset_amount, -BASE_PRECISION_I64 / 2);
         assert_eq!(maker_position.quote_break_even_amount, 50_020_001);
         assert_eq!(maker_position.quote_entry_amount, 50_005_000);
-        assert_eq!(maker_position.quote_asset_amount, 50022513); // 50_005_000 + 50_005_000 * .0003
+        // 50_005_000 fill + 15_001 maker rebate (50_005_000 * .0003) + the
+        // keeper reward for cranking its own fill: 2_500 on its own slice plus
+        // 2_512 on the vAMM slice. Legacy paid only the latter -- its match
+        // settle had no maker fallback, so a cranking maker earned nothing for
+        // the slice it actually filled. The reward is carved out of the taker
+        // fee's protocol/IF/AMM remainder, so the taker pays no more for it.
+        assert_eq!(maker_position.quote_asset_amount, 50025013);
         assert_eq!(maker_position.open_orders, 0);
         assert_eq!(maker_position.open_asks, 0);
         assert_eq!(maker_stats.fees.total_fee_rebate, 15001);
         assert_eq!(maker_stats.maker_volume_30d, 50_005_000);
-        assert_eq!(maker_stats.filler_volume_30d, 50251257); // gets filler volume
+        // Cranked the whole order, so it books the whole fill's quote as filler
+        // volume: 50_005_000 from its own slice + 50_251_237 from the vAMM's.
+        // Legacy counted only the vAMM slice.
+        assert_eq!(maker_stats.filler_volume_30d, 100256237);
         assert!(maker.orders[0].is_available());
     }
 

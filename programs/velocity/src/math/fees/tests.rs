@@ -32,6 +32,7 @@ mod calculate_fee_for_taker_and_maker {
             &MarketType::Perp,
             0,
             None,
+            0,
         )
         .unwrap();
 
@@ -79,6 +80,7 @@ mod calculate_fee_for_taker_and_maker {
             &MarketType::Perp,
             0,
             None,
+            0,
         )
         .unwrap();
 
@@ -125,6 +127,7 @@ mod calculate_fee_for_taker_and_maker {
             &MarketType::Perp,
             0,
             None,
+            0,
         )
         .unwrap();
 
@@ -171,6 +174,7 @@ mod calculate_fee_for_taker_and_maker {
             &MarketType::Perp,
             0,
             None,
+            0,
         )
         .unwrap();
 
@@ -215,6 +219,7 @@ mod calculate_fee_for_taker_and_maker {
             &MarketType::Perp,
             0,
             None,
+            0,
         )
         .unwrap();
 
@@ -256,6 +261,7 @@ mod calculate_fee_for_taker_and_maker {
             &MarketType::Perp,
             -50,
             None,
+            0,
         )
         .unwrap();
 
@@ -290,6 +296,7 @@ mod calculate_fee_for_taker_and_maker {
             &MarketType::Perp,
             50,
             None,
+            0,
         )
         .unwrap();
 
@@ -325,6 +332,7 @@ mod calculate_fee_for_taker_and_maker {
             &MarketType::Perp,
             -50,
             None,
+            0,
         )
         .unwrap();
 
@@ -360,6 +368,7 @@ mod calculate_fee_for_taker_and_maker {
             &MarketType::Perp,
             -50,
             None,
+            0,
         )
         .unwrap();
 
@@ -401,6 +410,7 @@ mod calculate_fee_for_taker_and_maker {
             &MarketType::Perp,
             -100,
             None,
+            0,
         )
         .unwrap();
 
@@ -435,6 +445,7 @@ mod calculate_fee_for_taker_and_maker {
             &MarketType::Perp,
             -100,
             None,
+            0,
         )
         .unwrap();
 
@@ -469,6 +480,7 @@ mod calculate_fee_for_taker_and_maker {
             &MarketType::Perp,
             -100,
             None,
+            0,
         )
         .unwrap();
 
@@ -504,6 +516,7 @@ mod calculate_fee_for_taker_and_maker {
             &MarketType::Perp,
             -100,
             None,
+            0,
         )
         .unwrap();
 
@@ -539,6 +552,7 @@ mod calculate_fee_for_taker_and_maker {
             &MarketType::Perp,
             -100,
             None,
+            0,
         )
         .unwrap();
 
@@ -588,6 +602,7 @@ mod calculate_fee_for_order_fulfill_against_amm {
             false,
             0,
             None,
+            0,
         )
         .unwrap();
 
@@ -630,6 +645,7 @@ mod calculate_fee_for_order_fulfill_against_amm {
             false,
             -50,
             None,
+            0,
         )
         .unwrap();
 
@@ -660,6 +676,7 @@ mod calculate_fee_for_order_fulfill_against_amm {
             false,
             50,
             None,
+            0,
         )
         .unwrap();
 
@@ -691,6 +708,7 @@ mod calculate_fee_for_order_fulfill_against_amm {
             false,
             -50,
             None,
+            0,
         )
         .unwrap();
 
@@ -722,6 +740,7 @@ mod calculate_fee_for_order_fulfill_against_amm {
             false,
             -50,
             None,
+            0,
         )
         .unwrap();
 

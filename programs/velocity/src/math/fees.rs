@@ -82,6 +82,7 @@ pub fn calculate_fee_for_fulfillment_with_amm(
     is_post_only: bool,
     fee_adjustment: i16,
     builder_fee_bps: Option<u16>,
+    filler_reward_paid: u64,
 ) -> VelocityResult<FillFees> {
     let fee_tier = determine_user_fee_tier(user_stats, fee_structure, &MarketType::Perp)?;
 
@@ -110,6 +111,7 @@ pub fn calculate_fee_for_fulfillment_with_amm(
                 clock_slot,
                 0,
                 &fee_structure.filler_reward_structure,
+                filler_reward_paid,
             )?
         };
         // (spread-derived) house fee net of the filler reward, split three
@@ -151,6 +153,7 @@ pub fn calculate_fee_for_fulfillment_with_amm(
                 clock_slot,
                 0,
                 &fee_structure.filler_reward_structure,
+                filler_reward_paid,
             )?
         };
 
@@ -271,12 +274,20 @@ fn calculate_referee_fee_and_referrer_reward(
     Ok((referee_fee, referee_discount, referrer_reward))
 }
 
+/// `filler_reward_paid` is what earlier legs of this same fill already paid the
+/// filler. The size-based term is linear in the fee, so it sums correctly across
+/// legs on its own; the time-based term is size-independent (same `order_slot`,
+/// `clock_slot` and `multiplier` for every leg of one order), so it is an
+/// allowance for the whole fill and has to be drawn down rather than re-granted
+/// per leg. Without that, a taker crossing N sources pays the time-based reward
+/// N times.
 fn calculate_filler_reward(
     fee: u64,
     order_slot: u64,
     clock_slot: u64,
     multiplier: u64,
     filler_reward_structure: &OrderFillerRewardStructure,
+    filler_reward_paid: u64,
 ) -> VelocityResult<u64> {
     // incentivize keepers to prioritize filling older orders (rather than just largest orders)
     // for sufficiently small-sized order, reward based on fraction of fee paid
@@ -305,8 +316,11 @@ fn calculate_filler_reward(
         .safe_div(100)? // 1e2 = sqrt(sqrt(1e8))
         .cast::<u64>()?;
 
-    // lesser of size-based and time-based reward
-    let fee = min(size_filler_reward, time_filler_reward);
+    // lesser of size-based and the time-based allowance left for this fill
+    let fee = min(
+        size_filler_reward,
+        time_filler_reward.saturating_sub(filler_reward_paid),
+    );
 
     Ok(fee)
 }
@@ -323,6 +337,7 @@ pub fn calculate_fee_for_fulfillment_with_match(
     market_type: &MarketType,
     fee_adjustment: i16,
     builder_fee_bps: Option<u16>,
+    filler_reward_paid: u64,
 ) -> VelocityResult<FillFees> {
     let taker_fee_tier = determine_user_fee_tier(taker_stats, fee_structure, market_type)?;
     let maker_fee_tier = if let Some(maker_stats) = maker_stats {
@@ -350,6 +365,7 @@ pub fn calculate_fee_for_fulfillment_with_match(
             clock_slot,
             filler_multiplier,
             &fee_structure.filler_reward_structure,
+            filler_reward_paid,
         )?
     };
 

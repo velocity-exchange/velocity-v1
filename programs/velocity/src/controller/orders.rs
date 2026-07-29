@@ -2315,6 +2315,10 @@ fn settle_amm_house_fill(
     oracle_map: &mut OracleMap,
     now: i64,
     slot: u64,
+    // Filler reward already paid by earlier legs of this same fill. The
+    // time-based component of the reward is size-independent, so it is a
+    // per-fill allowance the legs draw down rather than one each.
+    filler_reward_paid: &mut u64,
 ) -> VelocityResult<(u64, u64)> {
     // For sole-AMM steps with a post_only taker, override the
     // fill's quote at the order's limit price (the taker, acting
@@ -2371,7 +2375,9 @@ fn settle_amm_house_fill(
         order_post_only,
         market.fee_adjustment,
         builder_order_fee_bps,
+        *filler_reward_paid,
     )?;
+    *filler_reward_paid = filler_reward_paid.saturating_add(filler_reward);
     let builder_fee = builder_fee_option.unwrap_or(0);
 
     if builder_fee != 0 {
@@ -2607,6 +2613,10 @@ fn settle_dlob_match_fill(
     is_liquidation: bool,
     now: i64,
     slot: u64,
+    // Filler reward already paid by earlier legs of this same fill. The
+    // time-based component of the reward is size-independent, so it is a
+    // per-fill allowance the legs draw down rather than one each.
+    filler_reward_paid: &mut u64,
 ) -> VelocityResult<(u64, u64, u64)> {
     // DlobMatch fills only land from a Match step, which always
     // populates `match_maker_price`.
@@ -2719,7 +2729,9 @@ fn settle_dlob_match_fill(
         &MarketType::Perp,
         market.fee_adjustment,
         builder_order_fee_bps,
+        *filler_reward_paid,
     )?;
+    *filler_reward_paid = filler_reward_paid.saturating_add(filler_reward);
     let builder_fee = builder_fee_option.unwrap_or(0);
 
     if builder_fee != 0 {
@@ -2953,6 +2965,10 @@ fn settle_external_match_fill(
     is_liquidation: bool,
     now: i64,
     slot: u64,
+    // Filler reward already paid by earlier legs of this same fill. The
+    // time-based component of the reward is size-independent, so it is a
+    // per-fill allowance the legs draw down rather than one each.
+    filler_reward_paid: &mut u64,
 ) -> VelocityResult<(u64, u64)> {
     let maker_direction = taker_direction.opposite();
     let maker_position_index = get_position_index(&maker_user.perp_positions, market.market_index)
@@ -3045,7 +3061,9 @@ fn settle_external_match_fill(
         &MarketType::Perp,
         market.fee_adjustment,
         builder_order_fee_bps,
+        *filler_reward_paid,
     )?;
+    *filler_reward_paid = filler_reward_paid.saturating_add(filler_reward);
     let builder_fee = builder_fee_option.unwrap_or(0);
 
     if builder_fee != 0 {
@@ -3570,6 +3588,11 @@ fn fulfill_perp_order_router_pass(
     };
     let mut total_base = 0u64;
     let mut total_quote = 0u64;
+    // The filler reward's time-based component is size-independent, so it is
+    // an allowance for the whole fill: each leg draws down what earlier legs
+    // already paid instead of being granted it afresh. Otherwise a taker
+    // crossing N sources pays that component N times.
+    let mut filler_reward_paid = 0_u64;
     for (i, router_maker) in router_makers.iter().enumerate() {
         let allocation = allocations[externals_end + i];
         if allocation.base == 0 {
@@ -3643,6 +3666,7 @@ fn fulfill_perp_order_router_pass(
             is_liquidation,
             now,
             slot,
+            &mut filler_reward_paid,
         )?;
         total_base = total_base.safe_add(base_filled)?;
         total_quote = total_quote.safe_add(quote_filled)?;
@@ -3666,6 +3690,29 @@ fn fulfill_perp_order_router_pass(
 
     // ---- Settle the vAMM fill. ----
     if let Some(fill) = amm_fill {
+        // A maker that cranked this fill did the keeper's work for the *whole*
+        // order, not just its own slice, so it earns the reward on the vAMM
+        // slice too. It arrives as `filler: None` with `filler_key` naming
+        // itself (already loaded in the maker map, so it cannot be loaded a
+        // second time as the filler). Gated on it having actually filled, so a
+        // maker that names itself but wins no allocation earns nothing. The
+        // DLOB loop above has released its borrows by here.
+        let cranking_maker_key = (filler.is_none() && maker_fills.contains_key(filler_key))
+            .then_some(filler_key)
+            .filter(|key| makers_and_referrer.0.contains_key(key));
+        let mut cranking_maker = match cranking_maker_key {
+            Some(key) => Some(makers_and_referrer.get_ref_mut(key)?),
+            None => None,
+        };
+        let mut cranking_maker_stats = match cranking_maker.as_deref() {
+            Some(maker) if maker.authority != taker.authority => {
+                Some(makers_and_referrer_stats.get_ref_mut(&maker.authority)?)
+            }
+            _ => None,
+        };
+        let mut cranking_maker_opt: Option<&mut User> = cranking_maker.as_deref_mut();
+        let mut cranking_maker_stats_opt: Option<&mut UserStats> =
+            cranking_maker_stats.as_deref_mut();
         let (base_filled, quote_filled) = settle_amm_house_fill(
             &fill,
             market.deref_mut(),
@@ -3682,8 +3729,8 @@ fn fulfill_perp_order_router_pass(
             taker_limit_price,
             false,
             is_liquidation,
-            &mut None,
-            &mut None,
+            &mut cranking_maker_opt,
+            &mut cranking_maker_stats_opt,
             filler,
             filler_stats,
             filler_key,
@@ -3692,6 +3739,7 @@ fn fulfill_perp_order_router_pass(
             oracle_map,
             now,
             slot,
+            &mut filler_reward_paid,
         )?;
         total_base = total_base.safe_add(base_filled)?;
         total_quote = total_quote.safe_add(quote_filled)?;
@@ -3790,6 +3838,7 @@ fn fulfill_perp_order_router_pass(
                 is_liquidation,
                 now,
                 slot,
+                &mut filler_reward_paid,
             )?;
             total_base = total_base.safe_add(base_filled)?;
             total_quote = total_quote.safe_add(quote_filled)?;

@@ -1638,11 +1638,12 @@ pub mod velocity {
         handle_withdraw_protocol_fees_perp(ctx, market_index, amount)
     }
 
-    /// Permissionless: grow a zero-copy account to the size this program build
-    /// compiles in for its type (resolved from the account discriminator). The
-    /// migration crank after an upgrade that appends fields to an account
-    /// struct; no-op when already at size. Payer covers the rent-exempt
-    /// shortfall. See `docs/ACCOUNT-EXTENSION.md`.
+    /// Grow a zero-copy account to the size this program build compiles in
+    /// for its type (resolved from the account discriminator). The migration
+    /// crank after an upgrade that appends fields to an account struct; no-op
+    /// when already at size. Payer covers the rent-exempt shortfall (auth:
+    /// `AccountExtension` hot key, or warm/cold admin). See
+    /// `docs/ACCOUNT-EXTENSION.md`.
     pub fn extend_account(ctx: Context<ExtendAccount>) -> Result<()> {
         handle_extend_account(ctx)
     }

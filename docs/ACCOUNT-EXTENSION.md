@@ -37,25 +37,32 @@ The inverse case (account shorter than the struct) is not decodable by anyone an
 
 ## What ships in the program
 
-**`extend_account`** (permissionless). Takes `payer` (signer), the target account, and the system
-program. The handler reads the account's discriminator, resolves the target size
-`8 + size_of::<T>()` for that type from the deployed binary, transfers the rent-exempt shortfall
-from the payer, and grows the account data; the runtime zero-fills the new tail. Guard rails:
+**`extend_account`**. Takes `state`, `payer` (signer), an `authority` signer holding the
+`AccountExtension` hot role (warm/cold admin pass too, and are the only callers while the role is
+unset), the target account, and the system program. The handler reads the account's
+discriminator, resolves the target size `8 + size_of::<T>()` for that type from the deployed
+binary, transfers the rent-exempt shortfall from the payer, and grows the account data; the
+runtime zero-fills the new tail. Guard rails:
 
+- Auth: `HotRole.AccountExtension` (`State.hot_account_extension`, rotated with
+  `update_hot_admin` / `velocity-admin auth set-hot-admin accountExtension <pubkey>`). Extension
+  never corrupts contents, but growing accounts inflates fetch bandwidth and any future per-byte
+  transaction pricing, so when accounts grow is the protocol's decision, not the public's.
 - The account must be velocity-owned and carry the discriminator of a supported zero-copy type
   (`User`, `UserStats`, `ReferrerName`, `PerpMarket`, `SpotMarket`, `State`,
   `InsuranceFundStake`, `PrelaunchOracle`, `PythLazerOracle`, `RevenueShare`, `LPPool`,
   `Constituent`). Anything else fails with `InvalidAccountExtension`.
-- Grow-only, and the target is compiled in, so the instruction cannot be abused to shrink an
-  account, inflate one to an arbitrary size, or touch borsh accounts.
+- Grow-only, and the target is compiled in, so the instruction cannot shrink an account, inflate
+  one to an arbitrary size, or touch borsh accounts.
 - An account already at (or beyond) target size is a success no-op, so the crank is idempotent,
   races between crankers are harmless, and batched transactions never fail wholesale.
 - The handler takes the account as an `UncheckedAccount` and never loads it as its type. This
   matters: the whole point is repairing accounts the typed loaders currently reject.
 
-**`extend_account_devnet(new_len)`** grows an account to an arbitrary larger size. It exists so
-tests and devnet can simulate the post-upgrade state (account bigger than every deployed struct)
-before a real extension exists. Compiled out of mainnet builds via the `mainnet-beta` feature.
+**`extend_account_devnet(new_len)`** grows an account to an arbitrary larger size, under the same
+role gate. It exists so tests and devnet can simulate the post-upgrade state (account bigger than
+every deployed struct) before a real extension exists. Compiled out of mainnet builds via the
+`mainnet-beta` feature.
 
 Because `extend_account` ships **before** any real extension, it is already deployed and dormant
 by the time it is needed. The upgrade that finally eats the padding needs no new tooling; the
@@ -90,11 +97,11 @@ Say a field no longer fits in `User`'s padding and the struct must grow.
    ```
 
    The command scans with `getProgramAccounts` by discriminator, skips accounts already at size,
-   and sends batched `extend_account` instructions signed by your keypair (`--keypair`, any funded
-   key; the signer only pays rent shortfalls). `--dry-run` prints the affected accounts and the
-   rent cost without sending. Because the instruction is permissionless, keepers or users can also
-   self-serve individual accounts with `VelocityClient.extendAccount(pubkey)` instead of waiting
-   for the crank.
+   and sends batched `extend_account` instructions. The signing keypair (`--keypair`) must hold
+   the `AccountExtension` hot role or be the warm/cold admin; assign the role ahead of the
+   migration with `velocity-admin auth set-hot-admin accountExtension <pubkey>` so the crank runs
+   off a low-stakes hot key rather than an admin key. `--dry-run` prints the affected accounts
+   and the rent cost without sending.
 
 5. **Verify.** Re-run each type with `--dry-run`; every scan should report zero accounts below
    target. From here the new fields read as zero-defaults until code writes them.
@@ -132,5 +139,5 @@ expected buffer length. Concretely:
 - **Reordering, inserting, or widening existing fields.** That is a layout break, not an
   extension; existing bytes would be reinterpreted wrongly. The only safe growth is claiming
   trailing padding and appending past the old end.
-- **Shrinking.** Never supported; the rent refund would also make a permissionless shrink a
-  drain vector.
+- **Shrinking.** Never supported; it truncates live data, and the rent refund would make any
+  shrink path a drain vector if its key were ever compromised.

@@ -3,7 +3,13 @@
 //! end to end before a real struct extension exists.
 
 use {
-    crate::{error::ErrorCode, instructions::account_extension::extension_target_len, validate},
+    crate::{
+        auth::check_hot,
+        error::ErrorCode,
+        instructions::account_extension::extension_target_len,
+        state::state::{HotRole, State},
+        validate,
+    },
     anchor_lang::{
         prelude::*,
         system_program::{transfer, Transfer},
@@ -12,8 +18,11 @@ use {
 
 #[derive(Accounts)]
 pub struct ExtendAccountDevnet<'info> {
+    pub state: AccountLoader<'info, State>,
     #[account(mut)]
     pub payer: Signer<'info>,
+    #[account(constraint = check_hot(&authority.key(), &state, HotRole::AccountExtension)?)]
+    pub authority: Signer<'info>,
     /// CHECK: must be velocity-owned; the handler requires a supported
     /// zero-copy discriminator
     #[account(mut, owner = crate::ID)]

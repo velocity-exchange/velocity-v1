@@ -37,9 +37,11 @@ export function registerAccountExtension(parent: Command): void {
 				'Grow zero-copy accounts to the size the deployed program expects, as the migration ' +
 					'crank after a program upgrade that appended fields to an account struct ' +
 					'(see docs/ACCOUNT-EXTENSION.md). Pass a single account pubkey, or --type to scan ' +
-					'and extend every account of that type. Permissionless: the signer only pays the ' +
-					'rent-exempt shortfall, so --multisig is not supported. Idempotent; accounts ' +
-					'already at size are skipped (and are a no-op on-chain even when raced).'
+					'and extend every account of that type. The signer must hold the AccountExtension ' +
+					'hot role (or be the warm/cold admin) and pays the rent-exempt shortfalls; assign ' +
+					'the role with `auth set-hot-admin accountExtension <pubkey>`. --multisig is not ' +
+					'supported (assign the role to a hot keypair instead — a crank is many transactions). ' +
+					'Idempotent; accounts already at size are skipped (and are a no-op on-chain even when raced).'
 			)
 			.option(
 				'--type <type>',
@@ -66,7 +68,8 @@ export function registerAccountExtension(parent: Command): void {
 		};
 		if (opts.multisig) {
 			throw new Error(
-				'extend-account is permissionless; sign with a funded keypair instead of --multisig'
+				'extend-account does not support --multisig; assign the AccountExtension hot role ' +
+					'to a keypair (auth set-hot-admin accountExtension <pubkey>) and sign with it'
 			);
 		}
 		if ((account === undefined) === (local.type === undefined)) {

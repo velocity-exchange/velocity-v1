@@ -74,7 +74,7 @@ velocity-admin program close-buffers [--dry-run] [--program-only|--metadata-only
 
 velocity-admin multisig create --proposer <pubkey> [--name <name>]  # create a Squads V4 1/1 multisig
 
-velocity-admin extend-account <account>                          # permissionless; grow one zero-copy account to the deployed program's size
+velocity-admin extend-account <account>                          # AccountExtension hot key (or warm/cold); grow one zero-copy account to the deployed program's size
 velocity-admin extend-account --type <type> [--batch-size <n>] [--dry-run]  # migration crank: scan + extend every account of a type (see docs/ACCOUNT-EXTENSION.md)
 
 velocity-admin call <ixName> <payloadFile>     # generic IDL escape hatch

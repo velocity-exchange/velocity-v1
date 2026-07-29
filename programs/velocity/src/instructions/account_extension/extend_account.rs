@@ -1,8 +1,9 @@
-//! Permissionless grow of a zero-copy account to the size the deployed
-//! program compiles in for its type.
+//! Grow a zero-copy account to the size the deployed program compiles in for
+//! its type (auth: `AccountExtension` hot key, or warm/cold admin).
 
 use {
     crate::{
+        auth::check_hot,
         error::ErrorCode,
         state::{
             insurance_fund_stake::InsuranceFundStake,
@@ -11,7 +12,7 @@ use {
             pyth_lazer_oracle::PythLazerOracle,
             revenue_share::RevenueShare,
             spot_market::SpotMarket,
-            state::State,
+            state::{HotRole, State},
             user::{ReferrerName, User, UserStats},
         },
         validate,
@@ -26,8 +27,11 @@ use {
 
 #[derive(Accounts)]
 pub struct ExtendAccount<'info> {
+    pub state: AccountLoader<'info, State>,
     #[account(mut)]
     pub payer: Signer<'info>,
+    #[account(constraint = check_hot(&authority.key(), &state, HotRole::AccountExtension)?)]
+    pub authority: Signer<'info>,
     /// CHECK: must be velocity-owned; the handler resolves its type (and target
     /// size) from the account discriminator
     #[account(mut, owner = crate::ID)]
@@ -36,6 +40,11 @@ pub struct ExtendAccount<'info> {
 }
 
 /// Grow `account` to `8 + size_of::<T>()` for its discriminator's type `T`.
+///
+/// Auth: the `AccountExtension` hot key (or warm/cold admin fallback while the
+/// role is unset). Extension is harmless to account contents, but growing
+/// accounts inflates fetch bandwidth and any future per-byte transaction
+/// costs, so when it happens is the protocol's call, not the public's.
 ///
 /// Grow-only: an account already at (or beyond) the target size is a no-op so
 /// repeated cranking and races are harmless. The payer covers the rent-exempt

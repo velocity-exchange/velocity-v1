@@ -12,14 +12,15 @@
 //! is idempotent and batches never fail wholesale.
 //! `extend_account_devnet` additionally grows an account to an arbitrary
 //! larger size so the flow can be exercised before a real extension exists;
-//! it is compiled out of mainnet builds. See `docs/ACCOUNT-EXTENSION.md`.
+//! it is compiled out of production mainnet builds (`anchor-test` keeps it
+//! for the integration suite). See `docs/ACCOUNT-EXTENSION.md`.
 //!
 //! One file per instruction: account context at the top, handler below.
 
 mod extend_account;
-#[cfg(not(feature = "mainnet-beta"))]
+#[cfg(any(feature = "anchor-test", not(feature = "mainnet-beta")))]
 mod extend_account_devnet;
 
 pub use extend_account::*;
-#[cfg(not(feature = "mainnet-beta"))]
+#[cfg(any(feature = "anchor-test", not(feature = "mainnet-beta")))]
 pub use extend_account_devnet::*;

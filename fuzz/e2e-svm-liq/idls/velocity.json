@@ -2238,9 +2238,11 @@
     {
       "name": "extend_account_devnet",
       "docs": [
-        "Devnet-only: grow a zero-copy account to an arbitrary larger size to",
-        "exercise the extension flow before a real struct extension exists.",
-        "Stripped from mainnet builds via `mainnet-beta`."
+        "Devnet/test-only: grow a zero-copy account to an arbitrary larger size",
+        "to exercise the extension flow before a real struct extension exists.",
+        "Stripped from production mainnet builds; `anchor-test` keeps it so the",
+        "integration suite (which builds with default features + `anchor-test`)",
+        "can exercise extension end to end."
       ],
       "discriminator": [
         58,

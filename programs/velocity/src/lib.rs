@@ -1648,10 +1648,12 @@ pub mod velocity {
         handle_extend_account(ctx)
     }
 
-    /// Devnet-only: grow a zero-copy account to an arbitrary larger size to
-    /// exercise the extension flow before a real struct extension exists.
-    /// Stripped from mainnet builds via `mainnet-beta`.
-    #[cfg(not(feature = "mainnet-beta"))]
+    /// Devnet/test-only: grow a zero-copy account to an arbitrary larger size
+    /// to exercise the extension flow before a real struct extension exists.
+    /// Stripped from production mainnet builds; `anchor-test` keeps it so the
+    /// integration suite (which builds with default features + `anchor-test`)
+    /// can exercise extension end to end.
+    #[cfg(any(feature = "anchor-test", not(feature = "mainnet-beta")))]
     pub fn extend_account_devnet(ctx: Context<ExtendAccountDevnet>, new_len: u64) -> Result<()> {
         handle_extend_account_devnet(ctx, new_len)
     }

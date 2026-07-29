@@ -61,8 +61,9 @@ runtime zero-fills the new tail. Guard rails:
 
 **`extend_account_devnet(new_len)`** grows an account to an arbitrary larger size, under the same
 role gate. It exists so tests and devnet can simulate the post-upgrade state (account bigger than
-every deployed struct) before a real extension exists. Compiled out of mainnet builds via the
-`mainnet-beta` feature.
+every deployed struct) before a real extension exists. Compiled out of production mainnet builds
+(`mainnet-beta` without `anchor-test`); test builds keep it so the integration suite can exercise
+the flow.
 
 Because `extend_account` ships **before** any real extension, it is already deployed and dormant
 by the time it is needed. The upgrade that finally eats the padding needs no new tooling; the

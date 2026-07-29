@@ -1,4 +1,4 @@
-//! Devnet-only grow of a zero-copy account to an arbitrary larger size, so the
+//! Devnet/test-only grow of a zero-copy account to an arbitrary larger size, so the
 //! extension flow (and client tolerance of extended accounts) can be exercised
 //! end to end before a real struct extension exists.
 

@@ -455,6 +455,13 @@ pub struct PerpMarket {
     /// This market's hedge (LP pool) configuration. Sits immediately after `amm`
     /// so the trailing `[amm, hedge_config]` span is the contiguous VLP region.
     pub hedge_config: HedgeConfig,
+    /// The market's canonical CLOB quoter registry entry (`QuoterV0` PDA).
+    /// When set, every router fill must include it in its quoter section —
+    /// the mandatory-baseline rule: a route can't exclude the public book.
+    /// A dead entry (deactivated/unapproved) still has to be passed but is
+    /// skipped at quote time, so killing the book never bricks fills.
+    /// `Pubkey::default()` = no CLOB requirement.
+    pub clob_quoter: Pubkey,
 }
 
 impl Default for PerpMarket {
@@ -526,18 +533,19 @@ impl Default for PerpMarket {
             protocol_liquidation_fee: 0,
             _padding_buffer: [0; 4],
             fee_pool_buffer_target: 0,
+            clob_quoter: Pubkey::default(),
         }
     }
 }
 
 impl Size for PerpMarket {
-    // 1200-byte struct + 8-byte discriminator. The cached spread state
+    // 1328-byte struct + 8-byte discriminator. The cached spread state
     // (4×u128 spread reserves, i64 last_oracle_reserve_price_spread_pct,
     // 2×u32 long/short_spread, i32 reference_price_offset) plus a dedicated
     // u64 last_spread_update_slot live back on AMM — refreshed by
     // `math::spread::update_amm_quote_state` on each crank/fill `setup` and
     // read directly by quote/fill paths and dashboards.
-    const SIZE: usize = 1304;
+    const SIZE: usize = 1336;
 }
 
 impl MarketIndexOffset for PerpMarket {

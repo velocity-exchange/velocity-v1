@@ -1193,6 +1193,9 @@ export type PerpMarketAccount = {
 	/** bitmask, see `MarketConfigFlag` */
 	marketConfig: number;
 
+	/** the market's canonical CLOB quoter registry entry; when set, every router fill must include it (mandatory baseline). Default pubkey = no requirement */
+	clobQuoter: PublicKey;
+
 	// Fields migrated off AMM to top-level PerpMarket
 	oracle: PublicKey;
 	oracleSource: OracleSource;

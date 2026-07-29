@@ -1166,6 +1166,160 @@ export type Velocity = {
       ]
     },
     {
+      "name": "crankClobEvict",
+      "discriminator": [
+        151,
+        166,
+        191,
+        4,
+        122,
+        28,
+        36,
+        220
+      ],
+      "accounts": [
+        {
+          "name": "state"
+        },
+        {
+          "name": "authority",
+          "signer": true
+        },
+        {
+          "name": "filler",
+          "writable": true
+        },
+        {
+          "name": "fillerStats",
+          "writable": true
+        },
+        {
+          "name": "user",
+          "docs": [
+            "The owner of the order being removed (the book's tail for evict, the",
+            "hinted order for expire). Verified against the CLOB's return data —",
+            "a race that removed someone else's order fails the whole crank."
+          ],
+          "writable": true
+        },
+        {
+          "name": "perpMarket",
+          "writable": true
+        },
+        {
+          "name": "quoter",
+          "docs": [
+            "Deliberately not gated on active/approved: dead books still need",
+            "their resting orders reclaimed."
+          ]
+        },
+        {
+          "name": "clobMarket",
+          "docs": [
+            "accounts in the handler."
+          ],
+          "writable": true
+        },
+        {
+          "name": "clobProgram"
+        },
+        {
+          "name": "velocitySigner"
+        }
+      ],
+      "args": [
+        {
+          "name": "marketIndex",
+          "type": "u16"
+        },
+        {
+          "name": "side",
+          "type": {
+            "defined": {
+              "name": "clobSide"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "crankClobRemoveExpired",
+      "discriminator": [
+        35,
+        80,
+        27,
+        105,
+        148,
+        23,
+        65,
+        181
+      ],
+      "accounts": [
+        {
+          "name": "state"
+        },
+        {
+          "name": "authority",
+          "signer": true
+        },
+        {
+          "name": "filler",
+          "writable": true
+        },
+        {
+          "name": "fillerStats",
+          "writable": true
+        },
+        {
+          "name": "user",
+          "docs": [
+            "The owner of the order being removed (the book's tail for evict, the",
+            "hinted order for expire). Verified against the CLOB's return data —",
+            "a race that removed someone else's order fails the whole crank."
+          ],
+          "writable": true
+        },
+        {
+          "name": "perpMarket",
+          "writable": true
+        },
+        {
+          "name": "quoter",
+          "docs": [
+            "Deliberately not gated on active/approved: dead books still need",
+            "their resting orders reclaimed."
+          ]
+        },
+        {
+          "name": "clobMarket",
+          "docs": [
+            "accounts in the handler."
+          ],
+          "writable": true
+        },
+        {
+          "name": "clobProgram"
+        },
+        {
+          "name": "velocitySigner"
+        }
+      ],
+      "args": [
+        {
+          "name": "marketIndex",
+          "type": "u16"
+        },
+        {
+          "name": "orderRef",
+          "type": {
+            "defined": {
+              "name": "clobOrderRefV0"
+            }
+          }
+        }
+      ]
+    },
+    {
       "name": "deleteAmmCache",
       "discriminator": [
         216,
@@ -10081,6 +10235,36 @@ export type Velocity = {
       ]
     },
     {
+      "name": "updatePerpMarketClobQuoter",
+      "discriminator": [
+        210,
+        80,
+        79,
+        140,
+        168,
+        8,
+        27,
+        243
+      ],
+      "accounts": [
+        {
+          "name": "admin",
+          "signer": true
+        },
+        {
+          "name": "state"
+        },
+        {
+          "name": "perpMarket",
+          "writable": true
+        },
+        {
+          "name": "quoter"
+        }
+      ],
+      "args": []
+    },
+    {
       "name": "updatePerpMarketConcentrationCoef",
       "discriminator": [
         24,
@@ -17559,6 +17743,23 @@ export type Velocity = {
       }
     },
     {
+      "name": "clobSide",
+      "docs": [
+        "The CLOB's book side, as encoded on its wire (borsh enum tag)."
+      ],
+      "type": {
+        "kind": "enum",
+        "variants": [
+          {
+            "name": "bid"
+          },
+          {
+            "name": "ask"
+          }
+        ]
+      }
+    },
+    {
       "name": "constituent",
       "serialization": "bytemuckunsafe",
       "repr": {
@@ -22015,6 +22216,18 @@ export type Velocity = {
                 "name": "hedgeConfig"
               }
             }
+          },
+          {
+            "name": "clobQuoter",
+            "docs": [
+              "The market's canonical CLOB quoter registry entry (`QuoterV0` PDA).",
+              "When set, every router fill must include it in its quoter section —",
+              "the mandatory-baseline rule: a route can't exclude the public book.",
+              "A dead entry (deactivated/unapproved) still has to be passed but is",
+              "skipped at quote time, so killing the book never bricks fills.",
+              "`Pubkey::default()` = no CLOB requirement."
+            ],
+            "type": "pubkey"
           }
         ]
       }

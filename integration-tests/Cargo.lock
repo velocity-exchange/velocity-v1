@@ -4665,6 +4665,7 @@ dependencies = [
  "litesvm",
  "sha2 0.10.9",
  "solana-account",
+ "solana-clock",
  "solana-instruction",
  "solana-keypair",
  "solana-message",

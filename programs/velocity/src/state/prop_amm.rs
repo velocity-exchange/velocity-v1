@@ -259,11 +259,25 @@ pub struct ClobCancelOrderArgsV0 {
     pub order_ref: ClobOrderRefV0,
 }
 
+/// `evict_worst_v0` args on the CLOB wire.
+#[derive(Clone, Copy, AnchorSerialize, AnchorDeserialize, PartialEq, Eq, Debug)]
+pub struct ClobEvictWorstArgsV0 {
+    pub side: ClobSide,
+}
+
+/// `remove_expired_v0` args on the CLOB wire.
+#[derive(Clone, Copy, AnchorSerialize, AnchorDeserialize, PartialEq, Eq, Debug)]
+pub struct ClobRemoveExpiredArgsV0 {
+    pub order_ref: ClobOrderRefV0,
+}
+
 /// Anchor-default discriminators (`sha256("global:<name>")[..8]`) of the CLOB
 /// ixs velocity CPIs directly (place/cancel are velocity-mediated and not part
 /// of the registry's quote/execute surface, so they aren't stored per entry).
 pub const CLOB_PLACE_ORDER_V0_DISCRIMINATOR: [u8; 8] = [100, 204, 57, 226, 245, 228, 61, 187];
 pub const CLOB_CANCEL_ORDER_V0_DISCRIMINATOR: [u8; 8] = [70, 91, 225, 16, 228, 203, 124, 174];
+pub const CLOB_EVICT_WORST_V0_DISCRIMINATOR: [u8; 8] = [106, 60, 27, 129, 80, 27, 37, 73];
+pub const CLOB_REMOVE_EXPIRED_V0_DISCRIMINATOR: [u8; 8] = [241, 135, 215, 18, 254, 107, 179, 119];
 
 /// Execute leg for external CPI quoters, threaded into the router pass by the
 /// fill entrypoint — the controller works over account maps and can't CPI

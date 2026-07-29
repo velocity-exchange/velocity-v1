@@ -813,6 +813,9 @@ pub fn handle_initialize_perp_market(
         protocol_liquidation_fee: 0,
         _padding_buffer: [0; 4],
         fee_pool_buffer_target: FEE_POOL_TO_REVENUE_POOL_THRESHOLD as u64,
+        // Set post-init via `update_perp_market_clob_quoter` once the CLOB's
+        // registry entry exists (the entry itself needs the market first).
+        clob_quoter: Pubkey::default(),
     };
 
     safe_increment!(state.number_of_markets, 1);
@@ -2319,6 +2322,45 @@ pub fn handle_update_perp_market_paused_operations(
     perp_market.paused_operations = paused_operations;
 
     PerpOperation::log_all_operations_paused(perp_market.paused_operations);
+
+    Ok(())
+}
+
+/// Name the market's canonical CLOB quoter entry: once set, every router
+/// fill must carry it in its quoter section (mandatory baseline — a route
+/// can't exclude the public book). A dead entry is still passed but skipped
+/// at quote time, so deactivating the book never bricks fills; there is no
+/// clear path for the same reason — kill the entry instead.
+#[access_control(
+    perp_market_valid(&ctx.accounts.perp_market)
+)]
+pub fn handle_update_perp_market_clob_quoter(
+    ctx: Context<AdminUpdatePerpMarketClobQuoter>,
+) -> Result<()> {
+    let perp_market = &mut load_mut!(ctx.accounts.perp_market)?;
+    msg!("perp market {}", perp_market.market_index);
+
+    {
+        let quoter = ctx.accounts.quoter.load()?;
+        validate!(
+            quoter.quoter_type == crate::state::prop_amm::QuoterType::Clob,
+            ErrorCode::DefaultError,
+            "quoter entry is not a CLOB"
+        )?;
+        validate!(
+            quoter.market == perp_market.market_index,
+            ErrorCode::DefaultError,
+            "quoter entry is for market {}",
+            quoter.market
+        )?;
+    }
+
+    msg!(
+        "perp_market.clob_quoter: {} -> {}",
+        perp_market.clob_quoter,
+        ctx.accounts.quoter.key()
+    );
+    perp_market.clob_quoter = ctx.accounts.quoter.key();
 
     Ok(())
 }
@@ -3948,6 +3990,16 @@ pub struct AdminUpdatePerpMarket<'info> {
     pub state: AccountLoader<'info, State>,
     #[account(mut)]
     pub perp_market: AccountLoader<'info, PerpMarket>,
+}
+
+#[derive(Accounts)]
+pub struct AdminUpdatePerpMarketClobQuoter<'info> {
+    #[account(constraint = check_warm(&admin.key(), &state)?)]
+    pub admin: Signer<'info>,
+    pub state: AccountLoader<'info, State>,
+    #[account(mut)]
+    pub perp_market: AccountLoader<'info, PerpMarket>,
+    pub quoter: AccountLoader<'info, crate::state::prop_amm::QuoterV0>,
 }
 
 #[derive(Accounts)]

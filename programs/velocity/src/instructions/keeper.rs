@@ -322,6 +322,20 @@ fn fill_order<'c: 'info, 'info>(
         quoter_users.push(quoter_user);
         books_data.push((priority, levels));
     }
+
+    // Mandatory baseline (a route can't exclude the public book): when the
+    // market names a canonical CLOB entry, the fill must carry it. A dead
+    // entry satisfies the check — it was passed but skipped at quote time —
+    // so killing the book never bricks fills. The vAMM half of the baseline
+    // is inherent: it's in-program, gated only by oracle validity.
+    let required_clob = perp_market_map.get_ref(&market_index)?.clob_quoter;
+    validate!(
+        required_clob == Pubkey::default() || seen.contains(&required_clob),
+        ErrorCode::DefaultError,
+        "router fill must include the market's CLOB quoter {}",
+        required_clob
+    )?;
+
     let book_refs: Vec<QuoterBook> = books_data
         .iter()
         .map(|(priority, levels)| QuoterBook {

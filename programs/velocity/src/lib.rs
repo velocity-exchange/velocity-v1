@@ -20,6 +20,7 @@ use crate::state::market_status::MarketStatus;
 use crate::state::oracle::PrelaunchOracleParams;
 use crate::state::order_params::{ModifyOrderParams, OrderParams};
 use crate::state::perp_market::ContractTier;
+use crate::state::prop_amm::{ClobOrderRefV0, ClobSide};
 use crate::state::scale_order_params::ScaleOrderParams;
 use crate::state::settle_pnl_mode::SettlePnlMode;
 use crate::state::spot_market::AssetTier;
@@ -1318,6 +1319,12 @@ pub mod velocity {
         handle_update_perp_market_paused_operations(ctx, paused_operations)
     }
 
+    pub fn update_perp_market_clob_quoter(
+        ctx: Context<AdminUpdatePerpMarketClobQuoter>,
+    ) -> Result<()> {
+        handle_update_perp_market_clob_quoter(ctx)
+    }
+
     pub fn update_perp_market_contract_tier(
         ctx: Context<AdminUpdatePerpMarket>,
         contract_tier: ContractTier,
@@ -2179,6 +2186,22 @@ pub mod velocity {
         params: CancelClobOrderParams,
     ) -> Result<()> {
         handle_cancel_clob_order(ctx, params)
+    }
+
+    pub fn crank_clob_evict(
+        ctx: Context<CrankClobOrderRemoval>,
+        market_index: u16,
+        side: ClobSide,
+    ) -> Result<()> {
+        handle_crank_clob_evict(ctx, market_index, side)
+    }
+
+    pub fn crank_clob_remove_expired(
+        ctx: Context<CrankClobOrderRemoval>,
+        market_index: u16,
+        order_ref: ClobOrderRefV0,
+    ) -> Result<()> {
+        handle_crank_clob_remove_expired(ctx, market_index, order_ref)
     }
 
     #[cfg(feature = "anchor-test")]

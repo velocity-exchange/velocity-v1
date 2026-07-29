@@ -894,9 +894,11 @@ mod tests {
         // discriminator = 1224. The protocol-fee redesign then appended
         // `protocol_fee_pool` (32) + `pending_protocol_fee`/`pending_if_fee`
         // (2×16) + `protocol_liquidation_fee` (4) + pad (12) = 80 bytes at the
-        // tail → 1296 content, 1304 with discriminator.
-        assert_eq!(std::mem::size_of::<PerpMarket>(), 1296);
-        assert_eq!(PerpMarket::SIZE, 1304);
+        // tail → 1296 content, 1304 with discriminator. The router baseline
+        // then appended `clob_quoter` (32) → 1328 content, 1336 with
+        // discriminator.
+        assert_eq!(std::mem::size_of::<PerpMarket>(), 1328);
+        assert_eq!(PerpMarket::SIZE, 1336);
     }
 
     /// One-shot regeneration helper. Run with:

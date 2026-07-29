@@ -4136,6 +4136,7 @@ fn fulfill_perp_order_router_pass(
             target_size,
             order_step_size,
             &rivals,
+            effective_taker_limit,
         )?
     } else {
         vec![]

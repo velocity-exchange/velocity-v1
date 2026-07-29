@@ -59,19 +59,27 @@ fn marginal_price_after(
 
 /// Quote the vAMM: best-first ladder levels covering `min(size, available)`,
 /// shaded toward `rival_books` within the last-look band.
+///
+/// `taker_limit` bounds the ladder honestly: the curve inversion finds the
+/// cumulative where the marginal price reaches the limit, the total is capped
+/// there, and the final rung lands exactly at the limit price. Without it,
+/// equal-size chunk pricing would push whole rungs past a tight limit and the
+/// pass's truncation would zero the vAMM's book even though part of the curve
+/// was fillable. This is the taker's own price — no shading-band question.
 pub fn vamm_quote_levels(
     amm: &AMM,
     direction: Direction,
     size: u64,
     step_size: u64,
     rival_books: &[QuoterBook],
+    taker_limit: Option<u64>,
 ) -> VelocityResult<Vec<PriceLevel>> {
     let (position_direction, swap_direction) = match direction {
         Direction::Long => (PositionDirection::Long, SwapDirection::Remove),
         Direction::Short => (PositionDirection::Short, SwapDirection::Add),
     };
     let available = calculate_amm_available_liquidity(amm, &position_direction, step_size)?;
-    let total = size.min(available);
+    let mut total = size.min(available);
     if total == 0 {
         return Ok(vec![]);
     }
@@ -89,6 +97,23 @@ pub fn vamm_quote_levels(
             amm.bid_price(reserve_price, amm.short_spread, amm.reference_price_offset)?
         }
     };
+    if let Some(limit) = taker_limit {
+        let crossed_at_top = match direction {
+            Direction::Long => limit < top,
+            Direction::Short => limit > top,
+        };
+        if crossed_at_top {
+            return Ok(vec![]);
+        }
+        let (reachable, trade_direction) =
+            calculate_base_asset_amount_to_trade_to_price(amm, limit, position_direction)?;
+        if trade_direction == position_direction {
+            total = total.min(reachable);
+        }
+        if total == 0 {
+            return Ok(vec![]);
+        }
+    }
     let band_edge = {
         let band = (top as u128)
             .safe_mul(LAST_LOOK_BAND as u128)?
@@ -99,16 +124,24 @@ pub fn vamm_quote_levels(
         }
     };
 
-    // Last look: rival prices beyond our top (but within the band) become
-    // shading rungs, best-first. Always on — the vAMM was winning this flow
-    // at its honest price anyway (price priority), so filling at the rival's
-    // price instead is strictly LP surplus with no cost to any maker.
+    // Last look: rival prices beyond our top (but within the band and the
+    // taker's limit) become shading rungs, best-first. Always on — the vAMM
+    // was winning this flow at its honest price anyway (price priority), so
+    // filling at the rival's price instead is strictly LP surplus with no
+    // cost to any maker. A rung past the taker's limit would price its whole
+    // slice unfillable, so those are dropped here rather than truncated
+    // downstream.
+    let rung_edge = match (taker_limit, direction) {
+        (Some(limit), Direction::Long) => band_edge.min(limit),
+        (Some(limit), Direction::Short) => band_edge.max(limit),
+        (None, _) => band_edge,
+    };
     let mut rival_rungs: Vec<u64> = rival_books
         .iter()
         .flat_map(|book| book.levels.iter().map(|level| level.price))
         .filter(|&price| match direction {
-            Direction::Long => price > top && price <= band_edge,
-            Direction::Short => price < top && price >= band_edge && price > 0,
+            Direction::Long => price > top && price <= rung_edge,
+            Direction::Short => price < top && price >= rung_edge && price > 0,
         })
         .collect();
     rival_rungs.sort_unstable();
@@ -184,7 +217,7 @@ impl RouterQuoter for AmmQuoter<'_> {
         size: u64,
         rival_books: &[QuoterBook],
     ) -> VelocityResult<Vec<PriceLevel>> {
-        vamm_quote_levels(self.amm, direction, size, ctx.step_size, rival_books)
+        vamm_quote_levels(self.amm, direction, size, ctx.step_size, rival_books, None)
     }
 
     fn execute(
@@ -248,7 +281,7 @@ mod tests {
     fn long_ladder_is_monotone_and_at_or_better() {
         let amm = amm_fixture();
         let size = 10 * BASE_PRECISION_U64;
-        let levels = vamm_quote_levels(&amm, Direction::Long, size, 1, &[]).unwrap();
+        let levels = vamm_quote_levels(&amm, Direction::Long, size, 1, &[], None).unwrap();
 
         assert_eq!(levels.iter().map(|l| l.size).sum::<u64>(), size);
         assert!(levels.windows(2).all(|w| w[0].price <= w[1].price));
@@ -266,7 +299,7 @@ mod tests {
     fn short_ladder_is_monotone_and_at_or_better() {
         let amm = amm_fixture();
         let size = 10 * BASE_PRECISION_U64;
-        let levels = vamm_quote_levels(&amm, Direction::Short, size, 1, &[]).unwrap();
+        let levels = vamm_quote_levels(&amm, Direction::Short, size, 1, &[], None).unwrap();
 
         assert_eq!(levels.iter().map(|l| l.size).sum::<u64>(), size);
         assert!(levels.windows(2).all(|w| w[0].price >= w[1].price));
@@ -287,8 +320,15 @@ mod tests {
             price: rival_price,
             size: BASE_PRECISION_U64,
         }];
-        let levels =
-            vamm_quote_levels(&amm, Direction::Long, size, 1, &rival_book(&rival_levels)).unwrap();
+        let levels = vamm_quote_levels(
+            &amm,
+            Direction::Long,
+            size,
+            1,
+            &rival_book(&rival_levels),
+            None,
+        )
+        .unwrap();
 
         // The slice of curve cheaper than the rival is quoted AT the rival's
         // price (winning the tie by tier priority), and it comes first.
@@ -302,6 +342,68 @@ mod tests {
             .unwrap()
             .quote_asset_amount;
         assert!(split_notional(&levels) >= exact);
+    }
+
+    #[test]
+    fn taker_limit_caps_the_ladder_at_an_honest_final_rung() {
+        let amm = amm_fixture();
+        let size = 10 * BASE_PRECISION_U64;
+        // +0.5% — far tighter than the curve impact of a 10-unit take.
+        let limit = TOP + TOP / 200;
+        let levels = vamm_quote_levels(&amm, Direction::Long, size, 1, &[], Some(limit)).unwrap();
+
+        // The ladder quotes exactly the reachable slice: nonzero, smaller
+        // than the request, every rung within the limit, and the final rung
+        // at the limit itself (the curve inversion's landing point).
+        let quoted: u64 = levels.iter().map(|l| l.size).sum();
+        assert!(quoted > 0);
+        assert!(quoted < size);
+        assert!(levels.iter().all(|l| l.price <= limit));
+        assert_eq!(levels.last().unwrap().price, limit);
+
+        // Same slice, no limit: identical pricing for the shared prefix
+        // cumulative — the limit only truncates, never reprices.
+        let exact = calculate_base_swap_output(&amm, quoted, SwapDirection::Remove)
+            .unwrap()
+            .quote_asset_amount;
+        assert!(split_notional(&levels) >= exact);
+    }
+
+    #[test]
+    fn taker_limit_crossing_the_top_empties_the_book() {
+        let amm = amm_fixture();
+        let size = 10 * BASE_PRECISION_U64;
+        // Below the ask top: the vAMM can't fill a buyer within this limit.
+        let limit = TOP - TOP / 100;
+        assert!(
+            vamm_quote_levels(&amm, Direction::Long, size, 1, &[], Some(limit))
+                .unwrap()
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn rival_rungs_past_the_taker_limit_are_dropped() {
+        let amm = amm_fixture();
+        let size = 10 * BASE_PRECISION_U64;
+        let limit = TOP + TOP / 100; // +1%
+        let rival_levels = [PriceLevel {
+            price: TOP + TOP / 50, // +2%: in band, but past the limit
+            size: BASE_PRECISION_U64,
+        }];
+        let levels = vamm_quote_levels(
+            &amm,
+            Direction::Long,
+            size,
+            1,
+            &rival_book(&rival_levels),
+            Some(limit),
+        )
+        .unwrap();
+        // No rung priced past the limit — the unfillable rival never becomes
+        // a rung that would drag a fillable slice out of the book.
+        assert!(levels.iter().all(|l| l.price <= limit));
+        assert!(levels.iter().map(|l| l.size).sum::<u64>() > 0);
     }
 
     #[test]
@@ -321,15 +423,15 @@ mod tests {
             },
         ];
         let shaded =
-            vamm_quote_levels(&amm, Direction::Long, size, 1, &rival_book(&garbage)).unwrap();
-        let honest = vamm_quote_levels(&amm, Direction::Long, size, 1, &[]).unwrap();
+            vamm_quote_levels(&amm, Direction::Long, size, 1, &rival_book(&garbage), None).unwrap();
+        let honest = vamm_quote_levels(&amm, Direction::Long, size, 1, &[], None).unwrap();
         assert_eq!(shaded, honest);
     }
 
     #[test]
     fn size_caps_at_available_liquidity() {
         let amm = amm_fixture();
-        let levels = vamm_quote_levels(&amm, Direction::Long, u64::MAX, 1, &[]).unwrap();
+        let levels = vamm_quote_levels(&amm, Direction::Long, u64::MAX, 1, &[], None).unwrap();
         let available =
             calculate_amm_available_liquidity(&amm, &PositionDirection::Long, 1).unwrap();
         assert_eq!(levels.iter().map(|l| l.size).sum::<u64>(), available);
@@ -338,7 +440,7 @@ mod tests {
     #[test]
     fn zero_size_is_empty() {
         let amm = amm_fixture();
-        assert!(vamm_quote_levels(&amm, Direction::Long, 0, 1, &[])
+        assert!(vamm_quote_levels(&amm, Direction::Long, 0, 1, &[], None)
             .unwrap()
             .is_empty());
     }

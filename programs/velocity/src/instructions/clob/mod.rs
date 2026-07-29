@@ -9,11 +9,15 @@
 //! - [`cancel_clob_order`]: cancel CPI, then unwind the removed order's
 //!   remaining size from the aggregates.
 //! - fills/culls unwind through the router fill's execute response.
-//! - evict/expire cranks (velocity wrappers over the CLOB's crank ixs) are
-//!   still to come.
+//! - [`crank_clob_evict`]/[`crank_clob_remove_expired`]: permissionless
+//!   keeper wrappers over the CLOB's crank ixs — the maker's `User` rides
+//!   along so the returned removal unwinds its aggregates, and the keeper
+//!   earns the flat reward from the maker.
 
 mod cancel_clob_order;
+mod crank_clob_order_removal;
 mod place_clob_order;
 
 pub use cancel_clob_order::*;
+pub use crank_clob_order_removal::*;
 pub use place_clob_order::*;

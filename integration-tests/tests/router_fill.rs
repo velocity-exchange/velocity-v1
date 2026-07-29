@@ -78,11 +78,13 @@ fn set_oracle(svm: &mut litesvm::LiteSVM, address: Pubkey, price_precision_price
 }
 
 /// The controller unit fixture's $100 market: 100-unit reserves at peg 100,
-/// 2% base spread, 10%/5% margin ratios.
-fn set_trading_perp_market(svm: &mut litesvm::LiteSVM, oracle: Pubkey) {
+/// 2% base spread, 10%/5% margin ratios. `clob_quoter` names the canonical
+/// CLOB entry every router fill must carry (the mandatory baseline).
+fn set_trading_perp_market(svm: &mut litesvm::LiteSVM, oracle: Pubkey, clob_quoter: Pubkey) {
     let mut market: PerpMarket = Zeroable::zeroed();
     market.market_index = 0;
     market.status = MarketStatus::Active;
+    market.clob_quoter = anchor_lang::prelude::Pubkey::new_from_array(*clob_quoter.as_array());
     market.oracle = anchor_lang::prelude::Pubkey::new_from_array(*oracle.as_array());
     market.oracle_source = OracleSource::PythLazer;
     market.order_step_size = 1000;
@@ -207,8 +209,10 @@ fn clob_ix(name: &str, args: Vec<u8>, accounts: Vec<AccountMeta>) -> Instruction
     }
 }
 
-/// Borsh `MarketConfigV0` in PRICE_PRECISION/base-precision units.
+/// Borsh `MarketConfigV0` in PRICE_PRECISION/base-precision units. The evict
+/// threshold is 1 so the evict crank is exercisable with a single order.
 fn clob_market_config(market_index: u16) -> Vec<u8> {
+    let threshold = 1u32;
     let mut v = Vec::new();
     v.extend_from_slice(&market_index.to_le_bytes());
     v.extend_from_slice(&UNIT.to_le_bytes()); // base_precision
@@ -218,7 +222,7 @@ fn clob_market_config(market_index: u16) -> Vec<u8> {
     v.extend_from_slice(&0u32.to_le_bytes()); // default_activation_delay
     v.extend_from_slice(&20u32.to_le_bytes()); // max_activation_delay
     v.extend_from_slice(&2u32.to_le_bytes()); // unknown_user_grace_slots
-    v.extend_from_slice(&100u32.to_le_bytes()); // evict_threshold_per_side
+    v.extend_from_slice(&threshold.to_le_bytes()); // evict_threshold_per_side
     v.extend_from_slice(&128u16.to_le_bytes()); // max_quote_levels
     v.extend_from_slice(&64u16.to_le_bytes()); // max_execute_fills
     v.extend_from_slice(&32u16.to_le_bytes()); // max_execute_users
@@ -401,13 +405,16 @@ fn setup() -> Fixture {
 
     svm.warp_to_slot(10);
     let oracle = Pubkey::new_unique();
+    let clob_maker_user = Pubkey::new_unique();
+    // The quoter PDA is derivable before the entry exists, so the market can
+    // name its canonical CLOB from birth.
+    let quoter = quoter_pda(0, &clob_id(), &clob_maker_user);
     set_trading_state(&mut svm, &admin.pubkey());
     set_oracle(&mut svm, oracle, (100 * PRICE_PRECISION) as i64, 10);
-    set_trading_perp_market(&mut svm, oracle);
+    set_trading_perp_market(&mut svm, oracle, quoter);
     set_quote_spot_market(&mut svm);
 
     let clob_market = init_clob_book(&mut svm, &clob_admin);
-    let clob_maker_user = Pubkey::new_unique();
     set_user_account(
         &mut svm,
         clob_maker_user,
@@ -417,7 +424,8 @@ fn setup() -> Fixture {
             None,
         ),
     );
-    let quoter = register_clob_quoter(&mut svm, &admin, clob_maker_user, clob_market);
+    let registered = register_clob_quoter(&mut svm, &admin, clob_maker_user, clob_market);
+    assert_eq!(registered, quoter);
 
     Fixture {
         svm,
@@ -672,4 +680,202 @@ fn cancel_clob_order_unwinds_the_reserved_aggregates() {
         .data(),
     };
     assert!(send(&mut fixture.svm, &fixture.clob_maker_authority, ix2, &[]).is_err());
+}
+
+/// The mandatory baseline: a router fill that omits the market's named CLOB
+/// quoter entry fails, even though the vAMM alone could fill the order.
+#[test]
+fn router_fill_without_the_markets_clob_quoter_fails() {
+    let mut fixture = setup();
+
+    let taker_authority = Keypair::new();
+    let taker_user = Pubkey::new_unique();
+    let taker_stats = Pubkey::new_unique();
+    let mut taker_order = Order::default();
+    taker_order.order_id = 1;
+    taker_order.status = OrderStatus::Open;
+    taker_order.order_type = OrderType::Market;
+    taker_order.market_type = MarketType::Perp;
+    taker_order.market_index = 0;
+    taker_order.direction = PositionDirection::Long;
+    taker_order.base_asset_amount = UNIT;
+    taker_order.price = 105 * PRICE;
+    taker_order.auction_end_price = (105 * PRICE) as i64;
+    set_user_account(
+        &mut fixture.svm,
+        taker_user,
+        &trading_user(
+            &taker_authority.pubkey(),
+            100 * SPOT_BALANCE_PRECISION_U64,
+            Some(taker_order),
+        ),
+    );
+    set_user_stats_account(&mut fixture.svm, taker_stats, &taker_authority.pubkey());
+
+    let filler_user = Pubkey::new_unique();
+    let filler_stats = Pubkey::new_unique();
+    set_user_account(
+        &mut fixture.svm,
+        filler_user,
+        &trading_user(&fixture.keeper.pubkey(), 0, None),
+    );
+    set_user_stats_account(&mut fixture.svm, filler_stats, &fixture.keeper.pubkey());
+
+    fixture.svm.warp_to_slot(12);
+    set_oracle(
+        &mut fixture.svm,
+        fixture.oracle,
+        (100 * PRICE_PRECISION) as i64,
+        12,
+    );
+
+    // No quoter section at all: the fill must fail the baseline check.
+    let mut accounts = velocity::accounts::FillOrder {
+        state: state_pda(),
+        authority: fixture.keeper.pubkey(),
+        filler: filler_user,
+        filler_stats,
+        user: taker_user,
+        user_stats: taker_stats,
+    }
+    .to_account_metas(None);
+    accounts.push(AccountMeta::new_readonly(fixture.oracle, false));
+    accounts.push(AccountMeta::new(spot_market_pda(0), false));
+    accounts.push(AccountMeta::new(perp_market_pda(0), false));
+
+    let ix = Instruction {
+        program_id: velocity_id(),
+        accounts,
+        data: velocity::instruction::FillPerpOrderRouter { order_id: Some(1) }.data(),
+    };
+    let err = send(&mut fixture.svm, &fixture.keeper, ix, &[]).expect_err("baseline must fail");
+    let logs = format!("{:?}", err.meta.logs);
+    assert!(
+        logs.contains("must include the market's CLOB quoter"),
+        "unexpected failure: {logs}"
+    );
+}
+
+/// Place a CLOB ask with an expiry through the adapter, expire it, and crank
+/// the removal through velocity: the maker's reserved aggregates unwind and
+/// the keeper earns the flat reward from the maker.
+#[test]
+fn crank_remove_expired_unwinds_aggregates_and_pays_the_keeper() {
+    let mut fixture = setup();
+
+    let clock: solana_clock::Clock = fixture.svm.get_sysvar();
+    let ix = place_clob_order_ix(
+        fixture.clob_maker_user,
+        &fixture.clob_maker_authority,
+        fixture.quoter,
+        fixture.clob_market,
+        fixture.oracle,
+        PlaceClobOrderParams {
+            market_index: 0,
+            direction: PositionDirection::Short,
+            price: 99 * PRICE,
+            base_asset_amount: UNIT / 2,
+            max_ts: clock.unix_timestamp + 10,
+            activation_delay_slots: Some(0),
+        },
+    );
+    let meta = send(&mut fixture.svm, &fixture.clob_maker_authority, ix, &[]).unwrap();
+    let order_ref = velocity::state::prop_amm::ClobOrderRefV0 {
+        node_index: u32::from_le_bytes(meta.return_data.data[..4].try_into().unwrap()),
+        order_id: u64::from_le_bytes(meta.return_data.data[4..12].try_into().unwrap()),
+    };
+
+    // Past expiry.
+    let mut clock: solana_clock::Clock = fixture.svm.get_sysvar();
+    clock.unix_timestamp += 20;
+    fixture.svm.set_sysvar(&clock);
+
+    let filler_user = Pubkey::new_unique();
+    let filler_stats = Pubkey::new_unique();
+    set_user_account(
+        &mut fixture.svm,
+        filler_user,
+        &trading_user(&fixture.keeper.pubkey(), 0, None),
+    );
+    set_user_stats_account(&mut fixture.svm, filler_stats, &fixture.keeper.pubkey());
+
+    let (velocity_signer, _) = velocity_signer_pda();
+    let ix = Instruction {
+        program_id: velocity_id(),
+        accounts: velocity::accounts::CrankClobOrderRemoval {
+            state: state_pda(),
+            authority: fixture.keeper.pubkey(),
+            filler: filler_user,
+            filler_stats,
+            user: fixture.clob_maker_user,
+            perp_market: perp_market_pda(0),
+            quoter: fixture.quoter,
+            clob_market: fixture.clob_market,
+            clob_program: clob_id(),
+            velocity_signer,
+        }
+        .to_account_metas(None),
+        data: velocity::instruction::CrankClobRemoveExpired {
+            market_index: 0,
+            order_ref,
+        }
+        .data(),
+    };
+    send(&mut fixture.svm, &fixture.keeper, ix, &[]).unwrap();
+
+    let maker: User = read_zero_copy(&fixture.svm, &fixture.clob_maker_user);
+    assert_eq!(maker.perp_positions[0].open_asks, 0);
+    assert_eq!(maker.perp_positions[0].open_orders, 0);
+    assert_eq!(maker.open_orders, 0);
+    assert_eq!(clob_ask_count(&fixture.svm, &fixture.clob_market), 0);
+    // Flat reward moved maker → keeper (perps_default flat_filler_fee).
+    assert!(maker.perp_positions[0].quote_asset_amount < 0);
+    let filler: User = read_zero_copy(&fixture.svm, &filler_user);
+    assert!(filler.perp_positions[0].quote_asset_amount > 0);
+}
+
+/// The evict crank removes the side's tail once the soft cap is hit
+/// (threshold 1 in this fixture) and unwinds the maker the same way.
+#[test]
+fn crank_evict_unwinds_the_tails_aggregates() {
+    let mut fixture = setup();
+    place_clob_ask(&mut fixture, 99 * PRICE, UNIT / 2);
+
+    let filler_user = Pubkey::new_unique();
+    let filler_stats = Pubkey::new_unique();
+    set_user_account(
+        &mut fixture.svm,
+        filler_user,
+        &trading_user(&fixture.keeper.pubkey(), 0, None),
+    );
+    set_user_stats_account(&mut fixture.svm, filler_stats, &fixture.keeper.pubkey());
+
+    let (velocity_signer, _) = velocity_signer_pda();
+    let ix = Instruction {
+        program_id: velocity_id(),
+        accounts: velocity::accounts::CrankClobOrderRemoval {
+            state: state_pda(),
+            authority: fixture.keeper.pubkey(),
+            filler: filler_user,
+            filler_stats,
+            user: fixture.clob_maker_user,
+            perp_market: perp_market_pda(0),
+            quoter: fixture.quoter,
+            clob_market: fixture.clob_market,
+            clob_program: clob_id(),
+            velocity_signer,
+        }
+        .to_account_metas(None),
+        data: velocity::instruction::CrankClobEvict {
+            market_index: 0,
+            side: velocity::state::prop_amm::ClobSide::Ask,
+        }
+        .data(),
+    };
+    send(&mut fixture.svm, &fixture.keeper, ix, &[]).unwrap();
+
+    let maker: User = read_zero_copy(&fixture.svm, &fixture.clob_maker_user);
+    assert_eq!(maker.perp_positions[0].open_asks, 0);
+    assert_eq!(maker.perp_positions[0].open_orders, 0);
+    assert_eq!(clob_ask_count(&fixture.svm, &fixture.clob_market), 0);
 }

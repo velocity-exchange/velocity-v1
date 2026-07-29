@@ -172,3 +172,12 @@ mod tests {
         assert!(quoter_v0_market_offset() + 2 <= quoter_v0_len() as usize);
     }
 }
+
+/// The program's own split, reachable off-chain.
+///
+/// Selection needs the split evaluated over *candidate subsets* of quoters,
+/// which can't be done by simulating fills (combinatorial). Depending on the
+/// program as a host library means the router runs the same
+/// `split_across_quoters` the chain will run — no port, no mirror to drift.
+pub use program::math::router::{split_across_quoters, QuoterAllocation, QuoterBook};
+pub use program::state::prop_amm::{Direction, PriceLevel};

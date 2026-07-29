@@ -118,6 +118,15 @@ Reference PropAMM. **Anchor v2, litesvm**, plus integration tests of everything 
 
 - Signed route field in the swift message + on-chain enforcement (S4)
 - swift: hold window + attestation signing; route hint in WS payload
+- **Router selection ≠ fill simulation (corrected 2026-07-29)** — simulating one `fill_perp_order` answers "what would *this* fill do", but the router's actual job is *choosing* which quoters go in the transaction, and that choice is bounded by real limits litesvm enforces faithfully: the 1232-byte packet, the static-account ceiling (64, or ~256 via ALT), and the CU budget. Past a handful of PropAMMs the whole set doesn't fit, so selection is the job and whole-fill simulation can't be the primitive — you cannot enumerate candidate subsets by simulating a fill per subset.
+
+  The flow that follows:
+  1. **Quote wide.** Simulate a velocity *view* instruction that CPIs `quote_v0` on a batch of registered quoters and returns their books without touching state — velocity does the `invoke_signed` as its signer PDA, so the registry's account lists and any quoter that gates quoting on the velocity signer behave exactly as at fill time. Batches are bounded by tx account limits, but they're free (local, parallel), so N batches cost nothing. This is the deleted `probe_router` promoted to a first-class simulation-only instruction — relay's resolver pattern applied to routing: an instruction whose only purpose is to be simulated.
+  2. **Select narrow.** Run the split over the collected books to pick the subset that maximizes fill quality subject to one transaction's account + CU budget. `velocity-router-sim` depends on the program as a host library, so it calls the real `split_across_quoters` — no port, no mirror to drift.
+  3. **Verify once.** Simulate the chosen `fill_perp_order` end to end. That's what catches the margin clamps, at-or-better rejections and the baseline check, and its CU number sizes the real transaction.
+
+  Consequence for the SDK mirror: its job is client-side estimation, not selection. Selection is Rust, server-side, against the program's own math.
+
 - **`/route` by simulation, not by decoding (decided 2026-07-29)** — the routing service runs the real programs against cached account state in an in-process SVM instead of reimplementing book parsing off-chain.
 
   The decisive constraint: **a Custom quoter is an arbitrary third-party program.** There is no general off-chain decoder for its book, so "fetch and parse the orderbook" cannot work for the tier the whole design exists to support. The only way to learn a quoter's price is to call `quote_v0` — which means simulation. It subsumes the CLOB for free (decodable, but why write the decoder) and the vAMM for free (already in velocity).
@@ -135,6 +144,13 @@ Reference PropAMM. **Anchor v2, litesvm**, plus integration tests of everything 
   What the SDK mirror is still for: offline/client-side prediction with no service in the loop (`math/router.ts`, `math/vammLadder.ts`). Keep it and keep it faithful, but the authoritative server-side answer comes from simulation — so route *decision* logic must not grow in the SDK.
 
 - dlob-server: `/openOrders?user=`, L3 v2 (global order ids)
-- keep-rs: relayer mode for routed orders, margin-truncated fill building, user over-allocation past quoted depth (per-market ALT of resting makers) + retry on `StaleUserSet`, evict/expire cranking (soft-cap watch + expiry sweep, rewarded from the maker)
+- keep-rs: relayer mode for routed orders, margin-truncated fill building, user over-allocation past quoted depth (per-market ALT of resting makers) + retry on `StaleUserSet`
+- **CLOB cranks via relay, not a bespoke keeper (decided 2026-07-29)** — relay's `demo-book` already models this market's three conditions (its own doc calls the soft-cap one "the CLOB soft-cap pattern"), and the crank ixs built 2026-07-28 are already shaped like relay executors: permissionless, fail-closed, keeper paid from the maker — which is what `min_payment` + `assert_paid_v0` assert. So the keeper work drops out in favour of condition blocks.
+
+  **The condition block lives on a velocity account, not the CLOB's**, and both legs are velocity instructions: removal has to adjust the maker's `User` (open-order aggregates, and the reward debit), which only velocity can do, and the resolver has to stage *velocity's* account list — the maker `User`, the perp market, the filler — not the CLOB's. `target_program` = velocity, so an operator scoping a turner to velocity picks these up.
+  - **Evict** (`WakeKind::OnAccountChange`): `wake_account` is the CLOB market with `wake_offset`/`wake_len` covering `bid_count`/`ask_count`. `ConditionV0` names its wake account explicitly, so a velocity-hosted condition watching foreign CLOB bytes is native to the spec — no mirroring.
+  - **Expire** (`WakeKind::AtTimestamp`): needs a `wake_ts`, and velocity mediates every placement (`place_clob_order`), so it maintains the min-over-inserts hint in its own condition block as it places. Exact, and no CLOB-side change.
+  - The resolver reads the CLOB account to decide whether work exists and which order (`OrderRef`) — solving the "which order expired" discovery that would otherwise be hand-rolled off-chain, since account resolution is program code and can't drift.
+  - New per-market PDA to host the blocks: `QuoterV0` has only 8 bytes of padding and a `ConditionV0` is 280, so the conditions need their own account (also bounded by `MAX_RESOLVER_ACCOUNTS`).
 - Events pipeline + order history for CLOB records
 - Migration execution (S7): devnet rehearsal → mainnet additive → metrics-gated default flip → DLOB cancel-only → legacy removal

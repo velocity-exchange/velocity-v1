@@ -210,6 +210,7 @@ not manually edit `package.json` versions; changesets and the bot own those fiel
 | [FEES.md](./FEES.md)                                                          | The fee architecture: per-fill splits, fee ledger, sweeps, carveouts          |
 | [deploy-scripts/README.md](./deploy-scripts/README.md)                        | Devnet upgrade runbook (two-phase buffer deploys, wipe/reinit)                |
 | [docs/alignment-and-native-offsets.md](./docs/alignment-and-native-offsets.md) | Zero-copy struct alignment invariants; read before adding fields to accounts  |
+| [docs/ACCOUNT-EXTENSION.md](./docs/ACCOUNT-EXTENSION.md)                      | Growing zero-copy accounts past their padding: the `extend_account` crank, migration runbook, client rules |
 
 ## Bug bounty
 

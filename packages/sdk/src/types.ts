@@ -1057,6 +1057,8 @@ export type StateAccount = {
 	hotAmmSpreadAdjust: PublicKey;
 	/** hot key authorized to trigger protocol-fee withdrawals to `protocolFeeRecipientPerp`/`protocolFeeRecipientSpot` */
 	hotFeeWithdraw: PublicKey;
+	/** hot key authorized to grow zero-copy accounts to the deployed program's size (`extendAccount`) */
+	hotAccountExtension: PublicKey;
 	/** treasury PERP protocol fees are withdrawn to (settable only by `coldAdmin`); `PublicKey.default()` makes perp fee withdrawals inert */
 	protocolFeeRecipientPerp: PublicKey;
 	/** treasury SPOT protocol fees are withdrawn to (settable only by `coldAdmin`); `PublicKey.default()` makes spot fee withdrawals inert */

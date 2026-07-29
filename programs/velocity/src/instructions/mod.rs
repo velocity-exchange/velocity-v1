@@ -11,6 +11,7 @@ pub use {
         amm::admin::*,
         hedge::{admin::*, instructions::*, settle::*},
     },
+    account_extension::*,
     admin::*,
     constraints::*,
     if_staker::*,
@@ -20,6 +21,7 @@ pub use {
     user::*,
 };
 
+mod account_extension;
 mod admin;
 pub mod constraints;
 mod if_staker;

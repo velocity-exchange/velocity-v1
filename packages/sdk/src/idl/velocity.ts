@@ -2195,6 +2195,104 @@ export type Velocity = {
       ]
     },
     {
+      "name": "extendAccount",
+      "docs": [
+        "Grow a zero-copy account to the size this program build compiles in",
+        "for its type (resolved from the account discriminator). The migration",
+        "crank after an upgrade that appends fields to an account struct; no-op",
+        "when already at size. Payer covers the rent-exempt shortfall (auth:",
+        "`AccountExtension` hot key, or warm/cold admin). See",
+        "`docs/ACCOUNT-EXTENSION.md`."
+      ],
+      "discriminator": [
+        234,
+        102,
+        194,
+        203,
+        150,
+        72,
+        62,
+        229
+      ],
+      "accounts": [
+        {
+          "name": "state"
+        },
+        {
+          "name": "payer",
+          "writable": true,
+          "signer": true
+        },
+        {
+          "name": "authority",
+          "signer": true
+        },
+        {
+          "name": "account",
+          "docs": [
+            "size) from the account discriminator"
+          ],
+          "writable": true
+        },
+        {
+          "name": "systemProgram",
+          "address": "11111111111111111111111111111111"
+        }
+      ],
+      "args": []
+    },
+    {
+      "name": "extendAccountDevnet",
+      "docs": [
+        "Devnet/test-only: grow a zero-copy account to an arbitrary larger size",
+        "to exercise the extension flow before a real struct extension exists.",
+        "Stripped from production mainnet builds; `anchor-test` keeps it so the",
+        "integration suite (which builds with default features + `anchor-test`)",
+        "can exercise extension end to end."
+      ],
+      "discriminator": [
+        58,
+        206,
+        231,
+        21,
+        136,
+        141,
+        180,
+        252
+      ],
+      "accounts": [
+        {
+          "name": "state"
+        },
+        {
+          "name": "payer",
+          "writable": true,
+          "signer": true
+        },
+        {
+          "name": "authority",
+          "signer": true
+        },
+        {
+          "name": "account",
+          "docs": [
+            "zero-copy discriminator"
+          ],
+          "writable": true
+        },
+        {
+          "name": "systemProgram",
+          "address": "11111111111111111111111111111111"
+        }
+      ],
+      "args": [
+        {
+          "name": "newLen",
+          "type": "u64"
+        }
+      ]
+    },
+    {
       "name": "fillPerpOrder",
       "discriminator": [
         13,
@@ -16370,6 +16468,11 @@ export type Velocity = {
       "code": 6366,
       "name": "cannotModifyBuilderOrder",
       "msg": "Cannot modify a builder-coded order; cancel and re-place instead"
+    },
+    {
+      "code": 6367,
+      "name": "invalidAccountExtension",
+      "msg": "Invalid account extension"
     }
   ],
   "types": [
@@ -18217,6 +18320,9 @@ export type Velocity = {
           },
           {
             "name": "feeWithdraw"
+          },
+          {
+            "name": "accountExtension"
           }
         ]
       }
@@ -23700,11 +23806,20 @@ export type Velocity = {
             "type": "pubkey"
           },
           {
+            "name": "hotAccountExtension",
+            "docs": [
+              "Hot key authorized for the `AccountExtension` role (grows zero-copy",
+              "accounts to the deployed program's size after a struct-extending",
+              "upgrade)."
+            ],
+            "type": "pubkey"
+          },
+          {
             "name": "padding",
             "type": {
               "array": [
                 "u8",
-                271
+                239
               ]
             }
           }

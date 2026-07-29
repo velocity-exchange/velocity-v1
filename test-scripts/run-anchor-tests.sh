@@ -54,6 +54,7 @@ test_files=(
   decodeUser.ts
   scaleOrders.ts
   admin.ts
+  accountExtension.ts
   assetTier.ts
   cancelAllOrders.ts
   curve.ts

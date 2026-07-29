@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 import { Command } from 'commander';
+import { registerAccountExtension } from './commands/accountExtension';
 import { registerAuth } from './commands/auth';
 import { registerCall } from './commands/call';
 import { registerExchange } from './commands/exchange';
@@ -43,6 +44,7 @@ registerMultisig(program);
 registerUser(program);
 registerInsuranceFund(program);
 registerProgram(program);
+registerAccountExtension(program);
 registerCall(program);
 
 program.parseAsync(process.argv).catch((err) => {

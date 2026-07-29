@@ -7,6 +7,7 @@ members = [
 	"velocity-rs/examples/dlob-builder",
 	"keep-rs",
 	"swift",
+	"router-sim",
 ]
 
 # This is a SEPARATE workspace from the program workspace at the repo root
@@ -34,3 +35,8 @@ solana-program = { opt-level = 0 }
 # Hoisted from keep-rs/Cargo.toml — patches only apply at the workspace root.
 [patch.crates-io]
 pyth-lazer-protocol = { path = "keep-rs/vendor/pyth-lazer-protocol" }
+
+# `router-sim` depends on `relay-chain-source` (relay's extracted chain-access
+# + in-process simulation layer) by relative path, because that crate is not
+# published yet — so a checkout of `relay` must sit beside this repo. When it
+# is published, drop the path dep for a version and this note goes away.

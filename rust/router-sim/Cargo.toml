@@ -1,0 +1,28 @@
+[package]
+name = "velocity-router-sim"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[dependencies]
+# Chain access + in-process simulation, extracted from relay's crank turner.
+# Local path until the crate is published; see the workspace note in
+# rust/Cargo.toml.
+relay-chain-source = { path = "../../../relay/chain-source" }
+# The program as a host library, same flavor velocity-rs uses — so account
+# layout constants are derived from the struct rather than transcribed.
+program = { package = "velocity", path = "../../programs/velocity", default-features = false, features = [
+  "velocity-rs",
+  "mainnet-beta",
+  "cpi",
+  "isolated-position",
+  "vlp-hedge",
+] }
+anchor-lang = "1.0.2"
+anyhow = "1"
+async-trait = "0.1"
+solana-sdk = "3"
+tracing = "0.1"
+
+[dev-dependencies]
+tokio = { version = "1", features = ["rt-multi-thread", "macros"] }

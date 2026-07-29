@@ -43,5 +43,6 @@ pub fn handle_remove_expired_v0(
         order_id: removed.order_id,
         price: removed.price,
         base_asset_amount: removed.base_asset_amount,
+        side: removed.side,
     })
 }

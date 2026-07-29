@@ -2167,6 +2167,20 @@ pub mod velocity {
         handle_update_quoter_priority(ctx, priority)
     }
 
+    pub fn place_clob_order<'c: 'info, 'info>(
+        ctx: Context<'info, PlaceClobOrder<'info>>,
+        params: PlaceClobOrderParams,
+    ) -> Result<()> {
+        handle_place_clob_order(ctx, params)
+    }
+
+    pub fn cancel_clob_order(
+        ctx: Context<CancelClobOrder>,
+        params: CancelClobOrderParams,
+    ) -> Result<()> {
+        handle_cancel_clob_order(ctx, params)
+    }
+
     #[cfg(feature = "anchor-test")]
     pub fn probe_router<'info>(
         ctx: Context<'info, ProbeRouter<'info>>,

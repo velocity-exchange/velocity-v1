@@ -220,6 +220,11 @@ pub struct UserBalanceChange {
     pub user: Address,
     pub base_size: u64,
     pub quote_size: u64,
+    /// Orders of this user fully consumed (and removed) by the fill. The
+    /// caller decrements the user's open-order count by this; sub-min culls
+    /// ride the separate `cancelled` vec because their remainders also need
+    /// unwinding.
+    pub completed_orders: u32,
 }
 
 /// Where in the market account the borsh response was written. Returned via
@@ -262,6 +267,7 @@ pub struct RemovedOrder {
     pub order_id: u64,
     pub price: u64,
     pub base_asset_amount: u64,
+    pub side: Side,
 }
 
 pub struct ExecuteOutcome {
@@ -273,14 +279,16 @@ pub struct ExecuteOutcome {
     pub cancelled: Vec<RemovedOrder>,
 }
 
-/// Wire form of a crank-removed order — return data of evict/expire, so
-/// velocity can decrement the maker's open-order aggregates.
+/// Wire form of a removed order — return data of cancel/evict/expire, so
+/// velocity can decrement the maker's open-order aggregates. `side` tells
+/// velocity whether the remaining size unwinds `open_bids` or `open_asks`.
 #[derive(Clone, Copy, PartialEq, Eq, Debug, wincode::SchemaRead, wincode::SchemaWrite)]
 pub struct RemovedOrderV0 {
     pub user: Address,
     pub order_id: u64,
     pub price: u64,
     pub base_asset_amount: u64,
+    pub side: Side,
 }
 
 /// A sub-`min_order_size` remainder culled during execute, on the wire so
@@ -345,6 +353,7 @@ pub trait ClobBook {
         direction: Direction,
         size: u64,
         users: Option<&[Address]>,
+        taker: Option<&Address>,
         slot: u64,
         now: i64,
     ) -> Result<Vec<PriceLevel>>;
@@ -353,6 +362,7 @@ pub trait ClobBook {
         direction: Direction,
         size: u64,
         users: Option<&[Address]>,
+        taker: Option<&Address>,
         slot: u64,
         now: i64,
     ) -> Result<ExecuteOutcome>;
@@ -575,6 +585,7 @@ impl ClobBook for ClobMarketV0 {
             order_id: node.order_id,
             price: node.price,
             base_asset_amount: node.base_asset_amount,
+            side: node.side(),
         };
         remove_order(self, order_ref.node_index);
         Ok(removed)
@@ -604,6 +615,7 @@ impl ClobBook for ClobMarketV0 {
             order_id: node.order_id,
             price: node.price,
             base_asset_amount: node.base_asset_amount,
+            side: node.side(),
         };
         remove_order(self, tail);
         Ok(removed)
@@ -626,21 +638,24 @@ impl ClobBook for ClobMarketV0 {
             order_id: node.order_id,
             price: node.price,
             base_asset_amount: node.base_asset_amount,
+            side: node.side(),
         };
         remove_order(self, order_ref.node_index);
         Ok(removed)
     }
 
     /// Aggregate the levels a taker of `direction`/`size` would clear,
-    /// best-first, capped at [`MAX_QUOTE_LEVELS`]. Skips expired orders and
-    /// orders still inside their activation delay. Applies the same
-    /// unknown-user grace rule as [`Self::execute`] so the router's split
-    /// math matches what execute will deliver.
+    /// best-first, capped at [`MAX_QUOTE_LEVELS`]. Skips expired orders,
+    /// orders still inside their activation delay, and the taker's own
+    /// orders (self-trade prevention — same rule as [`Self::execute`]).
+    /// Applies the same unknown-user grace rule as execute so the router's
+    /// split math matches what execute will deliver.
     fn quote(
         &self,
         direction: Direction,
         size: u64,
         users: Option<&[Address]>,
+        taker: Option<&Address>,
         slot: u64,
         now: i64,
     ) -> Result<Vec<PriceLevel>> {
@@ -655,6 +670,9 @@ impl ClobBook for ClobMarketV0 {
             let node = &self[cursor as usize];
             cursor = node.next;
             if node.is_expired(now) || !node.is_active(slot) {
+                continue;
+            }
+            if taker.is_some_and(|t| address_eq(t, &node.user)) {
                 continue;
             }
             if skip_unknown_user(users, node, self.unknown_user_grace_slots, slot)? {
@@ -688,14 +706,16 @@ impl ClobBook for ClobMarketV0 {
     /// (dust can't hold an arena slot); the cull rides the wire response
     /// since that maker was just filled and is therefore loaded. Orders
     /// whose user is outside the caller's set are skipped inside the grace
-    /// window, and fail the call past it (see [`skip_unknown_user`]). No
-    /// price bound: the router already chose this quoter's allocation from
-    /// its quote.
+    /// window, and fail the call past it (see [`skip_unknown_user`]); the
+    /// taker's own orders are skipped unconditionally (self-trade
+    /// prevention). No price bound: the router already chose this quoter's
+    /// allocation from its quote.
     fn execute(
         &mut self,
         direction: Direction,
         size: u64,
         users: Option<&[Address]>,
+        taker: Option<&Address>,
         slot: u64,
         now: i64,
     ) -> Result<ExecuteOutcome> {
@@ -721,6 +741,9 @@ impl ClobBook for ClobMarketV0 {
             if !node.is_active(slot) {
                 continue;
             }
+            if taker.is_some_and(|t| address_eq(t, &node.user)) {
+                continue;
+            }
             if skip_unknown_user(users, &node, self.unknown_user_grace_slots, slot)? {
                 continue;
             }
@@ -738,7 +761,7 @@ impl ClobBook for ClobMarketV0 {
                 .ok_or(ClobError::MathError)?
                 .try_into()
                 .map_err(|_| ClobError::MathError)?;
-            match existing {
+            let change_index = match existing {
                 Some(i) => {
                     let change = &mut balance_changes[i];
                     change.base_size = change
@@ -749,13 +772,18 @@ impl ClobBook for ClobMarketV0 {
                         .quote_size
                         .checked_add(quote_size)
                         .ok_or(ClobError::MathError)?;
+                    i
                 }
-                None => balance_changes.push(UserBalanceChange {
-                    user: node.user,
-                    base_size: take,
-                    quote_size,
-                }),
-            }
+                None => {
+                    balance_changes.push(UserBalanceChange {
+                        user: node.user,
+                        base_size: take,
+                        quote_size,
+                        completed_orders: 0,
+                    });
+                    balance_changes.len() - 1
+                }
+            };
             fills.push(FillDetail {
                 user: node.user,
                 order_id: node.order_id,
@@ -764,6 +792,7 @@ impl ClobBook for ClobMarketV0 {
                 quote_size,
             });
             if take == node.base_asset_amount {
+                balance_changes[change_index].completed_orders += 1;
                 remove_order(self, index);
             } else {
                 let remainder = node.base_asset_amount - take;
@@ -773,6 +802,7 @@ impl ClobBook for ClobMarketV0 {
                         order_id: node.order_id,
                         price: node.price,
                         base_asset_amount: remainder,
+                        side: node.side(),
                     });
                     remove_order(self, index);
                 } else {

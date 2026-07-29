@@ -53,7 +53,7 @@ pub mod clob {
     pub fn cancel_order_v0(
         ctx: &mut Context<CancelOrderV0>,
         args: CancelOrderArgsV0,
-    ) -> Result<()> {
+    ) -> Result<state::RemovedOrderV0> {
         instructions::cancel_order_v0::handle_cancel_order_v0(ctx, args)
     }
 

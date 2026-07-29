@@ -722,6 +722,58 @@ export type Velocity = {
       ]
     },
     {
+      "name": "cancelClobOrder",
+      "discriminator": [
+        145,
+        107,
+        104,
+        232,
+        171,
+        3,
+        245,
+        94
+      ],
+      "accounts": [
+        {
+          "name": "state"
+        },
+        {
+          "name": "user",
+          "writable": true
+        },
+        {
+          "name": "authority",
+          "signer": true
+        },
+        {
+          "name": "quoter"
+        },
+        {
+          "name": "clobMarket",
+          "docs": [
+            "accounts in the handler."
+          ],
+          "writable": true
+        },
+        {
+          "name": "clobProgram"
+        },
+        {
+          "name": "velocitySigner"
+        }
+      ],
+      "args": [
+        {
+          "name": "params",
+          "type": {
+            "defined": {
+              "name": "cancelClobOrderParams"
+            }
+          }
+        }
+      ]
+    },
+    {
       "name": "cancelOrder",
       "discriminator": [
         95,
@@ -5861,6 +5913,62 @@ export type Velocity = {
           "name": "successCondition",
           "type": {
             "option": "u32"
+          }
+        }
+      ]
+    },
+    {
+      "name": "placeClobOrder",
+      "discriminator": [
+        252,
+        250,
+        165,
+        51,
+        142,
+        80,
+        101,
+        210
+      ],
+      "accounts": [
+        {
+          "name": "state"
+        },
+        {
+          "name": "user",
+          "writable": true
+        },
+        {
+          "name": "authority",
+          "signer": true
+        },
+        {
+          "name": "quoter",
+          "docs": [
+            "The CLOB's registry entry for this market — placement is only allowed",
+            "on a vetted book."
+          ]
+        },
+        {
+          "name": "clobMarket",
+          "docs": [
+            "accounts in the handler (the vetted CPI surface names the book)."
+          ],
+          "writable": true
+        },
+        {
+          "name": "clobProgram"
+        },
+        {
+          "name": "velocitySigner"
+        }
+      ],
+      "args": [
+        {
+          "name": "params",
+          "type": {
+            "defined": {
+              "name": "placeClobOrderParams"
+            }
           }
         }
       ]
@@ -17408,6 +17516,49 @@ export type Velocity = {
       }
     },
     {
+      "name": "cancelClobOrderParams",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "marketIndex",
+            "type": "u16"
+          },
+          {
+            "name": "orderRef",
+            "docs": [
+              "The hint returned at placement; the CLOB fails closed on a stale one."
+            ],
+            "type": {
+              "defined": {
+                "name": "clobOrderRefV0"
+              }
+            }
+          }
+        ]
+      }
+    },
+    {
+      "name": "clobOrderRefV0",
+      "docs": [
+        "Order handle on the CLOB: an O(1) node hint verified against the order id",
+        "there, so a stale hint fails closed on the CLOB side."
+      ],
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "nodeIndex",
+            "type": "u32"
+          },
+          {
+            "name": "orderId",
+            "type": "u64"
+          }
+        ]
+      }
+    },
+    {
       "name": "constituent",
       "serialization": "bytemuckunsafe",
       "repr": {
@@ -20593,6 +20744,9 @@ export type Velocity = {
           },
           {
             "name": "transferPerpPosition"
+          },
+          {
+            "name": "orderFilledWithExternalQuoter"
           }
         ]
       }
@@ -22023,6 +22177,54 @@ export type Velocity = {
           {
             "name": "positionFlag",
             "type": "u8"
+          }
+        ]
+      }
+    },
+    {
+      "name": "placeClobOrderParams",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "marketIndex",
+            "type": "u16"
+          },
+          {
+            "name": "direction",
+            "docs": [
+              "Long rests as a bid, Short as an ask."
+            ],
+            "type": {
+              "defined": {
+                "name": "positionDirection"
+              }
+            }
+          },
+          {
+            "name": "price",
+            "type": "u64"
+          },
+          {
+            "name": "baseAssetAmount",
+            "type": "u64"
+          },
+          {
+            "name": "maxTs",
+            "docs": [
+              "0 = good-till-cancelled."
+            ],
+            "type": "i64"
+          },
+          {
+            "name": "activationDelaySlots",
+            "docs": [
+              "None = the CLOB market's default speed bump. Zero requires the",
+              "attested-flow policy (not yet wired); the CLOB clamps to its max."
+            ],
+            "type": {
+              "option": "u32"
+            }
           }
         ]
       }

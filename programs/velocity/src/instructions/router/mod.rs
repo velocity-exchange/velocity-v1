@@ -1,8 +1,12 @@
-//! Router fill for the PropAMM order flow. Currently only the test-build
-//! CU/wire probe for the quoter CPI legs; the real fill ix (quote CPIs →
-//! split → clamp → execute CPIs → apply balance changes) grows here and the
-//! probe dies when it lands.
+//! Router fill for the PropAMM order flow: the CPI-backed execute leg the
+//! fill entrypoint threads into the fill controller, plus the test-build
+//! CU/wire probe for the quoter CPI legs (which dies once the router fill
+//! covers its ground end to end in integration tests).
 
+pub mod cpi_executor;
+#[cfg(feature = "anchor-test")]
 pub mod probe_router;
 
+pub use cpi_executor::*;
+#[cfg(feature = "anchor-test")]
 pub use probe_router::*;

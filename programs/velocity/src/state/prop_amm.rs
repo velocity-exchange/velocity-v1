@@ -149,6 +149,10 @@ pub struct QuoteArgsV0 {
     /// Quoters must not fill anyone else (velocity rejects the response
     /// otherwise). `None` = unrestricted, for off-chain quote discovery.
     pub users: Option<Vec<Pubkey>>,
+    /// The taker's `User`: quoters must skip the taker's own resting
+    /// liquidity (self-trade prevention) — a balance change for this user
+    /// is rejected.
+    pub taker: Option<Pubkey>,
 }
 
 #[derive(Clone, AnchorSerialize, AnchorDeserialize, PartialEq, Eq, Debug)]
@@ -180,6 +184,8 @@ pub struct ExecuteArgsV0 {
     /// Same contract as [`QuoteArgsV0::users`]; velocity always passes the
     /// loaded set here.
     pub users: Option<Vec<Pubkey>>,
+    /// Same contract as [`QuoteArgsV0::taker`].
+    pub taker: Option<Pubkey>,
 }
 
 #[derive(Clone, AnchorSerialize, AnchorDeserialize, PartialEq, Eq, Debug)]
@@ -198,6 +204,111 @@ pub struct CancelledRemainderV0 {
     pub base_asset_amount: u64,
 }
 
+/// The CLOB's book side, as encoded on its wire (borsh enum tag).
+#[derive(Clone, Copy, AnchorSerialize, AnchorDeserialize, PartialEq, Eq, Debug)]
+pub enum ClobSide {
+    Bid,
+    Ask,
+}
+
+impl ClobSide {
+    /// The maker position direction a resting order on this side represents.
+    pub fn to_position_direction(self) -> crate::controller::position::PositionDirection {
+        match self {
+            ClobSide::Bid => crate::controller::position::PositionDirection::Long,
+            ClobSide::Ask => crate::controller::position::PositionDirection::Short,
+        }
+    }
+}
+
+/// Order handle on the CLOB: an O(1) node hint verified against the order id
+/// there, so a stale hint fails closed on the CLOB side.
+#[derive(Clone, Copy, AnchorSerialize, AnchorDeserialize, PartialEq, Eq, Debug)]
+pub struct ClobOrderRefV0 {
+    pub node_index: u32,
+    pub order_id: u64,
+}
+
+/// Wire form of an order the CLOB removed — return data of its
+/// cancel/evict/expire ixs, so velocity can decrement the maker's
+/// open-order aggregates by the remaining size on the right side.
+#[derive(Clone, Copy, AnchorSerialize, AnchorDeserialize, PartialEq, Eq, Debug)]
+pub struct ClobRemovedOrderV0 {
+    pub user: Pubkey,
+    pub order_id: u64,
+    pub price: u64,
+    pub base_asset_amount: u64,
+    pub side: ClobSide,
+}
+
+/// `place_order_v0` args on the CLOB wire.
+#[derive(Clone, Copy, AnchorSerialize, AnchorDeserialize, PartialEq, Eq, Debug)]
+pub struct ClobPlaceOrderArgsV0 {
+    pub side: ClobSide,
+    pub price: u64,
+    pub base_asset_amount: u64,
+    /// None = the CLOB market's default activation delay. Zero is allowed —
+    /// velocity owns attestation policy.
+    pub activation_delay_slots: Option<u32>,
+    pub max_ts: i64,
+}
+
+/// `cancel_order_v0` args on the CLOB wire.
+#[derive(Clone, Copy, AnchorSerialize, AnchorDeserialize, PartialEq, Eq, Debug)]
+pub struct ClobCancelOrderArgsV0 {
+    pub order_ref: ClobOrderRefV0,
+}
+
+/// Anchor-default discriminators (`sha256("global:<name>")[..8]`) of the CLOB
+/// ixs velocity CPIs directly (place/cancel are velocity-mediated and not part
+/// of the registry's quote/execute surface, so they aren't stored per entry).
+pub const CLOB_PLACE_ORDER_V0_DISCRIMINATOR: [u8; 8] = [100, 204, 57, 226, 245, 228, 61, 187];
+pub const CLOB_CANCEL_ORDER_V0_DISCRIMINATOR: [u8; 8] = [70, 91, 225, 16, 228, 203, 124, 174];
+
+/// Execute leg for external CPI quoters, threaded into the router pass by the
+/// fill entrypoint — the controller works over account maps and can't CPI
+/// itself, so the entrypoint (which holds the `AccountInfo`s) supplies this.
+/// `index` addresses the same book order the caller quoted into
+/// `RouterFillInputs::books`.
+pub trait ExternalQuoterExecutor {
+    /// Registry type of quoter `index` — decides whether its fills carry
+    /// velocity-side resting-order aggregates to unwind (CLOB orders are
+    /// margin-reserved at placement; Custom PropAMM depth is not).
+    fn quoter_type(&self, index: usize) -> QuoterType;
+
+    /// CPI `execute_v0` on quoter `index` with the routed allocation. The
+    /// response is untrusted: the router pass validates overfill,
+    /// at-or-better-than-quote, and that every balance change lands on a
+    /// loaded user before settling anything.
+    fn execute(
+        &mut self,
+        index: usize,
+        direction: Direction,
+        size: u64,
+    ) -> crate::error::VelocityResult<ExecuteResponseV0>;
+}
+
+/// Executor for a router fill carrying no external quoter accounts: quoting
+/// produced no external books, so any external allocation is unreachable —
+/// executing one is an error, not a silent skip.
+pub struct NoExternalQuoters;
+
+impl ExternalQuoterExecutor for NoExternalQuoters {
+    fn quoter_type(&self, _index: usize) -> QuoterType {
+        QuoterType::Custom
+    }
+
+    fn execute(
+        &mut self,
+        _index: usize,
+        _direction: Direction,
+        _size: u64,
+    ) -> crate::error::VelocityResult<ExecuteResponseV0> {
+        msg!("router fill has no external quoter accounts to execute against");
+        Err(ErrorCode::DefaultError)
+    }
+}
+
 #[derive(Clone, Copy, AnchorSerialize, AnchorDeserialize, PartialEq, Eq, Debug)]
 pub struct UserBalanceChange {
     /// The User account the change applies to.
@@ -210,6 +321,11 @@ pub struct UserBalanceChange {
     /// user). Will be subtracted if direction was short (taker is taking
     /// quote from this user).
     pub quote_size: u64,
+    /// Resting orders of this user the fill fully consumed (and the quoter
+    /// removed). Velocity decrements the user's open-order count by this;
+    /// sub-min culls ride the separate `cancelled` vec because their
+    /// remainders also need unwinding.
+    pub completed_orders: u32,
 }
 
 impl QuoterV0 {

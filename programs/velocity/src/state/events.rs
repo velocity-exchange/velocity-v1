@@ -390,6 +390,7 @@ pub enum OrderActionExplanation {
     DeriskLp,
     OrderFilledWithOpenbookV2,
     TransferPerpPosition,
+    OrderFilledWithExternalQuoter,
 }
 
 #[event]

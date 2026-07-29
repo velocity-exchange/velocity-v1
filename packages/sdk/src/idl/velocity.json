@@ -716,6 +716,58 @@
       ]
     },
     {
+      "name": "cancel_clob_order",
+      "discriminator": [
+        145,
+        107,
+        104,
+        232,
+        171,
+        3,
+        245,
+        94
+      ],
+      "accounts": [
+        {
+          "name": "state"
+        },
+        {
+          "name": "user",
+          "writable": true
+        },
+        {
+          "name": "authority",
+          "signer": true
+        },
+        {
+          "name": "quoter"
+        },
+        {
+          "name": "clob_market",
+          "docs": [
+            "accounts in the handler."
+          ],
+          "writable": true
+        },
+        {
+          "name": "clob_program"
+        },
+        {
+          "name": "velocity_signer"
+        }
+      ],
+      "args": [
+        {
+          "name": "params",
+          "type": {
+            "defined": {
+              "name": "CancelClobOrderParams"
+            }
+          }
+        }
+      ]
+    },
+    {
       "name": "cancel_order",
       "discriminator": [
         95,
@@ -5855,6 +5907,62 @@
           "name": "success_condition",
           "type": {
             "option": "u32"
+          }
+        }
+      ]
+    },
+    {
+      "name": "place_clob_order",
+      "discriminator": [
+        252,
+        250,
+        165,
+        51,
+        142,
+        80,
+        101,
+        210
+      ],
+      "accounts": [
+        {
+          "name": "state"
+        },
+        {
+          "name": "user",
+          "writable": true
+        },
+        {
+          "name": "authority",
+          "signer": true
+        },
+        {
+          "name": "quoter",
+          "docs": [
+            "The CLOB's registry entry for this market — placement is only allowed",
+            "on a vetted book."
+          ]
+        },
+        {
+          "name": "clob_market",
+          "docs": [
+            "accounts in the handler (the vetted CPI surface names the book)."
+          ],
+          "writable": true
+        },
+        {
+          "name": "clob_program"
+        },
+        {
+          "name": "velocity_signer"
+        }
+      ],
+      "args": [
+        {
+          "name": "params",
+          "type": {
+            "defined": {
+              "name": "PlaceClobOrderParams"
+            }
           }
         }
       ]
@@ -17402,6 +17510,49 @@
       }
     },
     {
+      "name": "CancelClobOrderParams",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "market_index",
+            "type": "u16"
+          },
+          {
+            "name": "order_ref",
+            "docs": [
+              "The hint returned at placement; the CLOB fails closed on a stale one."
+            ],
+            "type": {
+              "defined": {
+                "name": "ClobOrderRefV0"
+              }
+            }
+          }
+        ]
+      }
+    },
+    {
+      "name": "ClobOrderRefV0",
+      "docs": [
+        "Order handle on the CLOB: an O(1) node hint verified against the order id",
+        "there, so a stale hint fails closed on the CLOB side."
+      ],
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "node_index",
+            "type": "u32"
+          },
+          {
+            "name": "order_id",
+            "type": "u64"
+          }
+        ]
+      }
+    },
+    {
       "name": "Constituent",
       "serialization": "bytemuckunsafe",
       "repr": {
@@ -20587,6 +20738,9 @@
           },
           {
             "name": "TransferPerpPosition"
+          },
+          {
+            "name": "OrderFilledWithExternalQuoter"
           }
         ]
       }
@@ -22017,6 +22171,54 @@
           {
             "name": "position_flag",
             "type": "u8"
+          }
+        ]
+      }
+    },
+    {
+      "name": "PlaceClobOrderParams",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "market_index",
+            "type": "u16"
+          },
+          {
+            "name": "direction",
+            "docs": [
+              "Long rests as a bid, Short as an ask."
+            ],
+            "type": {
+              "defined": {
+                "name": "PositionDirection"
+              }
+            }
+          },
+          {
+            "name": "price",
+            "type": "u64"
+          },
+          {
+            "name": "base_asset_amount",
+            "type": "u64"
+          },
+          {
+            "name": "max_ts",
+            "docs": [
+              "0 = good-till-cancelled."
+            ],
+            "type": "i64"
+          },
+          {
+            "name": "activation_delay_slots",
+            "docs": [
+              "None = the CLOB market's default speed bump. Zero requires the",
+              "attested-flow policy (not yet wired); the CLOB clamps to its max."
+            ],
+            "type": {
+              "option": "u32"
+            }
           }
         ]
       }

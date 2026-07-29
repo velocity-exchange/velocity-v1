@@ -28,6 +28,14 @@ pub struct QuoterBook<'a> {
     pub levels: &'a [PriceLevel],
 }
 
+/// Router-mode inputs the fill entrypoint threads into the fill controller:
+/// the external quoter books it already quoted via CPI, and the execute leg
+/// for allocations that land on them. Books and executor share indexing.
+pub struct RouterFillInputs<'a, 'b> {
+    pub books: &'a [QuoterBook<'b>],
+    pub executor: &'a mut dyn crate::state::prop_amm::ExternalQuoterExecutor,
+}
+
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct QuoterAllocation {
     /// Base size routed to this quoter, to be passed to its execute leg.

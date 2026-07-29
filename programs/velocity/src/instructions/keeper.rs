@@ -1,4 +1,4 @@
-use std::{cell::RefMut, convert::TryFrom};
+use std::{cell::RefMut, collections::BTreeMap, convert::TryFrom};
 
 use anchor_lang::{prelude::*, Discriminator};
 use anchor_spl::{
@@ -37,6 +37,7 @@ use crate::{
             add_builder_order, get_revenue_share_escrow_account, load_maps,
             validate_and_load_builder, AccountMaps,
         },
+        router::CpiQuoterExecutor,
     },
     load, load_mut, math,
     math::{
@@ -56,7 +57,7 @@ use crate::{
             find_bids_and_asks_from_users,
         },
         position::calculate_base_asset_value_and_pnl_with_oracle_price,
-        router::QuoterBook,
+        router::{QuoterBook, RouterFillInputs},
         safe_math::SafeMath,
         spot_withdraw::validate_spot_market_vault_amount,
     },
@@ -78,6 +79,7 @@ use crate::{
             get_market_set_from_list, get_writable_perp_market_set,
             get_writable_perp_market_set_from_vec, MarketSet, PerpMarketMap,
         },
+        prop_amm::{Direction, PriceLevel, QuoteArgsV0, QuoterType, QuoterV0},
         revenue_share::RevenueShareEscrowZeroCopyMut,
         revenue_share_map::load_revenue_share_map,
         settle_pnl_mode::SettlePnlMode,
@@ -111,15 +113,20 @@ pub fn handle_fill_perp_order<'c: 'info, 'info>(
     ctx: Context<'info, FillOrder<'info>>,
     order_id: Option<u32>,
 ) -> Result<()> {
-    fill_perp_order_common(ctx, order_id, None)
+    fill_perp_order_common(ctx, order_id, false)
 }
 
 /// [`handle_fill_perp_order`] through the router pass: one quote → split →
-/// execute sweep across the vAMM ladder (with last look over the rival books)
-/// and any DLOB makers in `remaining_accounts`, instead of the legacy
-/// fulfillment-method loop. External quoters (CLOB, PropAMMs) will join the
-/// split once their registry entries + CPI accounts are threaded through
-/// `remaining_accounts`; until then this ix routes vAMM + DLOB only.
+/// execute sweep across the vAMM ladder (with last look over the rival
+/// books), any DLOB makers, and any external quoters, instead of the legacy
+/// fulfillment-method loop.
+///
+/// `remaining_accounts`, beyond the usual market/oracle/user-map section:
+/// the external quoters' `QuoterV0` registry entries plus the union of their
+/// registered CPI accounts (including the quoter programs and the velocity
+/// signer PDA). Each active + approved entry for this market is quoted via
+/// CPI into a book; allocations that land on a book execute through the same
+/// entry's `execute_v0`. No quoter entries = vAMM + DLOB routing only.
 #[access_control(
     fill_not_paused(&ctx.accounts.state)
 )]
@@ -127,13 +134,13 @@ pub fn handle_fill_perp_order_router<'c: 'info, 'info>(
     ctx: Context<'info, FillOrder<'info>>,
     order_id: Option<u32>,
 ) -> Result<()> {
-    fill_perp_order_common(ctx, order_id, Some(&[]))
+    fill_perp_order_common(ctx, order_id, true)
 }
 
 fn fill_perp_order_common<'c: 'info, 'info>(
     ctx: Context<'info, FillOrder<'info>>,
     order_id: Option<u32>,
-    router_books: Option<&[QuoterBook]>,
+    router: bool,
 ) -> Result<()> {
     let (order_id, market_index) = {
         let user = &load!(ctx.accounts.user)?;
@@ -150,7 +157,7 @@ fn fill_perp_order_common<'c: 'info, 'info>(
     };
 
     let user_key = &ctx.accounts.user.key();
-    fill_order(ctx, order_id, market_index, router_books).inspect_err(|_e| {
+    fill_order(ctx, order_id, market_index, router).inspect_err(|_e| {
         msg!(
             "Err filling order id {} for user {} for market index {}",
             order_id,
@@ -166,7 +173,7 @@ fn fill_order<'c: 'info, 'info>(
     ctx: Context<'info, FillOrder<'info>>,
     order_id: u32,
     market_index: u16,
-    router_books: Option<&[QuoterBook]>,
+    router: bool,
 ) -> Result<()> {
     let clock = &Clock::get()?;
     let state = ctx.accounts.state.load()?;
@@ -200,6 +207,140 @@ fn fill_order<'c: 'info, 'info>(
     // No `update_amm` here: `fill_perp_order` snaps the AMM and refreshes
     // PerpMarket-level oracle stats internally before quoting.
 
+    if !router {
+        controller::orders::fill_perp_order_with_router(
+            order_id,
+            &*ctx.accounts.state.load()?,
+            &ctx.accounts.user,
+            &ctx.accounts.user_stats,
+            &spot_market_map,
+            &perp_market_map,
+            &mut oracle_map,
+            &ctx.accounts.filler,
+            &ctx.accounts.filler_stats,
+            &makers_and_referrer,
+            &makers_and_referrer_stats,
+            None,
+            clock,
+            FillMode::Fill,
+            None,
+            &mut escrow.as_mut(),
+        )?;
+        return Ok(());
+    }
+
+    // ---- Router mode: quote external quoters from the leftover accounts. ----
+    // Everything past the map/user/escrow sections is the quoter section:
+    // `QuoterV0` registry entries plus the union of their registered CPI
+    // accounts (quoter programs, response accounts, the velocity signer).
+    let leftover: Vec<&AccountInfo<'info>> = remaining_accounts_iter.collect();
+    let account_map: BTreeMap<Pubkey, AccountInfo<'info>> = leftover
+        .iter()
+        .map(|info| (*info.key, (*info).clone()))
+        .collect();
+    let quoters: Vec<AccountLoader<QuoterV0>> = leftover
+        .iter()
+        .filter(|info| {
+            info.owner == &crate::ID
+                && info
+                    .try_borrow_data()
+                    .is_ok_and(|data| data.get(..8) == Some(QuoterV0::DISCRIMINATOR))
+        })
+        .map(|info| AccountLoader::try_from(*info))
+        .collect::<Result<_>>()?;
+
+    let taker_key = ctx.accounts.user.key();
+    let (direction, unfilled) = {
+        let user = load!(ctx.accounts.user)?;
+        let order = user
+            .get_order(order_id)
+            .ok_or(ErrorCode::OrderDoesNotExist)?;
+        let position_base = user
+            .get_perp_position(market_index)
+            .map(|position| position.base_asset_amount)
+            .ok();
+        let direction = match order.direction {
+            PositionDirection::Long => Direction::Long,
+            PositionDirection::Short => Direction::Short,
+        };
+        (
+            direction,
+            order.get_base_asset_amount_unfilled(position_base)?,
+        )
+    };
+    let users: Vec<Pubkey> = makers_and_referrer.0.keys().copied().collect();
+
+    // Quote each live entry into a book. Deactivated/unapproved entries are
+    // skipped (a route signed before an admin pulled approval must not brick
+    // the fill); market mismatches are a malformed tx and fail loudly.
+    let mut kept: Vec<AccountLoader<QuoterV0>> = Vec::with_capacity(quoters.len());
+    let mut types: Vec<QuoterType> = Vec::with_capacity(quoters.len());
+    let mut books_data: Vec<(u8, Vec<PriceLevel>)> = Vec::with_capacity(quoters.len());
+    let mut seen: Vec<Pubkey> = Vec::with_capacity(quoters.len());
+    for loader in quoters {
+        let (priority, quoter_type, levels) = {
+            let quoter = loader.load()?;
+            validate!(
+                quoter.market == market_index,
+                ErrorCode::DefaultError,
+                "quoter entry {} is for market {}, fill is for market {}",
+                loader.key(),
+                quoter.market,
+                market_index
+            )?;
+            validate!(
+                quoter.quoter_type != QuoterType::Vamm,
+                ErrorCode::DefaultError,
+                "the vAMM quotes in-program, not through the registry"
+            )?;
+            validate!(
+                !seen.contains(&loader.key()),
+                ErrorCode::DefaultError,
+                "duplicate quoter entry {}",
+                loader.key()
+            )?;
+            seen.push(loader.key());
+            if !(quoter.is_active && quoter.is_approved) {
+                continue;
+            }
+            let levels = quoter.quote(
+                QuoteArgsV0 {
+                    direction,
+                    size: unfilled,
+                    users: Some(users.clone()),
+                    taker: Some(taker_key),
+                },
+                &state.signer,
+                state.signer_nonce,
+                &account_map,
+            )?;
+            (quoter.priority, quoter.quoter_type, levels)
+        };
+        kept.push(loader);
+        types.push(quoter_type);
+        books_data.push((priority, levels));
+    }
+    let book_refs: Vec<QuoterBook> = books_data
+        .iter()
+        .map(|(priority, levels)| QuoterBook {
+            priority: *priority,
+            levels,
+        })
+        .collect();
+    let mut executor = CpiQuoterExecutor {
+        quoters: &kept,
+        types,
+        account_map: &account_map,
+        velocity_signer: state.signer,
+        signer_nonce: state.signer_nonce,
+        users,
+        taker: taker_key,
+    };
+    let mut router_inputs = RouterFillInputs {
+        books: &book_refs,
+        executor: &mut executor,
+    };
+
     controller::orders::fill_perp_order_with_router(
         order_id,
         &*ctx.accounts.state.load()?,
@@ -215,7 +356,7 @@ fn fill_order<'c: 'info, 'info>(
         None,
         clock,
         FillMode::Fill,
-        router_books,
+        Some(&mut router_inputs),
         &mut escrow.as_mut(),
     )?;
 

@@ -101,6 +101,16 @@ pub mod instructions {
     #[automatically_derived]
     impl anchor_lang::InstructionData for BeginSwap {}
     #[derive(AnchorSerialize, AnchorDeserialize, Clone, Default)]
+    pub struct CancelClobOrder {
+        pub params: CancelClobOrderParams,
+    }
+    #[automatically_derived]
+    impl anchor_lang::Discriminator for CancelClobOrder {
+        const DISCRIMINATOR: &[u8] = &[145, 107, 104, 232, 171, 3, 245, 94];
+    }
+    #[automatically_derived]
+    impl anchor_lang::InstructionData for CancelClobOrder {}
+    #[derive(AnchorSerialize, AnchorDeserialize, Clone, Default)]
     pub struct CancelOrder {
         pub order_id: Option<u32>,
     }
@@ -806,6 +816,16 @@ pub mod instructions {
     }
     #[automatically_derived]
     impl anchor_lang::InstructionData for PlaceAndTakePerpOrder {}
+    #[derive(AnchorSerialize, AnchorDeserialize, Clone, Default)]
+    pub struct PlaceClobOrder {
+        pub params: PlaceClobOrderParams,
+    }
+    #[automatically_derived]
+    impl anchor_lang::Discriminator for PlaceClobOrder {
+        const DISCRIMINATOR: &[u8] = &[252, 250, 165, 51, 142, 80, 101, 210];
+    }
+    #[automatically_derived]
+    impl anchor_lang::InstructionData for PlaceClobOrder {}
     #[derive(AnchorSerialize, AnchorDeserialize, Clone, Default)]
     pub struct PlaceOrders {
         pub params: Vec<OrderParams>,
@@ -2923,6 +2943,40 @@ pub mod types {
         Debug,
         PartialEq,
     )]
+    pub struct CancelClobOrderParams {
+        pub market_index: u16,
+        pub order_ref: ClobOrderRefV0,
+    }
+    #[repr(C)]
+    #[derive(
+        AnchorSerialize,
+        AnchorDeserialize,
+        InitSpace,
+        Serialize,
+        Deserialize,
+        Copy,
+        Clone,
+        Default,
+        Debug,
+        PartialEq,
+    )]
+    pub struct ClobOrderRefV0 {
+        pub node_index: u32,
+        pub order_id: u64,
+    }
+    #[repr(C)]
+    #[derive(
+        AnchorSerialize,
+        AnchorDeserialize,
+        InitSpace,
+        Serialize,
+        Deserialize,
+        Copy,
+        Clone,
+        Default,
+        Debug,
+        PartialEq,
+    )]
     pub struct Constituent {
         pub pubkey: Pubkey,
         pub mint: Pubkey,
@@ -4114,6 +4168,7 @@ pub mod types {
         DeriskLp,
         OrderFilledWithOpenbookV2,
         TransferPerpPosition,
+        OrderFilledWithExternalQuoter,
     }
     #[repr(C)]
     #[derive(
@@ -4472,6 +4527,27 @@ pub mod types {
         pub market_index: u16,
         pub open_orders: u8,
         pub position_flag: u8,
+    }
+    #[repr(C)]
+    #[derive(
+        AnchorSerialize,
+        AnchorDeserialize,
+        InitSpace,
+        Serialize,
+        Deserialize,
+        Copy,
+        Clone,
+        Default,
+        Debug,
+        PartialEq,
+    )]
+    pub struct PlaceClobOrderParams {
+        pub market_index: u16,
+        pub direction: PositionDirection,
+        pub price: u64,
+        pub base_asset_amount: u64,
+        pub max_ts: i64,
+        pub activation_delay_slots: Option<u32>,
     }
     #[repr(C)]
     #[derive(
@@ -7613,6 +7689,100 @@ pub mod accounts {
     }
     #[automatically_derived]
     impl anchor_lang::AccountDeserialize for BeginSwap {
+        fn try_deserialize(buf: &mut &[u8]) -> anchor_lang::Result<Self> {
+            let given_disc = &buf[..8];
+            if Self::DISCRIMINATOR != given_disc {
+                return Err(anchor_lang::error!(
+                    anchor_lang::error::ErrorCode::AccountDiscriminatorMismatch
+                ));
+            }
+            Self::try_deserialize_unchecked(buf)
+        }
+        fn try_deserialize_unchecked(buf: &mut &[u8]) -> anchor_lang::Result<Self> {
+            let mut data: &[u8] = &buf[8..];
+            AnchorDeserialize::deserialize(&mut data)
+                .map_err(|_| anchor_lang::error::ErrorCode::AccountDidNotDeserialize.into())
+        }
+    }
+    #[repr(C)]
+    #[derive(Copy, Clone, Default, AnchorSerialize, AnchorDeserialize, Serialize, Deserialize)]
+    pub struct CancelClobOrder {
+        pub state: Pubkey,
+        pub user: Pubkey,
+        pub authority: Pubkey,
+        pub quoter: Pubkey,
+        pub clob_market: Pubkey,
+        pub clob_program: Pubkey,
+        pub velocity_signer: Pubkey,
+    }
+    #[automatically_derived]
+    impl anchor_lang::Discriminator for CancelClobOrder {
+        const DISCRIMINATOR: &[u8] = &[59, 58, 27, 234, 37, 83, 48, 191];
+    }
+    #[automatically_derived]
+    unsafe impl anchor_lang::__private::bytemuck::Pod for CancelClobOrder {}
+    #[automatically_derived]
+    unsafe impl anchor_lang::__private::bytemuck::Zeroable for CancelClobOrder {}
+    #[automatically_derived]
+    impl anchor_lang::ZeroCopy for CancelClobOrder {}
+    #[automatically_derived]
+    impl anchor_lang::InstructionData for CancelClobOrder {}
+    #[automatically_derived]
+    impl ToAccountMetas for CancelClobOrder {
+        fn to_account_metas(&self) -> Vec<AccountMeta> {
+            vec![
+                AccountMeta {
+                    pubkey: self.state,
+                    is_signer: false,
+                    is_writable: false,
+                },
+                AccountMeta {
+                    pubkey: self.user,
+                    is_signer: false,
+                    is_writable: true,
+                },
+                AccountMeta {
+                    pubkey: self.authority,
+                    is_signer: true,
+                    is_writable: false,
+                },
+                AccountMeta {
+                    pubkey: self.quoter,
+                    is_signer: false,
+                    is_writable: false,
+                },
+                AccountMeta {
+                    pubkey: self.clob_market,
+                    is_signer: false,
+                    is_writable: true,
+                },
+                AccountMeta {
+                    pubkey: self.clob_program,
+                    is_signer: false,
+                    is_writable: false,
+                },
+                AccountMeta {
+                    pubkey: self.velocity_signer,
+                    is_signer: false,
+                    is_writable: false,
+                },
+            ]
+        }
+    }
+    #[automatically_derived]
+    impl anchor_lang::AccountSerialize for CancelClobOrder {
+        fn try_serialize<W: std::io::Write>(&self, writer: &mut W) -> anchor_lang::Result<()> {
+            if writer.write_all(Self::DISCRIMINATOR).is_err() {
+                return Err(anchor_lang::error::ErrorCode::AccountDidNotSerialize.into());
+            }
+            if AnchorSerialize::serialize(self, writer).is_err() {
+                return Err(anchor_lang::error::ErrorCode::AccountDidNotSerialize.into());
+            }
+            Ok(())
+        }
+    }
+    #[automatically_derived]
+    impl anchor_lang::AccountDeserialize for CancelClobOrder {
         fn try_deserialize(buf: &mut &[u8]) -> anchor_lang::Result<Self> {
             let given_disc = &buf[..8];
             if Self::DISCRIMINATOR != given_disc {
@@ -13153,6 +13323,100 @@ pub mod accounts {
     }
     #[automatically_derived]
     impl anchor_lang::AccountDeserialize for PlaceAndTakePerpOrder {
+        fn try_deserialize(buf: &mut &[u8]) -> anchor_lang::Result<Self> {
+            let given_disc = &buf[..8];
+            if Self::DISCRIMINATOR != given_disc {
+                return Err(anchor_lang::error!(
+                    anchor_lang::error::ErrorCode::AccountDiscriminatorMismatch
+                ));
+            }
+            Self::try_deserialize_unchecked(buf)
+        }
+        fn try_deserialize_unchecked(buf: &mut &[u8]) -> anchor_lang::Result<Self> {
+            let mut data: &[u8] = &buf[8..];
+            AnchorDeserialize::deserialize(&mut data)
+                .map_err(|_| anchor_lang::error::ErrorCode::AccountDidNotDeserialize.into())
+        }
+    }
+    #[repr(C)]
+    #[derive(Copy, Clone, Default, AnchorSerialize, AnchorDeserialize, Serialize, Deserialize)]
+    pub struct PlaceClobOrder {
+        pub state: Pubkey,
+        pub user: Pubkey,
+        pub authority: Pubkey,
+        pub quoter: Pubkey,
+        pub clob_market: Pubkey,
+        pub clob_program: Pubkey,
+        pub velocity_signer: Pubkey,
+    }
+    #[automatically_derived]
+    impl anchor_lang::Discriminator for PlaceClobOrder {
+        const DISCRIMINATOR: &[u8] = &[115, 194, 104, 163, 115, 16, 47, 165];
+    }
+    #[automatically_derived]
+    unsafe impl anchor_lang::__private::bytemuck::Pod for PlaceClobOrder {}
+    #[automatically_derived]
+    unsafe impl anchor_lang::__private::bytemuck::Zeroable for PlaceClobOrder {}
+    #[automatically_derived]
+    impl anchor_lang::ZeroCopy for PlaceClobOrder {}
+    #[automatically_derived]
+    impl anchor_lang::InstructionData for PlaceClobOrder {}
+    #[automatically_derived]
+    impl ToAccountMetas for PlaceClobOrder {
+        fn to_account_metas(&self) -> Vec<AccountMeta> {
+            vec![
+                AccountMeta {
+                    pubkey: self.state,
+                    is_signer: false,
+                    is_writable: false,
+                },
+                AccountMeta {
+                    pubkey: self.user,
+                    is_signer: false,
+                    is_writable: true,
+                },
+                AccountMeta {
+                    pubkey: self.authority,
+                    is_signer: true,
+                    is_writable: false,
+                },
+                AccountMeta {
+                    pubkey: self.quoter,
+                    is_signer: false,
+                    is_writable: false,
+                },
+                AccountMeta {
+                    pubkey: self.clob_market,
+                    is_signer: false,
+                    is_writable: true,
+                },
+                AccountMeta {
+                    pubkey: self.clob_program,
+                    is_signer: false,
+                    is_writable: false,
+                },
+                AccountMeta {
+                    pubkey: self.velocity_signer,
+                    is_signer: false,
+                    is_writable: false,
+                },
+            ]
+        }
+    }
+    #[automatically_derived]
+    impl anchor_lang::AccountSerialize for PlaceClobOrder {
+        fn try_serialize<W: std::io::Write>(&self, writer: &mut W) -> anchor_lang::Result<()> {
+            if writer.write_all(Self::DISCRIMINATOR).is_err() {
+                return Err(anchor_lang::error::ErrorCode::AccountDidNotSerialize.into());
+            }
+            if AnchorSerialize::serialize(self, writer).is_err() {
+                return Err(anchor_lang::error::ErrorCode::AccountDidNotSerialize.into());
+            }
+            Ok(())
+        }
+    }
+    #[automatically_derived]
+    impl anchor_lang::AccountDeserialize for PlaceClobOrder {
         fn try_deserialize(buf: &mut &[u8]) -> anchor_lang::Result<Self> {
             let given_disc = &buf[..8];
             if Self::DISCRIMINATOR != given_disc {

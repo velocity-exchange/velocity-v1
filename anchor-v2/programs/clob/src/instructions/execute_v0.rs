@@ -21,6 +21,9 @@ pub struct ExecuteArgsV0 {
     /// `User`s velocity has loaded and can settle. `None` = unrestricted
     /// (tests; velocity always passes the loaded set).
     pub users: Option<Vec<Address>>,
+    /// The taker's `User`: their own resting orders are skipped
+    /// unconditionally (self-trade prevention).
+    pub taker: Option<Address>,
 }
 
 /// Quoter interface: commit a fill; balance changes (merged by user) go to
@@ -38,6 +41,7 @@ pub fn handle_execute_v0(
         args.direction,
         args.size,
         args.users.as_deref(),
+        args.taker.as_ref(),
         clock.slot,
         clock.unix_timestamp,
     )?;

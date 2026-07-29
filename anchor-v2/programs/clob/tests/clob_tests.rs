@@ -188,16 +188,17 @@ fn parse_levels(b: &[u8]) -> Vec<(u64, u64)> {
 }
 
 /// ExecuteResponseV0 { balance_changes: Vec<UserBalanceChange> } — entries
-/// are (user: 32, base_size: u64, quote_size: u64).
-fn parse_balance_changes(b: &[u8]) -> Vec<([u8; 32], u64, u64)> {
+/// are (user: 32, base_size: u64, quote_size: u64, completed_orders: u32).
+fn parse_balance_changes(b: &[u8]) -> Vec<([u8; 32], u64, u64, u32)> {
     let count = parse_u32(b) as usize;
     (0..count)
         .map(|i| {
-            let off = 4 + i * 48;
+            let off = 4 + i * 52;
             (
                 b[off..off + 32].try_into().unwrap(),
                 parse_u64(&b[off + 32..]),
                 parse_u64(&b[off + 40..]),
+                parse_u32(&b[off + 48..]),
             )
         })
         .collect()
@@ -220,6 +221,7 @@ fn quote_meta_users(
             direction,
             size,
             users,
+            taker: None,
         },
     }
     .to_instruction(accounts::QuoteV0 {
@@ -253,6 +255,7 @@ fn execute_meta_users(
             direction,
             size,
             users,
+            taker: None,
         },
     }
     .to_instruction(accounts::ExecuteV0 {
@@ -275,12 +278,12 @@ fn execute_users(
     direction: Direction,
     size: u64,
     users: Option<Vec<Address>>,
-) -> Vec<([u8; 32], u64, u64)> {
+) -> Vec<([u8; 32], u64, u64, u32)> {
     let meta = execute_meta_users(ctx, direction, size, users).unwrap();
     parse_balance_changes(&read_response(ctx, &meta))
 }
 
-fn execute(ctx: &mut Ctx, direction: Direction, size: u64) -> Vec<([u8; 32], u64, u64)> {
+fn execute(ctx: &mut Ctx, direction: Direction, size: u64) -> Vec<([u8; 32], u64, u64, u32)> {
     execute_users(ctx, direction, size, None)
 }
 
@@ -312,13 +315,15 @@ fn remove_expired(
     send(ctx, ix)
 }
 
-/// RemovedOrderV0 return data: (user, order_id, price, base_asset_amount).
-fn parse_removed(b: &[u8]) -> ([u8; 32], u64, u64, u64) {
+/// RemovedOrderV0 return data:
+/// (user, order_id, price, base_asset_amount, side).
+fn parse_removed(b: &[u8]) -> ([u8; 32], u64, u64, u64, u8) {
     (
         b[..32].try_into().unwrap(),
         parse_u64(&b[32..]),
         parse_u64(&b[40..]),
         parse_u64(&b[48..]),
+        b[56],
     )
 }
 
@@ -326,7 +331,7 @@ fn parse_removed(b: &[u8]) -> ([u8; 32], u64, u64, u64) {
 /// (user, order_id, base_asset_amount).
 fn parse_cancelled(b: &[u8]) -> Vec<([u8; 32], u64, u64)> {
     let n = parse_u32(b) as usize;
-    let off = 4 + n * 48;
+    let off = 4 + n * 52;
     let m = parse_u32(&b[off..]) as usize;
     (0..m)
         .map(|i| {
@@ -541,8 +546,11 @@ fn hard_cap_rejects_placement_and_crank_evicts_tail() {
 
     // The crank removes the tail (worst price) and reports it for velocity.
     let meta = evict_worst(&mut ctx, Side::Bid).unwrap();
-    let (evicted_user, _, price, base) = parse_removed(&meta.return_data.data);
-    assert_eq!((evicted_user, price, base), (user.to_bytes(), 100, 1));
+    let (evicted_user, _, price, base, side) = parse_removed(&meta.return_data.data);
+    assert_eq!(
+        (evicted_user, price, base, side),
+        (user.to_bytes(), 100, 1, Side::Bid.to_u8())
+    );
     place(&mut ctx, place_args(Side::Bid, 200, 1), user);
     let state = market_state(&ctx);
     assert_eq!(state.bid_count, 8);
@@ -657,8 +665,11 @@ fn expired_orders_are_skipped_and_cranked_off() {
     assert_eq!(state.free_count, CAPACITY as u32 - 1);
 
     let meta = remove_expired(&mut ctx, order_ref).unwrap();
-    let (removed_user, _, _, base) = parse_removed(&meta.return_data.data);
-    assert_eq!((removed_user, base), (user.to_bytes(), 5));
+    let (removed_user, _, _, base, side) = parse_removed(&meta.return_data.data);
+    assert_eq!(
+        (removed_user, base, side),
+        (user.to_bytes(), 5, Side::Ask.to_u8())
+    );
     let state = market_state(&ctx);
     assert_eq!(state.ask_count, 0);
     assert_eq!(state.free_count, CAPACITY as u32);
@@ -699,7 +710,7 @@ fn unknown_user_grace_skips_fresh_orders_and_fails_on_aged_ones() {
         vec![(101, 7)]
     );
     let changes = execute_users(&mut ctx, Direction::Long, 7, Some(vec![user_b]));
-    assert_eq!(changes, vec![(user_b.to_bytes(), 7, 707)]);
+    assert_eq!(changes, vec![(user_b.to_bytes(), 7, 707, 1)]);
     // A's order still resting, untouched.
     assert_eq!(quote(&mut ctx, Direction::Long, 12), vec![(100, 5)]);
 
@@ -719,7 +730,10 @@ fn unknown_user_grace_skips_fresh_orders_and_fails_on_aged_ones() {
     let changes = execute_users(&mut ctx, Direction::Long, 12, Some(vec![user_a, user_b]));
     assert_eq!(
         changes,
-        vec![(user_a.to_bytes(), 5, 500), (user_b.to_bytes(), 7, 707)]
+        vec![
+            (user_a.to_bytes(), 5, 500, 1),
+            (user_b.to_bytes(), 7, 707, 1)
+        ]
     );
 }
 
@@ -750,7 +764,7 @@ fn partial_fill_remainder_below_min_order_size_is_culled() {
     let resp = read_response(&ctx, &meta);
     assert_eq!(
         parse_balance_changes(&resp),
-        vec![(user.to_bytes(), 15, 1500)]
+        vec![(user.to_bytes(), 15, 1500, 0)]
     );
     assert_eq!(parse_cancelled(&resp), vec![(user.to_bytes(), 1, 5)]);
     assert!(quote(&mut ctx, Direction::Long, u64::MAX).is_empty());
@@ -789,6 +803,7 @@ fn cu_benchmarks() {
             direction: Direction::Short,
             size: u64::MAX,
             users: None,
+            taker: None,
         },
     }
     .to_instruction(accounts::QuoteV0 {
@@ -862,4 +877,64 @@ fn resize_grows_arena_and_per_side_capacity() {
     let state = market_state(&ctx);
     assert_eq!(state.bid_count, 16);
     assert_eq!(state.free_count, 32 - 16);
+}
+
+fn quote_taker(ctx: &mut Ctx, direction: Direction, size: u64, taker: Address) -> Vec<(u64, u64)> {
+    let ix = instruction::QuoteV0 {
+        args: QuoteArgsV0 {
+            direction,
+            size,
+            users: None,
+            taker: Some(taker),
+        },
+    }
+    .to_instruction(accounts::QuoteV0 {
+        market: addr(ctx.market),
+    });
+    let meta = send(ctx, ix).unwrap();
+    parse_levels(&read_response(ctx, &meta))
+}
+
+fn execute_taker(
+    ctx: &mut Ctx,
+    direction: Direction,
+    size: u64,
+    taker: Address,
+) -> Vec<([u8; 32], u64, u64, u32)> {
+    let ix = instruction::ExecuteV0 {
+        args: ExecuteArgsV0 {
+            direction,
+            size,
+            users: None,
+            taker: Some(taker),
+        },
+    }
+    .to_instruction(accounts::ExecuteV0 {
+        market: addr(ctx.market),
+        place_authority: addr(ctx.place_auth.pubkey()),
+    });
+    let meta = send(ctx, ix).unwrap();
+    parse_balance_changes(&read_response(ctx, &meta))
+}
+
+#[test]
+fn taker_own_orders_are_skipped_for_self_trade_prevention() {
+    let mut ctx = setup();
+    let taker = addr(Pubkey::new_unique());
+    let other = addr(Pubkey::new_unique());
+    // Taker's own ask at the top of book, another maker behind it.
+    place(&mut ctx, place_args(Side::Ask, 100, 5), taker);
+    place(&mut ctx, place_args(Side::Ask, 101, 7), other);
+    advance_slot(&mut ctx, 1);
+
+    // Quote and execute both walk past the taker's own order — no grace
+    // games, no StaleUserSet — and the fills match the quote.
+    assert_eq!(
+        quote_taker(&mut ctx, Direction::Long, 12, taker),
+        vec![(101, 7)]
+    );
+    let changes = execute_taker(&mut ctx, Direction::Long, 12, taker);
+    assert_eq!(changes, vec![(other.to_bytes(), 7, 707, 1)]);
+    // The taker's own order still rests.
+    assert_eq!(quote(&mut ctx, Direction::Long, 12), vec![(100, 5)]);
 }

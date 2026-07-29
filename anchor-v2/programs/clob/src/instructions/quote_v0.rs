@@ -18,6 +18,9 @@ pub struct QuoteArgsV0 {
     /// `None` = unrestricted (off-chain discovery). Orders for absent users
     /// are skipped within the market's grace window, fail the call past it.
     pub users: Option<Vec<Address>>,
+    /// The taker's `User`: their own resting orders are skipped
+    /// unconditionally (self-trade prevention).
+    pub taker: Option<Address>,
 }
 
 /// Quoter interface: price levels for a taker of `direction`/`size`, written
@@ -29,6 +32,7 @@ pub fn handle_quote_v0(ctx: &mut Context<QuoteV0>, args: QuoteArgsV0) -> Result<
         args.direction,
         args.size,
         args.users.as_deref(),
+        args.taker.as_ref(),
         clock.slot,
         clock.unix_timestamp,
     )?;

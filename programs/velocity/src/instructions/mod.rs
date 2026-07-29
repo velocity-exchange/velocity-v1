@@ -12,17 +12,18 @@ pub use crate::vlp::hedge::instructions::*;
 pub use crate::vlp::hedge::settle::*;
 
 pub use admin::*;
+pub use clob::*;
 pub use constraints::*;
 pub use if_staker::*;
 pub use keeper::*;
 pub use protocol_fees::*;
 pub use pyth_lazer_oracle::*;
 pub use quoter_registry::*;
-#[cfg(feature = "anchor-test")]
 pub use router::*;
 pub use user::*;
 
 mod admin;
+mod clob;
 pub mod constraints;
 mod if_staker;
 mod keeper;
@@ -30,6 +31,5 @@ pub mod optional_accounts;
 mod protocol_fees;
 mod pyth_lazer_oracle;
 mod quoter_registry;
-#[cfg(feature = "anchor-test")]
 mod router;
 mod user;

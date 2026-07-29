@@ -1051,10 +1051,10 @@ pub fn fill_perp_order(
     )
 }
 
-/// [`fill_perp_order`] with the router-mode selector: `Some(router_books)`
-/// runs the single-pass router fulfillment (the books may be empty — vAMM +
-/// passed DLOB makers only; nonzero external allocations require the CPI
-/// entrypoint), `None` runs the legacy method loop.
+/// [`fill_perp_order`] with the router-mode selector: `Some(inputs)` runs the
+/// single-pass router fulfillment over the vAMM, the passed DLOB makers, and
+/// the external books in `inputs` (executed via `inputs.executor`, the CPI
+/// leg the entrypoint supplies); `None` runs the legacy method loop.
 #[allow(clippy::too_many_arguments)]
 pub fn fill_perp_order_with_router(
     order_id: u32,
@@ -1071,7 +1071,7 @@ pub fn fill_perp_order_with_router(
     jit_maker_order_id: Option<u32>,
     clock: &Clock,
     fill_mode: FillMode,
-    router_books: Option<&[crate::math::router::QuoterBook]>,
+    router: Option<&mut crate::math::router::RouterFillInputs>,
     rev_share_escrow: &mut Option<&mut RevenueShareEscrowZeroCopyMut>,
 ) -> VelocityResult<(u64, u64)> {
     let now = clock.unix_timestamp;
@@ -1422,7 +1422,7 @@ pub fn fill_perp_order_with_router(
         amm_jit_allowed,
         fill_mode,
         oracle_stale_for_margin,
-        router_books,
+        router,
         rev_share_escrow,
     )?;
 
@@ -1871,7 +1871,7 @@ fn fulfill_perp_order(
     // `Some` selects the single-pass router fulfillment (the books may be
     // empty — vAMM + passed DLOB makers only); `None` runs the legacy
     // method-determination + step loop.
-    external_books: Option<&[crate::math::router::QuoterBook]>,
+    router: Option<&mut crate::math::router::RouterFillInputs>,
     rev_share_escrow: &mut Option<&mut RevenueShareEscrowZeroCopyMut>,
 ) -> VelocityResult<(u64, u64)> {
     let market_index = user.orders[user_order_index].market_index;
@@ -1890,7 +1890,7 @@ fn fulfill_perp_order(
     let perp_market_oi_before = perp_market.get_open_interest();
     drop(perp_market);
 
-    if let Some(books) = external_books {
+    if let Some(router) = router {
         let mut maker_fills: BTreeMap<Pubkey, (i64, bool)> = BTreeMap::new();
         let (base_asset_amount, quote_asset_amount) = fulfill_perp_order_router_pass(
             user,
@@ -1912,7 +1912,7 @@ fn fulfill_perp_order(
             slot,
             amm_is_available,
             fill_mode.is_liquidation(),
-            books,
+            router,
             rev_share_escrow,
             &mut maker_fills,
         )?;
@@ -3119,6 +3119,300 @@ fn settle_dlob_match_fill(
     Ok((fill.base_filled, fill.quote_filled, fill.base_filled))
 }
 
+/// Settle one external-quoter balance change: the maker is a loaded `User`
+/// whose resting liquidity lives outside velocity (a CLOB order or a PropAMM
+/// quote), so unlike [`settle_dlob_match_fill`] there is no velocity `Order`
+/// to update — the external program already committed its own book state.
+/// Everything protocol-level is identical to a DLOB match: match-fee
+/// schedule (maker rebate), position updates on both sides, filler reward,
+/// referrer/builder accrual, and the fill record (with no maker order).
+///
+/// The maker side has no `validate_fill_price` — the router pass already
+/// enforced per-unit at-or-better against this quoter's own quoted levels,
+/// which is the maker-side price contract here. The taker side validates
+/// against the effective taker limit as usual.
+///
+/// `maker_aggregates_tracked`: CLOB orders are margin-reserved through
+/// velocity at placement (`open_bids`/`open_asks`), so their fills unwind
+/// those aggregates; Custom PropAMM depth is never reserved.
+#[allow(clippy::too_many_arguments)]
+fn settle_external_match_fill(
+    base_filled: u64,
+    quote_filled: u64,
+    market: &mut PerpMarket,
+    taker: &mut User,
+    taker_stats: &mut UserStats,
+    taker_position_index: usize,
+    taker_order_index: usize,
+    taker_key: &Pubkey,
+    taker_direction: PositionDirection,
+    taker_existing_position_params_before: Option<(u64, u64)>,
+    maker_user: &mut User,
+    mut maker_stats: Option<&mut UserStats>,
+    maker_key: &Pubkey,
+    maker_aggregates_tracked: bool,
+    taker_limit_price: Option<u64>,
+    oracle_price: i64,
+    filler: &mut Option<&mut User>,
+    filler_stats: &mut Option<&mut UserStats>,
+    filler_key: &Pubkey,
+    rev_share_escrow: &mut Option<&mut RevenueShareEscrowZeroCopyMut>,
+    fee_structure: &FeeStructure,
+    oracle_map: &mut OracleMap,
+    is_liquidation: bool,
+    now: i64,
+    slot: u64,
+) -> VelocityResult<(u64, u64)> {
+    let maker_direction = taker_direction.opposite();
+    let maker_position_index = get_position_index(&maker_user.perp_positions, market.market_index)
+        .or_else(|_| add_new_position(&mut maker_user.perp_positions, market.market_index))?;
+    let maker_existing_position_params = maker_user.perp_positions[maker_position_index]
+        .get_existing_position_params_for_order_action(maker_direction);
+
+    if let Some(limit) = taker_limit_price {
+        validate_fill_price(
+            quote_filled,
+            base_filled,
+            BASE_PRECISION_U64,
+            taker_direction,
+            limit,
+            true,
+        )?;
+    }
+
+    let maker_pd = get_position_delta_for_fill(base_filled, quote_filled, maker_direction)?;
+    update_position_and_market(
+        &mut maker_user.perp_positions[maker_position_index],
+        market,
+        &maker_pd,
+    )?;
+    if let Some(ms) = maker_stats.as_mut() {
+        ms.update_maker_volume_30d(quote_filled, now)?;
+    } else {
+        taker_stats.update_maker_volume_30d(quote_filled, now)?;
+    }
+
+    let taker_pd = get_position_delta_for_fill(base_filled, quote_filled, taker_direction)?;
+    update_position_and_market(
+        &mut taker.perp_positions[taker_position_index],
+        market,
+        &taker_pd,
+    )?;
+    taker_stats.update_taker_volume_30d(quote_filled, now)?;
+
+    let reward_referrer =
+        can_reward_user_with_referral_reward(market.market_index, rev_share_escrow);
+    let reward_filler = can_reward_user_with_perp_pnl(filler, market.market_index);
+
+    let (builder_order_idx, referrer_builder_order_idx, builder_order_fee_bps, builder_idx) =
+        get_builder_escrow_info(
+            rev_share_escrow,
+            taker.sub_account_id,
+            taker.orders[taker_order_index].order_id,
+            market.market_index,
+            taker.orders[taker_order_index].is_has_builder(),
+        );
+
+    // The maker's per-unit price for the filler-reward tier — external fills
+    // have no single maker limit, so the average fill price stands in.
+    let avg_fill_price = quote_filled
+        .cast::<u128>()?
+        .safe_mul(BASE_PRECISION_U64.cast()?)?
+        .safe_div(base_filled.cast()?)?
+        .cast::<u64>()?;
+    let filler_multiplier = if reward_filler {
+        calculate_filler_multiplier_for_matched_orders(
+            avg_fill_price,
+            maker_direction,
+            oracle_price,
+        )?
+    } else {
+        0
+    };
+
+    let FillFees {
+        user_fee: taker_fee,
+        maker_rebate,
+        fee_to_market,
+        filler_reward,
+        referrer_reward,
+        referee_discount,
+        builder_fee: builder_fee_option,
+        protocol_fee,
+        if_fee,
+        amm_fee,
+        ..
+    } = fees::calculate_fee_for_fulfillment_with_match(
+        taker_stats,
+        &maker_stats,
+        quote_filled,
+        fee_structure,
+        taker.orders[taker_order_index].slot,
+        slot,
+        filler_multiplier,
+        reward_referrer,
+        &MarketType::Perp,
+        market.fee_adjustment,
+        builder_order_fee_bps,
+    )?;
+    let builder_fee = builder_fee_option.unwrap_or(0);
+
+    if builder_fee != 0 {
+        if let (Some(idx), Some(escrow)) = (builder_order_idx, rev_share_escrow.as_deref_mut()) {
+            let order = escrow.get_order_mut(idx)?;
+            order.fees_accrued = order.fees_accrued.safe_add(builder_fee)?;
+            market.accrue_pending_revenue_share(builder_fee)?;
+        } else {
+            validate!(
+                false,
+                ErrorCode::UnableToLoadRevenueShareAccount,
+                "Order has builder fee but no escrow account found"
+            )?;
+        }
+    }
+
+    market
+        .fee_ledger
+        .accrue_fill_fees(taker_fee, protocol_fee, if_fee, amm_fee)?;
+    if amm_fee > 0 {
+        <crate::vlp::amm::AMM as crate::vlp::amm::quoter::AmmContract>::apply_fill_fees(
+            &mut market.amm,
+            fee_to_market,
+            0,
+        )?;
+    }
+
+    controller::position::update_quote_asset_and_break_even_amount(
+        &mut taker.perp_positions[taker_position_index],
+        market,
+        -(taker_fee.safe_add(builder_fee)?).cast()?,
+    )?;
+    taker_stats.increment_total_fees(taker_fee)?;
+    taker_stats.increment_total_referee_discount(referee_discount)?;
+
+    controller::position::update_quote_asset_and_break_even_amount(
+        &mut maker_user.perp_positions[maker_position_index],
+        market,
+        maker_rebate.cast()?,
+    )?;
+    if let Some(ms) = maker_stats.as_mut() {
+        ms.increment_total_rebate(maker_rebate)?;
+    } else {
+        taker_stats.increment_total_rebate(maker_rebate)?;
+    }
+
+    if let Some(filler_user) = filler.as_mut() {
+        if filler_reward > 0 {
+            let filler_position_index =
+                get_position_index(&filler_user.perp_positions, market.market_index).or_else(
+                    |_| add_new_position(&mut filler_user.perp_positions, market.market_index),
+                )?;
+            controller::position::update_quote_asset_amount(
+                &mut filler_user.perp_positions[filler_position_index],
+                market,
+                filler_reward.cast()?,
+            )?;
+            filler_stats
+                .as_mut()
+                .safe_unwrap()?
+                .update_filler_volume(quote_filled, now)?;
+        }
+        filler_user.update_last_active_slot(slot);
+    }
+
+    if let (Some(idx), Some(escrow)) = (referrer_builder_order_idx, rev_share_escrow.as_deref_mut())
+    {
+        let order = escrow.get_order_mut(idx)?;
+        order.fees_accrued = order.fees_accrued.safe_add(referrer_reward)?;
+        market.accrue_pending_revenue_share(referrer_reward)?;
+    }
+
+    let is_taker_filled_after_this = update_order_after_fill(
+        &mut taker.orders[taker_order_index],
+        base_filled,
+        quote_filled,
+    )?;
+    if is_taker_filled_after_this {
+        if let (Some(idx), Some(escrow)) = (builder_order_idx, rev_share_escrow.as_deref_mut()) {
+            let _ = escrow
+                .get_order_mut(idx)
+                .map(|o| o.add_bit_flag(RevenueShareOrderBitFlag::Completed));
+        }
+    }
+    decrease_open_bids_and_asks(
+        &mut taker.perp_positions[taker_position_index],
+        &taker_direction,
+        base_filled,
+        taker.orders[taker_order_index].update_open_bids_and_asks(),
+    )?;
+    decrease_open_bids_and_asks(
+        &mut maker_user.perp_positions[maker_position_index],
+        &maker_direction,
+        base_filled,
+        maker_aggregates_tracked,
+    )?;
+
+    let order_action_explanation = if is_liquidation {
+        OrderActionExplanation::Liquidation
+    } else {
+        OrderActionExplanation::OrderFilledWithExternalQuoter
+    };
+    let mut order_action_bit_flags: u8 = 0;
+    order_action_bit_flags = set_order_bit_flag(
+        order_action_bit_flags,
+        taker.orders[taker_order_index].is_signed_msg(),
+        OrderBitFlag::SignedMessage,
+    );
+    if taker.perp_positions[taker_position_index].is_isolated()
+        || maker_user.perp_positions[maker_position_index].is_isolated()
+    {
+        order_action_bit_flags = set_order_bit_flag(
+            order_action_bit_flags,
+            true,
+            OrderBitFlag::IsIsolatedPosition,
+        );
+    }
+
+    let (taker_existing_quote_entry_amount, taker_existing_base_asset_amount) =
+        calculate_existing_position_fields_for_order_action(
+            base_filled,
+            taker_existing_position_params_before,
+        )?;
+    let (maker_existing_quote_entry_amount, maker_existing_base_asset_amount) =
+        calculate_existing_position_fields_for_order_action(
+            base_filled,
+            maker_existing_position_params,
+        )?;
+    let taker_order_for_record = taker.orders[taker_order_index];
+    emit_perp_action_record(
+        market,
+        oracle_map,
+        now,
+        order_action_explanation,
+        filler_key,
+        filler_reward,
+        base_filled,
+        quote_filled,
+        taker_fee.safe_add(builder_fee)?,
+        Some(maker_rebate),
+        referrer_reward,
+        None,
+        Some(*taker_key),
+        Some(taker_order_for_record),
+        Some(*maker_key),
+        None,
+        order_action_bit_flags,
+        taker_existing_quote_entry_amount,
+        taker_existing_base_asset_amount,
+        maker_existing_quote_entry_amount,
+        maker_existing_base_asset_amount,
+        builder_idx,
+        builder_fee_option,
+    )?;
+
+    Ok((base_filled, quote_filled))
+}
+
 /// Unified fulfill step. Replaces `fulfill_perp_order_with_amm` and
 /// `fulfill_perp_order_with_match` with a single matcher-driven path: build
 /// the right quoter set from the `PerpFulfillmentMethod`, run `match_take`
@@ -3576,12 +3870,13 @@ pub fn fulfill_perp_order_step(
 /// per-step fallback-price recompute (one effective taker limit bounds every
 /// book up front).
 ///
-/// External books are priced into the split but their execution is the CPI
-/// leg, which needs the quoter registry accounts — until the fill entrypoint
-/// carries them, a nonzero external allocation is an error. Maker prices are
-/// the sanitized frozen prices from discovery; `DlobOrderQuoter::execute`
-/// requotes off the same oracle/slot/tick so the two agree by construction,
-/// and `settle_dlob_match_fill`'s `validate_fill_price` enforces it.
+/// External books are priced into the split; allocations that land on them
+/// execute through `RouterFillInputs::executor` (the CPI leg the fill
+/// entrypoint supplies) and settle per returned balance change against the
+/// loaded makers. Maker prices are the sanitized frozen prices from
+/// discovery; `DlobOrderQuoter::execute` requotes off the same
+/// oracle/slot/tick so the two agree by construction, and
+/// `settle_dlob_match_fill`'s `validate_fill_price` enforces it.
 #[allow(clippy::too_many_arguments)]
 fn fulfill_perp_order_router_pass(
     taker: &mut User,
@@ -3603,7 +3898,7 @@ fn fulfill_perp_order_router_pass(
     slot: u64,
     amm_is_available: bool,
     is_liquidation: bool,
-    external_books: &[crate::math::router::QuoterBook],
+    router: &mut crate::math::router::RouterFillInputs,
     rev_share_escrow: &mut Option<&mut RevenueShareEscrowZeroCopyMut>,
     maker_fills: &mut BTreeMap<Pubkey, (i64, bool)>,
 ) -> VelocityResult<(u64, u64)> {
@@ -3611,6 +3906,8 @@ fn fulfill_perp_order_router_pass(
     use crate::state::prop_amm::{Direction, PriceLevel, QuoterType};
     use crate::state::quoter::RouterQuoter;
     use crate::vlp::amm::router_adapter::vamm_quote_levels;
+
+    let external_books = router.books;
 
     let market_index = taker.orders[taker_order_index].market_index;
     let mut market = perp_market_map.get_ref_mut(&market_index)?;
@@ -3791,14 +4088,6 @@ fn fulfill_perp_order_router_pass(
     let externals_end = external_books.len();
     let makers_end = externals_end + maker_levels.len();
 
-    validate!(
-        allocations[..externals_end]
-            .iter()
-            .all(|allocation| allocation.base == 0),
-        ErrorCode::DefaultError,
-        "external quoter execution requires the router fill entrypoint (CPI accounts not wired)"
-    )?;
-
     // ---- Execute the vAMM allocation, then release &mut market.amm. ----
     let amm_allocation = allocations[makers_end];
     let amm_fill = if amm_allocation.base > 0 {
@@ -3968,6 +4257,140 @@ fn fulfill_perp_order_router_pass(
         )?;
         total_base = total_base.safe_add(base_filled)?;
         total_quote = total_quote.safe_add(quote_filled)?;
+    }
+
+    // ---- Execute + settle each external allocation via the CPI leg. ----
+    // The response is untrusted: cap at the allocation, enforce per-unit
+    // at-or-better against the quoted levels, and settle only against loaded
+    // makers (`get_ref_mut` fails for anyone outside the tx's user set).
+    for (i, allocation) in allocations[..externals_end].iter().enumerate() {
+        if allocation.base == 0 {
+            continue;
+        }
+        let response = router.executor.execute(i, direction, allocation.base)?;
+        // CLOB orders are margin-reserved through velocity at placement, so
+        // their fills/culls unwind open-order aggregates; Custom PropAMM
+        // depth is never reserved, so there is nothing to unwind.
+        let maker_aggregates_tracked =
+            router.executor.quoter_type(i) == crate::state::prop_amm::QuoterType::Clob;
+
+        let (ext_base, ext_quote) = response.balance_changes.iter().try_fold(
+            (0u64, 0u64),
+            |(base, quote), change| -> VelocityResult<(u64, u64)> {
+                Ok((
+                    base.safe_add(change.base_size)?,
+                    quote.safe_add(change.quote_size)?,
+                ))
+            },
+        )?;
+        if ext_base == 0 {
+            continue;
+        }
+        validate!(
+            ext_base <= allocation.base,
+            ErrorCode::DefaultError,
+            "router external quoter {} overfilled: {} > {}",
+            i,
+            ext_base,
+            allocation.base
+        )?;
+        let aggregate_fill = QuoterFill {
+            side: taker_direction,
+            base_filled: ext_base,
+            quote_filled: ext_quote,
+            clearing_price: 0,
+            refresh_cost: 0,
+            is_fee_exempt: false,
+            fee_policy: crate::state::quoter::FillFeePolicy::DlobMatch,
+            quote_asset_amount_surplus: 0,
+        };
+        validate!(
+            crate::controller::matching::fill_at_or_better(
+                taker_direction,
+                &aggregate_fill,
+                allocation,
+                BASE_PRECISION_U64
+            )?,
+            ErrorCode::DefaultError,
+            "router external quoter {} filled worse than quoted",
+            i
+        )?;
+
+        for change in &response.balance_changes {
+            if change.base_size == 0 {
+                continue;
+            }
+            let mut maker = makers_and_referrer.get_ref_mut(&change.user)?;
+            let mut maker_stats = if maker.authority == taker.authority {
+                None
+            } else {
+                Some(makers_and_referrer_stats.get_ref_mut(&maker.authority)?)
+            };
+            let (base_filled, quote_filled) = settle_external_match_fill(
+                change.base_size,
+                change.quote_size,
+                market.deref_mut(),
+                taker,
+                taker_stats,
+                taker_position_index,
+                taker_order_index,
+                taker_key,
+                taker_direction,
+                taker_existing_position_params_before,
+                &mut maker,
+                maker_stats.as_deref_mut(),
+                &change.user,
+                maker_aggregates_tracked,
+                effective_taker_limit,
+                oracle_price,
+                filler,
+                filler_stats,
+                filler_key,
+                rev_share_escrow,
+                fee_structure,
+                oracle_map,
+                is_liquidation,
+                now,
+                slot,
+            )?;
+            total_base = total_base.safe_add(base_filled)?;
+            total_quote = total_quote.safe_add(quote_filled)?;
+
+            let maker_position_index = get_position_index(&maker.perp_positions, market_index)?;
+            update_maker_fills_map(
+                maker_fills,
+                &change.user,
+                maker_direction,
+                base_filled,
+                maker.perp_positions[maker_position_index].is_isolated(),
+            )?;
+            if maker_aggregates_tracked {
+                let position = &mut maker.perp_positions[maker_position_index];
+                position.open_orders = position
+                    .open_orders
+                    .saturating_sub(change.completed_orders.cast()?);
+                (0..change.completed_orders).for_each(|_| maker.decrement_open_orders(false));
+            }
+        }
+
+        // Sub-min remainders the quoter culled with this fill: unwind the
+        // remainder from the maker's aggregates (that maker was just filled,
+        // so they are loaded).
+        if maker_aggregates_tracked {
+            for cancelled in &response.cancelled {
+                let mut maker = makers_and_referrer.get_ref_mut(&cancelled.user)?;
+                let maker_position_index = get_position_index(&maker.perp_positions, market_index)?;
+                decrease_open_bids_and_asks(
+                    &mut maker.perp_positions[maker_position_index],
+                    &maker_direction,
+                    cancelled.base_asset_amount,
+                    true,
+                )?;
+                let position = &mut maker.perp_positions[maker_position_index];
+                position.open_orders = position.open_orders.saturating_sub(1);
+                maker.decrement_open_orders(false);
+            }
+        }
     }
 
     if total_base == 0 {

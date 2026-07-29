@@ -377,6 +377,9 @@ export class OrderActionExplanation {
 	static readonly TRANSFER_PERP_POSITION = {
 		transferPerpPosition: {},
 	};
+	static readonly ORDER_FILLED_WITH_EXTERNAL_QUOTER = {
+		orderFilledWithExternalQuoter: {},
+	};
 }
 
 /** Trigger-order condition on `Order.triggerCondition`. `ABOVE`/`BELOW` are the pending (not-yet-triggered) states; `TRIGGERED_ABOVE`/`TRIGGERED_BELOW` record that the condition has already fired, so the order is now live for filling. */

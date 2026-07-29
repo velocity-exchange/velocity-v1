@@ -3095,7 +3095,7 @@ pub mod fulfill_order {
     }
 
     #[test]
-    #[ignore = "one-lamport quote differences: the fill accumulates notional per ladder level rather than in one swap. Benign, but repinning waits on the post-only size question above (same fixtures touch AMM fees)."]
+    #[ignore = "the router splits by price and tier in one pass where the legacy loop allocated AMM-then-maker sequentially, so the same total fill divides a hair differently: AMM fee 50020001 vs 50022513 (0.005%), maker quote one lamport, and filler-volume attribution when the maker is also the filler. Taker outcome is identical. Needs the maker-is-filler aliasing checked before repinning."]
     fn fulfill_with_amm_and_maker() {
         let now = 0_i64;
         let slot = 0_u64;
@@ -4885,7 +4885,6 @@ pub mod fulfill_order {
     }
 
     #[test]
-    #[ignore = "UNEXPLAINED router-vs-legacy size delta on a post-only fill against the AMM: both paths cap the fill at the taker limit via the same marginal-price inversion (verified: the ladder cap bites, quoting 50.037 of a 1000-unit request at limit 99.90), yet legacy stopped at 35.032. Candidate causes: the secondary bound (cumulative_size bounds by AmmQuoter::max_fillable, the ladder by calculate_amm_available_liquidity) and step standardization. Do NOT repin these numbers until the 43% difference is accounted for."]
     fn fulfill_post_only_ask_with_amm() {
         let now = 0_i64;
         let slot = 0_u64;
@@ -5037,16 +5036,13 @@ pub mod fulfill_order {
         )
         .unwrap();
 
-        // The ladder prices each rung at its slice's average cost, and average
-        // beats marginal for the taker, so more size clears the same limit than
-        // the old marginal-price cap allowed — at a price still inside it.
-        assert_eq!(base_asset_amount, 50037000);
+        assert_eq!(base_asset_amount, 35032000);
 
         let taker_position = &taker.perp_positions[0];
-        assert_eq!(taker_position.base_asset_amount, -50037000);
-        assert_eq!(taker_position.quote_asset_amount, 5000196);
-        assert_eq!(taker_position.quote_entry_amount, 4998697);
-        assert_eq!(taker_position.quote_break_even_amount, 5000196);
+        assert_eq!(taker_position.base_asset_amount, -35032000);
+        assert_eq!(taker_position.quote_asset_amount, 3500746);
+        assert_eq!(taker_position.quote_entry_amount, 3499697);
+        assert_eq!(taker_position.quote_break_even_amount, 3500746);
         assert_eq!(taker_stats.fees.total_fee_paid, 0);
         assert_eq!(taker_stats.fees.total_fee_rebate, 1049);
         assert_eq!(taker_stats.fees.total_referee_discount, 0);
@@ -5073,7 +5069,6 @@ pub mod fulfill_order {
     }
 
     #[test]
-    #[ignore = "UNEXPLAINED router-vs-legacy size delta on a post-only fill against the AMM: both paths cap the fill at the taker limit via the same marginal-price inversion (verified: the ladder cap bites, quoting 50.037 of a 1000-unit request at limit 99.90), yet legacy stopped at 35.032. Candidate causes: the secondary bound (cumulative_size bounds by AmmQuoter::max_fillable, the ladder by calculate_amm_available_liquidity) and step standardization. Do NOT repin these numbers until the 43% difference is accounted for."]
     fn fulfill_post_only_bid_with_amm() {
         let now = 0_i64;
         let slot = 0_u64;
@@ -5225,14 +5220,11 @@ pub mod fulfill_order {
         )
         .unwrap();
 
-        // The ladder prices each rung at its slice's average cost, and average
-        // beats marginal for the taker, so more size clears the same limit than
-        // the old marginal-price cap allowed — at a price still inside it.
-        assert_eq!(base_asset_amount, 49962000);
+        assert_eq!(base_asset_amount, 34966000);
 
         let taker_position = &taker.perp_positions[0];
-        assert_eq!(taker_position.base_asset_amount, 49962000);
-        assert_eq!(taker_position.quote_asset_amount, -4999696);
+        assert_eq!(taker_position.base_asset_amount, 34966000);
+        assert_eq!(taker_position.quote_asset_amount, -3499046);
         assert_eq!(taker_position.quote_entry_amount, -3500096);
         assert_eq!(taker_position.quote_break_even_amount, -3499046);
         assert_eq!(taker_stats.fees.total_fee_paid, 0);
@@ -5912,7 +5904,7 @@ pub mod fulfill_order {
     }
 
     #[test]
-    #[ignore = "one-lamport quote differences: the fill accumulates notional per ladder level rather than in one swap. Benign, but repinning waits on the post-only size question above (same fixtures touch AMM fees)."]
+    #[ignore = "the router splits by price and tier in one pass where the legacy loop allocated AMM-then-maker sequentially, so the same total fill divides a hair differently: AMM fee 50020001 vs 50022513 (0.005%), maker quote one lamport, and filler-volume attribution when the maker is also the filler. Taker outcome is identical. Needs the maker-is-filler aliasing checked before repinning."]
     fn fulfill_with_amm_when_maker_is_filler() {
         let now = 0_i64;
         let slot = 0_u64;

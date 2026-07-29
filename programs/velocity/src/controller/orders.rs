@@ -3340,6 +3340,7 @@ fn fulfill_perp_order_router_pass(
     let order_tick_size = quote_inputs.tick_size;
     let order_step_size = quote_inputs.step_size;
     let setup_ctx = quote_inputs.ctx(slot);
+    let market_fee_adjustment = market.fee_adjustment;
     let mut amm_quoter = AmmQuoter::for_amm(&mut market.amm);
     amm_quoter.refresh(&setup_ctx)?;
     let reserve_after_setup = amm_quoter.amm.reserve_price()?;
@@ -3347,6 +3348,23 @@ fn fulfill_perp_order_router_pass(
     let amm_base_spread = amm_quoter.amm_base_spread();
     let amm_long_spread = amm_quoter.amm.long_spread;
     let amm_short_spread = amm_quoter.amm.short_spread;
+
+    // The vAMM gets a *tighter* ceiling than the maker books do, and it is
+    // not cosmetic: a post-only taker acts as a maker, so its limit is
+    // buffered by the maker rebate it earns and stepped one tick inside the
+    // limit (`calculate_effective_amm_taker_limit`). Bounding the ladder by
+    // the raw limit instead lets a post-only order sweep past the buffer —
+    // more size, and every unit priced at the raw limit rather than the
+    // buffered one, which is LP value handed to the taker. Maker books keep
+    // the raw limit: the buffer is the AMM's, not theirs.
+    let amm_taker_limit = crate::math::orders::calculate_effective_amm_taker_limit(
+        &taker.orders[taker_order_index],
+        taker_limit_price,
+        None,
+        &crate::math::fees::determine_user_fee_tier(taker_stats, fee_structure, &MarketType::Perp)?,
+        market_fee_adjustment,
+        order_tick_size,
+    )?;
 
     // One effective limit bounds every book. Market orders fall back to the
     // AMM fallback price so a router sweep stays price-bounded, exactly like
@@ -3439,7 +3457,9 @@ fn fulfill_perp_order_router_pass(
             target_size,
             order_step_size,
             &rivals,
-            effective_taker_limit,
+            // Fall back to the shared limit when the order has no limit of
+            // its own (a market order): `amm_taker_limit` is None then.
+            amm_taker_limit.or(effective_taker_limit),
         )?
     } else {
         vec![]

@@ -83,6 +83,8 @@ export * from './math/oracles';
 export * from './math/amm';
 export * from './math/trade';
 export * from './math/orders';
+export * from './math/router';
+export * from './math/vammLadder';
 export * from './math/repeg';
 export * from './math/liquidation';
 export * from './math/margin';

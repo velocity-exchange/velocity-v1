@@ -469,3 +469,38 @@ mod tests {
             .is_empty());
     }
 }
+
+#[cfg(test)]
+mod ts_mirror_fixture {
+    //! Emits a ladder for a fixed AMM so the TypeScript mirror
+    //! (`packages/sdk/src/math/vammLadder.ts`) can be checked against the
+    //! program's own numbers rather than against a reading of this file.
+    //! Run: `cargo test -p velocity --lib ts_mirror_fixture -- --nocapture`
+    use super::*;
+    use crate::math::constants::{AMM_RESERVE_PRECISION, BASE_PRECISION_U64, PEG_PRECISION};
+
+    #[test]
+    fn print_ladder_for_ts_mirror() {
+        let mut amm = AMM {
+            base_asset_reserve: 100 * AMM_RESERVE_PRECISION,
+            quote_asset_reserve: 100 * AMM_RESERVE_PRECISION,
+            terminal_quote_asset_reserve: 100 * AMM_RESERVE_PRECISION,
+            sqrt_k: 100 * AMM_RESERVE_PRECISION,
+            peg_multiplier: 50 * PEG_PRECISION,
+            min_base_asset_reserve: 50 * AMM_RESERVE_PRECISION,
+            max_base_asset_reserve: 200 * AMM_RESERVE_PRECISION,
+            max_fill_reserve_fraction: 4,
+            ..AMM::default()
+        };
+        amm.seed_no_spread_quote_state();
+        for (label, direction) in [("long", Direction::Long), ("short", Direction::Short)] {
+            let levels =
+                vamm_quote_levels(&amm, direction, 10 * BASE_PRECISION_U64, 1, &[], None).unwrap();
+            let encoded: Vec<String> = levels
+                .iter()
+                .map(|l| format!("{}:{}", l.price, l.size))
+                .collect();
+            println!("TS_MIRROR {} {}", label, encoded.join(","));
+        }
+    }
+}

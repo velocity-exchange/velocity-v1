@@ -570,6 +570,7 @@ export const mockStateAccount: StateAccount = {
 	hotMmOracleCrank: PublicKey.default,
 	hotAmmSpreadAdjust: PublicKey.default,
 	hotFeeWithdraw: PublicKey.default,
+	hotAccountExtension: PublicKey.default,
 	protocolFeeRecipientPerp: PublicKey.default,
 	protocolFeeRecipientSpot: PublicKey.default,
 	featureBitFlags: 0,

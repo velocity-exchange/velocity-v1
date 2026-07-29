@@ -159,7 +159,9 @@ export function registerAccountExtension(parent: Command): void {
 					);
 				console.log(
 					`dry run: would extend ${candidates.length} account(s) to ${targetLen} bytes ` +
-						`(rent-exempt minimum at target size: ${rentTarget / 1e9} SOL each, ` +
+						`(rent-exempt minimum at target size: ${
+							rentTarget / 1e9
+						} SOL each, ` +
 						`actual top-up is the per-account shortfall)`
 				);
 				for (const pubkey of candidates.slice(0, 20)) {
@@ -181,9 +183,7 @@ export function registerAccountExtension(parent: Command): void {
 					new Transaction().add(...ixs)
 				);
 				extended += chunk.length;
-				console.log(
-					`extended ${extended}/${candidates.length} (${signature})`
-				);
+				console.log(`extended ${extended}/${candidates.length} (${signature})`);
 			}
 		} finally {
 			await client.unsubscribe();

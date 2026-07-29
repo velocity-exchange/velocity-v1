@@ -2664,7 +2664,17 @@ fn settle_dlob_match_fill(
 
     let reward_referrer =
         can_reward_user_with_referral_reward(market.market_index, rev_share_escrow);
-    let reward_filler = can_reward_user_with_perp_pnl(filler, market.market_index);
+    // A maker that cranks its own fill arrives as `filler: None` with
+    // `filler_key` naming itself: it is already loaded in the maker map, and
+    // the same account cannot be loaded mutably twice (see `is_filler_maker`
+    // in `fill_perp_order_with_router`). It did the keeper's work on a slice it
+    // actually filled, so it earns the reward for that slice -- which spreads a
+    // multi-maker fill's reward pro rata, since each slice's reward is computed
+    // from the base that slice filled. A taker filling its own order names
+    // *itself*, so this stays false and no reward is charged at all.
+    let maker_is_filler = filler_key == m_key;
+    let reward_filler =
+        can_reward_user_with_perp_pnl(filler, market.market_index) || maker_is_filler;
 
     let (builder_order_idx, referrer_builder_order_idx, builder_order_fee_bps, builder_idx) =
         get_builder_escrow_info(
@@ -2782,6 +2792,16 @@ fn settle_dlob_match_fill(
                 .update_filler_volume(fill.quote_filled, now)?;
         }
         filler_user.update_last_active_slot(slot);
+    } else if maker_is_filler {
+        credit_filler_perp_pnl(
+            maker_user,
+            maker_stats,
+            market,
+            filler_reward,
+            fill.quote_filled,
+            now,
+            slot,
+        )?;
     }
 
     if let (Some(idx), Some(escrow)) = (referrer_builder_order_idx, rev_share_escrow.as_deref_mut())

@@ -38,8 +38,16 @@ fn get_fee_structure() -> FeeStructure {
     }
 }
 
+/// Distinct keys, in (taker, maker, filler) order. They must not alias: the
+/// fill path distinguishes a self-fill (`filler_key` == the taker) from a maker
+/// that cranked its own fill (`filler_key` == a maker) purely by key, and the
+/// two earn different rewards.
 fn get_user_keys() -> (Pubkey, Pubkey, Pubkey) {
-    (Pubkey::default(), Pubkey::default(), Pubkey::default())
+    (
+        Pubkey::new_unique(),
+        Pubkey::new_unique(),
+        Pubkey::new_unique(),
+    )
 }
 
 fn get_oracle_map<'a>() -> OracleMap<'a> {
@@ -3095,7 +3103,7 @@ pub mod fulfill_order {
     }
 
     #[test]
-    #[ignore = "filler-reward attribution differs on the router path, by construction. settle_amm_house_fill still carries the legacy fallback (orders.rs: `else if !is_jit_within_match { credit_filler_perp_pnl(maker_user, maker_stats, ..) }`) which credited the MAKER when no filler account was passed -- reachable in the legacy loop because the AMM JIT-ed *inside* a Match step, so a maker was in scope. The router settles the vAMM leg separately with maker=None, so it can never fire, and this test reads 0 filler_volume_30d instead of 50251257. Design call needed, not a repin: a router fill can span several makers, so \"the maker\" is ambiguous -- credit the largest allocation, drop the reward (and stop charging the taker for it), or require a filler account. The AMM/maker split also moves a hair (AMM fee 50020001 vs 50022513, maker quote one lamport); taker outcome is identical."]
+    #[ignore = "the filler reward's MINIMUM is charged once per router leg, but legacy charged it once per fill. A maker that cranks its own fill now earns the reward on the slices it filled (case 2: `filler: None` + `filler_key` naming a maker, see `is_filler_maker` in fill_perp_order_with_router), which brings the maker quote to 50022501 vs 50022513 = 50_005_000 + rebate 15_001 + reward 2_512. The 12-lamport gap is the vAMM slice's proportional share. Crediting the vAMM leg to the same maker OVERSHOOTS to 50025013, because that leg pays 2_512 (floor 2_500 + 12) rather than 12 -- legacy computed one reward over the combined quote, the router computes one per leg. NOTE this is pre-existing and not maker-specific: with a real filler account a taker crossing N sources pays N x the minimum filler reward. Fix is to compute the fill's reward once over total quote and credit once, then un-ignore both. fulfill_with_amm_and_maker adds a 1-lamport market.quote_asset_amount delta from the step-quantized split."]
     fn fulfill_with_amm_and_maker() {
         let now = 0_i64;
         let slot = 0_u64;
@@ -5904,7 +5912,7 @@ pub mod fulfill_order {
     }
 
     #[test]
-    #[ignore = "filler-reward attribution differs on the router path, by construction. settle_amm_house_fill still carries the legacy fallback (orders.rs: `else if !is_jit_within_match { credit_filler_perp_pnl(maker_user, maker_stats, ..) }`) which credited the MAKER when no filler account was passed -- reachable in the legacy loop because the AMM JIT-ed *inside* a Match step, so a maker was in scope. The router settles the vAMM leg separately with maker=None, so it can never fire, and this test reads 0 filler_volume_30d instead of 50251257. Design call needed, not a repin: a router fill can span several makers, so \"the maker\" is ambiguous -- credit the largest allocation, drop the reward (and stop charging the taker for it), or require a filler account. The AMM/maker split also moves a hair (AMM fee 50020001 vs 50022513, maker quote one lamport); taker outcome is identical."]
+    #[ignore = "the filler reward's MINIMUM is charged once per router leg, but legacy charged it once per fill. A maker that cranks its own fill now earns the reward on the slices it filled (case 2: `filler: None` + `filler_key` naming a maker, see `is_filler_maker` in fill_perp_order_with_router), which brings the maker quote to 50022501 vs 50022513 = 50_005_000 + rebate 15_001 + reward 2_512. The 12-lamport gap is the vAMM slice's proportional share. Crediting the vAMM leg to the same maker OVERSHOOTS to 50025013, because that leg pays 2_512 (floor 2_500 + 12) rather than 12 -- legacy computed one reward over the combined quote, the router computes one per leg. NOTE this is pre-existing and not maker-specific: with a real filler account a taker crossing N sources pays N x the minimum filler reward. Fix is to compute the fill's reward once over total quote and credit once, then un-ignore both. fulfill_with_amm_and_maker adds a 1-lamport market.quote_asset_amount delta from the step-quantized split."]
     fn fulfill_with_amm_when_maker_is_filler() {
         let now = 0_i64;
         let slot = 0_u64;

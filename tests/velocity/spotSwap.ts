@@ -726,7 +726,7 @@ describe('spot swap', () => {
 		assert(failed);
 	});
 
-	it.skip('swap and close token account after end_swap', async () => {
+	it('swap and close token account after end_swap', async () => {
 		// takerUSDC has 0 balance - it can be closed after endSwap
 		const amountIn = new BN(100).mul(QUOTE_PRECISION);
 		const { beginSwapIx, endSwapIx } = await takerVelocityClient.getSwapIx({

@@ -417,8 +417,8 @@ describe('AMM Curve', () => {
 		);
 
 		console.log(candidatePegUp0.toString(), candidatePegDown0.toString());
-		assert(candidatePegUp0.eq(new BN(202637647)));
-		assert(candidatePegDown0.eq(new BN(10131882)));
+		assert(candidatePegUp0.eq(new BN(200977458)));
+		assert(candidatePegDown0.eq(new BN(10048872)));
 
 		// check if short
 		await velocityClient.openPosition(
@@ -435,7 +435,7 @@ describe('AMM Curve', () => {
 			new BN(200 * PRICE_PRECISION.toNumber())
 		);
 		console.log(amm.pegMultiplier.toString(), '->', candidatePegUp.toString());
-		assert(candidatePegUp.eq(new BN(202637651)));
+		assert(candidatePegUp.eq(new BN(200977462)));
 
 		const candidatePegDown = calculateBudgetedPeg(
 			amm,
@@ -447,7 +447,7 @@ describe('AMM Curve', () => {
 			'->',
 			candidatePegDown.toString()
 		);
-		assert(candidatePegDown.eq(new BN(148987813)));
+		assert(candidatePegDown.eq(new BN(148996114)));
 
 		await velocityClient.closePosition(marketIndex);
 
@@ -471,7 +471,7 @@ describe('AMM Curve', () => {
 			'->',
 			candidatePegUp2.toString()
 		);
-		assert(candidatePegUp2.eq(new BN(151014187)));
+		assert(candidatePegUp2.eq(new BN(151005886)));
 
 		const candidatePegDown2 = calculateBudgetedPeg(
 			amm,
@@ -484,7 +484,7 @@ describe('AMM Curve', () => {
 			'->',
 			candidatePegDown2.toString()
 		);
-		assert(candidatePegDown2.eq(new BN(10131882)));
+		assert(candidatePegDown2.eq(new BN(10048872)));
 		await velocityClient.fetchAccounts();
 
 		await velocityClient.closePosition(marketIndex);

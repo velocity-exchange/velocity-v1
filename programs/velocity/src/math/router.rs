@@ -88,16 +88,26 @@ impl Cursor<'_> {
     }
 }
 
-fn quote_notional(price: u64, base: u64) -> VelocityResult<u64> {
-    (price as u128)
-        .safe_mul(base as u128)?
-        .safe_div(BASE_PRECISION)?
-        .cast::<u64>()
+/// Rounded toward the taker-conservative bound: the allocation's quote is
+/// what execution is held to (at-or-better), so it must never be tighter
+/// than a level's true notional. A long taker is bounded above (pays at
+/// most the quote) → ceil; a short taker is bounded below (receives at
+/// least the quote) → floor. The tighter rounding would reject honest fills
+/// whose own terminal rounding goes against the taker (the AMM's ±1, a
+/// maker-favored quote) whenever the quoted price has no slack to absorb
+/// it.
+fn quote_notional(direction: Direction, price: u64, base: u64) -> VelocityResult<u64> {
+    let exact = (price as u128).safe_mul(base as u128)?;
+    match direction {
+        Direction::Long => exact.safe_div_ceil(BASE_PRECISION)?.cast::<u64>(),
+        Direction::Short => exact.safe_div(BASE_PRECISION)?.cast::<u64>(),
+    }
 }
 
 /// Consume `amount` at `price` from book `i`: advances its cursor, shrinks
 /// its cached top, and accrues the allocation.
 fn take(
+    direction: Direction,
     cursor: &mut Cursor,
     top: &mut Option<(u64, u64)>,
     allocation: &mut QuoterAllocation,
@@ -107,7 +117,9 @@ fn take(
     cursor.consume(amount);
     *top = top.and_then(|(p, available)| (available > amount).then(|| (p, available - amount)));
     allocation.base = allocation.base.safe_add(amount)?;
-    allocation.quote = allocation.quote.safe_add(quote_notional(price, amount)?)?;
+    allocation.quote = allocation
+        .quote
+        .safe_add(quote_notional(direction, price, amount)?)?;
     Ok(())
 }
 
@@ -191,6 +203,7 @@ pub fn split_across_quoters(
                     .safe_div(total as u128)?
                     .cast::<u64>()?;
                 take(
+                    direction,
                     &mut cursors[i],
                     &mut tops[i],
                     &mut allocations[i],
@@ -212,6 +225,7 @@ pub fn split_across_quoters(
                 };
                 let amount = dust.min(available);
                 take(
+                    direction,
                     &mut cursors[i],
                     &mut tops[i],
                     &mut allocations[i],

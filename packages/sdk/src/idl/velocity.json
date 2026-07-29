@@ -2447,52 +2447,6 @@
       ]
     },
     {
-      "name": "fill_perp_order_router",
-      "discriminator": [
-        48,
-        193,
-        140,
-        99,
-        146,
-        115,
-        19,
-        82
-      ],
-      "accounts": [
-        {
-          "name": "state"
-        },
-        {
-          "name": "authority",
-          "signer": true
-        },
-        {
-          "name": "filler",
-          "writable": true
-        },
-        {
-          "name": "filler_stats",
-          "writable": true
-        },
-        {
-          "name": "user",
-          "writable": true
-        },
-        {
-          "name": "user_stats",
-          "writable": true
-        }
-      ],
-      "args": [
-        {
-          "name": "order_id",
-          "type": {
-            "option": "u32"
-          }
-        }
-      ]
-    },
-    {
       "name": "force_cancel_orders",
       "discriminator": [
         64,
@@ -6338,34 +6292,6 @@
         {
           "name": "pyth_message",
           "type": "bytes"
-        }
-      ]
-    },
-    {
-      "name": "probe_router",
-      "discriminator": [
-        220,
-        10,
-        160,
-        221,
-        46,
-        75,
-        30,
-        31
-      ],
-      "accounts": [
-        {
-          "name": "state"
-        }
-      ],
-      "args": [
-        {
-          "name": "args",
-          "type": {
-            "defined": {
-              "name": "ProbeRouterArgs"
-            }
-          }
         }
       ]
     },
@@ -18393,26 +18319,6 @@
       }
     },
     {
-      "name": "Direction",
-      "docs": [
-        "Taker direction, from the taker's perspective. Borsh wire encoding",
-        "(Long = 0, Short = 1) deliberately matches",
-        "[`crate::controller::position::PositionDirection`], but the CPI ABI gets",
-        "its own enum so it can never drift with internal refactors."
-      ],
-      "type": {
-        "kind": "enum",
-        "variants": [
-          {
-            "name": "Long"
-          },
-          {
-            "name": "Short"
-          }
-        ]
-      }
-    },
-    {
       "name": "FeeLedger",
       "docs": [
         "All of a perp market's fee-split accounting in one ledger.",
@@ -22591,47 +22497,6 @@
           {
             "name": "oracle_twap_5min_percent_divergence",
             "type": "u64"
-          }
-        ]
-      }
-    },
-    {
-      "name": "ProbeRouterArgs",
-      "type": {
-        "kind": "struct",
-        "fields": [
-          {
-            "name": "direction",
-            "type": {
-              "defined": {
-                "name": "Direction"
-              }
-            }
-          },
-          {
-            "name": "size",
-            "type": "u64"
-          },
-          {
-            "name": "users",
-            "type": {
-              "option": {
-                "vec": "pubkey"
-              }
-            }
-          },
-          {
-            "name": "quoter_count",
-            "docs": [
-              "The first `quoter_count` remaining accounts are `QuoterV0` entries;",
-              "the rest are the union of their registered CPI accounts (plus the",
-              "quoter programs)."
-            ],
-            "type": "u8"
-          },
-          {
-            "name": "execute",
-            "type": "bool"
           }
         ]
       }

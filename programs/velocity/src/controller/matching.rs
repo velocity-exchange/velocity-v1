@@ -415,10 +415,15 @@ pub struct RouterTakeOutcome {
 
 /// A fill is at-or-better than its allocation when its floored per-unit
 /// price does not lose to the allocation's ceiled per-unit price (reversed
-/// for a short taker). Unit-price comparison rather than raw notional:
-/// internal quoters legitimately round quote amounts by one unit against
-/// the taker (DLOB maker-favored rounding, the AMM's +1 on Remove), which a
-/// notional cross-multiply would reject as dust violations.
+/// for a short taker), with one quote lamport of absolute notional slack.
+/// The unit-price comparison (rather than a raw notional cross-multiply)
+/// absorbs sub-unit rounding on partial fills; the single-lamport slack
+/// absorbs a quoter's terminal rounding against the taker on an otherwise
+/// exact notional — the AMM's +1 on Remove, a short maker's ceil — which
+/// per-unit math can't hide when the fill is an exact base-precision
+/// multiple. The allocation's quote is itself ceiled per level
+/// (`math::router::quote_notional`), so one lamport is the whole honest
+/// gap, not a tunable tolerance.
 pub(crate) fn fill_at_or_better(
     side: PositionDirection,
     fill: &QuoterFill,
@@ -427,6 +432,18 @@ pub(crate) fn fill_at_or_better(
 ) -> VelocityResult<bool> {
     if fill.base_filled == 0 {
         return Ok(true);
+    }
+    match side {
+        PositionDirection::Long => {
+            if fill.quote_filled <= allocation.quote.saturating_add(1) {
+                return Ok(true);
+            }
+        }
+        PositionDirection::Short => {
+            if fill.quote_filled.saturating_add(1) >= allocation.quote {
+                return Ok(true);
+            }
+        }
     }
     let bp = base_precision.max(1) as u128;
     let actual_floor = (fill.quote_filled as u128)

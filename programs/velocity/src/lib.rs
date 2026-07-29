@@ -470,13 +470,6 @@ pub mod velocity {
         handle_fill_perp_order(ctx, order_id)
     }
 
-    pub fn fill_perp_order_router<'c: 'info, 'info>(
-        ctx: Context<'info, FillOrder<'info>>,
-        order_id: Option<u32>,
-    ) -> Result<()> {
-        handle_fill_perp_order_router(ctx, order_id)
-    }
-
     pub fn revert_fill(ctx: Context<RevertFill>) -> Result<()> {
         handle_revert_fill(ctx)
     }
@@ -2202,14 +2195,6 @@ pub mod velocity {
         order_ref: ClobOrderRefV0,
     ) -> Result<()> {
         handle_crank_clob_remove_expired(ctx, market_index, order_ref)
-    }
-
-    #[cfg(feature = "anchor-test")]
-    pub fn probe_router<'info>(
-        ctx: Context<'info, ProbeRouter<'info>>,
-        args: ProbeRouterArgs,
-    ) -> Result<()> {
-        handle_probe_router(ctx, args)
     }
 }
 

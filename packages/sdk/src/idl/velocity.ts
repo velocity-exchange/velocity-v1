@@ -2453,52 +2453,6 @@ export type Velocity = {
       ]
     },
     {
-      "name": "fillPerpOrderRouter",
-      "discriminator": [
-        48,
-        193,
-        140,
-        99,
-        146,
-        115,
-        19,
-        82
-      ],
-      "accounts": [
-        {
-          "name": "state"
-        },
-        {
-          "name": "authority",
-          "signer": true
-        },
-        {
-          "name": "filler",
-          "writable": true
-        },
-        {
-          "name": "fillerStats",
-          "writable": true
-        },
-        {
-          "name": "user",
-          "writable": true
-        },
-        {
-          "name": "userStats",
-          "writable": true
-        }
-      ],
-      "args": [
-        {
-          "name": "orderId",
-          "type": {
-            "option": "u32"
-          }
-        }
-      ]
-    },
-    {
       "name": "forceCancelOrders",
       "discriminator": [
         64,
@@ -6344,34 +6298,6 @@ export type Velocity = {
         {
           "name": "pythMessage",
           "type": "bytes"
-        }
-      ]
-    },
-    {
-      "name": "probeRouter",
-      "discriminator": [
-        220,
-        10,
-        160,
-        221,
-        46,
-        75,
-        30,
-        31
-      ],
-      "accounts": [
-        {
-          "name": "state"
-        }
-      ],
-      "args": [
-        {
-          "name": "args",
-          "type": {
-            "defined": {
-              "name": "probeRouterArgs"
-            }
-          }
         }
       ]
     },
@@ -18399,26 +18325,6 @@ export type Velocity = {
       }
     },
     {
-      "name": "direction",
-      "docs": [
-        "Taker direction, from the taker's perspective. Borsh wire encoding",
-        "(Long = 0, Short = 1) deliberately matches",
-        "[`crate::controller::position::PositionDirection`], but the CPI ABI gets",
-        "its own enum so it can never drift with internal refactors."
-      ],
-      "type": {
-        "kind": "enum",
-        "variants": [
-          {
-            "name": "long"
-          },
-          {
-            "name": "short"
-          }
-        ]
-      }
-    },
-    {
       "name": "feeLedger",
       "docs": [
         "All of a perp market's fee-split accounting in one ledger.",
@@ -22597,47 +22503,6 @@ export type Velocity = {
           {
             "name": "oracleTwap5minPercentDivergence",
             "type": "u64"
-          }
-        ]
-      }
-    },
-    {
-      "name": "probeRouterArgs",
-      "type": {
-        "kind": "struct",
-        "fields": [
-          {
-            "name": "direction",
-            "type": {
-              "defined": {
-                "name": "direction"
-              }
-            }
-          },
-          {
-            "name": "size",
-            "type": "u64"
-          },
-          {
-            "name": "users",
-            "type": {
-              "option": {
-                "vec": "pubkey"
-              }
-            }
-          },
-          {
-            "name": "quoterCount",
-            "docs": [
-              "The first `quoter_count` remaining accounts are `QuoterV0` entries;",
-              "the rest are the union of their registered CPI accounts (plus the",
-              "quoter programs)."
-            ],
-            "type": "u8"
-          },
-          {
-            "name": "execute",
-            "type": "bool"
           }
         ]
       }

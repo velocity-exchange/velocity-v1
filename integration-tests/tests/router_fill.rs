@@ -587,7 +587,11 @@ fn router_fill_splits_across_clob_dlob_and_vamm_sources() {
     let ix = Instruction {
         program_id: velocity_id(),
         accounts,
-        data: velocity::instruction::FillPerpOrderRouter { order_id: Some(1) }.data(),
+        data: velocity::instruction::FillPerpOrder {
+            order_id: Some(1),
+            _maker_order_id: None,
+        }
+        .data(),
     };
     let meta = send(&mut fixture.svm, &fixture.keeper, ix, &[]).unwrap();
 
@@ -746,7 +750,11 @@ fn router_fill_without_the_markets_clob_quoter_fails() {
     let ix = Instruction {
         program_id: velocity_id(),
         accounts,
-        data: velocity::instruction::FillPerpOrderRouter { order_id: Some(1) }.data(),
+        data: velocity::instruction::FillPerpOrder {
+            order_id: Some(1),
+            _maker_order_id: None,
+        }
+        .data(),
     };
     let err = send(&mut fixture.svm, &fixture.keeper, ix, &[]).expect_err("baseline must fail");
     let logs = format!("{:?}", err.meta.logs);

@@ -106,41 +106,23 @@ use crate::{
     OracleSource, ID,
 };
 
-#[access_control(
-    fill_not_paused(&ctx.accounts.state)
-)]
-pub fn handle_fill_perp_order<'c: 'info, 'info>(
-    ctx: Context<'info, FillOrder<'info>>,
-    order_id: Option<u32>,
-) -> Result<()> {
-    fill_perp_order_common(ctx, order_id, false)
-}
-
-/// [`handle_fill_perp_order`] through the router pass: one quote → split →
-/// execute sweep across the vAMM ladder (with last look over the rival
-/// books), any DLOB makers, and any external quoters, instead of the legacy
-/// fulfillment-method loop.
+/// The router fill: one quote → split → execute sweep across the vAMM
+/// ladder (with last look over the rival books), any DLOB makers, and any
+/// external quoters.
 ///
 /// `remaining_accounts`, beyond the usual market/oracle/user-map section:
 /// the external quoters' `QuoterV0` registry entries plus the union of their
 /// registered CPI accounts (including the quoter programs and the velocity
 /// signer PDA). Each active + approved entry for this market is quoted via
 /// CPI into a book; allocations that land on a book execute through the same
-/// entry's `execute_v0`. No quoter entries = vAMM + DLOB routing only.
+/// entry's `execute_v0`. No quoter entries = vAMM + DLOB routing only —
+/// allowed only while the market names no canonical CLOB (`clob_quoter`).
 #[access_control(
     fill_not_paused(&ctx.accounts.state)
 )]
-pub fn handle_fill_perp_order_router<'c: 'info, 'info>(
+pub fn handle_fill_perp_order<'c: 'info, 'info>(
     ctx: Context<'info, FillOrder<'info>>,
     order_id: Option<u32>,
-) -> Result<()> {
-    fill_perp_order_common(ctx, order_id, true)
-}
-
-fn fill_perp_order_common<'c: 'info, 'info>(
-    ctx: Context<'info, FillOrder<'info>>,
-    order_id: Option<u32>,
-    router: bool,
 ) -> Result<()> {
     let (order_id, market_index) = {
         let user = &load!(ctx.accounts.user)?;
@@ -157,7 +139,7 @@ fn fill_perp_order_common<'c: 'info, 'info>(
     };
 
     let user_key = &ctx.accounts.user.key();
-    fill_order(ctx, order_id, market_index, router).inspect_err(|_e| {
+    fill_order(ctx, order_id, market_index).inspect_err(|_e| {
         msg!(
             "Err filling order id {} for user {} for market index {}",
             order_id,
@@ -173,7 +155,6 @@ fn fill_order<'c: 'info, 'info>(
     ctx: Context<'info, FillOrder<'info>>,
     order_id: u32,
     market_index: u16,
-    router: bool,
 ) -> Result<()> {
     let clock = &Clock::get()?;
     let state = ctx.accounts.state.load()?;
@@ -207,29 +188,7 @@ fn fill_order<'c: 'info, 'info>(
     // No `update_amm` here: `fill_perp_order` snaps the AMM and refreshes
     // PerpMarket-level oracle stats internally before quoting.
 
-    if !router {
-        controller::orders::fill_perp_order_with_router(
-            order_id,
-            &*ctx.accounts.state.load()?,
-            &ctx.accounts.user,
-            &ctx.accounts.user_stats,
-            &spot_market_map,
-            &perp_market_map,
-            &mut oracle_map,
-            &ctx.accounts.filler,
-            &ctx.accounts.filler_stats,
-            &makers_and_referrer,
-            &makers_and_referrer_stats,
-            None,
-            clock,
-            FillMode::Fill,
-            None,
-            &mut escrow.as_mut(),
-        )?;
-        return Ok(());
-    }
-
-    // ---- Router mode: quote external quoters from the leftover accounts. ----
+    // ---- Quote external quoters from the leftover accounts. ----
     // Everything past the map/user/escrow sections is the quoter section:
     // `QuoterV0` registry entries plus the union of their registered CPI
     // accounts (quoter programs, response accounts, the velocity signer).

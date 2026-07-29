@@ -1014,6 +1014,11 @@ fn merge_modify_order_params_with_existing_order(
     }))
 }
 
+/// [`fill_perp_order_with_router`] with no external quoter books: the router
+/// pass still runs — vAMM ladder + passed DLOB makers — the split just has
+/// no CPI books to price in. This is every fill entrypoint that doesn't
+/// carry quoter accounts (place-and-take flows; external books there are a
+/// planned follow-up).
 pub fn fill_perp_order(
     order_id: u32,
     state: &State,
@@ -1031,6 +1036,11 @@ pub fn fill_perp_order(
     fill_mode: FillMode,
     rev_share_escrow: &mut Option<&mut RevenueShareEscrowZeroCopyMut>,
 ) -> VelocityResult<(u64, u64)> {
+    let mut no_externals = crate::state::prop_amm::NoExternalQuoters;
+    let mut router_inputs = crate::math::router::RouterFillInputs {
+        books: &[],
+        executor: &mut no_externals,
+    };
     fill_perp_order_with_router(
         order_id,
         state,
@@ -1046,7 +1056,7 @@ pub fn fill_perp_order(
         jit_maker_order_id,
         clock,
         fill_mode,
-        None,
+        Some(&mut router_inputs),
         rev_share_escrow,
     )
 }
@@ -4166,8 +4176,18 @@ fn fulfill_perp_order_router_pass(
     let externals_end = external_books.len();
     let makers_end = externals_end + maker_levels.len();
 
+    // Every executed size must be an `order_step_size` multiple — the
+    // market's position counters are validated against the step, and ladder
+    // chunks / pro-rata clearing slices / limit-capped totals aren't
+    // naturally aligned. Flooring drops at most step-1 of dust per quoter;
+    // the allocation's quote stays as quoted (a smaller fill against the
+    // same per-unit bound still validates).
+    let standardize =
+        |base: u64| crate::math::orders::standardize_base_asset_amount(base, order_step_size);
+
     // ---- Execute the vAMM allocation, then release &mut market.amm. ----
-    let amm_allocation = allocations[makers_end];
+    let mut amm_allocation = allocations[makers_end];
+    amm_allocation.base = standardize(amm_allocation.base)?;
     let amm_fill = if amm_allocation.base > 0 {
         let fill =
             RouterQuoter::execute(&mut amm_quoter, &setup_ctx, direction, amm_allocation.base)?;
@@ -4186,7 +4206,11 @@ fn fulfill_perp_order_router_pass(
                 BASE_PRECISION_U64
             )?,
             ErrorCode::DefaultError,
-            "router vAMM filled worse than quoted"
+            "router vAMM filled worse than quoted: fill {}/{} vs quoted {}/{}",
+            fill.quote_filled,
+            fill.base_filled,
+            amm_allocation.quote,
+            amm_allocation.base
         )?;
         (fill.base_filled > 0).then_some(fill)
     } else {
@@ -4211,7 +4235,8 @@ fn fulfill_perp_order_router_pass(
     let mut total_base = 0u64;
     let mut total_quote = 0u64;
     for (i, router_maker) in router_makers.iter().enumerate() {
-        let allocation = allocations[externals_end + i];
+        let mut allocation = allocations[externals_end + i];
+        allocation.base = standardize(allocation.base)?;
         if allocation.base == 0 {
             continue;
         }
@@ -4342,6 +4367,8 @@ fn fulfill_perp_order_router_pass(
     // at-or-better against the quoted levels, and settle only against loaded
     // makers (`get_ref_mut` fails for anyone outside the tx's user set).
     for (i, allocation) in allocations[..externals_end].iter().enumerate() {
+        let mut allocation = *allocation;
+        allocation.base = standardize(allocation.base)?;
         if allocation.base == 0 {
             continue;
         }
@@ -4386,7 +4413,7 @@ fn fulfill_perp_order_router_pass(
             crate::controller::matching::fill_at_or_better(
                 taker_direction,
                 &aggregate_fill,
-                allocation,
+                &allocation,
                 BASE_PRECISION_U64
             )?,
             ErrorCode::DefaultError,

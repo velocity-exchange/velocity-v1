@@ -239,7 +239,7 @@ pub fn compute_amm_refresh_validity_with_guard_rails(
 /// explicit AMM-refresh entrypoint surviving in the target architecture —
 /// invoked by the `update_amms` keeper crank to align stored peg with
 /// oracle on quiet markets. Quote/fill paths refresh the AMM atomically
-/// inside `QuoterCommit::commit_fill` instead.
+/// inside `AmmQuoter::commit_fill` instead.
 ///
 /// Pure AMM-side: writes only AMM fields (peg, reserves, sqrt_k,
 /// total_fee_minus_distributions, net_revenue_since_last_funding,

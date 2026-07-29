@@ -3,7 +3,7 @@
 //! Hosts:
 //! - [`AMM`]: the constant-product vAMM state. See the doc-comment on the
 //!   struct for the write-access policy that keeps mutations funneled through
-//!   `AmmContract` / `QuoterCommit` rather than direct field writes.
+//!   `AmmContract` / `AmmQuoter` rather than direct field writes.
 
 use anchor_lang::prelude::*;
 
@@ -43,7 +43,7 @@ use crate::{
 /// system, not by a CPI — and today's code follows the same discipline:
 ///
 /// - **Fills + market events**: `controller/match` dispatches through
-///   `QuoterCommit::commit_fill` / `on_market_event` on [`crate::vlp::amm::AmmQuoter`].
+///   `commit_fill` / `on_market_event` on [`crate::vlp::amm::AmmQuoter`].
 /// - **AMM-special P&L / position operations**: external code (insurance fund,
 ///   settlement) calls methods on the
 ///   [`crate::vlp::amm::quoter::AmmContract`] trait (`record_credit`,

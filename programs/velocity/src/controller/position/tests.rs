@@ -1,11 +1,12 @@
-use crate::controller::matching::fill_perp_market_against_amm;
 use crate::controller::position::{update_position_and_market, PositionDelta, PositionDirection};
-use crate::state::quoter::QuoteContext;
+use crate::state::prop_amm::Direction;
+use crate::state::quoter::{QuoteContext, RouterQuoter};
 use crate::vlp::amm::controller::SwapDirection;
 use crate::vlp::amm::refresh::_update_amm;
+use crate::vlp::amm::AmmQuoter;
 
 /// Replacement for the deleted `swap_base_asset` test-only entry point.
-/// Runs the matcher's sole-AMM path against a zero-spread quote state
+/// Runs the vAMM as a lone router quoter against a zero-spread quote state
 /// (the exact shape `swap_base_asset` had), mutates the market like
 /// `swap_base_asset` did, and returns `(quote_filled, surplus)`.
 fn run_amm_swap_for_test(
@@ -31,12 +32,12 @@ fn run_amm_swap_for_test(
     };
     market.amm.seed_no_spread_quote_state();
     // SwapDirection::Remove (base leaves the AMM, taker buys) ↔ taker Long.
-    let taker_dir = match swap_direction {
-        SwapDirection::Remove => PositionDirection::Long,
-        SwapDirection::Add => PositionDirection::Short,
+    let direction = match swap_direction {
+        SwapDirection::Remove => Direction::Long,
+        SwapDirection::Add => Direction::Short,
     };
-    let result = fill_perp_market_against_amm(market, &ctx, taker_dir, base_amount).unwrap();
-    let (_, fill) = result.fills.first().unwrap();
+    let mut amm_quoter = AmmQuoter::for_amm(&mut market.amm);
+    let fill = RouterQuoter::execute(&mut amm_quoter, &ctx, direction, base_amount).unwrap();
     (fill.quote_filled, fill.quote_asset_amount_surplus)
 }
 

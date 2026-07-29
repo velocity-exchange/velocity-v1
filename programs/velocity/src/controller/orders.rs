@@ -2324,7 +2324,7 @@ fn settle_amm_house_fill(
     // fill's quote at the order's limit price (the taker, acting
     // as maker, transacts at limit; the AMM captures the curve
     // ↔ limit gap as spread surplus). For JIT slices inside a
-    // Match step, `AmmJitQuoter::try_fill_solo` already returns
+    // Match step, the AMM's `try_fill_solo` already returns
     // the jit-price quote + curve↔jit surplus — pass through.
     let (taker_quote, taker_surplus) =
         if !is_jit_within_match && order_post_only && taker_limit_price.is_some() {

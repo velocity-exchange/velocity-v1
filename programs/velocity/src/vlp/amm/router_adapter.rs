@@ -26,7 +26,7 @@ use crate::math::constants::{BASE_PRECISION_U64, PERCENTAGE_PRECISION_U64};
 use crate::math::router::QuoterBook;
 use crate::math::safe_math::SafeMath;
 use crate::state::prop_amm::{Direction, PriceLevel, QuoterType};
-use crate::state::quoter::{QuoteContext, Quoter, QuoterCommit, QuoterFill, RouterQuoter};
+use crate::state::quoter::{QuoteContext, QuoterFill, RouterQuoter};
 
 use super::controller::{calculate_base_swap_output, SwapDirection};
 use super::math::amm::calculate_amm_available_liquidity;

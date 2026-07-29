@@ -218,7 +218,7 @@ pub fn update_amm_quote_state(
 /// `long_spread` / `short_spread` / `reference_price_offset` and its live
 /// `base`/`quote` reserves + `sqrt_k`. Restores the legacy `update_spread_reserves`
 /// mutator: [`update_amm_quote_state`] runs it after recomputing the spreads, and
-/// `QuoterCommit::commit_fill` runs it after a fill moves the reserves so the
+/// `AmmQuoter::commit_fill` runs it after a fill moves the reserves so the
 /// cached projections (which dashboards read) stay consistent with the curve.
 /// Leaves the spreads themselves untouched.
 pub fn refresh_cached_spread_reserves(amm: &mut AMM) -> VelocityResult<()> {

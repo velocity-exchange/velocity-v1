@@ -1,41 +1,37 @@
-//! # Quoter trait — the future shared-orderbook architecture
+//! # Quoter interfaces — the shared-orderbook architecture
 //!
-//! Velocity already matches across multiple liquidity sources today. A fill can
-//! land against a DLOB maker order, against a JIT auction participant,
-//! against the vAMM, or against the vAMM front-running ahead of a DLOB
-//! cross. The current matching is hard-coded for these specific paths in
-//! `controller/orders.rs` and `controller/amm_jit.rs` — a degenerate
-//! two-participant matcher with bespoke pairwise rules.
+//! Velocity matches across multiple liquidity sources: DLOB maker orders, the
+//! vAMM, and external quoter programs (CLOB, PropAMMs) reached over CPI. They
+//! are matched uniformly, not pairwise: every source publishes discrete price
+//! levels and the router splits a take across them.
 //!
-//! The shape this code uses going forward: every liquidity source implements
-//! [`Quoter`], exposing its single quoted price ([`Quoter::best_price`]) and
-//! its closed-form fill ([`Quoter::try_fill_solo`]). The fill engine
-//! (`controller/match.rs`) has two explicit paths: the sole continuous vAMM
-//! curve (`fill_amm_only`), and a discrete level walk over single-price makers
-//! (`match_take`) that sorts by price, fills best-first, and pro-ratas the
-//! clearing level. Priority makers (`is_prio = true` — the JIT vAMM) take
-//! their full marginal size before non-priority makers pro-rata the residual.
-//! Fee-exempt makers (`is_fee_exempt = true` — the vAMM) skip the protocol
-//! maker-fee schedule; standard makers (DLOB / JIT) pay/receive maker fees
-//! per protocol rules.
+//! The interface is [`RouterQuoter`] — `quote` returns a source's book as
+//! [`PriceLevel`]s, `execute` fills an allocation against it and settles the
+//! source's own bytes. A source is the sole authority on how its bytes mutate;
+//! the router only hands it the allocation it won. `priority` places it in a
+//! tier: at any given price, lower-priority-number tiers fill first and ties
+//! within a tier split pro rata.
 //!
-//! Settlement happens via per-maker [`QuoterCommit::commit_fill`]. The maker
-//! is the sole authority on how its bytes mutate; the engine just hands it
-//! the fill it won. Refresh cost (e.g. AMM repeg) flows out via
-//! [`QuoterFill::refresh_cost`] and is summed into the result for the fill
-//! controller to apply to PerpMarket.
+//! Two implementations live in-program: [`DlobOrderQuoter`], bridging one
+//! resting DLOB order (a single discrete level), and `AmmQuoter`, whose ladder
+//! is built by `vlp::amm::router_adapter::vamm_quote_levels` — so the
+//! continuous curve is reduced to levels before the router sees it. External
+//! quoters are not `RouterQuoter` impls at all; they are quoted and executed
+//! over CPI via [`crate::state::prop_amm::QuoterV0`].
 //!
-//! The vAMM is one `Quoter` impl (continuous, via `fill_amm_only`). DLOB
-//! resting orders are another (each a single discrete price level). JIT
-//! participants are a third. When off-chain market makers push Phoenix-style
-//! spline regions, the program materialises them into discrete levels that
-//! feed the same `match_take` walk — and the continuous-curve path is deleted
-//! with the vAMM.
+//! [`QuoteContext`] is the snapshot every source quotes against: quote methods
+//! read from it, and `execute` reads it again so a source reaches the same
+//! conclusion at execute time as it did at quote time. Refresh cost (e.g. AMM
+//! repeg) flows out via [`QuoterFill::refresh_cost`] for the fill controller to
+//! apply to the `PerpMarket`.
+//!
+//! Fee handling is per-source: [`FillFeePolicy`] selects the schedule a fill
+//! settles on (`DlobMatch` for resting orders, `AmmHouse` for the vAMM), and
+//! the vAMM is fee-exempt from the maker schedule because it earns from the
+//! spread it quotes rather than from a rebate.
 //!
 //! See `docs/amm-decoupling-and-maker-interface.md` for the full design,
-//! including matching pseudocode, pro-rata policy, snapshot consistency
-//! rules, and out-of-scope items (cross-program makers via CPI;
-//! tolerance-band pro-rata).
+//! including pro-rata policy and snapshot consistency rules.
 
 use crate::controller::position::PositionDirection;
 use crate::error::{ErrorCode, VelocityResult};
@@ -74,7 +70,7 @@ pub struct QuoteContext<'a> {
     /// `PerpMarket::order_tick_size`.
     pub tick: u64,
     /// The market's base step — minimum **base-amount** increment a fill
-    /// can take. Used by the AMM's `cumulative_size` (the `fill_amm_only`
+    /// can take. Used by the AMM's `cumulative_size` (the sole-vAMM
     /// limit cap) to standardise its analytic-inverse output into valid lot
     /// sizes. Sourced from `PerpMarket::order_step_size`.
     pub step_size: u64,
@@ -109,7 +105,7 @@ pub struct QuoteContext<'a> {
 /// The fields are protocol-level — meaningful to the fill controller without
 /// any maker-specific interpretation. The maker is the sole interpreter of
 /// any maker-specific state changes implied by the fill; those happen inside
-/// [`QuoterCommit::commit_fill`].
+/// [`RouterQuoter::execute`].
 #[derive(Debug, Clone, Copy)]
 pub struct QuoterFill {
     /// Which side of the book this fill is on (from the taker's perspective).
@@ -177,104 +173,6 @@ pub enum FillFeePolicy {
     DlobMatch,
 }
 
-/// A liquidity source on the shared orderbook.
-///
-/// # Fill algorithm (the contract this trait must satisfy)
-///
-/// The fill engine (`controller/match.rs`) has two explicit paths:
-///
-/// - **Sole continuous vAMM** (`fill_amm_only`): ask the AMM for its
-///   closed-form `try_fill_solo`, capped at the taker limit by the AMM's
-///   `cumulative_size` (an inherent `AmmQuoter` method, not on this trait).
-/// - **Discrete makers** (`match_take`): each maker is a single price level —
-///   its `best_price` and its full fillable size (unbounded `try_fill_solo`).
-///   Sort levels best-first, fill fully-crossed levels, and at the level that
-///   crosses demand distribute the residual priority-first (`is_prio`) then
-///   pro-rata by capacity. No price search.
-///
-/// Quote methods must be pure functions of `(self, ctx)` so the engine gets
-/// consistent answers across the (few) calls in a single fill. Settlement
-/// happens after the fill resolves, via `commit_fill`.
-pub trait Quoter {
-    /// Setup phase — called once per matching session before any quote
-    /// query. Implementations that derive transient state from `ctx` (e.g.
-    /// the AMM materialising a post-refresh projection + spread snapshot)
-    /// compute it here and store it on `self`. Quote methods (`best_price`,
-    /// `try_fill_solo`) then read that prepared state.
-    ///
-    /// Setup writes only to the quoter's own session-scoped fields. It
-    /// does NOT mutate any backing account state — peg/reserves on the
-    /// AMM only change inside `QuoterCommit::commit_fill`.
-    ///
-    /// Default is no-op: makers that quote from their constant-at-
-    /// construction inputs (DLOB orders, JIT participants) don't need
-    /// setup.
-    fn setup(&mut self, _ctx: &QuoteContext) -> VelocityResult<()> {
-        Ok(())
-    }
-
-    /// First nonzero offer on this side — the maker's single quoted price for
-    /// the discrete level walk. Pure function of `(self, ctx)`. Returns the
-    /// no-quote sentinel (`u64::MAX` for Long, `0` for Short) when the maker
-    /// doesn't quote this side.
-    fn best_price(&self, ctx: &QuoteContext, side: PositionDirection) -> VelocityResult<u64>;
-
-    /// Full fillable base at this maker's level (`best_price`). The discrete
-    /// walk in `controller::matching::match_take` reads this to size the
-    /// level, so it must be *cheap and non-mutating* — compute it analytically
-    /// (DLOB: remaining size; JIT vAMM: `min(throttle, reserve-bounded max)`),
-    /// NOT by running the actual fill. `0` means "no liquidity on this side".
-    /// Pure function of `(self, ctx)`.
-    fn level_capacity(&self, ctx: &QuoteContext, side: PositionDirection) -> VelocityResult<u64>;
-
-    /// Priority flag. At the clearing marginal tick, priority makers take
-    /// their full marginal size *before* pro-rata distributes the remainder
-    /// to non-priority makers. Doesn't override price priority — a better
-    /// `best_price` still wins regardless of `is_prio`. The vAMM is prio;
-    /// DLOB and JIT participants default to non-prio.
-    fn is_prio(&self) -> bool {
-        false
-    }
-
-    /// Whether this maker is exempt from the protocol's maker fee schedule.
-    /// The vAMM returns `true` — it makes its revenue from the spread it
-    /// quotes, not from a maker rebate. DLOB orders and JIT participants
-    /// default to `false` and pay/receive maker fees per the protocol
-    /// schedule. The fill controller checks this when applying fees from a
-    /// match.
-    fn is_fee_exempt(&self) -> bool {
-        false
-    }
-
-    /// Which fee schedule the unified fulfill orchestrator uses when a fill
-    /// lands against this quoter. The default is `DlobMatch` (DLOB resting
-    /// orders pay/receive the match fee schedule); the AMM quoters override
-    /// to `AmmHouse`.
-    fn fee_policy(&self) -> FillFeePolicy {
-        FillFeePolicy::DlobMatch
-    }
-
-    /// Closed-form fill of `target_size` base at this maker's price.
-    ///
-    /// Used two ways:
-    /// 1. The sole-AMM path (`fill_amm_only`) calls it to fill the whole take.
-    /// 2. The discrete walk (`match_take`) calls it with `u64::MAX` to read a
-    ///    maker's full level capacity, and again with the maker's allocated
-    ///    base to produce the committed fill.
-    ///
-    /// Every `Quoter` in this crate implements it (the AMM via swap math;
-    /// discrete makers as `min(target, remaining)` at their price). Returning
-    /// `None` means "no fill on this side / zero capacity".
-    fn try_fill_solo(
-        &self,
-        _ctx: &QuoteContext,
-        _side: PositionDirection,
-        _target_size: u64,
-    ) -> VelocityResult<Option<QuoterFill>> {
-        Ok(None)
-    }
-}
-
 // `CurveSnapshot`, `MarketEventEffects`, and `SnapOutcome` were deleted.
 // `on_market_event` returns `()`; AMM-side Anchor records
 // (`AmmCurveChanged`) are emitted by the AMM directly. `snap_to_oracle`
@@ -337,30 +235,6 @@ pub enum MarketEvent<'a> {
 // definition co-locates with the only impl (`impl AmmContract for AMM`).
 // Callers import it from there directly.
 
-/// Settle a fill onto a maker's internal state, or react to a market event.
-///
-/// Split from `Quoter` so quote queries can take `&self` (required for the
-/// matcher's many bisection calls) while commits take `&mut self`.
-///
-/// The maker is the sole authority on how its bytes change. Only constraint
-/// is that the `QuoterFill` amounts must be honored — the protocol-level
-/// accounting (position counters, fees on PerpMarket) depends on those
-/// amounts being accurate. The maker may also consume protocol budget
-/// (e.g. AMM applying a repeg) and report the cost via `QuoterFill::refresh_cost`.
-///
-/// [`on_market_event`] is the second mutation channel: market-level signals
-/// (funding application today; oracle ticks, external fills tomorrow) that a
-/// maker may want to react to. The default implementation ignores the event.
-/// The AMM uses it to fold its formulaic k-update inside the maker boundary,
-/// replacing the old "controller/funding reaches into market.amm" pattern.
-pub trait QuoterCommit: Quoter {
-    fn commit_fill(&mut self, ctx: &QuoteContext, fill: &QuoterFill) -> VelocityResult<()>;
-
-    fn on_market_event(&mut self, _ctx: &QuoteContext, _event: &MarketEvent) -> VelocityResult<()> {
-        Ok(())
-    }
-}
-
 /// A liquidity source the router fill reads and executes — the in-program
 /// mirror of the registry's external `QuoterV0` CPI legs, deliberately the
 /// same shape: `quote` returns discrete best-first levels, `execute` commits
@@ -368,9 +242,6 @@ pub trait QuoterCommit: Quoter {
 /// per-fill refresh (the AMM's projection/curve update) do it in their own
 /// setup step before the router quotes them — setup is not part of this
 /// contract, mirroring how external quoters refresh their own state.
-///
-/// The legacy [`Quoter`]/[`QuoterCommit`] surface above remains only for the
-/// legacy fill paths (`fill_amm_only`, `match_take`) and dies with them.
 pub trait RouterQuoter {
     /// Routing tier, same semantics as the registry's `QuoterV0::priority`:
     /// lower fills first at a shared price, pro rata within a tier.
@@ -445,7 +316,7 @@ impl RouterQuoter for DlobOrderQuoter<'_> {
 
 use crate::state::user::Order;
 
-/// A `Quoter` view over a single resting DLOB order.
+/// A [`RouterQuoter`] view over a single resting DLOB order.
 ///
 /// The order's direction (Long = bid, Short = ask) determines which side of
 /// the book it offers liquidity on; a maker offers liquidity to the *opposite*
@@ -472,6 +343,18 @@ pub struct DlobOrderQuoter<'a> {
 }
 
 impl<'a> DlobOrderQuoter<'a> {
+    /// A DLOB resting order is never fee-exempt: it pays / receives maker
+    /// fees per the protocol schedule. (The vAMM is the exempt one — it earns
+    /// from the spread it quotes.)
+    pub fn is_fee_exempt(&self) -> bool {
+        false
+    }
+
+    /// DLOB resting orders settle on the match fee schedule.
+    pub fn fee_policy(&self) -> FillFeePolicy {
+        FillFeePolicy::DlobMatch
+    }
+
     pub fn new(order: &'a mut Order, max_fill: u64) -> Self {
         DlobOrderQuoter { order, max_fill }
     }
@@ -540,22 +423,26 @@ impl<'a> DlobOrderQuoter<'a> {
     }
 }
 
-impl<'a> Quoter for DlobOrderQuoter<'a> {
-    fn best_price(&self, ctx: &QuoteContext, side: PositionDirection) -> VelocityResult<u64> {
+impl<'a> DlobOrderQuoter<'a> {
+    pub fn best_price(&self, ctx: &QuoteContext, side: PositionDirection) -> VelocityResult<u64> {
         if !self.quotes_on(side) {
             return Ok(Self::no_quote(side));
         }
         Ok(self.effective_price(ctx)?.unwrap_or(Self::no_quote(side)))
     }
 
-    fn level_capacity(&self, ctx: &QuoteContext, side: PositionDirection) -> VelocityResult<u64> {
+    pub fn level_capacity(
+        &self,
+        ctx: &QuoteContext,
+        side: PositionDirection,
+    ) -> VelocityResult<u64> {
         if !self.quotes_on(side) || self.effective_price(ctx)?.is_none() {
             return Ok(0);
         }
         Ok(self.remaining())
     }
 
-    fn try_fill_solo(
+    pub fn try_fill_solo(
         &self,
         ctx: &QuoteContext,
         side: PositionDirection,
@@ -615,8 +502,8 @@ impl DlobOrderQuoter<'_> {
     }
 }
 
-impl<'a> QuoterCommit for DlobOrderQuoter<'a> {
-    fn commit_fill(&mut self, _ctx: &QuoteContext, fill: &QuoterFill) -> VelocityResult<()> {
+impl<'a> DlobOrderQuoter<'a> {
+    pub fn commit_fill(&mut self, _ctx: &QuoteContext, fill: &QuoterFill) -> VelocityResult<()> {
         // Update only the order's bytes. Per-user position / fee accounting
         // is the fill controller's responsibility, applied after the match
         // resolves using the public `QuoterFill` fields.
@@ -636,7 +523,7 @@ impl<'a> QuoterCommit for DlobOrderQuoter<'a> {
 // AMM Quoter impl (v1)
 // ============================================================================
 //
-// `AmmQuoter` exposes the existing `AMM` struct through the `Quoter` trait so
+// `AmmQuoter` exposes the existing `AMM` struct as a router quoter so
 // the matcher can drive it. `is_prio = true`, `is_fee_exempt = true` per
 // design — the AMM front-runs DLOB at tied prices and doesn't pay maker fees.
 //

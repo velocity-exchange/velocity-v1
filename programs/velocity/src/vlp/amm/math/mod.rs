@@ -3,6 +3,5 @@
 
 pub mod amm;
 pub mod cp_curve;
-pub mod jit;
 pub mod repeg;
 pub mod spread;

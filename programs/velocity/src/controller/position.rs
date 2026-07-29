@@ -3,11 +3,8 @@ use anchor_lang::prelude::*;
 
 use crate::error::{ErrorCode, VelocityResult};
 use crate::math::casting::Cast;
-use crate::math::constants::{BASE_PRECISION_U64, MAX_BASE_ASSET_AMOUNT_WITH_AMM, PERP_DECIMALS};
-use crate::math::orders::{
-    calculate_quote_asset_amount_for_maker_order, get_position_delta_for_fill,
-    is_multiple_of_step_size,
-};
+use crate::math::constants::PERP_DECIMALS;
+use crate::math::orders::{calculate_quote_asset_amount_for_maker_order, is_multiple_of_step_size};
 use crate::math::position::{
     get_new_position_amounts, get_position_update_type, PositionUpdateType,
 };
@@ -15,7 +12,6 @@ use crate::math::safe_math::SafeMath;
 use crate::math_error;
 use crate::safe_increment;
 use crate::state::perp_market::PerpMarket;
-use crate::state::quoter::QuoteContext;
 use crate::state::user::{PerpPosition, PerpPositions, User};
 use crate::validate;
 
@@ -363,92 +359,6 @@ pub fn update_position_and_market(
     position.quote_break_even_amount = new_quote_break_even_amount;
 
     Ok(pnl)
-}
-
-pub fn update_position_with_base_asset_amount(
-    base_asset_amount: u64,
-    direction: PositionDirection,
-    market: &mut PerpMarket,
-    user: &mut User,
-    position_index: usize,
-    fill_price: Option<u64>,
-) -> VelocityResult<(u64, i64, i64)> {
-    // Fill against the AMM via the matcher's sole-maker fast path:
-    // `AmmQuoter::try_fill_solo` (byte-exact swap math, parity-tested) then
-    // `AmmQuoter::commit_fill` (mutates reserves + AMM's net counterparty
-    // position).
-    //
-    // Quote / fill prices read the AMM's cached spread state (refreshed by the
-    // keeper crank / fill setup); the caller is responsible for ensuring it's
-    // current for this slot.
-    //
-    // `AmmQuoter::try_fill_solo` only reads the AMM's own state and
-    // `ctx.base_precision`, so the oracle/slot/fee_budget fields are stubs
-    // here. Thread real values from the surrounding fill-path code if a
-    // future AmmQuoter method needs them.
-    let stats_snapshot = market.market_stats;
-    let oracle_stub = crate::state::oracle::OraclePriceData::default();
-    let ctx = QuoteContext {
-        stats: &stats_snapshot,
-        oracle: &oracle_stub,
-        mm_oracle: None,
-        oracle_validity: None,
-        fee_budget: 0,
-        tick: market.order_tick_size,
-        step_size: market.order_step_size,
-        slot: 0,
-        base_precision: BASE_PRECISION_U64,
-        market_status: crate::state::market_status::MarketStatus::default(),
-        market_config: 0,
-    };
-
-    let match_result = crate::controller::matching::fill_perp_market_against_amm(
-        market,
-        &ctx,
-        direction,
-        base_asset_amount,
-    )?;
-
-    // Sole-AMM fast path: the Match contains exactly one QuoterFill from AmmQuoter.
-    let (quote_asset_swapped, surplus_from_amm) = match match_result.fills.first() {
-        Some((_, fill)) => (fill.quote_filled, fill.quote_asset_amount_surplus as u64),
-        None => (0, 0),
-    };
-
-    let (quote_asset_amount, quote_asset_amount_surplus) = match fill_price {
-        Some(fill_price) => calculate_quote_asset_amount_surplus(
-            direction,
-            quote_asset_swapped,
-            base_asset_amount,
-            fill_price,
-        )?,
-        None => (quote_asset_swapped, surplus_from_amm as i64),
-    };
-
-    let position_delta =
-        get_position_delta_for_fill(base_asset_amount, quote_asset_amount, direction)?;
-
-    let pnl = update_position_and_market(
-        &mut user.perp_positions[position_index],
-        market,
-        &position_delta,
-    )?;
-
-    // base_asset_amount_with_amm was already updated by AmmQuoter::commit_fill
-    // (inside fill_perp_market_against_amm). Validate the invariant.
-    let amm_net_counterparty_position = market.amm.net_counterparty_position();
-    validate!(
-        amm_net_counterparty_position.unsigned_abs() <= MAX_BASE_ASSET_AMOUNT_WITH_AMM,
-        ErrorCode::InvalidAmmDetected,
-        "market.amm.base_asset_amount_with_amm={} cannot exceed MAX_BASE_ASSET_AMOUNT_WITH_AMM",
-        amm_net_counterparty_position
-    )?;
-
-    // The cached ask/bid spread reserves were re-derived inside
-    // `AmmQuoter::commit_fill` (via `refresh_cached_spread_reserves`) right
-    // after the curve reserves moved.
-
-    Ok((quote_asset_amount, quote_asset_amount_surplus, pnl))
 }
 
 pub fn calculate_quote_asset_amount_surplus(

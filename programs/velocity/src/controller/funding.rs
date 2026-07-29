@@ -28,7 +28,7 @@ use crate::state::market_status::MarketStatus;
 use crate::state::oracle_map::OracleMap;
 use crate::state::perp_market::{MarketConfigFlag, PerpMarket};
 use crate::state::perp_market_map::PerpMarketMap;
-use crate::state::quoter::{MarketEvent, QuoteContext, Quoter, QuoterCommit};
+use crate::state::quoter::{MarketEvent, QuoteContext};
 use crate::state::state::OracleGuardRails;
 use crate::state::user::User;
 
@@ -167,7 +167,7 @@ pub fn settle_funding_payments(
 /// market_stats.funding_period`); with a tiny `funding_period` (e.g. the
 /// bankrun `pyth.ts` tests use 0) a stale `last_update_slot` would lock funding
 /// out for the rest of the slot. Mirrors the legacy `_update_amm` the keeper
-/// ran before funding. The in-branch `AmmQuoter::setup` reuses this projection
+/// ran before funding. The in-branch `AmmQuoter::refresh` reuses this projection
 /// via slot-idempotency, so the curve math only runs once per slot.
 fn refresh_amm_for_funding_gate(
     market: &mut PerpMarket,
@@ -198,7 +198,7 @@ fn refresh_amm_for_funding_gate(
         market_status: market.status,
         market_config: market.market_config,
     };
-    AmmQuoter::for_amm(&mut market.amm).setup(&ctx)
+    AmmQuoter::for_amm(&mut market.amm).refresh(&ctx)
 }
 
 #[allow(clippy::comparison_chain)]
@@ -303,7 +303,7 @@ pub fn update_funding_rate(
         execution_premium_direction,
     ) = {
         let mut amm_quoter = AmmQuoter::for_amm(&mut market.amm);
-        amm_quoter.setup(&setup_ctx)?;
+        amm_quoter.refresh(&setup_ctx)?;
         let amm = &amm_quoter.amm;
         let reserve_price = amm.reserve_price()?;
         let long_spread = amm.long_spread;

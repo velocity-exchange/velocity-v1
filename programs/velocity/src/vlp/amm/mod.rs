@@ -13,5 +13,5 @@ pub mod refresh;
 pub mod router_adapter;
 pub mod state;
 
-pub use quoter::{AmmJitQuoter, AmmQuoter};
+pub use quoter::AmmQuoter;
 pub use state::{AmmFeePoolSnapshot, AMM};

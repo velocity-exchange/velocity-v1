@@ -63,9 +63,13 @@ pub struct ClobCrankConditionsV0 {
     /// fee, and turners would have no signal to prioritize (or decline) the
     /// work. Held here rather than in a global PDA because the executor
     /// already has to touch this account to repair the expiry hint — so the
-    /// reservoir costs no extra account in a crank transaction. Kept topped
-    /// off out of band (gas station); an empty reservoir stops cranks rather
-    /// than silently paying nothing, which is the failure ops can see.
+    /// reservoir costs no extra account in a crank transaction.
+    ///
+    /// Refilled by the maker, not the protocol: the flat removal reward the
+    /// maker pays accrues to a protocol-owned `User`, and a hot role withdraws
+    /// that quote and converts it to SOL to top these reservoirs off. An empty
+    /// reservoir stops cranks rather than silently paying nothing, which is the
+    /// failure mode ops can actually see.
     pub keeper_payment_lamports: u64,
     /// The perp market these conditions crank. Also the PDA seed.
     pub market_index: u16,

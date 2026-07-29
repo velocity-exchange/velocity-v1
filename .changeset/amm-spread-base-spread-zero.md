@@ -1,5 +1,5 @@
 ---
-'@velocity-exchange/sdk': minor
+"@velocity-exchange/sdk": minor
 ---
 
 Stop discarding the AMM's dynamic spread when `base_spread` is 0, so quoted vAMM prices match what the program will fill at.
@@ -14,6 +14,8 @@ Two smaller divergences in the same function are fixed alongside it, both verifi
 
 - **`amm_spread_adjustment` was skipped on the frozen-curve branch.** On chain it is applied after the `curve_update_intensity` branch, so it affects both the dynamic and the `[base_spread / 2, base_spread / 2]` result. The early return meant a market with `curve_update_intensity == 0` ignored its manual adjustment entirely. The adjustment is now factored into `applyAmmSpreadAdjustment` and applied to both branches, rounding as the program does — ceil when growing, floor when shrinking — rather than leaving a fractional spread.
 - **`base_spread / 2` was float division.** `base_spread.safe_div(2)` truncates on chain, so a `base_spread` of 175 (the value BTC-PERP and ETH-PERP carry) yielded 87 on chain and 87.5 in the SDK.
+
+`AdminClient.getMoveAmmToPriceIx` now passes `getMMOracleDataForPerpMarket` into `calculateTargetPriceTrade` rather than `undefined`. It was already sizing the move against a zero-width spread on markets with a nonzero `baseSpread` and `curveUpdateIntensity`, and with the change above would have started throwing on `baseSpread == 0` markets as well.
 
 **Behavioural note.** `calculateSpread` and `calculateSpreadReserves` now throw when `oraclePriceData` is omitted and `curveUpdateIntensity` is nonzero, where a `baseSpread` of 0 previously returned `[0, 0]` without needing an oracle. This is the same requirement markets with a nonzero `baseSpread` already had; callers on affected markets were silently receiving a zero-width spread instead. `getVammL2Generator` already requires `mmOraclePriceData`, so the in-repo L2 path is unaffected.
 

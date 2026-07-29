@@ -3095,7 +3095,7 @@ pub mod fulfill_order {
     }
 
     #[test]
-    #[ignore = "router-vs-legacy numeric deltas, diagnosed and benign: the ladder prices each rung at its slice average, and average beats marginal for the taker, so more size clears the same limit (verified: the post-only ask fills 50.037 units at $99.9299 against its $99.90 limit); level-wise accumulation also rounds a lamport differently than one swap. Remaining work is mechanical repinning of ~8 fee/quote numbers."]
+    #[ignore = "one-lamport quote differences: the fill accumulates notional per ladder level rather than in one swap. Benign, but repinning waits on the post-only size question above (same fixtures touch AMM fees)."]
     fn fulfill_with_amm_and_maker() {
         let now = 0_i64;
         let slot = 0_u64;
@@ -4885,7 +4885,7 @@ pub mod fulfill_order {
     }
 
     #[test]
-    #[ignore = "router-vs-legacy numeric deltas, diagnosed and benign: the ladder prices each rung at its slice average, and average beats marginal for the taker, so more size clears the same limit (verified: the post-only ask fills 50.037 units at $99.9299 against its $99.90 limit); level-wise accumulation also rounds a lamport differently than one swap. Remaining work is mechanical repinning of ~8 fee/quote numbers."]
+    #[ignore = "UNEXPLAINED router-vs-legacy size delta on a post-only fill against the AMM: both paths cap the fill at the taker limit via the same marginal-price inversion (verified: the ladder cap bites, quoting 50.037 of a 1000-unit request at limit 99.90), yet legacy stopped at 35.032. Candidate causes: the secondary bound (cumulative_size bounds by AmmQuoter::max_fillable, the ladder by calculate_amm_available_liquidity) and step standardization. Do NOT repin these numbers until the 43% difference is accounted for."]
     fn fulfill_post_only_ask_with_amm() {
         let now = 0_i64;
         let slot = 0_u64;
@@ -5073,7 +5073,7 @@ pub mod fulfill_order {
     }
 
     #[test]
-    #[ignore = "router-vs-legacy numeric deltas, diagnosed and benign: the ladder prices each rung at its slice average, and average beats marginal for the taker, so more size clears the same limit (verified: the post-only ask fills 50.037 units at $99.9299 against its $99.90 limit); level-wise accumulation also rounds a lamport differently than one swap. Remaining work is mechanical repinning of ~8 fee/quote numbers."]
+    #[ignore = "UNEXPLAINED router-vs-legacy size delta on a post-only fill against the AMM: both paths cap the fill at the taker limit via the same marginal-price inversion (verified: the ladder cap bites, quoting 50.037 of a 1000-unit request at limit 99.90), yet legacy stopped at 35.032. Candidate causes: the secondary bound (cumulative_size bounds by AmmQuoter::max_fillable, the ladder by calculate_amm_available_liquidity) and step standardization. Do NOT repin these numbers until the 43% difference is accounted for."]
     fn fulfill_post_only_bid_with_amm() {
         let now = 0_i64;
         let slot = 0_u64;
@@ -5912,7 +5912,7 @@ pub mod fulfill_order {
     }
 
     #[test]
-    #[ignore = "router-vs-legacy numeric deltas, diagnosed and benign: the ladder prices each rung at its slice average, and average beats marginal for the taker, so more size clears the same limit (verified: the post-only ask fills 50.037 units at $99.9299 against its $99.90 limit); level-wise accumulation also rounds a lamport differently than one swap. Remaining work is mechanical repinning of ~8 fee/quote numbers."]
+    #[ignore = "one-lamport quote differences: the fill accumulates notional per ladder level rather than in one swap. Benign, but repinning waits on the post-only size question above (same fixtures touch AMM fees)."]
     fn fulfill_with_amm_when_maker_is_filler() {
         let now = 0_i64;
         let slot = 0_u64;

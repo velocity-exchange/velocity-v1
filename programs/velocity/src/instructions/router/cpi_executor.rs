@@ -21,6 +21,9 @@ pub struct CpiQuoterExecutor<'a, 'info> {
     /// Registry types, captured at quote time so the fill controller can ask
     /// without re-loading the entry.
     pub types: Vec<QuoterType>,
+    /// Registry `user` per entry, captured at quote time — the margin
+    /// account the pre-execute clamp sizes Custom books against.
+    pub quoter_users: Vec<Pubkey>,
     /// Union of the quoters' registered CPI accounts (plus their programs),
     /// keyed by pubkey — the caller's leftover remaining accounts.
     pub account_map: &'a BTreeMap<Pubkey, AccountInfo<'info>>,
@@ -37,6 +40,10 @@ pub struct CpiQuoterExecutor<'a, 'info> {
 impl ExternalQuoterExecutor for CpiQuoterExecutor<'_, '_> {
     fn quoter_type(&self, index: usize) -> QuoterType {
         self.types.get(index).copied().unwrap_or(QuoterType::Custom)
+    }
+
+    fn quoter_user(&self, index: usize) -> Pubkey {
+        self.quoter_users.get(index).copied().unwrap_or_default()
     }
 
     fn execute(

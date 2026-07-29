@@ -276,6 +276,10 @@ pub trait ExternalQuoterExecutor {
     /// margin-reserved at placement; Custom PropAMM depth is not).
     fn quoter_type(&self, index: usize) -> QuoterType;
 
+    /// The `User` quoter `index` quotes for (`QuoterV0::user`) — the margin
+    /// account the pre-execute clamp sizes Custom books against.
+    fn quoter_user(&self, index: usize) -> Pubkey;
+
     /// CPI `execute_v0` on quoter `index` with the routed allocation. The
     /// response is untrusted: the router pass validates overfill,
     /// at-or-better-than-quote, and that every balance change lands on a
@@ -296,6 +300,10 @@ pub struct NoExternalQuoters;
 impl ExternalQuoterExecutor for NoExternalQuoters {
     fn quoter_type(&self, _index: usize) -> QuoterType {
         QuoterType::Custom
+    }
+
+    fn quoter_user(&self, _index: usize) -> Pubkey {
+        Pubkey::default()
     }
 
     fn execute(

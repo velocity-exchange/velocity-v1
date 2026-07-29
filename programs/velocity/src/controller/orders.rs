@@ -1903,6 +1903,7 @@ fn fulfill_perp_order(
             filler,
             filler_key,
             filler_stats,
+            spot_market_map,
             perp_market_map,
             oracle_map,
             validity_guard_rails,
@@ -3889,6 +3890,7 @@ fn fulfill_perp_order_router_pass(
     filler: &mut Option<&mut User>,
     filler_key: &Pubkey,
     filler_stats: &mut Option<&mut UserStats>,
+    spot_market_map: &SpotMarketMap,
     perp_market_map: &PerpMarketMap,
     oracle_map: &mut OracleMap,
     validity_guard_rails: &ValidityGuardRails,
@@ -3910,7 +3912,6 @@ fn fulfill_perp_order_router_pass(
     let external_books = router.books;
 
     let market_index = taker.orders[taker_order_index].market_index;
-    let mut market = perp_market_map.get_ref_mut(&market_index)?;
 
     // ---- Taker order fields (mirrors the step's capture). ----
     let taker_position_index = get_position_index(&taker.perp_positions, market_index)?;
@@ -3936,6 +3937,74 @@ fn fulfill_perp_order_router_pass(
     if target_size == 0 {
         return Ok((0, 0));
     }
+
+    // ---- Pre-execute margin clamp for Custom external books. ----
+    // A Custom PropAMM's depth is never margin-reserved, so cap each of its
+    // books at what the quoted user's account supports right now —
+    // truncating before the split keeps it from routing size the post-fill
+    // margin check would reject by failing the whole fill. CLOB books skip
+    // the clamp: their orders are margin-reserved at placement, so the
+    // shared post-fill check is the edge, not the primary defense. Runs
+    // before this market's RefMut is taken because the margin walk loads
+    // every market the maker touches.
+    let clamped_books: Vec<Option<Vec<PriceLevel>>> = (0..external_books.len())
+        .map(|i| -> VelocityResult<Option<Vec<PriceLevel>>> {
+            if router.executor.quoter_type(i) != QuoterType::Custom {
+                return Ok(None);
+            }
+            let quoter_user_key = router.executor.quoter_user(i);
+            // A quoter quoting for the taker themselves is a self-trade.
+            if quoter_user_key == *taker_key {
+                return Ok(Some(vec![]));
+            }
+            let position_index = {
+                let mut maker = makers_and_referrer.get_ref_mut(&quoter_user_key)?;
+                get_position_index(&maker.perp_positions, market_index)
+                    .or_else(|_| add_new_position(&mut maker.perp_positions, market_index))?
+            };
+            let maker = makers_and_referrer.get_ref(&quoter_user_key)?;
+            let cap = crate::math::orders::calculate_max_perp_order_size(
+                &maker,
+                position_index,
+                market_index,
+                maker_direction,
+                perp_market_map,
+                spot_market_map,
+                oracle_map,
+            )?;
+            let depth = external_books[i]
+                .levels
+                .iter()
+                .fold(0u64, |total, level| total.saturating_add(level.size));
+            if depth <= cap {
+                return Ok(None);
+            }
+            let mut remaining = cap;
+            let levels = external_books[i]
+                .levels
+                .iter()
+                .map_while(|level| {
+                    if remaining == 0 {
+                        return None;
+                    }
+                    let size = level.size.min(remaining);
+                    remaining -= size;
+                    Some(PriceLevel {
+                        price: level.price,
+                        size,
+                    })
+                })
+                .collect();
+            Ok(Some(levels))
+        })
+        .collect::<VelocityResult<_>>()?;
+    let external_levels = |i: usize| -> &[PriceLevel] {
+        clamped_books[i]
+            .as_deref()
+            .unwrap_or(external_books[i].levels)
+    };
+
+    let mut market = perp_market_map.get_ref_mut(&market_index)?;
 
     // ---- Oracle context + AMM setup (mirrors the step's block). ----
     let oracle_pd = *oracle_map.get_price_data(&market.oracle_id())?;
@@ -4048,9 +4117,13 @@ fn fulfill_perp_order_router_pass(
     let amm_levels: Vec<PriceLevel> = if amm_is_available {
         let rivals: Vec<QuoterBook> = external_books
             .iter()
-            .map(|book| QuoterBook {
-                priority: book.priority,
-                levels: &book.levels[..within_limit(book.levels)],
+            .enumerate()
+            .map(|(i, book)| {
+                let levels = external_levels(i);
+                QuoterBook {
+                    priority: book.priority,
+                    levels: &levels[..within_limit(levels)],
+                }
             })
             .chain(maker_levels.iter().map(|levels| QuoterBook {
                 priority: clob_tier,
@@ -4071,9 +4144,13 @@ fn fulfill_perp_order_router_pass(
     // ---- Split across the union, all books truncated at the limit. ----
     let books: Vec<QuoterBook> = external_books
         .iter()
-        .map(|book| QuoterBook {
-            priority: book.priority,
-            levels: &book.levels[..within_limit(book.levels)],
+        .enumerate()
+        .map(|(i, book)| {
+            let levels = external_levels(i);
+            QuoterBook {
+                priority: book.priority,
+                levels: &levels[..within_limit(levels)],
+            }
         })
         .chain(maker_levels.iter().map(|levels| QuoterBook {
             priority: clob_tier,

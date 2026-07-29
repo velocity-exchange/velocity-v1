@@ -275,10 +275,11 @@ fn fill_order<'c: 'info, 'info>(
     // the fill); market mismatches are a malformed tx and fail loudly.
     let mut kept: Vec<AccountLoader<QuoterV0>> = Vec::with_capacity(quoters.len());
     let mut types: Vec<QuoterType> = Vec::with_capacity(quoters.len());
+    let mut quoter_users: Vec<Pubkey> = Vec::with_capacity(quoters.len());
     let mut books_data: Vec<(u8, Vec<PriceLevel>)> = Vec::with_capacity(quoters.len());
     let mut seen: Vec<Pubkey> = Vec::with_capacity(quoters.len());
     for loader in quoters {
-        let (priority, quoter_type, levels) = {
+        let (priority, quoter_type, quoter_user, levels) = {
             let quoter = loader.load()?;
             validate!(
                 quoter.market == market_index,
@@ -314,10 +315,11 @@ fn fill_order<'c: 'info, 'info>(
                 state.signer_nonce,
                 &account_map,
             )?;
-            (quoter.priority, quoter.quoter_type, levels)
+            (quoter.priority, quoter.quoter_type, quoter.user, levels)
         };
         kept.push(loader);
         types.push(quoter_type);
+        quoter_users.push(quoter_user);
         books_data.push((priority, levels));
     }
     let book_refs: Vec<QuoterBook> = books_data
@@ -330,6 +332,7 @@ fn fill_order<'c: 'info, 'info>(
     let mut executor = CpiQuoterExecutor {
         quoters: &kept,
         types,
+        quoter_users,
         account_map: &account_map,
         velocity_signer: state.signer,
         signer_nonce: state.signer_nonce,

@@ -57,7 +57,9 @@ use crate::state::order_params::{
 use crate::state::paused_operations::PerpOperation;
 use crate::state::perp_market::PerpMarket;
 use crate::state::perp_market_map::PerpMarketMap;
-use crate::state::quoter::{DlobOrderQuoter, QuoteContext, QuoterFill};
+use crate::state::quoter::{
+    DlobOrderQuoter, MarketQuoteInputs as QuoteInputs, QuoteContext, QuoterFill,
+};
 use crate::state::spot_market::{SpotBalanceType, SpotMarket};
 use crate::state::spot_market_map::SpotMarketMap;
 use crate::state::state::FeeStructure;
@@ -3330,37 +3332,14 @@ fn fulfill_perp_order_router_pass(
 
     let mut market = perp_market_map.get_ref_mut(&market_index)?;
 
-    // ---- Oracle context + AMM setup (mirrors the step's block). ----
+    // ---- Oracle context + AMM refresh (shared with the quote view). ----
     let oracle_pd = *oracle_map.get_price_data(&market.oracle_id())?;
     let oracle_price = oracle_pd.price;
-    let mm_oracle_price_data =
-        market.get_mm_oracle_price_data(oracle_pd, slot, validity_guard_rails)?;
-    let sanitize_clamp_denom = market.get_sanitize_clamp_denominator()?;
-    let amm_refresh_validity =
-        crate::vlp::amm::refresh::compute_amm_refresh_validity_with_guard_rails(
-            &market,
-            &mm_oracle_price_data,
-            validity_guard_rails,
-        )?;
-    let market_stats_snapshot = market.market_stats;
-    let safe_oracle = mm_oracle_price_data.get_safe_oracle_price_data();
-    let order_tick_size = market.order_tick_size;
-    let order_step_size = market.order_step_size;
-    let market_status_local = market.status;
-    let market_config_local = market.market_config;
-    let setup_ctx = QuoteContext {
-        stats: &market_stats_snapshot,
-        oracle: &safe_oracle,
-        mm_oracle: Some(&mm_oracle_price_data),
-        oracle_validity: amm_refresh_validity,
-        fee_budget: 0,
-        tick: order_tick_size,
-        step_size: order_step_size,
-        slot,
-        base_precision: BASE_PRECISION_U64,
-        market_status: market_status_local,
-        market_config: market_config_local,
-    };
+    let quote_inputs = QuoteInputs::load(&market, oracle_pd, slot, validity_guard_rails)?;
+    let sanitize_clamp_denom = quote_inputs.sanitize_clamp_denominator;
+    let order_tick_size = quote_inputs.tick_size;
+    let order_step_size = quote_inputs.step_size;
+    let setup_ctx = quote_inputs.ctx(slot);
     let mut amm_quoter = AmmQuoter::for_amm(&mut market.amm);
     amm_quoter.refresh(&setup_ctx)?;
     let reserve_after_setup = amm_quoter.amm.reserve_price()?;
@@ -3379,12 +3358,12 @@ fn fulfill_perp_order_router_pass(
             let amm_available =
                 calculate_amm_available_liquidity(amm_ref, &taker_direction, order_step_size)?;
             Some(amm_ref.get_fallback_price(
-                &market_stats_snapshot,
+                &quote_inputs.stats,
                 &taker_direction,
                 amm_available,
                 oracle_price,
                 taker.orders[taker_order_index].seconds_til_expiry(now),
-                market_stats_snapshot.min_order_size,
+                quote_inputs.stats.min_order_size,
             )?)
         }
     };
@@ -3528,8 +3507,8 @@ fn fulfill_perp_order_router_pass(
 
     // ---- Execute + settle each maker allocation. ----
     let ctx = QuoteContext {
-        stats: &market_stats_snapshot,
-        oracle: &safe_oracle,
+        stats: &quote_inputs.stats,
+        oracle: &quote_inputs.safe_oracle,
         mm_oracle: None,
         oracle_validity: None,
         fee_budget: 0,

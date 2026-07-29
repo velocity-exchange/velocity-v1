@@ -42,7 +42,7 @@ use crate::math::router::QuoterBook;
 use crate::msg;
 use crate::state::perp_market_map::{get_writable_perp_market_set, MarketSet};
 use crate::state::prop_amm::{Direction, PriceLevel, QuoteArgsV0, QuoterType, QuoterV0};
-use crate::state::quoter::QuoteContext;
+use crate::state::quoter::MarketQuoteInputs;
 use crate::state::router_quote::{QuotedSourceKind, RouterQuoteBufferV0};
 use crate::state::state::State;
 use crate::state::user_map::load_user_maps;
@@ -192,11 +192,10 @@ pub fn handle_quote_router<'c: 'info, 'info>(
     // ---- DLOB makers next: one level per crossing resting order. ----
     let clob_tier = QuoterType::Clob.default_priority();
     let order_tick_size = perp_market_map.get_ref(&market_index)?.order_tick_size;
-    let order_step_size = perp_market_map.get_ref(&market_index)?.order_step_size;
-    let (oracle_price, market_stats, amm_snapshot) = {
+    let (oracle_price, amm_snapshot) = {
         let market = perp_market_map.get_ref(&market_index)?;
         let oracle_pd = *oracle_map.get_price_data(&market.oracle_id())?;
-        (oracle_pd, market.market_stats, market.amm)
+        (oracle_pd, market.amm)
     };
     // The fill path's own discovery predicate, so a book never advertises an
     // order the fill would skip (wrong side/type, untriggered, not open).
@@ -235,42 +234,17 @@ pub fn handle_quote_router<'c: 'info, 'info>(
     }
 
     // ---- vAMM last, with everything above as its rivals (last look). ----
-    // Quoted off a copy: `setup` projects the curve, and this instruction
+    // Quoted off a copy: `refresh` projects the curve, and this instruction
     // must not move the market's AMM.
     let mut amm: AMM = amm_snapshot;
-    let mm_oracle_price_data = {
+    let inputs = {
         let market = perp_market_map.get_ref(&market_index)?;
-        market.get_mm_oracle_price_data(
+        MarketQuoteInputs::load(
+            &market,
             oracle_price,
             clock.slot,
             &state.oracle_guard_rails.validity,
         )?
-    };
-    let amm_refresh_validity = {
-        let market = perp_market_map.get_ref(&market_index)?;
-        crate::vlp::amm::refresh::compute_amm_refresh_validity_with_guard_rails(
-            &market,
-            &mm_oracle_price_data,
-            &state.oracle_guard_rails.validity,
-        )?
-    };
-    let safe_oracle = mm_oracle_price_data.get_safe_oracle_price_data();
-    let (market_status, market_config) = {
-        let market = perp_market_map.get_ref(&market_index)?;
-        (market.status, market.market_config)
-    };
-    let setup_ctx = QuoteContext {
-        stats: &market_stats,
-        oracle: &safe_oracle,
-        mm_oracle: Some(&mm_oracle_price_data),
-        oracle_validity: amm_refresh_validity,
-        fee_budget: 0,
-        tick: order_tick_size,
-        step_size: order_step_size,
-        slot: clock.slot,
-        base_precision: crate::math::constants::BASE_PRECISION_U64,
-        market_status,
-        market_config,
     };
     let rivals: Vec<QuoterBook> = books
         .iter()
@@ -279,14 +253,15 @@ pub fn handle_quote_router<'c: 'info, 'info>(
             levels,
         })
         .collect();
+    let ctx = inputs.ctx(clock.slot);
     let amm_levels = {
-        let mut amm_quoter = AmmQuoter::for_amm(&mut amm);
-        amm_quoter.refresh(&setup_ctx)?;
+        let mut quoter = AmmQuoter::for_amm(&mut amm);
+        quoter.refresh(&ctx)?;
         vamm_quote_levels(
-            amm_quoter.amm,
+            quoter.amm,
             args.direction,
             args.size,
-            order_step_size,
+            ctx.step_size,
             &rivals,
             None,
         )?

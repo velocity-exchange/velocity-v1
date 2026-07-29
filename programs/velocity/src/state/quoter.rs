@@ -851,3 +851,72 @@ mod dlob_order_maker_tests {
         assert_eq!(fill.clearing_price, 100);
     }
 }
+
+/// An owned snapshot of everything a [`QuoteContext`] needs from a
+/// `PerpMarket`, so a caller can build the context once and hand out borrows.
+///
+/// Both quoting entrypoints — the fill's fulfillment pass and the router's
+/// quote view — need the same dozen fields pulled off the market before they
+/// can borrow its AMM mutably. Assembling them by hand at each site is how the
+/// two drift; the snapshot makes "what quoting needs from a market" one thing.
+pub struct MarketQuoteInputs {
+    pub stats: MarketStats,
+    pub safe_oracle: OraclePriceData,
+    pub mm_oracle: MMOraclePriceData,
+    pub oracle_validity: Option<crate::math::oracle::OracleValidity>,
+    pub oracle_price: i64,
+    pub tick_size: u64,
+    pub step_size: u64,
+    pub market_status: crate::state::market_status::MarketStatus,
+    pub market_config: u8,
+    pub sanitize_clamp_denominator: Option<i64>,
+}
+
+impl MarketQuoteInputs {
+    /// Snapshot `market` for quoting at `slot`.
+    pub fn load(
+        market: &crate::state::perp_market::PerpMarket,
+        oracle_price_data: OraclePriceData,
+        slot: u64,
+        validity_guard_rails: &crate::state::state::ValidityGuardRails,
+    ) -> VelocityResult<Self> {
+        let mm_oracle =
+            market.get_mm_oracle_price_data(oracle_price_data, slot, validity_guard_rails)?;
+        let oracle_validity =
+            crate::vlp::amm::refresh::compute_amm_refresh_validity_with_guard_rails(
+                market,
+                &mm_oracle,
+                validity_guard_rails,
+            )?;
+        Ok(MarketQuoteInputs {
+            stats: market.market_stats,
+            safe_oracle: mm_oracle.get_safe_oracle_price_data(),
+            mm_oracle,
+            oracle_validity,
+            oracle_price: oracle_price_data.price,
+            tick_size: market.order_tick_size,
+            step_size: market.order_step_size,
+            market_status: market.status,
+            market_config: market.market_config,
+            sanitize_clamp_denominator: market.get_sanitize_clamp_denominator()?,
+        })
+    }
+
+    /// The context quoting reads from. Borrows the snapshot, so it stays valid
+    /// while the caller holds the market's AMM mutably.
+    pub fn ctx(&self, slot: u64) -> QuoteContext<'_> {
+        QuoteContext {
+            stats: &self.stats,
+            oracle: &self.safe_oracle,
+            mm_oracle: Some(&self.mm_oracle),
+            oracle_validity: self.oracle_validity,
+            fee_budget: 0,
+            tick: self.tick_size,
+            step_size: self.step_size,
+            slot,
+            base_precision: crate::math::constants::BASE_PRECISION_U64,
+            market_status: self.market_status,
+            market_config: self.market_config,
+        }
+    }
+}

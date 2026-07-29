@@ -75,6 +75,9 @@ velocity-admin quoter set-approved <quoter> <true|false> [--admin <pk>]    # war
 velocity-admin quoter set-priority <quoter> <0-255> [--admin <pk>]         # warm/cold admin; lower fills first, pro rata within a tier
 velocity-admin quoter set-market-clob <market> <quoter> <clobMarket> <keeperPaymentLamports> [expireFallbackSlots] [--admin <pk>]  # warm/cold admin; names the mandatory-baseline CLOB and stands up (or re-prices) the market's relay crank conditions + reservoir
 
+velocity-admin clob-market init <market> <keeperPaymentLamports> --clob-program <pk> [--capacity <n>] [--fund-reservoir <lamports>] [--relay-program <pk>|none] [book config flags]  # one-shot bring-up: book create+init, quoter register+approve, canonical attach (creates crank conditions), relay watch; warm/cold admin, direct-send only
+velocity-admin clob-market register-watch <market> [--relay-program <pk>]  # register a relay WatchV0 over an existing market's conditions block; permissionless, direct-send only
+
 velocity-admin if stake <market> <amount> [--authority <pk>] [--user-token-account <pk>]  # inits the stake account if missing
 
 velocity-admin program upgrade --buffer <pk> [--spill <pk>] [--dry-run]  # propose an upgrade from an existing on-chain buffer

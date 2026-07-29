@@ -3095,7 +3095,7 @@ pub mod fulfill_order {
     }
 
     #[test]
-    #[ignore = "the router splits by price and tier in one pass where the legacy loop allocated AMM-then-maker sequentially, so the same total fill divides a hair differently: AMM fee 50020001 vs 50022513 (0.005%), maker quote one lamport, and filler-volume attribution when the maker is also the filler. Taker outcome is identical. Needs the maker-is-filler aliasing checked before repinning."]
+    #[ignore = "filler-reward attribution differs on the router path, by construction. settle_amm_house_fill still carries the legacy fallback (orders.rs: `else if !is_jit_within_match { credit_filler_perp_pnl(maker_user, maker_stats, ..) }`) which credited the MAKER when no filler account was passed -- reachable in the legacy loop because the AMM JIT-ed *inside* a Match step, so a maker was in scope. The router settles the vAMM leg separately with maker=None, so it can never fire, and this test reads 0 filler_volume_30d instead of 50251257. Design call needed, not a repin: a router fill can span several makers, so \"the maker\" is ambiguous -- credit the largest allocation, drop the reward (and stop charging the taker for it), or require a filler account. The AMM/maker split also moves a hair (AMM fee 50020001 vs 50022513, maker quote one lamport); taker outcome is identical."]
     fn fulfill_with_amm_and_maker() {
         let now = 0_i64;
         let slot = 0_u64;
@@ -5904,7 +5904,7 @@ pub mod fulfill_order {
     }
 
     #[test]
-    #[ignore = "the router splits by price and tier in one pass where the legacy loop allocated AMM-then-maker sequentially, so the same total fill divides a hair differently: AMM fee 50020001 vs 50022513 (0.005%), maker quote one lamport, and filler-volume attribution when the maker is also the filler. Taker outcome is identical. Needs the maker-is-filler aliasing checked before repinning."]
+    #[ignore = "filler-reward attribution differs on the router path, by construction. settle_amm_house_fill still carries the legacy fallback (orders.rs: `else if !is_jit_within_match { credit_filler_perp_pnl(maker_user, maker_stats, ..) }`) which credited the MAKER when no filler account was passed -- reachable in the legacy loop because the AMM JIT-ed *inside* a Match step, so a maker was in scope. The router settles the vAMM leg separately with maker=None, so it can never fire, and this test reads 0 filler_volume_30d instead of 50251257. Design call needed, not a repin: a router fill can span several makers, so \"the maker\" is ambiguous -- credit the largest allocation, drop the reward (and stop charging the taker for it), or require a filler account. The AMM/maker split also moves a hair (AMM fee 50020001 vs 50022513, maker quote one lamport); taker outcome is identical."]
     fn fulfill_with_amm_when_maker_is_filler() {
         let now = 0_i64;
         let slot = 0_u64;

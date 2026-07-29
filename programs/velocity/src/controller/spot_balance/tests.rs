@@ -2170,3 +2170,148 @@ fn lending_interest_carveout_three_way_split() {
     // the combined corruption tripwire must accept the post-accrual state
     crate::math::spot_withdraw::validate_spot_balances(&spot_market).unwrap();
 }
+
+/// A market shaped like `lending_interest_carveout_three_way_split`'s, sized so a one-hour
+/// accrual comfortably clears every rounding floor. Used by the two `last_interest_ts`
+/// regression tests below; `borrow_balance` is set per-case.
+fn interest_test_market() -> SpotMarket {
+    SpotMarket {
+        market_index: 0,
+        oracle_source: OracleSource::QuoteAsset,
+        cumulative_deposit_interest: SPOT_CUMULATIVE_INTEREST_PRECISION,
+        cumulative_borrow_interest: SPOT_CUMULATIVE_INTEREST_PRECISION,
+        decimals: 6,
+        initial_asset_weight: SPOT_WEIGHT_PRECISION,
+        maintenance_asset_weight: SPOT_WEIGHT_PRECISION,
+        deposit_balance: 1000 * SPOT_BALANCE_PRECISION,
+        borrow_balance: 0,
+        deposit_token_twap: 1000 * QUOTE_PRECISION_U64,
+        optimal_utilization: SPOT_UTILIZATION_PRECISION_U32 / 2,
+        optimal_borrow_rate: SPOT_RATE_PRECISION_U32 / 10, // 10% APR at optimal
+        max_borrow_rate: SPOT_RATE_PRECISION_U32,
+        status: MarketStatus::Active,
+        ..SpotMarket::default()
+    }
+}
+
+/// finding #117: a zero-borrow epoch must not stay on `last_interest_ts`. While utilization is
+/// zero no interest is owed, but the interval was left on the clock, so the first accrual after
+/// a borrow appeared billed that whole epoch at the newly non-zero rate. Any lender could farm
+/// it: deposit into an idle market, wait for the first borrower, crank, collect.
+#[test]
+fn idle_zero_utilization_epoch_is_not_billed_to_the_first_borrower() {
+    const THIRTY_DAYS: i64 = 60 * 60 * 24 * 30;
+    const ONE_HOUR_SECS: i64 = 3600;
+
+    let base = interest_test_market();
+
+    // 30 days pass with deposits but no borrows.
+    let mut idled = base;
+    update_spot_market_cumulative_interest(&mut idled, None, THIRTY_DAYS, false).unwrap();
+
+    // Nothing accrued (nothing was owed) ...
+    assert_eq!(
+        idled.cumulative_borrow_interest,
+        SPOT_CUMULATIVE_INTEREST_PRECISION
+    );
+    assert_eq!(
+        idled.cumulative_deposit_interest,
+        SPOT_CUMULATIVE_INTEREST_PRECISION
+    );
+    // ... and the idle span is off the clock, so it can never be billed later.
+    assert_eq!(idled.last_interest_ts, THIRTY_DAYS as u64);
+
+    // The first borrow appears, then one hour of interest accrues.
+    idled.borrow_balance = 500 * SPOT_BALANCE_PRECISION;
+    update_spot_market_cumulative_interest(&mut idled, None, THIRTY_DAYS + ONE_HOUR_SECS, false)
+        .unwrap();
+    let billed_after_idle = idled
+        .cumulative_borrow_interest
+        .safe_sub(SPOT_CUMULATIVE_INTEREST_PRECISION)
+        .unwrap();
+
+    // Control: identical balances, the same one hour, no preceding idle epoch.
+    let mut control = base;
+    control.borrow_balance = 500 * SPOT_BALANCE_PRECISION;
+    update_spot_market_cumulative_interest(&mut control, None, ONE_HOUR_SECS, false).unwrap();
+    let billed_one_hour = control
+        .cumulative_borrow_interest
+        .safe_sub(SPOT_CUMULATIVE_INTEREST_PRECISION)
+        .unwrap();
+
+    assert!(billed_one_hour > 0, "control accrued no borrow interest");
+    assert_eq!(
+        billed_after_idle, billed_one_hour,
+        "the 30-day idle epoch was billed to the first borrower"
+    );
+}
+
+/// finding #115: while interest updates are paused, deposits and withdrawals stay callable, so
+/// leaving the paused span on `last_interest_ts` meant the first accrual after resume applied
+/// the entire window to whatever balances existed at that moment — a deposit made just before
+/// the unpause earned interest for time it was not deposited. A pause stops accrual for the
+/// window; it does not defer it onto a different set of balances.
+#[test]
+fn paused_interest_interval_is_dropped_not_deferred() {
+    const ONE_DAY: i64 = 60 * 60 * 24;
+    const ONE_HOUR_SECS: i64 = 3600;
+
+    let mut base = interest_test_market();
+    base.borrow_balance = 500 * SPOT_BALANCE_PRECISION;
+
+    // Baseline: what one hour of interest costs on these balances.
+    let mut control = base;
+    update_spot_market_cumulative_interest(&mut control, None, ONE_HOUR_SECS, false).unwrap();
+    let billed_one_hour = control
+        .cumulative_borrow_interest
+        .safe_sub(SPOT_CUMULATIVE_INTEREST_PRECISION)
+        .unwrap();
+    assert!(billed_one_hour > 0, "control accrued no borrow interest");
+
+    // Exchange-wide funding pause, observed across a day, then an hour of live accrual.
+    let mut globally_paused = base;
+    update_spot_market_cumulative_interest(&mut globally_paused, None, ONE_DAY, true).unwrap();
+    assert_eq!(
+        globally_paused.cumulative_borrow_interest, SPOT_CUMULATIVE_INTEREST_PRECISION,
+        "interest accrued while paused"
+    );
+    assert_eq!(globally_paused.last_interest_ts, ONE_DAY as u64);
+
+    update_spot_market_cumulative_interest(
+        &mut globally_paused,
+        None,
+        ONE_DAY + ONE_HOUR_SECS,
+        false,
+    )
+    .unwrap();
+    assert_eq!(
+        globally_paused
+            .cumulative_borrow_interest
+            .safe_sub(SPOT_CUMULATIVE_INTEREST_PRECISION)
+            .unwrap(),
+        billed_one_hour,
+        "the paused day was billed after resume"
+    );
+
+    // Same via the market-scoped operation bit rather than the global flag.
+    let mut op_paused = base;
+    op_paused.paused_operations = SpotOperation::UpdateCumulativeInterest as u8;
+    update_spot_market_cumulative_interest(&mut op_paused, None, ONE_DAY, false).unwrap();
+    assert_eq!(
+        op_paused.cumulative_borrow_interest, SPOT_CUMULATIVE_INTEREST_PRECISION,
+        "interest accrued while the market's op bit was paused"
+    );
+    assert_eq!(op_paused.last_interest_ts, ONE_DAY as u64);
+
+    op_paused.paused_operations = 0;
+    update_spot_market_cumulative_interest(&mut op_paused, None, ONE_DAY + ONE_HOUR_SECS, false)
+        .unwrap();
+    assert_eq!(
+        op_paused
+            .cumulative_borrow_interest
+            .safe_sub(SPOT_CUMULATIVE_INTEREST_PRECISION)
+            .unwrap(),
+        billed_one_hour,
+        "the op-bit-paused day was billed after resume"
+    );
+}

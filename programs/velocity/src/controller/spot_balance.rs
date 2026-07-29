@@ -13,8 +13,9 @@ use {
             },
             safe_math::SafeMath,
             spot_balance::{
-                calculate_accumulated_interest, calculate_utilization, get_interest_token_amount,
-                get_spot_balance, get_token_amount, InterestAccumulated,
+                calculate_accumulated_interest, calculate_spot_market_utilization,
+                calculate_utilization, get_interest_token_amount, get_spot_balance,
+                get_token_amount, InterestAccumulated,
             },
             stats::{calculate_new_twap, calculate_weighted_average},
         },
@@ -134,6 +135,23 @@ pub fn update_spot_market_twap_stats(
     Ok(())
 }
 
+/// Stamp `last_interest_ts` forward to `now` **without** accruing anything.
+///
+/// Used for intervals in which no interest is charged to anyone. This is load-bearing, not
+/// bookkeeping: `calculate_accumulated_interest` bills the entire `now - last_interest_ts`
+/// span at whatever rate prevails when it finally runs, so an interval left un-stamped is
+/// billed retroactively to whoever happens to hold debt later (findings #115, #117).
+///
+/// Never moves the stamp backwards — `now` can trail the stored value (the accrual is also
+/// driven from user instructions, whose `now` comes from their own `Clock`).
+fn stamp_interest_ts_without_accrual(spot_market: &mut SpotMarket, now: i64) -> VelocityResult {
+    if now.cast::<u64>()? > spot_market.last_interest_ts {
+        spot_market.last_interest_ts = now.cast()?;
+    }
+
+    Ok(())
+}
+
 pub fn update_spot_market_cumulative_interest(
     spot_market: &mut SpotMarket,
     oracle_price_data: Option<&OraclePriceData>,
@@ -146,8 +164,17 @@ pub fn update_spot_market_cumulative_interest(
     // threaded in from callers because the global flag lives on `State`, which
     // this controller does not load. TWAP stats still advance so oracle EMAs
     // stay fresh, mirroring the dedicated `update_spot_market_cumulative_interest`
-    // crank; on resume the next accrual covers the full elapsed interval.
+    // crank.
+    //
+    // The clock is stamped forward as the pause is observed, so the paused interval is
+    // dropped rather than deferred. Previously it was left in place and the first accrual
+    // after resume applied the whole paused span to whatever balances existed at that
+    // moment: a deposit made just before the unpause collected interest for time it was not
+    // deposited, and a borrow opened during the pause was charged for time it did not exist
+    // (finding #115). A pause means interest does not accrue for that window — not that it
+    // accrues and is billed later to a different set of balances.
     if funding_paused || spot_market.is_operation_paused(SpotOperation::UpdateCumulativeInterest) {
+        stamp_interest_ts_without_accrual(spot_market, now)?;
         update_spot_market_twap_stats(spot_market, oracle_price_data, now)?;
         return Ok(());
     }
@@ -232,6 +259,24 @@ pub fn update_spot_market_cumulative_interest(
                 max_borrow_rate: spot_market.max_borrow_rate,
             });
         }
+    } else if calculate_spot_market_utilization(spot_market)? == 0 {
+        // Nothing is borrowed, so no interest is owed by anyone for this interval — the same
+        // condition on which `calculate_accumulated_interest` returns zero. Stamp the clock
+        // so the idle span leaves the ledger.
+        //
+        // Left un-stamped it stayed on the clock for the whole zero-borrow epoch, and the
+        // first accrual after a borrow appeared billed that entire span at the newly non-zero
+        // rate. Any lender could farm it: deposit into an idle market, wait for the first
+        // borrower, crank the accrual, and collect interest the fresh debt never owed
+        // (finding #117). Every borrow-creating path cranks this function *before* touching
+        // balances, so the stamp is always current at the instant debt appears and a new
+        // borrow can only ever be charged from its own creation.
+        //
+        // Deliberately narrow: only the genuinely-nothing-owed case stamps. When utilization
+        // is non-zero but the interval is too short for the split to clear a unit, the clock
+        // is left alone so the accrual is deferred, not forgiven — stamping there would let
+        // frequent cranking zero out borrowers' interest, the mirror image of #127.
+        stamp_interest_ts_without_accrual(spot_market, now)?;
     }
 
     update_spot_market_twap_stats(spot_market, oracle_price_data, now)?;

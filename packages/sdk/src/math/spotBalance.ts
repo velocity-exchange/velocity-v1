@@ -620,7 +620,13 @@ export function calculateBorrowRate(
  * `calculate_accumulated_interest`. This is a point-in-time estimate for display purposes only —
  * the actual on-chain update (`update_spot_market_cumulative_interest`) re-derives the rate from
  * utilization at settlement time (same as this function calling `calculateInterestRate(bank)` with
- * no delta), and only runs at all if `deposit_interest > 0 && borrow_interest > 1`. Borrow interest
+ * no delta), and only runs at all if `deposit_interest > 0 && borrow_interest > 1`.
+ *
+ * Note the program also advances `lastInterestTs` **without** accruing for intervals in which no
+ * interest is owed — while the market's `UpdateCumulativeInterest` op (or the exchange-wide funding
+ * pause) is set, and while utilization is zero. So a projection from `bank.lastInterestTs` never
+ * spans a paused or zero-borrow window; those intervals are dropped on chain rather than billed
+ * later to whatever balances exist at the time (findings #115, #117). Borrow interest
  * is always rounded up by 1 (added unconditionally), matching the program's lender-favoring
  * rounding, and is credited to `cumulativeBorrowInterest` in full. **`depositInterest` here is the
  * gross pre-carveout amount** — on-chain, `insuranceFund.ifFeeFactor` and `protocolFeeFactor`

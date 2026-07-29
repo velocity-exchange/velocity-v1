@@ -1378,7 +1378,7 @@ export class AdminClient extends VelocityClient {
 			targetPrice,
 			new BN(1000),
 			'quote',
-			undefined //todo
+			this.getMMOracleDataForPerpMarket(perpMarketIndex)
 		);
 
 		const [newQuoteAssetAmount, newBaseAssetAmount] =

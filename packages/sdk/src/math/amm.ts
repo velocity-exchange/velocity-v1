@@ -1258,18 +1258,51 @@ export function calculateSpreadBN(
 }
 
 /**
+ * Applies the market's manual `ammSpreadAdjustment` (%, grow if positive / shrink if
+ * negative, floored at 1) to an already-computed spread pair. Mirrors the tail of
+ * `update_spreads` in `vlp/amm/math/spread.rs`, which applies it to the frozen-curve
+ * branch as well as the dynamic one, and rounds as integer math (ceil when growing,
+ * floor when shrinking).
+ * @param amm AMM state holding `ammSpreadAdjustment`.
+ * @param longSpread Long-side spread before adjustment.
+ * @param shortSpread Short-side spread before adjustment.
+ * @returns `[longSpread, shortSpread]` after adjustment.
+ */
+function applyAmmSpreadAdjustment(
+	amm: AMM,
+	longSpread: number,
+	shortSpread: number
+): [number, number] {
+	if (amm.ammSpreadAdjustment > 0) {
+		const grow = (spread: number) =>
+			Math.max(spread + Math.ceil((spread * amm.ammSpreadAdjustment) / 100), 1);
+		return [grow(longSpread), grow(shortSpread)];
+	}
+	if (amm.ammSpreadAdjustment < 0) {
+		const shrink = (spread: number) =>
+			Math.max(
+				spread - Math.floor((spread * -amm.ammSpreadAdjustment) / 100),
+				1
+			);
+		return [shrink(longSpread), shrink(shortSpread)];
+	}
+	return [longSpread, shortSpread];
+}
+
+/**
  * Convenience wrapper around `calculateSpreadBN` that derives its lower-level inputs
  * (reserve price, oracle-vs-reserve spread, live oracle std, and confidence interval) from
  * `amm`/`marketStats`/`oraclePriceData` directly, then applies the market's manual
- * `ammSpreadAdjustment` (%, shrink if negative/grow if positive, floored at 1) on top. Returns
- * `[baseSpread/2, baseSpread/2]` unchanged (no dynamic widening) if `baseSpread` or
- * `curveUpdateIntensity` is zero.
+ * `ammSpreadAdjustment` (%, shrink if negative/grow if positive, floored at 1) on top.
+ * Mirrors `update_spreads` in `vlp/amm/math/spread.rs`: the dynamic spread is computed
+ * whenever `curveUpdateIntensity` is nonzero, and only a zero `curveUpdateIntensity`
+ * falls back to `[baseSpread/2, baseSpread/2]` (truncated).
  * @param amm AMM state to price the spread for.
  * @param marketStats Market stats needed for volatility/funding-bias inputs.
- * @param oraclePriceData Current oracle price data; required unless `baseSpread`/`curveUpdateIntensity` are both zero.
+ * @param oraclePriceData Current oracle price data; required unless `curveUpdateIntensity` is zero.
  * @param now Current unix timestamp (seconds); defaults to wall-clock time if omitted.
  * @param reservePrice Current AMM reserve price, PRICE_PRECISION (1e6); computed from `amm`'s reserves if omitted.
- * @throws if `oraclePriceData` is omitted while `baseSpread` and `curveUpdateIntensity` are both nonzero.
+ * @throws if `oraclePriceData` is omitted while `curveUpdateIntensity` is nonzero.
  * @returns `[longSpread, shortSpread]`, both BID_ASK_SPREAD_PRECISION (1e6) fraction-of-price units.
  */
 export function calculateSpread(
@@ -1279,13 +1312,20 @@ export function calculateSpread(
 	now?: BN,
 	reservePrice?: BN
 ): [number, number] {
-	if (amm.baseSpread == 0 || amm.curveUpdateIntensity == 0) {
-		return [amm.baseSpread / 2, amm.baseSpread / 2];
+	// On chain the dynamic spread is computed whenever curveUpdateIntensity > 0; a
+	// baseSpread of 0 does NOT disable it, it only lowers the floor that the vol
+	// spread is maxed against. Short-circuiting on baseSpread == 0 made the SDK
+	// report a zero-width vAMM spread on markets configured with baseSpread 0,
+	// while the program was quoting an inventory-skewed spread of >10%.
+	if (amm.curveUpdateIntensity == 0) {
+		// integer division on chain: `base_spread.safe_div(2)`
+		const halfBaseSpread = Math.floor(amm.baseSpread / 2);
+		return applyAmmSpreadAdjustment(amm, halfBaseSpread, halfBaseSpread);
 	}
 
 	if (!oraclePriceData) {
 		throw new Error(
-			'calculateSpread: oraclePriceData is required when baseSpread and curveUpdateIntensity are nonzero'
+			'calculateSpread: oraclePriceData is required when curveUpdateIntensity is nonzero'
 		);
 	}
 
@@ -1341,30 +1381,7 @@ export function calculateSpread(
 		marketStats.lastFundingOracleTwap,
 		amm.fundingBiasSensitivity
 	);
-	let longSpread = spreads[0];
-	let shortSpread = spreads[1];
-
-	if (amm.ammSpreadAdjustment > 0) {
-		longSpread = Math.max(
-			longSpread + (longSpread * amm.ammSpreadAdjustment) / 100,
-			1
-		);
-		shortSpread = Math.max(
-			shortSpread + (shortSpread * amm.ammSpreadAdjustment) / 100,
-			1
-		);
-	} else if (amm.ammSpreadAdjustment < 0) {
-		longSpread = Math.max(
-			longSpread - (longSpread * -amm.ammSpreadAdjustment) / 100,
-			1
-		);
-		shortSpread = Math.max(
-			shortSpread - (shortSpread * -amm.ammSpreadAdjustment) / 100,
-			1
-		);
-	}
-
-	return [longSpread, shortSpread];
+	return applyAmmSpreadAdjustment(amm, spreads[0], spreads[1]);
 }
 
 /**

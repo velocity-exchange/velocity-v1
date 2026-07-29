@@ -618,3 +618,25 @@ export async function getLpPoolTokenTokenAccountPublicKey(
 ): Promise<PublicKey> {
 	return await getAssociatedTokenAddress(lpPoolTokenMint, authority, true);
 }
+
+/**
+ * Derives a perp market's `ClobCrankConditionsV0` PDA (the relay crank
+ * conditions block + keeper-payment reservoir, created when a CLOB is
+ * attached via `updatePerpMarketClobQuoter`) from seeds
+ * `["clob_crank_conditions", marketIndex as u16 LE]`.
+ * @param programId - Deployed velocity program id.
+ * @param marketIndex - Perp market index.
+ * @returns The `ClobCrankConditionsV0` account's public key.
+ */
+export function getClobCrankConditionsPublicKey(
+	programId: PublicKey,
+	marketIndex: number
+): PublicKey {
+	return PublicKey.findProgramAddressSync(
+		[
+			Buffer.from(anchor.utils.bytes.utf8.encode('clob_crank_conditions')),
+			new anchor.BN(marketIndex).toArrayLike(Buffer, 'le', 2),
+		],
+		programId
+	)[0];
+}

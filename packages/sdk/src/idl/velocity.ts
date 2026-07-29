@@ -1183,7 +1183,12 @@ export type Velocity = {
         },
         {
           "name": "authority",
-          "signer": true
+          "docs": [
+            "the constraint below); in program-keeper mode it is only the lamport",
+            "payout target — relay's `KEEPER_PLACEHOLDER` slot — and no signature",
+            "is required."
+          ],
+          "writable": true
         },
         {
           "name": "filler",
@@ -1225,6 +1230,50 @@ export type Velocity = {
         },
         {
           "name": "velocitySigner"
+        },
+        {
+          "name": "crankConditions",
+          "docs": [
+            "The market's relay conditions account: the expiry-hint host and the",
+            "lamport reservoir. Optional so signed keepers can crank markets whose",
+            "conditions were never initialized; required in program-keeper mode."
+          ],
+          "writable": true,
+          "optional": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  99,
+                  108,
+                  111,
+                  98,
+                  95,
+                  99,
+                  114,
+                  97,
+                  110,
+                  107,
+                  95,
+                  99,
+                  111,
+                  110,
+                  100,
+                  105,
+                  116,
+                  105,
+                  111,
+                  110,
+                  115
+                ]
+              },
+              {
+                "kind": "arg",
+                "path": "marketIndex"
+              }
+            ]
+          }
         }
       ],
       "args": [
@@ -1260,7 +1309,12 @@ export type Velocity = {
         },
         {
           "name": "authority",
-          "signer": true
+          "docs": [
+            "the constraint below); in program-keeper mode it is only the lamport",
+            "payout target — relay's `KEEPER_PLACEHOLDER` slot — and no signature",
+            "is required."
+          ],
+          "writable": true
         },
         {
           "name": "filler",
@@ -1302,6 +1356,50 @@ export type Velocity = {
         },
         {
           "name": "velocitySigner"
+        },
+        {
+          "name": "crankConditions",
+          "docs": [
+            "The market's relay conditions account: the expiry-hint host and the",
+            "lamport reservoir. Optional so signed keepers can crank markets whose",
+            "conditions were never initialized; required in program-keeper mode."
+          ],
+          "writable": true,
+          "optional": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  99,
+                  108,
+                  111,
+                  98,
+                  95,
+                  99,
+                  114,
+                  97,
+                  110,
+                  107,
+                  95,
+                  99,
+                  111,
+                  110,
+                  100,
+                  105,
+                  116,
+                  105,
+                  111,
+                  110,
+                  115
+                ]
+              },
+              {
+                "kind": "arg",
+                "path": "marketIndex"
+              }
+            ]
+          }
         }
       ],
       "args": [
@@ -6201,6 +6299,52 @@ export type Velocity = {
         },
         {
           "name": "velocitySigner"
+        },
+        {
+          "name": "crankConditions",
+          "docs": [
+            "The market's relay conditions account, so an expiring placement",
+            "min-folds its `max_ts` into the expire condition's `wake_ts` hint.",
+            "Optional — placement must not brick on a market whose conditions were",
+            "never initialized, and a missed hint is caught by the fallback poll",
+            "condition (latency, not liveness)."
+          ],
+          "writable": true,
+          "optional": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  99,
+                  108,
+                  111,
+                  98,
+                  95,
+                  99,
+                  114,
+                  97,
+                  110,
+                  107,
+                  95,
+                  99,
+                  111,
+                  110,
+                  100,
+                  105,
+                  116,
+                  105,
+                  111,
+                  110,
+                  115
+                ]
+              },
+              {
+                "kind": "arg",
+                "path": "params.market_index"
+              }
+            ]
+          }
         }
       ],
       "args": [
@@ -7162,6 +7306,86 @@ export type Velocity = {
           "type": "u16"
         }
       ]
+    },
+    {
+      "name": "resolveClobCrankEvict",
+      "docs": [
+        "Relay resolver for the evict condition. Meant to be simulated, not",
+        "landed: stages the executor call and returns a response pointer."
+      ],
+      "discriminator": [
+        192,
+        3,
+        104,
+        190,
+        54,
+        59,
+        95,
+        210
+      ],
+      "accounts": [
+        {
+          "name": "crankConditions",
+          "docs": [
+            "Writable only because the payload is staged in its scratch region;",
+            "the instruction is otherwise read-only and only ever simulated."
+          ],
+          "writable": true
+        },
+        {
+          "name": "clobMarket",
+          "docs": [
+            "accounts, same as the executor it stages."
+          ]
+        },
+        {
+          "name": "quoter"
+        },
+        {
+          "name": "state"
+        }
+      ],
+      "args": []
+    },
+    {
+      "name": "resolveClobCrankRemoveExpired",
+      "docs": [
+        "Relay resolver for the expire (and expire-fallback) condition. Meant",
+        "to be simulated, not landed."
+      ],
+      "discriminator": [
+        33,
+        165,
+        79,
+        241,
+        1,
+        84,
+        210,
+        89
+      ],
+      "accounts": [
+        {
+          "name": "crankConditions",
+          "docs": [
+            "Writable only because the payload is staged in its scratch region;",
+            "the instruction is otherwise read-only and only ever simulated."
+          ],
+          "writable": true
+        },
+        {
+          "name": "clobMarket",
+          "docs": [
+            "accounts, same as the executor it stages."
+          ]
+        },
+        {
+          "name": "quoter"
+        },
+        {
+          "name": "state"
+        }
+      ],
+      "args": []
     },
     {
       "name": "resolvePerpBankruptcy",
@@ -10355,6 +10579,10 @@ export type Velocity = {
       "accounts": [
         {
           "name": "admin",
+          "docs": [
+            "Also pays the conditions account's rent on first attach."
+          ],
+          "writable": true,
           "signer": true
         },
         {
@@ -10366,9 +10594,76 @@ export type Velocity = {
         },
         {
           "name": "quoter"
+        },
+        {
+          "name": "clobMarket",
+          "docs": [
+            "accounts in the handler; the evict condition's change-watch points at",
+            "its book counts."
+          ]
+        },
+        {
+          "name": "crankConditions",
+          "docs": [
+            "The market's relay conditions + keeper reservoir, stood up (or",
+            "re-priced) as part of the attach so a new market needs no separate",
+            "crank ceremony."
+          ],
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  99,
+                  108,
+                  111,
+                  98,
+                  95,
+                  99,
+                  114,
+                  97,
+                  110,
+                  107,
+                  95,
+                  99,
+                  111,
+                  110,
+                  100,
+                  105,
+                  116,
+                  105,
+                  111,
+                  110,
+                  115
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "perpMarket"
+              }
+            ]
+          }
+        },
+        {
+          "name": "rent",
+          "address": "SysvarRent111111111111111111111111111111111"
+        },
+        {
+          "name": "systemProgram",
+          "address": "11111111111111111111111111111111"
         }
       ],
-      "args": []
+      "args": [
+        {
+          "name": "keeperPaymentLamports",
+          "type": "u64"
+        },
+        {
+          "name": "expireFallbackSlots",
+          "type": "u64"
+        }
+      ]
     },
     {
       "name": "updatePerpMarketConcentrationCoef",
@@ -14676,6 +14971,189 @@ export type Velocity = {
       ]
     },
     {
+      "name": "withdrawProtocolUserDeposit",
+      "discriminator": [
+        148,
+        218,
+        82,
+        85,
+        187,
+        96,
+        44,
+        87
+      ],
+      "accounts": [
+        {
+          "name": "state"
+        },
+        {
+          "name": "payer",
+          "writable": true,
+          "signer": true
+        },
+        {
+          "name": "authority",
+          "signer": true
+        },
+        {
+          "name": "protocolUser",
+          "writable": true
+        },
+        {
+          "name": "spotMarket",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  115,
+                  112,
+                  111,
+                  116,
+                  95,
+                  109,
+                  97,
+                  114,
+                  107,
+                  101,
+                  116
+                ]
+              },
+              {
+                "kind": "arg",
+                "path": "marketIndex"
+              }
+            ]
+          }
+        },
+        {
+          "name": "spotMarketVault",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  115,
+                  112,
+                  111,
+                  116,
+                  95,
+                  109,
+                  97,
+                  114,
+                  107,
+                  101,
+                  116,
+                  95,
+                  118,
+                  97,
+                  117,
+                  108,
+                  116
+                ]
+              },
+              {
+                "kind": "arg",
+                "path": "marketIndex"
+              }
+            ]
+          }
+        },
+        {
+          "name": "mint",
+          "relations": [
+            "spotMarketVault"
+          ]
+        },
+        {
+          "name": "recipient"
+        },
+        {
+          "name": "recipientTokenAccount",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "account",
+                "path": "recipient"
+              },
+              {
+                "kind": "account",
+                "path": "tokenProgram"
+              },
+              {
+                "kind": "account",
+                "path": "mint"
+              }
+            ],
+            "program": {
+              "kind": "const",
+              "value": [
+                140,
+                151,
+                37,
+                143,
+                78,
+                36,
+                137,
+                241,
+                187,
+                61,
+                16,
+                41,
+                20,
+                142,
+                13,
+                131,
+                11,
+                90,
+                19,
+                153,
+                218,
+                255,
+                16,
+                132,
+                4,
+                142,
+                123,
+                216,
+                219,
+                233,
+                248,
+                89
+              ]
+            }
+          }
+        },
+        {
+          "name": "tokenProgram"
+        },
+        {
+          "name": "velocitySigner"
+        },
+        {
+          "name": "systemProgram",
+          "address": "11111111111111111111111111111111"
+        },
+        {
+          "name": "associatedTokenProgram",
+          "address": "ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL"
+        }
+      ],
+      "args": [
+        {
+          "name": "marketIndex",
+          "type": "u16"
+        },
+        {
+          "name": "amount",
+          "type": "u64"
+        }
+      ]
+    },
+    {
       "name": "zeroMmOracleFields",
       "discriminator": [
         192,
@@ -14728,6 +15206,19 @@ export type Velocity = {
         54,
         214,
         247
+      ]
+    },
+    {
+      "name": "clobCrankConditionsV0",
+      "discriminator": [
+        192,
+        236,
+        226,
+        61,
+        136,
+        80,
+        33,
+        74
       ]
     },
     {
@@ -15198,6 +15689,19 @@ export type Velocity = {
         11,
         45,
         149
+      ]
+    },
+    {
+      "name": "protocolUserWithdrawRecord",
+      "discriminator": [
+        90,
+        146,
+        237,
+        102,
+        44,
+        121,
+        96,
+        192
       ]
     },
     {
@@ -17155,6 +17659,11 @@ export type Velocity = {
       "code": 6369,
       "name": "invalidQuoterAuthority",
       "msg": "Signer does not control this quoter registry entry"
+    },
+    {
+      "code": 6370,
+      "name": "insufficientCrankReservoir",
+      "msg": "CLOB crank condition account cannot cover the keeper payment"
     }
   ],
   "types": [
@@ -17908,6 +18417,80 @@ export type Velocity = {
               "defined": {
                 "name": "clobOrderRefV0"
               }
+            }
+          }
+        ]
+      }
+    },
+    {
+      "name": "clobCrankConditionsV0",
+      "serialization": "bytemuckunsafe",
+      "repr": {
+        "kind": "c"
+      },
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "block",
+            "docs": [
+              "The relay condition block, read in place by turners and rewritten in",
+              "place by velocity. First field, so it sits at the 8-aligned offset 8."
+            ],
+            "type": {
+              "array": [
+                "u8",
+                856
+              ]
+            }
+          },
+          {
+            "name": "staging",
+            "docs": [
+              "Scratch the resolvers stage their `ResolvedCrankV0` into. Only ever",
+              "written under simulation; on-chain contents are meaningless."
+            ],
+            "type": {
+              "array": [
+                "u8",
+                512
+              ]
+            }
+          },
+          {
+            "name": "keeperPaymentLamports",
+            "docs": [
+              "Lamports the executor pays the keeper per crank, mirrored into each",
+              "conditions' `min_payment`. This account doubles as the reservoir those",
+              "lamports come from: relay's `assert_paid_v0` measures the keeper's",
+              "lamport balance, so a crank that moves no lamports cannot express a",
+              "fee, and turners would have no signal to prioritize (or decline) the",
+              "work. Held here rather than in a global PDA because the executor",
+              "already has to touch this account to repair the expiry hint — so the",
+              "reservoir costs no extra account in a crank transaction.",
+              "",
+              "Refilled by the maker, not the protocol: the flat removal reward the",
+              "maker pays accrues to a protocol-owned `User`, and a hot role withdraws",
+              "that quote and converts it to SOL to top these reservoirs off. An empty",
+              "reservoir stops cranks rather than silently paying nothing, which is the",
+              "failure mode ops can actually see."
+            ],
+            "type": "u64"
+          },
+          {
+            "name": "marketIndex",
+            "docs": [
+              "The perp market these conditions crank. Also the PDA seed."
+            ],
+            "type": "u16"
+          },
+          {
+            "name": "padding",
+            "type": {
+              "array": [
+                "u8",
+                14
+              ]
             }
           }
         ]
@@ -22832,6 +23415,47 @@ export type Velocity = {
           {
             "name": "amount",
             "type": "u64"
+          },
+          {
+            "name": "recipientTokenAccount",
+            "type": "pubkey"
+          }
+        ]
+      }
+    },
+    {
+      "name": "protocolUserWithdrawRecord",
+      "docs": [
+        "Emitted when the hot fee-withdraw role drains accumulated crank rewards",
+        "from the protocol-owned `User` (`withdraw_protocol_user_deposit`)."
+      ],
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "ts",
+            "docs": [
+              "unix_timestamp of action"
+            ],
+            "type": "i64"
+          },
+          {
+            "name": "spotMarketIndex",
+            "docs": [
+              "the spot market the tokens were drawn from"
+            ],
+            "type": "u16"
+          },
+          {
+            "name": "amount",
+            "type": "u64"
+          },
+          {
+            "name": "protocolUser",
+            "docs": [
+              "the protocol-owned `User` account debited"
+            ],
+            "type": "pubkey"
           },
           {
             "name": "recipientTokenAccount",

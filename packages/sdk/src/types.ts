@@ -435,6 +435,25 @@ export type RouterQuoteBufferV0Account = {
 	levels: QuotedLevelV0[][];
 };
 
+/**
+ * Per-market relay conditions for the CLOB cranks, created when the admin
+ * attaches a CLOB to the market (`updatePerpMarketClobQuoter`). `block` is an
+ * opaque relay-spec condition block read by crank turners; `staging` is
+ * simulation-only scratch the resolvers write staged executor calls into. The
+ * account's own lamport balance is the reservoir that pays keepers
+ * `keeperPaymentLamports` per crank.
+ */
+export type ClobCrankConditionsV0Account = {
+	/** relay-spec condition block bytes (header + 3 conditions), parsed by relay tooling, not the SDK */
+	block: number[];
+	/** resolver staging scratch — meaningless on chain */
+	staging: number[];
+	/** lamports paid to the keeper per crank, drawn from this account's balance */
+	keeperPaymentLamports: BN;
+	marketIndex: number;
+	padding: number[];
+};
+
 /** Trigger-order condition on `Order.triggerCondition`. `ABOVE`/`BELOW` are the pending (not-yet-triggered) states; `TRIGGERED_ABOVE`/`TRIGGERED_BELOW` record that the condition has already fired, so the order is now live for filling. */
 export class OrderTriggerCondition {
 	static readonly ABOVE = { above: {} };
@@ -2377,6 +2396,18 @@ export type ProtocolFeeWithdrawRecord = {
 	spotMarketIndex: number;
 	/** spot market token-mint precision */
 	amount: BN;
+	recipientTokenAccount: PublicKey;
+};
+
+/** Emitted when the hot fee-withdraw role drains settled crank rewards from the protocol-owned `User` (`withdrawProtocolUserDeposit`). */
+export type ProtocolUserWithdrawRecord = {
+	ts: BN;
+	/** the spot market the tokens were drawn from */
+	spotMarketIndex: number;
+	/** spot market token-mint precision */
+	amount: BN;
+	/** the protocol-owned `User` account debited */
+	protocolUser: PublicKey;
 	recipientTokenAccount: PublicKey;
 };
 

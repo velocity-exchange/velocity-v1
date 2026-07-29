@@ -11,8 +11,8 @@
 //! condition watching foreign CLOB bytes is native to the spec — nothing is
 //! mirrored.
 //!
-//! Two conditions per market, in fixed slots so the resolver can address them
-//! by index:
+//! Three conditions per market, in fixed slots so the resolver can address
+//! them by index:
 //!
 //! - [`CLOB_CRANK_EVICT`] — `WakeKind::OnAccountChange` over the CLOB market's
 //!   `bid_count` / `ask_count`, so a turner wakes when the book grows toward
@@ -21,6 +21,18 @@
 //!   placement (`place_clob_order`), so it maintains a min-over-inserts
 //!   `wake_ts` hint here as it places; the executor recomputes the true value
 //!   as it works, repairing the hint.
+//! - [`CLOB_CRANK_EXPIRE_FALLBACK`] — `WakeKind::EverySlots`, the same
+//!   resolver/executor as the expire condition. The hint above is best-effort:
+//!   `place_clob_order` takes the conditions account as an *optional* account
+//!   (placement must not brick on a market whose conditions were never
+//!   initialized), so an expiring placement that omits it would otherwise be
+//!   work with no wake — the liveness bug the spec warns about. The fallback
+//!   poll makes a missed hint cost latency, never liveness.
+//!
+//! The account also hosts the `staging` region resolvers write their
+//! `ResolvedCrankV0` (executor account list + args) into. Resolvers are only
+//! ever simulated, so the write never lands on chain — the region is scratch
+//! that costs rent but no write contention.
 //!
 //! The block is held as an opaque byte region accessed through
 //! `relay_spec::read_block` / `read_block_mut` rather than as typed fields.
@@ -32,22 +44,37 @@
 //! `block` is the FIRST field so it begins at offset 8 (past anchor's
 //! discriminator), which is the 8-aligned offset `read_block` requires.
 
-use anchor_lang::prelude::*;
-use relay_spec::bytemuck::Zeroable;
-use relay_spec::{ConditionBlockHeaderV0, BLOCK_HEADER_LEN, CONDITION_LEN};
+use {
+    crate::{error::ErrorCode, msg},
+    anchor_lang::prelude::*,
+    relay_spec::{
+        ConditionBlockHeaderV0, ResolvedCrankV0, ResponsePointerV0, BLOCK_HEADER_LEN, CONDITION_LEN,
+    },
+};
 
-use crate::error::ErrorCode;
-use crate::msg;
+/// PDA seed: `["clob_crank_conditions", market_index]`.
+pub const CLOB_CRANK_CONDITIONS_PDA_SEED: &[u8] = b"clob_crank_conditions";
 
 /// Index of the evict condition (book grew toward its soft cap).
 pub const CLOB_CRANK_EVICT: usize = 0;
 /// Index of the expire condition (an order's `wake_ts` came due).
 pub const CLOB_CRANK_EXPIRE: usize = 1;
+/// Index of the expire fallback (periodic poll catching missed hints).
+pub const CLOB_CRANK_EXPIRE_FALLBACK: usize = 2;
 /// Conditions hosted per market.
-pub const CLOB_CRANK_CONDITIONS: usize = 2;
+pub const CLOB_CRANK_CONDITIONS: usize = 3;
 
 /// Bytes the condition block occupies: header + the fixed condition array.
 pub const CLOB_CRANK_BLOCK_LEN: usize = BLOCK_HEADER_LEN + CLOB_CRANK_CONDITIONS * CONDITION_LEN;
+
+/// Bytes reserved for a resolver's staged `ResolvedCrankV0`. The executor
+/// list is ~11 accounts (33 bytes each) plus a few bytes of args, so half of
+/// this is headroom for the shape to grow.
+pub const CLOB_CRANK_STAGING_LEN: usize = 512;
+
+/// Account-data offset of the staging region (what a `ResponsePointerV0`'s
+/// `offset` is relative to): discriminator + the block.
+pub const CLOB_CRANK_STAGING_OFFSET: usize = 8 + CLOB_CRANK_BLOCK_LEN;
 
 #[account(zero_copy(unsafe))]
 #[derive(Debug)]
@@ -56,7 +83,10 @@ pub struct ClobCrankConditionsV0 {
     /// The relay condition block, read in place by turners and rewritten in
     /// place by velocity. First field, so it sits at the 8-aligned offset 8.
     pub block: [u8; CLOB_CRANK_BLOCK_LEN],
-    /// Lamports the executor pays the keeper per crank, mirrored into both
+    /// Scratch the resolvers stage their `ResolvedCrankV0` into. Only ever
+    /// written under simulation; on-chain contents are meaningless.
+    pub staging: [u8; CLOB_CRANK_STAGING_LEN],
+    /// Lamports the executor pays the keeper per crank, mirrored into each
     /// conditions' `min_payment`. This account doubles as the reservoir those
     /// lamports come from: relay's `assert_paid_v0` measures the keeper's
     /// lamport balance, so a crank that moves no lamports cannot express a
@@ -73,7 +103,7 @@ pub struct ClobCrankConditionsV0 {
     pub keeper_payment_lamports: u64,
     /// The perp market these conditions crank. Also the PDA seed.
     pub market_index: u16,
-    pub padding: [u8; 6],
+    pub padding: [u8; 14],
 }
 
 impl Default for ClobCrankConditionsV0 {
@@ -81,17 +111,18 @@ impl Default for ClobCrankConditionsV0 {
         // `[u8; N]` derives Default only up to N = 32.
         Self {
             block: [0; CLOB_CRANK_BLOCK_LEN],
+            staging: [0; CLOB_CRANK_STAGING_LEN],
             keeper_payment_lamports: 0,
             market_index: 0,
-            padding: [0; 6],
+            padding: [0; 14],
         }
     }
 }
 
 impl ClobCrankConditionsV0 {
-    /// 8 (discriminator) + block + trailing fields. Kept as a const so the
-    /// alignment invariant below is checked at compile time.
-    pub const SIZE: usize = 8 + CLOB_CRANK_BLOCK_LEN + 8 + 2 + 6;
+    /// 8 (discriminator) + block + staging + trailing fields. Kept as a const
+    /// so the alignment invariant below is checked at compile time.
+    pub const SIZE: usize = 8 + CLOB_CRANK_BLOCK_LEN + CLOB_CRANK_STAGING_LEN + 8 + 2 + 14;
 
     /// The block region, for `relay_spec::read_block`.
     pub fn block(&self) -> &[u8] {
@@ -185,6 +216,50 @@ impl ClobCrankConditionsV0 {
             &self.block[start..start + CONDITION_LEN],
         ))
     }
+
+    /// The expire condition's `wake_ts` hint.
+    pub fn expire_wake_ts(&self) -> Result<i64> {
+        Ok(self.read_condition(CLOB_CRANK_EXPIRE)?.wake_ts)
+    }
+
+    /// Min-fold a newly placed order's `max_ts` into the expire hint — the
+    /// cheap, conservative maintenance `place_clob_order` does. Only ever
+    /// moves the wake earlier, so it can never make the hint fire late.
+    pub fn note_expiry(&mut self, max_ts: i64) -> Result<()> {
+        let conditions = relay_spec::read_block_mut(&mut self.block, 0)
+            .map_err(|_| error!(ErrorCode::DefaultError))?;
+        let hint = &mut conditions[CLOB_CRANK_EXPIRE].wake_ts;
+        *hint = (*hint).min(max_ts);
+        Ok(())
+    }
+
+    /// Overwrite the expire hint with a recomputed true minimum (`i64::MAX`
+    /// when no live order expires) — what the crank executor does after a
+    /// removal, so a due hint goes quiet instead of firing forever.
+    pub fn repair_expiry(&mut self, true_min_ts: i64) -> Result<()> {
+        let conditions = relay_spec::read_block_mut(&mut self.block, 0)
+            .map_err(|_| error!(ErrorCode::DefaultError))?;
+        conditions[CLOB_CRANK_EXPIRE].wake_ts = true_min_ts;
+        Ok(())
+    }
+
+    /// Stage a resolver's payload and return the pointer bytes to set as
+    /// return data. `offset` is relative to account data, as the turner reads
+    /// the staged range out of post-simulation account state.
+    pub fn stage(
+        &mut self,
+        resolved: &ResolvedCrankV0,
+    ) -> Result<[u8; relay_spec::RESPONSE_POINTER_LEN]> {
+        let len = resolved.write_into(&mut self.staging).map_err(|e| {
+            msg!(
+                "staging a {}-byte resolved crank failed: {:?}",
+                resolved.encoded_len(),
+                e
+            );
+            error!(ErrorCode::DefaultError)
+        })?;
+        Ok(ResponsePointerV0::new(0, CLOB_CRANK_STAGING_OFFSET as u32, len as u32).to_bytes())
+    }
 }
 
 // The block must start at an 8-aligned offset for `read_block`'s zero-copy
@@ -199,13 +274,18 @@ const _: () = assert!((ClobCrankConditionsV0::SIZE - 8) % 16 == 0);
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use {super::*, relay_spec::bytemuck::Zeroable};
 
     #[test]
     fn size_matches_the_layout_and_the_spec() {
-        assert_eq!(CLOB_CRANK_BLOCK_LEN, 16 + 2 * 280);
-        assert_eq!(ClobCrankConditionsV0::SIZE, 8 + 576 + 16);
-        // the u64 reservoir field must land 8-aligned, right after the block
+        assert_eq!(CLOB_CRANK_BLOCK_LEN, 16 + 3 * 280);
+        assert_eq!(ClobCrankConditionsV0::SIZE, 8 + 856 + 512 + 24);
+        // the staging region must land where the pointer offset says it does
+        assert_eq!(
+            CLOB_CRANK_STAGING_OFFSET,
+            8 + core::mem::offset_of!(ClobCrankConditionsV0, staging)
+        );
+        // the u64 reservoir field must land 8-aligned, past block + staging
         assert_eq!(std::mem::align_of::<ClobCrankConditionsV0>(), 8);
         assert_eq!(
             std::mem::size_of::<ClobCrankConditionsV0>(),
@@ -230,13 +310,56 @@ mod tests {
         assert_eq!(conditions.len(), CLOB_CRANK_CONDITIONS);
         assert_eq!(conditions[CLOB_CRANK_EXPIRE].wake_ts, 1_234);
         assert_eq!(conditions[CLOB_CRANK_EXPIRE].active, 1);
-        // The untouched slot is a zeroed (inactive) condition, not garbage.
+        // The untouched slots are zeroed (inactive) conditions, not garbage.
         assert_eq!(conditions[CLOB_CRANK_EVICT].active, 0);
+        assert_eq!(conditions[CLOB_CRANK_EXPIRE_FALLBACK].active, 0);
 
         assert_eq!(
             acct.read_condition(CLOB_CRANK_EXPIRE).unwrap().wake_ts,
             1_234
         );
+    }
+
+    #[test]
+    fn expiry_hint_min_folds_and_repairs() {
+        let mut acct = ClobCrankConditionsV0::default();
+        acct.init_header().unwrap();
+        let mut condition = relay_spec::ConditionV0::zeroed();
+        condition.wake_ts = i64::MAX;
+        condition.active = 1;
+        acct.write_condition(CLOB_CRANK_EXPIRE, &condition).unwrap();
+
+        acct.note_expiry(5_000).unwrap();
+        assert_eq!(acct.expire_wake_ts().unwrap(), 5_000);
+        // A later expiry never moves the hint back.
+        acct.note_expiry(9_000).unwrap();
+        assert_eq!(acct.expire_wake_ts().unwrap(), 5_000);
+        acct.note_expiry(1_000).unwrap();
+        assert_eq!(acct.expire_wake_ts().unwrap(), 1_000);
+
+        acct.repair_expiry(i64::MAX).unwrap();
+        assert_eq!(acct.expire_wake_ts().unwrap(), i64::MAX);
+    }
+
+    #[test]
+    fn staged_payload_round_trips_through_the_pointer() {
+        let mut acct = ClobCrankConditionsV0::default();
+        acct.init_header().unwrap();
+        let resolved = ResolvedCrankV0 {
+            accounts: (0..11u8)
+                .map(|i| relay_spec::AccountRefV0::writable([i; 32]))
+                .collect(),
+            data: vec![1, 2, 3],
+        };
+        let pointer_bytes = acct.stage(&resolved).unwrap();
+        let pointer = ResponsePointerV0::read(&pointer_bytes).unwrap();
+        assert!(pointer.has_work());
+        assert_eq!(pointer.account_index, 0);
+        assert_eq!(pointer.offset() as usize, CLOB_CRANK_STAGING_OFFSET);
+        // The turner reads [offset..offset+len] of the *account*; simulate
+        // that read against the account's would-be data layout.
+        let staged = &acct.staging[..pointer.len() as usize];
+        assert_eq!(ResolvedCrankV0::read(staged).unwrap(), resolved);
     }
 
     #[test]

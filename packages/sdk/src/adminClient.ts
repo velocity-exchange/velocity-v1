@@ -65,6 +65,7 @@ import {
 	getLpPoolTokenVaultPublicKey,
 	getVelocitySignerPublicKey,
 	getConstituentCorrelationsPublicKey,
+	getUserAccountPublicKeySync,
 } from './addresses/pda';
 import { squareRootBN } from './math/utils';
 import {
@@ -5499,6 +5500,90 @@ export class AdminClient extends VelocityClient {
 					quoteSpotMarket: quoteSpotMarket.pubkey,
 					spotMarketVault: quoteSpotMarket.vault,
 					mint: quoteSpotMarket.mint,
+					recipient,
+					recipientTokenAccount,
+					tokenProgram: tokenProgramId,
+					velocitySigner: this.getSignerPublicKey(),
+					systemProgram: SystemProgram.programId,
+					associatedTokenProgram: ASSOCIATED_TOKEN_PROGRAM_ID,
+				},
+				remainingAccounts,
+			}
+		);
+	}
+
+	/**
+	 * Withdraws settled crank rewards from the protocol-owned `User` (the account whose
+	 * authority is the velocity signer PDA — crank rewards accrue there in program-keeper
+	 * mode) to `state.protocolFeeRecipientPerp`'s ATA for the spot market's mint. Requires
+	 * `HotRole.FeeWithdraw`. Deposit-capped on-chain: the protocol `User` can never be
+	 * flipped into a borrower. Settle the accrued perp quote to deposits first
+	 * (`settlePNL` is permissionless).
+	 * @param marketIndex - Spot market to withdraw the protocol `User`'s deposit from.
+	 * @param amount - Requested amount in the market's token base units (clamped down to the deposit on-chain).
+	 * @param txParams - Optional transaction-building overrides.
+	 * @returns Transaction signature.
+	 */
+	public async withdrawProtocolUserDeposit(
+		marketIndex: number,
+		amount: BN,
+		txParams?: TxParams
+	): Promise<TransactionSignature> {
+		const ix = await this.getWithdrawProtocolUserDepositIx(marketIndex, amount);
+		const tx = await this.buildTransaction(ix, txParams);
+		const { txSig } = await this.sendTransaction(tx, [], this.opts);
+		return txSig;
+	}
+
+	/**
+	 * Builds the `withdrawProtocolUserDeposit` instruction without sending it. The
+	 * protocol `User` is derived as the velocity signer's sub-account 0. See
+	 * `withdrawProtocolUserDeposit`.
+	 * @returns The unsigned `withdrawProtocolUserDeposit` instruction.
+	 */
+	public async getWithdrawProtocolUserDepositIx(
+		marketIndex: number,
+		amount: BN
+	): Promise<TransactionInstruction> {
+		const spotMarket = this.getSpotMarketAccountOrThrow(marketIndex);
+		const tokenProgramId = this.getTokenProgramForSpotMarket(spotMarket);
+		const recipient = this.getStateAccount().protocolFeeRecipientPerp;
+		const recipientTokenAccount = getAssociatedTokenAddressSync(
+			spotMarket.mint,
+			recipient,
+			true,
+			tokenProgramId
+		);
+		const protocolUser = getUserAccountPublicKeySync(
+			this.program.programId,
+			this.getSignerPublicKey(),
+			0
+		);
+
+		const remainingAccounts: {
+			pubkey: PublicKey;
+			isSigner: boolean;
+			isWritable: boolean;
+		}[] = [];
+		if (this.isTransferHook(spotMarket)) {
+			await this.addExtraAccountMetasToRemainingAccounts(
+				spotMarket.mint,
+				remainingAccounts
+			);
+		}
+
+		return await this.program.instruction.withdrawProtocolUserDeposit(
+			marketIndex,
+			amount,
+			{
+				accounts: {
+					state: await this.getStatePublicKey(),
+					payer: this.wallet.publicKey,
+					authority: this.wallet.publicKey,
+					protocolUser,
+					spotMarket: spotMarket.pubkey,
+					spotMarketVault: spotMarket.vault,
+					mint: spotMarket.mint,
 					recipient,
 					recipientTokenAccount,
 					tokenProgram: tokenProgramId,

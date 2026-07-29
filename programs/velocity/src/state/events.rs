@@ -870,3 +870,17 @@ pub struct PerpMarketFeeSweepRecord {
     /// AMM fee provision tokenized into amm.fee_pool (booked at fill)
     pub amm_provision_tokenized: u64,
 }
+
+/// Emitted when the hot fee-withdraw role drains accumulated crank rewards
+/// from the protocol-owned `User` (`withdraw_protocol_user_deposit`).
+#[event]
+pub struct ProtocolUserWithdrawRecord {
+    /// unix_timestamp of action
+    pub ts: i64,
+    /// the spot market the tokens were drawn from
+    pub spot_market_index: u16,
+    pub amount: u64,
+    /// the protocol-owned `User` account debited
+    pub protocol_user: Pubkey,
+    pub recipient_token_account: Pubkey,
+}

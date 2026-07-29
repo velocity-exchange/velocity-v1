@@ -26,6 +26,36 @@ pub fn can_sign_for_user(user: &AccountLoader<User>, signer: &Signer) -> anchor_
     })
 }
 
+/// A `User` owned by the protocol itself: its authority is the velocity
+/// signer PDA, which no one can sign for. Creatable through the normal
+/// `initialize_user` path (the authority there is unchecked); the crank
+/// rewards accrue to it and only the hot-role withdraw can take value out.
+pub fn is_protocol_user(
+    user: &AccountLoader<User>,
+    state: &AccountLoader<State>,
+) -> anchor_lang::Result<bool> {
+    Ok(user.load()?.authority.eq(&state.load()?.signer))
+}
+
+/// `can_sign_for_user`, relaxed for the dual-mode cranks: the caller signs
+/// for the filler as today, **or** the filler is the protocol `User` — the
+/// program-keeper mode, where the reward accrues to the protocol and the
+/// caller is paid reservoir lamports instead, so no signature is required
+/// (relay turners submit executors without one).
+pub fn can_crank_for_filler(
+    filler: &AccountLoader<User>,
+    authority: &AccountInfo,
+    state: &AccountLoader<State>,
+) -> anchor_lang::Result<bool> {
+    if is_protocol_user(filler, state)? {
+        return Ok(true);
+    }
+    let filler = filler.load()?;
+    Ok(authority.is_signer
+        && (filler.authority.eq(authority.key)
+            || (filler.delegate.eq(authority.key) && !filler.delegate.eq(&Pubkey::default()))))
+}
+
 pub fn is_stats_for_user(
     user: &AccountLoader<User>,
     user_stats: &AccountLoader<UserStats>,

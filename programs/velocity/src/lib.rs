@@ -46,6 +46,10 @@ pub mod test_utils;
 mod validation;
 pub mod vlp;
 
+// Re-exported so consumers (tests, keepers) parse relay condition blocks and
+// staged crank payloads at the exact rev this program writes them with.
+pub use relay_spec;
+
 // main program entrypoint
 // anchor `#[program]` entrypoint is compiled out by `no-entrypoint`
 #[cfg(not(feature = "cpi"))]
@@ -1326,8 +1330,10 @@ pub mod velocity {
 
     pub fn update_perp_market_clob_quoter(
         ctx: Context<AdminUpdatePerpMarketClobQuoter>,
+        keeper_payment_lamports: u64,
+        expire_fallback_slots: u64,
     ) -> Result<()> {
-        handle_update_perp_market_clob_quoter(ctx)
+        handle_update_perp_market_clob_quoter(ctx, keeper_payment_lamports, expire_fallback_slots)
     }
 
     pub fn update_perp_market_contract_tier(
@@ -2243,6 +2249,26 @@ pub mod velocity {
         order_ref: ClobOrderRefV0,
     ) -> Result<()> {
         handle_crank_clob_remove_expired(ctx, market_index, order_ref)
+    }
+
+    /// Relay resolver for the evict condition. Meant to be simulated, not
+    /// landed: stages the executor call and returns a response pointer.
+    pub fn resolve_clob_crank_evict(ctx: Context<ResolveClobCrank>) -> Result<()> {
+        handle_resolve_clob_crank_evict(ctx)
+    }
+
+    /// Relay resolver for the expire (and expire-fallback) condition. Meant
+    /// to be simulated, not landed.
+    pub fn resolve_clob_crank_remove_expired(ctx: Context<ResolveClobCrank>) -> Result<()> {
+        handle_resolve_clob_crank_remove_expired(ctx)
+    }
+
+    pub fn withdraw_protocol_user_deposit<'c: 'info, 'info>(
+        ctx: Context<'info, WithdrawProtocolUserDeposit<'info>>,
+        market_index: u16,
+        amount: u64,
+    ) -> Result<()> {
+        handle_withdraw_protocol_user_deposit(ctx, market_index, amount)
     }
 }
 

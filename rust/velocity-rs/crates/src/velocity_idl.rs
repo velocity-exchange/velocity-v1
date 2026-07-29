@@ -1035,6 +1035,22 @@ pub mod instructions {
     #[automatically_derived]
     impl anchor_lang::InstructionData for ResizeSignedMsgUserOrders {}
     #[derive(AnchorSerialize, AnchorDeserialize, Clone, Default)]
+    pub struct ResolveClobCrankEvict {}
+    #[automatically_derived]
+    impl anchor_lang::Discriminator for ResolveClobCrankEvict {
+        const DISCRIMINATOR: &[u8] = &[192, 3, 104, 190, 54, 59, 95, 210];
+    }
+    #[automatically_derived]
+    impl anchor_lang::InstructionData for ResolveClobCrankEvict {}
+    #[derive(AnchorSerialize, AnchorDeserialize, Clone, Default)]
+    pub struct ResolveClobCrankRemoveExpired {}
+    #[automatically_derived]
+    impl anchor_lang::Discriminator for ResolveClobCrankRemoveExpired {
+        const DISCRIMINATOR: &[u8] = &[33, 165, 79, 241, 1, 84, 210, 89];
+    }
+    #[automatically_derived]
+    impl anchor_lang::InstructionData for ResolveClobCrankRemoveExpired {}
+    #[derive(AnchorSerialize, AnchorDeserialize, Clone, Default)]
     pub struct ResolvePerpBankruptcy {
         pub quote_spot_market_index: u16,
         pub market_index: u16,
@@ -1640,7 +1656,10 @@ pub mod instructions {
     #[automatically_derived]
     impl anchor_lang::InstructionData for UpdatePerpMarketBaseSpread {}
     #[derive(AnchorSerialize, AnchorDeserialize, Clone, Default)]
-    pub struct UpdatePerpMarketClobQuoter {}
+    pub struct UpdatePerpMarketClobQuoter {
+        pub keeper_payment_lamports: u64,
+        pub expire_fallback_slots: u64,
+    }
     #[automatically_derived]
     impl anchor_lang::Discriminator for UpdatePerpMarketClobQuoter {
         const DISCRIMINATOR: &[u8] = &[210, 80, 79, 140, 168, 8, 27, 243];
@@ -2638,6 +2657,17 @@ pub mod instructions {
     #[automatically_derived]
     impl anchor_lang::InstructionData for WithdrawProtocolFeesSpot {}
     #[derive(AnchorSerialize, AnchorDeserialize, Clone, Default)]
+    pub struct WithdrawProtocolUserDeposit {
+        pub market_index: u16,
+        pub amount: u64,
+    }
+    #[automatically_derived]
+    impl anchor_lang::Discriminator for WithdrawProtocolUserDeposit {
+        const DISCRIMINATOR: &[u8] = &[148, 218, 82, 85, 187, 96, 44, 87];
+    }
+    #[automatically_derived]
+    impl anchor_lang::InstructionData for WithdrawProtocolUserDeposit {}
+    #[derive(AnchorSerialize, AnchorDeserialize, Clone, Default)]
     pub struct ZeroMmOracleFields {}
     #[automatically_derived]
     impl anchor_lang::Discriminator for ZeroMmOracleFields {
@@ -2804,6 +2834,58 @@ pub mod types {
     }
     impl<T: Copy + anchor_lang::Space, const N: usize> anchor_lang::Space for BigArray<T, N> {
         const INIT_SPACE: usize = T::INIT_SPACE * N;
+    }
+    #[doc = " [`BigArray`] specialized to bytes."]
+    #[doc = ""]
+    #[doc = " `BigArray<u8, N>` cannot satisfy anchor's `Space` — the `InitSpace` derive"]
+    #[doc = " inlines primitive sizes rather than implementing `Space` for `u8`, and"]
+    #[doc = " coherence forbids a local `u8` specialization next to the generic impl —"]
+    #[doc = " so byte regions past serde's 32-element derive limit (a condition block,"]
+    #[doc = " a staging buffer) get their own wrapper with the obvious byte count."]
+    #[derive(AnchorSerialize, AnchorDeserialize, Copy, Clone, PartialEq, Debug)]
+    pub struct ByteArray<const N: usize>(pub [u8; N]);
+    impl<const N: usize> Default for ByteArray<N> {
+        fn default() -> Self {
+            Self([0u8; N])
+        }
+    }
+    impl<const N: usize> std::ops::Deref for ByteArray<N> {
+        type Target = [u8; N];
+        fn deref(&self) -> &Self::Target {
+            &self.0
+        }
+    }
+    impl<const N: usize> std::ops::DerefMut for ByteArray<N> {
+        fn deref_mut(&mut self) -> &mut Self::Target {
+            &mut self.0
+        }
+    }
+    impl<const N: usize> serde::Serialize for ByteArray<N> {
+        fn serialize<S: serde::Serializer>(
+            &self,
+            serializer: S,
+        ) -> std::result::Result<S::Ok, S::Error> {
+            serializer.collect_seq(self.0.iter())
+        }
+    }
+    impl<'de, const N: usize> serde::Deserialize<'de> for ByteArray<N> {
+        fn deserialize<D: serde::Deserializer<'de>>(
+            deserializer: D,
+        ) -> std::result::Result<Self, D::Error> {
+            let values: Vec<u8> = <Vec<u8> as serde::Deserialize>::deserialize(deserializer)?;
+            if values.len() != N {
+                return Err(serde::de::Error::invalid_length(
+                    values.len(),
+                    &"N elements",
+                ));
+            }
+            let mut out = [0u8; N];
+            out.copy_from_slice(&values);
+            Ok(Self(out))
+        }
+    }
+    impl<const N: usize> anchor_lang::Space for ByteArray<N> {
+        const INIT_SPACE: usize = N;
     }
     #[repr(C)]
     #[derive(
@@ -3058,6 +3140,27 @@ pub mod types {
     pub struct CancelClobOrderParams {
         pub market_index: u16,
         pub order_ref: ClobOrderRefV0,
+    }
+    #[repr(C)]
+    #[derive(
+        AnchorSerialize,
+        AnchorDeserialize,
+        InitSpace,
+        Serialize,
+        Deserialize,
+        Copy,
+        Clone,
+        Default,
+        Debug,
+        PartialEq,
+    )]
+    pub struct ClobCrankConditionsV0 {
+        pub block: ByteArray<856>,
+        pub staging: ByteArray<512>,
+        pub keeper_payment_lamports: u64,
+        pub market_index: u16,
+        #[serde(skip)]
+        pub padding: Padding<14>,
     }
     #[repr(C)]
     #[derive(
@@ -4827,6 +4930,26 @@ pub mod types {
         Debug,
         PartialEq,
     )]
+    pub struct ProtocolUserWithdrawRecord {
+        pub ts: i64,
+        pub spot_market_index: u16,
+        pub amount: u64,
+        pub protocol_user: Pubkey,
+        pub recipient_token_account: Pubkey,
+    }
+    #[repr(C)]
+    #[derive(
+        AnchorSerialize,
+        AnchorDeserialize,
+        InitSpace,
+        Serialize,
+        Deserialize,
+        Copy,
+        Clone,
+        Default,
+        Debug,
+        PartialEq,
+    )]
     pub struct PythLazerOracle {
         pub price: i64,
         pub publish_time: u64,
@@ -5966,6 +6089,66 @@ pub mod accounts {
     }
     #[automatically_derived]
     impl anchor_lang::AccountDeserialize for AmmConstituentMapping {
+        fn try_deserialize(buf: &mut &[u8]) -> anchor_lang::Result<Self> {
+            let given_disc = &buf[..8];
+            if Self::DISCRIMINATOR != given_disc {
+                return Err(anchor_lang::error!(
+                    anchor_lang::error::ErrorCode::AccountDiscriminatorMismatch
+                ));
+            }
+            Self::try_deserialize_unchecked(buf)
+        }
+        fn try_deserialize_unchecked(buf: &mut &[u8]) -> anchor_lang::Result<Self> {
+            let mut data: &[u8] = &buf[8..];
+            AnchorDeserialize::deserialize(&mut data)
+                .map_err(|_| anchor_lang::error::ErrorCode::AccountDidNotDeserialize.into())
+        }
+    }
+    #[repr(C)]
+    #[derive(
+        AnchorSerialize,
+        AnchorDeserialize,
+        InitSpace,
+        Serialize,
+        Deserialize,
+        Copy,
+        Clone,
+        Default,
+        Debug,
+        PartialEq,
+    )]
+    pub struct ClobCrankConditionsV0 {
+        pub block: ByteArray<856>,
+        pub staging: ByteArray<512>,
+        pub keeper_payment_lamports: u64,
+        pub market_index: u16,
+        #[serde(skip)]
+        pub padding: Padding<14>,
+    }
+    #[automatically_derived]
+    impl anchor_lang::Discriminator for ClobCrankConditionsV0 {
+        const DISCRIMINATOR: &[u8] = &[192, 236, 226, 61, 136, 80, 33, 74];
+    }
+    #[automatically_derived]
+    unsafe impl anchor_lang::__private::bytemuck::Pod for ClobCrankConditionsV0 {}
+    #[automatically_derived]
+    unsafe impl anchor_lang::__private::bytemuck::Zeroable for ClobCrankConditionsV0 {}
+    #[automatically_derived]
+    impl anchor_lang::ZeroCopy for ClobCrankConditionsV0 {}
+    #[automatically_derived]
+    impl anchor_lang::AccountSerialize for ClobCrankConditionsV0 {
+        fn try_serialize<W: std::io::Write>(&self, writer: &mut W) -> anchor_lang::Result<()> {
+            if writer.write_all(Self::DISCRIMINATOR).is_err() {
+                return Err(anchor_lang::error::ErrorCode::AccountDidNotSerialize.into());
+            }
+            if AnchorSerialize::serialize(self, writer).is_err() {
+                return Err(anchor_lang::error::ErrorCode::AccountDidNotSerialize.into());
+            }
+            Ok(())
+        }
+    }
+    #[automatically_derived]
+    impl anchor_lang::AccountDeserialize for ClobCrankConditionsV0 {
         fn try_deserialize(buf: &mut &[u8]) -> anchor_lang::Result<Self> {
             let given_disc = &buf[..8];
             if Self::DISCRIMINATOR != given_disc {
@@ -8607,6 +8790,7 @@ pub mod accounts {
         pub clob_market: Pubkey,
         pub clob_program: Pubkey,
         pub velocity_signer: Pubkey,
+        pub crank_conditions: Pubkey,
     }
     #[automatically_derived]
     impl anchor_lang::Discriminator for CrankClobEvict {
@@ -8631,8 +8815,8 @@ pub mod accounts {
                 },
                 AccountMeta {
                     pubkey: self.authority,
-                    is_signer: true,
-                    is_writable: false,
+                    is_signer: false,
+                    is_writable: true,
                 },
                 AccountMeta {
                     pubkey: self.filler,
@@ -8673,6 +8857,11 @@ pub mod accounts {
                     pubkey: self.velocity_signer,
                     is_signer: false,
                     is_writable: false,
+                },
+                AccountMeta {
+                    pubkey: self.crank_conditions,
+                    is_signer: false,
+                    is_writable: true,
                 },
             ]
         }
@@ -8719,6 +8908,7 @@ pub mod accounts {
         pub clob_market: Pubkey,
         pub clob_program: Pubkey,
         pub velocity_signer: Pubkey,
+        pub crank_conditions: Pubkey,
     }
     #[automatically_derived]
     impl anchor_lang::Discriminator for CrankClobRemoveExpired {
@@ -8743,8 +8933,8 @@ pub mod accounts {
                 },
                 AccountMeta {
                     pubkey: self.authority,
-                    is_signer: true,
-                    is_writable: false,
+                    is_signer: false,
+                    is_writable: true,
                 },
                 AccountMeta {
                     pubkey: self.filler,
@@ -8785,6 +8975,11 @@ pub mod accounts {
                     pubkey: self.velocity_signer,
                     is_signer: false,
                     is_writable: false,
+                },
+                AccountMeta {
+                    pubkey: self.crank_conditions,
+                    is_signer: false,
+                    is_writable: true,
                 },
             ]
         }
@@ -14000,6 +14195,7 @@ pub mod accounts {
         pub clob_market: Pubkey,
         pub clob_program: Pubkey,
         pub velocity_signer: Pubkey,
+        pub crank_conditions: Pubkey,
     }
     #[automatically_derived]
     impl anchor_lang::Discriminator for PlaceClobOrder {
@@ -14051,6 +14247,11 @@ pub mod accounts {
                     pubkey: self.velocity_signer,
                     is_signer: false,
                     is_writable: false,
+                },
+                AccountMeta {
+                    pubkey: self.crank_conditions,
+                    is_signer: false,
+                    is_writable: true,
                 },
             ]
         }
@@ -15409,6 +15610,158 @@ pub mod accounts {
     }
     #[automatically_derived]
     impl anchor_lang::AccountDeserialize for ResizeSignedMsgUserOrders {
+        fn try_deserialize(buf: &mut &[u8]) -> anchor_lang::Result<Self> {
+            let given_disc = &buf[..8];
+            if Self::DISCRIMINATOR != given_disc {
+                return Err(anchor_lang::error!(
+                    anchor_lang::error::ErrorCode::AccountDiscriminatorMismatch
+                ));
+            }
+            Self::try_deserialize_unchecked(buf)
+        }
+        fn try_deserialize_unchecked(buf: &mut &[u8]) -> anchor_lang::Result<Self> {
+            let mut data: &[u8] = &buf[8..];
+            AnchorDeserialize::deserialize(&mut data)
+                .map_err(|_| anchor_lang::error::ErrorCode::AccountDidNotDeserialize.into())
+        }
+    }
+    #[repr(C)]
+    #[derive(Copy, Clone, Default, AnchorSerialize, AnchorDeserialize, Serialize, Deserialize)]
+    pub struct ResolveClobCrankEvict {
+        pub crank_conditions: Pubkey,
+        pub clob_market: Pubkey,
+        pub quoter: Pubkey,
+        pub state: Pubkey,
+    }
+    #[automatically_derived]
+    impl anchor_lang::Discriminator for ResolveClobCrankEvict {
+        const DISCRIMINATOR: &[u8] = &[8, 43, 119, 165, 6, 218, 59, 156];
+    }
+    #[automatically_derived]
+    unsafe impl anchor_lang::__private::bytemuck::Pod for ResolveClobCrankEvict {}
+    #[automatically_derived]
+    unsafe impl anchor_lang::__private::bytemuck::Zeroable for ResolveClobCrankEvict {}
+    #[automatically_derived]
+    impl anchor_lang::ZeroCopy for ResolveClobCrankEvict {}
+    #[automatically_derived]
+    impl anchor_lang::InstructionData for ResolveClobCrankEvict {}
+    #[automatically_derived]
+    impl ToAccountMetas for ResolveClobCrankEvict {
+        fn to_account_metas(&self) -> Vec<AccountMeta> {
+            vec![
+                AccountMeta {
+                    pubkey: self.crank_conditions,
+                    is_signer: false,
+                    is_writable: true,
+                },
+                AccountMeta {
+                    pubkey: self.clob_market,
+                    is_signer: false,
+                    is_writable: false,
+                },
+                AccountMeta {
+                    pubkey: self.quoter,
+                    is_signer: false,
+                    is_writable: false,
+                },
+                AccountMeta {
+                    pubkey: self.state,
+                    is_signer: false,
+                    is_writable: false,
+                },
+            ]
+        }
+    }
+    #[automatically_derived]
+    impl anchor_lang::AccountSerialize for ResolveClobCrankEvict {
+        fn try_serialize<W: std::io::Write>(&self, writer: &mut W) -> anchor_lang::Result<()> {
+            if writer.write_all(Self::DISCRIMINATOR).is_err() {
+                return Err(anchor_lang::error::ErrorCode::AccountDidNotSerialize.into());
+            }
+            if AnchorSerialize::serialize(self, writer).is_err() {
+                return Err(anchor_lang::error::ErrorCode::AccountDidNotSerialize.into());
+            }
+            Ok(())
+        }
+    }
+    #[automatically_derived]
+    impl anchor_lang::AccountDeserialize for ResolveClobCrankEvict {
+        fn try_deserialize(buf: &mut &[u8]) -> anchor_lang::Result<Self> {
+            let given_disc = &buf[..8];
+            if Self::DISCRIMINATOR != given_disc {
+                return Err(anchor_lang::error!(
+                    anchor_lang::error::ErrorCode::AccountDiscriminatorMismatch
+                ));
+            }
+            Self::try_deserialize_unchecked(buf)
+        }
+        fn try_deserialize_unchecked(buf: &mut &[u8]) -> anchor_lang::Result<Self> {
+            let mut data: &[u8] = &buf[8..];
+            AnchorDeserialize::deserialize(&mut data)
+                .map_err(|_| anchor_lang::error::ErrorCode::AccountDidNotDeserialize.into())
+        }
+    }
+    #[repr(C)]
+    #[derive(Copy, Clone, Default, AnchorSerialize, AnchorDeserialize, Serialize, Deserialize)]
+    pub struct ResolveClobCrankRemoveExpired {
+        pub crank_conditions: Pubkey,
+        pub clob_market: Pubkey,
+        pub quoter: Pubkey,
+        pub state: Pubkey,
+    }
+    #[automatically_derived]
+    impl anchor_lang::Discriminator for ResolveClobCrankRemoveExpired {
+        const DISCRIMINATOR: &[u8] = &[57, 110, 250, 26, 100, 58, 35, 24];
+    }
+    #[automatically_derived]
+    unsafe impl anchor_lang::__private::bytemuck::Pod for ResolveClobCrankRemoveExpired {}
+    #[automatically_derived]
+    unsafe impl anchor_lang::__private::bytemuck::Zeroable for ResolveClobCrankRemoveExpired {}
+    #[automatically_derived]
+    impl anchor_lang::ZeroCopy for ResolveClobCrankRemoveExpired {}
+    #[automatically_derived]
+    impl anchor_lang::InstructionData for ResolveClobCrankRemoveExpired {}
+    #[automatically_derived]
+    impl ToAccountMetas for ResolveClobCrankRemoveExpired {
+        fn to_account_metas(&self) -> Vec<AccountMeta> {
+            vec![
+                AccountMeta {
+                    pubkey: self.crank_conditions,
+                    is_signer: false,
+                    is_writable: true,
+                },
+                AccountMeta {
+                    pubkey: self.clob_market,
+                    is_signer: false,
+                    is_writable: false,
+                },
+                AccountMeta {
+                    pubkey: self.quoter,
+                    is_signer: false,
+                    is_writable: false,
+                },
+                AccountMeta {
+                    pubkey: self.state,
+                    is_signer: false,
+                    is_writable: false,
+                },
+            ]
+        }
+    }
+    #[automatically_derived]
+    impl anchor_lang::AccountSerialize for ResolveClobCrankRemoveExpired {
+        fn try_serialize<W: std::io::Write>(&self, writer: &mut W) -> anchor_lang::Result<()> {
+            if writer.write_all(Self::DISCRIMINATOR).is_err() {
+                return Err(anchor_lang::error::ErrorCode::AccountDidNotSerialize.into());
+            }
+            if AnchorSerialize::serialize(self, writer).is_err() {
+                return Err(anchor_lang::error::ErrorCode::AccountDidNotSerialize.into());
+            }
+            Ok(())
+        }
+    }
+    #[automatically_derived]
+    impl anchor_lang::AccountDeserialize for ResolveClobCrankRemoveExpired {
         fn try_deserialize(buf: &mut &[u8]) -> anchor_lang::Result<Self> {
             let given_disc = &buf[..8];
             if Self::DISCRIMINATOR != given_disc {
@@ -20031,6 +20384,10 @@ pub mod accounts {
         pub state: Pubkey,
         pub perp_market: Pubkey,
         pub quoter: Pubkey,
+        pub clob_market: Pubkey,
+        pub crank_conditions: Pubkey,
+        pub rent: Pubkey,
+        pub system_program: Pubkey,
     }
     #[automatically_derived]
     impl anchor_lang::Discriminator for UpdatePerpMarketClobQuoter {
@@ -20051,7 +20408,7 @@ pub mod accounts {
                 AccountMeta {
                     pubkey: self.admin,
                     is_signer: true,
-                    is_writable: false,
+                    is_writable: true,
                 },
                 AccountMeta {
                     pubkey: self.state,
@@ -20065,6 +20422,26 @@ pub mod accounts {
                 },
                 AccountMeta {
                     pubkey: self.quoter,
+                    is_signer: false,
+                    is_writable: false,
+                },
+                AccountMeta {
+                    pubkey: self.clob_market,
+                    is_signer: false,
+                    is_writable: false,
+                },
+                AccountMeta {
+                    pubkey: self.crank_conditions,
+                    is_signer: false,
+                    is_writable: true,
+                },
+                AccountMeta {
+                    pubkey: self.rent,
+                    is_signer: false,
+                    is_writable: false,
+                },
+                AccountMeta {
+                    pubkey: self.system_program,
                     is_signer: false,
                     is_writable: false,
                 },
@@ -27049,6 +27426,136 @@ pub mod accounts {
     }
     #[repr(C)]
     #[derive(Copy, Clone, Default, AnchorSerialize, AnchorDeserialize, Serialize, Deserialize)]
+    pub struct WithdrawProtocolUserDeposit {
+        pub state: Pubkey,
+        pub payer: Pubkey,
+        pub authority: Pubkey,
+        pub protocol_user: Pubkey,
+        pub spot_market: Pubkey,
+        pub spot_market_vault: Pubkey,
+        pub mint: Pubkey,
+        pub recipient: Pubkey,
+        pub recipient_token_account: Pubkey,
+        pub token_program: Pubkey,
+        pub velocity_signer: Pubkey,
+        pub system_program: Pubkey,
+        pub associated_token_program: Pubkey,
+    }
+    #[automatically_derived]
+    impl anchor_lang::Discriminator for WithdrawProtocolUserDeposit {
+        const DISCRIMINATOR: &[u8] = &[15, 205, 226, 217, 160, 170, 183, 21];
+    }
+    #[automatically_derived]
+    unsafe impl anchor_lang::__private::bytemuck::Pod for WithdrawProtocolUserDeposit {}
+    #[automatically_derived]
+    unsafe impl anchor_lang::__private::bytemuck::Zeroable for WithdrawProtocolUserDeposit {}
+    #[automatically_derived]
+    impl anchor_lang::ZeroCopy for WithdrawProtocolUserDeposit {}
+    #[automatically_derived]
+    impl anchor_lang::InstructionData for WithdrawProtocolUserDeposit {}
+    #[automatically_derived]
+    impl ToAccountMetas for WithdrawProtocolUserDeposit {
+        fn to_account_metas(&self) -> Vec<AccountMeta> {
+            vec![
+                AccountMeta {
+                    pubkey: self.state,
+                    is_signer: false,
+                    is_writable: false,
+                },
+                AccountMeta {
+                    pubkey: self.payer,
+                    is_signer: true,
+                    is_writable: true,
+                },
+                AccountMeta {
+                    pubkey: self.authority,
+                    is_signer: true,
+                    is_writable: false,
+                },
+                AccountMeta {
+                    pubkey: self.protocol_user,
+                    is_signer: false,
+                    is_writable: true,
+                },
+                AccountMeta {
+                    pubkey: self.spot_market,
+                    is_signer: false,
+                    is_writable: true,
+                },
+                AccountMeta {
+                    pubkey: self.spot_market_vault,
+                    is_signer: false,
+                    is_writable: true,
+                },
+                AccountMeta {
+                    pubkey: self.mint,
+                    is_signer: false,
+                    is_writable: false,
+                },
+                AccountMeta {
+                    pubkey: self.recipient,
+                    is_signer: false,
+                    is_writable: false,
+                },
+                AccountMeta {
+                    pubkey: self.recipient_token_account,
+                    is_signer: false,
+                    is_writable: true,
+                },
+                AccountMeta {
+                    pubkey: self.token_program,
+                    is_signer: false,
+                    is_writable: false,
+                },
+                AccountMeta {
+                    pubkey: self.velocity_signer,
+                    is_signer: false,
+                    is_writable: false,
+                },
+                AccountMeta {
+                    pubkey: self.system_program,
+                    is_signer: false,
+                    is_writable: false,
+                },
+                AccountMeta {
+                    pubkey: self.associated_token_program,
+                    is_signer: false,
+                    is_writable: false,
+                },
+            ]
+        }
+    }
+    #[automatically_derived]
+    impl anchor_lang::AccountSerialize for WithdrawProtocolUserDeposit {
+        fn try_serialize<W: std::io::Write>(&self, writer: &mut W) -> anchor_lang::Result<()> {
+            if writer.write_all(Self::DISCRIMINATOR).is_err() {
+                return Err(anchor_lang::error::ErrorCode::AccountDidNotSerialize.into());
+            }
+            if AnchorSerialize::serialize(self, writer).is_err() {
+                return Err(anchor_lang::error::ErrorCode::AccountDidNotSerialize.into());
+            }
+            Ok(())
+        }
+    }
+    #[automatically_derived]
+    impl anchor_lang::AccountDeserialize for WithdrawProtocolUserDeposit {
+        fn try_deserialize(buf: &mut &[u8]) -> anchor_lang::Result<Self> {
+            let given_disc = &buf[..8];
+            if Self::DISCRIMINATOR != given_disc {
+                return Err(anchor_lang::error!(
+                    anchor_lang::error::ErrorCode::AccountDiscriminatorMismatch
+                ));
+            }
+            Self::try_deserialize_unchecked(buf)
+        }
+        fn try_deserialize_unchecked(buf: &mut &[u8]) -> anchor_lang::Result<Self> {
+            let mut data: &[u8] = &buf[8..];
+            AnchorDeserialize::deserialize(&mut data)
+                .map_err(|_| anchor_lang::error::ErrorCode::AccountDidNotDeserialize.into())
+        }
+    }
+    #[repr(C)]
+    #[derive(Copy, Clone, Default, AnchorSerialize, AnchorDeserialize, Serialize, Deserialize)]
     pub struct ZeroMmOracleFields {
         pub admin: Pubkey,
         pub state: Pubkey,
@@ -27864,6 +28371,8 @@ pub mod errors {
         InvalidQuoterConfig,
         #[msg("Signer does not control this quoter registry entry")]
         InvalidQuoterAuthority,
+        #[msg("CLOB crank condition account cannot cover the keeper payment")]
+        InsufficientCrankReservoir,
     }
 }
 pub mod events {
@@ -28149,6 +28658,15 @@ pub mod events {
         pub is_perp: bool,
         pub spot_market_index: u16,
         pub amount: u64,
+        pub recipient_token_account: Pubkey,
+    }
+    #[derive(Clone, Debug, PartialEq, Default)]
+    #[event]
+    pub struct ProtocolUserWithdrawRecord {
+        pub ts: i64,
+        pub spot_market_index: u16,
+        pub amount: u64,
+        pub protocol_user: Pubkey,
         pub recipient_token_account: Pubkey,
     }
     #[derive(Clone, Debug, PartialEq, Default)]

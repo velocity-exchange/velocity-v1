@@ -2376,11 +2376,20 @@ pub fn handle_update_perp_market_paused_operations(
 /// can't exclude the public book). A dead entry is still passed but skipped
 /// at quote time, so deactivating the book never bricks fills; there is no
 /// clear path for the same reason — kill the entry instead.
+///
+/// The attach also stands up (or, on re-attach, rewrites) the market's relay
+/// crank conditions: the evict/expire condition block plus the lamport
+/// reservoir that pays relay keepers `keeper_payment_lamports` per crank.
+/// This is the earliest point the full reference graph (book + registry
+/// entry) exists, so a new market needs no separate conditions ceremony, and
+/// re-pricing the crank is just re-running the attach.
 #[access_control(
     perp_market_valid(&ctx.accounts.perp_market)
 )]
 pub fn handle_update_perp_market_clob_quoter(
     ctx: Context<AdminUpdatePerpMarketClobQuoter>,
+    keeper_payment_lamports: u64,
+    expire_fallback_slots: u64,
 ) -> Result<()> {
     let perp_market = &mut load_mut!(ctx.accounts.perp_market)?;
     msg!("perp market {}", perp_market.market_index);
@@ -2398,7 +2407,39 @@ pub fn handle_update_perp_market_clob_quoter(
             "quoter entry is for market {}",
             quoter.market
         )?;
+        let registered = &quoter.execute_accounts[..quoter.execute_accounts_count as usize];
+        validate!(
+            registered
+                .iter()
+                .any(|meta| meta.pubkey == ctx.accounts.clob_market.key()),
+            ErrorCode::DefaultError,
+            "clob market is not registered on the quoter entry"
+        )?;
     }
+
+    // First attach initializes the conditions account; a re-attach rewrites
+    // the block in place, preserving a live expiry hint across the re-price.
+    let (mut conditions, initial_expire_wake_ts) = match ctx.accounts.crank_conditions.load_init() {
+        Ok(fresh) => (fresh, i64::MAX),
+        Err(_) => {
+            let existing = load_mut!(ctx.accounts.crank_conditions)?;
+            let hint = existing.expire_wake_ts().unwrap_or(i64::MAX);
+            (existing, hint)
+        }
+    };
+    crate::instructions::write_clob_crank_conditions(
+        &mut conditions,
+        &crate::instructions::ClobCrankConditionKeys {
+            crank_conditions: ctx.accounts.crank_conditions.key(),
+            clob_market: ctx.accounts.clob_market.key(),
+            quoter: ctx.accounts.quoter.key(),
+            state: ctx.accounts.state.key(),
+        },
+        perp_market.market_index,
+        keeper_payment_lamports,
+        expire_fallback_slots,
+        initial_expire_wake_ts,
+    )?;
 
     msg!(
         "perp_market.clob_quoter: {} -> {}",
@@ -4039,12 +4080,33 @@ pub struct AdminUpdatePerpMarket<'info> {
 
 #[derive(Accounts)]
 pub struct AdminUpdatePerpMarketClobQuoter<'info> {
-    #[account(constraint = check_warm(&admin.key(), &state)?)]
+    /// Also pays the conditions account's rent on first attach.
+    #[account(mut, constraint = check_warm(&admin.key(), &state)?)]
     pub admin: Signer<'info>,
     pub state: AccountLoader<'info, State>,
     #[account(mut)]
     pub perp_market: AccountLoader<'info, PerpMarket>,
     pub quoter: AccountLoader<'info, crate::state::prop_amm::QuoterV0>,
+    /// CHECK: validated against the quoter entry's registered execute
+    /// accounts in the handler; the evict condition's change-watch points at
+    /// its book counts.
+    pub clob_market: UncheckedAccount<'info>,
+    /// The market's relay conditions + keeper reservoir, stood up (or
+    /// re-priced) as part of the attach so a new market needs no separate
+    /// crank ceremony.
+    #[account(
+        init_if_needed,
+        seeds = [
+            crate::state::clob_crank::CLOB_CRANK_CONDITIONS_PDA_SEED,
+            perp_market.load()?.market_index.to_le_bytes().as_ref(),
+        ],
+        space = crate::state::clob_crank::ClobCrankConditionsV0::SIZE,
+        bump,
+        payer = admin
+    )]
+    pub crank_conditions: AccountLoader<'info, crate::state::clob_crank::ClobCrankConditionsV0>,
+    pub rent: Sysvar<'info, Rent>,
+    pub system_program: Program<'info, System>,
 }
 
 #[derive(Accounts)]

@@ -114,6 +114,36 @@ export function registerFees(parent: Command): void {
 
 	withGlobalOptions(
 		fees
+			.command('withdraw-protocol-user <market> <amount>')
+			.description(
+				"Withdraw settled crank rewards from the protocol-owned User (authority = the velocity signer PDA; rewards accrue there in program-keeper crank mode) to the recipient's associated token account. Settle the accrued perp quote to deposits first (settle-pnl is permissionless). Signer must hold the FeeWithdraw hot role. <market> is the SPOT market index; <amount> in token base units."
+			)
+	).action(async (market: string, amount: string, _flags, cmd: Command) => {
+		const opts = readGlobalOpts(cmd);
+		const provider = buildProvider(opts);
+		const client = await buildAdminClient(opts);
+		try {
+			const ix = await client.getWithdrawProtocolUserDepositIx(
+				Number.parseInt(market, 10),
+				new BN(amount)
+			);
+			const result = await sendOrPropose(
+				provider,
+				[ix],
+				opts.multisig ? new PublicKey(opts.multisig) : undefined,
+				'velocity-admin fees withdraw-protocol-user'
+			);
+			reportDispatch(
+				`protocol user deposit (spot-market[${market}]) ${amount} -> recipient ATA`,
+				result
+			);
+		} finally {
+			await client.unsubscribe();
+		}
+	});
+
+	withGlobalOptions(
+		fees
 			.command('withdraw-spot <market> <amount>')
 			.description(
 				"Withdraw from a spot market protocol_fee_pool to the recipient's associated token account (created if needed). Signer must hold the FeeWithdraw hot role. <amount> in token base units."

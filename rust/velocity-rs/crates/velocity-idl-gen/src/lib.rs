@@ -51,6 +51,11 @@ fn idl_type_to_rust(t: &IdlType) -> String {
                 // [u8; 64] is the signature shape; alias to the Default-having `Signature` newtype.
                 if *n == 64 && rust == "u8" {
                     "Signature".into()
+                } else if *n > SERDE_MAX_ARRAY_LEN && rust == "u8" {
+                    // `BigArray<u8, N>` can't satisfy anchor's `Space` (the
+                    // `InitSpace` derive never implements it for primitives),
+                    // so byte regions get their own wrapper.
+                    format!("ByteArray<{n}>")
                 } else if *n > SERDE_MAX_ARRAY_LEN {
                     // serde only derives for `[T; N]` up to N = 32. Applied at
                     // every depth, so a nested `[[T; 128]; 16]` has its inner

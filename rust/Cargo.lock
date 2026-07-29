@@ -470,7 +470,7 @@ dependencies = [
  "quinn-udp",
  "rustc-hash",
  "rustls",
- "socket2 0.6.4",
+ "socket2 0.5.10",
  "thiserror 2.0.18",
  "tokio",
  "tracing",
@@ -2836,7 +2836,7 @@ dependencies = [
  "libc",
  "percent-encoding",
  "pin-project-lite",
- "socket2 0.6.4",
+ "socket2 0.5.10",
  "system-configuration",
  "tokio",
  "tower-service",
@@ -4364,7 +4364,7 @@ dependencies = [
  "quinn-udp",
  "rustc-hash",
  "rustls",
- "socket2 0.6.4",
+ "socket2 0.5.10",
  "thiserror 2.0.18",
  "tokio",
  "tracing",
@@ -4401,7 +4401,7 @@ dependencies = [
  "cfg_aliases",
  "libc",
  "once_cell",
- "socket2 0.6.4",
+ "socket2 0.5.10",
  "tracing",
  "windows-sys 0.60.2",
 ]
@@ -4664,6 +4664,14 @@ dependencies = [
  "tracing",
  "yellowstone-grpc-client",
  "yellowstone-grpc-proto",
+]
+
+[[package]]
+name = "relay-spec"
+version = "0.1.0"
+source = "git+https://github.com/velocity-exchange/relay?rev=b8c6ecd0bb65f5dcad929fc7972a4a4241232fd0#b8c6ecd0bb65f5dcad929fc7972a4a4241232fd0"
+dependencies = [
+ "bytemuck",
 ]
 
 [[package]]
@@ -8830,6 +8838,7 @@ dependencies = [
  "num-traits",
  "pyth-client",
  "pyth_lazer",
+ "relay-spec",
  "solana-program",
  "solana-security-txt",
  "static_assertions",

@@ -170,3 +170,56 @@ impl<'de, T: Copy + Default + serde::Deserialize<'de>, const N: usize> serde::De
 impl<T: Copy + anchor_lang::Space, const N: usize> anchor_lang::Space for BigArray<T, N> {
     const INIT_SPACE: usize = T::INIT_SPACE * N;
 }
+
+/// [`BigArray`] specialized to bytes.
+///
+/// `BigArray<u8, N>` cannot satisfy anchor's `Space` — the `InitSpace` derive
+/// inlines primitive sizes rather than implementing `Space` for `u8`, and
+/// coherence forbids a local `u8` specialization next to the generic impl —
+/// so byte regions past serde's 32-element derive limit (a condition block,
+/// a staging buffer) get their own wrapper with the obvious byte count.
+#[derive(AnchorSerialize, AnchorDeserialize, Copy, Clone, PartialEq, Debug)]
+pub struct ByteArray<const N: usize>(pub [u8; N]);
+
+impl<const N: usize> Default for ByteArray<N> {
+    fn default() -> Self {
+        Self([0u8; N])
+    }
+}
+
+impl<const N: usize> std::ops::Deref for ByteArray<N> {
+    type Target = [u8; N];
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
+impl<const N: usize> std::ops::DerefMut for ByteArray<N> {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.0
+    }
+}
+
+impl<const N: usize> serde::Serialize for ByteArray<N> {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> std::result::Result<S::Ok, S::Error> {
+        serializer.collect_seq(self.0.iter())
+    }
+}
+
+impl<'de, const N: usize> serde::Deserialize<'de> for ByteArray<N> {
+    fn deserialize<D: serde::Deserializer<'de>>(
+        deserializer: D,
+    ) -> std::result::Result<Self, D::Error> {
+        let values: Vec<u8> = <Vec<u8> as serde::Deserialize>::deserialize(deserializer)?;
+        if values.len() != N {
+            return Err(serde::de::Error::invalid_length(values.len(), &"N elements"));
+        }
+        let mut out = [0u8; N];
+        out.copy_from_slice(&values);
+        Ok(Self(out))
+    }
+}
+
+impl<const N: usize> anchor_lang::Space for ByteArray<N> {
+    const INIT_SPACE: usize = N;
+}

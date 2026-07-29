@@ -359,6 +359,7 @@ fn place_clob_order_ix(
     quoter: Pubkey,
     clob_market: Pubkey,
     oracle: Pubkey,
+    crank_conditions: Option<Pubkey>,
     params: PlaceClobOrderParams,
 ) -> Instruction {
     let (velocity_signer, _) = velocity_signer_pda();
@@ -370,6 +371,7 @@ fn place_clob_order_ix(
         clob_market,
         clob_program: clob_id(),
         velocity_signer,
+        crank_conditions,
     }
     .to_account_metas(None);
     // Margin maps: oracle, spot market, perp market.
@@ -385,6 +387,7 @@ fn place_clob_order_ix(
 
 struct Fixture {
     svm: litesvm::LiteSVM,
+    admin: Keypair,
     keeper: Keypair,
     oracle: Pubkey,
     clob_market: Pubkey,
@@ -429,6 +432,7 @@ fn setup() -> Fixture {
 
     Fixture {
         svm,
+        admin,
         keeper,
         oracle,
         clob_market,
@@ -447,6 +451,7 @@ fn place_clob_ask(fixture: &mut Fixture, price: u64, size: u64) -> ClobOrderRefV
         fixture.quoter,
         fixture.clob_market,
         fixture.oracle,
+        None,
         PlaceClobOrderParams {
             market_index: 0,
             direction: PositionDirection::Short,
@@ -778,6 +783,7 @@ fn crank_remove_expired_unwinds_aggregates_and_pays_the_keeper() {
         fixture.quoter,
         fixture.clob_market,
         fixture.oracle,
+        None,
         PlaceClobOrderParams {
             market_index: 0,
             direction: PositionDirection::Short,
@@ -821,6 +827,7 @@ fn crank_remove_expired_unwinds_aggregates_and_pays_the_keeper() {
             clob_market: fixture.clob_market,
             clob_program: clob_id(),
             velocity_signer,
+            crank_conditions: None,
         }
         .to_account_metas(None),
         data: velocity::instruction::CrankClobRemoveExpired {
@@ -872,6 +879,7 @@ fn crank_evict_unwinds_the_tails_aggregates() {
             clob_market: fixture.clob_market,
             clob_program: clob_id(),
             velocity_signer,
+            crank_conditions: None,
         }
         .to_account_metas(None),
         data: velocity::instruction::CrankClobEvict {
@@ -1047,4 +1055,311 @@ fn quote_router_returns_verified_books_for_every_source() {
         "CU — quote_router across CLOB + DLOB + vAMM: {}",
         meta.compute_units_consumed
     );
+}
+
+// --- program-keeper (relay) crank mode ---
+
+fn crank_conditions_pda() -> Pubkey {
+    Pubkey::find_program_address(
+        &[b"clob_crank_conditions", 0u16.to_le_bytes().as_ref()],
+        &velocity_id(),
+    )
+    .0
+}
+
+/// The protocol-owned filler: a `User`/`UserStats` pair whose authority is
+/// the velocity signer PDA, at the derivation the resolvers stage.
+fn set_protocol_user(svm: &mut litesvm::LiteSVM) -> Pubkey {
+    let (signer, _) = velocity_signer_pda();
+    let user = Pubkey::find_program_address(
+        &[b"user", signer.as_ref(), 0u16.to_le_bytes().as_ref()],
+        &velocity_id(),
+    )
+    .0;
+    let stats =
+        Pubkey::find_program_address(&[b"user_stats", signer.as_ref()], &velocity_id()).0;
+    set_user_account(svm, user, &trading_user(&signer, 0, None));
+    set_user_stats_account(svm, stats, &signer);
+    user
+}
+
+/// Attach the CLOB to the market through the admin ix — which also stands up
+/// the crank conditions account, so no separate init exists to call.
+fn init_crank_conditions(fixture: &mut Fixture, keeper_payment_lamports: u64) -> Pubkey {
+    let conditions = crank_conditions_pda();
+    let ix = Instruction {
+        program_id: velocity_id(),
+        accounts: velocity::accounts::AdminUpdatePerpMarketClobQuoter {
+            admin: fixture.admin.pubkey(),
+            state: state_pda(),
+            perp_market: perp_market_pda(0),
+            quoter: fixture.quoter,
+            clob_market: fixture.clob_market,
+            crank_conditions: conditions,
+            rent: "SysvarRent111111111111111111111111111111111"
+                .parse()
+                .unwrap(),
+            system_program: "11111111111111111111111111111111".parse().unwrap(),
+        }
+        .to_account_metas(None),
+        data: velocity::instruction::UpdatePerpMarketClobQuoter {
+            keeper_payment_lamports,
+            expire_fallback_slots: 100,
+        }
+        .data(),
+    };
+    let admin = fixture.admin.insecure_clone();
+    send(&mut fixture.svm, &admin, ix, &[]).unwrap();
+    conditions
+}
+
+/// Run a resolver as a real transaction (a turner would only simulate it)
+/// and read the staged payload back exactly the way a turner does: response
+/// pointer from return data, payload bytes from the account.
+fn run_resolver(
+    fixture: &mut Fixture,
+    conditions: Pubkey,
+    expire: bool,
+) -> Option<velocity::relay_spec::ResolvedCrankV0> {
+    let ix = Instruction {
+        program_id: velocity_id(),
+        accounts: velocity::accounts::ResolveClobCrank {
+            crank_conditions: conditions,
+            clob_market: fixture.clob_market,
+            quoter: fixture.quoter,
+            state: state_pda(),
+        }
+        .to_account_metas(None),
+        data: if expire {
+            velocity::instruction::ResolveClobCrankRemoveExpired {}.data()
+        } else {
+            velocity::instruction::ResolveClobCrankEvict {}.data()
+        },
+    };
+    let keeper = fixture.keeper.insecure_clone();
+    let meta = send(&mut fixture.svm, &keeper, ix, &[]).unwrap();
+    let pointer =
+        velocity::relay_spec::ResponsePointerV0::read(&meta.return_data.data).unwrap();
+    if !pointer.has_work() {
+        return None;
+    }
+    let data = fixture.svm.get_account(&conditions).unwrap().data;
+    let staged = &data[pointer.offset() as usize..(pointer.offset() + pointer.len()) as usize];
+    Some(velocity::relay_spec::ResolvedCrankV0::read(staged).unwrap())
+}
+
+/// Submit a staged executor the way a turner does: keeper placeholder
+/// substituted with the payout account, every meta a non-signer (the fee
+/// payer is not in the account list).
+fn run_staged_executor(
+    fixture: &mut Fixture,
+    resolved: &velocity::relay_spec::ResolvedCrankV0,
+    executor_disc: &[u8],
+    payout: Pubkey,
+) {
+    let accounts = resolved
+        .accounts
+        .iter()
+        .map(|a| AccountMeta {
+            pubkey: if a.address == velocity::relay_spec::KEEPER_PLACEHOLDER {
+                payout
+            } else {
+                Pubkey::new_from_array(a.address)
+            },
+            is_signer: false,
+            is_writable: a.is_writable(),
+        })
+        .collect();
+    let mut data = executor_disc.to_vec();
+    data.extend_from_slice(&resolved.data);
+    let ix = Instruction {
+        program_id: velocity_id(),
+        accounts,
+        data,
+    };
+    let keeper = fixture.keeper.insecure_clone();
+    send(&mut fixture.svm, &keeper, ix, &[]).unwrap();
+}
+
+/// The full program-keeper expiry loop: init conditions, place an expiring
+/// order through the adapter (min-folding the wake hint), resolve, and
+/// submit the staged executor unsigned. The maker's reward accrues to the
+/// protocol User, the payout account is paid reservoir lamports, and the
+/// hint is repaired.
+#[test]
+fn program_keeper_expire_crank_pays_reservoir_lamports_to_an_unsigned_keeper() {
+    use velocity::state::clob_crank::{ClobCrankConditionsV0, CLOB_CRANK_EVICT};
+
+    let mut fixture = setup();
+    const PAYMENT: u64 = 50_000;
+    let conditions = init_crank_conditions(&mut fixture, PAYMENT);
+    let protocol_user = set_protocol_user(&mut fixture.svm);
+    // Top off the reservoir (lamport credits to a program-owned account are
+    // unrestricted — this is the hot role's off-chain top-off leg).
+    fixture.svm.airdrop(&conditions, 1_000_000_000).unwrap();
+
+    // The init wrote the evict watch over the book's counts and mirrored the
+    // payment into min_payment.
+    let acct: ClobCrankConditionsV0 = read_zero_copy(&fixture.svm, &conditions);
+    let evict = acct.read_condition(CLOB_CRANK_EVICT).unwrap();
+    assert_eq!(evict.min_payment, PAYMENT);
+    assert_eq!(
+        evict.wake_account,
+        fixture.clob_market.to_bytes(),
+        "evict watch must point at the CLOB market"
+    );
+    assert_eq!(acct.expire_wake_ts().unwrap(), i64::MAX);
+
+    // An expiring ask placed WITH the conditions account min-folds the hint.
+    let clock: solana_clock::Clock = fixture.svm.get_sysvar();
+    let max_ts = clock.unix_timestamp + 10;
+    let ix = place_clob_order_ix(
+        fixture.clob_maker_user,
+        &fixture.clob_maker_authority,
+        fixture.quoter,
+        fixture.clob_market,
+        fixture.oracle,
+        Some(conditions),
+        PlaceClobOrderParams {
+            market_index: 0,
+            direction: PositionDirection::Short,
+            price: 99 * PRICE,
+            base_asset_amount: UNIT / 2,
+            max_ts,
+            activation_delay_slots: Some(0),
+        },
+    );
+    let maker = fixture.clob_maker_authority.insecure_clone();
+    send(&mut fixture.svm, &maker, ix, &[]).unwrap();
+    let acct: ClobCrankConditionsV0 = read_zero_copy(&fixture.svm, &conditions);
+    assert_eq!(acct.expire_wake_ts().unwrap(), max_ts);
+
+    // Nothing expired yet: the resolver reports no work.
+    assert!(run_resolver(&mut fixture, conditions, true).is_none());
+
+    // Past expiry the resolver stages the executor call.
+    let mut clock: solana_clock::Clock = fixture.svm.get_sysvar();
+    clock.unix_timestamp += 20;
+    fixture.svm.set_sysvar(&clock);
+    let resolved = run_resolver(&mut fixture, conditions, true).expect("expired order is work");
+    assert_eq!(resolved.accounts.len(), 11);
+    assert_eq!(
+        resolved.accounts[2].address,
+        protocol_user.to_bytes(),
+        "filler slot must be the protocol User"
+    );
+    assert_eq!(
+        resolved.accounts[4].address,
+        fixture.clob_maker_user.to_bytes(),
+        "maker read off the book node"
+    );
+
+    let reservoir_before = fixture.svm.get_account(&conditions).unwrap().lamports;
+    // A payout account below the rent-exempt minimum after the credit fails
+    // the transaction, so keepers use an existing funded wallet.
+    let payout = Pubkey::new_unique();
+    fixture.svm.airdrop(&payout, 1_000_000_000).unwrap();
+    run_staged_executor(
+        &mut fixture,
+        &resolved,
+        velocity::instruction::CrankClobRemoveExpired::DISCRIMINATOR,
+        payout,
+    );
+
+    // Maker unwound; reward accrued to the protocol User; lamports moved
+    // reservoir -> payout; hint repaired to quiet.
+    let maker_user: User = read_zero_copy(&fixture.svm, &fixture.clob_maker_user);
+    assert_eq!(maker_user.perp_positions[0].open_asks, 0);
+    assert_eq!(maker_user.perp_positions[0].open_orders, 0);
+    assert!(maker_user.perp_positions[0].quote_asset_amount < 0);
+    let protocol: User = read_zero_copy(&fixture.svm, &protocol_user);
+    assert!(protocol.perp_positions[0].quote_asset_amount > 0);
+    assert_eq!(
+        fixture.svm.get_account(&payout).unwrap().lamports,
+        1_000_000_000 + PAYMENT
+    );
+    assert_eq!(
+        fixture.svm.get_account(&conditions).unwrap().lamports,
+        reservoir_before - PAYMENT
+    );
+    let acct: ClobCrankConditionsV0 = read_zero_copy(&fixture.svm, &conditions);
+    assert_eq!(acct.expire_wake_ts().unwrap(), i64::MAX);
+    assert_eq!(clob_ask_count(&fixture.svm, &fixture.clob_market), 0);
+}
+
+/// The evict resolver walks both sides: with both at the soft cap it stages
+/// the bid tail first (pinning the bid-side header offsets), then the ask —
+/// each executed unsigned with the reservoir paying.
+#[test]
+fn program_keeper_evict_crank_resolves_both_sides() {
+    let mut fixture = setup();
+    const PAYMENT: u64 = 10_000;
+    let conditions = init_crank_conditions(&mut fixture, PAYMENT);
+    set_protocol_user(&mut fixture.svm);
+    fixture.svm.airdrop(&conditions, 1_000_000_000).unwrap();
+
+    // Book empty: no evict work.
+    assert!(run_resolver(&mut fixture, conditions, false).is_none());
+
+    // A bid and an ask; the fixture's evict threshold is 1, so both sides
+    // are at the soft cap. Equal counts tie-break to the bid.
+    for (direction, price) in [
+        (PositionDirection::Long, 98 * PRICE),
+        (PositionDirection::Short, 99 * PRICE),
+    ] {
+        let ix = place_clob_order_ix(
+            fixture.clob_maker_user,
+            &fixture.clob_maker_authority,
+            fixture.quoter,
+            fixture.clob_market,
+            fixture.oracle,
+            Some(conditions),
+            PlaceClobOrderParams {
+                market_index: 0,
+                direction,
+                price,
+                base_asset_amount: UNIT / 2,
+                max_ts: 0,
+                activation_delay_slots: Some(0),
+            },
+        );
+        let maker = fixture.clob_maker_authority.insecure_clone();
+        send(&mut fixture.svm, &maker, ix, &[]).unwrap();
+    }
+
+    // First resolve takes the bid tail (args: market_index u16 + side byte,
+    // 0 = bid on the wire).
+    let resolved = run_resolver(&mut fixture, conditions, false).expect("bid side at soft cap");
+    assert_eq!(resolved.data, vec![0, 0, 0]);
+    let payout = Pubkey::new_unique();
+    fixture.svm.airdrop(&payout, 1_000_000_000).unwrap();
+    run_staged_executor(
+        &mut fixture,
+        &resolved,
+        velocity::instruction::CrankClobEvict::DISCRIMINATOR,
+        payout,
+    );
+    let maker_user: User = read_zero_copy(&fixture.svm, &fixture.clob_maker_user);
+    assert_eq!(maker_user.perp_positions[0].open_bids, 0);
+
+    // Second resolve takes the ask tail.
+    let resolved = run_resolver(&mut fixture, conditions, false).expect("ask side at soft cap");
+    assert_eq!(resolved.data, vec![0, 0, 1]);
+    run_staged_executor(
+        &mut fixture,
+        &resolved,
+        velocity::instruction::CrankClobEvict::DISCRIMINATOR,
+        payout,
+    );
+    let maker_user: User = read_zero_copy(&fixture.svm, &fixture.clob_maker_user);
+    assert_eq!(maker_user.perp_positions[0].open_asks, 0);
+    assert_eq!(maker_user.perp_positions[0].open_orders, 0);
+    assert_eq!(clob_ask_count(&fixture.svm, &fixture.clob_market), 0);
+    assert_eq!(
+        fixture.svm.get_account(&payout).unwrap().lamports,
+        1_000_000_000 + 2 * PAYMENT
+    );
+
+    // Book clear again: quiet.
+    assert!(run_resolver(&mut fixture, conditions, false).is_none());
 }

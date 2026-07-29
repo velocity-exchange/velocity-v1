@@ -2,6 +2,7 @@ import { Command } from 'commander';
 import { PublicKey, SystemProgram, SYSVAR_RENT_PUBKEY } from '@solana/web3.js';
 import { BN } from '@coral-xyz/anchor';
 import {
+	getClobCrankConditionsPublicKey,
 	getPerpMarketPublicKeySync,
 	QuoterCpiLeg,
 	QuoterType,
@@ -462,6 +463,75 @@ export function registerQuoter(parent: Command): void {
 					'velocity-admin quoter set-priority'
 				);
 				reportDispatch(`quoter ${quoterArg} priority = ${priority}`, result);
+			} finally {
+				if ((client as any).isSubscribed) {
+					await client.unsubscribe();
+				}
+			}
+		}
+	);
+
+	withGlobalOptions(
+		quoter
+			.command(
+				'set-market-clob <market> <quoter> <clobMarket> <keeperPaymentLamports> [expireFallbackSlots]'
+			)
+			.description(
+				"Name a perp market's canonical CLOB quoter entry (warm/cold admin): once set, every router fill must carry it (mandatory baseline). Also stands up (or re-prices) the market's relay crank conditions account in the same instruction — the evict/expire condition block plus the lamport reservoir that pays relay keepers <keeperPaymentLamports> per crank. Top the reservoir off with a plain lamport transfer to the conditions PDA. [expireFallbackSlots] is the expire fallback poll interval (default 1500 slots, ~10 min)."
+			)
+			.option(
+				'--admin <pubkey>',
+				'admin signer (defaults to the wallet; pass the vault PDA with --multisig)'
+			)
+	).action(
+		async (
+			market: string,
+			quoterArg: string,
+			clobMarket: string,
+			keeperPaymentLamports: string,
+			expireFallbackSlots: string | undefined,
+			flags: { admin?: string },
+			cmd: Command
+		) => {
+			const marketIndex = Number.parseInt(market, 10);
+			const opts = readGlobalOpts(cmd);
+			const provider = buildProvider(opts);
+			const client = await buildAdminClient(opts, false);
+			try {
+				const ix = client.program.instruction.updatePerpMarketClobQuoter(
+					new BN(keeperPaymentLamports),
+					new BN(expireFallbackSlots ?? 1500),
+					{
+						accounts: {
+							admin: flags.admin
+								? new PublicKey(flags.admin)
+								: provider.wallet.publicKey,
+							state: await client.getStatePublicKey(),
+							perpMarket: getPerpMarketPublicKeySync(
+								client.program.programId,
+								marketIndex
+							),
+							quoter: new PublicKey(quoterArg),
+							clobMarket: new PublicKey(clobMarket),
+							crankConditions: getClobCrankConditionsPublicKey(
+								client.program.programId,
+								marketIndex
+							),
+							rent: SYSVAR_RENT_PUBKEY,
+							systemProgram: SystemProgram.programId,
+						},
+					}
+				);
+				const result = await sendOrPropose(
+					provider,
+					[ix],
+					opts.multisig ? new PublicKey(opts.multisig) : undefined,
+					'velocity-admin quoter set-market-clob'
+				);
+				reportDispatch(
+					`perp-market[${market}] clob_quoter = ${quoterArg}, crank pays ${keeperPaymentLamports} lamports`,
+					result
+				);
 			} finally {
 				if ((client as any).isSubscribed) {
 					await client.unsubscribe();

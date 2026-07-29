@@ -2375,6 +2375,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "relay-spec"
+version = "0.1.0"
+source = "git+https://github.com/velocity-exchange/relay?rev=b8c6ecd0bb65f5dcad929fc7972a4a4241232fd0#b8c6ecd0bb65f5dcad929fc7972a4a4241232fd0"
+dependencies = [
+ "bytemuck",
+]
+
+[[package]]
 name = "rend"
 version = "0.4.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4635,7 +4643,7 @@ dependencies = [
 
 [[package]]
 name = "velocity"
-version = "2.164.0"
+version = "2.165.0"
 dependencies = [
  "anchor-lang",
  "anchor-spl",
@@ -4650,6 +4658,7 @@ dependencies = [
  "num-traits",
  "pyth-client",
  "pyth_lazer",
+ "relay-spec",
  "solana-program",
  "solana-security-txt",
  "static_assertions",

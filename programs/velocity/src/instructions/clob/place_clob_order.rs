@@ -4,33 +4,42 @@
 //! the CLOB trusts its `place_authority` (the velocity signer PDA) and only
 //! enforces book-level rules (tick/step/min, capacity, activation delay).
 
-use anchor_lang::prelude::*;
-use solana_program::{
-    instruction::{AccountMeta, Instruction},
-    program::{get_return_data, invoke_signed},
+use {
+    crate::{
+        controller::position::{
+            add_new_position, get_position_index, increase_open_bids_and_asks, PositionDirection,
+        },
+        error::ErrorCode,
+        instructions::{
+            constraints::*,
+            optional_accounts::{load_maps, AccountMaps},
+        },
+        load_mut,
+        math::{margin::meets_place_order_margin_requirement, orders::is_order_position_reducing},
+        msg,
+        signer::get_signer_seeds,
+        state::{
+            clob_crank::{ClobCrankConditionsV0, CLOB_CRANK_CONDITIONS_PDA_SEED},
+            market_status::MarketStatus,
+            perp_market_map::MarketSet,
+            prop_amm::{
+                ClobOrderRefV0, ClobPlaceOrderArgsV0, ClobSide, QuoterType, QuoterV0,
+                CLOB_PLACE_ORDER_V0_DISCRIMINATOR,
+            },
+            state::State,
+            user::User,
+        },
+        validate,
+    },
+    anchor_lang::prelude::*,
+    solana_program::{
+        instruction::{AccountMeta, Instruction},
+        program::{get_return_data, invoke_signed},
+    },
 };
-
-use crate::controller::position::{
-    add_new_position, get_position_index, increase_open_bids_and_asks, PositionDirection,
-};
-use crate::error::ErrorCode;
-use crate::instructions::constraints::*;
-use crate::instructions::optional_accounts::{load_maps, AccountMaps};
-use crate::math::margin::meets_place_order_margin_requirement;
-use crate::math::orders::is_order_position_reducing;
-use crate::msg;
-use crate::signer::get_signer_seeds;
-use crate::state::market_status::MarketStatus;
-use crate::state::perp_market_map::MarketSet;
-use crate::state::prop_amm::{
-    ClobOrderRefV0, ClobPlaceOrderArgsV0, ClobSide, QuoterType, QuoterV0,
-    CLOB_PLACE_ORDER_V0_DISCRIMINATOR,
-};
-use crate::state::state::State;
-use crate::state::user::User;
-use crate::{load_mut, validate};
 
 #[derive(Accounts)]
+#[instruction(params: PlaceClobOrderParams)]
 pub struct PlaceClobOrder<'info> {
     pub state: AccountLoader<'info, State>,
     #[account(
@@ -52,6 +61,20 @@ pub struct PlaceClobOrder<'info> {
     /// CHECK: the protocol signer PDA — the CLOB's `place_authority`.
     #[account(address = state.load()?.signer)]
     pub velocity_signer: UncheckedAccount<'info>,
+    /// The market's relay conditions account, so an expiring placement
+    /// min-folds its `max_ts` into the expire condition's `wake_ts` hint.
+    /// Optional — placement must not brick on a market whose conditions were
+    /// never initialized, and a missed hint is caught by the fallback poll
+    /// condition (latency, not liveness).
+    #[account(
+        mut,
+        seeds = [
+            CLOB_CRANK_CONDITIONS_PDA_SEED,
+            params.market_index.to_le_bytes().as_ref(),
+        ],
+        bump
+    )]
+    pub crank_conditions: Option<AccountLoader<'info, ClobCrankConditionsV0>>,
 }
 
 #[derive(Clone, Copy, AnchorSerialize, AnchorDeserialize)]
@@ -222,6 +245,14 @@ pub fn handle_place_clob_order<'c: 'info, 'info>(
         risk_increasing,
         isolated_market_index,
     )?;
+
+    // Wake the expiry crank no later than this order expires. Best-effort:
+    // the fallback poll condition covers placements that omit the account.
+    if params.max_ts != 0 {
+        if let Some(conditions) = &ctx.accounts.crank_conditions {
+            load_mut!(conditions)?.note_expiry(params.max_ts)?;
+        }
+    }
 
     msg!(
         "placed clob order {} (node {}) for user {}",

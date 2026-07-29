@@ -1,39 +1,72 @@
 //! Permissionless cranks over the CLOB's removal ixs (`evict_worst_v0`,
 //! `remove_expired_v0`). Removal is velocity-mediated so the maker's
-//! open-order aggregates stay exact: the keeper passes the maker's `User`
-//! (read off the book off-chain), the CLOB returns the removed order, and
-//! velocity unwinds the remaining size — failing closed if the book's tail
-//! changed and the removal hit someone else's order. The keeper earns the
-//! flat filler reward from the maker, mirroring DLOB order-expiry cranks.
+//! open-order aggregates stay exact: the caller passes the maker's `User`
+//! (read off the book off-chain, or staged by the resolver), the CLOB returns
+//! the removed order, and velocity unwinds the remaining size — failing
+//! closed if the book's tail changed and the removal hit someone else's
+//! order.
+//!
+//! The cranks are dual-mode, selected by which `filler` rides the call:
+//!
+//! - **Signed keeper** (today's path): the caller signs for its own filler
+//!   `User` and earns the flat removal reward from the maker, mirroring DLOB
+//!   order-expiry cranks. No lamports move.
+//! - **Program keeper** (relay): the filler is the protocol-owned `User`
+//!   (authority = the velocity signer PDA, which nobody can sign for), so no
+//!   signature is required — relay turners submit executors unsigned. The
+//!   maker's reward accrues to the protocol `User`, and the caller's
+//!   `authority` account is instead paid `keeper_payment_lamports` from the
+//!   market's conditions-account reservoir, giving relay's `assert_paid_v0`
+//!   a real fee to measure.
+//!
+//! Whenever the conditions account is passed, the executor also repairs the
+//! expire condition's `wake_ts` hint to the true minimum over the
+//! post-removal book, so a due hint goes quiet instead of waking turners
+//! forever.
 
-use anchor_lang::prelude::*;
-use solana_program::{
-    instruction::{AccountMeta, Instruction},
-    program::{get_return_data, invoke_signed},
+use {
+    crate::{
+        controller::{
+            orders::pay_keeper_flat_reward_for_perps,
+            position::{decrease_open_bids_and_asks, get_position_index},
+        },
+        error::ErrorCode,
+        instructions::constraints::*,
+        load_mut, msg,
+        signer::get_signer_seeds,
+        state::{
+            clob_crank::{ClobCrankConditionsV0, CLOB_CRANK_CONDITIONS_PDA_SEED},
+            perp_market::PerpMarket,
+            prop_amm::{
+                clob_min_expiry, ClobEvictWorstArgsV0, ClobOrderRefV0, ClobRemoveExpiredArgsV0,
+                ClobRemovedOrderV0, ClobSide, QuoterType, QuoterV0,
+                CLOB_EVICT_WORST_V0_DISCRIMINATOR, CLOB_REMOVE_EXPIRED_V0_DISCRIMINATOR,
+            },
+            state::State,
+            user::{User, UserStats},
+        },
+        validate,
+    },
+    anchor_lang::prelude::*,
+    solana_program::{
+        instruction::{AccountMeta, Instruction},
+        program::{get_return_data, invoke_signed},
+    },
 };
-
-use crate::controller::orders::pay_keeper_flat_reward_for_perps;
-use crate::controller::position::{decrease_open_bids_and_asks, get_position_index};
-use crate::error::ErrorCode;
-use crate::instructions::constraints::*;
-use crate::msg;
-use crate::signer::get_signer_seeds;
-use crate::state::perp_market::PerpMarket;
-use crate::state::prop_amm::{
-    ClobEvictWorstArgsV0, ClobOrderRefV0, ClobRemoveExpiredArgsV0, ClobRemovedOrderV0, ClobSide,
-    QuoterType, QuoterV0, CLOB_EVICT_WORST_V0_DISCRIMINATOR, CLOB_REMOVE_EXPIRED_V0_DISCRIMINATOR,
-};
-use crate::state::state::State;
-use crate::state::user::{User, UserStats};
-use crate::{load_mut, validate};
 
 #[derive(Accounts)]
+#[instruction(market_index: u16)]
 pub struct CrankClobOrderRemoval<'info> {
     pub state: AccountLoader<'info, State>,
-    pub authority: Signer<'info>,
+    /// CHECK: in signed-keeper mode this must sign for `filler` (enforced by
+    /// the constraint below); in program-keeper mode it is only the lamport
+    /// payout target — relay's `KEEPER_PLACEHOLDER` slot — and no signature
+    /// is required.
+    #[account(mut)]
+    pub authority: UncheckedAccount<'info>,
     #[account(
         mut,
-        constraint = can_sign_for_user(&filler, &authority)?
+        constraint = can_crank_for_filler(&filler, &authority, &state)?
     )]
     pub filler: AccountLoader<'info, User>,
     #[account(
@@ -61,6 +94,18 @@ pub struct CrankClobOrderRemoval<'info> {
     /// CHECK: the protocol signer PDA — the CLOB's `place_authority`.
     #[account(address = state.load()?.signer)]
     pub velocity_signer: UncheckedAccount<'info>,
+    /// The market's relay conditions account: the expiry-hint host and the
+    /// lamport reservoir. Optional so signed keepers can crank markets whose
+    /// conditions were never initialized; required in program-keeper mode.
+    #[account(
+        mut,
+        seeds = [
+            CLOB_CRANK_CONDITIONS_PDA_SEED,
+            market_index.to_le_bytes().as_ref(),
+        ],
+        bump
+    )]
+    pub crank_conditions: Option<AccountLoader<'info, ClobCrankConditionsV0>>,
 }
 
 pub fn handle_crank_clob_evict(
@@ -88,7 +133,8 @@ pub fn handle_crank_clob_remove_expired(
 }
 
 /// Shared crank body: CPI the removal, verify it hit the passed maker,
-/// unwind the aggregates, pay the keeper from the maker.
+/// unwind the aggregates, pay the keeper — quote from the maker in both
+/// modes, plus reservoir lamports in program-keeper mode.
 fn crank_clob_removal(
     ctx: Context<CrankClobOrderRemoval>,
     market_index: u16,
@@ -96,6 +142,12 @@ fn crank_clob_removal(
 ) -> Result<()> {
     let clock = Clock::get()?;
     let state = ctx.accounts.state.load()?;
+    let program_keeper_mode = ctx.accounts.filler.load()?.authority == state.signer;
+    validate!(
+        !program_keeper_mode || ctx.accounts.crank_conditions.is_some(),
+        ErrorCode::DefaultError,
+        "program-keeper crank requires the market's conditions account"
+    )?;
 
     {
         let quoter = ctx.accounts.quoter.load()?;
@@ -162,37 +214,61 @@ fn crank_clob_removal(
     )?;
 
     // Pay the keeper from the maker first (the same flat reward DLOB order
-    // expiry pays), THEN unwind — unwinding an otherwise-empty position
-    // frees its slot, and the reward needs to resolve it.
-    let mut user = load_mut!(ctx.accounts.user)?;
-    let mut filler = load_mut!(ctx.accounts.filler)?;
-    let mut market = load_mut!(ctx.accounts.perp_market)?;
-    validate!(
-        market.market_index == market_index,
-        ErrorCode::DefaultError,
-        "perp market {} passed for market {}",
-        market.market_index,
-        market_index
-    )?;
-    pay_keeper_flat_reward_for_perps(
-        &mut user,
-        Some(&mut filler),
-        &mut market,
-        state.perp_fee_structure.flat_filler_fee,
-        clock.slot,
-    )?;
+    // expiry pays; in program-keeper mode the filler is the protocol User),
+    // THEN unwind — unwinding an otherwise-empty position frees its slot,
+    // and the reward needs to resolve it.
+    {
+        let mut user = load_mut!(ctx.accounts.user)?;
+        let mut filler = load_mut!(ctx.accounts.filler)?;
+        let mut market = load_mut!(ctx.accounts.perp_market)?;
+        validate!(
+            market.market_index == market_index,
+            ErrorCode::DefaultError,
+            "perp market {} passed for market {}",
+            market.market_index,
+            market_index
+        )?;
+        pay_keeper_flat_reward_for_perps(
+            &mut user,
+            Some(&mut filler),
+            &mut market,
+            state.perp_fee_structure.flat_filler_fee,
+            clock.slot,
+        )?;
 
-    let position_index = get_position_index(&user.perp_positions, market_index)?;
-    decrease_open_bids_and_asks(
-        &mut user.perp_positions[position_index],
-        &removed.side.to_position_direction(),
-        removed.base_asset_amount,
-        true,
-    )?;
-    user.perp_positions[position_index].open_orders = user.perp_positions[position_index]
-        .open_orders
-        .saturating_sub(1);
-    user.decrement_open_orders(false);
+        let position_index = get_position_index(&user.perp_positions, market_index)?;
+        decrease_open_bids_and_asks(
+            &mut user.perp_positions[position_index],
+            &removed.side.to_position_direction(),
+            removed.base_asset_amount,
+            true,
+        )?;
+        user.perp_positions[position_index].open_orders = user.perp_positions[position_index]
+            .open_orders
+            .saturating_sub(1);
+        user.decrement_open_orders(false);
+    }
+
+    if let Some(conditions_loader) = &ctx.accounts.crank_conditions {
+        // Repair the expire hint against the post-removal book, so a due
+        // hint goes quiet once the last expiring order is gone.
+        let true_min = clob_min_expiry(&ctx.accounts.clob_market.try_borrow_data()?);
+        let payment = {
+            let mut conditions = load_mut!(conditions_loader)?;
+            conditions.repair_expiry(true_min)?;
+            conditions.keeper_payment_lamports
+        };
+        if program_keeper_mode {
+            let conditions_info = conditions_loader.to_account_info();
+            let rent_minimum = Rent::get()?.minimum_balance(conditions_info.data_len());
+            ClobCrankConditionsV0::pay_keeper_lamports(
+                &conditions_info,
+                &ctx.accounts.authority.to_account_info(),
+                payment,
+                rent_minimum,
+            )?;
+        }
+    }
 
     msg!(
         "cranked clob removal of order {} for user {}",

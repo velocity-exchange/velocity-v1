@@ -52,6 +52,7 @@ velocity-admin fees set-recipient <pubkey> <perp|spot>           # cold admin
 velocity-admin fees set-split <ammFeeNumerator> <ifFeeNumerator> # warm/cold admin
 velocity-admin fees withdraw-perp <market> <amount>  # FeeWithdraw hot key; pays the recipient's ATA (created if needed)
 velocity-admin fees withdraw-spot <market> <amount>  # FeeWithdraw hot key; pays the recipient's ATA (created if needed)
+velocity-admin fees withdraw-protocol-user <market> <amount>  # FeeWithdraw hot key; drains settled crank rewards from the protocol-owned User (settle-pnl first)
 velocity-admin fees sweep <market>                               # permissionless
 velocity-admin fees transfer-fee-pnl <feePoolMarket> <pnlPoolMarket> <amount> <fee-to-pnl|pnl-to-fee> # warm/cold admin
 
@@ -72,6 +73,7 @@ velocity-admin quoter update-config <quoter> [--response-account <pk>] [--quote-
 velocity-admin quoter set-active <quoter> <true|false> [--authority <pk>]  # maker kill switch; entry authority signs
 velocity-admin quoter set-approved <quoter> <true|false> [--admin <pk>]    # warm/cold admin vetting gate
 velocity-admin quoter set-priority <quoter> <0-255> [--admin <pk>]         # warm/cold admin; lower fills first, pro rata within a tier
+velocity-admin quoter set-market-clob <market> <quoter> <clobMarket> <keeperPaymentLamports> [expireFallbackSlots] [--admin <pk>]  # warm/cold admin; names the mandatory-baseline CLOB and stands up (or re-prices) the market's relay crank conditions + reservoir
 
 velocity-admin if stake <market> <amount> [--authority <pk>] [--user-token-account <pk>]  # inits the stake account if missing
 

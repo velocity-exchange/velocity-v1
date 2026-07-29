@@ -5,16 +5,16 @@
 //! legs the router fill uses. Registration ixs live in
 //! `instructions::quoter_registry`.
 
-use std::collections::BTreeMap;
-
-use anchor_lang::prelude::*;
-use solana_program::{
-    instruction::{AccountMeta, Instruction},
-    program::{get_return_data, invoke_signed},
+use {
+    crate::{error::ErrorCode, msg, signer::get_signer_seeds, state::traits::Size, validate},
+    anchor_lang::prelude::*,
+    solana_program::{
+        instruction::{AccountMeta, Instruction},
+        program::{get_return_data, invoke_signed},
+    },
+    static_assertions::const_assert_eq,
+    std::{collections::BTreeMap, convert::TryInto},
 };
-use static_assertions::const_assert_eq;
-
-use crate::{error::ErrorCode, msg, signer::get_signer_seeds, state::traits::Size, validate};
 
 /// Max accounts that can be registered per CPI leg (quote / execute).
 pub const MAX_QUOTER_ACCOUNTS: usize = 32;
@@ -278,6 +278,98 @@ pub const CLOB_PLACE_ORDER_V0_DISCRIMINATOR: [u8; 8] = [100, 204, 57, 226, 245, 
 pub const CLOB_CANCEL_ORDER_V0_DISCRIMINATOR: [u8; 8] = [70, 91, 225, 16, 228, 203, 124, 174];
 pub const CLOB_EVICT_WORST_V0_DISCRIMINATOR: [u8; 8] = [106, 60, 27, 129, 80, 27, 37, 73];
 pub const CLOB_REMOVE_EXPIRED_V0_DISCRIMINATOR: [u8; 8] = [241, 135, 215, 18, 254, 107, 179, 119];
+
+// --- CLOB account byte layout ---
+//
+// The crank resolvers (and the executor's expiry-hint repair) read the CLOB
+// market account's bytes directly: there is no CLOB instruction that answers
+// "which order is the tail" or "which order is expired", and the removal ixs
+// take the answer as a hint. These offsets mirror `ClobHeaderV0`/`OrderNodeV0`
+// in `anchor-v2/programs/clob/src/state.rs` — that program lives in a separate
+// workspace (anchor v2), so the layout can't be imported and is pinned here
+// instead; the litesvm crank tests exercise these reads against the real .so,
+// so a layout drift fails them. Every value is an *account-data* offset
+// (anchor's 8-byte discriminator included).
+
+/// `ClobHeaderV0.worst_bid` / `.worst_ask` — the side tails, what
+/// `evict_worst_v0` removes.
+pub const CLOB_WORST_BID_OFFSET: usize = 120;
+pub const CLOB_WORST_ASK_OFFSET: usize = 124;
+/// `ClobHeaderV0.bid_count` — first of the two adjacent u32 counts the evict
+/// condition's change-watch covers (`bid_count` then `ask_count`).
+pub const CLOB_BID_COUNT_OFFSET: usize = 136;
+pub const CLOB_ASK_COUNT_OFFSET: usize = 140;
+/// `ClobHeaderV0.evict_threshold_per_side` — the soft cap.
+pub const CLOB_EVICT_THRESHOLD_OFFSET: usize = 156;
+/// `ClobHeaderV0.market_index`.
+pub const CLOB_MARKET_INDEX_OFFSET: usize = 160;
+/// Start of the `OrderNodeV0` arena: `[disc][header][len: u32]` padded to the
+/// node's 8-byte alignment. Header size is const-asserted at 8352 upstream.
+pub const CLOB_ORDERS_OFFSET: usize = 8368;
+/// `size_of::<OrderNodeV0>()`.
+pub const CLOB_NODE_LEN: usize = 96;
+/// The CLOB's list terminator.
+pub const CLOB_NIL: u32 = u32::MAX;
+/// `OrderBitFlag::Open` — set on a live order, clear on a free node.
+pub const CLOB_ORDER_BIT_FLAG_OPEN: u8 = 1;
+
+/// The slice of an `OrderNodeV0` the cranks care about, copied out of the
+/// account bytes.
+#[derive(Clone, Copy, Debug)]
+pub struct ClobNodeView {
+    pub user: Pubkey,
+    pub base_asset_amount: u64,
+    pub max_ts: i64,
+    pub order_id: u64,
+    pub is_open: bool,
+}
+
+/// Read a u32 header field at an account-data offset.
+pub fn read_clob_u32(data: &[u8], offset: usize) -> Option<u32> {
+    Some(u32::from_le_bytes(
+        data.get(offset..offset + 4)?.try_into().ok()?,
+    ))
+}
+
+/// Node-arena capacity implied by the account's length.
+pub fn clob_node_capacity(data_len: usize) -> usize {
+    data_len.saturating_sub(CLOB_ORDERS_OFFSET) / CLOB_NODE_LEN
+}
+
+/// Read node `index` out of a CLOB market account's data. `None` past the
+/// arena.
+pub fn read_clob_node(data: &[u8], index: u32) -> Option<ClobNodeView> {
+    let start = CLOB_ORDERS_OFFSET + (index as usize).checked_mul(CLOB_NODE_LEN)?;
+    let node = data.get(start..start + CLOB_NODE_LEN)?;
+    Some(ClobNodeView {
+        user: Pubkey::new_from_array(node[..32].try_into().ok()?),
+        base_asset_amount: u64::from_le_bytes(node[40..48].try_into().ok()?),
+        max_ts: i64::from_le_bytes(node[56..64].try_into().ok()?),
+        order_id: u64::from_le_bytes(node[64..72].try_into().ok()?),
+        is_open: node[88] & CLOB_ORDER_BIT_FLAG_OPEN != 0,
+    })
+}
+
+/// The true minimum expiry over live orders (`i64::MAX` when none expires) —
+/// what the crank executor repairs the expire condition's `wake_ts` hint to.
+pub fn clob_min_expiry(data: &[u8]) -> i64 {
+    (0..clob_node_capacity(data.len()) as u32)
+        .filter_map(|i| read_clob_node(data, i))
+        .filter(|node| node.is_open && node.max_ts != 0)
+        .map(|node| node.max_ts)
+        .min()
+        .unwrap_or(i64::MAX)
+}
+
+/// The first live order expired at `now`, with its node index — the expire
+/// resolver's work discovery.
+pub fn clob_find_expired(data: &[u8], now: i64) -> Option<(u32, ClobNodeView)> {
+    (0..clob_node_capacity(data.len()) as u32).find_map(|i| {
+        read_clob_node(data, i)
+            .filter(|node| node.is_open && node.max_ts != 0 && node.max_ts <= now)
+            .map(|node| (i, node))
+    })
+}
 
 /// Execute leg for external CPI quoters, threaded into the router pass by the
 /// fill entrypoint — the controller works over account maps and can't CPI

@@ -1637,10 +1637,14 @@ export class VelocityClient {
 	 * Initializes `authority`'s `RevenueShareEscrow` account — the per-user account that tracks
 	 * pending builder-fee orders and the list of builders this user has approved (`approvedBuilders`),
 	 * required to place orders carrying a builder fee. On creation, `escrow.referrer` is copied from
-	 * the authority's existing `UserStats.referrer`, if any.
+	 * the authority's existing `UserStats.referrer`, if any — so create the escrow *after* the
+	 * authority's first `initializeUser`, which is where a referrer is recorded; the snapshot is
+	 * taken once and there is no instruction that re-reads it later.
 	 * @param authority - Authority the escrow is created for.
-	 * @param numOrders - Number of pending-order slots to allocate; determines account rent/size. Can
-	 * be grown later with `resizeRevenueShareEscrowOrders` (never shrunk).
+	 * @param numOrders - Number of pending-order slots to allocate; determines account rent/size.
+	 * Must be at least 1 — the program rejects a zero-capacity escrow, which could hold neither a
+	 * builder nor a referral row and would silently suppress all revenue share. Can be grown later
+	 * with `resizeRevenueShareEscrowOrders` (never shrunk).
 	 * @param txParams - Optional compute-unit/priority-fee overrides for the transaction.
 	 * @returns The transaction signature.
 	 */
@@ -1662,7 +1666,7 @@ export class VelocityClient {
 	 * Builds the `initializeRevenueShareEscrow` instruction. See `initializeRevenueShareEscrow` for
 	 * semantics.
 	 * @param authority - Authority the escrow is created for.
-	 * @param numOrders - Number of pending-order slots to allocate.
+	 * @param numOrders - Number of pending-order slots to allocate. Must be at least 1.
 	 * @param overrides.payer - Pays for account creation instead of `this.wallet`, if set.
 	 * @returns The initialize instruction.
 	 */

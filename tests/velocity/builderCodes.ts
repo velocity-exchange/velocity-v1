@@ -378,6 +378,29 @@ describe('builder codes', () => {
 		assert(builderAcc.totalReferrerRewards.toNumber() === 0);
 	});
 
+	it('cannot initialize a RevenueShareEscrow with zero order slots', async () => {
+		// A zero-capacity escrow can hold neither a builder nor a referral row, so every fee,
+		// discount and reward computation silently falls back to its no-revenue-share value.
+		// `authority` is unchecked on this instruction and only `payer` signs, so a third party
+		// could create any user's escrow PDA this way and suppress their rewards (finding #114).
+		// Must run before the successful init below, while the PDA still does not exist.
+		try {
+			await userClient.initializeRevenueShareEscrow(
+				userClient.wallet.publicKey,
+				0
+			);
+			assert(
+				false,
+				'should throw error when initializing an escrow with zero order slots'
+			);
+		} catch (e) {
+			assert(
+				e.message.includes('0x17f1'), // DefaultError
+				`expected DefaultError (0x17f1), got ${e.message}`
+			);
+		}
+	});
+
 	it('user can initialize a RevenueShareEscrow', async () => {
 		const numOrders = 2;
 

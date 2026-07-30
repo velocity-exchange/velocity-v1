@@ -253,11 +253,28 @@ pub fn handle_place_clob_order<'c: 'info, 'info>(
         isolated_market_index,
     )?;
 
-    // Wake the expiry crank no later than this order expires. Best-effort:
-    // the fallback poll condition covers placements that omit the account.
-    if params.max_ts != 0 {
-        if let Some(conditions) = &ctx.accounts.crank_conditions {
-            load_mut!(conditions)?.note_expiry(params.max_ts)?;
+    // Wake the cranks no later than this order matters: min-fold its expiry
+    // into the expire hint, and — when it rests behind a speed bump — its
+    // activation slot into the cross-activation hint, so a cross that makers
+    // lined up for fires the moment the order becomes matchable. Best-effort:
+    // the fallback poll covers placements that omit the account.
+    if let Some(conditions) = &ctx.accounts.crank_conditions {
+        let mut conditions = load_mut!(conditions)?;
+        if params.max_ts != 0 {
+            conditions.note_expiry(params.max_ts)?;
+        }
+        let delay = match params.activation_delay_slots {
+            Some(delay) => delay,
+            // Mirror the CLOB's default (`slot + default_delay`), read
+            // straight off the book's header bytes.
+            None => crate::state::prop_amm::read_clob_u32(
+                &ctx.accounts.clob_market.try_borrow_data()?,
+                crate::state::prop_amm::CLOB_DEFAULT_ACTIVATION_DELAY_OFFSET,
+            )
+            .ok_or(ErrorCode::DefaultError)?,
+        };
+        if delay > 0 {
+            conditions.note_activation(clock.slot.saturating_add(delay as u64))?;
         }
     }
 

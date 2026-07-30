@@ -38,7 +38,7 @@ use {
             clob_crank::{ClobCrankConditionsV0, CLOB_CRANK_CONDITIONS_PDA_SEED},
             perp_market::PerpMarket,
             prop_amm::{
-                clob_min_expiry, ClobEvictWorstArgsV0, ClobOrderRefV0, ClobRemoveExpiredArgsV0,
+                clob_hint_scan, ClobEvictWorstArgsV0, ClobOrderRefV0, ClobRemoveExpiredArgsV0,
                 ClobRemovedOrderV0, ClobSide, QuoterType, QuoterV0,
                 CLOB_EVICT_WORST_V0_DISCRIMINATOR, CLOB_REMOVE_EXPIRED_V0_DISCRIMINATOR,
             },
@@ -276,12 +276,16 @@ fn crank_clob_removal(
     }
 
     if let Some(conditions_loader) = &ctx.accounts.crank_conditions {
-        // Repair the expire hint against the post-removal book, so a due
-        // hint goes quiet once the last expiring order is gone.
-        let true_min = clob_min_expiry(&ctx.accounts.clob_market.try_borrow_data()?);
+        // Repair both wake hints against the post-removal book in one scan,
+        // so a due hint goes quiet once its work is gone.
+        let (min_expiry, min_activation) = crate::state::prop_amm::clob_hint_scan(
+            &ctx.accounts.clob_market.try_borrow_data()?,
+            clock.slot,
+        );
         let payment = {
             let mut conditions = load_mut!(conditions_loader)?;
-            conditions.repair_expiry(true_min)?;
+            conditions.repair_expiry(min_expiry)?;
+            conditions.repair_activation(min_activation)?;
             conditions.keeper_payment_lamports
         };
         if program_keeper_mode {

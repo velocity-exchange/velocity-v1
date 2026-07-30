@@ -16,8 +16,9 @@ use {
         error::ErrorCode,
         state::{
             clob_crank::{
-                ClobCrankConditionsV0, CLOB_CRANK_CROSS, CLOB_CRANK_CROSS_FALLBACK,
-                CLOB_CRANK_EVICT, CLOB_CRANK_EXPIRE, CLOB_CRANK_EXPIRE_FALLBACK,
+                ClobCrankConditionsV0, CLOB_CRANK_CROSS, CLOB_CRANK_CROSS_ACTIVATION,
+                CLOB_CRANK_CROSS_FALLBACK, CLOB_CRANK_EVICT, CLOB_CRANK_EXPIRE,
+                CLOB_CRANK_EXPIRE_FALLBACK,
             },
             prop_amm::{CLOB_BEST_BID_OFFSET, CLOB_BID_COUNT_OFFSET},
         },
@@ -56,6 +57,7 @@ pub fn write_clob_crank_conditions(
     keeper_payment_lamports: u64,
     expire_fallback_slots: u64,
     initial_expire_wake_ts: i64,
+    initial_activation_wake_slot: u64,
 ) -> Result<()> {
     validate!(
         keeper_payment_lamports > 0,
@@ -135,11 +137,24 @@ pub fn write_clob_crank_conditions(
     )?;
     conditions.write_condition(
         CLOB_CRANK_CROSS_FALLBACK,
-        // Activation-slot maturation makes an order matchable with no
-        // account change, and a PropAMM crossing the CLOB has no single
-        // account to watch — the poll is the liveness floor for both (the
-        // book publisher is the fast path).
+        // A PropAMM crossing the CLOB has no single account to watch — the
+        // poll is that case's liveness floor (the book publisher is the
+        // fast path).
         &ConditionV0::every_slots(expire_fallback_slots, cross_spec, &resolver_accounts),
+    )?;
+    let (mut activation, keep_wake_slot) = (
+        ConditionV0::at_slot(u64::MAX, cross_spec, &resolver_accounts),
+        initial_activation_wake_slot,
+    );
+    activation.wake_slot = keep_wake_slot;
+    conditions.write_condition(
+        CLOB_CRANK_CROSS_ACTIVATION,
+        // Activation-slot maturation makes an order matchable with no
+        // account change — but it is exactly when makers who lined up
+        // against a speed-bumped order expect the cross, so the program
+        // names the slot precisely: min-folded at placement, repaired by
+        // every landing crank's scan.
+        &activation,
     )?;
     Ok(())
 }

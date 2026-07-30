@@ -1871,7 +1871,13 @@ fn cross_match_crank_fills_a_crossed_clob_and_keeps_the_spread() {
     };
     assert!(resolve_cross(&mut fixture).is_none(), "book is uncrossed");
 
-    // Cross it again and let the resolver drive the whole crank.
+    // Cross it again — this time behind a speed bump, the makers-line-up
+    // scenario: the ask rests immediately, the crossing bid activates three
+    // slots out. Placement min-folds the activation slot into the AtSlot
+    // wake, the resolver reports no work until the slot arrives, and the
+    // cross fires the moment it does.
+    fixture.svm.warp_to_slot(20);
+    set_oracle(&mut fixture.svm, fixture.oracle, (100 * PRICE_PRECISION) as i64, 20);
     place_clob_ask(&mut fixture, 99 * PRICE, UNIT / 2);
     let ix = place_clob_order_ix(
         fixture.clob_maker_user,
@@ -1879,25 +1885,36 @@ fn cross_match_crank_fills_a_crossed_clob_and_keeps_the_spread() {
         fixture.quoter,
         fixture.clob_market,
         fixture.oracle,
-        None,
+        Some(conditions),
         PlaceClobOrderParams {
             market_index: 0,
             direction: PositionDirection::Long,
             price: 101 * PRICE,
             base_asset_amount: UNIT / 2,
             max_ts: 0,
-            activation_delay_slots: Some(0),
+            activation_delay_slots: Some(3),
         },
     );
     send(&mut fixture.svm, &maker_authority, ix, &[]).unwrap();
-    fixture.svm.warp_to_slot(14);
-    set_oracle(&mut fixture.svm, fixture.oracle, (100 * PRICE_PRECISION) as i64, 14);
+    {
+        use velocity::state::clob_crank::ClobCrankConditionsV0;
+        let acct: ClobCrankConditionsV0 = read_zero_copy(&fixture.svm, &conditions);
+        assert_eq!(
+            acct.activation_wake_slot().unwrap(),
+            23,
+            "placement min-folds the activation slot into the AtSlot wake"
+        );
+    }
+    // Before activation the crossing bid isn't matchable: no work.
+    assert!(resolve_cross(&mut fixture).is_none(), "speed bump still running");
 
+    fixture.svm.warp_to_slot(23);
+    set_oracle(&mut fixture.svm, fixture.oracle, (100 * PRICE_PRECISION) as i64, 23);
     let surplus_before = {
         let protocol: User = read_zero_copy(&fixture.svm, &protocol_user);
         protocol.perp_positions[0].quote_asset_amount
     };
-    let resolved = resolve_cross(&mut fixture).expect("crossed book is work");
+    let resolved = resolve_cross(&mut fixture).expect("crossed book is work at activation");
     assert_eq!(
         resolved.accounts[2].address,
         protocol_user.to_bytes(),
@@ -1921,6 +1938,13 @@ fn cross_match_crank_fills_a_crossed_clob_and_keeps_the_spread() {
         fixture.svm.get_account(&payout).unwrap().lamports,
         1_000_000_000 + 2 * PAYMENT
     );
+    // The landing executor repaired the activation hint forward: nothing
+    // pending, so the AtSlot wake goes quiet.
+    {
+        use velocity::state::clob_crank::ClobCrankConditionsV0;
+        let acct: ClobCrankConditionsV0 = read_zero_copy(&fixture.svm, &conditions);
+        assert_eq!(acct.activation_wake_slot().unwrap(), u64::MAX);
+    }
     // Empty again: no work.
     assert!(resolve_cross(&mut fixture).is_none());
 }

@@ -192,9 +192,27 @@ pub fn handle_crank_cross_match<'c: 'info, 'info>(
         &clock,
     )?;
 
-    // The keeper's fee, so relay's assert_paid_v0 has a balance to measure.
+    // Repair the wake hints from the post-match book when a leg was the
+    // CLOB (a matched activation is exactly when the activation hint fires;
+    // this is what sends it forward to the next pending slot).
+    let clob_book = quoters
+        .iter()
+        .zip(&executor.types)
+        .find(|(_, quoter_type)| **quoter_type == QuoterType::Clob)
+        .map(|(loader, _)| loader.load().map(|quoter| quoter.response_account))
+        .transpose()?;
     let payment = {
-        let conditions = load!(ctx.accounts.crank_conditions)?;
+        let mut conditions = crate::load_mut!(ctx.accounts.crank_conditions)?;
+        if let Some(book_key) = clob_book {
+            if let Some(book) = account_map.get(&book_key) {
+                let (min_expiry, min_activation) =
+                    crate::state::prop_amm::clob_hint_scan(&book.try_borrow_data()?, clock.slot);
+                conditions.repair_expiry(min_expiry)?;
+                conditions.repair_activation(min_activation)?;
+            }
+        }
+        // The keeper's fee, so relay's assert_paid_v0 has a balance to
+        // measure.
         conditions.keeper_payment_lamports
     };
     let conditions_info = ctx.accounts.crank_conditions.to_account_info();

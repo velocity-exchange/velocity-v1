@@ -2418,15 +2418,17 @@ pub fn handle_update_perp_market_clob_quoter(
     }
 
     // First attach initializes the conditions account; a re-attach rewrites
-    // the block in place, preserving a live expiry hint across the re-price.
-    let (mut conditions, initial_expire_wake_ts) = match ctx.accounts.crank_conditions.load_init() {
-        Ok(fresh) => (fresh, i64::MAX),
-        Err(_) => {
-            let existing = load_mut!(ctx.accounts.crank_conditions)?;
-            let hint = existing.expire_wake_ts().unwrap_or(i64::MAX);
-            (existing, hint)
-        }
-    };
+    // the block in place, preserving live wake hints across the re-price.
+    let (mut conditions, initial_expire_wake_ts, initial_activation_wake_slot) =
+        match ctx.accounts.crank_conditions.load_init() {
+            Ok(fresh) => (fresh, i64::MAX, u64::MAX),
+            Err(_) => {
+                let existing = load_mut!(ctx.accounts.crank_conditions)?;
+                let expire = existing.expire_wake_ts().unwrap_or(i64::MAX);
+                let activation = existing.activation_wake_slot().unwrap_or(u64::MAX);
+                (existing, expire, activation)
+            }
+        };
     crate::instructions::write_clob_crank_conditions(
         &mut conditions,
         &crate::instructions::ClobCrankConditionKeys {
@@ -2441,6 +2443,7 @@ pub fn handle_update_perp_market_clob_quoter(
         keeper_payment_lamports,
         expire_fallback_slots,
         initial_expire_wake_ts,
+        initial_activation_wake_slot,
     )?;
 
     msg!(

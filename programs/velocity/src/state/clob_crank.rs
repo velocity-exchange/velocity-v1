@@ -64,12 +64,18 @@ pub const CLOB_CRANK_EXPIRE_FALLBACK: usize = 2;
 /// Index of the cross condition (the book's best bid/ask moved — a crossing
 /// order is by definition a new best, so the watch catches every new cross).
 pub const CLOB_CRANK_CROSS: usize = 3;
-/// Index of the cross fallback (periodic poll: an order can become
-/// *matchable* at its activation slot without any account change, and
-/// PropAMM-side crosses have no single account to watch).
+/// Index of the cross fallback (periodic poll — the liveness floor for
+/// PropAMM-side crosses, which have no single account to watch).
 pub const CLOB_CRANK_CROSS_FALLBACK: usize = 4;
+/// Index of the cross-activation condition: `WakeKind::AtSlot` over the
+/// minimum *upcoming* `activation_slot` on the book. Activation changes
+/// nothing on-chain, but it is exactly when makers who lined up against a
+/// speed-bumped order expect the cross to fire — so the program tells
+/// turners the slot precisely, min-folded at placement and repaired to the
+/// next future activation (or `u64::MAX`) by every landing crank's scan.
+pub const CLOB_CRANK_CROSS_ACTIVATION: usize = 5;
 /// Conditions hosted per market.
-pub const CLOB_CRANK_CONDITIONS: usize = 5;
+pub const CLOB_CRANK_CONDITIONS: usize = 6;
 
 /// Bytes the condition block occupies: header + the fixed condition array.
 pub const CLOB_CRANK_BLOCK_LEN: usize = BLOCK_HEADER_LEN + CLOB_CRANK_CONDITIONS * CONDITION_LEN;
@@ -119,7 +125,7 @@ pub struct ClobCrankConditionsV0 {
     /// The market's quote spot market, captured at attach time (the staged
     /// executor's map section needs its PDA).
     pub quote_spot_market_index: u16,
-    pub padding: [u8; 12],
+    pub padding: [u8; 4],
 }
 
 impl Default for ClobCrankConditionsV0 {
@@ -132,7 +138,7 @@ impl Default for ClobCrankConditionsV0 {
             keeper_payment_lamports: 0,
             market_index: 0,
             quote_spot_market_index: 0,
-            padding: [0; 12],
+            padding: [0; 4],
         }
     }
 }
@@ -140,7 +146,7 @@ impl Default for ClobCrankConditionsV0 {
 impl ClobCrankConditionsV0 {
     /// 8 (discriminator) + block + staging + trailing fields. Kept as a const
     /// so the alignment invariant below is checked at compile time.
-    pub const SIZE: usize = 8 + CLOB_CRANK_BLOCK_LEN + CLOB_CRANK_STAGING_LEN + 32 + 8 + 2 + 2 + 12;
+    pub const SIZE: usize = 8 + CLOB_CRANK_BLOCK_LEN + CLOB_CRANK_STAGING_LEN + 32 + 8 + 2 + 2 + 4;
 
     /// The block region, for `relay_spec::read_block`.
     pub fn block(&self) -> &[u8] {
@@ -261,6 +267,35 @@ impl ClobCrankConditionsV0 {
         Ok(())
     }
 
+    /// The cross-activation condition's `wake_slot` hint.
+    pub fn activation_wake_slot(&self) -> Result<u64> {
+        Ok(self.read_condition(CLOB_CRANK_CROSS_ACTIVATION)?.wake_slot)
+    }
+
+    /// Min-fold a newly placed order's activation slot into the
+    /// cross-activation wake — cheap, conservative placement-side
+    /// maintenance, exactly like [`Self::note_expiry`]. Only future slots
+    /// matter: an already-active placement is covered by the cross
+    /// condition's change-watch over the book's bests.
+    pub fn note_activation(&mut self, activation_slot: u64) -> Result<()> {
+        let conditions = relay_spec::read_block_mut(&mut self.block, 0)
+            .map_err(|_| error!(ErrorCode::DefaultError))?;
+        let hint = &mut conditions[CLOB_CRANK_CROSS_ACTIVATION].wake_slot;
+        *hint = (*hint).min(activation_slot);
+        Ok(())
+    }
+
+    /// Overwrite the cross-activation hint with the recomputed minimum
+    /// *future* activation (`u64::MAX` when nothing is pending) — every
+    /// landing crank does this from its book scan, so a fired hint goes
+    /// quiet even when the activation produced no cross.
+    pub fn repair_activation(&mut self, min_future_slot: u64) -> Result<()> {
+        let conditions = relay_spec::read_block_mut(&mut self.block, 0)
+            .map_err(|_| error!(ErrorCode::DefaultError))?;
+        conditions[CLOB_CRANK_CROSS_ACTIVATION].wake_slot = min_future_slot;
+        Ok(())
+    }
+
     /// Stage a resolver's payload and return the pointer bytes to set as
     /// return data. `offset` is relative to account data, as the turner reads
     /// the staged range out of post-simulation account state.
@@ -296,8 +331,8 @@ mod tests {
 
     #[test]
     fn size_matches_the_layout_and_the_spec() {
-        assert_eq!(CLOB_CRANK_BLOCK_LEN, 16 + 5 * 280);
-        assert_eq!(ClobCrankConditionsV0::SIZE, 8 + 1416 + 2048 + 56);
+        assert_eq!(CLOB_CRANK_BLOCK_LEN, 16 + 6 * 280);
+        assert_eq!(ClobCrankConditionsV0::SIZE, 8 + 1696 + 2048 + 48);
         // the staging region must land where the pointer offset says it does
         assert_eq!(
             CLOB_CRANK_STAGING_OFFSET,

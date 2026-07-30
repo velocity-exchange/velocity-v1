@@ -3187,14 +3187,14 @@ pub mod types {
         PartialEq,
     )]
     pub struct ClobCrankConditionsV0 {
-        pub block: ByteArray<1416>,
+        pub block: ByteArray<1696>,
         pub staging: ByteArray<2048>,
         pub oracle: Pubkey,
         pub keeper_payment_lamports: u64,
         pub market_index: u16,
         pub quote_spot_market_index: u16,
         #[serde(skip)]
-        pub padding: Padding<12>,
+        pub padding: Padding<4>,
     }
     #[repr(C)]
     #[derive(
@@ -6152,14 +6152,14 @@ pub mod accounts {
         PartialEq,
     )]
     pub struct ClobCrankConditionsV0 {
-        pub block: ByteArray<1416>,
+        pub block: ByteArray<1696>,
         pub staging: ByteArray<2048>,
         pub oracle: Pubkey,
         pub keeper_payment_lamports: u64,
         pub market_index: u16,
         pub quote_spot_market_index: u16,
         #[serde(skip)]
-        pub padding: Padding<12>,
+        pub padding: Padding<4>,
     }
     #[automatically_derived]
     impl anchor_lang::Discriminator for ClobCrankConditionsV0 {

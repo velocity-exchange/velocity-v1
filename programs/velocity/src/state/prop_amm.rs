@@ -324,6 +324,11 @@ pub const CLOB_WORST_ASK_OFFSET: usize = 124;
 /// condition's change-watch covers (`bid_count` then `ask_count`).
 pub const CLOB_BID_COUNT_OFFSET: usize = 136;
 pub const CLOB_ASK_COUNT_OFFSET: usize = 140;
+/// `ClobHeaderV0.default_activation_delay_slots` — what a placement's
+/// `activation_slot` becomes when the caller doesn't choose a delay;
+/// velocity mirrors the CLOB's `slot + delay` computation to maintain the
+/// activation wake hint.
+pub const CLOB_DEFAULT_ACTIVATION_DELAY_OFFSET: usize = 144;
 /// `ClobHeaderV0.evict_threshold_per_side` — the soft cap.
 pub const CLOB_EVICT_THRESHOLD_OFFSET: usize = 156;
 /// `ClobHeaderV0.market_index`.
@@ -399,15 +404,28 @@ pub fn read_clob_node(data: &[u8], index: u32) -> Option<ClobNodeView> {
     })
 }
 
-/// The true minimum expiry over live orders (`i64::MAX` when none expires) —
-/// what the crank executor repairs the expire condition's `wake_ts` hint to.
-pub fn clob_min_expiry(data: &[u8]) -> i64 {
+/// One pass over the arena for both wake hints: the minimum expiry over
+/// live orders (`i64::MAX` when none expires) and the minimum *future*
+/// activation slot (`u64::MAX` when nothing is pending) — what a landing
+/// crank repairs the expire and cross-activation conditions to.
+pub fn clob_hint_scan(data: &[u8], current_slot: u64) -> (i64, u64) {
     (0..clob_node_capacity(data.len()) as u32)
         .filter_map(|i| read_clob_node(data, i))
-        .filter(|node| node.is_open && node.max_ts != 0)
-        .map(|node| node.max_ts)
-        .min()
-        .unwrap_or(i64::MAX)
+        .filter(|node| node.is_open)
+        .fold((i64::MAX, u64::MAX), |(min_ts, min_slot), node| {
+            (
+                if node.max_ts != 0 {
+                    min_ts.min(node.max_ts)
+                } else {
+                    min_ts
+                },
+                if node.activation_slot > current_slot {
+                    min_slot.min(node.activation_slot)
+                } else {
+                    min_slot
+                },
+            )
+        })
 }
 
 /// The first live order expired at `now`, with its node index — the expire

@@ -467,11 +467,21 @@ pub fn handle_trigger_clob_order<'c: 'info, 'info>(
         user.update_last_active_slot(slot);
     }
 
-    // Wake the expiry crank no later than this order expires (best-effort,
-    // backstopped by the fallback poll condition).
-    if max_ts != 0 {
-        if let Some(conditions) = &ctx.accounts.crank_conditions {
-            load_mut!(conditions)?.note_expiry(max_ts)?;
+    // Wake the cranks no later than this order matters (best-effort,
+    // backstopped by the fallback poll): its expiry, and its activation —
+    // trigger placements take the book's default speed bump.
+    if let Some(conditions) = &ctx.accounts.crank_conditions {
+        let mut conditions = load_mut!(conditions)?;
+        if max_ts != 0 {
+            conditions.note_expiry(max_ts)?;
+        }
+        let delay = crate::state::prop_amm::read_clob_u32(
+            &ctx.accounts.clob_market.try_borrow_data()?,
+            crate::state::prop_amm::CLOB_DEFAULT_ACTIVATION_DELAY_OFFSET,
+        )
+        .ok_or(ErrorCode::DefaultError)?;
+        if delay > 0 {
+            conditions.note_activation(slot.saturating_add(delay as u64))?;
         }
     }
 

@@ -18721,7 +18721,7 @@ export type Velocity = {
             "type": {
               "array": [
                 "u8",
-                1416
+                1696
               ]
             }
           },
@@ -18788,7 +18788,7 @@ export type Velocity = {
             "type": {
               "array": [
                 "u8",
-                12
+                4
               ]
             }
           }

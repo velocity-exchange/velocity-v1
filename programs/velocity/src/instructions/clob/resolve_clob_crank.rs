@@ -279,30 +279,35 @@ pub fn handle_resolve_clob_crank_cross(ctx: Context<ResolveClobCrank>) -> Result
         &crate::ID,
     );
 
-    // `CrankCrossMatch`'s account order: named accounts, the map section,
-    // maker `(User, UserStats)` pairs, then the quoter section. Both legs
-    // are the CLOB: entry index 0.
-    let mut accounts = vec![
-        AccountRefV0::readonly(ctx.accounts.state.key().to_bytes()),
-        AccountRefV0::writable(KEEPER_PLACEHOLDER),
-        AccountRefV0::writable(protocol_user.to_bytes()),
-        AccountRefV0::writable(protocol_user_stats.to_bytes()),
-        AccountRefV0::writable(ctx.accounts.crank_conditions.key().to_bytes()),
-        AccountRefV0::readonly(oracle.to_bytes()),
-        AccountRefV0::writable(quote_spot_market.to_bytes()),
-        AccountRefV0::writable(perp_market.to_bytes()),
-    ];
+    // Named accounts through the executor's own client struct (compile-time
+    // shape check), then the remaining sections: maps, maker
+    // `(User, UserStats)` pairs, the quoter section. Both legs are the CLOB:
+    // entry index 0.
+    let mut metas = crate::accounts::CrankCrossMatch {
+        state: ctx.accounts.state.key(),
+        authority: Pubkey::new_from_array(KEEPER_PLACEHOLDER),
+        taker: protocol_user,
+        taker_stats: protocol_user_stats,
+        crank_conditions: ctx.accounts.crank_conditions.key(),
+    }
+    .to_account_metas(None);
+    use solana_program::instruction::AccountMeta;
+    metas.push(AccountMeta::new_readonly(oracle, false));
+    metas.push(AccountMeta::new(quote_spot_market, false));
+    metas.push(AccountMeta::new(perp_market, false));
     for maker in &cross.makers {
         let (user_pda, stats_pda) = derive_user_pdas(maker);
-        accounts.push(AccountRefV0::writable(user_pda.to_bytes()));
-        accounts.push(AccountRefV0::writable(stats_pda.to_bytes()));
+        metas.push(AccountMeta::new(user_pda, false));
+        metas.push(AccountMeta::new(stats_pda, false));
     }
-    accounts.extend([
-        AccountRefV0::readonly(ctx.accounts.quoter.key().to_bytes()),
-        AccountRefV0::writable(ctx.accounts.clob_market.key().to_bytes()),
-        AccountRefV0::readonly(signer.to_bytes()),
-        AccountRefV0::readonly(ctx.accounts.quoter.load()?.program_id.to_bytes()),
-    ]);
+    metas.push(AccountMeta::new_readonly(ctx.accounts.quoter.key(), false));
+    metas.push(AccountMeta::new(ctx.accounts.clob_market.key(), false));
+    metas.push(AccountMeta::new_readonly(signer, false));
+    metas.push(AccountMeta::new_readonly(
+        ctx.accounts.quoter.load()?.program_id,
+        false,
+    ));
+    let accounts = to_account_refs(metas);
 
     let mut args = Vec::with_capacity(12);
     market_index.serialize(&mut args)?;
@@ -316,6 +321,27 @@ pub fn handle_resolve_clob_crank_cross(ctx: Context<ResolveClobCrank>) -> Result
     let pointer = load_mut!(ctx.accounts.crank_conditions)?.stage(&resolved)?;
     set_return_data(&pointer);
     Ok(())
+}
+
+/// Convert typed anchor client metas into relay account refs. Building the
+/// named-accounts prefix through the executor's own `crate::accounts::*`
+/// struct means a change to its `#[derive(Accounts)]` shape breaks staging
+/// at compile time (and the writable flags come from the derive), instead
+/// of surfacing as a runtime account mismatch.
+fn to_account_refs(metas: Vec<solana_program::instruction::AccountMeta>) -> Vec<AccountRefV0> {
+    metas
+        .into_iter()
+        .map(|meta| {
+            // Staged executors are unsigned by contract; nothing in these
+            // structs is a Signer.
+            debug_assert!(!meta.is_signer);
+            if meta.is_writable {
+                AccountRefV0::writable(meta.pubkey.to_bytes())
+            } else {
+                AccountRefV0::readonly(meta.pubkey.to_bytes())
+            }
+        })
+        .collect()
 }
 
 /// Derive the `(User, UserStats)` PDAs from a node's derivable identity —
@@ -379,20 +405,24 @@ fn stage(ctx: &Context<ResolveClobCrank>, maker: Pubkey, args: Vec<u8>) -> Resul
         &crate::ID,
     );
 
+    // The executor's full account list IS its `#[derive(Accounts)]` struct
+    // (no remaining accounts), so the whole thing is typed.
+    let metas = crate::accounts::CrankClobOrderRemoval {
+        state: ctx.accounts.state.key(),
+        authority: Pubkey::new_from_array(KEEPER_PLACEHOLDER),
+        filler: protocol_user,
+        filler_stats: protocol_user_stats,
+        user: maker,
+        perp_market,
+        quoter: ctx.accounts.quoter.key(),
+        clob_market: ctx.accounts.clob_market.key(),
+        clob_program: ctx.accounts.quoter.load()?.program_id,
+        velocity_signer: signer,
+        crank_conditions: Some(ctx.accounts.crank_conditions.key()),
+    }
+    .to_account_metas(None);
     let resolved = ResolvedCrankV0 {
-        accounts: vec![
-            AccountRefV0::readonly(ctx.accounts.state.key().to_bytes()),
-            AccountRefV0::writable(KEEPER_PLACEHOLDER),
-            AccountRefV0::writable(protocol_user.to_bytes()),
-            AccountRefV0::writable(protocol_user_stats.to_bytes()),
-            AccountRefV0::writable(maker.to_bytes()),
-            AccountRefV0::writable(perp_market.to_bytes()),
-            AccountRefV0::readonly(ctx.accounts.quoter.key().to_bytes()),
-            AccountRefV0::writable(ctx.accounts.clob_market.key().to_bytes()),
-            AccountRefV0::readonly(ctx.accounts.quoter.load()?.program_id.to_bytes()),
-            AccountRefV0::readonly(signer.to_bytes()),
-            AccountRefV0::writable(ctx.accounts.crank_conditions.key().to_bytes()),
-        ],
+        accounts: to_account_refs(metas),
         data: args,
     };
     let pointer = load_mut!(ctx.accounts.crank_conditions)?.stage(&resolved)?;

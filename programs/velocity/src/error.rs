@@ -799,6 +799,10 @@ pub enum ErrorCode {
     OrderPlacedOnClob,
     #[msg("Trigger is awaiting a price recross after eviction")]
     OrderAwaitingTriggerRecross,
+    #[msg("Cross match legs are imbalanced")]
+    CrossMatchImbalanced,
+    #[msg("Cross match is not profitable after fees")]
+    CrossMatchUnprofitable,
 }
 
 #[macro_export]

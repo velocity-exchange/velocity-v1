@@ -1418,6 +1418,107 @@ export type Velocity = {
       ]
     },
     {
+      "name": "crankCrossMatch",
+      "docs": [
+        "Fill two crossed resting sources against each other (permissionless;",
+        "the protocol User takes both legs and keeps the spread, the caller is",
+        "paid reservoir lamports). Reverts unless profitable after fees."
+      ],
+      "discriminator": [
+        121,
+        104,
+        3,
+        82,
+        220,
+        85,
+        74,
+        57
+      ],
+      "accounts": [
+        {
+          "name": "state"
+        },
+        {
+          "name": "authority",
+          "docs": [
+            "No signature: the executor's own profitability predicate is the gate."
+          ],
+          "writable": true
+        },
+        {
+          "name": "taker",
+          "docs": [
+            "The protocol-owned pass-through taker. Locked to the protocol `User`",
+            "so the reservoir never pays for someone else's private arb."
+          ],
+          "writable": true
+        },
+        {
+          "name": "takerStats",
+          "writable": true
+        },
+        {
+          "name": "crankConditions",
+          "docs": [
+            "The market's conditions account: the reservoir that pays the keeper."
+          ],
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  99,
+                  108,
+                  111,
+                  98,
+                  95,
+                  99,
+                  114,
+                  97,
+                  110,
+                  107,
+                  95,
+                  99,
+                  111,
+                  110,
+                  100,
+                  105,
+                  116,
+                  105,
+                  111,
+                  110,
+                  115
+                ]
+              },
+              {
+                "kind": "arg",
+                "path": "marketIndex"
+              }
+            ]
+          }
+        }
+      ],
+      "args": [
+        {
+          "name": "marketIndex",
+          "type": "u16"
+        },
+        {
+          "name": "size",
+          "type": "u64"
+        },
+        {
+          "name": "buyQuoterIndex",
+          "type": "u8"
+        },
+        {
+          "name": "sellQuoterIndex",
+          "type": "u8"
+        }
+      ]
+    },
+    {
       "name": "deleteAmmCache",
       "discriminator": [
         216,
@@ -17794,6 +17895,16 @@ export type Velocity = {
       "code": 6372,
       "name": "orderAwaitingTriggerRecross",
       "msg": "Trigger is awaiting a price recross after eviction"
+    },
+    {
+      "code": 6373,
+      "name": "crossMatchImbalanced",
+      "msg": "Cross match legs are imbalanced"
+    },
+    {
+      "code": 6374,
+      "name": "crossMatchUnprofitable",
+      "msg": "Cross match is not profitable after fees"
     }
   ],
   "types": [

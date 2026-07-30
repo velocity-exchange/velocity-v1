@@ -208,6 +208,19 @@ pub mod instructions {
     #[automatically_derived]
     impl anchor_lang::InstructionData for CrankClobRemoveExpired {}
     #[derive(AnchorSerialize, AnchorDeserialize, Clone, Default)]
+    pub struct CrankCrossMatch {
+        pub market_index: u16,
+        pub size: u64,
+        pub buy_quoter_index: u8,
+        pub sell_quoter_index: u8,
+    }
+    #[automatically_derived]
+    impl anchor_lang::Discriminator for CrankCrossMatch {
+        const DISCRIMINATOR: &[u8] = &[121, 104, 3, 82, 220, 85, 74, 57];
+    }
+    #[automatically_derived]
+    impl anchor_lang::InstructionData for CrankCrossMatch {}
+    #[derive(AnchorSerialize, AnchorDeserialize, Clone, Default)]
     pub struct DeleteAmmCache {}
     #[automatically_derived]
     impl anchor_lang::Discriminator for DeleteAmmCache {
@@ -9009,6 +9022,88 @@ pub mod accounts {
     }
     #[automatically_derived]
     impl anchor_lang::AccountDeserialize for CrankClobRemoveExpired {
+        fn try_deserialize(buf: &mut &[u8]) -> anchor_lang::Result<Self> {
+            let given_disc = &buf[..8];
+            if Self::DISCRIMINATOR != given_disc {
+                return Err(anchor_lang::error!(
+                    anchor_lang::error::ErrorCode::AccountDiscriminatorMismatch
+                ));
+            }
+            Self::try_deserialize_unchecked(buf)
+        }
+        fn try_deserialize_unchecked(buf: &mut &[u8]) -> anchor_lang::Result<Self> {
+            let mut data: &[u8] = &buf[8..];
+            AnchorDeserialize::deserialize(&mut data)
+                .map_err(|_| anchor_lang::error::ErrorCode::AccountDidNotDeserialize.into())
+        }
+    }
+    #[repr(C)]
+    #[derive(Copy, Clone, Default, AnchorSerialize, AnchorDeserialize, Serialize, Deserialize)]
+    pub struct CrankCrossMatch {
+        pub state: Pubkey,
+        pub authority: Pubkey,
+        pub taker: Pubkey,
+        pub taker_stats: Pubkey,
+        pub crank_conditions: Pubkey,
+    }
+    #[automatically_derived]
+    impl anchor_lang::Discriminator for CrankCrossMatch {
+        const DISCRIMINATOR: &[u8] = &[212, 73, 54, 118, 96, 88, 205, 92];
+    }
+    #[automatically_derived]
+    unsafe impl anchor_lang::__private::bytemuck::Pod for CrankCrossMatch {}
+    #[automatically_derived]
+    unsafe impl anchor_lang::__private::bytemuck::Zeroable for CrankCrossMatch {}
+    #[automatically_derived]
+    impl anchor_lang::ZeroCopy for CrankCrossMatch {}
+    #[automatically_derived]
+    impl anchor_lang::InstructionData for CrankCrossMatch {}
+    #[automatically_derived]
+    impl ToAccountMetas for CrankCrossMatch {
+        fn to_account_metas(&self) -> Vec<AccountMeta> {
+            vec![
+                AccountMeta {
+                    pubkey: self.state,
+                    is_signer: false,
+                    is_writable: false,
+                },
+                AccountMeta {
+                    pubkey: self.authority,
+                    is_signer: false,
+                    is_writable: true,
+                },
+                AccountMeta {
+                    pubkey: self.taker,
+                    is_signer: false,
+                    is_writable: true,
+                },
+                AccountMeta {
+                    pubkey: self.taker_stats,
+                    is_signer: false,
+                    is_writable: true,
+                },
+                AccountMeta {
+                    pubkey: self.crank_conditions,
+                    is_signer: false,
+                    is_writable: true,
+                },
+            ]
+        }
+    }
+    #[automatically_derived]
+    impl anchor_lang::AccountSerialize for CrankCrossMatch {
+        fn try_serialize<W: std::io::Write>(&self, writer: &mut W) -> anchor_lang::Result<()> {
+            if writer.write_all(Self::DISCRIMINATOR).is_err() {
+                return Err(anchor_lang::error::ErrorCode::AccountDidNotSerialize.into());
+            }
+            if AnchorSerialize::serialize(self, writer).is_err() {
+                return Err(anchor_lang::error::ErrorCode::AccountDidNotSerialize.into());
+            }
+            Ok(())
+        }
+    }
+    #[automatically_derived]
+    impl anchor_lang::AccountDeserialize for CrankCrossMatch {
         fn try_deserialize(buf: &mut &[u8]) -> anchor_lang::Result<Self> {
             let given_disc = &buf[..8];
             if Self::DISCRIMINATOR != given_disc {
@@ -28506,6 +28601,10 @@ pub mod errors {
         OrderPlacedOnClob,
         #[msg("Trigger is awaiting a price recross after eviction")]
         OrderAwaitingTriggerRecross,
+        #[msg("Cross match legs are imbalanced")]
+        CrossMatchImbalanced,
+        #[msg("Cross match is not profitable after fees")]
+        CrossMatchUnprofitable,
     }
 }
 pub mod events {

@@ -4060,6 +4060,360 @@ fn cancel_reduce_only_trigger_orders(
     Ok(())
 }
 
+/// Match two crossed external sources against each other with the protocol
+/// `User` as the pass-through taker — the arb bot the cross-match crank
+/// runs. Buy `size` from the `buy_index` book's asks, then sell exactly what
+/// filled into the `sell_index` book's bids (the two indexes may name the
+/// same book: an internally crossed CLOB). Both legs settle through the
+/// standard external-match path, so every maker experiences an ordinary
+/// fill — positions, match fees, records, aggregate unwinds, and the shared
+/// post-fill margin checks all apply.
+///
+/// The taker side needs no margin: its base is asserted unchanged (an
+/// imbalanced pair of legs reverts), and its quote delta — the crossed
+/// spread net of both legs' taker fees — must be strictly positive, so the
+/// protocol never runs a losing cross and a fee-gulfed cross simply rests.
+/// The taker's two orders are ephemeral: written into a free slot for the
+/// legs' settlement (fee schedule, fill records) and cleared before return,
+/// never counted in any open-order accounting.
+///
+/// Returns `(base_matched, quote_surplus)`.
+#[allow(clippy::too_many_arguments)]
+pub fn cross_match(
+    state: &State,
+    market_index: u16,
+    size: u64,
+    buy_index: usize,
+    sell_index: usize,
+    taker_loader: &AccountLoader<User>,
+    taker_stats_loader: &AccountLoader<UserStats>,
+    makers_and_referrer: &UserMap,
+    makers_and_referrer_stats: &UserStatsMap,
+    executor: &mut dyn crate::state::prop_amm::ExternalQuoterExecutor,
+    perp_market_map: &PerpMarketMap,
+    spot_market_map: &SpotMarketMap,
+    oracle_map: &mut OracleMap,
+    clock: &Clock,
+) -> VelocityResult<(u64, u64)> {
+    let now = clock.unix_timestamp;
+    let slot = clock.slot;
+    let taker_key = taker_loader.key();
+
+    validate!(
+        size > 0,
+        ErrorCode::DefaultError,
+        "cross size must be nonzero"
+    )?;
+
+    // ---- Oracle pre-flight, mirroring the fill path. ----
+    let (oracle_price, oracle_stale_for_margin, perp_market_oi_before) = {
+        let market = &mut perp_market_map.get_ref_mut(&market_index)?;
+        validation::perp_market::validate_perp_market(market)?;
+        validate!(
+            !market.is_in_settlement(now),
+            ErrorCode::MarketFillOrderPaused,
+            "Market is in settlement mode",
+        )?;
+        validate!(
+            !market.is_operation_paused(PerpOperation::Fill),
+            ErrorCode::MarketFillOrderPaused,
+            "Market fills paused",
+        )?;
+
+        let oracle_price_data = oracle_map.get_price_data(&market.oracle_id())?;
+        let mm_oracle_price_data = market.get_mm_oracle_price_data(
+            *oracle_price_data,
+            slot,
+            &state.oracle_guard_rails.validity,
+        )?;
+        let safe_oracle_price_data = mm_oracle_price_data.get_safe_oracle_price_data();
+        let safe_oracle_validity = oracle::oracle_validity(
+            MarketType::Perp,
+            market.market_index,
+            market
+                .market_stats
+                .historical_oracle_data
+                .last_oracle_price_twap,
+            &safe_oracle_price_data,
+            &state.oracle_guard_rails.validity,
+            market.get_max_confidence_interval_multiplier()?,
+            &market.oracle_source,
+            oracle::LogMode::SafeMMOracle,
+            market.oracle_slot_delay_override,
+            market.oracle_low_risk_slot_delay_override,
+        )?;
+        validate!(
+            is_oracle_valid_for_action(safe_oracle_validity, Some(VelocityAction::FillOrderMatch))?,
+            ErrorCode::InvalidOracle,
+            "oracle not valid for cross match"
+        )?;
+        let oracle_price = mm_oracle_price_data.get_price();
+        validate_market_within_price_band(market, state, oracle_price)?;
+        let oracle_stale_for_margin = mm_oracle_price_data.get_delay()
+            > state
+                .oracle_guard_rails
+                .validity
+                .slots_before_stale_for_margin;
+        (
+            oracle_price,
+            oracle_stale_for_margin,
+            market.get_open_interest(),
+        )
+    };
+
+    let taker = &mut load_mut!(taker_loader)?;
+    let mut taker_stats = load_mut!(taker_stats_loader)?;
+
+    let taker_position_index = get_position_index(&taker.perp_positions, market_index)
+        .or_else(|_| add_new_position(&mut taker.perp_positions, market_index))?;
+    let base_before = taker.perp_positions[taker_position_index].base_asset_amount;
+    let quote_before = taker.perp_positions[taker_position_index].quote_asset_amount;
+
+    // The ephemeral taker order the settlement path reads (fee schedule off
+    // its slot, id for the fill records). Cleared before return.
+    let taker_order_index = taker
+        .orders
+        .iter()
+        .position(|order| order.is_available())
+        .ok_or(ErrorCode::MaxNumberOfOrders)?;
+    let order_id = taker.next_order_id;
+    taker.next_order_id = taker.next_order_id.wrapping_add(1).max(1);
+
+    let mut maker_fills: BTreeMap<Pubkey, (i64, bool)> = BTreeMap::new();
+    let mut none_filler: Option<&mut User> = None;
+    let mut none_filler_stats: Option<&mut UserStats> = None;
+    let mut no_escrow: Option<&mut RevenueShareEscrowZeroCopyMut> = None;
+    let mut filler_reward_paid = 0u64;
+
+    let mut leg_totals: [(u64, u64); 2] = [(0, 0); 2];
+    let legs = [
+        (buy_index, PositionDirection::Long),
+        (sell_index, PositionDirection::Short),
+    ];
+    #[allow(clippy::needless_range_loop)]
+    for (leg, (book_index, taker_direction)) in legs.iter().copied().enumerate() {
+        // The sell leg must return exactly what the buy leg took.
+        let leg_size = if leg == 0 { size } else { leg_totals[0].0 };
+        if leg_size == 0 {
+            break;
+        }
+
+        // Custom PropAMM depth is never margin-reserved; clamp the leg to
+        // what the quoter's own account supports before mutating external
+        // state, exactly like the fill's pre-execute clamp.
+        if executor.quoter_type(book_index) == crate::state::prop_amm::QuoterType::Custom {
+            let quoter_user_key = executor.quoter_user(book_index);
+            validate!(
+                quoter_user_key != taker_key,
+                ErrorCode::DefaultError,
+                "cross leg quotes for the protocol user itself"
+            )?;
+            let maker_direction = taker_direction.opposite();
+            let position_index = {
+                let mut maker = makers_and_referrer.get_ref_mut(&quoter_user_key)?;
+                get_position_index(&maker.perp_positions, market_index)
+                    .or_else(|_| add_new_position(&mut maker.perp_positions, market_index))?
+            };
+            let maker = makers_and_referrer.get_ref(&quoter_user_key)?;
+            let cap = crate::math::orders::calculate_max_perp_order_size(
+                &maker,
+                position_index,
+                market_index,
+                maker_direction,
+                perp_market_map,
+                spot_market_map,
+                oracle_map,
+            )?;
+            validate!(
+                cap >= leg_size,
+                ErrorCode::CrossMatchImbalanced,
+                "cross leg {} margin cap {} below leg size {}",
+                leg,
+                cap,
+                leg_size
+            )?;
+        }
+
+        // The leg's ephemeral order (settlement reads direction + slot + id).
+        taker.orders[taker_order_index] = Order {
+            slot,
+            order_id,
+            market_index,
+            status: OrderStatus::Open,
+            order_type: OrderType::Market,
+            market_type: MarketType::Perp,
+            direction: taker_direction,
+            base_asset_amount: leg_size,
+            existing_position_direction: taker_direction,
+            ..Order::default()
+        };
+        let taker_existing_position_params_before = taker.perp_positions[taker_position_index]
+            .get_existing_position_params_for_order_action(taker_direction);
+
+        let cpi_direction = match taker_direction {
+            PositionDirection::Long => crate::state::prop_amm::Direction::Long,
+            PositionDirection::Short => crate::state::prop_amm::Direction::Short,
+        };
+        let response = executor.execute(book_index, cpi_direction, leg_size)?;
+        let maker_aggregates_tracked =
+            executor.quoter_type(book_index) == crate::state::prop_amm::QuoterType::Clob;
+        let maker_direction = taker_direction.opposite();
+
+        let mut market = perp_market_map.get_ref_mut(&market_index)?;
+        for change in &response.balance_changes {
+            if change.base_size == 0 {
+                continue;
+            }
+            validate!(
+                change.user != taker_key,
+                ErrorCode::DefaultError,
+                "cross leg settled against the protocol user itself"
+            )?;
+            let mut maker = makers_and_referrer.get_ref_mut(&change.user)?;
+            let mut maker_stats = Some(makers_and_referrer_stats.get_ref_mut(&maker.authority)?);
+            let (base_filled, quote_filled) = settle_external_match_fill(
+                change.base_size,
+                change.quote_size,
+                market.deref_mut(),
+                taker,
+                &mut taker_stats,
+                taker_position_index,
+                taker_order_index,
+                &taker_key,
+                taker_direction,
+                taker_existing_position_params_before,
+                &mut maker,
+                maker_stats.as_deref_mut(),
+                &change.user,
+                maker_aggregates_tracked,
+                None,
+                oracle_price,
+                &mut none_filler,
+                &mut none_filler_stats,
+                &taker_key,
+                &mut no_escrow,
+                &state.perp_fee_structure,
+                oracle_map,
+                false,
+                now,
+                slot,
+                &mut filler_reward_paid,
+            )?;
+            leg_totals[leg].0 = leg_totals[leg].0.safe_add(base_filled)?;
+            leg_totals[leg].1 = leg_totals[leg].1.safe_add(quote_filled)?;
+
+            let maker_position_index = get_position_index(&maker.perp_positions, market_index)?;
+            update_maker_fills_map(
+                &mut maker_fills,
+                &change.user,
+                maker_direction,
+                base_filled,
+                maker.perp_positions[maker_position_index].is_isolated(),
+            )?;
+            if maker_aggregates_tracked {
+                let position = &mut maker.perp_positions[maker_position_index];
+                position.open_orders = position
+                    .open_orders
+                    .saturating_sub(change.completed_order_ids.len().cast()?);
+                for clob_order_id in &change.completed_order_ids {
+                    maker.decrement_open_orders(false);
+                    maker.release_placed_trigger_slot(
+                        market_index,
+                        *clob_order_id,
+                        OrderStatus::Filled,
+                    );
+                }
+            }
+        }
+        if maker_aggregates_tracked {
+            for cancelled in &response.cancelled {
+                let mut maker = makers_and_referrer.get_ref_mut(&cancelled.user)?;
+                let maker_position_index = get_position_index(&maker.perp_positions, market_index)?;
+                decrease_open_bids_and_asks(
+                    &mut maker.perp_positions[maker_position_index],
+                    &maker_direction,
+                    cancelled.base_asset_amount,
+                    true,
+                )?;
+                let position = &mut maker.perp_positions[maker_position_index];
+                position.open_orders = position.open_orders.saturating_sub(1);
+                maker.decrement_open_orders(false);
+                maker.release_placed_trigger_slot(
+                    market_index,
+                    cancelled.order_id,
+                    OrderStatus::Canceled,
+                );
+            }
+        }
+        validate!(
+            leg_totals[leg].0 <= leg_size,
+            ErrorCode::DefaultError,
+            "cross leg {} overfilled: {} > {}",
+            leg,
+            leg_totals[leg].0,
+            leg_size
+        )?;
+    }
+
+    // The ephemeral order never outlives the match.
+    taker.orders[taker_order_index] = Order::default();
+
+    let (base_matched, _) = leg_totals[0];
+    validate!(
+        leg_totals[1].0 == base_matched,
+        ErrorCode::CrossMatchImbalanced,
+        "cross legs imbalanced: bought {} sold {}",
+        base_matched,
+        leg_totals[1].0
+    )?;
+    validate!(
+        base_matched > 0,
+        ErrorCode::CrossMatchUnprofitable,
+        "nothing crossed"
+    )?;
+    validate!(
+        taker.perp_positions[taker_position_index].base_asset_amount == base_before,
+        ErrorCode::CrossMatchImbalanced,
+        "protocol user base changed: {} -> {}",
+        base_before,
+        taker.perp_positions[taker_position_index].base_asset_amount
+    )?;
+    let surplus = taker.perp_positions[taker_position_index]
+        .quote_asset_amount
+        .safe_sub(quote_before)?;
+    validate!(
+        surplus > 0,
+        ErrorCode::CrossMatchUnprofitable,
+        "cross surplus {} not positive (fees are the gulf)",
+        surplus
+    )?;
+    taker.update_last_active_slot(slot);
+
+    // Shared post-fill invariants: per-maker margin/equity-floor checks over
+    // both legs' fills (the taker side is trivially non-increasing — its base
+    // is unchanged and its quote strictly grew).
+    fulfill_perp_order_post_checks(
+        taker,
+        &taker_stats,
+        makers_and_referrer,
+        makers_and_referrer_stats,
+        spot_market_map,
+        perp_market_map,
+        oracle_map,
+        market_index,
+        base_matched,
+        leg_totals[0].1,
+        &maker_fills,
+        true,
+        false,
+        perp_market_oi_before,
+        oracle_stale_for_margin,
+        false,
+    )?;
+
+    Ok((base_matched, surplus.cast()?))
+}
+
 pub fn trigger_order(
     order_id: u32,
     state: &State,

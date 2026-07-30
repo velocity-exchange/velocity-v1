@@ -1703,3 +1703,123 @@ fn placed_trigger_cancels_through_the_clob_only() {
     assert_eq!(maker.perp_positions[0].open_asks, 0);
     assert_eq!(clob_ask_count(&fixture.svm, &fixture.clob_market), 0);
 }
+
+/// A crossed CLOB (bid above ask) is matched by the cross crank: the
+/// protocol User round-trips the cross, keeps the spread net of both legs'
+/// taker fees, the makers' aggregates unwind as ordinary fills, and the
+/// keeper payout account is paid from the reservoir. Re-running with nothing
+/// crossed fails — the executor is the profitability predicate.
+#[test]
+fn cross_match_crank_fills_a_crossed_clob_and_keeps_the_spread() {
+    let mut fixture = setup();
+    const PAYMENT: u64 = 10_000;
+    let conditions = init_crank_conditions(&mut fixture, PAYMENT);
+    let protocol_user = set_protocol_user(&mut fixture.svm);
+    let (signer, _) = velocity_signer_pda();
+    let protocol_stats =
+        Pubkey::find_program_address(&[b"user_stats", signer.as_ref()], &velocity_id()).0;
+    fixture.svm.airdrop(&conditions, 1_000_000_000).unwrap();
+
+    let maker_stats = Pubkey::new_unique();
+    set_user_stats_account(
+        &mut fixture.svm,
+        maker_stats,
+        &fixture.clob_maker_authority.pubkey(),
+    );
+
+    // The maker quotes crossed against themselves: ask 0.5 @ 99, bid 0.5 @ 101.
+    place_clob_ask(&mut fixture, 99 * PRICE, UNIT / 2);
+    let ix = place_clob_order_ix(
+        fixture.clob_maker_user,
+        &fixture.clob_maker_authority,
+        fixture.quoter,
+        fixture.clob_market,
+        fixture.oracle,
+        None,
+        PlaceClobOrderParams {
+            market_index: 0,
+            direction: PositionDirection::Long,
+            price: 101 * PRICE,
+            base_asset_amount: UNIT / 2,
+            max_ts: 0,
+            activation_delay_slots: Some(0),
+        },
+    );
+    let maker_authority = fixture.clob_maker_authority.insecure_clone();
+    send(&mut fixture.svm, &maker_authority, ix, &[]).unwrap();
+    fixture.svm.warp_to_slot(12);
+    set_oracle(&mut fixture.svm, fixture.oracle, (100 * PRICE_PRECISION) as i64, 12);
+
+    let payout = Pubkey::new_unique();
+    fixture.svm.airdrop(&payout, 1_000_000_000).unwrap();
+    let cross_ix = || {
+        let mut accounts = velocity::accounts::CrankCrossMatch {
+            state: state_pda(),
+            authority: payout,
+            taker: protocol_user,
+            taker_stats: protocol_stats,
+            crank_conditions: conditions,
+        }
+        .to_account_metas(None);
+        // Maps, then the maker pair, then the quoter section.
+        accounts.push(AccountMeta::new_readonly(fixture.oracle, false));
+        accounts.push(AccountMeta::new(spot_market_pda(0), false));
+        accounts.push(AccountMeta::new(perp_market_pda(0), false));
+        accounts.push(AccountMeta::new(fixture.clob_maker_user, false));
+        accounts.push(AccountMeta::new(maker_stats, false));
+        accounts.push(AccountMeta::new_readonly(fixture.quoter, false));
+        accounts.push(AccountMeta::new(fixture.clob_market, false));
+        accounts.push(AccountMeta::new_readonly(velocity_signer_pda().0, false));
+        accounts.push(AccountMeta::new_readonly(clob_id(), false));
+        Instruction {
+            program_id: velocity_id(),
+            accounts,
+            data: velocity::instruction::CrankCrossMatch {
+                market_index: 0,
+                size: UNIT,
+                buy_quoter_index: 0,
+                sell_quoter_index: 0,
+            }
+            .data(),
+        }
+    };
+    let keeper = fixture.keeper.insecure_clone();
+    send(&mut fixture.svm, &keeper, cross_ix(), &[]).unwrap();
+
+    // The maker round-tripped against themselves: net base zero, they paid
+    // the spread; both orders consumed, aggregates unwound.
+    let maker: User = read_zero_copy(&fixture.svm, &fixture.clob_maker_user);
+    assert_eq!(maker.perp_positions[0].base_asset_amount, 0);
+    assert_eq!(maker.perp_positions[0].open_orders, 0);
+    assert_eq!(maker.perp_positions[0].open_bids, 0);
+    assert_eq!(maker.perp_positions[0].open_asks, 0);
+    assert_eq!(maker.open_orders, 0);
+    assert_eq!(clob_ask_count(&fixture.svm, &fixture.clob_market), 0);
+
+    // The protocol User kept the spread net of fees: bought 0.5 @ 99, sold
+    // 0.5 @ 101 -> 1.0 quote gross, minus two taker fees.
+    let protocol: User = read_zero_copy(&fixture.svm, &protocol_user);
+    assert_eq!(protocol.perp_positions[0].base_asset_amount, 0);
+    assert!(
+        protocol.perp_positions[0].quote_asset_amount >= 800_000,
+        "surplus after fees, got {}",
+        protocol.perp_positions[0].quote_asset_amount
+    );
+    assert!(protocol.perp_positions[0].quote_asset_amount < 1_000_000);
+    // The ephemeral taker orders never persist.
+    assert_eq!(protocol.open_orders, 0);
+    assert!(protocol.orders.iter().all(|order| order.status != OrderStatus::Open));
+    // Keeper paid from the reservoir.
+    assert_eq!(
+        fixture.svm.get_account(&payout).unwrap().lamports,
+        1_000_000_000 + PAYMENT
+    );
+
+    // Nothing crossed anymore: the predicate fails the crank.
+    let err = send(&mut fixture.svm, &keeper, cross_ix(), &[]).expect_err("no cross left");
+    let logs = format!("{:?}", err.meta.logs);
+    assert!(
+        logs.contains("CrossMatch") || logs.contains("nothing crossed"),
+        "unexpected: {logs}"
+    );
+}

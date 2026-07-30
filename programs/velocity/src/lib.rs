@@ -2262,6 +2262,19 @@ pub mod velocity {
         handle_trigger_clob_order(ctx, market_index, order_id)
     }
 
+    /// Fill two crossed resting sources against each other (permissionless;
+    /// the protocol User takes both legs and keeps the spread, the caller is
+    /// paid reservoir lamports). Reverts unless profitable after fees.
+    pub fn crank_cross_match<'c: 'info, 'info>(
+        ctx: Context<'info, CrankCrossMatch<'info>>,
+        market_index: u16,
+        size: u64,
+        buy_quoter_index: u8,
+        sell_quoter_index: u8,
+    ) -> Result<()> {
+        handle_crank_cross_match(ctx, market_index, size, buy_quoter_index, sell_quoter_index)
+    }
+
     /// Relay resolver for the evict condition. Meant to be simulated, not
     /// landed: stages the executor call and returns a response pointer.
     pub fn resolve_clob_crank_evict(ctx: Context<ResolveClobCrank>) -> Result<()> {

@@ -127,6 +127,7 @@ fn set_quote_spot_market(svm: &mut litesvm::LiteSVM) {
     market.market_index = 0;
     market.oracle_source = OracleSource::QuoteAsset;
     market.cumulative_deposit_interest = SPOT_CUMULATIVE_INTEREST_PRECISION;
+    market.cumulative_borrow_interest = SPOT_CUMULATIVE_INTEREST_PRECISION;
     market.decimals = 6;
     market.initial_asset_weight = SPOT_WEIGHT_PRECISION;
     market.maintenance_asset_weight = SPOT_WEIGHT_PRECISION;
@@ -1947,4 +1948,96 @@ fn cross_match_crank_fills_a_crossed_clob_and_keeps_the_spread() {
     }
     // Empty again: no work.
     assert!(resolve_cross(&mut fixture).is_none());
+}
+
+/// A maker whose account has deteriorated below initial margin gets their
+/// risk-increasing CLOB order force-cancelled by a keeper: aggregates
+/// unwind, the flat fee moves from the maker's quote deposit to the filler,
+/// and a healthy account is refused.
+#[test]
+fn force_cancel_reclaims_a_failing_makers_clob_orders() {
+    let mut fixture = setup();
+
+    // Rest an ask through the adapter (margin passes at 10k), then gut the
+    // maker's collateral while keeping the resting aggregates — the
+    // deterioration force-cancel exists for.
+    let order_ref = place_clob_ask(&mut fixture, 99 * PRICE, UNIT / 2);
+    let mut broke = trading_user(&fixture.clob_maker_authority.pubkey(), 1_000, None);
+    broke.perp_positions[0].open_asks = -((UNIT / 2) as i64);
+    broke.perp_positions[0].open_orders = 1;
+    broke.open_orders = 1;
+    broke.has_open_order = true;
+    broke.next_order_id = 2;
+
+    let filler_user = Pubkey::new_unique();
+    let filler_stats = Pubkey::new_unique();
+    set_user_account(
+        &mut fixture.svm,
+        filler_user,
+        &trading_user(&fixture.keeper.pubkey(), 0, None),
+    );
+    set_user_stats_account(&mut fixture.svm, filler_stats, &fixture.keeper.pubkey());
+
+    let (velocity_signer, _) = velocity_signer_pda();
+    let force_cancel_ix = |fixture: &Fixture| {
+        let mut accounts = velocity::accounts::ForceCancelClobOrders {
+            state: state_pda(),
+            authority: fixture.keeper.pubkey(),
+            filler: filler_user,
+            filler_stats,
+            user: fixture.clob_maker_user,
+            quoter: fixture.quoter,
+            clob_market: fixture.clob_market,
+            clob_program: clob_id(),
+            velocity_signer,
+            crank_conditions: None,
+        }
+        .to_account_metas(None);
+        accounts.push(AccountMeta::new_readonly(fixture.oracle, false));
+        accounts.push(AccountMeta::new(spot_market_pda(0), false));
+        accounts.push(AccountMeta::new(perp_market_pda(0), false));
+        Instruction {
+            program_id: velocity_id(),
+            accounts,
+            data: velocity::instruction::ForceCancelClobOrders {
+                market_index: 0,
+                order_refs: vec![order_ref],
+            }
+            .data(),
+        }
+    };
+
+    // Healthy account: refused.
+    let keeper = fixture.keeper.insecure_clone();
+    let err =
+        {
+        let ix = force_cancel_ix(&fixture);
+        send(&mut fixture.svm, &keeper, ix, &[]).expect_err("still healthy")
+    };
+    assert!(
+        format!("{:?}", err.meta.logs).contains("SufficientCollateral"),
+        "unexpected: {:?}",
+        err.meta.logs
+    );
+
+    // Deteriorated: the order is reclaimed for the flat fee.
+    set_user_account(&mut fixture.svm, fixture.clob_maker_user, &broke);
+    let ix = force_cancel_ix(&fixture);
+    send(&mut fixture.svm, &keeper, ix, &[]).unwrap();
+
+    let maker: User = read_zero_copy(&fixture.svm, &fixture.clob_maker_user);
+    assert_eq!(maker.perp_positions[0].open_asks, 0);
+    assert_eq!(maker.perp_positions[0].open_orders, 0);
+    assert_eq!(maker.open_orders, 0);
+    assert_eq!(clob_ask_count(&fixture.svm, &fixture.clob_market), 0);
+    // Flat fee moved maker -> filler through the quote spot balances.
+    let filler: User = read_zero_copy(&fixture.svm, &filler_user);
+    assert!(filler.spot_positions[0].scaled_balance > 0);
+    // The maker's dust deposit flipped into a borrow covering the fee.
+    assert_eq!(maker.spot_positions[0].balance_type, SpotBalanceType::Borrow);
+
+    // Nothing left: the same ref is now stale and the call fails loudly.
+    let ix = force_cancel_ix(&fixture);
+    let err = send(&mut fixture.svm, &keeper, ix, &[]).expect_err("stale ref");
+    assert!(format!("{:?}", err.meta.logs).contains("no passed refs are live orders"));
 }

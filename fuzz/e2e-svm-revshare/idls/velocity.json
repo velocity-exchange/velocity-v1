@@ -2744,6 +2744,125 @@
       ]
     },
     {
+      "name": "force_cancel_clob_orders",
+      "docs": [
+        "Force-cancel a failing account's CLOB orders (keeper-passed",
+        "`OrderRef`s; same gates and flat fee as `force_cancel_orders`)."
+      ],
+      "discriminator": [
+        4,
+        155,
+        214,
+        86,
+        4,
+        110,
+        182,
+        30
+      ],
+      "accounts": [
+        {
+          "name": "state"
+        },
+        {
+          "name": "authority",
+          "signer": true
+        },
+        {
+          "name": "filler",
+          "writable": true
+        },
+        {
+          "name": "filler_stats",
+          "writable": true
+        },
+        {
+          "name": "user",
+          "docs": [
+            "The deteriorated account whose CLOB orders are being reclaimed."
+          ],
+          "writable": true
+        },
+        {
+          "name": "quoter",
+          "docs": [
+            "Deliberately not gated on active/approved: dead books still need",
+            "failing makers' orders reclaimed."
+          ]
+        },
+        {
+          "name": "clob_market",
+          "docs": [
+            "accounts in the handler."
+          ],
+          "writable": true
+        },
+        {
+          "name": "clob_program"
+        },
+        {
+          "name": "velocity_signer"
+        },
+        {
+          "name": "crank_conditions",
+          "docs": [
+            "Wake-hint host; optional like every other CLOB path."
+          ],
+          "writable": true,
+          "optional": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  99,
+                  108,
+                  111,
+                  98,
+                  95,
+                  99,
+                  114,
+                  97,
+                  110,
+                  107,
+                  95,
+                  99,
+                  111,
+                  110,
+                  100,
+                  105,
+                  116,
+                  105,
+                  111,
+                  110,
+                  115
+                ]
+              },
+              {
+                "kind": "arg",
+                "path": "market_index"
+              }
+            ]
+          }
+        }
+      ],
+      "args": [
+        {
+          "name": "market_index",
+          "type": "u16"
+        },
+        {
+          "name": "order_refs",
+          "type": {
+            "vec": {
+              "defined": {
+                "name": "ClobOrderRefV0"
+              }
+            }
+          }
+        }
+      ]
+    },
+    {
       "name": "force_cancel_orders",
       "discriminator": [
         64,

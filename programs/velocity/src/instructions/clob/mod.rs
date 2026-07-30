@@ -26,16 +26,21 @@
 //! - [`crank_cross_match`]: fill two crossed resting sources against each
 //!   other with the protocol `User` as the pass-through taker; fires only
 //!   when the spread nets positive after fees.
+//! - [`force_cancel_clob_orders`]: the CLOB arm of the force-cancel keeper
+//!   flow — reclaim a failing account's risk-increasing book orders (and
+//!   their placed-trigger shadows) for the flat fee.
 
 mod cancel_clob_order;
 mod crank_clob_order_removal;
 mod crank_conditions_setup;
 mod crank_cross_match;
+mod force_cancel_clob_orders;
 mod place_clob_order;
 mod resolve_clob_crank;
 mod trigger_clob_order;
 
 pub use {
     cancel_clob_order::*, crank_clob_order_removal::*, crank_conditions_setup::*,
-    crank_cross_match::*, place_clob_order::*, resolve_clob_crank::*, trigger_clob_order::*,
+    crank_cross_match::*, force_cancel_clob_orders::*, place_clob_order::*, resolve_clob_crank::*,
+    trigger_clob_order::*,
 };

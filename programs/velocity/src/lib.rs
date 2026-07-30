@@ -2275,6 +2275,16 @@ pub mod velocity {
         handle_crank_cross_match(ctx, market_index, size, buy_quoter_index, sell_quoter_index)
     }
 
+    /// Force-cancel a failing account's CLOB orders (keeper-passed
+    /// `OrderRef`s; same gates and flat fee as `force_cancel_orders`).
+    pub fn force_cancel_clob_orders<'c: 'info, 'info>(
+        ctx: Context<'info, ForceCancelClobOrders<'info>>,
+        market_index: u16,
+        order_refs: Vec<ClobOrderRefV0>,
+    ) -> Result<()> {
+        handle_force_cancel_clob_orders(ctx, market_index, order_refs)
+    }
+
     /// Relay resolver for the evict condition. Meant to be simulated, not
     /// landed: stages the executor call and returns a response pointer.
     pub fn resolve_clob_crank_evict(ctx: Context<ResolveClobCrank>) -> Result<()> {

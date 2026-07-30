@@ -72,14 +72,24 @@ pub struct HistoricalOracleData {
 }
 
 impl HistoricalOracleData {
-    pub fn default_quote_oracle() -> Self {
+    /// Seed the quote spot market's historical oracle data at launch.
+    ///
+    /// `now` is stamped for the same reason as
+    /// [`Self::default_with_current_oracle`] (OtterSec #121). The quote market's
+    /// price is pinned at 1.0 by `OracleSource::QuoteAsset`, so its band is
+    /// degenerate either way and this is not a security fix here — but leaving the
+    /// timestamp at zero would make every deployment's quote market take the
+    /// zero-timestamp seeding path in `update_spot_market_twap_stats` on its first
+    /// crank, needlessly perturbing quote-market TWAP behavior (and with it every
+    /// collateral valuation that reads it). Stamp it so the normal EMA runs.
+    pub fn default_quote_oracle(now: i64) -> Self {
         HistoricalOracleData {
             last_oracle_price: PRICE_PRECISION_I64,
             last_oracle_conf: 0,
             last_oracle_delay: 0,
             last_oracle_price_twap: PRICE_PRECISION_I64,
             last_oracle_price_twap_5min: PRICE_PRECISION_I64,
-            ..HistoricalOracleData::default()
+            last_oracle_price_twap_ts: now,
         }
     }
 

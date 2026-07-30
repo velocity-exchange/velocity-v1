@@ -1109,7 +1109,7 @@ mod calculate_max_spot_order_size {
             maintenance_asset_weight: SPOT_WEIGHT_PRECISION,
             deposit_balance: 10000 * SPOT_BALANCE_PRECISION,
             liquidator_fee: 0,
-            historical_oracle_data: HistoricalOracleData::default_quote_oracle(),
+            historical_oracle_data: HistoricalOracleData::default_quote_oracle(0),
             ..SpotMarket::default()
         };
         create_anchor_account_info!(usdc_spot_market, SpotMarket, usdc_spot_market_account_info);
@@ -1215,7 +1215,7 @@ mod calculate_max_spot_order_size {
             maintenance_asset_weight: SPOT_WEIGHT_PRECISION,
             deposit_balance: 10000 * SPOT_BALANCE_PRECISION,
             liquidator_fee: 0,
-            historical_oracle_data: HistoricalOracleData::default_quote_oracle(),
+            historical_oracle_data: HistoricalOracleData::default_quote_oracle(0),
             ..SpotMarket::default()
         };
         create_anchor_account_info!(usdc_spot_market, SpotMarket, usdc_spot_market_account_info);
@@ -1322,7 +1322,7 @@ mod calculate_max_spot_order_size {
             maintenance_asset_weight: SPOT_WEIGHT_PRECISION,
             deposit_balance: 10000 * SPOT_BALANCE_PRECISION,
             liquidator_fee: 0,
-            historical_oracle_data: HistoricalOracleData::default_quote_oracle(),
+            historical_oracle_data: HistoricalOracleData::default_quote_oracle(0),
             ..SpotMarket::default()
         };
         create_anchor_account_info!(usdc_spot_market, SpotMarket, usdc_spot_market_account_info);
@@ -1428,7 +1428,7 @@ mod calculate_max_spot_order_size {
             maintenance_asset_weight: SPOT_WEIGHT_PRECISION,
             deposit_balance: 10000 * SPOT_BALANCE_PRECISION,
             liquidator_fee: 0,
-            historical_oracle_data: HistoricalOracleData::default_quote_oracle(),
+            historical_oracle_data: HistoricalOracleData::default_quote_oracle(0),
             ..SpotMarket::default()
         };
         create_anchor_account_info!(usdc_spot_market, SpotMarket, usdc_spot_market_account_info);
@@ -1517,7 +1517,7 @@ mod calculate_max_spot_order_size {
             maintenance_asset_weight: SPOT_WEIGHT_PRECISION,
             deposit_balance: 10000 * SPOT_BALANCE_PRECISION,
             liquidator_fee: 0,
-            historical_oracle_data: HistoricalOracleData::default_quote_oracle(),
+            historical_oracle_data: HistoricalOracleData::default_quote_oracle(0),
             ..SpotMarket::default()
         };
         create_anchor_account_info!(usdc_spot_market, SpotMarket, usdc_spot_market_account_info);
@@ -1624,7 +1624,7 @@ mod calculate_max_spot_order_size {
             maintenance_asset_weight: SPOT_WEIGHT_PRECISION,
             deposit_balance: 10000 * SPOT_BALANCE_PRECISION,
             liquidator_fee: 0,
-            historical_oracle_data: HistoricalOracleData::default_quote_oracle(),
+            historical_oracle_data: HistoricalOracleData::default_quote_oracle(0),
             ..SpotMarket::default()
         };
         create_anchor_account_info!(usdc_spot_market, SpotMarket, usdc_spot_market_account_info);
@@ -1731,7 +1731,7 @@ mod calculate_max_spot_order_size {
             maintenance_asset_weight: SPOT_WEIGHT_PRECISION,
             deposit_balance: 10000 * SPOT_BALANCE_PRECISION,
             liquidator_fee: 0,
-            historical_oracle_data: HistoricalOracleData::default_quote_oracle(),
+            historical_oracle_data: HistoricalOracleData::default_quote_oracle(0),
             ..SpotMarket::default()
         };
         create_anchor_account_info!(usdc_spot_market, SpotMarket, usdc_spot_market_account_info);
@@ -1838,7 +1838,7 @@ mod calculate_max_spot_order_size {
             maintenance_asset_weight: SPOT_WEIGHT_PRECISION,
             deposit_balance: 10000 * SPOT_BALANCE_PRECISION,
             liquidator_fee: 0,
-            historical_oracle_data: HistoricalOracleData::default_quote_oracle(),
+            historical_oracle_data: HistoricalOracleData::default_quote_oracle(0),
             ..SpotMarket::default()
         };
         create_anchor_account_info!(usdc_spot_market, SpotMarket, usdc_spot_market_account_info);

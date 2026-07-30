@@ -1642,7 +1642,7 @@ fn attempt_borrow_with_massive_upnl() {
         deposit_balance: 100_000_000 * SPOT_BALANCE_PRECISION, //$100M usdc
         borrow_balance: 0,
         deposit_token_twap: QUOTE_PRECISION_U64 / 2,
-        historical_oracle_data: HistoricalOracleData::default_quote_oracle(),
+        historical_oracle_data: HistoricalOracleData::default_quote_oracle(0),
         status: MarketStatus::Active,
 
         ..SpotMarket::default()
@@ -1770,7 +1770,7 @@ fn check_usdc_spot_market_twap() {
         deposit_balance: 100_000_000 * SPOT_BALANCE_PRECISION, //$100M usdc
         borrow_balance: 0,
         deposit_token_twap: QUOTE_PRECISION_U64 / 2,
-        historical_oracle_data: HistoricalOracleData::default_quote_oracle(),
+        historical_oracle_data: HistoricalOracleData::default_quote_oracle(0),
         status: MarketStatus::Active,
         ..SpotMarket::default()
     };
@@ -1785,12 +1785,15 @@ fn check_usdc_spot_market_twap() {
 
     update_spot_market_twap_stats(&mut spot_market, Some(&oracle_price_data), now).unwrap();
     assert_eq!(spot_market.historical_oracle_data.last_oracle_delay, 0);
-    // This market is built with `default_quote_oracle()`, which leaves
-    // `last_oracle_price_twap_ts` at 0, so this first call only seeds the
-    // timestamp and leaves the TWAPs at their initialized value (OtterSec #121).
-    // Previously it EMA'd from a zero timestamp and landed on 1000001 — the +1
-    // coming from `calculate_weighted_average`'s rounding bias, which fires even
-    // when the live price and the stored TWAP are identical.
+    // This fixture passes `default_quote_oracle(0)`, deliberately modelling a market
+    // whose `last_oracle_price_twap_ts` is still zero — i.e. pre-upgrade on-chain
+    // state. So this first call takes the seeding path: stamp the timestamp, leave
+    // the TWAPs at their initialized value (OtterSec #121). Previously it EMA'd
+    // from the zero timestamp and landed on 1000001, the +1 coming from
+    // `calculate_weighted_average`'s rounding bias, which fires even when the live
+    // price and the stored TWAP are identical. Real markets now stamp the timestamp
+    // at init (both spot initializers) and so keep EMA-ing normally from the very
+    // first crank — this seeding path only ever applies to legacy accounts.
     assert_eq!(
         spot_market.historical_oracle_data.last_oracle_price_twap,
         1000000
@@ -1925,7 +1928,7 @@ fn check_spot_market_max_borrow_fraction() {
         deposit_balance: 100_000_000 * SPOT_BALANCE_PRECISION, //$100M usdc
         borrow_balance: 0,
         deposit_token_twap: QUOTE_PRECISION_U64 / 2,
-        historical_oracle_data: HistoricalOracleData::default_quote_oracle(),
+        historical_oracle_data: HistoricalOracleData::default_quote_oracle(0),
         status: MarketStatus::Active,
         min_borrow_rate: 0,
         max_token_borrows_fraction: 1,
@@ -1994,7 +1997,7 @@ fn check_spot_market_min_borrow_rate() {
         deposit_balance: 100_000_000 * SPOT_BALANCE_PRECISION, //$100M usdc
         borrow_balance: 0,
         deposit_token_twap: QUOTE_PRECISION_U64 / 2,
-        historical_oracle_data: HistoricalOracleData::default_quote_oracle(),
+        historical_oracle_data: HistoricalOracleData::default_quote_oracle(0),
         status: MarketStatus::Active,
         min_borrow_rate: 0,
         ..SpotMarket::default()
@@ -2062,7 +2065,7 @@ fn isolated_perp_position() {
         deposit_balance: 100_000_000 * SPOT_BALANCE_PRECISION, //$100M usdc
         borrow_balance: 0,
         deposit_token_twap: QUOTE_PRECISION_U64 / 2,
-        historical_oracle_data: HistoricalOracleData::default_quote_oracle(),
+        historical_oracle_data: HistoricalOracleData::default_quote_oracle(0),
         status: MarketStatus::Active,
         ..SpotMarket::default()
     };

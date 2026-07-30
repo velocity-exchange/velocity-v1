@@ -2551,7 +2551,7 @@ mod update_aum_tests {
             oracle_source: OracleSource::QuoteAsset,
             cumulative_deposit_interest: SPOT_CUMULATIVE_INTEREST_PRECISION,
             decimals: 6,
-            historical_oracle_data: HistoricalOracleData::default_quote_oracle(),
+            historical_oracle_data: HistoricalOracleData::default_quote_oracle(0),
             ..SpotMarket::default()
         };
         create_anchor_account_info!(usdc_spot_market, SpotMarket, usdc_spot_market_account_info);

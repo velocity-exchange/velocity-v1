@@ -16,10 +16,10 @@ use {
         error::ErrorCode,
         state::{
             clob_crank::{
-                ClobCrankConditionsV0, CLOB_CRANK_EVICT, CLOB_CRANK_EXPIRE,
-                CLOB_CRANK_EXPIRE_FALLBACK,
+                ClobCrankConditionsV0, CLOB_CRANK_CROSS, CLOB_CRANK_CROSS_FALLBACK,
+                CLOB_CRANK_EVICT, CLOB_CRANK_EXPIRE, CLOB_CRANK_EXPIRE_FALLBACK,
             },
-            prop_amm::CLOB_BID_COUNT_OFFSET,
+            prop_amm::{CLOB_BEST_BID_OFFSET, CLOB_BID_COUNT_OFFSET},
         },
         validate,
     },
@@ -28,20 +28,27 @@ use {
     std::convert::TryInto,
 };
 
-/// The accounts every staged crank references, in resolver-account order.
+/// The accounts every staged crank references, in resolver-account order,
+/// plus the market references resolvers derive staged executors from.
 pub struct ClobCrankConditionKeys {
     pub crank_conditions: Pubkey,
     pub clob_market: Pubkey,
     pub quoter: Pubkey,
     pub state: Pubkey,
+    /// The perp market's oracle, stored on the conditions account so the
+    /// cross resolver can stage the executor's map section without holding
+    /// the perp market account.
+    pub oracle: Pubkey,
+    pub quote_spot_market_index: u16,
 }
 
 fn disc8(disc: &[u8]) -> Result<[u8; 8]> {
     disc.try_into().map_err(|_| error!(ErrorCode::DefaultError))
 }
 
-/// (Re)write the full condition block. `initial_expire_wake_ts` preserves a
-/// live hint across a re-price (`i64::MAX` on first write).
+/// (Re)write the full condition block: evict, expire (+ fallback), and
+/// cross (+ fallback). `initial_expire_wake_ts` preserves a live hint across
+/// a re-price (`i64::MAX` on first write).
 pub fn write_clob_crank_conditions(
     conditions: &mut ClobCrankConditionsV0,
     keys: &ClobCrankConditionKeys,
@@ -88,6 +95,8 @@ pub fn write_clob_crank_conditions(
 
     conditions.market_index = market_index;
     conditions.keeper_payment_lamports = keeper_payment_lamports;
+    conditions.oracle = keys.oracle;
+    conditions.quote_spot_market_index = keys.quote_spot_market_index;
     conditions.init_header()?;
     conditions.write_condition(
         CLOB_CRANK_EVICT,
@@ -107,6 +116,30 @@ pub fn write_clob_crank_conditions(
     conditions.write_condition(
         CLOB_CRANK_EXPIRE_FALLBACK,
         &ConditionV0::every_slots(expire_fallback_slots, expire_spec, &resolver_accounts),
+    )?;
+    let cross_spec = spec(
+        crate::instruction::ResolveClobCrankCross::DISCRIMINATOR,
+        crate::instruction::CrankCrossMatch::DISCRIMINATOR,
+    )?;
+    conditions.write_condition(
+        CLOB_CRANK_CROSS,
+        // Both u32 side heads, `best_bid` then `best_ask`, in one 8-byte
+        // watch — a crossing order is always a new best.
+        &ConditionV0::on_account_change(
+            keys.clob_market.to_bytes(),
+            CLOB_BEST_BID_OFFSET as u32,
+            8,
+            cross_spec,
+            &resolver_accounts,
+        ),
+    )?;
+    conditions.write_condition(
+        CLOB_CRANK_CROSS_FALLBACK,
+        // Activation-slot maturation makes an order matchable with no
+        // account change, and a PropAMM crossing the CLOB has no single
+        // account to watch — the poll is the liveness floor for both (the
+        // book publisher is the fast path).
+        &ConditionV0::every_slots(expire_fallback_slots, cross_spec, &resolver_accounts),
     )?;
     Ok(())
 }

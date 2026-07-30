@@ -291,6 +291,12 @@ pub const CLOB_REMOVE_EXPIRED_V0_DISCRIMINATOR: [u8; 8] = [241, 135, 215, 18, 25
 // so a layout drift fails them. Every value is an *account-data* offset
 // (anchor's 8-byte discriminator included).
 
+/// `ClobHeaderV0.best_bid` / `.best_ask` — the side heads. The cross
+/// condition's change-watch covers both u32s in one 8-byte window: a
+/// crossing order is by definition better than the opposite side's best, so
+/// it always lands as a new best and moves one of these.
+pub const CLOB_BEST_BID_OFFSET: usize = 112;
+pub const CLOB_BEST_ASK_OFFSET: usize = 116;
 /// `ClobHeaderV0.worst_bid` / `.worst_ask` — the side tails, what
 /// `evict_worst_v0` removes.
 pub const CLOB_WORST_BID_OFFSET: usize = 120;
@@ -318,10 +324,22 @@ pub const CLOB_ORDER_BIT_FLAG_OPEN: u8 = 1;
 #[derive(Clone, Copy, Debug)]
 pub struct ClobNodeView {
     pub user: Pubkey,
+    pub price: u64,
     pub base_asset_amount: u64,
+    /// First slot the order may match.
+    pub activation_slot: u64,
     pub max_ts: i64,
     pub order_id: u64,
+    /// Next node away from the best of book ([`CLOB_NIL`] at the tail).
+    pub next: u32,
     pub is_open: bool,
+}
+
+impl ClobNodeView {
+    /// Live and matchable right now: open, activated, not expired.
+    pub fn is_matchable(&self, slot: u64, now: i64) -> bool {
+        self.is_open && self.activation_slot <= slot && !(self.max_ts != 0 && self.max_ts < now)
+    }
 }
 
 /// Read a u32 header field at an account-data offset.
@@ -343,9 +361,12 @@ pub fn read_clob_node(data: &[u8], index: u32) -> Option<ClobNodeView> {
     let node = data.get(start..start + CLOB_NODE_LEN)?;
     Some(ClobNodeView {
         user: Pubkey::new_from_array(node[..32].try_into().ok()?),
+        price: u64::from_le_bytes(node[32..40].try_into().ok()?),
         base_asset_amount: u64::from_le_bytes(node[40..48].try_into().ok()?),
+        activation_slot: u64::from_le_bytes(node[48..56].try_into().ok()?),
         max_ts: i64::from_le_bytes(node[56..64].try_into().ok()?),
         order_id: u64::from_le_bytes(node[64..72].try_into().ok()?),
+        next: u32::from_le_bytes(node[84..88].try_into().ok()?),
         is_open: node[88] & CLOB_ORDER_BIT_FLAG_OPEN != 0,
     })
 }

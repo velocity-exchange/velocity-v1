@@ -33,7 +33,7 @@ use {
             prop_amm::{QuoterType, QuoterV0},
             state::State,
             user::{User, UserStats},
-            user_map::load_user_maps,
+            user_map::{load_user_map, load_user_maps, UserStatsMap},
         },
         validate,
     },
@@ -79,6 +79,7 @@ pub fn handle_crank_cross_match<'c: 'info, 'info>(
     size: u64,
     buy_quoter_index: u8,
     sell_quoter_index: u8,
+    makers_include_stats: bool,
 ) -> Result<()> {
     let clock = Clock::get()?;
     let state = ctx.accounts.state.load()?;
@@ -95,8 +96,15 @@ pub fn handle_crank_cross_match<'c: 'info, 'info>(
         clock.slot,
         Some(state.oracle_guard_rails),
     )?;
-    let (makers_and_referrer, makers_and_referrer_stats) =
-        load_user_maps(remaining_accounts_iter, true)?;
+    // Direct callers pass (User, UserStats) pairs for full maker attribution;
+    // relay-staged calls pass Users only, because a resolver cannot derive
+    // stats PDAs (see `cross_match`'s parameter note).
+    let (makers_and_referrer, makers_and_referrer_stats) = if makers_include_stats {
+        let (users, stats) = load_user_maps(remaining_accounts_iter, true)?;
+        (users, Some(stats))
+    } else {
+        (load_user_map(remaining_accounts_iter, true)?, None)
+    };
 
     // Quoter section: registry entries plus the union of their registered
     // CPI accounts, same shape as the router fill's.
@@ -169,7 +177,7 @@ pub fn handle_crank_cross_match<'c: 'info, 'info>(
         &ctx.accounts.taker,
         &ctx.accounts.taker_stats,
         &makers_and_referrer,
-        &makers_and_referrer_stats,
+        makers_and_referrer_stats.as_ref(),
         &mut executor,
         &perp_market_map,
         &spot_market_map,

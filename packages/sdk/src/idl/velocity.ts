@@ -1515,6 +1515,10 @@ export type Velocity = {
         {
           "name": "sellQuoterIndex",
           "type": "u8"
+        },
+        {
+          "name": "makersIncludeStats",
+          "type": "bool"
         }
       ]
     },
@@ -7407,6 +7411,46 @@ export type Velocity = {
           "type": "u16"
         }
       ]
+    },
+    {
+      "name": "resolveClobCrankCross",
+      "docs": [
+        "Relay resolver for the cross (and cross-fallback) condition. Meant to",
+        "be simulated, not landed."
+      ],
+      "discriminator": [
+        221,
+        103,
+        48,
+        85,
+        173,
+        165,
+        43,
+        8
+      ],
+      "accounts": [
+        {
+          "name": "crankConditions",
+          "docs": [
+            "Writable only because the payload is staged in its scratch region;",
+            "the instruction is otherwise read-only and only ever simulated."
+          ],
+          "writable": true
+        },
+        {
+          "name": "clobMarket",
+          "docs": [
+            "accounts, same as the executor it stages."
+          ]
+        },
+        {
+          "name": "quoter"
+        },
+        {
+          "name": "state"
+        }
+      ],
+      "args": []
     },
     {
       "name": "resolveClobCrankEvict",
@@ -18681,7 +18725,7 @@ export type Velocity = {
             "type": {
               "array": [
                 "u8",
-                856
+                1416
               ]
             }
           },
@@ -18694,9 +18738,19 @@ export type Velocity = {
             "type": {
               "array": [
                 "u8",
-                512
+                2048
               ]
             }
+          },
+          {
+            "name": "oracle",
+            "docs": [
+              "The market's oracle, captured at attach time. Resolvers hold only",
+              "four fixed accounts, so the staged executor's map section is derived",
+              "from here rather than from the perp market account; an admin oracle",
+              "rotation goes live for the cranks on re-attach."
+            ],
+            "type": "pubkey"
           },
           {
             "name": "keeperPaymentLamports",
@@ -18726,11 +18780,19 @@ export type Velocity = {
             "type": "u16"
           },
           {
+            "name": "quoteSpotMarketIndex",
+            "docs": [
+              "The market's quote spot market, captured at attach time (the staged",
+              "executor's map section needs its PDA)."
+            ],
+            "type": "u16"
+          },
+          {
             "name": "padding",
             "type": {
               "array": [
                 "u8",
-                14
+                12
               ]
             }
           }

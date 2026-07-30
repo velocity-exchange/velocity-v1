@@ -1779,6 +1779,7 @@ fn cross_match_crank_fills_a_crossed_clob_and_keeps_the_spread() {
                 size: UNIT,
                 buy_quoter_index: 0,
                 sell_quoter_index: 0,
+                makers_include_stats: true,
             }
             .data(),
         }
@@ -1822,4 +1823,85 @@ fn cross_match_crank_fills_a_crossed_clob_and_keeps_the_spread() {
         logs.contains("CrossMatch") || logs.contains("nothing crossed"),
         "unexpected: {logs}"
     );
+
+    // ---- The relay-staged path: resolver discovers the cross, stages the
+    // executor stats-less, and the turner-shaped submission fills it. ----
+    let resolve_cross = |fixture: &mut Fixture| -> Option<velocity::relay_spec::ResolvedCrankV0> {
+        let ix = Instruction {
+            program_id: velocity_id(),
+            accounts: velocity::accounts::ResolveClobCrank {
+                crank_conditions: conditions,
+                clob_market: fixture.clob_market,
+                quoter: fixture.quoter,
+                state: state_pda(),
+            }
+            .to_account_metas(None),
+            data: velocity::instruction::ResolveClobCrankCross {}.data(),
+        };
+        let keeper = fixture.keeper.insecure_clone();
+        let meta = send(&mut fixture.svm, &keeper, ix, &[]).unwrap();
+        let pointer =
+            velocity::relay_spec::ResponsePointerV0::read(&meta.return_data.data).unwrap();
+        if !pointer.has_work() {
+            return None;
+        }
+        let data = fixture.svm.get_account(&conditions).unwrap().data;
+        let staged =
+            &data[pointer.offset() as usize..(pointer.offset() + pointer.len()) as usize];
+        Some(velocity::relay_spec::ResolvedCrankV0::read(staged).unwrap())
+    };
+    assert!(resolve_cross(&mut fixture).is_none(), "book is uncrossed");
+
+    // Cross it again and let the resolver drive the whole crank.
+    place_clob_ask(&mut fixture, 99 * PRICE, UNIT / 2);
+    let ix = place_clob_order_ix(
+        fixture.clob_maker_user,
+        &fixture.clob_maker_authority,
+        fixture.quoter,
+        fixture.clob_market,
+        fixture.oracle,
+        None,
+        PlaceClobOrderParams {
+            market_index: 0,
+            direction: PositionDirection::Long,
+            price: 101 * PRICE,
+            base_asset_amount: UNIT / 2,
+            max_ts: 0,
+            activation_delay_slots: Some(0),
+        },
+    );
+    send(&mut fixture.svm, &maker_authority, ix, &[]).unwrap();
+    fixture.svm.warp_to_slot(14);
+    set_oracle(&mut fixture.svm, fixture.oracle, (100 * PRICE_PRECISION) as i64, 14);
+
+    let surplus_before = {
+        let protocol: User = read_zero_copy(&fixture.svm, &protocol_user);
+        protocol.perp_positions[0].quote_asset_amount
+    };
+    let resolved = resolve_cross(&mut fixture).expect("crossed book is work");
+    assert_eq!(
+        resolved.accounts[2].address,
+        protocol_user.to_bytes(),
+        "taker slot is the protocol User"
+    );
+    run_staged_executor(
+        &mut fixture,
+        &resolved,
+        velocity::instruction::CrankCrossMatch::DISCRIMINATOR,
+        payout,
+    );
+    let protocol: User = read_zero_copy(&fixture.svm, &protocol_user);
+    assert_eq!(protocol.perp_positions[0].base_asset_amount, 0);
+    assert!(
+        protocol.perp_positions[0].quote_asset_amount >= surplus_before + 800_000,
+        "second surplus accrued, got {}",
+        protocol.perp_positions[0].quote_asset_amount
+    );
+    assert_eq!(clob_ask_count(&fixture.svm, &fixture.clob_market), 0);
+    assert_eq!(
+        fixture.svm.get_account(&payout).unwrap().lamports,
+        1_000_000_000 + 2 * PAYMENT
+    );
+    // Empty again: no work.
+    assert!(resolve_cross(&mut fixture).is_none());
 }

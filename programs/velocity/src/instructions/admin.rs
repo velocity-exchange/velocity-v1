@@ -2434,6 +2434,8 @@ pub fn handle_update_perp_market_clob_quoter(
             clob_market: ctx.accounts.clob_market.key(),
             quoter: ctx.accounts.quoter.key(),
             state: ctx.accounts.state.key(),
+            oracle: perp_market.oracle,
+            quote_spot_market_index: perp_market.quote_spot_market_index,
         },
         perp_market.market_index,
         keeper_payment_lamports,

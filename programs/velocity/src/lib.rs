@@ -2271,8 +2271,16 @@ pub mod velocity {
         size: u64,
         buy_quoter_index: u8,
         sell_quoter_index: u8,
+        makers_include_stats: bool,
     ) -> Result<()> {
-        handle_crank_cross_match(ctx, market_index, size, buy_quoter_index, sell_quoter_index)
+        handle_crank_cross_match(
+            ctx,
+            market_index,
+            size,
+            buy_quoter_index,
+            sell_quoter_index,
+            makers_include_stats,
+        )
     }
 
     /// Relay resolver for the evict condition. Meant to be simulated, not
@@ -2285,6 +2293,12 @@ pub mod velocity {
     /// to be simulated, not landed.
     pub fn resolve_clob_crank_remove_expired(ctx: Context<ResolveClobCrank>) -> Result<()> {
         handle_resolve_clob_crank_remove_expired(ctx)
+    }
+
+    /// Relay resolver for the cross (and cross-fallback) condition. Meant to
+    /// be simulated, not landed.
+    pub fn resolve_clob_crank_cross(ctx: Context<ResolveClobCrank>) -> Result<()> {
+        handle_resolve_clob_crank_cross(ctx)
     }
 
     pub fn withdraw_protocol_user_deposit<'c: 'info, 'info>(

@@ -61,16 +61,24 @@ pub const CLOB_CRANK_EVICT: usize = 0;
 pub const CLOB_CRANK_EXPIRE: usize = 1;
 /// Index of the expire fallback (periodic poll catching missed hints).
 pub const CLOB_CRANK_EXPIRE_FALLBACK: usize = 2;
+/// Index of the cross condition (the book's best bid/ask moved — a crossing
+/// order is by definition a new best, so the watch catches every new cross).
+pub const CLOB_CRANK_CROSS: usize = 3;
+/// Index of the cross fallback (periodic poll: an order can become
+/// *matchable* at its activation slot without any account change, and
+/// PropAMM-side crosses have no single account to watch).
+pub const CLOB_CRANK_CROSS_FALLBACK: usize = 4;
 /// Conditions hosted per market.
-pub const CLOB_CRANK_CONDITIONS: usize = 3;
+pub const CLOB_CRANK_CONDITIONS: usize = 5;
 
 /// Bytes the condition block occupies: header + the fixed condition array.
 pub const CLOB_CRANK_BLOCK_LEN: usize = BLOCK_HEADER_LEN + CLOB_CRANK_CONDITIONS * CONDITION_LEN;
 
-/// Bytes reserved for a resolver's staged `ResolvedCrankV0`. The executor
-/// list is ~11 accounts (33 bytes each) plus a few bytes of args, so half of
-/// this is headroom for the shape to grow.
-pub const CLOB_CRANK_STAGING_LEN: usize = 512;
+/// Bytes reserved for a resolver's staged `ResolvedCrankV0`. The largest
+/// staged call is the cross executor: ~12 fixed accounts plus two accounts
+/// per staged maker (33 bytes each), so this bounds a cross at roughly two
+/// dozen makers — far past what one profitable top-of-book cross touches.
+pub const CLOB_CRANK_STAGING_LEN: usize = 2048;
 
 /// Account-data offset of the staging region (what a `ResponsePointerV0`'s
 /// `offset` is relative to): discriminator + the block.
@@ -86,6 +94,11 @@ pub struct ClobCrankConditionsV0 {
     /// Scratch the resolvers stage their `ResolvedCrankV0` into. Only ever
     /// written under simulation; on-chain contents are meaningless.
     pub staging: [u8; CLOB_CRANK_STAGING_LEN],
+    /// The market's oracle, captured at attach time. Resolvers hold only
+    /// four fixed accounts, so the staged executor's map section is derived
+    /// from here rather than from the perp market account; an admin oracle
+    /// rotation goes live for the cranks on re-attach.
+    pub oracle: Pubkey,
     /// Lamports the executor pays the keeper per crank, mirrored into each
     /// conditions' `min_payment`. This account doubles as the reservoir those
     /// lamports come from: relay's `assert_paid_v0` measures the keeper's
@@ -103,7 +116,10 @@ pub struct ClobCrankConditionsV0 {
     pub keeper_payment_lamports: u64,
     /// The perp market these conditions crank. Also the PDA seed.
     pub market_index: u16,
-    pub padding: [u8; 14],
+    /// The market's quote spot market, captured at attach time (the staged
+    /// executor's map section needs its PDA).
+    pub quote_spot_market_index: u16,
+    pub padding: [u8; 12],
 }
 
 impl Default for ClobCrankConditionsV0 {
@@ -112,9 +128,11 @@ impl Default for ClobCrankConditionsV0 {
         Self {
             block: [0; CLOB_CRANK_BLOCK_LEN],
             staging: [0; CLOB_CRANK_STAGING_LEN],
+            oracle: Pubkey::default(),
             keeper_payment_lamports: 0,
             market_index: 0,
-            padding: [0; 14],
+            quote_spot_market_index: 0,
+            padding: [0; 12],
         }
     }
 }
@@ -122,7 +140,7 @@ impl Default for ClobCrankConditionsV0 {
 impl ClobCrankConditionsV0 {
     /// 8 (discriminator) + block + staging + trailing fields. Kept as a const
     /// so the alignment invariant below is checked at compile time.
-    pub const SIZE: usize = 8 + CLOB_CRANK_BLOCK_LEN + CLOB_CRANK_STAGING_LEN + 8 + 2 + 14;
+    pub const SIZE: usize = 8 + CLOB_CRANK_BLOCK_LEN + CLOB_CRANK_STAGING_LEN + 32 + 8 + 2 + 2 + 12;
 
     /// The block region, for `relay_spec::read_block`.
     pub fn block(&self) -> &[u8] {
@@ -278,8 +296,8 @@ mod tests {
 
     #[test]
     fn size_matches_the_layout_and_the_spec() {
-        assert_eq!(CLOB_CRANK_BLOCK_LEN, 16 + 3 * 280);
-        assert_eq!(ClobCrankConditionsV0::SIZE, 8 + 856 + 512 + 24);
+        assert_eq!(CLOB_CRANK_BLOCK_LEN, 16 + 5 * 280);
+        assert_eq!(ClobCrankConditionsV0::SIZE, 8 + 1416 + 2048 + 56);
         // the staging region must land where the pointer offset says it does
         assert_eq!(
             CLOB_CRANK_STAGING_OFFSET,

@@ -213,6 +213,7 @@ pub mod instructions {
         pub size: u64,
         pub buy_quoter_index: u8,
         pub sell_quoter_index: u8,
+        pub makers_include_stats: bool,
     }
     #[automatically_derived]
     impl anchor_lang::Discriminator for CrankCrossMatch {
@@ -1047,6 +1048,14 @@ pub mod instructions {
     }
     #[automatically_derived]
     impl anchor_lang::InstructionData for ResizeSignedMsgUserOrders {}
+    #[derive(AnchorSerialize, AnchorDeserialize, Clone, Default)]
+    pub struct ResolveClobCrankCross {}
+    #[automatically_derived]
+    impl anchor_lang::Discriminator for ResolveClobCrankCross {
+        const DISCRIMINATOR: &[u8] = &[221, 103, 48, 85, 173, 165, 43, 8];
+    }
+    #[automatically_derived]
+    impl anchor_lang::InstructionData for ResolveClobCrankCross {}
     #[derive(AnchorSerialize, AnchorDeserialize, Clone, Default)]
     pub struct ResolveClobCrankEvict {}
     #[automatically_derived]
@@ -3179,12 +3188,14 @@ pub mod types {
         PartialEq,
     )]
     pub struct ClobCrankConditionsV0 {
-        pub block: ByteArray<856>,
-        pub staging: ByteArray<512>,
+        pub block: ByteArray<1416>,
+        pub staging: ByteArray<2048>,
+        pub oracle: Pubkey,
         pub keeper_payment_lamports: u64,
         pub market_index: u16,
+        pub quote_spot_market_index: u16,
         #[serde(skip)]
-        pub padding: Padding<14>,
+        pub padding: Padding<12>,
     }
     #[repr(C)]
     #[derive(
@@ -6142,12 +6153,14 @@ pub mod accounts {
         PartialEq,
     )]
     pub struct ClobCrankConditionsV0 {
-        pub block: ByteArray<856>,
-        pub staging: ByteArray<512>,
+        pub block: ByteArray<1416>,
+        pub staging: ByteArray<2048>,
+        pub oracle: Pubkey,
         pub keeper_payment_lamports: u64,
         pub market_index: u16,
+        pub quote_spot_market_index: u16,
         #[serde(skip)]
-        pub padding: Padding<14>,
+        pub padding: Padding<12>,
     }
     #[automatically_derived]
     impl anchor_lang::Discriminator for ClobCrankConditionsV0 {
@@ -15716,6 +15729,82 @@ pub mod accounts {
     }
     #[automatically_derived]
     impl anchor_lang::AccountDeserialize for ResizeSignedMsgUserOrders {
+        fn try_deserialize(buf: &mut &[u8]) -> anchor_lang::Result<Self> {
+            let given_disc = &buf[..8];
+            if Self::DISCRIMINATOR != given_disc {
+                return Err(anchor_lang::error!(
+                    anchor_lang::error::ErrorCode::AccountDiscriminatorMismatch
+                ));
+            }
+            Self::try_deserialize_unchecked(buf)
+        }
+        fn try_deserialize_unchecked(buf: &mut &[u8]) -> anchor_lang::Result<Self> {
+            let mut data: &[u8] = &buf[8..];
+            AnchorDeserialize::deserialize(&mut data)
+                .map_err(|_| anchor_lang::error::ErrorCode::AccountDidNotDeserialize.into())
+        }
+    }
+    #[repr(C)]
+    #[derive(Copy, Clone, Default, AnchorSerialize, AnchorDeserialize, Serialize, Deserialize)]
+    pub struct ResolveClobCrankCross {
+        pub crank_conditions: Pubkey,
+        pub clob_market: Pubkey,
+        pub quoter: Pubkey,
+        pub state: Pubkey,
+    }
+    #[automatically_derived]
+    impl anchor_lang::Discriminator for ResolveClobCrankCross {
+        const DISCRIMINATOR: &[u8] = &[209, 202, 225, 143, 124, 66, 35, 132];
+    }
+    #[automatically_derived]
+    unsafe impl anchor_lang::__private::bytemuck::Pod for ResolveClobCrankCross {}
+    #[automatically_derived]
+    unsafe impl anchor_lang::__private::bytemuck::Zeroable for ResolveClobCrankCross {}
+    #[automatically_derived]
+    impl anchor_lang::ZeroCopy for ResolveClobCrankCross {}
+    #[automatically_derived]
+    impl anchor_lang::InstructionData for ResolveClobCrankCross {}
+    #[automatically_derived]
+    impl ToAccountMetas for ResolveClobCrankCross {
+        fn to_account_metas(&self) -> Vec<AccountMeta> {
+            vec![
+                AccountMeta {
+                    pubkey: self.crank_conditions,
+                    is_signer: false,
+                    is_writable: true,
+                },
+                AccountMeta {
+                    pubkey: self.clob_market,
+                    is_signer: false,
+                    is_writable: false,
+                },
+                AccountMeta {
+                    pubkey: self.quoter,
+                    is_signer: false,
+                    is_writable: false,
+                },
+                AccountMeta {
+                    pubkey: self.state,
+                    is_signer: false,
+                    is_writable: false,
+                },
+            ]
+        }
+    }
+    #[automatically_derived]
+    impl anchor_lang::AccountSerialize for ResolveClobCrankCross {
+        fn try_serialize<W: std::io::Write>(&self, writer: &mut W) -> anchor_lang::Result<()> {
+            if writer.write_all(Self::DISCRIMINATOR).is_err() {
+                return Err(anchor_lang::error::ErrorCode::AccountDidNotSerialize.into());
+            }
+            if AnchorSerialize::serialize(self, writer).is_err() {
+                return Err(anchor_lang::error::ErrorCode::AccountDidNotSerialize.into());
+            }
+            Ok(())
+        }
+    }
+    #[automatically_derived]
+    impl anchor_lang::AccountDeserialize for ResolveClobCrankCross {
         fn try_deserialize(buf: &mut &[u8]) -> anchor_lang::Result<Self> {
             let given_disc = &buf[..8];
             if Self::DISCRIMINATOR != given_disc {

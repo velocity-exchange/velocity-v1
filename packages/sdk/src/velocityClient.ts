@@ -8883,7 +8883,16 @@ export class VelocityClient {
 		// their RevenueShareEscrow must be attached for BOTH builder fees and referrer
 		// revenue share. The builder case is detected from orderParams; pass the user's
 		// decoded escrow (e.g. from a RevenueShareEscrowMap) to cover the referred case.
-		takerEscrow?: RevenueShareEscrowAccount
+		takerEscrow?: RevenueShareEscrowAccount,
+		// Pass the market's CLOB accounts to have an unfilled limit remainder rest on
+		// the CLOB instead of being cancelled; omit for today's cancel behavior.
+		clobAccounts?: {
+			quoter: PublicKey;
+			clobMarket: PublicKey;
+			clobProgram: PublicKey;
+			velocitySigner: PublicKey;
+			crankConditions?: PublicKey;
+		}
 	): Promise<TransactionInstruction> {
 		orderParams = getOrderParams(orderParams, { marketType: MarketType.PERP });
 		const userStatsPublicKey = await this.getUserStatsAccountPublicKey();
@@ -8945,6 +8954,7 @@ export class VelocityClient {
 			userStats: userStatsPublicKey,
 			authority,
 			remainingAccounts,
+			clobAccounts,
 		});
 	}
 

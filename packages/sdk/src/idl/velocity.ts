@@ -6457,6 +6457,38 @@ export type Velocity = {
         {
           "name": "authority",
           "signer": true
+        },
+        {
+          "name": "quoter",
+          "docs": [
+            "Pass the market's CLOB entry (plus the three accounts below) to have",
+            "an unfilled limit remainder rest on the CLOB instead of the DLOB —",
+            "the S5 rule applied to the taker flow. Omit all four for today's",
+            "behavior."
+          ],
+          "optional": true
+        },
+        {
+          "name": "clobMarket",
+          "writable": true,
+          "optional": true
+        },
+        {
+          "name": "clobProgram",
+          "optional": true
+        },
+        {
+          "name": "velocitySigner",
+          "optional": true
+        },
+        {
+          "name": "crankConditions",
+          "docs": [
+            "Wake-hint host for the rested remainder; optional like every other",
+            "CLOB placement path."
+          ],
+          "writable": true,
+          "optional": true
         }
       ],
       "args": [

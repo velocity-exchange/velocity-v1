@@ -405,6 +405,7 @@ export class VelocityCore {
 	 * @param args.userStats - the taker's `UserStats` PDA.
 	 * @param args.authority - signer that must own or be a registered delegate of `user`.
 	 * @param args.remainingAccounts - writable perp market + oracle `AccountMeta[]` for `orderParams.marketIndex`, followed by maker/referrer `(User, UserStats)` pairs, followed by the taker's `RevenueShareEscrow` account if builder codes are enabled.
+	 * @param args.clobAccounts - the market's CLOB accounts (`quoter` registry entry, writable `clobMarket`, `clobProgram`, `velocitySigner`, optionally the writable `crankConditions` wake-hint account); when passed, an unfilled limit remainder rests on the CLOB instead of being cancelled.
 	 * @returns the unsigned `placeAndTakePerpOrder` `TransactionInstruction`.
 	 */
 	static async buildPlaceAndTakePerpOrderInstruction(args: {
@@ -416,6 +417,13 @@ export class VelocityCore {
 		userStats: PublicKey;
 		authority: PublicKey;
 		remainingAccounts: AccountMeta[];
+		clobAccounts?: {
+			quoter: PublicKey;
+			clobMarket: PublicKey;
+			clobProgram: PublicKey;
+			velocitySigner: PublicKey;
+			crankConditions?: PublicKey;
+		};
 	}): Promise<TransactionInstruction> {
 		return await buildPlaceAndTakePerpOrderInstruction(args);
 	}

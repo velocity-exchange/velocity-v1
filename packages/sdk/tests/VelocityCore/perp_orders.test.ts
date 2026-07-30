@@ -35,7 +35,9 @@ describe('VelocityCore perp order instruction builders', () => {
 
 	test('buildPlaceAndTakePerpOrderInstruction', async () => {
 		const called: any[] = [];
+		const programId = pk();
 		const program = {
+			programId,
 			instruction: {
 				placeAndTakePerpOrder: async (...args: any[]) => {
 					called.push(args);
@@ -55,6 +57,41 @@ describe('VelocityCore perp order instruction builders', () => {
 		});
 		expect(ix).toBe(fakeIx as any);
 		expect(called[0][1]).toBe(256);
+		// Omitted CLOB accounts encode as the program id — anchor's `None`.
+		const accounts = called[0][2].accounts;
+		for (const name of [
+			'quoter',
+			'clobMarket',
+			'clobProgram',
+			'velocitySigner',
+			'crankConditions',
+		]) {
+			expect(accounts[name]).toBe(programId);
+		}
+
+		const clobAccounts = {
+			quoter: pk(),
+			clobMarket: pk(),
+			clobProgram: pk(),
+			velocitySigner: pk(),
+		};
+		await VelocityCore.buildPlaceAndTakePerpOrderInstruction({
+			program,
+			orderParams: { m: 0 },
+			optionalParams: null,
+			state: pk(),
+			user: pk(),
+			userStats: pk(),
+			authority: pk(),
+			remainingAccounts: [],
+			clobAccounts,
+		});
+		const withClob = called[1][2].accounts;
+		expect(withClob.quoter).toBe(clobAccounts.quoter);
+		expect(withClob.clobMarket).toBe(clobAccounts.clobMarket);
+		expect(withClob.clobProgram).toBe(clobAccounts.clobProgram);
+		expect(withClob.velocitySigner).toBe(clobAccounts.velocitySigner);
+		expect(withClob.crankConditions).toBe(programId);
 	});
 
 	test('buildPlaceAndMakePerpOrderInstruction', async () => {

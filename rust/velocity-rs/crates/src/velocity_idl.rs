@@ -14357,6 +14357,11 @@ pub mod accounts {
         pub user: Pubkey,
         pub user_stats: Pubkey,
         pub authority: Pubkey,
+        pub quoter: Pubkey,
+        pub clob_market: Pubkey,
+        pub clob_program: Pubkey,
+        pub velocity_signer: Pubkey,
+        pub crank_conditions: Pubkey,
     }
     #[automatically_derived]
     impl anchor_lang::Discriminator for PlaceAndTakePerpOrder {
@@ -14393,6 +14398,31 @@ pub mod accounts {
                     pubkey: self.authority,
                     is_signer: true,
                     is_writable: false,
+                },
+                AccountMeta {
+                    pubkey: self.quoter,
+                    is_signer: false,
+                    is_writable: false,
+                },
+                AccountMeta {
+                    pubkey: self.clob_market,
+                    is_signer: false,
+                    is_writable: true,
+                },
+                AccountMeta {
+                    pubkey: self.clob_program,
+                    is_signer: false,
+                    is_writable: false,
+                },
+                AccountMeta {
+                    pubkey: self.velocity_signer,
+                    is_signer: false,
+                    is_writable: false,
+                },
+                AccountMeta {
+                    pubkey: self.crank_conditions,
+                    is_signer: false,
+                    is_writable: true,
                 },
             ]
         }

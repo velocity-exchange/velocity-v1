@@ -193,6 +193,12 @@ fn place_and_take<'info>(
             user: ctx.accounts.user.to_account_info().clone(),
             user_stats: ctx.accounts.user_stats.to_account_info().clone(),
             authority: ctx.accounts.authority.to_account_info().clone(),
+            // No CLOB accounts: an arb remainder keeps today's behavior.
+            quoter: None,
+            clob_market: None,
+            clob_program: None,
+            velocity_signer: None,
+            crank_conditions: None,
         };
 
         let cpi_context = CpiContext::new(ctx.accounts.velocity_program.key(), cpi_accounts)

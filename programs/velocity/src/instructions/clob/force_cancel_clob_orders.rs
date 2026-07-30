@@ -30,7 +30,6 @@ use {
         },
         load_mut,
         math::{
-            casting::Cast,
             constants::QUOTE_SPOT_MARKET_INDEX,
             margin::{
                 calculate_margin_requirement_and_total_collateral_and_liability_info,

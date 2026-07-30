@@ -6451,6 +6451,38 @@
         {
           "name": "authority",
           "signer": true
+        },
+        {
+          "name": "quoter",
+          "docs": [
+            "Pass the market's CLOB entry (plus the three accounts below) to have",
+            "an unfilled limit remainder rest on the CLOB instead of the DLOB —",
+            "the S5 rule applied to the taker flow. Omit all four for today's",
+            "behavior."
+          ],
+          "optional": true
+        },
+        {
+          "name": "clob_market",
+          "writable": true,
+          "optional": true
+        },
+        {
+          "name": "clob_program",
+          "optional": true
+        },
+        {
+          "name": "velocity_signer",
+          "optional": true
+        },
+        {
+          "name": "crank_conditions",
+          "docs": [
+            "Wake-hint host for the rested remainder; optional like every other",
+            "CLOB placement path."
+          ],
+          "writable": true,
+          "optional": true
         }
       ],
       "args": [

@@ -55,6 +55,10 @@ export async function buildPlacePerpOrderInstruction(args: {
  * @param args.userStats - the taker's `UserStats` PDA.
  * @param args.authority - signer that must own or be a registered delegate of `user`.
  * @param args.remainingAccounts - writable perp market + oracle `AccountMeta[]` for `orderParams.marketIndex`, followed by maker/referrer `(User, UserStats)` pairs, followed by the taker's `RevenueShareEscrow` account if builder codes are enabled.
+ * @param args.clobAccounts - pass the market's CLOB accounts (`quoter` registry entry,
+ * writable `clobMarket`, `clobProgram`, `velocitySigner`, and optionally the writable
+ * `crankConditions` wake-hint account) to have an unfilled limit remainder rest on the
+ * CLOB instead of being cancelled. Omit for today's behavior.
  * @returns the unsigned `placeAndTakePerpOrder` `TransactionInstruction`.
  */
 export async function buildPlaceAndTakePerpOrderInstruction(args: {
@@ -66,7 +70,17 @@ export async function buildPlaceAndTakePerpOrderInstruction(args: {
 	userStats: PublicKey;
 	authority: PublicKey;
 	remainingAccounts: AccountMeta[];
+	clobAccounts?: {
+		quoter: PublicKey;
+		clobMarket: PublicKey;
+		clobProgram: PublicKey;
+		velocitySigner: PublicKey;
+		crankConditions?: PublicKey;
+	};
 }): Promise<TransactionInstruction> {
+	// Anchor's optional-account convention: an omitted `Option` account is
+	// encoded as the program id, which the program decodes as `None`.
+	const omitted = args.program.programId;
 	return await args.program.instruction.placeAndTakePerpOrder(
 		args.orderParams,
 		args.optionalParams,
@@ -76,6 +90,11 @@ export async function buildPlaceAndTakePerpOrderInstruction(args: {
 				user: args.user,
 				userStats: args.userStats,
 				authority: args.authority,
+				quoter: args.clobAccounts?.quoter ?? omitted,
+				clobMarket: args.clobAccounts?.clobMarket ?? omitted,
+				clobProgram: args.clobAccounts?.clobProgram ?? omitted,
+				velocitySigner: args.clobAccounts?.velocitySigner ?? omitted,
+				crankConditions: args.clobAccounts?.crankConditions ?? omitted,
 			},
 			remainingAccounts: args.remainingAccounts,
 		}

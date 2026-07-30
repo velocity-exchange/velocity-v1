@@ -3126,6 +3126,83 @@ pub fn handle_place_and_take_perp_order<'c: 'info, 'info>(
         )?;
     }
 
+    // The remainder rests on the CLOB when the caller passed its accounts:
+    // plain limits live on the book, not in `User.orders`. Only a
+    // restable remainder migrates — market orders, oracle-offset prices and
+    // reduce-only orders keep today's DLOB behavior (the CLOB has no
+    // oracle-floating or reduce-only semantics), and any
+    // can't-rest outcome downgrades to a cancel rather than reverting the
+    // fill that already landed. The CLOB's `OrderRef` is left as the
+    // transaction's return data for the client to persist.
+    if !is_immediate_or_cancel && order_unfilled && params.order_type == OrderType::Limit {
+        if let (Some(quoter), Some(clob_market), Some(clob_program), Some(velocity_signer)) = (
+            &ctx.accounts.quoter,
+            &ctx.accounts.clob_market,
+            &ctx.accounts.clob_program,
+            &ctx.accounts.velocity_signer,
+        ) {
+            validate!(
+                clob_program.key() == quoter.load()?.program_id,
+                ErrorCode::DefaultError,
+                "clob program does not match the quoter entry"
+            )?;
+            validate!(
+                velocity_signer.key() == ctx.accounts.state.load()?.signer,
+                ErrorCode::DefaultError,
+                "velocity signer mismatch"
+            )?;
+            let remainder = {
+                let user = load!(ctx.accounts.user)?;
+                let order_index = user.get_order_index(order_id)?;
+                let order = &user.orders[order_index];
+                let position_base = user
+                    .get_perp_position(params.market_index)
+                    .map(|position| position.base_asset_amount)
+                    .unwrap_or(0);
+                (!order.has_oracle_price_offset() && !order.reduce_only).then(|| {
+                    (
+                        order.direction,
+                        order.price,
+                        order
+                            .get_base_asset_amount_unfilled(Some(position_base))
+                            .unwrap_or(0),
+                        order.max_ts,
+                    )
+                })
+            };
+            if let Some((direction, price, unfilled, max_ts)) = remainder {
+                if unfilled > 0 {
+                    controller::orders::cancel_order_by_order_id(
+                        order_id,
+                        &ctx.accounts.user,
+                        &perp_market_map,
+                        &spot_market_map,
+                        &mut oracle_map,
+                        &Clock::get()?,
+                    )?;
+                    crate::instructions::try_place_remainder_on_clob(
+                        &*ctx.accounts.state.load()?,
+                        &ctx.accounts.user,
+                        quoter,
+                        &clob_market.to_account_info(),
+                        &clob_program.to_account_info(),
+                        &velocity_signer.to_account_info(),
+                        ctx.accounts.crank_conditions.as_ref(),
+                        &perp_market_map,
+                        &spot_market_map,
+                        &mut oracle_map,
+                        params.market_index,
+                        direction,
+                        price,
+                        unfilled,
+                        max_ts,
+                        &Clock::get()?,
+                    )?;
+                }
+            }
+        }
+    }
+
     if success_condition == PlaceAndTakeOrderSuccessCondition::PartialFill as u8 {
         validate!(
             base_asset_amount_filled > 0,
@@ -5140,6 +5217,23 @@ pub struct PlaceAndTake<'info> {
     )]
     pub user_stats: AccountLoader<'info, UserStats>,
     pub authority: Signer<'info>,
+    /// Pass the market's CLOB entry (plus the three accounts below) to have
+    /// an unfilled limit remainder rest on the CLOB instead of the DLOB —
+    /// the S5 rule applied to the taker flow. Omit all four for today's
+    /// behavior.
+    pub quoter: Option<AccountLoader<'info, crate::state::prop_amm::QuoterV0>>,
+    /// CHECK: validated against the quoter entry's registered accounts.
+    #[account(mut)]
+    pub clob_market: Option<UncheckedAccount<'info>>,
+    /// CHECK: locked to the registered quoter program in the handler.
+    pub clob_program: Option<UncheckedAccount<'info>>,
+    /// CHECK: the protocol signer PDA, checked against `state.signer`.
+    pub velocity_signer: Option<UncheckedAccount<'info>>,
+    /// Wake-hint host for the rested remainder; optional like every other
+    /// CLOB placement path.
+    #[account(mut)]
+    pub crank_conditions:
+        Option<AccountLoader<'info, crate::state::clob_crank::ClobCrankConditionsV0>>,
 }
 
 #[derive(Accounts)]

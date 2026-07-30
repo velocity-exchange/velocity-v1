@@ -9,8 +9,8 @@ use {
         error::{ErrorCode, VelocityResult},
         msg,
         state::prop_amm::{
-            Direction, ExecuteArgsV0, ExecuteResponseV0, ExternalQuoterExecutor, QuoterType,
-            QuoterV0,
+            ClobUserRefV0, Direction, ExecuteArgsV0, ExecuteResponseV0, ExternalQuoterExecutor,
+            QuoterType, QuoterV0,
         },
     },
     anchor_lang::prelude::*,
@@ -33,11 +33,11 @@ pub struct CpiQuoterExecutor<'a, 'info> {
     pub velocity_signer: Pubkey,
     pub signer_nonce: u8,
     /// The loaded-user set forwarded on every execute (quoters must not fill
-    /// anyone else).
-    pub users: Vec<Pubkey>,
-    /// The taker's `User` — forwarded so quoters skip the taker's own
-    /// resting liquidity (self-trade prevention).
-    pub taker: Pubkey,
+    /// anyone else), in the wire's derivable form.
+    pub users: Vec<ClobUserRefV0>,
+    /// The taker — forwarded so quoters skip the taker's own resting
+    /// liquidity (self-trade prevention).
+    pub taker: ClobUserRefV0,
 }
 
 impl ExternalQuoterExecutor for CpiQuoterExecutor<'_, '_> {

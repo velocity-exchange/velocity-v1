@@ -1,7 +1,10 @@
-use anchor_lang_v2::prelude::*;
-
-use crate::error::ClobError;
-use crate::state::{ClobBook, ClobMarketV0, Direction, QuoteResponseV0, ResponsePointerV0};
+use {
+    crate::{
+        error::ClobError,
+        state::{ClobBook, ClobMarketV0, Direction, QuoteResponseV0, ResponsePointerV0, UserRefV0},
+    },
+    anchor_lang_v2::prelude::*,
+};
 
 #[derive(Accounts)]
 pub struct QuoteV0 {
@@ -17,10 +20,10 @@ pub struct QuoteArgsV0 {
     /// `User`s the caller can settle balance changes for (loaded in its tx).
     /// `None` = unrestricted (off-chain discovery). Orders for absent users
     /// are skipped within the market's grace window, fail the call past it.
-    pub users: Option<Vec<Address>>,
+    pub users: Option<Vec<UserRefV0>>,
     /// The taker's `User`: their own resting orders are skipped
     /// unconditionally (self-trade prevention).
-    pub taker: Option<Address>,
+    pub taker: Option<UserRefV0>,
 }
 
 /// Quoter interface: price levels for a taker of `direction`/`size`, written

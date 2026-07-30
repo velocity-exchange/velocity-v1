@@ -86,7 +86,7 @@ pub fn handle_resolve_clob_crank_evict(ctx: Context<ResolveClobCrank>) -> Result
         }
         let node = crate::state::prop_amm::read_clob_node(&data, tail)
             .ok_or_else(|| error!(ErrorCode::DefaultError))?;
-        (side, node.user)
+        (side, derive_user_pdas(&node.user_ref()).0)
     };
 
     let market_index = ctx.accounts.crank_conditions.load()?.market_index;
@@ -115,7 +115,7 @@ pub fn handle_resolve_clob_crank_remove_expired(ctx: Context<ResolveClobCrank>) 
         order_id: node.order_id,
     }
     .serialize(&mut args)?;
-    stage(&ctx, node.user, args)
+    stage(&ctx, derive_user_pdas(&node.user_ref()).0, args)
 }
 
 /// Makers one profitable cross touches, bounded so the staged executor
@@ -130,7 +130,7 @@ struct ClobCross {
     size: u64,
     buy_quote: u128,
     sell_quote: u128,
-    makers: Vec<Pubkey>,
+    makers: Vec<crate::state::prop_amm::ClobUserRefV0>,
 }
 
 /// Advance a cursor to the next node that is live and matchable right now.
@@ -174,17 +174,21 @@ fn find_clob_cross(data: &[u8], slot: u64, now: i64) -> Result<ClobCross> {
         }
         // Admit both makers before taking; stop at the cap instead of
         // taking size whose maker is not staged.
-        let mut admit = |user: Pubkey, makers: &mut Vec<Pubkey>| {
-            if makers.contains(&user) {
-                true
-            } else if makers.len() < MAX_CROSS_MAKERS {
-                makers.push(user);
-                true
-            } else {
-                false
-            }
-        };
-        if !admit(bid_node.user, &mut cross.makers) || !admit(ask_node.user, &mut cross.makers) {
+        let mut admit =
+            |user: crate::state::prop_amm::ClobUserRefV0,
+             makers: &mut Vec<crate::state::prop_amm::ClobUserRefV0>| {
+                if makers.contains(&user) {
+                    true
+                } else if makers.len() < MAX_CROSS_MAKERS {
+                    makers.push(user);
+                    true
+                } else {
+                    false
+                }
+            };
+        if !admit(bid_node.user_ref(), &mut cross.makers)
+            || !admit(ask_node.user_ref(), &mut cross.makers)
+        {
             break;
         }
 
@@ -213,12 +217,14 @@ fn find_clob_cross(data: &[u8], slot: u64, now: i64) -> Result<ClobCross> {
 
 /// Resolver for the cross conditions: find the book's crossing prefix,
 /// estimate profitability with the top (most conservative) taker-fee tier
-/// on both legs, and stage the `crank_cross_match` executor when the spread
-/// clears it. Only CLOB×CLOB is discoverable here — a PropAMM crossing the
-/// CLOB has no account a fixed four-account resolver can quote through, so
-/// that case is the book publisher's (it re-simulates the quote view on
-/// every registered quote-account change and submits the executor
-/// directly). The executor re-verifies profitability exactly either way.
+/// on both legs, and stage the `crank_cross_match` executor — full
+/// `(User, UserStats)` pairs, both derived from the node's `(authority,
+/// sub_account_id)` identity. Only CLOB×CLOB is discoverable here — a
+/// PropAMM crossing the CLOB has no account a fixed four-account resolver
+/// can quote through, so that case is the book publisher's (it re-simulates
+/// the quote view on every registered quote-account change and submits the
+/// executor directly). The executor re-verifies profitability exactly
+/// either way.
 pub fn handle_resolve_clob_crank_cross(ctx: Context<ResolveClobCrank>) -> Result<()> {
     validate_linkage(&ctx)?;
     let clock = Clock::get()?;
@@ -274,8 +280,8 @@ pub fn handle_resolve_clob_crank_cross(ctx: Context<ResolveClobCrank>) -> Result
     );
 
     // `CrankCrossMatch`'s account order: named accounts, the map section,
-    // maker users (stats-less — see the executor's makers_include_stats),
-    // then the quoter section. Both legs are the CLOB: entry index 0.
+    // maker `(User, UserStats)` pairs, then the quoter section. Both legs
+    // are the CLOB: entry index 0.
     let mut accounts = vec![
         AccountRefV0::readonly(ctx.accounts.state.key().to_bytes()),
         AccountRefV0::writable(KEEPER_PLACEHOLDER),
@@ -286,12 +292,11 @@ pub fn handle_resolve_clob_crank_cross(ctx: Context<ResolveClobCrank>) -> Result
         AccountRefV0::writable(quote_spot_market.to_bytes()),
         AccountRefV0::writable(perp_market.to_bytes()),
     ];
-    accounts.extend(
-        cross
-            .makers
-            .iter()
-            .map(|maker| AccountRefV0::writable(maker.to_bytes())),
-    );
+    for maker in &cross.makers {
+        let (user_pda, stats_pda) = derive_user_pdas(maker);
+        accounts.push(AccountRefV0::writable(user_pda.to_bytes()));
+        accounts.push(AccountRefV0::writable(stats_pda.to_bytes()));
+    }
     accounts.extend([
         AccountRefV0::readonly(ctx.accounts.quoter.key().to_bytes()),
         AccountRefV0::writable(ctx.accounts.clob_market.key().to_bytes()),
@@ -299,12 +304,11 @@ pub fn handle_resolve_clob_crank_cross(ctx: Context<ResolveClobCrank>) -> Result
         AccountRefV0::readonly(ctx.accounts.quoter.load()?.program_id.to_bytes()),
     ]);
 
-    let mut args = Vec::with_capacity(13);
+    let mut args = Vec::with_capacity(12);
     market_index.serialize(&mut args)?;
     cross.size.serialize(&mut args)?;
     0u8.serialize(&mut args)?; // buy leg: the CLOB entry
     0u8.serialize(&mut args)?; // sell leg: the CLOB entry
-    false.serialize(&mut args)?; // makers_include_stats
     let resolved = ResolvedCrankV0 {
         accounts,
         data: args,
@@ -312,6 +316,24 @@ pub fn handle_resolve_clob_crank_cross(ctx: Context<ResolveClobCrank>) -> Result
     let pointer = load_mut!(ctx.accounts.crank_conditions)?.stage(&resolved)?;
     set_return_data(&pointer);
     Ok(())
+}
+
+/// Derive the `(User, UserStats)` PDAs from a node's derivable identity —
+/// the whole point of the book storing `(authority, sub_account_id)`
+/// instead of the `User` key. Costs real CU, but resolvers only ever run
+/// under simulation.
+fn derive_user_pdas(user: &crate::state::prop_amm::ClobUserRefV0) -> (Pubkey, Pubkey) {
+    let (user_pda, _) = Pubkey::find_program_address(
+        &[
+            b"user",
+            user.authority.as_ref(),
+            user.sub_account_id.to_le_bytes().as_ref(),
+        ],
+        &crate::ID,
+    );
+    let (stats_pda, _) =
+        Pubkey::find_program_address(&[b"user_stats", user.authority.as_ref()], &crate::ID);
+    (user_pda, stats_pda)
 }
 
 fn validate_linkage(ctx: &Context<ResolveClobCrank>) -> Result<()> {

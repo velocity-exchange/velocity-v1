@@ -24,6 +24,24 @@ use {
 pub struct UserMap<'a>(pub BTreeMap<Pubkey, AccountLoader<'a, User>>);
 
 impl<'a> UserMap<'a> {
+    /// Index the loaded users by their derivable identity `(authority,
+    /// sub_account_id)` — how quoter-wire user refs resolve back to account
+    /// keys. A field match per loaded user, never a PDA derivation, so the
+    /// fill path pays nothing for the wire keeping identity derivable.
+    pub fn user_ref_index(
+        &self,
+    ) -> VelocityResult<std::collections::BTreeMap<(Pubkey, u16), Pubkey>> {
+        self.0
+            .iter()
+            .map(|(key, loader)| {
+                let user = loader
+                    .load()
+                    .map_err(|_| crate::error::ErrorCode::UnableToLoadAccountLoader)?;
+                Ok(((user.authority, user.sub_account_id), *key))
+            })
+            .collect()
+    }
+
     #[track_caller]
     #[inline(always)]
     pub fn get_ref(&self, user: &Pubkey) -> VelocityResult<Ref<'_, User>> {

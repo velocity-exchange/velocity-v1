@@ -1,9 +1,13 @@
-use anchor_lang_v2::prelude::*;
-
-use crate::error::ClobError;
-use crate::events::{ExecuteRecord, FillSlim};
-use crate::state::{
-    CancelledRemainderV0, ClobBook, ClobMarketV0, Direction, ExecuteResponseV0, ResponsePointerV0,
+use {
+    crate::{
+        error::ClobError,
+        events::{ExecuteRecord, FillSlim},
+        state::{
+            CancelledRemainderV0, ClobBook, ClobMarketV0, Direction, ExecuteResponseV0,
+            ResponsePointerV0, UserRefV0,
+        },
+    },
+    anchor_lang_v2::prelude::*,
 };
 
 #[derive(Accounts)]
@@ -20,10 +24,10 @@ pub struct ExecuteArgsV0 {
     pub size: u64,
     /// `User`s velocity has loaded and can settle. `None` = unrestricted
     /// (tests; velocity always passes the loaded set).
-    pub users: Option<Vec<Address>>,
+    pub users: Option<Vec<UserRefV0>>,
     /// The taker's `User`: their own resting orders are skipped
     /// unconditionally (self-trade prevention).
-    pub taker: Option<Address>,
+    pub taker: Option<UserRefV0>,
 }
 
 /// Quoter interface: commit a fill; balance changes (merged by user) go to

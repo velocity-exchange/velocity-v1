@@ -89,10 +89,19 @@ pub fn handle_cancel_clob_order(
         )?;
     }
 
-    // CPI cancel while no user borrows are held.
+    // CPI cancel; ownership travels in the args in derivable form and the
+    // CLOB verifies it against the node.
+    let user_ref = {
+        let user = crate::load!(ctx.accounts.user)?;
+        crate::state::prop_amm::ClobUserRefV0 {
+            authority: user.authority,
+            sub_account_id: user.sub_account_id,
+        }
+    };
     let mut data = CLOB_CANCEL_ORDER_V0_DISCRIMINATOR.to_vec();
     ClobCancelOrderArgsV0 {
         order_ref: params.order_ref,
+        user: user_ref,
     }
     .serialize(&mut data)
     .map_err(|_| ErrorCode::DefaultError)?;
@@ -102,14 +111,12 @@ pub fn handle_cancel_clob_order(
             accounts: vec![
                 AccountMeta::new(ctx.accounts.clob_market.key(), false),
                 AccountMeta::new_readonly(ctx.accounts.velocity_signer.key(), true),
-                AccountMeta::new_readonly(ctx.accounts.user.key(), false),
             ],
             data,
         },
         &[
             ctx.accounts.clob_market.to_account_info(),
             ctx.accounts.velocity_signer.to_account_info(),
-            ctx.accounts.user.to_account_info(),
             ctx.accounts.clob_program.to_account_info(),
         ],
         &[&get_signer_seeds(&state.signer_nonce)],
@@ -130,10 +137,11 @@ pub fn handle_cancel_clob_order(
         ErrorCode::DefaultError
     })?;
     validate!(
-        removed.user == ctx.accounts.user.key(),
+        removed.user == user_ref,
         ErrorCode::DefaultError,
-        "clob cancelled an order for {} instead of the passed user",
-        removed.user
+        "clob cancelled an order for {}/{} instead of the passed user",
+        removed.user.authority,
+        removed.user.sub_account_id
     )?;
 
     // Unwind the removed order's remaining size from the aggregates the

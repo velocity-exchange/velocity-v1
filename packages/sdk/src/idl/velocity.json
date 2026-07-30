@@ -1509,10 +1509,6 @@
         {
           "name": "sell_quoter_index",
           "type": "u8"
-        },
-        {
-          "name": "makers_include_stats",
-          "type": "bool"
         }
       ]
     },

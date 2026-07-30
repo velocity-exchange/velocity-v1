@@ -330,6 +330,7 @@ pub mod amm_jit {
 
         struct MockClobExecutor {
             user: Pubkey,
+            user_ref: crate::state::prop_amm::ClobUserRefV0,
             price: u64,
         }
         impl ExternalQuoterExecutor for MockClobExecutor {
@@ -349,7 +350,7 @@ pub mod amm_jit {
                     ((size as u128) * (self.price as u128) / BASE_PRECISION_U64 as u128) as u64;
                 Ok(ExecuteResponseV0 {
                     balance_changes: vec![UserBalanceChange {
-                        user: self.user,
+                        user: self.user_ref,
                         base_size: size,
                         quote_size,
                         completed_order_ids: vec![1],
@@ -547,6 +548,10 @@ pub mod amm_jit {
         }];
         let mut executor = MockClobExecutor {
             user: clob_maker_key,
+            user_ref: crate::state::prop_amm::ClobUserRefV0 {
+                authority: clob_maker_authority,
+                sub_account_id: 0,
+            },
             price: 99 * PRICE_PRECISION_U64,
         };
         let mut router_inputs = crate::math::router::RouterFillInputs {
@@ -633,6 +638,7 @@ pub mod amm_jit {
 
         struct MockCustomExecutor {
             user: Pubkey,
+            user_ref: crate::state::prop_amm::ClobUserRefV0,
             price: u64,
             requested: u64,
         }
@@ -654,7 +660,7 @@ pub mod amm_jit {
                     ((size as u128) * (self.price as u128) / BASE_PRECISION_U64 as u128) as u64;
                 Ok(ExecuteResponseV0 {
                     balance_changes: vec![UserBalanceChange {
-                        user: self.user,
+                        user: self.user_ref,
                         base_size: size,
                         quote_size,
                         completed_order_ids: vec![],
@@ -798,6 +804,10 @@ pub mod amm_jit {
         }];
         let mut executor = MockCustomExecutor {
             user: custom_maker_key,
+            user_ref: crate::state::prop_amm::ClobUserRefV0 {
+                authority: custom_maker_authority,
+                sub_account_id: 0,
+            },
             price: 99 * PRICE_PRECISION_U64,
             requested: 0,
         };

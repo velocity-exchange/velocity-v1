@@ -208,13 +208,18 @@ fn crank_clob_removal(
         msg!("clob removal returned undecodable removed order");
         ErrorCode::DefaultError
     })?;
-    validate!(
-        removed.user == ctx.accounts.user.key(),
-        ErrorCode::DefaultError,
-        "clob removed an order for {} but the crank loaded {}",
-        removed.user,
-        ctx.accounts.user.key()
-    )?;
+    {
+        let user = crate::load!(ctx.accounts.user)?;
+        validate!(
+            removed.user.authority == user.authority
+                && removed.user.sub_account_id == user.sub_account_id,
+            ErrorCode::DefaultError,
+            "clob removed an order for {}/{} but the crank loaded {}",
+            removed.user.authority,
+            removed.user.sub_account_id,
+            ctx.accounts.user.key()
+        )?;
+    }
 
     // Pay the keeper from the maker first (the same flat reward DLOB order
     // expiry pays; in program-keeper mode the filler is the protocol User),
@@ -294,7 +299,7 @@ fn crank_clob_removal(
     msg!(
         "cranked clob removal of order {} for user {}",
         removed.order_id,
-        removed.user
+        ctx.accounts.user.key()
     );
     Ok(())
 }

@@ -2271,16 +2271,8 @@ pub mod velocity {
         size: u64,
         buy_quoter_index: u8,
         sell_quoter_index: u8,
-        makers_include_stats: bool,
     ) -> Result<()> {
-        handle_crank_cross_match(
-            ctx,
-            market_index,
-            size,
-            buy_quoter_index,
-            sell_quoter_index,
-            makers_include_stats,
-        )
+        handle_crank_cross_match(ctx, market_index, size, buy_quoter_index, sell_quoter_index)
     }
 
     /// Relay resolver for the evict condition. Meant to be simulated, not

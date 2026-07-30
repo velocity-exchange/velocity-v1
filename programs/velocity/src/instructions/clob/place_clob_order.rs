@@ -151,11 +151,19 @@ pub fn handle_place_clob_order<'c: 'info, 'info>(
         )?;
     }
 
-    // CPI place while no user borrows are held (the runtime needs the user
-    // account unborrowed to lend it to the CLOB).
+    // CPI the placement. Identity travels in the args in derivable form —
+    // the book stores (authority, sub_account_id), not the User key, so
+    // off-chain readers can derive every user-hung PDA from a node.
     let side = match params.direction {
         PositionDirection::Long => ClobSide::Bid,
         PositionDirection::Short => ClobSide::Ask,
+    };
+    let user_ref = {
+        let user = crate::load!(ctx.accounts.user)?;
+        crate::state::prop_amm::ClobUserRefV0 {
+            authority: user.authority,
+            sub_account_id: user.sub_account_id,
+        }
     };
     let mut data = CLOB_PLACE_ORDER_V0_DISCRIMINATOR.to_vec();
     ClobPlaceOrderArgsV0 {
@@ -164,6 +172,7 @@ pub fn handle_place_clob_order<'c: 'info, 'info>(
         base_asset_amount: params.base_asset_amount,
         activation_delay_slots: params.activation_delay_slots,
         max_ts: params.max_ts,
+        user: user_ref,
     }
     .serialize(&mut data)
     .map_err(|_| ErrorCode::DefaultError)?;
@@ -173,14 +182,12 @@ pub fn handle_place_clob_order<'c: 'info, 'info>(
             accounts: vec![
                 AccountMeta::new(ctx.accounts.clob_market.key(), false),
                 AccountMeta::new_readonly(ctx.accounts.velocity_signer.key(), true),
-                AccountMeta::new_readonly(ctx.accounts.user.key(), false),
             ],
             data,
         },
         &[
             ctx.accounts.clob_market.to_account_info(),
             ctx.accounts.velocity_signer.to_account_info(),
-            ctx.accounts.user.to_account_info(),
             ctx.accounts.clob_program.to_account_info(),
         ],
         &[&get_signer_seeds(&state.signer_nonce)],

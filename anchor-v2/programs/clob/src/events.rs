@@ -6,7 +6,7 @@ use anchor_lang_v2::prelude::*;
 #[event(bytemuck)]
 #[repr(C)]
 pub struct OrderPlaceRecord {
-    pub user: Address,
+    pub authority: Address,
     pub ts: i64,
     pub slot: u64,
     pub order_id: u64,
@@ -16,20 +16,22 @@ pub struct OrderPlaceRecord {
     pub base_asset_amount: u64,
     pub node_index: u32,
     pub market_index: u16,
+    pub sub_account_id: u16,
     pub side: u8,
-    pub _pad: [u8; 1],
+    pub _pad: [u8; 7],
 }
 
 #[event(bytemuck)]
 #[repr(C)]
 pub struct OrderCancelRecord {
-    pub user: Address,
+    pub authority: Address,
     pub ts: i64,
     pub order_id: u64,
     pub price: u64,
     pub base_asset_amount: u64,
     pub market_index: u16,
-    pub _pad: [u8; 6],
+    pub sub_account_id: u16,
+    pub _pad: [u8; 4],
 }
 
 /// Crank eviction at the soft cap. Distinct from cancel: the UI shows
@@ -37,26 +39,28 @@ pub struct OrderCancelRecord {
 #[event(bytemuck)]
 #[repr(C)]
 pub struct OrderEvictRecord {
-    pub user: Address,
+    pub authority: Address,
     pub ts: i64,
     pub order_id: u64,
     pub price: u64,
     pub base_asset_amount: u64,
     pub market_index: u16,
-    pub _pad: [u8; 6],
+    pub sub_account_id: u16,
+    pub _pad: [u8; 4],
 }
 
 /// Crank reclamation of an expired order (execute only skips expired).
 #[event(bytemuck)]
 #[repr(C)]
 pub struct OrderExpireRecord {
-    pub user: Address,
+    pub authority: Address,
     pub ts: i64,
     pub order_id: u64,
     pub price: u64,
     pub base_asset_amount: u64,
     pub market_index: u16,
-    pub _pad: [u8; 6],
+    pub sub_account_id: u16,
+    pub _pad: [u8; 4],
 }
 
 /// One per execute — the hot path stays cheap by referencing orders by id

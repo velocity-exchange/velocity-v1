@@ -1,8 +1,11 @@
-use anchor_lang_v2::prelude::*;
-
-use crate::error::ClobError;
-use crate::events::OrderPlaceRecord;
-use crate::state::{ClobBook, ClobMarketV0, OrderRefV0, PlaceOrderParams, Side};
+use {
+    crate::{
+        error::ClobError,
+        events::OrderPlaceRecord,
+        state::{ClobBook, ClobMarketV0, OrderRefV0, PlaceOrderParams, Side, UserRefV0},
+    },
+    anchor_lang_v2::prelude::*,
+};
 
 #[derive(Accounts)]
 pub struct PlaceOrderV0 {
@@ -10,10 +13,6 @@ pub struct PlaceOrderV0 {
     pub market: ClobMarketV0,
     #[account(address = market.place_authority @ ClobError::InvalidAuthority)]
     pub place_authority: Signer,
-    /// Velocity `User` account the order settles against (authority verified
-    /// by velocity before the CPI). An account, not an arg: it's already in
-    /// the enclosing velocity transaction, so it costs one index byte.
-    pub user: UncheckedAccount,
 }
 
 #[derive(Clone, Copy, wincode::SchemaRead, wincode::SchemaWrite)]
@@ -25,6 +24,10 @@ pub struct PlaceOrderArgsV0 {
     /// allowed — the caller (velocity) owns attestation policy.
     pub activation_delay_slots: Option<u32>,
     pub max_ts: i64,
+    /// The velocity user the order settles against, in derivable form
+    /// (velocity verified control before the CPI; the CLOB trusts its
+    /// `place_authority` for identity).
+    pub user: UserRefV0,
 }
 
 /// Place a resting order. Returns the new order's [`OrderRefV0`] (as return
@@ -34,7 +37,7 @@ pub fn handle_place_order_v0(
     args: PlaceOrderArgsV0,
 ) -> Result<OrderRefV0> {
     let clock = Clock::get()?;
-    let user = *ctx.accounts.user.address();
+    let user = args.user;
     let market = &mut ctx.accounts.market;
 
     // Arg validation up front; account validation lives on the struct.
@@ -65,7 +68,7 @@ pub fn handle_place_order_v0(
     })?;
 
     emit!(OrderPlaceRecord {
-        user,
+        authority: user.authority,
         ts: clock.unix_timestamp,
         slot: clock.slot,
         order_id: order_ref.order_id,
@@ -75,8 +78,9 @@ pub fn handle_place_order_v0(
         base_asset_amount: args.base_asset_amount,
         node_index: order_ref.node_index,
         market_index: market.market_index,
+        sub_account_id: user.sub_account_id,
         side: args.side.to_u8(),
-        _pad: [0; 1],
+        _pad: [0; 7],
     });
 
     Ok(order_ref)

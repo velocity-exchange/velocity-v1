@@ -204,7 +204,7 @@ fn fill_order<'c: 'info, 'info>(
         .collect::<Result<_>>()?;
 
     let taker_key = ctx.accounts.user.key();
-    let (direction, unfilled) = {
+    let (direction, unfilled, taker_ref) = {
         let user = load!(ctx.accounts.user)?;
         let order = user
             .get_order(order_id)
@@ -220,9 +220,23 @@ fn fill_order<'c: 'info, 'info>(
         (
             direction,
             order.get_base_asset_amount_unfilled(position_base)?,
+            crate::state::prop_amm::ClobUserRefV0 {
+                authority: user.authority,
+                sub_account_id: user.sub_account_id,
+            },
         )
     };
-    let users: Vec<Pubkey> = makers_and_referrer.0.keys().copied().collect();
+    // The loaded-user set on the quoter wire, in derivable form.
+    let users: Vec<crate::state::prop_amm::ClobUserRefV0> = makers_and_referrer
+        .user_ref_index()?
+        .into_keys()
+        .map(
+            |(authority, sub_account_id)| crate::state::prop_amm::ClobUserRefV0 {
+                authority,
+                sub_account_id,
+            },
+        )
+        .collect();
 
     // Quote each live entry into a book. Deactivated/unapproved entries are
     // skipped (a route signed before an admin pulled approval must not brick
@@ -263,7 +277,7 @@ fn fill_order<'c: 'info, 'info>(
                     direction,
                     size: unfilled,
                     users: Some(users.clone()),
-                    taker: Some(taker_key),
+                    taker: Some(taker_ref),
                 },
                 &state.signer,
                 state.signer_nonce,
@@ -305,7 +319,7 @@ fn fill_order<'c: 'info, 'info>(
         velocity_signer: state.signer,
         signer_nonce: state.signer_nonce,
         users,
-        taker: taker_key,
+        taker: taker_ref,
     };
     let mut router_inputs = RouterFillInputs {
         books: &book_refs,

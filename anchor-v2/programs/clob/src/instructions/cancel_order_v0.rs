@@ -1,8 +1,11 @@
-use anchor_lang_v2::prelude::*;
-
-use crate::error::ClobError;
-use crate::events::OrderCancelRecord;
-use crate::state::{ClobBook, ClobMarketV0, OrderRefV0, RemovedOrderV0};
+use {
+    crate::{
+        error::ClobError,
+        events::OrderCancelRecord,
+        state::{ClobBook, ClobMarketV0, OrderRefV0, RemovedOrderV0, UserRefV0},
+    },
+    anchor_lang_v2::prelude::*,
+};
 
 #[derive(Accounts)]
 pub struct CancelOrderV0 {
@@ -10,13 +13,14 @@ pub struct CancelOrderV0 {
     pub market: ClobMarketV0,
     #[account(address = market.place_authority @ ClobError::InvalidAuthority)]
     pub place_authority: Signer,
-    /// Owner of the order being cancelled (verified against the node).
-    pub user: UncheckedAccount,
 }
 
 #[derive(Clone, Copy, wincode::SchemaRead, wincode::SchemaWrite)]
 pub struct CancelOrderArgsV0 {
     pub order_ref: OrderRefV0,
+    /// Owner of the order being cancelled (verified against the node;
+    /// velocity verified control before the CPI).
+    pub user: UserRefV0,
 }
 
 /// Cancel a resting order. Returns the removed order (as return data) so the
@@ -27,17 +31,17 @@ pub fn handle_cancel_order_v0(
     args: CancelOrderArgsV0,
 ) -> Result<RemovedOrderV0> {
     let clock = Clock::get()?;
-    let user = *ctx.accounts.user.address();
     let market = &mut ctx.accounts.market;
-    let removed = market.cancel(user, args.order_ref)?;
+    let removed = market.cancel(args.user, args.order_ref)?;
     emit!(OrderCancelRecord {
-        user: removed.user,
+        authority: removed.user.authority,
         ts: clock.unix_timestamp,
         order_id: removed.order_id,
         price: removed.price,
         base_asset_amount: removed.base_asset_amount,
         market_index: market.market_index,
-        _pad: [0; 6],
+        sub_account_id: removed.user.sub_account_id,
+        _pad: [0; 4],
     });
     Ok(RemovedOrderV0 {
         user: removed.user,

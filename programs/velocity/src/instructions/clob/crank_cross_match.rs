@@ -33,7 +33,7 @@ use {
             prop_amm::{QuoterType, QuoterV0},
             state::State,
             user::{User, UserStats},
-            user_map::{load_user_map, load_user_maps, UserStatsMap},
+            user_map::load_user_maps,
         },
         validate,
     },
@@ -79,7 +79,6 @@ pub fn handle_crank_cross_match<'c: 'info, 'info>(
     size: u64,
     buy_quoter_index: u8,
     sell_quoter_index: u8,
-    makers_include_stats: bool,
 ) -> Result<()> {
     let clock = Clock::get()?;
     let state = ctx.accounts.state.load()?;
@@ -96,15 +95,8 @@ pub fn handle_crank_cross_match<'c: 'info, 'info>(
         clock.slot,
         Some(state.oracle_guard_rails),
     )?;
-    // Direct callers pass (User, UserStats) pairs for full maker attribution;
-    // relay-staged calls pass Users only, because a resolver cannot derive
-    // stats PDAs (see `cross_match`'s parameter note).
-    let (makers_and_referrer, makers_and_referrer_stats) = if makers_include_stats {
-        let (users, stats) = load_user_maps(remaining_accounts_iter, true)?;
-        (users, Some(stats))
-    } else {
-        (load_user_map(remaining_accounts_iter, true)?, None)
-    };
+    let (makers_and_referrer, makers_and_referrer_stats) =
+        load_user_maps(remaining_accounts_iter, true)?;
 
     // Quoter section: registry entries plus the union of their registered
     // CPI accounts, same shape as the router fill's.
@@ -155,8 +147,23 @@ pub fn handle_crank_cross_match<'c: 'info, 'info>(
         quoters.len()
     )?;
 
-    let taker_key = ctx.accounts.taker.key();
-    let users: Vec<Pubkey> = makers_and_referrer.0.keys().copied().collect();
+    let taker_ref = {
+        let taker = load!(ctx.accounts.taker)?;
+        crate::state::prop_amm::ClobUserRefV0 {
+            authority: taker.authority,
+            sub_account_id: taker.sub_account_id,
+        }
+    };
+    let users: Vec<crate::state::prop_amm::ClobUserRefV0> = makers_and_referrer
+        .user_ref_index()?
+        .into_keys()
+        .map(
+            |(authority, sub_account_id)| crate::state::prop_amm::ClobUserRefV0 {
+                authority,
+                sub_account_id,
+            },
+        )
+        .collect();
     let mut executor = CpiQuoterExecutor {
         quoters: &quoters,
         types,
@@ -165,7 +172,7 @@ pub fn handle_crank_cross_match<'c: 'info, 'info>(
         velocity_signer: state.signer,
         signer_nonce: state.signer_nonce,
         users,
-        taker: taker_key,
+        taker: taker_ref,
     };
 
     let (base_matched, surplus) = controller::orders::cross_match(
@@ -177,7 +184,7 @@ pub fn handle_crank_cross_match<'c: 'info, 'info>(
         &ctx.accounts.taker,
         &ctx.accounts.taker_stats,
         &makers_and_referrer,
-        makers_and_referrer_stats.as_ref(),
+        &makers_and_referrer_stats,
         &mut executor,
         &perp_market_map,
         &spot_market_map,

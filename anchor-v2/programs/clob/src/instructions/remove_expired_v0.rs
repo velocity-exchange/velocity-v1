@@ -1,8 +1,11 @@
-use anchor_lang_v2::prelude::*;
-
-use crate::error::ClobError;
-use crate::events::OrderExpireRecord;
-use crate::state::{ClobBook, ClobMarketV0, OrderRefV0, RemovedOrderV0};
+use {
+    crate::{
+        error::ClobError,
+        events::OrderExpireRecord,
+        state::{ClobBook, ClobMarketV0, OrderRefV0, RemovedOrderV0},
+    },
+    anchor_lang_v2::prelude::*,
+};
 
 #[derive(Accounts)]
 pub struct RemoveExpiredV0 {
@@ -29,13 +32,14 @@ pub fn handle_remove_expired_v0(
     let removed = market.remove_expired(args.order_ref, clock.unix_timestamp)?;
 
     emit!(OrderExpireRecord {
-        user: removed.user,
+        authority: removed.user.authority,
         ts: clock.unix_timestamp,
         order_id: removed.order_id,
         price: removed.price,
         base_asset_amount: removed.base_asset_amount,
         market_index: market.market_index,
-        _pad: [0; 6],
+        sub_account_id: removed.user.sub_account_id,
+        _pad: [0; 4],
     });
 
     Ok(RemovedOrderV0 {

@@ -1,6 +1,7 @@
-use anchor_lang_v2::prelude::*;
-
-use crate::state::{ClobBook, ClobMarketV0, MarketConfigV0};
+use {
+    crate::state::{ClobBook, ClobMarketV0, MarketConfigV0},
+    anchor_lang_v2::prelude::*,
+};
 
 #[derive(Accounts)]
 pub struct InitializeMarketV0 {

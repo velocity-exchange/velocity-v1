@@ -140,6 +140,20 @@ impl Direction {
     }
 }
 
+/// A velocity user on the quoter wire, in its *derivable* form: authority
+/// wallet + sub-account index. Both the `User` PDA and the `UserStats` PDA
+/// derive from it, so an off-chain reader (a relay resolver staging a
+/// crank) can reach every user-derived account from a quoter's state alone
+/// — a stored `User` key is a dead end (its authority lives inside account
+/// data the reader can't load). Velocity resolves refs against its loaded
+/// users by field match, never by PDA derivation, so the hot path pays
+/// nothing for this.
+#[derive(Clone, Copy, AnchorSerialize, AnchorDeserialize, PartialEq, Eq, Debug)]
+pub struct ClobUserRefV0 {
+    pub authority: Pubkey,
+    pub sub_account_id: u16,
+}
+
 #[derive(Clone, AnchorSerialize, AnchorDeserialize, PartialEq, Eq, Debug)]
 pub struct QuoteArgsV0 {
     pub direction: Direction,
@@ -148,11 +162,11 @@ pub struct QuoteArgsV0 {
     /// `User`s velocity has loaded and can settle balance changes for.
     /// Quoters must not fill anyone else (velocity rejects the response
     /// otherwise). `None` = unrestricted, for off-chain quote discovery.
-    pub users: Option<Vec<Pubkey>>,
+    pub users: Option<Vec<ClobUserRefV0>>,
     /// The taker's `User`: quoters must skip the taker's own resting
     /// liquidity (self-trade prevention) — a balance change for this user
     /// is rejected.
-    pub taker: Option<Pubkey>,
+    pub taker: Option<ClobUserRefV0>,
 }
 
 #[derive(Clone, AnchorSerialize, AnchorDeserialize, PartialEq, Eq, Debug)]
@@ -183,9 +197,9 @@ pub struct ExecuteArgsV0 {
     pub size: u64,
     /// Same contract as [`QuoteArgsV0::users`]; velocity always passes the
     /// loaded set here.
-    pub users: Option<Vec<Pubkey>>,
+    pub users: Option<Vec<ClobUserRefV0>>,
     /// Same contract as [`QuoteArgsV0::taker`].
-    pub taker: Option<Pubkey>,
+    pub taker: Option<ClobUserRefV0>,
 }
 
 #[derive(Clone, AnchorSerialize, AnchorDeserialize, PartialEq, Eq, Debug)]
@@ -199,7 +213,7 @@ pub struct ExecuteResponseV0 {
 
 #[derive(Clone, Copy, AnchorSerialize, AnchorDeserialize, PartialEq, Eq, Debug)]
 pub struct CancelledRemainderV0 {
-    pub user: Pubkey,
+    pub user: ClobUserRefV0,
     pub order_id: u64,
     pub base_asset_amount: u64,
 }
@@ -234,7 +248,7 @@ pub struct ClobOrderRefV0 {
 /// open-order aggregates by the remaining size on the right side.
 #[derive(Clone, Copy, AnchorSerialize, AnchorDeserialize, PartialEq, Eq, Debug)]
 pub struct ClobRemovedOrderV0 {
-    pub user: Pubkey,
+    pub user: ClobUserRefV0,
     pub order_id: u64,
     pub price: u64,
     pub base_asset_amount: u64,
@@ -251,12 +265,17 @@ pub struct ClobPlaceOrderArgsV0 {
     /// velocity owns attestation policy.
     pub activation_delay_slots: Option<u32>,
     pub max_ts: i64,
+    /// The user the order settles against, in derivable form (velocity
+    /// verified control before the CPI).
+    pub user: ClobUserRefV0,
 }
 
 /// `cancel_order_v0` args on the CLOB wire.
 #[derive(Clone, Copy, AnchorSerialize, AnchorDeserialize, PartialEq, Eq, Debug)]
 pub struct ClobCancelOrderArgsV0 {
     pub order_ref: ClobOrderRefV0,
+    /// Owner of the order (verified against the node on the CLOB side).
+    pub user: ClobUserRefV0,
 }
 
 /// `evict_worst_v0` args on the CLOB wire.
@@ -323,7 +342,7 @@ pub const CLOB_ORDER_BIT_FLAG_OPEN: u8 = 1;
 /// account bytes.
 #[derive(Clone, Copy, Debug)]
 pub struct ClobNodeView {
-    pub user: Pubkey,
+    pub authority: Pubkey,
     pub price: u64,
     pub base_asset_amount: u64,
     /// First slot the order may match.
@@ -332,6 +351,7 @@ pub struct ClobNodeView {
     pub order_id: u64,
     /// Next node away from the best of book ([`CLOB_NIL`] at the tail).
     pub next: u32,
+    pub sub_account_id: u16,
     pub is_open: bool,
 }
 
@@ -339,6 +359,13 @@ impl ClobNodeView {
     /// Live and matchable right now: open, activated, not expired.
     pub fn is_matchable(&self, slot: u64, now: i64) -> bool {
         self.is_open && self.activation_slot <= slot && !(self.max_ts != 0 && self.max_ts < now)
+    }
+
+    pub fn user_ref(&self) -> ClobUserRefV0 {
+        ClobUserRefV0 {
+            authority: self.authority,
+            sub_account_id: self.sub_account_id,
+        }
     }
 }
 
@@ -360,13 +387,14 @@ pub fn read_clob_node(data: &[u8], index: u32) -> Option<ClobNodeView> {
     let start = CLOB_ORDERS_OFFSET + (index as usize).checked_mul(CLOB_NODE_LEN)?;
     let node = data.get(start..start + CLOB_NODE_LEN)?;
     Some(ClobNodeView {
-        user: Pubkey::new_from_array(node[..32].try_into().ok()?),
+        authority: Pubkey::new_from_array(node[..32].try_into().ok()?),
         price: u64::from_le_bytes(node[32..40].try_into().ok()?),
         base_asset_amount: u64::from_le_bytes(node[40..48].try_into().ok()?),
         activation_slot: u64::from_le_bytes(node[48..56].try_into().ok()?),
         max_ts: i64::from_le_bytes(node[56..64].try_into().ok()?),
         order_id: u64::from_le_bytes(node[64..72].try_into().ok()?),
         next: u32::from_le_bytes(node[84..88].try_into().ok()?),
+        sub_account_id: u16::from_le_bytes(node[90..92].try_into().ok()?),
         is_open: node[88] & CLOB_ORDER_BIT_FLAG_OPEN != 0,
     })
 }
@@ -446,8 +474,9 @@ impl ExternalQuoterExecutor for NoExternalQuoters {
 
 #[derive(Clone, AnchorSerialize, AnchorDeserialize, PartialEq, Eq, Debug)]
 pub struct UserBalanceChange {
-    /// The User account the change applies to.
-    pub user: Pubkey,
+    /// The user the change applies to, in derivable form; velocity resolves
+    /// it against its loaded users.
+    pub user: ClobUserRefV0,
     /// Will be subtracted if direction was long (taker is taking base from
     /// this user). Will be added if direction was short (taker is adding base
     /// to this user).

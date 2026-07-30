@@ -182,7 +182,7 @@ pub fn handle_trigger_clob_order<'c: 'info, 'info>(
 
     // ---- Phase 1: gate, reserve, reward — everything that can decide NOT
     // to place, while the user is borrowed. ----
-    let (side, price, base_asset_amount, max_ts) = {
+    let (side, price, base_asset_amount, max_ts, user_ref) = {
         let user = &mut load_mut!(ctx.accounts.user)?;
         let user_stats = load!(ctx.accounts.user_stats)?;
 
@@ -402,6 +402,10 @@ pub fn handle_trigger_clob_order<'c: 'info, 'info>(
             user.orders[order_index].price,
             base_asset_amount,
             user.orders[order_index].max_ts,
+            crate::state::prop_amm::ClobUserRefV0 {
+                authority: user.authority,
+                sub_account_id: user.sub_account_id,
+            },
         )
     };
 
@@ -413,6 +417,7 @@ pub fn handle_trigger_clob_order<'c: 'info, 'info>(
         base_asset_amount,
         activation_delay_slots: None,
         max_ts,
+        user: user_ref,
     }
     .serialize(&mut data)
     .map_err(|_| ErrorCode::DefaultError)?;
@@ -422,14 +427,12 @@ pub fn handle_trigger_clob_order<'c: 'info, 'info>(
             accounts: vec![
                 AccountMeta::new(ctx.accounts.clob_market.key(), false),
                 AccountMeta::new_readonly(ctx.accounts.velocity_signer.key(), true),
-                AccountMeta::new_readonly(ctx.accounts.user.key(), false),
             ],
             data,
         },
         &[
             ctx.accounts.clob_market.to_account_info(),
             ctx.accounts.velocity_signer.to_account_info(),
-            ctx.accounts.user.to_account_info(),
             ctx.accounts.clob_program.to_account_info(),
         ],
         &[&get_signer_seeds(&state.signer_nonce)],

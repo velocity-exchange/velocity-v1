@@ -5,11 +5,11 @@
 //! Capacity is derived from the account's data length at load, so each
 //! market picks its arena size at creation (and can grow via realloc).
 
-use anchor_lang_v2::accounts::Slab;
-use anchor_lang_v2::{address_eq, prelude::*};
-use static_assertions::const_assert_eq;
-
-use crate::error::ClobError;
+use {
+    crate::error::ClobError,
+    anchor_lang_v2::{accounts::Slab, address_eq, prelude::*},
+    static_assertions::const_assert_eq,
+};
 
 /// Null link sentinel. The account zero-inits and 0 is a valid node index,
 /// so `initialize` must thread the free list before the book is usable.
@@ -152,9 +152,11 @@ pub const ORDERS_OFFSET: usize = (8 + core::mem::size_of::<ClobHeaderV0>() + 4).
 #[repr(C)]
 #[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
 pub struct OrderNodeV0 {
-    /// Velocity `User` account fills settle against. Authority over that
-    /// account is verified by velocity before it CPIs place/cancel.
-    pub user: Address,
+    /// Authority wallet of the velocity `User` fills settle against
+    /// (velocity verifies control before it CPIs place/cancel). Paired with
+    /// `sub_account_id` below — see [`UserRefV0`] for why identity is stored
+    /// in derivable form.
+    pub authority: Address,
     /// PRICE_PRECISION.
     pub price: u64,
     /// Remaining unfilled size, base precision.
@@ -172,12 +174,22 @@ pub struct OrderNodeV0 {
     /// Away from the best of book (or next free node); [`NIL`] if tail.
     pub next: u32,
     pub bit_flags: u8,
-    pub padding: [u8; 7],
+    pub padding0: u8,
+    /// Sub-account half of the user identity (see `authority`).
+    pub sub_account_id: u16,
+    pub padding: [u8; 4],
 }
 
 const_assert_eq!(core::mem::size_of::<OrderNodeV0>(), 96);
 
 impl OrderNodeV0 {
+    pub fn user_ref(&self) -> UserRefV0 {
+        UserRefV0 {
+            authority: self.authority,
+            sub_account_id: self.sub_account_id,
+        }
+    }
+
     pub fn is_bit_flag_set(&self, flag: OrderBitFlag) -> bool {
         self.bit_flags & flag as u8 != 0
     }
@@ -207,6 +219,20 @@ pub struct OrderRefV0 {
     pub order_id: u64,
 }
 
+/// A velocity user in its *derivable* form: authority wallet + sub-account
+/// index. Both the `User` PDA (`["user", authority, sub_account_id]`) and
+/// the `UserStats` PDA (`["user_stats", authority]`) derive from it, which
+/// is why the book stores this rather than the `User` account key — an
+/// off-chain reader (a relay resolver staging a crank) can reach every
+/// user-derived account from the node alone, where a stored `User` key is a
+/// dead end (its authority lives inside account data the reader can't
+/// load).
+#[derive(Clone, Copy, PartialEq, Eq, Debug, wincode::SchemaRead, wincode::SchemaWrite)]
+pub struct UserRefV0 {
+    pub authority: Address,
+    pub sub_account_id: u16,
+}
+
 #[derive(Clone, Copy, PartialEq, Eq, Debug, wincode::SchemaRead, wincode::SchemaWrite)]
 pub struct PriceLevel {
     pub price: u64,
@@ -217,7 +243,7 @@ pub struct PriceLevel {
 /// `UserBalanceChange`.
 #[derive(Clone, PartialEq, Eq, Debug, wincode::SchemaRead, wincode::SchemaWrite)]
 pub struct UserBalanceChange {
-    pub user: Address,
+    pub user: UserRefV0,
     pub base_size: u64,
     pub quote_size: u64,
     /// Orders of this user fully consumed (and removed) by the fill, by id.
@@ -254,7 +280,7 @@ pub struct ExecuteResponseV0 {
 /// user into [`UserBalanceChange`]s.
 #[derive(Clone, Copy, Debug)]
 pub struct FillDetail {
-    pub user: Address,
+    pub user: UserRefV0,
     pub order_id: u64,
     pub price: u64,
     pub base_size: u64,
@@ -264,7 +290,7 @@ pub struct FillDetail {
 /// A removed order, for events (cancel/evict/expire).
 #[derive(Clone, Copy, Debug)]
 pub struct RemovedOrder {
-    pub user: Address,
+    pub user: UserRefV0,
     pub order_id: u64,
     pub price: u64,
     pub base_asset_amount: u64,
@@ -285,7 +311,7 @@ pub struct ExecuteOutcome {
 /// velocity whether the remaining size unwinds `open_bids` or `open_asks`.
 #[derive(Clone, Copy, PartialEq, Eq, Debug, wincode::SchemaRead, wincode::SchemaWrite)]
 pub struct RemovedOrderV0 {
-    pub user: Address,
+    pub user: UserRefV0,
     pub order_id: u64,
     pub price: u64,
     pub base_asset_amount: u64,
@@ -297,7 +323,7 @@ pub struct RemovedOrderV0 {
 /// so their `User` is always in the loaded set).
 #[derive(Clone, Copy, PartialEq, Eq, Debug, wincode::SchemaRead, wincode::SchemaWrite)]
 pub struct CancelledRemainderV0 {
-    pub user: Address,
+    pub user: UserRefV0,
     pub order_id: u64,
     pub base_asset_amount: u64,
 }
@@ -311,7 +337,7 @@ pub struct PlaceOrderParams {
     pub side: Side,
     pub price: u64,
     pub base_asset_amount: u64,
-    pub user: Address,
+    pub user: UserRefV0,
     pub activation_slot: u64,
     pub placed_slot: u64,
     pub max_ts: i64,
@@ -346,15 +372,15 @@ pub trait ClobBook {
         config: MarketConfigV0,
     ) -> Result<()>;
     fn place(&mut self, params: PlaceOrderParams) -> Result<OrderRefV0>;
-    fn cancel(&mut self, user: Address, order_ref: OrderRefV0) -> Result<RemovedOrder>;
+    fn cancel(&mut self, user: UserRefV0, order_ref: OrderRefV0) -> Result<RemovedOrder>;
     fn evict_worst(&mut self, side: Side) -> Result<RemovedOrder>;
     fn remove_expired(&mut self, order_ref: OrderRefV0, now: i64) -> Result<RemovedOrder>;
     fn quote(
         &self,
         direction: Direction,
         size: u64,
-        users: Option<&[Address]>,
-        taker: Option<&Address>,
+        users: Option<&[UserRefV0]>,
+        taker: Option<&UserRefV0>,
         slot: u64,
         now: i64,
     ) -> Result<Vec<PriceLevel>>;
@@ -362,8 +388,8 @@ pub trait ClobBook {
         &mut self,
         direction: Direction,
         size: u64,
-        users: Option<&[Address]>,
-        taker: Option<&Address>,
+        users: Option<&[UserRefV0]>,
+        taker: Option<&UserRefV0>,
         slot: u64,
         now: i64,
     ) -> Result<ExecuteOutcome>;
@@ -480,7 +506,7 @@ impl ClobBook for ClobMarketV0 {
             max_ts,
         } = params;
         require!(
-            price != 0 && base_asset_amount != 0 && !address_eq(&user, &ZERO_ADDRESS),
+            price != 0 && base_asset_amount != 0 && !address_eq(&user.authority, &ZERO_ADDRESS),
             ClobError::InvalidOrderParams
         );
         require!(
@@ -530,7 +556,7 @@ impl ClobBook for ClobMarketV0 {
             bit_flags |= OrderBitFlag::Ask as u8;
         }
         self[index as usize] = OrderNodeV0 {
-            user,
+            authority: user.authority,
             price,
             base_asset_amount,
             activation_slot,
@@ -540,7 +566,9 @@ impl ClobBook for ClobMarketV0 {
             prev,
             next: cursor,
             bit_flags,
-            padding: [0; 7],
+            padding0: 0,
+            sub_account_id: user.sub_account_id,
+            padding: [0; 4],
         };
 
         if prev != NIL {
@@ -572,7 +600,7 @@ impl ClobBook for ClobMarketV0 {
 
     /// Fails closed on a stale hint: node out of range, free, or holding a
     /// different order. `user` must own the order.
-    fn cancel(&mut self, user: Address, order_ref: OrderRefV0) -> Result<RemovedOrder> {
+    fn cancel(&mut self, user: UserRefV0, order_ref: OrderRefV0) -> Result<RemovedOrder> {
         let node = self
             .get(order_ref.node_index as usize)
             .ok_or(ClobError::StaleOrderRef)?;
@@ -580,9 +608,9 @@ impl ClobBook for ClobMarketV0 {
             node.is_bit_flag_set(OrderBitFlag::Open) && node.order_id == order_ref.order_id,
             ClobError::StaleOrderRef
         );
-        require!(address_eq(&node.user, &user), ClobError::OrderUserMismatch);
+        require!(node.user_ref() == user, ClobError::OrderUserMismatch);
         let removed = RemovedOrder {
-            user: node.user,
+            user: node.user_ref(),
             order_id: node.order_id,
             price: node.price,
             base_asset_amount: node.base_asset_amount,
@@ -612,7 +640,7 @@ impl ClobBook for ClobMarketV0 {
         };
         let node = &self[tail as usize];
         let removed = RemovedOrder {
-            user: node.user,
+            user: node.user_ref(),
             order_id: node.order_id,
             price: node.price,
             base_asset_amount: node.base_asset_amount,
@@ -635,7 +663,7 @@ impl ClobBook for ClobMarketV0 {
         );
         require!(node.is_expired(now), ClobError::OrderNotExpired);
         let removed = RemovedOrder {
-            user: node.user,
+            user: node.user_ref(),
             order_id: node.order_id,
             price: node.price,
             base_asset_amount: node.base_asset_amount,
@@ -655,8 +683,8 @@ impl ClobBook for ClobMarketV0 {
         &self,
         direction: Direction,
         size: u64,
-        users: Option<&[Address]>,
-        taker: Option<&Address>,
+        users: Option<&[UserRefV0]>,
+        taker: Option<&UserRefV0>,
         slot: u64,
         now: i64,
     ) -> Result<Vec<PriceLevel>> {
@@ -673,7 +701,7 @@ impl ClobBook for ClobMarketV0 {
             if node.is_expired(now) || !node.is_active(slot) {
                 continue;
             }
-            if taker.is_some_and(|t| address_eq(t, &node.user)) {
+            if taker.is_some_and(|t| *t == node.user_ref()) {
                 continue;
             }
             if skip_unknown_user(users, node, self.unknown_user_grace_slots, slot)? {
@@ -715,8 +743,8 @@ impl ClobBook for ClobMarketV0 {
         &mut self,
         direction: Direction,
         size: u64,
-        users: Option<&[Address]>,
-        taker: Option<&Address>,
+        users: Option<&[UserRefV0]>,
+        taker: Option<&UserRefV0>,
         slot: u64,
         now: i64,
     ) -> Result<ExecuteOutcome> {
@@ -742,7 +770,7 @@ impl ClobBook for ClobMarketV0 {
             if !node.is_active(slot) {
                 continue;
             }
-            if taker.is_some_and(|t| address_eq(t, &node.user)) {
+            if taker.is_some_and(|t| *t == node.user_ref()) {
                 continue;
             }
             if skip_unknown_user(users, &node, self.unknown_user_grace_slots, slot)? {
@@ -750,7 +778,7 @@ impl ClobBook for ClobMarketV0 {
             }
             let existing = balance_changes
                 .iter()
-                .position(|c| address_eq(&c.user, &node.user));
+                .position(|c| c.user == node.user_ref());
             if existing.is_none() && balance_changes.len() == max_users {
                 break;
             }
@@ -777,7 +805,7 @@ impl ClobBook for ClobMarketV0 {
                 }
                 None => {
                     balance_changes.push(UserBalanceChange {
-                        user: node.user,
+                        user: node.user_ref(),
                         base_size: take,
                         quote_size,
                         completed_order_ids: Vec::new(),
@@ -786,7 +814,7 @@ impl ClobBook for ClobMarketV0 {
                 }
             };
             fills.push(FillDetail {
-                user: node.user,
+                user: node.user_ref(),
                 order_id: node.order_id,
                 price: node.price,
                 base_size: take,
@@ -801,7 +829,7 @@ impl ClobBook for ClobMarketV0 {
                 let remainder = node.base_asset_amount - take;
                 if remainder < self.min_order_size {
                     cancelled.push(RemovedOrder {
-                        user: node.user,
+                        user: node.user_ref(),
                         order_id: node.order_id,
                         price: node.price,
                         base_asset_amount: remainder,
@@ -857,7 +885,7 @@ impl ClobBook for ClobMarketV0 {
 /// [`ClobError::StaleUserSet`] once older, because a keeper that misses an
 /// aged order is stale (or pruning makers) and the whole fill must not land.
 fn skip_unknown_user(
-    users: Option<&[Address]>,
+    users: Option<&[UserRefV0]>,
     node: &OrderNodeV0,
     grace_slots: u32,
     slot: u64,
@@ -865,7 +893,7 @@ fn skip_unknown_user(
     let Some(users) = users else {
         return Ok(false);
     };
-    if users.iter().any(|u| address_eq(u, &node.user)) {
+    if users.iter().any(|u| *u == node.user_ref()) {
         return Ok(false);
     }
     require!(

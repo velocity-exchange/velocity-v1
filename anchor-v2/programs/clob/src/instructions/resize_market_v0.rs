@@ -1,7 +1,10 @@
-use anchor_lang_v2::prelude::*;
-
-use crate::error::ClobError;
-use crate::state::{ClobBook, ClobMarketV0};
+use {
+    crate::{
+        error::ClobError,
+        state::{ClobBook, ClobMarketV0},
+    },
+    anchor_lang_v2::prelude::*,
+};
 
 #[derive(Accounts)]
 pub struct ResizeMarketV0 {

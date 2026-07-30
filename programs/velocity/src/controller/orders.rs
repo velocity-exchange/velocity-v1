@@ -3797,7 +3797,21 @@ fn fulfill_perp_order_router_pass(
     // ---- Execute + settle each external allocation via the CPI leg. ----
     // The response is untrusted: cap at the allocation, enforce per-unit
     // at-or-better against the quoted levels, and settle only against loaded
-    // makers (`get_ref_mut` fails for anyone outside the tx's user set).
+    // makers (the ref index only resolves users inside the tx's user set).
+    let user_ref_index = makers_and_referrer.user_ref_index()?;
+    let resolve_user = |user: &crate::state::prop_amm::ClobUserRefV0| -> VelocityResult<Pubkey> {
+        user_ref_index
+            .get(&(user.authority, user.sub_account_id))
+            .copied()
+            .ok_or_else(|| {
+                msg!(
+                    "quoter returned a balance change for an unloaded user {}/{}",
+                    user.authority,
+                    user.sub_account_id
+                );
+                ErrorCode::DefaultError
+            })
+    };
     for (i, allocation) in allocations[..externals_end].iter().enumerate() {
         if allocation.base == 0 {
             continue;
@@ -3855,7 +3869,8 @@ fn fulfill_perp_order_router_pass(
             if change.base_size == 0 {
                 continue;
             }
-            let mut maker = makers_and_referrer.get_ref_mut(&change.user)?;
+            let maker_key = resolve_user(&change.user)?;
+            let mut maker = makers_and_referrer.get_ref_mut(&maker_key)?;
             let mut maker_stats = if maker.authority == taker.authority {
                 None
             } else {
@@ -3874,7 +3889,7 @@ fn fulfill_perp_order_router_pass(
                 taker_existing_position_params_before,
                 &mut maker,
                 maker_stats.as_deref_mut(),
-                &change.user,
+                &maker_key,
                 maker_aggregates_tracked,
                 effective_taker_limit,
                 oracle_price,
@@ -3895,7 +3910,7 @@ fn fulfill_perp_order_router_pass(
             let maker_position_index = get_position_index(&maker.perp_positions, market_index)?;
             update_maker_fills_map(
                 maker_fills,
-                &change.user,
+                &maker_key,
                 maker_direction,
                 base_filled,
                 maker.perp_positions[maker_position_index].is_isolated(),
@@ -3923,7 +3938,8 @@ fn fulfill_perp_order_router_pass(
         // so they are loaded).
         if maker_aggregates_tracked {
             for cancelled in &response.cancelled {
-                let mut maker = makers_and_referrer.get_ref_mut(&cancelled.user)?;
+                let maker_key = resolve_user(&cancelled.user)?;
+                let mut maker = makers_and_referrer.get_ref_mut(&maker_key)?;
                 let maker_position_index = get_position_index(&maker.perp_positions, market_index)?;
                 decrease_open_bids_and_asks(
                     &mut maker.perp_positions[maker_position_index],
@@ -4088,14 +4104,7 @@ pub fn cross_match(
     taker_loader: &AccountLoader<User>,
     taker_stats_loader: &AccountLoader<UserStats>,
     makers_and_referrer: &UserMap,
-    // None on the relay-staged path: a resolver cannot derive maker stats
-    // PDAs (they hang off each maker's authority, which lives inside User
-    // accounts the resolver cannot read). Without stats, makers settle at
-    // the taker-tier rebate (identical numerator across tiers today), lose
-    // 30d maker-volume attribution for the fill, and skip the
-    // equity-breaker check (a breakered maker's resting orders are
-    // force-cancel territory regardless).
-    makers_and_referrer_stats: Option<&UserStatsMap>,
+    makers_and_referrer_stats: &UserStatsMap,
     executor: &mut dyn crate::state::prop_amm::ExternalQuoterExecutor,
     perp_market_map: &PerpMarketMap,
     spot_market_map: &SpotMarketMap,
@@ -4170,6 +4179,24 @@ pub fn cross_match(
 
     let taker = &mut load_mut!(taker_loader)?;
     let mut taker_stats = load_mut!(taker_stats_loader)?;
+    let taker_ref = crate::state::prop_amm::ClobUserRefV0 {
+        authority: taker.authority,
+        sub_account_id: taker.sub_account_id,
+    };
+    let user_ref_index = makers_and_referrer.user_ref_index()?;
+    let resolve_user = |user: &crate::state::prop_amm::ClobUserRefV0| -> VelocityResult<Pubkey> {
+        user_ref_index
+            .get(&(user.authority, user.sub_account_id))
+            .copied()
+            .ok_or_else(|| {
+                msg!(
+                    "cross leg returned a balance change for an unloaded user {}/{}",
+                    user.authority,
+                    user.sub_account_id
+                );
+                ErrorCode::DefaultError
+            })
+    };
 
     let taker_position_index = get_position_index(&taker.perp_positions, market_index)
         .or_else(|_| add_new_position(&mut taker.perp_positions, market_index))?;
@@ -4272,15 +4299,13 @@ pub fn cross_match(
                 continue;
             }
             validate!(
-                change.user != taker_key,
+                change.user != taker_ref,
                 ErrorCode::DefaultError,
                 "cross leg settled against the protocol user itself"
             )?;
-            let mut maker = makers_and_referrer.get_ref_mut(&change.user)?;
-            let mut maker_stats = match makers_and_referrer_stats {
-                Some(stats_map) => Some(stats_map.get_ref_mut(&maker.authority)?),
-                None => None,
-            };
+            let maker_key = resolve_user(&change.user)?;
+            let mut maker = makers_and_referrer.get_ref_mut(&maker_key)?;
+            let mut maker_stats = Some(makers_and_referrer_stats.get_ref_mut(&maker.authority)?);
             let (base_filled, quote_filled) = settle_external_match_fill(
                 change.base_size,
                 change.quote_size,
@@ -4294,7 +4319,7 @@ pub fn cross_match(
                 taker_existing_position_params_before,
                 &mut maker,
                 maker_stats.as_deref_mut(),
-                &change.user,
+                &maker_key,
                 maker_aggregates_tracked,
                 None,
                 oracle_price,
@@ -4315,7 +4340,7 @@ pub fn cross_match(
             let maker_position_index = get_position_index(&maker.perp_positions, market_index)?;
             update_maker_fills_map(
                 &mut maker_fills,
-                &change.user,
+                &maker_key,
                 maker_direction,
                 base_filled,
                 maker.perp_positions[maker_position_index].is_isolated(),
@@ -4337,7 +4362,8 @@ pub fn cross_match(
         }
         if maker_aggregates_tracked {
             for cancelled in &response.cancelled {
-                let mut maker = makers_and_referrer.get_ref_mut(&cancelled.user)?;
+                let maker_key = resolve_user(&cancelled.user)?;
+                let mut maker = makers_and_referrer.get_ref_mut(&maker_key)?;
                 let maker_position_index = get_position_index(&maker.perp_positions, market_index)?;
                 decrease_open_bids_and_asks(
                     &mut maker.perp_positions[maker_position_index],
@@ -4399,86 +4425,28 @@ pub fn cross_match(
     )?;
     taker.update_last_active_slot(slot);
 
-    // Post-fill maker invariants, mirroring `fulfill_perp_order_post_checks`'
-    // maker loop. The taker side of that fn is deliberately skipped: the
-    // protocol User's base is asserted unchanged and its quote strictly grew,
-    // so no margin state worsened. The equity-breaker check runs only when
-    // maker stats were loaded (see the parameter note above).
-    for (maker_key, (maker_base_asset_amount_filled, maker_is_isolated_position)) in &maker_fills {
-        let maker = makers_and_referrer.get_ref(maker_key)?;
-        let (margin_type, maker_risk_increasing) =
-            crate::math::orders::select_margin_type_for_perp_maker(
-                &maker,
-                *maker_base_asset_amount_filled,
-                market_index,
-            )?;
-        let margin_type_config = if *maker_is_isolated_position {
-            MarginTypeConfig::IsolatedPositionOverride {
-                market_index,
-                margin_requirement_type: margin_type,
-                default_isolated_margin_requirement_type: MarginRequirementType::Maintenance,
-                cross_margin_requirement_type: MarginRequirementType::Maintenance,
-            }
-        } else {
-            MarginTypeConfig::CrossMarginOverride {
-                margin_requirement_type: margin_type,
-                default_margin_requirement_type: MarginRequirementType::Maintenance,
-            }
-        };
-        let mut context = MarginContext::standard_with_config(margin_type_config);
-        if oracle_stale_for_margin {
-            validate!(
-                !maker_risk_increasing,
-                ErrorCode::InvalidOracle,
-                "maker must be reducing position if oracle stale for margin"
-            )?;
-            context = context.margin_ratio_override(MARGIN_PRECISION);
-        }
-        let maker_margin_calculation =
-            calculate_margin_requirement_and_total_collateral_and_liability_info(
-                &maker,
-                perp_market_map,
-                spot_market_map,
-                oracle_map,
-                context,
-            )?;
-        validate!(
-            maker_margin_calculation.meets_margin_requirement(),
-            ErrorCode::InsufficientCollateral,
-            "maker ({}) breached fill requirements",
-            maker_key
-        )?;
-        if maker_risk_increasing {
-            let maker_breaker_tripped = match makers_and_referrer_stats {
-                Some(stats_map) => stats_map
-                    .get_ref(&maker.authority)?
-                    .is_equity_breaker_tripped(),
-                None => false,
-            };
-            let maker_net_equity = calculate_net_equity_for_floor(
-                &maker,
-                perp_market_map,
-                spot_market_map,
-                oracle_map,
-            )?;
-            validate!(
-                !maker_breaker_tripped
-                    && !maker_net_equity
-                        .is_some_and(|net_equity| maker.is_below_buffered_equity_floor(net_equity)),
-                ErrorCode::EquityBelowFloor,
-                "maker ({}) below equity floor or breaker tripped",
-                maker_key
-            )?;
-        }
-    }
-    if oracle_stale_for_margin {
-        let perp_market_oi_after = perp_market_map.get_ref(&market_index)?.get_open_interest();
-        validate!(
-            perp_market_oi_after <= perp_market_oi_before,
-            ErrorCode::InvalidOracle,
-            "oracle stale for margin but open interest increased"
-        )?;
-    }
+    // Shared post-fill invariants: the per-maker margin/equity-floor/breaker
+    // checks over both legs' fills, plus the stale-oracle OI rule. The taker
+    // side of the shared check passes trivially — the protocol User's base
+    // is unchanged and its quote strictly grew.
+    fulfill_perp_order_post_checks(
+        taker,
+        &taker_stats,
+        makers_and_referrer,
+        makers_and_referrer_stats,
+        spot_market_map,
+        perp_market_map,
+        oracle_map,
+        market_index,
+        base_matched,
+        leg_totals[0].1,
+        &maker_fills,
+        true,
+        false,
+        perp_market_oi_before,
+        oracle_stale_for_margin,
+        false,
+    )?;
 
     Ok((base_matched, surplus.cast()?))
 }

@@ -408,7 +408,18 @@ fn setup() -> Fixture {
 
     svm.warp_to_slot(10);
     let oracle = Pubkey::new_unique();
-    let clob_maker_user = Pubkey::new_unique();
+    // Resolvers derive maker `User` PDAs from the node's (authority,
+    // sub_account_id) identity, so the fixture places the maker at its true
+    // address — as `initialize_user` always does in production.
+    let clob_maker_user = Pubkey::find_program_address(
+        &[
+            b"user",
+            clob_maker_authority.pubkey().as_ref(),
+            0u16.to_le_bytes().as_ref(),
+        ],
+        &velocity_id(),
+    )
+    .0;
     // The quoter PDA is derivable before the entry exists, so the market can
     // name its canonical CLOB from birth.
     let quoter = quoter_pda(0, &clob_id(), &clob_maker_user);
@@ -1720,7 +1731,16 @@ fn cross_match_crank_fills_a_crossed_clob_and_keeps_the_spread() {
         Pubkey::find_program_address(&[b"user_stats", signer.as_ref()], &velocity_id()).0;
     fixture.svm.airdrop(&conditions, 1_000_000_000).unwrap();
 
-    let maker_stats = Pubkey::new_unique();
+    // The staged cross executor carries the maker's (User, UserStats) pair
+    // at their derived addresses, so the stats fixture must live at its PDA.
+    let maker_stats = Pubkey::find_program_address(
+        &[
+            b"user_stats",
+            fixture.clob_maker_authority.pubkey().as_ref(),
+        ],
+        &velocity_id(),
+    )
+    .0;
     set_user_stats_account(
         &mut fixture.svm,
         maker_stats,
@@ -1779,7 +1799,6 @@ fn cross_match_crank_fills_a_crossed_clob_and_keeps_the_spread() {
                 size: UNIT,
                 buy_quoter_index: 0,
                 sell_quoter_index: 0,
-                makers_include_stats: true,
             }
             .data(),
         }

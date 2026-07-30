@@ -1,22 +1,25 @@
 //! litesvm integration tests. Require the SBF build first:
 //! `bun run program:build:clob` (cargo-build-sbf --tools-version v1.52).
 
-use anchor_v2_testing::{
-    Keypair, LiteSVM, Message, Signer, VersionedMessage, VersionedTransaction,
+use {
+    anchor_v2_testing::{
+        Keypair, LiteSVM, Message, Signer, VersionedMessage, VersionedTransaction,
+    },
+    clob::{
+        accounts,
+        anchor_lang_v2::{prelude::Address, solana_program::instruction::Instruction},
+        instruction,
+        state::{
+            ClobHeaderV0, ClobMarketV0, Direction, MarketConfigV0, OrderNodeV0, OrderRefV0, Side,
+            UserRefV0, ORDERS_OFFSET,
+        },
+        CancelOrderArgsV0, EvictWorstArgsV0, ExecuteArgsV0, PlaceOrderArgsV0, QuoteArgsV0,
+        RemoveExpiredArgsV0, ResizeMarketArgsV0, UpdateMarketArgsV0,
+    },
+    litesvm::types::{FailedTransactionMetadata, TransactionMetadata},
+    solana_clock::Clock,
+    solana_pubkey::Pubkey,
 };
-use clob::anchor_lang_v2::prelude::Address;
-use clob::anchor_lang_v2::solana_program::instruction::Instruction;
-use clob::state::MarketConfigV0;
-use clob::state::{
-    ClobHeaderV0, ClobMarketV0, Direction, OrderNodeV0, OrderRefV0, Side, ORDERS_OFFSET,
-};
-use clob::{
-    accounts, instruction, CancelOrderArgsV0, EvictWorstArgsV0, ExecuteArgsV0, PlaceOrderArgsV0,
-    QuoteArgsV0, RemoveExpiredArgsV0, ResizeMarketArgsV0, UpdateMarketArgsV0,
-};
-use litesvm::types::{FailedTransactionMetadata, TransactionMetadata};
-use solana_clock::Clock;
-use solana_pubkey::Pubkey;
 
 const SO_PATH: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../../target/deploy/clob.so");
 
@@ -130,11 +133,19 @@ fn send(ctx: &mut Ctx, ix: Instruction) -> Result<TransactionMetadata, FailedTra
     ctx.svm.send_transaction(tx)
 }
 
-fn place_ix(ctx: &Ctx, args: PlaceOrderArgsV0, user: Address) -> Instruction {
+/// Tests key users by a bare address; the wire wants the derivable form.
+fn uref(user: Address) -> UserRefV0 {
+    UserRefV0 {
+        authority: user,
+        sub_account_id: 0,
+    }
+}
+
+fn place_ix(ctx: &Ctx, mut args: PlaceOrderArgsV0, user: Address) -> Instruction {
+    args.user = uref(user);
     instruction::PlaceOrderV0 { args }.to_instruction(accounts::PlaceOrderV0 {
         market: addr(ctx.market),
         place_authority: addr(ctx.place_auth.pubkey()),
-        user,
     })
 }
 
@@ -145,6 +156,7 @@ fn place_args(side: Side, price: u64, size: u64) -> PlaceOrderArgsV0 {
         base_asset_amount: size,
         activation_delay_slots: None,
         max_ts: 0,
+        user: uref(addr(Pubkey::default())),
     }
 }
 
@@ -188,20 +200,27 @@ fn parse_levels(b: &[u8]) -> Vec<(u64, u64)> {
 }
 
 /// ExecuteResponseV0 { balance_changes: Vec<UserBalanceChange> } — entries
-/// are (user: 32, base_size: u64, quote_size: u64,
-/// completed_order_ids: Vec<u64>), so variable-length.
+/// are (user: UserRefV0 {authority: 32, sub: u16}, base_size: u64,
+/// quote_size: u64, completed_order_ids: Vec<u64>), so variable-length.
+/// Returns the authority as the identity (tests place with sub 0).
 fn parse_balance_changes(b: &[u8]) -> Vec<([u8; 32], u64, u64, Vec<u64>)> {
     let count = parse_u32(b) as usize;
     let mut off = 4;
     (0..count)
         .map(|_| {
-            let user = b[off..off + 32].try_into().unwrap();
-            let base = parse_u64(&b[off + 32..]);
-            let quote = parse_u64(&b[off + 40..]);
-            let ids = parse_u32(&b[off + 48..]) as usize;
-            let completed = (0..ids).map(|i| parse_u64(&b[off + 52 + i * 8..])).collect();
-            off += 52 + ids * 8;
-            (user, base, quote, completed)
+            let authority = b[off..off + 32].try_into().unwrap();
+            assert_eq!(
+                u16::from_le_bytes(b[off + 32..off + 34].try_into().unwrap()),
+                0
+            );
+            let base = parse_u64(&b[off + 34..]);
+            let quote = parse_u64(&b[off + 42..]);
+            let ids = parse_u32(&b[off + 50..]) as usize;
+            let completed = (0..ids)
+                .map(|i| parse_u64(&b[off + 54 + i * 8..]))
+                .collect();
+            off += 54 + ids * 8;
+            (authority, base, quote, completed)
         })
         .collect()
 }
@@ -222,7 +241,7 @@ fn quote_meta_users(
         args: QuoteArgsV0 {
             direction,
             size,
-            users,
+            users: users.map(|u| u.into_iter().map(uref).collect()),
             taker: None,
         },
     }
@@ -256,7 +275,7 @@ fn execute_meta_users(
         args: ExecuteArgsV0 {
             direction,
             size,
-            users,
+            users: users.map(|u| u.into_iter().map(uref).collect()),
             taker: None,
         },
     }
@@ -320,28 +339,34 @@ fn remove_expired(
 /// RemovedOrderV0 return data:
 /// (user, order_id, price, base_asset_amount, side).
 fn parse_removed(b: &[u8]) -> ([u8; 32], u64, u64, u64, u8) {
+    assert_eq!(u16::from_le_bytes(b[32..34].try_into().unwrap()), 0);
     (
         b[..32].try_into().unwrap(),
-        parse_u64(&b[32..]),
-        parse_u64(&b[40..]),
-        parse_u64(&b[48..]),
-        b[56],
+        parse_u64(&b[34..]),
+        parse_u64(&b[42..]),
+        parse_u64(&b[50..]),
+        b[58],
     )
 }
 
 /// Trailing `cancelled` vec of ExecuteResponseV0 — entries are
-/// (user, order_id, base_asset_amount).
+/// (user: UserRefV0, order_id, base_asset_amount). Walks past the
+/// variable-length balance changes first.
 fn parse_cancelled(b: &[u8]) -> Vec<([u8; 32], u64, u64)> {
     let n = parse_u32(b) as usize;
-    let off = 4 + n * 52;
+    let mut off = 4;
+    for _ in 0..n {
+        let ids = parse_u32(&b[off + 50..]) as usize;
+        off += 54 + ids * 8;
+    }
     let m = parse_u32(&b[off..]) as usize;
     (0..m)
         .map(|i| {
-            let o = off + 4 + i * 48;
+            let o = off + 4 + i * 50;
             (
                 b[o..o + 32].try_into().unwrap(),
-                parse_u64(&b[o + 32..]),
-                parse_u64(&b[o + 40..]),
+                parse_u64(&b[o + 34..]),
+                parse_u64(&b[o + 42..]),
             )
         })
         .collect()
@@ -424,12 +449,14 @@ fn cancel_verifies_hint_and_user() {
 
     let cancel = |ctx: &mut Ctx, user: Address, order_ref: OrderRefV0| {
         let ix = instruction::CancelOrderV0 {
-            args: CancelOrderArgsV0 { order_ref },
+            args: CancelOrderArgsV0 {
+                order_ref,
+                user: uref(user),
+            },
         }
         .to_instruction(accounts::CancelOrderV0 {
             market: addr(ctx.market),
             place_authority: addr(ctx.place_auth.pubkey()),
-            user,
         });
         send(ctx, ix)
     };
@@ -502,12 +529,14 @@ fn place_rejects_off_grid_undersized_and_bad_authority() {
     // A random signer can't place.
     let rando = Keypair::new();
     let ix = instruction::PlaceOrderV0 {
-        args: place_args(Side::Bid, 100, 10),
+        args: PlaceOrderArgsV0 {
+            user: uref(user),
+            ..place_args(Side::Bid, 100, 10)
+        },
     }
     .to_instruction(accounts::PlaceOrderV0 {
         market: addr(ctx.market),
         place_authority: addr(rando.pubkey()),
-        user,
     });
     ctx.svm.airdrop(&rando.pubkey(), 1_000_000_000).unwrap();
     ctx.svm.expire_blockhash();
@@ -887,7 +916,7 @@ fn quote_taker(ctx: &mut Ctx, direction: Direction, size: u64, taker: Address) -
             direction,
             size,
             users: None,
-            taker: Some(taker),
+            taker: Some(uref(taker)),
         },
     }
     .to_instruction(accounts::QuoteV0 {
@@ -908,7 +937,7 @@ fn execute_taker(
             direction,
             size,
             users: None,
-            taker: Some(taker),
+            taker: Some(uref(taker)),
         },
     }
     .to_instruction(accounts::ExecuteV0 {

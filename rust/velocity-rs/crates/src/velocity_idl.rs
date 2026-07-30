@@ -213,7 +213,6 @@ pub mod instructions {
         pub size: u64,
         pub buy_quoter_index: u8,
         pub sell_quoter_index: u8,
-        pub makers_include_stats: bool,
     }
     #[automatically_derived]
     impl anchor_lang::Discriminator for CrankCrossMatch {

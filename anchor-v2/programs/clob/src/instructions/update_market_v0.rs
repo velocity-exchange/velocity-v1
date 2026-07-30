@@ -1,8 +1,9 @@
-use anchor_lang_v2::prelude::*;
-
-use crate::error::ClobError;
-use crate::state::{
-    ClobMarketV0, EXECUTE_FILLS_CEILING, EXECUTE_USERS_CEILING, QUOTE_LEVELS_CEILING,
+use {
+    crate::{
+        error::ClobError,
+        state::{ClobMarketV0, EXECUTE_FILLS_CEILING, EXECUTE_USERS_CEILING, QUOTE_LEVELS_CEILING},
+    },
+    anchor_lang_v2::prelude::*,
 };
 
 #[derive(Accounts)]

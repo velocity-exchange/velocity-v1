@@ -1515,10 +1515,6 @@ export type Velocity = {
         {
           "name": "sellQuoterIndex",
           "type": "u8"
-        },
-        {
-          "name": "makersIncludeStats",
-          "type": "bool"
         }
       ]
     },

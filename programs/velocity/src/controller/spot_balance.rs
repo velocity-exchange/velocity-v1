@@ -87,7 +87,21 @@ pub fn update_spot_market_twap_stats(
     )?
     .cast()?;
 
-    if let Some(oracle_price_data) = oracle_price_data {
+    // Retroactive half of the OtterSec #121 fix. A market initialized before
+    // `default_with_current_oracle` started stamping `last_oracle_price_twap_ts`
+    // still carries a zero there, and a zero makes `since_last` below dwarf the TWAP
+    // period — `from_start` saturates to 0 and the TWAP is replaced by the live
+    // price outright, collapsing both `StrictOraclePrice` bounds onto it. Seed the
+    // timestamp and skip this one EMA step instead: the stored TWAP stays where it
+    // is (it was seeded to the launch price), so the band survives this first
+    // refresh and every later one weights a real elapsed interval.
+    let oracle_twap_ts_uninitialized =
+        spot_market.historical_oracle_data.last_oracle_price_twap_ts == 0;
+    if oracle_twap_ts_uninitialized {
+        spot_market.historical_oracle_data.last_oracle_price_twap_ts = now;
+    }
+
+    if let Some(oracle_price_data) = oracle_price_data.filter(|_| !oracle_twap_ts_uninitialized) {
         let sanitize_clamp_denominator = spot_market.get_sanitize_clamp_denominator()?;
 
         let capped_oracle_update_price: i64 = sanitize_new_price(

@@ -94,15 +94,27 @@ impl HistoricalOracleData {
         }
     }
 
-    pub fn default_with_current_oracle(oracle_price_data: OraclePriceData) -> Self {
+    /// Seed a spot market's historical oracle data at launch.
+    ///
+    /// `now` **must** land in `last_oracle_price_twap_ts`. Left at zero, the first
+    /// `update_spot_market_twap_stats` computes `since_last = now - 0`, which
+    /// dwarfs any TWAP period, so `from_start` saturates to 0 and the new TWAP
+    /// becomes the live price *exactly*. Both `StrictOraclePrice` bounds (`min` /
+    /// `max` of current vs the 5-min TWAP) then collapse onto that single price,
+    /// leaving the first price-banded operation on the market unguarded in both
+    /// directions (OtterSec #121). The perp initializer has always stamped this;
+    /// on the spot path the assignment was commented out.
+    pub fn default_with_current_oracle(oracle_price_data: OraclePriceData, now: i64) -> Self {
         HistoricalOracleData {
             last_oracle_price: oracle_price_data.price,
             last_oracle_conf: oracle_price_data.confidence,
             last_oracle_delay: oracle_price_data.delay,
             last_oracle_price_twap: oracle_price_data.price,
             last_oracle_price_twap_5min: oracle_price_data.price,
-            // last_oracle_price_twap_ts: now,
-            ..HistoricalOracleData::default()
+            last_oracle_price_twap_ts: now,
+            // Every field is set explicitly (no `..default()`): a future field
+            // addition should be a compile error here, not a silent zero — that is
+            // exactly how the missing timestamp went unnoticed.
         }
     }
 

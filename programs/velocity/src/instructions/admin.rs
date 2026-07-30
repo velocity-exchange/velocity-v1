@@ -307,7 +307,10 @@ pub fn handle_initialize_spot_market(
             )?;
 
             (
-                HistoricalOracleData::default_with_current_oracle(oracle_price_data?),
+                HistoricalOracleData::default_with_current_oracle(
+                    oracle_price_data?,
+                    Clock::get()?.unix_timestamp,
+                ),
                 HistoricalIndexData::default_with_current_oracle(oracle_price_data?)?,
             )
         };

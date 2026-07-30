@@ -95,8 +95,17 @@ pub fn update_spot_market_twap_stats(
     // timestamp and skip this one EMA step instead: the stored TWAP stays where it
     // is (it was seeded to the launch price), so the band survives this first
     // refresh and every later one weights a real elapsed interval.
-    let oracle_twap_ts_uninitialized =
-        spot_market.historical_oracle_data.last_oracle_price_twap_ts == 0;
+    //
+    // `QuoteAsset` markets are excluded: that source returns a constant
+    // `PRICE_PRECISION`, so their TWAP and live price are always the same number and
+    // the band is degenerate by construction — #121's vector cannot exist there.
+    // Seeding them would only flip which way `calculate_weighted_average`'s +/-1
+    // rounding bias falls on the first crank (a zero timestamp saturates
+    // `from_start` to 1, which flips the sign), moving every collateral valuation
+    // that reads the quote TWAP for no security gain.
+    let oracle_twap_ts_uninitialized = spot_market.historical_oracle_data.last_oracle_price_twap_ts
+        == 0
+        && spot_market.oracle_source != crate::state::oracle::OracleSource::QuoteAsset;
     if oracle_twap_ts_uninitialized {
         spot_market.historical_oracle_data.last_oracle_price_twap_ts = now;
     }

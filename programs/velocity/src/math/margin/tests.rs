@@ -458,7 +458,7 @@ mod calculate_margin_requirement_and_total_collateral {
             maintenance_asset_weight: SPOT_WEIGHT_PRECISION,
             deposit_balance: 10000 * SPOT_BALANCE_PRECISION,
             liquidator_fee: 0,
-            historical_oracle_data: HistoricalOracleData::default_quote_oracle(0),
+            historical_oracle_data: HistoricalOracleData::default_quote_oracle(),
             ..SpotMarket::default()
         };
         create_anchor_account_info!(usdc_spot_market, SpotMarket, usdc_spot_market_account_info);
@@ -548,7 +548,7 @@ mod calculate_margin_requirement_and_total_collateral {
             maintenance_asset_weight: SPOT_WEIGHT_PRECISION,
             deposit_balance: 10000 * SPOT_BALANCE_PRECISION,
             liquidator_fee: 0,
-            historical_oracle_data: HistoricalOracleData::default_quote_oracle(0),
+            historical_oracle_data: HistoricalOracleData::default_quote_oracle(),
             ..SpotMarket::default()
         };
         create_anchor_account_info!(usdc_spot_market, SpotMarket, usdc_spot_market_account_info);
@@ -640,7 +640,7 @@ mod calculate_margin_requirement_and_total_collateral {
             maintenance_liability_weight: SPOT_WEIGHT_PRECISION,
             deposit_balance: 10000 * SPOT_BALANCE_PRECISION,
             liquidator_fee: 0,
-            historical_oracle_data: HistoricalOracleData::default_quote_oracle(0),
+            historical_oracle_data: HistoricalOracleData::default_quote_oracle(),
             ..SpotMarket::default()
         };
         create_anchor_account_info!(usdc_spot_market, SpotMarket, usdc_spot_market_account_info);
@@ -748,7 +748,7 @@ mod calculate_margin_requirement_and_total_collateral {
             maintenance_asset_weight: SPOT_WEIGHT_PRECISION,
             deposit_balance: 10000 * SPOT_BALANCE_PRECISION,
             liquidator_fee: 0,
-            historical_oracle_data: HistoricalOracleData::default_quote_oracle(0),
+            historical_oracle_data: HistoricalOracleData::default_quote_oracle(),
             ..SpotMarket::default()
         };
         create_anchor_account_info!(usdc_spot_market, SpotMarket, usdc_spot_market_account_info);
@@ -941,7 +941,7 @@ mod calculate_margin_requirement_and_total_collateral {
             maintenance_asset_weight: SPOT_WEIGHT_PRECISION,
             deposit_balance: 10000 * SPOT_BALANCE_PRECISION,
             liquidator_fee: 0,
-            historical_oracle_data: HistoricalOracleData::default_quote_oracle(0),
+            historical_oracle_data: HistoricalOracleData::default_quote_oracle(),
             ..SpotMarket::default()
         };
         create_anchor_account_info!(usdc_spot_market, SpotMarket, usdc_spot_market_account_info);
@@ -1122,7 +1122,7 @@ mod calculate_margin_requirement_and_total_collateral {
             maintenance_asset_weight: SPOT_WEIGHT_PRECISION,
             deposit_balance: 10000 * SPOT_BALANCE_PRECISION,
             liquidator_fee: 0,
-            historical_oracle_data: HistoricalOracleData::default_quote_oracle(0),
+            historical_oracle_data: HistoricalOracleData::default_quote_oracle(),
             ..SpotMarket::default()
         };
         create_anchor_account_info!(usdc_spot_market, SpotMarket, usdc_spot_market_account_info);
@@ -1246,7 +1246,7 @@ mod calculate_margin_requirement_and_total_collateral {
             maintenance_asset_weight: SPOT_WEIGHT_PRECISION,
             deposit_balance: 10000 * SPOT_BALANCE_PRECISION,
             liquidator_fee: 0,
-            historical_oracle_data: HistoricalOracleData::default_quote_oracle(0),
+            historical_oracle_data: HistoricalOracleData::default_quote_oracle(),
             ..SpotMarket::default()
         };
         create_anchor_account_info!(usdc_spot_market, SpotMarket, usdc_spot_market_account_info);
@@ -1438,7 +1438,7 @@ mod calculate_margin_requirement_and_total_collateral {
             maintenance_asset_weight: SPOT_WEIGHT_PRECISION,
             deposit_balance: 10000 * SPOT_BALANCE_PRECISION,
             liquidator_fee: 0,
-            historical_oracle_data: HistoricalOracleData::default_quote_oracle(0),
+            historical_oracle_data: HistoricalOracleData::default_quote_oracle(),
             ..SpotMarket::default()
         };
         create_anchor_account_info!(usdc_spot_market, SpotMarket, usdc_spot_market_account_info);
@@ -1557,7 +1557,7 @@ mod calculate_margin_requirement_and_total_collateral {
             maintenance_asset_weight: SPOT_WEIGHT_PRECISION,
             deposit_balance: 10000 * SPOT_BALANCE_PRECISION,
             liquidator_fee: 0,
-            historical_oracle_data: HistoricalOracleData::default_quote_oracle(0),
+            historical_oracle_data: HistoricalOracleData::default_quote_oracle(),
             ..SpotMarket::default()
         };
         create_anchor_account_info!(usdc_spot_market, SpotMarket, usdc_spot_market_account_info);
@@ -1707,7 +1707,7 @@ mod calculate_margin_requirement_and_total_collateral {
             liquidator_fee: 0,
             historical_oracle_data: HistoricalOracleData {
                 last_oracle_price_twap_5min: PRICE_PRECISION_I64 * 9 / 10,
-                ..HistoricalOracleData::default_quote_oracle(0)
+                ..HistoricalOracleData::default_quote_oracle()
             },
             ..SpotMarket::default()
         };
@@ -1819,7 +1819,7 @@ mod calculate_margin_requirement_and_total_collateral {
             maintenance_asset_weight: SPOT_WEIGHT_PRECISION,
             deposit_balance: 10000 * SPOT_BALANCE_PRECISION,
             liquidator_fee: 0,
-            historical_oracle_data: HistoricalOracleData::default_quote_oracle(0),
+            historical_oracle_data: HistoricalOracleData::default_quote_oracle(),
             ..SpotMarket::default()
         };
         create_anchor_account_info!(usdc_spot_market, SpotMarket, usdc_spot_market_account_info);
@@ -1932,7 +1932,7 @@ mod calculate_margin_requirement_and_total_collateral {
             maintenance_asset_weight: SPOT_WEIGHT_PRECISION,
             deposit_balance: 10000 * SPOT_BALANCE_PRECISION,
             liquidator_fee: 0,
-            historical_oracle_data: HistoricalOracleData::default_quote_oracle(0),
+            historical_oracle_data: HistoricalOracleData::default_quote_oracle(),
             ..SpotMarket::default()
         };
         create_anchor_account_info!(usdc_spot_market, SpotMarket, usdc_spot_market_account_info);
@@ -2040,7 +2040,7 @@ mod calculate_margin_requirement_and_total_collateral {
             maintenance_asset_weight: SPOT_WEIGHT_PRECISION,
             deposit_balance: 10000 * SPOT_BALANCE_PRECISION,
             liquidator_fee: 0,
-            historical_oracle_data: HistoricalOracleData::default_quote_oracle(0),
+            historical_oracle_data: HistoricalOracleData::default_quote_oracle(),
             ..SpotMarket::default()
         };
         create_anchor_account_info!(usdc_spot_market, SpotMarket, usdc_spot_market_account_info);
@@ -2185,7 +2185,7 @@ mod calculate_margin_requirement_and_total_collateral_and_liability_info {
             maintenance_asset_weight: SPOT_WEIGHT_PRECISION,
             deposit_balance: 10000 * SPOT_BALANCE_PRECISION,
             liquidator_fee: 0,
-            historical_oracle_data: HistoricalOracleData::default_quote_oracle(0),
+            historical_oracle_data: HistoricalOracleData::default_quote_oracle(),
             ..SpotMarket::default()
         };
         create_anchor_account_info!(usdc_spot_market, SpotMarket, usdc_spot_market_account_info);
@@ -2293,7 +2293,7 @@ mod calculate_margin_requirement_and_total_collateral_and_liability_info {
             maintenance_asset_weight: SPOT_WEIGHT_PRECISION,
             deposit_balance: 10000 * SPOT_BALANCE_PRECISION,
             liquidator_fee: 0,
-            historical_oracle_data: HistoricalOracleData::default_quote_oracle(0),
+            historical_oracle_data: HistoricalOracleData::default_quote_oracle(),
             ..SpotMarket::default()
         };
         create_anchor_account_info!(usdc_spot_market, SpotMarket, usdc_spot_market_account_info);
@@ -2445,7 +2445,7 @@ mod calculate_margin_requirement_and_total_collateral_and_liability_info {
             maintenance_asset_weight: SPOT_WEIGHT_PRECISION,
             deposit_balance: 10000 * SPOT_BALANCE_PRECISION,
             liquidator_fee: 0,
-            historical_oracle_data: HistoricalOracleData::default_quote_oracle(0),
+            historical_oracle_data: HistoricalOracleData::default_quote_oracle(),
             ..SpotMarket::default()
         };
         create_anchor_account_info!(usdc_spot_market, SpotMarket, usdc_spot_market_account_info);
@@ -2546,7 +2546,7 @@ mod calculate_margin_requirement_and_total_collateral_and_liability_info {
             maintenance_asset_weight: SPOT_WEIGHT_PRECISION,
             deposit_balance: 10000 * SPOT_BALANCE_PRECISION,
             liquidator_fee: 0,
-            historical_oracle_data: HistoricalOracleData::default_quote_oracle(0),
+            historical_oracle_data: HistoricalOracleData::default_quote_oracle(),
             oracle: usdc_oracle_price_key,
             ..SpotMarket::default()
         };
@@ -2697,7 +2697,7 @@ mod calculate_margin_requirement_and_total_collateral_and_liability_info {
             deposit_balance: 10000 * SPOT_BALANCE_PRECISION,
             borrow_balance: 1000 * SPOT_BALANCE_PRECISION,
             liquidator_fee: 0,
-            historical_oracle_data: HistoricalOracleData::default_quote_oracle(0),
+            historical_oracle_data: HistoricalOracleData::default_quote_oracle(),
             oracle: usdc_oracle_price_key,
             ..SpotMarket::default()
         };
@@ -3009,7 +3009,7 @@ mod calculate_margin_requirement_and_total_collateral_and_liability_info {
             maintenance_asset_weight: SPOT_WEIGHT_PRECISION,
             deposit_balance: 10000 * SPOT_BALANCE_PRECISION,
             liquidator_fee: 0,
-            historical_oracle_data: HistoricalOracleData::default_quote_oracle(0),
+            historical_oracle_data: HistoricalOracleData::default_quote_oracle(),
             ..SpotMarket::default()
         };
         create_anchor_account_info!(usdc_spot_market, SpotMarket, usdc_spot_market_account_info);
@@ -3129,7 +3129,7 @@ mod calculate_max_withdrawable_amount {
             maintenance_asset_weight: SPOT_WEIGHT_PRECISION,
             deposit_balance: 10000 * SPOT_BALANCE_PRECISION,
             liquidator_fee: 0,
-            historical_oracle_data: HistoricalOracleData::default_quote_oracle(0),
+            historical_oracle_data: HistoricalOracleData::default_quote_oracle(),
             ..SpotMarket::default()
         };
         create_anchor_account_info!(usdc_spot_market, SpotMarket, usdc_spot_market_account_info);
@@ -3217,7 +3217,7 @@ mod calculate_max_withdrawable_amount {
             initial_liability_weight: SPOT_WEIGHT_PRECISION,
             maintenance_liability_weight: SPOT_WEIGHT_PRECISION,
             liquidator_fee: 0,
-            historical_oracle_data: HistoricalOracleData::default_quote_oracle(0),
+            historical_oracle_data: HistoricalOracleData::default_quote_oracle(),
             ..SpotMarket::default()
         };
         create_anchor_account_info!(usdc_spot_market, SpotMarket, usdc_spot_market_account_info);
@@ -3304,7 +3304,7 @@ mod calculate_max_withdrawable_amount {
             initial_liability_weight: SPOT_WEIGHT_PRECISION,
             maintenance_liability_weight: SPOT_WEIGHT_PRECISION,
             liquidator_fee: 0,
-            historical_oracle_data: HistoricalOracleData::default_quote_oracle(0),
+            historical_oracle_data: HistoricalOracleData::default_quote_oracle(),
             ..SpotMarket::default()
         };
         create_anchor_account_info!(usdc_spot_market, SpotMarket, usdc_spot_market_account_info);
@@ -4248,7 +4248,7 @@ mod calculate_user_equity {
             maintenance_asset_weight: SPOT_WEIGHT_PRECISION,
             deposit_balance: 10000 * SPOT_BALANCE_PRECISION,
             liquidator_fee: 0,
-            historical_oracle_data: HistoricalOracleData::default_quote_oracle(0),
+            historical_oracle_data: HistoricalOracleData::default_quote_oracle(),
             ..SpotMarket::default()
         };
         create_anchor_account_info!(usdc_spot_market, SpotMarket, usdc_spot_market_account_info);
@@ -4365,7 +4365,7 @@ mod pools {
             maintenance_asset_weight: SPOT_WEIGHT_PRECISION,
             deposit_balance: 10000 * SPOT_BALANCE_PRECISION,
             liquidator_fee: 0,
-            historical_oracle_data: HistoricalOracleData::default_quote_oracle(0),
+            historical_oracle_data: HistoricalOracleData::default_quote_oracle(),
             pool_id: 1,
             ..SpotMarket::default()
         };
@@ -4526,7 +4526,7 @@ mod isolated_position {
             maintenance_asset_weight: SPOT_WEIGHT_PRECISION,
             deposit_balance: 10000 * SPOT_BALANCE_PRECISION,
             liquidator_fee: 0,
-            historical_oracle_data: HistoricalOracleData::default_quote_oracle(0),
+            historical_oracle_data: HistoricalOracleData::default_quote_oracle(),
             ..SpotMarket::default()
         };
         create_anchor_account_info!(usdc_spot_market, SpotMarket, usdc_spot_market_account_info);
@@ -4733,7 +4733,7 @@ mod meets_place_order_margin_requirement_with_isolated {
             maintenance_asset_weight: SPOT_WEIGHT_PRECISION,
             deposit_balance: 10000 * SPOT_BALANCE_PRECISION,
             liquidator_fee: 0,
-            historical_oracle_data: HistoricalOracleData::default_quote_oracle(0),
+            historical_oracle_data: HistoricalOracleData::default_quote_oracle(),
             ..SpotMarket::default()
         };
         create_anchor_account_info!(usdc_spot_market, SpotMarket, usdc_spot_market_account_info);
@@ -4839,7 +4839,7 @@ mod meets_place_order_margin_requirement_with_isolated {
             maintenance_asset_weight: SPOT_WEIGHT_PRECISION,
             deposit_balance: 10000 * SPOT_BALANCE_PRECISION,
             liquidator_fee: 0,
-            historical_oracle_data: HistoricalOracleData::default_quote_oracle(0),
+            historical_oracle_data: HistoricalOracleData::default_quote_oracle(),
             ..SpotMarket::default()
         };
         create_anchor_account_info!(usdc_spot_market, SpotMarket, usdc_spot_market_account_info);
@@ -4923,7 +4923,7 @@ mod meets_place_order_margin_requirement_with_isolated {
             maintenance_asset_weight: SPOT_WEIGHT_PRECISION,
             deposit_balance: 10000 * SPOT_BALANCE_PRECISION,
             liquidator_fee: 0,
-            historical_oracle_data: HistoricalOracleData::default_quote_oracle(0),
+            historical_oracle_data: HistoricalOracleData::default_quote_oracle(),
             ..SpotMarket::default()
         };
         create_anchor_account_info!(usdc_spot_market, SpotMarket, usdc_spot_market_account_info);
@@ -5014,7 +5014,7 @@ mod meets_place_order_margin_requirement_with_isolated {
             maintenance_asset_weight: SPOT_WEIGHT_PRECISION,
             deposit_balance: 10000 * SPOT_BALANCE_PRECISION,
             liquidator_fee: 0,
-            historical_oracle_data: HistoricalOracleData::default_quote_oracle(0),
+            historical_oracle_data: HistoricalOracleData::default_quote_oracle(),
             ..SpotMarket::default()
         };
         create_anchor_account_info!(usdc_spot_market, SpotMarket, usdc_spot_market_account_info);
@@ -5104,7 +5104,7 @@ mod meets_place_order_margin_requirement_with_isolated {
             maintenance_asset_weight: SPOT_WEIGHT_PRECISION,
             deposit_balance: 10000 * SPOT_BALANCE_PRECISION,
             liquidator_fee: 0,
-            historical_oracle_data: HistoricalOracleData::default_quote_oracle(0),
+            historical_oracle_data: HistoricalOracleData::default_quote_oracle(),
             ..SpotMarket::default()
         };
         create_anchor_account_info!(usdc_spot_market, SpotMarket, usdc_spot_market_account_info);
@@ -5193,7 +5193,7 @@ mod meets_place_order_margin_requirement_with_isolated {
             maintenance_asset_weight: SPOT_WEIGHT_PRECISION,
             deposit_balance: 10000 * SPOT_BALANCE_PRECISION,
             liquidator_fee: 0,
-            historical_oracle_data: HistoricalOracleData::default_quote_oracle(0),
+            historical_oracle_data: HistoricalOracleData::default_quote_oracle(),
             ..SpotMarket::default()
         };
         create_anchor_account_info!(usdc_spot_market, SpotMarket, usdc_spot_market_account_info);
@@ -5282,7 +5282,7 @@ mod meets_place_order_margin_requirement_with_isolated {
             maintenance_asset_weight: SPOT_WEIGHT_PRECISION,
             deposit_balance: 10000 * SPOT_BALANCE_PRECISION,
             liquidator_fee: 0,
-            historical_oracle_data: HistoricalOracleData::default_quote_oracle(0),
+            historical_oracle_data: HistoricalOracleData::default_quote_oracle(),
             ..SpotMarket::default()
         };
         create_anchor_account_info!(usdc_spot_market, SpotMarket, usdc_spot_market_account_info);
@@ -5372,7 +5372,7 @@ mod meets_place_order_margin_requirement_with_isolated {
             maintenance_asset_weight: SPOT_WEIGHT_PRECISION,
             deposit_balance: 10000 * SPOT_BALANCE_PRECISION,
             liquidator_fee: 0,
-            historical_oracle_data: HistoricalOracleData::default_quote_oracle(0),
+            historical_oracle_data: HistoricalOracleData::default_quote_oracle(),
             ..SpotMarket::default()
         };
         create_anchor_account_info!(usdc_spot_market, SpotMarket, usdc_spot_market_account_info);
@@ -5505,7 +5505,7 @@ mod meets_place_order_margin_requirement_with_isolated {
             maintenance_asset_weight: SPOT_WEIGHT_PRECISION,
             deposit_balance: 10000 * SPOT_BALANCE_PRECISION,
             liquidator_fee: 0,
-            historical_oracle_data: HistoricalOracleData::default_quote_oracle(0),
+            historical_oracle_data: HistoricalOracleData::default_quote_oracle(),
             ..SpotMarket::default()
         };
         create_anchor_account_info!(usdc_spot_market, SpotMarket, usdc_spot_market_account_info);
@@ -5670,7 +5670,7 @@ mod meets_place_order_margin_requirement_with_isolated {
             maintenance_asset_weight: SPOT_WEIGHT_PRECISION,
             deposit_balance: 100000 * SPOT_BALANCE_PRECISION,
             liquidator_fee: 0,
-            historical_oracle_data: HistoricalOracleData::default_quote_oracle(0),
+            historical_oracle_data: HistoricalOracleData::default_quote_oracle(),
             ..SpotMarket::default()
         };
         create_anchor_account_info!(usdc_spot_market, SpotMarket, usdc_spot_market_account_info);
@@ -5845,7 +5845,7 @@ mod meets_place_order_margin_requirement_with_isolated {
             maintenance_asset_weight: SPOT_WEIGHT_PRECISION,
             deposit_balance: 100000 * SPOT_BALANCE_PRECISION,
             liquidator_fee: 0,
-            historical_oracle_data: HistoricalOracleData::default_quote_oracle(0),
+            historical_oracle_data: HistoricalOracleData::default_quote_oracle(),
             ..SpotMarket::default()
         };
         create_anchor_account_info!(usdc_spot_market, SpotMarket, usdc_spot_market_account_info);
@@ -6007,7 +6007,7 @@ mod meets_place_order_margin_requirement_with_isolated {
             maintenance_asset_weight: SPOT_WEIGHT_PRECISION,
             deposit_balance: 100000 * SPOT_BALANCE_PRECISION,
             liquidator_fee: 0,
-            historical_oracle_data: HistoricalOracleData::default_quote_oracle(0),
+            historical_oracle_data: HistoricalOracleData::default_quote_oracle(),
             ..SpotMarket::default()
         };
         create_anchor_account_info!(usdc_spot_market, SpotMarket, usdc_spot_market_account_info);
@@ -6160,7 +6160,7 @@ mod meets_place_order_margin_requirement_with_isolated {
             maintenance_asset_weight: SPOT_WEIGHT_PRECISION,
             deposit_balance: 100000 * SPOT_BALANCE_PRECISION,
             liquidator_fee: 0,
-            historical_oracle_data: HistoricalOracleData::default_quote_oracle(0),
+            historical_oracle_data: HistoricalOracleData::default_quote_oracle(),
             ..SpotMarket::default()
         };
         create_anchor_account_info!(usdc_spot_market, SpotMarket, usdc_spot_market_account_info);
@@ -6310,7 +6310,7 @@ mod meets_place_order_margin_requirement_with_isolated {
             maintenance_asset_weight: SPOT_WEIGHT_PRECISION,
             deposit_balance: 10000 * SPOT_BALANCE_PRECISION,
             liquidator_fee: 0,
-            historical_oracle_data: HistoricalOracleData::default_quote_oracle(0),
+            historical_oracle_data: HistoricalOracleData::default_quote_oracle(),
             ..SpotMarket::default()
         };
         create_anchor_account_info!(usdc_spot_market, SpotMarket, usdc_spot_market_account_info);
@@ -6404,7 +6404,7 @@ mod meets_place_order_margin_requirement_with_isolated {
             maintenance_asset_weight: SPOT_WEIGHT_PRECISION,
             deposit_balance: 10000 * SPOT_BALANCE_PRECISION,
             liquidator_fee: 0,
-            historical_oracle_data: HistoricalOracleData::default_quote_oracle(0),
+            historical_oracle_data: HistoricalOracleData::default_quote_oracle(),
             ..SpotMarket::default()
         };
         create_anchor_account_info!(usdc_spot_market, SpotMarket, usdc_spot_market_account_info);
@@ -6496,7 +6496,7 @@ mod meets_place_order_margin_requirement_with_isolated {
             maintenance_asset_weight: SPOT_WEIGHT_PRECISION,
             deposit_balance: 10000 * SPOT_BALANCE_PRECISION,
             liquidator_fee: 0,
-            historical_oracle_data: HistoricalOracleData::default_quote_oracle(0),
+            historical_oracle_data: HistoricalOracleData::default_quote_oracle(),
             ..SpotMarket::default()
         };
         create_anchor_account_info!(usdc_spot_market, SpotMarket, usdc_spot_market_account_info);
@@ -6619,7 +6619,7 @@ mod meets_place_order_margin_requirement_with_isolated {
             maintenance_asset_weight: SPOT_WEIGHT_PRECISION,
             deposit_balance: 10000 * SPOT_BALANCE_PRECISION,
             liquidator_fee: 0,
-            historical_oracle_data: HistoricalOracleData::default_quote_oracle(0),
+            historical_oracle_data: HistoricalOracleData::default_quote_oracle(),
             ..SpotMarket::default()
         };
         create_anchor_account_info!(usdc_spot_market, SpotMarket, usdc_spot_market_account_info);
@@ -6749,7 +6749,7 @@ mod meets_place_order_margin_requirement_with_isolated {
             maintenance_asset_weight: SPOT_WEIGHT_PRECISION,
             deposit_balance: 10000 * SPOT_BALANCE_PRECISION,
             liquidator_fee: 0,
-            historical_oracle_data: HistoricalOracleData::default_quote_oracle(0),
+            historical_oracle_data: HistoricalOracleData::default_quote_oracle(),
             ..SpotMarket::default()
         };
         create_anchor_account_info!(usdc_spot_market, SpotMarket, usdc_spot_market_account_info);
@@ -6915,7 +6915,7 @@ mod fill_perp_order_margin_requirement_with_isolated {
             maintenance_asset_weight: SPOT_WEIGHT_PRECISION,
             deposit_balance: 10000 * SPOT_BALANCE_PRECISION,
             liquidator_fee: 0,
-            historical_oracle_data: HistoricalOracleData::default_quote_oracle(0),
+            historical_oracle_data: HistoricalOracleData::default_quote_oracle(),
             ..SpotMarket::default()
         };
         create_anchor_account_info!(usdc_spot_market, SpotMarket, usdc_spot_market_account_info);

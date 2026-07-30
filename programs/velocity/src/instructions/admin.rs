@@ -289,7 +289,7 @@ pub fn handle_initialize_spot_market(
             )?;
 
             (
-                HistoricalOracleData::default_quote_oracle(Clock::get()?.unix_timestamp),
+                HistoricalOracleData::default_quote_oracle(),
                 HistoricalIndexData::default_quote_oracle(),
             )
         } else {

@@ -74,22 +74,29 @@ pub struct HistoricalOracleData {
 impl HistoricalOracleData {
     /// Seed the quote spot market's historical oracle data at launch.
     ///
-    /// `now` is stamped for the same reason as
-    /// [`Self::default_with_current_oracle`] (OtterSec #121). The quote market's
-    /// price is pinned at 1.0 by `OracleSource::QuoteAsset`, so its band is
-    /// degenerate either way and this is not a security fix here — but leaving the
-    /// timestamp at zero would make every deployment's quote market take the
-    /// zero-timestamp seeding path in `update_spot_market_twap_stats` on its first
-    /// crank, needlessly perturbing quote-market TWAP behavior (and with it every
-    /// collateral valuation that reads it). Stamp it so the normal EMA runs.
-    pub fn default_quote_oracle(now: i64) -> Self {
+    /// Deliberately leaves `last_oracle_price_twap_ts` at zero, unlike
+    /// [`Self::default_with_current_oracle`]. `OracleSource::QuoteAsset` returns a
+    /// constant `PRICE_PRECISION`, so this market's TWAP and live price are always
+    /// the same number and its `StrictOraclePrice` band is degenerate by
+    /// construction — OtterSec #121's vector cannot exist here, and
+    /// `update_spot_market_twap_stats` skips the seeding path for `QuoteAsset` for
+    /// the same reason.
+    ///
+    /// Stamping it anyway is not harmless: it changes which way
+    /// `calculate_weighted_average`'s ±1 rounding bias falls on the first crank
+    /// (`999999` vs `1000001`, since a zero timestamp saturates `from_start` to 1
+    /// and flips the bias), and every collateral valuation reads that TWAP. Both
+    /// values are noise around a definitionally constant 1.0, so the correct move is
+    /// to leave this market's behavior untouched rather than trade one artifact for
+    /// another.
+    pub fn default_quote_oracle() -> Self {
         HistoricalOracleData {
             last_oracle_price: PRICE_PRECISION_I64,
             last_oracle_conf: 0,
             last_oracle_delay: 0,
             last_oracle_price_twap: PRICE_PRECISION_I64,
             last_oracle_price_twap_5min: PRICE_PRECISION_I64,
-            last_oracle_price_twap_ts: now,
+            last_oracle_price_twap_ts: 0,
         }
     }
 

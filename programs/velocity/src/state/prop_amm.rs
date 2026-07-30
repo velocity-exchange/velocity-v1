@@ -423,7 +423,7 @@ impl ExternalQuoterExecutor for NoExternalQuoters {
     }
 }
 
-#[derive(Clone, Copy, AnchorSerialize, AnchorDeserialize, PartialEq, Eq, Debug)]
+#[derive(Clone, AnchorSerialize, AnchorDeserialize, PartialEq, Eq, Debug)]
 pub struct UserBalanceChange {
     /// The User account the change applies to.
     pub user: Pubkey,
@@ -436,10 +436,11 @@ pub struct UserBalanceChange {
     /// quote from this user).
     pub quote_size: u64,
     /// Resting orders of this user the fill fully consumed (and the quoter
-    /// removed). Velocity decrements the user's open-order count by this;
-    /// sub-min culls ride the separate `cancelled` vec because their
-    /// remainders also need unwinding.
-    pub completed_orders: u32,
+    /// removed), by id. Velocity decrements the user's open-order count by
+    /// the length and releases any placed trigger slot shadowing one of
+    /// these ids; sub-min culls ride the separate `cancelled` vec because
+    /// their remainders also need unwinding.
+    pub completed_order_ids: Vec<u64>,
 }
 
 impl QuoterV0 {

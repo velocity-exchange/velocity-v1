@@ -188,18 +188,20 @@ fn parse_levels(b: &[u8]) -> Vec<(u64, u64)> {
 }
 
 /// ExecuteResponseV0 { balance_changes: Vec<UserBalanceChange> } — entries
-/// are (user: 32, base_size: u64, quote_size: u64, completed_orders: u32).
-fn parse_balance_changes(b: &[u8]) -> Vec<([u8; 32], u64, u64, u32)> {
+/// are (user: 32, base_size: u64, quote_size: u64,
+/// completed_order_ids: Vec<u64>), so variable-length.
+fn parse_balance_changes(b: &[u8]) -> Vec<([u8; 32], u64, u64, Vec<u64>)> {
     let count = parse_u32(b) as usize;
+    let mut off = 4;
     (0..count)
-        .map(|i| {
-            let off = 4 + i * 52;
-            (
-                b[off..off + 32].try_into().unwrap(),
-                parse_u64(&b[off + 32..]),
-                parse_u64(&b[off + 40..]),
-                parse_u32(&b[off + 48..]),
-            )
+        .map(|_| {
+            let user = b[off..off + 32].try_into().unwrap();
+            let base = parse_u64(&b[off + 32..]);
+            let quote = parse_u64(&b[off + 40..]);
+            let ids = parse_u32(&b[off + 48..]) as usize;
+            let completed = (0..ids).map(|i| parse_u64(&b[off + 52 + i * 8..])).collect();
+            off += 52 + ids * 8;
+            (user, base, quote, completed)
         })
         .collect()
 }
@@ -278,12 +280,12 @@ fn execute_users(
     direction: Direction,
     size: u64,
     users: Option<Vec<Address>>,
-) -> Vec<([u8; 32], u64, u64, u32)> {
+) -> Vec<([u8; 32], u64, u64, Vec<u64>)> {
     let meta = execute_meta_users(ctx, direction, size, users).unwrap();
     parse_balance_changes(&read_response(ctx, &meta))
 }
 
-fn execute(ctx: &mut Ctx, direction: Direction, size: u64) -> Vec<([u8; 32], u64, u64, u32)> {
+fn execute(ctx: &mut Ctx, direction: Direction, size: u64) -> Vec<([u8; 32], u64, u64, Vec<u64>)> {
     execute_users(ctx, direction, size, None)
 }
 
@@ -710,7 +712,7 @@ fn unknown_user_grace_skips_fresh_orders_and_fails_on_aged_ones() {
         vec![(101, 7)]
     );
     let changes = execute_users(&mut ctx, Direction::Long, 7, Some(vec![user_b]));
-    assert_eq!(changes, vec![(user_b.to_bytes(), 7, 707, 1)]);
+    assert_eq!(changes, vec![(user_b.to_bytes(), 7, 707, vec![2])]);
     // A's order still resting, untouched.
     assert_eq!(quote(&mut ctx, Direction::Long, 12), vec![(100, 5)]);
 
@@ -731,8 +733,8 @@ fn unknown_user_grace_skips_fresh_orders_and_fails_on_aged_ones() {
     assert_eq!(
         changes,
         vec![
-            (user_a.to_bytes(), 5, 500, 1),
-            (user_b.to_bytes(), 7, 707, 1)
+            (user_a.to_bytes(), 5, 500, vec![1]),
+            (user_b.to_bytes(), 7, 707, vec![3])
         ]
     );
 }
@@ -764,7 +766,7 @@ fn partial_fill_remainder_below_min_order_size_is_culled() {
     let resp = read_response(&ctx, &meta);
     assert_eq!(
         parse_balance_changes(&resp),
-        vec![(user.to_bytes(), 15, 1500, 0)]
+        vec![(user.to_bytes(), 15, 1500, vec![])]
     );
     assert_eq!(parse_cancelled(&resp), vec![(user.to_bytes(), 1, 5)]);
     assert!(quote(&mut ctx, Direction::Long, u64::MAX).is_empty());
@@ -900,7 +902,7 @@ fn execute_taker(
     direction: Direction,
     size: u64,
     taker: Address,
-) -> Vec<([u8; 32], u64, u64, u32)> {
+) -> Vec<([u8; 32], u64, u64, Vec<u64>)> {
     let ix = instruction::ExecuteV0 {
         args: ExecuteArgsV0 {
             direction,
@@ -934,7 +936,7 @@ fn taker_own_orders_are_skipped_for_self_trade_prevention() {
         vec![(101, 7)]
     );
     let changes = execute_taker(&mut ctx, Direction::Long, 12, taker);
-    assert_eq!(changes, vec![(other.to_bytes(), 7, 707, 1)]);
+    assert_eq!(changes, vec![(other.to_bytes(), 7, 707, vec![2])]);
     // The taker's own order still rests.
     assert_eq!(quote(&mut ctx, Direction::Long, 12), vec![(100, 5)]);
 }

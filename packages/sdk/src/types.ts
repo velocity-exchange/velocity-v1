@@ -317,6 +317,10 @@ export class OrderBitFlag {
 	static readonly NewTriggerReduceOnly = 8;
 	static readonly HasBuilder = 16;
 	static readonly IsIsolatedPosition = 32;
+	/** the slot is a shadow of a trigger-limit resting on the CLOB (`triggerClobOrder`); it keeps the trigger params + the CLOB order ref in the auction price fields and deliberately reads as untriggered, so DLOB matching ignores it */
+	static readonly PlacedOnClob = 64;
+	/** set when an evicted placed trigger re-arms: it may not re-fire until a crank observes the price back on the non-trigger side (edge-triggering) */
+	static readonly AwaitingTriggerRecross = 128;
 }
 
 /** The kind of action an `OrderActionRecord` event describes. */

@@ -583,6 +583,13 @@ pub fn cancel_orders(
             continue;
         }
 
+        // Placed triggers live on the CLOB; their shadow slots can only be
+        // reclaimed through the CLOB removal paths (cancel_clob_order or the
+        // cranks), where the book and the aggregates unwind together.
+        if user.orders[order_index].is_placed_on_clob() {
+            continue;
+        }
+
         if let (Some(market_type), Some(market_index)) = (market_type, market_index) {
             if user.orders[order_index].market_type != market_type {
                 continue;
@@ -730,6 +737,17 @@ pub fn cancel_order(
     let is_perp_order = order_market_type == MarketType::Perp;
 
     validate!(order_status == OrderStatus::Open, ErrorCode::OrderNotOpen)?;
+
+    // A placed trigger's live order rests on the CLOB; the slot here is a
+    // shadow whose open-order count the CLOB order carries. Cancelling the
+    // shadow would strand the CLOB order and double-unwind its accounting —
+    // it must go through `cancel_clob_order` (bulk sweeps skip these slots).
+    validate!(
+        !user.orders[order_index].is_placed_on_clob(),
+        ErrorCode::OrderPlacedOnClob,
+        "order {} is placed on the CLOB",
+        user.orders[order_index].order_id
+    )?;
 
     let oracle_id = if is_perp_order {
         perp_market_map.get_ref(&order_market_index)?.oracle_id()
@@ -3886,8 +3904,17 @@ fn fulfill_perp_order_router_pass(
                 let position = &mut maker.perp_positions[maker_position_index];
                 position.open_orders = position
                     .open_orders
-                    .saturating_sub(change.completed_orders.cast()?);
-                (0..change.completed_orders).for_each(|_| maker.decrement_open_orders(false));
+                    .saturating_sub(change.completed_order_ids.len().cast()?);
+                for clob_order_id in &change.completed_order_ids {
+                    maker.decrement_open_orders(false);
+                    // A fully-consumed order may be a placed trigger's live
+                    // half; the shadow slot frees with it.
+                    maker.release_placed_trigger_slot(
+                        market_index,
+                        *clob_order_id,
+                        OrderStatus::Filled,
+                    );
+                }
             }
         }
 
@@ -3907,6 +3934,11 @@ fn fulfill_perp_order_router_pass(
                 let position = &mut maker.perp_positions[maker_position_index];
                 position.open_orders = position.open_orders.saturating_sub(1);
                 maker.decrement_open_orders(false);
+                maker.release_placed_trigger_slot(
+                    market_index,
+                    cancelled.order_id,
+                    OrderStatus::Canceled,
+                );
             }
         }
     }
@@ -4066,6 +4098,15 @@ pub fn trigger_order(
         user.orders[order_index].must_be_triggered(),
         ErrorCode::OrderNotTriggerable,
         "Order is not triggerable"
+    )?;
+
+    // A placed trigger's slot deliberately reads as untriggered (that keeps
+    // it out of every DLOB matching path), so guard explicitly: its live
+    // order already rests on the CLOB.
+    validate!(
+        !user.orders[order_index].is_placed_on_clob(),
+        ErrorCode::OrderPlacedOnClob,
+        "Order is placed on the CLOB"
     )?;
 
     if user.orders[order_index].triggered() {
@@ -4406,6 +4447,12 @@ pub fn force_cancel_orders(
 
     for order_index in 0..user.orders.len() {
         if user.orders[order_index].status != OrderStatus::Open {
+            continue;
+        }
+
+        // Placed triggers rest on the CLOB; force-cancelling them goes
+        // through the CLOB (keeper-passed `OrderRef`s), not the shadow slot.
+        if user.orders[order_index].is_placed_on_clob() {
             continue;
         }
 

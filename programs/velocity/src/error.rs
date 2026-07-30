@@ -795,6 +795,10 @@ pub enum ErrorCode {
     InvalidQuoterAuthority,
     #[msg("CLOB crank condition account cannot cover the keeper payment")]
     InsufficientCrankReservoir,
+    #[msg("Order is placed on the CLOB; cancel it there (cancel_clob_order)")]
+    OrderPlacedOnClob,
+    #[msg("Trigger is awaiting a price recross after eviction")]
+    OrderAwaitingTriggerRecross,
 }
 
 #[macro_export]

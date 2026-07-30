@@ -2251,6 +2251,17 @@ pub mod velocity {
         handle_crank_clob_remove_expired(ctx, market_index, order_ref)
     }
 
+    /// Crank an armed trigger-limit order onto the market's CLOB once its
+    /// trigger condition is met (permissionless; keeper earns the flat
+    /// reward from the user). Stop-markets go through `trigger_order`.
+    pub fn trigger_clob_order<'c: 'info, 'info>(
+        ctx: Context<'info, TriggerClobOrder<'info>>,
+        market_index: u16,
+        order_id: u32,
+    ) -> Result<()> {
+        handle_trigger_clob_order(ctx, market_index, order_id)
+    }
+
     /// Relay resolver for the evict condition. Meant to be simulated, not
     /// landed: stages the executor call and returns a response pointer.
     pub fn resolve_clob_crank_evict(ctx: Context<ResolveClobCrank>) -> Result<()> {

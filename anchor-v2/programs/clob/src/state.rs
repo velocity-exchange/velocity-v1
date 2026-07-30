@@ -215,16 +215,17 @@ pub struct PriceLevel {
 
 /// One user's share of an executed fill. Mirrors velocity's quoter-interface
 /// `UserBalanceChange`.
-#[derive(Clone, Copy, PartialEq, Eq, Debug, wincode::SchemaRead, wincode::SchemaWrite)]
+#[derive(Clone, PartialEq, Eq, Debug, wincode::SchemaRead, wincode::SchemaWrite)]
 pub struct UserBalanceChange {
     pub user: Address,
     pub base_size: u64,
     pub quote_size: u64,
-    /// Orders of this user fully consumed (and removed) by the fill. The
-    /// caller decrements the user's open-order count by this; sub-min culls
-    /// ride the separate `cancelled` vec because their remainders also need
-    /// unwinding.
-    pub completed_orders: u32,
+    /// Orders of this user fully consumed (and removed) by the fill, by id.
+    /// The caller decrements the user's open-order count by the length, and
+    /// the ids let it release per-order state it keeps against the book (a
+    /// placed trigger slot). Sub-min culls ride the separate `cancelled` vec
+    /// because their remainders also need unwinding.
+    pub completed_order_ids: Vec<u64>,
 }
 
 /// Where in the market account the borsh response was written. Returned via
@@ -779,7 +780,7 @@ impl ClobBook for ClobMarketV0 {
                         user: node.user,
                         base_size: take,
                         quote_size,
-                        completed_orders: 0,
+                        completed_order_ids: Vec::new(),
                     });
                     balance_changes.len() - 1
                 }
@@ -792,7 +793,9 @@ impl ClobBook for ClobMarketV0 {
                 quote_size,
             });
             if take == node.base_asset_amount {
-                balance_changes[change_index].completed_orders += 1;
+                balance_changes[change_index]
+                    .completed_order_ids
+                    .push(node.order_id);
                 remove_order(self, index);
             } else {
                 let remainder = node.base_asset_amount - take;

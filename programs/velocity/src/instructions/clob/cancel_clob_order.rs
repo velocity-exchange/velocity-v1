@@ -150,6 +150,13 @@ pub fn handle_cancel_clob_order(
         .open_orders
         .saturating_sub(1);
     user.decrement_open_orders(false);
+    // If this was a placed trigger's live order, its shadow slot frees too —
+    // cancelling here is how a user cancels a placed trigger.
+    user.release_placed_trigger_slot(
+        params.market_index,
+        removed.order_id,
+        crate::state::user::OrderStatus::Canceled,
+    );
     user.update_last_active_slot(clock.slot);
 
     msg!(

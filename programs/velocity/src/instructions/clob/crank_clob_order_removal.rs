@@ -117,7 +117,7 @@ pub fn handle_crank_clob_evict(
     ClobEvictWorstArgsV0 { side }
         .serialize(&mut data)
         .map_err(|_| ErrorCode::DefaultError)?;
-    crank_clob_removal(ctx, market_index, data)
+    crank_clob_removal(ctx, market_index, data, true)
 }
 
 pub fn handle_crank_clob_remove_expired(
@@ -129,16 +129,19 @@ pub fn handle_crank_clob_remove_expired(
     ClobRemoveExpiredArgsV0 { order_ref }
         .serialize(&mut data)
         .map_err(|_| ErrorCode::DefaultError)?;
-    crank_clob_removal(ctx, market_index, data)
+    crank_clob_removal(ctx, market_index, data, false)
 }
 
 /// Shared crank body: CPI the removal, verify it hit the passed maker,
 /// unwind the aggregates, pay the keeper — quote from the maker in both
-/// modes, plus reservoir lamports in program-keeper mode.
+/// modes, plus reservoir lamports in program-keeper mode. `is_evict` decides
+/// what happens to a placed trigger's shadow slot: eviction re-arms it
+/// (eager, in this same tx), expiry frees it.
 fn crank_clob_removal(
     ctx: Context<CrankClobOrderRemoval>,
     market_index: u16,
     cpi_data: Vec<u8>,
+    is_evict: bool,
 ) -> Result<()> {
     let clock = Clock::get()?;
     let state = ctx.accounts.state.load()?;
@@ -247,6 +250,24 @@ fn crank_clob_removal(
             .open_orders
             .saturating_sub(1);
         user.decrement_open_orders(false);
+
+        // A placed trigger's shadow slot follows its CLOB order: eviction
+        // re-arms it (with the unfilled remainder, edge-gated on a price
+        // recross), expiry frees it.
+        if is_evict {
+            user.re_arm_placed_trigger_slot(
+                market_index,
+                removed.order_id,
+                removed.base_asset_amount,
+                clock.slot,
+            )?;
+        } else {
+            user.release_placed_trigger_slot(
+                market_index,
+                removed.order_id,
+                crate::state::user::OrderStatus::Canceled,
+            );
+        }
     }
 
     if let Some(conditions_loader) = &ctx.accounts.crank_conditions {

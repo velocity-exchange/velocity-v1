@@ -352,7 +352,7 @@ pub mod amm_jit {
                         user: self.user,
                         base_size: size,
                         quote_size,
-                        completed_orders: 1,
+                        completed_order_ids: vec![1],
                     }],
                     cancelled: vec![],
                 })
@@ -657,7 +657,7 @@ pub mod amm_jit {
                         user: self.user,
                         base_size: size,
                         quote_size,
-                        completed_orders: 0,
+                        completed_order_ids: vec![],
                     }],
                     cancelled: vec![],
                 })

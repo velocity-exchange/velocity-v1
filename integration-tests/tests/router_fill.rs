@@ -1363,3 +1363,343 @@ fn program_keeper_evict_crank_resolves_both_sides() {
     // Book clear again: quiet.
     assert!(run_resolver(&mut fixture, conditions, false).is_none());
 }
+
+// --- trigger-order lifecycle (Armed -> Placed -> freed / re-armed) ---
+
+/// A user holding an ARMED trigger-limit: the slot counts one open order but
+/// no bids/asks (untriggered orders can't fill), which is the on-chain state
+/// `place_perp_order` leaves behind.
+fn armed_trigger_user(authority: &Pubkey, deposit: u64, order: Order) -> User {
+    let mut user: User = bytemuck::Zeroable::zeroed();
+    user.authority = anchor_lang::prelude::Pubkey::new_from_array(*authority.as_array());
+    user.spot_positions[0].market_index = 0;
+    user.spot_positions[0].balance_type = SpotBalanceType::Deposit;
+    user.spot_positions[0].scaled_balance = deposit;
+    user.perp_positions[0].market_index = 0;
+    user.perp_positions[0].open_orders = 1;
+    user.orders[0] = order;
+    user.open_orders = 1;
+    user.has_open_order = true;
+    user.next_order_id = order.order_id + 1;
+    user
+}
+
+fn trigger_clob_order_ix(fixture: &Fixture, order_id: u32, filler: Pubkey, filler_stats: Pubkey, maker_stats: Pubkey) -> Instruction {
+    let (velocity_signer, _) = velocity_signer_pda();
+    let mut accounts = velocity::accounts::TriggerClobOrder {
+        state: state_pda(),
+        authority: fixture.keeper.pubkey(),
+        filler,
+        filler_stats,
+        user: fixture.clob_maker_user,
+        user_stats: maker_stats,
+        quoter: fixture.quoter,
+        clob_market: fixture.clob_market,
+        clob_program: clob_id(),
+        velocity_signer,
+        crank_conditions: None,
+    }
+    .to_account_metas(None);
+    accounts.push(AccountMeta::new_readonly(fixture.oracle, false));
+    accounts.push(AccountMeta::new(spot_market_pda(0), false));
+    accounts.push(AccountMeta::new(perp_market_pda(0), false));
+    Instruction {
+        program_id: velocity_id(),
+        accounts,
+        data: velocity::instruction::TriggerClobOrder {
+            market_index: 0,
+            order_id,
+        }
+        .data(),
+    }
+}
+
+/// The whole trigger lifecycle: an armed stop-limit fails to trigger below
+/// its price, places on the CLOB once crossed (slot becomes the shadow),
+/// re-arms edge-gated on eviction (fires only after a recross), and frees on
+/// expiry after re-placement.
+#[test]
+fn trigger_limit_lifecycle_places_re_arms_on_evict_and_frees_on_expiry() {
+    use velocity::state::user::{OrderBitFlag, OrderTriggerCondition};
+
+    let mut fixture = setup();
+
+    // Sell-stop: trigger when oracle <= 98, then rest an ask at 97.
+    let clock: solana_clock::Clock = fixture.svm.get_sysvar();
+    let mut order = Order::default();
+    order.order_id = 1;
+    order.status = OrderStatus::Open;
+    order.order_type = OrderType::TriggerLimit;
+    order.market_type = MarketType::Perp;
+    order.market_index = 0;
+    order.direction = PositionDirection::Short;
+    order.base_asset_amount = UNIT / 2;
+    order.price = 97 * PRICE;
+    order.trigger_price = 98 * PRICE;
+    order.trigger_condition = OrderTriggerCondition::Below;
+    order.max_ts = clock.unix_timestamp + 1_000;
+    set_user_account(
+        &mut fixture.svm,
+        fixture.clob_maker_user,
+        &armed_trigger_user(
+            &fixture.clob_maker_authority.pubkey(),
+            10_000 * SPOT_BALANCE_PRECISION_U64,
+            order,
+        ),
+    );
+    let maker_stats = Pubkey::new_unique();
+    set_user_stats_account(
+        &mut fixture.svm,
+        maker_stats,
+        &fixture.clob_maker_authority.pubkey(),
+    );
+    let filler_user = Pubkey::new_unique();
+    let filler_stats = Pubkey::new_unique();
+    set_user_account(
+        &mut fixture.svm,
+        filler_user,
+        &trading_user(&fixture.keeper.pubkey(), 0, None),
+    );
+    set_user_stats_account(&mut fixture.svm, filler_stats, &fixture.keeper.pubkey());
+
+    // Above the trigger: no fire.
+    let keeper = fixture.keeper.insecure_clone();
+    let ix = trigger_clob_order_ix(&fixture, 1, filler_user, filler_stats, maker_stats);
+    let err = send(&mut fixture.svm, &keeper, ix, &[]).expect_err("price above trigger");
+    assert!(
+        format!("{:?}", err.meta.logs).contains("did not satisfy trigger condition"),
+        "unexpected: {:?}",
+        err.meta.logs
+    );
+
+    // Crossed: places on the CLOB, slot becomes the shadow.
+    set_oracle(&mut fixture.svm, fixture.oracle, (97 * PRICE_PRECISION) as i64, 12);
+    fixture.svm.warp_to_slot(12);
+    let ix = trigger_clob_order_ix(&fixture, 1, filler_user, filler_stats, maker_stats);
+    send(&mut fixture.svm, &keeper, ix, &[]).unwrap();
+    let maker: User = read_zero_copy(&fixture.svm, &fixture.clob_maker_user);
+    assert!(maker.orders[0].is_placed_on_clob());
+    assert_eq!(
+        maker.orders[0].trigger_condition,
+        OrderTriggerCondition::Below,
+        "shadow stays untriggered so DLOB paths ignore it"
+    );
+    let (node_index, clob_order_id) = maker.orders[0].clob_order_ref();
+    assert_eq!(clob_order_id, 1);
+    assert_eq!(maker.perp_positions[0].open_asks, -((UNIT / 2) as i64));
+    assert_eq!(maker.perp_positions[0].open_orders, 1);
+    assert_eq!(maker.open_orders, 1);
+    assert!(
+        maker.perp_positions[0].quote_asset_amount < 0,
+        "keeper reward paid from the user"
+    );
+    assert_eq!(clob_ask_count(&fixture.svm, &fixture.clob_market), 1);
+    let _ = node_index;
+
+    // A second trigger attempt on the placed slot fails.
+    let ix = trigger_clob_order_ix(&fixture, 1, filler_user, filler_stats, maker_stats);
+    let err = send(&mut fixture.svm, &keeper, ix, &[]).expect_err("already placed");
+    assert!(format!("{:?}", err.meta.logs).contains("already rests on the CLOB"));
+
+    // Evict (fixture soft cap = 1): the shadow re-arms in the same tx,
+    // edge-gated on a recross.
+    let (velocity_signer, _) = velocity_signer_pda();
+    let ix = Instruction {
+        program_id: velocity_id(),
+        accounts: velocity::accounts::CrankClobOrderRemoval {
+            state: state_pda(),
+            authority: fixture.keeper.pubkey(),
+            filler: filler_user,
+            filler_stats,
+            user: fixture.clob_maker_user,
+            perp_market: perp_market_pda(0),
+            quoter: fixture.quoter,
+            clob_market: fixture.clob_market,
+            clob_program: clob_id(),
+            velocity_signer,
+            crank_conditions: None,
+        }
+        .to_account_metas(None),
+        data: velocity::instruction::CrankClobEvict {
+            market_index: 0,
+            side: velocity::state::prop_amm::ClobSide::Ask,
+        }
+        .data(),
+    };
+    send(&mut fixture.svm, &keeper, ix, &[]).unwrap();
+    let maker: User = read_zero_copy(&fixture.svm, &fixture.clob_maker_user);
+    assert!(!maker.orders[0].is_placed_on_clob());
+    assert!(maker.orders[0].is_bit_flag_set(OrderBitFlag::AwaitingTriggerRecross));
+    assert_eq!(maker.orders[0].status, OrderStatus::Open);
+    assert_eq!(maker.orders[0].base_asset_amount, UNIT / 2);
+    assert_eq!(maker.perp_positions[0].open_asks, 0);
+    assert_eq!(maker.perp_positions[0].open_orders, 1, "armed slot counts again");
+    assert_eq!(maker.open_orders, 1);
+    assert_eq!(clob_ask_count(&fixture.svm, &fixture.clob_market), 0);
+
+    // Still through the trigger: the edge gate refuses to re-fire.
+    let ix = trigger_clob_order_ix(&fixture, 1, filler_user, filler_stats, maker_stats);
+    let err = send(&mut fixture.svm, &keeper, ix, &[]).expect_err("no recross yet");
+    assert!(format!("{:?}", err.meta.logs).contains("never crossed back"));
+
+    // Price back above: the crank observes the recross and clears the gate
+    // without placing.
+    set_oracle(&mut fixture.svm, fixture.oracle, (100 * PRICE_PRECISION) as i64, 13);
+    fixture.svm.warp_to_slot(13);
+    let ix = trigger_clob_order_ix(&fixture, 1, filler_user, filler_stats, maker_stats);
+    send(&mut fixture.svm, &keeper, ix, &[]).unwrap();
+    let maker: User = read_zero_copy(&fixture.svm, &fixture.clob_maker_user);
+    assert!(!maker.orders[0].is_bit_flag_set(OrderBitFlag::AwaitingTriggerRecross));
+    assert_eq!(clob_ask_count(&fixture.svm, &fixture.clob_market), 0);
+
+    // Crossed again: re-places.
+    set_oracle(&mut fixture.svm, fixture.oracle, (97 * PRICE_PRECISION) as i64, 14);
+    fixture.svm.warp_to_slot(14);
+    let ix = trigger_clob_order_ix(&fixture, 1, filler_user, filler_stats, maker_stats);
+    send(&mut fixture.svm, &keeper, ix, &[]).unwrap();
+    let maker: User = read_zero_copy(&fixture.svm, &fixture.clob_maker_user);
+    assert!(maker.orders[0].is_placed_on_clob());
+    let (node_index, clob_order_id) = maker.orders[0].clob_order_ref();
+    assert_eq!(clob_ask_count(&fixture.svm, &fixture.clob_market), 1);
+
+    // Expire the CLOB order: the expiry crank frees the shadow for good.
+    let mut clock: solana_clock::Clock = fixture.svm.get_sysvar();
+    clock.unix_timestamp += 2_000;
+    fixture.svm.set_sysvar(&clock);
+    let ix = Instruction {
+        program_id: velocity_id(),
+        accounts: velocity::accounts::CrankClobOrderRemoval {
+            state: state_pda(),
+            authority: fixture.keeper.pubkey(),
+            filler: filler_user,
+            filler_stats,
+            user: fixture.clob_maker_user,
+            perp_market: perp_market_pda(0),
+            quoter: fixture.quoter,
+            clob_market: fixture.clob_market,
+            clob_program: clob_id(),
+            velocity_signer,
+            crank_conditions: None,
+        }
+        .to_account_metas(None),
+        data: velocity::instruction::CrankClobRemoveExpired {
+            market_index: 0,
+            order_ref: velocity::state::prop_amm::ClobOrderRefV0 {
+                node_index,
+                order_id: clob_order_id,
+            },
+        }
+        .data(),
+    };
+    send(&mut fixture.svm, &keeper, ix, &[]).unwrap();
+    let maker: User = read_zero_copy(&fixture.svm, &fixture.clob_maker_user);
+    assert_eq!(maker.orders[0].status, OrderStatus::Canceled);
+    assert_eq!(maker.perp_positions[0].open_orders, 0);
+    assert_eq!(maker.open_orders, 0);
+    assert_eq!(maker.perp_positions[0].open_asks, 0);
+    assert_eq!(clob_ask_count(&fixture.svm, &fixture.clob_market), 0);
+}
+
+/// A user cancels a placed trigger through `cancel_clob_order` (the shadow
+/// frees with the book order), while the DLOB `cancel_order` path refuses to
+/// touch the shadow.
+#[test]
+fn placed_trigger_cancels_through_the_clob_only() {
+    use velocity::state::user::OrderTriggerCondition;
+
+    let mut fixture = setup();
+    let mut order = Order::default();
+    order.order_id = 1;
+    order.status = OrderStatus::Open;
+    order.order_type = OrderType::TriggerLimit;
+    order.market_type = MarketType::Perp;
+    order.market_index = 0;
+    order.direction = PositionDirection::Short;
+    order.base_asset_amount = UNIT / 2;
+    order.price = 97 * PRICE;
+    order.trigger_price = 98 * PRICE;
+    order.trigger_condition = OrderTriggerCondition::Below;
+    set_user_account(
+        &mut fixture.svm,
+        fixture.clob_maker_user,
+        &armed_trigger_user(
+            &fixture.clob_maker_authority.pubkey(),
+            10_000 * SPOT_BALANCE_PRECISION_U64,
+            order,
+        ),
+    );
+    let maker_stats = Pubkey::new_unique();
+    set_user_stats_account(
+        &mut fixture.svm,
+        maker_stats,
+        &fixture.clob_maker_authority.pubkey(),
+    );
+    let filler_user = Pubkey::new_unique();
+    let filler_stats = Pubkey::new_unique();
+    set_user_account(
+        &mut fixture.svm,
+        filler_user,
+        &trading_user(&fixture.keeper.pubkey(), 0, None),
+    );
+    set_user_stats_account(&mut fixture.svm, filler_stats, &fixture.keeper.pubkey());
+
+    set_oracle(&mut fixture.svm, fixture.oracle, (97 * PRICE_PRECISION) as i64, 12);
+    fixture.svm.warp_to_slot(12);
+    let keeper = fixture.keeper.insecure_clone();
+    let ix = trigger_clob_order_ix(&fixture, 1, filler_user, filler_stats, maker_stats);
+    send(&mut fixture.svm, &keeper, ix, &[]).unwrap();
+    let maker: User = read_zero_copy(&fixture.svm, &fixture.clob_maker_user);
+    let (node_index, clob_order_id) = maker.orders[0].clob_order_ref();
+
+    // The DLOB cancel path refuses the shadow.
+    let maker_authority = fixture.clob_maker_authority.insecure_clone();
+    let mut accounts = velocity::accounts::CancelOrder {
+        state: state_pda(),
+        user: fixture.clob_maker_user,
+        authority: maker_authority.pubkey(),
+    }
+    .to_account_metas(None);
+    accounts.push(AccountMeta::new_readonly(fixture.oracle, false));
+    accounts.push(AccountMeta::new(spot_market_pda(0), false));
+    accounts.push(AccountMeta::new(perp_market_pda(0), false));
+    let ix = Instruction {
+        program_id: velocity_id(),
+        accounts,
+        data: velocity::instruction::CancelOrder { order_id: Some(1) }.data(),
+    };
+    let err = send(&mut fixture.svm, &maker_authority, ix, &[]).expect_err("shadow is CLOB-owned");
+    assert!(format!("{:?}", err.meta.logs).contains("placed on the CLOB"));
+
+    // cancel_clob_order removes the book order AND frees the shadow.
+    let (velocity_signer, _) = velocity_signer_pda();
+    let ix = Instruction {
+        program_id: velocity_id(),
+        accounts: velocity::accounts::CancelClobOrder {
+            state: state_pda(),
+            user: fixture.clob_maker_user,
+            authority: maker_authority.pubkey(),
+            quoter: fixture.quoter,
+            clob_market: fixture.clob_market,
+            clob_program: clob_id(),
+            velocity_signer,
+        }
+        .to_account_metas(None),
+        data: velocity::instruction::CancelClobOrder {
+            params: CancelClobOrderParams {
+                market_index: 0,
+                order_ref: velocity::state::prop_amm::ClobOrderRefV0 {
+                    node_index,
+                    order_id: clob_order_id,
+                },
+            },
+        }
+        .data(),
+    };
+    send(&mut fixture.svm, &maker_authority, ix, &[]).unwrap();
+    let maker: User = read_zero_copy(&fixture.svm, &fixture.clob_maker_user);
+    assert_eq!(maker.orders[0].status, OrderStatus::Canceled);
+    assert_eq!(maker.perp_positions[0].open_orders, 0);
+    assert_eq!(maker.open_orders, 0);
+    assert_eq!(maker.perp_positions[0].open_asks, 0);
+    assert_eq!(clob_ask_count(&fixture.svm, &fixture.clob_market), 0);
+}

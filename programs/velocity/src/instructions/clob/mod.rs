@@ -20,14 +20,18 @@
 //!   its cranks up in the same instruction.
 //! - [`resolve_clob_crank`]: the simulation-only relay resolvers that stage
 //!   the crank executor calls.
+//! - [`trigger_clob_order`]: crank an armed trigger-limit onto the CLOB; the
+//!   `User.orders` slot becomes a shadow keeping the trigger params + the
+//!   CLOB `OrderRef` (freed on fill/cancel/expiry, re-armed on eviction).
 
 mod cancel_clob_order;
 mod crank_clob_order_removal;
 mod crank_conditions_setup;
 mod place_clob_order;
 mod resolve_clob_crank;
+mod trigger_clob_order;
 
 pub use {
     cancel_clob_order::*, crank_clob_order_removal::*, crank_conditions_setup::*,
-    place_clob_order::*, resolve_clob_crank::*,
+    place_clob_order::*, resolve_clob_crank::*, trigger_clob_order::*,
 };

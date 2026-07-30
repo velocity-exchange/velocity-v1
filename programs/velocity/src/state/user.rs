@@ -629,6 +629,82 @@ impl User {
         }
     }
 
+    /// The slot shadowing CLOB order `clob_order_id` on `market_index` — a
+    /// placed trigger (see [`OrderBitFlag::PlacedOnClob`]). Order ids are
+    /// unique per book, so at most one slot matches.
+    pub fn find_placed_trigger_slot(&self, market_index: u16, clob_order_id: u64) -> Option<usize> {
+        self.orders.iter().position(|order| {
+            order.status == OrderStatus::Open
+                && order.is_placed_on_clob()
+                && order.market_index == market_index
+                && order.market_type == MarketType::Perp
+                && order.clob_order_ref().1 == clob_order_id
+        })
+    }
+
+    /// Free the slot shadowing a CLOB order that left the book for good
+    /// (fill / cull / expiry / cancel). No accounting moves: the CLOB
+    /// removal path already unwound the live order's counts, and the shadow
+    /// never carried its own. Returns whether a slot matched — plain CLOB
+    /// orders have no shadow.
+    pub fn release_placed_trigger_slot(
+        &mut self,
+        market_index: u16,
+        clob_order_id: u64,
+        status: OrderStatus,
+    ) -> bool {
+        match self.find_placed_trigger_slot(market_index, clob_order_id) {
+            Some(index) => {
+                self.orders[index].status = status;
+                true
+            }
+            None => false,
+        }
+    }
+
+    /// Flip the slot shadowing an **evicted** CLOB order back to `Armed`,
+    /// carrying the unfilled remainder. Eager re-arm: the evict crank runs
+    /// through velocity with this `User` loaded, so the flip happens in the
+    /// same tx as the eviction. Re-triggering is edge-gated via
+    /// [`OrderBitFlag::AwaitingTriggerRecross`] — level-triggered re-arm
+    /// livelocks, since an evicted stop-limit is near the tail by definition
+    /// and immediate re-placement just gets evicted again.
+    pub fn re_arm_placed_trigger_slot(
+        &mut self,
+        market_index: u16,
+        clob_order_id: u64,
+        remaining_base: u64,
+        slot: u64,
+    ) -> VelocityResult<bool> {
+        let Some(index) = self.find_placed_trigger_slot(market_index, clob_order_id) else {
+            return Ok(false);
+        };
+        {
+            let order = &mut self.orders[index];
+            order.remove_bit_flag(OrderBitFlag::PlacedOnClob);
+            order.add_bit_flag(OrderBitFlag::AwaitingTriggerRecross);
+            order.trigger_condition = match order.trigger_condition {
+                OrderTriggerCondition::TriggeredAbove => OrderTriggerCondition::Above,
+                OrderTriggerCondition::TriggeredBelow => OrderTriggerCondition::Below,
+                other => other,
+            };
+            order.set_clob_order_ref(0, 0);
+            order.auction_start_price = 0;
+            order.auction_end_price = 0;
+            order.auction_duration = 0;
+            order.base_asset_amount = remaining_base;
+            order.base_asset_amount_filled = 0;
+            order.quote_asset_amount_filled = 0;
+            order.slot = slot;
+        }
+        // The armed slot is a live order again: it takes back the
+        // open-order count its CLOB order carried (the evict crank's unwind
+        // just decremented it). Untriggered orders add no bids/asks.
+        self.increment_open_orders(false);
+        self.get_perp_position_mut(market_index)?.open_orders += 1;
+        Ok(true)
+    }
+
     pub fn update_reduce_only_status(&mut self, reduce_only: bool) -> VelocityResult {
         if reduce_only {
             self.add_user_status(UserStatus::ReduceOnly);
@@ -1737,8 +1813,32 @@ impl Order {
         self.bit_flags |= flag as u8;
     }
 
+    pub fn remove_bit_flag(&mut self, flag: OrderBitFlag) {
+        self.bit_flags &= !(flag as u8);
+    }
+
     pub fn is_bit_flag_set(&self, flag: OrderBitFlag) -> bool {
         (self.bit_flags & flag as u8) != 0
+    }
+
+    pub fn is_placed_on_clob(&self) -> bool {
+        self.is_bit_flag_set(OrderBitFlag::PlacedOnClob)
+    }
+
+    /// The CLOB `OrderRef` a placed trigger slot shadows. The auction fields
+    /// host it: a trigger-limit resting on the CLOB can never auction, so
+    /// they are dead while [`OrderBitFlag::PlacedOnClob`] is set, and using
+    /// them keeps `Order`'s layout untouched.
+    pub fn clob_order_ref(&self) -> (u32, u64) {
+        (
+            self.auction_start_price as u32,
+            self.auction_end_price as u64,
+        )
+    }
+
+    pub fn set_clob_order_ref(&mut self, node_index: u32, clob_order_id: u64) {
+        self.auction_start_price = node_index as i64;
+        self.auction_end_price = clob_order_id as i64;
     }
 
     pub fn is_available(&self) -> bool {
@@ -1870,6 +1970,18 @@ pub enum OrderBitFlag {
     NewTriggerReduceOnly = 0b00001000,
     HasBuilder = 0b00010000,
     IsIsolatedPosition = 0b00100000,
+    /// A triggered trigger-limit whose live order now rests on the market's
+    /// CLOB. The slot is a shadow keeping the trigger params + the CLOB
+    /// `OrderRef` (see `Order::clob_order_ref`); it frees on fill/cancel/
+    /// expiry and re-arms on eviction. While set, the slot contributes no
+    /// open-order accounting of its own — the CLOB order carries it.
+    PlacedOnClob = 0b01000000,
+    /// Set when an evicted trigger re-arms: the trigger may not re-fire
+    /// until a keeper observes the price on the non-trigger side (the
+    /// on-chain approximation of edge-triggering). Level-triggered re-arm
+    /// livelocks — an evicted stop-limit is near the tail by definition, so
+    /// immediate re-placement just gets evicted again.
+    AwaitingTriggerRecross = 0b10000000,
 }
 
 #[derive(Clone, Copy, BorshSerialize, BorshDeserialize, PartialEq, Debug, Eq)]

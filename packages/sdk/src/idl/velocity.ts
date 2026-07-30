@@ -9037,6 +9037,126 @@ export type Velocity = {
       ]
     },
     {
+      "name": "triggerClobOrder",
+      "docs": [
+        "Crank an armed trigger-limit order onto the market's CLOB once its",
+        "trigger condition is met (permissionless; keeper earns the flat",
+        "reward from the user). Stop-markets go through `trigger_order`."
+      ],
+      "discriminator": [
+        4,
+        206,
+        255,
+        121,
+        250,
+        102,
+        163,
+        14
+      ],
+      "accounts": [
+        {
+          "name": "state"
+        },
+        {
+          "name": "authority",
+          "signer": true
+        },
+        {
+          "name": "filler",
+          "writable": true
+        },
+        {
+          "name": "fillerStats",
+          "writable": true
+        },
+        {
+          "name": "user",
+          "docs": [
+            "The owner of the armed trigger order."
+          ],
+          "writable": true
+        },
+        {
+          "name": "userStats",
+          "docs": [
+            "Read for the authority-wide equity breaker in the margin gate."
+          ]
+        },
+        {
+          "name": "quoter",
+          "docs": [
+            "The market's CLOB registry entry — placement is only allowed on a",
+            "vetted book, same as a direct `place_clob_order`."
+          ]
+        },
+        {
+          "name": "clobMarket",
+          "docs": [
+            "accounts in the handler."
+          ],
+          "writable": true
+        },
+        {
+          "name": "clobProgram"
+        },
+        {
+          "name": "velocitySigner"
+        },
+        {
+          "name": "crankConditions",
+          "docs": [
+            "Expiry-hint host, same optional contract as `place_clob_order`."
+          ],
+          "writable": true,
+          "optional": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  99,
+                  108,
+                  111,
+                  98,
+                  95,
+                  99,
+                  114,
+                  97,
+                  110,
+                  107,
+                  95,
+                  99,
+                  111,
+                  110,
+                  100,
+                  105,
+                  116,
+                  105,
+                  111,
+                  110,
+                  115
+                ]
+              },
+              {
+                "kind": "arg",
+                "path": "marketIndex"
+              }
+            ]
+          }
+        }
+      ],
+      "args": [
+        {
+          "name": "marketIndex",
+          "type": "u16"
+        },
+        {
+          "name": "orderId",
+          "type": "u32"
+        }
+      ]
+    },
+    {
       "name": "triggerOrder",
       "discriminator": [
         63,
@@ -17664,6 +17784,16 @@ export type Velocity = {
       "code": 6370,
       "name": "insufficientCrankReservoir",
       "msg": "CLOB crank condition account cannot cover the keeper payment"
+    },
+    {
+      "code": 6371,
+      "name": "orderPlacedOnClob",
+      "msg": "Order is placed on the CLOB; cancel it there (cancel_clob_order)"
+    },
+    {
+      "code": 6372,
+      "name": "orderAwaitingTriggerRecross",
+      "msg": "Trigger is awaiting a price recross after eviction"
     }
   ],
   "types": [

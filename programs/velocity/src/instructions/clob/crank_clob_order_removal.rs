@@ -278,10 +278,8 @@ fn crank_clob_removal(
     if let Some(conditions_loader) = &ctx.accounts.crank_conditions {
         // Repair both wake hints against the post-removal book in one scan,
         // so a due hint goes quiet once its work is gone.
-        let (min_expiry, min_activation) = crate::state::prop_amm::clob_hint_scan(
-            &ctx.accounts.clob_market.try_borrow_data()?,
-            clock.slot,
-        );
+        let (min_expiry, min_activation) =
+            clob_hint_scan(&ctx.accounts.clob_market.try_borrow_data()?, clock.slot);
         let payment = {
             let mut conditions = load_mut!(conditions_loader)?;
             conditions.repair_expiry(min_expiry)?;

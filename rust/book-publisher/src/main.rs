@@ -40,7 +40,7 @@ use {
     velocity_router_sim::{
         quote_view::{
             build_quote_router_ix, create_quote_buffer_ixs, perp_market_pda, read_zero_copy,
-            simulate_quote_view,
+            simulate_quote_view, state_pda,
         },
         router_subscriptions, Direction,
     },
@@ -279,7 +279,6 @@ async fn main() -> Result<()> {
         .await
         .context("connect redis")?;
 
-    let authority = payer.pubkey();
     let mut tick = tokio::time::interval(Duration::from_millis(config.tick_ms));
     tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     info!(markets = ?markets, tick_ms = config.tick_ms, cross_match = config.cross_match, "publishing");
@@ -327,6 +326,34 @@ async fn publish_market(
         .ok_or_else(|| anyhow!("perp market {market_index} not found"))?;
     let perp_market: PerpMarket = read_zero_copy(&perp_market_account.data)?;
 
+    // State (mm-oracle guard rails), the oracle itself, and the canonical
+    // CLOB entry (whose registered market account is the L3/best-makers
+    // source) — one batch; the entry is absent until a book is attached.
+    let mut side_accounts = source
+        .get_multiple_accounts(&[
+            state_pda(velocity),
+            perp_market.oracle,
+            perp_market.clob_quoter,
+        ])
+        .await?;
+    let clob_entry_account = side_accounts.pop().flatten();
+    let mut oracle_account = side_accounts
+        .pop()
+        .flatten()
+        .ok_or_else(|| anyhow!("oracle account missing for market {market_index}"))?;
+    let state: program::state::state::State = read_zero_copy(
+        &side_accounts
+            .pop()
+            .flatten()
+            .ok_or_else(|| anyhow!("state account missing"))?
+            .data,
+    )?;
+    let clob_book_key = clob_entry_account
+        .as_ref()
+        .map(|account| read_zero_copy::<program::state::prop_amm::QuoterV0>(&account.data))
+        .transpose()?
+        .map(|entry| entry.response_account);
+
     // A long taker consumes asks; a short taker consumes bids.
     let asks_ix = build_quote_router_ix(
         source,
@@ -355,20 +382,88 @@ async fn publish_market(
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()
         .as_millis();
-    let document = payload::l2_payload(
+    let clock = source.clock().await?;
+    let book_slot = asks.slot.max(bids.slot);
+    let decorations = payload::build_decorations(
+        &perp_market,
+        &state,
+        &oracle_account.owner,
+        &mut oracle_account.data,
+        clock.slot,
+        book_slot,
+    )?;
+    let name = market_name(&perp_market);
+    let l2 = payload::l2_payload(
         market_index,
-        &market_name(&perp_market),
+        &name,
         &perp_market.clob_quoter,
         &asks,
         &bids,
+        &decorations,
         ts_ms,
-    )
-    .to_string();
+    );
 
+    // The channel gets the full document; the key a depth-100 slice —
+    // matching the TS publisher's publish/SET split.
+    let mut l2_depth100 = l2.clone();
+    for side in ["bids", "asks"] {
+        if let Some(levels) = l2_depth100[side].as_array_mut() {
+            levels.truncate(100);
+        }
+    }
     let key = format!("{prefix}last_update_orderbook_perp_{market_index}");
     let channel = format!("{prefix}orderbook_perp_{market_index}");
-    redis.set::<_, _, ()>(&key, &document).await?;
-    redis.publish::<_, _, ()>(&channel, &document).await?;
+    redis.set::<_, _, ()>(&key, l2_depth100.to_string()).await?;
+    redis.publish::<_, _, ()>(&channel, l2.to_string()).await?;
+
+    for (group, document) in payload::grouped_payloads(&l2, perp_market.order_tick_size) {
+        redis
+            .publish::<_, _, ()>(
+                format!("{prefix}orderbook_perp_{market_index}_grouped_{group}"),
+                document.to_string(),
+            )
+            .await?;
+    }
+
+    // L3 + best makers come off the CLOB book directly (per-order data the
+    // quote view deliberately flattens away).
+    if let Some(book_key) = clob_book_key {
+        if let Some(book) = source
+            .get_multiple_accounts(&[book_key])
+            .await?
+            .pop()
+            .flatten()
+        {
+            let l3 = payload::l3_payload(
+                velocity,
+                market_index,
+                &name,
+                &book.data,
+                clock.slot,
+                clock.unix_timestamp,
+                &decorations,
+                ts_ms,
+            );
+            redis
+                .set::<_, _, ()>(
+                    format!("{prefix}last_update_orderbook_l3_perp_{market_index}"),
+                    l3.to_string(),
+                )
+                .await?;
+            let best_makers = payload::best_makers_payload(
+                velocity,
+                &book.data,
+                clock.slot,
+                clock.unix_timestamp,
+            );
+            redis
+                .set::<_, _, ()>(
+                    format!("{prefix}last_update_orderbook_best_makers_perp_{market_index}"),
+                    best_makers.to_string(),
+                )
+                .await?;
+        }
+    }
 
     // Fast-path cross matching: books in hand, a cross is free to see.
     // Simulate before sending — the executor is its own predicate, so a

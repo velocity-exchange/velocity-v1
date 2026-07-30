@@ -8,6 +8,7 @@ members = [
 	"keep-rs",
 	"swift",
 	"router-sim",
+	"book-publisher",
 ]
 
 # This is a SEPARATE workspace from the program workspace at the repo root

@@ -1257,6 +1257,17 @@ pub mod instructions {
     #[automatically_derived]
     impl anchor_lang::InstructionData for TransferPools {}
     #[derive(AnchorSerialize, AnchorDeserialize, Clone, Default)]
+    pub struct TriggerClobOrder {
+        pub market_index: u16,
+        pub order_id: u32,
+    }
+    #[automatically_derived]
+    impl anchor_lang::Discriminator for TriggerClobOrder {
+        const DISCRIMINATOR: &[u8] = &[4, 206, 255, 121, 250, 102, 163, 14];
+    }
+    #[automatically_derived]
+    impl anchor_lang::InstructionData for TriggerClobOrder {}
+    #[derive(AnchorSerialize, AnchorDeserialize, Clone, Default)]
     pub struct TriggerOrder {
         pub order_id: u32,
     }
@@ -17485,6 +17496,124 @@ pub mod accounts {
     }
     #[repr(C)]
     #[derive(Copy, Clone, Default, AnchorSerialize, AnchorDeserialize, Serialize, Deserialize)]
+    pub struct TriggerClobOrder {
+        pub state: Pubkey,
+        pub authority: Pubkey,
+        pub filler: Pubkey,
+        pub filler_stats: Pubkey,
+        pub user: Pubkey,
+        pub user_stats: Pubkey,
+        pub quoter: Pubkey,
+        pub clob_market: Pubkey,
+        pub clob_program: Pubkey,
+        pub velocity_signer: Pubkey,
+        pub crank_conditions: Pubkey,
+    }
+    #[automatically_derived]
+    impl anchor_lang::Discriminator for TriggerClobOrder {
+        const DISCRIMINATOR: &[u8] = &[164, 2, 89, 96, 205, 32, 153, 79];
+    }
+    #[automatically_derived]
+    unsafe impl anchor_lang::__private::bytemuck::Pod for TriggerClobOrder {}
+    #[automatically_derived]
+    unsafe impl anchor_lang::__private::bytemuck::Zeroable for TriggerClobOrder {}
+    #[automatically_derived]
+    impl anchor_lang::ZeroCopy for TriggerClobOrder {}
+    #[automatically_derived]
+    impl anchor_lang::InstructionData for TriggerClobOrder {}
+    #[automatically_derived]
+    impl ToAccountMetas for TriggerClobOrder {
+        fn to_account_metas(&self) -> Vec<AccountMeta> {
+            vec![
+                AccountMeta {
+                    pubkey: self.state,
+                    is_signer: false,
+                    is_writable: false,
+                },
+                AccountMeta {
+                    pubkey: self.authority,
+                    is_signer: true,
+                    is_writable: false,
+                },
+                AccountMeta {
+                    pubkey: self.filler,
+                    is_signer: false,
+                    is_writable: true,
+                },
+                AccountMeta {
+                    pubkey: self.filler_stats,
+                    is_signer: false,
+                    is_writable: true,
+                },
+                AccountMeta {
+                    pubkey: self.user,
+                    is_signer: false,
+                    is_writable: true,
+                },
+                AccountMeta {
+                    pubkey: self.user_stats,
+                    is_signer: false,
+                    is_writable: false,
+                },
+                AccountMeta {
+                    pubkey: self.quoter,
+                    is_signer: false,
+                    is_writable: false,
+                },
+                AccountMeta {
+                    pubkey: self.clob_market,
+                    is_signer: false,
+                    is_writable: true,
+                },
+                AccountMeta {
+                    pubkey: self.clob_program,
+                    is_signer: false,
+                    is_writable: false,
+                },
+                AccountMeta {
+                    pubkey: self.velocity_signer,
+                    is_signer: false,
+                    is_writable: false,
+                },
+                AccountMeta {
+                    pubkey: self.crank_conditions,
+                    is_signer: false,
+                    is_writable: true,
+                },
+            ]
+        }
+    }
+    #[automatically_derived]
+    impl anchor_lang::AccountSerialize for TriggerClobOrder {
+        fn try_serialize<W: std::io::Write>(&self, writer: &mut W) -> anchor_lang::Result<()> {
+            if writer.write_all(Self::DISCRIMINATOR).is_err() {
+                return Err(anchor_lang::error::ErrorCode::AccountDidNotSerialize.into());
+            }
+            if AnchorSerialize::serialize(self, writer).is_err() {
+                return Err(anchor_lang::error::ErrorCode::AccountDidNotSerialize.into());
+            }
+            Ok(())
+        }
+    }
+    #[automatically_derived]
+    impl anchor_lang::AccountDeserialize for TriggerClobOrder {
+        fn try_deserialize(buf: &mut &[u8]) -> anchor_lang::Result<Self> {
+            let given_disc = &buf[..8];
+            if Self::DISCRIMINATOR != given_disc {
+                return Err(anchor_lang::error!(
+                    anchor_lang::error::ErrorCode::AccountDiscriminatorMismatch
+                ));
+            }
+            Self::try_deserialize_unchecked(buf)
+        }
+        fn try_deserialize_unchecked(buf: &mut &[u8]) -> anchor_lang::Result<Self> {
+            let mut data: &[u8] = &buf[8..];
+            AnchorDeserialize::deserialize(&mut data)
+                .map_err(|_| anchor_lang::error::ErrorCode::AccountDidNotDeserialize.into())
+        }
+    }
+    #[repr(C)]
+    #[derive(Copy, Clone, Default, AnchorSerialize, AnchorDeserialize, Serialize, Deserialize)]
     pub struct TriggerOrder {
         pub state: Pubkey,
         pub authority: Pubkey,
@@ -28373,6 +28502,10 @@ pub mod errors {
         InvalidQuoterAuthority,
         #[msg("CLOB crank condition account cannot cover the keeper payment")]
         InsufficientCrankReservoir,
+        #[msg("Order is placed on the CLOB; cancel it there (cancel_clob_order)")]
+        OrderPlacedOnClob,
+        #[msg("Trigger is awaiting a price recross after eviction")]
+        OrderAwaitingTriggerRecross,
     }
 }
 pub mod events {

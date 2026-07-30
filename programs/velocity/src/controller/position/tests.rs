@@ -2862,3 +2862,328 @@ fn test_move_amm() {
     assert_eq!(perp_market.amm.sqrt_k, new_k);
     assert_eq!(perp_market.amm.peg_multiplier, 5); // still same
 }
+
+/// Synthetic expired perp market for the expiry-price conservation tests.
+///
+/// Users are net **long** 100 base at a $9,000 aggregate cost basis, with the
+/// settlement target at $100 — so the position is worth $10,000 at target and
+/// aggregate user profit is $1,000, deliberately more than the pools hold. That
+/// keeps `best_expiry_price` strictly below `target_price`, which matters: if the
+/// pools comfortably cover the claims the price just clamps to `target` and the
+/// test proves nothing about which balances were counted.
+///
+/// Market-side sign convention: `amm.base_asset_amount_with_amm` is the net
+/// *user* base position and `market.quote_asset_amount` the net user quote (see
+/// `calculate_net_user_pnl`).
+#[cfg(test)]
+fn expired_market_fixture(
+    pnl_pool_dollars: u64,
+    fee_pool_dollars: u64,
+    total_fee_minus_distributions: i128,
+    net_unsettled_funding_pnl: i64,
+) -> PerpMarket {
+    use crate::math::constants::{
+        AMM_RESERVE_PRECISION, BASE_PRECISION_I128, MAX_CONCENTRATION_COEFFICIENT, PEG_PRECISION,
+        QUOTE_PRECISION_I128, SPOT_BALANCE_PRECISION_U64,
+    };
+
+    let target = 100 * PRICE_PRECISION_I64;
+
+    let mut market = PerpMarket {
+        market_index: 0,
+        status: crate::state::market_status::MarketStatus::Active,
+        oracle_source: OracleSource::QuoteAsset, // anything but Prelaunch
+        expiry_ts: 1_000,
+        order_step_size: 1,
+        quote_asset_amount: -9_000 * QUOTE_PRECISION_I128,
+        net_unsettled_funding_pnl,
+        amm: AMM {
+            base_asset_reserve: 100 * AMM_RESERVE_PRECISION,
+            quote_asset_reserve: 100 * AMM_RESERVE_PRECISION,
+            sqrt_k: 100 * AMM_RESERVE_PRECISION,
+            peg_multiplier: PEG_PRECISION,
+            base_asset_amount_with_amm: 100 * BASE_PRECISION_I128,
+            total_fee_minus_distributions,
+            // Needed only so the `budget > 0` k-scale branch inside
+            // `settle_expired_market` can run; irrelevant to the priced balances.
+            concentration_coef: MAX_CONCENTRATION_COEFFICIENT,
+            ..AMM::default()
+        },
+        market_stats: crate::state::perp_market::MarketStats {
+            funding_period: 3600,
+            historical_oracle_data: HistoricalOracleData {
+                last_oracle_price: target,
+                last_oracle_price_twap: target,
+                last_oracle_price_twap_5min: target,
+                ..HistoricalOracleData::default()
+            },
+            ..crate::state::perp_market::MarketStats::default()
+        },
+        ..PerpMarket::default()
+    };
+
+    // Pools are seeded at a 1.0 cumulative-interest index, where
+    // `get_token_amount` reduces a scaled balance by SPOT_BALANCE_PRECISION /
+    // QUOTE_PRECISION. So $1 of pool = SPOT_BALANCE_PRECISION of scaled balance.
+    let per_dollar = SPOT_BALANCE_PRECISION_U64 as u128;
+    market.pnl_pool.scaled_balance = (pnl_pool_dollars as u128) * per_dollar;
+    market.amm.fee_pool.scaled_balance = (fee_pool_dollars as u128) * per_dollar;
+    market
+}
+
+#[cfg(test)]
+fn quote_spot_market_for_expiry() -> SpotMarket {
+    SpotMarket {
+        market_index: 0,
+        oracle_source: OracleSource::QuoteAsset,
+        cumulative_deposit_interest: SPOT_CUMULATIVE_INTEREST_PRECISION,
+        cumulative_borrow_interest: SPOT_CUMULATIVE_INTEREST_PRECISION,
+        decimals: 6,
+        initial_asset_weight: SPOT_WEIGHT_PRECISION,
+        maintenance_asset_weight: SPOT_WEIGHT_PRECISION,
+        deposit_balance: 1_000_000 * SPOT_CUMULATIVE_INTEREST_PRECISION,
+        historical_oracle_data: HistoricalOracleData {
+            last_oracle_price_twap: PRICE_PRECISION_I64,
+            last_oracle_price_twap_5min: PRICE_PRECISION_I64,
+            ..HistoricalOracleData::default()
+        },
+        ..SpotMarket::default()
+    }
+}
+
+/// OtterSec #116 — `settle_expired_market` must price winner claims against the
+/// PnL pool only, not the PnL pool plus the whole fee pool.
+///
+/// Only `min(total_fee_minus_distributions, fee_pool)` is ever transferred into
+/// the PnL pool, but `total_excess_balance` used to add the *full* (post-transfer)
+/// fee pool back in. Whenever `tfmd < fee_pool` the price was solved against value
+/// no claim could reach — `update_pnl_pool_and_user_balance` caps at
+/// `market.pnl_pool` and reverts `InsufficientPerpPnlPool` — so the tail of the
+/// winners reverted and the wind-down could never complete.
+#[test]
+fn settle_expired_market_prices_against_pnl_pool_only() {
+    use crate::{
+        math::constants::QUOTE_PRECISION_I128,
+        vlp::amm::math::amm::{calculate_expiry_price, calculate_net_user_pnl},
+    };
+
+    let clock = Clock {
+        slot: 0,
+        epoch_start_timestamp: 0,
+        epoch: 0,
+        leader_schedule_epoch: 0,
+        unix_timestamp: 2_000, // past expiry_ts
+    };
+    let state = State::default();
+
+    let mut spot_market = quote_spot_market_for_expiry();
+    create_anchor_account_info!(spot_market, SpotMarket, spot_market_account_info);
+    let spot_market_map: SpotMarketMap<'_> =
+        SpotMarketMap::load_one(&spot_market_account_info, true).unwrap();
+
+    let mut oracle_price = get_pyth_price_mantissa(PRICE_PRECISION_I64, 6);
+    let oracle_price_key =
+        Pubkey::from_str("J83w4HKfqxwcq3BEMMkPFSppX3gqekLyLJBexebFVkix").unwrap();
+    create_anchor_account_info!(
+        oracle_price,
+        &oracle_price_key,
+        PythLazerOracle,
+        oracle_account_info
+    );
+    let mut oracle_map = OracleMap::load_one(&oracle_account_info, clock.slot, None).unwrap();
+
+    // tfmd (10) is far below the fee pool (500), so 490 tokens stay behind in the
+    // fee pool and must not be priced as backing.
+    let mut market = expired_market_fixture(400, 500, 10 * QUOTE_PRECISION_I128, 0);
+    let pre_fix_fee_pool_contribution = 490 * QUOTE_PRECISION_I128;
+    create_anchor_account_info!(market, PerpMarket, market_account_info);
+    let perp_market_map = PerpMarketMap::load_one(&market_account_info, true).unwrap();
+
+    crate::vlp::amm::refresh::settle_expired_market(
+        0,
+        &perp_market_map,
+        &mut oracle_map,
+        &spot_market_map,
+        &state,
+        &clock,
+    )
+    .unwrap();
+
+    let m = perp_market_map.get_ref(&0).unwrap();
+    let quote_spot_market = spot_market_map.get_ref(&0).unwrap();
+
+    let pnl_pool = get_token_amount(
+        m.pnl_pool.scaled_balance,
+        &quote_spot_market,
+        m.pnl_pool.balance_type(),
+    )
+    .unwrap() as i128;
+    let leftover_fee_pool = get_token_amount(
+        m.amm.fee_pool.scaled_balance,
+        &quote_spot_market,
+        m.amm.fee_pool.balance_type(),
+    )
+    .unwrap() as i128;
+
+    assert_eq!(
+        leftover_fee_pool, pre_fix_fee_pool_contribution,
+        "fixture must leave fee-pool value un-moved to reproduce #116"
+    );
+
+    // The price must not have clamped to target, or this test proves nothing.
+    let target = m
+        .market_stats
+        .historical_oracle_data
+        .last_oracle_price_twap_5min;
+    assert!(
+        m.expiry_price < target - 1,
+        "expiry price clamped to target ({} vs {}) — fixture no longer binds on \
+         the pools and the test would pass regardless of the fix",
+        m.expiry_price,
+        target
+    );
+
+    // Aggregate claims at the chosen price fit inside the PnL pool. This is the
+    // conservation invariant #116 broke.
+    let claims = calculate_net_user_pnl(
+        &m.amm,
+        m.expiry_price,
+        m.quote_asset_amount,
+        m.net_unsettled_funding_pnl,
+    )
+    .unwrap();
+    assert!(
+        claims <= pnl_pool,
+        "aggregate claims ({}) must fit the pnl pool ({})",
+        claims,
+        pnl_pool
+    );
+
+    // ...and the pre-fix basis really did over-commit: re-solve counting the
+    // un-moved fee pool and show those claims exceed what is payable.
+    let pre_fix_price = calculate_expiry_price(
+        &m.amm,
+        target,
+        pnl_pool + leftover_fee_pool,
+        m.quote_asset_amount,
+        m.net_unsettled_funding_pnl,
+        m.order_step_size,
+    )
+    .unwrap();
+    let pre_fix_claims = calculate_net_user_pnl(
+        &m.amm,
+        pre_fix_price,
+        m.quote_asset_amount,
+        m.net_unsettled_funding_pnl,
+    )
+    .unwrap();
+    assert!(
+        pre_fix_price > m.expiry_price,
+        "counting the fee pool must raise the price for a net-long user base"
+    );
+    assert!(
+        pre_fix_claims > pnl_pool,
+        "pre-fix basis must over-commit the payable pool — if this trips the \
+         fixture no longer reproduces #116 ({} !> {})",
+        pre_fix_claims,
+        pnl_pool
+    );
+}
+
+/// OtterSec #125 — the expiry price must solve against a cost basis that includes
+/// `net_unsettled_funding_pnl`.
+///
+/// `settle_expired_position` runs `settle_funding_payment` before computing the
+/// payout, so pending funding is already folded into the quote each user is paid
+/// on. Solving against `quote_asset_amount` alone left aggregate claims exceeding
+/// the backing pools by exactly the market's unsettled funding.
+#[test]
+fn expiry_price_cost_basis_includes_unsettled_funding() {
+    use crate::{
+        math::constants::QUOTE_PRECISION_I128,
+        vlp::amm::math::amm::{calculate_expiry_price, calculate_net_user_pnl},
+    };
+
+    let market = expired_market_fixture(0, 0, 0, 0);
+    let target = 100 * PRICE_PRECISION_I64;
+    // Payable backing, and $25 of funding users are owed that settlement will
+    // fold into their quote before paying them.
+    let backing = 400 * QUOTE_PRECISION_I128;
+    let unsettled_funding = 25 * (crate::math::constants::QUOTE_PRECISION as i64);
+
+    let price_ignoring_funding = calculate_expiry_price(
+        &market.amm,
+        target,
+        backing,
+        market.quote_asset_amount,
+        0,
+        market.order_step_size,
+    )
+    .unwrap();
+
+    let price_with_funding = calculate_expiry_price(
+        &market.amm,
+        target,
+        backing,
+        market.quote_asset_amount,
+        unsettled_funding,
+        market.order_step_size,
+    )
+    .unwrap();
+
+    assert!(
+        price_ignoring_funding < target - 1,
+        "fixture must bind on the pools, not clamp to target"
+    );
+
+    // Users are net long, so folding in the funding they are owed must pull the
+    // settlement price DOWN to keep claims inside the pools.
+    assert!(
+        price_with_funding < price_ignoring_funding,
+        "including unsettled funding must lower the expiry price for a net-long \
+         user base ({} !< {})",
+        price_with_funding,
+        price_ignoring_funding
+    );
+
+    // Pre-fix: claims (which DO include funding) exceed the backing.
+    let claims_at_old_price = calculate_net_user_pnl(
+        &market.amm,
+        price_ignoring_funding,
+        market.quote_asset_amount,
+        unsettled_funding,
+    )
+    .unwrap();
+    assert!(
+        claims_at_old_price > backing,
+        "pre-fix price must over-commit the pools — if this trips the fixture no \
+         longer reproduces #125 ({} !> {})",
+        claims_at_old_price,
+        backing
+    );
+    // Over-committed by exactly the unsettled funding. Tolerance covers the
+    // solver's rounding: 100 base at 1e9 precision moves 100 quote units per
+    // price tick, and the result is also `saturating_sub(1)`ed.
+    assert!(
+        (claims_at_old_price - backing - unsettled_funding as i128).abs() <= 1_000,
+        "the shortfall should be the unsettled funding: claims {} backing {} funding {}",
+        claims_at_old_price,
+        backing,
+        unsettled_funding
+    );
+
+    // Fixed price conserves.
+    let claims_at_new_price = calculate_net_user_pnl(
+        &market.amm,
+        price_with_funding,
+        market.quote_asset_amount,
+        unsettled_funding,
+    )
+    .unwrap();
+    assert!(
+        claims_at_new_price <= backing,
+        "fixed price must keep claims inside the pools ({} > {})",
+        claims_at_new_price,
+        backing
+    );
+}

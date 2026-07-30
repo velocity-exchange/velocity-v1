@@ -502,21 +502,29 @@ pub fn settle_expired_market(
         target_expiry_price
     )?;
 
-    let pnl_pool_token_amount = get_token_amount(
+    // Price against the PnL pool ONLY — read after the transfer above, so it
+    // already includes `fee_pool_transfer`.
+    //
+    // The whole fee pool used to be added in here, but only
+    // `min(total_fee_minus_distributions, fee_pool)` is ever moved into the PnL
+    // pool, and expired-position settlement pays exclusively out of the PnL pool
+    // (`update_pnl_pool_and_user_balance` caps there and reverts
+    // `InsufficientPerpPnlPool`). Whenever `tfmd < fee_pool` the un-moved
+    // remainder inflated the expiry price by value no claim could ever draw on,
+    // so the tail of the winners reverted and the market could never finish
+    // winding down (OtterSec #116).
+    //
+    // Deliberately NOT fixed by moving the entire fee pool instead: the fee pool
+    // can hold more than the AMM's own accounted equity (`tfmd`), and that excess
+    // is protocol/IF fee revenue awaiting the sweep, not AMM surplus payable to
+    // perp winners. Whatever is left is routed to the revenue pool by
+    // `settle_expired_market_pools_to_revenue_pool` at delisting, as before.
+    let total_excess_balance: i128 = get_token_amount(
         market.pnl_pool.scaled_balance,
         spot_market,
         market.pnl_pool.balance_type(),
-    )?;
-
-    let fee_pool_token_amount = get_token_amount(
-        market.amm.fee_pool.scaled_balance,
-        spot_market,
-        market.amm.fee_pool.balance_type(),
-    )?;
-
-    let total_excess_balance: i128 = pnl_pool_token_amount
-        .safe_add(fee_pool_token_amount)?
-        .cast()?;
+    )?
+    .cast()?;
 
     crate::dlog!(market.market_index);
     crate::dlog!(total_excess_balance);
@@ -526,6 +534,9 @@ pub fn settle_expired_market(
         target_expiry_price,
         total_excess_balance,
         market.quote_asset_amount,
+        // Folded into the cost basis: `settle_expired_position` settles funding
+        // into each user's quote before paying them (OtterSec #125).
+        market.net_unsettled_funding_pnl,
         market.order_step_size,
     )?;
 

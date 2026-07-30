@@ -479,11 +479,29 @@ pub fn calculate_net_user_pnl(
     )?)
 }
 
+/// Solve for the settlement price at which aggregate user claims fit inside the
+/// value that actually backs them.
+///
+/// `total_excess_balance` must be **only** the balance a claim can actually be
+/// paid out of — the PnL pool. `settle_expired_position` pays via
+/// `update_pnl_pool_and_user_balance`, which caps at `market.pnl_pool` and
+/// reverts `InsufficientPerpPnlPool`; the fee pool is never payable, so counting
+/// it here over-prices winners and strands the tail of them (OtterSec #116).
+///
+/// `net_unsettled_funding_pnl` is folded into the cost basis via the shared
+/// [`calculate_net_user_cost_basis`], the same way [`calculate_net_user_pnl`]
+/// does it. Expired-position settlement runs `settle_funding_payment` before
+/// computing the payout, so each user's pending funding is already inside the
+/// quote they are paid on; solving against `quote_asset_amount` alone leaves
+/// aggregate claims exceeding the pools by exactly the market's unsettled
+/// funding (OtterSec #125). Taking it as a parameter rather than reading a bare
+/// quote keeps the two consumers of the cost basis symmetric.
 pub fn calculate_expiry_price(
     amm: &AMM,
     target_price: i64,
     total_excess_balance: i128,
     quote_asset_amount: i128,
+    net_unsettled_funding_pnl: i64,
     order_step_size: u64,
 ) -> VelocityResult<i64> {
     if amm.base_asset_amount_with_amm.abs() < order_step_size.cast::<i128>()? {
@@ -492,9 +510,12 @@ pub fn calculate_expiry_price(
     // net_baa * price + net_quote <= 0
     // net_quote/net_baa <= -price
 
+    let net_user_cost_basis =
+        calculate_net_user_cost_basis(quote_asset_amount, net_unsettled_funding_pnl)?;
+
     // net_user_unrealized_pnl negative = surplus in market
     // net_user_unrealized_pnl positive = expiry price needs to differ from oracle
-    let best_expiry_price = -(quote_asset_amount
+    let best_expiry_price = -(net_user_cost_basis
         .safe_sub(total_excess_balance.cast::<i128>()?)?
         .safe_mul(PRICE_TIMES_AMM_TO_QUOTE_PRECISION_RATIO_I128)?
         .safe_div(amm.base_asset_amount_with_amm)?)

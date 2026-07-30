@@ -17,6 +17,7 @@
 //! What the TS publisher keeps until the DLOB dies: DLOB maker books (this
 //! quote view is built without `(User, UserStats)` maker pairs).
 
+mod cross;
 mod payload;
 
 use {
@@ -85,6 +86,10 @@ pub struct Config {
     /// Pooled in-process SVM instances; 0 simulates over RPC instead.
     #[clap(long, env = "LOCAL_SIM_POOL", default_value = "4")]
     pub local_sim_pool: usize,
+    /// Submit `crank_cross_match` when the tick's books cross net of fees
+    /// (the publisher is the fast path; relay's poll is the liveness floor).
+    #[clap(long, env = "CROSS_MATCH", default_value = "true")]
+    pub cross_match: bool,
 }
 
 fn load_keypair(path: &str) -> Result<Keypair> {
@@ -277,7 +282,7 @@ async fn main() -> Result<()> {
     let authority = payer.pubkey();
     let mut tick = tokio::time::interval(Duration::from_millis(config.tick_ms));
     tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
-    info!(markets = ?markets, tick_ms = config.tick_ms, "publishing");
+    info!(markets = ?markets, tick_ms = config.tick_ms, cross_match = config.cross_match, "publishing");
 
     loop {
         tick.tick().await;
@@ -287,10 +292,11 @@ async fn main() -> Result<()> {
                 &mut redis,
                 &config.redis_prefix,
                 &velocity,
-                &authority,
+                &payer,
                 &buffer.pubkey(),
                 *market_index,
                 config.quote_size,
+                config.cross_match,
             )
             .await
             {
@@ -306,11 +312,13 @@ async fn publish_market(
     redis: &mut redis::aio::MultiplexedConnection,
     prefix: &str,
     velocity: &Pubkey,
-    authority: &Pubkey,
+    payer: &Keypair,
     buffer: &Pubkey,
     market_index: u16,
     quote_size: u64,
+    cross_match: bool,
 ) -> Result<()> {
+    let authority = &payer.pubkey();
     let perp_market_account = source
         .get_multiple_accounts(&[perp_market_pda(velocity, market_index)])
         .await?
@@ -361,5 +369,50 @@ async fn publish_market(
     let channel = format!("{prefix}orderbook_perp_{market_index}");
     redis.set::<_, _, ()>(&key, &document).await?;
     redis.publish::<_, _, ()>(&channel, &document).await?;
+
+    // Fast-path cross matching: books in hand, a cross is free to see.
+    // Simulate before sending — the executor is its own predicate, so a
+    // clean simulation implies a profitable crank.
+    if cross_match {
+        if let Some(plan) = cross::find_cross_plan(
+            source.as_ref(),
+            velocity,
+            authority,
+            market_index,
+            &perp_market.oracle,
+            perp_market.quote_spot_market_index,
+            program::math::constants::BASE_PRECISION_U64 as u128,
+            &asks,
+            &bids,
+        )
+        .await?
+        {
+            let blockhash = source.latest_blockhash().await?;
+            let tx = solana_sdk::transaction::Transaction::new_signed_with_payer(
+                &[plan.instruction.clone()],
+                Some(authority),
+                &[payer],
+                blockhash.hash,
+            );
+            let sim = source.simulate_transaction(&tx, &[]).await?;
+            match sim.err {
+                None => {
+                    let signature = source.send_transaction(&tx).await?;
+                    info!(
+                        market_index,
+                        %signature,
+                        size = plan.size,
+                        estimated_surplus = plan.estimated_surplus as u64,
+                        "submitted cross match"
+                    );
+                }
+                Some(err) => {
+                    // Raced by a fill or inside the fee gulf on-chain —
+                    // expected occasionally; the estimate is conservative.
+                    warn!(market_index, error = %err, "cross match simulation failed; not sent");
+                }
+            }
+        }
+    }
     Ok(())
 }

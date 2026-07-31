@@ -8243,6 +8243,77 @@ export type Velocity = {
       ]
     },
     {
+      "name": "resolveTriggerClobOrder",
+      "docs": [
+        "Relay resolver for `trigger_clob_order`. Meant to be simulated, not",
+        "landed."
+      ],
+      "discriminator": [
+        21,
+        250,
+        194,
+        125,
+        230,
+        11,
+        202,
+        66
+      ],
+      "accounts": [
+        {
+          "name": "triggerConditions",
+          "docs": [
+            "Writable only for the staging region; simulation-only."
+          ],
+          "writable": true
+        },
+        {
+          "name": "user"
+        },
+        {
+          "name": "oracle"
+        },
+        {
+          "name": "perpMarket"
+        }
+      ],
+      "args": []
+    },
+    {
+      "name": "resolveTriggerOrder",
+      "docs": [
+        "Relay resolver for `trigger_order`. Meant to be simulated, not landed."
+      ],
+      "discriminator": [
+        246,
+        112,
+        254,
+        98,
+        43,
+        234,
+        178,
+        33
+      ],
+      "accounts": [
+        {
+          "name": "triggerConditions",
+          "docs": [
+            "Writable only for the staging region; simulation-only."
+          ],
+          "writable": true
+        },
+        {
+          "name": "user"
+        },
+        {
+          "name": "oracle"
+        },
+        {
+          "name": "perpMarket"
+        }
+      ],
+      "args": []
+    },
+    {
       "name": "revertFill",
       "discriminator": [
         236,
@@ -8928,6 +8999,77 @@ export type Velocity = {
       ]
     },
     {
+      "name": "syncTriggerConditions",
+      "docs": [
+        "Rewrite a user's relay trigger-condition block from their live",
+        "orders — permissionless and idempotent; rent on the caller."
+      ],
+      "discriminator": [
+        105,
+        93,
+        218,
+        179,
+        236,
+        229,
+        95,
+        132
+      ],
+      "accounts": [
+        {
+          "name": "payer",
+          "writable": true,
+          "signer": true
+        },
+        {
+          "name": "user"
+        },
+        {
+          "name": "triggerConditions",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  116,
+                  114,
+                  105,
+                  103,
+                  103,
+                  101,
+                  114,
+                  95,
+                  99,
+                  111,
+                  110,
+                  100,
+                  105,
+                  116,
+                  105,
+                  111,
+                  110,
+                  115
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "user"
+              }
+            ]
+          }
+        },
+        {
+          "name": "rent",
+          "address": "SysvarRent111111111111111111111111111111111"
+        },
+        {
+          "name": "systemProgram",
+          "address": "11111111111111111111111111111111"
+        }
+      ],
+      "args": []
+    },
+    {
       "name": "transferDeposit",
       "discriminator": [
         20,
@@ -9559,7 +9701,11 @@ export type Velocity = {
         },
         {
           "name": "authority",
-          "signer": true
+          "docs": [
+            "program-keeper mode (protocol `User` as filler, relay turners) it is",
+            "only the lamport payout target and no signature is required."
+          ],
+          "writable": true
         },
         {
           "name": "filler",
@@ -9643,6 +9789,47 @@ export type Velocity = {
               }
             ]
           }
+        },
+        {
+          "name": "triggerConditions",
+          "docs": [
+            "The user's relay trigger conditions: the fired slot is released so",
+            "its level-triggered wake goes quiet. Optional, like everything else",
+            "on the relay side."
+          ],
+          "writable": true,
+          "optional": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  116,
+                  114,
+                  105,
+                  103,
+                  103,
+                  101,
+                  114,
+                  95,
+                  99,
+                  111,
+                  110,
+                  100,
+                  105,
+                  116,
+                  105,
+                  111,
+                  110,
+                  115
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "user"
+              }
+            ]
+          }
         }
       ],
       "args": [
@@ -9674,7 +9861,11 @@ export type Velocity = {
         },
         {
           "name": "authority",
-          "signer": true
+          "docs": [
+            "program-keeper mode (protocol `User` as filler, relay turners) it is",
+            "only the lamport payout target and no signature is required."
+          ],
+          "writable": true
         },
         {
           "name": "filler",
@@ -9686,6 +9877,57 @@ export type Velocity = {
         },
         {
           "name": "userStats"
+        },
+        {
+          "name": "triggerConditions",
+          "docs": [
+            "The user's relay trigger conditions: the fired slot is released so",
+            "its level-triggered wake goes quiet. Optional — keepers on markets",
+            "(or users) without relay plumbing crank exactly as before."
+          ],
+          "writable": true,
+          "optional": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  116,
+                  114,
+                  105,
+                  103,
+                  103,
+                  101,
+                  114,
+                  95,
+                  99,
+                  111,
+                  110,
+                  100,
+                  105,
+                  116,
+                  105,
+                  111,
+                  110,
+                  115
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "user"
+              }
+            ]
+          }
+        },
+        {
+          "name": "crankConditions",
+          "docs": [
+            "The fired market's crank conditions — the reservoir that pays the",
+            "keeper in program-keeper mode (validated against the order's market",
+            "in the handler). Required in program-keeper mode."
+          ],
+          "writable": true,
+          "optional": true
         }
       ],
       "args": [
@@ -16123,6 +16365,19 @@ export type Velocity = {
       ]
     },
     {
+      "name": "triggerConditionsV0",
+      "discriminator": [
+        66,
+        80,
+        217,
+        49,
+        180,
+        92,
+        215,
+        163
+      ]
+    },
+    {
       "name": "user",
       "discriminator": [
         159,
@@ -19140,7 +19395,7 @@ export type Velocity = {
             "type": {
               "array": [
                 "u8",
-                8848
+                1744
               ]
             }
           },
@@ -19153,7 +19408,7 @@ export type Velocity = {
             "type": {
               "array": [
                 "u8",
-                1024
+                2048
               ]
             }
           },
@@ -24425,7 +24680,7 @@ export type Velocity = {
             "type": {
               "array": [
                 "u8",
-                4432
+                880
               ]
             }
           },
@@ -24439,6 +24694,19 @@ export type Velocity = {
               "array": [
                 "u8",
                 2048
+              ]
+            }
+          },
+          {
+            "name": "resolverList",
+            "docs": [
+              "The resolver's account list ([`relay_spec::AccountRefV0`] wire",
+              "bytes), written at attach; the conditions reference it indirectly."
+            ],
+            "type": {
+              "array": [
+                "u8",
+                1254
               ]
             }
           },
@@ -24483,11 +24751,18 @@ export type Velocity = {
             "type": "u16"
           },
           {
+            "name": "resolverListCount",
+            "docs": [
+              "Live entries in `resolver_list`."
+            ],
+            "type": "u8"
+          },
+          {
             "name": "padding",
             "type": {
               "array": [
                 "u8",
-                12
+                5
               ]
             }
           }
@@ -26786,6 +27061,144 @@ export type Velocity = {
           {
             "name": "amount",
             "type": "u64"
+          }
+        ]
+      }
+    },
+    {
+      "name": "triggerConditionsV0",
+      "serialization": "bytemuckunsafe",
+      "repr": {
+        "kind": "c"
+      },
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "block",
+            "docs": [
+              "The relay condition block; first field, at the 8-aligned offset 8."
+            ],
+            "type": {
+              "array": [
+                "u8",
+                2320
+              ]
+            }
+          },
+          {
+            "name": "staging",
+            "docs": [
+              "Scratch the resolvers stage into. Simulation-only."
+            ],
+            "type": {
+              "array": [
+                "u8",
+                2048
+              ]
+            }
+          },
+          {
+            "name": "slots",
+            "docs": [
+              "Per-slot executor inputs, parallel to the block's condition slots."
+            ],
+            "type": {
+              "array": [
+                {
+                  "defined": {
+                    "name": "triggerSlotMetaV0"
+                  }
+                },
+                8
+              ]
+            }
+          },
+          {
+            "name": "mapAccounts",
+            "docs": [
+              "The user's margin-map section (see [`TRIGGER_MAP_ACCOUNTS_LEN`])."
+            ],
+            "type": {
+              "array": [
+                "u8",
+                792
+              ]
+            }
+          },
+          {
+            "name": "user",
+            "docs": [
+              "The `User` these conditions watch triggers for."
+            ],
+            "type": "pubkey"
+          },
+          {
+            "name": "mapAccountsCount",
+            "docs": [
+              "Live entries in `map_accounts`."
+            ],
+            "type": "u8"
+          },
+          {
+            "name": "padding",
+            "type": {
+              "array": [
+                "u8",
+                7
+              ]
+            }
+          }
+        ]
+      }
+    },
+    {
+      "name": "triggerSlotMetaV0",
+      "docs": [
+        "What a resolver needs to stage the right executor for a fired slot,",
+        "captured at sync time: the order's identity plus the market's CLOB",
+        "linkage when the trigger-limit path applies (zeroed for the plain",
+        "`trigger_order` path)."
+      ],
+      "serialization": "bytemuckunsafe",
+      "repr": {
+        "kind": "c"
+      },
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "quoter",
+            "docs": [
+              "The market's canonical CLOB entry / book / program — set when this",
+              "slot's executor is `trigger_clob_order`, zeroed for `trigger_order`."
+            ],
+            "type": "pubkey"
+          },
+          {
+            "name": "clobMarket",
+            "type": "pubkey"
+          },
+          {
+            "name": "clobProgram",
+            "type": "pubkey"
+          },
+          {
+            "name": "orderId",
+            "type": "u32"
+          },
+          {
+            "name": "marketIndex",
+            "type": "u16"
+          },
+          {
+            "name": "padding",
+            "type": {
+              "array": [
+                "u8",
+                2
+              ]
+            }
           }
         ]
       }

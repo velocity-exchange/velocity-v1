@@ -2328,6 +2328,25 @@ pub mod velocity {
         handle_resolve_crank_cross_match_quoter(ctx)
     }
 
+    /// Rewrite a user's relay trigger-condition block from their live
+    /// orders — permissionless and idempotent; rent on the caller.
+    pub fn sync_trigger_conditions<'c: 'info, 'info>(
+        ctx: Context<'info, SyncTriggerConditions<'info>>,
+    ) -> Result<()> {
+        handle_sync_trigger_conditions(ctx)
+    }
+
+    /// Relay resolver for `trigger_order`. Meant to be simulated, not landed.
+    pub fn resolve_trigger_order(ctx: Context<ResolveTriggerOrder>) -> Result<()> {
+        handle_resolve_trigger_order(ctx)
+    }
+
+    /// Relay resolver for `trigger_clob_order`. Meant to be simulated, not
+    /// landed.
+    pub fn resolve_trigger_clob_order(ctx: Context<ResolveTriggerClobOrder>) -> Result<()> {
+        handle_resolve_trigger_clob_order(ctx)
+    }
+
     pub fn withdraw_protocol_user_deposit<'c: 'info, 'info>(
         ctx: Context<'info, WithdrawProtocolUserDeposit<'info>>,
         market_index: u16,

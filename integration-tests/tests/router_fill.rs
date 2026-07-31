@@ -110,6 +110,10 @@ fn set_trading_perp_market(svm: &mut litesvm::LiteSVM, oracle: Pubkey, clob_quot
     market.amm.max_base_asset_reserve = u64::MAX as u128;
     market.amm.min_base_asset_reserve = 0;
     market.base_asset_amount_long = (AMM_RESERVE_PRECISION / 2) as i128;
+    market.market_stats.last_bid_price_twap = (100 * PRICE_PRECISION) as u64;
+    market.market_stats.last_ask_price_twap = (100 * PRICE_PRECISION) as u64;
+    market.market_stats.last_mark_price_twap = (100 * PRICE_PRECISION) as u64;
+    market.market_stats.last_mark_price_twap_5min = (100 * PRICE_PRECISION) as u64;
     market.market_stats.historical_oracle_data.last_oracle_price = (100 * PRICE_PRECISION) as i64;
     market
         .market_stats
@@ -1417,6 +1421,7 @@ fn trigger_clob_order_ix(
 ) -> Instruction {
     let (velocity_signer, _) = velocity_signer_pda();
     let mut accounts = velocity::accounts::TriggerClobOrder {
+        trigger_conditions: None,
         state: state_pda(),
         authority: fixture.keeper.pubkey(),
         filler,
@@ -2922,8 +2927,14 @@ fn generic_quoter_cross_conditions_discover_and_fill_a_midpoint_clob_cross() {
         fixture.clob_market.to_bytes()
     );
     assert_eq!(conditions[QUOTER_CROSS_FALLBACK].wake_slot, 100);
-    // The resolver list carries the entry's registered quote surface.
-    assert_eq!(conditions[QUOTER_CROSS_WATCH].resolver_accounts().len(), 8);
+    // The resolver list (entry's registered quote surface) is stored once
+    // next to the block; every condition points at it indirectly.
+    assert_eq!(conditions[QUOTER_CROSS_WATCH].num_resolver_accounts, 8);
+    assert_eq!(
+        conditions[QUOTER_CROSS_WATCH].resolver_list_offset,
+        velocity::state::quoter_cross::QUOTER_CROSS_RESOLVER_LIST_OFFSET as u32
+    );
+    assert_eq!(acct.resolver_list_count, 8);
 
     // Nothing crossed yet: the resolver reports no work.
     fixture.svm.warp_to_slot(12);
@@ -3003,4 +3014,251 @@ fn generic_quoter_cross_conditions_discover_and_fill_a_midpoint_clob_cross() {
     // The midpoint's rung depleted (standing intent).
     let (_, filled) = midpoint_ask_level(&fixture.svm, &maker.instance, 0);
     assert_eq!(filled, UNIT);
+}
+
+// ---------------------------------------------------------------------------
+// Trigger orders as relay conditions: per-user OnValueCross watches synced
+// from live orders, resolvers staging the dual-mode trigger cranks.
+// ---------------------------------------------------------------------------
+
+fn trigger_conditions_pda(user: &Pubkey) -> Pubkey {
+    Pubkey::find_program_address(&[b"trigger_conditions", user.as_ref()], &velocity_id()).0
+}
+
+fn sync_trigger_conditions(fixture: &mut Fixture, user: Pubkey, market_conditions: Pubkey) {
+    let mut accounts = velocity::accounts::SyncTriggerConditions {
+        payer: fixture.keeper.pubkey(),
+        user,
+        trigger_conditions: trigger_conditions_pda(&user),
+        rent: "SysvarRent111111111111111111111111111111111"
+            .parse()
+            .unwrap(),
+        system_program: "11111111111111111111111111111111".parse().unwrap(),
+    }
+    .to_account_metas(None);
+    // Margin maps + per-market crank inputs, any order.
+    accounts.push(AccountMeta::new_readonly(fixture.oracle, false));
+    accounts.push(AccountMeta::new(spot_market_pda(0), false));
+    accounts.push(AccountMeta::new(perp_market_pda(0), false));
+    accounts.push(AccountMeta::new_readonly(market_conditions, false));
+    accounts.push(AccountMeta::new_readonly(fixture.quoter, false));
+    let ix = Instruction {
+        program_id: velocity_id(),
+        accounts,
+        data: velocity::instruction::SyncTriggerConditions {}.data(),
+    };
+    let keeper = fixture.keeper.insecure_clone();
+    send(&mut fixture.svm, &keeper, ix, &[]).unwrap();
+}
+
+fn run_trigger_resolver(
+    fixture: &mut Fixture,
+    user: Pubkey,
+    clob_path: bool,
+) -> Option<velocity::relay_spec::ResolvedCrankV0> {
+    let conditions = trigger_conditions_pda(&user);
+    let accounts = velocity::accounts::ResolveTriggerOrder {
+        trigger_conditions: conditions,
+        user,
+        oracle: fixture.oracle,
+        perp_market: perp_market_pda(0),
+    }
+    .to_account_metas(None);
+    let ix = Instruction {
+        program_id: velocity_id(),
+        accounts,
+        data: if clob_path {
+            velocity::instruction::ResolveTriggerClobOrder {}.data()
+        } else {
+            velocity::instruction::ResolveTriggerOrder {}.data()
+        },
+    };
+    let keeper = fixture.keeper.insecure_clone();
+    let meta = send(&mut fixture.svm, &keeper, ix, &[]).unwrap();
+    let pointer = velocity::relay_spec::ResponsePointerV0::read(&meta.return_data.data).unwrap();
+    if !pointer.has_work() {
+        return None;
+    }
+    let data = fixture.svm.get_account(&conditions).unwrap().data;
+    let staged = &data[pointer.offset() as usize..(pointer.offset() + pointer.len()) as usize];
+    Some(velocity::relay_spec::ResolvedCrankV0::read(staged).unwrap())
+}
+
+/// The whole loop, turner-shaped: sync writes an OnValueCross condition at
+/// the trigger's raw-oracle threshold, the resolver reports no work while
+/// the price sits short, stages the dual-mode `trigger_order` once it
+/// crosses, and the staged executor lands unsigned — order triggered,
+/// keeper paid from the market reservoir, the fired slot released so the
+/// level-triggered wake goes quiet.
+#[test]
+fn trigger_relay_conditions_fire_an_armed_trigger_unsigned() {
+    use velocity::state::trigger_conditions::TriggerConditionsV0;
+
+    let mut fixture = setup();
+    const PAYMENT: u64 = 25_000;
+    let market_conditions = init_crank_conditions(&mut fixture, PAYMENT);
+    set_protocol_user(&mut fixture.svm);
+    fixture
+        .svm
+        .airdrop(&market_conditions, 1_000_000_000)
+        .unwrap();
+
+    // A user with an armed stop: trigger-market sell 1.0 when the oracle
+    // climbs to 105.
+    let authority = Keypair::new();
+    fixture
+        .svm
+        .airdrop(&authority.pubkey(), 1_000_000_000)
+        .unwrap();
+    let user = Pubkey::find_program_address(
+        &[
+            b"user",
+            authority.pubkey().as_ref(),
+            0u16.to_le_bytes().as_ref(),
+        ],
+        &velocity_id(),
+    )
+    .0;
+    let mut order = Order::default();
+    order.order_id = 7;
+    order.status = OrderStatus::Open;
+    order.order_type = OrderType::TriggerMarket;
+    order.market_type = MarketType::Perp;
+    order.market_index = 0;
+    order.direction = PositionDirection::Short;
+    order.base_asset_amount = UNIT;
+    order.trigger_price = 105 * PRICE;
+    order.trigger_condition = velocity::state::user::OrderTriggerCondition::Above;
+    set_user_account(
+        &mut fixture.svm,
+        user,
+        &trading_user(
+            &authority.pubkey(),
+            10_000 * SPOT_BALANCE_PRECISION_U64,
+            Some(order),
+        ),
+    );
+    let user_stats = Pubkey::find_program_address(
+        &[b"user_stats", authority.pubkey().as_ref()],
+        &velocity_id(),
+    )
+    .0;
+    set_user_stats_account(&mut fixture.svm, user_stats, &authority.pubkey());
+
+    sync_trigger_conditions(&mut fixture, user, market_conditions);
+
+    // The sync wrote a value watch at the trigger threshold (lazer exponent
+    // 6 = PRICE_PRECISION, so raw == trigger) with the plain trigger
+    // executor, and captured the margin-map section.
+    let conditions = trigger_conditions_pda(&user);
+    let acct: TriggerConditionsV0 = read_zero_copy(&fixture.svm, &conditions);
+    let (header, block) = velocity::relay_spec::read_block(acct.block(), 0).unwrap();
+    assert_eq!(header.num_conditions, 8);
+    assert_eq!(block[0].wake_account, fixture.oracle.to_bytes());
+    assert_eq!(block[0].wake_offset, 8);
+    assert_eq!(block[0].wake_len, 8);
+    assert_eq!(block[0].wake_ts, (105 * PRICE) as i64);
+    assert_eq!(block[0].wake_cmp, 0);
+    assert_eq!(block[0].min_payment, PAYMENT);
+    assert_eq!(block[1].active, 0, "one armed trigger, one live slot");
+    assert_eq!(acct.slots[0].order_id, 7);
+    assert_eq!(acct.map_accounts_count, 3);
+
+    // Below the trigger: the resolver reports no work.
+    fixture.svm.warp_to_slot(12);
+    set_oracle(
+        &mut fixture.svm,
+        fixture.oracle,
+        (100 * PRICE_PRECISION) as i64,
+        12,
+    );
+    assert!(run_trigger_resolver(&mut fixture, user, false).is_none());
+
+    // Crossed: the resolver stages the executor; a turner-shaped unsigned
+    // submission triggers the order and pays the keeper from the reservoir.
+    fixture.svm.warp_to_slot(13);
+    set_oracle(
+        &mut fixture.svm,
+        fixture.oracle,
+        (106 * PRICE_PRECISION) as i64,
+        13,
+    );
+    let resolved =
+        run_trigger_resolver(&mut fixture, user, false).expect("crossed threshold stages");
+    let payout = Pubkey::new_unique();
+    fixture.svm.airdrop(&payout, 1_000_000_000).unwrap();
+    let payout_before = fixture.svm.get_balance(&payout).unwrap();
+    run_staged_executor(
+        &mut fixture,
+        &resolved,
+        velocity::instruction::TriggerOrder::DISCRIMINATOR,
+        payout,
+    );
+
+    let triggered: User = read_zero_copy(&fixture.svm, &user);
+    assert!(triggered.orders[0].triggered());
+    assert_eq!(
+        fixture.svm.get_balance(&payout).unwrap(),
+        payout_before + PAYMENT
+    );
+    // The fired slot went quiet — the level-triggered wake must not spin.
+    let acct: TriggerConditionsV0 = read_zero_copy(&fixture.svm, &conditions);
+    let (_, block) = velocity::relay_spec::read_block(acct.block(), 0).unwrap();
+    assert_eq!(block[0].active, 0);
+    assert_eq!(acct.slots[0].order_id, 0);
+}
+
+/// A trigger-limit on a market with a vetted CLOB syncs to the
+/// `trigger_clob_order` executor path.
+#[test]
+fn trigger_limit_sync_targets_the_clob_executor() {
+    use velocity::state::trigger_conditions::TriggerConditionsV0;
+
+    let mut fixture = setup();
+    let market_conditions = init_crank_conditions(&mut fixture, 10_000);
+    let authority = Keypair::new();
+    let user = Pubkey::find_program_address(
+        &[
+            b"user",
+            authority.pubkey().as_ref(),
+            0u16.to_le_bytes().as_ref(),
+        ],
+        &velocity_id(),
+    )
+    .0;
+    let mut order = Order::default();
+    order.order_id = 3;
+    order.status = OrderStatus::Open;
+    order.order_type = OrderType::TriggerLimit;
+    order.market_type = MarketType::Perp;
+    order.market_index = 0;
+    order.direction = PositionDirection::Long;
+    order.base_asset_amount = UNIT;
+    order.price = 96 * PRICE;
+    order.trigger_price = 97 * PRICE;
+    order.trigger_condition = velocity::state::user::OrderTriggerCondition::Below;
+    set_user_account(
+        &mut fixture.svm,
+        user,
+        &trading_user(
+            &authority.pubkey(),
+            10_000 * SPOT_BALANCE_PRECISION_U64,
+            Some(order),
+        ),
+    );
+
+    sync_trigger_conditions(&mut fixture, user, market_conditions);
+
+    let acct: TriggerConditionsV0 = read_zero_copy(&fixture.svm, &trigger_conditions_pda(&user));
+    let (_, block) = velocity::relay_spec::read_block(acct.block(), 0).unwrap();
+    assert_eq!(block[0].wake_cmp, 1, "Below trigger watches downward");
+    assert_eq!(
+        block[0].executor_disc,
+        velocity::instruction::TriggerClobOrder::DISCRIMINATOR
+    );
+    assert_eq!(acct.slots[0].quoter.to_bytes(), fixture.quoter.to_bytes());
+    assert_eq!(
+        acct.slots[0].clob_market.to_bytes(),
+        fixture.clob_market.to_bytes()
+    );
 }

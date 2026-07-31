@@ -433,3 +433,130 @@ pub fn stage_removal(ctx: &Context<ResolveClobCrank>, maker: Pubkey, args: Vec<u
     set_return_data(&pointer);
     Ok(())
 }
+
+/// Shared tail of the trigger cranks (`trigger_order`,
+/// `trigger_clob_order`): release the fired slot on the user's relay
+/// trigger conditions so its level-triggered wake goes quiet, and in
+/// program-keeper mode pay the caller from the fired market's reservoir.
+#[allow(clippy::too_many_arguments)]
+pub fn finish_trigger_crank<'info>(
+    state: &AccountLoader<'info, State>,
+    filler: &AccountLoader<'info, User>,
+    authority: &UncheckedAccount<'info>,
+    user: &AccountLoader<'info, User>,
+    trigger_conditions: &Option<
+        AccountLoader<'info, crate::state::trigger_conditions::TriggerConditionsV0>,
+    >,
+    crank_conditions: &Option<AccountLoader<'info, ClobCrankConditionsV0>>,
+    market_index: u16,
+    order_id: u32,
+) -> Result<()> {
+    if let Some(conditions) = trigger_conditions {
+        let mut conditions = load_mut!(conditions)?;
+        validate!(
+            conditions.user == user.key(),
+            ErrorCode::DefaultError,
+            "trigger conditions are for user {}, crank is for {}",
+            conditions.user,
+            user.key()
+        )?;
+        conditions.release_slot(market_index, order_id);
+    }
+    let program_keeper_mode = filler.load()?.authority == state.load()?.signer;
+    if program_keeper_mode {
+        let reservoir = crank_conditions
+            .as_ref()
+            .ok_or_else(|| -> anchor_lang::error::Error {
+                msg!("program-keeper trigger crank requires the market's conditions account");
+                ErrorCode::DefaultError.into()
+            })?;
+        let payment = {
+            let conditions = reservoir.load()?;
+            validate!(
+                conditions.market_index == market_index,
+                ErrorCode::DefaultError,
+                "conditions are for market {}, the fired order is market {}",
+                conditions.market_index,
+                market_index
+            )?;
+            conditions.keeper_payment_lamports
+        };
+        let info = reservoir.to_account_info();
+        let rent_minimum = Rent::get()?.minimum_balance(info.data_len());
+        ClobCrankConditionsV0::pay_keeper_lamports(
+            &info,
+            &authority.to_account_info(),
+            payment,
+            rent_minimum,
+        )?;
+    }
+    Ok(())
+}
+
+/// Discovery shared by the trigger resolvers: the first armed trigger order
+/// on `market` whose condition the oracle satisfies right now and whose
+/// synced slot matches the resolver's executor path (`want_clob_path`).
+/// Everything is re-verified — a stale sync or moved price just returns
+/// `None` and the turner backs off.
+pub fn find_fired_trigger(
+    conditions: &crate::state::trigger_conditions::TriggerConditionsV0,
+    user: &User,
+    market: &PerpMarket,
+    oracle_info: &AccountInfo,
+    slot: u64,
+    want_clob_path: bool,
+) -> Result<Option<crate::state::trigger_conditions::TriggerSlotMetaV0>> {
+    validate!(
+        oracle_info.key() == market.oracle,
+        ErrorCode::DefaultError,
+        "oracle {} is not market {}'s oracle",
+        oracle_info.key(),
+        market.market_index
+    )?;
+    let oracle_price =
+        crate::state::oracle::get_oracle_price(&market.oracle_source, oracle_info, slot)?
+            .price
+            .max(0) as u64;
+
+    for order in user.orders.iter() {
+        if order.status != crate::state::user::OrderStatus::Open
+            || order.market_index != market.market_index
+            || !order.must_be_triggered()
+            || order.triggered()
+        {
+            continue;
+        }
+        if !crate::math::orders::order_satisfies_trigger_condition(order, oracle_price)? {
+            continue;
+        }
+        let Some(meta) = conditions
+            .slots
+            .iter()
+            .find(|meta| meta.market_index == order.market_index && meta.order_id == order.order_id)
+            .copied()
+        else {
+            continue;
+        };
+        let is_clob_path = meta.quoter != Pubkey::default();
+        if is_clob_path == want_clob_path {
+            return Ok(Some(meta));
+        }
+    }
+    Ok(None)
+}
+
+/// Append a synced margin-map section to staged executor metas.
+pub fn push_map_refs(
+    metas: &mut Vec<AccountMeta>,
+    conditions: &crate::state::trigger_conditions::TriggerConditionsV0,
+) -> Result<()> {
+    for r in conditions.read_map_accounts() {
+        let pubkey = Pubkey::new_from_array(r.address);
+        metas.push(if r.writable != 0 {
+            AccountMeta::new(pubkey, false)
+        } else {
+            AccountMeta::new_readonly(pubkey, false)
+        });
+    }
+    Ok(())
+}

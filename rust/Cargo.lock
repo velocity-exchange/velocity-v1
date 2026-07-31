@@ -4681,7 +4681,7 @@ checksum = "d6f6ff9a378485b298a5286656da665ba74413d36db0979633275d2e708145d4"
 [[package]]
 name = "relay-chain-source"
 version = "0.1.0"
-source = "git+https://github.com/velocity-exchange/relay?rev=79413dfa358f0310055668a47e60fe98e1eefe8f#79413dfa358f0310055668a47e60fe98e1eefe8f"
+source = "git+https://github.com/velocity-exchange/relay?rev=b90ea74136062b26bf072185f82c35c6bb8ab0e5#b90ea74136062b26bf072185f82c35c6bb8ab0e5"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -4707,7 +4707,7 @@ dependencies = [
 [[package]]
 name = "relay-spec"
 version = "0.1.0"
-source = "git+https://github.com/velocity-exchange/relay?rev=79413dfa358f0310055668a47e60fe98e1eefe8f#79413dfa358f0310055668a47e60fe98e1eefe8f"
+source = "git+https://github.com/velocity-exchange/relay?rev=b90ea74136062b26bf072185f82c35c6bb8ab0e5#b90ea74136062b26bf072185f82c35c6bb8ab0e5"
 dependencies = [
  "bytemuck",
 ]

@@ -1133,6 +1133,22 @@ pub mod instructions {
     #[automatically_derived]
     impl anchor_lang::InstructionData for ResolveSpotBankruptcy {}
     #[derive(AnchorSerialize, AnchorDeserialize, Clone, Default)]
+    pub struct ResolveTriggerClobOrder {}
+    #[automatically_derived]
+    impl anchor_lang::Discriminator for ResolveTriggerClobOrder {
+        const DISCRIMINATOR: &[u8] = &[21, 250, 194, 125, 230, 11, 202, 66];
+    }
+    #[automatically_derived]
+    impl anchor_lang::InstructionData for ResolveTriggerClobOrder {}
+    #[derive(AnchorSerialize, AnchorDeserialize, Clone, Default)]
+    pub struct ResolveTriggerOrder {}
+    #[automatically_derived]
+    impl anchor_lang::Discriminator for ResolveTriggerOrder {
+        const DISCRIMINATOR: &[u8] = &[246, 112, 254, 98, 43, 234, 178, 33];
+    }
+    #[automatically_derived]
+    impl anchor_lang::InstructionData for ResolveTriggerOrder {}
+    #[derive(AnchorSerialize, AnchorDeserialize, Clone, Default)]
     pub struct RevertFill {}
     #[automatically_derived]
     impl anchor_lang::Discriminator for RevertFill {
@@ -1234,6 +1250,14 @@ pub mod instructions {
     }
     #[automatically_derived]
     impl anchor_lang::InstructionData for SweepPerpMarketFees {}
+    #[derive(AnchorSerialize, AnchorDeserialize, Clone, Default)]
+    pub struct SyncTriggerConditions {}
+    #[automatically_derived]
+    impl anchor_lang::Discriminator for SyncTriggerConditions {
+        const DISCRIMINATOR: &[u8] = &[105, 93, 218, 179, 236, 229, 95, 132];
+    }
+    #[automatically_derived]
+    impl anchor_lang::InstructionData for SyncTriggerConditions {}
     #[derive(AnchorSerialize, AnchorDeserialize, Clone, Default)]
     pub struct TransferDeposit {
         pub market_index: u16,
@@ -3226,8 +3250,8 @@ pub mod types {
         PartialEq,
     )]
     pub struct ClobCrankConditionsV0 {
-        pub block: ByteArray<8848>,
-        pub staging: ByteArray<1024>,
+        pub block: ByteArray<1744>,
+        pub staging: ByteArray<2048>,
         pub oracle: Pubkey,
         pub keeper_payment_lamports: u64,
         pub market_index: u16,
@@ -5156,8 +5180,9 @@ pub mod types {
         PartialEq,
     )]
     pub struct QuoterCrossConditionsV0 {
-        pub block: ByteArray<4432>,
+        pub block: ByteArray<880>,
         pub staging: ByteArray<2048>,
+        pub resolver_list: ByteArray<1254>,
         pub quoter: Pubkey,
         pub clob_quoter: Pubkey,
         pub clob_market: Pubkey,
@@ -5165,8 +5190,9 @@ pub mod types {
         pub oracle: Pubkey,
         pub market_index: u16,
         pub quote_spot_market_index: u16,
+        pub resolver_list_count: u8,
         #[serde(skip)]
-        pub padding: Padding<12>,
+        pub padding: Padding<5>,
     }
     #[derive(
         AnchorSerialize,
@@ -5945,6 +5971,51 @@ pub mod types {
         Debug,
         PartialEq,
     )]
+    pub struct TriggerConditionsV0 {
+        pub block: ByteArray<2320>,
+        pub staging: ByteArray<2048>,
+        pub slots: [TriggerSlotMetaV0; 8],
+        pub map_accounts: ByteArray<792>,
+        pub user: Pubkey,
+        pub map_accounts_count: u8,
+        #[serde(skip)]
+        pub padding: Padding<7>,
+    }
+    #[repr(C)]
+    #[derive(
+        AnchorSerialize,
+        AnchorDeserialize,
+        InitSpace,
+        Serialize,
+        Deserialize,
+        Copy,
+        Clone,
+        Default,
+        Debug,
+        PartialEq,
+    )]
+    pub struct TriggerSlotMetaV0 {
+        pub quoter: Pubkey,
+        pub clob_market: Pubkey,
+        pub clob_program: Pubkey,
+        pub order_id: u32,
+        pub market_index: u16,
+        #[serde(skip)]
+        pub padding: Padding<2>,
+    }
+    #[repr(C)]
+    #[derive(
+        AnchorSerialize,
+        AnchorDeserialize,
+        InitSpace,
+        Serialize,
+        Deserialize,
+        Copy,
+        Clone,
+        Default,
+        Debug,
+        PartialEq,
+    )]
     pub struct UpdatePerpMarketSummaryStatsParams {
         pub net_unsettled_funding_pnl: Option<i64>,
         pub update_amm_summary_stats: Option<bool>,
@@ -6235,8 +6306,8 @@ pub mod accounts {
         PartialEq,
     )]
     pub struct ClobCrankConditionsV0 {
-        pub block: ByteArray<8848>,
-        pub staging: ByteArray<1024>,
+        pub block: ByteArray<1744>,
+        pub staging: ByteArray<2048>,
         pub oracle: Pubkey,
         pub keeper_payment_lamports: u64,
         pub market_index: u16,
@@ -6868,8 +6939,9 @@ pub mod accounts {
         PartialEq,
     )]
     pub struct QuoterCrossConditionsV0 {
-        pub block: ByteArray<4432>,
+        pub block: ByteArray<880>,
         pub staging: ByteArray<2048>,
+        pub resolver_list: ByteArray<1254>,
         pub quoter: Pubkey,
         pub clob_quoter: Pubkey,
         pub clob_market: Pubkey,
@@ -6877,8 +6949,9 @@ pub mod accounts {
         pub oracle: Pubkey,
         pub market_index: u16,
         pub quote_spot_market_index: u16,
+        pub resolver_list_count: u8,
         #[serde(skip)]
-        pub padding: Padding<12>,
+        pub padding: Padding<5>,
     }
     #[automatically_derived]
     impl anchor_lang::Discriminator for QuoterCrossConditionsV0 {
@@ -7503,6 +7576,68 @@ pub mod accounts {
     }
     #[automatically_derived]
     impl anchor_lang::AccountDeserialize for State {
+        fn try_deserialize(buf: &mut &[u8]) -> anchor_lang::Result<Self> {
+            let given_disc = &buf[..8];
+            if Self::DISCRIMINATOR != given_disc {
+                return Err(anchor_lang::error!(
+                    anchor_lang::error::ErrorCode::AccountDiscriminatorMismatch
+                ));
+            }
+            Self::try_deserialize_unchecked(buf)
+        }
+        fn try_deserialize_unchecked(buf: &mut &[u8]) -> anchor_lang::Result<Self> {
+            let mut data: &[u8] = &buf[8..];
+            AnchorDeserialize::deserialize(&mut data)
+                .map_err(|_| anchor_lang::error::ErrorCode::AccountDidNotDeserialize.into())
+        }
+    }
+    #[repr(C)]
+    #[derive(
+        AnchorSerialize,
+        AnchorDeserialize,
+        InitSpace,
+        Serialize,
+        Deserialize,
+        Copy,
+        Clone,
+        Default,
+        Debug,
+        PartialEq,
+    )]
+    pub struct TriggerConditionsV0 {
+        pub block: ByteArray<2320>,
+        pub staging: ByteArray<2048>,
+        pub slots: [TriggerSlotMetaV0; 8],
+        pub map_accounts: ByteArray<792>,
+        pub user: Pubkey,
+        pub map_accounts_count: u8,
+        #[serde(skip)]
+        pub padding: Padding<7>,
+    }
+    #[automatically_derived]
+    impl anchor_lang::Discriminator for TriggerConditionsV0 {
+        const DISCRIMINATOR: &[u8] = &[66, 80, 217, 49, 180, 92, 215, 163];
+    }
+    #[automatically_derived]
+    unsafe impl anchor_lang::__private::bytemuck::Pod for TriggerConditionsV0 {}
+    #[automatically_derived]
+    unsafe impl anchor_lang::__private::bytemuck::Zeroable for TriggerConditionsV0 {}
+    #[automatically_derived]
+    impl anchor_lang::ZeroCopy for TriggerConditionsV0 {}
+    #[automatically_derived]
+    impl anchor_lang::AccountSerialize for TriggerConditionsV0 {
+        fn try_serialize<W: std::io::Write>(&self, writer: &mut W) -> anchor_lang::Result<()> {
+            if writer.write_all(Self::DISCRIMINATOR).is_err() {
+                return Err(anchor_lang::error::ErrorCode::AccountDidNotSerialize.into());
+            }
+            if AnchorSerialize::serialize(self, writer).is_err() {
+                return Err(anchor_lang::error::ErrorCode::AccountDidNotSerialize.into());
+            }
+            Ok(())
+        }
+    }
+    #[automatically_derived]
+    impl anchor_lang::AccountDeserialize for TriggerConditionsV0 {
         fn try_deserialize(buf: &mut &[u8]) -> anchor_lang::Result<Self> {
             let given_disc = &buf[..8];
             if Self::DISCRIMINATOR != given_disc {
@@ -16764,6 +16899,158 @@ pub mod accounts {
     }
     #[repr(C)]
     #[derive(Copy, Clone, Default, AnchorSerialize, AnchorDeserialize, Serialize, Deserialize)]
+    pub struct ResolveTriggerClobOrder {
+        pub trigger_conditions: Pubkey,
+        pub user: Pubkey,
+        pub oracle: Pubkey,
+        pub perp_market: Pubkey,
+    }
+    #[automatically_derived]
+    impl anchor_lang::Discriminator for ResolveTriggerClobOrder {
+        const DISCRIMINATOR: &[u8] = &[196, 91, 84, 83, 77, 177, 184, 241];
+    }
+    #[automatically_derived]
+    unsafe impl anchor_lang::__private::bytemuck::Pod for ResolveTriggerClobOrder {}
+    #[automatically_derived]
+    unsafe impl anchor_lang::__private::bytemuck::Zeroable for ResolveTriggerClobOrder {}
+    #[automatically_derived]
+    impl anchor_lang::ZeroCopy for ResolveTriggerClobOrder {}
+    #[automatically_derived]
+    impl anchor_lang::InstructionData for ResolveTriggerClobOrder {}
+    #[automatically_derived]
+    impl ToAccountMetas for ResolveTriggerClobOrder {
+        fn to_account_metas(&self) -> Vec<AccountMeta> {
+            vec![
+                AccountMeta {
+                    pubkey: self.trigger_conditions,
+                    is_signer: false,
+                    is_writable: true,
+                },
+                AccountMeta {
+                    pubkey: self.user,
+                    is_signer: false,
+                    is_writable: false,
+                },
+                AccountMeta {
+                    pubkey: self.oracle,
+                    is_signer: false,
+                    is_writable: false,
+                },
+                AccountMeta {
+                    pubkey: self.perp_market,
+                    is_signer: false,
+                    is_writable: false,
+                },
+            ]
+        }
+    }
+    #[automatically_derived]
+    impl anchor_lang::AccountSerialize for ResolveTriggerClobOrder {
+        fn try_serialize<W: std::io::Write>(&self, writer: &mut W) -> anchor_lang::Result<()> {
+            if writer.write_all(Self::DISCRIMINATOR).is_err() {
+                return Err(anchor_lang::error::ErrorCode::AccountDidNotSerialize.into());
+            }
+            if AnchorSerialize::serialize(self, writer).is_err() {
+                return Err(anchor_lang::error::ErrorCode::AccountDidNotSerialize.into());
+            }
+            Ok(())
+        }
+    }
+    #[automatically_derived]
+    impl anchor_lang::AccountDeserialize for ResolveTriggerClobOrder {
+        fn try_deserialize(buf: &mut &[u8]) -> anchor_lang::Result<Self> {
+            let given_disc = &buf[..8];
+            if Self::DISCRIMINATOR != given_disc {
+                return Err(anchor_lang::error!(
+                    anchor_lang::error::ErrorCode::AccountDiscriminatorMismatch
+                ));
+            }
+            Self::try_deserialize_unchecked(buf)
+        }
+        fn try_deserialize_unchecked(buf: &mut &[u8]) -> anchor_lang::Result<Self> {
+            let mut data: &[u8] = &buf[8..];
+            AnchorDeserialize::deserialize(&mut data)
+                .map_err(|_| anchor_lang::error::ErrorCode::AccountDidNotDeserialize.into())
+        }
+    }
+    #[repr(C)]
+    #[derive(Copy, Clone, Default, AnchorSerialize, AnchorDeserialize, Serialize, Deserialize)]
+    pub struct ResolveTriggerOrder {
+        pub trigger_conditions: Pubkey,
+        pub user: Pubkey,
+        pub oracle: Pubkey,
+        pub perp_market: Pubkey,
+    }
+    #[automatically_derived]
+    impl anchor_lang::Discriminator for ResolveTriggerOrder {
+        const DISCRIMINATOR: &[u8] = &[165, 245, 62, 182, 187, 122, 166, 91];
+    }
+    #[automatically_derived]
+    unsafe impl anchor_lang::__private::bytemuck::Pod for ResolveTriggerOrder {}
+    #[automatically_derived]
+    unsafe impl anchor_lang::__private::bytemuck::Zeroable for ResolveTriggerOrder {}
+    #[automatically_derived]
+    impl anchor_lang::ZeroCopy for ResolveTriggerOrder {}
+    #[automatically_derived]
+    impl anchor_lang::InstructionData for ResolveTriggerOrder {}
+    #[automatically_derived]
+    impl ToAccountMetas for ResolveTriggerOrder {
+        fn to_account_metas(&self) -> Vec<AccountMeta> {
+            vec![
+                AccountMeta {
+                    pubkey: self.trigger_conditions,
+                    is_signer: false,
+                    is_writable: true,
+                },
+                AccountMeta {
+                    pubkey: self.user,
+                    is_signer: false,
+                    is_writable: false,
+                },
+                AccountMeta {
+                    pubkey: self.oracle,
+                    is_signer: false,
+                    is_writable: false,
+                },
+                AccountMeta {
+                    pubkey: self.perp_market,
+                    is_signer: false,
+                    is_writable: false,
+                },
+            ]
+        }
+    }
+    #[automatically_derived]
+    impl anchor_lang::AccountSerialize for ResolveTriggerOrder {
+        fn try_serialize<W: std::io::Write>(&self, writer: &mut W) -> anchor_lang::Result<()> {
+            if writer.write_all(Self::DISCRIMINATOR).is_err() {
+                return Err(anchor_lang::error::ErrorCode::AccountDidNotSerialize.into());
+            }
+            if AnchorSerialize::serialize(self, writer).is_err() {
+                return Err(anchor_lang::error::ErrorCode::AccountDidNotSerialize.into());
+            }
+            Ok(())
+        }
+    }
+    #[automatically_derived]
+    impl anchor_lang::AccountDeserialize for ResolveTriggerOrder {
+        fn try_deserialize(buf: &mut &[u8]) -> anchor_lang::Result<Self> {
+            let given_disc = &buf[..8];
+            if Self::DISCRIMINATOR != given_disc {
+                return Err(anchor_lang::error!(
+                    anchor_lang::error::ErrorCode::AccountDiscriminatorMismatch
+                ));
+            }
+            Self::try_deserialize_unchecked(buf)
+        }
+        fn try_deserialize_unchecked(buf: &mut &[u8]) -> anchor_lang::Result<Self> {
+            let mut data: &[u8] = &buf[8..];
+            AnchorDeserialize::deserialize(&mut data)
+                .map_err(|_| anchor_lang::error::ErrorCode::AccountDidNotDeserialize.into())
+        }
+    }
+    #[repr(C)]
+    #[derive(Copy, Clone, Default, AnchorSerialize, AnchorDeserialize, Serialize, Deserialize)]
     pub struct RevertFill {
         pub state: Pubkey,
         pub authority: Pubkey,
@@ -17618,6 +17905,88 @@ pub mod accounts {
     }
     #[repr(C)]
     #[derive(Copy, Clone, Default, AnchorSerialize, AnchorDeserialize, Serialize, Deserialize)]
+    pub struct SyncTriggerConditions {
+        pub payer: Pubkey,
+        pub user: Pubkey,
+        pub trigger_conditions: Pubkey,
+        pub rent: Pubkey,
+        pub system_program: Pubkey,
+    }
+    #[automatically_derived]
+    impl anchor_lang::Discriminator for SyncTriggerConditions {
+        const DISCRIMINATOR: &[u8] = &[189, 71, 18, 215, 143, 92, 36, 248];
+    }
+    #[automatically_derived]
+    unsafe impl anchor_lang::__private::bytemuck::Pod for SyncTriggerConditions {}
+    #[automatically_derived]
+    unsafe impl anchor_lang::__private::bytemuck::Zeroable for SyncTriggerConditions {}
+    #[automatically_derived]
+    impl anchor_lang::ZeroCopy for SyncTriggerConditions {}
+    #[automatically_derived]
+    impl anchor_lang::InstructionData for SyncTriggerConditions {}
+    #[automatically_derived]
+    impl ToAccountMetas for SyncTriggerConditions {
+        fn to_account_metas(&self) -> Vec<AccountMeta> {
+            vec![
+                AccountMeta {
+                    pubkey: self.payer,
+                    is_signer: true,
+                    is_writable: true,
+                },
+                AccountMeta {
+                    pubkey: self.user,
+                    is_signer: false,
+                    is_writable: false,
+                },
+                AccountMeta {
+                    pubkey: self.trigger_conditions,
+                    is_signer: false,
+                    is_writable: true,
+                },
+                AccountMeta {
+                    pubkey: self.rent,
+                    is_signer: false,
+                    is_writable: false,
+                },
+                AccountMeta {
+                    pubkey: self.system_program,
+                    is_signer: false,
+                    is_writable: false,
+                },
+            ]
+        }
+    }
+    #[automatically_derived]
+    impl anchor_lang::AccountSerialize for SyncTriggerConditions {
+        fn try_serialize<W: std::io::Write>(&self, writer: &mut W) -> anchor_lang::Result<()> {
+            if writer.write_all(Self::DISCRIMINATOR).is_err() {
+                return Err(anchor_lang::error::ErrorCode::AccountDidNotSerialize.into());
+            }
+            if AnchorSerialize::serialize(self, writer).is_err() {
+                return Err(anchor_lang::error::ErrorCode::AccountDidNotSerialize.into());
+            }
+            Ok(())
+        }
+    }
+    #[automatically_derived]
+    impl anchor_lang::AccountDeserialize for SyncTriggerConditions {
+        fn try_deserialize(buf: &mut &[u8]) -> anchor_lang::Result<Self> {
+            let given_disc = &buf[..8];
+            if Self::DISCRIMINATOR != given_disc {
+                return Err(anchor_lang::error!(
+                    anchor_lang::error::ErrorCode::AccountDiscriminatorMismatch
+                ));
+            }
+            Self::try_deserialize_unchecked(buf)
+        }
+        fn try_deserialize_unchecked(buf: &mut &[u8]) -> anchor_lang::Result<Self> {
+            let mut data: &[u8] = &buf[8..];
+            AnchorDeserialize::deserialize(&mut data)
+                .map_err(|_| anchor_lang::error::ErrorCode::AccountDidNotDeserialize.into())
+        }
+    }
+    #[repr(C)]
+    #[derive(Copy, Clone, Default, AnchorSerialize, AnchorDeserialize, Serialize, Deserialize)]
     pub struct TransferDeposit {
         pub from_user: Pubkey,
         pub to_user: Pubkey,
@@ -18170,6 +18539,7 @@ pub mod accounts {
         pub clob_program: Pubkey,
         pub velocity_signer: Pubkey,
         pub crank_conditions: Pubkey,
+        pub trigger_conditions: Pubkey,
     }
     #[automatically_derived]
     impl anchor_lang::Discriminator for TriggerClobOrder {
@@ -18194,8 +18564,8 @@ pub mod accounts {
                 },
                 AccountMeta {
                     pubkey: self.authority,
-                    is_signer: true,
-                    is_writable: false,
+                    is_signer: false,
+                    is_writable: true,
                 },
                 AccountMeta {
                     pubkey: self.filler,
@@ -18242,6 +18612,11 @@ pub mod accounts {
                     is_signer: false,
                     is_writable: true,
                 },
+                AccountMeta {
+                    pubkey: self.trigger_conditions,
+                    is_signer: false,
+                    is_writable: true,
+                },
             ]
         }
     }
@@ -18282,6 +18657,8 @@ pub mod accounts {
         pub filler: Pubkey,
         pub user: Pubkey,
         pub user_stats: Pubkey,
+        pub trigger_conditions: Pubkey,
+        pub crank_conditions: Pubkey,
     }
     #[automatically_derived]
     impl anchor_lang::Discriminator for TriggerOrder {
@@ -18306,8 +18683,8 @@ pub mod accounts {
                 },
                 AccountMeta {
                     pubkey: self.authority,
-                    is_signer: true,
-                    is_writable: false,
+                    is_signer: false,
+                    is_writable: true,
                 },
                 AccountMeta {
                     pubkey: self.filler,
@@ -18323,6 +18700,16 @@ pub mod accounts {
                     pubkey: self.user_stats,
                     is_signer: false,
                     is_writable: false,
+                },
+                AccountMeta {
+                    pubkey: self.trigger_conditions,
+                    is_signer: false,
+                    is_writable: true,
+                },
+                AccountMeta {
+                    pubkey: self.crank_conditions,
+                    is_signer: false,
+                    is_writable: true,
                 },
             ]
         }

@@ -56,6 +56,17 @@ pub const QUOTER_CROSS_STAGING_LEN: usize = 2048;
 /// `offset` is relative to): discriminator + the block.
 pub const QUOTER_CROSS_STAGING_OFFSET: usize = 8 + QUOTER_CROSS_BLOCK_LEN;
 
+/// The resolver's account list, stored ONCE next to the block and pointed
+/// at by every condition's `resolver_list_offset` (relay's indirection for
+/// lists that outgrow the inline slots): 5 named accounts + the entry's
+/// registered quote surface (≤32) + its program.
+pub const QUOTER_CROSS_RESOLVER_LIST_MAX: usize = 38;
+pub const QUOTER_CROSS_RESOLVER_LIST_LEN: usize =
+    QUOTER_CROSS_RESOLVER_LIST_MAX * relay_spec::ACCOUNT_REF_LEN;
+/// Account-data offset of the resolver list region.
+pub const QUOTER_CROSS_RESOLVER_LIST_OFFSET: usize =
+    QUOTER_CROSS_STAGING_OFFSET + QUOTER_CROSS_STAGING_LEN;
+
 #[account(zero_copy(unsafe))]
 #[derive(Debug)]
 #[repr(C)]
@@ -66,6 +77,9 @@ pub struct QuoterCrossConditionsV0 {
     /// Scratch the resolver stages its `ResolvedCrankV0` into. Only ever
     /// written under simulation.
     pub staging: [u8; QUOTER_CROSS_STAGING_LEN],
+    /// The resolver's account list ([`relay_spec::AccountRefV0`] wire
+    /// bytes), written at attach; the conditions reference it indirectly.
+    pub resolver_list: [u8; QUOTER_CROSS_RESOLVER_LIST_LEN],
     /// The Custom entry these conditions discover crosses for.
     pub quoter: Pubkey,
     /// The market's canonical CLOB entry / book / program, captured at
@@ -79,7 +93,9 @@ pub struct QuoterCrossConditionsV0 {
     pub oracle: Pubkey,
     pub market_index: u16,
     pub quote_spot_market_index: u16,
-    pub padding: [u8; 12],
+    /// Live entries in `resolver_list`.
+    pub resolver_list_count: u8,
+    pub padding: [u8; 5],
 }
 
 impl Default for QuoterCrossConditionsV0 {
@@ -87,6 +103,7 @@ impl Default for QuoterCrossConditionsV0 {
         Self {
             block: [0; QUOTER_CROSS_BLOCK_LEN],
             staging: [0; QUOTER_CROSS_STAGING_LEN],
+            resolver_list: [0; QUOTER_CROSS_RESOLVER_LIST_LEN],
             quoter: Pubkey::default(),
             clob_quoter: Pubkey::default(),
             clob_market: Pubkey::default(),
@@ -94,14 +111,37 @@ impl Default for QuoterCrossConditionsV0 {
             oracle: Pubkey::default(),
             market_index: 0,
             quote_spot_market_index: 0,
-            padding: [0; 12],
+            resolver_list_count: 0,
+            padding: [0; 5],
         }
     }
 }
 
 impl QuoterCrossConditionsV0 {
-    pub const SIZE: usize =
-        8 + QUOTER_CROSS_BLOCK_LEN + QUOTER_CROSS_STAGING_LEN + 5 * 32 + 2 + 2 + 12;
+    pub const SIZE: usize = 8
+        + QUOTER_CROSS_BLOCK_LEN
+        + QUOTER_CROSS_STAGING_LEN
+        + QUOTER_CROSS_RESOLVER_LIST_LEN
+        + 5 * 32
+        + 2
+        + 2
+        + 1
+        + 5;
+
+    /// Write the resolver account list the conditions point at.
+    pub fn write_resolver_list(&mut self, refs: &[relay_spec::AccountRefV0]) -> Result<()> {
+        if refs.len() > QUOTER_CROSS_RESOLVER_LIST_MAX {
+            msg!("resolver list of {} exceeds the region", refs.len());
+            return Err(ErrorCode::DefaultError.into());
+        }
+        for (i, r) in refs.iter().enumerate() {
+            let start = i * relay_spec::ACCOUNT_REF_LEN;
+            self.resolver_list[start..start + 32].copy_from_slice(&r.address);
+            self.resolver_list[start + 32] = r.writable;
+        }
+        self.resolver_list_count = refs.len() as u8;
+        Ok(())
+    }
 
     pub fn block(&self) -> &[u8] {
         &self.block

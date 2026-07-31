@@ -21,6 +21,7 @@ pub use {
     pyth_lazer_oracle::*,
     quoter_registry::*,
     router::*,
+    trigger_relay::*,
     user::*,
 };
 
@@ -35,4 +36,5 @@ mod protocol_fees;
 mod pyth_lazer_oracle;
 mod quoter_registry;
 mod router;
+mod trigger_relay;
 mod user;

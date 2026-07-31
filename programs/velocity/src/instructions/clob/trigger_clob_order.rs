@@ -81,10 +81,14 @@ use {
 #[instruction(market_index: u16)]
 pub struct TriggerClobOrder<'info> {
     pub state: AccountLoader<'info, State>,
-    pub authority: Signer<'info>,
+    /// CHECK: in signed-keeper mode this must sign for `filler`; in
+    /// program-keeper mode (protocol `User` as filler, relay turners) it is
+    /// only the lamport payout target and no signature is required.
+    #[account(mut)]
+    pub authority: UncheckedAccount<'info>,
     #[account(
         mut,
-        constraint = can_sign_for_user(&filler, &authority)?
+        constraint = can_crank_for_filler(&filler, &authority, &state)?
     )]
     pub filler: AccountLoader<'info, User>,
     #[account(
@@ -121,6 +125,19 @@ pub struct TriggerClobOrder<'info> {
         bump
     )]
     pub crank_conditions: Option<AccountLoader<'info, ClobCrankConditionsV0>>,
+    /// The user's relay trigger conditions: the fired slot is released so
+    /// its level-triggered wake goes quiet. Optional, like everything else
+    /// on the relay side.
+    #[account(
+        mut,
+        seeds = [
+            crate::state::trigger_conditions::TRIGGER_CONDITIONS_PDA_SEED,
+            user.key().as_ref(),
+        ],
+        bump
+    )]
+    pub trigger_conditions:
+        Option<AccountLoader<'info, crate::state::trigger_conditions::TriggerConditionsV0>>,
 }
 
 #[access_control(
@@ -485,6 +502,17 @@ pub fn handle_trigger_clob_order<'c: 'info, 'info>(
         }
     }
 
+    super::crank_common::finish_trigger_crank(
+        &ctx.accounts.state,
+        &ctx.accounts.filler,
+        &ctx.accounts.authority,
+        &ctx.accounts.user,
+        &ctx.accounts.trigger_conditions,
+        &ctx.accounts.crank_conditions,
+        market_index,
+        order_id,
+    )?;
+
     msg!(
         "triggered order {} onto the clob as order {} (node {}) for user {}",
         order_id,
@@ -492,5 +520,90 @@ pub fn handle_trigger_clob_order<'c: 'info, 'info>(
         order_ref.node_index,
         user_key
     );
+    Ok(())
+}
+
+/// The relay resolver for `trigger_clob_order` (`Resolve<EndpointName>`):
+/// simulation-only, staged from the user's synced trigger conditions.
+#[derive(Accounts)]
+pub struct ResolveTriggerClobOrder<'info> {
+    /// Writable only for the staging region; simulation-only.
+    #[account(mut, constraint = trigger_conditions.load()?.user == user.key())]
+    pub trigger_conditions:
+        AccountLoader<'info, crate::state::trigger_conditions::TriggerConditionsV0>,
+    pub user: AccountLoader<'info, User>,
+    /// CHECK: validated against the market's oracle in the handler.
+    pub oracle: UncheckedAccount<'info>,
+    pub perp_market: AccountLoader<'info, crate::state::perp_market::PerpMarket>,
+}
+
+pub fn handle_resolve_trigger_clob_order(ctx: Context<ResolveTriggerClobOrder>) -> Result<()> {
+    let clock = Clock::get()?;
+    let fired = {
+        let conditions = ctx.accounts.trigger_conditions.load()?;
+        let user = crate::load!(ctx.accounts.user)?;
+        let market = ctx.accounts.perp_market.load()?;
+        super::crank_common::find_fired_trigger(
+            &conditions,
+            &user,
+            &market,
+            &ctx.accounts.oracle,
+            clock.slot,
+            true,
+        )?
+    };
+    let Some(meta) = fired else {
+        return super::crank_common::no_work();
+    };
+
+    let (signer, _) = Pubkey::find_program_address(&[b"velocity_signer"], &crate::ID);
+    let (protocol_user, protocol_user_stats) =
+        super::crank_common::derive_protocol_user_pdas(&signer);
+    let (state_key, _) = Pubkey::find_program_address(&[b"velocity_state"], &crate::ID);
+    let (user_stats, _) = Pubkey::find_program_address(
+        &[
+            b"user_stats",
+            crate::load!(ctx.accounts.user)?.authority.as_ref(),
+        ],
+        &crate::ID,
+    );
+    let (market_conditions, _) = Pubkey::find_program_address(
+        &[
+            CLOB_CRANK_CONDITIONS_PDA_SEED,
+            meta.market_index.to_le_bytes().as_ref(),
+        ],
+        &crate::ID,
+    );
+
+    let mut metas = crate::accounts::TriggerClobOrder {
+        state: state_key,
+        authority: Pubkey::new_from_array(relay_spec::KEEPER_PLACEHOLDER),
+        filler: protocol_user,
+        filler_stats: protocol_user_stats,
+        user: ctx.accounts.user.key(),
+        user_stats,
+        quoter: meta.quoter,
+        clob_market: meta.clob_market,
+        clob_program: meta.clob_program,
+        velocity_signer: signer,
+        crank_conditions: Some(market_conditions),
+        trigger_conditions: Some(ctx.accounts.trigger_conditions.key()),
+    }
+    .to_account_metas(None);
+    super::crank_common::push_map_refs(&mut metas, &*ctx.accounts.trigger_conditions.load()?)?;
+
+    let mut args = Vec::with_capacity(6);
+    meta.market_index.serialize(&mut args)?;
+    meta.order_id.serialize(&mut args)?;
+    let resolved = relay_spec::ResolvedCrankV0 {
+        accounts: super::crank_common::to_account_refs(metas),
+        data: args,
+    };
+    let pointer = ctx
+        .accounts
+        .trigger_conditions
+        .load_mut()?
+        .stage(&resolved)?;
+    solana_program::program::set_return_data(&pointer);
     Ok(())
 }

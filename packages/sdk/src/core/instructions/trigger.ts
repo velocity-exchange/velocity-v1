@@ -32,7 +32,14 @@ export async function buildTriggerOrderInstruction(args: {
 	userStats: PublicKey;
 	authority: PublicKey;
 	remainingAccounts: AccountMeta[];
+	/** the user's relay trigger conditions PDA; omitted = program-id placeholder */
+	triggerConditions?: PublicKey;
+	/** the market's crank-conditions PDA (reservoir); omitted = placeholder */
+	crankConditions?: PublicKey;
 }): Promise<TransactionInstruction> {
+	// Omitted optional relay accounts (the user's trigger conditions and the
+	// market's crank conditions) encode as the program id — anchor's `None`.
+	const omitted = args.program.programId;
 	return await (args.program.instruction as any).triggerOrder(args.orderId, {
 		accounts: {
 			state: args.state,
@@ -40,6 +47,8 @@ export async function buildTriggerOrderInstruction(args: {
 			user: args.user,
 			userStats: args.userStats,
 			authority: args.authority,
+			triggerConditions: args.triggerConditions ?? omitted,
+			crankConditions: args.crankConditions ?? omitted,
 		},
 		remainingAccounts: args.remainingAccounts,
 	});

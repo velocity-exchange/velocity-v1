@@ -48,6 +48,7 @@ use {
         optional_accounts::{get_token_mint, update_prelaunch_oracle},
         print_error, safe_decrement,
         state::{
+            clob_crank::ClobCrankConditionsV0,
             events::{DeleteUserRecord, OrderActionExplanation, SignedMsgOrderRecord},
             fill_mode::FillMode,
             insurance_fund_stake::InsuranceFundStake,
@@ -74,6 +75,7 @@ use {
                 get_writable_spot_market_set, get_writable_spot_market_set_from_many, SpotMarketMap,
             },
             state::{HotRole, State},
+            trigger_conditions::{TriggerConditionsV0, TRIGGER_CONDITIONS_PDA_SEED},
             user::{MarketType, OrderStatus, OrderTriggerCondition, OrderType, User, UserStats},
             user_map::{load_user_map, load_user_maps},
             zero_copy::{AccountZeroCopyMut, ZeroCopyLoader},
@@ -373,8 +375,8 @@ pub fn handle_trigger_order<'c: 'info, 'info>(
     ctx: Context<'info, TriggerOrder<'info>>,
     order_id: u32,
 ) -> Result<()> {
-    let market_type = match load!(ctx.accounts.user)?.get_order(order_id) {
-        Some(order) => order.market_type,
+    let (market_type, market_index_of_order) = match load!(ctx.accounts.user)?.get_order(order_id) {
+        Some(order) => (order.market_type, order.market_index),
         None => {
             msg!("order_id not found {}", order_id);
             return Ok(());
@@ -407,6 +409,17 @@ pub fn handle_trigger_order<'c: 'info, 'info>(
         &mut oracle_map,
         &ctx.accounts.filler,
         &Clock::get()?,
+    )?;
+
+    crate::instructions::finish_trigger_crank(
+        &ctx.accounts.state,
+        &ctx.accounts.filler,
+        &ctx.accounts.authority,
+        &ctx.accounts.user,
+        &ctx.accounts.trigger_conditions,
+        &ctx.accounts.crank_conditions,
+        market_index_of_order,
+        order_id,
     )?;
 
     Ok(())
@@ -3602,10 +3615,14 @@ pub struct RevertFill<'info> {
 #[derive(Accounts)]
 pub struct TriggerOrder<'info> {
     pub state: AccountLoader<'info, State>,
-    pub authority: Signer<'info>,
+    /// CHECK: in signed-keeper mode this must sign for `filler`; in
+    /// program-keeper mode (protocol `User` as filler, relay turners) it is
+    /// only the lamport payout target and no signature is required.
+    #[account(mut)]
+    pub authority: UncheckedAccount<'info>,
     #[account(
         mut,
-        constraint = can_sign_for_user(&filler, &authority)?
+        constraint = can_crank_for_filler(&filler, &authority, &state)?
     )]
     pub filler: AccountLoader<'info, User>,
     #[account(mut)]
@@ -3614,6 +3631,20 @@ pub struct TriggerOrder<'info> {
         constraint = is_stats_for_user(&user, &user_stats)?
     )]
     pub user_stats: AccountLoader<'info, UserStats>,
+    /// The user's relay trigger conditions: the fired slot is released so
+    /// its level-triggered wake goes quiet. Optional — keepers on markets
+    /// (or users) without relay plumbing crank exactly as before.
+    #[account(
+        mut,
+        seeds = [TRIGGER_CONDITIONS_PDA_SEED, user.key().as_ref()],
+        bump
+    )]
+    pub trigger_conditions: Option<AccountLoader<'info, TriggerConditionsV0>>,
+    /// The fired market's crank conditions — the reservoir that pays the
+    /// keeper in program-keeper mode (validated against the order's market
+    /// in the handler). Required in program-keeper mode.
+    #[account(mut)]
+    pub crank_conditions: Option<AccountLoader<'info, ClobCrankConditionsV0>>,
 }
 
 #[derive(Accounts)]
@@ -4091,4 +4122,81 @@ pub struct PauseSpotMarketDepositWithdraw<'info> {
         bump,
     )]
     pub spot_market_vault: Box<InterfaceAccount<'info, TokenAccount>>,
+}
+
+/// The relay resolver for `trigger_order` (`Resolve<EndpointName>`):
+/// simulation-only, staged from the user's synced trigger conditions.
+#[derive(Accounts)]
+pub struct ResolveTriggerOrder<'info> {
+    /// Writable only for the staging region; simulation-only.
+    #[account(mut, constraint = trigger_conditions.load()?.user == user.key())]
+    pub trigger_conditions: AccountLoader<'info, TriggerConditionsV0>,
+    pub user: AccountLoader<'info, User>,
+    /// CHECK: validated against the market's oracle in the handler.
+    pub oracle: UncheckedAccount<'info>,
+    pub perp_market: AccountLoader<'info, PerpMarket>,
+}
+
+pub fn handle_resolve_trigger_order(ctx: Context<ResolveTriggerOrder>) -> Result<()> {
+    let clock = Clock::get()?;
+    let fired = {
+        let conditions = ctx.accounts.trigger_conditions.load()?;
+        let user = load!(ctx.accounts.user)?;
+        let market = ctx.accounts.perp_market.load()?;
+        crate::instructions::find_fired_trigger(
+            &conditions,
+            &user,
+            &market,
+            &ctx.accounts.oracle,
+            clock.slot,
+            false,
+        )?
+    };
+    let Some(meta) = fired else {
+        return crate::instructions::no_work();
+    };
+
+    let (signer, _) = Pubkey::find_program_address(&[b"velocity_signer"], &crate::ID);
+    let (protocol_user, _) = Pubkey::find_program_address(
+        &[b"user", signer.as_ref(), 0u16.to_le_bytes().as_ref()],
+        &crate::ID,
+    );
+    let (state_key, _) = Pubkey::find_program_address(&[b"velocity_state"], &crate::ID);
+    let (user_stats, _) = Pubkey::find_program_address(
+        &[b"user_stats", load!(ctx.accounts.user)?.authority.as_ref()],
+        &crate::ID,
+    );
+    let (market_conditions, _) = Pubkey::find_program_address(
+        &[
+            crate::state::clob_crank::CLOB_CRANK_CONDITIONS_PDA_SEED,
+            meta.market_index.to_le_bytes().as_ref(),
+        ],
+        &crate::ID,
+    );
+
+    let mut metas = crate::accounts::TriggerOrder {
+        state: state_key,
+        authority: Pubkey::new_from_array(relay_spec::KEEPER_PLACEHOLDER),
+        filler: protocol_user,
+        user: ctx.accounts.user.key(),
+        user_stats,
+        trigger_conditions: Some(ctx.accounts.trigger_conditions.key()),
+        crank_conditions: Some(market_conditions),
+    }
+    .to_account_metas(None);
+    crate::instructions::push_map_refs(&mut metas, &*ctx.accounts.trigger_conditions.load()?)?;
+
+    let mut args = Vec::with_capacity(4);
+    meta.order_id.serialize(&mut args)?;
+    let resolved = relay_spec::ResolvedCrankV0 {
+        accounts: crate::instructions::to_account_refs(metas),
+        data: args,
+    };
+    let pointer = ctx
+        .accounts
+        .trigger_conditions
+        .load_mut()?
+        .stage(&resolved)?;
+    solana_program::program::set_return_data(&pointer);
+    Ok(())
 }

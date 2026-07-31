@@ -16,7 +16,7 @@ use {
             prop_amm::{QuoterType, QuoterV0},
             quoter_cross::{
                 QuoterCrossConditionsV0, QUOTER_CROSS_CLOB, QUOTER_CROSS_CONDITIONS_PDA_SEED,
-                QUOTER_CROSS_FALLBACK, QUOTER_CROSS_WATCH,
+                QUOTER_CROSS_FALLBACK, QUOTER_CROSS_RESOLVER_LIST_OFFSET, QUOTER_CROSS_WATCH,
             },
             state::State,
         },
@@ -104,7 +104,9 @@ pub fn handle_initialize_quoter_cross_conditions(
     // The resolver's account list: the conditions (index 0 — where the
     // response pointer says the payload lives), the CLOB book, the state,
     // the entry, its quoted user, then the entry's full registered quote
-    // surface and program — everything the generic quote CPI needs.
+    // surface and program — everything the generic quote CPI needs. Stored
+    // ONCE next to the block; each condition points at it with relay's
+    // resolver-list indirection instead of inlining a copy.
     let mut resolver_accounts = vec![
         AccountRefV0::writable(ctx.accounts.cross_conditions.key().to_bytes()),
         AccountRefV0::readonly(clob_market.to_bytes()),
@@ -120,11 +122,6 @@ pub fn handle_initialize_quoter_cross_conditions(
         });
     }
     resolver_accounts.push(AccountRefV0::readonly(quoter.program_id.to_bytes()));
-    validate!(
-        resolver_accounts.len() <= relay_spec::MAX_RESOLVER_ACCOUNTS,
-        ErrorCode::InvalidQuoterConfig,
-        "quoter's registered quote surface exceeds the resolver account cap"
-    )?;
 
     let disc8 = |disc: &[u8]| -> Result<[u8; 8]> {
         disc.try_into().map_err(|_| error!(ErrorCode::DefaultError))
@@ -148,20 +145,28 @@ pub fn handle_initialize_quoter_cross_conditions(
     conditions.oracle = oracle;
     conditions.market_index = quoter.market;
     conditions.quote_spot_market_index = quote_spot_market_index;
+    conditions.write_resolver_list(&resolver_accounts)?;
     conditions.init_header()?;
+    let indirect = |mut condition: ConditionV0| -> ConditionV0 {
+        condition.set_indirect_resolver_accounts(
+            QUOTER_CROSS_RESOLVER_LIST_OFFSET as u32,
+            resolver_accounts.len() as u8,
+        );
+        condition
+    };
 
     // The maker-declared reprice watch; inactive when nothing is declared
     // (the fallback poll is then the only wake for this side).
     if quoter.watch_len > 0 {
         conditions.write_condition(
             QUOTER_CROSS_WATCH,
-            &ConditionV0::on_account_change(
+            &indirect(ConditionV0::on_account_change(
                 quoter.watch_account.to_bytes(),
                 quoter.watch_offset,
                 quoter.watch_len,
                 spec,
-                &resolver_accounts,
-            ),
+                &[],
+            )),
         )?;
     } else {
         conditions.write_condition(
@@ -173,17 +178,17 @@ pub fn handle_initialize_quoter_cross_conditions(
         QUOTER_CROSS_CLOB,
         // Both u32 side heads, `best_bid` then `best_ask`, in one 8-byte
         // watch — a crossing order is always a new best.
-        &ConditionV0::on_account_change(
+        &indirect(ConditionV0::on_account_change(
             clob_market.to_bytes(),
             crate::state::prop_amm::CLOB_BEST_BID_OFFSET as u32,
             8,
             spec,
-            &resolver_accounts,
-        ),
+            &[],
+        )),
     )?;
     conditions.write_condition(
         QUOTER_CROSS_FALLBACK,
-        &ConditionV0::every_slots(expire_fallback_slots, spec, &resolver_accounts),
+        &indirect(ConditionV0::every_slots(expire_fallback_slots, spec, &[])),
     )?;
     Ok(())
 }

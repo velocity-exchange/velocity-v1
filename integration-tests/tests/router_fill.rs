@@ -3262,3 +3262,282 @@ fn trigger_limit_sync_targets_the_clob_executor() {
         fixture.clob_market.to_bytes()
     );
 }
+
+// ---------------------------------------------------------------------------
+// Liquidations via relay: conservative per-oracle thresholds, a self-sync
+// watch on the user's own positions, and the with-fill executor staged with
+// the protocol User as an inventory-free liquidator.
+// ---------------------------------------------------------------------------
+
+fn liq_conditions_pda(user: &Pubkey) -> Pubkey {
+    Pubkey::find_program_address(&[b"liq_conditions", user.as_ref()], &velocity_id()).0
+}
+
+fn sync_liq_conditions(
+    fixture: &mut Fixture,
+    user: Pubkey,
+    market_conditions: Pubkey,
+    sync_payment_lamports: u64,
+) -> Pubkey {
+    let conditions = liq_conditions_pda(&user);
+    let mut accounts = velocity::accounts::SyncLiqConditions {
+        payer: fixture.keeper.pubkey(),
+        user,
+        liq_conditions: conditions,
+        rent: "SysvarRent111111111111111111111111111111111"
+            .parse()
+            .unwrap(),
+        system_program: "11111111111111111111111111111111".parse().unwrap(),
+    }
+    .to_account_metas(None);
+    // Margin maps (oracles, then markets), then the market's reservoir.
+    accounts.push(AccountMeta::new_readonly(fixture.oracle, false));
+    accounts.push(AccountMeta::new(spot_market_pda(0), false));
+    accounts.push(AccountMeta::new(perp_market_pda(0), false));
+    accounts.push(AccountMeta::new_readonly(market_conditions, false));
+    let ix = Instruction {
+        program_id: velocity_id(),
+        accounts,
+        data: velocity::instruction::SyncLiqConditions {
+            args: velocity::instructions::SyncLiqConditionsArgs {
+                sync_payment_lamports,
+                sync_fallback_slots: 3000,
+            },
+        }
+        .data(),
+    };
+    let keeper = fixture.keeper.insecure_clone();
+    send(&mut fixture.svm, &keeper, ix, &[]).unwrap();
+    conditions
+}
+
+fn run_liq_resolver(
+    fixture: &mut Fixture,
+    user: Pubkey,
+) -> Option<velocity::relay_spec::ResolvedCrankV0> {
+    let conditions = liq_conditions_pda(&user);
+    let mut accounts = velocity::accounts::ResolveLiquidatePerpWithFill {
+        liq_conditions: conditions,
+        user,
+        state: state_pda(),
+        oracle: fixture.oracle,
+    }
+    .to_account_metas(None);
+    accounts.push(AccountMeta::new_readonly(fixture.oracle, false));
+    accounts.push(AccountMeta::new(spot_market_pda(0), false));
+    accounts.push(AccountMeta::new(perp_market_pda(0), false));
+    let ix = Instruction {
+        program_id: velocity_id(),
+        accounts,
+        data: velocity::instruction::ResolveLiquidatePerpWithFill {}.data(),
+    };
+    let keeper = fixture.keeper.insecure_clone();
+    let meta = send(&mut fixture.svm, &keeper, ix, &[]).unwrap();
+    let pointer = velocity::relay_spec::ResponsePointerV0::read(&meta.return_data.data).unwrap();
+    if !pointer.has_work() {
+        return None;
+    }
+    let data = fixture.svm.get_account(&conditions).unwrap().data;
+    let staged = &data[pointer.offset() as usize..(pointer.offset() + pointer.len()) as usize];
+    Some(velocity::relay_spec::ResolvedCrankV0::read(staged).unwrap())
+}
+
+/// A leveraged long's liquidation threshold: the sync solves the
+/// ceteris-paribus price where free collateral runs out, haircuts it, and
+/// writes a downward OnValueCross — the "high-risk bucket boundary",
+/// precomputed. The resolver reports no work while the account is healthy
+/// (the level wake costs a turner nothing until the price is near), and
+/// the self-sync watch covers the user's own position bytes.
+#[test]
+fn liq_conditions_write_a_conservative_downward_threshold() {
+    use velocity::state::liq_conditions::{LiqConditionsV0, LIQ_SYNC_FALLBACK, LIQ_SYNC_WATCH};
+
+    let mut fixture = setup();
+    const PAYMENT: u64 = 10_000;
+    let market_conditions = init_crank_conditions(&mut fixture, PAYMENT);
+    set_protocol_user(&mut fixture.svm);
+
+    // 10x long: 10 units at $100 against $100 of collateral.
+    let authority = Keypair::new();
+    let user = Pubkey::find_program_address(
+        &[
+            b"user",
+            authority.pubkey().as_ref(),
+            0u16.to_le_bytes().as_ref(),
+        ],
+        &velocity_id(),
+    )
+    .0;
+    let mut account = trading_user(&authority.pubkey(), 100 * SPOT_BALANCE_PRECISION_U64, None);
+    account.perp_positions[0].market_index = 0;
+    account.perp_positions[0].base_asset_amount = (10 * UNIT) as i64;
+    account.perp_positions[0].quote_asset_amount = -((1000 * 1_000_000) as i64);
+    set_user_account(&mut fixture.svm, user, &account);
+
+    let conditions = sync_liq_conditions(&mut fixture, user, market_conditions, 5_000);
+    let acct: LiqConditionsV0 = read_zero_copy(&fixture.svm, &conditions);
+    let (header, block) = velocity::relay_spec::read_block(acct.block(), 0).unwrap();
+    assert_eq!(header.num_conditions, 14);
+
+    // Slot 0: the perp exposure's threshold — a downward value cross on the
+    // market oracle, strictly below spot and above zero.
+    assert_eq!(block[0].wake_account, fixture.oracle.to_bytes());
+    assert_eq!(block[0].wake_cmp, 1, "a long is liquidated as price falls");
+    assert!(block[0].wake_ts > 0);
+    assert!(
+        block[0].wake_ts < (100 * PRICE) as i64,
+        "threshold {} must sit below spot",
+        block[0].wake_ts
+    );
+    assert_eq!(block[0].min_payment, PAYMENT);
+    assert_eq!(acct.slots[0].target_market_index, 0);
+    assert_eq!(acct.slots[0].active, 1);
+
+    // The self-maintenance pair: a watch over the user's own position bytes
+    // whose executor is the sync, plus the coarse poll.
+    assert_eq!(block[LIQ_SYNC_WATCH].wake_account, user.to_bytes());
+    assert_eq!(
+        block[LIQ_SYNC_WATCH].executor_disc,
+        velocity::instruction::SyncLiqConditions::DISCRIMINATOR
+    );
+    assert_eq!(block[LIQ_SYNC_WATCH].min_payment, 5_000);
+    assert_eq!(block[LIQ_SYNC_FALLBACK].wake_slot, 3000);
+
+    // Healthy: the resolver runs the real margin calc and reports no work.
+    fixture.svm.warp_to_slot(12);
+    set_oracle(
+        &mut fixture.svm,
+        fixture.oracle,
+        (100 * PRICE_PRECISION) as i64,
+        12,
+    );
+    assert!(run_liq_resolver(&mut fixture, user).is_none());
+}
+
+/// Underwater: the resolver confirms real liquidatability and stages
+/// `liquidate_perp_with_fill` with the protocol User as liquidator — the
+/// inventory-free flavor — plus the market's reservoir for the keeper fee.
+#[test]
+fn liq_resolver_stages_the_with_fill_executor_for_the_protocol_user() {
+    let mut fixture = setup();
+    let market_conditions = init_crank_conditions(&mut fixture, 10_000);
+    let protocol_user = set_protocol_user(&mut fixture.svm);
+
+    let authority = Keypair::new();
+    let user = Pubkey::find_program_address(
+        &[
+            b"user",
+            authority.pubkey().as_ref(),
+            0u16.to_le_bytes().as_ref(),
+        ],
+        &velocity_id(),
+    )
+    .0;
+    // Deeply underwater: 10 units long entered at $100, now marked at $80.
+    let mut account = trading_user(&authority.pubkey(), 50 * SPOT_BALANCE_PRECISION_U64, None);
+    account.perp_positions[0].market_index = 0;
+    account.perp_positions[0].base_asset_amount = (10 * UNIT) as i64;
+    account.perp_positions[0].quote_asset_amount = -((1000 * 1_000_000) as i64);
+    set_user_account(&mut fixture.svm, user, &account);
+    sync_liq_conditions(&mut fixture, user, market_conditions, 0);
+
+    fixture.svm.warp_to_slot(12);
+    set_oracle(
+        &mut fixture.svm,
+        fixture.oracle,
+        (80 * PRICE_PRECISION) as i64,
+        12,
+    );
+
+    let resolved =
+        run_liq_resolver(&mut fixture, user).expect("an underwater account stages a liquidation");
+    let accounts: Vec<Pubkey> = resolved
+        .accounts
+        .iter()
+        .map(|a| Pubkey::new_from_array(a.address))
+        .collect();
+    // Liquidator = the protocol User; the keeper slot is the placeholder;
+    // the market's reservoir rides along for the payout.
+    assert!(
+        accounts.contains(&protocol_user),
+        "protocol user liquidates"
+    );
+    assert!(accounts.contains(&user));
+    assert!(accounts.contains(&market_conditions));
+    assert!(accounts
+        .iter()
+        .any(|k| k.to_bytes() == velocity::relay_spec::KEEPER_PLACEHOLDER));
+    // Args: the target perp market.
+    assert_eq!(resolved.data, 0u16.to_le_bytes().to_vec());
+}
+
+/// The plain (position-acquiring) liquidation refuses the protocol User:
+/// relay must never leave the protocol warehousing inventory — that path
+/// stays with keeper bots that have a balance sheet.
+#[test]
+fn plain_liquidation_rejects_the_protocol_user() {
+    let mut fixture = setup();
+    init_crank_conditions(&mut fixture, 10_000);
+    let protocol_user = set_protocol_user(&mut fixture.svm);
+    let (signer, _) = velocity_signer_pda();
+    let protocol_stats =
+        Pubkey::find_program_address(&[b"user_stats", signer.as_ref()], &velocity_id()).0;
+
+    let authority = Keypair::new();
+    let user = Pubkey::find_program_address(
+        &[
+            b"user",
+            authority.pubkey().as_ref(),
+            0u16.to_le_bytes().as_ref(),
+        ],
+        &velocity_id(),
+    )
+    .0;
+    let mut account = trading_user(&authority.pubkey(), 50 * SPOT_BALANCE_PRECISION_U64, None);
+    account.perp_positions[0].base_asset_amount = (10 * UNIT) as i64;
+    account.perp_positions[0].quote_asset_amount = -((1000 * 1_000_000) as i64);
+    set_user_account(&mut fixture.svm, user, &account);
+    let user_stats = Pubkey::find_program_address(
+        &[b"user_stats", authority.pubkey().as_ref()],
+        &velocity_id(),
+    )
+    .0;
+    set_user_stats_account(&mut fixture.svm, user_stats, &authority.pubkey());
+
+    fixture.svm.warp_to_slot(12);
+    set_oracle(
+        &mut fixture.svm,
+        fixture.oracle,
+        (80 * PRICE_PRECISION) as i64,
+        12,
+    );
+
+    let mut accounts = velocity::accounts::LiquidatePerp {
+        state: state_pda(),
+        authority: fixture.keeper.pubkey(),
+        liquidator: protocol_user,
+        liquidator_stats: protocol_stats,
+        user,
+        user_stats,
+        crank_conditions: None,
+    }
+    .to_account_metas(None);
+    accounts.push(AccountMeta::new_readonly(fixture.oracle, false));
+    accounts.push(AccountMeta::new(spot_market_pda(0), false));
+    accounts.push(AccountMeta::new(perp_market_pda(0), false));
+    let ix = Instruction {
+        program_id: velocity_id(),
+        accounts,
+        data: velocity::instruction::LiquidatePerp {
+            market_index: 0,
+            liquidator_max_base_asset_amount: UNIT,
+            limit_price: None,
+        }
+        .data(),
+    };
+    let keeper = fixture.keeper.insecure_clone();
+    assert!(
+        send(&mut fixture.svm, &keeper, ix, &[]).is_err(),
+        "the protocol user must not take liquidated inventory"
+    );
+}

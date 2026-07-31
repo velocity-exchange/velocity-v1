@@ -17,6 +17,7 @@ pub use {
     constraints::*,
     if_staker::*,
     keeper::*,
+    liq_relay::*,
     protocol_fees::*,
     pyth_lazer_oracle::*,
     quoter_registry::*,
@@ -31,6 +32,7 @@ mod clob;
 pub mod constraints;
 mod if_staker;
 mod keeper;
+mod liq_relay;
 pub mod optional_accounts;
 mod protocol_fees;
 mod pyth_lazer_oracle;

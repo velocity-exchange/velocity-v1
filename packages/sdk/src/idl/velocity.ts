@@ -5195,7 +5195,12 @@ export type Velocity = {
         },
         {
           "name": "authority",
-          "signer": true
+          "docs": [
+            "program-keeper mode (protocol `User` as liquidator, relay turners —",
+            "`liquidate_perp_with_fill` ONLY, the plain path rejects it) it is",
+            "only the lamport payout target and no signature is required."
+          ],
+          "writable": true
         },
         {
           "name": "liquidator",
@@ -5212,6 +5217,16 @@ export type Velocity = {
         {
           "name": "userStats",
           "writable": true
+        },
+        {
+          "name": "crankConditions",
+          "docs": [
+            "The fired market's crank conditions — the reservoir that pays the",
+            "keeper in program-keeper mode (validated against `market_index` in",
+            "the handler). Required in program-keeper mode."
+          ],
+          "writable": true,
+          "optional": true
         }
       ],
       "args": [
@@ -5307,7 +5322,12 @@ export type Velocity = {
         },
         {
           "name": "authority",
-          "signer": true
+          "docs": [
+            "program-keeper mode (protocol `User` as liquidator, relay turners —",
+            "`liquidate_perp_with_fill` ONLY, the plain path rejects it) it is",
+            "only the lamport payout target and no signature is required."
+          ],
+          "writable": true
         },
         {
           "name": "liquidator",
@@ -5324,6 +5344,16 @@ export type Velocity = {
         {
           "name": "userStats",
           "writable": true
+        },
+        {
+          "name": "crankConditions",
+          "docs": [
+            "The fired market's crank conditions — the reservoir that pays the",
+            "keeper in program-keeper mode (validated against `market_index` in",
+            "the handler). Required in program-keeper mode."
+          ],
+          "writable": true,
+          "optional": true
         }
       ],
       "args": [
@@ -7888,6 +7918,43 @@ export type Velocity = {
       "args": []
     },
     {
+      "name": "resolveLiquidatePerpWithFill",
+      "docs": [
+        "Relay resolver for a liquidation threshold: runs the real margin",
+        "calculation and stages `liquidate_perp_with_fill` with the protocol",
+        "`User` as the (inventory-free) liquidator. Simulated, not landed."
+      ],
+      "discriminator": [
+        170,
+        221,
+        26,
+        188,
+        165,
+        176,
+        102,
+        89
+      ],
+      "accounts": [
+        {
+          "name": "liqConditions",
+          "docs": [
+            "Writable only for the staging region; simulation-only."
+          ],
+          "writable": true
+        },
+        {
+          "name": "user"
+        },
+        {
+          "name": "state"
+        },
+        {
+          "name": "oracle"
+        }
+      ],
+      "args": []
+    },
+    {
       "name": "resolvePerpBankruptcy",
       "discriminator": [
         224,
@@ -8241,6 +8308,35 @@ export type Velocity = {
           "type": "u16"
         }
       ]
+    },
+    {
+      "name": "resolveSyncLiqConditions",
+      "docs": [
+        "Relay resolver for the self-sync conditions. Simulated, not landed."
+      ],
+      "discriminator": [
+        215,
+        145,
+        84,
+        178,
+        221,
+        187,
+        248,
+        25
+      ],
+      "accounts": [
+        {
+          "name": "liqConditions",
+          "docs": [
+            "Writable only for the staging region; simulation-only."
+          ],
+          "writable": true
+        },
+        {
+          "name": "user"
+        }
+      ],
+      "args": []
     },
     {
       "name": "resolveTriggerClobOrder",
@@ -8995,6 +9091,87 @@ export type Velocity = {
         {
           "name": "perpMarketIndex",
           "type": "u16"
+        }
+      ]
+    },
+    {
+      "name": "syncLiqConditions",
+      "docs": [
+        "Rewrite a user's relay liquidation-condition block from their live",
+        "positions — permissionless, and staged by the block's own",
+        "self-sync watch when the user's positions change."
+      ],
+      "discriminator": [
+        87,
+        58,
+        107,
+        39,
+        182,
+        230,
+        153,
+        200
+      ],
+      "accounts": [
+        {
+          "name": "payer",
+          "docs": [
+            "sync it is the keeper payout target (paid from the conditions",
+            "account's own lamports). Writable for both roles."
+          ],
+          "writable": true,
+          "signer": true
+        },
+        {
+          "name": "user"
+        },
+        {
+          "name": "liqConditions",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  108,
+                  105,
+                  113,
+                  95,
+                  99,
+                  111,
+                  110,
+                  100,
+                  105,
+                  116,
+                  105,
+                  111,
+                  110,
+                  115
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "user"
+              }
+            ]
+          }
+        },
+        {
+          "name": "rent",
+          "address": "SysvarRent111111111111111111111111111111111"
+        },
+        {
+          "name": "systemProgram",
+          "address": "11111111111111111111111111111111"
+        }
+      ],
+      "args": [
+        {
+          "name": "args",
+          "type": {
+            "defined": {
+              "name": "syncLiqConditionsArgs"
+            }
+          }
         }
       ]
     },
@@ -16196,6 +16373,19 @@ export type Velocity = {
       ]
     },
     {
+      "name": "liqConditionsV0",
+      "discriminator": [
+        42,
+        125,
+        67,
+        96,
+        199,
+        156,
+        58,
+        187
+      ]
+    },
+    {
       "name": "perpMarket",
       "discriminator": [
         10,
@@ -21525,6 +21715,147 @@ export type Velocity = {
           {
             "name": "lpPool",
             "type": "pubkey"
+          }
+        ]
+      }
+    },
+    {
+      "name": "liqConditionsV0",
+      "serialization": "bytemuckunsafe",
+      "repr": {
+        "kind": "c"
+      },
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "block",
+            "docs": [
+              "The relay condition block; first field, at the 8-aligned offset 8."
+            ],
+            "type": {
+              "array": [
+                "u8",
+                4048
+              ]
+            }
+          },
+          {
+            "name": "staging",
+            "docs": [
+              "Scratch the resolvers stage into. Simulation-only."
+            ],
+            "type": {
+              "array": [
+                "u8",
+                2048
+              ]
+            }
+          },
+          {
+            "name": "syncAccounts",
+            "docs": [
+              "See [`LIQ_SYNC_ACCOUNTS_LEN`]."
+            ],
+            "type": {
+              "array": [
+                "u8",
+                1056
+              ]
+            }
+          },
+          {
+            "name": "slots",
+            "docs": [
+              "Parallel to the threshold condition slots."
+            ],
+            "type": {
+              "array": [
+                {
+                  "defined": {
+                    "name": "liqSlotMetaV0"
+                  }
+                },
+                12
+              ]
+            }
+          },
+          {
+            "name": "user",
+            "docs": [
+              "The `User` these conditions watch."
+            ],
+            "type": "pubkey"
+          },
+          {
+            "name": "syncPaymentLamports",
+            "docs": [
+              "Fee the sync executor pays its keeper from this account's own",
+              "lamports (the account doubles as the sync reservoir — whoever wants",
+              "this user's hints self-maintaining funds it; empty degrades to",
+              "manual syncs + the thresholds from the last sync)."
+            ],
+            "type": "u64"
+          },
+          {
+            "name": "syncFallbackSlots",
+            "docs": [
+              "The fallback poll interval."
+            ],
+            "type": "u64"
+          },
+          {
+            "name": "syncAccountsCount",
+            "docs": [
+              "Live entries in `sync_accounts`."
+            ],
+            "type": "u8"
+          },
+          {
+            "name": "padding",
+            "type": {
+              "array": [
+                "u8",
+                15
+              ]
+            }
+          }
+        ]
+      }
+    },
+    {
+      "name": "liqSlotMetaV0",
+      "docs": [
+        "Per-threshold-slot metadata: which perp market the staged liquidation",
+        "targets (for a perp exposure, its own market; for a spot-collateral",
+        "exposure, the user's largest perp position)."
+      ],
+      "serialization": "bytemuckunsafe",
+      "repr": {
+        "kind": "c"
+      },
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "targetMarketIndex",
+            "type": "u16"
+          },
+          {
+            "name": "active",
+            "docs": [
+              "1 = live slot."
+            ],
+            "type": "u8"
+          },
+          {
+            "name": "padding",
+            "type": {
+              "array": [
+                "u8",
+                1
+              ]
+            }
           }
         ]
       }
@@ -26974,6 +27305,30 @@ export type Velocity = {
           },
           {
             "name": "out"
+          }
+        ]
+      }
+    },
+    {
+      "name": "syncLiqConditionsArgs",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "syncPaymentLamports",
+            "docs": [
+              "Fee the staged self-sync pays its keeper, from this account's own",
+              "lamports. 0 keeps the watch/poll conditions inactive (manual syncs",
+              "only) — turners have no signal to take unpaid work."
+            ],
+            "type": "u64"
+          },
+          {
+            "name": "syncFallbackSlots",
+            "docs": [
+              "Coarse fallback interval, in slots. 0 = use the previous value."
+            ],
+            "type": "u64"
           }
         ]
       }

@@ -2347,6 +2347,31 @@ pub mod velocity {
         handle_resolve_trigger_clob_order(ctx)
     }
 
+    /// Rewrite a user's relay liquidation-condition block from their live
+    /// positions — permissionless, and staged by the block's own
+    /// self-sync watch when the user's positions change.
+    pub fn sync_liq_conditions<'c: 'info, 'info>(
+        ctx: Context<'info, SyncLiqConditions<'info>>,
+        args: SyncLiqConditionsArgs,
+    ) -> Result<()> {
+        validate_sync_args(&args)?;
+        handle_sync_liq_conditions(ctx, args)
+    }
+
+    /// Relay resolver for the self-sync conditions. Simulated, not landed.
+    pub fn resolve_sync_liq_conditions(ctx: Context<ResolveSyncLiqConditions>) -> Result<()> {
+        handle_resolve_sync_liq_conditions(ctx)
+    }
+
+    /// Relay resolver for a liquidation threshold: runs the real margin
+    /// calculation and stages `liquidate_perp_with_fill` with the protocol
+    /// `User` as the (inventory-free) liquidator. Simulated, not landed.
+    pub fn resolve_liquidate_perp_with_fill<'c: 'info, 'info>(
+        ctx: Context<'info, ResolveLiquidatePerpWithFill<'info>>,
+    ) -> Result<()> {
+        handle_resolve_liquidate_perp_with_fill(ctx)
+    }
+
     pub fn withdraw_protocol_user_deposit<'c: 'info, 'info>(
         ctx: Context<'info, WithdrawProtocolUserDeposit<'info>>,
         market_index: u16,

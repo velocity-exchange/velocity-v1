@@ -35,6 +35,9 @@ export async function buildLiquidatePerpInstruction(args: {
 	liquidator: PublicKey;
 	liquidatorStats: PublicKey;
 	remainingAccounts: AccountMeta[];
+	/** the market's crank-conditions PDA (reservoir), for the unsigned
+	 * program-keeper path; omitted = program-id placeholder */
+	crankConditions?: PublicKey;
 }): Promise<TransactionInstruction> {
 	return await (args.program.instruction as any).liquidatePerp(
 		args.marketIndex,
@@ -48,6 +51,7 @@ export async function buildLiquidatePerpInstruction(args: {
 				userStats: args.userStats,
 				liquidator: args.liquidator,
 				liquidatorStats: args.liquidatorStats,
+				crankConditions: args.crankConditions ?? args.program.programId,
 			},
 			remainingAccounts: args.remainingAccounts,
 		}

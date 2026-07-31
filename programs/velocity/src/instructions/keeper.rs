@@ -1388,6 +1388,15 @@ pub fn handle_liquidate_perp<'c: 'info, 'info>(
     let slot = clock.slot;
     let state = ctx.accounts.state.load()?;
 
+    // A position-acquiring liquidation is inventory the protocol must never
+    // warehouse: the unsigned program-keeper mode exists for the with-fill
+    // flavor only, where the liquidator is just the filler.
+    validate!(
+        ctx.accounts.liquidator.load()?.authority != state.signer,
+        ErrorCode::DefaultError,
+        "the protocol user only liquidates via liquidate_perp_with_fill"
+    )?;
+
     let user_key = ctx.accounts.user.key();
     let liquidator_key = ctx.accounts.liquidator.key();
 
@@ -1496,6 +1505,39 @@ pub fn handle_liquidate_perp_with_fill<'c: 'info, 'info>(
         &clock,
         &state,
     )?;
+
+    // Program-keeper mode: the caller's payout account earns reservoir
+    // lamports for the crank — the same loop every other relay executor
+    // closes. Reaching here means a real (partial or full) liquidation
+    // fill happened; the controller errors otherwise.
+    let program_keeper_mode = ctx.accounts.liquidator.load()?.authority == state.signer;
+    if program_keeper_mode {
+        let reservoir = ctx.accounts.crank_conditions.as_ref().ok_or_else(
+            || -> anchor_lang::error::Error {
+                msg!("program-keeper liquidation requires the market's conditions account");
+                ErrorCode::DefaultError.into()
+            },
+        )?;
+        let payment = {
+            let conditions = reservoir.load()?;
+            validate!(
+                conditions.market_index == market_index,
+                ErrorCode::DefaultError,
+                "conditions are for market {}, the liquidation is market {}",
+                conditions.market_index,
+                market_index
+            )?;
+            conditions.keeper_payment_lamports
+        };
+        let info = reservoir.to_account_info();
+        let rent_minimum = Rent::get()?.minimum_balance(info.data_len());
+        ClobCrankConditionsV0::pay_keeper_lamports(
+            &info,
+            &ctx.accounts.authority.to_account_info(),
+            payment,
+            rent_minimum,
+        )?;
+    }
 
     Ok(())
 }
@@ -3751,10 +3793,15 @@ pub struct SettleFunding<'info> {
 #[derive(Accounts)]
 pub struct LiquidatePerp<'info> {
     pub state: AccountLoader<'info, State>,
-    pub authority: Signer<'info>,
+    /// CHECK: in signed-keeper mode this must sign for `liquidator`; in
+    /// program-keeper mode (protocol `User` as liquidator, relay turners —
+    /// `liquidate_perp_with_fill` ONLY, the plain path rejects it) it is
+    /// only the lamport payout target and no signature is required.
+    #[account(mut)]
+    pub authority: UncheckedAccount<'info>,
     #[account(
         mut,
-        constraint = can_sign_for_user(&liquidator, &authority)?
+        constraint = can_crank_for_filler(&liquidator, &authority, &state)?
     )]
     pub liquidator: AccountLoader<'info, User>,
     #[account(
@@ -3769,6 +3816,11 @@ pub struct LiquidatePerp<'info> {
         constraint = is_stats_for_user(&user, &user_stats)?
     )]
     pub user_stats: AccountLoader<'info, UserStats>,
+    /// The fired market's crank conditions — the reservoir that pays the
+    /// keeper in program-keeper mode (validated against `market_index` in
+    /// the handler). Required in program-keeper mode.
+    #[account(mut)]
+    pub crank_conditions: Option<AccountLoader<'info, ClobCrankConditionsV0>>,
 }
 
 #[derive(Accounts)]

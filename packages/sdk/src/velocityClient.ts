@@ -10694,6 +10694,9 @@ export class VelocityClient {
 				userStats: userStatsPublicKey,
 				liquidator,
 				liquidatorStats: liquidatorStatsPublicKey,
+				// Signed-keeper path: the relay reservoir account is absent,
+				// encoded as the program id (anchor's `None`).
+				crankConditions: this.program.programId,
 			},
 			remainingAccounts: remainingAccounts,
 		});

@@ -6,13 +6,18 @@ use {
         auth::check_hot,
         error::ErrorCode,
         state::{
+            clob_crank::ClobCrankConditionsV0,
             insurance_fund_stake::InsuranceFundStake,
+            liq_conditions::LiqConditionsV0,
             oracle::PrelaunchOracle,
             perp_market::PerpMarket,
+            prop_amm::QuoterV0,
             pyth_lazer_oracle::PythLazerOracle,
+            quoter_cross::QuoterCrossConditionsV0,
             revenue_share::RevenueShare,
             spot_market::SpotMarket,
             state::{HotRole, State},
+            trigger_conditions::TriggerConditionsV0,
             user::{ReferrerName, User, UserStats},
         },
         validate,
@@ -119,6 +124,15 @@ pub fn extension_target_len(discriminator: &[u8]) -> Option<usize> {
         RevenueShare,
         LPPool,
         Constituent,
+        // Relay plumbing. `QuoterV0` grew when the maker-declared reprice
+        // watch was added; the condition blocks grow whenever relay's
+        // `CONDITION_LEN` changes, which is why they belong here rather
+        // than in a bespoke migration.
+        QuoterV0,
+        ClobCrankConditionsV0,
+        QuoterCrossConditionsV0,
+        TriggerConditionsV0,
+        LiqConditionsV0,
     );
     None
 }

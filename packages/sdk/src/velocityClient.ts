@@ -130,6 +130,7 @@ import {
 	getConstituentVaultPublicKey,
 	getConstituentCorrelationsPublicKey,
 	getLpPoolTokenTokenAccountPublicKey,
+	getLiqConditionsPublicKey,
 } from './addresses/pda';
 import {
 	DataAndSlot,
@@ -1974,6 +1975,13 @@ export class VelocityClient {
 					rent: SYSVAR_RENT_PUBKEY,
 					systemProgram: SystemProgram.programId,
 					state: await this.getStatePublicKey(),
+					// Relay liquidation coverage, created with the account it
+					// watches. Rent is on the same payer; pass the program id
+					// (anchor's `None`) to decline it.
+					liqConditions: getLiqConditionsPublicKey(
+						this.program.programId,
+						userAccountPublicKey
+					),
 				},
 				remainingAccounts,
 			});

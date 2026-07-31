@@ -63,6 +63,7 @@ use {
                 OrderAction, OrderActionExplanation, OrderActionRecord, OrderRecord, SwapRecord,
             },
             fill_mode::FillMode,
+            liq_conditions::{LiqConditionsV0, LIQ_CONDITIONS_PDA_SEED},
             margin_calculation::MarginContext,
             market_status::MarketStatus,
             oracle::StrictOraclePrice,
@@ -135,6 +136,19 @@ pub fn handle_initialize_user<'c: 'info, 'info>(
     user.name = name;
     user.next_order_id = 1;
     user.next_liquidation_id = 1;
+    drop(user);
+
+    // Stamp the liquidation-conditions block so the account is a valid
+    // (all-inactive) block from birth. Nothing is armed yet: the user has
+    // no exposure, and the first `sync_liq_conditions` derives thresholds.
+    if let Some(liq_conditions) = &ctx.accounts.liq_conditions {
+        let mut conditions = liq_conditions
+            .load_init()
+            .or_else(|_| liq_conditions.load_mut())?;
+        conditions.user = user_key;
+        conditions.init_block()?;
+    }
+    let mut user = load_mut!(ctx.accounts.user)?;
 
     let remaining_accounts_iter = &mut ctx.remaining_accounts.iter().peekable();
 
@@ -4729,6 +4743,19 @@ pub struct InitializeUser<'info> {
         payer = payer
     )]
     pub user: AccountLoader<'info, User>,
+    /// Relay liquidation coverage, created alongside the account it
+    /// watches. Optional so raw-instruction integrators aren't broken and
+    /// so a caller can decline the rent; the SDK passes it by default, and
+    /// `deploy-scripts/migrate.ts` backfills whatever was declined. Coming
+    /// up empty is fine — the first sync writes the thresholds.
+    #[account(
+        init_if_needed,
+        seeds = [LIQ_CONDITIONS_PDA_SEED, user.key().as_ref()],
+        space = LiqConditionsV0::SIZE,
+        bump,
+        payer = payer
+    )]
+    pub liq_conditions: Option<AccountLoader<'info, LiqConditionsV0>>,
     #[account(
         mut,
         has_one = authority

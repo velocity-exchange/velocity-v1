@@ -47,7 +47,9 @@ import {
 	getSpotMarketPublicKeySync,
 	getLimitOrderParams,
 	getMarketOrderParams,
+	getTriggerMarketOrderParams,
 	isVariant,
+	OrderTriggerCondition,
 	getUserAccountPublicKeySync,
 	getUserStatsAccountPublicKey,
 	getVelocitySignerPublicKey,
@@ -77,6 +79,12 @@ const CLOB_ID = new PublicKey('BPX47ur8TbgZQgtJcGJvdcQMMFbmBP7ZrhpiUmLuHKqU');
 const MIDPOINT_ID = new PublicKey(
 	'eb3Kwmht4evPGGonNHCQs1h7ng63ZUwZ9TyV1qPo23D'
 );
+const RELAY_ID = new PublicKey(
+	process.env.RELAY_PROGRAM_ID ?? '4D5tPhw9sqkdkR5CpmP427TH6y9p9AMuKUukUEHn3Mpu'
+);
+const TURNER_BIN = process.env.RELAY_TURNER_BIN ?? '';
+/** relay-spec's `WatchV0` account length. */
+const WATCH_V0_LEN = 112;
 
 const UNIT = BASE_PRECISION; // 1e9
 const PRICE = PRICE_PRECISION; // 1e6
@@ -190,9 +198,31 @@ describe('e2e localnet: programs + publisher + redis', function () {
 
 	let publisher: ChildProcess | undefined;
 	let publisherLog: number | undefined;
+	let turner: ChildProcess | undefined;
+	let turnerLog: number | undefined;
+	/** Where relay pays its keeper: a plain account that never signs, which
+	 * is what the turner requires before it will crank an *untrusted*
+	 * program — i.e. velocity is treated exactly as a third-party turner
+	 * would treat it, with no trust flag. */
+	const relayPayout = Keypair.generate();
+	const turnerKeeper = Keypair.generate();
 	let redis: Redis;
 	let oracleRefresher: Promise<void> | undefined;
 	let stopOracleRefresher = false;
+	/** What the background feed posts. A live oracle is the only way to
+	 * move price on a real validator, so tests set this and wait. */
+	let oracleTargetPrice = 100;
+
+	/** Move the feed and wait until the change is on chain. */
+	const setOraclePrice = async (price: number) => {
+		oracleTargetPrice = price;
+		await pollUntil(`oracle to reach ${price}`, 30_000, async () => {
+			const info = await connection.getAccountInfo(oracle);
+			if (!info) return undefined;
+			const onChain = Number(info.data.readBigInt64LE(8)) / 1e6;
+			return Math.abs(onChain - price) < 0.5 ? true : undefined;
+		});
+	};
 
 	const airdrop = async (to: PublicKey, sol: number) => {
 		const sig = await connection.requestAirdrop(to, sol * LAMPORTS_PER_SOL);
@@ -612,7 +642,8 @@ describe('e2e localnet: programs + publisher + redis', function () {
 		kp: Keypair,
 		direction: PositionDirection,
 		price: BN,
-		size: BN
+		size: BN,
+		maxTs: BN = new BN(0)
 	) => {
 		const user = getUserAccountPublicKeySync(VELOCITY_ID, kp.publicKey, 0);
 		const ix = client.program.instruction.placeClobOrder(
@@ -621,7 +652,7 @@ describe('e2e localnet: programs + publisher + redis', function () {
 				direction,
 				price,
 				baseAssetAmount: size,
-				maxTs: new BN(0),
+				maxTs,
 				activationDelaySlots: 0,
 			},
 			{
@@ -658,6 +689,202 @@ describe('e2e localnet: programs + publisher + redis', function () {
 		return readClobView(info!.data);
 	};
 
+	/// Register a relay `WatchV0` over a velocity condition block. The
+	/// block is always the account's first field, so the offset is 8 (past
+	/// anchor's discriminator). Permissionless on relay's side.
+	const registerWatch = async (target: PublicKey) => {
+		const watch = Keypair.generate();
+		const offset = Buffer.alloc(4);
+		offset.writeUInt32LE(8);
+		const tx = new Transaction().add(
+			SystemProgram.createAccount({
+				fromPubkey: payer.publicKey,
+				newAccountPubkey: watch.publicKey,
+				lamports: await connection.getMinimumBalanceForRentExemption(
+					WATCH_V0_LEN
+				),
+				space: WATCH_V0_LEN,
+				programId: RELAY_ID,
+			}),
+			new TransactionInstruction({
+				programId: RELAY_ID,
+				keys: [
+					{ pubkey: payer.publicKey, isSigner: true, isWritable: false },
+					{ pubkey: target, isSigner: false, isWritable: false },
+					{ pubkey: watch.publicKey, isSigner: false, isWritable: true },
+				],
+				data: Buffer.concat([ixDiscriminator('register_watch_v0'), offset]),
+			})
+		);
+		await provider.sendAndConfirm(tx, [watch]);
+		return watch.publicKey;
+	};
+
+	const startTurner = () => {
+		const keeperPath = `${SCRATCH}/turner-keeper.json`;
+		fs.writeFileSync(
+			keeperPath,
+			JSON.stringify(Array.from(turnerKeeper.secretKey))
+		);
+		turnerLog = fs.openSync(`${SCRATCH}/turner.log`, 'w');
+		turner = spawn(
+			TURNER_BIN,
+			[
+				'--rpc-url',
+				RPC_URL,
+				'--keypair',
+				keeperPath,
+				'--program-id',
+				RELAY_ID.toBase58(),
+				// Scoped to velocity's watches, as an operator would run it.
+				'--target-program',
+				VELOCITY_ID.toBase58(),
+				// Untrusted mode: velocity gets no trust flag, so relay
+				// insists on a non-signing payout account and refuses any
+				// executor that names a signer.
+				'--payout-address',
+				relayPayout.publicKey.toBase58(),
+				'--tick-ms',
+				'400',
+				'--refresh-ticks',
+				'5',
+			],
+			{
+				env: { ...process.env, RUST_LOG: 'relay_crank_turner=debug,info' },
+				stdio: ['ignore', turnerLog, turnerLog],
+			}
+		);
+		turner.on('exit', (code) => {
+			if (code !== null && code !== 0) {
+				console.error(`turner exited ${code} — see ${SCRATCH}/turner.log`);
+			}
+		});
+	};
+
+	/** Lamports relay has paid its keeper — the proof a crank came from the
+	 * turner rather than from this test or the publisher, which pay their
+	 * own authorities instead. */
+	const relayPayoutBalance = () => connection.getBalance(relayPayout.publicKey);
+
+
+	/** The account tail every router-touching ix wants: margin maps, the
+	 * `(User, UserStats)` pairs of the makers that may fill, then the
+	 * quoter section (entries followed by their registered CPI accounts). */
+	const routerTail = (makerKps: Keypair[]) => {
+		const { velocitySigner: signer } = { velocitySigner };
+		const tail: {
+			pubkey: PublicKey;
+			isSigner: boolean;
+			isWritable: boolean;
+		}[] = [
+			{ pubkey: oracle, isSigner: false, isWritable: false },
+			{
+				pubkey: getSpotMarketPublicKeySync(VELOCITY_ID, 0),
+				isSigner: false,
+				isWritable: true,
+			},
+			{
+				pubkey: getPerpMarketPublicKeySync(VELOCITY_ID, 0),
+				isSigner: false,
+				isWritable: true,
+			},
+		];
+		for (const kp of makerKps) {
+			tail.push({
+				pubkey: getUserAccountPublicKeySync(VELOCITY_ID, kp.publicKey, 0),
+				isSigner: false,
+				isWritable: true,
+			});
+			tail.push({
+				pubkey: getUserStatsAccountPublicKey(VELOCITY_ID, kp.publicKey),
+				isSigner: false,
+				isWritable: true,
+			});
+		}
+		tail.push(
+			{ pubkey: clobEntry, isSigner: false, isWritable: false },
+			{ pubkey: midEntry, isSigner: false, isWritable: false },
+			{ pubkey: clobBook.publicKey, isSigner: false, isWritable: true },
+			{ pubkey: signer, isSigner: false, isWritable: false },
+			{ pubkey: CLOB_ID, isSigner: false, isWritable: false },
+			{ pubkey: midInstance, isSigner: false, isWritable: true },
+			{ pubkey: SYSVAR_INSTRUCTIONS_PUBKEY, isSigner: false, isWritable: false },
+			{ pubkey: MIDPOINT_ID, isSigner: false, isWritable: false }
+		);
+		return tail;
+	};
+
+	/** Fill a user's open order as the keeper — how a position gets opened
+	 * on a real validator (nothing here can be synthesized). */
+	const fillPendingOrder = async (
+		client: TestClient,
+		kp: Keypair,
+		makerKps: Keypair[] = [clobMakerKp, midMakerKp]
+	) => {
+		await client.fetchAccounts();
+		const order = client
+			.getUserAccount()!
+			.orders.find((o) => isVariant(o.status, 'open'))!;
+		const ix = admin.program.instruction.fillPerpOrder(order.orderId, null, {
+			accounts: {
+				state: await admin.getStatePublicKey(),
+				authority: payer.publicKey,
+				filler: getUserAccountPublicKeySync(VELOCITY_ID, payer.publicKey, 0),
+				fillerStats: getUserStatsAccountPublicKey(VELOCITY_ID, payer.publicKey),
+				user: getUserAccountPublicKeySync(VELOCITY_ID, kp.publicKey, 0),
+				userStats: getUserStatsAccountPublicKey(VELOCITY_ID, kp.publicKey),
+			},
+			remainingAccounts: routerTail(makerKps),
+		});
+		await provider.sendAndConfirm(
+			new Transaction()
+				.add(ComputeBudgetProgram.setComputeUnitLimit({ units: 800_000 }))
+				.add(ix)
+		);
+	};
+
+	/** Opt a user into relay liquidation coverage. */
+	const syncLiqConditions = async (user: PublicKey, liqConditions: PublicKey) => {
+		const args = Buffer.alloc(16);
+		args.writeBigUInt64LE(BigInt(20_000), 0); // sync fee, from its own lamports
+		args.writeBigUInt64LE(BigInt(3000), 8); // coarse fallback poll
+		await provider.sendAndConfirm(
+			new Transaction().add(
+				new TransactionInstruction({
+					programId: VELOCITY_ID,
+					keys: [
+						{ pubkey: payer.publicKey, isSigner: true, isWritable: true },
+						{ pubkey: user, isSigner: false, isWritable: false },
+						{ pubkey: liqConditions, isSigner: false, isWritable: true },
+						{ pubkey: SYSVAR_RENT_PUBKEY, isSigner: false, isWritable: false },
+						{
+							pubkey: SystemProgram.programId,
+							isSigner: false,
+							isWritable: false,
+						},
+						// Margin maps, then the market's reservoir (keeper fee).
+						{ pubkey: oracle, isSigner: false, isWritable: false },
+						{
+							pubkey: getSpotMarketPublicKeySync(VELOCITY_ID, 0),
+							isSigner: false,
+							isWritable: true,
+						},
+						{
+							pubkey: getPerpMarketPublicKeySync(VELOCITY_ID, 0),
+							isSigner: false,
+							isWritable: true,
+						},
+						{ pubkey: conditions, isSigner: false, isWritable: false },
+					],
+					data: Buffer.concat([
+						ixDiscriminator('sync_liq_conditions'),
+						args,
+					]),
+				})
+			)
+		);
+	};
+
 	before(async function () {
 		this.timeout(600_000);
 
@@ -670,9 +897,12 @@ describe('e2e localnet: programs + publisher + redis', function () {
 			takerKp,
 			crosserKp,
 			publisherKp,
+			turnerKeeper,
 		]) {
 			await airdrop(kp.publicKey, 100);
 		}
+		// The payout is rent-exempt but never signs; relay credits it.
+		await airdrop(relayPayout.publicKey, 1);
 
 		velocitySigner = getVelocitySignerPublicKey(VELOCITY_ID);
 		usdcMint = await createUsdcMint();
@@ -850,6 +1080,13 @@ describe('e2e localnet: programs + publisher + redis', function () {
 			const doc = await redis.get('last_update_orderbook_perp_0');
 			return doc ?? undefined;
 		});
+
+		// Relay: register the market's crank conditions (evict / expire /
+		// cross / activation all live in that one block) and start a
+		// turner. Everything after this point is cranked by relay unless a
+		// test explicitly submits.
+		await registerWatch(conditions);
+		startTurner();
 	});
 
 	after(async function () {
@@ -1202,5 +1439,213 @@ describe('e2e localnet: programs + publisher + redis', function () {
 			// 102 + 10bps = 102.102.
 			return propammAsk?.price === String(102.102 * 1e6) ? true : undefined;
 		});
+	});
+// ---------------------------------------------------------------------------
+// Relay: a live crank-turner discovering and landing work with nobody
+// submitting it. These three flows are relay's alone — the publisher only
+// ever submits `crank_cross_match` — so a state change here plus a credit to
+// relay's payout account is unambiguous attribution.
+// ---------------------------------------------------------------------------
+
+	it('reclaims an expired CLOB order without anyone submitting', async function () {
+		this.timeout(180_000);
+		const before = await readClob();
+		const payoutBefore = await relayPayoutBalance();
+
+		// A CLOB ask that expires in ~10s. Velocity min-folds the expiry
+		// into the market's wake hint as it places, so the turner has a
+		// deadline to wake on.
+		const now = Math.floor(Date.now() / 1000);
+		await placeClobOrder(
+			clobMaker,
+			clobMakerKp,
+			PositionDirection.SHORT,
+			new BN(1015).mul(PRICE).divn(10),
+			UNIT,
+			new BN(now + 10)
+		);
+		const armed = await readClob();
+		assert.equal(armed.askCount, before.askCount + 1);
+
+		// Nobody in this test submits anything from here on.
+		await pollUntil('relay to reclaim the expired order', 120_000, async () => {
+			const book = await readClob();
+			return book.askCount === before.askCount ? true : undefined;
+		});
+		assert.isAbove(
+			await relayPayoutBalance(),
+			payoutBefore,
+			'the reclaim was paid from the market reservoir to relay keeper'
+		);
+	});
+
+	it('fires an armed trigger order when the oracle crosses', async function () {
+		this.timeout(180_000);
+		// A stop: sell 0.5 if the oracle climbs through 104.
+		await taker.placePerpOrder(
+			getTriggerMarketOrderParams({
+				marketIndex: 0,
+				direction: PositionDirection.SHORT,
+				baseAssetAmount: UNIT.divn(2),
+				triggerPrice: new BN(104).mul(PRICE),
+				triggerCondition: OrderTriggerCondition.ABOVE,
+			})
+		);
+		await taker.fetchAccounts();
+		const armed = taker
+			.getUserAccount()!
+			.orders.find(
+				(o) =>
+					isVariant(o.status, 'open') &&
+					o.triggerPrice.eq(new BN(104).mul(PRICE))
+			)!;
+		assert.isOk(armed, 'trigger order is armed');
+
+		// Sync its relay conditions (an OnValueCross watch at the trigger
+		// threshold), register the watch, and let the turner have it.
+		const takerUser = getUserAccountPublicKeySync(
+			VELOCITY_ID,
+			takerKp.publicKey,
+			0
+		);
+		const triggerConditions = PublicKey.findProgramAddressSync(
+			[Buffer.from('trigger_conditions'), takerUser.toBuffer()],
+			VELOCITY_ID
+		)[0];
+		const syncAccounts = [
+			{ pubkey: oracle, isSigner: false, isWritable: false },
+			{
+				pubkey: getSpotMarketPublicKeySync(VELOCITY_ID, 0),
+				isSigner: false,
+				isWritable: true,
+			},
+			{
+				pubkey: getPerpMarketPublicKeySync(VELOCITY_ID, 0),
+				isSigner: false,
+				isWritable: true,
+			},
+			{ pubkey: conditions, isSigner: false, isWritable: false },
+			{ pubkey: clobEntry, isSigner: false, isWritable: false },
+		];
+		await provider.sendAndConfirm(
+			new Transaction().add(
+				new TransactionInstruction({
+					programId: VELOCITY_ID,
+					keys: [
+						{ pubkey: payer.publicKey, isSigner: true, isWritable: true },
+						{ pubkey: takerUser, isSigner: false, isWritable: false },
+						{ pubkey: triggerConditions, isSigner: false, isWritable: true },
+						{
+							pubkey: SYSVAR_RENT_PUBKEY,
+							isSigner: false,
+							isWritable: false,
+						},
+						{
+							pubkey: SystemProgram.programId,
+							isSigner: false,
+							isWritable: false,
+						},
+						...syncAccounts,
+					],
+					data: ixDiscriminator('sync_trigger_conditions'),
+				})
+			)
+		);
+		await registerWatch(triggerConditions);
+
+		const payoutBefore = await relayPayoutBalance();
+		// Move the oracle through the trigger. Nobody submits a trigger ix.
+		await setOraclePrice(106);
+
+		await pollUntil('relay to fire the trigger', 120_000, async () => {
+			await taker.fetchAccounts();
+			const order = taker
+				.getUserAccount()!
+				.orders.find((o) => o.orderId === armed.orderId);
+			// Triggered orders either carry a Triggered* condition or have
+			// already filled and freed the slot.
+			const fired =
+				!order ||
+				!isVariant(order.status, 'open') ||
+				isVariant(order.triggerCondition, 'triggeredAbove');
+			return fired ? true : undefined;
+		});
+		assert.isAbove(await relayPayoutBalance(), payoutBefore);
+		await setOraclePrice(100);
+	});
+
+	it('liquidates an underwater account through the router, with no inventory left behind', async function () {
+		this.timeout(240_000);
+		// A leveraged long that a price drop puts underwater.
+		const victimKp = Keypair.generate();
+		await airdrop(victimKp.publicKey, 10);
+		const victim = newClient(victimKp);
+		await victim.subscribe();
+		const victimUsdc = await fundUsdc(victimKp.publicKey, new BN(600).mul(USDC));
+		await victim.initializeUserAccountAndDepositCollateral(
+			new BN(600).mul(USDC),
+			victimUsdc
+		);
+		// ~8x: 5 units at ~100 on 600 of collateral.
+		await victim.placePerpOrder(
+			getMarketOrderParams({
+				marketIndex: 0,
+				direction: PositionDirection.LONG,
+				baseAssetAmount: UNIT.muln(5),
+				price: new BN(103).mul(PRICE),
+			})
+		);
+		await fillPendingOrder(victim, victimKp);
+		await victim.fetchAccounts();
+		assert.isAbove(
+			victim.getUser().getPerpPosition(0)!.baseAssetAmount.toNumber(),
+			0,
+			'victim is long'
+		);
+
+		// Opt them into relay liquidation coverage: thresholds from their
+		// live positions, a self-sync watch, and a funded sync reservoir.
+		const victimUser = getUserAccountPublicKeySync(
+			VELOCITY_ID,
+			victimKp.publicKey,
+			0
+		);
+		const liqConditions = PublicKey.findProgramAddressSync(
+			[Buffer.from('liq_conditions'), victimUser.toBuffer()],
+			VELOCITY_ID
+		)[0];
+		await syncLiqConditions(victimUser, liqConditions);
+		await airdrop(liqConditions, 1);
+		await registerWatch(liqConditions);
+
+		// Standing bid for the liquidation's fill leg to route into.
+		await placeClobOrder(
+			clobMaker,
+			clobMakerKp,
+			PositionDirection.LONG,
+			new BN(80).mul(PRICE),
+			UNIT.muln(5)
+		);
+
+		const payoutBefore = await relayPayoutBalance();
+		// Crash the oracle. Nobody submits a liquidation.
+		await setOraclePrice(84);
+
+		await pollUntil('relay to liquidate', 180_000, async () => {
+			await victim.fetchAccounts();
+			const position = victim.getUser().getPerpPosition(0);
+			const reduced =
+				!position ||
+				position.baseAssetAmount.lt(UNIT.muln(5));
+			return reduced ? true : undefined;
+		});
+		assert.isAbove(await relayPayoutBalance(), payoutBefore);
+
+		// The protocol User was only the filler: it must not be holding the
+		// liquidated position.
+		const protocolUserAccount = await connection.getAccountInfo(protocolUser);
+		assert.isOk(protocolUserAccount);
+		await setOraclePrice(100);
+		await victim.unsubscribe();
 	});
 });

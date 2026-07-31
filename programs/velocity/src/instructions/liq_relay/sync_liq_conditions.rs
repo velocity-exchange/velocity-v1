@@ -254,6 +254,9 @@ pub fn rewrite_liq_conditions<'info>(
 
     // Free collateral now — the distance each threshold is measured from.
     let user = crate::load!(user_loader)?;
+    // Stamped before the thresholds so a sync that legitimately writes none
+    // still converges — the resolver compares digests, not slot contents.
+    conditions.positions_digest = LiqConditionsV0::digest_positions(&user);
     let (free_collateral, target_market) = estimate_free_collateral(&user, &perps, &spots)?;
 
     let mut slot_index = 0usize;

@@ -95,9 +95,17 @@ pub struct LiqConditionsV0 {
     pub sync_payment_lamports: u64,
     /// The fallback poll interval.
     pub sync_fallback_slots: u64,
+    /// Digest of the exposures the last sync ran against. The resolver
+    /// compares it to the user's current positions to decide staleness —
+    /// comparing *watched markets* instead never converges for a user
+    /// whose exposures produce no watchable threshold (an unsupported
+    /// oracle layout, a market with no reservoir), leaving the
+    /// level-triggered sync wake firing forever. The localnet harness
+    /// caught exactly that loop, once a second.
+    pub positions_digest: u64,
     /// Live entries in `sync_accounts`.
     pub sync_accounts_count: u8,
-    pub padding: [u8; 15],
+    pub padding: [u8; 7],
 }
 
 impl Default for LiqConditionsV0 {
@@ -110,8 +118,9 @@ impl Default for LiqConditionsV0 {
             user: Pubkey::default(),
             sync_payment_lamports: 0,
             sync_fallback_slots: 0,
+            positions_digest: 0,
             sync_accounts_count: 0,
-            padding: [0; 15],
+            padding: [0; 7],
         }
     }
 }
@@ -125,8 +134,39 @@ impl LiqConditionsV0 {
         + 32
         + 8
         + 8
+        + 8
         + 1
-        + 15;
+        + 7;
+
+    /// FNV-1a over every exposure that moves a threshold. Cheap enough for
+    /// the executor to recompute on each sync, and exact enough that a
+    /// changed position always changes the digest.
+    pub fn digest_positions(user: &crate::state::user::User) -> u64 {
+        let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
+        let mut fold = |value: u64| {
+            for byte in value.to_le_bytes() {
+                hash ^= byte as u64;
+                hash = hash.wrapping_mul(0x1000_0000_01b3);
+            }
+        };
+        for position in user.perp_positions.iter() {
+            if position.base_asset_amount == 0 && position.quote_asset_amount == 0 {
+                continue;
+            }
+            fold(position.market_index as u64);
+            fold(position.base_asset_amount as u64);
+            fold(position.quote_asset_amount as u64);
+        }
+        for position in user.spot_positions.iter() {
+            if position.scaled_balance == 0 {
+                continue;
+            }
+            fold(position.market_index as u64);
+            fold(position.scaled_balance);
+            fold(position.balance_type as u64);
+        }
+        hash
+    }
 
     pub fn block(&self) -> &[u8] {
         &self.block

@@ -95,25 +95,11 @@ pub fn handle_resolve_resync_liq_conditions(
         let stale = {
             let conditions = ctx.accounts.liq_conditions.load()?;
             let user = crate::load!(ctx.accounts.user)?;
-            let watched: Vec<u16> = conditions
-                .slots
-                .iter()
-                .filter(|slot| slot.active != 0)
-                .map(|slot| slot.target_market_index)
-                .collect();
-            let live: Vec<u16> = user
-                .perp_positions
-                .iter()
-                .filter(|p| p.base_asset_amount != 0)
-                .map(|p| p.market_index)
-                .collect();
-            // Stale iff the watched set and the live set disagree. Closing
-            // every position counts (orphaned slots would otherwise keep
-            // level-triggered wakes armed against exposures that are gone),
-            // and the rewrite converges: once both sets are empty, no work.
-            let missing = live.iter().any(|market| !watched.contains(market));
-            let orphaned = watched.iter().any(|market| !live.contains(market));
-            missing || orphaned
+            // Digest mismatch = the thresholds were derived from different
+            // exposures. Converges by construction: the sync stamps the digest
+            // it ran against, so a rewrite that produces no watchable
+            // threshold still stops the wake.
+            LiqConditionsV0::digest_positions(&user) != conditions.positions_digest
         };
         if !stale {
             return Ok(None);

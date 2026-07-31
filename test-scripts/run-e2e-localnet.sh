@@ -1,12 +1,18 @@
 #!/usr/bin/env bash
 # Full-stack end-to-end harness against a real local validator — the devnet
 # confidence gate. Stands up:
-#   - solana-test-validator with velocity + pyth stub + CLOB + midpoint
+#   - solana-test-validator with velocity + pyth stub + CLOB + midpoint + relay
 #   - redis-server (the book wire)
 #   - the Rust book-publisher (simulated quote-view books + cross fast path)
+#   - a relay crank-turner, running untrusted-mode against velocity
 # then drives real trading through tests/e2e/localValidator.ts: protocol
 # init, CLOB/midpoint/DLOB liquidity, router fills, place-and-take remainder
-# resting, a publisher-detected cross match, and Redis book assertions.
+# resting, a publisher-detected cross match, Redis book assertions, and the
+# relay-cranked flows (order expiry, trigger orders, liquidations) landing
+# with nobody submitting them by hand.
+#
+# RELAY_REPO points at the relay checkout (default ~/source/relay); its
+# program + turner are built from source, the same way velocity's are.
 #
 # Usage: bash test-scripts/run-e2e-localnet.sh [--skip-build]
 # Requires: solana-test-validator, redis-server (brew install redis), bun.
@@ -15,6 +21,7 @@ cd "$(dirname "$0")/.."
 
 RPC_PORT="${RPC_PORT:-8899}"
 REDIS_PORT="${REDIS_PORT:-6399}"
+RELAY_REPO="${RELAY_REPO:-$HOME/source/relay}"
 SCRATCH="${E2E_SCRATCH:-$(mktemp -d /tmp/velocity-e2e.XXXXXX)}"
 export SDKROOT="${SDKROOT:-$(xcrun --show-sdk-path 2>/dev/null || true)}"
 
@@ -25,6 +32,9 @@ VELOCITY_ID="vELoC1audYbSYVRXn1vPaV8Axoa9oU6BYmNGZZBDZ1P"
 PYTH_ID="gSbePebfvPy7tRqimPoVecS2UsBvYv46ynrzWocc92s"
 CLOB_ID="BPX47ur8TbgZQgtJcGJvdcQMMFbmBP7ZrhpiUmLuHKqU"
 MIDPOINT_ID="eb3Kwmht4evPGGonNHCQs1h7ng63ZUwZ9TyV1qPo23D"
+RELAY_ID="4D5tPhw9sqkdkR5CpmP427TH6y9p9AMuKUukUEHn3Mpu"
+
+[ -d "$RELAY_REPO" ] || { echo "relay checkout not found at $RELAY_REPO (set RELAY_REPO)" >&2; exit 1; }
 
 if [ "${1:-}" != "--skip-build" ]; then
   echo "== building programs + publisher =="
@@ -41,11 +51,16 @@ if [ "${1:-}" != "--skip-build" ]; then
   bun run program:build:clob
   bun run program:build:midpoint
   cargo build --manifest-path rust/Cargo.toml -p book-publisher
+  # relay: the program the watches live on, and the turner that cranks them.
+  (cd "$RELAY_REPO/programs" && cargo-build-sbf --tools-version v1.54 --manifest-path relay/Cargo.toml)
+  cargo build --manifest-path "$RELAY_REPO/Cargo.toml" -p relay-crank-turner
   (cd packages/sdk && bun run build >/dev/null)
 else
   for f in target/deploy/velocity.so target/deploy/pyth.so \
     anchor-v2/target/deploy/clob.so anchor-v2/target/deploy/midpoint.so \
-    rust/target/debug/book-publisher; do
+    rust/target/debug/book-publisher \
+    "$RELAY_REPO/programs/target/deploy/relay.so" \
+    "$RELAY_REPO/target/debug/relay-crank-turner"; do
     [ -e "$f" ] || { echo "missing $f — run without --skip-build" >&2; exit 1; }
   done
 fi
@@ -56,6 +71,18 @@ cleanup() {
   wait 2>/dev/null || true
 }
 trap cleanup EXIT INT TERM
+
+# A validator orphaned by an earlier interrupted run keeps the port and its
+# old ledger, and the suite then fails deep inside init with a confusing
+# "already initialized". Clear the ports first, always.
+for port in "$RPC_PORT" "$REDIS_PORT"; do
+  pids=$(lsof -ti "tcp:$port" 2>/dev/null || true)
+  if [ -n "$pids" ]; then
+    echo "== port $port busy, killing $pids =="
+    kill $pids 2>/dev/null || true
+    sleep 2
+  fi
+done
 
 echo "== starting redis on :$REDIS_PORT =="
 redis-server --port "$REDIS_PORT" --save '' --appendonly no \
@@ -71,6 +98,7 @@ solana-test-validator \
   --bpf-program "$PYTH_ID" target/deploy/pyth.so \
   --bpf-program "$CLOB_ID" anchor-v2/target/deploy/clob.so \
   --bpf-program "$MIDPOINT_ID" anchor-v2/target/deploy/midpoint.so \
+  --bpf-program "$RELAY_ID" "$RELAY_REPO/programs/target/deploy/relay.so" \
   >"$SCRATCH/validator.log" 2>&1 &
 PIDS+=($!)
 
@@ -88,6 +116,8 @@ export E2E_RPC_URL="http://127.0.0.1:$RPC_PORT"
 export E2E_REDIS_URL="redis://127.0.0.1:$REDIS_PORT"
 export E2E_SCRATCH_DIR="$SCRATCH"
 export BOOK_PUBLISHER_BIN="$PWD/rust/target/debug/book-publisher"
+export RELAY_TURNER_BIN="$RELAY_REPO/target/debug/relay-crank-turner"
+export RELAY_PROGRAM_ID="$RELAY_ID"
 
 echo "== running e2e suite (scratch: $SCRATCH) =="
 PATH="$PWD/node_modules/.bin:$PATH" \

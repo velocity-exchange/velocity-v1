@@ -5013,6 +5013,45 @@ export type Velocity = {
           }
         },
         {
+          "name": "liqConditions",
+          "docs": [
+            "Relay liquidation coverage, created alongside the account it",
+            "watches. Optional so raw-instruction integrators aren't broken and",
+            "so a caller can decline the rent; the SDK passes it by default, and",
+            "`deploy-scripts/migrate.ts` backfills whatever was declined. Coming",
+            "up empty is fine — the first sync writes the thresholds."
+          ],
+          "writable": true,
+          "optional": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  108,
+                  105,
+                  113,
+                  95,
+                  99,
+                  111,
+                  110,
+                  100,
+                  105,
+                  116,
+                  105,
+                  111,
+                  110,
+                  115
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "user"
+              }
+            ]
+          }
+        },
+        {
           "name": "userStats",
           "writable": true
         },
@@ -21868,6 +21907,19 @@ export type Velocity = {
             "type": "u64"
           },
           {
+            "name": "positionsDigest",
+            "docs": [
+              "Digest of the exposures the last sync ran against. The resolver",
+              "compares it to the user's current positions to decide staleness —",
+              "comparing *watched markets* instead never converges for a user",
+              "whose exposures produce no watchable threshold (an unsupported",
+              "oracle layout, a market with no reservoir), leaving the",
+              "level-triggered sync wake firing forever. The localnet harness",
+              "caught exactly that loop, once a second."
+            ],
+            "type": "u64"
+          },
+          {
             "name": "syncAccountsCount",
             "docs": [
               "Live entries in `sync_accounts`."
@@ -21879,7 +21931,7 @@ export type Velocity = {
             "type": {
               "array": [
                 "u8",
-                15
+                7
               ]
             }
           }

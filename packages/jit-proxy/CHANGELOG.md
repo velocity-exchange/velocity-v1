@@ -1,5 +1,12 @@
 # @velocity-exchange/jit-proxy
 
+## 0.3.7
+
+### Patch Changes
+
+- Updated dependencies [[`c08211e`](https://github.com/velocity-exchange/velocity-v1/commit/c08211e4c106f57a1092238adb5c6d14895734f5)]:
+  - @velocity-exchange/sdk@0.12.0
+
 ## 0.3.6
 
 ### Patch Changes

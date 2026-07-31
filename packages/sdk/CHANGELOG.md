@@ -1,5 +1,11 @@
 # @velocity-exchange/sdk
 
+## 0.12.0
+
+### Minor Changes
+
+- [#350](https://github.com/velocity-exchange/velocity-v1/pull/350) [`c08211e`](https://github.com/velocity-exchange/velocity-v1/commit/c08211e4c106f57a1092238adb5c6d14895734f5) Thanks [@ChesterSim](https://github.com/ChesterSim)! - `PriorityFeeSubscriber` accepts an optional `fetchSolanaPriorityFee` override in its config, defaulting to the built-in `getRecentPrioritizationFees` RPC call. Lets an upstream route SOLANA fee sampling through its own cache/proxy instead of hitting the RPC directly.
+
 ## 0.11.0
 
 ### Minor Changes

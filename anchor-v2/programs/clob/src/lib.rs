@@ -20,8 +20,7 @@ pub mod state;
 
 // Re-exported so integration tests can reach wincode/BORSH_CONFIG through the
 // crate without their own git dep.
-pub use anchor_lang_v2;
-pub use instructions::*;
+pub use {anchor_lang_v2, instructions::*};
 
 declare_id!("BPX47ur8TbgZQgtJcGJvdcQMMFbmBP7ZrhpiUmLuHKqU");
 

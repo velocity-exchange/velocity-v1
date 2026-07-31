@@ -1584,6 +1584,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "midpoint"
+version = "0.1.0"
+dependencies = [
+ "anchor-lang-v2",
+ "anchor-v2-testing",
+ "bytemuck",
+ "litesvm",
+ "solana-account",
+ "solana-clock",
+ "solana-pubkey 3.0.0",
+ "static_assertions",
+ "wincode",
+]
+
+[[package]]
 name = "num"
 version = "0.2.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"

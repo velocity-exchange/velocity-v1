@@ -2,16 +2,21 @@
 //! standing in as the (executable) quoter program. Requires both fixtures:
 //! `bun run program:build` and `bun run program:build:clob`.
 
-use anchor_lang::{InstructionData, ToAccountMetas};
-use solana_instruction::Instruction;
-use solana_keypair::Keypair;
-use solana_pubkey::Pubkey;
-use solana_signer::Signer;
-use velocity::instructions::{
-    InitializeQuoterArgs, QuoterAccountMetaArg, UpdateQuoterAccountsArgs, UpdateQuoterConfigArgs,
+use {
+    anchor_lang::{InstructionData, ToAccountMetas},
+    solana_instruction::Instruction,
+    solana_keypair::Keypair,
+    solana_pubkey::Pubkey,
+    solana_signer::Signer,
+    velocity::{
+        instructions::{
+            InitializeQuoterArgs, QuoterAccountMetaArg, UpdateQuoterAccountsArgs,
+            UpdateQuoterConfigArgs,
+        },
+        state::prop_amm::{QuoterCpiLeg, QuoterType, QuoterV0},
+    },
+    velocity_integration_tests::*,
 };
-use velocity::state::prop_amm::{QuoterCpiLeg, QuoterType, QuoterV0};
-use velocity_integration_tests::*;
 
 fn rent_sysvar() -> Pubkey {
     "SysvarRent111111111111111111111111111111111"

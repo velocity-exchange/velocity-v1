@@ -3,26 +3,31 @@
 //! Heavy protocol state (State, PerpMarket, User) is synthesized directly via
 //! `set_account` where a test only needs account identity, not the init flow.
 
-use anchor_lang::Discriminator;
-use bytemuck::Zeroable;
-use litesvm::types::{FailedTransactionMetadata, TransactionMetadata};
-use litesvm::LiteSVM;
-use solana_account::Account;
-use solana_instruction::Instruction;
-use solana_keypair::Keypair;
-use solana_message::{Message, VersionedMessage};
-use solana_pubkey::Pubkey;
-use solana_signer::Signer;
-use solana_transaction::versioned::VersionedTransaction;
-use velocity::state::perp_market::PerpMarket;
-use velocity::state::state::State;
-use velocity::state::traits::Size;
-use velocity::state::user::User;
+use {
+    anchor_lang::Discriminator,
+    bytemuck::Zeroable,
+    litesvm::{
+        types::{FailedTransactionMetadata, TransactionMetadata},
+        LiteSVM,
+    },
+    solana_account::Account,
+    solana_instruction::Instruction,
+    solana_keypair::Keypair,
+    solana_message::{Message, VersionedMessage},
+    solana_pubkey::Pubkey,
+    solana_signer::Signer,
+    solana_transaction::versioned::VersionedTransaction,
+    velocity::state::{perp_market::PerpMarket, state::State, traits::Size, user::User},
+};
 
 pub const VELOCITY_SO: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../target/deploy/velocity.so");
 pub const CLOB_SO: &str = concat!(
     env!("CARGO_MANIFEST_DIR"),
     "/../anchor-v2/target/deploy/clob.so"
+);
+pub const MIDPOINT_SO: &str = concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/../anchor-v2/target/deploy/midpoint.so"
 );
 
 pub fn velocity_id() -> Pubkey {
@@ -35,13 +40,21 @@ pub fn clob_id() -> Pubkey {
         .unwrap()
 }
 
-/// Fresh SVM with both program fixtures loaded.
+pub fn midpoint_id() -> Pubkey {
+    "eb3Kwmht4evPGGonNHCQs1h7ng63ZUwZ9TyV1qPo23D"
+        .parse()
+        .unwrap()
+}
+
+/// Fresh SVM with all program fixtures loaded.
 pub fn svm() -> LiteSVM {
     let mut svm = LiteSVM::new();
     svm.add_program_from_file(velocity_id(), VELOCITY_SO)
         .expect("velocity.so missing — run `bun run program:build` first");
     svm.add_program_from_file(clob_id(), CLOB_SO)
         .expect("clob.so missing — run `bun run program:build:clob` first");
+    svm.add_program_from_file(midpoint_id(), MIDPOINT_SO)
+        .expect("midpoint.so missing — run `bun run program:build:midpoint` first");
     svm
 }
 
@@ -138,6 +151,20 @@ pub fn set_user(svm: &mut LiteSVM, address: Pubkey, authority: &Pubkey) {
     set_zero_copy_account(svm, address, User::DISCRIMINATOR, &user, User::SIZE);
 }
 
+/// A raw `SetComputeUnitLimit` instruction, for transactions that outgrow
+/// the 200k default (e.g. a router fill spanning several CPI quoters).
+pub fn compute_unit_limit_ix(units: u32) -> Instruction {
+    let mut data = vec![2u8];
+    data.extend_from_slice(&units.to_le_bytes());
+    Instruction {
+        program_id: "ComputeBudget111111111111111111111111111111"
+            .parse()
+            .unwrap(),
+        accounts: vec![],
+        data,
+    }
+}
+
 /// Send one instruction signed by `payer` plus any of `extra_signers` the
 /// metas mark as signers.
 pub fn send(
@@ -146,16 +173,27 @@ pub fn send(
     ix: Instruction,
     extra_signers: &[&Keypair],
 ) -> Result<TransactionMetadata, FailedTransactionMetadata> {
+    send_with_ixs(svm, payer, &[ix], extra_signers)
+}
+
+/// `send`, but with the caller controlling the full instruction list.
+pub fn send_with_ixs(
+    svm: &mut LiteSVM,
+    payer: &Keypair,
+    ixs: &[Instruction],
+    extra_signers: &[&Keypair],
+) -> Result<TransactionMetadata, FailedTransactionMetadata> {
     svm.expire_blockhash();
     let blockhash = svm.latest_blockhash();
-    let msg = Message::new_with_blockhash(&[ix.clone()], Some(&payer.pubkey()), &blockhash);
+    let msg = Message::new_with_blockhash(ixs, Some(&payer.pubkey()), &blockhash);
     let signers: Vec<&Keypair> = std::iter::once(payer)
         .chain(extra_signers.iter().copied().filter(|kp| {
             kp.pubkey() != payer.pubkey()
-                && ix
-                    .accounts
-                    .iter()
-                    .any(|m| m.is_signer && m.pubkey == kp.pubkey())
+                && ixs.iter().any(|ix| {
+                    ix.accounts
+                        .iter()
+                        .any(|m| m.is_signer && m.pubkey == kp.pubkey())
+                })
         }))
         .collect();
     let tx = VersionedTransaction::try_new(VersionedMessage::Legacy(msg), &signers).unwrap();

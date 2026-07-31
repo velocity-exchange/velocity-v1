@@ -2,6 +2,7 @@
 
 [programs.localnet]
 clob = "BPX47ur8TbgZQgtJcGJvdcQMMFbmBP7ZrhpiUmLuHKqU"
+midpoint = "eb3Kwmht4evPGGonNHCQs1h7ng63ZUwZ9TyV1qPo23D"
 
 [registry]
 url = "https://api.apr.dev"

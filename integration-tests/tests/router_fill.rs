@@ -8,32 +8,38 @@
 //! Protocol state (State, markets, users, oracle) is synthesized via
 //! `set_account` with the same values the controller unit fixtures use.
 
-use anchor_lang::{Discriminator, InstructionData, ToAccountMetas};
-use bytemuck::Zeroable;
-use solana_account::Account;
-use solana_instruction::{AccountMeta, Instruction};
-use solana_keypair::Keypair;
-use solana_pubkey::Pubkey;
-use solana_signer::Signer;
-use velocity::controller::position::PositionDirection;
-use velocity::instructions::{
-    CancelClobOrderParams, InitializeQuoterArgs, PlaceClobOrderParams, QuoterAccountMetaArg,
-    UpdateQuoterAccountsArgs,
+use {
+    anchor_lang::{Discriminator, InstructionData, ToAccountMetas},
+    bytemuck::Zeroable,
+    solana_account::Account,
+    solana_instruction::{AccountMeta, Instruction},
+    solana_keypair::Keypair,
+    solana_pubkey::Pubkey,
+    solana_signer::Signer,
+    velocity::{
+        controller::position::PositionDirection,
+        instructions::{
+            CancelClobOrderParams, InitializeQuoterArgs, PlaceClobOrderParams,
+            QuoterAccountMetaArg, UpdateQuoterAccountsArgs,
+        },
+        math::constants::{
+            AMM_RESERVE_PRECISION, PEG_PRECISION, PRICE_PRECISION, QUOTE_PRECISION_I64,
+            SPOT_BALANCE_PRECISION_U64, SPOT_CUMULATIVE_INTEREST_PRECISION, SPOT_WEIGHT_PRECISION,
+        },
+        state::{
+            market_status::MarketStatus,
+            oracle::OracleSource,
+            perp_market::PerpMarket,
+            prop_amm::{ClobOrderRefV0, QuoterCpiLeg, QuoterType},
+            pyth_lazer_oracle::PythLazerOracle,
+            spot_market::{SpotBalanceType, SpotMarket},
+            state::{FeeStructure, OracleGuardRails, State},
+            traits::Size,
+            user::{MarketType, Order, OrderStatus, OrderType, User, UserStats},
+        },
+    },
+    velocity_integration_tests::*,
 };
-use velocity::math::constants::{
-    AMM_RESERVE_PRECISION, PEG_PRECISION, PRICE_PRECISION, QUOTE_PRECISION_I64,
-    SPOT_BALANCE_PRECISION_U64, SPOT_CUMULATIVE_INTEREST_PRECISION, SPOT_WEIGHT_PRECISION,
-};
-use velocity::state::market_status::MarketStatus;
-use velocity::state::oracle::OracleSource;
-use velocity::state::perp_market::PerpMarket;
-use velocity::state::prop_amm::{ClobOrderRefV0, QuoterCpiLeg, QuoterType};
-use velocity::state::pyth_lazer_oracle::PythLazerOracle;
-use velocity::state::spot_market::{SpotBalanceType, SpotMarket};
-use velocity::state::state::{FeeStructure, OracleGuardRails, State};
-use velocity::state::traits::Size;
-use velocity::state::user::{MarketType, Order, OrderStatus, OrderType, User, UserStats};
-use velocity_integration_tests::*;
 
 const UNIT: u64 = 1_000_000_000;
 const PRICE: u64 = 1_000_000; // PRICE_PRECISION as u64
@@ -959,7 +965,10 @@ fn quote_router_returns_verified_books_for_every_source() {
     // The router's own quote buffer. Pre-created by the caller because it is
     // larger than a CPI can allocate (the CLOB market is created the same way).
     let router = Keypair::new();
-    fixture.svm.airdrop(&router.pubkey(), 10_000_000_000).unwrap();
+    fixture
+        .svm
+        .airdrop(&router.pubkey(), 10_000_000_000)
+        .unwrap();
     let quote_buffer = Pubkey::new_unique();
     fixture
         .svm
@@ -1088,8 +1097,7 @@ fn set_protocol_user(svm: &mut litesvm::LiteSVM) -> Pubkey {
         &velocity_id(),
     )
     .0;
-    let stats =
-        Pubkey::find_program_address(&[b"user_stats", signer.as_ref()], &velocity_id()).0;
+    let stats = Pubkey::find_program_address(&[b"user_stats", signer.as_ref()], &velocity_id()).0;
     set_user_account(svm, user, &trading_user(&signer, 0, None));
     set_user_stats_account(svm, stats, &signer);
     user
@@ -1150,8 +1158,7 @@ fn run_resolver(
     };
     let keeper = fixture.keeper.insecure_clone();
     let meta = send(&mut fixture.svm, &keeper, ix, &[]).unwrap();
-    let pointer =
-        velocity::relay_spec::ResponsePointerV0::read(&meta.return_data.data).unwrap();
+    let pointer = velocity::relay_spec::ResponsePointerV0::read(&meta.return_data.data).unwrap();
     if !pointer.has_work() {
         return None;
     }
@@ -1396,7 +1403,13 @@ fn armed_trigger_user(authority: &Pubkey, deposit: u64, order: Order) -> User {
     user
 }
 
-fn trigger_clob_order_ix(fixture: &Fixture, order_id: u32, filler: Pubkey, filler_stats: Pubkey, maker_stats: Pubkey) -> Instruction {
+fn trigger_clob_order_ix(
+    fixture: &Fixture,
+    order_id: u32,
+    filler: Pubkey,
+    filler_stats: Pubkey,
+    maker_stats: Pubkey,
+) -> Instruction {
     let (velocity_signer, _) = velocity_signer_pda();
     let mut accounts = velocity::accounts::TriggerClobOrder {
         state: state_pda(),
@@ -1485,7 +1498,12 @@ fn trigger_limit_lifecycle_places_re_arms_on_evict_and_frees_on_expiry() {
     );
 
     // Crossed: places on the CLOB, slot becomes the shadow.
-    set_oracle(&mut fixture.svm, fixture.oracle, (97 * PRICE_PRECISION) as i64, 12);
+    set_oracle(
+        &mut fixture.svm,
+        fixture.oracle,
+        (97 * PRICE_PRECISION) as i64,
+        12,
+    );
     fixture.svm.warp_to_slot(12);
     let ix = trigger_clob_order_ix(&fixture, 1, filler_user, filler_stats, maker_stats);
     send(&mut fixture.svm, &keeper, ix, &[]).unwrap();
@@ -1545,7 +1563,10 @@ fn trigger_limit_lifecycle_places_re_arms_on_evict_and_frees_on_expiry() {
     assert_eq!(maker.orders[0].status, OrderStatus::Open);
     assert_eq!(maker.orders[0].base_asset_amount, UNIT / 2);
     assert_eq!(maker.perp_positions[0].open_asks, 0);
-    assert_eq!(maker.perp_positions[0].open_orders, 1, "armed slot counts again");
+    assert_eq!(
+        maker.perp_positions[0].open_orders, 1,
+        "armed slot counts again"
+    );
     assert_eq!(maker.open_orders, 1);
     assert_eq!(clob_ask_count(&fixture.svm, &fixture.clob_market), 0);
 
@@ -1556,7 +1577,12 @@ fn trigger_limit_lifecycle_places_re_arms_on_evict_and_frees_on_expiry() {
 
     // Price back above: the crank observes the recross and clears the gate
     // without placing.
-    set_oracle(&mut fixture.svm, fixture.oracle, (100 * PRICE_PRECISION) as i64, 13);
+    set_oracle(
+        &mut fixture.svm,
+        fixture.oracle,
+        (100 * PRICE_PRECISION) as i64,
+        13,
+    );
     fixture.svm.warp_to_slot(13);
     let ix = trigger_clob_order_ix(&fixture, 1, filler_user, filler_stats, maker_stats);
     send(&mut fixture.svm, &keeper, ix, &[]).unwrap();
@@ -1565,7 +1591,12 @@ fn trigger_limit_lifecycle_places_re_arms_on_evict_and_frees_on_expiry() {
     assert_eq!(clob_ask_count(&fixture.svm, &fixture.clob_market), 0);
 
     // Crossed again: re-places.
-    set_oracle(&mut fixture.svm, fixture.oracle, (97 * PRICE_PRECISION) as i64, 14);
+    set_oracle(
+        &mut fixture.svm,
+        fixture.oracle,
+        (97 * PRICE_PRECISION) as i64,
+        14,
+    );
     fixture.svm.warp_to_slot(14);
     let ix = trigger_clob_order_ix(&fixture, 1, filler_user, filler_stats, maker_stats);
     send(&mut fixture.svm, &keeper, ix, &[]).unwrap();
@@ -1655,7 +1686,12 @@ fn placed_trigger_cancels_through_the_clob_only() {
     );
     set_user_stats_account(&mut fixture.svm, filler_stats, &fixture.keeper.pubkey());
 
-    set_oracle(&mut fixture.svm, fixture.oracle, (97 * PRICE_PRECISION) as i64, 12);
+    set_oracle(
+        &mut fixture.svm,
+        fixture.oracle,
+        (97 * PRICE_PRECISION) as i64,
+        12,
+    );
     fixture.svm.warp_to_slot(12);
     let keeper = fixture.keeper.insecure_clone();
     let ix = trigger_clob_order_ix(&fixture, 1, filler_user, filler_stats, maker_stats);
@@ -1769,7 +1805,12 @@ fn cross_match_crank_fills_a_crossed_clob_and_keeps_the_spread() {
     let maker_authority = fixture.clob_maker_authority.insecure_clone();
     send(&mut fixture.svm, &maker_authority, ix, &[]).unwrap();
     fixture.svm.warp_to_slot(12);
-    set_oracle(&mut fixture.svm, fixture.oracle, (100 * PRICE_PRECISION) as i64, 12);
+    set_oracle(
+        &mut fixture.svm,
+        fixture.oracle,
+        (100 * PRICE_PRECISION) as i64,
+        12,
+    );
 
     let payout = Pubkey::new_unique();
     fixture.svm.airdrop(&payout, 1_000_000_000).unwrap();
@@ -1829,7 +1870,10 @@ fn cross_match_crank_fills_a_crossed_clob_and_keeps_the_spread() {
     assert!(protocol.perp_positions[0].quote_asset_amount < 1_000_000);
     // The ephemeral taker orders never persist.
     assert_eq!(protocol.open_orders, 0);
-    assert!(protocol.orders.iter().all(|order| order.status != OrderStatus::Open));
+    assert!(protocol
+        .orders
+        .iter()
+        .all(|order| order.status != OrderStatus::Open));
     // Keeper paid from the reservoir.
     assert_eq!(
         fixture.svm.get_account(&payout).unwrap().lamports,
@@ -1866,8 +1910,7 @@ fn cross_match_crank_fills_a_crossed_clob_and_keeps_the_spread() {
             return None;
         }
         let data = fixture.svm.get_account(&conditions).unwrap().data;
-        let staged =
-            &data[pointer.offset() as usize..(pointer.offset() + pointer.len()) as usize];
+        let staged = &data[pointer.offset() as usize..(pointer.offset() + pointer.len()) as usize];
         Some(velocity::relay_spec::ResolvedCrankV0::read(staged).unwrap())
     };
     assert!(resolve_cross(&mut fixture).is_none(), "book is uncrossed");
@@ -1878,7 +1921,12 @@ fn cross_match_crank_fills_a_crossed_clob_and_keeps_the_spread() {
     // wake, the resolver reports no work until the slot arrives, and the
     // cross fires the moment it does.
     fixture.svm.warp_to_slot(20);
-    set_oracle(&mut fixture.svm, fixture.oracle, (100 * PRICE_PRECISION) as i64, 20);
+    set_oracle(
+        &mut fixture.svm,
+        fixture.oracle,
+        (100 * PRICE_PRECISION) as i64,
+        20,
+    );
     place_clob_ask(&mut fixture, 99 * PRICE, UNIT / 2);
     let ix = place_clob_order_ix(
         fixture.clob_maker_user,
@@ -1907,10 +1955,18 @@ fn cross_match_crank_fills_a_crossed_clob_and_keeps_the_spread() {
         );
     }
     // Before activation the crossing bid isn't matchable: no work.
-    assert!(resolve_cross(&mut fixture).is_none(), "speed bump still running");
+    assert!(
+        resolve_cross(&mut fixture).is_none(),
+        "speed bump still running"
+    );
 
     fixture.svm.warp_to_slot(23);
-    set_oracle(&mut fixture.svm, fixture.oracle, (100 * PRICE_PRECISION) as i64, 23);
+    set_oracle(
+        &mut fixture.svm,
+        fixture.oracle,
+        (100 * PRICE_PRECISION) as i64,
+        23,
+    );
     let surplus_before = {
         let protocol: User = read_zero_copy(&fixture.svm, &protocol_user);
         protocol.perp_positions[0].quote_asset_amount
@@ -2009,8 +2065,7 @@ fn force_cancel_reclaims_a_failing_makers_clob_orders() {
 
     // Healthy account: refused.
     let keeper = fixture.keeper.insecure_clone();
-    let err =
-        {
+    let err = {
         let ix = force_cancel_ix(&fixture);
         send(&mut fixture.svm, &keeper, ix, &[]).expect_err("still healthy")
     };
@@ -2034,7 +2089,10 @@ fn force_cancel_reclaims_a_failing_makers_clob_orders() {
     let filler: User = read_zero_copy(&fixture.svm, &filler_user);
     assert!(filler.spot_positions[0].scaled_balance > 0);
     // The maker's dust deposit flipped into a borrow covering the fee.
-    assert_eq!(maker.spot_positions[0].balance_type, SpotBalanceType::Borrow);
+    assert_eq!(
+        maker.spot_positions[0].balance_type,
+        SpotBalanceType::Borrow
+    );
 
     // Nothing left: the same ref is now stale and the call fails loudly.
     let ix = force_cancel_ix(&fixture);
@@ -2075,7 +2133,11 @@ fn place_and_take_rests_the_remainder_on_the_clob() {
             Some(dlob_order),
         ),
     );
-    set_user_stats_account(&mut fixture.svm, dlob_maker_stats, &dlob_maker_authority.pubkey());
+    set_user_stats_account(
+        &mut fixture.svm,
+        dlob_maker_stats,
+        &dlob_maker_authority.pubkey(),
+    );
 
     // The taker.
     let taker_authority = Keypair::new();
@@ -2096,7 +2158,12 @@ fn place_and_take_rests_the_remainder_on_the_clob() {
     set_user_stats_account(&mut fixture.svm, taker_stats, &taker_authority.pubkey());
 
     fixture.svm.warp_to_slot(12);
-    set_oracle(&mut fixture.svm, fixture.oracle, (100 * PRICE_PRECISION) as i64, 12);
+    set_oracle(
+        &mut fixture.svm,
+        fixture.oracle,
+        (100 * PRICE_PRECISION) as i64,
+        12,
+    );
 
     let (velocity_signer, _) = velocity_signer_pda();
     let mut accounts = velocity::accounts::PlaceAndTake {
@@ -2147,7 +2214,10 @@ fn place_and_take_rests_the_remainder_on_the_clob() {
         "took the maker's half"
     );
     assert!(
-        taker.orders.iter().all(|order| order.status != OrderStatus::Open),
+        taker
+            .orders
+            .iter()
+            .all(|order| order.status != OrderStatus::Open),
         "no DLOB remainder rests"
     );
     assert_eq!(
@@ -2164,4 +2234,519 @@ fn place_and_take_rests_the_remainder_on_the_clob() {
         order_id: u64::from_le_bytes(meta.return_data.data[4..12].try_into().unwrap()),
     };
     assert!(order_ref.order_id > 0, "order ref returned to the client");
+}
+
+// ---------------------------------------------------------------------------
+// Midpoint spline quoter: a maker's PDA instance of the midpoint program,
+// registered as a Custom entry, quoting offsets around a maker-fed mid.
+// ---------------------------------------------------------------------------
+
+fn instructions_sysvar() -> Pubkey {
+    "Sysvar1nstructions1111111111111111111111111"
+        .parse()
+        .unwrap()
+}
+
+fn midpoint_instance_pda(authority: &Pubkey) -> Pubkey {
+    Pubkey::find_program_address(
+        &[
+            b"midpoint",
+            0u16.to_le_bytes().as_ref(),
+            authority.as_ref(),
+            0u16.to_le_bytes().as_ref(),
+        ],
+        &midpoint_id(),
+    )
+    .0
+}
+
+/// Borsh-encode a midpoint spline side: Some(vec![(offset_ppm, size)]).
+fn encode_side(levels: &[(u64, u64)], out: &mut Vec<u8>) {
+    out.push(1);
+    out.extend_from_slice(&(levels.len() as u32).to_le_bytes());
+    for (offset_ppm, size) in levels {
+        out.extend_from_slice(&offset_ppm.to_le_bytes());
+        out.extend_from_slice(&size.to_le_bytes());
+    }
+}
+
+struct MidpointMaker {
+    authority: Keypair,
+    hot: Keypair,
+    user: Pubkey,
+    stats: Pubkey,
+    instance: Pubkey,
+    entry: Pubkey,
+}
+
+/// Stand up a midpoint maker end to end: `User` at the true PDA, a midpoint
+/// instance PDA (velocity signer as execute authority), spline levels around
+/// a $100 mid, and the approved Custom registry entry whose CPI legs carry
+/// the instance + instructions sysvar (+ the signer slot on execute).
+fn setup_midpoint_maker(fixture: &mut Fixture, deposit: u64, side_size: u64) -> MidpointMaker {
+    let authority = Keypair::new();
+    let hot = Keypair::new();
+    for kp in [&authority, &hot] {
+        fixture.svm.airdrop(&kp.pubkey(), 10_000_000_000).unwrap();
+    }
+    let (velocity_signer, _) = velocity_signer_pda();
+
+    let user = Pubkey::find_program_address(
+        &[
+            b"user",
+            authority.pubkey().as_ref(),
+            0u16.to_le_bytes().as_ref(),
+        ],
+        &velocity_id(),
+    )
+    .0;
+    set_user_account(
+        &mut fixture.svm,
+        user,
+        &trading_user(&authority.pubkey(), deposit, None),
+    );
+    let stats = Pubkey::new_unique();
+    set_user_stats_account(&mut fixture.svm, stats, &authority.pubkey());
+
+    // Create the instance. Config borsh: market u16, sub u16, base_precision
+    // u64, staleness u64, tick u64, step u64, min u64, attested bool.
+    let instance = midpoint_instance_pda(&authority.pubkey());
+    let mut data = ix_discriminator("initialize_quoter_v0").to_vec();
+    data.extend_from_slice(&0u16.to_le_bytes());
+    data.extend_from_slice(&0u16.to_le_bytes());
+    data.extend_from_slice(&UNIT.to_le_bytes());
+    data.extend_from_slice(&1_000u64.to_le_bytes());
+    data.extend_from_slice(&1u64.to_le_bytes());
+    data.extend_from_slice(&1u64.to_le_bytes());
+    data.extend_from_slice(&1u64.to_le_bytes());
+    data.push(0);
+    let ix = Instruction {
+        program_id: midpoint_id(),
+        accounts: vec![
+            AccountMeta::new(fixture.keeper.pubkey(), true),
+            AccountMeta::new_readonly(authority.pubkey(), true),
+            AccountMeta::new_readonly(velocity_signer, false),
+            AccountMeta::new_readonly(hot.pubkey(), false),
+            // Absent optional flow authority = the program id.
+            AccountMeta::new_readonly(midpoint_id(), false),
+            AccountMeta::new(instance, false),
+            AccountMeta::new_readonly("11111111111111111111111111111111".parse().unwrap(), false),
+        ],
+        data,
+    };
+    send(&mut fixture.svm, &fixture.keeper, ix, &[&authority]).unwrap();
+
+    // Arm the spline: mid $100, one 10bps rung per side.
+    let mut data = ix_discriminator("set_levels_v0").to_vec();
+    data.push(1);
+    data.extend_from_slice(&(100 * PRICE).to_le_bytes());
+    data.push(0); // sequence: None
+    encode_side(&[(1_000, side_size)], &mut data); // bids
+    encode_side(&[(1_000, side_size)], &mut data); // asks
+    let ix = Instruction {
+        program_id: midpoint_id(),
+        accounts: vec![
+            AccountMeta::new(instance, false),
+            AccountMeta::new_readonly(hot.pubkey(), true),
+        ],
+        data,
+    };
+    send(&mut fixture.svm, &fixture.keeper, ix, &[&hot]).unwrap();
+
+    // Register + approve the Custom entry (creation by the quoted user's
+    // authority — consent), CPI legs carrying instance + sysvar.
+    let entry = quoter_pda(0, &midpoint_id(), &user);
+    let ix = Instruction {
+        program_id: velocity_id(),
+        accounts: velocity::accounts::InitializeQuoter {
+            payer: fixture.keeper.pubkey(),
+            authority: authority.pubkey(),
+            quoter: entry,
+            perp_market: perp_market_pda(0),
+            quoter_program: midpoint_id(),
+            user,
+            rent: "SysvarRent111111111111111111111111111111111"
+                .parse()
+                .unwrap(),
+            system_program: "11111111111111111111111111111111".parse().unwrap(),
+        }
+        .to_account_metas(None),
+        data: velocity::instruction::InitializeQuoter {
+            args: InitializeQuoterArgs {
+                market_index: 0,
+                quoter_type: QuoterType::Custom,
+                response_account: instance,
+                quote_v0_discriminator: ix_discriminator("quote_v0"),
+                execute_v0_discriminator: ix_discriminator("execute_v0"),
+            },
+        }
+        .data(),
+    };
+    send(&mut fixture.svm, &fixture.keeper, ix, &[&authority]).unwrap();
+
+    for (leg, metas) in [
+        (
+            QuoterCpiLeg::Quote,
+            vec![
+                QuoterAccountMetaArg {
+                    pubkey: instance,
+                    is_writable: true,
+                },
+                QuoterAccountMetaArg {
+                    pubkey: instructions_sysvar(),
+                    is_writable: false,
+                },
+            ],
+        ),
+        (
+            QuoterCpiLeg::Execute,
+            vec![
+                QuoterAccountMetaArg {
+                    pubkey: instance,
+                    is_writable: true,
+                },
+                QuoterAccountMetaArg {
+                    pubkey: velocity_signer,
+                    is_writable: false,
+                },
+                QuoterAccountMetaArg {
+                    pubkey: instructions_sysvar(),
+                    is_writable: false,
+                },
+            ],
+        ),
+    ] {
+        let ix = Instruction {
+            program_id: velocity_id(),
+            accounts: velocity::accounts::UpdateQuoterAccounts {
+                authority: authority.pubkey(),
+                quoter: entry,
+            }
+            .to_account_metas(None),
+            data: velocity::instruction::UpdateQuoterAccounts {
+                args: UpdateQuoterAccountsArgs {
+                    leg,
+                    index: 0,
+                    metas,
+                },
+            }
+            .data(),
+        };
+        send(&mut fixture.svm, &fixture.keeper, ix, &[&authority]).unwrap();
+    }
+    let ix = Instruction {
+        program_id: velocity_id(),
+        accounts: velocity::accounts::UpdateQuoterApproved {
+            admin: fixture.admin.pubkey(),
+            state: state_pda(),
+            quoter: entry,
+        }
+        .to_account_metas(None),
+        data: velocity::instruction::UpdateQuoterApproved { approved: true }.data(),
+    };
+    send(&mut fixture.svm, &fixture.admin, ix, &[]).unwrap();
+
+    MidpointMaker {
+        authority,
+        hot,
+        user,
+        stats,
+        instance,
+        entry,
+    }
+}
+
+/// Fill a fresh taker's long market order across the baseline CLOB entry
+/// (empty book), the midpoint instance, and the vAMM.
+fn fill_long_through_midpoint(
+    fixture: &mut Fixture,
+    maker: &MidpointMaker,
+    size: u64,
+) -> (Pubkey, litesvm::types::TransactionMetadata) {
+    let taker_authority = Keypair::new();
+    let taker_user = Pubkey::new_unique();
+    let taker_stats = Pubkey::new_unique();
+    let mut taker_order = Order::default();
+    taker_order.order_id = 1;
+    taker_order.status = OrderStatus::Open;
+    taker_order.order_type = OrderType::Market;
+    taker_order.market_type = MarketType::Perp;
+    taker_order.market_index = 0;
+    taker_order.direction = PositionDirection::Long;
+    taker_order.base_asset_amount = size;
+    taker_order.price = 105 * PRICE;
+    taker_order.auction_end_price = (105 * PRICE) as i64;
+    set_user_account(
+        &mut fixture.svm,
+        taker_user,
+        &trading_user(
+            &taker_authority.pubkey(),
+            10_000 * SPOT_BALANCE_PRECISION_U64,
+            Some(taker_order),
+        ),
+    );
+    set_user_stats_account(&mut fixture.svm, taker_stats, &taker_authority.pubkey());
+
+    let filler_user = Pubkey::new_unique();
+    let filler_stats = Pubkey::new_unique();
+    set_user_account(
+        &mut fixture.svm,
+        filler_user,
+        &trading_user(&fixture.keeper.pubkey(), 0, None),
+    );
+    set_user_stats_account(&mut fixture.svm, filler_stats, &fixture.keeper.pubkey());
+
+    fixture.svm.warp_to_slot(12);
+    set_oracle(
+        &mut fixture.svm,
+        fixture.oracle,
+        (100 * PRICE_PRECISION) as i64,
+        12,
+    );
+
+    let (velocity_signer, _) = velocity_signer_pda();
+    let mut accounts = velocity::accounts::FillOrder {
+        state: state_pda(),
+        authority: fixture.keeper.pubkey(),
+        filler: filler_user,
+        filler_stats,
+        user: taker_user,
+        user_stats: taker_stats,
+    }
+    .to_account_metas(None);
+    accounts.push(AccountMeta::new_readonly(fixture.oracle, false));
+    accounts.push(AccountMeta::new(spot_market_pda(0), false));
+    accounts.push(AccountMeta::new(perp_market_pda(0), false));
+    // Maker section: the midpoint's quoted user.
+    accounts.push(AccountMeta::new(maker.user, false));
+    accounts.push(AccountMeta::new(maker.stats, false));
+    // Quoter section: baseline CLOB entry + midpoint entry, then the union
+    // of their CPI accounts and programs.
+    accounts.push(AccountMeta::new_readonly(fixture.quoter, false));
+    accounts.push(AccountMeta::new_readonly(maker.entry, false));
+    accounts.push(AccountMeta::new(fixture.clob_market, false));
+    accounts.push(AccountMeta::new_readonly(velocity_signer, false));
+    accounts.push(AccountMeta::new_readonly(clob_id(), false));
+    accounts.push(AccountMeta::new(maker.instance, false));
+    accounts.push(AccountMeta::new_readonly(instructions_sysvar(), false));
+    accounts.push(AccountMeta::new_readonly(midpoint_id(), false));
+
+    let ix = Instruction {
+        program_id: velocity_id(),
+        accounts,
+        data: velocity::instruction::FillPerpOrder {
+            order_id: Some(1),
+            _maker_order_id: None,
+        }
+        .data(),
+    };
+    // Three quoter CPI legs + the vAMM outgrow the 200k default.
+    let meta = send_with_ixs(
+        &mut fixture.svm,
+        &fixture.keeper,
+        &[compute_unit_limit_ix(400_000), ix],
+        &[],
+    )
+    .unwrap();
+    (taker_user, meta)
+}
+
+/// Read a spline level's (size, filled) off the instance account. Layout:
+/// disc(8) + 4×32 addresses + 8×u64 + 2×u16 + 4×u8, then bids[64], asks[64]
+/// of (offset u64, size u64, filled u64).
+fn midpoint_ask_level(svm: &litesvm::LiteSVM, instance: &Pubkey, index: usize) -> (u64, u64) {
+    let data = svm.get_account(instance).unwrap().data;
+    let levels_base = 8 + 4 * 32 + 8 * 8 + 4 + 4;
+    let asks_base = levels_base + 64 * 24;
+    let off = asks_base + index * 24;
+    (
+        u64::from_le_bytes(data[off + 8..off + 16].try_into().unwrap()),
+        u64::from_le_bytes(data[off + 16..off + 24].try_into().unwrap()),
+    )
+}
+
+#[test]
+fn router_fill_routes_through_a_midpoint_spline_quoter() {
+    let mut fixture = setup();
+    // Midpoint asks 0.5 @ mid + 10bps = 100.1; vAMM ask sits ~1% above mid.
+    let maker = setup_midpoint_maker(&mut fixture, 10_000 * SPOT_BALANCE_PRECISION_U64, UNIT / 2);
+
+    let (taker_user, meta) = fill_long_through_midpoint(&mut fixture, &maker, UNIT);
+
+    // Taker fully filled: 0.5 from the spline, the remainder from the vAMM.
+    let taker: User = read_zero_copy(&fixture.svm, &taker_user);
+    assert_eq!(taker.perp_positions[0].base_asset_amount, UNIT as i64);
+    assert_eq!(taker.orders[0].status, OrderStatus::Filled);
+
+    // The quoted user went short the spline's slice at the rung price —
+    // 0.5 @ 100.1 = 50.05 quote (before fees, floored like the CLOB).
+    let mm: User = read_zero_copy(&fixture.svm, &maker.user);
+    assert_eq!(mm.perp_positions[0].base_asset_amount, -((UNIT / 2) as i64));
+    assert_eq!(
+        mm.perp_positions[0].quote_entry_amount,
+        (100_100_000u64 / 2) as i64
+    );
+
+    // The instance's ask rung is consumed — standing intent depletes.
+    let (size, filled) = midpoint_ask_level(&fixture.svm, &maker.instance, 0);
+    assert_eq!(size, UNIT / 2);
+    assert_eq!(filled, UNIT / 2);
+
+    println!(
+        "CU — router fill through midpoint + vAMM: {}",
+        meta.compute_units_consumed
+    );
+}
+
+#[test]
+fn midpoint_book_is_margin_clamped_to_its_quoted_user() {
+    let mut fixture = setup();
+    // A thin maker quoting far beyond its margin: 20 USDC of collateral
+    // against a 10-unit (~$1000) quote. The router sizes the book against
+    // the quoted user before the split, so the fill takes only what the
+    // account supports and routes the rest to the vAMM.
+    let maker = setup_midpoint_maker(&mut fixture, 20 * SPOT_BALANCE_PRECISION_U64, 10 * UNIT);
+
+    let (taker_user, _) = fill_long_through_midpoint(&mut fixture, &maker, 2 * UNIT);
+
+    let taker: User = read_zero_copy(&fixture.svm, &taker_user);
+    assert_eq!(taker.perp_positions[0].base_asset_amount, (2 * UNIT) as i64);
+
+    let mm: User = read_zero_copy(&fixture.svm, &maker.user);
+    let mm_base = -mm.perp_positions[0].base_asset_amount;
+    assert!(mm_base > 0, "the clamped book still fills something");
+    assert!(
+        (mm_base as u64) < 2 * UNIT,
+        "margin clamp truncated the spline: {mm_base}"
+    );
+}
+
+#[test]
+fn router_fill_splits_across_clob_midpoint_and_vamm() {
+    let mut fixture = setup();
+    // Three sources at three prices: CLOB ask 0.5 @ 100, midpoint spline
+    // 0.5 @ 100.1 (mid + 10bps), vAMM ~1% above mid. A 1.5-unit taker
+    // consumes all three.
+    place_clob_ask(&mut fixture, 100 * PRICE, UNIT / 2);
+    let maker = setup_midpoint_maker(&mut fixture, 10_000 * SPOT_BALANCE_PRECISION_U64, UNIT / 2);
+
+    // The CLOB maker's stats ride the maker map alongside the midpoint's.
+    let clob_maker_stats = Pubkey::new_unique();
+    set_user_stats_account(
+        &mut fixture.svm,
+        clob_maker_stats,
+        &fixture.clob_maker_authority.pubkey(),
+    );
+
+    let taker_authority = Keypair::new();
+    let taker_user = Pubkey::new_unique();
+    let taker_stats = Pubkey::new_unique();
+    let mut taker_order = Order::default();
+    taker_order.order_id = 1;
+    taker_order.status = OrderStatus::Open;
+    taker_order.order_type = OrderType::Market;
+    taker_order.market_type = MarketType::Perp;
+    taker_order.market_index = 0;
+    taker_order.direction = PositionDirection::Long;
+    taker_order.base_asset_amount = UNIT + UNIT / 2;
+    taker_order.price = 105 * PRICE;
+    taker_order.auction_end_price = (105 * PRICE) as i64;
+    set_user_account(
+        &mut fixture.svm,
+        taker_user,
+        &trading_user(
+            &taker_authority.pubkey(),
+            10_000 * SPOT_BALANCE_PRECISION_U64,
+            Some(taker_order),
+        ),
+    );
+    set_user_stats_account(&mut fixture.svm, taker_stats, &taker_authority.pubkey());
+
+    let filler_user = Pubkey::new_unique();
+    let filler_stats = Pubkey::new_unique();
+    set_user_account(
+        &mut fixture.svm,
+        filler_user,
+        &trading_user(&fixture.keeper.pubkey(), 0, None),
+    );
+    set_user_stats_account(&mut fixture.svm, filler_stats, &fixture.keeper.pubkey());
+
+    fixture.svm.warp_to_slot(12);
+    set_oracle(
+        &mut fixture.svm,
+        fixture.oracle,
+        (100 * PRICE_PRECISION) as i64,
+        12,
+    );
+
+    let (velocity_signer, _) = velocity_signer_pda();
+    let mut accounts = velocity::accounts::FillOrder {
+        state: state_pda(),
+        authority: fixture.keeper.pubkey(),
+        filler: filler_user,
+        filler_stats,
+        user: taker_user,
+        user_stats: taker_stats,
+    }
+    .to_account_metas(None);
+    accounts.push(AccountMeta::new_readonly(fixture.oracle, false));
+    accounts.push(AccountMeta::new(spot_market_pda(0), false));
+    accounts.push(AccountMeta::new(perp_market_pda(0), false));
+    // Maker section: both quoted users.
+    accounts.push(AccountMeta::new(fixture.clob_maker_user, false));
+    accounts.push(AccountMeta::new(clob_maker_stats, false));
+    accounts.push(AccountMeta::new(maker.user, false));
+    accounts.push(AccountMeta::new(maker.stats, false));
+    // Quoter section: both entries + the union of their CPI accounts.
+    accounts.push(AccountMeta::new_readonly(fixture.quoter, false));
+    accounts.push(AccountMeta::new_readonly(maker.entry, false));
+    accounts.push(AccountMeta::new(fixture.clob_market, false));
+    accounts.push(AccountMeta::new_readonly(velocity_signer, false));
+    accounts.push(AccountMeta::new_readonly(clob_id(), false));
+    accounts.push(AccountMeta::new(maker.instance, false));
+    accounts.push(AccountMeta::new_readonly(instructions_sysvar(), false));
+    accounts.push(AccountMeta::new_readonly(midpoint_id(), false));
+
+    let ix = Instruction {
+        program_id: velocity_id(),
+        accounts,
+        data: velocity::instruction::FillPerpOrder {
+            order_id: Some(1),
+            _maker_order_id: None,
+        }
+        .data(),
+    };
+    let meta = send_with_ixs(
+        &mut fixture.svm,
+        &fixture.keeper,
+        &[compute_unit_limit_ix(400_000), ix],
+        &[],
+    )
+    .unwrap();
+
+    // All three sources filled: CLOB 0.5 @ 100 (best), midpoint 0.5 @
+    // 100.1, vAMM the remaining 0.5.
+    let taker: User = read_zero_copy(&fixture.svm, &taker_user);
+    assert_eq!(
+        taker.perp_positions[0].base_asset_amount,
+        (UNIT + UNIT / 2) as i64
+    );
+    assert_eq!(taker.orders[0].status, OrderStatus::Filled);
+
+    let clob_maker: User = read_zero_copy(&fixture.svm, &fixture.clob_maker_user);
+    assert_eq!(
+        clob_maker.perp_positions[0].base_asset_amount,
+        -((UNIT / 2) as i64)
+    );
+    assert_eq!(clob_ask_count(&fixture.svm, &fixture.clob_market), 0);
+
+    let mm: User = read_zero_copy(&fixture.svm, &maker.user);
+    assert_eq!(mm.perp_positions[0].base_asset_amount, -((UNIT / 2) as i64));
+    let (_, filled) = midpoint_ask_level(&fixture.svm, &maker.instance, 0);
+    assert_eq!(filled, UNIT / 2);
+
+    println!(
+        "CU — router fill across CLOB + midpoint + vAMM: {}",
+        meta.compute_units_consumed
+    );
 }

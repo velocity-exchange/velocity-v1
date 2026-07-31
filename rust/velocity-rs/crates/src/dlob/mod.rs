@@ -973,11 +973,8 @@ impl DLOB {
                 },
             );
 
-            // `continue`, not `break`: crossing is not monotonic in price. A taker
-            // order can fail to cross purely on its own attributes — `can_order_cross_vamm`
-            // rejects a sub-min-size order, and a stale/malformed order can sit at the top
-            // of the book priced far away from the vAMM — so stopping at the first
-            // non-crossing order silently hides every fillable order behind it.
+            // skip, don't stop: `can_order_cross_vamm` gates on the order's own size,
+            // so a non-crossing order says nothing about the ones behind it
             if !new_crosses.is_empty() {
                 all_crosses.push((taker_bid, new_crosses));
             }
@@ -1000,7 +997,6 @@ impl DLOB {
                 },
             );
 
-            // see the bid loop above: `continue`, not `break`
             if !new_crosses.is_empty() {
                 all_crosses.push((taker_ask, new_crosses));
             }

@@ -7,7 +7,10 @@ import {
 } from './types';
 import { AverageOverSlotsStrategy } from './averageOverSlotsStrategy';
 import { MaxOverSlotsStrategy } from './maxOverSlotsStrategy';
-import { fetchSolanaPriorityFee } from './solanaPriorityFeeMethod';
+import {
+	fetchSolanaPriorityFee,
+	FetchSolanaPriorityFee,
+} from './solanaPriorityFeeMethod';
 import {
 	HeliusPriorityFeeLevels,
 	HeliusPriorityLevel,
@@ -35,6 +38,7 @@ export class PriorityFeeSubscriber {
 	addresses: string[];
 	velocityMarkets?: VelocityMarketInfo[];
 	customStrategy?: PriorityFeeStrategy;
+	fetchSolanaPriorityFee: FetchSolanaPriorityFee;
 	averageStrategy = new AverageOverSlotsStrategy();
 	maxStrategy = new MaxOverSlotsStrategy();
 	priorityFeeMethod = PriorityFeeMethod.SOLANA;
@@ -66,6 +70,8 @@ export class PriorityFeeSubscriber {
 			? config.addresses.map((address) => address.toBase58())
 			: [];
 		this.velocityMarkets = config.velocityMarkets;
+		this.fetchSolanaPriorityFee =
+			config.fetchSolanaPriorityFee ?? fetchSolanaPriorityFee;
 
 		if (config.customStrategy) {
 			this.customStrategy = config.customStrategy;
@@ -124,7 +130,7 @@ export class PriorityFeeSubscriber {
 				'connection must be provided to use SOLANA priority fee API'
 			);
 		}
-		const samples = await fetchSolanaPriorityFee(
+		const samples = await this.fetchSolanaPriorityFee(
 			this.connection,
 			this.lookbackDistance,
 			this.addresses

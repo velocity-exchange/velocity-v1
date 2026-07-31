@@ -1151,9 +1151,9 @@ fn run_resolver(
         }
         .to_account_metas(None),
         data: if expire {
-            velocity::instruction::ResolveClobCrankRemoveExpired {}.data()
+            velocity::instruction::ResolveCrankClobRemoveExpired {}.data()
         } else {
-            velocity::instruction::ResolveClobCrankEvict {}.data()
+            velocity::instruction::ResolveCrankClobEvict {}.data()
         },
     };
     let keeper = fixture.keeper.insecure_clone();
@@ -1900,7 +1900,7 @@ fn cross_match_crank_fills_a_crossed_clob_and_keeps_the_spread() {
                 state: state_pda(),
             }
             .to_account_metas(None),
-            data: velocity::instruction::ResolveClobCrankCross {}.data(),
+            data: velocity::instruction::ResolveCrankCrossMatch {}.data(),
         };
         let keeper = fixture.keeper.insecure_clone();
         let meta = send(&mut fixture.svm, &keeper, ix, &[]).unwrap();

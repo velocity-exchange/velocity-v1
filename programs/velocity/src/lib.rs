@@ -2287,20 +2287,20 @@ pub mod velocity {
 
     /// Relay resolver for the evict condition. Meant to be simulated, not
     /// landed: stages the executor call and returns a response pointer.
-    pub fn resolve_clob_crank_evict(ctx: Context<ResolveClobCrank>) -> Result<()> {
-        handle_resolve_clob_crank_evict(ctx)
+    pub fn resolve_crank_clob_evict(ctx: Context<ResolveClobCrank>) -> Result<()> {
+        handle_resolve_crank_clob_evict(ctx)
     }
 
     /// Relay resolver for the expire (and expire-fallback) condition. Meant
     /// to be simulated, not landed.
-    pub fn resolve_clob_crank_remove_expired(ctx: Context<ResolveClobCrank>) -> Result<()> {
-        handle_resolve_clob_crank_remove_expired(ctx)
+    pub fn resolve_crank_clob_remove_expired(ctx: Context<ResolveClobCrank>) -> Result<()> {
+        handle_resolve_crank_clob_remove_expired(ctx)
     }
 
     /// Relay resolver for the cross (and cross-fallback) condition. Meant to
     /// be simulated, not landed.
-    pub fn resolve_clob_crank_cross(ctx: Context<ResolveClobCrank>) -> Result<()> {
-        handle_resolve_clob_crank_cross(ctx)
+    pub fn resolve_crank_cross_match(ctx: Context<ResolveClobCrank>) -> Result<()> {
+        handle_resolve_crank_cross_match(ctx)
     }
 
     pub fn withdraw_protocol_user_deposit<'c: 'info, 'info>(

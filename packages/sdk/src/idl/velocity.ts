@@ -7560,60 +7560,20 @@ export type Velocity = {
       ]
     },
     {
-      "name": "resolveClobCrankCross",
-      "docs": [
-        "Relay resolver for the cross (and cross-fallback) condition. Meant to",
-        "be simulated, not landed."
-      ],
-      "discriminator": [
-        221,
-        103,
-        48,
-        85,
-        173,
-        165,
-        43,
-        8
-      ],
-      "accounts": [
-        {
-          "name": "crankConditions",
-          "docs": [
-            "Writable only because the payload is staged in its scratch region;",
-            "the instruction is otherwise read-only and only ever simulated."
-          ],
-          "writable": true
-        },
-        {
-          "name": "clobMarket",
-          "docs": [
-            "accounts, same as the executor it stages."
-          ]
-        },
-        {
-          "name": "quoter"
-        },
-        {
-          "name": "state"
-        }
-      ],
-      "args": []
-    },
-    {
-      "name": "resolveClobCrankEvict",
+      "name": "resolveCrankClobEvict",
       "docs": [
         "Relay resolver for the evict condition. Meant to be simulated, not",
         "landed: stages the executor call and returns a response pointer."
       ],
       "discriminator": [
-        192,
-        3,
-        104,
-        190,
-        54,
-        59,
-        95,
-        210
+        107,
+        234,
+        33,
+        219,
+        99,
+        9,
+        84,
+        143
       ],
       "accounts": [
         {
@@ -7640,20 +7600,60 @@ export type Velocity = {
       "args": []
     },
     {
-      "name": "resolveClobCrankRemoveExpired",
+      "name": "resolveCrankClobRemoveExpired",
       "docs": [
         "Relay resolver for the expire (and expire-fallback) condition. Meant",
         "to be simulated, not landed."
       ],
       "discriminator": [
-        33,
+        255,
+        25,
+        138,
+        136,
+        201,
+        36,
+        41,
+        113
+      ],
+      "accounts": [
+        {
+          "name": "crankConditions",
+          "docs": [
+            "Writable only because the payload is staged in its scratch region;",
+            "the instruction is otherwise read-only and only ever simulated."
+          ],
+          "writable": true
+        },
+        {
+          "name": "clobMarket",
+          "docs": [
+            "accounts, same as the executor it stages."
+          ]
+        },
+        {
+          "name": "quoter"
+        },
+        {
+          "name": "state"
+        }
+      ],
+      "args": []
+    },
+    {
+      "name": "resolveCrankCrossMatch",
+      "docs": [
+        "Relay resolver for the cross (and cross-fallback) condition. Meant to",
+        "be simulated, not landed."
+      ],
+      "discriminator": [
+        192,
         165,
-        79,
-        241,
-        1,
-        84,
-        210,
-        89
+        30,
+        105,
+        235,
+        92,
+        239,
+        53
       ],
       "accounts": [
         {

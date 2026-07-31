@@ -1,10 +1,11 @@
-//! Permissionless cranks over the CLOB's removal ixs (`evict_worst_v0`,
-//! `remove_expired_v0`). Removal is velocity-mediated so the maker's
-//! open-order aggregates stay exact: the caller passes the maker's `User`
-//! (read off the book off-chain, or staged by the resolver), the CLOB returns
-//! the removed order, and velocity unwinds the remaining size — failing
-//! closed if the book's tail changed and the removal hit someone else's
-//! order.
+//! Shared plumbing for the CLOB crank instructions and their resolvers.
+//!
+//! Each crank endpoint lives in its own file next to its resolver
+//! (`crank_clob_evict.rs`, `crank_clob_remove_expired.rs`,
+//! `crank_cross_match.rs`); what they share lives here: the removal
+//! executor's account struct + body (evict and expire differ only in which
+//! CLOB removal they CPI and what happens to a placed trigger's shadow
+//! slot), the resolvers' common account struct, and the staging helpers.
 //!
 //! The cranks are dual-mode, selected by which `filler` rides the call:
 //!
@@ -19,10 +20,11 @@
 //!   market's conditions-account reservoir, giving relay's `assert_paid_v0`
 //!   a real fee to measure.
 //!
-//! Whenever the conditions account is passed, the executor also repairs the
-//! expire condition's `wake_ts` hint to the true minimum over the
-//! post-removal book, so a due hint goes quiet instead of waking turners
-//! forever.
+//! Resolvers are advisory: the executor re-verifies everything (the CLOB
+//! fails removals that aren't due, and velocity fails the crank if the
+//! removal hit a different maker), so a stale or lying simulation filters
+//! itself out. Deriving PDAs costs real CU but resolvers only ever run under
+//! simulation.
 
 use {
     crate::{
@@ -38,9 +40,8 @@ use {
             clob_crank::{ClobCrankConditionsV0, CLOB_CRANK_CONDITIONS_PDA_SEED},
             perp_market::PerpMarket,
             prop_amm::{
-                clob_hint_scan, ClobEvictWorstArgsV0, ClobOrderRefV0, ClobRemoveExpiredArgsV0,
-                ClobRemovedOrderV0, ClobSide, QuoterType, QuoterV0,
-                CLOB_EVICT_WORST_V0_DISCRIMINATOR, CLOB_REMOVE_EXPIRED_V0_DISCRIMINATOR,
+                clob_hint_scan, read_clob_node, ClobNodeView, ClobRemovedOrderV0, ClobUserRefV0,
+                QuoterType, QuoterV0, CLOB_NIL,
             },
             state::State,
             user::{User, UserStats},
@@ -48,11 +49,18 @@ use {
         validate,
     },
     anchor_lang::prelude::*,
+    relay_spec::{AccountRefV0, ResolvedCrankV0, ResponsePointerV0, KEEPER_PLACEHOLDER},
     solana_program::{
         instruction::{AccountMeta, Instruction},
-        program::{get_return_data, invoke_signed},
+        program::{get_return_data, invoke_signed, set_return_data},
     },
 };
+
+/// Makers one profitable cross touches, bounded so the staged executor
+/// stays inside the conditions account's scratch region. The walk stops
+/// before admitting a maker past the cap, so the staged size only covers
+/// staged makers and the executor's loaded-user set is always sufficient.
+pub const MAX_CROSS_MAKERS: usize = 8;
 
 #[derive(Accounts)]
 #[instruction(market_index: u16)]
@@ -108,36 +116,12 @@ pub struct CrankClobOrderRemoval<'info> {
     pub crank_conditions: Option<AccountLoader<'info, ClobCrankConditionsV0>>,
 }
 
-pub fn handle_crank_clob_evict(
-    ctx: Context<CrankClobOrderRemoval>,
-    market_index: u16,
-    side: ClobSide,
-) -> Result<()> {
-    let mut data = CLOB_EVICT_WORST_V0_DISCRIMINATOR.to_vec();
-    ClobEvictWorstArgsV0 { side }
-        .serialize(&mut data)
-        .map_err(|_| ErrorCode::DefaultError)?;
-    crank_clob_removal(ctx, market_index, data, true)
-}
-
-pub fn handle_crank_clob_remove_expired(
-    ctx: Context<CrankClobOrderRemoval>,
-    market_index: u16,
-    order_ref: ClobOrderRefV0,
-) -> Result<()> {
-    let mut data = CLOB_REMOVE_EXPIRED_V0_DISCRIMINATOR.to_vec();
-    ClobRemoveExpiredArgsV0 { order_ref }
-        .serialize(&mut data)
-        .map_err(|_| ErrorCode::DefaultError)?;
-    crank_clob_removal(ctx, market_index, data, false)
-}
-
 /// Shared crank body: CPI the removal, verify it hit the passed maker,
 /// unwind the aggregates, pay the keeper — quote from the maker in both
 /// modes, plus reservoir lamports in program-keeper mode. `is_evict` decides
 /// what happens to a placed trigger's shadow slot: eviction re-arms it
 /// (eager, in this same tx), expiry frees it.
-fn crank_clob_removal(
+pub fn crank_clob_removal(
     ctx: Context<CrankClobOrderRemoval>,
     market_index: u16,
     cpi_data: Vec<u8>,
@@ -303,5 +287,149 @@ fn crank_clob_removal(
         removed.order_id,
         ctx.accounts.user.key()
     );
+    Ok(())
+}
+
+/// Account order is the contract with `write_clob_crank_conditions`'s
+/// registered `resolver_accounts` — the conditions account first (index 0 is
+/// where the response pointer says the payload lives).
+#[derive(Accounts)]
+pub struct ResolveClobCrank<'info> {
+    /// Writable only because the payload is staged in its scratch region;
+    /// the instruction is otherwise read-only and only ever simulated.
+    #[account(mut)]
+    pub crank_conditions: AccountLoader<'info, ClobCrankConditionsV0>,
+    /// CHECK: validated against the quoter entry's registered execute
+    /// accounts, same as the executor it stages.
+    pub clob_market: UncheckedAccount<'info>,
+    pub quoter: AccountLoader<'info, QuoterV0>,
+    pub state: AccountLoader<'info, State>,
+}
+
+pub fn validate_linkage(ctx: &Context<ResolveClobCrank>) -> Result<()> {
+    let quoter = ctx.accounts.quoter.load()?;
+    let conditions = ctx.accounts.crank_conditions.load()?;
+    validate!(
+        quoter.quoter_type == QuoterType::Clob && quoter.market == conditions.market_index,
+        ErrorCode::DefaultError,
+        "quoter entry does not match the conditions account"
+    )?;
+    let registered = &quoter.execute_accounts[..quoter.execute_accounts_count as usize];
+    validate!(
+        registered
+            .iter()
+            .any(|meta| meta.pubkey == ctx.accounts.clob_market.key()),
+        ErrorCode::DefaultError,
+        "clob market is not registered on the quoter entry"
+    )?;
+    Ok(())
+}
+
+pub fn no_work() -> Result<()> {
+    set_return_data(&ResponsePointerV0::no_work().to_bytes());
+    Ok(())
+}
+
+/// Convert typed anchor client metas into relay account refs. Building the
+/// named-accounts prefix through the executor's own `crate::accounts::*`
+/// struct means a change to its `#[derive(Accounts)]` shape breaks staging
+/// at compile time (and the writable flags come from the derive), instead
+/// of surfacing as a runtime account mismatch.
+pub fn to_account_refs(metas: Vec<AccountMeta>) -> Vec<AccountRefV0> {
+    metas
+        .into_iter()
+        .map(|meta| {
+            // Staged executors are unsigned by contract; nothing in these
+            // structs is a Signer.
+            debug_assert!(!meta.is_signer);
+            if meta.is_writable {
+                AccountRefV0::writable(meta.pubkey.to_bytes())
+            } else {
+                AccountRefV0::readonly(meta.pubkey.to_bytes())
+            }
+        })
+        .collect()
+}
+
+/// Derive the `(User, UserStats)` PDAs from a node's derivable identity —
+/// the whole point of the book storing `(authority, sub_account_id)`
+/// instead of the `User` key.
+pub fn derive_user_pdas(user: &ClobUserRefV0) -> (Pubkey, Pubkey) {
+    let (user_pda, _) = Pubkey::find_program_address(
+        &[
+            b"user",
+            user.authority.as_ref(),
+            user.sub_account_id.to_le_bytes().as_ref(),
+        ],
+        &crate::ID,
+    );
+    let (stats_pda, _) =
+        Pubkey::find_program_address(&[b"user_stats", user.authority.as_ref()], &crate::ID);
+    (user_pda, stats_pda)
+}
+
+/// The protocol-owned `User` (the signer authority's first sub-account,
+/// created through the normal initialize_user path) and its stats PDA.
+pub fn derive_protocol_user_pdas(signer: &Pubkey) -> (Pubkey, Pubkey) {
+    let (protocol_user, _) = Pubkey::find_program_address(
+        &[b"user", signer.as_ref(), 0u16.to_le_bytes().as_ref()],
+        &crate::ID,
+    );
+    let (protocol_user_stats, _) =
+        Pubkey::find_program_address(&[b"user_stats", signer.as_ref()], &crate::ID);
+    (protocol_user, protocol_user_stats)
+}
+
+/// Advance a cursor to the next node that is live and matchable right now.
+pub fn next_matchable(
+    data: &[u8],
+    mut cursor: u32,
+    slot: u64,
+    now: i64,
+) -> Option<(u32, ClobNodeView)> {
+    while cursor != CLOB_NIL {
+        let node = read_clob_node(data, cursor)?;
+        if node.is_matchable(slot, now) {
+            return Some((cursor, node));
+        }
+        cursor = node.next;
+    }
+    None
+}
+
+/// Stage a removal-executor call: `CrankClobOrderRemoval`'s exact account
+/// order, with the keeper payout slot as the placeholder, followed by the
+/// borsh args after the discriminator.
+pub fn stage_removal(ctx: &Context<ResolveClobCrank>, maker: Pubkey, args: Vec<u8>) -> Result<()> {
+    let signer = ctx.accounts.state.load()?.signer;
+    let market_index = ctx.accounts.crank_conditions.load()?.market_index;
+    let (protocol_user, protocol_user_stats) = derive_protocol_user_pdas(&signer);
+    let (perp_market, _) = Pubkey::find_program_address(
+        &[b"perp_market", market_index.to_le_bytes().as_ref()],
+        &crate::ID,
+    );
+
+    // The executor's full account list IS its `#[derive(Accounts)]` struct
+    // (no remaining accounts), so the whole thing is typed.
+    let metas = crate::accounts::CrankClobOrderRemoval {
+        state: ctx.accounts.state.key(),
+        authority: Pubkey::new_from_array(KEEPER_PLACEHOLDER),
+        filler: protocol_user,
+        filler_stats: protocol_user_stats,
+        user: maker,
+        perp_market,
+        quoter: ctx.accounts.quoter.key(),
+        clob_market: ctx.accounts.clob_market.key(),
+        clob_program: ctx.accounts.quoter.load()?.program_id,
+        velocity_signer: signer,
+        crank_conditions: Some(ctx.accounts.crank_conditions.key()),
+    }
+    .to_account_metas(None);
+    let resolved = ResolvedCrankV0 {
+        accounts: to_account_refs(metas),
+        data: args,
+    };
+    let pointer = load_mut!(ctx.accounts.crank_conditions)?.stage(&resolved)?;
+    set_return_data(&pointer);
     Ok(())
 }

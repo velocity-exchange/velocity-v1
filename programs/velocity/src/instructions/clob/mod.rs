@@ -18,8 +18,10 @@
 //! - [`crank_conditions_setup`]: writes the market's relay condition block —
 //!   called by `update_perp_market_clob_quoter`, so attaching a CLOB stands
 //!   its cranks up in the same instruction.
-//! - [`resolve_clob_crank`]: the simulation-only relay resolvers that stage
-//!   the crank executor calls.
+//!
+//! Each crank instruction lives in its own file together with its
+//! simulation-only relay resolver (named `Resolve<EndpointName>`); the
+//! shared dual-mode plumbing is [`crank_common`].
 //! - [`trigger_clob_order`]: crank an armed trigger-limit onto the CLOB; the
 //!   `User.orders` slot becomes a shadow keeping the trigger params + the
 //!   CLOB `OrderRef` (freed on fill/cancel/expiry, re-armed on eviction).
@@ -31,16 +33,17 @@
 //!   their placed-trigger shadows) for the flat fee.
 
 mod cancel_clob_order;
-mod crank_clob_order_removal;
+mod crank_clob_evict;
+mod crank_clob_remove_expired;
+mod crank_common;
 mod crank_conditions_setup;
 mod crank_cross_match;
 mod force_cancel_clob_orders;
 mod place_clob_order;
-mod resolve_clob_crank;
 mod trigger_clob_order;
 
 pub use {
-    cancel_clob_order::*, crank_clob_order_removal::*, crank_conditions_setup::*,
-    crank_cross_match::*, force_cancel_clob_orders::*, place_clob_order::*, resolve_clob_crank::*,
-    trigger_clob_order::*,
+    cancel_clob_order::*, crank_clob_evict::*, crank_clob_remove_expired::*, crank_common::*,
+    crank_conditions_setup::*, crank_cross_match::*, force_cancel_clob_orders::*,
+    place_clob_order::*, trigger_clob_order::*,
 };

@@ -87,11 +87,11 @@ pub fn write_clob_crank_conditions(
         })
     };
     let evict_spec = spec(
-        crate::instruction::ResolveClobCrankEvict::DISCRIMINATOR,
+        crate::instruction::ResolveCrankClobEvict::DISCRIMINATOR,
         crate::instruction::CrankClobEvict::DISCRIMINATOR,
     )?;
     let expire_spec = spec(
-        crate::instruction::ResolveClobCrankRemoveExpired::DISCRIMINATOR,
+        crate::instruction::ResolveCrankClobRemoveExpired::DISCRIMINATOR,
         crate::instruction::CrankClobRemoveExpired::DISCRIMINATOR,
     )?;
 
@@ -120,7 +120,7 @@ pub fn write_clob_crank_conditions(
         &ConditionV0::every_slots(expire_fallback_slots, expire_spec, &resolver_accounts),
     )?;
     let cross_spec = spec(
-        crate::instruction::ResolveClobCrankCross::DISCRIMINATOR,
+        crate::instruction::ResolveCrankCrossMatch::DISCRIMINATOR,
         crate::instruction::CrankCrossMatch::DISCRIMINATOR,
     )?;
     conditions.write_condition(

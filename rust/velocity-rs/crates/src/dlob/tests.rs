@@ -4865,3 +4865,105 @@ fn dlob_min_size_oracle_close_crosses_vamm_incident_replay() {
     assert!(maker_crosses.has_vamm_cross);
     assert!(maker_crosses.orders.is_empty()); // no makers on the book — vAMM only
 }
+
+/// Replay of the 2026-07-31 BTC-PERP devnet incident: a stale reduce-only
+/// trigger-market order (never expiring, `max_ts == 0`, size `u64::MAX`-ish) sat
+/// at the top of the bid book priced far away from the vAMM. Every later Long
+/// was scanned *after* it, and the auction loop used to `break` on the first
+/// non-crossing taker — so four consecutive swift Longs were placed on-chain and
+/// then silently ignored until they expired, while Shorts on the same market
+/// (a separate loop, no blocker) filled normally.
+///
+/// Crossing is not monotonic in price: `can_order_cross_vamm` rejects on the
+/// order's own size/reduce-only attributes, so a non-crossing order says nothing
+/// about the ones behind it. Both loops must skip, not stop.
+#[test]
+fn dlob_non_crossing_top_of_book_does_not_shadow_later_takers() {
+    let _ = env_logger::try_init();
+    let slot = 100;
+    // fixture: min_order_size 10, oracle 1e9, vamm bid/ask 999_900_000 / 1_000_100_000
+    let perp_market = vamm_taker_test_market(1);
+    let oracle_price: u64 = 1_000_000_000;
+
+    let refresh = |dlob: &DLOB| {
+        if let Some(book) = dlob.markets.get(&MarketId::new(0, MarketType::Perp)) {
+            book.update_l3_view(oracle_price, &dlob.metadata, &Default::default());
+        }
+    };
+
+    // --- bid side (the incident) ---
+    let dlob = DLOB::default();
+    // Blocker: best bid, crosses the vAMM ask on price but is below min_order_size,
+    // so `can_order_cross_vamm` fails and it yields no cross.
+    let blocker = create_test_order(
+        1,
+        OrderType::Market,
+        Direction::Long,
+        1_000_300_000,
+        5,
+        slot,
+    );
+    dlob.insert_order(&Pubkey::new_unique(), slot, blocker);
+    // Fillable: lower priced, still through the vAMM ask, and above min size.
+    let fillable = create_test_order(
+        2,
+        OrderType::Market,
+        Direction::Long,
+        1_000_200_000,
+        50,
+        slot,
+    );
+    dlob.insert_order(&Pubkey::new_unique(), slot, fillable);
+    refresh(&dlob);
+
+    let crosses = dlob.find_crosses_for_auctions(
+        0,
+        MarketType::Perp,
+        slot,
+        oracle_price,
+        Some(&perp_market),
+        oracle_price,
+        None,
+    );
+    assert_eq!(
+        crosses.crosses.len(),
+        1,
+        "the fillable bid behind a non-crossing best bid must still be found: {:?}",
+        crosses.crosses
+    );
+    assert_eq!(crosses.crosses[0].0.order_id, 2);
+    assert!(crosses.crosses[0].1.has_vamm_cross);
+
+    // --- ask side: same invariant, mirrored ---
+    let dlob = DLOB::default();
+    let blocker = create_test_order(3, OrderType::Market, Direction::Short, 999_700_000, 5, slot);
+    dlob.insert_order(&Pubkey::new_unique(), slot, blocker);
+    let fillable = create_test_order(
+        4,
+        OrderType::Market,
+        Direction::Short,
+        999_800_000,
+        50,
+        slot,
+    );
+    dlob.insert_order(&Pubkey::new_unique(), slot, fillable);
+    refresh(&dlob);
+
+    let crosses = dlob.find_crosses_for_auctions(
+        0,
+        MarketType::Perp,
+        slot,
+        oracle_price,
+        Some(&perp_market),
+        oracle_price,
+        None,
+    );
+    assert_eq!(
+        crosses.crosses.len(),
+        1,
+        "the fillable ask behind a non-crossing best ask must still be found: {:?}",
+        crosses.crosses
+    );
+    assert_eq!(crosses.crosses[0].0.order_id, 4);
+    assert!(crosses.crosses[0].1.has_vamm_cross);
+}

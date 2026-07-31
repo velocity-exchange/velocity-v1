@@ -3396,9 +3396,12 @@ fn liq_conditions_write_a_conservative_downward_threshold() {
     // The self-maintenance pair: a watch over the user's own position bytes
     // whose executor is the sync, plus the coarse poll.
     assert_eq!(block[LIQ_SYNC_WATCH].wake_account, user.to_bytes());
+    // The staged executor is the UNSIGNED sibling: relay refuses to submit
+    // an executor whose account list names a signer, so the self-sync path
+    // cannot be the opt-in `sync_liq_conditions` (which takes a payer).
     assert_eq!(
         block[LIQ_SYNC_WATCH].executor_disc,
-        velocity::instruction::SyncLiqConditions::DISCRIMINATOR
+        velocity::instruction::ResyncLiqConditions::DISCRIMINATOR
     );
     assert_eq!(block[LIQ_SYNC_WATCH].min_payment, 5_000);
     assert_eq!(block[LIQ_SYNC_FALLBACK].wake_slot, 3000);
@@ -3540,4 +3543,104 @@ fn plain_liquidation_rejects_the_protocol_user() {
         send(&mut fixture.svm, &keeper, ix, &[]).is_err(),
         "the protocol user must not take liquidated inventory"
     );
+}
+
+/// The self-maintenance loop, turner-shaped — and the regression guard for
+/// the rule that broke it once: **a staged executor may not name a
+/// signer.** Relay marks every executor meta non-signing and refuses to
+/// sign a transaction whose executor names a signer, so the relay-facing
+/// resync takes no payer (the opt-in sync, which allocates, keeps its
+/// own). Here the user's positions change, the resolver notices the
+/// thresholds are stale, and the staged executor lands unsigned, paying
+/// the keeper from the conditions account's own lamports.
+#[test]
+fn liq_self_sync_stages_an_unsigned_executor_and_pays_from_its_own_lamports() {
+    use velocity::state::liq_conditions::LiqConditionsV0;
+
+    let mut fixture = setup();
+    let market_conditions = init_crank_conditions(&mut fixture, 10_000);
+    set_protocol_user(&mut fixture.svm);
+
+    let authority = Keypair::new();
+    let user = Pubkey::find_program_address(
+        &[
+            b"user",
+            authority.pubkey().as_ref(),
+            0u16.to_le_bytes().as_ref(),
+        ],
+        &velocity_id(),
+    )
+    .0;
+    let mut account = trading_user(&authority.pubkey(), 100 * SPOT_BALANCE_PRECISION_U64, None);
+    account.perp_positions[0].market_index = 0;
+    account.perp_positions[0].base_asset_amount = (10 * UNIT) as i64;
+    account.perp_positions[0].quote_asset_amount = -((1000 * 1_000_000) as i64);
+    set_user_account(&mut fixture.svm, user, &account);
+
+    const SYNC_FEE: u64 = 5_000;
+    let conditions = sync_liq_conditions(&mut fixture, user, market_conditions, SYNC_FEE);
+    // Fund the sync reservoir (whoever wants this user's hints
+    // self-maintaining pays for it).
+    fixture.svm.airdrop(&conditions, 100_000_000).unwrap();
+
+    // Nothing changed: the resolver reports no work.
+    let resolver_ix = || Instruction {
+        program_id: velocity_id(),
+        accounts: velocity::accounts::ResolveResyncLiqConditions {
+            liq_conditions: conditions,
+            user,
+        }
+        .to_account_metas(None),
+        data: velocity::instruction::ResolveResyncLiqConditions {}.data(),
+    };
+    let keeper = fixture.keeper.insecure_clone();
+    let ix = resolver_ix();
+    let meta = send(&mut fixture.svm, &keeper, ix, &[]).unwrap();
+    assert!(
+        !velocity::relay_spec::ResponsePointerV0::read(&meta.return_data.data)
+            .unwrap()
+            .has_work()
+    );
+
+    // The user closes their position: the thresholds are now for exposures
+    // that no longer exist.
+    let mut account: User = read_zero_copy(&fixture.svm, &user);
+    account.perp_positions[0].base_asset_amount = 0;
+    account.perp_positions[1].market_index = 0;
+    set_user_account(&mut fixture.svm, user, &account);
+
+    let ix = resolver_ix();
+    let meta = send(&mut fixture.svm, &keeper, ix, &[]).unwrap();
+    let pointer = velocity::relay_spec::ResponsePointerV0::read(&meta.return_data.data).unwrap();
+    assert!(pointer.has_work(), "closed position makes the hints stale");
+    let data = fixture.svm.get_account(&conditions).unwrap().data;
+    let staged = &data[pointer.offset() as usize..(pointer.offset() + pointer.len()) as usize];
+    let resolved = velocity::relay_spec::ResolvedCrankV0::read(staged).unwrap();
+
+    // Land it exactly as a turner does: every meta non-signing, keeper
+    // placeholder substituted. A `Signer` anywhere in the executor's
+    // accounts struct fails here.
+    let payout = Pubkey::new_unique();
+    fixture.svm.airdrop(&payout, 1_000_000_000).unwrap();
+    let payout_before = fixture.svm.get_balance(&payout).unwrap();
+    let conditions_before = fixture.svm.get_balance(&conditions).unwrap();
+    run_staged_executor(
+        &mut fixture,
+        &resolved,
+        velocity::instruction::ResyncLiqConditions::DISCRIMINATOR,
+        payout,
+    );
+
+    // Keeper paid from the conditions account, and the stale threshold is
+    // gone (no live exposures left to watch).
+    assert_eq!(
+        fixture.svm.get_balance(&payout).unwrap(),
+        payout_before + SYNC_FEE
+    );
+    assert_eq!(
+        fixture.svm.get_balance(&conditions).unwrap(),
+        conditions_before - SYNC_FEE
+    );
+    let acct: LiqConditionsV0 = read_zero_copy(&fixture.svm, &conditions);
+    assert_eq!(acct.slots[0].active, 0);
 }

@@ -1131,6 +1131,14 @@ pub mod instructions {
     #[automatically_derived]
     impl anchor_lang::InstructionData for ResolvePerpPnlDeficit {}
     #[derive(AnchorSerialize, AnchorDeserialize, Clone, Default)]
+    pub struct ResolveResyncLiqConditions {}
+    #[automatically_derived]
+    impl anchor_lang::Discriminator for ResolveResyncLiqConditions {
+        const DISCRIMINATOR: &[u8] = &[192, 11, 237, 99, 246, 44, 57, 175];
+    }
+    #[automatically_derived]
+    impl anchor_lang::InstructionData for ResolveResyncLiqConditions {}
+    #[derive(AnchorSerialize, AnchorDeserialize, Clone, Default)]
     pub struct ResolveSpotBankruptcy {
         pub market_index: u16,
     }
@@ -1140,14 +1148,6 @@ pub mod instructions {
     }
     #[automatically_derived]
     impl anchor_lang::InstructionData for ResolveSpotBankruptcy {}
-    #[derive(AnchorSerialize, AnchorDeserialize, Clone, Default)]
-    pub struct ResolveSyncLiqConditions {}
-    #[automatically_derived]
-    impl anchor_lang::Discriminator for ResolveSyncLiqConditions {
-        const DISCRIMINATOR: &[u8] = &[215, 145, 84, 178, 221, 187, 248, 25];
-    }
-    #[automatically_derived]
-    impl anchor_lang::InstructionData for ResolveSyncLiqConditions {}
     #[derive(AnchorSerialize, AnchorDeserialize, Clone, Default)]
     pub struct ResolveTriggerClobOrder {}
     #[automatically_derived]
@@ -1164,6 +1164,14 @@ pub mod instructions {
     }
     #[automatically_derived]
     impl anchor_lang::InstructionData for ResolveTriggerOrder {}
+    #[derive(AnchorSerialize, AnchorDeserialize, Clone, Default)]
+    pub struct ResyncLiqConditions {}
+    #[automatically_derived]
+    impl anchor_lang::Discriminator for ResyncLiqConditions {
+        const DISCRIMINATOR: &[u8] = &[1, 22, 75, 53, 225, 51, 245, 190];
+    }
+    #[automatically_derived]
+    impl anchor_lang::InstructionData for ResyncLiqConditions {}
     #[derive(AnchorSerialize, AnchorDeserialize, Clone, Default)]
     pub struct RevertFill {}
     #[automatically_derived]
@@ -17026,6 +17034,70 @@ pub mod accounts {
     }
     #[repr(C)]
     #[derive(Copy, Clone, Default, AnchorSerialize, AnchorDeserialize, Serialize, Deserialize)]
+    pub struct ResolveResyncLiqConditions {
+        pub liq_conditions: Pubkey,
+        pub user: Pubkey,
+    }
+    #[automatically_derived]
+    impl anchor_lang::Discriminator for ResolveResyncLiqConditions {
+        const DISCRIMINATOR: &[u8] = &[166, 246, 215, 227, 100, 133, 81, 210];
+    }
+    #[automatically_derived]
+    unsafe impl anchor_lang::__private::bytemuck::Pod for ResolveResyncLiqConditions {}
+    #[automatically_derived]
+    unsafe impl anchor_lang::__private::bytemuck::Zeroable for ResolveResyncLiqConditions {}
+    #[automatically_derived]
+    impl anchor_lang::ZeroCopy for ResolveResyncLiqConditions {}
+    #[automatically_derived]
+    impl anchor_lang::InstructionData for ResolveResyncLiqConditions {}
+    #[automatically_derived]
+    impl ToAccountMetas for ResolveResyncLiqConditions {
+        fn to_account_metas(&self) -> Vec<AccountMeta> {
+            vec![
+                AccountMeta {
+                    pubkey: self.liq_conditions,
+                    is_signer: false,
+                    is_writable: true,
+                },
+                AccountMeta {
+                    pubkey: self.user,
+                    is_signer: false,
+                    is_writable: false,
+                },
+            ]
+        }
+    }
+    #[automatically_derived]
+    impl anchor_lang::AccountSerialize for ResolveResyncLiqConditions {
+        fn try_serialize<W: std::io::Write>(&self, writer: &mut W) -> anchor_lang::Result<()> {
+            if writer.write_all(Self::DISCRIMINATOR).is_err() {
+                return Err(anchor_lang::error::ErrorCode::AccountDidNotSerialize.into());
+            }
+            if AnchorSerialize::serialize(self, writer).is_err() {
+                return Err(anchor_lang::error::ErrorCode::AccountDidNotSerialize.into());
+            }
+            Ok(())
+        }
+    }
+    #[automatically_derived]
+    impl anchor_lang::AccountDeserialize for ResolveResyncLiqConditions {
+        fn try_deserialize(buf: &mut &[u8]) -> anchor_lang::Result<Self> {
+            let given_disc = &buf[..8];
+            if Self::DISCRIMINATOR != given_disc {
+                return Err(anchor_lang::error!(
+                    anchor_lang::error::ErrorCode::AccountDiscriminatorMismatch
+                ));
+            }
+            Self::try_deserialize_unchecked(buf)
+        }
+        fn try_deserialize_unchecked(buf: &mut &[u8]) -> anchor_lang::Result<Self> {
+            let mut data: &[u8] = &buf[8..];
+            AnchorDeserialize::deserialize(&mut data)
+                .map_err(|_| anchor_lang::error::ErrorCode::AccountDidNotDeserialize.into())
+        }
+    }
+    #[repr(C)]
+    #[derive(Copy, Clone, Default, AnchorSerialize, AnchorDeserialize, Serialize, Deserialize)]
     pub struct ResolveSpotBankruptcy {
         pub state: Pubkey,
         pub authority: Pubkey,
@@ -17121,70 +17193,6 @@ pub mod accounts {
     }
     #[automatically_derived]
     impl anchor_lang::AccountDeserialize for ResolveSpotBankruptcy {
-        fn try_deserialize(buf: &mut &[u8]) -> anchor_lang::Result<Self> {
-            let given_disc = &buf[..8];
-            if Self::DISCRIMINATOR != given_disc {
-                return Err(anchor_lang::error!(
-                    anchor_lang::error::ErrorCode::AccountDiscriminatorMismatch
-                ));
-            }
-            Self::try_deserialize_unchecked(buf)
-        }
-        fn try_deserialize_unchecked(buf: &mut &[u8]) -> anchor_lang::Result<Self> {
-            let mut data: &[u8] = &buf[8..];
-            AnchorDeserialize::deserialize(&mut data)
-                .map_err(|_| anchor_lang::error::ErrorCode::AccountDidNotDeserialize.into())
-        }
-    }
-    #[repr(C)]
-    #[derive(Copy, Clone, Default, AnchorSerialize, AnchorDeserialize, Serialize, Deserialize)]
-    pub struct ResolveSyncLiqConditions {
-        pub liq_conditions: Pubkey,
-        pub user: Pubkey,
-    }
-    #[automatically_derived]
-    impl anchor_lang::Discriminator for ResolveSyncLiqConditions {
-        const DISCRIMINATOR: &[u8] = &[176, 26, 231, 226, 70, 10, 171, 74];
-    }
-    #[automatically_derived]
-    unsafe impl anchor_lang::__private::bytemuck::Pod for ResolveSyncLiqConditions {}
-    #[automatically_derived]
-    unsafe impl anchor_lang::__private::bytemuck::Zeroable for ResolveSyncLiqConditions {}
-    #[automatically_derived]
-    impl anchor_lang::ZeroCopy for ResolveSyncLiqConditions {}
-    #[automatically_derived]
-    impl anchor_lang::InstructionData for ResolveSyncLiqConditions {}
-    #[automatically_derived]
-    impl ToAccountMetas for ResolveSyncLiqConditions {
-        fn to_account_metas(&self) -> Vec<AccountMeta> {
-            vec![
-                AccountMeta {
-                    pubkey: self.liq_conditions,
-                    is_signer: false,
-                    is_writable: true,
-                },
-                AccountMeta {
-                    pubkey: self.user,
-                    is_signer: false,
-                    is_writable: false,
-                },
-            ]
-        }
-    }
-    #[automatically_derived]
-    impl anchor_lang::AccountSerialize for ResolveSyncLiqConditions {
-        fn try_serialize<W: std::io::Write>(&self, writer: &mut W) -> anchor_lang::Result<()> {
-            if writer.write_all(Self::DISCRIMINATOR).is_err() {
-                return Err(anchor_lang::error::ErrorCode::AccountDidNotSerialize.into());
-            }
-            if AnchorSerialize::serialize(self, writer).is_err() {
-                return Err(anchor_lang::error::ErrorCode::AccountDidNotSerialize.into());
-            }
-            Ok(())
-        }
-    }
-    #[automatically_derived]
-    impl anchor_lang::AccountDeserialize for ResolveSyncLiqConditions {
         fn try_deserialize(buf: &mut &[u8]) -> anchor_lang::Result<Self> {
             let given_disc = &buf[..8];
             if Self::DISCRIMINATOR != given_disc {
@@ -17337,6 +17345,76 @@ pub mod accounts {
     }
     #[automatically_derived]
     impl anchor_lang::AccountDeserialize for ResolveTriggerOrder {
+        fn try_deserialize(buf: &mut &[u8]) -> anchor_lang::Result<Self> {
+            let given_disc = &buf[..8];
+            if Self::DISCRIMINATOR != given_disc {
+                return Err(anchor_lang::error!(
+                    anchor_lang::error::ErrorCode::AccountDiscriminatorMismatch
+                ));
+            }
+            Self::try_deserialize_unchecked(buf)
+        }
+        fn try_deserialize_unchecked(buf: &mut &[u8]) -> anchor_lang::Result<Self> {
+            let mut data: &[u8] = &buf[8..];
+            AnchorDeserialize::deserialize(&mut data)
+                .map_err(|_| anchor_lang::error::ErrorCode::AccountDidNotDeserialize.into())
+        }
+    }
+    #[repr(C)]
+    #[derive(Copy, Clone, Default, AnchorSerialize, AnchorDeserialize, Serialize, Deserialize)]
+    pub struct ResyncLiqConditions {
+        pub keeper: Pubkey,
+        pub user: Pubkey,
+        pub liq_conditions: Pubkey,
+    }
+    #[automatically_derived]
+    impl anchor_lang::Discriminator for ResyncLiqConditions {
+        const DISCRIMINATOR: &[u8] = &[158, 189, 150, 192, 10, 130, 51, 32];
+    }
+    #[automatically_derived]
+    unsafe impl anchor_lang::__private::bytemuck::Pod for ResyncLiqConditions {}
+    #[automatically_derived]
+    unsafe impl anchor_lang::__private::bytemuck::Zeroable for ResyncLiqConditions {}
+    #[automatically_derived]
+    impl anchor_lang::ZeroCopy for ResyncLiqConditions {}
+    #[automatically_derived]
+    impl anchor_lang::InstructionData for ResyncLiqConditions {}
+    #[automatically_derived]
+    impl ToAccountMetas for ResyncLiqConditions {
+        fn to_account_metas(&self) -> Vec<AccountMeta> {
+            vec![
+                AccountMeta {
+                    pubkey: self.keeper,
+                    is_signer: false,
+                    is_writable: true,
+                },
+                AccountMeta {
+                    pubkey: self.user,
+                    is_signer: false,
+                    is_writable: false,
+                },
+                AccountMeta {
+                    pubkey: self.liq_conditions,
+                    is_signer: false,
+                    is_writable: true,
+                },
+            ]
+        }
+    }
+    #[automatically_derived]
+    impl anchor_lang::AccountSerialize for ResyncLiqConditions {
+        fn try_serialize<W: std::io::Write>(&self, writer: &mut W) -> anchor_lang::Result<()> {
+            if writer.write_all(Self::DISCRIMINATOR).is_err() {
+                return Err(anchor_lang::error::ErrorCode::AccountDidNotSerialize.into());
+            }
+            if AnchorSerialize::serialize(self, writer).is_err() {
+                return Err(anchor_lang::error::ErrorCode::AccountDidNotSerialize.into());
+            }
+            Ok(())
+        }
+    }
+    #[automatically_derived]
+    impl anchor_lang::AccountDeserialize for ResyncLiqConditions {
         fn try_deserialize(buf: &mut &[u8]) -> anchor_lang::Result<Self> {
             let given_disc = &buf[..8];
             if Self::DISCRIMINATOR != given_disc {

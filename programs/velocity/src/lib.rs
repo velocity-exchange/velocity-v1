@@ -2358,9 +2358,18 @@ pub mod velocity {
         handle_sync_liq_conditions(ctx, args)
     }
 
+    /// Relay's unsigned self-maintenance path: rewrite an existing block
+    /// and pay the keeper from its own lamports. Names no signer — staged
+    /// executors are submitted unsigned.
+    pub fn resync_liq_conditions<'c: 'info, 'info>(
+        ctx: Context<'info, ResyncLiqConditions<'info>>,
+    ) -> Result<()> {
+        handle_resync_liq_conditions(ctx)
+    }
+
     /// Relay resolver for the self-sync conditions. Simulated, not landed.
-    pub fn resolve_sync_liq_conditions(ctx: Context<ResolveSyncLiqConditions>) -> Result<()> {
-        handle_resolve_sync_liq_conditions(ctx)
+    pub fn resolve_resync_liq_conditions(ctx: Context<ResolveResyncLiqConditions>) -> Result<()> {
+        handle_resolve_resync_liq_conditions(ctx)
     }
 
     /// Relay resolver for a liquidation threshold: runs the real margin

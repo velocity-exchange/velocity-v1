@@ -8189,6 +8189,35 @@ export type Velocity = {
       ]
     },
     {
+      "name": "resolveResyncLiqConditions",
+      "docs": [
+        "Relay resolver for the self-sync conditions. Simulated, not landed."
+      ],
+      "discriminator": [
+        192,
+        11,
+        237,
+        99,
+        246,
+        44,
+        57,
+        175
+      ],
+      "accounts": [
+        {
+          "name": "liqConditions",
+          "docs": [
+            "Writable only for the staging region; simulation-only."
+          ],
+          "writable": true
+        },
+        {
+          "name": "user"
+        }
+      ],
+      "args": []
+    },
+    {
       "name": "resolveSpotBankruptcy",
       "discriminator": [
         124,
@@ -8310,35 +8339,6 @@ export type Velocity = {
       ]
     },
     {
-      "name": "resolveSyncLiqConditions",
-      "docs": [
-        "Relay resolver for the self-sync conditions. Simulated, not landed."
-      ],
-      "discriminator": [
-        215,
-        145,
-        84,
-        178,
-        221,
-        187,
-        248,
-        25
-      ],
-      "accounts": [
-        {
-          "name": "liqConditions",
-          "docs": [
-            "Writable only for the staging region; simulation-only."
-          ],
-          "writable": true
-        },
-        {
-          "name": "user"
-        }
-      ],
-      "args": []
-    },
-    {
       "name": "resolveTriggerClobOrder",
       "docs": [
         "Relay resolver for `trigger_clob_order`. Meant to be simulated, not",
@@ -8405,6 +8405,69 @@ export type Velocity = {
         },
         {
           "name": "perpMarket"
+        }
+      ],
+      "args": []
+    },
+    {
+      "name": "resyncLiqConditions",
+      "docs": [
+        "Relay's unsigned self-maintenance path: rewrite an existing block",
+        "and pay the keeper from its own lamports. Names no signer — staged",
+        "executors are submitted unsigned."
+      ],
+      "discriminator": [
+        1,
+        22,
+        75,
+        53,
+        225,
+        51,
+        245,
+        190
+      ],
+      "accounts": [
+        {
+          "name": "keeper",
+          "docs": [
+            "slot. Never a signer (see the module doc); it only receives",
+            "lamports."
+          ],
+          "writable": true
+        },
+        {
+          "name": "user"
+        },
+        {
+          "name": "liqConditions",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  108,
+                  105,
+                  113,
+                  95,
+                  99,
+                  111,
+                  110,
+                  100,
+                  105,
+                  116,
+                  105,
+                  111,
+                  110,
+                  115
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "user"
+              }
+            ]
+          }
         }
       ],
       "args": []

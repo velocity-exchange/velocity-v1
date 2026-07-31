@@ -2,11 +2,13 @@
 //! positions — the "which bucket is this user in" question the keeper bot
 //! answers in memory, precomputed as thresholds instead.
 //!
-//! Permissionless and idempotent. Two callers matter: whoever opts a user
-//! in (paying rent + funding the sync reservoir), and relay itself — the
-//! block's own sync-watch condition stages *this instruction* whenever the
-//! user's positions change, so the hints maintain themselves and the
-//! keeper is paid from the account's own lamports.
+//! Permissionless and idempotent. This is the **opt-in** entry point: it
+//! creates the account, so it takes a `payer: Signer`. Relay's
+//! self-maintenance path is a separate instruction —
+//! [`super::resync_liq_conditions`] — which names no signer at all,
+//! because a staged executor is submitted unsigned (relay's turner marks
+//! every meta non-signing and outright refuses to sign a transaction whose
+//! executor names a signer). Both share [`rewrite_liq_conditions`].
 //!
 //! ## The threshold math
 //!
@@ -132,6 +134,25 @@ pub fn handle_sync_liq_conditions<'c: 'info, 'info>(
     ctx: Context<'info, SyncLiqConditions<'info>>,
     args: SyncLiqConditionsArgs,
 ) -> Result<()> {
+    // The opt-in caller pays rent and funds the reservoir; paying them a
+    // sync fee out of the account they just funded would be a wash, so the
+    // fee belongs to the relay path only.
+    rewrite_liq_conditions(
+        &ctx.accounts.liq_conditions,
+        &ctx.accounts.user,
+        ctx.remaining_accounts,
+        args,
+    )
+}
+
+/// Recompute the block from the user's live positions. Shared by the
+/// opt-in sync and relay's unsigned resync.
+pub fn rewrite_liq_conditions<'info>(
+    liq_conditions: &AccountLoader<'info, LiqConditionsV0>,
+    user_loader: &AccountLoader<'info, User>,
+    remaining_accounts: &'info [AccountInfo<'info>],
+    args: SyncLiqConditionsArgs,
+) -> Result<()> {
     let mut perps: BTreeMap<u16, MarketInputs> = BTreeMap::new();
     let mut spots: BTreeMap<u16, MarketInputs> = BTreeMap::new();
     let mut oracle_of_market: BTreeMap<Pubkey, (bool, u16)> = BTreeMap::new();
@@ -139,7 +160,7 @@ pub fn handle_sync_liq_conditions<'c: 'info, 'info>(
     let mut tail_refs: Vec<AccountRefV0> = Vec::new();
     let mut oracle_infos: BTreeMap<Pubkey, &AccountInfo<'info>> = BTreeMap::new();
 
-    for info in ctx.remaining_accounts {
+    for info in remaining_accounts {
         if info.owner == &crate::ID {
             if let Ok(loader) = AccountLoader::<PerpMarket>::try_from(info) {
                 let market = loader.load()?;
@@ -208,8 +229,8 @@ pub fn handle_sync_liq_conditions<'c: 'info, 'info>(
         entry.price = price;
     }
 
-    let user_key = ctx.accounts.user.key();
-    let conditions_key = ctx.accounts.liq_conditions.key();
+    let user_key = user_loader.key();
+    let conditions_key = liq_conditions.key();
     let disc8 = |disc: &[u8]| -> Result<[u8; 8]> {
         disc.try_into().map_err(|_| error!(ErrorCode::DefaultError))
     };
@@ -219,11 +240,9 @@ pub fn handle_sync_liq_conditions<'c: 'info, 'info>(
     sync_accounts.extend(market_refs);
     sync_accounts.extend(tail_refs);
 
-    let mut conditions = ctx
-        .accounts
-        .liq_conditions
+    let mut conditions = liq_conditions
         .load_init()
-        .or_else(|_| ctx.accounts.liq_conditions.load_mut())?;
+        .or_else(|_| liq_conditions.load_mut())?;
     conditions.user = user_key;
     conditions.sync_payment_lamports = args.sync_payment_lamports;
     if args.sync_fallback_slots > 0 {
@@ -234,7 +253,7 @@ pub fn handle_sync_liq_conditions<'c: 'info, 'info>(
     conditions.write_sync_accounts(&sync_accounts)?;
 
     // Free collateral now — the distance each threshold is measured from.
-    let user = crate::load!(ctx.accounts.user)?;
+    let user = crate::load!(user_loader)?;
     let (free_collateral, target_market) = estimate_free_collateral(&user, &perps, &spots)?;
 
     let mut slot_index = 0usize;
@@ -337,9 +356,10 @@ pub fn handle_sync_liq_conditions<'c: 'info, 'info>(
     if args.sync_payment_lamports > 0 {
         let sync_spec = CrankSpecV0 {
             resolver_program: crate::ID.to_bytes(),
-            resolver_disc: disc8(crate::instruction::ResolveSyncLiqConditions::DISCRIMINATOR)?,
+            resolver_disc: disc8(crate::instruction::ResolveResyncLiqConditions::DISCRIMINATOR)?,
             executor_program: crate::ID.to_bytes(),
-            executor_disc: disc8(crate::instruction::SyncLiqConditions::DISCRIMINATOR)?,
+            // The unsigned sibling: a staged executor may not name a signer.
+            executor_disc: disc8(crate::instruction::ResyncLiqConditions::DISCRIMINATOR)?,
             min_payment: args.sync_payment_lamports,
         };
         let sync_resolver_accounts = [
@@ -364,21 +384,6 @@ pub fn handle_sync_liq_conditions<'c: 'info, 'info>(
     } else {
         conditions.write_condition(LIQ_SYNC_WATCH, &relay_spec::bytemuck::Zeroable::zeroed())?;
         conditions.write_condition(LIQ_SYNC_FALLBACK, &relay_spec::bytemuck::Zeroable::zeroed())?;
-    }
-    drop(conditions);
-
-    // When relay staged this sync, the payer is the keeper: pay them from
-    // the account's own lamports (best-effort — a manual sync must land
-    // even on an empty reservoir).
-    if args.sync_payment_lamports > 0 {
-        let info = ctx.accounts.liq_conditions.to_account_info();
-        let rent_minimum = Rent::get()?.minimum_balance(info.data_len());
-        LiqConditionsV0::pay_sync_keeper(
-            &info,
-            &ctx.accounts.payer.to_account_info(),
-            args.sync_payment_lamports,
-            rent_minimum,
-        )?;
     }
     Ok(())
 }

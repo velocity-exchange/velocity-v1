@@ -4,9 +4,7 @@
 //! (inventory-free) liquidator.
 
 pub mod resolve_liquidate_perp_with_fill;
-pub mod resolve_sync_liq_conditions;
+pub mod resync_liq_conditions;
 pub mod sync_liq_conditions;
 
-pub use {
-    resolve_liquidate_perp_with_fill::*, resolve_sync_liq_conditions::*, sync_liq_conditions::*,
-};
+pub use {resolve_liquidate_perp_with_fill::*, resync_liq_conditions::*, sync_liq_conditions::*};

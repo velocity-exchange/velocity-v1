@@ -21,11 +21,9 @@
 //! and back off; a missing block misses nothing keepers wouldn't cover.
 
 use {
-    crate::{error::ErrorCode, msg},
+    crate::error::ErrorCode,
     anchor_lang::prelude::*,
-    relay_spec::{
-        ConditionBlockHeaderV0, ResolvedCrankV0, ResponsePointerV0, BLOCK_HEADER_LEN, CONDITION_LEN,
-    },
+    relay_spec::{ConditionBlock, BLOCK_HEADER_LEN, CONDITION_LEN},
 };
 
 /// PDA seed: `["trigger_conditions", user key]`.
@@ -149,24 +147,37 @@ impl TriggerConditionsV0 {
         &self.block
     }
 
-    pub fn init_header(&mut self) -> Result<()> {
-        let header = ConditionBlockHeaderV0::new(TRIGGER_CONDITION_SLOTS as u8);
-        self.block[..BLOCK_HEADER_LEN].copy_from_slice(bytemuck::bytes_of(&header));
-        Ok(())
+    /// Anchor-flavoured wrappers over the spec trait's provided methods,
+    /// so handlers keep using `?` with the program's own error type.
+    pub fn init_block(&mut self) -> Result<()> {
+        ConditionBlock::init_header(self).map_err(|_| error!(ErrorCode::DefaultError))
     }
 
-    pub fn write_condition(
+    pub fn set_condition(
         &mut self,
         index: usize,
         condition: &relay_spec::ConditionV0,
     ) -> Result<()> {
-        if index >= TRIGGER_CONDITION_SLOTS {
-            msg!("trigger condition index {} out of range", index);
-            return Err(ErrorCode::DefaultError.into());
-        }
-        let start = BLOCK_HEADER_LEN + index * CONDITION_LEN;
-        self.block[start..start + CONDITION_LEN].copy_from_slice(bytemuck::bytes_of(condition));
-        Ok(())
+        ConditionBlock::write_condition(self, index, condition)
+            .map_err(|_| error!(ErrorCode::DefaultError))
+    }
+
+    pub fn get_condition(&self, index: usize) -> Result<relay_spec::ConditionV0> {
+        ConditionBlock::read_condition(self, index).map_err(|_| error!(ErrorCode::DefaultError))
+    }
+
+    pub fn edit_condition(
+        &mut self,
+        index: usize,
+        f: impl FnOnce(&mut relay_spec::ConditionV0),
+    ) -> Result<()> {
+        ConditionBlock::update_condition(self, index, f)
+            .map_err(|_| error!(ErrorCode::DefaultError))
+    }
+
+    pub fn clear_condition(&mut self, index: usize) -> Result<()> {
+        ConditionBlock::deactivate_condition(self, index)
+            .map_err(|_| error!(ErrorCode::DefaultError))
     }
 
     /// Deactivate the slot watching `(market_index, order_id)` — called when
@@ -184,28 +195,31 @@ impl TriggerConditionsV0 {
             }
         }
     }
-
-    pub fn stage(
-        &mut self,
-        resolved: &ResolvedCrankV0,
-    ) -> Result<[u8; relay_spec::RESPONSE_POINTER_LEN]> {
-        let len = resolved.write_into(&mut self.staging).map_err(|e| {
-            msg!(
-                "staging a {}-byte resolved crank failed: {:?}",
-                resolved.encoded_len(),
-                e
-            );
-            error!(ErrorCode::DefaultError)
-        })?;
-        Ok(
-            ResponsePointerV0::new(0, TRIGGER_CONDITIONS_STAGING_OFFSET as u32, len as u32)
-                .to_bytes(),
-        )
-    }
 }
 
 const _: () = assert!((TriggerConditionsV0::SIZE - 8) % 16 == 0);
 const _: () = assert!(TriggerConditionsV0::SIZE <= 10_240);
+
+/// Block hosting + staging, from the spec (see
+/// [`relay_spec::ConditionBlock`]): `init_header`, `write_condition`,
+/// `read_condition`, `update_condition`, `deactivate_condition`, and
+/// `stage` are all provided.
+impl ConditionBlock for TriggerConditionsV0 {
+    const NUM_CONDITIONS: usize = TRIGGER_CONDITION_SLOTS;
+    const STAGING_OFFSET: u32 = TRIGGER_CONDITIONS_STAGING_OFFSET as u32;
+
+    fn block(&self) -> &[u8] {
+        &self.block
+    }
+
+    fn block_mut(&mut self) -> &mut [u8] {
+        &mut self.block
+    }
+
+    fn staging_mut(&mut self) -> &mut [u8] {
+        &mut self.staging
+    }
+}
 
 #[cfg(test)]
 mod tests {
@@ -226,7 +240,7 @@ mod tests {
     #[test]
     fn release_zeroes_the_slot_and_its_condition() {
         let mut acct = TriggerConditionsV0::default();
-        acct.init_header().unwrap();
+        acct.init_block().unwrap();
         let mut condition = relay_spec::ConditionV0::on_value_cross(
             [7; 32],
             8,
@@ -243,7 +257,7 @@ mod tests {
             &[],
         );
         condition.active = 1;
-        acct.write_condition(2, &condition).unwrap();
+        acct.set_condition(2, &condition).unwrap();
         acct.slots[2].market_index = 4;
         acct.slots[2].order_id = 99;
 

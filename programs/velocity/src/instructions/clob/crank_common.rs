@@ -33,11 +33,12 @@ use {
             position::{decrease_open_bids_and_asks, get_position_index},
         },
         error::ErrorCode,
-        instructions::constraints::*,
+        instructions::{constraints::*, relay_harness::StagedCall},
         load_mut, msg,
         signer::get_signer_seeds,
         state::{
             clob_crank::{ClobCrankConditionsV0, CLOB_CRANK_CONDITIONS_PDA_SEED},
+            pdas,
             perp_market::PerpMarket,
             prop_amm::{
                 clob_hint_scan, read_clob_node, ClobNodeView, ClobRemovedOrderV0, ClobUserRefV0,
@@ -49,10 +50,10 @@ use {
         validate,
     },
     anchor_lang::prelude::*,
-    relay_spec::{AccountRefV0, ResolvedCrankV0, ResponsePointerV0, KEEPER_PLACEHOLDER},
+    relay_spec::KEEPER_PLACEHOLDER,
     solana_program::{
         instruction::{AccountMeta, Instruction},
-        program::{get_return_data, invoke_signed, set_return_data},
+        program::{get_return_data, invoke_signed},
     },
 };
 
@@ -325,59 +326,17 @@ pub fn validate_linkage(ctx: &Context<ResolveClobCrank>) -> Result<()> {
     Ok(())
 }
 
-pub fn no_work() -> Result<()> {
-    set_return_data(&ResponsePointerV0::no_work().to_bytes());
-    Ok(())
-}
-
-/// Convert typed anchor client metas into relay account refs. Building the
-/// named-accounts prefix through the executor's own `crate::accounts::*`
-/// struct means a change to its `#[derive(Accounts)]` shape breaks staging
-/// at compile time (and the writable flags come from the derive), instead
-/// of surfacing as a runtime account mismatch.
-pub fn to_account_refs(metas: Vec<AccountMeta>) -> Vec<AccountRefV0> {
-    metas
-        .into_iter()
-        .map(|meta| {
-            // Staged executors are unsigned by contract; nothing in these
-            // structs is a Signer.
-            debug_assert!(!meta.is_signer);
-            if meta.is_writable {
-                AccountRefV0::writable(meta.pubkey.to_bytes())
-            } else {
-                AccountRefV0::readonly(meta.pubkey.to_bytes())
-            }
-        })
-        .collect()
-}
-
 /// Derive the `(User, UserStats)` PDAs from a node's derivable identity —
 /// the whole point of the book storing `(authority, sub_account_id)`
 /// instead of the `User` key.
 pub fn derive_user_pdas(user: &ClobUserRefV0) -> (Pubkey, Pubkey) {
-    let (user_pda, _) = Pubkey::find_program_address(
-        &[
-            b"user",
-            user.authority.as_ref(),
-            user.sub_account_id.to_le_bytes().as_ref(),
-        ],
-        &crate::ID,
-    );
-    let (stats_pda, _) =
-        Pubkey::find_program_address(&[b"user_stats", user.authority.as_ref()], &crate::ID);
-    (user_pda, stats_pda)
+    pdas::user_pair(&user.authority, user.sub_account_id)
 }
 
 /// The protocol-owned `User` (the signer authority's first sub-account,
 /// created through the normal initialize_user path) and its stats PDA.
 pub fn derive_protocol_user_pdas(signer: &Pubkey) -> (Pubkey, Pubkey) {
-    let (protocol_user, _) = Pubkey::find_program_address(
-        &[b"user", signer.as_ref(), 0u16.to_le_bytes().as_ref()],
-        &crate::ID,
-    );
-    let (protocol_user_stats, _) =
-        Pubkey::find_program_address(&[b"user_stats", signer.as_ref()], &crate::ID);
-    (protocol_user, protocol_user_stats)
+    pdas::user_pair(signer, 0)
 }
 
 /// Advance a cursor to the next node that is live and matchable right now.
@@ -397,41 +356,26 @@ pub fn next_matchable(
     None
 }
 
-/// Stage a removal-executor call: `CrankClobOrderRemoval`'s exact account
-/// order, with the keeper payout slot as the placeholder, followed by the
-/// borsh args after the discriminator.
-pub fn stage_removal(ctx: &Context<ResolveClobCrank>, maker: Pubkey, args: Vec<u8>) -> Result<()> {
+/// The removal executor's call: `CrankClobOrderRemoval`'s full account
+/// list is its `#[derive(Accounts)]` struct (no remaining accounts), so
+/// the whole thing is typed.
+pub fn removal_call(ctx: &Context<ResolveClobCrank>, maker: Pubkey) -> Result<StagedCall> {
     let signer = ctx.accounts.state.load()?.signer;
     let market_index = ctx.accounts.crank_conditions.load()?.market_index;
-    let (protocol_user, protocol_user_stats) = derive_protocol_user_pdas(&signer);
-    let (perp_market, _) = Pubkey::find_program_address(
-        &[b"perp_market", market_index.to_le_bytes().as_ref()],
-        &crate::ID,
-    );
-
-    // The executor's full account list IS its `#[derive(Accounts)]` struct
-    // (no remaining accounts), so the whole thing is typed.
-    let metas = crate::accounts::CrankClobOrderRemoval {
+    let (protocol_user, protocol_user_stats) = pdas::protocol_user_pair();
+    Ok(StagedCall::new(crate::accounts::CrankClobOrderRemoval {
         state: ctx.accounts.state.key(),
         authority: Pubkey::new_from_array(KEEPER_PLACEHOLDER),
         filler: protocol_user,
         filler_stats: protocol_user_stats,
         user: maker,
-        perp_market,
+        perp_market: pdas::perp_market(market_index),
         quoter: ctx.accounts.quoter.key(),
         clob_market: ctx.accounts.clob_market.key(),
         clob_program: ctx.accounts.quoter.load()?.program_id,
         velocity_signer: signer,
         crank_conditions: Some(ctx.accounts.crank_conditions.key()),
-    }
-    .to_account_metas(None);
-    let resolved = ResolvedCrankV0 {
-        accounts: to_account_refs(metas),
-        data: args,
-    };
-    let pointer = load_mut!(ctx.accounts.crank_conditions)?.stage(&resolved)?;
-    set_return_data(&pointer);
-    Ok(())
+    }))
 }
 
 /// Shared tail of the trigger cranks (`trigger_order`,
@@ -543,20 +487,4 @@ pub fn find_fired_trigger(
         }
     }
     Ok(None)
-}
-
-/// Append a synced margin-map section to staged executor metas.
-pub fn push_map_refs(
-    metas: &mut Vec<AccountMeta>,
-    conditions: &crate::state::trigger_conditions::TriggerConditionsV0,
-) -> Result<()> {
-    for r in conditions.read_map_accounts() {
-        let pubkey = Pubkey::new_from_array(r.address);
-        metas.push(if r.writable != 0 {
-            AccountMeta::new(pubkey, false)
-        } else {
-            AccountMeta::new_readonly(pubkey, false)
-        });
-    }
-    Ok(())
 }

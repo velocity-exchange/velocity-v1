@@ -161,7 +161,7 @@ pub fn handle_sync_trigger_conditions<'c: 'info, 'info>(
         .load_init()
         .or_else(|_| ctx.accounts.trigger_conditions.load_mut())?;
     conditions.user = user_key;
-    conditions.init_header()?;
+    conditions.init_block()?;
     conditions.write_map_accounts(&map_refs)?;
 
     let user = crate::load!(ctx.accounts.user)?;
@@ -249,7 +249,7 @@ pub fn handle_sync_trigger_conditions<'c: 'info, 'info>(
             executor_disc,
             min_payment,
         };
-        conditions.write_condition(
+        conditions.set_condition(
             slot_index,
             &ConditionV0::on_value_cross(
                 oracle.to_bytes(),
@@ -266,7 +266,7 @@ pub fn handle_sync_trigger_conditions<'c: 'info, 'info>(
     }
     // Stale tail slots go quiet.
     for index in slot_index..TRIGGER_CONDITION_SLOTS {
-        conditions.write_condition(index, &relay_spec::bytemuck::Zeroable::zeroed())?;
+        conditions.set_condition(index, &relay_spec::bytemuck::Zeroable::zeroed())?;
         conditions.slots[index] = TriggerSlotMetaV0::default();
     }
     Ok(())

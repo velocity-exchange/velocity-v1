@@ -1229,7 +1229,7 @@ fn program_keeper_expire_crank_pays_reservoir_lamports_to_an_unsigned_keeper() {
     // The init wrote the evict watch over the book's counts and mirrored the
     // payment into min_payment.
     let acct: ClobCrankConditionsV0 = read_zero_copy(&fixture.svm, &conditions);
-    let evict = acct.read_condition(CLOB_CRANK_EVICT).unwrap();
+    let evict = acct.get_condition(CLOB_CRANK_EVICT).unwrap();
     assert_eq!(evict.min_payment, PAYMENT);
     assert_eq!(
         evict.wake_account,

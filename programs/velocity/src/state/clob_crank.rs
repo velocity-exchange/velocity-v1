@@ -45,11 +45,9 @@
 //! discriminator), which is the 8-aligned offset `read_block` requires.
 
 use {
-    crate::{error::ErrorCode, msg},
+    crate::error::ErrorCode,
     anchor_lang::prelude::*,
-    relay_spec::{
-        ConditionBlockHeaderV0, ResolvedCrankV0, ResponsePointerV0, BLOCK_HEADER_LEN, CONDITION_LEN,
-    },
+    relay_spec::{ConditionBlock, BLOCK_HEADER_LEN, CONDITION_LEN},
 };
 
 /// PDA seed: `["clob_crank_conditions", market_index]`.
@@ -155,37 +153,42 @@ impl ClobCrankConditionsV0 {
         &self.block
     }
 
-    /// The block region for in-place updates (e.g. the expiry `wake_ts` hint).
-    pub fn block_mut(&mut self) -> &mut [u8] {
-        &mut self.block
+    /// Anchor-flavoured wrappers over the spec trait's provided methods,
+    /// so handlers keep using `?` with the program's own error type.
+    pub fn init_block(&mut self) -> Result<()> {
+        ConditionBlock::init_header(self).map_err(|_| error!(ErrorCode::DefaultError))
     }
 
-    /// Stamp the spec header. Conditions are written separately, by index, so
-    /// a fresh account is a valid (if inactive) block from the first write.
-    pub fn init_header(&mut self) -> Result<()> {
-        let header = ConditionBlockHeaderV0::new(CLOB_CRANK_CONDITIONS as u8);
-        self.block[..BLOCK_HEADER_LEN].copy_from_slice(bytemuck::bytes_of(&header));
-        Ok(())
-    }
-
-    /// Overwrite one condition slot. `index` must be one of the two constants
-    /// above — the slots are fixed so the resolver can address them.
-    pub fn write_condition(
+    pub fn set_condition(
         &mut self,
         index: usize,
         condition: &relay_spec::ConditionV0,
     ) -> Result<()> {
-        if index >= CLOB_CRANK_CONDITIONS {
-            msg!(
-                "clob crank condition index {} exceeds {}",
-                index,
-                CLOB_CRANK_CONDITIONS
-            );
-            return Err(ErrorCode::DefaultError.into());
-        }
-        let start = BLOCK_HEADER_LEN + index * CONDITION_LEN;
-        self.block[start..start + CONDITION_LEN].copy_from_slice(bytemuck::bytes_of(condition));
-        Ok(())
+        ConditionBlock::write_condition(self, index, condition)
+            .map_err(|_| error!(ErrorCode::DefaultError))
+    }
+
+    pub fn get_condition(&self, index: usize) -> Result<relay_spec::ConditionV0> {
+        ConditionBlock::read_condition(self, index).map_err(|_| error!(ErrorCode::DefaultError))
+    }
+
+    pub fn edit_condition(
+        &mut self,
+        index: usize,
+        f: impl FnOnce(&mut relay_spec::ConditionV0),
+    ) -> Result<()> {
+        ConditionBlock::update_condition(self, index, f)
+            .map_err(|_| error!(ErrorCode::DefaultError))
+    }
+
+    pub fn clear_condition(&mut self, index: usize) -> Result<()> {
+        ConditionBlock::deactivate_condition(self, index)
+            .map_err(|_| error!(ErrorCode::DefaultError))
+    }
+
+    /// The block region for in-place updates (e.g. the expiry `wake_ts` hint).
+    pub fn block_mut(&mut self) -> &mut [u8] {
+        &mut self.block
     }
 
     /// Move `keeper_payment_lamports` from the conditions account to `keeper`,
@@ -232,20 +235,9 @@ impl ClobCrankConditionsV0 {
         Ok(amount)
     }
 
-    /// Read one condition slot back.
-    pub fn read_condition(&self, index: usize) -> Result<relay_spec::ConditionV0> {
-        if index >= CLOB_CRANK_CONDITIONS {
-            return Err(ErrorCode::DefaultError.into());
-        }
-        let start = BLOCK_HEADER_LEN + index * CONDITION_LEN;
-        Ok(bytemuck::pod_read_unaligned(
-            &self.block[start..start + CONDITION_LEN],
-        ))
-    }
-
     /// The expire condition's `wake_ts` hint.
     pub fn expire_wake_ts(&self) -> Result<i64> {
-        Ok(self.read_condition(CLOB_CRANK_EXPIRE)?.wake_ts)
+        Ok(self.get_condition(CLOB_CRANK_EXPIRE)?.wake_ts)
     }
 
     /// Min-fold a newly placed order's `max_ts` into the expire hint — the
@@ -271,7 +263,7 @@ impl ClobCrankConditionsV0 {
 
     /// The cross-activation condition's `wake_slot` hint.
     pub fn activation_wake_slot(&self) -> Result<u64> {
-        Ok(self.read_condition(CLOB_CRANK_CROSS_ACTIVATION)?.wake_slot)
+        Ok(self.get_condition(CLOB_CRANK_CROSS_ACTIVATION)?.wake_slot)
     }
 
     /// Min-fold a newly placed order's activation slot into the
@@ -297,24 +289,6 @@ impl ClobCrankConditionsV0 {
         conditions[CLOB_CRANK_CROSS_ACTIVATION].wake_slot = min_future_slot;
         Ok(())
     }
-
-    /// Stage a resolver's payload and return the pointer bytes to set as
-    /// return data. `offset` is relative to account data, as the turner reads
-    /// the staged range out of post-simulation account state.
-    pub fn stage(
-        &mut self,
-        resolved: &ResolvedCrankV0,
-    ) -> Result<[u8; relay_spec::RESPONSE_POINTER_LEN]> {
-        let len = resolved.write_into(&mut self.staging).map_err(|e| {
-            msg!(
-                "staging a {}-byte resolved crank failed: {:?}",
-                resolved.encoded_len(),
-                e
-            );
-            error!(ErrorCode::DefaultError)
-        })?;
-        Ok(ResponsePointerV0::new(0, CLOB_CRANK_STAGING_OFFSET as u32, len as u32).to_bytes())
-    }
 }
 
 // The block must start at an 8-aligned offset for `read_block`'s zero-copy
@@ -327,9 +301,33 @@ const _: () = assert!(CONDITION_LEN % 8 == 0);
 // on x86_64 and SBF.
 const _: () = assert!((ClobCrankConditionsV0::SIZE - 8) % 16 == 0);
 
+/// Block hosting + staging, from the spec (see
+/// [`relay_spec::ConditionBlock`]): `init_header`, `write_condition`,
+/// `read_condition`, `update_condition`, `deactivate_condition`, and
+/// `stage` are all provided.
+impl ConditionBlock for ClobCrankConditionsV0 {
+    const NUM_CONDITIONS: usize = CLOB_CRANK_CONDITIONS;
+    const STAGING_OFFSET: u32 = CLOB_CRANK_STAGING_OFFSET as u32;
+
+    fn block(&self) -> &[u8] {
+        &self.block
+    }
+
+    fn block_mut(&mut self) -> &mut [u8] {
+        &mut self.block
+    }
+
+    fn staging_mut(&mut self) -> &mut [u8] {
+        &mut self.staging
+    }
+}
+
 #[cfg(test)]
 mod tests {
-    use {super::*, relay_spec::bytemuck::Zeroable};
+    use {
+        super::*,
+        relay_spec::{bytemuck::Zeroable, ResolvedCrankV0, ResponsePointerV0},
+    };
 
     #[test]
     fn size_matches_the_layout_and_the_spec() {
@@ -357,12 +355,12 @@ mod tests {
     #[test]
     fn header_then_conditions_round_trip_through_the_spec() {
         let mut acct = ClobCrankConditionsV0::default();
-        acct.init_header().unwrap();
+        acct.init_block().unwrap();
 
         let mut condition = relay_spec::ConditionV0::zeroed();
         condition.wake_ts = 1_234;
         condition.active = 1;
-        acct.write_condition(CLOB_CRANK_EXPIRE, &condition).unwrap();
+        acct.set_condition(CLOB_CRANK_EXPIRE, &condition).unwrap();
 
         // relay's own reader must accept what we wrote, at offset 0 of the
         // region (offset 8 of the account).
@@ -376,7 +374,7 @@ mod tests {
         assert_eq!(conditions[CLOB_CRANK_EXPIRE_FALLBACK].active, 0);
 
         assert_eq!(
-            acct.read_condition(CLOB_CRANK_EXPIRE).unwrap().wake_ts,
+            acct.get_condition(CLOB_CRANK_EXPIRE).unwrap().wake_ts,
             1_234
         );
     }
@@ -384,11 +382,11 @@ mod tests {
     #[test]
     fn expiry_hint_min_folds_and_repairs() {
         let mut acct = ClobCrankConditionsV0::default();
-        acct.init_header().unwrap();
+        acct.init_block().unwrap();
         let mut condition = relay_spec::ConditionV0::zeroed();
         condition.wake_ts = i64::MAX;
         condition.active = 1;
-        acct.write_condition(CLOB_CRANK_EXPIRE, &condition).unwrap();
+        acct.set_condition(CLOB_CRANK_EXPIRE, &condition).unwrap();
 
         acct.note_expiry(5_000).unwrap();
         assert_eq!(acct.expire_wake_ts().unwrap(), 5_000);
@@ -405,7 +403,7 @@ mod tests {
     #[test]
     fn staged_payload_round_trips_through_the_pointer() {
         let mut acct = ClobCrankConditionsV0::default();
-        acct.init_header().unwrap();
+        acct.init_block().unwrap();
         let resolved = ResolvedCrankV0 {
             accounts: (0..11u8)
                 .map(|i| relay_spec::AccountRefV0::writable([i; 32]))
@@ -426,10 +424,10 @@ mod tests {
     #[test]
     fn out_of_range_condition_index_is_rejected() {
         let mut acct = ClobCrankConditionsV0::default();
-        acct.init_header().unwrap();
+        acct.init_block().unwrap();
         assert!(acct
-            .write_condition(CLOB_CRANK_CONDITIONS, &relay_spec::ConditionV0::zeroed())
+            .set_condition(CLOB_CRANK_CONDITIONS, &relay_spec::ConditionV0::zeroed())
             .is_err());
-        assert!(acct.read_condition(CLOB_CRANK_CONDITIONS).is_err());
+        assert!(acct.get_condition(CLOB_CRANK_CONDITIONS).is_err());
     }
 }

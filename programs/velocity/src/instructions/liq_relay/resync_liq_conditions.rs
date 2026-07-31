@@ -21,8 +21,7 @@ use {
         },
     },
     anchor_lang::prelude::*,
-    relay_spec::{ResolvedCrankV0, KEEPER_PLACEHOLDER},
-    solana_program::{instruction::AccountMeta, program::set_return_data},
+    relay_spec::KEEPER_PLACEHOLDER,
 };
 
 #[derive(Accounts)]
@@ -92,59 +91,44 @@ pub struct ResolveResyncLiqConditions<'info> {
 pub fn handle_resolve_resync_liq_conditions(
     ctx: Context<ResolveResyncLiqConditions>,
 ) -> Result<()> {
-    let stale = {
-        let conditions = ctx.accounts.liq_conditions.load()?;
-        let user = crate::load!(ctx.accounts.user)?;
-        let watched: Vec<u16> = conditions
-            .slots
-            .iter()
-            .filter(|slot| slot.active != 0)
-            .map(|slot| slot.target_market_index)
-            .collect();
-        let live: Vec<u16> = user
-            .perp_positions
-            .iter()
-            .filter(|p| p.base_asset_amount != 0)
-            .map(|p| p.market_index)
-            .collect();
-        // Stale iff the watched set and the live set disagree. Closing
-        // every position counts (orphaned slots would otherwise keep
-        // level-triggered wakes armed against exposures that are gone),
-        // and the rewrite converges: once both sets are empty, no work.
-        let missing = live.iter().any(|market| !watched.contains(market));
-        let orphaned = watched.iter().any(|market| !live.contains(market));
-        missing || orphaned
-    };
-    if !stale {
-        return crate::instructions::no_work();
-    }
-
-    let mut metas = crate::accounts::ResyncLiqConditions {
-        keeper: Pubkey::new_from_array(KEEPER_PLACEHOLDER),
-        user: ctx.accounts.user.key(),
-        liq_conditions: ctx.accounts.liq_conditions.key(),
-    }
-    .to_account_metas(None);
-    // The margin-map + reservoir accounts the last sync stored.
-    for r in ctx.accounts.liq_conditions.load()?.read_sync_accounts() {
-        let pubkey = Pubkey::new_from_array(r.address);
-        metas.push(if r.writable != 0 {
-            AccountMeta::new(pubkey, false)
-        } else {
-            AccountMeta::new_readonly(pubkey, false)
-        });
-    }
-    // Belt for the rule this whole instruction exists to satisfy.
-    require!(
-        metas.iter().all(|meta| !meta.is_signer),
-        ErrorCode::DefaultError
-    );
-
-    let resolved = ResolvedCrankV0 {
-        accounts: crate::instructions::to_account_refs(metas),
-        data: Vec::new(),
-    };
-    let pointer = ctx.accounts.liq_conditions.load_mut()?.stage(&resolved)?;
-    set_return_data(&pointer);
-    Ok(())
+    let conditions = ctx.accounts.liq_conditions.clone();
+    crate::instructions::resolve_into(&conditions, || {
+        let stale = {
+            let conditions = ctx.accounts.liq_conditions.load()?;
+            let user = crate::load!(ctx.accounts.user)?;
+            let watched: Vec<u16> = conditions
+                .slots
+                .iter()
+                .filter(|slot| slot.active != 0)
+                .map(|slot| slot.target_market_index)
+                .collect();
+            let live: Vec<u16> = user
+                .perp_positions
+                .iter()
+                .filter(|p| p.base_asset_amount != 0)
+                .map(|p| p.market_index)
+                .collect();
+            // Stale iff the watched set and the live set disagree. Closing
+            // every position counts (orphaned slots would otherwise keep
+            // level-triggered wakes armed against exposures that are gone),
+            // and the rewrite converges: once both sets are empty, no work.
+            let missing = live.iter().any(|market| !watched.contains(market));
+            let orphaned = watched.iter().any(|market| !live.contains(market));
+            missing || orphaned
+        };
+        if !stale {
+            return Ok(None);
+        }
+        // The no-signer rule this whole instruction exists to satisfy is
+        // enforced by the builder for every resolver.
+        Ok(Some(
+            crate::instructions::StagedCall::new(crate::accounts::ResyncLiqConditions {
+                keeper: Pubkey::new_from_array(KEEPER_PLACEHOLDER),
+                user: ctx.accounts.user.key(),
+                liq_conditions: ctx.accounts.liq_conditions.key(),
+            })
+            // The margin-map + reservoir accounts the last sync stored.
+            .refs(ctx.accounts.liq_conditions.load()?.read_sync_accounts()),
+        ))
+    })
 }

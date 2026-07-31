@@ -4,11 +4,12 @@
 
 use {
     super::crank_common::{
-        crank_clob_removal, derive_user_pdas, no_work, stage_removal, validate_linkage,
+        crank_clob_removal, derive_user_pdas, removal_call, validate_linkage,
         CrankClobOrderRemoval, ResolveClobCrank,
     },
     crate::{
         error::ErrorCode,
+        instructions::relay_harness::resolve_into,
         state::prop_amm::{
             clob_find_expired, ClobOrderRefV0, ClobRemoveExpiredArgsV0,
             CLOB_REMOVE_EXPIRED_V0_DISCRIMINATOR,
@@ -31,22 +32,24 @@ pub fn handle_crank_clob_remove_expired(
 
 pub fn handle_resolve_crank_clob_remove_expired(ctx: Context<ResolveClobCrank>) -> Result<()> {
     validate_linkage(&ctx)?;
-    let now = Clock::get()?.unix_timestamp;
-    let (node_index, node) = {
-        let data = ctx.accounts.clob_market.try_borrow_data()?;
-        match clob_find_expired(&data, now) {
-            Some(found) => found,
-            None => return no_work(),
-        }
-    };
-
-    let market_index = ctx.accounts.crank_conditions.load()?.market_index;
-    let mut args = Vec::with_capacity(14);
-    market_index.serialize(&mut args)?;
-    ClobOrderRefV0 {
-        node_index,
-        order_id: node.order_id,
-    }
-    .serialize(&mut args)?;
-    stage_removal(&ctx, derive_user_pdas(&node.user_ref()).0, args)
+    let conditions = ctx.accounts.crank_conditions.clone();
+    resolve_into(&conditions, || {
+        let now = Clock::get()?.unix_timestamp;
+        let (node_index, node) = {
+            let data = ctx.accounts.clob_market.try_borrow_data()?;
+            match clob_find_expired(&data, now) {
+                Some(found) => found,
+                None => return Ok(None),
+            }
+        };
+        let market_index = ctx.accounts.crank_conditions.load()?.market_index;
+        Ok(Some(
+            removal_call(&ctx, derive_user_pdas(&node.user_ref()).0)?
+                .arg(market_index)?
+                .arg(ClobOrderRefV0 {
+                    node_index,
+                    order_id: node.order_id,
+                })?,
+        ))
+    })
 }

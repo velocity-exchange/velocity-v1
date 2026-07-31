@@ -21,11 +21,9 @@
 //! `ClobCrankConditionsV0` reservoir pays the keeper either way.
 
 use {
-    crate::{error::ErrorCode, msg},
+    crate::error::ErrorCode,
     anchor_lang::prelude::*,
-    relay_spec::{
-        ConditionBlockHeaderV0, ResolvedCrankV0, ResponsePointerV0, BLOCK_HEADER_LEN, CONDITION_LEN,
-    },
+    relay_spec::{ConditionBlock, BLOCK_HEADER_LEN, CONDITION_LEN},
 };
 
 /// PDA seed: `["quoter_cross_conditions", quoter entry key]`.
@@ -147,47 +145,63 @@ impl QuoterCrossConditionsV0 {
         &self.block
     }
 
-    /// Stamp the spec header; conditions are written by index.
-    pub fn init_header(&mut self) -> Result<()> {
-        let header = ConditionBlockHeaderV0::new(QUOTER_CROSS_CONDITIONS as u8);
-        self.block[..BLOCK_HEADER_LEN].copy_from_slice(bytemuck::bytes_of(&header));
-        Ok(())
+    /// Anchor-flavoured wrappers over the spec trait's provided methods,
+    /// so handlers keep using `?` with the program's own error type.
+    pub fn init_block(&mut self) -> Result<()> {
+        ConditionBlock::init_header(self).map_err(|_| error!(ErrorCode::DefaultError))
     }
 
-    pub fn write_condition(
+    pub fn set_condition(
         &mut self,
         index: usize,
         condition: &relay_spec::ConditionV0,
     ) -> Result<()> {
-        if index >= QUOTER_CROSS_CONDITIONS {
-            msg!("quoter cross condition index {} out of range", index);
-            return Err(ErrorCode::DefaultError.into());
-        }
-        let start = BLOCK_HEADER_LEN + index * CONDITION_LEN;
-        self.block[start..start + CONDITION_LEN].copy_from_slice(bytemuck::bytes_of(condition));
-        Ok(())
+        ConditionBlock::write_condition(self, index, condition)
+            .map_err(|_| error!(ErrorCode::DefaultError))
     }
 
-    /// Stage a resolver's payload and return the pointer bytes to set as
-    /// return data.
-    pub fn stage(
+    pub fn get_condition(&self, index: usize) -> Result<relay_spec::ConditionV0> {
+        ConditionBlock::read_condition(self, index).map_err(|_| error!(ErrorCode::DefaultError))
+    }
+
+    pub fn edit_condition(
         &mut self,
-        resolved: &ResolvedCrankV0,
-    ) -> Result<[u8; relay_spec::RESPONSE_POINTER_LEN]> {
-        let len = resolved.write_into(&mut self.staging).map_err(|e| {
-            msg!(
-                "staging a {}-byte resolved crank failed: {:?}",
-                resolved.encoded_len(),
-                e
-            );
-            error!(ErrorCode::DefaultError)
-        })?;
-        Ok(ResponsePointerV0::new(0, QUOTER_CROSS_STAGING_OFFSET as u32, len as u32).to_bytes())
+        index: usize,
+        f: impl FnOnce(&mut relay_spec::ConditionV0),
+    ) -> Result<()> {
+        ConditionBlock::update_condition(self, index, f)
+            .map_err(|_| error!(ErrorCode::DefaultError))
+    }
+
+    pub fn clear_condition(&mut self, index: usize) -> Result<()> {
+        ConditionBlock::deactivate_condition(self, index)
+            .map_err(|_| error!(ErrorCode::DefaultError))
     }
 }
 
 const _: () = assert!((QuoterCrossConditionsV0::SIZE - 8) % 16 == 0);
 const _: () = assert!(QuoterCrossConditionsV0::SIZE <= 10_240);
+
+/// Block hosting + staging, from the spec (see
+/// [`relay_spec::ConditionBlock`]): `init_header`, `write_condition`,
+/// `read_condition`, `update_condition`, `deactivate_condition`, and
+/// `stage` are all provided.
+impl ConditionBlock for QuoterCrossConditionsV0 {
+    const NUM_CONDITIONS: usize = QUOTER_CROSS_CONDITIONS;
+    const STAGING_OFFSET: u32 = QUOTER_CROSS_STAGING_OFFSET as u32;
+
+    fn block(&self) -> &[u8] {
+        &self.block
+    }
+
+    fn block_mut(&mut self) -> &mut [u8] {
+        &mut self.block
+    }
+
+    fn staging_mut(&mut self) -> &mut [u8] {
+        &mut self.staging
+    }
+}
 
 #[cfg(test)]
 mod tests {
@@ -208,11 +222,11 @@ mod tests {
     #[test]
     fn header_and_conditions_round_trip_through_the_spec() {
         let mut acct = QuoterCrossConditionsV0::default();
-        acct.init_header().unwrap();
+        acct.init_block().unwrap();
         let mut condition = relay_spec::ConditionV0::zeroed();
         condition.wake_slot = 77;
         condition.active = 1;
-        acct.write_condition(QUOTER_CROSS_FALLBACK, &condition)
+        acct.set_condition(QUOTER_CROSS_FALLBACK, &condition)
             .unwrap();
         let (header, conditions) = relay_spec::read_block(acct.block(), 0).unwrap();
         assert_eq!(header.num_conditions, QUOTER_CROSS_CONDITIONS as u8);

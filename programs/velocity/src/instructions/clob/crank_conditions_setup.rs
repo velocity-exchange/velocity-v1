@@ -99,8 +99,8 @@ pub fn write_clob_crank_conditions(
     conditions.keeper_payment_lamports = keeper_payment_lamports;
     conditions.oracle = keys.oracle;
     conditions.quote_spot_market_index = keys.quote_spot_market_index;
-    conditions.init_header()?;
-    conditions.write_condition(
+    conditions.init_block()?;
+    conditions.set_condition(
         CLOB_CRANK_EVICT,
         // Both u32 counts, `bid_count` then `ask_count`, in one 8-byte watch.
         &ConditionV0::on_account_change(
@@ -111,11 +111,11 @@ pub fn write_clob_crank_conditions(
             &resolver_accounts,
         ),
     )?;
-    conditions.write_condition(
+    conditions.set_condition(
         CLOB_CRANK_EXPIRE,
         &ConditionV0::at_timestamp(initial_expire_wake_ts, expire_spec, &resolver_accounts),
     )?;
-    conditions.write_condition(
+    conditions.set_condition(
         CLOB_CRANK_EXPIRE_FALLBACK,
         &ConditionV0::every_slots(expire_fallback_slots, expire_spec, &resolver_accounts),
     )?;
@@ -123,7 +123,7 @@ pub fn write_clob_crank_conditions(
         crate::instruction::ResolveCrankCrossMatch::DISCRIMINATOR,
         crate::instruction::CrankCrossMatch::DISCRIMINATOR,
     )?;
-    conditions.write_condition(
+    conditions.set_condition(
         CLOB_CRANK_CROSS,
         // Both u32 side heads, `best_bid` then `best_ask`, in one 8-byte
         // watch — a crossing order is always a new best.
@@ -135,7 +135,7 @@ pub fn write_clob_crank_conditions(
             &resolver_accounts,
         ),
     )?;
-    conditions.write_condition(
+    conditions.set_condition(
         CLOB_CRANK_CROSS_FALLBACK,
         // A PropAMM crossing the CLOB has no single account to watch — the
         // poll is that case's liveness floor (the book publisher is the
@@ -147,7 +147,7 @@ pub fn write_clob_crank_conditions(
         initial_activation_wake_slot,
     );
     activation.wake_slot = keep_wake_slot;
-    conditions.write_condition(
+    conditions.set_condition(
         CLOB_CRANK_CROSS_ACTIVATION,
         // Activation-slot maturation makes an order matchable with no
         // account change — but it is exactly when makers who lined up

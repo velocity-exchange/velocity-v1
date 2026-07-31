@@ -8,7 +8,7 @@ publish = false
 # Chain access + in-process simulation, extracted from relay's crank turner.
 # Pinned by rev rather than tracking a branch: this crate decides what a fill
 # would do, so the simulation layer under it should only move deliberately.
-relay-chain-source = { git = "https://github.com/velocity-exchange/relay", rev = "b90ea74136062b26bf072185f82c35c6bb8ab0e5" }
+relay-chain-source = { git = "https://github.com/velocity-exchange/relay", rev = "5e601ab06266e9943c9b075c9f21506d3d1ac152" }
 # The program as a host library, same flavor velocity-rs uses — so account
 # layout constants are derived from the struct rather than transcribed.
 program = { package = "velocity", path = "../../programs/velocity", default-features = false, features = [

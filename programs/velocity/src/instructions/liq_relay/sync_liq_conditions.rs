@@ -249,7 +249,7 @@ pub fn rewrite_liq_conditions<'info>(
         conditions.sync_fallback_slots = args.sync_fallback_slots;
     }
     let fallback_slots = conditions.sync_fallback_slots.max(1);
-    conditions.init_header()?;
+    conditions.init_block()?;
     conditions.write_sync_accounts(&sync_accounts)?;
 
     // Free collateral now — the distance each threshold is measured from.
@@ -286,7 +286,7 @@ pub fn rewrite_liq_conditions<'info>(
                     disc8(crate::instruction::ResolveLiquidatePerpWithFill::DISCRIMINATOR)?,
                     disc8(crate::instruction::LiquidatePerpWithFill::DISCRIMINATOR)?,
                 )? {
-                    conditions.write_condition(slot_index, &condition)?;
+                    conditions.set_condition(slot_index, &condition)?;
                     conditions.slots[slot_index] = LiqSlotMetaV0 {
                         target_market_index: position.market_index,
                         active: 1,
@@ -335,7 +335,7 @@ pub fn rewrite_liq_conditions<'info>(
                     disc8(crate::instruction::ResolveLiquidatePerpWithFill::DISCRIMINATOR)?,
                     disc8(crate::instruction::LiquidatePerpWithFill::DISCRIMINATOR)?,
                 )? {
-                    conditions.write_condition(slot_index, &condition)?;
+                    conditions.set_condition(slot_index, &condition)?;
                     conditions.slots[slot_index] = LiqSlotMetaV0 {
                         target_market_index,
                         active: 1,
@@ -347,7 +347,7 @@ pub fn rewrite_liq_conditions<'info>(
         }
     }
     for index in slot_index..LIQ_THRESHOLD_SLOTS {
-        conditions.write_condition(index, &relay_spec::bytemuck::Zeroable::zeroed())?;
+        conditions.set_condition(index, &relay_spec::bytemuck::Zeroable::zeroed())?;
         conditions.slots[index] = LiqSlotMetaV0::default();
     }
 
@@ -367,7 +367,7 @@ pub fn rewrite_liq_conditions<'info>(
             AccountRefV0::readonly(user_key.to_bytes()),
         ];
         let (watch_offset, watch_len) = user_positions_watch_region();
-        conditions.write_condition(
+        conditions.set_condition(
             LIQ_SYNC_WATCH,
             &ConditionV0::on_account_change(
                 user_key.to_bytes(),
@@ -377,13 +377,13 @@ pub fn rewrite_liq_conditions<'info>(
                 &sync_resolver_accounts,
             ),
         )?;
-        conditions.write_condition(
+        conditions.set_condition(
             LIQ_SYNC_FALLBACK,
             &ConditionV0::every_slots(fallback_slots, sync_spec, &sync_resolver_accounts),
         )?;
     } else {
-        conditions.write_condition(LIQ_SYNC_WATCH, &relay_spec::bytemuck::Zeroable::zeroed())?;
-        conditions.write_condition(LIQ_SYNC_FALLBACK, &relay_spec::bytemuck::Zeroable::zeroed())?;
+        conditions.set_condition(LIQ_SYNC_WATCH, &relay_spec::bytemuck::Zeroable::zeroed())?;
+        conditions.set_condition(LIQ_SYNC_FALLBACK, &relay_spec::bytemuck::Zeroable::zeroed())?;
     }
     Ok(())
 }

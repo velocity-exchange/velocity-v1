@@ -538,72 +538,50 @@ pub struct ResolveTriggerClobOrder<'info> {
 }
 
 pub fn handle_resolve_trigger_clob_order(ctx: Context<ResolveTriggerClobOrder>) -> Result<()> {
-    let clock = Clock::get()?;
-    let fired = {
-        let conditions = ctx.accounts.trigger_conditions.load()?;
-        let user = crate::load!(ctx.accounts.user)?;
-        let market = ctx.accounts.perp_market.load()?;
-        super::crank_common::find_fired_trigger(
-            &conditions,
-            &user,
-            &market,
-            &ctx.accounts.oracle,
-            clock.slot,
-            true,
-        )?
-    };
-    let Some(meta) = fired else {
-        return super::crank_common::no_work();
-    };
+    let conditions = ctx.accounts.trigger_conditions.clone();
+    crate::instructions::resolve_into(&conditions, || {
+        let clock = Clock::get()?;
+        let fired = {
+            let conditions = ctx.accounts.trigger_conditions.load()?;
+            let user = crate::load!(ctx.accounts.user)?;
+            let market = ctx.accounts.perp_market.load()?;
+            super::crank_common::find_fired_trigger(
+                &conditions,
+                &user,
+                &market,
+                &ctx.accounts.oracle,
+                clock.slot,
+                true,
+            )?
+        };
+        let Some(meta) = fired else {
+            return Ok(None);
+        };
 
-    let (signer, _) = Pubkey::find_program_address(&[b"velocity_signer"], &crate::ID);
-    let (protocol_user, protocol_user_stats) =
-        super::crank_common::derive_protocol_user_pdas(&signer);
-    let (state_key, _) = Pubkey::find_program_address(&[b"velocity_state"], &crate::ID);
-    let (user_stats, _) = Pubkey::find_program_address(
-        &[
-            b"user_stats",
-            crate::load!(ctx.accounts.user)?.authority.as_ref(),
-        ],
-        &crate::ID,
-    );
-    let (market_conditions, _) = Pubkey::find_program_address(
-        &[
-            CLOB_CRANK_CONDITIONS_PDA_SEED,
-            meta.market_index.to_le_bytes().as_ref(),
-        ],
-        &crate::ID,
-    );
-
-    let mut metas = crate::accounts::TriggerClobOrder {
-        state: state_key,
-        authority: Pubkey::new_from_array(relay_spec::KEEPER_PLACEHOLDER),
-        filler: protocol_user,
-        filler_stats: protocol_user_stats,
-        user: ctx.accounts.user.key(),
-        user_stats,
-        quoter: meta.quoter,
-        clob_market: meta.clob_market,
-        clob_program: meta.clob_program,
-        velocity_signer: signer,
-        crank_conditions: Some(market_conditions),
-        trigger_conditions: Some(ctx.accounts.trigger_conditions.key()),
-    }
-    .to_account_metas(None);
-    super::crank_common::push_map_refs(&mut metas, &*ctx.accounts.trigger_conditions.load()?)?;
-
-    let mut args = Vec::with_capacity(6);
-    meta.market_index.serialize(&mut args)?;
-    meta.order_id.serialize(&mut args)?;
-    let resolved = relay_spec::ResolvedCrankV0 {
-        accounts: super::crank_common::to_account_refs(metas),
-        data: args,
-    };
-    let pointer = ctx
-        .accounts
-        .trigger_conditions
-        .load_mut()?
-        .stage(&resolved)?;
-    solana_program::program::set_return_data(&pointer);
-    Ok(())
+        let signer = crate::state::pdas::velocity_signer();
+        let (protocol_user, protocol_user_stats) = crate::state::pdas::protocol_user_pair();
+        let user_stats =
+            crate::state::pdas::user_stats(&crate::load!(ctx.accounts.user)?.authority);
+        Ok(Some(
+            crate::instructions::StagedCall::new(crate::accounts::TriggerClobOrder {
+                state: crate::state::pdas::state(),
+                authority: Pubkey::new_from_array(relay_spec::KEEPER_PLACEHOLDER),
+                filler: protocol_user,
+                filler_stats: protocol_user_stats,
+                user: ctx.accounts.user.key(),
+                user_stats,
+                quoter: meta.quoter,
+                clob_market: meta.clob_market,
+                clob_program: meta.clob_program,
+                velocity_signer: signer,
+                crank_conditions: Some(crate::state::pdas::clob_crank_conditions(
+                    meta.market_index,
+                )),
+                trigger_conditions: Some(ctx.accounts.trigger_conditions.key()),
+            })
+            .refs(ctx.accounts.trigger_conditions.load()?.read_map_accounts())
+            .arg(meta.market_index)?
+            .arg(meta.order_id)?,
+        ))
+    })
 }

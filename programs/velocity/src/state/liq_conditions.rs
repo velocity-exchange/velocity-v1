@@ -30,11 +30,9 @@
 //! liquidations.
 
 use {
-    crate::{error::ErrorCode, msg},
+    crate::error::ErrorCode,
     anchor_lang::prelude::*,
-    relay_spec::{
-        ConditionBlockHeaderV0, ResolvedCrankV0, ResponsePointerV0, BLOCK_HEADER_LEN, CONDITION_LEN,
-    },
+    relay_spec::{ConditionBlock, BLOCK_HEADER_LEN, CONDITION_LEN},
 };
 
 /// PDA seed: `["liq_conditions", user key]`.
@@ -134,24 +132,37 @@ impl LiqConditionsV0 {
         &self.block
     }
 
-    pub fn init_header(&mut self) -> Result<()> {
-        let header = ConditionBlockHeaderV0::new(LIQ_CONDITIONS as u8);
-        self.block[..BLOCK_HEADER_LEN].copy_from_slice(bytemuck::bytes_of(&header));
-        Ok(())
+    /// Anchor-flavoured wrappers over the spec trait's provided methods,
+    /// so handlers keep using `?` with the program's own error type.
+    pub fn init_block(&mut self) -> Result<()> {
+        ConditionBlock::init_header(self).map_err(|_| error!(ErrorCode::DefaultError))
     }
 
-    pub fn write_condition(
+    pub fn set_condition(
         &mut self,
         index: usize,
         condition: &relay_spec::ConditionV0,
     ) -> Result<()> {
-        if index >= LIQ_CONDITIONS {
-            msg!("liq condition index {} out of range", index);
-            return Err(ErrorCode::DefaultError.into());
-        }
-        let start = BLOCK_HEADER_LEN + index * CONDITION_LEN;
-        self.block[start..start + CONDITION_LEN].copy_from_slice(bytemuck::bytes_of(condition));
-        Ok(())
+        ConditionBlock::write_condition(self, index, condition)
+            .map_err(|_| error!(ErrorCode::DefaultError))
+    }
+
+    pub fn get_condition(&self, index: usize) -> Result<relay_spec::ConditionV0> {
+        ConditionBlock::read_condition(self, index).map_err(|_| error!(ErrorCode::DefaultError))
+    }
+
+    pub fn edit_condition(
+        &mut self,
+        index: usize,
+        f: impl FnOnce(&mut relay_spec::ConditionV0),
+    ) -> Result<()> {
+        ConditionBlock::update_condition(self, index, f)
+            .map_err(|_| error!(ErrorCode::DefaultError))
+    }
+
+    pub fn clear_condition(&mut self, index: usize) -> Result<()> {
+        ConditionBlock::deactivate_condition(self, index)
+            .map_err(|_| error!(ErrorCode::DefaultError))
     }
 
     pub fn write_sync_accounts(&mut self, refs: &[relay_spec::AccountRefV0]) -> Result<()> {
@@ -180,21 +191,6 @@ impl LiqConditionsV0 {
                 }
             })
             .collect()
-    }
-
-    pub fn stage(
-        &mut self,
-        resolved: &ResolvedCrankV0,
-    ) -> Result<[u8; relay_spec::RESPONSE_POINTER_LEN]> {
-        let len = resolved.write_into(&mut self.staging).map_err(|e| {
-            msg!(
-                "staging a {}-byte resolved crank failed: {:?}",
-                resolved.encoded_len(),
-                e
-            );
-            error!(ErrorCode::DefaultError)
-        })?;
-        Ok(ResponsePointerV0::new(0, LIQ_CONDITIONS_STAGING_OFFSET as u32, len as u32).to_bytes())
     }
 
     /// Pay the sync keeper from this account's own lamports, best-effort:
@@ -226,6 +222,27 @@ impl LiqConditionsV0 {
 
 const _: () = assert!((LiqConditionsV0::SIZE - 8) % 16 == 0);
 const _: () = assert!(LiqConditionsV0::SIZE <= 10_240);
+
+/// Block hosting + staging, from the spec (see
+/// [`relay_spec::ConditionBlock`]): `init_header`, `write_condition`,
+/// `read_condition`, `update_condition`, `deactivate_condition`, and
+/// `stage` are all provided.
+impl ConditionBlock for LiqConditionsV0 {
+    const NUM_CONDITIONS: usize = LIQ_CONDITIONS;
+    const STAGING_OFFSET: u32 = LIQ_CONDITIONS_STAGING_OFFSET as u32;
+
+    fn block(&self) -> &[u8] {
+        &self.block
+    }
+
+    fn block_mut(&mut self) -> &mut [u8] {
+        &mut self.block
+    }
+
+    fn staging_mut(&mut self) -> &mut [u8] {
+        &mut self.staging
+    }
+}
 
 #[cfg(test)]
 mod tests {

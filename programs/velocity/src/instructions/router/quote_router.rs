@@ -295,17 +295,42 @@ fn margin_cap(
     spot_market_map: &crate::state::spot_market_map::SpotMarketMap,
     oracle_map: &mut crate::state::oracle_map::OracleMap,
 ) -> Result<u64> {
-    let Ok(maker) = makers.get_ref(user) else {
-        // Without the quoter's user account there is nothing to verify
-        // against, so the book is unusable rather than trusted.
-        msg!("custom quoter user {} not passed; book dropped", user);
-        return Ok(0);
-    };
-    let Ok(position_index) =
+    let position_index = {
+        let Ok(maker) = makers.get_ref(user) else {
+            // Without the quoter's user account there is nothing to verify
+            // against, so the book is unusable rather than trusted.
+            msg!("custom quoter user {} not passed; book dropped", user);
+            return Ok(0);
+        };
         crate::controller::position::get_position_index(&maker.perp_positions, market_index)
-    else {
-        return Ok(0);
     };
+    let position_index = match position_index {
+        Ok(index) => index,
+        // The quoter's user has never traded this market. A fill opens the
+        // position slot before clamping (`add_new_position`) — mirror it, or
+        // a fresh maker's book quotes zero until its first fill. Requires
+        // the user passed writable, as the fill also requires; a read-only
+        // view degrades to the old zero-cap behavior.
+        Err(_) => match makers.get_ref_mut(user) {
+            Ok(mut maker) => {
+                match crate::controller::position::add_new_position(
+                    &mut maker.perp_positions,
+                    market_index,
+                ) {
+                    Ok(index) => index,
+                    Err(_) => return Ok(0), // position slots full
+                }
+            }
+            Err(_) => {
+                msg!(
+                    "custom quoter user {} read-only with no position; book dropped",
+                    user
+                );
+                return Ok(0);
+            }
+        },
+    };
+    let maker = makers.get_ref(user)?;
     Ok(calculate_max_perp_order_size(
         &maker,
         position_index,

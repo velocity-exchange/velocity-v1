@@ -248,10 +248,13 @@ pub async fn build_quote_router_ix<S: ChainSource>(
     accounts.push(AccountMeta::new_readonly(perp_market.oracle, false));
     accounts.push(AccountMeta::new(quote_spot_market, false));
     accounts.push(AccountMeta::new(perp_market_key, false));
-    // User-map section: custom quoters' (User, UserStats) pairs.
+    // User-map section: custom quoters' (User, UserStats) pairs. Writable,
+    // matching the fill's convention — the margin clamp opens a fresh
+    // maker's position slot the way a fill would, and a read-only user
+    // degrades that maker's book to zero.
     for (user, stats) in &user_pairs {
-        accounts.push(AccountMeta::new_readonly(*user, false));
-        accounts.push(AccountMeta::new_readonly(*stats, false));
+        accounts.push(AccountMeta::new(*user, false));
+        accounts.push(AccountMeta::new(*stats, false));
     }
     // Quoter section: entries, then the CPI union.
     for (key, _) in &entries {

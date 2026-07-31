@@ -104,6 +104,15 @@ rm -rf target/sbpf-solana-solana target/deploy
 cargo-build-sbf --tools-version v1.54 -- --features anchor-test
 ```
 
+**Symptom: `Access violation in stack frame 3 at address 0x2000...` on instructions that were fine before** (first seen: `initialize_user_stats` on a local validator), and a clean rebuild does NOT fix it.
+This is a **platform-tools v1.52 miscompile**, not a stale cache: v1.52 (the default bundled with `cargo-build-sbf` 3.1.14, which plain `anchor build` uses) emits velocity code that overflows a 4KB stack frame at runtime; v1.54 compiles the same code correctly. Any velocity `.so` that will actually be *executed* (validator deploys, the e2e localnet harness, devnet buffers) must be built with `--tools-version v1.54` explicitly — do not rely on the default:
+
+```bash
+cargo-build-sbf --tools-version v1.54 --manifest-path programs/velocity/Cargo.toml -- --no-default-features --features no-entrypoint,anchor-test
+```
+
+The litesvm/bankrun suites can mask this: they exercise only the instructions each test calls, and older runtimes were lenient. `integration-tests/tests/init_probe.rs` pins the real `initialize_user_stats` path so a miscompiled `.so` fails fast.
+
 ## Testing
 
 **Rust unit tests:**

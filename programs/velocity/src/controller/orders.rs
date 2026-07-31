@@ -4177,8 +4177,27 @@ pub fn cross_match(
         )
     };
 
+    // Settle funding for everyone the legs can touch BEFORE any position
+    // update, mirroring the fill path's pre-flight: `update_position_and_market`
+    // requires each position's `last_cumulative_funding_rate` to match the
+    // market's, and a maker who last traded before a funding update fails
+    // that invariant otherwise.
+    {
+        let mut market = perp_market_map.get_ref_mut(&market_index)?;
+        for (maker_key, maker_loader) in makers_and_referrer.0.iter() {
+            let mut maker = load_mut!(maker_loader)?;
+            if maker.get_perp_position(market_index).is_ok() {
+                settle_funding_payment(&mut maker, maker_key, &mut market, now)?;
+            }
+        }
+    }
+
     let taker = &mut load_mut!(taker_loader)?;
     let mut taker_stats = load_mut!(taker_stats_loader)?;
+    {
+        let mut market = perp_market_map.get_ref_mut(&market_index)?;
+        settle_funding_payment(taker, &taker_key, &mut market, now)?;
+    }
     let taker_ref = crate::state::prop_amm::ClobUserRefV0 {
         authority: taker.authority,
         sub_account_id: taker.sub_account_id,

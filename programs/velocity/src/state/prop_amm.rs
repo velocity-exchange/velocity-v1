@@ -85,16 +85,25 @@ pub struct QuoterV0 {
     pub priority: u8,
     pub quote_accounts_count: u8,
     pub execute_accounts_count: u8,
-    pub padding: [u8; 8],
+    /// Maker-declared reprice region: the account bytes whose change means
+    /// "this quoter may quote differently now" (a midpoint's mid region, a
+    /// custom AMM's parameter block). Relay cross-discovery conditions wake
+    /// on it; `watch_len == 0` means no declaration (poll-only discovery).
+    /// Config like everything else here: vetted by the admin via the
+    /// `is_approved` reset — a watch that misses reprices only costs the
+    /// maker cross latency, never correctness (the poll is the floor).
+    pub watch_offset: u32,
+    pub watch_len: u32,
+    pub watch_account: Pubkey,
 }
 
 // Zero-copy layout invariant (see docs/alignment-and-native-offsets.md):
 // no u128 fields, size (incl. 8-byte discriminator) ≡ 8 (mod 16).
-const_assert_eq!(std::mem::size_of::<QuoterV0>(), 2720);
+const_assert_eq!(std::mem::size_of::<QuoterV0>(), 2752);
 const_assert_eq!((QuoterV0::SIZE - 8) % 16, 0);
 
 impl Size for QuoterV0 {
-    const SIZE: usize = 2728;
+    const SIZE: usize = 2760;
 }
 
 /// PDA: one entry per (perp market, quoter program, quoted user).

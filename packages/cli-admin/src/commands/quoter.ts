@@ -539,4 +539,139 @@ export function registerQuoter(parent: Command): void {
 			}
 		}
 	);
+	withGlobalOptions(
+		quoter
+			.command('set-watch <quoter>')
+			.description(
+				"Declare (or clear) a Custom quoter's reprice-watch region — the account bytes whose change means the quoter may quote differently (a midpoint's mid region). Relay cross-discovery conditions wake on it. Clears admin approval (admin re-vets). Signer must be the entry authority."
+			)
+			.option('--watch-account <pubkey>', 'account whose bytes the watch covers')
+			.requiredOption('--offset <n>', 'watch region offset (account data)')
+			.requiredOption('--len <n>', 'watch region length; 0 clears the declaration')
+			.option(
+				'-a, --authority <pubkey>',
+				'entry authority (must sign; defaults to the wallet)'
+			)
+	).action(
+		async (
+			quoterArg: string,
+			flags: {
+				watchAccount?: string;
+				offset: string;
+				len: string;
+				authority?: string;
+			},
+			cmd: Command
+		) => {
+			const opts = readGlobalOpts(cmd);
+			const provider = buildProvider(opts);
+			const client = await buildAdminClient(opts, false);
+			try {
+				const watchLen = Number.parseInt(flags.len, 10);
+				if (watchLen > 0 && !flags.watchAccount) {
+					throw new Error('--watch-account is required unless --len is 0');
+				}
+				const ix = client.program.instruction.updateQuoterWatch(
+					{
+						watchOffset: Number.parseInt(flags.offset, 10),
+						watchLen,
+					},
+					{
+						accounts: {
+							authority: flags.authority
+								? new PublicKey(flags.authority)
+								: provider.wallet.publicKey,
+							quoter: new PublicKey(quoterArg),
+							watchAccount: flags.watchAccount
+								? new PublicKey(flags.watchAccount)
+								: PublicKey.default,
+						},
+					}
+				);
+				const result = await sendOrPropose(
+					provider,
+					[ix],
+					opts.multisig ? new PublicKey(opts.multisig) : undefined,
+					'velocity-admin quoter set-watch'
+				);
+				reportDispatch(
+					`quoter ${quoterArg} watch ${watchLen > 0 ? 'declared' : 'cleared'} (approval cleared)`,
+					result
+				);
+			} finally {
+				if ((client as any).isSubscribed) {
+					await client.unsubscribe();
+				}
+			}
+		}
+	);
+
+	withGlobalOptions(
+		quoter
+			.command('attach-cross <quoter>')
+			.description(
+				"Stand up (or re-price) a Custom quoter's relay cross-discovery conditions — the per-entry account whose resolver prices the quoter through its registered quote_v0 surface and stages crank_cross_match. Permissionless; the signer pays the rent. Requires the entry active + approved and the market's canonical CLOB attached."
+			)
+			.option('--fallback-slots <n>', 'periodic poll interval (slots)', '1500')
+	).action(
+		async (
+			quoterArg: string,
+			flags: { fallbackSlots: string },
+			cmd: Command
+		) => {
+			const opts = readGlobalOpts(cmd);
+			if (opts.multisig) {
+				throw new Error('attach-cross is permissionless — direct-send only');
+			}
+			const provider = buildProvider(opts);
+			const client = await buildAdminClient(opts, false);
+			try {
+				const quoterKey = new PublicKey(quoterArg);
+				const entry = await (client.program.account as any).quoterV0.fetch(
+					quoterKey
+				);
+				const perpMarket = getPerpMarketPublicKeySync(
+					client.program.programId,
+					entry.market
+				);
+				const marketConditions = getClobCrankConditionsPublicKey(
+					client.program.programId,
+					entry.market
+				);
+				const crossConditions = PublicKey.findProgramAddressSync(
+					[Buffer.from('quoter_cross_conditions'), quoterKey.toBuffer()],
+					client.program.programId
+				)[0];
+				const market = await (
+					client.program.account as any
+				).perpMarket.fetch(perpMarket);
+				const ix = client.program.instruction.initializeQuoterCrossConditions(
+					new BN(flags.fallbackSlots),
+					{
+						accounts: {
+							payer: provider.wallet.publicKey,
+							state: await client.getStatePublicKey(),
+							quoter: quoterKey,
+							perpMarket,
+							clobQuoter: market.clobQuoter,
+							marketConditions,
+							crossConditions,
+							rent: SYSVAR_RENT_PUBKEY,
+							systemProgram: SystemProgram.programId,
+						},
+					}
+				);
+				const result = await sendOrPropose(provider, [ix], undefined, '');
+				reportDispatch(
+					`cross conditions ${crossConditions.toBase58()} attached for quoter ${quoterArg}`,
+					result
+				);
+			} finally {
+				if ((client as any).isSubscribed) {
+					await client.unsubscribe();
+				}
+			}
+		}
+	);
 }
+

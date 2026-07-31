@@ -82,9 +82,12 @@ pub const CLOB_CRANK_BLOCK_LEN: usize = BLOCK_HEADER_LEN + CLOB_CRANK_CONDITIONS
 
 /// Bytes reserved for a resolver's staged `ResolvedCrankV0`. The largest
 /// staged call is the cross executor: ~12 fixed accounts plus two accounts
-/// per staged maker (33 bytes each), so this bounds a cross at roughly two
-/// dozen makers — far past what one profitable top-of-book cross touches.
-pub const CLOB_CRANK_STAGING_LEN: usize = 2048;
+/// per staged maker (33 bytes each), so this covers `MAX_CROSS_MAKERS`
+/// with room to spare. Deliberately snug: the whole account must stay
+/// under the 10,240-byte CPI allocation limit so the attach ix can
+/// `init` it in one step (the condition block itself grew when relay
+/// widened per-condition resolver account lists).
+pub const CLOB_CRANK_STAGING_LEN: usize = 1024;
 
 /// Account-data offset of the staging region (what a `ResponsePointerV0`'s
 /// `offset` is relative to): discriminator + the block.
@@ -331,8 +334,14 @@ mod tests {
 
     #[test]
     fn size_matches_the_layout_and_the_spec() {
-        assert_eq!(CLOB_CRANK_BLOCK_LEN, 16 + 6 * 280);
-        assert_eq!(ClobCrankConditionsV0::SIZE, 8 + 1696 + 2048 + 48);
+        assert_eq!(CLOB_CRANK_BLOCK_LEN, 16 + 6 * relay_spec::CONDITION_LEN);
+        assert_eq!(
+            ClobCrankConditionsV0::SIZE,
+            8 + CLOB_CRANK_BLOCK_LEN + CLOB_CRANK_STAGING_LEN + 48
+        );
+        // The whole account must clear anchor init's 10,240-byte CPI
+        // allocation ceiling, or attaching a CLOB to a market breaks.
+        assert!(ClobCrankConditionsV0::SIZE <= 10_240);
         // the staging region must land where the pointer offset says it does
         assert_eq!(
             CLOB_CRANK_STAGING_OFFSET,

@@ -241,6 +241,11 @@ fn clob_ask_count(svm: &litesvm::LiteSVM, market: &Pubkey) -> u32 {
     u32::from_le_bytes(data[140..144].try_into().unwrap())
 }
 
+fn clob_bid_count(svm: &litesvm::LiteSVM, market: &Pubkey) -> u32 {
+    let data = svm.get_account(market).unwrap().data;
+    u32::from_le_bytes(data[136..140].try_into().unwrap())
+}
+
 /// Init a CLOB book with `place_authority` = the velocity signer, so every
 /// placement must come through velocity.
 fn init_clob_book(svm: &mut litesvm::LiteSVM, clob_admin: &Keypair) -> Pubkey {
@@ -2305,7 +2310,11 @@ fn setup_midpoint_maker(fixture: &mut Fixture, deposit: u64, side_size: u64) -> 
         user,
         &trading_user(&authority.pubkey(), deposit, None),
     );
-    let stats = Pubkey::new_unique();
+    let stats = Pubkey::find_program_address(
+        &[b"user_stats", authority.pubkey().as_ref()],
+        &velocity_id(),
+    )
+    .0;
     set_user_stats_account(&mut fixture.svm, stats, &authority.pubkey());
 
     // Create the instance. Config borsh: market u16, sub u16, base_precision
@@ -2749,4 +2758,249 @@ fn router_fill_splits_across_clob_midpoint_and_vamm() {
         "CU — router fill across CLOB + midpoint + vAMM: {}",
         meta.compute_units_consumed
     );
+}
+
+// ---------------------------------------------------------------------------
+// Generic quoter-cross discovery: relay conditions per Custom entry, priced
+// through the entry's registered quote_v0 surface — no per-program code.
+// ---------------------------------------------------------------------------
+
+/// Declare the midpoint's mid region as its reprice watch (the maker knows
+/// their program's layout; velocity doesn't) and re-approve the entry.
+fn declare_midpoint_watch(fixture: &mut Fixture, maker: &MidpointMaker) {
+    let ix = Instruction {
+        program_id: velocity_id(),
+        accounts: velocity::accounts::UpdateQuoterWatch {
+            authority: maker.authority.pubkey(),
+            quoter: maker.entry,
+            watch_account: maker.instance,
+        }
+        .to_account_metas(None),
+        data: velocity::instruction::UpdateQuoterWatch {
+            args: velocity::instructions::UpdateQuoterWatchArgs {
+                watch_offset: 136, // mid_price + mid_slot
+                watch_len: 16,
+            },
+        }
+        .data(),
+    };
+    let authority = maker.authority.insecure_clone();
+    send(&mut fixture.svm, &authority, ix, &[]).unwrap();
+    // The declaration is a config change: approval resets, admin re-vets.
+    let entry: velocity::state::prop_amm::QuoterV0 = read_zero_copy(&fixture.svm, &maker.entry);
+    assert!(!entry.is_approved);
+    assert_eq!(entry.watch_account.to_bytes(), maker.instance.to_bytes());
+    assert_eq!(entry.watch_offset, 136);
+    assert_eq!(entry.watch_len, 16);
+    let ix = Instruction {
+        program_id: velocity_id(),
+        accounts: velocity::accounts::UpdateQuoterApproved {
+            admin: fixture.admin.pubkey(),
+            state: state_pda(),
+            quoter: maker.entry,
+        }
+        .to_account_metas(None),
+        data: velocity::instruction::UpdateQuoterApproved { approved: true }.data(),
+    };
+    let admin = fixture.admin.insecure_clone();
+    send(&mut fixture.svm, &admin, ix, &[]).unwrap();
+}
+
+/// Attach the per-entry cross conditions (permissionless; rent on the
+/// keeper here).
+fn attach_quoter_cross(fixture: &mut Fixture, maker: &MidpointMaker) -> Pubkey {
+    let cross_conditions = Pubkey::find_program_address(
+        &[b"quoter_cross_conditions", maker.entry.as_ref()],
+        &velocity_id(),
+    )
+    .0;
+    let ix = Instruction {
+        program_id: velocity_id(),
+        accounts: velocity::accounts::InitializeQuoterCrossConditions {
+            payer: fixture.keeper.pubkey(),
+            state: state_pda(),
+            quoter: maker.entry,
+            perp_market: perp_market_pda(0),
+            clob_quoter: fixture.quoter,
+            market_conditions: Pubkey::find_program_address(
+                &[b"clob_crank_conditions", 0u16.to_le_bytes().as_ref()],
+                &velocity_id(),
+            )
+            .0,
+            cross_conditions,
+            rent: "SysvarRent111111111111111111111111111111111"
+                .parse()
+                .unwrap(),
+            system_program: "11111111111111111111111111111111".parse().unwrap(),
+        }
+        .to_account_metas(None),
+        data: velocity::instruction::InitializeQuoterCrossConditions {
+            expire_fallback_slots: 100,
+        }
+        .data(),
+    };
+    let keeper = fixture.keeper.insecure_clone();
+    send(&mut fixture.svm, &keeper, ix, &[]).unwrap();
+    cross_conditions
+}
+
+/// Run the generic resolver the way a turner does. Its account list is
+/// exactly what the attach registered: conditions, book, state, entry,
+/// user, then the entry's registered quote surface + program.
+fn run_quoter_cross_resolver(
+    fixture: &mut Fixture,
+    maker: &MidpointMaker,
+    cross_conditions: Pubkey,
+) -> Option<velocity::relay_spec::ResolvedCrankV0> {
+    let mut accounts = velocity::accounts::ResolveCrankCrossMatchQuoter {
+        cross_conditions,
+        clob_market: fixture.clob_market,
+        state: state_pda(),
+        quoter: maker.entry,
+        user: maker.user,
+    }
+    .to_account_metas(None);
+    accounts.push(AccountMeta::new(maker.instance, false));
+    accounts.push(AccountMeta::new_readonly(instructions_sysvar(), false));
+    accounts.push(AccountMeta::new_readonly(midpoint_id(), false));
+    let ix = Instruction {
+        program_id: velocity_id(),
+        accounts,
+        data: velocity::instruction::ResolveCrankCrossMatchQuoter {}.data(),
+    };
+    let keeper = fixture.keeper.insecure_clone();
+    let meta = send(&mut fixture.svm, &keeper, ix, &[]).unwrap();
+    let pointer = velocity::relay_spec::ResponsePointerV0::read(&meta.return_data.data).unwrap();
+    if !pointer.has_work() {
+        return None;
+    }
+    let data = fixture.svm.get_account(&cross_conditions).unwrap().data;
+    let staged = &data[pointer.offset() as usize..(pointer.offset() + pointer.len()) as usize];
+    Some(velocity::relay_spec::ResolvedCrankV0::read(staged).unwrap())
+}
+
+/// The whole generic loop, turner-shaped: a maker declares their reprice
+/// region, cross conditions attach permissionlessly, the resolver prices
+/// the quoter through its registered quote_v0 CPI (no midpoint-specific
+/// velocity code anywhere), and the staged crank_cross_match lands
+/// unsigned — protocol User round-trips the cross, keeper paid from the
+/// market reservoir.
+#[test]
+fn generic_quoter_cross_conditions_discover_and_fill_a_midpoint_clob_cross() {
+    use velocity::state::quoter_cross::{
+        QuoterCrossConditionsV0, QUOTER_CROSS_CLOB, QUOTER_CROSS_FALLBACK, QUOTER_CROSS_WATCH,
+    };
+
+    let mut fixture = setup();
+    const PAYMENT: u64 = 10_000;
+    let market_conditions = init_crank_conditions(&mut fixture, PAYMENT);
+    set_protocol_user(&mut fixture.svm);
+    fixture
+        .svm
+        .airdrop(&market_conditions, 1_000_000_000)
+        .unwrap();
+
+    // Midpoint asks 2.0 @ 100.1 (mid 100 + 10bps).
+    let maker = setup_midpoint_maker(&mut fixture, 10_000 * SPOT_BALANCE_PRECISION_U64, 2 * UNIT);
+    declare_midpoint_watch(&mut fixture, &maker);
+    let cross_conditions = attach_quoter_cross(&mut fixture, &maker);
+
+    // The attach wrote the three conditions: the maker's watch, the CLOB
+    // bests, the fallback poll — all pointing at the generic resolver.
+    let acct: QuoterCrossConditionsV0 = read_zero_copy(&fixture.svm, &cross_conditions);
+    let (header, conditions) = velocity::relay_spec::read_block(acct.block(), 0).unwrap();
+    assert_eq!(header.num_conditions, 3);
+    assert_eq!(
+        conditions[QUOTER_CROSS_WATCH].wake_account,
+        maker.instance.to_bytes()
+    );
+    assert_eq!(conditions[QUOTER_CROSS_WATCH].wake_offset, 136);
+    assert_eq!(conditions[QUOTER_CROSS_WATCH].wake_len, 16);
+    assert_eq!(conditions[QUOTER_CROSS_WATCH].min_payment, PAYMENT);
+    assert_eq!(
+        conditions[QUOTER_CROSS_CLOB].wake_account,
+        fixture.clob_market.to_bytes()
+    );
+    assert_eq!(conditions[QUOTER_CROSS_FALLBACK].wake_slot, 100);
+    // The resolver list carries the entry's registered quote surface.
+    assert_eq!(conditions[QUOTER_CROSS_WATCH].resolver_accounts().len(), 8);
+
+    // Nothing crossed yet: the resolver reports no work.
+    fixture.svm.warp_to_slot(12);
+    set_oracle(
+        &mut fixture.svm,
+        fixture.oracle,
+        (100 * PRICE_PRECISION) as i64,
+        12,
+    );
+    assert!(run_quoter_cross_resolver(&mut fixture, &maker, cross_conditions).is_none());
+
+    // A CLOB bid at 101 crosses the midpoint's 100.1 ask — 90bps of spread
+    // clears two tier-0 taker fees.
+    let ix = place_clob_order_ix(
+        fixture.clob_maker_user,
+        &fixture.clob_maker_authority,
+        fixture.quoter,
+        fixture.clob_market,
+        fixture.oracle,
+        None,
+        PlaceClobOrderParams {
+            market_index: 0,
+            direction: PositionDirection::Long,
+            price: 101 * PRICE,
+            base_asset_amount: UNIT,
+            max_ts: 0,
+            activation_delay_slots: Some(0),
+        },
+    );
+    let clob_maker_authority = fixture.clob_maker_authority.insecure_clone();
+    send(&mut fixture.svm, &clob_maker_authority, ix, &[]).unwrap();
+    // The staged executor derives the CLOB maker's stats PDA.
+    let clob_maker_stats = Pubkey::find_program_address(
+        &[
+            b"user_stats",
+            fixture.clob_maker_authority.pubkey().as_ref(),
+        ],
+        &velocity_id(),
+    )
+    .0;
+    set_user_stats_account(
+        &mut fixture.svm,
+        clob_maker_stats,
+        &fixture.clob_maker_authority.pubkey(),
+    );
+    fixture.svm.warp_to_slot(13);
+    set_oracle(
+        &mut fixture.svm,
+        fixture.oracle,
+        (100 * PRICE_PRECISION) as i64,
+        13,
+    );
+
+    let resolved = run_quoter_cross_resolver(&mut fixture, &maker, cross_conditions)
+        .expect("crossed books stage a crank");
+    let payout = Pubkey::new_unique();
+    fixture.svm.airdrop(&payout, 1_000_000_000).unwrap();
+    let payout_before = fixture.svm.get_balance(&payout).unwrap();
+    run_staged_executor(
+        &mut fixture,
+        &resolved,
+        velocity::instruction::CrankCrossMatch::DISCRIMINATOR,
+        payout,
+    );
+
+    // The crosser (CLOB bid) is long, the midpoint maker short, the
+    // reservoir paid the keeper, and the crossed bid is off the book.
+    let crosser: User = read_zero_copy(&fixture.svm, &fixture.clob_maker_user);
+    assert_eq!(crosser.perp_positions[0].base_asset_amount, UNIT as i64);
+    let mm: User = read_zero_copy(&fixture.svm, &maker.user);
+    assert_eq!(mm.perp_positions[0].base_asset_amount, -(UNIT as i64));
+    assert_eq!(
+        fixture.svm.get_balance(&payout).unwrap(),
+        payout_before + PAYMENT
+    );
+    assert_eq!(clob_bid_count(&fixture.svm, &fixture.clob_market), 0);
+    // The midpoint's rung depleted (standing intent).
+    let (_, filled) = midpoint_ask_level(&fixture.svm, &maker.instance, 0);
+    assert_eq!(filled, UNIT);
 }

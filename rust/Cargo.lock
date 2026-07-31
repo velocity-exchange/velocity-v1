@@ -4681,7 +4681,7 @@ checksum = "d6f6ff9a378485b298a5286656da665ba74413d36db0979633275d2e708145d4"
 [[package]]
 name = "relay-chain-source"
 version = "0.1.0"
-source = "git+https://github.com/velocity-exchange/relay?rev=b8c6ecd0bb65f5dcad929fc7972a4a4241232fd0#b8c6ecd0bb65f5dcad929fc7972a4a4241232fd0"
+source = "git+https://github.com/velocity-exchange/relay?rev=79413dfa358f0310055668a47e60fe98e1eefe8f#79413dfa358f0310055668a47e60fe98e1eefe8f"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -4697,6 +4697,7 @@ dependencies = [
  "solana-pubsub-client",
  "solana-rpc-client-api",
  "solana-sdk",
+ "solana-transaction-status-client-types",
  "tokio",
  "tracing",
  "yellowstone-grpc-client",
@@ -4706,7 +4707,7 @@ dependencies = [
 [[package]]
 name = "relay-spec"
 version = "0.1.0"
-source = "git+https://github.com/velocity-exchange/relay?rev=b8c6ecd0bb65f5dcad929fc7972a4a4241232fd0#b8c6ecd0bb65f5dcad929fc7972a4a4241232fd0"
+source = "git+https://github.com/velocity-exchange/relay?rev=79413dfa358f0310055668a47e60fe98e1eefe8f#79413dfa358f0310055668a47e60fe98e1eefe8f"
 dependencies = [
  "bytemuck",
 ]

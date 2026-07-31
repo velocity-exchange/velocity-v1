@@ -4202,6 +4202,167 @@ export type Velocity = {
       ]
     },
     {
+      "name": "initializeQuoterCrossConditions",
+      "docs": [
+        "Stand up (or re-price) a Custom quoter's relay cross-discovery",
+        "conditions — permissionless; rent on the caller."
+      ],
+      "discriminator": [
+        22,
+        71,
+        18,
+        82,
+        184,
+        158,
+        94,
+        93
+      ],
+      "accounts": [
+        {
+          "name": "payer",
+          "writable": true,
+          "signer": true
+        },
+        {
+          "name": "state"
+        },
+        {
+          "name": "quoter",
+          "docs": [
+            "The Custom entry to discover crosses for."
+          ]
+        },
+        {
+          "name": "perpMarket",
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  112,
+                  101,
+                  114,
+                  112,
+                  95,
+                  109,
+                  97,
+                  114,
+                  107,
+                  101,
+                  116
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "quoter"
+              }
+            ]
+          }
+        },
+        {
+          "name": "clobQuoter",
+          "docs": [
+            "The market's canonical CLOB entry — the other leg of every staged",
+            "cross."
+          ]
+        },
+        {
+          "name": "marketConditions",
+          "docs": [
+            "The market's crank conditions: the keeper-payment source of truth."
+          ],
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  99,
+                  108,
+                  111,
+                  98,
+                  95,
+                  99,
+                  114,
+                  97,
+                  110,
+                  107,
+                  95,
+                  99,
+                  111,
+                  110,
+                  100,
+                  105,
+                  116,
+                  105,
+                  111,
+                  110,
+                  115
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "quoter"
+              }
+            ]
+          }
+        },
+        {
+          "name": "crossConditions",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  113,
+                  117,
+                  111,
+                  116,
+                  101,
+                  114,
+                  95,
+                  99,
+                  114,
+                  111,
+                  115,
+                  115,
+                  95,
+                  99,
+                  111,
+                  110,
+                  100,
+                  105,
+                  116,
+                  105,
+                  111,
+                  110,
+                  115
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "quoter"
+              }
+            ]
+          }
+        },
+        {
+          "name": "rent",
+          "address": "SysvarRent111111111111111111111111111111111"
+        },
+        {
+          "name": "systemProgram",
+          "address": "11111111111111111111111111111111"
+        }
+      ],
+      "args": [
+        {
+          "name": "expireFallbackSlots",
+          "type": "u64"
+        }
+      ]
+    },
+    {
       "name": "initializeReferrerName",
       "discriminator": [
         235,
@@ -7675,6 +7836,53 @@ export type Velocity = {
         },
         {
           "name": "state"
+        }
+      ],
+      "args": []
+    },
+    {
+      "name": "resolveCrankCrossMatchQuoter",
+      "docs": [
+        "Relay resolver for a Custom quoter's cross conditions: prices the",
+        "quoter generically through its registered `quote_v0` surface and",
+        "stages `crank_cross_match`. Meant to be simulated, not landed."
+      ],
+      "discriminator": [
+        170,
+        98,
+        124,
+        98,
+        157,
+        243,
+        148,
+        131
+      ],
+      "accounts": [
+        {
+          "name": "crossConditions",
+          "docs": [
+            "Writable only for the staging region; simulation-only."
+          ],
+          "writable": true
+        },
+        {
+          "name": "clobMarket"
+        },
+        {
+          "name": "state"
+        },
+        {
+          "name": "quoter",
+          "relations": [
+            "crossConditions"
+          ]
+        },
+        {
+          "name": "user",
+          "docs": [
+            "The entry's quoted user — the maker every staged balance change",
+            "lands on; its identity derives the staged `(User, UserStats)` pair."
+          ]
         }
       ],
       "args": []
@@ -12668,6 +12876,53 @@ export type Velocity = {
       ]
     },
     {
+      "name": "updateQuoterWatch",
+      "discriminator": [
+        97,
+        137,
+        30,
+        49,
+        137,
+        246,
+        203,
+        198
+      ],
+      "accounts": [
+        {
+          "name": "authority",
+          "docs": [
+            "The entry's own authority — the quoted user's wallet for Custom",
+            "entries."
+          ],
+          "signer": true,
+          "relations": [
+            "quoter"
+          ]
+        },
+        {
+          "name": "quoter",
+          "writable": true
+        },
+        {
+          "name": "watchAccount",
+          "docs": [
+            "quoter's own state account; not otherwise constrained (the admin",
+            "vets it, and a wrong watch only costs the maker latency)."
+          ]
+        }
+      ],
+      "args": [
+        {
+          "name": "args",
+          "type": {
+            "defined": {
+              "name": "updateQuoterWatchArgs"
+            }
+          }
+        }
+      ]
+    },
+    {
       "name": "updateSolvencyStatus",
       "discriminator": [
         81,
@@ -15735,6 +15990,19 @@ export type Velocity = {
         81,
         121,
         133
+      ]
+    },
+    {
+      "name": "quoterCrossConditionsV0",
+      "discriminator": [
+        72,
+        61,
+        211,
+        139,
+        238,
+        110,
+        226,
+        41
       ]
     },
     {
@@ -18872,7 +19140,7 @@ export type Velocity = {
             "type": {
               "array": [
                 "u8",
-                1696
+                8848
               ]
             }
           },
@@ -18885,7 +19153,7 @@ export type Velocity = {
             "type": {
               "array": [
                 "u8",
-                2048
+                1024
               ]
             }
           },
@@ -24140,6 +24408,93 @@ export type Velocity = {
       }
     },
     {
+      "name": "quoterCrossConditionsV0",
+      "serialization": "bytemuckunsafe",
+      "repr": {
+        "kind": "c"
+      },
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "block",
+            "docs": [
+              "The relay condition block; first field, so it sits at the 8-aligned",
+              "offset 8 `read_block` requires."
+            ],
+            "type": {
+              "array": [
+                "u8",
+                4432
+              ]
+            }
+          },
+          {
+            "name": "staging",
+            "docs": [
+              "Scratch the resolver stages its `ResolvedCrankV0` into. Only ever",
+              "written under simulation."
+            ],
+            "type": {
+              "array": [
+                "u8",
+                2048
+              ]
+            }
+          },
+          {
+            "name": "quoter",
+            "docs": [
+              "The Custom entry these conditions discover crosses for."
+            ],
+            "type": "pubkey"
+          },
+          {
+            "name": "clobQuoter",
+            "docs": [
+              "The market's canonical CLOB entry / book / program, captured at",
+              "attach time (the resolver stages the executor's CLOB leg from here",
+              "without holding those accounts). Re-attach after a CLOB rotation."
+            ],
+            "type": "pubkey"
+          },
+          {
+            "name": "clobMarket",
+            "type": "pubkey"
+          },
+          {
+            "name": "clobProgram",
+            "type": "pubkey"
+          },
+          {
+            "name": "oracle",
+            "docs": [
+              "The market's oracle, captured at attach time (the staged executor's",
+              "map section)."
+            ],
+            "type": "pubkey"
+          },
+          {
+            "name": "marketIndex",
+            "type": "u16"
+          },
+          {
+            "name": "quoteSpotMarketIndex",
+            "type": "u16"
+          },
+          {
+            "name": "padding",
+            "type": {
+              "array": [
+                "u8",
+                12
+              ]
+            }
+          }
+        ]
+      }
+    },
+    {
       "name": "quoterType",
       "repr": {
         "kind": "rust"
@@ -24308,13 +24663,25 @@ export type Velocity = {
             "type": "u8"
           },
           {
-            "name": "padding",
-            "type": {
-              "array": [
-                "u8",
-                8
-              ]
-            }
+            "name": "watchOffset",
+            "docs": [
+              "Maker-declared reprice region: the account bytes whose change means",
+              "\"this quoter may quote differently now\" (a midpoint's mid region, a",
+              "custom AMM's parameter block). Relay cross-discovery conditions wake",
+              "on it; `watch_len == 0` means no declaration (poll-only discovery).",
+              "Config like everything else here: vetted by the admin via the",
+              "`is_approved` reset — a watch that misses reprices only costs the",
+              "maker cross latency, never correctness (the poll is the floor)."
+            ],
+            "type": "u32"
+          },
+          {
+            "name": "watchLen",
+            "type": "u32"
+          },
+          {
+            "name": "watchAccount",
+            "type": "pubkey"
           }
         ]
       }
@@ -26508,6 +26875,25 @@ export type Velocity = {
                 ]
               }
             }
+          }
+        ]
+      }
+    },
+    {
+      "name": "updateQuoterWatchArgs",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "watchOffset",
+            "type": "u32"
+          },
+          {
+            "name": "watchLen",
+            "docs": [
+              "0 clears the declaration (poll-only discovery)."
+            ],
+            "type": "u32"
           }
         ]
       }

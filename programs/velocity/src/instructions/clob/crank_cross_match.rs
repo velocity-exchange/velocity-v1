@@ -34,7 +34,7 @@ use {
         state::{
             clob_crank::{ClobCrankConditionsV0, CLOB_CRANK_CONDITIONS_PDA_SEED},
             perp_market_map::{get_writable_perp_market_set, MarketSet},
-            prop_amm::{QuoterType, QuoterV0},
+            prop_amm::{PriceLevel, QuoterType, QuoterV0},
             state::State,
             user::{User, UserStats},
             user_map::load_user_maps,
@@ -421,6 +421,330 @@ fn find_clob_cross(data: &[u8], slot: u64, now: i64) -> Result<ClobCross> {
         if ask_remaining == 0 {
             ask = next_matchable(data, ask_node.next, slot, now);
             ask_remaining = ask.map(|(_, node)| node.base_asset_amount).unwrap_or(0);
+        }
+    }
+    Ok(cross)
+}
+
+/// The generic quoter-cross resolver's accounts. The entry's registered
+/// quote surface (plus its program) rides `remaining_accounts` — registered
+/// per condition at attach time, so it is whatever `quote_v0` needs for
+/// *any* Custom quoter. Nothing here is program-specific.
+#[derive(Accounts)]
+pub struct ResolveCrankCrossMatchQuoter<'info> {
+    /// Writable only for the staging region; simulation-only.
+    #[account(mut, has_one = quoter)]
+    pub cross_conditions: AccountLoader<'info, crate::state::quoter_cross::QuoterCrossConditionsV0>,
+    /// CHECK: locked to the CLOB book captured at attach.
+    #[account(address = cross_conditions.load()?.clob_market)]
+    pub clob_market: UncheckedAccount<'info>,
+    pub state: AccountLoader<'info, State>,
+    pub quoter: AccountLoader<'info, QuoterV0>,
+    /// The entry's quoted user — the maker every staged balance change
+    /// lands on; its identity derives the staged `(User, UserStats)` pair.
+    #[account(address = quoter.load()?.user)]
+    pub user: AccountLoader<'info, User>,
+}
+
+/// Discover a cross between a Custom quoter and the CLOB *generically*: CPI
+/// the entry's registered `quote_v0` (the same interface every fill uses —
+/// resolvers only run under simulation, so the CPI is free), walk the
+/// CLOB's bytes against the returned levels in both directions, and stage
+/// `crank_cross_match` for the profitable side. Works for any quoter
+/// program with a registry entry; velocity carries no per-program code.
+pub fn handle_resolve_crank_cross_match_quoter<'info>(
+    ctx: Context<'info, ResolveCrankCrossMatchQuoter<'info>>,
+) -> Result<()> {
+    let clock = Clock::get()?;
+    let quoter = ctx.accounts.quoter.load()?;
+    if !quoter.is_active || !quoter.is_approved {
+        // A killed or unvetted quoter has no discoverable work; the
+        // conditions go quiet rather than erroring forever.
+        return no_work();
+    }
+    let (signer, signer_nonce) = {
+        let state = ctx.accounts.state.load()?;
+        (state.signer, state.signer_nonce)
+    };
+    let account_map: BTreeMap<Pubkey, AccountInfo<'info>> = ctx
+        .remaining_accounts
+        .iter()
+        .map(|info| (*info.key, info.clone()))
+        .collect();
+
+    // Quote both sides. `users: None` is discovery mode (unrestricted);
+    // no taker (the executor's taker is the protocol User, which quotes
+    // nothing anywhere).
+    let quote = |direction: crate::state::prop_amm::Direction| -> Result<Vec<PriceLevel>> {
+        quoter.quote(
+            crate::state::prop_amm::QuoteArgsV0 {
+                direction,
+                size: u64::MAX / 2,
+                users: None,
+                taker: None,
+            },
+            &signer,
+            signer_nonce,
+            &account_map,
+        )
+    };
+    let quoter_asks = sanitize_levels(quote(crate::state::prop_amm::Direction::Long)?, true);
+    let quoter_bids = sanitize_levels(quote(crate::state::prop_amm::Direction::Short)?, false);
+
+    let maker_ref = {
+        let user = crate::load!(ctx.accounts.user)?;
+        crate::state::prop_amm::ClobUserRefV0 {
+            authority: user.authority,
+            sub_account_id: user.sub_account_id,
+        }
+    };
+
+    // Both cross directions against the CLOB's bytes; keep the better one.
+    // buy leg = the entry whose ask is consumed.
+    let clob_data = ctx.accounts.clob_market.try_borrow_data()?;
+    let a = find_quoter_clob_cross(
+        &clob_data,
+        &quoter_asks,
+        true,
+        clock.slot,
+        clock.unix_timestamp,
+    )?;
+    let b = find_quoter_clob_cross(
+        &clob_data,
+        &quoter_bids,
+        false,
+        clock.slot,
+        clock.unix_timestamp,
+    )?;
+    drop(clob_data);
+    // (cross, buy_index, sell_index): entry 0 = the CLOB, entry 1 = the quoter.
+    let (cross, buy_index, sell_index) =
+        if a.surplus(&ctx.accounts.state)? >= b.surplus(&ctx.accounts.state)? {
+            (a, 1u8, 0u8)
+        } else {
+            (b, 0u8, 1u8)
+        };
+    if cross.size == 0 || cross.surplus(&ctx.accounts.state)? == 0 {
+        return no_work();
+    }
+
+    let (market_index, oracle, quote_spot_market_index, clob_quoter, clob_program) = {
+        let conditions = ctx.accounts.cross_conditions.load()?;
+        (
+            conditions.market_index,
+            conditions.oracle,
+            conditions.quote_spot_market_index,
+            conditions.clob_quoter,
+            conditions.clob_program,
+        )
+    };
+    let (protocol_user, protocol_user_stats) = derive_protocol_user_pdas(&signer);
+    let (perp_market, _) = Pubkey::find_program_address(
+        &[b"perp_market", market_index.to_le_bytes().as_ref()],
+        &crate::ID,
+    );
+    let (quote_spot_market, _) = Pubkey::find_program_address(
+        &[
+            b"spot_market",
+            quote_spot_market_index.to_le_bytes().as_ref(),
+        ],
+        &crate::ID,
+    );
+    let market_conditions = Pubkey::find_program_address(
+        &[
+            crate::state::clob_crank::CLOB_CRANK_CONDITIONS_PDA_SEED,
+            market_index.to_le_bytes().as_ref(),
+        ],
+        &crate::ID,
+    )
+    .0;
+
+    let mut metas = crate::accounts::CrankCrossMatch {
+        state: ctx.accounts.state.key(),
+        authority: Pubkey::new_from_array(KEEPER_PLACEHOLDER),
+        taker: protocol_user,
+        taker_stats: protocol_user_stats,
+        crank_conditions: market_conditions,
+    }
+    .to_account_metas(None);
+    use solana_program::instruction::AccountMeta;
+    metas.push(AccountMeta::new_readonly(oracle, false));
+    metas.push(AccountMeta::new(quote_spot_market, false));
+    metas.push(AccountMeta::new(perp_market, false));
+    // Maker pairs: the quoter's user first, then the CLOB-side makers.
+    let mut staged = vec![maker_ref];
+    for maker in &cross.makers {
+        if !staged.contains(maker) {
+            staged.push(*maker);
+        }
+    }
+    for maker in &staged {
+        let (user_pda, stats_pda) = derive_user_pdas(maker);
+        metas.push(AccountMeta::new(user_pda, false));
+        metas.push(AccountMeta::new(stats_pda, false));
+    }
+    // Entries (0 = CLOB, 1 = the quoter), then the union of both execute
+    // surfaces: the CLOB's [book, signer] plus everything the quoter
+    // registered, programs included.
+    metas.push(AccountMeta::new_readonly(clob_quoter, false));
+    metas.push(AccountMeta::new_readonly(ctx.accounts.quoter.key(), false));
+    let mut union: BTreeMap<Pubkey, bool> = BTreeMap::new();
+    *union.entry(ctx.accounts.clob_market.key()).or_default() |= true;
+    union.entry(signer).or_default();
+    union.entry(clob_program).or_default();
+    for meta in &quoter.execute_accounts[..quoter.execute_accounts_count as usize] {
+        *union.entry(meta.pubkey).or_default() |= meta.is_writable;
+    }
+    *union.entry(quoter.response_account).or_default() |= true;
+    union.entry(quoter.program_id).or_default();
+    for (key, writable) in &union {
+        metas.push(if *writable {
+            AccountMeta::new(*key, false)
+        } else {
+            AccountMeta::new_readonly(*key, false)
+        });
+    }
+    let accounts = to_account_refs(metas);
+
+    let mut args = Vec::with_capacity(12);
+    market_index.serialize(&mut args)?;
+    cross.size.serialize(&mut args)?;
+    buy_index.serialize(&mut args)?;
+    sell_index.serialize(&mut args)?;
+    let resolved = ResolvedCrankV0 {
+        accounts,
+        data: args,
+    };
+    let pointer = crate::load_mut!(ctx.accounts.cross_conditions)?.stage(&resolved)?;
+    solana_program::program::set_return_data(&pointer);
+    Ok(())
+}
+
+/// A quoter-vs-CLOB crossing prefix. `quoter_is_ask_side` selects which
+/// legs cross: the quoter's asks against the CLOB's bids, or the CLOB's
+/// asks against the quoter's bids.
+struct QuoterCross {
+    size: u64,
+    buy_quote: u128,
+    sell_quote: u128,
+    makers: Vec<crate::state::prop_amm::ClobUserRefV0>,
+}
+
+impl QuoterCross {
+    /// After-fee surplus at the top (most conservative) taker-fee tier on
+    /// both legs; zero when the cross is inside the fee gulf.
+    fn surplus(&self, state: &AccountLoader<State>) -> Result<u128> {
+        if self.size == 0 {
+            return Ok(0);
+        }
+        let (fee_numerator, fee_denominator) = {
+            let state = state.load()?;
+            let tier = state.perp_fee_structure.fee_tiers[0];
+            (
+                tier.fee_numerator as u128,
+                (tier.fee_denominator as u128).max(1),
+            )
+        };
+        let fees = (self.buy_quote * fee_numerator).div_ceil(fee_denominator)
+            + (self.sell_quote * fee_numerator).div_ceil(fee_denominator);
+        Ok(self
+            .sell_quote
+            .saturating_sub(self.buy_quote.saturating_add(fees)))
+    }
+}
+
+/// The longest usable best-first prefix of an untrusted `quote_v0` book:
+/// positive prices/sizes, monotone (ascending asks / descending bids),
+/// truncated at the first violation — the router's sanitization rule.
+fn sanitize_levels(levels: Vec<PriceLevel>, ascending: bool) -> Vec<PriceLevel> {
+    let mut out: Vec<PriceLevel> = Vec::with_capacity(levels.len());
+    for level in levels {
+        if level.price == 0 || level.size == 0 {
+            break;
+        }
+        if let Some(previous) = out.last() {
+            let monotone = if ascending {
+                level.price >= previous.price
+            } else {
+                level.price <= previous.price
+            };
+            if !monotone {
+                break;
+            }
+        }
+        out.push(level);
+    }
+    out
+}
+
+/// Walk the quoter's (sanitized) levels against the CLOB's matchable side:
+/// `quoter_is_ask_side` crosses quoter asks with CLOB bids (CLOB bid price
+/// >= quoter ask price), else CLOB asks with quoter bids.
+fn find_quoter_clob_cross(
+    clob_data: &[u8],
+    quoter_levels: &[PriceLevel],
+    quoter_is_ask_side: bool,
+    slot: u64,
+    now: i64,
+) -> Result<QuoterCross> {
+    let base_precision = crate::math::constants::BASE_PRECISION_U64 as u128;
+    let mut cross = QuoterCross {
+        size: 0,
+        buy_quote: 0,
+        sell_quote: 0,
+        makers: Vec::new(),
+    };
+    let head = if quoter_is_ask_side {
+        crate::state::prop_amm::CLOB_BEST_BID_OFFSET
+    } else {
+        crate::state::prop_amm::CLOB_BEST_ASK_OFFSET
+    };
+    let cursor = crate::state::prop_amm::read_clob_u32(clob_data, head)
+        .ok_or_else(|| error!(ErrorCode::DefaultError))?;
+    let mut clob = next_matchable(clob_data, cursor, slot, now);
+    let mut clob_remaining = clob.map(|(_, node)| node.base_asset_amount).unwrap_or(0);
+    let mut levels = quoter_levels.iter();
+    let mut level = levels.next();
+    let mut level_remaining = level.map(|l| l.size).unwrap_or(0);
+
+    while let (Some((_, node)), Some(l)) = (clob, level) {
+        let crossed = if quoter_is_ask_side {
+            node.price >= l.price
+        } else {
+            l.price >= node.price
+        };
+        if !crossed {
+            break;
+        }
+        // Reserve one maker slot for the quoter's user (staged first).
+        if !cross.makers.contains(&node.user_ref()) {
+            if cross.makers.len() + 1 >= MAX_CROSS_MAKERS {
+                break;
+            }
+            cross.makers.push(node.user_ref());
+        }
+        let take = clob_remaining.min(level_remaining);
+        let (ask_price, bid_price) = if quoter_is_ask_side {
+            (l.price, node.price)
+        } else {
+            (node.price, l.price)
+        };
+        cross.size = cross.size.saturating_add(take);
+        cross.buy_quote = cross
+            .buy_quote
+            .saturating_add(ask_price as u128 * take as u128 / base_precision);
+        cross.sell_quote = cross
+            .sell_quote
+            .saturating_add(bid_price as u128 * take as u128 / base_precision);
+        clob_remaining -= take;
+        level_remaining -= take;
+        if clob_remaining == 0 {
+            clob = next_matchable(clob_data, node.next, slot, now);
+            clob_remaining = clob.map(|(_, n)| n.base_asset_amount).unwrap_or(0);
+        }
+        if level_remaining == 0 {
+            level = levels.next();
+            level_remaining = level.map(|l| l.size).unwrap_or(0);
         }
     }
     Ok(cross)

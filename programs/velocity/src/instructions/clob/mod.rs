@@ -39,11 +39,12 @@ mod crank_common;
 mod crank_conditions_setup;
 mod crank_cross_match;
 mod force_cancel_clob_orders;
+mod initialize_quoter_cross_conditions;
 mod place_clob_order;
 mod trigger_clob_order;
 
 pub use {
     cancel_clob_order::*, crank_clob_evict::*, crank_clob_remove_expired::*, crank_common::*,
     crank_conditions_setup::*, crank_cross_match::*, force_cancel_clob_orders::*,
-    place_clob_order::*, trigger_clob_order::*,
+    initialize_quoter_cross_conditions::*, place_clob_order::*, trigger_clob_order::*,
 };

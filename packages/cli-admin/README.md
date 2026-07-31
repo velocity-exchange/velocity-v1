@@ -74,6 +74,8 @@ velocity-admin quoter set-active <quoter> <true|false> [--authority <pk>]  # mak
 velocity-admin quoter set-approved <quoter> <true|false> [--admin <pk>]    # warm/cold admin vetting gate
 velocity-admin quoter set-priority <quoter> <0-255> [--admin <pk>]         # warm/cold admin; lower fills first, pro rata within a tier
 velocity-admin quoter set-market-clob <market> <quoter> <clobMarket> <keeperPaymentLamports> [expireFallbackSlots] [--admin <pk>]  # warm/cold admin; names the mandatory-baseline CLOB and stands up (or re-prices) the market's relay crank conditions + reservoir
+velocity-admin quoter set-watch <quoter> --watch-account <pk> --offset <n> --len <n> [-a <pk>]  # entry authority; declares the reprice region relay cross-discovery wakes on (len 0 clears); resets approval
+velocity-admin quoter attach-cross <quoter> [--fallback-slots <n>]           # permissionless; stands up (or re-prices) the entry's relay cross-discovery conditions
 
 velocity-admin clob-market init <market> <keeperPaymentLamports> --clob-program <pk> [--capacity <n>] [--fund-reservoir <lamports>] [--relay-program <pk>|none] [book config flags]  # one-shot bring-up: book create+init, quoter register+approve, canonical attach (creates crank conditions), relay watch; warm/cold admin, direct-send only
 velocity-admin clob-market register-watch <market> [--relay-program <pk>]  # register a relay WatchV0 over an existing market's conditions block; permissionless, direct-send only

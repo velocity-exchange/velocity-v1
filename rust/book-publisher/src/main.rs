@@ -122,7 +122,10 @@ fn maybe_local_sim<S: ChainSource + 'static>(inner: S, pool: usize) -> Arc<dyn C
     } else {
         Arc::new(LocalSimSource::new(
             inner,
-            LocalSimConfig { pool_size: pool },
+            LocalSimConfig {
+                pool_size: pool,
+                ..LocalSimConfig::default()
+            },
         ))
     }
 }

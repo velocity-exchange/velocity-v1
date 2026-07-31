@@ -2744,5 +2744,8 @@ export type QuoterV0Account = {
 	priority: number;
 	quoteAccountsCount: number;
 	executeAccountsCount: number;
-	padding: number[];
+	/** maker-declared reprice region: relay cross-discovery conditions wake when `watchAccount.data[watchOffset..watchOffset+watchLen]` changes; `watchLen == 0` = no declaration (poll-only discovery). A config change like any other — resets `isApproved` */
+	watchOffset: number;
+	watchLen: number;
+	watchAccount: PublicKey;
 };

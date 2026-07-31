@@ -24,6 +24,7 @@ pub mod perp_market_map;
 pub mod prop_amm;
 pub mod pyth_lazer_oracle;
 pub mod quoter;
+pub mod quoter_cross;
 pub mod revenue_share;
 pub mod revenue_share_map;
 pub mod router_quote;

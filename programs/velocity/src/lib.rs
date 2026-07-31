@@ -2205,6 +2205,13 @@ pub mod velocity {
         handle_update_quoter_priority(ctx, priority)
     }
 
+    pub fn update_quoter_watch(
+        ctx: Context<UpdateQuoterWatch>,
+        args: UpdateQuoterWatchArgs,
+    ) -> Result<()> {
+        handle_update_quoter_watch(ctx, args)
+    }
+
     pub fn place_clob_order<'c: 'info, 'info>(
         ctx: Context<'info, PlaceClobOrder<'info>>,
         params: PlaceClobOrderParams,
@@ -2301,6 +2308,24 @@ pub mod velocity {
     /// be simulated, not landed.
     pub fn resolve_crank_cross_match(ctx: Context<ResolveClobCrank>) -> Result<()> {
         handle_resolve_crank_cross_match(ctx)
+    }
+
+    /// Stand up (or re-price) a Custom quoter's relay cross-discovery
+    /// conditions — permissionless; rent on the caller.
+    pub fn initialize_quoter_cross_conditions(
+        ctx: Context<InitializeQuoterCrossConditions>,
+        expire_fallback_slots: u64,
+    ) -> Result<()> {
+        handle_initialize_quoter_cross_conditions(ctx, expire_fallback_slots)
+    }
+
+    /// Relay resolver for a Custom quoter's cross conditions: prices the
+    /// quoter generically through its registered `quote_v0` surface and
+    /// stages `crank_cross_match`. Meant to be simulated, not landed.
+    pub fn resolve_crank_cross_match_quoter<'info>(
+        ctx: Context<'info, ResolveCrankCrossMatchQuoter<'info>>,
+    ) -> Result<()> {
+        handle_resolve_crank_cross_match_quoter(ctx)
     }
 
     pub fn withdraw_protocol_user_deposit<'c: 'info, 'info>(

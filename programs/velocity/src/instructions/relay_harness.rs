@@ -26,7 +26,7 @@
 //! being silently skipped forever by turners.
 
 use {
-    crate::{error::ErrorCode, msg},
+    crate::{error::ErrorCode, msg, state::pdas},
     anchor_lang::{prelude::*, ZeroCopy},
     relay_spec::{
         AccountRefV0, ConditionBlock, ResolvedCrankV0, ResponsePointerV0, KEEPER_PLACEHOLDER,
@@ -68,6 +68,34 @@ impl StagedCall {
     /// settlement path expects.
     pub fn user_pair(self, user: Pubkey, stats: Pubkey) -> Self {
         self.account(user, true).account(stats, true)
+    }
+
+    /// Append the margin-map section every executor's `load_maps` call
+    /// parses: oracle (readonly), the quote spot market, then the perp
+    /// market. **Positional** — `load_maps` reads these by order, not by
+    /// name, so the ordering lives here once instead of in each resolver.
+    pub fn map_section(
+        self,
+        oracle: Pubkey,
+        quote_spot_market_index: u16,
+        perp_market_index: u16,
+    ) -> Self {
+        self.account(oracle, false)
+            .account(pdas::spot_market(quote_spot_market_index), true)
+            .account(pdas::perp_market(perp_market_index), true)
+    }
+
+    /// Append the `(User, UserStats)` pairs of maker identities read off a
+    /// book — the derivation the CLOB's `(authority, sub_account_id)`
+    /// nodes exist to make possible.
+    pub fn maker_refs(
+        self,
+        makers: impl IntoIterator<Item = crate::state::prop_amm::ClobUserRefV0>,
+    ) -> Self {
+        makers.into_iter().fold(self, |call, maker| {
+            let (user, stats) = pdas::user_pair(&maker.authority, maker.sub_account_id);
+            call.user_pair(user, stats)
+        })
     }
 
     /// Append account refs captured earlier (a stored margin-map section,

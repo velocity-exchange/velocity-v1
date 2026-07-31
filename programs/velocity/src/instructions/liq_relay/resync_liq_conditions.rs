@@ -21,7 +21,6 @@ use {
         },
     },
     anchor_lang::prelude::*,
-    relay_spec::KEEPER_PLACEHOLDER,
 };
 
 #[derive(Accounts)]
@@ -123,7 +122,7 @@ pub fn handle_resolve_resync_liq_conditions(
         // enforced by the builder for every resolver.
         Ok(Some(
             crate::instructions::StagedCall::new(crate::accounts::ResyncLiqConditions {
-                keeper: Pubkey::new_from_array(KEEPER_PLACEHOLDER),
+                keeper: crate::state::pdas::keeper_placeholder(),
                 user: ctx.accounts.user.key(),
                 liq_conditions: ctx.accounts.liq_conditions.key(),
             })

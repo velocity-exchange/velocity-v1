@@ -22,7 +22,6 @@ use {
         validate,
     },
     anchor_lang::prelude::*,
-    relay_spec::KEEPER_PLACEHOLDER,
 };
 
 #[derive(Accounts)]
@@ -100,7 +99,7 @@ pub fn handle_resolve_liquidate_perp_with_fill<'c: 'info, 'info>(
         Ok(Some(
             crate::instructions::StagedCall::new(crate::accounts::LiquidatePerp {
                 state: ctx.accounts.state.key(),
-                authority: Pubkey::new_from_array(KEEPER_PLACEHOLDER),
+                authority: crate::state::pdas::keeper_placeholder(),
                 liquidator: protocol_user,
                 liquidator_stats: protocol_user_stats,
                 user: ctx.accounts.user.key(),

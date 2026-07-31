@@ -18,9 +18,7 @@
 //! required anywhere (relay turners submit executors unsigned).
 
 use {
-    super::crank_common::{
-        derive_user_pdas, next_matchable, validate_linkage, ResolveClobCrank, MAX_CROSS_MAKERS,
-    },
+    super::crank_common::{next_matchable, validate_linkage, ResolveClobCrank, MAX_CROSS_MAKERS},
     crate::{
         controller,
         error::ErrorCode,
@@ -43,7 +41,6 @@ use {
         validate,
     },
     anchor_lang::{prelude::*, Discriminator},
-    relay_spec::KEEPER_PLACEHOLDER,
     std::collections::BTreeMap,
 };
 
@@ -292,20 +289,15 @@ pub fn handle_resolve_crank_cross_match(ctx: Context<ResolveClobCrank>) -> Resul
         // shape check), then the remaining sections: maps, maker
         // `(User, UserStats)` pairs, the quoter section. Both legs are the CLOB:
         // entry index 0.
-        let mut call = StagedCall::new(crate::accounts::CrankCrossMatch {
+        let call = StagedCall::new(crate::accounts::CrankCrossMatch {
             state: ctx.accounts.state.key(),
-            authority: Pubkey::new_from_array(KEEPER_PLACEHOLDER),
+            authority: pdas::keeper_placeholder(),
             taker: protocol_user,
             taker_stats: protocol_user_stats,
             crank_conditions: ctx.accounts.crank_conditions.key(),
         })
-        .account(oracle, false)
-        .account(pdas::spot_market(quote_spot_market_index), true)
-        .account(pdas::perp_market(market_index), true);
-        for maker in &cross.makers {
-            let (user_pda, stats_pda) = derive_user_pdas(maker);
-            call = call.user_pair(user_pda, stats_pda);
-        }
+        .map_section(oracle, quote_spot_market_index, market_index)
+        .maker_refs(cross.makers.iter().copied());
         Ok(Some(
             call.account(ctx.accounts.quoter.key(), false)
                 .account(ctx.accounts.clob_market.key(), true)
@@ -521,16 +513,14 @@ pub fn handle_resolve_crank_cross_match_quoter<'info>(
         };
         let (protocol_user, protocol_user_stats) = pdas::protocol_user_pair();
 
-        let mut call = StagedCall::new(crate::accounts::CrankCrossMatch {
+        let call = StagedCall::new(crate::accounts::CrankCrossMatch {
             state: ctx.accounts.state.key(),
-            authority: Pubkey::new_from_array(KEEPER_PLACEHOLDER),
+            authority: pdas::keeper_placeholder(),
             taker: protocol_user,
             taker_stats: protocol_user_stats,
             crank_conditions: pdas::clob_crank_conditions(market_index),
         })
-        .account(oracle, false)
-        .account(pdas::spot_market(quote_spot_market_index), true)
-        .account(pdas::perp_market(market_index), true);
+        .map_section(oracle, quote_spot_market_index, market_index);
         // Maker pairs: the quoter's user first, then the CLOB-side makers.
         let mut staged = vec![maker_ref];
         for maker in &cross.makers {
@@ -538,14 +528,11 @@ pub fn handle_resolve_crank_cross_match_quoter<'info>(
                 staged.push(*maker);
             }
         }
-        for maker in &staged {
-            let (user_pda, stats_pda) = derive_user_pdas(maker);
-            call = call.user_pair(user_pda, stats_pda);
-        }
         // Entries (0 = CLOB, 1 = the quoter), then the union of both execute
         // surfaces: the CLOB's [book, signer] plus everything the quoter
         // registered, programs included.
-        call = call
+        let mut call = call
+            .maker_refs(staged.iter().copied())
             .account(clob_quoter, false)
             .account(ctx.accounts.quoter.key(), false);
         let mut union: BTreeMap<Pubkey, bool> = BTreeMap::new();

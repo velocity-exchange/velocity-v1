@@ -4215,7 +4215,7 @@ pub fn handle_resolve_trigger_order(ctx: Context<ResolveTriggerOrder>) -> Result
         Ok(Some(
             crate::instructions::StagedCall::new(crate::accounts::TriggerOrder {
                 state: crate::state::pdas::state(),
-                authority: Pubkey::new_from_array(relay_spec::KEEPER_PLACEHOLDER),
+                authority: crate::state::pdas::keeper_placeholder(),
                 filler: protocol_user,
                 user: ctx.accounts.user.key(),
                 user_stats,

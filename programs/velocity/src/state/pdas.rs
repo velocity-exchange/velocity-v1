@@ -8,6 +8,12 @@
 
 use {crate::state::clob_crank::CLOB_CRANK_CONDITIONS_PDA_SEED, anchor_lang::prelude::*};
 
+/// Relay's payout sentinel, as a `Pubkey` — the slot a turner substitutes
+/// its keeper into. Every staged executor must name it exactly once.
+pub fn keeper_placeholder() -> Pubkey {
+    Pubkey::new_from_array(relay_spec::KEEPER_PLACEHOLDER)
+}
+
 pub fn state() -> Pubkey {
     Pubkey::find_program_address(&[b"velocity_state"], &crate::ID).0
 }

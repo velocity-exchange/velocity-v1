@@ -565,7 +565,7 @@ pub fn handle_resolve_trigger_clob_order(ctx: Context<ResolveTriggerClobOrder>) 
         Ok(Some(
             crate::instructions::StagedCall::new(crate::accounts::TriggerClobOrder {
                 state: crate::state::pdas::state(),
-                authority: Pubkey::new_from_array(relay_spec::KEEPER_PLACEHOLDER),
+                authority: crate::state::pdas::keeper_placeholder(),
                 filler: protocol_user,
                 filler_stats: protocol_user_stats,
                 user: ctx.accounts.user.key(),

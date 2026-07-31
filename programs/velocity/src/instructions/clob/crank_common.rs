@@ -50,7 +50,6 @@ use {
         validate,
     },
     anchor_lang::prelude::*,
-    relay_spec::KEEPER_PLACEHOLDER,
     solana_program::{
         instruction::{AccountMeta, Instruction},
         program::{get_return_data, invoke_signed},
@@ -365,7 +364,7 @@ pub fn removal_call(ctx: &Context<ResolveClobCrank>, maker: Pubkey) -> Result<St
     let (protocol_user, protocol_user_stats) = pdas::protocol_user_pair();
     Ok(StagedCall::new(crate::accounts::CrankClobOrderRemoval {
         state: ctx.accounts.state.key(),
-        authority: Pubkey::new_from_array(KEEPER_PLACEHOLDER),
+        authority: pdas::keeper_placeholder(),
         filler: protocol_user,
         filler_stats: protocol_user_stats,
         user: maker,

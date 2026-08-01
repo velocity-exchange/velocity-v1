@@ -95,7 +95,6 @@ pub struct ResolveResyncLiqConditions<'info> {
 pub fn handle_resolve_resync_liq_conditions(
     ctx: Context<ResolveResyncLiqConditions>,
 ) -> Result<()> {
-    let conditions = ctx.accounts.liq_conditions.clone();
     crate::instructions::resolve_into(&ctx.accounts.scratch, || {
         let stale = {
             let conditions = ctx.accounts.liq_conditions.load()?;

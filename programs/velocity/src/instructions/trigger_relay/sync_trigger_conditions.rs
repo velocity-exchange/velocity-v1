@@ -135,7 +135,9 @@ pub fn rewrite_trigger_conditions<'info>(
             }
         }
         // Anything else is a candidate oracle: matched by pubkey below, and
-        // part of the margin-map section (readonly).
+        // part of the margin-map section (readonly). Velocity-owned
+        // accounts land here too — deliberately: velocity hosts its own
+        // oracle accounts (PythLazer, prelaunch).
         oracle_infos.insert(*info.key, info);
     }
     // Map section in load_maps order: oracles (readonly) first, then the
@@ -270,7 +272,9 @@ pub fn rewrite_trigger_conditions<'info>(
                 oracle.to_bytes(),
                 watch.price_offset,
                 watch.price_len,
-                threshold,
+                // Signed: every registered watch layout stores its price
+                // as i64.
+                relay_spec::WatchValue::Signed(threshold),
                 cmp,
                 spec,
                 resolvers,

@@ -16,7 +16,7 @@ use {
             prop_amm::{QuoterType, QuoterV0},
             quoter_cross::{
                 QuoterCrossConditionsV0, QUOTER_CROSS_CLOB, QUOTER_CROSS_CONDITIONS_PDA_SEED,
-                QUOTER_CROSS_FALLBACK, QUOTER_CROSS_RESOLVER_LIST_OFFSET, QUOTER_CROSS_WATCH,
+                QUOTER_CROSS_FALLBACK, QUOTER_CROSS_WATCH,
             },
             state::State,
         },
@@ -146,12 +146,8 @@ pub fn handle_initialize_quoter_cross_conditions(
     conditions.oracle = oracle;
     conditions.market_index = quoter.market;
     conditions.quote_spot_market_index = quote_spot_market_index;
-    conditions.write_resolver_list(&resolver_accounts)?;
     conditions.init_block()?;
-    let resolvers = relay_spec::ResolverListV0::new(
-        QUOTER_CROSS_RESOLVER_LIST_OFFSET as u32,
-        resolver_accounts.len() as u8,
-    );
+    let resolvers = conditions.write_resolver_list(&resolver_accounts)?;
 
     // The maker-declared reprice watch; inactive when nothing is declared
     // (the fallback poll is then the only wake for this side).

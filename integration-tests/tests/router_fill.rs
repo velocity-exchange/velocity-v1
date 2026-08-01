@@ -52,10 +52,10 @@ fn value_cross(c: &velocity::relay_spec::ConditionV0) -> ([u8; 32], u32, u32, i6
             address,
             offset,
             len,
-            threshold,
+            threshold: velocity::relay_spec::WatchValue::Signed(threshold),
             cmp,
         }) => (address, offset, len, threshold, cmp),
-        other => panic!("expected OnValueCross, got {other:?}"),
+        other => panic!("expected signed OnValueCross, got {other:?}"),
     }
 }
 
@@ -2959,14 +2959,10 @@ fn generic_quoter_cross_conditions_discover_and_fill_a_midpoint_clob_cross() {
         Ok(velocity::relay_spec::WakeView::EverySlots { slots: 100 })
     );
     // The resolver list (shared scratch, then the entry's registered quote
-    // surface) is stored once next to the block; every condition points at
-    // it indirectly.
+    // surface) is stored once in the relay block's built-in region; every
+    // condition points at it indirectly.
     assert_eq!(conditions[QUOTER_CROSS_WATCH].resolvers().count, 9);
-    assert_eq!(
-        conditions[QUOTER_CROSS_WATCH].resolvers().offset,
-        velocity::state::quoter_cross::QUOTER_CROSS_RESOLVER_LIST_OFFSET as u32
-    );
-    assert_eq!(acct.resolver_list_count, 9);
+    assert_eq!(acct.relay.resolver_refs().len(), 9);
 
     // Nothing crossed yet: the resolver reports no work.
     fixture.svm.warp_to_slot(12);
@@ -3198,7 +3194,7 @@ fn trigger_relay_conditions_fire_an_armed_trigger_unsigned() {
     assert_eq!(acct.trigger_slots[0].order_id, 7);
     // The shared list: the resolver's four named accounts (scratch first),
     // then the map.
-    assert_eq!(acct.sync_accounts_count, 4 + 3);
+    assert_eq!(acct.relay.resolver_refs().len(), 4 + 3);
 
     // Below the trigger: the resolver reports no work.
     fixture.svm.warp_to_slot(12);
@@ -3301,6 +3297,132 @@ fn trigger_limit_sync_targets_the_clob_executor() {
         acct.trigger_slots[0].clob_market.to_bytes(),
         fixture.clob_market.to_bytes()
     );
+}
+
+/// The merged sync, called the way the localnet harness calls it — quoter
+/// entry and crank-conditions account in the remaining accounts alongside
+/// the margin maps. The liquidation pass writes the shared account list
+/// both passes' staged executors reuse, and it must keep the non-map
+/// accounts *after* the markets: `load_maps` parses positionally, and a
+/// quoter filed among the oracles cuts the perp market off from the staged
+/// `trigger_order` (`PerpMarketNotFound`) — the localnet run caught
+/// exactly that.
+#[test]
+fn merged_sync_keeps_the_stored_map_section_parseable() {
+    use velocity::state::user_conditions::UserConditionsV0;
+
+    let mut fixture = setup();
+    const PAYMENT: u64 = 25_000;
+    let market_conditions = init_crank_conditions(&mut fixture, PAYMENT);
+    set_protocol_user(&mut fixture.svm);
+    fixture
+        .svm
+        .airdrop(&market_conditions, 1_000_000_000)
+        .unwrap();
+
+    let authority = Keypair::new();
+    fixture
+        .svm
+        .airdrop(&authority.pubkey(), 1_000_000_000)
+        .unwrap();
+    let user = Pubkey::find_program_address(
+        &[
+            b"user",
+            authority.pubkey().as_ref(),
+            0u16.to_le_bytes().as_ref(),
+        ],
+        &velocity_id(),
+    )
+    .0;
+    let mut order = Order::default();
+    order.order_id = 7;
+    order.status = OrderStatus::Open;
+    order.order_type = OrderType::TriggerMarket;
+    order.market_type = MarketType::Perp;
+    order.market_index = 0;
+    order.direction = PositionDirection::Short;
+    order.base_asset_amount = UNIT;
+    order.trigger_price = 105 * PRICE;
+    order.trigger_condition = velocity::state::user::OrderTriggerCondition::Above;
+    set_user_account(
+        &mut fixture.svm,
+        user,
+        &trading_user(
+            &authority.pubkey(),
+            10_000 * SPOT_BALANCE_PRECISION_U64,
+            Some(order),
+        ),
+    );
+    let user_stats = Pubkey::find_program_address(
+        &[b"user_stats", authority.pubkey().as_ref()],
+        &velocity_id(),
+    )
+    .0;
+    set_user_stats_account(&mut fixture.svm, user_stats, &authority.pubkey());
+
+    // One sync for the whole block, remaining accounts as an integrator
+    // passes them: maps, then the crank inputs, then the quoter entry.
+    let conditions = user_conditions_pda(&user);
+    let mut accounts = velocity::accounts::SyncUserConditions {
+        payer: fixture.keeper.pubkey(),
+        user,
+        user_conditions: conditions,
+        rent: "SysvarRent111111111111111111111111111111111"
+            .parse()
+            .unwrap(),
+        system_program: "11111111111111111111111111111111".parse().unwrap(),
+    }
+    .to_account_metas(None);
+    accounts.push(AccountMeta::new_readonly(fixture.oracle, false));
+    accounts.push(AccountMeta::new(spot_market_pda(0), false));
+    accounts.push(AccountMeta::new(perp_market_pda(0), false));
+    accounts.push(AccountMeta::new_readonly(market_conditions, false));
+    accounts.push(AccountMeta::new_readonly(fixture.quoter, false));
+    let ix = Instruction {
+        program_id: velocity_id(),
+        accounts,
+        data: velocity::instruction::SyncUserConditions {
+            args: velocity::instructions::SyncLiqConditionsArgs {
+                sync_payment_lamports: 20_000,
+                sync_fallback_slots: 3000,
+            },
+        }
+        .data(),
+    };
+    let keeper = fixture.keeper.insecure_clone();
+    send(&mut fixture.svm, &keeper, ix, &[]).unwrap();
+
+    // The stored list: prefix, maps, then the tail the parser never
+    // reaches — the quoter must not sit inside the map section.
+    let acct: UserConditionsV0 = read_zero_copy(&fixture.svm, &conditions);
+    let map = acct.read_sync_accounts();
+    assert_eq!(map.len(), 5, "oracle, spot, perp, conditions, quoter");
+    assert_eq!(map[0].address, fixture.oracle.to_bytes());
+    assert_eq!(map[1].address, spot_market_pda(0).to_bytes());
+    assert_eq!(map[2].address, perp_market_pda(0).to_bytes());
+    assert_eq!(map[3].address, market_conditions.to_bytes());
+    assert_eq!(map[4].address, fixture.quoter.to_bytes());
+
+    // And the proof it parses: the staged trigger executor lands.
+    fixture.svm.warp_to_slot(13);
+    set_oracle(
+        &mut fixture.svm,
+        fixture.oracle,
+        (106 * PRICE_PRECISION) as i64,
+        13,
+    );
+    let resolved =
+        run_trigger_resolver(&mut fixture, user, false).expect("crossed threshold stages");
+    let payout = Pubkey::new_unique();
+    fixture.svm.airdrop(&payout, 1_000_000_000).unwrap();
+    run_staged_executor(
+        &mut fixture,
+        &resolved,
+        velocity::instruction::TriggerOrder::DISCRIMINATOR,
+        payout,
+    );
+    let triggered: User = read_zero_copy(&fixture.svm, &user);
+    assert!(triggered.orders[0].triggered());
 }
 
 // ---------------------------------------------------------------------------
@@ -3424,11 +3546,16 @@ fn liq_conditions_write_a_conservative_downward_threshold() {
         1,
         "a long is liquidated as price falls"
     );
-    assert!(value_cross(&block[0]).3 > 0);
+    // The distance is real, not epsilon: ~$50 free collateral against a
+    // 9.5-unit-equivalent slope puts the ceteris-paribus boundary ~$5.26
+    // below spot, and the 20% haircut arms the watch ~$4.21 below. A
+    // threshold a whisker under spot means the slope/distance scales
+    // diverged again (the localnet harness caught exactly that: every
+    // perp watch due on any tick, every spot watch never armed).
+    let threshold = value_cross(&block[0]).3;
     assert!(
-        value_cross(&block[0]).3 < (100 * PRICE) as i64,
-        "threshold {} must sit below spot",
-        value_cross(&block[0]).3
+        threshold > (94 * PRICE) as i64 && threshold < (97 * PRICE) as i64,
+        "threshold {threshold} should sit ~4 dollars below spot"
     );
     assert_eq!(block[0].min_payment(), PAYMENT);
     assert_eq!(acct.slots[0].target_market_index, 0);

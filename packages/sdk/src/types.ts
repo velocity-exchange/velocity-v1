@@ -441,20 +441,21 @@ export type RouterQuoteBufferV0Account = {
 
 /**
  * Per-market relay conditions for the CLOB cranks, created when the admin
- * attaches a CLOB to the market (`updatePerpMarketClobQuoter`). `block` is an
- * opaque relay-spec condition block read by crank turners; `staging` is
- * simulation-only scratch the resolvers write staged executor calls into. The
- * account's own lamport balance is the reservoir that pays keepers
+ * attaches a CLOB to the market (`updatePerpMarketClobQuoter`). `relay` is
+ * an opaque relay-spec block (conditions + resolver account list) read by
+ * crank turners; resolvers stage into the program's shared scratch account.
+ * The account's own lamport balance is the reservoir that pays keepers
  * `keeperPaymentLamports` per crank.
  */
 export type ClobCrankConditionsV0Account = {
-	/** relay-spec condition block bytes (header + 3 conditions), parsed by relay tooling, not the SDK */
-	block: number[];
-	/** resolver staging scratch — meaningless on chain */
-	staging: number[];
+	/** relay-spec RelayBlockV0<6, 8> wire bytes (header + 6 conditions + the resolver account list), parsed by relay tooling, not the SDK */
+	relay: number[];
+	/** the market's oracle, captured at attach time */
+	oracle: PublicKey;
 	/** lamports paid to the keeper per crank, drawn from this account's balance */
 	keeperPaymentLamports: BN;
 	marketIndex: number;
+	quoteSpotMarketIndex: number;
 	padding: number[];
 };
 

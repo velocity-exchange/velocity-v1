@@ -70,8 +70,10 @@ pub fn write_clob_crank_conditions(
         "expire fallback interval must be nonzero"
     )?;
 
-    // Stored once on the account; every condition below points at it.
-    // Index 0 by contract: `ClobCrankConditionsV0::stage` points there.
+    // The block stamps its own account offset before anything points into
+    // it. Stored once on the account; every condition below points at it.
+    // Index 0 by contract: the staged response pointer names the scratch.
+    conditions.init_block()?;
     let resolvers = conditions.write_resolvers(&[
         AccountRefV0::writable(crate::state::pdas::relay_scratch().to_bytes()),
         AccountRefV0::readonly(keys.crank_conditions.to_bytes()),
@@ -101,7 +103,6 @@ pub fn write_clob_crank_conditions(
     conditions.keeper_payment_lamports = keeper_payment_lamports;
     conditions.oracle = keys.oracle;
     conditions.quote_spot_market_index = keys.quote_spot_market_index;
-    conditions.init_block()?;
     conditions.set_condition(
         CLOB_CRANK_EVICT,
         // Both u32 counts, `bid_count` then `ask_count`, in one 8-byte watch.

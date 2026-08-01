@@ -20049,30 +20049,26 @@ export type Velocity = {
         "kind": "struct",
         "fields": [
           {
-            "name": "block",
+            "name": "relay",
             "docs": [
-              "The relay condition block, read in place by turners and rewritten in",
-              "place by velocity. First field, so it sits at the 8-aligned offset 8."
+              "Everything relay needs hosted, in one field: the spec header, the",
+              "condition slots, and the resolver account list every condition here",
+              "points at. First field, so its watch offset is 8."
             ],
             "type": {
-              "array": [
-                "u8",
-                1168
-              ]
-            }
-          },
-          {
-            "name": "resolvers",
-            "docs": [
-              "Scratch the resolvers stage their `ResolvedCrankV0` into. Only ever",
-              "written under simulation; on-chain contents are meaningless.",
-              "The resolver account list every condition here points at."
-            ],
-            "type": {
-              "array": [
-                "u8",
-                176
-              ]
+              "defined": {
+                "name": "relayBlock6x8",
+                "generics": [
+                  {
+                    "kind": "const",
+                    "value": "6"
+                  },
+                  {
+                    "kind": "const",
+                    "value": "8"
+                  }
+                ]
+              }
             }
           },
           {
@@ -20125,7 +20121,7 @@ export type Velocity = {
             "type": {
               "array": [
                 "u8",
-                4
+                12
               ]
             }
           }
@@ -25372,31 +25368,27 @@ export type Velocity = {
         "kind": "struct",
         "fields": [
           {
-            "name": "block",
+            "name": "relay",
             "docs": [
-              "The relay condition block; first field, so it sits at the 8-aligned",
-              "offset 8 `read_block` requires."
+              "Everything relay needs hosted, in one field: the spec header, the",
+              "condition slots, and the resolver account list (written at attach)",
+              "every condition here points at. First field, so its watch offset",
+              "is 8."
             ],
             "type": {
-              "array": [
-                "u8",
-                592
-              ]
-            }
-          },
-          {
-            "name": "resolverList",
-            "docs": [
-              "Scratch the resolver stages its `ResolvedCrankV0` into. Only ever",
-              "written under simulation.",
-              "The resolver's account list ([`relay_spec::AccountRefV0`] wire",
-              "bytes), written at attach; the conditions reference it indirectly."
-            ],
-            "type": {
-              "array": [
-                "u8",
-                1254
-              ]
+              "defined": {
+                "name": "relayBlock3x40",
+                "generics": [
+                  {
+                    "kind": "const",
+                    "value": "3"
+                  },
+                  {
+                    "kind": "const",
+                    "value": "40"
+                  }
+                ]
+              }
             }
           },
           {
@@ -25440,18 +25432,11 @@ export type Velocity = {
             "type": "u16"
           },
           {
-            "name": "resolverListCount",
-            "docs": [
-              "Live entries in `resolver_list`."
-            ],
-            "type": "u8"
-          },
-          {
             "name": "padding",
             "type": {
               "array": [
                 "u8",
-                5
+                4
               ]
             }
           }
@@ -25677,6 +25662,78 @@ export type Velocity = {
               "array": [
                 "u8",
                 32
+              ]
+            }
+          }
+        ]
+      }
+    },
+    {
+      "name": "relayBlock22x32",
+      "docs": [
+        "relay_spec::RelayBlockV0<22, 32>: spec header, 22 condition slots, and a 32-slot resolver account list, as one opaque wire region"
+      ],
+      "serialization": "bytemuckunsafe",
+      "repr": {
+        "kind": "c"
+      },
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "bytes",
+            "type": {
+              "array": [
+                "u8",
+                5312
+              ]
+            }
+          }
+        ]
+      }
+    },
+    {
+      "name": "relayBlock3x40",
+      "docs": [
+        "relay_spec::RelayBlockV0<3, 40>: spec header, 3 condition slots, and a 40-slot resolver account list, as one opaque wire region"
+      ],
+      "serialization": "bytemuckunsafe",
+      "repr": {
+        "kind": "c"
+      },
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "bytes",
+            "type": {
+              "array": [
+                "u8",
+                1928
+              ]
+            }
+          }
+        ]
+      }
+    },
+    {
+      "name": "relayBlock6x8",
+      "docs": [
+        "relay_spec::RelayBlockV0<6, 8>: spec header, 6 condition slots, and a 8-slot resolver account list, as one opaque wire region"
+      ],
+      "serialization": "bytemuckunsafe",
+      "repr": {
+        "kind": "c"
+      },
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "bytes",
+            "type": {
+              "array": [
+                "u8",
+                1448
               ]
             }
           }
@@ -28233,28 +28290,26 @@ export type Velocity = {
         "kind": "struct",
         "fields": [
           {
-            "name": "block",
+            "name": "relay",
             "docs": [
-              "The relay condition block; first field, at the 8-aligned offset 8."
+              "Everything relay needs hosted, in one field: the spec header, the",
+              "condition slots, and the shared sync account list (see",
+              "[`LIQ_SYNC_ACCOUNTS_MAX`]). First field, so its watch offset is 8."
             ],
             "type": {
-              "array": [
-                "u8",
-                4240
-              ]
-            }
-          },
-          {
-            "name": "syncAccounts",
-            "docs": [
-              "Scratch the resolvers stage into. Simulation-only.",
-              "See [`LIQ_SYNC_ACCOUNTS_LEN`]."
-            ],
-            "type": {
-              "array": [
-                "u8",
-                1056
-              ]
+              "defined": {
+                "name": "relayBlock22x32",
+                "generics": [
+                  {
+                    "kind": "const",
+                    "value": "22"
+                  },
+                  {
+                    "kind": "const",
+                    "value": "32"
+                  }
+                ]
+              }
             }
           },
           {
@@ -28339,18 +28394,11 @@ export type Velocity = {
             "type": "u64"
           },
           {
-            "name": "syncAccountsCount",
-            "docs": [
-              "Live entries in `sync_accounts`."
-            ],
-            "type": "u8"
-          },
-          {
             "name": "padding",
             "type": {
               "array": [
                 "u8",
-                7
+                8
               ]
             }
           }

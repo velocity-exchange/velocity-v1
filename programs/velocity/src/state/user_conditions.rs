@@ -30,9 +30,9 @@
 //! liquidations.
 
 use {
-    crate::error::ErrorCode,
+    crate::{error::ErrorCode, state::relay_block::RelayBlock},
     anchor_lang::prelude::*,
-    relay_spec::{ConditionBlock, BLOCK_HEADER_LEN, CONDITION_LEN},
+    relay_spec::{ConditionBlock, RelayBlockV0},
 };
 
 #[zero_copy(unsafe)]
@@ -82,36 +82,27 @@ pub const TRIGGER_RESOLVERS_LEN: usize = TRIGGER_CONDITION_SLOTS * TRIGGER_RESOL
 pub const TRIGGER_RESOLVERS_OFFSET: usize =
     relay_spec::block_offset!(UserConditionsV0, trigger_resolvers);
 
-pub const USER_CONDITIONS_BLOCK_LEN: usize = BLOCK_HEADER_LEN + USER_CONDITIONS * CONDITION_LEN;
+/// Account-data offset of the relay block (what a `WatchV0` registers at).
+pub const USER_CONDITIONS_BLOCK_OFFSET: usize = relay_spec::block_offset!(UserConditionsV0, relay);
 
-/// The staged executor: a dozen named accounts plus the stored account
-/// list below.
-
-pub const USER_CONDITIONS_TAIL_OFFSET: usize = 8 + USER_CONDITIONS_BLOCK_LEN;
-
-/// The remaining-accounts list the sync was last called with, verbatim
-/// ([`relay_spec::AccountRefV0`] wire): the user's full margin maps
-/// followed by the markets' crank-conditions accounts. Staged executors
-/// reuse it — the liquidation's map parser stops at the first non-map
-/// account, so the tail is inert there.
+/// Capacity of the stored sync account list — the remaining-accounts list
+/// the sync was last called with, verbatim ([`relay_spec::AccountRefV0`]
+/// wire): the user's full margin maps followed by the markets'
+/// crank-conditions accounts and quoter entries. Staged executors reuse it
+/// — `load_maps` parses positionally and stops at the first non-map
+/// account, so the tail is inert there but still reaches a staged resync,
+/// which re-classifies everything. It lives in the relay block's built-in
+/// resolver region because it *doubles as the threshold conditions'
+/// indirect resolver account list*: a condition may only carry a pointer,
+/// and `ResolveLiquidatePerpWithFill` needs its named accounts plus the
+/// whole margin map — stored once, shared by every threshold slot.
 pub const LIQ_SYNC_ACCOUNTS_MAX: usize = 32;
-pub const LIQ_SYNC_ACCOUNTS_LEN: usize = LIQ_SYNC_ACCOUNTS_MAX * relay_spec::ACCOUNT_REF_LEN;
 
-/// The region doubles as the threshold conditions' *indirect resolver
-/// account list*: a condition may only carry four refs inline, and
-/// `ResolveLiquidatePerpWithFill` needs its three named accounts plus the
-/// whole margin map. Relay reads `num_resolver_accounts` refs straight out
-/// of the block's own account at `resolver_list_offset`, so the list is
-/// stored once, here, with the resolver's named accounts first.
-///
-/// The prefix is `[scratch, conditions, user, state]` — deliberately nothing
+/// The stored list's leading entries are the resolver's named accounts —
+/// `[scratch, conditions, user, state]`, deliberately nothing
 /// market-specific, so all twelve threshold slots share one list.
+/// [`UserConditionsV0::read_sync_accounts`] skips them.
 pub const LIQ_RESOLVER_PREFIX: usize = 4;
-
-/// Byte offset of `sync_accounts` within the account, for
-/// `set_indirect_resolver_accounts`.
-pub const LIQ_SYNC_ACCOUNTS_OFFSET: usize =
-    relay_spec::block_offset!(UserConditionsV0, sync_accounts);
 
 /// Per-threshold-slot metadata: which perp market the staged liquidation
 /// targets (for a perp exposure, its own market; for a spot-collateral
@@ -130,11 +121,10 @@ pub struct LiqSlotMetaV0 {
 #[derive(Debug)]
 #[repr(C)]
 pub struct UserConditionsV0 {
-    /// The relay condition block; first field, at the 8-aligned offset 8.
-    pub block: [u8; USER_CONDITIONS_BLOCK_LEN],
-    /// Scratch the resolvers stage into. Simulation-only.
-    /// See [`LIQ_SYNC_ACCOUNTS_LEN`].
-    pub sync_accounts: [u8; LIQ_SYNC_ACCOUNTS_LEN],
+    /// Everything relay needs hosted, in one field: the spec header, the
+    /// condition slots, and the shared sync account list (see
+    /// [`LIQ_SYNC_ACCOUNTS_MAX`]). First field, so its watch offset is 8.
+    pub relay: RelayBlock<USER_CONDITIONS, LIQ_SYNC_ACCOUNTS_MAX>,
     /// Parallel to the threshold condition slots.
     pub slots: [LiqSlotMetaV0; LIQ_THRESHOLD_SLOTS],
     /// Parallel to the trigger condition slots.
@@ -158,16 +148,13 @@ pub struct UserConditionsV0 {
     /// level-triggered sync wake firing forever. The localnet harness
     /// caught exactly that loop, once a second.
     pub positions_digest: u64,
-    /// Live entries in `sync_accounts`.
-    pub sync_accounts_count: u8,
-    pub padding: [u8; 7],
+    pub padding: [u8; 8],
 }
 
 impl Default for UserConditionsV0 {
     fn default() -> Self {
         Self {
-            block: [0; USER_CONDITIONS_BLOCK_LEN],
-            sync_accounts: [0; LIQ_SYNC_ACCOUNTS_LEN],
+            relay: RelayBlock::default(),
             slots: [LiqSlotMetaV0::default(); LIQ_THRESHOLD_SLOTS],
             trigger_slots: [TriggerSlotMetaV0::default(); TRIGGER_CONDITION_SLOTS],
             trigger_resolvers: [0; TRIGGER_RESOLVERS_LEN],
@@ -175,16 +162,14 @@ impl Default for UserConditionsV0 {
             sync_payment_lamports: 0,
             sync_fallback_slots: 0,
             positions_digest: 0,
-            sync_accounts_count: 0,
-            padding: [0; 7],
+            padding: [0; 8],
         }
     }
 }
 
 impl UserConditionsV0 {
     pub const SIZE: usize = 8
-        + USER_CONDITIONS_BLOCK_LEN
-        + LIQ_SYNC_ACCOUNTS_LEN
+        + RelayBlockV0::<USER_CONDITIONS, LIQ_SYNC_ACCOUNTS_MAX>::SIZE
         + LIQ_THRESHOLD_SLOTS * core::mem::size_of::<LiqSlotMetaV0>()
         + TRIGGER_CONDITION_SLOTS * core::mem::size_of::<TriggerSlotMetaV0>()
         + TRIGGER_RESOLVERS_LEN
@@ -192,8 +177,7 @@ impl UserConditionsV0 {
         + 8
         + 8
         + 8
-        + 1
-        + 7;
+        + 8;
 
     /// FNV-1a over every exposure that moves a threshold. Cheap enough for
     /// the executor to recompute on each sync, and exact enough that a
@@ -226,13 +210,15 @@ impl UserConditionsV0 {
     }
 
     pub fn block(&self) -> &[u8] {
-        &self.block
+        ConditionBlock::block(&self.relay)
     }
 
     /// Anchor-flavoured wrappers over the spec trait's provided methods,
     /// so handlers keep using `?` with the program's own error type.
     pub fn init_block(&mut self) -> Result<()> {
-        ConditionBlock::init_header(self).map_err(|_| error!(ErrorCode::DefaultError))
+        self.relay
+            .init(USER_CONDITIONS_BLOCK_OFFSET as u32)
+            .map_err(|_| error!(ErrorCode::DefaultError))
     }
 
     pub fn set_condition(
@@ -240,12 +226,13 @@ impl UserConditionsV0 {
         index: usize,
         condition: &relay_spec::ConditionV0,
     ) -> Result<()> {
-        ConditionBlock::write_condition(self, index, condition)
+        ConditionBlock::write_condition(&mut self.relay, index, condition)
             .map_err(|_| error!(ErrorCode::DefaultError))
     }
 
     pub fn get_condition(&self, index: usize) -> Result<relay_spec::ConditionV0> {
-        ConditionBlock::read_condition(self, index).map_err(|_| error!(ErrorCode::DefaultError))
+        ConditionBlock::read_condition(&self.relay, index)
+            .map_err(|_| error!(ErrorCode::DefaultError))
     }
 
     pub fn edit_condition(
@@ -253,12 +240,12 @@ impl UserConditionsV0 {
         index: usize,
         f: impl FnOnce(&mut relay_spec::ConditionV0),
     ) -> Result<()> {
-        ConditionBlock::update_condition(self, index, f)
+        ConditionBlock::update_condition(&mut self.relay, index, f)
             .map_err(|_| error!(ErrorCode::DefaultError))
     }
 
     pub fn clear_condition(&mut self, index: usize) -> Result<()> {
-        ConditionBlock::deactivate_condition(self, index)
+        ConditionBlock::deactivate_condition(&mut self.relay, index)
             .map_err(|_| error!(ErrorCode::DefaultError))
     }
 
@@ -294,43 +281,32 @@ impl UserConditionsV0 {
         for (index, meta) in self.trigger_slots.iter_mut().enumerate() {
             if meta.market_index == market_index && meta.order_id == order_id {
                 *meta = TriggerSlotMetaV0::default();
-                // active byte sits last-ish in the condition; zero the whole
-                // slot rather than reaching into spec internals.
-                let start = BLOCK_HEADER_LEN + (TRIGGER_SLOT_BASE + index) * CONDITION_LEN;
-                self.block[start..start + CONDITION_LEN].fill(0);
+                let _ = ConditionBlock::deactivate_condition(
+                    &mut self.relay,
+                    TRIGGER_SLOT_BASE + index,
+                );
                 return;
             }
         }
     }
 
-    pub fn write_sync_accounts(&mut self, refs: &[relay_spec::AccountRefV0]) -> Result<()> {
-        if refs.len() > LIQ_SYNC_ACCOUNTS_MAX {
+    /// Store the shared sync account list and describe where it landed
+    /// (the threshold conditions' indirect resolver list).
+    pub fn write_sync_accounts(
+        &mut self,
+        refs: &[relay_spec::AccountRefV0],
+    ) -> Result<relay_spec::ResolverListV0> {
+        self.relay.write_resolvers(refs).map_err(|_| {
             msg!("sync account list of {} exceeds the region", refs.len());
-            return Err(ErrorCode::DefaultError.into());
-        }
-        for (i, r) in refs.iter().enumerate() {
-            let start = i * relay_spec::ACCOUNT_REF_LEN;
-            self.sync_accounts[start..start + 32].copy_from_slice(&r.address);
-            self.sync_accounts[start + 32] = r.writable;
-        }
-        self.sync_accounts_count = refs.len() as u8;
-        Ok(())
+            error!(ErrorCode::DefaultError)
+        })
     }
 
     /// The margin-map accounts only — the resolver-list prefix is skipped,
     /// so staged executors see exactly the list the sync was called with.
     pub fn read_sync_accounts(&self) -> Vec<relay_spec::AccountRefV0> {
-        ((LIQ_RESOLVER_PREFIX)..(self.sync_accounts_count as usize).min(LIQ_SYNC_ACCOUNTS_MAX))
-            .map(|i| {
-                let start = i * relay_spec::ACCOUNT_REF_LEN;
-                let mut address = [0u8; 32];
-                address.copy_from_slice(&self.sync_accounts[start..start + 32]);
-                relay_spec::AccountRefV0 {
-                    address,
-                    writable: self.sync_accounts[start + 32],
-                }
-            })
-            .collect()
+        let refs = self.relay.resolver_refs();
+        refs.get(LIQ_RESOLVER_PREFIX..).unwrap_or(&[]).to_vec()
     }
 
     /// Pay the sync keeper from this account's own lamports, best-effort:
@@ -363,11 +339,7 @@ impl UserConditionsV0 {
 const _: () = assert!((UserConditionsV0::SIZE - 8) % 16 == 0);
 const _: () = assert!(UserConditionsV0::SIZE <= 10_240);
 
-/// Block hosting + staging, from the spec (see
-/// [`relay_spec::ConditionBlock`]): `init_header`, `write_condition`,
-/// `read_condition`, `update_condition`, `deactivate_condition`, and
-/// `stage` are all provided.
-relay_spec::condition_block!(UserConditionsV0, block, USER_CONDITIONS);
+const _: () = assert!(USER_CONDITIONS_BLOCK_OFFSET % 8 == 0);
 
 #[cfg(test)]
 mod tests {
@@ -378,10 +350,6 @@ mod tests {
         assert_eq!(
             std::mem::size_of::<UserConditionsV0>(),
             UserConditionsV0::SIZE - 8
-        );
-        assert_eq!(
-            LIQ_SYNC_ACCOUNTS_OFFSET,
-            8 + core::mem::offset_of!(UserConditionsV0, sync_accounts)
         );
         assert_eq!(
             TRIGGER_RESOLVERS_OFFSET,
@@ -400,7 +368,7 @@ mod merged_size_tests {
     #[test]
     fn size_is_pinned() {
         assert_eq!(USER_CONDITIONS, 22);
-        assert_eq!(CONDITION_LEN, 192);
+        assert_eq!(relay_spec::CONDITION_LEN, 192);
         println!("UserConditionsV0::SIZE = {}", UserConditionsV0::SIZE);
         assert!(UserConditionsV0::SIZE <= 10_240);
     }

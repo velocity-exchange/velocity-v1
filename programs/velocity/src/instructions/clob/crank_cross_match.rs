@@ -116,7 +116,7 @@ pub fn handle_crank_cross_match<'c: 'info, 'info>(
                     .try_borrow_data()
                     .is_ok_and(|data| data.get(..8) == Some(QuoterV0::DISCRIMINATOR))
         })
-        .map(|info| AccountLoader::try_from(*info))
+        .map(|info| AccountLoader::try_from(info))
         .collect::<Result<_>>()?;
 
     let mut types: Vec<QuoterType> = Vec::with_capacity(quoters.len());
@@ -247,7 +247,6 @@ pub fn handle_crank_cross_match<'c: 'info, 'info>(
 /// exactly either way.
 pub fn handle_resolve_crank_cross_match(ctx: Context<ResolveClobCrank>) -> Result<()> {
     validate_linkage(&ctx)?;
-    let conditions = ctx.accounts.crank_conditions.clone();
     resolve_into(&ctx.accounts.scratch, || {
         let clock = Clock::get()?;
         let cross = {
@@ -356,18 +355,17 @@ fn find_clob_cross(data: &[u8], slot: u64, now: i64) -> Result<ClobCross> {
         }
         // Admit both makers before taking; stop at the cap instead of
         // taking size whose maker is not staged.
-        let mut admit =
-            |user: crate::state::prop_amm::ClobUserRefV0,
-             makers: &mut Vec<crate::state::prop_amm::ClobUserRefV0>| {
-                if makers.contains(&user) {
-                    true
-                } else if makers.len() < MAX_CROSS_MAKERS {
-                    makers.push(user);
-                    true
-                } else {
-                    false
-                }
-            };
+        let admit = |user: crate::state::prop_amm::ClobUserRefV0,
+                     makers: &mut Vec<crate::state::prop_amm::ClobUserRefV0>| {
+            if makers.contains(&user) {
+                true
+            } else if makers.len() < MAX_CROSS_MAKERS {
+                makers.push(user);
+                true
+            } else {
+                false
+            }
+        };
         if !admit(bid_node.user_ref(), &mut cross.makers)
             || !admit(ask_node.user_ref(), &mut cross.makers)
         {
@@ -431,7 +429,6 @@ pub struct ResolveCrankCrossMatchQuoter<'info> {
 pub fn handle_resolve_crank_cross_match_quoter<'info>(
     ctx: Context<'info, ResolveCrankCrossMatchQuoter<'info>>,
 ) -> Result<()> {
-    let conditions = ctx.accounts.cross_conditions.clone();
     resolve_into(&ctx.accounts.scratch, || {
         let clock = Clock::get()?;
         let quoter = ctx.accounts.quoter.load()?;

@@ -542,7 +542,6 @@ pub struct ResolveTriggerClobOrder<'info> {
 }
 
 pub fn handle_resolve_trigger_clob_order(ctx: Context<ResolveTriggerClobOrder>) -> Result<()> {
-    let conditions = ctx.accounts.trigger_conditions.clone();
     crate::instructions::resolve_into(&ctx.accounts.scratch, || {
         let clock = Clock::get()?;
         let fired = {

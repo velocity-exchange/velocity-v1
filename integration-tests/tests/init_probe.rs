@@ -131,5 +131,5 @@ fn initialize_user_creates_its_liq_conditions() {
     );
     assert_eq!(conditions.user, user);
     // `init_block` ran: the header is a valid, all-inactive relay block.
-    assert_eq!(&conditions.block[..8], b"RELAY-V0");
+    assert_eq!(&conditions.block()[..8], b"RELAY-V0");
 }

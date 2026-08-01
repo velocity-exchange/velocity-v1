@@ -21,9 +21,9 @@
 //! `ClobCrankConditionsV0` reservoir pays the keeper either way.
 
 use {
-    crate::error::ErrorCode,
+    crate::{error::ErrorCode, state::relay_block::RelayBlock},
     anchor_lang::prelude::*,
-    relay_spec::{ConditionBlock, BLOCK_HEADER_LEN, CONDITION_LEN},
+    relay_spec::{ConditionBlock, RelayBlockV0},
 };
 
 /// PDA seed: `["quoter_cross_conditions", quoter entry key]`.
@@ -38,44 +38,24 @@ pub const QUOTER_CROSS_FALLBACK: usize = 2;
 /// Conditions hosted per entry.
 pub const QUOTER_CROSS_CONDITIONS: usize = 3;
 
-/// Bytes the condition block occupies: header + the fixed condition array.
-pub const QUOTER_CROSS_BLOCK_LEN: usize =
-    BLOCK_HEADER_LEN + QUOTER_CROSS_CONDITIONS * CONDITION_LEN;
+/// The resolver's account list capacity: 5 named accounts + the entry's
+/// registered quote surface (≤32) + its program, rounded to
+/// [`RelayBlockV0`]'s granularity of 8.
+pub const QUOTER_CROSS_RESOLVER_CAPACITY: usize = 40;
 
-/// Resolver staging bytes. The staged cross executor carries the named
-/// accounts, the map section, up to `MAX_CROSS_MAKERS` maker pairs, both
-/// entries, and the union of both entries' execute surfaces — a quoter
-/// registering an unusually long execute list can exceed this, in which
-/// case staging fails and the turner sees no work (self-limiting, and the
-/// publisher fast path still covers the cross).
-
-/// Account-data offset of the staging region (what a `ResponsePointerV0`'s
-/// `offset` is relative to): discriminator + the block.
-pub const QUOTER_CROSS_TAIL_OFFSET: usize = 8 + QUOTER_CROSS_BLOCK_LEN;
-
-/// The resolver's account list, stored ONCE next to the block and pointed
-/// at by every condition's `resolver_list_offset` (relay's indirection for
-/// lists that outgrow the inline slots): 5 named accounts + the entry's
-/// registered quote surface (≤32) + its program.
-pub const QUOTER_CROSS_RESOLVER_LIST_MAX: usize = 38;
-pub const QUOTER_CROSS_RESOLVER_LIST_LEN: usize =
-    QUOTER_CROSS_RESOLVER_LIST_MAX * relay_spec::ACCOUNT_REF_LEN;
-/// Account-data offset of the resolver list region.
-pub const QUOTER_CROSS_RESOLVER_LIST_OFFSET: usize =
-    relay_spec::block_offset!(QuoterCrossConditionsV0, resolver_list);
+/// Account-data offset of the relay block (what a `WatchV0` registers at).
+pub const QUOTER_CROSS_BLOCK_OFFSET: usize =
+    relay_spec::block_offset!(QuoterCrossConditionsV0, relay);
 
 #[account(zero_copy(unsafe))]
-#[derive(Debug)]
+#[derive(Debug, Default)]
 #[repr(C)]
 pub struct QuoterCrossConditionsV0 {
-    /// The relay condition block; first field, so it sits at the 8-aligned
-    /// offset 8 `read_block` requires.
-    pub block: [u8; QUOTER_CROSS_BLOCK_LEN],
-    /// Scratch the resolver stages its `ResolvedCrankV0` into. Only ever
-    /// written under simulation.
-    /// The resolver's account list ([`relay_spec::AccountRefV0`] wire
-    /// bytes), written at attach; the conditions reference it indirectly.
-    pub resolver_list: [u8; QUOTER_CROSS_RESOLVER_LIST_LEN],
+    /// Everything relay needs hosted, in one field: the spec header, the
+    /// condition slots, and the resolver account list (written at attach)
+    /// every condition here points at. First field, so its watch offset
+    /// is 8.
+    pub relay: RelayBlock<QUOTER_CROSS_CONDITIONS, QUOTER_CROSS_RESOLVER_CAPACITY>,
     /// The Custom entry these conditions discover crosses for.
     pub quoter: Pubkey,
     /// The market's canonical CLOB entry / book / program, captured at
@@ -89,56 +69,39 @@ pub struct QuoterCrossConditionsV0 {
     pub oracle: Pubkey,
     pub market_index: u16,
     pub quote_spot_market_index: u16,
-    /// Live entries in `resolver_list`.
-    pub resolver_list_count: u8,
-    pub padding: [u8; 5],
-}
-
-impl Default for QuoterCrossConditionsV0 {
-    fn default() -> Self {
-        Self {
-            block: [0; QUOTER_CROSS_BLOCK_LEN],
-            resolver_list: [0; QUOTER_CROSS_RESOLVER_LIST_LEN],
-            quoter: Pubkey::default(),
-            clob_quoter: Pubkey::default(),
-            clob_market: Pubkey::default(),
-            clob_program: Pubkey::default(),
-            oracle: Pubkey::default(),
-            market_index: 0,
-            quote_spot_market_index: 0,
-            resolver_list_count: 0,
-            padding: [0; 5],
-        }
-    }
+    pub padding: [u8; 4],
 }
 
 impl QuoterCrossConditionsV0 {
-    pub const SIZE: usize =
-        8 + QUOTER_CROSS_BLOCK_LEN + QUOTER_CROSS_RESOLVER_LIST_LEN + 5 * 32 + 2 + 2 + 1 + 5;
+    pub const SIZE: usize = 8
+        + RelayBlockV0::<QUOTER_CROSS_CONDITIONS, QUOTER_CROSS_RESOLVER_CAPACITY>::SIZE
+        + 5 * 32
+        + 2
+        + 2
+        + 4;
 
-    /// Write the resolver account list the conditions point at.
-    pub fn write_resolver_list(&mut self, refs: &[relay_spec::AccountRefV0]) -> Result<()> {
-        if refs.len() > QUOTER_CROSS_RESOLVER_LIST_MAX {
+    /// Write the resolver account list the conditions point at, and
+    /// describe where it landed.
+    pub fn write_resolver_list(
+        &mut self,
+        refs: &[relay_spec::AccountRefV0],
+    ) -> Result<relay_spec::ResolverListV0> {
+        self.relay.write_resolvers(refs).map_err(|_| {
             msg!("resolver list of {} exceeds the region", refs.len());
-            return Err(ErrorCode::DefaultError.into());
-        }
-        for (i, r) in refs.iter().enumerate() {
-            let start = i * relay_spec::ACCOUNT_REF_LEN;
-            self.resolver_list[start..start + 32].copy_from_slice(&r.address);
-            self.resolver_list[start + 32] = r.writable;
-        }
-        self.resolver_list_count = refs.len() as u8;
-        Ok(())
+            error!(ErrorCode::DefaultError)
+        })
     }
 
     pub fn block(&self) -> &[u8] {
-        &self.block
+        ConditionBlock::block(&self.relay)
     }
 
     /// Anchor-flavoured wrappers over the spec trait's provided methods,
     /// so handlers keep using `?` with the program's own error type.
     pub fn init_block(&mut self) -> Result<()> {
-        ConditionBlock::init_header(self).map_err(|_| error!(ErrorCode::DefaultError))
+        self.relay
+            .init(QUOTER_CROSS_BLOCK_OFFSET as u32)
+            .map_err(|_| error!(ErrorCode::DefaultError))
     }
 
     pub fn set_condition(
@@ -146,12 +109,13 @@ impl QuoterCrossConditionsV0 {
         index: usize,
         condition: &relay_spec::ConditionV0,
     ) -> Result<()> {
-        ConditionBlock::write_condition(self, index, condition)
+        ConditionBlock::write_condition(&mut self.relay, index, condition)
             .map_err(|_| error!(ErrorCode::DefaultError))
     }
 
     pub fn get_condition(&self, index: usize) -> Result<relay_spec::ConditionV0> {
-        ConditionBlock::read_condition(self, index).map_err(|_| error!(ErrorCode::DefaultError))
+        ConditionBlock::read_condition(&self.relay, index)
+            .map_err(|_| error!(ErrorCode::DefaultError))
     }
 
     pub fn edit_condition(
@@ -159,24 +123,19 @@ impl QuoterCrossConditionsV0 {
         index: usize,
         f: impl FnOnce(&mut relay_spec::ConditionV0),
     ) -> Result<()> {
-        ConditionBlock::update_condition(self, index, f)
+        ConditionBlock::update_condition(&mut self.relay, index, f)
             .map_err(|_| error!(ErrorCode::DefaultError))
     }
 
     pub fn clear_condition(&mut self, index: usize) -> Result<()> {
-        ConditionBlock::deactivate_condition(self, index)
+        ConditionBlock::deactivate_condition(&mut self.relay, index)
             .map_err(|_| error!(ErrorCode::DefaultError))
     }
 }
 
+const _: () = assert!(QUOTER_CROSS_BLOCK_OFFSET % 8 == 0);
 const _: () = assert!((QuoterCrossConditionsV0::SIZE - 8) % 16 == 0);
 const _: () = assert!(QuoterCrossConditionsV0::SIZE <= 10_240);
-
-/// Block hosting + staging, from the spec (see
-/// [`relay_spec::ConditionBlock`]): `init_header`, `write_condition`,
-/// `read_condition`, `update_condition`, `deactivate_condition`, and
-/// `stage` are all provided.
-relay_spec::condition_block!(QuoterCrossConditionsV0, block, QUOTER_CROSS_CONDITIONS);
 
 #[cfg(test)]
 mod tests {
@@ -187,10 +146,6 @@ mod tests {
         assert_eq!(
             std::mem::size_of::<QuoterCrossConditionsV0>(),
             QuoterCrossConditionsV0::SIZE - 8
-        );
-        assert_eq!(
-            QUOTER_CROSS_RESOLVER_LIST_OFFSET,
-            8 + core::mem::offset_of!(QuoterCrossConditionsV0, resolver_list)
         );
     }
 

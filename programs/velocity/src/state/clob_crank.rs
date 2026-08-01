@@ -45,9 +45,9 @@
 //! discriminator), which is the 8-aligned offset `read_block` requires.
 
 use {
-    crate::error::ErrorCode,
+    crate::{error::ErrorCode, state::relay_block::RelayBlock},
     anchor_lang::prelude::*,
-    relay_spec::{ConditionBlock, BLOCK_HEADER_LEN, CONDITION_LEN},
+    relay_spec::{ConditionBlock, RelayBlockV0},
 };
 
 /// PDA seed: `["clob_crank_conditions", market_index]`.
@@ -75,41 +75,21 @@ pub const CLOB_CRANK_CROSS_ACTIVATION: usize = 5;
 /// Conditions hosted per market.
 pub const CLOB_CRANK_CONDITIONS: usize = 6;
 
-/// Bytes the condition block occupies: header + the fixed condition array.
-pub const CLOB_CRANK_BLOCK_LEN: usize = BLOCK_HEADER_LEN + CLOB_CRANK_CONDITIONS * CONDITION_LEN;
+/// Every condition on this account resolves with the same five accounts;
+/// the capacity is [`RelayBlockV0`]'s minimum granularity of 8.
+pub const CLOB_CRANK_RESOLVER_CAPACITY: usize = 8;
 
-/// Bytes reserved for a resolver's staged `ResolvedCrankV0`. The largest
-/// staged call is the cross executor: ~12 fixed accounts plus two accounts
-/// per staged maker (33 bytes each), so this bounds a cross at roughly two
-/// dozen makers — far past what one profitable top-of-book cross touches.
-/// The whole account must stay under the 10,240-byte CPI allocation limit
-/// so the attach ix can `init` it in one step.
-
-/// Account-data offset of the staging region (what a `ResponsePointerV0`'s
-/// `offset` is relative to): discriminator + the block.
-pub const CLOB_CRANK_TAIL_OFFSET: usize = 8 + CLOB_CRANK_BLOCK_LEN;
-
-/// Every condition on this account resolves with the same five accounts,
-/// so the list is stored once and each condition points at it. Padded to
-/// keep (SIZE - 8) %% 16 == 0 (see docs/alignment-and-native-offsets.md).
-pub const CLOB_CRANK_RESOLVERS_MAX: usize = 5;
-pub const CLOB_CRANK_RESOLVERS_LEN: usize = 176;
-const _: () =
-    assert!(CLOB_CRANK_RESOLVERS_LEN >= CLOB_CRANK_RESOLVERS_MAX * relay_spec::ACCOUNT_REF_LEN);
-pub const CLOB_CRANK_RESOLVERS_OFFSET: usize =
-    relay_spec::block_offset!(ClobCrankConditionsV0, resolvers);
+/// Account-data offset of the relay block (what a `WatchV0` registers at).
+pub const CLOB_CRANK_BLOCK_OFFSET: usize = relay_spec::block_offset!(ClobCrankConditionsV0, relay);
 
 #[account(zero_copy(unsafe))]
-#[derive(Debug)]
+#[derive(Debug, Default)]
 #[repr(C)]
 pub struct ClobCrankConditionsV0 {
-    /// The relay condition block, read in place by turners and rewritten in
-    /// place by velocity. First field, so it sits at the 8-aligned offset 8.
-    pub block: [u8; CLOB_CRANK_BLOCK_LEN],
-    /// Scratch the resolvers stage their `ResolvedCrankV0` into. Only ever
-    /// written under simulation; on-chain contents are meaningless.
-    /// The resolver account list every condition here points at.
-    pub resolvers: [u8; CLOB_CRANK_RESOLVERS_LEN],
+    /// Everything relay needs hosted, in one field: the spec header, the
+    /// condition slots, and the resolver account list every condition here
+    /// points at. First field, so its watch offset is 8.
+    pub relay: RelayBlock<CLOB_CRANK_CONDITIONS, CLOB_CRANK_RESOLVER_CAPACITY>,
     /// The market's oracle, captured at attach time. Resolvers hold only
     /// four fixed accounts, so the staged executor's map section is derived
     /// from here rather than from the perp market account; an admin oracle
@@ -135,58 +115,41 @@ pub struct ClobCrankConditionsV0 {
     /// The market's quote spot market, captured at attach time (the staged
     /// executor's map section needs its PDA).
     pub quote_spot_market_index: u16,
-    pub padding: [u8; 4],
-}
-
-impl Default for ClobCrankConditionsV0 {
-    fn default() -> Self {
-        // `[u8; N]` derives Default only up to N = 32.
-        Self {
-            block: [0; CLOB_CRANK_BLOCK_LEN],
-            resolvers: [0; CLOB_CRANK_RESOLVERS_LEN],
-            oracle: Pubkey::default(),
-            keeper_payment_lamports: 0,
-            market_index: 0,
-            quote_spot_market_index: 0,
-            padding: [0; 4],
-        }
-    }
+    pub padding: [u8; 12],
 }
 
 impl ClobCrankConditionsV0 {
-    /// 8 (discriminator) + block + staging + trailing fields. Kept as a const
-    /// so the alignment invariant below is checked at compile time.
-    pub const SIZE: usize =
-        8 + CLOB_CRANK_BLOCK_LEN + CLOB_CRANK_RESOLVERS_LEN + 32 + 8 + 2 + 2 + 4;
+    /// 8 (discriminator) + the relay block + trailing fields. Kept as a
+    /// const so the alignment invariant below is checked at compile time.
+    pub const SIZE: usize = 8
+        + RelayBlockV0::<CLOB_CRANK_CONDITIONS, CLOB_CRANK_RESOLVER_CAPACITY>::SIZE
+        + 32
+        + 8
+        + 2
+        + 2
+        + 12;
 
     /// Store the resolver account list and describe where it landed.
     pub fn write_resolvers(
         &mut self,
         refs: &[relay_spec::AccountRefV0],
     ) -> Result<relay_spec::ResolverListV0> {
-        if refs.len() > CLOB_CRANK_RESOLVERS_MAX {
-            return Err(ErrorCode::DefaultError.into());
-        }
-        for (i, r) in refs.iter().enumerate() {
-            let at = i * relay_spec::ACCOUNT_REF_LEN;
-            self.resolvers[at..at + 32].copy_from_slice(&r.address);
-            self.resolvers[at + 32] = r.writable;
-        }
-        Ok(relay_spec::ResolverListV0::new(
-            CLOB_CRANK_RESOLVERS_OFFSET as u32,
-            refs.len() as u8,
-        ))
+        self.relay
+            .write_resolvers(refs)
+            .map_err(|_| error!(ErrorCode::DefaultError))
     }
 
     /// The block region, for `relay_spec::read_block`.
     pub fn block(&self) -> &[u8] {
-        &self.block
+        ConditionBlock::block(&self.relay)
     }
 
     /// Anchor-flavoured wrappers over the spec trait's provided methods,
     /// so handlers keep using `?` with the program's own error type.
     pub fn init_block(&mut self) -> Result<()> {
-        ConditionBlock::init_header(self).map_err(|_| error!(ErrorCode::DefaultError))
+        self.relay
+            .init(CLOB_CRANK_BLOCK_OFFSET as u32)
+            .map_err(|_| error!(ErrorCode::DefaultError))
     }
 
     pub fn set_condition(
@@ -194,12 +157,13 @@ impl ClobCrankConditionsV0 {
         index: usize,
         condition: &relay_spec::ConditionV0,
     ) -> Result<()> {
-        ConditionBlock::write_condition(self, index, condition)
+        ConditionBlock::write_condition(&mut self.relay, index, condition)
             .map_err(|_| error!(ErrorCode::DefaultError))
     }
 
     pub fn get_condition(&self, index: usize) -> Result<relay_spec::ConditionV0> {
-        ConditionBlock::read_condition(self, index).map_err(|_| error!(ErrorCode::DefaultError))
+        ConditionBlock::read_condition(&self.relay, index)
+            .map_err(|_| error!(ErrorCode::DefaultError))
     }
 
     pub fn edit_condition(
@@ -207,18 +171,13 @@ impl ClobCrankConditionsV0 {
         index: usize,
         f: impl FnOnce(&mut relay_spec::ConditionV0),
     ) -> Result<()> {
-        ConditionBlock::update_condition(self, index, f)
+        ConditionBlock::update_condition(&mut self.relay, index, f)
             .map_err(|_| error!(ErrorCode::DefaultError))
     }
 
     pub fn clear_condition(&mut self, index: usize) -> Result<()> {
-        ConditionBlock::deactivate_condition(self, index)
+        ConditionBlock::deactivate_condition(&mut self.relay, index)
             .map_err(|_| error!(ErrorCode::DefaultError))
-    }
-
-    /// The block region for in-place updates (e.g. the expiry `wake_ts` hint).
-    pub fn block_mut(&mut self) -> &mut [u8] {
-        &mut self.block
     }
 
     /// Move `keeper_payment_lamports` from the conditions account to `keeper`,
@@ -277,29 +236,23 @@ impl ClobCrankConditionsV0 {
     /// cheap, conservative maintenance `place_clob_order` does. Only ever
     /// moves the wake earlier, so it can never make the hint fire late.
     pub fn note_expiry(&mut self, max_ts: i64) -> Result<()> {
-        let conditions = relay_spec::read_block_mut(&mut self.block, 0)
-            .map_err(|_| error!(ErrorCode::DefaultError))?;
-        let condition = &mut conditions[CLOB_CRANK_EXPIRE];
-        let current = match condition.wake() {
-            Ok(relay_spec::WakeView::AtTimestamp { unix_ts }) => unix_ts,
-            _ => return Err(error!(ErrorCode::DefaultError)),
-        };
-        condition.set_wake(relay_spec::WakeView::AtTimestamp {
-            unix_ts: current.min(max_ts),
-        });
-        Ok(())
+        let current = self.expire_wake_ts()?;
+        self.edit_condition(CLOB_CRANK_EXPIRE, |c| {
+            c.set_wake(relay_spec::WakeView::AtTimestamp {
+                unix_ts: current.min(max_ts),
+            })
+        })
     }
 
     /// Overwrite the expire hint with a recomputed true minimum (`i64::MAX`
     /// when no live order expires) — what the crank executor does after a
     /// removal, so a due hint goes quiet instead of firing forever.
     pub fn repair_expiry(&mut self, true_min_ts: i64) -> Result<()> {
-        let conditions = relay_spec::read_block_mut(&mut self.block, 0)
-            .map_err(|_| error!(ErrorCode::DefaultError))?;
-        conditions[CLOB_CRANK_EXPIRE].set_wake(relay_spec::WakeView::AtTimestamp {
-            unix_ts: true_min_ts,
-        });
-        Ok(())
+        self.edit_condition(CLOB_CRANK_EXPIRE, |c| {
+            c.set_wake(relay_spec::WakeView::AtTimestamp {
+                unix_ts: true_min_ts,
+            })
+        })
     }
 
     /// The cross-activation condition's `wake_slot` hint.
@@ -316,17 +269,12 @@ impl ClobCrankConditionsV0 {
     /// matter: an already-active placement is covered by the cross
     /// condition's change-watch over the book's bests.
     pub fn note_activation(&mut self, activation_slot: u64) -> Result<()> {
-        let conditions = relay_spec::read_block_mut(&mut self.block, 0)
-            .map_err(|_| error!(ErrorCode::DefaultError))?;
-        let condition = &mut conditions[CLOB_CRANK_CROSS_ACTIVATION];
-        let current = match condition.wake() {
-            Ok(relay_spec::WakeView::AtSlot { slot }) => slot,
-            _ => return Err(error!(ErrorCode::DefaultError)),
-        };
-        condition.set_wake(relay_spec::WakeView::AtSlot {
-            slot: current.min(activation_slot),
-        });
-        Ok(())
+        let current = self.activation_wake_slot()?;
+        self.edit_condition(CLOB_CRANK_CROSS_ACTIVATION, |c| {
+            c.set_wake(relay_spec::WakeView::AtSlot {
+                slot: current.min(activation_slot),
+            })
+        })
     }
 
     /// Overwrite the cross-activation hint with the recomputed minimum
@@ -334,30 +282,22 @@ impl ClobCrankConditionsV0 {
     /// landing crank does this from its book scan, so a fired hint goes
     /// quiet even when the activation produced no cross.
     pub fn repair_activation(&mut self, min_future_slot: u64) -> Result<()> {
-        let conditions = relay_spec::read_block_mut(&mut self.block, 0)
-            .map_err(|_| error!(ErrorCode::DefaultError))?;
-        conditions[CLOB_CRANK_CROSS_ACTIVATION].set_wake(relay_spec::WakeView::AtSlot {
-            slot: min_future_slot,
-        });
-        Ok(())
+        self.edit_condition(CLOB_CRANK_CROSS_ACTIVATION, |c| {
+            c.set_wake(relay_spec::WakeView::AtSlot {
+                slot: min_future_slot,
+            })
+        })
     }
 }
 
 // The block must start at an 8-aligned offset for `read_block`'s zero-copy
 // cast; anchor's discriminator puts field 0 at offset 8.
-const _: () = assert!(BLOCK_HEADER_LEN % 8 == 0);
-const _: () = assert!(CONDITION_LEN % 8 == 0);
+const _: () = assert!(CLOB_CRANK_BLOCK_OFFSET % 8 == 0);
 
 // Zero-copy alignment invariant (see docs/alignment-and-native-offsets.md):
 // no u128 fields, and `(SIZE - 8) % 16 == 0` so the struct sizes identically
 // on x86_64 and SBF.
 const _: () = assert!((ClobCrankConditionsV0::SIZE - 8) % 16 == 0);
-
-/// Block hosting + staging, from the spec (see
-/// [`relay_spec::ConditionBlock`]): `init_header`, `write_condition`,
-/// `read_condition`, `update_condition`, `deactivate_condition`, and
-/// `stage` are all provided.
-relay_spec::condition_block!(ClobCrankConditionsV0, block, CLOB_CRANK_CONDITIONS);
 
 #[cfg(test)]
 mod tests {
@@ -368,20 +308,12 @@ mod tests {
 
     #[test]
     fn size_matches_the_layout_and_the_spec() {
-        assert_eq!(CLOB_CRANK_BLOCK_LEN, 16 + 6 * relay_spec::CONDITION_LEN);
-        assert_eq!(
-            ClobCrankConditionsV0::SIZE,
-            8 + CLOB_CRANK_BLOCK_LEN + CLOB_CRANK_RESOLVERS_LEN + 48
-        );
         // The whole account must clear anchor init's 10,240-byte CPI
         // allocation ceiling, or attaching a CLOB to a market breaks.
         assert!(ClobCrankConditionsV0::SIZE <= 10_240);
-        // the resolver list must land where the conditions point at it
-        assert_eq!(
-            CLOB_CRANK_RESOLVERS_OFFSET,
-            8 + core::mem::offset_of!(ClobCrankConditionsV0, resolvers)
-        );
-        // the u64 reservoir field must land 8-aligned, past block + staging
+        // The watch registers at the relay block, which is the first field.
+        assert_eq!(CLOB_CRANK_BLOCK_OFFSET, 8);
+        // the u64 reservoir field must land 8-aligned, past the block
         assert_eq!(std::mem::align_of::<ClobCrankConditionsV0>(), 8);
         assert_eq!(
             std::mem::size_of::<ClobCrankConditionsV0>(),
@@ -393,6 +325,9 @@ mod tests {
     fn header_then_conditions_round_trip_through_the_spec() {
         let mut acct = ClobCrankConditionsV0::default();
         acct.init_block().unwrap();
+        let resolvers = acct
+            .write_resolvers(&[relay_spec::AccountRefV0::writable([9; 32])])
+            .unwrap();
 
         // Built the way a host builds one — the constructor is what marks
         // a condition active; `set_wake` only rewrites the wake.
@@ -405,7 +340,7 @@ mod tests {
                 executor_disc: [2; 8],
                 min_payment: 5_000,
             },
-            relay_spec::ResolverListV0::new(CLOB_CRANK_RESOLVERS_OFFSET as u32, 1),
+            resolvers,
         );
         acct.set_condition(CLOB_CRANK_EXPIRE, &condition).unwrap();
 

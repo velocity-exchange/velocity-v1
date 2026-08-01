@@ -1646,12 +1646,23 @@ describe('e2e localnet: programs + publisher + redis', function () {
 		await airdrop(victimKp.publicKey, 10);
 		const victim = newClient(victimKp);
 		await victim.subscribe();
-		const victimUsdc = await fundUsdc(victimKp.publicKey, new BN(600).mul(USDC));
+		const victimUsdc = await fundUsdc(victimKp.publicKey, new BN(60).mul(USDC));
 		await victim.initializeUserAccountAndDepositCollateral(
-			new BN(600).mul(USDC),
+			new BN(60).mul(USDC),
 			victimUsdc
 		);
-		// ~8x: 5 units at ~100 on 600 of collateral.
+		// Standing ask deep enough for the whole entry: without it the
+		// vAMM's slippage caps the fill near one unit and the "victim" ends
+		// up ~1.7x — never liquidatable, and the scenario passes vacuously.
+		await placeClobOrder(
+			clobMaker,
+			clobMakerKp,
+			PositionDirection.SHORT,
+			new BN(102).mul(PRICE),
+			UNIT.muln(5)
+		);
+		// ~8.5x: 5 units at ~102 on 60 of collateral — a price drop to 84
+		// puts equity below zero, well past maintenance.
 		await victim.placePerpOrder(
 			getMarketOrderParams({
 				marketIndex: 0,
@@ -1662,10 +1673,9 @@ describe('e2e localnet: programs + publisher + redis', function () {
 		);
 		await fillPendingOrder(victim, victimKp);
 		await victim.fetchAccounts();
-		assert.isAbove(
-			victim.getUser().getPerpPosition(0)!.baseAssetAmount.toNumber(),
-			0,
-			'victim is long'
+		assert.isTrue(
+			victim.getUser().getPerpPosition(0)!.baseAssetAmount.eq(UNIT.muln(5)),
+			'victim entered the full intended size'
 		);
 
 		// Opt them into relay liquidation coverage: thresholds from their
@@ -1680,12 +1690,13 @@ describe('e2e localnet: programs + publisher + redis', function () {
 		await airdrop(userConditions, 1);
 		await registerWatch(userConditions);
 
-		// Standing bid for the liquidation's fill leg to route into.
+		// Standing bid for the liquidation's fill leg to route into, close
+		// enough to the crashed oracle to clear the fill price bands.
 		await placeClobOrder(
 			clobMaker,
 			clobMakerKp,
 			PositionDirection.LONG,
-			new BN(80).mul(PRICE),
+			new BN(90).mul(PRICE),
 			UNIT.muln(5)
 		);
 
@@ -1694,8 +1705,12 @@ describe('e2e localnet: programs + publisher + redis', function () {
 		// vacuously the moment the victim's position is smaller than it,
 		// which reports "relay liquidated" for a relay that did nothing.
 		const sizeBefore = victim.getUser().getPerpPosition(0)!.baseAssetAmount;
-		// Crash the oracle. Nobody submits a liquidation.
-		await setOraclePrice(84);
+		// Crash the oracle — hard enough to put the victim under
+		// maintenance (equity ~$14 vs ~$23 required at 93), gentle enough
+		// to stay inside the oracle price bands a 16% single-slot move
+		// breaches (`PriceBandsBreached` on the staged executor). Nobody
+		// submits a liquidation.
+		await setOraclePrice(93);
 
 		await pollUntil('relay to liquidate', 180_000, async () => {
 			await victim.fetchAccounts();

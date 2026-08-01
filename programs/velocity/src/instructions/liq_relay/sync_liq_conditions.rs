@@ -19,16 +19,19 @@
 //! the ceteris-paribus price at which free collateral hits zero, and watch
 //! *that* — with a haircut so it fires while buffer remains.
 //!
-//! Slopes (per unit of that market's price, in PRICE_PRECISION):
+//! Slopes (free collateral per unit of that market's raw price, carried in
+//! BASE_PRECISION fixed-point so both exposure kinds share one distance
+//! formula):
 //!
 //! - a perp position of size `b`: collateral moves `+b` (unrealized PnL),
 //!   maintenance moves `+|b|·mmr`. Net free-collateral slope is
 //!   `b − |b|·mmr` — long positions lose as price falls, shorts as it
-//!   rises.
+//!   rises. `b` is already BASE_PRECISION-scaled.
 //! - a spot deposit of `a` tokens with maintenance asset weight `w`:
 //!   collateral moves `+a·w`, so free collateral falls as the price falls.
 //!   (Spot *borrows* raise the requirement as their price rises; both
-//!   directions are covered by the sign of the slope.)
+//!   directions are covered by the sign of the slope.) The token amount is
+//!   scaled up to the same fixed-point.
 //!
 //! Because the estimate holds other prices fixed, a correlated move can
 //! reach liquidatability before any single threshold trips — which is what
@@ -51,11 +54,12 @@ use {
             oracle_watch::{oracle_watch, OracleWatchV0, WatchDirection},
             pdas,
             perp_market::PerpMarket,
+            prop_amm::QuoterV0,
             spot_market::{SpotBalanceType, SpotMarket},
             user::User,
             user_conditions::{
-                LiqSlotMetaV0, UserConditionsV0, LIQ_SYNC_ACCOUNTS_OFFSET, LIQ_SYNC_FALLBACK,
-                LIQ_SYNC_WATCH, LIQ_THRESHOLD_SLOTS, USER_CONDITIONS_PDA_SEED,
+                LiqSlotMetaV0, UserConditionsV0, LIQ_SYNC_FALLBACK, LIQ_SYNC_WATCH,
+                LIQ_THRESHOLD_SLOTS, USER_CONDITIONS_PDA_SEED,
             },
         },
         validate,
@@ -194,6 +198,23 @@ pub fn rewrite_liq_conditions<'info>(
                 tail_refs.push(AccountRefV0::readonly(info.key.to_bytes()));
                 continue;
             }
+            // Quoter entries are the trigger pass's input, not this one's —
+            // but this pass writes the shared account list both passes'
+            // staged executors reuse, so they must be kept out of the map
+            // section: `load_maps` stops at the first non-map account, and
+            // a quoter filed among the oracles cuts the markets off from
+            // every staged executor (the localnet harness hit exactly that
+            // as `PerpMarketNotFound`). Stored after the markets, where the
+            // parser never reaches, so a staged resync still carries them.
+            if let Ok(loader) = AccountLoader::<QuoterV0>::try_from(info) {
+                let _ = loader.load()?;
+                tail_refs.push(AccountRefV0::readonly(info.key.to_bytes()));
+                continue;
+            }
+            // Anything else velocity-owned falls through with the oracle
+            // candidates below — deliberately: velocity hosts its own
+            // oracle accounts (PythLazer, prelaunch), and they must land
+            // in the map section.
         }
         oracle_infos.insert(*info.key, info);
     }
@@ -254,10 +275,9 @@ pub fn rewrite_liq_conditions<'info>(
     }
     let fallback_slots = conditions.sync_fallback_slots.max(1);
     conditions.init_block()?;
-    conditions.write_sync_accounts(&sync_accounts)?;
     // What the threshold conditions point relay at (prefix + margin map).
     // Every condition on this account points at the one stored list.
-    let resolvers = ResolverListV0::new(LIQ_SYNC_ACCOUNTS_OFFSET as u32, sync_accounts.len() as u8);
+    let resolvers = conditions.write_sync_accounts(&sync_accounts)?;
 
     // Free collateral now — the distance each threshold is measured from.
     let user = crate::load!(user_loader)?;
@@ -280,6 +300,9 @@ pub fn rewrite_liq_conditions<'info>(
                 let Some(inputs) = perps.get(&position.market_index).copied() else {
                     continue;
                 };
+                // Slope in BASE_PRECISION fixed-point: free collateral
+                // (QUOTE_PRECISION) moves `slope / BASE_PRECISION` per raw
+                // price unit (PRICE_PRECISION).
                 let base = position.base_asset_amount as i128;
                 let slope = base.safe_sub(
                     base.abs()
@@ -321,12 +344,15 @@ pub fn rewrite_liq_conditions<'info>(
                     &position.balance_type,
                 )?
                 .cast::<i128>()?;
-                // Collateral slope per unit price: deposits help, borrows hurt.
+                // Collateral slope per unit price, in the same
+                // BASE_PRECISION fixed-point as the perp slope: deposits
+                // help, borrows hurt.
                 let signed = match position.balance_type {
                     SpotBalanceType::Deposit => amount,
                     SpotBalanceType::Borrow => -amount,
                 };
                 let slope = signed
+                    .safe_mul(crate::math::constants::BASE_PRECISION_I128)?
                     .safe_mul(inputs.maintenance_ratio as i128)?
                     .safe_div(SPOT_WEIGHT_PRECISION_U128 as i128)?
                     .safe_div(10i128.pow(inputs.decimals.min(18)))?;
@@ -502,9 +528,14 @@ fn threshold_condition(
     if slope == 0 || inputs.price <= 0 {
         return Ok(None);
     }
-    // Δprice that exhausts free collateral, haircut toward early.
+    // Δprice (raw PRICE_PRECISION units) that exhausts free collateral,
+    // haircut toward early. `slope` is BASE_PRECISION fixed-point (free
+    // collateral per raw price unit), so the scale cancels here — using
+    // PRICE_PRECISION instead put every perp threshold a thousandth of the
+    // true distance from spot (a wake on every tick) and drove every spot
+    // threshold off the price axis (never armed).
     let distance = free_collateral
-        .safe_mul(crate::math::constants::PRICE_PRECISION_I128)?
+        .safe_mul(crate::math::constants::BASE_PRECISION_I128)?
         .safe_div(slope.abs())?;
     let haircut = distance
         .safe_mul(BPS_DENOM.safe_sub(THRESHOLD_HAIRCUT_BPS)?)?
@@ -529,7 +560,8 @@ fn threshold_condition(
         oracle.to_bytes(),
         watch.price_offset,
         watch.price_len,
-        raw,
+        // Signed: every registered watch layout stores its price as i64.
+        relay_spec::WatchValue::Signed(raw),
         direction.cmp(),
         CrankSpecV0 {
             resolver_program: crate::ID.to_bytes(),

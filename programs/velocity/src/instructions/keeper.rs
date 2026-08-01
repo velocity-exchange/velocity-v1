@@ -202,10 +202,9 @@ fn fill_order<'c: 'info, 'info>(
                     .try_borrow_data()
                     .is_ok_and(|data| data.get(..8) == Some(QuoterV0::DISCRIMINATOR))
         })
-        .map(|info| AccountLoader::try_from(*info))
+        .map(|info| AccountLoader::try_from(info))
         .collect::<Result<_>>()?;
 
-    let taker_key = ctx.accounts.user.key();
     let (direction, unfilled, taker_ref) = {
         let user = load!(ctx.accounts.user)?;
         let order = user
@@ -4195,7 +4194,6 @@ pub struct ResolveTriggerOrder<'info> {
 }
 
 pub fn handle_resolve_trigger_order(ctx: Context<ResolveTriggerOrder>) -> Result<()> {
-    let conditions = ctx.accounts.trigger_conditions.clone();
     crate::instructions::resolve_into(&ctx.accounts.scratch, || {
         let clock = Clock::get()?;
         let fired = {

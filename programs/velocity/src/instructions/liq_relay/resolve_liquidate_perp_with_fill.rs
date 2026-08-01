@@ -41,7 +41,6 @@ pub struct ResolveLiquidatePerpWithFill<'info> {
 pub fn handle_resolve_liquidate_perp_with_fill<'c: 'info, 'info>(
     ctx: Context<'info, ResolveLiquidatePerpWithFill<'info>>,
 ) -> Result<()> {
-    let conditions = ctx.accounts.liq_conditions.clone();
     crate::instructions::resolve_into(&ctx.accounts.scratch, || {
         let clock = Clock::get()?;
         let state = ctx.accounts.state.load()?;

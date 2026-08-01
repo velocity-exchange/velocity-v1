@@ -1301,6 +1301,16 @@ pub mod instructions {
     #[automatically_derived]
     impl anchor_lang::InstructionData for SyncTriggerConditions {}
     #[derive(AnchorSerialize, AnchorDeserialize, Clone, Default)]
+    pub struct SyncUserConditions {
+        pub args: SyncLiqConditionsArgs,
+    }
+    #[automatically_derived]
+    impl anchor_lang::Discriminator for SyncUserConditions {
+        const DISCRIMINATOR: &[u8] = &[25, 90, 224, 168, 223, 46, 67, 255];
+    }
+    #[automatically_derived]
+    impl anchor_lang::InstructionData for SyncUserConditions {}
+    #[derive(AnchorSerialize, AnchorDeserialize, Clone, Default)]
     pub struct TransferDeposit {
         pub market_index: u16,
         pub amount: u64,
@@ -3292,14 +3302,13 @@ pub mod types {
         PartialEq,
     )]
     pub struct ClobCrankConditionsV0 {
-        pub block: ByteArray<1168>,
-        pub resolvers: ByteArray<176>,
+        pub relay: RelayBlock6x8,
         pub oracle: Pubkey,
         pub keeper_payment_lamports: u64,
         pub market_index: u16,
         pub quote_spot_market_index: u16,
         #[serde(skip)]
-        pub padding: Padding<4>,
+        pub padding: Padding<12>,
     }
     #[repr(C)]
     #[derive(
@@ -5241,8 +5250,7 @@ pub mod types {
         PartialEq,
     )]
     pub struct QuoterCrossConditionsV0 {
-        pub block: ByteArray<592>,
-        pub resolver_list: ByteArray<1254>,
+        pub relay: RelayBlock3x40,
         pub quoter: Pubkey,
         pub clob_quoter: Pubkey,
         pub clob_market: Pubkey,
@@ -5250,9 +5258,8 @@ pub mod types {
         pub oracle: Pubkey,
         pub market_index: u16,
         pub quote_spot_market_index: u16,
-        pub resolver_list_count: u8,
         #[serde(skip)]
-        pub padding: Padding<5>,
+        pub padding: Padding<4>,
     }
     #[derive(
         AnchorSerialize,
@@ -5323,6 +5330,54 @@ pub mod types {
         pub user: Pubkey,
         pub user_stats: Pubkey,
         pub name: [u8; 32],
+    }
+    #[repr(C)]
+    #[derive(
+        AnchorSerialize,
+        AnchorDeserialize,
+        InitSpace,
+        Serialize,
+        Deserialize,
+        Copy,
+        Clone,
+        Default,
+        Debug,
+        PartialEq,
+    )]
+    pub struct RelayBlock22x32 {
+        pub bytes: ByteArray<5312>,
+    }
+    #[repr(C)]
+    #[derive(
+        AnchorSerialize,
+        AnchorDeserialize,
+        InitSpace,
+        Serialize,
+        Deserialize,
+        Copy,
+        Clone,
+        Default,
+        Debug,
+        PartialEq,
+    )]
+    pub struct RelayBlock3x40 {
+        pub bytes: ByteArray<1928>,
+    }
+    #[repr(C)]
+    #[derive(
+        AnchorSerialize,
+        AnchorDeserialize,
+        InitSpace,
+        Serialize,
+        Deserialize,
+        Copy,
+        Clone,
+        Default,
+        Debug,
+        PartialEq,
+    )]
+    pub struct RelayBlock6x8 {
+        pub bytes: ByteArray<1448>,
     }
     #[repr(C)]
     #[derive(
@@ -6194,8 +6249,7 @@ pub mod types {
         PartialEq,
     )]
     pub struct UserConditionsV0 {
-        pub block: ByteArray<4240>,
-        pub sync_accounts: ByteArray<1056>,
+        pub relay: RelayBlock22x32,
         pub slots: [LiqSlotMetaV0; 12],
         pub trigger_slots: [TriggerSlotMetaV0; 8],
         pub trigger_resolvers: ByteArray<1344>,
@@ -6203,9 +6257,8 @@ pub mod types {
         pub sync_payment_lamports: u64,
         pub sync_fallback_slots: u64,
         pub positions_digest: u64,
-        pub sync_accounts_count: u8,
         #[serde(skip)]
-        pub padding: Padding<7>,
+        pub padding: Padding<8>,
     }
     #[repr(C)]
     #[derive(
@@ -6403,14 +6456,13 @@ pub mod accounts {
         PartialEq,
     )]
     pub struct ClobCrankConditionsV0 {
-        pub block: ByteArray<1168>,
-        pub resolvers: ByteArray<176>,
+        pub relay: RelayBlock6x8,
         pub oracle: Pubkey,
         pub keeper_payment_lamports: u64,
         pub market_index: u16,
         pub quote_spot_market_index: u16,
         #[serde(skip)]
-        pub padding: Padding<4>,
+        pub padding: Padding<12>,
     }
     #[automatically_derived]
     impl anchor_lang::Discriminator for ClobCrankConditionsV0 {
@@ -7036,8 +7088,7 @@ pub mod accounts {
         PartialEq,
     )]
     pub struct QuoterCrossConditionsV0 {
-        pub block: ByteArray<592>,
-        pub resolver_list: ByteArray<1254>,
+        pub relay: RelayBlock3x40,
         pub quoter: Pubkey,
         pub clob_quoter: Pubkey,
         pub clob_market: Pubkey,
@@ -7045,9 +7096,8 @@ pub mod accounts {
         pub oracle: Pubkey,
         pub market_index: u16,
         pub quote_spot_market_index: u16,
-        pub resolver_list_count: u8,
         #[serde(skip)]
-        pub padding: Padding<5>,
+        pub padding: Padding<4>,
     }
     #[automatically_derived]
     impl anchor_lang::Discriminator for QuoterCrossConditionsV0 {
@@ -7841,8 +7891,7 @@ pub mod accounts {
         PartialEq,
     )]
     pub struct UserConditionsV0 {
-        pub block: ByteArray<4240>,
-        pub sync_accounts: ByteArray<1056>,
+        pub relay: RelayBlock22x32,
         pub slots: [LiqSlotMetaV0; 12],
         pub trigger_slots: [TriggerSlotMetaV0; 8],
         pub trigger_resolvers: ByteArray<1344>,
@@ -7850,9 +7899,8 @@ pub mod accounts {
         pub sync_payment_lamports: u64,
         pub sync_fallback_slots: u64,
         pub positions_digest: u64,
-        pub sync_accounts_count: u8,
         #[serde(skip)]
-        pub padding: Padding<7>,
+        pub padding: Padding<8>,
     }
     #[automatically_derived]
     impl anchor_lang::Discriminator for UserConditionsV0 {
@@ -16557,7 +16605,7 @@ pub mod accounts {
                 AccountMeta {
                     pubkey: self.crank_conditions,
                     is_signer: false,
-                    is_writable: true,
+                    is_writable: false,
                 },
                 AccountMeta {
                     pubkey: self.clob_market,
@@ -16639,7 +16687,7 @@ pub mod accounts {
                 AccountMeta {
                     pubkey: self.crank_conditions,
                     is_signer: false,
-                    is_writable: true,
+                    is_writable: false,
                 },
                 AccountMeta {
                     pubkey: self.clob_market,
@@ -16721,7 +16769,7 @@ pub mod accounts {
                 AccountMeta {
                     pubkey: self.crank_conditions,
                     is_signer: false,
-                    is_writable: true,
+                    is_writable: false,
                 },
                 AccountMeta {
                     pubkey: self.clob_market,
@@ -16804,7 +16852,7 @@ pub mod accounts {
                 AccountMeta {
                     pubkey: self.cross_conditions,
                     is_signer: false,
-                    is_writable: true,
+                    is_writable: false,
                 },
                 AccountMeta {
                     pubkey: self.clob_market,
@@ -16890,7 +16938,7 @@ pub mod accounts {
                 AccountMeta {
                     pubkey: self.liq_conditions,
                     is_signer: false,
-                    is_writable: true,
+                    is_writable: false,
                 },
                 AccountMeta {
                     pubkey: self.user,
@@ -17165,7 +17213,7 @@ pub mod accounts {
                 AccountMeta {
                     pubkey: self.liq_conditions,
                     is_signer: false,
-                    is_writable: true,
+                    is_writable: false,
                 },
                 AccountMeta {
                     pubkey: self.user,
@@ -17349,7 +17397,7 @@ pub mod accounts {
                 AccountMeta {
                     pubkey: self.trigger_conditions,
                     is_signer: false,
-                    is_writable: true,
+                    is_writable: false,
                 },
                 AccountMeta {
                     pubkey: self.user,
@@ -17431,7 +17479,7 @@ pub mod accounts {
                 AccountMeta {
                     pubkey: self.trigger_conditions,
                     is_signer: false,
-                    is_writable: true,
+                    is_writable: false,
                 },
                 AccountMeta {
                     pubkey: self.user,
@@ -18553,6 +18601,88 @@ pub mod accounts {
     }
     #[automatically_derived]
     impl anchor_lang::AccountDeserialize for SyncTriggerConditions {
+        fn try_deserialize(buf: &mut &[u8]) -> anchor_lang::Result<Self> {
+            let given_disc = &buf[..8];
+            if Self::DISCRIMINATOR != given_disc {
+                return Err(anchor_lang::error!(
+                    anchor_lang::error::ErrorCode::AccountDiscriminatorMismatch
+                ));
+            }
+            Self::try_deserialize_unchecked(buf)
+        }
+        fn try_deserialize_unchecked(buf: &mut &[u8]) -> anchor_lang::Result<Self> {
+            let mut data: &[u8] = &buf[8..];
+            AnchorDeserialize::deserialize(&mut data)
+                .map_err(|_| anchor_lang::error::ErrorCode::AccountDidNotDeserialize.into())
+        }
+    }
+    #[repr(C)]
+    #[derive(Copy, Clone, Default, AnchorSerialize, AnchorDeserialize, Serialize, Deserialize)]
+    pub struct SyncUserConditions {
+        pub payer: Pubkey,
+        pub user: Pubkey,
+        pub user_conditions: Pubkey,
+        pub rent: Pubkey,
+        pub system_program: Pubkey,
+    }
+    #[automatically_derived]
+    impl anchor_lang::Discriminator for SyncUserConditions {
+        const DISCRIMINATOR: &[u8] = &[166, 186, 136, 69, 252, 84, 203, 151];
+    }
+    #[automatically_derived]
+    unsafe impl anchor_lang::__private::bytemuck::Pod for SyncUserConditions {}
+    #[automatically_derived]
+    unsafe impl anchor_lang::__private::bytemuck::Zeroable for SyncUserConditions {}
+    #[automatically_derived]
+    impl anchor_lang::ZeroCopy for SyncUserConditions {}
+    #[automatically_derived]
+    impl anchor_lang::InstructionData for SyncUserConditions {}
+    #[automatically_derived]
+    impl ToAccountMetas for SyncUserConditions {
+        fn to_account_metas(&self) -> Vec<AccountMeta> {
+            vec![
+                AccountMeta {
+                    pubkey: self.payer,
+                    is_signer: true,
+                    is_writable: true,
+                },
+                AccountMeta {
+                    pubkey: self.user,
+                    is_signer: false,
+                    is_writable: false,
+                },
+                AccountMeta {
+                    pubkey: self.user_conditions,
+                    is_signer: false,
+                    is_writable: true,
+                },
+                AccountMeta {
+                    pubkey: self.rent,
+                    is_signer: false,
+                    is_writable: false,
+                },
+                AccountMeta {
+                    pubkey: self.system_program,
+                    is_signer: false,
+                    is_writable: false,
+                },
+            ]
+        }
+    }
+    #[automatically_derived]
+    impl anchor_lang::AccountSerialize for SyncUserConditions {
+        fn try_serialize<W: std::io::Write>(&self, writer: &mut W) -> anchor_lang::Result<()> {
+            if writer.write_all(Self::DISCRIMINATOR).is_err() {
+                return Err(anchor_lang::error::ErrorCode::AccountDidNotSerialize.into());
+            }
+            if AnchorSerialize::serialize(self, writer).is_err() {
+                return Err(anchor_lang::error::ErrorCode::AccountDidNotSerialize.into());
+            }
+            Ok(())
+        }
+    }
+    #[automatically_derived]
+    impl anchor_lang::AccountDeserialize for SyncUserConditions {
         fn try_deserialize(buf: &mut &[u8]) -> anchor_lang::Result<Self> {
             let given_disc = &buf[..8];
             if Self::DISCRIMINATOR != given_disc {

@@ -142,6 +142,8 @@ plus a mid the hot key tracks tick-by-tick. The binding constraint is the mid wr
 
 - Signed route field in the swift message + on-chain enforcement (S4)
 - swift: hold window + attestation signing; route hint in WS payload
+- [x] swift `/route` landed 2026-08-01: GET `/route?marketIndex&direction&size` runs the publisher-style quote-view simulation + the program's own `split_across_quoters` and returns per-source books + allocations (strings for u64s). Read-only by design — it rides an existing quote buffer (the publisher's, discovered by market memcmp) naming its stored authority, since simulation skips sig-verify; no buffer → 503. Verified against the localnet ledger incl. the vAMM last-look tie-win
+- Maker/UI API surface: benchmark is **Hyperliquid's API** (Noah, 2026-08-01 — "as good as hyperliquid"). Known gaps vs HL: per-user WS event streams (orderUpdates/userFills/userEvents), cloid-class client order ids, dead-man's-switch scheduled cancels, batch place/cancel, actions over WS, l2Book precision knobs. Details in memory `reference-hyperliquid-api-benchmark`
 - **Router selection ≠ fill simulation (corrected 2026-07-29)** — simulating one `fill_perp_order` answers "what would *this* fill do", but the router's actual job is *choosing* which quoters go in the transaction, and that choice is bounded by real limits litesvm enforces faithfully: the 1232-byte packet, the static-account ceiling (64, or ~256 via ALT), and the CU budget. Past a handful of PropAMMs the whole set doesn't fit, so selection is the job and whole-fill simulation can't be the primitive — you cannot enumerate candidate subsets by simulating a fill per subset.
 
   The flow that follows:

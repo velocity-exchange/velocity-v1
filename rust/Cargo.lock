@@ -8008,6 +8008,7 @@ dependencies = [
  "prometheus",
  "rand 0.8.6",
  "redis",
+ "relay-chain-source",
  "serde",
  "serde_json",
  "solana-account-decoder-client-types",
@@ -8029,6 +8030,7 @@ dependencies = [
  "tower-http 0.6.11",
  "urlencoding",
  "uuid",
+ "velocity-router-sim",
  "velocity-rs",
  "zstd",
 ]

@@ -134,6 +134,7 @@ impl Config {
 
 pub struct ServerParams {
     velocity: velocity_rs::VelocityClient,
+    route: crate::route::RouteContext,
     slot_subscriber: Arc<SuperSlotSubscriber>,
     metrics: SwiftServerMetrics,
     redis_pool: MultiplexedConnection,
@@ -141,6 +142,12 @@ pub struct ServerParams {
     config: Arc<Config>,
     farmer_pubkeys: HashSet<Pubkey>,
     rpc_health_cache: RpcHealthCache,
+}
+
+impl ServerParams {
+    pub fn route(&self) -> &crate::route::RouteContext {
+        &self.route
+    }
 }
 
 /// TTL for the cached RPC `get_health` result. k8s liveness/readiness probes
@@ -797,7 +804,7 @@ pub async fn start_server() {
         _ => panic!("Invalid velocity environment: {velocity_env}"),
     };
     let wallet = Wallet::new(Keypair::new());
-    let client = VelocityClient::new(context, RpcClient::new(rpc_endpoint), wallet)
+    let client = VelocityClient::new(context, RpcClient::new(rpc_endpoint.clone()), wallet)
         .await
         .expect("initialized client");
 
@@ -829,6 +836,7 @@ pub async fn start_server() {
         });
 
     let state: &'static ServerParams = Box::leak(Box::new(ServerParams {
+        route: crate::route::RouteContext::new(rpc_endpoint, velocity_rs::constants::PROGRAM_ID),
         velocity: client,
         slot_subscriber: Arc::new(slot_subscriber),
         metrics,
@@ -883,6 +891,7 @@ pub async fn start_server() {
     let app = Router::new()
         .fallback(fallback)
         .route("/orders", post(process_order_wrapper))
+        .route("/route", get(crate::route::route_quote))
         .route("/depositTrade", post(deposit_trade))
         .route("/health", get(health_check))
         .layer(cors)

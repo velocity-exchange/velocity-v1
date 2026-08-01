@@ -102,6 +102,57 @@ pub async fn quoter_entries<S: ChainSource>(
         .context("fetch quoter registry entries")
 }
 
+/// Byte length of a `RouterQuoteBufferV0` account, from the program.
+pub fn quote_buffer_len() -> u64 {
+    program::state::router_quote::RouterQuoteBufferV0::SIZE as u64
+}
+
+/// The `RouterQuoteBufferV0` account discriminator, from the program.
+pub fn quote_buffer_discriminator() -> Vec<u8> {
+    program::state::router_quote::RouterQuoteBufferV0::DISCRIMINATOR.to_vec()
+}
+
+/// Account-data offset of `RouterQuoteBufferV0::market`, derived from the
+/// struct so a field reorder can't silently mis-filter.
+pub fn quote_buffer_market_offset() -> usize {
+    8 + core::mem::offset_of!(program::state::router_quote::RouterQuoteBufferV0, market)
+}
+
+/// Find an existing quote buffer for a market and report `(buffer,
+/// authority)`.
+///
+/// Quoting is simulation-only and simulation skips signature verification,
+/// so a read-only consumer (an HTTP `/route`, a dashboard) can quote through
+/// *any* live buffer — typically the book-publisher's — by naming its stored
+/// authority as the instruction's signer, without holding a key or paying
+/// the ~33 KB of rent a buffer costs. Writers that land quotes for real
+/// still need their own buffer (the authority gate exists so two routers
+/// sharing a market don't overwrite each other's reads).
+pub async fn find_quote_buffer<S: ChainSource>(
+    source: &S,
+    velocity_program: &Pubkey,
+    market_index: u16,
+) -> Result<Option<(Pubkey, Pubkey)>> {
+    let filters = vec![vec![
+        AccountFilter::DataSize(quote_buffer_len()),
+        AccountFilter::prefix(quote_buffer_discriminator()),
+        AccountFilter::Memcmp {
+            offset: quote_buffer_market_offset(),
+            bytes: market_index.to_le_bytes().to_vec(),
+        },
+    ]];
+    let mut buffers = source
+        .get_program_accounts(velocity_program, &filters)
+        .await
+        .context("fetch quote buffers")?;
+    // Deterministic pick when several routers share the market.
+    buffers.sort_by_key(|(key, _)| *key);
+    Ok(buffers.first().map(|(key, account)| {
+        let authority = Pubkey::try_from(&account.data[8..40]).expect("32-byte authority");
+        (*key, authority)
+    }))
+}
+
 /// The outcome of simulating a router fill.
 #[derive(Debug, Clone)]
 pub struct RouterQuote {

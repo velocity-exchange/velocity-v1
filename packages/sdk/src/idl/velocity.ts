@@ -8384,7 +8384,8 @@ export type Velocity = {
           "writable": true
         },
         {
-          "name": "userStats"
+          "name": "userStats",
+          "writable": true
         }
       ],
       "args": [

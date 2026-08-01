@@ -3453,6 +3453,7 @@ pub struct TriggerOrder<'info> {
     #[account(mut)]
     pub user: AccountLoader<'info, User>,
     #[account(
+        mut,
         constraint = is_stats_for_user(&user, &user_stats)?
     )]
     pub user_stats: AccountLoader<'info, UserStats>,

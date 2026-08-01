@@ -8378,7 +8378,8 @@
           "writable": true
         },
         {
-          "name": "user_stats"
+          "name": "user_stats",
+          "writable": true
         }
       ],
       "args": [

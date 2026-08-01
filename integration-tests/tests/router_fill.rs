@@ -3320,7 +3320,6 @@ fn run_liq_resolver(
         liq_conditions: conditions,
         user,
         state: state_pda(),
-        oracle: fixture.oracle,
     }
     .to_account_metas(None);
     accounts.push(AccountMeta::new_readonly(fixture.oracle, false));

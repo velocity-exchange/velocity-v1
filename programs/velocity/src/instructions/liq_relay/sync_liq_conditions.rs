@@ -48,8 +48,8 @@ use {
         state::{
             clob_crank::ClobCrankConditionsV0,
             liq_conditions::{
-                LiqConditionsV0, LiqSlotMetaV0, LIQ_CONDITIONS_PDA_SEED, LIQ_SYNC_FALLBACK,
-                LIQ_SYNC_WATCH, LIQ_THRESHOLD_SLOTS,
+                LiqConditionsV0, LiqSlotMetaV0, LIQ_CONDITIONS_PDA_SEED, LIQ_SYNC_ACCOUNTS_OFFSET,
+                LIQ_SYNC_FALLBACK, LIQ_SYNC_WATCH, LIQ_THRESHOLD_SLOTS,
             },
             oracle::OracleSource,
             oracle_watch::{oracle_watch, OracleWatchV0, WatchDirection},
@@ -153,6 +153,7 @@ pub fn rewrite_liq_conditions<'info>(
     remaining_accounts: &'info [AccountInfo<'info>],
     args: SyncLiqConditionsArgs,
 ) -> Result<()> {
+    let user_key = user_loader.key();
     let mut perps: BTreeMap<u16, MarketInputs> = BTreeMap::new();
     let mut spots: BTreeMap<u16, MarketInputs> = BTreeMap::new();
     let mut oracle_of_market: BTreeMap<Pubkey, (bool, u16)> = BTreeMap::new();
@@ -224,14 +225,21 @@ pub fn rewrite_liq_conditions<'info>(
         entry.price = price;
     }
 
-    let user_key = user_loader.key();
     let conditions_key = liq_conditions.key();
     let disc8 = |disc: &[u8]| -> Result<[u8; 8]> {
         disc.try_into().map_err(|_| error!(ErrorCode::DefaultError))
     };
 
     // The account list staged executors reuse, in load_maps order.
-    let mut sync_accounts = oracle_refs;
+    // The stored list is also the threshold conditions' indirect resolver
+    // list, so it leads with the accounts `ResolveLiquidatePerpWithFill`
+    // names, in its declaration order. `read_sync_accounts` skips them.
+    let mut sync_accounts = vec![
+        AccountRefV0::writable(conditions_key.to_bytes()),
+        AccountRefV0::readonly(user_key.to_bytes()),
+        AccountRefV0::readonly(pdas::state().to_bytes()),
+    ];
+    sync_accounts.extend(oracle_refs);
     sync_accounts.extend(market_refs);
     sync_accounts.extend(tail_refs);
 
@@ -246,6 +254,8 @@ pub fn rewrite_liq_conditions<'info>(
     let fallback_slots = conditions.sync_fallback_slots.max(1);
     conditions.init_block()?;
     conditions.write_sync_accounts(&sync_accounts)?;
+    // What the threshold conditions point relay at (prefix + margin map).
+    let resolver_count = sync_accounts.len() as u8;
 
     // Free collateral now — the distance each threshold is measured from.
     let user = crate::load!(user_loader)?;
@@ -278,8 +288,7 @@ pub fn rewrite_liq_conditions<'info>(
                     &inputs,
                     slope,
                     free_collateral,
-                    &conditions_key,
-                    &user_key,
+                    resolver_count,
                     disc8(crate::instruction::ResolveLiquidatePerpWithFill::DISCRIMINATOR)?,
                     disc8(crate::instruction::LiquidatePerpWithFill::DISCRIMINATOR)?,
                 )? {
@@ -326,8 +335,7 @@ pub fn rewrite_liq_conditions<'info>(
                     &inputs,
                     slope,
                     free_collateral,
-                    &conditions_key,
-                    &user_key,
+                    resolver_count,
                     disc8(crate::instruction::ResolveLiquidatePerpWithFill::DISCRIMINATOR)?,
                     disc8(crate::instruction::LiquidatePerpWithFill::DISCRIMINATOR)?,
                 )? {
@@ -484,8 +492,7 @@ fn threshold_condition(
     inputs: &MarketInputs,
     slope: i128,
     free_collateral: i128,
-    conditions_key: &Pubkey,
-    user_key: &Pubkey,
+    resolver_count: u8,
     resolver_disc: [u8; 8],
     executor_disc: [u8; 8],
 ) -> Result<Option<ConditionV0>> {
@@ -517,18 +524,10 @@ fn threshold_condition(
         return Ok(None);
     };
 
-    // Order is the contract with `ResolveLiquidatePerpWithFill`'s accounts
-    // struct, field for field. It is not self-checking: a mismatch shows up
-    // only as an anchor owner/discriminator error inside a turner's
-    // simulation, which reads as "relay is broken" rather than "this list
-    // is in the wrong order".
-    let resolver_accounts = [
-        AccountRefV0::writable(conditions_key.to_bytes()),
-        AccountRefV0::readonly(user_key.to_bytes()),
-        AccountRefV0::readonly(pdas::state().to_bytes()),
-        AccountRefV0::readonly(oracle.to_bytes()),
-    ];
-    Ok(Some(ConditionV0::on_value_cross(
+    // The resolver needs its three named accounts *and* the whole margin
+    // map — more than a condition holds inline — so it reads the list that
+    // `rewrite_liq_conditions` already stored on this very account.
+    let mut condition = ConditionV0::on_value_cross(
         oracle.to_bytes(),
         watch.price_offset,
         watch.price_len,
@@ -541,8 +540,10 @@ fn threshold_condition(
             executor_disc,
             min_payment,
         },
-        &resolver_accounts,
-    )))
+        &[],
+    );
+    condition.set_indirect_resolver_accounts(LIQ_SYNC_ACCOUNTS_OFFSET as u32, resolver_count);
+    Ok(Some(condition))
 }
 
 // Referenced by the doc comment's precision notes.

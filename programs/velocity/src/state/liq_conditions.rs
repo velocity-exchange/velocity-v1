@@ -61,6 +61,22 @@ pub const LIQ_CONDITIONS_STAGING_OFFSET: usize = 8 + LIQ_CONDITIONS_BLOCK_LEN;
 pub const LIQ_SYNC_ACCOUNTS_MAX: usize = 32;
 pub const LIQ_SYNC_ACCOUNTS_LEN: usize = LIQ_SYNC_ACCOUNTS_MAX * relay_spec::ACCOUNT_REF_LEN;
 
+/// The region doubles as the threshold conditions' *indirect resolver
+/// account list*: a condition may only carry four refs inline, and
+/// `ResolveLiquidatePerpWithFill` needs its three named accounts plus the
+/// whole margin map. Relay reads `num_resolver_accounts` refs straight out
+/// of the block's own account at `resolver_list_offset`, so the list is
+/// stored once, here, with the resolver's named accounts first.
+///
+/// The prefix is `[liq_conditions, user, state]` — deliberately nothing
+/// market-specific, so all twelve threshold slots share one list.
+pub const LIQ_RESOLVER_PREFIX: usize = 3;
+
+/// Byte offset of `sync_accounts` within the account, for
+/// `set_indirect_resolver_accounts`.
+pub const LIQ_SYNC_ACCOUNTS_OFFSET: usize =
+    LIQ_CONDITIONS_STAGING_OFFSET + LIQ_CONDITIONS_STAGING_LEN;
+
 /// Per-threshold-slot metadata: which perp market the staged liquidation
 /// targets (for a perp exposure, its own market; for a spot-collateral
 /// exposure, the user's largest perp position).
@@ -205,6 +221,8 @@ impl LiqConditionsV0 {
             .map_err(|_| error!(ErrorCode::DefaultError))
     }
 
+    /// Writes the full resolver list: [`LIQ_RESOLVER_PREFIX`] named
+    /// accounts followed by the margin map.
     pub fn write_sync_accounts(&mut self, refs: &[relay_spec::AccountRefV0]) -> Result<()> {
         if refs.len() > LIQ_SYNC_ACCOUNTS_MAX {
             msg!("sync account list of {} exceeds the region", refs.len());
@@ -219,8 +237,10 @@ impl LiqConditionsV0 {
         Ok(())
     }
 
+    /// The margin-map accounts only — the resolver-list prefix is skipped,
+    /// so staged executors see exactly the list the sync was called with.
     pub fn read_sync_accounts(&self) -> Vec<relay_spec::AccountRefV0> {
-        (0..(self.sync_accounts_count as usize).min(LIQ_SYNC_ACCOUNTS_MAX))
+        ((LIQ_RESOLVER_PREFIX)..(self.sync_accounts_count as usize).min(LIQ_SYNC_ACCOUNTS_MAX))
             .map(|i| {
                 let start = i * relay_spec::ACCOUNT_REF_LEN;
                 let mut address = [0u8; 32];

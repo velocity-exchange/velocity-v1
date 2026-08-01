@@ -31,8 +31,6 @@ pub struct ResolveLiquidatePerpWithFill<'info> {
     pub liq_conditions: AccountLoader<'info, LiqConditionsV0>,
     pub user: AccountLoader<'info, User>,
     pub state: AccountLoader<'info, State>,
-    /// CHECK: part of the margin map; validated by `load_maps` below.
-    pub oracle: UncheckedAccount<'info>,
 }
 
 pub fn handle_resolve_liquidate_perp_with_fill<'c: 'info, 'info>(

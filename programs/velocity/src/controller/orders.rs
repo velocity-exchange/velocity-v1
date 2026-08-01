@@ -3648,6 +3648,10 @@ fn fulfill_perp_order_router_pass(
             continue;
         }
         let mut maker = makers_and_referrer.get_ref_mut(&router_maker.key)?;
+        // The settle helpers update positions directly, so the maker's
+        // funding must be current first — same pre-flight every match path
+        // runs (a stale stamp fails `update_position_and_market`'s check).
+        settle_funding_payment(&mut maker, &router_maker.key, market.deref_mut(), now)?;
         let maker_existing_position_params = maker
             .get_perp_position(market_index)?
             .get_existing_position_params_for_order_action(maker_direction);
@@ -3871,6 +3875,10 @@ fn fulfill_perp_order_router_pass(
             }
             let maker_key = resolve_user(&change.user)?;
             let mut maker = makers_and_referrer.get_ref_mut(&maker_key)?;
+            // Same pre-flight as the DLOB leg: the maker's funding stamp
+            // must be current before `settle_external_match_fill` touches
+            // their position.
+            settle_funding_payment(&mut maker, &maker_key, market.deref_mut(), now)?;
             let mut maker_stats = if maker.authority == taker.authority {
                 None
             } else {

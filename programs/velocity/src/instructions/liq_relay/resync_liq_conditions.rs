@@ -81,6 +81,10 @@ pub fn handle_resync_liq_conditions<'c: 'info, 'info>(
 /// recomputes everything from the account list the last sync stored.
 #[derive(Accounts)]
 pub struct ResolveResyncLiqConditions<'info> {
+    /// The shared staging account, index 0 by convention — a resolver's
+    /// response pointer is interpreted against it.
+    #[account(mut, seeds = [crate::state::relay_scratch::RELAY_SCRATCH_PDA_SEED], bump)]
+    pub scratch: AccountLoader<'info, crate::state::relay_scratch::RelayScratchV0>,
     /// Writable only for the staging region; simulation-only.
     #[account(mut, constraint = liq_conditions.load()?.user == user.key())]
     pub liq_conditions: AccountLoader<'info, UserConditionsV0>,
@@ -91,7 +95,7 @@ pub fn handle_resolve_resync_liq_conditions(
     ctx: Context<ResolveResyncLiqConditions>,
 ) -> Result<()> {
     let conditions = ctx.accounts.liq_conditions.clone();
-    crate::instructions::resolve_into(&conditions, || {
+    crate::instructions::resolve_into(&ctx.accounts.scratch, || {
         let stale = {
             let conditions = ctx.accounts.liq_conditions.load()?;
             let user = crate::load!(ctx.accounts.user)?;

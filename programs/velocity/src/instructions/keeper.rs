@@ -4180,6 +4180,10 @@ pub struct PauseSpotMarketDepositWithdraw<'info> {
 /// simulation-only, staged from the user's synced trigger conditions.
 #[derive(Accounts)]
 pub struct ResolveTriggerOrder<'info> {
+    /// The shared staging account, index 0 by convention — a resolver's
+    /// response pointer is interpreted against it.
+    #[account(mut, seeds = [crate::state::relay_scratch::RELAY_SCRATCH_PDA_SEED], bump)]
+    pub scratch: AccountLoader<'info, crate::state::relay_scratch::RelayScratchV0>,
     /// Writable only for the staging region; simulation-only.
     #[account(mut, constraint = trigger_conditions.load()?.user == user.key())]
     pub trigger_conditions: AccountLoader<'info, UserConditionsV0>,
@@ -4191,7 +4195,7 @@ pub struct ResolveTriggerOrder<'info> {
 
 pub fn handle_resolve_trigger_order(ctx: Context<ResolveTriggerOrder>) -> Result<()> {
     let conditions = ctx.accounts.trigger_conditions.clone();
-    crate::instructions::resolve_into(&conditions, || {
+    crate::instructions::resolve_into(&ctx.accounts.scratch, || {
         let clock = Clock::get()?;
         let fired = {
             let conditions = ctx.accounts.trigger_conditions.load()?;

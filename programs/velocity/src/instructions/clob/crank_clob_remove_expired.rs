@@ -33,7 +33,7 @@ pub fn handle_crank_clob_remove_expired(
 pub fn handle_resolve_crank_clob_remove_expired(ctx: Context<ResolveClobCrank>) -> Result<()> {
     validate_linkage(&ctx)?;
     let conditions = ctx.accounts.crank_conditions.clone();
-    resolve_into(&conditions, || {
+    resolve_into(&ctx.accounts.scratch, || {
         let now = Clock::get()?.unix_timestamp;
         let (node_index, node) = {
             let data = ctx.accounts.clob_market.try_borrow_data()?;

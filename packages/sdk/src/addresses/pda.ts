@@ -628,7 +628,12 @@ export async function getLpPoolTokenTokenAccountPublicKey(
  * @param marketIndex - Perp market index.
  * @returns The `ClobCrankConditionsV0` account's public key.
  */
-/** Per-user relay liquidation conditions: `["liq_conditions", user]`. */
+/**
+ * Per-user relay conditions: `["user_conditions", user]`. One account per
+ * user covering both liquidation thresholds and trigger orders — they were
+ * two accounts until they were merged, so a client that still derives a
+ * `liq_conditions` or `trigger_conditions` address is looking at nothing.
+ */
 export function getUserConditionsPublicKey(
 	programId: PublicKey,
 	user: PublicKey
@@ -638,6 +643,18 @@ export function getUserConditionsPublicKey(
 			Buffer.from(anchor.utils.bytes.utf8.encode('user_conditions')),
 			user.toBuffer(),
 		],
+		programId
+	)[0];
+}
+
+/**
+ * The program-wide resolver staging account: `["relay_scratch"]`. Every
+ * resolver names it at index 0; it holds no durable state (resolvers only
+ * ever run under simulation), so it is created once and shared.
+ */
+export function getRelayScratchPublicKey(programId: PublicKey): PublicKey {
+	return PublicKey.findProgramAddressSync(
+		[Buffer.from(anchor.utils.bytes.utf8.encode('relay_scratch'))],
 		programId
 	)[0];
 }

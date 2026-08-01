@@ -1657,6 +1657,12 @@ pub mod velocity {
     /// when already at size. Payer covers the rent-exempt shortfall (auth:
     /// `AccountExtension` hot key, or warm/cold admin). See
     /// `docs/ACCOUNT-EXTENSION.md`.
+    /// Create the program's shared resolver staging account (one for the
+    /// whole program; permissionless, pays its own rent once).
+    pub fn initialize_relay_scratch(ctx: Context<InitializeRelayScratch>) -> Result<()> {
+        handle_initialize_relay_scratch(ctx)
+    }
+
     pub fn extend_account(ctx: Context<ExtendAccount>) -> Result<()> {
         handle_extend_account(ctx)
     }

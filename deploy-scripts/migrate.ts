@@ -39,6 +39,7 @@ import {
 import { AnchorProvider, BN, Program } from '@coral-xyz/anchor';
 import {
 	getClobCrankConditionsPublicKey,
+	getRelayScratchPublicKey,
 	getUserConditionsPublicKey,
 	getPerpMarketPublicKeySync,
 	getSpotMarketPublicKeySync,
@@ -97,10 +98,15 @@ const RESIZABLE: { name: string; size: number }[] = [
 	{ name: 'User', size: 8 + 4496 },
 	{ name: 'PerpMarket', size: 8 + 1328 },
 	{ name: 'QuoterV0', size: 8 + 2752 },
-	{ name: 'ClobCrankConditionsV0', size: 3848 },
-	{ name: 'QuoterCrossConditionsV0', size: 4360 },
-	{ name: 'TriggerConditionsV0', size: 6040 },
-	{ name: 'LiqConditionsV0', size: 7272 },
+	// Relay condition hosts. These shrank when conditions dropped their
+	// inline resolver slots and their per-account staging regions, so
+	// `extend_account` will not touch them — it only ever grows. They stay
+	// listed because the table is what a future growth is added to, and a
+	// type missing from it is the failure that has no symptom until an
+	// account is read at the wrong offset.
+	{ name: 'ClobCrankConditionsV0', size: 1400 },
+	{ name: 'QuoterCrossConditionsV0', size: 2024 },
+	{ name: 'UserConditionsV0', size: 7592 },
 ];
 
 async function main() {
@@ -167,6 +173,28 @@ async function main() {
 					.instruction(),
 			]);
 		}
+	}
+
+	// ---- 1b. shared resolver staging --------------------------------------
+	// Every resolver names this account. Until it exists, every relay crank
+	// in the program fails simulation with an owner error, so it comes
+	// before anything that registers a watch.
+	const scratch = getRelayScratchPublicKey(velocity);
+	if (await connection.getAccountInfo(scratch)) {
+		console.log(`\nscratch ${scratch.toBase58()}: already created`);
+	} else {
+		console.log(`\nscratch ${scratch.toBase58()}: creating`);
+		await act('create relay scratch', [
+			await program.methods
+				.initializeRelayScratch()
+				.accounts({
+					scratch,
+					payer: payer.publicKey,
+					rent: SYSVAR_RENT_PUBKEY,
+					systemProgram: SystemProgram.programId,
+				})
+				.instruction(),
+		]);
 	}
 
 	// ---- 2. liquidation coverage -----------------------------------------

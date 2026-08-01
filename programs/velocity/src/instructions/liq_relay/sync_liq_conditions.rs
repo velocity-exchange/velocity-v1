@@ -235,7 +235,8 @@ pub fn rewrite_liq_conditions<'info>(
     // list, so it leads with the accounts `ResolveLiquidatePerpWithFill`
     // names, in its declaration order. `read_sync_accounts` skips them.
     let mut sync_accounts = vec![
-        AccountRefV0::writable(conditions_key.to_bytes()),
+        AccountRefV0::writable(pdas::relay_scratch().to_bytes()),
+        AccountRefV0::readonly(conditions_key.to_bytes()),
         AccountRefV0::readonly(user_key.to_bytes()),
         AccountRefV0::readonly(pdas::state().to_bytes()),
     ];

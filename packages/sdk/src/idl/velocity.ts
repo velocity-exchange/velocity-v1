@@ -2601,14 +2601,6 @@ export type Velocity = {
     },
     {
       "name": "extendAccount",
-      "docs": [
-        "Grow a zero-copy account to the size this program build compiles in",
-        "for its type (resolved from the account discriminator). The migration",
-        "crank after an upgrade that appends fields to an account struct; no-op",
-        "when already at size. Payer covers the rent-exempt shortfall (auth:",
-        "`AccountExtension` hot key, or warm/cold admin). See",
-        "`docs/ACCOUNT-EXTENSION.md`."
-      ],
       "discriminator": [
         234,
         102,
@@ -4442,6 +4434,71 @@ export type Velocity = {
           }
         }
       ]
+    },
+    {
+      "name": "initializeRelayScratch",
+      "docs": [
+        "Grow a zero-copy account to the size this program build compiles in",
+        "for its type (resolved from the account discriminator). The migration",
+        "crank after an upgrade that appends fields to an account struct; no-op",
+        "when already at size. Payer covers the rent-exempt shortfall (auth:",
+        "`AccountExtension` hot key, or warm/cold admin). See",
+        "`docs/ACCOUNT-EXTENSION.md`.",
+        "Create the program's shared resolver staging account (one for the",
+        "whole program; permissionless, pays its own rent once)."
+      ],
+      "discriminator": [
+        87,
+        141,
+        72,
+        84,
+        238,
+        1,
+        115,
+        131
+      ],
+      "accounts": [
+        {
+          "name": "scratch",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  114,
+                  101,
+                  108,
+                  97,
+                  121,
+                  95,
+                  115,
+                  99,
+                  114,
+                  97,
+                  116,
+                  99,
+                  104
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "name": "payer",
+          "writable": true,
+          "signer": true
+        },
+        {
+          "name": "rent",
+          "address": "SysvarRent111111111111111111111111111111111"
+        },
+        {
+          "name": "systemProgram",
+          "address": "11111111111111111111111111111111"
+        }
+      ],
+      "args": []
     },
     {
       "name": "initializeRevenueShare",
@@ -7808,6 +7865,36 @@ export type Velocity = {
       ],
       "accounts": [
         {
+          "name": "scratch",
+          "docs": [
+            "The shared staging account, index 0 by convention — a resolver's",
+            "response pointer is interpreted against it."
+          ],
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  114,
+                  101,
+                  108,
+                  97,
+                  121,
+                  95,
+                  115,
+                  99,
+                  114,
+                  97,
+                  116,
+                  99,
+                  104
+                ]
+              }
+            ]
+          }
+        },
+        {
           "name": "crankConditions",
           "docs": [
             "Writable only because the payload is staged in its scratch region;",
@@ -7847,6 +7934,36 @@ export type Velocity = {
         113
       ],
       "accounts": [
+        {
+          "name": "scratch",
+          "docs": [
+            "The shared staging account, index 0 by convention — a resolver's",
+            "response pointer is interpreted against it."
+          ],
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  114,
+                  101,
+                  108,
+                  97,
+                  121,
+                  95,
+                  115,
+                  99,
+                  114,
+                  97,
+                  116,
+                  99,
+                  104
+                ]
+              }
+            ]
+          }
+        },
         {
           "name": "crankConditions",
           "docs": [
@@ -7888,6 +8005,36 @@ export type Velocity = {
       ],
       "accounts": [
         {
+          "name": "scratch",
+          "docs": [
+            "The shared staging account, index 0 by convention — a resolver's",
+            "response pointer is interpreted against it."
+          ],
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  114,
+                  101,
+                  108,
+                  97,
+                  121,
+                  95,
+                  115,
+                  99,
+                  114,
+                  97,
+                  116,
+                  99,
+                  104
+                ]
+              }
+            ]
+          }
+        },
+        {
           "name": "crankConditions",
           "docs": [
             "Writable only because the payload is staged in its scratch region;",
@@ -7928,6 +8075,36 @@ export type Velocity = {
         131
       ],
       "accounts": [
+        {
+          "name": "scratch",
+          "docs": [
+            "The shared staging account, index 0 by convention — a resolver's",
+            "response pointer is interpreted against it."
+          ],
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  114,
+                  101,
+                  108,
+                  97,
+                  121,
+                  95,
+                  115,
+                  99,
+                  114,
+                  97,
+                  116,
+                  99,
+                  104
+                ]
+              }
+            ]
+          }
+        },
         {
           "name": "crossConditions",
           "docs": [
@@ -7975,6 +8152,36 @@ export type Velocity = {
         89
       ],
       "accounts": [
+        {
+          "name": "scratch",
+          "docs": [
+            "The shared staging account, index 0 by convention — a resolver's",
+            "response pointer is interpreted against it."
+          ],
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  114,
+                  101,
+                  108,
+                  97,
+                  121,
+                  95,
+                  115,
+                  99,
+                  114,
+                  97,
+                  116,
+                  99,
+                  104
+                ]
+              }
+            ]
+          }
+        },
         {
           "name": "liqConditions",
           "docs": [
@@ -8242,6 +8449,36 @@ export type Velocity = {
       ],
       "accounts": [
         {
+          "name": "scratch",
+          "docs": [
+            "The shared staging account, index 0 by convention — a resolver's",
+            "response pointer is interpreted against it."
+          ],
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  114,
+                  101,
+                  108,
+                  97,
+                  121,
+                  95,
+                  115,
+                  99,
+                  114,
+                  97,
+                  116,
+                  99,
+                  104
+                ]
+              }
+            ]
+          }
+        },
+        {
           "name": "liqConditions",
           "docs": [
             "Writable only for the staging region; simulation-only."
@@ -8393,6 +8630,36 @@ export type Velocity = {
       ],
       "accounts": [
         {
+          "name": "scratch",
+          "docs": [
+            "The shared staging account, index 0 by convention — a resolver's",
+            "response pointer is interpreted against it."
+          ],
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  114,
+                  101,
+                  108,
+                  97,
+                  121,
+                  95,
+                  115,
+                  99,
+                  114,
+                  97,
+                  116,
+                  99,
+                  104
+                ]
+              }
+            ]
+          }
+        },
+        {
           "name": "triggerConditions",
           "docs": [
             "Writable only for the staging region; simulation-only."
@@ -8427,6 +8694,36 @@ export type Velocity = {
         33
       ],
       "accounts": [
+        {
+          "name": "scratch",
+          "docs": [
+            "The shared staging account, index 0 by convention — a resolver's",
+            "response pointer is interpreted against it."
+          ],
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  114,
+                  101,
+                  108,
+                  97,
+                  121,
+                  95,
+                  115,
+                  99,
+                  114,
+                  97,
+                  116,
+                  99,
+                  104
+                ]
+              }
+            ]
+          }
+        },
         {
           "name": "triggerConditions",
           "docs": [
@@ -16544,6 +16841,19 @@ export type Velocity = {
       ]
     },
     {
+      "name": "relayScratchV0",
+      "discriminator": [
+        233,
+        134,
+        29,
+        108,
+        164,
+        128,
+        221,
+        138
+      ]
+    },
+    {
       "name": "revenueShare",
       "discriminator": [
         55,
@@ -19670,27 +19980,16 @@ export type Velocity = {
             }
           },
           {
-            "name": "staging",
-            "docs": [
-              "Scratch the resolvers stage their `ResolvedCrankV0` into. Only ever",
-              "written under simulation; on-chain contents are meaningless."
-            ],
-            "type": {
-              "array": [
-                "u8",
-                2048
-              ]
-            }
-          },
-          {
             "name": "resolvers",
             "docs": [
+              "Scratch the resolvers stage their `ResolvedCrankV0` into. Only ever",
+              "written under simulation; on-chain contents are meaningless.",
               "The resolver account list every condition here points at."
             ],
             "type": {
               "array": [
                 "u8",
-                144
+                176
               ]
             }
           },
@@ -25004,21 +25303,10 @@ export type Velocity = {
             }
           },
           {
-            "name": "staging",
-            "docs": [
-              "Scratch the resolver stages its `ResolvedCrankV0` into. Only ever",
-              "written under simulation."
-            ],
-            "type": {
-              "array": [
-                "u8",
-                2048
-              ]
-            }
-          },
-          {
             "name": "resolverList",
             "docs": [
+              "Scratch the resolver stages its `ResolvedCrankV0` into. Only ever",
+              "written under simulation.",
               "The resolver's account list ([`relay_spec::AccountRefV0`] wire",
               "bytes), written at attach; the conditions reference it indirectly."
             ],
@@ -25307,6 +25595,27 @@ export type Velocity = {
               "array": [
                 "u8",
                 32
+              ]
+            }
+          }
+        ]
+      }
+    },
+    {
+      "name": "relayScratchV0",
+      "serialization": "bytemuckunsafe",
+      "repr": {
+        "kind": "c"
+      },
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "scratch",
+            "type": {
+              "array": [
+                "u8",
+                4096
               ]
             }
           }
@@ -27854,20 +28163,9 @@ export type Velocity = {
             }
           },
           {
-            "name": "staging",
-            "docs": [
-              "Scratch the resolvers stage into. Simulation-only."
-            ],
-            "type": {
-              "array": [
-                "u8",
-                2048
-              ]
-            }
-          },
-          {
             "name": "syncAccounts",
             "docs": [
+              "Scratch the resolvers stage into. Simulation-only.",
               "See [`LIQ_SYNC_ACCOUNTS_LEN`]."
             ],
             "type": {
@@ -27917,7 +28215,7 @@ export type Velocity = {
             "type": {
               "array": [
                 "u8",
-                1056
+                1344
               ]
             }
           },

@@ -73,7 +73,8 @@ pub fn write_clob_crank_conditions(
     // Stored once on the account; every condition below points at it.
     // Index 0 by contract: `ClobCrankConditionsV0::stage` points there.
     let resolvers = conditions.write_resolvers(&[
-        AccountRefV0::writable(keys.crank_conditions.to_bytes()),
+        AccountRefV0::writable(crate::state::pdas::relay_scratch().to_bytes()),
+        AccountRefV0::readonly(keys.crank_conditions.to_bytes()),
         AccountRefV0::readonly(keys.clob_market.to_bytes()),
         AccountRefV0::readonly(keys.quoter.to_bytes()),
         AccountRefV0::readonly(keys.state.to_bytes()),

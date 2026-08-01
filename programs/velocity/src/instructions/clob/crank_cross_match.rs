@@ -248,7 +248,7 @@ pub fn handle_crank_cross_match<'c: 'info, 'info>(
 pub fn handle_resolve_crank_cross_match(ctx: Context<ResolveClobCrank>) -> Result<()> {
     validate_linkage(&ctx)?;
     let conditions = ctx.accounts.crank_conditions.clone();
-    resolve_into(&conditions, || {
+    resolve_into(&ctx.accounts.scratch, || {
         let clock = Clock::get()?;
         let cross = {
             let data = ctx.accounts.clob_market.try_borrow_data()?;
@@ -403,6 +403,10 @@ fn find_clob_cross(data: &[u8], slot: u64, now: i64) -> Result<ClobCross> {
 /// *any* Custom quoter. Nothing here is program-specific.
 #[derive(Accounts)]
 pub struct ResolveCrankCrossMatchQuoter<'info> {
+    /// The shared staging account, index 0 by convention — a resolver's
+    /// response pointer is interpreted against it.
+    #[account(mut, seeds = [crate::state::relay_scratch::RELAY_SCRATCH_PDA_SEED], bump)]
+    pub scratch: AccountLoader<'info, crate::state::relay_scratch::RelayScratchV0>,
     /// Writable only for the staging region; simulation-only.
     #[account(mut, has_one = quoter)]
     pub cross_conditions: AccountLoader<'info, crate::state::quoter_cross::QuoterCrossConditionsV0>,
@@ -427,7 +431,7 @@ pub fn handle_resolve_crank_cross_match_quoter<'info>(
     ctx: Context<'info, ResolveCrankCrossMatchQuoter<'info>>,
 ) -> Result<()> {
     let conditions = ctx.accounts.cross_conditions.clone();
-    resolve_into(&conditions, || {
+    resolve_into(&ctx.accounts.scratch, || {
         let clock = Clock::get()?;
         let quoter = ctx.accounts.quoter.load()?;
         if !quoter.is_active || !quoter.is_approved {

@@ -48,11 +48,10 @@ pub const QUOTER_CROSS_BLOCK_LEN: usize =
 /// registering an unusually long execute list can exceed this, in which
 /// case staging fails and the turner sees no work (self-limiting, and the
 /// publisher fast path still covers the cross).
-pub const QUOTER_CROSS_STAGING_LEN: usize = 2048;
 
 /// Account-data offset of the staging region (what a `ResponsePointerV0`'s
 /// `offset` is relative to): discriminator + the block.
-pub const QUOTER_CROSS_STAGING_OFFSET: usize = 8 + QUOTER_CROSS_BLOCK_LEN;
+pub const QUOTER_CROSS_TAIL_OFFSET: usize = 8 + QUOTER_CROSS_BLOCK_LEN;
 
 /// The resolver's account list, stored ONCE next to the block and pointed
 /// at by every condition's `resolver_list_offset` (relay's indirection for
@@ -62,8 +61,7 @@ pub const QUOTER_CROSS_RESOLVER_LIST_MAX: usize = 38;
 pub const QUOTER_CROSS_RESOLVER_LIST_LEN: usize =
     QUOTER_CROSS_RESOLVER_LIST_MAX * relay_spec::ACCOUNT_REF_LEN;
 /// Account-data offset of the resolver list region.
-pub const QUOTER_CROSS_RESOLVER_LIST_OFFSET: usize =
-    QUOTER_CROSS_STAGING_OFFSET + QUOTER_CROSS_STAGING_LEN;
+pub const QUOTER_CROSS_RESOLVER_LIST_OFFSET: usize = QUOTER_CROSS_TAIL_OFFSET;
 
 #[account(zero_copy(unsafe))]
 #[derive(Debug)]
@@ -74,7 +72,6 @@ pub struct QuoterCrossConditionsV0 {
     pub block: [u8; QUOTER_CROSS_BLOCK_LEN],
     /// Scratch the resolver stages its `ResolvedCrankV0` into. Only ever
     /// written under simulation.
-    pub staging: [u8; QUOTER_CROSS_STAGING_LEN],
     /// The resolver's account list ([`relay_spec::AccountRefV0`] wire
     /// bytes), written at attach; the conditions reference it indirectly.
     pub resolver_list: [u8; QUOTER_CROSS_RESOLVER_LIST_LEN],
@@ -100,7 +97,6 @@ impl Default for QuoterCrossConditionsV0 {
     fn default() -> Self {
         Self {
             block: [0; QUOTER_CROSS_BLOCK_LEN],
-            staging: [0; QUOTER_CROSS_STAGING_LEN],
             resolver_list: [0; QUOTER_CROSS_RESOLVER_LIST_LEN],
             quoter: Pubkey::default(),
             clob_quoter: Pubkey::default(),
@@ -116,15 +112,8 @@ impl Default for QuoterCrossConditionsV0 {
 }
 
 impl QuoterCrossConditionsV0 {
-    pub const SIZE: usize = 8
-        + QUOTER_CROSS_BLOCK_LEN
-        + QUOTER_CROSS_STAGING_LEN
-        + QUOTER_CROSS_RESOLVER_LIST_LEN
-        + 5 * 32
-        + 2
-        + 2
-        + 1
-        + 5;
+    pub const SIZE: usize =
+        8 + QUOTER_CROSS_BLOCK_LEN + QUOTER_CROSS_RESOLVER_LIST_LEN + 5 * 32 + 2 + 2 + 1 + 5;
 
     /// Write the resolver account list the conditions point at.
     pub fn write_resolver_list(&mut self, refs: &[relay_spec::AccountRefV0]) -> Result<()> {
@@ -188,7 +177,6 @@ const _: () = assert!(QuoterCrossConditionsV0::SIZE <= 10_240);
 /// `stage` are all provided.
 impl ConditionBlock for QuoterCrossConditionsV0 {
     const NUM_CONDITIONS: usize = QUOTER_CROSS_CONDITIONS;
-    const STAGING_OFFSET: u32 = QUOTER_CROSS_STAGING_OFFSET as u32;
 
     fn block(&self) -> &[u8] {
         &self.block
@@ -196,10 +184,6 @@ impl ConditionBlock for QuoterCrossConditionsV0 {
 
     fn block_mut(&mut self) -> &mut [u8] {
         &mut self.block
-    }
-
-    fn staging_mut(&mut self) -> &mut [u8] {
-        &mut self.staging
     }
 }
 
@@ -214,8 +198,8 @@ mod tests {
             QuoterCrossConditionsV0::SIZE - 8
         );
         assert_eq!(
-            QUOTER_CROSS_STAGING_OFFSET,
-            8 + core::mem::offset_of!(QuoterCrossConditionsV0, staging)
+            QUOTER_CROSS_RESOLVER_LIST_OFFSET,
+            8 + core::mem::offset_of!(QuoterCrossConditionsV0, resolver_list)
         );
     }
 

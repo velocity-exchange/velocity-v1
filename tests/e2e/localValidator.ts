@@ -52,6 +52,7 @@ import {
 	OrderTriggerCondition,
 	getUserAccountPublicKeySync,
 	getUserStatsAccountPublicKey,
+	getRelayScratchPublicKey,
 	getUserConditionsPublicKey,
 	getVelocitySignerPublicKey,
 	OracleSource,
@@ -949,6 +950,22 @@ describe('e2e localnet: programs + publisher + redis', function () {
 		// Protocol init through the real admin instructions.
 		admin = newClient(payer);
 		await admin.initialize(usdcMint.publicKey, true);
+
+		// The program-wide resolver staging account. Every relay crank
+		// simulates against it, so it exists before any watch is registered.
+		await provider.sendAndConfirm(
+			new Transaction().add(
+				await program.methods
+					.initializeRelayScratch()
+					.accounts({
+						scratch: getRelayScratchPublicKey(VELOCITY_ID),
+						payer: payer.publicKey,
+						rent: SYSVAR_RENT_PUBKEY,
+						systemProgram: SystemProgram.programId,
+					})
+					.instruction()
+			)
+		);
 		await admin.subscribe();
 		await initializeQuoteSpotMarket(admin, usdcMint.publicKey);
 		await admin.initializePerpMarket(
@@ -1543,10 +1560,12 @@ describe('e2e localnet: programs + publisher + redis', function () {
 			takerKp.publicKey,
 			0
 		);
-		const triggerConditions = PublicKey.findProgramAddressSync(
-			[Buffer.from('trigger_conditions'), takerUser.toBuffer()],
-			VELOCITY_ID
-		)[0];
+		// One conditions account per user now — the same one the
+		// liquidation thresholds live on.
+		const triggerConditions = getUserConditionsPublicKey(
+			VELOCITY_ID,
+			takerUser
+		);
 		const syncAccounts = [
 			{ pubkey: oracle, isSigner: false, isWritable: false },
 			{
@@ -1645,10 +1664,7 @@ describe('e2e localnet: programs + publisher + redis', function () {
 			victimKp.publicKey,
 			0
 		);
-		const userConditions = PublicKey.findProgramAddressSync(
-			[Buffer.from('user_conditions'), victimUser.toBuffer()],
-			VELOCITY_ID
-		)[0];
+		const userConditions = getUserConditionsPublicKey(VELOCITY_ID, victimUser);
 		await syncLiqConditions(victimUser, userConditions);
 		await airdrop(userConditions, 1);
 		await registerWatch(userConditions);

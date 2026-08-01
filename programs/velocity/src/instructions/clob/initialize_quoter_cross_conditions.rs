@@ -108,7 +108,8 @@ pub fn handle_initialize_quoter_cross_conditions(
     // ONCE next to the block; each condition points at it with relay's
     // resolver-list indirection instead of inlining a copy.
     let mut resolver_accounts = vec![
-        AccountRefV0::writable(ctx.accounts.cross_conditions.key().to_bytes()),
+        AccountRefV0::writable(crate::state::pdas::relay_scratch().to_bytes()),
+        AccountRefV0::readonly(ctx.accounts.cross_conditions.key().to_bytes()),
         AccountRefV0::readonly(clob_market.to_bytes()),
         AccountRefV0::readonly(ctx.accounts.state.key().to_bytes()),
         AccountRefV0::readonly(ctx.accounts.quoter.key().to_bytes()),

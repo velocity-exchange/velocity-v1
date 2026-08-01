@@ -3,9 +3,8 @@
 //!
 //! A resolver is always: look for work; if there is none say so; otherwise
 //! describe the executor call (its account list and its args), write that
-//! into the conditions account's staging region, and return a pointer to
-//! it. Only the first step differs between resolvers — [`resolve_into`]
-//! owns the rest.
+//! into the shared scratch account, and return a pointer to it. Only the
+//! first step differs between resolvers — [`resolve_into`] owns the rest.
 //!
 //! The builder is also where relay's two hard rules about staged executors
 //! are enforced, because both have already been tripped once by hand:
@@ -26,11 +25,13 @@
 //! being silently skipped forever by turners.
 
 use {
-    crate::{error::ErrorCode, msg, state::pdas},
-    anchor_lang::{prelude::*, ZeroCopy},
-    relay_spec::{
-        AccountRefV0, ConditionBlock, ResolvedCrankV0, ResponsePointerV0, KEEPER_PLACEHOLDER,
+    crate::{
+        error::ErrorCode,
+        msg,
+        state::{pdas, relay_scratch::RelayScratchV0},
     },
+    anchor_lang::prelude::*,
+    relay_spec::{AccountRefV0, ResolvedCrankV0, ResponsePointerV0, KEEPER_PLACEHOLDER},
     solana_program::{instruction::AccountMeta, program::set_return_data},
     std::ops::DerefMut,
 };
@@ -154,25 +155,16 @@ impl StagedCall {
 /// work. Everything else — the no-work response, the account-ref
 /// conversion and its rule checks, staging, and the return data — happens
 /// here.
-pub fn resolve_into<'info, T>(
-    conditions: &AccountLoader<'info, T>,
+pub fn resolve_into<'info>(
+    scratch: &AccountLoader<'info, RelayScratchV0>,
     discover: impl FnOnce() -> Result<Option<StagedCall>>,
-) -> Result<()>
-where
-    T: ZeroCopy + Owner + ConditionBlock,
-{
+) -> Result<()> {
     let Some(call) = discover()? else {
         set_return_data(&ResponsePointerV0::no_work().to_bytes());
         return Ok(());
     };
     let resolved = call.into_resolved()?;
-    let pointer = {
-        let mut conditions = conditions.load_mut()?;
-        conditions.deref_mut().stage(&resolved).map_err(|e| {
-            msg!("staging a resolved crank failed: {:?}", e);
-            error!(ErrorCode::DefaultError)
-        })?
-    };
+    let pointer = scratch.load_mut()?.deref_mut().stage(&resolved)?;
     set_return_data(&pointer);
     Ok(())
 }

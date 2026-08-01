@@ -32,6 +32,7 @@ mod admin;
 mod clob;
 pub mod constraints;
 mod if_staker;
+pub mod initialize_relay_scratch;
 mod keeper;
 mod liq_relay;
 pub mod optional_accounts;
@@ -42,3 +43,5 @@ pub mod relay_harness;
 mod router;
 mod trigger_relay;
 mod user;
+
+pub use initialize_relay_scratch::*;

@@ -1153,6 +1153,7 @@ fn run_resolver(
     let ix = Instruction {
         program_id: velocity_id(),
         accounts: velocity::accounts::ResolveClobCrank {
+            scratch: relay_scratch_pda(),
             crank_conditions: conditions,
             clob_market: fixture.clob_market,
             quoter: fixture.quoter,
@@ -1171,7 +1172,7 @@ fn run_resolver(
     if !pointer.has_work() {
         return None;
     }
-    let data = fixture.svm.get_account(&conditions).unwrap().data;
+    let data = fixture.svm.get_account(&relay_scratch_pda()).unwrap().data;
     let staged = &data[pointer.offset() as usize..(pointer.offset() + pointer.len()) as usize];
     Some(velocity::relay_spec::ResolvedCrankV0::read(staged).unwrap())
 }
@@ -1904,6 +1905,7 @@ fn cross_match_crank_fills_a_crossed_clob_and_keeps_the_spread() {
         let ix = Instruction {
             program_id: velocity_id(),
             accounts: velocity::accounts::ResolveClobCrank {
+                scratch: relay_scratch_pda(),
                 crank_conditions: conditions,
                 clob_market: fixture.clob_market,
                 quoter: fixture.quoter,
@@ -1919,7 +1921,7 @@ fn cross_match_crank_fills_a_crossed_clob_and_keeps_the_spread() {
         if !pointer.has_work() {
             return None;
         }
-        let data = fixture.svm.get_account(&conditions).unwrap().data;
+        let data = fixture.svm.get_account(&relay_scratch_pda()).unwrap().data;
         let staged = &data[pointer.offset() as usize..(pointer.offset() + pointer.len()) as usize];
         Some(velocity::relay_spec::ResolvedCrankV0::read(staged).unwrap())
     };
@@ -2858,6 +2860,7 @@ fn run_quoter_cross_resolver(
     cross_conditions: Pubkey,
 ) -> Option<velocity::relay_spec::ResolvedCrankV0> {
     let mut accounts = velocity::accounts::ResolveCrankCrossMatchQuoter {
+        scratch: relay_scratch_pda(),
         cross_conditions,
         clob_market: fixture.clob_market,
         state: state_pda(),
@@ -2879,7 +2882,7 @@ fn run_quoter_cross_resolver(
     if !pointer.has_work() {
         return None;
     }
-    let data = fixture.svm.get_account(&cross_conditions).unwrap().data;
+    let data = fixture.svm.get_account(&relay_scratch_pda()).unwrap().data;
     let staged = &data[pointer.offset() as usize..(pointer.offset() + pointer.len()) as usize];
     Some(velocity::relay_spec::ResolvedCrankV0::read(staged).unwrap())
 }
@@ -2927,14 +2930,15 @@ fn generic_quoter_cross_conditions_discover_and_fill_a_midpoint_clob_cross() {
         fixture.clob_market.to_bytes()
     );
     assert_eq!(conditions[QUOTER_CROSS_FALLBACK].wake_slot, 100);
-    // The resolver list (entry's registered quote surface) is stored once
-    // next to the block; every condition points at it indirectly.
-    assert_eq!(conditions[QUOTER_CROSS_WATCH].num_resolver_accounts, 8);
+    // The resolver list (shared scratch, then the entry's registered quote
+    // surface) is stored once next to the block; every condition points at
+    // it indirectly.
+    assert_eq!(conditions[QUOTER_CROSS_WATCH].num_resolver_accounts, 9);
     assert_eq!(
         conditions[QUOTER_CROSS_WATCH].resolver_list_offset,
         velocity::state::quoter_cross::QUOTER_CROSS_RESOLVER_LIST_OFFSET as u32
     );
-    assert_eq!(acct.resolver_list_count, 8);
+    assert_eq!(acct.resolver_list_count, 9);
 
     // Nothing crossed yet: the resolver reports no work.
     fixture.svm.warp_to_slot(12);
@@ -3058,6 +3062,7 @@ fn run_trigger_resolver(
 ) -> Option<velocity::relay_spec::ResolvedCrankV0> {
     let conditions = user_conditions_pda(&user);
     let accounts = velocity::accounts::ResolveTriggerOrder {
+        scratch: relay_scratch_pda(),
         trigger_conditions: conditions,
         user,
         oracle: fixture.oracle,
@@ -3079,7 +3084,7 @@ fn run_trigger_resolver(
     if !pointer.has_work() {
         return None;
     }
-    let data = fixture.svm.get_account(&conditions).unwrap().data;
+    let data = fixture.svm.get_account(&relay_scratch_pda()).unwrap().data;
     let staged = &data[pointer.offset() as usize..(pointer.offset() + pointer.len()) as usize];
     Some(velocity::relay_spec::ResolvedCrankV0::read(staged).unwrap())
 }
@@ -3164,8 +3169,9 @@ fn trigger_relay_conditions_fire_an_armed_trigger_unsigned() {
     assert_eq!(trig[0].min_payment, PAYMENT);
     assert_eq!(trig[1].active, 0, "one armed trigger, one live slot");
     assert_eq!(acct.trigger_slots[0].order_id, 7);
-    // The shared list: the resolver's three named accounts, then the map.
-    assert_eq!(acct.sync_accounts_count, 3 + 3);
+    // The shared list: the resolver's four named accounts (scratch first),
+    // then the map.
+    assert_eq!(acct.sync_accounts_count, 4 + 3);
 
     // Below the trigger: the resolver reports no work.
     fixture.svm.warp_to_slot(12);
@@ -3320,6 +3326,7 @@ fn run_liq_resolver(
 ) -> Option<velocity::relay_spec::ResolvedCrankV0> {
     let conditions = user_conditions_pda(&user);
     let mut accounts = velocity::accounts::ResolveLiquidatePerpWithFill {
+        scratch: relay_scratch_pda(),
         liq_conditions: conditions,
         user,
         state: state_pda(),
@@ -3339,7 +3346,7 @@ fn run_liq_resolver(
     if !pointer.has_work() {
         return None;
     }
-    let data = fixture.svm.get_account(&conditions).unwrap().data;
+    let data = fixture.svm.get_account(&relay_scratch_pda()).unwrap().data;
     let staged = &data[pointer.offset() as usize..(pointer.offset() + pointer.len()) as usize];
     Some(velocity::relay_spec::ResolvedCrankV0::read(staged).unwrap())
 }
@@ -3590,6 +3597,7 @@ fn liq_self_sync_stages_an_unsigned_executor_and_pays_from_its_own_lamports() {
     let resolver_ix = || Instruction {
         program_id: velocity_id(),
         accounts: velocity::accounts::ResolveResyncLiqConditions {
+            scratch: relay_scratch_pda(),
             liq_conditions: conditions,
             user,
         }
@@ -3616,7 +3624,7 @@ fn liq_self_sync_stages_an_unsigned_executor_and_pays_from_its_own_lamports() {
     let meta = send(&mut fixture.svm, &keeper, ix, &[]).unwrap();
     let pointer = velocity::relay_spec::ResponsePointerV0::read(&meta.return_data.data).unwrap();
     assert!(pointer.has_work(), "closed position makes the hints stale");
-    let data = fixture.svm.get_account(&conditions).unwrap().data;
+    let data = fixture.svm.get_account(&relay_scratch_pda()).unwrap().data;
     let staged = &data[pointer.offset() as usize..(pointer.offset() + pointer.len()) as usize];
     let resolved = velocity::relay_spec::ResolvedCrankV0::read(staged).unwrap();
 

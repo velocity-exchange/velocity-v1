@@ -84,20 +84,19 @@ pub const CLOB_CRANK_BLOCK_LEN: usize = BLOCK_HEADER_LEN + CLOB_CRANK_CONDITIONS
 /// dozen makers — far past what one profitable top-of-book cross touches.
 /// The whole account must stay under the 10,240-byte CPI allocation limit
 /// so the attach ix can `init` it in one step.
-pub const CLOB_CRANK_STAGING_LEN: usize = 2048;
 
 /// Account-data offset of the staging region (what a `ResponsePointerV0`'s
 /// `offset` is relative to): discriminator + the block.
-pub const CLOB_CRANK_STAGING_OFFSET: usize = 8 + CLOB_CRANK_BLOCK_LEN;
+pub const CLOB_CRANK_TAIL_OFFSET: usize = 8 + CLOB_CRANK_BLOCK_LEN;
 
-/// Every condition on this account resolves with the same four accounts,
+/// Every condition on this account resolves with the same five accounts,
 /// so the list is stored once and each condition points at it. Padded to
 /// keep (SIZE - 8) %% 16 == 0 (see docs/alignment-and-native-offsets.md).
-pub const CLOB_CRANK_RESOLVERS_MAX: usize = 4;
-pub const CLOB_CRANK_RESOLVERS_LEN: usize = 144;
+pub const CLOB_CRANK_RESOLVERS_MAX: usize = 5;
+pub const CLOB_CRANK_RESOLVERS_LEN: usize = 176;
 const _: () =
     assert!(CLOB_CRANK_RESOLVERS_LEN >= CLOB_CRANK_RESOLVERS_MAX * relay_spec::ACCOUNT_REF_LEN);
-pub const CLOB_CRANK_RESOLVERS_OFFSET: usize = CLOB_CRANK_STAGING_OFFSET + CLOB_CRANK_STAGING_LEN;
+pub const CLOB_CRANK_RESOLVERS_OFFSET: usize = CLOB_CRANK_TAIL_OFFSET;
 
 #[account(zero_copy(unsafe))]
 #[derive(Debug)]
@@ -108,7 +107,6 @@ pub struct ClobCrankConditionsV0 {
     pub block: [u8; CLOB_CRANK_BLOCK_LEN],
     /// Scratch the resolvers stage their `ResolvedCrankV0` into. Only ever
     /// written under simulation; on-chain contents are meaningless.
-    pub staging: [u8; CLOB_CRANK_STAGING_LEN],
     /// The resolver account list every condition here points at.
     pub resolvers: [u8; CLOB_CRANK_RESOLVERS_LEN],
     /// The market's oracle, captured at attach time. Resolvers hold only
@@ -144,7 +142,6 @@ impl Default for ClobCrankConditionsV0 {
         // `[u8; N]` derives Default only up to N = 32.
         Self {
             block: [0; CLOB_CRANK_BLOCK_LEN],
-            staging: [0; CLOB_CRANK_STAGING_LEN],
             resolvers: [0; CLOB_CRANK_RESOLVERS_LEN],
             oracle: Pubkey::default(),
             keeper_payment_lamports: 0,
@@ -158,15 +155,8 @@ impl Default for ClobCrankConditionsV0 {
 impl ClobCrankConditionsV0 {
     /// 8 (discriminator) + block + staging + trailing fields. Kept as a const
     /// so the alignment invariant below is checked at compile time.
-    pub const SIZE: usize = 8
-        + CLOB_CRANK_BLOCK_LEN
-        + CLOB_CRANK_STAGING_LEN
-        + CLOB_CRANK_RESOLVERS_LEN
-        + 32
-        + 8
-        + 2
-        + 2
-        + 4;
+    pub const SIZE: usize =
+        8 + CLOB_CRANK_BLOCK_LEN + CLOB_CRANK_RESOLVERS_LEN + 32 + 8 + 2 + 2 + 4;
 
     /// Store the resolver account list and describe where it landed.
     pub fn write_resolvers(
@@ -346,7 +336,6 @@ const _: () = assert!((ClobCrankConditionsV0::SIZE - 8) % 16 == 0);
 /// `stage` are all provided.
 impl ConditionBlock for ClobCrankConditionsV0 {
     const NUM_CONDITIONS: usize = CLOB_CRANK_CONDITIONS;
-    const STAGING_OFFSET: u32 = CLOB_CRANK_STAGING_OFFSET as u32;
 
     fn block(&self) -> &[u8] {
         &self.block
@@ -354,10 +343,6 @@ impl ConditionBlock for ClobCrankConditionsV0 {
 
     fn block_mut(&mut self) -> &mut [u8] {
         &mut self.block
-    }
-
-    fn staging_mut(&mut self) -> &mut [u8] {
-        &mut self.staging
     }
 }
 
@@ -373,15 +358,15 @@ mod tests {
         assert_eq!(CLOB_CRANK_BLOCK_LEN, 16 + 6 * relay_spec::CONDITION_LEN);
         assert_eq!(
             ClobCrankConditionsV0::SIZE,
-            8 + CLOB_CRANK_BLOCK_LEN + CLOB_CRANK_STAGING_LEN + CLOB_CRANK_RESOLVERS_LEN + 48
+            8 + CLOB_CRANK_BLOCK_LEN + CLOB_CRANK_RESOLVERS_LEN + 48
         );
         // The whole account must clear anchor init's 10,240-byte CPI
         // allocation ceiling, or attaching a CLOB to a market breaks.
         assert!(ClobCrankConditionsV0::SIZE <= 10_240);
-        // the staging region must land where the pointer offset says it does
+        // the resolver list must land where the conditions point at it
         assert_eq!(
-            CLOB_CRANK_STAGING_OFFSET,
-            8 + core::mem::offset_of!(ClobCrankConditionsV0, staging)
+            CLOB_CRANK_RESOLVERS_OFFSET,
+            8 + core::mem::offset_of!(ClobCrankConditionsV0, resolvers)
         );
         // the u64 reservoir field must land 8-aligned, past block + staging
         assert_eq!(std::mem::align_of::<ClobCrankConditionsV0>(), 8);
@@ -441,22 +426,27 @@ mod tests {
 
     #[test]
     fn staged_payload_round_trips_through_the_pointer() {
-        let mut acct = ClobCrankConditionsV0::default();
-        acct.init_block().unwrap();
+        // Staging is the shared scratch account's job now, not this
+        // account's: the pointer names scratch at index 0.
+        let mut scratch = crate::state::relay_scratch::RelayScratchV0::default();
         let resolved = ResolvedCrankV0 {
             accounts: (0..11u8)
                 .map(|i| relay_spec::AccountRefV0::writable([i; 32]))
                 .collect(),
             data: vec![1, 2, 3],
         };
-        let pointer_bytes = acct.stage(&resolved).unwrap();
+        let pointer_bytes = scratch.stage(&resolved).unwrap();
         let pointer = ResponsePointerV0::read(&pointer_bytes).unwrap();
         assert!(pointer.has_work());
-        assert_eq!(pointer.account_index, 0);
-        assert_eq!(pointer.offset() as usize, CLOB_CRANK_STAGING_OFFSET);
-        // The turner reads [offset..offset+len] of the *account*; simulate
-        // that read against the account's would-be data layout.
-        let staged = &acct.staging[..pointer.len() as usize];
+        assert_eq!(
+            pointer.account_index,
+            crate::state::relay_scratch::RELAY_SCRATCH_ACCOUNT_INDEX
+        );
+        assert_eq!(
+            pointer.offset(),
+            crate::state::relay_scratch::RELAY_SCRATCH_OFFSET
+        );
+        let staged = &scratch.scratch[..pointer.len() as usize];
         assert_eq!(ResolvedCrankV0::read(staged).unwrap(), resolved);
     }
 

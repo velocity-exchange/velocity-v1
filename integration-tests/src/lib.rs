@@ -55,6 +55,9 @@ pub fn svm() -> LiteSVM {
         .expect("clob.so missing — run `bun run program:build:clob` first");
     svm.add_program_from_file(midpoint_id(), MIDPOINT_SO)
         .expect("midpoint.so missing — run `bun run program:build:midpoint` first");
+    // Every resolver names the program-wide staging account, so it exists
+    // from the start rather than each fixture remembering to create it.
+    set_relay_scratch(&mut svm);
     svm
 }
 
@@ -129,6 +132,30 @@ pub fn set_state(svm: &mut LiteSVM, warm_admin: &Pubkey) {
     state.signer = anchor_lang::prelude::Pubkey::new_from_array(signer.to_bytes());
     state.signer_nonce = nonce;
     set_zero_copy_account(svm, state_pda(), State::DISCRIMINATOR, &state, State::SIZE);
+}
+
+/// The program-wide resolver staging account. Every resolver names it, so
+/// any fixture that resolves anything needs it to exist.
+pub fn set_relay_scratch(svm: &mut LiteSVM) {
+    let scratch: velocity::state::relay_scratch::RelayScratchV0 = Zeroable::zeroed();
+    set_zero_copy_account(
+        svm,
+        relay_scratch_pda(),
+        velocity::state::relay_scratch::RelayScratchV0::DISCRIMINATOR,
+        &scratch,
+        velocity::state::relay_scratch::RelayScratchV0::SIZE,
+    );
+}
+
+pub fn relay_scratch_pda() -> Pubkey {
+    Pubkey::new_from_array(
+        anchor_lang::prelude::Pubkey::find_program_address(
+            &[velocity::state::relay_scratch::RELAY_SCRATCH_PDA_SEED],
+            &velocity::ID,
+        )
+        .0
+        .to_bytes(),
+    )
 }
 
 /// Zeroed `PerpMarket` at the index-derived PDA — account identity only.

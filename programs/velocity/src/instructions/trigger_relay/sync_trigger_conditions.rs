@@ -152,7 +152,8 @@ pub fn handle_sync_trigger_conditions<'c: 'info, 'info>(
     // named accounts, then the user's margin map. Either sync populating
     // it is enough, and neither has to carry its own copy.
     let mut stored = vec![
-        AccountRefV0::writable(conditions_key.to_bytes()),
+        AccountRefV0::writable(crate::state::pdas::relay_scratch().to_bytes()),
+        AccountRefV0::readonly(conditions_key.to_bytes()),
         AccountRefV0::readonly(user_key.to_bytes()),
         AccountRefV0::readonly(crate::state::pdas::state().to_bytes()),
     ];
@@ -230,7 +231,8 @@ pub fn handle_sync_trigger_conditions<'c: 'info, 'info>(
         let resolvers = conditions.write_slot_resolvers(
             slot_index,
             &[
-                AccountRefV0::writable(conditions_key.to_bytes()),
+                AccountRefV0::writable(crate::state::pdas::relay_scratch().to_bytes()),
+                AccountRefV0::readonly(conditions_key.to_bytes()),
                 AccountRefV0::readonly(user_key.to_bytes()),
                 AccountRefV0::readonly(oracle.to_bytes()),
                 AccountRefV0::readonly(perp_market_pda.to_bytes()),

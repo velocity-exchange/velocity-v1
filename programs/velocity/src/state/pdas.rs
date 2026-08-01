@@ -14,6 +14,15 @@ pub fn keeper_placeholder() -> Pubkey {
     Pubkey::new_from_array(relay_spec::KEEPER_PLACEHOLDER)
 }
 
+/// The shared resolver staging account.
+pub fn relay_scratch() -> Pubkey {
+    Pubkey::find_program_address(
+        &[crate::state::relay_scratch::RELAY_SCRATCH_PDA_SEED],
+        &crate::ID,
+    )
+    .0
+}
+
 pub fn state() -> Pubkey {
     Pubkey::find_program_address(&[b"velocity_state"], &crate::ID).0
 }

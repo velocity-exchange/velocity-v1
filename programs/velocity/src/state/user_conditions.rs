@@ -69,9 +69,13 @@ pub const USER_CONDITIONS: usize = TRIGGER_SLOT_BASE + TRIGGER_CONDITION_SLOTS;
 /// Each trigger slot's resolver names that slot's own market oracle and
 /// perp market, so unlike the margin map there is no one list every
 /// condition can share; the region is per slot.
-pub const TRIGGER_RESOLVERS_PER_SLOT: usize = 4;
-pub const TRIGGER_RESOLVERS_STRIDE: usize =
-    TRIGGER_RESOLVERS_PER_SLOT * relay_spec::ACCOUNT_REF_LEN;
+pub const TRIGGER_RESOLVERS_PER_SLOT: usize = 5;
+/// 5 refs is 165 bytes; the stride is rounded up so the whole region
+/// keeps `(SIZE - 8) % 16 == 0`. Padding sits between stripes, never
+/// inside one, so each slot's list stays contiguous.
+pub const TRIGGER_RESOLVERS_STRIDE: usize = 168;
+const _: () =
+    assert!(TRIGGER_RESOLVERS_STRIDE >= TRIGGER_RESOLVERS_PER_SLOT * relay_spec::ACCOUNT_REF_LEN);
 pub const TRIGGER_RESOLVERS_LEN: usize = TRIGGER_CONDITION_SLOTS * TRIGGER_RESOLVERS_STRIDE;
 
 /// Account-data offset of the per-slot trigger resolver lists.
@@ -84,9 +88,8 @@ pub const USER_CONDITIONS_BLOCK_LEN: usize = BLOCK_HEADER_LEN + USER_CONDITIONS 
 
 /// The staged executor: a dozen named accounts plus the stored account
 /// list below.
-pub const USER_CONDITIONS_STAGING_LEN: usize = 2048;
 
-pub const USER_CONDITIONS_STAGING_OFFSET: usize = 8 + USER_CONDITIONS_BLOCK_LEN;
+pub const USER_CONDITIONS_TAIL_OFFSET: usize = 8 + USER_CONDITIONS_BLOCK_LEN;
 
 /// The remaining-accounts list the sync was last called with, verbatim
 /// ([`relay_spec::AccountRefV0`] wire): the user's full margin maps
@@ -103,14 +106,13 @@ pub const LIQ_SYNC_ACCOUNTS_LEN: usize = LIQ_SYNC_ACCOUNTS_MAX * relay_spec::ACC
 /// of the block's own account at `resolver_list_offset`, so the list is
 /// stored once, here, with the resolver's named accounts first.
 ///
-/// The prefix is `[liq_conditions, user, state]` — deliberately nothing
+/// The prefix is `[scratch, conditions, user, state]` — deliberately nothing
 /// market-specific, so all twelve threshold slots share one list.
-pub const LIQ_RESOLVER_PREFIX: usize = 3;
+pub const LIQ_RESOLVER_PREFIX: usize = 4;
 
 /// Byte offset of `sync_accounts` within the account, for
 /// `set_indirect_resolver_accounts`.
-pub const LIQ_SYNC_ACCOUNTS_OFFSET: usize =
-    USER_CONDITIONS_STAGING_OFFSET + USER_CONDITIONS_STAGING_LEN;
+pub const LIQ_SYNC_ACCOUNTS_OFFSET: usize = USER_CONDITIONS_TAIL_OFFSET;
 
 /// Per-threshold-slot metadata: which perp market the staged liquidation
 /// targets (for a perp exposure, its own market; for a spot-collateral
@@ -132,7 +134,6 @@ pub struct UserConditionsV0 {
     /// The relay condition block; first field, at the 8-aligned offset 8.
     pub block: [u8; USER_CONDITIONS_BLOCK_LEN],
     /// Scratch the resolvers stage into. Simulation-only.
-    pub staging: [u8; USER_CONDITIONS_STAGING_LEN],
     /// See [`LIQ_SYNC_ACCOUNTS_LEN`].
     pub sync_accounts: [u8; LIQ_SYNC_ACCOUNTS_LEN],
     /// Parallel to the threshold condition slots.
@@ -167,7 +168,6 @@ impl Default for UserConditionsV0 {
     fn default() -> Self {
         Self {
             block: [0; USER_CONDITIONS_BLOCK_LEN],
-            staging: [0; USER_CONDITIONS_STAGING_LEN],
             sync_accounts: [0; LIQ_SYNC_ACCOUNTS_LEN],
             slots: [LiqSlotMetaV0::default(); LIQ_THRESHOLD_SLOTS],
             trigger_slots: [TriggerSlotMetaV0::default(); TRIGGER_CONDITION_SLOTS],
@@ -185,7 +185,6 @@ impl Default for UserConditionsV0 {
 impl UserConditionsV0 {
     pub const SIZE: usize = 8
         + USER_CONDITIONS_BLOCK_LEN
-        + USER_CONDITIONS_STAGING_LEN
         + LIQ_SYNC_ACCOUNTS_LEN
         + LIQ_THRESHOLD_SLOTS * core::mem::size_of::<LiqSlotMetaV0>()
         + TRIGGER_CONDITION_SLOTS * core::mem::size_of::<TriggerSlotMetaV0>()
@@ -371,7 +370,6 @@ const _: () = assert!(UserConditionsV0::SIZE <= 10_240);
 /// `stage` are all provided.
 impl ConditionBlock for UserConditionsV0 {
     const NUM_CONDITIONS: usize = USER_CONDITIONS;
-    const STAGING_OFFSET: u32 = USER_CONDITIONS_STAGING_OFFSET as u32;
 
     fn block(&self) -> &[u8] {
         &self.block
@@ -379,10 +377,6 @@ impl ConditionBlock for UserConditionsV0 {
 
     fn block_mut(&mut self) -> &mut [u8] {
         &mut self.block
-    }
-
-    fn staging_mut(&mut self) -> &mut [u8] {
-        &mut self.staging
     }
 }
 
@@ -397,8 +391,12 @@ mod tests {
             UserConditionsV0::SIZE - 8
         );
         assert_eq!(
-            USER_CONDITIONS_STAGING_OFFSET,
-            8 + core::mem::offset_of!(UserConditionsV0, staging)
+            LIQ_SYNC_ACCOUNTS_OFFSET,
+            8 + core::mem::offset_of!(UserConditionsV0, sync_accounts)
+        );
+        assert_eq!(
+            TRIGGER_RESOLVERS_OFFSET,
+            8 + core::mem::offset_of!(UserConditionsV0, trigger_resolvers)
         );
     }
 }

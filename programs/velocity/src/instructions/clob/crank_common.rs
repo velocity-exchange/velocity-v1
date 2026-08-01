@@ -295,6 +295,10 @@ pub fn crank_clob_removal(
 /// where the response pointer says the payload lives).
 #[derive(Accounts)]
 pub struct ResolveClobCrank<'info> {
+    /// The shared staging account, index 0 by convention — a resolver's
+    /// response pointer is interpreted against it.
+    #[account(mut, seeds = [crate::state::relay_scratch::RELAY_SCRATCH_PDA_SEED], bump)]
+    pub scratch: AccountLoader<'info, crate::state::relay_scratch::RelayScratchV0>,
     /// Writable only because the payload is staged in its scratch region;
     /// the instruction is otherwise read-only and only ever simulated.
     #[account(mut)]

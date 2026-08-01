@@ -26,6 +26,10 @@ use {
 
 #[derive(Accounts)]
 pub struct ResolveLiquidatePerpWithFill<'info> {
+    /// The shared staging account, index 0 by convention — a resolver's
+    /// response pointer is interpreted against it.
+    #[account(mut, seeds = [crate::state::relay_scratch::RELAY_SCRATCH_PDA_SEED], bump)]
+    pub scratch: AccountLoader<'info, crate::state::relay_scratch::RelayScratchV0>,
     /// Writable only for the staging region; simulation-only.
     #[account(mut, constraint = liq_conditions.load()?.user == user.key())]
     pub liq_conditions: AccountLoader<'info, UserConditionsV0>,
@@ -37,7 +41,7 @@ pub fn handle_resolve_liquidate_perp_with_fill<'c: 'info, 'info>(
     ctx: Context<'info, ResolveLiquidatePerpWithFill<'info>>,
 ) -> Result<()> {
     let conditions = ctx.accounts.liq_conditions.clone();
-    crate::instructions::resolve_into(&conditions, || {
+    crate::instructions::resolve_into(&ctx.accounts.scratch, || {
         let clock = Clock::get()?;
         let state = ctx.accounts.state.load()?;
 

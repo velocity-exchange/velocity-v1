@@ -126,6 +126,22 @@ pub fn handle_initialize_user<'c: 'info, 'info>(
     name: [u8; 32],
 ) -> Result<()> {
     let user_key = ctx.accounts.user.key();
+
+    // Stamp the liquidation-conditions block so the account is a valid
+    // (all-inactive) block from birth. Nothing is armed yet: the user has
+    // no exposure, and the first `sync_liq_conditions` derives thresholds.
+    //
+    // Before the user is loaded, not after: `load_init` does not write the
+    // discriminator until the instruction exits, so a `load_mut` of the
+    // user in between reads a zeroed one and fails.
+    if let Some(liq_conditions) = &ctx.accounts.liq_conditions {
+        let mut conditions = liq_conditions
+            .load_init()
+            .or_else(|_| liq_conditions.load_mut())?;
+        conditions.user = user_key;
+        conditions.init_block()?;
+    }
+
     let mut user = ctx
         .accounts
         .user
@@ -136,19 +152,6 @@ pub fn handle_initialize_user<'c: 'info, 'info>(
     user.name = name;
     user.next_order_id = 1;
     user.next_liquidation_id = 1;
-    drop(user);
-
-    // Stamp the liquidation-conditions block so the account is a valid
-    // (all-inactive) block from birth. Nothing is armed yet: the user has
-    // no exposure, and the first `sync_liq_conditions` derives thresholds.
-    if let Some(liq_conditions) = &ctx.accounts.liq_conditions {
-        let mut conditions = liq_conditions
-            .load_init()
-            .or_else(|_| liq_conditions.load_mut())?;
-        conditions.user = user_key;
-        conditions.init_block()?;
-    }
-    let mut user = load_mut!(ctx.accounts.user)?;
 
     let remaining_accounts_iter = &mut ctx.remaining_accounts.iter().peekable();
 

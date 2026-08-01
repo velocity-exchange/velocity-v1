@@ -52,8 +52,9 @@ use {
                 LIQ_SYNC_WATCH, LIQ_THRESHOLD_SLOTS,
             },
             oracle::OracleSource,
+            oracle_watch::{oracle_watch, OracleWatchV0, WatchDirection},
+            pdas,
             perp_market::PerpMarket,
-            pyth_lazer_oracle::PythLazerOracle,
             spot_market::{SpotBalanceType, SpotMarket},
             user::User,
         },
@@ -63,11 +64,6 @@ use {
     relay_spec::{AccountRefV0, ConditionV0, CrankSpecV0},
     std::{collections::BTreeMap, convert::TryInto},
 };
-
-/// PythLazer raw-price watch layout (see `sync_trigger_conditions`).
-const PYTH_LAZER_PRICE_OFFSET: u32 = 8;
-const PYTH_LAZER_PRICE_LEN: u32 = 8;
-const PYTH_LAZER_EXPONENT_OFFSET: usize = 32;
 
 /// Fraction of the distance-to-liquidation the threshold is pulled in by,
 /// so a watch fires while there is still buffer: 20%. Absorbs the
@@ -120,11 +116,15 @@ pub struct SyncLiqConditionsArgs {
 #[derive(Default, Clone, Copy)]
 struct MarketInputs {
     oracle: Option<Pubkey>,
-    is_lazer: bool,
-    exponent: Option<i32>,
+    /// Where a raw-price watch reads this market's oracle, when its source
+    /// has a registered layout. `None` leaves the market keeper-only.
+    watch: Option<OracleWatchV0>,
+    oracle_source: Option<OracleSource>,
     /// Maintenance margin ratio (perp) / maintenance asset weight (spot).
     maintenance_ratio: u32,
-    price: i64,
+    /// The oracle price in `PRICE_PRECISION` — not the raw field, which is
+    /// only the same thing on a six-decimal feed.
+    price: i128,
     keeper_payment_lamports: Option<u64>,
     decimals: u32,
     cumulative_deposit_interest: u128,
@@ -166,7 +166,7 @@ pub fn rewrite_liq_conditions<'info>(
                 let market = loader.load()?;
                 let entry = perps.entry(market.market_index).or_default();
                 entry.oracle = Some(market.oracle);
-                entry.is_lazer = matches!(market.oracle_source, OracleSource::PythLazer);
+                entry.oracle_source = Some(market.oracle_source);
                 entry.maintenance_ratio = market.margin_ratio_maintenance;
                 oracle_of_market.insert(market.oracle, (true, market.market_index));
                 market_refs.push(AccountRefV0::writable(info.key.to_bytes()));
@@ -176,7 +176,7 @@ pub fn rewrite_liq_conditions<'info>(
                 let market = loader.load()?;
                 let entry = spots.entry(market.market_index).or_default();
                 entry.oracle = Some(market.oracle);
-                entry.is_lazer = matches!(market.oracle_source, OracleSource::PythLazer);
+                entry.oracle_source = Some(market.oracle_source);
                 entry.maintenance_ratio = market.maintenance_asset_weight;
                 entry.decimals = market.decimals;
                 entry.cumulative_deposit_interest = market.cumulative_deposit_interest;
@@ -197,35 +197,30 @@ pub fn rewrite_liq_conditions<'info>(
         oracle_infos.insert(*info.key, info);
     }
 
-    // Oracle prices + exponents (readonly, first in map order).
+    // Oracle prices (readonly, first in map order). The watch layout is
+    // resolved off each oracle's bytes once, here, and carries both the
+    // current price and where a threshold condition should read it.
     let mut oracle_refs: Vec<AccountRefV0> = Vec::new();
     for (key, info) in &oracle_infos {
         oracle_refs.push(AccountRefV0::readonly(key.to_bytes()));
         let Some((is_perp, market_index)) = oracle_of_market.get(key).copied() else {
             continue;
         };
-        let data = info.try_borrow_data()?;
-        if data.len() < 8 + core::mem::size_of::<PythLazerOracle>()
-            || &data[..8] != PythLazerOracle::DISCRIMINATOR
-        {
-            continue;
-        }
-        let price = i64::from_le_bytes(
-            data[8..16]
-                .try_into()
-                .map_err(|_| ErrorCode::DefaultError)?,
-        );
-        let exponent = i32::from_le_bytes(
-            data[PYTH_LAZER_EXPONENT_OFFSET..PYTH_LAZER_EXPONENT_OFFSET + 4]
-                .try_into()
-                .map_err(|_| ErrorCode::DefaultError)?,
-        );
         let entry = if is_perp {
             perps.entry(market_index).or_default()
         } else {
             spots.entry(market_index).or_default()
         };
-        entry.exponent = Some(exponent);
+        let Some(source) = entry.oracle_source else {
+            continue;
+        };
+        let Some(watch) = oracle_watch(info, source) else {
+            continue;
+        };
+        let Some(price) = watch.protocol_price() else {
+            continue;
+        };
+        entry.watch = Some(watch);
         entry.price = price;
     }
 
@@ -285,7 +280,6 @@ pub fn rewrite_liq_conditions<'info>(
                     free_collateral,
                     &conditions_key,
                     &user_key,
-                    position.market_index,
                     disc8(crate::instruction::ResolveLiquidatePerpWithFill::DISCRIMINATOR)?,
                     disc8(crate::instruction::LiquidatePerpWithFill::DISCRIMINATOR)?,
                 )? {
@@ -334,7 +328,6 @@ pub fn rewrite_liq_conditions<'info>(
                     free_collateral,
                     &conditions_key,
                     &user_key,
-                    target_market_index,
                     disc8(crate::instruction::ResolveLiquidatePerpWithFill::DISCRIMINATOR)?,
                     disc8(crate::instruction::LiquidatePerpWithFill::DISCRIMINATOR)?,
                 )? {
@@ -423,10 +416,10 @@ fn estimate_free_collateral(
         let base = position.base_asset_amount as i128;
         let notional = base
             .abs()
-            .safe_mul(inputs.price as i128)?
+            .safe_mul(inputs.price)?
             .safe_div(crate::math::constants::BASE_PRECISION_I128)?;
         collateral = collateral.safe_add(
-            base.safe_mul(inputs.price as i128)?
+            base.safe_mul(inputs.price)?
                 .safe_div(crate::math::constants::BASE_PRECISION_I128)?
                 .safe_add(position.quote_asset_amount as i128)?,
         )?;
@@ -455,7 +448,7 @@ fn estimate_free_collateral(
         let price = if position.market_index == 0 {
             crate::math::constants::PRICE_PRECISION_I128
         } else {
-            inputs.price as i128
+            inputs.price
         };
         let value = amount
             .safe_mul(price)?
@@ -493,18 +486,15 @@ fn threshold_condition(
     free_collateral: i128,
     conditions_key: &Pubkey,
     user_key: &Pubkey,
-    target_market_index: u16,
     resolver_disc: [u8; 8],
     executor_disc: [u8; 8],
 ) -> Result<Option<ConditionV0>> {
-    let (Some(oracle), Some(exponent), Some(min_payment)) = (
-        inputs.oracle,
-        inputs.exponent,
-        inputs.keeper_payment_lamports,
-    ) else {
+    let (Some(oracle), Some(watch), Some(min_payment)) =
+        (inputs.oracle, inputs.watch, inputs.keeper_payment_lamports)
+    else {
         return Ok(None);
     };
-    if !inputs.is_lazer || slope == 0 || inputs.price <= 0 {
+    if slope == 0 || inputs.price <= 0 {
         return Ok(None);
     }
     // Δprice that exhausts free collateral, haircut toward early.
@@ -515,34 +505,35 @@ fn threshold_condition(
         .safe_mul(BPS_DENOM.safe_sub(THRESHOLD_HAIRCUT_BPS)?)?
         .safe_div(BPS_DENOM)?;
     // Positive slope = health falls as the price falls (long perp, deposit).
-    let (threshold_price, cmp) = if slope > 0 {
-        (inputs.price as i128 - haircut, 1u8)
+    let (threshold_price, direction) = if slope > 0 {
+        (inputs.price - haircut, WatchDirection::AtOrBelow)
     } else {
-        (inputs.price as i128 + haircut, 0u8)
+        (inputs.price + haircut, WatchDirection::AtOrAbove)
     };
     if threshold_price <= 0 {
         return Ok(None);
     }
-    let Some(raw) = raw_price(threshold_price, exponent) else {
+    let Some(raw) = watch.raw_threshold(threshold_price, direction) else {
         return Ok(None);
     };
 
-    let (perp_market_pda, _) = Pubkey::find_program_address(
-        &[b"perp_market", target_market_index.to_le_bytes().as_ref()],
-        &crate::ID,
-    );
+    // Order is the contract with `ResolveLiquidatePerpWithFill`'s accounts
+    // struct, field for field. It is not self-checking: a mismatch shows up
+    // only as an anchor owner/discriminator error inside a turner's
+    // simulation, which reads as "relay is broken" rather than "this list
+    // is in the wrong order".
     let resolver_accounts = [
         AccountRefV0::writable(conditions_key.to_bytes()),
         AccountRefV0::readonly(user_key.to_bytes()),
+        AccountRefV0::readonly(pdas::state().to_bytes()),
         AccountRefV0::readonly(oracle.to_bytes()),
-        AccountRefV0::readonly(perp_market_pda.to_bytes()),
     ];
     Ok(Some(ConditionV0::on_value_cross(
         oracle.to_bytes(),
-        PYTH_LAZER_PRICE_OFFSET,
-        PYTH_LAZER_PRICE_LEN,
+        watch.price_offset,
+        watch.price_len,
         raw,
-        cmp,
+        direction.cmp(),
         CrankSpecV0 {
             resolver_program: crate::ID.to_bytes(),
             resolver_disc,
@@ -552,19 +543,6 @@ fn threshold_condition(
         },
         &resolver_accounts,
     )))
-}
-
-/// PRICE_PRECISION → the oracle's raw units.
-fn raw_price(price: i128, exponent: i32) -> Option<i64> {
-    let raw = match exponent {
-        e if !(0..=12).contains(&e) => return None,
-        e if e >= 6 => price.checked_mul(10i128.checked_pow((e - 6) as u32)?)?,
-        e => price / 10i128.checked_pow((6 - e) as u32)?,
-    };
-    if raw > i64::MAX as i128 || raw <= 0 {
-        return None;
-    }
-    Some(raw as i64)
 }
 
 // Referenced by the doc comment's precision notes.

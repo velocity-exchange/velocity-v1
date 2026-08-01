@@ -18,6 +18,7 @@ pub mod margin_calculation;
 pub mod market_status;
 pub mod oracle;
 pub mod oracle_map;
+pub mod oracle_watch;
 pub mod order_params;
 pub mod paused_operations;
 pub mod pdas;

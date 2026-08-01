@@ -52,6 +52,7 @@ import {
 	OrderTriggerCondition,
 	getUserAccountPublicKeySync,
 	getUserStatsAccountPublicKey,
+	getLiqConditionsPublicKey,
 	getVelocitySignerPublicKey,
 	OracleSource,
 	PEG_PRECISION,
@@ -85,6 +86,10 @@ const RELAY_ID = new PublicKey(
 const TURNER_BIN = process.env.RELAY_TURNER_BIN ?? '';
 /** relay-spec's `WatchV0` account length. */
 const WATCH_V0_LEN = 112;
+/** `agg.price` within the pyth stub's `Price` account — the same offset
+ * velocity's `oracle_watch` registers for push feeds, so a test reading the
+ * feed and a relay watch reading it see the same bytes. */
+const PYTH_AGG_PRICE_OFFSET = 208;
 
 const UNIT = BASE_PRECISION; // 1e9
 const PRICE = PRICE_PRECISION; // 1e6
@@ -219,7 +224,8 @@ describe('e2e localnet: programs + publisher + redis', function () {
 		await pollUntil(`oracle to reach ${price}`, 30_000, async () => {
 			const info = await connection.getAccountInfo(oracle);
 			if (!info) return undefined;
-			const onChain = Number(info.data.readBigInt64LE(8)) / 1e6;
+			const onChain =
+				Number(info.data.readBigInt64LE(PYTH_AGG_PRICE_OFFSET)) / 1e6;
 			return Math.abs(onChain - price) < 0.5 ? true : undefined;
 		});
 	};
@@ -632,6 +638,9 @@ describe('e2e localnet: programs + publisher + redis', function () {
 				payer: payer.publicKey,
 				rent: SYSVAR_RENT_PUBKEY,
 				systemProgram: SystemProgram.programId,
+				// Optional, but anchor still wants it named: pass the PDA so
+				// the protocol user is relay-covered like any other.
+				liqConditions: getLiqConditionsPublicKey(VELOCITY_ID, protocolUser),
 			},
 		});
 		await provider.sendAndConfirm(new Transaction().add(initStats, initUser));
@@ -999,15 +1008,25 @@ describe('e2e localnet: programs + publisher + redis', function () {
 			adminUsdc
 		);
 
-		// Keep the oracle fresh: on a real cluster a live feed does this; here
-		// a background set_price loop re-posts $100 every second so the vAMM
-		// stays inside its oracle-validity gates.
+		// Keep the oracle fresh: on a real cluster a live feed does this;
+		// here a background loop re-posts `oracleTargetPrice` every second
+		// so the vAMM stays inside its oracle-validity gates, and so tests
+		// can move price by moving the target.
+		//
+		// It has to be `set_price_info`, not `set_price`: velocity reads
+		// staleness off `valid_slot` (`get_pyth_price`), which `set_price`
+		// leaves at whatever `initialize` wrote. A feed that never advances
+		// its slot ages out of every validity gate no matter how often the
+		// price is rewritten.
 		oracleRefresher = (async () => {
 			while (!stopOracleRefresher) {
 				try {
-					const ix = pythProgram.instruction.setPrice(new BN(100).mul(PRICE), {
-						accounts: { price: oracle },
-					});
+					const ix = pythProgram.instruction.setPriceInfo(
+						new BN(Math.round(oracleTargetPrice * 1e6)),
+						new BN(1).mul(PRICE).divn(100),
+						new BN(await connection.getSlot()),
+						{ accounts: { price: oracle } }
+					);
 					await provider.sendAndConfirm(new Transaction().add(ix));
 				} catch {
 					// transient send failures are fine; the next beat retries

@@ -25,9 +25,10 @@ use {
         error::ErrorCode,
         state::{
             clob_crank::ClobCrankConditionsV0,
+            oracle::OracleSource,
+            oracle_watch::{oracle_watch, OracleWatchV0, WatchDirection},
             perp_market::PerpMarket,
             prop_amm::{QuoterType, QuoterV0},
-            pyth_lazer_oracle::PythLazerOracle,
             spot_market::SpotMarket,
             trigger_conditions::{
                 TriggerConditionsV0, TriggerSlotMetaV0, TRIGGER_CONDITIONS_PDA_SEED,
@@ -40,13 +41,6 @@ use {
     relay_spec::{AccountRefV0, ConditionV0, CrankSpecV0},
     std::{collections::BTreeMap, convert::TryInto},
 };
-
-/// PythLazer raw-price watch layout: `price: i64` at account offset 8 (past
-/// the discriminator), `exponent: i32` at offset 32. Other sources have no
-/// registered layout yet and fall back to the keeper path.
-const PYTH_LAZER_PRICE_OFFSET: u32 = 8;
-const PYTH_LAZER_PRICE_LEN: u32 = 8;
-const PYTH_LAZER_EXPONENT_OFFSET: usize = 32;
 
 #[derive(Accounts)]
 pub struct SyncTriggerConditions<'info> {
@@ -69,9 +63,10 @@ pub struct SyncTriggerConditions<'info> {
 #[derive(Default)]
 struct MarketInputs {
     oracle: Option<Pubkey>,
-    oracle_source_is_lazer: bool,
-    /// (raw-price watch offset/len, exponent) read off the oracle account.
-    lazer_exponent: Option<i32>,
+    oracle_source: Option<OracleSource>,
+    /// Where a raw-price watch reads this market's oracle, when its source
+    /// has a registered layout. `None` leaves the order keeper-only.
+    watch: Option<OracleWatchV0>,
     keeper_payment_lamports: Option<u64>,
     /// (entry, book, program) when a vetted CLOB is attached.
     clob: Option<(Pubkey, Pubkey, Pubkey)>,
@@ -93,10 +88,7 @@ pub fn handle_sync_trigger_conditions<'c: 'info, 'info>(
                 let market = loader.load()?;
                 let inputs = markets.entry(market.market_index).or_default();
                 inputs.oracle = Some(market.oracle);
-                inputs.oracle_source_is_lazer = matches!(
-                    market.oracle_source,
-                    crate::state::oracle::OracleSource::PythLazer
-                );
+                inputs.oracle_source = Some(market.oracle_source);
                 market_oracles.insert(market.oracle, market.market_index);
                 market_refs.push(AccountRefV0::writable(info.key.to_bytes()));
                 continue;
@@ -128,23 +120,17 @@ pub fn handle_sync_trigger_conditions<'c: 'info, 'info>(
         oracle_infos.insert(*info.key, info);
     }
     // Map section in load_maps order: oracles (readonly) first, then the
-    // spot/perp markets (writable). Lazer exponents read off the oracle
-    // bytes for the threshold conversion.
+    // spot/perp markets (writable). The watch layout is resolved off each
+    // oracle's bytes here, once, for the threshold conversion below.
     let mut map_refs: Vec<AccountRefV0> = Vec::new();
     for (key, info) in &oracle_infos {
         map_refs.push(AccountRefV0::readonly(key.to_bytes()));
-        if let Some(market_index) = market_oracles.get(key) {
-            let data = info.try_borrow_data()?;
-            if data.len() >= 8 + core::mem::size_of::<PythLazerOracle>()
-                && &data[..8] == PythLazerOracle::DISCRIMINATOR
-            {
-                let exponent = i32::from_le_bytes(
-                    data[PYTH_LAZER_EXPONENT_OFFSET..PYTH_LAZER_EXPONENT_OFFSET + 4]
-                        .try_into()
-                        .map_err(|_| ErrorCode::DefaultError)?,
-                );
-                markets.entry(*market_index).or_default().lazer_exponent = Some(exponent);
-            }
+        let Some(market_index) = market_oracles.get(key) else {
+            continue;
+        };
+        let entry = markets.entry(*market_index).or_default();
+        if let Some(source) = entry.oracle_source {
+            entry.watch = oracle_watch(info, source);
         }
     }
     map_refs.extend(market_refs);
@@ -177,25 +163,21 @@ pub fn handle_sync_trigger_conditions<'c: 'info, 'info>(
             continue;
         };
         // Everything a watch needs, or the order stays keeper-only.
-        let (Some(oracle), Some(exponent), Some(min_payment)) = (
-            inputs.oracle,
-            inputs.lazer_exponent,
-            inputs.keeper_payment_lamports,
-        ) else {
-            continue;
-        };
-        if !inputs.oracle_source_is_lazer {
-            continue;
-        }
-        let Some(threshold) = raw_threshold(order.trigger_price, exponent, order.trigger_condition)
+        let (Some(oracle), Some(watch), Some(min_payment)) =
+            (inputs.oracle, inputs.watch, inputs.keeper_payment_lamports)
         else {
             continue;
         };
-        let cmp = match order.trigger_condition {
-            crate::state::user::OrderTriggerCondition::Above => 0u8,
-            crate::state::user::OrderTriggerCondition::Below => 1u8,
+        let direction = match order.trigger_condition {
+            crate::state::user::OrderTriggerCondition::Above => WatchDirection::AtOrAbove,
+            crate::state::user::OrderTriggerCondition::Below => WatchDirection::AtOrBelow,
             _ => continue,
         };
+        let Some(threshold) = watch.raw_threshold(i128::from(order.trigger_price), direction)
+        else {
+            continue;
+        };
+        let cmp = direction.cmp();
 
         // Trigger-limits go to the CLOB when the market has one (and the
         // order has a fixed resting price); everything else through the
@@ -253,8 +235,8 @@ pub fn handle_sync_trigger_conditions<'c: 'info, 'info>(
             slot_index,
             &ConditionV0::on_value_cross(
                 oracle.to_bytes(),
-                PYTH_LAZER_PRICE_OFFSET,
-                PYTH_LAZER_PRICE_LEN,
+                watch.price_offset,
+                watch.price_len,
                 threshold,
                 cmp,
                 spec,
@@ -270,34 +252,4 @@ pub fn handle_sync_trigger_conditions<'c: 'info, 'info>(
         conditions.slots[index] = TriggerSlotMetaV0::default();
     }
     Ok(())
-}
-
-/// A trigger price (PRICE_PRECISION, 1e6) in the oracle's raw units,
-/// rounded toward early-firing: `Above` fires when the oracle climbs to
-/// the trigger, so its threshold rounds down; `Below` rounds up. Early is
-/// a wasted resolver simulation (it re-verifies with the real oracle
-/// code); late would be a missed trigger.
-fn raw_threshold(
-    trigger_price: u64,
-    exponent: i32,
-    condition: crate::state::user::OrderTriggerCondition,
-) -> Option<i64> {
-    let price = i128::from(trigger_price);
-    let raw = match exponent {
-        e if !(0..=12).contains(&e) => return None,
-        e if e >= 6 => price.checked_mul(10i128.checked_pow((e - 6) as u32)?)?,
-        e => {
-            let divisor = 10i128.checked_pow((6 - e) as u32)?;
-            match condition {
-                crate::state::user::OrderTriggerCondition::Above => price / divisor,
-                // Ceiling division (int_roundings is unstable on this
-                // toolchain); price and divisor are nonnegative.
-                _ => (price + divisor - 1) / divisor,
-            }
-        }
-    };
-    if raw > i64::MAX as i128 || raw < i64::MIN as i128 {
-        return None;
-    }
-    Some(raw as i64)
 }

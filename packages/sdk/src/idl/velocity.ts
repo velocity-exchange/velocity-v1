@@ -7891,10 +7891,9 @@ export type Velocity = {
         {
           "name": "crankConditions",
           "docs": [
-            "Writable only because the payload is staged in its scratch region;",
-            "the instruction is otherwise read-only and only ever simulated."
-          ],
-          "writable": true
+            "Read-only: resolvers stage into the shared scratch account, not",
+            "into the block they read."
+          ]
         },
         {
           "name": "clobMarket",
@@ -7961,10 +7960,9 @@ export type Velocity = {
         {
           "name": "crankConditions",
           "docs": [
-            "Writable only because the payload is staged in its scratch region;",
-            "the instruction is otherwise read-only and only ever simulated."
-          ],
-          "writable": true
+            "Read-only: resolvers stage into the shared scratch account, not",
+            "into the block they read."
+          ]
         },
         {
           "name": "clobMarket",
@@ -8031,10 +8029,9 @@ export type Velocity = {
         {
           "name": "crankConditions",
           "docs": [
-            "Writable only because the payload is staged in its scratch region;",
-            "the instruction is otherwise read-only and only ever simulated."
-          ],
-          "writable": true
+            "Read-only: resolvers stage into the shared scratch account, not",
+            "into the block they read."
+          ]
         },
         {
           "name": "clobMarket",
@@ -8102,9 +8099,9 @@ export type Velocity = {
         {
           "name": "crossConditions",
           "docs": [
-            "Writable only for the staging region; simulation-only."
-          ],
-          "writable": true
+            "Writable only for the staging region; simulation-only.",
+            "Read-only: resolvers stage into the shared scratch account."
+          ]
         },
         {
           "name": "clobMarket"
@@ -8179,9 +8176,9 @@ export type Velocity = {
         {
           "name": "liqConditions",
           "docs": [
-            "Writable only for the staging region; simulation-only."
-          ],
-          "writable": true
+            "Read-only: resolvers stage into the shared scratch account, not",
+            "into the block they read."
+          ]
         },
         {
           "name": "user"
@@ -8475,9 +8472,9 @@ export type Velocity = {
         {
           "name": "liqConditions",
           "docs": [
-            "Writable only for the staging region; simulation-only."
-          ],
-          "writable": true
+            "Read-only: resolvers stage into the shared scratch account, not",
+            "into the block they read."
+          ]
         },
         {
           "name": "user"
@@ -8656,9 +8653,9 @@ export type Velocity = {
         {
           "name": "triggerConditions",
           "docs": [
-            "Writable only for the staging region; simulation-only."
-          ],
-          "writable": true
+            "Read-only: resolvers stage into the shared scratch account, not",
+            "into the block they read."
+          ]
         },
         {
           "name": "user"
@@ -8721,9 +8718,9 @@ export type Velocity = {
         {
           "name": "triggerConditions",
           "docs": [
-            "Writable only for the staging region; simulation-only."
-          ],
-          "writable": true
+            "Read-only: resolvers stage into the shared scratch account, not",
+            "into the block they read."
+          ]
         },
         {
           "name": "user"

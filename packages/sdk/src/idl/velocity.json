@@ -7885,10 +7885,9 @@
         {
           "name": "crank_conditions",
           "docs": [
-            "Writable only because the payload is staged in its scratch region;",
-            "the instruction is otherwise read-only and only ever simulated."
-          ],
-          "writable": true
+            "Read-only: resolvers stage into the shared scratch account, not",
+            "into the block they read."
+          ]
         },
         {
           "name": "clob_market",
@@ -7955,10 +7954,9 @@
         {
           "name": "crank_conditions",
           "docs": [
-            "Writable only because the payload is staged in its scratch region;",
-            "the instruction is otherwise read-only and only ever simulated."
-          ],
-          "writable": true
+            "Read-only: resolvers stage into the shared scratch account, not",
+            "into the block they read."
+          ]
         },
         {
           "name": "clob_market",
@@ -8025,10 +8023,9 @@
         {
           "name": "crank_conditions",
           "docs": [
-            "Writable only because the payload is staged in its scratch region;",
-            "the instruction is otherwise read-only and only ever simulated."
-          ],
-          "writable": true
+            "Read-only: resolvers stage into the shared scratch account, not",
+            "into the block they read."
+          ]
         },
         {
           "name": "clob_market",
@@ -8096,9 +8093,9 @@
         {
           "name": "cross_conditions",
           "docs": [
-            "Writable only for the staging region; simulation-only."
-          ],
-          "writable": true
+            "Writable only for the staging region; simulation-only.",
+            "Read-only: resolvers stage into the shared scratch account."
+          ]
         },
         {
           "name": "clob_market"
@@ -8173,9 +8170,9 @@
         {
           "name": "liq_conditions",
           "docs": [
-            "Writable only for the staging region; simulation-only."
-          ],
-          "writable": true
+            "Read-only: resolvers stage into the shared scratch account, not",
+            "into the block they read."
+          ]
         },
         {
           "name": "user"
@@ -8469,9 +8466,9 @@
         {
           "name": "liq_conditions",
           "docs": [
-            "Writable only for the staging region; simulation-only."
-          ],
-          "writable": true
+            "Read-only: resolvers stage into the shared scratch account, not",
+            "into the block they read."
+          ]
         },
         {
           "name": "user"
@@ -8650,9 +8647,9 @@
         {
           "name": "trigger_conditions",
           "docs": [
-            "Writable only for the staging region; simulation-only."
-          ],
-          "writable": true
+            "Read-only: resolvers stage into the shared scratch account, not",
+            "into the block they read."
+          ]
         },
         {
           "name": "user"
@@ -8715,9 +8712,9 @@
         {
           "name": "trigger_conditions",
           "docs": [
-            "Writable only for the staging region; simulation-only."
-          ],
-          "writable": true
+            "Read-only: resolvers stage into the shared scratch account, not",
+            "into the block they read."
+          ]
         },
         {
           "name": "user"

@@ -46,11 +46,26 @@ pub const TRIGGER_CONDITIONS_STAGING_LEN: usize = 2048;
 /// resolver cannot derive other markets' oracles. Goes stale when the
 /// user's positions change; a stale map fails the executor's simulation
 /// until the next sync, never fires wrongly.
+/// Each slot's resolver names four accounts of its own — the conditions,
+/// the user, and *that slot's* market oracle and perp market — so unlike
+/// the margin map there is no one list every condition can share. The
+/// region is per slot, and a condition points at its own stripe.
+pub const TRIGGER_RESOLVERS_PER_SLOT: usize = 4;
+pub const TRIGGER_RESOLVERS_STRIDE: usize =
+    TRIGGER_RESOLVERS_PER_SLOT * relay_spec::ACCOUNT_REF_LEN;
+pub const TRIGGER_RESOLVERS_LEN: usize = TRIGGER_CONDITION_SLOTS * TRIGGER_RESOLVERS_STRIDE;
+
 pub const TRIGGER_MAP_ACCOUNTS_MAX: usize = 24;
 pub const TRIGGER_MAP_ACCOUNTS_LEN: usize = TRIGGER_MAP_ACCOUNTS_MAX * relay_spec::ACCOUNT_REF_LEN;
 
 /// Account-data offset of the staging region.
 pub const TRIGGER_CONDITIONS_STAGING_OFFSET: usize = 8 + TRIGGER_CONDITIONS_BLOCK_LEN;
+
+/// Account-data offset of the per-slot resolver lists.
+pub const TRIGGER_RESOLVERS_OFFSET: usize = TRIGGER_CONDITIONS_STAGING_OFFSET
+    + TRIGGER_CONDITIONS_STAGING_LEN
+    + TRIGGER_CONDITION_SLOTS * core::mem::size_of::<TriggerSlotMetaV0>()
+    + TRIGGER_MAP_ACCOUNTS_LEN;
 
 /// What a resolver needs to stage the right executor for a fired slot,
 /// captured at sync time: the order's identity plus the market's CLOB
@@ -82,6 +97,8 @@ pub struct TriggerConditionsV0 {
     pub slots: [TriggerSlotMetaV0; TRIGGER_CONDITION_SLOTS],
     /// The user's margin-map section (see [`TRIGGER_MAP_ACCOUNTS_LEN`]).
     pub map_accounts: [u8; TRIGGER_MAP_ACCOUNTS_LEN],
+    /// Per-slot resolver account lists (see [`TRIGGER_RESOLVERS_LEN`]).
+    pub resolvers: [u8; TRIGGER_RESOLVERS_LEN],
     /// The `User` these conditions watch triggers for.
     pub user: Pubkey,
     /// Live entries in `map_accounts`.
@@ -96,6 +113,7 @@ impl Default for TriggerConditionsV0 {
             staging: [0; TRIGGER_CONDITIONS_STAGING_LEN],
             slots: [TriggerSlotMetaV0::default(); TRIGGER_CONDITION_SLOTS],
             map_accounts: [0; TRIGGER_MAP_ACCOUNTS_LEN],
+            resolvers: [0; TRIGGER_RESOLVERS_LEN],
             user: Pubkey::default(),
             map_accounts_count: 0,
             padding: [0; 7],
@@ -109,11 +127,33 @@ impl TriggerConditionsV0 {
         + TRIGGER_CONDITIONS_STAGING_LEN
         + TRIGGER_CONDITION_SLOTS * core::mem::size_of::<TriggerSlotMetaV0>()
         + TRIGGER_MAP_ACCOUNTS_LEN
+        + TRIGGER_RESOLVERS_LEN
         + 32
         + 1
         + 7;
 
     /// Write the margin-map section the staged executors append.
+    /// Write slot `index`'s resolver list and describe where it landed.
+    pub fn write_slot_resolvers(
+        &mut self,
+        index: usize,
+        refs: &[relay_spec::AccountRefV0],
+    ) -> Result<relay_spec::ResolverListV0> {
+        if index >= TRIGGER_CONDITION_SLOTS || refs.len() > TRIGGER_RESOLVERS_PER_SLOT {
+            return Err(ErrorCode::DefaultError.into());
+        }
+        let base = index * TRIGGER_RESOLVERS_STRIDE;
+        for (i, r) in refs.iter().enumerate() {
+            let at = base + i * relay_spec::ACCOUNT_REF_LEN;
+            self.resolvers[at..at + 32].copy_from_slice(&r.address);
+            self.resolvers[at + 32] = r.writable;
+        }
+        Ok(relay_spec::ResolverListV0::new(
+            (TRIGGER_RESOLVERS_OFFSET + base) as u32,
+            refs.len() as u8,
+        ))
+    }
+
     pub fn write_map_accounts(&mut self, refs: &[relay_spec::AccountRefV0]) -> Result<()> {
         if refs.len() > TRIGGER_MAP_ACCOUNTS_MAX {
             msg!("map section of {} exceeds the region", refs.len());
@@ -254,7 +294,7 @@ mod tests {
                 executor_disc: [3; 8],
                 min_payment: 5,
             },
-            &[],
+            relay_spec::ResolverListV0::new(0, 0),
         );
         condition.active = 1;
         acct.set_condition(2, &condition).unwrap();

@@ -218,12 +218,15 @@ pub fn handle_sync_trigger_conditions<'c: 'info, 'info>(
             &[b"perp_market", order.market_index.to_le_bytes().as_ref()],
             &crate::ID,
         );
-        let resolver_accounts = [
-            AccountRefV0::writable(conditions_key.to_bytes()),
-            AccountRefV0::readonly(user_key.to_bytes()),
-            AccountRefV0::readonly(oracle.to_bytes()),
-            AccountRefV0::readonly(perp_market_pda.to_bytes()),
-        ];
+        let resolvers = conditions.write_slot_resolvers(
+            slot_index,
+            &[
+                AccountRefV0::writable(conditions_key.to_bytes()),
+                AccountRefV0::readonly(user_key.to_bytes()),
+                AccountRefV0::readonly(oracle.to_bytes()),
+                AccountRefV0::readonly(perp_market_pda.to_bytes()),
+            ],
+        )?;
         let spec = CrankSpecV0 {
             resolver_program: crate::ID.to_bytes(),
             resolver_disc,
@@ -240,7 +243,7 @@ pub fn handle_sync_trigger_conditions<'c: 'info, 'info>(
                 threshold,
                 cmp,
                 spec,
-                &resolver_accounts,
+                resolvers,
             ),
         )?;
         conditions.slots[slot_index] = meta;

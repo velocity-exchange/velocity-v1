@@ -1474,12 +1474,20 @@ describe('e2e localnet: programs + publisher + redis', function () {
 		// A CLOB ask that expires in ~10s. Velocity min-folds the expiry
 		// into the market's wake hint as it places, so the turner has a
 		// deadline to wake on.
+		//
+		// Priced well above every bid on the book — the midpoint spline
+		// quotes around 102, so an ask near the touch gets crossed and
+		// filled, and the order count returns to baseline for a reason
+		// that has nothing to do with expiry.
+		await clobMaker.fetchAccounts();
+		const makerSizeBefore =
+			clobMaker.getUser().getPerpPosition(0)?.baseAssetAmount ?? new BN(0);
 		const now = Math.floor(Date.now() / 1000);
 		await placeClobOrder(
 			clobMaker,
 			clobMakerKp,
 			PositionDirection.SHORT,
-			new BN(1015).mul(PRICE).divn(10),
+			new BN(110).mul(PRICE),
 			UNIT,
 			new BN(now + 10)
 		);
@@ -1491,6 +1499,14 @@ describe('e2e localnet: programs + publisher + redis', function () {
 			const book = await readClob();
 			return book.askCount === before.askCount ? true : undefined;
 		});
+		// Reclaimed, not filled: a cross would also drop the count.
+		await clobMaker.fetchAccounts();
+		assert.isTrue(
+			(clobMaker.getUser().getPerpPosition(0)?.baseAssetAmount ?? new BN(0)).eq(
+				makerSizeBefore
+			),
+			'the order expired rather than trading'
+		);
 		assert.isAbove(
 			await relayPayoutBalance(),
 			payoutBefore,
@@ -1647,6 +1663,10 @@ describe('e2e localnet: programs + publisher + redis', function () {
 		);
 
 		const payoutBefore = await relayPayoutBalance();
+		// Measured, not assumed: a fixed size to compare against passes
+		// vacuously the moment the victim's position is smaller than it,
+		// which reports "relay liquidated" for a relay that did nothing.
+		const sizeBefore = victim.getUser().getPerpPosition(0)!.baseAssetAmount;
 		// Crash the oracle. Nobody submits a liquidation.
 		await setOraclePrice(84);
 
@@ -1654,8 +1674,7 @@ describe('e2e localnet: programs + publisher + redis', function () {
 			await victim.fetchAccounts();
 			const position = victim.getUser().getPerpPosition(0);
 			const reduced =
-				!position ||
-				position.baseAssetAmount.lt(UNIT.muln(5));
+				!position || position.baseAssetAmount.lt(sizeBefore);
 			return reduced ? true : undefined;
 		});
 		assert.isAbove(await relayPayoutBalance(), payoutBefore);

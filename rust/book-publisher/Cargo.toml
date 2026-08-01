@@ -7,7 +7,7 @@ publish = false
 [dependencies]
 # Quote-view assembly + decoding over a chain source.
 velocity-router-sim = { path = "../router-sim" }
-relay-chain-source = { git = "https://github.com/velocity-exchange/relay", rev = "5e601ab06266e9943c9b075c9f21506d3d1ac152" }
+relay-chain-source = { git = "https://github.com/velocity-exchange/relay", rev = "5fdf5c5abc346af0ceb9067b799afb3552c9cc4f" }
 program = { package = "velocity", path = "../../programs/velocity", default-features = false, features = [
   "velocity-rs",
   "mainnet-beta",

@@ -61,7 +61,7 @@ use {
         validate,
     },
     anchor_lang::{prelude::*, Discriminator},
-    relay_spec::{AccountRefV0, ConditionV0, CrankSpecV0},
+    relay_spec::{AccountRefV0, ConditionV0, CrankSpecV0, ResolverListV0},
     std::{collections::BTreeMap, convert::TryInto},
 };
 
@@ -255,7 +255,8 @@ pub fn rewrite_liq_conditions<'info>(
     conditions.init_block()?;
     conditions.write_sync_accounts(&sync_accounts)?;
     // What the threshold conditions point relay at (prefix + margin map).
-    let resolver_count = sync_accounts.len() as u8;
+    // Every condition on this account points at the one stored list.
+    let resolvers = ResolverListV0::new(LIQ_SYNC_ACCOUNTS_OFFSET as u32, sync_accounts.len() as u8);
 
     // Free collateral now — the distance each threshold is measured from.
     let user = crate::load!(user_loader)?;
@@ -288,7 +289,7 @@ pub fn rewrite_liq_conditions<'info>(
                     &inputs,
                     slope,
                     free_collateral,
-                    resolver_count,
+                    resolvers,
                     disc8(crate::instruction::ResolveLiquidatePerpWithFill::DISCRIMINATOR)?,
                     disc8(crate::instruction::LiquidatePerpWithFill::DISCRIMINATOR)?,
                 )? {
@@ -335,7 +336,7 @@ pub fn rewrite_liq_conditions<'info>(
                     &inputs,
                     slope,
                     free_collateral,
-                    resolver_count,
+                    resolvers,
                     disc8(crate::instruction::ResolveLiquidatePerpWithFill::DISCRIMINATOR)?,
                     disc8(crate::instruction::LiquidatePerpWithFill::DISCRIMINATOR)?,
                 )? {
@@ -366,10 +367,6 @@ pub fn rewrite_liq_conditions<'info>(
             executor_disc: disc8(crate::instruction::ResyncLiqConditions::DISCRIMINATOR)?,
             min_payment: args.sync_payment_lamports,
         };
-        let sync_resolver_accounts = [
-            AccountRefV0::writable(conditions_key.to_bytes()),
-            AccountRefV0::readonly(user_key.to_bytes()),
-        ];
         let (watch_offset, watch_len) = user_positions_watch_region();
         conditions.set_condition(
             LIQ_SYNC_WATCH,
@@ -378,12 +375,12 @@ pub fn rewrite_liq_conditions<'info>(
                 watch_offset,
                 watch_len,
                 sync_spec,
-                &sync_resolver_accounts,
+                resolvers,
             ),
         )?;
         conditions.set_condition(
             LIQ_SYNC_FALLBACK,
-            &ConditionV0::every_slots(fallback_slots, sync_spec, &sync_resolver_accounts),
+            &ConditionV0::every_slots(fallback_slots, sync_spec, resolvers),
         )?;
     } else {
         conditions.set_condition(LIQ_SYNC_WATCH, &relay_spec::bytemuck::Zeroable::zeroed())?;
@@ -492,7 +489,7 @@ fn threshold_condition(
     inputs: &MarketInputs,
     slope: i128,
     free_collateral: i128,
-    resolver_count: u8,
+    resolvers: ResolverListV0,
     resolver_disc: [u8; 8],
     executor_disc: [u8; 8],
 ) -> Result<Option<ConditionV0>> {
@@ -527,7 +524,7 @@ fn threshold_condition(
     // The resolver needs its three named accounts *and* the whole margin
     // map — more than a condition holds inline — so it reads the list that
     // `rewrite_liq_conditions` already stored on this very account.
-    let mut condition = ConditionV0::on_value_cross(
+    Ok(Some(ConditionV0::on_value_cross(
         oracle.to_bytes(),
         watch.price_offset,
         watch.price_len,
@@ -540,10 +537,8 @@ fn threshold_condition(
             executor_disc,
             min_payment,
         },
-        &[],
-    );
-    condition.set_indirect_resolver_accounts(LIQ_SYNC_ACCOUNTS_OFFSET as u32, resolver_count);
-    Ok(Some(condition))
+        resolvers,
+    )))
 }
 
 // Referenced by the doc comment's precision notes.

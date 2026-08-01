@@ -147,25 +147,22 @@ pub fn handle_initialize_quoter_cross_conditions(
     conditions.quote_spot_market_index = quote_spot_market_index;
     conditions.write_resolver_list(&resolver_accounts)?;
     conditions.init_block()?;
-    let indirect = |mut condition: ConditionV0| -> ConditionV0 {
-        condition.set_indirect_resolver_accounts(
-            QUOTER_CROSS_RESOLVER_LIST_OFFSET as u32,
-            resolver_accounts.len() as u8,
-        );
-        condition
-    };
+    let resolvers = relay_spec::ResolverListV0::new(
+        QUOTER_CROSS_RESOLVER_LIST_OFFSET as u32,
+        resolver_accounts.len() as u8,
+    );
 
     // The maker-declared reprice watch; inactive when nothing is declared
     // (the fallback poll is then the only wake for this side).
     if quoter.watch_len > 0 {
         conditions.set_condition(
             QUOTER_CROSS_WATCH,
-            &indirect(ConditionV0::on_account_change(
+            &(ConditionV0::on_account_change(
                 quoter.watch_account.to_bytes(),
                 quoter.watch_offset,
                 quoter.watch_len,
                 spec,
-                &[],
+                resolvers,
             )),
         )?;
     } else {
@@ -178,17 +175,17 @@ pub fn handle_initialize_quoter_cross_conditions(
         QUOTER_CROSS_CLOB,
         // Both u32 side heads, `best_bid` then `best_ask`, in one 8-byte
         // watch — a crossing order is always a new best.
-        &indirect(ConditionV0::on_account_change(
+        &(ConditionV0::on_account_change(
             clob_market.to_bytes(),
             crate::state::prop_amm::CLOB_BEST_BID_OFFSET as u32,
             8,
             spec,
-            &[],
+            resolvers,
         )),
     )?;
     conditions.set_condition(
         QUOTER_CROSS_FALLBACK,
-        &indirect(ConditionV0::every_slots(expire_fallback_slots, spec, &[])),
+        &(ConditionV0::every_slots(expire_fallback_slots, spec, resolvers)),
     )?;
     Ok(())
 }

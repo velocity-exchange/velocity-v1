@@ -7986,9 +7986,6 @@ export type Velocity = {
         },
         {
           "name": "state"
-        },
-        {
-          "name": "oracle"
         }
       ],
       "args": []
@@ -19687,7 +19684,7 @@ export type Velocity = {
             "type": {
               "array": [
                 "u8",
-                1744
+                1168
               ]
             }
           },
@@ -19701,6 +19698,18 @@ export type Velocity = {
               "array": [
                 "u8",
                 2048
+              ]
+            }
+          },
+          {
+            "name": "resolvers",
+            "docs": [
+              "The resolver account list every condition here points at."
+            ],
+            "type": {
+              "array": [
+                "u8",
+                144
               ]
             }
           },
@@ -21838,7 +21847,7 @@ export type Velocity = {
             "type": {
               "array": [
                 "u8",
-                4048
+                2704
               ]
             }
           },
@@ -25126,7 +25135,7 @@ export type Velocity = {
             "type": {
               "array": [
                 "u8",
-                880
+                592
               ]
             }
           },
@@ -27552,7 +27561,7 @@ export type Velocity = {
             "type": {
               "array": [
                 "u8",
-                2320
+                1552
               ]
             }
           },
@@ -27593,6 +27602,18 @@ export type Velocity = {
               "array": [
                 "u8",
                 792
+              ]
+            }
+          },
+          {
+            "name": "resolvers",
+            "docs": [
+              "Per-slot resolver account lists (see [`TRIGGER_RESOLVERS_LEN`])."
+            ],
+            "type": {
+              "array": [
+                "u8",
+                1056
               ]
             }
           },

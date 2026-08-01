@@ -90,6 +90,15 @@ pub const CLOB_CRANK_STAGING_LEN: usize = 2048;
 /// `offset` is relative to): discriminator + the block.
 pub const CLOB_CRANK_STAGING_OFFSET: usize = 8 + CLOB_CRANK_BLOCK_LEN;
 
+/// Every condition on this account resolves with the same four accounts,
+/// so the list is stored once and each condition points at it. Padded to
+/// keep (SIZE - 8) %% 16 == 0 (see docs/alignment-and-native-offsets.md).
+pub const CLOB_CRANK_RESOLVERS_MAX: usize = 4;
+pub const CLOB_CRANK_RESOLVERS_LEN: usize = 144;
+const _: () =
+    assert!(CLOB_CRANK_RESOLVERS_LEN >= CLOB_CRANK_RESOLVERS_MAX * relay_spec::ACCOUNT_REF_LEN);
+pub const CLOB_CRANK_RESOLVERS_OFFSET: usize = CLOB_CRANK_STAGING_OFFSET + CLOB_CRANK_STAGING_LEN;
+
 #[account(zero_copy(unsafe))]
 #[derive(Debug)]
 #[repr(C)]
@@ -100,6 +109,8 @@ pub struct ClobCrankConditionsV0 {
     /// Scratch the resolvers stage their `ResolvedCrankV0` into. Only ever
     /// written under simulation; on-chain contents are meaningless.
     pub staging: [u8; CLOB_CRANK_STAGING_LEN],
+    /// The resolver account list every condition here points at.
+    pub resolvers: [u8; CLOB_CRANK_RESOLVERS_LEN],
     /// The market's oracle, captured at attach time. Resolvers hold only
     /// four fixed accounts, so the staged executor's map section is derived
     /// from here rather than from the perp market account; an admin oracle
@@ -134,6 +145,7 @@ impl Default for ClobCrankConditionsV0 {
         Self {
             block: [0; CLOB_CRANK_BLOCK_LEN],
             staging: [0; CLOB_CRANK_STAGING_LEN],
+            resolvers: [0; CLOB_CRANK_RESOLVERS_LEN],
             oracle: Pubkey::default(),
             keeper_payment_lamports: 0,
             market_index: 0,
@@ -146,7 +158,34 @@ impl Default for ClobCrankConditionsV0 {
 impl ClobCrankConditionsV0 {
     /// 8 (discriminator) + block + staging + trailing fields. Kept as a const
     /// so the alignment invariant below is checked at compile time.
-    pub const SIZE: usize = 8 + CLOB_CRANK_BLOCK_LEN + CLOB_CRANK_STAGING_LEN + 32 + 8 + 2 + 2 + 4;
+    pub const SIZE: usize = 8
+        + CLOB_CRANK_BLOCK_LEN
+        + CLOB_CRANK_STAGING_LEN
+        + CLOB_CRANK_RESOLVERS_LEN
+        + 32
+        + 8
+        + 2
+        + 2
+        + 4;
+
+    /// Store the resolver account list and describe where it landed.
+    pub fn write_resolvers(
+        &mut self,
+        refs: &[relay_spec::AccountRefV0],
+    ) -> Result<relay_spec::ResolverListV0> {
+        if refs.len() > CLOB_CRANK_RESOLVERS_MAX {
+            return Err(ErrorCode::DefaultError.into());
+        }
+        for (i, r) in refs.iter().enumerate() {
+            let at = i * relay_spec::ACCOUNT_REF_LEN;
+            self.resolvers[at..at + 32].copy_from_slice(&r.address);
+            self.resolvers[at + 32] = r.writable;
+        }
+        Ok(relay_spec::ResolverListV0::new(
+            CLOB_CRANK_RESOLVERS_OFFSET as u32,
+            refs.len() as u8,
+        ))
+    }
 
     /// The block region, for `relay_spec::read_block`.
     pub fn block(&self) -> &[u8] {
@@ -334,7 +373,7 @@ mod tests {
         assert_eq!(CLOB_CRANK_BLOCK_LEN, 16 + 6 * relay_spec::CONDITION_LEN);
         assert_eq!(
             ClobCrankConditionsV0::SIZE,
-            8 + CLOB_CRANK_BLOCK_LEN + CLOB_CRANK_STAGING_LEN + 48
+            8 + CLOB_CRANK_BLOCK_LEN + CLOB_CRANK_STAGING_LEN + CLOB_CRANK_RESOLVERS_LEN + 48
         );
         // The whole account must clear anchor init's 10,240-byte CPI
         // allocation ceiling, or attaching a CLOB to a market breaks.

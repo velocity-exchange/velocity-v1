@@ -70,13 +70,14 @@ pub fn write_clob_crank_conditions(
         "expire fallback interval must be nonzero"
     )?;
 
-    let resolver_accounts = [
-        // Index 0 by contract: `ClobCrankConditionsV0::stage` points there.
+    // Stored once on the account; every condition below points at it.
+    // Index 0 by contract: `ClobCrankConditionsV0::stage` points there.
+    let resolvers = conditions.write_resolvers(&[
         AccountRefV0::writable(keys.crank_conditions.to_bytes()),
         AccountRefV0::readonly(keys.clob_market.to_bytes()),
         AccountRefV0::readonly(keys.quoter.to_bytes()),
         AccountRefV0::readonly(keys.state.to_bytes()),
-    ];
+    ])?;
     let spec = |resolver_disc: &[u8], executor_disc: &[u8]| -> Result<CrankSpecV0> {
         Ok(CrankSpecV0 {
             resolver_program: crate::ID.to_bytes(),
@@ -108,16 +109,16 @@ pub fn write_clob_crank_conditions(
             CLOB_BID_COUNT_OFFSET as u32,
             8,
             evict_spec,
-            &resolver_accounts,
+            resolvers,
         ),
     )?;
     conditions.set_condition(
         CLOB_CRANK_EXPIRE,
-        &ConditionV0::at_timestamp(initial_expire_wake_ts, expire_spec, &resolver_accounts),
+        &ConditionV0::at_timestamp(initial_expire_wake_ts, expire_spec, resolvers),
     )?;
     conditions.set_condition(
         CLOB_CRANK_EXPIRE_FALLBACK,
-        &ConditionV0::every_slots(expire_fallback_slots, expire_spec, &resolver_accounts),
+        &ConditionV0::every_slots(expire_fallback_slots, expire_spec, resolvers),
     )?;
     let cross_spec = spec(
         crate::instruction::ResolveCrankCrossMatch::DISCRIMINATOR,
@@ -132,7 +133,7 @@ pub fn write_clob_crank_conditions(
             CLOB_BEST_BID_OFFSET as u32,
             8,
             cross_spec,
-            &resolver_accounts,
+            resolvers,
         ),
     )?;
     conditions.set_condition(
@@ -140,10 +141,10 @@ pub fn write_clob_crank_conditions(
         // A PropAMM crossing the CLOB has no single account to watch — the
         // poll is that case's liveness floor (the book publisher is the
         // fast path).
-        &ConditionV0::every_slots(expire_fallback_slots, cross_spec, &resolver_accounts),
+        &ConditionV0::every_slots(expire_fallback_slots, cross_spec, resolvers),
     )?;
     let (mut activation, keep_wake_slot) = (
-        ConditionV0::at_slot(u64::MAX, cross_spec, &resolver_accounts),
+        ConditionV0::at_slot(u64::MAX, cross_spec, resolvers),
         initial_activation_wake_slot,
     );
     activation.wake_slot = keep_wake_slot;

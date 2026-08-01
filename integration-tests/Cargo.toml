@@ -31,9 +31,3 @@ solana-pubkey = "3"
 solana-signer = "3"
 solana-transaction = "3"
 
-# TEMPORARY — REMOVE with the next commit. Points at a sibling relay
-# checkout because 3f95239 (staging out of the ConditionBlock trait) is
-# not pushed yet, so the rev below cannot be bumped. CI cannot build with
-# this in place.
-[patch."https://github.com/velocity-exchange/relay"]
-relay-spec = { path = "../../relay/spec" }

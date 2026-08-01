@@ -3631,14 +3631,20 @@ impl<'a> TransactionBuilder<'a> {
             self.ixs.push(ix);
         }
 
+        let user = Wallet::derive_user_account(&self.authority, sub_account_id);
         let mut accounts = program::accounts::InitializeUser {
             state: *state_account(),
             authority: self.authority,
-            user: Wallet::derive_user_account(&self.authority, sub_account_id),
+            user,
             user_stats: Wallet::derive_stats_account(&self.owner()),
             payer: self.authority,
             rent: SYSVAR_RENT_PUBKEY,
             system_program: SYSTEM_PROGRAM_ID,
+            // Optional, but passed by default so a new user is covered by
+            // relay liquidation/trigger conditions from birth.
+            user_conditions: Some(
+                Pubkey::find_program_address(&[b"user_conditions", user.as_ref()], &program::ID).0,
+            ),
         }
         .to_account_metas(None);
         if let Some(referrer) = referrer {

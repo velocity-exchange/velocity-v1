@@ -96,7 +96,8 @@ pub const CLOB_CRANK_RESOLVERS_MAX: usize = 5;
 pub const CLOB_CRANK_RESOLVERS_LEN: usize = 176;
 const _: () =
     assert!(CLOB_CRANK_RESOLVERS_LEN >= CLOB_CRANK_RESOLVERS_MAX * relay_spec::ACCOUNT_REF_LEN);
-pub const CLOB_CRANK_RESOLVERS_OFFSET: usize = CLOB_CRANK_TAIL_OFFSET;
+pub const CLOB_CRANK_RESOLVERS_OFFSET: usize =
+    relay_spec::block_offset!(ClobCrankConditionsV0, resolvers);
 
 #[account(zero_copy(unsafe))]
 #[derive(Debug)]
@@ -266,7 +267,10 @@ impl ClobCrankConditionsV0 {
 
     /// The expire condition's `wake_ts` hint.
     pub fn expire_wake_ts(&self) -> Result<i64> {
-        Ok(self.get_condition(CLOB_CRANK_EXPIRE)?.wake_ts)
+        match self.get_condition(CLOB_CRANK_EXPIRE)?.wake() {
+            Ok(relay_spec::WakeView::AtTimestamp { unix_ts }) => Ok(unix_ts),
+            _ => Err(error!(ErrorCode::DefaultError)),
+        }
     }
 
     /// Min-fold a newly placed order's `max_ts` into the expire hint — the
@@ -275,8 +279,14 @@ impl ClobCrankConditionsV0 {
     pub fn note_expiry(&mut self, max_ts: i64) -> Result<()> {
         let conditions = relay_spec::read_block_mut(&mut self.block, 0)
             .map_err(|_| error!(ErrorCode::DefaultError))?;
-        let hint = &mut conditions[CLOB_CRANK_EXPIRE].wake_ts;
-        *hint = (*hint).min(max_ts);
+        let condition = &mut conditions[CLOB_CRANK_EXPIRE];
+        let current = match condition.wake() {
+            Ok(relay_spec::WakeView::AtTimestamp { unix_ts }) => unix_ts,
+            _ => return Err(error!(ErrorCode::DefaultError)),
+        };
+        condition.set_wake(relay_spec::WakeView::AtTimestamp {
+            unix_ts: current.min(max_ts),
+        });
         Ok(())
     }
 
@@ -286,13 +296,18 @@ impl ClobCrankConditionsV0 {
     pub fn repair_expiry(&mut self, true_min_ts: i64) -> Result<()> {
         let conditions = relay_spec::read_block_mut(&mut self.block, 0)
             .map_err(|_| error!(ErrorCode::DefaultError))?;
-        conditions[CLOB_CRANK_EXPIRE].wake_ts = true_min_ts;
+        conditions[CLOB_CRANK_EXPIRE].set_wake(relay_spec::WakeView::AtTimestamp {
+            unix_ts: true_min_ts,
+        });
         Ok(())
     }
 
     /// The cross-activation condition's `wake_slot` hint.
     pub fn activation_wake_slot(&self) -> Result<u64> {
-        Ok(self.get_condition(CLOB_CRANK_CROSS_ACTIVATION)?.wake_slot)
+        match self.get_condition(CLOB_CRANK_CROSS_ACTIVATION)?.wake() {
+            Ok(relay_spec::WakeView::AtSlot { slot }) => Ok(slot),
+            _ => Err(error!(ErrorCode::DefaultError)),
+        }
     }
 
     /// Min-fold a newly placed order's activation slot into the
@@ -303,8 +318,14 @@ impl ClobCrankConditionsV0 {
     pub fn note_activation(&mut self, activation_slot: u64) -> Result<()> {
         let conditions = relay_spec::read_block_mut(&mut self.block, 0)
             .map_err(|_| error!(ErrorCode::DefaultError))?;
-        let hint = &mut conditions[CLOB_CRANK_CROSS_ACTIVATION].wake_slot;
-        *hint = (*hint).min(activation_slot);
+        let condition = &mut conditions[CLOB_CRANK_CROSS_ACTIVATION];
+        let current = match condition.wake() {
+            Ok(relay_spec::WakeView::AtSlot { slot }) => slot,
+            _ => return Err(error!(ErrorCode::DefaultError)),
+        };
+        condition.set_wake(relay_spec::WakeView::AtSlot {
+            slot: current.min(activation_slot),
+        });
         Ok(())
     }
 
@@ -315,7 +336,9 @@ impl ClobCrankConditionsV0 {
     pub fn repair_activation(&mut self, min_future_slot: u64) -> Result<()> {
         let conditions = relay_spec::read_block_mut(&mut self.block, 0)
             .map_err(|_| error!(ErrorCode::DefaultError))?;
-        conditions[CLOB_CRANK_CROSS_ACTIVATION].wake_slot = min_future_slot;
+        conditions[CLOB_CRANK_CROSS_ACTIVATION].set_wake(relay_spec::WakeView::AtSlot {
+            slot: min_future_slot,
+        });
         Ok(())
     }
 }
@@ -334,17 +357,7 @@ const _: () = assert!((ClobCrankConditionsV0::SIZE - 8) % 16 == 0);
 /// [`relay_spec::ConditionBlock`]): `init_header`, `write_condition`,
 /// `read_condition`, `update_condition`, `deactivate_condition`, and
 /// `stage` are all provided.
-impl ConditionBlock for ClobCrankConditionsV0 {
-    const NUM_CONDITIONS: usize = CLOB_CRANK_CONDITIONS;
-
-    fn block(&self) -> &[u8] {
-        &self.block
-    }
-
-    fn block_mut(&mut self) -> &mut [u8] {
-        &mut self.block
-    }
-}
+relay_spec::condition_block!(ClobCrankConditionsV0, block, CLOB_CRANK_CONDITIONS);
 
 #[cfg(test)]
 mod tests {
@@ -381,9 +394,19 @@ mod tests {
         let mut acct = ClobCrankConditionsV0::default();
         acct.init_block().unwrap();
 
-        let mut condition = relay_spec::ConditionV0::zeroed();
-        condition.wake_ts = 1_234;
-        condition.active = 1;
+        // Built the way a host builds one — the constructor is what marks
+        // a condition active; `set_wake` only rewrites the wake.
+        let condition = relay_spec::ConditionV0::at_timestamp(
+            1_234,
+            relay_spec::CrankSpecV0 {
+                resolver_program: crate::ID.to_bytes(),
+                resolver_disc: [1; 8],
+                executor_program: crate::ID.to_bytes(),
+                executor_disc: [2; 8],
+                min_payment: 5_000,
+            },
+            relay_spec::ResolverListV0::new(CLOB_CRANK_RESOLVERS_OFFSET as u32, 1),
+        );
         acct.set_condition(CLOB_CRANK_EXPIRE, &condition).unwrap();
 
         // relay's own reader must accept what we wrote, at offset 0 of the
@@ -391,15 +414,18 @@ mod tests {
         let (header, conditions) = relay_spec::read_block(acct.block(), 0).unwrap();
         assert_eq!(header.num_conditions, CLOB_CRANK_CONDITIONS as u8);
         assert_eq!(conditions.len(), CLOB_CRANK_CONDITIONS);
-        assert_eq!(conditions[CLOB_CRANK_EXPIRE].wake_ts, 1_234);
-        assert_eq!(conditions[CLOB_CRANK_EXPIRE].active, 1);
+        assert_eq!(
+            conditions[CLOB_CRANK_EXPIRE].wake(),
+            Ok(relay_spec::WakeView::AtTimestamp { unix_ts: 1_234 })
+        );
+        assert!(conditions[CLOB_CRANK_EXPIRE].is_active());
         // The untouched slots are zeroed (inactive) conditions, not garbage.
-        assert_eq!(conditions[CLOB_CRANK_EVICT].active, 0);
-        assert_eq!(conditions[CLOB_CRANK_EXPIRE_FALLBACK].active, 0);
+        assert!(!conditions[CLOB_CRANK_EVICT].is_active());
+        assert!(!conditions[CLOB_CRANK_EXPIRE_FALLBACK].is_active());
 
         assert_eq!(
-            acct.get_condition(CLOB_CRANK_EXPIRE).unwrap().wake_ts,
-            1_234
+            acct.get_condition(CLOB_CRANK_EXPIRE).unwrap().wake(),
+            Ok(relay_spec::WakeView::AtTimestamp { unix_ts: 1_234 })
         );
     }
 
@@ -408,8 +434,7 @@ mod tests {
         let mut acct = ClobCrankConditionsV0::default();
         acct.init_block().unwrap();
         let mut condition = relay_spec::ConditionV0::zeroed();
-        condition.wake_ts = i64::MAX;
-        condition.active = 1;
+        condition.set_wake(relay_spec::WakeView::AtTimestamp { unix_ts: i64::MAX });
         acct.set_condition(CLOB_CRANK_EXPIRE, &condition).unwrap();
 
         acct.note_expiry(5_000).unwrap();

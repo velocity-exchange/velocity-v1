@@ -2377,7 +2377,7 @@ dependencies = [
 [[package]]
 name = "relay-spec"
 version = "0.1.0"
-source = "git+https://github.com/velocity-exchange/relay?rev=3f952393c776e3469cb9f632f09ed8b8e36c2a6b#3f952393c776e3469cb9f632f09ed8b8e36c2a6b"
+source = "git+https://github.com/velocity-exchange/relay?rev=4b4e80d27e49e18247218b2f570ee902788833b5#4b4e80d27e49e18247218b2f570ee902788833b5"
 dependencies = [
  "bytemuck",
 ]

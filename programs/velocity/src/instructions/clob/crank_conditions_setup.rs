@@ -144,11 +144,7 @@ pub fn write_clob_crank_conditions(
         // fast path).
         &ConditionV0::every_slots(expire_fallback_slots, cross_spec, resolvers),
     )?;
-    let (mut activation, keep_wake_slot) = (
-        ConditionV0::at_slot(u64::MAX, cross_spec, resolvers),
-        initial_activation_wake_slot,
-    );
-    activation.wake_slot = keep_wake_slot;
+    let activation = ConditionV0::at_slot(initial_activation_wake_slot, cross_spec, resolvers);
     conditions.set_condition(
         CLOB_CRANK_CROSS_ACTIVATION,
         // Activation-slot maturation makes an order matchable with no

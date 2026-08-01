@@ -44,6 +44,31 @@ use {
 const UNIT: u64 = 1_000_000_000;
 const PRICE: u64 = 1_000_000; // PRICE_PRECISION as u64
 
+/// The wake fields are sealed behind `WakeView`; these pull one variant's
+/// payload out for assertions, and fail loudly on the wrong variant.
+fn value_cross(c: &velocity::relay_spec::ConditionV0) -> ([u8; 32], u32, u32, i64, u8) {
+    match c.wake() {
+        Ok(velocity::relay_spec::WakeView::OnValueCross {
+            address,
+            offset,
+            len,
+            threshold,
+            cmp,
+        }) => (address, offset, len, threshold, cmp),
+        other => panic!("expected OnValueCross, got {other:?}"),
+    }
+}
+
+fn account_change(c: &velocity::relay_spec::ConditionV0) -> ([u8; 32], u32, u32) {
+    match c.wake() {
+        Ok(velocity::relay_spec::WakeView::OnAccountChange {
+            address,
+            offset,
+            len,
+        }) => (address, offset, len),
+        other => panic!("expected OnAccountChange, got {other:?}"),
+    }
+}
 fn spot_market_pda(market_index: u16) -> Pubkey {
     Pubkey::find_program_address(
         &[b"spot_market", market_index.to_le_bytes().as_ref()],
@@ -1231,9 +1256,9 @@ fn program_keeper_expire_crank_pays_reservoir_lamports_to_an_unsigned_keeper() {
     // payment into min_payment.
     let acct: ClobCrankConditionsV0 = read_zero_copy(&fixture.svm, &conditions);
     let evict = acct.get_condition(CLOB_CRANK_EVICT).unwrap();
-    assert_eq!(evict.min_payment, PAYMENT);
+    assert_eq!(evict.min_payment(), PAYMENT);
     assert_eq!(
-        evict.wake_account,
+        account_change(&evict).0,
         fixture.clob_market.to_bytes(),
         "evict watch must point at the CLOB market"
     );
@@ -2919,23 +2944,26 @@ fn generic_quoter_cross_conditions_discover_and_fill_a_midpoint_clob_cross() {
     let (header, conditions) = velocity::relay_spec::read_block(acct.block(), 0).unwrap();
     assert_eq!(header.num_conditions, 3);
     assert_eq!(
-        conditions[QUOTER_CROSS_WATCH].wake_account,
+        account_change(&conditions[QUOTER_CROSS_WATCH]).0,
         maker.instance.to_bytes()
     );
-    assert_eq!(conditions[QUOTER_CROSS_WATCH].wake_offset, 136);
-    assert_eq!(conditions[QUOTER_CROSS_WATCH].wake_len, 16);
-    assert_eq!(conditions[QUOTER_CROSS_WATCH].min_payment, PAYMENT);
+    assert_eq!(account_change(&conditions[QUOTER_CROSS_WATCH]).1, 136);
+    assert_eq!(account_change(&conditions[QUOTER_CROSS_WATCH]).2, 16);
+    assert_eq!(conditions[QUOTER_CROSS_WATCH].min_payment(), PAYMENT);
     assert_eq!(
-        conditions[QUOTER_CROSS_CLOB].wake_account,
+        account_change(&conditions[QUOTER_CROSS_CLOB]).0,
         fixture.clob_market.to_bytes()
     );
-    assert_eq!(conditions[QUOTER_CROSS_FALLBACK].wake_slot, 100);
+    assert_eq!(
+        conditions[QUOTER_CROSS_FALLBACK].wake(),
+        Ok(velocity::relay_spec::WakeView::EverySlots { slots: 100 })
+    );
     // The resolver list (shared scratch, then the entry's registered quote
     // surface) is stored once next to the block; every condition points at
     // it indirectly.
-    assert_eq!(conditions[QUOTER_CROSS_WATCH].num_resolver_accounts, 9);
+    assert_eq!(conditions[QUOTER_CROSS_WATCH].resolvers().count, 9);
     assert_eq!(
-        conditions[QUOTER_CROSS_WATCH].resolver_list_offset,
+        conditions[QUOTER_CROSS_WATCH].resolvers().offset,
         velocity::state::quoter_cross::QUOTER_CROSS_RESOLVER_LIST_OFFSET as u32
     );
     assert_eq!(acct.resolver_list_count, 9);
@@ -3161,13 +3189,12 @@ fn trigger_relay_conditions_fire_an_armed_trigger_unsigned() {
     // One block per user: liquidation slots first, then the trigger slots.
     assert_eq!(header.num_conditions as usize, USER_CONDITIONS);
     let trig = &block[TRIGGER_SLOT_BASE..];
-    assert_eq!(trig[0].wake_account, fixture.oracle.to_bytes());
-    assert_eq!(trig[0].wake_offset, 8);
-    assert_eq!(trig[0].wake_len, 8);
-    assert_eq!(trig[0].wake_ts, (105 * PRICE) as i64);
-    assert_eq!(trig[0].wake_cmp, 0);
-    assert_eq!(trig[0].min_payment, PAYMENT);
-    assert_eq!(trig[1].active, 0, "one armed trigger, one live slot");
+    assert_eq!(
+        value_cross(&trig[0]),
+        (fixture.oracle.to_bytes(), 8, 8, (105 * PRICE) as i64, 0)
+    );
+    assert_eq!(trig[0].min_payment(), PAYMENT);
+    assert!(!trig[1].is_active(), "one armed trigger, one live slot");
     assert_eq!(acct.trigger_slots[0].order_id, 7);
     // The shared list: the resolver's four named accounts (scratch first),
     // then the map.
@@ -3213,7 +3240,7 @@ fn trigger_relay_conditions_fire_an_armed_trigger_unsigned() {
     // The fired slot went quiet — the level-triggered wake must not spin.
     let acct: UserConditionsV0 = read_zero_copy(&fixture.svm, &conditions);
     let (_, block) = velocity::relay_spec::read_block(acct.block(), 0).unwrap();
-    assert_eq!(block[0].active, 0);
+    assert!(!block[0].is_active());
     assert_eq!(acct.trigger_slots[0].order_id, 0);
 }
 
@@ -3261,9 +3288,9 @@ fn trigger_limit_sync_targets_the_clob_executor() {
     let acct: UserConditionsV0 = read_zero_copy(&fixture.svm, &user_conditions_pda(&user));
     let (_, block) = velocity::relay_spec::read_block(acct.block(), 0).unwrap();
     let trig = &block[TRIGGER_SLOT_BASE..];
-    assert_eq!(trig[0].wake_cmp, 1, "Below trigger watches downward");
+    assert_eq!(value_cross(&trig[0]).4, 1, "Below trigger watches downward");
     assert_eq!(
-        trig[0].executor_disc,
+        trig[0].crank_spec().executor_disc,
         velocity::instruction::TriggerClobOrder::DISCRIMINATOR
     );
     assert_eq!(
@@ -3391,30 +3418,37 @@ fn liq_conditions_write_a_conservative_downward_threshold() {
 
     // Slot 0: the perp exposure's threshold — a downward value cross on the
     // market oracle, strictly below spot and above zero.
-    assert_eq!(block[0].wake_account, fixture.oracle.to_bytes());
-    assert_eq!(block[0].wake_cmp, 1, "a long is liquidated as price falls");
-    assert!(block[0].wake_ts > 0);
-    assert!(
-        block[0].wake_ts < (100 * PRICE) as i64,
-        "threshold {} must sit below spot",
-        block[0].wake_ts
+    assert_eq!(value_cross(&block[0]).0, fixture.oracle.to_bytes());
+    assert_eq!(
+        value_cross(&block[0]).4,
+        1,
+        "a long is liquidated as price falls"
     );
-    assert_eq!(block[0].min_payment, PAYMENT);
+    assert!(value_cross(&block[0]).3 > 0);
+    assert!(
+        value_cross(&block[0]).3 < (100 * PRICE) as i64,
+        "threshold {} must sit below spot",
+        value_cross(&block[0]).3
+    );
+    assert_eq!(block[0].min_payment(), PAYMENT);
     assert_eq!(acct.slots[0].target_market_index, 0);
     assert_eq!(acct.slots[0].active, 1);
 
     // The self-maintenance pair: a watch over the user's own position bytes
     // whose executor is the sync, plus the coarse poll.
-    assert_eq!(block[LIQ_SYNC_WATCH].wake_account, user.to_bytes());
+    assert_eq!(account_change(&block[LIQ_SYNC_WATCH]).0, user.to_bytes());
     // The staged executor is the UNSIGNED sibling: relay refuses to submit
     // an executor whose account list names a signer, so the self-sync path
     // cannot be the opt-in `sync_liq_conditions` (which takes a payer).
     assert_eq!(
-        block[LIQ_SYNC_WATCH].executor_disc,
+        block[LIQ_SYNC_WATCH].crank_spec().executor_disc,
         velocity::instruction::ResyncLiqConditions::DISCRIMINATOR
     );
-    assert_eq!(block[LIQ_SYNC_WATCH].min_payment, 5_000);
-    assert_eq!(block[LIQ_SYNC_FALLBACK].wake_slot, 3000);
+    assert_eq!(block[LIQ_SYNC_WATCH].min_payment(), 5_000);
+    assert_eq!(
+        block[LIQ_SYNC_FALLBACK].wake(),
+        Ok(velocity::relay_spec::WakeView::EverySlots { slots: 3000 })
+    );
 
     // Healthy: the resolver runs the real margin calc and reports no work.
     fixture.svm.warp_to_slot(12);

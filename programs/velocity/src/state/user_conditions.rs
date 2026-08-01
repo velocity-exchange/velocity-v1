@@ -79,10 +79,8 @@ const _: () =
 pub const TRIGGER_RESOLVERS_LEN: usize = TRIGGER_CONDITION_SLOTS * TRIGGER_RESOLVERS_STRIDE;
 
 /// Account-data offset of the per-slot trigger resolver lists.
-pub const TRIGGER_RESOLVERS_OFFSET: usize = LIQ_SYNC_ACCOUNTS_OFFSET
-    + LIQ_SYNC_ACCOUNTS_LEN
-    + LIQ_THRESHOLD_SLOTS * core::mem::size_of::<LiqSlotMetaV0>()
-    + TRIGGER_CONDITION_SLOTS * core::mem::size_of::<TriggerSlotMetaV0>();
+pub const TRIGGER_RESOLVERS_OFFSET: usize =
+    relay_spec::block_offset!(UserConditionsV0, trigger_resolvers);
 
 pub const USER_CONDITIONS_BLOCK_LEN: usize = BLOCK_HEADER_LEN + USER_CONDITIONS * CONDITION_LEN;
 
@@ -112,7 +110,8 @@ pub const LIQ_RESOLVER_PREFIX: usize = 4;
 
 /// Byte offset of `sync_accounts` within the account, for
 /// `set_indirect_resolver_accounts`.
-pub const LIQ_SYNC_ACCOUNTS_OFFSET: usize = USER_CONDITIONS_TAIL_OFFSET;
+pub const LIQ_SYNC_ACCOUNTS_OFFSET: usize =
+    relay_spec::block_offset!(UserConditionsV0, sync_accounts);
 
 /// Per-threshold-slot metadata: which perp market the staged liquidation
 /// targets (for a perp exposure, its own market; for a spot-collateral
@@ -368,17 +367,7 @@ const _: () = assert!(UserConditionsV0::SIZE <= 10_240);
 /// [`relay_spec::ConditionBlock`]): `init_header`, `write_condition`,
 /// `read_condition`, `update_condition`, `deactivate_condition`, and
 /// `stage` are all provided.
-impl ConditionBlock for UserConditionsV0 {
-    const NUM_CONDITIONS: usize = USER_CONDITIONS;
-
-    fn block(&self) -> &[u8] {
-        &self.block
-    }
-
-    fn block_mut(&mut self) -> &mut [u8] {
-        &mut self.block
-    }
-}
+relay_spec::condition_block!(UserConditionsV0, block, USER_CONDITIONS);
 
 #[cfg(test)]
 mod tests {

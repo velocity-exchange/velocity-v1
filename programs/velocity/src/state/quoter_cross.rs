@@ -61,7 +61,8 @@ pub const QUOTER_CROSS_RESOLVER_LIST_MAX: usize = 38;
 pub const QUOTER_CROSS_RESOLVER_LIST_LEN: usize =
     QUOTER_CROSS_RESOLVER_LIST_MAX * relay_spec::ACCOUNT_REF_LEN;
 /// Account-data offset of the resolver list region.
-pub const QUOTER_CROSS_RESOLVER_LIST_OFFSET: usize = QUOTER_CROSS_TAIL_OFFSET;
+pub const QUOTER_CROSS_RESOLVER_LIST_OFFSET: usize =
+    relay_spec::block_offset!(QuoterCrossConditionsV0, resolver_list);
 
 #[account(zero_copy(unsafe))]
 #[derive(Debug)]
@@ -175,17 +176,7 @@ const _: () = assert!(QuoterCrossConditionsV0::SIZE <= 10_240);
 /// [`relay_spec::ConditionBlock`]): `init_header`, `write_condition`,
 /// `read_condition`, `update_condition`, `deactivate_condition`, and
 /// `stage` are all provided.
-impl ConditionBlock for QuoterCrossConditionsV0 {
-    const NUM_CONDITIONS: usize = QUOTER_CROSS_CONDITIONS;
-
-    fn block(&self) -> &[u8] {
-        &self.block
-    }
-
-    fn block_mut(&mut self) -> &mut [u8] {
-        &mut self.block
-    }
-}
+relay_spec::condition_block!(QuoterCrossConditionsV0, block, QUOTER_CROSS_CONDITIONS);
 
 #[cfg(test)]
 mod tests {
@@ -208,13 +199,15 @@ mod tests {
         let mut acct = QuoterCrossConditionsV0::default();
         acct.init_block().unwrap();
         let mut condition = relay_spec::ConditionV0::zeroed();
-        condition.wake_slot = 77;
-        condition.active = 1;
+        condition.set_wake(relay_spec::WakeView::AtSlot { slot: 77 });
         acct.set_condition(QUOTER_CROSS_FALLBACK, &condition)
             .unwrap();
         let (header, conditions) = relay_spec::read_block(acct.block(), 0).unwrap();
         assert_eq!(header.num_conditions, QUOTER_CROSS_CONDITIONS as u8);
-        assert_eq!(conditions[QUOTER_CROSS_FALLBACK].wake_slot, 77);
-        assert_eq!(conditions[QUOTER_CROSS_WATCH].active, 0);
+        assert_eq!(
+            conditions[QUOTER_CROSS_FALLBACK].wake(),
+            Ok(relay_spec::WakeView::AtSlot { slot: 77 })
+        );
+        assert!(!conditions[QUOTER_CROSS_WATCH].is_active());
     }
 }

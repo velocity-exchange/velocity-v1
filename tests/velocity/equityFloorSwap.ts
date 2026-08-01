@@ -29,6 +29,7 @@ import {
 	mockOracleNoProgram,
 	mockUSDCMint,
 	mockUserUSDCAccount,
+	setFeedPriceNoProgram,
 } from './testHelpers';
 import { createTransferInstruction } from '@solana/spl-token';
 import { startAnchor } from 'solana-bankrun';
@@ -39,6 +40,8 @@ import { BankrunContextWrapper } from '../../packages/sdk/src/bankrun/bankrunCon
 const EQUITY_BELOW_FLOOR_HEX = '0x18d6';
 // InvalidSwap
 const INVALID_SWAP_HEX = '0x1868';
+// InvalidOracle
+const INVALID_ORACLE_HEX = '0x1793';
 
 // Net-equity floor metric and the strictly-reducing swap exemption:
 // a taker holds 200 USDC and owes 1 SOL (tokens spent externally). The
@@ -325,6 +328,56 @@ describe('equity floor swap', () => {
 		}
 		assert(err, 'value-leaking swap should have been rejected');
 		assert(err.message.includes(INVALID_SWAP_HEX));
+	});
+
+	it('reducing swap with a stale oracle is rejected', async () => {
+		// stale the sol oracle past the margin guard rails; the exemption's
+		// value bound cannot price against it, so the swap is refused even at
+		// a fair rate
+		await bankrunContextWrapper.moveTimeForward(400);
+
+		const amountIn = new BN(100).mul(QUOTE_PRECISION);
+		const { beginSwapIx, endSwapIx } = await takerVelocityClient.getSwapIx({
+			amountIn,
+			inMarketIndex: 0,
+			outMarketIndex: 1,
+			inTokenAccount: takerUSDC,
+			outTokenAccount: takerWSOL,
+		});
+
+		const transferIn = createTransferInstruction(
+			takerUSDC,
+			adminUSDC.publicKey,
+			takerVelocityClient.wallet.publicKey,
+			amountIn.toNumber()
+		);
+		const transferOut = createTransferInstruction(
+			adminWSOL,
+			takerWSOL,
+			adminVelocityClient.wallet.publicKey,
+			LAMPORTS_PER_SOL
+		);
+
+		const tx = new Transaction()
+			.add(beginSwapIx)
+			.add(transferIn)
+			.add(transferOut)
+			.add(endSwapIx);
+
+		let err: Error | undefined;
+		try {
+			await takerVelocityClient.sendTransaction(tx, [
+				// @ts-ignore
+				adminVelocityClient.wallet.payer,
+			]);
+		} catch (e) {
+			err = e as Error;
+		}
+		assert(err, 'stale-oracle reducing swap should have been rejected');
+		assert(err.message.includes(INVALID_ORACLE_HEX));
+
+		// refresh the oracle so the exemption works again below
+		await setFeedPriceNoProgram(bankrunContextWrapper, 100, solOracle);
 	});
 
 	it('reducing swap repays the borrow while tripped', async () => {

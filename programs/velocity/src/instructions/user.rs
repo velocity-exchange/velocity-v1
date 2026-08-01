@@ -4033,7 +4033,16 @@ pub fn handle_end_swap<'c: 'info, 'info>(
         "the in_spot_market must have a flash loan amount set"
     )?;
 
-    let in_oracle_data = oracle_map.get_price_data(&in_spot_market.oracle_id())?;
+    let (in_oracle_data, in_oracle_validity) = oracle_map.get_price_data_and_validity(
+        MarketType::Spot,
+        in_spot_market.market_index,
+        &in_spot_market.oracle_id(),
+        in_spot_market.historical_oracle_data.last_oracle_price_twap,
+        in_spot_market.get_max_confidence_interval_multiplier()?,
+        -1,
+        0,
+        Some(LogMode::Margin),
+    )?;
     let in_oracle_price = in_oracle_data.price;
 
     let mut out_spot_market = spot_market_map.get_ref_mut(&out_market_index)?;
@@ -4045,7 +4054,18 @@ pub fn handle_end_swap<'c: 'info, 'info>(
         out_market_index
     )?;
 
-    let out_oracle_data = oracle_map.get_price_data(&out_spot_market.oracle_id())?;
+    let (out_oracle_data, out_oracle_validity) = oracle_map.get_price_data_and_validity(
+        MarketType::Spot,
+        out_spot_market.market_index,
+        &out_spot_market.oracle_id(),
+        out_spot_market
+            .historical_oracle_data
+            .last_oracle_price_twap,
+        out_spot_market.get_max_confidence_interval_multiplier()?,
+        -1,
+        0,
+        Some(LogMode::Margin),
+    )?;
     let out_oracle_price = out_oracle_data.price;
 
     let in_vault = &mut ctx.accounts.in_spot_market_vault;
@@ -4288,15 +4308,52 @@ pub fn handle_end_swap<'c: 'info, 'info>(
         )?;
     }
 
-    // While under floor protection, bound the exempted swap's value loss at
-    // oracle so a "reducing" swap cannot leak value through a bad route.
+    // While under floor protection, bound the exempted swap's value loss so a
+    // "reducing" swap cannot leak value through a bad route. The bound is the
+    // exemption's only safety, so both legs must have valid oracles, and the
+    // bound values the leg given up at the strict max and the leg received at
+    // the strict min of live price and 5min twap, so a stale sample cannot
+    // flatter the exchange rate.
     if strictly_reducing && (user_stats.is_equity_breaker_tripped() || user.equity_floor > 0) {
-        let in_value =
-            get_token_value(amount_in.cast()?, in_spot_market.decimals, in_oracle_price)?;
+        validate!(
+            is_oracle_valid_for_action(in_oracle_validity, Some(VelocityAction::MarginCalc))?,
+            ErrorCode::InvalidOracle,
+            "in oracle invalid for swap under equity floor protection"
+        )?;
+
+        validate!(
+            is_oracle_valid_for_action(out_oracle_validity, Some(VelocityAction::MarginCalc))?,
+            ErrorCode::InvalidOracle,
+            "out oracle invalid for swap under equity floor protection"
+        )?;
+
+        let in_strict_price = StrictOraclePrice::new(
+            in_oracle_price,
+            in_spot_market
+                .historical_oracle_data
+                .last_oracle_price_twap_5min,
+            true,
+        );
+        in_strict_price.validate()?;
+
+        let out_strict_price = StrictOraclePrice::new(
+            out_oracle_price,
+            out_spot_market
+                .historical_oracle_data
+                .last_oracle_price_twap_5min,
+            true,
+        );
+        out_strict_price.validate()?;
+
+        let in_value = get_token_value(
+            amount_in.cast()?,
+            in_spot_market.decimals,
+            in_strict_price.max(),
+        )?;
         let out_value = get_token_value(
             amount_out.cast()?,
             out_spot_market.decimals,
-            out_oracle_price,
+            out_strict_price.min(),
         )?;
 
         let min_out_value = in_value

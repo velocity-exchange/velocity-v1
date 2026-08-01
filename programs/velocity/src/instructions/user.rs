@@ -63,7 +63,6 @@ use {
                 OrderAction, OrderActionExplanation, OrderActionRecord, OrderRecord, SwapRecord,
             },
             fill_mode::FillMode,
-            liq_conditions::{LiqConditionsV0, LIQ_CONDITIONS_PDA_SEED},
             margin_calculation::MarginContext,
             market_status::MarketStatus,
             oracle::StrictOraclePrice,
@@ -93,6 +92,7 @@ use {
                 transfer_equity_floor, MarketType, Order, OrderStatus, OrderType, ReferrerName,
                 ReferrerStatus, SpecialUserStatus, User, UserStats,
             },
+            user_conditions::{UserConditionsV0, USER_CONDITIONS_PDA_SEED},
             user_map::load_user_maps,
         },
         validate,
@@ -134,10 +134,10 @@ pub fn handle_initialize_user<'c: 'info, 'info>(
     // Before the user is loaded, not after: `load_init` does not write the
     // discriminator until the instruction exits, so a `load_mut` of the
     // user in between reads a zeroed one and fails.
-    if let Some(liq_conditions) = &ctx.accounts.liq_conditions {
-        let mut conditions = liq_conditions
+    if let Some(user_conditions) = &ctx.accounts.user_conditions {
+        let mut conditions = user_conditions
             .load_init()
-            .or_else(|_| liq_conditions.load_mut())?;
+            .or_else(|_| user_conditions.load_mut())?;
         conditions.user = user_key;
         conditions.init_block()?;
     }
@@ -4753,12 +4753,12 @@ pub struct InitializeUser<'info> {
     /// up empty is fine — the first sync writes the thresholds.
     #[account(
         init_if_needed,
-        seeds = [LIQ_CONDITIONS_PDA_SEED, user.key().as_ref()],
-        space = LiqConditionsV0::SIZE,
+        seeds = [USER_CONDITIONS_PDA_SEED, user.key().as_ref()],
+        space = UserConditionsV0::SIZE,
         bump,
         payer = payer
     )]
-    pub liq_conditions: Option<AccountLoader<'info, LiqConditionsV0>>,
+    pub user_conditions: Option<AccountLoader<'info, UserConditionsV0>>,
     #[account(
         mut,
         has_one = authority

@@ -629,27 +629,13 @@ export async function getLpPoolTokenTokenAccountPublicKey(
  * @returns The `ClobCrankConditionsV0` account's public key.
  */
 /** Per-user relay liquidation conditions: `["liq_conditions", user]`. */
-export function getLiqConditionsPublicKey(
+export function getUserConditionsPublicKey(
 	programId: PublicKey,
 	user: PublicKey
 ): PublicKey {
 	return PublicKey.findProgramAddressSync(
 		[
-			Buffer.from(anchor.utils.bytes.utf8.encode('liq_conditions')),
-			user.toBuffer(),
-		],
-		programId
-	)[0];
-}
-
-/** Per-user relay trigger-order conditions: `["trigger_conditions", user]`. */
-export function getTriggerConditionsPublicKey(
-	programId: PublicKey,
-	user: PublicKey
-): PublicKey {
-	return PublicKey.findProgramAddressSync(
-		[
-			Buffer.from(anchor.utils.bytes.utf8.encode('trigger_conditions')),
+			Buffer.from(anchor.utils.bytes.utf8.encode('user_conditions')),
 			user.toBuffer(),
 		],
 		programId

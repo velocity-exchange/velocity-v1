@@ -75,8 +75,8 @@ use {
                 get_writable_spot_market_set, get_writable_spot_market_set_from_many, SpotMarketMap,
             },
             state::{HotRole, State},
-            trigger_conditions::{TriggerConditionsV0, TRIGGER_CONDITIONS_PDA_SEED},
             user::{MarketType, OrderStatus, OrderTriggerCondition, OrderType, User, UserStats},
+            user_conditions::{UserConditionsV0, USER_CONDITIONS_PDA_SEED},
             user_map::{load_user_map, load_user_maps},
             zero_copy::{AccountZeroCopyMut, ZeroCopyLoader},
         },
@@ -3678,10 +3678,10 @@ pub struct TriggerOrder<'info> {
     /// (or users) without relay plumbing crank exactly as before.
     #[account(
         mut,
-        seeds = [TRIGGER_CONDITIONS_PDA_SEED, user.key().as_ref()],
+        seeds = [USER_CONDITIONS_PDA_SEED, user.key().as_ref()],
         bump
     )]
-    pub trigger_conditions: Option<AccountLoader<'info, TriggerConditionsV0>>,
+    pub trigger_conditions: Option<AccountLoader<'info, UserConditionsV0>>,
     /// The fired market's crank conditions — the reservoir that pays the
     /// keeper in program-keeper mode (validated against the order's market
     /// in the handler). Required in program-keeper mode.
@@ -4182,7 +4182,7 @@ pub struct PauseSpotMarketDepositWithdraw<'info> {
 pub struct ResolveTriggerOrder<'info> {
     /// Writable only for the staging region; simulation-only.
     #[account(mut, constraint = trigger_conditions.load()?.user == user.key())]
-    pub trigger_conditions: AccountLoader<'info, TriggerConditionsV0>,
+    pub trigger_conditions: AccountLoader<'info, UserConditionsV0>,
     pub user: AccountLoader<'info, User>,
     /// CHECK: validated against the market's oracle in the handler.
     pub oracle: UncheckedAccount<'info>,
@@ -4224,7 +4224,7 @@ pub fn handle_resolve_trigger_order(ctx: Context<ResolveTriggerOrder>) -> Result
                     meta.market_index,
                 )),
             })
-            .refs(ctx.accounts.trigger_conditions.load()?.read_map_accounts())
+            .refs(ctx.accounts.trigger_conditions.load()?.read_sync_accounts())
             .arg(meta.order_id)?,
         ))
     })

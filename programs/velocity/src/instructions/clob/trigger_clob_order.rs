@@ -131,13 +131,13 @@ pub struct TriggerClobOrder<'info> {
     #[account(
         mut,
         seeds = [
-            crate::state::trigger_conditions::TRIGGER_CONDITIONS_PDA_SEED,
+            crate::state::user_conditions::USER_CONDITIONS_PDA_SEED,
             user.key().as_ref(),
         ],
         bump
     )]
     pub trigger_conditions:
-        Option<AccountLoader<'info, crate::state::trigger_conditions::TriggerConditionsV0>>,
+        Option<AccountLoader<'info, crate::state::user_conditions::UserConditionsV0>>,
 }
 
 #[access_control(
@@ -529,8 +529,7 @@ pub fn handle_trigger_clob_order<'c: 'info, 'info>(
 pub struct ResolveTriggerClobOrder<'info> {
     /// Writable only for the staging region; simulation-only.
     #[account(mut, constraint = trigger_conditions.load()?.user == user.key())]
-    pub trigger_conditions:
-        AccountLoader<'info, crate::state::trigger_conditions::TriggerConditionsV0>,
+    pub trigger_conditions: AccountLoader<'info, crate::state::user_conditions::UserConditionsV0>,
     pub user: AccountLoader<'info, User>,
     /// CHECK: validated against the market's oracle in the handler.
     pub oracle: UncheckedAccount<'info>,
@@ -579,7 +578,7 @@ pub fn handle_resolve_trigger_clob_order(ctx: Context<ResolveTriggerClobOrder>) 
                 )),
                 trigger_conditions: Some(ctx.accounts.trigger_conditions.key()),
             })
-            .refs(ctx.accounts.trigger_conditions.load()?.read_map_accounts())
+            .refs(ctx.accounts.trigger_conditions.load()?.read_sync_accounts())
             .arg(meta.market_index)?
             .arg(meta.order_id)?,
         ))

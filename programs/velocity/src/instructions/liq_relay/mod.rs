@@ -1,5 +1,5 @@
 //! Relay plumbing for liquidations: the per-user condition block
-//! (`state::liq_conditions`), its self-maintaining sync, and the resolver
+//! (`state::user_conditions`), its self-maintaining sync, and the resolver
 //! that stages `liquidate_perp_with_fill` with the protocol `User` as the
 //! (inventory-free) liquidator.
 

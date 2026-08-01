@@ -35,23 +35,58 @@ use {
     relay_spec::{ConditionBlock, BLOCK_HEADER_LEN, CONDITION_LEN},
 };
 
-/// PDA seed: `["liq_conditions", user key]`.
-pub const LIQ_CONDITIONS_PDA_SEED: &[u8] = b"liq_conditions";
+#[zero_copy(unsafe)]
+#[derive(Default, Eq, PartialEq, Debug)]
+#[repr(C)]
+pub struct TriggerSlotMetaV0 {
+    /// The market's canonical CLOB entry / book / program — set when this
+    /// slot's executor is `trigger_clob_order`, zeroed for `trigger_order`.
+    pub quoter: Pubkey,
+    pub clob_market: Pubkey,
+    pub clob_program: Pubkey,
+    pub order_id: u32,
+    pub market_index: u16,
+    pub padding: [u8; 2],
+}
+
+/// PDA seed: `["user_conditions", user key]`.
+pub const USER_CONDITIONS_PDA_SEED: &[u8] = b"user_conditions";
 
 /// Watched exposures per user (perp positions + non-quote spot exposures).
 pub const LIQ_THRESHOLD_SLOTS: usize = 12;
 /// Threshold slots, then the sync watch, then the fallback poll.
 pub const LIQ_SYNC_WATCH: usize = LIQ_THRESHOLD_SLOTS;
 pub const LIQ_SYNC_FALLBACK: usize = LIQ_THRESHOLD_SLOTS + 1;
-pub const LIQ_CONDITIONS: usize = LIQ_THRESHOLD_SLOTS + 2;
+/// Trigger-order slots follow the liquidation ones in the same block.
+/// One account per user, not two: both are keyed by the user, invalidated
+/// by the same account changing, and want the same margin map — carrying
+/// them separately paid rent, a `WatchV0`, and a turner registry entry
+/// twice for one user.
+pub const TRIGGER_SLOT_BASE: usize = LIQ_THRESHOLD_SLOTS + 2;
+pub const TRIGGER_CONDITION_SLOTS: usize = 8;
+pub const USER_CONDITIONS: usize = TRIGGER_SLOT_BASE + TRIGGER_CONDITION_SLOTS;
 
-pub const LIQ_CONDITIONS_BLOCK_LEN: usize = BLOCK_HEADER_LEN + LIQ_CONDITIONS * CONDITION_LEN;
+/// Each trigger slot's resolver names that slot's own market oracle and
+/// perp market, so unlike the margin map there is no one list every
+/// condition can share; the region is per slot.
+pub const TRIGGER_RESOLVERS_PER_SLOT: usize = 4;
+pub const TRIGGER_RESOLVERS_STRIDE: usize =
+    TRIGGER_RESOLVERS_PER_SLOT * relay_spec::ACCOUNT_REF_LEN;
+pub const TRIGGER_RESOLVERS_LEN: usize = TRIGGER_CONDITION_SLOTS * TRIGGER_RESOLVERS_STRIDE;
+
+/// Account-data offset of the per-slot trigger resolver lists.
+pub const TRIGGER_RESOLVERS_OFFSET: usize = LIQ_SYNC_ACCOUNTS_OFFSET
+    + LIQ_SYNC_ACCOUNTS_LEN
+    + LIQ_THRESHOLD_SLOTS * core::mem::size_of::<LiqSlotMetaV0>()
+    + TRIGGER_CONDITION_SLOTS * core::mem::size_of::<TriggerSlotMetaV0>();
+
+pub const USER_CONDITIONS_BLOCK_LEN: usize = BLOCK_HEADER_LEN + USER_CONDITIONS * CONDITION_LEN;
 
 /// The staged executor: a dozen named accounts plus the stored account
 /// list below.
-pub const LIQ_CONDITIONS_STAGING_LEN: usize = 2048;
+pub const USER_CONDITIONS_STAGING_LEN: usize = 2048;
 
-pub const LIQ_CONDITIONS_STAGING_OFFSET: usize = 8 + LIQ_CONDITIONS_BLOCK_LEN;
+pub const USER_CONDITIONS_STAGING_OFFSET: usize = 8 + USER_CONDITIONS_BLOCK_LEN;
 
 /// The remaining-accounts list the sync was last called with, verbatim
 /// ([`relay_spec::AccountRefV0`] wire): the user's full margin maps
@@ -75,7 +110,7 @@ pub const LIQ_RESOLVER_PREFIX: usize = 3;
 /// Byte offset of `sync_accounts` within the account, for
 /// `set_indirect_resolver_accounts`.
 pub const LIQ_SYNC_ACCOUNTS_OFFSET: usize =
-    LIQ_CONDITIONS_STAGING_OFFSET + LIQ_CONDITIONS_STAGING_LEN;
+    USER_CONDITIONS_STAGING_OFFSET + USER_CONDITIONS_STAGING_LEN;
 
 /// Per-threshold-slot metadata: which perp market the staged liquidation
 /// targets (for a perp exposure, its own market; for a spot-collateral
@@ -93,15 +128,19 @@ pub struct LiqSlotMetaV0 {
 #[account(zero_copy(unsafe))]
 #[derive(Debug)]
 #[repr(C)]
-pub struct LiqConditionsV0 {
+pub struct UserConditionsV0 {
     /// The relay condition block; first field, at the 8-aligned offset 8.
-    pub block: [u8; LIQ_CONDITIONS_BLOCK_LEN],
+    pub block: [u8; USER_CONDITIONS_BLOCK_LEN],
     /// Scratch the resolvers stage into. Simulation-only.
-    pub staging: [u8; LIQ_CONDITIONS_STAGING_LEN],
+    pub staging: [u8; USER_CONDITIONS_STAGING_LEN],
     /// See [`LIQ_SYNC_ACCOUNTS_LEN`].
     pub sync_accounts: [u8; LIQ_SYNC_ACCOUNTS_LEN],
     /// Parallel to the threshold condition slots.
     pub slots: [LiqSlotMetaV0; LIQ_THRESHOLD_SLOTS],
+    /// Parallel to the trigger condition slots.
+    pub trigger_slots: [TriggerSlotMetaV0; TRIGGER_CONDITION_SLOTS],
+    /// Per-slot trigger resolver lists (see [`TRIGGER_RESOLVERS_LEN`]).
+    pub trigger_resolvers: [u8; TRIGGER_RESOLVERS_LEN],
     /// The `User` these conditions watch.
     pub user: Pubkey,
     /// Fee the sync executor pays its keeper from this account's own
@@ -124,13 +163,15 @@ pub struct LiqConditionsV0 {
     pub padding: [u8; 7],
 }
 
-impl Default for LiqConditionsV0 {
+impl Default for UserConditionsV0 {
     fn default() -> Self {
         Self {
-            block: [0; LIQ_CONDITIONS_BLOCK_LEN],
-            staging: [0; LIQ_CONDITIONS_STAGING_LEN],
+            block: [0; USER_CONDITIONS_BLOCK_LEN],
+            staging: [0; USER_CONDITIONS_STAGING_LEN],
             sync_accounts: [0; LIQ_SYNC_ACCOUNTS_LEN],
             slots: [LiqSlotMetaV0::default(); LIQ_THRESHOLD_SLOTS],
+            trigger_slots: [TriggerSlotMetaV0::default(); TRIGGER_CONDITION_SLOTS],
+            trigger_resolvers: [0; TRIGGER_RESOLVERS_LEN],
             user: Pubkey::default(),
             sync_payment_lamports: 0,
             sync_fallback_slots: 0,
@@ -141,12 +182,14 @@ impl Default for LiqConditionsV0 {
     }
 }
 
-impl LiqConditionsV0 {
+impl UserConditionsV0 {
     pub const SIZE: usize = 8
-        + LIQ_CONDITIONS_BLOCK_LEN
-        + LIQ_CONDITIONS_STAGING_LEN
+        + USER_CONDITIONS_BLOCK_LEN
+        + USER_CONDITIONS_STAGING_LEN
         + LIQ_SYNC_ACCOUNTS_LEN
         + LIQ_THRESHOLD_SLOTS * core::mem::size_of::<LiqSlotMetaV0>()
+        + TRIGGER_CONDITION_SLOTS * core::mem::size_of::<TriggerSlotMetaV0>()
+        + TRIGGER_RESOLVERS_LEN
         + 32
         + 8
         + 8
@@ -223,6 +266,45 @@ impl LiqConditionsV0 {
 
     /// Writes the full resolver list: [`LIQ_RESOLVER_PREFIX`] named
     /// accounts followed by the margin map.
+    /// Write trigger slot `index`'s resolver list and describe where it
+    /// landed.
+    pub fn write_slot_resolvers(
+        &mut self,
+        index: usize,
+        refs: &[relay_spec::AccountRefV0],
+    ) -> Result<relay_spec::ResolverListV0> {
+        if index >= TRIGGER_CONDITION_SLOTS || refs.len() > TRIGGER_RESOLVERS_PER_SLOT {
+            return Err(ErrorCode::DefaultError.into());
+        }
+        let base = index * TRIGGER_RESOLVERS_STRIDE;
+        for (i, r) in refs.iter().enumerate() {
+            let at = base + i * relay_spec::ACCOUNT_REF_LEN;
+            self.trigger_resolvers[at..at + 32].copy_from_slice(&r.address);
+            self.trigger_resolvers[at + 32] = r.writable;
+        }
+        Ok(relay_spec::ResolverListV0::new(
+            (TRIGGER_RESOLVERS_OFFSET + base) as u32,
+            refs.len() as u8,
+        ))
+    }
+
+    /// Deactivate the trigger slot watching `(market_index, order_id)` —
+    /// called when the trigger fires (or the order otherwise dies) so a
+    /// level-triggered wake goes quiet. Missing slot is fine: syncs are
+    /// best-effort.
+    pub fn release_slot(&mut self, market_index: u16, order_id: u32) {
+        for (index, meta) in self.trigger_slots.iter_mut().enumerate() {
+            if meta.market_index == market_index && meta.order_id == order_id {
+                *meta = TriggerSlotMetaV0::default();
+                // active byte sits last-ish in the condition; zero the whole
+                // slot rather than reaching into spec internals.
+                let start = BLOCK_HEADER_LEN + (TRIGGER_SLOT_BASE + index) * CONDITION_LEN;
+                self.block[start..start + CONDITION_LEN].fill(0);
+                return;
+            }
+        }
+    }
+
     pub fn write_sync_accounts(&mut self, refs: &[relay_spec::AccountRefV0]) -> Result<()> {
         if refs.len() > LIQ_SYNC_ACCOUNTS_MAX {
             msg!("sync account list of {} exceeds the region", refs.len());
@@ -280,16 +362,16 @@ impl LiqConditionsV0 {
     }
 }
 
-const _: () = assert!((LiqConditionsV0::SIZE - 8) % 16 == 0);
-const _: () = assert!(LiqConditionsV0::SIZE <= 10_240);
+const _: () = assert!((UserConditionsV0::SIZE - 8) % 16 == 0);
+const _: () = assert!(UserConditionsV0::SIZE <= 10_240);
 
 /// Block hosting + staging, from the spec (see
 /// [`relay_spec::ConditionBlock`]): `init_header`, `write_condition`,
 /// `read_condition`, `update_condition`, `deactivate_condition`, and
 /// `stage` are all provided.
-impl ConditionBlock for LiqConditionsV0 {
-    const NUM_CONDITIONS: usize = LIQ_CONDITIONS;
-    const STAGING_OFFSET: u32 = LIQ_CONDITIONS_STAGING_OFFSET as u32;
+impl ConditionBlock for UserConditionsV0 {
+    const NUM_CONDITIONS: usize = USER_CONDITIONS;
+    const STAGING_OFFSET: u32 = USER_CONDITIONS_STAGING_OFFSET as u32;
 
     fn block(&self) -> &[u8] {
         &self.block
@@ -311,12 +393,28 @@ mod tests {
     #[test]
     fn size_matches_the_layout() {
         assert_eq!(
-            std::mem::size_of::<LiqConditionsV0>(),
-            LiqConditionsV0::SIZE - 8
+            std::mem::size_of::<UserConditionsV0>(),
+            UserConditionsV0::SIZE - 8
         );
         assert_eq!(
-            LIQ_CONDITIONS_STAGING_OFFSET,
-            8 + core::mem::offset_of!(LiqConditionsV0, staging)
+            USER_CONDITIONS_STAGING_OFFSET,
+            8 + core::mem::offset_of!(UserConditionsV0, staging)
         );
+    }
+}
+
+#[cfg(test)]
+mod merged_size_tests {
+    use super::*;
+
+    /// One account per user instead of two. The number is load-bearing —
+    /// it is rent every user pays — so it is pinned rather than left to
+    /// drift as fields are added.
+    #[test]
+    fn size_is_pinned() {
+        assert_eq!(USER_CONDITIONS, 22);
+        assert_eq!(CONDITION_LEN, 192);
+        println!("UserConditionsV0::SIZE = {}", UserConditionsV0::SIZE);
+        assert!(UserConditionsV0::SIZE <= 10_240);
     }
 }

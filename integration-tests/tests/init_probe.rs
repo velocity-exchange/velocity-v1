@@ -69,8 +69,8 @@ fn initialize_user_creates_its_liq_conditions() {
         &velocity_id(),
     )
     .0;
-    let liq_conditions =
-        Pubkey::find_program_address(&[b"liq_conditions", user.as_ref()], &velocity_id()).0;
+    let user_conditions =
+        Pubkey::find_program_address(&[b"user_conditions", user.as_ref()], &velocity_id()).0;
 
     let metas = |accounts: Vec<anchor_lang::prelude::AccountMeta>| -> Vec<AccountMeta> {
         accounts
@@ -111,7 +111,7 @@ fn initialize_user_creates_its_liq_conditions() {
                 payer: admin.pubkey(),
                 rent,
                 system_program,
-                liq_conditions: Some(liq_conditions),
+                user_conditions: Some(user_conditions),
             }
             .to_account_metas(None),
         ),
@@ -124,10 +124,10 @@ fn initialize_user_creates_its_liq_conditions() {
     send(&mut svm, &admin, init_user, &[]).unwrap();
 
     // The block exists, is owned by velocity, and points back at its user.
-    let account = svm.get_account(&liq_conditions).expect("liq conditions");
+    let account = svm.get_account(&user_conditions).expect("liq conditions");
     assert_eq!(account.owner, velocity_id());
-    let conditions: &velocity::state::liq_conditions::LiqConditionsV0 = bytemuck::from_bytes(
-        &account.data[8..velocity::state::liq_conditions::LiqConditionsV0::SIZE],
+    let conditions: &velocity::state::user_conditions::UserConditionsV0 = bytemuck::from_bytes(
+        &account.data[8..velocity::state::user_conditions::UserConditionsV0::SIZE],
     );
     assert_eq!(conditions.user, user);
     // `init_block` ran: the header is a valid, all-inactive relay block.

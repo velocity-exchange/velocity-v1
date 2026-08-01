@@ -39,7 +39,7 @@ import {
 import { AnchorProvider, BN, Program } from '@coral-xyz/anchor';
 import {
 	getClobCrankConditionsPublicKey,
-	getLiqConditionsPublicKey,
+	getUserConditionsPublicKey,
 	getPerpMarketPublicKeySync,
 	getSpotMarketPublicKeySync,
 	Wallet,
@@ -196,8 +196,8 @@ async function main() {
 		const decodedUser: any = program.coder.accounts.decode('User', account.data);
 		const marketIndexes = exposedPerpMarkets(decodedUser);
 		if (marketIndexes.length === 0) continue;
-		const liqConditions = getLiqConditionsPublicKey(velocity, user);
-		const existing = await connection.getAccountInfo(liqConditions);
+		const userConditions = getUserConditionsPublicKey(velocity, user);
+		const existing = await connection.getAccountInfo(userConditions);
 		const syncAccounts: AccountMeta[] = [];
 		for (const marketIndex of marketIndexes) {
 			const oracle = marketOracles.get(marketIndex);
@@ -232,7 +232,7 @@ async function main() {
 					keys: [
 						{ pubkey: payer.publicKey, isSigner: true, isWritable: true },
 						{ pubkey: user, isSigner: false, isWritable: false },
-						{ pubkey: liqConditions, isSigner: false, isWritable: true },
+						{ pubkey: userConditions, isSigner: false, isWritable: true },
 						{ pubkey: SYSVAR_RENT_PUBKEY, isSigner: false, isWritable: false },
 						{
 							pubkey: SystemProgram.programId,
@@ -250,22 +250,22 @@ async function main() {
 		);
 		// The sync fee comes from the conditions account's own lamports.
 		if (!args.dryRun) {
-			const info = await connection.getAccountInfo(liqConditions);
+			const info = await connection.getAccountInfo(userConditions);
 			const floor = await connection.getMinimumBalanceForRentExemption(
 				info?.data.length ?? 7272
 			);
 			const want = floor + Number(args.syncPaymentLamports) * 50;
 			if ((info?.lamports ?? 0) < want) {
-				await act(`fund sync reservoir ${liqConditions.toBase58()}`, [
+				await act(`fund sync reservoir ${userConditions.toBase58()}`, [
 					SystemProgram.transfer({
 						fromPubkey: payer.publicKey,
-						toPubkey: liqConditions,
+						toPubkey: userConditions,
 						lamports: want - (info?.lamports ?? 0),
 					}),
 				]);
 			}
 		}
-		await ensureWatch(connection, provider, payer, liqConditions, act);
+		await ensureWatch(connection, provider, payer, userConditions, act);
 		covered += 1;
 	}
 	console.log(`liq coverage: ${covered} accounts with exposure`);

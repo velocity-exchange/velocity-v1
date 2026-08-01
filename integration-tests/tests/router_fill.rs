@@ -3021,15 +3021,15 @@ fn generic_quoter_cross_conditions_discover_and_fill_a_midpoint_clob_cross() {
 // from live orders, resolvers staging the dual-mode trigger cranks.
 // ---------------------------------------------------------------------------
 
-fn trigger_conditions_pda(user: &Pubkey) -> Pubkey {
-    Pubkey::find_program_address(&[b"trigger_conditions", user.as_ref()], &velocity_id()).0
+fn user_conditions_pda(user: &Pubkey) -> Pubkey {
+    Pubkey::find_program_address(&[b"user_conditions", user.as_ref()], &velocity_id()).0
 }
 
 fn sync_trigger_conditions(fixture: &mut Fixture, user: Pubkey, market_conditions: Pubkey) {
     let mut accounts = velocity::accounts::SyncTriggerConditions {
         payer: fixture.keeper.pubkey(),
         user,
-        trigger_conditions: trigger_conditions_pda(&user),
+        trigger_conditions: user_conditions_pda(&user),
         rent: "SysvarRent111111111111111111111111111111111"
             .parse()
             .unwrap(),
@@ -3056,7 +3056,7 @@ fn run_trigger_resolver(
     user: Pubkey,
     clob_path: bool,
 ) -> Option<velocity::relay_spec::ResolvedCrankV0> {
-    let conditions = trigger_conditions_pda(&user);
+    let conditions = user_conditions_pda(&user);
     let accounts = velocity::accounts::ResolveTriggerOrder {
         trigger_conditions: conditions,
         user,
@@ -3092,7 +3092,7 @@ fn run_trigger_resolver(
 /// level-triggered wake goes quiet.
 #[test]
 fn trigger_relay_conditions_fire_an_armed_trigger_unsigned() {
-    use velocity::state::trigger_conditions::TriggerConditionsV0;
+    use velocity::state::user_conditions::{UserConditionsV0, TRIGGER_SLOT_BASE, USER_CONDITIONS};
 
     let mut fixture = setup();
     const PAYMENT: u64 = 25_000;
@@ -3150,19 +3150,22 @@ fn trigger_relay_conditions_fire_an_armed_trigger_unsigned() {
     // The sync wrote a value watch at the trigger threshold (lazer exponent
     // 6 = PRICE_PRECISION, so raw == trigger) with the plain trigger
     // executor, and captured the margin-map section.
-    let conditions = trigger_conditions_pda(&user);
-    let acct: TriggerConditionsV0 = read_zero_copy(&fixture.svm, &conditions);
+    let conditions = user_conditions_pda(&user);
+    let acct: UserConditionsV0 = read_zero_copy(&fixture.svm, &conditions);
     let (header, block) = velocity::relay_spec::read_block(acct.block(), 0).unwrap();
-    assert_eq!(header.num_conditions, 8);
-    assert_eq!(block[0].wake_account, fixture.oracle.to_bytes());
-    assert_eq!(block[0].wake_offset, 8);
-    assert_eq!(block[0].wake_len, 8);
-    assert_eq!(block[0].wake_ts, (105 * PRICE) as i64);
-    assert_eq!(block[0].wake_cmp, 0);
-    assert_eq!(block[0].min_payment, PAYMENT);
-    assert_eq!(block[1].active, 0, "one armed trigger, one live slot");
-    assert_eq!(acct.slots[0].order_id, 7);
-    assert_eq!(acct.map_accounts_count, 3);
+    // One block per user: liquidation slots first, then the trigger slots.
+    assert_eq!(header.num_conditions as usize, USER_CONDITIONS);
+    let trig = &block[TRIGGER_SLOT_BASE..];
+    assert_eq!(trig[0].wake_account, fixture.oracle.to_bytes());
+    assert_eq!(trig[0].wake_offset, 8);
+    assert_eq!(trig[0].wake_len, 8);
+    assert_eq!(trig[0].wake_ts, (105 * PRICE) as i64);
+    assert_eq!(trig[0].wake_cmp, 0);
+    assert_eq!(trig[0].min_payment, PAYMENT);
+    assert_eq!(trig[1].active, 0, "one armed trigger, one live slot");
+    assert_eq!(acct.trigger_slots[0].order_id, 7);
+    // The shared list: the resolver's three named accounts, then the map.
+    assert_eq!(acct.sync_accounts_count, 3 + 3);
 
     // Below the trigger: the resolver reports no work.
     fixture.svm.warp_to_slot(12);
@@ -3202,17 +3205,17 @@ fn trigger_relay_conditions_fire_an_armed_trigger_unsigned() {
         payout_before + PAYMENT
     );
     // The fired slot went quiet — the level-triggered wake must not spin.
-    let acct: TriggerConditionsV0 = read_zero_copy(&fixture.svm, &conditions);
+    let acct: UserConditionsV0 = read_zero_copy(&fixture.svm, &conditions);
     let (_, block) = velocity::relay_spec::read_block(acct.block(), 0).unwrap();
     assert_eq!(block[0].active, 0);
-    assert_eq!(acct.slots[0].order_id, 0);
+    assert_eq!(acct.trigger_slots[0].order_id, 0);
 }
 
 /// A trigger-limit on a market with a vetted CLOB syncs to the
 /// `trigger_clob_order` executor path.
 #[test]
 fn trigger_limit_sync_targets_the_clob_executor() {
-    use velocity::state::trigger_conditions::TriggerConditionsV0;
+    use velocity::state::user_conditions::{UserConditionsV0, TRIGGER_SLOT_BASE, USER_CONDITIONS};
 
     let mut fixture = setup();
     let market_conditions = init_crank_conditions(&mut fixture, 10_000);
@@ -3249,16 +3252,20 @@ fn trigger_limit_sync_targets_the_clob_executor() {
 
     sync_trigger_conditions(&mut fixture, user, market_conditions);
 
-    let acct: TriggerConditionsV0 = read_zero_copy(&fixture.svm, &trigger_conditions_pda(&user));
+    let acct: UserConditionsV0 = read_zero_copy(&fixture.svm, &user_conditions_pda(&user));
     let (_, block) = velocity::relay_spec::read_block(acct.block(), 0).unwrap();
-    assert_eq!(block[0].wake_cmp, 1, "Below trigger watches downward");
+    let trig = &block[TRIGGER_SLOT_BASE..];
+    assert_eq!(trig[0].wake_cmp, 1, "Below trigger watches downward");
     assert_eq!(
-        block[0].executor_disc,
+        trig[0].executor_disc,
         velocity::instruction::TriggerClobOrder::DISCRIMINATOR
     );
-    assert_eq!(acct.slots[0].quoter.to_bytes(), fixture.quoter.to_bytes());
     assert_eq!(
-        acct.slots[0].clob_market.to_bytes(),
+        acct.trigger_slots[0].quoter.to_bytes(),
+        fixture.quoter.to_bytes()
+    );
+    assert_eq!(
+        acct.trigger_slots[0].clob_market.to_bytes(),
         fixture.clob_market.to_bytes()
     );
 }
@@ -3269,17 +3276,13 @@ fn trigger_limit_sync_targets_the_clob_executor() {
 // the protocol User as an inventory-free liquidator.
 // ---------------------------------------------------------------------------
 
-fn liq_conditions_pda(user: &Pubkey) -> Pubkey {
-    Pubkey::find_program_address(&[b"liq_conditions", user.as_ref()], &velocity_id()).0
-}
-
 fn sync_liq_conditions(
     fixture: &mut Fixture,
     user: Pubkey,
     market_conditions: Pubkey,
     sync_payment_lamports: u64,
 ) -> Pubkey {
-    let conditions = liq_conditions_pda(&user);
+    let conditions = user_conditions_pda(&user);
     let mut accounts = velocity::accounts::SyncLiqConditions {
         payer: fixture.keeper.pubkey(),
         user,
@@ -3315,7 +3318,7 @@ fn run_liq_resolver(
     fixture: &mut Fixture,
     user: Pubkey,
 ) -> Option<velocity::relay_spec::ResolvedCrankV0> {
-    let conditions = liq_conditions_pda(&user);
+    let conditions = user_conditions_pda(&user);
     let mut accounts = velocity::accounts::ResolveLiquidatePerpWithFill {
         liq_conditions: conditions,
         user,
@@ -3349,7 +3352,7 @@ fn run_liq_resolver(
 /// the self-sync watch covers the user's own position bytes.
 #[test]
 fn liq_conditions_write_a_conservative_downward_threshold() {
-    use velocity::state::liq_conditions::{LiqConditionsV0, LIQ_SYNC_FALLBACK, LIQ_SYNC_WATCH};
+    use velocity::state::user_conditions::{UserConditionsV0, LIQ_SYNC_FALLBACK, LIQ_SYNC_WATCH};
 
     let mut fixture = setup();
     const PAYMENT: u64 = 10_000;
@@ -3373,10 +3376,11 @@ fn liq_conditions_write_a_conservative_downward_threshold() {
     account.perp_positions[0].quote_asset_amount = -((1000 * 1_000_000) as i64);
     set_user_account(&mut fixture.svm, user, &account);
 
+    use velocity::state::user_conditions::USER_CONDITIONS;
     let conditions = sync_liq_conditions(&mut fixture, user, market_conditions, 5_000);
-    let acct: LiqConditionsV0 = read_zero_copy(&fixture.svm, &conditions);
+    let acct: UserConditionsV0 = read_zero_copy(&fixture.svm, &conditions);
     let (header, block) = velocity::relay_spec::read_block(acct.block(), 0).unwrap();
-    assert_eq!(header.num_conditions, 14);
+    assert_eq!(header.num_conditions as usize, USER_CONDITIONS);
 
     // Slot 0: the perp exposure's threshold — a downward value cross on the
     // market oracle, strictly below spot and above zero.
@@ -3554,7 +3558,7 @@ fn plain_liquidation_rejects_the_protocol_user() {
 /// the keeper from the conditions account's own lamports.
 #[test]
 fn liq_self_sync_stages_an_unsigned_executor_and_pays_from_its_own_lamports() {
-    use velocity::state::liq_conditions::LiqConditionsV0;
+    use velocity::state::user_conditions::{UserConditionsV0, TRIGGER_SLOT_BASE, USER_CONDITIONS};
 
     let mut fixture = setup();
     let market_conditions = init_crank_conditions(&mut fixture, 10_000);
@@ -3640,6 +3644,6 @@ fn liq_self_sync_stages_an_unsigned_executor_and_pays_from_its_own_lamports() {
         fixture.svm.get_balance(&conditions).unwrap(),
         conditions_before - SYNC_FEE
     );
-    let acct: LiqConditionsV0 = read_zero_copy(&fixture.svm, &conditions);
+    let acct: UserConditionsV0 = read_zero_copy(&fixture.svm, &conditions);
     assert_eq!(acct.slots[0].active, 0);
 }

@@ -388,7 +388,7 @@ pub fn finish_trigger_crank<'info>(
     authority: &UncheckedAccount<'info>,
     user: &AccountLoader<'info, User>,
     trigger_conditions: &Option<
-        AccountLoader<'info, crate::state::trigger_conditions::TriggerConditionsV0>,
+        AccountLoader<'info, crate::state::user_conditions::UserConditionsV0>,
     >,
     crank_conditions: &Option<AccountLoader<'info, ClobCrankConditionsV0>>,
     market_index: u16,
@@ -442,13 +442,13 @@ pub fn finish_trigger_crank<'info>(
 /// Everything is re-verified — a stale sync or moved price just returns
 /// `None` and the turner backs off.
 pub fn find_fired_trigger(
-    conditions: &crate::state::trigger_conditions::TriggerConditionsV0,
+    conditions: &crate::state::user_conditions::UserConditionsV0,
     user: &User,
     market: &PerpMarket,
     oracle_info: &AccountInfo,
     slot: u64,
     want_clob_path: bool,
-) -> Result<Option<crate::state::trigger_conditions::TriggerSlotMetaV0>> {
+) -> Result<Option<crate::state::user_conditions::TriggerSlotMetaV0>> {
     validate!(
         oracle_info.key() == market.oracle,
         ErrorCode::DefaultError,
@@ -473,7 +473,7 @@ pub fn find_fired_trigger(
             continue;
         }
         let Some(meta) = conditions
-            .slots
+            .trigger_slots
             .iter()
             .find(|meta| meta.market_index == order.market_index && meta.order_id == order.order_id)
             .copied()

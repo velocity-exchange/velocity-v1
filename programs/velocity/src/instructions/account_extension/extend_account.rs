@@ -8,7 +8,6 @@ use {
         state::{
             clob_crank::ClobCrankConditionsV0,
             insurance_fund_stake::InsuranceFundStake,
-            liq_conditions::LiqConditionsV0,
             oracle::PrelaunchOracle,
             perp_market::PerpMarket,
             prop_amm::QuoterV0,
@@ -17,8 +16,8 @@ use {
             revenue_share::RevenueShare,
             spot_market::SpotMarket,
             state::{HotRole, State},
-            trigger_conditions::TriggerConditionsV0,
             user::{ReferrerName, User, UserStats},
+            user_conditions::UserConditionsV0,
         },
         validate,
         vlp::hedge::state::{Constituent, LPPool},
@@ -131,8 +130,7 @@ pub fn extension_target_len(discriminator: &[u8]) -> Option<usize> {
         QuoterV0,
         ClobCrankConditionsV0,
         QuoterCrossConditionsV0,
-        TriggerConditionsV0,
-        LiqConditionsV0,
+        UserConditionsV0,
     );
     None
 }

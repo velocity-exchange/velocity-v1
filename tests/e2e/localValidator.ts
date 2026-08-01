@@ -52,7 +52,7 @@ import {
 	OrderTriggerCondition,
 	getUserAccountPublicKeySync,
 	getUserStatsAccountPublicKey,
-	getLiqConditionsPublicKey,
+	getUserConditionsPublicKey,
 	getVelocitySignerPublicKey,
 	OracleSource,
 	PEG_PRECISION,
@@ -640,7 +640,7 @@ describe('e2e localnet: programs + publisher + redis', function () {
 				systemProgram: SystemProgram.programId,
 				// Optional, but anchor still wants it named: pass the PDA so
 				// the protocol user is relay-covered like any other.
-				liqConditions: getLiqConditionsPublicKey(VELOCITY_ID, protocolUser),
+				userConditions: getUserConditionsPublicKey(VELOCITY_ID, protocolUser),
 			},
 		});
 		await provider.sendAndConfirm(new Transaction().add(initStats, initUser));
@@ -853,7 +853,7 @@ describe('e2e localnet: programs + publisher + redis', function () {
 	};
 
 	/** Opt a user into relay liquidation coverage. */
-	const syncLiqConditions = async (user: PublicKey, liqConditions: PublicKey) => {
+	const syncLiqConditions = async (user: PublicKey, userConditions: PublicKey) => {
 		const args = Buffer.alloc(16);
 		args.writeBigUInt64LE(BigInt(20_000), 0); // sync fee, from its own lamports
 		args.writeBigUInt64LE(BigInt(3000), 8); // coarse fallback poll
@@ -864,7 +864,7 @@ describe('e2e localnet: programs + publisher + redis', function () {
 					keys: [
 						{ pubkey: payer.publicKey, isSigner: true, isWritable: true },
 						{ pubkey: user, isSigner: false, isWritable: false },
-						{ pubkey: liqConditions, isSigner: false, isWritable: true },
+						{ pubkey: userConditions, isSigner: false, isWritable: true },
 						{ pubkey: SYSVAR_RENT_PUBKEY, isSigner: false, isWritable: false },
 						{
 							pubkey: SystemProgram.programId,
@@ -1645,13 +1645,13 @@ describe('e2e localnet: programs + publisher + redis', function () {
 			victimKp.publicKey,
 			0
 		);
-		const liqConditions = PublicKey.findProgramAddressSync(
-			[Buffer.from('liq_conditions'), victimUser.toBuffer()],
+		const userConditions = PublicKey.findProgramAddressSync(
+			[Buffer.from('user_conditions'), victimUser.toBuffer()],
 			VELOCITY_ID
 		)[0];
-		await syncLiqConditions(victimUser, liqConditions);
-		await airdrop(liqConditions, 1);
-		await registerWatch(liqConditions);
+		await syncLiqConditions(victimUser, userConditions);
+		await airdrop(userConditions, 1);
+		await registerWatch(userConditions);
 
 		// Standing bid for the liquidation's fill leg to route into.
 		await placeClobOrder(

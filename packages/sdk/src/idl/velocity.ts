@@ -5013,7 +5013,7 @@ export type Velocity = {
           }
         },
         {
-          "name": "liqConditions",
+          "name": "userConditions",
           "docs": [
             "Relay liquidation coverage, created alongside the account it",
             "watches. Optional so raw-instruction integrators aren't broken and",
@@ -5028,9 +5028,10 @@ export type Velocity = {
               {
                 "kind": "const",
                 "value": [
-                  108,
-                  105,
-                  113,
+                  117,
+                  115,
+                  101,
+                  114,
                   95,
                   99,
                   111,
@@ -8482,9 +8483,10 @@ export type Velocity = {
               {
                 "kind": "const",
                 "value": [
-                  108,
-                  105,
-                  113,
+                  117,
+                  115,
+                  101,
+                  114,
                   95,
                   99,
                   111,
@@ -9231,9 +9233,10 @@ export type Velocity = {
               {
                 "kind": "const",
                 "value": [
-                  108,
-                  105,
-                  113,
+                  117,
+                  115,
+                  101,
+                  114,
                   95,
                   99,
                   111,
@@ -9307,11 +9310,8 @@ export type Velocity = {
               {
                 "kind": "const",
                 "value": [
-                  116,
-                  114,
-                  105,
-                  103,
-                  103,
+                  117,
+                  115,
                   101,
                   114,
                   95,
@@ -10080,11 +10080,8 @@ export type Velocity = {
               {
                 "kind": "const",
                 "value": [
-                  116,
-                  114,
-                  105,
-                  103,
-                  103,
+                  117,
+                  115,
                   101,
                   114,
                   95,
@@ -10168,11 +10165,8 @@ export type Velocity = {
               {
                 "kind": "const",
                 "value": [
-                  116,
-                  114,
-                  105,
-                  103,
-                  103,
+                  117,
+                  115,
                   101,
                   114,
                   95,
@@ -16472,19 +16466,6 @@ export type Velocity = {
       ]
     },
     {
-      "name": "liqConditionsV0",
-      "discriminator": [
-        42,
-        125,
-        67,
-        96,
-        199,
-        156,
-        58,
-        187
-      ]
-    },
-    {
       "name": "perpMarket",
       "discriminator": [
         10,
@@ -16654,19 +16635,6 @@ export type Velocity = {
       ]
     },
     {
-      "name": "triggerConditionsV0",
-      "discriminator": [
-        66,
-        80,
-        217,
-        49,
-        180,
-        92,
-        215,
-        163
-      ]
-    },
-    {
       "name": "user",
       "discriminator": [
         159,
@@ -16677,6 +16645,19 @@ export type Velocity = {
         151,
         58,
         236
+      ]
+    },
+    {
+      "name": "userConditionsV0",
+      "discriminator": [
+        199,
+        61,
+        169,
+        235,
+        49,
+        162,
+        162,
+        70
       ]
     },
     {
@@ -21826,123 +21807,6 @@ export type Velocity = {
           {
             "name": "lpPool",
             "type": "pubkey"
-          }
-        ]
-      }
-    },
-    {
-      "name": "liqConditionsV0",
-      "serialization": "bytemuckunsafe",
-      "repr": {
-        "kind": "c"
-      },
-      "type": {
-        "kind": "struct",
-        "fields": [
-          {
-            "name": "block",
-            "docs": [
-              "The relay condition block; first field, at the 8-aligned offset 8."
-            ],
-            "type": {
-              "array": [
-                "u8",
-                2704
-              ]
-            }
-          },
-          {
-            "name": "staging",
-            "docs": [
-              "Scratch the resolvers stage into. Simulation-only."
-            ],
-            "type": {
-              "array": [
-                "u8",
-                2048
-              ]
-            }
-          },
-          {
-            "name": "syncAccounts",
-            "docs": [
-              "See [`LIQ_SYNC_ACCOUNTS_LEN`]."
-            ],
-            "type": {
-              "array": [
-                "u8",
-                1056
-              ]
-            }
-          },
-          {
-            "name": "slots",
-            "docs": [
-              "Parallel to the threshold condition slots."
-            ],
-            "type": {
-              "array": [
-                {
-                  "defined": {
-                    "name": "liqSlotMetaV0"
-                  }
-                },
-                12
-              ]
-            }
-          },
-          {
-            "name": "user",
-            "docs": [
-              "The `User` these conditions watch."
-            ],
-            "type": "pubkey"
-          },
-          {
-            "name": "syncPaymentLamports",
-            "docs": [
-              "Fee the sync executor pays its keeper from this account's own",
-              "lamports (the account doubles as the sync reservoir — whoever wants",
-              "this user's hints self-maintaining funds it; empty degrades to",
-              "manual syncs + the thresholds from the last sync)."
-            ],
-            "type": "u64"
-          },
-          {
-            "name": "syncFallbackSlots",
-            "docs": [
-              "The fallback poll interval."
-            ],
-            "type": "u64"
-          },
-          {
-            "name": "positionsDigest",
-            "docs": [
-              "Digest of the exposures the last sync ran against. The resolver",
-              "compares it to the user's current positions to decide staleness —",
-              "comparing *watched markets* instead never converges for a user",
-              "whose exposures produce no watchable threshold (an unsupported",
-              "oracle layout, a market with no reservoir), leaving the",
-              "level-triggered sync wake firing forever. The localnet harness",
-              "caught exactly that loop, once a second."
-            ],
-            "type": "u64"
-          },
-          {
-            "name": "syncAccountsCount",
-            "docs": [
-              "Live entries in `sync_accounts`."
-            ],
-            "type": "u8"
-          },
-          {
-            "name": "padding",
-            "type": {
-              "array": [
-                "u8",
-                7
-              ]
-            }
           }
         ]
       }
@@ -27545,112 +27409,7 @@ export type Velocity = {
       }
     },
     {
-      "name": "triggerConditionsV0",
-      "serialization": "bytemuckunsafe",
-      "repr": {
-        "kind": "c"
-      },
-      "type": {
-        "kind": "struct",
-        "fields": [
-          {
-            "name": "block",
-            "docs": [
-              "The relay condition block; first field, at the 8-aligned offset 8."
-            ],
-            "type": {
-              "array": [
-                "u8",
-                1552
-              ]
-            }
-          },
-          {
-            "name": "staging",
-            "docs": [
-              "Scratch the resolvers stage into. Simulation-only."
-            ],
-            "type": {
-              "array": [
-                "u8",
-                2048
-              ]
-            }
-          },
-          {
-            "name": "slots",
-            "docs": [
-              "Per-slot executor inputs, parallel to the block's condition slots."
-            ],
-            "type": {
-              "array": [
-                {
-                  "defined": {
-                    "name": "triggerSlotMetaV0"
-                  }
-                },
-                8
-              ]
-            }
-          },
-          {
-            "name": "mapAccounts",
-            "docs": [
-              "The user's margin-map section (see [`TRIGGER_MAP_ACCOUNTS_LEN`])."
-            ],
-            "type": {
-              "array": [
-                "u8",
-                792
-              ]
-            }
-          },
-          {
-            "name": "resolvers",
-            "docs": [
-              "Per-slot resolver account lists (see [`TRIGGER_RESOLVERS_LEN`])."
-            ],
-            "type": {
-              "array": [
-                "u8",
-                1056
-              ]
-            }
-          },
-          {
-            "name": "user",
-            "docs": [
-              "The `User` these conditions watch triggers for."
-            ],
-            "type": "pubkey"
-          },
-          {
-            "name": "mapAccountsCount",
-            "docs": [
-              "Live entries in `map_accounts`."
-            ],
-            "type": "u8"
-          },
-          {
-            "name": "padding",
-            "type": {
-              "array": [
-                "u8",
-                7
-              ]
-            }
-          }
-        ]
-      }
-    },
-    {
       "name": "triggerSlotMetaV0",
-      "docs": [
-        "What a resolver needs to stage the right executor for a fired slot,",
-        "captured at sync time: the order's identity plus the market's CLOB",
-        "linkage when the trigger-limit path applies (zeroed for the plain",
-        "`trigger_order` path)."
-      ],
       "serialization": "bytemuckunsafe",
       "repr": {
         "kind": "c"
@@ -28069,6 +27828,151 @@ export type Velocity = {
               "precision: QUOTE_PRECISION"
             ],
             "type": "u64"
+          }
+        ]
+      }
+    },
+    {
+      "name": "userConditionsV0",
+      "serialization": "bytemuckunsafe",
+      "repr": {
+        "kind": "c"
+      },
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "block",
+            "docs": [
+              "The relay condition block; first field, at the 8-aligned offset 8."
+            ],
+            "type": {
+              "array": [
+                "u8",
+                4240
+              ]
+            }
+          },
+          {
+            "name": "staging",
+            "docs": [
+              "Scratch the resolvers stage into. Simulation-only."
+            ],
+            "type": {
+              "array": [
+                "u8",
+                2048
+              ]
+            }
+          },
+          {
+            "name": "syncAccounts",
+            "docs": [
+              "See [`LIQ_SYNC_ACCOUNTS_LEN`]."
+            ],
+            "type": {
+              "array": [
+                "u8",
+                1056
+              ]
+            }
+          },
+          {
+            "name": "slots",
+            "docs": [
+              "Parallel to the threshold condition slots."
+            ],
+            "type": {
+              "array": [
+                {
+                  "defined": {
+                    "name": "liqSlotMetaV0"
+                  }
+                },
+                12
+              ]
+            }
+          },
+          {
+            "name": "triggerSlots",
+            "docs": [
+              "Parallel to the trigger condition slots."
+            ],
+            "type": {
+              "array": [
+                {
+                  "defined": {
+                    "name": "triggerSlotMetaV0"
+                  }
+                },
+                8
+              ]
+            }
+          },
+          {
+            "name": "triggerResolvers",
+            "docs": [
+              "Per-slot trigger resolver lists (see [`TRIGGER_RESOLVERS_LEN`])."
+            ],
+            "type": {
+              "array": [
+                "u8",
+                1056
+              ]
+            }
+          },
+          {
+            "name": "user",
+            "docs": [
+              "The `User` these conditions watch."
+            ],
+            "type": "pubkey"
+          },
+          {
+            "name": "syncPaymentLamports",
+            "docs": [
+              "Fee the sync executor pays its keeper from this account's own",
+              "lamports (the account doubles as the sync reservoir — whoever wants",
+              "this user's hints self-maintaining funds it; empty degrades to",
+              "manual syncs + the thresholds from the last sync)."
+            ],
+            "type": "u64"
+          },
+          {
+            "name": "syncFallbackSlots",
+            "docs": [
+              "The fallback poll interval."
+            ],
+            "type": "u64"
+          },
+          {
+            "name": "positionsDigest",
+            "docs": [
+              "Digest of the exposures the last sync ran against. The resolver",
+              "compares it to the user's current positions to decide staleness —",
+              "comparing *watched markets* instead never converges for a user",
+              "whose exposures produce no watchable threshold (an unsupported",
+              "oracle layout, a market with no reservoir), leaving the",
+              "level-triggered sync wake firing forever. The localnet harness",
+              "caught exactly that loop, once a second."
+            ],
+            "type": "u64"
+          },
+          {
+            "name": "syncAccountsCount",
+            "docs": [
+              "Live entries in `sync_accounts`."
+            ],
+            "type": "u8"
+          },
+          {
+            "name": "padding",
+            "type": {
+              "array": [
+                "u8",
+                7
+              ]
+            }
           }
         ]
       }

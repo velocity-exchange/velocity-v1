@@ -16,8 +16,8 @@ use {
         instructions::optional_accounts::{load_maps, AccountMaps},
         math::margin::calculate_margin_requirement_and_total_collateral_and_liability_info,
         state::{
-            liq_conditions::LiqConditionsV0, margin_calculation::MarginContext,
-            perp_market_map::MarketSet, state::State, user::User,
+            margin_calculation::MarginContext, perp_market_map::MarketSet, state::State,
+            user::User, user_conditions::UserConditionsV0,
         },
         validate,
     },
@@ -28,7 +28,7 @@ use {
 pub struct ResolveLiquidatePerpWithFill<'info> {
     /// Writable only for the staging region; simulation-only.
     #[account(mut, constraint = liq_conditions.load()?.user == user.key())]
-    pub liq_conditions: AccountLoader<'info, LiqConditionsV0>,
+    pub liq_conditions: AccountLoader<'info, UserConditionsV0>,
     pub user: AccountLoader<'info, User>,
     pub state: AccountLoader<'info, State>,
 }

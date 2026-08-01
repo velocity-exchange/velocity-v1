@@ -188,7 +188,7 @@ impl<'info> InitializeUserCPI for Context<'info, InitializeVaultWithProtocol<'in
             system_program: self.accounts.system_program.to_account_info().clone(),
             // A vault's velocity user is managed, never liquidated through
             // the relay path, so it declines the conditions rent.
-            liq_conditions: None,
+            user_conditions: None,
         };
         let cpi_ctx = CpiContext::new_with_signer(cpi_program, cpi_accounts, signers);
         let sub_account_id = 0_u16;

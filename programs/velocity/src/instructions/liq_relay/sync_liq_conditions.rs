@@ -47,16 +47,16 @@ use {
         },
         state::{
             clob_crank::ClobCrankConditionsV0,
-            liq_conditions::{
-                LiqConditionsV0, LiqSlotMetaV0, LIQ_CONDITIONS_PDA_SEED, LIQ_SYNC_ACCOUNTS_OFFSET,
-                LIQ_SYNC_FALLBACK, LIQ_SYNC_WATCH, LIQ_THRESHOLD_SLOTS,
-            },
             oracle::OracleSource,
             oracle_watch::{oracle_watch, OracleWatchV0, WatchDirection},
             pdas,
             perp_market::PerpMarket,
             spot_market::{SpotBalanceType, SpotMarket},
             user::User,
+            user_conditions::{
+                LiqSlotMetaV0, UserConditionsV0, LIQ_SYNC_ACCOUNTS_OFFSET, LIQ_SYNC_FALLBACK,
+                LIQ_SYNC_WATCH, LIQ_THRESHOLD_SLOTS, USER_CONDITIONS_PDA_SEED,
+            },
         },
         validate,
     },
@@ -92,12 +92,12 @@ pub struct SyncLiqConditions<'info> {
     pub user: AccountLoader<'info, User>,
     #[account(
         init_if_needed,
-        seeds = [LIQ_CONDITIONS_PDA_SEED, user.key().as_ref()],
-        space = LiqConditionsV0::SIZE,
+        seeds = [USER_CONDITIONS_PDA_SEED, user.key().as_ref()],
+        space = UserConditionsV0::SIZE,
         bump,
         payer = payer
     )]
-    pub liq_conditions: AccountLoader<'info, LiqConditionsV0>,
+    pub liq_conditions: AccountLoader<'info, UserConditionsV0>,
     pub rent: Sysvar<'info, Rent>,
     pub system_program: Program<'info, System>,
 }
@@ -148,7 +148,7 @@ pub fn handle_sync_liq_conditions<'c: 'info, 'info>(
 /// Recompute the block from the user's live positions. Shared by the
 /// opt-in sync and relay's unsigned resync.
 pub fn rewrite_liq_conditions<'info>(
-    liq_conditions: &AccountLoader<'info, LiqConditionsV0>,
+    liq_conditions: &AccountLoader<'info, UserConditionsV0>,
     user_loader: &AccountLoader<'info, User>,
     remaining_accounts: &'info [AccountInfo<'info>],
     args: SyncLiqConditionsArgs,
@@ -262,7 +262,7 @@ pub fn rewrite_liq_conditions<'info>(
     let user = crate::load!(user_loader)?;
     // Stamped before the thresholds so a sync that legitimately writes none
     // still converges — the resolver compares digests, not slot contents.
-    conditions.positions_digest = LiqConditionsV0::digest_positions(&user);
+    conditions.positions_digest = UserConditionsV0::digest_positions(&user);
     let (free_collateral, target_market) = estimate_free_collateral(&user, &perps, &spots)?;
 
     let mut slot_index = 0usize;

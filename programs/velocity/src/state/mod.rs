@@ -11,7 +11,6 @@ pub mod events;
 pub mod fill_mode;
 pub mod fulfillment_params;
 pub mod insurance_fund_stake;
-pub mod liq_conditions;
 pub mod liquidation_mode;
 pub mod load_ref;
 pub mod margin_calculation;
@@ -40,7 +39,7 @@ pub mod spot_market_map;
 #[allow(clippy::module_inception)]
 pub mod state;
 pub mod traits;
-pub mod trigger_conditions;
 pub mod user;
+pub mod user_conditions;
 pub mod user_map;
 pub mod zero_copy;

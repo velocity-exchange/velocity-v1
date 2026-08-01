@@ -16,8 +16,8 @@ use {
     crate::{
         error::ErrorCode,
         state::{
-            liq_conditions::{LiqConditionsV0, LIQ_CONDITIONS_PDA_SEED},
             user::User,
+            user_conditions::{UserConditionsV0, USER_CONDITIONS_PDA_SEED},
         },
     },
     anchor_lang::prelude::*,
@@ -33,11 +33,11 @@ pub struct ResyncLiqConditions<'info> {
     pub user: AccountLoader<'info, User>,
     #[account(
         mut,
-        seeds = [LIQ_CONDITIONS_PDA_SEED, user.key().as_ref()],
+        seeds = [USER_CONDITIONS_PDA_SEED, user.key().as_ref()],
         bump,
         constraint = liq_conditions.load()?.user == user.key()
     )]
-    pub liq_conditions: AccountLoader<'info, LiqConditionsV0>,
+    pub liq_conditions: AccountLoader<'info, UserConditionsV0>,
 }
 
 pub fn handle_resync_liq_conditions<'c: 'info, 'info>(
@@ -61,7 +61,7 @@ pub fn handle_resync_liq_conditions<'c: 'info, 'info>(
 
     let info = ctx.accounts.liq_conditions.to_account_info();
     let rent_minimum = Rent::get()?.minimum_balance(info.data_len());
-    LiqConditionsV0::pay_sync_keeper(
+    UserConditionsV0::pay_sync_keeper(
         &info,
         &ctx.accounts.keeper.to_account_info(),
         args.sync_payment_lamports,
@@ -83,7 +83,7 @@ pub fn handle_resync_liq_conditions<'c: 'info, 'info>(
 pub struct ResolveResyncLiqConditions<'info> {
     /// Writable only for the staging region; simulation-only.
     #[account(mut, constraint = liq_conditions.load()?.user == user.key())]
-    pub liq_conditions: AccountLoader<'info, LiqConditionsV0>,
+    pub liq_conditions: AccountLoader<'info, UserConditionsV0>,
     pub user: AccountLoader<'info, User>,
 }
 
@@ -99,7 +99,7 @@ pub fn handle_resolve_resync_liq_conditions(
             // exposures. Converges by construction: the sync stamps the digest
             // it ran against, so a rewrite that produces no watchable
             // threshold still stops the wake.
-            LiqConditionsV0::digest_positions(&user) != conditions.positions_digest
+            UserConditionsV0::digest_positions(&user) != conditions.positions_digest
         };
         if !stale {
             return Ok(None);

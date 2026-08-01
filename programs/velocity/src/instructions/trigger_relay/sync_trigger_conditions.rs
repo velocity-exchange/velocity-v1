@@ -30,11 +30,11 @@ use {
             perp_market::PerpMarket,
             prop_amm::{QuoterType, QuoterV0},
             spot_market::SpotMarket,
-            trigger_conditions::{
-                TriggerConditionsV0, TriggerSlotMetaV0, TRIGGER_CONDITIONS_PDA_SEED,
-                TRIGGER_CONDITION_SLOTS,
-            },
             user::{OrderStatus, OrderType, User},
+            user_conditions::{
+                TriggerSlotMetaV0, UserConditionsV0, TRIGGER_CONDITION_SLOTS, TRIGGER_SLOT_BASE,
+                USER_CONDITIONS_PDA_SEED,
+            },
         },
     },
     anchor_lang::{prelude::*, Discriminator},
@@ -49,12 +49,12 @@ pub struct SyncTriggerConditions<'info> {
     pub user: AccountLoader<'info, User>,
     #[account(
         init_if_needed,
-        seeds = [TRIGGER_CONDITIONS_PDA_SEED, user.key().as_ref()],
-        space = TriggerConditionsV0::SIZE,
+        seeds = [USER_CONDITIONS_PDA_SEED, user.key().as_ref()],
+        space = UserConditionsV0::SIZE,
         bump,
         payer = payer
     )]
-    pub trigger_conditions: AccountLoader<'info, TriggerConditionsV0>,
+    pub trigger_conditions: AccountLoader<'info, UserConditionsV0>,
     pub rent: Sysvar<'info, Rent>,
     pub system_program: Program<'info, System>,
 }
@@ -148,7 +148,16 @@ pub fn handle_sync_trigger_conditions<'c: 'info, 'info>(
         .or_else(|_| ctx.accounts.trigger_conditions.load_mut())?;
     conditions.user = user_key;
     conditions.init_block()?;
-    conditions.write_map_accounts(&map_refs)?;
+    // The same stored list the liquidation sync writes: the resolver's
+    // named accounts, then the user's margin map. Either sync populating
+    // it is enough, and neither has to carry its own copy.
+    let mut stored = vec![
+        AccountRefV0::writable(conditions_key.to_bytes()),
+        AccountRefV0::readonly(user_key.to_bytes()),
+        AccountRefV0::readonly(crate::state::pdas::state().to_bytes()),
+    ];
+    stored.extend(map_refs);
+    conditions.write_sync_accounts(&stored)?;
 
     let user = crate::load!(ctx.accounts.user)?;
     let mut slot_index = 0usize;
@@ -235,7 +244,7 @@ pub fn handle_sync_trigger_conditions<'c: 'info, 'info>(
             min_payment,
         };
         conditions.set_condition(
-            slot_index,
+            TRIGGER_SLOT_BASE + slot_index,
             &ConditionV0::on_value_cross(
                 oracle.to_bytes(),
                 watch.price_offset,
@@ -246,13 +255,16 @@ pub fn handle_sync_trigger_conditions<'c: 'info, 'info>(
                 resolvers,
             ),
         )?;
-        conditions.slots[slot_index] = meta;
+        conditions.trigger_slots[slot_index] = meta;
         slot_index += 1;
     }
     // Stale tail slots go quiet.
     for index in slot_index..TRIGGER_CONDITION_SLOTS {
-        conditions.set_condition(index, &relay_spec::bytemuck::Zeroable::zeroed())?;
-        conditions.slots[index] = TriggerSlotMetaV0::default();
+        conditions.set_condition(
+            TRIGGER_SLOT_BASE + index,
+            &relay_spec::bytemuck::Zeroable::zeroed(),
+        )?;
+        conditions.trigger_slots[index] = TriggerSlotMetaV0::default();
     }
     Ok(())
 }

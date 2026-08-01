@@ -4184,8 +4184,9 @@ pub struct ResolveTriggerOrder<'info> {
     /// response pointer is interpreted against it.
     #[account(mut, seeds = [crate::state::relay_scratch::RELAY_SCRATCH_PDA_SEED], bump)]
     pub scratch: AccountLoader<'info, crate::state::relay_scratch::RelayScratchV0>,
-    /// Writable only for the staging region; simulation-only.
-    #[account(mut, constraint = trigger_conditions.load()?.user == user.key())]
+    /// Read-only: resolvers stage into the shared scratch account, not
+    /// into the block they read.
+    #[account(constraint = trigger_conditions.load()?.user == user.key())]
     pub trigger_conditions: AccountLoader<'info, UserConditionsV0>,
     pub user: AccountLoader<'info, User>,
     /// CHECK: validated against the market's oracle in the handler.

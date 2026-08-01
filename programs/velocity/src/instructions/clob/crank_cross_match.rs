@@ -408,7 +408,8 @@ pub struct ResolveCrankCrossMatchQuoter<'info> {
     #[account(mut, seeds = [crate::state::relay_scratch::RELAY_SCRATCH_PDA_SEED], bump)]
     pub scratch: AccountLoader<'info, crate::state::relay_scratch::RelayScratchV0>,
     /// Writable only for the staging region; simulation-only.
-    #[account(mut, has_one = quoter)]
+    /// Read-only: resolvers stage into the shared scratch account.
+    #[account(has_one = quoter)]
     pub cross_conditions: AccountLoader<'info, crate::state::quoter_cross::QuoterCrossConditionsV0>,
     /// CHECK: locked to the CLOB book captured at attach.
     #[account(address = cross_conditions.load()?.clob_market)]

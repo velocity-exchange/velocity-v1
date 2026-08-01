@@ -30,8 +30,9 @@ pub struct ResolveLiquidatePerpWithFill<'info> {
     /// response pointer is interpreted against it.
     #[account(mut, seeds = [crate::state::relay_scratch::RELAY_SCRATCH_PDA_SEED], bump)]
     pub scratch: AccountLoader<'info, crate::state::relay_scratch::RelayScratchV0>,
-    /// Writable only for the staging region; simulation-only.
-    #[account(mut, constraint = liq_conditions.load()?.user == user.key())]
+    /// Read-only: resolvers stage into the shared scratch account, not
+    /// into the block they read.
+    #[account(constraint = liq_conditions.load()?.user == user.key())]
     pub liq_conditions: AccountLoader<'info, UserConditionsV0>,
     pub user: AccountLoader<'info, User>,
     pub state: AccountLoader<'info, State>,

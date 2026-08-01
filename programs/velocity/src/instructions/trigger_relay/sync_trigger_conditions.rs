@@ -75,6 +75,25 @@ struct MarketInputs {
 pub fn handle_sync_trigger_conditions<'c: 'info, 'info>(
     ctx: Context<'info, SyncTriggerConditions<'info>>,
 ) -> Result<()> {
+    rewrite_trigger_conditions(
+        &ctx.accounts.trigger_conditions,
+        &ctx.accounts.user,
+        ctx.remaining_accounts,
+        true,
+    )
+}
+
+/// Derive this user's trigger conditions into the trigger slot range.
+///
+/// `write_shared_list` is false when the liquidation pass in the same
+/// instruction already wrote the resolver list — it is the same list, and
+/// writing it twice is just CU.
+pub fn rewrite_trigger_conditions<'info>(
+    trigger_conditions: &AccountLoader<'info, UserConditionsV0>,
+    user_loader: &AccountLoader<'info, User>,
+    remaining_accounts: &'info [AccountInfo<'info>],
+    write_shared_list: bool,
+) -> Result<()> {
     // Classify the remaining accounts by discriminator; oracles are matched
     // by pubkey against the loaded markets afterwards.
     let mut markets: BTreeMap<u16, MarketInputs> = BTreeMap::new();
@@ -82,7 +101,7 @@ pub fn handle_sync_trigger_conditions<'c: 'info, 'info>(
     let mut market_refs: Vec<AccountRefV0> = Vec::new();
     let mut oracle_infos: BTreeMap<Pubkey, &AccountInfo<'info>> = BTreeMap::new();
 
-    for info in ctx.remaining_accounts {
+    for info in remaining_accounts {
         if info.owner == &crate::ID {
             if let Ok(loader) = AccountLoader::<PerpMarket>::try_from(info) {
                 let market = loader.load()?;
@@ -135,17 +154,15 @@ pub fn handle_sync_trigger_conditions<'c: 'info, 'info>(
     }
     map_refs.extend(market_refs);
 
-    let user_key = ctx.accounts.user.key();
-    let conditions_key = ctx.accounts.trigger_conditions.key();
+    let user_key = user_loader.key();
+    let conditions_key = trigger_conditions.key();
     let disc8 = |disc: &[u8]| -> Result<[u8; 8]> {
         disc.try_into().map_err(|_| error!(ErrorCode::DefaultError))
     };
 
-    let mut conditions = ctx
-        .accounts
-        .trigger_conditions
+    let mut conditions = trigger_conditions
         .load_init()
-        .or_else(|_| ctx.accounts.trigger_conditions.load_mut())?;
+        .or_else(|_| trigger_conditions.load_mut())?;
     conditions.user = user_key;
     conditions.init_block()?;
     // The same stored list the liquidation sync writes: the resolver's
@@ -158,9 +175,11 @@ pub fn handle_sync_trigger_conditions<'c: 'info, 'info>(
         AccountRefV0::readonly(crate::state::pdas::state().to_bytes()),
     ];
     stored.extend(map_refs);
-    conditions.write_sync_accounts(&stored)?;
+    if write_shared_list {
+        conditions.write_sync_accounts(&stored)?;
+    }
 
-    let user = crate::load!(ctx.accounts.user)?;
+    let user = crate::load!(user_loader)?;
     let mut slot_index = 0usize;
     for order in user.orders.iter() {
         if slot_index >= TRIGGER_CONDITION_SLOTS {

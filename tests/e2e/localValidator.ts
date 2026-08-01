@@ -853,8 +853,9 @@ describe('e2e localnet: programs + publisher + redis', function () {
 		);
 	};
 
-	/** Opt a user into relay liquidation coverage. */
-	const syncLiqConditions = async (user: PublicKey, userConditions: PublicKey) => {
+	/** Opt a user into relay coverage: liquidation thresholds and triggers,
+	 * one instruction over one account. */
+	const syncUserConditions = async (user: PublicKey, userConditions: PublicKey) => {
 		const args = Buffer.alloc(16);
 		args.writeBigUInt64LE(BigInt(20_000), 0); // sync fee, from its own lamports
 		args.writeBigUInt64LE(BigInt(3000), 8); // coarse fallback poll
@@ -887,7 +888,7 @@ describe('e2e localnet: programs + publisher + redis', function () {
 						{ pubkey: conditions, isSigner: false, isWritable: false },
 					],
 					data: Buffer.concat([
-						ixDiscriminator('sync_liq_conditions'),
+						ixDiscriminator('sync_user_conditions'),
 						args,
 					]),
 				})
@@ -955,7 +956,7 @@ describe('e2e localnet: programs + publisher + redis', function () {
 		// simulates against it, so it exists before any watch is registered.
 		await provider.sendAndConfirm(
 			new Transaction().add(
-				await program.methods
+				await admin.program.methods
 					.initializeRelayScratch()
 					.accounts({
 						scratch: getRelayScratchPublicKey(VELOCITY_ID),
@@ -1601,7 +1602,17 @@ describe('e2e localnet: programs + publisher + redis', function () {
 						},
 						...syncAccounts,
 					],
-					data: ixDiscriminator('sync_trigger_conditions'),
+					// One sync for the whole block; args are the liquidation
+					// side's (fee, fallback) and the trigger pass shares them.
+					data: Buffer.concat([
+						ixDiscriminator('sync_user_conditions'),
+						(() => {
+							const a = Buffer.alloc(16);
+							a.writeBigUInt64LE(BigInt(20_000), 0);
+							a.writeBigUInt64LE(BigInt(3000), 8);
+							return a;
+						})(),
+					]),
 				})
 			)
 		);
@@ -1665,7 +1676,7 @@ describe('e2e localnet: programs + publisher + redis', function () {
 			0
 		);
 		const userConditions = getUserConditionsPublicKey(VELOCITY_ID, victimUser);
-		await syncLiqConditions(victimUser, userConditions);
+		await syncUserConditions(victimUser, userConditions);
 		await airdrop(userConditions, 1);
 		await registerWatch(userConditions);
 

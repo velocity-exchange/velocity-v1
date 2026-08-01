@@ -1657,6 +1657,22 @@ pub mod velocity {
     /// when already at size. Payer covers the rent-exempt shortfall (auth:
     /// `AccountExtension` hot key, or warm/cold admin). See
     /// `docs/ACCOUNT-EXTENSION.md`.
+    /// Derive a user's whole relay condition block — liquidation
+    /// thresholds and trigger watches — in one pass.
+    ///
+    /// The default way to sync a user. `sync_liq_conditions` and
+    /// `sync_trigger_conditions` remain for callers that genuinely want
+    /// one half (a user with orders and no positions needs no thresholds),
+    /// but both write the same account, so calling them in sequence just
+    /// classifies the same `remaining_accounts` twice.
+    pub fn sync_user_conditions<'c: 'info, 'info>(
+        ctx: Context<'info, SyncUserConditions<'info>>,
+        args: SyncLiqConditionsArgs,
+    ) -> Result<()> {
+        validate_sync_args(&args)?;
+        handle_sync_user_conditions(ctx, args)
+    }
+
     /// Create the program's shared resolver staging account (one for the
     /// whole program; permissionless, pays its own rent once).
     pub fn initialize_relay_scratch(ctx: Context<InitializeRelayScratch>) -> Result<()> {
@@ -2334,8 +2350,8 @@ pub mod velocity {
         handle_resolve_crank_cross_match_quoter(ctx)
     }
 
-    /// Rewrite a user's relay trigger-condition block from their live
-    /// orders — permissionless and idempotent; rent on the caller.
+    /// Rewrite only the trigger half of a user's condition block. Prefer
+    /// `sync_user_conditions` unless the liquidation half is known current.
     pub fn sync_trigger_conditions<'c: 'info, 'info>(
         ctx: Context<'info, SyncTriggerConditions<'info>>,
     ) -> Result<()> {
@@ -2353,9 +2369,11 @@ pub mod velocity {
         handle_resolve_trigger_clob_order(ctx)
     }
 
-    /// Rewrite a user's relay liquidation-condition block from their live
-    /// positions — permissionless, and staged by the block's own
-    /// self-sync watch when the user's positions change.
+    /// Rewrite only the liquidation half of a user's condition block.
+    /// Prefer `sync_user_conditions` unless the trigger half is known
+    /// current. Staged by the block's own self-sync watch on position
+    /// changes, which is why this half has a relay path and the other
+    /// does not.
     pub fn sync_liq_conditions<'c: 'info, 'info>(
         ctx: Context<'info, SyncLiqConditions<'info>>,
         args: SyncLiqConditionsArgs,

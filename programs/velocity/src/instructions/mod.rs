@@ -41,7 +41,8 @@ mod pyth_lazer_oracle;
 mod quoter_registry;
 pub mod relay_harness;
 mod router;
+pub mod sync_user_conditions;
 mod trigger_relay;
 mod user;
 
-pub use initialize_relay_scratch::*;
+pub use {initialize_relay_scratch::*, sync_user_conditions::*};

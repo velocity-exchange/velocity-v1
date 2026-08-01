@@ -4438,12 +4438,6 @@ export type Velocity = {
     {
       "name": "initializeRelayScratch",
       "docs": [
-        "Grow a zero-copy account to the size this program build compiles in",
-        "for its type (resolved from the account discriminator). The migration",
-        "crank after an upgrade that appends fields to an account struct; no-op",
-        "when already at size. Payer covers the rent-exempt shortfall (auth:",
-        "`AccountExtension` hot key, or warm/cold admin). See",
-        "`docs/ACCOUNT-EXTENSION.md`.",
         "Create the program's shared resolver staging account (one for the",
         "whole program; permissionless, pays its own rent once)."
       ],
@@ -9495,9 +9489,11 @@ export type Velocity = {
     {
       "name": "syncLiqConditions",
       "docs": [
-        "Rewrite a user's relay liquidation-condition block from their live",
-        "positions — permissionless, and staged by the block's own",
-        "self-sync watch when the user's positions change."
+        "Rewrite only the liquidation half of a user's condition block.",
+        "Prefer `sync_user_conditions` unless the trigger half is known",
+        "current. Staged by the block's own self-sync watch on position",
+        "changes, which is why this half has a relay path and the other",
+        "does not."
       ],
       "discriminator": [
         87,
@@ -9577,8 +9573,8 @@ export type Velocity = {
     {
       "name": "syncTriggerConditions",
       "docs": [
-        "Rewrite a user's relay trigger-condition block from their live",
-        "orders — permissionless and idempotent; rent on the caller."
+        "Rewrite only the trigger half of a user's condition block. Prefer",
+        "`sync_user_conditions` unless the liquidation half is known current."
       ],
       "discriminator": [
         105,
@@ -9641,6 +9637,95 @@ export type Velocity = {
         }
       ],
       "args": []
+    },
+    {
+      "name": "syncUserConditions",
+      "docs": [
+        "Grow a zero-copy account to the size this program build compiles in",
+        "for its type (resolved from the account discriminator). The migration",
+        "crank after an upgrade that appends fields to an account struct; no-op",
+        "when already at size. Payer covers the rent-exempt shortfall (auth:",
+        "`AccountExtension` hot key, or warm/cold admin). See",
+        "`docs/ACCOUNT-EXTENSION.md`.",
+        "Derive a user's whole relay condition block — liquidation",
+        "thresholds and trigger watches — in one pass.",
+        "",
+        "The default way to sync a user. `sync_liq_conditions` and",
+        "`sync_trigger_conditions` remain for callers that genuinely want",
+        "one half (a user with orders and no positions needs no thresholds),",
+        "but both write the same account, so calling them in sequence just",
+        "classifies the same `remaining_accounts` twice."
+      ],
+      "discriminator": [
+        25,
+        90,
+        224,
+        168,
+        223,
+        46,
+        67,
+        255
+      ],
+      "accounts": [
+        {
+          "name": "payer",
+          "writable": true,
+          "signer": true
+        },
+        {
+          "name": "user"
+        },
+        {
+          "name": "userConditions",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  117,
+                  115,
+                  101,
+                  114,
+                  95,
+                  99,
+                  111,
+                  110,
+                  100,
+                  105,
+                  116,
+                  105,
+                  111,
+                  110,
+                  115
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "user"
+              }
+            ]
+          }
+        },
+        {
+          "name": "rent",
+          "address": "SysvarRent111111111111111111111111111111111"
+        },
+        {
+          "name": "systemProgram",
+          "address": "11111111111111111111111111111111"
+        }
+      ],
+      "args": [
+        {
+          "name": "args",
+          "type": {
+            "defined": {
+              "name": "syncLiqConditionsArgs"
+            }
+          }
+        }
+      ]
     },
     {
       "name": "transferDeposit",

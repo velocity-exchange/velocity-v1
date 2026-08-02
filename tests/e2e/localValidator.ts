@@ -675,6 +675,9 @@ describe('e2e localnet: programs + publisher + redis', function () {
 					clobProgram: CLOB_ID,
 					velocitySigner,
 					crankConditions: conditions,
+					// No fast activation here: absent, encoded as the
+					// program id (anchor's `None`).
+					instructionsSysvar: VELOCITY_ID,
 				},
 				remainingAccounts: [
 					{ pubkey: oracle, isSigner: false, isWritable: false },

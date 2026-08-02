@@ -75,6 +75,11 @@ pub struct PlaceClobOrder<'info> {
         bump
     )]
     pub crank_conditions: Option<AccountLoader<'info, ClobCrankConditionsV0>>,
+    /// CHECK: the instructions sysvar, locked by address. Required only for
+    /// a faster-than-default activation delay: the handler introspects it
+    /// for the flow-authority co-signer (the attestation).
+    #[account(address = solana_program::sysvar::instructions::ID)]
+    pub instructions_sysvar: Option<UncheckedAccount<'info>>,
 }
 
 #[derive(Clone, Copy, AnchorSerialize, AnchorDeserialize)]
@@ -86,8 +91,10 @@ pub struct PlaceClobOrderParams {
     pub base_asset_amount: u64,
     /// 0 = good-till-cancelled.
     pub max_ts: i64,
-    /// None = the CLOB market's default speed bump. Zero requires the
-    /// attested-flow policy (not yet wired); the CLOB clamps to its max.
+    /// None = the CLOB market's default speed bump. Anything below the
+    /// default requires the flow-authority attestation (the transaction
+    /// co-signed by `State.hot_flow_authority`, introspected off the
+    /// instructions sysvar); the CLOB clamps to its max.
     pub activation_delay_slots: Option<u32>,
 }
 
@@ -149,6 +156,38 @@ pub fn handle_place_clob_order<'c: 'info, 'info>(
             ErrorCode::MarketPlaceOrderPaused,
             "market not active"
         )?;
+    }
+
+    // The speed bump is the taker protection that replaced JIT; skipping it
+    // is reserved for attested flow — a transaction the flow authority
+    // (swift) co-signed after serving the hold window off-chain. Anything
+    // at-or-above the book's default needs no attestation.
+    if let Some(requested) = params.activation_delay_slots {
+        let default_delay = crate::state::prop_amm::read_clob_u32(
+            &ctx.accounts.clob_market.try_borrow_data()?,
+            crate::state::prop_amm::CLOB_DEFAULT_ACTIVATION_DELAY_OFFSET,
+        )
+        .ok_or(ErrorCode::DefaultError)?;
+        if requested < default_delay {
+            let flow_authority = state.hot_key(crate::state::state::HotRole::FlowAuthority);
+            validate!(
+                flow_authority != Pubkey::default(),
+                ErrorCode::UnattestedFastActivation,
+                "no flow authority is configured; fast activation is disabled"
+            )?;
+            let sysvar = ctx.accounts.instructions_sysvar.as_ref().ok_or_else(|| {
+                msg!("fast activation needs the instructions sysvar for attestation");
+                ErrorCode::UnattestedFastActivation
+            })?;
+            validate!(
+                crate::instructions::optional_accounts::tx_co_signed_by(sysvar, &flow_authority)?,
+                ErrorCode::UnattestedFastActivation,
+                "activation delay {} is below the default {} and the transaction is not \
+                 co-signed by the flow authority",
+                requested,
+                default_delay
+            )?;
+        }
     }
 
     // CPI the placement. Identity travels in the args in derivable form —

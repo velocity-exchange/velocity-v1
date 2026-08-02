@@ -426,3 +426,24 @@ pub fn add_builder_order<'a, 'b>(
     ))?;
     Ok(escrow.get_order_mut(order_idx).ok())
 }
+
+/// Whether the running transaction is co-signed by `signer`, read off the
+/// instructions sysvar. The signer's signature carries no funds authority
+/// by itself — it is a marker other checks introspect (the flow-authority
+/// attestation): the signature proves the transaction passed through the
+/// key's holder, and instruction data can't forge a signer flag.
+pub fn tx_co_signed_by(instructions_sysvar: &AccountInfo, signer: &Pubkey) -> VelocityResult<bool> {
+    use solana_program::sysvar::instructions::load_instruction_at_checked;
+    let mut index = 0usize;
+    while let Ok(instruction) = load_instruction_at_checked(index, instructions_sysvar) {
+        if instruction
+            .accounts
+            .iter()
+            .any(|meta| meta.is_signer && meta.pubkey == *signer)
+        {
+            return Ok(true);
+        }
+        index += 1;
+    }
+    Ok(false)
+}

@@ -1137,6 +1137,8 @@ export type StateAccount = {
 	hotFeeWithdraw: PublicKey;
 	/** hot key authorized to grow zero-copy accounts to the deployed program's size (`extendAccount`) */
 	hotAccountExtension: PublicKey;
+	/** the retail-flow attestation key (swift's): transactions co-signed by it are attested flow — required for faster-than-default CLOB activation; `PublicKey.default()` disables fast activation */
+	hotFlowAuthority: PublicKey;
 	/** treasury PERP protocol fees are withdrawn to (settable only by `coldAdmin`); `PublicKey.default()` makes perp fee withdrawals inert */
 	protocolFeeRecipientPerp: PublicKey;
 	/** treasury SPOT protocol fees are withdrawn to (settable only by `coldAdmin`); `PublicKey.default()` makes spot fee withdrawals inert */

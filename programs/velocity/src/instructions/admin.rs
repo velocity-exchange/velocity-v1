@@ -149,6 +149,7 @@ pub fn handle_initialize(ctx: Context<Initialize>) -> Result<()> {
         protocol_fee_recipient_perp: Pubkey::default(),
         hot_fee_withdraw: Pubkey::default(),
         hot_account_extension: Pubkey::default(),
+        hot_flow_authority: Pubkey::default(),
         protocol_fee_recipient_spot: Pubkey::default(),
         perp_fee_structure: FeeStructure::perps_default(),
         spot_fee_structure: FeeStructure::spot_default(),
@@ -159,7 +160,7 @@ pub fn handle_initialize(ctx: Context<Initialize>) -> Result<()> {
         feature_bit_flags: 0,
         lp_pool_feature_bit_flags: 0,
         solvency_status: SolvencyStatus::active(),
-        padding: [0; 239],
+        padding: [0; 207],
     };
 
     Ok(())

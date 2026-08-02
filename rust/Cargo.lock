@@ -8015,6 +8015,7 @@ dependencies = [
  "solana-account-info",
  "solana-clock",
  "solana-hash 3.1.0",
+ "solana-instruction",
  "solana-keypair",
  "solana-message",
  "solana-native-token",

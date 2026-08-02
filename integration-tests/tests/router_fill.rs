@@ -413,6 +413,7 @@ fn place_clob_order_ix(
         clob_program: clob_id(),
         velocity_signer,
         crank_conditions,
+        instructions_sysvar: None,
     }
     .to_account_metas(None);
     // Margin maps: oracle, spot market, perp market.
@@ -519,6 +520,98 @@ fn place_clob_ask(fixture: &mut Fixture, price: u64, size: u64) -> ClobOrderRefV
         node_index: u32::from_le_bytes(data[..4].try_into().unwrap()),
         order_id: u64::from_le_bytes(data[4..12].try_into().unwrap()),
     }
+}
+
+/// The speed bump replaced JIT; skipping it is attested flow only. A
+/// below-default activation delay must fail without the flow authority
+/// co-signing the transaction, and pass with it — while at-or-above the
+/// default stays permissionless.
+#[test]
+fn fast_activation_requires_the_flow_authority_attestation() {
+    use velocity::state::state::HotRole;
+
+    let mut fixture = setup();
+    // The fixture's book has a zero default (every test placement is
+    // "fast"); raise it so below-default is expressible.
+    let mut book = fixture.svm.get_account(&fixture.clob_market).unwrap();
+    let at = velocity::state::prop_amm::CLOB_DEFAULT_ACTIVATION_DELAY_OFFSET;
+    book.data[at..at + 4].copy_from_slice(&2u32.to_le_bytes());
+    fixture.svm.set_account(fixture.clob_market, book).unwrap();
+
+    let place = |fixture: &Fixture, delay: Option<u32>, with_sysvar: bool| {
+        let mut ix = place_clob_order_ix(
+            fixture.clob_maker_user,
+            &fixture.clob_maker_authority,
+            fixture.quoter,
+            fixture.clob_market,
+            fixture.oracle,
+            None,
+            PlaceClobOrderParams {
+                market_index: 0,
+                direction: PositionDirection::Short,
+                price: 105 * PRICE,
+                base_asset_amount: UNIT,
+                max_ts: 0,
+                activation_delay_slots: delay,
+            },
+        );
+        if with_sysvar {
+            // The optional slot is encoded as a program-id placeholder;
+            // swap the real sysvar in.
+            // Two optionals are encoded as placeholders (crank_conditions,
+            // then instructions_sysvar) — the sysvar is the LAST one.
+            let placeholder = ix
+                .accounts
+                .iter()
+                .rposition(|meta| meta.pubkey == velocity_id() && !meta.is_writable)
+                .expect("optional placeholder present");
+            ix.accounts[placeholder].pubkey = "Sysvar1nstructions1111111111111111111111111"
+                .parse()
+                .unwrap();
+        }
+        ix
+    };
+
+    // At-or-above the default: permissionless, exactly as before.
+    let keeper = fixture.clob_maker_authority.insecure_clone();
+    let default_delay_ix = place(&fixture, None, false);
+    let at_default_ix = place(&fixture, Some(2), false);
+    let fast_ix = place(&fixture, Some(0), true);
+    send(&mut fixture.svm, &keeper, default_delay_ix, &[]).unwrap();
+    send(&mut fixture.svm, &keeper, at_default_ix, &[]).unwrap();
+
+    // Below the default with no flow authority configured: refused.
+    let err = send(&mut fixture.svm, &keeper, fast_ix.clone(), &[]).unwrap_err();
+    assert!(
+        format!("{:?}", err.err).contains("6375"),
+        "expected UnattestedFastActivation, got {:?}",
+        err.err
+    );
+
+    // Configure the flow authority.
+    let flow = Keypair::new();
+    fixture.svm.airdrop(&flow.pubkey(), 1_000_000_000).unwrap();
+    let mut state: State = read_zero_copy(&fixture.svm, &state_pda());
+    state.set_hot_key(HotRole::FlowAuthority, flow.pubkey());
+    set_zero_copy_account(
+        &mut fixture.svm,
+        state_pda(),
+        State::DISCRIMINATOR,
+        &state,
+        State::SIZE,
+    );
+
+    // Still refused when the transaction is not co-signed.
+    let err = send(&mut fixture.svm, &keeper, fast_ix.clone(), &[]).unwrap_err();
+    assert!(format!("{:?}", err.err).contains("6375"));
+
+    // Co-signed by the flow authority (a signer meta anywhere in the
+    // transaction — here, appended to the placement's own accounts): the
+    // fast activation is attested and lands.
+    let mut ix = fast_ix;
+    ix.accounts
+        .push(AccountMeta::new_readonly(flow.pubkey(), true));
+    send(&mut fixture.svm, &keeper, ix, &[&flow]).unwrap();
 }
 
 #[test]

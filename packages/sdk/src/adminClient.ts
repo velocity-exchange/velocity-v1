@@ -8460,6 +8460,7 @@ export enum HotRole {
 	AmmSpreadAdjust = 'ammSpreadAdjust',
 	FeeWithdraw = 'feeWithdraw',
 	AccountExtension = 'accountExtension',
+	FlowAuthority = 'flowAuthority',
 }
 
 /** Anchor encodes Rust enums as `{ <variant>: {} }`. */

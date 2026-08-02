@@ -6879,6 +6879,15 @@ export type Velocity = {
               }
             ]
           }
+        },
+        {
+          "name": "instructionsSysvar",
+          "docs": [
+            "a faster-than-default activation delay: the handler introspects it",
+            "for the flow-authority co-signer (the attestation)."
+          ],
+          "optional": true,
+          "address": "Sysvar1nstructions1111111111111111111111111"
         }
       ],
       "args": [
@@ -19281,6 +19290,11 @@ export type Velocity = {
       "code": 6374,
       "name": "crossMatchUnprofitable",
       "msg": "Cross match is not profitable after fees"
+    },
+    {
+      "code": 6375,
+      "name": "unattestedFastActivation",
+      "msg": "Faster-than-default activation requires the flow-authority attestation"
     }
   ],
   "types": [
@@ -21334,6 +21348,9 @@ export type Velocity = {
           },
           {
             "name": "accountExtension"
+          },
+          {
+            "name": "flowAuthority"
           }
         ]
       }
@@ -24878,8 +24895,10 @@ export type Velocity = {
           {
             "name": "activationDelaySlots",
             "docs": [
-              "None = the CLOB market's default speed bump. Zero requires the",
-              "attested-flow policy (not yet wired); the CLOB clamps to its max."
+              "None = the CLOB market's default speed bump. Anything below the",
+              "default requires the flow-authority attestation (the transaction",
+              "co-signed by `State.hot_flow_authority`, introspected off the",
+              "instructions sysvar); the CLOB clamps to its max."
             ],
             "type": {
               "option": "u32"
@@ -27664,11 +27683,24 @@ export type Velocity = {
             "type": "pubkey"
           },
           {
+            "name": "hotFlowAuthority",
+            "docs": [
+              "The retail-flow attestation key (swift's). Not a signer of any admin",
+              "instruction: transactions *co-signed* by this key are attested flow —",
+              "`place_clob_order` accepts a faster-than-default activation delay",
+              "only when instructions-sysvar introspection finds it among the",
+              "transaction's signers, and quoters (e.g. the midpoint) apply their",
+              "own equivalent check. `Pubkey::default()` (unset) disables fast",
+              "activation entirely rather than leaving it open."
+            ],
+            "type": "pubkey"
+          },
+          {
             "name": "padding",
             "type": {
               "array": [
                 "u8",
-                239
+                207
               ]
             }
           }

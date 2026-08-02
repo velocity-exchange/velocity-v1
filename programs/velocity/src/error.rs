@@ -803,6 +803,8 @@ pub enum ErrorCode {
     CrossMatchImbalanced,
     #[msg("Cross match is not profitable after fees")]
     CrossMatchUnprofitable,
+    #[msg("Faster-than-default activation requires the flow-authority attestation")]
+    UnattestedFastActivation,
 }
 
 #[macro_export]

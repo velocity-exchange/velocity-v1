@@ -48,6 +48,7 @@ solana-signature = { version = "3", features = ["rand"] }
 solana-keypair = "3"
 solana-signer = "3"
 solana-hash = "3"
+solana-instruction = "3"
 solana-message = "3"
 solana-transaction = { version = "3", features = ["verify"] }
 solana-native-token = "3"

@@ -134,6 +134,7 @@ impl Config {
 
 pub struct ServerParams {
     velocity: velocity_rs::VelocityClient,
+    attest: crate::attest::AttestContext,
     route: crate::route::RouteContext,
     slot_subscriber: Arc<SuperSlotSubscriber>,
     metrics: SwiftServerMetrics,
@@ -147,6 +148,10 @@ pub struct ServerParams {
 impl ServerParams {
     pub fn route(&self) -> &crate::route::RouteContext {
         &self.route
+    }
+
+    pub fn attest(&self) -> &crate::attest::AttestContext {
+        &self.attest
     }
 }
 
@@ -218,6 +223,13 @@ pub async fn process_order_wrapper(
             ];
             let topic = format!("swift_orders_{}_{}", metrics_labels[0], metrics_labels[1]);
             let payload = order_metadata.encode();
+            // The order is now attestable: keepers may request the
+            // flow-authority co-signature once the hold window elapses.
+            server_params.attest.record(
+                order_metadata.uuid,
+                order_metadata.ts,
+                order_metadata.order_signature,
+            );
 
             server_params
                 .publish_order(
@@ -836,6 +848,7 @@ pub async fn start_server() {
         });
 
     let state: &'static ServerParams = Box::leak(Box::new(ServerParams {
+        attest: crate::attest::AttestContext::from_env(),
         route: crate::route::RouteContext::new(rpc_endpoint, velocity_rs::constants::PROGRAM_ID),
         velocity: client,
         slot_subscriber: Arc::new(slot_subscriber),
@@ -892,6 +905,7 @@ pub async fn start_server() {
         .fallback(fallback)
         .route("/orders", post(process_order_wrapper))
         .route("/route", get(crate::route::route_quote))
+        .route("/attest", post(crate::attest::attest))
         .route("/depositTrade", post(deposit_trade))
         .route("/health", get(health_check))
         .layer(cors)

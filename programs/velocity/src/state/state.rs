@@ -93,7 +93,15 @@ pub struct State {
     /// accounts to the deployed program's size after a struct-extending
     /// upgrade).
     pub hot_account_extension: Pubkey,
-    pub padding: [u8; 239],
+    /// The retail-flow attestation key (swift's). Not a signer of any admin
+    /// instruction: transactions *co-signed* by this key are attested flow —
+    /// `place_clob_order` accepts a faster-than-default activation delay
+    /// only when instructions-sysvar introspection finds it among the
+    /// transaction's signers, and quoters (e.g. the midpoint) apply their
+    /// own equivalent check. `Pubkey::default()` (unset) disables fast
+    /// activation entirely rather than leaving it open.
+    pub hot_flow_authority: Pubkey,
+    pub padding: [u8; 207],
 }
 
 /// Purpose-specific hot role keys held on `State`. Each variant maps to one of the
@@ -112,6 +120,7 @@ pub enum HotRole {
     AmmSpreadAdjust,
     FeeWithdraw,
     AccountExtension,
+    FlowAuthority,
 }
 
 #[derive(BitFlags, Clone, Copy, PartialEq, Debug, Eq)]
@@ -173,6 +182,7 @@ impl Default for State {
             protocol_fee_recipient_perp: Pubkey::default(),
             hot_fee_withdraw: Pubkey::default(),
             hot_account_extension: Pubkey::default(),
+            hot_flow_authority: Pubkey::default(),
             protocol_fee_recipient_spot: Pubkey::default(),
             perp_fee_structure: FeeStructure::default(),
             spot_fee_structure: FeeStructure::default(),
@@ -195,7 +205,7 @@ impl Default for State {
             feature_bit_flags: 0,
             lp_pool_feature_bit_flags: 0,
             solvency_status: 0,
-            padding: [0; 239],
+            padding: [0; 207],
         }
     }
 }
@@ -309,6 +319,7 @@ impl State {
             HotRole::AmmSpreadAdjust => self.hot_amm_spread_adjust,
             HotRole::FeeWithdraw => self.hot_fee_withdraw,
             HotRole::AccountExtension => self.hot_account_extension,
+            HotRole::FlowAuthority => self.hot_flow_authority,
         }
     }
 
@@ -326,6 +337,7 @@ impl State {
             HotRole::AmmSpreadAdjust => self.hot_amm_spread_adjust = key,
             HotRole::FeeWithdraw => self.hot_fee_withdraw = key,
             HotRole::AccountExtension => self.hot_account_extension = key,
+            HotRole::FlowAuthority => self.hot_flow_authority = key,
         }
     }
 

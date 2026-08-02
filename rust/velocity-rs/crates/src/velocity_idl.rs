@@ -3812,6 +3812,7 @@ pub mod types {
         AmmSpreadAdjust,
         FeeWithdraw,
         AccountExtension,
+        FlowAuthority,
     }
     #[repr(C)]
     #[derive(
@@ -5986,8 +5987,9 @@ pub mod types {
         pub protocol_fee_recipient_spot: Pubkey,
         pub hot_fee_withdraw: Pubkey,
         pub hot_account_extension: Pubkey,
+        pub hot_flow_authority: Pubkey,
         #[serde(skip)]
-        pub padding: Padding<239>,
+        pub padding: Padding<207>,
     }
     #[repr(C)]
     #[derive(
@@ -7750,8 +7752,9 @@ pub mod accounts {
         pub protocol_fee_recipient_spot: Pubkey,
         pub hot_fee_withdraw: Pubkey,
         pub hot_account_extension: Pubkey,
+        pub hot_flow_authority: Pubkey,
         #[serde(skip)]
-        pub padding: Padding<239>,
+        pub padding: Padding<207>,
     }
     #[automatically_derived]
     impl anchor_lang::Discriminator for State {
@@ -15143,6 +15146,7 @@ pub mod accounts {
         pub clob_program: Pubkey,
         pub velocity_signer: Pubkey,
         pub crank_conditions: Pubkey,
+        pub instructions_sysvar: Pubkey,
     }
     #[automatically_derived]
     impl anchor_lang::Discriminator for PlaceClobOrder {
@@ -15199,6 +15203,11 @@ pub mod accounts {
                     pubkey: self.crank_conditions,
                     is_signer: false,
                     is_writable: true,
+                },
+                AccountMeta {
+                    pubkey: self.instructions_sysvar,
+                    is_signer: false,
+                    is_writable: false,
                 },
             ]
         }
@@ -30342,6 +30351,8 @@ pub mod errors {
         CrossMatchImbalanced,
         #[msg("Cross match is not profitable after fees")]
         CrossMatchUnprofitable,
+        #[msg("Faster-than-default activation requires the flow-authority attestation")]
+        UnattestedFastActivation,
     }
 }
 pub mod events {

@@ -263,6 +263,16 @@ describe('equity floor', () => {
 				.getUserAccount()
 				.perpPositions[0].baseAssetAmount.eq(ZERO)
 		);
+
+		// the reducing fill succeeded on a subaccount below its raw floor, so
+		// it armed the authority-wide breaker inline (lazy trip)
+		assert((await fetchBreakerTripped()) !== 0);
+
+		// clear it so the tests below start from an unarmed authority
+		await velocityClient.resetEquityFloorBreaker(
+			velocityClient.getUserStatsAccountPublicKey()
+		);
+		assert((await fetchBreakerTripped()) === 0);
 	});
 
 	it('clearing the floor disables the check', async () => {

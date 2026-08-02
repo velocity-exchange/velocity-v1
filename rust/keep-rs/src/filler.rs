@@ -188,6 +188,16 @@ impl FillerBot {
         let mut slot_rx = self.slot_rx;
         let mut limiter = self.limiter;
         let velocity: &'static VelocityClient = Box::leak(Box::new(self.velocity));
+        // Attested flow: only when the chain names a flow authority and a
+        // swift endpoint is reachable. Absent either, fills run unattested
+        // exactly as before.
+        let attest: Option<&'static crate::attest::AttestClient> = velocity
+            .state_account()
+            .ok()
+            .map(|state| state.hot_flow_authority)
+            .filter(|flow| *flow != Pubkey::default())
+            .and_then(crate::attest::AttestClient::from_env)
+            .map(|client| &*Box::leak(Box::new(client)));
         let dlob = self.dlob;
         let market_ids = self.market_ids;
         let filler_subaccount = self.filler_subaccount;
@@ -302,6 +312,7 @@ impl FillerBot {
                                         signed_order,
                                         crosses,
                                         tx_worker_ref.clone(),
+                                        attest,
                                     ).await;
                                 }
                                 SwiftEval::NotFillable(reason) => {
@@ -1009,6 +1020,7 @@ async fn try_trigger_order(
 }
 
 /// Try to fill a swift order
+#[allow(clippy::too_many_arguments)]
 async fn try_swift_fill(
     velocity: &'static VelocityClient,
     priority_fee: u64,
@@ -1017,6 +1029,7 @@ async fn try_swift_fill(
     swift_order: SignedOrderInfo,
     crosses: MakerCrosses,
     tx_worker_ref: TxSender,
+    attest: Option<&'static crate::attest::AttestClient>,
 ) {
     log::info!(target: TARGET, "try fill swift order: {}", swift_order.order_uuid_str());
     let taker_order = swift_order.order_params();
@@ -1039,13 +1052,6 @@ async fn try_swift_fill(
             return;
         }
     };
-    let tx_builder = TransactionBuilder::new(
-        velocity.program_data(),
-        filler_subaccount,
-        std::borrow::Cow::Borrowed(&filler_account_data),
-        false,
-    );
-
     let maker_accounts: Vec<User> = crosses
         .orders
         .iter()
@@ -1060,45 +1066,120 @@ async fn try_swift_fill(
         return;
     }
 
-    // let taker_order_id = taker_account_data.next_order_id;
-    let mut tx_builder = tx_builder
-        .with_priority_fee(priority_fee, Some(cu_limit))
-        .place_swift_order(&swift_order, &taker_account_data)
-        .fill_perp_order(
-            taker_order.market_index,
-            taker_subaccount,
-            &taker_account_data,
-            &taker_stats,
-            None, // Some(taker_order_id), // assuming we're fast enough that its the taker_order_id, should be ok for retail
-            maker_accounts.as_slice(),
-            Some(swift_order.has_builder()),
+    // The whole fill is assembled twice at most: once with the flow
+    // authority riding a compute-budget instruction as a read-only
+    // co-signer (compute budget parses no accounts, so the marker is
+    // inert), and — only if attestation falls through — once plain.
+    let assemble = |co_signer: Option<Pubkey>| -> (VersionedMessage, u64) {
+        let tx_builder = TransactionBuilder::new(
+            velocity.program_data(),
+            filler_subaccount,
+            std::borrow::Cow::Borrowed(&filler_account_data),
+            false,
         );
-
-    // large accounts list, bump CU limit to compensate
-    let mut effective_cu_limit = cu_limit;
-    if let Some(ix) = tx_builder.ixs().last() {
-        if ix.accounts.len() >= 30 {
-            effective_cu_limit = cu_limit * 2;
-            tx_builder = tx_builder.set_ix(
-                1,
-                ComputeBudgetInstruction::set_compute_unit_limit(effective_cu_limit),
+        let mut tx_builder = tx_builder
+            .with_priority_fee(priority_fee, Some(cu_limit))
+            .place_swift_order(&swift_order, &taker_account_data)
+            .fill_perp_order(
+                taker_order.market_index,
+                taker_subaccount,
+                &taker_account_data,
+                &taker_stats,
+                None, // Some(taker_order_id), // assuming we're fast enough that its the taker_order_id, should be ok for retail
+                maker_accounts.as_slice(),
+                Some(swift_order.has_builder()),
             );
+
+        // large accounts list, bump CU limit to compensate
+        let mut effective_cu_limit = cu_limit;
+        if let Some(ix) = tx_builder.ixs().last() {
+            if ix.accounts.len() >= 30 {
+                effective_cu_limit = cu_limit * 2;
+                tx_builder = tx_builder.set_ix(
+                    1,
+                    ComputeBudgetInstruction::set_compute_unit_limit(effective_cu_limit),
+                );
+            }
+        }
+        if let Some(flow) = co_signer {
+            let mut price_ix = tx_builder.ixs()[0].clone();
+            price_ix
+                .accounts
+                .push(solana_sdk::instruction::AccountMeta::new_readonly(
+                    flow, true,
+                ));
+            tx_builder = tx_builder.set_ix(0, price_ix);
+        }
+        (tx_builder.build(), effective_cu_limit as u64)
+    };
+
+    let intent = || TxIntent::SwiftFill {
+        uuid: swift_order.order_uuid(),
+        market_index: taker_order.market_index,
+        taker_user: taker_subaccount,
+        maker_crosses: crosses.clone(),
+    };
+
+    if let Some(client) = attest {
+        match attested_swift_fill(velocity, client, &swift_order, &assemble).await {
+            Ok((tx, effective_cu_limit)) => {
+                tx_worker_ref
+                    .send_signed_tx(tx, intent(), effective_cu_limit)
+                    .await;
+                return;
+            }
+            Err(reason) => {
+                log::warn!(
+                    target: TARGET,
+                    "attestation fell through ({reason}); filling unattested. uuid={}",
+                    swift_order.order_uuid_str()
+                );
+            }
         }
     }
-    let tx = tx_builder.build();
 
+    let (tx, effective_cu_limit) = assemble(None);
     tx_worker_ref
-        .send_tx(
-            tx,
-            TxIntent::SwiftFill {
-                uuid: swift_order.order_uuid(),
-                market_index: taker_order.market_index,
-                taker_user: taker_subaccount,
-                maker_crosses: crosses,
-            },
-            effective_cu_limit as u64,
-        )
+        .send_tx(tx, intent(), effective_cu_limit)
         .await;
+}
+
+/// Build, self-sign, and get the flow-authority co-signature for a swift
+/// fill. Both signatures cover one fixed message, so the blockhash is set
+/// here and nothing may re-sign the result.
+async fn attested_swift_fill(
+    velocity: &'static VelocityClient,
+    client: &crate::attest::AttestClient,
+    swift_order: &SignedOrderInfo,
+    assemble: &dyn Fn(Option<Pubkey>) -> (VersionedMessage, u64),
+) -> Result<(VersionedTransaction, u64), String> {
+    let (mut message, effective_cu_limit) = assemble(Some(client.flow_authority()));
+    let blockhash = velocity
+        .get_latest_blockhash()
+        .await
+        .map_err(|e| format!("no blockhash: {e:?}"))?;
+    message.set_recent_blockhash(blockhash);
+
+    let own = velocity
+        .wallet()
+        .sign_message(&message.serialize())
+        .map_err(|e| format!("wallet signing failed: {e:?}"))?;
+    let signer = velocity.wallet().signer();
+    let own_index = message
+        .static_account_keys()
+        .iter()
+        .position(|key| *key == signer)
+        .ok_or("wallet signer missing from message")?;
+    let mut signatures =
+        vec![Signature::default(); message.header().num_required_signatures as usize];
+    signatures[own_index] = own;
+    let tx = VersionedTransaction {
+        signatures,
+        message,
+    };
+
+    let attested = client.attest(swift_order.order_uuid_str(), &tx).await?;
+    Ok((attested, effective_cu_limit))
 }
 
 /// Place a swift order on-chain without filling it.
@@ -2964,6 +3045,32 @@ impl TxSender {
         cu_limit: u64,
     ) -> Option<Signature> {
         self.queue_tx(tx, None, false, intent, cu_limit).await
+    }
+
+    /// Enqueue a transaction whose signatures are already complete (the
+    /// attested-flow path: the flow authority co-signed a fixed message,
+    /// so re-signing at a fresh blockhash would invalidate it).
+    pub async fn send_signed_tx(
+        &self,
+        tx: VersionedTransaction,
+        intent: TxIntent,
+        cu_limit: u64,
+    ) -> Option<Signature> {
+        let sig = tx.signatures[0];
+        self.tx
+            .send(TxWork::Send {
+                tx,
+                simulation_tx: None,
+                require_fill_event: false,
+                ts: SystemTime::now()
+                    .duration_since(UNIX_EPOCH)
+                    .unwrap()
+                    .as_millis() as u64,
+                intent,
+                cu_limit,
+            })
+            .ok()?;
+        Some(sig)
     }
 
     pub async fn send_fill_tx(

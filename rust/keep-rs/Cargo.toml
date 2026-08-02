@@ -15,6 +15,9 @@ clap = { version = "4.5.40", "features" = ["env", "derive"] }
 crossbeam = { version = "0.8.4", features = ["crossbeam-channel"] }
 dotenv = "0.15.0"
 velocity-rs = { path = "../velocity-rs", features = ["unsafe_pub", "titan"] }
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+base64 = "0.22"
+bincode = "1"
 # Program internals are reached via `velocity_rs::program::…`; no direct path-dep on
 # the velocity program. velocity-rs pulls it with `cpi` (⊇ `no-entrypoint`).
 env_logger = "0.11"

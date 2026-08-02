@@ -3246,6 +3246,8 @@ version = "0.1.7"
 dependencies = [
  "anchor-lang",
  "axum 0.8.9",
+ "base64 0.22.1",
+ "bincode",
  "clap",
  "crossbeam",
  "dashmap 6.2.1",
@@ -3257,6 +3259,7 @@ dependencies = [
  "prometheus",
  "pyth-lazer-client",
  "pyth-lazer-protocol",
+ "reqwest",
  "serde",
  "serde_json",
  "solana-account-decoder-client-types",

@@ -1,6 +1,7 @@
 //! Rust Keeper Bot
 use std::sync::Arc;
 
+mod attest;
 mod filler;
 mod http;
 mod liquidator;

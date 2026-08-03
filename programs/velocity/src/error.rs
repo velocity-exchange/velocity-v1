@@ -805,6 +805,16 @@ pub enum ErrorCode {
     CrossMatchUnprofitable,
     #[msg("Faster-than-default activation requires the flow-authority attestation")]
     UnattestedFastActivation,
+    #[msg("Quoter returned a malformed quote/execute response")]
+    InvalidQuoterResponse,
+    #[msg("Quoter filled more base than the router allocated to it")]
+    QuoterOverfilled,
+    #[msg("Quoter filled at a price its quote does not support")]
+    QuoterFillOffQuote,
+    #[msg("Quoter returned a balance change for a user it may not act against")]
+    QuoterSubjectNotPermitted,
+    #[msg("More loaded users than the quoter wire can carry")]
+    TooManyQuoterWireUsers,
 }
 
 #[macro_export]

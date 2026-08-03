@@ -18,7 +18,7 @@ use {
         },
         instruction,
         state::{
-            Direction, MidpointQuoterV0, QuoterConfigV0, SplineLevelInputV0, UserRefV0,
+            Direction, MidpointQuoterV0, QuoterConfigV0, SplineLevelInputV0, UserRefV0, UserSetV0,
             RESPONSE_OFFSET,
         },
         velocity::STATE_HOT_FLOW_AUTHORITY_OFFSET,
@@ -347,7 +347,7 @@ fn quote_args(direction: Direction, size: u64) -> QuoteArgsV0 {
     QuoteArgsV0 {
         direction,
         size,
-        users: None,
+        users: UserSetV0::EMPTY,
         taker: None,
     }
 }
@@ -369,7 +369,7 @@ fn execute_ix(ctx: &Ctx, direction: Direction, size: u64) -> Instruction {
         args: ExecuteArgsV0 {
             direction,
             size,
-            users: None,
+            users: UserSetV0::EMPTY,
             taker: None,
         },
     }
@@ -689,7 +689,7 @@ fn quoted_user_gates_apply() {
     let ix = quote_ix_with(
         &ctx,
         QuoteArgsV0 {
-            users: Some(vec![stranger]),
+            users: UserSetV0::from_refs(&[stranger]).unwrap(),
             ..quote_args(Direction::Long, UNIT)
         },
     );
@@ -711,7 +711,7 @@ fn quoted_user_gates_apply() {
     let ix = quote_ix_with(
         &ctx,
         QuoteArgsV0 {
-            users: Some(vec![stranger, quoted]),
+            users: UserSetV0::from_refs(&[stranger, quoted]).unwrap(),
             taker: Some(stranger),
             ..quote_args(Direction::Long, UNIT)
         },

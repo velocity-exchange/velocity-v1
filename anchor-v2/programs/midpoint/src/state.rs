@@ -64,6 +64,55 @@ pub struct UserRefV0 {
     pub sub_account_id: u16,
 }
 
+impl UserRefV0 {
+    pub const ZERO: Self = Self {
+        authority: ZERO_ADDRESS,
+        sub_account_id: 0,
+    };
+}
+
+/// Capacity of [`UserSetV0`] — see the CLOB's `USER_SET_CAPACITY` for where
+/// the number comes from. Every program on the quoter wire must agree on it.
+pub const USER_SET_CAPACITY: usize = 48;
+
+/// The caller's settleable-user set as velocity's `QuoterUserSetV0` puts it on
+/// the wire: a live count then a fixed-width array, so decoding it costs no
+/// allocation and the encoding is pinned rather than negotiated. Empty means
+/// unrestricted.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, wincode::SchemaRead, wincode::SchemaWrite)]
+pub struct UserSetV0 {
+    pub len: u8,
+    pub users: [UserRefV0; USER_SET_CAPACITY],
+}
+
+/// Encoded width of a [`UserSetV0`]: 32-byte authority + u16 sub-account each,
+/// behind a one-byte count.
+pub const USER_SET_BYTES: usize = 1 + USER_SET_CAPACITY * (32 + 2);
+
+impl UserSetV0 {
+    pub const EMPTY: Self = Self {
+        len: 0,
+        users: [UserRefV0::ZERO; USER_SET_CAPACITY],
+    };
+
+    /// The live prefix. `len` arrives from a foreign caller, so it is clamped
+    /// rather than trusted.
+    pub fn as_slice(&self) -> &[UserRefV0] {
+        &self.users[..(self.len as usize).min(USER_SET_CAPACITY)]
+    }
+
+    /// Build from at most [`USER_SET_CAPACITY`] refs; `None` past capacity.
+    pub fn from_refs(refs: &[UserRefV0]) -> Option<Self> {
+        if refs.len() > USER_SET_CAPACITY {
+            return None;
+        }
+        let mut set = Self::EMPTY;
+        set.users[..refs.len()].copy_from_slice(refs);
+        set.len = refs.len() as u8;
+        Some(set)
+    }
+}
+
 #[derive(Clone, Copy, PartialEq, Eq, Debug, wincode::SchemaRead, wincode::SchemaWrite)]
 pub struct PriceLevel {
     pub price: u64,
@@ -288,21 +337,33 @@ impl SplineParams {
     }
 
     /// Quote amount for `base` at `price`, mirroring the CLOB:
-    /// `price × base / base_precision`, floored. u64 while the product fits
-    /// (see [`SplineParams::level_price`] on why the divide is worth
-    /// avoiding), widening only when it must.
-    pub fn quote_amount(&self, price: u64, base: u64) -> Result<u64> {
+    /// `price × base / base_precision`, floored, with `carry` — the previous
+    /// rung's sub-unit remainder — folded in and the new remainder handed
+    /// back. Carrying rather than truncating per rung is what makes a
+    /// multi-rung fill's total the floor of the whole walk's notional, which
+    /// is the one rounding velocity admits when it holds the fill to the
+    /// prices this quoter published. u64 while the product fits (see
+    /// [`SplineParams::level_price`] on why the divide is worth avoiding),
+    /// widening only when it must.
+    pub fn quote_amount(&self, price: u64, base: u64, carry: u64) -> Result<(u64, u64)> {
         let base_precision = self.base_precision.max(1);
-        if let Some(product) = price.checked_mul(base) {
-            return Ok(product / base_precision);
+        if let Some(scaled) = price.checked_mul(base).and_then(|p| p.checked_add(carry)) {
+            return Ok((scaled / base_precision, scaled % base_precision));
         }
-        (price as u128)
+        let scaled = (price as u128)
             .checked_mul(base as u128)
             .ok_or(MidpointError::MathError)?
-            .checked_div(base_precision as u128)
-            .ok_or(MidpointError::MathError)?
-            .try_into()
-            .map_err(|_| MidpointError::MathError.into())
+            .checked_add(carry as u128)
+            .ok_or(MidpointError::MathError)?;
+        let precision = base_precision as u128;
+        Ok((
+            (scaled / precision)
+                .try_into()
+                .map_err(|_| MidpointError::MathError)?,
+            (scaled % precision)
+                .try_into()
+                .map_err(|_| MidpointError::MathError)?,
+        ))
     }
 }
 
@@ -354,6 +415,7 @@ impl MidpointQuoterV0 {
         }
         let params = self.params();
         let mut wanted = size;
+        let mut carry = 0u64;
         for (index, level) in self.side_levels(direction).iter().enumerate() {
             if wanted == 0 {
                 break;
@@ -370,9 +432,11 @@ impl MidpointQuoterV0 {
                 .base
                 .checked_add(take)
                 .ok_or(MidpointError::MathError)?;
+            let (quote, remainder) = params.quote_amount(price, take, carry)?;
+            carry = remainder;
             fill.quote = fill
                 .quote
-                .checked_add(params.quote_amount(price, take)?)
+                .checked_add(quote)
                 .ok_or(MidpointError::MathError)?;
             fill.consumed[index] = take;
             wanted -= take;
@@ -935,12 +999,20 @@ mod tests {
         u64::try_from(price).ok()
     }
 
-    fn reference_quote_amount(params: &SplineParams, price: u64, base: u64) -> Option<u64> {
-        (price as u128)
+    fn reference_quote_amount(
+        params: &SplineParams,
+        price: u64,
+        base: u64,
+        carry: u64,
+    ) -> Option<(u64, u64)> {
+        let precision = params.base_precision.max(1) as u128;
+        let scaled = (price as u128)
             .checked_mul(base as u128)?
-            .checked_div(params.base_precision.max(1) as u128)?
-            .try_into()
-            .ok()
+            .checked_add(carry as u128)?;
+        Some((
+            (scaled / precision).try_into().ok()?,
+            (scaled % precision).try_into().ok()?,
+        ))
     }
 
     /// The u64 fast paths must be exactly the u128 math, including where they
@@ -983,11 +1055,13 @@ mod tests {
         };
         for price in [0, 1, MID, u64::MAX / 3, u64::MAX] {
             for base in [0, 1, UNIT, 12_345_678_901, u64::MAX / 7, u64::MAX] {
-                assert_eq!(
-                    params.quote_amount(price, base).ok(),
-                    reference_quote_amount(&params, price, base),
-                    "price {price} base {base}"
-                );
+                for carry in [0, 1, UNIT - 1] {
+                    assert_eq!(
+                        params.quote_amount(price, base, carry).ok(),
+                        reference_quote_amount(&params, price, base, carry),
+                        "price {price} base {base} carry {carry}"
+                    );
+                }
             }
         }
     }

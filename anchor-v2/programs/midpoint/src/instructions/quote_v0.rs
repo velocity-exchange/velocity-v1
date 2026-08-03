@@ -1,7 +1,7 @@
 use {
     crate::{
         introspection::tx_co_signed_by,
-        state::{Direction, MidpointQuoterV0, ResponsePointerV0, UserRefV0},
+        state::{Direction, MidpointQuoterV0, ResponsePointerV0, UserRefV0, UserSetV0},
         velocity::{hot_flow_authority, VELOCITY_STATE},
     },
     anchor_lang_v2::prelude::*,
@@ -29,10 +29,10 @@ pub struct QuoteArgsV0 {
     pub direction: Direction,
     pub size: u64,
     /// `User`s the caller can settle balance changes for. The midpoint
-    /// settles against exactly one user — if it is absent from a `Some`
+    /// settles against exactly one user — if it is absent from a non-empty
     /// set, the book is empty (not an error: the caller simply can't
     /// settle us, so we have nothing for them).
-    pub users: Option<Vec<UserRefV0>>,
+    pub users: UserSetV0,
     /// The taker's `User`: quoting yourself is a wash trade, so the quoted
     /// user's own flow sees an empty book.
     pub taker: Option<UserRefV0>,
@@ -48,13 +48,13 @@ pub struct QuoteArgsV0 {
 /// once. An unassigned role closes the gate.
 pub fn caller_gate(
     quoter: &MidpointQuoterV0,
-    users: Option<&[UserRefV0]>,
+    users: &[UserRefV0],
     taker: Option<&UserRefV0>,
     instructions_sysvar: &anchor_lang_v2::pinocchio::account::AccountView,
     velocity_state: &anchor_lang_v2::pinocchio::account::AccountView,
 ) -> Result<bool> {
     let quoted = quoter.user_ref();
-    if users.is_some_and(|set| !set.contains(&quoted)) {
+    if !users.is_empty() && !users.contains(&quoted) {
         return Ok(false);
     }
     if taker.is_some_and(|taker| *taker == quoted) {
@@ -78,7 +78,7 @@ pub fn handle_quote_v0(ctx: &mut Context<QuoteV0>, args: QuoteArgsV0) -> Result<
     let clock = Clock::get()?;
     let open = caller_gate(
         &ctx.accounts.quoter,
-        args.users.as_deref(),
+        args.users.as_slice(),
         args.taker.as_ref(),
         ctx.accounts.instructions_sysvar.account(),
         ctx.accounts.velocity_state.account(),

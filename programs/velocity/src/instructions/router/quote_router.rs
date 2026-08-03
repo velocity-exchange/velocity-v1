@@ -39,7 +39,7 @@ use {
         msg,
         state::{
             perp_market_map::{get_writable_perp_market_set, MarketSet},
-            prop_amm::{Direction, PriceLevel, QuoteArgsV0, QuoterType, QuoterV0},
+            prop_amm::{Direction, PriceLevel, QuoteArgsV0, QuoterType, QuoterUserSetV0, QuoterV0},
             quoter::MarketQuoteInputs,
             router_quote::{QuotedSourceKind, RouterQuoteBufferV0},
             state::State,
@@ -145,12 +145,13 @@ pub fn handle_quote_router<'c: 'info, 'info>(
             }
             let levels = quoter
                 .quote(
+                    market_index,
                     QuoteArgsV0 {
                         direction: args.direction,
                         size: args.size,
                         // A view has no settlement, so no loaded-user
                         // restriction: quote everything the book holds.
-                        users: None,
+                        users: QuoterUserSetV0::EMPTY,
                         taker: None,
                     },
                     &state.signer,

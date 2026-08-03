@@ -37,6 +37,12 @@
 //! more to the router than the book can honour — a zero-priced level wins any
 //! routing waterfall outright — so it fails the instruction rather than ship.
 //! See [`write_level`] and [`check_fill_price`].
+//!
+//! Execute is also held to its own quote on the way out, by velocity: the
+//! response's total quote must be the notional of these same orders at the
+//! prices `quote` published, to within the one unavoidable division. That is
+//! why fills are priced by differencing a running total rather than rounded
+//! one at a time (see `quote_size` in [`ClobBook::execute`]).
 
 use {
     crate::{
@@ -83,7 +89,7 @@ pub trait ClobBook {
         &mut self,
         direction: Direction,
         size: u64,
-        users: Option<&[UserRefV0]>,
+        users: &[UserRefV0],
         taker: Option<&UserRefV0>,
         slot: u64,
         now: i64,
@@ -92,7 +98,7 @@ pub trait ClobBook {
         &mut self,
         direction: Direction,
         size: u64,
-        users: Option<&[UserRefV0]>,
+        users: &[UserRefV0],
         taker: Option<&UserRefV0>,
         slot: u64,
         now: i64,
@@ -527,7 +533,7 @@ impl ClobBook for ClobMarketV0 {
         &mut self,
         direction: Direction,
         size: u64,
-        users: Option<&[UserRefV0]>,
+        users: &[UserRefV0],
         taker: Option<&UserRefV0>,
         slot: u64,
         now: i64,
@@ -606,7 +612,7 @@ impl ClobBook for ClobMarketV0 {
         &mut self,
         direction: Direction,
         size: u64,
-        users: Option<&[UserRefV0]>,
+        users: &[UserRefV0],
         taker: Option<&UserRefV0>,
         slot: u64,
         now: i64,
@@ -632,6 +638,10 @@ impl ClobBook for ClobMarketV0 {
         // Price of the last order consumed, for the best-first check in
         // `check_fill_price`.
         let mut filled: Option<u64> = None;
+        // The sweep's notional so far (before the divide) and the quote already
+        // attributed to earlier fills. See `quote_size` below.
+        let mut swept = 0u128;
+        let mut paid = 0u128;
 
         walk_side(self, side, |book, index, node| {
             if remaining == 0 || fills.len() == max_fills {
@@ -649,13 +659,26 @@ impl ClobBook for ClobMarketV0 {
             let take = remaining.min(node.base_asset_amount);
             check_fill_price(side, filled, node.price, take)?;
             filled = Some(node.price);
-            let quote_size: u64 = (node.price as u128)
-                .checked_mul(take as u128)
-                .ok_or(ClobError::MathError)?
-                .checked_div(base_precision)
-                .ok_or(ClobError::MathError)?
+            // Each fill's quote is the *difference of running floors*, not the
+            // floor of its own notional: the sweep's total then comes out as
+            // the floor of the whole sweep's notional rather than the sum of
+            // per-fill floors, which can sit a unit lower per fill. Velocity
+            // holds the total to the prices this book quoted for these same
+            // orders moments earlier and admits exactly that one rounding, and
+            // the dust a per-fill truncation loses would come out of the
+            // makers.
+            swept = swept
+                .checked_add(
+                    (node.price as u128)
+                        .checked_mul(take as u128)
+                        .ok_or(ClobError::MathError)?,
+                )
+                .ok_or(ClobError::MathError)?;
+            let swept_quote = swept / base_precision;
+            let quote_size: u64 = (swept_quote - paid)
                 .try_into()
                 .map_err(|_| ClobError::MathError)?;
+            paid = swept_quote;
             let record = match existing {
                 Some(offset) => {
                     writer.add_u64(book, offset + CHANGE_BASE, take)?;
@@ -872,7 +895,7 @@ fn removed_order(node: &OrderNodeV0) -> RemovedOrder {
 /// delivers.
 fn is_matchable(
     node: &OrderNodeV0,
-    users: Option<&[UserRefV0]>,
+    users: &[UserRefV0],
     taker: Option<&UserRefV0>,
     grace_slots: u32,
     slot: u64,
@@ -893,15 +916,12 @@ fn is_matchable(
 /// [`ClobError::StaleUserSet`] once older, because a keeper that misses an
 /// aged order is stale (or pruning makers) and the whole fill must not land.
 fn skip_unknown_user(
-    users: Option<&[UserRefV0]>,
+    users: &[UserRefV0],
     node: &OrderNodeV0,
     grace_slots: u32,
     slot: u64,
 ) -> Result<bool> {
-    let Some(users) = users else {
-        return Ok(false);
-    };
-    if users.iter().any(|u| *u == node.user_ref()) {
+    if users.is_empty() || users.iter().any(|u| *u == node.user_ref()) {
         return Ok(false);
     }
     require!(

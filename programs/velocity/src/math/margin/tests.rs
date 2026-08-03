@@ -6804,6 +6804,51 @@ mod meets_place_order_margin_requirement_with_isolated {
     }
 }
 
+/// OtterSec #143 / #144 — the spot-only liability flag must not be polluted by
+/// the perp oracle, and both spot flags must actually flip on a stale spot
+/// oracle so the fill-path gate can read them.
+///
+/// The perp-fill path already handles a stale *perp* oracle deliberately
+/// (`oracle_stale_for_margin` → 100% margin override for the taker, reject
+/// unless someone reduces for the maker). Gating the new fill check on the
+/// broad `all_liability_oracles_valid` would silently replace that design with a
+/// hard reject, which is why `all_spot_liability_oracles_valid` exists.
+#[test]
+fn spot_liability_oracle_flag_is_independent_of_the_perp_oracle() {
+    use crate::{
+        math::margin::MarginRequirementType,
+        state::margin_calculation::{MarginCalculation, MarginContext},
+    };
+
+    // A perp-oracle invalidation clears the broad flag but must leave the
+    // spot-only flag alone.
+    let mut calc = MarginCalculation::new(MarginContext::standard(MarginRequirementType::Initial));
+    assert!(calc.all_liability_oracles_valid);
+    assert!(calc.all_spot_liability_oracles_valid);
+    assert!(calc.all_deposit_oracles_valid);
+
+    calc.update_all_liability_oracles_valid(false);
+    assert!(
+        !calc.all_liability_oracles_valid,
+        "the broad flag must record the perp oracle"
+    );
+    assert!(
+        calc.all_spot_liability_oracles_valid,
+        "a perp-oracle invalidation must NOT clear the spot-only flag — that is \
+             what keeps the fill gate from overriding oracle_stale_for_margin"
+    );
+
+    // A spot-borrow invalidation clears both, so every pre-existing consumer of
+    // the broad flag keeps its current meaning.
+    let mut calc2 = MarginCalculation::new(MarginContext::standard(MarginRequirementType::Initial));
+    calc2.update_all_spot_liability_oracles_valid(false);
+    assert!(!calc2.all_spot_liability_oracles_valid);
+    assert!(
+        !calc2.all_liability_oracles_valid,
+        "a spot-borrow invalidation must still fold into the broad flag"
+    );
+}
+
 mod fill_perp_order_margin_requirement_with_isolated {
     use {
         crate::{

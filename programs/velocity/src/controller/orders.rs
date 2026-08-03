@@ -2131,6 +2131,41 @@ fn fulfill_perp_order(
         }
 
         if !user_order_position_decreasing {
+            // A risk-increasing fill must not be admitted on margin the calculation
+            // derived from a stale spot oracle (OtterSec #143 / #144). The margin
+            // calc *records* these verdicts but nothing consumed them here, so:
+            //   #143 — a `StaleForMargin` positive deposit was still credited at its
+            //          stale weighted price, letting phantom collateral open an
+            //          in-band losing DLOB trade whose counterparty then settles a
+            //          real profit out of the PnL pool.
+            //   #144 — a `StaleForMargin` spot borrow was still priced at its stale
+            //          low value, so an account that is actually insolvent at the
+            //          refreshed price passes and becomes protocol bad debt.
+            // `meets_withdraw_margin_requirement` already gates on this for the
+            // withdraw path; the fill path is the same value-releasing decision.
+            //
+            // Only the *risk-increasing* branch is gated: refusing a reducing fill
+            // would block the very action that lowers exposure, which is the trade-off
+            // the surrounding `oracle_stale_for_margin` handling and the equity-floor
+            // check below already make. Liquidations are excluded entirely — this
+            // whole block is `if !fill_mode.is_liquidation()`.
+            //
+            // Note this deliberately reads the spot-only liability flag:
+            // `all_liability_oracles_valid` is also cleared by an invalid *perp*
+            // oracle, which `oracle_stale_for_margin` above already handles by
+            // overriding margin to 100% rather than rejecting. Gating on the broader
+            // field would silently replace that design with a hard reject.
+            validate!(
+                taker_margin_calculation.all_deposit_oracles_valid,
+                ErrorCode::InvalidOracle,
+                "taker increasing risk while a spot deposit oracle is invalid for margin"
+            )?;
+            validate!(
+                taker_margin_calculation.all_spot_liability_oracles_valid,
+                ErrorCode::InvalidOracle,
+                "taker increasing risk while a spot borrow oracle is invalid for margin"
+            )?;
+
             let taker_breaker_tripped = user_stats.is_equity_breaker_tripped();
             let taker_net_equity =
                 calculate_net_equity_for_floor(user, perp_market_map, spot_market_map, oracle_map)?;
@@ -2231,6 +2266,24 @@ fn fulfill_perp_order(
         }
 
         if maker_risk_increasing {
+            // Same gate as the taker side above (OtterSec #143 / #144) — a maker
+            // taking on new risk is exactly as able to do it against phantom
+            // stale-oracle collateral, and the DLOB attack in both findings needs
+            // two accounts, so gating only the taker would leave it reachable from
+            // the maker seat.
+            validate!(
+                maker_margin_calculation.all_deposit_oracles_valid,
+                ErrorCode::InvalidOracle,
+                "maker ({}) increasing risk while a spot deposit oracle is invalid for margin",
+                maker_key
+            )?;
+            validate!(
+                maker_margin_calculation.all_spot_liability_oracles_valid,
+                ErrorCode::InvalidOracle,
+                "maker ({}) increasing risk while a spot borrow oracle is invalid for margin",
+                maker_key
+            )?;
+
             let maker_net_equity = calculate_net_equity_for_floor(
                 &maker,
                 perp_market_map,

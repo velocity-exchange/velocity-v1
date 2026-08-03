@@ -356,7 +356,7 @@ pub fn calculate_margin_requirement_and_total_collateral_and_liability_info(
 
                     calculation.add_spot_liability()?;
 
-                    calculation.update_all_liability_oracles_valid(oracle_valid);
+                    calculation.update_all_spot_liability_oracles_valid(oracle_valid);
 
                     #[cfg(feature = "velocity-rs")]
                     calculation.add_spot_liability_value(token_value)?;
@@ -447,7 +447,7 @@ pub fn calculate_margin_requirement_and_total_collateral_and_liability_info(
                         spot_market.asset_tier == AssetTier::Isolated,
                     );
 
-                    calculation.update_all_liability_oracles_valid(oracle_valid);
+                    calculation.update_all_spot_liability_oracles_valid(oracle_valid);
 
                     #[cfg(feature = "velocity-rs")]
                     calculation.add_spot_liability_value(worst_case_token_value.unsigned_abs())?;
@@ -455,7 +455,7 @@ pub fn calculate_margin_requirement_and_total_collateral_and_liability_info(
                 Ordering::Equal => {
                     if spot_position.has_open_order() {
                         calculation.add_spot_liability()?;
-                        calculation.update_all_liability_oracles_valid(oracle_valid);
+                        calculation.update_all_spot_liability_oracles_valid(oracle_valid);
                         calculation.update_with_spot_isolated_liability(
                             spot_market.asset_tier == AssetTier::Isolated,
                         );

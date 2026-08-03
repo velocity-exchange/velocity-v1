@@ -2270,3 +2270,111 @@ fn spot_cumulative_interest_with_no_oracle_leaves_oracle_twaps_alone() {
     assert!(unrefreshed.borrow_token_twap > before.borrow_token_twap);
     assert_eq!(unrefreshed.last_twap_ts, later as u64);
 }
+
+/// OtterSec #134 — a same-authority spot transfer must not refresh the transferred
+/// market's oracle TWAP before its own source-side margin check.
+///
+/// `transfer_spot_deposit` used to pass `Some(oracle_price_data)`, then call
+/// `meets_withdraw_margin_requirement`, which values the source through
+/// `StrictOraclePrice`. `get_strict_token_value` prices a **liability** at
+/// `strict_price.max()`, so dragging the 5-minute TWAP down toward a temporarily
+/// depressed live price lowers that upper bound, under-values the debt, and frees
+/// sibling collateral for withdrawal — leaving depositor-socialized debt when the
+/// oracle recovers. It now passes `None`.
+#[test]
+fn refreshing_oracle_twap_understates_a_liability_for_the_strict_price() {
+    use crate::{
+        math::spot_balance::get_strict_token_value,
+        state::oracle::{OraclePriceData, StrictOraclePrice},
+    };
+
+    let settled_price = 100 * PRICE_PRECISION_I64;
+    let depressed_price = 60 * PRICE_PRECISION_I64;
+    let now = 1_700_000_000_i64;
+
+    let mut market = SpotMarket {
+        market_index: 1,
+        oracle_source: OracleSource::PythLazer,
+        cumulative_deposit_interest: SPOT_CUMULATIVE_INTEREST_PRECISION,
+        cumulative_borrow_interest: SPOT_CUMULATIVE_INTEREST_PRECISION,
+        decimals: 6,
+        initial_asset_weight: SPOT_WEIGHT_PRECISION,
+        maintenance_asset_weight: SPOT_WEIGHT_PRECISION,
+        deposit_balance: 1_000 * SPOT_BALANCE_PRECISION,
+        borrow_balance: 500 * SPOT_BALANCE_PRECISION,
+        // Non-zero rate params, else the default market has a 0% borrow rate and
+        // nothing accrues for the interest assertion at the end.
+        optimal_utilization: SPOT_UTILIZATION_PRECISION_U32 / 2,
+        optimal_borrow_rate: SPOT_RATE_PRECISION_U32 * 20,
+        max_borrow_rate: SPOT_RATE_PRECISION_U32 * 50,
+        status: MarketStatus::Active,
+        historical_oracle_data: HistoricalOracleData {
+            last_oracle_price: settled_price,
+            last_oracle_price_twap: settled_price,
+            last_oracle_price_twap_5min: settled_price,
+            last_oracle_price_twap_ts: now - 60,
+            ..HistoricalOracleData::default()
+        },
+        ..SpotMarket::default()
+    };
+
+    let depressed_oracle = OraclePriceData {
+        price: depressed_price,
+        confidence: 0,
+        delay: 0,
+        has_sufficient_number_of_data_points: true,
+        ..OraclePriceData::default()
+    };
+
+    // One unit of borrow (negative token amount => liability).
+    let liability: i128 = -(1_000_000_i128);
+
+    let value_at = |m: &SpotMarket| {
+        let strict = StrictOraclePrice::new(
+            depressed_price,
+            m.historical_oracle_data.last_oracle_price_twap_5min,
+            true,
+        );
+        get_strict_token_value(liability, m.decimals, &strict).unwrap()
+    };
+
+    // Baseline: TWAP still at the settled price, so the liability is priced at the
+    // conservative upper bound (100), not the depressed live price.
+    let before = value_at(&market);
+
+    // Pre-fix ordering: refresh first. The TWAP is pulled toward 60, so `max()` drops
+    // and the debt is valued as *smaller* (less negative) than it should be.
+    let mut refreshed = market;
+    update_spot_market_cumulative_interest(&mut refreshed, Some(&depressed_oracle), now, false)
+        .unwrap();
+    assert!(
+        refreshed.historical_oracle_data.last_oracle_price_twap_5min
+            < market.historical_oracle_data.last_oracle_price_twap_5min,
+        "the refresh must drag the 5min TWAP toward the depressed price"
+    );
+    let after_refresh = value_at(&refreshed);
+    assert!(
+        after_refresh > before,
+        "pre-fix ordering must under-value the liability (less negative): {} !> {} \
+         — if this trips, the fixture no longer reproduces #134",
+        after_refresh,
+        before
+    );
+
+    // Fixed ordering: `None` leaves the oracle TWAP (and its timestamp) alone, so the
+    // margin check still prices the debt at the conservative bound.
+    update_spot_market_cumulative_interest(&mut market, None, now, false).unwrap();
+    assert_eq!(
+        market.historical_oracle_data.last_oracle_price_twap_5min,
+        settled_price
+    );
+    assert_eq!(
+        market.historical_oracle_data.last_oracle_price_twap_ts,
+        now - 60,
+        "the timestamp must not move either, or the next real refresh under-weights \
+         the elapsed interval"
+    );
+    assert_eq!(value_at(&market), before);
+    // ...while interest still accrued.
+    assert!(market.cumulative_borrow_interest > SPOT_CUMULATIVE_INTEREST_PRECISION);
+}

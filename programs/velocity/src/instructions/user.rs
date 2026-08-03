@@ -1146,11 +1146,27 @@ fn transfer_spot_deposit(
     funding_paused: bool,
 ) -> anchor_lang::Result<()> {
     {
+        // Accrue interest, but pass `None` so this transfer does NOT advance the
+        // transferred market's *oracle* TWAPs (OtterSec #134 — the same shape as
+        // #110/#111).
+        //
+        // `meets_withdraw_margin_requirement` below values the source account through
+        // `StrictOraclePrice`, whose bounds are min/max of the live price and this
+        // market's `last_oracle_price_twap_5min`. A liability is priced at the
+        // *upper* bound, so dragging that TWAP down toward a temporarily depressed
+        // live price under-values the debt, lets the margin check pass, and frees
+        // sibling collateral for withdrawal — leaving depositor-socialized debt once
+        // the oracle recovers.
+        //
+        // Interest accrual and the deposit/borrow/utilization TWAPs still advance;
+        // only the oracle TWAP (and its timestamp) is left alone, so the next real
+        // refresh still weights the full elapsed interval. That TWAP keeps advancing
+        // on every other spot path and via the permissionless
+        // `update_spot_market_cumulative_interest` crank.
         let spot_market = &mut spot_market_map.get_ref_mut(&market_index)?;
-        let oracle_price_data = oracle_map.get_price_data(&spot_market.oracle_id())?;
         controller::spot_balance::update_spot_market_cumulative_interest(
             spot_market,
-            Some(oracle_price_data),
+            None,
             now,
             funding_paused,
         )?;

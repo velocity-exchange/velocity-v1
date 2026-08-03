@@ -7358,6 +7358,7 @@ export class AdminClient extends VelocityClient {
 				inputMint: inMarket.mint,
 				outputMint: outMarket.mint,
 				amount,
+				userPublicKey: this.provider.wallet.publicKey,
 				slippageBps,
 				swapMode,
 				onlyDirectRoutes,

@@ -2,6 +2,7 @@ import { expect } from 'chai';
 import sinon from 'sinon';
 import { Connection, PublicKey } from '@solana/web3.js';
 import { BN } from '../../src/isomorphic/anchor';
+import { JupiterClient } from '../../src/jupiter/jupiterClient';
 import { UnifiedSwapClient } from '../../src/swap/UnifiedSwapClient';
 import { SwapQuote } from '../../src/swap/types';
 import { MAX_TX_BYTE_SIZE } from '../../src/tx/utils';
@@ -138,5 +139,34 @@ describe('UnifiedSwapClient Titan route size constraint', () => {
 		it('reports itself as the configured provider', () => {
 			expect(client.providerName).to.equal(provider);
 		});
+	});
+});
+
+describe('UnifiedSwapClient Jupiter API version', () => {
+	const jupiterClient = (jupiterApiVersion?: 'v1' | 'v2') =>
+		new UnifiedSwapClient({
+			clientType: 'jupiter',
+			connection: sinon.createStubInstance(Connection) as unknown as Connection,
+			jupiterApiVersion,
+		}).getClient() as JupiterClient;
+
+	/** Private on the client, so read it the way a caller cannot. */
+	const apiVersionOf = (client: JupiterClient) =>
+		(client as unknown as { apiVersion: string }).apiVersion;
+
+	it('forwards an explicit version to the Jupiter client', () => {
+		expect(apiVersionOf(jupiterClient('v2'))).to.equal('v2');
+	});
+
+	it('leaves the Jupiter client on its own default when unset', () => {
+		expect(apiVersionOf(jupiterClient())).to.equal(
+			apiVersionOf(
+				new JupiterClient({
+					connection: sinon.createStubInstance(
+						Connection
+					) as unknown as Connection,
+				})
+			)
+		);
 	});
 });

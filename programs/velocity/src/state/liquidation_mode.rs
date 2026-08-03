@@ -55,7 +55,11 @@ pub trait LiquidatePerpMode {
 
     fn is_user_bankrupt(&self, user: &User) -> VelocityResult<bool>;
 
-    fn should_user_enter_bankruptcy(&self, user: &User) -> VelocityResult<bool>;
+    fn should_user_enter_bankruptcy(
+        &self,
+        user: &User,
+        spot_market_map: &SpotMarketMap,
+    ) -> VelocityResult<bool>;
 
     fn enter_bankruptcy(&self, user: &mut User) -> VelocityResult<()>;
 
@@ -172,8 +176,12 @@ impl LiquidatePerpMode for CrossMarginLiquidatePerpMode {
         Ok(user.is_cross_margin_bankrupt())
     }
 
-    fn should_user_enter_bankruptcy(&self, user: &User) -> VelocityResult<bool> {
-        Ok(is_cross_margin_bankrupt(user))
+    fn should_user_enter_bankruptcy(
+        &self,
+        user: &User,
+        spot_market_map: &SpotMarketMap,
+    ) -> VelocityResult<bool> {
+        is_cross_margin_bankrupt(user, spot_market_map)
     }
 
     fn enter_bankruptcy(&self, user: &mut User) -> VelocityResult<()> {
@@ -323,7 +331,13 @@ impl LiquidatePerpMode for IsolatedMarginLiquidatePerpMode {
         user.is_isolated_margin_bankrupt(self.market_index)
     }
 
-    fn should_user_enter_bankruptcy(&self, user: &User) -> VelocityResult<bool> {
+    fn should_user_enter_bankruptcy(
+        &self,
+        user: &User,
+        _spot_market_map: &SpotMarketMap,
+    ) -> VelocityResult<bool> {
+        // Isolated positions carry their own collateral, so the cross-margin
+        // realizability questions (#145 / #151) do not apply here.
         is_isolated_margin_bankrupt(user, self.market_index)
     }
 

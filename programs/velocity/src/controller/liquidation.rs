@@ -600,7 +600,7 @@ pub fn liquidate_perp(
 
     if base_asset_amount >= base_asset_amount_to_cover_margin_shortage {
         liquidation_mode.exit_liquidation(user)?;
-    } else if liquidation_mode.should_user_enter_bankruptcy(user)? {
+    } else if liquidation_mode.should_user_enter_bankruptcy(user, spot_market_map)? {
         liquidation_mode.enter_bankruptcy(user)?;
     }
 
@@ -1202,7 +1202,7 @@ pub fn liquidate_perp_with_fill(
 
     if liquidation_mode.can_exit_liquidation(&margin_calculation_after)? {
         liquidation_mode.exit_liquidation(&mut user)?;
-    } else if liquidation_mode.should_user_enter_bankruptcy(&user)? {
+    } else if liquidation_mode.should_user_enter_bankruptcy(&user, spot_market_map)? {
         liquidation_mode.enter_bankruptcy(&mut user)?;
     }
 
@@ -1837,7 +1837,7 @@ pub fn liquidate_spot(
 
     if liability_transfer >= liability_transfer_to_cover_margin_shortage {
         user.exit_cross_margin_liquidation();
-    } else if is_cross_margin_bankrupt(user) {
+    } else if is_cross_margin_bankrupt(user, spot_market_map)? {
         user.enter_cross_margin_bankruptcy();
     }
 
@@ -2587,7 +2587,7 @@ pub fn liquidate_spot_with_swap_end(
 
     if margin_calulcation_after.can_exit_cross_margin_liquidation()? {
         user.exit_cross_margin_liquidation();
-    } else if is_cross_margin_bankrupt(user) {
+    } else if is_cross_margin_bankrupt(user, spot_market_map)? {
         user.enter_cross_margin_bankruptcy();
     }
 
@@ -3079,7 +3079,7 @@ pub fn liquidate_borrow_for_perp_pnl(
 
     if liability_transfer >= liability_transfer_to_cover_margin_shortage {
         user.exit_cross_margin_liquidation();
-    } else if is_cross_margin_bankrupt(user) {
+    } else if is_cross_margin_bankrupt(user, spot_market_map)? {
         user.enter_cross_margin_bankruptcy();
     }
 
@@ -3641,7 +3641,7 @@ pub fn liquidate_perp_pnl_for_deposit(
 
     if pnl_transfer >= pnl_transfer_to_cover_margin_shortage {
         liquidation_mode.exit_liquidation(user)?;
-    } else if liquidation_mode.should_user_enter_bankruptcy(user)? {
+    } else if liquidation_mode.should_user_enter_bankruptcy(user, spot_market_map)? {
         liquidation_mode.enter_bankruptcy(user)?;
     }
 
@@ -3718,7 +3718,7 @@ pub fn resolve_perp_bankruptcy(
     let liquidation_mode = get_perp_liquidation_mode(user, market_index)?;
 
     if !liquidation_mode.is_user_bankrupt(user)?
-        && liquidation_mode.should_user_enter_bankruptcy(user)?
+        && liquidation_mode.should_user_enter_bankruptcy(user, spot_market_map)?
     {
         liquidation_mode.enter_bankruptcy(user)?;
     }
@@ -4025,7 +4025,7 @@ pub fn resolve_perp_bankruptcy(
     }
 
     // True if a bankrupting liability remains; clears status otherwise.
-    let still_bankrupt = liquidation_mode.should_user_enter_bankruptcy(user)?;
+    let still_bankrupt = liquidation_mode.should_user_enter_bankruptcy(user, spot_market_map)?;
     if !still_bankrupt {
         liquidation_mode.exit_bankruptcy(user)?;
     }
@@ -4071,7 +4071,7 @@ pub fn resolve_spot_bankruptcy(
     insurance_fund_vault_balance: u64,
     funding_paused: bool,
 ) -> VelocityResult<u64> {
-    if !user.is_cross_margin_bankrupt() && is_cross_margin_bankrupt(user) {
+    if !user.is_cross_margin_bankrupt() && is_cross_margin_bankrupt(user, spot_market_map)? {
         user.enter_cross_margin_bankruptcy();
     }
 
@@ -4257,7 +4257,7 @@ pub fn resolve_spot_bankruptcy(
     }
 
     // True if a bankrupting liability remains; clears status otherwise.
-    let still_bankrupt = is_cross_margin_bankrupt(user);
+    let still_bankrupt = is_cross_margin_bankrupt(user, spot_market_map)?;
     if !still_bankrupt {
         user.exit_cross_margin_bankruptcy();
     }

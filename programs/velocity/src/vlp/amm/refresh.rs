@@ -519,14 +519,30 @@ pub fn settle_expired_market(
     // is protocol/IF fee revenue awaiting the sweep, not AMM surplus payable to
     // perp winners. Whatever is left is routed to the revenue pool by
     // `settle_expired_market_pools_to_revenue_pool` at delisting, as before.
-    let total_excess_balance: i128 = get_token_amount(
+    // ...and then reserve the builder/referrer revenue share already accrued
+    // against that pool (OtterSec #147). `pending_revenue_share` is a booked
+    // liability, not AMM surplus: the taker's quote was debited at fill and a
+    // matching payable recorded, so while the escrow rows are outstanding the pool
+    // still holds those tokens but they belong to the builder/referrer. Every
+    // ordinary fee sweep reserves the counter (`sweep_market_fees`) and
+    // `calculate_perp_market_amm_summary_stats` subtracts it for exactly this
+    // reason; the expiry solver was the one consumer treating the gross pool as
+    // payable, which over-priced winner claims by the amount owed and would strand
+    // the revenue-share sweep after the winners drained the pool.
+    //
+    // Saturating: a corrupt counter larger than the pool must floor the backing at
+    // zero rather than solve against a negative balance.
+    let pnl_pool_token_amount = get_token_amount(
         market.pnl_pool.scaled_balance,
         spot_market,
         market.pnl_pool.balance_type(),
-    )?
-    .cast()?;
+    )?;
+    let total_excess_balance: i128 = pnl_pool_token_amount
+        .saturating_sub(market.pending_revenue_share.cast()?)
+        .cast()?;
 
     crate::dlog!(market.market_index);
+    crate::dlog!(market.pending_revenue_share);
     crate::dlog!(total_excess_balance);
 
     let expiry_price = amm::calculate_expiry_price(

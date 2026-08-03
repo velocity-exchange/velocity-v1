@@ -3187,3 +3187,134 @@ fn expiry_price_cost_basis_includes_unsettled_funding() {
         backing
     );
 }
+
+/// OtterSec #147 — `settle_expired_market` must reserve `pending_revenue_share`
+/// before pricing expired perp winners against the PnL pool.
+///
+/// Those tokens are a booked liability: the taker's quote was debited at fill and a
+/// matching builder/referrer payable recorded, so the pool holds them but they are
+/// owed elsewhere. Every ordinary fee sweep reserves the counter, and
+/// `calculate_perp_market_amm_summary_stats` subtracts it; the expiry solver was
+/// the one consumer treating the gross pool as payable. This extends the #116 fix
+/// in the same expression — #116 stopped counting the un-moved fee pool, #147 stops
+/// counting tokens already owed to third parties.
+#[test]
+fn settle_expired_market_reserves_pending_revenue_share() {
+    use crate::math::constants::QUOTE_PRECISION;
+
+    let clock = Clock {
+        slot: 0,
+        epoch_start_timestamp: 0,
+        epoch: 0,
+        leader_schedule_epoch: 0,
+        unix_timestamp: 2_000, // past expiry_ts
+    };
+    let state = State::default();
+
+    let mut spot_market = quote_spot_market_for_expiry();
+    create_anchor_account_info!(spot_market, SpotMarket, spot_market_account_info);
+    let spot_market_map: SpotMarketMap<'_> =
+        SpotMarketMap::load_one(&spot_market_account_info, true).unwrap();
+
+    let mut oracle_price = get_pyth_price_mantissa(PRICE_PRECISION_I64, 6);
+    let oracle_price_key =
+        Pubkey::from_str("J83w4HKfqxwcq3BEMMkPFSppX3gqekLyLJBexebFVkix").unwrap();
+    create_anchor_account_info!(
+        oracle_price,
+        &oracle_price_key,
+        PythLazerOracle,
+        oracle_account_info
+    );
+    let mut oracle_map = OracleMap::load_one(&oracle_account_info, clock.slot, None).unwrap();
+
+    // $400 pool, of which $150 is already owed to builders/referrers, so only $250
+    // actually backs winner claims. No fee-pool transfer in play (tfmd = 0), which
+    // isolates this from #116.
+    let owed = 150 * (QUOTE_PRECISION as u64);
+    let mut market = expired_market_fixture(400, 0, 0, 0);
+    market.pending_revenue_share = owed;
+    create_anchor_account_info!(market, PerpMarket, market_account_info);
+    let perp_market_map = PerpMarketMap::load_one(&market_account_info, true).unwrap();
+
+    crate::vlp::amm::refresh::settle_expired_market(
+        0,
+        &perp_market_map,
+        &mut oracle_map,
+        &spot_market_map,
+        &state,
+        &clock,
+    )
+    .unwrap();
+
+    let m = perp_market_map.get_ref(&0).unwrap();
+    let quote_spot_market = spot_market_map.get_ref(&0).unwrap();
+    let pnl_pool = get_token_amount(
+        m.pnl_pool.scaled_balance,
+        &quote_spot_market,
+        m.pnl_pool.balance_type(),
+    )
+    .unwrap() as i128;
+    let payable = pnl_pool - owed as i128;
+
+    // Must not have clamped to target, or the pools aren't binding and the test
+    // proves nothing.
+    let target = m
+        .market_stats
+        .historical_oracle_data
+        .last_oracle_price_twap_5min;
+    assert!(
+        m.expiry_price < target - 1,
+        "expiry price clamped to target ({} vs {}) — fixture no longer binds",
+        m.expiry_price,
+        target
+    );
+
+    let claims = crate::vlp::amm::math::amm::calculate_net_user_pnl(
+        &m.amm,
+        m.expiry_price,
+        m.quote_asset_amount,
+        m.net_unsettled_funding_pnl,
+    )
+    .unwrap();
+
+    // Claims fit inside what is genuinely payable, leaving the owed revenue share
+    // intact for the sweep.
+    assert!(
+        claims <= payable,
+        "claims ({}) must fit the pool net of pending_revenue_share ({} = {} - {})",
+        claims,
+        payable,
+        pnl_pool,
+        owed
+    );
+
+    // ...and the pre-fix basis (gross pool) really did over-commit, so the guard is
+    // what prevents this rather than the arithmetic being harmless.
+    let pre_fix_price = crate::vlp::amm::math::amm::calculate_expiry_price(
+        &m.amm,
+        target,
+        pnl_pool,
+        m.quote_asset_amount,
+        m.net_unsettled_funding_pnl,
+        m.order_step_size,
+    )
+    .unwrap();
+    let pre_fix_claims = crate::vlp::amm::math::amm::calculate_net_user_pnl(
+        &m.amm,
+        pre_fix_price,
+        m.quote_asset_amount,
+        m.net_unsettled_funding_pnl,
+    )
+    .unwrap();
+    assert!(
+        pre_fix_price > m.expiry_price,
+        "pricing against the gross pool must raise the expiry price"
+    );
+    assert!(
+        pre_fix_claims > payable,
+        "pre-fix basis must over-commit the payable balance — if this trips the \
+         fixture no longer reproduces #147 ({} !> {})",
+        pre_fix_claims,
+        payable
+    );
+}

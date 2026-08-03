@@ -2635,6 +2635,11 @@ mod tests {
             metrics: SwiftServerMetrics::new(),
             user_account_fetcher: UserAccountFetcher::mock(users),
             config: Arc::new(crate::swift_server::Config::from_env()),
+            attest: crate::attest::AttestContext::from_env(),
+            route: crate::route::RouteContext::new(
+                velocity.rpc().url(),
+                velocity_rs::constants::PROGRAM_ID,
+            ),
             velocity,
             farmer_pubkeys: Default::default(),
             redis_pool,

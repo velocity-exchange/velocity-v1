@@ -712,6 +712,9 @@ async fn swift_taker_filled_by_deployed_maker() {
         builder_idx: None,
         builder_fee_tenth_bps: None,
         isolated_position_deposit: None,
+        // Devnet: the program refuses a message tagged for another cluster.
+        network: Some(velocity_rs::program::state::order_params::SIGNED_MSG_NETWORK_DEVNET),
+        route: None,
     };
     let signed = SignedOrderType::authority(msg);
     let hex_msg = hex::encode(signed.to_borsh());

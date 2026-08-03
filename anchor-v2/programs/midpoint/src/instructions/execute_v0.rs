@@ -1,12 +1,10 @@
 use {
     crate::{
         error::MidpointError,
-        events::MidpointExecuteRecord,
+        events::{MidpointExecuteRecordV0, MIDPOINT_EVENT_VERSION},
         instructions::quote_v0::caller_gate,
-        state::{
-            Direction, ExecuteResponseV0, MidpointQuoterV0, ResponsePointerV0, UserBalanceChange,
-            UserRefV0,
-        },
+        state::{Direction, MidpointQuoterV0, ResponsePointerV0, UserRefV0},
+        velocity::VELOCITY_STATE,
     },
     anchor_lang_v2::prelude::*,
 };
@@ -19,6 +17,9 @@ pub struct ExecuteV0 {
     pub execute_authority: Signer,
     /// CHECK: the instructions sysvar; see `QuoteV0`.
     pub instructions_sysvar: UncheckedAccount,
+    /// CHECK: velocity's global `State`, address-locked; see `QuoteV0`.
+    #[account(address = VELOCITY_STATE @ MidpointError::InvalidVelocityState)]
+    pub velocity_state: UncheckedAccount,
 }
 
 #[derive(Clone, wincode::SchemaRead, wincode::SchemaWrite)]
@@ -43,16 +44,19 @@ pub fn handle_execute_v0(
         args.users.as_deref(),
         args.taker.as_ref(),
         ctx.accounts.instructions_sysvar.account(),
+        ctx.accounts.velocity_state.account(),
     )?;
     let quoter = &mut ctx.accounts.quoter;
 
-    let mut balance_changes = Vec::new();
+    let mut change = None;
     if open {
         let fill = quoter.fill(args.direction, args.size, clock.slot)?;
         if fill.base > 0 {
-            quoter.apply_fill(args.direction, &fill);
-            emit!(MidpointExecuteRecord {
-                authority: quoter.authority,
+            // Applying the fill also asserts the consumed rungs are a
+            // monotone best-first prefix of the side.
+            quoter.apply_fill(args.direction, &fill)?;
+            emit!(MidpointExecuteRecordV0 {
+                user_authority: quoter.user_authority,
                 ts: clock.unix_timestamp,
                 slot: clock.slot,
                 mid_price: quoter.mid_price,
@@ -64,26 +68,12 @@ pub fn handle_execute_v0(
                     Direction::Long => 0,
                     Direction::Short => 1,
                 },
-                _pad: [0; 3],
+                version: MIDPOINT_EVENT_VERSION,
+                _pad: [0; 2],
             });
-            balance_changes.push(UserBalanceChange {
-                user: quoter.user_ref(),
-                base_size: fill.base,
-                quote_size: fill.quote,
-                completed_order_ids: Vec::new(),
-            });
+            change = Some((fill.base, fill.quote));
         }
     }
 
-    let mut data = Vec::with_capacity(256);
-    anchor_lang_v2::wincode::config::serialize_into(
-        &mut data,
-        &ExecuteResponseV0 {
-            balance_changes,
-            cancelled: Vec::new(),
-        },
-        anchor_lang_v2::BORSH_CONFIG,
-    )
-    .map_err(|_| MidpointError::ResponseTooLarge)?;
-    quoter.write_response(&data)
+    quoter.write_execute_response(change)
 }

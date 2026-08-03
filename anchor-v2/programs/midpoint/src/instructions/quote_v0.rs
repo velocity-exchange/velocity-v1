@@ -1,8 +1,8 @@
 use {
     crate::{
-        error::MidpointError,
         introspection::tx_co_signed_by,
-        state::{Direction, MidpointQuoterV0, QuoteResponseV0, ResponsePointerV0, UserRefV0},
+        state::{Direction, MidpointQuoterV0, ResponsePointerV0, UserRefV0},
+        velocity::{hot_flow_authority, VELOCITY_STATE},
     },
     anchor_lang_v2::prelude::*,
 };
@@ -16,6 +16,12 @@ pub struct QuoteV0 {
     /// attestation check verifies the address, and it is only read when the
     /// quoter requires attested flow.
     pub instructions_sysvar: UncheckedAccount,
+    /// CHECK: velocity's global `State`, address-locked. Read only for
+    /// `hot_flow_authority` and only when the quoter requires attested flow —
+    /// the current flow key lives there, never on this instance (see
+    /// `crate::velocity`). Registered on the quoter entry's quote leg.
+    #[account(address = VELOCITY_STATE @ crate::error::MidpointError::InvalidVelocityState)]
+    pub velocity_state: UncheckedAccount,
 }
 
 #[derive(Clone, wincode::SchemaRead, wincode::SchemaWrite)]
@@ -36,11 +42,16 @@ pub struct QuoteArgsV0 {
 /// self-trade, and (when configured) flow attestation. The mid-staleness /
 /// pause gate lives in `MidpointQuoterV0::is_quoting`, applied by the
 /// quote/fill walks themselves.
+///
+/// The attestation branch reads velocity's live `State.hot_flow_authority`, so
+/// an unassigned role or a rotated key takes effect for every instance at
+/// once. An unassigned role closes the gate.
 pub fn caller_gate(
     quoter: &MidpointQuoterV0,
     users: Option<&[UserRefV0]>,
     taker: Option<&UserRefV0>,
     instructions_sysvar: &anchor_lang_v2::pinocchio::account::AccountView,
+    velocity_state: &anchor_lang_v2::pinocchio::account::AccountView,
 ) -> Result<bool> {
     let quoted = quoter.user_ref();
     if users.is_some_and(|set| !set.contains(&quoted)) {
@@ -49,16 +60,19 @@ pub fn caller_gate(
     if taker.is_some_and(|taker| *taker == quoted) {
         return Ok(false);
     }
-    if quoter.require_attested_flow != 0
-        && !tx_co_signed_by(instructions_sysvar, &quoter.flow_authority)?
-    {
-        return Ok(false);
+    if quoter.require_attested_flow != 0 {
+        let Some(flow_authority) = hot_flow_authority(velocity_state)? else {
+            return Ok(false);
+        };
+        if !tx_co_signed_by(instructions_sysvar, &flow_authority)? {
+            return Ok(false);
+        }
     }
     Ok(true)
 }
 
 /// Quoter interface: price levels for a taker of `direction`/`size` off the
-/// spline at the current mid, written to the quoter's response tail; the
+/// spline at the current mid, streamed into the quoter's response tail; the
 /// returned pointer locates them.
 pub fn handle_quote_v0(ctx: &mut Context<QuoteV0>, args: QuoteArgsV0) -> Result<ResponsePointerV0> {
     let clock = Clock::get()?;
@@ -67,20 +81,9 @@ pub fn handle_quote_v0(ctx: &mut Context<QuoteV0>, args: QuoteArgsV0) -> Result<
         args.users.as_deref(),
         args.taker.as_ref(),
         ctx.accounts.instructions_sysvar.account(),
+        ctx.accounts.velocity_state.account(),
     )?;
-    let quoter = &mut ctx.accounts.quoter;
-    let levels = if open {
-        quoter.quote(args.direction, args.size, clock.slot)
-    } else {
-        Vec::new()
-    };
-
-    let mut data = Vec::with_capacity(1024);
-    anchor_lang_v2::wincode::config::serialize_into(
-        &mut data,
-        &QuoteResponseV0 { levels },
-        anchor_lang_v2::BORSH_CONFIG,
-    )
-    .map_err(|_| MidpointError::ResponseTooLarge)?;
-    quoter.write_response(&data)
+    ctx.accounts
+        .quoter
+        .write_quote_response(args.direction, args.size, clock.slot, open)
 }

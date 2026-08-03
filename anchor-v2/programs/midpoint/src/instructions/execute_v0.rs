@@ -1,5 +1,6 @@
 use {
     crate::{
+        emit::emit_pod,
         error::MidpointError,
         events::{MidpointExecuteRecordV0, MIDPOINT_EVENT_VERSION},
         instructions::quote_v0::caller_gate,
@@ -55,7 +56,7 @@ pub fn handle_execute_v0(
             // Applying the fill also asserts the consumed rungs are a
             // monotone best-first prefix of the side.
             quoter.apply_fill(args.direction, &fill)?;
-            emit!(MidpointExecuteRecordV0 {
+            emit_pod!(MidpointExecuteRecordV0 {
                 user_authority: quoter.user_authority,
                 ts: clock.unix_timestamp,
                 slot: clock.slot,

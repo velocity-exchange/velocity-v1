@@ -44,4 +44,8 @@ pub enum ClobError {
     ArenaExhausted,
     #[msg("Book invariant check failed after the operation")]
     BookInvariantViolated,
+    #[msg("Response level has a zero price or size, or is not strictly best-first")]
+    InvalidResponseLevel,
+    #[msg("Event payload exceeds its buffer")]
+    EventTooLarge,
 }

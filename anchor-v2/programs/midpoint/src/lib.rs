@@ -29,6 +29,7 @@
 
 use anchor_lang_v2::prelude::*;
 
+pub mod emit;
 pub mod error;
 pub mod events;
 pub mod instructions;

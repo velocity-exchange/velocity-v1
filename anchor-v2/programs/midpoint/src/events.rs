@@ -12,7 +12,10 @@
 //!   layout, so a field whose meaning changes (a new direction encoding, a
 //!   unit change) can be distinguished without a discriminator break.
 //!
-//! Emitters must always stamp [`MIDPOINT_EVENT_VERSION`], never a literal.
+//! Emitters must always stamp [`MIDPOINT_EVENT_VERSION`], never a literal, and
+//! go through [`crate::emit`] rather than anchor's `emit!`: `Event::data()`
+//! allocates a `Vec` even for a fixed-size record, and the log bytes are
+//! identical either way.
 
 use anchor_lang_v2::prelude::*;
 

@@ -1,6 +1,7 @@
 use {
     crate::{
         book::ClobBook,
+        emit::emit_pod,
         error::ClobError,
         events::OrderCancelRecordV0,
         state::{ClobMarketV0, OrderRefV0, RemovedOrderV0, UserRefV0},
@@ -34,7 +35,7 @@ pub fn handle_cancel_order_v0(
     let clock = Clock::get()?;
     let market = &mut ctx.accounts.market;
     let removed = market.cancel(args.user, args.order_ref)?;
-    emit!(OrderCancelRecordV0 {
+    emit_pod!(OrderCancelRecordV0 {
         authority: removed.user.authority,
         ts: clock.unix_timestamp,
         order_id: removed.order_id,

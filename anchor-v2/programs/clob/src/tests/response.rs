@@ -9,43 +9,45 @@
 use {
     super::market::{assert_err, place, test_config, user, TestMarket},
     crate::{
-        book::ClobBook,
+        book::{ClobBook, NodeArena},
         error::ClobError,
         response::ResponseWriter,
         state::{
             CancelledRemainderV0, ClobMarketV0, Direction, ExecuteResponseV0, PriceLevel,
-            QuoteResponseV0, ResponsePointerV0, Side, UserBalanceChange, RESPONSE_BUFFER_BYTES,
-            RESPONSE_OFFSET,
+            QuoteResponseV0, ResponsePointerV0, Side, UserBalanceChange, UserRefV0,
+            CANCELLED_BYTES, CHANGE_MIN_BYTES, COUNT_BYTES, EXECUTE_FILLS_CEILING,
+            EXECUTE_USERS_CEILING, ORDER_ID_BYTES, PRICE_LEVEL_BYTES, QUOTE_LEVELS_CEILING,
+            RESPONSE_BUFFER_BYTES, RESPONSE_OFFSET, USER_REF_BYTES,
         },
     },
 };
 
-fn encode_quote(levels: Vec<PriceLevel>) -> Vec<u8> {
+fn encode<T>(value: &T) -> Vec<u8>
+where
+    T: wincode::SchemaWrite<anchor_lang_v2::BorshConfig, Src = T> + ?Sized,
+{
     let mut bytes = Vec::new();
     anchor_lang_v2::wincode::config::serialize_into(
         &mut bytes,
-        &QuoteResponseV0 { levels },
+        value,
         anchor_lang_v2::BORSH_CONFIG,
     )
     .unwrap();
     bytes
 }
 
+fn encode_quote(levels: Vec<PriceLevel>) -> Vec<u8> {
+    encode(&QuoteResponseV0 { levels })
+}
+
 fn encode_execute(
     balance_changes: Vec<UserBalanceChange>,
     cancelled: Vec<CancelledRemainderV0>,
 ) -> Vec<u8> {
-    let mut bytes = Vec::new();
-    anchor_lang_v2::wincode::config::serialize_into(
-        &mut bytes,
-        &ExecuteResponseV0 {
-            balance_changes,
-            cancelled,
-        },
-        anchor_lang_v2::BORSH_CONFIG,
-    )
-    .unwrap();
-    bytes
+    encode(&ExecuteResponseV0 {
+        balance_changes,
+        cancelled,
+    })
 }
 
 /// The bytes the returned pointer designates.
@@ -232,6 +234,182 @@ fn execute_stops_at_the_user_cap() {
     );
     // B's order is untouched — a second user would need a second record.
     assert_eq!(book.node_count(Side::Ask), 1);
+}
+
+/// The config ceilings are derived from these widths, so a field added to a
+/// wire type has to move them: measure each against wincode's own encoding
+/// rather than trusting the arithmetic in `state`.
+#[test]
+fn wire_widths_match_the_response_types() {
+    let user = user(0xA);
+    assert_eq!(encode(&user).len(), USER_REF_BYTES);
+    assert_eq!(
+        encode(&PriceLevel { price: 1, size: 2 }).len(),
+        PRICE_LEVEL_BYTES
+    );
+    assert_eq!(
+        encode(&CancelledRemainderV0 {
+            user,
+            order_id: 1,
+            base_asset_amount: 2,
+        })
+        .len(),
+        CANCELLED_BYTES
+    );
+    let change = |ids: Vec<u64>| UserBalanceChange {
+        user,
+        base_size: 1,
+        quote_size: 2,
+        completed_order_ids: ids,
+    };
+    // A record with no completed ids is the narrowest one, and each id it
+    // does carry adds exactly one stride.
+    assert_eq!(encode(&change(vec![])).len(), CHANGE_MIN_BYTES);
+    assert_eq!(
+        encode(&change(vec![1, 2, 3])).len(),
+        CHANGE_MIN_BYTES + 3 * ORDER_ID_BYTES
+    );
+    // Sequence counts: an empty vec is the count alone.
+    assert_eq!(encode_quote(vec![]).len(), COUNT_BYTES);
+    assert_eq!(encode_execute(vec![], vec![]).len(), 2 * COUNT_BYTES);
+}
+
+/// A market configured at the ceilings has to be able to emit the widest
+/// response the encoder can produce. The narrowest balance-change record is
+/// [`CHANGE_MIN_BYTES`] wide, but a maker only enters the response by being
+/// filled, and a full fill also appends the completed order id — so the widest
+/// response is one record per fill, each carrying its id, and the record count
+/// is bounded by `max_execute_fills` rather than by `max_execute_users`.
+#[test]
+fn a_market_at_the_execute_ceilings_streams_a_full_width_response() {
+    let fills = EXECUTE_FILLS_CEILING as usize;
+    let config = crate::state::MarketConfigV0 {
+        max_execute_fills: EXECUTE_FILLS_CEILING,
+        max_execute_users: EXECUTE_USERS_CEILING,
+        ..test_config()
+    };
+    let market = TestMarket::new_with(2 * fills as u32, config);
+    let mut book = market.book();
+
+    // One order per maker, each a full-width record: distinct user, its own
+    // price level, fully consumed.
+    // Seeds from 1: a zeroed authority is not a placeable user.
+    let makers: Vec<UserRefV0> = (0..fills).map(|i| user(i as u8 + 1)).collect();
+    let orders: Vec<_> = makers
+        .iter()
+        .enumerate()
+        .map(|(i, maker)| place(&mut book, Side::Ask, 100 + i as u64, 1, *maker))
+        .collect();
+
+    let outcome = book
+        .execute(Direction::Long, fills as u64, None, None, 0, 0)
+        .unwrap();
+    let expected = encode_execute(
+        makers
+            .iter()
+            .zip(orders.iter())
+            .enumerate()
+            .map(|(i, (maker, order))| UserBalanceChange {
+                user: *maker,
+                base_size: 1,
+                quote_size: 100 + i as u64,
+                completed_order_ids: vec![order.order_id],
+            })
+            .collect(),
+        vec![],
+    );
+    assert_eq!(streamed(&book, outcome.response), expected);
+    assert_eq!(outcome.fills.len(), fills);
+    assert_eq!(book.node_count(Side::Ask), 0);
+
+    // The widest response the encoder can produce, and it fits with room to
+    // spare — `ResponseTooLarge` is unreachable at the configured ceilings.
+    let widest = 2 * COUNT_BYTES + fills * (CHANGE_MIN_BYTES + ORDER_ID_BYTES);
+    assert_eq!(outcome.response.len as usize, widest);
+    assert!(
+        widest <= RESPONSE_BUFFER_BYTES,
+        "{widest} > the response region"
+    );
+}
+
+/// Two asks placed 100 then 101, with the node prices overwritten afterwards —
+/// a shape `place` cannot build (it rejects a zero price and keeps the list
+/// sorted), so it takes hand corruption to reach the response self-check.
+fn corrupted_ask_book(prices: [u64; 2]) -> TestMarket {
+    let market = TestMarket::new(16);
+    {
+        let mut book = market.book();
+        let maker = user(0xA);
+        let first = place(&mut book, Side::Ask, 100, 5, maker);
+        let second = place(&mut book, Side::Ask, 101, 5, maker);
+        book.update_node(first.node_index, |node| node.price = prices[0])
+            .unwrap();
+        book.update_node(second.node_index, |node| node.price = prices[1])
+            .unwrap();
+    }
+    market
+}
+
+/// Neither instruction may emit a response the router would misprice: a level
+/// better than the one in front of it (out-of-order book), or a zero price
+/// (which would win every routing waterfall for free).
+#[test]
+fn a_corrupt_book_cannot_produce_a_response() {
+    for prices in [[100, 99], [0, 101]] {
+        assert_err(
+            corrupted_ask_book(prices)
+                .book()
+                .quote(Direction::Long, 10, None, None, 0, 0),
+            ClobError::InvalidResponseLevel,
+        );
+        // Execute sweeps the same list and rejects the same shapes. Fresh
+        // market: the failed sweep leaves the book part-consumed.
+        assert_err(
+            corrupted_ask_book(prices)
+                .book()
+                .execute(Direction::Long, 10, None, None, 0, 0),
+            ClobError::InvalidResponseLevel,
+        );
+    }
+}
+
+/// Equal prices are the normal case on a level, and bids run the other way —
+/// neither may trip the best-first check.
+#[test]
+fn quote_accepts_the_orders_a_healthy_book_produces() {
+    let market = TestMarket::new(16);
+    let mut book = market.book();
+    let maker = user(0xA);
+    place(&mut book, Side::Bid, 100, 5, maker);
+    place(&mut book, Side::Bid, 100, 5, maker);
+    place(&mut book, Side::Bid, 99, 5, maker);
+
+    let pointer = book.quote(Direction::Short, 15, None, None, 0, 0).unwrap();
+    assert_eq!(
+        streamed(&book, pointer),
+        encode_quote(vec![
+            PriceLevel {
+                price: 100,
+                size: 10
+            },
+            PriceLevel { price: 99, size: 5 },
+        ])
+    );
+    book.execute(Direction::Short, 15, None, None, 0, 0)
+        .unwrap();
+}
+
+/// The quote ceiling is the level count that fits the region, so the widest
+/// quote response must fit too.
+#[test]
+fn the_quote_ceiling_fits_the_response_region() {
+    let widest = COUNT_BYTES + QUOTE_LEVELS_CEILING as usize * PRICE_LEVEL_BYTES;
+    assert!(
+        widest <= RESPONSE_BUFFER_BYTES,
+        "{widest} > the response region"
+    );
+    // One more level would not.
+    assert!(widest + PRICE_LEVEL_BYTES > RESPONSE_BUFFER_BYTES);
 }
 
 #[test]

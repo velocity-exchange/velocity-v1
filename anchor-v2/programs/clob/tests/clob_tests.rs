@@ -7,11 +7,12 @@ use {
     },
     clob::{
         accounts,
-        anchor_lang_v2::{prelude::Address, solana_program::instruction::Instruction},
+        anchor_lang_v2::{prelude::Address, solana_program::instruction::Instruction, Event},
+        events::{ExecuteRecordV0, FillSlimV0},
         instruction,
         state::{
             ClobHeaderV0, ClobMarketV0, Direction, MarketConfigV0, OrderNodeV0, OrderRefV0, Side,
-            UserRefV0, ORDERS_OFFSET,
+            UserRefV0, EXECUTE_FILLS_CEILING, ORDERS_OFFSET,
         },
         CancelOrderArgsV0, EvictWorstArgsV0, ExecuteArgsV0, PlaceOrderArgsV0, QuoteArgsV0,
         RemoveExpiredArgsV0, ResizeMarketArgsV0, UpdateMarketArgsV0,
@@ -115,10 +116,33 @@ fn setup_with_capacity(capacity: usize) -> Ctx {
 
 /// Sign with payer plus whichever of the known keys the metas mark as signer.
 fn send(ctx: &mut Ctx, ix: Instruction) -> Result<TransactionMetadata, FailedTransactionMetadata> {
+    send_with_budget(ctx, ix, None)
+}
+
+/// `send`, optionally preceded by a compute-budget instruction. The default
+/// 200k is not enough for the ceiling cases (a full-width execute is a lot of
+/// book work), and raising it in the tx is what a real caller would do too.
+fn send_with_budget(
+    ctx: &mut Ctx,
+    ix: Instruction,
+    compute_unit_limit: Option<u32>,
+) -> Result<TransactionMetadata, FailedTransactionMetadata> {
     // Fresh blockhash per send so identical instruction streams don't dedupe.
     ctx.svm.expire_blockhash();
     let blockhash = ctx.svm.latest_blockhash();
-    let msg = Message::new_with_blockhash(&[ix.clone()], Some(&ctx.payer.pubkey()), &blockhash);
+    let ixs: Vec<Instruction> = compute_unit_limit
+        .map(|limit| Instruction {
+            program_id: "ComputeBudget111111111111111111111111111111"
+                .parse()
+                .unwrap(),
+            accounts: Vec::new(),
+            // Tag 2 is SetComputeUnitLimit(u32).
+            data: [&[2u8][..], &limit.to_le_bytes()[..]].concat(),
+        })
+        .into_iter()
+        .chain(core::iter::once(ix.clone()))
+        .collect();
+    let msg = Message::new_with_blockhash(&ixs, Some(&ctx.payer.pubkey()), &blockhash);
     let mut signers: Vec<&dyn anchor_v2_testing::Signer> = vec![&ctx.payer];
     for kp in [&ctx.admin, &ctx.place_auth] {
         let needed = ix
@@ -370,6 +394,39 @@ fn parse_cancelled(b: &[u8]) -> Vec<([u8; 32], u64, u64)> {
             )
         })
         .collect()
+}
+
+/// The single `sol_log_data` field of a transaction, decoded. Events are
+/// logged as one base64 blob per `Program data:` line, which is what every
+/// decoder expects — a discriminator and body split across two syscall fields
+/// would show up here as two space-separated blobs.
+fn program_data(meta: &TransactionMetadata) -> Vec<u8> {
+    const PREFIX: &str = "Program data: ";
+    const ALPHABET: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let encoded = meta
+        .logs
+        .iter()
+        .find_map(|log| log.strip_prefix(PREFIX))
+        .expect("an event was logged");
+    assert!(
+        !encoded.contains(' '),
+        "event was logged as multiple fields"
+    );
+    let mut bytes = Vec::new();
+    let (mut accumulator, mut bits) = (0u32, 0u32);
+    for byte in encoded.bytes().filter(|byte| *byte != b'=') {
+        let value = ALPHABET
+            .iter()
+            .position(|c| *c == byte)
+            .expect("base64 alphabet") as u32;
+        accumulator = (accumulator << 6) | value;
+        bits += 6;
+        if bits >= 8 {
+            bits -= 8;
+            bytes.push((accumulator >> bits) as u8);
+        }
+    }
+    bytes
 }
 
 fn market_state(ctx: &Ctx) -> ClobHeaderV0 {
@@ -879,6 +936,88 @@ fn cu_benchmark_interleaved_makers() {
     println!(
         "CU — execute(64 orders, 8 interleaved makers): {}",
         meta.compute_units_consumed
+    );
+}
+
+/// The widest event and response a market can produce, on-chain: fills and
+/// users both configured at their ceilings, and every fill a distinct maker
+/// whose order is fully consumed (so every balance-change record also carries a
+/// completed order id).
+///
+/// Two things only a real SBF run can check. The response has to fit the
+/// region at the configured ceiling — the point of deriving the ceiling from
+/// the record width. And the event's payload is built in a stack buffer sized
+/// for that same ceiling, so this is the case that catches a buffer the 4KB SBF
+/// stack frame can't hold; the bytes are compared against what anchor's
+/// `Event::data()` would have produced, which is the contract with every
+/// decoder.
+#[test]
+fn an_execute_at_the_ceilings_fits_the_response_and_emits_the_record() {
+    let mut ctx = setup();
+    let fills = EXECUTE_FILLS_CEILING as usize;
+    let ix = instruction::UpdateMarketV0 {
+        args: UpdateMarketArgsV0 {
+            max_execute_fills: Some(EXECUTE_FILLS_CEILING),
+            max_execute_users: Some(EXECUTE_FILLS_CEILING),
+            ..Default::default()
+        },
+    }
+    .to_instruction(accounts::UpdateMarketV0 {
+        market: addr(ctx.market),
+        authority: addr(ctx.admin.pubkey()),
+        new_place_authority: None,
+    });
+    send(&mut ctx, ix).unwrap();
+
+    let orders: Vec<OrderRefV0> = (0..fills)
+        .map(|i| {
+            place(
+                &mut ctx,
+                place_args(Side::Ask, 100 + i as u64, 1),
+                addr(Pubkey::new_unique()),
+            )
+        })
+        .collect();
+    advance_slot(&mut ctx, 1);
+
+    let ix = instruction::ExecuteV0 {
+        args: ExecuteArgsV0 {
+            direction: Direction::Long,
+            size: fills as u64,
+            users: None,
+            taker: None,
+        },
+    }
+    .to_instruction(accounts::ExecuteV0 {
+        market: addr(ctx.market),
+        place_authority: addr(ctx.place_auth.pubkey()),
+    });
+    let meta = send_with_budget(&mut ctx, ix, Some(1_400_000)).unwrap();
+    let response = read_response(&ctx, &meta);
+    let changes = parse_balance_changes(&response);
+    assert_eq!(changes.len(), fills);
+    assert!(changes.iter().all(|change| change.3.len() == 1));
+
+    let clock: Clock = ctx.svm.get_sysvar();
+    let expected = ExecuteRecordV0 {
+        ts: clock.unix_timestamp,
+        slot: clock.slot,
+        market_index: 0,
+        direction: Direction::Long.to_u8(),
+        fills: orders
+            .iter()
+            .map(|order| FillSlimV0 {
+                order_id: order.order_id,
+                base_size: 1,
+            })
+            .collect(),
+        cancelled_order_ids: vec![],
+    };
+    assert_eq!(program_data(&meta), Event::data(&expected));
+    println!(
+        "CU — execute({fills} fills, {fills} makers, at the ceilings): {}, response: {} bytes",
+        meta.compute_units_consumed,
+        response.len()
     );
 }
 

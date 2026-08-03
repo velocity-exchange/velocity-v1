@@ -1,6 +1,7 @@
 use {
     crate::{
         book::ClobBook,
+        emit::emit_pod,
         error::ClobError,
         events::OrderEvictRecordV0,
         state::{ClobMarketV0, RemovedOrderV0, Side},
@@ -33,7 +34,7 @@ pub fn handle_evict_worst_v0(
     let market = &mut ctx.accounts.market;
     let removed = market.evict_worst(args.side)?;
 
-    emit!(OrderEvictRecordV0 {
+    emit_pod!(OrderEvictRecordV0 {
         authority: removed.user.authority,
         ts: clock.unix_timestamp,
         order_id: removed.order_id,

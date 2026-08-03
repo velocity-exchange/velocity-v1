@@ -17,13 +17,12 @@
 use {
     crate::{
         error::ClobError,
-        state::{ClobMarketV0, ResponsePointerV0, RESPONSE_BUFFER_BYTES, RESPONSE_OFFSET},
+        state::{
+            ClobMarketV0, ResponsePointerV0, COUNT_BYTES, RESPONSE_BUFFER_BYTES, RESPONSE_OFFSET,
+        },
     },
     anchor_lang_v2::prelude::*,
 };
-
-/// Byte width of a borsh sequence count.
-pub const COUNT_BYTES: usize = 4;
 
 /// Append-only cursor over the market's response region.
 ///

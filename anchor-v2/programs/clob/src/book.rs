@@ -30,6 +30,13 @@
 //! adds its own postcondition. The exhaustive O(n) version — full list walk,
 //! price ordering, every slot accounted for — runs in the unit tests after
 //! every operation rather than on-chain.
+//!
+//! Quote and execute additionally check what they are about to *report*: every
+//! level or fill carries a nonzero price and size, and the sequence runs
+//! best-price-first for the side. A response that broke either would be worth
+//! more to the router than the book can honour — a zero-priced level wins any
+//! routing waterfall outright — so it fails the instruction rather than ship.
+//! See [`write_level`] and [`check_fill_price`].
 
 use {
     crate::{
@@ -39,8 +46,9 @@ use {
         state::{
             CancelledRemainderV0, ClobHeaderV0, ClobMarketV0, Direction, ExecuteOutcome,
             MarketConfigV0, OrderBitFlag, OrderNodeV0, OrderRefV0, PlaceOrderParams, RemovedOrder,
-            ResponsePointerV0, Side, UserRefV0, EXECUTE_FILLS_CEILING, EXECUTE_USERS_CEILING,
-            QUOTE_LEVELS_CEILING, USER_REF_BYTES, ZERO_ADDRESS,
+            ResponsePointerV0, Side, UserRefV0, CHANGE_MIN_BYTES, EXECUTE_FILLS_CEILING,
+            EXECUTE_USERS_CEILING, ORDER_ID_BYTES, QUOTE_LEVELS_CEILING, USER_REF_BYTES,
+            ZERO_ADDRESS,
         },
     },
     anchor_lang_v2::{address_eq, prelude::*},
@@ -51,12 +59,12 @@ use {
 pub const NIL: u32 = u32::MAX;
 
 /// Field offsets inside a `UserBalanceChange` record as written into the
-/// response region: `[user 34][base u64][quote u64][id count u32][ids…]`.
+/// response region: `[user 34][base u64][quote u64][id count u32][ids…]`. The
+/// widths themselves live in [`crate::state`], which derives the config
+/// ceilings from them.
 const CHANGE_BASE: usize = USER_REF_BYTES;
-const CHANGE_QUOTE: usize = CHANGE_BASE + 8;
-const CHANGE_IDS: usize = CHANGE_QUOTE + 8;
-/// Width of a record with no completed order ids.
-const CHANGE_MIN_BYTES: usize = CHANGE_IDS + crate::response::COUNT_BYTES;
+const CHANGE_QUOTE: usize = CHANGE_BASE + core::mem::size_of::<u64>();
+const CHANGE_IDS: usize = CHANGE_QUOTE + core::mem::size_of::<u64>();
 
 /// Book operations over the market slab. A trait because inherent impls
 /// aren't allowed on the foreign `Slab` type.
@@ -524,6 +532,7 @@ impl ClobBook for ClobMarketV0 {
         slot: u64,
         now: i64,
     ) -> Result<ResponsePointerV0> {
+        let side = direction.book_side();
         let max_levels = self.max_quote_levels.min(QUOTE_LEVELS_CEILING) as usize;
         let grace_slots = self.unknown_user_grace_slots;
         let mut writer = ResponseWriter::new();
@@ -533,9 +542,12 @@ impl ClobBook for ClobMarketV0 {
         // changes (or the walk ends) — orders at one price are contiguous, so
         // a level costs one 16-byte append however many orders it holds.
         let mut open: Option<(u64, u64)> = None;
+        // Price of the last level actually written, for the best-first check
+        // in `write_level`.
+        let mut written: Option<u64> = None;
         let mut remaining = size;
 
-        walk_side(self, direction.book_side(), |book, _, node| {
+        walk_side(self, side, |book, _, node| {
             if !is_matchable(node, users, taker, grace_slots, slot, now)? {
                 return Ok(Walk::Continue);
             }
@@ -552,7 +564,7 @@ impl ClobBook for ClobMarketV0 {
                         return Ok(Walk::Stop);
                     }
                     if let Some((price, aggregate)) = open {
-                        write_level(book, &mut writer, price, aggregate)?;
+                        write_level(book, &mut writer, side, &mut written, price, aggregate)?;
                     }
                     open = Some((node.price, take));
                     levels += 1;
@@ -566,7 +578,7 @@ impl ClobBook for ClobMarketV0 {
             })
         })?;
         if let Some((price, aggregate)) = open {
-            write_level(self, &mut writer, price, aggregate)?;
+            write_level(self, &mut writer, side, &mut written, price, aggregate)?;
         }
 
         writer.patch_count(self, count_offset, levels as u32)?;
@@ -617,6 +629,9 @@ impl ClobBook for ClobMarketV0 {
         let mut cancelled: Option<CancelledRemainderV0> = None;
         let mut removals = 0u32;
         let mut remaining = size;
+        // Price of the last order consumed, for the best-first check in
+        // `check_fill_price`.
+        let mut filled: Option<u64> = None;
 
         walk_side(self, side, |book, index, node| {
             if remaining == 0 || fills.len() == max_fills {
@@ -632,6 +647,8 @@ impl ClobBook for ClobMarketV0 {
                 return Ok(Walk::Stop);
             }
             let take = remaining.min(node.base_asset_amount);
+            check_fill_price(side, filled, node.price, take)?;
+            filled = Some(node.price);
             let quote_size: u64 = (node.price as u128)
                 .checked_mul(take as u128)
                 .ok_or(ClobError::MathError)?
@@ -665,7 +682,7 @@ impl ClobBook for ClobMarketV0 {
                 let ids = writer.read_count(book, record + CHANGE_IDS)?;
                 let at = record
                     .checked_add(CHANGE_MIN_BYTES)
-                    .and_then(|base| base.checked_add((ids as usize).checked_mul(8)?))
+                    .and_then(|base| base.checked_add((ids as usize).checked_mul(ORDER_ID_BYTES)?))
                     .ok_or(ClobError::ResponseTooLarge)?;
                 writer.insert_u64(book, at, node.order_id)?;
                 let ids = ids.checked_add(1).ok_or(ClobError::MathError)?;
@@ -894,15 +911,49 @@ fn skip_unknown_user(
     Ok(true)
 }
 
-/// Append one borsh `PriceLevel` to the quote response.
+/// Append one borsh `PriceLevel` to the quote response, after re-checking on
+/// the way out what the wire type promises: levels are best-price-first and
+/// every one is a real, fillable level.
+///
+/// A response carrying a zero price, a zero size, or a level that improves on
+/// the one before it would win a routing waterfall it cannot honour — the
+/// router picks a quoter by exactly these numbers — so the instruction fails
+/// instead. None of the three is producible by a book that holds its
+/// invariants (`place` rejects a zero price or size, and a side is a
+/// price-sorted list whose equal-priced orders are contiguous, so aggregation
+/// leaves the written prices strictly monotone); this is the check that says
+/// so.
 fn write_level(
     book: &mut ClobMarketV0,
     writer: &mut ResponseWriter,
+    side: Side,
+    written: &mut Option<u64>,
     price: u64,
     size: u64,
 ) -> Result<()> {
+    require!(price != 0 && size != 0, ClobError::InvalidResponseLevel);
+    require!(
+        written.is_none_or(|before| side.is_worse_price(price, before)),
+        ClobError::InvalidResponseLevel
+    );
     writer.append_u64(book, price)?;
     writer.append_u64(book, size)?;
+    *written = Some(price);
+    Ok(())
+}
+
+/// The same self-check for a fill entering the execute response. Execute
+/// reports per-maker balance changes rather than levels, so the price is not
+/// on the wire — but it values the fill (`price × base`), and the sweep is the
+/// same best-first walk, so the ordering still has to hold. Equal consecutive
+/// prices are expected here: one level is contiguous orders, each its own
+/// fill.
+fn check_fill_price(side: Side, filled: Option<u64>, price: u64, take: u64) -> Result<()> {
+    require!(price != 0 && take != 0, ClobError::InvalidResponseLevel);
+    require!(
+        filled.is_none_or(|before| !side.is_worse_price(before, price)),
+        ClobError::InvalidResponseLevel
+    );
     Ok(())
 }
 
@@ -924,7 +975,7 @@ fn find_change_record(
         let ids = writer.read_count(book, offset + CHANGE_IDS)? as usize;
         offset = offset
             .checked_add(CHANGE_MIN_BYTES)
-            .and_then(|base| base.checked_add(ids.checked_mul(8)?))
+            .and_then(|base| base.checked_add(ids.checked_mul(ORDER_ID_BYTES)?))
             .ok_or(ClobError::ResponseTooLarge)?;
     }
     Ok(None)

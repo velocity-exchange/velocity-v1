@@ -12,7 +12,7 @@
 
 use {
     anchor_lang_v2::{accounts::Slab, prelude::*},
-    static_assertions::const_assert_eq,
+    static_assertions::{const_assert, const_assert_eq},
 };
 
 pub const ZERO_ADDRESS: Address = Address::new_from_array([0u8; 32]);
@@ -22,13 +22,73 @@ pub const ZERO_ADDRESS: Address = Address::new_from_array([0u8; 32]);
 /// bound by the 1024-byte return-data cap.
 pub const RESPONSE_BUFFER_BYTES: usize = 8192;
 
+// Borsh widths of the response wire types. Each is built from the field
+// types of the struct it measures, and
+// `tests::response::wire_widths_match_the_response_types` pins every one
+// against wincode's encoding of that struct — so a field added to a wire type
+// fails a test instead of silently shifting the ceilings below.
+
+/// Byte width of a borsh sequence count (a `Vec`'s length prefix).
+pub const COUNT_BYTES: usize = core::mem::size_of::<u32>();
+
+/// Borsh width of a [`UserRefV0`]: 32-byte authority + u16 sub-account. The
+/// response encoder compares and writes users in this form, so the constant
+/// is the single definition of that width.
+pub const USER_REF_BYTES: usize = core::mem::size_of::<Address>() + core::mem::size_of::<u16>();
+
+/// Borsh width of a [`PriceLevel`].
+pub const PRICE_LEVEL_BYTES: usize = 2 * core::mem::size_of::<u64>();
+
+/// Borsh width of one `completed_order_ids` entry.
+pub const ORDER_ID_BYTES: usize = core::mem::size_of::<u64>();
+
+/// Borsh width of a [`UserBalanceChange`] that completed no orders — the
+/// narrowest a balance-change record can be, and the width a full response of
+/// them is derived from.
+pub const CHANGE_MIN_BYTES: usize = USER_REF_BYTES + 2 * core::mem::size_of::<u64>() + COUNT_BYTES;
+
+/// Borsh width of a [`CancelledRemainderV0`].
+pub const CANCELLED_BYTES: usize = USER_REF_BYTES + 2 * core::mem::size_of::<u64>();
+
 // Hard ceilings on the per-market response/batch config — bound by the
 // response region and the 32KB program heap, which don't vary per market.
 // The per-market operating points live on the header. Partial execution is
 // the interface contract; the router sees smaller balance changes.
-pub const QUOTE_LEVELS_CEILING: u16 = ((RESPONSE_BUFFER_BYTES - 4) / 16) as u16;
+
+/// Ceiling on `max_quote_levels`: a [`QuoteResponseV0`] is a count followed
+/// by that many [`PriceLevel`]s.
+pub const QUOTE_LEVELS_CEILING: u16 =
+    ((RESPONSE_BUFFER_BYTES - COUNT_BYTES) / PRICE_LEVEL_BYTES) as u16;
+
 pub const EXECUTE_FILLS_CEILING: u16 = 128;
-pub const EXECUTE_USERS_CEILING: u16 = ((RESPONSE_BUFFER_BYTES - 4) / 48) as u16;
+
+/// Ceiling on `max_execute_users`. An [`ExecuteResponseV0`] is
+/// `[changes count][records…][cancelled count][at most one cancelled]`, and a
+/// record is [`CHANGE_MIN_BYTES`] plus [`ORDER_ID_BYTES`] per order it
+/// completed. Every completed id belongs to a fill, so the whole id space is
+/// bounded by `EXECUTE_FILLS_CEILING`: reserving it here — rather than
+/// dividing the region by the record width alone — is what makes a market
+/// configured *at* this ceiling unable to overrun the response region,
+/// whatever the book holds.
+pub const EXECUTE_USERS_CEILING: u16 = ((RESPONSE_BUFFER_BYTES
+    - 2 * COUNT_BYTES
+    - CANCELLED_BYTES
+    - EXECUTE_FILLS_CEILING as usize * ORDER_ID_BYTES)
+    / CHANGE_MIN_BYTES) as u16;
+
+// The widest response either instruction can produce at the ceilings fits the
+// region, so `ResponseTooLarge` is unreachable for a market whose config the
+// init/update checks accepted.
+const_assert!(
+    COUNT_BYTES + QUOTE_LEVELS_CEILING as usize * PRICE_LEVEL_BYTES <= RESPONSE_BUFFER_BYTES
+);
+const_assert!(
+    2 * COUNT_BYTES
+        + CANCELLED_BYTES
+        + EXECUTE_FILLS_CEILING as usize * ORDER_ID_BYTES
+        + EXECUTE_USERS_CEILING as usize * CHANGE_MIN_BYTES
+        <= RESPONSE_BUFFER_BYTES
+);
 
 /// Taker direction, as passed through the quoter interface.
 #[derive(Clone, Copy, PartialEq, Eq, Debug, wincode::SchemaRead, wincode::SchemaWrite)]
@@ -262,11 +322,6 @@ pub struct UserRefV0 {
     pub authority: Address,
     pub sub_account_id: u16,
 }
-
-/// Borsh width of a [`UserRefV0`] on the wire: 32-byte authority + u16
-/// sub-account. The response encoder compares and writes users in this
-/// form, so the constant is the single definition of that width.
-pub const USER_REF_BYTES: usize = 34;
 
 impl UserRefV0 {
     /// The user's borsh encoding, for comparing against and writing into the

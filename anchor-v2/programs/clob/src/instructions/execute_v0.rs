@@ -1,8 +1,8 @@
 use {
     crate::{
         book::ClobBook,
+        emit::emit_execute_record,
         error::ClobError,
-        events::ExecuteRecordV0,
         state::{ClobMarketV0, Direction, ResponsePointerV0, UserRefV0},
     },
     anchor_lang_v2::prelude::*,
@@ -48,14 +48,14 @@ pub fn handle_execute_v0(
         clock.unix_timestamp,
     )?;
 
-    emit!(ExecuteRecordV0 {
-        ts: clock.unix_timestamp,
-        slot: clock.slot,
+    emit_execute_record(
+        clock.unix_timestamp,
+        clock.slot,
         market_index,
-        direction: args.direction.to_u8(),
-        fills: outcome.fills,
-        cancelled_order_ids: outcome.cancelled_order_id.into_iter().collect(),
-    });
+        args.direction.to_u8(),
+        &outcome.fills,
+        outcome.cancelled_order_id,
+    )?;
 
     Ok(outcome.response)
 }

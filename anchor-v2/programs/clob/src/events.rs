@@ -7,7 +7,12 @@
 //! which would silently repurpose a discriminator indexers already key on.
 //!
 //! Lifecycle events are `#[event(bytemuck)]` — fixed-size, zero-padding, the
-//! cheapest emit path. `side`/`direction` are raw u8s (0 = bid/long).
+//! cheapest layout. `side`/`direction` are raw u8s (0 = bid/long).
+//!
+//! None of them is emitted through anchor's `emit!`: every `Event::data()`
+//! flavour allocates, so [`crate::emit`] builds the same log bytes in a stack
+//! buffer instead. The types here stay the schema of record for what goes on
+//! the wire, and `tests::emit` pins the two encodings against each other.
 
 use anchor_lang_v2::prelude::*;
 
@@ -91,3 +96,7 @@ pub struct FillSlimV0 {
     pub order_id: u64,
     pub base_size: u64,
 }
+
+/// Borsh width of a [`FillSlimV0`] — the per-fill stride of the execute
+/// record's payload, which [`crate::emit`] sizes its stack buffer from.
+pub const FILL_SLIM_BYTES: usize = 2 * core::mem::size_of::<u64>();

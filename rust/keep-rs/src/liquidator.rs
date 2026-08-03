@@ -2951,7 +2951,6 @@ impl PrimaryLiquidationStrategy {
                     100,
                     asset_market_index,
                     liability_market_index,
-                    Some(true),
                     None,
                     None,
                 ),

@@ -2935,10 +2935,13 @@ impl<'a> TransactionBuilder<'a> {
     /// This function handles common Jupiter-specific logic and returns a struct containing
     /// all the instructions that need to be inserted between begin and end wrapper instructions.
     ///
-    /// Only the route's own instructions are selected. A Jito tip (`other_instructions` /
-    /// `tip_instruction`) is dropped rather than filtered: the swap bracket rejects any
-    /// instruction it does not recognize with `InvalidSwap`, and the SDK never opts into
-    /// Jupiter's transaction landing, so neither list should be populated to begin with.
+    /// Of the route's instructions only the swap and a non-token cleanup (a SOL unwrap)
+    /// go in the bracket. Jupiter's compute-budget instructions are not used — the caller
+    /// budgets the whole transaction, not the swap alone — and its setup instructions are
+    /// replaced with idempotent ATA creation for the two swap token accounts, placed
+    /// before `begin_swap` rather than inside the bracket. Auxiliary instructions the
+    /// bracket could not carry (a Jito tip) are rejected when the route is parsed, so
+    /// nothing the route needs is dropped here.
     ///
     /// # Arguments
     /// * `jupiter_swap_info` - Jupiter swap route and instructions

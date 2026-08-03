@@ -55,7 +55,6 @@ async fn jupiter_swap_usdc_to_sol() {
             10,
             token_in.index(),
             token_out.index(),
-            Some(true),
             None,
             None,
         )
@@ -137,7 +136,6 @@ async fn jupiter_swap_sol_unwrap() {
             10,
             token_in.index(),
             token_out.index(),
-            Some(true),
             None,
             None,
         )

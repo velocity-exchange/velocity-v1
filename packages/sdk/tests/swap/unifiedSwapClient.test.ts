@@ -2,10 +2,15 @@ import { expect } from 'chai';
 import sinon from 'sinon';
 import { Connection, PublicKey } from '@solana/web3.js';
 import { BN } from '../../src/isomorphic/anchor';
-import { JupiterClient } from '../../src/jupiter/jupiterClient';
 import { UnifiedSwapClient } from '../../src/swap/UnifiedSwapClient';
 import { SwapQuote } from '../../src/swap/types';
 import { MAX_TX_BYTE_SIZE } from '../../src/tx/utils';
+
+// jupiterClient does `import fetch from 'node-fetch'`, which compiles to a
+// `.default` property read on the module object at call time — so stubbing that
+// property intercepts it. Stubbing `global.fetch` would not.
+// eslint-disable-next-line @typescript-eslint/no-var-requires
+const nodeFetch = require('node-fetch');
 
 const INPUT_MINT = new PublicKey('So11111111111111111111111111111111111111112');
 const OUTPUT_MINT = new PublicKey(
@@ -143,30 +148,53 @@ describe('UnifiedSwapClient Titan route size constraint', () => {
 });
 
 describe('UnifiedSwapClient Jupiter API version', () => {
+	let fetchStub: sinon.SinonStub;
+
 	const jupiterClient = (jupiterApiVersion?: 'v1' | 'v2') =>
 		new UnifiedSwapClient({
 			clientType: 'jupiter',
 			connection: sinon.createStubInstance(Connection) as unknown as Connection,
 			jupiterApiVersion,
-		}).getClient() as JupiterClient;
+		});
 
-	/** Private on the client, so read it the way a caller cannot. */
-	const apiVersionOf = (client: JupiterClient) =>
-		(client as unknown as { apiVersion: string }).apiVersion;
+	/**
+	 * The version is private on the Jupiter client, so read the forwarding the
+	 * way a caller experiences it: which endpoint the quote request goes to. The
+	 * body is deliberately unusable — the request has already been made by the
+	 * time the client rejects it.
+	 */
+	const quotedUrl = async (client: UnifiedSwapClient) => {
+		fetchStub.resolves({
+			ok: true,
+			status: 200,
+			json: async () => ({}),
+		} as unknown as Response);
 
-	it('forwards an explicit version to the Jupiter client', () => {
-		expect(apiVersionOf(jupiterClient('v2'))).to.equal('v2');
+		await client
+			.getQuote({
+				inputMint: INPUT_MINT,
+				outputMint: OUTPUT_MINT,
+				amount: new BN(1000000),
+				userPublicKey: USER,
+			})
+			.catch(() => undefined);
+
+		return String(fetchStub.firstCall.args[0]);
+	};
+
+	beforeEach(() => {
+		fetchStub = sinon.stub(nodeFetch, 'default');
 	});
 
-	it('leaves the Jupiter client on its own default when unset', () => {
-		expect(apiVersionOf(jupiterClient())).to.equal(
-			apiVersionOf(
-				new JupiterClient({
-					connection: sinon.createStubInstance(
-						Connection
-					) as unknown as Connection,
-				})
-			)
-		);
+	afterEach(() => {
+		sinon.restore();
+	});
+
+	it('forwards an explicit version to the Jupiter client', async () => {
+		expect(await quotedUrl(jupiterClient('v2'))).to.contain('/v2/build');
+	});
+
+	it('leaves the Jupiter client on its own default when unset', async () => {
+		expect(await quotedUrl(jupiterClient())).to.contain('/v1/quote');
 	});
 });

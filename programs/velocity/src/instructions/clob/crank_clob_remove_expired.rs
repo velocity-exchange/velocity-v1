@@ -4,16 +4,12 @@
 
 use {
     super::crank_common::{
-        crank_clob_removal, derive_user_pdas, removal_call, validate_linkage,
+        crank_clob_removal, derive_user_pdas, removal_call, validate_linkage, ClobRemoval,
         CrankClobOrderRemoval, ResolveClobCrank,
     },
     crate::{
-        error::ErrorCode,
         instructions::relay_harness::resolve_into,
-        state::prop_amm::{
-            clob_find_expired, ClobOrderRefV0, ClobRemoveExpiredArgsV0,
-            CLOB_REMOVE_EXPIRED_V0_DISCRIMINATOR,
-        },
+        state::prop_amm::{clob_find_expired, ClobOrderRefV0, ClobRemoveExpiredArgsV0},
     },
     anchor_lang::prelude::*,
 };
@@ -23,11 +19,11 @@ pub fn handle_crank_clob_remove_expired(
     market_index: u16,
     order_ref: ClobOrderRefV0,
 ) -> Result<()> {
-    let mut data = CLOB_REMOVE_EXPIRED_V0_DISCRIMINATOR.to_vec();
-    ClobRemoveExpiredArgsV0 { order_ref }
-        .serialize(&mut data)
-        .map_err(|_| ErrorCode::DefaultError)?;
-    crank_clob_removal(ctx, market_index, data, false)
+    crank_clob_removal(
+        ctx,
+        market_index,
+        ClobRemoval::Expire(ClobRemoveExpiredArgsV0 { order_ref }),
+    )
 }
 
 pub fn handle_resolve_crank_clob_remove_expired(ctx: Context<ResolveClobCrank>) -> Result<()> {

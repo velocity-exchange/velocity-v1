@@ -303,6 +303,18 @@ pub mod velocity {
         handle_place_and_take_perp_order(ctx, params, success_condition)
     }
 
+    /// `place_and_take_perp_order` with the market's CLOB accounts required:
+    /// an unfilled restable limit remainder rests on the book instead of the
+    /// DLOB. v0's account list is frozen for ABI compatibility, so the CLOB
+    /// route is a separate endpoint rather than optional accounts on v0.
+    pub fn place_and_take_perp_order_v1<'c: 'info, 'info>(
+        ctx: Context<'info, PlaceAndTakeV1<'info>>,
+        params: OrderParams,
+        success_condition: Option<u32>,
+    ) -> Result<()> {
+        handle_place_and_take_perp_order_v1(ctx, params, success_condition)
+    }
+
     pub fn place_and_make_perp_order<'c: 'info, 'info>(
         ctx: Context<'info, PlaceAndMake<'info>>,
         params: OrderParams,
@@ -2246,6 +2258,16 @@ pub mod velocity {
         params: CancelClobOrderParams,
     ) -> Result<()> {
         handle_cancel_clob_order(ctx, params)
+    }
+
+    /// Reprice/resize a resting CLOB order: cancel-and-replace in one
+    /// instruction, with a single margin gate over the net change. `None`
+    /// fields keep the resting order's value.
+    pub fn modify_clob_order<'c: 'info, 'info>(
+        ctx: Context<'info, ModifyClobOrder<'info>>,
+        params: ModifyClobOrderParams,
+    ) -> Result<()> {
+        handle_modify_clob_order(ctx, params)
     }
 
     pub fn initialize_router_quote_buffer(

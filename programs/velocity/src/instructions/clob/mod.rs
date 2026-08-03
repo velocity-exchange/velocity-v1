@@ -8,6 +8,12 @@
 //!   CLOB as its `place_authority` (the velocity signer PDA).
 //! - [`cancel_clob_order`]: cancel CPI, then unwind the removed order's
 //!   remaining size from the aggregates.
+//! - [`modify_clob_order`]: cancel-and-replace in one instruction, with one
+//!   margin gate over the *net* change (the CLOB has no in-place mutation).
+//! - [`place_and_take_v1`]: the taker route with the CLOB accounts required —
+//!   an unfilled restable limit remainder rests on the book instead of the
+//!   DLOB. The v0 instruction's account list is frozen, hence the new
+//!   endpoint.
 //! - fills/culls unwind through the router fill's execute response.
 //! - [`crank_clob_evict`]/[`crank_clob_remove_expired`]: permissionless
 //!   keeper wrappers over the CLOB's crank ixs — the maker's `User` rides
@@ -18,6 +24,10 @@
 //! - [`crank_conditions_setup`]: writes the market's relay condition block —
 //!   called by `update_perp_market_clob_quoter`, so attaching a CLOB stands
 //!   its cranks up in the same instruction.
+//!
+//! Every CPI to the book goes through `ClobMarket` (`state::prop_amm`): one
+//! place in the program speaks the CLOB's wire — its discriminators, borsh
+//! args, `invoke_signed` account pair, and return-data decode.
 //!
 //! Each crank instruction lives in its own file together with its
 //! simulation-only relay resolver (named `Resolve<EndpointName>`); the
@@ -40,11 +50,14 @@ mod crank_conditions_setup;
 mod crank_cross_match;
 mod force_cancel_clob_orders;
 mod initialize_quoter_cross_conditions;
+mod modify_clob_order;
+mod place_and_take_v1;
 mod place_clob_order;
 mod trigger_clob_order;
 
 pub use {
     cancel_clob_order::*, crank_clob_evict::*, crank_clob_remove_expired::*, crank_common::*,
     crank_conditions_setup::*, crank_cross_match::*, force_cancel_clob_orders::*,
-    initialize_quoter_cross_conditions::*, place_clob_order::*, trigger_clob_order::*,
+    initialize_quoter_cross_conditions::*, modify_clob_order::*, place_and_take_v1::*,
+    place_clob_order::*, trigger_clob_order::*,
 };

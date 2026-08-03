@@ -54,27 +54,19 @@ use {
             orders::{is_oracle_too_divergent_with_twap_5min, order_satisfies_trigger_condition},
         },
         msg,
-        signer::get_signer_seeds,
         state::{
             clob_crank::{ClobCrankConditionsV0, CLOB_CRANK_CONDITIONS_PDA_SEED},
             events::OrderActionExplanation,
             margin_calculation::MarginContext,
             market_status::MarketStatus,
             perp_market_map::MarketSet,
-            prop_amm::{
-                ClobOrderRefV0, ClobPlaceOrderArgsV0, ClobSide, QuoterType, QuoterV0,
-                CLOB_PLACE_ORDER_V0_DISCRIMINATOR,
-            },
+            prop_amm::{ClobMarket, ClobPlaceOrderArgsV0, ClobSide, QuoterV0},
             state::State,
             user::{MarketType, OrderBitFlag, OrderType, User, UserStats},
         },
         validate,
     },
     anchor_lang::prelude::*,
-    solana_program::{
-        instruction::{AccountMeta, Instruction},
-        program::{get_return_data, invoke_signed},
-    },
 };
 
 #[derive(Accounts)]
@@ -168,37 +160,25 @@ pub fn handle_trigger_clob_order<'c: 'info, 'info>(
         Some(state.oracle_guard_rails),
     )?;
 
-    {
+    let clob = {
         let quoter = ctx.accounts.quoter.load()?;
-        validate!(
-            quoter.quoter_type == QuoterType::Clob,
-            ErrorCode::DefaultError,
-            "quoter entry is not a CLOB"
-        )?;
         validate!(
             quoter.is_active && quoter.is_approved,
             ErrorCode::DefaultError,
             "CLOB quoter is not active and approved"
         )?;
-        validate!(
-            quoter.market == market_index,
-            ErrorCode::DefaultError,
-            "quoter entry is for market {}, trigger is for market {}",
-            quoter.market,
-            market_index
-        )?;
-        let registered = &quoter.execute_accounts[..quoter.execute_accounts_count as usize];
-        validate!(
-            registered
-                .iter()
-                .any(|meta| meta.pubkey == ctx.accounts.clob_market.key()),
-            ErrorCode::DefaultError,
-            "clob market is not registered on the quoter entry"
-        )?;
-    }
+        ClobMarket::from_quoter(
+            &quoter,
+            market_index,
+            &ctx.accounts.clob_market,
+            &ctx.accounts.clob_program,
+            &ctx.accounts.velocity_signer,
+            state.signer_nonce,
+        )?
+    };
 
-    // ---- Phase 1: gate, reserve, reward — everything that can decide NOT
-    // to place, while the user is borrowed. ----
+    // ---- Gate, reserve, reward — everything that can decide NOT to place,
+    // while the user is borrowed. ----
     let (side, price, base_asset_amount, max_ts, user_ref) = {
         let user = &mut load_mut!(ctx.accounts.user)?;
         let user_stats = load!(ctx.accounts.user_stats)?;
@@ -426,50 +406,17 @@ pub fn handle_trigger_clob_order<'c: 'info, 'info>(
         )
     };
 
-    // ---- Phase 2: CPI the placement while no user borrows are held. ----
-    let mut data = CLOB_PLACE_ORDER_V0_DISCRIMINATOR.to_vec();
-    ClobPlaceOrderArgsV0 {
+    // ---- CPI the placement while no user borrows are held. ----
+    let order_ref = clob.place(ClobPlaceOrderArgsV0 {
         side,
         price,
         base_asset_amount,
         activation_delay_slots: None,
         max_ts,
         user: user_ref,
-    }
-    .serialize(&mut data)
-    .map_err(|_| ErrorCode::DefaultError)?;
-    invoke_signed(
-        &Instruction {
-            program_id: ctx.accounts.clob_program.key(),
-            accounts: vec![
-                AccountMeta::new(ctx.accounts.clob_market.key(), false),
-                AccountMeta::new_readonly(ctx.accounts.velocity_signer.key(), true),
-            ],
-            data,
-        },
-        &[
-            ctx.accounts.clob_market.to_account_info(),
-            ctx.accounts.velocity_signer.to_account_info(),
-            ctx.accounts.clob_program.to_account_info(),
-        ],
-        &[&get_signer_seeds(&state.signer_nonce)],
-    )?;
-    let (writer, ref_data) = get_return_data().ok_or_else(|| -> anchor_lang::error::Error {
-        msg!("clob place returned no order ref");
-        ErrorCode::DefaultError.into()
-    })?;
-    validate!(
-        writer == ctx.accounts.clob_program.key(),
-        ErrorCode::DefaultError,
-        "clob place return data written by {}",
-        writer
-    )?;
-    let order_ref = ClobOrderRefV0::deserialize(&mut ref_data.as_slice()).map_err(|_| {
-        msg!("clob place returned undecodable order ref");
-        ErrorCode::DefaultError
     })?;
 
-    // ---- Phase 3: mark the slot as the placed shadow. ----
+    // ---- Mark the slot as the placed shadow. ----
     {
         let mut user = load_mut!(ctx.accounts.user)?;
         let order_index = user
@@ -492,11 +439,7 @@ pub fn handle_trigger_clob_order<'c: 'info, 'info>(
         if max_ts != 0 {
             conditions.note_expiry(max_ts)?;
         }
-        let delay = crate::state::prop_amm::read_clob_u32(
-            &ctx.accounts.clob_market.try_borrow_data()?,
-            crate::state::prop_amm::CLOB_DEFAULT_ACTIVATION_DELAY_OFFSET,
-        )
-        .ok_or(ErrorCode::DefaultError)?;
+        let delay = clob.default_activation_delay_slots()?;
         if delay > 0 {
             conditions.note_activation(slot.saturating_add(delay as u64))?;
         }

@@ -302,10 +302,157 @@ pub struct ClobRemoveExpiredArgsV0 {
 /// Anchor-default discriminators (`sha256("global:<name>")[..8]`) of the CLOB
 /// ixs velocity CPIs directly (place/cancel are velocity-mediated and not part
 /// of the registry's quote/execute surface, so they aren't stored per entry).
+/// Nothing outside [`ClobMarket`] should reference these — it is the one
+/// place that speaks this wire.
 pub const CLOB_PLACE_ORDER_V0_DISCRIMINATOR: [u8; 8] = [100, 204, 57, 226, 245, 228, 61, 187];
 pub const CLOB_CANCEL_ORDER_V0_DISCRIMINATOR: [u8; 8] = [70, 91, 225, 16, 228, 203, 124, 174];
 pub const CLOB_EVICT_WORST_V0_DISCRIMINATOR: [u8; 8] = [106, 60, 27, 129, 80, 27, 37, 73];
 pub const CLOB_REMOVE_EXPIRED_V0_DISCRIMINATOR: [u8; 8] = [241, 135, 215, 18, 254, 107, 179, 119];
+
+/// The velocity-mediated CLOB CPI surface, bound to one book: the three
+/// accounts every call takes plus the signer nonce that lets velocity sign as
+/// the book's `place_authority`.
+///
+/// This is the *only* place in the program that speaks the CLOB's wire — the
+/// discriminators above, the borsh arg encoding, `invoke_signed` with the
+/// fixed `[market (w), velocity_signer (s)]` account pair, and the
+/// return-data decode (writer-checked, so a program the CLOB CPI'd into
+/// can't spoof the response). Every caller — placement, cancel, the
+/// evict/expire cranks, force-cancel — goes through a method here.
+///
+/// `execute_v0` is deliberately absent: that leg is the *registry* wire every
+/// quoter type shares ([`QuoterV0::execute`] → `invoke_quoter`), whose
+/// account list is per-entry registered rather than this fixed pair, and it
+/// already has exactly one implementation.
+pub struct ClobMarket<'a, 'info> {
+    /// The book account, passed writable.
+    pub market: &'a AccountInfo<'info>,
+    /// The registered CLOB program.
+    pub program: &'a AccountInfo<'info>,
+    /// Velocity's signer PDA — the book's `place_authority`.
+    pub velocity_signer: &'a AccountInfo<'info>,
+    pub signer_nonce: u8,
+}
+
+impl<'a, 'info> ClobMarket<'a, 'info> {
+    /// Bind to the book a CLOB registry entry names. Checks what every
+    /// caller needs: the entry is a CLOB, it serves `market_index`, and this
+    /// book is one of the accounts the admin vetted onto the entry (so a
+    /// caller can't point a valid entry at an arbitrary account it owns).
+    ///
+    /// Deliberately *not* gated on `is_active`/`is_approved`: those mean
+    /// "may take new flow", and the removal paths must keep working on a
+    /// killed or de-listed book. Placement applies that gate itself.
+    pub fn from_quoter(
+        quoter: &QuoterV0,
+        market_index: u16,
+        market: &'a AccountInfo<'info>,
+        program: &'a AccountInfo<'info>,
+        velocity_signer: &'a AccountInfo<'info>,
+        signer_nonce: u8,
+    ) -> Result<Self> {
+        quoter.validate_clob_book(market_index, &market.key())?;
+        Ok(Self {
+            market,
+            program,
+            velocity_signer,
+            signer_nonce,
+        })
+    }
+
+    /// Rest a new order on the book; returns the CLOB's handle for it.
+    pub fn place(&self, args: ClobPlaceOrderArgsV0) -> Result<ClobOrderRefV0> {
+        self.invoke(&CLOB_PLACE_ORDER_V0_DISCRIMINATOR, &args, "place")
+    }
+
+    /// Pull one order off the book; returns what was removed so the caller
+    /// can unwind the maker's aggregates by the remaining size.
+    pub fn cancel(&self, args: ClobCancelOrderArgsV0) -> Result<ClobRemovedOrderV0> {
+        self.invoke(&CLOB_CANCEL_ORDER_V0_DISCRIMINATOR, &args, "cancel")
+    }
+
+    /// Reclaim the hinted expired order (the CLOB re-checks that it is due).
+    pub fn remove_expired(&self, args: ClobRemoveExpiredArgsV0) -> Result<ClobRemovedOrderV0> {
+        self.invoke(
+            &CLOB_REMOVE_EXPIRED_V0_DISCRIMINATOR,
+            &args,
+            "remove expired",
+        )
+    }
+
+    /// Reclaim the worst order on a side past its soft cap (the CLOB
+    /// re-checks the threshold).
+    pub fn evict(&self, args: ClobEvictWorstArgsV0) -> Result<ClobRemovedOrderV0> {
+        self.invoke(&CLOB_EVICT_WORST_V0_DISCRIMINATOR, &args, "evict")
+    }
+
+    /// The book's default activation delay, read straight off its header —
+    /// what a placement's `activation_slot` becomes when the caller doesn't
+    /// choose a delay. Callers mirror the CLOB's `slot + delay` to maintain
+    /// the crank wake hints, and compare a requested delay against it to
+    /// decide whether the fast-activation attestation is required.
+    pub fn default_activation_delay_slots(&self) -> Result<u32> {
+        read_clob_u32(
+            &self.market.try_borrow_data()?,
+            CLOB_DEFAULT_ACTIVATION_DELAY_OFFSET,
+        )
+        .ok_or_else(|| {
+            msg!("clob market account is too short to hold its header");
+            ErrorCode::DefaultError.into()
+        })
+    }
+
+    /// One CPI: `discriminator ++ borsh(args)` to the book as its
+    /// `place_authority`, then decode the response the CLOB left as return
+    /// data. `what` only names the call in error messages.
+    fn invoke<A: AnchorSerialize, R: AnchorDeserialize>(
+        &self,
+        discriminator: &[u8; 8],
+        args: &A,
+        what: &str,
+    ) -> Result<R> {
+        let mut data = discriminator.to_vec();
+        args.serialize(&mut data).map_err(|_| {
+            msg!("failed to serialize clob {} args", what);
+            ErrorCode::DefaultError
+        })?;
+        invoke_signed(
+            &Instruction {
+                program_id: self.program.key(),
+                accounts: vec![
+                    AccountMeta::new(self.market.key(), false),
+                    AccountMeta::new_readonly(self.velocity_signer.key(), true),
+                ],
+                data,
+            },
+            &[
+                self.market.clone(),
+                self.velocity_signer.clone(),
+                self.program.clone(),
+            ],
+            &[&get_signer_seeds(&self.signer_nonce)],
+        )?;
+
+        // Return data is last-writer-wins within the transaction, so require
+        // the writer to be the book's own program: otherwise a program the
+        // CLOB CPI'd into could dictate the response velocity settles on.
+        let (writer, response) = get_return_data().ok_or_else(|| -> Error {
+            msg!("clob {} returned no response", what);
+            ErrorCode::DefaultError.into()
+        })?;
+        validate!(
+            writer == self.program.key(),
+            ErrorCode::DefaultError,
+            "clob {} return data written by {} instead of the book's program",
+            what,
+            writer
+        )?;
+        R::deserialize(&mut response.as_slice()).map_err(|_| {
+            msg!("clob {} returned an undecodable response", what);
+            ErrorCode::DefaultError.into()
+        })
+    }
+}
 
 // --- CLOB account byte layout ---
 //
@@ -521,6 +668,35 @@ pub struct UserBalanceChange {
 }
 
 impl QuoterV0 {
+    /// This entry really is the CLOB serving `market_index`, and `book` is one
+    /// of the accounts the admin vetted onto it — so a caller can't point an
+    /// otherwise-valid entry at an arbitrary account it happens to own.
+    ///
+    /// Deliberately says nothing about `is_active`/`is_approved`: those mean
+    /// "may take new flow", and the removal paths must keep working on a
+    /// killed or de-listed book. Callers that add flow gate on them too.
+    pub fn validate_clob_book(&self, market_index: u16, book: &Pubkey) -> Result<()> {
+        validate!(
+            self.quoter_type == QuoterType::Clob,
+            ErrorCode::DefaultError,
+            "quoter entry is not a CLOB"
+        )?;
+        validate!(
+            self.market == market_index,
+            ErrorCode::DefaultError,
+            "quoter entry is for market {}, call is for market {}",
+            self.market,
+            market_index
+        )?;
+        let registered = &self.execute_accounts[..self.execute_accounts_count as usize];
+        validate!(
+            registered.iter().any(|meta| &meta.pubkey == book),
+            ErrorCode::DefaultError,
+            "clob market is not registered on the quoter entry"
+        )?;
+        Ok(())
+    }
+
     /// CPI `quote_v0` on the quoter program and return its price levels.
     ///
     /// `account_map` is the caller's remaining-accounts index (pubkey →

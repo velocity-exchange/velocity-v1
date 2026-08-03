@@ -17,25 +17,17 @@ use {
         load_mut,
         math::{margin::meets_place_order_margin_requirement, orders::is_order_position_reducing},
         msg,
-        signer::get_signer_seeds,
         state::{
             clob_crank::{ClobCrankConditionsV0, CLOB_CRANK_CONDITIONS_PDA_SEED},
             market_status::MarketStatus,
             perp_market_map::MarketSet,
-            prop_amm::{
-                ClobOrderRefV0, ClobPlaceOrderArgsV0, ClobSide, QuoterType, QuoterV0,
-                CLOB_PLACE_ORDER_V0_DISCRIMINATOR,
-            },
+            prop_amm::{ClobMarket, ClobPlaceOrderArgsV0, ClobSide, QuoterV0},
             state::State,
             user::User,
         },
         validate,
     },
     anchor_lang::prelude::*,
-    solana_program::{
-        instruction::{AccountMeta, Instruction},
-        program::{get_return_data, invoke_signed},
-    },
 };
 
 #[derive(Accounts)]
@@ -121,34 +113,22 @@ pub fn handle_place_clob_order<'c: 'info, 'info>(
         Some(state.oracle_guard_rails),
     )?;
 
-    {
+    let clob = {
         let quoter = ctx.accounts.quoter.load()?;
-        validate!(
-            quoter.quoter_type == QuoterType::Clob,
-            ErrorCode::DefaultError,
-            "quoter entry is not a CLOB"
-        )?;
         validate!(
             quoter.is_active && quoter.is_approved,
             ErrorCode::DefaultError,
             "CLOB quoter is not active and approved"
         )?;
-        validate!(
-            quoter.market == params.market_index,
-            ErrorCode::DefaultError,
-            "quoter entry is for market {}, order is for market {}",
-            quoter.market,
-            params.market_index
-        )?;
-        let registered = &quoter.execute_accounts[..quoter.execute_accounts_count as usize];
-        validate!(
-            registered
-                .iter()
-                .any(|meta| meta.pubkey == ctx.accounts.clob_market.key()),
-            ErrorCode::DefaultError,
-            "clob market is not registered on the quoter entry"
-        )?;
-    }
+        ClobMarket::from_quoter(
+            &quoter,
+            params.market_index,
+            &ctx.accounts.clob_market,
+            &ctx.accounts.clob_program,
+            &ctx.accounts.velocity_signer,
+            state.signer_nonce,
+        )?
+    };
     {
         let market = perp_market_map.get_ref(&params.market_index)?;
         validate!(
@@ -163,11 +143,7 @@ pub fn handle_place_clob_order<'c: 'info, 'info>(
     // (swift) co-signed after serving the hold window off-chain. Anything
     // at-or-above the book's default needs no attestation.
     if let Some(requested) = params.activation_delay_slots {
-        let default_delay = crate::state::prop_amm::read_clob_u32(
-            &ctx.accounts.clob_market.try_borrow_data()?,
-            crate::state::prop_amm::CLOB_DEFAULT_ACTIVATION_DELAY_OFFSET,
-        )
-        .ok_or(ErrorCode::DefaultError)?;
+        let default_delay = clob.default_activation_delay_slots()?;
         if requested < default_delay {
             let flow_authority = state.hot_key(crate::state::state::HotRole::FlowAuthority);
             validate!(
@@ -204,49 +180,16 @@ pub fn handle_place_clob_order<'c: 'info, 'info>(
             sub_account_id: user.sub_account_id,
         }
     };
-    let mut data = CLOB_PLACE_ORDER_V0_DISCRIMINATOR.to_vec();
-    ClobPlaceOrderArgsV0 {
+    // The CLOB returns the new order's ref; it stays the transaction's return
+    // data (clients persist it as the cancel hint) and is decoded here so a
+    // malformed response fails the placement.
+    let order_ref = clob.place(ClobPlaceOrderArgsV0 {
         side,
         price: params.price,
         base_asset_amount: params.base_asset_amount,
         activation_delay_slots: params.activation_delay_slots,
         max_ts: params.max_ts,
         user: user_ref,
-    }
-    .serialize(&mut data)
-    .map_err(|_| ErrorCode::DefaultError)?;
-    invoke_signed(
-        &Instruction {
-            program_id: ctx.accounts.clob_program.key(),
-            accounts: vec![
-                AccountMeta::new(ctx.accounts.clob_market.key(), false),
-                AccountMeta::new_readonly(ctx.accounts.velocity_signer.key(), true),
-            ],
-            data,
-        },
-        &[
-            ctx.accounts.clob_market.to_account_info(),
-            ctx.accounts.velocity_signer.to_account_info(),
-            ctx.accounts.clob_program.to_account_info(),
-        ],
-        &[&get_signer_seeds(&state.signer_nonce)],
-    )?;
-    // The CLOB returns the new order's ref; leave it as the transaction's
-    // return data (clients persist it as the cancel hint) but decode it here
-    // so a malformed response fails the placement.
-    let (writer, ref_data) = get_return_data().ok_or_else(|| -> anchor_lang::error::Error {
-        msg!("clob place returned no order ref");
-        ErrorCode::DefaultError.into()
-    })?;
-    validate!(
-        writer == ctx.accounts.clob_program.key(),
-        ErrorCode::DefaultError,
-        "clob place return data written by {}",
-        writer
-    )?;
-    let order_ref = ClobOrderRefV0::deserialize(&mut ref_data.as_slice()).map_err(|_| {
-        msg!("clob place returned undecodable order ref");
-        ErrorCode::DefaultError
     })?;
 
     // Reserve the worst-case aggregates, then gate margin exactly like a
@@ -306,11 +249,7 @@ pub fn handle_place_clob_order<'c: 'info, 'info>(
             Some(delay) => delay,
             // Mirror the CLOB's default (`slot + default_delay`), read
             // straight off the book's header bytes.
-            None => crate::state::prop_amm::read_clob_u32(
-                &ctx.accounts.clob_market.try_borrow_data()?,
-                crate::state::prop_amm::CLOB_DEFAULT_ACTIVATION_DELAY_OFFSET,
-            )
-            .ok_or(ErrorCode::DefaultError)?,
+            None => clob.default_activation_delay_slots()?,
         };
         if delay > 0 {
             conditions.note_activation(clock.slot.saturating_add(delay as u64))?;
@@ -326,13 +265,15 @@ pub fn handle_place_clob_order<'c: 'info, 'info>(
     Ok(())
 }
 
-/// Rest an unfilled `place_and_take` remainder on the CLOB — the S5 rule
-/// ("if it can rest and be matched, it lives on the CLOB") applied to the
-/// taker flow's leftover. Degrades gracefully: a dead quoter entry or a
-/// failed margin re-reserve returns `Ok(false)` (the remainder stays
-/// cancelled, the fill stands) instead of reverting the whole
-/// place-and-take. Only a hard-cap placement rejection on the CLOB side
-/// reverts, which is the documented ops-failure state.
+/// Rest an unfilled `place_and_take` remainder on the CLOB: if it can rest
+/// and be matched, it lives on the book, not in `User.orders`. Degrades
+/// gracefully — a dead quoter entry or a failed margin re-reserve returns
+/// `Ok(false)` (the remainder stays cancelled, the fill stands) instead of
+/// reverting the whole place-and-take. Only a hard-cap placement rejection on
+/// the CLOB side reverts, which is the documented ops-failure state.
+///
+/// Reached only from `place_and_take_perp_order_v1` — the v0 instruction has
+/// no CLOB accounts to pass.
 #[allow(clippy::too_many_arguments)]
 pub fn try_place_remainder_on_clob<'info>(
     state: &crate::state::state::State,
@@ -352,27 +293,22 @@ pub fn try_place_remainder_on_clob<'info>(
     max_ts: i64,
     clock: &Clock,
 ) -> Result<bool> {
-    {
+    let clob = {
         let quoter = quoter_loader.load()?;
-        validate!(
-            quoter.quoter_type == QuoterType::Clob && quoter.market == market_index,
-            ErrorCode::DefaultError,
-            "quoter entry does not serve market {}",
-            market_index
-        )?;
-        let registered = &quoter.execute_accounts[..quoter.execute_accounts_count as usize];
-        validate!(
-            registered
-                .iter()
-                .any(|meta| meta.pubkey == clob_market.key()),
-            ErrorCode::DefaultError,
-            "clob market is not registered on the quoter entry"
+        let clob = ClobMarket::from_quoter(
+            &quoter,
+            market_index,
+            clob_market,
+            clob_program,
+            velocity_signer,
+            state.signer_nonce,
         )?;
         if !(quoter.is_active && quoter.is_approved) {
             msg!("clob quoter inactive; remainder stays cancelled");
             return Ok(false);
         }
-    }
+        clob
+    };
 
     // Reserve the worst-case aggregates and re-run the placement margin
     // gate BEFORE the CPI, so a failure can skip resting (remainder stays
@@ -441,46 +377,13 @@ pub fn try_place_remainder_on_clob<'info>(
         PositionDirection::Long => ClobSide::Bid,
         PositionDirection::Short => ClobSide::Ask,
     };
-    let mut data = CLOB_PLACE_ORDER_V0_DISCRIMINATOR.to_vec();
-    ClobPlaceOrderArgsV0 {
+    let order_ref = clob.place(ClobPlaceOrderArgsV0 {
         side,
         price,
         base_asset_amount,
         activation_delay_slots: None,
         max_ts,
         user: user_ref,
-    }
-    .serialize(&mut data)
-    .map_err(|_| ErrorCode::DefaultError)?;
-    invoke_signed(
-        &Instruction {
-            program_id: clob_program.key(),
-            accounts: vec![
-                AccountMeta::new(clob_market.key(), false),
-                AccountMeta::new_readonly(velocity_signer.key(), true),
-            ],
-            data,
-        },
-        &[
-            clob_market.clone(),
-            velocity_signer.clone(),
-            clob_program.clone(),
-        ],
-        &[&get_signer_seeds(&state.signer_nonce)],
-    )?;
-    let (writer, ref_data) = get_return_data().ok_or_else(|| -> anchor_lang::error::Error {
-        msg!("clob place returned no order ref");
-        ErrorCode::DefaultError.into()
-    })?;
-    validate!(
-        writer == clob_program.key(),
-        ErrorCode::DefaultError,
-        "clob place return data written by {}",
-        writer
-    )?;
-    let order_ref = ClobOrderRefV0::deserialize(&mut ref_data.as_slice()).map_err(|_| {
-        msg!("clob place returned undecodable order ref");
-        ErrorCode::DefaultError
     })?;
 
     // Wake the cranks no later than this order matters.
@@ -489,11 +392,7 @@ pub fn try_place_remainder_on_clob<'info>(
         if max_ts != 0 {
             conditions.note_expiry(max_ts)?;
         }
-        let delay = crate::state::prop_amm::read_clob_u32(
-            &clob_market.try_borrow_data()?,
-            crate::state::prop_amm::CLOB_DEFAULT_ACTIVATION_DELAY_OFFSET,
-        )
-        .ok_or(ErrorCode::DefaultError)?;
+        let delay = clob.default_activation_delay_slots()?;
         if delay > 0 {
             conditions.note_activation(clock.slot.saturating_add(delay as u64))?;
         }

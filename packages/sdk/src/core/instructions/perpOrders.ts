@@ -58,8 +58,11 @@ export async function buildPlacePerpOrderInstruction(args: {
  * @param args.clobAccounts - pass the market's CLOB accounts (`quoter` registry entry,
  * writable `clobMarket`, `clobProgram`, `velocitySigner`, and optionally the writable
  * `crankConditions` wake-hint account) to have an unfilled limit remainder rest on the
- * CLOB instead of being cancelled. Omit for today's behavior.
- * @returns the unsigned `placeAndTakePerpOrder` `TransactionInstruction`.
+ * CLOB instead of being cancelled. Doing so builds `placeAndTakePerpOrderV1` instead —
+ * `placeAndTakePerpOrder`'s account list is frozen for ABI compatibility, so the CLOB
+ * route is a separate instruction on which those accounts are required. Omit for the v0
+ * instruction and its cancel-the-remainder behavior.
+ * @returns the unsigned `placeAndTakePerpOrder`/`placeAndTakePerpOrderV1` `TransactionInstruction`.
  */
 export async function buildPlaceAndTakePerpOrderInstruction(args: {
 	program: VelocityProgram;
@@ -78,9 +81,30 @@ export async function buildPlaceAndTakePerpOrderInstruction(args: {
 		crankConditions?: PublicKey;
 	};
 }): Promise<TransactionInstruction> {
-	// Anchor's optional-account convention: an omitted `Option` account is
-	// encoded as the program id, which the program decodes as `None`.
-	const omitted = args.program.programId;
+	if (args.clobAccounts) {
+		// Anchor's optional-account convention: an omitted `Option` account is
+		// encoded as the program id, which the program decodes as `None`. Only
+		// `crankConditions` is optional on v1 — the rest are required.
+		const omitted = args.program.programId;
+		return await args.program.instruction.placeAndTakePerpOrderV1(
+			args.orderParams,
+			args.optionalParams,
+			{
+				accounts: {
+					state: args.state,
+					user: args.user,
+					userStats: args.userStats,
+					authority: args.authority,
+					quoter: args.clobAccounts.quoter,
+					clobMarket: args.clobAccounts.clobMarket,
+					clobProgram: args.clobAccounts.clobProgram,
+					velocitySigner: args.clobAccounts.velocitySigner,
+					crankConditions: args.clobAccounts.crankConditions ?? omitted,
+				},
+				remainingAccounts: args.remainingAccounts,
+			}
+		);
+	}
 	return await args.program.instruction.placeAndTakePerpOrder(
 		args.orderParams,
 		args.optionalParams,
@@ -90,11 +114,6 @@ export async function buildPlaceAndTakePerpOrderInstruction(args: {
 				user: args.user,
 				userStats: args.userStats,
 				authority: args.authority,
-				quoter: args.clobAccounts?.quoter ?? omitted,
-				clobMarket: args.clobAccounts?.clobMarket ?? omitted,
-				clobProgram: args.clobAccounts?.clobProgram ?? omitted,
-				velocitySigner: args.clobAccounts?.velocitySigner ?? omitted,
-				crankConditions: args.clobAccounts?.crankConditions ?? omitted,
 			},
 			remainingAccounts: args.remainingAccounts,
 		}

@@ -35,14 +35,13 @@ use {
         error::ErrorCode,
         instructions::{constraints::*, relay_harness::StagedCall},
         load_mut, msg,
-        signer::get_signer_seeds,
         state::{
             clob_crank::{ClobCrankConditionsV0, CLOB_CRANK_CONDITIONS_PDA_SEED},
             pdas,
             perp_market::PerpMarket,
             prop_amm::{
-                clob_hint_scan, read_clob_node, ClobNodeView, ClobRemovedOrderV0, ClobUserRefV0,
-                QuoterType, QuoterV0, CLOB_NIL,
+                clob_hint_scan, read_clob_node, ClobEvictWorstArgsV0, ClobMarket, ClobNodeView,
+                ClobRemoveExpiredArgsV0, ClobRemovedOrderV0, ClobUserRefV0, QuoterV0, CLOB_NIL,
             },
             state::State,
             user::{User, UserStats},
@@ -50,10 +49,6 @@ use {
         validate,
     },
     anchor_lang::prelude::*,
-    solana_program::{
-        instruction::{AccountMeta, Instruction},
-        program::{get_return_data, invoke_signed},
-    },
 };
 
 /// Makers one profitable cross touches, bounded so the staged executor
@@ -116,16 +111,34 @@ pub struct CrankClobOrderRemoval<'info> {
     pub crank_conditions: Option<AccountLoader<'info, ClobCrankConditionsV0>>,
 }
 
+/// Which removal a crank is: the two differ only in the CLOB call they make
+/// and in what happens to a placed trigger's shadow slot — eviction re-arms
+/// it (eager, in this same tx), expiry frees it.
+pub enum ClobRemoval {
+    Evict(ClobEvictWorstArgsV0),
+    Expire(ClobRemoveExpiredArgsV0),
+}
+
+impl ClobRemoval {
+    fn invoke(self, clob: &ClobMarket) -> Result<ClobRemovedOrderV0> {
+        match self {
+            ClobRemoval::Evict(args) => clob.evict(args),
+            ClobRemoval::Expire(args) => clob.remove_expired(args),
+        }
+    }
+
+    fn is_evict(&self) -> bool {
+        matches!(self, ClobRemoval::Evict(_))
+    }
+}
+
 /// Shared crank body: CPI the removal, verify it hit the passed maker,
 /// unwind the aggregates, pay the keeper — quote from the maker in both
-/// modes, plus reservoir lamports in program-keeper mode. `is_evict` decides
-/// what happens to a placed trigger's shadow slot: eviction re-arms it
-/// (eager, in this same tx), expiry frees it.
+/// modes, plus reservoir lamports in program-keeper mode.
 pub fn crank_clob_removal(
     ctx: Context<CrankClobOrderRemoval>,
     market_index: u16,
-    cpi_data: Vec<u8>,
-    is_evict: bool,
+    removal: ClobRemoval,
 ) -> Result<()> {
     let clock = Clock::get()?;
     let state = ctx.accounts.state.load()?;
@@ -136,62 +149,18 @@ pub fn crank_clob_removal(
         "program-keeper crank requires the market's conditions account"
     )?;
 
-    {
-        let quoter = ctx.accounts.quoter.load()?;
-        validate!(
-            quoter.quoter_type == QuoterType::Clob,
-            ErrorCode::DefaultError,
-            "quoter entry is not a CLOB"
-        )?;
-        validate!(
-            quoter.market == market_index,
-            ErrorCode::DefaultError,
-            "quoter entry is for market {}, crank is for market {}",
-            quoter.market,
-            market_index
-        )?;
-        let registered = &quoter.execute_accounts[..quoter.execute_accounts_count as usize];
-        validate!(
-            registered
-                .iter()
-                .any(|meta| meta.pubkey == ctx.accounts.clob_market.key()),
-            ErrorCode::DefaultError,
-            "clob market is not registered on the quoter entry"
-        )?;
-    }
+    let clob = ClobMarket::from_quoter(
+        &*ctx.accounts.quoter.load()?,
+        market_index,
+        &ctx.accounts.clob_market,
+        &ctx.accounts.clob_program,
+        &ctx.accounts.velocity_signer,
+        state.signer_nonce,
+    )?;
 
     // CPI while no user borrows are held.
-    invoke_signed(
-        &Instruction {
-            program_id: ctx.accounts.clob_program.key(),
-            accounts: vec![
-                AccountMeta::new(ctx.accounts.clob_market.key(), false),
-                AccountMeta::new_readonly(ctx.accounts.velocity_signer.key(), true),
-            ],
-            data: cpi_data,
-        },
-        &[
-            ctx.accounts.clob_market.to_account_info(),
-            ctx.accounts.velocity_signer.to_account_info(),
-            ctx.accounts.clob_program.to_account_info(),
-        ],
-        &[&get_signer_seeds(&state.signer_nonce)],
-    )?;
-    let (writer, removed_data) =
-        get_return_data().ok_or_else(|| -> anchor_lang::error::Error {
-            msg!("clob removal returned no removed order");
-            ErrorCode::DefaultError.into()
-        })?;
-    validate!(
-        writer == ctx.accounts.clob_program.key(),
-        ErrorCode::DefaultError,
-        "clob removal return data written by {}",
-        writer
-    )?;
-    let removed = ClobRemovedOrderV0::deserialize(&mut removed_data.as_slice()).map_err(|_| {
-        msg!("clob removal returned undecodable removed order");
-        ErrorCode::DefaultError
-    })?;
+    let is_evict = removal.is_evict();
+    let removed = removal.invoke(&clob)?;
     {
         let user = crate::load!(ctx.accounts.user)?;
         validate!(
@@ -312,19 +281,7 @@ pub struct ResolveClobCrank<'info> {
 pub fn validate_linkage(ctx: &Context<ResolveClobCrank>) -> Result<()> {
     let quoter = ctx.accounts.quoter.load()?;
     let conditions = ctx.accounts.crank_conditions.load()?;
-    validate!(
-        quoter.quoter_type == QuoterType::Clob && quoter.market == conditions.market_index,
-        ErrorCode::DefaultError,
-        "quoter entry does not match the conditions account"
-    )?;
-    let registered = &quoter.execute_accounts[..quoter.execute_accounts_count as usize];
-    validate!(
-        registered
-            .iter()
-            .any(|meta| meta.pubkey == ctx.accounts.clob_market.key()),
-        ErrorCode::DefaultError,
-        "clob market is not registered on the quoter entry"
-    )?;
+    quoter.validate_clob_book(conditions.market_index, &ctx.accounts.clob_market.key())?;
     Ok(())
 }
 
@@ -465,8 +422,16 @@ pub fn find_fired_trigger(
             .max(0) as u64;
 
     for order in user.orders.iter() {
+        // A trigger slot already placed on the CLOB is a shadow, not armed
+        // work: it deliberately reads as *untriggered* so every DLOB matching
+        // path ignores it, which means the `triggered()` test below does not
+        // exclude it. Without this, discovery keeps re-firing an order that is
+        // already resting on the book — `trigger_clob_order` then rejects the
+        // staged crank with `OrderPlacedOnClob` every round, burning turner
+        // work and starving genuinely armed triggers behind it.
         if order.status != crate::state::user::OrderStatus::Open
             || order.market_index != market.market_index
+            || order.is_placed_on_clob()
             || !order.must_be_triggered()
             || order.triggered()
         {

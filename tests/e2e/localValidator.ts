@@ -65,6 +65,7 @@ import {
 	getUserStatsAccountPublicKey,
 	getRelayScratchPublicKey,
 	getUserConditionsPublicKey,
+	getQuoterSignerPublicKey,
 	getVelocitySignerPublicKey,
 	OracleSource,
 	PEG_PRECISION,
@@ -197,12 +198,12 @@ const clobIx = {
 	/** `initialize_market_v0` over market 0, with the admin CLI's defaults. */
 	initializeMarket(
 		payer: PublicKey,
-		velocitySigner: PublicKey,
+		placeAuthority: PublicKey,
 		book: PublicKey
 	): TransactionInstruction {
 		return new TransactionInstruction({
 			programId: CLOB_ID,
-			keys: [signerRo(payer), ro(velocitySigner), rw(book)],
+			keys: [signerRo(payer), ro(placeAuthority), rw(book)],
 			data: Buffer.concat([
 				ixDiscriminator('initialize_market_v0'),
 				u16(0), // market_index
@@ -247,7 +248,7 @@ const midpointIx = {
 		payer: PublicKey;
 		config: PublicKey;
 		maker: PublicKey;
-		velocitySigner: PublicKey;
+		executeAuthority: PublicKey;
 		hot: PublicKey;
 		instance: PublicKey;
 	}): TransactionInstruction {
@@ -257,7 +258,7 @@ const midpointIx = {
 				signerRw(accounts.payer),
 				signerRo(accounts.config),
 				signerRo(accounts.maker),
-				ro(accounts.velocitySigner),
+				ro(accounts.executeAuthority),
 				ro(accounts.hot),
 				rw(accounts.instance),
 				ro(SystemProgram.programId),
@@ -393,6 +394,8 @@ describe('e2e localnet: programs + publisher + redis', function () {
 	let midInstance: PublicKey;
 	let midEntry: PublicKey;
 	let velocitySigner: PublicKey;
+	/** The signer for quoter CPIs and CLOB calls — never the vault authority. */
+	let quoterSigner: PublicKey;
 	/** Resolved during bring-up: `routerTail` is synchronous. */
 	let statePdaCache: PublicKey;
 	let protocolUser: PublicKey;
@@ -642,7 +645,7 @@ describe('e2e localnet: programs + publisher + redis', function () {
 				await createAccount(clobBook.publicKey, space, CLOB_ID),
 				clobIx.initializeMarket(
 					payer.publicKey,
-					velocitySigner,
+					quoterSigner,
 					clobBook.publicKey
 				),
 			],
@@ -658,7 +661,7 @@ describe('e2e localnet: programs + publisher + redis', function () {
 			quoteLeg: [{ pubkey: clobBook.publicKey, isWritable: true }],
 			executeLeg: [
 				{ pubkey: clobBook.publicKey, isWritable: true },
-				{ pubkey: velocitySigner, isWritable: false },
+				{ pubkey: quoterSigner, isWritable: false },
 			],
 		});
 		clobEntry = registration.quoter;
@@ -702,7 +705,7 @@ describe('e2e localnet: programs + publisher + redis', function () {
 					payer: payer.publicKey,
 					config: midConfigKp.publicKey,
 					maker: midMakerKp.publicKey,
-					velocitySigner,
+					executeAuthority: quoterSigner,
 					hot: midHotKp.publicKey,
 					instance: midInstance,
 				}),
@@ -731,7 +734,7 @@ describe('e2e localnet: programs + publisher + redis', function () {
 			],
 			executeLeg: [
 				{ pubkey: midInstance, isWritable: true },
-				{ pubkey: velocitySigner, isWritable: false },
+				{ pubkey: quoterSigner, isWritable: false },
 				{ pubkey: SYSVAR_INSTRUCTIONS_PUBKEY, isWritable: false },
 				{ pubkey: statePda, isWritable: false },
 			],
@@ -805,7 +808,7 @@ describe('e2e localnet: programs + publisher + redis', function () {
 					quoter: clobEntry,
 					clobMarket: clobBook.publicKey,
 					clobProgram: CLOB_ID,
-					velocitySigner,
+					quoterSigner,
 					crankConditions: conditions,
 					// No fast activation here: absent, encoded as the
 					// program id (anchor's `None`).
@@ -956,7 +959,7 @@ describe('e2e localnet: programs + publisher + redis', function () {
 		ro(clobEntry),
 		ro(midEntry),
 		rw(clobBook.publicKey),
-		ro(velocitySigner),
+		ro(quoterSigner),
 		ro(CLOB_ID),
 		rw(midInstance),
 		ro(SYSVAR_INSTRUCTIONS_PUBKEY),
@@ -1048,6 +1051,7 @@ describe('e2e localnet: programs + publisher + redis', function () {
 		await airdrop(relayPayout.publicKey, 1);
 
 		velocitySigner = getVelocitySignerPublicKey(VELOCITY_ID);
+		quoterSigner = getQuoterSignerPublicKey(VELOCITY_ID);
 		usdcMint = await createUsdcMint();
 
 		// $100 oracle through the pyth stub program (drivable on a real
@@ -1440,7 +1444,7 @@ describe('e2e localnet: programs + publisher + redis', function () {
 				quoter: clobEntry,
 				clobMarket: clobBook.publicKey,
 				clobProgram: CLOB_ID,
-				velocitySigner,
+				quoterSigner,
 				crankConditions: conditions,
 			}
 		);

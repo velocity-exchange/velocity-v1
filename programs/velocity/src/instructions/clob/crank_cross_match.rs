@@ -282,7 +282,9 @@ pub fn handle_resolve_crank_cross_match(ctx: Context<ResolveClobCrank>) -> Resul
                 conditions.quote_spot_market_index,
             )
         };
-        let signer = ctx.accounts.state.load()?.signer;
+        // The CLOB's execute leg is signed by the quoter CPI signer, not the
+        // vault authority — stage the one the executor will actually sign as.
+        let (quoter_signer, _) = crate::signer::find_quoter_signer();
         let (protocol_user, protocol_user_stats) = pdas::protocol_user_pair();
 
         // Named accounts through the executor's own client struct (compile-time
@@ -301,7 +303,7 @@ pub fn handle_resolve_crank_cross_match(ctx: Context<ResolveClobCrank>) -> Resul
         Ok(Some(
             call.account(ctx.accounts.quoter.key(), false)
                 .account(ctx.accounts.clob_market.key(), true)
-                .account(signer, false)
+                .account(quoter_signer, false)
                 .account(ctx.accounts.quoter.load()?.program_id, false)
                 .arg(market_index)?
                 .arg(cross.size)?

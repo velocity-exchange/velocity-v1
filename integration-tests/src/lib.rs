@@ -69,6 +69,13 @@ pub fn velocity_signer_pda() -> (Pubkey, u8) {
     Pubkey::find_program_address(&[b"velocity_signer"], &velocity_id())
 }
 
+/// The signer velocity uses for quoter CPIs and its CLOB calls — deliberately
+/// a different PDA from [`velocity_signer_pda`], which is the token authority
+/// on every vault and must never reach an external program.
+pub fn quoter_signer_pda() -> (Pubkey, u8) {
+    Pubkey::find_program_address(&[b"quoter_signer"], &velocity_id())
+}
+
 /// Anchor default instruction discriminator: sha256("global:<name>")[..8].
 pub fn ix_discriminator(name: &str) -> [u8; 8] {
     use sha2::{Digest, Sha256};

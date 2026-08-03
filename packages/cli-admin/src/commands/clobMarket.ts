@@ -181,6 +181,11 @@ export function registerClobMarket(parent: Command): void {
 				'1500'
 			)
 			.option(
+				'--min-cross-surplus <quote>',
+				"floor on what the protocol must net from a cross-match crank, QUOTE_PRECISION (1e6). Cranking a cross pays the reservoir's keeper fee, so a cross that clears by a cent is one worth declining",
+				'0'
+			)
+			.option(
 				'--fund-reservoir <lamports>',
 				'lamports transferred to the conditions reservoir after the attach'
 			)
@@ -198,6 +203,7 @@ export function registerClobMarket(parent: Command): void {
 				capacity: string;
 				quoterUser: string;
 				expireFallbackSlots: string;
+				minCrossSurplus: string;
 				fundReservoir?: string;
 				relayProgram: string;
 			},
@@ -328,6 +334,7 @@ export function registerClobMarket(parent: Command): void {
 				const attach = client.program.instruction.updatePerpMarketClobQuoter(
 					new BN(keeperPaymentLamports),
 					new BN(flags.expireFallbackSlots),
+					new BN(flags.minCrossSurplus),
 					{
 						accounts: {
 							admin: wallet,

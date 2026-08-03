@@ -2391,6 +2391,7 @@ pub fn handle_update_perp_market_clob_quoter(
     ctx: Context<AdminUpdatePerpMarketClobQuoter>,
     keeper_payment_lamports: u64,
     expire_fallback_slots: u64,
+    min_cross_surplus: u64,
 ) -> Result<()> {
     let perp_market = &mut load_mut!(ctx.accounts.perp_market)?;
     msg!("perp market {}", perp_market.market_index);
@@ -2442,6 +2443,7 @@ pub fn handle_update_perp_market_clob_quoter(
         },
         perp_market.market_index,
         keeper_payment_lamports,
+        min_cross_surplus,
         expire_fallback_slots,
         initial_expire_wake_ts,
         initial_activation_wake_slot,

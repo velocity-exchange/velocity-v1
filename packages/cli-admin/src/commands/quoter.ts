@@ -426,7 +426,7 @@ export function registerQuoter(parent: Command): void {
 		quoter
 			.command('set-priority <quoter> <priority>')
 			.description(
-				'Set a quoter registry entry\'s routing priority (warm/cold admin): at a price, lower-priority tiers fill first, pro rata within a tier. Registration defaults by type (vamm 0, clob 10, custom 20). Admin-only — a maker choosing their own priority could jump the vAMM/CLOB. <priority> = 0-255.'
+				"Set a quoter registry entry's routing priority (warm/cold admin): at a price, lower-priority tiers fill first, pro rata within a tier. Registration defaults by type (vamm 0, clob 10, custom 20). Admin-only — a maker choosing their own priority could jump the vAMM/CLOB. <priority> = 0-255."
 			)
 			.option(
 				'--admin <pubkey>',
@@ -480,6 +480,11 @@ export function registerQuoter(parent: Command): void {
 				"Name a perp market's canonical CLOB quoter entry (warm/cold admin): once set, every router fill must carry it (mandatory baseline). Also stands up (or re-prices) the market's relay crank conditions account in the same instruction — the evict/expire condition block plus the lamport reservoir that pays relay keepers <keeperPaymentLamports> per crank. Top the reservoir off with a plain lamport transfer to the conditions PDA. [expireFallbackSlots] is the expire fallback poll interval (default 1500 slots, ~10 min)."
 			)
 			.option(
+				'--min-cross-surplus <quote>',
+				"floor on what the protocol must net from a cross-match crank, in QUOTE_PRECISION (1e6). Cranking a cross pays the reservoir's keeper fee, so a cross that clears by a cent is one worth declining. 0 keeps the bare strictly-profitable rule",
+				'0'
+			)
+			.option(
 				'--admin <pubkey>',
 				'admin signer (defaults to the wallet; pass the vault PDA with --multisig)'
 			)
@@ -490,7 +495,7 @@ export function registerQuoter(parent: Command): void {
 			clobMarket: string,
 			keeperPaymentLamports: string,
 			expireFallbackSlots: string | undefined,
-			flags: { admin?: string },
+			flags: { admin?: string; minCrossSurplus: string },
 			cmd: Command
 		) => {
 			const marketIndex = Number.parseInt(market, 10);
@@ -501,6 +506,7 @@ export function registerQuoter(parent: Command): void {
 				const ix = client.program.instruction.updatePerpMarketClobQuoter(
 					new BN(keeperPaymentLamports),
 					new BN(expireFallbackSlots ?? 1500),
+					new BN(flags.minCrossSurplus),
 					{
 						accounts: {
 							admin: flags.admin
@@ -545,9 +551,15 @@ export function registerQuoter(parent: Command): void {
 			.description(
 				"Declare (or clear) a Custom quoter's reprice-watch region — the account bytes whose change means the quoter may quote differently (a midpoint's mid region). Relay cross-discovery conditions wake on it. Clears admin approval (admin re-vets). Signer must be the entry authority."
 			)
-			.option('--watch-account <pubkey>', 'account whose bytes the watch covers')
+			.option(
+				'--watch-account <pubkey>',
+				'account whose bytes the watch covers'
+			)
 			.requiredOption('--offset <n>', 'watch region offset (account data)')
-			.requiredOption('--len <n>', 'watch region length; 0 clears the declaration')
+			.requiredOption(
+				'--len <n>',
+				'watch region length; 0 clears the declaration'
+			)
 			.option(
 				'-a, --authority <pubkey>',
 				'entry authority (must sign; defaults to the wallet)'
@@ -595,7 +607,9 @@ export function registerQuoter(parent: Command): void {
 					'velocity-admin quoter set-watch'
 				);
 				reportDispatch(
-					`quoter ${quoterArg} watch ${watchLen > 0 ? 'declared' : 'cleared'} (approval cleared)`,
+					`quoter ${quoterArg} watch ${
+						watchLen > 0 ? 'declared' : 'cleared'
+					} (approval cleared)`,
 					result
 				);
 			} finally {
@@ -642,9 +656,9 @@ export function registerQuoter(parent: Command): void {
 					[Buffer.from('quoter_cross_conditions'), quoterKey.toBuffer()],
 					client.program.programId
 				)[0];
-				const market = await (
-					client.program.account as any
-				).perpMarket.fetch(perpMarket);
+				const market = await (client.program.account as any).perpMarket.fetch(
+					perpMarket
+				);
 				const ix = client.program.instruction.initializeQuoterCrossConditions(
 					new BN(flags.fallbackSlots),
 					{
@@ -674,4 +688,3 @@ export function registerQuoter(parent: Command): void {
 		}
 	);
 }
-

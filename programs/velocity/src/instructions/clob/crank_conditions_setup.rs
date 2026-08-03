@@ -55,6 +55,7 @@ pub fn write_clob_crank_conditions(
     keys: &ClobCrankConditionKeys,
     market_index: u16,
     keeper_payment_lamports: u64,
+    min_cross_surplus: u64,
     expire_fallback_slots: u64,
     initial_expire_wake_ts: i64,
     initial_activation_wake_slot: u64,
@@ -95,6 +96,7 @@ pub fn write_clob_crank_conditions(
 
     conditions.market_index = market_index;
     conditions.keeper_payment_lamports = keeper_payment_lamports;
+    conditions.min_cross_surplus = min_cross_surplus;
     conditions.oracle = keys.oracle;
     conditions.quote_spot_market_index = keys.quote_spot_market_index;
     conditions.set_condition(

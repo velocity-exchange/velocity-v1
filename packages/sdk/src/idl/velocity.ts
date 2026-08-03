@@ -12596,6 +12596,10 @@ export type Velocity = {
         {
           "name": "expireFallbackSlots",
           "type": "u64"
+        },
+        {
+          "name": "minCrossSurplus",
+          "type": "u64"
         }
       ]
     },
@@ -20556,6 +20560,23 @@ export type Velocity = {
             "type": "u64"
           },
           {
+            "name": "minCrossSurplus",
+            "docs": [
+              "Floor on the protocol's quote surplus from a cross-match crank, in",
+              "QUOTE_PRECISION. A cross costs the protocol real SOL — the reservoir",
+              "pays `keeper_payment_lamports` to whoever cranked it — so a cross that",
+              "clears by a cent is a cross worth declining. Zero keeps the bare",
+              "\"strictly profitable\" rule.",
+              "",
+              "Denominated in quote rather than derived from the lamport cost because",
+              "the conversion needs a SOL price, and the cross crank carries no SOL",
+              "oracle (it holds the perp's oracle and its map section, nothing more).",
+              "Admins set it to cover the lamport payout with margin and re-price it",
+              "alongside `keeper_payment_lamports`, which is the same cadence."
+            ],
+            "type": "u64"
+          },
+          {
             "name": "marketIndex",
             "docs": [
               "The perp market these conditions crank. Also the PDA seed."
@@ -20573,7 +20594,7 @@ export type Velocity = {
           {
             "name": "padding",
             "docs": [
-              "Tail reserve: 12 bytes of alignment slack plus room for two more",
+              "Tail reserve: 4 bytes of alignment slack plus room for two more",
               "captured pubkeys, so a resolver that needs another fixed account can",
               "take it from here instead of forcing an `extend_account` migration on",
               "every market's conditions."
@@ -20581,7 +20602,7 @@ export type Velocity = {
             "type": {
               "array": [
                 "u8",
-                76
+                68
               ]
             }
           }

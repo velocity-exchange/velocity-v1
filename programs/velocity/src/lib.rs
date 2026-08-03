@@ -1344,8 +1344,14 @@ pub mod velocity {
         ctx: Context<AdminUpdatePerpMarketClobQuoter>,
         keeper_payment_lamports: u64,
         expire_fallback_slots: u64,
+        min_cross_surplus: u64,
     ) -> Result<()> {
-        handle_update_perp_market_clob_quoter(ctx, keeper_payment_lamports, expire_fallback_slots)
+        handle_update_perp_market_clob_quoter(
+            ctx,
+            keeper_payment_lamports,
+            expire_fallback_slots,
+            min_cross_surplus,
+        )
     }
 
     pub fn update_perp_market_contract_tier(

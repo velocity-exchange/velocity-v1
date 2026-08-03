@@ -4156,6 +4156,10 @@ pub fn cross_match(
     spot_market_map: &SpotMarketMap,
     oracle_map: &mut OracleMap,
     clock: &Clock,
+    // Floor on the protocol's quote surplus, from the market's crank
+    // conditions. A cross the protocol nets less than this on is not worth
+    // the lamports the reservoir pays out for it.
+    min_surplus: u64,
 ) -> VelocityResult<(u64, u64)> {
     let now = clock.unix_timestamp;
     let slot = clock.slot;
@@ -4545,10 +4549,11 @@ pub fn cross_match(
         .quote_asset_amount
         .safe_sub(quote_before)?;
     validate!(
-        surplus > 0,
+        surplus > 0 && surplus.unsigned_abs() >= min_surplus,
         ErrorCode::CrossMatchUnprofitable,
-        "cross surplus {} not positive (fees are the gulf)",
-        surplus
+        "cross surplus {} below the market's floor of {} (fees are the gulf)",
+        surplus,
+        min_surplus
     )?;
     taker.update_last_active_slot(slot);
 

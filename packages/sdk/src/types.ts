@@ -454,6 +454,8 @@ export type ClobCrankConditionsV0Account = {
 	oracle: PublicKey;
 	/** lamports paid to the keeper per crank, drawn from this account's balance */
 	keeperPaymentLamports: BN;
+	/** floor on the protocol's quote surplus from a cross-match crank, QUOTE_PRECISION (1e6); cranking a cross pays the reservoir's keeper fee, so a cross that clears by less is declined. 0 = strictly-profitable only */
+	minCrossSurplus: BN;
 	marketIndex: number;
 	quoteSpotMarketIndex: number;
 	padding: number[];

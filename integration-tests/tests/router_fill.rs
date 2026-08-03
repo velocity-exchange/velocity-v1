@@ -1235,6 +1235,16 @@ fn set_protocol_user(svm: &mut litesvm::LiteSVM) -> Pubkey {
 /// Attach the CLOB to the market through the admin ix — which also stands up
 /// the crank conditions account, so no separate init exists to call.
 fn init_crank_conditions(fixture: &mut Fixture, keeper_payment_lamports: u64) -> Pubkey {
+    init_crank_conditions_with_floor(fixture, keeper_payment_lamports, 0)
+}
+
+/// `min_cross_surplus` is the floor on what the protocol must net from a
+/// cross-match crank; 0 is the bare "strictly profitable" rule.
+fn init_crank_conditions_with_floor(
+    fixture: &mut Fixture,
+    keeper_payment_lamports: u64,
+    min_cross_surplus: u64,
+) -> Pubkey {
     let conditions = crank_conditions_pda();
     let ix = Instruction {
         program_id: velocity_id(),
@@ -1254,6 +1264,7 @@ fn init_crank_conditions(fixture: &mut Fixture, keeper_payment_lamports: u64) ->
         data: velocity::instruction::UpdatePerpMarketClobQuoter {
             keeper_payment_lamports,
             expire_fallback_slots: 100,
+            min_cross_surplus,
         }
         .data(),
     };
@@ -1893,6 +1904,118 @@ fn placed_trigger_cancels_through_the_clob_only() {
     assert_eq!(maker.open_orders, 0);
     assert_eq!(maker.perp_positions[0].open_asks, 0);
     assert_eq!(clob_ask_count(&fixture.svm, &fixture.clob_market), 0);
+}
+
+/// A cross the protocol barely clears is a cross worth declining: cranking
+/// one costs the reservoir real lamports, so the market's `min_cross_surplus`
+/// floors what the protocol must net before the crank is allowed to land.
+/// The spread here is ~$1 on half a unit, so a $10 floor is out of reach and
+/// a zero floor is not.
+#[test]
+fn a_cross_below_the_markets_surplus_floor_is_declined() {
+    let mut fixture = setup();
+    const PAYMENT: u64 = 10_000;
+    // Floor far above the achievable spread, in QUOTE_PRECISION.
+    let conditions = init_crank_conditions_with_floor(&mut fixture, PAYMENT, 10 * 1_000_000);
+    let protocol_user = set_protocol_user(&mut fixture.svm);
+    let (signer, _) = velocity_signer_pda();
+    let protocol_stats =
+        Pubkey::find_program_address(&[b"user_stats", signer.as_ref()], &velocity_id()).0;
+    fixture.svm.airdrop(&conditions, 1_000_000_000).unwrap();
+
+    let maker_stats = Pubkey::find_program_address(
+        &[
+            b"user_stats",
+            fixture.clob_maker_authority.pubkey().as_ref(),
+        ],
+        &velocity_id(),
+    )
+    .0;
+    set_user_stats_account(
+        &mut fixture.svm,
+        maker_stats,
+        &fixture.clob_maker_authority.pubkey(),
+    );
+
+    // Crossed against themselves: ask 0.5 @ 99, bid 0.5 @ 101.
+    place_clob_ask(&mut fixture, 99 * PRICE, UNIT / 2);
+    let ix = place_clob_order_ix(
+        fixture.clob_maker_user,
+        &fixture.clob_maker_authority,
+        fixture.quoter,
+        fixture.clob_market,
+        fixture.oracle,
+        None,
+        PlaceClobOrderParams {
+            market_index: 0,
+            direction: PositionDirection::Long,
+            price: 101 * PRICE,
+            base_asset_amount: UNIT / 2,
+            max_ts: 0,
+            activation_delay_slots: Some(0),
+        },
+    );
+    let maker_authority = fixture.clob_maker_authority.insecure_clone();
+    send(&mut fixture.svm, &maker_authority, ix, &[]).unwrap();
+    fixture.svm.warp_to_slot(12);
+    set_oracle(
+        &mut fixture.svm,
+        fixture.oracle,
+        (100 * PRICE_PRECISION) as i64,
+        12,
+    );
+
+    let payout = Pubkey::new_unique();
+    fixture.svm.airdrop(&payout, 1_000_000_000).unwrap();
+    let cross_ix = || {
+        let mut accounts = velocity::accounts::CrankCrossMatch {
+            state: state_pda(),
+            authority: payout,
+            taker: protocol_user,
+            taker_stats: protocol_stats,
+            crank_conditions: conditions,
+        }
+        .to_account_metas(None);
+        accounts.push(AccountMeta::new_readonly(fixture.oracle, false));
+        accounts.push(AccountMeta::new(spot_market_pda(0), false));
+        accounts.push(AccountMeta::new(perp_market_pda(0), false));
+        accounts.push(AccountMeta::new(fixture.clob_maker_user, false));
+        accounts.push(AccountMeta::new(maker_stats, false));
+        accounts.push(AccountMeta::new_readonly(fixture.quoter, false));
+        accounts.push(AccountMeta::new(fixture.clob_market, false));
+        accounts.push(AccountMeta::new_readonly(quoter_signer_pda().0, false));
+        accounts.push(AccountMeta::new_readonly(clob_id(), false));
+        Instruction {
+            program_id: velocity_id(),
+            accounts,
+            data: velocity::instruction::CrankCrossMatch {
+                market_index: 0,
+                size: UNIT,
+                buy_quoter_index: 0,
+                sell_quoter_index: 0,
+            }
+            .data(),
+        }
+    };
+    let ix = cross_ix();
+    let keeper = fixture.keeper.insecure_clone();
+    let err = send(&mut fixture.svm, &keeper, ix.clone(), &[]).unwrap_err();
+    let logs = err.meta.logs.join(" ");
+    assert!(
+        logs.contains("CrossMatchUnprofitable") || logs.contains("below the market's floor"),
+        "expected the floor to decline the cross, got: {logs}"
+    );
+    // Nothing happened: the book still holds both sides.
+    let maker: User = read_zero_copy(&fixture.svm, &fixture.clob_maker_user);
+    assert_eq!(maker.perp_positions[0].open_orders, 2);
+
+    // Re-price the floor to zero — the same cross now lands, so it was the
+    // floor that declined it and not the cross itself.
+    init_crank_conditions_with_floor(&mut fixture, PAYMENT, 0);
+    send(&mut fixture.svm, &keeper, ix, &[]).unwrap();
+    let maker: User = read_zero_copy(&fixture.svm, &fixture.clob_maker_user);
+    assert_eq!(maker.perp_positions[0].open_orders, 0);
+    assert_eq!(maker.perp_positions[0].base_asset_amount, 0);
 }
 
 /// A crossed CLOB (bid above ask) is matched by the cross crank: the

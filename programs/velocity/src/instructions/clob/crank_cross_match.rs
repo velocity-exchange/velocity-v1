@@ -201,6 +201,7 @@ pub fn handle_crank_cross_match<'c: 'info, 'info>(
         &spot_market_map,
         &mut oracle_map,
         &clock,
+        ctx.accounts.crank_conditions.load()?.min_cross_surplus,
     )?;
 
     // Repair the wake hints from the post-match book when a leg was the

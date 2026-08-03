@@ -114,16 +114,28 @@ pub struct ClobCrankConditionsV0 {
     /// reservoir stops cranks rather than silently paying nothing, which is the
     /// failure mode ops can actually see.
     pub keeper_payment_lamports: u64,
+    /// Floor on the protocol's quote surplus from a cross-match crank, in
+    /// QUOTE_PRECISION. A cross costs the protocol real SOL — the reservoir
+    /// pays `keeper_payment_lamports` to whoever cranked it — so a cross that
+    /// clears by a cent is a cross worth declining. Zero keeps the bare
+    /// "strictly profitable" rule.
+    ///
+    /// Denominated in quote rather than derived from the lamport cost because
+    /// the conversion needs a SOL price, and the cross crank carries no SOL
+    /// oracle (it holds the perp's oracle and its map section, nothing more).
+    /// Admins set it to cover the lamport payout with margin and re-price it
+    /// alongside `keeper_payment_lamports`, which is the same cadence.
+    pub min_cross_surplus: u64,
     /// The perp market these conditions crank. Also the PDA seed.
     pub market_index: u16,
     /// The market's quote spot market, captured at attach time (the staged
     /// executor's map section needs its PDA).
     pub quote_spot_market_index: u16,
-    /// Tail reserve: 12 bytes of alignment slack plus room for two more
+    /// Tail reserve: 4 bytes of alignment slack plus room for two more
     /// captured pubkeys, so a resolver that needs another fixed account can
     /// take it from here instead of forcing an `extend_account` migration on
     /// every market's conditions.
-    pub padding: [u8; 76],
+    pub padding: [u8; 68],
 }
 
 // `padding` is longer than 32 bytes, which `#[derive(Default)]` does not
@@ -134,9 +146,10 @@ impl Default for ClobCrankConditionsV0 {
             relay: RelayBlock::default(),
             oracle: Pubkey::default(),
             keeper_payment_lamports: 0,
+            min_cross_surplus: 0,
             market_index: 0,
             quote_spot_market_index: 0,
-            padding: [0; 76],
+            padding: [0; 68],
         }
     }
 }
@@ -148,9 +161,10 @@ impl ClobCrankConditionsV0 {
         + RelayBlockV0::<CLOB_CRANK_CONDITIONS, CLOB_CRANK_RESOLVER_CAPACITY>::SIZE
         + 32
         + 8
+        + 8
         + 2
         + 2
-        + 76;
+        + 68;
 
     /// Store the resolver account list and describe where it landed.
     pub fn write_resolvers(
@@ -329,6 +343,19 @@ mod tests {
         super::*,
         relay_spec::{bytemuck::Zeroable, ResolvedCrankV0, ResponsePointerV0},
     };
+
+    /// The surplus floor came out of the padding tail, so the account's size
+    /// — and therefore every live conditions PDA — is untouched by it. If this
+    /// fails, the field was added rather than carved and attaching a CLOB
+    /// needs a resize.
+    #[test]
+    fn the_cross_surplus_floor_costs_no_account_space() {
+        assert_eq!(std::mem::size_of::<ClobCrankConditionsV0>(), 1_568);
+        assert_eq!(ClobCrankConditionsV0::SIZE, 1_576);
+        // Default is the bare "strictly profitable" rule: a market that never
+        // sets a floor behaves as it did before the field existed.
+        assert_eq!(ClobCrankConditionsV0::default().min_cross_surplus, 0);
+    }
 
     #[test]
     fn size_matches_the_layout_and_the_spec() {

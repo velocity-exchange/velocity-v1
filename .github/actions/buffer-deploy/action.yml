@@ -11,7 +11,7 @@ description: >
   proposal.
 inputs:
   program:
-    description: "Program lib name (velocity | token_faucet | jit_proxy)"
+    description: "Program lib name (velocity | token_faucet)"
     required: true
   program-id:
     description: "On-chain program ID being upgraded (for the resize check)"

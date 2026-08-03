@@ -4,8 +4,8 @@
 //! (manual / scheduled). Requires `TEST_DEVNET_RPC_ENDPOINT` and a funded
 //! `TEST_PRIVATE_KEY`, and an initialized devnet (run `deploy-scripts/init-devnet.ts`).
 //!
-//! Hybrid intent: for actions a DEPLOYED bot owns (DLOB fills, JIT fills,
-//! liquidations, pnl settling, mark-twap crank) the test sets up one side and
+//! Hybrid intent: for actions a DEPLOYED bot owns (DLOB fills, liquidations,
+//! pnl settling, mark-twap crank) the test sets up one side and
 //! polls for the bot to act; pure user actions (deposit/withdraw/AMM-take) are
 //! driven directly. Each scenario owns a fixed, REUSED subaccount of the one
 //! funded payer (see the `SUB_*` ids + `TestCtx::acquire`, which resets the
@@ -13,8 +13,8 @@
 //! allocation leaked rent and exhausted the monotonic u16 sub-account-id space.
 //! Run with `--test-threads=1`.
 //!
-//! Bot-timing-dependent scenarios (jit-maker incentive, liquidation via oracle
-//! drift, settler thresholds) RUN — their setup is deterministic and they treat
+//! Bot-timing-dependent scenarios (liquidation via oracle drift, settler
+//! thresholds) RUN — their setup is deterministic and they treat
 //! "bot didn't act in time" as inconclusive (warn, not failure), so they're safe
 //! in the nightly non-gating job. `#[ignore]` is reserved for scenarios whose
 //! setup itself can't be established on devnet right now (swift HTTP 502, SOL
@@ -58,11 +58,10 @@ const SUB_TAKER_AMM: u16 = 3;
 const SUB_TAKER_JIT: u16 = 4;
 const SUB_DLOB_MAKER: u16 = 5;
 const SUB_DLOB_TAKER: u16 = 6;
-const SUB_JIT_AUCTION: u16 = 7;
-const SUB_BAD_PERP: u16 = 8;
-const SUB_BAD_SPOT_BORROW: u16 = 9;
-const SUB_UNSETTLED_PNL: u16 = 10;
-const SUB_SWIFT: u16 = 11;
+const SUB_BAD_PERP: u16 = 7;
+const SUB_BAD_SPOT_BORROW: u16 = 8;
+const SUB_UNSETTLED_PNL: u16 = 9;
+const SUB_SWIFT: u16 = 10;
 
 /// A marketable 1-SOL limit order priced 5% through the oracle in the trade
 /// direction, so it crosses the AMM and the DEPLOYED filler fills it against the
@@ -670,50 +669,6 @@ async fn mark_twap_crank_advances() {
         (1..=180).contains(&delta),
         "mark-twap ts advanced by {delta}s; expected 1..=180 (≈crank cadence within the poll)"
     );
-}
-
-// ---- Scenario 2: JIT auction taker, DEPLOYED jit-maker fills ---------------
-// Nightly-safe: warn-skips (not fails) if the jit-maker doesn't fill in time, so
-// it never blocks. Verified live: the deployed jit-maker fills the 1-SOL auction.
-#[tokio::test]
-async fn jit_auction_filled_by_jit_maker() {
-    let ctx = TestCtx::new().await;
-    let sub = ctx.acquire(SUB_JIT_AUCTION).await;
-    ctx.fund_and_deposit_dusdt(sub, 100).await;
-
-    let px = ctx.client.oracle_price(SOL_PERP).await.expect("oracle");
-    // Rest (place_orders, NOT place_and_take) an oracle auction order generous to
-    // the maker so the jit-maker is incentivized to fill during the auction.
-    let order = OrderParams {
-        order_type: OrderType::Oracle,
-        market_type: MarketType::Perp,
-        market_index: 0,
-        direction: PositionDirection::Long,
-        base_asset_amount: ONE_SOL as u64,
-        oracle_price_offset: Some(px / 50), // +2% room
-        auction_start_price: Some(0),
-        auction_end_price: Some(px / 50),
-        auction_duration: Some(30),
-        ..Default::default()
-    };
-    let tx = ctx
-        .client
-        .init_tx(&sub, false)
-        .await
-        .unwrap()
-        .place_orders(vec![order])
-        .build();
-    ctx.send_confirmed(tx).await;
-
-    // If the jit-maker fills, it fills the whole 1-SOL auction order (exact base).
-    if ctx
-        .wait_perp_base_eq(sub, 0, ONE_SOL, Duration::from_secs(60))
-        .await
-        .is_none()
-    {
-        log::warn!("INCONCLUSIVE: jit-maker did not fill the 1-SOL auction within 60s");
-    }
-    ctx.cleanup(sub).await;
 }
 
 // ---- Scenario 1s / 2s: swift taker submitted to deployed swift server -------

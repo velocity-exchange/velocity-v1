@@ -102,9 +102,6 @@ enabledBots:
   # Liquidator bot, liquidates unhealthy positions by taking over the risk (caution, you should manage risk here)
   # - liquidator
 
-  # Example maker bot that participates in JIT auction (caution: you will probably lose money)
-  # - jitMaker
-
   # Example maker bot that posts floating oracle orders
   # - floatingMaker
 
@@ -175,7 +172,7 @@ botConfigs:
     # and also passed into jupiter when doing swaps.
     maxSlippageBps: 50
 
-    # duration of jit auction for derisk orders
+    # duration of the derisk order's dutch auction
     deriskAuctionDurationSlots: 100
 
     # Minimum deposit amount to try to liquidiate, per spot market, in lamports.

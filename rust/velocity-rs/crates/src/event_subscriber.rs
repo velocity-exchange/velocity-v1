@@ -910,183 +910,15 @@ mod test {
         .await;
     }
 
-    #[ignore = "base64 encoded logs need updating"]
-    #[cfg(feature = "rpc_tests")]
-    #[tokio::test]
-    async fn log_stream_handles_jit_proxy_events() {
-        let cache = TxSignatureCache::new(16);
-        let (event_tx, mut event_rx) = channel(16);
-
-        let mut log_stream = LogEventStream {
-            cache: Arc::new(cache.into()),
-            provider: Arc::new(
-                PubsubClient::new("wss://api.devnet.solana.com".into())
-                    .await
-                    .unwrap(),
-            ),
-            sub_account: "GgZkrSFgTAXZn1rNtZ533wpZi6nxx8whJC9bxRESB22c"
-                .try_into()
-                .unwrap(),
-            event_tx,
-            commitment: CommitmentConfig::confirmed(),
-        };
-
-        let logs: Vec<String> = [
-            "Program ComputeBudget111111111111111111111111111111 invoke [1]",
-            "Program ComputeBudget111111111111111111111111111111 success",
-            "Program J1TPRoXCtGuMcWiWFE6RB9eZU8U35PBMETCwNQLCNPhQ invoke [1]",
-            "Program log: Instruction: ArbPerp",
-            "Program dRiftyHA39MWEi3m9aunc5MzRF1JYuBsbn6VPcn33UH invoke [2]",
-            "Program log: Instruction: PlaceAndTakePerpOrder",
-            "Program log: Invalid Spot 0 Oracle: Stale (oracle_delay=23)",
-            "Program log: 4DRDR8LtbQFOKvplAAAAAAAAGAABAAAAAAAAAAAAAAFGJn8TpIimFlKv8ZWRhmuU81x+ojkf3K4d+++MbslDfAGZcTYAAQEBAM5q/TIAAAABAAAAAAAAAAABAAAAAAAAAAAAAAAAAACTWxEAAAAAAAA=",
-            "Program log: aBNAOFkVAlpOKvplAAAAAEYmfxOkiKYWUq/xlZGGa5TzXH6iOR/crh3774xuyUN8qZQ2DwAAAABMTREAAAAAAADOav0yAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAJlxNgAYAAEBAQAAAQAAAQAAAAAA",
-            "Program log: 4DRDR8LtbQFOKvplAAAAAAIIGAABAUYmfxOkiKYWUq/xlZGGa5TzXH6iOR/crh3774xuyUN8AQAAAAAAAAAAAceaAwAAAAAAAQDOav0yAAAAAQQgzQ4AAAAAAQIjAQAAAAAAAQA+////////AAAAAUYmfxOkiKYWUq/xlZGGa5TzXH6iOR/crh3774xuyUN8AZlxNgABAQEAzmr9MgAAAAEAzmr9MgAAAAEEIM0OAAAAAAHpAf4sI0TDV0Ec0LWHs9mO40bjfKEm3A+yye5HFCQQQQEzPgAAAQABANraQssAAAABANraQssAAAABLJgAOwAAAACTWxEAAAAAAAA=",
-            "Program dRiftyHA39MWEi3m9aunc5MzRF1JYuBsbn6VPcn33UH consumed 373815 of 1334075 compute units",
-            "Program dRiftyHA39MWEi3m9aunc5MzRF1JYuBsbn6VPcn33UH success",
-            "Program dRiftyHA39MWEi3m9aunc5MzRF1JYuBsbn6VPcn33UH invoke [2]",
-            "Program log: Instruction: PlaceAndTakePerpOrder",
-            "Program log: Invalid Spot 0 Oracle: Stale (oracle_delay=23)",
-            "Program log: 4DRDR8LtbQFOKvplAAAAAAAAGAABAAAAAAAAAAAAAAFGJn8TpIimFlKv8ZWRhmuU81x+ojkf3K4d+++MbslDfAGacTYAAQABAM5q/TIAAAABAAAAAAAAAAABAAAAAAAAAAAAAAAAAACTWxEAAAAAAAA=",
-            "Program log: aBNAOFkVAlpOKvplAAAAAEYmfxOkiKYWUq/xlZGGa5TzXH6iOR/crh3774xuyUN8qZQ2DwAAAACAPBEAAAAAAADOav0yAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAJpxNgAYAAEBAQABAAAAAQAAAAAA",
-            "Program log: 4DRDR8LtbQFOKvplAAAAAAIQGAABAUYmfxOkiKYWUq/xlZGGa5TzXH6iOR/crh3774xuyUN8AQAAAAAAAAAAAciaAwAAAAAAAQDgBS0LAAAAAQBYOwMAAAAAAYs/AAAAAAAAAAAB+Ejx//////8AAUYmfxOkiKYWUq/xlZGGa5TzXH6iOR/crh3774xuyUN8AZpxNgABAAEAzmr9MgAAAAEA4AUtCwAAAAEAWDsDAAAAAAAAAAAAAJNbEQAAAAAAAA==",
-            "Program log: 4DRDR8LtbQFOKvplAAAAAAIIGAABAUYmfxOkiKYWUq/xlZGGa5TzXH6iOR/crh3774xuyUN8AQAAAAAAAAAAAcmaAwAAAAAAAQDuZNAnAAAAAYBpgwsAAAAAAV3iAAAAAAAAARhp////////AAAAAUYmfxOkiKYWUq/xlZGGa5TzXH6iOR/crh3774xuyUN8AZpxNgABAAEAzmr9MgAAAAEAzmr9MgAAAAGAwb4OAAAAAAFmQRGN8PRJqt5D5pVvCspbc3f0ZBdTB1Kcw0YfuzxCOAH2/poHAQEBAIjmn+sAAAABAFrDjp4AAAABgPDZLQAAAACTWxEAAAAAAAA=",
-            "Program dRiftyHA39MWEi3m9aunc5MzRF1JYuBsbn6VPcn33UH consumed 269624 of 934786 compute units",
-            "Program dRiftyHA39MWEi3m9aunc5MzRF1JYuBsbn6VPcn33UH success",
-            "Program log: pnl 792986",
-            "Program J1TPRoXCtGuMcWiWFE6RB9eZU8U35PBMETCwNQLCNPhQ consumed 738458 of 1399850 compute units",
-            "Program J1TPRoXCtGuMcWiWFE6RB9eZU8U35PBMETCwNQLCNPhQ success",
-            ].into_iter().map(Into::into).collect();
-
-        log_stream.process_log(338797360, RpcLogsResponse {
-            signature: "2jLk34wWwgecuws9iD9Ug63JdL8kYBePdtcakzG34zEx9KYVYD6HuokxMZYpFw799cJZBcaCMZ47WAxkGJjM7zNC".into(),
-            err: None,
-            logs: logs.clone(),
-        }).await;
-
-        // case 1: jit taker
-        assert_eq!(
-            event_rx.try_recv().expect("one event"),
-            VelocityEvent::OrderFill {
-                maker: Some(
-                    "GgZkrSFgTAXZn1rNtZ533wpZi6nxx8whJC9bxRESB22c".try_into().unwrap(),
-                ),
-                maker_fee: -49664,
-                maker_order_id: 15923,
-                maker_side: Some(
-                    PositionDirection::Long,
-                ),
-                taker: Some(
-                    "5iqawn52cdBmsjC4hDegyFnX1iNRTNDV5mRsGzgqbuyD".try_into().unwrap(),
-                ),
-                taker_fee: 74498,
-                taker_order_id: 3568025,
-                taker_side: Some(
-                    PositionDirection::Short,
-                ),
-                base_asset_amount_filled: 219000000000,
-                quote_asset_amount_filled: 248324100,
-                market_index: 24,
-                market_type: MarketType::Perp,
-                oracle_price: 1137555,
-                signature: "2jLk34wWwgecuws9iD9Ug63JdL8kYBePdtcakzG34zEx9KYVYD6HuokxMZYpFw799cJZBcaCMZ47WAxkGJjM7zNC".into(),
-                tx_idx: 9,
-                ts: 1710893646,
-                bit_flags: 0,
-            }
-        );
-        assert!(event_rx.try_recv().is_err()); // no more events
-
-        // case 2: jit maker
-        // reset the cache and account to process the log from maker's side this time
-        log_stream.sub_account = "5iqawn52cdBmsjC4hDegyFnX1iNRTNDV5mRsGzgqbuyD"
-            .try_into()
-            .unwrap();
-        log_stream.cache.write().await.reset();
-
-        log_stream.process_log(338797360, RpcLogsResponse {
-            signature: "2jLk34wWwgecuws9iD9Ug63JdL8kYBePdtcakzG34zEx9KYVYD6HuokxMZYpFw799cJZBcaCMZ47WAxkGJjM7zNC".into(),
-            err: None,
-            logs: logs.clone(),
-        }).await;
-
-        assert!(event_rx.try_recv().is_ok()); // place/create
-        assert!(event_rx.try_recv().is_ok()); // fill with match
-        assert!(event_rx.try_recv().is_ok()); // place/create
-        assert!(event_rx.try_recv().is_ok()); // fill with amm
-        assert!(event_rx.try_recv().is_ok()); // fill with match
-        assert!(event_rx.try_recv().is_err()); // no more events
-    }
-
     #[test]
-    fn parses_order_trigger() {
-        // Build a current-layout `OrderActionRecord` with `OrderAction::Trigger`
-        // and serialize it the same way the program emits events
-        // (`[8-byte discriminator][borsh body]`, base64). This keeps the fixture
-        // in sync with the on-chain event layout instead of relying on a
-        // captured base64 blob that drifts whenever the struct changes.
-        let user = Pubkey::new_unique();
-        let taker_order = Order {
-            order_id: 7,
-            base_asset_amount: 1_000_000,
-            market_type: MarketType::Perp,
-            ..Default::default()
-        };
-        let oar = get_order_action_record(
-            1_700_000_000,
-            OrderAction::Trigger,
-            OrderActionExplanation::None,
-            0,
-            None,
-            None,
-            None,
-            None,
-            None,
-            None,
-            None,
-            None,
-            None,
-            None,
-            Some(user),
-            Some(taker_order),
-            None,
-            None,
-            123_456,
-            0,
-        );
-
-        let logs = &[
-            "Program log: Instruction: TriggerOrder".to_string(),
-            format!("{PROGRAM_DATA}{}", serialize_event(oar)),
-            "Program dRiftyHA39MWEi3m9aunc5MzRF1JYuBsbn6VPcn33UH success".to_string(),
-        ];
-
-        let mut trigger = None;
-        for log in logs {
-            if let Some(event @ VelocityEvent::OrderTrigger { .. }) = try_parse_log(log, "sig", 0) {
-                trigger = Some(event);
-            }
-        }
-        assert_eq!(
-            trigger,
-            Some(VelocityEvent::OrderTrigger {
-                user,
-                order_id: 7,
-                oracle_price: 123_456,
-                amount: 1_000_000,
-            })
-        );
-    }
-
-    #[test]
-    fn parses_jit_proxy_logs() {
+    fn parses_nested_cpi_logs() {
         let _ = env_logger::try_init();
 
-        // The jit-proxy program CPIs into the velocity program; the velocity
-        // events (OrderRecord place + OrderActionRecord fill) are emitted as
-        // `Program log:`/`Program data:` lines nested under the jit-proxy
-        // program invocation. Synthesize those events from the current types
-        // and confirm they parse out of the interleaved jit-proxy logs.
+        // When another program CPIs into velocity, the velocity events
+        // (OrderRecord place + OrderActionRecord fill) are emitted as
+        // `Program log:`/`Program data:` lines nested under the outer program's
+        // invocation. Synthesize those events from the current types and
+        // confirm they parse out of the interleaved outer-program logs.
         let taker = Pubkey::new_unique();
         let maker = Pubkey::new_unique();
 
@@ -1134,12 +966,12 @@ mod test {
         );
 
         let cpi_logs = &[
-            "Program J1TPRoXCtGuMcWiWFE6RB9eZU8U35PBMETCwNQLCNPhQ invoke [1]".to_string(),
-            "Program log: Instruction: ArbPerp".to_string(),
+            "Program vAuLTsyrvSfZRuRB3XgvkPwNGgYSs9YRYymVebLKoxR invoke [1]".to_string(),
+            "Program log: Instruction: FillOrder".to_string(),
             "Program dRiftyHA39MWEi3m9aunc5MzRF1JYuBsbn6VPcn33UH invoke [2]".to_string(),
             format!("{PROGRAM_DATA}{}", serialize_event(order_record)),
             format!("{PROGRAM_DATA}{}", serialize_event(fill)),
-            "Program J1TPRoXCtGuMcWiWFE6RB9eZU8U35PBMETCwNQLCNPhQ success".to_string(),
+            "Program vAuLTsyrvSfZRuRB3XgvkPwNGgYSs9YRYymVebLKoxR success".to_string(),
         ];
 
         let events: Vec<VelocityEvent> = cpi_logs

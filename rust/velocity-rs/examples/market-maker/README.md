@@ -19,7 +19,3 @@ GRPC_URL="" \
 GRPC_X_TOKEN="" \
  cargo run --release -- --grpc
 ```
-
-## JIT Making
-Velocity MMs can also provide Just in Time (JIT) matching via swift and jit-proxy helper program.
-for examples see the `swift-maker` example and the jit-proxy example: https://github.com/velocity-exchange/jit-proxy/tree/master/rust

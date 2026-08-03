@@ -15,7 +15,6 @@ on:
         options:
           - velocity
           - token_faucet
-          - jit_proxy
       branch:
         description: "Branch (or ref) to build from"
         required: true
@@ -33,7 +32,6 @@ env:
   VERIFIABLE_BUILD_IMAGE: solanafoundation/solana-verifiable-build:3.1.14
   VELOCITY_DEVNET_PROGRAM_ID: vELoC1audYbSYVRXn1vPaV8Axoa9oU6BYmNGZZBDZ1P
   TOKEN_FAUCET_DEVNET_PROGRAM_ID: V4v1mQiAdLz4qwckEb45WqHYceYizoib39cDBHSWfaB
-  JIT_PROXY_DEVNET_PROGRAM_ID: J1TPRoXCtGuMcWiWFE6RB9eZU8U35PBMETCwNQLCNPhQ
 
 jobs:
   deploy:
@@ -52,7 +50,6 @@ jobs:
           case "${{ inputs.program }}" in
             velocity)        PID="${{ env.VELOCITY_DEVNET_PROGRAM_ID }}" ;;
             token_faucet) PID="${{ env.TOKEN_FAUCET_DEVNET_PROGRAM_ID }}" ;;
-            jit_proxy)    PID="${{ env.JIT_PROXY_DEVNET_PROGRAM_ID }}" ;;
             *) echo "Unknown program '${{ inputs.program }}'" >&2; exit 1 ;;
           esac
           echo "program-id=$PID" >> "$GITHUB_OUTPUT"

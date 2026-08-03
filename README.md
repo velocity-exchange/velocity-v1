@@ -20,8 +20,8 @@ are migrating from the Drift SDK, [docs/DRIFT-TO-VELOCITY.md](./docs/DRIFT-TO-VE
 
 | Path              | What it is                                                                                                                   |
 | ----------------- | ---------------------------------------------------------------------------------------------------------------------------- |
-| `programs/`       | On-chain programs: `velocity` (core protocol), `vaults`, `jit-proxy`, plus oracle stubs/integrations used by tests            |
-| `packages/`       | Publishable npm libraries: `@velocity-exchange/sdk`, `admin-cli`, `vaults-sdk`, `jit-proxy`                                   |
+| `programs/`       | On-chain programs: `velocity` (core protocol), `vaults`, plus oracle stubs/integrations used by tests                         |
+| `packages/`       | Publishable npm libraries: `@velocity-exchange/sdk`, `admin-cli`, `vaults-sdk`                                                |
 | `apps/`           | Private deployable services (shipped as Docker images, never npm): `dlob-server`, `keeper-bots-v2`, `usermap-server`          |
 | `rust/`           | A **second, separate Cargo workspace**: `velocity-rs` (Rust SDK), `keep-rs` (keeper bots), `swift` (tx server)                |
 | `tests/`          | ~70 TypeScript integration tests (local validator / bankrun)                                                                  |
@@ -38,7 +38,6 @@ programs (SBF), while `rust/` consumes the program as a host library with its ow
 | ----------- | ---------------------------------------------- |
 | `velocity`  | `vELoC1audYbSYVRXn1vPaV8Axoa9oU6BYmNGZZBDZ1P`  |
 | `vaults`    | `vAuLTsyrvSfZRuRB3XgvkPwNGgYSs9YRYymVebLKoxR`  |
-| `jit-proxy` | `J1TPRoXCtGuMcWiWFE6RB9eZU8U35PBMETCwNQLCNPhQ` |
 
 ## Prerequisites
 
@@ -113,7 +112,7 @@ After a program change, run `bash fuzz/sync-idls.sh` to re-sync the vendored IDL
 | Task                                          | Command                                                                    |
 | --------------------------------------------- | -------------------------------------------------------------------------- |
 | Build program + sync IDL/types into the SDK   | `bun run program:build`                                                     |
-| Regenerate IDL/types only (fast, no SBF build) | `bun run program:idl` (vaults: `program:idl:vaults`, jit: `program:idl:jit-proxy`) |
+| Regenerate IDL/types only (fast, no SBF build) | `bun run program:idl` (vaults: `program:idl:vaults`)                       |
 | Deployable devnet `.so`                       | `bun run program:build:devnet`                                              |
 | Mainnet `.so` (production gates on)           | `bun run program:build:mainnet`                                             |
 | Build one TS package + its deps               | `bunx turbo run build --filter=@velocity-exchange/sdk`                      |
@@ -196,7 +195,6 @@ Workflow:
 | `@velocity-exchange/sdk`        | `npm-sdk-v0.2.3`        |
 | `@velocity-exchange/admin-cli`  | `npm-cli-admin-v0.2.3`  |
 | `@velocity-exchange/vaults-sdk` | `npm-vaults-sdk-v0.2.3` |
-| `@velocity-exchange/jit-proxy`  | `npm-jit-proxy-v0.2.3`  |
 
 The tag version must match the `package.json` version committed by the "Version Packages" PR. Do
 not manually edit `package.json` versions; changesets and the bot own those fields.

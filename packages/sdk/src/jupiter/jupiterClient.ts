@@ -269,7 +269,8 @@ export interface JupiterBuildResponse {
 	otherInstructions: JupiterApiInstruction[];
 	/** Non-null only when opted into Jupiter's own transaction landing. */
 	tipInstruction: JupiterApiInstruction | null;
-	addressesByLookupTableAddress: Record<string, string[]>;
+	/** Null / absent when the route needs no lookup tables. */
+	addressesByLookupTableAddress: Record<string, string[]> | null;
 	/** `blockhash` is a byte array, not base58. Unused — we fetch a fresh one. */
 	blockhashWithMetadata?: { blockhash: number[]; lastValidBlockHeight: number };
 	/** Object-valued on a validation failure — read it through {@link describeJupiterError}. */
@@ -609,8 +610,10 @@ export class JupiterClient implements SwapProvider {
 			!Array.isArray(build.computeBudgetInstructions) ||
 			!Array.isArray(build.setupInstructions) ||
 			!Array.isArray(build.otherInstructions) ||
-			!build.addressesByLookupTableAddress ||
-			typeof build.addressesByLookupTableAddress !== 'object'
+			// A route needing no lookup tables sends null / omits the field; only a
+			// non-object value is malformed.
+			(build.addressesByLookupTableAddress != null &&
+				typeof build.addressesByLookupTableAddress !== 'object')
 		) {
 			throw new Error(
 				'Jupiter quote failed: response is missing build instructions'
@@ -901,7 +904,7 @@ export class JupiterClient implements SwapProvider {
 	private async getBuildLookupTables(
 		build: JupiterBuildResponse
 	): Promise<AddressLookupTableAccount[]> {
-		const addresses = Object.keys(build.addressesByLookupTableAddress);
+		const addresses = Object.keys(build.addressesByLookupTableAddress ?? {});
 		const lookupTables = await Promise.all(
 			addresses.map((address) => this.getLookupTable(new PublicKey(address)))
 		);

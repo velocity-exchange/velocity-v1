@@ -493,6 +493,23 @@ describe('JupiterClient v2 (/swap/v2/build)', () => {
 		expect(err.message).to.contain('missing build instructions');
 	});
 
+	// A route needing no lookup tables reports the field as null, which must not
+	// read as a malformed build.
+	it('accepts a build with no address lookup tables', async () => {
+		fetchStub.resolves(
+			jsonResponse({ ...validBuildBody, addressesByLookupTableAddress: null })
+		);
+
+		const quote = await getQuote();
+		const { lookupTables } = await client.getRouteInstructions({
+			quote,
+			userPublicKey: USER,
+		});
+
+		expect(lookupTables).to.deep.equal([]);
+		expect(connection.getAddressLookupTable.called).to.be.false;
+	});
+
 	it('names an address lookup table it could not resolve', async () => {
 		connection.getAddressLookupTable.resolves({
 			context: { slot: 1 },

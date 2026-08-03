@@ -629,6 +629,34 @@ impl User {
         }
     }
 
+    /// How many of this market's open perp orders live on a CLOB instead of
+    /// in [`Self::orders`].
+    ///
+    /// A plain CLOB placement reserves the position's `open_orders` slot and
+    /// writes no `Order` row — only a *triggered* order keeps a shadow row
+    /// (see [`OrderBitFlag::PlacedOnClob`]), and that row is counted once, by
+    /// the row itself. So the position's count minus its listed open rows is
+    /// exactly the book-resident count. This is the only record velocity
+    /// keeps of a plain CLOB order: the order ids themselves live on the book
+    /// (u64 there, u32 here), so anything that must not mistake a resting
+    /// book order for a gone one asks this instead of scanning `orders`.
+    pub fn clob_resident_open_orders(&self, market_index: u16) -> u8 {
+        let listed = self
+            .orders
+            .iter()
+            .filter(|order| {
+                order.status == OrderStatus::Open
+                    && order.market_type == MarketType::Perp
+                    && order.market_index == market_index
+            })
+            .count()
+            .min(u8::MAX as usize) as u8;
+        self.get_perp_position(market_index)
+            .map(|position| position.open_orders)
+            .unwrap_or(0)
+            .saturating_sub(listed)
+    }
+
     /// The slot shadowing CLOB order `clob_order_id` on `market_index` — a
     /// placed trigger (see [`OrderBitFlag::PlacedOnClob`]). Order ids are
     /// unique per book, so at most one slot matches.
@@ -725,14 +753,12 @@ impl User {
         Ok(())
     }
 
+    /// Whether a new `Order` row would fit. Deliberately counts only
+    /// [`Self::orders`]: a plain CLOB order occupies no row, so a maker with a
+    /// full book still has room here — the CLOB's own capacity (and its evict
+    /// crank) bounds that side.
     pub fn has_room_for_new_order(&self) -> bool {
-        for order in self.orders.iter() {
-            if order.is_available() {
-                return true;
-            }
-        }
-
-        false
+        self.orders.iter().any(|order| order.is_available())
     }
 
     /// `strictly_reducing`: the swap consumed an existing deposit and repaid

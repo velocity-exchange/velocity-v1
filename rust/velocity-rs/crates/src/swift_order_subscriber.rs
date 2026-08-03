@@ -291,6 +291,14 @@ impl SignedOrderInfo {
         self.order.is_delegated()
     }
 
+    /// Custom quoter entries the taker's route names — see
+    /// [`SignedOrderType::route`]. Advisory: the program enforces nothing
+    /// about it, but a keeper filling this order should pass these entries so
+    /// the taker gets the liquidity they asked for.
+    pub fn route(&self) -> Option<&[Pubkey]> {
+        self.order.route()
+    }
+
     pub fn new(
         uuid: String,
         taker_authority: Pubkey,

@@ -6332,6 +6332,118 @@ export type Velocity = {
       ]
     },
     {
+      "name": "modifyClobOrder",
+      "docs": [
+        "Reprice/resize a resting CLOB order: cancel-and-replace in one",
+        "instruction, with a single margin gate over the net change. `None`",
+        "fields keep the resting order's value."
+      ],
+      "discriminator": [
+        64,
+        222,
+        242,
+        64,
+        138,
+        91,
+        220,
+        67
+      ],
+      "accounts": [
+        {
+          "name": "state"
+        },
+        {
+          "name": "user",
+          "writable": true
+        },
+        {
+          "name": "authority",
+          "signer": true
+        },
+        {
+          "name": "quoter",
+          "docs": [
+            "The book's registry entry. The replacement leg additionally requires it",
+            "to be active and approved."
+          ]
+        },
+        {
+          "name": "clobMarket",
+          "docs": [
+            "accounts in the handler."
+          ],
+          "writable": true
+        },
+        {
+          "name": "clobProgram"
+        },
+        {
+          "name": "velocitySigner"
+        },
+        {
+          "name": "crankConditions",
+          "docs": [
+            "Wake-hint host for the replacement; optional like every other CLOB",
+            "placement path."
+          ],
+          "writable": true,
+          "optional": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  99,
+                  108,
+                  111,
+                  98,
+                  95,
+                  99,
+                  114,
+                  97,
+                  110,
+                  107,
+                  95,
+                  99,
+                  111,
+                  110,
+                  100,
+                  105,
+                  116,
+                  105,
+                  111,
+                  110,
+                  115
+                ]
+              },
+              {
+                "kind": "arg",
+                "path": "params.market_index"
+              }
+            ]
+          }
+        },
+        {
+          "name": "instructionsSysvar",
+          "docs": [
+            "faster-than-default activation delay on the replacement."
+          ],
+          "optional": true,
+          "address": "Sysvar1nstructions1111111111111111111111111"
+        }
+      ],
+      "args": [
+        {
+          "name": "params",
+          "type": {
+            "defined": {
+              "name": "modifyClobOrderParams"
+            }
+          }
+        }
+      ]
+    },
+    {
       "name": "modifyOrder",
       "discriminator": [
         47,
@@ -6739,38 +6851,124 @@ export type Velocity = {
         {
           "name": "authority",
           "signer": true
+        }
+      ],
+      "args": [
+        {
+          "name": "params",
+          "type": {
+            "defined": {
+              "name": "orderParams"
+            }
+          }
+        },
+        {
+          "name": "successCondition",
+          "type": {
+            "option": "u32"
+          }
+        }
+      ]
+    },
+    {
+      "name": "placeAndTakePerpOrderV1",
+      "docs": [
+        "`place_and_take_perp_order` with the market's CLOB accounts required:",
+        "an unfilled restable limit remainder rests on the book instead of the",
+        "DLOB. v0's account list is frozen for ABI compatibility, so the CLOB",
+        "route is a separate endpoint rather than optional accounts on v0."
+      ],
+      "discriminator": [
+        168,
+        73,
+        91,
+        161,
+        18,
+        41,
+        252,
+        94
+      ],
+      "accounts": [
+        {
+          "name": "state"
+        },
+        {
+          "name": "user",
+          "writable": true
+        },
+        {
+          "name": "userStats",
+          "writable": true
+        },
+        {
+          "name": "authority",
+          "signer": true
         },
         {
           "name": "quoter",
           "docs": [
-            "Pass the market's CLOB entry (plus the three accounts below) to have",
-            "an unfilled limit remainder rest on the CLOB instead of the DLOB —",
-            "the S5 rule applied to the taker flow. Omit all four for today's",
-            "behavior."
-          ],
-          "optional": true
+            "The market's CLOB registry entry — the remainder only ever rests on a",
+            "vetted book."
+          ]
         },
         {
           "name": "clobMarket",
-          "writable": true,
-          "optional": true
+          "docs": [
+            "accounts (`ClobMarket::from_quoter`), so a valid entry can't be",
+            "pointed at an arbitrary account."
+          ],
+          "writable": true
         },
         {
-          "name": "clobProgram",
-          "optional": true
+          "name": "clobProgram"
         },
         {
-          "name": "velocitySigner",
-          "optional": true
+          "name": "velocitySigner"
         },
         {
           "name": "crankConditions",
           "docs": [
-            "Wake-hint host for the rested remainder; optional like every other",
-            "CLOB placement path."
+            "Wake-hint host for the rested remainder. Optional like every other",
+            "CLOB placement path: a market whose conditions were never initialized",
+            "must still be tradeable, and a missed hint costs crank latency, not",
+            "liveness (the fallback poll is the floor)."
           ],
           "writable": true,
-          "optional": true
+          "optional": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  99,
+                  108,
+                  111,
+                  98,
+                  95,
+                  99,
+                  114,
+                  97,
+                  110,
+                  107,
+                  95,
+                  99,
+                  111,
+                  110,
+                  100,
+                  105,
+                  116,
+                  105,
+                  111,
+                  110,
+                  115
+                ]
+              },
+              {
+                "kind": "arg",
+                "path": "params.market_index"
+              }
+            ]
+          }
         }
       ],
       "args": [
@@ -22855,6 +23053,70 @@ export type Velocity = {
           },
           {
             "name": "perp"
+          }
+        ]
+      }
+    },
+    {
+      "name": "modifyClobOrderParams",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "marketIndex",
+            "type": "u16"
+          },
+          {
+            "name": "orderRef",
+            "docs": [
+              "Handle for the order being modified; the CLOB fails closed on a stale",
+              "hint, and velocity fails the whole call if the removal hit anyone else."
+            ],
+            "type": {
+              "defined": {
+                "name": "clobOrderRefV0"
+              }
+            }
+          },
+          {
+            "name": "price",
+            "docs": [
+              "`None` keeps the resting price."
+            ],
+            "type": {
+              "option": "u64"
+            }
+          },
+          {
+            "name": "baseAssetAmount",
+            "docs": [
+              "`None` keeps the *remaining* size of the resting order (not its",
+              "original size)."
+            ],
+            "type": {
+              "option": "u64"
+            }
+          },
+          {
+            "name": "maxTs",
+            "docs": [
+              "`None` keeps the resting expiry (read off the book node before the",
+              "cancel — the CLOB's removal response doesn't carry it). `Some(0)` makes",
+              "the replacement good-till-cancelled."
+            ],
+            "type": {
+              "option": "i64"
+            }
+          },
+          {
+            "name": "activationDelaySlots",
+            "docs": [
+              "Same rule as `place_clob_order`: `None` takes the book's default speed",
+              "bump, anything below it needs the flow-authority attestation."
+            ],
+            "type": {
+              "option": "u32"
+            }
           }
         ]
       }

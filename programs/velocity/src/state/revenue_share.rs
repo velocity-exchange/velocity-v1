@@ -522,11 +522,25 @@ impl<'a> RevenueShareEscrowZeroCopyMut<'a> {
                     // which made this incorrectly mark a still-open fee-bearing
                     // row Completed and clear it early (OtterSec #82). Order ids
                     // are unique among a user's open orders, so the scan is exact.
-                    let still_open = user.orders.iter().any(|user_order| {
+                    let listed_open = user.orders.iter().any(|user_order| {
                         user_order.status == OrderStatus::Open
                             && user_order.order_id == rev_share_order.order_id
                     });
-                    if !still_open {
+                    // ...but a plain CLOB order has no `orders` row *at all*:
+                    // placement (and the place-and-take remainder that migrates
+                    // onto the book) reserves the position's open-order count
+                    // and writes nothing else. The scan above therefore reads a
+                    // live book order as gone and would clear its row while the
+                    // order still rests — the same premature-completion symptom
+                    // as OtterSec #82, reached by a different route. Velocity
+                    // records book-resident orders only as that count (their ids
+                    // live on the book), so while the market has any, this
+                    // reconciler cannot prove *this* row's order is gone and
+                    // fails closed: the row stays Open and is revoked by the
+                    // first settle after the book clears.
+                    let book_resident = rev_share_order.market_type == MarketType::Perp
+                        && user.clob_resident_open_orders(rev_share_order.market_index) > 0;
+                    if !listed_open && !book_resident {
                         if rev_share_order.fees_accrued > 0 {
                             rev_share_order.add_bit_flag(RevenueShareOrderBitFlag::Completed);
                         } else {
@@ -605,7 +619,7 @@ impl<'a> RevenueShareEscrowLoader<'a> for AccountInfo<'a> {
 mod revoke_completed_orders_tests {
     use {
         super::*,
-        crate::state::user::{Order, OrderStatus, User},
+        crate::state::user::{Order, OrderStatus, PerpPosition, User},
         std::cell::RefCell,
     };
 
@@ -698,6 +712,88 @@ mod revoke_completed_orders_tests {
         assert!(
             escrow.get_order(0).unwrap().is_completed(),
             "a closed order's fee-bearing row should be marked Completed"
+        );
+    }
+
+    /// A plain CLOB order lives on the book, not in `user.orders`: placement
+    /// (and the `place_and_take` remainder that migrates onto the book)
+    /// reserves the perp position's `open_orders` and writes no `Order` row.
+    /// Scanning `user.orders` alone therefore reads a still-resting order as
+    /// gone and clears its builder row — premature completion, the OtterSec
+    /// #82 symptom by another route. `revoke_completed_orders` must consult
+    /// the book-resident count too.
+    #[test]
+    fn revoke_keeps_row_while_the_order_rests_on_a_clob() {
+        // fees_accrued == 0, the destructive branch: the row is zeroed and the
+        // escrow slot handed to the next placement.
+        let n = RevenueShareEscrow::space(1, 0);
+        let mut backing = escrow_backing(&[open_builder_row(7, 0, 0)]);
+        let full: &mut [u8] = bytemuck::cast_slice_mut(&mut backing);
+        let cell = RefCell::new(&mut full[..n]);
+        let data = RefMut::map(cell.borrow_mut(), |d| &mut **d);
+        let (_disc, data) = RefMut::map_split(data, |d| d.split_at_mut(8));
+        let (fixed, data) = RefMut::map_split(data, |d| {
+            d.split_at_mut(std::mem::size_of::<RevenueShareEscrowFixed>())
+        });
+        let mut escrow = RevenueShareEscrowZeroCopyMut {
+            fixed: RefMut::map(fixed, |b| bytemuck::from_bytes_mut(b)),
+            data,
+        };
+
+        // The order rests on market 0's CLOB: the position reserved a slot,
+        // `orders` is empty.
+        let mut perp_positions = [PerpPosition::default(); 8];
+        perp_positions[0] = PerpPosition {
+            market_index: 0,
+            open_orders: 1,
+            ..PerpPosition::default()
+        };
+        let user = User {
+            sub_account_id: 0,
+            orders: [Order::default(); 32],
+            perp_positions,
+            ..User::default()
+        };
+
+        escrow.revoke_completed_orders(&user).unwrap();
+        let row = escrow.get_order(0).unwrap();
+        assert!(
+            row.is_open() && !row.is_completed() && row.order_id == 7,
+            "a builder row must survive while its order still rests on the CLOB"
+        );
+
+        // A row for a *different* market is not shielded by market 0's book
+        // order — the count is per market, so precision is kept.
+        {
+            let other_market = escrow.get_order_mut(0).unwrap();
+            other_market.market_index = 3;
+        }
+        escrow.revoke_completed_orders(&user).unwrap();
+        assert!(
+            escrow.get_order(0).unwrap().is_available(),
+            "a market-3 row is not kept alive by a market-0 book order"
+        );
+
+        // Negative control: once the book order clears, the position's count
+        // drops and the row is revoked as before.
+        let mut backing = escrow_backing(&[open_builder_row(7, 0, 0)]);
+        let full: &mut [u8] = bytemuck::cast_slice_mut(&mut backing);
+        let cell = RefCell::new(&mut full[..n]);
+        let data = RefMut::map(cell.borrow_mut(), |d| &mut **d);
+        let (_disc, data) = RefMut::map_split(data, |d| d.split_at_mut(8));
+        let (fixed, data) = RefMut::map_split(data, |d| {
+            d.split_at_mut(std::mem::size_of::<RevenueShareEscrowFixed>())
+        });
+        let mut escrow = RevenueShareEscrowZeroCopyMut {
+            fixed: RefMut::map(fixed, |b| bytemuck::from_bytes_mut(b)),
+            data,
+        };
+        let mut cleared = user;
+        cleared.perp_positions[0].open_orders = 0;
+        escrow.revoke_completed_orders(&cleared).unwrap();
+        assert!(
+            escrow.get_order(0).unwrap().is_available(),
+            "a zero-fee row for a gone order is still cleared"
         );
     }
 }

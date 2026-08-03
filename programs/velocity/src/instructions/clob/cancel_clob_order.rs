@@ -11,22 +11,14 @@ use {
         error::ErrorCode,
         instructions::constraints::*,
         load_mut, msg,
-        signer::get_signer_seeds,
         state::{
-            prop_amm::{
-                ClobCancelOrderArgsV0, ClobOrderRefV0, ClobRemovedOrderV0, QuoterType, QuoterV0,
-                CLOB_CANCEL_ORDER_V0_DISCRIMINATOR,
-            },
+            prop_amm::{ClobCancelOrderArgsV0, ClobMarket, ClobOrderRefV0, QuoterV0},
             state::State,
             user::User,
         },
         validate,
     },
     anchor_lang::prelude::*,
-    solana_program::{
-        instruction::{AccountMeta, Instruction},
-        program::{get_return_data, invoke_signed},
-    },
 };
 
 #[derive(Accounts)]
@@ -65,29 +57,14 @@ pub fn handle_cancel_clob_order(
     let clock = Clock::get()?;
     let state = ctx.accounts.state.load()?;
 
-    {
-        let quoter = ctx.accounts.quoter.load()?;
-        validate!(
-            quoter.quoter_type == QuoterType::Clob,
-            ErrorCode::DefaultError,
-            "quoter entry is not a CLOB"
-        )?;
-        validate!(
-            quoter.market == params.market_index,
-            ErrorCode::DefaultError,
-            "quoter entry is for market {}, order is for market {}",
-            quoter.market,
-            params.market_index
-        )?;
-        let registered = &quoter.execute_accounts[..quoter.execute_accounts_count as usize];
-        validate!(
-            registered
-                .iter()
-                .any(|meta| meta.pubkey == ctx.accounts.clob_market.key()),
-            ErrorCode::DefaultError,
-            "clob market is not registered on the quoter entry"
-        )?;
-    }
+    let clob = ClobMarket::from_quoter(
+        &*ctx.accounts.quoter.load()?,
+        params.market_index,
+        &ctx.accounts.clob_market,
+        &ctx.accounts.clob_program,
+        &ctx.accounts.velocity_signer,
+        state.signer_nonce,
+    )?;
 
     // CPI cancel; ownership travels in the args in derivable form and the
     // CLOB verifies it against the node.
@@ -98,43 +75,9 @@ pub fn handle_cancel_clob_order(
             sub_account_id: user.sub_account_id,
         }
     };
-    let mut data = CLOB_CANCEL_ORDER_V0_DISCRIMINATOR.to_vec();
-    ClobCancelOrderArgsV0 {
+    let removed = clob.cancel(ClobCancelOrderArgsV0 {
         order_ref: params.order_ref,
         user: user_ref,
-    }
-    .serialize(&mut data)
-    .map_err(|_| ErrorCode::DefaultError)?;
-    invoke_signed(
-        &Instruction {
-            program_id: ctx.accounts.clob_program.key(),
-            accounts: vec![
-                AccountMeta::new(ctx.accounts.clob_market.key(), false),
-                AccountMeta::new_readonly(ctx.accounts.velocity_signer.key(), true),
-            ],
-            data,
-        },
-        &[
-            ctx.accounts.clob_market.to_account_info(),
-            ctx.accounts.velocity_signer.to_account_info(),
-            ctx.accounts.clob_program.to_account_info(),
-        ],
-        &[&get_signer_seeds(&state.signer_nonce)],
-    )?;
-    let (writer, removed_data) =
-        get_return_data().ok_or_else(|| -> anchor_lang::error::Error {
-            msg!("clob cancel returned no removed order");
-            ErrorCode::DefaultError.into()
-        })?;
-    validate!(
-        writer == ctx.accounts.clob_program.key(),
-        ErrorCode::DefaultError,
-        "clob cancel return data written by {}",
-        writer
-    )?;
-    let removed = ClobRemovedOrderV0::deserialize(&mut removed_data.as_slice()).map_err(|_| {
-        msg!("clob cancel returned undecodable removed order");
-        ErrorCode::DefaultError
     })?;
     validate!(
         removed.user == user_ref,

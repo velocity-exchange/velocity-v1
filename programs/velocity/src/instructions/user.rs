@@ -3025,10 +3025,48 @@ pub fn handle_place_and_take_perp_order<'c: 'info, 'info>(
     params: OrderParams,
     optional_params: Option<u32>, // u32 for backwards compatibility
 ) -> Result<()> {
-    let clock = Clock::get()?;
-    let state = ctx.accounts.state.load()?;
+    place_and_take_perp_order(
+        &ctx.accounts.state,
+        &ctx.accounts.user,
+        &ctx.accounts.user_stats,
+        ctx.remaining_accounts,
+        params,
+        optional_params,
+        None,
+    )
+}
 
-    let remaining_accounts_iter = &mut ctx.remaining_accounts.iter().peekable();
+/// The CLOB accounts a V1 taker route carries, so an unfilled restable
+/// remainder can migrate onto the book instead of being cancelled. See
+/// `instructions::clob::place_and_take_v1` — the v0 instruction passes
+/// `None` and keeps the pre-CLOB behaviour exactly.
+pub struct ClobRemainderRoute<'a, 'info> {
+    pub quoter: &'a AccountLoader<'info, crate::state::prop_amm::QuoterV0>,
+    pub clob_market: &'a AccountInfo<'info>,
+    pub clob_program: &'a AccountInfo<'info>,
+    pub velocity_signer: &'a AccountInfo<'info>,
+    pub crank_conditions:
+        Option<&'a AccountLoader<'info, crate::state::clob_crank::ClobCrankConditionsV0>>,
+}
+
+/// Shared `place_and_take` body: place the taker order, fill it, optionally
+/// rest the unfilled remainder on the market's CLOB, then enforce the
+/// caller's success condition. `clob` is what separates the two instructions
+/// that call this — `place_and_take_perp_order` (v0, ABI-frozen) passes
+/// `None`; `place_and_take_perp_order_v1` passes its required CLOB accounts.
+pub fn place_and_take_perp_order<'c: 'info, 'info>(
+    state_loader: &AccountLoader<'info, State>,
+    user_loader: &AccountLoader<'info, User>,
+    user_stats_loader: &AccountLoader<'info, UserStats>,
+    remaining_accounts: &'c [AccountInfo<'info>],
+    params: OrderParams,
+    optional_params: Option<u32>, // u32 for backwards compatibility
+    clob: Option<ClobRemainderRoute<'_, 'info>>,
+) -> Result<()> {
+    let clock = Clock::get()?;
+    let state = state_loader.load()?;
+
+    let remaining_accounts_iter = &mut remaining_accounts.iter().peekable();
     let AccountMaps {
         perp_market_map,
         spot_market_map,
@@ -3055,8 +3093,8 @@ pub fn handle_place_and_take_perp_order<'c: 'info, 'info>(
     // and refreshes PerpMarket-level oracle stats internally before
     // reading peg / reserves.
 
-    let user_key = ctx.accounts.user.key();
-    let mut user = load_mut!(ctx.accounts.user)?;
+    let user_key = user_loader.key();
+    let mut user = load_mut!(user_loader)?;
     let clock = Clock::get()?;
 
     let (success_condition, auction_duration_percentage) = parse_optional_params(optional_params);
@@ -3087,7 +3125,7 @@ pub fn handle_place_and_take_perp_order<'c: 'info, 'info>(
     )?;
 
     controller::orders::place_perp_order(
-        &*ctx.accounts.state.load()?,
+        &state,
         &mut user,
         user_key,
         &perp_market_map,
@@ -3103,19 +3141,18 @@ pub fn handle_place_and_take_perp_order<'c: 'info, 'info>(
     // `escrow` to be re-borrowed for the fill below.
     drop(user);
 
-    let user = &mut ctx.accounts.user;
-    let order_id = load!(user)?.get_last_order_id();
+    let order_id = load!(user_loader)?.get_last_order_id();
 
     let (base_asset_amount_filled, _) = controller::orders::fill_perp_order(
         order_id,
-        &*ctx.accounts.state.load()?,
-        user,
-        &ctx.accounts.user_stats,
+        &state,
+        user_loader,
+        user_stats_loader,
         &spot_market_map,
         &perp_market_map,
         &mut oracle_map,
-        &user.clone(),
-        &ctx.accounts.user_stats.clone(),
+        &user_loader.clone(),
+        &user_stats_loader.clone(),
         &makers_and_referrer,
         &makers_and_referrer_stats,
         None,
@@ -3127,7 +3164,7 @@ pub fn handle_place_and_take_perp_order<'c: 'info, 'info>(
         &mut escrow.as_mut(),
     )?;
 
-    let order_unfilled = load!(ctx.accounts.user)?
+    let order_unfilled = load!(user_loader)?
         .orders
         .iter()
         .any(|order| order.order_id == order_id && order.status == OrderStatus::Open);
@@ -3135,7 +3172,7 @@ pub fn handle_place_and_take_perp_order<'c: 'info, 'info>(
     if is_immediate_or_cancel && order_unfilled {
         controller::orders::cancel_order_by_order_id(
             order_id,
-            &ctx.accounts.user,
+            user_loader,
             &perp_market_map,
             &spot_market_map,
             &mut oracle_map,
@@ -3143,33 +3180,18 @@ pub fn handle_place_and_take_perp_order<'c: 'info, 'info>(
         )?;
     }
 
-    // The remainder rests on the CLOB when the caller passed its accounts:
-    // plain limits live on the book, not in `User.orders`. Only a
-    // restable remainder migrates — market orders, oracle-offset prices and
-    // reduce-only orders keep today's DLOB behavior (the CLOB has no
-    // oracle-floating or reduce-only semantics), and any
-    // can't-rest outcome downgrades to a cancel rather than reverting the
-    // fill that already landed. The CLOB's `OrderRef` is left as the
-    // transaction's return data for the client to persist.
-    if !is_immediate_or_cancel && order_unfilled && params.order_type == OrderType::Limit {
-        if let (Some(quoter), Some(clob_market), Some(clob_program), Some(velocity_signer)) = (
-            &ctx.accounts.quoter,
-            &ctx.accounts.clob_market,
-            &ctx.accounts.clob_program,
-            &ctx.accounts.velocity_signer,
-        ) {
-            validate!(
-                clob_program.key() == quoter.load()?.program_id,
-                ErrorCode::DefaultError,
-                "clob program does not match the quoter entry"
-            )?;
-            validate!(
-                velocity_signer.key() == ctx.accounts.state.load()?.signer,
-                ErrorCode::DefaultError,
-                "velocity signer mismatch"
-            )?;
+    // V1 route only: a plain limit remainder lives on the book, not in
+    // `User.orders`, so migrate it instead of leaving it resting on the DLOB.
+    // Only a *restable* remainder migrates — market orders, oracle-offset
+    // prices and reduce-only orders keep DLOB behaviour (the CLOB has no
+    // oracle-floating or reduce-only semantics) — and any can't-rest outcome
+    // downgrades to a cancel rather than reverting the fill that already
+    // landed. The CLOB's `OrderRef` is left as the transaction's return data
+    // for the client to persist as its cancel hint.
+    if let Some(clob) = clob {
+        if !is_immediate_or_cancel && order_unfilled && params.order_type == OrderType::Limit {
             let remainder = {
-                let user = load!(ctx.accounts.user)?;
+                let user = load!(user_loader)?;
                 let order_index = user.get_order_index(order_id)?;
                 let order = &user.orders[order_index];
                 let position_base = user
@@ -3191,20 +3213,20 @@ pub fn handle_place_and_take_perp_order<'c: 'info, 'info>(
                 if unfilled > 0 {
                     controller::orders::cancel_order_by_order_id(
                         order_id,
-                        &ctx.accounts.user,
+                        user_loader,
                         &perp_market_map,
                         &spot_market_map,
                         &mut oracle_map,
                         &Clock::get()?,
                     )?;
                     crate::instructions::try_place_remainder_on_clob(
-                        &*ctx.accounts.state.load()?,
-                        &ctx.accounts.user,
-                        quoter,
-                        &clob_market.to_account_info(),
-                        &clob_program.to_account_info(),
-                        &velocity_signer.to_account_info(),
-                        ctx.accounts.crank_conditions.as_ref(),
+                        &state,
+                        user_loader,
+                        clob.quoter,
+                        clob.clob_market,
+                        clob.clob_program,
+                        clob.velocity_signer,
+                        clob.crank_conditions,
                         &perp_market_map,
                         &spot_market_map,
                         &mut oracle_map,
@@ -5247,23 +5269,6 @@ pub struct PlaceAndTake<'info> {
     )]
     pub user_stats: AccountLoader<'info, UserStats>,
     pub authority: Signer<'info>,
-    /// Pass the market's CLOB entry (plus the three accounts below) to have
-    /// an unfilled limit remainder rest on the CLOB instead of the DLOB —
-    /// the S5 rule applied to the taker flow. Omit all four for today's
-    /// behavior.
-    pub quoter: Option<AccountLoader<'info, crate::state::prop_amm::QuoterV0>>,
-    /// CHECK: validated against the quoter entry's registered accounts.
-    #[account(mut)]
-    pub clob_market: Option<UncheckedAccount<'info>>,
-    /// CHECK: locked to the registered quoter program in the handler.
-    pub clob_program: Option<UncheckedAccount<'info>>,
-    /// CHECK: the protocol signer PDA, checked against `state.signer`.
-    pub velocity_signer: Option<UncheckedAccount<'info>>,
-    /// Wake-hint host for the rested remainder; optional like every other
-    /// CLOB placement path.
-    #[account(mut)]
-    pub crank_conditions:
-        Option<AccountLoader<'info, crate::state::clob_crank::ClobCrankConditionsV0>>,
 }
 
 #[derive(Accounts)]

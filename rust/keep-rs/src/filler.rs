@@ -18,7 +18,9 @@ use {
         RpcAccountInfoConfig, RpcProgramAccountsConfig, RpcTransactionConfig,
     },
     solana_sdk::{
-        instruction::InstructionError, signature::Signature, transaction::TransactionError,
+        instruction::{AccountMeta, InstructionError},
+        signature::Signature,
+        transaction::TransactionError,
     },
     solana_transaction_status_client_types::{UiTransactionEncoding, UiTransactionError},
     std::{
@@ -28,7 +30,7 @@ use {
     },
     tokio::{runtime::Handle, sync::RwLock},
     velocity_rs::{
-        constants::PROGRAM_ID,
+        constants::{derive_velocity_signer, PROGRAM_ID},
         dlob::{
             CrossesAndTopMakers, CrossingRegion, DLOBNotifier, L3Order, MakerCrosses, OrderKind,
             TakerOrder, DLOB,
@@ -39,7 +41,7 @@ use {
             AccountUpdate, TransactionUpdate,
         },
         priority_fee_subscriber::PriorityFeeSubscriber,
-        program::math::auction::calculate_auction_price,
+        program::{math::auction::calculate_auction_price, state::prop_amm::QuoterV0},
         swift_order_subscriber::{SignedOrderInfo, SwiftOrderStream},
         types::{
             accounts::{PerpMarket, User, UserStats},
@@ -311,6 +313,7 @@ impl FillerBot {
                                         filler_subaccount,
                                         signed_order,
                                         crosses,
+                                        perp_market.clob_quoter,
                                         tx_worker_ref.clone(),
                                         attest,
                                     ).await;
@@ -1028,6 +1031,9 @@ async fn try_swift_fill(
     filler_subaccount: Pubkey,
     swift_order: SignedOrderInfo,
     crosses: MakerCrosses,
+    // The market's canonical CLOB registry entry (`PerpMarket.clob_quoter`);
+    // `Pubkey::default()` when no book is attached.
+    clob_quoter: Pubkey,
     tx_worker_ref: TxSender,
     attest: Option<&'static crate::attest::AttestClient>,
 ) {
@@ -1066,6 +1072,12 @@ async fn try_swift_fill(
         return;
     }
 
+    // The fill's quoter section, appended to the fill instruction's remaining
+    // accounts below. One network round trip per entry, done before assembly
+    // so both assembly passes produce the same account list.
+    let quoter_metas =
+        route_quoter_metas(velocity, clob_quoter, swift_order.route(), &swift_order).await;
+
     // The whole fill is assembled twice at most: once with the flow
     // authority riding a compute-budget instruction as a read-only
     // co-signer (compute budget parses no accounts, so the marker is
@@ -1089,6 +1101,17 @@ async fn try_swift_fill(
                 maker_accounts.as_slice(),
                 Some(swift_order.has_builder()),
             );
+
+        // The quoter section rides the fill instruction's remaining accounts:
+        // the program reads everything past the map/user/escrow sections as
+        // registry entries plus their CPI accounts. Appended before the CU
+        // bump below so the bump sees the real account count.
+        if !quoter_metas.is_empty() {
+            let last = tx_builder.ixs().len() - 1;
+            let mut fill_ix = tx_builder.ixs()[last].clone();
+            fill_ix.accounts.extend(quoter_metas.iter().cloned());
+            tx_builder = tx_builder.set_ix(last, fill_ix);
+        }
 
         // large accounts list, bump CU limit to compensate
         let mut effective_cu_limit = cu_limit;
@@ -1142,6 +1165,101 @@ async fn try_swift_fill(
     tx_worker_ref
         .send_tx(tx, intent(), effective_cu_limit)
         .await;
+}
+
+/// The quoter section a router fill carries: the registry entries the fill
+/// routes across, then the union of their `execute_v0` CPI accounts (each
+/// entry's registered accounts, its response account, its program) plus the
+/// velocity signer PDA.
+///
+/// Two things go in, for two different reasons:
+///
+/// - The market's canonical CLOB entry is **mandatory**. `fill_perp_order`
+///   rejects any fill on a market with a book attached that doesn't carry its
+///   entry ("router fill must include the market's CLOB quoter") — the public
+///   book is a baseline a route can't exclude. A killed entry satisfies the
+///   check because the program skips it at quote time, so passing it is
+///   always safe.
+/// - The custom quoter entries the taker's signed route names
+///   ([`SignedOrderInfo::route`]) are **advisory**: the program enforces
+///   nothing about the route, and deliberately so — it can't know which
+///   quoters were live when the taker signed. But a keeper that drops them
+///   silently denies the taker liquidity they explicitly asked for, so honour
+///   the route rather than treating it as a hint.
+///
+/// Entries that can't be read are skipped rather than failing the fill: the
+/// program itself skips inactive/unapproved entries, and losing a custom entry
+/// only costs the taker that one source. A missing *CLOB* entry is logged
+/// loudly, because the fill that follows will be rejected.
+async fn route_quoter_metas(
+    velocity: &VelocityClient,
+    clob_quoter: Pubkey,
+    route: Option<&[Pubkey]>,
+    swift_order: &SignedOrderInfo,
+) -> Vec<AccountMeta> {
+    let mut keys: Vec<Pubkey> = Vec::new();
+    if clob_quoter != Pubkey::default() {
+        keys.push(clob_quoter);
+    }
+    for key in route.unwrap_or_default() {
+        if !keys.contains(key) {
+            keys.push(*key);
+        }
+    }
+    if keys.is_empty() {
+        return Vec::new();
+    }
+
+    let mut entries: Vec<QuoterV0> = Vec::with_capacity(keys.len());
+    let mut kept: Vec<Pubkey> = Vec::with_capacity(keys.len());
+    for key in keys {
+        match velocity.get_account_value::<QuoterV0>(&key).await {
+            Ok(entry) => {
+                entries.push(entry);
+                kept.push(key);
+            }
+            Err(err) => {
+                if key == clob_quoter {
+                    log::error!(
+                        target: TARGET,
+                        "clob quoter entry {key} unreadable ({err:?}); the fill will be rejected. uuid={}",
+                        swift_order.order_uuid_str()
+                    );
+                } else {
+                    log::warn!(
+                        target: TARGET,
+                        "routed quoter entry {key} unreadable ({err:?}); dropping that source. uuid={}",
+                        swift_order.order_uuid_str()
+                    );
+                }
+            }
+        }
+    }
+
+    // Writability ORs across entries. The union is a BTreeMap so two keepers
+    // building the same fill emit byte-identical account lists — the
+    // attestation signs one fixed message, so a nondeterministic order would
+    // make co-signatures unreproducible.
+    let mut cpi_union: BTreeMap<Pubkey, bool> = BTreeMap::new();
+    for entry in &entries {
+        for meta in &entry.execute_accounts[..entry.execute_accounts_count as usize] {
+            *cpi_union.entry(meta.pubkey).or_default() |= meta.is_writable;
+        }
+        *cpi_union.entry(entry.response_account).or_default() |= true;
+        cpi_union.entry(entry.program_id).or_default();
+    }
+    cpi_union.entry(derive_velocity_signer()).or_default();
+
+    kept.iter()
+        .map(|key| AccountMeta::new_readonly(*key, false))
+        .chain(cpi_union.iter().map(|(key, writable)| {
+            if *writable {
+                AccountMeta::new(*key, false)
+            } else {
+                AccountMeta::new_readonly(*key, false)
+            }
+        }))
+        .collect()
 }
 
 /// Build, self-sign, and get the flow-authority co-signature for a swift

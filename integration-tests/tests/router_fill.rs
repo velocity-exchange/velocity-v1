@@ -2296,15 +2296,18 @@ fn place_and_take_rests_the_remainder_on_the_clob() {
     );
 
     let (velocity_signer, _) = velocity_signer_pda();
-    let mut accounts = velocity::accounts::PlaceAndTake {
+    // The V1 route: v0's account list is frozen at its pre-CLOB shape, so
+    // resting the remainder on the book is a distinct endpoint whose CLOB
+    // accounts are required.
+    let mut accounts = velocity::accounts::PlaceAndTakeV1 {
         state: state_pda(),
         user: taker_user,
         user_stats: taker_stats,
         authority: taker_authority.pubkey(),
-        quoter: Some(fixture.quoter),
-        clob_market: Some(fixture.clob_market),
-        clob_program: Some(clob_id()),
-        velocity_signer: Some(velocity_signer),
+        quoter: fixture.quoter,
+        clob_market: fixture.clob_market,
+        clob_program: clob_id(),
+        velocity_signer,
         crank_conditions: None,
     }
     .to_account_metas(None);
@@ -2327,7 +2330,7 @@ fn place_and_take_rests_the_remainder_on_the_clob() {
     let ix = Instruction {
         program_id: velocity_id(),
         accounts,
-        data: velocity::instruction::PlaceAndTakePerpOrder {
+        data: velocity::instruction::PlaceAndTakePerpOrderV1 {
             params,
             success_condition: Some(0),
         }

@@ -5,7 +5,7 @@
 
 use {
     super::crank_common::{
-        crank_clob_removal, derive_user_pdas, removal_call, validate_linkage,
+        crank_clob_removal, derive_user_pdas, removal_call, validate_linkage, ClobRemoval,
         CrankClobOrderRemoval, ResolveClobCrank,
     },
     crate::{
@@ -13,8 +13,8 @@ use {
         instructions::relay_harness::resolve_into,
         state::prop_amm::{
             read_clob_node, read_clob_u32, ClobEvictWorstArgsV0, ClobSide, CLOB_ASK_COUNT_OFFSET,
-            CLOB_BID_COUNT_OFFSET, CLOB_EVICT_THRESHOLD_OFFSET, CLOB_EVICT_WORST_V0_DISCRIMINATOR,
-            CLOB_NIL, CLOB_WORST_ASK_OFFSET, CLOB_WORST_BID_OFFSET,
+            CLOB_BID_COUNT_OFFSET, CLOB_EVICT_THRESHOLD_OFFSET, CLOB_NIL, CLOB_WORST_ASK_OFFSET,
+            CLOB_WORST_BID_OFFSET,
         },
     },
     anchor_lang::prelude::*,
@@ -25,11 +25,11 @@ pub fn handle_crank_clob_evict(
     market_index: u16,
     side: ClobSide,
 ) -> Result<()> {
-    let mut data = CLOB_EVICT_WORST_V0_DISCRIMINATOR.to_vec();
-    ClobEvictWorstArgsV0 { side }
-        .serialize(&mut data)
-        .map_err(|_| ErrorCode::DefaultError)?;
-    crank_clob_removal(ctx, market_index, data, true)
+    crank_clob_removal(
+        ctx,
+        market_index,
+        ClobRemoval::Evict(ClobEvictWorstArgsV0 { side }),
+    )
 }
 
 pub fn handle_resolve_crank_clob_evict(ctx: Context<ResolveClobCrank>) -> Result<()> {

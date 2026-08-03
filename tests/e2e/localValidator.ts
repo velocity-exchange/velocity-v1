@@ -10,6 +10,11 @@
  * maker orders, the protocol User for cranks, and the Rust book-publisher
  * ticking against the validator over RPC and writing the Redis wire while
  * its cross fast path watches for crossed books.
+ *
+ * Velocity instructions go through the SDK wherever it has a builder. The
+ * CLOB, midpoint and relay programs ship no TS client, so their anchor wire
+ * (discriminator + borsh args) is hand-encoded in the `clobIx` / `midpointIx`
+ * / `relayIx` helpers below.
  */
 import * as anchor from '@coral-xyz/anchor';
 import { Program } from '@coral-xyz/anchor';
@@ -19,6 +24,7 @@ import { spawn, ChildProcess } from 'child_process';
 import * as fs from 'fs';
 import Redis from 'ioredis';
 import {
+	AccountMeta,
 	AddressLookupTableProgram,
 	ComputeBudgetProgram,
 	Connection,
@@ -47,9 +53,9 @@ import {
 	BulkAccountLoader,
 	getClobCrankConditionsPublicKey,
 	getPerpMarketPublicKeySync,
-	getSpotMarketPublicKeySync,
 	getLimitOrderParams,
 	generateSignedMsgUuid,
+	HotRole,
 	SignedMsgNetwork,
 	getMarketOrderParams,
 	getTriggerMarketOrderParams,
@@ -101,8 +107,10 @@ const WATCH_V0_LEN = 112;
 const PYTH_AGG_PRICE_OFFSET = 208;
 
 const UNIT = BASE_PRECISION; // 1e9
-const PRICE = PRICE_PRECISION; // 1e6
 const USDC = new BN(10).pow(new BN(6));
+/** Dollars → PRICE_PRECISION (1e6), the precision every price here is in. */
+const usd = (dollars: number): BN =>
+	new BN(Math.round(dollars * PRICE_PRECISION.toNumber()));
 
 /** Anchor default instruction discriminator: sha256("global:<name>")[..8]. */
 function ixDiscriminator(name: string): Buffer {
@@ -122,6 +130,14 @@ function u32(v: number): Buffer {
 function u64(v: BN | number): Buffer {
 	return new BN(v).toArrayLike(Buffer, 'le', 8);
 }
+
+// Account metas: read-only, writable, and their signing counterparts.
+const meta = (pubkey: PublicKey, isWritable: boolean, isSigner: boolean) =>
+	({ pubkey, isSigner, isWritable }) as AccountMeta;
+const ro = (pubkey: PublicKey) => meta(pubkey, false, false);
+const rw = (pubkey: PublicKey) => meta(pubkey, true, false);
+const signerRo = (pubkey: PublicKey) => meta(pubkey, false, true);
+const signerRw = (pubkey: PublicKey) => meta(pubkey, true, true);
 
 async function sleep(ms: number): Promise<void> {
 	return new Promise((resolve) => setTimeout(resolve, ms));
@@ -172,6 +188,166 @@ function readClobView(data: Buffer): ClobView {
 	};
 }
 
+/** The CLOB program's anchor wire (it has no TS client). */
+const clobIx = {
+	/** `initialize_market_v0` over market 0, with the admin CLI's defaults. */
+	initializeMarket(
+		payer: PublicKey,
+		velocitySigner: PublicKey,
+		book: PublicKey
+	): TransactionInstruction {
+		return new TransactionInstruction({
+			programId: CLOB_ID,
+			keys: [signerRo(payer), ro(velocitySigner), rw(book)],
+			data: Buffer.concat([
+				ixDiscriminator('initialize_market_v0'),
+				u16(0), // market_index
+				u64(UNIT), // base_precision
+				u64(100), // order_tick_size
+				u64(100000), // order_step_size
+				u64(100000), // min_order_size
+				u32(0), // default_activation_delay_slots
+				u32(20), // max_activation_delay_slots
+				u32(2), // unknown_user_grace_slots
+				u32(768), // evict_threshold_per_side
+				u16(128), // max_quote_levels
+				u16(64), // max_execute_fills
+				u16(32), // max_execute_users
+			]),
+		});
+	},
+	/** `[disc][ClobHeaderV0][len u32][pad to 8]` then the 96-byte node arena. */
+	space(capacity: number): number {
+		return Math.ceil((8 + 8352 + 4) / 8) * 8 + capacity * CLOB_NODE_LEN;
+	},
+};
+
+type SplineLevel = { offsetPpm: number; size: BN };
+
+/** The midpoint program's anchor wire (it has no TS client either). */
+const midpointIx = {
+	instance(maker: PublicKey): PublicKey {
+		return PublicKey.findProgramAddressSync(
+			[Buffer.from('midpoint'), u16(0), maker.toBuffer(), u16(0)],
+			MIDPOINT_ID
+		)[0];
+	},
+	/** `initialize_quoter_v0`: market u16, sub u16, base_precision u64,
+	 * staleness u64, tick u64, step u64, min u64, attested bool. */
+	initializeQuoter(accounts: {
+		payer: PublicKey;
+		maker: PublicKey;
+		velocitySigner: PublicKey;
+		hot: PublicKey;
+		instance: PublicKey;
+	}): TransactionInstruction {
+		return new TransactionInstruction({
+			programId: MIDPOINT_ID,
+			keys: [
+				signerRw(accounts.payer),
+				signerRo(accounts.maker),
+				ro(accounts.velocitySigner),
+				ro(accounts.hot),
+				// Absent optional flow authority = the program id.
+				ro(MIDPOINT_ID),
+				rw(accounts.instance),
+				ro(SystemProgram.programId),
+			],
+			data: Buffer.concat([
+				ixDiscriminator('initialize_quoter_v0'),
+				u16(0),
+				u16(0),
+				u64(UNIT),
+				u64(1000), // max_mid_staleness_slots — generous for a slow tick
+				u64(100), // price_tick_size
+				u64(100000), // size_step
+				u64(100000), // min_quote_size
+				Buffer.from([0]), // require_attested_flow
+			]),
+		});
+	},
+	setMid(instance: PublicKey, hot: PublicKey, mid: BN): TransactionInstruction {
+		return new TransactionInstruction({
+			programId: MIDPOINT_ID,
+			keys: [rw(instance), signerRo(hot)],
+			data: Buffer.concat([
+				ixDiscriminator('set_mid_v0'),
+				u64(mid),
+				u64(0), // sequence guard: off
+			]),
+		});
+	},
+	setLevels(
+		instance: PublicKey,
+		hot: PublicKey,
+		mid: BN,
+		levels: SplineLevel[]
+	): TransactionInstruction {
+		const side = Buffer.concat([
+			Buffer.from([1]), // Some(levels)
+			u32(levels.length),
+			...levels.flatMap((level) => [u64(level.offsetPpm), u64(level.size)]),
+		]);
+		return new TransactionInstruction({
+			programId: MIDPOINT_ID,
+			keys: [rw(instance), signerRo(hot)],
+			data: Buffer.concat([
+				ixDiscriminator('set_levels_v0'),
+				Buffer.from([1]), // mid: Some
+				u64(mid),
+				Buffer.from([0]), // sequence: None
+				side, // bids
+				side, // asks
+			]),
+		});
+	},
+	/** `update_quoter_v0` with `require_attested_flow = Some(true)` and every
+	 * other field absent. */
+	requireAttestedFlow(
+		instance: PublicKey,
+		maker: PublicKey,
+		flowAuthority: PublicKey
+	): TransactionInstruction {
+		return new TransactionInstruction({
+			programId: MIDPOINT_ID,
+			keys: [
+				rw(instance),
+				signerRo(maker),
+				// Absent optional hot authority = the program id.
+				ro(MIDPOINT_ID),
+				ro(flowAuthority),
+			],
+			data: Buffer.concat([
+				ixDiscriminator('update_quoter_v0'),
+				Buffer.from([0]), // max_mid_staleness_slots: None
+				Buffer.from([0]), // price_tick_size: None
+				Buffer.from([0]), // size_step: None
+				Buffer.from([0]), // min_quote_size: None
+				Buffer.from([1, 1]), // require_attested_flow: Some(true)
+				Buffer.from([0]), // is_paused: None
+			]),
+		});
+	},
+};
+
+/** The relay program's anchor wire (it has no TS client either). */
+const relayIx = {
+	/** `register_watch_v0` over a velocity condition block. The block is always
+	 * the account's first field, so the offset is 8 (past anchor's
+	 * discriminator). Permissionless on relay's side. */
+	registerWatch(
+		payer: PublicKey,
+		target: PublicKey,
+		watch: PublicKey
+	): TransactionInstruction {
+		return new TransactionInstruction({
+			programId: RELAY_ID,
+			keys: [signerRo(payer), ro(target), rw(watch)],
+			data: Buffer.concat([ixDiscriminator('register_watch_v0'), u32(8)]),
+		});
+	},
+};
+
 describe('e2e localnet: programs + publisher + redis', function () {
 	const connection = new Connection(RPC_URL, 'confirmed');
 	const payer = Keypair.generate();
@@ -210,12 +386,8 @@ describe('e2e localnet: programs + publisher + redis', function () {
 	let protocolUser: PublicKey;
 	let protocolUserStats: PublicKey;
 
-	let publisher: ChildProcess | undefined;
-	let publisherLog: number | undefined;
-	let turner: ChildProcess | undefined;
-	let turnerLog: number | undefined;
-	let swift: ChildProcess | undefined;
-	let swiftLog: number | undefined;
+	/** Every spawned service, with the log fd `after` has to close. */
+	const services: { child: ChildProcess; log: number }[] = [];
 	/** The retail-flow attestation key swift co-signs with; registered
 	 * on-chain as `State.hot_flow_authority`. */
 	const flowAuthorityKp = Keypair.generate();
@@ -231,6 +403,75 @@ describe('e2e localnet: programs + publisher + redis', function () {
 	/** What the background feed posts. A live oracle is the only way to
 	 * move price on a real validator, so tests set this and wait. */
 	let oracleTargetPrice = 100;
+
+	const perpMarket = getPerpMarketPublicKeySync(VELOCITY_ID, 0);
+	const userOf = (authority: PublicKey) =>
+		getUserAccountPublicKeySync(VELOCITY_ID, authority, 0);
+	const statsOf = (authority: PublicKey) =>
+		getUserStatsAccountPublicKey(VELOCITY_ID, authority);
+	/** A market's quoter-registry entry: `["quoter", market, program, user]`
+	 * (`PublicKey.default` as the user for a CLOB, whose entry is shared). */
+	const quoterKey = (quoterProgram: PublicKey, user: PublicKey) =>
+		PublicKey.findProgramAddressSync(
+			[
+				Buffer.from('quoter'),
+				u16(0),
+				quoterProgram.toBuffer(),
+				user.toBuffer(),
+			],
+			VELOCITY_ID
+		)[0];
+
+	const send = (ixs: TransactionInstruction[], signers: Keypair[] = []) =>
+		provider.sendAndConfirm(new Transaction().add(...ixs), signers);
+
+	/** Fills route through every quoter, well past the default CU budget. */
+	const sendFill = (ix: TransactionInstruction) =>
+		send([ComputeBudgetProgram.setComputeUnitLimit({ units: 800_000 }), ix]);
+
+	/** `SystemProgram.createAccount`, rent looked up for `space`. */
+	const createAccount = async (
+		newAccount: PublicKey,
+		space: number,
+		programId: PublicKey
+	) =>
+		SystemProgram.createAccount({
+			fromPubkey: payer.publicKey,
+			newAccountPubkey: newAccount,
+			lamports: await connection.getMinimumBalanceForRentExemption(space),
+			space,
+			programId,
+		});
+
+	/** Spawn a service with its stdio in `$SCRATCH/<name>.log`, and register it
+	 * for teardown. A non-zero exit is reported but never fails a test on its
+	 * own — the scenarios' on-chain assertions are the verdict. */
+	const startService = (
+		name: string,
+		bin: string,
+		args: string[],
+		env: Record<string, string>
+	): ChildProcess => {
+		const log = fs.openSync(`${SCRATCH}/${name}.log`, 'w');
+		const child = spawn(bin, args, {
+			env: { ...process.env, ...env },
+			stdio: ['ignore', log, log],
+		});
+		child.on('exit', (code) => {
+			if (code !== null && code !== 0) {
+				console.error(`${name} exited ${code} — see ${SCRATCH}/${name}.log`);
+			}
+		});
+		services.push({ child, log });
+		return child;
+	};
+
+	/** A keypair on disk, the way every one of these services takes one. */
+	const writeKeypair = (name: string, kp: Keypair): string => {
+		const path = `${SCRATCH}/${name}.json`;
+		fs.writeFileSync(path, JSON.stringify(Array.from(kp.secretKey)));
+		return path;
+	};
 
 	/** Move the feed and wait until the change is on chain. */
 	const setOraclePrice = async (price: number) => {
@@ -251,52 +492,44 @@ describe('e2e localnet: programs + publisher + redis', function () {
 
 	const createUsdcMint = async (): Promise<Keypair> => {
 		const mint = Keypair.generate();
-		const tx = new Transaction().add(
-			SystemProgram.createAccount({
-				fromPubkey: payer.publicKey,
-				newAccountPubkey: mint.publicKey,
-				lamports: await connection.getMinimumBalanceForRentExemption(
-					MintLayout.span
+		await send(
+			[
+				await createAccount(mint.publicKey, MintLayout.span, TOKEN_PROGRAM_ID),
+				createInitializeMintInstruction(
+					mint.publicKey,
+					6,
+					payer.publicKey,
+					payer.publicKey
 				),
-				space: MintLayout.span,
-				programId: TOKEN_PROGRAM_ID,
-			}),
-			createInitializeMintInstruction(
-				mint.publicKey,
-				6,
-				payer.publicKey,
-				payer.publicKey
-			)
+			],
+			[mint]
 		);
-		await provider.sendAndConfirm(tx, [mint]);
 		return mint;
 	};
 
 	const fundUsdc = async (owner: PublicKey, amount: BN): Promise<PublicKey> => {
 		const account = Keypair.generate();
-		const tx = new Transaction().add(
-			SystemProgram.createAccount({
-				fromPubkey: payer.publicKey,
-				newAccountPubkey: account.publicKey,
-				lamports: await connection.getMinimumBalanceForRentExemption(
-					AccountLayout.span
+		await send(
+			[
+				await createAccount(
+					account.publicKey,
+					AccountLayout.span,
+					TOKEN_PROGRAM_ID
 				),
-				space: AccountLayout.span,
-				programId: TOKEN_PROGRAM_ID,
-			}),
-			createInitializeAccountInstruction(
-				account.publicKey,
-				usdcMint.publicKey,
-				owner
-			),
-			createMintToInstruction(
-				usdcMint.publicKey,
-				account.publicKey,
-				payer.publicKey,
-				BigInt(amount.toString())
-			)
+				createInitializeAccountInstruction(
+					account.publicKey,
+					usdcMint.publicKey,
+					owner
+				),
+				createMintToInstruction(
+					usdcMint.publicKey,
+					account.publicKey,
+					payer.publicKey,
+					BigInt(amount.toString())
+				),
+			],
+			[account]
 		);
-		await provider.sendAndConfirm(tx, [account]);
 		return account.publicKey;
 	};
 
@@ -320,344 +553,212 @@ describe('e2e localnet: programs + publisher + redis', function () {
 		return client;
 	};
 
+	/** The margin map every router-touching instruction opens with: market 0's
+	 * oracle, its quote spot market, and the perp market itself. */
+	const marginMap = (): AccountMeta[] =>
+		admin.getRemainingAccounts({
+			userAccounts: [],
+			writablePerpMarketIndexes: [0],
+			writableSpotMarketIndexes: [0],
+		});
+
+	/** Register + approve a quoter, the sequence `admin-cli quoter` runs:
+	 * create the registry entry, publish its two CPI account lists, then have
+	 * the admin approve the surface. */
+	const registerQuoterIxs = async (args: {
+		authority: PublicKey;
+		quoterType: QuoterType;
+		quoterProgram: PublicKey;
+		responseAccount: PublicKey;
+		user: PublicKey;
+		quoteLeg: { pubkey: PublicKey; isWritable: boolean }[];
+		executeLeg: { pubkey: PublicKey; isWritable: boolean }[];
+	}): Promise<{ quoter: PublicKey; ixs: TransactionInstruction[] }> => {
+		const program = admin.program;
+		const quoter = quoterKey(args.quoterProgram, args.user);
+		const legs: [QuoterCpiLeg, typeof args.quoteLeg][] = [
+			[QuoterCpiLeg.QUOTE, args.quoteLeg],
+			[QuoterCpiLeg.EXECUTE, args.executeLeg],
+		];
+		return {
+			quoter,
+			ixs: [
+				program.instruction.initializeQuoter(
+					{
+						marketIndex: 0,
+						quoterType: args.quoterType,
+						responseAccount: args.responseAccount,
+						quoteV0Discriminator: Array.from(ixDiscriminator('quote_v0')),
+						executeV0Discriminator: Array.from(ixDiscriminator('execute_v0')),
+					},
+					{
+						accounts: {
+							payer: payer.publicKey,
+							authority: args.authority,
+							quoter,
+							perpMarket,
+							quoterProgram: args.quoterProgram,
+							user: args.user,
+							rent: SYSVAR_RENT_PUBKEY,
+							systemProgram: SystemProgram.programId,
+						},
+					}
+				),
+				...legs.map(([leg, metas]) =>
+					program.instruction.updateQuoterAccounts(
+						{ leg, index: 0, metas },
+						{ accounts: { authority: args.authority, quoter } }
+					)
+				),
+				program.instruction.updateQuoterApproved(true, {
+					accounts: {
+						admin: payer.publicKey,
+						state: await admin.getStatePublicKey(),
+						quoter,
+					},
+				}),
+			],
+		};
+	};
+
 	/** CLOB bring-up, exactly as `admin-cli clob-market init` does it. */
 	const clobBringUp = async () => {
-		const capacity = 1024;
-		const space = Math.ceil((8 + 8352 + 4) / 8) * 8 + capacity * CLOB_NODE_LEN;
+		const space = clobIx.space(1024);
 		clobBook = Keypair.generate();
-		const config = Buffer.concat([
-			u16(0), // market_index
-			u64(UNIT), // base_precision
-			u64(100), // order_tick_size
-			u64(100000), // order_step_size
-			u64(100000), // min_order_size
-			u32(0), // default_activation_delay_slots
-			u32(20), // max_activation_delay_slots
-			u32(2), // unknown_user_grace_slots
-			u32(768), // evict_threshold_per_side
-			u16(128), // max_quote_levels
-			u16(64), // max_execute_fills
-			u16(32), // max_execute_users
-		]);
-		await provider.sendAndConfirm(
-			new Transaction().add(
-				SystemProgram.createAccount({
-					fromPubkey: payer.publicKey,
-					newAccountPubkey: clobBook.publicKey,
-					lamports: await connection.getMinimumBalanceForRentExemption(space),
-					space,
-					programId: CLOB_ID,
-				}),
-				new TransactionInstruction({
-					programId: CLOB_ID,
-					keys: [
-						{ pubkey: payer.publicKey, isSigner: true, isWritable: false },
-						{ pubkey: velocitySigner, isSigner: false, isWritable: false },
-						{ pubkey: clobBook.publicKey, isSigner: false, isWritable: true },
-					],
-					data: Buffer.concat([
-						ixDiscriminator('initialize_market_v0'),
-						config,
-					]),
-				})
-			),
+		await send(
+			[
+				await createAccount(clobBook.publicKey, space, CLOB_ID),
+				clobIx.initializeMarket(
+					payer.publicKey,
+					velocitySigner,
+					clobBook.publicKey
+				),
+			],
 			[clobBook]
 		);
 
-		clobEntry = PublicKey.findProgramAddressSync(
-			[
-				Buffer.from('quoter'),
-				u16(0),
-				CLOB_ID.toBuffer(),
-				PublicKey.default.toBuffer(),
+		const registration = await registerQuoterIxs({
+			authority: payer.publicKey,
+			quoterType: QuoterType.CLOB,
+			quoterProgram: CLOB_ID,
+			responseAccount: clobBook.publicKey,
+			user: PublicKey.default,
+			quoteLeg: [{ pubkey: clobBook.publicKey, isWritable: true }],
+			executeLeg: [
+				{ pubkey: clobBook.publicKey, isWritable: true },
+				{ pubkey: velocitySigner, isWritable: false },
 			],
-			VELOCITY_ID
-		)[0];
-		const program = admin.program;
-		const initQuoter = program.instruction.initializeQuoter(
-			{
-				marketIndex: 0,
-				quoterType: QuoterType.CLOB,
-				responseAccount: clobBook.publicKey,
-				quoteV0Discriminator: Array.from(ixDiscriminator('quote_v0')),
-				executeV0Discriminator: Array.from(ixDiscriminator('execute_v0')),
-			},
-			{
-				accounts: {
-					payer: payer.publicKey,
-					authority: payer.publicKey,
-					quoter: clobEntry,
-					perpMarket: getPerpMarketPublicKeySync(VELOCITY_ID, 0),
-					quoterProgram: CLOB_ID,
-					user: PublicKey.default,
-					rent: SYSVAR_RENT_PUBKEY,
-					systemProgram: SystemProgram.programId,
-				},
-			}
-		);
-		const legAccounts = (
-			leg: QuoterCpiLeg,
-			metas: { pubkey: PublicKey; isWritable: boolean }[]
-		) =>
-			program.instruction.updateQuoterAccounts(
-				{ leg, index: 0, metas },
-				{ accounts: { authority: payer.publicKey, quoter: clobEntry } }
-			);
-		const approve = program.instruction.updateQuoterApproved(true, {
-			accounts: {
-				admin: payer.publicKey,
-				state: await admin.getStatePublicKey(),
-				quoter: clobEntry,
-			},
 		});
-		await provider.sendAndConfirm(
-			new Transaction().add(
-				initQuoter,
-				legAccounts(QuoterCpiLeg.QUOTE, [
-					{ pubkey: clobBook.publicKey, isWritable: true },
-				]),
-				legAccounts(QuoterCpiLeg.EXECUTE, [
-					{ pubkey: clobBook.publicKey, isWritable: true },
-					{ pubkey: velocitySigner, isWritable: false },
-				]),
-				approve
-			)
-		);
+		clobEntry = registration.quoter;
+		await send(registration.ixs);
 
 		// Attach as the market's canonical CLOB (creates conditions) + fund
 		// the crank reservoir.
 		conditions = getClobCrankConditionsPublicKey(VELOCITY_ID, 0);
-		const attach = program.instruction.updatePerpMarketClobQuoter(
-			new BN(10_000), // keeper_payment_lamports
-			new BN(1500), // expire_fallback_slots
-			{
-				accounts: {
-					admin: payer.publicKey,
-					state: await admin.getStatePublicKey(),
-					perpMarket: getPerpMarketPublicKeySync(VELOCITY_ID, 0),
-					quoter: clobEntry,
-					clobMarket: clobBook.publicKey,
-					crankConditions: conditions,
-					rent: SYSVAR_RENT_PUBKEY,
-					systemProgram: SystemProgram.programId,
-				},
-			}
-		);
-		await provider.sendAndConfirm(
-			new Transaction().add(
-				attach,
-				SystemProgram.transfer({
-					fromPubkey: payer.publicKey,
-					toPubkey: conditions,
-					lamports: LAMPORTS_PER_SOL,
-				})
-			)
-		);
+		await send([
+			admin.program.instruction.updatePerpMarketClobQuoter(
+				new BN(10_000), // keeper_payment_lamports
+				new BN(1500), // expire_fallback_slots
+				{
+					accounts: {
+						admin: payer.publicKey,
+						state: await admin.getStatePublicKey(),
+						perpMarket,
+						quoter: clobEntry,
+						clobMarket: clobBook.publicKey,
+						crankConditions: conditions,
+						rent: SYSVAR_RENT_PUBKEY,
+						systemProgram: SystemProgram.programId,
+					},
+				}
+			),
+			SystemProgram.transfer({
+				fromPubkey: payer.publicKey,
+				toPubkey: conditions,
+				lamports: LAMPORTS_PER_SOL,
+			}),
+		]);
 	};
 
 	/** Midpoint instance + spline, then its Custom registry entry. */
 	const midpointBringUp = async () => {
-		midInstance = PublicKey.findProgramAddressSync(
+		midInstance = midpointIx.instance(midMakerKp.publicKey);
+		await send(
 			[
-				Buffer.from('midpoint'),
-				u16(0),
-				midMakerKp.publicKey.toBuffer(),
-				u16(0),
+				midpointIx.initializeQuoter({
+					payer: payer.publicKey,
+					maker: midMakerKp.publicKey,
+					velocitySigner,
+					hot: midHotKp.publicKey,
+					instance: midInstance,
+				}),
 			],
-			MIDPOINT_ID
-		)[0];
-		// Config borsh: market u16, sub u16, base_precision u64, staleness
-		// u64, tick u64, step u64, min u64, attested bool.
-		const initData = Buffer.concat([
-			ixDiscriminator('initialize_quoter_v0'),
-			u16(0),
-			u16(0),
-			u64(UNIT),
-			u64(1000), // max_mid_staleness_slots — generous for a slow tick
-			u64(100), // price_tick_size
-			u64(100000), // size_step
-			u64(100000), // min_quote_size
-			Buffer.from([0]), // require_attested_flow
-		]);
-		const init = new TransactionInstruction({
-			programId: MIDPOINT_ID,
-			keys: [
-				{ pubkey: payer.publicKey, isSigner: true, isWritable: true },
-				{ pubkey: midMakerKp.publicKey, isSigner: true, isWritable: false },
-				{ pubkey: velocitySigner, isSigner: false, isWritable: false },
-				{ pubkey: midHotKp.publicKey, isSigner: false, isWritable: false },
-				// Absent optional flow authority = the program id.
-				{ pubkey: MIDPOINT_ID, isSigner: false, isWritable: false },
-				{ pubkey: midInstance, isSigner: false, isWritable: true },
-				{ pubkey: SystemProgram.programId, isSigner: false, isWritable: false },
-			],
-			data: initData,
-		});
-		await provider.sendAndConfirm(new Transaction().add(init), [midMakerKp]);
+			[midMakerKp]
+		);
 		// Spline: 10bps / 30bps rungs, one unit each, mid $100.
-		await setMidpointLevels(new BN(100).mul(PRICE), [
+		await setMidpointLevels(usd(100), [
 			{ offsetPpm: 1000, size: UNIT },
 			{ offsetPpm: 3000, size: UNIT },
 		]);
 
-		const midUser = getUserAccountPublicKeySync(
-			VELOCITY_ID,
-			midMakerKp.publicKey,
-			0
-		);
-		midEntry = PublicKey.findProgramAddressSync(
-			[
-				Buffer.from('quoter'),
-				u16(0),
-				MIDPOINT_ID.toBuffer(),
-				midUser.toBuffer(),
+		const registration = await registerQuoterIxs({
+			authority: midMakerKp.publicKey,
+			quoterType: QuoterType.CUSTOM,
+			quoterProgram: MIDPOINT_ID,
+			responseAccount: midInstance,
+			user: userOf(midMakerKp.publicKey),
+			quoteLeg: [
+				{ pubkey: midInstance, isWritable: true },
+				{ pubkey: SYSVAR_INSTRUCTIONS_PUBKEY, isWritable: false },
 			],
-			VELOCITY_ID
-		)[0];
-		const program = admin.program;
-		const initQuoter = program.instruction.initializeQuoter(
-			{
-				marketIndex: 0,
-				quoterType: QuoterType.CUSTOM,
-				responseAccount: midInstance,
-				quoteV0Discriminator: Array.from(ixDiscriminator('quote_v0')),
-				executeV0Discriminator: Array.from(ixDiscriminator('execute_v0')),
-			},
-			{
-				accounts: {
-					payer: payer.publicKey,
-					authority: midMakerKp.publicKey,
-					quoter: midEntry,
-					perpMarket: getPerpMarketPublicKeySync(VELOCITY_ID, 0),
-					quoterProgram: MIDPOINT_ID,
-					user: midUser,
-					rent: SYSVAR_RENT_PUBKEY,
-					systemProgram: SystemProgram.programId,
-				},
-			}
-		);
-		const legAccounts = (
-			leg: QuoterCpiLeg,
-			metas: { pubkey: PublicKey; isWritable: boolean }[]
-		) =>
-			program.instruction.updateQuoterAccounts(
-				{ leg, index: 0, metas },
-				{ accounts: { authority: midMakerKp.publicKey, quoter: midEntry } }
-			);
-		const approve = program.instruction.updateQuoterApproved(true, {
-			accounts: {
-				admin: payer.publicKey,
-				state: await admin.getStatePublicKey(),
-				quoter: midEntry,
-			},
+			executeLeg: [
+				{ pubkey: midInstance, isWritable: true },
+				{ pubkey: velocitySigner, isWritable: false },
+				{ pubkey: SYSVAR_INSTRUCTIONS_PUBKEY, isWritable: false },
+			],
 		});
-		await provider.sendAndConfirm(
-			new Transaction().add(
-				initQuoter,
-				legAccounts(QuoterCpiLeg.QUOTE, [
-					{ pubkey: midInstance, isWritable: true },
-					{ pubkey: SYSVAR_INSTRUCTIONS_PUBKEY, isWritable: false },
-				]),
-				legAccounts(QuoterCpiLeg.EXECUTE, [
-					{ pubkey: midInstance, isWritable: true },
-					{ pubkey: velocitySigner, isWritable: false },
-					{ pubkey: SYSVAR_INSTRUCTIONS_PUBKEY, isWritable: false },
-				]),
-				approve
-			),
-			[midMakerKp]
-		);
+		midEntry = registration.quoter;
+		await send(registration.ixs, [midMakerKp]);
 	};
 
-	const setMidpointMid = async (mid: BN) => {
-		const data = Buffer.concat([
-			ixDiscriminator('set_mid_v0'),
-			u64(mid),
-			u64(0),
-		]);
-		await provider.sendAndConfirm(
-			new Transaction().add(
-				new TransactionInstruction({
-					programId: MIDPOINT_ID,
-					keys: [
-						{ pubkey: midInstance, isSigner: false, isWritable: true },
-						{ pubkey: midHotKp.publicKey, isSigner: true, isWritable: false },
-					],
-					data,
-				})
-			),
-			[midHotKp]
-		);
-	};
+	const setMidpointMid = (mid: BN) =>
+		send([midpointIx.setMid(midInstance, midHotKp.publicKey, mid)], [midHotKp]);
 
-	const setMidpointLevels = async (
-		mid: BN,
-		levels: { offsetPpm: number; size: BN }[]
-	) => {
-		const side = Buffer.concat([
-			Buffer.from([1]),
-			u32(levels.length),
-			...levels.flatMap((level) => [u64(level.offsetPpm), u64(level.size)]),
-		]);
-		const data = Buffer.concat([
-			ixDiscriminator('set_levels_v0'),
-			Buffer.from([1]),
-			u64(mid),
-			Buffer.from([0]), // sequence: None
-			side, // bids
-			side, // asks
-		]);
-		await provider.sendAndConfirm(
-			new Transaction().add(
-				new TransactionInstruction({
-					programId: MIDPOINT_ID,
-					keys: [
-						{ pubkey: midInstance, isSigner: false, isWritable: true },
-						{ pubkey: midHotKp.publicKey, isSigner: true, isWritable: false },
-					],
-					data,
-				})
-			),
+	const setMidpointLevels = (mid: BN, levels: SplineLevel[]) =>
+		send(
+			[midpointIx.setLevels(midInstance, midHotKp.publicKey, mid, levels)],
 			[midHotKp]
 		);
-	};
 
 	/** The protocol-owned User (velocity signer's sub-account 0) for cranks. */
 	const initProtocolUser = async () => {
-		protocolUser = getUserAccountPublicKeySync(VELOCITY_ID, velocitySigner, 0);
-		protocolUserStats = getUserStatsAccountPublicKey(
-			VELOCITY_ID,
-			velocitySigner
-		);
+		protocolUser = userOf(velocitySigner);
+		protocolUserStats = statsOf(velocitySigner);
 		const program = admin.program;
-		const state = await admin.getStatePublicKey();
-		const name = Array.from(Buffer.alloc(32, ' '));
-		Buffer.from('protocol').copy(Buffer.from(name));
-		const initStats = program.instruction.initializeUserStats({
-			accounts: {
-				userStats: protocolUserStats,
-				state,
-				authority: velocitySigner,
-				payer: payer.publicKey,
-				rent: SYSVAR_RENT_PUBKEY,
-				systemProgram: SystemProgram.programId,
-			},
-		});
-		const initUser = program.instruction.initializeUser(0, name, {
-			accounts: {
-				user: protocolUser,
-				userStats: protocolUserStats,
-				state,
-				authority: velocitySigner,
-				payer: payer.publicKey,
-				rent: SYSVAR_RENT_PUBKEY,
-				systemProgram: SystemProgram.programId,
-				// Optional, but anchor still wants it named: pass the PDA so
-				// the protocol user is relay-covered like any other.
-				userConditions: getUserConditionsPublicKey(VELOCITY_ID, protocolUser),
-			},
-		});
-		await provider.sendAndConfirm(new Transaction().add(initStats, initUser));
+		// The SDK's initializeUser builders only ever act for their own
+		// wallet's authority; this User's authority is the velocity signer.
+		const shared = {
+			state: await admin.getStatePublicKey(),
+			authority: velocitySigner,
+			payer: payer.publicKey,
+			rent: SYSVAR_RENT_PUBKEY,
+			systemProgram: SystemProgram.programId,
+		};
+		await send([
+			program.instruction.initializeUserStats({
+				accounts: { userStats: protocolUserStats, ...shared },
+			}),
+			program.instruction.initializeUser(0, Array.from(Buffer.alloc(32, ' ')), {
+				accounts: {
+					user: protocolUser,
+					userStats: protocolUserStats,
+					...shared,
+					// Optional, but anchor still wants it named: pass the PDA
+					// so the protocol user is relay-covered like any other.
+					userConditions: getUserConditionsPublicKey(VELOCITY_ID, protocolUser),
+				},
+			}),
+		]);
 	};
 
 	const placeClobOrder = async (
@@ -668,7 +769,6 @@ describe('e2e localnet: programs + publisher + redis', function () {
 		size: BN,
 		maxTs: BN = new BN(0)
 	) => {
-		const user = getUserAccountPublicKeySync(VELOCITY_ID, kp.publicKey, 0);
 		const ix = client.program.instruction.placeClobOrder(
 			{
 				marketIndex: 0,
@@ -681,7 +781,7 @@ describe('e2e localnet: programs + publisher + redis', function () {
 			{
 				accounts: {
 					state: await client.getStatePublicKey(),
-					user,
+					user: userOf(kp.publicKey),
 					authority: kp.publicKey,
 					quoter: clobEntry,
 					clobMarket: clobBook.publicKey,
@@ -692,19 +792,7 @@ describe('e2e localnet: programs + publisher + redis', function () {
 					// program id (anchor's `None`).
 					instructionsSysvar: VELOCITY_ID,
 				},
-				remainingAccounts: [
-					{ pubkey: oracle, isSigner: false, isWritable: false },
-					{
-						pubkey: getSpotMarketPublicKeySync(VELOCITY_ID, 0),
-						isSigner: false,
-						isWritable: true,
-					},
-					{
-						pubkey: getPerpMarketPublicKeySync(VELOCITY_ID, 0),
-						isSigner: false,
-						isWritable: true,
-					},
-				],
+				remainingAccounts: marginMap(),
 			}
 		);
 		await client.sendTransaction(new Transaction().add(ix));
@@ -715,51 +803,27 @@ describe('e2e localnet: programs + publisher + redis', function () {
 		return readClobView(info!.data);
 	};
 
-	/// Register a relay `WatchV0` over a velocity condition block. The
-	/// block is always the account's first field, so the offset is 8 (past
-	/// anchor's discriminator). Permissionless on relay's side.
 	const registerWatch = async (target: PublicKey) => {
 		const watch = Keypair.generate();
-		const offset = Buffer.alloc(4);
-		offset.writeUInt32LE(8);
-		const tx = new Transaction().add(
-			SystemProgram.createAccount({
-				fromPubkey: payer.publicKey,
-				newAccountPubkey: watch.publicKey,
-				lamports: await connection.getMinimumBalanceForRentExemption(
-					WATCH_V0_LEN
-				),
-				space: WATCH_V0_LEN,
-				programId: RELAY_ID,
-			}),
-			new TransactionInstruction({
-				programId: RELAY_ID,
-				keys: [
-					{ pubkey: payer.publicKey, isSigner: true, isWritable: false },
-					{ pubkey: target, isSigner: false, isWritable: false },
-					{ pubkey: watch.publicKey, isSigner: false, isWritable: true },
-				],
-				data: Buffer.concat([ixDiscriminator('register_watch_v0'), offset]),
-			})
+		await send(
+			[
+				await createAccount(watch.publicKey, WATCH_V0_LEN, RELAY_ID),
+				relayIx.registerWatch(payer.publicKey, target, watch.publicKey),
+			],
+			[watch]
 		);
-		await provider.sendAndConfirm(tx, [watch]);
 		return watch.publicKey;
 	};
 
-	const startTurner = () => {
-		const keeperPath = `${SCRATCH}/turner-keeper.json`;
-		fs.writeFileSync(
-			keeperPath,
-			JSON.stringify(Array.from(turnerKeeper.secretKey))
-		);
-		turnerLog = fs.openSync(`${SCRATCH}/turner.log`, 'w');
-		turner = spawn(
+	const startTurner = () =>
+		startService(
+			'turner',
 			TURNER_BIN,
 			[
 				'--rpc-url',
 				RPC_URL,
 				'--keypair',
-				keeperPath,
+				writeKeypair('turner-keeper', turnerKeeper),
 				'--program-id',
 				RELAY_ID.toBase58(),
 				// Scoped to velocity's watches, as an operator would run it.
@@ -775,17 +839,8 @@ describe('e2e localnet: programs + publisher + redis', function () {
 				'--refresh-ticks',
 				'5',
 			],
-			{
-				env: { ...process.env, RUST_LOG: 'relay_crank_turner=debug,info' },
-				stdio: ['ignore', turnerLog, turnerLog],
-			}
+			{ RUST_LOG: 'relay_crank_turner=debug,info' }
 		);
-		turner.on('exit', (code) => {
-			if (code !== null && code !== 0) {
-				console.error(`turner exited ${code} — see ${SCRATCH}/turner.log`);
-			}
-		});
-	};
 
 	/** Create + activate an address lookup table over `addresses`. */
 	const createRouterLookupTable = async (addresses: PublicKey[]) => {
@@ -799,17 +854,15 @@ describe('e2e localnet: programs + publisher + redis', function () {
 		const unique = [...new Set(addresses.map((a) => a.toBase58()))].map(
 			(a) => new PublicKey(a)
 		);
-		await provider.sendAndConfirm(
-			new Transaction().add(
-				createIx,
-				AddressLookupTableProgram.extendLookupTable({
-					payer: payer.publicKey,
-					authority: payer.publicKey,
-					lookupTable: tableAddress,
-					addresses: unique,
-				})
-			)
-		);
+		await send([
+			createIx,
+			AddressLookupTableProgram.extendLookupTable({
+				payer: payer.publicKey,
+				authority: payer.publicKey,
+				lookupTable: tableAddress,
+				addresses: unique,
+			}),
+		]);
 		// Addresses added in slot N only resolve from N+1: the account
 		// reads back immediately, but a transaction using it before the
 		// slot turns over fails with "invalid index" at load time.
@@ -834,39 +887,28 @@ describe('e2e localnet: programs + publisher + redis', function () {
 			new PublicKey('feezFJywCs7LZXXi6dyLKpr3XKgtf7KXXKZ2y6vzTSQ'),
 			1
 		);
-		swiftLog = fs.openSync(`${SCRATCH}/swift.log`, 'w');
-		const redisPort = new URL(REDIS_URL).port || '6379';
-		swift = spawn(SWIFT_BIN, ['--server', 'swift'], {
-			env: {
-				...process.env,
-				ENV: 'devnet',
-				ENDPOINT: RPC_URL,
-				WS_ENDPOINT_1: RPC_URL.replace('http', 'ws').replace('8899', '8900'),
-				ELASTICACHE_HOST: '127.0.0.1',
-				ELASTICACHE_PORT: redisPort,
-				PORT: String(SWIFT_PORT),
-				METRICS_PORT: '9469',
-				FLOW_AUTHORITY_KEYPAIR: JSON.stringify(
-					Array.from(flowAuthorityKp.secretKey)
-				),
-				// Long enough that the scenario reliably observes the
-				// too-early response, short enough that the signed
-				// message's slot window survives the round-trip.
-				ATTESTATION_HOLD_MS: '600',
-				// Intake's pre-flight RPC simulation is a production
-				// admission guard, not part of the attestation loop, and
-				// it needs the client's devnet market plumbing that a
-				// freshly-initialized localnet doesn't provide. The real
-				// verdict here is the on-chain fill at the end.
-				DISABLE_RPC_SIM: 'true',
-				RUST_LOG: 'info',
-			},
-			stdio: ['ignore', swiftLog, swiftLog],
-		});
-		swift.on('exit', (code) => {
-			if (code !== null && code !== 0) {
-				console.error(`swift exited ${code} — see ${SCRATCH}/swift.log`);
-			}
+		startService('swift', SWIFT_BIN, ['--server', 'swift'], {
+			ENV: 'devnet',
+			ENDPOINT: RPC_URL,
+			WS_ENDPOINT_1: RPC_URL.replace('http', 'ws').replace('8899', '8900'),
+			ELASTICACHE_HOST: '127.0.0.1',
+			ELASTICACHE_PORT: new URL(REDIS_URL).port || '6379',
+			PORT: String(SWIFT_PORT),
+			METRICS_PORT: '9469',
+			FLOW_AUTHORITY_KEYPAIR: JSON.stringify(
+				Array.from(flowAuthorityKp.secretKey)
+			),
+			// Long enough that the scenario reliably observes the
+			// too-early response, short enough that the signed
+			// message's slot window survives the round-trip.
+			ATTESTATION_HOLD_MS: '600',
+			// Intake's pre-flight RPC simulation is a production
+			// admission guard, not part of the attestation loop, and
+			// it needs the client's devnet market plumbing that a
+			// freshly-initialized localnet doesn't provide. The real
+			// verdict here is the on-chain fill at the end.
+			DISABLE_RPC_SIM: 'true',
+			RUST_LOG: 'info',
 		});
 		await pollUntil('swift to serve /health', 60_000, async () => {
 			try {
@@ -883,53 +925,44 @@ describe('e2e localnet: programs + publisher + redis', function () {
 	 * own authorities instead. */
 	const relayPayoutBalance = () => connection.getBalance(relayPayout.publicKey);
 
-
 	/** The account tail every router-touching ix wants: margin maps, the
 	 * `(User, UserStats)` pairs of the makers that may fill, then the
 	 * quoter section (entries followed by their registered CPI accounts). */
-	const routerTail = (makerKps: Keypair[]) => {
-		const { velocitySigner: signer } = { velocitySigner };
-		const tail: {
-			pubkey: PublicKey;
-			isSigner: boolean;
-			isWritable: boolean;
-		}[] = [
-			{ pubkey: oracle, isSigner: false, isWritable: false },
-			{
-				pubkey: getSpotMarketPublicKeySync(VELOCITY_ID, 0),
-				isSigner: false,
-				isWritable: true,
+	const routerTail = (makerKps: Keypair[]): AccountMeta[] => [
+		...marginMap(),
+		...makerKps.flatMap((kp) => [
+			rw(userOf(kp.publicKey)),
+			rw(statsOf(kp.publicKey)),
+		]),
+		ro(clobEntry),
+		ro(midEntry),
+		rw(clobBook.publicKey),
+		ro(velocitySigner),
+		ro(CLOB_ID),
+		rw(midInstance),
+		ro(SYSVAR_INSTRUCTIONS_PUBKEY),
+		ro(MIDPOINT_ID),
+	];
+
+	/** `fillPerpOrder` as the keeper, with the router tail the SDK's
+	 * `getFillPerpOrderIx` cannot express (it has no quoter section, and
+	 * marks the quote spot market read-only). */
+	const fillPerpOrderIx = async (
+		orderId: number,
+		takerAuthority: PublicKey,
+		makerKps: Keypair[]
+	) =>
+		admin.program.instruction.fillPerpOrder(orderId, null, {
+			accounts: {
+				state: await admin.getStatePublicKey(),
+				authority: payer.publicKey,
+				filler: userOf(payer.publicKey),
+				fillerStats: statsOf(payer.publicKey),
+				user: userOf(takerAuthority),
+				userStats: statsOf(takerAuthority),
 			},
-			{
-				pubkey: getPerpMarketPublicKeySync(VELOCITY_ID, 0),
-				isSigner: false,
-				isWritable: true,
-			},
-		];
-		for (const kp of makerKps) {
-			tail.push({
-				pubkey: getUserAccountPublicKeySync(VELOCITY_ID, kp.publicKey, 0),
-				isSigner: false,
-				isWritable: true,
-			});
-			tail.push({
-				pubkey: getUserStatsAccountPublicKey(VELOCITY_ID, kp.publicKey),
-				isSigner: false,
-				isWritable: true,
-			});
-		}
-		tail.push(
-			{ pubkey: clobEntry, isSigner: false, isWritable: false },
-			{ pubkey: midEntry, isSigner: false, isWritable: false },
-			{ pubkey: clobBook.publicKey, isSigner: false, isWritable: true },
-			{ pubkey: signer, isSigner: false, isWritable: false },
-			{ pubkey: CLOB_ID, isSigner: false, isWritable: false },
-			{ pubkey: midInstance, isSigner: false, isWritable: true },
-			{ pubkey: SYSVAR_INSTRUCTIONS_PUBKEY, isSigner: false, isWritable: false },
-			{ pubkey: MIDPOINT_ID, isSigner: false, isWritable: false }
-		);
-		return tail;
-	};
+			remainingAccounts: routerTail(makerKps),
+		});
 
 	/** Fill a user's open order as the keeper — how a position gets opened
 	 * on a real validator (nothing here can be synthesized). */
@@ -942,66 +975,34 @@ describe('e2e localnet: programs + publisher + redis', function () {
 		const order = client
 			.getUserAccount()!
 			.orders.find((o) => isVariant(o.status, 'open'))!;
-		const ix = admin.program.instruction.fillPerpOrder(order.orderId, null, {
-			accounts: {
-				state: await admin.getStatePublicKey(),
-				authority: payer.publicKey,
-				filler: getUserAccountPublicKeySync(VELOCITY_ID, payer.publicKey, 0),
-				fillerStats: getUserStatsAccountPublicKey(VELOCITY_ID, payer.publicKey),
-				user: getUserAccountPublicKeySync(VELOCITY_ID, kp.publicKey, 0),
-				userStats: getUserStatsAccountPublicKey(VELOCITY_ID, kp.publicKey),
-			},
-			remainingAccounts: routerTail(makerKps),
-		});
-		await provider.sendAndConfirm(
-			new Transaction()
-				.add(ComputeBudgetProgram.setComputeUnitLimit({ units: 800_000 }))
-				.add(ix)
+		await sendFill(
+			await fillPerpOrderIx(order.orderId, kp.publicKey, makerKps)
 		);
 	};
 
 	/** Opt a user into relay coverage: liquidation thresholds and triggers,
-	 * one instruction over one account. */
-	const syncUserConditions = async (user: PublicKey, userConditions: PublicKey) => {
-		const args = Buffer.alloc(16);
-		args.writeBigUInt64LE(BigInt(20_000), 0); // sync fee, from its own lamports
-		args.writeBigUInt64LE(BigInt(3000), 8); // coarse fallback poll
-		await provider.sendAndConfirm(
-			new Transaction().add(
-				new TransactionInstruction({
-					programId: VELOCITY_ID,
-					keys: [
-						{ pubkey: payer.publicKey, isSigner: true, isWritable: true },
-						{ pubkey: user, isSigner: false, isWritable: false },
-						{ pubkey: userConditions, isSigner: false, isWritable: true },
-						{ pubkey: SYSVAR_RENT_PUBKEY, isSigner: false, isWritable: false },
-						{
-							pubkey: SystemProgram.programId,
-							isSigner: false,
-							isWritable: false,
-						},
-						// Margin maps, then the market's reservoir (keeper fee).
-						{ pubkey: oracle, isSigner: false, isWritable: false },
-						{
-							pubkey: getSpotMarketPublicKeySync(VELOCITY_ID, 0),
-							isSigner: false,
-							isWritable: true,
-						},
-						{
-							pubkey: getPerpMarketPublicKeySync(VELOCITY_ID, 0),
-							isSigner: false,
-							isWritable: true,
-						},
-						{ pubkey: conditions, isSigner: false, isWritable: false },
-					],
-					data: Buffer.concat([
-						ixDiscriminator('sync_user_conditions'),
-						args,
-					]),
-				})
-			)
-		);
-	};
+	 * one instruction over one account. `extra` appends to the condition
+	 * pass's own accounts (e.g. a quoter entry for trigger routing). */
+	const syncUserConditions = (user: PublicKey, extra: AccountMeta[] = []) =>
+		send([
+			admin.program.instruction.syncUserConditions(
+				{
+					syncPaymentLamports: new BN(20_000), // from its own lamports
+					syncFallbackSlots: new BN(3000), // coarse fallback poll
+				},
+				{
+					accounts: {
+						payer: payer.publicKey,
+						user,
+						userConditions: getUserConditionsPublicKey(VELOCITY_ID, user),
+						rent: SYSVAR_RENT_PUBKEY,
+						systemProgram: SystemProgram.programId,
+					},
+					// Margin maps, then the market's reservoir (keeper fee).
+					remainingAccounts: [...marginMap(), ro(conditions), ...extra],
+				}
+			),
+		]);
 
 	before(async function () {
 		this.timeout(600_000);
@@ -1034,23 +1035,13 @@ describe('e2e localnet: programs + publisher + redis', function () {
 		anchor.setProvider(provider);
 		pythProgram = new Program(pythIdl, provider);
 		const feed = Keypair.generate();
-		const initFeed = pythProgram.instruction.initialize(
-			new BN(100).mul(PRICE),
-			-6,
-			new BN(1).mul(PRICE).divn(100),
-			{ accounts: { price: feed.publicKey } }
-		);
-		await provider.sendAndConfirm(
-			new Transaction().add(
-				SystemProgram.createAccount({
-					fromPubkey: payer.publicKey,
-					newAccountPubkey: feed.publicKey,
-					space: 3312,
-					lamports: await connection.getMinimumBalanceForRentExemption(3312),
-					programId: PYTH_ID,
+		await send(
+			[
+				await createAccount(feed.publicKey, 3312, PYTH_ID),
+				pythProgram.instruction.initialize(usd(100), -6, usd(0.01), {
+					accounts: { price: feed.publicKey },
 				}),
-				initFeed
-			),
+			],
 			[feed]
 		);
 		oracle = feed.publicKey;
@@ -1061,19 +1052,17 @@ describe('e2e localnet: programs + publisher + redis', function () {
 
 		// The program-wide resolver staging account. Every relay crank
 		// simulates against it, so it exists before any watch is registered.
-		await provider.sendAndConfirm(
-			new Transaction().add(
-				await admin.program.methods
-					.initializeRelayScratch()
-					.accounts({
-						scratch: getRelayScratchPublicKey(VELOCITY_ID),
-						payer: payer.publicKey,
-						rent: SYSVAR_RENT_PUBKEY,
-						systemProgram: SystemProgram.programId,
-					})
-					.instruction()
-			)
-		);
+		await send([
+			await admin.program.methods
+				.initializeRelayScratch()
+				.accounts({
+					scratch: getRelayScratchPublicKey(VELOCITY_ID),
+					payer: payer.publicKey,
+					rent: SYSVAR_RENT_PUBKEY,
+					systemProgram: SystemProgram.programId,
+				})
+				.instruction(),
+		]);
 		await admin.subscribe();
 		await initializeQuoteSpotMarket(admin, usdcMint.publicKey);
 		await admin.initializePerpMarket(
@@ -1146,13 +1135,14 @@ describe('e2e localnet: programs + publisher + redis', function () {
 		oracleRefresher = (async () => {
 			while (!stopOracleRefresher) {
 				try {
-					const ix = pythProgram.instruction.setPriceInfo(
-						new BN(Math.round(oracleTargetPrice * 1e6)),
-						new BN(1).mul(PRICE).divn(100),
-						new BN(await connection.getSlot()),
-						{ accounts: { price: oracle } }
-					);
-					await provider.sendAndConfirm(new Transaction().add(ix));
+					await send([
+						pythProgram.instruction.setPriceInfo(
+							usd(oracleTargetPrice),
+							usd(0.01),
+							new BN(await connection.getSlot()),
+							{ accounts: { price: oracle } }
+						),
+					]);
 				} catch {
 					// transient send failures are fine; the next beat retries
 				}
@@ -1166,14 +1156,14 @@ describe('e2e localnet: programs + publisher + redis', function () {
 			clobMaker,
 			clobMakerKp,
 			PositionDirection.SHORT,
-			new BN(1005).mul(PRICE).divn(10),
+			usd(100.5),
 			UNIT
 		);
 		await placeClobOrder(
 			clobMaker,
 			clobMakerKp,
 			PositionDirection.LONG,
-			new BN(995).mul(PRICE).divn(10),
+			usd(99.5),
 			UNIT
 		);
 		await dlobMaker.placePerpOrder(
@@ -1181,42 +1171,25 @@ describe('e2e localnet: programs + publisher + redis', function () {
 				marketIndex: 0,
 				direction: PositionDirection.SHORT,
 				baseAssetAmount: UNIT,
-				price: new BN(1006).mul(PRICE).divn(10),
+				price: usd(100.6),
 				postOnly: PostOnlyParams.MUST_POST_ONLY,
 			})
 		);
 
 		// The publisher, exactly as deployed: RPC transport against the
 		// validator, RPC-side simulation, cross fast path armed.
-		const publisherKeyPath = `${SCRATCH}/publisher-keypair.json`;
-		fs.writeFileSync(
-			publisherKeyPath,
-			JSON.stringify(Array.from(publisherKp.secretKey))
-		);
-		publisherLog = fs.openSync(`${SCRATCH}/publisher.log`, 'w');
-		publisher = spawn(PUBLISHER_BIN, [], {
-			env: {
-				...process.env,
-				RPC_URL,
-				TRANSPORT: 'rpc',
-				VELOCITY_PROGRAM_ID: VELOCITY_ID.toBase58(),
-				MARKETS: '0',
-				KEYPAIR_PATH: publisherKeyPath,
-				BUFFER_DIR: `${SCRATCH}/quote-buffers`,
-				REDIS_URL,
-				TICK_MS: '750',
-				LOCAL_SIM_POOL: '0',
-				CROSS_MATCH: 'true',
-				RUST_LOG: 'info',
-			},
-			stdio: ['ignore', publisherLog, publisherLog],
-		});
-		publisher.on('exit', (code) => {
-			if (code !== null && code !== 0) {
-				console.error(
-					`book-publisher exited ${code} — see ${SCRATCH}/publisher.log`
-				);
-			}
+		startService('publisher', PUBLISHER_BIN, [], {
+			RPC_URL,
+			TRANSPORT: 'rpc',
+			VELOCITY_PROGRAM_ID: VELOCITY_ID.toBase58(),
+			MARKETS: '0',
+			KEYPAIR_PATH: writeKeypair('publisher-keypair', publisherKp),
+			BUFFER_DIR: `${SCRATCH}/quote-buffers`,
+			REDIS_URL,
+			TICK_MS: '750',
+			LOCAL_SIM_POOL: '0',
+			CROSS_MATCH: 'true',
+			RUST_LOG: 'info',
 		});
 
 		redis = new Redis(REDIS_URL);
@@ -1234,19 +1207,9 @@ describe('e2e localnet: programs + publisher + redis', function () {
 
 		// Attested flow: register swift's co-signing key as the on-chain
 		// flow authority, then bring swift up with it.
-		await provider.sendAndConfirm(
-			new Transaction().add(
-				admin.program.instruction.updateHotAdmin(
-					{ flowAuthority: {} },
-					flowAuthorityKp.publicKey,
-					{
-						accounts: {
-							state: await admin.getStatePublicKey(),
-							admin: payer.publicKey,
-						},
-					}
-				)
-			)
+		await admin.updateHotAdmin(
+			HotRole.FlowAuthority,
+			flowAuthorityKp.publicKey
 		);
 	});
 
@@ -1265,12 +1228,10 @@ describe('e2e localnet: programs + publisher + redis', function () {
 		} catch {
 			// best effort
 		}
-		publisher?.kill();
-		if (publisherLog !== undefined) fs.closeSync(publisherLog);
-		turner?.kill();
-		if (turnerLog !== undefined) fs.closeSync(turnerLog);
-		swift?.kill();
-		if (swiftLog !== undefined) fs.closeSync(swiftLog);
+		for (const { child, log } of services) {
+			child.kill();
+			fs.closeSync(log);
+		}
 		redis?.disconnect();
 		for (const client of clients) {
 			try {
@@ -1342,11 +1303,7 @@ describe('e2e localnet: programs + publisher + redis', function () {
 		const l3 = JSON.parse(
 			(await redis.get('last_update_orderbook_l3_perp_0'))!
 		);
-		const makerPda = getUserAccountPublicKeySync(
-			VELOCITY_ID,
-			clobMakerKp.publicKey,
-			0
-		).toBase58();
+		const makerPda = userOf(clobMakerKp.publicKey).toBase58();
 		assert.equal(l3.asks[0].price, String(100.5 * 1e6));
 		assert.equal(l3.asks[0].maker, makerPda);
 		assert.equal(l3.bids[0].maker, makerPda);
@@ -1383,97 +1340,31 @@ describe('e2e localnet: programs + publisher + redis', function () {
 		this.timeout(120_000);
 		// Long 3.5: midpoint 100.1 (2.0), CLOB 100.5 (1.0), then the DLOB
 		// maker at 100.6 (0.5) — the vAMM ask sits ~1% out and yields to all.
+		const size = UNIT.muln(35).divn(10);
 		await taker.placePerpOrder(
 			getMarketOrderParams({
 				marketIndex: 0,
 				direction: PositionDirection.LONG,
-				baseAssetAmount: UNIT.muln(35).divn(10),
-				price: new BN(102).mul(PRICE),
+				baseAssetAmount: size,
+				price: usd(102),
 			})
 		);
-		const takerUser = getUserAccountPublicKeySync(
-			VELOCITY_ID,
-			takerKp.publicKey,
-			0
-		);
 		const order = (await taker.forceGetUserAccount())!.orders.find((o) =>
-			o.baseAssetAmount.eq(UNIT.muln(35).divn(10))
+			o.baseAssetAmount.eq(size)
 		)!;
 
-		const pair = (kp: Keypair) => [
-			{
-				pubkey: getUserAccountPublicKeySync(VELOCITY_ID, kp.publicKey, 0),
-				isSigner: false,
-				isWritable: true,
-			},
-			{
-				pubkey: getUserStatsAccountPublicKey(VELOCITY_ID, kp.publicKey),
-				isSigner: false,
-				isWritable: true,
-			},
-		];
-		const fillIx = admin.program.instruction.fillPerpOrder(
-			order.orderId,
-			null,
-			{
-				accounts: {
-					state: await admin.getStatePublicKey(),
-					authority: payer.publicKey,
-					filler: getUserAccountPublicKeySync(VELOCITY_ID, payer.publicKey, 0),
-					fillerStats: getUserStatsAccountPublicKey(
-						VELOCITY_ID,
-						payer.publicKey
-					),
-					user: takerUser,
-					userStats: getUserStatsAccountPublicKey(
-						VELOCITY_ID,
-						takerKp.publicKey
-					),
-				},
-				remainingAccounts: [
-					{ pubkey: oracle, isSigner: false, isWritable: false },
-					{
-						pubkey: getSpotMarketPublicKeySync(VELOCITY_ID, 0),
-						isSigner: false,
-						isWritable: true,
-					},
-					{
-						pubkey: getPerpMarketPublicKeySync(VELOCITY_ID, 0),
-						isSigner: false,
-						isWritable: true,
-					},
-					// Maker section: DLOB maker + both quoted users.
-					...pair(dlobMakerKp),
-					...pair(clobMakerKp),
-					...pair(midMakerKp),
-					// Quoter section: entries, then the union of CPI accounts.
-					{ pubkey: clobEntry, isSigner: false, isWritable: false },
-					{ pubkey: midEntry, isSigner: false, isWritable: false },
-					{ pubkey: clobBook.publicKey, isSigner: false, isWritable: true },
-					{ pubkey: velocitySigner, isSigner: false, isWritable: false },
-					{ pubkey: CLOB_ID, isSigner: false, isWritable: false },
-					{ pubkey: midInstance, isSigner: false, isWritable: true },
-					{
-						pubkey: SYSVAR_INSTRUCTIONS_PUBKEY,
-						isSigner: false,
-						isWritable: false,
-					},
-					{ pubkey: MIDPOINT_ID, isSigner: false, isWritable: false },
-				],
-			}
-		);
-		await provider.sendAndConfirm(
-			new Transaction()
-				.add(ComputeBudgetProgram.setComputeUnitLimit({ units: 800_000 }))
-				.add(fillIx)
+		// Maker section: DLOB maker + both quoted users.
+		await sendFill(
+			await fillPerpOrderIx(order.orderId, takerKp.publicKey, [
+				dlobMakerKp,
+				clobMakerKp,
+				midMakerKp,
+			])
 		);
 
 		await taker.fetchAccounts();
 		const position = taker.getUser().getPerpPosition(0)!;
-		assert.equal(
-			position.baseAssetAmount.toString(),
-			UNIT.muln(35).divn(10).toString()
-		);
+		assert.equal(position.baseAssetAmount.toString(), size.toString());
 
 		// The CLOB ask is gone; the midpoint's first rung is fully consumed.
 		const book = await readClob();
@@ -1502,7 +1393,7 @@ describe('e2e localnet: programs + publisher + redis', function () {
 		// A 100.0 limit long sits below every ask (best is the midpoint's
 		// 100.1 after the fill test re-arms below) — nothing fills, and the
 		// remainder migrates onto the CLOB as a resting bid.
-		await setMidpointLevels(new BN(100).mul(PRICE), [
+		await setMidpointLevels(usd(100), [
 			{ offsetPpm: 1000, size: UNIT.muln(2) },
 		]);
 		const before = await readClob();
@@ -1512,7 +1403,7 @@ describe('e2e localnet: programs + publisher + redis', function () {
 				marketIndex: 0,
 				direction: PositionDirection.LONG,
 				baseAssetAmount: UNIT,
-				price: new BN(100).mul(PRICE),
+				price: usd(100),
 			}),
 			undefined,
 			undefined,
@@ -1532,17 +1423,14 @@ describe('e2e localnet: programs + publisher + redis', function () {
 
 		const after = await readClob();
 		assert.equal(after.bidCount, before.bidCount + 1);
-		assert.equal(
-			after.bestBidPrice!.toString(),
-			new BN(100).mul(PRICE).toString()
-		);
+		assert.equal(after.bestBidPrice!.toString(), usd(100).toString());
 		// The taker's DLOB order slot is not resting open (migrated) — scope
 		// to this order's price so unrelated leftovers can't bleed in.
 		await taker.fetchAccounts();
 		const open = taker
 			.getUserAccount()!
 			.orders.filter(
-				(o) => isVariant(o.status, 'open') && o.price.eq(new BN(100).mul(PRICE))
+				(o) => isVariant(o.status, 'open') && o.price.eq(usd(100))
 			);
 		assert.equal(open.length, 0);
 	});
@@ -1559,7 +1447,7 @@ describe('e2e localnet: programs + publisher + redis', function () {
 			crosser,
 			crosserKp,
 			PositionDirection.LONG,
-			new BN(101).mul(PRICE),
+			usd(101),
 			UNIT
 		);
 
@@ -1571,8 +1459,7 @@ describe('e2e localnet: programs + publisher + redis', function () {
 			async () => {
 				const book = await readClob();
 				const crossedBidGone =
-					book.bestBidPrice === undefined ||
-					book.bestBidPrice.lt(new BN(101).mul(PRICE));
+					book.bestBidPrice === undefined || book.bestBidPrice.lt(usd(101));
 				return crossedBidGone ? true : undefined;
 			}
 		);
@@ -1595,7 +1482,7 @@ describe('e2e localnet: programs + publisher + redis', function () {
 
 	it('a mid write repositions the published spline', async function () {
 		this.timeout(120_000);
-		await setMidpointMid(new BN(102).mul(PRICE));
+		await setMidpointMid(usd(102));
 		await pollUntil('published book to track the new mid', 30_000, async () => {
 			const raw = await redis.get('last_update_orderbook_perp_0');
 			if (!raw) return undefined;
@@ -1605,12 +1492,13 @@ describe('e2e localnet: programs + publisher + redis', function () {
 			return propammAsk?.price === String(102.102 * 1e6) ? true : undefined;
 		});
 	});
-// ---------------------------------------------------------------------------
-// Relay: a live crank-turner discovering and landing work with nobody
-// submitting it. These three flows are relay's alone — the publisher only
-// ever submits `crank_cross_match` — so a state change here plus a credit to
-// relay's payout account is unambiguous attribution.
-// ---------------------------------------------------------------------------
+
+	// ---------------------------------------------------------------------------
+	// Relay: a live crank-turner discovering and landing work with nobody
+	// submitting it. These three flows are relay's alone — the publisher only
+	// ever submits `crank_cross_match` — so a state change here plus a credit to
+	// relay's payout account is unambiguous attribution.
+	// ---------------------------------------------------------------------------
 
 	it('reclaims an expired CLOB order without anyone submitting', async function () {
 		this.timeout(180_000);
@@ -1633,7 +1521,7 @@ describe('e2e localnet: programs + publisher + redis', function () {
 			clobMaker,
 			clobMakerKp,
 			PositionDirection.SHORT,
-			new BN(110).mul(PRICE),
+			usd(110),
 			UNIT,
 			new BN(now + 10)
 		);
@@ -1668,7 +1556,7 @@ describe('e2e localnet: programs + publisher + redis', function () {
 				marketIndex: 0,
 				direction: PositionDirection.SHORT,
 				baseAssetAmount: UNIT.divn(2),
-				triggerPrice: new BN(104).mul(PRICE),
+				triggerPrice: usd(104),
 				triggerCondition: OrderTriggerCondition.ABOVE,
 			})
 		);
@@ -1676,75 +1564,17 @@ describe('e2e localnet: programs + publisher + redis', function () {
 		const armed = taker
 			.getUserAccount()!
 			.orders.find(
-				(o) =>
-					isVariant(o.status, 'open') &&
-					o.triggerPrice.eq(new BN(104).mul(PRICE))
+				(o) => isVariant(o.status, 'open') && o.triggerPrice.eq(usd(104))
 			)!;
 		assert.isOk(armed, 'trigger order is armed');
 
 		// Sync its relay conditions (an OnValueCross watch at the trigger
-		// threshold), register the watch, and let the turner have it.
-		const takerUser = getUserAccountPublicKeySync(
-			VELOCITY_ID,
-			takerKp.publicKey,
-			0
-		);
-		// One conditions account per user now — the same one the
-		// liquidation thresholds live on.
-		const triggerConditions = getUserConditionsPublicKey(
-			VELOCITY_ID,
-			takerUser
-		);
-		const syncAccounts = [
-			{ pubkey: oracle, isSigner: false, isWritable: false },
-			{
-				pubkey: getSpotMarketPublicKeySync(VELOCITY_ID, 0),
-				isSigner: false,
-				isWritable: true,
-			},
-			{
-				pubkey: getPerpMarketPublicKeySync(VELOCITY_ID, 0),
-				isSigner: false,
-				isWritable: true,
-			},
-			{ pubkey: conditions, isSigner: false, isWritable: false },
-			{ pubkey: clobEntry, isSigner: false, isWritable: false },
-		];
-		await provider.sendAndConfirm(
-			new Transaction().add(
-				new TransactionInstruction({
-					programId: VELOCITY_ID,
-					keys: [
-						{ pubkey: payer.publicKey, isSigner: true, isWritable: true },
-						{ pubkey: takerUser, isSigner: false, isWritable: false },
-						{ pubkey: triggerConditions, isSigner: false, isWritable: true },
-						{
-							pubkey: SYSVAR_RENT_PUBKEY,
-							isSigner: false,
-							isWritable: false,
-						},
-						{
-							pubkey: SystemProgram.programId,
-							isSigner: false,
-							isWritable: false,
-						},
-						...syncAccounts,
-					],
-					// One sync for the whole block; args are the liquidation
-					// side's (fee, fallback) and the trigger pass shares them.
-					data: Buffer.concat([
-						ixDiscriminator('sync_user_conditions'),
-						(() => {
-							const a = Buffer.alloc(16);
-							a.writeBigUInt64LE(BigInt(20_000), 0);
-							a.writeBigUInt64LE(BigInt(3000), 8);
-							return a;
-						})(),
-					]),
-				})
-			)
-		);
-		await registerWatch(triggerConditions);
+		// threshold), register the watch, and let the turner have it. One
+		// conditions account per user now — the same one the liquidation
+		// thresholds live on, so one sync covers both halves.
+		const takerUser = userOf(takerKp.publicKey);
+		await syncUserConditions(takerUser, [ro(clobEntry)]);
+		await registerWatch(getUserConditionsPublicKey(VELOCITY_ID, takerUser));
 
 		const payoutBefore = await relayPayoutBalance();
 		// Move the oracle through the trigger. Nobody submits a trigger ix.
@@ -1786,7 +1616,7 @@ describe('e2e localnet: programs + publisher + redis', function () {
 			clobMaker,
 			clobMakerKp,
 			PositionDirection.SHORT,
-			new BN(102).mul(PRICE),
+			usd(102),
 			UNIT.muln(5)
 		);
 		// ~8.5x: 5 units at ~102 on 60 of collateral — a price drop to 84
@@ -1796,7 +1626,7 @@ describe('e2e localnet: programs + publisher + redis', function () {
 				marketIndex: 0,
 				direction: PositionDirection.LONG,
 				baseAssetAmount: UNIT.muln(5),
-				price: new BN(103).mul(PRICE),
+				price: usd(103),
 			})
 		);
 		await fillPendingOrder(victim, victimKp);
@@ -1808,13 +1638,9 @@ describe('e2e localnet: programs + publisher + redis', function () {
 
 		// Opt them into relay liquidation coverage: thresholds from their
 		// live positions, a self-sync watch, and a funded sync reservoir.
-		const victimUser = getUserAccountPublicKeySync(
-			VELOCITY_ID,
-			victimKp.publicKey,
-			0
-		);
+		const victimUser = userOf(victimKp.publicKey);
 		const userConditions = getUserConditionsPublicKey(VELOCITY_ID, victimUser);
-		await syncUserConditions(victimUser, userConditions);
+		await syncUserConditions(victimUser);
 		await airdrop(userConditions, 1);
 		await registerWatch(userConditions);
 
@@ -1824,7 +1650,7 @@ describe('e2e localnet: programs + publisher + redis', function () {
 			clobMaker,
 			clobMakerKp,
 			PositionDirection.LONG,
-			new BN(90).mul(PRICE),
+			usd(90),
 			UNIT.muln(5)
 		);
 
@@ -1843,8 +1669,7 @@ describe('e2e localnet: programs + publisher + redis', function () {
 		await pollUntil('relay to liquidate', 180_000, async () => {
 			await victim.fetchAccounts();
 			const position = victim.getUser().getPerpPosition(0);
-			const reduced =
-				!position || position.baseAssetAmount.lt(sizeBefore);
+			const reduced = !position || position.baseAssetAmount.lt(sizeBefore);
 			return reduced ? true : undefined;
 		});
 		assert.isAbove(await relayPayoutBalance(), payoutBefore);
@@ -1868,44 +1693,20 @@ describe('e2e localnet: programs + publisher + redis', function () {
 		// co-signed by the flow authority see its books — which makes the
 		// midpoint's participation below an on-chain proof that the
 		// co-signature carried, not just that the endpoints answered.
-		await provider.sendAndConfirm(
-			new Transaction().add(
-				new TransactionInstruction({
-					programId: MIDPOINT_ID,
-					keys: [
-						{ pubkey: midInstance, isSigner: false, isWritable: true },
-						{
-							pubkey: midMakerKp.publicKey,
-							isSigner: true,
-							isWritable: false,
-						},
-						// Absent optional hot authority = the program id.
-						{ pubkey: MIDPOINT_ID, isSigner: false, isWritable: false },
-						{
-							pubkey: flowAuthorityKp.publicKey,
-							isSigner: false,
-							isWritable: false,
-						},
-					],
-					// Args: five absent options, require_attested_flow =
-					// Some(true), is_paused absent.
-					data: Buffer.concat([
-						ixDiscriminator('update_quoter_v0'),
-						Buffer.from([0]), // max_mid_staleness_slots: None
-						Buffer.from([0]), // price_tick_size: None
-						Buffer.from([0]), // size_step: None
-						Buffer.from([0]), // min_quote_size: None
-						Buffer.from([1, 1]), // require_attested_flow: Some(true)
-						Buffer.from([0]), // is_paused: None
-					]),
-				})
-			),
+		await send(
+			[
+				midpointIx.requireAttestedFlow(
+					midInstance,
+					midMakerKp.publicKey,
+					flowAuthorityKp.publicKey
+				),
+			],
 			[midMakerKp]
 		);
 
 		// Re-arm the midpoint: earlier scenarios consumed its ask rungs
 		// (filled is standing intent) and its mid may have gone stale.
-		await setMidpointLevels(new BN(100).mul(PRICE), [
+		await setMidpointLevels(usd(100), [
 			{ offsetPpm: 1000, size: UNIT.muln(2) },
 			{ offsetPpm: 3000, size: UNIT.muln(2) },
 		]);
@@ -1914,18 +1715,12 @@ describe('e2e localnet: programs + publisher + redis', function () {
 		// real intake, which verifies, simulates, publishes to keepers,
 		// and records it as attestable.
 		if (
-			!(await taker.isSignedMsgUserOrdersAccountInitialized(
-				takerKp.publicKey
-			))
+			!(await taker.isSignedMsgUserOrdersAccountInitialized(takerKp.publicKey))
 		) {
 			await taker.initializeSignedMsgUserOrders(takerKp.publicKey, 8);
 		}
 		await taker.fetchAccounts();
-		const takerUser = getUserAccountPublicKeySync(
-			VELOCITY_ID,
-			takerKp.publicKey,
-			0
-		);
+		const takerUser = userOf(takerKp.publicKey);
 		const positionBefore =
 			taker.getUser().getPerpPosition(0)?.baseAssetAmount ?? new BN(0);
 		await midMaker.fetchAccounts();
@@ -1939,12 +1734,12 @@ describe('e2e localnet: programs + publisher + redis', function () {
 		// activate, and doing that after intake would burn the hold window
 		// this scenario exists to observe.
 		const lookupTable = await createRouterLookupTable([
-			...routerTail([clobMakerKp, midMakerKp]).map((meta) => meta.pubkey),
+			...routerTail([clobMakerKp, midMakerKp]).map((a) => a.pubkey),
 			VELOCITY_ID,
 			takerUser,
-			getUserStatsAccountPublicKey(VELOCITY_ID, takerKp.publicKey),
-			getUserAccountPublicKeySync(VELOCITY_ID, payer.publicKey, 0),
-			getUserStatsAccountPublicKey(VELOCITY_ID, payer.publicKey),
+			statsOf(takerKp.publicKey),
+			userOf(payer.publicKey),
+			statsOf(payer.publicKey),
 		]);
 
 		// Sign and submit, freshly each attempt: the signed message pins a
@@ -1959,10 +1754,10 @@ describe('e2e localnet: programs + publisher + redis', function () {
 					marketIndex: 0,
 					direction: PositionDirection.LONG,
 					baseAssetAmount: UNIT,
-					price: new BN(103).mul(PRICE),
+					price: usd(103),
 					auctionDuration: 120,
-					auctionStartPrice: new BN(101).mul(PRICE),
-					auctionEndPrice: new BN(103).mul(PRICE),
+					auctionStartPrice: usd(101),
+					auctionEndPrice: usd(103),
 				}),
 				subAccountId: 0,
 				slot: new BN(await connection.getSlot()),
@@ -2013,49 +1808,30 @@ describe('e2e localnet: programs + publisher + redis', function () {
 		});
 		// Compute budget parses no accounts, so the co-signer meta rides
 		// here inertly — exactly how keep-rs marks an attested fill.
-		cuLimit.keys.push({
-			pubkey: flowAuthorityKp.publicKey,
-			isSigner: true,
-			isWritable: false,
-		});
+		cuLimit.keys.push(signerRo(flowAuthorityKp.publicKey));
 		const [ed25519Ix, placeIx] = await admin.getPlaceSignedMsgTakerPerpOrderIxs(
 			signed,
 			0,
 			{
 				taker: takerUser,
-				takerStats: getUserStatsAccountPublicKey(
-					VELOCITY_ID,
-					takerKp.publicKey
-				),
+				takerStats: statsOf(takerKp.publicKey),
 				takerUserAccount: taker.getUserAccount()!,
 				signingAuthority: takerKp.publicKey,
 			},
 			[cuLimit]
 		);
-		// The order id the swift placement will take, read before building:
-		// with `null` the fill picks the user's first fillable order, which
-		// here is a leftover triggered short from an earlier scenario.
-		const swiftOrderId = taker.getUserAccount()!.nextOrderId;
-		const fillIx = admin.program.instruction.fillPerpOrder(swiftOrderId, null, {
-			accounts: {
-				state: await admin.getStatePublicKey(),
-				authority: payer.publicKey,
-				filler: getUserAccountPublicKeySync(VELOCITY_ID, payer.publicKey, 0),
-				fillerStats: getUserStatsAccountPublicKey(
-					VELOCITY_ID,
-					payer.publicKey
-				),
-				user: takerUser,
-				userStats: getUserStatsAccountPublicKey(
-					VELOCITY_ID,
-					takerKp.publicKey
-				),
-			},
-			// Both makers: the CLOB carries resting orders from earlier
-			// scenarios, and a quote whose user set omits them fails
-			// `StaleUserSet` once they age past the grace window.
-			remainingAccounts: routerTail([clobMakerKp, midMakerKp]),
-		});
+		// Name the order id the swift placement will take: with `null` the
+		// fill picks the user's first fillable order, which here is a
+		// leftover triggered short from an earlier scenario.
+		//
+		// Both makers: the CLOB carries resting orders from earlier
+		// scenarios, and a quote whose user set omits them fails
+		// `StaleUserSet` once they age past the grace window.
+		const fillIx = await fillPerpOrderIx(
+			taker.getUserAccount()!.nextOrderId,
+			takerKp.publicKey,
+			[clobMakerKp, midMakerKp]
+		);
 		const blockhash = await connection.getLatestBlockhash();
 		const message = new TransactionMessage({
 			payerKey: payer.publicKey,
@@ -2124,9 +1900,8 @@ describe('e2e localnet: programs + publisher + redis', function () {
 			'the attested fill to land',
 			45_000,
 			async () => {
-				const status = (
-					await connection.getSignatureStatuses([signature])
-				).value[0];
+				const status = (await connection.getSignatureStatuses([signature]))
+					.value[0];
 				if (!status) {
 					return undefined;
 				}

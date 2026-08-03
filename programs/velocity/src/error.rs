@@ -789,6 +789,8 @@ pub enum ErrorCode {
     CannotModifyBuilderOrder,
     #[msg("Invalid account extension")]
     InvalidAccountExtension,
+    #[msg("Spot market interest is too stale to value a borrow for margin")]
+    SpotMarketInterestStaleForMargin,
 }
 
 #[macro_export]

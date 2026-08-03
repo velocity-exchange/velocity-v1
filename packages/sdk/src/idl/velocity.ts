@@ -16473,6 +16473,11 @@ export type Velocity = {
       "code": 6367,
       "name": "invalidAccountExtension",
       "msg": "Invalid account extension"
+    },
+    {
+      "code": 6368,
+      "name": "spotMarketInterestStaleForMargin",
+      "msg": "Spot market interest is too stale to value a borrow for margin"
     }
   ],
   "types": [

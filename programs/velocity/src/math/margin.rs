@@ -5,9 +5,10 @@ use {
         math::{
             casting::Cast,
             constants::{
-                MARGIN_PRECISION_U128, MAX_POSITIVE_UPNL_FOR_INITIAL_MARGIN, PRICE_PRECISION,
-                PRICE_PRECISION_I128, PRICE_PRECISION_I64, SPOT_IMF_PRECISION_U128,
-                SPOT_WEIGHT_PRECISION, SPOT_WEIGHT_PRECISION_U128,
+                MARGIN_PRECISION_U128, MAX_POSITIVE_UPNL_FOR_INITIAL_MARGIN,
+                MAX_SPOT_INTEREST_STALENESS_FOR_MARGIN, PRICE_PRECISION, PRICE_PRECISION_I128,
+                PRICE_PRECISION_I64, SPOT_IMF_PRECISION_U128, SPOT_WEIGHT_PRECISION,
+                SPOT_WEIGHT_PRECISION_U128,
             },
             funding::calculate_funding_payment,
             oracle::{is_oracle_valid_for_action, LogMode, VelocityAction},
@@ -230,6 +231,55 @@ pub fn calculate_user_safest_position_tiers(
     }
 
     Ok((safest_tier_spot_liablity, safest_tier_perp_liablity))
+}
+
+/// Reject valuing a user's spot **borrows** for margin when the market's interest
+/// accrual is too stale (OtterSec #135 / #148).
+///
+/// Margin values a scaled borrow through the market's *stored*
+/// `cumulative_borrow_interest`. Interest accrued since `last_interest_ts` is not in
+/// that index, so the debt is understated by exactly the un-booked amount — and
+/// nothing on these paths refreshes the market: `handle_withdraw` only cranks the
+/// market being withdrawn (#135) and the perp-fill handler cranks none at all
+/// (#148), while the user's *other* borrow markets arrive read-only. A borrower can
+/// therefore release tokens, or take an adverse in-band DLOB fill, against debt the
+/// check never fully saw, leaving bad debt once that market is finally cranked.
+///
+/// Only **borrow** positions are gated. A stale *deposit* index understates
+/// collateral, which errs in the protocol's favour, so there is nothing to protect
+/// against there — and gating deposits would strand withdrawals for no gain.
+///
+/// Mirrors the perp side's existing freshness precondition (`amm.is_fresh_at`).
+/// Recovery needs no privileges: `update_spot_market_cumulative_interest` is
+/// permissionless and may be bundled into the same transaction.
+pub fn validate_spot_borrow_interest_fresh_for_margin(
+    user: &User,
+    spot_market_map: &SpotMarketMap,
+    now: i64,
+) -> VelocityResult {
+    for spot_position in &user.spot_positions {
+        if spot_position.is_available()
+            || spot_position.balance_type != SpotBalanceType::Borrow
+            || spot_position.scaled_balance == 0
+        {
+            continue;
+        }
+
+        let spot_market = spot_market_map.get_ref(&spot_position.market_index)?;
+        let staleness = now.safe_sub(spot_market.last_interest_ts.cast()?)?;
+
+        validate!(
+            staleness <= MAX_SPOT_INTEREST_STALENESS_FOR_MARGIN,
+            ErrorCode::SpotMarketInterestStaleForMargin,
+            "spot market {} interest is {}s stale (max {}s) — crank \
+             update_spot_market_cumulative_interest before valuing its borrow",
+            spot_position.market_index,
+            staleness,
+            MAX_SPOT_INTEREST_STALENESS_FOR_MARGIN
+        )?;
+    }
+
+    Ok(())
 }
 
 pub fn calculate_margin_requirement_and_total_collateral_and_liability_info(

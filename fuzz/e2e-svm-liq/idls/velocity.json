@@ -16467,6 +16467,11 @@
       "code": 6367,
       "name": "InvalidAccountExtension",
       "msg": "Invalid account extension"
+    },
+    {
+      "code": 6368,
+      "name": "SpotMarketInterestStaleForMargin",
+      "msg": "Spot market interest is too stale to value a borrow for margin"
     }
   ],
   "types": [

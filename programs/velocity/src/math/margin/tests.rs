@@ -6849,6 +6849,96 @@ fn spot_liability_oracle_flag_is_independent_of_the_perp_oracle() {
     );
 }
 
+/// OtterSec #135 / #148 — a stale spot-interest index must block valuing that
+/// market's **borrow** for margin, while a stale *deposit* index stays allowed.
+///
+/// Margin values a scaled borrow through the stored `cumulative_borrow_interest`,
+/// so un-booked interest understates the debt. `handle_withdraw` cranks only the
+/// market being withdrawn and the perp-fill handler cranks none, and the other
+/// markets arrive read-only — hence a freshness precondition rather than a
+/// refresh (which would need them writable) or an in-margin projection (which
+/// would cost CU on every fill).
+#[test]
+fn stale_spot_interest_blocks_borrow_valuation_but_not_deposits() {
+    use crate::{
+        create_anchor_account_info,
+        math::{
+            constants::MAX_SPOT_INTEREST_STALENESS_FOR_MARGIN,
+            margin::validate_spot_borrow_interest_fresh_for_margin,
+        },
+        state::{
+            spot_market::{SpotBalanceType, SpotMarket},
+            spot_market_map::SpotMarketMap,
+            user::{SpotPosition, User},
+        },
+        SPOT_BALANCE_PRECISION, SPOT_CUMULATIVE_INTEREST_PRECISION,
+    };
+
+    let now = 1_700_000_000_i64;
+
+    let build = |last_interest_ts: u64| SpotMarket {
+        market_index: 1,
+        deposit_balance: 1_000 * SPOT_BALANCE_PRECISION,
+        borrow_balance: 500 * SPOT_BALANCE_PRECISION,
+        cumulative_deposit_interest: SPOT_CUMULATIVE_INTEREST_PRECISION,
+        cumulative_borrow_interest: SPOT_CUMULATIVE_INTEREST_PRECISION,
+        decimals: 6,
+        last_interest_ts,
+        ..SpotMarket::default()
+    };
+
+    let position = |balance_type: SpotBalanceType| {
+        let mut user = User::default();
+        user.spot_positions[0] = SpotPosition {
+            market_index: 1,
+            scaled_balance: 100 * (SPOT_BALANCE_PRECISION as u64),
+            balance_type,
+            ..SpotPosition::default()
+        };
+        user
+    };
+
+    // Fresh market: a borrow values fine.
+    {
+        let mut market = build((now - 10) as u64);
+        create_anchor_account_info!(market, SpotMarket, ai);
+        let map = SpotMarketMap::load_one(&ai, true).unwrap();
+        let user = position(SpotBalanceType::Borrow);
+        assert!(validate_spot_borrow_interest_fresh_for_margin(&user, &map, now).is_ok());
+    }
+
+    // Stale beyond the bound: a borrow is refused.
+    {
+        let stale_by = MAX_SPOT_INTEREST_STALENESS_FOR_MARGIN + 1;
+        let mut market = build((now - stale_by) as u64);
+        create_anchor_account_info!(market, SpotMarket, ai);
+        let map = SpotMarketMap::load_one(&ai, true).unwrap();
+        let user = position(SpotBalanceType::Borrow);
+        assert_eq!(
+            validate_spot_borrow_interest_fresh_for_margin(&user, &map, now),
+            Err(crate::error::ErrorCode::SpotMarketInterestStaleForMargin),
+            "an un-cranked market must not be used to value a borrow"
+        );
+
+        // ...but the identical staleness on a DEPOSIT position is allowed: a stale
+        // deposit index understates collateral, which errs the protocol's way.
+        let depositor = position(SpotBalanceType::Deposit);
+        assert!(
+            validate_spot_borrow_interest_fresh_for_margin(&depositor, &map, now).is_ok(),
+            "a stale deposit index must not block — it understates collateral"
+        );
+    }
+
+    // Exactly at the bound is still allowed (inclusive).
+    {
+        let mut market = build((now - MAX_SPOT_INTEREST_STALENESS_FOR_MARGIN) as u64);
+        create_anchor_account_info!(market, SpotMarket, ai);
+        let map = SpotMarketMap::load_one(&ai, true).unwrap();
+        let user = position(SpotBalanceType::Borrow);
+        assert!(validate_spot_borrow_interest_fresh_for_margin(&user, &map, now).is_ok());
+    }
+}
+
 mod fill_perp_order_margin_requirement_with_isolated {
     use {
         crate::{

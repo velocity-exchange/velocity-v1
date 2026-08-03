@@ -842,6 +842,13 @@ pub fn handle_withdraw<'c: 'info, 'info>(
         amount
     };
 
+    // OtterSec #135: this handler cranks only the market being withdrawn, so a borrow
+    // in any *other* market is valued below through its stale stored
+    // `cumulative_borrow_interest` — the due interest is simply missing from the
+    // initial-margin check, and those markets arrive read-only so they cannot be
+    // refreshed here. Require their accrual to be recent instead.
+    math::margin::validate_spot_borrow_interest_fresh_for_margin(user, &spot_market_map, now)?;
+
     user.meets_withdraw_margin_requirement(
         &perp_market_map,
         &spot_market_map,

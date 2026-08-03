@@ -26144,6 +26144,8 @@ pub mod errors {
         CannotModifyBuilderOrder,
         #[msg("Invalid account extension")]
         InvalidAccountExtension,
+        #[msg("Spot market interest is too stale to value a borrow for margin")]
+        SpotMarketInterestStaleForMargin,
     }
 }
 pub mod events {

@@ -122,6 +122,25 @@ pub const ONE_HOUR: i64 = 3600;
 pub const ONE_HOUR_I128: i128 = ONE_HOUR as i128;
 pub const TWENTY_FOUR_HOUR: i64 = 3600 * 24;
 pub const THIRTEEN_DAY: i64 = TWENTY_FOUR_HOUR * 13; // IF unstake default
+
+/// How stale a spot market's interest accrual may be before its **borrows** can no
+/// longer be valued for margin on a value-releasing path (OtterSec #135 / #148).
+///
+/// Margin values a scaled borrow through the market's *stored*
+/// `cumulative_borrow_interest`, so any interest accrued since `last_interest_ts`
+/// is omitted and the debt is understated. Bounding the gap bounds the
+/// understatement: it is `debt x borrow_rate x elapsed / year`, so at an extreme
+/// 100% APR one hour caps it near 0.011% of the debt — far inside the
+/// initial-vs-maintenance margin gap, and therefore too small to engineer bad debt
+/// with. An un-cranked market, by contrast, can drift arbitrarily far, which is the
+/// actual vector.
+///
+/// Chosen over projecting the index inside the margin calculation (which would cost
+/// CU on every fill's margin loop and need an SDK mirror) and over refreshing every
+/// position's market (which would require clients to pass them **writable**, an ABI
+/// break). Recoverable without special privileges: `update_spot_market_cumulative_interest`
+/// is permissionless and can be bundled into the same transaction.
+pub const MAX_SPOT_INTEREST_STALENESS_FOR_MARGIN: i64 = ONE_HOUR;
 pub const EPOCH_DURATION: i64 = TWENTY_FOUR_HOUR * 28;
 pub const THIRTY_DAY: i64 = TWENTY_FOUR_HOUR * 30;
 pub const THIRTY_DAY_I128: i128 = (TWENTY_FOUR_HOUR * 30) as i128;

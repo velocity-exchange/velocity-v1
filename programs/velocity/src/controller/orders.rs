@@ -2166,6 +2166,18 @@ fn fulfill_perp_order(
                 "taker increasing risk while a spot borrow oracle is invalid for margin"
             )?;
 
+            // OtterSec #148: this handler makes no spot market refreshable, yet the
+            // margin calc above values every scaled spot borrow through its stored
+            // cumulative-borrow index. Unaccrued interest is therefore missing from
+            // the check, so an adverse in-band DLOB fill can be taken against debt
+            // it never fully saw. Require recent accrual instead (the crank is
+            // permissionless and can be bundled into the same transaction).
+            crate::math::margin::validate_spot_borrow_interest_fresh_for_margin(
+                user,
+                spot_market_map,
+                now,
+            )?;
+
             let taker_breaker_tripped = user_stats.is_equity_breaker_tripped();
             let taker_net_equity =
                 calculate_net_equity_for_floor(user, perp_market_map, spot_market_map, oracle_map)?;
@@ -2282,6 +2294,13 @@ fn fulfill_perp_order(
                 ErrorCode::InvalidOracle,
                 "maker ({}) increasing risk while a spot borrow oracle is invalid for margin",
                 maker_key
+            )?;
+
+            // Same freshness precondition as the taker side (OtterSec #148).
+            crate::math::margin::validate_spot_borrow_interest_fresh_for_margin(
+                &maker,
+                spot_market_map,
+                now,
             )?;
 
             let maker_net_equity = calculate_net_equity_for_floor(

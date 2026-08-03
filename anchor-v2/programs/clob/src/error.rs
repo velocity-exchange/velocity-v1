@@ -36,4 +36,12 @@ pub enum ClobError {
     BelowEvictThreshold,
     #[msg("Order is not expired")]
     OrderNotExpired,
+    // Numeric codes are the on-chain identity of these errors: add new
+    // variants at the bottom, never reorder or reuse.
+    #[msg("Node index is outside the order arena")]
+    NodeIndexOutOfRange,
+    #[msg("Order arena has no free node")]
+    ArenaExhausted,
+    #[msg("Book invariant check failed after the operation")]
+    BookInvariantViolated,
 }

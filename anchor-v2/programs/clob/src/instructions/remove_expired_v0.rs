@@ -1,8 +1,9 @@
 use {
     crate::{
+        book::ClobBook,
         error::ClobError,
-        events::OrderExpireRecord,
-        state::{ClobBook, ClobMarketV0, OrderRefV0, RemovedOrderV0},
+        events::OrderExpireRecordV0,
+        state::{ClobMarketV0, OrderRefV0, RemovedOrderV0},
     },
     anchor_lang_v2::prelude::*,
 };
@@ -31,7 +32,7 @@ pub fn handle_remove_expired_v0(
     let market = &mut ctx.accounts.market;
     let removed = market.remove_expired(args.order_ref, clock.unix_timestamp)?;
 
-    emit!(OrderExpireRecord {
+    emit!(OrderExpireRecordV0 {
         authority: removed.user.authority,
         ts: clock.unix_timestamp,
         order_id: removed.order_id,

@@ -1,8 +1,9 @@
 use {
     crate::{
+        book::ClobBook,
         error::ClobError,
-        events::OrderPlaceRecord,
-        state::{ClobBook, ClobMarketV0, OrderRefV0, PlaceOrderParams, Side, UserRefV0},
+        events::OrderPlaceRecordV0,
+        state::{ClobMarketV0, OrderRefV0, PlaceOrderParams, Side, UserRefV0},
     },
     anchor_lang_v2::prelude::*,
 };
@@ -67,7 +68,7 @@ pub fn handle_place_order_v0(
         max_ts: args.max_ts,
     })?;
 
-    emit!(OrderPlaceRecord {
+    emit!(OrderPlaceRecordV0 {
         authority: user.authority,
         ts: clock.unix_timestamp,
         slot: clock.slot,

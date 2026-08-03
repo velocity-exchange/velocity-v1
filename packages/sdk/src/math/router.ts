@@ -250,3 +250,148 @@ export function splitAcrossQuoters(
 
 	return allocations;
 }
+
+/**
+ * Whether a `quote_v0` response is one velocity will route at all — the mirror
+ * of `validate_quoted_levels`. Every price and size must be nonzero, and
+ * prices must run best-first for the taker's direction, non-strictly (equal
+ * consecutive prices are legal: a ladder's rungs come from distinct offsets
+ * that can round to the same tick).
+ *
+ * On-chain this rejects the fill rather than truncating the book, so a client
+ * predicting a fill must apply it to any book it publishes or consumes.
+ */
+export function areQuotedLevelsValid(
+	direction: PositionDirection,
+	levels: RouterPriceLevel[]
+): boolean {
+	let previous: BN | undefined;
+	for (const level of levels) {
+		if (level.price.lte(ZERO) || level.size.lte(ZERO)) {
+			return false;
+		}
+		if (previous) {
+			const ordered = isVariant(direction, 'long')
+				? level.price.gte(previous)
+				: level.price.lte(previous);
+			if (!ordered) {
+				return false;
+			}
+		}
+		previous = level.price;
+	}
+	return true;
+}
+
+/**
+ * The prices a quoter committed to for the best-priced `base` units of the book
+ * it quoted — what an execute of that size is held to. Mirrors `QuotedPrefix`.
+ */
+export type RouterQuotedPrefix = {
+	/** `Σ price × base` over the prefix, *before* dividing by `BASE_PRECISION`. */
+	scaledQuote: BN;
+	/** The prefix's first (taker-favourable) price. */
+	bestPrice: BN;
+	/** The prefix's last price — the worst any unit in it was quoted at. */
+	worstPrice: BN;
+};
+
+/**
+ * Walk `levels` best-first for `base` units and price them at the quoted
+ * levels — the mirror of `quoted_prefix`. Applies the same step quantization
+ * the split does, so the prefix is the one the split allocated from.
+ *
+ * Returns `undefined` when the levels can't cover `base`, which on-chain is a
+ * quoter filling more than it quoted (`QuoterOverfilled`).
+ */
+export function quotedPrefix(
+	levels: RouterPriceLevel[],
+	stepSize: BN,
+	base: BN
+): RouterQuotedPrefix | undefined {
+	const step = stepSize.gt(ZERO) ? stepSize : new BN(1);
+	let remaining = base;
+	let scaledQuote = ZERO;
+	let bestPrice: BN | undefined;
+	let worstPrice = ZERO;
+	for (const level of levels.slice(0, MAX_LEVELS_PER_BOOK)) {
+		if (remaining.eq(ZERO)) {
+			break;
+		}
+		const usable = floorToStep(level.size, step);
+		if (usable.eq(ZERO)) {
+			continue;
+		}
+		const take = BN.min(remaining, usable);
+		scaledQuote = scaledQuote.add(level.price.mul(take));
+		bestPrice = bestPrice ?? level.price;
+		worstPrice = level.price;
+		remaining = remaining.sub(take);
+	}
+	if (!remaining.eq(ZERO)) {
+		return undefined;
+	}
+	return { scaledQuote, bestPrice: bestPrice ?? ZERO, worstPrice };
+}
+
+/** `quote` lies in `[lo, hi]` after dividing both by `BASE_PRECISION`, with the
+ * one unavoidable rounding step admitted at each end plus `slack` further quote
+ * units either side. Mirrors `notional_within`. */
+function notionalWithin(lo: BN, hi: BN, quote: BN, slack: BN): boolean {
+	const floor = BN.max(lo.div(BASE_PRECISION).sub(slack), ZERO);
+	const ceil = hi.add(BASE_PRECISION).subn(1).div(BASE_PRECISION).add(slack);
+	return quote.gte(floor) && quote.lte(ceil);
+}
+
+/**
+ * Whether an external quoter's executed `(base, quote)` is inside the quote it
+ * gave in the same transaction — the mirror of `validate_executed_notional`,
+ * and the check that decides whether a router fill lands at all.
+ *
+ * The upper bound is the notional of the best-priced `base` units of the
+ * allocation (what "every unit at the price quoted for that unit" means for a
+ * partial fill); the lower bound is every unit at the prefix's best price
+ * (without it a response could pay its makers nothing). Rounding is admitted
+ * exactly once, for the single division into quote units — a quoter whose
+ * encoder divides per fill must carry the remainder across them.
+ */
+export function isExecutedNotionalInQuote(
+	prefix: RouterQuotedPrefix,
+	base: BN,
+	quote: BN
+): boolean {
+	const atBest = prefix.bestPrice.mul(base);
+	return notionalWithin(
+		BN.min(atBest, prefix.scaledQuote),
+		BN.max(atBest, prefix.scaledQuote),
+		quote,
+		ZERO
+	);
+}
+
+/**
+ * The same band applied to one balance change — the mirror of
+ * `validate_change_notional`. Every unit of a change must be priced inside the
+ * quoted prefix's range; the aggregate bound alone would let a quoter overpay
+ * one maker out of another's pocket.
+ *
+ * `orders` is how many of the quoter's own orders the change merges (for a
+ * CLOB, `completedOrderIds.length + 1`): a merged record can't be exact even
+ * when the response total is, so one quote unit of slack per merged order is
+ * admitted.
+ */
+export function isChangeNotionalInQuote(
+	prefix: RouterQuotedPrefix,
+	base: BN,
+	quote: BN,
+	orders: BN
+): boolean {
+	const atBest = prefix.bestPrice.mul(base);
+	const atWorst = prefix.worstPrice.mul(base);
+	return notionalWithin(
+		BN.min(atBest, atWorst),
+		BN.max(atBest, atWorst),
+		quote,
+		orders
+	);
+}

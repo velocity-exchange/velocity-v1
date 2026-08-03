@@ -340,6 +340,20 @@ pub mod amm_jit {
             fn quoter_user(&self, _index: usize) -> Pubkey {
                 self.user
             }
+            fn subjects(
+                &self,
+                _index: usize,
+                _direction: Direction,
+                size: u64,
+            ) -> crate::error::VelocityResult<crate::state::prop_amm::QuoterSubjects> {
+                Ok(crate::state::prop_amm::QuoterSubjects::Book(vec![
+                    crate::state::prop_amm::ClobRestingOrderV0 {
+                        user: self.user_ref,
+                        price: self.price,
+                        base_asset_amount: size,
+                    },
+                ]))
+            }
             fn execute(
                 &mut self,
                 _index: usize,
@@ -625,6 +639,304 @@ pub mod amm_jit {
         );
     }
 
+    /// A quoter's response is only allowed to name subjects that quoter may
+    /// act against. The loaded-user set is much wider than that — it holds the
+    /// taker and every rival source's makers — so a quoter naming one of those
+    /// would be minting a position onto a stranger at a price it chose.
+    ///
+    /// Same fixture as the fill above, except the external quoter's response
+    /// names the *DLOB* maker (its own book holds only the CLOB maker). The
+    /// whole fill must fail rather than settle it: this is the wiring test for
+    /// the rule `QuoterSubjects::permits` states, which
+    /// `state::prop_amm::tests` covers case by case.
+    #[test]
+    fn router_pass_rejects_an_external_quoter_naming_another_sources_maker() {
+        use crate::state::prop_amm::{
+            ClobRestingOrderV0, ClobUserRefV0, Direction, ExecuteResponseV0,
+            ExternalQuoterExecutor, PriceLevel, QuoterSubjects, QuoterType, UserBalanceChange,
+        };
+
+        /// Its book rests `resting`; its response names `names`.
+        struct HostileClobExecutor {
+            user: Pubkey,
+            resting: ClobUserRefV0,
+            names: ClobUserRefV0,
+            price: u64,
+        }
+        impl ExternalQuoterExecutor for HostileClobExecutor {
+            fn quoter_type(&self, _index: usize) -> QuoterType {
+                QuoterType::Clob
+            }
+            fn quoter_user(&self, _index: usize) -> Pubkey {
+                self.user
+            }
+            fn subjects(
+                &self,
+                _index: usize,
+                _direction: Direction,
+                size: u64,
+            ) -> crate::error::VelocityResult<QuoterSubjects> {
+                Ok(QuoterSubjects::Book(vec![ClobRestingOrderV0 {
+                    user: self.resting,
+                    price: self.price,
+                    base_asset_amount: size,
+                }]))
+            }
+            fn execute(
+                &mut self,
+                _index: usize,
+                _direction: Direction,
+                size: u64,
+            ) -> crate::error::VelocityResult<ExecuteResponseV0> {
+                let quote_size =
+                    ((size as u128) * (self.price as u128) / BASE_PRECISION_U64 as u128) as u64;
+                Ok(ExecuteResponseV0 {
+                    balance_changes: vec![UserBalanceChange {
+                        user: self.names,
+                        base_size: size,
+                        quote_size,
+                        completed_order_ids: vec![],
+                    }],
+                    cancelled: vec![],
+                })
+            }
+        }
+
+        let now = 0_i64;
+        let slot = 0_u64;
+
+        let mut oracle_price = get_pyth_price(100, 6);
+        let oracle_price_key =
+            Pubkey::from_str("J83w4HKfqxwcq3BEMMkPFSppX3gqekLyLJBexebFVkix").unwrap();
+        create_anchor_account_info!(
+            oracle_price,
+            &oracle_price_key,
+            PythLazerOracle,
+            oracle_account_info
+        );
+        let mut oracle_map = OracleMap::load_one(&oracle_account_info, slot, None).unwrap();
+
+        let mut market = PerpMarket {
+            amm: AMM {
+                base_asset_reserve: 100 * AMM_RESERVE_PRECISION,
+                quote_asset_reserve: 100 * AMM_RESERVE_PRECISION,
+                base_asset_amount_with_amm: (AMM_RESERVE_PRECISION / 2) as i128,
+                sqrt_k: 100 * AMM_RESERVE_PRECISION,
+                peg_multiplier: 100 * PEG_PRECISION,
+                max_slippage_ratio: 50,
+                max_fill_reserve_fraction: 100,
+                base_spread: 20000,
+                ..AMM::default()
+            },
+            base_asset_amount_long: (AMM_RESERVE_PRECISION / 2) as i128,
+            order_step_size: 1000,
+            order_tick_size: 1,
+            oracle: oracle_price_key,
+            oracle_source: crate::state::oracle::OracleSource::PythLazer,
+            market_stats: MarketStats {
+                historical_oracle_data: HistoricalOracleData {
+                    last_oracle_price: (100 * PRICE_PRECISION) as i64,
+                    last_oracle_price_twap: (100 * PRICE_PRECISION) as i64,
+                    last_oracle_price_twap_5min: (100 * PRICE_PRECISION) as i64,
+                    ..HistoricalOracleData::default()
+                },
+                ..MarketStats::default()
+            },
+            margin_ratio_initial: 1000,
+            margin_ratio_maintenance: 500,
+            status: MarketStatus::Initialized,
+            ..PerpMarket::default_test()
+        };
+        market.amm.max_base_asset_reserve = u64::MAX as u128;
+        market.amm.min_base_asset_reserve = 0;
+
+        create_anchor_account_info!(market, PerpMarket, market_account_info);
+        let market_map = PerpMarketMap::load_one(&market_account_info, true).unwrap();
+
+        let mut spot_market = SpotMarket {
+            market_index: 0,
+            oracle_source: OracleSource::QuoteAsset,
+            cumulative_deposit_interest: SPOT_CUMULATIVE_INTEREST_PRECISION,
+            decimals: 6,
+            initial_asset_weight: SPOT_WEIGHT_PRECISION,
+            maintenance_asset_weight: SPOT_WEIGHT_PRECISION,
+            historical_oracle_data: HistoricalOracleData::default_price(QUOTE_PRECISION_I64),
+            ..SpotMarket::default()
+        };
+        create_anchor_account_info!(spot_market, SpotMarket, spot_market_account_info);
+        let spot_market_map = SpotMarketMap::load_one(&spot_market_account_info, true).unwrap();
+
+        let mut taker = User {
+            orders: get_orders(Order {
+                market_index: 0,
+                status: OrderStatus::Open,
+                order_type: OrderType::Market,
+                direction: PositionDirection::Long,
+                base_asset_amount: BASE_PRECISION_U64,
+                slot: 0,
+                auction_start_price: 0,
+                auction_end_price: 105 * PRICE_PRECISION_I64,
+                price: 105 * PRICE_PRECISION_U64,
+                auction_duration: 0,
+                ..Order::default()
+            }),
+            perp_positions: get_positions(PerpPosition {
+                market_index: 0,
+                open_orders: 1,
+                open_bids: BASE_PRECISION_I64,
+                ..PerpPosition::default()
+            }),
+            spot_positions: get_spot_positions(SpotPosition {
+                market_index: 0,
+                balance_type: SpotBalanceType::Deposit,
+                scaled_balance: 100 * SPOT_BALANCE_PRECISION_U64,
+                ..SpotPosition::default()
+            }),
+            ..User::default()
+        };
+
+        // The DLOB maker — loaded, but resting on velocity's own book, not on
+        // the external quoter's.
+        let maker_key = Pubkey::from_str("My11111111111111111111111111111111111111113").unwrap();
+        let maker_authority =
+            Pubkey::from_str("J83w4HKfqxwcq3BEMMkPFSppX3gqekLyLJBexebFVkix").unwrap();
+        let mut maker = User {
+            authority: maker_authority,
+            orders: get_orders(Order {
+                market_index: 0,
+                post_only: true,
+                order_type: OrderType::Limit,
+                direction: PositionDirection::Short,
+                base_asset_amount: BASE_PRECISION_U64 / 2,
+                price: 100 * PRICE_PRECISION_U64,
+                ..Order::default()
+            }),
+            perp_positions: get_positions(PerpPosition {
+                market_index: 0,
+                open_orders: 1,
+                open_asks: -BASE_PRECISION_I64 / 2,
+                ..PerpPosition::default()
+            }),
+            spot_positions: get_spot_positions(SpotPosition {
+                market_index: 0,
+                balance_type: SpotBalanceType::Deposit,
+                scaled_balance: 100 * 100 * SPOT_BALANCE_PRECISION_U64,
+                ..SpotPosition::default()
+            }),
+            ..User::default()
+        };
+        create_anchor_account_info!(maker, &maker_key, User, maker_account_info);
+        let mut makers_and_referrers = UserMap::load_one(&maker_account_info).unwrap();
+
+        let clob_maker_key =
+            Pubkey::from_str("CLoB111111111111111111111111111111111111111").unwrap();
+        let clob_maker_authority =
+            Pubkey::from_str("6ncQ5nmiZjHJK8QPGevKJnnLKtSXjZ4Q2r8bTHTNiFEf").unwrap();
+        let mut clob_maker = User {
+            authority: clob_maker_authority,
+            open_orders: 1,
+            has_open_order: true,
+            perp_positions: get_positions(PerpPosition {
+                market_index: 0,
+                open_orders: 1,
+                open_asks: -BASE_PRECISION_I64 / 2,
+                ..PerpPosition::default()
+            }),
+            spot_positions: get_spot_positions(SpotPosition {
+                market_index: 0,
+                balance_type: SpotBalanceType::Deposit,
+                scaled_balance: 100 * 100 * SPOT_BALANCE_PRECISION_U64,
+                ..SpotPosition::default()
+            }),
+            ..User::default()
+        };
+        create_anchor_account_info!(clob_maker, &clob_maker_key, User, clob_maker_account_info);
+        makers_and_referrers.0.insert(
+            clob_maker_key,
+            anchor_lang::prelude::AccountLoader::try_from(&clob_maker_account_info).unwrap(),
+        );
+
+        let mut filler = User::default();
+        let fee_structure = get_fee_structure();
+        let (taker_key, _, filler_key) = get_user_keys();
+        let mut taker_stats = UserStats::default();
+        let mut maker_stats = UserStats {
+            authority: maker_authority,
+            ..UserStats::default()
+        };
+        create_anchor_account_info!(maker_stats, UserStats, maker_stats_account_info);
+        let mut maker_and_referrer_stats =
+            UserStatsMap::load_one(&maker_stats_account_info).unwrap();
+        let mut clob_maker_stats = UserStats {
+            authority: clob_maker_authority,
+            ..UserStats::default()
+        };
+        create_anchor_account_info!(clob_maker_stats, UserStats, clob_maker_stats_account_info);
+        maker_and_referrer_stats.0.insert(
+            clob_maker_authority,
+            anchor_lang::prelude::AccountLoader::try_from(&clob_maker_stats_account_info).unwrap(),
+        );
+        let mut filler_stats = UserStats::default();
+
+        let external_levels = [PriceLevel {
+            price: 99 * PRICE_PRECISION_U64,
+            size: BASE_PRECISION_U64 / 2,
+        }];
+        let external_books = [crate::math::router::QuoterBook {
+            priority: QuoterType::Clob.default_priority(),
+            levels: &external_levels,
+        }];
+        let mut executor = HostileClobExecutor {
+            user: clob_maker_key,
+            resting: ClobUserRefV0 {
+                authority: clob_maker_authority,
+                sub_account_id: 0,
+            },
+            // The DLOB maker: loaded, settleable, and none of this quoter's
+            // business.
+            names: ClobUserRefV0 {
+                authority: maker_authority,
+                sub_account_id: 0,
+            },
+            price: 99 * PRICE_PRECISION_U64,
+        };
+        let mut router_inputs = crate::math::router::RouterFillInputs {
+            books: &external_books,
+            executor: &mut executor,
+        };
+
+        let result = fulfill_perp_order(
+            &mut taker,
+            0,
+            &taker_key,
+            &mut taker_stats,
+            &makers_and_referrers,
+            &maker_and_referrer_stats,
+            &[(maker_key, 0, 100 * PRICE_PRECISION_U64)],
+            &mut Some(&mut filler),
+            &filler_key,
+            &mut Some(&mut filler_stats),
+            &spot_market_map,
+            &market_map,
+            &mut oracle_map,
+            &crate::state::state::ValidityGuardRails::default(),
+            &fee_structure,
+            Some(market.market_stats.historical_oracle_data.last_oracle_price),
+            now,
+            slot,
+            true,
+            FillMode::Fill,
+            false,
+            &mut router_inputs,
+            &mut None,
+        );
+
+        assert_eq!(
+            result,
+            Err(crate::error::ErrorCode::QuoterSubjectNotPermitted)
+        );
+    }
+
     /// A Custom PropAMM's depth is never margin-reserved, so the router pass
     /// clamps its book to what the quoted user's account supports before the
     /// split — a thin maker fills what its margin covers instead of failing
@@ -648,6 +960,14 @@ pub mod amm_jit {
             }
             fn quoter_user(&self, _index: usize) -> Pubkey {
                 self.user
+            }
+            fn subjects(
+                &self,
+                _index: usize,
+                _direction: Direction,
+                _size: u64,
+            ) -> crate::error::VelocityResult<crate::state::prop_amm::QuoterSubjects> {
+                Ok(crate::state::prop_amm::QuoterSubjects::Account(self.user))
             }
             fn execute(
                 &mut self,

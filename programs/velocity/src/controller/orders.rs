@@ -3799,10 +3799,17 @@ fn fulfill_perp_order_router_pass(
     }
 
     // ---- Execute + settle each external allocation via the CPI leg. ----
-    // The response is untrusted: cap at the allocation, enforce per-unit
-    // at-or-better against the quoted levels, and settle only against loaded
-    // makers (the ref index only resolves users inside the tx's user set).
+    // The response is untrusted on three axes, and each is bounded before a
+    // single balance is moved: the volume (never more than allocated), the
+    // price (inside the levels this quoter quoted moments ago, in this same
+    // transaction), and the subject (a user this quoter is allowed to act
+    // against — the loaded set is far wider than that, and it holds the taker
+    // and every rival quoter's makers).
     let user_ref_index = makers_and_referrer.user_ref_index()?;
+    let taker_ref = crate::state::prop_amm::ClobUserRefV0 {
+        authority: taker.authority,
+        sub_account_id: taker.sub_account_id,
+    };
     let resolve_user = |user: &crate::state::prop_amm::ClobUserRefV0| -> VelocityResult<Pubkey> {
         user_ref_index
             .get(&(user.authority, user.sub_account_id))
@@ -3820,6 +3827,9 @@ fn fulfill_perp_order_router_pass(
         if allocation.base == 0 {
             continue;
         }
+        // Before the CPI: a book-backed quoter's permitted subjects live in
+        // the state its execute is about to consume.
+        let subjects = router.executor.subjects(i, direction, allocation.base)?;
         let response = router.executor.execute(i, direction, allocation.base)?;
         // CLOB orders are margin-reserved through velocity at placement, so
         // their fills/culls unwind open-order aggregates; Custom PropAMM
@@ -3841,32 +3851,25 @@ fn fulfill_perp_order_router_pass(
         }
         validate!(
             ext_base <= allocation.base,
-            ErrorCode::DefaultError,
+            ErrorCode::QuoterOverfilled,
             "router external quoter {} overfilled: {} > {}",
             i,
             ext_base,
             allocation.base
         )?;
-        let aggregate_fill = QuoterFill {
-            side: taker_direction,
-            base_filled: ext_base,
-            quote_filled: ext_quote,
-            clearing_price: 0,
-            refresh_cost: 0,
-            is_fee_exempt: false,
-            fee_policy: crate::state::quoter::FillFeePolicy::DlobMatch,
-            quote_asset_amount_surplus: 0,
-        };
+        // The levels this quoter's allocation was cut from — the same slice
+        // the split walked, so the prefix priced here is the one it routed.
+        let quoted =
+            crate::math::router::quoted_prefix(books[i].levels, order_step_size, ext_base)?;
         validate!(
-            crate::controller::matching::fill_at_or_better(
-                taker_direction,
-                &aggregate_fill,
-                allocation,
-                BASE_PRECISION_U64
-            )?,
-            ErrorCode::DefaultError,
-            "router external quoter {} filled worse than quoted",
-            i
+            crate::math::router::validate_executed_notional(&quoted, ext_base, ext_quote)?,
+            ErrorCode::QuoterFillOffQuote,
+            "router external quoter {} filled {}/{} outside its quote for that size ({}..{})",
+            i,
+            ext_quote,
+            ext_base,
+            quoted.best_price,
+            quoted.worst_price
         )?;
 
         for change in &response.balance_changes {
@@ -3874,6 +3877,25 @@ fn fulfill_perp_order_router_pass(
                 continue;
             }
             let maker_key = resolve_user(&change.user)?;
+            validate!(
+                subjects.permits(&change.user, &maker_key, &taker_ref),
+                ErrorCode::QuoterSubjectNotPermitted,
+                "router external quoter {} may not act against user {}",
+                i,
+                maker_key
+            )?;
+            validate!(
+                crate::math::router::validate_change_notional(
+                    &quoted,
+                    change.base_size,
+                    change.quote_size,
+                    merged_orders(change)?,
+                )?,
+                ErrorCode::QuoterFillOffQuote,
+                "router external quoter {} priced user {} outside its quoted band",
+                i,
+                maker_key
+            )?;
             let mut maker = makers_and_referrer.get_ref_mut(&maker_key)?;
             // Same pre-flight as the DLOB leg: the maker's funding stamp
             // must be current before `settle_external_match_fill` touches
@@ -3943,10 +3965,18 @@ fn fulfill_perp_order_router_pass(
 
         // Sub-min remainders the quoter culled with this fill: unwind the
         // remainder from the maker's aggregates (that maker was just filled,
-        // so they are loaded).
+        // so they are loaded). A cull releases a margin reservation, so it is
+        // held to the same subject rule as a balance change.
         if maker_aggregates_tracked {
             for cancelled in &response.cancelled {
                 let maker_key = resolve_user(&cancelled.user)?;
+                validate!(
+                    subjects.permits(&cancelled.user, &maker_key, &taker_ref),
+                    ErrorCode::QuoterSubjectNotPermitted,
+                    "router external quoter {} may not cancel for user {}",
+                    i,
+                    maker_key
+                )?;
                 let mut maker = makers_and_referrer.get_ref_mut(&maker_key)?;
                 let maker_position_index = get_position_index(&maker.perp_positions, market_index)?;
                 decrease_open_bids_and_asks(
@@ -4000,6 +4030,14 @@ fn fulfill_perp_order_router_pass(
     }
 
     Ok((total_base, total_quote))
+}
+
+/// How many of a quoter's own orders one balance change merges, as the
+/// response itself declares: every order the change consumed outright, plus
+/// at most one it left a remainder on. Bounds the integer rounding a merged
+/// record can carry (see `math::router::validate_change_notional`).
+fn merged_orders(change: &crate::state::prop_amm::UserBalanceChange) -> VelocityResult<u64> {
+    change.completed_order_ids.len().cast::<u64>()?.safe_add(1)
 }
 
 pub fn update_order_after_fill(
@@ -4315,22 +4353,77 @@ pub fn cross_match(
             PositionDirection::Long => crate::state::prop_amm::Direction::Long,
             PositionDirection::Short => crate::state::prop_amm::Direction::Short,
         };
+        // Read before the CPI: whom this leg's quoter may move, and — for a
+        // book velocity can read — the prices those orders rest at. A cross
+        // has no `quote_v0` leg to bind against (the crank's account list
+        // carries only the execute surface), so the book's own resting run
+        // stands in as the quote. A Custom entry offers neither, and there it
+        // is the entry's single consenting `user` plus the surplus check that
+        // bound the leg.
+        let subjects = executor.subjects(book_index, cpi_direction, leg_size)?;
         let response = executor.execute(book_index, cpi_direction, leg_size)?;
         let maker_aggregates_tracked =
             executor.quoter_type(book_index) == crate::state::prop_amm::QuoterType::Clob;
         let maker_direction = taker_direction.opposite();
+
+        let (leg_base, leg_quote) = response.balance_changes.iter().try_fold(
+            (0u64, 0u64),
+            |(base, quote), change| -> VelocityResult<(u64, u64)> {
+                Ok((
+                    base.safe_add(change.base_size)?,
+                    quote.safe_add(change.quote_size)?,
+                ))
+            },
+        )?;
+        // These are real orders rather than a quoted ladder, so they price at
+        // their own size with no step quantization.
+        let quoted = match subjects.as_levels() {
+            Some(levels) if leg_base > 0 => {
+                Some(crate::math::router::quoted_prefix(&levels, 1, leg_base)?)
+            }
+            _ => None,
+        };
+        if let Some(quoted) = quoted.as_ref() {
+            validate!(
+                crate::math::router::validate_executed_notional(quoted, leg_base, leg_quote)?,
+                ErrorCode::QuoterFillOffQuote,
+                "cross leg {} filled {}/{} outside the book it swept ({}..{})",
+                leg,
+                leg_quote,
+                leg_base,
+                quoted.best_price,
+                quoted.worst_price
+            )?;
+        }
 
         let mut market = perp_market_map.get_ref_mut(&market_index)?;
         for change in &response.balance_changes {
             if change.base_size == 0 {
                 continue;
             }
-            validate!(
-                change.user != taker_ref,
-                ErrorCode::DefaultError,
-                "cross leg settled against the protocol user itself"
-            )?;
             let maker_key = resolve_user(&change.user)?;
+            validate!(
+                subjects.permits(&change.user, &maker_key, &taker_ref),
+                ErrorCode::QuoterSubjectNotPermitted,
+                "cross leg {} quoter may not act against user {} (the protocol \
+                 user itself is never a subject)",
+                leg,
+                maker_key
+            )?;
+            if let Some(quoted) = quoted.as_ref() {
+                validate!(
+                    crate::math::router::validate_change_notional(
+                        quoted,
+                        change.base_size,
+                        change.quote_size,
+                        merged_orders(change)?,
+                    )?,
+                    ErrorCode::QuoterFillOffQuote,
+                    "cross leg {} priced user {} outside the book it swept",
+                    leg,
+                    maker_key
+                )?;
+            }
             let mut maker = makers_and_referrer.get_ref_mut(&maker_key)?;
             let mut maker_stats = Some(makers_and_referrer_stats.get_ref_mut(&maker.authority)?);
             let (base_filled, quote_filled) = settle_external_match_fill(
@@ -4390,6 +4483,13 @@ pub fn cross_match(
         if maker_aggregates_tracked {
             for cancelled in &response.cancelled {
                 let maker_key = resolve_user(&cancelled.user)?;
+                validate!(
+                    subjects.permits(&cancelled.user, &maker_key, &taker_ref),
+                    ErrorCode::QuoterSubjectNotPermitted,
+                    "cross leg {} quoter may not cancel for user {}",
+                    leg,
+                    maker_key
+                )?;
                 let mut maker = makers_and_referrer.get_ref_mut(&maker_key)?;
                 let maker_position_index = get_position_index(&maker.perp_positions, market_index)?;
                 decrease_open_bids_and_asks(

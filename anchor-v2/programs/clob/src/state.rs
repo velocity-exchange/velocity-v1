@@ -324,6 +324,11 @@ pub struct UserRefV0 {
 }
 
 impl UserRefV0 {
+    pub const ZERO: Self = Self {
+        authority: ZERO_ADDRESS,
+        sub_account_id: 0,
+    };
+
     /// The user's borsh encoding, for comparing against and writing into the
     /// response region without a heap round-trip.
     pub fn to_bytes(self) -> [u8; USER_REF_BYTES] {
@@ -331,6 +336,64 @@ impl UserRefV0 {
         bytes[..32].copy_from_slice(&self.authority.to_bytes());
         bytes[32..].copy_from_slice(&self.sub_account_id.to_le_bytes());
         bytes
+    }
+}
+
+/// Capacity of [`UserSetV0`]. Mirrors velocity's `MAX_QUOTER_WIRE_USERS`,
+/// which is derived from the account-lock budget of the transaction that
+/// forwards the set: 64 locks, minus the 15 a router fill spends before its
+/// first maker, minus one for the `UserStats` those makers share in the best
+/// case. Both sides must hold the same number or the wire is undecodable.
+pub const USER_SET_CAPACITY: usize = 48;
+
+/// The caller's settleable-user set, exactly as velocity's
+/// `QuoterUserSetV0` puts it on the wire: a live count followed by a
+/// fixed-width array. Fixed width is what lets both sides decode it without
+/// allocating on a path that runs twice per fill, and what makes the encoding
+/// something to pin rather than negotiate.
+///
+/// An empty set means unrestricted, which only callers that settle nothing
+/// (quote discovery) use. Otherwise it is the set of velocity `User`s the
+/// calling transaction loaded, and liquidity owned by anyone else must be
+/// passed over: velocity cannot settle a balance change for a `User` it did
+/// not load, and refuses the whole response if one appears.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, wincode::SchemaRead, wincode::SchemaWrite)]
+pub struct UserSetV0 {
+    /// Live entries at the head of `users`; the tail is undefined.
+    pub len: u8,
+    pub users: [UserRefV0; USER_SET_CAPACITY],
+}
+
+/// Encoded width of a [`UserSetV0`], pinned against velocity's
+/// `QUOTER_USER_SET_BYTES` by `tests::response`.
+pub const USER_SET_BYTES: usize = 1 + USER_SET_CAPACITY * USER_REF_BYTES;
+
+impl UserSetV0 {
+    pub const EMPTY: Self = Self {
+        len: 0,
+        users: [UserRefV0::ZERO; USER_SET_CAPACITY],
+    };
+
+    /// The live prefix. `len` arrives from a foreign caller, so it is clamped
+    /// rather than trusted.
+    pub fn as_slice(&self) -> &[UserRefV0] {
+        &self.users[..(self.len as usize).min(USER_SET_CAPACITY)]
+    }
+
+    /// Whether the set restricts anything at all.
+    pub fn is_unrestricted(&self) -> bool {
+        self.len == 0
+    }
+
+    /// Build from at most [`USER_SET_CAPACITY`] refs; `None` past capacity.
+    pub fn from_refs(refs: &[UserRefV0]) -> Option<Self> {
+        if refs.len() > USER_SET_CAPACITY {
+            return None;
+        }
+        let mut set = Self::EMPTY;
+        set.users[..refs.len()].copy_from_slice(refs);
+        set.len = refs.len() as u8;
+        Some(set)
     }
 }
 

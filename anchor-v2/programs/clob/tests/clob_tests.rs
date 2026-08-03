@@ -12,7 +12,7 @@ use {
         instruction,
         state::{
             ClobHeaderV0, ClobMarketV0, Direction, MarketConfigV0, OrderNodeV0, OrderRefV0, Side,
-            UserRefV0, EXECUTE_FILLS_CEILING, ORDERS_OFFSET,
+            UserRefV0, UserSetV0, EXECUTE_FILLS_CEILING, ORDERS_OFFSET,
         },
         CancelOrderArgsV0, EvictWorstArgsV0, ExecuteArgsV0, PlaceOrderArgsV0, QuoteArgsV0,
         RemoveExpiredArgsV0, ResizeMarketArgsV0, UpdateMarketArgsV0,
@@ -255,6 +255,18 @@ fn place(ctx: &mut Ctx, args: PlaceOrderArgsV0, user: Address) -> OrderRefV0 {
     parse_order_ref(&meta.return_data.data)
 }
 
+/// The wire's settleable-user set from a test's `Option<Vec<Address>>`:
+/// `None` is the unrestricted set.
+fn user_set(users: Option<Vec<Address>>) -> UserSetV0 {
+    match users {
+        None => UserSetV0::EMPTY,
+        Some(users) => {
+            let refs: Vec<_> = users.into_iter().map(uref).collect();
+            UserSetV0::from_refs(&refs).unwrap()
+        }
+    }
+}
+
 fn quote_meta_users(
     ctx: &mut Ctx,
     direction: Direction,
@@ -265,7 +277,7 @@ fn quote_meta_users(
         args: QuoteArgsV0 {
             direction,
             size,
-            users: users.map(|u| u.into_iter().map(uref).collect()),
+            users: user_set(users),
             taker: None,
         },
     }
@@ -299,7 +311,7 @@ fn execute_meta_users(
         args: ExecuteArgsV0 {
             direction,
             size,
-            users: users.map(|u| u.into_iter().map(uref).collect()),
+            users: user_set(users),
             taker: None,
         },
     }
@@ -620,7 +632,7 @@ fn execute_rejects_unauthorized_caller() {
     let args = || ExecuteArgsV0 {
         direction: Direction::Long,
         size: 5,
-        users: None,
+        users: UserSetV0::EMPTY,
         taker: None,
     };
     let execute_ix = |authority: Pubkey| {
@@ -960,7 +972,7 @@ fn cu_benchmarks() {
         args: QuoteArgsV0 {
             direction: Direction::Short,
             size: u64::MAX,
-            users: None,
+            users: UserSetV0::EMPTY,
             taker: None,
         },
     }
@@ -1054,7 +1066,7 @@ fn an_execute_at_the_ceilings_fits_the_response_and_emits_the_record() {
         args: ExecuteArgsV0 {
             direction: Direction::Long,
             size: fills as u64,
-            users: None,
+            users: UserSetV0::EMPTY,
             taker: None,
         },
     }
@@ -1152,7 +1164,7 @@ fn quote_taker(ctx: &mut Ctx, direction: Direction, size: u64, taker: Address) -
         args: QuoteArgsV0 {
             direction,
             size,
-            users: None,
+            users: UserSetV0::EMPTY,
             taker: Some(uref(taker)),
         },
     }
@@ -1173,7 +1185,7 @@ fn execute_taker(
         args: ExecuteArgsV0 {
             direction,
             size,
-            users: None,
+            users: UserSetV0::EMPTY,
             taker: Some(uref(taker)),
         },
     }

@@ -4,11 +4,16 @@
 //! price-time ordering its own book preserves — then customs), pro rata
 //! within a tier; a single-member tier degenerates to filling it outright.
 //!
-//! Books come from untrusted `quote_v0` responses, so each is sanitized to
-//! its longest usable best-first prefix (capped, monotone, non-degenerate) —
-//! a quoter returning garbage levels only truncates its own book. Step-size
-//! alignment of allocations is not handled here: execute may partially fill
-//! and the fill-time validation clamps, so dust misalignment errs safe.
+//! Books come from untrusted `quote_v0` responses. They are checked against
+//! the level contract when velocity reads them ([`validate_quoted_levels`]),
+//! and the walk here still tolerates junk by truncating rather than trusting
+//! it. Step-size alignment of allocations is not handled here: execute may
+//! partially fill and the fill-time validation clamps, so dust misalignment
+//! errs safe.
+//!
+//! The other half of this module is the reverse direction: [`quoted_prefix`]
+//! and [`validate_executed_notional`] hold what a quoter's `execute_v0`
+//! returned to the levels it quoted moments earlier in the same transaction.
 
 use crate::{
     error::{ErrorCode, VelocityResult},
@@ -268,6 +273,194 @@ pub fn split_across_quoters(
     Ok(allocations)
 }
 
+/// Reject a foreign `quote_v0` response outright rather than route it.
+///
+/// The split walk tolerates junk by truncating, but the raw levels are read
+/// by more than the split — the taker-limit cut, the Custom margin clamp's
+/// depth sum, and the vAMM's last look all see them, and there a level
+/// nobody can fill still moves the outcome (a zero-priced level looks like
+/// the best bid/ask in existence and shades the vAMM's whole ladder away).
+/// So the contract the type documents is enforced at ingestion instead:
+///
+/// - every price and size is nonzero — a level nobody can fill is not a quote;
+/// - prices run best-first for the taker's direction, non-strictly. Equal
+///   consecutive prices are legal and normal: a ladder's rungs are derived
+///   from distinct offsets that can round to the same tick.
+///
+/// A quoter that trips this fails the fill it was quoted for. That is not new
+/// exposure — an approved quoter can fail the CPI itself — and it keeps the
+/// misbehavior loud enough for the admin to pull the entry.
+pub fn validate_quoted_levels(direction: Direction, levels: &[PriceLevel]) -> VelocityResult<()> {
+    let mut previous: Option<u64> = None;
+    for level in levels {
+        validate!(
+            level.price != 0 && level.size != 0,
+            ErrorCode::InvalidQuoterResponse,
+            "quoter level has zero price or size: {}/{}",
+            level.price,
+            level.size
+        )?;
+        if let Some(previous) = previous {
+            let ordered = match direction {
+                Direction::Long => level.price >= previous,
+                Direction::Short => level.price <= previous,
+            };
+            validate!(
+                ordered,
+                ErrorCode::InvalidQuoterResponse,
+                "quoter levels are not best-price-first: {} after {}",
+                level.price,
+                previous
+            )?;
+        }
+        previous = Some(level.price);
+    }
+    Ok(())
+}
+
+/// The prices a quoter committed to for the best-priced `base` units of the
+/// book it quoted — what an execute of that size is held to.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct QuotedPrefix {
+    /// `Σ price · base` over the prefix, *before* the division by
+    /// `BASE_PRECISION`: the quoted notional as an exact integer, so the only
+    /// rounding in the comparison is the single terminal one.
+    pub scaled_quote: u128,
+    /// The prefix's first (taker-favourable) price.
+    pub best_price: u64,
+    /// The prefix's last price — the worst any unit in it was quoted at.
+    pub worst_price: u64,
+}
+
+/// Walk `levels` best-first for `base` units and price them at the quoted
+/// levels. Mirrors [`Cursor::peek`]'s step quantization, so the prefix is the
+/// same one [`split_across_quoters`] allocated from.
+pub fn quoted_prefix(
+    levels: &[PriceLevel],
+    step_size: u64,
+    base: u64,
+) -> VelocityResult<QuotedPrefix> {
+    let step = step_size.max(1);
+    let mut remaining = base;
+    let mut prefix = QuotedPrefix {
+        scaled_quote: 0,
+        best_price: 0,
+        worst_price: 0,
+    };
+    for level in levels.iter().take(MAX_LEVELS_PER_BOOK) {
+        if remaining == 0 {
+            break;
+        }
+        let usable = level.size - level.size % step;
+        if usable == 0 {
+            continue;
+        }
+        let take = remaining.min(usable);
+        prefix.scaled_quote = prefix
+            .scaled_quote
+            .safe_add((level.price as u128).safe_mul(take as u128)?)?;
+        if prefix.best_price == 0 {
+            prefix.best_price = level.price;
+        }
+        prefix.worst_price = level.price;
+        remaining -= take;
+    }
+    validate!(
+        remaining == 0,
+        ErrorCode::QuoterOverfilled,
+        "quoter filled {} base but only quoted {}",
+        base,
+        base - remaining
+    )?;
+    Ok(prefix)
+}
+
+/// `quote` lies in `[lo, hi]` once both bounds are divided by
+/// `BASE_PRECISION`, with the one rounding step that division can't avoid
+/// admitted at each end plus `slack` further quote units either side.
+fn notional_within(lo: u128, hi: u128, quote: u64, slack: u64) -> VelocityResult<bool> {
+    let floor = lo.safe_div(BASE_PRECISION)?.saturating_sub(slack as u128);
+    let ceil = hi
+        .safe_add(BASE_PRECISION.safe_sub(1)?)?
+        .safe_div(BASE_PRECISION)?
+        .safe_add(slack as u128)?;
+    let quote = quote as u128;
+    Ok(quote >= floor && quote <= ceil)
+}
+
+/// Hold an external quoter's executed `(base, quote)` to the quote it gave in
+/// the same transaction.
+///
+/// Volume binds one-sided: a quoter may fill less than the router allocated
+/// (a book can thin out between the two legs of its own interface, and the
+/// router must accept the smaller size), never more.
+///
+/// Price binds two-sided, over the *prefix* the volume implies rather than
+/// the whole allocation. Both bounds matter, because both counterparties are
+/// third parties to the quoter:
+///
+/// - The upper bound is the notional of the best-priced `base` units of the
+///   allocation. It is what "every unit at the price quoted for that unit"
+///   means for a partial fill, and it is strictly tighter than holding the
+///   fill to the whole allocation's average — that average includes levels
+///   the fill never reached, and would let a quoter fill only its cheap depth
+///   while charging for the expensive.
+/// - The lower bound is every unit at the prefix's best price. Without it a
+///   quoter could report a fill that pays its makers nothing and hand the
+///   taker their base for free.
+///
+/// The gap between the bounds is the quoter's own quoted spread across the
+/// units it filled: a single-price prefix pins the notional exactly, and a
+/// multi-price one leaves only the attribution *within* that quoter's own
+/// book unpinned. Velocity cannot close that last gap without re-deriving the
+/// book it is quoting, and it must stay open anyway — an honest execute can
+/// legitimately fill more of a better level than the step-quantized
+/// allocation walk assigned to it.
+///
+/// Rounding is admitted exactly once, for the single division from
+/// price×base into quote units. A quoter whose encoder divides per fill must
+/// therefore carry the remainder forward across them rather than truncate
+/// each one; per-fill truncation drifts below this bound by up to a unit per
+/// fill, and that dust comes out of its makers.
+pub fn validate_executed_notional(
+    prefix: &QuotedPrefix,
+    base: u64,
+    quote: u64,
+) -> VelocityResult<bool> {
+    let at_best = (prefix.best_price as u128).safe_mul(base as u128)?;
+    notional_within(
+        at_best.min(prefix.scaled_quote),
+        at_best.max(prefix.scaled_quote),
+        quote,
+        0,
+    )
+}
+
+/// The same price band applied to one balance change: every unit of it must
+/// be priced inside the quoted prefix's range. The aggregate bound alone
+/// would let a quoter overpay one maker out of another's pocket while the
+/// total stayed honest; this bounds each subject's price to what the quoter
+/// published.
+///
+/// `orders` is how many of the quoter's own orders the change merges. A
+/// merged record can't be exact even when the response's total is — the
+/// remainder carried between fills lands in whichever record follows — so one
+/// quote unit of slack per merged order is admitted here. At quote precision
+/// that is sub-cent dust, and it is bounded by the response the quoter had to
+/// declare: a CLOB change names every order it consumed but the one it left a
+/// remainder on.
+pub fn validate_change_notional(
+    prefix: &QuotedPrefix,
+    base: u64,
+    quote: u64,
+    orders: u64,
+) -> VelocityResult<bool> {
+    let base = base as u128;
+    let at_best = (prefix.best_price as u128).safe_mul(base)?;
+    let at_worst = (prefix.worst_price as u128).safe_mul(base)?;
+    notional_within(at_best.min(at_worst), at_best.max(at_worst), quote, orders)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -417,5 +610,152 @@ mod tests {
         assert_eq!(out[0], QuoterAllocation::default());
         let out = split(Direction::Long, 0, &[(CLOB, vec![level(100, B)])]);
         assert_eq!(out[0], QuoterAllocation::default());
+    }
+
+    // ---- Ingestion: what velocity will and won't route. ----
+
+    #[test]
+    fn a_zero_price_or_size_level_is_rejected_on_ingestion() {
+        // Not merely truncated: the raw levels reach the taker-limit cut, the
+        // margin clamp and the vAMM's last look, where an unfillable level
+        // still moves the outcome.
+        assert!(validate_quoted_levels(Direction::Long, &[level(0, B)]).is_err());
+        assert!(validate_quoted_levels(Direction::Long, &[level(100, 0)]).is_err());
+        assert!(
+            validate_quoted_levels(Direction::Long, &[level(100, B), level(0, u64::MAX)]).is_err()
+        );
+        assert!(validate_quoted_levels(Direction::Long, &[level(100, B)]).is_ok());
+    }
+
+    #[test]
+    fn levels_must_run_best_price_first() {
+        assert!(validate_quoted_levels(Direction::Long, &[level(100, B), level(99, B)]).is_err());
+        assert!(validate_quoted_levels(Direction::Short, &[level(100, B), level(101, B)]).is_err());
+        assert!(validate_quoted_levels(Direction::Long, &[level(100, B), level(101, B)]).is_ok());
+        assert!(validate_quoted_levels(Direction::Short, &[level(101, B), level(100, B)]).is_ok());
+    }
+
+    /// Non-strictly: a ladder's rungs come from distinct offsets that can
+    /// round to the same tick, so equal consecutive prices are normal.
+    #[test]
+    fn equal_consecutive_prices_are_legal() {
+        assert!(validate_quoted_levels(
+            Direction::Long,
+            &[level(100, B), level(100, B), level(101, B)]
+        )
+        .is_ok());
+        assert!(validate_quoted_levels(
+            Direction::Short,
+            &[level(100, B), level(100, B), level(99, B)]
+        )
+        .is_ok());
+        // And they price as one price: the band collapses, so the notional is
+        // pinned exactly.
+        let levels = [level(100 * PRICE, B), level(100 * PRICE, B)];
+        let prefix = quoted_prefix(&levels, 1, 2 * B).unwrap();
+        assert_eq!(prefix.best_price, prefix.worst_price);
+        assert!(validate_executed_notional(&prefix, 2 * B, 200 * PRICE).unwrap());
+        assert!(!validate_executed_notional(&prefix, 2 * B, 200 * PRICE + 2).unwrap());
+    }
+
+    /// One quote unit of terminal rounding, whichever way the quoter's own
+    /// division went, and no more.
+    #[test]
+    fn the_prefix_notional_admits_exactly_one_rounding() {
+        // 3 base units at a price that doesn't divide evenly: exact notional
+        // is 1.5 quote units.
+        let levels = [level(PRICE / 2, 3)];
+        let prefix = quoted_prefix(&levels, 1, 3).unwrap();
+        assert_eq!(prefix.scaled_quote, (PRICE as u128 / 2) * 3);
+        assert!(validate_executed_notional(&prefix, 3, 1).unwrap());
+        assert!(validate_executed_notional(&prefix, 3, 2).unwrap());
+        assert!(!validate_executed_notional(&prefix, 3, 3).unwrap());
+    }
+
+    // ---- Execute against quote: the binding rule. ----
+
+    const PRICE: u64 = BASE_PRECISION as u64;
+
+    fn ladder() -> [PriceLevel; 2] {
+        [level(100 * PRICE, B), level(102 * PRICE, B)]
+    }
+
+    /// The volume decides which units were filled, and those units' quoted
+    /// prices decide the notional. A quoter that fills only the cheap half of
+    /// its allocation cannot charge the whole allocation's average.
+    #[test]
+    fn a_partial_fill_is_priced_at_the_prefix_it_reached() {
+        let levels = ladder();
+        // Full allocation: both levels, 202 quote for 2 base units.
+        let full = quoted_prefix(&levels, 1, 2 * B).unwrap();
+        assert_eq!(full.scaled_quote, 202u128 * PRICE as u128 * B as u128);
+        assert!(validate_executed_notional(&full, 2 * B, 202 * PRICE).unwrap());
+        assert!(!validate_executed_notional(&full, 2 * B, 202 * PRICE + 2).unwrap());
+
+        // Half filled: only the 100 level was reached, so 100 is the bar —
+        // the 101 average over the whole allocation is not available.
+        let half = quoted_prefix(&levels, 1, B).unwrap();
+        assert_eq!(half.best_price, 100 * PRICE);
+        assert_eq!(half.worst_price, 100 * PRICE);
+        assert!(validate_executed_notional(&half, B, 100 * PRICE).unwrap());
+        assert!(!validate_executed_notional(&half, B, 101 * PRICE).unwrap());
+    }
+
+    #[test]
+    fn charging_worse_than_quoted_is_rejected_in_both_directions() {
+        let asks = ladder();
+        let long = quoted_prefix(&asks, 1, 2 * B).unwrap();
+        // A long taker pays quote: more than quoted is theft from the taker.
+        assert!(!validate_executed_notional(&long, 2 * B, 203 * PRICE).unwrap());
+        // Less than every unit at the best price is theft from the makers.
+        assert!(!validate_executed_notional(&long, 2 * B, 199 * PRICE).unwrap());
+        assert!(validate_executed_notional(&long, 2 * B, 201 * PRICE).unwrap());
+
+        // A short taker receives quote, so the bounds swap sides.
+        let bids = [level(100 * PRICE, B), level(98 * PRICE, B)];
+        let short = quoted_prefix(&bids, 1, 2 * B).unwrap();
+        assert_eq!(short.scaled_quote, 198u128 * PRICE as u128 * B as u128);
+        assert!(!validate_executed_notional(&short, 2 * B, 197 * PRICE).unwrap());
+        assert!(!validate_executed_notional(&short, 2 * B, 201 * PRICE).unwrap());
+        assert!(validate_executed_notional(&short, 2 * B, 199 * PRICE).unwrap());
+    }
+
+    /// Nothing a quoter returns may exceed what the router allocated to it.
+    #[test]
+    fn a_fill_past_the_quoted_depth_has_no_prefix() {
+        let levels = ladder();
+        assert!(quoted_prefix(&levels, 1, 2 * B).is_ok());
+        assert!(quoted_prefix(&levels, 1, 2 * B + 1).is_err());
+    }
+
+    /// Per-change: the aggregate can be honest while one subject is paid out
+    /// of another's pocket, so each change is held to the prefix's band too.
+    #[test]
+    fn a_single_change_is_held_to_the_quoted_band() {
+        let levels = ladder();
+        let prefix = quoted_prefix(&levels, 1, 2 * B).unwrap();
+        // Inside the 100..102 band.
+        assert!(validate_change_notional(&prefix, B, 100 * PRICE, 1).unwrap());
+        assert!(validate_change_notional(&prefix, B, 102 * PRICE, 1).unwrap());
+        // Outside it either way.
+        assert!(!validate_change_notional(&prefix, B, 99 * PRICE, 1).unwrap());
+        assert!(!validate_change_notional(&prefix, B, 103 * PRICE, 1).unwrap());
+        // Slack is one quote unit per merged order, not a licence to reprice.
+        assert!(validate_change_notional(&prefix, B, 100 * PRICE - 4, 4).unwrap());
+        assert!(!validate_change_notional(&prefix, B, 100 * PRICE - 6, 4).unwrap());
+    }
+
+    /// A level whose size isn't a step multiple is quantized the same way the
+    /// split quantizes it, so the prefix prices the units the split routed.
+    #[test]
+    fn the_prefix_quantizes_levels_like_the_split_does() {
+        let levels = [level(100 * PRICE, 3), level(200 * PRICE, 4)];
+        // Step 2: the first level yields 2, the second 4.
+        let prefix = quoted_prefix(&levels, 2, 6).unwrap();
+        assert_eq!(
+            prefix.scaled_quote,
+            (100 * PRICE as u128) * 2 + (200 * PRICE as u128) * 4
+        );
+        assert!(quoted_prefix(&levels, 2, 7).is_err());
     }
 }

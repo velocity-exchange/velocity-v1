@@ -19709,6 +19709,31 @@ export type Velocity = {
       "code": 6375,
       "name": "unattestedFastActivation",
       "msg": "Faster-than-default activation requires the flow-authority attestation"
+    },
+    {
+      "code": 6376,
+      "name": "invalidQuoterResponse",
+      "msg": "Quoter returned a malformed quote/execute response"
+    },
+    {
+      "code": 6377,
+      "name": "quoterOverfilled",
+      "msg": "Quoter filled more base than the router allocated to it"
+    },
+    {
+      "code": 6378,
+      "name": "quoterFillOffQuote",
+      "msg": "Quoter filled at a price its quote does not support"
+    },
+    {
+      "code": 6379,
+      "name": "quoterSubjectNotPermitted",
+      "msg": "Quoter returned a balance change for a user it may not act against"
+    },
+    {
+      "code": 6380,
+      "name": "tooManyQuoterWireUsers",
+      "msg": "More loaded users than the quoter wire can carry"
     }
   ],
   "types": [
@@ -26014,7 +26039,13 @@ export type Velocity = {
               "Account owned by `program_id` that quote/execute responses are written",
               "into; must be registered in both account lists. Responses are read at",
               "the pointer returned via return data, so payloads aren't bound by the",
-              "1024-byte return-data cap."
+              "1024-byte return-data cap.",
+              "",
+              "For CLOB entries this is the book itself — the CLOB's response region",
+              "lives in its market account — which is what lets velocity read the",
+              "resting orders an execute may touch without a second registered",
+              "account to trust. Callers that depend on that re-derive the book's",
+              "market index from its bytes rather than assume it."
             ],
             "type": "pubkey"
           },

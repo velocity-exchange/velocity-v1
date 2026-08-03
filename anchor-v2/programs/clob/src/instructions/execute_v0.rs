@@ -3,7 +3,7 @@ use {
         book::ClobBook,
         emit::emit_execute_record,
         error::ClobError,
-        state::{ClobMarketV0, Direction, ResponsePointerV0, UserRefV0},
+        state::{ClobMarketV0, Direction, ResponsePointerV0, UserRefV0, UserSetV0},
     },
     anchor_lang_v2::prelude::*,
 };
@@ -20,9 +20,9 @@ pub struct ExecuteV0 {
 pub struct ExecuteArgsV0 {
     pub direction: Direction,
     pub size: u64,
-    /// `User`s velocity has loaded and can settle. `None` = unrestricted
+    /// `User`s velocity has loaded and can settle. Empty = unrestricted
     /// (tests; velocity always passes the loaded set).
-    pub users: Option<Vec<UserRefV0>>,
+    pub users: UserSetV0,
     /// The taker's `User`: their own resting orders are skipped
     /// unconditionally (self-trade prevention).
     pub taker: Option<UserRefV0>,
@@ -42,7 +42,7 @@ pub fn handle_execute_v0(
     let outcome = market.execute(
         args.direction,
         args.size,
-        args.users.as_deref(),
+        args.users.as_slice(),
         args.taker.as_ref(),
         clock.slot,
         clock.unix_timestamp,

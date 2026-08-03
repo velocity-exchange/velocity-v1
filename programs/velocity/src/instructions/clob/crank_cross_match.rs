@@ -121,6 +121,7 @@ pub fn handle_crank_cross_match<'c: 'info, 'info>(
 
     let mut types: Vec<QuoterType> = Vec::with_capacity(quoters.len());
     let mut quoter_users: Vec<Pubkey> = Vec::with_capacity(quoters.len());
+    let mut response_accounts: Vec<Pubkey> = Vec::with_capacity(quoters.len());
     for loader in &quoters {
         let quoter = loader.load()?;
         validate!(
@@ -138,6 +139,7 @@ pub fn handle_crank_cross_match<'c: 'info, 'info>(
         )?;
         types.push(quoter.quoter_type);
         quoter_users.push(quoter.user);
+        response_accounts.push(quoter.response_account);
     }
     let buy_index = buy_quoter_index as usize;
     let sell_index = sell_quoter_index as usize;
@@ -157,26 +159,31 @@ pub fn handle_crank_cross_match<'c: 'info, 'info>(
             sub_account_id: taker.sub_account_id,
         }
     };
-    let users: Vec<crate::state::prop_amm::ClobUserRefV0> = makers_and_referrer
-        .user_ref_index()?
-        .into_keys()
-        .map(
-            |(authority, sub_account_id)| crate::state::prop_amm::ClobUserRefV0 {
-                authority,
-                sub_account_id,
-            },
-        )
-        .collect();
+    let users = crate::state::prop_amm::quoter_wire_users(
+        makers_and_referrer
+            .user_ref_index()?
+            .into_keys()
+            .map(
+                |(authority, sub_account_id)| crate::state::prop_amm::ClobUserRefV0 {
+                    authority,
+                    sub_account_id,
+                },
+            ),
+    )?;
     let (quoter_signer, quoter_signer_nonce) = crate::signer::find_quoter_signer();
     let mut executor = CpiQuoterExecutor {
         quoters: &quoters,
         types,
         quoter_users,
+        response_accounts,
+        market_index,
         account_map: &account_map,
         quoter_signer,
         quoter_signer_nonce,
         users,
         taker: taker_ref,
+        slot: clock.slot,
+        now: clock.unix_timestamp,
     };
 
     let (base_matched, surplus) = controller::orders::cross_match(
@@ -447,15 +454,17 @@ pub fn handle_resolve_crank_cross_match_quoter<'info>(
             .map(|info| (*info.key, info.clone()))
             .collect();
 
-        // Quote both sides. `users: None` is discovery mode (unrestricted);
-        // no taker (the executor's taker is the protocol User, which quotes
-        // nothing anywhere).
+        // Quote both sides. An empty user set is discovery mode
+        // (unrestricted); no taker (the executor's taker is the protocol
+        // User, which quotes nothing anywhere).
+        let market_index = ctx.accounts.cross_conditions.load()?.market_index;
         let quote = |direction: crate::state::prop_amm::Direction| -> Result<Vec<PriceLevel>> {
             quoter.quote(
+                market_index,
                 crate::state::prop_amm::QuoteArgsV0 {
                     direction,
                     size: u64::MAX / 2,
-                    users: None,
+                    users: crate::state::prop_amm::QuoterUserSetRef::EMPTY,
                     taker: None,
                 },
                 &quoter_signer,
@@ -503,10 +512,9 @@ pub fn handle_resolve_crank_cross_match_quoter<'info>(
             return Ok(None);
         }
 
-        let (market_index, oracle, quote_spot_market_index, clob_quoter, clob_program) = {
+        let (oracle, quote_spot_market_index, clob_quoter, clob_program) = {
             let conditions = ctx.accounts.cross_conditions.load()?;
             (
-                conditions.market_index,
                 conditions.oracle,
                 conditions.quote_spot_market_index,
                 conditions.clob_quoter,

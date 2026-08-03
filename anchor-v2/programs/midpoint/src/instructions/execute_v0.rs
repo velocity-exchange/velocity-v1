@@ -4,7 +4,7 @@ use {
         error::MidpointError,
         events::{MidpointExecuteRecordV0, MIDPOINT_EVENT_VERSION},
         instructions::quote_v0::caller_gate,
-        state::{Direction, MidpointQuoterV0, ResponsePointerV0, UserRefV0},
+        state::{Direction, MidpointQuoterV0, ResponsePointerV0, UserRefV0, UserSetV0},
         velocity::VELOCITY_STATE,
     },
     anchor_lang_v2::prelude::*,
@@ -27,7 +27,7 @@ pub struct ExecuteV0 {
 pub struct ExecuteArgsV0 {
     pub direction: Direction,
     pub size: u64,
-    pub users: Option<Vec<UserRefV0>>,
+    pub users: UserSetV0,
     pub taker: Option<UserRefV0>,
 }
 
@@ -42,7 +42,7 @@ pub fn handle_execute_v0(
     let clock = Clock::get()?;
     let open = caller_gate(
         &ctx.accounts.quoter,
-        args.users.as_deref(),
+        args.users.as_slice(),
         args.taker.as_ref(),
         ctx.accounts.instructions_sysvar.account(),
         ctx.accounts.velocity_state.account(),

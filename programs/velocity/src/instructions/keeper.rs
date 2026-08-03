@@ -228,16 +228,17 @@ fn fill_order<'c: 'info, 'info>(
         )
     };
     // The loaded-user set on the quoter wire, in derivable form.
-    let users: Vec<crate::state::prop_amm::ClobUserRefV0> = makers_and_referrer
-        .user_ref_index()?
-        .into_keys()
-        .map(
-            |(authority, sub_account_id)| crate::state::prop_amm::ClobUserRefV0 {
-                authority,
-                sub_account_id,
-            },
-        )
-        .collect();
+    let users = crate::state::prop_amm::quoter_wire_users(
+        makers_and_referrer
+            .user_ref_index()?
+            .into_keys()
+            .map(
+                |(authority, sub_account_id)| crate::state::prop_amm::ClobUserRefV0 {
+                    authority,
+                    sub_account_id,
+                },
+            ),
+    )?;
 
     // Quote each live entry into a book. Deactivated/unapproved entries are
     // skipped (a route signed before an admin pulled approval must not brick
@@ -246,10 +247,11 @@ fn fill_order<'c: 'info, 'info>(
     let mut kept: Vec<AccountLoader<QuoterV0>> = Vec::with_capacity(quoters.len());
     let mut types: Vec<QuoterType> = Vec::with_capacity(quoters.len());
     let mut quoter_users: Vec<Pubkey> = Vec::with_capacity(quoters.len());
+    let mut response_accounts: Vec<Pubkey> = Vec::with_capacity(quoters.len());
     let mut books_data: Vec<(u8, Vec<PriceLevel>)> = Vec::with_capacity(quoters.len());
     let mut seen: Vec<Pubkey> = Vec::with_capacity(quoters.len());
     for loader in quoters {
-        let (priority, quoter_type, quoter_user, levels) = {
+        let (priority, quoter_type, quoter_user, response_account, levels) = {
             let quoter = loader.load()?;
             validate!(
                 quoter.market == market_index,
@@ -275,21 +277,29 @@ fn fill_order<'c: 'info, 'info>(
                 continue;
             }
             let levels = quoter.quote(
+                market_index,
                 QuoteArgsV0 {
                     direction,
                     size: unfilled,
-                    users: Some(users.clone()),
+                    users: crate::state::prop_amm::QuoterUserSetRef(&users),
                     taker: Some(taker_ref),
                 },
                 &quoter_signer,
                 quoter_signer_nonce,
                 &account_map,
             )?;
-            (quoter.priority, quoter.quoter_type, quoter.user, levels)
+            (
+                quoter.priority,
+                quoter.quoter_type,
+                quoter.user,
+                quoter.response_account,
+                levels,
+            )
         };
         kept.push(loader);
         types.push(quoter_type);
         quoter_users.push(quoter_user);
+        response_accounts.push(response_account);
         books_data.push((priority, levels));
     }
 
@@ -317,11 +327,15 @@ fn fill_order<'c: 'info, 'info>(
         quoters: &kept,
         types,
         quoter_users,
+        response_accounts,
+        market_index,
         account_map: &account_map,
         quoter_signer,
         quoter_signer_nonce,
         users,
         taker: taker_ref,
+        slot: clock.slot,
+        now: clock.unix_timestamp,
     };
     let mut router_inputs = RouterFillInputs {
         books: &book_refs,

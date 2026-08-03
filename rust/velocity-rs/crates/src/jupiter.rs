@@ -1,9 +1,22 @@
-//! Jupiter SDK helpers
+//! Jupiter Swap API v2 helpers
 //!
-//! Talks to the Jupiter Swap API **v2** Router endpoint `GET /swap/v2/build`, which returns the
-//! quote and the raw swap instructions in a single round trip (v1 needed `GET /quote` followed by
-//! `POST /swap-instructions`). The response is mapped back onto the `jupiter-swap-api-client`
-//! types so [`JupiterSwapInfo`] keeps the same public shape as under v1.
+//! `GET /swap/v2/build` answers a quote and the instructions that execute it in
+//! one round trip, replacing v1's `GET /quote` -> `POST /swap-instructions` pair.
+//! It also returns each lookup table's addresses inline, so building a swap tx
+//! needs no account fetch at all.
+//!
+//! The endpoint is **ExactIn-only** — it dropped `swapMode` from its contract and,
+//! sent `ExactOut`, answers 200 having spent the requested amount as the *input*.
+//! There is therefore no swap-mode parameter here: an amount is always an input
+//! amount. Use the `titan` module (feature `titan`) for ExactOut.
+//!
+//! The route is built for a named `taker`, so the returned quote is only
+//! executable by the `user_authority` it was quoted for.
+use std::{collections::BTreeMap, sync::LazyLock, time::Duration};
+
+use base64::{engine::general_purpose::STANDARD, Engine};
+use serde::{Deserialize, Deserializer};
+
 use crate::{
     solana_sdk::{
         instruction::{AccountMeta, Instruction},
@@ -11,60 +24,64 @@ use crate::{
         pubkey::Pubkey,
     },
     types::{SdkError, SdkResult},
-    utils, VelocityClient,
+    VelocityClient,
 };
-use base64::Engine;
-pub use jupiter_swap_api_client::{
-    quote::{QuoteResponse, SwapMode},
-    swap::SwapInstructionsResponse,
-    transaction_config::TransactionConfig,
-    JupiterSwapApiClient,
-};
-use rust_decimal::Decimal;
-use serde::Deserialize;
-use std::{collections::BTreeMap, str::FromStr};
 
-/// Default Jupiter API url — the v2 Router base. `/build` is appended by the query below.
-/// See: https://dev.jup.ag/docs/swap-api
+/// Default Jupiter API url (lite-api.jup.ag is deprecated as of Jan 31, 2026)
+/// See: https://dev.jup.ag/portal/migrate-from-lite-api
 const DEFAULT_JUPITER_API_URL: &str = "https://api.jup.ag/swap/v2";
 
-/// Ceiling on a single `/build` round trip. Without one a stalled Jupiter connection blocks the
-/// caller's swap path indefinitely — the liquidator races this against Titan and must not hang.
-const JUPITER_REQUEST_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
+/// A quote goes stale in seconds, so a hung request is worth less than a retry
+const JUPITER_REQUEST_TIMEOUT: Duration = Duration::from_secs(10);
 
-/// Shared client so the connection pool and TLS setup are reused across swap queries.
-fn jupiter_http_client() -> &'static reqwest::Client {
-    static CLIENT: std::sync::OnceLock<reqwest::Client> = std::sync::OnceLock::new();
-    CLIENT.get_or_init(|| {
-        reqwest::Client::builder()
-            .timeout(JUPITER_REQUEST_TIMEOUT)
-            .build()
-            .expect("build jupiter http client")
-    })
-}
-
-/// Rejects any swap mode other than `ExactIn`.
-///
-/// `/swap/v2/build` is ExactIn-only and dropped `swapMode` from its contract.
-/// Sent `ExactOut` it still answers 200 — with `swapMode: "ExactIn"` and `amount`
-/// spent as the *input* — so a caller asking to receive `amount` would instead
-/// spend it. Fail rather than invert the trade. `ExactOut` needs the v1 API.
-fn ensure_exact_in(swap_mode: SwapMode) -> SdkResult<()> {
-    match swap_mode {
-        SwapMode::ExactIn => Ok(()),
-        SwapMode::ExactOut => Err(SdkError::Generic(
-            "jupiter swap: ExactOut is not supported by the Jupiter v2 API \
-             (/swap/v2/build is ExactIn-only and silently treats the amount as the input)"
-                .to_string(),
-        )),
-    }
-}
+/// Shared so the connection pool survives between quotes
+static JUPITER_HTTP_CLIENT: LazyLock<reqwest::Client> = LazyLock::new(|| {
+    reqwest::Client::builder()
+        .timeout(JUPITER_REQUEST_TIMEOUT)
+        .build()
+        .expect("jupiter http client")
+});
 
 /// jupiter swap IXs and metadata for building a swap Tx
 pub struct JupiterSwapInfo {
-    pub quote: QuoteResponse,
-    pub ixs: SwapInstructionsResponse,
+    pub quote: JupiterQuote,
+    pub ixs: JupiterRouteInstructions,
     pub luts: Vec<AddressLookupTableAccount>,
+}
+
+/// The quote half of a `/swap/v2/build` response
+#[derive(Clone, Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct JupiterQuote {
+    #[serde(deserialize_with = "deser_pubkey")]
+    pub input_mint: Pubkey,
+    #[serde(deserialize_with = "deser_pubkey")]
+    pub output_mint: Pubkey,
+    /// Amount spent. Always the requested amount — the endpoint is ExactIn-only.
+    #[serde(deserialize_with = "deser_u64")]
+    pub in_amount: u64,
+    #[serde(deserialize_with = "deser_u64")]
+    pub out_amount: u64,
+    /// `out_amount` less the slippage tolerance: the route's minimum received
+    #[serde(deserialize_with = "deser_u64")]
+    pub other_amount_threshold: u64,
+    pub slippage_bps: u16,
+    #[serde(default)]
+    pub price_impact_pct: Option<String>,
+}
+
+/// The instructions a `/swap/v2/build` route is made of, in execution order
+#[derive(Clone, Debug)]
+pub struct JupiterRouteInstructions {
+    pub compute_budget_instructions: Vec<Instruction>,
+    pub setup_instructions: Vec<Instruction>,
+    /// Instruction performing the action of swapping
+    pub swap_instruction: Instruction,
+    pub cleanup_instruction: Option<Instruction>,
+    /// Instructions that are not part of the route itself — currently only a Jito tip
+    pub other_instructions: Vec<Instruction>,
+    /// Set only when opted into Jupiter's own transaction landing, which this SDK does not
+    pub tip_instruction: Option<Instruction>,
 }
 
 pub trait JupiterSwapApi {
@@ -72,35 +89,32 @@ pub trait JupiterSwapApi {
         &self,
         user_authority: &Pubkey,
         amount: u64,
-        swap_mode: SwapMode,
         slippage_bps: u16,
         in_market: u16,
         out_market: u16,
         only_direct_routes: Option<bool>,
         excluded_dexes: Option<String>,
-        transaction_config: Option<TransactionConfig>,
+        max_accounts: Option<usize>,
     ) -> impl std::future::Future<Output = SdkResult<JupiterSwapInfo>> + Send;
 }
 
 impl JupiterSwapApi for VelocityClient {
     /// Fetch Jupiter swap ixs and metadata for a token swap
     ///
-    /// Issues a single `GET {JUPITER_API_URL}/build` (Jupiter Swap API v2) to get the optimal swap
-    /// route and its raw instructions, then hydrates the route's address lookup tables over RPC.
+    /// Queries `GET /swap/v2/build` for the optimal route between two tokens and
+    /// the instructions that execute it.
     ///
     /// # Arguments
     ///
-    /// * `user_authority` - The public key of the user's wallet that will execute the swap
-    ///   (sent as the v2 `taker` query param, which is required)
+    /// * `user_authority` - The public key of the user's wallet that will execute the swap.
+    ///   The route is built for this wallet and is not executable by another.
     /// * `amount` - The amount of input tokens to swap, in native units (smallest denomination)
-    /// * `swap_mode` - Must be `ExactIn`; `ExactOut` is rejected (v2 `/build` is ExactIn-only)
     /// * `slippage_bps` - Maximum allowed slippage in basis points (1 bp = 0.01%)
     /// * `in_market` - The market index of the token to swap from
     /// * `out_market` - The market index of the token to swap to
     /// * `only_direct_routes` - If Some(true), only consider direct swap routes between the tokens
     /// * `excluded_dexes` - Optional comma-separated string of DEX names to exclude from routing
-    /// * `transaction_config` - **Ignored.** v2 `/build` has no equivalent request body; the
-    ///   parameter is retained for source compatibility with the v1 signature.
+    /// * `max_accounts` - Optional cap on the number of accounts the route may touch
     ///
     /// # Returns
     ///
@@ -111,7 +125,7 @@ impl JupiterSwapApi for VelocityClient {
     ///
     /// ```no_run
     /// use velocity_rs::{Context, VelocityClient, RpcClient, Wallet};
-    /// use velocity_rs::jupiter::{JupiterSwapApi, SwapMode};
+    /// use velocity_rs::jupiter::JupiterSwapApi;
     /// use velocity_rs::types::SdkResult;
     /// use solana_keypair::Keypair;
     ///
@@ -127,8 +141,7 @@ impl JupiterSwapApi for VelocityClient {
     /// let swap_info = client
     ///     .jupiter_swap_query(
     ///         wallet.authority(),
-    ///         1_000_000, // 1 USDC
-    ///         SwapMode::ExactIn,
+    ///         1_000_000, // 1 USDC in
     ///         50,  // 0.5% slippage
     ///         0,   // in spot market index (e.g. USDC)
     ///         1,   // out spot market index (e.g. SOL)
@@ -144,33 +157,20 @@ impl JupiterSwapApi for VelocityClient {
         &self,
         user_authority: &Pubkey,
         amount: u64,
-        swap_mode: SwapMode,
         slippage_bps: u16,
         in_market: u16,
         out_market: u16,
         only_direct_routes: Option<bool>,
         excluded_dexes: Option<String>,
-        _transaction_config: Option<TransactionConfig>,
+        max_accounts: Option<usize>,
     ) -> SdkResult<JupiterSwapInfo> {
         let jupiter_url =
             std::env::var("JUPITER_API_URL").unwrap_or(DEFAULT_JUPITER_API_URL.into());
-        let api_key = std::env::var("JUPITER_API_KEY").ok();
-        if api_key.is_none() {
-            log::info!(
-                "JUPITER_API_KEY not set; using the keyless Jupiter tier which rate-limits \
-                 aggressively. Get a free API key at https://portal.jup.ag"
-            );
-        }
-
-        ensure_exact_in(swap_mode)?;
 
         let in_market = self.try_get_spot_market_account(in_market)?;
         let out_market = self.try_get_spot_market_account(out_market)?;
 
-        // GET /swap/v2/build — quote + raw instructions in one call. `swapMode` is
-        // deliberately not sent: v2 removed it. `onlyDirectRoutes`, `excludeDexes`
-        // and `maxAccounts` were each verified to still bind.
-        let mut query: Vec<(&str, String)> = vec![
+        let mut query = vec![
             ("inputMint", in_market.mint.to_string()),
             ("outputMint", out_market.mint.to_string()),
             ("amount", amount.to_string()),
@@ -180,131 +180,250 @@ impl JupiterSwapApi for VelocityClient {
         if let Some(only_direct_routes) = only_direct_routes {
             query.push(("onlyDirectRoutes", only_direct_routes.to_string()));
         }
+        if let Some(max_accounts) = max_accounts {
+            query.push(("maxAccounts", max_accounts.to_string()));
+        }
         if let Some(excluded_dexes) = excluded_dexes {
             query.push(("excludeDexes", excluded_dexes));
         }
 
-        let mut request = jupiter_http_client()
+        let mut request = JUPITER_HTTP_CLIENT
             .get(format!("{jupiter_url}/build"))
             .query(&query);
-        if let Some(api_key) = api_key {
-            request = request.header("x-api-key", api_key);
+        match std::env::var("JUPITER_API_KEY") {
+            Ok(api_key) => request = request.header("x-api-key", api_key),
+            Err(_) => log::warn!(
+                "JUPITER_API_KEY not set. Jupiter API requests may fail after Jan 31, 2026. \
+                 Get a free API key at https://portal.jup.ag"
+            ),
         }
 
         let response = request.send().await.map_err(|err| {
             log::error!("jupiter api request: {err:?}");
-            SdkError::Generic(format!("jupiter /build request failed: {err}"))
+            SdkError::Generic(err.to_string())
         })?;
         let status = response.status();
         let body = response.text().await.map_err(|err| {
-            log::error!("jupiter api request: {err:?}");
-            SdkError::Generic(format!("jupiter /build response body ({status}): {err}"))
+            log::error!("jupiter api response: {err:?}");
+            SdkError::Generic(err.to_string())
         })?;
 
+        // v2 reports a failure both as a non-2xx and as a 200 carrying an error
+        // body, so the body is checked before the status.
+        if let Some(message) = serde_json::from_str::<ErrorBody>(&body)
+            .ok()
+            .and_then(|err| err.describe())
+        {
+            log::error!("jupiter build failed ({status}): {message}");
+            return Err(SdkError::Generic(format!(
+                "jupiter build failed ({status}): {message}"
+            )));
+        }
         if !status.is_success() {
-            let msg = describe_jupiter_error(&body);
-            log::error!("jupiter api request failed ({status}): {msg}");
-            return Err(SdkError::Generic(format!("jupiter /build {status}: {msg}")));
+            log::error!("jupiter build failed ({status}): {body}");
+            return Err(SdkError::Generic(format!(
+                "jupiter build failed ({status}): {}",
+                truncate(&body)
+            )));
         }
 
+        // A v2 build carries the route's instructions, so a body missing them is
+        // unusable rather than merely uninteresting — deserializing the whole
+        // response is what rejects it, here instead of on-chain.
         let build: BuildResponse = serde_json::from_str(&body).map_err(|err| {
-            // A 200 can still carry a routing-failure body, so surface that before the serde error.
-            let msg = describe_jupiter_error(&body);
-            log::error!("jupiter api response: {err:?}");
-            SdkError::Generic(format!("jupiter /build response: {msg} ({err})"))
+            log::error!("jupiter build response: {err:?}");
+            SdkError::Generic(format!("jupiter build response: {err}"))
         })?;
 
-        let (quote_response, swap_instructions) = build.try_into_sdk_types()?;
+        build.try_into()
+    }
+}
 
-        let res = self
-            .rpc()
-            .get_multiple_accounts(swap_instructions.address_lookup_table_addresses.as_slice())
-            .await?;
+/// A `/swap/v2/build` response
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct BuildResponse {
+    #[serde(flatten)]
+    quote: JupiterQuote,
+    compute_budget_instructions: Vec<ApiInstruction>,
+    setup_instructions: Vec<ApiInstruction>,
+    swap_instruction: ApiInstruction,
+    cleanup_instruction: Option<ApiInstruction>,
+    #[serde(default)]
+    other_instructions: Vec<ApiInstruction>,
+    #[serde(default)]
+    tip_instruction: Option<ApiInstruction>,
+    /// v2 returns each lookup table's addresses inline, which is everything an
+    /// `AddressLookupTableAccount` holds, so the tables need no fetch. The
+    /// trade-off is that a table deactivated between the build and the send is
+    /// no longer noticed here — it surfaces when the tx is simulated instead.
+    ///
+    /// Null or absent when the route needs no lookup tables. Ordered, so a given
+    /// route always yields the same LUT list.
+    #[serde(default)]
+    addresses_by_lookup_table_address: Option<BTreeMap<String, Vec<String>>>,
+}
 
-        let luts = res
+impl TryFrom<BuildResponse> for JupiterSwapInfo {
+    type Error = SdkError;
+
+    fn try_from(build: BuildResponse) -> SdkResult<Self> {
+        let luts = build
+            .addresses_by_lookup_table_address
+            .unwrap_or_default()
             .iter()
-            .zip(swap_instructions.address_lookup_table_addresses.iter())
-            .map(|(acc, key)| {
-                utils::deserialize_alt(*key, acc.as_ref().expect("deser LUT")).expect("deser LUT")
+            .map(|(key, addresses)| {
+                Ok(AddressLookupTableAccount {
+                    key: parse_pubkey(key)?,
+                    addresses: addresses
+                        .iter()
+                        .map(|address| parse_pubkey(address))
+                        .collect::<SdkResult<Vec<Pubkey>>>()?,
+                })
             })
-            .collect();
+            .collect::<SdkResult<Vec<AddressLookupTableAccount>>>()?;
 
         Ok(JupiterSwapInfo {
+            quote: build.quote,
+            ixs: JupiterRouteInstructions {
+                compute_budget_instructions: build
+                    .compute_budget_instructions
+                    .into_iter()
+                    .map(Into::into)
+                    .collect(),
+                setup_instructions: build
+                    .setup_instructions
+                    .into_iter()
+                    .map(Into::into)
+                    .collect(),
+                swap_instruction: build.swap_instruction.into(),
+                cleanup_instruction: build.cleanup_instruction.map(Into::into),
+                other_instructions: build
+                    .other_instructions
+                    .into_iter()
+                    .map(Into::into)
+                    .collect(),
+                tip_instruction: build.tip_instruction.map(Into::into),
+            },
             luts,
-            quote: quote_response,
-            ixs: swap_instructions,
         })
     }
 }
 
-/// Turn any of the three Jupiter v2 error body shapes into a readable message.
-///
-/// * validation failure (400): `{"success":false,"error":{"issues":[{path,message}],"name":"ZodError"}}`
-/// * rate limit (429): `{"code":…,"message":"…"}`
-/// * routing failure: `{"error":"…","errorCode":"…"}` (the v1 shape)
-///
-/// Falls back to the raw body so nothing is ever silently swallowed.
-fn describe_jupiter_error(body: &str) -> String {
-    let Ok(value) = serde_json::from_str::<serde_json::Value>(body) else {
-        return truncate(body);
-    };
-
-    // ZodError: `error` is an object carrying `issues`
-    if let Some(issues) = value
-        .get("error")
-        .and_then(|e| e.get("issues"))
-        .and_then(|i| i.as_array())
-    {
-        let issues: Vec<String> = issues
-            .iter()
-            .map(|issue| {
-                let path = issue
-                    .get("path")
-                    .and_then(|p| p.as_array())
-                    .map(|p| {
-                        p.iter()
-                            .map(|seg| {
-                                seg.as_str()
-                                    .map(str::to_string)
-                                    .unwrap_or_else(|| seg.to_string())
-                            })
-                            .collect::<Vec<_>>()
-                            .join(".")
-                    })
-                    .unwrap_or_default();
-                let message = issue
-                    .get("message")
-                    .and_then(|m| m.as_str())
-                    .unwrap_or("invalid");
-                if path.is_empty() {
-                    message.to_string()
-                } else {
-                    format!("{path}: {message}")
-                }
-            })
-            .collect();
-        return format!("validation error ({})", issues.join("; "));
-    }
-
-    // v1-style routing failure: `error` is a string, optionally with `errorCode`
-    if let Some(error) = value.get("error").and_then(|e| e.as_str()) {
-        return match value.get("errorCode").and_then(|c| c.as_str()) {
-            Some(code) => format!("{error} ({code})"),
-            None => error.to_string(),
-        };
-    }
-
-    // rate limit / generic gateway shape: `{code, message}`
-    if let Some(message) = value.get("message").and_then(|m| m.as_str()) {
-        return match value.get("code") {
-            Some(code) => format!("{message} (code {code})"),
-            None => message.to_string(),
-        };
-    }
-
-    truncate(body)
+/// An instruction as the Jupiter API encodes it on the wire
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ApiInstruction {
+    #[serde(deserialize_with = "deser_pubkey")]
+    program_id: Pubkey,
+    accounts: Vec<ApiAccountMeta>,
+    #[serde(deserialize_with = "deser_base64")]
+    data: Vec<u8>,
 }
 
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ApiAccountMeta {
+    #[serde(deserialize_with = "deser_pubkey")]
+    pubkey: Pubkey,
+    is_signer: bool,
+    is_writable: bool,
+}
+
+impl From<ApiInstruction> for Instruction {
+    fn from(value: ApiInstruction) -> Self {
+        Instruction {
+            program_id: value.program_id,
+            accounts: value.accounts.into_iter().map(Into::into).collect(),
+            data: value.data,
+        }
+    }
+}
+
+impl From<ApiAccountMeta> for AccountMeta {
+    fn from(value: ApiAccountMeta) -> Self {
+        AccountMeta {
+            pubkey: value.pubkey,
+            is_signer: value.is_signer,
+            is_writable: value.is_writable,
+        }
+    }
+}
+
+/// The error shapes a v2 response can carry
+///
+/// Three unrelated ones: a Zod validation object (`{ error: { issues, name } }`),
+/// a rate-limit body (`{ code, message }`), and v1's `{ error, errorCode }`.
+/// Every field is optional so a successful body parses into this too, and
+/// [`Self::describe`] answers `None` for it.
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ErrorBody {
+    error: Option<serde_json::Value>,
+    error_code: Option<String>,
+    message: Option<String>,
+}
+
+impl ErrorBody {
+    /// Renders whatever the body says went wrong, or `None` if it says nothing
+    fn describe(&self) -> Option<String> {
+        match &self.error {
+            // A validation failure. Rendering the object itself would read as a
+            // serde_json dump, so the issues are unpacked into `path: message`.
+            Some(serde_json::Value::Object(error)) => {
+                let issues: Vec<String> = error
+                    .get("issues")
+                    .and_then(serde_json::Value::as_array)
+                    .map(|issues| {
+                        issues
+                            .iter()
+                            .filter_map(|issue| {
+                                let message = issue.get("message")?.as_str()?;
+                                let path = issue
+                                    .get("path")
+                                    .and_then(serde_json::Value::as_array)
+                                    .map(|path| {
+                                        path.iter()
+                                            // a bare `to_string()` would quote the strings
+                                            .map(|part| match part {
+                                                serde_json::Value::String(part) => part.clone(),
+                                                part => part.to_string(),
+                                            })
+                                            .collect::<Vec<String>>()
+                                            .join(".")
+                                    })
+                                    .unwrap_or_default();
+                                Some(match path.is_empty() {
+                                    true => message.to_string(),
+                                    false => format!("{path}: {message}"),
+                                })
+                            })
+                            .collect()
+                    })
+                    .unwrap_or_default();
+
+                let name = error
+                    .get("name")
+                    .and_then(serde_json::Value::as_str)
+                    .unwrap_or("error");
+                Some(match issues.is_empty() {
+                    true => format!("{name}: {}", serde_json::Value::Object(error.clone())),
+                    false => format!("{name}: {}", issues.join("; ")),
+                })
+            }
+            // An empty-string `error` is as useless as a missing one, so it falls
+            // through to the next candidate rather than rendering as nothing.
+            Some(serde_json::Value::String(error)) if !error.is_empty() => Some(error.clone()),
+            _ => self
+                .error_code
+                .clone()
+                .or_else(|| self.message.clone())
+                .filter(|message| !message.is_empty()),
+        }
+    }
+}
+
+/// Bounds an unrecognized error body so it stays readable in a log line
 fn truncate(body: &str) -> String {
     const MAX: usize = 512;
     match body.char_indices().nth(MAX) {
@@ -313,224 +432,34 @@ fn truncate(body: &str) -> String {
     }
 }
 
-// --- `GET /swap/v2/build` response ---
-
-#[derive(Deserialize, Debug, Clone)]
-#[serde(rename_all = "camelCase")]
-struct BuildResponse {
-    input_mint: String,
-    output_mint: String,
-    in_amount: String,
-    out_amount: String,
-    other_amount_threshold: String,
-    swap_mode: SwapMode,
-    slippage_bps: u16,
-    /// Sent as a decimal string; `Decimal`'s deserializer also accepts a JSON number.
-    price_impact_pct: Decimal,
-    route_plan: Vec<BuildRoutePlanStep>,
-    compute_budget_instructions: Vec<BuildInstruction>,
-    setup_instructions: Vec<BuildInstruction>,
-    swap_instruction: BuildInstruction,
-    cleanup_instruction: Option<BuildInstruction>,
-    #[serde(default)]
-    other_instructions: Vec<BuildInstruction>,
-    #[serde(default)]
-    tip_instruction: Option<BuildInstruction>,
-    /// v2 documents this as `Record<string, string[]> | null`, so it must tolerate an explicit
-    /// `null` as well as a missing field.
-    ///
-    /// A `BTreeMap` rather than a `HashMap`: the key order becomes the ALT order handed to
-    /// `v0::Message::try_compile`, which walks the tables in order and drops any that resolve no
-    /// accounts. Under a randomized hash order, overlapping tables would claim shared accounts
-    /// differently run to run, varying the compiled transaction's size.
-    #[serde(default)]
-    addresses_by_lookup_table_address: Option<BTreeMap<String, Vec<String>>>,
-}
-
-#[derive(Deserialize, Debug, Clone)]
-#[serde(rename_all = "camelCase")]
-struct BuildRoutePlanStep {
-    swap_info: BuildSwapInfo,
-    /// Split share of the hop. v2 sends a fractional percentage (e.g. `29.23`) alongside `bps`.
-    percent: f64,
-    #[serde(default)]
-    bps: Option<u32>,
-}
-
-#[derive(Deserialize, Debug, Clone)]
-#[serde(rename_all = "camelCase")]
-struct BuildSwapInfo {
-    amm_key: String,
-    label: String,
-    input_mint: String,
-    output_mint: String,
-    in_amount: String,
-    out_amount: String,
-}
-
-#[derive(Deserialize, Debug, Clone)]
-#[serde(rename_all = "camelCase")]
-struct BuildInstruction {
-    program_id: String,
-    accounts: Vec<BuildAccountMeta>,
-    /// base64 encoded
-    data: String,
-}
-
-#[derive(Deserialize, Debug, Clone)]
-#[serde(rename_all = "camelCase")]
-struct BuildAccountMeta {
-    pubkey: String,
-    is_signer: bool,
-    is_writable: bool,
-}
-
-fn parse_pubkey(field: &str, value: &str) -> SdkResult<Pubkey> {
-    Pubkey::from_str(value)
-        .map_err(|err| SdkError::Generic(format!("jupiter /build {field} '{value}': {err}")))
-}
-
-fn parse_u64(field: &str, value: &str) -> SdkResult<u64> {
+fn parse_pubkey(value: &str) -> SdkResult<Pubkey> {
     value
         .parse()
-        .map_err(|err| SdkError::Generic(format!("jupiter /build {field} '{value}': {err}")))
+        .map_err(|_| SdkError::Generic(format!("jupiter build: invalid pubkey: {value}")))
 }
 
-impl BuildInstruction {
-    fn try_into_instruction(self) -> SdkResult<Instruction> {
-        let accounts = self
-            .accounts
-            .into_iter()
-            .map(|acc| {
-                Ok(AccountMeta {
-                    pubkey: parse_pubkey("accounts[].pubkey", &acc.pubkey)?,
-                    is_signer: acc.is_signer,
-                    is_writable: acc.is_writable,
-                })
-            })
-            .collect::<SdkResult<Vec<_>>>()?;
-        Ok(Instruction {
-            program_id: parse_pubkey("programId", &self.program_id)?,
-            accounts,
-            data: base64::engine::general_purpose::STANDARD.decode(self.data)?,
-        })
+fn deser_pubkey<'de, D: Deserializer<'de>>(deserializer: D) -> Result<Pubkey, D::Error> {
+    let value = String::deserialize(deserializer)?;
+    value.parse().map_err(serde::de::Error::custom)
+}
+
+fn deser_base64<'de, D: Deserializer<'de>>(deserializer: D) -> Result<Vec<u8>, D::Error> {
+    let value = String::deserialize(deserializer)?;
+    STANDARD.decode(value).map_err(serde::de::Error::custom)
+}
+
+/// v2 reports token amounts as JSON strings; a bare number is accepted too.
+fn deser_u64<'de, D: Deserializer<'de>>(deserializer: D) -> Result<u64, D::Error> {
+    #[derive(Deserialize)]
+    #[serde(untagged)]
+    enum StringOrNumber {
+        String(String),
+        Number(u64),
     }
-}
 
-impl BuildResponse {
-    /// Map the v2 build response onto the `jupiter-swap-api-client` types the crate's public API
-    /// exposes, so [`JupiterSwapInfo`] is shape-identical to the v1 two-call flow.
-    fn try_into_sdk_types(self) -> SdkResult<(QuoteResponse, SwapInstructionsResponse)> {
-        let route_plan = self
-            .route_plan
-            .into_iter()
-            .map(|step| {
-                Ok(
-                    jupiter_swap_api_client::route_plan_with_metadata::RoutePlanStep {
-                        swap_info: jupiter_swap_api_client::route_plan_with_metadata::SwapInfo {
-                            amm_key: parse_pubkey("routePlan[].ammKey", &step.swap_info.amm_key)?,
-                            label: step.swap_info.label,
-                            input_mint: parse_pubkey(
-                                "routePlan[].inputMint",
-                                &step.swap_info.input_mint,
-                            )?,
-                            output_mint: parse_pubkey(
-                                "routePlan[].outputMint",
-                                &step.swap_info.output_mint,
-                            )?,
-                            in_amount: parse_u64(
-                                "routePlan[].inAmount",
-                                &step.swap_info.in_amount,
-                            )?,
-                            out_amount: parse_u64(
-                                "routePlan[].outAmount",
-                                &step.swap_info.out_amount,
-                            )?,
-                            // v2 no longer reports per-hop fees
-                            fee_amount: None,
-                            fee_mint: None,
-                        },
-                        // `RoutePlanStep::percent` is a u8; v2 splits are fractional, so round the
-                        // bps share (informational field — no consumer sizes a swap off it).
-                        percent: step
-                            .bps
-                            .map(|bps| (bps as f64) / 100.0)
-                            .unwrap_or(step.percent)
-                            .round()
-                            .clamp(0.0, 100.0) as u8,
-                    },
-                )
-            })
-            .collect::<SdkResult<Vec<_>>>()?;
-
-        let quote = QuoteResponse {
-            input_mint: parse_pubkey("inputMint", &self.input_mint)?,
-            in_amount: parse_u64("inAmount", &self.in_amount)?,
-            output_mint: parse_pubkey("outputMint", &self.output_mint)?,
-            out_amount: parse_u64("outAmount", &self.out_amount)?,
-            other_amount_threshold: parse_u64(
-                "otherAmountThreshold",
-                &self.other_amount_threshold,
-            )?,
-            swap_mode: self.swap_mode,
-            slippage_bps: self.slippage_bps,
-            // v1-only auto-slippage reporting; v2 has no equivalent
-            computed_auto_slippage: None,
-            uses_quote_minimizing_slippage: None,
-            platform_fee: None,
-            price_impact_pct: self.price_impact_pct,
-            route_plan,
-            // not reported by v2
-            context_slot: 0,
-            time_taken: 0.0,
-        };
-
-        // `tipInstruction` is a System-program transfer to a Jito tip account. It must never be
-        // spliced into the swap bracket (the program rejects the tx with `InvalidSwap`), so fold it
-        // into `other_instructions` where `build_jupiter_swap_ixs` already refuses to proceed.
-        let other_instructions = self
-            .other_instructions
-            .into_iter()
-            .chain(self.tip_instruction)
-            .map(BuildInstruction::try_into_instruction)
-            .collect::<SdkResult<Vec<_>>>()?;
-
-        let address_lookup_table_addresses = self
-            .addresses_by_lookup_table_address
-            .unwrap_or_default()
-            .keys()
-            .map(|key| parse_pubkey("addressesByLookupTableAddress", key))
-            .collect::<SdkResult<Vec<_>>>()?;
-
-        let ixs = SwapInstructionsResponse {
-            // v2 has no token-ledger flow
-            token_ledger_instruction: None,
-            compute_budget_instructions: self
-                .compute_budget_instructions
-                .into_iter()
-                .map(BuildInstruction::try_into_instruction)
-                .collect::<SdkResult<Vec<_>>>()?,
-            setup_instructions: self
-                .setup_instructions
-                .into_iter()
-                .map(BuildInstruction::try_into_instruction)
-                .collect::<SdkResult<Vec<_>>>()?,
-            swap_instruction: self.swap_instruction.try_into_instruction()?,
-            cleanup_instruction: self
-                .cleanup_instruction
-                .map(BuildInstruction::try_into_instruction)
-                .transpose()?,
-            other_instructions,
-            address_lookup_table_addresses,
-            // v2 leaves fee/CU budgeting to the caller and reports no simulation
-            prioritization_fee_lamports: 0,
-            compute_unit_limit: 0,
-            prioritization_type: None,
-            dynamic_slippage_report: None,
-            simulation_error: None,
-        };
-
-        Ok((quote, ixs))
+    match StringOrNumber::deserialize(deserializer)? {
+        StringOrNumber::String(value) => value.parse().map_err(serde::de::Error::custom),
+        StringOrNumber::Number(value) => Ok(value),
     }
 }
 
@@ -538,347 +467,174 @@ impl BuildResponse {
 mod tests {
     use super::*;
 
-    const JUP_V6: &str = "JUP6LkbZbjS1jKKwapdHNy74zcZ3tLUZoi5QNyVTaV4";
-    const SYSTEM_PROGRAM: &str = "11111111111111111111111111111111";
-    const COMPUTE_BUDGET: &str = "ComputeBudget111111111111111111111111111111";
-
-    /// Trimmed `GET https://api.jup.ag/swap/v2/build` response (USDC -> USDT, ExactIn, 50bps),
-    /// account lists shortened.
-    const USDC_USDT_BUILD: &str = r#"{
-      "inputMint": "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
-      "outputMint": "Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB",
-      "inAmount": "100000000",
-      "outAmount": "100106158",
-      "otherAmountThreshold": "99605628",
-      "swapMode": "ExactIn",
-      "slippageBps": 50,
-      "priceImpactPct": "0",
-      "routePlan": [
-        {
-          "percent": 100,
-          "bps": 10000,
-          "swapInfo": {
-            "ammKey": "GMCJvYGf5Ex2ARiMquaBDqU6iKM8uiEQkB8jCnoNfHpC",
-            "label": "GoonFi V2",
-            "inputMint": "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
-            "outputMint": "So11111111111111111111111111111111111111112",
-            "inAmount": "100000000",
-            "outAmount": "1380753603"
-          }
-        },
-        {
-          "percent": 29.23,
-          "bps": 2923,
-          "swapInfo": {
-            "ammKey": "FJnaiidSLXFweWkgbinxEHRykVHsnkzDcYbNDR3RF5LN",
-            "label": "BisonFi",
-            "inputMint": "So11111111111111111111111111111111111111112",
-            "outputMint": "Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB",
-            "inAmount": "1380753603",
-            "outAmount": "100106158"
-          }
-        }
-      ],
-      "computeBudgetInstructions": [
-        {
-          "programId": "ComputeBudget111111111111111111111111111111",
-          "accounts": [],
-          "data": "A6oNCgAAAAAA"
-        }
-      ],
-      "setupInstructions": [
-        {
-          "programId": "ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL",
-          "accounts": [
+    /// A `/swap/v2/build` body, trimmed to the fields the SDK reads
+    const BUILD_RESPONSE: &str = r#"{
+        "inputMint": "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
+        "outputMint": "So11111111111111111111111111111111111111112",
+        "inAmount": "10000000",
+        "outAmount": "72510138",
+        "otherAmountThreshold": "72437627",
+        "swapMode": "ExactIn",
+        "slippageBps": 10,
+        "priceImpactPct": "0.0001",
+        "routePlan": [{ "percent": 100, "bps": 10000 }],
+        "computeBudgetInstructions": [
             {
-              "pubkey": "7KVJjSVfmiHNbEHRSCUxUgxCsjuHfsFTxvKUdFtnPXfy",
-              "isSigner": true,
-              "isWritable": true
+                "programId": "ComputeBudget111111111111111111111111111111",
+                "accounts": [],
+                "data": "AwAAAAAAAAA="
             }
-          ],
-          "data": "AQ=="
+        ],
+        "setupInstructions": [
+            {
+                "programId": "ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL",
+                "accounts": [
+                    {
+                        "pubkey": "9JtczxrJjPM4J1xooxr2rFXmRivarb4BwjNiBgXDwe2p",
+                        "isSigner": true,
+                        "isWritable": true
+                    }
+                ],
+                "data": "AQ=="
+            }
+        ],
+        "swapInstruction": {
+            "programId": "JUP6LkbZbjS1jKKwapdHNy74zcZ3tLUZoi5QNyVTaV4",
+            "accounts": [
+                {
+                    "pubkey": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+                    "isSigner": false,
+                    "isWritable": false
+                },
+                {
+                    "pubkey": "9JtczxrJjPM4J1xooxr2rFXmRivarb4BwjNiBgXDwe2p",
+                    "isSigner": true,
+                    "isWritable": true
+                }
+            ],
+            "data": "wSCbM0HWnIE="
+        },
+        "cleanupInstruction": {
+            "programId": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+            "accounts": [],
+            "data": "CQ=="
+        },
+        "otherInstructions": [],
+        "tipInstruction": null,
+        "addressesByLookupTableAddress": {
+            "So11111111111111111111111111111111111111112": [
+                "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+            ],
+            "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v": [
+                "JUP6LkbZbjS1jKKwapdHNy74zcZ3tLUZoi5QNyVTaV4",
+                "ComputeBudget111111111111111111111111111111"
+            ]
         }
-      ],
-      "swapInstruction": {
-        "programId": "JUP6LkbZbjS1jKKwapdHNy74zcZ3tLUZoi5QNyVTaV4",
-        "accounts": [
-          {
-            "pubkey": "7KVJjSVfmiHNbEHRSCUxUgxCsjuHfsFTxvKUdFtnPXfy",
-            "isSigner": true,
-            "isWritable": false
-          },
-          {
-            "pubkey": "GMCJvYGf5Ex2ARiMquaBDqU6iKM8uiEQkB8jCnoNfHpC",
-            "isSigner": false,
-            "isWritable": true
-          }
-        ],
-        "data": "u2T6zDHErxQ="
-      },
-      "cleanupInstruction": null,
-      "otherInstructions": [],
-      "tipInstruction": null,
-      "addressesByLookupTableAddress": {
-        "DttEs7CNMNwtH4gc5cfusPJn3xHvavEt8eAfDtDGTEFc": [
-          "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v"
-        ],
-        "DBmHWCVEGCzZ3zDNr9WzRaMmSqCjcixMh78imXfno9qJ": [
-          "Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB"
-        ]
-      },
-      "blockhashWithMetadata": {
-        "blockhash": [1, 2, 3],
-        "lastValidBlockHeight": 123
-      }
     }"#;
 
-    fn parse(body: &str) -> (QuoteResponse, SwapInstructionsResponse) {
-        serde_json::from_str::<BuildResponse>(body)
-            .expect("deserialize build response")
-            .try_into_sdk_types()
-            .expect("map build response")
-    }
-
     #[test]
-    fn maps_build_response_quote() {
-        let (quote, _) = parse(USDC_USDT_BUILD);
+    fn deserializes_a_v2_build() {
+        let build: BuildResponse = serde_json::from_str(BUILD_RESPONSE).expect("parses");
+        let info: JupiterSwapInfo = build.try_into().expect("converts");
 
+        // string-encoded amounts
+        assert_eq!(info.quote.in_amount, 10_000_000);
+        assert_eq!(info.quote.out_amount, 72_510_138);
+        assert_eq!(info.quote.other_amount_threshold, 72_437_627);
+        assert_eq!(info.quote.slippage_bps, 10);
         assert_eq!(
-            quote.input_mint.to_string(),
+            info.quote.input_mint,
             "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v"
+                .parse()
+                .unwrap()
         );
-        assert_eq!(
-            quote.output_mint.to_string(),
-            "Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB"
-        );
-        assert_eq!(quote.in_amount, 100_000_000);
-        assert_eq!(quote.out_amount, 100_106_158);
-        assert_eq!(quote.other_amount_threshold, 99_605_628);
-        assert_eq!(quote.swap_mode, SwapMode::ExactIn);
-        assert_eq!(quote.slippage_bps, 50);
-        assert_eq!(quote.price_impact_pct, Decimal::ZERO);
-        assert_eq!(quote.context_slot, 0);
-        assert_eq!(quote.time_taken, 0.0);
-        assert!(quote.platform_fee.is_none());
 
-        assert_eq!(quote.route_plan.len(), 2);
-        assert_eq!(quote.route_plan[0].percent, 100);
-        assert_eq!(quote.route_plan[0].swap_info.label, "GoonFi V2");
-        assert_eq!(quote.route_plan[0].swap_info.in_amount, 100_000_000);
-        // fractional v2 split rounds onto the u8 `percent`
-        assert_eq!(quote.route_plan[1].percent, 29);
-        // v2 no longer reports per-hop fees
-        assert!(quote.route_plan[0].swap_info.fee_amount.is_none());
-        assert!(quote.route_plan[0].swap_info.fee_mint.is_none());
+        let swap_ix = &info.ixs.swap_instruction;
+        assert_eq!(
+            swap_ix.program_id,
+            "JUP6LkbZbjS1jKKwapdHNy74zcZ3tLUZoi5QNyVTaV4"
+                .parse()
+                .unwrap()
+        );
+        assert_eq!(swap_ix.data, STANDARD.decode("wSCbM0HWnIE=").unwrap());
+        assert_eq!(swap_ix.accounts.len(), 2);
+        assert!(!swap_ix.accounts[0].is_signer);
+        assert!(swap_ix.accounts[1].is_signer && swap_ix.accounts[1].is_writable);
+
+        assert_eq!(info.ixs.compute_budget_instructions.len(), 1);
+        assert_eq!(info.ixs.setup_instructions.len(), 1);
+        assert!(info.ixs.cleanup_instruction.is_some());
+        assert!(info.ixs.other_instructions.is_empty());
+        assert!(info.ixs.tip_instruction.is_none());
+
+        // LUT addresses come inline — no account fetch, and a stable order
+        assert_eq!(info.luts.len(), 2);
+        assert_eq!(
+            info.luts[0].key,
+            "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v"
+                .parse()
+                .unwrap()
+        );
+        assert_eq!(info.luts[0].addresses.len(), 2);
+        assert_eq!(info.luts[1].addresses.len(), 1);
     }
 
+    /// A route needing no lookup tables reports the field as null, which must not
+    /// read as a malformed build.
     #[test]
-    fn maps_build_response_instructions() {
-        let (_, ixs) = parse(USDC_USDT_BUILD);
-
-        assert!(ixs.token_ledger_instruction.is_none());
-        assert_eq!(ixs.compute_budget_instructions.len(), 1);
-        assert_eq!(
-            ixs.compute_budget_instructions[0].program_id.to_string(),
-            COMPUTE_BUDGET
-        );
-        assert_eq!(ixs.setup_instructions.len(), 1);
-        assert_eq!(ixs.swap_instruction.program_id.to_string(), JUP_V6);
-        assert_eq!(ixs.swap_instruction.accounts.len(), 2);
-        assert!(ixs.swap_instruction.accounts[0].is_signer);
-        assert!(!ixs.swap_instruction.accounts[0].is_writable);
-        assert!(ixs.swap_instruction.accounts[1].is_writable);
-        // base64 `u2T6zDHErxQ=` is the v6 `route` discriminator
-        assert_eq!(
-            ixs.swap_instruction.data,
-            vec![0xbb, 0x64, 0xfa, 0xcc, 0x31, 0xc4, 0xaf, 0x14]
-        );
-        assert!(ixs.cleanup_instruction.is_none());
-        assert!(ixs.other_instructions.is_empty());
-    }
-
-    /// Asserted unsorted: the ALT order reaches `v0::Message::try_compile`, so it has to be a
-    /// stable function of the response rather than of a per-process hash seed. The fixture lists
-    /// `Dtt…` before `DBm…`; the parsed order is the sorted one either way.
-    #[test]
-    fn parses_lookup_table_keys_in_deterministic_order() {
-        let (_, ixs) = parse(USDC_USDT_BUILD);
-
-        let keys: Vec<String> = ixs
-            .address_lookup_table_addresses
-            .iter()
-            .map(ToString::to_string)
-            .collect();
-        assert_eq!(
-            keys,
-            vec![
-                "DBmHWCVEGCzZ3zDNr9WzRaMmSqCjcixMh78imXfno9qJ".to_string(),
-                "DttEs7CNMNwtH4gc5cfusPJn3xHvavEt8eAfDtDGTEFc".to_string(),
+    fn accepts_a_build_with_no_lookup_tables() {
+        let body = BUILD_RESPONSE.replace(
+            r#""addressesByLookupTableAddress": {
+            "So11111111111111111111111111111111111111112": [
+                "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+            ],
+            "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v": [
+                "JUP6LkbZbjS1jKKwapdHNy74zcZ3tLUZoi5QNyVTaV4",
+                "ComputeBudget111111111111111111111111111111"
             ]
+        }"#,
+            r#""addressesByLookupTableAddress": null"#,
         );
+        assert!(
+            !body.contains(r#""addressesByLookupTableAddress": {"#),
+            "fixture replacement applied"
+        );
+
+        let build: BuildResponse = serde_json::from_str(&body).expect("parses");
+        let info: JupiterSwapInfo = build.try_into().expect("converts");
+        assert!(info.luts.is_empty());
     }
 
-    /// v2 documents `addressesByLookupTableAddress` as `Record<string, string[]> | null`, so an
-    /// explicit `null` (and an omitted field) must map to no lookup tables rather than fail the
-    /// whole request.
     #[test]
-    fn tolerates_absent_lookup_table_map() {
-        for value in [Some(serde_json::Value::Null), None] {
-            let mut body: serde_json::Value =
-                serde_json::from_str(USDC_USDT_BUILD).expect("fixture is json");
-            let map = body.as_object_mut().expect("object");
-            match value {
-                Some(null) => map.insert("addressesByLookupTableAddress".into(), null),
-                None => map.remove("addressesByLookupTableAddress"),
-            }
-            .expect("fixture carries the field");
-
-            let (_, ixs) = parse(&body.to_string());
-            assert!(ixs.address_lookup_table_addresses.is_empty());
-        }
+    fn a_successful_body_describes_no_error() {
+        let body: ErrorBody = serde_json::from_str(BUILD_RESPONSE).expect("parses");
+        assert_eq!(body.describe(), None);
     }
 
-    /// A non-null `tipInstruction` must land in `other_instructions` so
-    /// `TransactionBuilder::build_jupiter_swap_ixs` refuses the route instead of splicing a
-    /// System transfer between `swap_begin`/`swap_end` (which the program rejects).
     #[test]
-    fn tip_instruction_folds_into_other_instructions() {
-        let body = USDC_USDT_BUILD.replace(
-            r#""tipInstruction": null"#,
-            r#""tipInstruction": {
-              "programId": "11111111111111111111111111111111",
-              "accounts": [
-                {"pubkey": "7KVJjSVfmiHNbEHRSCUxUgxCsjuHfsFTxvKUdFtnPXfy", "isSigner": true, "isWritable": true},
-                {"pubkey": "96gYZGLnJYVFmbjzopPSU6QiEV5fGqZNyN9nmNhvrZU5", "isSigner": false, "isWritable": true}
-              ],
-              "data": "AgAAAECJAAAAAAAA"
-            }"#,
-        );
-        assert_ne!(body, USDC_USDT_BUILD, "fixture substitution applied");
-
-        let (_, ixs) = parse(&body);
-        assert_eq!(ixs.other_instructions.len(), 1);
+    fn describes_a_validation_error() {
+        let body: ErrorBody = serde_json::from_str(
+            r#"{"error":{"name":"ZodError","issues":[{"path":["taker"],"message":"Required"}]}}"#,
+        )
+        .expect("parses");
         assert_eq!(
-            ixs.other_instructions[0].program_id.to_string(),
-            SYSTEM_PROGRAM
-        );
-    }
-
-    /// `otherInstructions` entries are preserved and the tip is appended after them.
-    #[test]
-    fn other_instructions_precede_the_tip() {
-        let body = USDC_USDT_BUILD
-            .replace(
-                r#""otherInstructions": []"#,
-                r#""otherInstructions": [
-                  {"programId": "ComputeBudget111111111111111111111111111111", "accounts": [], "data": "AQ=="}
-                ]"#,
-            )
-            .replace(
-                r#""tipInstruction": null"#,
-                r#""tipInstruction": {"programId": "11111111111111111111111111111111", "accounts": [], "data": "AQ=="}"#,
-            );
-
-        let (_, ixs) = parse(&body);
-        let program_ids: Vec<String> = ixs
-            .other_instructions
-            .iter()
-            .map(|ix| ix.program_id.to_string())
-            .collect();
-        assert_eq!(program_ids, vec![COMPUTE_BUDGET, SYSTEM_PROGRAM]);
-    }
-
-    /// v2 sends `priceImpactPct` as a full-scale decimal *string*.
-    #[test]
-    fn parses_fractional_price_impact() {
-        let body = USDC_USDT_BUILD.replace(
-            r#""priceImpactPct": "0""#,
-            r#""priceImpactPct": "0.0084866618200544905813785251""#,
-        );
-        let (quote, _) = parse(&body);
-        assert_eq!(
-            quote.price_impact_pct,
-            Decimal::from_str("0.0084866618200544905813785251").unwrap()
-        );
-    }
-
-    /// v2 only ever answers `ExactIn`, so the mapping keeps what the response says
-    /// rather than echoing the request.
-    #[test]
-    fn maps_swap_mode_from_the_response() {
-        let (quote, _) = parse(USDC_USDT_BUILD);
-        assert_eq!(quote.swap_mode, SwapMode::ExactIn);
-    }
-
-    #[test]
-    fn accepts_exact_in() {
-        assert!(ensure_exact_in(SwapMode::ExactIn).is_ok());
-    }
-
-    /// Sending it would return a 200 that spends the amount as the input instead
-    /// of receiving it as the output, silently inverting the caller's trade.
-    #[test]
-    fn rejects_exact_out() {
-        let err = ensure_exact_in(SwapMode::ExactOut).expect_err("ExactOut must be rejected");
-        let message = err.to_string();
-        assert!(message.contains("ExactOut is not supported"), "{message}");
-        assert!(message.contains("ExactIn-only"), "{message}");
-    }
-
-    #[test]
-    fn maps_cleanup_instruction_when_present() {
-        let body = USDC_USDT_BUILD.replace(
-            r#""cleanupInstruction": null"#,
-            r#""cleanupInstruction": {
-              "programId": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
-              "accounts": [],
-              "data": "CQ=="
-            }"#,
-        );
-        let (_, ixs) = parse(&body);
-        assert_eq!(
-            ixs.cleanup_instruction.expect("cleanup ix").data,
-            vec![0x09]
+            body.describe().as_deref(),
+            Some("ZodError: taker: Required")
         );
     }
 
     #[test]
-    fn describes_zod_validation_error() {
-        let msg = describe_jupiter_error(
-            r#"{"success":false,"error":{"issues":[{"code":"invalid_type","expected":"string",
-               "received":"undefined","path":["taker"],"message":"Required"}],"name":"ZodError"}}"#,
-        );
-        assert!(msg.contains("taker"), "{msg}");
-        assert!(msg.contains("Required"), "{msg}");
-        assert!(!msg.contains("[object Object]"), "{msg}");
-        assert!(!msg.contains("issues"), "{msg}");
+    fn describes_a_rate_limit_error() {
+        let body: ErrorBody =
+            serde_json::from_str(r#"{"code":429,"message":"Too many requests"}"#).expect("parses");
+        assert_eq!(body.describe().as_deref(), Some("Too many requests"));
     }
 
     #[test]
-    fn describes_rate_limit_error() {
-        let msg =
-            describe_jupiter_error(r#"{"code":429,"message":"You have exceeded the rate limit"}"#);
-        assert!(msg.contains("exceeded the rate limit"), "{msg}");
-        assert!(msg.contains("429"), "{msg}");
-    }
-
-    #[test]
-    fn describes_v1_style_routing_error() {
-        let msg = describe_jupiter_error(
-            r#"{"error":"Could not find any route","errorCode":"COULD_NOT_FIND_ANY_ROUTE"}"#,
-        );
-        assert_eq!(msg, "Could not find any route (COULD_NOT_FIND_ANY_ROUTE)");
-    }
-
-    #[test]
-    fn describes_unparseable_error_body() {
-        assert_eq!(
-            describe_jupiter_error("<html>502</html>"),
-            "<html>502</html>"
-        );
-        let long = "x".repeat(1000);
-        let msg = describe_jupiter_error(&long);
-        assert!(msg.ends_with('…'));
-        assert_eq!(msg.chars().count(), 513);
+    fn describes_a_v1_shaped_error() {
+        let body: ErrorBody =
+            serde_json::from_str(r#"{"error":"Could not find any route","errorCode":"NO_ROUTE"}"#)
+                .expect("parses");
+        assert_eq!(body.describe().as_deref(), Some("Could not find any route"));
     }
 }

@@ -2935,6 +2935,11 @@ impl<'a> TransactionBuilder<'a> {
     /// This function handles common Jupiter-specific logic and returns a struct containing
     /// all the instructions that need to be inserted between begin and end wrapper instructions.
     ///
+    /// Only the route's own instructions are selected. A Jito tip (`other_instructions` /
+    /// `tip_instruction`) is dropped rather than filtered: the swap bracket rejects any
+    /// instruction it does not recognize with `InvalidSwap`, and the SDK never opts into
+    /// Jupiter's transaction landing, so neither list should be populated to begin with.
+    ///
     /// # Arguments
     /// * `jupiter_swap_info` - Jupiter swap route and instructions
     /// * `in_market` - Spot market of the input token
@@ -2972,11 +2977,6 @@ impl<'a> TransactionBuilder<'a> {
         } else {
             Vec::new()
         };
-
-        // TODO: support jito bundle
-        if !jupiter_swap_ixs.other_instructions.is_empty() {
-            panic!("jupiter swap unsupported ix: Jito tip");
-        }
 
         // support SOL unwrap ixs, ignore account delete/reclaim ixs
         let cleanup_instruction = jupiter_swap_ixs.cleanup_instruction.filter(|ix| {

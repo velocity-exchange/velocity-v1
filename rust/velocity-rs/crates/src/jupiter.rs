@@ -22,7 +22,7 @@ pub use jupiter_swap_api_client::{
 };
 use rust_decimal::Decimal;
 use serde::Deserialize;
-use std::{collections::HashMap, str::FromStr};
+use std::{collections::BTreeMap, str::FromStr};
 
 /// Default Jupiter API url — the v2 Router base. `/build` is appended by the query below.
 /// See: https://dev.jup.ag/docs/swap-api
@@ -338,8 +338,13 @@ struct BuildResponse {
     tip_instruction: Option<BuildInstruction>,
     /// v2 documents this as `Record<string, string[]> | null`, so it must tolerate an explicit
     /// `null` as well as a missing field.
+    ///
+    /// A `BTreeMap` rather than a `HashMap`: the key order becomes the ALT order handed to
+    /// `v0::Message::try_compile`, which walks the tables in order and drops any that resolve no
+    /// accounts. Under a randomized hash order, overlapping tables would claim shared accounts
+    /// differently run to run, varying the compiled transaction's size.
     #[serde(default)]
-    addresses_by_lookup_table_address: Option<HashMap<String, Vec<String>>>,
+    addresses_by_lookup_table_address: Option<BTreeMap<String, Vec<String>>>,
 }
 
 #[derive(Deserialize, Debug, Clone)]
@@ -692,16 +697,18 @@ mod tests {
         assert!(ixs.other_instructions.is_empty());
     }
 
+    /// Asserted unsorted: the ALT order reaches `v0::Message::try_compile`, so it has to be a
+    /// stable function of the response rather than of a per-process hash seed. The fixture lists
+    /// `Dtt…` before `DBm…`; the parsed order is the sorted one either way.
     #[test]
-    fn parses_lookup_table_keys() {
+    fn parses_lookup_table_keys_in_deterministic_order() {
         let (_, ixs) = parse(USDC_USDT_BUILD);
 
-        let mut keys: Vec<String> = ixs
+        let keys: Vec<String> = ixs
             .address_lookup_table_addresses
             .iter()
             .map(ToString::to_string)
             .collect();
-        keys.sort();
         assert_eq!(
             keys,
             vec![

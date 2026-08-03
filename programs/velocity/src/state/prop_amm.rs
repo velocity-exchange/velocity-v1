@@ -365,7 +365,13 @@ impl AnchorSerialize for QuoterUserSetRef<'_> {
 /// path's frame at runtime while every host-side test passed. These args are
 /// only ever serialized (each quoter decodes its own mirror), so a reference
 /// costs nothing on the wire.
-#[derive(Clone, Copy, AnchorSerialize, PartialEq, Eq, Debug)]
+///
+/// `AnchorSerialize` is written by hand rather than derived: the derive also
+/// emits an `IdlBuild` impl under the `idl-build` feature, and anchor's IDL
+/// generator rejects a type with a lifetime ("Unsupported generic
+/// argument"). These args are outbound CPI data that no client decodes from
+/// our IDL, so they belong nowhere in it.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct QuoteArgsV0<'a> {
     pub direction: Direction,
     /// Base size the taker wants filled.
@@ -400,8 +406,8 @@ pub struct ResponsePointerV0 {
     pub len: u32,
 }
 
-/// Borrowed for the same reason as [`QuoteArgsV0`].
-#[derive(Clone, Copy, AnchorSerialize, PartialEq, Eq, Debug)]
+/// Borrowed, and hand-serialized, for the same reasons as [`QuoteArgsV0`].
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct ExecuteArgsV0<'a> {
     pub direction: Direction,
     /// Base size to fill. The quoter may partially fill; the actual fill is
@@ -412,6 +418,24 @@ pub struct ExecuteArgsV0<'a> {
     pub users: QuoterUserSetRef<'a>,
     /// Same contract as [`QuoteArgsV0::taker`].
     pub taker: Option<ClobUserRefV0>,
+}
+
+impl AnchorSerialize for QuoteArgsV0<'_> {
+    fn serialize<W: std::io::Write>(&self, writer: &mut W) -> std::io::Result<()> {
+        self.direction.serialize(writer)?;
+        self.size.serialize(writer)?;
+        self.users.serialize(writer)?;
+        self.taker.serialize(writer)
+    }
+}
+
+impl AnchorSerialize for ExecuteArgsV0<'_> {
+    fn serialize<W: std::io::Write>(&self, writer: &mut W) -> std::io::Result<()> {
+        self.direction.serialize(writer)?;
+        self.size.serialize(writer)?;
+        self.users.serialize(writer)?;
+        self.taker.serialize(writer)
+    }
 }
 
 #[derive(Clone, AnchorSerialize, AnchorDeserialize, PartialEq, Eq, Debug)]

@@ -6,7 +6,7 @@ use {
         Vault,
     },
     anchor_lang::prelude::*,
-    anchor_spl::token_interface::TokenAccount,
+    anchor_spl::token_interface::{TokenAccount, TokenInterface},
     velocity::{
         cpi::accounts::CancelRequestRemoveInsuranceFundStake as VelocityCancelRequestRemoveInsuranceFundStake,
         program::Velocity,
@@ -22,9 +22,10 @@ pub fn cancel_request_remove_insurance_fund_stake<'info>(
     Ok(())
 }
 
-// Own accounts struct (mirrors velocity's split of cancel off request-remove): cancel does not
-// settle revenue, so it keeps the minimal account set and does not carry the request-remove
-// path's `velocity_state` / `velocity_spot_market_vault` / `velocity_signer` / `token_program`.
+// Own accounts struct (mirrors velocity's split of cancel off request-remove). Cancel now DOES
+// settle already-due revenue before pricing the forfeiture (OtterSec #141), so it carries the same
+// `velocity_state` / `velocity_spot_market_vault` / `velocity_signer` / `token_program` set as the
+// request-remove path.
 #[derive(Accounts)]
 #[instruction(market_index: u16)]
 pub struct CancelRequestRemoveInsuranceFundStake<'info> {
@@ -62,7 +63,19 @@ pub struct CancelRequestRemoveInsuranceFundStake<'info> {
     )]
     /// CHECK: checked in velocity cpi
     pub velocity_user_stats: AccountInfo<'info>,
+    #[account(
+        mut,
+        seeds = [b"spot_market_vault".as_ref(), market_index.to_le_bytes().as_ref()],
+        bump,
+        seeds::program = velocity_program.key(),
+    )]
+    pub velocity_spot_market_vault: Box<InterfaceAccount<'info, TokenAccount>>,
+    /// CHECK: checked in velocity cpi
+    pub velocity_state: AccountInfo<'info>,
+    /// CHECK: forced velocity_signer
+    pub velocity_signer: AccountInfo<'info>,
     pub velocity_program: Program<'info, Velocity>,
+    pub token_program: Interface<'info, TokenInterface>,
 }
 
 impl<'info> CancelRequestRemoveInsuranceFundStakeCPI
@@ -72,11 +85,19 @@ impl<'info> CancelRequestRemoveInsuranceFundStakeCPI
         declare_vault_seeds!(self.accounts.vault, seeds);
 
         let cpi_accounts = VelocityCancelRequestRemoveInsuranceFundStake {
+            state: self.accounts.velocity_state.clone(),
             spot_market: self.accounts.velocity_spot_market.to_account_info().clone(),
             insurance_fund_stake: self.accounts.insurance_fund_stake.to_account_info().clone(),
             user_stats: self.accounts.velocity_user_stats.clone(),
             authority: self.accounts.vault.to_account_info().clone(),
+            spot_market_vault: self
+                .accounts
+                .velocity_spot_market_vault
+                .to_account_info()
+                .clone(),
             insurance_fund_vault: self.accounts.insurance_fund_vault.to_account_info().clone(),
+            velocity_signer: self.accounts.velocity_signer.clone(),
+            token_program: self.accounts.token_program.to_account_info().clone(),
         };
 
         let velocity_program = self.accounts.velocity_program.key();

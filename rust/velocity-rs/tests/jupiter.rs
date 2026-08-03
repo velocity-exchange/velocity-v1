@@ -1,6 +1,7 @@
-// Live tests: hit the Jupiter swap API + live RPC. Gated behind `rpc_tests` so
-// the offline PR gate (`cargo test --workspace`) excludes them; the live CI job
-// runs with `--features rpc_tests`.
+// Live tests: hit the Jupiter swap API v2 (`GET /swap/v2/build`) + live RPC. Gated behind
+// `rpc_tests` so the offline PR gate (`cargo test --workspace`) excludes them; the live CI job
+// runs with `--features rpc_tests`. Offline mapping/serde coverage lives in
+// `crates/src/jupiter.rs`'s test module.
 #![cfg(feature = "rpc_tests")]
 
 use solana_transaction::{InstructionError, TransactionError};

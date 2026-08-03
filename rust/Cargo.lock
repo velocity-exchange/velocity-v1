@@ -6885,6 +6885,7 @@ dependencies = [
  "nanoid",
  "regex",
  "reqwest",
+ "rust_decimal",
  "serde",
  "serde_json",
  "solana-account",

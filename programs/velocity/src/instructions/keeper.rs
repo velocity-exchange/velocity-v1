@@ -23,7 +23,6 @@ use {
                 add_builder_order, get_revenue_share_escrow_account, load_maps,
                 validate_and_load_builder, AccountMaps,
             },
-            router::cpi_executor::CpiQuoterExecutor,
         },
         load, load_mut,
         math::{
@@ -40,7 +39,7 @@ use {
                 find_bids_and_asks_from_users,
             },
             position::calculate_base_asset_value_and_pnl_with_oracle_price,
-            router::{QuoterBook, RouterFillInputs},
+            router::RouterFillInputs,
             safe_math::SafeMath,
             spot_withdraw::validate_spot_market_vault_amount,
         },
@@ -62,7 +61,7 @@ use {
                 get_market_set_from_list, get_writable_perp_market_set,
                 get_writable_perp_market_set_from_vec, MarketSet, PerpMarketMap,
             },
-            prop_amm::{Direction, PriceLevel, QuoteArgsV0, QuoterType, QuoterV0},
+            prop_amm::Direction,
             revenue_share::RevenueShareEscrowZeroCopyMut,
             revenue_share_map::load_revenue_share_map,
             settle_pnl_mode::SettlePnlMode,
@@ -100,7 +99,7 @@ use {
             self, load_current_index_checked, load_instruction_at_checked, ID as IX_ID,
         },
     },
-    std::{cell::RefMut, collections::BTreeMap, convert::TryFrom},
+    std::{cell::RefMut, convert::TryFrom},
 };
 
 /// The router fill: one quote → split → execute sweep across the vAMM
@@ -188,23 +187,8 @@ fn fill_order<'c: 'info, 'info>(
     // ---- Quote external quoters from the leftover accounts. ----
     // Everything past the map/user/escrow sections is the quoter section:
     // `QuoterV0` registry entries plus the union of their registered CPI
-    // accounts (quoter programs, response accounts, the velocity signer).
+    // accounts (quoter programs, response accounts, the quoter CPI signer).
     let leftover: Vec<&AccountInfo<'info>> = remaining_accounts_iter.collect();
-    let account_map: BTreeMap<Pubkey, AccountInfo<'info>> = leftover
-        .iter()
-        .map(|info| (*info.key, (*info).clone()))
-        .collect();
-    let quoters: Vec<AccountLoader<QuoterV0>> = leftover
-        .iter()
-        .filter(|info| {
-            info.owner == &crate::ID
-                && info
-                    .try_borrow_data()
-                    .is_ok_and(|data| data.get(..8) == Some(QuoterV0::DISCRIMINATOR))
-        })
-        .map(|info| AccountLoader::try_from(info))
-        .collect::<Result<_>>()?;
-
     let (direction, unfilled, taker_ref) = {
         let user = load!(ctx.accounts.user)?;
         let order = user
@@ -227,116 +211,29 @@ fn fill_order<'c: 'info, 'info>(
             },
         )
     };
-    // The loaded-user set on the quoter wire, in derivable form.
-    let users = crate::state::prop_amm::quoter_wire_users(
-        makers_and_referrer
-            .user_ref_index()?
-            .into_keys()
-            .map(
-                |(authority, sub_account_id)| crate::state::prop_amm::ClobUserRefV0 {
-                    authority,
-                    sub_account_id,
-                },
-            ),
-    )?;
-
-    // Quote each live entry into a book. Deactivated/unapproved entries are
-    // skipped (a route signed before an admin pulled approval must not brick
-    // the fill); market mismatches are a malformed tx and fail loudly.
     let (quoter_signer, quoter_signer_nonce) = crate::signer::find_quoter_signer();
-    let mut kept: Vec<AccountLoader<QuoterV0>> = Vec::with_capacity(quoters.len());
-    let mut types: Vec<QuoterType> = Vec::with_capacity(quoters.len());
-    let mut quoter_users: Vec<Pubkey> = Vec::with_capacity(quoters.len());
-    let mut response_accounts: Vec<Pubkey> = Vec::with_capacity(quoters.len());
-    let mut books_data: Vec<(u8, Vec<PriceLevel>)> = Vec::with_capacity(quoters.len());
-    let mut seen: Vec<Pubkey> = Vec::with_capacity(quoters.len());
-    for loader in quoters {
-        let (priority, quoter_type, quoter_user, response_account, levels) = {
-            let quoter = loader.load()?;
-            validate!(
-                quoter.market == market_index,
-                ErrorCode::DefaultError,
-                "quoter entry {} is for market {}, fill is for market {}",
-                loader.key(),
-                quoter.market,
-                market_index
-            )?;
-            validate!(
-                quoter.quoter_type != QuoterType::Vamm,
-                ErrorCode::DefaultError,
-                "the vAMM quotes in-program, not through the registry"
-            )?;
-            validate!(
-                !seen.contains(&loader.key()),
-                ErrorCode::DefaultError,
-                "duplicate quoter entry {}",
-                loader.key()
-            )?;
-            seen.push(loader.key());
-            if !(quoter.is_active && quoter.is_approved) {
-                continue;
-            }
-            let levels = quoter.quote(
-                market_index,
-                QuoteArgsV0 {
-                    direction,
-                    size: unfilled,
-                    users: crate::state::prop_amm::QuoterUserSetRef(&users),
-                    taker: Some(taker_ref),
-                },
-                &quoter_signer,
-                quoter_signer_nonce,
-                &account_map,
-            )?;
-            (
-                quoter.priority,
-                quoter.quoter_type,
-                quoter.user,
-                quoter.response_account,
-                levels,
-            )
+    let inputs =
+        crate::instructions::QuoteInputs {
+            market_index,
+            direction,
+            size: unfilled,
+            users: &crate::state::prop_amm::quoter_wire_users(
+                makers_and_referrer.user_ref_index()?.into_keys().map(
+                    |(authority, sub_account_id)| crate::state::prop_amm::ClobUserRefV0 {
+                        authority,
+                        sub_account_id,
+                    },
+                ),
+            )?,
+            taker: taker_ref,
+            quoter_signer,
+            quoter_signer_nonce,
         };
-        kept.push(loader);
-        types.push(quoter_type);
-        quoter_users.push(quoter_user);
-        response_accounts.push(response_account);
-        books_data.push((priority, levels));
-    }
+    let section = crate::instructions::QuoterSection::quote(&leftover, &inputs)?;
+    section.require_baseline(perp_market_map.get_ref(&market_index)?.clob_quoter)?;
 
-    // Mandatory baseline (a route can't exclude the public book): when the
-    // market names a canonical CLOB entry, the fill must carry it. A dead
-    // entry satisfies the check — it was passed but skipped at quote time —
-    // so killing the book never bricks fills. The vAMM half of the baseline
-    // is inherent: it's in-program, gated only by oracle validity.
-    let required_clob = perp_market_map.get_ref(&market_index)?.clob_quoter;
-    validate!(
-        required_clob == Pubkey::default() || seen.contains(&required_clob),
-        ErrorCode::DefaultError,
-        "router fill must include the market's CLOB quoter {}",
-        required_clob
-    )?;
-
-    let book_refs: Vec<QuoterBook> = books_data
-        .iter()
-        .map(|(priority, levels)| QuoterBook {
-            priority: *priority,
-            levels,
-        })
-        .collect();
-    let mut executor = CpiQuoterExecutor {
-        quoters: &kept,
-        types,
-        quoter_users,
-        response_accounts,
-        market_index,
-        account_map: &account_map,
-        quoter_signer,
-        quoter_signer_nonce,
-        users,
-        taker: taker_ref,
-        slot: clock.slot,
-        now: clock.unix_timestamp,
-    };
+    let book_refs = section.book_refs();
+    let mut executor = section.executor(&inputs, clock.slot, clock.unix_timestamp);
     let mut router_inputs = RouterFillInputs {
         books: &book_refs,
         executor: &mut executor,

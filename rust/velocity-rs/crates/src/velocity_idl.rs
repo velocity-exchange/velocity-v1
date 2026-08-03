@@ -1817,6 +1817,7 @@ pub mod instructions {
     pub struct UpdatePerpMarketClobQuoter {
         pub keeper_payment_lamports: u64,
         pub expire_fallback_slots: u64,
+        pub min_cross_surplus: u64,
     }
     #[automatically_derived]
     impl anchor_lang::Discriminator for UpdatePerpMarketClobQuoter {
@@ -3326,10 +3327,11 @@ pub mod types {
         pub relay: RelayBlock6x8,
         pub oracle: Pubkey,
         pub keeper_payment_lamports: u64,
+        pub min_cross_surplus: u64,
         pub market_index: u16,
         pub quote_spot_market_index: u16,
         #[serde(skip)]
-        pub padding: Padding<76>,
+        pub padding: Padding<68>,
     }
     #[repr(C)]
     #[derive(
@@ -6480,10 +6482,11 @@ pub mod accounts {
         pub relay: RelayBlock6x8,
         pub oracle: Pubkey,
         pub keeper_payment_lamports: u64,
+        pub min_cross_surplus: u64,
         pub market_index: u16,
         pub quote_spot_market_index: u16,
         #[serde(skip)]
-        pub padding: Padding<76>,
+        pub padding: Padding<68>,
     }
     #[automatically_derived]
     impl anchor_lang::Discriminator for ClobCrankConditionsV0 {

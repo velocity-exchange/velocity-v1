@@ -1458,6 +1458,44 @@ export type Velocity = {
             "user",
             "userStats"
           ]
+        },
+        {
+          "name": "revenueShareEscrow",
+          "docs": [
+            "most users never create one. Deliberately an `UncheckedAccount` **pinned by",
+            "`seeds`** rather than a typed `AccountLoader`: because the address is derived",
+            "and not caller-chosen, absence is *provable* (`data_is_empty()`), so the handler",
+            "can distinguish \"this authority has no escrow\" from \"the caller omitted it to",
+            "skip the check\". A typed loader would instead make deletion impossible for the",
+            "majority of users, who have no escrow account to pass.",
+            "",
+            "Required rather than `Option` so a caller holding fee-bearing builder rows",
+            "cannot simply leave it out (OtterSec #128)."
+          ],
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  82,
+                  69,
+                  86,
+                  95,
+                  69,
+                  83,
+                  67,
+                  82,
+                  79,
+                  87
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "authority"
+              }
+            ]
+          }
         }
       ],
       "args": []

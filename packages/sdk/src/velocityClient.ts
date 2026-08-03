@@ -2757,6 +2757,14 @@ export class VelocityClient {
 
 	/**
 	 * Builds the `deleteUser` instruction. See `deleteUser` for on-chain preconditions.
+	 *
+	 * The authority's `RevenueShareEscrow` PDA is derived and passed automatically, so
+	 * callers need no change. It is a **required** account even when the authority has
+	 * never created an escrow: the address is pinned by seeds on chain, so an
+	 * uninitialized account proves absence rather than an omitted check. The program
+	 * uses it to settle this sub-account's builder rows before the id is retired
+	 * forever, which is what stops the builder's accrued fee being stranded
+	 * (OtterSec #128).
 	 * @param userAccountPublicKey - User account PDA to delete.
 	 * @returns The instruction.
 	 */
@@ -2767,6 +2775,10 @@ export class VelocityClient {
 				userStats: this.getUserStatsAccountPublicKey(),
 				authority: this.wallet.publicKey,
 				state: await this.getStatePublicKey(),
+				revenueShareEscrow: getRevenueShareEscrowAccountPublicKey(
+					this.program.programId,
+					this.wallet.publicKey
+				),
 			},
 		});
 

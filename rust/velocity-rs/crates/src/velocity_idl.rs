@@ -8225,6 +8225,7 @@ pub mod accounts {
         pub user_stats: Pubkey,
         pub state: Pubkey,
         pub authority: Pubkey,
+        pub revenue_share_escrow: Pubkey,
     }
     #[automatically_derived]
     impl anchor_lang::Discriminator for DeleteUser {
@@ -8260,6 +8261,11 @@ pub mod accounts {
                 AccountMeta {
                     pubkey: self.authority,
                     is_signer: true,
+                    is_writable: true,
+                },
+                AccountMeta {
+                    pubkey: self.revenue_share_escrow,
+                    is_signer: false,
                     is_writable: true,
                 },
             ]

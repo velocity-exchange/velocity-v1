@@ -26402,12 +26402,38 @@ export type Velocity = {
             "type": {
               "option": "u64"
             }
+          },
+          {
+            "name": "network",
+            "docs": [
+              "See [`SignedMsgOrderParamsMessage::network`]."
+            ],
+            "type": {
+              "option": "u8"
+            }
+          },
+          {
+            "name": "route",
+            "docs": [
+              "See [`SignedMsgOrderParamsMessage::route`]."
+            ],
+            "type": {
+              "option": {
+                "vec": "pubkey"
+              }
+            }
           }
         ]
       }
     },
     {
       "name": "signedMsgOrderParamsMessage",
+      "docs": [
+        "Trailing fields are appended, never inserted: the verifier zero-pads a",
+        "short payload before decoding, so an older producer's message reads as",
+        "`None` for everything it did not send (see",
+        "`validation::sig_verification`)."
+      ],
       "type": {
         "kind": "struct",
         "fields": [
@@ -26478,6 +26504,31 @@ export type Velocity = {
             "name": "isolatedPositionDeposit",
             "type": {
               "option": "u64"
+            }
+          },
+          {
+            "name": "network",
+            "docs": [
+              "[`SIGNED_MSG_NETWORK_MAINNET`] / [`SIGNED_MSG_NETWORK_DEVNET`]."
+            ],
+            "type": {
+              "option": "u8"
+            }
+          },
+          {
+            "name": "route",
+            "docs": [
+              "The route the taker signed for: `QuoterV0` entries of the **custom**",
+              "quoters (PropAMMs) it wants used. The CLOB and the vAMM are the",
+              "mandatory baseline of every router fill, so they are implicit and",
+              "never named here. Advisory to the program today — swift forwards it",
+              "to keepers, which is what makes a routed order reach the quoters the",
+              "taker chose."
+            ],
+            "type": {
+              "option": {
+                "vec": "pubkey"
+              }
             }
           }
         ]

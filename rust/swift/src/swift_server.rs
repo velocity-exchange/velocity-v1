@@ -328,6 +328,12 @@ pub async fn process_order(
         None
     };
 
+    // Carried through to the log and the keeper feed: the network tag the
+    // program validates, and the route the taker signed for (its custom
+    // quoters — the CLOB and vAMM baseline is implicit).
+    let network = signed_msg.network();
+    let route = signed_msg.route().map(<[_]>::to_vec);
+
     let current_slot = server_params.slot_subscriber.current_slot();
     let (
         SignedMessageInfo {
@@ -342,7 +348,7 @@ pub async fn process_order(
 
     log::info!(
         target: "server",
-        "{} signer={} taker_subaccount={} slot={} side={:?} base={} price={} order_type={:?} reduce_only={} post_only={:?} iso={:?} delegate_signer={:?}",
+        "{} signer={} taker_subaccount={} slot={} side={:?} base={} price={} order_type={:?} reduce_only={} post_only={:?} iso={:?} delegate_signer={:?} network={:?} route={:?}",
         context.log_prefix,
         signing_pubkey,
         taker_pubkey,
@@ -355,6 +361,8 @@ pub async fn process_order(
         order_params.post_only,
         isolated_position_deposit,
         delegate_signer,
+        network.map(|tag| tag as char),
+        route,
     );
 
     // check the order is valid for execution by program
@@ -2196,6 +2204,8 @@ mod tests {
             builder_fee_tenth_bps: None,
             builder_idx: None,
             isolated_position_deposit: None,
+            network: None,
+            route: None,
         });
         let msg = IncomingSignedMessage {
             taker_pubkey: taker,
@@ -2234,6 +2244,8 @@ mod tests {
             builder_fee_tenth_bps: None,
             builder_idx: None,
             isolated_position_deposit: None,
+            network: None,
+            route: None,
         });
         let msg = IncomingSignedMessage {
             taker_pubkey: taker,
@@ -2270,6 +2282,8 @@ mod tests {
             builder_fee_tenth_bps: None,
             builder_idx: None,
             isolated_position_deposit: None,
+            network: None,
+            route: None,
         });
 
         let result = extract_signed_message_info(&delegated_msg, &taker_authority, current_slot);
@@ -2302,6 +2316,8 @@ mod tests {
             builder_fee_tenth_bps: None,
             builder_idx: None,
             isolated_position_deposit: None,
+            network: None,
+            route: None,
         });
 
         let result = extract_signed_message_info(&delegated_msg, &taker_authority, current_slot);
@@ -2338,6 +2354,8 @@ mod tests {
             builder_fee_tenth_bps: None,
             builder_idx: None,
             isolated_position_deposit: None,
+            network: None,
+            route: None,
         });
 
         let result = extract_signed_message_info(&authority_msg, &taker_authority, current_slot);
@@ -2372,6 +2390,8 @@ mod tests {
             builder_fee_tenth_bps: None,
             builder_idx: None,
             isolated_position_deposit: None,
+            network: None,
+            route: None,
         });
 
         let result = extract_signed_message_info(&authority_msg, &taker_authority, current_slot);
@@ -2407,6 +2427,8 @@ mod tests {
             builder_fee_tenth_bps: None,
             builder_idx: None,
             isolated_position_deposit: None,
+            network: None,
+            route: None,
         });
 
         let result = extract_signed_message_info(&delegated_msg, &taker_authority, current_slot);
@@ -2445,6 +2467,8 @@ mod tests {
             builder_fee_tenth_bps: None,
             builder_idx: None,
             isolated_position_deposit: None,
+            network: None,
+            route: None,
         });
         assert!(!is_isolated_deposit(&delegated_msg));
         let result = extract_signed_message_info(&delegated_msg, &taker_authority, current_slot);
@@ -2470,6 +2494,8 @@ mod tests {
             builder_fee_tenth_bps: None,
             builder_idx: None,
             isolated_position_deposit: Some(0),
+            network: None,
+            route: None,
         });
         assert!(!is_isolated_deposit(&delegated_msg));
         let result = extract_signed_message_info(&delegated_msg, &taker_authority, current_slot);
@@ -2498,6 +2524,8 @@ mod tests {
             builder_fee_tenth_bps: None,
             builder_idx: None,
             isolated_position_deposit: Some(100_000_000), // 0.1 SOL
+            network: None,
+            route: None,
         });
         assert!(is_isolated_deposit(&delegated_msg));
         let result = extract_signed_message_info(&delegated_msg, &taker_authority, current_slot);
@@ -2523,6 +2551,8 @@ mod tests {
             builder_fee_tenth_bps: None,
             builder_idx: None,
             isolated_position_deposit: None,
+            network: None,
+            route: None,
         });
         assert!(!is_isolated_deposit(&authority_msg));
         let result = extract_signed_message_info(&authority_msg, &taker_authority, current_slot);
@@ -2548,6 +2578,8 @@ mod tests {
             builder_fee_tenth_bps: None,
             builder_idx: None,
             isolated_position_deposit: Some(50_000_000), // 0.05 SOL
+            network: None,
+            route: None,
         });
         assert!(is_isolated_deposit(&authority_msg));
         let result = extract_signed_message_info(&authority_msg, &taker_authority, current_slot);

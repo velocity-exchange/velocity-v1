@@ -5610,16 +5610,7 @@ pub mod types {
     }
     #[repr(C)]
     #[derive(
-        AnchorSerialize,
-        AnchorDeserialize,
-        InitSpace,
-        Serialize,
-        Deserialize,
-        Copy,
-        Clone,
-        Default,
-        Debug,
-        PartialEq,
+        AnchorSerialize, AnchorDeserialize, Serialize, Deserialize, Clone, Default, Debug, PartialEq,
     )]
     pub struct SignedMsgOrderParamsDelegateMessage {
         pub signed_msg_order_params: OrderParams,
@@ -5632,19 +5623,12 @@ pub mod types {
         pub builder_idx: Option<u8>,
         pub builder_fee_tenth_bps: Option<u16>,
         pub isolated_position_deposit: Option<u64>,
+        pub network: Option<u8>,
+        pub route: Option<Vec<Pubkey>>,
     }
     #[repr(C)]
     #[derive(
-        AnchorSerialize,
-        AnchorDeserialize,
-        InitSpace,
-        Serialize,
-        Deserialize,
-        Copy,
-        Clone,
-        Default,
-        Debug,
-        PartialEq,
+        AnchorSerialize, AnchorDeserialize, Serialize, Deserialize, Clone, Default, Debug, PartialEq,
     )]
     pub struct SignedMsgOrderParamsMessage {
         pub signed_msg_order_params: OrderParams,
@@ -5657,6 +5641,8 @@ pub mod types {
         pub builder_idx: Option<u8>,
         pub builder_fee_tenth_bps: Option<u16>,
         pub isolated_position_deposit: Option<u64>,
+        pub network: Option<u8>,
+        pub route: Option<Vec<Pubkey>>,
     }
     #[repr(C)]
     #[derive(
@@ -6338,16 +6324,7 @@ pub mod types {
     }
     #[repr(C)]
     #[derive(
-        AnchorSerialize,
-        AnchorDeserialize,
-        InitSpace,
-        Serialize,
-        Deserialize,
-        Copy,
-        Clone,
-        Default,
-        Debug,
-        PartialEq,
+        AnchorSerialize, AnchorDeserialize, Serialize, Deserialize, Clone, Default, Debug, PartialEq,
     )]
     pub struct _SignedMsgOrderParamsExport {
         pub _a: SignedMsgOrderParamsMessage,

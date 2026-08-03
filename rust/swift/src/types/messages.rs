@@ -12,11 +12,20 @@ use {
     velocity_rs::{
         swift_order_subscriber::{deser_signed_msg_type, SignedMessageInfo, SignedOrderType},
         types::{market_type_from_str, MarketType},
-        velocity_idl::types::SignedMsgOrderParamsDelegateMessage as IdlSignedMsgOrderParamsDelegateMessage,
     },
 };
 
-pub const MAX_SIGNED_MSG_BORSH_LEN: usize = IdlSignedMsgOrderParamsDelegateMessage::INIT_SPACE + 8;
+/// Upper bound on an encoded signed message. Hand-computed rather than
+/// `InitSpace`-derived: the message carries a signed route (`Vec<Pubkey>`),
+/// which has no fixed size, so anchor cannot size the type. Bound =
+/// everything before the route + a full-length route.
+pub const MAX_SIGNED_MSG_BORSH_LEN: usize = SIGNED_MSG_FIXED_LEN + SIGNED_MSG_ROUTE_MAX_LEN + 8;
+/// Borsh length of the delegate message with every `Option` present and no
+/// route: the widest fixed part either variant can have.
+const SIGNED_MSG_FIXED_LEN: usize = 512;
+/// `Option` tag + vec length prefix + [`MAX_SIGNED_MSG_ROUTE_LEN`] pubkeys.
+const SIGNED_MSG_ROUTE_MAX_LEN: usize =
+    1 + 4 + velocity_rs::program::state::order_params::MAX_SIGNED_MSG_ROUTE_LEN * 32;
 pub const MAX_SIGNED_MSG_HEX_LEN: usize = MAX_SIGNED_MSG_BORSH_LEN * 2;
 
 #[derive(serde::Deserialize, Clone, Debug, PartialEq)]
@@ -402,6 +411,8 @@ mod tests {
             builder_fee_tenth_bps: None,
             builder_idx: None,
             isolated_position_deposit: None,
+            network: None,
+            route: None,
         };
         let hex_msg = encode_message(&SignedOrderType::delegated(expected.clone()));
         let signature = sign_hex(&signer, &hex_msg);
@@ -487,6 +498,8 @@ mod tests {
             builder_fee_tenth_bps: None,
             builder_idx: None,
             isolated_position_deposit: None,
+            network: None,
+            route: None,
         };
         let hex_msg = encode_message(&SignedOrderType::authority(expected.clone()));
         let signature = sign_hex(&signer, &hex_msg);
@@ -648,6 +661,8 @@ mod tests {
             builder_idx: None,
             builder_fee_tenth_bps: None,
             isolated_position_deposit: None,
+            network: None,
+            route: None,
         };
         let hex = encode_message(&SignedOrderType::authority(order.clone()));
 
@@ -712,6 +727,8 @@ mod tests {
             builder_idx: None,
             builder_fee_tenth_bps: None,
             isolated_position_deposit: None,
+            network: None,
+            route: None,
         };
         let hex = encode_message(&SignedOrderType::authority(order.clone()));
 

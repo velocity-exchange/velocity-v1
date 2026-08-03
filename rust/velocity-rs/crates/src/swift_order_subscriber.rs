@@ -86,6 +86,23 @@ impl SignedOrderType {
     pub fn is_delegated(&self) -> bool {
         matches!(self, Self::Delegated { .. })
     }
+    /// Cluster the taker signed for (`b'm'`/`b'd'`), if tagged. The program
+    /// rejects a mismatch — see `SignedMsgOrderParamsMessage::network`.
+    pub fn network(&self) -> Option<u8> {
+        match self {
+            Self::Authority { inner, .. } => inner.network,
+            Self::Delegated { inner, .. } => inner.network,
+        }
+    }
+    /// Custom quoters (PropAMMs) the taker's route names, if any. The CLOB
+    /// and vAMM baseline is implicit and never listed; a keeper honoring a
+    /// route passes these entries in its fill.
+    pub fn route(&self) -> Option<&[Pubkey]> {
+        match self {
+            Self::Authority { inner, .. } => inner.route.as_deref(),
+            Self::Delegated { inner, .. } => inner.route.as_deref(),
+        }
+    }
     /// Serialize as a borsh buffer
     ///
     /// DEV: Swift clients do not encode or decode the enum byte
@@ -711,6 +728,8 @@ mod tests {
             builder_idx: None,
             builder_fee_tenth_bps: None,
             isolated_position_deposit: None,
+            network: None,
+            route: None,
         }
     }
 
@@ -899,6 +918,8 @@ mod tests {
             builder_idx: None,
             builder_fee_tenth_bps: None,
             isolated_position_deposit: None,
+            network: None,
+            route: None,
         };
         let order_message_raw =
             hex::encode(SignedOrderType::delegated(expected_delegate.clone()).to_borsh());

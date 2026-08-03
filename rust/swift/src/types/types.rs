@@ -139,6 +139,8 @@ mod tests {
             builder_idx: None,
             builder_fee_tenth_bps: None,
             isolated_position_deposit: None,
+            network: None,
+            route: None,
         };
         let hex_msg =
             faster_hex::hex_string(SignedOrderType::authority(order).to_borsh().as_slice());

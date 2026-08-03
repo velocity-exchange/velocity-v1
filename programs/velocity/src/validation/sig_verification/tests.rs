@@ -505,4 +505,75 @@ mod sig_verification {
         assert_eq!(order_params.auction_start_price, Some(240000000i64));
         assert_eq!(order_params.auction_end_price, Some(238000000i64));
     }
+
+    /// The network tag and the signed route: an untagged message (every
+    /// producer before the tag existed) still decodes, a message tagged for
+    /// this build passes with its route intact, and one tagged for the other
+    /// cluster is refused — which is the whole reason the byte exists, since
+    /// the signature covers the order and not the chain.
+    #[test]
+    fn network_tag_is_enforced_and_the_route_round_trips() {
+        use {
+            crate::state::order_params::{
+                expected_signed_msg_network, OrderParams, SignedMsgOrderParamsMessage,
+                SIGNED_MSG_NETWORK_DEVNET, SIGNED_MSG_NETWORK_MAINNET,
+            },
+            anchor_lang::AnchorSerialize,
+        };
+
+        let quoter = Pubkey::from_str("BPX47ur8TbgZQgtJcGJvdcQMMFbmBP7ZrhpiUmLuHKqU").unwrap();
+        let encode = |network: Option<u8>, route: Option<Vec<Pubkey>>| {
+            let message = SignedMsgOrderParamsMessage {
+                signed_msg_order_params: OrderParams {
+                    base_asset_amount: 1_000_000_000,
+                    ..OrderParams::default()
+                },
+                sub_account_id: 0,
+                slot: 42,
+                uuid: *b"CRO3irG1",
+                take_profit_order_params: None,
+                stop_loss_order_params: None,
+                max_margin_ratio: None,
+                builder_idx: None,
+                builder_fee_tenth_bps: None,
+                isolated_position_deposit: None,
+                network,
+                route,
+            };
+            let mut payload = vec![0u8; 8]; // manual discriminator
+            message.serialize(&mut payload).unwrap();
+            payload
+        };
+        let signature = [1u8; 64];
+
+        // Untagged: the pre-tag encoding keeps working.
+        let untagged = deserialize_into_verified_message(encode(None, None), &signature, false)
+            .expect("untagged message decodes");
+        assert_eq!(untagged.network, None);
+        assert_eq!(untagged.route, None);
+
+        // Tagged for this build, with a route: accepted verbatim. The CLOB
+        // and vAMM baseline is implicit, so only the custom quoter is named.
+        let tagged = deserialize_into_verified_message(
+            encode(Some(expected_signed_msg_network()), Some(vec![quoter])),
+            &signature,
+            false,
+        )
+        .expect("correctly tagged message decodes");
+        assert_eq!(tagged.network, Some(expected_signed_msg_network()));
+        assert_eq!(tagged.route, Some(vec![quoter]));
+
+        // Tagged for the other cluster: refused, so a devnet order cannot
+        // be replayed against mainnet state (or the reverse).
+        let wrong = if expected_signed_msg_network() == SIGNED_MSG_NETWORK_DEVNET {
+            SIGNED_MSG_NETWORK_MAINNET
+        } else {
+            SIGNED_MSG_NETWORK_DEVNET
+        };
+        assert!(
+            deserialize_into_verified_message(encode(Some(wrong), None), &signature, false)
+                .is_err(),
+            "a message signed for the other cluster must be refused"
+        );
+    }
 }

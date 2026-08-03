@@ -917,6 +917,41 @@ impl OrderParams {
     }
 }
 
+/// Network tag on a signed message: which cluster the taker signed for.
+///
+/// Without it, a message signed for devnet is byte-identical to one signed
+/// for mainnet — the signature covers the order, not the chain it was meant
+/// for — so a devnet order (cheap, farmable) could be replayed against
+/// mainnet state. One byte closes that: `b'm'` / `b'd'`, checked against
+/// the build's own cluster. `None` is the pre-tag encoding and stays
+/// accepted (nothing is deployed to mainnet yet); once producers all emit
+/// it, the check becomes mandatory.
+pub const SIGNED_MSG_NETWORK_MAINNET: u8 = b'm';
+pub const SIGNED_MSG_NETWORK_DEVNET: u8 = b'd';
+
+/// The tag this build accepts.
+pub const fn expected_signed_msg_network() -> u8 {
+    #[cfg(feature = "mainnet-beta")]
+    {
+        SIGNED_MSG_NETWORK_MAINNET
+    }
+    #[cfg(not(feature = "mainnet-beta"))]
+    {
+        SIGNED_MSG_NETWORK_DEVNET
+    }
+}
+
+/// Cap on a signed route (see [`SignedMsgOrderParamsMessage::route`]): a
+/// message naming more custom quoters than this is refused rather than
+/// silently truncated, which also keeps the message length bounded for
+/// off-chain buffers. Four is past what one fill routes through in
+/// practice — the CLOB and the vAMM sit outside the list.
+pub const MAX_SIGNED_MSG_ROUTE_LEN: usize = 4;
+
+/// Trailing fields are appended, never inserted: the verifier zero-pads a
+/// short payload before decoding, so an older producer's message reads as
+/// `None` for everything it did not send (see
+/// `validation::sig_verification`).
 #[derive(AnchorSerialize, AnchorDeserialize, Clone, Default, Eq, PartialEq, Debug)]
 pub struct SignedMsgOrderParamsMessage {
     pub signed_msg_order_params: OrderParams,
@@ -929,6 +964,15 @@ pub struct SignedMsgOrderParamsMessage {
     pub builder_idx: Option<u8>,
     pub builder_fee_tenth_bps: Option<u16>,
     pub isolated_position_deposit: Option<u64>,
+    /// [`SIGNED_MSG_NETWORK_MAINNET`] / [`SIGNED_MSG_NETWORK_DEVNET`].
+    pub network: Option<u8>,
+    /// The route the taker signed for: `QuoterV0` entries of the **custom**
+    /// quoters (PropAMMs) it wants used. The CLOB and the vAMM are the
+    /// mandatory baseline of every router fill, so they are implicit and
+    /// never named here. Advisory to the program today — swift forwards it
+    /// to keepers, which is what makes a routed order reach the quoters the
+    /// taker chose.
+    pub route: Option<Vec<Pubkey>>,
 }
 
 #[derive(AnchorSerialize, AnchorDeserialize, Clone, Default, Eq, PartialEq, Debug)]
@@ -943,6 +987,10 @@ pub struct SignedMsgOrderParamsDelegateMessage {
     pub builder_idx: Option<u8>,
     pub builder_fee_tenth_bps: Option<u16>,
     pub isolated_position_deposit: Option<u64>,
+    /// See [`SignedMsgOrderParamsMessage::network`].
+    pub network: Option<u8>,
+    /// See [`SignedMsgOrderParamsMessage::route`].
+    pub route: Option<Vec<Pubkey>>,
 }
 
 #[derive(AnchorSerialize, AnchorDeserialize, Clone, Default, Eq, PartialEq, Debug)]

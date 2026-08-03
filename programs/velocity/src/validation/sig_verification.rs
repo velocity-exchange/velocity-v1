@@ -63,6 +63,11 @@ pub struct VerifiedMessage {
     pub builder_idx: Option<u8>,
     pub builder_fee_tenth_bps: Option<u16>,
     pub isolated_position_deposit: Option<u64>,
+    /// The cluster the taker signed for; validated against this build.
+    pub network: Option<u8>,
+    /// Custom quoters (PropAMMs) the taker's route names. The CLOB and vAMM
+    /// baseline is implicit.
+    pub route: Option<Vec<Pubkey>>,
     pub signature: [u8; 64],
 }
 
@@ -104,6 +109,8 @@ pub fn deserialize_into_verified_message(
             builder_idx: deserialized.builder_idx,
             builder_fee_tenth_bps: deserialized.builder_fee_tenth_bps,
             isolated_position_deposit: deserialized.isolated_position_deposit,
+            network: validate_signed_msg_network(deserialized.network)?,
+            route: validate_signed_msg_route(deserialized.route)?,
             signature: *signature,
         })
     } else {
@@ -134,8 +141,53 @@ pub fn deserialize_into_verified_message(
             builder_idx: deserialized.builder_idx,
             builder_fee_tenth_bps: deserialized.builder_fee_tenth_bps,
             isolated_position_deposit: deserialized.isolated_position_deposit,
+            network: validate_signed_msg_network(deserialized.network)?,
+            route: validate_signed_msg_route(deserialized.route)?,
             signature: *signature,
         })
+    }
+}
+
+/// Reject a message signed for a different cluster.
+///
+/// The signature covers the order, not the chain, so without this a devnet
+/// order replays verbatim against mainnet. Absent (`None`) is the pre-tag
+/// encoding and passes — nothing is deployed to mainnet yet, and the
+/// verifier zero-pads short payloads, so old producers keep working until
+/// they emit the tag.
+/// Refuse an over-long route rather than truncating it: a taker's signed
+/// route is a statement about where their order may fill, and silently
+/// dropping entries would fill somewhere they did not sign for.
+fn validate_signed_msg_route(
+    route: Option<Vec<Pubkey>>,
+) -> std::result::Result<Option<Vec<Pubkey>>, anchor_lang::error::Error> {
+    if let Some(entries) = &route {
+        if entries.len() > crate::state::order_params::MAX_SIGNED_MSG_ROUTE_LEN {
+            msg!(
+                "signed route names {} quoters, max {}",
+                entries.len(),
+                crate::state::order_params::MAX_SIGNED_MSG_ROUTE_LEN
+            );
+            return Err(SignatureVerificationError::InvalidMessageDataSize.into());
+        }
+    }
+    Ok(route)
+}
+
+fn validate_signed_msg_network(
+    network: Option<u8>,
+) -> std::result::Result<Option<u8>, anchor_lang::error::Error> {
+    let expected = crate::state::order_params::expected_signed_msg_network();
+    match network {
+        Some(tag) if tag != expected => {
+            msg!(
+                "signed message is for network {} but this program is {}",
+                tag as char,
+                expected as char
+            );
+            Err(SignatureVerificationError::InvalidMessageDataSize.into())
+        }
+        other => Ok(other),
     }
 }
 

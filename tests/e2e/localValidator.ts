@@ -50,6 +50,7 @@ import {
 	getSpotMarketPublicKeySync,
 	getLimitOrderParams,
 	generateSignedMsgUuid,
+	SignedMsgNetwork,
 	getMarketOrderParams,
 	getTriggerMarketOrderParams,
 	isVariant,
@@ -1968,6 +1969,11 @@ describe('e2e localnet: programs + publisher + redis', function () {
 				uuid,
 				takeProfitOrderParams: null,
 				stopLossOrderParams: null,
+				// Tagged for this cluster (the program refuses a message
+				// signed for the other one) and routed through the midpoint
+				// explicitly — the CLOB and vAMM baseline is implicit.
+				network: SignedMsgNetwork.DEVNET,
+				route: [midEntry],
 			});
 			const res = await fetch(`${SWIFT_URL}/orders`, {
 				method: 'POST',

@@ -12,8 +12,8 @@
 //! Exposed to velocity through the quoter interface: `quote_v0`/`execute_v0`
 //! stream borsh responses directly into the instance's response tail and
 //! return a `ResponsePointerV0` via return data. Execute is gated on the
-//! registered `execute_authority` (the velocity signer PDA — velocity clamps
-//! size to the quoted user's margin before CPI'ing here). Safety is the
+//! registered `execute_authority` (velocity's quoter CPI signer PDA —
+//! velocity clamps size to the quoted user's margin before CPI'ing here). Safety is the
 //! mid-staleness gate: a dead feed stops quoting on its own.
 //!
 //! Two authorities are held per instance and neither derives from the other:

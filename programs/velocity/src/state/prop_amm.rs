@@ -4,9 +4,14 @@
 //! response account. [`QuoterV0::quote`]/[`QuoterV0::execute`] are the CPI
 //! legs the router fill uses. Registration ixs live in
 //! `instructions::quoter_registry`.
+//!
+//! Every CPI out of this module signs as `quoter_signer` (see
+//! `crate::signer`), never as the vault authority.
 
 use {
-    crate::{error::ErrorCode, msg, signer::get_signer_seeds, state::traits::Size, validate},
+    crate::{
+        error::ErrorCode, msg, signer::get_quoter_signer_seeds, state::traits::Size, validate,
+    },
     anchor_lang::prelude::*,
     solana_program::{
         instruction::{AccountMeta, Instruction},
@@ -15,6 +20,9 @@ use {
     static_assertions::const_assert_eq,
     std::{collections::BTreeMap, convert::TryInto},
 };
+
+#[cfg(test)]
+mod tests;
 
 /// Max accounts that can be registered per CPI leg (quote / execute).
 pub const MAX_QUOTER_ACCOUNTS: usize = 32;
@@ -122,13 +130,58 @@ pub enum QuoterCpiLeg {
 pub struct AmmAccountMeta {
     pub pubkey: Pubkey,
     /// Whether the account is passed writable to the quoter program.
-    /// `is_signer` is intentionally not stored: quoter CPIs never receive
-    /// signer privilege at all (see `invoke_quoter`).
+    /// `is_signer` is intentionally not stored: the only slot a quoter CPI
+    /// ever receives signer privilege on is `quoter_signer`, decided by
+    /// pubkey match rather than by registration (see [`quoter_account_metas`]).
     pub is_writable: bool,
     pub padding: [u8; 7],
 }
 
 const_assert_eq!(std::mem::size_of::<AmmAccountMeta>(), 40);
+
+/// Reject a registered CPI account list that names velocity's vault authority.
+///
+/// That PDA is the SPL token authority on every `spot_market_vault` and
+/// `insurance_fund_vault` and the `User`/`UserStats` authority of the protocol
+/// account. Velocity never signs a quoter CPI as it — [`quoter_account_metas`]
+/// only ever marks `quoter_signer` — but a quoter has no legitimate use for
+/// the key either, so naming it is refused at registration rather than
+/// silently downgraded to a read-only slot.
+pub fn validate_quoter_accounts<'a>(pubkeys: impl IntoIterator<Item = &'a Pubkey>) -> Result<()> {
+    let vault_authority = crate::state::pdas::velocity_signer();
+    pubkeys.into_iter().try_for_each(|pubkey| {
+        validate!(
+            *pubkey != vault_authority,
+            ErrorCode::InvalidQuoterConfig,
+            "velocity's vault authority {} cannot be a quoter cpi account",
+            vault_authority
+        )
+    })?;
+    Ok(())
+}
+
+/// Account metas for one quoter CPI leg.
+///
+/// NEVER forward outer signer privilege. Signer status propagates through CPI,
+/// so a quoter handed the taker's wallet as a signer could CPI to the
+/// system/token program and drain it. Quoters that need to know who signed the
+/// outer transaction (e.g. the `flow_authority` attestation) introspect the
+/// instructions sysvar instead.
+///
+/// The single signer is `quoter_signer` (velocity signing as itself) — a
+/// registered slot for it is how a quoter authenticates that velocity, not an
+/// arbitrary caller, is invoking it. That PDA is the authority on nothing, so
+/// a quoter that forwards the signature onward gains nothing by it.
+fn quoter_account_metas(registered: &[AmmAccountMeta], quoter_signer: &Pubkey) -> Vec<AccountMeta> {
+    registered
+        .iter()
+        .map(|meta| AccountMeta {
+            pubkey: meta.pubkey,
+            is_signer: meta.pubkey == *quoter_signer,
+            is_writable: meta.is_writable,
+        })
+        .collect()
+}
 
 /// Taker direction, from the taker's perspective. Borsh wire encoding
 /// (Long = 0, Short = 1) deliberately matches
@@ -315,7 +368,7 @@ pub const CLOB_REMOVE_EXPIRED_V0_DISCRIMINATOR: [u8; 8] = [241, 135, 215, 18, 25
 ///
 /// This is the *only* place in the program that speaks the CLOB's wire — the
 /// discriminators above, the borsh arg encoding, `invoke_signed` with the
-/// fixed `[market (w), velocity_signer (s)]` account pair, and the
+/// fixed `[market (w), quoter_signer (s)]` account pair, and the
 /// return-data decode (writer-checked, so a program the CLOB CPI'd into
 /// can't spoof the response). Every caller — placement, cancel, the
 /// evict/expire cranks, force-cancel — goes through a method here.
@@ -329,9 +382,14 @@ pub struct ClobMarket<'a, 'info> {
     pub market: &'a AccountInfo<'info>,
     /// The registered CLOB program.
     pub program: &'a AccountInfo<'info>,
-    /// Velocity's signer PDA — the book's `place_authority`.
-    pub velocity_signer: &'a AccountInfo<'info>,
-    pub signer_nonce: u8,
+    /// The quoter CPI signer PDA — what a book's `place_authority` is set to.
+    /// The CLOB gates place/cancel/evict/expire *and* `execute_v0` on that one
+    /// field, so this leg and the registry's execute leg necessarily sign as
+    /// the same key; that key is `quoter_signer` rather than the vault
+    /// authority so no external program ever receives a signature that can
+    /// move protocol funds.
+    pub quoter_signer: &'a AccountInfo<'info>,
+    pub quoter_signer_nonce: u8,
 }
 
 impl<'a, 'info> ClobMarket<'a, 'info> {
@@ -348,15 +406,15 @@ impl<'a, 'info> ClobMarket<'a, 'info> {
         market_index: u16,
         market: &'a AccountInfo<'info>,
         program: &'a AccountInfo<'info>,
-        velocity_signer: &'a AccountInfo<'info>,
-        signer_nonce: u8,
+        quoter_signer: &'a AccountInfo<'info>,
+        quoter_signer_nonce: u8,
     ) -> Result<Self> {
         quoter.validate_clob_book(market_index, &market.key())?;
         Ok(Self {
             market,
             program,
-            velocity_signer,
-            signer_nonce,
+            quoter_signer,
+            quoter_signer_nonce,
         })
     }
 
@@ -421,16 +479,16 @@ impl<'a, 'info> ClobMarket<'a, 'info> {
                 program_id: self.program.key(),
                 accounts: vec![
                     AccountMeta::new(self.market.key(), false),
-                    AccountMeta::new_readonly(self.velocity_signer.key(), true),
+                    AccountMeta::new_readonly(self.quoter_signer.key(), true),
                 ],
                 data,
             },
             &[
                 self.market.clone(),
-                self.velocity_signer.clone(),
+                self.quoter_signer.clone(),
                 self.program.clone(),
             ],
-            &[&get_signer_seeds(&self.signer_nonce)],
+            &[&get_quoter_signer_seeds(&self.quoter_signer_nonce)],
         )?;
 
         // Return data is last-writer-wins within the transaction, so require
@@ -709,8 +767,8 @@ impl QuoterV0 {
     pub fn quote<'info>(
         &self,
         args: QuoteArgsV0,
-        velocity_signer: &Pubkey,
-        signer_nonce: u8,
+        quoter_signer: &Pubkey,
+        quoter_signer_nonce: u8,
         account_map: &BTreeMap<Pubkey, AccountInfo<'info>>,
     ) -> Result<Vec<PriceLevel>> {
         validate!(
@@ -723,8 +781,8 @@ impl QuoterV0 {
             &self.quote_accounts,
             self.quote_accounts_count,
             &args,
-            velocity_signer,
-            signer_nonce,
+            quoter_signer,
+            quoter_signer_nonce,
             account_map,
         )?;
         Ok(response.levels)
@@ -737,8 +795,8 @@ impl QuoterV0 {
     pub fn execute<'info>(
         &self,
         args: ExecuteArgsV0,
-        velocity_signer: &Pubkey,
-        signer_nonce: u8,
+        quoter_signer: &Pubkey,
+        quoter_signer_nonce: u8,
         account_map: &BTreeMap<Pubkey, AccountInfo<'info>>,
     ) -> Result<ExecuteResponseV0> {
         validate!(
@@ -751,8 +809,8 @@ impl QuoterV0 {
             &self.execute_accounts,
             self.execute_accounts_count,
             &args,
-            velocity_signer,
-            signer_nonce,
+            quoter_signer,
+            quoter_signer_nonce,
             account_map,
         )
     }
@@ -766,8 +824,8 @@ impl QuoterV0 {
         registered: &[AmmAccountMeta],
         count: u8,
         args: &A,
-        velocity_signer: &Pubkey,
-        signer_nonce: u8,
+        quoter_signer: &Pubkey,
+        quoter_signer_nonce: u8,
         account_map: &BTreeMap<Pubkey, AccountInfo<'info>>,
     ) -> Result<R> {
         validate!(
@@ -777,30 +835,14 @@ impl QuoterV0 {
             count,
             registered.len()
         )?;
-        let registered = &registered[..count as usize];
+        let account_metas = quoter_account_metas(&registered[..count as usize], quoter_signer);
 
-        let mut account_metas = Vec::with_capacity(registered.len());
-        let mut account_infos = Vec::with_capacity(registered.len());
-        for meta in registered {
+        let mut account_infos = Vec::with_capacity(account_metas.len() + 1);
+        for meta in &account_metas {
             let info = account_map.get(&meta.pubkey).ok_or_else(|| {
                 msg!("prop amm account {} missing from account map", meta.pubkey);
                 ErrorCode::DefaultError
             })?;
-            account_metas.push(AccountMeta {
-                pubkey: meta.pubkey,
-                // NEVER forward outer signer privilege. Signer status
-                // propagates through CPI, so a quoter handed the taker's
-                // wallet as a signer could CPI to the system/token program
-                // and drain it. Quoters that need to know who signed the
-                // outer transaction (e.g. the `flow_authority` attestation)
-                // introspect the instructions sysvar instead. The single
-                // exception is velocity's own signer PDA (invoke_signed
-                // below — velocity signing as itself): a registered signer
-                // slot for it is how a quoter authenticates that velocity,
-                // not an arbitrary caller, is invoking execute.
-                is_signer: meta.pubkey == *velocity_signer,
-                is_writable: meta.is_writable,
-            });
             account_infos.push(info.clone());
         }
         // CPI needs the callee program's account info too.
@@ -823,7 +865,7 @@ impl QuoterV0 {
                 data,
             },
             &account_infos,
-            &[&get_signer_seeds(&signer_nonce)],
+            &[&get_quoter_signer_seeds(&quoter_signer_nonce)],
         )?;
 
         // The payload lives in the quoter's response account; return data

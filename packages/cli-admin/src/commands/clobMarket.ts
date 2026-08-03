@@ -12,6 +12,7 @@ import { BN } from '@coral-xyz/anchor';
 import {
 	getClobCrankConditionsPublicKey,
 	getPerpMarketPublicKeySync,
+	getQuoterSignerPublicKey,
 	QuoterCpiLeg,
 	QuoterType,
 } from '@velocity-exchange/sdk';
@@ -142,7 +143,7 @@ export function registerClobMarket(parent: Command): void {
 		clobMarket
 			.command('init <market> <keeperPaymentLamports>')
 			.description(
-				"Stand up a perp market's CLOB in one command: create the book account, initialize it on the CLOB program (place_authority = the velocity signer), register + approve its quoter entry, attach it as the market's canonical CLOB (creating the crank conditions + reservoir), and optionally register the relay watch and fund the reservoir. Signer must hold warm/cold admin (approval + attach). Direct-send only — fresh account keypairs must co-sign, so --multisig is rejected."
+				"Stand up a perp market's CLOB in one command: create the book account, initialize it on the CLOB program (place_authority = the quoter CPI signer), register + approve its quoter entry, attach it as the market's canonical CLOB (creating the crank conditions + reservoir), and optionally register the relay watch and fund the reservoir. Signer must hold warm/cold admin (approval + attach). Direct-send only — fresh account keypairs must co-sign, so --multisig is rejected."
 			)
 			.requiredOption('--clob-program <pubkey>', 'deployed CLOB program id')
 			.option('--capacity <n>', 'order-node arena capacity', '4096')
@@ -215,7 +216,7 @@ export function registerClobMarket(parent: Command): void {
 			try {
 				const clobProgram = new PublicKey(flags.clobProgram);
 				const quoterUser = new PublicKey(flags.quoterUser);
-				const velocitySigner = client.getSignerPublicKey();
+				const quoterSigner = getQuoterSignerPublicKey(client.program.programId);
 				const perpMarket = getPerpMarketPublicKeySync(
 					client.program.programId,
 					marketIndex
@@ -227,7 +228,9 @@ export function registerClobMarket(parent: Command): void {
 				const wallet = provider.wallet.publicKey;
 
 				// 1. The book: a fresh account on the CLOB program, initialized
-				// with velocity's signer as its place_authority.
+				// with velocity's quoter CPI signer as its place_authority. Not the
+				// vault authority: signer privilege is inherited by a callee, so the
+				// key the CLOB receives must be the authority on nothing.
 				const book = Keypair.generate();
 				const space = clobMarketSpace(Number.parseInt(flags.capacity, 10));
 				const bookRent =
@@ -243,7 +246,7 @@ export function registerClobMarket(parent: Command): void {
 					programId: clobProgram,
 					keys: [
 						{ pubkey: wallet, isSigner: true, isWritable: false },
-						{ pubkey: velocitySigner, isSigner: false, isWritable: false },
+						{ pubkey: quoterSigner, isSigner: false, isWritable: false },
 						{ pubkey: book.publicKey, isSigner: false, isWritable: true },
 					],
 					data: Buffer.concat([
@@ -313,7 +316,7 @@ export function registerClobMarket(parent: Command): void {
 						]),
 						legAccounts(QuoterCpiLeg.EXECUTE, [
 							{ pubkey: book.publicKey, isWritable: true },
-							{ pubkey: velocitySigner, isWritable: false },
+							{ pubkey: quoterSigner, isWritable: false },
 						]),
 						approve
 					)

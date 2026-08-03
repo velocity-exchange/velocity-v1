@@ -26,7 +26,7 @@ pub struct InitializeQuoterV0 {
     /// afterwards (a different quoted user means a new instance, signed for
     /// again).
     pub user_authority: Signer,
-    /// The only signer `execute_v0` accepts (the velocity signer PDA).
+    /// The only signer `execute_v0` accepts (velocity's quoter CPI signer PDA).
     /// Immutable after init. Accounts, not args: duplicated accounts cost
     /// one index byte in the tx.
     pub execute_authority: UncheckedAccount,

@@ -129,6 +129,7 @@ pub fn handle_quote_router<'c: 'info, 'info>(
     // ---- Externals first: their books are the vAMM's last look. ----
     // Books are held as owned levels so they can be handed to the ladder as
     // rivals after the CPI borrow ends.
+    let (quoter_signer, quoter_signer_nonce) = crate::signer::find_quoter_signer();
     let mut books: Vec<(u8, Vec<PriceLevel>)> = Vec::with_capacity(quoter_count);
     for loader in &quoters {
         let (priority, quoter_type, quoter_user, mut levels) = {
@@ -153,8 +154,8 @@ pub fn handle_quote_router<'c: 'info, 'info>(
                         users: None,
                         taker: None,
                     },
-                    &state.signer,
-                    state.signer_nonce,
+                    &quoter_signer,
+                    quoter_signer_nonce,
                     &account_map,
                 )
                 .map_err(|e| {

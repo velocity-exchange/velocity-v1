@@ -8729,7 +8729,7 @@ pub mod accounts {
         pub quoter: Pubkey,
         pub clob_market: Pubkey,
         pub clob_program: Pubkey,
-        pub velocity_signer: Pubkey,
+        pub quoter_signer: Pubkey,
     }
     #[automatically_derived]
     impl anchor_lang::Discriminator for CancelClobOrder {
@@ -8778,7 +8778,7 @@ pub mod accounts {
                     is_writable: false,
                 },
                 AccountMeta {
-                    pubkey: self.velocity_signer,
+                    pubkey: self.quoter_signer,
                     is_signer: false,
                     is_writable: false,
                 },
@@ -9334,7 +9334,7 @@ pub mod accounts {
         pub quoter: Pubkey,
         pub clob_market: Pubkey,
         pub clob_program: Pubkey,
-        pub velocity_signer: Pubkey,
+        pub quoter_signer: Pubkey,
         pub crank_conditions: Pubkey,
     }
     #[automatically_derived]
@@ -9399,7 +9399,7 @@ pub mod accounts {
                     is_writable: false,
                 },
                 AccountMeta {
-                    pubkey: self.velocity_signer,
+                    pubkey: self.quoter_signer,
                     is_signer: false,
                     is_writable: false,
                 },
@@ -9452,7 +9452,7 @@ pub mod accounts {
         pub quoter: Pubkey,
         pub clob_market: Pubkey,
         pub clob_program: Pubkey,
-        pub velocity_signer: Pubkey,
+        pub quoter_signer: Pubkey,
         pub crank_conditions: Pubkey,
     }
     #[automatically_derived]
@@ -9517,7 +9517,7 @@ pub mod accounts {
                     is_writable: false,
                 },
                 AccountMeta {
-                    pubkey: self.velocity_signer,
+                    pubkey: self.quoter_signer,
                     is_signer: false,
                     is_writable: false,
                 },
@@ -11165,7 +11165,7 @@ pub mod accounts {
         pub quoter: Pubkey,
         pub clob_market: Pubkey,
         pub clob_program: Pubkey,
-        pub velocity_signer: Pubkey,
+        pub quoter_signer: Pubkey,
         pub crank_conditions: Pubkey,
     }
     #[automatically_derived]
@@ -11225,7 +11225,7 @@ pub mod accounts {
                     is_writable: false,
                 },
                 AccountMeta {
-                    pubkey: self.velocity_signer,
+                    pubkey: self.quoter_signer,
                     is_signer: false,
                     is_writable: false,
                 },
@@ -14519,7 +14519,7 @@ pub mod accounts {
         pub quoter: Pubkey,
         pub clob_market: Pubkey,
         pub clob_program: Pubkey,
-        pub velocity_signer: Pubkey,
+        pub quoter_signer: Pubkey,
         pub crank_conditions: Pubkey,
         pub instructions_sysvar: Pubkey,
     }
@@ -14570,7 +14570,7 @@ pub mod accounts {
                     is_writable: false,
                 },
                 AccountMeta {
-                    pubkey: self.velocity_signer,
+                    pubkey: self.quoter_signer,
                     is_signer: false,
                     is_writable: false,
                 },
@@ -15240,7 +15240,7 @@ pub mod accounts {
         pub quoter: Pubkey,
         pub clob_market: Pubkey,
         pub clob_program: Pubkey,
-        pub velocity_signer: Pubkey,
+        pub quoter_signer: Pubkey,
         pub crank_conditions: Pubkey,
     }
     #[automatically_derived]
@@ -15295,7 +15295,7 @@ pub mod accounts {
                     is_writable: false,
                 },
                 AccountMeta {
-                    pubkey: self.velocity_signer,
+                    pubkey: self.quoter_signer,
                     is_signer: false,
                     is_writable: false,
                 },
@@ -15345,7 +15345,7 @@ pub mod accounts {
         pub quoter: Pubkey,
         pub clob_market: Pubkey,
         pub clob_program: Pubkey,
-        pub velocity_signer: Pubkey,
+        pub quoter_signer: Pubkey,
         pub crank_conditions: Pubkey,
         pub instructions_sysvar: Pubkey,
     }
@@ -15396,7 +15396,7 @@ pub mod accounts {
                     is_writable: false,
                 },
                 AccountMeta {
-                    pubkey: self.velocity_signer,
+                    pubkey: self.quoter_signer,
                     is_signer: false,
                     is_writable: false,
                 },
@@ -19460,7 +19460,7 @@ pub mod accounts {
         pub quoter: Pubkey,
         pub clob_market: Pubkey,
         pub clob_program: Pubkey,
-        pub velocity_signer: Pubkey,
+        pub quoter_signer: Pubkey,
         pub crank_conditions: Pubkey,
         pub trigger_conditions: Pubkey,
     }
@@ -19526,7 +19526,7 @@ pub mod accounts {
                     is_writable: false,
                 },
                 AccountMeta {
-                    pubkey: self.velocity_signer,
+                    pubkey: self.quoter_signer,
                     is_signer: false,
                     is_writable: false,
                 },

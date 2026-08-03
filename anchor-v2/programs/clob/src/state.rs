@@ -160,9 +160,9 @@ pub enum OrderBitFlag {
 pub struct ClobHeaderV0 {
     /// Admin able to configure the market.
     pub authority: Address,
-    /// Only signer allowed to place/cancel/execute (the velocity signer PDA;
-    /// velocity verifies `User` authority and flow-attestation policy —
-    /// including zero-delay activation — before CPI'ing here).
+    /// Only signer allowed to place/cancel/execute (velocity's quoter CPI
+    /// signer PDA; velocity verifies `User` authority and flow-attestation
+    /// policy — including zero-delay activation — before CPI'ing here).
     pub place_authority: Address,
     /// Prices must be a multiple of this (PRICE_PRECISION). Enforced at
     /// placement, not baked into the stored representation, so it can be

@@ -30,8 +30,9 @@ pub struct CpiQuoterExecutor<'a, 'info> {
     /// Union of the quoters' registered CPI accounts (plus their programs),
     /// keyed by pubkey — the caller's leftover remaining accounts.
     pub account_map: &'a BTreeMap<Pubkey, AccountInfo<'info>>,
-    pub velocity_signer: Pubkey,
-    pub signer_nonce: u8,
+    /// The privilege-free PDA every quoter CPI signs as, and its bump.
+    pub quoter_signer: Pubkey,
+    pub quoter_signer_nonce: u8,
     /// The loaded-user set forwarded on every execute (quoters must not fill
     /// anyone else), in the wire's derivable form.
     pub users: Vec<ClobUserRefV0>,
@@ -71,8 +72,8 @@ impl ExternalQuoterExecutor for CpiQuoterExecutor<'_, '_> {
                     users: Some(self.users.clone()),
                     taker: Some(self.taker),
                 },
-                &self.velocity_signer,
-                self.signer_nonce,
+                &self.quoter_signer,
+                self.quoter_signer_nonce,
                 self.account_map,
             )
             .map_err(|e| {

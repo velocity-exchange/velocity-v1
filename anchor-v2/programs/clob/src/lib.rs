@@ -3,10 +3,12 @@
 //! `execute_v0` write borsh responses into the market's response-buffer PDA
 //! and return a `ResponsePointerV0` via return data.
 //!
-//! Placement policy lives in velocity: `place_authority` (the velocity signer
-//! PDA) is the only signer allowed to place/cancel/execute — velocity verifies
-//! `User` authority and margin/flow policy before CPI'ing here. `quote_v0` is
-//! read-only and ungated.
+//! Placement policy lives in velocity: `place_authority` (velocity's quoter
+//! CPI signer PDA) is the only signer allowed to place/cancel/execute —
+//! velocity verifies `User` authority and margin/flow policy before CPI'ing
+//! here. `execute_v0` shares that gate because it consumes resting orders
+//! while creating no positions: only velocity can settle the fill it returns.
+//! `quote_v0` is read-only and ungated.
 //!
 //! Discriminators stay 8-byte anchor defaults (not `#[discrim]` single-byte):
 //! the velocity quoter registry stores `[u8; 8]` discriminators.

@@ -35,6 +35,7 @@ use {
         error::ErrorCode,
         instructions::{constraints::*, relay_harness::StagedCall},
         load_mut, msg,
+        signer::QUOTER_SIGNER_SEED,
         state::{
             clob_crank::{ClobCrankConditionsV0, CLOB_CRANK_CONDITIONS_PDA_SEED},
             pdas,
@@ -94,9 +95,12 @@ pub struct CrankClobOrderRemoval<'info> {
     /// CHECK: locked to the registered quoter program.
     #[account(address = quoter.load()?.program_id)]
     pub clob_program: UncheckedAccount<'info>,
-    /// CHECK: the protocol signer PDA — the CLOB's `place_authority`.
-    #[account(address = state.load()?.signer)]
-    pub velocity_signer: UncheckedAccount<'info>,
+    /// CHECK: the quoter CPI signer PDA — what a book's `place_authority` is
+    /// set to. Deliberately not the vault authority: signer privilege is
+    /// inherited by a callee, so the key velocity hands an external program
+    /// must be the authority on nothing.
+    #[account(seeds = [QUOTER_SIGNER_SEED], bump)]
+    pub quoter_signer: UncheckedAccount<'info>,
     /// The market's relay conditions account: the expiry-hint host and the
     /// lamport reservoir. Optional so signed keepers can crank markets whose
     /// conditions were never initialized; required in program-keeper mode.
@@ -154,8 +158,8 @@ pub fn crank_clob_removal(
         market_index,
         &ctx.accounts.clob_market,
         &ctx.accounts.clob_program,
-        &ctx.accounts.velocity_signer,
-        state.signer_nonce,
+        &ctx.accounts.quoter_signer,
+        ctx.bumps.quoter_signer,
     )?;
 
     // CPI while no user borrows are held.
@@ -327,7 +331,6 @@ pub fn removal_call<I: anchor_lang::Discriminator>(
     ctx: &Context<ResolveClobCrank>,
     maker: Pubkey,
 ) -> Result<StagedCall> {
-    let signer = ctx.accounts.state.load()?.signer;
     let market_index = ctx.accounts.crank_conditions.load()?.market_index;
     let (protocol_user, protocol_user_stats) = pdas::protocol_user_pair();
     Ok(StagedCall::new::<I>(
@@ -341,7 +344,7 @@ pub fn removal_call<I: anchor_lang::Discriminator>(
             quoter: ctx.accounts.quoter.key(),
             clob_market: ctx.accounts.clob_market.key(),
             clob_program: ctx.accounts.quoter.load()?.program_id,
-            velocity_signer: signer,
+            quoter_signer: pdas::quoter_signer(),
             crank_conditions: Some(ctx.accounts.crank_conditions.key()),
         },
     ))

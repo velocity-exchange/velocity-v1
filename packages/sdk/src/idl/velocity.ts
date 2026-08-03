@@ -759,7 +759,34 @@ export type Velocity = {
           "name": "clobProgram"
         },
         {
-          "name": "velocitySigner"
+          "name": "quoterSigner",
+          "docs": [
+            "set to. Deliberately not the vault authority: signer privilege is",
+            "inherited by a callee, so the key velocity hands an external program",
+            "must be the authority on nothing."
+          ],
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  113,
+                  117,
+                  111,
+                  116,
+                  101,
+                  114,
+                  95,
+                  115,
+                  105,
+                  103,
+                  110,
+                  101,
+                  114
+                ]
+              }
+            ]
+          }
         }
       ],
       "args": [
@@ -1229,7 +1256,34 @@ export type Velocity = {
           "name": "clobProgram"
         },
         {
-          "name": "velocitySigner"
+          "name": "quoterSigner",
+          "docs": [
+            "set to. Deliberately not the vault authority: signer privilege is",
+            "inherited by a callee, so the key velocity hands an external program",
+            "must be the authority on nothing."
+          ],
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  113,
+                  117,
+                  111,
+                  116,
+                  101,
+                  114,
+                  95,
+                  115,
+                  105,
+                  103,
+                  110,
+                  101,
+                  114
+                ]
+              }
+            ]
+          }
         },
         {
           "name": "crankConditions",
@@ -1355,7 +1409,34 @@ export type Velocity = {
           "name": "clobProgram"
         },
         {
-          "name": "velocitySigner"
+          "name": "quoterSigner",
+          "docs": [
+            "set to. Deliberately not the vault authority: signer privilege is",
+            "inherited by a callee, so the key velocity hands an external program",
+            "must be the authority on nothing."
+          ],
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  113,
+                  117,
+                  111,
+                  116,
+                  101,
+                  114,
+                  95,
+                  115,
+                  105,
+                  103,
+                  110,
+                  101,
+                  114
+                ]
+              }
+            ]
+          }
         },
         {
           "name": "crankConditions",
@@ -2798,7 +2879,34 @@ export type Velocity = {
           "name": "clobProgram"
         },
         {
-          "name": "velocitySigner"
+          "name": "quoterSigner",
+          "docs": [
+            "set to. Deliberately not the vault authority: signer privilege is",
+            "inherited by a callee, so the key velocity hands an external program",
+            "must be the authority on nothing."
+          ],
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  113,
+                  117,
+                  111,
+                  116,
+                  101,
+                  114,
+                  95,
+                  115,
+                  105,
+                  103,
+                  110,
+                  101,
+                  114
+                ]
+              }
+            ]
+          }
         },
         {
           "name": "crankConditions",
@@ -6378,7 +6486,34 @@ export type Velocity = {
           "name": "clobProgram"
         },
         {
-          "name": "velocitySigner"
+          "name": "quoterSigner",
+          "docs": [
+            "set to. Deliberately not the vault authority: signer privilege is",
+            "inherited by a callee, so the key velocity hands an external program",
+            "must be the authority on nothing."
+          ],
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  113,
+                  117,
+                  111,
+                  116,
+                  101,
+                  114,
+                  95,
+                  115,
+                  105,
+                  103,
+                  110,
+                  101,
+                  114
+                ]
+              }
+            ]
+          }
         },
         {
           "name": "crankConditions",
@@ -6923,7 +7058,34 @@ export type Velocity = {
           "name": "clobProgram"
         },
         {
-          "name": "velocitySigner"
+          "name": "quoterSigner",
+          "docs": [
+            "set to. Deliberately not the vault authority: signer privilege is",
+            "inherited by a callee, so the key velocity hands an external program",
+            "must be the authority on nothing."
+          ],
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  113,
+                  117,
+                  111,
+                  116,
+                  101,
+                  114,
+                  95,
+                  115,
+                  105,
+                  103,
+                  110,
+                  101,
+                  114
+                ]
+              }
+            ]
+          }
         },
         {
           "name": "crankConditions",
@@ -7030,7 +7192,34 @@ export type Velocity = {
           "name": "clobProgram"
         },
         {
-          "name": "velocitySigner"
+          "name": "quoterSigner",
+          "docs": [
+            "set to. Deliberately not the vault authority: signer privilege is",
+            "inherited by a callee, so the key velocity hands an external program",
+            "must be the authority on nothing."
+          ],
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  113,
+                  117,
+                  111,
+                  116,
+                  101,
+                  114,
+                  95,
+                  115,
+                  105,
+                  103,
+                  110,
+                  101,
+                  114
+                ]
+              }
+            ]
+          }
         },
         {
           "name": "crankConditions",
@@ -10608,7 +10797,34 @@ export type Velocity = {
           "name": "clobProgram"
         },
         {
-          "name": "velocitySigner"
+          "name": "quoterSigner",
+          "docs": [
+            "set to. Deliberately not the vault authority: signer privilege is",
+            "inherited by a callee, so the key velocity hands an external program",
+            "must be the authority on nothing."
+          ],
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  113,
+                  117,
+                  111,
+                  116,
+                  101,
+                  114,
+                  95,
+                  115,
+                  105,
+                  103,
+                  110,
+                  101,
+                  114
+                ]
+              }
+            ]
+          }
         },
         {
           "name": "crankConditions",
@@ -19871,8 +20087,9 @@ export type Velocity = {
             "name": "isWritable",
             "docs": [
               "Whether the account is passed writable to the quoter program.",
-              "`is_signer` is intentionally not stored: quoter CPIs never receive",
-              "signer privilege at all (see `invoke_quoter`)."
+              "`is_signer` is intentionally not stored: the only slot a quoter CPI",
+              "ever receives signer privilege on is `quoter_signer`, decided by",
+              "pubkey match rather than by registration (see [`quoter_account_metas`])."
             ],
             "type": "bool"
           },

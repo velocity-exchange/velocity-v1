@@ -150,8 +150,8 @@ pub struct MidpointQuoterV0 {
     /// Hot key allowed to write mid/levels. Rotatable by `authority`, so the
     /// key that signs thousands of mid updates a day carries no other power.
     pub hot_authority: Address,
-    /// Only signer allowed to execute (the velocity signer PDA — velocity
-    /// clamps size to the quoted user's margin before CPI'ing here).
+    /// Only signer allowed to execute (velocity's quoter CPI signer PDA —
+    /// velocity clamps size to the quoted user's margin before CPI'ing here).
     /// Immutable after init.
     pub execute_authority: Address,
     /// Wallet half of the quoted velocity `User` — fills settle against

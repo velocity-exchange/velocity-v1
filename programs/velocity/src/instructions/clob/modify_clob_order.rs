@@ -41,6 +41,7 @@ use {
         load_mut,
         math::{margin::meets_place_order_margin_requirement, orders::is_order_position_reducing},
         msg,
+        signer::QUOTER_SIGNER_SEED,
         state::{
             clob_crank::{ClobCrankConditionsV0, CLOB_CRANK_CONDITIONS_PDA_SEED},
             market_status::MarketStatus,
@@ -77,9 +78,12 @@ pub struct ModifyClobOrder<'info> {
     /// CHECK: locked to the registered quoter program.
     #[account(address = quoter.load()?.program_id)]
     pub clob_program: UncheckedAccount<'info>,
-    /// CHECK: the protocol signer PDA — the CLOB's `place_authority`.
-    #[account(address = state.load()?.signer)]
-    pub velocity_signer: UncheckedAccount<'info>,
+    /// CHECK: the quoter CPI signer PDA — what a book's `place_authority` is
+    /// set to. Deliberately not the vault authority: signer privilege is
+    /// inherited by a callee, so the key velocity hands an external program
+    /// must be the authority on nothing.
+    #[account(seeds = [QUOTER_SIGNER_SEED], bump)]
+    pub quoter_signer: UncheckedAccount<'info>,
     /// Wake-hint host for the replacement; optional like every other CLOB
     /// placement path.
     #[account(
@@ -154,8 +158,8 @@ pub fn handle_modify_clob_order<'c: 'info, 'info>(
             params.market_index,
             &ctx.accounts.clob_market,
             &ctx.accounts.clob_program,
-            &ctx.accounts.velocity_signer,
-            state.signer_nonce,
+            &ctx.accounts.quoter_signer,
+            ctx.bumps.quoter_signer,
         )?
     };
     validate!(

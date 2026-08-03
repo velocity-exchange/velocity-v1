@@ -11,6 +11,7 @@ use {
         error::ErrorCode,
         instructions::constraints::*,
         load_mut, msg,
+        signer::QUOTER_SIGNER_SEED,
         state::{
             prop_amm::{ClobCancelOrderArgsV0, ClobMarket, ClobOrderRefV0, QuoterV0},
             state::State,
@@ -38,9 +39,12 @@ pub struct CancelClobOrder<'info> {
     /// CHECK: locked to the registered quoter program.
     #[account(address = quoter.load()?.program_id)]
     pub clob_program: UncheckedAccount<'info>,
-    /// CHECK: the protocol signer PDA — the CLOB's `place_authority`.
-    #[account(address = state.load()?.signer)]
-    pub velocity_signer: UncheckedAccount<'info>,
+    /// CHECK: the quoter CPI signer PDA — what a book's `place_authority` is
+    /// set to. Deliberately not the vault authority: signer privilege is
+    /// inherited by a callee, so the key velocity hands an external program
+    /// must be the authority on nothing.
+    #[account(seeds = [QUOTER_SIGNER_SEED], bump)]
+    pub quoter_signer: UncheckedAccount<'info>,
 }
 
 #[derive(Clone, Copy, AnchorSerialize, AnchorDeserialize)]
@@ -55,15 +59,14 @@ pub fn handle_cancel_clob_order(
     params: CancelClobOrderParams,
 ) -> Result<()> {
     let clock = Clock::get()?;
-    let state = ctx.accounts.state.load()?;
 
     let clob = ClobMarket::from_quoter(
         &*ctx.accounts.quoter.load()?,
         params.market_index,
         &ctx.accounts.clob_market,
         &ctx.accounts.clob_program,
-        &ctx.accounts.velocity_signer,
-        state.signer_nonce,
+        &ctx.accounts.quoter_signer,
+        ctx.bumps.quoter_signer,
     )?;
 
     // CPI cancel; ownership travels in the args in derivable form and the

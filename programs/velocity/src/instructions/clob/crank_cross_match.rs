@@ -167,13 +167,14 @@ pub fn handle_crank_cross_match<'c: 'info, 'info>(
             },
         )
         .collect();
+    let (quoter_signer, quoter_signer_nonce) = crate::signer::find_quoter_signer();
     let mut executor = CpiQuoterExecutor {
         quoters: &quoters,
         types,
         quoter_users,
         account_map: &account_map,
-        velocity_signer: state.signer,
-        signer_nonce: state.signer_nonce,
+        quoter_signer,
+        quoter_signer_nonce,
         users,
         taker: taker_ref,
     };
@@ -437,10 +438,7 @@ pub fn handle_resolve_crank_cross_match_quoter<'info>(
             // conditions go quiet rather than erroring forever.
             return Ok(None);
         }
-        let (signer, signer_nonce) = {
-            let state = ctx.accounts.state.load()?;
-            (state.signer, state.signer_nonce)
-        };
+        let (quoter_signer, quoter_signer_nonce) = crate::signer::find_quoter_signer();
         let account_map: BTreeMap<Pubkey, AccountInfo<'info>> = ctx
             .remaining_accounts
             .iter()
@@ -458,8 +456,8 @@ pub fn handle_resolve_crank_cross_match_quoter<'info>(
                     users: None,
                     taker: None,
                 },
-                &signer,
-                signer_nonce,
+                &quoter_signer,
+                quoter_signer_nonce,
                 &account_map,
             )
         };
@@ -539,7 +537,7 @@ pub fn handle_resolve_crank_cross_match_quoter<'info>(
             .account(ctx.accounts.quoter.key(), false);
         let mut union: BTreeMap<Pubkey, bool> = BTreeMap::new();
         *union.entry(ctx.accounts.clob_market.key()).or_default() |= true;
-        union.entry(signer).or_default();
+        union.entry(quoter_signer).or_default();
         union.entry(clob_program).or_default();
         for meta in &quoter.execute_accounts[..quoter.execute_accounts_count as usize] {
             *union.entry(meta.pubkey).or_default() |= meta.is_writable;

@@ -157,13 +157,17 @@ async function pollUntil<T>(
 	}
 }
 
-// --- CLOB book byte offsets, pinned by the program's litesvm tests
-// (prop_amm.rs constants).
+// --- CLOB book byte offsets. These are a hand copy of the `CLOB_*_OFFSET`
+// constants in `programs/velocity/src/state/prop_amm.rs`, which are the
+// authoritative set (pinned there against the CLOB's own litesvm tests).
+// Nothing checks the copy, so re-read them whenever the CLOB header changes:
+// a stale arena offset reads live orders as zeros, which looks like an order
+// that never rested rather than like a decoding bug.
 const CLOB_BEST_BID_OFFSET = 112;
 const CLOB_BEST_ASK_OFFSET = 116;
 const CLOB_BID_COUNT_OFFSET = 136;
 const CLOB_ASK_COUNT_OFFSET = 140;
-const CLOB_ORDERS_OFFSET = 8368;
+const CLOB_ORDERS_OFFSET = 8496;
 const CLOB_NODE_LEN = 96;
 const CLOB_NIL = 0xffffffff;
 
@@ -233,9 +237,15 @@ const midpointIx = {
 		)[0];
 	},
 	/** `initialize_quoter_v0`: market u16, sub u16, base_precision u64,
-	 * staleness u64, tick u64, step u64, min u64, attested bool. */
+	 * staleness u64, tick u64, step u64, min u64, attested bool.
+	 *
+	 * `config` and `maker` are separate signers: the config key reconfigures
+	 * and rotates the hot key, while the quoted wallet's signature is the
+	 * consent to quote for its sub-account (and seeds the instance). They must
+	 * be distinct keys — anchor v2 rejects duplicate account metas. */
 	initializeQuoter(accounts: {
 		payer: PublicKey;
+		config: PublicKey;
 		maker: PublicKey;
 		velocitySigner: PublicKey;
 		hot: PublicKey;
@@ -245,11 +255,10 @@ const midpointIx = {
 			programId: MIDPOINT_ID,
 			keys: [
 				signerRw(accounts.payer),
+				signerRo(accounts.config),
 				signerRo(accounts.maker),
 				ro(accounts.velocitySigner),
 				ro(accounts.hot),
-				// Absent optional flow authority = the program id.
-				ro(MIDPOINT_ID),
 				rw(accounts.instance),
 				ro(SystemProgram.programId),
 			],
@@ -302,20 +311,20 @@ const midpointIx = {
 		});
 	},
 	/** `update_quoter_v0` with `require_attested_flow = Some(true)` and every
-	 * other field absent. */
+	 * other field absent. Signed by the config key, not the quoted wallet.
+	 * No flow-authority account: the instance stores no copy of that key —
+	 * it reads the live one off velocity's State at quote time. */
 	requireAttestedFlow(
 		instance: PublicKey,
-		maker: PublicKey,
-		flowAuthority: PublicKey
+		config: PublicKey
 	): TransactionInstruction {
 		return new TransactionInstruction({
 			programId: MIDPOINT_ID,
 			keys: [
 				rw(instance),
-				signerRo(maker),
+				signerRo(config),
 				// Absent optional hot authority = the program id.
 				ro(MIDPOINT_ID),
-				ro(flowAuthority),
 			],
 			data: Buffer.concat([
 				ixDiscriminator('update_quoter_v0'),
@@ -359,6 +368,7 @@ describe('e2e localnet: programs + publisher + redis', function () {
 	// Actors.
 	const clobMakerKp = Keypair.generate();
 	const midMakerKp = Keypair.generate();
+	const midConfigKp = Keypair.generate();
 	const midHotKp = Keypair.generate();
 	const dlobMakerKp = Keypair.generate();
 	const takerKp = Keypair.generate();
@@ -383,6 +393,8 @@ describe('e2e localnet: programs + publisher + redis', function () {
 	let midInstance: PublicKey;
 	let midEntry: PublicKey;
 	let velocitySigner: PublicKey;
+	/** Resolved during bring-up: `routerTail` is synchronous. */
+	let statePdaCache: PublicKey;
 	let protocolUser: PublicKey;
 	let protocolUserStats: PublicKey;
 
@@ -682,18 +694,20 @@ describe('e2e localnet: programs + publisher + redis', function () {
 
 	/** Midpoint instance + spline, then its Custom registry entry. */
 	const midpointBringUp = async () => {
+		const statePda = await admin.getStatePublicKey();
 		midInstance = midpointIx.instance(midMakerKp.publicKey);
 		await send(
 			[
 				midpointIx.initializeQuoter({
 					payer: payer.publicKey,
+					config: midConfigKp.publicKey,
 					maker: midMakerKp.publicKey,
 					velocitySigner,
 					hot: midHotKp.publicKey,
 					instance: midInstance,
 				}),
 			],
-			[midMakerKp]
+			[midConfigKp, midMakerKp]
 		);
 		// Spline: 10bps / 30bps rungs, one unit each, mid $100.
 		await setMidpointLevels(usd(100), [
@@ -707,14 +721,19 @@ describe('e2e localnet: programs + publisher + redis', function () {
 			quoterProgram: MIDPOINT_ID,
 			responseAccount: midInstance,
 			user: userOf(midMakerKp.publicKey),
+			// Both legs end with velocity's State: midpoint reads the live
+			// `hot_flow_authority` off it rather than caching a copy, so the
+			// key can rotate without every instance being reconfigured.
 			quoteLeg: [
 				{ pubkey: midInstance, isWritable: true },
 				{ pubkey: SYSVAR_INSTRUCTIONS_PUBKEY, isWritable: false },
+				{ pubkey: statePda, isWritable: false },
 			],
 			executeLeg: [
 				{ pubkey: midInstance, isWritable: true },
 				{ pubkey: velocitySigner, isWritable: false },
 				{ pubkey: SYSVAR_INSTRUCTIONS_PUBKEY, isWritable: false },
+				{ pubkey: statePda, isWritable: false },
 			],
 		});
 		midEntry = registration.quoter;
@@ -941,6 +960,11 @@ describe('e2e localnet: programs + publisher + redis', function () {
 		ro(CLOB_ID),
 		rw(midInstance),
 		ro(SYSVAR_INSTRUCTIONS_PUBKEY),
+		// Midpoint reads the live flow authority off velocity's State on both
+		// legs. The ix's own `state` account is not in the CPI account map —
+		// that map is built from the remaining accounts — so it appears again
+		// here, which costs one index byte.
+		ro(statePdaCache),
 		ro(MIDPOINT_ID),
 	];
 
@@ -1048,6 +1072,7 @@ describe('e2e localnet: programs + publisher + redis', function () {
 
 		// Protocol init through the real admin instructions.
 		admin = newClient(payer);
+		statePdaCache = await admin.getStatePublicKey();
 		await admin.initialize(usdcMint.publicKey, true);
 
 		// The program-wide resolver staging account. Every relay crank
@@ -1694,14 +1719,8 @@ describe('e2e localnet: programs + publisher + redis', function () {
 		// midpoint's participation below an on-chain proof that the
 		// co-signature carried, not just that the endpoints answered.
 		await send(
-			[
-				midpointIx.requireAttestedFlow(
-					midInstance,
-					midMakerKp.publicKey,
-					flowAuthorityKp.publicKey
-				),
-			],
-			[midMakerKp]
+			[midpointIx.requireAttestedFlow(midInstance, midConfigKp.publicKey)],
+			[midConfigKp]
 		);
 
 		// Re-arm the midpoint: earlier scenarios consumed its ask rungs

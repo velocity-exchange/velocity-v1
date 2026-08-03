@@ -28,6 +28,23 @@ use std::{collections::HashMap, str::FromStr};
 /// See: https://dev.jup.ag/docs/swap-api
 const DEFAULT_JUPITER_API_URL: &str = "https://api.jup.ag/swap/v2";
 
+/// Rejects any swap mode other than `ExactIn`.
+///
+/// `/swap/v2/build` is ExactIn-only and dropped `swapMode` from its contract.
+/// Sent `ExactOut` it still answers 200 — with `swapMode: "ExactIn"` and `amount`
+/// spent as the *input* — so a caller asking to receive `amount` would instead
+/// spend it. Fail rather than invert the trade. `ExactOut` needs the v1 API.
+fn ensure_exact_in(swap_mode: SwapMode) -> SdkResult<()> {
+    match swap_mode {
+        SwapMode::ExactIn => Ok(()),
+        SwapMode::ExactOut => Err(SdkError::Generic(
+            "jupiter swap: ExactOut is not supported by the Jupiter v2 API \
+             (/swap/v2/build is ExactIn-only and silently treats the amount as the input)"
+                .to_string(),
+        )),
+    }
+}
+
 /// jupiter swap IXs and metadata for building a swap Tx
 pub struct JupiterSwapInfo {
     pub quote: QuoteResponse,
@@ -130,22 +147,19 @@ impl JupiterSwapApi for VelocityClient {
             );
         }
 
+        ensure_exact_in(swap_mode)?;
+
         let in_market = self.try_get_spot_market_account(in_market)?;
         let out_market = self.try_get_spot_market_account(out_market)?;
 
-        // GET /swap/v2/build — quote + raw instructions in one call
+        // GET /swap/v2/build — quote + raw instructions in one call. `swapMode` is
+        // deliberately not sent: v2 removed it. `onlyDirectRoutes`, `excludeDexes`
+        // and `maxAccounts` were each verified to still bind.
         let mut query: Vec<(&str, String)> = vec![
             ("inputMint", in_market.mint.to_string()),
             ("outputMint", out_market.mint.to_string()),
             ("amount", amount.to_string()),
             ("slippageBps", slippage_bps.to_string()),
-            (
-                "swapMode",
-                match swap_mode {
-                    SwapMode::ExactIn => "ExactIn".to_string(),
-                    SwapMode::ExactOut => "ExactOut".to_string(),
-                },
-            ),
             ("taker", user_authority.to_string()),
         ];
         if let Some(only_direct_routes) = only_direct_routes {
@@ -743,11 +757,27 @@ mod tests {
         );
     }
 
+    /// v2 only ever answers `ExactIn`, so the mapping keeps what the response says
+    /// rather than echoing the request.
     #[test]
-    fn maps_exact_out_swap_mode() {
-        let body = USDC_USDT_BUILD.replace(r#""swapMode": "ExactIn""#, r#""swapMode": "ExactOut""#);
-        let (quote, _) = parse(&body);
-        assert_eq!(quote.swap_mode, SwapMode::ExactOut);
+    fn maps_swap_mode_from_the_response() {
+        let (quote, _) = parse(USDC_USDT_BUILD);
+        assert_eq!(quote.swap_mode, SwapMode::ExactIn);
+    }
+
+    #[test]
+    fn accepts_exact_in() {
+        assert!(ensure_exact_in(SwapMode::ExactIn).is_ok());
+    }
+
+    /// Sending it would return a 200 that spends the amount as the input instead
+    /// of receiving it as the output, silently inverting the caller's trade.
+    #[test]
+    fn rejects_exact_out() {
+        let err = ensure_exact_in(SwapMode::ExactOut).expect_err("ExactOut must be rejected");
+        let message = err.to_string();
+        assert!(message.contains("ExactOut is not supported"), "{message}");
+        assert!(message.contains("ExactIn-only"), "{message}");
     }
 
     #[test]

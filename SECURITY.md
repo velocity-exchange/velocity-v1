@@ -22,7 +22,7 @@ Example impacts:
 - User or protocol funds remain frozen after a program upgrade when specific preconditions are met
 
 ### Medium
-**Payout:** $1,000 to $5,000 per bug
+**Payout:** $5,000 to $10,000 per bug
 
 Example impacts:
 - Temporary freezing of funds
@@ -30,7 +30,7 @@ Example impacts:
 - Theft of a small amount of funds, or theft requiring significant preconditions
 
 ### Low
-**Payout:** $1,000 to $5,000 per bug
+**Payout:** $100 to $5,000 per bug
 
 Other issues that may not qualify for one of the above tiers.
 

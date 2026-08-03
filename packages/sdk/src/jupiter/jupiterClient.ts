@@ -1,5 +1,6 @@
 import {
 	AddressLookupTableAccount,
+	ComputeBudgetProgram,
 	Connection,
 	PublicKey,
 	TransactionInstruction,
@@ -293,13 +294,6 @@ const isV2Payload = (payload: unknown): payload is JupiterV2RoutePayload =>
 	typeof payload === 'object' &&
 	(payload as { apiVersion?: unknown }).apiVersion === 'v2';
 
-/** Whether a quote's route payload is a v2 build rather than a v1 quote body. */
-const carriesV2Build = (quote: unknown): boolean => {
-	const route = (quote as SwapQuote | undefined)?.providerRoute;
-
-	return !!route && 'quote' in route && isV2Payload(route.quote);
-};
-
 const toTransactionInstruction = (
 	instruction: JupiterApiInstruction
 ): TransactionInstruction =>
@@ -314,13 +308,12 @@ const toTransactionInstruction = (
 	});
 
 /**
- * A v2 build's instructions in execution order: compute budget, setup, swap,
- * cleanup, other, tip.
+ * Everything a v2 build wants sent, in execution order: compute budget, setup,
+ * swap, cleanup, other, tip.
  *
- * The tip and `otherInstructions` are included here because this is also what a
- * standalone transaction sends. {@link filterRouteInstructions} drops them again
- * for the velocity swap bracket — both are System-program transfers, which the
- * program rejects between `beginSwap` and `endSwap`.
+ * This is the standalone-transaction list. The velocity swap bracket uses
+ * {@link bracketBuildInstructions} instead — it must not carry the tip or
+ * `otherInstructions`.
  */
 const flattenBuildInstructions = (
 	build: JupiterBuildResponse
@@ -333,6 +326,39 @@ const flattenBuildInstructions = (
 		...build.otherInstructions,
 		...(build.tipInstruction ? [build.tipInstruction] : []),
 	].map(toTransactionInstruction);
+
+/**
+ * The build's route only, for splicing between `beginSwap` and `endSwap`.
+ *
+ * Deliberately an allowlist: `tipInstruction` and `otherInstructions` are
+ * dropped by *not being selected*, rather than by trusting
+ * {@link filterRouteInstructions} to recognize them. That filter is a denylist —
+ * it keeps anything it doesn't know — so a tip routed through a Jito-specific
+ * program instead of a plain System transfer would survive it and fail on-chain
+ * with `InvalidSwap`. Selecting only the route's own instructions cannot.
+ */
+const bracketBuildInstructions = (
+	build: JupiterBuildResponse
+): TransactionInstruction[] =>
+	[
+		...build.computeBudgetInstructions,
+		...build.setupInstructions,
+		build.swapInstruction,
+		...(build.cleanupInstruction ? [build.cleanupInstruction] : []),
+	].map(toTransactionInstruction);
+
+/**
+ * `SetComputeUnitLimit`'s discriminator. v2 builds carry only a CU *price*
+ * (discriminator 3), but a caller-supplied limit must not end up duplicated if
+ * that ever changes.
+ */
+const SET_COMPUTE_UNIT_LIMIT_DISCRIMINATOR = 2;
+
+const isSetComputeUnitLimitIx = (
+	instruction: TransactionInstruction
+): boolean =>
+	instruction.programId.equals(ComputeBudgetProgram.programId) &&
+	instruction.data[0] === SET_COMPUTE_UNIT_LIMIT_DISCRIMINATOR;
 
 /** A ZodError issue as the v2 API reports it. */
 type ZodIssue = { path?: unknown[]; message?: string };
@@ -369,11 +395,13 @@ const describeJupiterError = (
 		return JSON.stringify(error);
 	}
 
+	// `||`, not `??` — an empty-string `error` is as useless as a missing one and
+	// must fall through to the next candidate rather than render as nothing.
 	return (
-		error ??
-		body?.errorCode ??
-		body?.message ??
-		response.statusText ??
+		error ||
+		body?.errorCode ||
+		body?.message ||
+		response.statusText ||
 		`HTTP ${response.status}`
 	);
 };
@@ -433,11 +461,16 @@ export class JupiterClient implements SwapProvider {
 	}
 
 	/**
-	 * The version path segment for the configured API.
+	 * The version path segment for an endpoint.
 	 *
 	 * Empty for a custom `url`, which is assumed to already carry one.
+	 *
+	 * Callers pass the version the endpoint *belongs to* rather than relying on
+	 * the configured one: `/quote` and `/swap` exist only under v1 and `/build`
+	 * only under v2, so deriving the segment from `this.apiVersion` would let a
+	 * v2-configured client address a `/v2/swap` that does not exist.
 	 */
-	private versionSegment(): string {
+	private versionSegment(apiVersion: JupiterApiVersion): string {
 		if (
 			this.url !== RECOMMENDED_JUPITER_API &&
 			this.url !== LEGACY_JUPITER_API
@@ -445,7 +478,7 @@ export class JupiterClient implements SwapProvider {
 			return '';
 		}
 
-		return this.apiVersion === 'v2'
+		return apiVersion === 'v2'
 			? JUPITER_API_V2_VERSION
 			: RECOMMENDED_JUPITER_API_VERSION;
 	}
@@ -511,28 +544,37 @@ export class JupiterClient implements SwapProvider {
 				'JupiterClient.getQuote: userPublicKey is required for the Jupiter v2 API (the /swap/v2/build endpoint builds instructions for a specific taker)'
 			);
 		}
+		// `/build` is ExactIn-only and drops `swapMode` from its contract. Sending
+		// ExactOut does not fail — the response comes back `swapMode: 'ExactIn'`
+		// with `amount` spent as *input*, so a caller asking to receive `amount`
+		// would instead spend it. Reject rather than invert the trade.
+		if (swapMode !== 'ExactIn') {
+			throw new Error(
+				`JupiterClient.getQuote: swapMode '${swapMode}' is not supported by the Jupiter v2 API (/swap/v2/build is ExactIn-only and silently treats the amount as the input); construct the client with apiVersion: "v1"`
+			);
+		}
 
+		// `onlyDirectRoutes`, `excludeDexes` and `maxAccounts` are all forwarded:
+		// each was verified against the live v2 API to still bind (direct-only
+		// routing keeps every leg on the requested pair, an excluded DEX stops
+		// appearing, and a lower account budget shrinks the route). `swapMode` is
+		// deliberately not sent — v2 removed it.
 		const params = new URLSearchParams({
 			inputMint: inputMint.toString(),
 			outputMint: outputMint.toString(),
 			amount: amount.toString(),
 			slippageBps: slippageBps.toString(),
-			swapMode,
 			taker: userPublicKey.toString(),
 			onlyDirectRoutes: onlyDirectRoutes.toString(),
 			maxAccounts: maxAccounts.toString(),
 			...(excludeDexes && { excludeDexes: excludeDexes.join(',') }),
 		});
-		// An ExactOut route has no account budget to spend — same as v1.
-		if (swapMode === 'ExactOut') {
-			params.delete('maxAccounts');
-		}
 
 		const headers = this.getHeaders();
 		const fetchOptions: RequestInit =
 			Object.keys(headers).length > 0 ? { headers } : {};
 		const response = await fetch(
-			`${this.url}${this.versionSegment()}/build?${params.toString()}`,
+			`${this.url}${this.versionSegment('v2')}/build?${params.toString()}`,
 			fetchOptions
 		);
 
@@ -559,13 +601,31 @@ export class JupiterClient implements SwapProvider {
 			throw new Error('Jupiter quote failed: response is missing route fields');
 		}
 
+		// A v2 build carries the instructions too, so they are part of what makes
+		// the response usable. Without this a malformed 200 quotes fine and dies
+		// later inside the build step as an opaque `not iterable` TypeError.
+		if (
+			!build.swapInstruction ||
+			!Array.isArray(build.computeBudgetInstructions) ||
+			!Array.isArray(build.setupInstructions) ||
+			!Array.isArray(build.otherInstructions) ||
+			!build.addressesByLookupTableAddress ||
+			typeof build.addressesByLookupTableAddress !== 'object'
+		) {
+			throw new Error(
+				'Jupiter quote failed: response is missing build instructions'
+			);
+		}
+
 		// Dropped now they are known absent, so the quote carries the same fields a
-		// v1 one does rather than v2's wider `error` type.
+		// v1 one does rather than v2's wider `error` type. The route payload holds
+		// this same object rather than `build`, so the instruction list is
+		// referenced twice, not copied.
 		const { error: _error, errorCode: _errorCode, ...quote } = build;
 
 		return buildSwapQuote(quote, {
 			provider: 'jupiter',
-			quote: { apiVersion: 'v2', build },
+			quote: { apiVersion: 'v2', build: quote },
 			// v2 builds for one taker, so the route is only executable by them.
 			quotedFor: userPublicKey.toString(),
 		});
@@ -621,7 +681,7 @@ export class JupiterClient implements SwapProvider {
 		const fetchOptions: RequestInit =
 			Object.keys(headers).length > 0 ? { headers } : {};
 		const response = await fetch(
-			`${this.url}${this.versionSegment()}/quote?${params.toString()}`,
+			`${this.url}${this.versionSegment('v1')}/quote?${params.toString()}`,
 			fetchOptions
 		);
 
@@ -657,40 +717,70 @@ export class JupiterClient implements SwapProvider {
 	}
 
 	/**
-	 * Get a swap transaction for quote, by posting it back to `POST /swap`.
-	 * @param quote quote to perform swap, from {@link getQuote}
-	 * @param userPublicKey the signer's wallet public key
+	 * The route as a standalone transaction, setup and teardown included.
+	 *
+	 * Under v1 this posts the quote to `POST /swap` and deserializes the
+	 * returned transaction. Under v2 the build's instructions are compiled
+	 * locally, against a **freshly fetched** blockhash rather than the build's
+	 * own `blockhashWithMetadata` — a build response may be minutes old by the
+	 * time it is signed, and this matches what the Titan client does.
 	 *
 	 * Always builds at the quote's own slippage — the price the caller was
 	 * shown. Re-quote to change it rather than overriding it here.
 	 *
-	 * v1 only. A v2 quote already carries its instructions and has no `/swap`
-	 * endpoint to post to — use {@link getSwapTransaction} or
-	 * {@link getRouteInstructions}.
+	 * **Compute budget.** v1's `/swap` sized the transaction for you. v2's
+	 * `/build` returns a compute unit *price* but no compute unit *limit*, so
+	 * without `computeUnitLimit` the transaction runs on the runtime default
+	 * (200k CU per instruction, capped at 1.4M) — usually enough for a swap, but
+	 * not sized to the route, and the CU price then applies to that whole default.
+	 * Pass `computeUnitLimit` to set it explicitly; a simulated value is tighter
+	 * still, and the fee scales with whatever limit is in force.
+	 *
+	 * @throws If the quote came from a different provider or a different wallet.
 	 */
-	public async getSwap({
+	public async getSwapTransaction({
 		quote,
 		userPublicKey,
-	}: {
-		quote: QuoteResponse | JupiterSwapQuote;
-		userPublicKey: PublicKey;
+		computeUnitLimit,
+	}: GetRouteInstructionsParams & {
+		/** Explicit CU limit. v2 supplies no limit of its own — see above. */
+		computeUnitLimit?: number;
 	}): Promise<VersionedTransaction> {
-		if (!quote) {
-			throw new Error('Jupiter swap quote not provided. Please try again.');
-		}
+		const route = expectProviderRoute(quote, 'jupiter', userPublicKey);
 
-		if (carriesV2Build(quote)) {
-			throw new Error(
-				'JupiterClient.getSwap posts to the v1 /swap endpoint; a v2 quote carries its instructions already — use getSwapTransaction or getRouteInstructions'
+		if (isV2Payload(route.quote)) {
+			const { build } = route.quote;
+
+			const [lookupTables, { blockhash }] = await Promise.all([
+				this.getBuildLookupTables(build),
+				this.connection.getLatestBlockhash(),
+			]);
+
+			const instructions = flattenBuildInstructions(build);
+
+			return new VersionedTransaction(
+				new TransactionMessage({
+					payerKey: userPublicKey,
+					recentBlockhash: blockhash,
+					instructions:
+						computeUnitLimit === undefined
+							? instructions
+							: [
+									ComputeBudgetProgram.setComputeUnitLimit({
+										units: computeUnitLimit,
+									}),
+									...instructions.filter(
+										(instruction) => !isSetComputeUnitLimitIx(instruction)
+									),
+							  ],
+				}).compileToV0Message(lookupTables)
 			);
 		}
 
-		// `providerRoute` is our own wrapper, not part of Jupiter's quote body.
-		const { providerRoute: _providerRoute, ...quoteResponse } =
-			quote as JupiterSwapQuote;
+		const quoteResponse = route.quote as QuoteResponse;
 
 		const resp = await (
-			await fetch(`${this.url}${this.versionSegment()}/swap`, {
+			await fetch(`${this.url}${this.versionSegment('v1')}/swap`, {
 				method: 'POST',
 				headers: this.getHeaders('application/json'),
 				body: JSON.stringify({
@@ -720,45 +810,6 @@ export class JupiterClient implements SwapProvider {
 	}
 
 	/**
-	 * The route as a standalone transaction, setup and teardown included.
-	 *
-	 * Under v1 this is the transaction `/swap` returns. Under v2 the build's
-	 * instructions are compiled locally, against a **freshly fetched** blockhash
-	 * rather than the build's own `blockhashWithMetadata` — a build response may
-	 * be minutes old by the time it is signed, and this matches what the Titan
-	 * client does.
-	 * @throws If the quote came from a different provider or a different wallet.
-	 */
-	public async getSwapTransaction({
-		quote,
-		userPublicKey,
-	}: GetRouteInstructionsParams): Promise<VersionedTransaction> {
-		const route = expectProviderRoute(quote, 'jupiter', userPublicKey);
-
-		if (isV2Payload(route.quote)) {
-			const { build } = route.quote;
-
-			const [lookupTables, { blockhash }] = await Promise.all([
-				this.getBuildLookupTables(build),
-				this.connection.getLatestBlockhash(),
-			]);
-
-			return new VersionedTransaction(
-				new TransactionMessage({
-					payerKey: userPublicKey,
-					recentBlockhash: blockhash,
-					instructions: flattenBuildInstructions(build),
-				}).compileToV0Message(lookupTables)
-			);
-		}
-
-		return this.getSwap({
-			quote: route.quote as QuoteResponse,
-			userPublicKey,
-		});
-	}
-
-	/**
 	 * Builds the route instructions for a quote returned by {@link getQuote}.
 	 *
 	 * The quote carries its own route payload, so this reads no client state
@@ -777,7 +828,7 @@ export class JupiterClient implements SwapProvider {
 
 			return {
 				instructions: filterRouteInstructions({
-					instructions: flattenBuildInstructions(build),
+					instructions: bracketBuildInstructions(build),
 					inputMint: new PublicKey(quote.inputMint),
 					outputMint: new PublicKey(quote.outputMint),
 				}),
@@ -785,8 +836,8 @@ export class JupiterClient implements SwapProvider {
 			};
 		}
 
-		const transaction = await this.getSwap({
-			quote: route.quote as QuoteResponse,
+		const transaction = await this.getSwapTransaction({
+			quote,
 			userPublicKey,
 		});
 
@@ -850,16 +901,26 @@ export class JupiterClient implements SwapProvider {
 	private async getBuildLookupTables(
 		build: JupiterBuildResponse
 	): Promise<AddressLookupTableAccount[]> {
-		return (
-			await Promise.all(
-				Object.keys(build.addressesByLookupTableAddress).map((address) =>
-					this.getLookupTable(new PublicKey(address))
-				)
-			)
-		).filter(
-			(lookupTable): lookupTable is AddressLookupTableAccount =>
-				lookupTable !== undefined
+		const addresses = Object.keys(build.addressesByLookupTableAddress);
+		const lookupTables = await Promise.all(
+			addresses.map((address) => this.getLookupTable(new PublicKey(address)))
 		);
+
+		// A route compiled without one of its tables silently falls back to static
+		// account keys: it either overflows the transaction size limit or resolves
+		// different accounts, and fails with nothing pointing at the missing table.
+		const unresolved = addresses.filter(
+			(_, i) => lookupTables[i] === undefined
+		);
+		if (unresolved.length > 0) {
+			throw new Error(
+				`Jupiter route is missing address lookup table(s) ${unresolved.join(
+					', '
+				)} — cannot compile the route without them`
+			);
+		}
+
+		return lookupTables as AddressLookupTableAccount[];
 	}
 
 	async getLookupTable(

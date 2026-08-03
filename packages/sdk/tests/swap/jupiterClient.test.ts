@@ -191,7 +191,13 @@ const apiIx = (
 const ataCreate = (mint: PublicKey): JupiterApiInstruction =>
 	apiIx(ATA_PROGRAM, [USER, USER, USER, mint], [1]);
 
-/** Shaped on a real `/swap/v2/build` body (usdc-usdt.json). */
+/**
+ * Shaped on a real `/swap/v2/build` response.
+ *
+ * `computeBudgetInstructions` holds a `SetComputeUnitPrice` (discriminator 3)
+ * and nothing else, because that is all v2 sends — unlike v1's `/swap`, it never
+ * supplies a `SetComputeUnitLimit`. A fixture with a limit would hide that.
+ */
 const validBuildBody: JupiterBuildResponse = {
 	inputMint: INPUT_MINT.toString(),
 	outputMint: OUTPUT_MINT.toString(),
@@ -202,7 +208,9 @@ const validBuildBody: JupiterBuildResponse = {
 	slippageBps: 10,
 	priceImpactPct: '0',
 	routePlan: [],
-	computeBudgetInstructions: [apiIx(COMPUTE_BUDGET_PROGRAM, [], [2, 64, 66])],
+	computeBudgetInstructions: [
+		apiIx(COMPUTE_BUDGET_PROGRAM, [], [3, 64, 66, 15, 0, 0, 0, 0, 0]),
+	],
 	setupInstructions: [],
 	swapInstruction: apiIx(JUPITER_V6_PROGRAM, [USER], [9, 1, 2, 3]),
 	cleanupInstruction: null,
@@ -262,15 +270,41 @@ describe('JupiterClient v2 (/swap/v2/build)', () => {
 		expect(quote.providerRoute.quotedFor).to.equal(USER.toString());
 	});
 
-	it('drops maxAccounts for an ExactOut route', async () => {
-		fetchStub.resolves(
-			jsonResponse({ ...validBuildBody, swapMode: 'ExactOut' })
-		);
+	// `/build` is ExactIn-only: sent ExactOut, the live API answers 200 with
+	// `swapMode: 'ExactIn'` and spends `amount` as the input, so a caller asking
+	// to receive `amount` would instead spend it. adminClient/velocityClient both
+	// size `beginSwap` off an ExactOut quote, so inverting it silently is unsafe.
+	it('rejects ExactOut rather than letting v2 reinterpret it as ExactIn', async () => {
+		const err = await captureError(getQuote({ swapMode: 'ExactOut' }));
 
-		await getQuote({ swapMode: 'ExactOut' });
+		expect(err.message).to.contain("swapMode 'ExactOut' is not supported");
+		expect(err.message).to.contain('apiVersion: "v1"');
+		expect(fetchStub.called).to.be.false;
+	});
 
-		expect(quoteUrl()).to.contain('swapMode=ExactOut');
-		expect(quoteUrl()).to.not.contain('maxAccounts');
+	it('does not send swapMode, which v2 removed from its contract', async () => {
+		fetchStub.resolves(jsonResponse(validBuildBody));
+
+		await getQuote({ swapMode: 'ExactIn' });
+
+		expect(quoteUrl()).to.not.contain('swapMode');
+	});
+
+	// Each verified against the live v2 API to still bind, despite `onlyDirectRoutes`
+	// being absent from v2's documented parameter list.
+	it('forwards the routing constraints v2 still honours', async () => {
+		fetchStub.resolves(jsonResponse(validBuildBody));
+
+		await getQuote({
+			onlyDirectRoutes: true,
+			maxAccounts: 45,
+			excludeDexes: ['Raydium CLMM'],
+		});
+
+		const params = new URLSearchParams(quoteUrl().split('?')[1]);
+		expect(params.get('onlyDirectRoutes')).to.equal('true');
+		expect(params.get('maxAccounts')).to.equal('45');
+		expect(params.get('excludeDexes')).to.equal('Raydium CLMM');
 	});
 
 	it('rejects a quote request with no taker', async () => {
@@ -419,6 +453,99 @@ describe('JupiterClient v2 (/swap/v2/build)', () => {
 		]);
 	});
 
+	// filterRouteInstructions is a denylist — it keeps what it doesn't recognize.
+	// The bracket list is therefore selected from the route's own instructions, so
+	// a tip that isn't a plain System transfer still cannot reach the chain.
+	it('keeps a non-System tip out of the bracket', async () => {
+		const JITO_TIP_PROGRAM = 'T1pyyaTNZsKv2WcRAB8oVnk93mLJw2XzjtVYqCsaHqt';
+		fetchStub.resolves(
+			jsonResponse({
+				...validBuildBody,
+				otherInstructions: [apiIx(JITO_TIP_PROGRAM, [USER, USER], [7, 0])],
+				tipInstruction: apiIx(JITO_TIP_PROGRAM, [USER, USER], [7, 1]),
+			})
+		);
+
+		const quote = await getQuote();
+		const { instructions } = await client.getRouteInstructions({
+			quote,
+			userPublicKey: USER,
+		});
+
+		expect(instructions.map((ix) => ix.programId.toString())).to.deep.equal([
+			JUPITER_V6_PROGRAM,
+		]);
+	});
+
+	it('rejects a 200 body that carries no build instructions', async () => {
+		const {
+			computeBudgetInstructions: _cb,
+			swapInstruction: _swap,
+			addressesByLookupTableAddress: _alts,
+			...withoutInstructions
+		} = validBuildBody;
+		fetchStub.resolves(jsonResponse(withoutInstructions));
+
+		const err = await captureError(getQuote());
+
+		// Without this the quote succeeds and dies later inside the build step as
+		// `build.computeBudgetInstructions is not iterable`.
+		expect(err.message).to.contain('missing build instructions');
+	});
+
+	it('names an address lookup table it could not resolve', async () => {
+		connection.getAddressLookupTable.resolves({
+			context: { slot: 1 },
+			value: null,
+		});
+		fetchStub.resolves(
+			jsonResponse({
+				...validBuildBody,
+				addressesByLookupTableAddress: {
+					[ALT_ADDRESS.toString()]: [USER.toString()],
+				},
+			})
+		);
+
+		const quote = await getQuote();
+		const err = await captureError(
+			client.getRouteInstructions({ quote, userPublicKey: USER })
+		);
+
+		// Compiling without the table silently falls back to static keys.
+		expect(err.message).to.contain(ALT_ADDRESS.toString());
+		expect(err.message).to.contain('missing address lookup table');
+	});
+
+	// v2 sends a CU price and no CU limit, so a standalone transaction is left on
+	// the runtime default unless the caller sets one.
+	it('sets an explicit compute unit limit when asked, and none otherwise', async () => {
+		connection.getLatestBlockhash.resolves({
+			blockhash: '11111111111111111111111111111111',
+			lastValidBlockHeight: 1,
+		});
+		fetchStub.resolves(jsonResponse(validBuildBody));
+
+		const quote = await getQuote();
+		const computeBudgetData = async (computeUnitLimit?: number) => {
+			const transaction = await client.getSwapTransaction({
+				quote,
+				userPublicKey: USER,
+				computeUnitLimit,
+			});
+
+			return TransactionMessage.decompile(transaction.message)
+				.instructions.filter(
+					(ix) => ix.programId.toString() === COMPUTE_BUDGET_PROGRAM
+				)
+				.map((ix) => ix.data[0]);
+		};
+
+		// 3 = SetComputeUnitPrice, all Jupiter sends. 2 = SetComputeUnitLimit.
+		expect(await computeBudgetData()).to.deep.equal([3]);
+		expect(await computeBudgetData(400_000)).to.deep.equal([2, 3]);
+	});
+
 	it('compiles a standalone transaction from the full build, tip included', async () => {
 		connection.getLatestBlockhash.resolves({
 			blockhash: '11111111111111111111111111111111',
@@ -453,18 +580,6 @@ describe('JupiterClient v2 (/swap/v2/build)', () => {
 			SYSTEM_PROGRAM,
 			SYSTEM_PROGRAM,
 		]);
-	});
-
-	it('rejects a v2 quote posted to the v1 /swap endpoint', async () => {
-		fetchStub.resolves(jsonResponse(validBuildBody));
-
-		const quote = await getQuote();
-		const err = await captureError(
-			client.getSwap({ quote, userPublicKey: USER })
-		);
-
-		expect(err.message).to.contain('v1 /swap endpoint');
-		expect(fetchStub.callCount).to.equal(1);
 	});
 
 	it('rejects a route quoted for a different wallet', async () => {

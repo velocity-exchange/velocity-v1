@@ -507,7 +507,8 @@ export class JupiterClient implements SwapProvider {
 	 * which builds the route for one wallet at quote time.
 	 * @param slippageBps the slippage tolerance in basis points
 	 * @param swapMode the swap mode (ExactIn or ExactOut)
-	 * @param onlyDirectRoutes whether to only return direct routes
+	 * @param onlyDirectRoutes whether to only return direct routes. Rejected under
+	 * `apiVersion: 'v2'`, which has no direct-only routing control.
 	 */
 	public async getQuote(params: SwapQuoteParams): Promise<JupiterSwapQuote> {
 		return this.apiVersion === 'v2'
@@ -555,18 +556,26 @@ export class JupiterClient implements SwapProvider {
 			);
 		}
 
-		// `onlyDirectRoutes`, `excludeDexes` and `maxAccounts` are all forwarded:
-		// each was verified against the live v2 API to still bind (direct-only
-		// routing keeps every leg on the requested pair, an excluded DEX stops
-		// appearing, and a lower account budget shrinks the route). `swapMode` is
-		// deliberately not sent — v2 removed it.
+		// `/build` has no direct-only routing control. It does not reject the
+		// parameter — unknown query params come back 200 — it just ignores it, and
+		// the route it returns can still hop through intermediate mints. Sending it
+		// would hand back a multi-hop route to a caller who asked for single-hop,
+		// spending more accounts and intermediate ATAs than they budgeted for.
+		if (onlyDirectRoutes) {
+			throw new Error(
+				'JupiterClient.getQuote: onlyDirectRoutes is not supported by the Jupiter v2 API (/swap/v2/build silently ignores it and still returns multi-hop routes); construct the client with apiVersion: "v1"'
+			);
+		}
+
+		// `excludeDexes` and `maxAccounts` are forwarded — both were verified
+		// against the live v2 API to still bind. `swapMode` and `onlyDirectRoutes`
+		// are deliberately not sent: v2 honours neither.
 		const params = new URLSearchParams({
 			inputMint: inputMint.toString(),
 			outputMint: outputMint.toString(),
 			amount: amount.toString(),
 			slippageBps: slippageBps.toString(),
 			taker: userPublicKey.toString(),
-			onlyDirectRoutes: onlyDirectRoutes.toString(),
 			maxAccounts: maxAccounts.toString(),
 			...(excludeDexes && { excludeDexes: excludeDexes.join(',') }),
 		});

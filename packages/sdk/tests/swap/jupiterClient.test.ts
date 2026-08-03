@@ -290,21 +290,38 @@ describe('JupiterClient v2 (/swap/v2/build)', () => {
 		expect(quoteUrl()).to.not.contain('swapMode');
 	});
 
-	// Each verified against the live v2 API to still bind, despite `onlyDirectRoutes`
-	// being absent from v2's documented parameter list.
+	// Both verified against the live v2 API to still bind: an excluded DEX stops
+	// appearing, and a lower account budget shrinks the route.
 	it('forwards the routing constraints v2 still honours', async () => {
 		fetchStub.resolves(jsonResponse(validBuildBody));
 
 		await getQuote({
-			onlyDirectRoutes: true,
 			maxAccounts: 45,
 			excludeDexes: ['Raydium CLMM'],
 		});
 
 		const params = new URLSearchParams(quoteUrl().split('?')[1]);
-		expect(params.get('onlyDirectRoutes')).to.equal('true');
 		expect(params.get('maxAccounts')).to.equal('45');
 		expect(params.get('excludeDexes')).to.equal('Raydium CLMM');
+	});
+
+	// `/build` has no direct-only routing control. It answers 200 for unknown query
+	// params rather than rejecting them, so forwarding it would return a multi-hop
+	// route to a caller who asked for single-hop.
+	it('rejects onlyDirectRoutes rather than quoting a multi-hop route as direct', async () => {
+		const err = await captureError(getQuote({ onlyDirectRoutes: true }));
+
+		expect(err.message).to.contain('onlyDirectRoutes is not supported');
+		expect(err.message).to.contain('apiVersion: "v1"');
+		expect(fetchStub.called).to.be.false;
+	});
+
+	it('never sends onlyDirectRoutes, which v2 ignores', async () => {
+		fetchStub.resolves(jsonResponse(validBuildBody));
+
+		await getQuote({ onlyDirectRoutes: false });
+
+		expect(quoteUrl()).to.not.contain('onlyDirectRoutes');
 	});
 
 	it('rejects a quote request with no taker', async () => {

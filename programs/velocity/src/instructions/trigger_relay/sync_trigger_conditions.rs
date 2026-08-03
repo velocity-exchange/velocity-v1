@@ -187,7 +187,14 @@ pub fn rewrite_trigger_conditions<'info>(
         if slot_index >= TRIGGER_CONDITION_SLOTS {
             break;
         }
-        if order.status != OrderStatus::Open || !order.must_be_triggered() || order.triggered() {
+        // Skip a trigger already resting on a book: it deliberately reads
+        // as untriggered, so without this the watch re-fires every round
+        // and `trigger_clob_order` rejects the staged crank each time.
+        if order.status != OrderStatus::Open
+            || !order.must_be_triggered()
+            || order.triggered()
+            || order.is_placed_on_clob()
+        {
             continue;
         }
         let Some(inputs) = markets.get(&order.market_index) else {

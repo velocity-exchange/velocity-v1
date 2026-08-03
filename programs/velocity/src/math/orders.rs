@@ -724,6 +724,14 @@ pub fn find_maker_orders(
         if order.status != OrderStatus::Open {
             continue;
         }
+        // A slot shadowing a CLOB order carries no open_bids/open_asks
+        // reservation, so matching it here would fill size the book still
+        // holds. The trigger filter below happens to exclude these today
+        // only because a placed trigger deliberately stays untriggered —
+        // this does not rely on that.
+        if order.is_placed_on_clob() {
+            continue;
+        }
 
         // if order direction is not same or market type is not same or market index is the same, skip
         if order.direction != *direction
@@ -1226,6 +1234,11 @@ pub fn find_bids_and_asks_from_users(
 
         for order in user.orders.iter() {
             if order.status != OrderStatus::Open {
+                continue;
+            }
+            // Shadows of CLOB-resident orders are not DLOB liquidity: the
+            // size lives on the book, not in a reservation here.
+            if order.is_placed_on_clob() {
                 continue;
             }
 

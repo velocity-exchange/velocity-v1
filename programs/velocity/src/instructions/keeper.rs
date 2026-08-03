@@ -658,6 +658,21 @@ pub fn handle_update_user_open_orders_count<'info>(ctx: Context<UpdateUserIdle>)
         }
     }
 
+    // A CLOB-resident order occupies no `orders` slot — only the position's
+    // `open_orders` reservation records it — so counting rows alone would
+    // wipe the count for every order resting on a book, desyncing it from
+    // the per-position reservations this instruction does not touch. Add
+    // them back per market.
+    open_orders = user
+        .perp_positions
+        .iter()
+        .map(|position| position.market_index)
+        .collect::<std::collections::BTreeSet<_>>()
+        .into_iter()
+        .fold(open_orders, |total, market_index| {
+            total.saturating_add(user.clob_resident_open_orders(market_index))
+        });
+
     user.open_orders = open_orders;
     user.has_open_order = open_orders > 0;
     user.open_auctions = open_auctions;

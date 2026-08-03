@@ -95,7 +95,9 @@ async function watchRegistrationIxs(
 	target: PublicKey,
 	watch: Keypair
 ): Promise<TransactionInstruction[]> {
-	const rent = await connection.getMinimumBalanceForRentExemption(WATCH_ACCOUNT_LEN);
+	const rent = await connection.getMinimumBalanceForRentExemption(
+		WATCH_ACCOUNT_LEN
+	);
 	const create = SystemProgram.createAccount({
 		fromPubkey: payer,
 		newAccountPubkey: watch.publicKey,
@@ -133,14 +135,14 @@ export function registerClobMarket(parent: Command): void {
 	const clobMarket = parent
 		.command('clob-market')
 		.description(
-			'CLOB market bring-up: create + register a perp market\'s order book and its relay crank plumbing.'
+			"CLOB market bring-up: create + register a perp market's order book and its relay crank plumbing."
 		);
 
 	withGlobalOptions(
 		clobMarket
 			.command('init <market> <keeperPaymentLamports>')
 			.description(
-				'Stand up a perp market\'s CLOB in one command: create the book account, initialize it on the CLOB program (place_authority = the velocity signer), register + approve its quoter entry, attach it as the market\'s canonical CLOB (creating the crank conditions + reservoir), and optionally register the relay watch and fund the reservoir. Signer must hold warm/cold admin (approval + attach). Direct-send only — fresh account keypairs must co-sign, so --multisig is rejected.'
+				"Stand up a perp market's CLOB in one command: create the book account, initialize it on the CLOB program (place_authority = the velocity signer), register + approve its quoter entry, attach it as the market's canonical CLOB (creating the crank conditions + reservoir), and optionally register the relay watch and fund the reservoir. Signer must hold warm/cold admin (approval + attach). Direct-send only — fresh account keypairs must co-sign, so --multisig is rejected."
 			)
 			.requiredOption('--clob-program <pubkey>', 'deployed CLOB program id')
 			.option('--capacity <n>', 'order-node arena capacity', '4096')
@@ -152,11 +154,23 @@ export function registerClobMarket(parent: Command): void {
 			.option('--base-precision <n>', 'base units per whole unit', '1000000000')
 			.option('--tick-size <n>', 'price tick (PRICE_PRECISION)', '100')
 			.option('--step-size <n>', 'size step (base precision)', '100000')
-			.option('--min-order-size <n>', 'minimum order size (base precision)', '100000')
-			.option('--default-activation-delay <slots>', 'default taker speed bump', '1')
+			.option(
+				'--min-order-size <n>',
+				'minimum order size (base precision)',
+				'100000'
+			)
+			.option(
+				'--default-activation-delay <slots>',
+				'default taker speed bump',
+				'1'
+			)
 			.option('--max-activation-delay <slots>', 'max caller-chosen delay', '20')
 			.option('--grace-slots <n>', 'unknown-user grace window', '2')
-			.option('--evict-threshold <n>', 'per-side soft cap enabling the evict crank', '3072')
+			.option(
+				'--evict-threshold <n>',
+				'per-side soft cap enabling the evict crank',
+				'3072'
+			)
 			.option('--max-quote-levels <n>', 'quote response level cap', '128')
 			.option('--max-execute-fills <n>', 'execute response fill cap', '64')
 			.option('--max-execute-users <n>', 'execute user-set cap', '32')
@@ -241,7 +255,9 @@ export function registerClobMarket(parent: Command): void {
 					new Transaction().add(createBook, initBook),
 					[book]
 				);
-				console.log(`book ${book.publicKey.toBase58()} initialized (${space} bytes)`);
+				console.log(
+					`book ${book.publicKey.toBase58()} initialized (${space} bytes)`
+				);
 
 				// 2. Registry entry: init, register the CPI surface, approve.
 				const quoterPda = PublicKey.findProgramAddressSync(
@@ -274,7 +290,10 @@ export function registerClobMarket(parent: Command): void {
 						},
 					}
 				);
-				const legAccounts = (leg: QuoterCpiLeg, metas: { pubkey: PublicKey; isWritable: boolean }[]) =>
+				const legAccounts = (
+					leg: QuoterCpiLeg,
+					metas: { pubkey: PublicKey; isWritable: boolean }[]
+				) =>
 					client.program.instruction.updateQuoterAccounts(
 						{ leg, index: 0, metas },
 						{ accounts: { authority: wallet, quoter: quoterPda } }
@@ -363,7 +382,7 @@ export function registerClobMarket(parent: Command): void {
 		clobMarket
 			.command('register-watch <market>')
 			.description(
-				'Register a relay WatchV0 over an existing market\'s crank-conditions block, so relay turners discover its CLOB crank work. Permissionless on relay\'s side; the signing wallet becomes the registrar (and can later close the watch to reclaim rent). Direct-send only.'
+				"Register a relay WatchV0 over an existing market's crank-conditions block, so relay turners discover its CLOB crank work. Permissionless on relay's side; the signing wallet becomes the registrar (and can later close the watch to reclaim rent). Direct-send only."
 			)
 			.option(
 				'--relay-program <pubkey>',

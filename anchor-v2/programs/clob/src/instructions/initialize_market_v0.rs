@@ -1,5 +1,8 @@
 use {
-    crate::state::{ClobBook, ClobMarketV0, MarketConfigV0},
+    crate::{
+        book::ClobBook,
+        state::{ClobMarketV0, MarketConfigV0},
+    },
     anchor_lang_v2::prelude::*,
 };
 

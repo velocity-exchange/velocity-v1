@@ -229,9 +229,11 @@ fn set_user_stats_account(svm: &mut litesvm::LiteSVM, address: Pubkey, authority
     );
 }
 
-/// `[disc][ClobHeaderV0 8352][len u32][pad][OrderNodeV0 x cap]`.
+/// `[disc][ClobHeaderV0 8480][len u32][pad][OrderNodeV0 x cap]`. The header
+/// is the CLOB's `size_of::<ClobHeaderV0>()` — a 128-byte reserve for future
+/// fields sits between the config and the 8192-byte response region.
 fn clob_market_space(capacity: usize) -> usize {
-    let orders_offset = (8 + 8352 + 4usize).next_multiple_of(8);
+    let orders_offset = (8 + 8480 + 4usize).next_multiple_of(8);
     orders_offset + capacity * 96
 }
 

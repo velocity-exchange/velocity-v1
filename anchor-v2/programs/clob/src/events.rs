@@ -1,3 +1,11 @@
+//! CLOB lifecycle events.
+//!
+//! Every event type carries an explicit version suffix, matching the `_v0`
+//! instruction and `V0` wire generation. The event discriminator is derived
+//! from the type name, so a layout change means a new `…RecordV1` type
+//! emitted alongside (or in place of) the V0 one — never an edit in place,
+//! which would silently repurpose a discriminator indexers already key on.
+//!
 //! Lifecycle events are `#[event(bytemuck)]` — fixed-size, zero-padding, the
 //! cheapest emit path. `side`/`direction` are raw u8s (0 = bid/long).
 
@@ -5,7 +13,7 @@ use anchor_lang_v2::prelude::*;
 
 #[event(bytemuck)]
 #[repr(C)]
-pub struct OrderPlaceRecord {
+pub struct OrderPlaceRecordV0 {
     pub authority: Address,
     pub ts: i64,
     pub slot: u64,
@@ -23,7 +31,7 @@ pub struct OrderPlaceRecord {
 
 #[event(bytemuck)]
 #[repr(C)]
-pub struct OrderCancelRecord {
+pub struct OrderCancelRecordV0 {
     pub authority: Address,
     pub ts: i64,
     pub order_id: u64,
@@ -38,7 +46,7 @@ pub struct OrderCancelRecord {
 /// "re-armed"/"evicted", and velocity re-arms triggers in the same tx.
 #[event(bytemuck)]
 #[repr(C)]
-pub struct OrderEvictRecord {
+pub struct OrderEvictRecordV0 {
     pub authority: Address,
     pub ts: i64,
     pub order_id: u64,
@@ -52,7 +60,7 @@ pub struct OrderEvictRecord {
 /// Crank reclamation of an expired order (execute only skips expired).
 #[event(bytemuck)]
 #[repr(C)]
-pub struct OrderExpireRecord {
+pub struct OrderExpireRecordV0 {
     pub authority: Address,
     pub ts: i64,
     pub order_id: u64,
@@ -67,19 +75,19 @@ pub struct OrderExpireRecord {
 /// only. `user`/`price` resolve against the indexer's order table (built
 /// from place records); quote amounts derive from price × base.
 #[event]
-pub struct ExecuteRecord {
+pub struct ExecuteRecordV0 {
     pub ts: i64,
     pub slot: u64,
     pub market_index: u16,
     pub direction: u8,
-    pub fills: Vec<FillSlim>,
+    pub fills: Vec<FillSlimV0>,
     /// Orders culled because the post-fill remainder fell below
     /// `min_order_size`.
     pub cancelled_order_ids: Vec<u64>,
 }
 
 #[derive(Clone, Copy, wincode::SchemaRead, wincode::SchemaWrite)]
-pub struct FillSlim {
+pub struct FillSlimV0 {
     pub order_id: u64,
     pub base_size: u64,
 }

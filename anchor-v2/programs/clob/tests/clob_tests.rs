@@ -854,6 +854,34 @@ fn cu_benchmarks() {
     );
 }
 
+/// Worst case for the response encoder: makers interleaved through the book,
+/// so most completed order ids have to be spliced into a balance-change
+/// record that already has other records written after it.
+#[test]
+fn cu_benchmark_interleaved_makers() {
+    let mut ctx = setup();
+    let makers: Vec<Address> = (0..8).map(|_| addr(Pubkey::new_unique())).collect();
+    for i in 0..64u64 {
+        let ix = place_ix(
+            &ctx,
+            place_args(Side::Ask, 100 + i, 1),
+            makers[(i % 8) as usize],
+        );
+        send(&mut ctx, ix).unwrap();
+    }
+    advance_slot(&mut ctx, 1);
+
+    let meta = execute_meta_users(&mut ctx, Direction::Long, 64, Some(makers.clone())).unwrap();
+    let changes = parse_balance_changes(&read_response(&ctx, &meta));
+    assert_eq!(changes.len(), 8);
+    // Every maker's eight orders are fully consumed and reported.
+    assert!(changes.iter().all(|change| change.3.len() == 8));
+    println!(
+        "CU — execute(64 orders, 8 interleaved makers): {}",
+        meta.compute_units_consumed
+    );
+}
+
 #[test]
 fn resize_grows_arena_and_per_side_capacity() {
     let mut ctx = setup_with_capacity(16); // 8 per side

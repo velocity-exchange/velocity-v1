@@ -1,8 +1,5 @@
 use {
-    crate::{
-        error::ClobError,
-        state::{ClobBook, ClobMarketV0},
-    },
+    crate::{book::ClobBook, error::ClobError, state::ClobMarketV0},
     anchor_lang_v2::prelude::*,
 };
 

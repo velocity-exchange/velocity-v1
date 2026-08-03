@@ -1,7 +1,7 @@
 use {
     crate::{
-        error::ClobError,
-        state::{ClobBook, ClobMarketV0, Direction, QuoteResponseV0, ResponsePointerV0, UserRefV0},
+        book::ClobBook,
+        state::{ClobMarketV0, Direction, ResponsePointerV0, UserRefV0},
     },
     anchor_lang_v2::prelude::*,
 };
@@ -26,26 +26,17 @@ pub struct QuoteArgsV0 {
     pub taker: Option<UserRefV0>,
 }
 
-/// Quoter interface: price levels for a taker of `direction`/`size`, written
-/// to the market's response tail; the returned pointer locates them.
+/// Quoter interface: price levels for a taker of `direction`/`size`, streamed
+/// into the market's response tail as they are aggregated; the returned
+/// pointer locates them.
 pub fn handle_quote_v0(ctx: &mut Context<QuoteV0>, args: QuoteArgsV0) -> Result<ResponsePointerV0> {
     let clock = Clock::get()?;
-    let market = &mut ctx.accounts.market;
-    let levels = market.quote(
+    ctx.accounts.market.quote(
         args.direction,
         args.size,
         args.users.as_deref(),
         args.taker.as_ref(),
         clock.slot,
         clock.unix_timestamp,
-    )?;
-
-    let mut data = Vec::with_capacity(1024);
-    anchor_lang_v2::wincode::config::serialize_into(
-        &mut data,
-        &QuoteResponseV0 { levels },
-        anchor_lang_v2::BORSH_CONFIG,
     )
-    .map_err(|_| ClobError::ResponseTooLarge)?;
-    market.write_response(&data)
 }

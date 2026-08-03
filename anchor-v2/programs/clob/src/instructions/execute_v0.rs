@@ -1,11 +1,9 @@
 use {
     crate::{
+        book::ClobBook,
         error::ClobError,
-        events::{ExecuteRecord, FillSlim},
-        state::{
-            CancelledRemainderV0, ClobBook, ClobMarketV0, Direction, ExecuteResponseV0,
-            ResponsePointerV0, UserRefV0,
-        },
+        events::ExecuteRecordV0,
+        state::{ClobMarketV0, Direction, ResponsePointerV0, UserRefV0},
     },
     anchor_lang_v2::prelude::*,
 };
@@ -30,10 +28,10 @@ pub struct ExecuteArgsV0 {
     pub taker: Option<UserRefV0>,
 }
 
-/// Quoter interface: commit a fill; balance changes (merged by user) go to
-/// the market's response tail, located by the returned pointer. Velocity
-/// clamps `size` to margin before calling and validates the changes on its
-/// side.
+/// Quoter interface: commit a fill; balance changes (merged by user) are
+/// streamed into the market's response tail as the book is consumed, located
+/// by the returned pointer. Velocity clamps `size` to margin before calling
+/// and validates the changes on its side.
 pub fn handle_execute_v0(
     ctx: &mut Context<ExecuteV0>,
     args: ExecuteArgsV0,
@@ -50,39 +48,14 @@ pub fn handle_execute_v0(
         clock.unix_timestamp,
     )?;
 
-    emit!(ExecuteRecord {
+    emit!(ExecuteRecordV0 {
         ts: clock.unix_timestamp,
         slot: clock.slot,
         market_index,
         direction: args.direction.to_u8(),
-        fills: outcome
-            .fills
-            .iter()
-            .map(|f| FillSlim {
-                order_id: f.order_id,
-                base_size: f.base_size,
-            })
-            .collect(),
-        cancelled_order_ids: outcome.cancelled.iter().map(|c| c.order_id).collect(),
+        fills: outcome.fills,
+        cancelled_order_ids: outcome.cancelled_order_id.into_iter().collect(),
     });
 
-    let mut data = Vec::with_capacity(2048);
-    anchor_lang_v2::wincode::config::serialize_into(
-        &mut data,
-        &ExecuteResponseV0 {
-            balance_changes: outcome.balance_changes,
-            cancelled: outcome
-                .cancelled
-                .iter()
-                .map(|c| CancelledRemainderV0 {
-                    user: c.user,
-                    order_id: c.order_id,
-                    base_asset_amount: c.base_asset_amount,
-                })
-                .collect(),
-        },
-        anchor_lang_v2::BORSH_CONFIG,
-    )
-    .map_err(|_| ClobError::ResponseTooLarge)?;
-    market.write_response(&data)
+    Ok(outcome.response)
 }

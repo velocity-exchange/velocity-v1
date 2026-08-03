@@ -10,13 +10,24 @@
 //!
 //! Discriminators stay 8-byte anchor defaults (not `#[discrim]` single-byte):
 //! the velocity quoter registry stores `[u8; 8]` discriminators.
+//!
+//! Module layout: [`state`] is the account layout and wire types, [`book`]
+//! the order-book algorithm over them (arena access, traversal, invariants),
+//! [`response`] the streaming borsh encoder that writes quote/execute
+//! payloads straight into the market's response region, and [`instructions`]
+//! one file per instruction.
 
 use anchor_lang_v2::prelude::*;
 
+pub mod book;
 pub mod error;
 pub mod events;
 pub mod instructions;
+pub mod response;
 pub mod state;
+
+#[cfg(test)]
+mod tests;
 
 // Re-exported so integration tests can reach wincode/BORSH_CONFIG through the
 // crate without their own git dep.

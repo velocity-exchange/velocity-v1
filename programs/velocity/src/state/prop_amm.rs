@@ -490,8 +490,11 @@ pub const CLOB_EVICT_THRESHOLD_OFFSET: usize = 156;
 /// `ClobHeaderV0.market_index`.
 pub const CLOB_MARKET_INDEX_OFFSET: usize = 160;
 /// Start of the `OrderNodeV0` arena: `[disc][header][len: u32]` padded to the
-/// node's 8-byte alignment. Header size is const-asserted at 8352 upstream.
-pub const CLOB_ORDERS_OFFSET: usize = 8368;
+/// node's 8-byte alignment. The CLOB const-asserts its header at 8480, and
+/// this must move with it — reading the arena at a stale offset silently
+/// misparses every node, which reads as an empty or nonsense book rather
+/// than as an error.
+pub const CLOB_ORDERS_OFFSET: usize = 8496;
 /// `size_of::<OrderNodeV0>()`.
 pub const CLOB_NODE_LEN: usize = 96;
 /// The CLOB's list terminator.

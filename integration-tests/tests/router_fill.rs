@@ -2463,11 +2463,14 @@ fn setup_midpoint_maker(fixture: &mut Fixture, deposit: u64, side_size: u64) -> 
         program_id: midpoint_id(),
         accounts: vec![
             AccountMeta::new(fixture.keeper.pubkey(), true),
+            // The maker's config key and the quoted wallet are separate
+            // identities now; this fixture runs both as one keypair, which
+            // still exercises the consent rule (the quoted wallet signs and
+            // seeds the PDA).
+            AccountMeta::new_readonly(authority.pubkey(), true),
             AccountMeta::new_readonly(authority.pubkey(), true),
             AccountMeta::new_readonly(velocity_signer, false),
             AccountMeta::new_readonly(hot.pubkey(), false),
-            // Absent optional flow authority = the program id.
-            AccountMeta::new_readonly(midpoint_id(), false),
             AccountMeta::new(instance, false),
             AccountMeta::new_readonly("11111111111111111111111111111111".parse().unwrap(), false),
         ],
@@ -2535,6 +2538,12 @@ fn setup_midpoint_maker(fixture: &mut Fixture, deposit: u64, side_size: u64) -> 
                     pubkey: instructions_sysvar(),
                     is_writable: false,
                 },
+                // The midpoint reads the live flow authority out of
+                // velocity's State rather than trusting a local copy.
+                QuoterAccountMetaArg {
+                    pubkey: state_pda(),
+                    is_writable: false,
+                },
             ],
         ),
         (
@@ -2550,6 +2559,10 @@ fn setup_midpoint_maker(fixture: &mut Fixture, deposit: u64, side_size: u64) -> 
                 },
                 QuoterAccountMetaArg {
                     pubkey: instructions_sysvar(),
+                    is_writable: false,
+                },
+                QuoterAccountMetaArg {
+                    pubkey: state_pda(),
                     is_writable: false,
                 },
             ],
@@ -2668,6 +2681,11 @@ fn fill_long_through_midpoint(
     accounts.push(AccountMeta::new_readonly(clob_id(), false));
     accounts.push(AccountMeta::new(maker.instance, false));
     accounts.push(AccountMeta::new_readonly(instructions_sysvar(), false));
+    // Velocity resolves each quoter's CPI metas from this trailing map, and
+    // the midpoint's quote/execute legs name velocity's State (they read the
+    // live flow authority from it); the fill's own named `state` account is
+    // not part of the map, so it has to ride here too.
+    accounts.push(AccountMeta::new_readonly(state_pda(), false));
     accounts.push(AccountMeta::new_readonly(midpoint_id(), false));
 
     let ix = Instruction {
@@ -2695,7 +2713,9 @@ fn fill_long_through_midpoint(
 /// of (offset u64, size u64, filled u64).
 fn midpoint_ask_level(svm: &litesvm::LiteSVM, instance: &Pubkey, index: usize) -> (u64, u64) {
     let data = svm.get_account(instance).unwrap().data;
-    let levels_base = 8 + 4 * 32 + 8 * 8 + 4 + 4;
+    // disc + 4 addresses + 8 u64s + 2 u16s + 4 u8s + 72 bytes of reserved
+    // tail space. Mirrors MidpointQuoterV0 up to `bids`.
+    let levels_base = 8 + 4 * 32 + 8 * 8 + 2 * 2 + 4 + 72;
     let asks_base = levels_base + 64 * 24;
     let off = asks_base + index * 24;
     (
@@ -2844,6 +2864,11 @@ fn router_fill_splits_across_clob_midpoint_and_vamm() {
     accounts.push(AccountMeta::new_readonly(clob_id(), false));
     accounts.push(AccountMeta::new(maker.instance, false));
     accounts.push(AccountMeta::new_readonly(instructions_sysvar(), false));
+    // Velocity resolves each quoter's CPI metas from this trailing map, and
+    // the midpoint's quote/execute legs name velocity's State (they read the
+    // live flow authority from it); the fill's own named `state` account is
+    // not part of the map, so it has to ride here too.
+    accounts.push(AccountMeta::new_readonly(state_pda(), false));
     accounts.push(AccountMeta::new_readonly(midpoint_id(), false));
 
     let ix = Instruction {
@@ -2993,6 +3018,11 @@ fn run_quoter_cross_resolver(
     .to_account_metas(None);
     accounts.push(AccountMeta::new(maker.instance, false));
     accounts.push(AccountMeta::new_readonly(instructions_sysvar(), false));
+    // Velocity resolves each quoter's CPI metas from this trailing map, and
+    // the midpoint's quote/execute legs name velocity's State (they read the
+    // live flow authority from it); the fill's own named `state` account is
+    // not part of the map, so it has to ride here too.
+    accounts.push(AccountMeta::new_readonly(state_pda(), false));
     accounts.push(AccountMeta::new_readonly(midpoint_id(), false));
     let ix = Instruction {
         program_id: velocity_id(),
@@ -3059,8 +3089,10 @@ fn generic_quoter_cross_conditions_discover_and_fill_a_midpoint_clob_cross() {
     // The resolver list (shared scratch, then the entry's registered quote
     // surface) is stored once in the relay block's built-in region; every
     // condition points at it indirectly.
-    assert_eq!(conditions[QUOTER_CROSS_WATCH].resolvers().count, 9);
-    assert_eq!(acct.relay.resolver_refs().len(), 9);
+    // Ten, not nine: the midpoint's quote leg now names velocity's State,
+    // which it reads the live flow authority from.
+    assert_eq!(conditions[QUOTER_CROSS_WATCH].resolvers().count, 10);
+    assert_eq!(acct.relay.resolver_refs().len(), 10);
 
     // Nothing crossed yet: the resolver reports no work.
     fixture.svm.warp_to_slot(12);

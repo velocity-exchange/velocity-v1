@@ -48,11 +48,11 @@ pub const QUOTER_CROSS_BLOCK_OFFSET: usize =
     relay_spec::block_offset!(QuoterCrossConditionsV0, relay);
 
 #[account(zero_copy(unsafe))]
-#[derive(Debug, Default)]
+#[derive(Debug)]
 #[repr(C)]
 pub struct QuoterCrossConditionsV0 {
-    /// Everything relay needs hosted, in one field: the spec header, the
-    /// condition slots, and the resolver account list (written at attach)
+    /// Everything relay needs hosted, in one field: the `relay-spec` header,
+    /// the condition slots, and the resolver account list (written at attach)
     /// every condition here points at. First field, so its watch offset
     /// is 8.
     pub relay: RelayBlock<QUOTER_CROSS_CONDITIONS, QUOTER_CROSS_RESOLVER_CAPACITY>,
@@ -69,7 +69,29 @@ pub struct QuoterCrossConditionsV0 {
     pub oracle: Pubkey,
     pub market_index: u16,
     pub quote_spot_market_index: u16,
-    pub padding: [u8; 4],
+    /// Tail reserve: 4 bytes of alignment slack plus room for two more
+    /// captured pubkeys, so a resolver that needs another fixed account can
+    /// take it from here instead of forcing an `extend_account` migration on
+    /// every attached quoter entry.
+    pub padding: [u8; 68],
+}
+
+// `padding` is longer than 32 bytes, which `#[derive(Default)]` does not
+// cover (arrays only derive it up to 32).
+impl Default for QuoterCrossConditionsV0 {
+    fn default() -> Self {
+        Self {
+            relay: RelayBlock::default(),
+            quoter: Pubkey::default(),
+            clob_quoter: Pubkey::default(),
+            clob_market: Pubkey::default(),
+            clob_program: Pubkey::default(),
+            oracle: Pubkey::default(),
+            market_index: 0,
+            quote_spot_market_index: 0,
+            padding: [0; 68],
+        }
+    }
 }
 
 impl QuoterCrossConditionsV0 {
@@ -78,7 +100,7 @@ impl QuoterCrossConditionsV0 {
         + 5 * 32
         + 2
         + 2
-        + 4;
+        + 68;
 
     /// Write the resolver account list the conditions point at, and
     /// describe where it landed.
@@ -96,8 +118,9 @@ impl QuoterCrossConditionsV0 {
         ConditionBlock::block(&self.relay)
     }
 
-    /// Anchor-flavoured wrappers over the spec trait's provided methods,
-    /// so handlers keep using `?` with the program's own error type.
+    /// Anchor-flavoured wrappers over [`relay_spec::ConditionBlock`]'s
+    /// provided methods, so handlers keep using `?` with the program's own
+    /// error type.
     pub fn init_block(&mut self) -> Result<()> {
         self.relay
             .init(QUOTER_CROSS_BLOCK_OFFSET as u32)

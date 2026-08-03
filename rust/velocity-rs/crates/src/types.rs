@@ -25,9 +25,9 @@ use tokio_tungstenite::tungstenite;
 pub mod accounts {
     //! Velocity on-chain account types.
     //!
-    //! After Phase 4, TransactionBuilder uses anchor-derived context
-    //! structs from `program::accounts::*` directly, so we no longer glob
-    //! the IDL accounts module. `State` is the only IDL holdover — velocity
+    //! `TransactionBuilder` uses anchor-derived context structs from
+    //! `program::accounts::*` directly, so we no longer glob the IDL
+    //! accounts module. `State` is the only IDL holdover — velocity
     //! native's `State` is `#[account]` (Borsh) but velocity-rs's
     //! `AccountMap::account_data::<T>` wants `T: Pod`, and velocity-idl-gen
     //! emits `unsafe impl Pod for State`.

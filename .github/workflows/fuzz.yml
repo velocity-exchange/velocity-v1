@@ -176,7 +176,7 @@ jobs:
   # Manually-triggered only (workflow_dispatch). Never runs on PRs, so it cannot
   # gate merges. Runs short host-tier invariant smokes to confirm the fuzzer
   # executes end-to-end. SVM smokes are omitted here (they need a built .so via
-  # `anchor build`) — run those locally per the plan.
+  # `anchor build`) — run those locally against a freshly built .so.
   fuzz-smoke:
     name: smoke (host-tier, non-gating)
     if: ${{ github.event_name == 'workflow_dispatch' }}

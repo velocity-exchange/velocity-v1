@@ -113,9 +113,12 @@ pub struct RouterQuoteBufferV0 {
     pub source_count: u8,
     /// Taker direction quoted (`Direction` as u8: 0 = long, 1 = short).
     pub direction: u8,
-    /// Pads the header to 64 bytes so the struct stays a multiple of 16 and
-    /// `(SIZE - 8) % 16 == 0` holds (docs/alignment-and-native-offsets.md).
-    pub padding: [u8; 12],
+    /// Pads the header to 128 bytes: 12 bytes of alignment slack (so the
+    /// struct stays a multiple of 16 and `(SIZE - 8) % 16 == 0` holds — see
+    /// docs/alignment-and-native-offsets.md) plus room for two more pubkeys,
+    /// so naming another account in the header doesn't shift `sources` /
+    /// `levels` and break every off-chain decoder of this buffer.
+    pub padding: [u8; 76],
     pub sources: [QuotedSourceV0; MAX_QUOTED_SOURCES],
     /// One slot per source, parallel to `sources`.
     pub levels: [[QuotedLevelV0; MAX_LEVELS_PER_SOURCE]; MAX_QUOTED_SOURCES],
@@ -123,11 +126,11 @@ pub struct RouterQuoteBufferV0 {
 
 // Zero-copy layout invariant (docs/alignment-and-native-offsets.md): no u128
 // fields, and size including the 8-byte discriminator is ≡ 8 (mod 16).
-const_assert_eq!(std::mem::size_of::<RouterQuoteBufferV0>(), 33472);
+const_assert_eq!(std::mem::size_of::<RouterQuoteBufferV0>(), 33536);
 const_assert_eq!((RouterQuoteBufferV0::SIZE - 8) % 16, 0);
 
 impl Size for RouterQuoteBufferV0 {
-    const SIZE: usize = 33480;
+    const SIZE: usize = 33544;
 }
 
 impl RouterQuoteBufferV0 {

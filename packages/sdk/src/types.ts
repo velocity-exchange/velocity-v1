@@ -2423,7 +2423,7 @@ export type ProtocolFeeWithdrawRecord = {
 };
 
 /** Emitted when the hot fee-withdraw role drains settled crank rewards from the protocol-owned `User` (`withdrawProtocolUserDeposit`). */
-export type ProtocolUserWithdrawRecord = {
+export type ProtocolUserWithdrawRecordV0 = {
 	ts: BN;
 	/** the spot market the tokens were drawn from */
 	spotMarketIndex: number;

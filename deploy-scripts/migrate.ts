@@ -98,15 +98,15 @@ const RESIZABLE: { name: string; size: number }[] = [
 	{ name: 'User', size: 8 + 4496 },
 	{ name: 'PerpMarket', size: 8 + 1328 },
 	{ name: 'QuoterV0', size: 8 + 2752 },
-	// Relay condition hosts. These shrank when conditions dropped their
-	// inline resolver slots and their per-account staging regions, so
-	// `extend_account` will not touch them — it only ever grows. They stay
-	// listed because the table is what a future growth is added to, and a
-	// type missing from it is the failure that has no symptom until an
-	// account is read at the wrong offset.
-	{ name: 'ClobCrankConditionsV0', size: 1400 },
-	{ name: 'QuoterCrossConditionsV0', size: 2024 },
-	{ name: 'UserConditionsV0', size: 7592 },
+	// Relay condition hosts. Sizes come from the `sizes_for_the_migration_script`
+	// test in `state/relay_scratch.rs` — run it (`cargo test -p velocity --lib
+	// sizes_for_the_migration_script -- --show-output`) and paste, rather than
+	// working them out by hand. A type missing from (or stale in) this table is
+	// the failure that has no symptom until an account is read at the wrong
+	// offset.
+	{ name: 'ClobCrankConditionsV0', size: 1576 },
+	{ name: 'QuoterCrossConditionsV0', size: 2168 },
+	{ name: 'UserConditionsV0', size: 7672 },
 ];
 
 async function main() {

@@ -4,15 +4,16 @@
 //! `relay-spec` wire structure naming, per condition, when to wake, which
 //! instruction to simulate to find work (the resolver), and which instruction
 //! does it (the executor). The block lives on a velocity-owned account rather
-//! than the CLOB's for two reasons the plan settles: removal has to adjust the
-//! maker's `User` (open-order aggregates and the reward debit), which only
-//! velocity can do; and the resolver has to stage *velocity's* account list.
-//! `ConditionV0` names its wake account explicitly, so a velocity-hosted
-//! condition watching foreign CLOB bytes is native to the spec — nothing is
-//! mirrored.
+//! than the CLOB's for two reasons: removal has to adjust the maker's `User`
+//! (open-order aggregates and the reward debit), which only velocity can do;
+//! and the resolver has to stage *velocity's* account list. `ConditionV0`
+//! names its wake account explicitly, so a velocity-hosted condition watching
+//! foreign CLOB bytes is native to `relay-spec` — nothing is mirrored.
 //!
-//! Three conditions per market, in fixed slots so the resolver can address
-//! them by index:
+//! [`CLOB_CRANK_CONDITIONS`] conditions per market, in fixed slots so the
+//! resolver can address them by index — the three removal ones below, plus
+//! [`CLOB_CRANK_CROSS`], [`CLOB_CRANK_CROSS_FALLBACK`], and
+//! [`CLOB_CRANK_CROSS_ACTIVATION`] for cross discovery:
 //!
 //! - [`CLOB_CRANK_EVICT`] — `WakeKind::OnAccountChange` over the CLOB market's
 //!   `bid_count` / `ask_count`, so a turner wakes when the book grows toward
@@ -26,13 +27,15 @@
 //!   `place_clob_order` takes the conditions account as an *optional* account
 //!   (placement must not brick on a market whose conditions were never
 //!   initialized), so an expiring placement that omits it would otherwise be
-//!   work with no wake — the liveness bug the spec warns about. The fallback
-//!   poll makes a missed hint cost latency, never liveness.
+//!   work with no wake: an order past its `max_ts` that no turner is ever told
+//!   about, resting on the book until some unrelated wake happens to fire. The
+//!   fallback poll makes a missed hint cost latency, never liveness.
 //!
-//! The account also hosts the `staging` region resolvers write their
-//! `ResolvedCrankV0` (executor account list + args) into. Resolvers are only
-//! ever simulated, so the write never lands on chain — the region is scratch
-//! that costs rent but no write contention.
+//! Resolvers stage their `ResolvedCrankV0` (executor account list + args) into
+//! the program-wide [`crate::state::relay_scratch::RelayScratchV0`], not into
+//! this account — a resolver only ever runs under simulation, so the staged
+//! bytes never land on chain and two turners cannot collide. See that module
+//! for why the region is shared rather than per conditions account.
 //!
 //! The block is held as an opaque byte region accessed through
 //! `relay_spec::read_block` / `read_block_mut` rather than as typed fields.
@@ -41,7 +44,7 @@
 //! spec revision that adds a field is a version bump here, not a layout
 //! migration.
 //!
-//! `block` is the FIRST field so it begins at offset 8 (past anchor's
+//! `relay` is the FIRST field so it begins at offset 8 (past anchor's
 //! discriminator), which is the 8-aligned offset `read_block` requires.
 
 use {
@@ -83,12 +86,12 @@ pub const CLOB_CRANK_RESOLVER_CAPACITY: usize = 8;
 pub const CLOB_CRANK_BLOCK_OFFSET: usize = relay_spec::block_offset!(ClobCrankConditionsV0, relay);
 
 #[account(zero_copy(unsafe))]
-#[derive(Debug, Default)]
+#[derive(Debug)]
 #[repr(C)]
 pub struct ClobCrankConditionsV0 {
-    /// Everything relay needs hosted, in one field: the spec header, the
-    /// condition slots, and the resolver account list every condition here
-    /// points at. First field, so its watch offset is 8.
+    /// Everything relay needs hosted, in one field: the `relay-spec` header,
+    /// the condition slots, and the resolver account list every condition
+    /// here points at. First field, so its watch offset is 8.
     pub relay: RelayBlock<CLOB_CRANK_CONDITIONS, CLOB_CRANK_RESOLVER_CAPACITY>,
     /// The market's oracle, captured at attach time. Resolvers hold only
     /// four fixed accounts, so the staged executor's map section is derived
@@ -115,7 +118,26 @@ pub struct ClobCrankConditionsV0 {
     /// The market's quote spot market, captured at attach time (the staged
     /// executor's map section needs its PDA).
     pub quote_spot_market_index: u16,
-    pub padding: [u8; 12],
+    /// Tail reserve: 12 bytes of alignment slack plus room for two more
+    /// captured pubkeys, so a resolver that needs another fixed account can
+    /// take it from here instead of forcing an `extend_account` migration on
+    /// every market's conditions.
+    pub padding: [u8; 76],
+}
+
+// `padding` is longer than 32 bytes, which `#[derive(Default)]` does not
+// cover (arrays only derive it up to 32).
+impl Default for ClobCrankConditionsV0 {
+    fn default() -> Self {
+        Self {
+            relay: RelayBlock::default(),
+            oracle: Pubkey::default(),
+            keeper_payment_lamports: 0,
+            market_index: 0,
+            quote_spot_market_index: 0,
+            padding: [0; 76],
+        }
+    }
 }
 
 impl ClobCrankConditionsV0 {
@@ -127,7 +149,7 @@ impl ClobCrankConditionsV0 {
         + 8
         + 2
         + 2
-        + 12;
+        + 76;
 
     /// Store the resolver account list and describe where it landed.
     pub fn write_resolvers(
@@ -144,8 +166,9 @@ impl ClobCrankConditionsV0 {
         ConditionBlock::block(&self.relay)
     }
 
-    /// Anchor-flavoured wrappers over the spec trait's provided methods,
-    /// so handlers keep using `?` with the program's own error type.
+    /// Anchor-flavoured wrappers over [`relay_spec::ConditionBlock`]'s
+    /// provided methods, so handlers keep using `?` with the program's own
+    /// error type.
     pub fn init_block(&mut self) -> Result<()> {
         self.relay
             .init(CLOB_CRANK_BLOCK_OFFSET as u32)

@@ -95,8 +95,6 @@ pub mod event_subscriber;
 pub mod priority_fee_subscriber;
 pub mod swift_order_subscriber;
 
-pub mod jit_client;
-
 pub mod account_map;
 pub mod marketmap;
 pub mod oraclemap;
@@ -2679,9 +2677,9 @@ impl<'a> TransactionBuilder<'a> {
 
     /// Place a swift order (Perps only)
     ///
-    /// ☢️ this Ix will not fill by itself. The caller should add a subsequent Ix
-    /// e.g. with JIT proxy, to atomically place and fill the order
-    /// or see `place_and_make_swift_order`
+    /// ☢️ this Ix will not fill by itself. The caller should add a subsequent
+    /// fill Ix to atomically place and fill the order, or see
+    /// `place_and_make_swift_order`
     ///
     /// * `signed_order_info` - the signed swift order info
     /// * `taker_account` - taker subaccount data

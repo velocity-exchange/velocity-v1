@@ -12,7 +12,6 @@ import {
 	MarketType,
 	PerpMarkets,
 } from '@velocity-exchange/sdk';
-import { JitMakerConfig } from './bots/jitMaker';
 import { EquityFloorGuardConfig } from './bots/equityFloorGuard';
 import { PriceFeedProperty } from '@pythnetwork/pyth-lazer-sdk';
 
@@ -174,7 +173,6 @@ export type BotConfigMap = {
 	swiftTaker?: BaseBotConfig;
 	swiftMaker?: BaseBotConfig;
 	swiftPlacer?: BaseBotConfig;
-	jitMaker?: JitMakerConfig;
 	lpTargetBaseCranker?: LpPoolTargetBaseCrankerConfig;
 };
 

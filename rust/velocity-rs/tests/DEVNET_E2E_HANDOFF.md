@@ -152,17 +152,7 @@ can't set. "Orchestrate" = what it would take to make the outcome deterministic.
 - Today the test reads live inventory, picks the direction the AMM would offload,
   fills via `place_and_take` in-tx; warn-skips when the AMM is flat or jit off.
 
-### 3. `jit_auction_filled_by_jit_maker` — deployed jit-maker fills an auction
-- **Depends on:** a **deployed jit-maker bot being up and economically
-  incentivized** by the auction. Observed flaky: filled on one run, not on the next.
-- **Why uncontrollable:** external bot liveness + its own profitability gate; CI
-  can't guarantee either.
-- **To orchestrate:** run a **test-pinned maker** instead of relying on the
-  ambient one — from a second authority, `place_and_make` against the resting
-  auction so the fill is deterministic. (Turns it from "observe the prod bot" into
-  "controlled maker fills".)
-
-### 4. `bad_perp_trade_gets_liquidated` — deployed liquidator
+### 3. `bad_perp_trade_gets_liquidated` — deployed liquidator
 - **Depends on:** adverse **oracle drift** moving SOL enough to push the position
   past maintenance within the timeout, **and** a running liquidator.
 - **Why uncontrollable:** the oracle is external (pyth/switchboard); the program
@@ -175,7 +165,7 @@ can't set. "Orchestrate" = what it would take to make the outcome deterministic.
      leverage breaches immediately, then let the deployed liquidator act.
   Either needs an admin/oracle authority + a running liquidator.
 
-### 5. `bad_spot_borrow_gets_liquidated` — deployed liquidator (spot) — `#[ignore]`
+### 4. `bad_spot_borrow_gets_liquidated` — deployed liquidator (spot) — `#[ignore]`
 - **Depends on:** a meaningful SOL (spot 1) borrow being **allowed by the daily
   withdraw guard**, then a maintenance breach (same oracle-drift problem as #4).
 - **Why uncontrollable:** NOT liquidity. Verified live by seeding the vault from a
@@ -195,7 +185,7 @@ can't set. "Orchestrate" = what it would take to make the outcome deterministic.
   spot-1 (locked behind the same withdraw guard; recoverable only once the guard is
   raised).
 
-### 6. `unsettled_pnl_gets_settled` — deployed userPnlSettler
+### 5. `unsettled_pnl_gets_settled` — deployed userPnlSettler
 - **Depends on:** the deployed **userPnlSettler being up** and the banked pnl
   exceeding **its settle threshold**.
 - **Why uncontrollable:** external bot liveness + an off-chain threshold we don't
@@ -206,7 +196,7 @@ can't set. "Orchestrate" = what it would take to make the outcome deterministic.
   2. Drive `settle_pnl` **from the test** (deterministic) — but then it verifies
      our crank, not the deployed settler.
 
-### 7. `swift_taker_filled_by_deployed_maker` — swift server + deployed maker — `#[ignore]`
+### 6. `swift_taker_filled_by_deployed_maker` — swift server + deployed maker — `#[ignore]`
 - **Depends on:** the swift **HTTP order server being reachable** and a deployed
   swift maker filling.
 - **Why uncontrollable:** `swift.master.velocity.exchange/orders` **intermittently

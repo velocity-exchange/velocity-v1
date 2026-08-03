@@ -37,8 +37,6 @@ import {
 	BlockhashSubscriber,
 	WhileValidTxSender,
 	configs,
-	AuctionSubscriber,
-	SwiftOrderSubscriber,
 } from '@velocity-exchange/sdk';
 import { promiseTimeout } from '@velocity-exchange/sdk';
 
@@ -76,8 +74,6 @@ import { BundleSender } from './bundleSender';
 import { VelocityStateWatcher, StateChecks } from './velocityStateWatcher';
 import { webhookMessage } from './webhook';
 import { PythLazerCrankerBot } from './bots/pythLazerCranker';
-import { JitMaker } from './bots/jitMaker';
-import { JitProxyClient, JitterSniper } from '@velocity-exchange/jit-proxy';
 import { JetProxyTxSender } from './bots/common/jetTxSender';
 import { Agent, setGlobalDispatcher } from 'undici';
 import { timedCacheableLookup } from './bots/common/timedLookup';
@@ -99,10 +95,8 @@ program
 	.option('--filler-lite', 'Enable filler lite bot')
 	.option('--spot-filler', 'Enable spot filler bot')
 	.option('--trigger', 'Enable trigger bot')
-	.option('--jit-maker', 'Enable JIT auction maker bot')
 	.option('--floating-maker', 'Enable floating maker bot')
 	.option('--liquidator', 'Enable liquidator bot')
-	.option('--uncross-arb', 'Arb bot')
 	.option(
 		'--if-revenue-settler',
 		'Enable Insurance Fund revenue pool settler bot'
@@ -193,11 +187,6 @@ program
 		'--tx-retry-timeout-ms <string>',
 		'Timeout in ms for retry tx sender',
 		'30000'
-	)
-	.option(
-		'--market-type <type>',
-		'Set the market type for the JIT Maker bot',
-		'PERP'
 	)
 	.option(
 		'--priority-fee-multiplier <number>',
@@ -606,60 +595,6 @@ const runBot = async () => {
 			)
 		);
 	}
-	if (configHasBot(config, 'jitMaker')) {
-		needPriorityFeeSubscriber = true;
-		needVelocityStateWatcher = true;
-		needUserMapSubscribe = true;
-
-		const auctionSubscriber = new AuctionSubscriber({
-			velocityClient,
-			resubTimeoutMs: 30_000,
-		});
-		let swiftOrderSubscriber: SwiftOrderSubscriber | undefined = undefined;
-		if (config.global.velocityEnv === 'devnet') {
-			if (!config.botConfigs?.jitMaker?.marketIndexes) {
-				throw new Error('Market indexes must be specified for JIT Maker bot');
-			}
-			swiftOrderSubscriber = new SwiftOrderSubscriber({
-				velocityEnv: 'devnet',
-				// Point at the deployment's own swift ws-server when set (velocity runs
-				// swift-ws-server-app in-cluster); else the SDK default (public host).
-				endpoint: process.env.SWIFT_WS_ENDPOINT,
-				marketIndexes: config.botConfigs?.jitMaker?.marketIndexes,
-				keypair: new Keypair(),
-				velocityClient,
-				userAccountGetter: userMap,
-			});
-		}
-
-		const jitProxyClient = new JitProxyClient({
-			// @ts-ignore
-			velocityClient: velocityClient,
-			programId: new PublicKey(sdkConfig.JIT_PROXY_PROGRAM_ID!),
-		});
-
-		// Cast to any to work around SDK version mismatch between jit-proxy and main SDK
-		const jitter = new JitterSniper({
-			auctionSubscriber: auctionSubscriber as any,
-			velocityClient: velocityClient as any,
-			jitProxyClient,
-			swiftOrderSubscriber: swiftOrderSubscriber as any,
-			slotSubscriber: slotSubscriber as any,
-			auctionSubscriberIgnoresSwiftOrders: !!swiftOrderSubscriber,
-		});
-		await jitter.subscribe();
-
-		bots.push(
-			new JitMaker(
-				velocityClient,
-				jitter,
-				config.botConfigs!.jitMaker!,
-				config.global.velocityEnv,
-				priorityFeeSubscriber
-			)
-		);
-	}
-
 	if (configHasBot(config, 'filler')) {
 		needPythPriceSubscriber = true;
 		needCheckVelocityUser = true;

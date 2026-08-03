@@ -433,8 +433,6 @@ pub enum SdkError {
     Generic(String),
     #[error("max connection attempts reached")]
     MaxReconnectionAttemptsReached,
-    #[error("jit taker order not found")]
-    JitOrderNotFound,
     #[error("market data unavailable. subscribe market: {0:?}")]
     NoMarketData(MarketId),
     #[error("account data unavailable. subscribe account: {0:?}")]

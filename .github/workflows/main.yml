@@ -464,7 +464,7 @@ jobs:
         run: cargo test --manifest-path rust/Cargo.toml --locked --workspace --all-targets --features "rpc_tests"
   # Devnet end-to-end suite proving the DEPLOYED bots act (tests/devnet_e2e.rs).
   # Manual-only (workflow_dispatch): submits real devnet txs, sets up one side of
-  # each flow and polls for the deployed filler/jit-maker/liquidator/settler/crank
+  # each flow and polls for the deployed filler/liquidator/settler/crank
   # to act. Single-threaded (all subaccounts share the one TEST_PRIVATE_KEY
   # authority). `--include-ignored` also runs the flaky/infra-dependent scenarios
   # (swift reachability, liquidation via oracle drift), which log INCONCLUSIVE

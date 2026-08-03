@@ -16,7 +16,7 @@
 # Usage:
 #   deploy-scripts/verify-buffer.sh <program> <actions-run-or-job-url> [options]
 #
-#   <program>                 velocity | token_faucet | jit_proxy (cargo library name)
+#   <program>                 velocity | token_faucet (cargo library name)
 #   <actions-run-or-job-url>  e.g. https://github.com/<org>/<repo>/actions/runs/<id>[/attempts/<n>][/job/<id>]
 #                             (include /attempts/<n> for re-run runs — the log
 #                             of the deploying attempt, not the latest, is read)
@@ -70,7 +70,7 @@ while [ $# -gt 0 ]; do
 	esac
 done
 
-[ -n "$program" ] || die "missing <program> (velocity | token_faucet | jit_proxy)"
+[ -n "$program" ] || die "missing <program> (velocity | token_faucet)"
 [ -n "$buffer" ] || [ -n "$run_url" ] || die "provide <actions-run-or-job-url> or --buffer <pubkey>"
 
 command -v solana-verify >/dev/null || die "solana-verify not found on PATH"

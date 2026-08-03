@@ -103,7 +103,9 @@ deposit, and settle PnL. The accounts are not liquidated or seized.
 
 A frozen authority can also cure the breach itself, from internal surplus. A **cure transfer** is a
 funds-only `transferDepositByDelegate` (zero floor delta) into a subaccount whose equity is below
-its buffered floor; it stays allowed under the breaker. The debited side must still clear its own
+its buffered floor; it stays allowed under the breaker. Eligibility is verified with the same
+oracle-validity requirement the trip and the reset use (`InvalidOracle` otherwise), so it cannot be
+decided off a stale or degraded price. The debited side must still clear its own
 `floor + buffer` after the funds leave, so a cure can never create a new breach, and once the
 credited side clears its buffered floor the exemption closes again. Partial cures compose: several
 subaccounts can each contribute what they have to spare. The SDK plans this:

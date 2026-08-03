@@ -981,16 +981,25 @@ pub fn handle_transfer_deposit_by_delegate<'c: 'info, 'info>(
             "equity floor breaker is tripped for this authority; floor cannot move"
         )?;
 
-        let to_user_breached = calculate_net_equity_for_floor(
-            to_user,
-            &perp_market_map,
-            &spot_market_map,
-            &mut oracle_map,
-        )?
-        .is_some_and(|net_equity| to_user.is_below_buffered_equity_floor(net_equity));
+        validate!(
+            to_user.equity_floor > 0,
+            ErrorCode::EquityBelowFloor,
+            "equity floor breaker is tripped for this authority; transfers must cure a floored subaccount"
+        )?;
+
+        let (to_user_net_equity, to_user_oracles_valid) =
+            calculate_user_equity(to_user, &perp_market_map, &spot_market_map, &mut oracle_map)?;
+
+        // Cure eligibility must not be decided off an invalid price, matching
+        // the validity the trip and the reset require of the same metric.
+        validate!(
+            to_user_oracles_valid,
+            ErrorCode::InvalidOracle,
+            "cannot verify cure transfer with an invalid oracle"
+        )?;
 
         validate!(
-            to_user_breached,
+            to_user.is_below_buffered_equity_floor(to_user_net_equity),
             ErrorCode::EquityBelowFloor,
             "equity floor breaker is tripped for this authority; transfers must cure a subaccount below its buffered equity floor"
         )?;

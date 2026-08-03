@@ -955,12 +955,6 @@ pub fn handle_transfer_deposit_by_delegate<'c: 'info, 'info>(
         "delegate transfer not allowed"
     )?;
 
-    validate!(
-        !user_stats.is_equity_breaker_tripped(),
-        ErrorCode::EquityBelowFloor,
-        "equity floor breaker is tripped for this authority"
-    )?;
-
     let AccountMaps {
         perp_market_map,
         spot_market_map,
@@ -972,6 +966,35 @@ pub fn handle_transfer_deposit_by_delegate<'c: 'info, 'info>(
         clock.slot,
         Some(state.oracle_guard_rails),
     )?;
+
+    // While the equity breaker is tripped, the only delegate transfer allowed
+    // is one that shrinks an existing breach: funds only (no floor movement)
+    // into a subaccount below its buffered floor. The debited side is still
+    // gated at its own floor + buffer by the withdraw margin check inside
+    // `transfer_spot_deposit`, so a cure cannot create a new breach, and once
+    // the credited side clears its buffered floor this path closes again. The
+    // transfer never clears the flag; only the admin reset does.
+    if user_stats.is_equity_breaker_tripped() {
+        validate!(
+            equity_floor_delta == 0,
+            ErrorCode::EquityBelowFloor,
+            "equity floor breaker is tripped for this authority; floor cannot move"
+        )?;
+
+        let to_user_breached = calculate_net_equity_for_floor(
+            to_user,
+            &perp_market_map,
+            &spot_market_map,
+            &mut oracle_map,
+        )?
+        .is_some_and(|net_equity| to_user.is_below_buffered_equity_floor(net_equity));
+
+        validate!(
+            to_user_breached,
+            ErrorCode::EquityBelowFloor,
+            "equity floor breaker is tripped for this authority; transfers must cure a subaccount below its buffered equity floor"
+        )?;
+    }
 
     // Carry equity floor along with the funds so the sum of floors across the
     // authority's subaccounts is preserved. The from side is validated against

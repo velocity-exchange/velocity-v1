@@ -34,6 +34,8 @@ const EQUITY_BELOW_FLOOR_HEX = '0x18d6';
 const INVALID_FLOOR_TRANSFER_HEX = '0x18d7';
 // SufficientCollateral
 const SUFFICIENT_COLLATERAL_HEX = '0x1774';
+// InvalidEquityBreakerReset
+const INVALID_BREAKER_RESET_HEX = '0x18e0';
 
 describe('equity floor', () => {
 	const chProgram = anchor.workspace.Velocity as Program;
@@ -525,25 +527,127 @@ describe('equity floor', () => {
 		assert(err, 'withdraw from healthy subaccount should have been rejected');
 		assert(err.message.includes(EQUITY_BELOW_FLOOR_HEX));
 
-		// delegate transfers are frozen as well
+		// delegate transfers are frozen as well: floor cannot move
 		let transferErr: Error | undefined;
 		try {
 			await delegateVelocityClient.transferDepositByDelegate(
 				new BN(1 * 10 ** 6),
 				0,
 				1,
-				0
+				0,
+				new BN(1 * 10 ** 6)
 			);
 		} catch (e) {
 			transferErr = e as Error;
 		}
-		assert(transferErr, 'delegate transfer should have been rejected');
+		assert(transferErr, 'floor-carrying transfer should have been rejected');
 		assert(transferErr.message.includes(EQUITY_BELOW_FLOOR_HEX));
+
+		// and funds may not move toward a subaccount that is not breached
+		let outboundErr: Error | undefined;
+		try {
+			await delegateVelocityClient.transferDepositByDelegate(
+				new BN(1 * 10 ** 6),
+				0,
+				0,
+				1
+			);
+		} catch (e) {
+			outboundErr = e as Error;
+		}
+		assert(outboundErr, 'transfer to a healthy subaccount should have been rejected');
+		assert(outboundErr.message.includes(EQUITY_BELOW_FLOOR_HEX));
+	});
+
+	it('cure transfers into the breached subaccount stay allowed while tripped', async () => {
+		const floor0Before = await floorOf(0);
+		const floor1Before = await floorOf(1);
+		await velocityClient.fetchAccounts();
+		const equity0Before = velocityClient.getUser(0).getNetUsdValue();
+
+		// funds-only transfer into breached sub 0: the one delegate transfer
+		// the breaker allows, so internal surplus can cure a breach
+		await delegateVelocityClient.transferDepositByDelegate(
+			new BN(1 * 10 ** 6),
+			0,
+			1,
+			0
+		);
+
+		// funds moved, floors did not, and the flag did not clear
+		await velocityClient.fetchAccounts();
+		assert(velocityClient.getUser(0).getNetUsdValue().gt(equity0Before));
+		assert((await floorOf(0)).eq(floor0Before));
+		assert((await floorOf(1)).eq(floor1Before));
+		assert((await fetchBreakerTripped()) !== 0);
+
+		// deposits also stay allowed under the freeze; restore sub 1's equity
+		// so the later buffer-band arithmetic keeps its transfer history
+		await velocityClient.deposit(
+			new BN(1 * 10 ** 6),
+			0,
+			userUSDCAccount.publicKey,
+			1
+		);
+		assert((await fetchBreakerTripped()) !== 0);
+	});
+
+	it('reset is refused while any subaccount is below its buffered floor', async () => {
+		await velocityClient.fetchAccounts();
+		const userAccounts = [
+			velocityClient.getUser(0).getUserAccount(),
+			velocityClient.getUser(1).getUserAccount(),
+		];
+
+		// sub 0 is still below its 50 floor: the self-verifying reset reverts
+		let err: Error | undefined;
+		try {
+			await velocityClient.resetEquityFloorBreaker(
+				velocityClient.getUserStatsAccountPublicKey(),
+				undefined,
+				userAccounts
+			);
+		} catch (e) {
+			err = e as Error;
+		}
+		assert(err, 'reset with a breached subaccount should have been rejected');
+		assert(err.message.includes(INVALID_BREAKER_RESET_HEX));
+		assert((await fetchBreakerTripped()) !== 0);
+
+		// omitting the breached subaccount does not help: the count is pinned
+		// to the authority's live subaccounts
+		let incompleteErr: Error | undefined;
+		try {
+			await velocityClient.resetEquityFloorBreaker(
+				velocityClient.getUserStatsAccountPublicKey(),
+				undefined,
+				[velocityClient.getUser(1).getUserAccount()]
+			);
+		} catch (e) {
+			incompleteErr = e as Error;
+		}
+		assert(incompleteErr, 'incomplete reset should have been rejected');
+		assert(incompleteErr.message.includes(INVALID_BREAKER_RESET_HEX));
+		assert((await fetchBreakerTripped()) !== 0);
 	});
 
 	it('warm admin resets the breaker and unfreezes', async () => {
+		// sub 0 cannot back its simulated 50 floor; resuming anyway means
+		// lowering the floor first, explicitly, then the reset verifies clean
+		await velocityClient.updateUserEquityFloor(
+			userAccountPublicKey,
+			ZERO,
+			ZERO
+		);
+		await velocityClient.fetchAccounts();
+
 		await velocityClient.resetEquityFloorBreaker(
-			velocityClient.getUserStatsAccountPublicKey()
+			velocityClient.getUserStatsAccountPublicKey(),
+			undefined,
+			[
+				velocityClient.getUser(0).getUserAccount(),
+				velocityClient.getUser(1).getUserAccount(),
+			]
 		);
 		assert((await fetchBreakerTripped()) === 0);
 

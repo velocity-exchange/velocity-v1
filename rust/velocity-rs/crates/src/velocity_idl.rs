@@ -26144,6 +26144,8 @@ pub mod errors {
         CannotModifyBuilderOrder,
         #[msg("Invalid account extension")]
         InvalidAccountExtension,
+        #[msg("Invalid equity breaker reset")]
+        InvalidEquityBreakerReset,
     }
 }
 pub mod events {

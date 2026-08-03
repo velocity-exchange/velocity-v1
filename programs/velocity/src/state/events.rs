@@ -873,8 +873,17 @@ pub struct PerpMarketFeeSweepRecord {
 
 /// Emitted when the hot fee-withdraw role drains accumulated crank rewards
 /// from the protocol-owned `User` (`withdraw_protocol_user_deposit`).
+///
+/// Versioned in the name, unlike the records inherited from upstream. An
+/// `#[event]`'s discriminator is derived from its struct name, so adding a
+/// field to a `…Record` changes the payload under a discriminator consumers
+/// already decode — the old decoder either truncates or fails, and nothing on
+/// the wire says which shape it got. A field addition here ships as
+/// `ProtocolUserWithdrawRecordV1` instead, with its own discriminator, so an
+/// old subscriber ignores it rather than mis-parsing it. Events velocity adds
+/// from here on follow the same rule.
 #[event]
-pub struct ProtocolUserWithdrawRecord {
+pub struct ProtocolUserWithdrawRecordV0 {
     /// unix_timestamp of action
     pub ts: i64,
     /// the spot market the tokens were drawn from

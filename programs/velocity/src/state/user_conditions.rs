@@ -3,7 +3,9 @@
 //! event-recheck on the user's own changes, coarse full sweep), expressed
 //! as relay conditions.
 //!
-//! One account per `User`, opt-in, three kinds of condition:
+//! One account per `User`, opt-in. Three kinds of liquidation condition, plus
+//! the trigger-order slots that share the block (see [`TRIGGER_SLOT_BASE`] for
+//! why the two live on one account):
 //!
 //! - **Threshold slots** — one `OnValueCross` per exposure, watching that
 //!   exposure's oracle at a *conservative* single-oracle liquidation-price
@@ -26,8 +28,8 @@
 //! exactly, and the liquidator is only the filler, so the protocol `User`
 //! warehouses no inventory. Users the sync can't model (no perp positions,
 //! unsupported oracle layouts, past the slot cap) stay on the keeper-bot
-//! floor, which remains the plan of record for inventory-taking
-//! liquidations.
+//! floor, which remains how a liquidator that wants to take the inventory
+//! itself liquidates.
 
 use {
     crate::{error::ErrorCode, state::relay_block::RelayBlock},
@@ -121,8 +123,8 @@ pub struct LiqSlotMetaV0 {
 #[derive(Debug)]
 #[repr(C)]
 pub struct UserConditionsV0 {
-    /// Everything relay needs hosted, in one field: the spec header, the
-    /// condition slots, and the shared sync account list (see
+    /// Everything relay needs hosted, in one field: the `relay-spec` header,
+    /// the condition slots, and the shared sync account list (see
     /// [`LIQ_SYNC_ACCOUNTS_MAX`]). First field, so its watch offset is 8.
     pub relay: RelayBlock<USER_CONDITIONS, LIQ_SYNC_ACCOUNTS_MAX>,
     /// Parallel to the threshold condition slots.
@@ -148,7 +150,10 @@ pub struct UserConditionsV0 {
     /// level-triggered sync wake firing forever. The localnet harness
     /// caught exactly that loop, once a second.
     pub positions_digest: u64,
-    pub padding: [u8; 8],
+    /// Tail reserve: 8 bytes of alignment slack plus room for two more
+    /// pubkeys, so a future sync input can be captured here instead of
+    /// forcing an `extend_account` migration on every opted-in user.
+    pub padding: [u8; 72],
 }
 
 impl Default for UserConditionsV0 {
@@ -162,7 +167,7 @@ impl Default for UserConditionsV0 {
             sync_payment_lamports: 0,
             sync_fallback_slots: 0,
             positions_digest: 0,
-            padding: [0; 8],
+            padding: [0; 72],
         }
     }
 }
@@ -177,7 +182,7 @@ impl UserConditionsV0 {
         + 8
         + 8
         + 8
-        + 8;
+        + 72;
 
     /// FNV-1a over every exposure that moves a threshold. Cheap enough for
     /// the executor to recompute on each sync, and exact enough that a
@@ -213,8 +218,9 @@ impl UserConditionsV0 {
         ConditionBlock::block(&self.relay)
     }
 
-    /// Anchor-flavoured wrappers over the spec trait's provided methods,
-    /// so handlers keep using `?` with the program's own error type.
+    /// Anchor-flavoured wrappers over [`relay_spec::ConditionBlock`]'s
+    /// provided methods, so handlers keep using `?` with the program's own
+    /// error type.
     pub fn init_block(&mut self) -> Result<()> {
         self.relay
             .init(USER_CONDITIONS_BLOCK_OFFSET as u32)
@@ -249,10 +255,10 @@ impl UserConditionsV0 {
             .map_err(|_| error!(ErrorCode::DefaultError))
     }
 
-    /// Writes the full resolver list: [`LIQ_RESOLVER_PREFIX`] named
-    /// accounts followed by the margin map.
     /// Write trigger slot `index`'s resolver list and describe where it
-    /// landed.
+    /// landed. (The liquidation side's shared list is
+    /// [`Self::write_sync_accounts`] — this region is per slot, see
+    /// [`TRIGGER_RESOLVERS_PER_SLOT`].)
     pub fn write_slot_resolvers(
         &mut self,
         index: usize,

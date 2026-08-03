@@ -17298,16 +17298,16 @@ export type Velocity = {
       ]
     },
     {
-      "name": "protocolUserWithdrawRecord",
+      "name": "protocolUserWithdrawRecordV0",
       "discriminator": [
-        90,
-        146,
-        237,
-        102,
-        44,
-        121,
-        96,
-        192
+        225,
+        65,
+        189,
+        186,
+        181,
+        79,
+        234,
+        100
       ]
     },
     {
@@ -20065,9 +20065,9 @@ export type Velocity = {
           {
             "name": "relay",
             "docs": [
-              "Everything relay needs hosted, in one field: the spec header, the",
-              "condition slots, and the resolver account list every condition here",
-              "points at. First field, so its watch offset is 8."
+              "Everything relay needs hosted, in one field: the `relay-spec` header,",
+              "the condition slots, and the resolver account list every condition",
+              "here points at. First field, so its watch offset is 8."
             ],
             "type": {
               "defined": {
@@ -20132,10 +20132,16 @@ export type Velocity = {
           },
           {
             "name": "padding",
+            "docs": [
+              "Tail reserve: 12 bytes of alignment slack plus room for two more",
+              "captured pubkeys, so a resolver that needs another fixed account can",
+              "take it from here instead of forcing an `extend_account` migration on",
+              "every market's conditions."
+            ],
             "type": {
               "array": [
                 "u8",
-                12
+                76
               ]
             }
           }
@@ -25112,10 +25118,19 @@ export type Velocity = {
       }
     },
     {
-      "name": "protocolUserWithdrawRecord",
+      "name": "protocolUserWithdrawRecordV0",
       "docs": [
         "Emitted when the hot fee-withdraw role drains accumulated crank rewards",
-        "from the protocol-owned `User` (`withdraw_protocol_user_deposit`)."
+        "from the protocol-owned `User` (`withdraw_protocol_user_deposit`).",
+        "",
+        "Versioned in the name, unlike the records inherited from upstream. An",
+        "`#[event]`'s discriminator is derived from its struct name, so adding a",
+        "field to a `…Record` changes the payload under a discriminator consumers",
+        "already decode — the old decoder either truncates or fails, and nothing on",
+        "the wire says which shape it got. A field addition here ships as",
+        "`ProtocolUserWithdrawRecordV1` instead, with its own discriminator, so an",
+        "old subscriber ignores it rather than mis-parsing it. Events velocity adds",
+        "from here on follow the same rule."
       ],
       "type": {
         "kind": "struct",
@@ -25389,8 +25404,8 @@ export type Velocity = {
           {
             "name": "relay",
             "docs": [
-              "Everything relay needs hosted, in one field: the spec header, the",
-              "condition slots, and the resolver account list (written at attach)",
+              "Everything relay needs hosted, in one field: the `relay-spec` header,",
+              "the condition slots, and the resolver account list (written at attach)",
               "every condition here points at. First field, so its watch offset",
               "is 8."
             ],
@@ -25452,10 +25467,16 @@ export type Velocity = {
           },
           {
             "name": "padding",
+            "docs": [
+              "Tail reserve: 4 bytes of alignment slack plus room for two more",
+              "captured pubkeys, so a resolver that needs another fixed account can",
+              "take it from here instead of forcing an `extend_account` migration on",
+              "every attached quoter entry."
+            ],
             "type": {
               "array": [
                 "u8",
-                4
+                68
               ]
             }
           }
@@ -26069,13 +26090,16 @@ export type Velocity = {
           {
             "name": "padding",
             "docs": [
-              "Pads the header to 64 bytes so the struct stays a multiple of 16 and",
-              "`(SIZE - 8) % 16 == 0` holds (docs/alignment-and-native-offsets.md)."
+              "Pads the header to 128 bytes: 12 bytes of alignment slack (so the",
+              "struct stays a multiple of 16 and `(SIZE - 8) % 16 == 0` holds — see",
+              "docs/alignment-and-native-offsets.md) plus room for two more pubkeys,",
+              "so naming another account in the header doesn't shift `sources` /",
+              "`levels` and break every off-chain decoder of this buffer."
             ],
             "type": {
               "array": [
                 "u8",
-                12
+                76
               ]
             }
           },
@@ -28375,8 +28399,8 @@ export type Velocity = {
           {
             "name": "relay",
             "docs": [
-              "Everything relay needs hosted, in one field: the spec header, the",
-              "condition slots, and the shared sync account list (see",
+              "Everything relay needs hosted, in one field: the `relay-spec` header,",
+              "the condition slots, and the shared sync account list (see",
               "[`LIQ_SYNC_ACCOUNTS_MAX`]). First field, so its watch offset is 8."
             ],
             "type": {
@@ -28478,10 +28502,15 @@ export type Velocity = {
           },
           {
             "name": "padding",
+            "docs": [
+              "Tail reserve: 8 bytes of alignment slack plus room for two more",
+              "pubkeys, so a future sync input can be captured here instead of",
+              "forcing an `extend_account` migration on every opted-in user."
+            ],
             "type": {
               "array": [
                 "u8",
-                8
+                72
               ]
             }
           }

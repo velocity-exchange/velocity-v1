@@ -138,12 +138,52 @@ bash test-scripts/run-anchor-tests.sh --skip-build
 
 The integration tests in `tests/` import the SDK by **relative path** (`../packages/sdk/src/...`) and resolve `@coral-xyz/anchor` and friends from the **repo-root** `node_modules`. The single root `bun install` (workspace) provides both — there is no separate per-package install. If deps are missing, run `bun install` at the repo root.
 
+**Rust integration tests (litesvm, `integration-tests/`):** a standalone workspace that loads the
+real `.so` fixtures and drives real instructions. It needs three built programs first — velocity, and
+the CLOB + midpoint from `anchor-v2/`:
+
+```bash
+cargo-build-sbf --tools-version v1.54 --manifest-path programs/velocity/Cargo.toml -- --no-default-features --features no-entrypoint,anchor-test
+bun run program:build:clob && bun run program:build:midpoint
+cd integration-tests && cargo test --locked
+```
+
+Gated in CI by the `integration-tests` job in `.github/workflows/main.yml`.
+
 **SDK unit tests:**
 
 ```bash
 cd packages/sdk/ && bun run test:dlob    # DLOB tests
 cd packages/sdk/ && bun run test:ci      # CI subset
 ```
+
+### Which suites to run while working
+
+The long suites are minutes-to-tens-of-minutes each and rebuild the SBF program. **Do not re-run them
+repeatedly inside a working session** — the loop is: unit tests while iterating, **one** integration
+run before you push, CI for everything else.
+
+| While iterating (seconds–a minute, run freely)                                                            | Once before pushing                                            | CI only                                                 |
+| --------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------- | ------------------------------------------------------- |
+| `cargo test -p velocity`, `cargo check -p velocity`, `cargo check -p vaults`, `cargo clippy -p velocity`   | `bash test-scripts/run-anchor-tests.sh` (`--skip-build` if the `.so` is current) | `vault-tests`, `rust-workspace-check`, `docker-images-*` |
+| `cd packages/sdk && bun run test:ci`, `bun run test:dlob`                                                  | `cd integration-tests && cargo test --locked`                   | the fuzz workflow                                       |
+
+When an integration suite fails, **read the failure and fix the cause** — do not re-run it hoping for a
+different result, and do not re-run the whole file set to check one test. Re-run the single failing
+test (`ts-mocha -t 300000 ./tests/<file>.ts`, or `cargo test --locked <test_name>` in
+`integration-tests/`), then do the one full run at the end.
+
+**`bun run test:e2e:localnet` is a manual, local-only gate — never part of an iteration loop, and
+deliberately not in CI.** It stands up a real `solana-test-validator`, a `redis-server`, the Rust
+book-publisher and swift-server, and a relay crank-turner, and it needs a **separate `relay`
+checkout** (`RELAY_REPO`, default `~/source/relay`) whose program and turner it builds from source.
+That last dependency is why it is not CI-feasible today: relay is a different private repo, so a CI
+job would need a deploy key plus a pinned relay revision, and the run would be a ~40-minute
+multi-service job whose failures are usually the harness rather than the change. Run it locally
+before a devnet upgrade and after touching the relay-facing surface (condition blocks, resolvers,
+executors). If it ever needs to gate, the prerequisite is pinning relay as a submodule (or vendoring
+`relay.so` + the turner binary) — recommend that before wiring the job, don't approximate it with a
+partial harness.
 
 **Lint/format:**
 
@@ -301,6 +341,35 @@ Prefer declarative iterator chains (`map`/`filter`/`fold`/`try_fold`/`collect`) 
 ### Doc comments
 
 All modules have doc comments. When making feature or refactor changes, update any module-level doc comments that would be invalidated by the change.
+
+**No plan codenames in comments.** A comment must never point at a design doc, plan, spec section,
+work phase, or review round as its justification — not `S1`–`S7` / "the S5 rule", not "Phase 2",
+not "the plan settles this", "per the sync log", "as the spec warns", "deferred to a later phase". A
+reader has the code, not the plan; those labels expire the moment the doc is renamed, reorganized, or
+merged, and they encode nothing a reader can act on. Write the reason itself instead:
+
+```rust
+// BAD:  the S5 rule applied to the taker flow
+// GOOD: an unfilled place_and_take remainder rests on the book instead of
+//       cancelling, so the taker keeps queue position at its limit price
+```
+
+Referring to a *named, stable artifact* is fine — a crate (`relay-spec`), a type
+(`relay_spec::ConditionV0`), a module path, a durable doc that explains a whole subsystem
+(`docs/alignment-and-native-offsets.md`) — because those are things the reader can go read and that
+change with the code. `docs/propamm-plan.md` is where S1–S7 are *defined*; that document may use
+them, code may not. Local step labels inside one function ("first pass … second pass") are fine too,
+as long as they describe that function rather than a project timeline.
+
+**Version new event structs.** An `#[event]`'s discriminator is derived from its struct name, so
+adding a field to an existing record silently changes the payload under a discriminator consumers
+already decode. New velocity events therefore end in `V0` (e.g. `ProtocolUserWithdrawRecordV0`), and
+a field addition ships as `…V1` with its own discriminator rather than mutating the `V0` shape. The
+records inherited from upstream Drift keep their unversioned names — don't rename those. Wire every
+new event into the SDK's subscriber surface in the same change: `EventMap`, the `eventTypes` default
+list, and the `VelocityEvent` union in `packages/sdk/src/events/types.ts`, plus the record's type
+mirror in `packages/sdk/src/types.ts`. A type mirror without the `EventMap` entry compiles fine and
+is simply never decoded.
 
 ### Migration doc ([docs/DRIFT-TO-VELOCITY.md](./docs/DRIFT-TO-VELOCITY.md))
 

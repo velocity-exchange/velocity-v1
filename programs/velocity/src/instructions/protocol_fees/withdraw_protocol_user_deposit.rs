@@ -25,7 +25,7 @@ use {
             casting::Cast, safe_math::SafeMath, spot_withdraw::validate_spot_market_vault_amount,
         },
         state::{
-            events::ProtocolUserWithdrawRecord,
+            events::ProtocolUserWithdrawRecordV0,
             spot_market::{SpotBalanceType, SpotMarket},
             state::{HotRole, State},
             user::User,
@@ -158,7 +158,7 @@ pub fn handle_withdraw_protocol_user_deposit<'c: 'info, 'info>(
         },
     )?;
 
-    emit!(ProtocolUserWithdrawRecord {
+    emit!(ProtocolUserWithdrawRecordV0 {
         ts: now,
         spot_market_index: market_index,
         amount: withdraw_amount,

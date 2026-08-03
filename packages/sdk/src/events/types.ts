@@ -22,6 +22,7 @@ import {
 	LPBorrowLendDepositRecord,
 	PerpMarketFeeSweepRecord,
 	ProtocolFeeWithdrawRecord,
+	ProtocolUserWithdrawRecordV0,
 	RevenueShareSettleRecord,
 	TransferFeeAndPnlPoolRecord,
 } from '../types';
@@ -82,6 +83,7 @@ export const DefaultEventSubscriptionOptions: EventSubscriptionOptions = {
 		'LPBorrowLendDepositRecord',
 		'PerpMarketFeeSweepRecord',
 		'ProtocolFeeWithdrawRecord',
+		'ProtocolUserWithdrawRecordV0',
 		'RevenueShareSettleRecord',
 		'TransferFeeAndPnlPoolRecord',
 	],
@@ -141,6 +143,11 @@ export type WrappedEvents = WrappedEvent<EventType>[];
  * `RevenueShareSettleRecord` (builder/referrer revenue-share settlement, fee
  * amounts in `QUOTE_PRECISION`), and `TransferFeeAndPnlPoolRecord` (internal
  * transfer between a market's fee pool and pnl pool, `QUOTE_PRECISION`).
+ *
+ * Keys are the on-chain struct names verbatim, because that is what an
+ * `#[event]`'s discriminator is derived from. Velocity's own events carry a
+ * version suffix (`…RecordV0`); a field addition ships as a new `…RecordV1`
+ * key rather than changing the shape decoded under an existing one.
  */
 export type EventMap = {
 	DepositRecord: Event<DepositRecord>;
@@ -168,6 +175,8 @@ export type EventMap = {
 	PerpMarketFeeSweepRecord: Event<PerpMarketFeeSweepRecord>;
 	/** Admin withdrawal from a perp or spot market's protocol fee pool to a recipient token account. */
 	ProtocolFeeWithdrawRecord: Event<ProtocolFeeWithdrawRecord>;
+	/** Hot fee-withdraw role draining the protocol-owned `User`'s settled crank rewards to a recipient token account. */
+	ProtocolUserWithdrawRecordV0: Event<ProtocolUserWithdrawRecordV0>;
 	/** Builder/referrer fee revenue-share settlement for a market. Fee amounts are quote-token, `QUOTE_PRECISION` (1e6). */
 	RevenueShareSettleRecord: Event<RevenueShareSettleRecord>;
 	/** Internal transfer of quote token between a perp market's fee pool and pnl pool. */
@@ -205,6 +214,7 @@ export type VelocityEvent =
 	| Event<LPBorrowLendDepositRecord>
 	| Event<PerpMarketFeeSweepRecord>
 	| Event<ProtocolFeeWithdrawRecord>
+	| Event<ProtocolUserWithdrawRecordV0>
 	| Event<RevenueShareSettleRecord>
 	| Event<TransferFeeAndPnlPoolRecord>
 	| Event<CuUsage>;

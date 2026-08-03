@@ -229,6 +229,7 @@ function mockPerpMarketCommon(): Omit<
 		fundingRampSlope: 1000000,
 		orderStepSize: new BN(1),
 		orderTickSize: new BN(1),
+		clobQuoter: PublicKey.default,
 	};
 }
 
@@ -571,6 +572,7 @@ export const mockStateAccount: StateAccount = {
 	hotAmmSpreadAdjust: PublicKey.default,
 	hotFeeWithdraw: PublicKey.default,
 	hotAccountExtension: PublicKey.default,
+	hotFlowAuthority: PublicKey.default,
 	protocolFeeRecipientPerp: PublicKey.default,
 	protocolFeeRecipientSpot: PublicKey.default,
 	featureBitFlags: 0,

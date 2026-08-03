@@ -3308,7 +3308,7 @@ pub mod types {
         pub market_index: u16,
         pub quote_spot_market_index: u16,
         #[serde(skip)]
-        pub padding: Padding<12>,
+        pub padding: Padding<76>,
     }
     #[repr(C)]
     #[derive(
@@ -5098,7 +5098,7 @@ pub mod types {
         Debug,
         PartialEq,
     )]
-    pub struct ProtocolUserWithdrawRecord {
+    pub struct ProtocolUserWithdrawRecordV0 {
         pub ts: i64,
         pub spot_market_index: u16,
         pub amount: u64,
@@ -5260,7 +5260,7 @@ pub mod types {
         pub market_index: u16,
         pub quote_spot_market_index: u16,
         #[serde(skip)]
-        pub padding: Padding<4>,
+        pub padding: Padding<68>,
     }
     #[derive(
         AnchorSerialize,
@@ -5500,7 +5500,7 @@ pub mod types {
         pub source_count: u8,
         pub direction: u8,
         #[serde(skip)]
-        pub padding: Padding<12>,
+        pub padding: Padding<76>,
         pub sources: [QuotedSourceV0; 16],
         pub levels: [BigArray<QuotedLevelV0, 128>; 16],
     }
@@ -6246,7 +6246,7 @@ pub mod types {
         pub sync_fallback_slots: u64,
         pub positions_digest: u64,
         #[serde(skip)]
-        pub padding: Padding<8>,
+        pub padding: Padding<72>,
     }
     #[repr(C)]
     #[derive(
@@ -6441,7 +6441,7 @@ pub mod accounts {
         pub market_index: u16,
         pub quote_spot_market_index: u16,
         #[serde(skip)]
-        pub padding: Padding<12>,
+        pub padding: Padding<76>,
     }
     #[automatically_derived]
     impl anchor_lang::Discriminator for ClobCrankConditionsV0 {
@@ -7076,7 +7076,7 @@ pub mod accounts {
         pub market_index: u16,
         pub quote_spot_market_index: u16,
         #[serde(skip)]
-        pub padding: Padding<4>,
+        pub padding: Padding<68>,
     }
     #[automatically_derived]
     impl anchor_lang::Discriminator for QuoterCrossConditionsV0 {
@@ -7428,7 +7428,7 @@ pub mod accounts {
         pub source_count: u8,
         pub direction: u8,
         #[serde(skip)]
-        pub padding: Padding<12>,
+        pub padding: Padding<76>,
         pub sources: [QuotedSourceV0; 16],
         pub levels: [BigArray<QuotedLevelV0, 128>; 16],
     }
@@ -7880,7 +7880,7 @@ pub mod accounts {
         pub sync_fallback_slots: u64,
         pub positions_digest: u64,
         #[serde(skip)]
-        pub padding: Padding<8>,
+        pub padding: Padding<72>,
     }
     #[automatically_derived]
     impl anchor_lang::Discriminator for UserConditionsV0 {
@@ -30619,7 +30619,7 @@ pub mod events {
     }
     #[derive(Clone, Debug, PartialEq, Default)]
     #[event]
-    pub struct ProtocolUserWithdrawRecord {
+    pub struct ProtocolUserWithdrawRecordV0 {
         pub ts: i64,
         pub spot_market_index: u16,
         pub amount: u64,

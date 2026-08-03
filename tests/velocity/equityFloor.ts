@@ -555,7 +555,10 @@ describe('equity floor', () => {
 		} catch (e) {
 			outboundErr = e as Error;
 		}
-		assert(outboundErr, 'transfer to a healthy subaccount should have been rejected');
+		assert(
+			outboundErr,
+			'transfer to a healthy subaccount should have been rejected'
+		);
 		assert(outboundErr.message.includes(EQUITY_BELOW_FLOOR_HEX));
 	});
 

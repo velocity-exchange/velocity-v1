@@ -447,6 +447,32 @@ pub struct ExecuteResponseV0 {
     pub cancelled: Vec<CancelledRemainderV0>,
 }
 
+/// One order a CLOB removed as a sub-min remainder of a fill.
+///
+/// **`base_asset_amount` and the completed-order ids beside it are taken on
+/// faith, and that is a first-party-code assumption, not a verified one.**
+/// They release a maker's margin reservation and decrement their open-order
+/// counts, and that maker is an ordinary velocity user resting on the book —
+/// not the quoter's own account, so the subject rule bounds *whose* books an
+/// entry may touch but not whether it described what it did to them.
+/// Over-reporting frees more reservation than the order held, which
+/// understates that user's margin requirement; an id for an order still live
+/// on the book frees a placed trigger's shadow while the book keeps the size.
+///
+/// Two things make it acceptable rather than a hole. Only a `QuoterType::Clob`
+/// entry reaches this path at all (a Custom quoter's depth is never reserved
+/// through velocity, so there is nothing to unwind), and velocity already
+/// takes the same numbers on faith from the same program on every removal
+/// path — `ClobRemovedOrderV0` out of `cancel_order_v0`, `evict_worst_v0` and
+/// `remove_expired_v0` drives the identical unwinding. Verifying only this
+/// one would leave four equivalent routes open.
+///
+/// So the assumption is: **a Clob-typed registry entry runs code we ship.**
+/// Nothing in the program enforces that — `is_approved` is admin vetting of a
+/// CPI surface, not a program-id allowlist — so approving a third-party CLOB
+/// is what would turn this into a real exposure. At that point these amounts
+/// must be checked against `clob_resting_prefix`, read before execute
+/// consumes the nodes, and the same check owed to the removal cranks.
 #[derive(Clone, Copy, AnchorSerialize, AnchorDeserialize, PartialEq, Eq, Debug)]
 pub struct CancelledRemainderV0 {
     pub user: ClobUserRefV0,

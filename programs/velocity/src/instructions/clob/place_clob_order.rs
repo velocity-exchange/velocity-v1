@@ -1,7 +1,7 @@
 //! Place a resting limit order on a registered CLOB. Velocity owns placement
 //! policy: it verifies the `User` authority, reserves the order's worst-case
 //! open-order aggregates, and gates margin exactly like a DLOB placement —
-//! the CLOB trusts its `place_authority` (the velocity signer PDA) and only
+//! the CLOB trusts its `place_authority` (the quoter CPI signer PDA) and only
 //! enforces book-level rules (tick/step/min, capacity, activation delay).
 
 use {
@@ -17,6 +17,7 @@ use {
         load_mut,
         math::{margin::meets_place_order_margin_requirement, orders::is_order_position_reducing},
         msg,
+        signer::QUOTER_SIGNER_SEED,
         state::{
             clob_crank::{ClobCrankConditionsV0, CLOB_CRANK_CONDITIONS_PDA_SEED},
             market_status::MarketStatus,
@@ -50,9 +51,12 @@ pub struct PlaceClobOrder<'info> {
     /// CHECK: locked to the registered quoter program.
     #[account(address = quoter.load()?.program_id)]
     pub clob_program: UncheckedAccount<'info>,
-    /// CHECK: the protocol signer PDA — the CLOB's `place_authority`.
-    #[account(address = state.load()?.signer)]
-    pub velocity_signer: UncheckedAccount<'info>,
+    /// CHECK: the quoter CPI signer PDA — what a book's `place_authority` is
+    /// set to. Deliberately not the vault authority: signer privilege is
+    /// inherited by a callee, so the key velocity hands an external program
+    /// must be the authority on nothing.
+    #[account(seeds = [QUOTER_SIGNER_SEED], bump)]
+    pub quoter_signer: UncheckedAccount<'info>,
     /// The market's relay conditions account, so an expiring placement
     /// min-folds its `max_ts` into the expire condition's `wake_ts` hint.
     /// Optional — placement must not brick on a market whose conditions were
@@ -125,8 +129,8 @@ pub fn handle_place_clob_order<'c: 'info, 'info>(
             params.market_index,
             &ctx.accounts.clob_market,
             &ctx.accounts.clob_program,
-            &ctx.accounts.velocity_signer,
-            state.signer_nonce,
+            &ctx.accounts.quoter_signer,
+            ctx.bumps.quoter_signer,
         )?
     };
     {
@@ -276,12 +280,12 @@ pub fn handle_place_clob_order<'c: 'info, 'info>(
 /// no CLOB accounts to pass.
 #[allow(clippy::too_many_arguments)]
 pub fn try_place_remainder_on_clob<'info>(
-    state: &crate::state::state::State,
     user_loader: &AccountLoader<'info, User>,
     quoter_loader: &AccountLoader<'info, QuoterV0>,
     clob_market: &AccountInfo<'info>,
     clob_program: &AccountInfo<'info>,
-    velocity_signer: &AccountInfo<'info>,
+    quoter_signer: &AccountInfo<'info>,
+    quoter_signer_nonce: u8,
     crank_conditions: Option<&AccountLoader<'info, ClobCrankConditionsV0>>,
     perp_market_map: &crate::state::perp_market_map::PerpMarketMap,
     spot_market_map: &crate::state::spot_market_map::SpotMarketMap,
@@ -300,8 +304,8 @@ pub fn try_place_remainder_on_clob<'info>(
             market_index,
             clob_market,
             clob_program,
-            velocity_signer,
-            state.signer_nonce,
+            quoter_signer,
+            quoter_signer_nonce,
         )?;
         if !(quoter.is_active && quoter.is_approved) {
             msg!("clob quoter inactive; remainder stays cancelled");

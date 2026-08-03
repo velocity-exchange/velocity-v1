@@ -242,6 +242,7 @@ fn fill_order<'c: 'info, 'info>(
     // Quote each live entry into a book. Deactivated/unapproved entries are
     // skipped (a route signed before an admin pulled approval must not brick
     // the fill); market mismatches are a malformed tx and fail loudly.
+    let (quoter_signer, quoter_signer_nonce) = crate::signer::find_quoter_signer();
     let mut kept: Vec<AccountLoader<QuoterV0>> = Vec::with_capacity(quoters.len());
     let mut types: Vec<QuoterType> = Vec::with_capacity(quoters.len());
     let mut quoter_users: Vec<Pubkey> = Vec::with_capacity(quoters.len());
@@ -280,8 +281,8 @@ fn fill_order<'c: 'info, 'info>(
                     users: Some(users.clone()),
                     taker: Some(taker_ref),
                 },
-                &state.signer,
-                state.signer_nonce,
+                &quoter_signer,
+                quoter_signer_nonce,
                 &account_map,
             )?;
             (quoter.priority, quoter.quoter_type, quoter.user, levels)
@@ -317,8 +318,8 @@ fn fill_order<'c: 'info, 'info>(
         types,
         quoter_users,
         account_map: &account_map,
-        velocity_signer: state.signer,
-        signer_nonce: state.signer_nonce,
+        quoter_signer,
+        quoter_signer_nonce,
         users,
         taker: taker_ref,
     };

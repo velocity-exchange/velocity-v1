@@ -5,7 +5,7 @@
 use {
     crate::{
         error::ErrorCode,
-        state::prop_amm::{QuoterCpiLeg, QuoterV0, MAX_QUOTER_ACCOUNTS},
+        state::prop_amm::{validate_quoter_accounts, QuoterCpiLeg, QuoterV0, MAX_QUOTER_ACCOUNTS},
         validate,
     },
     anchor_lang::prelude::*,
@@ -53,6 +53,7 @@ pub fn handle_update_quoter_accounts(
         end,
         MAX_QUOTER_ACCOUNTS
     )?;
+    validate_quoter_accounts(args.metas.iter().map(|meta| &meta.pubkey))?;
 
     let (list, count) = match args.leg {
         QuoterCpiLeg::Quote => (&mut quoter.quote_accounts, &mut quoter.quote_accounts_count),

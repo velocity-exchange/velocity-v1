@@ -605,6 +605,76 @@ fn place_rejects_off_grid_undersized_and_bad_authority() {
     assert_clob_err(result, err_code(clob::error::ClobError::InvalidAuthority));
 }
 
+/// `execute_v0` consumes resting orders but creates no positions anywhere —
+/// only velocity does that, out of the balance changes this returns. An
+/// unauthorized caller could therefore wipe the book for free, so the same
+/// `place_authority` gate placement uses covers it.
+#[test]
+fn execute_rejects_unauthorized_caller() {
+    let mut ctx = setup();
+    let user = addr(Pubkey::new_unique());
+    ctx.svm.warp_to_slot(10);
+    place(&mut ctx, place_args(Side::Ask, 100, 5), user);
+    ctx.svm.warp_to_slot(11);
+
+    let args = || ExecuteArgsV0 {
+        direction: Direction::Long,
+        size: 5,
+        users: None,
+        taker: None,
+    };
+    let execute_ix = |authority: Pubkey| {
+        instruction::ExecuteV0 { args: args() }.to_instruction(accounts::ExecuteV0 {
+            market: addr(ctx.market),
+            place_authority: addr(authority),
+        })
+    };
+
+    // A different signer is not the book's place authority.
+    let rando = Keypair::new();
+    ctx.svm.airdrop(&rando.pubkey(), 1_000_000_000).unwrap();
+    ctx.svm.expire_blockhash();
+    let blockhash = ctx.svm.latest_blockhash();
+    let msg = Message::new_with_blockhash(
+        &[execute_ix(rando.pubkey())],
+        Some(&ctx.payer.pubkey()),
+        &blockhash,
+    );
+    let signers: Vec<&dyn anchor_v2_testing::Signer> = vec![&ctx.payer, &rando];
+    let tx = VersionedTransaction::try_new(VersionedMessage::Legacy(msg), &signers).unwrap();
+    assert_clob_err(
+        ctx.svm.send_transaction(tx),
+        err_code(clob::error::ClobError::InvalidAuthority),
+    );
+
+    // Naming the right authority without its signature is not enough either.
+    let mut unsigned = execute_ix(ctx.place_auth.pubkey());
+    for meta in &mut unsigned.accounts {
+        meta.is_signer = false;
+    }
+    ctx.svm.expire_blockhash();
+    let blockhash = ctx.svm.latest_blockhash();
+    let msg = Message::new_with_blockhash(&[unsigned], Some(&ctx.payer.pubkey()), &blockhash);
+    let signers: Vec<&dyn anchor_v2_testing::Signer> = vec![&ctx.payer];
+    let tx = VersionedTransaction::try_new(VersionedMessage::Legacy(msg), &signers).unwrap();
+    let err = format!(
+        "{:?}",
+        ctx.svm
+            .send_transaction(tx)
+            .expect_err("expected failure")
+            .err
+    );
+    assert!(
+        err.contains("MissingRequiredSignature"),
+        "expected MissingRequiredSignature, got {err}"
+    );
+
+    // The order is untouched, and the real authority can still take it.
+    assert_eq!(market_state(&ctx).ask_count, 1);
+    assert_eq!(execute(&mut ctx, Direction::Long, 5).len(), 1);
+    assert_eq!(market_state(&ctx).ask_count, 0);
+}
+
 #[test]
 fn hard_cap_rejects_placement_and_crank_evicts_tail() {
     let mut ctx = setup_with_capacity(16); // 8 per side, evict threshold 6

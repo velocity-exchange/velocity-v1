@@ -39,6 +39,7 @@ use {
             safe_math::SafeMath,
         },
         msg,
+        signer::QUOTER_SIGNER_SEED,
         state::{
             clob_crank::{ClobCrankConditionsV0, CLOB_CRANK_CONDITIONS_PDA_SEED},
             margin_calculation::MarginContext,
@@ -88,9 +89,12 @@ pub struct ForceCancelClobOrders<'info> {
     /// CHECK: locked to the registered quoter program.
     #[account(address = quoter.load()?.program_id)]
     pub clob_program: UncheckedAccount<'info>,
-    /// CHECK: the protocol signer PDA — the CLOB's `place_authority`.
-    #[account(address = state.load()?.signer)]
-    pub velocity_signer: UncheckedAccount<'info>,
+    /// CHECK: the quoter CPI signer PDA — what a book's `place_authority` is
+    /// set to. Deliberately not the vault authority: signer privilege is
+    /// inherited by a callee, so the key velocity hands an external program
+    /// must be the authority on nothing.
+    #[account(seeds = [QUOTER_SIGNER_SEED], bump)]
+    pub quoter_signer: UncheckedAccount<'info>,
     /// Wake-hint host; optional like every other CLOB path.
     #[account(
         mut,
@@ -136,8 +140,8 @@ pub fn handle_force_cancel_clob_orders<'c: 'info, 'info>(
         market_index,
         &ctx.accounts.clob_market,
         &ctx.accounts.clob_program,
-        &ctx.accounts.velocity_signer,
-        state.signer_nonce,
+        &ctx.accounts.quoter_signer,
+        ctx.bumps.quoter_signer,
     )?;
 
     // ---- Gate: the account must actually be failing, same as the DLOB

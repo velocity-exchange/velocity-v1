@@ -20,6 +20,7 @@
 use {
     crate::{
         instructions::{constraints::*, place_and_take_perp_order, ClobRemainderRoute},
+        signer::QUOTER_SIGNER_SEED,
         state::{
             clob_crank::{ClobCrankConditionsV0, CLOB_CRANK_CONDITIONS_PDA_SEED},
             order_params::OrderParams,
@@ -57,9 +58,12 @@ pub struct PlaceAndTakeV1<'info> {
     /// CHECK: locked to the registered quoter program.
     #[account(address = quoter.load()?.program_id)]
     pub clob_program: UncheckedAccount<'info>,
-    /// CHECK: the protocol signer PDA — the CLOB's `place_authority`.
-    #[account(address = state.load()?.signer)]
-    pub velocity_signer: UncheckedAccount<'info>,
+    /// CHECK: the quoter CPI signer PDA — what a book's `place_authority` is
+    /// set to. Deliberately not the vault authority: signer privilege is
+    /// inherited by a callee, so the key velocity hands an external program
+    /// must be the authority on nothing.
+    #[account(seeds = [QUOTER_SIGNER_SEED], bump)]
+    pub quoter_signer: UncheckedAccount<'info>,
     /// Wake-hint host for the rested remainder. Optional like every other
     /// CLOB placement path: a market whose conditions were never initialized
     /// must still be tradeable, and a missed hint costs crank latency, not
@@ -94,7 +98,8 @@ pub fn handle_place_and_take_perp_order_v1<'c: 'info, 'info>(
             quoter: &ctx.accounts.quoter,
             clob_market: &ctx.accounts.clob_market,
             clob_program: &ctx.accounts.clob_program,
-            velocity_signer: &ctx.accounts.velocity_signer,
+            quoter_signer: &ctx.accounts.quoter_signer,
+            quoter_signer_nonce: ctx.bumps.quoter_signer,
             crank_conditions: ctx.accounts.crank_conditions.as_ref(),
         }),
     )

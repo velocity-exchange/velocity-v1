@@ -107,6 +107,7 @@ import { TokenFaucet } from './tokenFaucet';
 import { EventEmitter } from 'events';
 import StrictEventEmitter from 'strict-event-emitter-types';
 import {
+	getQuoterSignerPublicKey,
 	getVelocitySignerPublicKey,
 	getVelocityStateAccountPublicKey,
 	getInsuranceFundStakeAccountPublicKey,
@@ -691,6 +692,7 @@ export class VelocityClient {
 	/**
 	 * Returns the program's PDA signer (used as the authority for vault CPIs), computing and caching
 	 * it on first call. Synchronous — the signer PDA has no seeds that require an on-chain lookup.
+	 * Not the key external-program CPIs sign as; see {@link getQuoterSignerPublicKey}.
 	 * @returns The velocity signer public key.
 	 */
 	public getSignerPublicKey(): PublicKey {
@@ -699,6 +701,24 @@ export class VelocityClient {
 		}
 		this.signerPublicKey = getVelocitySignerPublicKey(this.program.programId);
 		return this.signerPublicKey;
+	}
+
+	quoterSignerPublicKey?: PublicKey;
+	/**
+	 * Returns the PDA velocity signs external-quoter CPIs as — the CLOB's `place_authority` and the
+	 * signer slot a registered quoter authenticates velocity by. A different key from
+	 * {@link getSignerPublicKey}: it is the authority on nothing, so a callee that forwards the
+	 * signature onward gains nothing. Synchronous and cached.
+	 * @returns The quoter CPI signer public key.
+	 */
+	public getQuoterSignerPublicKey(): PublicKey {
+		if (this.quoterSignerPublicKey) {
+			return this.quoterSignerPublicKey;
+		}
+		this.quoterSignerPublicKey = getQuoterSignerPublicKey(
+			this.program.programId
+		);
+		return this.quoterSignerPublicKey;
 	}
 
 	/**
@@ -8898,7 +8918,7 @@ export class VelocityClient {
 			quoter: PublicKey;
 			clobMarket: PublicKey;
 			clobProgram: PublicKey;
-			velocitySigner: PublicKey;
+			quoterSigner: PublicKey;
 			crankConditions?: PublicKey;
 		}
 	): Promise<TransactionInstruction> {

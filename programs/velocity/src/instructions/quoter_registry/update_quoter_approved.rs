@@ -1,12 +1,16 @@
 //! Admin vetting gate. Approval validates the entry is coherent enough to
 //! CPI: non-empty account lists on both legs, each containing the response
-//! account (the router reads responses from it, so it must be forwarded).
+//! account (the router reads responses from it, so it must be forwarded), and
+//! no reserved key on either list.
 
 use {
     crate::{
         auth::check_warm,
         error::ErrorCode,
-        state::{prop_amm::QuoterV0, state::State},
+        state::{
+            prop_amm::{validate_quoter_accounts, QuoterV0},
+            state::State,
+        },
         validate,
     },
     anchor_lang::prelude::*,
@@ -43,6 +47,10 @@ pub fn handle_update_quoter_approved(
                 ErrorCode::InvalidQuoterConfig,
                 "response account must be registered in both CPI account lists"
             )?;
+            // Re-checked here, not only at write time: a list stored before
+            // the reserved-key check existed is still on chain, and approval
+            // is the gate that lets an entry take flow.
+            validate_quoter_accounts(list[..count as usize].iter().map(|meta| &meta.pubkey))?;
         }
     }
     quoter.is_approved = approved;

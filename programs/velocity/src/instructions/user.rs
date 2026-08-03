@@ -3044,7 +3044,9 @@ pub struct ClobRemainderRoute<'a, 'info> {
     pub quoter: &'a AccountLoader<'info, crate::state::prop_amm::QuoterV0>,
     pub clob_market: &'a AccountInfo<'info>,
     pub clob_program: &'a AccountInfo<'info>,
-    pub velocity_signer: &'a AccountInfo<'info>,
+    /// The quoter CPI signer (the book's `place_authority`) and its bump.
+    pub quoter_signer: &'a AccountInfo<'info>,
+    pub quoter_signer_nonce: u8,
     pub crank_conditions:
         Option<&'a AccountLoader<'info, crate::state::clob_crank::ClobCrankConditionsV0>>,
 }
@@ -3220,12 +3222,12 @@ pub fn place_and_take_perp_order<'c: 'info, 'info>(
                         &Clock::get()?,
                     )?;
                     crate::instructions::try_place_remainder_on_clob(
-                        &state,
                         user_loader,
                         clob.quoter,
                         clob.clob_market,
                         clob.clob_program,
-                        clob.velocity_signer,
+                        clob.quoter_signer,
+                        clob.quoter_signer_nonce,
                         clob.crank_conditions,
                         &perp_market_map,
                         &spot_market_map,

@@ -27,8 +27,17 @@ pub fn state() -> Pubkey {
     Pubkey::find_program_address(&[b"velocity_state"], &crate::ID).0
 }
 
+/// The vault authority: SPL token authority on every `spot_market_vault` and
+/// `insurance_fund_vault`, and the protocol `User`'s authority.
 pub fn velocity_signer() -> Pubkey {
-    Pubkey::find_program_address(&[b"velocity_signer"], &crate::ID).0
+    Pubkey::find_program_address(&[crate::signer::VELOCITY_SIGNER_SEED], &crate::ID).0
+}
+
+/// The signer every CPI into an external program (registered quoters, the
+/// CLOB) uses — authority over nothing, so a callee that forwards it gains
+/// nothing. See `crate::signer`.
+pub fn quoter_signer() -> Pubkey {
+    crate::signer::find_quoter_signer().0
 }
 
 pub fn user(authority: &Pubkey, sub_account_id: u16) -> Pubkey {

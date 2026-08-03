@@ -54,6 +54,7 @@ use {
             orders::{is_oracle_too_divergent_with_twap_5min, order_satisfies_trigger_condition},
         },
         msg,
+        signer::QUOTER_SIGNER_SEED,
         state::{
             clob_crank::{ClobCrankConditionsV0, CLOB_CRANK_CONDITIONS_PDA_SEED},
             events::OrderActionExplanation,
@@ -104,9 +105,12 @@ pub struct TriggerClobOrder<'info> {
     /// CHECK: locked to the registered quoter program.
     #[account(address = quoter.load()?.program_id)]
     pub clob_program: UncheckedAccount<'info>,
-    /// CHECK: the protocol signer PDA — the CLOB's `place_authority`.
-    #[account(address = state.load()?.signer)]
-    pub velocity_signer: UncheckedAccount<'info>,
+    /// CHECK: the quoter CPI signer PDA — what a book's `place_authority` is
+    /// set to. Deliberately not the vault authority: signer privilege is
+    /// inherited by a callee, so the key velocity hands an external program
+    /// must be the authority on nothing.
+    #[account(seeds = [QUOTER_SIGNER_SEED], bump)]
+    pub quoter_signer: UncheckedAccount<'info>,
     /// Expiry-hint host, same optional contract as `place_clob_order`.
     #[account(
         mut,
@@ -172,8 +176,8 @@ pub fn handle_trigger_clob_order<'c: 'info, 'info>(
             market_index,
             &ctx.accounts.clob_market,
             &ctx.accounts.clob_program,
-            &ctx.accounts.velocity_signer,
-            state.signer_nonce,
+            &ctx.accounts.quoter_signer,
+            ctx.bumps.quoter_signer,
         )?
     };
 
@@ -504,7 +508,6 @@ pub fn handle_resolve_trigger_clob_order(ctx: Context<ResolveTriggerClobOrder>) 
             return Ok(None);
         };
 
-        let signer = crate::state::pdas::velocity_signer();
         let (protocol_user, protocol_user_stats) = crate::state::pdas::protocol_user_pair();
         let user_stats =
             crate::state::pdas::user_stats(&crate::load!(ctx.accounts.user)?.authority);
@@ -519,7 +522,7 @@ pub fn handle_resolve_trigger_clob_order(ctx: Context<ResolveTriggerClobOrder>) 
                 quoter: meta.quoter,
                 clob_market: meta.clob_market,
                 clob_program: meta.clob_program,
-                velocity_signer: signer,
+                quoter_signer: crate::state::pdas::quoter_signer(),
                 crank_conditions: Some(crate::state::pdas::clob_crank_conditions(
                     meta.market_index,
                 )),

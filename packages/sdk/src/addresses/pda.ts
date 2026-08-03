@@ -326,6 +326,23 @@ export function getVelocitySignerPublicKey(programId: PublicKey): PublicKey {
 }
 
 /**
+ * Derives the singleton `quoter_signer` PDA — the key velocity signs every CPI into an external
+ * quoter program with (a registered PropAMM's `quote_v0`/`execute_v0`, and the CLOB's
+ * place/cancel/evict/expire, which is why a book's `place_authority` is set to it). Deliberately a
+ * different key from {@link getVelocitySignerPublicKey}: signer privilege is inherited by a callee,
+ * so the key handed to an external program is the authority on nothing — not a token vault, not a
+ * mint, not any `User`.
+ * @param programId - Deployed velocity program id.
+ * @returns The quoter CPI signer PDA's public key.
+ */
+export function getQuoterSignerPublicKey(programId: PublicKey): PublicKey {
+	return PublicKey.findProgramAddressSync(
+		[Buffer.from(anchor.utils.bytes.utf8.encode('quoter_signer'))],
+		programId
+	)[0];
+}
+
+/**
  * Derives the PDA that reserves a unique referrer name, from seeds `["referrer_name", nameBuffer]`.
  * Used to enforce name uniqueness for referrers on-chain.
  * @param programId - Deployed velocity program id.

@@ -48,8 +48,9 @@
 //! discriminator), which is the 8-aligned offset `read_block` requires.
 
 use {
-    crate::{error::ErrorCode, state::relay_block::RelayBlock},
+    crate::error::ErrorCode,
     anchor_lang::prelude::*,
+    relay_anchor::RelayBlock,
     relay_spec::{ConditionBlock, RelayBlockV0},
 };
 
@@ -359,8 +360,6 @@ mod tests {
             relay_spec::CrankSpecV0 {
                 resolver_program: crate::ID.to_bytes(),
                 resolver_disc: [1; 8],
-                executor_program: crate::ID.to_bytes(),
-                executor_disc: [2; 8],
                 min_payment: 5_000,
             },
             resolvers,
@@ -412,12 +411,14 @@ mod tests {
         // Staging is the shared scratch account's job now, not this
         // account's: the pointer names scratch at index 0.
         let mut scratch = crate::state::relay_scratch::RelayScratchV0::default();
-        let resolved = ResolvedCrankV0 {
-            accounts: (0..11u8)
+        let resolved = ResolvedCrankV0::new(
+            crate::ID.to_bytes(),
+            [2; 8],
+            (0..11u8)
                 .map(|i| relay_spec::AccountRefV0::writable([i; 32]))
                 .collect(),
-            data: vec![1, 2, 3],
-        };
+            vec![1, 2, 3],
+        );
         let pointer_bytes = scratch.stage(&resolved).unwrap();
         let pointer = ResponsePointerV0::read(&pointer_bytes).unwrap();
         assert!(pointer.has_work());

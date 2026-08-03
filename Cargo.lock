@@ -1586,9 +1586,18 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "dc897dd8d9e8bd1ed8cdad82b5966c3e0ecae09fb1907d58efaa013543185d0a"
 
 [[package]]
+name = "relay-anchor"
+version = "0.1.0"
+source = "git+https://github.com/velocity-exchange/relay?rev=88419fd1de3ee189e44ef591d9e8f5c558d58a9d#88419fd1de3ee189e44ef591d9e8f5c558d58a9d"
+dependencies = [
+ "anchor-lang",
+ "relay-spec",
+]
+
+[[package]]
 name = "relay-spec"
 version = "0.1.0"
-source = "git+https://github.com/velocity-exchange/relay?rev=f81e43069798434186860555d197239bd640d5dd#f81e43069798434186860555d197239bd640d5dd"
+source = "git+https://github.com/velocity-exchange/relay?rev=88419fd1de3ee189e44ef591d9e8f5c558d58a9d#88419fd1de3ee189e44ef591d9e8f5c558d58a9d"
 dependencies = [
  "bytemuck",
 ]
@@ -3221,6 +3230,7 @@ dependencies = [
  "pyth",
  "pyth-client",
  "pyth_lazer",
+ "relay-anchor",
  "relay-spec",
  "solana-program",
  "solana-security-txt",

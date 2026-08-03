@@ -25967,7 +25967,7 @@
     {
       "name": "RelayBlock22x32",
       "docs": [
-        "relay_spec::RelayBlockV0<22, 32>: spec header, 22 condition slots, and a 32-slot resolver account list, as one opaque wire region"
+        "relay condition block (spec v0), 22 conditions, as one opaque wire region"
       ],
       "serialization": "bytemuckunsafe",
       "repr": {
@@ -25991,7 +25991,7 @@
     {
       "name": "RelayBlock3x40",
       "docs": [
-        "relay_spec::RelayBlockV0<3, 40>: spec header, 3 condition slots, and a 40-slot resolver account list, as one opaque wire region"
+        "relay condition block (spec v0), 3 conditions, as one opaque wire region"
       ],
       "serialization": "bytemuckunsafe",
       "repr": {
@@ -26015,7 +26015,7 @@
     {
       "name": "RelayBlock6x8",
       "docs": [
-        "relay_spec::RelayBlockV0<6, 8>: spec header, 6 condition slots, and a 8-slot resolver account list, as one opaque wire region"
+        "relay condition block (spec v0), 6 conditions, as one opaque wire region"
       ],
       "serialization": "bytemuckunsafe",
       "repr": {

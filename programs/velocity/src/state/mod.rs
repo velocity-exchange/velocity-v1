@@ -27,7 +27,6 @@ pub mod prop_amm;
 pub mod pyth_lazer_oracle;
 pub mod quoter;
 pub mod quoter_cross;
-pub mod relay_block;
 pub mod relay_scratch;
 pub mod revenue_share;
 pub mod revenue_share_map;

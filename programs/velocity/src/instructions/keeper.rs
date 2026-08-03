@@ -4231,7 +4231,7 @@ pub fn handle_resolve_trigger_order(ctx: Context<ResolveTriggerOrder>) -> Result
         let (protocol_user, _) = crate::state::pdas::protocol_user_pair();
         let user_stats = crate::state::pdas::user_stats(&load!(ctx.accounts.user)?.authority);
         Ok(Some(
-            crate::instructions::StagedCall::new(crate::accounts::TriggerOrder {
+            crate::staged_call!(TriggerOrder {
                 state: crate::state::pdas::state(),
                 authority: crate::state::pdas::keeper_placeholder(),
                 filler: protocol_user,

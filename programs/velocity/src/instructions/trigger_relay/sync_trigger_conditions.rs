@@ -223,11 +223,10 @@ pub fn rewrite_trigger_conditions<'info>(
         let clob_path = order.order_type == OrderType::TriggerLimit
             && order.oracle_price_offset == 0
             && inputs.clob.is_some();
-        let (resolver_disc, executor_disc, meta) = if clob_path {
+        let (resolver_disc, meta) = if clob_path {
             let (entry, book, program) = inputs.clob.unwrap();
             (
                 disc8(crate::instruction::ResolveTriggerClobOrder::DISCRIMINATOR)?,
-                disc8(crate::instruction::TriggerClobOrder::DISCRIMINATOR)?,
                 TriggerSlotMetaV0 {
                     quoter: entry,
                     clob_market: book,
@@ -240,7 +239,6 @@ pub fn rewrite_trigger_conditions<'info>(
         } else {
             (
                 disc8(crate::instruction::ResolveTriggerOrder::DISCRIMINATOR)?,
-                disc8(crate::instruction::TriggerOrder::DISCRIMINATOR)?,
                 TriggerSlotMetaV0 {
                     quoter: Pubkey::default(),
                     clob_market: Pubkey::default(),
@@ -269,8 +267,6 @@ pub fn rewrite_trigger_conditions<'info>(
         let spec = CrankSpecV0 {
             resolver_program: crate::ID.to_bytes(),
             resolver_disc,
-            executor_program: crate::ID.to_bytes(),
-            executor_disc,
             min_payment,
         };
         conditions.set_condition(

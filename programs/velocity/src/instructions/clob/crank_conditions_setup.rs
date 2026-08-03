@@ -81,23 +81,17 @@ pub fn write_clob_crank_conditions(
         AccountRefV0::readonly(keys.quoter.to_bytes()),
         AccountRefV0::readonly(keys.state.to_bytes()),
     ])?;
-    let spec = |resolver_disc: &[u8], executor_disc: &[u8]| -> Result<CrankSpecV0> {
+    // Only the resolver: which executor a fired condition runs is that
+    // resolver's answer, staged with its payload.
+    let spec = |resolver_disc: &[u8]| -> Result<CrankSpecV0> {
         Ok(CrankSpecV0 {
             resolver_program: crate::ID.to_bytes(),
             resolver_disc: disc8(resolver_disc)?,
-            executor_program: crate::ID.to_bytes(),
-            executor_disc: disc8(executor_disc)?,
             min_payment: keeper_payment_lamports,
         })
     };
-    let evict_spec = spec(
-        crate::instruction::ResolveCrankClobEvict::DISCRIMINATOR,
-        crate::instruction::CrankClobEvict::DISCRIMINATOR,
-    )?;
-    let expire_spec = spec(
-        crate::instruction::ResolveCrankClobRemoveExpired::DISCRIMINATOR,
-        crate::instruction::CrankClobRemoveExpired::DISCRIMINATOR,
-    )?;
+    let evict_spec = spec(crate::instruction::ResolveCrankClobEvict::DISCRIMINATOR)?;
+    let expire_spec = spec(crate::instruction::ResolveCrankClobRemoveExpired::DISCRIMINATOR)?;
 
     conditions.market_index = market_index;
     conditions.keeper_payment_lamports = keeper_payment_lamports;
@@ -122,10 +116,7 @@ pub fn write_clob_crank_conditions(
         CLOB_CRANK_EXPIRE_FALLBACK,
         &ConditionV0::every_slots(expire_fallback_slots, expire_spec, resolvers),
     )?;
-    let cross_spec = spec(
-        crate::instruction::ResolveCrankCrossMatch::DISCRIMINATOR,
-        crate::instruction::CrankCrossMatch::DISCRIMINATOR,
-    )?;
+    let cross_spec = spec(crate::instruction::ResolveCrankCrossMatch::DISCRIMINATOR)?;
     conditions.set_condition(
         CLOB_CRANK_CROSS,
         // Both u32 side heads, `best_bid` then `best_ask`, in one 8-byte

@@ -66,7 +66,9 @@ pub fn handle_resolve_crank_clob_evict(ctx: Context<ResolveClobCrank>) -> Result
 
         let market_index = ctx.accounts.crank_conditions.load()?.market_index;
         Ok(Some(
-            removal_call(&ctx, maker)?.arg(market_index)?.arg(side)?,
+            removal_call::<crate::instruction::CrankClobEvict>(&ctx, maker)?
+                .arg(market_index)?
+                .arg(side)?,
         ))
     })
 }

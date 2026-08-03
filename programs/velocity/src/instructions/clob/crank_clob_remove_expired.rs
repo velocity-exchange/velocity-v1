@@ -39,12 +39,15 @@ pub fn handle_resolve_crank_clob_remove_expired(ctx: Context<ResolveClobCrank>) 
         };
         let market_index = ctx.accounts.crank_conditions.load()?.market_index;
         Ok(Some(
-            removal_call(&ctx, derive_user_pdas(&node.user_ref()).0)?
-                .arg(market_index)?
-                .arg(ClobOrderRefV0 {
-                    node_index,
-                    order_id: node.order_id,
-                })?,
+            removal_call::<crate::instruction::CrankClobRemoveExpired>(
+                &ctx,
+                derive_user_pdas(&node.user_ref()).0,
+            )?
+            .arg(market_index)?
+            .arg(ClobOrderRefV0 {
+                node_index,
+                order_id: node.order_id,
+            })?,
         ))
     })
 }

@@ -130,8 +130,6 @@ pub fn handle_initialize_quoter_cross_conditions(
     let spec = CrankSpecV0 {
         resolver_program: crate::ID.to_bytes(),
         resolver_disc: disc8(crate::instruction::ResolveCrankCrossMatchQuoter::DISCRIMINATOR)?,
-        executor_program: crate::ID.to_bytes(),
-        executor_disc: disc8(crate::instruction::CrankCrossMatch::DISCRIMINATOR)?,
         min_payment: keeper_payment_lamports,
     };
 

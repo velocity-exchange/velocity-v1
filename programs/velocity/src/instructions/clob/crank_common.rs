@@ -318,23 +318,33 @@ pub fn next_matchable(
 /// The removal executor's call: `CrankClobOrderRemoval`'s full account
 /// list is its `#[derive(Accounts)]` struct (no remaining accounts), so
 /// the whole thing is typed.
-pub fn removal_call(ctx: &Context<ResolveClobCrank>, maker: Pubkey) -> Result<StagedCall> {
+///
+/// `I` names which executor the caller is staging — `crank_clob_evict` and
+/// `crank_clob_remove_expired` share this account list but are different
+/// instructions, and since the executor identity now comes back from the
+/// resolver rather than out of the condition, the resolver has to say which.
+pub fn removal_call<I: anchor_lang::Discriminator>(
+    ctx: &Context<ResolveClobCrank>,
+    maker: Pubkey,
+) -> Result<StagedCall> {
     let signer = ctx.accounts.state.load()?.signer;
     let market_index = ctx.accounts.crank_conditions.load()?.market_index;
     let (protocol_user, protocol_user_stats) = pdas::protocol_user_pair();
-    Ok(StagedCall::new(crate::accounts::CrankClobOrderRemoval {
-        state: ctx.accounts.state.key(),
-        authority: pdas::keeper_placeholder(),
-        filler: protocol_user,
-        filler_stats: protocol_user_stats,
-        user: maker,
-        perp_market: pdas::perp_market(market_index),
-        quoter: ctx.accounts.quoter.key(),
-        clob_market: ctx.accounts.clob_market.key(),
-        clob_program: ctx.accounts.quoter.load()?.program_id,
-        velocity_signer: signer,
-        crank_conditions: Some(ctx.accounts.crank_conditions.key()),
-    }))
+    Ok(StagedCall::new::<I>(
+        crate::accounts::CrankClobOrderRemoval {
+            state: ctx.accounts.state.key(),
+            authority: pdas::keeper_placeholder(),
+            filler: protocol_user,
+            filler_stats: protocol_user_stats,
+            user: maker,
+            perp_market: pdas::perp_market(market_index),
+            quoter: ctx.accounts.quoter.key(),
+            clob_market: ctx.accounts.clob_market.key(),
+            clob_program: ctx.accounts.quoter.load()?.program_id,
+            velocity_signer: signer,
+            crank_conditions: Some(ctx.accounts.crank_conditions.key()),
+        },
+    ))
 }
 
 /// Shared tail of the trigger cranks (`trigger_order`,

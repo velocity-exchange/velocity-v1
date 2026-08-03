@@ -23,6 +23,37 @@
 //! Both are checked here rather than left to review, so a resolver that
 //! violates one fails its own simulation with a named error instead of
 //! being silently skipped forever by turners.
+//!
+//! ## The executor is the resolver's answer
+//!
+//! A condition names only its resolver; the instruction to actually run
+//! comes back inside the staged payload. So a [`StagedCall`] is built from
+//! *both* of the executor's generated types — `crate::instruction::X` for
+//! its discriminator and `crate::accounts::X` for its account list — which
+//! is what [`staged_call!`] exists to pair. Naming the executor here rather
+//! than in the condition means arming a crank no longer has to restate an
+//! identity its resolver already knows.
+//!
+//! ## The fired-condition identity is deliberately ignored
+//!
+//! Relay appends a [`relay_spec::FiredConditionV0`] (target account, block
+//! offset, slot index) to every resolver's instruction data. Velocity's
+//! resolvers do not declare it — anchor's borsh dispatch ignores trailing
+//! bytes — because for these blocks it is redundant, and trusting it would
+//! be worse than scanning:
+//!
+//! - Each condition kind has its own resolver, so the discriminator relay
+//!   dispatched already says what kind of work is due.
+//! - The sync instructions rewrite a whole block in place, so a slot index
+//!   moves under a re-sync while the watch that fired keeps its coordinates.
+//!   A resolver that answered only for the index it was handed would answer
+//!   about whatever moved into that slot; one that re-derives the due work
+//!   from the accounts it holds cannot.
+//!
+//! A resolver that ever *needs* the identity (a block whose slots share one
+//! resolver) should declare it as an argument and validate it against the
+//! account it loaded, exactly as relay's docs require — it is an argument,
+//! not a capability.
 
 use {
     crate::{
@@ -36,20 +67,25 @@ use {
     std::ops::DerefMut,
 };
 
-/// An executor call a resolver has decided on: the account list and the
-/// borsh args that follow the discriminator.
+/// An executor call a resolver has decided on: which instruction to run,
+/// its account list, and the borsh args that follow the discriminator.
 pub struct StagedCall {
+    disc: &'static [u8],
     metas: Vec<AccountMeta>,
     data: Vec<u8>,
 }
 
 impl StagedCall {
-    /// Start from the executor's own `crate::accounts::*` struct, so a
-    /// change to its `#[derive(Accounts)]` shape breaks staging at compile
-    /// time (and the writability flags come from the derive rather than
-    /// being restated by hand).
-    pub fn new(accounts: impl ToAccountMetas) -> Self {
+    /// Name the executor by its two generated types: `I` is
+    /// `crate::instruction::X` (the discriminator relay will invoke) and
+    /// `accounts` is `crate::accounts::X`, so a change to either the
+    /// instruction's name or its `#[derive(Accounts)]` shape breaks staging
+    /// at compile time — and the writability flags come from the derive
+    /// rather than being restated by hand. Prefer [`staged_call!`], which
+    /// pairs the two from one name.
+    pub fn new<I: anchor_lang::Discriminator>(accounts: impl ToAccountMetas) -> Self {
         Self {
+            disc: I::DISCRIMINATOR,
             metas: accounts.to_account_metas(None),
             data: Vec::new(),
         }
@@ -121,6 +157,11 @@ impl StagedCall {
     }
 
     fn into_resolved(self) -> Result<ResolvedCrankV0> {
+        let executor_disc: [u8; 8] = std::convert::TryInto::<[u8; 8]>::try_into(self.disc)
+            .map_err(|_| {
+                msg!("staged executor discriminator is not 8 bytes");
+                error!(ErrorCode::DefaultError)
+            })?;
         let mut names_placeholder = false;
         let accounts = self
             .metas
@@ -144,10 +185,12 @@ impl StagedCall {
             msg!("staged executor names no keeper placeholder");
             return Err(error!(ErrorCode::DefaultError));
         }
-        Ok(ResolvedCrankV0 {
+        Ok(ResolvedCrankV0::new(
+            crate::ID.to_bytes(),
+            executor_disc,
             accounts,
-            data: self.data,
-        })
+            self.data,
+        ))
     }
 }
 
@@ -167,4 +210,21 @@ pub fn resolve_into<'info>(
     let pointer = scratch.load_mut()?.deref_mut().stage(&resolved)?;
     set_return_data(&pointer);
     Ok(())
+}
+
+/// Stage a call to one of velocity's own executors, named once.
+///
+/// `staged_call!(TriggerOrder { state, user, .. })` expands to a
+/// [`StagedCall`] carrying `crate::instruction::TriggerOrder`'s
+/// discriminator and `crate::accounts::TriggerOrder`'s metas. The two
+/// generated types share the executor's name, and pairing them here is what
+/// keeps a resolver from staging one instruction's accounts under another's
+/// discriminator.
+#[macro_export]
+macro_rules! staged_call {
+    ($executor:ident $accounts:tt) => {
+        $crate::instructions::StagedCall::new::<$crate::instruction::$executor>(
+            $crate::accounts::$executor $accounts,
+        )
+    };
 }

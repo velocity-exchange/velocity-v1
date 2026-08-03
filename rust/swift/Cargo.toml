@@ -27,7 +27,7 @@ velocity-rs = { path = "../velocity-rs" }
 # `/route`: the same quote-view simulation the book-publisher runs, exposed
 # as an HTTP endpoint.
 velocity-router-sim = { path = "../router-sim" }
-relay-chain-source = { git = "https://github.com/velocity-exchange/relay", rev = "f81e43069798434186860555d197239bd640d5dd" }
+relay-chain-source = { git = "https://github.com/velocity-exchange/relay", rev = "88419fd1de3ee189e44ef591d9e8f5c558d58a9d" }
 solana-account-info = "3.1"
 solana-clock = "3"
 ed25519-dalek = "1.0.1"

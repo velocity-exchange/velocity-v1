@@ -315,7 +315,6 @@ pub fn rewrite_liq_conditions<'info>(
                     free_collateral,
                     resolvers,
                     disc8(crate::instruction::ResolveLiquidatePerpWithFill::DISCRIMINATOR)?,
-                    disc8(crate::instruction::LiquidatePerpWithFill::DISCRIMINATOR)?,
                 )? {
                     conditions.set_condition(slot_index, &condition)?;
                     conditions.slots[slot_index] = LiqSlotMetaV0 {
@@ -365,7 +364,6 @@ pub fn rewrite_liq_conditions<'info>(
                     free_collateral,
                     resolvers,
                     disc8(crate::instruction::ResolveLiquidatePerpWithFill::DISCRIMINATOR)?,
-                    disc8(crate::instruction::LiquidatePerpWithFill::DISCRIMINATOR)?,
                 )? {
                     conditions.set_condition(slot_index, &condition)?;
                     conditions.slots[slot_index] = LiqSlotMetaV0 {
@@ -389,9 +387,6 @@ pub fn rewrite_liq_conditions<'info>(
         let sync_spec = CrankSpecV0 {
             resolver_program: crate::ID.to_bytes(),
             resolver_disc: disc8(crate::instruction::ResolveResyncLiqConditions::DISCRIMINATOR)?,
-            executor_program: crate::ID.to_bytes(),
-            // The unsigned sibling: a staged executor may not name a signer.
-            executor_disc: disc8(crate::instruction::ResyncLiqConditions::DISCRIMINATOR)?,
             min_payment: args.sync_payment_lamports,
         };
         let (watch_offset, watch_len) = user_positions_watch_region();
@@ -518,7 +513,6 @@ fn threshold_condition(
     free_collateral: i128,
     resolvers: ResolverListV0,
     resolver_disc: [u8; 8],
-    executor_disc: [u8; 8],
 ) -> Result<Option<ConditionV0>> {
     let (Some(oracle), Some(watch), Some(min_payment)) =
         (inputs.oracle, inputs.watch, inputs.keeper_payment_lamports)
@@ -566,8 +560,6 @@ fn threshold_condition(
         CrankSpecV0 {
             resolver_program: crate::ID.to_bytes(),
             resolver_disc,
-            executor_program: crate::ID.to_bytes(),
-            executor_disc,
             min_payment,
         },
         resolvers,

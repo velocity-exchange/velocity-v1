@@ -509,7 +509,7 @@ pub fn handle_resolve_trigger_clob_order(ctx: Context<ResolveTriggerClobOrder>) 
         let user_stats =
             crate::state::pdas::user_stats(&crate::load!(ctx.accounts.user)?.authority);
         Ok(Some(
-            crate::instructions::StagedCall::new(crate::accounts::TriggerClobOrder {
+            crate::staged_call!(TriggerClobOrder {
                 state: crate::state::pdas::state(),
                 authority: crate::state::pdas::keeper_placeholder(),
                 filler: protocol_user,

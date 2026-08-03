@@ -111,7 +111,7 @@ pub fn handle_resolve_resync_liq_conditions(
         // The no-signer rule this whole instruction exists to satisfy is
         // enforced by the builder for every resolver.
         Ok(Some(
-            crate::instructions::StagedCall::new(crate::accounts::ResyncLiqConditions {
+            crate::staged_call!(ResyncLiqConditions {
                 keeper: crate::state::pdas::keeper_placeholder(),
                 user: ctx.accounts.user.key(),
                 liq_conditions: ctx.accounts.liq_conditions.key(),

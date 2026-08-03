@@ -21,8 +21,9 @@
 //! `ClobCrankConditionsV0` reservoir pays the keeper either way.
 
 use {
-    crate::{error::ErrorCode, state::relay_block::RelayBlock},
+    crate::error::ErrorCode,
     anchor_lang::prelude::*,
+    relay_anchor::RelayBlock,
     relay_spec::{ConditionBlock, RelayBlockV0},
 };
 

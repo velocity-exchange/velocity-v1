@@ -25,7 +25,7 @@ use {
         instructions::{
             constraints::*,
             optional_accounts::{load_maps, AccountMaps},
-            relay_harness::{resolve_into, StagedCall},
+            relay_harness::resolve_into,
             router::cpi_executor::CpiQuoterExecutor,
         },
         load, msg,
@@ -288,7 +288,7 @@ pub fn handle_resolve_crank_cross_match(ctx: Context<ResolveClobCrank>) -> Resul
         // shape check), then the remaining sections: maps, maker
         // `(User, UserStats)` pairs, the quoter section. Both legs are the CLOB:
         // entry index 0.
-        let call = StagedCall::new(crate::accounts::CrankCrossMatch {
+        let call = crate::staged_call!(CrankCrossMatch {
             state: ctx.accounts.state.key(),
             authority: pdas::keeper_placeholder(),
             taker: protocol_user,
@@ -515,7 +515,7 @@ pub fn handle_resolve_crank_cross_match_quoter<'info>(
         };
         let (protocol_user, protocol_user_stats) = pdas::protocol_user_pair();
 
-        let call = StagedCall::new(crate::accounts::CrankCrossMatch {
+        let call = crate::staged_call!(CrankCrossMatch {
             state: ctx.accounts.state.key(),
             authority: pdas::keeper_placeholder(),
             taker: protocol_user,

@@ -99,15 +99,21 @@ pub fn handle_resolve_liquidate_perp_with_fill<'c: 'info, 'info>(
         let user_stats =
             crate::state::pdas::user_stats(&crate::load!(ctx.accounts.user)?.authority);
         Ok(Some(
-            crate::instructions::StagedCall::new(crate::accounts::LiquidatePerp {
-                state: ctx.accounts.state.key(),
-                authority: crate::state::pdas::keeper_placeholder(),
-                liquidator: protocol_user,
-                liquidator_stats: protocol_user_stats,
-                user: ctx.accounts.user.key(),
-                user_stats,
-                crank_conditions: Some(crate::state::pdas::clob_crank_conditions(market_index)),
-            })
+            // `liquidate_perp_with_fill` shares `liquidate_perp`'s account
+            // list, so the two cannot be paired by name: this is the
+            // inventory-free flavor, and staging the plain one would have
+            // the protocol acquire the position.
+            crate::instructions::StagedCall::new::<crate::instruction::LiquidatePerpWithFill>(
+                crate::accounts::LiquidatePerp {
+                    state: ctx.accounts.state.key(),
+                    authority: crate::state::pdas::keeper_placeholder(),
+                    liquidator: protocol_user,
+                    liquidator_stats: protocol_user_stats,
+                    user: ctx.accounts.user.key(),
+                    user_stats,
+                    crank_conditions: Some(crate::state::pdas::clob_crank_conditions(market_index)),
+                },
+            )
             .refs(stored)
             .arg(market_index)?,
         ))

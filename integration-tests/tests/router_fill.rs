@@ -1297,15 +1297,27 @@ fn run_resolver(
     Some(velocity::relay_spec::ResolvedCrankV0::read(staged).unwrap())
 }
 
-/// Submit a staged executor the way a turner does: keeper placeholder
-/// substituted with the payout account, every meta a non-signer (the fee
-/// payer is not in the account list).
+/// Submit a staged executor the way a turner does: the instruction is the
+/// one the payload names, keeper placeholder substituted with the payout
+/// account, every meta a non-signer (the fee payer is not in the account
+/// list). `expected_disc` is the executor the caller means to be running —
+/// asserted against the payload rather than substituted for it, so a
+/// resolver that stages the wrong instruction fails here.
 fn run_staged_executor(
     fixture: &mut Fixture,
     resolved: &velocity::relay_spec::ResolvedCrankV0,
-    executor_disc: &[u8],
+    expected_disc: &[u8],
     payout: Pubkey,
 ) {
+    assert_eq!(
+        resolved.executor_program,
+        velocity_id().to_bytes(),
+        "velocity resolvers stage velocity executors"
+    );
+    assert_eq!(
+        resolved.executor_disc, expected_disc,
+        "staged executor is not the one this test means to run"
+    );
     let accounts = resolved
         .accounts
         .iter()
@@ -1319,7 +1331,7 @@ fn run_staged_executor(
             is_writable: a.is_writable(),
         })
         .collect();
-    let mut data = executor_disc.to_vec();
+    let mut data = resolved.executor_disc.to_vec();
     data.extend_from_slice(&resolved.data);
     let ix = Instruction {
         program_id: velocity_id(),
@@ -3415,9 +3427,12 @@ fn trigger_limit_sync_targets_the_clob_executor() {
     let (_, block) = velocity::relay_spec::read_block(acct.block(), 0).unwrap();
     let trig = &block[TRIGGER_SLOT_BASE..];
     assert_eq!(value_cross(&trig[0]).4, 1, "Below trigger watches downward");
+    // The CLOB path shows up as the resolver the condition names — the
+    // executor it stages (`trigger_clob_order`) is that resolver's answer,
+    // asserted where the payload is read.
     assert_eq!(
-        trig[0].crank_spec().executor_disc,
-        velocity::instruction::TriggerClobOrder::DISCRIMINATOR
+        trig[0].crank_spec().resolver_disc,
+        velocity::instruction::ResolveTriggerClobOrder::DISCRIMINATOR
     );
     assert_eq!(
         acct.trigger_slots[0].quoter.to_bytes(),
@@ -3694,12 +3709,9 @@ fn liq_conditions_write_a_conservative_downward_threshold() {
     // The self-maintenance pair: a watch over the user's own position bytes
     // whose executor is the sync, plus the coarse poll.
     assert_eq!(account_change(&block[LIQ_SYNC_WATCH]).0, user.to_bytes());
-    // The staged executor is the UNSIGNED sibling: relay refuses to submit
-    // an executor whose account list names a signer, so the self-sync path
-    // cannot be the opt-in `sync_liq_conditions` (which takes a payer).
     assert_eq!(
-        block[LIQ_SYNC_WATCH].crank_spec().executor_disc,
-        velocity::instruction::ResyncLiqConditions::DISCRIMINATOR
+        block[LIQ_SYNC_WATCH].crank_spec().resolver_disc,
+        velocity::instruction::ResolveResyncLiqConditions::DISCRIMINATOR
     );
     assert_eq!(block[LIQ_SYNC_WATCH].min_payment(), 5_000);
     assert_eq!(
@@ -3755,6 +3767,11 @@ fn liq_resolver_stages_the_with_fill_executor_for_the_protocol_user() {
 
     let resolved =
         run_liq_resolver(&mut fixture, user).expect("an underwater account stages a liquidation");
+    assert_eq!(
+        resolved.executor_disc,
+        velocity::instruction::LiquidatePerpWithFill::DISCRIMINATOR,
+        "the inventory-free flavor"
+    );
     let accounts: Vec<Pubkey> = resolved
         .accounts
         .iter()

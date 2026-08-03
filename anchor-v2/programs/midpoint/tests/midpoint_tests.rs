@@ -1,6 +1,10 @@
 //! litesvm integration tests. Require the SBF build first:
 //! `bun run program:build:midpoint` (cargo-build-sbf --tools-version v1.52).
 
+// Every send helper returns litesvm's `FailedTransactionMetadata` by value;
+// boxing a test harness's error type buys nothing.
+#![allow(clippy::result_large_err)]
+
 use {
     anchor_v2_testing::{
         Keypair, LiteSVM, Message, Signer, VersionedMessage, VersionedTransaction,
@@ -17,8 +21,10 @@ use {
             Direction, MidpointQuoterV0, QuoterConfigV0, SplineLevelInputV0, UserRefV0,
             RESPONSE_OFFSET,
         },
+        velocity::STATE_HOT_FLOW_AUTHORITY_OFFSET,
         ExecuteArgsV0, QuoteArgsV0, SetLevelsArgsV0, SetMidArgsV0, UpdateQuoterArgsV0,
     },
+    solana_account::Account,
     solana_clock::Clock,
     solana_pubkey::Pubkey,
 };
@@ -28,15 +34,28 @@ const SO_PATH: &str = concat!(
     "/../../target/deploy/midpoint.so"
 );
 
-/// PRICE_PRECISION-ish scale used throughout: mid = 100_000_000 ($100 at 1e6).
+/// Mid at the market's price precision: 100_000_000 = $100 at 1e6.
 const MID: u64 = 100_000_000;
 const BASE_PRECISION: u64 = 1_000_000_000;
 const UNIT: u64 = BASE_PRECISION;
+
+/// `State::SIZE` on velocity's side (8-byte discriminator + 1744-byte struct).
+const VELOCITY_STATE_SIZE: usize = 1752;
 
 fn program_id() -> Pubkey {
     "eb3Kwmht4evPGGonNHCQs1h7ng63ZUwZ9TyV1qPo23D"
         .parse()
         .unwrap()
+}
+
+fn velocity_program_id() -> Pubkey {
+    "vELoC1audYbSYVRXn1vPaV8Axoa9oU6BYmNGZZBDZ1P"
+        .parse()
+        .unwrap()
+}
+
+fn velocity_state() -> Pubkey {
+    Pubkey::find_program_address(&[b"velocity_state"], &velocity_program_id()).0
 }
 
 fn addr(pk: Pubkey) -> Address {
@@ -56,20 +75,22 @@ fn instructions_sysvar() -> Pubkey {
 struct Ctx {
     svm: LiteSVM,
     payer: Keypair,
-    /// The quoted wallet (config authority).
+    /// The maker's config key.
     authority: Keypair,
+    /// The quoted wallet — signs creation, seeds the PDA, receives the fills.
+    user_authority: Keypair,
     hot: Keypair,
     execute_auth: Keypair,
     flow: Keypair,
     quoter: Pubkey,
 }
 
-fn quoter_pda(market_index: u16, authority: &Pubkey, sub_account_id: u16) -> Pubkey {
+fn quoter_pda(market_index: u16, user_authority: &Pubkey, sub_account_id: u16) -> Pubkey {
     Pubkey::find_program_address(
         &[
             b"midpoint",
             market_index.to_le_bytes().as_ref(),
-            authority.as_ref(),
+            user_authority.as_ref(),
             sub_account_id.to_le_bytes().as_ref(),
         ],
         &program_id(),
@@ -90,6 +111,32 @@ fn config() -> QuoterConfigV0 {
     }
 }
 
+/// Stand in for velocity's `State`: the only bytes the midpoint reads are
+/// `hot_flow_authority` at its fixed offset, and the only identity checks are
+/// the account's address and owner (a discriminator check would be redundant —
+/// nothing but `State` can live at that PDA).
+fn write_velocity_state(svm: &mut LiteSVM, owner: Pubkey, flow_authority: Option<Pubkey>) {
+    let mut data = vec![0u8; VELOCITY_STATE_SIZE];
+    // Velocity's own discriminator, unread here; nonzero so the fixture never
+    // looks like a fresh allocation.
+    data[..8].copy_from_slice(&[0xAA; 8]);
+    if let Some(key) = flow_authority {
+        data[STATE_HOT_FLOW_AUTHORITY_OFFSET..STATE_HOT_FLOW_AUTHORITY_OFFSET + 32]
+            .copy_from_slice(&key.to_bytes());
+    }
+    svm.set_account(
+        velocity_state(),
+        Account {
+            lamports: 1_000_000_000,
+            data,
+            owner,
+            executable: false,
+            rent_epoch: 0,
+        },
+    )
+    .unwrap();
+}
+
 fn setup() -> Ctx {
     setup_with_config(config())
 }
@@ -100,24 +147,26 @@ fn setup_with_config(config: QuoterConfigV0) -> Ctx {
         .expect("midpoint.so missing — run `bun run program:build:midpoint` first");
     let payer = Keypair::new();
     let authority = Keypair::new();
+    let user_authority = Keypair::new();
     let hot = Keypair::new();
     let execute_auth = Keypair::new();
     let flow = Keypair::new();
     svm.airdrop(&payer.pubkey(), 100_000_000_000).unwrap();
+    // The flow authority velocity currently publishes.
+    write_velocity_state(&mut svm, velocity_program_id(), Some(flow.pubkey()));
 
     let quoter = quoter_pda(
         config.market_index,
-        &authority.pubkey(),
+        &user_authority.pubkey(),
         config.user_sub_account_id,
     );
-    let require_flow = config.require_attested_flow;
     let ix =
         instruction::InitializeQuoterV0 { config }.to_instruction(accounts::InitializeQuoterV0 {
             payer: addr(payer.pubkey()),
             authority: addr(authority.pubkey()),
+            user_authority: addr(user_authority.pubkey()),
             execute_authority: addr(execute_auth.pubkey()),
             hot_authority: addr(hot.pubkey()),
-            flow_authority: require_flow.then(|| addr(flow.pubkey())),
             quoter: addr(quoter),
             system_program: addr(system_program()),
         });
@@ -125,6 +174,7 @@ fn setup_with_config(config: QuoterConfigV0) -> Ctx {
         svm,
         payer,
         authority,
+        user_authority,
         hot,
         execute_auth,
         flow,
@@ -136,16 +186,52 @@ fn setup_with_config(config: QuoterConfigV0) -> Ctx {
 
 /// Sign with payer plus whichever of the known keys the metas mark as signer.
 fn send(ctx: &mut Ctx, ix: Instruction) -> Result<TransactionMetadata, FailedTransactionMetadata> {
+    send_signed_by(ctx, ix, None)
+}
+
+/// Like [`send`], but with an extra co-signer appended to the instruction —
+/// how a flow authority attests a transaction (velocity never forwards signer
+/// bits to a quoter, so the quoter introspects the sysvar instead).
+fn send_co_signed(
+    ctx: &mut Ctx,
+    ix: Instruction,
+    co_signer: &Keypair,
+) -> Result<TransactionMetadata, FailedTransactionMetadata> {
+    send_signed_by(ctx, ix, Some(co_signer))
+}
+
+fn send_signed_by(
+    ctx: &mut Ctx,
+    mut ix: Instruction,
+    co_signer: Option<&Keypair>,
+) -> Result<TransactionMetadata, FailedTransactionMetadata> {
+    if let Some(co_signer) = co_signer {
+        ix.accounts
+            .push(AccountMeta::new_readonly(co_signer.pubkey(), true));
+    }
     ctx.svm.expire_blockhash();
     let blockhash = ctx.svm.latest_blockhash();
     let msg = Message::new_with_blockhash(&[ix.clone()], Some(&ctx.payer.pubkey()), &blockhash);
     let mut signers: Vec<&dyn anchor_v2_testing::Signer> = vec![&ctx.payer];
-    for kp in [&ctx.authority, &ctx.hot, &ctx.execute_auth, &ctx.flow] {
+    let known: Vec<&Keypair> = [
+        &ctx.authority,
+        &ctx.user_authority,
+        &ctx.hot,
+        &ctx.execute_auth,
+        &ctx.flow,
+    ]
+    .into_iter()
+    .chain(co_signer)
+    .collect();
+    for kp in known {
         let needed = ix
             .accounts
             .iter()
             .any(|m| m.is_signer && m.pubkey.to_bytes() == kp.pubkey().to_bytes());
-        if needed && kp.pubkey() != ctx.payer.pubkey() {
+        let already = signers
+            .iter()
+            .any(|signer| signer.pubkey().to_bytes() == kp.pubkey().to_bytes());
+        if needed && !already {
             signers.push(kp);
         }
     }
@@ -185,11 +271,11 @@ fn parse_levels(b: &[u8]) -> Vec<(u64, u64)> {
 }
 
 /// ExecuteResponseV0 { balance_changes, cancelled } with at most one change
-/// and no completed ids: (authority, base, quote) per change.
+/// and no completed ids: (user authority, base, quote) per change.
 fn parse_execute(b: &[u8]) -> Vec<([u8; 32], u64, u64)> {
     let count = parse_u32(b) as usize;
     let mut off = 4;
-    (0..count)
+    let changes: Vec<_> = (0..count)
         .map(|_| {
             let authority: [u8; 32] = b[off..off + 32].try_into().unwrap();
             let base = parse_u64(&b[off + 34..]);
@@ -199,7 +285,13 @@ fn parse_execute(b: &[u8]) -> Vec<([u8; 32], u64, u64)> {
             off += 32 + 2 + 8 + 8 + 4;
             (authority, base, quote)
         })
-        .collect()
+        .collect();
+    assert_eq!(
+        parse_u32(&b[off..]),
+        0,
+        "midpoint never cancels a remainder"
+    );
+    changes
 }
 
 fn set_mid_ix(ctx: &Ctx, mid: u64, sequence: u64) -> Instruction {
@@ -251,19 +343,25 @@ fn arm(ctx: &mut Ctx) {
     .unwrap();
 }
 
-fn quote_ix(ctx: &Ctx, direction: Direction, size: u64) -> Instruction {
-    instruction::QuoteV0 {
-        args: QuoteArgsV0 {
-            direction,
-            size,
-            users: None,
-            taker: None,
-        },
+fn quote_args(direction: Direction, size: u64) -> QuoteArgsV0 {
+    QuoteArgsV0 {
+        direction,
+        size,
+        users: None,
+        taker: None,
     }
-    .to_instruction(accounts::QuoteV0 {
+}
+
+fn quote_ix_with(ctx: &Ctx, args: QuoteArgsV0) -> Instruction {
+    instruction::QuoteV0 { args }.to_instruction(accounts::QuoteV0 {
         quoter: addr(ctx.quoter),
         instructions_sysvar: addr(instructions_sysvar()),
+        velocity_state: addr(velocity_state()),
     })
+}
+
+fn quote_ix(ctx: &Ctx, direction: Direction, size: u64) -> Instruction {
+    quote_ix_with(ctx, quote_args(direction, size))
 }
 
 fn execute_ix(ctx: &Ctx, direction: Direction, size: u64) -> Instruction {
@@ -279,6 +377,15 @@ fn execute_ix(ctx: &Ctx, direction: Direction, size: u64) -> Instruction {
         quoter: addr(ctx.quoter),
         execute_authority: addr(ctx.execute_auth.pubkey()),
         instructions_sysvar: addr(instructions_sysvar()),
+        velocity_state: addr(velocity_state()),
+    })
+}
+
+fn update_ix(ctx: &Ctx, args: UpdateQuoterArgsV0, new_hot: Option<Pubkey>) -> Instruction {
+    instruction::UpdateQuoterV0 { args }.to_instruction(accounts::UpdateQuoterV0 {
+        quoter: addr(ctx.quoter),
+        authority: addr(ctx.authority.pubkey()),
+        new_hot_authority: new_hot.map(addr),
     })
 }
 
@@ -287,6 +394,13 @@ fn quote_levels(ctx: &mut Ctx, direction: Direction, size: u64) -> Vec<(u64, u64
     let meta = send(ctx, ix).unwrap();
     let response = read_response(ctx, &meta);
     parse_levels(&response)
+}
+
+fn read_quoter(ctx: &Ctx) -> MidpointQuoterV0 {
+    let account = ctx.svm.get_account(&ctx.quoter).unwrap();
+    let mut quoter = [0u8; core::mem::size_of::<MidpointQuoterV0>()];
+    quoter.copy_from_slice(&account.data[8..8 + core::mem::size_of::<MidpointQuoterV0>()]);
+    unsafe { core::mem::transmute::<_, MidpointQuoterV0>(quoter) }
 }
 
 #[test]
@@ -384,37 +498,94 @@ fn nonzero_mid_sequence_must_increase() {
     assert_eq!(quoter.mid_sequence, 6);
 }
 
-fn read_quoter(ctx: &Ctx) -> MidpointQuoterV0 {
-    let account = ctx.svm.get_account(&ctx.quoter).unwrap();
-    let mut quoter = [0u8; core::mem::size_of::<MidpointQuoterV0>()];
-    quoter.copy_from_slice(&account.data[8..8 + core::mem::size_of::<MidpointQuoterV0>()]);
-    unsafe { core::mem::transmute::<_, MidpointQuoterV0>(quoter) }
-}
-
 #[test]
 fn only_the_hot_authority_writes_mid_and_levels() {
     let mut ctx = setup();
     let mut ix = set_mid_ix(&ctx, MID, 0);
-    // Swap the signer for the (also known) authority key: address mismatch.
+    // Swap the signer for the (also known) config authority: address mismatch.
     ix.accounts[1] = AccountMeta::new_readonly(ctx.authority.pubkey(), true);
     assert!(send(&mut ctx, ix).is_err());
 
     // Rotate the hot key through update, then the old key fails.
     let new_hot = Keypair::new();
-    let ix = instruction::UpdateQuoterV0 {
-        args: UpdateQuoterArgsV0::default(),
-    }
-    .to_instruction(accounts::UpdateQuoterV0 {
-        quoter: addr(ctx.quoter),
-        authority: addr(ctx.authority.pubkey()),
-        new_hot_authority: Some(addr(new_hot.pubkey())),
-        new_flow_authority: None,
-    });
+    let ix = update_ix(&ctx, UpdateQuoterArgsV0::default(), Some(new_hot.pubkey()));
     send(&mut ctx, ix).unwrap();
     {
         let ix = set_mid_ix(&ctx, MID, 0);
         assert!(send(&mut ctx, ix).is_err());
     }
+}
+
+/// The maker's config key and the quoted wallet are separate identities: the
+/// config key reconfigures and cannot receive fills, the quoted wallet
+/// receives fills and cannot reconfigure.
+#[test]
+fn the_config_authority_is_independent_of_the_quoted_wallet() {
+    let mut ctx = setup();
+    let quoter = read_quoter(&ctx);
+    assert_ne!(
+        ctx.authority.pubkey().to_bytes(),
+        ctx.user_authority.pubkey().to_bytes()
+    );
+    assert_eq!(quoter.authority, addr(ctx.authority.pubkey()));
+    assert_eq!(quoter.user_authority, addr(ctx.user_authority.pubkey()));
+
+    // The quoted wallet cannot reconfigure.
+    let mut ix = update_ix(
+        &ctx,
+        UpdateQuoterArgsV0 {
+            is_paused: Some(true),
+            ..Default::default()
+        },
+        None,
+    );
+    ix.accounts[1] = AccountMeta::new_readonly(ctx.user_authority.pubkey(), true);
+    assert!(send(&mut ctx, ix).is_err());
+
+    // The config key can, and the pause takes hold.
+    arm(&mut ctx);
+    let ix = update_ix(
+        &ctx,
+        UpdateQuoterArgsV0 {
+            is_paused: Some(true),
+            ..Default::default()
+        },
+        None,
+    );
+    send(&mut ctx, ix).unwrap();
+    assert!(quote_levels(&mut ctx, Direction::Long, UNIT).is_empty());
+}
+
+/// Creation is still consent: the instance lives at a PDA seeded by the
+/// quoted wallet, and that wallet must sign. An operator holding only its own
+/// config key cannot stand up an instance quoting somebody else.
+#[test]
+fn creating_an_instance_needs_the_quoted_wallets_signature() {
+    let mut ctx = setup();
+    let victim = Keypair::new();
+    let squatted = quoter_pda(1, &victim.pubkey(), 0);
+    let config = QuoterConfigV0 {
+        market_index: 1,
+        ..config()
+    };
+    let mut ix =
+        instruction::InitializeQuoterV0 { config }.to_instruction(accounts::InitializeQuoterV0 {
+            payer: addr(ctx.payer.pubkey()),
+            authority: addr(ctx.authority.pubkey()),
+            user_authority: addr(victim.pubkey()),
+            execute_authority: addr(ctx.execute_auth.pubkey()),
+            hot_authority: addr(ctx.hot.pubkey()),
+            quoter: addr(squatted),
+            system_program: addr(system_program()),
+        });
+    // Strip the victim's signer bit: `send` only signs for keys it holds, so
+    // this is the squatter's best attempt.
+    for meta in ix.accounts.iter_mut() {
+        if meta.pubkey.to_bytes() == victim.pubkey().to_bytes() {
+            meta.is_signer = false;
+        }
+    }
+    assert!(send(&mut ctx, ix).is_err());
 }
 
 #[test]
@@ -428,7 +599,8 @@ fn execute_consumes_the_spline_and_reports_one_balance_change() {
     let changes = parse_execute(&read_response(&ctx, &meta));
     assert_eq!(changes.len(), 1);
     let (authority, base, quote) = changes[0];
-    assert_eq!(authority, ctx.authority.pubkey().to_bytes());
+    // The fill settles against the quoted wallet, not the config key.
+    assert_eq!(authority, ctx.user_authority.pubkey().to_bytes());
     assert_eq!(base, UNIT + UNIT / 2);
     // 1.0 @ 100_100_000 + 0.5 @ 100_300_000, floored per level.
     assert_eq!(quote, 100_100_000 + 100_300_000 / 2);
@@ -453,6 +625,44 @@ fn execute_consumes_the_spline_and_reports_one_balance_change() {
     assert_eq!(asks, vec![(100_100_000, UNIT)]);
 }
 
+/// A shrinking rewrite must leave no stale rung behind — the post-write
+/// invariant scan requires a zeroed tail, and the book must agree.
+#[test]
+fn a_shrinking_rewrite_drops_the_tail() {
+    let mut ctx = setup();
+    send_levels(
+        &mut ctx,
+        SetLevelsArgsV0 {
+            mid: Some(MID),
+            sequence: None,
+            bids: None,
+            asks: Some(levels(&[(1_000, UNIT), (2_000, UNIT), (3_000, UNIT)])),
+        },
+    )
+    .unwrap();
+    let ix = execute_ix(&ctx, Direction::Long, UNIT + UNIT / 2);
+    send(&mut ctx, ix).unwrap();
+
+    send_levels(
+        &mut ctx,
+        SetLevelsArgsV0 {
+            mid: None,
+            sequence: None,
+            bids: None,
+            asks: Some(levels(&[(5_000, UNIT)])),
+        },
+    )
+    .unwrap();
+    let quoter = read_quoter(&ctx);
+    assert_eq!(quoter.ask_count, 1);
+    assert_eq!(quoter.asks[0].offset_ppm, 5_000);
+    for level in &quoter.asks[1..] {
+        assert_eq!((level.offset_ppm, level.size, level.filled), (0, 0, 0));
+    }
+    let asks = quote_levels(&mut ctx, Direction::Long, 10 * UNIT);
+    assert_eq!(asks, vec![(100_500_000, UNIT)]);
+}
+
 #[test]
 fn execute_requires_the_execute_authority() {
     let mut ctx = setup();
@@ -467,7 +677,7 @@ fn quoted_user_gates_apply() {
     let mut ctx = setup();
     arm(&mut ctx);
     let quoted = UserRefV0 {
-        authority: addr(ctx.authority.pubkey()),
+        authority: addr(ctx.user_authority.pubkey()),
         sub_account_id: 0,
     };
     let stranger = UserRefV0 {
@@ -476,56 +686,45 @@ fn quoted_user_gates_apply() {
     };
 
     // A user set that can't settle the quoted user sees an empty book.
-    let ix = instruction::QuoteV0 {
-        args: QuoteArgsV0 {
-            direction: Direction::Long,
-            size: UNIT,
+    let ix = quote_ix_with(
+        &ctx,
+        QuoteArgsV0 {
             users: Some(vec![stranger]),
-            taker: None,
+            ..quote_args(Direction::Long, UNIT)
         },
-    }
-    .to_instruction(accounts::QuoteV0 {
-        quoter: addr(ctx.quoter),
-        instructions_sysvar: addr(instructions_sysvar()),
-    });
+    );
     let meta = send(&mut ctx, ix).unwrap();
     assert!(parse_levels(&read_response(&ctx, &meta)).is_empty());
 
     // The quoted user's own flow sees an empty book (self-trade).
-    let ix = instruction::QuoteV0 {
-        args: QuoteArgsV0 {
-            direction: Direction::Long,
-            size: UNIT,
-            users: None,
+    let ix = quote_ix_with(
+        &ctx,
+        QuoteArgsV0 {
             taker: Some(quoted),
+            ..quote_args(Direction::Long, UNIT)
         },
-    }
-    .to_instruction(accounts::QuoteV0 {
-        quoter: addr(ctx.quoter),
-        instructions_sysvar: addr(instructions_sysvar()),
-    });
+    );
     let meta = send(&mut ctx, ix).unwrap();
     assert!(parse_levels(&read_response(&ctx, &meta)).is_empty());
 
     // A set including the quoted user quotes normally.
-    let ix = instruction::QuoteV0 {
-        args: QuoteArgsV0 {
-            direction: Direction::Long,
-            size: UNIT,
+    let ix = quote_ix_with(
+        &ctx,
+        QuoteArgsV0 {
             users: Some(vec![stranger, quoted]),
             taker: Some(stranger),
+            ..quote_args(Direction::Long, UNIT)
         },
-    }
-    .to_instruction(accounts::QuoteV0 {
-        quoter: addr(ctx.quoter),
-        instructions_sysvar: addr(instructions_sysvar()),
-    });
+    );
     let meta = send(&mut ctx, ix).unwrap();
     assert_eq!(parse_levels(&read_response(&ctx, &meta)).len(), 1);
 }
 
+/// THE reason the flow authority is not a local field: the gate follows
+/// velocity's live `State.hot_flow_authority`, so one rotation there retires a
+/// compromised key for every instance at once — no per-maker migration.
 #[test]
-fn attested_flow_requires_the_flow_authority_signature() {
+fn attested_flow_follows_velocitys_current_flow_authority() {
     let mut ctx = setup_with_config(QuoterConfigV0 {
         require_attested_flow: true,
         ..config()
@@ -535,23 +734,85 @@ fn attested_flow_requires_the_flow_authority_signature() {
     // Unattested: empty book.
     assert!(quote_levels(&mut ctx, Direction::Long, UNIT).is_empty());
 
-    // The flow authority co-signing the transaction (as an extra signer
-    // meta on the ix) opens the book — introspection sees the signer bit.
-    let mut ix = quote_ix(&ctx, Direction::Long, UNIT);
-    ix.accounts
-        .push(AccountMeta::new_readonly(ctx.flow.pubkey(), true));
-    let meta = send(&mut ctx, ix).unwrap();
+    // The published flow authority co-signing opens the book — introspection
+    // sees the signer bit (a quoter CPI never receives real signer bits).
+    let ix = quote_ix(&ctx, Direction::Long, UNIT);
+    let flow = ctx.flow.insecure_clone();
+    let meta = send_co_signed(&mut ctx, ix, &flow).unwrap();
     assert_eq!(parse_levels(&read_response(&ctx, &meta)).len(), 1);
 
     // Execute is gated the same way.
     let ix = execute_ix(&ctx, Direction::Long, UNIT);
     let meta = send(&mut ctx, ix).unwrap();
     assert!(parse_execute(&read_response(&ctx, &meta)).is_empty());
-    let mut ix = execute_ix(&ctx, Direction::Long, UNIT);
-    ix.accounts
-        .push(AccountMeta::new_readonly(ctx.flow.pubkey(), true));
-    let meta = send(&mut ctx, ix).unwrap();
+    let ix = execute_ix(&ctx, Direction::Long, UNIT);
+    let meta = send_co_signed(&mut ctx, ix, &flow).unwrap();
     assert_eq!(parse_execute(&read_response(&ctx, &meta)).len(), 1);
+
+    // Velocity rotates the role. The retired key stops opening the book
+    // instantly, with no instruction sent to this instance...
+    let rotated = Keypair::new();
+    write_velocity_state(&mut ctx.svm, velocity_program_id(), Some(rotated.pubkey()));
+    let ix = quote_ix(&ctx, Direction::Long, UNIT);
+    let meta = send_co_signed(&mut ctx, ix, &flow).unwrap();
+    assert!(parse_levels(&read_response(&ctx, &meta)).is_empty());
+    // ...and the new one opens it.
+    let ix = quote_ix(&ctx, Direction::Long, UNIT);
+    let meta = send_co_signed(&mut ctx, ix, &rotated).unwrap();
+    assert_eq!(parse_levels(&read_response(&ctx, &meta)).len(), 1);
+}
+
+/// An unassigned role (`Pubkey::default()`) closes the gate rather than
+/// leaving it open — the same fail-closed rule velocity applies to fast CLOB
+/// activation.
+#[test]
+fn an_unassigned_flow_authority_silences_an_attested_quoter() {
+    let mut ctx = setup_with_config(QuoterConfigV0 {
+        require_attested_flow: true,
+        ..config()
+    });
+    arm(&mut ctx);
+    write_velocity_state(&mut ctx.svm, velocity_program_id(), None);
+    let ix = quote_ix(&ctx, Direction::Long, UNIT);
+    let flow = ctx.flow.insecure_clone();
+    let meta = send_co_signed(&mut ctx, ix, &flow).unwrap();
+    assert!(parse_levels(&read_response(&ctx, &meta)).is_empty());
+    // A zeroed authority never matches a signer either way.
+    assert!(quote_levels(&mut ctx, Direction::Long, UNIT).is_empty());
+}
+
+/// The state account is identified by address *and* owner: an impostor sitting
+/// at the right address under the wrong program is rejected, not read.
+#[test]
+fn a_state_account_not_owned_by_velocity_is_rejected() {
+    let mut ctx = setup_with_config(QuoterConfigV0 {
+        require_attested_flow: true,
+        ..config()
+    });
+    arm(&mut ctx);
+    write_velocity_state(&mut ctx.svm, system_program(), Some(ctx.flow.pubkey()));
+    let ix = quote_ix(&ctx, Direction::Long, UNIT);
+    let flow = ctx.flow.insecure_clone();
+    assert!(send_co_signed(&mut ctx, ix, &flow).is_err());
+}
+
+/// Any other account in that slot fails the address lock.
+#[test]
+fn a_substituted_state_account_is_rejected() {
+    let mut ctx = setup_with_config(QuoterConfigV0 {
+        require_attested_flow: true,
+        ..config()
+    });
+    arm(&mut ctx);
+    let mut ix = quote_ix(&ctx, Direction::Long, UNIT);
+    let impostor = Pubkey::new_unique();
+    write_velocity_state(&mut ctx.svm, velocity_program_id(), Some(ctx.flow.pubkey()));
+    for meta in ix.accounts.iter_mut() {
+        if meta.pubkey.to_bytes() == velocity_state().to_bytes() {
+            meta.pubkey = impostor;
+        }
+    }
+    assert!(send(&mut ctx, ix).is_err());
 }
 
 #[test]
@@ -609,24 +870,33 @@ fn level_validation_rejects_bad_shapes() {
         },
     );
     assert!(send(&mut ctx, ix).is_err());
+    // More rungs than the ladder holds.
+    let ix = set_levels_ix(
+        &ctx,
+        SetLevelsArgsV0 {
+            mid: None,
+            sequence: None,
+            bids: None,
+            asks: Some(levels(
+                &(0..65).map(|i| (1_000 + i, UNIT)).collect::<Vec<_>>(),
+            )),
+        },
+    );
+    assert!(send(&mut ctx, ix).is_err());
 }
 
 #[test]
 fn paused_quoter_is_silent() {
     let mut ctx = setup();
     arm(&mut ctx);
-    let ix = instruction::UpdateQuoterV0 {
-        args: UpdateQuoterArgsV0 {
+    let ix = update_ix(
+        &ctx,
+        UpdateQuoterArgsV0 {
             is_paused: Some(true),
             ..Default::default()
         },
-    }
-    .to_instruction(accounts::UpdateQuoterV0 {
-        quoter: addr(ctx.quoter),
-        authority: addr(ctx.authority.pubkey()),
-        new_hot_authority: None,
-        new_flow_authority: None,
-    });
+        None,
+    );
     send(&mut ctx, ix).unwrap();
     assert!(quote_levels(&mut ctx, Direction::Long, UNIT).is_empty());
     let meta = {
@@ -640,6 +910,8 @@ fn paused_quoter_is_silent() {
 /// floor so makers can track fair value tick-by-tick for ~free. The budget
 /// is deliberately above the measured cost (headroom for anchor-v2 drift)
 /// but low enough that a regression that adds real work fails loudly.
+/// `set_levels` and the quote/execute legs are budgeted the same way — the
+/// post-write invariant scans are bounded and must stay cheap.
 #[test]
 fn set_mid_cu_stays_near_the_floor() {
     let mut ctx = setup();
@@ -648,26 +920,33 @@ fn set_mid_cu_stays_near_the_floor() {
     let meta = send(&mut ctx, ix).unwrap();
     let set_mid_cu = meta.compute_units_consumed;
 
+    let full_side = (0..64).map(|i| (1_000 + i, UNIT)).collect::<Vec<_>>();
     let meta = send_levels(
         &mut ctx,
         SetLevelsArgsV0 {
             mid: Some(MID),
             sequence: None,
-            bids: Some(levels(
-                &(0..64).map(|i| (1_000 + i, UNIT)).collect::<Vec<_>>(),
-            )),
-            asks: Some(levels(
-                &(0..64).map(|i| (1_000 + i, UNIT)).collect::<Vec<_>>(),
-            )),
+            bids: Some(levels(&full_side)),
+            asks: Some(levels(&full_side)),
         },
     )
     .unwrap();
     let set_levels_cu = meta.compute_units_consumed;
 
-    println!("CU — set_mid: {set_mid_cu}, set_levels(64×2 + mid): {set_levels_cu}");
+    let ix = quote_ix(&ctx, Direction::Long, u64::MAX);
+    let quote_cu = send(&mut ctx, ix).unwrap().compute_units_consumed;
+    let ix = execute_ix(&ctx, Direction::Long, u64::MAX);
+    let execute_cu = send(&mut ctx, ix).unwrap().compute_units_consumed;
+
+    println!(
+        "CU — set_mid: {set_mid_cu}, set_levels(64×2 + mid): {set_levels_cu}, \
+         quote(64 rungs): {quote_cu}, execute(64 rungs): {execute_cu}"
+    );
     assert!(set_mid_cu <= 800, "set_mid regressed: {set_mid_cu} CU");
     assert!(
         set_levels_cu <= 10_000,
         "set_levels regressed: {set_levels_cu} CU"
     );
+    assert!(quote_cu <= 18_000, "quote regressed: {quote_cu} CU");
+    assert!(execute_cu <= 32_000, "execute regressed: {execute_cu} CU");
 }

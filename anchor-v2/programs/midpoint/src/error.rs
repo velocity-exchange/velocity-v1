@@ -20,4 +20,10 @@ pub enum MidpointError {
     ResponseTooLarge,
     #[msg("Instructions sysvar account is not the sysvar")]
     InvalidInstructionsSysvar,
+    // New variants go at the bottom: on-chain clients match error codes by
+    // number.
+    #[msg("Velocity state account is not velocity's initialized State")]
+    InvalidVelocityState,
+    #[msg("Post-operation invariant check failed")]
+    InvariantViolated,
 }

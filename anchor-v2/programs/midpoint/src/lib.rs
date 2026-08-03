@@ -10,11 +10,19 @@
 //! CU-pinned by a litesvm test.
 //!
 //! Exposed to velocity through the quoter interface: `quote_v0`/`execute_v0`
-//! write borsh responses into the instance's response tail and return a
-//! `ResponsePointerV0` via return data. Execute is gated on the registered
-//! `execute_authority` (the velocity signer PDA — velocity clamps size to
-//! the quoted user's margin before CPI'ing here). Safety is the
+//! stream borsh responses directly into the instance's response tail and
+//! return a `ResponsePointerV0` via return data. Execute is gated on the
+//! registered `execute_authority` (the velocity signer PDA — velocity clamps
+//! size to the quoted user's margin before CPI'ing here). Safety is the
 //! mid-staleness gate: a dead feed stops quoting on its own.
+//!
+//! Two authorities are held per instance and neither derives from the other:
+//! the maker's config key (`authority`) and the quoted velocity `User`'s
+//! wallet (`user_authority`, which signs creation and seeds the PDA). Nothing
+//! *trust*-bearing is configured locally: the attested-flow gate reads
+//! velocity's live `State.hot_flow_authority` on every quote (see
+//! [`velocity`]), so rotating a compromised flow key is one velocity admin
+//! call, not a per-maker migration.
 //!
 //! Discriminators stay 8-byte anchor defaults: the velocity quoter registry
 //! stores `[u8; 8]` discriminators.
@@ -26,6 +34,7 @@ pub mod events;
 pub mod instructions;
 pub mod introspection;
 pub mod state;
+pub mod velocity;
 
 // Re-exported so integration tests can reach wincode/BORSH_CONFIG through the
 // crate without their own git dep.

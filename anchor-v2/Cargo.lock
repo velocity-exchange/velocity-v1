@@ -1591,6 +1591,7 @@ dependencies = [
  "anchor-v2-testing",
  "bytemuck",
  "litesvm",
+ "serde_json",
  "solana-account",
  "solana-clock",
  "solana-pubkey 3.0.0",

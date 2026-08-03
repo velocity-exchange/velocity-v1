@@ -459,6 +459,77 @@ export type ClobCrankConditionsV0Account = {
 	padding: number[];
 };
 
+/**
+ * Per-market relay conditions that watch a Custom quoter for a cross against
+ * the market's CLOB, created by `initializeQuoterCrossConditions`. Same shape
+ * of account as `ClobCrankConditionsV0Account`: the reservoir that pays the
+ * cross crank is this account's own lamport balance.
+ */
+export type QuoterCrossConditionsV0Account = {
+	/** relay-spec RelayBlockV0<3, 40> wire bytes, parsed by relay tooling, not the SDK */
+	relay: number[];
+	/** the Custom `QuoterV0` entry these conditions watch for crosses */
+	quoter: PublicKey;
+	/** the market's canonical CLOB entry, its book, and its program, captured at attach time */
+	clobQuoter: PublicKey;
+	clobMarket: PublicKey;
+	clobProgram: PublicKey;
+	/** the market's oracle, captured at attach time */
+	oracle: PublicKey;
+	marketIndex: number;
+	quoteSpotMarketIndex: number;
+	padding: number[];
+};
+
+/** Which perp market a `UserConditionsV0` liquidation-threshold slot watches, parallel to the slot's condition. */
+export type LiqSlotMetaV0 = {
+	targetMarketIndex: number;
+	/** 1 = live slot */
+	active: number;
+	padding: number[];
+};
+
+/** The order a `UserConditionsV0` trigger slot watches, plus the CLOB it goes onto when it fires. All three CLOB keys are the default pubkey for a trigger that cranks onto the DLOB instead. */
+export type TriggerSlotMetaV0 = {
+	quoter: PublicKey;
+	clobMarket: PublicKey;
+	clobProgram: PublicKey;
+	orderId: number;
+	marketIndex: number;
+	padding: number[];
+};
+
+/**
+ * One user's relay conditions: the precomputed liquidation thresholds for
+ * their live exposures and one watch per armed trigger order, rewritten as a
+ * whole by `syncLiqConditions` / `syncTriggerConditions` (permissionless and
+ * idempotent — the block is a hint set, and the keeper-bot path remains the
+ * correctness floor for anything not in it).
+ *
+ * `positionsDigest` is what makes a stale block detectable: it digests the
+ * exposures the last sync ran against, so the self-maintenance watch can tell
+ * that the thresholds no longer describe the account.
+ */
+export type UserConditionsV0Account = {
+	/** relay-spec RelayBlockV0<22, 32> wire bytes, parsed by relay tooling, not the SDK */
+	relay: number[];
+	/** parallel to the 12 threshold condition slots */
+	slots: LiqSlotMetaV0[];
+	/** parallel to the 8 trigger condition slots */
+	triggerSlots: TriggerSlotMetaV0[];
+	/** per-slot trigger resolver account lists, relay-spec wire bytes */
+	triggerResolvers: number[];
+	/** the `User` these conditions watch */
+	user: PublicKey;
+	/** lamports the sync executor pays its keeper, drawn from this account's balance */
+	syncPaymentLamports: BN;
+	/** fallback poll interval, in slots */
+	syncFallbackSlots: BN;
+	/** digest of the exposures the last sync ran against */
+	positionsDigest: BN;
+	padding: number[];
+};
+
 /** Trigger-order condition on `Order.triggerCondition`. `ABOVE`/`BELOW` are the pending (not-yet-triggered) states; `TRIGGERED_ABOVE`/`TRIGGERED_BELOW` record that the condition has already fired, so the order is now live for filling. */
 export class OrderTriggerCondition {
 	static readonly ABOVE = { above: {} };

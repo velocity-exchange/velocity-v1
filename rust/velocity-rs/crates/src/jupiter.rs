@@ -28,6 +28,21 @@ use std::{collections::HashMap, str::FromStr};
 /// See: https://dev.jup.ag/docs/swap-api
 const DEFAULT_JUPITER_API_URL: &str = "https://api.jup.ag/swap/v2";
 
+/// Ceiling on a single `/build` round trip. Without one a stalled Jupiter connection blocks the
+/// caller's swap path indefinitely — the liquidator races this against Titan and must not hang.
+const JUPITER_REQUEST_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
+
+/// Shared client so the connection pool and TLS setup are reused across swap queries.
+fn jupiter_http_client() -> &'static reqwest::Client {
+    static CLIENT: std::sync::OnceLock<reqwest::Client> = std::sync::OnceLock::new();
+    CLIENT.get_or_init(|| {
+        reqwest::Client::builder()
+            .timeout(JUPITER_REQUEST_TIMEOUT)
+            .build()
+            .expect("build jupiter http client")
+    })
+}
+
 /// Rejects any swap mode other than `ExactIn`.
 ///
 /// `/swap/v2/build` is ExactIn-only and dropped `swapMode` from its contract.
@@ -58,9 +73,9 @@ pub trait JupiterSwapApi {
         user_authority: &Pubkey,
         amount: u64,
         swap_mode: SwapMode,
+        slippage_bps: u16,
         in_market: u16,
         out_market: u16,
-        slippage_bps: u16,
         only_direct_routes: Option<bool>,
         excluded_dexes: Option<String>,
         transaction_config: Option<TransactionConfig>,
@@ -78,7 +93,7 @@ impl JupiterSwapApi for VelocityClient {
     /// * `user_authority` - The public key of the user's wallet that will execute the swap
     ///   (sent as the v2 `taker` query param, which is required)
     /// * `amount` - The amount of input tokens to swap, in native units (smallest denomination)
-    /// * `swap_mode` - The type of swap to perform (e.g. ExactIn, ExactOut)
+    /// * `swap_mode` - Must be `ExactIn`; `ExactOut` is rejected (v2 `/build` is ExactIn-only)
     /// * `slippage_bps` - Maximum allowed slippage in basis points (1 bp = 0.01%)
     /// * `in_market` - The market index of the token to swap from
     /// * `out_market` - The market index of the token to swap to
@@ -169,7 +184,7 @@ impl JupiterSwapApi for VelocityClient {
             query.push(("excludeDexes", excluded_dexes));
         }
 
-        let mut request = reqwest::Client::new()
+        let mut request = jupiter_http_client()
             .get(format!("{jupiter_url}/build"))
             .query(&query);
         if let Some(api_key) = api_key {
@@ -321,8 +336,10 @@ struct BuildResponse {
     other_instructions: Vec<BuildInstruction>,
     #[serde(default)]
     tip_instruction: Option<BuildInstruction>,
+    /// v2 documents this as `Record<string, string[]> | null`, so it must tolerate an explicit
+    /// `null` as well as a missing field.
     #[serde(default)]
-    addresses_by_lookup_table_address: HashMap<String, Vec<String>>,
+    addresses_by_lookup_table_address: Option<HashMap<String, Vec<String>>>,
 }
 
 #[derive(Deserialize, Debug, Clone)]
@@ -475,6 +492,7 @@ impl BuildResponse {
 
         let address_lookup_table_addresses = self
             .addresses_by_lookup_table_address
+            .unwrap_or_default()
             .keys()
             .map(|key| parse_pubkey("addressesByLookupTableAddress", key))
             .collect::<SdkResult<Vec<_>>>()?;
@@ -691,6 +709,26 @@ mod tests {
                 "DttEs7CNMNwtH4gc5cfusPJn3xHvavEt8eAfDtDGTEFc".to_string(),
             ]
         );
+    }
+
+    /// v2 documents `addressesByLookupTableAddress` as `Record<string, string[]> | null`, so an
+    /// explicit `null` (and an omitted field) must map to no lookup tables rather than fail the
+    /// whole request.
+    #[test]
+    fn tolerates_absent_lookup_table_map() {
+        for value in [Some(serde_json::Value::Null), None] {
+            let mut body: serde_json::Value =
+                serde_json::from_str(USDC_USDT_BUILD).expect("fixture is json");
+            let map = body.as_object_mut().expect("object");
+            match value {
+                Some(null) => map.insert("addressesByLookupTableAddress".into(), null),
+                None => map.remove("addressesByLookupTableAddress"),
+            }
+            .expect("fixture carries the field");
+
+            let (_, ixs) = parse(&body.to_string());
+            assert!(ixs.address_lookup_table_addresses.is_empty());
+        }
     }
 
     /// A non-null `tipInstruction` must land in `other_instructions` so

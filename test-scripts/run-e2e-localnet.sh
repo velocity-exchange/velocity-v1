@@ -51,6 +51,7 @@ if [ "${1:-}" != "--skip-build" ]; then
   bun run program:build:clob
   bun run program:build:midpoint
   cargo build --manifest-path rust/Cargo.toml -p book-publisher
+  cargo build --manifest-path rust/Cargo.toml -p swift-server
   # relay: the program the watches live on, and the turner that cranks them.
   (cd "$RELAY_REPO/programs" && cargo-build-sbf --tools-version v1.54 --manifest-path relay/Cargo.toml)
   cargo build --manifest-path "$RELAY_REPO/Cargo.toml" -p relay-crank-turner
@@ -59,6 +60,7 @@ else
   for f in target/deploy/velocity.so target/deploy/pyth.so \
     anchor-v2/target/deploy/clob.so anchor-v2/target/deploy/midpoint.so \
     rust/target/debug/book-publisher \
+    rust/target/debug/swift-server \
     "$RELAY_REPO/programs/target/deploy/relay.so" \
     "$RELAY_REPO/target/debug/relay-crank-turner"; do
     [ -e "$f" ] || { echo "missing $f — run without --skip-build" >&2; exit 1; }
@@ -116,6 +118,7 @@ export E2E_RPC_URL="http://127.0.0.1:$RPC_PORT"
 export E2E_REDIS_URL="redis://127.0.0.1:$REDIS_PORT"
 export E2E_SCRATCH_DIR="$SCRATCH"
 export BOOK_PUBLISHER_BIN="$PWD/rust/target/debug/book-publisher"
+export SWIFT_BIN="$PWD/rust/target/debug/swift-server"
 export RELAY_TURNER_BIN="$RELAY_REPO/target/debug/relay-crank-turner"
 export RELAY_PROGRAM_ID="$RELAY_ID"
 

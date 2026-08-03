@@ -19,6 +19,7 @@ import { spawn, ChildProcess } from 'child_process';
 import * as fs from 'fs';
 import Redis from 'ioredis';
 import {
+	AddressLookupTableProgram,
 	ComputeBudgetProgram,
 	Connection,
 	Keypair,
@@ -29,6 +30,8 @@ import {
 	SYSVAR_RENT_PUBKEY,
 	Transaction,
 	TransactionInstruction,
+	TransactionMessage,
+	VersionedTransaction,
 } from '@solana/web3.js';
 import {
 	AccountLayout,
@@ -46,6 +49,7 @@ import {
 	getPerpMarketPublicKeySync,
 	getSpotMarketPublicKeySync,
 	getLimitOrderParams,
+	generateSignedMsgUuid,
 	getMarketOrderParams,
 	getTriggerMarketOrderParams,
 	isVariant,
@@ -85,6 +89,9 @@ const RELAY_ID = new PublicKey(
 	process.env.RELAY_PROGRAM_ID ?? '4D5tPhw9sqkdkR5CpmP427TH6y9p9AMuKUukUEHn3Mpu'
 );
 const TURNER_BIN = process.env.RELAY_TURNER_BIN ?? '';
+const SWIFT_BIN = process.env.SWIFT_BIN ?? '';
+const SWIFT_PORT = 3211;
+const SWIFT_URL = `http://127.0.0.1:${SWIFT_PORT}`;
 /** relay-spec's `WatchV0` account length. */
 const WATCH_V0_LEN = 112;
 /** `agg.price` within the pyth stub's `Price` account — the same offset
@@ -206,6 +213,11 @@ describe('e2e localnet: programs + publisher + redis', function () {
 	let publisherLog: number | undefined;
 	let turner: ChildProcess | undefined;
 	let turnerLog: number | undefined;
+	let swift: ChildProcess | undefined;
+	let swiftLog: number | undefined;
+	/** The retail-flow attestation key swift co-signs with; registered
+	 * on-chain as `State.hot_flow_authority`. */
+	const flowAuthorityKp = Keypair.generate();
 	/** Where relay pays its keeper: a plain account that never signs, which
 	 * is what the turner requires before it will crank an *untrusted*
 	 * program — i.e. velocity is treated exactly as a third-party turner
@@ -774,6 +786,97 @@ describe('e2e localnet: programs + publisher + redis', function () {
 		});
 	};
 
+	/** Create + activate an address lookup table over `addresses`. */
+	const createRouterLookupTable = async (addresses: PublicKey[]) => {
+		const slot = await connection.getSlot('finalized');
+		const [createIx, tableAddress] =
+			AddressLookupTableProgram.createLookupTable({
+				authority: payer.publicKey,
+				payer: payer.publicKey,
+				recentSlot: slot,
+			});
+		const unique = [...new Set(addresses.map((a) => a.toBase58()))].map(
+			(a) => new PublicKey(a)
+		);
+		await provider.sendAndConfirm(
+			new Transaction().add(
+				createIx,
+				AddressLookupTableProgram.extendLookupTable({
+					payer: payer.publicKey,
+					authority: payer.publicKey,
+					lookupTable: tableAddress,
+					addresses: unique,
+				})
+			)
+		);
+		// Addresses added in slot N only resolve from N+1: the account
+		// reads back immediately, but a transaction using it before the
+		// slot turns over fails with "invalid index" at load time.
+		const extendedAt = await connection.getSlot();
+		await pollUntil('lookup table to activate', 30_000, async () => {
+			const slotNow = await connection.getSlot();
+			return slotNow > extendedAt + 1 ? slotNow : undefined;
+		});
+		return await pollUntil('lookup table to be readable', 30_000, async () => {
+			const fetched = await connection.getAddressLookupTable(tableAddress);
+			return fetched.value &&
+				fetched.value.state.addresses.length === unique.length
+				? fetched.value
+				: undefined;
+		});
+	};
+
+	const startSwift = async () => {
+		// Swift's RPC simulation uses a fixed fee payer that never signs but
+		// must exist and hold SOL (gas-station-maintained in production).
+		await airdrop(
+			new PublicKey('feezFJywCs7LZXXi6dyLKpr3XKgtf7KXXKZ2y6vzTSQ'),
+			1
+		);
+		swiftLog = fs.openSync(`${SCRATCH}/swift.log`, 'w');
+		const redisPort = new URL(REDIS_URL).port || '6379';
+		swift = spawn(SWIFT_BIN, ['--server', 'swift'], {
+			env: {
+				...process.env,
+				ENV: 'devnet',
+				ENDPOINT: RPC_URL,
+				WS_ENDPOINT_1: RPC_URL.replace('http', 'ws').replace('8899', '8900'),
+				ELASTICACHE_HOST: '127.0.0.1',
+				ELASTICACHE_PORT: redisPort,
+				PORT: String(SWIFT_PORT),
+				METRICS_PORT: '9469',
+				FLOW_AUTHORITY_KEYPAIR: JSON.stringify(
+					Array.from(flowAuthorityKp.secretKey)
+				),
+				// Long enough that the scenario reliably observes the
+				// too-early response, short enough that the signed
+				// message's slot window survives the round-trip.
+				ATTESTATION_HOLD_MS: '600',
+				// Intake's pre-flight RPC simulation is a production
+				// admission guard, not part of the attestation loop, and
+				// it needs the client's devnet market plumbing that a
+				// freshly-initialized localnet doesn't provide. The real
+				// verdict here is the on-chain fill at the end.
+				DISABLE_RPC_SIM: 'true',
+				RUST_LOG: 'info',
+			},
+			stdio: ['ignore', swiftLog, swiftLog],
+		});
+		swift.on('exit', (code) => {
+			if (code !== null && code !== 0) {
+				console.error(`swift exited ${code} — see ${SCRATCH}/swift.log`);
+			}
+		});
+		await pollUntil('swift to serve /health', 60_000, async () => {
+			try {
+				const res = await fetch(`${SWIFT_URL}/health`);
+				return res.ok ? true : undefined;
+			} catch {
+				return undefined;
+			}
+		});
+	};
+
 	/** Lamports relay has paid its keeper — the proof a crank came from the
 	 * turner rather than from this test or the publisher, which pay their
 	 * own authorities instead. */
@@ -1127,6 +1230,23 @@ describe('e2e localnet: programs + publisher + redis', function () {
 		// test explicitly submits.
 		await registerWatch(conditions);
 		startTurner();
+
+		// Attested flow: register swift's co-signing key as the on-chain
+		// flow authority, then bring swift up with it.
+		await provider.sendAndConfirm(
+			new Transaction().add(
+				admin.program.instruction.updateHotAdmin(
+					{ flowAuthority: {} },
+					flowAuthorityKp.publicKey,
+					{
+						accounts: {
+							state: await admin.getStatePublicKey(),
+							admin: payer.publicKey,
+						},
+					}
+				)
+			)
+		);
 	});
 
 	after(async function () {
@@ -1146,6 +1266,10 @@ describe('e2e localnet: programs + publisher + redis', function () {
 		}
 		publisher?.kill();
 		if (publisherLog !== undefined) fs.closeSync(publisherLog);
+		turner?.kill();
+		if (turnerLog !== undefined) fs.closeSync(turnerLog);
+		swift?.kill();
+		if (swiftLog !== undefined) fs.closeSync(swiftLog);
 		redis?.disconnect();
 		for (const client of clients) {
 			try {
@@ -1730,5 +1854,302 @@ describe('e2e localnet: programs + publisher + redis', function () {
 		assert.isOk(protocolUserAccount);
 		await setOraclePrice(100);
 		await victim.unsubscribe();
+	});
+
+	it('fills a swift order through the attested-flow loop', async function () {
+		this.timeout(180_000);
+		// Swift boots here, last, against a settled chain: its client
+		// snapshots the market list at startup, and a boot racing the
+		// bring-up sees an empty world (and its intake simulation panics
+		// on missing market data — observed, not hypothetical).
+		await startSwift();
+		// Gate the midpoint on attestation: from here, only transactions
+		// co-signed by the flow authority see its books — which makes the
+		// midpoint's participation below an on-chain proof that the
+		// co-signature carried, not just that the endpoints answered.
+		await provider.sendAndConfirm(
+			new Transaction().add(
+				new TransactionInstruction({
+					programId: MIDPOINT_ID,
+					keys: [
+						{ pubkey: midInstance, isSigner: false, isWritable: true },
+						{
+							pubkey: midMakerKp.publicKey,
+							isSigner: true,
+							isWritable: false,
+						},
+						// Absent optional hot authority = the program id.
+						{ pubkey: MIDPOINT_ID, isSigner: false, isWritable: false },
+						{
+							pubkey: flowAuthorityKp.publicKey,
+							isSigner: false,
+							isWritable: false,
+						},
+					],
+					// Args: five absent options, require_attested_flow =
+					// Some(true), is_paused absent.
+					data: Buffer.concat([
+						ixDiscriminator('update_quoter_v0'),
+						Buffer.from([0]), // max_mid_staleness_slots: None
+						Buffer.from([0]), // price_tick_size: None
+						Buffer.from([0]), // size_step: None
+						Buffer.from([0]), // min_quote_size: None
+						Buffer.from([1, 1]), // require_attested_flow: Some(true)
+						Buffer.from([0]), // is_paused: None
+					]),
+				})
+			),
+			[midMakerKp]
+		);
+
+		// Re-arm the midpoint: earlier scenarios consumed its ask rungs
+		// (filled is standing intent) and its mid may have gone stale.
+		await setMidpointLevels(new BN(100).mul(PRICE), [
+			{ offsetPpm: 1000, size: UNIT.muln(2) },
+			{ offsetPpm: 3000, size: UNIT.muln(2) },
+		]);
+
+		// The taker signs an order off-chain and hands it to swift — the
+		// real intake, which verifies, simulates, publishes to keepers,
+		// and records it as attestable.
+		if (
+			!(await taker.isSignedMsgUserOrdersAccountInitialized(
+				takerKp.publicKey
+			))
+		) {
+			await taker.initializeSignedMsgUserOrders(takerKp.publicKey, 8);
+		}
+		await taker.fetchAccounts();
+		const takerUser = getUserAccountPublicKeySync(
+			VELOCITY_ID,
+			takerKp.publicKey,
+			0
+		);
+		const positionBefore =
+			taker.getUser().getPerpPosition(0)?.baseAssetAmount ?? new BN(0);
+		await midMaker.fetchAccounts();
+		const midBefore =
+			midMaker.getUser().getPerpPosition(0)?.baseAssetAmount ?? new BN(0);
+
+		// A v0 message over a lookup table, the way a real keeper sends a
+		// swift fill: the ed25519 instruction carries the whole signed
+		// message, so the router tail does not fit in a legacy transaction.
+		// Built before the order is submitted — a table costs two slots to
+		// activate, and doing that after intake would burn the hold window
+		// this scenario exists to observe.
+		const lookupTable = await createRouterLookupTable([
+			...routerTail([clobMakerKp, midMakerKp]).map((meta) => meta.pubkey),
+			VELOCITY_ID,
+			takerUser,
+			getUserStatsAccountPublicKey(VELOCITY_ID, takerKp.publicKey),
+			getUserAccountPublicKeySync(VELOCITY_ID, payer.publicKey, 0),
+			getUserStatsAccountPublicKey(VELOCITY_ID, payer.publicKey),
+		]);
+
+		// Sign and submit, freshly each attempt: the signed message pins a
+		// slot, so a retry has to re-sign rather than replay. Retried
+		// because swift's market/oracle subscriptions warm up
+		// asynchronously after boot — in production it has been up for
+		// hours before an order arrives; here it is seconds old.
+		const submit = async () => {
+			const uuid = generateSignedMsgUuid();
+			const signed = taker.signSignedMsgOrderParamsMessage({
+				signedMsgOrderParams: getMarketOrderParams({
+					marketIndex: 0,
+					direction: PositionDirection.LONG,
+					baseAssetAmount: UNIT,
+					price: new BN(103).mul(PRICE),
+					auctionDuration: 120,
+					auctionStartPrice: new BN(101).mul(PRICE),
+					auctionEndPrice: new BN(103).mul(PRICE),
+				}),
+				subAccountId: 0,
+				slot: new BN(await connection.getSlot()),
+				uuid,
+				takeProfitOrderParams: null,
+				stopLossOrderParams: null,
+			});
+			const res = await fetch(`${SWIFT_URL}/orders`, {
+				method: 'POST',
+				headers: { 'content-type': 'application/json' },
+				body: JSON.stringify({
+					signature: signed.signature.toString('base64'),
+					message: signed.orderParams.toString(),
+					taker_authority: takerKp.publicKey.toBase58(),
+					signing_authority: takerKp.publicKey.toBase58(),
+				}),
+			});
+			return { uuid, signed, ok: res.ok, body: await res.text() };
+		};
+		let lastRejection = '';
+		const accepted = await pollUntil(
+			'swift to accept the signed order',
+			90_000,
+			async () => {
+				const attempt = await submit();
+				if (attempt.ok) {
+					return attempt;
+				}
+				lastRejection = attempt.body;
+				return undefined;
+			}
+		).catch(() => {
+			throw new Error(`swift intake refused: ${lastRejection}`);
+		});
+		const { uuid, signed } = accepted;
+
+		// The keeper's side, wire-for-wire what keep-rs does: the flow
+		// authority rides the compute-budget price instruction as a
+		// read-only co-signer, the transaction is signed against a fixed
+		// blockhash, and /attest is polled through the hold window.
+		const cuLimit = ComputeBudgetProgram.setComputeUnitLimit({
+			units: 1_400_000,
+		});
+		// Compute budget parses no accounts, so the co-signer meta rides
+		// here inertly — exactly how keep-rs marks an attested fill.
+		cuLimit.keys.push({
+			pubkey: flowAuthorityKp.publicKey,
+			isSigner: true,
+			isWritable: false,
+		});
+		const [ed25519Ix, placeIx] = await admin.getPlaceSignedMsgTakerPerpOrderIxs(
+			signed,
+			0,
+			{
+				taker: takerUser,
+				takerStats: getUserStatsAccountPublicKey(
+					VELOCITY_ID,
+					takerKp.publicKey
+				),
+				takerUserAccount: taker.getUserAccount()!,
+				signingAuthority: takerKp.publicKey,
+			},
+			[cuLimit]
+		);
+		// The order id the swift placement will take, read before building:
+		// with `null` the fill picks the user's first fillable order, which
+		// here is a leftover triggered short from an earlier scenario.
+		const swiftOrderId = taker.getUserAccount()!.nextOrderId;
+		const fillIx = admin.program.instruction.fillPerpOrder(swiftOrderId, null, {
+			accounts: {
+				state: await admin.getStatePublicKey(),
+				authority: payer.publicKey,
+				filler: getUserAccountPublicKeySync(VELOCITY_ID, payer.publicKey, 0),
+				fillerStats: getUserStatsAccountPublicKey(
+					VELOCITY_ID,
+					payer.publicKey
+				),
+				user: takerUser,
+				userStats: getUserStatsAccountPublicKey(
+					VELOCITY_ID,
+					takerKp.publicKey
+				),
+			},
+			// Both makers: the CLOB carries resting orders from earlier
+			// scenarios, and a quote whose user set omits them fails
+			// `StaleUserSet` once they age past the grace window.
+			remainingAccounts: routerTail([clobMakerKp, midMakerKp]),
+		});
+		const blockhash = await connection.getLatestBlockhash();
+		const message = new TransactionMessage({
+			payerKey: payer.publicKey,
+			recentBlockhash: blockhash.blockhash,
+			instructions: [cuLimit, ed25519Ix, placeIx, fillIx],
+		}).compileToV0Message([lookupTable]);
+		const tx = new VersionedTransaction(message);
+		tx.sign([payer]);
+		const raw = Buffer.from(tx.serialize()).toString('base64');
+
+		let sawHoldWindow = false;
+		let attested: Buffer | undefined;
+		for (let attempt = 0; attempt < 8 && !attested; attempt++) {
+			const res = await fetch(`${SWIFT_URL}/attest`, {
+				method: 'POST',
+				headers: { 'content-type': 'application/json' },
+				body: JSON.stringify({
+					uuid: Buffer.from(uuid).toString(),
+					transaction: raw,
+				}),
+			});
+			const body = await res.text();
+			if (res.status === 425) {
+				sawHoldWindow = true;
+				const { retryAfterMs } = JSON.parse(body) as {
+					retryAfterMs?: number;
+				};
+				await new Promise((r) => setTimeout(r, retryAfterMs ?? 250));
+				continue;
+			}
+			assert.equal(res.status, 200, `attest refused: ${body}`);
+			attested = Buffer.from(
+				(JSON.parse(body) as { transaction: string }).transaction,
+				'base64'
+			);
+		}
+		assert.isTrue(sawHoldWindow, 'the hold window was observed');
+		assert.isOk(attested, 'attestation granted after the hold');
+
+		// Submitting the co-signed bytes verbatim: the validator verifies
+		// BOTH signatures, so landing at all proves swift's co-signature.
+		// Simulated with sigVerify first — sendRawTransaction's preflight
+		// does NOT check signatures, so a bad co-signature would otherwise
+		// surface only as a transaction that silently never lands.
+		const verified = await connection.simulateTransaction(
+			VersionedTransaction.deserialize(attested!),
+			{ sigVerify: true, replaceRecentBlockhash: false }
+		);
+		assert.isNull(
+			verified.value.err,
+			`attested tx failed sigVerify simulation: ${JSON.stringify(
+				verified.value.err
+			)} ${JSON.stringify(verified.value.logs?.slice(-6))}`
+		);
+		// Preflight is skipped deliberately: the sigVerify simulation above
+		// is the stronger check (preflight does not verify signatures at
+		// all), and on this validator preflighted sends were dropped
+		// inconsistently while this path lands reliably.
+		const signature = await connection.sendRawTransaction(attested!, {
+			skipPreflight: true,
+			maxRetries: 20,
+		});
+		// Poll the status rather than confirmTransaction: a timeout there
+		// says only "unknown", where the status carries the on-chain error.
+		const landed = await pollUntil(
+			'the attested fill to land',
+			45_000,
+			async () => {
+				const status = (
+					await connection.getSignatureStatuses([signature])
+				).value[0];
+				if (!status) {
+					return undefined;
+				}
+				assert.isNull(
+					status.err,
+					`attested fill reverted: ${JSON.stringify(status.err)}`
+				);
+				return status;
+			}
+		).catch(() => undefined);
+		assert.isOk(landed, 'attested fill confirmed');
+
+		await taker.fetchAccounts();
+		const positionAfter =
+			taker.getUser().getPerpPosition(0)?.baseAssetAmount ?? new BN(0);
+		assert.isTrue(
+			positionAfter.sub(positionBefore).eq(UNIT),
+			`taker filled the full unit (got ${positionAfter
+				.sub(positionBefore)
+				.toString()})`
+		);
+		// The attestation reached the midpoint: its books only open to
+		// co-signed flow now, and its maker went short against the taker.
+		await midMaker.fetchAccounts();
+		const midAfter =
+			midMaker.getUser().getPerpPosition(0)?.baseAssetAmount ?? new BN(0);
+		assert.isTrue(
+			midAfter.lt(midBefore),
+			`midpoint maker filled attested flow (before=${midBefore} after=${midAfter})`
+		);
 	});
 });

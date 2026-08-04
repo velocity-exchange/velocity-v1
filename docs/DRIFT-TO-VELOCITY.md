@@ -216,6 +216,10 @@ in favour of a single `getProviderSwapIx({ swapProvider, ... })` that accepts an
 `SwapProvider`; `swap`'s `swapClient` parameter is typed `SwapProvider` and no longer
 branches on the concrete client. `getSwapIx` (the `beginSwap`/`endSwap` pair) is unchanged.
 
+Jupiter Swap API v2 opt-in (jupiter-swap-api-v2): the former v1-only
+`JupiterClient.getSwap` (`POST /swap`) was removed. Callers use `getSwapTransaction`
+(which still posts to `/swap` under `apiVersion: 'v1'`) or `getRouteInstructions`.
+
 ### 4.4 Type-level breaking changes
 
 - **`oraclePriceOffset` is now `BN`** (was `number`) on `Order` and `OrderParams` —

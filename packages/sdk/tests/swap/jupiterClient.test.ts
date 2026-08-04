@@ -158,6 +158,27 @@ describe('JupiterClient.getQuote', () => {
 
 		expect(err.message).to.contain('Jupiter quote failed');
 	});
+
+	// v1's /swap sizes the compute budget itself, so a caller-supplied limit has
+	// nowhere to go on this path — unlike v2, which compiles the transaction
+	// locally and can splice one in.
+	it('rejects computeUnitLimit rather than silently dropping it on the v1 path', async () => {
+		fetchStub.resolves(jsonResponse(validQuoteBody));
+
+		const quote = await getQuote();
+		const err = await captureError(
+			client.getSwapTransaction({
+				quote,
+				userPublicKey: USER,
+				computeUnitLimit: 400_000,
+			})
+		);
+
+		expect(err.message).to.contain('computeUnitLimit is not supported');
+		expect(err.message).to.contain('apiVersion: "v2"');
+		// Only the quote request should have gone out — no POST to /swap.
+		expect(fetchStub.callCount).to.equal(1);
+	});
 });
 
 const USER = new PublicKey('HxFLKUAmAMLz1jtT3hbvCMELwH5H9tpM2QugP8sKyfhc');

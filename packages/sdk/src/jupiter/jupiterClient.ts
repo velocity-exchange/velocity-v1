@@ -740,13 +740,15 @@ export class JupiterClient implements SwapProvider {
 	 * Always builds at the quote's own slippage — the price the caller was
 	 * shown. Re-quote to change it rather than overriding it here.
 	 *
-	 * **Compute budget.** v1's `/swap` sized the transaction for you. v2's
-	 * `/build` returns a compute unit *price* but no compute unit *limit*, so
-	 * without `computeUnitLimit` the transaction runs on the runtime default
-	 * (200k CU per instruction, capped at 1.4M) — usually enough for a swap, but
-	 * not sized to the route, and the CU price then applies to that whole default.
-	 * Pass `computeUnitLimit` to set it explicitly; a simulated value is tighter
-	 * still, and the fee scales with whatever limit is in force.
+	 * **Compute budget.** `computeUnitLimit` is v2-only. v1's `/swap` sizes the
+	 * compute budget itself, so passing `computeUnitLimit` under v1 throws rather
+	 * than silently ignoring it. Under v2, `/build` returns a compute unit
+	 * *price* but no compute unit *limit*, so without `computeUnitLimit` the
+	 * transaction runs on the runtime default (200k CU per instruction, capped
+	 * at 1.4M) — usually enough for a swap, but not sized to the route, and the
+	 * CU price then applies to that whole default. Pass `computeUnitLimit` to set
+	 * it explicitly; a simulated value is tighter still, and the fee scales with
+	 * whatever limit is in force.
 	 *
 	 * @throws If the quote came from a different provider or a different wallet.
 	 */
@@ -786,6 +788,12 @@ export class JupiterClient implements SwapProvider {
 									),
 							  ],
 				}).compileToV0Message(lookupTables)
+			);
+		}
+
+		if (computeUnitLimit !== undefined) {
+			throw new Error(
+				'JupiterClient.getSwapTransaction: computeUnitLimit is not supported by the Jupiter v1 API (POST /swap sizes the compute budget itself); construct the client with apiVersion: "v2"'
 			);
 		}
 

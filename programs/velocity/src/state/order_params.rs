@@ -697,9 +697,24 @@ impl OrderParams {
         oracle_price: i64,
         is_signed_msg: bool,
     ) -> VelocityResult<bool> {
+        // Auction-param sanitization is OFF in test builds, deliberately: the
+        // integration suites construct auctions on purpose that this would
+        // rewrite, and rewriting them under the test's feet makes the fixtures
+        // describe something other than what they assert on. It means a test
+        // build accepts auction params production would sanitize — read test
+        // results about auction pricing with that in mind.
+        //
+        // The bindings are consumed below in every other flavour; naming them
+        // here keeps this from warning as an unreachable statement over
+        // unused parameters, which reads like an abandoned edit rather than a
+        // deliberate bypass.
         #[cfg(feature = "anchor-test")]
-        return Ok(false);
+        {
+            let _ = (perp_market, oracle_price, is_signed_msg);
+            return Ok(false);
+        }
 
+        #[cfg(not(feature = "anchor-test"))]
         let sanitized: bool = match self.order_type {
             OrderType::Limit => self.update_perp_auction_params_limit_orders(
                 perp_market,
@@ -716,6 +731,7 @@ impl OrderParams {
             _ => false,
         };
 
+        #[cfg(not(feature = "anchor-test"))]
         Ok(sanitized)
     }
 

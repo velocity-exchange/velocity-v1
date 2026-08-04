@@ -15043,3 +15043,206 @@ mod liquidation_mode {
         assert_eq!(cancel_market_index, Some(0));
     }
 }
+
+/// OtterSec #145: extinguishing an unfundable perp claim moves its *creditor*, it does not destroy
+/// value.
+pub mod extinguish_unfundable_perp_claims {
+    use crate::{
+        controller::liquidation::extinguish_unfundable_perp_claims,
+        create_anchor_account_info,
+        math::constants::{
+            QUOTE_PRECISION_I128, QUOTE_PRECISION_I64, SPOT_BALANCE_PRECISION,
+            SPOT_CUMULATIVE_INTEREST_PRECISION,
+        },
+        state::{
+            perp_market::PerpMarket,
+            perp_market_map::PerpMarketMap,
+            spot_market::SpotMarket,
+            spot_market_map::SpotMarketMap,
+            user::{PerpPosition, User},
+        },
+    };
+
+    /// The whole point of the mechanism: the user's claim is gone, the market owes the same total, and
+    /// the insurance tranche is now the creditor instead of the bankrupt estate.
+    ///
+    /// Equity neutrality is the invariant to protect. Zeroing the user's claim lowers
+    /// `market.quote_asset_amount` (and so `net_user_pnl`), which raises the market's excess by the
+    /// forfeited amount; the `pending_if_fee` credit lowers it by exactly the same amount. If a future
+    /// change breaks that pairing, the market's balance sheet silently misstates.
+    #[test]
+    fn unfundable_claim_moves_to_the_insurance_tranche() {
+        let mut spot_market = SpotMarket {
+            market_index: 0,
+            decimals: 6,
+            cumulative_deposit_interest: SPOT_CUMULATIVE_INTEREST_PRECISION,
+            cumulative_borrow_interest: SPOT_CUMULATIVE_INTEREST_PRECISION,
+            deposit_balance: 1_000_000 * SPOT_BALANCE_PRECISION,
+            ..SpotMarket::default()
+        };
+        create_anchor_account_info!(spot_market, SpotMarket, spot_market_ai);
+        let spot_market_map = SpotMarketMap::load_one(&spot_market_ai, true).unwrap();
+
+        // Claim market with an empty pnl pool: the 500 claim is entirely unfundable.
+        let mut claim_market = PerpMarket {
+            market_index: 0,
+            quote_spot_market_index: 0,
+            quote_asset_amount: 500 * QUOTE_PRECISION_I128,
+            ..PerpMarket::default()
+        };
+        create_anchor_account_info!(claim_market, PerpMarket, claim_market_ai);
+        let perp_market_map = PerpMarketMap::load_one(&claim_market_ai, true).unwrap();
+
+        let mut user = User::default();
+        user.perp_positions[0] = PerpPosition {
+            market_index: 0,
+            quote_asset_amount: 500 * QUOTE_PRECISION_I64,
+            ..PerpPosition::default()
+        };
+
+        let market_quote_before = perp_market_map.get_ref(&0).unwrap().quote_asset_amount;
+        let pending_if_before = perp_market_map
+            .get_ref(&0)
+            .unwrap()
+            .fee_ledger
+            .pending_if_fee;
+
+        let forfeited =
+            extinguish_unfundable_perp_claims(&mut user, &perp_market_map, &spot_market_map)
+                .unwrap();
+
+        assert_eq!(forfeited, 500 * QUOTE_PRECISION_I128 as u128);
+        // The user no longer holds a claim to collect after insurance covers their debt.
+        assert_eq!(user.perp_positions[0].quote_asset_amount, 0);
+
+        let market_after = perp_market_map.get_ref(&0).unwrap();
+        // Aggregate user claims fell by the forfeited amount...
+        assert_eq!(
+            market_after.quote_asset_amount,
+            market_quote_before - 500 * QUOTE_PRECISION_I128,
+            "aggregate user claims must fall by the forfeited amount"
+        );
+        // ...and the insurance tranche picked it up, one for one. Equity-neutral.
+        assert_eq!(
+            market_after.fee_ledger.pending_if_fee,
+            pending_if_before + 500 * QUOTE_PRECISION_I128 as u128,
+            "the insurance tranche must become the creditor for exactly the forfeited amount"
+        );
+    }
+
+    /// Only the part the pool genuinely cannot pay may be taken; the fundable remainder belongs in the
+    /// ordinary settle pipeline, which needs no insurance at all.
+    #[test]
+    fn only_the_unfundable_excess_is_taken() {
+        let mut spot_market = SpotMarket {
+            market_index: 0,
+            decimals: 6,
+            cumulative_deposit_interest: SPOT_CUMULATIVE_INTEREST_PRECISION,
+            cumulative_borrow_interest: SPOT_CUMULATIVE_INTEREST_PRECISION,
+            deposit_balance: 1_000_000 * SPOT_BALANCE_PRECISION,
+            ..SpotMarket::default()
+        };
+        create_anchor_account_info!(spot_market, SpotMarket, spot_market_ai);
+        let spot_market_map = SpotMarketMap::load_one(&spot_market_ai, true).unwrap();
+
+        // Pool holds 200 tokens against a 500 claim -> 300 unfundable.
+        let mut claim_market = PerpMarket {
+            market_index: 0,
+            quote_spot_market_index: 0,
+            quote_asset_amount: 500 * QUOTE_PRECISION_I128,
+            ..PerpMarket::default()
+        };
+        claim_market.pnl_pool.scaled_balance = 200 * (SPOT_BALANCE_PRECISION as u128);
+        create_anchor_account_info!(claim_market, PerpMarket, claim_market_ai);
+        let perp_market_map = PerpMarketMap::load_one(&claim_market_ai, true).unwrap();
+
+        let mut user = User::default();
+        user.perp_positions[0] = PerpPosition {
+            market_index: 0,
+            quote_asset_amount: 500 * QUOTE_PRECISION_I64,
+            ..PerpPosition::default()
+        };
+
+        let forfeited =
+            extinguish_unfundable_perp_claims(&mut user, &perp_market_map, &spot_market_map)
+                .unwrap();
+
+        assert_eq!(
+            forfeited,
+            300 * QUOTE_PRECISION_I128 as u128,
+            "only the unfundable excess may be taken"
+        );
+        assert_eq!(
+            user.perp_positions[0].quote_asset_amount,
+            200 * QUOTE_PRECISION_I64,
+            "the fundable part must survive for the ordinary settle pipeline"
+        );
+        assert_eq!(
+            perp_market_map
+                .get_ref(&0)
+                .unwrap()
+                .fee_ledger
+                .pending_if_fee,
+            300 * QUOTE_PRECISION_I128 as u128
+        );
+    }
+
+    /// A position with base exposure or a live order is not a settled claim and must never be
+    /// extinguished, even if admission somehow let it through.
+    #[test]
+    fn live_positions_are_never_extinguished() {
+        let mut spot_market = SpotMarket {
+            market_index: 0,
+            decimals: 6,
+            cumulative_deposit_interest: SPOT_CUMULATIVE_INTEREST_PRECISION,
+            cumulative_borrow_interest: SPOT_CUMULATIVE_INTEREST_PRECISION,
+            deposit_balance: 1_000_000 * SPOT_BALANCE_PRECISION,
+            ..SpotMarket::default()
+        };
+        create_anchor_account_info!(spot_market, SpotMarket, spot_market_ai);
+        let spot_market_map = SpotMarketMap::load_one(&spot_market_ai, true).unwrap();
+
+        let mut claim_market = PerpMarket {
+            market_index: 0,
+            quote_spot_market_index: 0,
+            quote_asset_amount: 500 * QUOTE_PRECISION_I128,
+            ..PerpMarket::default()
+        };
+        create_anchor_account_info!(claim_market, PerpMarket, claim_market_ai);
+        let perp_market_map = PerpMarketMap::load_one(&claim_market_ai, true).unwrap();
+
+        let mut with_base = User::default();
+        with_base.perp_positions[0] = PerpPosition {
+            market_index: 0,
+            quote_asset_amount: 500 * QUOTE_PRECISION_I64,
+            base_asset_amount: 1,
+            ..PerpPosition::default()
+        };
+        assert_eq!(
+            extinguish_unfundable_perp_claims(&mut with_base, &perp_market_map, &spot_market_map)
+                .unwrap(),
+            0
+        );
+        assert_eq!(
+            with_base.perp_positions[0].quote_asset_amount,
+            500 * QUOTE_PRECISION_I64
+        );
+
+        let mut with_order = User::default();
+        with_order.perp_positions[0] = PerpPosition {
+            market_index: 0,
+            quote_asset_amount: 500 * QUOTE_PRECISION_I64,
+            open_orders: 1,
+            ..PerpPosition::default()
+        };
+        assert_eq!(
+            extinguish_unfundable_perp_claims(&mut with_order, &perp_market_map, &spot_market_map)
+                .unwrap(),
+            0
+        );
+        assert_eq!(
+            with_order.perp_positions[0].quote_asset_amount,
+            500 * QUOTE_PRECISION_I64
+        );
+    }
+}

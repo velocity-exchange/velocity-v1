@@ -186,6 +186,20 @@ impl FeeLedger {
         Ok(())
     }
 
+    /// Re-book a bankrupt estate's forfeited perp claim as an insurance-tranche claim on the same
+    /// pnl pool (OtterSec #145).
+    ///
+    /// Deliberately *not* `accrue_liquidation_fees`: that also bumps `total_liquidation_fee`, and this
+    /// is not a fee anyone charged — it is a claim whose creditor changed from the bankrupt user to
+    /// the insurance fund. `pending_if_fee` is already defined as a claim on future pnl-pool inflows,
+    /// which is exactly what an unfundable user claim was, so the swap is equity-neutral: zeroing the
+    /// user's `quote_asset_amount` lowers `market.quote_asset_amount` and so `net_user_pnl`, raising
+    /// the market's excess by the same amount this subtracts from it.
+    pub fn accrue_forfeited_claim_to_if(&mut self, amount: u128) -> VelocityResult {
+        self.pending_if_fee = self.pending_if_fee.safe_add(amount)?;
+        Ok(())
+    }
+
     /// Fees accrued but not yet materialized — the floor funding/spending may
     /// not eat into.
     pub fn pending_fee_obligations(&self) -> VelocityResult<u128> {

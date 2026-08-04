@@ -59,6 +59,7 @@ pub trait LiquidatePerpMode {
         &self,
         user: &User,
         spot_market_map: &SpotMarketMap,
+        perp_market_map: &PerpMarketMap,
     ) -> VelocityResult<bool>;
 
     fn enter_bankruptcy(&self, user: &mut User) -> VelocityResult<()>;
@@ -180,8 +181,9 @@ impl LiquidatePerpMode for CrossMarginLiquidatePerpMode {
         &self,
         user: &User,
         spot_market_map: &SpotMarketMap,
+        perp_market_map: &PerpMarketMap,
     ) -> VelocityResult<bool> {
-        is_cross_margin_bankrupt(user, spot_market_map)
+        is_cross_margin_bankrupt(user, spot_market_map, perp_market_map)
     }
 
     fn enter_bankruptcy(&self, user: &mut User) -> VelocityResult<()> {
@@ -335,6 +337,7 @@ impl LiquidatePerpMode for IsolatedMarginLiquidatePerpMode {
         &self,
         user: &User,
         _spot_market_map: &SpotMarketMap,
+        _perp_market_map: &PerpMarketMap,
     ) -> VelocityResult<bool> {
         // Isolated positions carry their own collateral, so the cross-margin
         // realizability questions (#145 / #151) do not apply here.

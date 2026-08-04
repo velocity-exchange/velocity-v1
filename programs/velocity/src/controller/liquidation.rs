@@ -77,7 +77,7 @@ use {
             order_params::PlaceOrderOptions,
             paused_operations::{PerpOperation, SpotOperation},
             perp_market_map::PerpMarketMap,
-            spot_market::SpotBalanceType,
+            spot_market::{SpotBalance, SpotBalanceType},
             spot_market_map::SpotMarketMap,
             state::State,
             user::{MarketType, Order, OrderStatus, OrderType, User, UserStats},
@@ -603,7 +603,11 @@ pub fn liquidate_perp(
 
     if base_asset_amount >= base_asset_amount_to_cover_margin_shortage {
         liquidation_mode.exit_liquidation(user)?;
-    } else if liquidation_mode.should_user_enter_bankruptcy(user, spot_market_map)? {
+    } else if liquidation_mode.should_user_enter_bankruptcy(
+        user,
+        spot_market_map,
+        perp_market_map,
+    )? {
         liquidation_mode.enter_bankruptcy(user)?;
     }
 
@@ -1205,7 +1209,11 @@ pub fn liquidate_perp_with_fill(
 
     if liquidation_mode.can_exit_liquidation(&margin_calculation_after)? {
         liquidation_mode.exit_liquidation(&mut user)?;
-    } else if liquidation_mode.should_user_enter_bankruptcy(&user, spot_market_map)? {
+    } else if liquidation_mode.should_user_enter_bankruptcy(
+        &user,
+        spot_market_map,
+        perp_market_map,
+    )? {
         liquidation_mode.enter_bankruptcy(&mut user)?;
     }
 
@@ -1840,7 +1848,7 @@ pub fn liquidate_spot(
 
     if liability_transfer >= liability_transfer_to_cover_margin_shortage {
         user.exit_cross_margin_liquidation();
-    } else if is_cross_margin_bankrupt(user, spot_market_map)? {
+    } else if is_cross_margin_bankrupt(user, spot_market_map, perp_market_map)? {
         user.enter_cross_margin_bankruptcy();
     }
 
@@ -2590,7 +2598,7 @@ pub fn liquidate_spot_with_swap_end(
 
     if margin_calulcation_after.can_exit_cross_margin_liquidation()? {
         user.exit_cross_margin_liquidation();
-    } else if is_cross_margin_bankrupt(user, spot_market_map)? {
+    } else if is_cross_margin_bankrupt(user, spot_market_map, perp_market_map)? {
         user.enter_cross_margin_bankruptcy();
     }
 
@@ -3082,7 +3090,7 @@ pub fn liquidate_borrow_for_perp_pnl(
 
     if liability_transfer >= liability_transfer_to_cover_margin_shortage {
         user.exit_cross_margin_liquidation();
-    } else if is_cross_margin_bankrupt(user, spot_market_map)? {
+    } else if is_cross_margin_bankrupt(user, spot_market_map, perp_market_map)? {
         user.enter_cross_margin_bankruptcy();
     }
 
@@ -3644,7 +3652,11 @@ pub fn liquidate_perp_pnl_for_deposit(
 
     if pnl_transfer >= pnl_transfer_to_cover_margin_shortage {
         liquidation_mode.exit_liquidation(user)?;
-    } else if liquidation_mode.should_user_enter_bankruptcy(user, spot_market_map)? {
+    } else if liquidation_mode.should_user_enter_bankruptcy(
+        user,
+        spot_market_map,
+        perp_market_map,
+    )? {
         liquidation_mode.enter_bankruptcy(user)?;
     }
 
@@ -3703,6 +3715,99 @@ pub fn liquidate_perp_pnl_for_deposit(
     });
 
     Ok(())
+}
+
+/// Extinguish the estate's *unfundable* positive perp claims, re-booking each into its own market's
+/// insurance tranche, and return the total (OtterSec #145).
+///
+/// A positive `quote_asset_amount` on a zero-base position is a claim on that market's pnl pool. When
+/// the pool cannot pay it, the claim is **unfunded but still owed** — and `is_cross_margin_bankrupt`
+/// now lets such a claim through rather than vetoing admission forever, because the pool only fills as
+/// counterparty losses settle and may never do so, which previously stranded a real, resolvable loss
+/// in another market indefinitely.
+///
+/// Letting it through *without* doing anything else is exactly the bug my first attempt at #145
+/// shipped: the resolver draws the full per-market face value of the debt, the re-derive then sees the
+/// account perp-solvent again, clears the latch, and the user walks away still holding the claim. So
+/// rather than ignoring it (which treats unfunded as *worthless*), we move its **creditor** — the
+/// user's claim is zeroed and the same amount is added to that market's `pending_if_fee`.
+///
+/// Equity-neutral by construction. Zeroing the user's claim lowers `market.quote_asset_amount` and so
+/// `net_user_pnl`, which *raises* the market's excess by the forfeited amount; the `pending_if_fee`
+/// credit lowers it by exactly the same amount. Nothing is created or destroyed — the pool owes the
+/// same total, to the insurance fund instead of to a bankrupt user. This needs no new state and no
+/// inter-market receivable, because `pending_if_fee` is already defined as a claim on future pnl-pool
+/// inflows, which is precisely what the user's claim was.
+///
+/// What it does *not* buy: the IF receives a **claim, not cash**, so the draw for this bankruptcy is
+/// not reduced today. It is compensated later, if and when the pool fills, through the existing
+/// `pending_if_fee` -> `sweep_market_fees` -> revenue pool -> `settle_revenue_to_insurance_fund` path.
+/// Still strictly better than the user keeping the claim, and unlike capping the draw it resolves the
+/// bankruptcy in one step with no lingering matched debt.
+///
+/// Bounded by the net-insolvency gate in `is_cross_margin_bankrupt`: admission requires the net perp
+/// quote to be <= 0, so total claims can never exceed total debt and this cannot take more than the
+/// estate owes.
+fn extinguish_unfundable_perp_claims(
+    user: &mut User,
+    perp_market_map: &PerpMarketMap,
+    spot_market_map: &SpotMarketMap,
+) -> VelocityResult<u128> {
+    let quote_spot_market = spot_market_map.get_quote_spot_market()?;
+    let mut total_forfeited: u128 = 0;
+
+    for index in 0..user.perp_positions.len() {
+        let position = user.perp_positions[index];
+
+        if position.is_isolated() || position.quote_asset_amount <= 0 {
+            continue;
+        }
+
+        // Admission already rejects these, but re-check rather than rely on it: a position with base
+        // exposure or a live order is not a settled claim and must not be extinguished.
+        if position.base_asset_amount != 0 || position.has_open_order() {
+            continue;
+        }
+
+        let mut perp_market = perp_market_map.get_ref_mut(&position.market_index)?;
+
+        // Recompute fundability rather than trusting the admission-time view: the pool can move
+        // between admission and resolution, and only the part the pool genuinely cannot pay may be
+        // taken. Any fundable part is left alone to settle through the ordinary pipeline.
+        let pnl_pool_tokens = get_token_amount(
+            perp_market.pnl_pool.balance(),
+            &quote_spot_market,
+            perp_market.pnl_pool.balance_type(),
+        )?;
+
+        let unfundable = position
+            .quote_asset_amount
+            .cast::<u128>()?
+            .saturating_sub(pnl_pool_tokens);
+
+        if unfundable == 0 {
+            continue;
+        }
+
+        update_quote_asset_amount(
+            &mut user.perp_positions[index],
+            &mut perp_market,
+            -unfundable.cast::<i64>()?,
+        )?;
+        perp_market
+            .fee_ledger
+            .accrue_forfeited_claim_to_if(unfundable)?;
+
+        msg!(
+            "perp market {} bankruptcy: forfeited {} of unfundable claim to the insurance tranche",
+            position.market_index,
+            unfundable
+        );
+
+        total_forfeited = total_forfeited.safe_add(unfundable)?;
+    }
+
+    Ok(total_forfeited)
 }
 
 /// Set off the user's quote deposit against this perp market's bad debt, returning the amount
@@ -3813,7 +3918,7 @@ pub fn resolve_perp_bankruptcy(
     let liquidation_mode = get_perp_liquidation_mode(user, market_index)?;
 
     if !liquidation_mode.is_user_bankrupt(user)?
-        && liquidation_mode.should_user_enter_bankruptcy(user, spot_market_map)?
+        && liquidation_mode.should_user_enter_bankruptcy(user, spot_market_map, perp_market_map)?
     {
         liquidation_mode.enter_bankruptcy(user)?;
     }
@@ -3853,6 +3958,11 @@ pub fn resolve_perp_bankruptcy(
             market_index
         );
     })?;
+
+    // OtterSec #145: convert the estate's unfundable positive claims into insurance-tranche claims
+    // before anything else, so the account cannot be left holding one after insurance covers its
+    // debt. Runs before the setoff and the loss read so both see the wound-up estate.
+    extinguish_unfundable_perp_claims(user, perp_market_map, spot_market_map)?;
 
     // OtterSec #130: apply the estate's own quote deposit before drawing on anyone else's money.
     let setoff = apply_quote_deposit_setoff_for_perp_bankruptcy(
@@ -4165,7 +4275,8 @@ pub fn resolve_perp_bankruptcy(
     }
 
     // True if a bankrupting liability remains; clears status otherwise.
-    let still_bankrupt = liquidation_mode.should_user_enter_bankruptcy(user, spot_market_map)?;
+    let still_bankrupt =
+        liquidation_mode.should_user_enter_bankruptcy(user, spot_market_map, perp_market_map)?;
     if !still_bankrupt {
         liquidation_mode.exit_bankruptcy(user)?;
     }
@@ -4211,7 +4322,9 @@ pub fn resolve_spot_bankruptcy(
     insurance_fund_vault_balance: u64,
     funding_paused: bool,
 ) -> VelocityResult<u64> {
-    if !user.is_cross_margin_bankrupt() && is_cross_margin_bankrupt(user, spot_market_map)? {
+    if !user.is_cross_margin_bankrupt()
+        && is_cross_margin_bankrupt(user, spot_market_map, perp_market_map)?
+    {
         user.enter_cross_margin_bankruptcy();
     }
 
@@ -4238,6 +4351,12 @@ pub fn resolve_spot_bankruptcy(
         user.exit_cross_margin_bankruptcy();
         return Ok(0);
     }
+
+    // OtterSec #145: an account can reach the spot resolver holding unfundable perp claims (its
+    // liability is a spot borrow, so the perp-before-spot precedence below does not divert it). Wind
+    // those up here too, or the same walk-away applies: insurance covers the borrow and the claim is
+    // still live to collect later.
+    extinguish_unfundable_perp_claims(user, perp_market_map, spot_market_map)?;
 
     // Audit #52: enforce a deterministic perp-before-spot bankruptcy precedence.
     // resolve_perp_bankruptcy and resolve_spot_bankruptcy both draw from the
@@ -4415,7 +4534,7 @@ pub fn resolve_spot_bankruptcy(
     }
 
     // True if a bankrupting liability remains; clears status otherwise.
-    let still_bankrupt = is_cross_margin_bankrupt(user, spot_market_map)?;
+    let still_bankrupt = is_cross_margin_bankrupt(user, spot_market_map, perp_market_map)?;
     if !still_bankrupt {
         user.exit_cross_margin_bankruptcy();
     }

@@ -231,6 +231,16 @@ pub mod instructions {
     #[automatically_derived]
     impl anchor_lang::InstructionData for CrankCrossMatch {}
     #[derive(AnchorSerialize, AnchorDeserialize, Clone, Default)]
+    pub struct CrankTakerOriginCross {
+        pub market_index: u16,
+    }
+    #[automatically_derived]
+    impl anchor_lang::Discriminator for CrankTakerOriginCross {
+        const DISCRIMINATOR: &[u8] = &[105, 245, 226, 50, 241, 206, 172, 254];
+    }
+    #[automatically_derived]
+    impl anchor_lang::InstructionData for CrankTakerOriginCross {}
+    #[derive(AnchorSerialize, AnchorDeserialize, Clone, Default)]
     pub struct DeleteAmmCache {}
     #[automatically_derived]
     impl anchor_lang::Discriminator for DeleteAmmCache {
@@ -6163,6 +6173,35 @@ pub mod types {
         Debug,
         PartialEq,
     )]
+    pub struct TakerOriginCrossRecordV0 {
+        pub ts: i64,
+        pub slot: u64,
+        pub market_index: u16,
+        pub taker: Pubkey,
+        pub maker: Pubkey,
+        pub filler: Pubkey,
+        pub base_asset_amount: u64,
+        pub quote_asset_amount: u64,
+        pub rest_price: u64,
+        pub fill_price: u64,
+        pub improvement: u64,
+        pub crank_reward: u64,
+        pub remainder_base_asset_amount: u64,
+        pub remainder_order_id: u64,
+    }
+    #[repr(C)]
+    #[derive(
+        AnchorSerialize,
+        AnchorDeserialize,
+        InitSpace,
+        Serialize,
+        Deserialize,
+        Copy,
+        Clone,
+        Default,
+        Debug,
+        PartialEq,
+    )]
     pub struct TargetsDatum {
         pub cost_to_trade_bps: i32,
         #[serde(skip)]
@@ -9799,6 +9838,124 @@ pub mod accounts {
     }
     #[automatically_derived]
     impl anchor_lang::AccountDeserialize for CrankCrossMatch {
+        fn try_deserialize(buf: &mut &[u8]) -> anchor_lang::Result<Self> {
+            let given_disc = &buf[..8];
+            if Self::DISCRIMINATOR != given_disc {
+                return Err(anchor_lang::error!(
+                    anchor_lang::error::ErrorCode::AccountDiscriminatorMismatch
+                ));
+            }
+            Self::try_deserialize_unchecked(buf)
+        }
+        fn try_deserialize_unchecked(buf: &mut &[u8]) -> anchor_lang::Result<Self> {
+            let mut data: &[u8] = &buf[8..];
+            AnchorDeserialize::deserialize(&mut data)
+                .map_err(|_| anchor_lang::error::ErrorCode::AccountDidNotDeserialize.into())
+        }
+    }
+    #[repr(C)]
+    #[derive(Copy, Clone, Default, AnchorSerialize, AnchorDeserialize, Serialize, Deserialize)]
+    pub struct CrankTakerOriginCross {
+        pub state: Pubkey,
+        pub authority: Pubkey,
+        pub filler: Pubkey,
+        pub filler_stats: Pubkey,
+        pub taker: Pubkey,
+        pub taker_stats: Pubkey,
+        pub quoter: Pubkey,
+        pub clob_market: Pubkey,
+        pub clob_program: Pubkey,
+        pub quoter_signer: Pubkey,
+        pub crank_conditions: Pubkey,
+    }
+    #[automatically_derived]
+    impl anchor_lang::Discriminator for CrankTakerOriginCross {
+        const DISCRIMINATOR: &[u8] = &[124, 49, 240, 53, 91, 16, 159, 46];
+    }
+    #[automatically_derived]
+    unsafe impl anchor_lang::__private::bytemuck::Pod for CrankTakerOriginCross {}
+    #[automatically_derived]
+    unsafe impl anchor_lang::__private::bytemuck::Zeroable for CrankTakerOriginCross {}
+    #[automatically_derived]
+    impl anchor_lang::ZeroCopy for CrankTakerOriginCross {}
+    #[automatically_derived]
+    impl anchor_lang::InstructionData for CrankTakerOriginCross {}
+    #[automatically_derived]
+    impl ToAccountMetas for CrankTakerOriginCross {
+        fn to_account_metas(&self) -> Vec<AccountMeta> {
+            vec![
+                AccountMeta {
+                    pubkey: self.state,
+                    is_signer: false,
+                    is_writable: false,
+                },
+                AccountMeta {
+                    pubkey: self.authority,
+                    is_signer: false,
+                    is_writable: true,
+                },
+                AccountMeta {
+                    pubkey: self.filler,
+                    is_signer: false,
+                    is_writable: true,
+                },
+                AccountMeta {
+                    pubkey: self.filler_stats,
+                    is_signer: false,
+                    is_writable: true,
+                },
+                AccountMeta {
+                    pubkey: self.taker,
+                    is_signer: false,
+                    is_writable: true,
+                },
+                AccountMeta {
+                    pubkey: self.taker_stats,
+                    is_signer: false,
+                    is_writable: true,
+                },
+                AccountMeta {
+                    pubkey: self.quoter,
+                    is_signer: false,
+                    is_writable: false,
+                },
+                AccountMeta {
+                    pubkey: self.clob_market,
+                    is_signer: false,
+                    is_writable: true,
+                },
+                AccountMeta {
+                    pubkey: self.clob_program,
+                    is_signer: false,
+                    is_writable: false,
+                },
+                AccountMeta {
+                    pubkey: self.quoter_signer,
+                    is_signer: false,
+                    is_writable: false,
+                },
+                AccountMeta {
+                    pubkey: self.crank_conditions,
+                    is_signer: false,
+                    is_writable: true,
+                },
+            ]
+        }
+    }
+    #[automatically_derived]
+    impl anchor_lang::AccountSerialize for CrankTakerOriginCross {
+        fn try_serialize<W: std::io::Write>(&self, writer: &mut W) -> anchor_lang::Result<()> {
+            if writer.write_all(Self::DISCRIMINATOR).is_err() {
+                return Err(anchor_lang::error::ErrorCode::AccountDidNotSerialize.into());
+            }
+            if AnchorSerialize::serialize(self, writer).is_err() {
+                return Err(anchor_lang::error::ErrorCode::AccountDidNotSerialize.into());
+            }
+            Ok(())
+        }
+    }
+    #[automatically_derived]
+    impl anchor_lang::AccountDeserialize for CrankTakerOriginCross {
         fn try_deserialize(buf: &mut &[u8]) -> anchor_lang::Result<Self> {
             let given_disc = &buf[..8];
             if Self::DISCRIMINATOR != given_disc {
@@ -30978,6 +31135,10 @@ pub mod errors {
         SignedRouteMismatch,
         #[msg("A quoter the order's signed route names is absent from the fill")]
         SignedRouteEntryMissing,
+        #[msg("No resolvable taker-origin cross on this book")]
+        NoTakerOriginCross,
+        #[msg("Crossing would leave the taker worse off than its resting price")]
+        TakerOriginCrossWorseForTaker,
     }
 }
 pub mod events {
@@ -31347,6 +31508,24 @@ pub mod events {
         pub out_oracle_price: i64,
         pub in_oracle_price: i64,
         pub fee: u64,
+    }
+    #[derive(Clone, Debug, PartialEq, Default)]
+    #[event]
+    pub struct TakerOriginCrossRecordV0 {
+        pub ts: i64,
+        pub slot: u64,
+        pub market_index: u16,
+        pub taker: Pubkey,
+        pub maker: Pubkey,
+        pub filler: Pubkey,
+        pub base_asset_amount: u64,
+        pub quote_asset_amount: u64,
+        pub rest_price: u64,
+        pub fill_price: u64,
+        pub improvement: u64,
+        pub crank_reward: u64,
+        pub remainder_base_asset_amount: u64,
+        pub remainder_order_id: u64,
     }
     #[derive(Clone, Debug, PartialEq, Default)]
     #[event]

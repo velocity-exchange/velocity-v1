@@ -4943,3 +4943,445 @@ fn fill_v1_migrates_a_restable_remainder_to_the_book() {
         "and rests there as a bid"
     );
 }
+
+// ---------------------------------------------------------------------------
+// Taker-origin crosses: a migrated taker remainder, and the crank that hands
+// it the improvement its auction window earned.
+// ---------------------------------------------------------------------------
+
+/// Pause the vAMM for fills. A place-and-take that finds no liquidity is how
+/// this fixture manufactures a *whole* unfilled remainder to migrate, and an
+/// unpaused curve would fill an aggressive bid on the spot instead.
+fn pause_amm_fill(svm: &mut litesvm::LiteSVM) {
+    use velocity::state::paused_operations::PerpOperation;
+    let mut market: PerpMarket = read_zero_copy(svm, &perp_market_pda(0));
+    market.paused_operations |= PerpOperation::AmmFill as u8;
+    set_zero_copy_account(
+        svm,
+        perp_market_pda(0),
+        PerpMarket::DISCRIMINATOR,
+        &market,
+        PerpMarket::SIZE,
+    );
+}
+
+/// A funded `(User, UserStats)` pair at the real PDAs — where a book node's
+/// `(authority, sub_account_id)` identity resolves to.
+struct Party {
+    authority: Keypair,
+    user: Pubkey,
+    stats: Pubkey,
+}
+
+fn party(svm: &mut litesvm::LiteSVM, deposit: u64) -> Party {
+    let authority = Keypair::new();
+    svm.airdrop(&authority.pubkey(), 10_000_000_000).unwrap();
+    let user = Pubkey::find_program_address(
+        &[
+            b"user",
+            authority.pubkey().as_ref(),
+            0u16.to_le_bytes().as_ref(),
+        ],
+        &velocity_id(),
+    )
+    .0;
+    let stats = Pubkey::find_program_address(
+        &[b"user_stats", authority.pubkey().as_ref()],
+        &velocity_id(),
+    )
+    .0;
+    let mut state = trading_user(&authority.pubkey(), deposit, None);
+    state.next_order_id = 1;
+    set_user_account(svm, user, &state);
+    set_user_stats_account(svm, stats, &authority.pubkey());
+    Party {
+        authority,
+        user,
+        stats,
+    }
+}
+
+/// Rest one `party`'s CLOB order through the velocity adapter (margin gated,
+/// aggregates reserved), immediately matchable.
+fn place_clob_order_for(
+    fixture: &mut Fixture,
+    party: &Party,
+    direction: PositionDirection,
+    price: u64,
+    size: u64,
+) -> ClobOrderRefV0 {
+    let ix = place_clob_order_ix(
+        party.user,
+        &party.authority,
+        fixture.quoter,
+        fixture.clob_market,
+        fixture.oracle,
+        None,
+        PlaceClobOrderParams {
+            market_index: 0,
+            direction,
+            price,
+            base_asset_amount: size,
+            max_ts: 0,
+            activation_delay_slots: Some(0),
+        },
+    );
+    let authority = party.authority.insecure_clone();
+    let meta = send(&mut fixture.svm, &authority, ix, &[]).unwrap();
+    let data = &meta.return_data.data;
+    ClobOrderRefV0 {
+        node_index: u32::from_le_bytes(data[..4].try_into().unwrap()),
+        order_id: u64::from_le_bytes(data[4..12].try_into().unwrap()),
+    }
+}
+
+/// Migrate a whole unfilled limit onto the book as a taker-origin remainder:
+/// `place_and_take_perp_order_v1` with nothing to fill against (empty book,
+/// vAMM paused) is exactly the R1 path a keeper fill takes, and the only way
+/// to get the flag set.
+fn rest_taker_origin_order(
+    fixture: &mut Fixture,
+    party: &Party,
+    direction: PositionDirection,
+    price: u64,
+    size: u64,
+) {
+    use velocity::state::order_params::{OrderParams, PostOnlyParam};
+
+    let (quoter_signer, _) = quoter_signer_pda();
+    let mut accounts = velocity::accounts::PlaceAndTakeV1 {
+        state: state_pda(),
+        user: party.user,
+        user_stats: party.stats,
+        authority: party.authority.pubkey(),
+        quoter: fixture.quoter,
+        clob_market: fixture.clob_market,
+        clob_program: clob_id(),
+        quoter_signer,
+        crank_conditions: None,
+    }
+    .to_account_metas(None);
+    accounts.push(AccountMeta::new_readonly(fixture.oracle, false));
+    accounts.push(AccountMeta::new(spot_market_pda(0), false));
+    accounts.push(AccountMeta::new(perp_market_pda(0), false));
+    // No makers: the remainder is the whole order.
+    accounts.push(AccountMeta::new_readonly(fixture.quoter, false));
+    accounts.push(AccountMeta::new(fixture.clob_market, false));
+    accounts.push(AccountMeta::new_readonly(quoter_signer, false));
+    accounts.push(AccountMeta::new_readonly(clob_id(), false));
+
+    let ix = Instruction {
+        program_id: velocity_id(),
+        accounts,
+        data: velocity::instruction::PlaceAndTakePerpOrderV1 {
+            params: OrderParams {
+                order_type: OrderType::Limit,
+                market_type: MarketType::Perp,
+                direction,
+                base_asset_amount: size,
+                price,
+                market_index: 0,
+                post_only: PostOnlyParam::None,
+                ..OrderParams::default()
+            },
+            success_condition: None,
+        }
+        .data(),
+    };
+    let authority = party.authority.insecure_clone();
+    send_with_ixs(
+        &mut fixture.svm,
+        &authority,
+        &[compute_unit_limit_ix(400_000), ix],
+        &[],
+    )
+    .unwrap();
+}
+
+/// The crank, signed-keeper mode: `filler` is the caller's own `User` and the
+/// crank reward lands there as quote.
+fn crank_taker_origin_cross_ix(
+    fixture: &Fixture,
+    keeper: &Party,
+    taker: &Party,
+    counterparty: &Party,
+) -> Instruction {
+    let (quoter_signer, _) = quoter_signer_pda();
+    let mut accounts = velocity::accounts::CrankTakerOriginCross {
+        state: state_pda(),
+        authority: keeper.authority.pubkey(),
+        filler: keeper.user,
+        filler_stats: keeper.stats,
+        taker: taker.user,
+        taker_stats: taker.stats,
+        quoter: fixture.quoter,
+        clob_market: fixture.clob_market,
+        clob_program: clob_id(),
+        quoter_signer,
+        crank_conditions: None,
+    }
+    .to_account_metas(None);
+    // Maps, then the counterparty's (User, UserStats) pair.
+    accounts.push(AccountMeta::new_readonly(fixture.oracle, false));
+    accounts.push(AccountMeta::new(spot_market_pda(0), false));
+    accounts.push(AccountMeta::new(perp_market_pda(0), false));
+    accounts.push(AccountMeta::new(counterparty.user, false));
+    accounts.push(AccountMeta::new(counterparty.stats, false));
+    Instruction {
+        program_id: velocity_id(),
+        accounts,
+        data: velocity::instruction::CrankTakerOriginCross { market_index: 0 }.data(),
+    }
+}
+
+fn perp_position(svm: &litesvm::LiteSVM, user: &Pubkey) -> velocity::state::user::PerpPosition {
+    let user: User = read_zero_copy(svm, user);
+    user.perp_positions[0]
+}
+
+/// The mechanism, end to end. A taker's unfilled limit bid at 101 migrates to
+/// the book flagged taker-origin; two makers then line up asks at 100 and 99
+/// inside its window. The crank resolves against the **99** — the best price,
+/// not the taker's own — so the improvement goes to the taker and not to
+/// whoever could have taken the remainder at 101. The maker who quoted 100
+/// loses on price rather than on latency, and is untouched until the next
+/// crank walks down to it.
+#[test]
+fn taker_origin_cross_settles_at_the_best_counterpartys_price() {
+    let mut fixture = setup();
+    pause_amm_fill(&mut fixture.svm);
+
+    let taker = party(&mut fixture.svm, 10_000 * SPOT_BALANCE_PRECISION_U64);
+    let best = party(&mut fixture.svm, 10_000 * SPOT_BALANCE_PRECISION_U64);
+    let worse = party(&mut fixture.svm, 10_000 * SPOT_BALANCE_PRECISION_U64);
+    let keeper = party(&mut fixture.svm, 0);
+
+    // The remainder: a whole unfilled unit resting at its limit of 101.
+    rest_taker_origin_order(
+        &mut fixture,
+        &taker,
+        PositionDirection::Long,
+        101 * PRICE,
+        UNIT,
+    );
+    assert_eq!(clob_bid_count(&fixture.svm, &fixture.clob_market), 1);
+    assert_eq!(
+        perp_position(&fixture.svm, &taker.user).open_bids,
+        UNIT as i64,
+        "the remainder's worst case is reserved on the book, not on the DLOB"
+    );
+
+    // Makers line up inside the window: 0.5 at 100, then 0.5 at 99.
+    place_clob_order_for(
+        &mut fixture,
+        &worse,
+        PositionDirection::Short,
+        100 * PRICE,
+        UNIT / 2,
+    );
+    place_clob_order_for(
+        &mut fixture,
+        &best,
+        PositionDirection::Short,
+        99 * PRICE,
+        UNIT / 2,
+    );
+
+    fixture.svm.warp_to_slot(20);
+    set_oracle(
+        &mut fixture.svm,
+        fixture.oracle,
+        (100 * PRICE_PRECISION) as i64,
+        20,
+    );
+
+    let ix = crank_taker_origin_cross_ix(&fixture, &keeper, &taker, &best);
+    let keeper_authority = keeper.authority.insecure_clone();
+    let meta = send_with_ixs(
+        &mut fixture.svm,
+        &keeper_authority,
+        &[compute_unit_limit_ix(400_000), ix],
+        &[],
+    )
+    .unwrap();
+    let logs = meta.logs.join(" ");
+    // Two CLOB CPIs (cancel + execute), the settlement, and the re-placement.
+    // A ceiling rather than an equality, but a tight one: this runs inside a
+    // relay executor's budget alongside its own accounting.
+    assert!(
+        meta.compute_units_consumed < 80_000,
+        "crank cost {} CU",
+        meta.compute_units_consumed
+    );
+    assert!(
+        logs.contains("taker-origin cross: 500000000 base at 99000000 instead of 101000000"),
+        "settled at the counterparty's price, not the resting one: {logs}"
+    );
+
+    // The taker is long half a unit at 99, not at 101. Its quote is the 49.5
+    // notional plus the taker fee plus the cranker's cut — all of which fits
+    // well inside the $1 the 101 rest price would have cost it.
+    let taker_position = perp_position(&fixture.svm, &taker.user);
+    assert_eq!(taker_position.base_asset_amount, (UNIT / 2) as i64);
+    let paid = -taker_position.quote_asset_amount;
+    assert!(
+        (49_500_000..49_600_000).contains(&paid),
+        "paid {paid}: 99 plus fees, where 101 would have been 50_500_000"
+    );
+
+    // The cranker is paid out of the improvement, in quote, on its own `User`.
+    let reward = perp_position(&fixture.svm, &keeper.user).quote_asset_amount;
+    assert_eq!(
+        reward, 4_950,
+        "the ordinary filler reward: 10% of the taker fee on the 99 notional"
+    );
+    let improvement = 1_000_000; // (101 - 99) * 0.5 units
+    assert!(
+        reward < improvement,
+        "reward {reward} must fit inside the {improvement} improvement"
+    );
+    // The invariant, measured: the taker's all-in cost beats what being taken
+    // at its own resting price would have been, fee included.
+    let cost_if_taken = 50_500_000 + 50_500; // 101 * 0.5 plus 10bps
+    assert!(
+        paid < cost_if_taken,
+        "crossing cost {paid}, resting would have cost {cost_if_taken}"
+    );
+
+    // The best-priced maker filled at its own price; the one that quoted 100
+    // is untouched, order and reservation intact.
+    let best_position = perp_position(&fixture.svm, &best.user);
+    assert_eq!(best_position.base_asset_amount, -((UNIT / 2) as i64));
+    assert_eq!(best_position.open_asks, 0, "reservation released");
+    assert_eq!(best_position.open_orders, 0);
+    assert!(
+        best_position.quote_asset_amount >= 49_500_000,
+        "the maker got the 99 it asked for, plus its rebate: {}",
+        best_position.quote_asset_amount
+    );
+    let worse_position = perp_position(&fixture.svm, &worse.user);
+    assert_eq!(worse_position.base_asset_amount, 0, "not filled");
+    assert_eq!(worse_position.open_asks, -((UNIT / 2) as i64));
+    assert_eq!(worse_position.open_orders, 1);
+
+    // The half the counterparty was too small to take went back on the book,
+    // still taker-origin — cancelling it would let a cranker delete a taker's
+    // whole order by crossing one unit of it.
+    assert_eq!(clob_bid_count(&fixture.svm, &fixture.clob_market), 1);
+    assert_eq!(clob_ask_count(&fixture.svm, &fixture.clob_market), 1);
+    assert_eq!(
+        perp_position(&fixture.svm, &taker.user).open_bids,
+        (UNIT / 2) as i64,
+        "the re-placed remainder keeps its reservation"
+    );
+
+    // ---- The second crank walks down to the 100: same order, next best
+    // counterparty, and the taker still beats its 101.
+    let ix = crank_taker_origin_cross_ix(&fixture, &keeper, &taker, &worse);
+    let meta = send_with_ixs(
+        &mut fixture.svm,
+        &keeper_authority,
+        &[compute_unit_limit_ix(400_000), ix],
+        &[],
+    )
+    .unwrap();
+    assert!(
+        meta.logs
+            .join(" ")
+            .contains("taker-origin cross: 500000000 base at 100000000"),
+        "the next-best counterparty prices the second half"
+    );
+    let taker_position = perp_position(&fixture.svm, &taker.user);
+    assert_eq!(taker_position.base_asset_amount, UNIT as i64);
+    assert_eq!(taker_position.open_bids, 0, "nothing left resting");
+    assert_eq!(taker_position.open_orders, 0);
+    assert_eq!(clob_bid_count(&fixture.svm, &fixture.clob_market), 0);
+    assert_eq!(clob_ask_count(&fixture.svm, &fixture.clob_market), 0);
+
+    // Nothing crossed anymore: the crank declines rather than doing something
+    // arbitrary.
+    let ix = crank_taker_origin_cross_ix(&fixture, &keeper, &taker, &worse);
+    let err = send_with_ixs(
+        &mut fixture.svm,
+        &keeper_authority,
+        &[compute_unit_limit_ix(400_000), ix],
+        &[],
+    )
+    .expect_err("no cross left");
+    assert!(
+        err.meta.logs.join(" ").contains("NoTakerOriginCross"),
+        "unexpected: {:?}",
+        err.meta.logs
+    );
+}
+
+/// An improvement too small to fund the cranker's reward still resolves — for
+/// free. Refusing it instead would leave the remainder gated against being
+/// taken with nothing able to clear the gate, which is worse for the taker
+/// than the fill it asked for; and a unit of dust in front of a remainder
+/// would be enough to strand it for its whole life. The cranker is not working
+/// for nothing either way — the market's reservoir pays its lamports, exactly
+/// as it does for every other crank.
+#[test]
+fn a_dust_improvement_resolves_without_paying_the_cranker() {
+    let mut fixture = setup();
+    pause_amm_fill(&mut fixture.svm);
+
+    let taker = party(&mut fixture.svm, 10_000 * SPOT_BALANCE_PRECISION_U64);
+    let maker = party(&mut fixture.svm, 10_000 * SPOT_BALANCE_PRECISION_U64);
+    let keeper = party(&mut fixture.svm, 0);
+
+    rest_taker_origin_order(
+        &mut fixture,
+        &taker,
+        PositionDirection::Long,
+        100 * PRICE,
+        UNIT / 2,
+    );
+    // A fifth of a basis point better, on half a unit: 1_000 quote units of
+    // improvement, against a reward the filler-reward schedule prices at 10%
+    // of the taker fee — about 5_000 on this notional.
+    place_clob_order_for(
+        &mut fixture,
+        &maker,
+        PositionDirection::Short,
+        100 * PRICE - 2_000,
+        UNIT / 2,
+    );
+
+    fixture.svm.warp_to_slot(20);
+    set_oracle(
+        &mut fixture.svm,
+        fixture.oracle,
+        (100 * PRICE_PRECISION) as i64,
+        20,
+    );
+
+    let ix = crank_taker_origin_cross_ix(&fixture, &keeper, &taker, &maker);
+    let keeper_authority = keeper.authority.insecure_clone();
+    send_with_ixs(
+        &mut fixture.svm,
+        &keeper_authority,
+        &[compute_unit_limit_ix(400_000), ix],
+        &[],
+    )
+    .unwrap();
+
+    let taker_position = perp_position(&fixture.svm, &taker.user);
+    assert_eq!(taker_position.base_asset_amount, (UNIT / 2) as i64);
+    assert_eq!(taker_position.open_bids, 0);
+    assert_eq!(taker_position.open_orders, 0, "consumed outright");
+    assert_eq!(
+        perp_position(&fixture.svm, &keeper.user).quote_asset_amount,
+        0,
+        "a reward that does not fit in the improvement is not paid at all"
+    );
+    // The whole dust improvement stayed with the taker: notional at the
+    // counterparty's price plus its own taker fee, nothing else.
+    let paid = -taker_position.quote_asset_amount;
+    assert_eq!(paid, 49_999_000 + 49_999);
+    assert!(
+        paid < 50_000_000 + 50_000,
+        "still cheaper than being taken at the 100 it rested at"
+    );
+}

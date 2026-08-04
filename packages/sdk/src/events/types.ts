@@ -24,6 +24,7 @@ import {
 	ProtocolFeeWithdrawRecord,
 	ProtocolUserWithdrawRecordV0,
 	RevenueShareSettleRecord,
+	TakerOriginCrossRecordV0,
 	TransferFeeAndPnlPoolRecord,
 } from '../types';
 import { EventEmitter } from 'events';
@@ -85,6 +86,7 @@ export const DefaultEventSubscriptionOptions: EventSubscriptionOptions = {
 		'ProtocolFeeWithdrawRecord',
 		'ProtocolUserWithdrawRecordV0',
 		'RevenueShareSettleRecord',
+		'TakerOriginCrossRecordV0',
 		'TransferFeeAndPnlPoolRecord',
 	],
 	maxEventsPerType: 4096,
@@ -179,6 +181,8 @@ export type EventMap = {
 	ProtocolUserWithdrawRecordV0: Event<ProtocolUserWithdrawRecordV0>;
 	/** Builder/referrer fee revenue-share settlement for a market. Fee amounts are quote-token, `QUOTE_PRECISION` (1e6). */
 	RevenueShareSettleRecord: Event<RevenueShareSettleRecord>;
+	/** A taker-origin cross resolved on a CLOB book: the migrated taker remainder settled at the crossing counterparty's price, with the cranker paid out of the improvement. */
+	TakerOriginCrossRecordV0: Event<TakerOriginCrossRecordV0>;
 	/** Internal transfer of quote token between a perp market's fee pool and pnl pool. */
 	TransferFeeAndPnlPoolRecord: Event<TransferFeeAndPnlPoolRecord>;
 };
@@ -216,6 +220,7 @@ export type VelocityEvent =
 	| Event<ProtocolFeeWithdrawRecord>
 	| Event<ProtocolUserWithdrawRecordV0>
 	| Event<RevenueShareSettleRecord>
+	| Event<TakerOriginCrossRecordV0>
 	| Event<TransferFeeAndPnlPoolRecord>
 	| Event<CuUsage>;
 

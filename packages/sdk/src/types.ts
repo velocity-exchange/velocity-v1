@@ -2509,6 +2509,45 @@ export type ProtocolUserWithdrawRecordV0 = {
 	recipientTokenAccount: PublicKey;
 };
 
+/**
+ * Emitted when `crankTakerOriginCross` resolves a taker-origin cross on a CLOB
+ * book: what the taker gained by settling at the counterparty's price instead
+ * of its own, and what the cranker took out of that.
+ *
+ * The match also emits the ordinary `OrderActionRecord`. This record carries
+ * what that one structurally cannot: the price the order was *resting* at, the
+ * improvement between the two prices, and the crank reward — which is charged
+ * to the taker out of the improvement rather than carved out of the taker fee,
+ * so it never appears as that record's `fillerReward`.
+ */
+export type TakerOriginCrossRecordV0 = {
+	ts: BN;
+	slot: BN;
+	marketIndex: number;
+	/** owner of the taker-origin order — the aggressor of this match */
+	taker: PublicKey;
+	/** the resting counterparty, filled at its own price */
+	maker: PublicKey;
+	/** the cranker's `User`, credited `crankReward` in quote */
+	filler: PublicKey;
+	/** BASE_PRECISION (1e9) */
+	baseAssetAmount: BN;
+	/** QUOTE_PRECISION (1e6) */
+	quoteAssetAmount: BN;
+	/** PRICE_PRECISION (1e6) — the price the taker-origin order was resting at */
+	restPrice: BN;
+	/** PRICE_PRECISION (1e6) — the counterparty's price, what the match settled at */
+	fillPrice: BN;
+	/** QUOTE_PRECISION (1e6) — gross quote the taker gained: |restPrice − fillPrice| × base */
+	improvement: BN;
+	/** QUOTE_PRECISION (1e6) — quote paid to the cranker out of that improvement */
+	crankReward: BN;
+	/** size the counterparty was too small to consume, put back on the book still taker-origin (0 when the cross consumed the order outright, or the leftover was below the book's minimum and was dropped) */
+	remainderBaseAssetAmount: BN;
+	/** the re-placed remainder's new CLOB order id (0 when nothing was re-placed) — the old handle is stale, this is the client's new one */
+	remainderOrderId: BN;
+};
+
 /** Emitted when a builder's/referrer's accrued `RevenueShareOrder` fees are settled into their `RevenueShareAccount`. */
 export type RevenueShareSettleRecord = {
 	ts: BN;

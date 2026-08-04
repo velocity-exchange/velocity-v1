@@ -1,6 +1,7 @@
 use {
     crate::{
-        error::VelocityResult,
+        controller::position::PositionDirection,
+        error::{ErrorCode, VelocityResult},
         math::{
             casting::Cast,
             constants::{
@@ -406,6 +407,135 @@ pub fn calculate_fee_for_fulfillment_with_match(
         protocol_fee,
         if_fee,
         amm_fee,
+    })
+}
+
+/// What resolving one taker-origin cross is worth, and what the cranker takes
+/// out of it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct TakerOriginCrossFee {
+    /// Gross quote the taker gains by trading at the counterparty's price
+    /// instead of the price it was resting at: `|rest − counterparty| × base`,
+    /// expressed as the difference of the two notionals.
+    pub improvement: u64,
+    /// The improvement net of the difference in taker fee between the two
+    /// notionals — what the taker is actually better off by, and therefore all
+    /// the reward can be drawn from. Zero when the two are a wash.
+    pub budget: u64,
+    /// Paid to the cranker in quote, out of `budget`.
+    pub crank_reward: u64,
+}
+
+impl TakerOriginCrossFee {
+    /// What the taker keeps: the whole budget when the cross resolves for
+    /// free, the rest of it when the cranker is paid. Never negative — that is
+    /// the R5 invariant, and it is why this is a subtraction and not a
+    /// `saturating_sub`.
+    pub fn taker_surplus(&self) -> VelocityResult<u64> {
+        self.budget.safe_sub(self.crank_reward)
+    }
+}
+
+/// R5: size the cranker's reward for resolving a taker-origin cross.
+///
+/// The reward is an ordinary filler reward — same
+/// [`calculate_filler_reward`] sizing every fill pays, off the taker fee this
+/// fill charges and the age of the resting order — but it is charged to the
+/// taker rather than carved out of the taker fee, because the thing it is
+/// buying belongs to the taker: the difference between the counterparty's
+/// price and the price the order was resting at. Widening the taker fee on
+/// this path instead would couple the crank's cost to the protocol fee
+/// schedule, which changes for unrelated reasons.
+///
+/// The reward is paid **in full or not at all**, never shaved to fit: the
+/// cranker's revenue stays predictable, and the taker never funds a keeper
+/// subsidy out of a gain that could not cover one. So the cap is a threshold —
+/// an improvement that does not strictly exceed the reward resolves the cross
+/// for *free* instead of paying a reduced one.
+///
+/// **A cross whose improvement cannot cover a reward is still resolved.** The
+/// alternative — refusing it, as "only fires when the improvement exceeds the
+/// fee" reads on its own — leaves the order gated against being taken with
+/// nothing able to clear the gate, which is strictly worse for the taker than
+/// the fill it asked for; and one unit of dust improvement in front of a
+/// remainder would be enough to strand it for its whole life. The cranker is
+/// not working for nothing either way: its lamport cost is covered by the
+/// market's reservoir, the same as every other crank's. The zero-improvement
+/// cross — counterparty price equal to the rest price — is the same case and
+/// the same answer: resolve it, pay nothing, the taker gets the fill it wanted
+/// at a price it had already accepted.
+///
+/// `budget` is the improvement net of the *fee* difference, not the gross
+/// improvement, because the two notionals carry different taker fees. Selling
+/// at a better price means a bigger notional and a bigger fee. A cross whose
+/// improvement is smaller than that extra fee would leave the taker worse off
+/// than resting, and that — the invariant's one hard edge — is refused with
+/// [`ErrorCode::TakerOriginCrossWorseForTaker`]. It takes a taker fee above
+/// 100% to reach: the extra fee is `rate × improvement`, so any schedule
+/// charging less than the whole trade leaves a non-negative budget.
+///
+/// `rest_quote` is the notional at the price the taker-origin order was
+/// resting at, `counterparty_quote` the notional at the counterparty's price
+/// (what the match settles at), and `order_slot` the slot the taker-origin
+/// order was placed — its age drives the time-based half of the reward, as an
+/// `Order.slot` does on the DLOB.
+#[allow(clippy::too_many_arguments)]
+pub fn calculate_taker_origin_cross_fee(
+    taker_direction: PositionDirection,
+    rest_quote: u64,
+    counterparty_quote: u64,
+    fee_tier: &FeeTier,
+    fee_adjustment: i16,
+    order_slot: u64,
+    clock_slot: u64,
+    filler_multiplier: u64,
+    filler_reward_structure: &OrderFillerRewardStructure,
+) -> VelocityResult<TakerOriginCrossFee> {
+    let fee_at_rest = calculate_taker_fee(rest_quote, fee_tier, fee_adjustment)?;
+    let fee_at_cross = calculate_taker_fee(counterparty_quote, fee_tier, fee_adjustment)?;
+    // Buying: the taker pays the smaller notional. Selling: it receives the
+    // bigger one. Either way the taker's cost improves by this much, before
+    // fees.
+    let improvement = match taker_direction {
+        PositionDirection::Long => rest_quote.saturating_sub(counterparty_quote),
+        PositionDirection::Short => counterparty_quote.saturating_sub(rest_quote),
+    };
+    // The invariant, as arithmetic: crossing must not cost the taker more than
+    // resting did. `improvement + fee_at_rest` is what it saves,
+    // `fee_at_cross` what it now owes.
+    let budget = improvement
+        .cast::<i128>()?
+        .safe_add(fee_at_rest.cast::<i128>()?)?
+        .safe_sub(fee_at_cross.cast::<i128>()?)?;
+    if budget < 0 {
+        msg!(
+            "taker-origin cross improves {} but costs {} more in taker fee; leaving it resting",
+            improvement,
+            fee_at_cross.saturating_sub(fee_at_rest)
+        );
+        return Err(ErrorCode::TakerOriginCrossWorseForTaker);
+    }
+    let budget = budget.cast::<u64>()?;
+
+    let uncapped = if filler_multiplier == 0 {
+        0
+    } else {
+        calculate_filler_reward(
+            fee_at_cross,
+            order_slot,
+            clock_slot,
+            filler_multiplier,
+            filler_reward_structure,
+            0,
+        )?
+    };
+    Ok(TakerOriginCrossFee {
+        improvement,
+        budget,
+        // Strictly less, so the taker keeps something whenever the cranker is
+        // paid at all: its net then *beats* the resting price rather than
+        // merely matching it.
+        crank_reward: if uncapped < budget { uncapped } else { 0 },
     })
 }
 

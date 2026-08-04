@@ -4584,6 +4584,450 @@ pub fn cross_match(
     Ok((base_matched, surplus.cast()?))
 }
 
+/// The oracle pre-flight and R5 pricing of one taker-origin cross, before any
+/// of it is committed.
+///
+/// Split from [`settle_taker_origin_cross`] because it must run *before* the
+/// CLOB calls that consume the pair: the cross is refused outright when
+/// crossing would leave the taker worse off than the price it was resting at,
+/// and a refusal has to leave the book untouched. Same oracle gates the fill
+/// path applies (`FillOrderMatch` validity, price band, staleness) — the
+/// reward's size-vs-oracle multiplier is derived from the price, so it is a
+/// value transfer driven by an oracle read and gated like one.
+///
+/// Returns the fee split, the mm-oracle price the settlement values fills
+/// against, whether the oracle is stale for margin, and the market's open
+/// interest before the fill — the last three being what
+/// [`settle_taker_origin_cross`] needs to run the shared post-fill checks.
+///
+/// `rest_price` is the price the taker-origin order rests at,
+/// `counterparty_price` the price the match will settle at, and `order_slot`
+/// the slot the taker-origin order was placed on the book.
+#[allow(clippy::too_many_arguments)]
+pub fn price_taker_origin_cross(
+    state: &State,
+    market_index: u16,
+    taker_direction: PositionDirection,
+    rest_price: u64,
+    counterparty_price: u64,
+    base_asset_amount: u64,
+    order_slot: u64,
+    taker_stats: &UserStats,
+    perp_market_map: &PerpMarketMap,
+    oracle_map: &mut OracleMap,
+    clock: &Clock,
+) -> VelocityResult<(fees::TakerOriginCrossFee, i64, bool, u128)> {
+    let (oracle_price, oracle_stale_for_margin, perp_market_oi_before, fee_adjustment) = {
+        let market = &mut perp_market_map.get_ref_mut(&market_index)?;
+        validation::perp_market::validate_perp_market(market)?;
+        validate!(
+            !market.is_in_settlement(clock.unix_timestamp),
+            ErrorCode::MarketFillOrderPaused,
+            "Market is in settlement mode",
+        )?;
+        validate!(
+            !market.is_operation_paused(PerpOperation::Fill),
+            ErrorCode::MarketFillOrderPaused,
+            "Market fills paused",
+        )?;
+
+        let oracle_price_data = oracle_map.get_price_data(&market.oracle_id())?;
+        let mm_oracle_price_data = market.get_mm_oracle_price_data(
+            *oracle_price_data,
+            clock.slot,
+            &state.oracle_guard_rails.validity,
+        )?;
+        let safe_oracle_price_data = mm_oracle_price_data.get_safe_oracle_price_data();
+        let safe_oracle_validity = oracle::oracle_validity(
+            MarketType::Perp,
+            market.market_index,
+            market
+                .market_stats
+                .historical_oracle_data
+                .last_oracle_price_twap,
+            &safe_oracle_price_data,
+            &state.oracle_guard_rails.validity,
+            market.get_max_confidence_interval_multiplier()?,
+            &market.oracle_source,
+            oracle::LogMode::SafeMMOracle,
+            market.oracle_slot_delay_override,
+            market.oracle_low_risk_slot_delay_override,
+        )?;
+        validate!(
+            is_oracle_valid_for_action(safe_oracle_validity, Some(VelocityAction::FillOrderMatch))?,
+            ErrorCode::InvalidOracle,
+            "oracle not valid for taker-origin cross"
+        )?;
+        let oracle_price = mm_oracle_price_data.get_price();
+        validate_market_within_price_band(market, state, oracle_price)?;
+        (
+            oracle_price,
+            mm_oracle_price_data.get_delay()
+                > state
+                    .oracle_guard_rails
+                    .validity
+                    .slots_before_stale_for_margin,
+            market.get_open_interest(),
+            market.fee_adjustment,
+        )
+    };
+
+    // Both notionals at the CLOB's own rounding (floor of price × base), so
+    // the improvement is measured in the same units the fill will settle in.
+    let notional = |price: u64| -> VelocityResult<u64> {
+        price
+            .cast::<u128>()?
+            .safe_mul(base_asset_amount.cast()?)?
+            .safe_div(BASE_PRECISION_U64.cast()?)?
+            .cast::<u64>()
+    };
+    let fee = fees::calculate_taker_origin_cross_fee(
+        taker_direction,
+        notional(rest_price)?,
+        notional(counterparty_price)?,
+        &fees::determine_user_fee_tier(taker_stats, &state.perp_fee_structure, &MarketType::Perp)?,
+        fee_adjustment,
+        order_slot,
+        clock.slot,
+        calculate_filler_multiplier_for_matched_orders(
+            counterparty_price,
+            taker_direction.opposite(),
+            oracle_price,
+        )?,
+        &state.perp_fee_structure.filler_reward_structure,
+    )?;
+    Ok((
+        fee,
+        oracle_price,
+        oracle_stale_for_margin,
+        perp_market_oi_before,
+    ))
+}
+
+/// What one resolved taker-origin cross settled to.
+#[derive(Clone, Copy, Debug)]
+pub struct TakerOriginCrossFill {
+    pub base_filled: u64,
+    pub quote_filled: u64,
+    /// Quote moved from the taker to the filler out of the improvement.
+    pub crank_reward: u64,
+    /// The counterparty the response named, resolved against the loaded users.
+    pub maker: Pubkey,
+}
+
+/// Settle a resolved taker-origin cross as an ordinary two-user match at the
+/// counterparty's price.
+///
+/// This is R3: the taker-origin order demanded liquidity, so the counterparty
+/// keeps its own price and the taker captures the whole difference. Nothing
+/// reprices anything here — the CLOB filled the counterparty at its stored
+/// price and the response's `(base, quote)` *is* that price, so settling the
+/// pair against it is all it takes.
+///
+/// Unlike [`cross_match`] there is no protocol pass-through: no ephemeral
+/// protocol taker, no second leg, no surplus landing in the protocol `User`,
+/// and no `min_cross_surplus` floor. Both sides of this match are real users
+/// with real exposure, and the improvement is the taker's, not the protocol's
+/// — the only cut taken out of it is the cranker's reward (R5, priced by
+/// [`price_taker_origin_cross`]), paid in quote from the taker to the filler
+/// the way every keeper reward on a perp is.
+///
+/// The taker's order lives on the book rather than in `User.orders`, so a free
+/// order slot is reconstructed from the removal the CLOB reported (direction,
+/// price, size, placement slot) for the settlement to read, and cleared before
+/// return. That is not a fabrication like `cross_match`'s ephemeral order: the
+/// taker really does have this order, it is just stored on the book.
+///
+/// `removed` is the taker-origin order as the CLOB reported it on removal —
+/// the authority on which side was the aggressor, not velocity's book read —
+/// and `order_slot` the slot it was placed. `response` is the counterparty
+/// leg's execute response and `subjects` the resting run velocity read off the
+/// book before that CPI ran (the quote the response is held to).
+#[allow(clippy::too_many_arguments)]
+pub fn settle_taker_origin_cross(
+    state: &State,
+    market_index: u16,
+    removed: &crate::state::prop_amm::ClobRemovedOrderV0,
+    order_slot: u64,
+    response: &crate::state::prop_amm::ExecuteResponseV0,
+    subjects: &crate::state::prop_amm::QuoterSubjects,
+    fee: &fees::TakerOriginCrossFee,
+    oracle_price: i64,
+    oracle_stale_for_margin: bool,
+    perp_market_oi_before: u128,
+    taker_loader: &AccountLoader<User>,
+    taker_stats_loader: &AccountLoader<UserStats>,
+    filler_loader: &AccountLoader<User>,
+    filler_stats_loader: &AccountLoader<UserStats>,
+    makers_and_referrer: &UserMap,
+    makers_and_referrer_stats: &UserStatsMap,
+    perp_market_map: &PerpMarketMap,
+    spot_market_map: &SpotMarketMap,
+    oracle_map: &mut OracleMap,
+    clock: &Clock,
+) -> VelocityResult<TakerOriginCrossFill> {
+    let now = clock.unix_timestamp;
+    let slot = clock.slot;
+    let taker_key = taker_loader.key();
+    let filler_key = filler_loader.key();
+    let taker_direction = removed.side.to_position_direction();
+    let maker_direction = taker_direction.opposite();
+
+    // One counterparty, one balance change: the crank sizes the match at the
+    // counterparty's own remaining size, so a response naming anyone else — or
+    // splitting across orders — is not the cross that was priced.
+    let changes: Vec<&crate::state::prop_amm::UserBalanceChange> = response
+        .balance_changes
+        .iter()
+        .filter(|change| change.base_size > 0)
+        .collect();
+    validate!(
+        changes.len() == 1,
+        ErrorCode::InvalidQuoterResponse,
+        "taker-origin cross expects one counterparty fill, got {}",
+        changes.len()
+    )?;
+    let change = changes[0];
+    let taker_ref = {
+        let taker = load!(taker_loader)?;
+        crate::state::prop_amm::ClobUserRefV0 {
+            authority: taker.authority,
+            sub_account_id: taker.sub_account_id,
+        }
+    };
+    let maker_key = *makers_and_referrer
+        .user_ref_index()?
+        .get(&(change.user.authority, change.user.sub_account_id))
+        .ok_or_else(|| {
+            msg!(
+                "counterparty {}/{} is not loaded",
+                change.user.authority,
+                change.user.sub_account_id
+            );
+            ErrorCode::UserNotFound
+        })?;
+    validate!(
+        subjects.permits(&change.user, &maker_key, &taker_ref),
+        ErrorCode::QuoterSubjectNotPermitted,
+        "the book may not fill user {} for this cross",
+        maker_key
+    )?;
+    // Hold the fill to the run velocity read off the book before the CPI —
+    // the same binding the router fill and the cross crank apply, and what
+    // makes "the counterparty's price" a fact rather than the book's claim.
+    let levels = subjects.as_levels().ok_or_else(|| {
+        msg!("taker-origin cross needs a readable book");
+        ErrorCode::InvalidQuoterResponse
+    })?;
+    let quoted = crate::math::router::quoted_prefix(&levels, 1, change.base_size)?;
+    validate!(
+        crate::math::router::validate_executed_notional(
+            &quoted,
+            change.base_size,
+            change.quote_size
+        )?,
+        ErrorCode::QuoterFillOffQuote,
+        "counterparty filled {}/{} outside the book it rested on ({}..{})",
+        change.quote_size,
+        change.base_size,
+        quoted.best_price,
+        quoted.worst_price
+    )?;
+
+    // Funding stamps first: `update_position_and_market` requires both
+    // positions' `last_cumulative_funding_rate` to match the market's.
+    let taker = &mut load_mut!(taker_loader)?;
+    let mut taker_stats = load_mut!(taker_stats_loader)?;
+    let mut maker = makers_and_referrer.get_ref_mut(&maker_key)?;
+    let mut market = perp_market_map.get_ref_mut(&market_index)?;
+    settle_funding_payment(taker, &taker_key, market.deref_mut(), now)?;
+    settle_funding_payment(&mut maker, &maker_key, market.deref_mut(), now)?;
+
+    let taker_position_index = get_position_index(&taker.perp_positions, market_index)
+        .or_else(|_| add_new_position(&mut taker.perp_positions, market_index))?;
+    let taker_existing_position_params_before = taker.perp_positions[taker_position_index]
+        .get_existing_position_params_for_order_action(taker_direction);
+    // Which margin requirement the taker is held to afterwards, decided before
+    // its position moves: a cross that reduces an existing position is
+    // measured against maintenance, as on any other fill.
+    let taker_position_decreasing = is_order_position_reducing(
+        &taker_direction,
+        removed.base_asset_amount,
+        taker.perp_positions[taker_position_index]
+            .base_asset_amount
+            .cast()?,
+    )?;
+
+    // The taker's order, reconstructed from the book's own record of it. The
+    // CLOB's order id is wider than a velocity one; narrowing it keeps the
+    // fill record pointing at the book's order (ids are sequential per book)
+    // and the full-width id rides `TakerOriginCrossRecordV0`.
+    let taker_order_index = taker
+        .orders
+        .iter()
+        .position(|order| order.is_available())
+        .ok_or(ErrorCode::MaxNumberOfOrders)?;
+    taker.orders[taker_order_index] = Order {
+        slot: order_slot,
+        order_id: removed.order_id as u32,
+        market_index,
+        status: OrderStatus::Open,
+        order_type: OrderType::Limit,
+        market_type: MarketType::Perp,
+        direction: taker_direction,
+        base_asset_amount: removed.base_asset_amount,
+        price: removed.price,
+        existing_position_direction: taker_direction,
+        ..Order::default()
+    };
+
+    let mut maker_stats = if maker.authority == taker.authority {
+        None
+    } else {
+        Some(makers_and_referrer_stats.get_ref_mut(&maker.authority)?)
+    };
+    // No filler on the settlement itself: the cranker's reward comes out of
+    // the improvement below, not out of the taker fee, so the fee schedule
+    // splits exactly as it would on any other fill. No escrow either — a
+    // builder/referrer accrual belongs to the order the taker signed, which
+    // was settled when the remainder migrated.
+    let mut none_filler: Option<&mut User> = None;
+    let mut none_filler_stats: Option<&mut UserStats> = None;
+    let mut no_escrow: Option<&mut RevenueShareEscrowZeroCopyMut> = None;
+    let mut filler_reward_paid = 0u64;
+    let (base_filled, quote_filled) = settle_external_match_fill(
+        change.base_size,
+        change.quote_size,
+        market.deref_mut(),
+        taker,
+        &mut taker_stats,
+        taker_position_index,
+        taker_order_index,
+        &taker_key,
+        taker_direction,
+        taker_existing_position_params_before,
+        &mut maker,
+        maker_stats.as_deref_mut(),
+        &maker_key,
+        true,
+        // The price the order was resting at is the taker's own limit, so the
+        // fill has to be at-or-better than it — the cross is only allowed to
+        // improve on the rest price, never to walk away from it.
+        Some(removed.price),
+        oracle_price,
+        &mut none_filler,
+        &mut none_filler_stats,
+        &filler_key,
+        &mut no_escrow,
+        &state.perp_fee_structure,
+        oracle_map,
+        false,
+        now,
+        slot,
+        &mut filler_reward_paid,
+    )?;
+    // The reconstructed order never outlives the match.
+    taker.orders[taker_order_index] = Order::default();
+
+    // The counterparty's own book bookkeeping: orders the fill consumed
+    // outright, and a sub-min remainder the book culled with it.
+    let maker_position_index = get_position_index(&maker.perp_positions, market_index)?;
+    let mut maker_fills: BTreeMap<Pubkey, (i64, bool)> = BTreeMap::new();
+    update_maker_fills_map(
+        &mut maker_fills,
+        &maker_key,
+        maker_direction,
+        base_filled,
+        maker.perp_positions[maker_position_index].is_isolated(),
+    )?;
+    maker.perp_positions[maker_position_index].open_orders = maker.perp_positions
+        [maker_position_index]
+        .open_orders
+        .saturating_sub(change.completed_order_ids.len().cast()?);
+    for clob_order_id in &change.completed_order_ids {
+        maker.decrement_open_orders(false);
+        maker.release_placed_trigger_slot(market_index, *clob_order_id, OrderStatus::Filled);
+    }
+    for cancelled in &response.cancelled {
+        validate!(
+            cancelled.user == change.user,
+            ErrorCode::QuoterSubjectNotPermitted,
+            "the book may not cancel for a user this cross did not fill"
+        )?;
+        decrease_open_bids_and_asks(
+            &mut maker.perp_positions[maker_position_index],
+            &maker_direction,
+            cancelled.base_asset_amount,
+            true,
+        )?;
+        maker.perp_positions[maker_position_index].open_orders = maker.perp_positions
+            [maker_position_index]
+            .open_orders
+            .saturating_sub(1);
+        maker.decrement_open_orders(false);
+        maker.release_placed_trigger_slot(market_index, cancelled.order_id, OrderStatus::Canceled);
+    }
+
+    // R5: the cranker's cut of the improvement, in quote, taker → filler —
+    // the same quote-for-work transfer the flat keeper rewards make, sized by
+    // the improvement instead of by a flat fee. Paid before the margin checks
+    // so the taker is measured net of it.
+    let crank_reward = if fee.crank_reward > 0 {
+        let mut filler = load_mut!(filler_loader)?;
+        let paid = pay_keeper_flat_reward_for_perps(
+            taker,
+            Some(&mut filler),
+            market.deref_mut(),
+            fee.crank_reward,
+            slot,
+        )?;
+        // A filler with no room for a position in this market reports zero
+        // *after* debiting the taker, so the reward would leave the taker and
+        // land nowhere. Revert instead: the cranker can pass a `User` that can
+        // hold the position.
+        validate!(
+            paid == fee.crank_reward,
+            ErrorCode::DefaultError,
+            "cranker's User cannot hold a position in market {} to be paid in",
+            market_index
+        )?;
+        load_mut!(filler_stats_loader)?.update_filler_volume(quote_filled, now)?;
+        paid
+    } else {
+        0
+    };
+    taker.update_last_active_slot(slot);
+    drop(market);
+    drop(maker_stats);
+    drop(maker);
+
+    fulfill_perp_order_post_checks(
+        taker,
+        &taker_stats,
+        makers_and_referrer,
+        makers_and_referrer_stats,
+        spot_market_map,
+        perp_market_map,
+        oracle_map,
+        market_index,
+        base_filled,
+        quote_filled,
+        &maker_fills,
+        taker_position_decreasing,
+        taker.perp_positions[taker_position_index].is_isolated(),
+        perp_market_oi_before,
+        oracle_stale_for_margin,
+        false,
+    )?;
+
+    Ok(TakerOriginCrossFill {
+        base_filled,
+        quote_filled,
+        crank_reward,
+        maker: maker_key,
+    })
+}
+
 pub fn trigger_order(
     order_id: u32,
     state: &State,

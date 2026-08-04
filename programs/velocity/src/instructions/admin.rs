@@ -27,6 +27,7 @@ use {
                 SPOT_CUMULATIVE_INTEREST_PRECISION, SPOT_IMF_PRECISION, SPOT_WEIGHT_PRECISION,
                 THIRTEEN_DAY, TWENTY_FOUR_HOUR,
             },
+            margin::calculate_user_equity,
             orders::is_multiple_of_step_size,
             safe_math::SafeMath,
             spot_balance::get_token_amount,
@@ -65,6 +66,7 @@ use {
             },
             traits::Size,
             user::{MarketType, SpecialUserStatus, User, UserStats},
+            user_map::load_user_map,
         },
         validate,
         validation::{
@@ -3801,8 +3803,86 @@ pub fn handle_update_special_user_status(
 /// Clears the authority-wide equity breaker set by the permissionless
 /// `trip_equity_floor_breaker`. Warm admin only; intended to be called after
 /// a human has reviewed why the breaker fired.
-pub fn handle_reset_equity_floor_breaker(ctx: Context<ResetEquityFloorBreaker>) -> Result<()> {
+///
+/// The clear is self-verifying at execution time: `remaining_accounts` must
+/// carry every live subaccount of the authority (count pinned by
+/// `UserStats.number_of_sub_accounts`, so none can be omitted or passed
+/// twice) followed by the markets and oracles their positions reference, and
+/// every floored subaccount must show net equity at or above its
+/// floor + buffer with all oracles valid. An approval that has gone stale
+/// (a subaccount drifted back into breach after review) therefore fails
+/// instead of unfreezing a breached authority. The escape hatch when
+/// resumption is the business decision anyway is `update_user_equity_floor`:
+/// lower the floors first, explicitly and auditably.
+pub fn handle_reset_equity_floor_breaker<'c: 'info, 'info>(
+    ctx: Context<'info, ResetEquityFloorBreaker<'info>>,
+) -> Result<()> {
+    let state = ctx.accounts.state.load()?;
     let mut user_stats = load_mut!(ctx.accounts.user_stats)?;
+
+    let remaining_accounts_iter = &mut ctx.remaining_accounts.iter().peekable();
+    let user_map = load_user_map(remaining_accounts_iter, false)?;
+    let AccountMaps {
+        perp_market_map,
+        spot_market_map,
+        mut oracle_map,
+    } = load_maps(
+        remaining_accounts_iter,
+        &MarketSet::new(),
+        &MarketSet::new(),
+        Clock::get()?.slot,
+        Some(state.oracle_guard_rails),
+    )?;
+
+    // Completeness: exactly the authority's live subaccounts. The map is
+    // keyed by pubkey (a duplicate collapses and fails the count), every
+    // entry must belong to the authority, and distinct same-authority user
+    // accounts are distinct subaccounts (PDA uniqueness), so no subaccount
+    // can be omitted or counted twice.
+    validate!(
+        user_map.0.len() == user_stats.number_of_sub_accounts as usize,
+        ErrorCode::InvalidEquityBreakerReset,
+        "expected all {} subaccounts of the authority, got {}",
+        user_stats.number_of_sub_accounts,
+        user_map.0.len()
+    )?;
+
+    for user_account_loader in user_map.0.values() {
+        let user = user_account_loader.load()?;
+
+        validate!(
+            user.authority == user_stats.authority,
+            ErrorCode::InvalidEquityBreakerReset,
+            "subaccount {} does not belong to authority {}",
+            user.sub_account_id,
+            user_stats.authority
+        )?;
+
+        if user.equity_floor == 0 {
+            continue;
+        }
+
+        let (net_equity, all_oracles_valid) =
+            calculate_user_equity(&user, &perp_market_map, &spot_market_map, &mut oracle_map)?;
+
+        // An unfreeze must not be granted off an invalid price, mirroring
+        // the trip's own oracle-validity requirement.
+        validate!(
+            all_oracles_valid,
+            ErrorCode::InvalidOracle,
+            "cannot reset equity floor breaker with an invalid oracle"
+        )?;
+
+        validate!(
+            !user.is_below_buffered_equity_floor(net_equity),
+            ErrorCode::InvalidEquityBreakerReset,
+            "subaccount {} net equity {} below equity floor {} + buffer {}",
+            user.sub_account_id,
+            net_equity,
+            user.equity_floor,
+            user.equity_floor_buffer
+        )?;
+    }
 
     msg!(
         "equity floor breaker reset for authority {:?}",

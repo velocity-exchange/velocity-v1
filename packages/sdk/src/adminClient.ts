@@ -42,6 +42,7 @@ import {
 	TransferFeeAndPnlPoolDirection,
 	MarketType,
 	SpotMarketAccount,
+	UserAccount,
 } from './types';
 import { DEFAULT_MARKET_NAME, encodeName } from './userName';
 import { BN } from './isomorphic/anchor';
@@ -54,6 +55,7 @@ import {
 	getInsuranceFundVaultPublicKey,
 	getPrelaunchOraclePublicKey,
 	getUserStatsAccountPublicKey,
+	getUserAccountPublicKeySync,
 	getPythLazerOraclePublicKey,
 	getTokenProgramForSpotMarket,
 	getLpPoolPublicKey,
@@ -7358,6 +7360,7 @@ export class AdminClient extends VelocityClient {
 				inputMint: inMarket.mint,
 				outputMint: outMarket.mint,
 				amount,
+				userPublicKey: this.provider.wallet.publicKey,
 				slippageBps,
 				swapMode,
 				onlyDirectRoutes,
@@ -8202,15 +8205,27 @@ export class AdminClient extends VelocityClient {
 	 * `tripEquityFloorBreaker` keeper instruction, unfreezing all of the
 	 * authority's subaccounts. Requires warm admin (`check_warm`); intended to
 	 * be called after a human has reviewed why the breaker fired.
+	 *
+	 * The clear is self-verifying onchain: the instruction carries every live
+	 * subaccount of the authority (fetched here, count pinned onchain by
+	 * `UserStats.numberOfSubAccounts`) plus their markets and oracles, and
+	 * reverts with `InvalidEquityBreakerReset` unless every floored subaccount
+	 * clears its floor + buffer at execution time. To resume a maker whose
+	 * equity does not clear the floors anyway, lower the floors first with
+	 * `updateUserEquityFloor`.
 	 * @param userStatsPublicKey - `UserStats` PDA of the authority to unfreeze.
 	 * @param txParams - Optional transaction-building overrides.
 	 * @returns Transaction signature.
 	 */
 	public async resetEquityFloorBreaker(
 		userStatsPublicKey: PublicKey,
-		txParams?: TxParams
+		txParams?: TxParams,
+		userAccounts?: UserAccount[]
 	): Promise<TransactionSignature> {
-		const ix = await this.getResetEquityFloorBreakerIx(userStatsPublicKey);
+		const ix = await this.getResetEquityFloorBreakerIx(
+			userStatsPublicKey,
+			userAccounts
+		);
 		const tx = await this.buildTransaction(ix, txParams);
 		const { txSig } = await this.sendTransaction(tx, [], this.opts);
 		return txSig;
@@ -8219,11 +8234,37 @@ export class AdminClient extends VelocityClient {
 	/**
 	 * Builds the `resetEquityFloorBreaker` instruction without sending it. See
 	 * `resetEquityFloorBreaker`.
+	 * @param userAccounts - The authority's live subaccounts; fetched via
+	 * `getUserAccountsForAuthority` when omitted (pass them on connections
+	 * without `getProgramAccounts` support).
 	 * @returns The unsigned `resetEquityFloorBreaker` instruction.
 	 */
 	public async getResetEquityFloorBreakerIx(
-		userStatsPublicKey: PublicKey
+		userStatsPublicKey: PublicKey,
+		userAccounts?: UserAccount[]
 	): Promise<TransactionInstruction> {
+		if (!userAccounts) {
+			const userStats = await (this.program.account as any).userStats.fetch(
+				userStatsPublicKey
+			);
+			userAccounts = await this.getUserAccountsForAuthority(
+				userStats.authority
+			);
+		}
+
+		// subaccounts first (the program consumes user accounts off the front
+		// of remaining accounts by discriminator), then their markets/oracles
+		const remainingAccounts = userAccounts.map((userAccount) => ({
+			pubkey: getUserAccountPublicKeySync(
+				this.program.programId,
+				userAccount.authority,
+				userAccount.subAccountId
+			),
+			isWritable: false,
+			isSigner: false,
+		}));
+		remainingAccounts.push(...this.getRemainingAccounts({ userAccounts }));
+
 		return this.program.instruction.resetEquityFloorBreaker({
 			accounts: {
 				admin: this.useHotWalletAdmin
@@ -8232,6 +8273,7 @@ export class AdminClient extends VelocityClient {
 				state: await this.getStatePublicKey(),
 				userStats: userStatsPublicKey,
 			},
+			remainingAccounts,
 		});
 	}
 

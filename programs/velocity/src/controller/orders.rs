@@ -5536,6 +5536,22 @@ pub fn pay_keeper_flat_reward_for_perps(
     slot: u64,
 ) -> VelocityResult<u64> {
     let filler_reward = if let Some(filler) = filler {
+        filler.update_last_active_slot(slot);
+        // Claim the filler's position slot BEFORE debiting the user, because
+        // this is the half that can fail — a filler holding a position in
+        // every slot, none of them this market's, gets none. Debiting first
+        // and then bailing paid nobody and destroyed the user's quote: the
+        // user's position and the market's aggregate both came out short by
+        // the reward, so the value accrued to the pool instead of to the
+        // keeper that earned it. `force_get_perp_position_mut` creates the
+        // slot, so claiming it here is what the credit below finds.
+        if filler
+            .force_get_perp_position_mut(market.market_index)
+            .is_err()
+        {
+            return Ok(0);
+        }
+
         let user_position = user.get_perp_position_mut(market.market_index)?;
         controller::position::update_quote_asset_and_break_even_amount(
             user_position,
@@ -5543,12 +5559,7 @@ pub fn pay_keeper_flat_reward_for_perps(
             -filler_reward.cast()?,
         )?;
 
-        filler.update_last_active_slot(slot);
-        // Dont throw error if filler doesnt have position available
-        let filler_position = match filler.force_get_perp_position_mut(market.market_index) {
-            Ok(position) => position,
-            Err(_) => return Ok(0),
-        };
+        let filler_position = filler.force_get_perp_position_mut(market.market_index)?;
         controller::position::update_quote_asset_amount(
             filler_position,
             market,

@@ -9498,3 +9498,49 @@ mod get_auction_params_min_duration_floor {
         assert_eq!(duration, 5);
     }
 }
+
+mod keeper_reward {
+
+    /// A keeper reward must never leave the user's account without landing in
+    /// the filler's.
+    ///
+    /// `force_get_perp_position_mut` fails when the filler already holds a
+    /// position in every slot and none is this market's, and the reward is
+    /// documented as not throwing in that case. The order of the two halves is
+    /// therefore load-bearing: debiting first and then bailing took the quote
+    /// off the user and credited nobody, so it accrued to the pool instead of
+    /// to the keeper that earned it.
+    #[test]
+    fn an_unpayable_keeper_reward_does_not_debit_the_user() {
+        use crate::{
+            controller::orders::pay_keeper_flat_reward_for_perps,
+            state::{perp_market::PerpMarket, user::User},
+        };
+
+        let mut market = PerpMarket {
+            market_index: 0,
+            ..PerpMarket::default()
+        };
+        let mut user = User::default();
+        user.perp_positions[0].market_index = 0;
+        user.perp_positions[0].quote_asset_amount = 1_000_000;
+
+        // Every slot occupied by another market, so this market cannot be
+        // added — exactly the case the early return exists for.
+        let mut filler = User::default();
+        for (i, position) in filler.perp_positions.iter_mut().enumerate() {
+            position.market_index = (i as u16) + 1;
+            position.base_asset_amount = 1;
+        }
+
+        let paid =
+            pay_keeper_flat_reward_for_perps(&mut user, Some(&mut filler), &mut market, 5_000, 10)
+                .unwrap();
+
+        assert_eq!(paid, 0, "an unpayable reward is not paid");
+        assert_eq!(
+            user.perp_positions[0].quote_asset_amount, 1_000_000,
+            "and the user keeps the quote it would have paid"
+        );
+    }
+}

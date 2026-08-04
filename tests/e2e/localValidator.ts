@@ -1052,17 +1052,31 @@ describe('e2e localnet: programs + publisher + redis', function () {
 		 * keeper cannot quietly route somewhere else. */
 		signedRoute: PublicKey[] = []
 	) =>
-		admin.program.instruction.fillPerpOrder(orderId, null, signedRoute, {
-			accounts: {
-				state: await admin.getStatePublicKey(),
-				authority: payer.publicKey,
-				filler: userOf(payer.publicKey),
-				fillerStats: statsOf(payer.publicKey),
-				user: userOf(takerAuthority),
-				userStats: statsOf(takerAuthority),
-			},
-			remainingAccounts: routerTail(makerKps),
-		});
+		// The v1 route: a restable remainder of the filled order rests on the
+		// book instead of staying in `User.orders`. Keepers use it in
+		// production (keep-rs's swift path), so the suite fills the same way.
+		admin.program.instruction.fillPerpOrderV1(
+			orderId,
+			null,
+			signedRoute,
+			0, // market_index — the conditions PDA seed needs it up front
+			{
+				accounts: {
+					state: await admin.getStatePublicKey(),
+					authority: payer.publicKey,
+					filler: userOf(payer.publicKey),
+					fillerStats: statsOf(payer.publicKey),
+					user: userOf(takerAuthority),
+					userStats: statsOf(takerAuthority),
+					quoter: clobEntry,
+					clobMarket: clobBook.publicKey,
+					clobProgram: CLOB_ID,
+					quoterSigner,
+					crankConditions: conditions,
+				},
+				remainingAccounts: routerTail(makerKps),
+			}
+		);
 
 	/** Fill a user's open order as the keeper — how a position gets opened
 	 * on a real validator (nothing here can be synthesized). */

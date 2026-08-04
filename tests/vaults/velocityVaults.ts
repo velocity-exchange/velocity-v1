@@ -2120,9 +2120,7 @@ describe('TestTokenizedVaults', () => {
 
 	it('The v2 instruction refuses cohort 0 and out-of-range cohort ids', async () => {
 		const vaultAccount = await program.account.vault.fetch(commonVaultKey);
-		const tokenMetadataProgram = metaplex
-			.programs()
-			.getTokenMetadata().address;
+		const tokenMetadataProgram = metaplex.programs().getTokenMetadata().address;
 
 		// Cohort 0 through the v2 seed list is a DIFFERENT address from the legacy pool,
 		// so leaving it callable would give cohort 0 two addresses. Ids above 65535 are
@@ -2333,7 +2331,9 @@ describe('TestTokenizedVaults', () => {
 		);
 
 		// The vault's own share totals are unmoved: tokenizing only relocates shares.
-		const vaultAfterTokenize = await program.account.vault.fetch(commonVaultKey);
+		const vaultAfterTokenize = await program.account.vault.fetch(
+			commonVaultKey
+		);
 		assert(vaultAfterTokenize.totalShares.eq(vaultBefore.totalShares));
 		assert(vaultAfterTokenize.userShares.eq(vaultBefore.userShares));
 
@@ -2493,9 +2493,7 @@ describe('TestTokenizedVaults', () => {
 
 		// Cohort 0 grew by exactly the shares moved.
 		assert(
-			tvd0After.vaultShares
-				.sub(tvd0Before.vaultShares)
-				.eq(vdBefore.vaultShares)
+			tvd0After.vaultShares.sub(tvd0Before.vaultShares).eq(vdBefore.vaultShares)
 		);
 		assert(tvd0After.netDeposits.gt(tvd0Before.netDeposits));
 

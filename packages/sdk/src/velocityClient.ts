@@ -10868,6 +10868,7 @@ export class VelocityClient {
 				inputMint: assetMarket.mint,
 				outputMint: liabilityMarket.mint,
 				amount: swapAmount,
+				userPublicKey: this.provider.wallet.publicKey,
 				slippageBps,
 				swapMode,
 				onlyDirectRoutes,

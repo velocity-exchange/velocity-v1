@@ -2366,6 +2366,21 @@ pub mod velocity {
         handle_crank_cross_match(ctx, market_index, size, buy_quoter_index, sell_quoter_index)
     }
 
+    /// Resolve one taker-origin cross on a market's CLOB (permissionless):
+    /// consume the crossing counterparty at its own price, lift the migrated
+    /// taker remainder off the book, and settle the pair at the counterparty's
+    /// price so the taker — not whoever lands a transaction at the activation
+    /// slot — captures the improvement. The cranker is paid a filler reward in
+    /// quote out of that improvement, capped so the taker's net still beats the
+    /// price it was resting at; a cross that cannot clear that bar is left
+    /// resting.
+    pub fn crank_taker_origin_cross<'c: 'info, 'info>(
+        ctx: Context<'info, CrankTakerOriginCross<'info>>,
+        market_index: u16,
+    ) -> Result<()> {
+        handle_crank_taker_origin_cross(ctx, market_index)
+    }
+
     /// Force-cancel a failing account's CLOB orders (keeper-passed
     /// `OrderRef`s; same gates and flat fee as `force_cancel_orders`).
     pub fn force_cancel_clob_orders<'c: 'info, 'info>(

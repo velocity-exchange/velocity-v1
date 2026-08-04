@@ -1,8 +1,12 @@
 # Taker remainders on the CLOB, and the activation-slot auction
 
-Status: **the CLOB half of R2/R4 is built** (the marker, its report on the removal wire, and the
-gate); R1, R3 and R5–R7 are velocity-side and still proposal. Design source of truth for the
-surrounding work is the Notion PropAMM doc; this is a focused proposal for one hole in it.
+Status: **built.** R1–R7 are live: the CLOB carries the marker, reports it on the removal wire and
+protects a crossed remainder; velocity migrates restable remainders (`fill_perp_order_v1`,
+`place_and_take_v1`, `place_and_make_v1`) and resolves the cross with `crank_taker_origin_cross`.
+Two things named below are deliberately still open — relay discovery (a condition that wakes a
+turner when a taker-origin cross appears; the crank is keeper-callable today) and open question C
+(market remainders still do not migrate). Design source of truth for the surrounding work is the
+Notion PropAMM doc; this is a focused proposal for one hole in it.
 
 ## The hole
 
@@ -96,13 +100,28 @@ An order still inside its activation delay — or already expired — is not a c
 match it, so no improvement is within reach, and gating on it would freeze the remainder for its
 whole auction window, which is exactly when it is resting there.
 
-**R5 — The cranker is paid out of the improvement.** A taker-origin cross only fires when the
-improvement exceeds the fee, so it is self-funding and needs no reservoir subsidy on this path.
-The fee is capped so the taker's net still beats the price it was resting at — otherwise the
-mechanism is worse for the taker than being taken, which is the thing it exists to prevent.
+**R5 — The cranker is paid out of the improvement.** An ordinary filler reward
+(`calculate_filler_reward` sizing, so roughly a tenth of the taker fee), charged to the taker in
+quote rather than carved out of the taker fee: the improvement belongs to the taker, and widening
+the taker fee on this path would couple the crank's cost to the protocol fee schedule, which
+changes for unrelated reasons.
 
 Invariant: `maker_price + taker_fee + crank_fee` must be better for the taker than
-`rest_price + taker_fee`. If it is not, do not cross; leave the order resting.
+`rest_price + taker_fee`. The reward is capped by that, and paid **in full or not at all** — an
+improvement that cannot cover it resolves the cross for free rather than paying a shaved reward,
+which keeps the cranker's revenue predictable and stops the taker funding a keeper subsidy out of a
+gain that could not have funded one.
+
+The equal-price cross (and the dust-improvement cross, which is the same case) therefore resolves
+rather than resting. "Only fires when the improvement exceeds the fee" reads well until you notice
+what refusing costs: the remainder is gated against being taken, so refusing to cross leaves it
+with nothing able to clear the gate, and a single unit of dust improvement in front of it would
+strand it for its whole life. The taker asked to trade; a fill at a price it already accepted is
+what it wanted. The cranker is not working for nothing either way — the market's reservoir pays its
+lamports, exactly as it does for every other CLOB crank.
+
+The one hard refusal is a cross that would leave the taker *worse off* than resting, which takes a
+taker fee above 100% to reach (the extra fee on the better price is `rate × improvement`).
 
 **R6 — Rest price.** For a limit remainder, the order's own limit. For a market remainder,
 `auction_end_price` is the only price available, and R1–R5 are what make resting there safe
@@ -135,15 +154,33 @@ keeps floor-guarding those.
 - R4's gate in `execute_v0`, as `ClobError::TakerOriginCrossPending`.
 - No cross matching and no pricing: R3 lives in velocity.
 
-**velocity (`programs/velocity`)**
+**velocity (`programs/velocity`)** — built.
 - `fill_perp_order_v1`: the CLOB accounts plus the migration step. Nearly free in accounts — a
   router fill already carries the CLOB entry, its book, the clob program and the quoter signer,
   because the CLOB baseline is mandatory; only `crank_conditions` is new, and it is optional
   everywhere else already.
 - The migration itself reuses `try_place_remainder_on_clob`, with the taker-origin flag set.
-- The taker-origin cross settles as an ordinary two-user match, not through `cross_match`'s
-  protocol pass-through.
-- Crank-fee accounting out of the improvement, and the R5 invariant.
+- `crank_taker_origin_cross` resolves one cross: consume the counterparty with `execute_v0`, lift
+  the taker-origin order off with `cancel_order_v0` (its `taker_origin` report is what authorises
+  the repricing — velocity's own book read only *finds* the pair), then
+  `settle_taker_origin_cross` settles the two as an ordinary two-user match, not through
+  `cross_match`'s protocol pass-through. The cancel runs first, so a refusal leaves the book
+  untouched and the counterparty's fill never meets R4's gate.
+- Only the best matchable order on each side is considered. A taker-origin order behind a better
+  one on its own side is crossed by that better order too, which makes the pair an ordinary
+  maker×maker cross for `crank_cross_match`; once that clears, this crank sees it. The two cranks
+  compose rather than duplicating each other's search.
+- A partially-consumed remainder goes back on the book still taker-origin and immediately
+  matchable — it has already served its auction window — because cancelling it would let a cranker
+  delete a taker's whole resting order by crossing one unit of it. It comes back with a new CLOB
+  order id, so a client's cancel hint has to be re-read.
+- Crank-fee accounting out of the improvement (`calculate_taker_origin_cross_fee`), and the R5
+  invariant.
+- Not built: **two taker-origin orders crossing each other** is refused (`NoTakerOriginCross`).
+  Both sides are aggressors, so neither's price is "the counterparty's price" and nothing here gets
+  to pick a winner between them. Two swift remainders on opposite sides both wanting to trade is a
+  real case; resolving it needs a pricing rule this document does not have (the midpoint, or
+  price-time priority to whichever rested first).
 
 **SDK / keepers**
 - `getFillPerpOrderIx` gains the CLOB accounts (v1 route), mirroring the take builder.
@@ -159,10 +196,12 @@ keeps floor-guarding those.
 binding rejects those, so it was never actually on the table. See R4 for the two narrowings that
 keep rejecting from costing liveness.
 
-**B. Where does the crank fee sit relative to the protocol taker fee?** Simplest is a separate
-component out of the improvement, paid to the crank payout account, leaving the protocol fee
-schedule untouched. The alternative — widening the taker fee on this path and paying the cranker
-from it — couples two things that change for different reasons.
+**B. Where does the crank fee sit relative to the protocol taker fee? — settled: beside it.** The
+reward is a separate quote debit on the taker, out of the improvement, credited to the cranker's
+`User` the way every other perp keeper reward is. The protocol fee schedule is untouched, so the
+match's own fee split is identical to any other fill's — which is also why the crank reward does
+*not* appear as the fill record's `filler_reward` and gets its own record
+(`TakerOriginCrossRecordV0`).
 
 **C. Market remainders: migrate now or after this lands?** Migrating them before R1–R5 exist
 means resting at a slippage bound with only the activation slot protecting them, which is

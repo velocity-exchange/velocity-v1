@@ -675,6 +675,21 @@ impl<'a, 'info> ClobMarket<'a, 'info> {
         })
     }
 
+    /// The book's floor on a resting order's size, read off its header bytes.
+    /// A remainder below it cannot rest — the book culls one on its own fills
+    /// — so a caller re-placing a partially-crossed remainder has to drop it
+    /// instead of offering the book a placement it will reject.
+    pub fn min_order_size(&self) -> Result<u64> {
+        let data = self.market.try_borrow_data()?;
+        let bytes = data
+            .get(CLOB_MIN_ORDER_SIZE_OFFSET..CLOB_MIN_ORDER_SIZE_OFFSET + 8)
+            .ok_or_else(|| -> Error {
+                msg!("clob market account is too short to hold its header");
+                ErrorCode::DefaultError.into()
+            })?;
+        Ok(u64::from_le_bytes(bytes.try_into().unwrap()))
+    }
+
     /// One CPI: `discriminator ++ borsh(args)` to the book as its
     /// `place_authority`, then decode the response the CLOB left as return
     /// data. `what` only names the call in error messages.
@@ -758,6 +773,10 @@ pub const CLOB_ASK_COUNT_OFFSET: usize = 140;
 /// velocity mirrors the CLOB's `slot + delay` computation to maintain the
 /// activation wake hint.
 pub const CLOB_DEFAULT_ACTIVATION_DELAY_OFFSET: usize = 144;
+/// `ClobHeaderV0.min_order_size` — the floor on a resting order's size. What
+/// a re-placed remainder has to clear: below it the book culls rather than
+/// rests, so velocity must not offer it one.
+pub const CLOB_MIN_ORDER_SIZE_OFFSET: usize = 88;
 /// `ClobHeaderV0.evict_threshold_per_side` — the soft cap.
 pub const CLOB_EVICT_THRESHOLD_OFFSET: usize = 156;
 /// `ClobHeaderV0.market_index`.
@@ -774,6 +793,12 @@ pub const CLOB_NODE_LEN: usize = 96;
 pub const CLOB_NIL: u32 = u32::MAX;
 /// `OrderBitFlag::Open` — set on a live order, clear on a free node.
 pub const CLOB_ORDER_BIT_FLAG_OPEN: u8 = 1;
+/// `OrderBitFlag::TakerOrigin` — the order is a migrated taker remainder, so
+/// in a cross it is the aggressor and the match settles at the counterparty's
+/// price. Velocity sets it at migration and reads it back here to *find* a
+/// cross to resolve; the authoritative report is `ClobRemovedOrderV0`, which
+/// is what the resolution checks before settling.
+pub const CLOB_ORDER_BIT_FLAG_TAKER_ORIGIN: u8 = 4;
 
 /// The slice of an `OrderNodeV0` the cranks care about, copied out of the
 /// account bytes.
@@ -786,10 +811,16 @@ pub struct ClobNodeView {
     pub activation_slot: u64,
     pub max_ts: i64,
     pub order_id: u64,
+    /// Slot the order was placed — the age the crank reward's time-based
+    /// component is measured against, exactly as `Order.slot` is for a DLOB
+    /// fill.
+    pub placed_slot: u64,
     /// Next node away from the best of book ([`CLOB_NIL`] at the tail).
     pub next: u32,
     pub sub_account_id: u16,
     pub is_open: bool,
+    /// The order is a migrated taker remainder (`OrderBitFlag::TakerOrigin`).
+    pub is_taker_origin: bool,
 }
 
 impl ClobNodeView {
@@ -839,9 +870,11 @@ pub fn read_clob_node(data: &[u8], index: u32) -> Option<ClobNodeView> {
         activation_slot: u64::from_le_bytes(node[48..56].try_into().ok()?),
         max_ts: i64::from_le_bytes(node[56..64].try_into().ok()?),
         order_id: u64::from_le_bytes(node[64..72].try_into().ok()?),
+        placed_slot: u64::from_le_bytes(node[72..80].try_into().ok()?),
         next: u32::from_le_bytes(node[84..88].try_into().ok()?),
         sub_account_id: u16::from_le_bytes(node[90..92].try_into().ok()?),
         is_open: node[88] & CLOB_ORDER_BIT_FLAG_OPEN != 0,
+        is_taker_origin: node[88] & CLOB_ORDER_BIT_FLAG_TAKER_ORIGIN != 0,
     })
 }
 

@@ -1600,6 +1600,162 @@ export type Velocity = {
       ]
     },
     {
+      "name": "crankTakerOriginCross",
+      "docs": [
+        "Resolve one taker-origin cross on a market's CLOB (permissionless):",
+        "consume the crossing counterparty at its own price, lift the migrated",
+        "taker remainder off the book, and settle the pair at the counterparty's",
+        "price so the taker — not whoever lands a transaction at the activation",
+        "slot — captures the improvement. The cranker is paid a filler reward in",
+        "quote out of that improvement, capped so the taker's net still beats the",
+        "price it was resting at; a cross that cannot clear that bar is left",
+        "resting."
+      ],
+      "discriminator": [
+        105,
+        245,
+        226,
+        50,
+        241,
+        206,
+        172,
+        254
+      ],
+      "accounts": [
+        {
+          "name": "state"
+        },
+        {
+          "name": "authority",
+          "docs": [
+            "constraint below enforces it); in program-keeper mode it is only the",
+            "lamport payout target — relay's keeper-placeholder slot — and no",
+            "signature is required."
+          ],
+          "writable": true
+        },
+        {
+          "name": "filler",
+          "docs": [
+            "The cranker's margin account: the crank reward lands here as quote."
+          ],
+          "writable": true
+        },
+        {
+          "name": "fillerStats",
+          "writable": true
+        },
+        {
+          "name": "taker",
+          "docs": [
+            "Owner of the taker-origin order — the taker of this match. Verified",
+            "against the identity the CLOB reports on removal, so a wrong account",
+            "fails the crank rather than settling against someone else."
+          ],
+          "writable": true
+        },
+        {
+          "name": "takerStats",
+          "writable": true
+        },
+        {
+          "name": "quoter",
+          "docs": [
+            "The market's CLOB registry entry."
+          ]
+        },
+        {
+          "name": "clobMarket",
+          "docs": [
+            "(`ClobMarket::from_quoter`), so a valid entry cannot be pointed at an",
+            "arbitrary account."
+          ],
+          "writable": true
+        },
+        {
+          "name": "clobProgram"
+        },
+        {
+          "name": "quoterSigner",
+          "docs": [
+            "set to, and the authority on nothing else."
+          ],
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  113,
+                  117,
+                  111,
+                  116,
+                  101,
+                  114,
+                  95,
+                  115,
+                  105,
+                  103,
+                  110,
+                  101,
+                  114
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "name": "crankConditions",
+          "docs": [
+            "The market's relay conditions account: the wake-hint host and the",
+            "lamport reservoir. Optional so a signed keeper can crank a market whose",
+            "conditions were never initialized; required in program-keeper mode."
+          ],
+          "writable": true,
+          "optional": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  99,
+                  108,
+                  111,
+                  98,
+                  95,
+                  99,
+                  114,
+                  97,
+                  110,
+                  107,
+                  95,
+                  99,
+                  111,
+                  110,
+                  100,
+                  105,
+                  116,
+                  105,
+                  111,
+                  110,
+                  115
+                ]
+              },
+              {
+                "kind": "arg",
+                "path": "marketIndex"
+              }
+            ]
+          }
+        }
+      ],
+      "args": [
+        {
+          "name": "marketIndex",
+          "type": "u16"
+        }
+      ]
+    },
+    {
       "name": "deleteAmmCache",
       "discriminator": [
         216,
@@ -18128,6 +18284,19 @@ export type Velocity = {
       ]
     },
     {
+      "name": "takerOriginCrossRecordV0",
+      "discriminator": [
+        124,
+        217,
+        157,
+        153,
+        11,
+        104,
+        35,
+        145
+      ]
+    },
+    {
       "name": "transferFeeAndPnlPoolRecord",
       "discriminator": [
         92,
@@ -20069,6 +20238,16 @@ export type Velocity = {
       "code": 6382,
       "name": "signedRouteEntryMissing",
       "msg": "A quoter the order's signed route names is absent from the fill"
+    },
+    {
+      "code": 6383,
+      "name": "noTakerOriginCross",
+      "msg": "No resolvable taker-origin cross on this book"
+    },
+    {
+      "code": 6384,
+      "name": "takerOriginCrossWorseForTaker",
+      "msg": "Crossing would leave the taker worse off than its resting price"
     }
   ],
   "types": [
@@ -28754,6 +28933,115 @@ export type Velocity = {
             "name": "syncFallbackSlots",
             "docs": [
               "Coarse fallback interval, in slots. 0 = use the previous value."
+            ],
+            "type": "u64"
+          }
+        ]
+      }
+    },
+    {
+      "name": "takerOriginCrossRecordV0",
+      "docs": [
+        "Emitted when `crank_taker_origin_cross` resolves a taker-origin cross on a",
+        "CLOB book: what the taker gained by settling at the counterparty's price",
+        "instead of its own, and what the cranker took out of that.",
+        "",
+        "The fill itself also emits the ordinary `OrderActionRecord` for the match.",
+        "This record carries what that one structurally cannot: the price the order",
+        "was *resting* at (an `OrderActionRecord` only ever knows the price it",
+        "filled at), the improvement between the two, and the crank reward — which",
+        "is charged to the taker out of the improvement rather than carved out of",
+        "the taker fee, so it never appears as that record's `filler_reward`."
+      ],
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "ts",
+            "docs": [
+              "unix_timestamp of action"
+            ],
+            "type": "i64"
+          },
+          {
+            "name": "slot",
+            "type": "u64"
+          },
+          {
+            "name": "marketIndex",
+            "type": "u16"
+          },
+          {
+            "name": "taker",
+            "docs": [
+              "owner of the taker-origin order — the aggressor of this match"
+            ],
+            "type": "pubkey"
+          },
+          {
+            "name": "maker",
+            "docs": [
+              "the resting counterparty, filled at its own price"
+            ],
+            "type": "pubkey"
+          },
+          {
+            "name": "filler",
+            "docs": [
+              "the cranker's `User`, credited `crank_reward` in quote"
+            ],
+            "type": "pubkey"
+          },
+          {
+            "name": "baseAssetAmount",
+            "type": "u64"
+          },
+          {
+            "name": "quoteAssetAmount",
+            "type": "u64"
+          },
+          {
+            "name": "restPrice",
+            "docs": [
+              "the price the taker-origin order was resting at"
+            ],
+            "type": "u64"
+          },
+          {
+            "name": "fillPrice",
+            "docs": [
+              "the counterparty's price — what the match settled at"
+            ],
+            "type": "u64"
+          },
+          {
+            "name": "improvement",
+            "docs": [
+              "gross quote the taker gained: |rest_price − fill_price| × base"
+            ],
+            "type": "u64"
+          },
+          {
+            "name": "crankReward",
+            "docs": [
+              "quote paid to the cranker out of that improvement"
+            ],
+            "type": "u64"
+          },
+          {
+            "name": "remainderBaseAssetAmount",
+            "docs": [
+              "size the counterparty was too small to consume, put back on the book",
+              "still taker-origin (0 when the cross consumed the order outright, or",
+              "when the leftover was below the book's minimum and was dropped)"
+            ],
+            "type": "u64"
+          },
+          {
+            "name": "remainderOrderId",
+            "docs": [
+              "the re-placed remainder's new CLOB order id (0 when nothing was",
+              "re-placed) — the old handle is stale, this is the client's new one"
             ],
             "type": "u64"
           }

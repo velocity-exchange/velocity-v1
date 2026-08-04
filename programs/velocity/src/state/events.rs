@@ -893,3 +893,44 @@ pub struct ProtocolUserWithdrawRecordV0 {
     pub protocol_user: Pubkey,
     pub recipient_token_account: Pubkey,
 }
+
+/// Emitted when `crank_taker_origin_cross` resolves a taker-origin cross on a
+/// CLOB book: what the taker gained by settling at the counterparty's price
+/// instead of its own, and what the cranker took out of that.
+///
+/// The fill itself also emits the ordinary `OrderActionRecord` for the match.
+/// This record carries what that one structurally cannot: the price the order
+/// was *resting* at (an `OrderActionRecord` only ever knows the price it
+/// filled at), the improvement between the two, and the crank reward — which
+/// is charged to the taker out of the improvement rather than carved out of
+/// the taker fee, so it never appears as that record's `filler_reward`.
+#[event]
+pub struct TakerOriginCrossRecordV0 {
+    /// unix_timestamp of action
+    pub ts: i64,
+    pub slot: u64,
+    pub market_index: u16,
+    /// owner of the taker-origin order — the aggressor of this match
+    pub taker: Pubkey,
+    /// the resting counterparty, filled at its own price
+    pub maker: Pubkey,
+    /// the cranker's `User`, credited `crank_reward` in quote
+    pub filler: Pubkey,
+    pub base_asset_amount: u64,
+    pub quote_asset_amount: u64,
+    /// the price the taker-origin order was resting at
+    pub rest_price: u64,
+    /// the counterparty's price — what the match settled at
+    pub fill_price: u64,
+    /// gross quote the taker gained: |rest_price − fill_price| × base
+    pub improvement: u64,
+    /// quote paid to the cranker out of that improvement
+    pub crank_reward: u64,
+    /// size the counterparty was too small to consume, put back on the book
+    /// still taker-origin (0 when the cross consumed the order outright, or
+    /// when the leftover was below the book's minimum and was dropped)
+    pub remainder_base_asset_amount: u64,
+    /// the re-placed remainder's new CLOB order id (0 when nothing was
+    /// re-placed) — the old handle is stale, this is the client's new one
+    pub remainder_order_id: u64,
+}

@@ -42,6 +42,12 @@
 //! - [`crank_cross_match`]: fill two crossed resting sources against each
 //!   other with the protocol `User` as the pass-through taker; fires only
 //!   when the spread nets positive after fees.
+//! - [`crank_taker_origin_cross`]: hand a migrated taker remainder the
+//!   improvement its auction window earned it — consume the crossing
+//!   counterparty, lift the remainder off the book, and settle the pair at the
+//!   counterparty's price, paying the cranker out of the difference. No
+//!   protocol pass-through: one side is the aggressor and the improvement is
+//!   its own.
 //! - [`force_cancel_clob_orders`]: the CLOB arm of the force-cancel keeper
 //!   flow — reclaim a failing account's risk-increasing book orders (and
 //!   their placed-trigger shadows) for the flat fee.
@@ -52,6 +58,7 @@ mod crank_clob_remove_expired;
 mod crank_common;
 mod crank_conditions_setup;
 mod crank_cross_match;
+mod crank_taker_origin_cross;
 mod fill_v1;
 mod force_cancel_clob_orders;
 mod initialize_quoter_cross_conditions;
@@ -63,7 +70,7 @@ mod trigger_clob_order;
 
 pub use {
     cancel_clob_order::*, crank_clob_evict::*, crank_clob_remove_expired::*, crank_common::*,
-    crank_conditions_setup::*, crank_cross_match::*, fill_v1::*, force_cancel_clob_orders::*,
-    initialize_quoter_cross_conditions::*, modify_clob_order::*, place_and_make_v1::*,
-    place_and_take_v1::*, place_clob_order::*, trigger_clob_order::*,
+    crank_conditions_setup::*, crank_cross_match::*, crank_taker_origin_cross::*, fill_v1::*,
+    force_cancel_clob_orders::*, initialize_quoter_cross_conditions::*, modify_clob_order::*,
+    place_and_make_v1::*, place_and_take_v1::*, place_clob_order::*, trigger_clob_order::*,
 };

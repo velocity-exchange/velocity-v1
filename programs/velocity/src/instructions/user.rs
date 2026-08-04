@@ -437,6 +437,23 @@ pub fn handle_initialize_revenue_share_escrow<'c: 'info, 'info>(
         .resize_with(num_orders as usize, RevenueShareOrder::default);
 
     let mut user_stats = ctx.accounts.user_stats.load_mut()?;
+
+    // `escrow.referrer` is snapshotted here and never written again, while
+    // `user_stats.referrer` is only ever set by the first `initialize_user` — so the
+    // snapshot is correct if and only if that call has already happened. `authority`
+    // is unchecked and only `payer` signs, so without this gate any third party could
+    // create another authority's escrow in the window between `initialize_user_stats`
+    // and its first `initialize_user`, freezing a defaulted referrer into the escrow
+    // and permanently suppressing that user's referral rewards and referee discount
+    // (nothing, not even the permissionless resize, can rewrite the field).
+    // Requiring a created subaccount puts the escrow strictly after the point where
+    // the referrer becomes immutable.
+    validate!(
+        user_stats.number_of_sub_accounts_created > 0,
+        ErrorCode::UserNotFound,
+        "revenue share escrow requires the authority's first user to exist, otherwise it snapshots a defaulted referrer"
+    )?;
+
     escrow.referrer = user_stats.referrer;
     user_stats.update_builder_referral_status();
 

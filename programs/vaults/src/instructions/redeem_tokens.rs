@@ -5,6 +5,7 @@ use {
             is_tokenized_depositor_for_vault, is_user_for_vault,
         },
         error::ErrorCode,
+        refresh_velocity_spot_market,
         state::{traits::VaultDepositorBase, FeeUpdateProvider, FeeUpdateStatus},
         token_cpi::{BurnTokensCPI, TokenTransferCPI},
         validate, AccountMapProvider, TokenizedVaultDepositor, Vault, VaultDepositor,
@@ -13,7 +14,10 @@ use {
     anchor_lang::prelude::*,
     anchor_spl::token::{burn, transfer, Burn, Mint, Token, TokenAccount, Transfer},
     velocity::{
-        instructions::optional_accounts::AccountMaps, math::safe_math::SafeMath, state::user::User,
+        instructions::optional_accounts::AccountMaps,
+        math::safe_math::SafeMath,
+        program::Velocity,
+        state::{spot_market::SpotMarket, user::User},
     },
 };
 
@@ -21,6 +25,12 @@ pub fn redeem_tokens<'info>(
     ctx: Context<'info, RedeemTokens<'info>>,
     tokens_to_burn: u64,
 ) -> Result<()> {
+    // Advance the denomination market's `cumulative_deposit_interest` BEFORE any
+    // account is borrowed and before NAV is snapshotted (OtterSec #136/#137).
+    // Must precede `load_mut`/`load_maps`: `invoke` rejects a CPI whose writable
+    // accounts still have live borrows, and the maps must read post-refresh data.
+    refresh_velocity_spot_market!(ctx);
+
     let clock = &Clock::get()?;
 
     let mut vault = ctx.accounts.vault.load_mut()?;
@@ -207,6 +217,30 @@ pub struct RedeemTokens<'info> {
     )]
     pub velocity_user: AccountLoader<'info, User>,
     pub token_program: Program<'info, Token>,
+    /// CHECK: checked in velocity cpi
+    pub velocity_state: AccountInfo<'info>,
+    /// The vault's denomination spot market, refreshed by CPI before NAV is
+    /// snapshotted (OtterSec #136/#137). Writable because velocity advances its
+    /// `cumulative_deposit_interest`.
+    #[account(
+        mut,
+        seeds = [b"spot_market".as_ref(), vault.load()?.spot_market_index.to_le_bytes().as_ref()],
+        bump,
+        seeds::program = velocity_program.key(),
+    )]
+    pub velocity_spot_market: AccountLoader<'info, SpotMarket>,
+    /// CHECK: must be `velocity_spot_market.oracle`; enforced by velocity's
+    /// `valid_oracle_for_spot_market` access control on the refresh CPI.
+    pub velocity_oracle: AccountInfo<'info>,
+    /// CHECK: PDA-pinned to the denomination market's velocity vault;
+    /// deserialized and validated inside the refresh CPI.
+    #[account(
+        seeds = [b"spot_market_vault".as_ref(), vault.load()?.spot_market_index.to_le_bytes().as_ref()],
+        bump,
+        seeds::program = velocity_program.key(),
+    )]
+    pub velocity_spot_market_vault: AccountInfo<'info>,
+    pub velocity_program: Program<'info, Velocity>,
 }
 
 impl<'info> TokenTransferCPI for Context<'info, RedeemTokens<'info>> {

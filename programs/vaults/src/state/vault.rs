@@ -543,6 +543,18 @@ impl Vault {
         Ok(rebase_divisor)
     }
 
+    /// Vault NAV, denominated in `spot_market_index`'s token.
+    ///
+    /// **Every caller must first CPI velocity's
+    /// `update_spot_market_cumulative_interest` for `self.spot_market_index`** — see
+    /// [`crate::velocity_cpi::refresh_denomination_spot_market`] and the
+    /// `refresh_velocity_spot_market!` macro. This values the vault's velocity spot
+    /// deposit through the market's **stored** `cumulative_deposit_interest`, so a
+    /// market that has not accrued since the last crank understates NAV by the
+    /// accrued-but-unbooked lender interest. Pricing shares against that stale NAV
+    /// overmints for entrants and misprices withdraw requests / cancellations
+    /// (OtterSec #136/#137). The vaults program cannot advance the index itself:
+    /// only the owning program may write a velocity-owned account.
     pub fn calculate_equity(
         &self,
         user: &User,

@@ -360,6 +360,46 @@ export class VaultClient {
 	}
 
 	/**
+	 * The accounts every NAV-snapshotting vault instruction needs so the vaults
+	 * program can CPI velocity's `update_spot_market_cumulative_interest` for the
+	 * vault's denomination spot market *before* it prices shares.
+	 *
+	 * `Vault::calculate_equity` values the vault's velocity deposit off the spot
+	 * market's STORED `cumulative_deposit_interest`; only velocity may write that
+	 * account, so the refresh has to be a CPI. Without it a stale index understates
+	 * NAV — entrants overmint shares (OtterSec #136) and withdraw
+	 * requests/cancellations snapshot the wrong equity (OtterSec #137).
+	 *
+	 * ABI note: `velocity_spot_market`, `velocity_oracle`,
+	 * `velocity_spot_market_vault`, `velocity_state` and `velocity_program` were
+	 * appended to 19 vault instructions. Callers that build instructions through
+	 * this client need no changes; callers that hand-roll account lists must append
+	 * the accounts this returns.
+	 */
+	private async getSpotMarketRefreshAccounts(spotMarketIndex: number): Promise<{
+		velocityState: PublicKey;
+		velocitySpotMarket: PublicKey;
+		velocityOracle: PublicKey;
+		velocitySpotMarketVault: PublicKey;
+		velocityProgram: PublicKey;
+	}> {
+		const spotMarket =
+			this.velocityClient.getSpotMarketAccount(spotMarketIndex);
+		if (!spotMarket) {
+			throw new Error(
+				`Spot market ${spotMarketIndex} not found on velocityClient`
+			);
+		}
+		return {
+			velocityState: await this.velocityClient.getStatePublicKey(),
+			velocitySpotMarket: spotMarket.pubkey,
+			velocityOracle: spotMarket.oracle,
+			velocitySpotMarketVault: spotMarket.vault,
+			velocityProgram: this.velocityClient.program.programId,
+		};
+	}
+
+	/**
 	 *
 	 * @param vault pubkey
 	 * @param factorUnrealizedPNL add unrealized pnl to net balance
@@ -956,6 +996,9 @@ export class VaultClient {
 		);
 
 		const accounts = {
+			...(await this.getSpotMarketRefreshAccounts(
+				vaultAccount.spotMarketIndex
+			)),
 			vault,
 			vaultTokenAccount: vaultAccount.tokenAccount,
 			velocityUser: await getUserAccountPublicKey(
@@ -1040,6 +1083,9 @@ export class VaultClient {
 		);
 
 		const accounts = {
+			...(await this.getSpotMarketRefreshAccounts(
+				vaultAccount.spotMarketIndex
+			)),
 			vault,
 			velocityUser: vaultAccount.user,
 			velocityUserStats: userStatsKey,
@@ -1078,6 +1124,9 @@ export class VaultClient {
 		);
 
 		const accounts = {
+			...(await this.getSpotMarketRefreshAccounts(
+				vaultAccount.spotMarketIndex
+			)),
 			manager: vaultAccount.manager,
 			vault,
 			velocityUser: vaultAccount.user,
@@ -1185,6 +1234,9 @@ export class VaultClient {
 
 		const withdrawIx = await this.program.instruction.managerWithdraw({
 			accounts: {
+				...(await this.getSpotMarketRefreshAccounts(
+					vaultAccount.spotMarketIndex
+				)),
 				vault,
 				manager: vaultAccount.manager,
 				vaultTokenAccount: vaultAccount.tokenAccount,
@@ -1618,6 +1670,9 @@ export class VaultClient {
 		);
 
 		const accounts = {
+			...(await this.getSpotMarketRefreshAccounts(
+				vaultAccount.spotMarketIndex
+			)),
 			vault,
 			vaultDepositor,
 			manager: vaultAccount.manager,
@@ -1676,6 +1731,9 @@ export class VaultClient {
 		);
 
 		const accounts = {
+			...(await this.getSpotMarketRefreshAccounts(
+				vaultAccount.spotMarketIndex
+			)),
 			vault,
 			tokenizedVaultDepositor,
 			velocityUser: await getUserAccountPublicKey(
@@ -1738,6 +1796,9 @@ export class VaultClient {
 		);
 
 		const accounts = {
+			...(await this.getSpotMarketRefreshAccounts(
+				vaultAccount.spotMarketIndex
+			)),
 			vault,
 			vaultDepositor,
 			velocityUser: await getUserAccountPublicKey(
@@ -1965,6 +2026,9 @@ export class VaultClient {
 				// generator can't encode `vault.shares_base.to_string().as_bytes()`
 				// and emits broken seeds. Pass it explicitly to override.
 				.accountsPartial({
+					...(await this.getSpotMarketRefreshAccounts(
+						vaultAccount.spotMarketIndex
+					)),
 					authority: this.velocityClient.wallet.publicKey,
 					vault: vaultDepositorAccount.vault,
 					tokenizedVaultDepositor: getTokenizedVaultAddressSync(
@@ -2035,6 +2099,9 @@ export class VaultClient {
 				// @ts-ignore args tuple vs anchor 0.32 IDL recursion limit
 				.transferVaultDepositorShares(amount, withdrawUnit)
 				.accounts({
+					...(await this.getSpotMarketRefreshAccounts(
+						vaultAccount.spotMarketIndex
+					)),
 					vault: vaultDepositorAccount.vault,
 					authority: this.velocityClient.wallet.publicKey,
 					toVaultDepositor,
@@ -2112,6 +2179,9 @@ export class VaultClient {
 		return await this.program.methods
 			.redeemTokens(tokensToBurn)
 			.accounts({
+				...(await this.getSpotMarketRefreshAccounts(
+					vaultAccount.spotMarketIndex
+				)),
 				authority: this.velocityClient.wallet.publicKey,
 				vault: vaultDepositorAccount.vault,
 				tokenizedVaultDepositor: getTokenizedVaultAddressSync(
@@ -2213,6 +2283,9 @@ export class VaultClient {
 		);
 
 		const accounts = {
+			...(await this.getSpotMarketRefreshAccounts(
+				vaultAccount.spotMarketIndex
+			)),
 			vault: vaultPubKey,
 			vaultDepositor,
 			vaultTokenAccount: vaultAccount.tokenAccount,
@@ -2365,6 +2438,9 @@ export class VaultClient {
 		);
 
 		const accounts = {
+			...(await this.getSpotMarketRefreshAccounts(
+				vaultAccount.spotMarketIndex
+			)),
 			vault: vaultDepositorAccount.vault,
 			vaultDepositor,
 			velocityUser: vaultAccount.user,
@@ -2487,6 +2563,9 @@ export class VaultClient {
 		}
 
 		const accounts = {
+			...(await this.getSpotMarketRefreshAccounts(
+				vaultAccount.spotMarketIndex
+			)),
 			vault: vaultDepositorAccount.vault,
 			vaultDepositor,
 			vaultTokenAccount: vaultAccount.tokenAccount,
@@ -2591,6 +2670,9 @@ export class VaultClient {
 		}
 
 		const accounts = {
+			...(await this.getSpotMarketRefreshAccounts(
+				vaultAccount.spotMarketIndex
+			)),
 			manager: vaultAccount.manager,
 			vault: vaultDepositorAccount.vault,
 			vaultDepositor,
@@ -2649,6 +2731,9 @@ export class VaultClient {
 		);
 
 		const accounts = {
+			...(await this.getSpotMarketRefreshAccounts(
+				vaultAccount.spotMarketIndex
+			)),
 			vault: vaultDepositorAccount.vault,
 			vaultDepositor,
 			velocityUserStats: userStatsKey,
@@ -2740,6 +2825,9 @@ export class VaultClient {
 		const velocityStateKey = await this.velocityClient.getStatePublicKey();
 
 		const accounts = {
+			...(await this.getSpotMarketRefreshAccounts(
+				vaultAccount.spotMarketIndex
+			)),
 			vault,
 			vaultDepositor,
 			vaultTokenAccount: vaultAccount.tokenAccount,
@@ -3228,6 +3316,9 @@ export class VaultClient {
 		);
 
 		const accounts = {
+			...(await this.getSpotMarketRefreshAccounts(
+				vaultAccount.spotMarketIndex
+			)),
 			vault,
 			velocityUserStats: userStatsKey,
 			velocityUser: vaultAccount.user,
@@ -3277,6 +3368,9 @@ export class VaultClient {
 		);
 
 		const accounts = {
+			...(await this.getSpotMarketRefreshAccounts(
+				vaultAccount.spotMarketIndex
+			)),
 			manager: vaultAccount.manager,
 			vault,
 			velocityUserStats: userStatsKey,
@@ -3363,6 +3457,9 @@ export class VaultClient {
 
 		const ix = this.program.instruction.managerWithdraw({
 			accounts: {
+				...(await this.getSpotMarketRefreshAccounts(
+					vaultAccount.spotMarketIndex
+				)),
 				vault,
 				manager: vaultAccount.manager,
 				vaultTokenAccount: vaultAccount.tokenAccount,

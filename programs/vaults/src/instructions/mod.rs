@@ -3,14 +3,15 @@ pub use {
     admin_update_vault_class::*, apply_profit_share::*, apply_rebase::*,
     apply_rebase_tokenized_depositor::*, cancel_request_remove_insurance_fund_stake::*,
     cancel_withdraw_request::*, deposit::*, force_withdraw::*, initialize_insurance_fund_stake::*,
-    initialize_tokenized_vault_depositor::*, initialize_vault::*, initialize_vault_depositor::*,
-    initialize_vault_with_protocol::*, liquidate::*, manager_borrow::*,
-    manager_cancel_fee_update::*, manager_cancel_withdraw_request::*, manager_deposit::*,
-    manager_repay::*, manager_request_withdraw::*, manager_update_borrow::*,
-    manager_update_fees::*, manager_withdraw::*, protocol_cancel_withdraw_request::*,
-    protocol_request_withdraw::*, protocol_withdraw::*, redeem_tokens::*,
-    remove_insurance_fund_stake::*, request_remove_insurance_fund_stake::*, request_withdraw::*,
-    reset_delegate::*, tokenize_shares::*, transfer_vault_depositor_shares::*, update_delegate::*,
+    initialize_tokenized_vault_depositor::*, initialize_tokenized_vault_depositor_v2::*,
+    initialize_vault::*, initialize_vault_depositor::*, initialize_vault_with_protocol::*,
+    liquidate::*, manager_borrow::*, manager_cancel_fee_update::*,
+    manager_cancel_withdraw_request::*, manager_deposit::*, manager_repay::*,
+    manager_request_withdraw::*, manager_update_borrow::*, manager_update_fees::*,
+    manager_withdraw::*, protocol_cancel_withdraw_request::*, protocol_request_withdraw::*,
+    protocol_withdraw::*, redeem_tokens::*, remove_insurance_fund_stake::*,
+    request_remove_insurance_fund_stake::*, request_withdraw::*, reset_delegate::*,
+    tokenize_shares::*, transfer_vault_depositor_shares::*, update_delegate::*,
     update_margin_trading_enabled::*, update_pool_id::*, update_vault::*, update_vault_manager::*,
     update_vault_protocol::*, withdraw::*,
 };
@@ -29,6 +30,7 @@ mod deposit;
 mod force_withdraw;
 mod initialize_insurance_fund_stake;
 mod initialize_tokenized_vault_depositor;
+mod initialize_tokenized_vault_depositor_v2;
 mod initialize_vault;
 mod initialize_vault_depositor;
 mod initialize_vault_with_protocol;

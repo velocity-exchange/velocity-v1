@@ -172,10 +172,21 @@ pub struct TokenizeShares<'info> {
 		constraint = is_vault_shares_base_for_tokenized_depositor(&vault.load()?.shares_base, &tokenized_vault_depositor)?,
 	)]
     pub tokenized_vault_depositor: AccountLoader<'info, TokenizedVaultDepositor>,
+    /// A vault can run several tokenized pools, each with its own mint, so this account cannot be
+    /// seed-checked against one canonical mint address. `is_mint_for_tokenized_depositor` pins it
+    /// instead, and pins it just as tightly:
+    ///
+    /// - `tokenized_vault_depositor` is an `AccountLoader`, so anchor already proved it is owned by
+    ///   this program and carries the `TokenizedVaultDepositor` discriminator;
+    /// - `is_tokenized_depositor_for_vault` above ties that account to this `vault`;
+    /// - its `mint` field is written once, in `TokenizedVaultDepositor::new`, from the `init` mint
+    ///   PDA of the initialize instruction, and no code path ever writes it again.
+    ///
+    /// So `mint.key() == tokenized_vault_depositor.mint` still resolves to a mint this program
+    /// created for this vault under seeds it derived. `redeem_tokens` has always paired the mint
+    /// this way, with no seed check of its own.
     #[account(
         mut,
-        seeds = [b"mint", vault.key().as_ref(), vault.load()?.shares_base.to_string().as_bytes()],
-        bump,
         mint::authority = vault.key(),
 		constraint = is_mint_for_tokenized_depositor(&mint.key(), &tokenized_vault_depositor)?,
     )]

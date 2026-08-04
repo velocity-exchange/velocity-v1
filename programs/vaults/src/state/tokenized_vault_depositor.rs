@@ -54,7 +54,16 @@ pub struct TokenizedVaultDepositor {
     /// The bump for the vault pda
     pub bump: u8,
     pub padding1: [u8; 3],
-    pub padding: [u64; 11],
+    /// Which tokenized pool of this vault this account is. One vault can run several pools at the
+    /// same `vault_shares_base`, each with its own mint and its own pooled cost basis. The id is a
+    /// PDA seed of both this account and its mint.
+    ///
+    /// Cohort 0 is the legacy pool. Its seeds omit the id, so every pool created before cohorts
+    /// keeps its address and reads this repurposed padding as 0. `initialize_tokenized_vault_
+    /// depositor_v2` therefore refuses cohort 0, and only it can create ids 1 and above.
+    pub cohort_id: u32,
+    pub padding2: [u8; 4],
+    pub padding: [u64; 10],
 }
 
 impl Size for TokenizedVaultDepositor {
@@ -111,11 +120,22 @@ impl VaultDepositorBase for TokenizedVaultDepositor {
 }
 
 impl TokenizedVaultDepositor {
+    /// Highest cohort id a vault can open.
+    ///
+    /// The bound keeps the PDA seeds unambiguous. `find_program_address` concatenates the seeds, and
+    /// the pool seeds hold `shares_base` as a variable-length decimal string. A cohort id appended
+    /// after it as 4 little-endian bytes can only be confused with a longer `shares_base` string if
+    /// all 4 of those bytes are ASCII digits. Every id at or below this bound has two zero bytes in
+    /// its high half, which no ASCII digit is. So the cohort seed list and the legacy seed list can
+    /// never derive the same address. See `initialize_tokenized_vault_depositor_v2`.
+    pub const MAX_COHORT_ID: u32 = u16::MAX as u32;
+
     pub fn new(
         vault: Pubkey,
         pubkey: Pubkey,
         mint: Pubkey,
         vault_shares_base: u32,
+        cohort_id: u32,
         bump: u8,
         now: i64,
     ) -> Self {
@@ -134,7 +154,9 @@ impl TokenizedVaultDepositor {
             vault_shares_base,
             bump,
             padding1: [0; 3],
-            padding: [0; 11],
+            cohort_id,
+            padding2: [0; 4],
+            padding: [0; 10],
         }
     }
 
@@ -384,7 +406,7 @@ impl TokenizedVaultDepositor {
 #[cfg(test)]
 mod tests {
     use {
-        crate::{TokenizedVaultDepositor, Vault, VaultDepositorBase},
+        crate::{Size, TokenizedVaultDepositor, Vault, VaultDepositorBase},
         anchor_lang::prelude::Pubkey,
         velocity::math::{constants::PERCENTAGE_PRECISION, safe_math::SafeMath},
     };
@@ -397,6 +419,7 @@ mod tests {
             Pubkey::default(),
             Pubkey::default(),
             Pubkey::default(),
+            0,
             0,
             0,
             now,
@@ -464,6 +487,7 @@ mod tests {
             Pubkey::default(),
             0,
             0,
+            0,
             now,
         );
         let shares_transferred = 500_000;
@@ -501,6 +525,7 @@ mod tests {
             Pubkey::default(),
             Pubkey::default(),
             Pubkey::default(),
+            0,
             0,
             0,
             now,
@@ -568,6 +593,7 @@ mod tests {
             Pubkey::default(),
             Pubkey::default(),
             Pubkey::default(),
+            0,
             0,
             0,
             now,
@@ -638,6 +664,7 @@ mod tests {
             Pubkey::default(),
             0,
             0,
+            0,
             now,
         );
         let shares_transferred = 500_000u128;
@@ -704,6 +731,7 @@ mod tests {
             Pubkey::default(),
             0,
             0,
+            0,
             now,
         );
         let shares = 500_000u128;
@@ -728,5 +756,85 @@ mod tests {
             returned_vp.is_some(),
             "redeem_tokens must return the provider for the instruction to keep alive"
         );
+    }
+
+    /// `cohort_id` was carved out of the old `padding: [u64; 11]` block, so `SIZE` did not change and
+    /// deployed accounts need no migration. Pin the offset. A legacy account holds zeros from byte
+    /// 184 on, so it must read as cohort 0, which is the legacy cohort.
+    #[test]
+    fn test_cohort_id_sits_in_former_padding() {
+        assert_eq!(std::mem::size_of::<TokenizedVaultDepositor>(), 272);
+        assert_eq!(TokenizedVaultDepositor::SIZE, 280);
+
+        let tvd = TokenizedVaultDepositor::default();
+        let struct_start = &tvd as *const TokenizedVaultDepositor as usize;
+        let cohort_start = &tvd.cohort_id as *const u32 as usize;
+        assert_eq!(
+            cohort_start - struct_start,
+            184,
+            "cohort_id moved out of the former padding block"
+        );
+        assert_eq!(tvd.cohort_id, 0, "a zeroed account must read as cohort 0");
+    }
+
+    /// The pool PDA seeds hold `shares_base` as a variable-length decimal string, and
+    /// `find_program_address` concatenates seeds. So a cohort id appended after that string could in
+    /// principle re-derive a legacy address for a larger `shares_base`. It cannot, for any id in
+    /// range: at least one of the 4 little-endian bytes is not an ASCII digit, and a decimal string
+    /// holds only ASCII digits. `TokenizedVaultDepositor::MAX_COHORT_ID` exists for this.
+    #[test]
+    fn test_cohort_seed_tail_is_never_all_ascii_digits() {
+        for cohort_id in 1..=TokenizedVaultDepositor::MAX_COHORT_ID {
+            assert!(
+                cohort_id
+                    .to_le_bytes()
+                    .iter()
+                    .any(|byte| !byte.is_ascii_digit()),
+                "cohort {cohort_id} seed tail reads as decimal digits, so it can alias a legacy address"
+            );
+        }
+
+        // The first id outside the bound that does alias. 0x30303030 is "0000", so cohort 808464432
+        // of shares_base 1 would derive the legacy address of shares_base 10000.
+        let aliasing = u32::from_le_bytes(*b"0000");
+        assert!(aliasing > TokenizedVaultDepositor::MAX_COHORT_ID);
+        assert!(aliasing.to_le_bytes().iter().all(u8::is_ascii_digit));
+    }
+
+    /// Cohort 0 must keep the legacy address, and every other cohort must get a different one.
+    #[test]
+    fn test_cohort_seeds_are_distinct_from_legacy() {
+        let program_id = Pubkey::new_unique();
+        let vault = Pubkey::new_unique();
+
+        let legacy = Pubkey::find_program_address(
+            &[b"tokenized_vault_depositor", vault.as_ref(), b"0"],
+            &program_id,
+        )
+        .0;
+        let cohort_1 = Pubkey::find_program_address(
+            &[
+                b"tokenized_vault_depositor",
+                vault.as_ref(),
+                b"0",
+                &1u32.to_le_bytes(),
+            ],
+            &program_id,
+        )
+        .0;
+        let cohort_2 = Pubkey::find_program_address(
+            &[
+                b"tokenized_vault_depositor",
+                vault.as_ref(),
+                b"0",
+                &2u32.to_le_bytes(),
+            ],
+            &program_id,
+        )
+        .0;
+
+        assert_ne!(legacy, cohort_1);
+        assert_ne!(legacy, cohort_2);
+        assert_ne!(cohort_1, cohort_2);
     }
 }

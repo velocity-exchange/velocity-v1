@@ -159,6 +159,54 @@ export type VaultDepositor = {
 	padding: BN[];
 };
 
+/**
+ * One tokenized pool of a vault. Mirrors the on-chain `TokenizedVaultDepositor`.
+ *
+ * The account holds ONE pooled cost basis (`netDeposits + cumulativeProfitShareAmount`) for every
+ * holder of `mint`. A vault can run several pools at the same `vaultSharesBase`, told apart by
+ * `cohortId`; cohort 0 is the legacy pool. Each cohort keeps its own mint, shares and basis.
+ */
+export type TokenizedVaultDepositor = {
+	vault: PublicKey;
+	pubkey: PublicKey;
+	mint: PublicKey;
+	vaultShares: BN;
+	lastVaultShares: BN;
+	lastValidTs: BN;
+	netDeposits: BN;
+	totalDeposits: BN;
+	totalWithdraws: BN;
+	cumulativeProfitShareAmount: BN;
+	profitShareFeePaid: BN;
+	vaultSharesBase: number;
+	bump: number;
+	padding1: number[];
+	cohortId: number;
+	padding2: number[];
+	padding: BN[];
+};
+
+/** One cohort of a vault, priced against current vault equity. */
+export type TokenizedCohort = {
+	/** 0 is the legacy pool. */
+	cohortId: number;
+	/** The `TokenizedVaultDepositor` address. */
+	address: PublicKey;
+	/** This cohort's SPL mint. Cohorts are not fungible with each other. */
+	mint: PublicKey;
+	account: TokenizedVaultDepositor;
+	/** Current value of the pool's vault shares, in the vault's deposit asset. */
+	poolValue: BN;
+	/** The pool's single cost basis: `netDeposits + cumulativeProfitShareAmount`. */
+	costBasis: BN;
+	/** True while `poolValue >= costBasis`. Below that the pool is under water. */
+	atPar: boolean;
+	/** True once the vault rebased past this pool's shares base. Only redeeming is left. */
+	rebased: boolean;
+	/** True when the pool accepts a new `tokenizeShares`. Requires `atPar` and no rebase. */
+	tokenizeable: boolean;
+};
+
 export type VaultProtocol = {
 	protocol: PublicKey;
 	protocolProfitAndFeeShares: BN;

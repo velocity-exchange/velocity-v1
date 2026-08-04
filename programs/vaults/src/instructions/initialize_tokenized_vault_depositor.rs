@@ -14,31 +14,68 @@ pub fn initialize_tokenized_vault_depositor(
     ctx: Context<InitializeTokenizedVaultDepositor>,
     params: InitializeTokenizedVaultDepositorParams,
 ) -> Result<()> {
-    let vault = ctx.accounts.vault.load()?;
-    let mut tokenized_vault_depositor = ctx.accounts.vault_depositor.load_init()?;
-    *tokenized_vault_depositor = TokenizedVaultDepositor::new(
-        ctx.accounts.vault.key(),
-        ctx.accounts.vault_depositor.key(),
-        ctx.accounts.mint_account.key(),
-        vault.shares_base,
+    // Cohort 0 is the legacy pool. Its PDA seeds carry no cohort id, so this instruction can only
+    // ever create cohort 0. `initialize_tokenized_vault_depositor_v2` creates ids 1 and above.
+    init_tokenized_pool(
+        &ctx.accounts.vault,
+        &ctx.accounts.vault_depositor,
         ctx.bumps.vault_depositor,
+        &ctx.accounts.mint_account.to_account_info(),
+        &ctx.accounts.metadata_account.to_account_info(),
+        &ctx.accounts.payer.to_account_info(),
+        &ctx.accounts.token_metadata_program.to_account_info(),
+        &ctx.accounts.system_program.to_account_info(),
+        &ctx.accounts.rent.to_account_info(),
+        0,
+        params,
+    )
+}
+
+/// Body shared by `initialize_tokenized_vault_depositor` and its `_v2` cohort variant.
+///
+/// The two instructions differ only in the PDA seeds of `vault_depositor` and `mint_account`.
+/// Anchor checks those seeds before the handler runs, so by this point both instructions hold the
+/// same kind of accounts and do the same work.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn init_tokenized_pool<'info>(
+    vault: &AccountLoader<'info, Vault>,
+    vault_depositor: &AccountLoader<'info, TokenizedVaultDepositor>,
+    vault_depositor_bump: u8,
+    mint_account: &AccountInfo<'info>,
+    metadata_account: &AccountInfo<'info>,
+    payer: &AccountInfo<'info>,
+    token_metadata_program: &AccountInfo<'info>,
+    system_program: &AccountInfo<'info>,
+    rent: &AccountInfo<'info>,
+    cohort_id: u32,
+    params: InitializeTokenizedVaultDepositorParams,
+) -> Result<()> {
+    let vault_ref = vault.load()?;
+    let mut tokenized_vault_depositor = vault_depositor.load_init()?;
+    *tokenized_vault_depositor = TokenizedVaultDepositor::new(
+        vault.key(),
+        vault_depositor.key(),
+        mint_account.key(),
+        vault_ref.shares_base,
+        cohort_id,
+        vault_depositor_bump,
         Clock::get()?.unix_timestamp,
     );
 
-    let signature_seeds = Vault::get_vault_signer_seeds(vault.name.as_ref(), &vault.bump);
+    let signature_seeds = Vault::get_vault_signer_seeds(vault_ref.name.as_ref(), &vault_ref.bump);
     let signers = &[&signature_seeds[..]];
 
     create_metadata_accounts_v3(
         CpiContext::new_with_signer(
-            ctx.accounts.token_metadata_program.key(),
+            token_metadata_program.key(),
             CreateMetadataAccountsV3 {
-                metadata: ctx.accounts.metadata_account.to_account_info(),
-                mint: ctx.accounts.mint_account.to_account_info(),
-                mint_authority: ctx.accounts.vault.to_account_info(),
-                update_authority: ctx.accounts.vault.to_account_info(),
-                payer: ctx.accounts.payer.to_account_info(),
-                system_program: ctx.accounts.system_program.to_account_info(),
-                rent: ctx.accounts.rent.to_account_info(),
+                metadata: metadata_account.clone(),
+                mint: mint_account.clone(),
+                mint_authority: vault.to_account_info(),
+                update_authority: vault.to_account_info(),
+                payer: payer.clone(),
+                system_program: system_program.clone(),
+                rent: rent.clone(),
             },
             signers,
         ),

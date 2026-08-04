@@ -48,11 +48,13 @@ import { mockOracleNoProgram } from './common/bankrunOracle';
 import { TestBulkAccountLoader } from './common/testBulkAccountLoader';
 import { startAnchor } from 'solana-bankrun';
 import { BankrunProvider } from 'anchor-bankrun';
-import { getMint } from '@solana/spl-token';
+import { getAssociatedTokenAddressSync, getMint } from '@solana/spl-token';
 import { Keypair, LAMPORTS_PER_SOL, Signer } from '@solana/web3.js';
 import { expect } from 'chai';
 import {
+	MAX_TOKENIZED_COHORT_ID,
 	VaultClient,
+	getTokenizedVaultAddressSync,
 	getTokenizedVaultMintAddressSync,
 	getVaultAddressSync,
 	getVaultDepositorAddressSync,
@@ -1912,6 +1914,601 @@ describe('TestTokenizedVaults', () => {
 			commonVaultKey,
 			[vaultDepositor],
 			[tokenizedVaultDepositor]
+		);
+
+		await bootstrapVd.velocityClient.unsubscribe();
+		await bootstrapVd.vaultClient.unsubscribe();
+	});
+
+	// ---------------------------------------------------------------------------
+	// Multi-cohort tokenized pools.
+	//
+	// A tokenized depositor holds ONE pooled cost basis for every holder of its
+	// mint, so `tokenize_shares` refuses to mint into it while its value sits
+	// below that basis. Cohorts restore availability: the manager opens a fresh
+	// pool, at par by construction, for the newcomer to mint into.
+	//
+	// The under-water gate itself is a separate change and is not on this branch,
+	// so these tests prove the cohort mechanism rather than the refusal: cohort 0
+	// keeps its legacy addresses, a second cohort opens with its own mint,
+	// tokenizing and redeeming work in it, and the two pools' shares and bases
+	// stay separate.
+	//
+	// The SDK's cohort discovery helpers (`getTokenizedVaultDepositors`,
+	// `getTokenizedCohorts`, `findTokenizeableCohort`, `getNextCohortId`) are not
+	// covered here. They need `getProgramAccounts`, which the bankrun connection
+	// does not implement.
+	// ---------------------------------------------------------------------------
+
+	it('Cohort 0 derives the legacy tokenized addresses', async () => {
+		// The backwards-compatibility guarantee. Cohort 0's seed list carries no cohort
+		// id, so every pool deployed before cohorts keeps its address. Derive the legacy
+		// seeds by hand here, so the SDK helper cannot mark its own homework.
+		const legacyTvd = PublicKey.findProgramAddressSync(
+			[
+				Buffer.from('tokenized_vault_depositor'),
+				commonVaultKey.toBuffer(),
+				Buffer.from('0'),
+			],
+			program.programId
+		)[0];
+		const legacyMint = PublicKey.findProgramAddressSync(
+			[Buffer.from('mint'), commonVaultKey.toBuffer(), Buffer.from('0')],
+			program.programId
+		)[0];
+
+		for (const derived of [
+			getTokenizedVaultAddressSync(program.programId, commonVaultKey, 0),
+			getTokenizedVaultAddressSync(program.programId, commonVaultKey, 0, 0),
+		]) {
+			assert(
+				derived.equals(legacyTvd),
+				'cohort 0 must derive the legacy tokenized depositor address'
+			);
+		}
+		for (const derived of [
+			getTokenizedVaultMintAddressSync(program.programId, commonVaultKey, 0),
+			getTokenizedVaultMintAddressSync(program.programId, commonVaultKey, 0, 0),
+		]) {
+			assert(
+				derived.equals(legacyMint),
+				'cohort 0 must derive the legacy mint address'
+			);
+		}
+
+		// The pool the earlier test created sits at that legacy address, and its
+		// repurposed padding reads as cohort 0.
+		const tvd0 = await program.account.tokenizedVaultDepositor.fetch(legacyTvd);
+		assert(tvd0.cohortId === 0, 'a legacy pool must read as cohort 0');
+		assert(tvd0.mint.equals(legacyMint));
+
+		// Every other cohort is a different address on both PDAs.
+		for (const cohortId of [1, 2, MAX_TOKENIZED_COHORT_ID]) {
+			assert(
+				!getTokenizedVaultAddressSync(
+					program.programId,
+					commonVaultKey,
+					0,
+					cohortId
+				).equals(legacyTvd)
+			);
+			assert(
+				!getTokenizedVaultMintAddressSync(
+					program.programId,
+					commonVaultKey,
+					0,
+					cohortId
+				).equals(legacyMint)
+			);
+		}
+
+		// Ids above the bound could alias a legacy address, so the helper refuses them.
+		expect(() =>
+			getTokenizedVaultAddressSync(
+				program.programId,
+				commonVaultKey,
+				0,
+				MAX_TOKENIZED_COHORT_ID + 1
+			)
+		).to.throw();
+	});
+
+	it('Initialize a second cohort on the same vault', async () => {
+		const cohort0Tvd = getTokenizedVaultAddressSync(
+			program.programId,
+			commonVaultKey,
+			0,
+			0
+		);
+		const cohort0Mint = getTokenizedVaultMintAddressSync(
+			program.programId,
+			commonVaultKey,
+			0,
+			0
+		);
+		const cohort1Tvd = getTokenizedVaultAddressSync(
+			program.programId,
+			commonVaultKey,
+			0,
+			1
+		);
+		const cohort1Mint = getTokenizedVaultMintAddressSync(
+			program.programId,
+			commonVaultKey,
+			0,
+			1
+		);
+
+		assert(!cohort1Mint.equals(cohort0Mint), 'each cohort needs its own mint');
+		assert(
+			(await connection.getAccountInfo(cohort1Tvd)) === null,
+			'cohort 1 must not exist yet'
+		);
+
+		const tvd0Before = await program.account.tokenizedVaultDepositor.fetch(
+			cohort0Tvd
+		);
+		const mint0SupplyBefore = (await getMint(connection, cohort0Mint)).supply;
+
+		await managerClient.initializeTokenizedVaultDepositor(
+			{
+				vault: commonVaultKey,
+				tokenName: 'Tokenized Vault Cohort 1',
+				tokenSymbol: 'TV1',
+				tokenUri: '',
+				decimals: 6,
+				cohortId: 1,
+			},
+			{ noLut: true }
+		);
+
+		const tvd1 = await program.account.tokenizedVaultDepositor.fetch(
+			cohort1Tvd
+		);
+		assert(tvd1.cohortId === 1);
+		assert(tvd1.vault.equals(commonVaultKey));
+		assert(tvd1.mint.equals(cohort1Mint));
+		assert(tvd1.vaultSharesBase === 0);
+		// A fresh pool is at par by construction: no shares and no basis.
+		assert(tvd1.vaultShares.eqn(0));
+		assert(tvd1.netDeposits.eqn(0));
+		assert(tvd1.cumulativeProfitShareAmount.eqn(0));
+
+		// The mint is a real, distinct SPL mint owned by the vault.
+		const mint1 = await getMint(connection, cohort1Mint);
+		assert(mint1.mintAuthority.equals(commonVaultKey));
+		assert(mint1.freezeAuthority.equals(commonVaultKey));
+		assert(mint1.decimals === 6);
+		assert(Number(mint1.supply) === 0);
+
+		const metadata1 = await metaplex
+			.nfts()
+			.findByMint({ mintAddress: cohort1Mint });
+		assert(metadata1.name === 'Tokenized Vault Cohort 1');
+		assert(metadata1.symbol === 'TV1');
+
+		// Opening cohort 1 changed nothing about cohort 0.
+		const tvd0After = await program.account.tokenizedVaultDepositor.fetch(
+			cohort0Tvd
+		);
+		assert(tvd0After.cohortId === 0);
+		assert(tvd0After.vaultShares.eq(tvd0Before.vaultShares));
+		assert(tvd0After.netDeposits.eq(tvd0Before.netDeposits));
+		assert(
+			(await getMint(connection, cohort0Mint)).supply === mint0SupplyBefore
+		);
+
+		// Each cohort id is single-use: `init` on the PDA refuses a second open.
+		let reopenFailed = false;
+		try {
+			await managerClient.initializeTokenizedVaultDepositor(
+				{
+					vault: commonVaultKey,
+					tokenName: 'Tokenized Vault Cohort 1',
+					tokenSymbol: 'TV1',
+					tokenUri: '',
+					decimals: 6,
+					cohortId: 1,
+				},
+				{ noLut: true }
+			);
+		} catch (e) {
+			reopenFailed = true;
+		}
+		assert(reopenFailed, 'reopening cohort 1 must fail');
+	});
+
+	it('The v2 instruction refuses cohort 0 and out-of-range cohort ids', async () => {
+		const vaultAccount = await program.account.vault.fetch(commonVaultKey);
+		const tokenMetadataProgram = metaplex
+			.programs()
+			.getTokenMetadata().address;
+
+		// Cohort 0 through the v2 seed list is a DIFFERENT address from the legacy pool,
+		// so leaving it callable would give cohort 0 two addresses. Ids above 65535 are
+		// refused for a second reason: their 4 seed bytes can all be ASCII digits, which
+		// could alias the legacy address of a larger shares_base.
+		for (const cohortId of [0, MAX_TOKENIZED_COHORT_ID + 1]) {
+			const seedTail = Buffer.alloc(4);
+			seedTail.writeUInt32LE(cohortId);
+			const tvd = PublicKey.findProgramAddressSync(
+				[
+					Buffer.from('tokenized_vault_depositor'),
+					commonVaultKey.toBuffer(),
+					Buffer.from('0'),
+					seedTail,
+				],
+				program.programId
+			)[0];
+			const mint = PublicKey.findProgramAddressSync(
+				[
+					Buffer.from('mint'),
+					commonVaultKey.toBuffer(),
+					Buffer.from('0'),
+					seedTail,
+				],
+				program.programId
+			)[0];
+
+			let failed = false;
+			try {
+				await managerClient.program.methods
+					// @ts-ignore args tuple vs anchor 0.32 IDL recursion limit
+					.initializeTokenizedVaultDepositorV2(
+						{
+							tokenName: 'Rejected',
+							tokenSymbol: 'NO',
+							tokenUri: '',
+							decimals: 6,
+						},
+						cohortId
+					)
+					.accountsPartial({
+						vault: commonVaultKey,
+						vaultDepositor: tvd,
+						mintAccount: mint,
+						metadataAccount: metaplex.nfts().pdas().metadata({ mint }),
+						tokenMetadataProgram,
+						payer: vaultAccount.manager,
+					})
+					.rpc();
+			} catch (e) {
+				failed = true;
+			}
+			assert(failed, `v2 must refuse cohort ${cohortId}`);
+			assert(
+				(await connection.getAccountInfo(tvd)) === null,
+				`v2 must not have created a pool for cohort ${cohortId}`
+			);
+		}
+	});
+
+	it('Tokenize and redeem in a second cohort, with no leak into cohort 0', async () => {
+		const cohort0Tvd = getTokenizedVaultAddressSync(
+			program.programId,
+			commonVaultKey,
+			0,
+			0
+		);
+		const cohort0Mint = getTokenizedVaultMintAddressSync(
+			program.programId,
+			commonVaultKey,
+			0,
+			0
+		);
+		const cohort1Tvd = getTokenizedVaultAddressSync(
+			program.programId,
+			commonVaultKey,
+			0,
+			1
+		);
+		const cohort1Mint = getTokenizedVaultMintAddressSync(
+			program.programId,
+			commonVaultKey,
+			0,
+			1
+		);
+
+		const bootstrapVd = await bootstrapSignerClientAndUserBankrun({
+			bankrunContext: bankrunContextWrapper,
+			signer: Keypair.generate(),
+			programId: VAULT_PROGRAM_ID,
+			usdcMint,
+			usdcAmount,
+			vaultClientCliMode: true,
+			metaplex,
+			velocityClientConfig: {
+				accountSubscription: {
+					type: 'polling',
+					accountLoader: bulkAccountLoader as BulkAccountLoader,
+				},
+				activeSubAccountId: 0,
+				subAccountIds: [],
+				perpMarketIndexes,
+				spotMarketIndexes,
+				oracleInfos,
+			},
+		});
+		const vaultDepositor = getVaultDepositorAddressSync(
+			program.programId,
+			commonVaultKey,
+			bootstrapVd.signer.publicKey
+		);
+
+		await bootstrapVd.vaultClient.deposit(
+			vaultDepositor,
+			usdcAmount,
+			{
+				vault: commonVaultKey,
+				authority: bootstrapVd.vaultClient.velocityClient.wallet.publicKey,
+			},
+			{ noLut: true },
+			bootstrapVd.userUSDCAccount.publicKey
+		);
+
+		const vdBefore = await program.account.vaultDepositor.fetch(vaultDepositor);
+		const tvd0Before = await program.account.tokenizedVaultDepositor.fetch(
+			cohort0Tvd
+		);
+		const tvd1Before = await program.account.tokenizedVaultDepositor.fetch(
+			cohort1Tvd
+		);
+		const vaultBefore = await program.account.vault.fetch(commonVaultKey);
+		const mint0SupplyBefore = (await getMint(connection, cohort0Mint)).supply;
+
+		// Cohort 0 already holds shares and tokens from the earlier test, so this is a
+		// real independence check rather than a comparison of two empty pools.
+		assert(tvd0Before.vaultShares.gtn(0));
+		assert(mint0SupplyBefore > 0n);
+		assert(tvd1Before.vaultShares.eqn(0));
+
+		// Tokenize into cohort 1.
+		await bootstrapVd.vaultClient.tokenizeShares(
+			vaultDepositor,
+			vdBefore.vaultShares,
+			WithdrawUnit.SHARES,
+			undefined,
+			{ noLut: true },
+			1
+		);
+
+		const vdAfterTokenize = await program.account.vaultDepositor.fetch(
+			vaultDepositor
+		);
+		const tvd0AfterTokenize =
+			await program.account.tokenizedVaultDepositor.fetch(cohort0Tvd);
+		const tvd1AfterTokenize =
+			await program.account.tokenizedVaultDepositor.fetch(cohort1Tvd);
+		const mint1AfterTokenize = await getMint(connection, cohort1Mint);
+
+		// The depositor's shares moved into cohort 1, and cohort 1 minted for them.
+		assert(vdAfterTokenize.vaultShares.eqn(0));
+		assert(tvd1AfterTokenize.vaultShares.eq(vdBefore.vaultShares));
+		assert(Number(mint1AfterTokenize.supply) > 0);
+
+		const userCohort1Ata = getAssociatedTokenAddressSync(
+			cohort1Mint,
+			bootstrapVd.signer.publicKey,
+			true
+		);
+		const userCohort1Balance = await getTokenBalance(
+			connection,
+			userCohort1Ata
+		);
+		assert(
+			new BN(userCohort1Balance.value.amount).eq(
+				new BN(String(mint1AfterTokenize.supply))
+			),
+			'the tokenizer must hold the whole cohort 1 supply'
+		);
+		// The holder never touched cohort 0's mint. Cohorts are separate SPL mints and
+		// are not fungible with each other.
+		assert(
+			(await connection.getAccountInfo(
+				getAssociatedTokenAddressSync(
+					cohort0Mint,
+					bootstrapVd.signer.publicKey,
+					true
+				)
+			)) === null,
+			'tokenizing cohort 1 must not create a cohort 0 token account'
+		);
+
+		// Cohort 0's shares, basis and token supply are all untouched.
+		assert(tvd0AfterTokenize.vaultShares.eq(tvd0Before.vaultShares));
+		assert(tvd0AfterTokenize.netDeposits.eq(tvd0Before.netDeposits));
+		assert(
+			tvd0AfterTokenize.cumulativeProfitShareAmount.eq(
+				tvd0Before.cumulativeProfitShareAmount
+			)
+		);
+		assert(
+			(await getMint(connection, cohort0Mint)).supply === mint0SupplyBefore
+		);
+
+		// Cohort 1 took the newcomer's basis, and only cohort 1.
+		assert(
+			tvd1AfterTokenize.netDeposits.gt(tvd1Before.netDeposits),
+			'cohort 1 must record the tokenized basis'
+		);
+
+		// The vault's own share totals are unmoved: tokenizing only relocates shares.
+		const vaultAfterTokenize = await program.account.vault.fetch(commonVaultKey);
+		assert(vaultAfterTokenize.totalShares.eq(vaultBefore.totalShares));
+		assert(vaultAfterTokenize.userShares.eq(vaultBefore.userShares));
+
+		// Shares are conserved across the depositor and both pools.
+		assert(
+			vdAfterTokenize.vaultShares
+				.add(tvd0AfterTokenize.vaultShares)
+				.add(tvd1AfterTokenize.vaultShares)
+				.eq(
+					vdBefore.vaultShares
+						.add(tvd0Before.vaultShares)
+						.add(tvd1Before.vaultShares)
+				),
+			'tokenizing must only relocate shares'
+		);
+
+		// Redeem half of cohort 1.
+		const tokensToBurn = new BN(userCohort1Balance.value.amount).div(TWO);
+		await bootstrapVd.vaultClient.redeemTokens(
+			vaultDepositor,
+			tokensToBurn,
+			undefined,
+			{ noLut: true },
+			1
+		);
+
+		const vdAfterRedeem = await program.account.vaultDepositor.fetch(
+			vaultDepositor
+		);
+		const tvd0AfterRedeem = await program.account.tokenizedVaultDepositor.fetch(
+			cohort0Tvd
+		);
+		const tvd1AfterRedeem = await program.account.tokenizedVaultDepositor.fetch(
+			cohort1Tvd
+		);
+		const mint1AfterRedeem = await getMint(connection, cohort1Mint);
+
+		// Shares came back out of cohort 1, and its supply fell by exactly the burn.
+		assert(vdAfterRedeem.vaultShares.gtn(0));
+		assert(tvd1AfterRedeem.vaultShares.lt(tvd1AfterTokenize.vaultShares));
+		assert(
+			new BN(String(mint1AfterTokenize.supply))
+				.sub(new BN(String(mint1AfterRedeem.supply)))
+				.eq(tokensToBurn),
+			'cohort 1 supply must fall by the tokens burned'
+		);
+
+		// Cohort 0 is still untouched, including its token supply.
+		assert(tvd0AfterRedeem.vaultShares.eq(tvd0Before.vaultShares));
+		assert(tvd0AfterRedeem.netDeposits.eq(tvd0Before.netDeposits));
+		assert(
+			(await getMint(connection, cohort0Mint)).supply === mint0SupplyBefore
+		);
+
+		const vaultAfterRedeem = await program.account.vault.fetch(commonVaultKey);
+		assert(vaultAfterRedeem.totalShares.eq(vaultBefore.totalShares));
+		assert(vaultAfterRedeem.userShares.eq(vaultBefore.userShares));
+
+		assert(
+			vdAfterRedeem.vaultShares
+				.add(tvd0AfterRedeem.vaultShares)
+				.add(tvd1AfterRedeem.vaultShares)
+				.eq(
+					vdBefore.vaultShares
+						.add(tvd0Before.vaultShares)
+						.add(tvd1Before.vaultShares)
+				),
+			'redeeming must only relocate shares'
+		);
+
+		await bootstrapVd.velocityClient.unsubscribe();
+		await bootstrapVd.vaultClient.unsubscribe();
+	});
+
+	it('Tokenizing into cohort 0 leaves cohort 1 untouched', async () => {
+		const cohort0Tvd = getTokenizedVaultAddressSync(
+			program.programId,
+			commonVaultKey,
+			0,
+			0
+		);
+		const cohort1Tvd = getTokenizedVaultAddressSync(
+			program.programId,
+			commonVaultKey,
+			0,
+			1
+		);
+		const cohort1Mint = getTokenizedVaultMintAddressSync(
+			program.programId,
+			commonVaultKey,
+			0,
+			1
+		);
+
+		const bootstrapVd = await bootstrapSignerClientAndUserBankrun({
+			bankrunContext: bankrunContextWrapper,
+			signer: Keypair.generate(),
+			programId: VAULT_PROGRAM_ID,
+			usdcMint,
+			usdcAmount,
+			vaultClientCliMode: true,
+			metaplex,
+			velocityClientConfig: {
+				accountSubscription: {
+					type: 'polling',
+					accountLoader: bulkAccountLoader as BulkAccountLoader,
+				},
+				activeSubAccountId: 0,
+				subAccountIds: [],
+				perpMarketIndexes,
+				spotMarketIndexes,
+				oracleInfos,
+			},
+		});
+		const vaultDepositor = getVaultDepositorAddressSync(
+			program.programId,
+			commonVaultKey,
+			bootstrapVd.signer.publicKey
+		);
+
+		await bootstrapVd.vaultClient.deposit(
+			vaultDepositor,
+			usdcAmount,
+			{
+				vault: commonVaultKey,
+				authority: bootstrapVd.vaultClient.velocityClient.wallet.publicKey,
+			},
+			{ noLut: true },
+			bootstrapVd.userUSDCAccount.publicKey
+		);
+
+		const vdBefore = await program.account.vaultDepositor.fetch(vaultDepositor);
+		const tvd0Before = await program.account.tokenizedVaultDepositor.fetch(
+			cohort0Tvd
+		);
+		const tvd1Before = await program.account.tokenizedVaultDepositor.fetch(
+			cohort1Tvd
+		);
+		const mint1SupplyBefore = (await getMint(connection, cohort1Mint)).supply;
+
+		// cohortId defaults to 0, so this is also the pin that existing callers keep
+		// hitting the legacy pool.
+		await bootstrapVd.vaultClient.tokenizeShares(
+			vaultDepositor,
+			vdBefore.vaultShares,
+			WithdrawUnit.SHARES,
+			undefined,
+			{ noLut: true }
+		);
+
+		const tvd0After = await program.account.tokenizedVaultDepositor.fetch(
+			cohort0Tvd
+		);
+		const tvd1After = await program.account.tokenizedVaultDepositor.fetch(
+			cohort1Tvd
+		);
+
+		// Cohort 0 grew by exactly the shares moved.
+		assert(
+			tvd0After.vaultShares
+				.sub(tvd0Before.vaultShares)
+				.eq(vdBefore.vaultShares)
+		);
+		assert(tvd0After.netDeposits.gt(tvd0Before.netDeposits));
+
+		// Cohort 1 did not move at all.
+		assert(tvd1After.vaultShares.eq(tvd1Before.vaultShares));
+		assert(tvd1After.netDeposits.eq(tvd1Before.netDeposits));
+		assert(
+			tvd1After.cumulativeProfitShareAmount.eq(
+				tvd1Before.cumulativeProfitShareAmount
+			)
+		);
+		assert(
+			(await getMint(connection, cohort1Mint)).supply === mint1SupplyBefore
 		);
 
 		await bootstrapVd.velocityClient.unsubscribe();

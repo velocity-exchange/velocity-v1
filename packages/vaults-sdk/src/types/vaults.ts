@@ -1094,6 +1094,156 @@ export type Vaults = {
 			];
 		},
 		{
+			name: 'initializeTokenizedVaultDepositorV2';
+			docs: [
+				'Open an additional tokenized pool ("cohort") on the vault, with its own mint and its own',
+				'pooled cost basis. `cohort_id` must be in `1..=65535`; cohort 0 is the legacy pool that',
+				'`initialize_tokenized_vault_depositor` creates.',
+			];
+			discriminator: [239, 210, 134, 255, 103, 67, 80, 118];
+			accounts: [
+				{
+					name: 'vault';
+				},
+				{
+					name: 'vaultDepositor';
+					docs: [
+						'Same seeds as the cohort-0 account plus the cohort id. `init` makes each id single-use.',
+					];
+					writable: true;
+					pda: {
+						seeds: [
+							{
+								kind: 'const';
+								value: [
+									116,
+									111,
+									107,
+									101,
+									110,
+									105,
+									122,
+									101,
+									100,
+									95,
+									118,
+									97,
+									117,
+									108,
+									116,
+									95,
+									100,
+									101,
+									112,
+									111,
+									115,
+									105,
+									116,
+									111,
+									114,
+								];
+							},
+							{
+								kind: 'account';
+								path: 'vault';
+							},
+							{
+								kind: 'account';
+								path: 'vault';
+							},
+							{
+								kind: 'arg';
+								path: 'cohortId';
+							},
+						];
+					};
+				},
+				{
+					name: 'mintAccount';
+					writable: true;
+					pda: {
+						seeds: [
+							{
+								kind: 'const';
+								value: [109, 105, 110, 116];
+							},
+							{
+								kind: 'account';
+								path: 'vault';
+							},
+							{
+								kind: 'account';
+								path: 'vault';
+							},
+							{
+								kind: 'arg';
+								path: 'cohortId';
+							},
+						];
+					};
+				},
+				{
+					name: 'metadataAccount';
+					writable: true;
+					pda: {
+						seeds: [
+							{
+								kind: 'const';
+								value: [109, 101, 116, 97, 100, 97, 116, 97];
+							},
+							{
+								kind: 'account';
+								path: 'tokenMetadataProgram';
+							},
+							{
+								kind: 'account';
+								path: 'mintAccount';
+							},
+						];
+						program: {
+							kind: 'account';
+							path: 'tokenMetadataProgram';
+						};
+					};
+				},
+				{
+					name: 'payer';
+					writable: true;
+					signer: true;
+				},
+				{
+					name: 'tokenProgram';
+					address: 'TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA';
+				},
+				{
+					name: 'tokenMetadataProgram';
+					address: 'metaqbxxUerdq28cj1RbAWkYQm3ybzjb6a8bt518x1s';
+				},
+				{
+					name: 'rent';
+					address: 'SysvarRent111111111111111111111111111111111';
+				},
+				{
+					name: 'systemProgram';
+					address: '11111111111111111111111111111111';
+				},
+			];
+			args: [
+				{
+					name: 'params';
+					type: {
+						defined: {
+							name: 'initializeTokenizedVaultDepositorParams';
+						};
+					};
+				},
+				{
+					name: 'cohortId';
+					type: 'u32';
+				},
+			];
+		},
+		{
 			name: 'initializeVault';
 			discriminator: [48, 191, 163, 44, 71, 129, 63, 164];
 			accounts: [
@@ -2659,23 +2809,22 @@ export type Vaults = {
 				},
 				{
 					name: 'mint';
+					docs: [
+						'A vault can run several tokenized pools, each with its own mint, so this account cannot be',
+						'seed-checked against one canonical mint address. `is_mint_for_tokenized_depositor` pins it',
+						'instead, and pins it just as tightly:',
+						'',
+						'- `tokenized_vault_depositor` is an `AccountLoader`, so anchor already proved it is owned by',
+						'this program and carries the `TokenizedVaultDepositor` discriminator;',
+						'- `is_tokenized_depositor_for_vault` above ties that account to this `vault`;',
+						'- its `mint` field is written once, in `TokenizedVaultDepositor::new`, from the `init` mint',
+						'PDA of the initialize instruction, and no code path ever writes it again.',
+						'',
+						'So `mint.key() == tokenized_vault_depositor.mint` still resolves to a mint this program',
+						'created for this vault under seeds it derived. `redeem_tokens` has always paired the mint',
+						'this way, with no seed check of its own.',
+					];
 					writable: true;
-					pda: {
-						seeds: [
-							{
-								kind: 'const';
-								value: [109, 105, 110, 116];
-							},
-							{
-								kind: 'account';
-								path: 'vault';
-							},
-							{
-								kind: 'account';
-								path: 'vault';
-							},
-						];
-					};
 				},
 				{
 					name: 'userTokenAccount';
@@ -5079,9 +5228,28 @@ export type Vaults = {
 						};
 					},
 					{
+						name: 'cohortId';
+						docs: [
+							'Which tokenized pool of this vault this account is. One vault can run several pools at the',
+							'same `vault_shares_base`, each with its own mint and its own pooled cost basis. The id is a',
+							'PDA seed of both this account and its mint.',
+							'',
+							'Cohort 0 is the legacy pool. Its seeds omit the id, so every pool created before cohorts',
+							'keeps its address and reads this repurposed padding as 0. `initialize_tokenized_vault_',
+							'depositor_v2` therefore refuses cohort 0, and only it can create ids 1 and above.',
+						];
+						type: 'u32';
+					},
+					{
+						name: 'padding2';
+						type: {
+							array: ['u8', 4];
+						};
+					},
+					{
 						name: 'padding';
 						type: {
-							array: ['u64', 11];
+							array: ['u64', 10];
 						};
 					},
 				];

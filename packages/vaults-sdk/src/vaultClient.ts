@@ -21,6 +21,7 @@ import {
 import { BorshAccountsCoder, Program, ProgramAccount } from '@coral-xyz/anchor';
 import { Vaults } from './types/vaults';
 import {
+	MAX_TOKENIZED_COHORT_ID,
 	getTokenizedVaultAddressSync,
 	getTokenizedVaultMintAddressSync,
 	getInsuranceFundTokenVaultAddressSync,
@@ -51,6 +52,8 @@ import {
 import {
 	FeeUpdate,
 	hasPendingFeeUpdate,
+	TokenizedCohort,
+	TokenizedVaultDepositor,
 	Vault,
 	VaultClass,
 	VaultDepositor,
@@ -342,6 +345,129 @@ export class VaultClient {
 		return (await this.program.account.vaultDepositor.all(
 			filters
 		)) as ProgramAccount<VaultDepositor>[];
+	}
+
+	/**
+	 * Every tokenized pool ("cohort") of a vault, in ascending cohort id order.
+	 *
+	 * A vault can run several pools at once. Each has its own SPL mint and its own pooled cost basis,
+	 * and cohort 0 is the legacy pool. Needs `getProgramAccounts`.
+	 */
+	public async getTokenizedVaultDepositors(
+		vault?: PublicKey
+	): Promise<ProgramAccount<TokenizedVaultDepositor>[]> {
+		const filters = [
+			{
+				// discriminator = TokenizedVaultDepositor
+				memcmp: {
+					offset: 0,
+					bytes: bs58.encode(
+						(
+							this.program.coder.accounts as BorshAccountsCoder
+						).accountDiscriminator('tokenizedVaultDepositor')
+					),
+				},
+			},
+		];
+		if (vault) {
+			filters.push({
+				// vault = vault
+				memcmp: {
+					offset: 8,
+					bytes: vault.toBase58(),
+				},
+			});
+		}
+		// @ts-ignore
+		const accounts = (await this.program.account.tokenizedVaultDepositor.all(
+			filters
+		)) as ProgramAccount<TokenizedVaultDepositor>[];
+		return accounts.sort((a, b) => a.account.cohortId - b.account.cohortId);
+	}
+
+	/**
+	 * Every cohort of a vault, priced against current vault equity, in ascending cohort id order.
+	 *
+	 * A pool holds ONE cost basis for every holder of its mint, and the profit-share fee comes out of
+	 * the pool's own shares, so it dilutes every token equally. Minting into a pool whose value sits
+	 * below its basis would hand the newcomer part of the incumbents' loss shelter, so
+	 * `tokenizeShares` refuses it. `tokenizeable` reports which pools accept a new tokenization.
+	 */
+	public async getTokenizedCohorts(
+		vault: PublicKey
+	): Promise<TokenizedCohort[]> {
+		const vaultAccount = (await this.program.account.vault.fetch(
+			vault
+		)) as Vault;
+		const vaultEquity = await this.calculateVaultEquity({
+			vault: vaultAccount,
+		});
+		const cohorts = await this.getTokenizedVaultDepositors(vault);
+
+		return cohorts.map(({ publicKey, account }) => {
+			// A vault with no shares prices every pool at zero rather than dividing by zero.
+			const poolValue = vaultAccount.totalShares.eq(ZERO)
+				? ZERO
+				: depositSharesToVaultAmount(
+						account.vaultShares,
+						vaultAccount.totalShares,
+						vaultEquity
+				  );
+			const costBasis = account.netDeposits.add(
+				account.cumulativeProfitShareAmount
+			);
+			const atPar = poolValue.gte(costBasis);
+			const rebased = account.vaultSharesBase !== vaultAccount.sharesBase;
+
+			return {
+				cohortId: account.cohortId,
+				address: publicKey,
+				mint: account.mint,
+				account,
+				poolValue,
+				costBasis,
+				atPar,
+				rebased,
+				tokenizeable: atPar && !rebased,
+			};
+		});
+	}
+
+	/**
+	 * The lowest-id cohort of a vault that accepts a new `tokenizeShares`, or `undefined` if every
+	 * pool is under water or left behind by a rebase.
+	 *
+	 * `undefined` means the manager should open a fresh cohort with
+	 * {@link initializeTokenizedVaultDepositor}, using {@link getNextCohortId} for the id. A fresh
+	 * pool starts with a zero basis, so it is at par by construction.
+	 */
+	public async findTokenizeableCohort(
+		vault: PublicKey
+	): Promise<TokenizedCohort | undefined> {
+		const cohorts = await this.getTokenizedCohorts(vault);
+		return cohorts.find((cohort) => cohort.tokenizeable);
+	}
+
+	/**
+	 * The lowest cohort id of a vault that is not taken yet, for opening a new pool.
+	 *
+	 * Ids are per vault and never reused; `init` on the PDA makes each one single-use. Cohort 0 is the
+	 * legacy pool, so this returns 1 or higher whenever cohort 0 already exists.
+	 */
+	public async getNextCohortId(vault: PublicKey): Promise<number> {
+		const taken = new Set(
+			(await this.getTokenizedVaultDepositors(vault)).map(
+				({ account }) => account.cohortId
+			)
+		);
+		for (let cohortId = 0; cohortId <= MAX_TOKENIZED_COHORT_ID; cohortId++) {
+			if (!taken.has(cohortId)) {
+				return cohortId;
+			}
+		}
+		throw new Error(
+			`vault ${vault.toBase58()} has used every cohort id up to ${MAX_TOKENIZED_COHORT_ID}`
+		);
 	}
 
 	public async getSubscribedVaultUser(
@@ -1814,6 +1940,19 @@ export class VaultClient {
 		return await this.createAndSendTxn([initIx], uiTxParams);
 	}
 
+	/**
+	 * Opens a tokenized pool ("cohort") on a vault, with its own SPL mint and its own pooled cost
+	 * basis.
+	 *
+	 * A pool holds one cost basis for every holder of its mint, so `tokenizeShares` refuses to mint
+	 * into it while its value sits below that basis. Open a new cohort to give a newcomer an at-par
+	 * pool to mint into. Use {@link findTokenizeableCohort} to pick the cohort to mint into, and
+	 * {@link getNextCohortId} to pick the id for a new one.
+	 *
+	 * `cohortId` defaults to 0, the legacy pool, which routes to the original
+	 * `initialize_tokenized_vault_depositor` instruction and derives the address it always had. Ids
+	 * 1..={@link MAX_TOKENIZED_COHORT_ID} route to `initialize_tokenized_vault_depositor_v2`.
+	 */
 	public async initializeTokenizedVaultDepositor(
 		params: {
 			vault: PublicKey;
@@ -1822,6 +1961,7 @@ export class VaultClient {
 			tokenUri: string;
 			decimals?: number;
 			sharesBase?: number;
+			cohortId?: number;
 		},
 		uiTxParams?: TxParams
 	): Promise<TransactionSignature> {
@@ -1831,36 +1971,45 @@ export class VaultClient {
 			);
 		}
 
-		let spotMarketDecimals = 6;
-		let sharesBase = 0;
-		if (params.decimals === undefined || params.sharesBase === undefined) {
-			const vault = await this.program.account.vault.fetch(params.vault);
+		const cohortId = params.cohortId ?? 0;
+		const vaultAccount = await this.program.account.vault.fetch(params.vault);
+
+		// `sharesBase` is a PDA seed, so a wrong one silently derives the wrong pool. Honor the caller's
+		// value when given, otherwise read the vault. The previous code defaulted it to 0 and only read
+		// the vault when `decimals` was also absent, so a caller who passed both arguments derived
+		// cohort 0 of shares base 0 on a rebased vault.
+		const sharesBase = params.sharesBase ?? vaultAccount.sharesBase;
+
+		let decimals = params.decimals;
+		if (decimals === undefined) {
 			const spotMarketAccount = this.velocityClient.getSpotMarketAccount(
-				vault.spotMarketIndex
+				vaultAccount.spotMarketIndex
 			);
 			if (!spotMarketAccount) {
 				throw new Error(
-					`VelocityClient failed to load vault's spot market (marketIndex: ${vault.spotMarketIndex})`
+					`VelocityClient failed to load vault's spot market (marketIndex: ${vaultAccount.spotMarketIndex})`
 				);
 			}
-			spotMarketDecimals = spotMarketAccount.decimals;
-			sharesBase = vault.sharesBase;
+			decimals = spotMarketAccount.decimals;
 		}
 
 		const mintAddress = getTokenizedVaultMintAddressSync(
 			this.program.programId,
 			params.vault,
-			sharesBase
+			sharesBase,
+			cohortId
 		);
 
-		const vaultAccount = await this.program.account.vault.fetch(params.vault);
-
+		// Anchor's TS PDA resolver cannot evaluate seeds that read a field of another account, and
+		// `shares_base` is exactly that. It substitutes the default pubkey and the transaction fails
+		// with AccountOwnedByWrongProgram (3007). Pass `vaultDepositor` and `mintAccount` explicitly.
 		const accounts = {
 			vault: params.vault,
 			vaultDepositor: getTokenizedVaultAddressSync(
 				this.program.programId,
 				params.vault,
-				sharesBase
+				sharesBase,
+				cohortId
 			),
 			mintAccount: mintAddress,
 			metadataAccount: this.metaplex.nfts().pdas().metadata({
@@ -1882,26 +2031,34 @@ export class VaultClient {
 			mintAddress
 		);
 
-		return await this.createAndSendTxn(
-			[
-				await this.program.methods
-					.initializeTokenizedVaultDepositor({
-						...params,
-						decimals: params.decimals ?? spotMarketDecimals,
-					})
-					.accounts(accounts)
-					.instruction(),
-				createAtaIx,
-			],
-			uiTxParams
-		);
+		const initArgs = { ...params, decimals };
+
+		// Cohort 0's seed list omits the cohort id, so it needs the original instruction. Anchor cannot
+		// shape a `seeds =` list on a condition, which is why there are two instructions at all.
+		const initIx =
+			cohortId === 0
+				? await this.program.methods
+						.initializeTokenizedVaultDepositor(initArgs)
+						.accounts(accounts)
+						.instruction()
+				: await this.program.methods
+						.initializeTokenizedVaultDepositorV2(initArgs, cohortId)
+						.accountsPartial(accounts)
+						.instruction();
+
+		return await this.createAndSendTxn([initIx, createAtaIx], uiTxParams);
 	}
 
+	/**
+	 * @param cohortId which tokenized pool to mint into. Defaults to 0, the legacy pool. Use
+	 * {@link findTokenizeableCohort} to pick a pool whose value is at or above its cost basis.
+	 */
 	public async createTokenizeSharesIx(
 		vaultDepositor: PublicKey,
 		amount: BN,
 		unit: WithdrawUnit,
-		mint?: PublicKey
+		mint?: PublicKey,
+		cohortId = 0
 	): Promise<TransactionInstruction[]> {
 		const vaultDepositorAccount =
 			await this.program.account.vaultDepositor.fetch(vaultDepositor);
@@ -1914,7 +2071,8 @@ export class VaultClient {
 			getTokenizedVaultMintAddressSync(
 				this.program.programId,
 				vaultDepositorAccount.vault,
-				vaultAccount.sharesBase
+				vaultAccount.sharesBase,
+				cohortId
 			);
 
 		const userAta = getAssociatedTokenAddressSync(
@@ -1961,16 +2119,20 @@ export class VaultClient {
 				// anchor idl bug: https://github.com/coral-xyz/anchor/issues/2914
 				// @ts-ignore args tuple vs anchor 0.32 IDL recursion limit
 				.tokenizeShares(amount, unit)
-				// `mint` is auto-resolved from IDL seeds, but anchor 1.0's IDL
-				// generator can't encode `vault.shares_base.to_string().as_bytes()`
-				// and emits broken seeds. Pass it explicitly to override.
+				// Anchor's TS PDA resolver cannot evaluate seeds that read a field of
+				// another account, and both `tokenized_vault_depositor` and `mint` are
+				// keyed on `vault.shares_base`. It substitutes the default pubkey and
+				// the transaction fails with AccountOwnedByWrongProgram (3007). Pass
+				// both explicitly. `mint` no longer carries seeds at all, since a vault
+				// can run several cohorts.
 				.accountsPartial({
 					authority: this.velocityClient.wallet.publicKey,
 					vault: vaultDepositorAccount.vault,
 					tokenizedVaultDepositor: getTokenizedVaultAddressSync(
 						this.program.programId,
 						vaultDepositorAccount.vault,
-						vaultAccount.sharesBase
+						vaultAccount.sharesBase,
+						cohortId
 					),
 					mint,
 					userTokenAccount: userAta,
@@ -1983,18 +2145,23 @@ export class VaultClient {
 		return ixs;
 	}
 
+	/**
+	 * @param cohortId which tokenized pool to mint into. Defaults to 0, the legacy pool.
+	 */
 	public async tokenizeShares(
 		vaultDepositor: PublicKey,
 		amount: BN,
 		unit: WithdrawUnit,
 		mint?: PublicKey,
-		txParams?: TxParams
+		txParams?: TxParams,
+		cohortId = 0
 	): Promise<TransactionSignature> {
 		const ixs = await this.createTokenizeSharesIx(
 			vaultDepositor,
 			amount,
 			unit,
-			mint
+			mint,
+			cohortId
 		);
 		return await this.createAndSendTxn(ixs, txParams);
 	}
@@ -2063,10 +2230,15 @@ export class VaultClient {
 		return await this.createAndSendTxn(ixs, txParams);
 	}
 
+	/**
+	 * @param cohortId which tokenized pool to redeem from. Defaults to 0, the legacy pool. It must be
+	 * the cohort whose mint the caller holds; cohorts are separate SPL mints and are not fungible.
+	 */
 	public async createRedeemTokensIx(
 		vaultDepositor: PublicKey,
 		tokensToBurn: BN,
-		sharesBase?: number
+		sharesBase?: number,
+		cohortId = 0
 	): Promise<TransactionInstruction> {
 		const vaultDepositorAccount =
 			await this.program.account.vaultDepositor.fetch(vaultDepositor);
@@ -2077,7 +2249,8 @@ export class VaultClient {
 		const mint = getTokenizedVaultMintAddressSync(
 			this.program.programId,
 			vaultDepositorAccount.vault,
-			sharesBase ?? vaultAccount.sharesBase
+			sharesBase ?? vaultAccount.sharesBase,
+			cohortId
 		);
 
 		const userAta = getAssociatedTokenAddressSync(
@@ -2109,6 +2282,9 @@ export class VaultClient {
 			true
 		);
 
+		// `tokenizedVaultDepositor` is keyed on `vault.shares_base`, which anchor's TS PDA resolver
+		// cannot read. It substitutes the default pubkey and the transaction fails with
+		// AccountOwnedByWrongProgram (3007). Pass it explicitly.
 		return await this.program.methods
 			.redeemTokens(tokensToBurn)
 			.accounts({
@@ -2117,7 +2293,8 @@ export class VaultClient {
 				tokenizedVaultDepositor: getTokenizedVaultAddressSync(
 					this.program.programId,
 					vaultDepositorAccount.vault,
-					sharesBase ?? vaultAccount.sharesBase
+					sharesBase ?? vaultAccount.sharesBase,
+					cohortId
 				),
 				mint,
 				userTokenAccount: userAta,
@@ -2132,20 +2309,23 @@ export class VaultClient {
 	 * Redeems tokens from the vault.
 	 * @param vaultDepositor
 	 * @param tokensToBurn
-	 * @param mint optionally provide a mint, or infer the mint from the current vault share base
+	 * @param sharesBase optionally provide a shares base, or infer it from the vault
 	 * @param txParams
+	 * @param cohortId which tokenized pool to redeem from. Defaults to 0, the legacy pool.
 	 * @returns
 	 */
 	public async redeemTokens(
 		vaultDepositor: PublicKey,
 		tokensToBurn: BN,
 		sharesBase?: number,
-		txParams?: TxParams
+		txParams?: TxParams,
+		cohortId = 0
 	): Promise<TransactionSignature> {
 		const ix = await this.createRedeemTokensIx(
 			vaultDepositor,
 			tokensToBurn,
-			sharesBase
+			sharesBase,
+			cohortId
 		);
 		return await this.createAndSendTxn([ix], txParams);
 	}

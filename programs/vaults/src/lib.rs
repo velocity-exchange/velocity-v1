@@ -88,6 +88,17 @@ pub mod vaults {
         instructions::initialize_tokenized_vault_depositor(ctx, params)
     }
 
+    /// Open an additional tokenized pool ("cohort") on the vault, with its own mint and its own
+    /// pooled cost basis. `cohort_id` must be in `1..=65535`; cohort 0 is the legacy pool that
+    /// `initialize_tokenized_vault_depositor` creates.
+    pub fn initialize_tokenized_vault_depositor_v2(
+        ctx: Context<InitializeTokenizedVaultDepositorV2>,
+        params: InitializeTokenizedVaultDepositorParams,
+        cohort_id: u32,
+    ) -> Result<()> {
+        instructions::initialize_tokenized_vault_depositor_v2(ctx, params, cohort_id)
+    }
+
     pub fn tokenize_shares<'info>(
         ctx: Context<'info, TokenizeShares<'info>>,
         amount: u64,

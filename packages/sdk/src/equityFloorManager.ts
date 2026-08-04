@@ -181,6 +181,63 @@ export function planFloorMoves(
 	return moves;
 }
 
+/**
+ * Plans the fund-only transfers (zero floor delta) that top subaccounts
+ * below their buffered floor back above it out of the other subaccounts'
+ * spare equity. Deficit sides are targeted to land `haircut` above their
+ * buffered floor; donor sides are drawn down no further than `haircut`
+ * above their own, so a cure cannot create a new breach. Best-effort: when
+ * spare equity cannot cover every deficit, the deepest breaches are topped
+ * up first and the rest must come from fresh deposits.
+ */
+export function planCureMoves(
+	subaccounts: Pick<
+		SubaccountFloorStatus,
+		'subAccountId' | 'equityFloor' | 'bufferedHeadroom'
+	>[],
+	haircut: BN
+): QuoteTransferPlan[] {
+	// worst first, so scarce donor equity goes to the deepest breach
+	const deficits = subaccounts
+		.filter((u) => u.equityFloor.gt(ZERO) && u.bufferedHeadroom.isNeg())
+		.sort((a, b) => a.bufferedHeadroom.cmp(b.bufferedHeadroom))
+		.map((u) => ({
+			subAccountId: u.subAccountId,
+			// land just above the gate, mirroring the transfer haircut
+			amount: u.bufferedHeadroom.neg().add(haircut),
+		}));
+	const donors = subaccounts
+		.map((u) => ({
+			subAccountId: u.subAccountId,
+			amount: BN.max(u.bufferedHeadroom.sub(haircut), ZERO),
+		}))
+		.filter((d) => d.amount.gt(ZERO))
+		.sort((a, b) => b.amount.cmp(a.amount));
+
+	const plans: QuoteTransferPlan[] = [];
+	let s = 0;
+	let d = 0;
+	while (s < donors.length && d < deficits.length) {
+		const amount = BN.min(donors[s].amount, deficits[d].amount);
+		plans.push({
+			amount,
+			marketIndex: QUOTE_SPOT_MARKET_INDEX,
+			fromSubAccountId: donors[s].subAccountId,
+			toSubAccountId: deficits[d].subAccountId,
+			equityFloorDelta: ZERO,
+		});
+		donors[s].amount = donors[s].amount.sub(amount);
+		deficits[d].amount = deficits[d].amount.sub(amount);
+		if (donors[s].amount.isZero()) {
+			s++;
+		}
+		if (deficits[d].amount.isZero()) {
+			d++;
+		}
+	}
+	return plans;
+}
+
 const LEVEL_SEVERITY: Record<EquityFloorLevel, number> = {
 	breached: 4,
 	critical: 3,
@@ -460,6 +517,45 @@ export class EquityFloorManager {
 			subaccounts.map((u) => u.equityFloor),
 			targets
 		);
+	}
+
+	/**
+	 * Plans the fund-only transfers (zero floor delta) that top subaccounts
+	 * below their buffered floor back above it out of the other subaccounts'
+	 * spare equity. Such a transfer is the one delegate transfer the program
+	 * allows while the equity breaker is tripped, so this is the self-serve
+	 * path out of a stale-split trip: cure every breach from internal
+	 * surplus, then ask the admin to reset the breaker (the transfers never
+	 * clear the flag). See `planCureMoves` for the sizing rules.
+	 */
+	public planCureTransfers(): QuoteTransferPlan[] {
+		return planCureMoves(
+			this.getManagedUsers().map((user) => this.getSubaccountStatus(user)),
+			this.collateralHaircut
+		);
+	}
+
+	/**
+	 * Executes `planCureTransfers` serially. Works while the breaker is
+	 * tripped; a no-op when no subaccount is below its buffered floor.
+	 */
+	public async cureBreaches(
+		txParams?: TxParams
+	): Promise<TransactionSignature[]> {
+		const sigs: TransactionSignature[] = [];
+		for (const plan of this.planCureTransfers()) {
+			sigs.push(
+				await this.velocityClient.transferDepositByDelegate(
+					plan.amount,
+					plan.marketIndex,
+					plan.fromSubAccountId,
+					plan.toSubAccountId,
+					plan.equityFloorDelta,
+					txParams
+				)
+			);
+		}
+		return sigs;
 	}
 
 	/**

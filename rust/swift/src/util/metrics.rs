@@ -35,6 +35,12 @@ pub async fn metrics_handler(
 pub struct SwiftServerMetrics {
     pub taker_orders_counter: Counter,
     pub order_type_counter: CounterVec,
+    pub order_notional_usd: CounterVec,
+    /// Accepted orders whose notional could NOT be computed, by market and reason
+    /// (`no_oracle`, `max_leverage`). The denominator that makes
+    /// `swift_order_notional_usd` honest — without it an undercount from a dead
+    /// oracle subscription looks like a drop in demand.
+    pub order_notional_skipped: CounterVec,
     pub redis_publish_fail_counter: CounterVec,
     pub redis_publish_success_counter: CounterVec,
     pub redis_publish_latency: Histogram,
@@ -66,6 +72,22 @@ impl SwiftServerMetrics {
                 "Number of orders by market index and type",
             ),
             &["market_type", "market_index", "sanitized"],
+        )
+        .unwrap();
+        let order_notional_usd = CounterVec::new(
+            Opts::new(
+                "swift_order_notional_usd",
+                "Notional USD of accepted taker orders (base_asset_amount x oracle price), by market",
+            ),
+            &["market_type", "market_index"],
+        )
+        .unwrap();
+        let order_notional_skipped = CounterVec::new(
+            Opts::new(
+                "swift_order_notional_skipped_count",
+                "Accepted orders excluded from swift_order_notional_usd, by market and reason",
+            ),
+            &["market_type", "market_index", "reason"],
         )
         .unwrap();
         let redis_publish_fail_counter = CounterVec::new(
@@ -134,6 +156,8 @@ impl SwiftServerMetrics {
         SwiftServerMetrics {
             taker_orders_counter,
             order_type_counter,
+            order_notional_usd,
+            order_notional_skipped,
             redis_publish_fail_counter,
             redis_publish_success_counter,
             redis_publish_latency,
@@ -152,6 +176,12 @@ impl SwiftServerMetrics {
             .unwrap();
         registry
             .register(Box::new(self.order_type_counter.clone()))
+            .unwrap();
+        registry
+            .register(Box::new(self.order_notional_usd.clone()))
+            .unwrap();
+        registry
+            .register(Box::new(self.order_notional_skipped.clone()))
             .unwrap();
         registry
             .register(Box::new(self.redis_publish_fail_counter.clone()))

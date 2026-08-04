@@ -45,7 +45,8 @@ use {
             },
             margin::{
                 calculate_margin_requirement_and_total_collateral_and_liability_info,
-                meets_initial_margin_requirement, MarginRequirementType,
+                calculate_net_equity_for_floor, meets_initial_margin_requirement,
+                MarginRequirementType,
             },
             oracle::{is_oracle_valid_for_action, oracle_validity, LogMode, VelocityAction},
             orders::{
@@ -643,6 +644,22 @@ pub fn liquidate_perp(
         ErrorCode::InsufficientCollateral,
         "Liquidator doesnt have enough collateral to take over perp position"
     )?;
+
+    // The liquidation adds exposure to the liquidator like a risk-increasing
+    // fill; the liquidator subaccount must clear its own buffered equity floor
+    // to take it on.
+    if let Some(liquidator_net_equity) =
+        calculate_net_equity_for_floor(liquidator, perp_market_map, spot_market_map, oracle_map)?
+    {
+        validate!(
+            !liquidator.is_below_buffered_equity_floor(liquidator_net_equity),
+            ErrorCode::EquityBelowFloor,
+            "liquidator net equity {} below equity floor {} + buffer {}",
+            liquidator_net_equity,
+            liquidator.equity_floor,
+            liquidator.equity_floor_buffer
+        )?;
+    }
 
     // get ids for order fills
     let user_order_id = get_then_update_id!(user, next_order_id);
@@ -1906,6 +1923,22 @@ pub fn liquidate_spot(
         "Liquidator doesnt have enough collateral to take over borrow"
     )?;
 
+    // The liquidation adds exposure to the liquidator like a risk-increasing
+    // fill; the liquidator subaccount must clear its own buffered equity floor
+    // to take it on.
+    if let Some(liquidator_net_equity) =
+        calculate_net_equity_for_floor(liquidator, perp_market_map, spot_market_map, oracle_map)?
+    {
+        validate!(
+            !liquidator.is_below_buffered_equity_floor(liquidator_net_equity),
+            ErrorCode::EquityBelowFloor,
+            "liquidator net equity {} below equity floor {} + buffer {}",
+            liquidator_net_equity,
+            liquidator.equity_floor,
+            liquidator.equity_floor_buffer
+        )?;
+    }
+
     emit!(LiquidationRecord {
         ts: now,
         liquidation_id,
@@ -3123,6 +3156,22 @@ pub fn liquidate_borrow_for_perp_pnl(
         "Liquidator doesnt have enough collateral to take over borrow"
     )?;
 
+    // The liquidation adds exposure to the liquidator like a risk-increasing
+    // fill; the liquidator subaccount must clear its own buffered equity floor
+    // to take it on.
+    if let Some(liquidator_net_equity) =
+        calculate_net_equity_for_floor(liquidator, perp_market_map, spot_market_map, oracle_map)?
+    {
+        validate!(
+            !liquidator.is_below_buffered_equity_floor(liquidator_net_equity),
+            ErrorCode::EquityBelowFloor,
+            "liquidator net equity {} below equity floor {} + buffer {}",
+            liquidator_net_equity,
+            liquidator.equity_floor,
+            liquidator.equity_floor_buffer
+        )?;
+    }
+
     let market_oracle_price = {
         let market = perp_market_map.get_ref_mut(&perp_market_index)?;
         oracle_map.get_price_data(&market.oracle_id())?.price
@@ -3668,6 +3717,22 @@ pub fn liquidate_perp_pnl_for_deposit(
         ErrorCode::InsufficientCollateral,
         "Liquidator doesnt have enough collateral to take over borrow"
     )?;
+
+    // The liquidation adds exposure to the liquidator like a risk-increasing
+    // fill; the liquidator subaccount must clear its own buffered equity floor
+    // to take it on.
+    if let Some(liquidator_net_equity) =
+        calculate_net_equity_for_floor(liquidator, perp_market_map, spot_market_map, oracle_map)?
+    {
+        validate!(
+            !liquidator.is_below_buffered_equity_floor(liquidator_net_equity),
+            ErrorCode::EquityBelowFloor,
+            "liquidator net equity {} below equity floor {} + buffer {}",
+            liquidator_net_equity,
+            liquidator.equity_floor,
+            liquidator.equity_floor_buffer
+        )?;
+    }
 
     let market_oracle_price = {
         let market = perp_market_map.get_ref_mut(&perp_market_index)?;

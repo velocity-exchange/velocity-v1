@@ -955,12 +955,6 @@ pub fn handle_transfer_deposit_by_delegate<'c: 'info, 'info>(
         "delegate transfer not allowed"
     )?;
 
-    validate!(
-        !user_stats.is_equity_breaker_tripped(),
-        ErrorCode::EquityBelowFloor,
-        "equity floor breaker is tripped for this authority"
-    )?;
-
     let AccountMaps {
         perp_market_map,
         spot_market_map,
@@ -972,6 +966,44 @@ pub fn handle_transfer_deposit_by_delegate<'c: 'info, 'info>(
         clock.slot,
         Some(state.oracle_guard_rails),
     )?;
+
+    // While the equity breaker is tripped, the only delegate transfer allowed
+    // is one that shrinks an existing breach: funds only (no floor movement)
+    // into a subaccount below its buffered floor. The debited side is still
+    // gated at its own floor + buffer by the withdraw margin check inside
+    // `transfer_spot_deposit`, so a cure cannot create a new breach, and once
+    // the credited side clears its buffered floor this path closes again. The
+    // transfer never clears the flag; only the admin reset does.
+    if user_stats.is_equity_breaker_tripped() {
+        validate!(
+            equity_floor_delta == 0,
+            ErrorCode::EquityBelowFloor,
+            "equity floor breaker is tripped for this authority; floor cannot move"
+        )?;
+
+        validate!(
+            to_user.equity_floor > 0,
+            ErrorCode::EquityBelowFloor,
+            "equity floor breaker is tripped for this authority; transfers must cure a floored subaccount"
+        )?;
+
+        let (to_user_net_equity, to_user_oracles_valid) =
+            calculate_user_equity(to_user, &perp_market_map, &spot_market_map, &mut oracle_map)?;
+
+        // Cure eligibility must not be decided off an invalid price, matching
+        // the validity the trip and the reset require of the same metric.
+        validate!(
+            to_user_oracles_valid,
+            ErrorCode::InvalidOracle,
+            "cannot verify cure transfer with an invalid oracle"
+        )?;
+
+        validate!(
+            to_user.is_below_buffered_equity_floor(to_user_net_equity),
+            ErrorCode::EquityBelowFloor,
+            "equity floor breaker is tripped for this authority; transfers must cure a subaccount below its buffered equity floor"
+        )?;
+    }
 
     // Carry equity floor along with the funds so the sum of floors across the
     // authority's subaccounts is preserved. The from side is validated against
@@ -4033,7 +4065,16 @@ pub fn handle_end_swap<'c: 'info, 'info>(
         "the in_spot_market must have a flash loan amount set"
     )?;
 
-    let in_oracle_data = oracle_map.get_price_data(&in_spot_market.oracle_id())?;
+    let (in_oracle_data, in_oracle_validity) = oracle_map.get_price_data_and_validity(
+        MarketType::Spot,
+        in_spot_market.market_index,
+        &in_spot_market.oracle_id(),
+        in_spot_market.historical_oracle_data.last_oracle_price_twap,
+        in_spot_market.get_max_confidence_interval_multiplier()?,
+        -1,
+        0,
+        Some(LogMode::Margin),
+    )?;
     let in_oracle_price = in_oracle_data.price;
 
     let mut out_spot_market = spot_market_map.get_ref_mut(&out_market_index)?;
@@ -4045,7 +4086,18 @@ pub fn handle_end_swap<'c: 'info, 'info>(
         out_market_index
     )?;
 
-    let out_oracle_data = oracle_map.get_price_data(&out_spot_market.oracle_id())?;
+    let (out_oracle_data, out_oracle_validity) = oracle_map.get_price_data_and_validity(
+        MarketType::Spot,
+        out_spot_market.market_index,
+        &out_spot_market.oracle_id(),
+        out_spot_market
+            .historical_oracle_data
+            .last_oracle_price_twap,
+        out_spot_market.get_max_confidence_interval_multiplier()?,
+        -1,
+        0,
+        Some(LogMode::Margin),
+    )?;
     let out_oracle_price = out_oracle_data.price;
 
     let in_vault = &mut ctx.accounts.in_spot_market_vault;
@@ -4288,15 +4340,52 @@ pub fn handle_end_swap<'c: 'info, 'info>(
         )?;
     }
 
-    // While under floor protection, bound the exempted swap's value loss at
-    // oracle so a "reducing" swap cannot leak value through a bad route.
+    // While under floor protection, bound the exempted swap's value loss so a
+    // "reducing" swap cannot leak value through a bad route. The bound is the
+    // exemption's only safety, so both legs must have valid oracles, and the
+    // bound values the leg given up at the strict max and the leg received at
+    // the strict min of live price and 5min twap, so a stale sample cannot
+    // flatter the exchange rate.
     if strictly_reducing && (user_stats.is_equity_breaker_tripped() || user.equity_floor > 0) {
-        let in_value =
-            get_token_value(amount_in.cast()?, in_spot_market.decimals, in_oracle_price)?;
+        validate!(
+            is_oracle_valid_for_action(in_oracle_validity, Some(VelocityAction::MarginCalc))?,
+            ErrorCode::InvalidOracle,
+            "in oracle invalid for swap under equity floor protection"
+        )?;
+
+        validate!(
+            is_oracle_valid_for_action(out_oracle_validity, Some(VelocityAction::MarginCalc))?,
+            ErrorCode::InvalidOracle,
+            "out oracle invalid for swap under equity floor protection"
+        )?;
+
+        let in_strict_price = StrictOraclePrice::new(
+            in_oracle_price,
+            in_spot_market
+                .historical_oracle_data
+                .last_oracle_price_twap_5min,
+            true,
+        );
+        in_strict_price.validate()?;
+
+        let out_strict_price = StrictOraclePrice::new(
+            out_oracle_price,
+            out_spot_market
+                .historical_oracle_data
+                .last_oracle_price_twap_5min,
+            true,
+        );
+        out_strict_price.validate()?;
+
+        let in_value = get_token_value(
+            amount_in.cast()?,
+            in_spot_market.decimals,
+            in_strict_price.max(),
+        )?;
         let out_value = get_token_value(
             amount_out.cast()?,
             out_spot_market.decimals,
-            out_oracle_price,
+            out_strict_price.min(),
         )?;
 
         let min_out_value = in_value
@@ -4361,6 +4450,19 @@ pub fn handle_end_swap<'c: 'info, 'info>(
         margin_type,
         strictly_reducing,
     )?;
+
+    // The exempt swap skips the buffered-floor gate and may legally end below
+    // the raw floor; arm the breaker inline instead of waiting for the
+    // permissionless trip.
+    if strictly_reducing {
+        controller::equity_floor::try_lazy_equity_breaker_trip(
+            &user,
+            &mut user_stats,
+            &perp_market_map,
+            &spot_market_map,
+            &mut oracle_map,
+        )?;
+    }
 
     user.update_last_active_slot(slot);
 

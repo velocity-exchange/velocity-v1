@@ -397,13 +397,17 @@ export class EquityFloorGuardBot implements Bot {
 		user: User,
 		authorityKey: string
 	): Promise<void> {
-		if (this.trippedAuthorities.has(authorityKey)) {
+		// dry run never sets the onchain flag, so the cache alone debounces it
+		if (this.dryRun && this.trippedAuthorities.has(authorityKey)) {
 			return;
 		}
 
 		const userAccount = user.getUserAccountOrThrow();
 
-		// skip if already tripped on chain (by us earlier or anyone else)
+		// skip if already tripped on chain (by us earlier or anyone else). The
+		// cache is only trusted while the onchain flag backs it: a warm-admin
+		// reset clears the flag, the entry is evicted, and a later breach
+		// trips again instead of being skipped until the bot restarts.
 		try {
 			const stats = await (
 				this.velocityClient.program.account as any
@@ -417,6 +421,7 @@ export class EquityFloorGuardBot implements Bot {
 				this.trippedAuthorities.add(authorityKey);
 				return;
 			}
+			this.trippedAuthorities.delete(authorityKey);
 		} catch (e) {
 			logger.error(`${this.name}: failed to fetch user stats: ${e}`);
 			return;

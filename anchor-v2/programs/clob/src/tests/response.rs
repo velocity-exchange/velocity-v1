@@ -23,7 +23,7 @@ use {
     },
 };
 
-fn encode<T>(value: &T) -> Vec<u8>
+pub(super) fn encode<T>(value: &T) -> Vec<u8>
 where
     T: wincode::SchemaWrite<anchor_lang_v2::BorshConfig, Src = T> + ?Sized,
 {
@@ -37,7 +37,7 @@ where
     bytes
 }
 
-fn encode_quote(levels: Vec<PriceLevel>) -> Vec<u8> {
+pub(super) fn encode_quote(levels: Vec<PriceLevel>) -> Vec<u8> {
     encode(&QuoteResponseV0 { levels })
 }
 
@@ -52,7 +52,7 @@ fn encode_execute(
 }
 
 /// The bytes the returned pointer designates.
-fn streamed(book: &ClobMarketV0, pointer: ResponsePointerV0) -> Vec<u8> {
+pub(super) fn streamed(book: &ClobMarketV0, pointer: ResponsePointerV0) -> Vec<u8> {
     assert_eq!(pointer.offset as usize, RESPONSE_OFFSET);
     book.response[..pointer.len as usize].to_vec()
 }

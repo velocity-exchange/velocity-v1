@@ -76,25 +76,54 @@ cross is also simpler than today's crank: an ordinary two-user match at one pric
 Without it, an outsider who lands a transaction at the activation slot takes the taker-origin order
 at its limit and pockets the improvement — and the landing race is back, with an extra step.
 
-Enforced in the CLOB's own `execute_v0`, and it **rejects** rather than uncrossing first. Uncrossing
-inside `execute_v0` would return fills outside the prefix the router quoted, which velocity's
-quote↔execute binding refuses — so "resolve the cross on the way through" is not available to the
-book at all.
+Enforced in the CLOB's own `quote_v0` and `execute_v0`, which **skip** the order: while a
+counterparty crosses it, a crossed taker remainder is simply not in the book's matchable set, exactly
+as an expired or not-yet-activated order is not. A taker sweeping the side passes over it and fills
+whatever is behind it instead.
 
 Narrowed twice, both times to exactly the harm:
 
-- Only a **taker-origin** order is protected. An ordinary maker×maker cross is unclaimed arbitrage,
-  not somebody's improvement, and gating on it would freeze every taker on that book.
-- Only the order actually being filled is checked, against the best price on the other side that
-  could match this slot. So a fill that *consumes the counterparty* still lands — which it must,
-  because that is the direction velocity's cross resolution runs: take the counterparty's side with
-  `execute_v0` (an ordinary fill at its own price), lift the taker-origin order off with
-  `cancel_order_v0`, and settle the pair internally at the counterparty's price. A book-wide gate
-  would strand the pair forever.
+- Only a **taker-origin** order is held back. An ordinary maker×maker cross is unclaimed arbitrage,
+  not somebody's improvement, and holding either side back over it would cost takers depth for
+  nothing.
+- Only the order being traded is tested, against the best price on the other side that could match
+  this slot. The counterparty itself is never skipped — it is an ordinary maker, and consuming it is
+  the fill velocity's cross resolution runs: take the counterparty's side with `execute_v0` (an
+  ordinary fill at its own price), lift the taker-origin order off with `cancel_order_v0`, and settle
+  the pair internally at the counterparty's price.
 
 An order still inside its activation delay — or already expired — is not a counterparty: nothing can
-match it, so no improvement is within reach, and gating on it would freeze the remainder for its
-whole auction window, which is exactly when it is resting there.
+match it, so no improvement is within reach, and holding the remainder back then would cost the book
+that depth for its whole auction window, which is exactly when it is resting there. A remainder that
+nothing crosses is likewise ordinary depth, quotable and takeable at its own price — that is the
+fallback when no maker lines up during the window, and how the remainder eventually fills if none
+ever does.
+
+**Quote and execute skip via one predicate, and that is the point.** A router allocates from the
+quote and velocity binds the execute to it, so depth one of them offers and the other withholds is a
+reverted transaction for a taker that did nothing wrong — velocity cannot route around a shortfall
+after the fact. Both read `book::TakerOriginGate`, so a future change to what the gate withholds
+lands on both at once instead of on whichever one someone remembered.
+
+### Why skip rather than fail the call
+
+Three shapes were on the table. **Uncross inside `execute_v0`** is unavailable: it would return fills
+outside the prefix the router quoted, which velocity's quote↔execute binding refuses. **Fail the
+call** was the first implementation, and it protected the remainder just as well, but it made the
+order shadow every level behind it on its side: quote could only publish the prefix in front of it
+(anything further was not deliverable, since the fill would hit the remainder and revert), and a
+taker remainder rests at a slippage bound, so it normally sits at or near the front. A single crossed
+remainder took its whole side dark until the crank resolved the cross.
+
+**Skip** keeps the protection and drops the cliff. The remainder still cannot be taken at its limit;
+the depth behind it stays both quotable and fillable, because execute really can deliver it; and
+consistency between the two gets easier rather than harder, since they now skip the same order for
+the same reason. A taker just finds less depth than it hoped for, which is ordinary book behaviour —
+depth vanishes between quote and fill all the time.
+
+The one casualty is `ClobError::TakerOriginCrossPending`, which nothing emits any more. It is
+deprecated in place rather than removed: the numeric code is the on-chain identity of every variant
+after it.
 
 **R5 — The cranker is paid out of the improvement.** A taker-origin cross only fires when the
 improvement exceeds the fee, so it is self-funding and needs no reservoir subsidy on this path.
@@ -132,7 +161,11 @@ keeps floor-guarding those.
   through a removal. The shared quoter-interface types (`UserBalanceChange`,
   `CancelledRemainderV0`) are untouched — every quoter emits those, and only the CLOB can ever
   have an order to mark.
-- R4's gate in `execute_v0`, as `ClobError::TakerOriginCrossPending`.
+- R4's gate as `book::TakerOriginGate`, read by both `quote_v0` and `execute_v0`, which skip a
+  crossed taker remainder the way they skip an expired one — so quote never publishes depth the fill
+  will not deliver, and the rest of the side stays tradeable.
+- `ClobError::TakerOriginCrossPending`, deprecated in place: the gate's first shape failed the call
+  instead of skipping, and the numeric code cannot be reused.
 - No cross matching and no pricing: R3 lives in velocity.
 
 **velocity (`programs/velocity`)**

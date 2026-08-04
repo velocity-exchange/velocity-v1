@@ -1325,37 +1325,86 @@ fn the_taker_origin_flag_round_trips_through_place_and_removal() {
     assert!(!parse_removed(&meta.return_data.data).5);
 }
 
-/// The gate, on-chain: a taker remainder resting at 101 with a maker ask at 99
-/// against it cannot be bought at 101 by whoever lands first, but the fill that
-/// *consumes the counterparty* still lands — that direction is how velocity
-/// resolves the cross, and blocking it would strand the pair forever.
+/// The gate, on-chain, and velocity's whole cross-resolution path with it: a
+/// taker remainder at 101 with a maker ask at 99 against it is passed over
+/// rather than bought at 101 by whoever lands first, the counterparty is
+/// ordinary fillable depth at its own 99 (the leg velocity runs), and the
+/// remainder then comes off by cancel saying it was the aggressor.
 #[test]
-fn a_crossed_taker_remainder_cannot_be_taken_but_its_counterparty_can() {
+fn a_crossed_taker_remainder_is_passed_over_and_its_counterparty_is_not() {
+    let mut ctx = setup();
+    let taker = addr(Pubkey::new_unique());
+    let maker = addr(Pubkey::new_unique());
+    let remainder = place(&mut ctx, taker_origin_args(Side::Bid, 101, 5), taker);
+    place(&mut ctx, place_args(Side::Ask, 99, 5), maker);
+    advance_slot(&mut ctx, 1);
+
+    // Nothing else rests on the bid side, so a taker going that way finds no
+    // depth — the call lands and fills nothing, and the book is untouched.
+    assert!(quote(&mut ctx, Direction::Short, u64::MAX).is_empty());
+    assert!(execute(&mut ctx, Direction::Short, 5).is_empty());
+    let state = market_state(&ctx);
+    assert_eq!((state.bid_count, state.ask_count), (1, 1));
+
+    // Taking the ask at its own 99 is ordinary liquidity taking, and is the
+    // price the pair settles at.
+    assert_eq!(quote(&mut ctx, Direction::Long, u64::MAX), vec![(99, 5)]);
+    let changes = execute(&mut ctx, Direction::Long, 5);
+    assert_eq!(changes, vec![(maker.to_bytes(), 5, 495, vec![2])]);
+
+    // Then the remainder comes off, reporting which side was the aggressor.
+    let meta = cancel(&mut ctx, remainder, taker).unwrap();
+    let (_, _, price, base, side, taker_origin) = parse_removed(&meta.return_data.data);
+    assert_eq!(
+        (price, base, side, taker_origin),
+        (101, 5, Side::Bid.to_u8(), true)
+    );
+    assert_eq!(market_state(&ctx).bid_count, 0);
+}
+
+/// Skipping rather than failing is what keeps the rest of the side alive. A
+/// remainder rests at a slippage bound, so it is normally at the front — failing
+/// on it would take every level behind it with it for as long as the cross stood.
+#[test]
+fn a_crossed_remainder_does_not_shadow_the_depth_behind_it() {
     let mut ctx = setup();
     let taker = addr(Pubkey::new_unique());
     let maker = addr(Pubkey::new_unique());
     place(&mut ctx, taker_origin_args(Side::Bid, 101, 5), taker);
+    place(&mut ctx, place_args(Side::Bid, 98, 7), maker);
     place(&mut ctx, place_args(Side::Ask, 99, 5), maker);
     advance_slot(&mut ctx, 1);
 
-    assert_clob_err(
-        execute_meta(&mut ctx, Direction::Short, 5),
-        err_code(clob::error::ClobError::TakerOriginCrossPending),
-    );
-    // Nothing moved.
+    assert_eq!(quote(&mut ctx, Direction::Short, u64::MAX), vec![(98, 7)]);
+    let changes = execute(&mut ctx, Direction::Short, 7);
+    assert_eq!(changes, vec![(maker.to_bytes(), 7, 686, vec![2])]);
+    // The maker's bid filled; the remainder is still resting.
     let state = market_state(&ctx);
-    assert_eq!((state.bid_count, state.ask_count), (1, 1));
+    assert_eq!(state.bid_count, 1);
+    assert!(node(&ctx, state.best_bid).is_taker_origin());
+}
 
-    // Taking the ask at its own 99 is ordinary liquidity taking.
-    let changes = execute(&mut ctx, Direction::Long, 5);
-    assert_eq!(changes, vec![(maker.to_bytes(), 5, 495, vec![2])]);
-    // Uncrossed, the remainder is takeable again.
+/// A taker remainder nobody crosses is ordinary depth — quotable and takeable at
+/// its own price. That is the fallback when no maker lines up during the auction
+/// window, and how the remainder eventually fills if none ever does.
+#[test]
+fn an_uncrossed_taker_remainder_is_quotable_and_takeable() {
+    let mut ctx = setup();
+    let taker = addr(Pubkey::new_unique());
+    let maker = addr(Pubkey::new_unique());
+    place(&mut ctx, taker_origin_args(Side::Bid, 101, 5), taker);
+    // Best ask above the bid, so nothing crosses.
+    place(&mut ctx, place_args(Side::Ask, 105, 5), maker);
+    advance_slot(&mut ctx, 1);
+
+    assert_eq!(quote(&mut ctx, Direction::Short, u64::MAX), vec![(101, 5)]);
     let changes = execute(&mut ctx, Direction::Short, 5);
     assert_eq!(changes, vec![(taker.to_bytes(), 5, 505, vec![1])]);
+    assert_eq!(market_state(&ctx).bid_count, 0);
 }
 
 /// Two makers crossing is unclaimed arbitrage, not a taker's improvement, and
-/// gating on it would freeze every taker on the book.
+/// holding either side back over it would cost takers depth for nothing.
 #[test]
 fn a_maker_only_cross_is_not_gated() {
     let mut ctx = setup();
@@ -1370,10 +1419,10 @@ fn a_maker_only_cross_is_not_gated() {
 }
 
 /// The gate turns on with the counterparty's activation slot, not with its
-/// placement: an order inside its auction window cannot be matched by anyone,
-/// so it puts no improvement within reach — and a book that froze the moment a
-/// crossed order was *placed* would be frozen for the whole window, which is
-/// exactly when a migrated remainder is resting there.
+/// placement: an order inside its auction window cannot be matched by anyone, so
+/// it puts no improvement within reach — and holding the remainder back from the
+/// moment a crossed order was *placed* would cost the book that depth for the
+/// whole window, which is exactly when a migrated remainder is resting there.
 #[test]
 fn an_unactivated_counterparty_does_not_gate_the_fill() {
     let mut ctx = setup();
@@ -1401,16 +1450,96 @@ fn an_unactivated_counterparty_does_not_gate_the_fill() {
     );
     send(&mut ctx, ix).unwrap();
 
-    // Slot 10: the ask cannot match, so taking the remainder at 101 is all
-    // that is on offer and it is allowed.
+    // Slot 10: the ask cannot match, so the remainder is ordinary depth.
+    assert_eq!(quote(&mut ctx, Direction::Short, u64::MAX), vec![(101, 5)]);
     assert_eq!(execute(&mut ctx, Direction::Short, 1).len(), 1);
 
-    // Slot 30: the ask is a live counterparty and the remainder is protected.
+    // Slot 30: the ask is a live counterparty and the remainder drops out of
+    // both the quote and the fill.
     ctx.svm.warp_to_slot(29);
     assert_eq!(execute(&mut ctx, Direction::Short, 1).len(), 1);
     ctx.svm.warp_to_slot(30);
-    assert_clob_err(
-        execute_meta(&mut ctx, Direction::Short, 1),
-        err_code(clob::error::ClobError::TakerOriginCrossPending),
+    assert!(quote(&mut ctx, Direction::Short, u64::MAX).is_empty());
+    assert!(execute(&mut ctx, Direction::Short, 1).is_empty());
+}
+
+/// Quote and the gate on-chain: the crossed remainder's level is absent from the
+/// quote, the ordinary maker levels on either side of it are published, and the
+/// fill delivers exactly what was published. A router allocates from the quote
+/// and velocity binds the execute to it, so any disagreement between the two is a
+/// reverted transaction for a taker that did nothing wrong.
+#[test]
+fn quote_and_execute_skip_the_same_order() {
+    let mut ctx = setup();
+    let taker = addr(Pubkey::new_unique());
+    let maker = addr(Pubkey::new_unique());
+    let crosser = addr(Pubkey::new_unique());
+    place(&mut ctx, place_args(Side::Ask, 99, 5), maker);
+    place(&mut ctx, taker_origin_args(Side::Ask, 100, 5), taker);
+    place(&mut ctx, place_args(Side::Ask, 102, 5), maker);
+    let crossing_bid = place(&mut ctx, place_args(Side::Bid, 101, 5), crosser);
+    advance_slot(&mut ctx, 1);
+
+    assert_eq!(
+        quote(&mut ctx, Direction::Long, u64::MAX),
+        vec![(99, 5), (102, 5)]
+    );
+    // Execute honours exactly that: 10 base across the two makers, and the
+    // remainder still resting between them.
+    let changes = execute(&mut ctx, Direction::Long, u64::MAX);
+    assert_eq!(changes, vec![(maker.to_bytes(), 10, 1005, vec![1, 3])]);
+    let state = market_state(&ctx);
+    assert_eq!(state.ask_count, 1);
+    assert!(node(&ctx, state.best_ask).is_taker_origin());
+
+    // The crossing bid is ordinary depth the other way — the fill velocity's
+    // cross resolution runs.
+    assert_eq!(quote(&mut ctx, Direction::Short, u64::MAX), vec![(101, 5)]);
+
+    // With the cross gone the remainder is ordinary depth again, at its own
+    // price.
+    cancel(&mut ctx, crossing_bid, crosser).unwrap();
+    assert_eq!(quote(&mut ctx, Direction::Long, u64::MAX), vec![(100, 5)]);
+    assert_eq!(execute(&mut ctx, Direction::Long, 5).len(), 1);
+}
+
+/// The gate's cost on quote, which unlike execute walks a whole side: the worst
+/// case is an *uncrossed* taker-origin order at the head, so the counterparty
+/// lookup actually happens and the walk still runs to the level cap afterwards.
+#[test]
+fn cu_benchmark_quote_with_a_taker_origin_head() {
+    let mut ctx = setup();
+    let user = addr(Pubkey::new_unique());
+    for i in 0..PER_SIDE as u64 - 1 {
+        let ix = place_ix(&ctx, place_args(Side::Bid, 100 + i, 10), user);
+        send(&mut ctx, ix).unwrap();
+    }
+    // Best of the bid side, with an ask far above it so nothing crosses.
+    let ix = place_ix(
+        &ctx,
+        taker_origin_args(Side::Bid, 100 + PER_SIDE as u64, 10),
+        user,
+    );
+    send(&mut ctx, ix).unwrap();
+    let ix = place_ix(&ctx, place_args(Side::Ask, 100_000, 10), user);
+    send(&mut ctx, ix).unwrap();
+    advance_slot(&mut ctx, 1);
+
+    let ix = instruction::QuoteV0 {
+        args: QuoteArgsV0 {
+            direction: Direction::Short,
+            size: u64::MAX,
+            users: UserSetV0::EMPTY,
+            taker: None,
+        },
+    }
+    .to_instruction(accounts::QuoteV0 {
+        market: addr(ctx.market),
+    });
+    let meta = send(&mut ctx, ix).unwrap();
+    assert_eq!(parse_levels(&read_response(&ctx, &meta)).len(), 128);
+    println!(
+        "CU — quote(full side, uncrossed taker-origin at head): {}",
+        meta.compute_units_consumed
     );
 }

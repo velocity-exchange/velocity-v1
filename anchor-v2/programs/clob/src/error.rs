@@ -48,6 +48,13 @@ pub enum ClobError {
     InvalidResponseLevel,
     #[msg("Event payload exceeds its buffer")]
     EventTooLarge,
-    #[msg("A taker-origin order in this fill is crossed by a live counterparty")]
+    /// @deprecated Never returned. This was the first shape of the taker-origin
+    /// gate, which failed any fill that reached a taker remainder a counterparty
+    /// crossed. The gate now *skips* such an order the way it skips an expired
+    /// one (see `book::TakerOriginGate`), so the depth behind it stays tradeable
+    /// and a taker simply finds less depth than it hoped for — ordinary book
+    /// behaviour, not an error. Kept in place because the numeric code is the
+    /// on-chain identity of this and every later variant: do not delete or reuse.
+    #[msg("Deprecated: a crossed taker-origin order is skipped, not rejected")]
     TakerOriginCrossPending,
 }

@@ -17,6 +17,9 @@ export type SolanaPriorityFeeResponse = {
  * @param addresses Account keys to scope the fee lookup to (accounts the transaction will write-lock).
  * @returns Filtered, slot-descending samples; `undefined` if the RPC returned zero results; an empty array if the RPC call itself threw (error is logged, not thrown).
  */
+/** Signature of `fetchSolanaPriorityFee`, for callers overriding `PriorityFeeSubscriberConfig.fetchSolanaPriorityFee`. */
+export type FetchSolanaPriorityFee = typeof fetchSolanaPriorityFee;
+
 export async function fetchSolanaPriorityFee(
 	connection: Connection,
 	lookbackDistance: number,

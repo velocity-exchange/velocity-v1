@@ -208,6 +208,7 @@ export async function findBestMSolSuperStakeIxs({
 				inputMint: solSpotMarketAccount.mint,
 				outputMint: mSolSpotMarketAccount.mint,
 				amount,
+				userPublicKey: velocityClient.provider.wallet.publicKey,
 				slippageBps: 1000,
 				onlyDirectRoutes,
 			});

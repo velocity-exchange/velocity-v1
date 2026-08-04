@@ -516,6 +516,22 @@ pub mod velocity {
         handle_fill_perp_order(ctx, order_id, signed_route)
     }
 
+    /// `fill_perp_order` with the market's CLOB accounts required: a restable
+    /// remainder of the filled order migrates to the book instead of resting
+    /// in `User.orders`. v0's account list is frozen, so this is a separate
+    /// endpoint. `market_index` is an argument because the crank-conditions
+    /// PDA seed needs it before any account is loaded; it is checked against
+    /// the order's own market.
+    pub fn fill_perp_order_v1<'c: 'info, 'info>(
+        ctx: Context<'info, FillOrderV1<'info>>,
+        order_id: Option<u32>,
+        _maker_order_id: Option<u32>,
+        signed_route: Vec<Pubkey>,
+        market_index: u16,
+    ) -> Result<()> {
+        handle_fill_perp_order_v1(ctx, order_id, signed_route, market_index)
+    }
+
     pub fn revert_fill(ctx: Context<RevertFill>) -> Result<()> {
         handle_revert_fill(ctx)
     }

@@ -136,7 +136,21 @@ pub fn handle_fill_perp_order<'c: 'info, 'info>(
     };
 
     let user_key = &ctx.accounts.user.key();
-    fill_order(ctx, order_id, market_index, signed_route).inspect_err(|_e| {
+    fill_order(
+        FillAccounts {
+            state: &ctx.accounts.state,
+            filler: &ctx.accounts.filler,
+            filler_stats: &ctx.accounts.filler_stats,
+            user: &ctx.accounts.user,
+            user_stats: &ctx.accounts.user_stats,
+        },
+        ctx.remaining_accounts,
+        order_id,
+        market_index,
+        signed_route,
+        None,
+    )
+    .inspect_err(|_e| {
         msg!(
             "Err filling order id {} for user {} for market index {}",
             order_id,
@@ -148,16 +162,49 @@ pub fn handle_fill_perp_order<'c: 'info, 'info>(
     Ok(())
 }
 
-fn fill_order<'c: 'info, 'info>(
-    ctx: Context<'info, FillOrder<'info>>,
+/// The accounts a fill needs, borrowed so the v0 and v1 entrypoints — which
+/// have different `#[derive(Accounts)]` shapes — share one body.
+pub struct FillAccounts<'a, 'info> {
+    pub state: &'a AccountLoader<'info, State>,
+    pub filler: &'a AccountLoader<'info, User>,
+    pub filler_stats: &'a AccountLoader<'info, UserStats>,
+    pub user: &'a AccountLoader<'info, User>,
+    pub user_stats: &'a AccountLoader<'info, UserStats>,
+}
+
+/// The v1 entrypoint's way in: `fill_order` is private, and this names why it
+/// is being called with a CLOB route rather than exposing the whole body.
+pub fn fill_order_v1_entry<'c: 'info, 'info>(
+    accounts: FillAccounts<'_, 'info>,
+    remaining_accounts: &'c [AccountInfo<'info>],
     order_id: u32,
     market_index: u16,
     signed_route: Vec<Pubkey>,
+    clob: Option<crate::instructions::ClobRemainderRoute<'_, 'info>>,
+) -> Result<()> {
+    fill_order(
+        accounts,
+        remaining_accounts,
+        order_id,
+        market_index,
+        signed_route,
+        clob,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn fill_order<'c: 'info, 'info>(
+    accounts: FillAccounts<'_, 'info>,
+    remaining_accounts: &'c [AccountInfo<'info>],
+    order_id: u32,
+    market_index: u16,
+    signed_route: Vec<Pubkey>,
+    clob: Option<crate::instructions::ClobRemainderRoute<'_, 'info>>,
 ) -> Result<()> {
     let clock = &Clock::get()?;
-    let state = ctx.accounts.state.load()?;
+    let state = accounts.state.load()?;
 
-    let remaining_accounts_iter = &mut ctx.remaining_accounts.iter().peekable();
+    let remaining_accounts_iter = &mut remaining_accounts.iter().peekable();
     let AccountMaps {
         perp_market_map,
         spot_market_map,
@@ -175,10 +222,7 @@ fn fill_order<'c: 'info, 'info>(
 
     let builder_codes_enabled = state.builder_codes_enabled();
     let mut escrow = if builder_codes_enabled {
-        get_revenue_share_escrow_account(
-            remaining_accounts_iter,
-            &load!(ctx.accounts.user)?.authority,
-        )?
+        get_revenue_share_escrow_account(remaining_accounts_iter, &load!(accounts.user)?.authority)?
     } else {
         None
     };
@@ -192,7 +236,7 @@ fn fill_order<'c: 'info, 'info>(
     // accounts (quoter programs, response accounts, the quoter CPI signer).
     let leftover: Vec<&AccountInfo<'info>> = remaining_accounts_iter.collect();
     let (direction, unfilled, taker_ref, route_digest) = {
-        let user = load!(ctx.accounts.user)?;
+        let user = load!(accounts.user)?;
         let order = user
             .get_order(order_id)
             .ok_or(ErrorCode::OrderDoesNotExist)?;
@@ -245,14 +289,14 @@ fn fill_order<'c: 'info, 'info>(
 
     controller::orders::fill_perp_order_with_router(
         order_id,
-        &*ctx.accounts.state.load()?,
-        &ctx.accounts.user,
-        &ctx.accounts.user_stats,
+        &*accounts.state.load()?,
+        &accounts.user,
+        &accounts.user_stats,
         &spot_market_map,
         &perp_market_map,
         &mut oracle_map,
-        &ctx.accounts.filler,
-        &ctx.accounts.filler_stats,
+        &accounts.filler,
+        &accounts.filler_stats,
         &makers_and_referrer,
         &makers_and_referrer_stats,
         None,
@@ -261,6 +305,77 @@ fn fill_order<'c: 'info, 'info>(
         &mut router_inputs,
         &mut escrow.as_mut(),
     )?;
+
+    // v1 route only: a restable remainder belongs on the book, not in
+    // `User.orders`. This is the hole the taker-remainder design closes — a
+    // signed-message taker order cannot be IOC, so without this its leftover
+    // rests on the DLOB forever, and the DLOB is not where a restable order
+    // lives any more.
+    //
+    // Restable means the same thing it means on the place-and-take route: a
+    // fixed price, no oracle offset, not reduce-only, since the CLOB has
+    // neither oracle-floating nor reduce-only semantics. Market orders are
+    // deliberately excluded here even though they have an
+    // `auction_end_price`: resting at a slippage bound is only safe once a
+    // taker-origin cross pays the taker the improvement, and that does not
+    // exist yet (docs/taker-remainder-auction.md).
+    if let Some(clob) = clob {
+        let remainder = {
+            let user = load!(accounts.user)?;
+            let Ok(order_index) = user.get_order_index(order_id) else {
+                return Ok(());
+            };
+            let order = &user.orders[order_index];
+            let position_base = user
+                .get_perp_position(market_index)
+                .map(|position| position.base_asset_amount)
+                .unwrap_or(0);
+            (order.status == OrderStatus::Open
+                && order.order_type == OrderType::Limit
+                && !order.has_oracle_price_offset()
+                && !order.reduce_only)
+                .then(|| {
+                    (
+                        order.direction,
+                        order.price,
+                        order
+                            .get_base_asset_amount_unfilled(Some(position_base))
+                            .unwrap_or(0),
+                        order.max_ts,
+                    )
+                })
+        };
+        if let Some((direction, price, unfilled, max_ts)) = remainder {
+            if unfilled > 0 {
+                controller::orders::cancel_order_by_order_id(
+                    order_id,
+                    accounts.user,
+                    &perp_market_map,
+                    &spot_market_map,
+                    &mut oracle_map,
+                    clock,
+                )?;
+                crate::instructions::try_place_remainder_on_clob(
+                    accounts.user,
+                    clob.quoter,
+                    clob.clob_market,
+                    clob.clob_program,
+                    clob.quoter_signer,
+                    clob.quoter_signer_nonce,
+                    clob.crank_conditions,
+                    &perp_market_map,
+                    &spot_market_map,
+                    &mut oracle_map,
+                    market_index,
+                    direction,
+                    price,
+                    unfilled,
+                    max_ts,
+                    clock,
+                )?;
+            }
+        }
+    }
 
     Ok(())
 }

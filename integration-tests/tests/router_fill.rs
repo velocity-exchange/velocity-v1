@@ -4479,3 +4479,142 @@ fn place_and_make_v1_rests_the_unmatched_remainder_on_the_book() {
     assert_eq!(maker.open_orders, 1);
     assert_eq!(clob_ask_count(&fixture.svm, &fixture.clob_market), 1);
 }
+
+/// A keeper fill's restable remainder migrates to the book.
+///
+/// This is the case `place_and_take_v1` could not reach: a signed-message
+/// taker order cannot be IOC, so its leftover rests — and a keeper-driven fill
+/// held no CLOB accounts, so it rested on the DLOB. v1 gives the fill those
+/// accounts and the remainder lands on the book, where the activation window
+/// and the cross give it counterparties.
+#[test]
+fn fill_v1_migrates_a_restable_remainder_to_the_book() {
+    use velocity::state::order_params::PostOnlyParam;
+
+    let mut fixture = setup();
+    let _ = PostOnlyParam::None;
+
+    // A taker resting a limit long for a full unit at $100, with only half a
+    // unit of CLOB liquidity to take.
+    let maker_stats = Pubkey::find_program_address(
+        &[
+            b"user_stats",
+            fixture.clob_maker_authority.pubkey().as_ref(),
+        ],
+        &velocity_id(),
+    )
+    .0;
+    set_user_stats_account(
+        &mut fixture.svm,
+        maker_stats,
+        &fixture.clob_maker_authority.pubkey(),
+    );
+    place_clob_ask(&mut fixture, 100 * PRICE, UNIT / 2);
+
+    let taker_authority = Keypair::new();
+    let taker_user = Pubkey::new_unique();
+    let taker_stats = Pubkey::new_unique();
+    let mut taker_order = Order::default();
+    taker_order.order_id = 1;
+    taker_order.status = OrderStatus::Open;
+    taker_order.order_type = OrderType::Limit;
+    taker_order.market_type = MarketType::Perp;
+    taker_order.market_index = 0;
+    taker_order.direction = PositionDirection::Long;
+    taker_order.base_asset_amount = UNIT;
+    taker_order.price = 100 * PRICE;
+    let mut taker_state = trading_user(
+        &taker_authority.pubkey(),
+        10_000 * SPOT_BALANCE_PRECISION_U64,
+        Some(taker_order),
+    );
+    taker_state.next_order_id = 2;
+    set_user_account(&mut fixture.svm, taker_user, &taker_state);
+    set_user_stats_account(&mut fixture.svm, taker_stats, &taker_authority.pubkey());
+
+    let filler_user = Pubkey::new_unique();
+    let filler_stats = Pubkey::new_unique();
+    set_user_account(
+        &mut fixture.svm,
+        filler_user,
+        &trading_user(&fixture.keeper.pubkey(), 0, None),
+    );
+    set_user_stats_account(&mut fixture.svm, filler_stats, &fixture.keeper.pubkey());
+
+    fixture.svm.warp_to_slot(12);
+    set_oracle(
+        &mut fixture.svm,
+        fixture.oracle,
+        (100 * PRICE_PRECISION) as i64,
+        12,
+    );
+
+    let (quoter_signer, _) = quoter_signer_pda();
+    let mut accounts = velocity::accounts::FillOrderV1 {
+        state: state_pda(),
+        authority: fixture.keeper.pubkey(),
+        filler: filler_user,
+        filler_stats,
+        user: taker_user,
+        user_stats: taker_stats,
+        quoter: fixture.quoter,
+        clob_market: fixture.clob_market,
+        clob_program: clob_id(),
+        quoter_signer,
+        crank_conditions: None,
+    }
+    .to_account_metas(None);
+    accounts.push(AccountMeta::new_readonly(fixture.oracle, false));
+    accounts.push(AccountMeta::new(spot_market_pda(0), false));
+    accounts.push(AccountMeta::new(perp_market_pda(0), false));
+    accounts.push(AccountMeta::new(fixture.clob_maker_user, false));
+    accounts.push(AccountMeta::new(maker_stats, false));
+    // The quoter section: the mandatory CLOB baseline and its CPI accounts.
+    accounts.push(AccountMeta::new_readonly(fixture.quoter, false));
+    accounts.push(AccountMeta::new(fixture.clob_market, false));
+    accounts.push(AccountMeta::new_readonly(quoter_signer, false));
+    accounts.push(AccountMeta::new_readonly(clob_id(), false));
+
+    let ix = Instruction {
+        program_id: velocity_id(),
+        accounts,
+        data: velocity::instruction::FillPerpOrderV1 {
+            order_id: Some(1),
+            _maker_order_id: None,
+            signed_route: vec![],
+            market_index: 0,
+        }
+        .data(),
+    };
+    send_with_ixs(
+        &mut fixture.svm,
+        &fixture.keeper,
+        &[compute_unit_limit_ix(400_000), ix],
+        &[],
+    )
+    .unwrap();
+
+    let taker: User = read_zero_copy(&fixture.svm, &taker_user);
+    assert_eq!(
+        taker.perp_positions[0].base_asset_amount,
+        (UNIT / 2) as i64,
+        "took the book's half"
+    );
+    assert!(
+        taker
+            .orders
+            .iter()
+            .all(|order| order.status != OrderStatus::Open),
+        "no remainder rests on the DLOB"
+    );
+    assert_eq!(
+        taker.perp_positions[0].open_bids,
+        (UNIT / 2) as i64,
+        "the remainder is reserved against the book"
+    );
+    assert_eq!(
+        clob_bid_count(&fixture.svm, &fixture.clob_market),
+        1,
+        "and rests there as a bid"
+    );
+}

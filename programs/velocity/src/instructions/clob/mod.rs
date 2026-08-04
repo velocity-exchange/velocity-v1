@@ -10,6 +10,8 @@
 //!   remaining size from the aggregates.
 //! - [`modify_clob_order`]: cancel-and-replace in one instruction, with one
 //!   margin gate over the *net* change (the CLOB has no in-place mutation).
+//! - [`fill_v1`]: the keeper fill with the CLOB accounts required — a restable
+//!   remainder migrates to the book instead of resting in `User.orders`.
 //! - [`place_and_make_v1`]: the maker route with the CLOB accounts required —
 //!   an unmatched remainder rests on the book instead of being cancelled.
 //! - [`place_and_take_v1`]: the taker route with the CLOB accounts required —
@@ -50,6 +52,7 @@ mod crank_clob_remove_expired;
 mod crank_common;
 mod crank_conditions_setup;
 mod crank_cross_match;
+mod fill_v1;
 mod force_cancel_clob_orders;
 mod initialize_quoter_cross_conditions;
 mod modify_clob_order;
@@ -60,7 +63,7 @@ mod trigger_clob_order;
 
 pub use {
     cancel_clob_order::*, crank_clob_evict::*, crank_clob_remove_expired::*, crank_common::*,
-    crank_conditions_setup::*, crank_cross_match::*, force_cancel_clob_orders::*,
+    crank_conditions_setup::*, crank_cross_match::*, fill_v1::*, force_cancel_clob_orders::*,
     initialize_quoter_cross_conditions::*, modify_clob_order::*, place_and_make_v1::*,
     place_and_take_v1::*, place_clob_order::*, trigger_clob_order::*,
 };

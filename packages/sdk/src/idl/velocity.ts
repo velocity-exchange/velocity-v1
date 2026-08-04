@@ -2836,6 +2836,166 @@ export type Velocity = {
       ]
     },
     {
+      "name": "fillPerpOrderV1",
+      "docs": [
+        "`fill_perp_order` with the market's CLOB accounts required: a restable",
+        "remainder of the filled order migrates to the book instead of resting",
+        "in `User.orders`. v0's account list is frozen, so this is a separate",
+        "endpoint. `market_index` is an argument because the crank-conditions",
+        "PDA seed needs it before any account is loaded; it is checked against",
+        "the order's own market."
+      ],
+      "discriminator": [
+        88,
+        149,
+        73,
+        149,
+        110,
+        236,
+        243,
+        188
+      ],
+      "accounts": [
+        {
+          "name": "state"
+        },
+        {
+          "name": "authority",
+          "signer": true
+        },
+        {
+          "name": "filler",
+          "writable": true
+        },
+        {
+          "name": "fillerStats",
+          "writable": true
+        },
+        {
+          "name": "user",
+          "writable": true
+        },
+        {
+          "name": "userStats",
+          "writable": true
+        },
+        {
+          "name": "quoter",
+          "docs": [
+            "The market's CLOB registry entry — a remainder only ever rests on a",
+            "vetted book."
+          ]
+        },
+        {
+          "name": "clobMarket",
+          "docs": [
+            "(`ClobMarket::from_quoter`), so a valid entry cannot be pointed at an",
+            "arbitrary account."
+          ],
+          "writable": true
+        },
+        {
+          "name": "clobProgram"
+        },
+        {
+          "name": "quoterSigner",
+          "docs": [
+            "and the authority on nothing else."
+          ],
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  113,
+                  117,
+                  111,
+                  116,
+                  101,
+                  114,
+                  95,
+                  115,
+                  105,
+                  103,
+                  110,
+                  101,
+                  114
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "name": "crankConditions",
+          "docs": [
+            "Wake-hint host for the rested remainder. Optional as on every CLOB",
+            "placement path: a market whose conditions were never initialized must",
+            "still be fillable, and a missed hint costs crank latency, not liveness."
+          ],
+          "writable": true,
+          "optional": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  99,
+                  108,
+                  111,
+                  98,
+                  95,
+                  99,
+                  114,
+                  97,
+                  110,
+                  107,
+                  95,
+                  99,
+                  111,
+                  110,
+                  100,
+                  105,
+                  116,
+                  105,
+                  111,
+                  110,
+                  115
+                ]
+              },
+              {
+                "kind": "arg",
+                "path": "marketIndex"
+              }
+            ]
+          }
+        }
+      ],
+      "args": [
+        {
+          "name": "orderId",
+          "type": {
+            "option": "u32"
+          }
+        },
+        {
+          "name": "makerOrderId",
+          "type": {
+            "option": "u32"
+          }
+        },
+        {
+          "name": "signedRoute",
+          "type": {
+            "vec": "pubkey"
+          }
+        },
+        {
+          "name": "marketIndex",
+          "type": "u16"
+        }
+      ]
+    },
+    {
       "name": "forceCancelClobOrders",
       "docs": [
         "Force-cancel a failing account's CLOB orders (keeper-passed",

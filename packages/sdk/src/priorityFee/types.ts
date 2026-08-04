@@ -1,5 +1,8 @@
 import { Connection, PublicKey } from '@solana/web3.js';
-import { SolanaPriorityFeeResponse } from './solanaPriorityFeeMethod';
+import {
+	FetchSolanaPriorityFee,
+	SolanaPriorityFeeResponse,
+} from './solanaPriorityFeeMethod';
 import { HeliusPriorityFeeResponse } from './heliusPriorityFeeMethod';
 import {
 	VelocityMarketInfo,
@@ -52,6 +55,8 @@ export type PriorityFeeSubscriberConfig = {
 	velocityMarkets?: VelocityMarketInfo[];
 	/** `PriorityFeeStrategy` backing `getCustomStrategyResult()`; defaults to `AverageOverSlotsStrategy`. */
 	customStrategy?: PriorityFeeStrategy;
+	/** Overrides the SOLANA sampling call (`fetchSolanaPriorityFee`); defaults to the built-in RPC-calling implementation. Useful for routing through an upstream cache/proxy instead of hitting `getRecentPrioritizationFees` directly. */
+	fetchSolanaPriorityFee?: FetchSolanaPriorityFee;
 	/** Which upstream API to sample from; defaults to `PriorityFeeMethod.SOLANA`. */
 	priorityFeeMethod?: PriorityFeeMethod;
 	/** Number of recent slots to consider when computing fee estimates; defaults to 50. */

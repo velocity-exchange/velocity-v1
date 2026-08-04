@@ -61,6 +61,8 @@ test_files=(
   deleteInitializedSpotMarket.ts
   depositIntoSpotMarketVault.ts
   equityFloor.ts
+  equityFloorSwap.ts
+  equityFloorLazyTrip.ts
   velocityClient.ts
   insuranceFundStake.ts
   isolatedPositionVelocityClient.ts

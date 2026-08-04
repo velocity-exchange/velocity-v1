@@ -5136,12 +5136,14 @@ export class VelocityClient {
 			)) as UserAccount;
 		};
 
-		// moving equity floor triggers an on-chain margin check of the credited
-		// side, so its markets/oracles must be in the remaining accounts too
-		const userAccounts = [await loadUserAccount(fromSubAccountId, fromUser)];
-		if (resolvedFloorDelta.gt(ZERO)) {
-			userAccounts.push(await loadUserAccount(toSubAccountId, toUser));
-		}
+		// the credited side's markets/oracles must be in the remaining accounts
+		// too: a floor delta triggers an onchain margin check of the credited
+		// side, and under a tripped breaker the cure exemption computes the
+		// credited side's net equity even with a zero delta
+		const userAccounts = [
+			await loadUserAccount(fromSubAccountId, fromUser),
+			await loadUserAccount(toSubAccountId, toUser),
+		];
 
 		const remainingAccounts = this.getRemainingAccounts({
 			userAccounts,
@@ -10872,6 +10874,7 @@ export class VelocityClient {
 				inputMint: assetMarket.mint,
 				outputMint: liabilityMarket.mint,
 				amount: swapAmount,
+				userPublicKey: this.provider.wallet.publicKey,
 				slippageBps,
 				swapMode,
 				onlyDirectRoutes,

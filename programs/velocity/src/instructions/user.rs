@@ -1023,11 +1023,24 @@ pub fn handle_transfer_deposit_by_delegate<'c: 'info, 'info>(
         // a subaccount inside the buffer band (at/above floor) may still
         // rebalance floor away. Measured as net equity, matching the breaker
         // trip threshold.
-        let (from_user_net_equity, _) = calculate_user_equity(
+        let (from_user_net_equity, from_user_oracles_valid) = calculate_user_equity(
             from_user,
             &perp_market_map,
             &spot_market_map,
             &mut oracle_map,
+        )?;
+
+        // Defusal eligibility must not be decided off an invalid price. The
+        // counterpart `trip_equity_floor_breaker` requires valid oracles, so
+        // without this check a stale-high price lets this guard pass in the
+        // same slot the trip reverts. The floor transfer would then drop the
+        // subaccount to `equity_floor = 0`, after which `is_below_equity_floor`
+        // short-circuits to false until an admin sets a new floor. The oracle
+        // therefore only has to be bad for the slot this transfer lands in.
+        validate!(
+            from_user_oracles_valid,
+            ErrorCode::InvalidOracle,
+            "cannot verify equity floor transfer with an invalid oracle"
         )?;
 
         validate!(
@@ -1059,8 +1072,17 @@ pub fn handle_transfer_deposit_by_delegate<'c: 'info, 'info>(
     )?;
 
     if equity_floor_delta > 0 {
-        let (to_user_net_equity, _) =
+        let (to_user_net_equity, to_user_oracles_valid) =
             calculate_user_equity(to_user, &perp_market_map, &spot_market_map, &mut oracle_map)?;
+
+        // The new floor must be backed by equity that is actually measurable.
+        // A stale-high price would otherwise let a floor land on a subaccount
+        // that cannot back it.
+        validate!(
+            to_user_oracles_valid,
+            ErrorCode::InvalidOracle,
+            "cannot verify equity floor transfer with an invalid oracle"
+        )?;
 
         validate!(
             !to_user.is_below_buffered_equity_floor(to_user_net_equity),

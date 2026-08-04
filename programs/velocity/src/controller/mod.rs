@@ -6,6 +6,7 @@
 //! `position.rs` / `spot_position.rs` = position mutation primitives used by orders and liquidation.
 //! `funding.rs` / `pnl.rs` = market maintenance operations run by keeper cranks.
 
+pub mod equity_floor;
 pub mod funding;
 pub mod insurance;
 pub mod isolated_position;

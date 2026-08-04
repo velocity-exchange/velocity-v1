@@ -69,6 +69,13 @@ pub mod midpoint {
         instructions::set_levels_v0::handle_set_levels_v0(ctx, args)
     }
 
+    pub fn cancel_all_v0(
+        ctx: &mut Context<CancelAllV0>,
+        args: CancelAllArgsV0,
+    ) -> Result<state::CancelAllOutcomeV0> {
+        instructions::cancel_all_v0::handle_cancel_all_v0(ctx, args)
+    }
+
     pub fn quote_v0(
         ctx: &mut Context<QuoteV0>,
         args: QuoteArgsV0,

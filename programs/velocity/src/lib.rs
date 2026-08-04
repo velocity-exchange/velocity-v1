@@ -2284,6 +2284,17 @@ pub mod velocity {
         handle_cancel_clob_order(ctx, params)
     }
 
+    /// Pull every resting CLOB order this `User` holds on one side (or both) in
+    /// a single CPI, unwinding the aggregates from per-side totals. The book
+    /// caps one sweep; the log says when it stopped early and the call is safe
+    /// to repeat.
+    pub fn cancel_all_clob_orders(
+        ctx: Context<CancelAllClobOrders>,
+        params: CancelAllClobOrdersParams,
+    ) -> Result<()> {
+        handle_cancel_all_clob_orders(ctx, params)
+    }
+
     /// Reprice/resize a resting CLOB order: cancel-and-replace in one
     /// instruction, with a single margin gate over the net change. `None`
     /// fields keep the resting order's value.

@@ -47,6 +47,33 @@ pub struct OrderCancelRecordV0 {
     pub _pad: [u8; 4],
 }
 
+/// One per `cancel_all_v0` — a maker withdrawing a whole side (or both) in one
+/// instruction, rather than one [`OrderCancelRecordV0`] per order.
+///
+/// Orders are referenced by id only, the same contract [`ExecuteRecordV0`]
+/// uses: an indexer resolves price and size against the order table it built
+/// from place records, so the sweep's log stays ~8 bytes per order instead of
+/// re-stating what the reader already has. Ids come in book order, bids before
+/// asks.
+///
+/// `exhaustive` false means the call stopped at
+/// [`crate::state::CANCEL_ALL_ORDERS_CEILING`] and this user still has resting
+/// orders — a reader must not treat the side as empty.
+#[event]
+pub struct OrdersCancelRecordV0 {
+    pub authority: Address,
+    pub ts: i64,
+    pub bid_base_asset_amount: u64,
+    pub ask_base_asset_amount: u64,
+    pub market_index: u16,
+    pub sub_account_id: u16,
+    /// Which sides the sweep covered, as the wire enum's borsh tag
+    /// (0 = bids, 1 = asks, 2 = both).
+    pub sides: u8,
+    pub exhaustive: bool,
+    pub order_ids: Vec<u64>,
+}
+
 /// Crank eviction at the soft cap. Distinct from cancel: the UI shows
 /// "re-armed"/"evicted", and velocity re-arms triggers in the same tx.
 #[event(bytemuck)]

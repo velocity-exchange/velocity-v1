@@ -8,9 +8,12 @@ use {
         assert_consistent, assert_err, place, place_raw, test_config, user, TestMarket,
     },
     crate::{
-        book::{BookHeader, ClobBook, NodeArena, NIL},
+        book::{walk_side, BookHeader, ClobBook, NodeArena, Walk, NIL},
         error::ClobError,
-        state::{Direction, OrderBitFlag, PlaceOrderParams, Side},
+        state::{
+            CancelAllOutcome, CancelSidesV0, ClobMarketV0, Direction, OrderBitFlag,
+            PlaceOrderParams, Side, UserRefV0, CANCEL_ALL_ORDERS_CEILING,
+        },
     },
     anchor_lang_v2::prelude::*,
 };
@@ -215,6 +218,185 @@ fn removals_free_the_slot_and_close_the_list() {
     assert_eq!(book.free_head, mid.node_index);
     assert_err(book.cancel(maker, mid), ClobError::StaleOrderRef);
     assert_err(book.remove_expired(mid, 1), ClobError::StaleOrderRef);
+}
+
+/// Helper for the cancel-all tests: run the sweep and collect the ids it
+/// reported, asserting the book is fully consistent afterwards.
+#[track_caller]
+fn cancel_all(
+    book: &mut ClobMarketV0,
+    user: UserRefV0,
+    sides: CancelSidesV0,
+) -> (CancelAllOutcome, Vec<u64>) {
+    let mut ids = Vec::new();
+    let outcome = book
+        .cancel_all(user, sides, &mut |order_id| {
+            ids.push(order_id);
+            Ok(())
+        })
+        .expect("cancel_all succeeds");
+    assert_consistent(book);
+    (outcome, ids)
+}
+
+/// The property the aggregate wire rests on: after a sweep of a side, that
+/// side holds none of the swept user's orders, everyone else's are untouched in
+/// their original order, and the reported totals are exactly what left.
+#[test]
+fn cancel_all_takes_one_users_side_and_leaves_the_rest() {
+    let market = TestMarket::new(32);
+    let mut book = market.book();
+    let (mine, theirs) = (user(0xA), user(0xB));
+
+    // Interleaved through both sides, so a sweep has to relink around
+    // survivors rather than truncate a contiguous run.
+    let mut survivors = Vec::new();
+    for i in 0..4u64 {
+        place(&mut book, Side::Bid, 100 - i, 3, mine);
+        survivors.push(place(&mut book, Side::Bid, 100 - i, 7, theirs));
+        place(&mut book, Side::Ask, 200 + i, 5, mine);
+    }
+
+    let (outcome, ids) = cancel_all(&mut book, mine, CancelSidesV0::Both);
+    assert_eq!(outcome.bid_orders, 4);
+    assert_eq!(outcome.ask_orders, 4);
+    assert_eq!(outcome.bid_base_asset_amount, 12);
+    assert_eq!(outcome.ask_base_asset_amount, 20);
+    assert!(outcome.exhaustive);
+    assert_eq!(ids.len(), 8);
+
+    // Nothing of mine is left; every one of theirs is, best-first as placed.
+    assert_eq!(book.node_count(Side::Ask), 0);
+    assert_eq!(book.node_count(Side::Bid), 4);
+    let mut remaining = Vec::new();
+    walk_side(&mut book, Side::Bid, |_, _, node| {
+        assert_eq!(node.user_ref(), theirs);
+        remaining.push(node.order_id);
+        Ok(Walk::Continue)
+    })
+    .unwrap();
+    assert_eq!(
+        remaining,
+        survivors
+            .iter()
+            .map(|order| order.order_id)
+            .collect::<Vec<_>>()
+    );
+}
+
+#[test]
+fn cancel_all_sweeps_only_the_named_sides() {
+    let market = TestMarket::new(16);
+    let mut book = market.book();
+    let maker = user(1);
+    place(&mut book, Side::Bid, 100, 2, maker);
+    place(&mut book, Side::Ask, 200, 3, maker);
+
+    let (bids, _) = cancel_all(&mut book, maker, CancelSidesV0::Bids);
+    assert_eq!((bids.bid_orders, bids.ask_orders), (1, 0));
+    assert_eq!(bids.bid_base_asset_amount, 2);
+    assert_eq!(bids.ask_base_asset_amount, 0);
+    assert_eq!(book.node_count(Side::Ask), 1);
+
+    let (asks, _) = cancel_all(&mut book, maker, CancelSidesV0::Asks);
+    assert_eq!((asks.bid_orders, asks.ask_orders), (0, 1));
+    assert_eq!(asks.ask_base_asset_amount, 3);
+    assert_eq!(book.node_count(Side::Bid), 0);
+
+    // A sweep with nothing to take is not an error — it reports an empty,
+    // exhaustive result, which is what makes the call idempotent.
+    let (empty, ids) = cancel_all(&mut book, maker, CancelSidesV0::Both);
+    assert_eq!(
+        empty,
+        CancelAllOutcome {
+            exhaustive: true,
+            ..Default::default()
+        }
+    );
+    assert!(ids.is_empty());
+}
+
+/// Past the per-call cap the sweep stops and says so, and the orders it did
+/// remove are exactly the ones it reported — so repeating the call converges.
+#[test]
+fn cancel_all_stops_at_the_ceiling_and_reports_it() {
+    let capacity = 2 * (CANCEL_ALL_ORDERS_CEILING as u32 + 4);
+    let market = TestMarket::new(capacity);
+    let mut book = market.book();
+    let maker = user(1);
+    let total = CANCEL_ALL_ORDERS_CEILING as u64 + 4;
+    for i in 0..total {
+        place(&mut book, Side::Bid, 1_000 - i, 1, maker);
+    }
+
+    let (first, ids) = cancel_all(&mut book, maker, CancelSidesV0::Both);
+    assert!(!first.exhaustive);
+    assert_eq!(first.bid_orders, CANCEL_ALL_ORDERS_CEILING as u32);
+    assert_eq!(ids.len(), CANCEL_ALL_ORDERS_CEILING as usize);
+    assert_eq!(
+        book.node_count(Side::Bid),
+        total as u32 - CANCEL_ALL_ORDERS_CEILING as u32
+    );
+
+    // The remainder clears in one more call, which then reads as exhaustive.
+    let (second, ids) = cancel_all(&mut book, maker, CancelSidesV0::Both);
+    assert!(second.exhaustive);
+    assert_eq!(second.bid_orders, 4);
+    assert_eq!(ids.len(), 4);
+    assert_eq!(book.node_count(Side::Bid), 0);
+}
+
+/// The cap is a budget for the whole call, not for each side — otherwise a
+/// two-sided sweep could remove twice what the ceiling promises and overrun the
+/// cancel record's log buffer.
+#[test]
+fn the_cancel_all_ceiling_spans_both_sides() {
+    let per_side = CANCEL_ALL_ORDERS_CEILING as u32;
+    let market = TestMarket::new(2 * per_side);
+    let mut book = market.book();
+    let maker = user(1);
+    for i in 0..per_side as u64 {
+        place(&mut book, Side::Bid, 1_000 - i, 1, maker);
+        place(&mut book, Side::Ask, 2_000 + i, 1, maker);
+    }
+
+    let (outcome, ids) = cancel_all(&mut book, maker, CancelSidesV0::Both);
+    assert!(!outcome.exhaustive);
+    assert_eq!(outcome.orders(), CANCEL_ALL_ORDERS_CEILING as u32);
+    assert_eq!(ids.len(), CANCEL_ALL_ORDERS_CEILING as usize);
+    // Bids filled the budget, so the ask side was never touched.
+    assert_eq!(outcome.ask_orders, 0);
+    assert_eq!(book.node_count(Side::Ask), per_side);
+}
+
+/// The sweep ends by validating the book like every other mutating operation.
+#[test]
+fn cancel_all_ends_by_validating_the_book() {
+    let market = TestMarket::new(8);
+    let mut book = market.book();
+    let maker = user(1);
+    place(&mut book, Side::Bid, 100, 1, maker);
+    book.free_count += 1;
+    assert_err(
+        book.cancel_all(maker, CancelSidesV0::Both, &mut |_| Ok(())),
+        ClobError::BookInvariantViolated,
+    );
+}
+
+/// A sink that refuses fails the whole sweep rather than dropping an order
+/// from the record — the id list is what an indexer reconciles the book from.
+#[test]
+fn a_failing_id_sink_fails_the_sweep() {
+    let market = TestMarket::new(8);
+    let mut book = market.book();
+    let maker = user(1);
+    place(&mut book, Side::Bid, 100, 1, maker);
+    assert_err(
+        book.cancel_all(maker, CancelSidesV0::Both, &mut |_| {
+            Err(ClobError::EventTooLarge.into())
+        }),
+        ClobError::EventTooLarge,
+    );
 }
 
 #[test]

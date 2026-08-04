@@ -55,6 +55,48 @@ pub enum Direction {
     Short,
 }
 
+/// Which sides a `cancel_all_v0` withdraws. The same wire enum (and the same
+/// borsh tags) as the CLOB's, so a client speaks one shape to either quoter
+/// type. Named sides rather than a pair of bools because the wire must not be
+/// able to express "neither" — that is a maker believing their quotes are gone
+/// when nothing happened.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, wincode::SchemaRead, wincode::SchemaWrite)]
+pub enum CancelSidesV0 {
+    Bids,
+    Asks,
+    Both,
+}
+
+impl CancelSidesV0 {
+    /// The taker directions that consume the named sides. A bid is what a
+    /// `Short` taker hits, an ask what a `Long` taker hits.
+    pub fn directions(self) -> &'static [Direction] {
+        match self {
+            CancelSidesV0::Bids => &[Direction::Short],
+            CancelSidesV0::Asks => &[Direction::Long],
+            CancelSidesV0::Both => &[Direction::Short, Direction::Long],
+        }
+    }
+}
+
+/// What a `cancel_all_v0` withdrew.
+///
+/// Rung counts and nothing more, deliberately. Unlike the CLOB's, this sweep
+/// reserves nothing on velocity's side — spline depth is standing intent,
+/// margin-clamped at execute — so no caller has aggregates to unwind and the
+/// response is informational. Totalling the withdrawn intent as well would mean
+/// reading every rung back before zeroing it, which costs more per rung than
+/// the withdrawal itself and reports a number the maker (who wrote the shape)
+/// already knows.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default, wincode::SchemaRead, wincode::SchemaWrite)]
+pub struct CancelAllOutcomeV0 {
+    /// Rungs withdrawn per side.
+    pub bid_rungs: u8,
+    pub ask_rungs: u8,
+    /// Whether the mid was zeroed too.
+    pub mid_cleared: bool,
+}
+
 /// A velocity user in its derivable form — see the CLOB's `UserRefV0` for
 /// why identity is stored as `(authority, sub_account_id)` rather than the
 /// `User` account key.
@@ -498,6 +540,58 @@ impl MidpointQuoterV0 {
             };
         }
         *count = inputs.len() as u8;
+        Ok(())
+    }
+
+    /// Withdraw one side's standing intent: zero its live rungs and drop the
+    /// count to nothing. Returns the rungs cleared.
+    ///
+    /// Only the live prefix is written. The tail past `count` is already zero
+    /// by the ladder invariant, so a maker running eight rungs pays for eight
+    /// rather than for the ladder's capacity — which is what makes this cheaper
+    /// than `set_levels_v0` with an empty side, and it is a straight `fill` so
+    /// the write lowers to a memset rather than a per-rung loop.
+    pub fn clear_side(&mut self, direction: Direction) -> u8 {
+        let count = self.side_count(direction) as usize;
+        let (levels, stored) = match direction {
+            Direction::Long => (&mut self.asks[..], &mut self.ask_count),
+            Direction::Short => (&mut self.bids[..], &mut self.bid_count),
+        };
+        levels[..count].fill(SplineLevelV0 {
+            offset_ppm: 0,
+            size: 0,
+            filled: 0,
+        });
+        *stored = 0;
+        count as u8
+    }
+
+    /// Post-condition of [`Self::clear_side`]: the side's count is gone and
+    /// every rung the withdrawal wrote is zeroed, so nothing on it can quote.
+    ///
+    /// Scoped to the `cleared` rungs rather than the whole ladder, and that
+    /// scope is the point. The tail past the old count was already zero by the
+    /// ladder invariant and a withdrawal never writes there, so scanning it
+    /// would be compute spent proving something this operation cannot break —
+    /// on a path a maker takes under time pressure. Every other mutating
+    /// instruction still runs the full [`Self::validate`], so a tail corrupted
+    /// by anything else is still caught there. Same trade [`Self::set_mid`]
+    /// makes for the same reason.
+    pub fn validate_cleared_side(&self, direction: Direction, cleared: u8) -> Result<()> {
+        require!(
+            self.side_count(direction) == 0,
+            MidpointError::InvariantViolated
+        );
+        let levels = match direction {
+            Direction::Long => &self.asks,
+            Direction::Short => &self.bids,
+        };
+        require!(
+            levels[..(cleared as usize).min(MAX_SPLINE_LEVELS)]
+                .iter()
+                .all(|level| level.offset_ppm == 0 && level.size == 0 && level.filled == 0),
+            MidpointError::InvariantViolated
+        );
         Ok(())
     }
 
@@ -949,6 +1043,87 @@ mod tests {
             consumed,
         };
         assert!(quoter.apply_fill(Direction::Long, &fill).is_err());
+    }
+
+    #[test]
+    fn clear_side_withdraws_one_side_and_leaves_the_other() {
+        let mut quoter = quoter(&[(1_000, UNIT), (3_000, UNIT / 2)], &[(500, 2 * UNIT)]);
+        // A partly-consumed rung is withdrawn like any other, `filled` and all.
+        let fill = quoter.fill(Direction::Short, UNIT / 4, 0).unwrap();
+        quoter.apply_fill(Direction::Short, &fill).unwrap();
+
+        assert_eq!(quoter.clear_side(Direction::Short), 2);
+        assert_eq!(quoter.bid_count, 0);
+        assert!(quoter.bids.iter().all(|level| *level
+            == SplineLevelV0 {
+                offset_ppm: 0,
+                size: 0,
+                filled: 0
+            }));
+        // The ask side is untouched and still quotes.
+        assert_eq!(quoter.ask_count, 1);
+        assert_eq!(quoter.asks[0].size, 2 * UNIT);
+        quoter.validate().unwrap();
+        assert!(quoter
+            .write_quote_response(Direction::Short, UNIT, 0, true)
+            .is_ok());
+        assert!(quoter.fill(Direction::Short, UNIT, 0).unwrap().base == 0);
+        assert_eq!(quoter.fill(Direction::Long, UNIT, 0).unwrap().base, UNIT);
+    }
+
+    /// Clearing an empty side is a no-op that still leaves a valid ladder, so
+    /// the instruction is idempotent — a maker can fire it twice without a
+    /// failed transaction telling them nothing was wrong.
+    #[test]
+    fn clearing_an_empty_side_is_a_valid_no_op() {
+        let mut quoter = quoter(&[], &[(500, UNIT)]);
+        assert_eq!(quoter.clear_side(Direction::Short), 0);
+        quoter.validate().unwrap();
+        assert_eq!(quoter.clear_side(Direction::Long), 1);
+        assert_eq!(quoter.clear_side(Direction::Long), 0);
+        quoter.validate().unwrap();
+    }
+
+    /// The withdrawal post-check covers the rungs the withdrawal wrote and a
+    /// count that failed to drop — and deliberately not the tail beyond them,
+    /// which is the trade that keeps it proportional to the shape being pulled.
+    /// The full [`MidpointQuoterV0::validate`] every other mutating instruction
+    /// runs is what covers the tail.
+    #[test]
+    fn the_withdrawal_post_check_covers_what_the_withdrawal_wrote() {
+        let mut quoter = quoter(&[(1_000, UNIT), (3_000, UNIT)], &[(500, UNIT)]);
+        let cleared = quoter.clear_side(Direction::Short);
+        quoter
+            .validate_cleared_side(Direction::Short, cleared)
+            .unwrap();
+
+        // A rung the withdrawal should have zeroed but didn't.
+        quoter.bids[1].size = UNIT;
+        assert!(quoter
+            .validate_cleared_side(Direction::Short, cleared)
+            .is_err());
+        quoter.bids[1].size = 0;
+
+        // A count that failed to drop, which would leave the side quotable.
+        quoter.bid_count = 1;
+        assert!(quoter
+            .validate_cleared_side(Direction::Short, cleared)
+            .is_err());
+        quoter.bid_count = 0;
+
+        // Scoped to the side it was asked about: the ask side is still live and
+        // that is not an error.
+        quoter
+            .validate_cleared_side(Direction::Short, cleared)
+            .unwrap();
+        assert_eq!(quoter.ask_count, 1);
+
+        // Stale tail rungs are out of scope here, and caught by `validate`.
+        quoter.bids[7].size = UNIT;
+        quoter
+            .validate_cleared_side(Direction::Short, cleared)
+            .unwrap();
+        assert!(quoter.validate().is_err());
     }
 
     #[test]

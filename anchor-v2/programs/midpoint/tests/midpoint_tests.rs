@@ -18,11 +18,12 @@ use {
         },
         instruction,
         state::{
-            Direction, MidpointQuoterV0, QuoterConfigV0, SplineLevelInputV0, UserRefV0, UserSetV0,
-            RESPONSE_OFFSET,
+            CancelSidesV0, Direction, MidpointQuoterV0, QuoterConfigV0, SplineLevelInputV0,
+            UserRefV0, UserSetV0, RESPONSE_OFFSET,
         },
         velocity::STATE_HOT_FLOW_AUTHORITY_OFFSET,
-        ExecuteArgsV0, QuoteArgsV0, SetLevelsArgsV0, SetMidArgsV0, UpdateQuoterArgsV0,
+        CancelAllArgsV0, ExecuteArgsV0, QuoteArgsV0, SetLevelsArgsV0, SetMidArgsV0,
+        UpdateQuoterArgsV0,
     },
     solana_account::Account,
     solana_clock::Clock,
@@ -387,6 +388,23 @@ fn update_ix(ctx: &Ctx, args: UpdateQuoterArgsV0, new_hot: Option<Pubkey>) -> In
         authority: addr(ctx.authority.pubkey()),
         new_hot_authority: new_hot.map(addr),
     })
+}
+
+fn cancel_all_ix(ctx: &Ctx, signer: Pubkey, sides: CancelSidesV0, clear_mid: bool) -> Instruction {
+    instruction::CancelAllV0 {
+        args: CancelAllArgsV0 { sides, clear_mid },
+    }
+    .to_instruction(accounts::CancelAllV0 {
+        quoter: addr(ctx.quoter),
+        authority: addr(signer),
+    })
+}
+
+/// The `CancelAllOutcomeV0` the instruction returns, off return data:
+/// `(bid_rungs, ask_rungs, mid_cleared)`.
+fn parse_cancel_all(data: &[u8]) -> (u8, u8, bool) {
+    assert_eq!(data.len(), 3, "outcome wire width");
+    (data[0], data[1], data[2] == 1)
 }
 
 fn quote_levels(ctx: &mut Ctx, direction: Direction, size: u64) -> Vec<(u64, u64)> {
@@ -906,6 +924,124 @@ fn paused_quoter_is_silent() {
     assert!(parse_execute(&read_response(&ctx, &meta)).is_empty());
 }
 
+#[test]
+fn cancel_all_withdraws_the_named_side_and_leaves_the_other_quoting() {
+    let mut ctx = setup();
+    arm(&mut ctx);
+    // A partly-consumed rung is withdrawn like any other.
+    let ix = execute_ix(&ctx, Direction::Short, UNIT / 2);
+    send(&mut ctx, ix).unwrap();
+
+    let ix = cancel_all_ix(&ctx, ctx.hot.pubkey(), CancelSidesV0::Bids, false);
+    let meta = send(&mut ctx, ix).unwrap();
+    let (bid_rungs, ask_rungs, mid_cleared) = parse_cancel_all(&meta.return_data.data);
+    assert_eq!((bid_rungs, ask_rungs), (2, 0));
+    assert!(!mid_cleared);
+
+    // The bid side quotes nothing; the ask side is untouched, mid intact.
+    assert!(quote_levels(&mut ctx, Direction::Short, u64::MAX).is_empty());
+    assert_eq!(quote_levels(&mut ctx, Direction::Long, u64::MAX).len(), 2);
+    let quoter = read_quoter(&ctx);
+    assert_eq!((quoter.bid_count, quoter.ask_count), (0, 2));
+    assert_eq!(quoter.mid_price, MID);
+
+    // Re-shaping the withdrawn side brings it straight back, with `filled`
+    // reset — a withdrawal leaves no residue behind.
+    send_levels(
+        &mut ctx,
+        SetLevelsArgsV0 {
+            mid: None,
+            sequence: None,
+            bids: Some(levels(&[(1_000, UNIT)])),
+            asks: None,
+        },
+    )
+    .unwrap();
+    assert_eq!(
+        quote_levels(&mut ctx, Direction::Short, u64::MAX),
+        vec![(99_900_000, UNIT)]
+    );
+}
+
+#[test]
+fn cancel_all_can_take_both_sides_and_the_mid_at_once() {
+    let mut ctx = setup();
+    arm(&mut ctx);
+
+    let ix = cancel_all_ix(&ctx, ctx.hot.pubkey(), CancelSidesV0::Both, true);
+    let meta = send(&mut ctx, ix).unwrap();
+    let (bid_rungs, ask_rungs, mid_cleared) = parse_cancel_all(&meta.return_data.data);
+    assert_eq!((bid_rungs, ask_rungs), (2, 2));
+    assert!(mid_cleared);
+
+    let quoter = read_quoter(&ctx);
+    assert_eq!((quoter.bid_count, quoter.ask_count), (0, 0));
+    assert_eq!(quoter.mid_price, 0);
+    assert!(quote_levels(&mut ctx, Direction::Long, u64::MAX).is_empty());
+    assert!(quote_levels(&mut ctx, Direction::Short, u64::MAX).is_empty());
+
+    // A zeroed mid silences the spline even once the ladders are back, so
+    // re-arming shape alone can't accidentally resume quoting.
+    send_levels(
+        &mut ctx,
+        SetLevelsArgsV0 {
+            mid: None,
+            sequence: None,
+            bids: Some(levels(&[(1_000, UNIT)])),
+            asks: Some(levels(&[(1_000, UNIT)])),
+        },
+    )
+    .unwrap();
+    assert!(quote_levels(&mut ctx, Direction::Long, u64::MAX).is_empty());
+    let ix = set_mid_ix(&ctx, MID, 0);
+    send(&mut ctx, ix).unwrap();
+    assert_eq!(quote_levels(&mut ctx, Direction::Long, u64::MAX).len(), 1);
+}
+
+/// Both of the maker's keys can withdraw, and nobody else can. The cold key
+/// matters because a maker's panic button must work when the hot key is what
+/// they no longer trust.
+#[test]
+fn either_maker_key_can_cancel_all_and_no_one_else() {
+    let mut ctx = setup();
+    arm(&mut ctx);
+
+    let stranger = Keypair::new();
+    ctx.svm.airdrop(&stranger.pubkey(), 1_000_000_000).unwrap();
+    let ix = cancel_all_ix(&ctx, stranger.pubkey(), CancelSidesV0::Both, false);
+    assert!(send_signed_by(&mut ctx, ix, Some(&stranger)).is_err());
+    // The quoted wallet is not a config key either — it consented to being
+    // quoted, which is not authority over the shape.
+    let ix = cancel_all_ix(
+        &ctx,
+        ctx.user_authority.pubkey(),
+        CancelSidesV0::Both,
+        false,
+    );
+    assert!(send(&mut ctx, ix).is_err());
+    assert_eq!(read_quoter(&ctx).bid_count, 2);
+
+    let ix = cancel_all_ix(&ctx, ctx.hot.pubkey(), CancelSidesV0::Bids, false);
+    send(&mut ctx, ix).unwrap();
+    let ix = cancel_all_ix(&ctx, ctx.authority.pubkey(), CancelSidesV0::Asks, false);
+    send(&mut ctx, ix).unwrap();
+    let quoter = read_quoter(&ctx);
+    assert_eq!((quoter.bid_count, quoter.ask_count), (0, 0));
+}
+
+/// Firing it twice is not an error: a maker hitting their kill switch again
+/// must not get a failed transaction that reads as "something is wrong".
+#[test]
+fn cancel_all_is_idempotent() {
+    let mut ctx = setup();
+    arm(&mut ctx);
+    let ix = cancel_all_ix(&ctx, ctx.hot.pubkey(), CancelSidesV0::Both, true);
+    send(&mut ctx, ix).unwrap();
+    let ix = cancel_all_ix(&ctx, ctx.hot.pubkey(), CancelSidesV0::Both, true);
+    let meta = send(&mut ctx, ix).unwrap();
+    assert_eq!(parse_cancel_all(&meta.return_data.data), (0, 0, true));
+}
+
 /// THE number this program exists for: a mid write must be near the compute
 /// floor so makers can track fair value tick-by-tick for ~free. The budget
 /// is deliberately above the measured cost (headroom for anchor-v2 drift)
@@ -999,4 +1135,163 @@ fn set_mid_cu_stays_near_the_floor() {
     );
     assert!(quote_cu <= 18_000, "quote regressed: {quote_cu} CU");
     assert!(execute_cu <= 32_000, "execute regressed: {execute_cu} CU");
+}
+
+/// Withdrawing quotes is the other move a maker makes under time pressure, so
+/// it is budgeted like the mid write.
+///
+/// Two things are pinned, both against the way this was done before
+/// (`set_levels_v0` with empty sides, plus a separate `set_mid_v0` to stop the
+/// spline outright): a one-sided withdrawal, and the atomic full stop. The cost
+/// must also track the rungs actually pulled rather than the ladder's capacity,
+/// which is what makes a two-rung desk cheap.
+#[test]
+fn cancel_all_cu_beats_the_set_levels_it_replaces() {
+    let full_side = (0..64).map(|i| (1_000 + i, UNIT)).collect::<Vec<_>>();
+    let shapes: [(&str, &[(u64, u64)]); 3] = [
+        ("empty", &[]),
+        ("2 rungs/side", &[(1_000, UNIT), (3_000, UNIT)]),
+        ("64 rungs/side", &full_side),
+    ];
+    let mut one_side = Vec::new();
+    for (label, side) in shapes {
+        // Baseline: clearing both sides the old way, two `set_levels_v0` args
+        // and a full both-ladder re-scan.
+        let mut ctx = setup();
+        send_levels(
+            &mut ctx,
+            SetLevelsArgsV0 {
+                mid: Some(MID),
+                sequence: None,
+                bids: Some(levels(side)),
+                asks: Some(levels(side)),
+            },
+        )
+        .unwrap();
+        let set_levels_cu = send_levels(
+            &mut ctx,
+            SetLevelsArgsV0 {
+                mid: None,
+                sequence: None,
+                bids: Some(levels(&[])),
+                asks: Some(levels(&[])),
+            },
+        )
+        .unwrap()
+        .compute_units_consumed;
+        // ...and the one-sided baseline, for the one-sided comparison.
+        let mut ctx = setup();
+        send_levels(
+            &mut ctx,
+            SetLevelsArgsV0 {
+                mid: Some(MID),
+                sequence: None,
+                bids: Some(levels(side)),
+                asks: Some(levels(side)),
+            },
+        )
+        .unwrap();
+        let set_levels_one_side_cu = send_levels(
+            &mut ctx,
+            SetLevelsArgsV0 {
+                mid: None,
+                sequence: None,
+                bids: Some(levels(&[])),
+                asks: None,
+            },
+        )
+        .unwrap()
+        .compute_units_consumed;
+
+        let mut ctx = setup();
+        send_levels(
+            &mut ctx,
+            SetLevelsArgsV0 {
+                mid: Some(MID),
+                sequence: None,
+                bids: Some(levels(side)),
+                asks: Some(levels(side)),
+            },
+        )
+        .unwrap();
+        // One side only, which is what a maker pulling a single quote pays.
+        let ix = cancel_all_ix(&ctx, ctx.hot.pubkey(), CancelSidesV0::Bids, false);
+        let one_side_cu = send(&mut ctx, ix).unwrap().compute_units_consumed;
+
+        // The like-for-like against the baseline: both sides, mid untouched.
+        let mut ctx = setup();
+        send_levels(
+            &mut ctx,
+            SetLevelsArgsV0 {
+                mid: Some(MID),
+                sequence: None,
+                bids: Some(levels(side)),
+                asks: Some(levels(side)),
+            },
+        )
+        .unwrap();
+        let ix = cancel_all_ix(&ctx, ctx.hot.pubkey(), CancelSidesV0::Both, false);
+        let both_cu = send(&mut ctx, ix).unwrap().compute_units_consumed;
+        // The same sweep taking the mid with it — the atomic full stop, whose
+        // baseline is `set_levels(clear both)` *plus* a `set_mid(0)`, since
+        // clearing the ladders alone leaves the spline armed.
+        let mut ctx = setup();
+        send_levels(
+            &mut ctx,
+            SetLevelsArgsV0 {
+                mid: Some(MID),
+                sequence: None,
+                bids: Some(levels(side)),
+                asks: Some(levels(side)),
+            },
+        )
+        .unwrap();
+        let ix = cancel_all_ix(&ctx, ctx.hot.pubkey(), CancelSidesV0::Both, true);
+        let both_and_mid_cu = send(&mut ctx, ix).unwrap().compute_units_consumed;
+        let ix = set_mid_ix(&ctx, 0, 0);
+        let set_mid_cu = send(&mut ctx, ix).unwrap().compute_units_consumed;
+        let full_stop_baseline = set_levels_cu + set_mid_cu;
+
+        println!(
+            "CU — cancel_all({label}): one side {one_side_cu}, both {both_cu}, \
+             both + mid {both_and_mid_cu}; baseline: set_levels(clear one) \
+             {set_levels_one_side_cu}, set_levels(clear both) {set_levels_cu}, \
+             + set_mid(0) = {full_stop_baseline}"
+        );
+        assert!(
+            one_side_cu < set_levels_one_side_cu,
+            "{label}: withdrawing one side ({one_side_cu}) must beat clearing it via \
+             set_levels ({set_levels_one_side_cu}) — it writes only the live rungs and \
+             re-checks only the side it pulled"
+        );
+        assert!(
+            both_and_mid_cu < full_stop_baseline,
+            "{label}: the atomic full stop ({both_and_mid_cu}) must beat the two \
+             instructions it replaces ({full_stop_baseline})"
+        );
+        assert!(
+            one_side_cu < both_cu,
+            "{label}: withdrawing one side ({one_side_cu}) must cost less than both \
+             ({both_cu}) — the cost is meant to track the rungs actually written"
+        );
+        // Deliberately no assertion that a two-sided withdrawal beats
+        // `set_levels(clear both)`. At the ladder's full 64 rungs a side it does
+        // not: `set_levels` pays a flat cost (it always rewrites both ladders in
+        // full and always re-scans them) while this pays per rung, so the two
+        // cross around the high fifties. What is claimed above is what holds
+        // everywhere — one-sided withdrawals, and the atomic full stop.
+        one_side.push(one_side_cu);
+    }
+
+    // The design property: cost tracks the rungs actually pulled rather than the
+    // ladder's capacity, which is what makes a normal desk's shape cheap. A flat
+    // cost here would mean the withdrawal had stopped being proportional.
+    let [empty, shallow, deep] = one_side[..] else {
+        panic!("one measurement per shape");
+    };
+    assert!(
+        empty < shallow && shallow * 2 < deep,
+        "withdrawal cost must scale with the rungs pulled, got {empty} (none), \
+         {shallow} (2 rungs), {deep} (64 rungs)"
+    );
 }

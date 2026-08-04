@@ -19,11 +19,20 @@ use {
 };
 
 /// Largest arena the harness backs. Sized once so the buffer length is a
-/// constant; smaller markets just set a shorter `data_len`. Big enough to hold
-/// `EXECUTE_FILLS_CEILING` orders on one side (a side is half the arena), so
-/// the response tests can drive the widest execute response a market can
-/// produce.
-pub const MAX_CAPACITY: u32 = 2 * crate::state::EXECUTE_FILLS_CEILING as u32;
+/// constant; smaller markets just set a shorter `data_len`.
+///
+/// A side is half the arena, so this is twice the most orders any test needs on
+/// one side: `EXECUTE_FILLS_CEILING` for the widest execute response a market
+/// can produce, and a few past `CANCEL_ALL_ORDERS_CEILING` so a cancel-all
+/// sweep can be driven over its per-call cap.
+const MAX_PER_SIDE: u32 =
+    if crate::state::EXECUTE_FILLS_CEILING > crate::state::CANCEL_ALL_ORDERS_CEILING {
+        crate::state::EXECUTE_FILLS_CEILING as u32
+    } else {
+        crate::state::CANCEL_ALL_ORDERS_CEILING as u32 + 4
+    };
+
+pub const MAX_CAPACITY: u32 = 2 * MAX_PER_SIDE;
 
 const BUFFER_BYTES: usize = MIN_ACCOUNT_BUF + ClobMarketV0::space_for(MAX_CAPACITY);
 

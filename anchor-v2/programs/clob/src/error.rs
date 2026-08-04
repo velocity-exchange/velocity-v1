@@ -48,4 +48,6 @@ pub enum ClobError {
     InvalidResponseLevel,
     #[msg("Event payload exceeds its buffer")]
     EventTooLarge,
+    #[msg("A taker-origin order in this fill is crossed by a live counterparty")]
+    TakerOriginCrossPending,
 }

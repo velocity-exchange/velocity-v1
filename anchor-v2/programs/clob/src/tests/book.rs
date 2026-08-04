@@ -251,13 +251,8 @@ fn expired_orders_are_reclaimed_only_once_expired() {
     let maker = user(1);
     let order = book
         .place(PlaceOrderParams {
-            side: Side::Ask,
-            price: 100,
-            base_asset_amount: 5,
-            user: maker,
-            activation_slot: 0,
-            placed_slot: 0,
             max_ts: 1_000,
+            ..super::market::params(Side::Ask, 100, 5, maker)
         })
         .unwrap();
 

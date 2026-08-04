@@ -30,6 +30,11 @@ pub struct PlaceOrderArgsV0 {
     /// (velocity verified control before the CPI; the CLOB trusts its
     /// `place_authority` for identity).
     pub user: UserRefV0,
+    /// Mark the order [`crate::state::OrderBitFlag::TakerOrigin`]: it is an
+    /// unfilled taker remainder velocity migrated onto the book, not a quote
+    /// its owner chose to post. Only velocity can know that, so it is an
+    /// argument rather than something the CLOB infers.
+    pub taker_origin: bool,
 }
 
 /// Place a resting order. Returns the new order's [`OrderRefV0`] (as return
@@ -67,6 +72,7 @@ pub fn handle_place_order_v0(
         activation_slot,
         placed_slot: clock.slot,
         max_ts: args.max_ts,
+        taker_origin: args.taker_origin,
     })?;
 
     emit_pod!(OrderPlaceRecordV0 {

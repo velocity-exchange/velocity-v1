@@ -38,6 +38,14 @@
 //! routing waterfall outright — so it fails the instruction rather than ship.
 //! See [`write_level`] and [`check_fill_price`].
 //!
+//! One thing execute refuses outright: filling an order marked
+//! [`OrderBitFlag::TakerOrigin`] while a counterparty on the other side crosses
+//! it — see [`reject_crossed_taker_origin`]. Every order still fills at its own
+//! stored price; the book neither reprices a cross nor resolves one, it only
+//! declines to sell the taker's improvement to whoever gets there first, and
+//! reports the flag on [`crate::state::RemovedOrderV0`] so velocity can settle
+//! the cross at the counterparty's price.
+//!
 //! Execute is also held to its own quote on the way out, by velocity: the
 //! response's total quote must be the notional of these same orders at the
 //! prices `quote` published, to within the one unavoidable division. That is
@@ -360,6 +368,7 @@ impl ClobBook for ClobMarketV0 {
             activation_slot,
             placed_slot,
             max_ts,
+            taker_origin,
         } = params;
         require!(
             price != 0 && base_asset_amount != 0 && !address_eq(&user.authority, &ZERO_ADDRESS),
@@ -410,7 +419,9 @@ impl ClobBook for ClobMarketV0 {
                 order_id,
                 prev,
                 next,
-                bit_flags: OrderBitFlag::Open as u8 | side.side_bit(),
+                bit_flags: OrderBitFlag::Open as u8
+                    | side.side_bit()
+                    | OrderBitFlag::TakerOrigin.bit_if(taker_origin),
                 padding0: 0,
                 sub_account_id: user.sub_account_id,
                 padding: [0; 4],
@@ -430,7 +441,8 @@ impl ClobBook for ClobMarketV0 {
         require!(
             placed.order_id == order_id
                 && placed.is_bit_flag_set(OrderBitFlag::Open)
-                && placed.side() == side,
+                && placed.side() == side
+                && placed.is_taker_origin() == taker_origin,
             ClobError::BookInvariantViolated
         );
         require!(
@@ -608,6 +620,10 @@ impl ClobBook for ClobMarketV0 {
     /// Fills merge by user: the records already written into the response
     /// *are* the accumulator, so a repeat maker patches their record's
     /// totals in place instead of a heap `Vec` of balance changes.
+    ///
+    /// One order it refuses to fill: a taker-origin order that has a live
+    /// crossing counterparty on the other side. See
+    /// [`reject_crossed_taker_origin`].
     fn execute(
         &mut self,
         direction: Direction,
@@ -642,6 +658,10 @@ impl ClobBook for ClobMarketV0 {
         // attributed to earlier fills. See `quote_size` below.
         let mut swept = 0u128;
         let mut paid = 0u128;
+        // Best price on the other side that could match this slot, resolved on
+        // first need: only a taker-origin order about to be filled asks for it,
+        // so a book holding none pays nothing for the R4 gate.
+        let mut counterparty: Option<Option<u64>> = None;
 
         walk_side(self, side, |book, index, node| {
             if remaining == 0 || fills.len() == max_fills {
@@ -649,6 +669,17 @@ impl ClobBook for ClobMarketV0 {
             }
             if !is_matchable(node, users, taker, grace_slots, slot, now)? {
                 return Ok(Walk::Continue);
+            }
+            if node.is_taker_origin() {
+                let best = match counterparty {
+                    Some(cached) => cached,
+                    None => {
+                        let resolved = best_actionable_price(book, side.opposite(), slot, now)?;
+                        counterparty = Some(resolved);
+                        resolved
+                    }
+                };
+                reject_crossed_taker_origin(side, node.price, best)?;
             }
             let user_key = node.user_ref().to_bytes();
             let existing =
@@ -887,6 +918,7 @@ fn removed_order(node: &OrderNodeV0) -> RemovedOrder {
         price: node.price,
         base_asset_amount: node.base_asset_amount,
         side: node.side(),
+        taker_origin: node.is_taker_origin(),
     }
 }
 
@@ -908,6 +940,59 @@ fn is_matchable(
         return Ok(false);
     }
     Ok(!skip_unknown_user(users, node, grace_slots, slot)?)
+}
+
+/// Refuse to fill a taker-origin order while a counterparty on the other side
+/// crosses it.
+///
+/// A taker-origin order rests at the worst price its owner agreed to tolerate,
+/// and the activation delay before it becomes matchable is an auction: makers
+/// line up inside the window, and the best-priced one is meant to get the cross
+/// — at *its* price, so the improvement over the resting price goes to the
+/// taker. Letting anyone take the order at its own price while that
+/// counterparty is standing there hands the improvement to whoever lands a
+/// transaction in the activation slot instead, which is the latency race the
+/// window exists to replace with a price race. So the fill is refused and the
+/// cross has to be resolved first.
+///
+/// Scoped to the order actually being filled, not to the book: an ordinary
+/// maker×maker cross is nobody's improvement to steal and must not freeze
+/// takers, and the fill that *consumes the counterparty* — the direction
+/// velocity's cross resolution runs — has to stay open or the cross could never
+/// be resolved at all.
+fn reject_crossed_taker_origin(side: Side, price: u64, counterparty: Option<u64>) -> Result<()> {
+    require!(
+        !counterparty.is_some_and(|opposite| side.is_crossed_by(price, opposite)),
+        ClobError::TakerOriginCrossPending
+    );
+    Ok(())
+}
+
+/// Price of the best order on `side` that could be matched this slot at all.
+///
+/// Deliberately blind to the caller's user set and its self-trade exclusion,
+/// which say whether *this* caller may fill an order, not whether the order is
+/// a live counterparty. An order still inside its activation delay (or already
+/// expired) is skipped, because nothing can match it yet: a cross that involves
+/// one is not actionable by anyone, so there is no improvement within reach to
+/// protect — and firing on it would freeze the book for the whole auction
+/// window, which is precisely when a migrated taker remainder sits unactivated
+/// in front of the resting book.
+fn best_actionable_price(
+    book: &mut ClobMarketV0,
+    side: Side,
+    slot: u64,
+    now: i64,
+) -> Result<Option<u64>> {
+    let mut best = None;
+    walk_side(book, side, |_, _, node| {
+        if node.is_expired(now) || !node.is_active(slot) {
+            return Ok(Walk::Continue);
+        }
+        best = Some(node.price);
+        Ok(Walk::Stop)
+    })?;
+    Ok(best)
 }
 
 /// Grace rule for a matchable order whose user is missing from the caller's

@@ -50,6 +50,12 @@ pub const CHANGE_MIN_BYTES: usize = USER_REF_BYTES + 2 * core::mem::size_of::<u6
 /// Borsh width of a [`CancelledRemainderV0`].
 pub const CANCELLED_BYTES: usize = USER_REF_BYTES + 2 * core::mem::size_of::<u64>();
 
+/// Borsh width of a [`RemovedOrderV0`] — the return data of
+/// `cancel_order_v0`/`evict_worst_v0`/`remove_expired_v0`. Not used to size
+/// anything here (anchor serializes the value), but velocity reads those bytes
+/// by offset, so the width is pinned rather than assumed.
+pub const REMOVED_ORDER_BYTES: usize = USER_REF_BYTES + 3 * core::mem::size_of::<u64>() + 2;
+
 // Hard ceilings on the per-market response/batch config — bound by the
 // response region and the 32KB program heap, which don't vary per market.
 // The per-market operating points live on the header. Partial execution is
@@ -146,6 +152,23 @@ impl Side {
             Side::Ask => OrderBitFlag::Ask as u8,
         }
     }
+
+    pub fn opposite(self) -> Side {
+        match self {
+            Side::Bid => Side::Ask,
+            Side::Ask => Side::Bid,
+        }
+    }
+
+    /// Whether an order of this side resting at `price` is crossed by an order
+    /// on the opposite side at `opposite`: a bid is crossed by an ask at or
+    /// below it, an ask by a bid at or above it.
+    pub fn is_crossed_by(self, price: u64, opposite: u64) -> bool {
+        match self {
+            Side::Bid => opposite <= price,
+            Side::Ask => opposite >= price,
+        }
+    }
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -154,6 +177,25 @@ pub enum OrderBitFlag {
     Open = 1,
     /// Order is an ask (clear = bid).
     Ask = 2,
+    /// The order is an unfilled taker remainder migrated onto the book rather
+    /// than a quote someone chose to post: it demands liquidity, and in a
+    /// cross it is the aggressor, so the cross prices at the counterparty's
+    /// side. Velocity is the only caller and sets it at migration; the CLOB
+    /// itself still fills the order at its own stored price like any other,
+    /// and only reports the fact (see [`RemovedOrderV0::taker_origin`]).
+    TakerOrigin = 4,
+}
+
+impl OrderBitFlag {
+    /// This bit when `set`, nothing otherwise — mirrors [`Side::side_bit`] for
+    /// composing a node's `bit_flags`.
+    pub fn bit_if(self, set: bool) -> u8 {
+        if set {
+            self as u8
+        } else {
+            0
+        }
+    }
 }
 
 #[account]
@@ -290,6 +332,10 @@ impl OrderNodeV0 {
         } else {
             Side::Bid
         }
+    }
+
+    pub fn is_taker_origin(&self) -> bool {
+        self.is_bit_flag_set(OrderBitFlag::TakerOrigin)
     }
 
     pub fn is_expired(&self, now: i64) -> bool {
@@ -453,6 +499,7 @@ pub struct RemovedOrder {
     pub price: u64,
     pub base_asset_amount: u64,
     pub side: Side,
+    pub taker_origin: bool,
 }
 
 /// What `execute` hands back: where the wire response was written, plus the
@@ -477,6 +524,19 @@ pub struct RemovedOrderV0 {
     pub price: u64,
     pub base_asset_amount: u64,
     pub side: Side,
+    /// The order carried [`OrderBitFlag::TakerOrigin`].
+    ///
+    /// This is how velocity identifies the aggressor of a cross it resolves,
+    /// and it is the only place the CLOB reports the flag. A taker-origin
+    /// cross cannot go through `execute_v0` at all — [`crate::book`]'s R4
+    /// gate refuses to fill a taker-origin order that has a live crossing
+    /// counterparty — so velocity resolves one by taking the counterparty's
+    /// side with `execute_v0` (an ordinary fill at the counterparty's own
+    /// price) and lifting the taker-origin order off the book with
+    /// `cancel_order_v0`, which returns this. Without the flag velocity
+    /// cannot tell which of the two removed orders was demanding liquidity,
+    /// and so cannot know which side's price the match settles at.
+    pub taker_origin: bool,
 }
 
 /// A sub-`min_order_size` remainder culled during execute, on the wire so
@@ -502,6 +562,8 @@ pub struct PlaceOrderParams {
     pub activation_slot: u64,
     pub placed_slot: u64,
     pub max_ts: i64,
+    /// Marks the order [`OrderBitFlag::TakerOrigin`].
+    pub taker_origin: bool,
 }
 
 /// Per-market configuration, set at init (also the init wire args).

@@ -5385,3 +5385,291 @@ fn a_dust_improvement_resolves_without_paying_the_cranker() {
         "still cheaper than being taken at the 100 it rested at"
     );
 }
+
+/// Cancel one `party`'s CLOB order through the velocity adapter, unwinding its
+/// reservation.
+fn cancel_clob_order_for(fixture: &mut Fixture, party: &Party, order_ref: ClobOrderRefV0) {
+    let (quoter_signer, _) = quoter_signer_pda();
+    let ix = Instruction {
+        program_id: velocity_id(),
+        accounts: velocity::accounts::CancelClobOrder {
+            state: state_pda(),
+            user: party.user,
+            authority: party.authority.pubkey(),
+            quoter: fixture.quoter,
+            clob_market: fixture.clob_market,
+            clob_program: clob_id(),
+            quoter_signer,
+        }
+        .to_account_metas(None),
+        data: velocity::instruction::CancelClobOrder {
+            params: CancelClobOrderParams {
+                market_index: 0,
+                order_ref,
+            },
+        }
+        .data(),
+    };
+    let authority = party.authority.insecure_clone();
+    send(&mut fixture.svm, &authority, ix, &[]).unwrap();
+}
+
+/// Two migrated taker remainders crossing each other, and nothing else on the
+/// book — `early` resting first, `late` a slot later.
+///
+/// The sequence is the reachable one rather than a contrivance. A remainder
+/// rests; something crosses it, which takes it out of the book's matchable set;
+/// and while it is held back a second taker's fill finds no liquidity where that
+/// remainder is standing, so its own unfilled size migrates onto the other side
+/// instead of taking it. Lifting the blocker leaves two remainders facing each
+/// other with nobody able to take either — which is exactly the state neither
+/// crank could resolve before.
+fn rest_crossing_remainders(
+    fixture: &mut Fixture,
+    blocker: &Party,
+    early: (&Party, PositionDirection, u64, u64),
+    late: (&Party, PositionDirection, u64, u64),
+    late_slot: u64,
+) {
+    let (early_party, early_direction, early_price, early_size) = early;
+    let (late_party, late_direction, late_price, late_size) = late;
+    rest_taker_origin_order(
+        fixture,
+        early_party,
+        early_direction,
+        early_price,
+        early_size,
+    );
+    let blocker_ref =
+        place_clob_order_for(fixture, blocker, late_direction, early_price, early_size);
+
+    // A slot apart, so time priority is decided by the slot rather than by the
+    // order id. The same-slot tie-break is a unit test.
+    fixture.svm.warp_to_slot(late_slot);
+    set_oracle(
+        &mut fixture.svm,
+        fixture.oracle,
+        (100 * PRICE_PRECISION) as i64,
+        late_slot,
+    );
+    rest_taker_origin_order(fixture, late_party, late_direction, late_price, late_size);
+    cancel_clob_order_for(fixture, blocker, blocker_ref);
+    assert_eq!(clob_bid_count(&fixture.svm, &fixture.clob_market), 1);
+    assert_eq!(clob_ask_count(&fixture.svm, &fixture.clob_market), 1);
+}
+
+/// Two taker remainders crossing each other, resolved by price-time priority:
+/// the one that rested first is the maker at its own price, and the later
+/// arrival is the aggressor that crosses into it.
+///
+/// A bid at 101 rests first; an ask at 99 for half the size arrives a slot
+/// later. Neither can be taken — the book withholds both — and neither can be
+/// consumed with `execute_v0` for the same reason, so the crank cancels the pair
+/// and settles it at **101**: the seller gets the whole improvement for having
+/// come to trade, and the bid gets the price it was already offering, which is
+/// all a maker is ever promised.
+#[test]
+fn two_crossed_remainders_settle_at_the_one_that_rested_first() {
+    let mut fixture = setup();
+    pause_amm_fill(&mut fixture.svm);
+
+    let early = party(&mut fixture.svm, 10_000 * SPOT_BALANCE_PRECISION_U64);
+    let late = party(&mut fixture.svm, 10_000 * SPOT_BALANCE_PRECISION_U64);
+    let blocker = party(&mut fixture.svm, 10_000 * SPOT_BALANCE_PRECISION_U64);
+    let keeper = party(&mut fixture.svm, 0);
+
+    rest_crossing_remainders(
+        &mut fixture,
+        &blocker,
+        (&early, PositionDirection::Long, 101 * PRICE, UNIT),
+        (&late, PositionDirection::Short, 99 * PRICE, UNIT / 2),
+        12,
+    );
+    assert_eq!(
+        perp_position(&fixture.svm, &late.user).open_asks,
+        -((UNIT / 2) as i64),
+        "the later remainder's worst case is reserved on the book"
+    );
+
+    fixture.svm.warp_to_slot(20);
+    set_oracle(
+        &mut fixture.svm,
+        fixture.oracle,
+        (100 * PRICE_PRECISION) as i64,
+        20,
+    );
+
+    // The aggressor is the later order, so it is the `taker` of the crank.
+    let ix = crank_taker_origin_cross_ix(&fixture, &keeper, &late, &early);
+    let keeper_authority = keeper.authority.insecure_clone();
+    let meta = send_with_ixs(
+        &mut fixture.svm,
+        &keeper_authority,
+        &[compute_unit_limit_ix(400_000), ix],
+        &[],
+    )
+    .unwrap();
+    // Two cancels, the settlement and the re-placement — no `execute_v0`, which
+    // is why this is cheaper than the maker path rather than more expensive.
+    assert!(
+        meta.compute_units_consumed < 70_000,
+        "crank cost {} CU",
+        meta.compute_units_consumed
+    );
+    assert!(
+        meta.logs
+            .join(" ")
+            .contains("taker-origin cross: 500000000 base at 101000000 instead of 99000000"),
+        "settled at the earlier order's price: {:?}",
+        meta.logs
+    );
+
+    // The seller sold at 101, not at the 99 it was resting at: it receives the
+    // 50.5 notional less its taker fee and the cranker's cut, comfortably above
+    // the 49.5 its own price would have brought.
+    let late_position = perp_position(&fixture.svm, &late.user);
+    assert_eq!(late_position.base_asset_amount, -((UNIT / 2) as i64));
+    let received = late_position.quote_asset_amount;
+    assert!(
+        (50_400_000..50_500_000).contains(&received),
+        "received {received}: 101 less fees, where 99 would have brought 49_500_000"
+    );
+    assert_eq!(late_position.open_asks, 0, "consumed outright");
+    assert_eq!(late_position.open_orders, 0);
+
+    // The buyer paid its own 101 and keeps its rebate — a maker's outcome, and
+    // the half the seller could not fill is back on the book still taker-origin.
+    let early_position = perp_position(&fixture.svm, &early.user);
+    assert_eq!(early_position.base_asset_amount, (UNIT / 2) as i64);
+    assert!(
+        (-50_500_000..=-50_480_000).contains(&early_position.quote_asset_amount),
+        "paid its own 101, less its maker rebate: {}",
+        early_position.quote_asset_amount
+    );
+    assert_eq!(
+        early_position.open_bids,
+        (UNIT / 2) as i64,
+        "the re-placed leftover keeps its reservation"
+    );
+    assert_eq!(early_position.open_orders, 1);
+    assert_eq!(clob_bid_count(&fixture.svm, &fixture.clob_market), 1);
+    assert_eq!(clob_ask_count(&fixture.svm, &fixture.clob_market), 0);
+    // The re-placed leftover's new handle is the transaction's return data: the
+    // old order id is stale, and a client holding it has to re-read this one.
+    let new_order_id = u64::from_le_bytes(meta.return_data.data[4..12].try_into().unwrap());
+    assert!(new_order_id > 0, "the leftover rested under a new id");
+
+    // The cranker is paid out of the improvement, in quote, on its own `User`:
+    // the ordinary filler reward, 10% of the taker fee on the 50.5 notional.
+    let reward = perp_position(&fixture.svm, &keeper.user).quote_asset_amount;
+    assert_eq!(reward, 5_050);
+    let improvement = 1_000_000; // (101 - 99) * 0.5 units
+    assert!(
+        reward < improvement,
+        "reward {reward} must fit inside the {improvement} improvement"
+    );
+    // The invariant, measured against what resting would have paid: the seller
+    // keeps more than its own 99 net of the same fee schedule.
+    assert!(
+        received > 49_500_000 - 49_500,
+        "crossing brought {received}, resting would have brought {}",
+        49_500_000 - 49_500
+    );
+
+    // Nothing crosses the leftover now, so there is no cross to resolve and the
+    // crank declines rather than doing something arbitrary.
+    let ix = crank_taker_origin_cross_ix(&fixture, &keeper, &late, &early);
+    let err = send_with_ixs(
+        &mut fixture.svm,
+        &keeper_authority,
+        &[compute_unit_limit_ix(400_000), ix],
+        &[],
+    )
+    .expect_err("nothing crosses the leftover");
+    assert!(
+        err.meta.logs.join(" ").contains("NoTakerOriginCross"),
+        "unexpected: {:?}",
+        err.meta.logs
+    );
+}
+
+/// The leftover belongs to whichever remainder was bigger, and once both sides
+/// are remainders that can be the aggressor. Here the later order is twice the
+/// size of the one it crosses, so its own unconsumed half goes back on the book
+/// — on its own side, at its own price, still taker-origin — while the earlier
+/// order is consumed outright.
+#[test]
+fn the_aggressors_own_leftover_goes_back_on_its_side() {
+    let mut fixture = setup();
+    pause_amm_fill(&mut fixture.svm);
+
+    let early = party(&mut fixture.svm, 10_000 * SPOT_BALANCE_PRECISION_U64);
+    let late = party(&mut fixture.svm, 10_000 * SPOT_BALANCE_PRECISION_U64);
+    let blocker = party(&mut fixture.svm, 10_000 * SPOT_BALANCE_PRECISION_U64);
+    let keeper = party(&mut fixture.svm, 0);
+
+    // The earlier remainder is the *ask* this time, so the aggressor is a buyer
+    // and the settlement price is the ask's 99 — the mirror of the case above.
+    rest_crossing_remainders(
+        &mut fixture,
+        &blocker,
+        (&early, PositionDirection::Short, 99 * PRICE, UNIT / 2),
+        (&late, PositionDirection::Long, 101 * PRICE, UNIT),
+        12,
+    );
+
+    fixture.svm.warp_to_slot(20);
+    set_oracle(
+        &mut fixture.svm,
+        fixture.oracle,
+        (100 * PRICE_PRECISION) as i64,
+        20,
+    );
+
+    let ix = crank_taker_origin_cross_ix(&fixture, &keeper, &late, &early);
+    let keeper_authority = keeper.authority.insecure_clone();
+    let meta = send_with_ixs(
+        &mut fixture.svm,
+        &keeper_authority,
+        &[compute_unit_limit_ix(400_000), ix],
+        &[],
+    )
+    .unwrap();
+    assert!(
+        meta.logs
+            .join(" ")
+            .contains("taker-origin cross: 500000000 base at 99000000 instead of 101000000"),
+        "the earlier ask priced it: {:?}",
+        meta.logs
+    );
+
+    // The buyer bought half a unit at 99 and still has half a unit resting at
+    // its own 101, with the reservation to match — cancelling the whole thing
+    // because half of it crossed would take its queue position for nothing.
+    let late_position = perp_position(&fixture.svm, &late.user);
+    assert_eq!(late_position.base_asset_amount, (UNIT / 2) as i64);
+    assert_eq!(late_position.open_bids, (UNIT / 2) as i64);
+    assert_eq!(late_position.open_orders, 1);
+    assert_eq!(clob_bid_count(&fixture.svm, &fixture.clob_market), 1);
+    assert_eq!(clob_ask_count(&fixture.svm, &fixture.clob_market), 0);
+
+    // The earlier ask was consumed outright: nothing reserved, no order left.
+    let early_position = perp_position(&fixture.svm, &early.user);
+    assert_eq!(early_position.base_asset_amount, -((UNIT / 2) as i64));
+    assert_eq!(early_position.open_asks, 0);
+    assert_eq!(early_position.open_orders, 0);
+    assert!(
+        early_position.quote_asset_amount >= 49_500_000,
+        "the seller got the 99 it asked for, plus its rebate: {}",
+        early_position.quote_asset_amount
+    );
+
+    // The buyer's all-in cost beats the 101 it was resting at, which is the
+    // whole point of the mechanism.
+    let paid = -late_position.quote_asset_amount;
+    assert!(
+        paid < 50_500_000 + 50_500,
+        "crossing cost {paid}, resting would have cost {}",
+        50_500_000 + 50_500
+    );
+}

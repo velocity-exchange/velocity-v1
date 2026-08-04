@@ -2,7 +2,8 @@
 
 Status: **built.** R1–R7 are live: the CLOB carries the marker, reports it on the removal wire and
 protects a crossed remainder; velocity migrates restable remainders (`fill_perp_order_v1`,
-`place_and_take_v1`, `place_and_make_v1`) and resolves the cross with `crank_taker_origin_cross`.
+`place_and_take_v1`, `place_and_make_v1`) and resolves the cross with `crank_taker_origin_cross` —
+against an ordinary maker, and between two remainders (R3's price-time rule).
 Two things named below are deliberately still open — relay discovery (a condition that wakes a
 turner when a taker-origin cross appears; the crank is keeper-callable today) and open question C
 (market remainders still do not migrate). Design source of truth for the surrounding work is the
@@ -64,6 +65,26 @@ liquidity; in a cross it is the aggressor.*
 match settles at the **counterparty's** price. Best price on the book wins, and price priority
 already orders the book that way, so no new selection logic — only the price the match settles at
 changes.
+
+**When both sides are taker-origin, price-time priority decides which is the counterparty**: the
+order that rested first is the maker and its price is the settlement price; the later arrival is the
+aggressor and crosses into it. Ties on the placement slot break on the lower CLOB order id — a
+book's `next_order_id` only increases, so within one slot the lower id rested first.
+
+Nothing else about R3 changes, because nothing else needs to: the later order is the one that came
+to trade, which is what "taker" means everywhere else in this document, and the earlier order gets
+the price it was already offering, which is all a maker is ever promised. The alternative on the
+table was the midpoint, and it is worse in the way that matters — it takes half the improvement away
+from the order that earned it and hands it to one that was already content, and it makes the
+outcome depend on a number neither party quoted.
+
+Two consequences worth stating. A re-placed leftover gets a new placement slot along with its new
+order id, so it loses its time priority against other remainders; that is the same trade the new
+order id already makes, and the alternative is a book API for editing a resting order's size.
+And the *earlier* order captures nothing here — no improvement, no rebate beyond the ordinary maker
+rebate — even when a better ordinary maker is resting behind the aggressor on its own side. Only
+the best matchable order on each side is considered, so that better maker is not in this pair; it
+becomes reachable on the next crank, once the pair clears.
 
 **The CLOB does not do this.** It stays honest: every order fills at its own stored price, exactly
 as today, and the book neither reprices a cross nor resolves one. Velocity already computes fill
@@ -199,6 +220,15 @@ keeps floor-guarding those.
   `settle_taker_origin_cross` settles the two as an ordinary two-user match, not through
   `cross_match`'s protocol pass-through. The cancel runs first, so a refusal leaves the book
   untouched and the counterparty's fill never meets R4's gate.
+- **Two taker remainders crossing each other take a second branch of the same crank**: both are
+  cancelled and settled directly against each other, at the earlier one's price. They cannot be
+  resolved the other way — R4's gate withholds a crossed taker-origin order from `execute_v0`, so
+  an execute aimed at one would pass over it and fill deeper depth instead, settling against a maker
+  the cross was never priced for. Cancelling both takes them out of the book's reach entirely, and
+  two `RemovedOrderV0`s carry everything the settlement needs (owner, side, price, size, and the
+  flag). Because there is no `execute_v0` in it, this branch is *cheaper* than the maker one, and it
+  is the only one where the leftover can belong to either side: the match is sized to the smaller
+  order, so whichever was bigger goes back on the book still taker-origin.
 - Only the best matchable order on each side is considered. A taker-origin order behind a better
   one on its own side is crossed by that better order too, which makes the pair an ordinary
   maker×maker cross for `crank_cross_match`; once that clears, this crank sees it. The two cranks
@@ -208,12 +238,8 @@ keeps floor-guarding those.
   delete a taker's whole resting order by crossing one unit of it. It comes back with a new CLOB
   order id, so a client's cancel hint has to be re-read.
 - Crank-fee accounting out of the improvement (`calculate_taker_origin_cross_fee`), and the R5
-  invariant.
-- Not built: **two taker-origin orders crossing each other** is refused (`NoTakerOriginCross`).
-  Both sides are aggressors, so neither's price is "the counterparty's price" and nothing here gets
-  to pick a winner between them. Two swift remainders on opposite sides both wanting to trade is a
-  real case; resolving it needs a pricing rule this document does not have (the midpoint, or
-  price-time priority to whichever rested first).
+  invariant. R5 is indifferent to which branch resolved the cross: the reward is drawn from the same
+  improvement, capped the same way, and a zero or dust improvement resolves for free either way.
 
 **SDK / keepers**
 - `getFillPerpOrderIx` gains the CLOB accounts (v1 route), mirroring the take builder.

@@ -4672,15 +4672,9 @@ pub fn price_taker_origin_cross(
         )
     };
 
-    // Both notionals at the CLOB's own rounding (floor of price × base), so
-    // the improvement is measured in the same units the fill will settle in.
-    let notional = |price: u64| -> VelocityResult<u64> {
-        price
-            .cast::<u128>()?
-            .safe_mul(base_asset_amount.cast()?)?
-            .safe_div(BASE_PRECISION_U64.cast()?)?
-            .cast::<u64>()
-    };
+    // Both notionals at the CLOB's own rounding, so the improvement is
+    // measured in the same units the fill will settle in.
+    let notional = |price: u64| clob_notional(price, base_asset_amount);
     let fee = fees::calculate_taker_origin_cross_fee(
         taker_direction,
         notional(rest_price)?,
@@ -4715,14 +4709,109 @@ pub struct TakerOriginCrossFill {
     pub maker: Pubkey,
 }
 
+/// How the counterparty leg of a taker-origin cross reached the settlement,
+/// and therefore what bookkeeping the settlement still owes its `User`.
+///
+/// The two arms are the two shapes a resolvable cross comes in, and the book
+/// decides which — they are not interchangeable ways of doing the same thing.
+/// An ordinary maker is *consumed* through the book, the only actor allowed to
+/// price its own fill, so the settlement holds the response to the quote
+/// velocity read off the book beforehand. A second taker remainder cannot be
+/// consumed at all: the book withholds a crossed taker-origin order from
+/// `execute_v0` exactly as it withholds the first, and would silently fill
+/// deeper depth instead. So the crank cancels both, and the price comes from
+/// two removals the book itself vouched for.
+pub enum TakerOriginCounterparty {
+    /// Filled through the book. `subjects` is the resting run velocity read
+    /// before the CPI — the quote the response is held to — and the response's
+    /// retired order ids are what unwind the maker's open-order slots.
+    Executed {
+        response: crate::state::prop_amm::ExecuteResponseV0,
+        subjects: crate::state::prop_amm::QuoterSubjects,
+    },
+    /// Cancelled off the book by the crank, and settled at its own price for
+    /// `base_asset_amount` of its size. Its order left the book whole, so its
+    /// open-order slot and any leftover reservation are the *caller's* to
+    /// settle — only the caller can re-place a leftover, which is a CPI.
+    Cancelled {
+        removed: crate::state::prop_amm::ClobRemovedOrderV0,
+        base_asset_amount: u64,
+    },
+}
+
+/// The counterparty leg, resolved to what the settlement needs of it.
+struct CounterpartyLeg<'a> {
+    user: crate::state::prop_amm::ClobUserRefV0,
+    base_asset_amount: u64,
+    quote_asset_amount: u64,
+    /// The book's balance change, when the book is what filled it — whose
+    /// retired order ids the settlement unwinds. `None` for a cancelled
+    /// counterparty, which had no fill on the book to report.
+    change: Option<&'a crate::state::prop_amm::UserBalanceChange>,
+}
+
+impl TakerOriginCounterparty {
+    fn leg(&self) -> VelocityResult<CounterpartyLeg<'_>> {
+        match self {
+            // One counterparty, one balance change: the crank sizes the match
+            // at the counterparty's own remaining size, so a response naming
+            // anyone else — or splitting across orders — is not the cross that
+            // was priced.
+            Self::Executed { response, .. } => {
+                let changes: Vec<&crate::state::prop_amm::UserBalanceChange> = response
+                    .balance_changes
+                    .iter()
+                    .filter(|change| change.base_size > 0)
+                    .collect();
+                validate!(
+                    changes.len() == 1,
+                    ErrorCode::InvalidQuoterResponse,
+                    "taker-origin cross expects one counterparty fill, got {}",
+                    changes.len()
+                )?;
+                let change = changes[0];
+                Ok(CounterpartyLeg {
+                    user: change.user,
+                    base_asset_amount: change.base_size,
+                    quote_asset_amount: change.quote_size,
+                    change: Some(change),
+                })
+            }
+            Self::Cancelled {
+                removed,
+                base_asset_amount,
+            } => Ok(CounterpartyLeg {
+                user: removed.user,
+                base_asset_amount: *base_asset_amount,
+                quote_asset_amount: clob_notional(removed.price, *base_asset_amount)?,
+                change: None,
+            }),
+        }
+    }
+}
+
+/// Notional of `base_asset_amount` at `price`, floored.
+///
+/// The CLOB's own rounding, which is what makes a notional velocity computes
+/// for a cross it prices itself land in the same units a book-filled leg
+/// would have — and lets one number serve both the fee's improvement and the
+/// settlement's quote.
+pub fn clob_notional(price: u64, base_asset_amount: u64) -> VelocityResult<u64> {
+    price
+        .cast::<u128>()?
+        .safe_mul(base_asset_amount.cast()?)?
+        .safe_div(BASE_PRECISION_U64.cast()?)?
+        .cast::<u64>()
+}
+
 /// Settle a resolved taker-origin cross as an ordinary two-user match at the
 /// counterparty's price.
 ///
 /// This is R3: the taker-origin order demanded liquidity, so the counterparty
 /// keeps its own price and the taker captures the whole difference. Nothing
-/// reprices anything here — the CLOB filled the counterparty at its stored
-/// price and the response's `(base, quote)` *is* that price, so settling the
-/// pair against it is all it takes.
+/// reprices anything here — the counterparty's `(base, quote)` *is* that price,
+/// whether the book filled it (its stored price, as the response reports) or
+/// the crank cancelled it (its removal price, at [`clob_notional`]'s rounding).
 ///
 /// Unlike [`cross_match`] there is no protocol pass-through: no ephemeral
 /// protocol taker, no second leg, no surplus landing in the protocol `User`,
@@ -4738,19 +4827,18 @@ pub struct TakerOriginCrossFill {
 /// return. That is not a fabrication like `cross_match`'s ephemeral order: the
 /// taker really does have this order, it is just stored on the book.
 ///
-/// `removed` is the taker-origin order as the CLOB reported it on removal —
-/// the authority on which side was the aggressor, not velocity's book read —
-/// and `order_slot` the slot it was placed. `response` is the counterparty
-/// leg's execute response and `subjects` the resting run velocity read off the
-/// book before that CPI ran (the quote the response is held to).
+/// `removed` is the taker-origin order the *aggressor* was resting as the CLOB
+/// reported it on removal — the authority on which side was demanding
+/// liquidity, not velocity's book read — and `order_slot` the slot it was
+/// placed. `counterparty` is the other side of the match, in whichever of its
+/// two shapes ([`TakerOriginCounterparty`]) the book left available.
 #[allow(clippy::too_many_arguments)]
 pub fn settle_taker_origin_cross(
     state: &State,
     market_index: u16,
     removed: &crate::state::prop_amm::ClobRemovedOrderV0,
     order_slot: u64,
-    response: &crate::state::prop_amm::ExecuteResponseV0,
-    subjects: &crate::state::prop_amm::QuoterSubjects,
+    counterparty: &TakerOriginCounterparty,
     fee: &fees::TakerOriginCrossFee,
     oracle_price: i64,
     oracle_stale_for_margin: bool,
@@ -4773,21 +4861,7 @@ pub fn settle_taker_origin_cross(
     let taker_direction = removed.side.to_position_direction();
     let maker_direction = taker_direction.opposite();
 
-    // One counterparty, one balance change: the crank sizes the match at the
-    // counterparty's own remaining size, so a response naming anyone else — or
-    // splitting across orders — is not the cross that was priced.
-    let changes: Vec<&crate::state::prop_amm::UserBalanceChange> = response
-        .balance_changes
-        .iter()
-        .filter(|change| change.base_size > 0)
-        .collect();
-    validate!(
-        changes.len() == 1,
-        ErrorCode::InvalidQuoterResponse,
-        "taker-origin cross expects one counterparty fill, got {}",
-        changes.len()
-    )?;
-    let change = changes[0];
+    let leg = counterparty.leg()?;
     let taker_ref = {
         let taker = load!(taker_loader)?;
         crate::state::prop_amm::ClobUserRefV0 {
@@ -4797,42 +4871,46 @@ pub fn settle_taker_origin_cross(
     };
     let maker_key = *makers_and_referrer
         .user_ref_index()?
-        .get(&(change.user.authority, change.user.sub_account_id))
+        .get(&(leg.user.authority, leg.user.sub_account_id))
         .ok_or_else(|| {
             msg!(
                 "counterparty {}/{} is not loaded",
-                change.user.authority,
-                change.user.sub_account_id
+                leg.user.authority,
+                leg.user.sub_account_id
             );
             ErrorCode::UserNotFound
         })?;
-    validate!(
-        subjects.permits(&change.user, &maker_key, &taker_ref),
-        ErrorCode::QuoterSubjectNotPermitted,
-        "the book may not fill user {} for this cross",
-        maker_key
-    )?;
-    // Hold the fill to the run velocity read off the book before the CPI —
-    // the same binding the router fill and the cross crank apply, and what
-    // makes "the counterparty's price" a fact rather than the book's claim.
-    let levels = subjects.as_levels().ok_or_else(|| {
-        msg!("taker-origin cross needs a readable book");
-        ErrorCode::InvalidQuoterResponse
-    })?;
-    let quoted = crate::math::router::quoted_prefix(&levels, 1, change.base_size)?;
-    validate!(
-        crate::math::router::validate_executed_notional(
-            &quoted,
-            change.base_size,
-            change.quote_size
-        )?,
-        ErrorCode::QuoterFillOffQuote,
-        "counterparty filled {}/{} outside the book it rested on ({}..{})",
-        change.quote_size,
-        change.base_size,
-        quoted.best_price,
-        quoted.worst_price
-    )?;
+    if let TakerOriginCounterparty::Executed { subjects, .. } = counterparty {
+        validate!(
+            subjects.permits(&leg.user, &maker_key, &taker_ref),
+            ErrorCode::QuoterSubjectNotPermitted,
+            "the book may not fill user {} for this cross",
+            maker_key
+        )?;
+        // Hold the fill to the run velocity read off the book before the CPI —
+        // the same binding the router fill and the cross crank apply, and what
+        // makes "the counterparty's price" a fact rather than the book's claim.
+        // A cancelled counterparty needs none of it: velocity priced that leg
+        // itself, off a removal the book reported.
+        let levels = subjects.as_levels().ok_or_else(|| {
+            msg!("taker-origin cross needs a readable book");
+            ErrorCode::InvalidQuoterResponse
+        })?;
+        let quoted = crate::math::router::quoted_prefix(&levels, 1, leg.base_asset_amount)?;
+        validate!(
+            crate::math::router::validate_executed_notional(
+                &quoted,
+                leg.base_asset_amount,
+                leg.quote_asset_amount
+            )?,
+            ErrorCode::QuoterFillOffQuote,
+            "counterparty filled {}/{} outside the book it rested on ({}..{})",
+            leg.quote_asset_amount,
+            leg.base_asset_amount,
+            quoted.best_price,
+            quoted.worst_price
+        )?;
+    }
 
     // Funding stamps first: `update_position_and_market` requires both
     // positions' `last_cumulative_funding_rate` to match the market's.
@@ -4896,8 +4974,8 @@ pub fn settle_taker_origin_cross(
     let mut no_escrow: Option<&mut RevenueShareEscrowZeroCopyMut> = None;
     let mut filler_reward_paid = 0u64;
     let (base_filled, quote_filled) = settle_external_match_fill(
-        change.base_size,
-        change.quote_size,
+        leg.base_asset_amount,
+        leg.quote_asset_amount,
         market.deref_mut(),
         taker,
         &mut taker_stats,
@@ -4929,8 +5007,6 @@ pub fn settle_taker_origin_cross(
     // The reconstructed order never outlives the match.
     taker.orders[taker_order_index] = Order::default();
 
-    // The counterparty's own book bookkeeping: orders the fill consumed
-    // outright, and a sub-min remainder the book culled with it.
     let maker_position_index = get_position_index(&maker.perp_positions, market_index)?;
     let mut maker_fills: BTreeMap<Pubkey, (i64, bool)> = BTreeMap::new();
     update_maker_fills_map(
@@ -4940,32 +5016,44 @@ pub fn settle_taker_origin_cross(
         base_filled,
         maker.perp_positions[maker_position_index].is_isolated(),
     )?;
-    maker.perp_positions[maker_position_index].open_orders = maker.perp_positions
-        [maker_position_index]
-        .open_orders
-        .saturating_sub(change.completed_order_ids.len().cast()?);
-    for clob_order_id in &change.completed_order_ids {
-        maker.decrement_open_orders(false);
-        maker.release_placed_trigger_slot(market_index, *clob_order_id, OrderStatus::Filled);
-    }
-    for cancelled in &response.cancelled {
-        validate!(
-            cancelled.user == change.user,
-            ErrorCode::QuoterSubjectNotPermitted,
-            "the book may not cancel for a user this cross did not fill"
-        )?;
-        decrease_open_bids_and_asks(
-            &mut maker.perp_positions[maker_position_index],
-            &maker_direction,
-            cancelled.base_asset_amount,
-            true,
-        )?;
+    // The counterparty's own book bookkeeping, for the leg the book filled:
+    // orders the fill consumed outright, and a sub-min remainder the book
+    // culled with it. A cancelled counterparty has neither — its order left
+    // the book whole, and the caller settles its slot and its leftover.
+    if let (Some(change), TakerOriginCounterparty::Executed { response, .. }) =
+        (leg.change, counterparty)
+    {
         maker.perp_positions[maker_position_index].open_orders = maker.perp_positions
             [maker_position_index]
             .open_orders
-            .saturating_sub(1);
-        maker.decrement_open_orders(false);
-        maker.release_placed_trigger_slot(market_index, cancelled.order_id, OrderStatus::Canceled);
+            .saturating_sub(change.completed_order_ids.len().cast()?);
+        for clob_order_id in &change.completed_order_ids {
+            maker.decrement_open_orders(false);
+            maker.release_placed_trigger_slot(market_index, *clob_order_id, OrderStatus::Filled);
+        }
+        for cancelled in &response.cancelled {
+            validate!(
+                cancelled.user == change.user,
+                ErrorCode::QuoterSubjectNotPermitted,
+                "the book may not cancel for a user this cross did not fill"
+            )?;
+            decrease_open_bids_and_asks(
+                &mut maker.perp_positions[maker_position_index],
+                &maker_direction,
+                cancelled.base_asset_amount,
+                true,
+            )?;
+            maker.perp_positions[maker_position_index].open_orders = maker.perp_positions
+                [maker_position_index]
+                .open_orders
+                .saturating_sub(1);
+            maker.decrement_open_orders(false);
+            maker.release_placed_trigger_slot(
+                market_index,
+                cancelled.order_id,
+                OrderStatus::Canceled,
+            );
+        }
     }
 
     // R5: the cranker's cut of the improvement, in quote, taker → filler —

@@ -78,6 +78,55 @@ pub fn is_cross_margin_bankrupt(
     Ok(has_liability)
 }
 
+/// Whether the user still holds a spot deposit that could be applied to their bad debt.
+///
+/// OtterSec #130: the bankruptcy latch is a *snapshot* of "nothing left to seize", and the resolvers
+/// read only the liability row. Assets can still arrive after the latch is set — the revenue-share
+/// sweep is permissionless, and keeper filler rewards credit the filler with no bankruptcy check —
+/// and once it is set, `settle_pnl` and `liquidate_spot` both reject the user, so nothing can apply
+/// that asset to the debt. Resolving anyway socializes a loss the estate could have covered, and the
+/// asset becomes withdrawable as soon as the resolver clears the latch.
+///
+/// Deliberately much narrower than [`is_cross_margin_bankrupt`]. That predicate also vetoes on an
+/// open order or on base exposure, which are "not yet in a resolvable state" conditions rather than
+/// realizable assets — the resolvers are legitimately reached with orders still open, so re-deriving
+/// the full predicate would block resolutions that have nothing to do with this finding.
+///
+/// Scoped to **spot deposits** on purpose. A *quote* deposit is set off directly by
+/// `resolve_perp_bankruptcy` before it draws; this covers the residue that setoff cannot reach,
+/// namely a *non-quote* deposit (netting that against a quote debt would be a cross-asset swap, not
+/// a balance transfer). A positive perp `quote_asset_amount` in another market is **not** counted
+/// here — that is OtterSec #145's subject, where an *unfundable* claim must be extinguished into the
+/// market's insurance tranche rather than merely deferred. Widen this to perp quotes only together
+/// with that change, or the two will disagree.
+pub fn has_realizable_spot_assets_for_setoff(
+    user: &User,
+    spot_market_map: &SpotMarketMap,
+) -> VelocityResult<bool> {
+    for spot_position in user.spot_positions.iter() {
+        if spot_position.scaled_balance == 0
+            || spot_position.balance_type != SpotBalanceType::Deposit
+        {
+            continue;
+        }
+
+        // Measured in tokens, not scaled balance, for the same reason as #151: a fully socialized
+        // market leaves a positive scaled row whose token value is zero, and that worthless residue
+        // must not gate a bad-debt repair.
+        let spot_market = spot_market_map.get_ref(&spot_position.market_index)?;
+        if get_token_amount(
+            spot_position.scaled_balance.cast()?,
+            &spot_market,
+            &SpotBalanceType::Deposit,
+        )? > 0
+        {
+            return Ok(true);
+        }
+    }
+
+    Ok(false)
+}
+
 /// Returns true if the user still has an unresolved cross-margin perp
 /// bankruptcy: a non-isolated perp position carrying bad debt (no base, no open
 /// order, negative unsettled pnl). Used to enforce the deterministic

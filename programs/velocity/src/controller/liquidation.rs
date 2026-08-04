@@ -10,7 +10,7 @@ use {
             orders::{self, cancel_order, fill_perp_order, place_perp_order},
             position::{
                 get_position_index, update_position_and_market, update_quote_asset_amount,
-                update_quote_asset_and_break_even_amount, PositionDirection,
+                update_quote_asset_and_break_even_amount, update_settled_pnl, PositionDirection,
             },
             spot_balance::{
                 transfer_spot_balances, update_protocol_fee_pool_balances,
@@ -22,7 +22,10 @@ use {
         error::{ErrorCode, VelocityResult},
         get_then_update_id, load_mut,
         math::{
-            bankruptcy::{has_pending_cross_margin_perp_bankruptcy, is_cross_margin_bankrupt},
+            bankruptcy::{
+                has_pending_cross_margin_perp_bankruptcy, has_realizable_spot_assets_for_setoff,
+                is_cross_margin_bankrupt,
+            },
             casting::Cast,
             constants::{
                 LIQUIDATION_FEE_PRECISION, LIQUIDATION_FEE_PRECISION_U128,
@@ -3702,6 +3705,98 @@ pub fn liquidate_perp_pnl_for_deposit(
     Ok(())
 }
 
+/// Set off the user's quote deposit against this perp market's bad debt, returning the amount
+/// applied (OtterSec #130).
+///
+/// The bankruptcy latch is a *snapshot* of "nothing left to seize", taken by liquidation. Assets
+/// can still arrive afterwards — the revenue-share sweep is permissionless, and keeper filler
+/// rewards credit the filler with no bankruptcy check at all — and once the latch is set, every
+/// route by which such an asset could pay the debt is closed: `settle_pnl` rejects a bankrupt user
+/// (`controller/pnl.rs`), `liquidate_spot` rejects a bankrupt user, and the resolver itself reads
+/// only the liability row. So a late credit sat in a blind spot while insurance and depositors
+/// covered the debt in full, and became withdrawable the moment the resolver cleared the latch.
+///
+/// This performs the `settle_pnl` move the bankrupt user is barred from making themselves: tokens
+/// leave the quote deposit for the market's `pnl_pool` and the perp debt shrinks by the same
+/// amount. Because those tokens land exactly where tranche 2 would have deposited insurance money,
+/// every tranche below sees the *net* debt and the insurance draw shrinks 1:1. It is token-neutral
+/// in the quote market, so the handler's vault-amount assertion still holds.
+///
+/// Bounded by construction: `min(deposit, |debt|)` can never take more than is owed, which is why
+/// this is preferable to forfeiting a credit at its source — the sweep cannot compute what the
+/// account actually owes (that spans every perp market and every spot borrow, and needs oracles),
+/// so a source-side guard would over-confiscate.
+fn apply_quote_deposit_setoff_for_perp_bankruptcy(
+    market_index: u16,
+    user: &mut User,
+    perp_market_map: &PerpMarketMap,
+    spot_market_map: &SpotMarketMap,
+    oracle_map: &mut OracleMap,
+    now: i64,
+    funding_paused: bool,
+) -> VelocityResult<u128> {
+    let position_index = get_position_index(&user.perp_positions, market_index)?;
+
+    // An isolated position is walled off from cross collateral by design; its resolver never
+    // consults cross deposits and must not start now.
+    if user.perp_positions[position_index].is_isolated() {
+        return Ok(0);
+    }
+
+    let debt = user.perp_positions[position_index].quote_asset_amount;
+    if debt >= 0 {
+        return Ok(0);
+    }
+
+    let quote_spot_market = &mut spot_market_map.get_quote_spot_market_mut()?;
+    let oracle_price_data = oracle_map.get_price_data(&quote_spot_market.oracle_id())?;
+    update_spot_market_cumulative_interest(
+        quote_spot_market,
+        Some(oracle_price_data),
+        now,
+        funding_paused,
+    )?;
+
+    let quote_position = user.get_quote_spot_position();
+    if quote_position.balance_type != SpotBalanceType::Deposit {
+        return Ok(0);
+    }
+
+    let setoff = quote_position
+        .get_token_amount(quote_spot_market)?
+        .min(debt.unsigned_abs().cast()?);
+
+    if setoff == 0 {
+        return Ok(0);
+    }
+
+    let mut perp_market = perp_market_map.get_ref_mut(&market_index)?;
+
+    transfer_spot_balances(
+        setoff.cast()?,
+        quote_spot_market,
+        user.get_quote_spot_position_mut(),
+        &mut perp_market.pnl_pool,
+    )?;
+
+    update_quote_asset_amount(
+        &mut user.perp_positions[position_index],
+        &mut perp_market,
+        setoff.cast()?,
+    )?;
+
+    // Parity with `settle_pnl`, which stamps the same counter when it moves this value.
+    update_settled_pnl(user, position_index, -setoff.cast::<i64>()?)?;
+
+    msg!(
+        "perp market {} bankruptcy: set off {} of quote deposit against bad debt",
+        market_index,
+        setoff
+    );
+
+    Ok(setoff)
+}
+
 pub fn resolve_perp_bankruptcy(
     market_index: u16,
     user: &mut User,
@@ -3759,10 +3854,55 @@ pub fn resolve_perp_bankruptcy(
         );
     })?;
 
+    // OtterSec #130: apply the estate's own quote deposit before drawing on anyone else's money.
+    let setoff = apply_quote_deposit_setoff_for_perp_bankruptcy(
+        market_index,
+        user,
+        perp_market_map,
+        spot_market_map,
+        oracle_map,
+        now,
+        funding_paused,
+    )?;
+
+    // OtterSec #130, fallback for what the setoff above cannot reach: a credit that landed in a
+    // *non-quote* deposit (netting that against a quote debt would be a cross-asset swap, not a
+    // balance transfer). If such an asset remains, the latch's premise is stale, so clear it and
+    // return WITHOUT drawing. Ordinary liquidation — which rejects a latched user — is then legal
+    // again and will seize the asset and re-latch for the genuine residual.
+    //
+    // This tests *only* for realizable assets, not the full bankruptcy predicate: that one also
+    // vetoes on an open order or base exposure, which the resolvers are legitimately reached with,
+    // so re-deriving it wholesale would block unrelated legitimate resolutions.
+    //
+    // Committing the un-latch rather than erroring is essential: erroring would leave the bit set
+    // and wedge both paths. Nothing has been drawn at this point, so returning here cannot reorder
+    // insurance spending relative to the perp-before-spot precedence (#52).
+    if has_realizable_spot_assets_for_setoff(user, spot_market_map)? {
+        msg!(
+            "stale cross-margin bankruptcy latch (assets present after setoff of {}); un-latching without drawing",
+            setoff
+        );
+        liquidation_mode.exit_bankruptcy(user)?;
+        return Ok(0);
+    }
+
     let loss = user
         .get_perp_position(market_index)?
         .quote_asset_amount
         .cast::<i128>()?;
+
+    // The setoff can cover this market's debt outright while a liability elsewhere keeps the
+    // account bankrupt. Nothing is left to resolve *here*, and `has_pending_cross_margin_perp_bankruptcy`
+    // no longer reports this market, so the spot resolver is unblocked (#52). Return rather than
+    // tripping the negative-pnl assertion below.
+    if loss == 0 {
+        msg!(
+            "perp market {} bad debt fully covered by setoff; nothing to resolve",
+            market_index
+        );
+        return Ok(0);
+    }
 
     validate!(
         loss < 0,
@@ -4080,6 +4220,24 @@ pub fn resolve_spot_bankruptcy(
         ErrorCode::UserNotBankrupt,
         "user not bankrupt",
     )?;
+
+    // OtterSec #130: the latch is a snapshot of "nothing left to seize", and assets can arrive
+    // after it is set (the permissionless revenue-share sweep, keeper filler rewards) while every
+    // route that could apply them to the debt is closed to a bankrupt user. This resolver reads only
+    // the liability row, so resolving on a stale latch would socialize the whole borrow while the
+    // new asset escaped setoff and became withdrawable once the latch cleared.
+    //
+    // If a realizable deposit is present, clear the latch and return WITHOUT drawing, so ordinary
+    // liquidation (which rejects a latched user) can seize it and re-latch for the genuine residual.
+    // Un-latching rather than erroring is essential — erroring would leave the bit set and wedge both
+    // paths. This tests only for assets, not the full bankruptcy predicate, which also vetoes on open
+    // orders and base exposure. It sits above the #52 precedence check deliberately: it draws
+    // nothing, so it cannot reorder insurance spending between perp and spot stakeholders.
+    if has_realizable_spot_assets_for_setoff(user, spot_market_map)? {
+        msg!("stale cross-margin bankruptcy latch (assets present); un-latching without drawing");
+        user.exit_cross_margin_bankruptcy();
+        return Ok(0);
+    }
 
     // Audit #52: enforce a deterministic perp-before-spot bankruptcy precedence.
     // resolve_perp_bankruptcy and resolve_spot_bankruptcy both draw from the

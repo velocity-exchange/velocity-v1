@@ -15870,7 +15870,7 @@ pub mod accounts {
                 AccountMeta {
                     pubkey: self.user_stats,
                     is_signer: false,
-                    is_writable: false,
+                    is_writable: true,
                 },
             ]
         }
@@ -26144,6 +26144,8 @@ pub mod errors {
         CannotModifyBuilderOrder,
         #[msg("Invalid account extension")]
         InvalidAccountExtension,
+        #[msg("Invalid equity breaker reset")]
+        InvalidEquityBreakerReset,
     }
 }
 pub mod events {

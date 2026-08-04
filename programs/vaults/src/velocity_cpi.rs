@@ -3,30 +3,27 @@ use {
     velocity::cpi::accounts::UpdateSpotMarketCumulativeInterest as VelocityUpdateSpotMarketCumulativeInterest,
 };
 
-/// Refresh the velocity spot market that denominates the vault's NAV
-/// (`Vault::spot_market_index`) before any [`crate::Vault::calculate_equity`]
-/// snapshot.
+/// Refresh the velocity spot market that denominates the vault's NAV (`Vault::spot_market_index`),
+/// before any [`crate::Vault::calculate_equity`] snapshot.
 ///
-/// `calculate_equity` prices the vault's velocity deposit off the market's
-/// **stored** `cumulative_deposit_interest`. Solana only lets the owning program
-/// mutate an account, so the vaults program cannot advance that index itself —
-/// it has to CPI velocity. Before this existed, `deposit` refreshed the market
-/// only afterwards (as a side effect of the deposit CPI), so an entrant minted
-/// shares against an index that had not yet absorbed the lender interest the
-/// incumbents had already earned — the entrant captured a slice of it
-/// (OtterSec #136). The withdraw-request / cancel paths never refreshed at all,
-/// leaking pre-request interest to the remaining shareholders and letting
-/// request-window interest escape the cancellation share-forfeiture rule
-/// (OtterSec #137).
+/// `calculate_equity` prices the vault's velocity deposit off the market's STORED
+/// `cumulative_deposit_interest`. Solana lets only the owning program mutate an account, so the vaults
+/// program cannot advance that index. It must CPI velocity.
 ///
-/// Call this **first** in any handler that snapshots NAV, before the accounts
-/// are borrowed (`load`/`load_mut`) and before `load_maps` — `invoke` rejects a
-/// CPI whose writable accounts still have live borrows, and the maps must read
-/// post-refresh data.
+/// OtterSec #136: `deposit` refreshed the market only afterwards, as a side effect of the deposit CPI.
+/// An entrant therefore minted shares against an index that had not yet absorbed lender interest the
+/// incumbents had earned, and captured part of it.
 ///
-/// The refresh is idempotent within a slot: velocity's
-/// `update_spot_market_cumulative_interest` no-ops once `last_interest_ts == now`,
-/// so handlers that later CPI `deposit`/`withdraw` pay nothing extra for it.
+/// OtterSec #137: the withdraw-request and cancel paths never refreshed. Request understated the frozen
+/// request value, and cancel let request-window interest escape the share-forfeiture rule.
+///
+/// Call this FIRST in any handler that snapshots NAV. It must run before `load`/`load_mut` and before
+/// `load_maps`: `invoke` rejects a CPI whose writable accounts still have live borrows, and the maps
+/// must read post-refresh data.
+///
+/// The refresh is idempotent within a slot. Velocity's `update_spot_market_cumulative_interest` does
+/// nothing once `last_interest_ts == now`, so a handler that later CPIs `deposit` or `withdraw` pays
+/// nothing extra.
 pub fn refresh_denomination_spot_market<'info>(
     velocity_program: &AccountInfo<'info>,
     state: &AccountInfo<'info>,

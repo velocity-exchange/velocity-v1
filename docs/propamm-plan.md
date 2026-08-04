@@ -141,7 +141,19 @@ plus a mid the hot key tracks tick-by-tick. The binding constraint is the mid wr
 
 ## Later (not yet scheduled)
 
-- Signed route field in the swift message + on-chain enforcement (S4)
+- **Taker remainders on the CLOB + the activation-slot auction — proposal for review:
+  [`docs/taker-remainder-auction.md`](./taker-remainder-auction.md).** A signed-message taker
+  order cannot be IOC, so its unfilled remainder rests on the DLOB and nothing migrates it —
+  only `place_and_take_v1` / `place_and_make_v1` hold CLOB accounts. The proposal adds
+  `fill_perp_order_v1` for the migration, and prices a taker-origin cross at the *counterparty's*
+  price so the improvement reaches the taker: taking a resting order is a landing race (highest
+  priority fee wins, at the taker's limit), whereas resting counterparties compete on price
+  inside the activation window. Load-bearing rule: a crossed book must be uncrossed before it can
+  be taken, or the landing race returns at the activation slot. Open questions and sequencing in
+  the doc
+- Signed route field in the swift message + on-chain enforcement (S4) — **done 2026-08-03**: the
+  route is stamped as a digest on the order at placement and `fill_perp_order` requires the
+  claimed route to match it and every entry to be carried by the transaction
 - [x] swift attestation landed 2026-08-01: `State.hot_flow_authority` (HotRole::FlowAuthority, rotate via update_hot_admin; unset = fast activation disabled), `place_clob_order` rejects below-default `activation_delay_slots` without the flow-authority tx co-signer (optional trailing `instructions_sysvar`, error `UnattestedFastActivation` 6375), and swift `POST /attest` (hold window from intake recv_ts, default 300ms; strict tx validation — readonly non-fee-payer signer slot, program allowlist velocity/compute-budget/ed25519, must embed the held order's taker signature; partial-signs and returns the tx). Env: FLOW_AUTHORITY_KEYPAIR / ATTESTATION_HOLD_MS / ATTESTATION_EXPIRY_MS. keep-rs consumes /attest as of 2026-08-02: the filler co-signs swift fills via the flow authority riding a compute-budget ix (parses no accounts), pre-signs at a fixed blockhash, submits the co-signed tx verbatim (new TxSender::send_signed_tx), and degrades to unattested on any failure. Still open: route hint in WS payload (signed-route work); localnet e2e doesn't yet exercise the keeper/attest loop (no keep-rs in the harness)
 - [x] swift `/route` landed 2026-08-01: GET `/route?marketIndex&direction&size` runs the publisher-style quote-view simulation + the program's own `split_across_quoters` and returns per-source books + allocations (strings for u64s). Read-only by design — it rides an existing quote buffer (the publisher's, discovered by market memcmp) naming its stored authority, since simulation skips sig-verify; no buffer → 503. Verified against the localnet ledger incl. the vAMM last-look tie-win
 - Maker/UI API surface: benchmark is **Hyperliquid's API** (Noah, 2026-08-01 — "as good as hyperliquid"). Known gaps vs HL: per-user WS event streams (orderUpdates/userFills/userEvents), cloid-class client order ids, dead-man's-switch scheduled cancels, batch place/cancel, actions over WS, l2Book precision knobs. Details in memory `reference-hyperliquid-api-benchmark`

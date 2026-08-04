@@ -933,6 +933,56 @@ fn set_mid_cu_stays_near_the_floor() {
     .unwrap();
     let set_levels_cu = meta.compute_units_consumed;
 
+    let thirty_two = (0..32).map(|i| (1_000 + i, UNIT)).collect::<Vec<_>>();
+    let cu32_one_side = send_levels(
+        &mut ctx,
+        SetLevelsArgsV0 {
+            mid: None,
+            sequence: None,
+            bids: Some(levels(&thirty_two)),
+            asks: None,
+        },
+    )
+    .unwrap()
+    .compute_units_consumed;
+    let cu32_both = send_levels(
+        &mut ctx,
+        SetLevelsArgsV0 {
+            mid: Some(MID),
+            sequence: None,
+            bids: Some(levels(&thirty_two)),
+            asks: Some(levels(&thirty_two)),
+        },
+    )
+    .unwrap()
+    .compute_units_consumed;
+    let one_rung = send_levels(
+        &mut ctx,
+        SetLevelsArgsV0 {
+            mid: None,
+            sequence: None,
+            bids: Some(levels(&[(1_000, UNIT)])),
+            asks: None,
+        },
+    )
+    .unwrap()
+    .compute_units_consumed;
+    let clear_side = send_levels(
+        &mut ctx,
+        SetLevelsArgsV0 {
+            mid: None,
+            sequence: None,
+            bids: Some(levels(&[])),
+            asks: None,
+        },
+    )
+    .unwrap()
+    .compute_units_consumed;
+    println!(
+        "CU — set_levels(1 rung): {one_rung}, set_levels(clear one side): {clear_side}, \
+         set_levels(32 one side): {cu32_one_side}, set_levels(32×2 + mid): {cu32_both}"
+    );
+
     let ix = quote_ix(&ctx, Direction::Long, u64::MAX);
     let quote_cu = send(&mut ctx, ix).unwrap().compute_units_consumed;
     let ix = execute_ix(&ctx, Direction::Long, u64::MAX);

@@ -984,8 +984,51 @@ fn cu_benchmarks() {
     // Execute across 50 orders (one user, so the response stays small).
     let execute_meta = execute_meta(&mut ctx, Direction::Short, 500).unwrap();
 
+    // Cancel: place a fresh order and remove it (one order per ix).
+    let mut ctx2 = setup();
+    let u2 = addr(Pubkey::new_unique());
+    let oref = place(&mut ctx2, place_args(Side::Bid, 500, 10), u2);
+    let cancel_ix = instruction::CancelOrderV0 {
+        args: CancelOrderArgsV0 {
+            order_ref: oref,
+            user: uref(u2),
+        },
+    }
+    .to_instruction(accounts::CancelOrderV0 {
+        market: addr(ctx2.market),
+        place_authority: addr(ctx2.place_auth.pubkey()),
+    });
+    let cancel_empty = send(&mut ctx2, cancel_ix).unwrap().compute_units_consumed;
+
+    // Cancel out of a nearly-full side (relink cost at depth).
+    let mut refs = Vec::new();
+    for i in 0..PER_SIDE as u64 - 1 {
+        refs.push(place(&mut ctx2, place_args(Side::Bid, 1_000 + i, 10), u2));
+    }
+    let mid_ref = refs[refs.len() / 2];
+    let cancel_ix = instruction::CancelOrderV0 {
+        args: CancelOrderArgsV0 {
+            order_ref: mid_ref,
+            user: uref(u2),
+        },
+    }
+    .to_instruction(accounts::CancelOrderV0 {
+        market: addr(ctx2.market),
+        place_authority: addr(ctx2.place_auth.pubkey()),
+    });
+    let cancel_full = send(&mut ctx2, cancel_ix).unwrap().compute_units_consumed;
+
+    let empty_place = {
+        let mut c = setup();
+        let u = addr(Pubkey::new_unique());
+        let ix = place_ix(&c, place_args(Side::Bid, 100, 10), u);
+        send(&mut c, ix).unwrap().compute_units_consumed
+    };
+
     println!(
-        "CU — place(best, full book): {}, evict_worst: {}, quote(full side): {}, execute(50 orders): {}",
+        "CU — place(empty book): {empty_place}, place(best, full book): {}, \
+         cancel(only order): {cancel_empty}, cancel(mid of full side): {cancel_full}, \
+         evict_worst: {}, quote(full side): {}, execute(50 orders): {}",
         place_meta.compute_units_consumed,
         evict_meta.compute_units_consumed,
         quote_meta.compute_units_consumed,

@@ -287,11 +287,11 @@ fn cross_market_estate(claim_dollars: i64, debt_dollars: i64) -> User {
     user
 }
 
-/// OtterSec #145: an *unfundable* positive claim must stop vetoing a real, resolvable loss elsewhere.
+/// OtterSec #145: an unfundable positive claim must not veto a resolvable loss elsewhere.
 ///
-/// Under the old rule any positive `quote_asset_amount` vetoed outright, so a claim on a market whose
-/// pnl pool could not pay it stranded the loss in the other market forever — the pool only fills as
-/// counterparty losses settle, which may never happen, and until then the claim can never become a
+/// The old rule vetoed on any positive `quote_asset_amount`. A claim on a market whose PnL pool could
+/// not pay it therefore stranded the loss in the other market forever. The pool fills only as
+/// counterparty losses settle, which can never happen, and until then the claim cannot become a
 /// deposit to clear the veto.
 #[test]
 fn unfundable_positive_claim_does_not_veto_bankruptcy() {
@@ -306,14 +306,13 @@ fn unfundable_positive_claim_does_not_veto_bankruptcy() {
     });
 }
 
-/// OtterSec #145, the guard that makes unpayability alone insufficient: a *net-solvent* estate is
-/// still refused, however unfundable its claim is.
+/// OtterSec #145: a net-solvent estate is still refused, however unfundable its claim is.
 ///
-/// Without this, an account with a large unfundable claim and a small debt would be admitted and have
-/// the whole claim extinguished to cover a fraction of it — confiscating value it was genuinely owed.
-/// This is also the shape that made a payability-only check unsound against
+/// Without this gate, a large unfundable claim against a small debt is admitted, and the whole claim
+/// is forfeited to cover a fraction of it. That confiscates value the user is owed. It is also the
+/// shape that made a payability-only check unsound against
 /// `successful_liquidation_over_multiple_slots`, where a user holds $1050 of real positive PnL against
-/// a pool that is empty simply because counterparty losses have not settled yet.
+/// a pool that is empty only because counterparty losses have not settled.
 #[test]
 fn net_solvent_estate_is_never_bankrupt_however_unfundable() {
     let user = cross_market_estate(5_000, -1_000);
@@ -326,8 +325,8 @@ fn net_solvent_estate_is_never_bankrupt_however_unfundable() {
     });
 }
 
-/// OtterSec #145: a claim the pool CAN pay still vetoes — that portion belongs in the ordinary
-/// pipeline (settle -> deposit -> `liquidate_perp_pnl_for_deposit`), which needs no insurance at all.
+/// OtterSec #145: a claim the pool can pay still vetoes. That part belongs in the ordinary pipeline
+/// (settle -> deposit -> `liquidate_perp_pnl_for_deposit`), which uses no insurance.
 #[test]
 fn fundable_positive_claim_still_vetoes() {
     let user = cross_market_estate(500, -1_000);

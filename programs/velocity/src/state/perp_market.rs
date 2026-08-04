@@ -186,15 +186,15 @@ impl FeeLedger {
         Ok(())
     }
 
-    /// Re-book a bankrupt estate's forfeited perp claim as an insurance-tranche claim on the same
-    /// pnl pool (OtterSec #145).
+    /// Move a bankrupt estate's forfeited perp claim to this pool's insurance tranche (OtterSec #145).
     ///
-    /// Deliberately *not* `accrue_liquidation_fees`: that also bumps `total_liquidation_fee`, and this
-    /// is not a fee anyone charged — it is a claim whose creditor changed from the bankrupt user to
-    /// the insurance fund. `pending_if_fee` is already defined as a claim on future pnl-pool inflows,
-    /// which is exactly what an unfundable user claim was, so the swap is equity-neutral: zeroing the
-    /// user's `quote_asset_amount` lowers `market.quote_asset_amount` and so `net_user_pnl`, raising
-    /// the market's excess by the same amount this subtracts from it.
+    /// This is not `accrue_liquidation_fees`, which also raises `total_liquidation_fee`. Nobody
+    /// charged a fee here. Only the creditor changed, from a bankrupt user to the insurance fund.
+    ///
+    /// `pending_if_fee` is already a claim on future PnL-pool inflows, which is what the user's
+    /// unfundable claim was. The swap is therefore equity-neutral: zeroing the user's
+    /// `quote_asset_amount` lowers `market.quote_asset_amount`, and so `net_user_pnl`, which raises the
+    /// market's excess by the amount this subtracts.
     pub fn accrue_forfeited_claim_to_if(&mut self, amount: u128) -> VelocityResult {
         self.pending_if_fee = self.pending_if_fee.safe_add(amount)?;
         Ok(())

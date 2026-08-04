@@ -10830,13 +10830,13 @@ pub mod resolve_perp_bankruptcy {
         assert_eq!(expected_market, market_after);
     }
 
-    /// OtterSec #130: a quote deposit that arrived after the bankruptcy latch was set must be
-    /// applied to the bad debt before anyone else's money is drawn.
+    /// OtterSec #130: a quote deposit that arrives after the latch must pay the debt before insurance
+    /// does.
     ///
-    /// The credit gets in permissionlessly (the revenue-share sweep) or via an unguarded keeper
-    /// filler reward, and once latched, `settle_pnl` and `liquidate_spot` both reject the user — so
-    /// before this fix the deposit sat untouchable while insurance and depositors covered the whole
-    /// debt, then became withdrawable the instant the resolver cleared the latch.
+    /// The credit arrives permissionlessly through the revenue-share sweep, or through an unguarded
+    /// keeper filler reward. Once latched, `settle_pnl` and `liquidate_spot` both reject the user, so
+    /// before this fix the deposit sat idle while insurance and depositors covered the whole debt. It
+    /// then became withdrawable when the resolver cleared the latch.
     #[test]
     pub fn quote_deposit_is_set_off_before_socializing_loss() {
         let now = 0_i64;
@@ -10952,12 +10952,12 @@ pub mod resolve_perp_bankruptcy {
         assert_eq!(user.status, 0);
     }
 
-    /// OtterSec #130, the fallback leg: a *non-quote* deposit cannot be netted against a quote debt
-    /// (that would be a cross-asset swap, not a balance transfer), so the resolver must refuse to
-    /// draw and instead un-latch, handing the account back to ordinary liquidation.
+    /// OtterSec #130, the fallback leg. A non-quote deposit cannot be netted against a quote debt,
+    /// because that needs a cross-asset swap. The resolver must refuse to draw and un-latch instead,
+    /// which hands the account back to ordinary liquidation.
     ///
-    /// Un-latching rather than erroring is the point: erroring would leave the status bit set, and
-    /// `liquidate_spot` rejects a latched user, so both paths would be wedged forever.
+    /// Un-latching matters: an error would leave the status bit set, and `liquidate_spot` rejects a
+    /// latched user, so both paths would wedge forever.
     #[test]
     pub fn non_quote_deposit_unlatches_instead_of_drawing() {
         let now = 0_i64;
@@ -15063,13 +15063,13 @@ pub mod extinguish_unfundable_perp_claims {
         },
     };
 
-    /// The whole point of the mechanism: the user's claim is gone, the market owes the same total, and
-    /// the insurance tranche is now the creditor instead of the bankrupt estate.
+    /// The user's claim is gone, the market owes the same total, and the insurance tranche is the new
+    /// creditor.
     ///
-    /// Equity neutrality is the invariant to protect. Zeroing the user's claim lowers
-    /// `market.quote_asset_amount` (and so `net_user_pnl`), which raises the market's excess by the
-    /// forfeited amount; the `pending_if_fee` credit lowers it by exactly the same amount. If a future
-    /// change breaks that pairing, the market's balance sheet silently misstates.
+    /// Equity neutrality is the invariant to protect. Zeroing the claim lowers
+    /// `market.quote_asset_amount`, and so `net_user_pnl`, which raises the market's excess by the
+    /// forfeited amount. The `pending_if_fee` credit lowers it by the same amount. If a later change
+    /// breaks that pairing, the market's balance sheet misstates without any error.
     #[test]
     fn unfundable_claim_moves_to_the_insurance_tranche() {
         let mut spot_market = SpotMarket {
@@ -15130,8 +15130,8 @@ pub mod extinguish_unfundable_perp_claims {
         );
     }
 
-    /// Only the part the pool genuinely cannot pay may be taken; the fundable remainder belongs in the
-    /// ordinary settle pipeline, which needs no insurance at all.
+    /// Only the part the pool cannot pay may be taken. The fundable remainder belongs in the ordinary
+    /// settle pipeline, which uses no insurance.
     #[test]
     fn only_the_unfundable_excess_is_taken() {
         let mut spot_market = SpotMarket {
@@ -15187,8 +15187,8 @@ pub mod extinguish_unfundable_perp_claims {
         );
     }
 
-    /// A position with base exposure or a live order is not a settled claim and must never be
-    /// extinguished, even if admission somehow let it through.
+    /// A position with base exposure or a live order is not a settled claim. It must never be
+    /// forfeited, even if admission lets it through.
     #[test]
     fn live_positions_are_never_extinguished() {
         let mut spot_market = SpotMarket {

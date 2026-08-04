@@ -12,26 +12,18 @@ use crate::{
 #[cfg(test)]
 mod tests;
 
-/// Whether a user qualifies to be flagged bankrupt on the cross-margin side:
-/// spot liabilities, no realizable spot assets, and no realizable perp exposure.
+/// Whether the user qualifies as cross-margin bankrupt: it has spot liabilities, no realizable spot
+/// assets, and no realizable perp exposure.
 ///
-/// OtterSec #151: a deposit row was vetoed on `scaled_balance > 0` alone. A full
-/// spot-market socialization floors `cumulative_deposit_interest` at 1 and leaves each
-/// wiped depositor's scaled row positive, so the row survives while its *token* amount
-/// is zero. That worthless row blocked bankruptcy admission (and PnL liquidation) for a
-/// user with unrelated cross-margin debt, stalling the next bad-debt repair. It is now
-/// measured in tokens.
+/// OtterSec #151. A deposit row is measured in tokens, not in `scaled_balance`. A full spot-market
+/// socialization floors `cumulative_deposit_interest` at 1. Each wiped depositor keeps a positive
+/// scaled row that is worth zero tokens. Such a row used to block bankruptcy admission and PnL
+/// liquidation, and stalled the next bad-debt repair. A deposit worth 1 token or more still vetoes.
 ///
-/// Deliberately narrow: a deposit worth >= 1 token still vetoes, so this only ever
-/// admits bankruptcy for a row that genuinely cannot be realized at all.
-///
-/// OtterSec #145: a positive perp `quote_asset_amount` no longer vetoes unconditionally. It vetoes
-/// only while the market's pnl pool can still pay some of it, *and* only when the estate is net
-/// solvent across its perp positions. Both conditions matter and neither alone is sufficient — see
-/// the inline notes at each check. The unfundable remainder is not ignored (that would treat an
-/// unfunded claim as worthless rather than owed); `resolve_perp_bankruptcy` /
-/// `resolve_spot_bankruptcy` extinguish it into the market's insurance tranche, moving the creditor
-/// from the bankrupt estate to the IF.
+/// OtterSec #145. A positive perp `quote_asset_amount` no longer vetoes on its own. It vetoes only
+/// while the market's PnL pool can pay part of it, and only while the estate is net solvent. Each
+/// check has its own note below. The unfundable remainder is not ignored, because an unfunded claim
+/// is still owed. Both resolvers move that remainder into the market's insurance tranche.
 pub fn is_cross_margin_bankrupt(
     user: &User,
     spot_market_map: &SpotMarketMap,
@@ -79,22 +71,15 @@ pub fn is_cross_margin_bankrupt(
         let quote = perp_position.quote_asset_amount;
 
         if quote > 0 {
-            // #145: a positive claim vetoes only while it is still REALIZABLE. Previously any
-            // positive quote vetoed outright, so a claim on a market whose pnl pool cannot pay it
-            // stranded a real, resolvable loss in another market forever — the pool only fills as
-            // counterparty losses settle, which may never happen, and until then the claim can never
-            // be settled into a deposit to clear the veto.
+            // #145: a positive claim vetoes only while it is realizable.
             //
-            // Do NOT simply ignore the claim, though: that treats an *unfunded* claim as
-            // *worthless*, when it is in fact still owed. The resolver extinguishes the unfundable
-            // part into the market's insurance tranche (`accrue_forfeited_claim_to_if`) so the
-            // creditor changes from the bankrupt estate to the IF rather than the obligation simply
-            // vanishing — otherwise the user walks away holding a live claim after insurance already
-            // covered their debt in full.
+            // A pool that cannot pay the claim used to strand a resolvable loss in another market
+            // forever. The pool fills only as counterparty losses settle, which can never happen.
+            // Until it fills, the claim cannot become a deposit, so the veto never clears.
             //
-            // While the pool CAN pay some of it, keep vetoing: that portion should settle through
-            // the ordinary pipeline (settle -> deposit -> `liquidate_perp_pnl_for_deposit`), which
-            // needs no insurance at all.
+            // While the pool can pay part of the claim, keep vetoing. That part settles through the
+            // ordinary pipeline (settle -> deposit -> `liquidate_perp_pnl_for_deposit`), which uses
+            // no insurance. The resolver forfeits the remainder to the insurance tranche.
             let perp_market = perp_market_map.get_ref(&perp_position.market_index)?;
             let pnl_pool_tokens = get_token_amount(
                 perp_market.pnl_pool.balance(),
@@ -112,14 +97,14 @@ pub fn is_cross_margin_bankrupt(
         net_perp_quote = net_perp_quote.safe_add(quote.cast()?)?;
     }
 
-    // #145 guard, and the reason unpayability alone is not a sufficient test: only admit when the
-    // estate is NET insolvent across its perp positions. Without this, an account with a large
-    // unfundable claim and a small debt (+5000 in A against -1000 in B) would be admitted and have
-    // the whole 5000 extinguished to cover 1000 — confiscating 4000 it was genuinely owed. Netting
-    // is exact here rather than an approximation, because every position that reaches this point has
-    // `base_asset_amount == 0`, so its entire value *is* its `quote_asset_amount`: no oracle needed
-    // and no meaningful CU cost. It is also what bounds the extinguish step, since net <= 0
-    // guarantees total claims <= total debt.
+    // #145: admit only a NET insolvent estate. Unpayability alone is not sufficient.
+    //
+    // Without this gate, +5000 in market A against -1000 in market B is admitted. The resolver then
+    // forfeits all 5000 to cover 1000, and confiscates 4000 the user is owed.
+    //
+    // The sum is exact, not an approximation. Every position that reaches here has
+    // `base_asset_amount == 0`, so its whole value is its `quote_asset_amount`. No oracle is needed.
+    // The gate also bounds the forfeit: net <= 0 means total claims <= total debt.
     if net_perp_quote > 0 {
         return Ok(false);
     }
@@ -127,27 +112,26 @@ pub fn is_cross_margin_bankrupt(
     Ok(has_liability)
 }
 
-/// Whether the user still holds a spot deposit that could be applied to their bad debt.
+/// Whether the user still holds a spot deposit that can pay part of its bad debt.
 ///
-/// OtterSec #130: the bankruptcy latch is a *snapshot* of "nothing left to seize", and the resolvers
-/// read only the liability row. Assets can still arrive after the latch is set — the revenue-share
-/// sweep is permissionless, and keeper filler rewards credit the filler with no bankruptcy check —
-/// and once it is set, `settle_pnl` and `liquidate_spot` both reject the user, so nothing can apply
-/// that asset to the debt. Resolving anyway socializes a loss the estate could have covered, and the
-/// asset becomes withdrawable as soon as the resolver clears the latch.
+/// OtterSec #130. The bankruptcy latch records that nothing was left to seize when liquidation set
+/// it. Assets can arrive after that. The revenue-share sweep is permissionless, and keeper filler
+/// rewards credit the filler with no bankruptcy check. Once the latch is set, `settle_pnl` and
+/// `liquidate_spot` both reject the user, and the resolvers read only the liability row. The asset
+/// therefore pays nothing, insurance covers the whole debt, and the asset becomes withdrawable when
+/// the resolver clears the latch.
 ///
-/// Deliberately much narrower than [`is_cross_margin_bankrupt`]. That predicate also vetoes on an
-/// open order or on base exposure, which are "not yet in a resolvable state" conditions rather than
-/// realizable assets — the resolvers are legitimately reached with orders still open, so re-deriving
-/// the full predicate would block resolutions that have nothing to do with this finding.
+/// This is much narrower than [`is_cross_margin_bankrupt`]. That predicate also vetoes on an open
+/// order or on base exposure. Those conditions mean "not resolvable yet", not "holds an asset". The
+/// resolvers are reached with orders open, so the full predicate would block valid resolutions.
 ///
-/// Scoped to **spot deposits** on purpose. A *quote* deposit is set off directly by
-/// `resolve_perp_bankruptcy` before it draws; this covers the residue that setoff cannot reach,
-/// namely a *non-quote* deposit (netting that against a quote debt would be a cross-asset swap, not
-/// a balance transfer). A positive perp `quote_asset_amount` in another market is **not** counted
-/// here — that is OtterSec #145's subject, where an *unfundable* claim must be extinguished into the
-/// market's insurance tranche rather than merely deferred. Widen this to perp quotes only together
-/// with that change, or the two will disagree.
+/// Scope is spot deposits only. `resolve_perp_bankruptcy` sets off a *quote* deposit directly before
+/// it draws, so this covers the residue it cannot reach: a *non-quote* deposit. Netting that against
+/// a quote debt needs a cross-asset swap, not a balance transfer.
+///
+/// A positive perp `quote_asset_amount` is not counted here. OtterSec #145 handles it, and forfeits
+/// an unfundable claim to the insurance tranche instead of deferring it. Widen this to perp quotes
+/// only together with that path, or the two disagree.
 pub fn has_realizable_spot_assets_for_setoff(
     user: &User,
     spot_market_map: &SpotMarketMap,

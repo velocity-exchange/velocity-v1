@@ -2161,6 +2161,17 @@ fn fulfill_perp_order(
                 );
                 return Err(ErrorCode::EquityBelowFloor);
             }
+        } else {
+            // A reducing fill is exempt from the buffered-floor gate and may
+            // legally leave the subaccount below its raw floor; arm the
+            // breaker inline instead of waiting for the permissionless trip.
+            controller::equity_floor::try_lazy_equity_breaker_trip(
+                user,
+                user_stats,
+                perp_market_map,
+                spot_market_map,
+                oracle_map,
+            )?;
         }
     }
 
@@ -2264,6 +2275,29 @@ fn fulfill_perp_order(
                     maker_breaker_tripped
                 );
                 return Err(ErrorCode::EquityBelowFloor);
+            }
+        } else if maker.equity_floor > 0 {
+            // A reducing maker fill is exempt from the buffered-floor gate
+            // and may legally leave the subaccount below its raw floor; arm
+            // the breaker inline instead of waiting for the permissionless
+            // trip.
+            if maker.authority == user.authority {
+                controller::equity_floor::try_lazy_equity_breaker_trip(
+                    &maker,
+                    user_stats,
+                    perp_market_map,
+                    spot_market_map,
+                    oracle_map,
+                )?;
+            } else {
+                let mut maker_stats = makers_and_referrer_stats.get_ref_mut(&maker.authority)?;
+                controller::equity_floor::try_lazy_equity_breaker_trip(
+                    &maker,
+                    &mut maker_stats,
+                    perp_market_map,
+                    spot_market_map,
+                    oracle_map,
+                )?;
             }
         }
     }
@@ -3569,7 +3603,8 @@ pub fn trigger_order(
     let filler_key = filler.key();
     let user_key = user.key();
     let user = &mut load_mut!(user)?;
-    let user_stats = load!(user_stats)?;
+    let user_stats_loader = user_stats;
+    let user_stats = load!(user_stats_loader)?;
 
     let order_index = user
         .orders
@@ -3774,6 +3809,19 @@ pub fn trigger_order(
             )?;
 
             user.update_last_active_slot(slot);
+
+            // The cancel succeeds while the subaccount may already sit below
+            // its raw floor; arm the breaker inline so the keeper's trigger
+            // doubles as the trip.
+            drop(user_stats);
+            let mut user_stats = load_mut!(user_stats_loader)?;
+            controller::equity_floor::try_lazy_equity_breaker_trip(
+                user,
+                &mut user_stats,
+                perp_market_map,
+                spot_market_map,
+                oracle_map,
+            )?;
 
             return Ok(());
         }

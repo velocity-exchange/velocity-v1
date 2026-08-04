@@ -227,6 +227,11 @@ pub fn handle_trigger_order<'c: 'info, 'info>(
 
     let (writeable_perp_markets, writeable_spot_markets) = (MarketSet::new(), MarketSet::new());
 
+    let state = ctx.accounts.state.load()?;
+
+    // Load the map under the live State guard rails so every oracle-validity
+    // decision on this path, including the lazy breaker trip on the cancel
+    // branch, uses the same policy as the permissionless trip.
     let AccountMaps {
         perp_market_map,
         spot_market_map,
@@ -236,12 +241,12 @@ pub fn handle_trigger_order<'c: 'info, 'info>(
         &writeable_perp_markets,
         &writeable_spot_markets,
         Clock::get()?.slot,
-        None,
+        Some(state.oracle_guard_rails),
     )?;
 
     controller::orders::trigger_order(
         order_id,
-        &*ctx.accounts.state.load()?,
+        &state,
         &ctx.accounts.user,
         &ctx.accounts.user_stats,
         &spot_market_map,
@@ -3483,6 +3488,7 @@ pub struct TriggerOrder<'info> {
     #[account(mut)]
     pub user: AccountLoader<'info, User>,
     #[account(
+        mut,
         constraint = is_stats_for_user(&user, &user_stats)?
     )]
     pub user_stats: AccountLoader<'info, UserStats>,

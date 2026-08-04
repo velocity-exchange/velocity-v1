@@ -1,5 +1,5 @@
 import { Connection, VersionedTransaction } from '@solana/web3.js';
-import { JupiterClient } from '../jupiter/jupiterClient';
+import { JupiterApiVersion, JupiterClient } from '../jupiter/jupiterClient';
 import { TitanClient } from '../titan/titanClient';
 import { MAX_TX_BYTE_SIZE } from '../tx/utils';
 import {
@@ -54,6 +54,7 @@ export class UnifiedSwapClient implements SwapProvider {
 	 * @param authToken - For Titan: auth token (required when not using proxy). For Jupiter: API key (required for api.jup.ag, get free key at https://portal.jup.ag)
 	 * @param url - Optional custom URL
 	 * @param proxyUrl - Optional proxy URL for Titan
+	 * @param jupiterApiVersion - For Jupiter: which Swap API to use. Ignored for Titan.
 	 */
 	constructor({
 		clientType,
@@ -61,12 +62,14 @@ export class UnifiedSwapClient implements SwapProvider {
 		authToken,
 		url,
 		proxyUrl,
+		jupiterApiVersion,
 	}: {
 		clientType: SwapClientType;
 		connection: Connection;
 		authToken?: string;
 		url?: string;
 		proxyUrl?: string;
+		jupiterApiVersion?: JupiterApiVersion;
 	}) {
 		this.clientType = clientType;
 
@@ -75,6 +78,7 @@ export class UnifiedSwapClient implements SwapProvider {
 				connection,
 				url,
 				apiKey: authToken,
+				apiVersion: jupiterApiVersion,
 			});
 		} else if (clientType === 'titan') {
 			this.client = new TitanClient({

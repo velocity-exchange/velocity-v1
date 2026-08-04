@@ -11618,6 +11618,13 @@ export class VelocityClient {
 	 * the calling wallet's `UserStats` (which must be the signer's own) must have
 	 * `canUpdateBidAskTwap` set and at least 1000 USDC (`QUOTE_PRECISION`, 1e6) staked in the
 	 * insurance fund (`ifStakedQuoteAssetAmount`), or the instruction reverts.
+	 *
+	 * Only orders that have rested on-chain for at least `BID_ASK_TWAP_MIN_QUOTE_REST_SLOTS`
+	 * (24 slots, ~10s) are sampled — a quote must have been takeable by someone else before it may
+	 * move the TWAP. Orders newer than that are silently skipped, so passing only freshly-placed
+	 * makers yields no DLOB estimate and the crank falls back to the AMM's quote. Note this is
+	 * measured from the order's on-chain post slot, not from `order.slot` (which signed-message
+	 * orders back-date).
 	 * @param perpMarketIndex - Perp market index to update.
 	 * @param makers - `(maker, makerStats)` pairs whose resting orders are sampled for the estimate.
 	 * @param txParams - Optional compute-unit/priority-fee overrides.

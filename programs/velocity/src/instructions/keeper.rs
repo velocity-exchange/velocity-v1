@@ -29,8 +29,8 @@ use {
             self,
             casting::Cast,
             constants::{
-                BID_ASK_TWAP_MAX_ORACLE_DIVERGENCE_PERCENT, QUOTE_PRECISION_I128,
-                QUOTE_PRECISION_U64, QUOTE_SPOT_MARKET_INDEX,
+                BID_ASK_TWAP_MAX_ORACLE_DIVERGENCE_PERCENT, BID_ASK_TWAP_MIN_QUOTE_REST_SLOTS,
+                QUOTE_PRECISION_I128, QUOTE_PRECISION_U64, QUOTE_SPOT_MARKET_INDEX,
             },
             margin::{calculate_user_equity, meets_settle_pnl_maintenance_margin_requirement},
             oracle::{is_oracle_valid_for_action, VelocityAction},
@@ -2651,8 +2651,14 @@ pub fn handle_update_perp_bid_ask_twap<'c: 'info, 'info>(
 
     let depth = perp_market.get_market_depth_for_funding_rate()?;
 
-    let (bids, asks) =
-        find_bids_and_asks_from_users(perp_market, oracle_price_data, &makers, slot, now)?;
+    let (bids, asks) = find_bids_and_asks_from_users(
+        perp_market,
+        oracle_price_data,
+        &makers,
+        slot,
+        now,
+        BID_ASK_TWAP_MIN_QUOTE_REST_SLOTS,
+    )?;
     let (bids, asks) = filter_bids_asks_by_oracle_divergence(
         bids,
         asks,

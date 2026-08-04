@@ -1179,12 +1179,34 @@ pub struct Level {
     pub base_asset_amount: u64,
 }
 
+/// Slots elapsed since an order was posted, derived from `Order::posted_slot_tail`.
+///
+/// `posted_slot_tail` is the low 8 bits of the clock slot at post time
+/// (`get_posted_slot_from_clock_slot`), so this is only exact modulo 256. That is the safe
+/// direction for a minimum-age check: for a genuinely fresh order (elapsed < 256) the result
+/// is exact, so a fresh quote can never masquerade as an old one. An order older than 256
+/// slots may *understate* its age and be conservatively treated as fresh.
+///
+/// `Order::slot` is deliberately not used here — signed-message orders back-date it to
+/// `min(clock_slot, signed_msg_taker_order_slot)` (`state/order_params.rs`), so it does not
+/// reflect when the order actually became visible on-chain.
+pub fn slots_since_order_posted(slot: u64, posted_slot_tail: u8) -> u64 {
+    (slot as u8).wrapping_sub(posted_slot_tail) as u64
+}
+
+/// Collect the resting bid/ask levels for `perp_market` from the supplied `users`.
+///
+/// `min_resting_slots` requires each quote to have been live on-chain for at least that many
+/// slots before it is included. Pass `BID_ASK_TWAP_MIN_QUOTE_REST_SLOTS` when the result feeds
+/// the mark TWAP (see the constant for why), and `0` when the caller needs the true current
+/// book — e.g. arbitrage, where a fresh quote is exactly what should be actionable.
 pub fn find_bids_and_asks_from_users(
     perp_market: &PerpMarket,
     oracle_price_date: &OraclePriceData,
     users: &UserMap,
     slot: u64,
     now: i64,
+    min_resting_slots: u64,
 ) -> VelocityResult<(Vec<Level>, Vec<Level>)> {
     let mut bids: Vec<Level> = Vec::with_capacity(32);
     let mut asks: Vec<Level> = Vec::with_capacity(32);
@@ -1239,6 +1261,16 @@ pub fn find_bids_and_asks_from_users(
             }
 
             if !order.is_resting_limit_order(slot)? {
+                continue;
+            }
+
+            // OtterSec #146: a quote must have been exposed on-chain long enough that a third
+            // party could have taken it, before it is allowed to move the mark TWAP. Without
+            // this, `is_resting_limit_order` admits a post-only order in its own post slot,
+            // so the crank's caller can quote, crank and cancel atomically at no risk.
+            if min_resting_slots > 0
+                && slots_since_order_posted(slot, order.posted_slot_tail) < min_resting_slots
+            {
                 continue;
             }
 

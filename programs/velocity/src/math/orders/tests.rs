@@ -3973,8 +3973,14 @@ pub mod find_bids_and_asks_from_users {
             controller::position::PositionDirection,
             create_anchor_account_info,
             math::{
-                constants::{BASE_PRECISION_U64, PRICE_PRECISION_I64, PRICE_PRECISION_U64},
-                orders::{find_bids_and_asks_from_users, Level},
+                constants::{
+                    BASE_PRECISION_U64, BID_ASK_TWAP_MIN_QUOTE_REST_SLOTS, PRICE_PRECISION_I64,
+                    PRICE_PRECISION_U64,
+                },
+                orders::{
+                    find_bids_and_asks_from_users, get_posted_slot_from_clock_slot,
+                    slots_since_order_posted, Level,
+                },
             },
             state::{
                 oracle::OraclePriceData,
@@ -4040,9 +4046,15 @@ pub mod find_bids_and_asks_from_users {
 
         let makers_and_referrers = UserMap::load_one(&maker_account_info).unwrap();
 
-        let (bids, asks) =
-            find_bids_and_asks_from_users(&market, &oracle_price_data, &makers_and_referrers, 0, 0)
-                .unwrap();
+        let (bids, asks) = find_bids_and_asks_from_users(
+            &market,
+            &oracle_price_data,
+            &makers_and_referrers,
+            0,
+            0,
+            0,
+        )
+        .unwrap();
 
         let mut expected_bids = vec![];
         for i in 0..16 {
@@ -4116,9 +4128,15 @@ pub mod find_bids_and_asks_from_users {
 
         let makers_and_referrers = UserMap::load_one(&maker_account_info).unwrap();
 
-        let (bids, asks) =
-            find_bids_and_asks_from_users(&market, &oracle_price_data, &makers_and_referrers, 0, 0)
-                .unwrap();
+        let (bids, asks) = find_bids_and_asks_from_users(
+            &market,
+            &oracle_price_data,
+            &makers_and_referrers,
+            0,
+            0,
+            0,
+        )
+        .unwrap();
 
         // Apply the 15% oracle divergence filter (as done in update_perp_bid_ask_twap)
         let (filtered_bids, filtered_asks) =
@@ -4138,6 +4156,132 @@ pub mod find_bids_and_asks_from_users {
 
         // Raw asks were 89-104. All are <= 115, so all 16 kept
         assert_eq!(filtered_asks.len(), 16);
+    }
+
+    /// OtterSec #146: a quote that has not rested long enough must not reach the mark TWAP.
+    ///
+    /// The attack is atomic — place a post-only pair, crank, cancel, all in one transaction —
+    /// so the property that matters is that a quote posted in the *current* slot contributes
+    /// nothing, while the same quote does contribute once it has been exposed.
+    #[test]
+    fn min_resting_slots_excludes_freshly_posted_quotes() {
+        let market = PerpMarket::default_test();
+
+        let oracle_price_data = OraclePriceData {
+            price: 100 * PRICE_PRECISION_I64,
+            ..OraclePriceData::default()
+        };
+
+        // A self-crossed pair, both post-only so `is_resting_limit_order` admits them
+        // immediately, priced inside the 15% oracle band so the divergence filter keeps them.
+        let posted_slot: u64 = 318_454_856;
+        let mut maker_orders = [Order::default(); 32];
+        maker_orders[0] = Order {
+            status: OrderStatus::Open,
+            market_index: 0,
+            market_type: MarketType::Perp,
+            order_type: OrderType::Limit,
+            direction: PositionDirection::Long,
+            base_asset_amount: BASE_PRECISION_U64,
+            price: 105 * PRICE_PRECISION_U64,
+            post_only: true,
+            posted_slot_tail: get_posted_slot_from_clock_slot(posted_slot),
+            ..Order::default()
+        };
+        maker_orders[1] = Order {
+            status: OrderStatus::Open,
+            market_index: 0,
+            market_type: MarketType::Perp,
+            order_type: OrderType::Limit,
+            direction: PositionDirection::Short,
+            base_asset_amount: BASE_PRECISION_U64,
+            price: 90 * PRICE_PRECISION_U64,
+            post_only: true,
+            posted_slot_tail: get_posted_slot_from_clock_slot(posted_slot),
+            ..Order::default()
+        };
+
+        let mut maker = User {
+            perp_positions: get_positions(PerpPosition {
+                market_index: 0,
+                open_orders: 2,
+                ..PerpPosition::default()
+            }),
+            orders: maker_orders,
+            ..User::default()
+        };
+        let maker_key = Pubkey::default();
+        create_anchor_account_info!(maker, &maker_key, User, maker_account_info);
+        let makers = UserMap::load_one(&maker_account_info).unwrap();
+
+        // Same slot the quotes were posted in: both excluded, so the crank has no DLOB input
+        // at all and falls back to the AMM quote.
+        let (bids, asks) = find_bids_and_asks_from_users(
+            &market,
+            &oracle_price_data,
+            &makers,
+            posted_slot,
+            0,
+            BID_ASK_TWAP_MIN_QUOTE_REST_SLOTS,
+        )
+        .unwrap();
+        assert!(bids.is_empty());
+        assert!(asks.is_empty());
+
+        // One slot short of the requirement: still excluded.
+        let (bids, asks) = find_bids_and_asks_from_users(
+            &market,
+            &oracle_price_data,
+            &makers,
+            posted_slot + BID_ASK_TWAP_MIN_QUOTE_REST_SLOTS - 1,
+            0,
+            BID_ASK_TWAP_MIN_QUOTE_REST_SLOTS,
+        )
+        .unwrap();
+        assert!(bids.is_empty());
+        assert!(asks.is_empty());
+
+        // Rested long enough: the quotes now count.
+        let (bids, asks) = find_bids_and_asks_from_users(
+            &market,
+            &oracle_price_data,
+            &makers,
+            posted_slot + BID_ASK_TWAP_MIN_QUOTE_REST_SLOTS,
+            0,
+            BID_ASK_TWAP_MIN_QUOTE_REST_SLOTS,
+        )
+        .unwrap();
+        assert_eq!(bids.len(), 1);
+        assert_eq!(bids[0].price, 105 * PRICE_PRECISION_U64);
+        assert_eq!(asks.len(), 1);
+        assert_eq!(asks[0].price, 90 * PRICE_PRECISION_U64);
+
+        // `min_resting_slots == 0` keeps the true live book, which is what arb_perp needs.
+        let (bids, asks) =
+            find_bids_and_asks_from_users(&market, &oracle_price_data, &makers, posted_slot, 0, 0)
+                .unwrap();
+        assert_eq!(bids.len(), 1);
+        assert_eq!(asks.len(), 1);
+    }
+
+    /// `posted_slot_tail` is only 8 bits, so age is known modulo 256. A fresh quote must never
+    /// be able to appear old — that direction would reopen the attack. The reverse (an old
+    /// quote appearing fresh, and so being conservatively skipped) is acceptable.
+    #[test]
+    fn slots_since_order_posted_never_understates_a_fresh_quote() {
+        let posted_slot: u64 = 318_454_856;
+        let tail = get_posted_slot_from_clock_slot(posted_slot);
+
+        for elapsed in 0..256u64 {
+            assert_eq!(
+                slots_since_order_posted(posted_slot + elapsed, tail),
+                elapsed,
+                "age must be exact within one 256-slot window"
+            );
+        }
+
+        // At exactly one full wrap the age reads as 0 — treated as fresh, hence skipped.
+        assert_eq!(slots_since_order_posted(posted_slot + 256, tail), 0);
     }
 }
 

@@ -209,6 +209,25 @@ pub const MAX_BID_ASK_INVENTORY_SKEW_FACTOR: u64 = 10 * BID_ASK_SPREAD_PRECISION
 /// Bids more than this % below oracle and asks more than this % above oracle are filtered out.
 pub const BID_ASK_TWAP_MAX_ORACLE_DIVERGENCE_PERCENT: u64 = 15;
 
+/// Minimum number of slots a DLOB quote must have been live on-chain before it may
+/// influence the bid/ask/mark TWAP (OtterSec #146).
+///
+/// `update_perp_bid_ask_twap` samples the book from caller-supplied `User` accounts, and
+/// nothing else in the program checks how long an order has existed: a post-only limit
+/// order (or any order with `auction_duration == 0`) counts as a *resting* limit order in
+/// the very slot it was placed. So the crank's caller could place a self-crossed pair of
+/// quotes, crank, and cancel, all in one transaction — moving the mark TWAP that
+/// `get_perp_baseline_start_price_offset` uses to set a *third party's* forced-close
+/// auction band, while never being exposed to a fill.
+///
+/// Anchored on the `min_auction_duration = 20` that `place_perp_order` forces onto every
+/// triggered stop-loss auction (`controller/orders.rs:3691`): a quote must be exposed at
+/// least as long as the auction it would move, so a third party genuinely could have taken
+/// it in a separate transaction before it is allowed to count. 24 slots is that 20 plus a
+/// slack leader window (~9.6s at 400ms/slot), and sits well below both the 150-slot
+/// `SafeTriggerOrder` horizon and the 256-slot `Order::posted_slot_tail` modulus.
+pub const BID_ASK_TWAP_MIN_QUOTE_REST_SLOTS: u64 = 24;
+
 pub const MAX_POSITIVE_UPNL_FOR_INITIAL_MARGIN: i128 = 100 * QUOTE_PRECISION_I128; // max upnl for initial margin calc
 pub const DEFAULT_MAX_TWAP_UPDATE_PRICE_BAND_DENOMINATOR: i64 = 3; // '3' here means clamp new data point to 33% (1/3) divergence from current twap (if twap > 0)
 

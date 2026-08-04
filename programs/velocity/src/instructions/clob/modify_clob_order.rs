@@ -312,6 +312,8 @@ pub fn handle_modify_clob_order<'c: 'info, 'info>(
         activation_delay_slots: params.activation_delay_slots,
         max_ts,
         user: user_ref,
+        // Not a migrated taker remainder: this price is its owner's choice.
+        taker_origin: false,
     })?;
 
     // A placed trigger's shadow follows its live order to the new handle;

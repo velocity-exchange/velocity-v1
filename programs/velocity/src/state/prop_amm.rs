@@ -515,6 +515,13 @@ pub struct ClobRemovedOrderV0 {
     pub price: u64,
     pub base_asset_amount: u64,
     pub side: ClobSide,
+    /// The removed order was taker-origin — a migrated taker remainder.
+    ///
+    /// The only place the CLOB reports the flag, and what tells velocity
+    /// which side of a cross it is resolving was demanding liquidity, hence
+    /// which side's price the match settles at. Trailing, so every offset
+    /// before it is unchanged.
+    pub taker_origin: bool,
 }
 
 /// `place_order_v0` args on the CLOB wire.
@@ -530,6 +537,14 @@ pub struct ClobPlaceOrderArgsV0 {
     /// The user the order settles against, in derivable form (velocity
     /// verified control before the CPI).
     pub user: ClobUserRefV0,
+    /// Mark the order taker-origin on the book: it is an unfilled taker
+    /// remainder velocity migrated there, not a quote its owner chose to
+    /// post. Only velocity knows that, which is why the CLOB takes it as an
+    /// argument. It changes two things on the book — the order cannot be
+    /// taken while a live counterparty crosses it (so the improvement cannot
+    /// be won by landing a transaction at the activation slot), and a cross
+    /// involving it settles at the counterparty's price.
+    pub taker_origin: bool,
 }
 
 /// `cancel_order_v0` args on the CLOB wire.

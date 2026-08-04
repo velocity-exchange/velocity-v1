@@ -418,6 +418,8 @@ pub fn handle_trigger_clob_order<'c: 'info, 'info>(
         activation_delay_slots: None,
         max_ts,
         user: user_ref,
+        // Not a migrated taker remainder: this price is its owner's choice.
+        taker_origin: false,
     })?;
 
     // ---- Mark the slot as the placed shadow. ----

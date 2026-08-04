@@ -194,6 +194,8 @@ pub fn handle_place_clob_order<'c: 'info, 'info>(
         activation_delay_slots: params.activation_delay_slots,
         max_ts: params.max_ts,
         user: user_ref,
+        // A placement whose price its owner chose, not a migrated remainder.
+        taker_origin: false,
     })?;
 
     // Reserve the worst-case aggregates, then gate margin exactly like a
@@ -388,6 +390,11 @@ pub fn try_place_remainder_on_clob<'info>(
         activation_delay_slots: None,
         max_ts,
         user: user_ref,
+        // The whole point of this path: the book must know this order is a
+        // migrated taker remainder, so it cannot be taken while a live
+        // counterparty crosses it and a cross settles at that
+        // counterparty's price.
+        taker_origin: true,
     })?;
 
     // Wake the cranks no later than this order matters.

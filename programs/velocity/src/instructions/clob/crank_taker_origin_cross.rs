@@ -7,12 +7,19 @@
 //! improvement to the taker, and this is that somebody: permissionless, and
 //! paid out of the improvement it delivers.
 //!
-//! The resolution runs in the one direction the book leaves open: consume the
-//! **counterparty** with `execute_v0` (an ordinary fill at its own stored
-//! price), lift the taker-origin order off with `cancel_order_v0`, and settle
-//! the two as an ordinary two-user match at the counterparty's price. The
-//! cancel goes first, so a refusal costs nothing and the book is never left
-//! holding one side of a half-settled pair.
+//! Against an ordinary maker the resolution runs in the one direction the book
+//! leaves open: consume the **counterparty** with `execute_v0` (an ordinary
+//! fill at its own stored price), lift the taker-origin order off with
+//! `cancel_order_v0`, and settle the two as an ordinary two-user match at the
+//! counterparty's price. The cancel goes first, so a refusal costs nothing and
+//! the book is never left holding one side of a half-settled pair.
+//!
+//! When the counterparty is a **second taker remainder**, neither side can be
+//! consumed — the book withholds both from `execute_v0` — so the crank cancels
+//! them both and velocity prices the match itself. Price-time priority decides
+//! whose price: the order that rested first is the maker, the later one is the
+//! aggressor, and the improvement goes to the aggressor exactly as it would
+//! against a maker who chose to quote there.
 //!
 //! Nothing here resembles `crank_cross_match`'s protocol pass-through. That
 //! crank exists for two *makers* crossing, where neither side is demanding
@@ -26,6 +33,7 @@ use {
     crate::{
         controller::{
             self,
+            orders::TakerOriginCounterparty,
             position::{decrease_open_bids_and_asks, get_position_index, PositionDirection},
         },
         error::ErrorCode,
@@ -43,9 +51,9 @@ use {
             perp_market_map::{get_writable_perp_market_set, MarketSet},
             prop_amm::{
                 clob_hint_scan, clob_resting_prefix, read_clob_u32, ClobCancelOrderArgsV0,
-                ClobMarket, ClobNodeView, ClobOrderRefV0, ClobPlaceOrderArgsV0, ClobSide,
-                ClobUserRefV0, Direction, ExecuteArgsV0, QuoterSubjects, QuoterUserSetRef,
-                QuoterV0, CLOB_BEST_ASK_OFFSET, CLOB_BEST_BID_OFFSET,
+                ClobMarket, ClobNodeView, ClobOrderRefV0, ClobPlaceOrderArgsV0, ClobRemovedOrderV0,
+                ClobSide, ClobUserRefV0, Direction, ExecuteArgsV0, QuoterSubjects,
+                QuoterUserSetRef, QuoterV0, CLOB_BEST_ASK_OFFSET, CLOB_BEST_BID_OFFSET,
             },
             state::State,
             user::{OrderStatus, User, UserStats},
@@ -55,6 +63,9 @@ use {
     },
     anchor_lang::prelude::*,
 };
+
+#[cfg(test)]
+mod tests;
 
 #[derive(Accounts)]
 #[instruction(market_index: u16)]
@@ -115,14 +126,34 @@ pub struct CrankTakerOriginCross<'info> {
     pub crank_conditions: Option<AccountLoader<'info, ClobCrankConditionsV0>>,
 }
 
-/// One resolvable cross: the taker-origin order and the counterparty whose
-/// price the match settles at.
+/// Which shape of cross this is, and therefore how the counterparty leaves the
+/// book.
+enum TakerOriginCrossKind {
+    /// The counterparty is an ordinary maker: it is consumed with `execute_v0`,
+    /// an ordinary fill at its own stored price.
+    Maker,
+    /// The counterparty is a second taker remainder, and is cancelled off the
+    /// book rather than consumed. Its node index is carried because that cancel
+    /// needs the handle.
+    ///
+    /// **Not a variation on the maker path.** The book skips a taker-origin
+    /// order that a live counterparty crosses, so an `execute_v0` aimed at this
+    /// one would pass over it and fill whatever is behind it instead — settling
+    /// against a maker the cross was never priced for, or failing the response
+    /// validation. Cancelling both sides takes them out of the book's reach
+    /// entirely, and two removals is everything the settlement needs.
+    Pair { counterparty_node: u32 },
+}
+
+/// One resolvable cross: the aggressor (a taker-origin order) and the
+/// counterparty whose price the match settles at.
 struct TakerOriginCross {
     taker_origin: ClobNodeView,
     taker_origin_node: u32,
     counterparty: ClobNodeView,
-    /// Side the taker-origin order rests on (the counterparty is on the other).
+    /// Side the aggressor rests on (the counterparty is on the other).
     side: ClobSide,
+    kind: TakerOriginCrossKind,
 }
 
 impl TakerOriginCross {
@@ -138,6 +169,17 @@ impl TakerOriginCross {
     }
 }
 
+/// Did `a` rest before `b`?
+///
+/// Price-time priority between two crossing taker remainders: the earlier one
+/// is the maker, and its price is the one the match settles at. Ties on the
+/// slot break on the CLOB order id, which is sound rather than arbitrary — a
+/// book's `next_order_id` only ever increases, so within one slot the lower id
+/// was placed first.
+fn rested_first(a: &ClobNodeView, b: &ClobNodeView) -> bool {
+    (a.placed_slot, a.order_id) < (b.placed_slot, b.order_id)
+}
+
 /// The taker-origin cross at the top of the book, if there is one.
 ///
 /// Only the best matchable order on each side is considered. A taker-origin
@@ -147,10 +189,16 @@ impl TakerOriginCross {
 /// taker-origin order is the best and this crank sees it. So the two cranks
 /// compose instead of duplicating each other's search.
 ///
-/// Refused pairs, both leaving the book untouched: a counterparty that is
-/// itself taker-origin (two aggressors, so neither side's price is "the
-/// counterparty's price" — nothing here gets to pick a winner between them),
-/// and a counterparty owned by the taker (self-trade).
+/// When **both** sides are taker-origin, both are demanding liquidity and
+/// neither price is "the counterparty's price" by construction, so the tie is
+/// broken the way a book breaks every other one: whoever rested first is the
+/// maker at its own price, and the later arrival is the aggressor that crosses
+/// into it. It earns the improvement for the same reason a taker always does —
+/// it was the one that came to trade — and the earlier order gets the price it
+/// was already offering, which is all a maker is ever promised.
+///
+/// The one refused pair, leaving the book untouched: a counterparty owned by
+/// the taker (self-trade).
 fn find_taker_origin_cross(data: &[u8], slot: u64, now: i64) -> Result<Option<TakerOriginCross>> {
     let head = |offset: usize| -> Result<u32> {
         read_clob_u32(data, offset).ok_or_else(|| error!(ErrorCode::DefaultError))
@@ -163,16 +211,17 @@ fn find_taker_origin_cross(data: &[u8], slot: u64, now: i64) -> Result<Option<Ta
     if bid.price < ask.price {
         return Ok(None);
     }
-    // The bid first when both are marked: it is the side that would be filled
-    // by a taker selling, and nothing distinguishes them otherwise.
-    let (side, taker_origin_node, taker_origin, counterparty) = if bid.is_taker_origin {
-        (ClobSide::Bid, bid_node, bid, ask)
-    } else if ask.is_taker_origin {
-        (ClobSide::Ask, ask_node, ask, bid)
-    } else {
-        return Ok(None);
-    };
-    if counterparty.is_taker_origin || counterparty.user_ref() == taker_origin.user_ref() {
+    let bid_aggresses = (ClobSide::Bid, bid_node, bid, ask, ask_node);
+    let ask_aggresses = (ClobSide::Ask, ask_node, ask, bid, bid_node);
+    let (side, taker_origin_node, taker_origin, counterparty, counterparty_node) =
+        match (bid.is_taker_origin, ask.is_taker_origin) {
+            (false, false) => return Ok(None),
+            (true, false) => bid_aggresses,
+            (false, true) => ask_aggresses,
+            (true, true) if rested_first(&bid, &ask) => ask_aggresses,
+            (true, true) => bid_aggresses,
+        };
+    if counterparty.user_ref() == taker_origin.user_ref() {
         return Ok(None);
     }
     Ok(Some(TakerOriginCross {
@@ -180,7 +229,73 @@ fn find_taker_origin_cross(data: &[u8], slot: u64, now: i64) -> Result<Option<Ta
         taker_origin_node,
         counterparty,
         side,
+        kind: if counterparty.is_taker_origin {
+            TakerOriginCrossKind::Pair { counterparty_node }
+        } else {
+            TakerOriginCrossKind::Maker
+        },
     }))
+}
+
+/// Put a leftover back on the book, if the book can hold it.
+///
+/// Cancelling the whole of a taker's resting order because one unit of it
+/// crossed would take its queue position for nothing, so whatever the match did
+/// not consume goes back — still taker-origin, and immediately matchable rather
+/// than behind a fresh speed bump, since it has already served its auction
+/// window. Its reservation and open-order slot never moved, so a leftover that
+/// rests costs no `User` bookkeeping at all.
+///
+/// `None` when nothing rested: either there was no leftover, or it was below the
+/// book's minimum, which the book culls rather than rests — and then
+/// [`unwind_leftover`] is the other half of this.
+fn rest_leftover(
+    clob: &ClobMarket,
+    removed: &ClobRemovedOrderV0,
+    leftover: u64,
+    max_ts: i64,
+) -> Result<Option<ClobOrderRefV0>> {
+    if leftover == 0 || leftover < clob.min_order_size()? {
+        return Ok(None);
+    }
+    clob.place(ClobPlaceOrderArgsV0 {
+        side: removed.side,
+        price: removed.price,
+        base_asset_amount: leftover,
+        activation_delay_slots: Some(0),
+        max_ts,
+        user: removed.user,
+        taker_origin: true,
+    })
+    .map(Some)
+}
+
+/// Take an order that did not go back on the book off its owner's aggregates:
+/// the open-order slot comes off, and so does whatever the leftover still
+/// reserved. Runs for a consumed order (nothing left to unwind but the slot) and
+/// for a sub-min leftover the book cannot hold.
+fn unwind_leftover(
+    user: &mut User,
+    market_index: u16,
+    direction: &PositionDirection,
+    leftover: u64,
+    order_id: u64,
+) -> Result<()> {
+    let position_index = get_position_index(&user.perp_positions, market_index)?;
+    if leftover > 0 {
+        decrease_open_bids_and_asks(
+            &mut user.perp_positions[position_index],
+            direction,
+            leftover,
+            true,
+        )?;
+    }
+    user.perp_positions[position_index].open_orders = user.perp_positions[position_index]
+        .open_orders
+        .saturating_sub(1);
+    user.decrement_open_orders(false);
+    user.release_placed_trigger_slot(market_index, order_id, OrderStatus::Canceled);
+    Ok(())
 }
 
 pub fn handle_crank_taker_origin_cross<'c: 'info, 'info>(
@@ -284,11 +399,11 @@ pub fn handle_crank_taker_origin_cross<'c: 'info, 'info>(
         )?
     };
 
-    // ---- Lift the taker-origin order off the book. First, because the CLOB
-    // is the authority on the flag: velocity's byte read found the node, and
-    // the removal is what proves it was taker-origin, whose it was, and at
-    // what price — before anything settles against those facts. It also leaves
-    // the book uncrossed for the counterparty's fill, so the book's own
+    // ---- Lift the aggressor off the book. First, because the CLOB is the
+    // authority on the flag: velocity's byte read found the node, and the
+    // removal is what proves it was taker-origin, whose it was, and at what
+    // price — before anything settles against those facts. It also leaves the
+    // book uncrossed for the counterparty's fill, so the book's own
     // taker-origin protection cannot fire on the way through.
     let removed = clob.cancel(ClobCancelOrderArgsV0 {
         order_ref: ClobOrderRefV0 {
@@ -312,45 +427,86 @@ pub fn handle_crank_taker_origin_cross<'c: 'info, 'info>(
         "clob removed a different order than the cross was priced against"
     )?;
 
-    // ---- Consume the counterparty: an ordinary fill at its own price, which
-    // is what makes the response's quote *be* the price the match settles at.
-    let direction = match taker_direction {
-        PositionDirection::Long => Direction::Long,
-        PositionDirection::Short => Direction::Short,
+    // ---- Get the counterparty out of the book, the way its own flag allows.
+    let counterparty = match cross.kind {
+        // An ordinary maker: consume it. An ordinary fill at its own price,
+        // which is what makes the response's quote *be* the price the match
+        // settles at.
+        TakerOriginCrossKind::Maker => {
+            let direction = match taker_direction {
+                PositionDirection::Long => Direction::Long,
+                PositionDirection::Short => Direction::Short,
+            };
+            let users = [taker_ref, cross.counterparty.user_ref()];
+            let subjects = QuoterSubjects::Book(clob_resting_prefix(
+                &ctx.accounts.clob_market.try_borrow_data()?,
+                direction.clob_side(),
+                size,
+                &users,
+                &taker_ref,
+                clock.slot,
+                clock.unix_timestamp,
+            ));
+            // The execute leg's account list is the registry's, resolved
+            // against the accounts this instruction already names — the book,
+            // the CPI signer, and the program.
+            let mut account_map = std::collections::BTreeMap::new();
+            for info in [
+                ctx.accounts.clob_market.to_account_info(),
+                ctx.accounts.quoter_signer.to_account_info(),
+                ctx.accounts.clob_program.to_account_info(),
+            ] {
+                account_map.insert(info.key(), info);
+            }
+            let response = quoter.execute(
+                market_index,
+                ExecuteArgsV0 {
+                    direction,
+                    size,
+                    users: QuoterUserSetRef(&users),
+                    taker: Some(taker_ref),
+                },
+                &ctx.accounts.quoter_signer.key(),
+                ctx.bumps.quoter_signer,
+                &account_map,
+            )?;
+            TakerOriginCounterparty::Executed { response, subjects }
+        }
+        // A second taker remainder: cancel it too. It cannot be consumed —
+        // `execute_v0` skips a crossed taker-origin order and would fill past
+        // it — and once both sides are off the book there is no gate left to
+        // interfere and nothing for a fill to reach the wrong maker through.
+        // The removal carries the price, the size and the owner, which is the
+        // whole of what settling the pair needs.
+        TakerOriginCrossKind::Pair { counterparty_node } => {
+            let counterparty_ref = cross.counterparty.user_ref();
+            let removed_counterparty = clob.cancel(ClobCancelOrderArgsV0 {
+                order_ref: ClobOrderRefV0 {
+                    node_index: counterparty_node,
+                    order_id: cross.counterparty.order_id,
+                },
+                user: counterparty_ref,
+            })?;
+            validate!(
+                removed_counterparty.taker_origin,
+                ErrorCode::NoTakerOriginCross,
+                "clob order {} is not taker-origin; it cannot be the maker of a pair",
+                removed_counterparty.order_id
+            )?;
+            validate!(
+                removed_counterparty.user == counterparty_ref
+                    && removed_counterparty.side != cross.side
+                    && removed_counterparty.price == cross.counterparty.price
+                    && removed_counterparty.base_asset_amount >= size,
+                ErrorCode::DefaultError,
+                "clob removed a different counterparty than the cross was priced against"
+            )?;
+            TakerOriginCounterparty::Cancelled {
+                removed: removed_counterparty,
+                base_asset_amount: size,
+            }
+        }
     };
-    let users = [taker_ref, cross.counterparty.user_ref()];
-    let subjects = QuoterSubjects::Book(clob_resting_prefix(
-        &ctx.accounts.clob_market.try_borrow_data()?,
-        direction.clob_side(),
-        size,
-        &users,
-        &taker_ref,
-        clock.slot,
-        clock.unix_timestamp,
-    ));
-    // The execute leg's account list is the registry's, resolved against the
-    // accounts this instruction already names — the book, the CPI signer, and
-    // the program.
-    let mut account_map = std::collections::BTreeMap::new();
-    for info in [
-        ctx.accounts.clob_market.to_account_info(),
-        ctx.accounts.quoter_signer.to_account_info(),
-        ctx.accounts.clob_program.to_account_info(),
-    ] {
-        account_map.insert(info.key(), info);
-    }
-    let response = quoter.execute(
-        market_index,
-        ExecuteArgsV0 {
-            direction,
-            size,
-            users: QuoterUserSetRef(&users),
-            taker: Some(taker_ref),
-        },
-        &ctx.accounts.quoter_signer.key(),
-        ctx.bumps.quoter_signer,
-        &account_map,
-    )?;
     drop(quoter);
 
     let fill = controller::orders::settle_taker_origin_cross(
@@ -358,8 +514,7 @@ pub fn handle_crank_taker_origin_cross<'c: 'info, 'info>(
         market_index,
         &removed,
         cross.taker_origin.placed_slot,
-        &response,
-        &subjects,
+        &counterparty,
         &fee,
         oracle_price,
         oracle_stale_for_margin,
@@ -383,45 +538,63 @@ pub fn handle_crank_taker_origin_cross<'c: 'info, 'info>(
         size
     )?;
 
-    // ---- Whatever the counterparty was too small to consume goes back on the
-    // book, still taker-origin. Cancelling it outright instead would let a
-    // cranker delete a taker's whole resting order by crossing one unit of it,
-    // and the remainder has already served its auction window, so it goes back
-    // matchable immediately rather than behind a fresh speed bump. Its
-    // reservation and open-order slot never moved, so only a dropped remainder
-    // unwinds anything. The book's new order ref is left as the transaction's
-    // return data (the CLOB writes it), and rides the record below.
-    let remainder = removed.base_asset_amount.saturating_sub(fill.base_filled);
-    let remainder_order_id = if remainder > 0 && remainder >= clob.min_order_size()? {
-        let order_ref = clob.place(ClobPlaceOrderArgsV0 {
-            side: removed.side,
-            price: removed.price,
-            base_asset_amount: remainder,
-            activation_delay_slots: Some(0),
-            max_ts: cross.taker_origin.max_ts,
-            user: taker_ref,
-            taker_origin: true,
-        })?;
-        order_ref.order_id
-    } else {
-        // Gone: sub-min remainders cannot rest (the book culls its own), so the
-        // taker's leftover reservation and open-order slot come off here.
+    // ---- Whatever the match was too small to consume goes back on the book,
+    // still taker-origin. Against an ordinary maker only the aggressor can have
+    // a leftover, since the cross is sized to what the counterparty had; two
+    // remainders are sized to each other, so the survivor may be either of
+    // them. Both are handled the same way, and the book's new order ref is left
+    // as the transaction's return data (the CLOB writes it) besides riding the
+    // record below.
+    let taker_leftover = removed.base_asset_amount.saturating_sub(fill.base_filled);
+    let taker_rested = rest_leftover(&clob, &removed, taker_leftover, cross.taker_origin.max_ts)?;
+    if taker_rested.is_none() {
         let mut taker = load_mut!(ctx.accounts.taker)?;
-        let position_index = get_position_index(&taker.perp_positions, market_index)?;
-        if remainder > 0 {
-            decrease_open_bids_and_asks(
-                &mut taker.perp_positions[position_index],
-                &taker_direction,
-                remainder,
-                true,
+        unwind_leftover(
+            &mut taker,
+            market_index,
+            &taker_direction,
+            taker_leftover,
+            removed.order_id,
+        )?;
+    }
+    let (counterparty_rested, counterparty_leftover) = match &counterparty {
+        TakerOriginCounterparty::Cancelled {
+            removed: counterparty_removed,
+            ..
+        } => {
+            let leftover = counterparty_removed
+                .base_asset_amount
+                .saturating_sub(fill.base_filled);
+            let rested = rest_leftover(
+                &clob,
+                counterparty_removed,
+                leftover,
+                cross.counterparty.max_ts,
             )?;
+            if rested.is_none() {
+                let mut maker = makers_and_referrer.get_ref_mut(&fill.maker)?;
+                unwind_leftover(
+                    &mut maker,
+                    market_index,
+                    &taker_direction.opposite(),
+                    leftover,
+                    counterparty_removed.order_id,
+                )?;
+            }
+            (rested, leftover)
         }
-        taker.perp_positions[position_index].open_orders = taker.perp_positions[position_index]
-            .open_orders
-            .saturating_sub(1);
-        taker.decrement_open_orders(false);
-        taker.release_placed_trigger_slot(market_index, removed.order_id, OrderStatus::Canceled);
-        0
+        // The book kept this counterparty's own accounting: it reported the
+        // orders the fill retired and the sub-min remainder it culled, and the
+        // settlement unwound both.
+        TakerOriginCounterparty::Executed { .. } => (None, 0),
+    };
+    // Only one leftover can exist — the match is sized to the smaller of the
+    // two orders, so the other side is consumed outright.
+    let (remainder_owner, remainder, remainder_order_id) = match (taker_rested, counterparty_rested)
+    {
+        (Some(order_ref), _) => (ctx.accounts.taker.key(), taker_leftover, order_ref.order_id),
+        (_, Some(order_ref)) => (fill.maker, counterparty_leftover, order_ref.order_id),
+        (None, None) => (Pubkey::default(), 0, 0),
     };
 
     // ---- Wake hints and the keeper's lamports, as every CLOB crank does.
@@ -465,12 +638,10 @@ pub fn handle_crank_taker_origin_cross<'c: 'info, 'info>(
         fill_price,
         improvement: fee.improvement,
         crank_reward: fill.crank_reward,
-        remainder_base_asset_amount: if remainder_order_id == 0 {
-            0
-        } else {
-            remainder
-        },
+        maker_taker_origin: matches!(counterparty, TakerOriginCounterparty::Cancelled { .. }),
+        remainder_base_asset_amount: remainder,
         remainder_order_id,
+        remainder_owner,
     });
     msg!(
         "taker-origin cross: {} base at {} instead of {}, improvement {} quote, cranker paid {}",

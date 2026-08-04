@@ -2524,9 +2524,9 @@ export type TakerOriginCrossRecordV0 = {
 	ts: BN;
 	slot: BN;
 	marketIndex: number;
-	/** owner of the taker-origin order — the aggressor of this match */
+	/** owner of the taker-origin order that aggressed this match — the later of the two to rest when both sides were taker-origin */
 	taker: PublicKey;
-	/** the resting counterparty, filled at its own price */
+	/** the counterparty, filled at its own price */
 	maker: PublicKey;
 	/** the cranker's `User`, credited `crankReward` in quote */
 	filler: PublicKey;
@@ -2542,10 +2542,14 @@ export type TakerOriginCrossRecordV0 = {
 	improvement: BN;
 	/** QUOTE_PRECISION (1e6) — quote paid to the cranker out of that improvement */
 	crankReward: BN;
-	/** size the counterparty was too small to consume, put back on the book still taker-origin (0 when the cross consumed the order outright, or the leftover was below the book's minimum and was dropped) */
+	/** the counterparty was itself a migrated taker remainder, and won the price by resting first — so this match was two remainders clearing against each other rather than one against an ordinary maker */
+	makerTakerOrigin: boolean;
+	/** size the match was too small to consume, put back on the book still taker-origin (0 when the cross consumed both orders outright, or the leftover was below the book's minimum and was dropped) */
 	remainderBaseAssetAmount: BN;
 	/** the re-placed remainder's new CLOB order id (0 when nothing was re-placed) — the old handle is stale, this is the client's new one */
 	remainderOrderId: BN;
+	/** whose remainder was re-placed: `taker` or `maker` above (the default pubkey when nothing was). Only a match between two remainders can leave it on the maker, since an ordinary counterparty is consumed to exactly the size the cross was priced for */
+	remainderOwner: PublicKey;
 };
 
 /** Emitted when a builder's/referrer's accrued `RevenueShareOrder` fees are settled into their `RevenueShareAccount`. */

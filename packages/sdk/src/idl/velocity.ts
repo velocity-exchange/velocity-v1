@@ -29144,14 +29144,15 @@ export type Velocity = {
           {
             "name": "taker",
             "docs": [
-              "owner of the taker-origin order — the aggressor of this match"
+              "owner of the taker-origin order that aggressed this match — the later of",
+              "the two to rest when both sides were taker-origin"
             ],
             "type": "pubkey"
           },
           {
             "name": "maker",
             "docs": [
-              "the resting counterparty, filled at its own price"
+              "the counterparty, filled at its own price"
             ],
             "type": "pubkey"
           },
@@ -29199,11 +29200,20 @@ export type Velocity = {
             "type": "u64"
           },
           {
+            "name": "makerTakerOrigin",
+            "docs": [
+              "the counterparty was itself a migrated taker remainder, and won the",
+              "price by resting first — so this match was two remainders clearing",
+              "against each other rather than one against an ordinary maker"
+            ],
+            "type": "bool"
+          },
+          {
             "name": "remainderBaseAssetAmount",
             "docs": [
-              "size the counterparty was too small to consume, put back on the book",
-              "still taker-origin (0 when the cross consumed the order outright, or",
-              "when the leftover was below the book's minimum and was dropped)"
+              "size the match was too small to consume, put back on the book still",
+              "taker-origin (0 when the cross consumed both orders outright, or when",
+              "the leftover was below the book's minimum and was dropped)"
             ],
             "type": "u64"
           },
@@ -29214,6 +29224,16 @@ export type Velocity = {
               "re-placed) — the old handle is stale, this is the client's new one"
             ],
             "type": "u64"
+          },
+          {
+            "name": "remainderOwner",
+            "docs": [
+              "whose remainder was re-placed: `taker` or `maker` above (the default",
+              "pubkey when nothing was). Only a match between two remainders can leave",
+              "it on the maker, since an ordinary counterparty is consumed to exactly",
+              "the size the cross was priced for"
+            ],
+            "type": "pubkey"
           }
         ]
       }

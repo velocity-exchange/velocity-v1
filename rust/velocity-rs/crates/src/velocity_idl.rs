@@ -6186,8 +6186,10 @@ pub mod types {
         pub fill_price: u64,
         pub improvement: u64,
         pub crank_reward: u64,
+        pub maker_taker_origin: bool,
         pub remainder_base_asset_amount: u64,
         pub remainder_order_id: u64,
+        pub remainder_owner: Pubkey,
     }
     #[repr(C)]
     #[derive(
@@ -31524,8 +31526,10 @@ pub mod events {
         pub fill_price: u64,
         pub improvement: u64,
         pub crank_reward: u64,
+        pub maker_taker_origin: bool,
         pub remainder_base_asset_amount: u64,
         pub remainder_order_id: u64,
+        pub remainder_owner: Pubkey,
     }
     #[derive(Clone, Debug, PartialEq, Default)]
     #[event]

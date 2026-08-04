@@ -519,16 +519,27 @@ pub fn settle_expired_market(
     // is protocol/IF fee revenue awaiting the sweep, not AMM surplus payable to
     // perp winners. Whatever is left is routed to the revenue pool by
     // `settle_expired_market_pools_to_revenue_pool` at delisting, as before.
-    // ...and then reserve the builder/referrer revenue share already accrued
-    // against that pool (OtterSec #147). `pending_revenue_share` is a booked
-    // liability, not AMM surplus: the taker's quote was debited at fill and a
-    // matching payable recorded, so while the escrow rows are outstanding the pool
-    // still holds those tokens but they belong to the builder/referrer. Every
-    // ordinary fee sweep reserves the counter (`sweep_market_fees`) and
-    // `calculate_perp_market_amm_summary_stats` subtracts it for exactly this
-    // reason; the expiry solver was the one consumer treating the gross pool as
-    // payable, which over-priced winner claims by the amount owed and would strand
-    // the revenue-share sweep after the winners drained the pool.
+    //
+    // The pool is then read net of `pending_revenue_share` (OtterSec #147). That
+    // counter is a booked third-party liability, not AMM surplus: the taker's quote
+    // was debited at fill and a matching builder/referrer payable recorded, so the
+    // pool holds those tokens while they are owed elsewhere. `sweep_market_fees`
+    // reserves the counter ahead of every fee drain and
+    // `calculate_perp_market_amm_summary_stats` subtracts it; the expiry solver was
+    // the one consumer pricing against the gross pool. Reserving it here is what
+    // lets the payable survive wind-down at all —
+    // `settle_expired_market_pools_to_revenue_pool` validates that base amounts and
+    // net user cost basis are zero but never that the revenue share is paid, so
+    // once winners drain the pool the accrued builder fee is unrecoverable: the
+    // tokens leave for the revenue pool and the escrow rows stay outstanding.
+    //
+    // `pending_protocol_fee` / `pending_if_fee` are deliberately NOT reserved. They
+    // are the protocol's own revenue and sit junior to user claims by design:
+    // `sweep_market_fees` reserves `max(net_user_pnl, 0)` — valued at
+    // `expiry_price` while the market is in Settlement — ahead of both drains, so a
+    // short pool pays winners first and the carveouts take the loss. Reserving them
+    // here would invert that ladder and pay protocol revenue ahead of expiring
+    // traders.
     //
     // Saturating: a corrupt counter larger than the pool must floor the backing at
     // zero rather than solve against a negative balance.

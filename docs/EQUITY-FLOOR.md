@@ -3,12 +3,16 @@
 How the equity floor on delegated accounts works: what it enforces, what happens when it trips, and
 how to move funds between subaccounts without tripping it.
 
-This applies to accounts that Velocity creates and funds under its own authority, with the borrowing
-maker's trading key set as the `delegate` on each subaccount. The loan is deposited in USDT across
-one or more subaccounts, and each subaccount carries an `equity_floor`: a minimum account equity,
-denominated in USDT, that the subaccount must stay above. Velocity sets the floors when the accounts
-are funded; the standard arrangement is 70% of the loan amount, i.e. a maximum loss of 30% of the
-loan. On a 1,000,000 USDT loan, the floors across the subaccounts sum to 700,000 USDT.
+This applies to accounts that Velocity creates and funds under its own authority, with an external
+operator's trading key set as the `delegate` on each subaccount. The funds are deposited in USDT
+across one or more subaccounts, and each subaccount carries an `equity_floor`: a minimum account
+equity, denominated in USDT, that the subaccount must stay above. Velocity sets the floors when the
+accounts are funded; the standard configuration sets the floors at 70% of the funded amount, i.e. a
+protection target of at most 30% drawdown. On 1,000,000 USDT of funded capital, the floors across
+the subaccounts sum to 700,000 USDT. The 30% figure is a target the mechanisms below enforce, not a
+synchronous onchain cap; see
+[Timing and what the breaker does not guarantee](#timing-and-what-the-breaker-does-not-guarantee)
+for the exact loss model.
 
 Each subaccount also carries an `equity_floor_buffer`: required headroom above the floor. The floor
 itself is the trip threshold of the breaker; every risk-increasing action must clear the higher line
@@ -58,13 +62,28 @@ the floor itself.
 The checks above only apply to actions. Equity can also fall below the floor through trading
 losses; the breaker covers that case.
 
-`tripEquityFloorBreaker` is a permissionless instruction: any keeper can call it against a
-subaccount, and the onchain proof is a net-equity calculation showing that subaccount's equity is
-below its floor (not the buffered line: the buffer gates actions, the floor arms the breaker). The
-trip additionally requires every oracle the subaccount's positions depend on to be valid, and
-rejects with `InvalidOracle` otherwise, so an authority-wide freeze can never be armed off a stale
-or degraded price. Velocity runs a guard bot that watches every floored account, so once any
-subaccount drops below its floor, expect the breaker to be tripped within seconds.
+The breaker arms in two ways, both against the same proof: a net-equity calculation showing the
+subaccount's equity is below its raw floor (not the buffered line: the buffer gates actions, the
+floor arms the breaker), with every oracle the subaccount's positions depend on valid, so an
+authority-wide freeze can never be armed off a stale or degraded price.
+
+1. **Lazily, on touch.** The actions that are allowed to run while a subaccount sits below its raw
+   floor set the flag inline as a side effect of succeeding: a reducing perp fill (whether the
+   subaccount is taker or maker), a strictly reducing swap, and a trigger order cancelled by the
+   below-floor check. A below-floor subaccount with resting reduce-side orders is therefore
+   frozen by the first counterparty fill against them, with no keeper involved; a delegate closing
+   the losing position freezes the authority in that same transaction. The check costs nothing on
+   subaccounts without a floor and is skipped once the breaker is set.
+2. **By the permissionless `tripEquityFloorBreaker` instruction.** Any keeper can call it against a
+   subaccount (it rejects with `InvalidOracle` on any invalid oracle, and with
+   `SufficientCollateral` when the subaccount is not below its floor). Velocity runs a guard bot
+   that watches every floored account and sends this trip; under normal operation expect it to
+   land within seconds of a breach, subject to RPC health and transaction inclusion. Because the
+   instruction is permissionless, the guard bot is a backstop, not a single point of failure: any
+   third party can trip a breached account.
+
+The lazy path covers every actively traded account; the keeper path covers the remaining case of a
+subaccount that breaches its floor and then sees no transactions at all.
 
 Tripping sets the `equityBreakerTripped` flag on the authority's `UserStats` account. This flag is
 authority-wide: it freezes every subaccount under the authority, not just the one that breached.
@@ -88,6 +107,38 @@ breaker trips, contact Velocity.
 Because every permitted action leaves equity at or above `floor + buffer`, the breaker can only be
 armed by losses eating through the buffer. The delegate cannot trade, withdraw, or transfer a
 subaccount into a trippable state; the onchain checks reject the attempt instead.
+
+## Timing and what the breaker does not guarantee
+
+The per-subaccount gates are synchronous: an action that would breach the buffered floor reverts in
+the transaction that attempts it. The authority-wide breaker is not: a subaccount can fall below
+its raw floor through passive losses (funding, mark moves) without any transaction running, and a
+program only executes inside a transaction, so the flag is set by the next qualifying transaction
+to touch the chain, not at the moment of the breach. Between the breach and that transaction:
+
+- The breached subaccount itself is already restricted to reduce-only activity by its own gate.
+- Sibling subaccounts are not yet frozen. Each is still bounded by its own `floor + buffer` gate
+  and its own margin requirements, so the additional exposure they can add in the window is capped
+  by their own headroom, but it is not zero.
+- The window closes at the first touch on the breached subaccount (a counterparty fill against its
+  resting reduce-side orders, the delegate reducing, a keeper trigger) or at the guard bot's trip,
+  whichever lands first. For an account with resting orders or any activity this is typically the
+  next fill; for a fully idle account it is the guard bot's latency, and if the bot is down, until
+  any third party trips it.
+
+Two more things the breaker does not do:
+
+- It does not close positions. A frozen account keeps its open positions, and passive losses can
+  continue after the flag is set. Winding down is operational: Velocity's runbook uses the
+  reduce-only `user close-positions` flow, which works while frozen.
+- It does not restore equity. The floors bound losses via the gates, the trips, and the wind-down
+  procedure together; losses incurred in the window between breach and wind-down sit on the
+  account like any trading loss.
+
+The 70% floor configuration should therefore be read as: no delegate action can take a subaccount
+below its buffered floor (synchronous), any breach freezes the authority at the next touch or trip
+(asynchronous, typically fast), and the remaining exposure is passive market movement between the
+breach and the completed wind-down.
 
 ## Moving funds between subaccounts
 
@@ -220,8 +271,8 @@ back it.
 
 ## A worked session
 
-A concrete run-through, on a 1,000,000 USDT loan split across two subaccounts, with each call
-paired to the math the program actually executes. Floors sum to 700,000 (the 70% arrangement) and
+A concrete run-through, on 1,000,000 USDT funded across two subaccounts, with each call
+paired to the math the program actually executes. Floors sum to 700,000 (the 70% configuration) and
 each subaccount carries a 10,000 buffer. "Gate" below means `floor + buffer`, the line
 risk-increasing actions must clear.
 
@@ -344,11 +395,12 @@ All of the checks above enforce one rule:
 
 The program pins the sums (only the transfer instruction can move floor and buffer between
 subaccounts, and it conserves both; only Velocity's admin can change the totals), and checks net
-equity against the buffered floor per subaccount on every risk-increasing action. The aggregate consequence is that total equity
-across the subaccounts always covers the agreed total floor, e.g. 70% of the loan, with the buffers
-as working margin on top.
+equity against the buffered floor per subaccount on every risk-increasing action. The aggregate
+consequence is that no permitted action can leave total equity across the subaccounts below the
+agreed total floor, e.g. 70% of the funded amount, with the buffers as working margin on top; passive losses
+past a floor are handled by the breaker, on the timing described above.
 
-As long as the rule holds, the delegate can split the loan across subaccounts and move funds and
+As long as the rule holds, the delegate can split the funds across subaccounts and move funds and
 floor between them freely. If losses push any subaccount below its floor, the breaker trips and all
 subaccounts become reduce-only until a Velocity admin resets the flag.
 
@@ -428,7 +480,8 @@ to `transfer_deposit_by_delegate` directly and applies its own haircut when land
 The program is the only layer that enforces anything. Floor and buffer live on each `User`
 account and every risk-increasing instruction checks equity against `floor + buffer` on the
 subaccount it is already operating on; the authority-wide part is a single flag on `UserStats`,
-set by the permissionless trip and cleared only by the warm admin. The SDKs mirror those checks
+set lazily by the exempt paths themselves or by the permissionless trip, and cleared only by the
+warm admin. The SDKs mirror those checks
 rather than adding rules of their own, and every consumer that reports a level (the manager, the
 guard bot, the CLI) uses the same classifier.
 
@@ -437,7 +490,8 @@ Lifecycle:
 1. Velocity funds the subaccounts and sets floors and buffers (`user set-equity-floor`).
 2. The delegate trades and rebalances freely; every action is gated at `floor + buffer`.
 3. The guard bot watches headroom and alerts on `warning` and `critical`.
-4. If losses cross a floor, the breaker trips and every subaccount goes reduce-only.
+4. If losses cross a floor, the breaker trips (at the first touch on the breached subaccount, or
+   at the guard bot's trip, whichever lands first) and every subaccount goes reduce-only.
 5. Velocity inspects (`user equity-floor-status`), winds down if needed (`user close-positions`,
    reduce-only, so it works while frozen), and clears the flag after review
    (`user reset-equity-breaker`).

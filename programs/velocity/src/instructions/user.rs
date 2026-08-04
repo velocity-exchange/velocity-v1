@@ -4419,6 +4419,19 @@ pub fn handle_end_swap<'c: 'info, 'info>(
         strictly_reducing,
     )?;
 
+    // The exempt swap skips the buffered-floor gate and may legally end below
+    // the raw floor; arm the breaker inline instead of waiting for the
+    // permissionless trip.
+    if strictly_reducing {
+        controller::equity_floor::try_lazy_equity_breaker_trip(
+            &user,
+            &mut user_stats,
+            &perp_market_map,
+            &spot_market_map,
+            &mut oracle_map,
+        )?;
+    }
+
     user.update_last_active_slot(slot);
 
     let swap_record = SwapRecord {

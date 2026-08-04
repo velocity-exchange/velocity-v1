@@ -245,6 +245,12 @@ describe('equity floor swap', () => {
 	});
 
 	it('risk-increasing swap stays frozen while tripped', async () => {
+		// margin trading must be on or the swap dies earlier with
+		// MarginTradingDisabled; this test pins the breaker gate
+		await takerVelocityClient.updateUserMarginTradingEnabled([
+			{ marginTradingEnabled: true, subAccountId: 0 },
+		]);
+
 		// sol -> usdc would open a new sol borrow: not a strict reducer
 		const amountIn = new BN(LAMPORTS_PER_SOL).div(new BN(10));
 		const { beginSwapIx, endSwapIx } = await takerVelocityClient.getSwapIx({

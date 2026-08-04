@@ -15870,7 +15870,7 @@ pub mod accounts {
                 AccountMeta {
                     pubkey: self.user_stats,
                     is_signer: false,
-                    is_writable: false,
+                    is_writable: true,
                 },
             ]
         }

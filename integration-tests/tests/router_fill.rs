@@ -2367,6 +2367,127 @@ fn force_cancel_reclaims_a_failing_makers_clob_orders() {
     assert!(format!("{:?}", err.meta.logs).contains("no passed refs are live orders"));
 }
 
+/// Retail routes: `place_and_take_perp_order_v1` fills the taker off the
+/// market's CLOB, with no DLOB maker anywhere in the transaction. This is the
+/// property the endpoint exists for — before it routed, a taker signing their
+/// own transaction could only reach the vAMM and whatever DLOB makers they
+/// passed, so book liquidity was keeper-only. The accounts the taker passes
+/// *are* their route; the mandatory CLOB baseline is enforced against them.
+#[test]
+fn place_and_take_v1_fills_a_retail_taker_off_the_clob() {
+    use velocity::state::order_params::{OrderParams, PostOnlyParam};
+
+    let mut fixture = setup();
+    // The book's maker needs its stats at the derived address: the fill
+    // resolves a balance change to a loaded user by field match, and the pair
+    // has to be in the transaction to be settled against.
+    let maker_stats = Pubkey::find_program_address(
+        &[
+            b"user_stats",
+            fixture.clob_maker_authority.pubkey().as_ref(),
+        ],
+        &velocity_id(),
+    )
+    .0;
+    set_user_stats_account(
+        &mut fixture.svm,
+        maker_stats,
+        &fixture.clob_maker_authority.pubkey(),
+    );
+    place_clob_ask(&mut fixture, 99 * PRICE, UNIT / 2);
+
+    let taker_authority = Keypair::new();
+    fixture
+        .svm
+        .airdrop(&taker_authority.pubkey(), 10_000_000_000)
+        .unwrap();
+    let taker_user = Pubkey::new_unique();
+    let taker_stats = Pubkey::new_unique();
+    let mut taker_state = trading_user(
+        &taker_authority.pubkey(),
+        10_000 * SPOT_BALANCE_PRECISION_U64,
+        None,
+    );
+    taker_state.next_order_id = 1;
+    set_user_account(&mut fixture.svm, taker_user, &taker_state);
+    set_user_stats_account(&mut fixture.svm, taker_stats, &taker_authority.pubkey());
+
+    fixture.svm.warp_to_slot(12);
+    set_oracle(
+        &mut fixture.svm,
+        fixture.oracle,
+        (100 * PRICE_PRECISION) as i64,
+        12,
+    );
+
+    let (quoter_signer, _) = quoter_signer_pda();
+    let mut accounts = velocity::accounts::PlaceAndTakeV1 {
+        state: state_pda(),
+        user: taker_user,
+        user_stats: taker_stats,
+        authority: taker_authority.pubkey(),
+        quoter: fixture.quoter,
+        clob_market: fixture.clob_market,
+        clob_program: clob_id(),
+        quoter_signer,
+        crank_conditions: None,
+    }
+    .to_account_metas(None);
+    accounts.push(AccountMeta::new_readonly(fixture.oracle, false));
+    accounts.push(AccountMeta::new(spot_market_pda(0), false));
+    accounts.push(AccountMeta::new(perp_market_pda(0), false));
+    // The book's maker, so its fill can be settled.
+    accounts.push(AccountMeta::new(fixture.clob_maker_user, false));
+    accounts.push(AccountMeta::new(maker_stats, false));
+    // The route: the market's CLOB and the accounts its CPI resolves against.
+    accounts.push(AccountMeta::new_readonly(fixture.quoter, false));
+    accounts.push(AccountMeta::new(fixture.clob_market, false));
+    accounts.push(AccountMeta::new_readonly(quoter_signer, false));
+    accounts.push(AccountMeta::new_readonly(clob_id(), false));
+
+    let ix = Instruction {
+        program_id: velocity_id(),
+        accounts,
+        data: velocity::instruction::PlaceAndTakePerpOrderV1 {
+            params: OrderParams {
+                order_type: OrderType::Limit,
+                market_type: MarketType::Perp,
+                direction: PositionDirection::Long,
+                base_asset_amount: UNIT / 2,
+                price: 99 * PRICE,
+                market_index: 0,
+                post_only: PostOnlyParam::None,
+                ..OrderParams::default()
+            },
+            success_condition: None,
+        }
+        .data(),
+    };
+    send_with_ixs(
+        &mut fixture.svm,
+        &taker_authority,
+        &[compute_unit_limit_ix(400_000), ix],
+        &[],
+    )
+    .unwrap();
+
+    // The taker is long off the book, and the book's ask is consumed.
+    let taker: User = read_zero_copy(&fixture.svm, &taker_user);
+    assert_eq!(
+        taker.perp_positions[0].base_asset_amount,
+        (UNIT / 2) as i64,
+        "filled off the CLOB"
+    );
+    let maker: User = read_zero_copy(&fixture.svm, &fixture.clob_maker_user);
+    assert_eq!(
+        maker.perp_positions[0].base_asset_amount,
+        -((UNIT / 2) as i64),
+        "the book's maker is short the other side"
+    );
+    assert_eq!(maker.perp_positions[0].open_asks, 0, "reservation released");
+    assert_eq!(clob_ask_count(&fixture.svm, &fixture.clob_market), 0);
+}
+
 /// A partially-filled place-and-take limit rests its remainder on the CLOB
 /// when the caller passes the CLOB accounts: the taker fills half against a
 /// DLOB maker, the leftover half leaves `User.orders` and becomes a resting
@@ -2453,6 +2574,14 @@ fn place_and_take_rests_the_remainder_on_the_clob() {
     accounts.push(AccountMeta::new(perp_market_pda(0), false));
     accounts.push(AccountMeta::new(dlob_maker_user, false));
     accounts.push(AccountMeta::new(dlob_maker_stats, false));
+    // The quoter section: v1 routes, so the taker names the entries it wants
+    // consulted. The market's canonical CLOB is mandatory, and its registered
+    // CPI accounts have to be resolvable from this list even though the
+    // remainder-placement leg names them too — same locks, one index byte.
+    accounts.push(AccountMeta::new_readonly(fixture.quoter, false));
+    accounts.push(AccountMeta::new(fixture.clob_market, false));
+    accounts.push(AccountMeta::new_readonly(quoter_signer, false));
+    accounts.push(AccountMeta::new_readonly(clob_id(), false));
 
     let params = OrderParams {
         order_type: OrderType::Limit,

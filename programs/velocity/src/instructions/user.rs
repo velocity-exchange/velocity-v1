@@ -3145,26 +3145,100 @@ pub fn place_and_take_perp_order<'c: 'info, 'info>(
 
     let order_id = load!(user_loader)?.get_last_order_id();
 
-    let (base_asset_amount_filled, _) = controller::orders::fill_perp_order(
-        order_id,
-        &state,
-        user_loader,
-        user_stats_loader,
-        &spot_market_map,
-        &perp_market_map,
-        &mut oracle_map,
-        &user_loader.clone(),
-        &user_stats_loader.clone(),
-        &makers_and_referrer,
-        &makers_and_referrer_stats,
-        None,
-        &Clock::get()?,
-        FillMode::PlaceAndTake(
-            is_immediate_or_cancel || optional_params.is_some(),
-            auction_duration_percentage,
-        ),
-        &mut escrow.as_mut(),
-    )?;
+    let fill_mode = FillMode::PlaceAndTake(
+        is_immediate_or_cancel || optional_params.is_some(),
+        auction_duration_percentage,
+    );
+    // v1 routes; v0 does not. A taker on v1 signed a transaction naming the
+    // registry entries it wants consulted, so the accounts it passed *are*
+    // its route — there is no third party whose choice needs constraining
+    // (that is the keeper path's problem, and the signed route's). v0's
+    // account list is frozen, so it keeps the vAMM + passed-DLOB-makers fill.
+    let (base_asset_amount_filled, _) = if clob.is_some() {
+        let leftover: Vec<&AccountInfo<'info>> = remaining_accounts_iter.collect();
+        let (direction, unfilled, taker_ref) = {
+            let user = load!(user_loader)?;
+            let order = user
+                .get_order(order_id)
+                .ok_or(ErrorCode::OrderDoesNotExist)?;
+            let position_base = user
+                .get_perp_position(params.market_index)
+                .map(|position| position.base_asset_amount)
+                .ok();
+            (
+                match order.direction {
+                    PositionDirection::Long => crate::state::prop_amm::Direction::Long,
+                    PositionDirection::Short => crate::state::prop_amm::Direction::Short,
+                },
+                order.get_base_asset_amount_unfilled(position_base)?,
+                crate::state::prop_amm::ClobUserRefV0 {
+                    authority: user.authority,
+                    sub_account_id: user.sub_account_id,
+                },
+            )
+        };
+        let (quoter_signer, quoter_signer_nonce) = crate::signer::find_quoter_signer();
+        let inputs = crate::instructions::QuoteInputs {
+            market_index: params.market_index,
+            direction,
+            size: unfilled,
+            users: &crate::state::prop_amm::quoter_wire_users(
+                makers_and_referrer.user_ref_index()?.into_keys().map(
+                    |(authority, sub_account_id)| crate::state::prop_amm::ClobUserRefV0 {
+                        authority,
+                        sub_account_id,
+                    },
+                ),
+            )?,
+            taker: taker_ref,
+            quoter_signer,
+            quoter_signer_nonce,
+        };
+        let section = crate::instructions::QuoterSection::quote(&leftover, &inputs)?;
+        section.require_baseline(perp_market_map.get_ref(&params.market_index)?.clob_quoter)?;
+        let book_refs = section.book_refs();
+        let mut executor = section.executor(&inputs, clock.slot, clock.unix_timestamp);
+        let mut router_inputs = crate::math::router::RouterFillInputs {
+            books: &book_refs,
+            executor: &mut executor,
+        };
+        controller::orders::fill_perp_order_with_router(
+            order_id,
+            &state,
+            user_loader,
+            user_stats_loader,
+            &spot_market_map,
+            &perp_market_map,
+            &mut oracle_map,
+            &user_loader.clone(),
+            &user_stats_loader.clone(),
+            &makers_and_referrer,
+            &makers_and_referrer_stats,
+            None,
+            &Clock::get()?,
+            fill_mode,
+            &mut router_inputs,
+            &mut escrow.as_mut(),
+        )?
+    } else {
+        controller::orders::fill_perp_order(
+            order_id,
+            &state,
+            user_loader,
+            user_stats_loader,
+            &spot_market_map,
+            &perp_market_map,
+            &mut oracle_map,
+            &user_loader.clone(),
+            &user_stats_loader.clone(),
+            &makers_and_referrer,
+            &makers_and_referrer_stats,
+            None,
+            &Clock::get()?,
+            fill_mode,
+            &mut escrow.as_mut(),
+        )?
+    };
 
     let order_unfilled = load!(user_loader)?
         .orders

@@ -51,5 +51,6 @@ pub fn handle_evict_worst_v0(
         price: removed.price,
         base_asset_amount: removed.base_asset_amount,
         side: removed.side,
+        taker_origin: removed.taker_origin,
     })
 }

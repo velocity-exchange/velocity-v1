@@ -1,6 +1,7 @@
 # Taker remainders on the CLOB, and the activation-slot auction
 
-Status: **proposal, for review.** Nothing here is built. Design source of truth for the
+Status: **the CLOB half of R2/R4 is built** (the marker, its report on the removal wire, and the
+gate); R1, R3 and R5–R7 are velocity-side and still proposal. Design source of truth for the
 surrounding work is the Notion PropAMM doc; this is a focused proposal for one hole in it.
 
 ## The hole
@@ -55,26 +56,45 @@ price, no oracle offset, not reduce-only. The rest price and the activation dela
 already exists (`Open`, `Ask`), so this costs no space. The flag means: *this order demands
 liquidity; in a cross it is the aggressor.*
 
-**R3 — Cross pricing.** When a taker-origin order crosses a resting counterparty, the fill prices
-at the **counterparty's** price. Best price on the book wins, and price priority already orders
-the book that way, so no new selection logic — only the price the match executes at changes.
+**R3 — Cross pricing, in velocity.** When a taker-origin order crosses a resting counterparty, the
+match settles at the **counterparty's** price. Best price on the book wins, and price priority
+already orders the book that way, so no new selection logic — only the price the match settles at
+changes.
 
-This is not what `cross_match` does today: it fills each leg at its own price and hands the
-difference to the protocol `User` (the surplus `min_cross_surplus` floors). For a taker-origin
-leg there is no surplus to hand anywhere — it belongs to the taker. A taker-origin cross is also
-simpler than today's crank: it is an ordinary two-user match at one price, so it needs none of
+**The CLOB does not do this.** It stays honest: every order fills at its own stored price, exactly
+as today, and the book neither reprices a cross nor resolves one. Velocity already computes fill
+prices at settlement, so all the CLOB owes it is the taker-origin *fact* — reported on
+`RemovedOrderV0` (see R4 for why that is the wire that carries it).
+
+Settling at the counterparty's price is not what `cross_match` does today: it fills each leg at its
+own price and hands the difference to the protocol `User` (the surplus `min_cross_surplus` floors).
+For a taker-origin leg there is no surplus to hand anywhere — it belongs to the taker. A taker-origin
+cross is also simpler than today's crank: an ordinary two-user match at one price, needing none of
 `cross_match`'s ephemeral protocol-taker machinery.
 
-**R4 — A crossed book must be uncrossed before it can be taken.** This is load-bearing, not an
-optimisation. Without it, an outsider who lands a transaction at the activation slot takes the
-taker-origin order at its limit and pockets the improvement — and the landing race is back, with
-an extra step. With it, an interaction with a crossed book resolves the crossing pairs first and
-can only touch what is left.
+**R4 — A crossed taker remainder cannot be taken.** This is load-bearing, not an optimisation.
+Without it, an outsider who lands a transaction at the activation slot takes the taker-origin order
+at its limit and pockets the improvement — and the landing race is back, with an extra step.
 
-Enforced in the CLOB's own `execute_v0`: if the book is crossed, either match the crossing pairs
-first or reject. Rejecting is simpler and pushes the work to the crank; matching first is
-strictly better for liveness because the crossed state cannot survive the next touch, and it
-needs no separate crank transaction to exist at all. **Open question A.**
+Enforced in the CLOB's own `execute_v0`, and it **rejects** rather than uncrossing first. Uncrossing
+inside `execute_v0` would return fills outside the prefix the router quoted, which velocity's
+quote↔execute binding refuses — so "resolve the cross on the way through" is not available to the
+book at all.
+
+Narrowed twice, both times to exactly the harm:
+
+- Only a **taker-origin** order is protected. An ordinary maker×maker cross is unclaimed arbitrage,
+  not somebody's improvement, and gating on it would freeze every taker on that book.
+- Only the order actually being filled is checked, against the best price on the other side that
+  could match this slot. So a fill that *consumes the counterparty* still lands — which it must,
+  because that is the direction velocity's cross resolution runs: take the counterparty's side with
+  `execute_v0` (an ordinary fill at its own price), lift the taker-origin order off with
+  `cancel_order_v0`, and settle the pair internally at the counterparty's price. A book-wide gate
+  would strand the pair forever.
+
+An order still inside its activation delay — or already expired — is not a counterparty: nothing can
+match it, so no improvement is within reach, and gating on it would freeze the remainder for its
+whole auction window, which is exactly when it is resting there.
 
 **R5 — The cranker is paid out of the improvement.** A taker-origin cross only fires when the
 improvement exceeds the fee, so it is self-funding and needs no reservoir subsidy on this path.
@@ -104,13 +124,16 @@ keeps floor-guarding those.
 
 ## Changes required
 
-**CLOB (`anchor-v2/programs/clob`)**
-- `OrderBitFlag::TakerOrigin` (bit 4) plus a place argument to set it.
-- Cross matching: pair a taker-origin order against the best crossing counterparty at the
-  counterparty's price; report the improvement so velocity can account for the crank fee.
-- R4's invariant in `execute_v0`.
-- Response wire: the executed price per fill is already carried; the improvement and the
-  taker-origin flag are new.
+**CLOB (`anchor-v2/programs/clob`)** — built.
+- `OrderBitFlag::TakerOrigin` (bit 4) plus `PlaceOrderArgsV0::taker_origin` to set it.
+- `RemovedOrderV0::taker_origin`, so `cancel_order_v0`/`evict_worst_v0`/`remove_expired_v0` report
+  the flag. That is the only place the CLOB reports it, and it is enough: R4 keeps a taker-origin
+  cross out of `execute_v0` entirely, so both sides of a cross velocity settles leave the book
+  through a removal. The shared quoter-interface types (`UserBalanceChange`,
+  `CancelledRemainderV0`) are untouched — every quoter emits those, and only the CLOB can ever
+  have an order to mark.
+- R4's gate in `execute_v0`, as `ClobError::TakerOriginCrossPending`.
+- No cross matching and no pricing: R3 lives in velocity.
 
 **velocity (`programs/velocity`)**
 - `fill_perp_order_v1`: the CLOB accounts plus the migration step. Nearly free in accounts — a
@@ -131,10 +154,10 @@ keeps floor-guarding those.
 
 ## Open questions
 
-**A. R4: reject a take on a crossed book, or uncross first?** Rejecting is a few lines and pushes
-liveness onto the crank. Uncrossing inside `execute_v0` is more code but means the crossed state
-never survives a touch, no crank has to exist for correctness, and the CU is paid by whoever
-touched the book. I lean to uncrossing first.
+**A. R4: reject a take on a crossed book, or uncross first? — settled: reject.** Uncrossing inside
+`execute_v0` would hand back fills outside the prefix the router quoted, and velocity's quote↔execute
+binding rejects those, so it was never actually on the table. See R4 for the two narrowings that
+keep rejecting from costing liveness.
 
 **B. Where does the crank fee sit relative to the protocol taker fee?** Simplest is a separate
 component out of the improvement, paid to the crank payout account, leaving the protocol fee

@@ -121,7 +121,30 @@ pub fn place_raw(
     size: u64,
     user: UserRefV0,
 ) -> Result<OrderRefV0> {
-    book.place(PlaceOrderParams {
+    book.place(params(side, price, size, user))
+}
+
+/// Place a migrated taker remainder — same order, [`OrderBitFlag::TakerOrigin`]
+/// set.
+pub fn place_taker_origin(
+    book: &mut ClobMarketV0,
+    side: Side,
+    price: u64,
+    size: u64,
+    user: UserRefV0,
+) -> OrderRefV0 {
+    let order_ref = book
+        .place(PlaceOrderParams {
+            taker_origin: true,
+            ..params(side, price, size, user)
+        })
+        .expect("placement succeeds");
+    assert_consistent(book);
+    order_ref
+}
+
+pub fn params(side: Side, price: u64, size: u64, user: UserRefV0) -> PlaceOrderParams {
+    PlaceOrderParams {
         side,
         price,
         base_asset_amount: size,
@@ -129,7 +152,8 @@ pub fn place_raw(
         activation_slot: 0,
         placed_slot: 0,
         max_ts: 0,
-    })
+        taker_origin: false,
+    }
 }
 
 /// Assert a book operation failed with a specific [`ClobError`]. Anchor maps

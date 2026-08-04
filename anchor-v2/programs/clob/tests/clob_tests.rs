@@ -1,5 +1,5 @@
 //! litesvm integration tests. Require the SBF build first:
-//! `bun run program:build:clob` (cargo-build-sbf --tools-version v1.52).
+//! `bun run program:build:clob` (cargo-build-sbf --tools-version v1.54).
 
 use {
     anchor_v2_testing::{
@@ -11,8 +11,9 @@ use {
         events::{ExecuteRecordV0, FillSlimV0},
         instruction,
         state::{
-            ClobHeaderV0, ClobMarketV0, Direction, MarketConfigV0, OrderNodeV0, OrderRefV0, Side,
-            UserRefV0, UserSetV0, EXECUTE_FILLS_CEILING, ORDERS_OFFSET,
+            ClobHeaderV0, ClobMarketV0, Direction, MarketConfigV0, OrderBitFlag, OrderNodeV0,
+            OrderRefV0, Side, UserRefV0, UserSetV0, EXECUTE_FILLS_CEILING, ORDERS_OFFSET,
+            REMOVED_ORDER_BYTES,
         },
         CancelOrderArgsV0, EvictWorstArgsV0, ExecuteArgsV0, PlaceOrderArgsV0, QuoteArgsV0,
         RemoveExpiredArgsV0, ResizeMarketArgsV0, UpdateMarketArgsV0,
@@ -181,6 +182,15 @@ fn place_args(side: Side, price: u64, size: u64) -> PlaceOrderArgsV0 {
         activation_delay_slots: None,
         max_ts: 0,
         user: uref(addr(Pubkey::default())),
+        taker_origin: false,
+    }
+}
+
+/// A migrated taker remainder: same placement, marked taker-origin.
+fn taker_origin_args(side: Side, price: u64, size: u64) -> PlaceOrderArgsV0 {
+    PlaceOrderArgsV0 {
+        taker_origin: true,
+        ..place_args(side, price, size)
     }
 }
 
@@ -373,15 +383,21 @@ fn remove_expired(
 }
 
 /// RemovedOrderV0 return data:
-/// (user, order_id, price, base_asset_amount, side).
-fn parse_removed(b: &[u8]) -> ([u8; 32], u64, u64, u64, u8) {
+/// (user, order_id, price, base_asset_amount, side, taker_origin).
+fn parse_removed(b: &[u8]) -> ([u8; 32], u64, u64, u64, u8, bool) {
     assert_eq!(u16::from_le_bytes(b[32..34].try_into().unwrap()), 0);
+    assert_eq!(b.len(), REMOVED_ORDER_BYTES);
     (
         b[..32].try_into().unwrap(),
         parse_u64(&b[34..]),
         parse_u64(&b[42..]),
         parse_u64(&b[50..]),
         b[58],
+        match b[59] {
+            0 => false,
+            1 => true,
+            other => panic!("taker_origin is not a borsh bool: {other}"),
+        },
     )
 }
 
@@ -716,10 +732,10 @@ fn hard_cap_rejects_placement_and_crank_evicts_tail() {
 
     // The crank removes the tail (worst price) and reports it for velocity.
     let meta = evict_worst(&mut ctx, Side::Bid).unwrap();
-    let (evicted_user, _, price, base, side) = parse_removed(&meta.return_data.data);
+    let (evicted_user, _, price, base, side, taker_origin) = parse_removed(&meta.return_data.data);
     assert_eq!(
-        (evicted_user, price, base, side),
-        (user.to_bytes(), 100, 1, Side::Bid.to_u8())
+        (evicted_user, price, base, side, taker_origin),
+        (user.to_bytes(), 100, 1, Side::Bid.to_u8(), false)
     );
     place(&mut ctx, place_args(Side::Bid, 200, 1), user);
     let state = market_state(&ctx);
@@ -835,10 +851,10 @@ fn expired_orders_are_skipped_and_cranked_off() {
     assert_eq!(state.free_count, CAPACITY as u32 - 1);
 
     let meta = remove_expired(&mut ctx, order_ref).unwrap();
-    let (removed_user, _, _, base, side) = parse_removed(&meta.return_data.data);
+    let (removed_user, _, _, base, side, taker_origin) = parse_removed(&meta.return_data.data);
     assert_eq!(
-        (removed_user, base, side),
-        (user.to_bytes(), 5, Side::Ask.to_u8())
+        (removed_user, base, side, taker_origin),
+        (user.to_bytes(), 5, Side::Ask.to_u8(), false)
     );
     let state = market_state(&ctx);
     assert_eq!(state.ask_count, 0);
@@ -1260,4 +1276,141 @@ fn taker_own_orders_are_skipped_for_self_trade_prevention() {
     assert_eq!(changes, vec![(other.to_bytes(), 7, 707, vec![2])]);
     // The taker's own order still rests.
     assert_eq!(quote(&mut ctx, Direction::Long, 12), vec![(100, 5)]);
+}
+
+fn cancel(
+    ctx: &mut Ctx,
+    order_ref: OrderRefV0,
+    user: Address,
+) -> Result<TransactionMetadata, FailedTransactionMetadata> {
+    let ix = instruction::CancelOrderV0 {
+        args: CancelOrderArgsV0 {
+            order_ref,
+            user: uref(user),
+        },
+    }
+    .to_instruction(accounts::CancelOrderV0 {
+        market: addr(ctx.market),
+        place_authority: addr(ctx.place_auth.pubkey()),
+    });
+    send(ctx, ix)
+}
+
+/// Velocity is the only caller that can know an order is a migrated taker
+/// remainder, so it says so at placement — and gets the fact back out of the
+/// removal that lifts the order off the book, which is how it identifies the
+/// aggressor of a cross it settles.
+#[test]
+fn the_taker_origin_flag_round_trips_through_place_and_removal() {
+    let mut ctx = setup();
+    let user = addr(Pubkey::new_unique());
+
+    let remainder = place(&mut ctx, taker_origin_args(Side::Bid, 101, 5), user);
+    let ordinary = place(&mut ctx, place_args(Side::Bid, 90, 5), user);
+    assert!(node(&ctx, remainder.node_index).is_taker_origin());
+    assert!(
+        node(&ctx, remainder.node_index).is_bit_flag_set(OrderBitFlag::Open),
+        "the marker must not displace the liveness bit"
+    );
+    assert!(!node(&ctx, ordinary.node_index).is_taker_origin());
+
+    let meta = cancel(&mut ctx, remainder, user).unwrap();
+    let (_, order_id, price, base, side, taker_origin) = parse_removed(&meta.return_data.data);
+    assert_eq!(
+        (order_id, price, base, side, taker_origin),
+        (remainder.order_id, 101, 5, Side::Bid.to_u8(), true)
+    );
+
+    let meta = cancel(&mut ctx, ordinary, user).unwrap();
+    assert!(!parse_removed(&meta.return_data.data).5);
+}
+
+/// The gate, on-chain: a taker remainder resting at 101 with a maker ask at 99
+/// against it cannot be bought at 101 by whoever lands first, but the fill that
+/// *consumes the counterparty* still lands — that direction is how velocity
+/// resolves the cross, and blocking it would strand the pair forever.
+#[test]
+fn a_crossed_taker_remainder_cannot_be_taken_but_its_counterparty_can() {
+    let mut ctx = setup();
+    let taker = addr(Pubkey::new_unique());
+    let maker = addr(Pubkey::new_unique());
+    place(&mut ctx, taker_origin_args(Side::Bid, 101, 5), taker);
+    place(&mut ctx, place_args(Side::Ask, 99, 5), maker);
+    advance_slot(&mut ctx, 1);
+
+    assert_clob_err(
+        execute_meta(&mut ctx, Direction::Short, 5),
+        err_code(clob::error::ClobError::TakerOriginCrossPending),
+    );
+    // Nothing moved.
+    let state = market_state(&ctx);
+    assert_eq!((state.bid_count, state.ask_count), (1, 1));
+
+    // Taking the ask at its own 99 is ordinary liquidity taking.
+    let changes = execute(&mut ctx, Direction::Long, 5);
+    assert_eq!(changes, vec![(maker.to_bytes(), 5, 495, vec![2])]);
+    // Uncrossed, the remainder is takeable again.
+    let changes = execute(&mut ctx, Direction::Short, 5);
+    assert_eq!(changes, vec![(taker.to_bytes(), 5, 505, vec![1])]);
+}
+
+/// Two makers crossing is unclaimed arbitrage, not a taker's improvement, and
+/// gating on it would freeze every taker on the book.
+#[test]
+fn a_maker_only_cross_is_not_gated() {
+    let mut ctx = setup();
+    let maker_a = addr(Pubkey::new_unique());
+    let maker_b = addr(Pubkey::new_unique());
+    place(&mut ctx, place_args(Side::Bid, 101, 5), maker_a);
+    place(&mut ctx, place_args(Side::Ask, 99, 5), maker_b);
+    advance_slot(&mut ctx, 1);
+
+    assert_eq!(execute(&mut ctx, Direction::Short, 5).len(), 1);
+    assert_eq!(execute(&mut ctx, Direction::Long, 5).len(), 1);
+}
+
+/// The gate turns on with the counterparty's activation slot, not with its
+/// placement: an order inside its auction window cannot be matched by anyone,
+/// so it puts no improvement within reach — and a book that froze the moment a
+/// crossed order was *placed* would be frozen for the whole window, which is
+/// exactly when a migrated remainder is resting there.
+#[test]
+fn an_unactivated_counterparty_does_not_gate_the_fill() {
+    let mut ctx = setup();
+    let taker = addr(Pubkey::new_unique());
+    let maker = addr(Pubkey::new_unique());
+    ctx.svm.warp_to_slot(10);
+
+    // The remainder is live now; the maker's crossing ask only at slot 30.
+    let ix = place_ix(
+        &ctx,
+        PlaceOrderArgsV0 {
+            activation_delay_slots: Some(0),
+            ..taker_origin_args(Side::Bid, 101, 5)
+        },
+        taker,
+    );
+    send(&mut ctx, ix).unwrap();
+    let ix = place_ix(
+        &ctx,
+        PlaceOrderArgsV0 {
+            activation_delay_slots: Some(20),
+            ..place_args(Side::Ask, 99, 5)
+        },
+        maker,
+    );
+    send(&mut ctx, ix).unwrap();
+
+    // Slot 10: the ask cannot match, so taking the remainder at 101 is all
+    // that is on offer and it is allowed.
+    assert_eq!(execute(&mut ctx, Direction::Short, 1).len(), 1);
+
+    // Slot 30: the ask is a live counterparty and the remainder is protected.
+    ctx.svm.warp_to_slot(29);
+    assert_eq!(execute(&mut ctx, Direction::Short, 1).len(), 1);
+    ctx.svm.warp_to_slot(30);
+    assert_clob_err(
+        execute_meta(&mut ctx, Direction::Short, 1),
+        err_code(clob::error::ClobError::TakerOriginCrossPending),
+    );
 }

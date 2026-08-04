@@ -14,11 +14,11 @@ use {
         response::ResponseWriter,
         state::{
             CancelledRemainderV0, ClobMarketV0, Direction, ExecuteResponseV0, MarketConfigV0,
-            PriceLevel, QuoteResponseV0, ResponsePointerV0, Side, UserBalanceChange, UserRefV0,
-            UserSetV0, CANCELLED_BYTES, CHANGE_MIN_BYTES, COUNT_BYTES, EXECUTE_FILLS_CEILING,
-            EXECUTE_USERS_CEILING, ORDER_ID_BYTES, PRICE_LEVEL_BYTES, QUOTE_LEVELS_CEILING,
-            RESPONSE_BUFFER_BYTES, RESPONSE_OFFSET, USER_REF_BYTES, USER_SET_BYTES,
-            USER_SET_CAPACITY,
+            PriceLevel, QuoteResponseV0, RemovedOrderV0, ResponsePointerV0, Side,
+            UserBalanceChange, UserRefV0, UserSetV0, CANCELLED_BYTES, CHANGE_MIN_BYTES,
+            COUNT_BYTES, EXECUTE_FILLS_CEILING, EXECUTE_USERS_CEILING, ORDER_ID_BYTES,
+            PRICE_LEVEL_BYTES, QUOTE_LEVELS_CEILING, REMOVED_ORDER_BYTES, RESPONSE_BUFFER_BYTES,
+            RESPONSE_OFFSET, USER_REF_BYTES, USER_SET_BYTES, USER_SET_CAPACITY,
         },
     },
 };
@@ -256,6 +256,29 @@ fn wire_widths_match_the_response_types() {
         })
         .len(),
         CANCELLED_BYTES
+    );
+    // Return data rather than response bytes, but velocity reads it by offset,
+    // so the width and the position of the trailing flag are both pinned.
+    let removed = RemovedOrderV0 {
+        user,
+        order_id: 1,
+        price: 2,
+        base_asset_amount: 3,
+        side: Side::Ask,
+        taker_origin: true,
+    };
+    assert_eq!(encode(&removed).len(), REMOVED_ORDER_BYTES);
+    assert_eq!(
+        encode(&removed)[REMOVED_ORDER_BYTES - 2..],
+        [Side::Ask.to_u8(), 1]
+    );
+    assert_eq!(
+        encode(&RemovedOrderV0 {
+            side: Side::Bid,
+            taker_origin: false,
+            ..removed
+        })[REMOVED_ORDER_BYTES - 2..],
+        [Side::Bid.to_u8(), 0]
     );
     let change = |ids: Vec<u64>| UserBalanceChange {
         user,

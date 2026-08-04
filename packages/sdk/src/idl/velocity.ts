@@ -2772,6 +2772,13 @@ export type Velocity = {
     },
     {
       "name": "fillPerpOrder",
+      "docs": [
+        "`signed_route` is the route the order's signer chose, as the filler",
+        "read it off their signed message. It is checked against the digest the",
+        "order carries, so a filler cannot misreport it, and every entry in it",
+        "must appear in this transaction — the taker picks who competes for",
+        "their flow, not the filler. Empty for an order with no signed route."
+      ],
       "discriminator": [
         13,
         188,
@@ -2818,6 +2825,12 @@ export type Velocity = {
           "name": "makerOrderId",
           "type": {
             "option": "u32"
+          }
+        },
+        {
+          "name": "signedRoute",
+          "type": {
+            "vec": "pubkey"
           }
         }
       ]
@@ -19738,6 +19751,16 @@ export type Velocity = {
       "code": 6380,
       "name": "tooManyQuoterWireUsers",
       "msg": "More loaded users than the quoter wire can carry"
+    },
+    {
+      "code": 6381,
+      "name": "signedRouteMismatch",
+      "msg": "Claimed route does not match the one the order was signed with"
+    },
+    {
+      "code": 6382,
+      "name": "signedRouteEntryMissing",
+      "msg": "A quoter the order's signed route names is absent from the fill"
     }
   ],
   "types": [
@@ -23838,11 +23861,33 @@ export type Velocity = {
             "type": "u8"
           },
           {
+            "name": "routeDigest",
+            "docs": [
+              "The route this order's signer chose, as",
+              "[`crate::state::order_params::route_digest`] of the `QuoterV0` entries",
+              "their signed message named. Zero when no route was signed, which is",
+              "every directly-placed order.",
+              "",
+              "A digest rather than the list because an `Order` has no room for",
+              "pubkeys, and stored bytes here cost 32 slots each. The filler supplies",
+              "the list and this pins which list it may supply — the check that the",
+              "fill actually *carried* those entries is then a containment test",
+              "against the transaction. Bytes, not a `u32`, to stay alignment-free in",
+              "the middle of a byte run."
+            ],
+            "type": {
+              "array": [
+                "u8",
+                4
+              ]
+            }
+          },
+          {
             "name": "padding",
             "type": {
               "array": [
                 "u8",
-                5
+                1
               ]
             }
           }

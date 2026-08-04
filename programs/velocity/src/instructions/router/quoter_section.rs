@@ -165,6 +165,37 @@ impl<'info> QuoterSection<'info> {
         Ok(())
     }
 
+    /// Hold the transaction to the route the order's signer chose.
+    ///
+    /// `claimed` is what the filler says the signer picked; `digest` is what
+    /// the order carries. The digest check means a filler cannot substitute a
+    /// route, and it covers the unrouted case for free — an empty route
+    /// digests to zero, which is what a directly-placed order holds.
+    ///
+    /// Then every claimed entry must be **present** in the transaction, used
+    /// or not. Presence rather than participation is the enforceable form: an
+    /// entry that is inactive or unapproved is skipped at quote time, and
+    /// whether it *should* have won is a question about prices, not accounts.
+    /// Extra entries beyond the route are fine — the router allocates by
+    /// price and an execute is bound to its own quote, so an uninvited quoter
+    /// can only lose. Omitting one the taker asked for is the actual attack.
+    pub fn require_signed_route(&self, claimed: &[Pubkey], digest: [u8; 4]) -> Result<()> {
+        validate!(
+            crate::state::order_params::route_digest(claimed) == digest,
+            ErrorCode::SignedRouteMismatch,
+            "claimed route does not digest to the one the order was signed with"
+        )?;
+        for entry in claimed {
+            validate!(
+                self.passed.contains(entry),
+                ErrorCode::SignedRouteEntryMissing,
+                "signed route names quoter {} but the fill does not carry it",
+                entry
+            )?;
+        }
+        Ok(())
+    }
+
     pub fn book_refs(&self) -> Vec<QuoterBook<'_>> {
         self.books
             .iter()

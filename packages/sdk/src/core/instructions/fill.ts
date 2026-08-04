@@ -19,7 +19,8 @@ import type { VelocityProgram } from '../../config';
  * @param args.user - the order owner's `User` account (the taker being filled).
  * @param args.userStats - the taker's `UserStats` PDA.
  * @param args.authority - signer that must own or be a registered delegate of `filler`.
- * @param args.remainingAccounts - writable perp market + oracle `AccountMeta[]` for the order's market, followed by any maker/referrer `(User, UserStats)` account pairs, followed by the taker's `RevenueShareEscrow` account if builder codes are enabled protocol-wide.
+ * @param args.remainingAccounts - writable perp market + oracle `AccountMeta[]` for the order's market, followed by any maker/referrer `(User, UserStats)` account pairs, followed by the taker's `RevenueShareEscrow` account if builder codes are enabled protocol-wide, followed by the quoter section (each `QuoterV0` entry plus the accounts its CPI resolves against).
+ * @param args.signedRoute - the `QuoterV0` entries the order's signer chose, as read off their signed message. Checked on-chain against the digest the order carries, and every entry must appear in `remainingAccounts` — a filler cannot drop a quoter the taker picked. Omit (or pass `[]`) for an order placed without a signed route.
  * @returns the unsigned `fillPerpOrder` `TransactionInstruction`.
  */
 export async function buildFillPerpOrderInstruction(args: {
@@ -32,10 +33,12 @@ export async function buildFillPerpOrderInstruction(args: {
 	userStats: PublicKey;
 	authority: PublicKey;
 	remainingAccounts: AccountMeta[];
+	signedRoute?: PublicKey[];
 }): Promise<TransactionInstruction> {
 	return await (args.program.instruction as any).fillPerpOrder(
 		args.orderId,
 		null,
+		args.signedRoute ?? [],
 		{
 			accounts: {
 				state: args.state,

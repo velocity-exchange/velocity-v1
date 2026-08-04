@@ -478,7 +478,8 @@ mod tests {
             auction_duration: 0,
             posted_slot_tail: 0,
             bit_flags: 0,
-            padding: [0; 5],
+            route_digest: [0; 4],
+            padding: [0; 1],
         }
     }
 }

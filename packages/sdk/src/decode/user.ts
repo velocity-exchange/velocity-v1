@@ -275,7 +275,11 @@ export function decodeUser(buffer: Buffer): UserAccount {
 		offset += 1;
 		const bitFlags = buffer.readUint8(offset);
 		offset += 1;
-		offset += 5; // padding
+		// The route digest is 4 of what used to be 5 padding bytes, so the
+		// order's width is unchanged.
+		const routeDigest = Array.from(buffer.subarray(offset, offset + 4));
+		offset += 4;
+		offset += 1; // padding
 		orders.push({
 			slot,
 			price,
@@ -302,6 +306,7 @@ export function decodeUser(buffer: Buffer): UserAccount {
 			auctionDuration,
 			bitFlags,
 			postedSlotTail,
+			routeDigest,
 		});
 	}
 

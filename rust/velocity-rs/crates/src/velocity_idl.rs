@@ -384,6 +384,7 @@ pub mod instructions {
     pub struct FillPerpOrder {
         pub order_id: Option<u32>,
         pub _maker_order_id: Option<u32>,
+        pub signed_route: Vec<Pubkey>,
     }
     #[automatically_derived]
     impl anchor_lang::Discriminator for FillPerpOrder {
@@ -4555,8 +4556,9 @@ pub mod types {
         pub auction_duration: u8,
         pub posted_slot_tail: u8,
         pub bit_flags: u8,
+        pub route_digest: [u8; 4],
         #[serde(skip)]
-        pub padding: Padding<5>,
+        pub padding: Padding<1>,
     }
     #[derive(
         AnchorSerialize,
@@ -30567,6 +30569,10 @@ pub mod errors {
         QuoterSubjectNotPermitted,
         #[msg("More loaded users than the quoter wire can carry")]
         TooManyQuoterWireUsers,
+        #[msg("Claimed route does not match the one the order was signed with")]
+        SignedRouteMismatch,
+        #[msg("A quoter the order's signed route names is absent from the fill")]
+        SignedRouteEntryMissing,
     }
 }
 pub mod events {

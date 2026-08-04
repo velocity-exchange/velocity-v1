@@ -815,6 +815,10 @@ pub enum ErrorCode {
     QuoterSubjectNotPermitted,
     #[msg("More loaded users than the quoter wire can carry")]
     TooManyQuoterWireUsers,
+    #[msg("Claimed route does not match the one the order was signed with")]
+    SignedRouteMismatch,
+    #[msg("A quoter the order's signed route names is absent from the fill")]
+    SignedRouteEntryMissing,
 }
 
 #[macro_export]

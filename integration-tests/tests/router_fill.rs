@@ -742,6 +742,7 @@ fn router_fill_splits_across_clob_dlob_and_vamm_sources() {
         data: velocity::instruction::FillPerpOrder {
             order_id: Some(1),
             _maker_order_id: None,
+            signed_route: vec![],
         }
         .data(),
     };
@@ -905,6 +906,7 @@ fn router_fill_without_the_markets_clob_quoter_fails() {
         data: velocity::instruction::FillPerpOrder {
             order_id: Some(1),
             _maker_order_id: None,
+            signed_route: vec![],
         }
         .data(),
     };
@@ -2958,6 +2960,7 @@ fn fill_long_through_midpoint(
         data: velocity::instruction::FillPerpOrder {
             order_id: Some(1),
             _maker_order_id: None,
+            signed_route: vec![],
         }
         .data(),
     };
@@ -3141,6 +3144,7 @@ fn router_fill_splits_across_clob_midpoint_and_vamm() {
         data: velocity::instruction::FillPerpOrder {
             order_id: Some(1),
             _maker_order_id: None,
+            signed_route: vec![],
         }
         .data(),
     };
@@ -4214,4 +4218,124 @@ fn liq_self_sync_stages_an_unsigned_executor_and_pays_from_its_own_lamports() {
     );
     let acct: UserConditionsV0 = read_zero_copy(&fixture.svm, &conditions);
     assert_eq!(acct.slots[0].active, 0);
+}
+
+/// A filler cannot quietly drop a quoter the taker signed for.
+///
+/// The order carries a digest of the route its signer chose, so the route a
+/// filler claims is pinned to that one, and every entry in it has to be
+/// carried by the fill. That is what makes a signed route a constraint on the
+/// filler rather than a suggestion — a keeper has no reason to prefer the
+/// taker's sources over its own, so the chain holds it to them.
+#[test]
+fn a_fill_must_carry_every_quoter_the_taker_signed_for() {
+    use velocity::state::order_params::route_digest;
+
+    let mut fixture = setup();
+    let maker = setup_midpoint_maker(&mut fixture, 10_000 * SPOT_BALANCE_PRECISION_U64, UNIT);
+
+    let taker_authority = Keypair::new();
+    let taker_user = Pubkey::new_unique();
+    let taker_stats = Pubkey::new_unique();
+    let mut taker_order = Order::default();
+    taker_order.order_id = 1;
+    taker_order.status = OrderStatus::Open;
+    taker_order.order_type = OrderType::Market;
+    taker_order.market_type = MarketType::Perp;
+    taker_order.market_index = 0;
+    taker_order.direction = PositionDirection::Long;
+    taker_order.base_asset_amount = UNIT;
+    taker_order.price = 105 * PRICE;
+    taker_order.auction_end_price = (105 * PRICE) as i64;
+    // Signed with a route naming the midpoint entry — what a swift message's
+    // `route` becomes once `place_signed_msg_taker_order` stamps it.
+    let route = vec![maker.entry];
+    taker_order.route_digest = route_digest(&route);
+    set_user_account(
+        &mut fixture.svm,
+        taker_user,
+        &trading_user(
+            &taker_authority.pubkey(),
+            10_000 * SPOT_BALANCE_PRECISION_U64,
+            Some(taker_order),
+        ),
+    );
+    set_user_stats_account(&mut fixture.svm, taker_stats, &taker_authority.pubkey());
+
+    let filler_user = Pubkey::new_unique();
+    let filler_stats = Pubkey::new_unique();
+    set_user_account(
+        &mut fixture.svm,
+        filler_user,
+        &trading_user(&fixture.keeper.pubkey(), 0, None),
+    );
+    set_user_stats_account(&mut fixture.svm, filler_stats, &fixture.keeper.pubkey());
+    fixture.svm.warp_to_slot(12);
+    set_oracle(
+        &mut fixture.svm,
+        fixture.oracle,
+        (100 * PRICE_PRECISION) as i64,
+        12,
+    );
+
+    let (quoter_signer, _) = quoter_signer_pda();
+    // A fill that carries only the mandatory CLOB baseline: the signed
+    // midpoint entry is nowhere in the transaction.
+    let fill_ix = |claimed: Vec<Pubkey>| {
+        let mut accounts = velocity::accounts::FillOrder {
+            state: state_pda(),
+            authority: fixture.keeper.pubkey(),
+            filler: filler_user,
+            filler_stats,
+            user: taker_user,
+            user_stats: taker_stats,
+        }
+        .to_account_metas(None);
+        accounts.push(AccountMeta::new_readonly(fixture.oracle, false));
+        accounts.push(AccountMeta::new(spot_market_pda(0), false));
+        accounts.push(AccountMeta::new(perp_market_pda(0), false));
+        accounts.push(AccountMeta::new_readonly(fixture.quoter, false));
+        accounts.push(AccountMeta::new(fixture.clob_market, false));
+        accounts.push(AccountMeta::new_readonly(quoter_signer, false));
+        accounts.push(AccountMeta::new_readonly(clob_id(), false));
+        Instruction {
+            program_id: velocity_id(),
+            accounts,
+            data: velocity::instruction::FillPerpOrder {
+                order_id: Some(1),
+                _maker_order_id: None,
+                signed_route: claimed,
+            }
+            .data(),
+        }
+    };
+
+    // Claiming the real route while omitting its quoter: refused.
+    let err = send_with_ixs(
+        &mut fixture.svm,
+        &fixture.keeper,
+        &[compute_unit_limit_ix(400_000), fill_ix(route.clone())],
+        &[],
+    )
+    .expect_err("the signed quoter is absent from the transaction");
+    assert!(
+        format!("{:?}", err.meta.logs).contains("SignedRouteEntryMissing"),
+        "unexpected: {:?}",
+        err.meta.logs
+    );
+
+    // Claiming no route at all, to dodge the presence check: also refused —
+    // the claim no longer digests to what the order was signed with.
+    let err = send_with_ixs(
+        &mut fixture.svm,
+        &fixture.keeper,
+        &[compute_unit_limit_ix(400_000), fill_ix(vec![])],
+        &[],
+    )
+    .expect_err("an empty claim does not match the order's digest");
+    assert!(
+        format!("{:?}", err.meta.logs).contains("SignedRouteMismatch"),
+        "unexpected: {:?}",
+        err.meta.logs
+    );
 }

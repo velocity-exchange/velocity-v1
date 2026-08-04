@@ -1616,7 +1616,19 @@ pub struct Order {
     /// Bitflags for further classification
     /// 0: is_signed_message
     pub bit_flags: u8,
-    pub padding: [u8; 5],
+    /// The route this order's signer chose, as
+    /// [`crate::state::order_params::route_digest`] of the `QuoterV0` entries
+    /// their signed message named. Zero when no route was signed, which is
+    /// every directly-placed order.
+    ///
+    /// A digest rather than the list because an `Order` has no room for
+    /// pubkeys, and stored bytes here cost 32 slots each. The filler supplies
+    /// the list and this pins which list it may supply — the check that the
+    /// fill actually *carried* those entries is then a containment test
+    /// against the transaction. Bytes, not a `u32`, to stay alignment-free in
+    /// the middle of a byte run.
+    pub route_digest: [u8; 4],
+    pub padding: [u8; 1],
 }
 
 #[derive(Clone, Copy, AnchorSerialize, AnchorDeserialize, PartialEq, Eq, Debug)]
@@ -1931,7 +1943,8 @@ impl Default for Order {
             max_ts: 0,
             posted_slot_tail: 0,
             bit_flags: 0,
-            padding: [0; 5],
+            route_digest: [0; 4],
+            padding: [0; 1],
         }
     }
 }

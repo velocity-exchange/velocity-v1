@@ -2193,7 +2193,8 @@ mod get_close_perp_params {
             max_ts: 100,
             posted_slot_tail: get_posted_slot_from_clock_slot(slot),
             bit_flags: 0,
-            padding: [0; 5],
+            route_digest: [0; 4],
+            padding: [0; 1],
         }
     }
 
@@ -2273,4 +2274,29 @@ fn test_parse_optional_params() {
     let (success_condition, auction_duration_percentage) = parse_optional_params(Some(0x00001234));
     assert_eq!(success_condition, 0x34);
     assert_eq!(auction_duration_percentage, 0x12);
+}
+
+/// The digest is what binds a filler to the taker's choice, so its two
+/// properties are load-bearing: an empty route reads as "none signed", and the
+/// same choice digests identically however a client ordered or repeated it.
+#[test]
+fn a_signed_route_digests_canonically() {
+    use {crate::state::order_params::route_digest, anchor_lang::prelude::Pubkey};
+
+    assert_eq!(route_digest(&[]), [0; 4], "no route is the zero digest");
+
+    let a = Pubkey::new_from_array([7; 32]);
+    let b = Pubkey::new_from_array([9; 32]);
+    assert_eq!(route_digest(&[a, b]), route_digest(&[b, a]), "order-free");
+    assert_eq!(
+        route_digest(&[a, b, a]),
+        route_digest(&[a, b]),
+        "duplicates collapse"
+    );
+    assert_ne!(
+        route_digest(&[a]),
+        route_digest(&[a, b]),
+        "adding a quoter is a different route"
+    );
+    assert_ne!(route_digest(&[a]), [0; 4], "a real route is never 'none'");
 }

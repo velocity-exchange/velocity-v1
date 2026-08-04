@@ -3401,6 +3401,11 @@ impl<'a> TransactionBuilder<'a> {
         taker_order_id: Option<u32>,
         makers: &[User],
         has_builder: Option<bool>,
+        // The `QuoterV0` entries the taker's signed message named. Checked
+        // on-chain against the order's digest, and each must be among the
+        // quoter accounts this transaction carries. Empty for an order placed
+        // without a signed route.
+        signed_route: &[Pubkey],
     ) -> Self {
         let mut accounts = build_accounts(
             self.program_data,
@@ -3463,6 +3468,7 @@ impl<'a> TransactionBuilder<'a> {
             data: InstructionData::data(&program::instruction::FillPerpOrder {
                 order_id: taker_order_id,
                 _maker_order_id: None,
+                signed_route: signed_route.to_vec(),
             }),
         };
 

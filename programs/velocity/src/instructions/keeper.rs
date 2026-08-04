@@ -119,6 +119,7 @@ use {
 pub fn handle_fill_perp_order<'c: 'info, 'info>(
     ctx: Context<'info, FillOrder<'info>>,
     order_id: Option<u32>,
+    signed_route: Vec<Pubkey>,
 ) -> Result<()> {
     let (order_id, market_index) = {
         let user = &load!(ctx.accounts.user)?;
@@ -135,7 +136,7 @@ pub fn handle_fill_perp_order<'c: 'info, 'info>(
     };
 
     let user_key = &ctx.accounts.user.key();
-    fill_order(ctx, order_id, market_index).inspect_err(|_e| {
+    fill_order(ctx, order_id, market_index, signed_route).inspect_err(|_e| {
         msg!(
             "Err filling order id {} for user {} for market index {}",
             order_id,
@@ -151,6 +152,7 @@ fn fill_order<'c: 'info, 'info>(
     ctx: Context<'info, FillOrder<'info>>,
     order_id: u32,
     market_index: u16,
+    signed_route: Vec<Pubkey>,
 ) -> Result<()> {
     let clock = &Clock::get()?;
     let state = ctx.accounts.state.load()?;
@@ -189,7 +191,7 @@ fn fill_order<'c: 'info, 'info>(
     // `QuoterV0` registry entries plus the union of their registered CPI
     // accounts (quoter programs, response accounts, the quoter CPI signer).
     let leftover: Vec<&AccountInfo<'info>> = remaining_accounts_iter.collect();
-    let (direction, unfilled, taker_ref) = {
+    let (direction, unfilled, taker_ref, route_digest) = {
         let user = load!(ctx.accounts.user)?;
         let order = user
             .get_order(order_id)
@@ -209,6 +211,7 @@ fn fill_order<'c: 'info, 'info>(
                 authority: user.authority,
                 sub_account_id: user.sub_account_id,
             },
+            order.route_digest,
         )
     };
     let (quoter_signer, quoter_signer_nonce) = crate::signer::find_quoter_signer();
@@ -231,6 +234,7 @@ fn fill_order<'c: 'info, 'info>(
         };
     let section = crate::instructions::QuoterSection::quote(&leftover, &inputs)?;
     section.require_baseline(perp_market_map.get_ref(&market_index)?.clob_quoter)?;
+    section.require_signed_route(&signed_route, route_digest)?;
 
     let book_refs = section.book_refs();
     let mut executor = section.executor(&inputs, clock.slot, clock.unix_timestamp);
@@ -963,6 +967,18 @@ pub fn place_signed_msg_taker_order<'c: 'info, 'info>(
         },
         &mut builder_order,
     )?;
+
+    // Bind the taker's chosen route to the order they just signed for. A
+    // keeper builds the fill transaction, so without this the route is a
+    // suggestion it can ignore — and the whole point of the taker signing one
+    // is that they, not the keeper, pick which quoters get to compete.
+    if let Some(route) = verified_message_and_signature.route.as_deref() {
+        let digest = crate::state::order_params::route_digest(route);
+        let order_id = signed_msg_order_id.order_id;
+        if let Some(index) = taker.get_order_index(order_id).ok() {
+            taker.orders[index].route_digest = digest;
+        }
+    }
 
     let order_params_hash =
         base64::encode(solana_program::hash::hash(&borsh::to_vec(&signature).unwrap()).as_ref());

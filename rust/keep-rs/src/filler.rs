@@ -1100,6 +1100,10 @@ async fn try_swift_fill(
                 None, // Some(taker_order_id), // assuming we're fast enough that its the taker_order_id, should be ok for retail
                 maker_accounts.as_slice(),
                 Some(swift_order.has_builder()),
+                // The taker's own choice of quoters, straight off the message
+                // they signed. The program checks it against the digest it
+                // stamped on the order, so this cannot be substituted.
+                swift_order.route().unwrap_or(&[]),
             );
 
         // The quoter section rides the fill instruction's remaining accounts:
@@ -1646,6 +1650,11 @@ async fn try_auction_fill(
             Some(taker_order.order_id),
             maker_accounts.as_slice(),
             None,
+            // No signed route: these paths fill orders off the DLOB and do
+            // not hold the message a swift order was signed with. A rested
+            // order that carries a route digest will reject this fill until
+            // the route is threaded through from the swift subscription.
+            &[],
         );
 
         // large accounts list, bump CU limit to compensate
@@ -1806,6 +1815,11 @@ async fn try_uncross(
                 Some(taker_order_id),
                 makers.as_slice(),
                 None,
+                // No signed route: these paths fill orders off the DLOB and do
+                // not hold the message a swift order was signed with. A rested
+                // order that carries a route digest will reject this fill until
+                // the route is threaded through from the swift subscription.
+                &[],
             );
 
         // large accounts list, bump CU limit to compensate
@@ -2030,6 +2044,11 @@ async fn try_vamm_taker_fill(
             Some(l3_order.order_id),
             maker_accounts.as_slice(),
             None,
+            // No signed route: these paths fill orders off the DLOB and do
+            // not hold the message a swift order was signed with. A rested
+            // order that carries a route digest will reject this fill until
+            // the route is threaded through from the swift subscription.
+            &[],
         );
 
         // large accounts list, bump CU limit to compensate

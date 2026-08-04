@@ -490,12 +490,18 @@ pub mod velocity {
 
     // Keeper Instructions
 
+    /// `signed_route` is the route the order's signer chose, as the filler
+    /// read it off their signed message. It is checked against the digest the
+    /// order carries, so a filler cannot misreport it, and every entry in it
+    /// must appear in this transaction — the taker picks who competes for
+    /// their flow, not the filler. Empty for an order with no signed route.
     pub fn fill_perp_order<'c: 'info, 'info>(
         ctx: Context<'info, FillOrder<'info>>,
         order_id: Option<u32>,
         _maker_order_id: Option<u32>,
+        signed_route: Vec<Pubkey>,
     ) -> Result<()> {
-        handle_fill_perp_order(ctx, order_id)
+        handle_fill_perp_order(ctx, order_id, signed_route)
     }
 
     pub fn revert_fill(ctx: Context<RevertFill>) -> Result<()> {

@@ -948,6 +948,38 @@ pub const fn expected_signed_msg_network() -> u8 {
 /// practice — the CLOB and the vAMM sit outside the list.
 pub const MAX_SIGNED_MSG_ROUTE_LEN: usize = 4;
 
+/// Digest of a signed route: the `QuoterV0` entries a taker chose, reduced to
+/// the four bytes an [`crate::state::user::Order`] can hold.
+///
+/// Canonicalised first (sorted, deduped) so the same choice always digests the
+/// same way regardless of how a client ordered it, and an empty route digests
+/// to zero — which is what makes one equality check cover both "no route was
+/// signed" and "this is the route that was signed".
+///
+/// Four bytes is short for a hash, and adequate here: a filler cannot choose
+/// preimages freely, only sets of actually-registered approved entries, of
+/// which a market has a handful. Collision across every real candidate set is
+/// negligible, and the consequence of one would be routing to an approved
+/// quoter the taker did not pick — not a theft.
+pub fn route_digest(route: &[Pubkey]) -> [u8; 4] {
+    if route.is_empty() {
+        return [0; 4];
+    }
+    let mut keys: Vec<[u8; 32]> = route.iter().map(|key| key.to_bytes()).collect();
+    keys.sort_unstable();
+    keys.dedup();
+    let flat: Vec<u8> = keys.concat();
+    let hash = solana_program::hash::hash(&flat);
+    let mut out = [0u8; 4];
+    out.copy_from_slice(&hash.to_bytes()[..4]);
+    // Never collide with "no route": a real route must be distinguishable
+    // from an absent one.
+    if out == [0; 4] {
+        out[0] = 1;
+    }
+    out
+}
+
 /// Trailing fields are appended, never inserted: the verifier zero-pads a
 /// short payload before decoding, so an older producer's message reads as
 /// `None` for everything it did not send (see

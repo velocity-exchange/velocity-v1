@@ -92,7 +92,8 @@ While it is set, all subaccounts reject:
 - risk-increasing fills (both as taker and as maker; resting risk-increasing trigger orders are
   cancelled instead of triggered, and the triggering keeper is paid no reward on that cancel),
 - withdrawals,
-- transfers out (deposit transfers, perp position transfers, pool transfers),
+- transfers out (deposit transfers, perp position transfers, pool transfers), except the cure
+  transfer described below,
 - swaps, except the price-bounded strictly reducing swap described above, which stays available so
   a frozen account can still repay a borrow out of its own deposits,
 - acting as the liquidator in position-acquiring liquidations.
@@ -100,9 +101,33 @@ While it is set, all subaccounts reject:
 Reduce-only activity remains allowed: the delegate can still close positions, cancel orders,
 deposit, and settle PnL. The accounts are not liquidated or seized.
 
+A frozen authority can also cure the breach itself, from internal surplus. A **cure transfer** is a
+funds-only `transferDepositByDelegate` (zero floor delta) into a subaccount whose equity is below
+its buffered floor; it stays allowed under the breaker. Eligibility is verified with the same
+oracle-validity requirement the trip and the reset use (`InvalidOracle` otherwise), so it cannot be
+decided off a stale or degraded price. The debited side must still clear its own
+`floor + buffer` after the funds leave, so a cure can never create a new breach, and once the
+credited side clears its buffered floor the exemption closes again. Partial cures compose: several
+subaccounts can each contribute what they have to spare. The SDK plans this:
+`manager.planCureTransfers()` returns the fund-only transfers that top every breached subaccount up
+to just above its gate out of the others' spare equity (deepest breach first, donors drawn down no
+further than just above their own gate), and `manager.cureBreaches()` submits them. Curing does not
+clear the flag; it makes the reset safe to grant, since no subaccount is left below its floor for a
+keeper to re-trip against.
+
 The flag does not clear itself, even if equity recovers above the floor. Only Velocity's warm admin
 can clear it, via `resetEquityFloorBreaker`, after a human has reviewed why it fired. If the
 breaker trips, contact Velocity.
+
+The reset is itself verified onchain: the instruction carries every live subaccount of the
+authority (the count is pinned to `UserStats.number_of_sub_accounts`, so none can be omitted or
+passed twice) together with their markets and oracles, and it reverts with
+`InvalidEquityBreakerReset` (6368) unless every floored subaccount shows net equity at or above its
+`floor + buffer` with all oracles valid at execution time. An approval that has gone stale, because
+a subaccount drifted back into breach after it was reviewed, fails instead of unfreezing a breached
+authority; the trip and the reset both prove their condition onchain. When resumption is the
+business decision even though equity does not clear the floors, the admin lowers the floors first
+(`updateUserEquityFloor`), explicitly and auditably, and then resets.
 
 Because every permitted action leaves equity at or above `floor + buffer`, the breaker can only be
 armed by losses eating through the buffer. The delegate cannot trade, withdraw, or transfer a
@@ -162,6 +187,7 @@ manager.getStatus(); // aggregate + per-subaccount equity, floor, buffer, headro
 manager.getMaxWithdrawable(subAccountId); // most that can leave to the outside
 manager.getMaxQuoteTransferable(from, to); // most that can move between subaccounts
 await manager.rebalanceFloors(); // re-split the floor to match where the equity sits
+await manager.cureBreaches(); // top breached subaccounts back up from the others' surplus
 ```
 
 `rebalanceFloors` computes a proportional-to-equity floor split and applies it with zero-amount
@@ -492,9 +518,13 @@ Lifecycle:
 3. The guard bot watches headroom and alerts on `warning` and `critical`.
 4. If losses cross a floor, the breaker trips (at the first touch on the breached subaccount, or
    at the guard bot's trip, whichever lands first) and every subaccount goes reduce-only.
-5. Velocity inspects (`user equity-floor-status`), winds down if needed (`user close-positions`,
+5. The delegate cures the breach while frozen: deposits, or cure transfers from sibling
+   subaccounts' surplus (`manager.cureBreaches()`).
+6. Velocity inspects (`user equity-floor-status`), winds down if needed (`user close-positions`,
    reduce-only, so it works while frozen), and clears the flag after review
-   (`user reset-equity-breaker`).
+   (`user reset-equity-breaker`). The reset proves onchain that every subaccount clears its
+   `floor + buffer` and reverts otherwise, so a stale approval cannot unfreeze a breached
+   authority.
 
 ## Quick reference
 
@@ -503,10 +533,11 @@ Lifecycle:
 | `updateUserEquityFloor`     | Velocity admin      | Sets a subaccount's floor and buffer (changes the totals)              |
 | `transferDepositByDelegate` | The delegate        | Moves funds and floor between subaccounts, conserving the floor sum    |
 | `tripEquityFloorBreaker`    | Anyone              | Proves one subaccount is below its floor, freezes the whole authority  |
-| `resetEquityFloorBreaker`   | Velocity warm admin | Clears the breaker after review                                        |
+| `resetEquityFloorBreaker`   | Velocity warm admin | Proves every subaccount clears floor + buffer, then clears the breaker |
 
 | Error                        | Code | Meaning                                                                       |
 | ---------------------------- | ---- | ----------------------------------------------------------------------------- |
 | `EquityBelowFloor`           | 6358 | A risk-increasing action was blocked at floor + buffer, or the breaker is set |
 | `InvalidEquityFloorTransfer` | 6359 | A floor transfer broke one of the three transfer rules                        |
 | `InvalidSwap`                | 6248 | Among other swap failures: a strictly reducing swap under floor protection breached the 1% oracle value bound |
+| `InvalidEquityBreakerReset`  | 6368 | A breaker reset was refused: a subaccount is below its floor + buffer, or the subaccount set was incomplete |

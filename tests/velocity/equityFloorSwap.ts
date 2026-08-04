@@ -435,17 +435,22 @@ describe('equity floor swap', () => {
 	});
 
 	it('warm admin resets the breaker and withdrawals resume', async () => {
-		await adminVelocityClient.resetEquityFloorBreaker(
-			takerVelocityClient.getUserStatsAccountPublicKey()
-		);
-		assert((await fetchBreakerTripped()) === 0);
-
-		// clear the floor so the withdraw gate no longer binds
+		// the reset verifies every subaccount clears its floor + buffer, so
+		// the floor the taker cannot back comes down first; also clears the
+		// withdraw gate below. Bankrun lacks getProgramAccounts, so the
+		// subaccounts are passed by hand.
 		await adminVelocityClient.updateUserEquityFloor(
 			takerUserPublicKey,
 			ZERO,
 			ZERO
 		);
+		await takerUser.fetchAccounts();
+		await adminVelocityClient.resetEquityFloorBreaker(
+			takerVelocityClient.getUserStatsAccountPublicKey(),
+			undefined,
+			[takerUser.getUserAccount()]
+		);
+		assert((await fetchBreakerTripped()) === 0);
 
 		await takerVelocityClient.withdraw(
 			new BN(10).mul(QUOTE_PRECISION),

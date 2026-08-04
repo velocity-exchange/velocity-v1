@@ -87,30 +87,7 @@ pub fn update_spot_market_twap_stats(
     )?
     .cast()?;
 
-    // Retroactive half of the OtterSec #121 fix. A market initialized before
-    // `default_with_current_oracle` started stamping `last_oracle_price_twap_ts`
-    // still carries a zero there, and a zero makes `since_last` below dwarf the TWAP
-    // period — `from_start` saturates to 0 and the TWAP is replaced by the live
-    // price outright, collapsing both `StrictOraclePrice` bounds onto it. Seed the
-    // timestamp and skip this one EMA step instead: the stored TWAP stays where it
-    // is (it was seeded to the launch price), so the band survives this first
-    // refresh and every later one weights a real elapsed interval.
-    //
-    // `QuoteAsset` markets are excluded: that source returns a constant
-    // `PRICE_PRECISION`, so their TWAP and live price are always the same number and
-    // the band is degenerate by construction — #121's vector cannot exist there.
-    // Seeding them would only flip which way `calculate_weighted_average`'s +/-1
-    // rounding bias falls on the first crank (a zero timestamp saturates
-    // `from_start` to 1, which flips the sign), moving every collateral valuation
-    // that reads the quote TWAP for no security gain.
-    let oracle_twap_ts_uninitialized = spot_market.historical_oracle_data.last_oracle_price_twap_ts
-        == 0
-        && spot_market.oracle_source != crate::state::oracle::OracleSource::QuoteAsset;
-    if oracle_twap_ts_uninitialized {
-        spot_market.historical_oracle_data.last_oracle_price_twap_ts = now;
-    }
-
-    if let Some(oracle_price_data) = oracle_price_data.filter(|_| !oracle_twap_ts_uninitialized) {
+    if let Some(oracle_price_data) = oracle_price_data {
         let sanitize_clamp_denominator = spot_market.get_sanitize_clamp_denominator()?;
 
         let capped_oracle_update_price: i64 = sanitize_new_price(

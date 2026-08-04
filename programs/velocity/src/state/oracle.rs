@@ -78,9 +78,8 @@ impl HistoricalOracleData {
     /// [`Self::default_with_current_oracle`]. `OracleSource::QuoteAsset` returns a
     /// constant `PRICE_PRECISION`, so this market's TWAP and live price are always
     /// the same number and its `StrictOraclePrice` band is degenerate by
-    /// construction — OtterSec #121's vector cannot exist here, and
-    /// `update_spot_market_twap_stats` skips the seeding path for `QuoteAsset` for
-    /// the same reason.
+    /// construction — the collapse [`Self::default_with_current_oracle`] guards
+    /// against cannot happen here.
     ///
     /// Stamping it anyway is not harmless: it changes which way
     /// `calculate_weighted_average`'s ±1 rounding bias falls on the first crank

@@ -1785,11 +1785,6 @@ fn check_usdc_spot_market_twap() {
 
     update_spot_market_twap_stats(&mut spot_market, Some(&oracle_price_data), now).unwrap();
     assert_eq!(spot_market.historical_oracle_data.last_oracle_delay, 0);
-    // Unchanged by the OtterSec #121 fix: this is a `QuoteAsset` market, which the
-    // zero-timestamp seeding path deliberately skips (constant price, degenerate
-    // band). So it still EMA's from the zero timestamp and still lands on 1000001 —
-    // the +1 being `calculate_weighted_average`'s rounding bias, which fires even
-    // when the live price and the stored TWAP are identical.
     assert_eq!(
         spot_market.historical_oracle_data.last_oracle_price_twap,
         1000001
@@ -2176,24 +2171,25 @@ fn lending_interest_carveout_three_way_split() {
     crate::math::spot_withdraw::validate_spot_balances(&spot_market).unwrap();
 }
 
-/// OtterSec #121 — a zero `last_oracle_price_twap_ts` collapses a spot market's
-/// first asset/liability price band.
+/// OtterSec #121 — spot market init must stamp `last_oracle_price_twap_ts`, or the
+/// market's first asset/liability price band collapses.
 ///
-/// `HistoricalOracleData::default_with_current_oracle` had the timestamp
-/// assignment commented out, so a freshly initialized spot market carried
+/// `HistoricalOracleData::default_with_current_oracle` had that one assignment
+/// commented out, so a freshly initialized spot market carried
 /// `last_oracle_price_twap_ts == 0`. On the first refresh `since_last = now - 0`
 /// dwarfs the TWAP period, `from_start` saturates, and the TWAP is replaced by the
 /// live price *outright* — after which both `StrictOraclePrice` bounds (`min` /
 /// `max` of current vs the 5-min TWAP) sit on the same number and the first
 /// price-banded operation is unguarded in both directions.
 #[test]
-fn zero_oracle_twap_ts_does_not_collapse_the_spot_price_band() {
+fn spot_market_init_stamps_oracle_twap_ts_so_the_first_price_band_survives() {
     use crate::{
         math::stats::calculate_new_twap,
         state::oracle::{OraclePriceData, StrictOraclePrice},
     };
 
     let launch_price = 100 * PRICE_PRECISION_I64;
+    let live_price = 130 * PRICE_PRECISION_I64;
     let now = 1_700_000_000_i64;
 
     let launch_oracle = OraclePriceData {
@@ -2204,22 +2200,20 @@ fn zero_oracle_twap_ts_does_not_collapse_the_spot_price_band() {
         sequence_id: None,
     };
 
-    // Half of the fix: the initializer now stamps the timestamp.
-    let seeded = HistoricalOracleData::default_with_current_oracle(launch_oracle, now);
+    // The fix: the initializer stamps the timestamp.
+    let at_launch = HistoricalOracleData::default_with_current_oracle(launch_oracle, now);
     assert_eq!(
-        seeded.last_oracle_price_twap_ts, now,
+        at_launch.last_oracle_price_twap_ts, now,
         "spot market init must stamp last_oracle_price_twap_ts"
     );
 
-    // The mechanism, shown directly: from a zero timestamp one EMA step returns the
-    // live price, no matter how far it has moved from the stored TWAP.
-    let live_price = 130 * PRICE_PRECISION_I64;
+    // What the missing stamp did, shown directly: from a zero timestamp one EMA step
+    // returns the live price, however far it has moved from the stored TWAP. Up to
+    // `calculate_weighted_average`'s ±1 rounding bias, that leaves a band 1 wide
+    // against a true 30,000,000 spread — a collapse for every practical purpose.
     let collapsed =
         calculate_new_twap(live_price, now, launch_price, 0, FIVE_MINUTE as i64).unwrap();
     let collapsed_band = StrictOraclePrice::new(live_price, collapsed, true);
-    // Lands on the live price up to `calculate_weighted_average`'s ±1 rounding
-    // bias, leaving a band 1 wide against a true 30,000,000 spread — a collapse for
-    // every practical purpose. This is the state #121 describes.
     assert!(
         (live_price - collapsed).abs() <= 1,
         "a zero timestamp must effectively replace the TWAP with the live price \
@@ -2233,9 +2227,9 @@ fn zero_oracle_twap_ts_does_not_collapse_the_spot_price_band() {
         collapsed_band.max() - collapsed_band.min()
     );
 
-    // Other half of the fix: a market already on chain with a zero timestamp gets
-    // the timestamp seeded and this one EMA step skipped, so the band survives.
-    let mut legacy = SpotMarket {
+    // With the stamp, the same refresh weights a real elapsed interval: the TWAP
+    // moves only partway toward the live price and the band keeps real width.
+    let mut market = SpotMarket {
         market_index: 1,
         oracle_source: OracleSource::PythLazer,
         cumulative_deposit_interest: SPOT_CUMULATIVE_INTEREST_PRECISION,
@@ -2245,13 +2239,7 @@ fn zero_oracle_twap_ts_does_not_collapse_the_spot_price_band() {
         maintenance_asset_weight: SPOT_WEIGHT_PRECISION,
         deposit_balance: 1_000 * SPOT_BALANCE_PRECISION,
         status: MarketStatus::Active,
-        historical_oracle_data: HistoricalOracleData {
-            last_oracle_price: launch_price,
-            last_oracle_price_twap: launch_price,
-            last_oracle_price_twap_5min: launch_price,
-            last_oracle_price_twap_ts: 0, // pre-fix on-chain state
-            ..HistoricalOracleData::default()
-        },
+        historical_oracle_data: at_launch,
         ..SpotMarket::default()
     };
 
@@ -2262,39 +2250,23 @@ fn zero_oracle_twap_ts_does_not_collapse_the_spot_price_band() {
         has_sufficient_number_of_data_points: true,
         sequence_id: None,
     };
-    update_spot_market_twap_stats(&mut legacy, Some(&live_oracle), now).unwrap();
+    update_spot_market_twap_stats(&mut market, Some(&live_oracle), now + 60).unwrap();
 
-    assert_eq!(
-        legacy.historical_oracle_data.last_oracle_price_twap_ts, now,
-        "the zero timestamp must be seeded"
-    );
-    assert_eq!(
-        legacy.historical_oracle_data.last_oracle_price_twap_5min, launch_price,
-        "the TWAP must not be replaced by the live price on the seeding refresh"
-    );
-
-    let band = StrictOraclePrice::new(
-        live_price,
-        legacy.historical_oracle_data.last_oracle_price_twap_5min,
-        true,
-    );
+    let twap = market.historical_oracle_data.last_oracle_price_twap_5min;
     assert!(
-        band.max() - band.min() > 0,
-        "the band must have width after the seeding refresh ({} .. {})",
-        band.min(),
-        band.max()
-    );
-    assert_eq!(band.min(), launch_price);
-    assert_eq!(band.max(), live_price);
-
-    // And the next refresh weights a real elapsed interval rather than saturating.
-    update_spot_market_twap_stats(&mut legacy, Some(&live_oracle), now + 60).unwrap();
-    let twap_after = legacy.historical_oracle_data.last_oracle_price_twap_5min;
-    assert!(
-        twap_after > launch_price && twap_after < live_price,
-        "second refresh should move the TWAP partway ({} not in ({}, {}))",
-        twap_after,
+        twap > launch_price && twap < live_price,
+        "the first refresh should move the TWAP partway ({} not in ({}, {}))",
+        twap,
         launch_price,
         live_price
+    );
+
+    let band = StrictOraclePrice::new(live_price, twap, true);
+    assert_eq!(band.min(), twap);
+    assert_eq!(band.max(), live_price);
+    assert!(
+        band.max() - band.min() > 20 * PRICE_PRECISION_I64,
+        "the band must keep real width against a 30,000,000 move, got {}",
+        band.max() - band.min()
     );
 }

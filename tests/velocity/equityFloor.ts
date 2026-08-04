@@ -270,9 +270,20 @@ describe('equity floor', () => {
 		// it armed the authority-wide breaker inline (lazy trip)
 		assert((await fetchBreakerTripped()) !== 0);
 
-		// clear it so the tests below start from an unarmed authority
+		// clear it so the tests below start from an unarmed authority. The
+		// reset verifies every subaccount clears its floor + buffer, so the
+		// 20 floor sub 0 cannot back comes down first; bankrun lacks
+		// getProgramAccounts, so the subaccounts are passed by hand
+		await velocityClient.updateUserEquityFloor(
+			userAccountPublicKey,
+			new BN(2 * 10 ** 6),
+			ZERO
+		);
+		await velocityClient.fetchAccounts();
 		await velocityClient.resetEquityFloorBreaker(
-			velocityClient.getUserStatsAccountPublicKey()
+			velocityClient.getUserStatsAccountPublicKey(),
+			undefined,
+			[velocityClient.getUser(0).getUserAccount()]
 		);
 		assert((await fetchBreakerTripped()) === 0);
 	});

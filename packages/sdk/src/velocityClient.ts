@@ -5768,6 +5768,14 @@ export class VelocityClient {
 	 * draws into unrealized (unsettled) PnL. Note the clamp is a build-time estimate: if the settle
 	 * realizes less than the claimable PnL (e.g. the market's PnL pool is short), the withdraw can still
 	 * fail on-chain with `InsufficientCollateral`.
+	 *
+	 * The clamp bounds the request by the position's own balance only. The on-chain handler also applies
+	 * the spot market's withdraw circuit breaker to this path, at market level and without the
+	 * small-depositor exception (an isolated position carries its own collateral, so the carve-out for a
+	 * small honest cross depositor does not apply). A withdrawal that would take the market's resulting
+	 * deposits below `minDepositAmount` from `calculateWithdrawLimit` therefore reverts with
+	 * `DailyWithdrawLimit` (6128), whatever the position holds. Read `withdrawLimit` from
+	 * `calculateWithdrawLimit` for the market's remaining room.
 	 * @param amount - Amount to withdraw, in the position's quote spot market's token precision. Values
 	 * exceeding the withdrawable balance are clamped to it (i.e. pass a huge value to withdraw all).
 	 * @param perpMarketIndex - Perp market index of the isolated position to withdraw from.

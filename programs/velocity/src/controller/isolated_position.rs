@@ -13,6 +13,7 @@ use {
             liquidation::is_isolated_margin_being_liquidated,
             margin::{validate_spot_margin_trading, MarginRequirementType},
             safe_math::SafeMath,
+            spot_withdraw::check_withdraw_limits,
         },
         state::{
             events::{DepositDirection, DepositExplanation, DepositRecord},
@@ -166,6 +167,22 @@ pub fn deposit_into_isolated_perp_position<'c: 'info, 'info>(
     Ok(())
 }
 
+/// Moves collateral between the account's cross-margin spot position and its
+/// isolated position in the same spot market.
+///
+/// This function does not check the withdraw limits, and it must not. No token
+/// leaves the spot market vault. Both legs are equal and opposite inside one
+/// market, so `deposit_balance` and `borrow_balance` end where they started. The
+/// TVL check at the end of the function pins that. The withdraw circuit breaker
+/// rate limits vault outflow, so it has nothing to measure here.
+///
+/// The transfer can still change who is eligible for the small-depositor
+/// exception. Moving most of a large cross deposit into an isolated position
+/// leaves the cross position under the per-account allowance. That does not
+/// yield extra funds, because the market-level `exception_floor` in
+/// `check_withdraw_limits` caps the total exception outflow per market, and
+/// because `withdraw_from_isolated_perp_position` now applies the market-level
+/// check to the isolated balance.
 pub fn transfer_isolated_perp_position_deposit<'c: 'info, 'info>(
     user: &mut User,
     user_stats: Option<&mut UserStats>,
@@ -395,25 +412,56 @@ pub fn withdraw_from_isolated_perp_position<'c: 'info, 'info>(
             spot_market.get_precision().cast()?,
         )?;
 
-        let isolated_perp_position =
-            user.force_get_isolated_perp_position_mut(perp_market_index)?;
+        // The isolated position is a mutable borrow out of `user`. It ends here
+        // so the withdraw-limit check below can read the market on its own.
+        {
+            let isolated_perp_position =
+                user.force_get_isolated_perp_position_mut(perp_market_index)?;
 
-        let isolated_position_token_amount =
-            isolated_perp_position.get_isolated_token_amount(spot_market)?;
+            let isolated_position_token_amount =
+                isolated_perp_position.get_isolated_token_amount(spot_market)?;
 
+            validate!(
+                amount as u128 <= isolated_position_token_amount,
+                ErrorCode::InsufficientCollateral,
+                "user has insufficient deposit for market {}",
+                spot_market_index
+            )?;
+
+            update_spot_balances(
+                amount as u128,
+                &SpotBalanceType::Borrow,
+                spot_market,
+                isolated_perp_position,
+                true,
+            )?;
+        }
+
+        // This withdrawal sends real tokens out of the spot market vault, so it
+        // must respect the withdraw circuit breaker. The cross-margin withdraw
+        // path gets this from
+        // `update_spot_balances_and_cumulative_deposits_with_limits`. This path
+        // debits balances directly, so the check is explicit. Without it one
+        // account of any size defeats the breaker for the whole market.
+        //
+        // `user` is deliberately `None`, which asks for a pure market-level
+        // verdict and denies the small-depositor exception here. Two reasons.
+        // First, the exception reads the account's *cross-margin* spot position
+        // in this market. That balance is not the balance being withdrawn, so a
+        // tiny cross deposit would excuse an arbitrarily large isolated
+        // withdrawal. Second, `check_withdraw_limits` looks the cross position up
+        // with `get_spot_position_index`, which errors when the account has no
+        // cross position in the market. An isolated-only depositor would get
+        // `CouldNotFindSpotPosition` instead of a limit verdict. An isolated
+        // position carries its own collateral and is not the small honest
+        // depositor the carve-out exists for.
         validate!(
-            amount as u128 <= isolated_position_token_amount,
-            ErrorCode::InsufficientCollateral,
-            "user has insufficient deposit for market {}",
-            spot_market_index
-        )?;
-
-        update_spot_balances(
-            amount as u128,
-            &SpotBalanceType::Borrow,
-            spot_market,
-            isolated_perp_position,
-            true,
+            check_withdraw_limits(spot_market, None, None)?,
+            ErrorCode::DailyWithdrawLimit,
+            "Spot Market {} has hit daily withdraw limit. Attempted isolated position withdraw of {} by {}",
+            spot_market_index,
+            amount,
+            user.authority
         )?;
     }
 

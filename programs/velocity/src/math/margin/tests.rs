@@ -4306,6 +4306,181 @@ mod calculate_user_equity {
 }
 
 #[cfg(test)]
+mod calculate_user_equity_bounds {
+    use {
+        crate::{
+            create_anchor_account_info,
+            math::{
+                constants::{
+                    SPOT_BALANCE_PRECISION, SPOT_BALANCE_PRECISION_U64,
+                    SPOT_CUMULATIVE_INTEREST_PRECISION, SPOT_WEIGHT_PRECISION,
+                },
+                margin::{calculate_user_equity, calculate_user_equity_bounds, UserEquityBounds},
+            },
+            state::{
+                oracle::{HistoricalOracleData, OracleSource},
+                oracle_map::OracleMap,
+                perp_market_map::PerpMarketMap,
+                pyth_lazer_oracle::PythLazerOracle,
+                spot_market::{SpotBalanceType, SpotMarket},
+                spot_market_map::SpotMarketMap,
+                user::{Order, PerpPosition, SpotPosition, User},
+            },
+            test_utils::{get_pyth_price, *},
+            LIQUIDATION_FEE_PRECISION, PRICE_PRECISION_I64,
+        },
+        solana_program::pubkey::Pubkey,
+        std::str::FromStr,
+    };
+
+    /// 10,000 USDC deposit plus a 90 SOL spot position. SOL lives at 100 and
+    /// its 5 minute twap sits at 110, so the two bound prices differ. The
+    /// oracle goes stale when `slot` runs far past the posted slot.
+    fn run_scenario(balance_type: SpotBalanceType, slot: u64) -> (UserEquityBounds, i128, bool) {
+        let mut sol_oracle_price = get_pyth_price(100, 6);
+        let sol_oracle_price_key =
+            Pubkey::from_str("J83w4HKfqxwcq3BEMMkPFSppX3gqekLyLJBexebFVkix").unwrap();
+        create_anchor_account_info!(
+            sol_oracle_price,
+            &sol_oracle_price_key,
+            PythLazerOracle,
+            oracle_account_info
+        );
+        let mut oracle_map = OracleMap::load_one(&oracle_account_info, slot, None).unwrap();
+
+        let market_map = PerpMarketMap::empty();
+
+        let mut usdc_spot_market = SpotMarket {
+            market_index: 0,
+            oracle_source: OracleSource::QuoteAsset,
+            cumulative_deposit_interest: SPOT_CUMULATIVE_INTEREST_PRECISION,
+            decimals: 6,
+            initial_asset_weight: SPOT_WEIGHT_PRECISION,
+            maintenance_asset_weight: SPOT_WEIGHT_PRECISION,
+            deposit_balance: 10000 * SPOT_BALANCE_PRECISION,
+            liquidator_fee: 0,
+            historical_oracle_data: HistoricalOracleData::default_quote_oracle(),
+            ..SpotMarket::default()
+        };
+        create_anchor_account_info!(usdc_spot_market, SpotMarket, usdc_spot_market_account_info);
+
+        let mut sol_spot_market = SpotMarket {
+            market_index: 1,
+            oracle_source: OracleSource::PythLazer,
+            oracle: sol_oracle_price_key,
+            cumulative_deposit_interest: SPOT_CUMULATIVE_INTEREST_PRECISION,
+            cumulative_borrow_interest: SPOT_CUMULATIVE_INTEREST_PRECISION,
+            decimals: 9,
+            initial_asset_weight: 8 * SPOT_WEIGHT_PRECISION / 10,
+            maintenance_asset_weight: 9 * SPOT_WEIGHT_PRECISION / 10,
+            initial_liability_weight: 12 * SPOT_WEIGHT_PRECISION / 10,
+            maintenance_liability_weight: 11 * SPOT_WEIGHT_PRECISION / 10,
+            liquidator_fee: LIQUIDATION_FEE_PRECISION / 1000,
+            historical_oracle_data: HistoricalOracleData {
+                // The long twap matches the live price so the fresh case is
+                // genuinely valid. Only the 5 minute twap diverges, which is
+                // the pair the bounds use.
+                last_oracle_price_twap: 100 * PRICE_PRECISION_I64,
+                last_oracle_price_twap_5min: 110 * PRICE_PRECISION_I64,
+                ..HistoricalOracleData::default()
+            },
+            ..SpotMarket::default()
+        };
+        create_anchor_account_info!(sol_spot_market, SpotMarket, sol_spot_market_account_info);
+
+        let spot_market_account_infos = Vec::from([
+            &usdc_spot_market_account_info,
+            &sol_spot_market_account_info,
+        ]);
+        let spot_market_map =
+            SpotMarketMap::load_multiple(spot_market_account_infos, true).unwrap();
+
+        let mut spot_positions = [SpotPosition::default(); 8];
+        spot_positions[0] = SpotPosition {
+            market_index: 0,
+            balance_type: SpotBalanceType::Deposit,
+            scaled_balance: 10000 * SPOT_BALANCE_PRECISION_U64,
+            ..SpotPosition::default()
+        };
+        spot_positions[1] = SpotPosition {
+            market_index: 1,
+            balance_type,
+            scaled_balance: 90 * SPOT_BALANCE_PRECISION_U64,
+            ..SpotPosition::default()
+        };
+        let user = User {
+            orders: [Order::default(); 32],
+            perp_positions: [PerpPosition::default(); 8],
+            spot_positions,
+            ..User::default()
+        };
+
+        let bounds =
+            calculate_user_equity_bounds(&user, &market_map, &spot_market_map, &mut oracle_map)
+                .unwrap();
+        let (live_equity, live_valid) =
+            calculate_user_equity(&user, &market_map, &spot_market_map, &mut oracle_map).unwrap();
+
+        (bounds, live_equity, live_valid)
+    }
+
+    #[test]
+    fn bounds_collapse_onto_live_equity_when_oracles_are_valid() {
+        // Every position is priceable, so both bounds are the exact value and
+        // the gates behave exactly as they did before bounding existed.
+        let (bounds, live_equity, live_valid) = run_scenario(SpotBalanceType::Borrow, 0);
+
+        assert!(live_valid);
+        assert!(bounds.all_oracles_valid);
+        // 10,000 USDC - 90 SOL at 100 = 1,000 USDC
+        assert_eq!(live_equity, 1_000_000_000);
+        assert_eq!(bounds.lower, 1_000_000_000);
+        assert_eq!(bounds.upper, 1_000_000_000);
+    }
+
+    #[test]
+    fn stale_oracle_prices_a_liability_high_in_the_lower_bound() {
+        let (bounds, live_equity, live_valid) = run_scenario(SpotBalanceType::Borrow, 100_000);
+
+        assert!(!live_valid);
+        assert!(!bounds.all_oracles_valid);
+        // The live price still reads 100, which is what the old code trusted.
+        assert_eq!(live_equity, 1_000_000_000);
+        // lower prices the borrow at max(100, 110) = 110: 10,000 - 9,900 = 100
+        assert_eq!(bounds.lower, 100_000_000);
+        // upper prices the borrow at min(100, 110) = 100: 10,000 - 9,000 = 1,000
+        assert_eq!(bounds.upper, 1_000_000_000);
+        assert!(bounds.lower <= live_equity && live_equity <= bounds.upper);
+    }
+
+    #[test]
+    fn stale_oracle_prices_an_asset_low_in_the_lower_bound() {
+        let (bounds, live_equity, live_valid) = run_scenario(SpotBalanceType::Deposit, 100_000);
+
+        assert!(!live_valid);
+        assert!(!bounds.all_oracles_valid);
+        assert_eq!(live_equity, 19_000_000_000);
+        // lower prices the deposit at min(100, 110) = 100: 10,000 + 9,000
+        assert_eq!(bounds.lower, 19_000_000_000);
+        // upper prices the deposit at max(100, 110) = 110: 10,000 + 9,900
+        assert_eq!(bounds.upper, 19_900_000_000);
+        assert!(bounds.lower <= live_equity && live_equity <= bounds.upper);
+    }
+
+    #[test]
+    fn lower_never_exceeds_upper() {
+        // The orientation the gates rely on. `lower >= floor` therefore implies
+        // `upper >= floor`, so a permitted action is never trippable.
+        for balance_type in [SpotBalanceType::Deposit, SpotBalanceType::Borrow] {
+            for slot in [0_u64, 100_000] {
+                let (bounds, _, _) = run_scenario(balance_type, slot);
+                assert!(bounds.lower <= bounds.upper);
+            }
+        }
+    }
+}
+
+#[cfg(test)]
 mod pools {
     use {
         crate::{

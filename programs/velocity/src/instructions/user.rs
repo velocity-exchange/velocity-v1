@@ -2179,11 +2179,12 @@ pub fn handle_transfer_perp_position<'c: 'info, 'info>(
         &spot_market_map,
         &mut oracle_map,
     )? {
+        // The floor restricts the from side here, so take the lower bound.
         validate!(
-            !from_user.is_below_buffered_equity_floor(from_user_net_equity),
+            !from_user.is_below_buffered_equity_floor(from_user_net_equity.lower),
             ErrorCode::EquityBelowFloor,
             "from user net equity {} below equity floor {} + buffer {}",
-            from_user_net_equity,
+            from_user_net_equity.lower,
             from_user.equity_floor,
             from_user.equity_floor_buffer
         )?;
@@ -2216,11 +2217,12 @@ pub fn handle_transfer_perp_position<'c: 'info, 'info>(
         &spot_market_map,
         &mut oracle_map,
     )? {
+        // The floor restricts the to side here, so take the lower bound.
         validate!(
-            !to_user.is_below_buffered_equity_floor(to_user_net_equity),
+            !to_user.is_below_buffered_equity_floor(to_user_net_equity.lower),
             ErrorCode::EquityBelowFloor,
             "to user net equity {} below equity floor {} + buffer {}",
-            to_user_net_equity,
+            to_user_net_equity.lower,
             to_user.equity_floor,
             to_user.equity_floor_buffer
         )?;

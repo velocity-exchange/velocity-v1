@@ -676,6 +676,33 @@ export function getRelayScratchPublicKey(programId: PublicKey): PublicKey {
 	)[0];
 }
 
+/**
+ * A quoter registry entry (`QuoterV0`) — one per
+ * `(perp market, quoter program, quoted user)`.
+ *
+ * `user` is the velocity `User` the entry's fills settle against, which is
+ * what makes the triple unique: one program can quote for several accounts on
+ * the same market, and the same account can be quoted by several programs.
+ * For a CLOB entry the quoted user is the default pubkey, since a book settles
+ * against whichever maker is resting rather than one margin account.
+ */
+export function getQuoterPublicKey(
+	programId: PublicKey,
+	marketIndex: number,
+	quoterProgram: PublicKey,
+	user: PublicKey
+): PublicKey {
+	return PublicKey.findProgramAddressSync(
+		[
+			Buffer.from(anchor.utils.bytes.utf8.encode('quoter')),
+			new anchor.BN(marketIndex).toArrayLike(Buffer, 'le', 2),
+			quoterProgram.toBuffer(),
+			user.toBuffer(),
+		],
+		programId
+	)[0];
+}
+
 export function getClobCrankConditionsPublicKey(
 	programId: PublicKey,
 	marketIndex: number

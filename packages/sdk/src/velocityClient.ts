@@ -1327,9 +1327,17 @@ export class VelocityClient {
 		 * for the account creation instead of the default wallet.
 		 */
 		externalWallet?: PublicKey;
+		/**
+		 * Build for an authority other than this client's. `initialize_user_stats`
+		 * does not require the authority to sign, so a `UserStats` can be created
+		 * for any key — which is the only way to stand up the protocol-owned
+		 * account, whose authority is velocity's signer PDA and therefore never a
+		 * wallet. Defaults to this client's authority.
+		 */
+		authority?: PublicKey;
 	}): Promise<TransactionInstruction> {
 		const payer = overrides?.externalWallet ?? this.wallet.publicKey;
-		const authority = this.authority;
+		const authority = overrides?.authority ?? this.authority;
 		return await this.program.instruction.initializeUserStats({
 			accounts: {
 				userStats: getUserStatsAccountPublicKey(

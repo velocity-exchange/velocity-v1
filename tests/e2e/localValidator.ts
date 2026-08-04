@@ -74,6 +74,7 @@ import {
 	PRICE_PRECISION,
 	QuoterCpiLeg,
 	QuoterType,
+	RetryTxSender,
 	TestClient,
 	Wallet,
 } from '../../packages/sdk/src';
@@ -437,8 +438,69 @@ describe('e2e localnet: programs + publisher + redis', function () {
 			VELOCITY_ID
 		)[0];
 
-	const send = (ixs: TransactionInstruction[], signers: Keypair[] = []) =>
-		provider.sendAndConfirm(new Transaction().add(...ixs), signers);
+	/** How long any send here waits for its signature.
+	 *
+	 * Nothing in this file confirms through `connection.confirmTransaction`:
+	 * its legacy strategy gives up after a fixed 30 seconds with a bare
+	 * "unknown if it succeeded or failed" — no signature, no on-chain error —
+	 * and by the later scenarios this machine is running the validator
+	 * alongside redis, the book-publisher, swift and a crank turner, so a
+	 * transaction that did land routinely confirms past that mark.
+	 *
+	 * 60s is the validity window of the blockhash the transaction was signed
+	 * with (150 slots): past it the RPC has stopped rebroadcasting, so a
+	 * signature still missing is missing for good and waiting longer only
+	 * delays the report. */
+	const CONFIRM_TIMEOUT_MS = 60_000;
+
+	/** Wait for `signature` by polling its status, reporting the on-chain
+	 * error if it reverted. */
+	const confirmSignature = async (
+		signature: string,
+		what = `tx ${signature}`
+	) =>
+		pollUntil(`${what} to confirm`, CONFIRM_TIMEOUT_MS, async () => {
+			const status = (await connection.getSignatureStatuses([signature]))
+				.value[0];
+			if (!status) return undefined;
+			if (status.err) {
+				const logs = await connection
+					.getTransaction(signature, {
+						commitment: 'confirmed',
+						maxSupportedTransactionVersion: 0,
+					})
+					.catch(() => null);
+				throw new Error(
+					`${what} reverted: ${JSON.stringify(status.err)}\n${(
+						logs?.meta?.logMessages ?? ['no logs']
+					)
+						.slice(-10)
+						.join('\n')}`
+				);
+			}
+			// 'processed' is not what the rest of this file reads at: every
+			// account fetch after a send uses 'confirmed'.
+			return status.confirmationStatus === 'processed' ? undefined : status;
+		});
+
+	const send = async (
+		ixs: TransactionInstruction[],
+		signers: Keypair[] = []
+	): Promise<string> => {
+		const tx = new Transaction().add(...ixs);
+		tx.feePayer = payer.publicKey;
+		tx.recentBlockhash = (
+			await connection.getLatestBlockhash('confirmed')
+		).blockhash;
+		tx.sign(payer, ...signers);
+		// Preflight stays on: it is where a reverting setup transaction gives
+		// up its program logs, which is more than a status lookup can recover.
+		const signature = await connection.sendRawTransaction(tx.serialize(), {
+			preflightCommitment: 'confirmed',
+		});
+		await confirmSignature(signature);
+		return signature;
+	};
 
 	/** Fills route through every quoter, well past the default CU budget. */
 	const sendFill = (ix: TransactionInstruction) =>
@@ -502,7 +564,7 @@ describe('e2e localnet: programs + publisher + redis', function () {
 
 	const airdrop = async (to: PublicKey, sol: number) => {
 		const sig = await connection.requestAirdrop(to, sol * LAMPORTS_PER_SOL);
-		await connection.confirmTransaction(sig, 'confirmed');
+		await confirmSignature(sig, `airdrop to ${to.toBase58()}`);
 	};
 
 	const createUsdcMint = async (): Promise<Keypair> => {
@@ -564,6 +626,9 @@ describe('e2e localnet: programs + publisher + redis', function () {
 				accountLoader: new BulkAccountLoader(connection, 'confirmed', 500),
 			},
 		});
+		// The SDK's default sender stops waiting after 35s, the same cliff a
+		// loaded validator walks off; hold it to this file's budget.
+		(client.txSender as RetryTxSender).timeout = CONFIRM_TIMEOUT_MS;
 		clients.push(client);
 		return client;
 	};
@@ -1928,25 +1993,7 @@ describe('e2e localnet: programs + publisher + redis', function () {
 			skipPreflight: true,
 			maxRetries: 20,
 		});
-		// Poll the status rather than confirmTransaction: a timeout there
-		// says only "unknown", where the status carries the on-chain error.
-		const landed = await pollUntil(
-			'the attested fill to land',
-			45_000,
-			async () => {
-				const status = (await connection.getSignatureStatuses([signature]))
-					.value[0];
-				if (!status) {
-					return undefined;
-				}
-				assert.isNull(
-					status.err,
-					`attested fill reverted: ${JSON.stringify(status.err)}`
-				);
-				return status;
-			}
-		).catch(() => undefined);
-		assert.isOk(landed, 'attested fill confirmed');
+		await confirmSignature(signature, 'the attested fill');
 
 		await taker.fetchAccounts();
 		const positionAfter =

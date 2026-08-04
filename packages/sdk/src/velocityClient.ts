@@ -8912,15 +8912,22 @@ export class VelocityClient {
 		// revenue share. The builder case is detected from orderParams; pass the user's
 		// decoded escrow (e.g. from a RevenueShareEscrowMap) to cover the referred case.
 		takerEscrow?: RevenueShareEscrowAccount,
-		// Pass the market's CLOB accounts to have an unfilled limit remainder rest on
-		// the CLOB instead of being cancelled; omit for today's cancel behavior.
+		// Pass the market's CLOB accounts to select the v1 route: the fill goes
+		// through the router (so the taker reaches book and PropAMM liquidity,
+		// not just the vAMM and any makers passed) and an unfilled limit
+		// remainder rests on the CLOB instead of being cancelled. The quoter
+		// section these imply is appended to the remaining accounts for you.
 		clobAccounts?: {
 			quoter: PublicKey;
 			clobMarket: PublicKey;
 			clobProgram: PublicKey;
 			quoterSigner: PublicKey;
 			crankConditions?: PublicKey;
-		}
+		},
+		// Additional quoter entries and their registered CPI accounts, for a
+		// taker routing across PropAMMs beyond the mandatory CLOB + vAMM
+		// baseline. Only meaningful alongside `clobAccounts`.
+		extraQuoterAccounts?: AccountMeta[]
 	): Promise<TransactionInstruction> {
 		orderParams = getOrderParams(orderParams, { marketType: MarketType.PERP });
 		const userStatsPublicKey = await this.getUserStatsAccountPublicKey();
@@ -8963,6 +8970,31 @@ export class VelocityClient {
 		);
 		if (takerEscrowMeta) {
 			remainingAccounts.push(takerEscrowMeta);
+		}
+		if (clobAccounts) {
+			// v1 routes, so its tail carries the quoter section, and the
+			// market's canonical CLOB is mandatory there. These are the same
+			// accounts `clobAccounts` already names for the remainder leg —
+			// the program resolves a quoter's registered CPI accounts from the
+			// remaining accounts, which its named ones are not part of.
+			remainingAccounts.push(
+				{ pubkey: clobAccounts.quoter, isWritable: false, isSigner: false },
+				{ pubkey: clobAccounts.clobMarket, isWritable: true, isSigner: false },
+				{
+					pubkey: clobAccounts.quoterSigner,
+					isWritable: false,
+					isSigner: false,
+				},
+				{
+					pubkey: clobAccounts.clobProgram,
+					isWritable: false,
+					isSigner: false,
+				}
+			);
+			// Any further quoters the taker wants competing for this fill.
+			if (extraQuoterAccounts) {
+				remainingAccounts.push(...extraQuoterAccounts);
+			}
 		}
 
 		let optionalParams = null;

@@ -674,6 +674,9 @@ describe('e2e localnet: programs + publisher + redis', function () {
 			admin.program.instruction.updatePerpMarketClobQuoter(
 				new BN(10_000), // keeper_payment_lamports
 				new BN(1500), // expire_fallback_slots
+				// min_cross_surplus: 0 keeps the bare strictly-profitable rule,
+				// which is what the cross-match scenario below asserts against.
+				new BN(0),
 				{
 					accounts: {
 						admin: payer.publicKey,
@@ -977,9 +980,14 @@ describe('e2e localnet: programs + publisher + redis', function () {
 	const fillPerpOrderIx = async (
 		orderId: number,
 		takerAuthority: PublicKey,
-		makerKps: Keypair[]
+		makerKps: Keypair[],
+		/** The route the order's signer chose, as a keeper reads it off their
+		 * signed message. The program checks it against the digest stamped on
+		 * the order and requires every entry to be in the transaction, so a
+		 * keeper cannot quietly route somewhere else. */
+		signedRoute: PublicKey[] = []
 	) =>
-		admin.program.instruction.fillPerpOrder(orderId, null, {
+		admin.program.instruction.fillPerpOrder(orderId, null, signedRoute, {
 			accounts: {
 				state: await admin.getStatePublicKey(),
 				authority: payer.publicKey,
@@ -1853,7 +1861,10 @@ describe('e2e localnet: programs + publisher + redis', function () {
 		const fillIx = await fillPerpOrderIx(
 			taker.getUserAccount()!.nextOrderId,
 			takerKp.publicKey,
-			[clobMakerKp, midMakerKp]
+			[clobMakerKp, midMakerKp],
+			// The taker signed for the midpoint above; a fill that ignored it
+			// is refused, so pass it exactly as keep-rs does.
+			[midEntry]
 		);
 		const blockhash = await connection.getLatestBlockhash();
 		const message = new TransactionMessage({

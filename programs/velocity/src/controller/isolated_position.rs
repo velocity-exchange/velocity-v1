@@ -13,13 +13,14 @@ use {
             liquidation::is_isolated_margin_being_liquidated,
             margin::{validate_spot_margin_trading, MarginRequirementType},
             safe_math::SafeMath,
-            spot_withdraw::check_withdraw_limits,
+            spot_withdraw::{check_deposit_limits, check_withdraw_limits},
         },
         state::{
             events::{DepositDirection, DepositExplanation, DepositRecord},
             margin_calculation::MarginTypeConfig,
             market_status::MarketStatus,
             oracle_map::OracleMap,
+            paused_operations::SpotOperation,
             perp_market_map::PerpMarketMap,
             spot_market::SpotBalanceType,
             spot_market_map::SpotMarketMap,
@@ -114,6 +115,19 @@ pub fn deposit_into_isolated_perp_position<'c: 'info, 'info>(
         matches!(spot_market.status, MarketStatus::Active),
         ErrorCode::MarketActionPaused,
         "spot_market not active",
+    )?;
+
+    // The daily deposit cap counts tokens that enter the spot market vault. This
+    // deposit enters the same vault as a cross-margin deposit, so the same cap
+    // applies. `handle_deposit` checks it on the cross path. A cap that one
+    // instruction can step around is not a cap. This is a no-op when the market
+    // has no cap configured (`max_deposit_bps_per_day == 0`).
+    validate!(
+        check_deposit_limits(&spot_market)?,
+        ErrorCode::DailyDepositLimit,
+        "Spot Market {} has hit daily deposit limit (deposits exceed {} bps above 24h twap)",
+        spot_market_index,
+        spot_market.max_deposit_bps_per_day
     )?;
 
     drop(spot_market);
@@ -462,6 +476,40 @@ pub fn withdraw_from_isolated_perp_position<'c: 'info, 'info>(
             spot_market_index,
             amount,
             user.authority
+        )?;
+
+        // The admin can stop withdrawals per market, either by market status or
+        // by the `Withdraw` paused-operation bit. The cross-margin withdraw path
+        // applies both gates inside
+        // `update_spot_balances_and_cumulative_deposits_with_limits`. This path
+        // debits balances directly, so both gates are explicit. A market that is
+        // closed for withdrawals must be closed on every route out of the vault.
+        //
+        // The admitted status set is copied from the cross path. It admits
+        // `Settlement`, so a wound-down market stays exitable, and it rejects
+        // `Initialized` and `Delisted`. This traps no isolated collateral. An
+        // admin can move a market out of `Delisted` again, because
+        // `update_spot_market_status` writes any status without restriction. The
+        // holder also keeps a second exit at every status:
+        // `transfer_isolated_perp_position_deposit` has no per-market status gate,
+        // so the isolated balance can always move to the cross-margin position
+        // and then face these same rules. The isolated holder therefore never has
+        // fewer exits than a cross-margin holder in the same market.
+        validate!(
+            matches!(
+                spot_market.status,
+                MarketStatus::Active | MarketStatus::ReduceOnly | MarketStatus::Settlement
+            ),
+            ErrorCode::MarketWithdrawPaused,
+            "Spot Market {} withdraws are currently paused, market not active or in settlement",
+            spot_market_index
+        )?;
+
+        validate!(
+            !spot_market.is_operation_paused(SpotOperation::Withdraw),
+            ErrorCode::MarketWithdrawPaused,
+            "Spot Market {} withdraws are currently paused",
+            spot_market_index
         )?;
     }
 

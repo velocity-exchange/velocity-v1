@@ -8,6 +8,10 @@
 //!   CLOB as its `place_authority` (the quoter CPI signer PDA).
 //! - [`cancel_clob_order`]: cancel CPI, then unwind the removed order's
 //!   remaining size from the aggregates.
+//! - [`cancel_all_clob_orders`]: the same thing for a maker's whole side (or
+//!   both) in one CPI, unwinding from per-side totals so the cost does not grow
+//!   with the ladder. The book caps a single sweep and says so; the handler
+//!   unwinds what was actually removed, so repeating it converges.
 //! - [`modify_clob_order`]: cancel-and-replace in one instruction, with one
 //!   margin gate over the *net* change (the CLOB has no in-place mutation).
 //! - [`fill_v1`]: the keeper fill with the CLOB accounts required — a restable
@@ -46,6 +50,7 @@
 //!   flow — reclaim a failing account's risk-increasing book orders (and
 //!   their placed-trigger shadows) for the flat fee.
 
+mod cancel_all_clob_orders;
 mod cancel_clob_order;
 mod crank_clob_evict;
 mod crank_clob_remove_expired;
@@ -62,8 +67,9 @@ mod place_clob_order;
 mod trigger_clob_order;
 
 pub use {
-    cancel_clob_order::*, crank_clob_evict::*, crank_clob_remove_expired::*, crank_common::*,
-    crank_conditions_setup::*, crank_cross_match::*, fill_v1::*, force_cancel_clob_orders::*,
-    initialize_quoter_cross_conditions::*, modify_clob_order::*, place_and_make_v1::*,
-    place_and_take_v1::*, place_clob_order::*, trigger_clob_order::*,
+    cancel_all_clob_orders::*, cancel_clob_order::*, crank_clob_evict::*,
+    crank_clob_remove_expired::*, crank_common::*, crank_conditions_setup::*, crank_cross_match::*,
+    fill_v1::*, force_cancel_clob_orders::*, initialize_quoter_cross_conditions::*,
+    modify_clob_order::*, place_and_make_v1::*, place_and_take_v1::*, place_clob_order::*,
+    trigger_clob_order::*,
 };

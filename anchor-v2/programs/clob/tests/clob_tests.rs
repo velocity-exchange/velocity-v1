@@ -7,16 +7,18 @@ use {
     },
     clob::{
         accounts,
-        anchor_lang_v2::{prelude::Address, solana_program::instruction::Instruction, Event},
-        events::{ExecuteRecordV0, FillSlimV0},
+        anchor_lang_v2::{
+            prelude::Address, solana_program::instruction::Instruction, Discriminator, Event,
+        },
+        events::{ExecuteRecordV0, FillSlimV0, OrdersCancelRecordV0},
         instruction,
         state::{
-            ClobHeaderV0, ClobMarketV0, Direction, MarketConfigV0, OrderBitFlag, OrderNodeV0,
-            OrderRefV0, Side, UserRefV0, UserSetV0, EXECUTE_FILLS_CEILING, ORDERS_OFFSET,
-            REMOVED_ORDER_BYTES,
+            CancelSidesV0, ClobHeaderV0, ClobMarketV0, Direction, MarketConfigV0, OrderBitFlag,
+            OrderNodeV0, OrderRefV0, Side, UserRefV0, UserSetV0, CANCEL_ALL_ORDERS_CEILING,
+            EXECUTE_FILLS_CEILING, ORDERS_OFFSET, REMOVED_ORDER_BYTES,
         },
-        CancelOrderArgsV0, EvictWorstArgsV0, ExecuteArgsV0, PlaceOrderArgsV0, QuoteArgsV0,
-        RemoveExpiredArgsV0, ResizeMarketArgsV0, UpdateMarketArgsV0,
+        CancelAllArgsV0, CancelOrderArgsV0, EvictWorstArgsV0, ExecuteArgsV0, PlaceOrderArgsV0,
+        QuoteArgsV0, RemoveExpiredArgsV0, ResizeMarketArgsV0, UpdateMarketArgsV0,
     },
     litesvm::types::{FailedTransactionMetadata, TransactionMetadata},
     solana_clock::Clock,
@@ -455,6 +457,51 @@ fn program_data(meta: &TransactionMetadata) -> Vec<u8> {
         }
     }
     bytes
+}
+
+fn cancel_all_ix(ctx: &Ctx, user: Address, sides: CancelSidesV0) -> Instruction {
+    instruction::CancelAllV0 {
+        args: CancelAllArgsV0 {
+            user: uref(user),
+            sides,
+        },
+    }
+    .to_instruction(accounts::CancelAllV0 {
+        market: addr(ctx.market),
+        place_authority: addr(ctx.place_auth.pubkey()),
+    })
+}
+
+/// `CancelAllOutcomeV0` off return data:
+/// `(bid_base, ask_base, bid_orders, ask_orders, exhaustive)`.
+fn parse_cancel_all(b: &[u8]) -> (u64, u64, u32, u32, bool) {
+    assert_eq!(b.len(), 34 + 8 + 8 + 4 + 4 + 1, "outcome wire width");
+    (
+        parse_u64(&b[34..]),
+        parse_u64(&b[42..]),
+        parse_u32(&b[50..]),
+        parse_u32(&b[54..]),
+        b[58] == 1,
+    )
+}
+
+/// The `OrdersCancelRecordV0` payload: skips the fixed prefix and returns the
+/// logged id list.
+fn parse_cancel_all_record(bytes: &[u8]) -> (bool, Vec<u64>) {
+    assert_eq!(
+        &bytes[..8],
+        OrdersCancelRecordV0::DISCRIMINATOR,
+        "not a cancel-all record"
+    );
+    // [disc 8][authority 32][ts 8][bid base 8][ask base 8][market 2][sub 2]
+    // [sides 1][exhaustive 1][count 4][ids…]
+    const IDS: usize = 8 + 32 + 8 + 8 + 8 + 2 + 2 + 1 + 1 + 4;
+    let exhaustive = bytes[IDS - 5] == 1;
+    let count = parse_u32(&bytes[IDS - 4..]) as usize;
+    let ids = (0..count)
+        .map(|i| parse_u64(&bytes[IDS + i * 8..]))
+        .collect();
+    (exhaustive, ids)
 }
 
 fn market_state(ctx: &Ctx) -> ClobHeaderV0 {
@@ -966,6 +1013,68 @@ fn partial_fill_remainder_below_min_order_size_is_culled() {
     assert_eq!(market_state(&ctx).ask_count, 1);
 }
 
+/// The whole point of the id list: an indexer reconciling the book from events
+/// gets one record naming every order that left, and it has to survive the
+/// widest case the per-call cap allows — a ~1KB log buffer built in an SBF
+/// stack frame, which is exactly where this program has broken before.
+#[test]
+fn cancel_all_logs_every_removed_order_id_at_the_ceiling() {
+    let mut ctx = setup();
+    let user = addr(Pubkey::new_unique());
+    let other = addr(Pubkey::new_unique());
+    let per_side = CANCEL_ALL_ORDERS_CEILING as u64 / 2;
+    let mut expected = Vec::new();
+    // Interleave a second maker through both sides, so the sweep is a filtered
+    // walk rather than a truncation and the ids can't come out of order.
+    for i in 0..per_side {
+        expected.push(place(&mut ctx, place_args(Side::Bid, 1_000 - i, 10), user).order_id);
+        place(&mut ctx, place_args(Side::Bid, 1_000 - i, 10), other);
+    }
+    for i in 0..per_side {
+        expected.push(place(&mut ctx, place_args(Side::Ask, 2_000 + i, 10), user).order_id);
+        place(&mut ctx, place_args(Side::Ask, 2_000 + i, 10), other);
+    }
+
+    let ix = cancel_all_ix(&ctx, user, CancelSidesV0::Both);
+    let meta = send_with_budget(&mut ctx, ix, Some(400_000)).unwrap();
+    let (bid_base, ask_base, bid_orders, ask_orders, exhaustive) =
+        parse_cancel_all(&meta.return_data.data);
+    assert_eq!(bid_orders as u64, per_side);
+    assert_eq!(ask_orders as u64, per_side);
+    assert_eq!(bid_base, per_side * 10);
+    assert_eq!(ask_base, per_side * 10);
+    assert!(exhaustive);
+
+    // The record carries every id, bids first, in book order.
+    let (logged_exhaustive, ids) = parse_cancel_all_record(&program_data(&meta));
+    assert!(logged_exhaustive);
+    assert_eq!(ids, expected);
+
+    // Only this maker's orders left.
+    let state = market_state(&ctx);
+    assert_eq!(state.bid_count as u64, per_side);
+    assert_eq!(state.ask_count as u64, per_side);
+}
+
+/// Placement policy lives in velocity, so the book takes a sweep only from its
+/// `place_authority` — otherwise anyone could pull a maker's quotes.
+#[test]
+fn cancel_all_requires_the_place_authority() {
+    let mut ctx = setup();
+    let user = addr(Pubkey::new_unique());
+    place(&mut ctx, place_args(Side::Bid, 100, 10), user);
+
+    // The market's own admin is the sharpest version of this: a real key with
+    // real authority over the book that still must not be able to pull quotes.
+    let mut ix = cancel_all_ix(&ctx, user, CancelSidesV0::Both);
+    ix.accounts[1].pubkey = ctx.admin.pubkey();
+    assert_clob_err(
+        send(&mut ctx, ix),
+        err_code(clob::error::ClobError::InvalidAuthority),
+    );
+    assert_eq!(market_state(&ctx).bid_count, 1);
+}
+
 #[test]
 fn cu_benchmarks() {
     let mut ctx = setup();
@@ -1049,6 +1158,84 @@ fn cu_benchmarks() {
         evict_meta.compute_units_consumed,
         quote_meta.compute_units_consumed,
         execute_meta.compute_units_consumed,
+    );
+}
+
+/// A sweep is a filtered walk of each requested side, so its cost is set by the
+/// *book's* depth rather than the maker's. This measures both ends of that: a
+/// maker's ladder on an otherwise-empty book, and the same ladder buried behind
+/// a full side of other makers' orders — against the per-order cancel it
+/// replaces.
+///
+/// Only the shallow case is asserted, because the deep case genuinely loses at
+/// this level: the walk pays a hop per resting order while a per-order cancel is
+/// O(1), so on a deep book a handful of `cancel_order_v0` calls beat one sweep
+/// here. That crossover does not survive contact with velocity, which is the
+/// only caller — a `cancel_clob_order` instruction costs ~11k CU of account
+/// loading and margin bookkeeping around its ~1.4k of book work, so end to end
+/// the sweep wins at every depth (see `cu_bench_cancel_all_beats_cancelling_\
+/// order_by_order` in the integration suite). Making the walk stop once the
+/// maker's orders run out would need velocity to pass a trusted count, coupling
+/// the book's exhaustiveness to velocity's bookkeeping for a case that is
+/// already a win.
+#[test]
+fn cu_benchmark_cancel_all() {
+    const LADDER: u64 = 8;
+
+    let mut ctx = setup();
+    let mine = addr(Pubkey::new_unique());
+    let refs: Vec<OrderRefV0> = (0..LADDER)
+        .map(|i| place(&mut ctx, place_args(Side::Ask, 2_000 + i, 10), mine))
+        .collect();
+    let per_order_cu: u64 = refs
+        .iter()
+        .map(|order_ref| {
+            let ix = instruction::CancelOrderV0 {
+                args: CancelOrderArgsV0 {
+                    order_ref: *order_ref,
+                    user: uref(mine),
+                },
+            }
+            .to_instruction(accounts::CancelOrderV0 {
+                market: addr(ctx.market),
+                place_authority: addr(ctx.place_auth.pubkey()),
+            });
+            send(&mut ctx, ix).unwrap().compute_units_consumed
+        })
+        .sum();
+
+    let mut ctx = setup();
+    (0..LADDER).for_each(|i| {
+        place(&mut ctx, place_args(Side::Ask, 2_000 + i, 10), mine);
+    });
+    let ix = cancel_all_ix(&ctx, mine, CancelSidesV0::Both);
+    let shallow_cu = send(&mut ctx, ix).unwrap().compute_units_consumed;
+
+    // The same ladder with a full side of other makers' orders ahead of it,
+    // which is the walk cost this design accepts in exchange for the book
+    // needing no per-user index.
+    let mut ctx = setup();
+    let other = addr(Pubkey::new_unique());
+    (0..PER_SIDE as u64 - LADDER).for_each(|i| {
+        place(&mut ctx, place_args(Side::Ask, 1_000 + i, 10), other);
+    });
+    (0..LADDER).for_each(|i| {
+        place(&mut ctx, place_args(Side::Ask, 2_000 + i, 10), mine);
+    });
+    let ix = cancel_all_ix(&ctx, mine, CancelSidesV0::Both);
+    let deep_cu = send_with_budget(&mut ctx, ix, Some(400_000))
+        .unwrap()
+        .compute_units_consumed;
+
+    println!(
+        "CU — cancel_all({LADDER} orders, empty book): {shallow_cu}, \
+         ({LADDER} orders behind a full {PER_SIDE}-deep side): {deep_cu}; \
+         baseline {LADDER}× cancel_order_v0: {per_order_cu}"
+    );
+    assert!(
+        shallow_cu < per_order_cu,
+        "sweeping {LADDER} orders ({shallow_cu}) must beat cancelling them one at a \
+         time ({per_order_cu})"
     );
 }
 

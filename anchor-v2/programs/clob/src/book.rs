@@ -61,9 +61,10 @@ use {
         events::FillSlimV0,
         response::ResponseWriter,
         state::{
-            CancelledRemainderV0, ClobHeaderV0, ClobMarketV0, Direction, ExecuteOutcome,
-            MarketConfigV0, OrderBitFlag, OrderNodeV0, OrderRefV0, PlaceOrderParams, RemovedOrder,
-            ResponsePointerV0, Side, UserRefV0, CHANGE_MIN_BYTES, EXECUTE_FILLS_CEILING,
+            CancelAllOutcome, CancelSidesV0, CancelledRemainderV0, ClobHeaderV0, ClobMarketV0,
+            Direction, ExecuteOutcome, MarketConfigV0, OrderBitFlag, OrderNodeV0, OrderRefV0,
+            PlaceOrderParams, RemovedOrder, ResponsePointerV0, Side, UserRefV0,
+            CANCEL_ALL_ORDERS_CEILING, CHANGE_MIN_BYTES, EXECUTE_FILLS_CEILING,
             EXECUTE_USERS_CEILING, ORDER_ID_BYTES, QUOTE_LEVELS_CEILING, USER_REF_BYTES,
             ZERO_ADDRESS,
         },
@@ -94,6 +95,12 @@ pub trait ClobBook {
     ) -> Result<()>;
     fn place(&mut self, params: PlaceOrderParams) -> Result<OrderRefV0>;
     fn cancel(&mut self, user: UserRefV0, order_ref: OrderRefV0) -> Result<RemovedOrder>;
+    fn cancel_all(
+        &mut self,
+        user: UserRefV0,
+        sides: CancelSidesV0,
+        removed_ids: &mut dyn FnMut(u64) -> Result<()>,
+    ) -> Result<CancelAllOutcome>;
     fn evict_worst(&mut self, side: Side) -> Result<RemovedOrder>;
     fn remove_expired(&mut self, order_ref: OrderRefV0, now: i64) -> Result<RemovedOrder>;
     fn quote(
@@ -486,6 +493,87 @@ impl ClobBook for ClobMarketV0 {
         validate_single_removal(self, &node, order_ref.node_index)?;
         self.validate_book()?;
         Ok(removed)
+    }
+
+    /// Withdraw every order `user` holds on the requested sides in one pass.
+    ///
+    /// The book has no per-user index — user identity lives inline on the node
+    /// and there is deliberately no seat table (see [`OrderNodeV0`]) — so this
+    /// is a full walk of each requested side, O(orders on the side) rather than
+    /// O(the user's orders). That is still the cheap direction: the alternative
+    /// a maker has is one instruction per order, and the walk costs a fraction
+    /// of one CPI round trip per hop.
+    ///
+    /// Removals are capped at [`CANCEL_ALL_ORDERS_CEILING`] per call, and
+    /// [`CancelAllOutcome::exhaustive`] reports whether the walk reached the end
+    /// of every requested side. It is false only when the cap stopped it, which
+    /// is the one case where orders of this user are still resting — the
+    /// caller's contract is to repeat the call until it comes back true.
+    ///
+    /// Each removed order's id goes to `removed_ids` as the walk frees it, in
+    /// book order per side. The handler streams those into the cancel record's
+    /// log buffer; taking a sink rather than returning a `Vec` keeps this off
+    /// the heap on a path that can touch a hundred orders.
+    fn cancel_all(
+        &mut self,
+        user: UserRefV0,
+        sides: CancelSidesV0,
+        removed_ids: &mut dyn FnMut(u64) -> Result<()>,
+    ) -> Result<CancelAllOutcome> {
+        let ceiling = CANCEL_ALL_ORDERS_CEILING as u32;
+        let mut outcome = CancelAllOutcome {
+            exhaustive: true,
+            ..Default::default()
+        };
+        // Running across both sides, so the cap bounds the call rather than
+        // each side of it.
+        let mut total_removed = 0u32;
+        for side in sides.sides().iter().copied() {
+            if !outcome.exhaustive {
+                break;
+            }
+            let count_before = self.node_count(side);
+            let mut base_removed = 0u64;
+            let mut orders_removed = 0u32;
+            walk_side(self, side, |book, index, node| {
+                if node.user_ref() != user {
+                    return Ok(Walk::Continue);
+                }
+                if total_removed >= ceiling {
+                    outcome.exhaustive = false;
+                    return Ok(Walk::Stop);
+                }
+                base_removed = base_removed
+                    .checked_add(node.base_asset_amount)
+                    .ok_or(ClobError::MathError)?;
+                orders_removed += 1;
+                total_removed += 1;
+                removed_ids(node.order_id)?;
+                remove_order(book, index)?;
+                Ok(Walk::Continue)
+            })?;
+
+            // Every removal the walk made came off this side.
+            require!(
+                self.node_count(side)
+                    == count_before
+                        .checked_sub(orders_removed)
+                        .ok_or(ClobError::BookInvariantViolated)?,
+                ClobError::BookInvariantViolated
+            );
+            match side {
+                Side::Bid => {
+                    outcome.bid_base_asset_amount = base_removed;
+                    outcome.bid_orders = orders_removed;
+                }
+                Side::Ask => {
+                    outcome.ask_base_asset_amount = base_removed;
+                    outcome.ask_orders = orders_removed;
+                }
+            }
+        }
+        self.validate_book()?;
+        Ok(outcome)
     }
 
     /// Crank-mediated eviction: only the side's tail (worst price, youngest

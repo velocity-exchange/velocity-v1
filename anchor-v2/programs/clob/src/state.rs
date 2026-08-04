@@ -68,6 +68,14 @@ pub const QUOTE_LEVELS_CEILING: u16 =
 
 pub const EXECUTE_FILLS_CEILING: u16 = 128;
 
+/// Hard cap on the orders one `cancel_all_v0` removes. Bounds three things at
+/// once: the removal work in a single call, the id list the cancel record logs
+/// ([`CANCEL_ALL_RECORD_LOG_BYTES`]), and how far a maker's aggregate unwind
+/// can drift from one instruction. A maker holding more than this cancels in
+/// repeated calls — the instruction reports whether it finished (see
+/// [`CancelAllOutcome::exhaustive`]).
+pub const CANCEL_ALL_ORDERS_CEILING: u16 = 128;
+
 /// Ceiling on `max_execute_users`. An [`ExecuteResponseV0`] is
 /// `[changes count][records…][cancelled count][at most one cancelled]`, and a
 /// record is [`CHANGE_MIN_BYTES`] plus [`ORDER_ID_BYTES`] per order it
@@ -489,6 +497,73 @@ pub struct ExecuteResponseV0 {
     /// Sub-min remainders removed by this execute (see
     /// [`CancelledRemainderV0`]).
     pub cancelled: Vec<CancelledRemainderV0>,
+}
+
+/// Which sides a `cancel_all_v0` withdraws. Named sides rather than a pair of
+/// bools so the wire cannot express "neither", which is a maker believing
+/// their quotes are gone when nothing happened.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, wincode::SchemaRead, wincode::SchemaWrite)]
+pub enum CancelSidesV0 {
+    Bids,
+    Asks,
+    Both,
+}
+
+impl CancelSidesV0 {
+    /// The sides to walk, in book order.
+    pub fn sides(self) -> &'static [Side] {
+        match self {
+            CancelSidesV0::Bids => &[Side::Bid],
+            CancelSidesV0::Asks => &[Side::Ask],
+            CancelSidesV0::Both => &[Side::Bid, Side::Ask],
+        }
+    }
+
+    pub fn includes(self, side: Side) -> bool {
+        matches!(
+            (self, side),
+            (CancelSidesV0::Both, _)
+                | (CancelSidesV0::Bids, Side::Bid)
+                | (CancelSidesV0::Asks, Side::Ask)
+        )
+    }
+}
+
+/// What a `cancel_all_v0` withdrew, aggregated per side.
+///
+/// Per-side totals rather than a list of removals: velocity unwinds
+/// `open_bids`/`open_asks` by a summed base amount and the open-order counts by
+/// a count, so the whole sweep costs it the same two calls one cancel does.
+/// The per-order detail an indexer needs rides the cancel record's id list
+/// instead of return data.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct CancelAllOutcome {
+    pub bid_base_asset_amount: u64,
+    pub ask_base_asset_amount: u64,
+    pub bid_orders: u32,
+    pub ask_orders: u32,
+    /// Whether the walk finished every requested side rather than stopping at
+    /// [`CANCEL_ALL_ORDERS_CEILING`]. False means orders of this user are
+    /// still resting and the caller should repeat the call.
+    pub exhaustive: bool,
+}
+
+impl CancelAllOutcome {
+    pub fn orders(&self) -> u32 {
+        self.bid_orders.saturating_add(self.ask_orders)
+    }
+}
+
+/// Wire form of [`CancelAllOutcome`] — return data of `cancel_all_v0`, so
+/// velocity can unwind the maker's aggregates in one pass per side.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, wincode::SchemaRead, wincode::SchemaWrite)]
+pub struct CancelAllOutcomeV0 {
+    pub user: UserRefV0,
+    pub bid_base_asset_amount: u64,
+    pub ask_base_asset_amount: u64,
+    pub bid_orders: u32,
+    pub ask_orders: u32,
+    pub exhaustive: bool,
 }
 
 /// A removed order, for events (cancel/evict/expire).

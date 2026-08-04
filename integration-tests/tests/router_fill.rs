@@ -19,8 +19,8 @@ use {
     velocity::{
         controller::position::PositionDirection,
         instructions::{
-            CancelClobOrderParams, InitializeQuoterArgs, PlaceClobOrderParams,
-            QuoterAccountMetaArg, UpdateQuoterAccountsArgs,
+            CancelAllClobOrdersParams, CancelClobOrderParams, InitializeQuoterArgs,
+            PlaceClobOrderParams, QuoterAccountMetaArg, UpdateQuoterAccountsArgs,
         },
         math::constants::{
             AMM_RESERVE_PRECISION, PEG_PRECISION, PRICE_PRECISION, QUOTE_PRECISION_I64,
@@ -30,7 +30,7 @@ use {
             market_status::MarketStatus,
             oracle::OracleSource,
             perp_market::PerpMarket,
-            prop_amm::{ClobOrderRefV0, QuoterCpiLeg, QuoterType},
+            prop_amm::{ClobCancelSides, ClobOrderRefV0, QuoterCpiLeg, QuoterType},
             pyth_lazer_oracle::PythLazerOracle,
             spot_market::{SpotBalanceType, SpotMarket},
             state::{FeeStructure, OracleGuardRails, State},
@@ -778,6 +778,256 @@ fn router_fill_splits_across_clob_dlob_and_vamm_sources() {
     println!(
         "CU — router fill across CLOB + DLOB + vAMM sources: {}",
         meta.compute_units_consumed
+    );
+}
+
+/// Place a bid through velocity, so a sweep has both sides to take.
+fn place_clob_bid(fixture: &mut Fixture, price: u64, size: u64) -> ClobOrderRefV0 {
+    let ix = place_clob_order_ix(
+        fixture.clob_maker_user,
+        &fixture.clob_maker_authority,
+        fixture.quoter,
+        fixture.clob_market,
+        fixture.oracle,
+        None,
+        PlaceClobOrderParams {
+            market_index: 0,
+            direction: PositionDirection::Long,
+            price,
+            base_asset_amount: size,
+            max_ts: 0,
+            activation_delay_slots: Some(0),
+        },
+    );
+    let meta = send(&mut fixture.svm, &fixture.clob_maker_authority, ix, &[]).unwrap();
+    let data = &meta.return_data.data;
+    ClobOrderRefV0 {
+        node_index: u32::from_le_bytes(data[..4].try_into().unwrap()),
+        order_id: u64::from_le_bytes(data[4..12].try_into().unwrap()),
+    }
+}
+
+fn cancel_all_clob_ix(fixture: &Fixture, sides: ClobCancelSides) -> Instruction {
+    let (quoter_signer, _) = quoter_signer_pda();
+    Instruction {
+        program_id: velocity_id(),
+        accounts: velocity::accounts::CancelAllClobOrders {
+            state: state_pda(),
+            user: fixture.clob_maker_user,
+            authority: fixture.clob_maker_authority.pubkey(),
+            quoter: fixture.quoter,
+            clob_market: fixture.clob_market,
+            clob_program: clob_id(),
+            quoter_signer,
+            crank_conditions: None,
+        }
+        .to_account_metas(None),
+        data: velocity::instruction::CancelAllClobOrders {
+            params: CancelAllClobOrdersParams {
+                market_index: 0,
+                sides,
+            },
+        }
+        .data(),
+    }
+}
+
+/// The end-to-end property: a whole ladder comes off the book in one
+/// instruction, and the maker's aggregates land exactly where the same orders
+/// cancelled one at a time would have left them.
+#[test]
+fn cancel_all_clob_orders_unwinds_a_whole_ladder_in_one_instruction() {
+    let mut fixture = setup();
+    let mut bid_base = 0u64;
+    let mut ask_base = 0u64;
+    for i in 0..5u64 {
+        bid_base += UNIT / 2 + i;
+        ask_base += UNIT / 4 + i;
+        place_clob_bid(&mut fixture, (98 - i) * PRICE, UNIT / 2 + i);
+        place_clob_ask(&mut fixture, (99 + i) * PRICE, UNIT / 4 + i);
+    }
+    let before: User = read_zero_copy(&fixture.svm, &fixture.clob_maker_user);
+    assert_eq!(before.perp_positions[0].open_orders, 10);
+    assert_eq!(before.open_orders, 10);
+    assert_eq!(before.perp_positions[0].open_bids, bid_base as i64);
+    assert_eq!(before.perp_positions[0].open_asks, -(ask_base as i64));
+
+    // Bids only first, so the ask side proves the sweep is side-scoped all the
+    // way through velocity's unwind.
+    let ix = cancel_all_clob_ix(&fixture, ClobCancelSides::Bids);
+    send(&mut fixture.svm, &fixture.clob_maker_authority, ix, &[]).unwrap();
+    let after_bids: User = read_zero_copy(&fixture.svm, &fixture.clob_maker_user);
+    assert_eq!(after_bids.perp_positions[0].open_bids, 0);
+    assert_eq!(after_bids.perp_positions[0].open_asks, -(ask_base as i64));
+    assert_eq!(after_bids.perp_positions[0].open_orders, 5);
+    assert_eq!(after_bids.open_orders, 5);
+    assert_eq!(clob_bid_count(&fixture.svm, &fixture.clob_market), 0);
+    assert_eq!(clob_ask_count(&fixture.svm, &fixture.clob_market), 5);
+
+    let ix = cancel_all_clob_ix(&fixture, ClobCancelSides::Both);
+    send(&mut fixture.svm, &fixture.clob_maker_authority, ix, &[]).unwrap();
+    let after: User = read_zero_copy(&fixture.svm, &fixture.clob_maker_user);
+    assert_eq!(after.perp_positions[0].open_bids, 0);
+    assert_eq!(after.perp_positions[0].open_asks, 0);
+    assert_eq!(after.perp_positions[0].open_orders, 0);
+    assert_eq!(after.open_orders, 0);
+    assert!(!after.has_open_order);
+    assert_eq!(clob_ask_count(&fixture.svm, &fixture.clob_market), 0);
+
+    // Idempotent: nothing left to take is a success, not a failed transaction.
+    let ix = cancel_all_clob_ix(&fixture, ClobCancelSides::Both);
+    send(&mut fixture.svm, &fixture.clob_maker_authority, ix, &[]).unwrap();
+}
+
+/// A second funded maker on the same book, so a sweep can be shown to leave
+/// someone else's orders alone.
+fn second_clob_maker(fixture: &mut Fixture) -> (Pubkey, Keypair) {
+    let authority = Keypair::new();
+    fixture
+        .svm
+        .airdrop(&authority.pubkey(), 10_000_000_000)
+        .unwrap();
+    let user = Pubkey::find_program_address(
+        &[
+            b"user",
+            authority.pubkey().as_ref(),
+            0u16.to_le_bytes().as_ref(),
+        ],
+        &velocity_id(),
+    )
+    .0;
+    set_user_account(
+        &mut fixture.svm,
+        user,
+        &trading_user(
+            &authority.pubkey(),
+            10_000 * SPOT_BALANCE_PRECISION_U64,
+            None,
+        ),
+    );
+    (user, authority)
+}
+
+/// A sweep must leave another maker's orders — and their aggregates — alone.
+/// The book stores maker identity per node with no per-user index, so "take
+/// only this user's" is a filter on a shared walk, which is exactly the thing
+/// worth pinning end to end.
+#[test]
+fn cancel_all_clob_orders_only_takes_the_signing_users_orders() {
+    let mut fixture = setup();
+    let (other_user, other_authority) = second_clob_maker(&mut fixture);
+
+    // Interleaved at the same price, so the survivors sit either side of the
+    // orders being taken rather than in a contiguous run.
+    for _ in 0..2 {
+        place_clob_ask(&mut fixture, 99 * PRICE, UNIT / 2);
+        let ix = place_clob_order_ix(
+            other_user,
+            &other_authority,
+            fixture.quoter,
+            fixture.clob_market,
+            fixture.oracle,
+            None,
+            PlaceClobOrderParams {
+                market_index: 0,
+                direction: PositionDirection::Short,
+                price: 99 * PRICE,
+                base_asset_amount: UNIT / 3,
+                max_ts: 0,
+                activation_delay_slots: Some(0),
+            },
+        );
+        send(&mut fixture.svm, &other_authority, ix, &[]).unwrap();
+    }
+    assert_eq!(clob_ask_count(&fixture.svm, &fixture.clob_market), 4);
+
+    let ix = cancel_all_clob_ix(&fixture, ClobCancelSides::Both);
+    send(&mut fixture.svm, &fixture.clob_maker_authority, ix, &[]).unwrap();
+
+    assert_eq!(clob_ask_count(&fixture.svm, &fixture.clob_market), 2);
+    let mine: User = read_zero_copy(&fixture.svm, &fixture.clob_maker_user);
+    assert_eq!(mine.perp_positions[0].open_asks, 0);
+    assert_eq!(mine.perp_positions[0].open_orders, 0);
+    let theirs: User = read_zero_copy(&fixture.svm, &other_user);
+    assert_eq!(theirs.perp_positions[0].open_asks, -((2 * UNIT / 3) as i64));
+    assert_eq!(theirs.perp_positions[0].open_orders, 2);
+}
+
+/// The reason this instruction exists, in numbers: sweeping a ladder must cost
+/// far less than cancelling it order by order, and — unlike the per-order route
+/// — must not grow much with the ladder's depth, since the aggregate unwind is
+/// the same two calls however many orders came off.
+#[test]
+fn cu_bench_cancel_all_beats_cancelling_order_by_order() {
+    const LADDER: u64 = 8;
+
+    // Baseline: one `cancel_clob_order` per resting order.
+    let mut fixture = setup();
+    let refs: Vec<ClobOrderRefV0> = (0..LADDER)
+        .map(|i| place_clob_ask(&mut fixture, (99 + i) * PRICE, UNIT / 4))
+        .collect();
+    let (quoter_signer, _) = quoter_signer_pda();
+    let per_order_cu: u64 = refs
+        .iter()
+        .map(|order_ref| {
+            let ix = Instruction {
+                program_id: velocity_id(),
+                accounts: velocity::accounts::CancelClobOrder {
+                    state: state_pda(),
+                    user: fixture.clob_maker_user,
+                    authority: fixture.clob_maker_authority.pubkey(),
+                    quoter: fixture.quoter,
+                    clob_market: fixture.clob_market,
+                    clob_program: clob_id(),
+                    quoter_signer,
+                }
+                .to_account_metas(None),
+                data: velocity::instruction::CancelClobOrder {
+                    params: CancelClobOrderParams {
+                        market_index: 0,
+                        order_ref: *order_ref,
+                    },
+                }
+                .data(),
+            };
+            send(&mut fixture.svm, &fixture.clob_maker_authority, ix, &[])
+                .unwrap()
+                .compute_units_consumed
+        })
+        .sum();
+
+    // The sweep, at one order and at the full ladder.
+    let mut fixture = setup();
+    place_clob_ask(&mut fixture, 99 * PRICE, UNIT / 4);
+    let ix = cancel_all_clob_ix(&fixture, ClobCancelSides::Both);
+    let one_order_cu = send(&mut fixture.svm, &fixture.clob_maker_authority, ix, &[])
+        .unwrap()
+        .compute_units_consumed;
+
+    let mut fixture = setup();
+    for i in 0..LADDER {
+        place_clob_ask(&mut fixture, (99 + i) * PRICE, UNIT / 4);
+    }
+    let ix = cancel_all_clob_ix(&fixture, ClobCancelSides::Both);
+    let ladder_cu = send(&mut fixture.svm, &fixture.clob_maker_authority, ix, &[])
+        .unwrap()
+        .compute_units_consumed;
+
+    println!(
+        "CU — cancel_all_clob_orders: 1 order {one_order_cu}, {LADDER} orders {ladder_cu}; \
+         baseline {LADDER}× cancel_clob_order {per_order_cu}"
+    );
+    assert!(
+        ladder_cu * 4 < per_order_cu,
+        "sweeping {LADDER} orders ({ladder_cu}) must be far cheaper than cancelling them \
+         one at a time ({per_order_cu})"
+    );
+    // The per-order route pays a whole instruction per order; this pays a walk
+    // hop. Depth must therefore be nearly free by comparison.
+    assert!(
+        ladder_cu < one_order_cu * 2,
+        "sweep cost must be dominated by the fixed instruction, not the ladder: \
+         1 order {one_order_cu}, {LADDER} orders {ladder_cu}"
     );
 }
 
@@ -1796,6 +2046,81 @@ fn trigger_limit_lifecycle_places_re_arms_on_evict_and_frees_on_expiry() {
     assert_eq!(maker.perp_positions[0].open_orders, 0);
     assert_eq!(maker.open_orders, 0);
     assert_eq!(maker.perp_positions[0].open_asks, 0);
+    assert_eq!(clob_ask_count(&fixture.svm, &fixture.clob_market), 0);
+}
+
+/// A sweep frees placed-trigger shadows too. The handler can't match returned
+/// order ids for this (the wire is aggregate), so it re-checks each shadow's
+/// node against the post-sweep book — this pins that the shadow ends up
+/// `Canceled` and its accounting unwound, the same as a per-order cancel leaves
+/// it.
+#[test]
+fn cancel_all_frees_placed_trigger_shadows() {
+    use velocity::state::user::OrderTriggerCondition;
+
+    let mut fixture = setup();
+    let mut order = Order::default();
+    order.order_id = 1;
+    order.status = OrderStatus::Open;
+    order.order_type = OrderType::TriggerLimit;
+    order.market_type = MarketType::Perp;
+    order.market_index = 0;
+    order.direction = PositionDirection::Short;
+    order.base_asset_amount = UNIT / 2;
+    order.price = 97 * PRICE;
+    order.trigger_price = 98 * PRICE;
+    order.trigger_condition = OrderTriggerCondition::Below;
+    set_user_account(
+        &mut fixture.svm,
+        fixture.clob_maker_user,
+        &armed_trigger_user(
+            &fixture.clob_maker_authority.pubkey(),
+            10_000 * SPOT_BALANCE_PRECISION_U64,
+            order,
+        ),
+    );
+    let maker_stats = Pubkey::new_unique();
+    set_user_stats_account(
+        &mut fixture.svm,
+        maker_stats,
+        &fixture.clob_maker_authority.pubkey(),
+    );
+    let filler_user = Pubkey::new_unique();
+    let filler_stats = Pubkey::new_unique();
+    set_user_account(
+        &mut fixture.svm,
+        filler_user,
+        &trading_user(&fixture.keeper.pubkey(), 0, None),
+    );
+    set_user_stats_account(&mut fixture.svm, filler_stats, &fixture.keeper.pubkey());
+
+    set_oracle(
+        &mut fixture.svm,
+        fixture.oracle,
+        (97 * PRICE_PRECISION) as i64,
+        12,
+    );
+    fixture.svm.warp_to_slot(12);
+    let keeper = fixture.keeper.insecure_clone();
+    let ix = trigger_clob_order_ix(&fixture, 1, filler_user, filler_stats, maker_stats);
+    send(&mut fixture.svm, &keeper, ix, &[]).unwrap();
+
+    // A plain book order alongside the shadowed one, so the sweep takes both
+    // kinds in one pass and the counts have to cover both.
+    place_clob_ask(&mut fixture, 96 * PRICE, UNIT / 4);
+    let before: User = read_zero_copy(&fixture.svm, &fixture.clob_maker_user);
+    assert!(before.orders[0].is_placed_on_clob());
+    assert_eq!(before.perp_positions[0].open_orders, 2);
+    assert_eq!(clob_ask_count(&fixture.svm, &fixture.clob_market), 2);
+
+    let ix = cancel_all_clob_ix(&fixture, ClobCancelSides::Asks);
+    send(&mut fixture.svm, &fixture.clob_maker_authority, ix, &[]).unwrap();
+
+    let after: User = read_zero_copy(&fixture.svm, &fixture.clob_maker_user);
+    assert_eq!(after.orders[0].status, OrderStatus::Canceled);
+    assert_eq!(after.perp_positions[0].open_orders, 0);
+    assert_eq!(after.open_orders, 0);
+    assert_eq!(after.perp_positions[0].open_asks, 0);
     assert_eq!(clob_ask_count(&fixture.svm, &fixture.clob_market), 0);
 }
 

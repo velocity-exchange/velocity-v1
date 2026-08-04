@@ -71,6 +71,13 @@ pub mod clob {
         instructions::cancel_order_v0::handle_cancel_order_v0(ctx, args)
     }
 
+    pub fn cancel_all_v0(
+        ctx: &mut Context<CancelAllV0>,
+        args: CancelAllArgsV0,
+    ) -> Result<state::CancelAllOutcomeV0> {
+        instructions::cancel_all_v0::handle_cancel_all_v0(ctx, args)
+    }
+
     pub fn evict_worst_v0(
         ctx: &mut Context<EvictWorstV0>,
         args: EvictWorstArgsV0,

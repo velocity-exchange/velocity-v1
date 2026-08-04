@@ -722,6 +722,136 @@ export type Velocity = {
       ]
     },
     {
+      "name": "cancelAllClobOrders",
+      "docs": [
+        "Pull every resting CLOB order this `User` holds on one side (or both) in",
+        "a single CPI, unwinding the aggregates from per-side totals. The book",
+        "caps one sweep; the log says when it stopped early and the call is safe",
+        "to repeat."
+      ],
+      "discriminator": [
+        161,
+        193,
+        25,
+        181,
+        238,
+        63,
+        127,
+        144
+      ],
+      "accounts": [
+        {
+          "name": "state"
+        },
+        {
+          "name": "user",
+          "writable": true
+        },
+        {
+          "name": "authority",
+          "signer": true
+        },
+        {
+          "name": "quoter"
+        },
+        {
+          "name": "clobMarket",
+          "docs": [
+            "accounts in the handler."
+          ],
+          "writable": true
+        },
+        {
+          "name": "clobProgram"
+        },
+        {
+          "name": "quoterSigner",
+          "docs": [
+            "set to. Deliberately not the vault authority: signer privilege is",
+            "inherited by a callee, so the key velocity hands an external program",
+            "must be the authority on nothing."
+          ],
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  113,
+                  117,
+                  111,
+                  116,
+                  101,
+                  114,
+                  95,
+                  115,
+                  105,
+                  103,
+                  110,
+                  101,
+                  114
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "name": "crankConditions",
+          "docs": [
+            "Wake-hint host; optional like every other CLOB path. Pulling orders can",
+            "only *relax* the expiry and activation hints, so a caller that omits it",
+            "leaves the cranks waking earlier than they need to — latency, not",
+            "liveness."
+          ],
+          "writable": true,
+          "optional": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  99,
+                  108,
+                  111,
+                  98,
+                  95,
+                  99,
+                  114,
+                  97,
+                  110,
+                  107,
+                  95,
+                  99,
+                  111,
+                  110,
+                  100,
+                  105,
+                  116,
+                  105,
+                  111,
+                  110,
+                  115
+                ]
+              },
+              {
+                "kind": "arg",
+                "path": "params.market_index"
+              }
+            ]
+          }
+        }
+      ],
+      "args": [
+        {
+          "name": "params",
+          "type": {
+            "defined": {
+              "name": "cancelAllClobOrdersParams"
+            }
+          }
+        }
+      ]
+    },
+    {
       "name": "cancelClobOrder",
       "discriminator": [
         145,
@@ -20806,6 +20936,26 @@ export type Velocity = {
       }
     },
     {
+      "name": "cancelAllClobOrdersParams",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "marketIndex",
+            "type": "u16"
+          },
+          {
+            "name": "sides",
+            "type": {
+              "defined": {
+                "name": "clobCancelSides"
+              }
+            }
+          }
+        ]
+      }
+    },
+    {
       "name": "cancelClobOrderParams",
       "type": {
         "kind": "struct",
@@ -20824,6 +20974,26 @@ export type Velocity = {
                 "name": "clobOrderRefV0"
               }
             }
+          }
+        ]
+      }
+    },
+    {
+      "name": "clobCancelSides",
+      "docs": [
+        "Which sides a `cancel_all_v0` withdraws, on the CLOB wire."
+      ],
+      "type": {
+        "kind": "enum",
+        "variants": [
+          {
+            "name": "bids"
+          },
+          {
+            "name": "asks"
+          },
+          {
+            "name": "both"
           }
         ]
       }

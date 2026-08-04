@@ -555,6 +555,85 @@ pub struct ClobCancelOrderArgsV0 {
     pub user: ClobUserRefV0,
 }
 
+/// Which sides a `cancel_all_v0` withdraws, on the CLOB wire.
+#[derive(Clone, Copy, AnchorSerialize, AnchorDeserialize, PartialEq, Eq, Debug)]
+pub enum ClobCancelSides {
+    Bids,
+    Asks,
+    Both,
+}
+
+impl ClobCancelSides {
+    /// The maker position directions the named sides represent — a resting bid
+    /// is a long, a resting ask a short. What the aggregate unwind iterates.
+    pub fn directions(self) -> &'static [crate::controller::position::PositionDirection] {
+        use crate::controller::position::PositionDirection;
+        match self {
+            ClobCancelSides::Bids => &[PositionDirection::Long],
+            ClobCancelSides::Asks => &[PositionDirection::Short],
+            ClobCancelSides::Both => &[PositionDirection::Long, PositionDirection::Short],
+        }
+    }
+
+    pub fn includes(self, direction: crate::controller::position::PositionDirection) -> bool {
+        use crate::controller::position::PositionDirection;
+        matches!(
+            (self, direction),
+            (ClobCancelSides::Both, _)
+                | (ClobCancelSides::Bids, PositionDirection::Long)
+                | (ClobCancelSides::Asks, PositionDirection::Short)
+        )
+    }
+}
+
+/// `cancel_all_v0` args on the CLOB wire.
+#[derive(Clone, Copy, AnchorSerialize, AnchorDeserialize, PartialEq, Eq, Debug)]
+pub struct ClobCancelAllArgsV0 {
+    /// Whose orders to withdraw (verified against each node on the CLOB side).
+    pub user: ClobUserRefV0,
+    pub sides: ClobCancelSides,
+}
+
+/// What the CLOB's `cancel_all_v0` withdrew: per-side totals rather than a list
+/// of removals, which is exactly the shape the open-order aggregates consume —
+/// one `decrease_open_bids_and_asks` per side and one count, however many
+/// orders the sweep took.
+#[derive(Clone, Copy, AnchorSerialize, AnchorDeserialize, PartialEq, Eq, Debug)]
+pub struct ClobCancelAllOutcomeV0 {
+    pub user: ClobUserRefV0,
+    pub bid_base_asset_amount: u64,
+    pub ask_base_asset_amount: u64,
+    pub bid_orders: u32,
+    pub ask_orders: u32,
+    /// Whether the CLOB finished the requested sides rather than stopping at
+    /// its per-call cap. False means this user still has resting orders and the
+    /// caller should repeat the instruction.
+    pub exhaustive: bool,
+}
+
+impl ClobCancelAllOutcomeV0 {
+    pub fn orders(&self) -> u32 {
+        self.bid_orders.saturating_add(self.ask_orders)
+    }
+
+    /// Base amount withdrawn on the side a maker position of `direction` rests
+    /// on — a bid is a long, an ask a short.
+    pub fn base_for(&self, direction: crate::controller::position::PositionDirection) -> u64 {
+        match direction {
+            crate::controller::position::PositionDirection::Long => self.bid_base_asset_amount,
+            crate::controller::position::PositionDirection::Short => self.ask_base_asset_amount,
+        }
+    }
+
+    /// Orders withdrawn on that same side.
+    pub fn orders_for(&self, direction: crate::controller::position::PositionDirection) -> u32 {
+        match direction {
+            crate::controller::position::PositionDirection::Long => self.bid_orders,
+            crate::controller::position::PositionDirection::Short => self.ask_orders,
+        }
+    }
+}
+
 /// `evict_worst_v0` args on the CLOB wire.
 #[derive(Clone, Copy, AnchorSerialize, AnchorDeserialize, PartialEq, Eq, Debug)]
 pub struct ClobEvictWorstArgsV0 {
@@ -574,6 +653,7 @@ pub struct ClobRemoveExpiredArgsV0 {
 /// place that speaks this wire.
 pub const CLOB_PLACE_ORDER_V0_DISCRIMINATOR: [u8; 8] = [100, 204, 57, 226, 245, 228, 61, 187];
 pub const CLOB_CANCEL_ORDER_V0_DISCRIMINATOR: [u8; 8] = [70, 91, 225, 16, 228, 203, 124, 174];
+pub const CLOB_CANCEL_ALL_V0_DISCRIMINATOR: [u8; 8] = [212, 11, 203, 11, 184, 40, 88, 95];
 pub const CLOB_EVICT_WORST_V0_DISCRIMINATOR: [u8; 8] = [106, 60, 27, 129, 80, 27, 37, 73];
 pub const CLOB_REMOVE_EXPIRED_V0_DISCRIMINATOR: [u8; 8] = [241, 135, 215, 18, 254, 107, 179, 119];
 
@@ -642,6 +722,15 @@ impl<'a, 'info> ClobMarket<'a, 'info> {
     /// can unwind the maker's aggregates by the remaining size.
     pub fn cancel(&self, args: ClobCancelOrderArgsV0) -> Result<ClobRemovedOrderV0> {
         self.invoke(&CLOB_CANCEL_ORDER_V0_DISCRIMINATOR, &args, "cancel")
+    }
+
+    /// Pull every order this user holds on the named sides in one CPI; returns
+    /// the per-side totals to unwind their aggregates by. The CLOB caps how many
+    /// it takes per call and says so in
+    /// [`ClobCancelAllOutcomeV0::exhaustive`] — the totals always describe
+    /// exactly what that call removed, so repeating it is safe.
+    pub fn cancel_all(&self, args: ClobCancelAllArgsV0) -> Result<ClobCancelAllOutcomeV0> {
+        self.invoke(&CLOB_CANCEL_ALL_V0_DISCRIMINATOR, &args, "cancel all")
     }
 
     /// Reclaim the hinted expired order (the CLOB re-checks that it is due).

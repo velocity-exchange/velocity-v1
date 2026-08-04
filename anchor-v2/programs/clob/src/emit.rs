@@ -23,8 +23,11 @@
 use {
     crate::{
         error::ClobError,
-        events::{ExecuteRecordV0, FillSlimV0, FILL_SLIM_BYTES},
-        state::{COUNT_BYTES, EXECUTE_FILLS_CEILING, ORDER_ID_BYTES},
+        events::{ExecuteRecordV0, FillSlimV0, OrdersCancelRecordV0, FILL_SLIM_BYTES},
+        state::{
+            CancelAllOutcome, CANCEL_ALL_ORDERS_CEILING, COUNT_BYTES, EXECUTE_FILLS_CEILING,
+            ORDER_ID_BYTES,
+        },
     },
     anchor_lang_v2::prelude::*,
 };
@@ -47,6 +50,19 @@ pub const EXECUTE_RECORD_LOG_BYTES: usize = DISCRIMINATOR_BYTES
     + EXECUTE_FILLS_CEILING as usize * FILL_SLIM_BYTES
     + COUNT_BYTES
     + ORDER_ID_BYTES;
+
+/// Widest [`OrdersCancelRecordV0`] log: the discriminator, the fixed prefix
+/// (user ref, ts, both base totals, market index, sides tag, exhaustive flag),
+/// and the id list at [`CANCEL_ALL_ORDERS_CEILING`] — the cap that makes this
+/// bound reachable-but-not-exceedable whatever the book holds.
+pub const CANCEL_ALL_RECORD_LOG_BYTES: usize = DISCRIMINATOR_BYTES
+    + core::mem::size_of::<Address>()
+    + core::mem::size_of::<i64>()
+    + 2 * core::mem::size_of::<u64>()
+    + 2 * core::mem::size_of::<u16>()
+    + 2 * core::mem::size_of::<u8>()
+    + COUNT_BYTES
+    + CANCEL_ALL_ORDERS_CEILING as usize * ORDER_ID_BYTES;
 
 /// `[discriminator][body]` for a fixed-size (`#[event(bytemuck)]`) record.
 ///
@@ -132,6 +148,38 @@ impl<const N: usize> LogBuf<N> {
         Ok(())
     }
 
+    /// Push `len` zero bytes and return their offset, for a field whose value
+    /// isn't known until after later fields have been written (the cancel-all
+    /// record's totals and id count are only settled once its walk ends).
+    /// Zeros rather than a gap so every counted byte stays initialized, which
+    /// is what [`Self::as_slice`] relies on.
+    pub fn reserve(&mut self, len: usize) -> Result<usize> {
+        let at = self.len;
+        (0..len).try_for_each(|_| self.push(&[0]))?;
+        Ok(at)
+    }
+
+    /// Overwrite bytes already pushed — only inside the initialized prefix, so
+    /// a reserved field can be filled in but nothing can be written past the
+    /// end.
+    pub fn patch(&mut self, at: usize, bytes: &[u8]) -> Result<()> {
+        let end = at
+            .checked_add(bytes.len())
+            .ok_or(ClobError::EventTooLarge)?;
+        require!(end <= self.len, ClobError::EventTooLarge);
+        // SAFETY: `end <= self.len` and `push` initialized every byte it
+        // counted, so this overwrites initialized memory inside the buffer.
+        // Layout as in `push`.
+        unsafe {
+            core::ptr::copy_nonoverlapping(
+                bytes.as_ptr(),
+                self.bytes.as_mut_ptr().add(at).cast::<u8>(),
+                bytes.len(),
+            );
+        }
+        Ok(())
+    }
+
     pub fn as_slice(&self) -> &[u8] {
         // SAFETY: `push` is the only way `len` grows, and it initializes every
         // byte it counts, so `..len` is initialized. Layout as above.
@@ -185,6 +233,97 @@ pub fn write_execute_record<const N: usize>(
     cancelled_order_id
         .iter()
         .try_for_each(|order_id| log.push(&order_id.to_le_bytes()))
+}
+
+/// Streaming writer for an [`OrdersCancelRecordV0`].
+///
+/// The sweep can't know its own totals until it ends — the base amounts, the
+/// `exhaustive` flag and the id count all settle at the last removal — but the
+/// ids have to be written as the walk frees them or they'd need a second
+/// buffer to sit in. So the prefix goes down with those four fields reserved,
+/// ids append during the walk, and [`Self::finish`] patches and emits.
+///
+/// [`OrdersCancelRecordV0`] stays the schema of record for the layout;
+/// `tests::emit` pins the two encodings against each other.
+pub struct CancelAllRecord {
+    log: LogBuf<CANCEL_ALL_RECORD_LOG_BYTES>,
+    bid_base_at: usize,
+    ask_base_at: usize,
+    exhaustive_at: usize,
+    count_at: usize,
+    ids: u32,
+}
+
+impl CancelAllRecord {
+    /// Always inlined: the buffer is ~1KB, and a `new()` frame handing it back
+    /// would put two live copies of it in one SBF stack frame.
+    #[inline(always)]
+    pub fn new(
+        authority: &Address,
+        ts: i64,
+        market_index: u16,
+        sub_account_id: u16,
+        sides: u8,
+    ) -> Result<Self> {
+        let mut log = LogBuf::<CANCEL_ALL_RECORD_LOG_BYTES>::new();
+        log.push(OrdersCancelRecordV0::DISCRIMINATOR)?;
+        log.push(&authority.to_bytes())?;
+        log.push(&ts.to_le_bytes())?;
+        let bid_base_at = log.reserve(core::mem::size_of::<u64>())?;
+        let ask_base_at = log.reserve(core::mem::size_of::<u64>())?;
+        log.push(&market_index.to_le_bytes())?;
+        log.push(&sub_account_id.to_le_bytes())?;
+        log.push(&[sides])?;
+        let exhaustive_at = log.reserve(core::mem::size_of::<u8>())?;
+        let count_at = log.reserve(COUNT_BYTES)?;
+        Ok(Self {
+            log,
+            bid_base_at,
+            ask_base_at,
+            exhaustive_at,
+            count_at,
+            ids: 0,
+        })
+    }
+
+    /// Append one removed order id. The bounds check in [`LogBuf::push`] is
+    /// what makes the ceiling enforceable here too: a walk that somehow ran
+    /// past it fails the instruction instead of logging a truncated record.
+    pub fn push_id(&mut self, order_id: u64) -> Result<()> {
+        self.log.push(&order_id.to_le_bytes())?;
+        self.ids = self.ids.checked_add(1).ok_or(ClobError::EventTooLarge)?;
+        Ok(())
+    }
+
+    /// Patch in what the sweep settled and log the record.
+    pub fn finish(&mut self, outcome: &CancelAllOutcome) -> Result<()> {
+        self.patch_totals(outcome)?;
+        self.log.emit();
+        Ok(())
+    }
+
+    /// The patched record's bytes, without logging them. Split out so
+    /// `tests::emit` can hold this encoding against `Event::data()`.
+    pub fn log_bytes(&mut self, outcome: &CancelAllOutcome) -> Result<&[u8]> {
+        self.patch_totals(outcome)?;
+        Ok(self.log.as_slice())
+    }
+
+    /// Fill the four fields reserved before the walk. The id count is taken
+    /// from what was actually pushed, and disagreeing with the outcome's count
+    /// is an error rather than a record an indexer would reconcile wrongly.
+    fn patch_totals(&mut self, outcome: &CancelAllOutcome) -> Result<()> {
+        require!(self.ids == outcome.orders(), ClobError::EventTooLarge);
+        let (bid_base_at, ask_base_at) = (self.bid_base_at, self.ask_base_at);
+        let (exhaustive_at, count_at) = (self.exhaustive_at, self.count_at);
+        self.log
+            .patch(bid_base_at, &outcome.bid_base_asset_amount.to_le_bytes())?;
+        self.log
+            .patch(ask_base_at, &outcome.ask_base_asset_amount.to_le_bytes())?;
+        self.log
+            .patch(exhaustive_at, &[u8::from(outcome.exhaustive)])?;
+        self.log.patch(count_at, &self.ids.to_le_bytes())
+    }
 }
 
 /// Emit an [`ExecuteRecordV0`] from the stack.

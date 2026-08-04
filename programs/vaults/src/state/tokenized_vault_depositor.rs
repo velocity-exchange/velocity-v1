@@ -182,28 +182,28 @@ impl TokenizedVaultDepositor {
         let (manager_profit_share, protocol_profit_share) =
             self.apply_profit_share(vault_equity, vault, vault_protocol)?;
 
-        // #140: this account carries ONE cost basis for every holder of `mint`, and the profit-share
-        // fee is collected by shrinking the pool's own shares, which dilutes every token equally
-        // regardless of who accrued the loss. Both `transfer_shares` legs move basis by the *current
-        // value* of the shares moved, so the pooled loss shelter (basis - value) is invariant to
-        // supply changes while being consumed per-token. Minting into an under-water pool therefore
-        // hands the newcomer a slice of the existing holders' shelter.
+        // #140: this account holds ONE cost basis for every holder of `mint`. The profit-share fee
+        // comes out of the pool's own shares, so it dilutes every token equally, whoever accrued the
+        // loss.
         //
-        // Working the fee-incidence algebra through, a single pooled basis can be fair only when
-        // basis == value at the moment supply changes -- and `apply_profit_share` above already
-        // forces that equality whenever value > basis. So it suffices to reject the value < basis
-        // case, and that is provably the tightest condition reachable without a per-holder state
-        // model. (Which is unreachable regardless: the fee comes out of shared pool shares, so it
-        // cannot be charged to one cohort over another, and this is a classic SPL mint whose
-        // transfers the program never observes.)
+        // Both `transfer_shares` legs move basis by the CURRENT VALUE of the shares moved. The pooled
+        // loss shelter (basis - value) is therefore invariant to supply, while each token consumes a
+        // pro-rata part of it. Minting into an under-water pool hands the newcomer part of the
+        // incumbents' shelter.
         //
-        // Tested post-transfer on purpose. By the time we run, `tokenize_shares` (the instruction)
-        // has already moved the newcomer's shares and their `withdraw_value` of basis in -- but a
-        // mint raises basis and value by the same amount, so `value + v >= basis + v` is
-        // algebraically the same test as `value >= basis`. No need to plumb `withdraw_value` out of
-        // `transfer_shares` or reconstruct the pre-existing pool. `>=` rather than `==` also keeps
-        // this compatible with #104 (a deferred sub-share fee legitimately leaves value > basis) and
-        // immune to the ±1 that `WithdrawUnit::Token` can introduce.
+        // A single pooled basis can be fair only when basis == value at the supply change.
+        // `apply_profit_share` above already forces that whenever value > basis. So rejecting the
+        // value < basis case is sufficient, and is the tightest condition available without per-holder
+        // state. Per-holder state cannot work here anyway: the fee comes out of shared pool shares, and
+        // this is a classic SPL mint whose transfers the program never sees.
+        //
+        // The test runs POST-transfer on purpose. `tokenize_shares` has already moved the newcomer's
+        // shares and basis in, but a mint raises basis and value by the same amount. So
+        // `value + v >= basis + v` is the same test as `value >= basis`, and `withdraw_value` needs no
+        // plumbing out of `transfer_shares`.
+        //
+        // Use `>=`, not `==`. #104 can defer a sub-share fee and leave value > basis, and
+        // `WithdrawUnit::Token` can introduce a difference of 1.
         let pool_value = depositor_shares_to_vault_amount(
             self.get_vault_shares().cast()?,
             vault.total_shares.cast()?,
@@ -419,28 +419,25 @@ impl TokenizedVaultDepositor {
         self.last_vault_shares = self.vault_shares;
     }
 
-    /// Clear the pooled cost basis once the pool holds neither shares nor tokens (#140).
+    /// Clear the pooled cost basis once the pool holds no shares and no tokens (#140).
     ///
-    /// Both `transfer_shares` legs move basis by the current value of the shares moved, so a full
-    /// redemption leaves `net_deposits + cumulative_profit_share_amount` behind as a high-water mark
-    /// with **no holders standing behind it**. Left in place it is inherited by whoever tokenizes
-    /// next, and it cuts both ways:
+    /// Both `transfer_shares` legs move basis by the current value of the shares moved. A full
+    /// redemption therefore leaves `net_deposits + cumulative_profit_share_amount` behind with no
+    /// holders behind it. The next tokenizer inherits it, and it cuts both ways:
     ///
-    /// - orphaned *above* value (the pool was under water when it drained) is a free loss shelter —
-    ///   the next tokenizer pays no profit share on a recovery they did not suffer the drawdown for,
-    ///   and no existing holder is harmed, so the cost falls entirely on the manager's fee revenue;
-    /// - orphaned *below* value (possible whenever `hurdle_rate > 0` leaves a sub-hurdle profit
-    ///   without advancing the mark, or #104 defers a sub-share fee and rolls it back) is the
-    ///   mirror: the next honest tokenizer immediately owes profit share on gains they never made.
+    /// - orphaned ABOVE value, when the pool was under water as it drained, is a free loss shelter.
+    ///   The next tokenizer pays no profit share on a recovery whose drawdown it never suffered. No
+    ///   holder is harmed, so the manager's fee revenue takes the whole loss.
+    /// - orphaned BELOW value is the mirror. It is reachable when `hurdle_rate > 0` leaves a
+    ///   sub-hurdle profit without advancing the mark, or when #104 defers a sub-share fee and rolls
+    ///   it back. The next honest tokenizer then owes profit share on gains it never made.
     ///
-    /// A pool empty of both shares and tokens has no holders by definition, so resetting is
-    /// observationally invisible to anyone. `profit_share_fee_paid`, `total_deposits` and
-    /// `total_withdraws` are lifetime analytics and deliberately preserved.
+    /// A pool with no shares and no tokens has no holders, so the reset is invisible to everyone.
+    /// `profit_share_fee_paid`, `total_deposits` and `total_withdraws` are lifetime analytics and stay.
     ///
-    /// Note this is *subsumed* for security purposes by the under-water gate in
-    /// [`Self::tokenize_shares`] (an empty pool with basis > 0 fails that gate anyway); it is kept
-    /// because it is free and because it is the only thing that fixes the below-value direction,
-    /// which is an honest-user bug rather than an exploit.
+    /// The under-water gate in [`Self::tokenize_shares`] already covers the security case, because an
+    /// empty pool with a positive basis fails it. This is kept because it is free, and because it is
+    /// the only fix for the below-value direction, which is an honest-user bug.
     pub fn reset_orphaned_cost_basis(&mut self) {
         self.net_deposits = 0;
         self.cumulative_profit_share_amount = 0;

@@ -325,6 +325,19 @@ describe('equity floor oracle validity', () => {
 		// disagreed: the trip required valid oracles while the defusal guard did
 		// not, so an owner could shed the floor off a breached subaccount in the
 		// one slot the oracle was bad and defuse the trip permanently.
+		//
+		// Raise the floor to 400 so the subaccount is genuinely breached at an
+		// honest price and merely looks solvent at the stale one. It holds
+		// 160 usdc and 1 sol: 260 at the 5 minute twap, which is under the
+		// floor and therefore provable, against 660 at the stale live price of
+		// 500, which is over it. The shed below moves 100 usdc of funds with
+		// 100 usdc of floor, so the credited side can back its new floor and
+		// the only thing that can stop the transfer is the oracle.
+		await adminVelocityClient.updateUserEquityFloor(
+			takerUserPublicKey,
+			new BN(400).mul(QUOTE_PRECISION),
+			ZERO
+		);
 		await takerVelocityClient.fetchAccounts();
 
 		const floorBefore = takerVelocityClient
@@ -352,11 +365,11 @@ describe('equity floor oracle validity', () => {
 		let shedErr: Error | undefined;
 		try {
 			await delegateVelocityClient.transferDepositByDelegate(
-				new BN(10).mul(QUOTE_PRECISION),
+				new BN(100).mul(QUOTE_PRECISION),
 				0,
 				0,
 				1,
-				new BN(50).mul(QUOTE_PRECISION)
+				new BN(100).mul(QUOTE_PRECISION)
 			);
 		} catch (e) {
 			shedErr = e as Error;

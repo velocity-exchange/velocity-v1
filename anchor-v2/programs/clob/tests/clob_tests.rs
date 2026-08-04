@@ -1414,3 +1414,82 @@ fn an_unactivated_counterparty_does_not_gate_the_fill() {
         err_code(clob::error::ClobError::TakerOriginCrossPending),
     );
 }
+
+/// Quote and the gate on-chain: the crossed remainder's depth is absent from the
+/// quote while the ordinary maker depth in front of it is published, and the
+/// published depth is exactly what execute delivers. A router allocates from the
+/// quote and velocity binds the execute to it, so any depth quote publishes and
+/// execute refuses is a reverted transaction for a taker that did nothing wrong.
+#[test]
+fn quote_omits_the_depth_the_gate_would_refuse() {
+    let mut ctx = setup();
+    let taker = addr(Pubkey::new_unique());
+    let maker = addr(Pubkey::new_unique());
+    let crosser = addr(Pubkey::new_unique());
+    place(&mut ctx, place_args(Side::Ask, 99, 5), maker);
+    place(&mut ctx, taker_origin_args(Side::Ask, 100, 5), taker);
+    place(&mut ctx, place_args(Side::Ask, 102, 5), maker);
+    let crossing_bid = place(&mut ctx, place_args(Side::Bid, 101, 5), crosser);
+    advance_slot(&mut ctx, 1);
+
+    assert_eq!(quote(&mut ctx, Direction::Long, u64::MAX), vec![(99, 5)]);
+    // Execute honours exactly that and no more.
+    assert_eq!(execute(&mut ctx, Direction::Long, 5).len(), 1);
+    assert_clob_err(
+        execute_meta(&mut ctx, Direction::Long, 1),
+        err_code(clob::error::ClobError::TakerOriginCrossPending),
+    );
+    // The crossing bid is ordinary depth the other way — the fill velocity's
+    // cross resolution runs.
+    assert_eq!(quote(&mut ctx, Direction::Short, u64::MAX), vec![(101, 5)]);
+
+    // With the cross gone the remainder is ordinary depth again, at its own
+    // price, and the level behind it comes back with it.
+    cancel(&mut ctx, crossing_bid, crosser).unwrap();
+    assert_eq!(
+        quote(&mut ctx, Direction::Long, u64::MAX),
+        vec![(100, 5), (102, 5)]
+    );
+    assert_eq!(execute(&mut ctx, Direction::Long, 10).len(), 2);
+}
+
+/// The gate's cost on quote, which unlike execute walks a whole side: the worst
+/// case is an *uncrossed* taker-origin order at the head, so the counterparty
+/// lookup actually happens and the walk still runs to the level cap afterwards.
+#[test]
+fn cu_benchmark_quote_with_a_taker_origin_head() {
+    let mut ctx = setup();
+    let user = addr(Pubkey::new_unique());
+    for i in 0..PER_SIDE as u64 - 1 {
+        let ix = place_ix(&ctx, place_args(Side::Bid, 100 + i, 10), user);
+        send(&mut ctx, ix).unwrap();
+    }
+    // Best of the bid side, with an ask far above it so nothing crosses.
+    let ix = place_ix(
+        &ctx,
+        taker_origin_args(Side::Bid, 100 + PER_SIDE as u64, 10),
+        user,
+    );
+    send(&mut ctx, ix).unwrap();
+    let ix = place_ix(&ctx, place_args(Side::Ask, 100_000, 10), user);
+    send(&mut ctx, ix).unwrap();
+    advance_slot(&mut ctx, 1);
+
+    let ix = instruction::QuoteV0 {
+        args: QuoteArgsV0 {
+            direction: Direction::Short,
+            size: u64::MAX,
+            users: UserSetV0::EMPTY,
+            taker: None,
+        },
+    }
+    .to_instruction(accounts::QuoteV0 {
+        market: addr(ctx.market),
+    });
+    let meta = send(&mut ctx, ix).unwrap();
+    assert_eq!(parse_levels(&read_response(&ctx, &meta)).len(), 128);
+    println!(
+        "CU — quote(full side, uncrossed taker-origin at head): {}",
+        meta.compute_units_consumed
+    );
+}

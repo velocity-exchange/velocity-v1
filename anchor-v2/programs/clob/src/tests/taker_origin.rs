@@ -1,17 +1,28 @@
 //! Taker-origin orders: the marker on the node, its report on the removal
 //! wire, and the gate that stops a crossed taker remainder being taken at its
-//! own price.
+//! own price — in execute, which fails, and in quote, which must publish only
+//! the depth execute can still deliver.
 
 use {
-    super::market::{assert_err, params, place, place_taker_origin, user, TestMarket},
+    super::{
+        market::{assert_err, params, place, place_taker_origin, user, TestMarket},
+        response::{encode_quote, streamed},
+    },
     crate::{
         book::{ClobBook, NodeArena},
         error::ClobError,
         state::{
-            ClobMarketV0, Direction, OrderBitFlag, OrderRefV0, PlaceOrderParams, Side, UserRefV0,
+            ClobMarketV0, Direction, OrderBitFlag, OrderRefV0, PlaceOrderParams, PriceLevel, Side,
+            UserRefV0,
         },
     },
 };
+
+/// The levels a quote published, decoded from the response region.
+fn quoted(book: &mut ClobMarketV0, direction: Direction, size: u64, slot: u64) -> Vec<u8> {
+    let pointer = book.quote(direction, size, &[], None, slot, 0).unwrap();
+    streamed(book, pointer)
+}
 
 /// Place with an explicit activation slot, so a test can hold one side of a
 /// pair inside its auction window.
@@ -255,5 +266,148 @@ fn the_gate_reads_the_book_not_the_callers_set() {
     assert_err(
         book.execute(Direction::Short, 5, &[taker], None, 0, 0),
         ClobError::TakerOriginCrossPending,
+    );
+}
+
+/// A router allocates from the quote and then executes against the allocation,
+/// and velocity binds the second to the first — so depth the gate would refuse
+/// must not appear in the quote at all. Otherwise a taker that quoted honestly
+/// gets a reverted transaction it did nothing to deserve.
+#[test]
+fn quote_leaves_out_the_depth_the_gate_would_refuse() {
+    let market = TestMarket::new(16);
+    let mut book = market.book();
+    let (taker, maker) = (user(0xA), user(0xB));
+    // Asks: a maker at 99, then a taker remainder at 100, then a maker at 102 —
+    // and a bid at 101 crossing the remainder.
+    place(&mut book, Side::Ask, 99, 5, maker);
+    place_taker_origin(&mut book, Side::Ask, 100, 5, taker);
+    place(&mut book, Side::Ask, 102, 5, maker);
+    place(&mut book, Side::Bid, 101, 5, user(0xC));
+
+    // The maker level in front of the remainder is ordinary depth and is
+    // published. The remainder's own level is not — and neither is the maker
+    // level behind it, because execute fails *on* the remainder rather than
+    // filling around it, so that depth is not deliverable either.
+    assert_eq!(
+        quoted(&mut book, Direction::Long, u64::MAX, 0),
+        encode_quote(vec![PriceLevel { price: 99, size: 5 }])
+    );
+
+    // And the published depth is exactly what execute delivers: 5 lands, one
+    // more base than that is the fill the gate refuses.
+    assert_eq!(
+        book.execute(Direction::Long, 5, &[], None, 0, 0)
+            .unwrap()
+            .fills
+            .len(),
+        1
+    );
+    assert_err(
+        book.execute(Direction::Long, 1, &[], None, 0, 0),
+        ClobError::TakerOriginCrossPending,
+    );
+
+    // The other side is untouched: the crossing bid is ordinary depth for a
+    // taker going the other way, and that is the fill velocity's cross
+    // resolution runs.
+    assert_eq!(
+        quoted(&mut book, Direction::Short, u64::MAX, 0),
+        encode_quote(vec![PriceLevel {
+            price: 101,
+            size: 5
+        }])
+    );
+}
+
+/// A gated order at the head of the side leaves nothing to publish — the whole
+/// side is shadowed until the cross is resolved, which is the cost of execute
+/// failing rather than filling around it.
+#[test]
+fn a_gated_order_at_the_head_empties_the_quote() {
+    let market = TestMarket::new(16);
+    let mut book = market.book();
+    let (taker, maker) = (user(0xA), user(0xB));
+    place_taker_origin(&mut book, Side::Bid, 101, 5, taker);
+    place(&mut book, Side::Bid, 98, 5, maker);
+    place(&mut book, Side::Ask, 99, 5, maker);
+
+    assert_eq!(
+        quoted(&mut book, Direction::Short, u64::MAX, 0),
+        encode_quote(vec![])
+    );
+    assert_err(
+        book.execute(Direction::Short, 1, &[], None, 0, 0),
+        ClobError::TakerOriginCrossPending,
+    );
+}
+
+/// Nothing about the order changed — only that a counterparty was standing
+/// against it. Once the cross is gone the remainder is ordinary depth again, at
+/// its own price, and the levels behind it come back with it.
+#[test]
+fn the_same_book_quotes_that_depth_once_the_cross_is_gone() {
+    let market = TestMarket::new(16);
+    let mut book = market.book();
+    let (taker, maker, crosser) = (user(0xA), user(0xB), user(0xC));
+    place(&mut book, Side::Ask, 99, 5, maker);
+    place_taker_origin(&mut book, Side::Ask, 100, 5, taker);
+    place(&mut book, Side::Ask, 102, 5, maker);
+    let crossing_bid = place(&mut book, Side::Bid, 101, 5, crosser);
+
+    assert_eq!(
+        quoted(&mut book, Direction::Long, u64::MAX, 0),
+        encode_quote(vec![PriceLevel { price: 99, size: 5 }])
+    );
+
+    // Velocity's cross resolution ends with the crossing pair off the book; the
+    // same removal by cancel is what a plain cancellation does too.
+    book.cancel(crosser, crossing_bid).unwrap();
+    assert_eq!(
+        quoted(&mut book, Direction::Long, u64::MAX, 0),
+        encode_quote(vec![
+            PriceLevel { price: 99, size: 5 },
+            PriceLevel {
+                price: 100,
+                size: 5
+            },
+            PriceLevel {
+                price: 102,
+                size: 5
+            },
+        ])
+    );
+    // Execute agrees, which is the whole point of the two sharing a predicate.
+    assert_eq!(
+        book.execute(Direction::Long, 15, &[], None, 0, 0)
+            .unwrap()
+            .fills
+            .len(),
+        3
+    );
+}
+
+/// The gate turns on with the counterparty's activation slot in quote exactly as
+/// it does in execute: while the crossing ask is inside its own auction window
+/// the remainder is ordinary depth, and it stops being published the slot that
+/// ask could match.
+#[test]
+fn quote_follows_the_counterpartys_activation_slot() {
+    let market = TestMarket::new(16);
+    let mut book = market.book();
+    let (taker, maker) = (user(0xA), user(0xB));
+    place_at(&mut book, Side::Bid, 101, 5, taker, 0, true);
+    place_at(&mut book, Side::Ask, 99, 5, maker, 10, false);
+
+    assert_eq!(
+        quoted(&mut book, Direction::Short, u64::MAX, 9),
+        encode_quote(vec![PriceLevel {
+            price: 101,
+            size: 5
+        }])
+    );
+    assert_eq!(
+        quoted(&mut book, Direction::Short, u64::MAX, 10),
+        encode_quote(vec![])
     );
 }

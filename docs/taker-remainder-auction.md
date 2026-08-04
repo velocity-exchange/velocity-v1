@@ -96,6 +96,24 @@ An order still inside its activation delay — or already expired — is not a c
 match it, so no improvement is within reach, and gating on it would freeze the remainder for its
 whole auction window, which is exactly when it is resting there.
 
+**`quote_v0` publishes only depth `execute_v0` will fill.** The gate would otherwise be a trap: a
+taker quotes the book honestly, the router allocates it depth that includes the crossed remainder,
+the execute rejects, and the transaction reverts through no fault of the taker's. Velocity binds the
+execute to the quoted prefix, so it cannot route around a rejection after the fact — the depth has to
+be absent from the quote in the first place.
+
+So quote asks the same predicate execute does, and ends its walk at the first order the gate refuses
+rather than skipping past it: execute fails *on* that order, so the depth behind it is not
+deliverable either. What quote publishes is the prefix in front of the gated order, which is exactly
+what execute can still fill. Sharing the predicate is deliberate — a change to what the gate refuses
+that landed on only one of the two would recreate this bug.
+
+The cost is that a gated order shadows the depth behind it on its side until the cross is resolved,
+and a taker remainder rests aggressively, so it is usually near the front. That is what execute
+failing rather than filling around it buys, and it is bounded by crank latency. If it ever proves too
+expensive, the alternative is for execute to *skip* a gated order the way it skips an expired one and
+for quote to skip with it — at the cost of making `TakerOriginCrossPending` unreachable.
+
 **R5 — The cranker is paid out of the improvement.** A taker-origin cross only fires when the
 improvement exceeds the fee, so it is self-funding and needs no reservoir subsidy on this path.
 The fee is capped so the taker's net still beats the price it was resting at — otherwise the
@@ -132,7 +150,9 @@ keeps floor-guarding those.
   through a removal. The shared quoter-interface types (`UserBalanceChange`,
   `CancelledRemainderV0`) are untouched — every quoter emits those, and only the CLOB can ever
   have an order to mark.
-- R4's gate in `execute_v0`, as `ClobError::TakerOriginCrossPending`.
+- R4's gate in `execute_v0`, as `ClobError::TakerOriginCrossPending`, and the same predicate in
+  `quote_v0`, which ends its walk at the first order the gate would refuse so it never publishes
+  depth the fill will reject.
 - No cross matching and no pricing: R3 lives in velocity.
 
 **velocity (`programs/velocity`)**

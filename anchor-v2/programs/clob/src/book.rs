@@ -38,13 +38,15 @@
 //! routing waterfall outright — so it fails the instruction rather than ship.
 //! See [`write_level`] and [`check_fill_price`].
 //!
-//! One thing execute refuses outright: filling an order marked
+//! One order neither instruction will trade: one marked
 //! [`OrderBitFlag::TakerOrigin`] while a counterparty on the other side crosses
-//! it — see [`reject_crossed_taker_origin`]. Every order still fills at its own
-//! stored price; the book neither reprices a cross nor resolves one, it only
-//! declines to sell the taker's improvement to whoever gets there first, and
-//! reports the flag on [`crate::state::RemovedOrderV0`] so velocity can settle
-//! the cross at the counterparty's price.
+//! it — see [`TakerOriginGate`], which both of them ask, so the depth quote
+//! publishes is always depth execute can deliver. Execute fails the call; quote
+//! stops short of the order. Every order still fills at its own stored price;
+//! the book neither reprices a cross nor resolves one, it only declines to sell
+//! the taker's improvement to whoever gets there first, and reports the flag on
+//! [`crate::state::RemovedOrderV0`] so velocity can settle the cross at the
+//! counterparty's price.
 //!
 //! Execute is also held to its own quote on the way out, by velocity: the
 //! response's total quote must be the notional of these same orders at the
@@ -541,6 +543,12 @@ impl ClobBook for ClobMarketV0 {
     /// [`Self::execute`], shared through [`is_matchable`]). Applies the same
     /// unknown-user grace rule as execute so the router's split math matches
     /// what execute will deliver.
+    ///
+    /// Ends the walk at the first order [`TakerOriginGate`] refuses, rather than
+    /// skipping past it: execute *fails* on that order, so the depth behind it
+    /// is not deliverable either, and publishing it would hand the router an
+    /// allocation whose fill reverts. What comes out is the prefix execute can
+    /// still fill — the levels in front of the gated order — and nothing else.
     fn quote(
         &mut self,
         direction: Direction,
@@ -564,10 +572,14 @@ impl ClobBook for ClobMarketV0 {
         // in `write_level`.
         let mut written: Option<u64> = None;
         let mut remaining = size;
+        let mut gate = TakerOriginGate::new(side, slot, now);
 
         walk_side(self, side, |book, _, node| {
             if !is_matchable(node, users, taker, grace_slots, slot, now)? {
                 return Ok(Walk::Continue);
+            }
+            if gate.refuses(book, node)? {
+                return Ok(Walk::Stop);
             }
             let take = remaining.min(node.base_asset_amount);
             match open {
@@ -622,8 +634,9 @@ impl ClobBook for ClobMarketV0 {
     /// totals in place instead of a heap `Vec` of balance changes.
     ///
     /// One order it refuses to fill: a taker-origin order that has a live
-    /// crossing counterparty on the other side. See
-    /// [`reject_crossed_taker_origin`].
+    /// crossing counterparty on the other side. See [`TakerOriginGate`], which
+    /// [`Self::quote`] reads too so the two never disagree about what is
+    /// takeable.
     fn execute(
         &mut self,
         direction: Direction,
@@ -658,10 +671,7 @@ impl ClobBook for ClobMarketV0 {
         // attributed to earlier fills. See `quote_size` below.
         let mut swept = 0u128;
         let mut paid = 0u128;
-        // Best price on the other side that could match this slot, resolved on
-        // first need: only a taker-origin order about to be filled asks for it,
-        // so a book holding none pays nothing for the R4 gate.
-        let mut counterparty: Option<Option<u64>> = None;
+        let mut gate = TakerOriginGate::new(side, slot, now);
 
         walk_side(self, side, |book, index, node| {
             if remaining == 0 || fills.len() == max_fills {
@@ -670,17 +680,10 @@ impl ClobBook for ClobMarketV0 {
             if !is_matchable(node, users, taker, grace_slots, slot, now)? {
                 return Ok(Walk::Continue);
             }
-            if node.is_taker_origin() {
-                let best = match counterparty {
-                    Some(cached) => cached,
-                    None => {
-                        let resolved = best_actionable_price(book, side.opposite(), slot, now)?;
-                        counterparty = Some(resolved);
-                        resolved
-                    }
-                };
-                reject_crossed_taker_origin(side, node.price, best)?;
-            }
+            require!(
+                !gate.refuses(book, node)?,
+                ClobError::TakerOriginCrossPending
+            );
             let user_key = node.user_ref().to_bytes();
             let existing =
                 find_change_record(book, &writer, records_start, change_count, &user_key)?;
@@ -942,8 +945,8 @@ fn is_matchable(
     Ok(!skip_unknown_user(users, node, grace_slots, slot)?)
 }
 
-/// Refuse to fill a taker-origin order while a counterparty on the other side
-/// crosses it.
+/// Whether a taker-origin order is off limits right now, because a counterparty
+/// on the other side crosses it.
 ///
 /// A taker-origin order rests at the worst price its owner agreed to tolerate,
 /// and the activation delay before it becomes matchable is an auction: makers
@@ -952,20 +955,80 @@ fn is_matchable(
 /// taker. Letting anyone take the order at its own price while that
 /// counterparty is standing there hands the improvement to whoever lands a
 /// transaction in the activation slot instead, which is the latency race the
-/// window exists to replace with a price race. So the fill is refused and the
-/// cross has to be resolved first.
+/// window exists to replace with a price race. So the order cannot be taken
+/// until the cross is resolved.
 ///
-/// Scoped to the order actually being filled, not to the book: an ordinary
-/// maker×maker cross is nobody's improvement to steal and must not freeze
-/// takers, and the fill that *consumes the counterparty* — the direction
-/// velocity's cross resolution runs — has to stay open or the cross could never
-/// be resolved at all.
-fn reject_crossed_taker_origin(side: Side, price: u64, counterparty: Option<u64>) -> Result<()> {
-    require!(
-        !counterparty.is_some_and(|opposite| side.is_crossed_by(price, opposite)),
-        ClobError::TakerOriginCrossPending
-    );
-    Ok(())
+/// **[`ClobBook::quote`] and [`ClobBook::execute`] have to decide this with the
+/// same predicate, which is why it is a type rather than a condition written
+/// twice.** Execute fails the call ([`ClobError::TakerOriginCrossPending`]);
+/// quote ends its walk at the order, so the depth it publishes is exactly the
+/// prefix execute can still deliver. Were quote to publish depth execute
+/// refuses, a taker that quoted honestly, was allocated that depth by the
+/// router, and then executed would get a failed transaction through no fault of
+/// its own — velocity binds the execute to the quoted prefix, so there is
+/// nothing it can do about the rejection after the fact. Any future change to
+/// what the gate refuses has to land on both instructions at once, and sharing
+/// the predicate is what makes that automatic instead of remembered.
+///
+/// Scoped to the order being tested, not to the book: an ordinary maker×maker
+/// cross is nobody's improvement to steal and must not freeze takers, and the
+/// fill that *consumes the counterparty* — the direction velocity's cross
+/// resolution runs — has to stay open or the cross could never be resolved at
+/// all.
+struct TakerOriginGate {
+    /// The side holding the orders being tested: the one a taker of this
+    /// direction consumes.
+    consumed: Side,
+    slot: u64,
+    now: i64,
+    /// Best price on the other side that could match this slot, resolved on
+    /// first need and then reused for the rest of the walk. Hoisted out of the
+    /// per-order path in the sense that matters — one lookup answers every order
+    /// — and it is *correct* to hold it, because the other side cannot change
+    /// while a walk of `consumed` is in flight. Resolved lazily rather than
+    /// before the walk because eager resolution inlines a second `walk_side`
+    /// into `execute`'s prologue, and the spills that costs its frame measured
+    /// far worse than the lookup itself: see the CU benchmarks in
+    /// `tests/clob_tests.rs`.
+    counterparty: Option<Option<u64>>,
+}
+
+impl TakerOriginGate {
+    fn new(consumed: Side, slot: u64, now: i64) -> Self {
+        Self {
+            consumed,
+            slot,
+            now,
+            counterparty: None,
+        }
+    }
+
+    /// The one question both instructions ask of each order they are about to
+    /// trade. Quote asks it once per level across a whole-side walk, so the
+    /// answer for an order that is not taker-origin at all — every order on an
+    /// ordinary book — stays a bit test at the call site, and everything behind
+    /// it is out of line.
+    #[inline(always)]
+    fn refuses(&mut self, book: &mut ClobMarketV0, node: &OrderNodeV0) -> Result<bool> {
+        if !node.is_taker_origin() {
+            return Ok(false);
+        }
+        self.crossed(book, node.price)
+    }
+
+    #[inline(never)]
+    fn crossed(&mut self, book: &mut ClobMarketV0, price: u64) -> Result<bool> {
+        let counterparty = match self.counterparty {
+            Some(cached) => cached,
+            None => {
+                let resolved =
+                    best_actionable_price(book, self.consumed.opposite(), self.slot, self.now)?;
+                self.counterparty = Some(resolved);
+                resolved
+            }
+        };
+        Ok(counterparty.is_some_and(|opposite| self.consumed.is_crossed_by(price, opposite)))
+    }
 }
 
 /// Price of the best order on `side` that could be matched this slot at all.

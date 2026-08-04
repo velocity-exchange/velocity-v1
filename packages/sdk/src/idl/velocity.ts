@@ -8384,7 +8384,8 @@ export type Velocity = {
           "writable": true
         },
         {
-          "name": "userStats"
+          "name": "userStats",
+          "writable": true
         }
       ],
       "args": [
@@ -16476,6 +16477,11 @@ export type Velocity = {
     },
     {
       "code": 6368,
+      "name": "invalidEquityBreakerReset",
+      "msg": "Invalid equity breaker reset"
+    },
+    {
+      "code": 6369,
       "name": "spotMarketInterestStaleForMargin",
       "msg": "Spot market interest is too stale to value a borrow for margin"
     }

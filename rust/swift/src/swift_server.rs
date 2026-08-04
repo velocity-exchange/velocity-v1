@@ -62,7 +62,10 @@ use {
     velocity_rs::{
         constants::state_account,
         event_subscriber::PubsubClient,
-        math::account_list_builder::AccountsListBuilder,
+        math::{
+            account_list_builder::AccountsListBuilder,
+            constants::{BASE_PRECISION_U64, PRICE_PRECISION_I64},
+        },
         swift_order_subscriber::{SignedMessageInfo, SignedOrderType},
         types::{
             accounts::User, errors::ErrorCode, CommitmentConfig, MarketId, MarketStatus,
@@ -449,6 +452,11 @@ pub async fn process_order(
             .metrics
             .current_slot_gauge
             .set(current_slot as f64);
+        // Recorded on accept, not on publish: this is the one point both HTTP entry
+        // points converge on with `order_params` still in scope. A publish that then
+        // fails counts here anyway — swift_redis_publish_fail_count is the panel for
+        // that gap, and it is normally zero.
+        server_params.record_order_notional(&order_params, context);
 
         Ok(order_metadata)
     } else {
@@ -1551,6 +1559,58 @@ impl ServerParams {
                 error: None,
             },
         ))
+    }
+
+    /// Record the notional USD of an accepted order (`base_asset_amount × oracle
+    /// price`). Reads the locally subscribed oracle — no RPC, so this is safe
+    /// in the request path.
+    ///
+    /// Skips (and counts the skip) rather than guessing in the two cases where a
+    /// number would be worse than a gap:
+    ///   - `base_asset_amount == u64::MAX` — the max-leverage sentinel, resolved to
+    ///     a real size on-chain. Multiplying it out would add ~1.8e10 base units of
+    ///     imaginary notional per order and swamp every real number on the chart.
+    ///   - no readable oracle price — the same condition that makes the auction band
+    ///     guard fail open.
+    fn record_order_notional(&self, order_params: &OrderParams, context: &RequestContext) {
+        let market_index_str = order_params.market_index.to_string();
+        let labels = [order_params.market_type.as_str(), &market_index_str];
+        let skip = |reason: &str| {
+            self.metrics
+                .order_notional_skipped
+                .with_label_values(&[labels[0], labels[1], reason])
+                .inc();
+        };
+
+        if order_params.base_asset_amount == u64::MAX {
+            skip("max_leverage");
+            return;
+        }
+
+        let market_id = MarketId::new(order_params.market_index, order_params.market_type);
+        let Some(oracle) = self.velocity.try_get_oracle_price_data_and_slot(market_id) else {
+            skip("no_oracle");
+            log::debug!(
+                target: "server",
+                "{}: no oracle price for {market_id:?}; order notional not recorded",
+                context.log_prefix
+            );
+            return;
+        };
+        if oracle.data.price <= 0 {
+            skip("no_oracle");
+            return;
+        }
+
+        // Precision-correct in f64: base is 1e9-scaled, price 1e6-scaled. The
+        // product of the raw integers overflows i64 for a large order, so divide
+        // before multiplying rather than after.
+        let base = order_params.base_asset_amount as f64 / BASE_PRECISION_U64 as f64;
+        let price = oracle.data.price as f64 / PRICE_PRECISION_I64 as f64;
+        self.metrics
+            .order_notional_usd
+            .with_label_values(&labels)
+            .inc_by(base * price);
     }
 
     fn simulate_will_auction_params_sanitize(

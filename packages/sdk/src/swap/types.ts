@@ -107,7 +107,10 @@ export interface SwapQuoteParams {
 	inputMint: PublicKey;
 	outputMint: PublicKey;
 	amount: BN;
-	/** Required by Titan, which bakes the user's token accounts into the route. */
+	/**
+	 * Required by Titan, which bakes the user's token accounts into the route,
+	 * and by Jupiter's v2 API, which builds the route for one `taker`.
+	 */
 	userPublicKey?: PublicKey;
 	maxAccounts?: number;
 	slippageBps?: number;

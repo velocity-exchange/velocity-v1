@@ -8378,7 +8378,8 @@
           "writable": true
         },
         {
-          "name": "user_stats"
+          "name": "user_stats",
+          "writable": true
         }
       ],
       "args": [
@@ -16470,6 +16471,11 @@
     },
     {
       "code": 6368,
+      "name": "InvalidEquityBreakerReset",
+      "msg": "Invalid equity breaker reset"
+    },
+    {
+      "code": 6369,
       "name": "SpotMarketInterestStaleForMargin",
       "msg": "Spot market interest is too stale to value a borrow for margin"
     }

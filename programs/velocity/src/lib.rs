@@ -323,6 +323,18 @@ pub mod velocity {
         handle_place_and_make_perp_order(ctx, params, taker_order_id)
     }
 
+    /// `place_and_make_perp_order` with the market's CLOB accounts required:
+    /// the unmatched remainder rests on the book instead of being cancelled.
+    /// v0's account list is frozen for ABI compatibility, so the CLOB route is
+    /// a separate endpoint rather than optional accounts on v0.
+    pub fn place_and_make_perp_order_v1<'c: 'info, 'info>(
+        ctx: Context<'info, PlaceAndMakeV1<'info>>,
+        params: OrderParams,
+        taker_order_id: u32,
+    ) -> Result<()> {
+        handle_place_and_make_perp_order_v1(ctx, params, taker_order_id)
+    }
+
     pub fn place_and_make_signed_msg_perp_order<'c: 'info, 'info>(
         ctx: Context<'info, PlaceAndMakeSignedMsg<'info>>,
         params: OrderParams,

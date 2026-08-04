@@ -6890,6 +6890,154 @@ export type Velocity = {
       ]
     },
     {
+      "name": "placeAndMakePerpOrderV1",
+      "docs": [
+        "`place_and_make_perp_order` with the market's CLOB accounts required:",
+        "the unmatched remainder rests on the book instead of being cancelled.",
+        "v0's account list is frozen for ABI compatibility, so the CLOB route is",
+        "a separate endpoint rather than optional accounts on v0."
+      ],
+      "discriminator": [
+        29,
+        136,
+        72,
+        149,
+        63,
+        222,
+        134,
+        96
+      ],
+      "accounts": [
+        {
+          "name": "state"
+        },
+        {
+          "name": "user",
+          "writable": true
+        },
+        {
+          "name": "userStats",
+          "writable": true
+        },
+        {
+          "name": "taker",
+          "writable": true
+        },
+        {
+          "name": "takerStats",
+          "writable": true
+        },
+        {
+          "name": "authority",
+          "signer": true
+        },
+        {
+          "name": "quoter",
+          "docs": [
+            "The market's CLOB registry entry — the remainder only ever rests on a",
+            "vetted book."
+          ]
+        },
+        {
+          "name": "clobMarket",
+          "docs": [
+            "(`ClobMarket::from_quoter`), so a valid entry can't be pointed at an",
+            "arbitrary account."
+          ],
+          "writable": true
+        },
+        {
+          "name": "clobProgram"
+        },
+        {
+          "name": "quoterSigner",
+          "docs": [
+            "set to, and the authority on nothing else."
+          ],
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  113,
+                  117,
+                  111,
+                  116,
+                  101,
+                  114,
+                  95,
+                  115,
+                  105,
+                  103,
+                  110,
+                  101,
+                  114
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "name": "crankConditions",
+          "docs": [
+            "Wake-hint host for the rested remainder. Optional like every other CLOB",
+            "placement path: a market whose conditions were never initialized must",
+            "still be tradeable, and a missed hint costs crank latency, not liveness."
+          ],
+          "writable": true,
+          "optional": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  99,
+                  108,
+                  111,
+                  98,
+                  95,
+                  99,
+                  114,
+                  97,
+                  110,
+                  107,
+                  95,
+                  99,
+                  111,
+                  110,
+                  100,
+                  105,
+                  116,
+                  105,
+                  111,
+                  110,
+                  115
+                ]
+              },
+              {
+                "kind": "arg",
+                "path": "params.market_index"
+              }
+            ]
+          }
+        }
+      ],
+      "args": [
+        {
+          "name": "params",
+          "type": {
+            "defined": {
+              "name": "orderParams"
+            }
+          }
+        },
+        {
+          "name": "takerOrderId",
+          "type": "u32"
+        }
+      ]
+    },
+    {
       "name": "placeAndMakeSignedMsgPerpOrder",
       "discriminator": [
         16,

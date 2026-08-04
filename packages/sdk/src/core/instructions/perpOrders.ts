@@ -124,7 +124,9 @@ export async function buildPlaceAndTakePerpOrderInstruction(args: {
  * Builds a `placeAndMakePerpOrder` instruction: posts an immediate-or-cancel, post-only
  * `Limit` order for `user` and immediately fills it as the maker against `taker`'s
  * existing resting order (`InvalidOrderIOCPostOnly` if `orderParams` isn't IOC + post-only
- * + `Limit`). Any unfilled remainder of the just-placed maker order is auto-cancelled.
+ * + `Limit`). Any unfilled remainder of the just-placed maker order is auto-cancelled —
+ * unless `clobAccounts` is passed, which selects the v1 route and rests that remainder on
+ * the market's CLOB instead of throwing it away.
  * @param args.program - Anchor `Program<Velocity>` used to build the instruction.
  * @param args.orderParams - an `OrderParams` object; `baseAssetAmount` is BASE_PRECISION (1e9), `price`/`oraclePriceOffset` are PRICE_PRECISION (1e6).
  * @param args.takerOrderId - the on-chain order ID of `taker`'s resting order being filled.
@@ -135,7 +137,8 @@ export async function buildPlaceAndTakePerpOrderInstruction(args: {
  * @param args.takerStats - the taker's `UserStats` PDA.
  * @param args.authority - signer that must own or be a registered delegate of `user` (the maker).
  * @param args.remainingAccounts - writable perp market + oracle `AccountMeta[]` for `orderParams.marketIndex`, followed by any additional maker/referrer `(User, UserStats)` pairs needed to fill `taker`'s order, followed by `taker`'s `RevenueShareEscrow` account if builder codes are enabled.
- * @returns the unsigned `placeAndMakePerpOrder` `TransactionInstruction`.
+ * @param args.clobAccounts - pass the market's CLOB accounts to use `placeAndMakePerpOrderV1`, whose unmatched remainder rests on the book rather than being cancelled. `crankConditions` is optional (it only maintains the crank wake hint); the rest are required on that route.
+ * @returns the unsigned `placeAndMakePerpOrder` (or `...V1`) `TransactionInstruction`.
  */
 export async function buildPlaceAndMakePerpOrderInstruction(args: {
 	program: VelocityProgram;
@@ -148,7 +151,39 @@ export async function buildPlaceAndMakePerpOrderInstruction(args: {
 	takerStats: PublicKey;
 	authority: PublicKey;
 	remainingAccounts: AccountMeta[];
+	clobAccounts?: {
+		quoter: PublicKey;
+		clobMarket: PublicKey;
+		clobProgram: PublicKey;
+		quoterSigner: PublicKey;
+		crankConditions?: PublicKey;
+	};
 }): Promise<TransactionInstruction> {
+	if (args.clobAccounts) {
+		// An omitted `Option` account is encoded as the program id, which the
+		// program decodes as `None`.
+		const omitted = args.program.programId;
+		return await args.program.instruction.placeAndMakePerpOrderV1(
+			args.orderParams,
+			args.takerOrderId,
+			{
+				accounts: {
+					state: args.state,
+					user: args.user,
+					userStats: args.userStats,
+					taker: args.taker,
+					takerStats: args.takerStats,
+					authority: args.authority,
+					quoter: args.clobAccounts.quoter,
+					clobMarket: args.clobAccounts.clobMarket,
+					clobProgram: args.clobAccounts.clobProgram,
+					quoterSigner: args.clobAccounts.quoterSigner,
+					crankConditions: args.clobAccounts.crankConditions ?? omitted,
+				},
+				remainingAccounts: args.remainingAccounts,
+			}
+		);
+	}
 	return await args.program.instruction.placeAndMakePerpOrder(
 		args.orderParams,
 		args.takerOrderId,

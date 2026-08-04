@@ -4339,3 +4339,143 @@ fn a_fill_must_carry_every_quoter_the_taker_signed_for() {
         err.meta.logs
     );
 }
+
+/// The maker route's remainder lives on the book.
+///
+/// `place_and_make` is IOC post-only, and v0 has no choice but to cancel
+/// whatever the named taker order did not consume — the maker quoted a price,
+/// filled part of it, and loses the rest. v1 rests that remainder on the CLOB,
+/// which is where a restable maker order belongs. IOC still holds in the sense
+/// that matters: the order does not occupy a `User.orders` slot afterwards.
+#[test]
+fn place_and_make_v1_rests_the_unmatched_remainder_on_the_book() {
+    use velocity::state::order_params::{OrderParams, PostOnlyParam};
+
+    let mut fixture = setup();
+
+    // A taker resting a long for half a unit at $100 — the order the maker
+    // will be matched against.
+    let taker_authority = Keypair::new();
+    let taker_user = Pubkey::new_unique();
+    let taker_stats = Pubkey::new_unique();
+    let mut taker_order = Order::default();
+    taker_order.order_id = 1;
+    taker_order.status = OrderStatus::Open;
+    taker_order.order_type = OrderType::Market;
+    taker_order.market_type = MarketType::Perp;
+    taker_order.market_index = 0;
+    taker_order.direction = PositionDirection::Long;
+    taker_order.base_asset_amount = UNIT / 2;
+    taker_order.price = 101 * PRICE;
+    taker_order.auction_end_price = (101 * PRICE) as i64;
+    set_user_account(
+        &mut fixture.svm,
+        taker_user,
+        &trading_user(
+            &taker_authority.pubkey(),
+            10_000 * SPOT_BALANCE_PRECISION_U64,
+            Some(taker_order),
+        ),
+    );
+    set_user_stats_account(&mut fixture.svm, taker_stats, &taker_authority.pubkey());
+
+    // The maker: quotes a full unit, so half is left after the taker's half.
+    let maker_authority = Keypair::new();
+    fixture
+        .svm
+        .airdrop(&maker_authority.pubkey(), 10_000_000_000)
+        .unwrap();
+    let maker_user = Pubkey::new_unique();
+    let maker_stats = Pubkey::find_program_address(
+        &[b"user_stats", maker_authority.pubkey().as_ref()],
+        &velocity_id(),
+    )
+    .0;
+    let mut maker_state = trading_user(
+        &maker_authority.pubkey(),
+        10_000 * SPOT_BALANCE_PRECISION_U64,
+        None,
+    );
+    maker_state.next_order_id = 1;
+    set_user_account(&mut fixture.svm, maker_user, &maker_state);
+    set_user_stats_account(&mut fixture.svm, maker_stats, &maker_authority.pubkey());
+
+    fixture.svm.warp_to_slot(12);
+    set_oracle(
+        &mut fixture.svm,
+        fixture.oracle,
+        (100 * PRICE_PRECISION) as i64,
+        12,
+    );
+
+    let (quoter_signer, _) = quoter_signer_pda();
+    let mut accounts = velocity::accounts::PlaceAndMakeV1 {
+        state: state_pda(),
+        user: maker_user,
+        user_stats: maker_stats,
+        taker: taker_user,
+        taker_stats,
+        authority: maker_authority.pubkey(),
+        quoter: fixture.quoter,
+        clob_market: fixture.clob_market,
+        clob_program: clob_id(),
+        quoter_signer,
+        crank_conditions: None,
+    }
+    .to_account_metas(None);
+    accounts.push(AccountMeta::new_readonly(fixture.oracle, false));
+    accounts.push(AccountMeta::new(spot_market_pda(0), false));
+    accounts.push(AccountMeta::new(perp_market_pda(0), false));
+
+    let ix = Instruction {
+        program_id: velocity_id(),
+        accounts,
+        data: velocity::instruction::PlaceAndMakePerpOrderV1 {
+            params: OrderParams {
+                order_type: OrderType::Limit,
+                market_type: MarketType::Perp,
+                direction: PositionDirection::Short,
+                base_asset_amount: UNIT,
+                price: 100 * PRICE,
+                market_index: 0,
+                post_only: PostOnlyParam::MustPostOnly,
+                // IOC is a bit flag on the params, not a field.
+                bit_flags: velocity::state::order_params::OrderParamsBitFlag::ImmediateOrCancel
+                    as u8,
+                ..OrderParams::default()
+            },
+            taker_order_id: 1,
+        }
+        .data(),
+    };
+    send_with_ixs(
+        &mut fixture.svm,
+        &maker_authority,
+        &[compute_unit_limit_ix(400_000), ix],
+        &[],
+    )
+    .unwrap();
+
+    // The maker sold the taker's half, and the other half is resting as a
+    // CLOB ask rather than having been cancelled.
+    let maker: User = read_zero_copy(&fixture.svm, &maker_user);
+    assert_eq!(
+        maker.perp_positions[0].base_asset_amount,
+        -((UNIT / 2) as i64),
+        "matched the taker's half"
+    );
+    assert!(
+        maker
+            .orders
+            .iter()
+            .all(|order| order.status != OrderStatus::Open),
+        "nothing rests in User.orders — IOC still holds there"
+    );
+    assert_eq!(
+        maker.perp_positions[0].open_asks,
+        -((UNIT / 2) as i64),
+        "the remainder is reserved against the book"
+    );
+    assert_eq!(maker.open_orders, 1);
+    assert_eq!(clob_ask_count(&fixture.svm, &fixture.clob_market), 1);
+}

@@ -3343,10 +3343,39 @@ pub fn handle_place_and_make_perp_order<'c: 'info, 'info>(
     params: OrderParams,
     taker_order_id: u32,
 ) -> Result<()> {
-    let clock = &Clock::get()?;
-    let state = ctx.accounts.state.load()?;
+    place_and_make_perp_order(
+        &ctx.accounts.state,
+        &ctx.accounts.user,
+        &ctx.accounts.user_stats,
+        &ctx.accounts.taker,
+        &ctx.accounts.taker_stats,
+        ctx.remaining_accounts,
+        params,
+        taker_order_id,
+        None,
+    )
+}
 
-    let remaining_accounts_iter = &mut ctx.remaining_accounts.iter().peekable();
+/// Shared body of `place_and_make_perp_order` (v0) and
+/// `place_and_make_perp_order_v1`. `clob` is what separates them: v0 passes
+/// `None` and cancels an unmatched remainder, v1 passes its required CLOB
+/// accounts and rests the remainder on the book instead.
+#[allow(clippy::too_many_arguments)]
+pub fn place_and_make_perp_order<'c: 'info, 'info>(
+    state_loader: &AccountLoader<'info, State>,
+    user_loader: &AccountLoader<'info, User>,
+    user_stats_loader: &AccountLoader<'info, UserStats>,
+    taker_loader: &AccountLoader<'info, User>,
+    taker_stats_loader: &AccountLoader<'info, UserStats>,
+    remaining_accounts: &'c [AccountInfo<'info>],
+    params: OrderParams,
+    taker_order_id: u32,
+    clob: Option<ClobRemainderRoute<'_, 'info>>,
+) -> Result<()> {
+    let clock = &Clock::get()?;
+    let state = state_loader.load()?;
+
+    let remaining_accounts_iter = &mut remaining_accounts.iter().peekable();
     let AccountMaps {
         perp_market_map,
         spot_market_map,
@@ -3371,8 +3400,8 @@ pub fn handle_place_and_make_perp_order<'c: 'info, 'info>(
     // maker order. `place_perp_order` doesn't fill against the AMM, so
     // peg/reserves freshness isn't required.
 
-    let user_key = ctx.accounts.user.key();
-    let mut user = load_mut!(ctx.accounts.user)?;
+    let user_key = user_loader.key();
+    let mut user = load_mut!(user_loader)?;
 
     controller::orders::place_perp_order(
         &state,
@@ -3393,15 +3422,12 @@ pub fn handle_place_and_make_perp_order<'c: 'info, 'info>(
 
     let (mut makers_and_referrer, mut makers_and_referrer_stats) =
         load_user_maps(remaining_accounts_iter, true)?;
-    makers_and_referrer.insert(ctx.accounts.user.key(), ctx.accounts.user.clone())?;
-    makers_and_referrer_stats.insert(authority, ctx.accounts.user_stats.clone())?;
+    makers_and_referrer.insert(user_loader.key(), user_loader.clone())?;
+    makers_and_referrer_stats.insert(authority, user_stats_loader.clone())?;
 
     let builder_codes_enabled = state.builder_codes_enabled();
     let mut escrow = if builder_codes_enabled {
-        get_revenue_share_escrow_account(
-            remaining_accounts_iter,
-            &load!(ctx.accounts.taker)?.authority,
-        )?
+        get_revenue_share_escrow_account(remaining_accounts_iter, &load!(taker_loader)?.authority)?
     } else {
         None
     };
@@ -3409,13 +3435,13 @@ pub fn handle_place_and_make_perp_order<'c: 'info, 'info>(
     controller::orders::fill_perp_order(
         taker_order_id,
         &state,
-        &ctx.accounts.taker,
-        &ctx.accounts.taker_stats,
+        taker_loader,
+        taker_stats_loader,
         &spot_market_map,
         &perp_market_map,
         &mut oracle_map,
-        &ctx.accounts.user.clone(),
-        &ctx.accounts.user_stats.clone(),
+        &user_loader.clone(),
+        &user_stats_loader.clone(),
         &makers_and_referrer,
         &makers_and_referrer_stats,
         Some(order_id),
@@ -3424,20 +3450,72 @@ pub fn handle_place_and_make_perp_order<'c: 'info, 'info>(
         &mut escrow.as_mut(),
     )?;
 
-    let order_exists = load!(ctx.accounts.user)?
+    let order_exists = load!(user_loader)?
         .orders
         .iter()
         .any(|order| order.order_id == order_id && order.status == OrderStatus::Open);
 
     if order_exists {
+        // A restable remainder migrates to the book on the v1 route: the
+        // maker wanted to quote at this price, and IOC on this instruction is
+        // about not occupying a `User.orders` slot, not about refusing to
+        // rest. Oracle-offset and reduce-only orders keep v0 behaviour — the
+        // CLOB has neither semantic — and any can't-rest outcome downgrades
+        // to the cancel rather than reverting a fill that already landed.
+        let remainder = clob.as_ref().and_then(|_| {
+            let user = load!(user_loader).ok()?;
+            let order_index = user.get_order_index(order_id).ok()?;
+            let order = &user.orders[order_index];
+            let position_base = user
+                .get_perp_position(params.market_index)
+                .map(|position| position.base_asset_amount)
+                .unwrap_or(0);
+            (order.order_type == OrderType::Limit
+                && !order.has_oracle_price_offset()
+                && !order.reduce_only)
+                .then(|| {
+                    (
+                        order.direction,
+                        order.price,
+                        order
+                            .get_base_asset_amount_unfilled(Some(position_base))
+                            .unwrap_or(0),
+                        order.max_ts,
+                    )
+                })
+        });
+
         controller::orders::cancel_order_by_order_id(
             order_id,
-            &ctx.accounts.user,
+            user_loader,
             &perp_market_map,
             &spot_market_map,
             &mut oracle_map,
             clock,
         )?;
+
+        if let (Some(clob), Some((direction, price, unfilled, max_ts))) = (clob, remainder) {
+            if unfilled > 0 {
+                crate::instructions::try_place_remainder_on_clob(
+                    user_loader,
+                    clob.quoter,
+                    clob.clob_market,
+                    clob.clob_program,
+                    clob.quoter_signer,
+                    clob.quoter_signer_nonce,
+                    clob.crank_conditions,
+                    &perp_market_map,
+                    &spot_market_map,
+                    &mut oracle_map,
+                    params.market_index,
+                    direction,
+                    price,
+                    unfilled,
+                    max_ts,
+                    clock,
+                )?;
+            }
+        }
     }
 
     Ok(())

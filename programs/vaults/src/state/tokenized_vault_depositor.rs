@@ -182,6 +182,45 @@ impl TokenizedVaultDepositor {
         let (manager_profit_share, protocol_profit_share) =
             self.apply_profit_share(vault_equity, vault, vault_protocol)?;
 
+        // #140: this account carries ONE cost basis for every holder of `mint`, and the profit-share
+        // fee is collected by shrinking the pool's own shares, which dilutes every token equally
+        // regardless of who accrued the loss. Both `transfer_shares` legs move basis by the *current
+        // value* of the shares moved, so the pooled loss shelter (basis - value) is invariant to
+        // supply changes while being consumed per-token. Minting into an under-water pool therefore
+        // hands the newcomer a slice of the existing holders' shelter.
+        //
+        // Working the fee-incidence algebra through, a single pooled basis can be fair only when
+        // basis == value at the moment supply changes -- and `apply_profit_share` above already
+        // forces that equality whenever value > basis. So it suffices to reject the value < basis
+        // case, and that is provably the tightest condition reachable without a per-holder state
+        // model. (Which is unreachable regardless: the fee comes out of shared pool shares, so it
+        // cannot be charged to one cohort over another, and this is a classic SPL mint whose
+        // transfers the program never observes.)
+        //
+        // Tested post-transfer on purpose. By the time we run, `tokenize_shares` (the instruction)
+        // has already moved the newcomer's shares and their `withdraw_value` of basis in -- but a
+        // mint raises basis and value by the same amount, so `value + v >= basis + v` is
+        // algebraically the same test as `value >= basis`. No need to plumb `withdraw_value` out of
+        // `transfer_shares` or reconstruct the pre-existing pool. `>=` rather than `==` also keeps
+        // this compatible with #104 (a deferred sub-share fee legitimately leaves value > basis) and
+        // immune to the ±1 that `WithdrawUnit::Token` can introduce.
+        let pool_value = depositor_shares_to_vault_amount(
+            self.get_vault_shares().cast()?,
+            vault.total_shares.cast()?,
+            vault_equity.cast()?,
+        )?;
+        let cost_basis = self
+            .get_net_deposits()
+            .safe_add(self.get_cumulative_profit_share_amount())?;
+
+        validate!(
+            pool_value.cast::<i64>()? >= cost_basis,
+            ErrorCode::InvalidTokenization,
+            "cannot tokenize into an under-water tokenized depositor: pool value {} < pooled cost basis {}",
+            pool_value,
+            cost_basis
+        )?;
+
         let vault_shares_before = self.checked_vault_shares(vault)?;
         let total_vault_shares_before = vault.total_shares;
         let user_vault_shares_before = vault.user_shares;
@@ -378,6 +417,33 @@ impl TokenizedVaultDepositor {
     /// can no longer hold). Callers must invoke this after the redeem share transfer completes.
     pub fn checkpoint_vault_shares(&mut self) {
         self.last_vault_shares = self.vault_shares;
+    }
+
+    /// Clear the pooled cost basis once the pool holds neither shares nor tokens (#140).
+    ///
+    /// Both `transfer_shares` legs move basis by the current value of the shares moved, so a full
+    /// redemption leaves `net_deposits + cumulative_profit_share_amount` behind as a high-water mark
+    /// with **no holders standing behind it**. Left in place it is inherited by whoever tokenizes
+    /// next, and it cuts both ways:
+    ///
+    /// - orphaned *above* value (the pool was under water when it drained) is a free loss shelter —
+    ///   the next tokenizer pays no profit share on a recovery they did not suffer the drawdown for,
+    ///   and no existing holder is harmed, so the cost falls entirely on the manager's fee revenue;
+    /// - orphaned *below* value (possible whenever `hurdle_rate > 0` leaves a sub-hurdle profit
+    ///   without advancing the mark, or #104 defers a sub-share fee and rolls it back) is the
+    ///   mirror: the next honest tokenizer immediately owes profit share on gains they never made.
+    ///
+    /// A pool empty of both shares and tokens has no holders by definition, so resetting is
+    /// observationally invisible to anyone. `profit_share_fee_paid`, `total_deposits` and
+    /// `total_withdraws` are lifetime analytics and deliberately preserved.
+    ///
+    /// Note this is *subsumed* for security purposes by the under-water gate in
+    /// [`Self::tokenize_shares`] (an empty pool with basis > 0 fails that gate anyway); it is kept
+    /// because it is free and because it is the only thing that fixes the below-value direction,
+    /// which is an honest-user bug rather than an exploit.
+    pub fn reset_orphaned_cost_basis(&mut self) {
+        self.net_deposits = 0;
+        self.cumulative_profit_share_amount = 0;
     }
 }
 
@@ -645,7 +711,16 @@ mod tests {
         tvd.last_vault_shares = shares_transferred;
 
         let total_supply = shares_transferred as u64;
-        let vault_equity = 1_000_000;
+        // Share price of exactly 1, so basis and value move by the same figures below.
+        let vault_equity = 500_000;
+        vault.total_shares = shares_transferred;
+
+        // The pool's cost basis is maintained by `transfer_shares` at the instruction layer, which
+        // this unit test bypasses along with the share movement itself. It has to be emulated too:
+        // left at zero, the first `apply_profit_share` books the whole pool as phantom profit and
+        // parks the high-water mark at full value, so any later outflow reads as under water and the
+        // #140 gate (correctly) refuses. Start at basis == value.
+        tvd.net_deposits = vault_equity as i64;
 
         // redeem 50%
         let tokens_to_burn = total_supply / 2;
@@ -664,12 +739,14 @@ mod tests {
 
         // simulate the instruction moving the shares out and re-checkpointing (#105)
         tvd.vault_shares -= shares_to_redeem as u128;
+        tvd.net_deposits -= shares_to_redeem as i64;
         tvd.checkpoint_vault_shares();
         assert_eq!(tvd.last_vault_shares, tvd.vault_shares);
 
         // a new tokenization into the same tokenized depositor must now succeed
         let new_shares = 100_000u128;
         tvd.vault_shares += new_shares;
+        tvd.net_deposits += new_shares as i64;
         let res = tvd.tokenize_shares(
             vault,
             &mut None,
@@ -728,5 +805,145 @@ mod tests {
             returned_vp.is_some(),
             "redeem_tokens must return the provider for the instruction to keep alive"
         );
+    }
+
+    /// #140: tokenizing into an under-water pool is refused.
+    ///
+    /// The pool holds one cost basis for all holders and the profit-share fee comes out of pool
+    /// shares, so it dilutes every token equally. A newcomer minting while basis > value buys a slice
+    /// of the incumbents' loss shelter: on recovery the fee is computed against the *pooled* basis,
+    /// so the incumbents pay profit share on a gain that is partly the newcomer's, and the newcomer
+    /// pays less than they would standing alone. It is a pure holder-to-holder transfer — the manager
+    /// collects the same either way — which is why no basis-rewriting rule can fix it and the mint
+    /// itself has to be refused.
+    #[test]
+    fn under_water_pool_refuses_tokenization() {
+        let now = 1337;
+        let vault = &mut Vault::default();
+        let mut tvd = TokenizedVaultDepositor::new(
+            Pubkey::default(),
+            Pubkey::default(),
+            Pubkey::default(),
+            0,
+            0,
+            now,
+        );
+
+        // 1000 shares tokenized when the share price was 1.
+        let existing_shares = 1_000u128;
+        tvd.vault_shares = existing_shares;
+        tvd.last_vault_shares = existing_shares;
+        tvd.net_deposits = 1_000;
+        vault.total_shares = existing_shares;
+
+        // The vault then falls 40%: the pool is worth 600 against a basis of 1000.
+        let vault_equity_after_drawdown = 600u64;
+
+        // A newcomer's shares have already been moved in by `transfer_shares` when the state fn
+        // runs, so model that: +1000 shares carrying +600 of basis at today's price.
+        let new_shares = 1_000u128;
+        tvd.vault_shares += new_shares;
+        tvd.net_deposits += 600;
+        vault.total_shares += new_shares;
+
+        let res = tvd.tokenize_shares(
+            vault,
+            &mut None,
+            &mut None,
+            existing_shares as u64,
+            vault_equity_after_drawdown * 2,
+            new_shares,
+            now,
+            0,
+        );
+
+        assert!(
+            res.is_err(),
+            "tokenizing into an under-water pool must be refused, got {:?}",
+            res.ok()
+        );
+    }
+
+    /// #140: a pool at or above its basis still accepts tokenizations.
+    ///
+    /// The companion to the test above — the gate must not be a blanket ban. `apply_profit_share`
+    /// already forces basis == value whenever value > basis, so the healthy case has to keep working
+    /// or tokenization would be dead entirely.
+    #[test]
+    fn healthy_pool_still_accepts_tokenization() {
+        let now = 1337;
+        let vault = &mut Vault::default();
+        let mut tvd = TokenizedVaultDepositor::new(
+            Pubkey::default(),
+            Pubkey::default(),
+            Pubkey::default(),
+            0,
+            0,
+            now,
+        );
+
+        let existing_shares = 1_000u128;
+        tvd.vault_shares = existing_shares;
+        tvd.last_vault_shares = existing_shares;
+        tvd.net_deposits = 1_000;
+        vault.total_shares = existing_shares;
+
+        // Share price of exactly 1: value == basis, the boundary the `>=` admits.
+        let new_shares = 1_000u128;
+        tvd.vault_shares += new_shares;
+        tvd.net_deposits += 1_000;
+        vault.total_shares += new_shares;
+
+        let res = tvd.tokenize_shares(
+            vault,
+            &mut None,
+            &mut None,
+            existing_shares as u64,
+            2_000,
+            new_shares,
+            now,
+            0,
+        );
+
+        assert!(
+            res.is_ok(),
+            "a pool at its cost basis must still accept tokenization: {:?}",
+            res.err()
+        );
+    }
+
+    /// #140: draining a pool must not leave its cost basis behind for the next tokenizer.
+    ///
+    /// This is the sharpest form of the finding: it needs no victim, no timing race and no
+    /// coordination. Redeem every token, and `transfer_shares` has reduced `net_deposits` by only the
+    /// *current value* of the shares that left — so a pool drained while under water keeps the whole
+    /// shelter with nobody behind it. Whoever tokenizes next inherits it and pays zero profit share
+    /// on the recovery. The loss falls entirely on the manager's fee revenue.
+    ///
+    /// It cuts the other way too: orphaned *below* value, the next honest tokenizer immediately owes
+    /// profit share on gains they never made.
+    #[test]
+    fn emptied_pool_drops_its_orphaned_cost_basis() {
+        let now = 1337;
+        let mut tvd = TokenizedVaultDepositor::new(
+            Pubkey::default(),
+            Pubkey::default(),
+            Pubkey::default(),
+            0,
+            0,
+            now,
+        );
+
+        // A pool drained at 50% down: the departing holder correctly ate the loss in their own
+        // VaultDepositor, and `transfer_shares` left basis 500 against value 0.
+        tvd.vault_shares = 0;
+        tvd.last_vault_shares = 0;
+        tvd.net_deposits = 500;
+        tvd.cumulative_profit_share_amount = 250;
+
+        tvd.reset_orphaned_cost_basis();
+
+        assert_eq!(tvd.get_net_deposits(), 0);
+        assert_eq!(tvd.get_cumulative_profit_share_amount(), 0);
     }
 }

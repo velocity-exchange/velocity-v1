@@ -573,7 +573,9 @@ export function registerUser(parent: Command): void {
 			.command('reset-equity-breaker <userStats>')
 			.description(
 				'Clear the authority-wide equity floor breaker on a UserStats account (warm admin). ' +
-					'Unfreezes all subaccounts of the authority after a breach has been reviewed.'
+					'Unfreezes all subaccounts of the authority after a breach has been reviewed. ' +
+					'Self-verifying onchain: reverts unless every subaccount clears its floor + buffer ' +
+					'at execution time; lower floors first (set-equity-floor) to resume regardless.'
 			)
 	).action(async (userStatsPk: string, _flags, cmd: Command) => {
 		const opts = readGlobalOpts(cmd);

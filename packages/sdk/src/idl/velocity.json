@@ -8421,7 +8421,8 @@
           "writable": true
         },
         {
-          "name": "user_stats"
+          "name": "user_stats",
+          "writable": true
         }
       ],
       "args": [
@@ -16510,6 +16511,11 @@
       "code": 6367,
       "name": "InvalidAccountExtension",
       "msg": "Invalid account extension"
+    },
+    {
+      "code": 6368,
+      "name": "InvalidEquityBreakerReset",
+      "msg": "Invalid equity breaker reset"
     }
   ],
   "types": [

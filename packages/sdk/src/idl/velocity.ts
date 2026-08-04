@@ -8427,7 +8427,8 @@ export type Velocity = {
           "writable": true
         },
         {
-          "name": "userStats"
+          "name": "userStats",
+          "writable": true
         }
       ],
       "args": [
@@ -16516,6 +16517,11 @@ export type Velocity = {
       "code": 6367,
       "name": "invalidAccountExtension",
       "msg": "Invalid account extension"
+    },
+    {
+      "code": 6368,
+      "name": "invalidEquityBreakerReset",
+      "msg": "Invalid equity breaker reset"
     }
   ],
   "types": [

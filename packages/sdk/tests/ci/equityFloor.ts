@@ -5,6 +5,7 @@ import {
 	getEquityFloorLevel,
 	allocateEquityFloors,
 	planFloorMoves,
+	planCureMoves,
 	ZERO,
 } from '../../src';
 
@@ -271,6 +272,120 @@ describe('planFloorMoves', () => {
 					`result != target at iteration ${i} index ${j}`
 				);
 			});
+		}
+	});
+});
+
+describe('planCureMoves', () => {
+	const cure = (
+		subs: [number, number, number][], // [subAccountId, equityFloor, bufferedHeadroom]
+		haircut = 1
+	) =>
+		planCureMoves(
+			subs.map(([subAccountId, equityFloor, bufferedHeadroom]) => ({
+				subAccountId,
+				equityFloor: bn(equityFloor),
+				bufferedHeadroom: bn(bufferedHeadroom),
+			})),
+			bn(haircut)
+		);
+
+	it('is a no-op when no subaccount is below its buffered floor', () => {
+		assert.isEmpty(
+			cure([
+				[0, 480, 302],
+				[1, 320, 5],
+			])
+		);
+	});
+
+	it('tops a deficit up to the haircut above its gate, funds only', () => {
+		const plans = cure([
+			[0, 480, 302],
+			[1, 320, -22],
+		]);
+		assert.lengthOf(plans, 1);
+		assert.equal(plans[0].fromSubAccountId, 0);
+		assert.equal(plans[0].toSubAccountId, 1);
+		assert(plans[0].amount.eq(bn(23))); // deficit 22 + haircut 1
+		assert(plans[0].equityFloorDelta.eq(ZERO));
+	});
+
+	it('never targets a subaccount without a floor', () => {
+		assert.isEmpty(
+			cure([
+				[0, 480, 302],
+				[1, 0, -50],
+			])
+		);
+	});
+
+	it('lets a floorless subaccount donate', () => {
+		const plans = cure([
+			[0, 0, 200],
+			[1, 320, -22],
+		]);
+		assert.lengthOf(plans, 1);
+		assert.equal(plans[0].fromSubAccountId, 0);
+		assert(plans[0].amount.eq(bn(23)));
+	});
+
+	it('combines donors to cure one deficit, largest donor first', () => {
+		const plans = cure([
+			[0, 100, 61], // cap 60
+			[1, 320, -100], // deficit 101
+			[2, 100, 51], // cap 50
+		]);
+		assert.lengthOf(plans, 2);
+		assert.equal(plans[0].fromSubAccountId, 0);
+		assert(plans[0].amount.eq(bn(60)));
+		assert.equal(plans[1].fromSubAccountId, 2);
+		assert(plans[1].amount.eq(bn(41)));
+		assert(plans.every((p) => p.toSubAccountId === 1));
+	});
+
+	it('sends scarce donor equity to the deepest breach first', () => {
+		const plans = cure([
+			[0, 100, 11], // cap 10
+			[1, 320, -50], // deficit 51, deepest
+			[2, 320, -5], // deficit 6
+		]);
+		assert.lengthOf(plans, 1);
+		assert.equal(plans[0].toSubAccountId, 1);
+		assert(plans[0].amount.eq(bn(10))); // best-effort partial
+	});
+
+	it('never draws a donor below the haircut above its own gate', () => {
+		const rng = new Lcg(0xc0ffee);
+		for (let i = 0; i < 5_000; i++) {
+			const n = 2 + rng.next(6);
+			const subs: [number, number, number][] = Array.from(
+				{ length: n },
+				(_, j) => [
+					j,
+					rng.next(2) === 0 ? 0 : 1 + rng.next(1_000_000),
+					rng.next(2_000_000) - 1_000_000,
+				]
+			);
+			const headroom = subs.map(([, , h]) => bn(h));
+			for (const plan of cure(subs)) {
+				assert(plan.equityFloorDelta.eq(ZERO), `floor moved at ${i}`);
+				assert(plan.amount.gt(ZERO), `zero-amount plan at ${i}`);
+				headroom[plan.fromSubAccountId] = headroom[plan.fromSubAccountId].sub(
+					plan.amount
+				);
+				headroom[plan.toSubAccountId] = headroom[plan.toSubAccountId].add(
+					plan.amount
+				);
+				assert(
+					headroom[plan.fromSubAccountId].gte(bn(1)),
+					`donor drawn under its gate at ${i}`
+				);
+				assert(
+					headroom[plan.toSubAccountId].lte(bn(1)),
+					`deficit overfilled past haircut at ${i}`
+				);
+			}
 		}
 	});
 });

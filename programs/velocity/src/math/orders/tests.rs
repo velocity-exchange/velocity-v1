@@ -4160,9 +4160,9 @@ pub mod find_bids_and_asks_from_users {
 
     /// OtterSec #146: a quote that has not rested long enough must not reach the mark TWAP.
     ///
-    /// The attack is atomic — place a post-only pair, crank, cancel, all in one transaction —
-    /// so the property that matters is that a quote posted in the *current* slot contributes
-    /// nothing, while the same quote does contribute once it has been exposed.
+    /// The attack is atomic: place a post-only pair, crank, cancel, in one transaction. So the property
+    /// to hold is that a quote posted in the current slot contributes nothing, and the same quote does
+    /// contribute once it has rested.
     #[test]
     fn min_resting_slots_excludes_freshly_posted_quotes() {
         let market = PerpMarket::default_test();
@@ -4264,9 +4264,8 @@ pub mod find_bids_and_asks_from_users {
         assert_eq!(asks.len(), 1);
     }
 
-    /// `posted_slot_tail` is only 8 bits, so age is known modulo 256. A fresh quote must never
-    /// be able to appear old — that direction would reopen the attack. The reverse (an old
-    /// quote appearing fresh, and so being conservatively skipped) is acceptable.
+    /// `posted_slot_tail` holds 8 bits, so age is known modulo 256. A fresh quote must never look old,
+    /// because that reopens the attack. An old quote that looks fresh is skipped, which is safe.
     #[test]
     fn slots_since_order_posted_never_understates_a_fresh_quote() {
         let posted_slot: u64 = 318_454_856;

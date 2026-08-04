@@ -115,6 +115,26 @@ pub fn derive_velocity_signer() -> Pubkey {
     account
 }
 
+/// The signer velocity uses for quoter CPIs and its CLOB calls, and the
+/// `place_authority` every book is configured with. Deliberately not
+/// [`derive_velocity_signer`], which is the token authority on every vault:
+/// signer privilege is inherited by a callee, so the key handed to an external
+/// program must be the authority on nothing.
+pub fn derive_quoter_signer() -> Pubkey {
+    let (account, _seed) = Pubkey::find_program_address(&[&b"quoter_signer"[..]], &PROGRAM_ID);
+    account
+}
+
+/// The per-market relay crank conditions account, which also holds the
+/// reservoir that pays crank keepers.
+pub fn derive_clob_crank_conditions(market_index: u16) -> Pubkey {
+    let (account, _seed) = Pubkey::find_program_address(
+        &[&b"clob_crank_conditions"[..], &market_index.to_le_bytes()],
+        &PROGRAM_ID,
+    );
+    account
+}
+
 pub fn derive_revenue_share(authority: &Pubkey) -> Pubkey {
     let (account, _seed) =
         Pubkey::find_program_address(&[&b"REV_SHARE"[..], authority.as_ref()], &PROGRAM_ID);

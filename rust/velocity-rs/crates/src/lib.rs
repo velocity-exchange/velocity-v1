@@ -1902,6 +1902,22 @@ struct ForceMarkets {
     writeable: Vec<MarketId>,
 }
 
+/// The market's CLOB accounts, which select `fill_perp_order_v1`: the filled
+/// order's restable remainder migrates to the book rather than resting in
+/// `User.orders`. `market_index` is separate from the fill's own because the
+/// crank-conditions PDA seed needs it before any account is loaded.
+#[derive(Clone, Copy, Debug)]
+pub struct ClobFillAccounts {
+    pub market_index: u16,
+    pub quoter: Pubkey,
+    pub clob_market: Pubkey,
+    pub clob_program: Pubkey,
+    pub quoter_signer: Pubkey,
+    /// `None` = the market's crank conditions were never initialized; the
+    /// placement skips the wake hint and the fallback poll covers it.
+    pub crank_conditions: Option<Pubkey>,
+}
+
 impl ForceMarkets {
     /// Set given `markets` as readable, enforcing there inclusion in a final Tx
     pub fn with_readable(&mut self, markets: &[MarketId]) -> &mut Self {
@@ -3406,21 +3422,47 @@ impl<'a> TransactionBuilder<'a> {
         // quoter accounts this transaction carries. Empty for an order placed
         // without a signed route.
         signed_route: &[Pubkey],
+        // Present = the v1 route: a restable remainder of the filled order
+        // migrates to the market's CLOB instead of resting in `User.orders`.
+        clob: Option<ClobFillAccounts>,
     ) -> Self {
-        let mut accounts = build_accounts(
-            self.program_data,
-            program::accounts::FillOrder {
-                state: *state_account(),
-                authority: self.authority,
-                user: taker,
-                user_stats: Wallet::derive_stats_account(&taker_account.authority),
-                filler: self.sub_account,
-                filler_stats: Wallet::derive_stats_account(&self.owner()),
-            },
-            makers.iter().chain(std::iter::once(taker_account)),
-            std::iter::empty(),
-            std::iter::once(&MarketId::perp(market_index)),
-        );
+        let user_stats = Wallet::derive_stats_account(&taker_account.authority);
+        let filler_stats = Wallet::derive_stats_account(&self.owner());
+        let mut accounts = match &clob {
+            Some(clob) => build_accounts(
+                self.program_data,
+                program::accounts::FillOrderV1 {
+                    state: *state_account(),
+                    authority: self.authority,
+                    user: taker,
+                    user_stats,
+                    filler: self.sub_account,
+                    filler_stats,
+                    quoter: clob.quoter,
+                    clob_market: clob.clob_market,
+                    clob_program: clob.clob_program,
+                    quoter_signer: clob.quoter_signer,
+                    crank_conditions: clob.crank_conditions,
+                },
+                makers.iter().chain(std::iter::once(taker_account)),
+                std::iter::empty(),
+                std::iter::once(&MarketId::perp(market_index)),
+            ),
+            None => build_accounts(
+                self.program_data,
+                program::accounts::FillOrder {
+                    state: *state_account(),
+                    authority: self.authority,
+                    user: taker,
+                    user_stats,
+                    filler: self.sub_account,
+                    filler_stats,
+                },
+                makers.iter().chain(std::iter::once(taker_account)),
+                std::iter::empty(),
+                std::iter::once(&MarketId::perp(market_index)),
+            ),
+        };
 
         for maker in makers {
             accounts.extend([
@@ -3465,11 +3507,19 @@ impl<'a> TransactionBuilder<'a> {
         let ix = Instruction {
             program_id: constants::PROGRAM_ID,
             accounts,
-            data: InstructionData::data(&program::instruction::FillPerpOrder {
-                order_id: taker_order_id,
-                _maker_order_id: None,
-                signed_route: signed_route.to_vec(),
-            }),
+            data: match &clob {
+                Some(clob) => InstructionData::data(&program::instruction::FillPerpOrderV1 {
+                    order_id: taker_order_id,
+                    _maker_order_id: None,
+                    signed_route: signed_route.to_vec(),
+                    market_index: clob.market_index,
+                }),
+                None => InstructionData::data(&program::instruction::FillPerpOrder {
+                    order_id: taker_order_id,
+                    _maker_order_id: None,
+                    signed_route: signed_route.to_vec(),
+                }),
+            },
         };
 
         self.ixs.push(ix);
@@ -4532,6 +4582,8 @@ mod tests {
                 Some(1),
                 &makers,
                 None,
+                &[],
+                None,
             )
             .build();
         assert!(
@@ -4550,6 +4602,8 @@ mod tests {
                 &plain_stats,
                 Some(1),
                 &makers,
+                None,
+                &[],
                 None,
             )
             .build();

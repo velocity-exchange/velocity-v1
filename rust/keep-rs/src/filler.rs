@@ -30,7 +30,7 @@ use {
     },
     tokio::{runtime::Handle, sync::RwLock},
     velocity_rs::{
-        constants::{derive_velocity_signer, PROGRAM_ID},
+        constants::{derive_clob_crank_conditions, derive_quoter_signer, PROGRAM_ID},
         dlob::{
             CrossesAndTopMakers, CrossingRegion, DLOBNotifier, L3Order, MakerCrosses, OrderKind,
             TakerOrder, DLOB,
@@ -49,7 +49,7 @@ use {
             OrderParamsExt, OrderTriggerCondition, OrderType, PositionDirection, PostOnlyParam,
             RpcSendTransactionConfig, StateExt, VersionedMessage, VersionedTransaction, AMM,
         },
-        GrpcSubscribeOpts, Pubkey, TransactionBuilder, VelocityClient, Wallet,
+        ClobFillAccounts, GrpcSubscribeOpts, Pubkey, TransactionBuilder, VelocityClient, Wallet,
     },
 };
 
@@ -1075,8 +1075,28 @@ async fn try_swift_fill(
     // The fill's quoter section, appended to the fill instruction's remaining
     // accounts below. One network round trip per entry, done before assembly
     // so both assembly passes produce the same account list.
-    let quoter_metas =
-        route_quoter_metas(velocity, clob_quoter, swift_order.route(), &swift_order).await;
+    let Some(quoter_metas) =
+        route_quoter_metas(velocity, clob_quoter, swift_order.route(), &swift_order).await
+    else {
+        return;
+    };
+
+    // The v1 fill route, so a restable remainder of this order rests on the
+    // market's CLOB rather than in `User.orders`. A signed-message order
+    // cannot be IOC, so without this its leftover stays on the DLOB, where
+    // nothing but another keeper's fill can reach it.
+    let clob_fill = velocity
+        .get_account_value::<QuoterV0>(&clob_quoter)
+        .await
+        .ok()
+        .map(|entry| ClobFillAccounts {
+            market_index: taker_order.market_index,
+            quoter: clob_quoter,
+            clob_market: entry.response_account,
+            clob_program: entry.program_id,
+            quoter_signer: derive_quoter_signer(),
+            crank_conditions: Some(derive_clob_crank_conditions(taker_order.market_index)),
+        });
 
     // The whole fill is assembled twice at most: once with the flow
     // authority riding a compute-budget instruction as a read-only
@@ -1104,6 +1124,7 @@ async fn try_swift_fill(
                 // they signed. The program checks it against the digest it
                 // stamped on the order, so this cannot be substituted.
                 swift_order.route().unwrap_or(&[]),
+                clob_fill,
             );
 
         // The quoter section rides the fill instruction's remaining accounts:
@@ -1200,7 +1221,7 @@ async fn route_quoter_metas(
     clob_quoter: Pubkey,
     route: Option<&[Pubkey]>,
     swift_order: &SignedOrderInfo,
-) -> Vec<AccountMeta> {
+) -> Option<Vec<AccountMeta>> {
     let mut keys: Vec<Pubkey> = Vec::new();
     if clob_quoter != Pubkey::default() {
         keys.push(clob_quoter);
@@ -1211,7 +1232,7 @@ async fn route_quoter_metas(
         }
     }
     if keys.is_empty() {
-        return Vec::new();
+        return Some(Vec::new());
     }
 
     let mut entries: Vec<QuoterV0> = Vec::with_capacity(keys.len());
@@ -1223,19 +1244,17 @@ async fn route_quoter_metas(
                 kept.push(key);
             }
             Err(err) => {
-                if key == clob_quoter {
-                    log::error!(
-                        target: TARGET,
-                        "clob quoter entry {key} unreadable ({err:?}); the fill will be rejected. uuid={}",
-                        swift_order.order_uuid_str()
-                    );
-                } else {
-                    log::warn!(
-                        target: TARGET,
-                        "routed quoter entry {key} unreadable ({err:?}); dropping that source. uuid={}",
-                        swift_order.order_uuid_str()
-                    );
-                }
+                // Both cases now abandon the attempt. The signed route is
+                // enforced on chain: every entry the taker named must be
+                // carried by the fill, and the market's canonical CLOB is a
+                // mandatory baseline — so a fill missing either is rejected,
+                // and building it only spends a transaction to discover that.
+                log::error!(
+                    target: TARGET,
+                    "quoter entry {key} unreadable ({err:?}); abandoning the fill. uuid={}",
+                    swift_order.order_uuid_str()
+                );
+                return None;
             }
         }
     }
@@ -1252,18 +1271,24 @@ async fn route_quoter_metas(
         *cpi_union.entry(entry.response_account).or_default() |= true;
         cpi_union.entry(entry.program_id).or_default();
     }
-    cpi_union.entry(derive_velocity_signer()).or_default();
+    // The quoter CPI signer, not the vault authority: velocity signs quoter
+    // legs as a PDA that is the authority on nothing. Each entry's registered
+    // list usually names it already; this makes the fill work for one that
+    // does not.
+    cpi_union.entry(derive_quoter_signer()).or_default();
 
-    kept.iter()
-        .map(|key| AccountMeta::new_readonly(*key, false))
-        .chain(cpi_union.iter().map(|(key, writable)| {
-            if *writable {
-                AccountMeta::new(*key, false)
-            } else {
-                AccountMeta::new_readonly(*key, false)
-            }
-        }))
-        .collect()
+    Some(
+        kept.iter()
+            .map(|key| AccountMeta::new_readonly(*key, false))
+            .chain(cpi_union.iter().map(|(key, writable)| {
+                if *writable {
+                    AccountMeta::new(*key, false)
+                } else {
+                    AccountMeta::new_readonly(*key, false)
+                }
+            }))
+            .collect(),
+    )
 }
 
 /// Build, self-sign, and get the flow-authority co-signature for a swift
@@ -1655,6 +1680,9 @@ async fn try_auction_fill(
             // order that carries a route digest will reject this fill until
             // the route is threaded through from the swift subscription.
             &[],
+            // v0: these fill orders discovered on the DLOB, and a rested
+            // order's remainder is already where it is going to stay.
+            None,
         );
 
         // large accounts list, bump CU limit to compensate
@@ -1820,6 +1848,9 @@ async fn try_uncross(
                 // order that carries a route digest will reject this fill until
                 // the route is threaded through from the swift subscription.
                 &[],
+                // v0: these fill orders discovered on the DLOB, and a rested
+                // order's remainder is already where it is going to stay.
+                None,
             );
 
         // large accounts list, bump CU limit to compensate
@@ -2049,6 +2080,9 @@ async fn try_vamm_taker_fill(
             // order that carries a route digest will reject this fill until
             // the route is threaded through from the swift subscription.
             &[],
+            // v0: these fill orders discovered on the DLOB, and a rested
+            // order's remainder is already where it is going to stay.
+            None,
         );
 
         // large accounts list, bump CU limit to compensate

@@ -18,7 +18,10 @@
 //! required anywhere (relay turners submit executors unsigned).
 
 use {
-    super::crank_common::{next_matchable, validate_linkage, ResolveClobCrank, MAX_CROSS_MAKERS},
+    super::{
+        crank_common::{next_matchable, validate_linkage, ResolveClobCrank, MAX_CROSS_MAKERS},
+        crank_taker_origin_cross::stage_taker_origin_cross,
+    },
     crate::{
         controller,
         error::ErrorCode,
@@ -33,7 +36,7 @@ use {
             clob_crank::{ClobCrankConditionsV0, CLOB_CRANK_CONDITIONS_PDA_SEED},
             pdas,
             perp_market_map::{get_writable_perp_market_set, MarketSet},
-            prop_amm::{PriceLevel, QuoterType, QuoterV0},
+            prop_amm::{ClobNodeView, PriceLevel, QuoterType, QuoterV0},
             state::State,
             user::{User, UserStats},
             user_map::load_user_maps,
@@ -43,6 +46,9 @@ use {
     anchor_lang::{prelude::*, Discriminator},
     std::collections::BTreeMap,
 };
+
+#[cfg(test)]
+mod tests;
 
 #[derive(Accounts)]
 #[instruction(market_index: u16)]
@@ -254,10 +260,22 @@ pub fn handle_crank_cross_match<'c: 'info, 'info>(
 /// (it CPIs `quote_v0` through the entry's registered surface), with the
 /// book publisher as the fast path. The executor re-verifies profitability
 /// exactly either way.
+///
+/// A taker-origin cross is looked for first and staged as
+/// `crank_taker_origin_cross` instead. A `ResolvedCrankV0` names its own
+/// executor, so serving both from one condition costs no extra slot and no
+/// second wake — the wakes that find a maker×maker cross are the same ones that
+/// find a taker-origin cross (see [`stage_taker_origin_cross`]). The order is
+/// the economics: the improvement between the two prices belongs to the order
+/// that came to trade, so it is handed over before the protocol middles the
+/// same crossed book as arbitrage.
 pub fn handle_resolve_crank_cross_match(ctx: Context<ResolveClobCrank>) -> Result<()> {
     validate_linkage(&ctx)?;
     resolve_into(&ctx.accounts.scratch, || {
         let clock = Clock::get()?;
+        if let Some(call) = stage_taker_origin_cross(&ctx, &clock)? {
+            return Ok(Some(call));
+        }
         let cross = {
             let data = ctx.accounts.clob_market.try_borrow_data()?;
             find_clob_cross(&data, clock.slot, clock.unix_timestamp)?
@@ -330,6 +348,36 @@ struct ClobCross {
     makers: Vec<crate::state::prop_amm::ClobUserRefV0>,
 }
 
+/// Advance to the next node a cross leg may consume: a taker-origin order is
+/// never one, and neither its base nor its owner belongs in a staged cross.
+///
+/// Every taker-origin order this walk reaches is crossed, since the walk only
+/// visits the prefix where the two sides cross, and admitting one is wrong in
+/// two separate ways. Usually the book withholds it from `execute_v0`, so a leg
+/// sized to include its base comes back short, the two legs imbalance, and the
+/// ordinary cross resting in *front* of the remainder cannot clear either for as
+/// long as it is there. And admitting it also stages its owner's
+/// `(User, UserStats)` pair, which is what would let the book hand the remainder
+/// over at its own resting price: once the first leg has consumed the whole
+/// opposite side nothing crosses the remainder any more, so the gate protecting
+/// it stops firing, and the improvement lands in the protocol `User` instead of
+/// the taker's. Leaving its owner unloaded means the book passes over the order
+/// as unsettleable even then.
+///
+/// A crossed remainder is [`stage_taker_origin_cross`]'s to resolve, at the
+/// counterparty's price. Whatever rests behind it is an ordinary cross and stays
+/// in.
+fn next_crossable(data: &[u8], cursor: u32, slot: u64, now: i64) -> Option<(u32, ClobNodeView)> {
+    let mut cursor = cursor;
+    loop {
+        let (index, node) = next_matchable(data, cursor, slot, now)?;
+        if !node.is_taker_origin {
+            return Some((index, node));
+        }
+        cursor = node.next;
+    }
+}
+
 /// Two-pointer walk over the crossing prefix (bid price >= ask price),
 /// best-first on both sides — exactly the orders the executor's two legs
 /// will consume.
@@ -345,13 +393,13 @@ fn find_clob_cross(data: &[u8], slot: u64, now: i64) -> Result<ClobCross> {
         crate::state::prop_amm::read_clob_u32(data, offset)
             .ok_or_else(|| error!(ErrorCode::DefaultError))
     };
-    let mut bid = next_matchable(
+    let mut bid = next_crossable(
         data,
         read(crate::state::prop_amm::CLOB_BEST_BID_OFFSET)?,
         slot,
         now,
     );
-    let mut ask = next_matchable(
+    let mut ask = next_crossable(
         data,
         read(crate::state::prop_amm::CLOB_BEST_ASK_OFFSET)?,
         slot,
@@ -395,11 +443,11 @@ fn find_clob_cross(data: &[u8], slot: u64, now: i64) -> Result<ClobCross> {
         bid_remaining -= take;
         ask_remaining -= take;
         if bid_remaining == 0 {
-            bid = next_matchable(data, bid_node.next, slot, now);
+            bid = next_crossable(data, bid_node.next, slot, now);
             bid_remaining = bid.map(|(_, node)| node.base_asset_amount).unwrap_or(0);
         }
         if ask_remaining == 0 {
-            ask = next_matchable(data, ask_node.next, slot, now);
+            ask = next_crossable(data, ask_node.next, slot, now);
             ask_remaining = ask.map(|(_, node)| node.base_asset_amount).unwrap_or(0);
         }
     }

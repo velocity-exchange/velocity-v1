@@ -51,7 +51,9 @@
 //!   counterparty, lift the remainder off the book, and settle the pair at the
 //!   counterparty's price, paying the cranker out of the difference. No
 //!   protocol pass-through: one side is the aggressor and the improvement is
-//!   its own.
+//!   its own. Discovered by the cross conditions' resolver, which stages this
+//!   crank ahead of the arb one when the top of the book is a crossed
+//!   remainder.
 //! - [`force_cancel_clob_orders`]: the CLOB arm of the force-cancel keeper
 //!   flow — reclaim a failing account's risk-increasing book orders (and
 //!   their placed-trigger shadows) for the flat fee.

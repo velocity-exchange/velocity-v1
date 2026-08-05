@@ -1576,6 +1576,37 @@ fn run_resolver(
     Some(velocity::relay_spec::ResolvedCrankV0::read(staged).unwrap())
 }
 
+/// The cross conditions' resolver, read back the way a turner does. One resolver
+/// answers for the whole family: it stages `crank_taker_origin_cross` when a
+/// migrated remainder is crossed and `crank_cross_match` otherwise, and the
+/// staged payload is what says which.
+fn run_cross_resolver(
+    fixture: &mut Fixture,
+    conditions: Pubkey,
+) -> Option<velocity::relay_spec::ResolvedCrankV0> {
+    let ix = Instruction {
+        program_id: velocity_id(),
+        accounts: velocity::accounts::ResolveClobCrank {
+            scratch: relay_scratch_pda(),
+            crank_conditions: conditions,
+            clob_market: fixture.clob_market,
+            quoter: fixture.quoter,
+            state: state_pda(),
+        }
+        .to_account_metas(None),
+        data: velocity::instruction::ResolveCrankCrossMatch {}.data(),
+    };
+    let keeper = fixture.keeper.insecure_clone();
+    let meta = send(&mut fixture.svm, &keeper, ix, &[]).unwrap();
+    let pointer = velocity::relay_spec::ResponsePointerV0::read(&meta.return_data.data).unwrap();
+    if !pointer.has_work() {
+        return None;
+    }
+    let data = fixture.svm.get_account(&relay_scratch_pda()).unwrap().data;
+    let staged = &data[pointer.offset() as usize..(pointer.offset() + pointer.len()) as usize];
+    Some(velocity::relay_spec::ResolvedCrankV0::read(staged).unwrap())
+}
+
 /// Submit a staged executor the way a turner does: the instruction is the
 /// one the payload names, keeper placeholder substituted with the payout
 /// account, every meta a non-signer (the fee payer is not in the account
@@ -2499,30 +2530,7 @@ fn cross_match_crank_fills_a_crossed_clob_and_keeps_the_spread() {
 
     // ---- The relay-staged path: resolver discovers the cross, stages the
     // executor stats-less, and the turner-shaped submission fills it. ----
-    let resolve_cross = |fixture: &mut Fixture| -> Option<velocity::relay_spec::ResolvedCrankV0> {
-        let ix = Instruction {
-            program_id: velocity_id(),
-            accounts: velocity::accounts::ResolveClobCrank {
-                scratch: relay_scratch_pda(),
-                crank_conditions: conditions,
-                clob_market: fixture.clob_market,
-                quoter: fixture.quoter,
-                state: state_pda(),
-            }
-            .to_account_metas(None),
-            data: velocity::instruction::ResolveCrankCrossMatch {}.data(),
-        };
-        let keeper = fixture.keeper.insecure_clone();
-        let meta = send(&mut fixture.svm, &keeper, ix, &[]).unwrap();
-        let pointer =
-            velocity::relay_spec::ResponsePointerV0::read(&meta.return_data.data).unwrap();
-        if !pointer.has_work() {
-            return None;
-        }
-        let data = fixture.svm.get_account(&relay_scratch_pda()).unwrap().data;
-        let staged = &data[pointer.offset() as usize..(pointer.offset() + pointer.len()) as usize];
-        Some(velocity::relay_spec::ResolvedCrankV0::read(staged).unwrap())
-    };
+    let resolve_cross = |fixture: &mut Fixture| run_cross_resolver(fixture, conditions);
     assert!(resolve_cross(&mut fixture).is_none(), "book is uncrossed");
 
     // Cross it again — this time behind a speed bump, the makers-line-up
@@ -5687,6 +5695,340 @@ fn the_aggressors_own_leftover_goes_back_on_its_side() {
         paid < 50_500_000 + 50_500,
         "crossing cost {paid}, resting would have cost {}",
         50_500_000 + 50_500
+    );
+}
+
+/// Relay discovery for the taker-origin cross, and the whole staged shape of it.
+///
+/// The crank has no condition of its own and needs none: it only ever resolves
+/// the tops of the matchable book, and the market's cross conditions already
+/// wake on the book's bests moving and on an activation slot maturing. Their
+/// resolver stages `crank_taker_origin_cross` when the pair at the top is a
+/// migrated remainder crossed by a counterparty, and the arb crank otherwise —
+/// a `ResolvedCrankV0` names its own executor, so one condition serves both.
+#[test]
+fn cross_conditions_stage_the_taker_origin_crank_for_a_crossed_remainder() {
+    let mut fixture = setup();
+    pause_amm_fill(&mut fixture.svm);
+    const PAYMENT: u64 = 10_000;
+    let conditions = init_crank_conditions(&mut fixture, PAYMENT);
+    fixture.svm.airdrop(&conditions, 1_000_000_000).unwrap();
+    let protocol_user = set_protocol_user(&mut fixture.svm);
+    let (signer, _) = velocity_signer_pda();
+    let protocol_stats =
+        Pubkey::find_program_address(&[b"user_stats", signer.as_ref()], &velocity_id()).0;
+
+    let taker = party(&mut fixture.svm, 10_000 * SPOT_BALANCE_PRECISION_U64);
+    let maker = party(&mut fixture.svm, 10_000 * SPOT_BALANCE_PRECISION_U64);
+    rest_taker_origin_order(
+        &mut fixture,
+        &taker,
+        PositionDirection::Long,
+        101 * PRICE,
+        UNIT,
+    );
+    place_clob_order_for(
+        &mut fixture,
+        &maker,
+        PositionDirection::Short,
+        99 * PRICE,
+        UNIT / 2,
+    );
+    fixture.svm.warp_to_slot(20);
+    set_oracle(
+        &mut fixture.svm,
+        fixture.oracle,
+        (100 * PRICE_PRECISION) as i64,
+        20,
+    );
+
+    let resolved =
+        run_cross_resolver(&mut fixture, conditions).expect("a crossed remainder is work");
+    assert_eq!(
+        resolved.executor_disc,
+        velocity::instruction::CrankTakerOriginCross::DISCRIMINATOR,
+        "the taker's improvement is handed over before the protocol middles the same book"
+    );
+    // Both `(User, UserStats)` pairs come off the two nodes' own
+    // `(authority, sub_account_id)`, and the rest of the list is PDAs plus the
+    // accounts the resolver holds — nothing a turner has to be told.
+    let (quoter_signer, _) = quoter_signer_pda();
+    let expected: Vec<(Pubkey, bool)> = vec![
+        (state_pda(), false),
+        (
+            Pubkey::new_from_array(velocity::relay_spec::KEEPER_PLACEHOLDER),
+            true,
+        ),
+        (protocol_user, true),
+        (protocol_stats, true),
+        (taker.user, true),
+        (taker.stats, true),
+        (fixture.quoter, false),
+        (fixture.clob_market, true),
+        (clob_id(), false),
+        (quoter_signer, false),
+        (conditions, true),
+        (fixture.oracle, false),
+        (spot_market_pda(0), true),
+        (perp_market_pda(0), true),
+        (maker.user, true),
+        (maker.stats, true),
+    ];
+    assert_eq!(
+        resolved
+            .accounts
+            .iter()
+            .map(|a| (Pubkey::new_from_array(a.address), a.is_writable()))
+            .collect::<Vec<_>>(),
+        expected
+    );
+    assert_eq!(
+        resolved.data,
+        0u16.to_le_bytes(),
+        "market_index is the only argument"
+    );
+    // The staged payload fits the shared staging region with room to spare, so
+    // the account list is bounded by the transaction rather than by the scratch.
+    assert!(
+        resolved.encoded_len() < velocity::state::relay_scratch::RELAY_SCRATCH_LEN,
+        "staged {} bytes",
+        resolved.encoded_len()
+    );
+
+    let payout = Pubkey::new_unique();
+    fixture.svm.airdrop(&payout, 1_000_000_000).unwrap();
+    run_staged_executor(
+        &mut fixture,
+        &resolved,
+        velocity::instruction::CrankTakerOriginCross::DISCRIMINATOR,
+        payout,
+    );
+
+    // Settled at the counterparty's 99 rather than the 101 the remainder rested
+    // at, exactly as the signed-keeper path does.
+    let taker_position = perp_position(&fixture.svm, &taker.user);
+    assert_eq!(taker_position.base_asset_amount, (UNIT / 2) as i64);
+    let paid = -taker_position.quote_asset_amount;
+    assert!(
+        (49_500_000..49_600_000).contains(&paid),
+        "paid {paid}: 99 plus fees, where 101 would have been 50_500_000"
+    );
+    // Program-keeper mode: the quote reward accrues to the protocol `User` and
+    // the payout account takes the reservoir's lamports, which is the payment
+    // relay's `assert_paid_v0` measures against the condition's `min_payment`.
+    assert_eq!(
+        perp_position(&fixture.svm, &protocol_user).quote_asset_amount,
+        4_950
+    );
+    assert_eq!(
+        fixture.svm.get_account(&payout).unwrap().lamports,
+        1_000_000_000 + PAYMENT
+    );
+    // The unconsumed half is back on the book with nothing crossing it —
+    // ordinary depth, so the conditions go quiet.
+    assert_eq!(clob_bid_count(&fixture.svm, &fixture.clob_market), 1);
+    assert_eq!(clob_ask_count(&fixture.svm, &fixture.clob_market), 0);
+    assert!(run_cross_resolver(&mut fixture, conditions).is_none());
+}
+
+/// Two remainders facing each other are staged by the same resolver, with the
+/// later arrival in the `taker` slot and the earlier one as the counterparty
+/// whose price the match settles at — the branch the crank takes needs no
+/// condition of its own either.
+#[test]
+fn cross_conditions_stage_the_pair_branch_with_the_later_remainder_as_taker() {
+    let mut fixture = setup();
+    pause_amm_fill(&mut fixture.svm);
+    const PAYMENT: u64 = 10_000;
+    let conditions = init_crank_conditions(&mut fixture, PAYMENT);
+    fixture.svm.airdrop(&conditions, 1_000_000_000).unwrap();
+    set_protocol_user(&mut fixture.svm);
+
+    let early = party(&mut fixture.svm, 10_000 * SPOT_BALANCE_PRECISION_U64);
+    let late = party(&mut fixture.svm, 10_000 * SPOT_BALANCE_PRECISION_U64);
+    let blocker = party(&mut fixture.svm, 10_000 * SPOT_BALANCE_PRECISION_U64);
+    rest_crossing_remainders(
+        &mut fixture,
+        &blocker,
+        (&early, PositionDirection::Long, 101 * PRICE, UNIT),
+        (&late, PositionDirection::Short, 99 * PRICE, UNIT / 2),
+        12,
+    );
+    fixture.svm.warp_to_slot(20);
+    set_oracle(
+        &mut fixture.svm,
+        fixture.oracle,
+        (100 * PRICE_PRECISION) as i64,
+        20,
+    );
+
+    let resolved = run_cross_resolver(&mut fixture, conditions).expect("the pair is work");
+    assert_eq!(
+        resolved.executor_disc,
+        velocity::instruction::CrankTakerOriginCross::DISCRIMINATOR
+    );
+    assert_eq!(
+        resolved.accounts[4].address,
+        late.user.to_bytes(),
+        "the later remainder is the aggressor, so it is the crank's taker"
+    );
+    assert_eq!(
+        resolved.accounts[14].address,
+        early.user.to_bytes(),
+        "the earlier one is the counterparty the match is priced at"
+    );
+
+    let payout = Pubkey::new_unique();
+    fixture.svm.airdrop(&payout, 1_000_000_000).unwrap();
+    run_staged_executor(
+        &mut fixture,
+        &resolved,
+        velocity::instruction::CrankTakerOriginCross::DISCRIMINATOR,
+        payout,
+    );
+    let late_position = perp_position(&fixture.svm, &late.user);
+    assert_eq!(late_position.base_asset_amount, -((UNIT / 2) as i64));
+    assert!(
+        (50_400_000..50_500_000).contains(&late_position.quote_asset_amount),
+        "sold at the earlier order's 101 less fees: {}",
+        late_position.quote_asset_amount
+    );
+    assert_eq!(
+        fixture.svm.get_account(&payout).unwrap().lamports,
+        1_000_000_000 + PAYMENT
+    );
+}
+
+/// The two cross cranks compose rather than duplicating each other's search: a
+/// maker×maker cross in front of a migrated remainder is the arb crank's work,
+/// and the remainder's own cross becomes the resolver's answer once that clears.
+///
+/// The remainder's base is never offered to the arb crank, which is what makes
+/// the composition work at all. A leg sized to include it either comes back
+/// short — the book withholds a crossed remainder from `execute_v0`, so the two
+/// legs imbalance and the cross in front of it is stuck as well — or, when the
+/// first leg consumed the whole opposite side, nothing crosses the remainder any
+/// more by the time the second leg runs and the book hands it over at the price
+/// it rested at, with the improvement landing in the protocol `User` instead of
+/// the taker's. The asks here are exactly the crossing depth, which is the
+/// second shape.
+#[test]
+fn the_arb_crank_clears_the_front_of_book_before_the_remainders_own_cross() {
+    let mut fixture = setup();
+    pause_amm_fill(&mut fixture.svm);
+    const PAYMENT: u64 = 10_000;
+    let conditions = init_crank_conditions(&mut fixture, PAYMENT);
+    fixture.svm.airdrop(&conditions, 1_000_000_000).unwrap();
+    let protocol_user = set_protocol_user(&mut fixture.svm);
+
+    let taker = party(&mut fixture.svm, 10_000 * SPOT_BALANCE_PRECISION_U64);
+    let seller = party(&mut fixture.svm, 10_000 * SPOT_BALANCE_PRECISION_U64);
+    let buyer = party(&mut fixture.svm, 10_000 * SPOT_BALANCE_PRECISION_U64);
+
+    // A remainder at 101, a whole unit of asks at 99 crossing it, and a maker
+    // bidding 102 in front of it — so the top of the book is maker×maker and the
+    // remainder is the second-best bid.
+    rest_taker_origin_order(
+        &mut fixture,
+        &taker,
+        PositionDirection::Long,
+        101 * PRICE,
+        UNIT,
+    );
+    place_clob_order_for(
+        &mut fixture,
+        &seller,
+        PositionDirection::Short,
+        99 * PRICE,
+        UNIT,
+    );
+    place_clob_order_for(
+        &mut fixture,
+        &buyer,
+        PositionDirection::Long,
+        102 * PRICE,
+        UNIT / 2,
+    );
+    fixture.svm.warp_to_slot(20);
+    set_oracle(
+        &mut fixture.svm,
+        fixture.oracle,
+        (100 * PRICE_PRECISION) as i64,
+        20,
+    );
+
+    let payout = Pubkey::new_unique();
+    fixture.svm.airdrop(&payout, 1_000_000_000).unwrap();
+    let resolved = run_cross_resolver(&mut fixture, conditions).expect("the front of book crosses");
+    assert_eq!(
+        resolved.executor_disc,
+        velocity::instruction::CrankCrossMatch::DISCRIMINATOR,
+        "two makers crossing is unclaimed arbitrage, not somebody's improvement"
+    );
+    // `[market_index u16][size u64][buy u8][sell u8]`: the staged size stops at
+    // the 102 bid. That cap is also what keeps the arb legs off the remainder
+    // outright — the sell leg is sized to the depth in front of it, so it never
+    // sweeps that far even in the moment the first leg empties the ask side and
+    // the book's own protection stops firing.
+    assert_eq!(
+        u64::from_le_bytes(resolved.data[2..10].try_into().unwrap()),
+        UNIT / 2,
+        "the cross is sized to the maker in front of the remainder"
+    );
+    assert!(
+        !resolved
+            .accounts
+            .iter()
+            .any(|a| a.address == taker.user.to_bytes()),
+        "the remainder's owner is not staged, so the book cannot settle its order for this cross"
+    );
+    run_staged_executor(
+        &mut fixture,
+        &resolved,
+        velocity::instruction::CrankCrossMatch::DISCRIMINATOR,
+        payout,
+    );
+    // Sized to the 102 bid alone: the remainder behind it contributed nothing.
+    assert_eq!(
+        perp_position(&fixture.svm, &buyer.user).base_asset_amount,
+        (UNIT / 2) as i64
+    );
+    assert_eq!(
+        perp_position(&fixture.svm, &seller.user).base_asset_amount,
+        -((UNIT / 2) as i64)
+    );
+    assert!(perp_position(&fixture.svm, &protocol_user).quote_asset_amount > 0);
+    assert_eq!(
+        perp_position(&fixture.svm, &taker.user).base_asset_amount,
+        0,
+        "the remainder was not part of the arb"
+    );
+
+    // With the front of book cleared the remainder is the best bid, and the same
+    // resolver now answers with the crank that prices in its favour.
+    let resolved =
+        run_cross_resolver(&mut fixture, conditions).expect("the remainder's cross is next");
+    assert_eq!(
+        resolved.executor_disc,
+        velocity::instruction::CrankTakerOriginCross::DISCRIMINATOR
+    );
+    assert_eq!(resolved.accounts[4].address, taker.user.to_bytes());
+    run_staged_executor(
+        &mut fixture,
+        &resolved,
+        velocity::instruction::CrankTakerOriginCross::DISCRIMINATOR,
+        payout,
+    );
+    let taker_position = perp_position(&fixture.svm, &taker.user);
+    assert_eq!(taker_position.base_asset_amount, (UNIT / 2) as i64);
+    let paid = -taker_position.quote_asset_amount;
+    assert!(
+        (49_500_000..49_600_000).contains(&paid),
+        "paid {paid}: the seller's 99, not the 101 it rested at"
+    );
+    assert_eq!(
+        fixture.svm.get_account(&payout).unwrap().lamports,
+        1_000_000_000 + 2 * PAYMENT
     );
 }
 

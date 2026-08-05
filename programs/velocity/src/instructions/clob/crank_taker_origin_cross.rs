@@ -27,9 +27,13 @@
 //! floored surplus. Here one side is the aggressor by construction, the
 //! improvement belongs to it, and the only cut anyone takes is the cranker's
 //! reward.
+//!
+//! Relay discovery is [`stage_taker_origin_cross`], reached from the cross
+//! conditions' resolver rather than from a condition of its own — see it for why
+//! the existing wakes already cover this crank.
 
 use {
-    super::crank_common::next_matchable,
+    super::crank_common::{next_matchable, ResolveClobCrank},
     crate::{
         controller::{
             self,
@@ -40,6 +44,7 @@ use {
         instructions::{
             constraints::*,
             optional_accounts::{load_maps, AccountMaps},
+            StagedCall,
         },
         load, load_mut,
         math::{casting::Cast, safe_math::SafeMath},
@@ -48,6 +53,7 @@ use {
         state::{
             clob_crank::{ClobCrankConditionsV0, CLOB_CRANK_CONDITIONS_PDA_SEED},
             events::TakerOriginCrossRecordV0,
+            pdas,
             perp_market_map::{get_writable_perp_market_set, MarketSet},
             prop_amm::{
                 clob_hint_scan, clob_resting_prefix, read_clob_u32, ClobCancelOrderArgsV0,
@@ -652,4 +658,104 @@ pub fn handle_crank_taker_origin_cross<'c: 'info, 'info>(
         fill.crank_reward
     );
     Ok(())
+}
+
+/// Stage this crank for the book's taker-origin cross, if it has one — the
+/// discovery half of [`handle_crank_taker_origin_cross`], called by the cross
+/// conditions' resolver (`handle_resolve_crank_cross_match`) ahead of the
+/// maker×maker cross it stages otherwise. A `ResolvedCrankV0` names its own
+/// executor, so one resolver serves both, and the order is the economics: a
+/// taker-origin cross is resolved in the taker's favour before the protocol
+/// middles the same crossed book as arbitrage.
+///
+/// **No condition slot or watch of its own, and none needed.** This crank only
+/// ever resolves the tops of the matchable book, so a taker-origin cross can
+/// newly appear in exactly two ways, both already wired: a side's best moved —
+/// covered by the cross condition's 8-byte change-watch over `best_bid` and
+/// `best_ask`, since a crossing order is by definition a new best — or a
+/// front-of-book order reached its `activation_slot`, which the cross-activation
+/// `AtSlot` hint names precisely (`note_activation` min-folds every placement's,
+/// a migrating remainder's included).
+///
+/// **`min_payment` stays the market's `keeper_payment_lamports`**, the same
+/// price the maker×maker cross on that slot carries, because lamports are what
+/// relay measures: `assert_paid_v0` watches the payout account's lamport
+/// balance, and this crank pays the same reservoir lamports as every other CLOB
+/// crank. Its quote-denominated crank reward can legitimately be zero — a dust
+/// or equal-price improvement resolves for free by design — so pricing the
+/// condition above the lamport payout would make exactly those crosses
+/// undiscoverable, and a unit of dust in front of a gated remainder is enough to
+/// strand it for its whole life.
+///
+/// **The blocker-removal wake.** Two remainders can only face each other while
+/// something crosses the earlier one, so the moment their pair becomes
+/// resolvable is usually the *blocker's* removal rather than a new order's
+/// arrival. That moves a head u32 and fires the change-watch whenever the
+/// blocker is its side's head, which is the ordinary case. Two shapes it misses:
+/// a blocker sitting behind a better-priced order nothing can match yet (its
+/// removal rewrites an arena link, not the head), and a blocker that leaves the
+/// matchable set by passing its own `max_ts`, which is no write at all. The
+/// expire condition's `AtTimestamp` hint covers the second one hop earlier — it
+/// fires at that `max_ts`, and removing the expired order then moves the head —
+/// and the every-slots cross fallback is the floor under both, so a missed hint
+/// costs latency rather than liveness.
+pub(super) fn stage_taker_origin_cross(
+    ctx: &Context<ResolveClobCrank>,
+    clock: &Clock,
+) -> Result<Option<StagedCall>> {
+    let quoter = ctx.accounts.quoter.load()?;
+    if !quoter.is_active || !quoter.is_approved {
+        // The crank refuses a killed or unvetted entry, so there is no work to
+        // stage against one; reclaiming orders left on a dead book is the
+        // eviction and force-cancel paths'.
+        return Ok(None);
+    }
+    let cross = {
+        let data = ctx.accounts.clob_market.try_borrow_data()?;
+        find_taker_origin_cross(&data, clock.slot, clock.unix_timestamp)?
+    };
+    let Some(cross) = cross else {
+        return Ok(None);
+    };
+
+    let (protocol_user, protocol_user_stats) = pdas::protocol_user_pair();
+    let taker_ref = cross.taker_origin.user_ref();
+    let counterparty_ref = cross.counterparty.user_ref();
+    let (taker, taker_stats) = pdas::user_pair(&taker_ref.authority, taker_ref.sub_account_id);
+    // The protocol `User` is the filler on this path, and the crank loads each
+    // margin account exactly once, so it cannot also be a side of the cross it
+    // resolves.
+    if taker == protocol_user
+        || pdas::user(&counterparty_ref.authority, counterparty_ref.sub_account_id) == protocol_user
+    {
+        return Ok(None);
+    }
+    let (market_index, oracle, quote_spot_market_index) = {
+        let conditions = ctx.accounts.crank_conditions.load()?;
+        (
+            conditions.market_index,
+            conditions.oracle,
+            conditions.quote_spot_market_index,
+        )
+    };
+    Ok(Some(
+        crate::staged_call!(CrankTakerOriginCross {
+            state: ctx.accounts.state.key(),
+            authority: pdas::keeper_placeholder(),
+            filler: protocol_user,
+            filler_stats: protocol_user_stats,
+            taker,
+            taker_stats,
+            quoter: ctx.accounts.quoter.key(),
+            clob_market: ctx.accounts.clob_market.key(),
+            clob_program: quoter.program_id,
+            quoter_signer: pdas::quoter_signer(),
+            crank_conditions: Some(ctx.accounts.crank_conditions.key()),
+        })
+        // Both `(User, UserStats)` pairs derive from the nodes' own
+        // `(authority, sub_account_id)`, which is what the book stores them for.
+        .map_section(oracle, quote_spot_market_index, market_index)
+        .maker_refs([counterparty_ref])
+        .arg(market_index)?,
+    ))
 }

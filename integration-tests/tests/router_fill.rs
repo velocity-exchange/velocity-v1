@@ -6180,3 +6180,107 @@ fn fill_v1_rests_a_market_remainder_at_its_auction_bound() {
         "at the auction bound, not at a zero price"
     );
 }
+
+/// The arbitrage crank refuses a book holding a crossed taker remainder.
+///
+/// The book's own gate cannot cover this: the arb crank's first leg can
+/// consume the whole opposite side, after which nothing crosses the remainder
+/// and taking it is legitimate as far as the CLOB can tell — so the second leg
+/// would fill it at its own resting price and the improvement would land with
+/// the protocol, which is the outcome the taker-origin path exists to prevent.
+/// Relay never stages that, but the instruction is permissionless, so a
+/// hand-built one has to be refused.
+#[test]
+fn the_arb_crank_refuses_a_book_holding_a_crossed_taker_remainder() {
+    let mut fixture = setup();
+    pause_amm_fill(&mut fixture.svm);
+    const PAYMENT: u64 = 10_000;
+    let conditions = init_crank_conditions(&mut fixture, PAYMENT);
+    fixture.svm.airdrop(&conditions, 1_000_000_000).unwrap();
+    let protocol_user = set_protocol_user(&mut fixture.svm);
+    let (signer, _) = velocity_signer_pda();
+    let protocol_stats =
+        Pubkey::find_program_address(&[b"user_stats", signer.as_ref()], &velocity_id()).0;
+
+    let taker = party(&mut fixture.svm, 10_000 * SPOT_BALANCE_PRECISION_U64);
+    let maker = party(&mut fixture.svm, 10_000 * SPOT_BALANCE_PRECISION_U64);
+    // A migrated remainder bidding 101, crossed by a maker ask at 99.
+    rest_taker_origin_order(
+        &mut fixture,
+        &taker,
+        PositionDirection::Long,
+        101 * PRICE,
+        UNIT,
+    );
+    place_clob_order_for(
+        &mut fixture,
+        &maker,
+        PositionDirection::Short,
+        99 * PRICE,
+        UNIT / 2,
+    );
+    fixture.svm.warp_to_slot(20);
+    set_oracle(
+        &mut fixture.svm,
+        fixture.oracle,
+        (100 * PRICE_PRECISION) as i64,
+        20,
+    );
+
+    let payout = Pubkey::new_unique();
+    fixture.svm.airdrop(&payout, 1_000_000_000).unwrap();
+    let mut accounts = velocity::accounts::CrankCrossMatch {
+        state: state_pda(),
+        authority: payout,
+        taker: protocol_user,
+        taker_stats: protocol_stats,
+        crank_conditions: conditions,
+    }
+    .to_account_metas(None);
+    accounts.push(AccountMeta::new_readonly(fixture.oracle, false));
+    accounts.push(AccountMeta::new(spot_market_pda(0), false));
+    accounts.push(AccountMeta::new(perp_market_pda(0), false));
+    // Both owners loaded, which is what lets a hand-built call settle against
+    // the remainder at all.
+    accounts.push(AccountMeta::new(taker.user, false));
+    accounts.push(AccountMeta::new(taker.stats, false));
+    accounts.push(AccountMeta::new(maker.user, false));
+    accounts.push(AccountMeta::new(maker.stats, false));
+    accounts.push(AccountMeta::new_readonly(fixture.quoter, false));
+    accounts.push(AccountMeta::new(fixture.clob_market, false));
+    accounts.push(AccountMeta::new_readonly(quoter_signer_pda().0, false));
+    accounts.push(AccountMeta::new_readonly(clob_id(), false));
+
+    let ix = Instruction {
+        program_id: velocity_id(),
+        accounts,
+        data: velocity::instruction::CrankCrossMatch {
+            market_index: 0,
+            size: UNIT / 2,
+            buy_quoter_index: 0,
+            sell_quoter_index: 0,
+        }
+        .data(),
+    };
+    let keeper = fixture.keeper.insecure_clone();
+    let err = send_with_ixs(
+        &mut fixture.svm,
+        &keeper,
+        &[compute_unit_limit_ix(400_000), ix],
+        &[],
+    )
+    .expect_err("the arb crank must not touch a crossed remainder");
+    assert!(
+        format!("{:?}", err.meta.logs).contains("CrossedTakerRemainderPending"),
+        "unexpected: {:?}",
+        err.meta.logs
+    );
+
+    // Nothing moved: the remainder is still resting and unfilled.
+    let taker_account: User = read_zero_copy(&fixture.svm, &taker.user);
+    assert_eq!(
+        taker_account.perp_positions[0].base_asset_amount, 0,
+        "the remainder was not filled"
+    );
+    assert_eq!(clob_bid_count(&fixture.svm, &fixture.clob_market), 1);
+}

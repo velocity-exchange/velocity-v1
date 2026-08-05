@@ -20365,11 +20365,16 @@
     },
     {
       "code": 6383,
+      "name": "CrossedTakerRemainderPending",
+      "msg": "A crossed taker remainder must be resolved by crank_taker_origin_cross"
+    },
+    {
+      "code": 6384,
       "name": "NoTakerOriginCross",
       "msg": "No resolvable taker-origin cross on this book"
     },
     {
-      "code": 6384,
+      "code": 6385,
       "name": "TakerOriginCrossWorseForTaker",
       "msg": "Crossing would leave the taker worse off than its resting price"
     }

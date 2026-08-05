@@ -153,7 +153,7 @@ enum TakerOriginCrossKind {
 
 /// One resolvable cross: the aggressor (a taker-origin order) and the
 /// counterparty whose price the match settles at.
-struct TakerOriginCross {
+pub(crate) struct TakerOriginCross {
     taker_origin: ClobNodeView,
     taker_origin_node: u32,
     counterparty: ClobNodeView,
@@ -205,7 +205,11 @@ fn rested_first(a: &ClobNodeView, b: &ClobNodeView) -> bool {
 ///
 /// The one refused pair, leaving the book untouched: a counterparty owned by
 /// the taker (self-trade).
-fn find_taker_origin_cross(data: &[u8], slot: u64, now: i64) -> Result<Option<TakerOriginCross>> {
+pub(crate) fn find_taker_origin_cross(
+    data: &[u8],
+    slot: u64,
+    now: i64,
+) -> Result<Option<TakerOriginCross>> {
     let head = |offset: usize| -> Result<u32> {
         read_clob_u32(data, offset).ok_or_else(|| error!(ErrorCode::DefaultError))
     };

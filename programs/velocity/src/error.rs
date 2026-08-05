@@ -819,6 +819,8 @@ pub enum ErrorCode {
     SignedRouteMismatch,
     #[msg("A quoter the order's signed route names is absent from the fill")]
     SignedRouteEntryMissing,
+    #[msg("A crossed taker remainder must be resolved by crank_taker_origin_cross")]
+    CrossedTakerRemainderPending,
     #[msg("No resolvable taker-origin cross on this book")]
     NoTakerOriginCross,
     #[msg("Crossing would leave the taker worse off than its resting price")]

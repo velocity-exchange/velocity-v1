@@ -20371,11 +20371,16 @@ export type Velocity = {
     },
     {
       "code": 6383,
+      "name": "crossedTakerRemainderPending",
+      "msg": "A crossed taker remainder must be resolved by crank_taker_origin_cross"
+    },
+    {
+      "code": 6384,
       "name": "noTakerOriginCross",
       "msg": "No resolvable taker-origin cross on this book"
     },
     {
-      "code": 6384,
+      "code": 6385,
       "name": "takerOriginCrossWorseForTaker",
       "msg": "Crossing would leave the taker worse off than its resting price"
     }

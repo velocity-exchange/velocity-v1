@@ -192,6 +192,40 @@ pub fn handle_crank_cross_match<'c: 'info, 'info>(
         now: clock.unix_timestamp,
     };
 
+    // A crossed taker remainder is not this crank's to touch. The book's own
+    // gate cannot stop it: the first leg can consume the whole opposite side,
+    // after which nothing crosses the remainder any more and taking it becomes
+    // legitimate as far as the CLOB can tell — so the second leg fills it at
+    // its own resting price and the improvement lands with the protocol, which
+    // is exactly the outcome the taker-origin path exists to prevent. Relay
+    // never stages that (its resolver picks the taker-origin crank when the
+    // top pair is a remainder), but this instruction is permissionless, so a
+    // hand-built one has to be refused here.
+    //
+    // Refusing rather than skipping, because the caller has a correct
+    // instruction to send instead: `crank_taker_origin_cross` resolves this
+    // book and pays the taker the difference.
+    for quoter in quoters
+        .iter()
+        .zip(&executor.types)
+        .filter_map(|(loader, kind)| (*kind == QuoterType::Clob).then_some(loader))
+    {
+        let book = account_map
+            .get(&quoter.load()?.response_account)
+            .ok_or_else(|| error!(ErrorCode::DefaultError))?;
+        let data = book.try_borrow_data()?;
+        validate!(
+            super::crank_taker_origin_cross::find_taker_origin_cross(
+                &data,
+                clock.slot,
+                clock.unix_timestamp
+            )?
+            .is_none(),
+            ErrorCode::CrossedTakerRemainderPending,
+            "a crossed taker remainder must be resolved by crank_taker_origin_cross"
+        )?;
+    }
+
     let (base_matched, surplus) = controller::orders::cross_match(
         &state,
         market_index,

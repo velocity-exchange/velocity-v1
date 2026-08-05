@@ -65,6 +65,13 @@ pub const CLOB_CRANK_EXPIRE: usize = 1;
 pub const CLOB_CRANK_EXPIRE_FALLBACK: usize = 2;
 /// Index of the cross condition (the book's best bid/ask moved — a crossing
 /// order is by definition a new best, so the watch catches every new cross).
+///
+/// Its resolver answers for both cross cranks: a crossed taker remainder at the
+/// top of the book is staged as `crank_taker_origin_cross`, so the improvement
+/// reaches the taker, and anything else crossed as `crank_cross_match`. A
+/// `ResolvedCrankV0` names its own executor, so the second crank needs neither a
+/// slot of its own nor a second wake — the two wakes below are already the only
+/// ways a top-of-book cross can appear.
 pub const CLOB_CRANK_CROSS: usize = 3;
 /// Index of the cross fallback (periodic poll — the liveness floor for
 /// PropAMM-side crosses, which have no single account to watch).

@@ -1,13 +1,13 @@
 # Taker remainders on the CLOB, and the activation-slot auction
 
-Status: **built.** R1–R7 are live: the CLOB carries the marker, reports it on the removal wire and
+Status: **built.** R1–R8 are live: the CLOB carries the marker, reports it on the removal wire and
 protects a crossed remainder; velocity migrates restable remainders (`fill_perp_order_v1`,
 `place_and_take_v1`, `place_and_make_v1`) and resolves the cross with `crank_taker_origin_cross` —
-against an ordinary maker, and between two remainders (R3's price-time rule).
-Two things named below are deliberately still open — relay discovery (a condition that wakes a
-turner when a taker-origin cross appears; the crank is keeper-callable today) and open question C
-(market remainders still do not migrate). Design source of truth for the surrounding work is the
-Notion PropAMM doc; this is a focused proposal for one hole in it.
+against an ordinary maker, and between two remainders (R3's price-time rule) — and relay turners
+discover the crank through the market's existing cross conditions (R8). One thing named below is
+deliberately still open: open question C, market remainders still do not migrate. Design source of
+truth for the surrounding work is the Notion PropAMM doc; this is a focused proposal for one hole in
+it.
 
 ## The hole
 
@@ -183,6 +183,39 @@ A market configured at 0 has no auction window: its remainders can only be fille
 the landing race applies. That is a per-market configuration consequence worth stating in the
 admin surface, not a special case in the program.
 
+**R8 — Discovery, on the conditions that already exist.** The crank is permissionless, so something
+has to notice a resolvable cross; relay turners do, through the market's `CLOB_CRANK_CROSS`
+conditions, whose resolver stages `crank_taker_origin_cross` when the top of the matchable book is a
+crossed remainder and `crank_cross_match` otherwise. A `ResolvedCrankV0` names its own executor, so
+one condition slot serves both.
+
+No new slot and no new watch, because the crank only ever resolves the tops of the book: a
+taker-origin cross can newly appear either because a side's best moved — the cross condition's
+8-byte `OnAccountChange` over `best_bid`/`best_ask`, and a crossing order is by definition a new
+best — or because a front-of-book order reached its `activation_slot`, which the cross-activation
+`AtSlot` hint names precisely (min-folded at every placement, a migrating remainder's included).
+
+The ordering is the economics, not a preference: the improvement belongs to the order that came to
+trade, so it is handed over before the protocol middles the same crossed book as arbitrage. It also
+keeps the arb crank off a cross it must not run — see "what this replaces" below.
+
+`min_payment` on those conditions stays the market's `keeper_payment_lamports`. That is what relay
+measures (`assert_paid_v0` watches the payout account's lamport balance), and this crank pays the
+same reservoir lamports as every other. Pricing it above that would make exactly the crosses R5
+resolves for free undiscoverable, and a unit of dust in front of a gated remainder is enough to
+strand it for its whole life.
+
+The wake that needs care is the **both-remainders** case: two remainders can only face each other
+while something crosses the earlier one, so the moment the pair becomes resolvable is usually the
+*blocker's* removal rather than a new order's arrival. That moves a head pointer and fires the
+change-watch whenever the blocker is its side's head, which is the ordinary case. Two shapes it
+misses: a blocker sitting behind a better-priced order nothing can match yet, whose removal rewrites
+an arena link and not the head; and a blocker that leaves the matchable set by passing its own
+`max_ts`, which is no account write at all. The expire condition's `AtTimestamp` hint covers the
+second one hop earlier — it fires at that `max_ts`, and removing the expired order then moves the
+head — and the every-slots cross fallback is the floor under both, so a missed hint costs latency
+rather than liveness.
+
 ## What this replaces
 
 `cross_match`'s protocol-as-middleman only makes sense for two *maker* orders crossing, where
@@ -190,6 +223,18 @@ neither side is demanding liquidity and the spread is genuinely unclaimed arbitr
 taker-origin crosses price at the maker's side, the protocol's cut disappears from the case that
 matters most for user outcomes and remains only for maker×maker crosses. `min_cross_surplus`
 keeps floor-guarding those.
+
+**A crossed remainder is not depth the arb crank may cross, and its discovery no longer offers it
+one.** The cross resolver's crossing-prefix walk steps over a taker-origin node instead of counting
+its base. Both outcomes of counting it are wrong: usually the book withholds the remainder from
+`execute_v0`, the leg steps over it, the two legs imbalance, and the ordinary cross *in front of*
+the remainder is stuck for as long as it rests there; and when the first leg consumes the whole
+opposite side, nothing crosses the remainder any more by the time the second leg runs, so the book
+hands it over at its own resting price with the improvement going to the protocol `User` — the
+landing-race outcome R4 exists to prevent, arrived at from the other direction. Stepping over it
+restores the composition: the arb crank clears the front of the book, and the remainder's own cross
+is what the resolver answers with next. The velocity-side gate for a hand-built `crank_cross_match`
+aimed at a crossed remainder is a separate hole, still open.
 
 ## Changes required
 
@@ -240,6 +285,13 @@ keeps floor-guarding those.
 - Crank-fee accounting out of the improvement (`calculate_taker_origin_cross_fee`), and the R5
   invariant. R5 is indifferent to which branch resolved the cross: the reward is drawn from the same
   improvement, capped the same way, and a zero or dust improvement resolves for free either way.
+
+**Relay** — built.
+- No new condition or watch: the `CLOB_CRANK_CROSS` slot's resolver
+  (`resolve_crank_cross_match`) stages `crank_taker_origin_cross` when it finds a crossed remainder
+  and `crank_cross_match` otherwise, at the same `min_payment` (R8).
+- The crossing-prefix walk that feeds the arb crank steps over taker-origin nodes, so the two cranks
+  compose instead of the arb one being staged for a cross it cannot run.
 
 **SDK / keepers**
 - `getFillPerpOrderIx` gains the CLOB accounts (v1 route), mirroring the take builder.

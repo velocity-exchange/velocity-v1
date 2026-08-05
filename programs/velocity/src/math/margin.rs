@@ -1023,10 +1023,19 @@ pub fn calculate_user_equity(
             Some(LogMode::Margin),
         )?;
 
-        all_oracles_valid &=
-            is_oracle_valid_for_action(oracle_validity, Some(VelocityAction::MarginCalc))?;
+        let settled = market.status == MarketStatus::Settlement;
 
-        let valuation_price = if market.status == MarketStatus::Settlement {
+        // A settled market is valued at its expiry price. Its oracle does not
+        // enter the number, so its verdict must not enter the flag either,
+        // matching `calculate_user_equity_bounds`. A dead oracle on a settled
+        // market would otherwise permanently block every consumer that
+        // requires validity: the breaker trip, the reset, and cure transfers.
+        if !settled {
+            all_oracles_valid &=
+                is_oracle_valid_for_action(oracle_validity, Some(VelocityAction::MarginCalc))?;
+        }
+
+        let valuation_price = if settled {
             market.expiry_price
         } else {
             oracle_price_data.price
@@ -1073,11 +1082,21 @@ pub fn calculate_user_equity(
 ///
 /// `lower == upper == calculate_user_equity` when every oracle is valid, so
 /// normal operation is unchanged.
+///
+/// When a position has no positive candidate price at all (live and 5min twap
+/// both non-positive), no finite bound exists and the bounds **saturate**:
+/// `lower = i128::MIN` and `upper = i128::MAX`. Every floor comparison then
+/// resolves conservatively without arithmetic on the sentinels: an account
+/// that cannot be priced is below every restriction line and above every
+/// authorization line, so restrictions apply and authorizations do not, and
+/// the host instruction never aborts over it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct UserEquityBounds {
-    /// Worst-case net equity. Assets low, liabilities high.
+    /// Worst-case net equity. Assets low, liabilities high. `i128::MIN` when
+    /// saturated.
     pub lower: i128,
-    /// Best-case net equity. Assets high, liabilities low.
+    /// Best-case net equity. Assets high, liabilities low. `i128::MAX` when
+    /// saturated.
     pub upper: i128,
     /// False when any oracle this walk read is invalid for `MarginCalc`.
     pub all_oracles_valid: bool,
@@ -1116,6 +1135,7 @@ pub fn calculate_user_equity_bounds(
         upper: 0,
         all_oracles_valid: true,
     };
+    let mut unpriceable = false;
 
     for spot_position in user.spot_positions.iter() {
         if spot_position.is_available() {
@@ -1138,18 +1158,19 @@ pub fn calculate_user_equity_bounds(
         bounds.all_oracles_valid &= oracle_valid;
 
         let token_amount = spot_position.get_signed_token_amount(&spot_market)?;
-        let (price_a, price_b) = bound_prices(
+        match bound_prices(
             oracle_price_data.price,
             spot_market
                 .historical_oracle_data
                 .last_oracle_price_twap_5min,
             oracle_valid,
-        )?;
-
-        bounds.add(
-            get_token_value(token_amount, spot_market.decimals, price_a)?,
-            get_token_value(token_amount, spot_market.decimals, price_b)?,
-        )?;
+        ) {
+            Some((price_a, price_b)) => bounds.add(
+                get_token_value(token_amount, spot_market.decimals, price_a)?,
+                get_token_value(token_amount, spot_market.decimals, price_b)?,
+            )?,
+            None => unpriceable = true,
+        }
     }
 
     for market_position in user.perp_positions.iter() {
@@ -1181,13 +1202,18 @@ pub fn calculate_user_equity_bounds(
             )?;
             bounds.all_oracles_valid &= quote_oracle_valid;
 
-            let (quote_price_a, quote_price_b) = bound_prices(
+            let Some((quote_price_a, quote_price_b)) = bound_prices(
                 quote_oracle_price_data.price,
                 quote_spot_market
                     .historical_oracle_data
                     .last_oracle_price_twap_5min,
                 quote_oracle_valid,
-            )?;
+            ) else {
+                // No usable quote price: the position (and any isolated
+                // balance) is unpriceable; saturate rather than value it.
+                unpriceable = true;
+                continue;
+            };
 
             if market_position.is_isolated() {
                 let quote_token_amount = market_position
@@ -1241,14 +1267,21 @@ pub fn calculate_user_equity_bounds(
         let (valuation_price_a, valuation_price_b) = if settled {
             (market.expiry_price, market.expiry_price)
         } else {
-            bound_prices(
+            match bound_prices(
                 oracle_price_data.price,
                 market
                     .market_stats
                     .historical_oracle_data
                     .last_oracle_price_twap_5min,
                 oracle_valid,
-            )?
+            ) {
+                Some(pair) => pair,
+                None => {
+                    // No usable valuation price: saturate rather than value.
+                    unpriceable = true;
+                    continue;
+                }
+            }
         };
 
         let unrealized_funding = calculate_funding_payment(
@@ -1263,21 +1296,33 @@ pub fn calculate_user_equity_bounds(
         // Pnl is monotonic in the valuation price, and its quote value is
         // monotonic in the quote price. The extremes of the product therefore
         // sit at the corners of the two bound pairs, so the four corners cover
-        // every consistent price assignment.
+        // every consistent price assignment. Collapsed pairs (valid oracles,
+        // the common case) skip their second corner, so the all-valid walk
+        // does one pnl valuation and one multiply, matching
+        // `calculate_user_equity`.
         let mut pnl_value_lower = i128::MAX;
         let mut pnl_value_upper = i128::MIN;
 
-        for valuation_price in [valuation_price_a, valuation_price_b] {
+        let valuation_prices = [valuation_price_a, valuation_price_b];
+        let valuation_count = if valuation_price_a == valuation_price_b {
+            1
+        } else {
+            2
+        };
+        let quote_prices = [quote_price_a, quote_price_b];
+        let quote_count = if quote_price_a == quote_price_b { 1 } else { 2 };
+
+        for valuation_price in &valuation_prices[..valuation_count] {
             let (_, unrealized_pnl) = calculate_base_asset_value_and_pnl_with_oracle_price(
                 market_position,
-                valuation_price,
+                *valuation_price,
             )?;
 
             let pnl = unrealized_pnl.safe_add(unrealized_funding.cast()?)?;
 
-            for quote_price in [quote_price_a, quote_price_b] {
+            for quote_price in &quote_prices[..quote_count] {
                 let pnl_value = pnl
-                    .safe_mul(quote_price.cast()?)?
+                    .safe_mul((*quote_price).cast()?)?
                     .safe_div(PRICE_PRECISION_I128)?;
 
                 pnl_value_lower = pnl_value_lower.min(pnl_value);
@@ -1288,21 +1333,38 @@ pub fn calculate_user_equity_bounds(
         bounds.add(pnl_value_lower, pnl_value_upper)?;
     }
 
+    // An unpriceable position admits no finite bound, so the whole account
+    // doesn't: saturate. `lower` sits below every floor (restrictions apply)
+    // and `upper` above every floor (no authorization), with no arithmetic
+    // performed on the sentinels.
+    if unpriceable {
+        bounds.lower = i128::MIN;
+        bounds.upper = i128::MAX;
+    }
+
     Ok(bounds)
 }
 
 /// The two prices that bound an unpriceable position: the live price and the
 /// 5-minute twap. Returns the live price twice when the oracle is valid, which
 /// collapses both bounds onto the exact value.
-fn bound_prices(price: i64, twap_5min: i64, oracle_valid: bool) -> VelocityResult<(i64, i64)> {
+///
+/// Never errors: this runs inside shared paths (a maker's gate inside another
+/// taker's fill), so a garbage price must degrade, not abort the host. A
+/// non-positive candidate is dropped; with one candidate left the pair
+/// collapses onto it; with none the position is unpriceable and the caller
+/// saturates the bounds instead (see [`calculate_user_equity_bounds`]).
+fn bound_prices(price: i64, twap_5min: i64, oracle_valid: bool) -> Option<(i64, i64)> {
     if oracle_valid {
-        return Ok((price, price));
+        return Some((price, price));
     }
 
-    let strict_price = StrictOraclePrice::new(price, twap_5min, true);
-    strict_price.validate()?;
-
-    Ok((strict_price.min(), strict_price.max()))
+    match (price > 0, twap_5min > 0) {
+        (true, true) => Some((price.min(twap_5min), price.max(twap_5min))),
+        (false, true) => Some((twap_5min, twap_5min)),
+        (true, false) => Some((price, price)),
+        (false, false) => None,
+    }
 }
 
 /// Net equity bounds for the equity-floor gates: [`calculate_user_equity_bounds`]

@@ -992,6 +992,9 @@ pub fn handle_transfer_deposit_by_delegate<'c: 'info, 'info>(
 
         // Cure eligibility must not be decided off an invalid price, matching
         // the validity the trip and the reset require of the same metric.
+        // Deliberately a blanket reject rather than the bounded metric the
+        // floor gates use: this is a standalone instruction (no innocent
+        // third party to abort), and failing frozen is the right direction.
         validate!(
             to_user_oracles_valid,
             ErrorCode::InvalidOracle,

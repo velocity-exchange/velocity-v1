@@ -4126,6 +4126,112 @@ mod calculate_user_equity {
     }
 
     #[test]
+    pub fn settled_market_dead_oracle_does_not_poison_the_verdict() {
+        // A settled market is valued at its expiry price; its oracle does not
+        // enter the number, so its verdict must not enter the flag. Settled
+        // markets are exactly where feeds die, and every consumer that
+        // requires validity (breaker trip, reset, cure transfers) would
+        // otherwise be permanently blocked for any account still holding the
+        // settled position.
+        let slot = 100_000_u64; // far past the posted slot: oracle stale
+
+        let mut oracle_price = get_pyth_price(100, 6);
+        let oracle_price_key =
+            Pubkey::from_str("J83w4HKfqxwcq3BEMMkPFSppX3gqekLyLJBexebFVkix").unwrap();
+        create_anchor_account_info!(
+            oracle_price,
+            &oracle_price_key,
+            PythLazerOracle,
+            oracle_account_info
+        );
+        let mut oracle_map = OracleMap::load_one(&oracle_account_info, slot, None).unwrap();
+
+        let mut market = PerpMarket {
+            amm: AMM {
+                base_asset_reserve: 100 * AMM_RESERVE_PRECISION,
+                quote_asset_reserve: 100 * AMM_RESERVE_PRECISION,
+                sqrt_k: 100 * AMM_RESERVE_PRECISION,
+                peg_multiplier: 100 * PEG_PRECISION,
+                max_slippage_ratio: 50,
+                max_fill_reserve_fraction: 100,
+                base_spread: 0,
+                ..AMM::default()
+            },
+            margin_ratio_initial: 2000,
+            margin_ratio_maintenance: 1000,
+            status: MarketStatus::Settlement,
+            expiry_price: 95 * PRICE_PRECISION_I64,
+            order_step_size: 1000,
+            order_tick_size: 1,
+            oracle: oracle_price_key,
+            oracle_source: crate::state::oracle::OracleSource::PythLazer,
+            market_stats: MarketStats {
+                historical_oracle_data: HistoricalOracleData {
+                    last_oracle_price: (100 * PRICE_PRECISION) as i64,
+                    last_oracle_price_twap: (100 * PRICE_PRECISION) as i64,
+                    last_oracle_price_twap_5min: (100 * PRICE_PRECISION) as i64,
+                    ..HistoricalOracleData::default()
+                },
+                ..MarketStats::default()
+            },
+            ..PerpMarket::default_test()
+        };
+        market.amm.max_base_asset_reserve = u128::MAX;
+        market.amm.min_base_asset_reserve = 0;
+
+        create_anchor_account_info!(market, PerpMarket, market_account_info);
+        let market_map = PerpMarketMap::load_one(&market_account_info, true).unwrap();
+
+        let mut usdc_spot_market = SpotMarket {
+            market_index: 0,
+            oracle_source: OracleSource::QuoteAsset,
+            cumulative_deposit_interest: SPOT_CUMULATIVE_INTEREST_PRECISION,
+            decimals: 6,
+            initial_asset_weight: SPOT_WEIGHT_PRECISION,
+            maintenance_asset_weight: SPOT_WEIGHT_PRECISION,
+            deposit_balance: 10000 * SPOT_BALANCE_PRECISION,
+            liquidator_fee: 0,
+            historical_oracle_data: HistoricalOracleData {
+                last_oracle_price_twap: PRICE_PRECISION_I64,
+                last_oracle_price_twap_5min: PRICE_PRECISION_I64,
+                ..HistoricalOracleData::default()
+            },
+            ..SpotMarket::default()
+        };
+        create_anchor_account_info!(usdc_spot_market, SpotMarket, usdc_spot_market_account_info);
+        let spot_market_account_infos = Vec::from([&usdc_spot_market_account_info]);
+        let spot_market_map =
+            SpotMarketMap::load_multiple(spot_market_account_infos, true).unwrap();
+
+        let mut spot_positions = [SpotPosition::default(); 8];
+        spot_positions[0] = SpotPosition {
+            market_index: 0,
+            balance_type: SpotBalanceType::Deposit,
+            scaled_balance: 10 * SPOT_BALANCE_PRECISION_U64,
+            ..SpotPosition::default()
+        };
+        let user = User {
+            orders: [Order::default(); 32],
+            perp_positions: get_positions(PerpPosition {
+                market_index: 0,
+                base_asset_amount: BASE_PRECISION_I64,
+                quote_asset_amount: -90 * QUOTE_PRECISION_I64,
+                ..PerpPosition::default()
+            }),
+            spot_positions,
+            ..User::default()
+        };
+
+        let (net_usd_value, all_oracles_valid) =
+            calculate_user_equity(&user, &market_map, &spot_market_map, &mut oracle_map).unwrap();
+
+        // valued at expiry 95: pnl 95 - 90 = 5, plus the 10 deposit
+        assert_eq!(net_usd_value, 15_000_000);
+        // the dead oracle on the settled market does not poison the verdict
+        assert!(all_oracles_valid);
+    }
+
+    #[test]
     pub fn usdc_deposit_negative_perp_pnl() {
         let slot = 0_u64;
 
@@ -4337,7 +4443,16 @@ mod calculate_user_equity_bounds {
     /// its 5 minute twap sits at 110, so the two bound prices differ. The
     /// oracle goes stale when `slot` runs far past the posted slot.
     fn run_scenario(balance_type: SpotBalanceType, slot: u64) -> (UserEquityBounds, i128, bool) {
-        let mut sol_oracle_price = get_pyth_price(100, 6);
+        run_scenario_with_prices(balance_type, slot, 100, 110 * PRICE_PRECISION_I64)
+    }
+
+    fn run_scenario_with_prices(
+        balance_type: SpotBalanceType,
+        slot: u64,
+        live_price: i64,
+        twap_5min: i64,
+    ) -> (UserEquityBounds, i128, bool) {
+        let mut sol_oracle_price = get_pyth_price(live_price, 6);
         let sol_oracle_price_key =
             Pubkey::from_str("J83w4HKfqxwcq3BEMMkPFSppX3gqekLyLJBexebFVkix").unwrap();
         create_anchor_account_info!(
@@ -4381,7 +4496,7 @@ mod calculate_user_equity_bounds {
                 // genuinely valid. Only the 5 minute twap diverges, which is
                 // the pair the bounds use.
                 last_oracle_price_twap: 100 * PRICE_PRECISION_I64,
-                last_oracle_price_twap_5min: 110 * PRICE_PRECISION_I64,
+                last_oracle_price_twap_5min: twap_5min,
                 ..HistoricalOracleData::default()
             },
             ..SpotMarket::default()
@@ -4477,6 +4592,42 @@ mod calculate_user_equity_bounds {
                 assert!(bounds.lower <= bounds.upper);
             }
         }
+    }
+
+    #[test]
+    fn unseeded_5min_twap_falls_back_to_live_price_without_error() {
+        // A stale oracle on a market whose 5min twap was never seeded is the
+        // reachable degenerate pair. The bounds walk must degrade on it, not
+        // error: it runs inside shared paths (a maker's gate inside another
+        // taker's fill). The single positive candidate (the live price)
+        // prices both bounds.
+        let (bounds, _, live_valid) =
+            run_scenario_with_prices(SpotBalanceType::Borrow, 100_000, 100, 0);
+
+        assert!(!live_valid);
+        assert!(!bounds.all_oracles_valid);
+        // borrow priced at the live 100 in both bounds: 10,000 - 9,000 = 1,000
+        assert_eq!(bounds.lower, 1_000_000_000);
+        assert_eq!(bounds.upper, 1_000_000_000);
+    }
+
+    #[test]
+    fn bound_prices_never_errors() {
+        // A non-positive candidate is dropped; one candidate collapses the
+        // pair; none is None, which the walk turns into saturated bounds.
+        // (Non-positive prices cannot currently reach the walk through the
+        // oracle map, whose validity math errors on them first; this pins the
+        // helper as total anyway so it can never abort a host instruction.)
+        use crate::math::margin::bound_prices;
+
+        assert_eq!(bound_prices(100, 110, false), Some((100, 110)));
+        assert_eq!(bound_prices(110, 100, false), Some((100, 110)));
+        assert_eq!(bound_prices(100, 0, false), Some((100, 100)));
+        assert_eq!(bound_prices(0, 110, false), Some((110, 110)));
+        assert_eq!(bound_prices(0, 0, false), None);
+        assert_eq!(bound_prices(-1, -1, false), None);
+        // a valid oracle passes through untouched, twap ignored
+        assert_eq!(bound_prices(100, 0, true), Some((100, 100)));
     }
 }
 

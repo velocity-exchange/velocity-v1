@@ -470,7 +470,10 @@ export class EquityFloorGuardBot implements Bot {
 				// until the oracle recovers. During an oracle outage this is
 				// exactly the state worth alerting on, so it must not drown
 				// in generic sim-error noise.
-				if (simErrorText.includes('"Custom":6035') || simErrorText.includes('0x1793')) {
+				if (
+					simErrorText.includes('"Custom":6035') ||
+					simErrorText.includes('0x1793')
+				) {
 					const message =
 						`${this.name}: trip for ${authorityKey} blocked by invalid oracle; ` +
 						`account is breached but unprovable until the feed recovers, retrying`;

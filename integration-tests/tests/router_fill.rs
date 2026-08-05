@@ -277,6 +277,22 @@ fn clob_bid_count(svm: &litesvm::LiteSVM, market: &Pubkey) -> u32 {
     u32::from_le_bytes(data[136..140].try_into().unwrap())
 }
 
+/// The price of the best resting bid, read through the same node offsets the
+/// program uses so a header change breaks both together.
+fn clob_best_bid_price(svm: &litesvm::LiteSVM, market: &Pubkey) -> Option<u64> {
+    use velocity::state::prop_amm::{read_clob_node, CLOB_BEST_BID_OFFSET, CLOB_NIL};
+    let data = svm.get_account(market).unwrap().data;
+    let head = u32::from_le_bytes(
+        data[CLOB_BEST_BID_OFFSET..CLOB_BEST_BID_OFFSET + 4]
+            .try_into()
+            .unwrap(),
+    );
+    if head == CLOB_NIL {
+        return None;
+    }
+    read_clob_node(&data, head).map(|node| node.price)
+}
+
 /// Init a CLOB book with `place_authority` = the velocity signer, so every
 /// placement must come through velocity.
 fn init_clob_book(svm: &mut litesvm::LiteSVM, clob_admin: &Keypair) -> Pubkey {
@@ -5671,5 +5687,154 @@ fn the_aggressors_own_leftover_goes_back_on_its_side() {
         paid < 50_500_000 + 50_500,
         "crossing cost {paid}, resting would have cost {}",
         50_500_000 + 50_500
+    );
+}
+
+/// A market order's remainder rests at the bound it already accepted.
+///
+/// Its own `price` is zero, so `auction_end_price` — the worst fill it agreed
+/// to — is the only price it can rest at. Resting there is safe only because
+/// the migrated order is taker-origin: a maker arriving during the activation
+/// window has to beat it on price, and the cross pays the taker the
+/// difference, rather than the order being a free option for whoever lands
+/// first.
+#[test]
+fn fill_v1_rests_a_market_remainder_at_its_auction_bound() {
+    let mut fixture = setup();
+
+    let maker_stats = Pubkey::find_program_address(
+        &[
+            b"user_stats",
+            fixture.clob_maker_authority.pubkey().as_ref(),
+        ],
+        &velocity_id(),
+    )
+    .0;
+    set_user_stats_account(
+        &mut fixture.svm,
+        maker_stats,
+        &fixture.clob_maker_authority.pubkey(),
+    );
+    // The vAMM is in every fill's mandatory baseline and quotes deep enough to
+    // absorb a market order outright, so there is no remainder to migrate
+    // unless it is out of the picture — which is the real-world case too: a
+    // market remainder survives only when the taker's bound is tighter than
+    // the curve.
+    pause_amm_fill(&mut fixture.svm);
+    // Half a unit of book liquidity against a one-unit market order.
+    place_clob_ask(&mut fixture, 99 * PRICE, UNIT / 2);
+
+    let taker_authority = Keypair::new();
+    let taker_user = Pubkey::new_unique();
+    let taker_stats = Pubkey::new_unique();
+    let mut taker_order = Order::default();
+    taker_order.order_id = 1;
+    taker_order.status = OrderStatus::Open;
+    taker_order.order_type = OrderType::Market;
+    taker_order.market_type = MarketType::Perp;
+    taker_order.market_index = 0;
+    taker_order.direction = PositionDirection::Long;
+    taker_order.base_asset_amount = UNIT;
+    // A market order carries no price of its own; the auction end is its bound.
+    taker_order.price = 0;
+    taker_order.auction_start_price = (99 * PRICE) as i64;
+    // Under the oracle, so the vAMM cannot fill and the remainder survives.
+    taker_order.auction_end_price = (99 * PRICE + PRICE / 2) as i64;
+    let mut taker_state = trading_user(
+        &taker_authority.pubkey(),
+        10_000 * SPOT_BALANCE_PRECISION_U64,
+        Some(taker_order),
+    );
+    taker_state.next_order_id = 2;
+    set_user_account(&mut fixture.svm, taker_user, &taker_state);
+    set_user_stats_account(&mut fixture.svm, taker_stats, &taker_authority.pubkey());
+
+    let filler_user = Pubkey::new_unique();
+    let filler_stats = Pubkey::new_unique();
+    set_user_account(
+        &mut fixture.svm,
+        filler_user,
+        &trading_user(&fixture.keeper.pubkey(), 0, None),
+    );
+    set_user_stats_account(&mut fixture.svm, filler_stats, &fixture.keeper.pubkey());
+    fixture.svm.warp_to_slot(12);
+    set_oracle(
+        &mut fixture.svm,
+        fixture.oracle,
+        (100 * PRICE_PRECISION) as i64,
+        12,
+    );
+
+    let (quoter_signer, _) = quoter_signer_pda();
+    let mut accounts = velocity::accounts::FillOrderV1 {
+        state: state_pda(),
+        authority: fixture.keeper.pubkey(),
+        filler: filler_user,
+        filler_stats,
+        user: taker_user,
+        user_stats: taker_stats,
+        quoter: fixture.quoter,
+        clob_market: fixture.clob_market,
+        clob_program: clob_id(),
+        quoter_signer,
+        crank_conditions: None,
+    }
+    .to_account_metas(None);
+    accounts.push(AccountMeta::new_readonly(fixture.oracle, false));
+    accounts.push(AccountMeta::new(spot_market_pda(0), false));
+    accounts.push(AccountMeta::new(perp_market_pda(0), false));
+    accounts.push(AccountMeta::new(fixture.clob_maker_user, false));
+    accounts.push(AccountMeta::new(maker_stats, false));
+    accounts.push(AccountMeta::new_readonly(fixture.quoter, false));
+    accounts.push(AccountMeta::new(fixture.clob_market, false));
+    accounts.push(AccountMeta::new_readonly(quoter_signer, false));
+    accounts.push(AccountMeta::new_readonly(clob_id(), false));
+
+    let ix = Instruction {
+        program_id: velocity_id(),
+        accounts,
+        data: velocity::instruction::FillPerpOrderV1 {
+            order_id: Some(1),
+            _maker_order_id: None,
+            signed_route: vec![],
+            market_index: 0,
+        }
+        .data(),
+    };
+    send_with_ixs(
+        &mut fixture.svm,
+        &fixture.keeper,
+        &[compute_unit_limit_ix(400_000), ix],
+        &[],
+    )
+    .unwrap();
+
+    let taker: User = read_zero_copy(&fixture.svm, &taker_user);
+    assert_eq!(
+        taker.perp_positions[0].base_asset_amount,
+        (UNIT / 2) as i64,
+        "took the book's half"
+    );
+    assert!(
+        taker
+            .orders
+            .iter()
+            .all(|order| order.status != OrderStatus::Open),
+        "nothing left on the DLOB"
+    );
+    assert_eq!(
+        taker.perp_positions[0].open_bids,
+        (UNIT / 2) as i64,
+        "the remainder is reserved against the book"
+    );
+    let (bid_count, best_bid) = (
+        clob_bid_count(&fixture.svm, &fixture.clob_market),
+        clob_best_bid_price(&fixture.svm, &fixture.clob_market),
+    );
+    assert_eq!(bid_count, 1, "and rests there");
+    assert_eq!(
+        best_bid,
+        Some(99 * PRICE + PRICE / 2),
+        "at the auction bound, not at a zero price"
     );
 }

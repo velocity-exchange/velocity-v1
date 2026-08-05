@@ -330,20 +330,41 @@ fn fill_order<'c: 'info, 'info>(
                 .get_perp_position(market_index)
                 .map(|position| position.base_asset_amount)
                 .unwrap_or(0);
-            (order.status == OrderStatus::Open
-                && order.order_type == OrderType::Limit
-                && !order.has_oracle_price_offset()
-                && !order.reduce_only)
-                .then(|| {
-                    (
-                        order.direction,
-                        order.price,
-                        order
-                            .get_base_asset_amount_unfilled(Some(position_base))
-                            .unwrap_or(0),
-                        order.max_ts,
-                    )
-                })
+            if order.status != OrderStatus::Open
+                || order.has_oracle_price_offset()
+                || order.reduce_only
+            {
+                return Ok(());
+            }
+            // A `Market` order's own `price` is 0 — its bound lives in
+            // `auction_end_price`, the worst fill it already agreed to. That
+            // is the only price it can rest at, and resting there is safe
+            // *because* a migrated remainder is taker-origin: it cannot be
+            // taken while a live counterparty crosses it, and a cross settles
+            // at the counterparty's price, so a maker that lines up during the
+            // activation window competes on price rather than on transaction
+            // landing. Without that protection this would be a free option
+            // written at the taker's own worst price.
+            //
+            // `Oracle` and the trigger variants are excluded: an
+            // oracle-floating price has nothing fixed to rest at, and a
+            // trigger has its own placement path.
+            let rest_price = match order.order_type {
+                OrderType::Limit => order.price,
+                OrderType::Market => order.auction_end_price.max(0).unsigned_abs(),
+                _ => return Ok(()),
+            };
+            if rest_price == 0 {
+                return Ok(());
+            }
+            Some((
+                order.direction,
+                rest_price,
+                order
+                    .get_base_asset_amount_unfilled(Some(position_base))
+                    .unwrap_or(0),
+                order.max_ts,
+            ))
         };
         if let Some((direction, price, unfilled, max_ts)) = remainder {
             if unfilled > 0 {

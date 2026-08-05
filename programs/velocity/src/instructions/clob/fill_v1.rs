@@ -18,11 +18,16 @@
 //! because the market's canonical CLOB is a mandatory baseline. Only
 //! `crank_conditions` is new, and it is optional here as everywhere else.
 //!
-//! Market-order remainders are deliberately *not* migrated. Their only price
-//! is `auction_end_price` — a slippage bound, not a price the taker wants to
-//! trade at — and resting one on the book is safe only once a taker-origin
-//! cross pays the taker the improvement rather than whoever lands a
-//! transaction at the activation slot. See `docs/taker-remainder-auction.md`.
+//! A market-order remainder migrates too, resting at `auction_end_price` —
+//! the worst fill it already agreed to, and the only price it has. That is
+//! only safe because a migrated remainder is taker-origin: it cannot be taken
+//! while a live counterparty crosses it, and a cross settles at the
+//! counterparty's price, so a maker arriving during the activation window
+//! competes on price instead of on transaction landing. Resting at a slippage
+//! bound without that is a free option written at the taker's worst price.
+//!
+//! Oracle-offset orders still do not migrate — an oracle-floating price has
+//! nothing fixed to rest at. See `docs/taker-remainder-auction.md`.
 
 use {
     crate::{

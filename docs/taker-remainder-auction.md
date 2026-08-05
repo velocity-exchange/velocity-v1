@@ -173,10 +173,18 @@ lamports, exactly as it does for every other CLOB crank.
 The one hard refusal is a cross that would leave the taker *worse off* than resting, which takes a
 taker fee above 100% to reach (the extra fee on the better price is `rate × improvement`).
 
-**R6 — Rest price.** For a limit remainder, the order's own limit. For a market remainder,
-`auction_end_price` is the only price available, and R1–R5 are what make resting there safe
-rather than a free option — the order cannot be picked off before its activation slot, and at
-that slot the best resting counterparty wins on price.
+**R6 — Rest price. Built.** For a limit remainder, the order's own limit. For a market
+remainder, `auction_end_price` — its own `price` is zero, and the auction end is the worst fill
+it already agreed to. R2–R5 are what make resting there safe rather than a free option: the
+order cannot be taken while a counterparty crosses it, and a cross settles at the counterparty's
+price, so a maker arriving in the activation window competes on price rather than on transaction
+landing. Oracle-offset orders do not migrate — an oracle-floating price has nothing fixed to
+rest at.
+
+A market remainder only exists when the taker's bound is tighter than the vAMM's price: the vAMM
+is in every fill's mandatory baseline and quotes deep enough to absorb a market order outright,
+so a taker with room to reach the curve simply fills. That is also the case where resting at the
+bound matters most — it is the one the taker cannot otherwise complete.
 
 **R7 — Activation delay.** The market's `default_activation_delay_slots`, as with any placement.
 A market configured at 0 has no auction window: its remainders can only be filled by taking, and

@@ -1527,19 +1527,51 @@ export class User {
 
 	/**
 	 * True when the account has an admin-set `equityFloor` and its net equity
-	 * (`getNetUsdValue`: unweighted assets and perp PnL minus unweighted spot
-	 * liabilities, at live oracle prices) is below it. This is the trip
-	 * threshold of the permissionless `tripEquityFloorBreaker`; action gating
-	 * happens at `equityFloor + equityFloorBuffer` (see
-	 * `isBelowBufferedEquityFloor`). Mirrors `User::is_below_equity_floor`
-	 * onchain.
+	 * (unweighted assets and perp PnL minus unweighted spot liabilities) is below
+	 * it. This is the trip threshold of the permissionless `tripEquityFloorBreaker`;
+	 * action gating happens at `equityFloor + equityFloorBuffer` (see
+	 * `isBelowBufferedEquityFloor`). Mirrors `User::is_below_equity_floor` onchain.
+	 *
+	 * Pass `slot` to predict the onchain gates exactly. They compare the LOWER
+	 * equity bound, so an invalid oracle cannot price the account up through the
+	 * floor. Without a slot this assumes valid oracles, where the bounds collapse
+	 * onto the exact value and the two answers agree.
 	 */
-	public isBelowEquityFloor(): boolean {
+	public isBelowEquityFloor(slot?: BN): boolean {
 		const equityFloor = this.getUserAccountOrThrow().equityFloor;
 		if (equityFloor.lte(ZERO)) {
 			return false;
 		}
-		return this.getNetUsdValue().lt(equityFloor);
+		const netEquity = slot
+			? this.getNetUsdValueBounds(slot).lower
+			: this.getNetUsdValue();
+		return netEquity.lt(equityFloor);
+	}
+
+	/**
+	 * True when the equity floor authorizes a keeper to force-cancel this account's
+	 * orders. Mirrors the `force_cancel_orders` arm of the onchain gate.
+	 *
+	 * This is the one floor consumer that reads the UPPER bound, and it is the only
+	 * one that also requires `allOraclesValid`. Everywhere else, being below the
+	 * floor restricts the account, so the lower bound is what fails closed. Here it
+	 * AUTHORIZES a third party against the account, so the conservative direction
+	 * flips: a bad price must not manufacture that authorization.
+	 *
+	 * The onchain instruction also authorizes on a breached maintenance margin, and
+	 * that arm is independent of this one. A `false` here does not mean the keeper
+	 * cannot force-cancel.
+	 */
+	public isForceCancelAuthorizedByEquityFloor(slot: BN): boolean {
+		const equityFloor = this.getUserAccountOrThrow().equityFloor;
+		if (equityFloor.lte(ZERO)) {
+			return false;
+		}
+		const bounds = this.getNetUsdValueBounds(slot);
+		if (!bounds.allOraclesValid) {
+			return false;
+		}
+		return bounds.upper.lt(equityFloor);
 	}
 
 	/**
@@ -1577,34 +1609,41 @@ export class User {
 	}
 
 	/**
-	 * Net equity (`getNetUsdValue`) in excess of the admin-set `equityFloor`,
-	 * floored at zero (QUOTE_PRECISION). Unbounded (`null`) when no floor is set.
-	 * This is headroom above the trip threshold; headroom above the level
-	 * risk-increasing actions must clear is `getEquityAboveBufferedFloor`.
+	 * Net equity in excess of the admin-set `equityFloor`, floored at zero
+	 * (QUOTE_PRECISION). Unbounded (`null`) when no floor is set. This is headroom
+	 * above the trip threshold; headroom above the level risk-increasing actions
+	 * must clear is `getEquityAboveBufferedFloor`.
+	 *
+	 * Pass `slot` to measure headroom the way the gates do, from the lower bound. An
+	 * invalid oracle then reduces reported headroom instead of inflating it.
 	 */
-	public getEquityAboveFloor(): BN | null {
+	public getEquityAboveFloor(slot?: BN): BN | null {
 		const equityFloor = this.getUserAccountOrThrow().equityFloor;
 		if (equityFloor.lte(ZERO)) {
 			return null;
 		}
-		return BN.max(this.getNetUsdValue().sub(equityFloor), ZERO);
+		const netEquity = slot
+			? this.getNetUsdValueBounds(slot).lower
+			: this.getNetUsdValue();
+		return BN.max(netEquity.sub(equityFloor), ZERO);
 	}
 
 	/**
-	 * Net equity (`getNetUsdValue`) in excess of `equityFloor +
-	 * equityFloorBuffer`, floored at zero (QUOTE_PRECISION). Unbounded
-	 * (`null`) when no floor is set. When this reaches zero, risk-increasing
-	 * actions start rejecting.
+	 * Net equity in excess of `equityFloor + equityFloorBuffer`, floored at zero
+	 * (QUOTE_PRECISION). Unbounded (`null`) when no floor is set. When this reaches
+	 * zero, risk-increasing actions start rejecting.
+	 *
+	 * Pass `slot` to measure headroom the way the gates do, from the lower bound.
 	 */
-	public getEquityAboveBufferedFloor(): BN | null {
+	public getEquityAboveBufferedFloor(slot?: BN): BN | null {
 		const equityFloor = this.getUserAccountOrThrow().equityFloor;
 		if (equityFloor.lte(ZERO)) {
 			return null;
 		}
-		return BN.max(
-			this.getNetUsdValue().sub(this.getBufferedEquityFloor()),
-			ZERO
-		);
+		const netEquity = slot
+			? this.getNetUsdValueBounds(slot).lower
+			: this.getNetUsdValue();
+		return BN.max(netEquity.sub(this.getBufferedEquityFloor()), ZERO);
 	}
 
 	/**

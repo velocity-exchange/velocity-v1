@@ -613,7 +613,7 @@ jobs:
             target/deploy
             target/idl/velocity.json
             target/types/velocity.ts
-          key: ${{ runner.os }}-velocity-program-anchortest-ltothin-cu16-v2-anchor${{ env.ANCHOR_VERSION }}-rust${{ env.RUST_TOOLCHAIN }}-${{ hashFiles('programs/**', 'Cargo.toml', 'Cargo.lock', 'Anchor.toml') }}
+          key: ${{ runner.os }}-velocity-program-anchortest-ltothin-cu16-anchor${{ env.ANCHOR_VERSION }}-rust${{ env.RUST_TOOLCHAIN }}-${{ hashFiles('programs/**', 'Cargo.toml', 'Cargo.lock', 'Anchor.toml') }}
 
       # Only recompile when the program sources changed (cache miss). bankrun's
       # startAnchor loads velocity/pyth/token_faucet from target/deploy, so the
@@ -635,6 +635,19 @@ jobs:
           rm -rf target/sbpf-solana-solana target/deploy
           anchor build --ignore-keys --skip-lint -- --features anchor-test
 
+      # Save the compiled program cache only on a cache miss AND only when the
+      # build succeeded — prevents a partial build (e.g. IDL gen failed after
+      # .so was emitted) from poisoning subsequent runs with the same key.
+      - name: Save compiled program cache
+        if: steps.cache-program.outputs.cache-hit != 'true' && success()
+        uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        with:
+          path: |
+            target/deploy
+            target/idl/velocity.json
+            target/types/velocity.ts
+          key: ${{ runner.os }}-velocity-program-anchortest-ltothin-cu16-anchor${{ env.ANCHOR_VERSION }}-rust${{ env.RUST_TOOLCHAIN }}-${{ hashFiles('programs/**', 'Cargo.toml', 'Cargo.lock', 'Anchor.toml') }}
+
       # run-anchor-tests.sh --skip-build syncs the freshly built/restored IDL
       # into packages/sdk/src/idl and builds the SDK before running the suites:
       # most test files import `../packages/sdk/src/...` (transpiled on the fly by
@@ -646,30 +659,6 @@ jobs:
         env:
           RUST_LOG: solana_runtime::message_processor::stable_log=info
         run: bash test-scripts/run-anchor-tests.sh --skip-build
-
-      # Save AFTER the suite, not before it. A build that compiles is not the same
-      # as a build the tests accept, and a restored artifact is only worth serving
-      # if the suite it produced was green.
-      #
-      # This ordering was a real failure, not a hypothetical. On PR #364 the same
-      # cache key was a MISS on one run (fresh build, suite green, entry saved) and
-      # a HIT on the next (restored artifact, `spotDepositWithdraw.ts` failed twice
-      # on the interest-accrual assertions). Program sources were byte-identical
-      # across the two runs, the second commit touched no Rust, and the suite
-      # passes locally at that commit on a fresh build. So a published entry can
-      # produce a failing suite even though the build step succeeded, and saving
-      # before the suite is what let it be published.
-      #
-      # `success()` still gates the save, so a failing suite now also blocks it.
-      - name: Save compiled program cache
-        if: steps.cache-program.outputs.cache-hit != 'true' && success()
-        uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
-        with:
-          path: |
-            target/deploy
-            target/idl/velocity.json
-            target/types/velocity.ts
-          key: ${{ runner.os }}-velocity-program-anchortest-ltothin-cu16-v2-anchor${{ env.ANCHOR_VERSION }}-rust${{ env.RUST_TOOLCHAIN }}-${{ hashFiles('programs/**', 'Cargo.toml', 'Cargo.lock', 'Anchor.toml') }}
   vault-tests:
     name: Vault tests
     needs: changes
@@ -758,18 +747,8 @@ jobs:
           CARGO_PROFILE_RELEASE_CODEGEN_UNITS: '16'
         run: bash test-scripts/run-vault-tests.sh --build-only
 
-      # --skip-build syncs the freshly built/restored IDL into packages/sdk/src/idl,
-      # builds the SDKs, and runs the suite (programs already built/restored above).
-      - name: run vault tests
-        env:
-          RUST_LOG: solana_runtime::message_processor::stable_log=info
-        run: bash test-scripts/run-vault-tests.sh --skip-build
-
-      # Save AFTER the suite, for the same reason as the anchor-tests job above: a
-      # build that compiles is not a build the tests accept, so an entry is only
-      # published once the suite it produced was green. The key literal is not
-      # bumped here — this job has no observed bad entry, and bumping it would force
-      # a fresh SBF compile on every open PR for no benefit.
+      # Save only on a cache miss AND only when the build succeeded — prevents a
+      # partial build from poisoning subsequent runs with the same key.
       - name: Save compiled program cache
         if: steps.cache-program-vaults.outputs.cache-hit != 'true' && success()
         uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
@@ -779,6 +758,13 @@ jobs:
             target/idl/velocity.json
             target/types/velocity.ts
           key: ${{ runner.os }}-velocity-program-vaulttest-nomainnet-thin-cu16-anchor${{ env.ANCHOR_VERSION }}-rust${{ env.RUST_TOOLCHAIN }}-${{ hashFiles('programs/**', 'Cargo.toml', 'Cargo.lock', 'Anchor.toml') }}
+
+      # --skip-build syncs the freshly built/restored IDL into packages/sdk/src/idl,
+      # builds the SDKs, and runs the suite (programs already built/restored above).
+      - name: run vault tests
+        env:
+          RUST_LOG: solana_runtime::message_processor::stable_log=info
+        run: bash test-scripts/run-vault-tests.sh --skip-build
   verify-sdk-configs:
     name: Verify SDK Configs
     # Live-RPC SDK tests (tests/ci needs MAINNET/DEVNET_RPC_ENDPOINT). Not a PR

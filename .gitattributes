@@ -1,0 +1,17 @@
+# `merge=union` keeps the lines from BOTH sides of a conflicting hunk instead of
+# writing conflict markers. It is built into git, so it needs no per-developer
+# `git config` — cloning the repo is enough for it to take effect.
+#
+# docs/DRIFT-TO-VELOCITY.md is append-mostly: nearly every branch adds one row to
+# the §6 change-log table, and two branches adding different rows at the same
+# position conflict every single time even though the resolution is always "keep
+# both". Union merge does that automatically.
+#
+# The tradeoff, because it is not free: union applies to the WHOLE file, not just
+# the table, and gitattributes cannot scope to a region. So when two branches edit
+# the SAME existing line differently — rewording a §2/§4/§5 paragraph, say — you
+# get both versions kept silently rather than a conflict to resolve. Review the
+# merged section when a change edits existing prose rather than appending a row.
+#
+# Applies to merge, rebase and cherry-pick (all use the merge machinery).
+docs/DRIFT-TO-VELOCITY.md merge=union

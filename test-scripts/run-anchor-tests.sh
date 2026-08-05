@@ -24,6 +24,29 @@ else
     echo "       Run without --skip-build, or copy fresh types into target/types/ first." >&2
     exit 1
   fi
+  # Same reasoning for the programs themselves, and this one fails far worse
+  # without a guard: the bankrun harness loads every workspace program, and a
+  # missing .so produces only a "Possible bogus program name" *warning* before
+  # the affected file's `before all` hook hangs for its full 300s timeout with
+  # no statement of the cause. Wiping target/deploy to clear stale SBF
+  # artifacts is a routine thing to do, and it silently invalidates
+  # --skip-build.
+  # The list comes from Anchor.toml's [programs.localnet], which is what
+  # solana-bankrun's startAnchor loads, so adding a program there cannot
+  # silently escape this check.
+  missing=()
+  while read -r program; do
+    [ -f "target/deploy/${program}.so" ] || missing+=("${program}.so")
+  done < <(awk '/^\[programs\.localnet\]/{f=1;next} /^\[/{f=0} f && /=/{print $1}' Anchor.toml)
+  if [ ${#missing[@]} -ne 0 ]; then
+    echo "ERROR: target/deploy is missing: ${missing[*]}" >&2
+    echo "       The bankrun harness loads every workspace program; a missing one" >&2
+    echo "       hangs a test file's setup for 300s instead of failing." >&2
+    echo "       Run without --skip-build, or build the missing ones with" >&2
+    echo "       cargo-build-sbf --tools-version v1.54 --manifest-path programs/<name>/Cargo.toml" >&2
+    exit 1
+  fi
+
   cp target/idl/velocity.json packages/sdk/src/idl/
   cp target/types/velocity.ts packages/sdk/src/idl/
 fi

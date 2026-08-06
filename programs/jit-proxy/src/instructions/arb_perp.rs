@@ -61,8 +61,11 @@ pub fn arb_perp<'c: 'info, 'info>(
     let perp_market = perp_market_map.get_ref(&market_index)?;
     let oracle_price_data = oracle_map.get_price_data(&perp_market.oracle_id())?;
 
+    // `min_resting_slots = 0`: arbitrage acts on the true current book. The rest-age rule stops a
+    // just-posted quote from moving the mark TWAP (OtterSec #146). Such a quote is still takeable,
+    // which is what this instruction needs.
     let (bids, asks) =
-        find_bids_and_asks_from_users(&perp_market, oracle_price_data, &makers, slot, now)?;
+        find_bids_and_asks_from_users(&perp_market, oracle_price_data, &makers, slot, now, 0)?;
 
     let best_bid = bids.first().ok_or(ErrorCode::NoBestBid)?;
     let best_ask = asks.first().ok_or(ErrorCode::NoBestAsk)?;

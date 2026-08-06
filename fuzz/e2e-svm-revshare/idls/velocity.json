@@ -883,6 +883,9 @@
       ],
       "accounts": [
         {
+          "name": "state"
+        },
+        {
           "name": "spot_market",
           "writable": true,
           "pda": {
@@ -927,6 +930,40 @@
           ]
         },
         {
+          "name": "spot_market_vault",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  115,
+                  112,
+                  111,
+                  116,
+                  95,
+                  109,
+                  97,
+                  114,
+                  107,
+                  101,
+                  116,
+                  95,
+                  118,
+                  97,
+                  117,
+                  108,
+                  116
+                ]
+              },
+              {
+                "kind": "arg",
+                "path": "market_index"
+              }
+            ]
+          }
+        },
+        {
           "name": "insurance_fund_vault",
           "writable": true,
           "pda": {
@@ -962,6 +999,12 @@
               }
             ]
           }
+        },
+        {
+          "name": "velocity_signer"
+        },
+        {
+          "name": "token_program"
         }
       ],
       "args": [

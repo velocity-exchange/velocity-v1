@@ -152,6 +152,38 @@ pub fn liquidate_perp(
         market_index
     )?;
 
+    // OtterSec #149: once `expiry_ts` passes, an expired perp position must only be
+    // closed out at the market's committed `expiry_price`, never at the live oracle.
+    //
+    // Every ordinary user path already refuses past expiry via the same
+    // `is_in_settlement(now)` predicate — placing, filling, triggering, transferring and
+    // settling all gate on it — but direct permissionless liquidation did not, so it kept
+    // valuing and transferring the position at the live oracle for the whole window
+    // between `expiry_ts` and a warm admin flipping the status to `Settlement`. A
+    // liquidator could take the position at a live price that the fixed settlement price
+    // then supersedes, while the owner had no way to act.
+    //
+    // Scoped precisely to that window. Deliberately NOT `is_in_settlement(now)`, which is
+    // also true once the status *is* `Settlement`/`Delisted` — by then `expiry_price` is
+    // committed and liquidation during the wind-down is a legitimate way to resolve bad
+    // debt (the delisting tests exercise exactly that). What must be refused is only the
+    // gap where the market has expired but no settlement price exists yet.
+    let expired_awaiting_settlement = market.expiry_ts != 0
+        && now >= market.expiry_ts
+        && !matches!(
+            market.status,
+            MarketStatus::Settlement | MarketStatus::Delisted
+        );
+
+    validate!(
+        !expired_awaiting_settlement,
+        ErrorCode::InvalidLiquidation,
+        "market {} expired at {} but has no committed expiry price yet; \
+         settle_expired_market must run first",
+        market_index,
+        market.expiry_ts
+    )?;
+
     drop(market);
 
     settle_funding_payment(
@@ -622,15 +654,16 @@ pub fn liquidate_perp(
 
     // The liquidation adds exposure to the liquidator like a risk-increasing
     // fill; the liquidator subaccount must clear its own buffered equity floor
-    // to take it on.
+    // to take it on. The floor restricts the liquidator here, so take the lower
+    // bound.
     if let Some(liquidator_net_equity) =
         calculate_net_equity_for_floor(liquidator, perp_market_map, spot_market_map, oracle_map)?
     {
         validate!(
-            !liquidator.is_below_buffered_equity_floor(liquidator_net_equity),
+            !liquidator.is_below_buffered_equity_floor(liquidator_net_equity.lower),
             ErrorCode::EquityBelowFloor,
             "liquidator net equity {} below equity floor {} + buffer {}",
-            liquidator_net_equity,
+            liquidator_net_equity.lower,
             liquidator.equity_floor,
             liquidator.equity_floor_buffer
         )?;
@@ -830,6 +863,38 @@ pub fn liquidate_perp_with_fill(
         ErrorCode::InvalidLiquidation,
         "Liquidation operation is paused for market {}",
         market_index
+    )?;
+
+    // OtterSec #149: once `expiry_ts` passes, an expired perp position must only be
+    // closed out at the market's committed `expiry_price`, never at the live oracle.
+    //
+    // Every ordinary user path already refuses past expiry via the same
+    // `is_in_settlement(now)` predicate — placing, filling, triggering, transferring and
+    // settling all gate on it — but direct permissionless liquidation did not, so it kept
+    // valuing and transferring the position at the live oracle for the whole window
+    // between `expiry_ts` and a warm admin flipping the status to `Settlement`. A
+    // liquidator could take the position at a live price that the fixed settlement price
+    // then supersedes, while the owner had no way to act.
+    //
+    // Scoped precisely to that window. Deliberately NOT `is_in_settlement(now)`, which is
+    // also true once the status *is* `Settlement`/`Delisted` — by then `expiry_price` is
+    // committed and liquidation during the wind-down is a legitimate way to resolve bad
+    // debt (the delisting tests exercise exactly that). What must be refused is only the
+    // gap where the market has expired but no settlement price exists yet.
+    let expired_awaiting_settlement = market.expiry_ts != 0
+        && now >= market.expiry_ts
+        && !matches!(
+            market.status,
+            MarketStatus::Settlement | MarketStatus::Delisted
+        );
+
+    validate!(
+        !expired_awaiting_settlement,
+        ErrorCode::InvalidLiquidation,
+        "market {} expired at {} but has no committed expiry price yet; \
+         settle_expired_market must run first",
+        market_index,
+        market.expiry_ts
     )?;
 
     drop(market);
@@ -1872,15 +1937,16 @@ pub fn liquidate_spot(
 
     // The liquidation adds exposure to the liquidator like a risk-increasing
     // fill; the liquidator subaccount must clear its own buffered equity floor
-    // to take it on.
+    // to take it on. The floor restricts the liquidator here, so take the lower
+    // bound.
     if let Some(liquidator_net_equity) =
         calculate_net_equity_for_floor(liquidator, perp_market_map, spot_market_map, oracle_map)?
     {
         validate!(
-            !liquidator.is_below_buffered_equity_floor(liquidator_net_equity),
+            !liquidator.is_below_buffered_equity_floor(liquidator_net_equity.lower),
             ErrorCode::EquityBelowFloor,
             "liquidator net equity {} below equity floor {} + buffer {}",
-            liquidator_net_equity,
+            liquidator_net_equity.lower,
             liquidator.equity_floor,
             liquidator.equity_floor_buffer
         )?;
@@ -3105,15 +3171,16 @@ pub fn liquidate_borrow_for_perp_pnl(
 
     // The liquidation adds exposure to the liquidator like a risk-increasing
     // fill; the liquidator subaccount must clear its own buffered equity floor
-    // to take it on.
+    // to take it on. The floor restricts the liquidator here, so take the lower
+    // bound.
     if let Some(liquidator_net_equity) =
         calculate_net_equity_for_floor(liquidator, perp_market_map, spot_market_map, oracle_map)?
     {
         validate!(
-            !liquidator.is_below_buffered_equity_floor(liquidator_net_equity),
+            !liquidator.is_below_buffered_equity_floor(liquidator_net_equity.lower),
             ErrorCode::EquityBelowFloor,
             "liquidator net equity {} below equity floor {} + buffer {}",
-            liquidator_net_equity,
+            liquidator_net_equity.lower,
             liquidator.equity_floor,
             liquidator.equity_floor_buffer
         )?;
@@ -3671,15 +3738,16 @@ pub fn liquidate_perp_pnl_for_deposit(
 
     // The liquidation adds exposure to the liquidator like a risk-increasing
     // fill; the liquidator subaccount must clear its own buffered equity floor
-    // to take it on.
+    // to take it on. The floor restricts the liquidator here, so take the lower
+    // bound.
     if let Some(liquidator_net_equity) =
         calculate_net_equity_for_floor(liquidator, perp_market_map, spot_market_map, oracle_map)?
     {
         validate!(
-            !liquidator.is_below_buffered_equity_floor(liquidator_net_equity),
+            !liquidator.is_below_buffered_equity_floor(liquidator_net_equity.lower),
             ErrorCode::EquityBelowFloor,
             "liquidator net equity {} below equity floor {} + buffer {}",
-            liquidator_net_equity,
+            liquidator_net_equity.lower,
             liquidator.equity_floor,
             liquidator.equity_floor_buffer
         )?;

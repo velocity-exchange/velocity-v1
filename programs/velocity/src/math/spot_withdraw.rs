@@ -130,6 +130,16 @@ pub fn calculate_max_borrow_token_amount(
     Ok(max_borrow_token)
 }
 
+/// Tests if one account qualifies for an exception to the market withdraw
+/// limits. The account qualifies when it holds a deposit, has never net
+/// withdrawn more than it net deposited, and held less than one tenth of
+/// `withdraw_guard_threshold` in this market before the withdrawal.
+///
+/// This is an eligibility filter only. The result is per account, so it carries
+/// no information about how much the market can afford to release. Callers must
+/// combine it with a market-level budget. `check_withdraw_limits` does this with
+/// `exception_floor`. A caller that grants a bypass on this predicate alone lets
+/// an attacker split one deposit across many accounts and drain the market.
 pub fn check_user_exception_to_withdraw_limits(
     spot_market: &SpotMarket,
     user: Option<&User>,
@@ -286,7 +296,53 @@ pub fn check_withdraw_limits(
         msg!("max_borrow_token={:?}", max_borrow_token);
         msg!("borrow_token_amount={:?}", borrow_token_amount);
 
+        // The market-level check failed. A small depositor can still get an
+        // exception. `check_user_exception_to_withdraw_limits` is the
+        // eligibility filter for that exception. It is a per-account predicate,
+        // so it must not decide the withdrawal on its own. An attacker splits
+        // one large deposit across many accounts. Every account then satisfies
+        // the per-account predicate, and the cohort drains the whole market past
+        // a tripped breaker. Rent on the extra accounts is refundable, so the
+        // cost of the split is near zero.
+        //
+        // `exception_floor` adds the missing market-level budget. The whole
+        // eligible cohort can take the market down by one
+        // `withdraw_guard_threshold` below the breaker floor. It can take no
+        // more, no matter how many accounts join.
+        //
+        // The relaxation is one `withdraw_guard_threshold` for two reasons.
+        // First, that field already sizes this carve-out. The per-account
+        // predicate derives its own allowance from it. Second, it is the only
+        // field in this subsystem with an enforced absolute notional cap.
+        // `validate_withdraw_guard_threshold` in `validation/spot_market.rs`
+        // rejects a value above `MAX_WITHDRAW_GUARD_THRESHOLD_NOTIONAL`, which
+        // is $10k. Both `initialize_spot_market` and
+        // `update_withdraw_guard_threshold` run that check. Total exception
+        // outflow per market per TWAP window is therefore bounded at $10k
+        // notional. The budget also regenerates at the same rate as the breaker.
+        // As the deposit TWAP decays, `min_deposit_token` falls, and
+        // `exception_floor` falls with it.
+        //
+        // Do not reach for `withdraw_circuit_breaker_bps` to tune this. That
+        // field only feeds `calculate_min_deposit_token_amount`. Before this
+        // bound existed the exception ignored the field completely, so a change
+        // from 2500 bps to 1 bp moved the sybil yield by zero. Change
+        // `withdraw_guard_threshold` to size this carve-out.
+        //
+        // One property of the surrounding code limits the attack to a prepared
+        // attacker. A large position cannot be split after the breaker trips.
+        // Every path that can shrink a position below the per-account allowance
+        // runs this same check. `transfer_deposit`, `transfer_pools` and
+        // `end_swap` all go through
+        // `update_spot_balances_and_cumulative_deposits_with_limits`. Spot DLOB
+        // fills are disabled. The split must happen in advance.
+        let exception_floor =
+            min_deposit_token.saturating_sub(spot_market.withdraw_guard_threshold.cast::<u128>()?);
+
+        msg!("exception_floor={:?}", exception_floor);
+
         check_user_exception_to_withdraw_limits(spot_market, user, token_amount_withdrawn)?
+            && deposit_token_amount >= exception_floor
     } else {
         true
     };
@@ -454,7 +510,16 @@ pub fn validate_spot_market_vault_amount(
 
 #[cfg(test)]
 mod tests {
-    use {super::*, crate::math::constants::QUOTE_PRECISION};
+    use {
+        super::*,
+        crate::{
+            math::constants::{
+                MAX_WITHDRAW_GUARD_THRESHOLD_NOTIONAL, QUOTE_PRECISION, QUOTE_PRECISION_U64,
+                SPOT_BALANCE_PRECISION, SPOT_CUMULATIVE_INTEREST_PRECISION,
+            },
+            state::user::SpotPosition,
+        },
+    };
 
     #[test]
     fn min_deposit_zero_pct_defaults_to_25_percent() {
@@ -506,5 +571,163 @@ mod tests {
         let pct = (BPS_PRECISION / 5) as u16; // 2000 bps = 20%
         let max = calculate_max_deposit_token_amount(twap, guard, pct).unwrap();
         assert_eq!(max, guard);
+    }
+
+    // Fixture for the withdraw-limit exception budget.
+    //
+    // The numbers are the shipped quote-market (USDT) config in
+    // `deploy-scripts/params/relaunch-spot-markets.json`. The market holds
+    // 500_000 USDT and the breaker is the default 2500 bps.
+
+    /// Quote-market `withdraw_guard_threshold`, 9_500 tokens at 6 decimals.
+    const GUARD: u64 = 9_500 * QUOTE_PRECISION_U64;
+    /// 24h deposit TWAP for the market, 500_000 tokens.
+    const TWAP: u64 = 500_000 * QUOTE_PRECISION_U64;
+    /// Per-account allowance in `check_user_exception_to_withdraw_limits`, 950 tokens.
+    const PER_ACCOUNT_ALLOWANCE: u128 = (GUARD / 10) as u128;
+
+    /// Converts a token amount to a scaled balance. The fixture uses 6 decimals
+    /// and cumulative interest at precision, so the ratio is constant.
+    fn scaled(token_amount: u128) -> u128 {
+        token_amount * (SPOT_BALANCE_PRECISION / QUOTE_PRECISION)
+    }
+
+    fn breaker_market(deposit_token_amount: u128) -> SpotMarket {
+        SpotMarket {
+            market_index: 0,
+            decimals: 6,
+            cumulative_deposit_interest: SPOT_CUMULATIVE_INTEREST_PRECISION,
+            cumulative_borrow_interest: SPOT_CUMULATIVE_INTEREST_PRECISION,
+            deposit_balance: scaled(deposit_token_amount),
+            borrow_balance: 0,
+            deposit_token_twap: TWAP,
+            withdraw_guard_threshold: GUARD,
+            withdraw_circuit_breaker_bps: 2_500,
+            ..SpotMarket::default()
+        }
+    }
+
+    /// Builds an account that qualifies for the exception. `remaining` is the
+    /// balance left after the withdrawal. `lifetime` is the amount the account
+    /// ever deposited. Net deposits are zero, which is the strongest position an
+    /// honest depositor can be in.
+    fn eligible_account(remaining: u128, lifetime: u128) -> User {
+        let mut user = User {
+            total_deposits: lifetime as u64,
+            total_withdraws: lifetime as u64,
+            ..User::default()
+        };
+        user.spot_positions[0] = SpotPosition {
+            market_index: 0,
+            balance_type: SpotBalanceType::Deposit,
+            scaled_balance: scaled(remaining) as u64,
+            cumulative_deposits: remaining as i64,
+            ..SpotPosition::default()
+        };
+        user
+    }
+
+    /// Runs one full-balance withdrawal in program order. The program debits the
+    /// balances first and calls `check_withdraw_limits` after. A rejected
+    /// withdrawal aborts the transaction, so the debit is rolled back here.
+    ///
+    /// Returns `(eligible, allowed)`. `eligible` is the per-account predicate on
+    /// its own. `allowed` is the full decision.
+    fn try_withdraw_all(market: &mut SpotMarket, amount: u128) -> (bool, bool) {
+        let user = eligible_account(0, amount);
+        let debit = scaled(amount);
+
+        market.deposit_balance -= debit;
+        let eligible =
+            check_user_exception_to_withdraw_limits(market, Some(&user), Some(amount)).unwrap();
+        let allowed = check_withdraw_limits(market, Some(&user), Some(amount)).unwrap();
+        if !allowed {
+            market.deposit_balance += debit;
+        }
+
+        (eligible, allowed)
+    }
+
+    #[test]
+    fn withdraw_exception_still_frees_a_small_depositor() {
+        // The breaker floor for this market. The TWAP is 500_000 USDT and the
+        // breaker is 2500 bps, so deposits may not fall below 375_000 USDT.
+        let floor = calculate_min_deposit_token_amount(TWAP as u128, GUARD as u128, 2_500).unwrap();
+        assert_eq!(floor, 375_000 * QUOTE_PRECISION);
+
+        // The market sits exactly on the floor. The market-level check passes at
+        // the floor and fails one token unit below it, so any withdrawal from
+        // here needs the exception.
+        let mut market = breaker_market(floor);
+        assert!(check_withdraw_limits(&market, None, None).unwrap());
+        assert!(!check_withdraw_limits(&breaker_market(floor - 1), None, None).unwrap());
+
+        // A 500 USDT depositor is below the 950 USDT per-account allowance and
+        // still exits in full.
+        let amount = 500 * QUOTE_PRECISION;
+        assert!(amount < PER_ACCOUNT_ALLOWANCE);
+        let (eligible, allowed) = try_withdraw_all(&mut market, amount);
+        assert!(eligible);
+        assert!(allowed);
+
+        let remaining =
+            get_token_amount(market.deposit_balance, &market, &SpotBalanceType::Deposit).unwrap();
+        assert_eq!(remaining, floor - amount);
+    }
+
+    #[test]
+    fn withdraw_exception_cohort_cannot_exceed_one_guard_threshold() {
+        // The guard threshold is the whole exception budget for the market. An
+        // admin cannot raise it above 10_000 USDT of notional, because
+        // `validate_withdraw_guard_threshold` rejects that on both
+        // `initialize_spot_market` and `update_withdraw_guard_threshold`.
+        assert!(GUARD as u128 <= MAX_WITHDRAW_GUARD_THRESHOLD_NOTIONAL);
+
+        let floor = calculate_min_deposit_token_amount(TWAP as u128, GUARD as u128, 2_500).unwrap();
+        let mut market = breaker_market(floor);
+
+        // 600 prepared accounts, each holding 900 USDT. Every one is below the
+        // 950 USDT per-account allowance, so every one passes the eligibility
+        // predicate. They want 540_000 USDT in total.
+        let per_account = 900 * QUOTE_PRECISION;
+        assert!(per_account < PER_ACCOUNT_ALLOWANCE);
+        let cohort_size = 600_u128;
+        let cohort_demand = per_account * cohort_size;
+        assert!(cohort_demand > GUARD as u128);
+
+        let mut extracted = 0_u128;
+        let mut accounts_paid = 0_u128;
+        let mut rejected_but_eligible = 0_u128;
+
+        for _ in 0..cohort_size {
+            let (eligible, allowed) = try_withdraw_all(&mut market, per_account);
+            assert!(eligible, "every account in the cohort must stay eligible");
+            if allowed {
+                extracted += per_account;
+                accounts_paid += 1;
+            } else {
+                // Eligibility alone did not pay this account. The market-level
+                // budget is what stopped it.
+                rejected_but_eligible += 1;
+            }
+        }
+
+        // Ten accounts drained 9_000 USDT. The eleventh would have taken the
+        // market 9_900 USDT below the floor, which is more than one guard
+        // threshold, so it and every account after it got nothing.
+        assert_eq!(accounts_paid, 10);
+        assert_eq!(extracted, 9_000 * QUOTE_PRECISION);
+        assert_eq!(rejected_but_eligible, cohort_size - 10);
+
+        // The money bound. Sybil yield is capped at one guard threshold per
+        // market per TWAP window, not at one allowance per account.
+        assert!(extracted <= GUARD as u128);
+        assert!(extracted < cohort_demand);
+
+        let remaining =
+            get_token_amount(market.deposit_balance, &market, &SpotBalanceType::Deposit).unwrap();
+        assert_eq!(remaining, floor - extracted);
+        assert_eq!(remaining, floor - GUARD as u128 + 500 * QUOTE_PRECISION);
+        assert!(remaining >= floor - GUARD as u128);
     }
 }

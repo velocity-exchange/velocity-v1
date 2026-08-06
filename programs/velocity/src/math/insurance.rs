@@ -116,6 +116,20 @@ pub fn calculate_if_shares_lost(
     // the donation, `f` = attacker's share fraction) than they can recapture from the
     // victim's `f`-weighted burn. The attack is unprofitable for any `f < 1`, so pricing
     // the restake off the live balance here is safe.
+    //
+    // A pending request covering the *entire* fund is the degenerate case of that model:
+    // the forfeiture accrues to the *remaining* stakers, and a sole staker has none, so
+    // nothing is forfeited. Without this guard the restake leg prices against a pool of
+    // `total_shares - n_shares == 0` shares, `vault_amount_to_if_shares` returns a
+    // proportion of a zero-share pool (0 new shares), and the caller burns the staker's
+    // whole position — user shares, `user_shares` and `total_shares` all go to zero — while
+    // the vault keeps their tokens (finding #108). `>=` rather than `==` so a corrupt
+    // `n_shares > total_shares` state cancels back to an intact stake instead of reverting
+    // forever in the `safe_sub` below, the same strand-by-revert failure #34 removed.
+    if n_shares >= spot_market.insurance_fund.total_shares {
+        return Ok(0);
+    }
+
     let amount = if_shares_to_vault_amount(
         n_shares,
         spot_market.insurance_fund.total_shares,

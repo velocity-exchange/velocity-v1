@@ -172,6 +172,7 @@ import {
 import { Velocity } from './idl/velocity';
 import { WRAPPED_SOL_MINT } from './constants/spotMarkets';
 import { UserStats } from './userStats';
+import { getPerpMarketsWithForfeitableClaims } from './math/bankruptcy';
 import { isSpotPositionAvailable } from './math/spotPosition';
 import { calculateMarketMaxAvailableInsurance } from './math/market';
 import { fetchUserStatsAccount } from './accounts/fetch';
@@ -11386,7 +11387,15 @@ export class VelocityClient {
 				this.getUserAccountOrThrow(liquidatorSubAccountId),
 				userAccount,
 			],
-			writablePerpMarketIndexes: [marketIndex],
+			// The resolver also forfeits the estate's unfundable positive perp claims to their own
+			// markets' insurance tranches, so those markets are written to as well. Passing one
+			// read-only makes the program revert at map load.
+			writablePerpMarketIndexes: [
+				marketIndex,
+				...getPerpMarketsWithForfeitableClaims(userAccount).filter(
+					(index) => index !== marketIndex
+				),
+			],
 			writableSpotMarketIndexes: [QUOTE_SPOT_MARKET_INDEX],
 		});
 
@@ -11479,6 +11488,11 @@ export class VelocityClient {
 				userAccount,
 			],
 			writableSpotMarketIndexes: [marketIndex],
+			// This resolver also winds up the estate's unfundable positive perp claims into their
+			// markets' insurance tranches, so those perp markets must be writable even though the
+			// bankruptcy being resolved is a spot borrow.
+			writablePerpMarketIndexes:
+				getPerpMarketsWithForfeitableClaims(userAccount),
 		});
 
 		const spotMarket = this.getSpotMarketAccountOrThrow(marketIndex);

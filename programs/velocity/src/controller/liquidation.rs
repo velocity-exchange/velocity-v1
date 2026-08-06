@@ -24,7 +24,7 @@ use {
         math::{
             bankruptcy::{
                 has_pending_cross_margin_perp_bankruptcy, has_realizable_spot_assets_for_setoff,
-                is_cross_margin_bankrupt,
+                is_cross_margin_bankrupt, perp_markets_with_forfeitable_claims,
             },
             casting::Cast,
             constants::{
@@ -3750,37 +3750,36 @@ fn extinguish_unfundable_perp_claims(
     let quote_spot_market = spot_market_map.get_quote_spot_market()?;
     let mut total_forfeited: u128 = 0;
 
-    for index in 0..user.perp_positions.len() {
+    // One pass over the same list the handler declared writable. A position with base exposure or a
+    // live order is not a settled claim and is excluded there, so this loop cannot write to a market
+    // the handler did not declare.
+    for market_index in perp_markets_with_forfeitable_claims(user) {
+        let index = get_position_index(&user.perp_positions, market_index)?;
         let position = user.perp_positions[index];
 
-        if position.is_isolated() || position.quote_asset_amount <= 0 {
-            continue;
-        }
+        // Recompute fundability under a READ borrow. The pool can move between admission and
+        // resolution, and only the part it cannot pay may be taken; a fundable part settles through
+        // the ordinary pipeline. Taking the write borrow only once something is actually forfeited
+        // keeps a no-op pass from touching write access it does not use.
+        let unfundable = {
+            let perp_market = perp_market_map.get_ref(&market_index)?;
+            let pnl_pool_tokens = get_token_amount(
+                perp_market.pnl_pool.balance(),
+                &quote_spot_market,
+                perp_market.pnl_pool.balance_type(),
+            )?;
 
-        // Re-check instead of relying on admission. A position with base exposure or a live order is
-        // not a settled claim, and must not be forfeited.
-        if position.base_asset_amount != 0 || position.has_open_order() {
-            continue;
-        }
-
-        let mut perp_market = perp_market_map.get_ref_mut(&position.market_index)?;
-
-        // Recompute fundability. The pool can move between admission and resolution, and only the
-        // part it cannot pay may be taken. A fundable part settles through the ordinary pipeline.
-        let pnl_pool_tokens = get_token_amount(
-            perp_market.pnl_pool.balance(),
-            &quote_spot_market,
-            perp_market.pnl_pool.balance_type(),
-        )?;
-
-        let unfundable = position
-            .quote_asset_amount
-            .cast::<u128>()?
-            .saturating_sub(pnl_pool_tokens);
+            position
+                .quote_asset_amount
+                .cast::<u128>()?
+                .saturating_sub(pnl_pool_tokens)
+        };
 
         if unfundable == 0 {
             continue;
         }
+
+        let mut perp_market = perp_market_map.get_ref_mut(&market_index)?;
 
         update_quote_asset_amount(
             &mut user.perp_positions[index],
@@ -3793,7 +3792,7 @@ fn extinguish_unfundable_perp_claims(
 
         msg!(
             "perp market {} bankruptcy: forfeited {} of unfundable claim to the insurance tranche",
-            position.market_index,
+            market_index,
             unfundable
         );
 
@@ -3950,12 +3949,10 @@ pub fn resolve_perp_bankruptcy(
         );
     })?;
 
-    // OtterSec #145: forfeit the estate's unfundable claims first, so the account cannot keep one
-    // after insurance covers its debt. This runs before the setoff and the loss read, so both see the
-    // wound-up estate.
-    extinguish_unfundable_perp_claims(user, perp_market_map, spot_market_map)?;
-
     // OtterSec #130: apply the estate's own quote deposit before drawing on anyone else's money.
+    // Safe to run ahead of the stale-latch check below: it debits a deposit and credits the debt by
+    // the same amount, which is exactly the `settle_pnl` the user is barred from making, so it leaves
+    // the estate no worse off even when the account is handed back to ordinary liquidation.
     let setoff = apply_quote_deposit_setoff_for_perp_bankruptcy(
         market_index,
         user,
@@ -3986,6 +3983,20 @@ pub fn resolve_perp_bankruptcy(
         liquidation_mode.exit_bankruptcy(user)?;
         return Ok(0);
     }
+
+    // OtterSec #145: wind up the estate's unfundable claims, so the account cannot keep one after
+    // insurance covers its debt.
+    //
+    // This MUST sit below the un-latch above. Forfeiting is irreversible, and the un-latch path hands
+    // the account back to ordinary liquidation, which may cover the whole debt out of the seized
+    // asset — leaving no bankruptcy, no insurance draw, and a confiscation that bought nothing. The
+    // net-solvency bound this relies on is established at admission, and a stale latch means exactly
+    // that the state has moved since, so it cannot be assumed here. `resolve_spot_bankruptcy` orders
+    // these two the same way.
+    //
+    // It stays above the `loss` read: if this market's own claim was positive and unfundable, zeroing
+    // it lands on the `loss == 0` path below rather than tripping the negative-pnl assertion.
+    extinguish_unfundable_perp_claims(user, perp_market_map, spot_market_map)?;
 
     let loss = user
         .get_perp_position(market_index)?

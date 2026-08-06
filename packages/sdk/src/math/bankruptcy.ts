@@ -6,6 +6,7 @@ import {
 	PerpPosition,
 	PositionFlag,
 	SpotBalanceType,
+	UserAccount,
 } from '../types';
 import { User } from '../user';
 
@@ -199,4 +200,32 @@ export function hasIsolatedMarginBankrupt(user: User): boolean {
 		}
 	}
 	return false;
+}
+
+/**
+ * Perp market indexes a bankruptcy resolver may write to beyond the market being resolved, mirroring
+ * `perp_markets_with_forfeitable_claims` in `programs/velocity/src/math/bankruptcy.rs`.
+ *
+ * `resolvePerpBankruptcy` and `resolveSpotBankruptcy` forfeit the estate's unfundable positive perp
+ * claims to their own markets' insurance tranches, which debits the user's claim and credits that
+ * market's `pendingIfFee`. Both instructions therefore need these markets passed **writable**; a
+ * read-only account fails the program's `load_mut` and reverts the whole resolve.
+ *
+ * Fundability is deliberately not filtered on: a claim the pool can pay when the transaction is built
+ * may be unfundable by the time it lands, and the program recomputes fundability at execution.
+ * @param userAccount Decoded user account of the estate being resolved.
+ * @returns Market indexes to add to `writablePerpMarketIndexes`; may be empty.
+ */
+export function getPerpMarketsWithForfeitableClaims(
+	userAccount: UserAccount
+): number[] {
+	return userAccount.perpPositions
+		.filter(
+			(position) =>
+				(position.positionFlag & PositionFlag.IsolatedPosition) === 0 &&
+				position.quoteAssetAmount.gt(ZERO) &&
+				position.baseAssetAmount.eq(ZERO) &&
+				!hasOpenOrders(position)
+		)
+		.map((position) => position.marketIndex);
 }

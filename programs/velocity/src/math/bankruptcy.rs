@@ -160,6 +160,29 @@ pub fn has_realizable_spot_assets_for_setoff(
     Ok(false)
 }
 
+/// Perp markets whose settled positive claims a bankruptcy resolver may forfeit to the insurance
+/// tranche, so a handler can declare them writable before loading its market map (OtterSec #145).
+///
+/// `extinguish_unfundable_perp_claims` writes to every market in this list: it debits the user's
+/// claim and credits the market's `pending_if_fee`. A market passed read-only fails `load_mut` deep
+/// inside the resolver, so both resolve handlers derive their writable perp-market set from here.
+/// Fundability is deliberately NOT filtered on: a claim that the pool can pay when the transaction
+/// is built may be unfundable by the time it lands, so every settled positive claim must be
+/// writable. Keeping the position filter here rather than inline in the resolver is what stops the
+/// handler's declared set and the resolver's actual writes from drifting apart.
+pub fn perp_markets_with_forfeitable_claims(user: &User) -> Vec<u16> {
+    user.perp_positions
+        .iter()
+        .filter(|position| {
+            !position.is_isolated()
+                && position.quote_asset_amount > 0
+                && position.base_asset_amount == 0
+                && !position.has_open_order()
+        })
+        .map(|position| position.market_index)
+        .collect()
+}
+
 /// Returns true if the user still has an unresolved cross-margin perp
 /// bankruptcy: a non-isolated perp position carrying bad debt (no base, no open
 /// order, negative unsettled pnl). Used to enforce the deterministic

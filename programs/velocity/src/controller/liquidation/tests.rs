@@ -15245,4 +15245,102 @@ pub mod extinguish_unfundable_perp_claims {
             500 * QUOTE_PRECISION_I64
         );
     }
+
+    /// The writable-market contract: everything this function writes to must be in
+    /// `perp_markets_with_forfeitable_claims`, which is what the resolve handlers declare writable.
+    ///
+    /// This test builds the claim market's `AccountInfo` by hand rather than through
+    /// `create_anchor_account_info!`, because that macro passes `is_writable: true` unconditionally.
+    /// Every other unit test in this file therefore runs with every account writable, and cannot
+    /// observe a mutability failure at all — which is exactly how a `get_ref_mut` on a market the
+    /// handler never declared writable reached review. Anchor's `load_mut` rejects a non-writable
+    /// account, so passing `false` here reproduces the production failure.
+    #[test]
+    fn only_declared_writable_markets_are_written() {
+        let mut spot_market = SpotMarket {
+            market_index: 0,
+            decimals: 6,
+            cumulative_deposit_interest: SPOT_CUMULATIVE_INTEREST_PRECISION,
+            cumulative_borrow_interest: SPOT_CUMULATIVE_INTEREST_PRECISION,
+            deposit_balance: 1_000_000 * SPOT_BALANCE_PRECISION,
+            ..SpotMarket::default()
+        };
+        create_anchor_account_info!(spot_market, SpotMarket, spot_market_ai);
+        let spot_market_map = SpotMarketMap::load_one(&spot_market_ai, true).unwrap();
+
+        // A funded pool, so this claim is NOT forfeitable and the pass writes nothing.
+        let mut funded_market = PerpMarket {
+            market_index: 0,
+            quote_spot_market_index: 0,
+            quote_asset_amount: 500 * QUOTE_PRECISION_I128,
+            pnl_pool: crate::state::perp_market::PoolBalance {
+                scaled_balance: 500 * SPOT_BALANCE_PRECISION,
+                market_index: 0,
+                ..crate::state::perp_market::PoolBalance::default()
+            },
+            ..PerpMarket::default()
+        };
+        // Read-only on purpose: `is_writable = false`, which the macro cannot express.
+        let funded_owner = <PerpMarket as anchor_lang::Owner>::owner();
+        let funded_key = anchor_lang::prelude::Pubkey::default();
+        let mut funded_lamports = 0;
+        let mut funded_data = crate::test_utils::get_anchor_account_bytes(&mut funded_market);
+        let funded_market_ai = crate::test_utils::create_account_info(
+            &funded_key,
+            false,
+            &mut funded_lamports,
+            &mut funded_data[..],
+            &funded_owner,
+        );
+
+        let mut user = User::default();
+        user.perp_positions[0] = PerpPosition {
+            market_index: 0,
+            quote_asset_amount: 500 * QUOTE_PRECISION_I64,
+            ..PerpPosition::default()
+        };
+
+        // The claim is fully fundable, so nothing is forfeited and no write borrow is needed. A
+        // read-only market therefore has to succeed: the fundability test must not take
+        // `get_ref_mut`. Against the original code this line fails with a load error.
+        let read_only_map = PerpMarketMap::load_multiple(vec![&funded_market_ai], false).unwrap();
+        assert_eq!(
+            extinguish_unfundable_perp_claims(&mut user, &read_only_map, &spot_market_map).unwrap(),
+            0,
+            "a fully fundable claim must not be forfeited"
+        );
+        assert_eq!(
+            user.perp_positions[0].quote_asset_amount,
+            500 * QUOTE_PRECISION_I64,
+            "a fundable claim stays with the user for the ordinary pipeline"
+        );
+
+        // And the market it *would* write to is exactly the one the handlers declare writable.
+        let mut unfunded_market = PerpMarket {
+            market_index: 1,
+            quote_spot_market_index: 0,
+            quote_asset_amount: 500 * QUOTE_PRECISION_I128,
+            ..PerpMarket::default()
+        };
+        create_anchor_account_info!(unfunded_market, PerpMarket, unfunded_market_ai);
+        let writable_map = PerpMarketMap::load_multiple(vec![&unfunded_market_ai], true).unwrap();
+
+        let mut claimant = User::default();
+        claimant.perp_positions[0] = PerpPosition {
+            market_index: 1,
+            quote_asset_amount: 500 * QUOTE_PRECISION_I64,
+            ..PerpPosition::default()
+        };
+
+        assert_eq!(
+            crate::math::bankruptcy::perp_markets_with_forfeitable_claims(&claimant),
+            vec![1],
+            "the declared writable set must name every market the forfeit writes to"
+        );
+        assert_eq!(
+            extinguish_unfundable_perp_claims(&mut claimant, &writable_map, &spot_market_map)
+                .unwrap(),
+            500 * QUOTE_PRECISION_I128 as u128
+        );
+    }
 }

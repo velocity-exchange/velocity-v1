@@ -265,6 +265,13 @@ pub fn handle_trigger_order<'c: 'info, 'info>(
 pub fn handle_force_cancel_orders<'c: 'info, 'info>(
     ctx: Context<'info, ForceCancelOrder>,
 ) -> Result<()> {
+    let state = ctx.accounts.state.load()?;
+
+    // Load the map under the live State guard rails. The equity-floor arm of
+    // force-cancel requires an oracle-validity verdict, so this handler must
+    // apply the same validity policy as `withdraw` and the permissionless trip.
+    // Without the guard rails the same account gets a different floor verdict
+    // here than everywhere else.
     let AccountMaps {
         perp_market_map,
         spot_market_map,
@@ -274,11 +281,11 @@ pub fn handle_force_cancel_orders<'c: 'info, 'info>(
         &MarketSet::new(),
         &get_writable_spot_market_set(QUOTE_SPOT_MARKET_INDEX),
         Clock::get()?.slot,
-        None,
+        Some(state.oracle_guard_rails),
     )?;
 
     controller::orders::force_cancel_orders(
-        &*ctx.accounts.state.load()?,
+        &state,
         &ctx.accounts.user,
         &spot_market_map,
         &perp_market_map,
@@ -3135,8 +3142,17 @@ pub fn handle_force_delete_user<'c: 'info, 'info>(
 
     // check the user equity
 
-    let (user_equity, _) =
+    let (user_equity, all_oracles_valid) =
         calculate_user_equity(user, &perp_market_map, &spot_market_map, &mut oracle_map)?;
+
+    // Deletion sends the user's remaining deposits to the keeper's own token
+    // account, so this must fail closed. A stale-low price understates the
+    // equity and makes a funded account look like dust.
+    validate!(
+        all_oracles_valid,
+        ErrorCode::InvalidOracle,
+        "cannot force delete user with an invalid oracle"
+    )?;
 
     let max_equity = QUOTE_PRECISION_I128 / 20;
     validate!(

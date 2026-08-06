@@ -221,14 +221,21 @@ for any field size ≤ 48 bytes.  Once reserve drops below 16, you must check mo
 
 ## Native Instruction Byte Offsets
 
-Two instruction handlers bypass Anchor's deserializer entirely and **write directly into raw
+Three instruction handlers bypass Anchor's deserializer entirely and **write directly into raw
 account bytes** at hardcoded offsets:
 
-- `handle_update_mm_oracle_native` — writes `mm_oracle_slot`, `mm_oracle_price`,
+- `handle_update_mm_oracle_native` (opcode 0) — writes `mm_oracle_slot`, `mm_oracle_price`,
   `mm_oracle_sequence_id` into a `PerpMarket` account; reads `feature_bit_flags` from a `State`
   account.
-- `handle_update_amm_spread_adjustment_native` — writes `amm_spread_adjustment` into a
+- `handle_update_amm_spread_adjustment_native` (opcode 1) — writes `amm_spread_adjustment` into a
   `PerpMarket` account.
+- `handle_update_mm_oracle_batch_native` (opcode 2) — the same writes as opcode 0, for up to 64
+  `PerpMarket` accounts in one instruction.
+
+Opcode 0 and opcode 2 read the `State` auth fields through the shared
+`STATE_FEATURE_BIT_FLAGS_OFFSET` / `STATE_HOT_MM_ORACLE_CRANK_OFFSET` constants in
+`instructions/admin.rs`, so the two cannot desync from each other; both still have to be kept in
+step with the layout, which is what the offset tests below are for.
 
 ### Two different encoding models — two different offset calculation methods
 
@@ -261,8 +268,9 @@ lock these values down:
   and asserts the byte is found at position 982 (including discriminator).
 
 **If you change any field in `AMM`, `PerpMarket`, or `State`, run `cargo test -p velocity
-native_instruction_offsets` and update both the test expectations and the literals in
-`handle_update_mm_oracle_native` / `handle_update_amm_spread_adjustment_native` together.**
+native_instruction_offsets` and update both the test expectations and the offset constants used by
+`handle_update_mm_oracle_native` / `handle_update_mm_oracle_batch_native` /
+`handle_update_amm_spread_adjustment_native` together.**
 
 ---
 

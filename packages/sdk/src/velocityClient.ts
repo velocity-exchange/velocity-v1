@@ -82,6 +82,49 @@ import { VelocityCore } from './core/VelocityCore';
 const SPOT_DLOB_TRADING_DISABLED_MSG =
 	'Spot DLOB trading is disabled; spot balances, deposits, and swaps remain available.';
 
+/**
+ * One market's entry in an `updateMmOracleBatchNative` call. `marketIndex` is written into the
+ * instruction payload as well as selecting the account, and the program rejects the instruction if
+ * the two disagree.
+ */
+export type MmOracleBatchUpdate = {
+	marketIndex: number;
+	/** New MM oracle price, PRICE_PRECISION (1e6). Must be positive. */
+	oraclePrice: BN;
+	/** Monotonically increasing sequence id for this market's MM oracle. */
+	oracleSequenceId: BN;
+};
+
+/**
+ * Maximum markets per `updateMmOracleBatchNative` call, mirroring the program's
+ * `MM_ORACLE_BATCH_MAX_MARKETS`. Not reachable in practice: the transaction packet size and the
+ * runtime's 64 account-lock ceiling both bind well before this does.
+ */
+export const MM_ORACLE_BATCH_MAX_MARKETS = 64;
+
+/** Bytes per batch payload entry: `u16` market index + `i64` price + `u64` sequence id. */
+const MM_ORACLE_BATCH_ENTRY_LEN = 18;
+
+// Default compute budget for `updateMmOracleBatchNative`. `bun run bench:native-cu`
+// decomposes the handler into: a ~1272 CU fixed authentication prologue, ~602 CU
+// per accepted market, ~451 CU per skipped market, and ~452 CU for the reject-mask
+// log, which is emitted at most once and only when something was skipped. The
+// prologue being charged once instead of once per market is the whole reason
+// batching pays.
+//
+// The worst case is a *partially* rejected batch (~1573 + 602n): it pays for the
+// writes and the log. All-accepted is cheaper (no log, 3680 CU at 4 markets) and
+// all-rejected is cheaper still (no writes, 3529 CU), so neither bounds the
+// budget. Measured 4-market figures: 3680 accepted, 3529 rejected, 3981 mixed.
+//
+// Rounded up from the mixed case for ~14% headroom, which also covers the
+// ComputeBudget instructions' own 150 CU and the hot-key compare the bench build
+// compiles out. Priority fee is charged on the requested limit rather than on
+// consumption, so a cranker at production cadence should pass its own measured
+// `txParams.computeUnits` rather than rely on this.
+const MM_ORACLE_BATCH_BASE_CU = 1_900;
+const MM_ORACLE_BATCH_PER_MARKET_CU = 700;
+
 import {
 	AccountMeta,
 	AddressLookupTableAccount,
@@ -13115,6 +13158,130 @@ export class VelocityClient {
 			],
 			data,
 		});
+	}
+
+	/**
+	 * Updates the MM oracle for several perp markets in one native instruction (dispatch opcode 2).
+	 *
+	 * Equivalent to calling `updateMmOracleNative` once per market, but the authentication prologue
+	 * (state validation, kill-switch, hot-key compare, clock sysvar check) is paid once for the whole
+	 * batch, and one transaction covers every market so a single signature fee is amortised across
+	 * them all.
+	 *
+	 * Per-market rate-limit and sanity rejections (non-positive price, non-advancing sequence id,
+	 * slot gap below the program floor, step above the 1% cap) skip that market and leave the rest of
+	 * the batch intact. Structural problems (an account that is not a perp market, a non-writable
+	 * market, malformed data) fail the whole instruction, since those can only be builder bugs.
+	 *
+	 * @param updates - One entry per market. Order is preserved and must match the account order,
+	 * which this builder handles. Each entry's market index is also written into the payload and
+	 * re-checked on chain against the account it was paired with, so a misordered list is a hard
+	 * error rather than a silent write to the wrong market. Duplicate market indexes are rejected:
+	 * the program would silently skip the second occurrence.
+	 * @returns The instruction.
+	 */
+	public async getUpdateMmOracleBatchNativeIx(
+		updates: MmOracleBatchUpdate[]
+	): Promise<TransactionInstruction> {
+		if (updates.length === 0) {
+			throw new Error('getUpdateMmOracleBatchNativeIx: no updates supplied');
+		}
+		if (updates.length > MM_ORACLE_BATCH_MAX_MARKETS) {
+			throw new Error(
+				`getUpdateMmOracleBatchNativeIx: ${updates.length} markets exceeds the ${MM_ORACLE_BATCH_MAX_MARKETS} per-batch maximum`
+			);
+		}
+		const seen = new Set<number>();
+		for (const { marketIndex, oraclePrice } of updates) {
+			if (seen.has(marketIndex)) {
+				throw new Error(
+					`getUpdateMmOracleBatchNativeIx: duplicate market index ${marketIndex}; the program would skip the second occurrence`
+				);
+			}
+			seen.add(marketIndex);
+
+			// BN's little-endian serialization drops the sign, so a negative price
+			// would arrive on chain as its magnitude and be written as if valid.
+			// The program skips non-positive prices; reject them here so the caller
+			// sees the bug rather than a silently different price.
+			if (oraclePrice.isNeg() || oraclePrice.isZero()) {
+				throw new Error(
+					`getUpdateMmOracleBatchNativeIx: non-positive price for market ${marketIndex}`
+				);
+			}
+		}
+
+		const discriminatorBuffer = createNativeInstructionDiscriminatorBuffer(2);
+		const data = Buffer.alloc(
+			discriminatorBuffer.length +
+				1 +
+				updates.length * MM_ORACLE_BATCH_ENTRY_LEN
+		);
+		data.set(discriminatorBuffer, 0);
+		data.writeUInt8(updates.length, discriminatorBuffer.length);
+
+		updates.forEach(({ marketIndex, oraclePrice, oracleSequenceId }, i) => {
+			const offset =
+				discriminatorBuffer.length + 1 + i * MM_ORACLE_BATCH_ENTRY_LEN;
+			data.writeUInt16LE(marketIndex, offset);
+			data.set(oraclePrice.toArrayLike(Buffer, 'le', 8), offset + 2);
+			data.set(oracleSequenceId.toArrayLike(Buffer, 'le', 8), offset + 10);
+		});
+
+		return new TransactionInstruction({
+			programId: this.program.programId,
+			keys: [
+				{
+					pubkey: this.wallet.publicKey,
+					isWritable: false,
+					isSigner: true,
+				},
+				{
+					pubkey: SYSVAR_CLOCK_PUBKEY,
+					isWritable: false,
+					isSigner: false,
+				},
+				{
+					pubkey: await this.getStatePublicKey(),
+					isWritable: false,
+					isSigner: false,
+				},
+				...updates.map(({ marketIndex }) => ({
+					pubkey: this.getPerpMarketAccountOrThrow(marketIndex).pubkey,
+					isWritable: true,
+					isSigner: false,
+				})),
+			],
+			data,
+		});
+	}
+
+	/**
+	 * Sends an `updateMmOracleBatchNative` transaction. See `getUpdateMmOracleBatchNativeIx` for
+	 * semantics.
+	 * @param updates - One entry per market.
+	 * @param txParams - Optional transaction params. `computeUnits` defaults to
+	 * `MM_ORACLE_BATCH_BASE_CU + MM_ORACLE_BATCH_PER_MARKET_CU * updates.length`; note the priority
+	 * fee is charged on the requested limit, not on consumption, so a cranker should pin its own
+	 * measured value rather than pad this one.
+	 * @returns The transaction signature.
+	 */
+	public async updateMmOracleBatchNative(
+		updates: MmOracleBatchUpdate[],
+		txParams?: TxParams
+	): Promise<TransactionSignature> {
+		const ix = await this.getUpdateMmOracleBatchNativeIx(updates);
+
+		const tx = await this.buildTransaction(ix, {
+			computeUnits:
+				MM_ORACLE_BATCH_BASE_CU +
+				MM_ORACLE_BATCH_PER_MARKET_CU * updates.length,
+			computeUnitsPrice: 0,
+			...txParams,
+		});
+		const { txSig } = await this.sendTransaction(tx, [], this.opts);
+
+		return txSig;
 	}
 
 	/**

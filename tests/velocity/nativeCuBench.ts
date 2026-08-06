@@ -106,6 +106,13 @@ describe('compute units', () => {
 	const fillMmOraclePrice = new BN(1_000_000); // price 1, PRICE_PRECISION
 	let fillMmOracleSequenceId = new BN(1_000_000);
 
+	// Dedicated markets for the batch bench, kept off markets 0 and 1 so the
+	// batch writes cannot perturb the single-market noop benches or the fill
+	// bench. Four of them because that is the current mainnet perp market count.
+	const batchMarketIndexes = [2, 3, 4, 5];
+	let batchMmOraclePrice = new BN(100_000_000);
+	let batchMmOracleSequenceId = new BN(1_000_000);
+
 	before(async () => {
 		originalConsoleLog = console.log;
 		console.log = (...args: Parameters<typeof console.log>) => {
@@ -141,7 +148,7 @@ describe('compute units', () => {
 				commitment: 'confirmed',
 			},
 			activeSubAccountId: 0,
-			perpMarketIndexes: [0, 1],
+			perpMarketIndexes: [0, 1, ...batchMarketIndexes],
 			spotMarketIndexes: [0],
 			subAccountIds: [],
 			accountSubscription: {
@@ -202,6 +209,19 @@ describe('compute units', () => {
 			fillMmOraclePrice,
 			fillMmOracleSequenceId
 		);
+		// Batch-bench markets. No AMM depth or curve work needed: the batch
+		// handler only touches `market_stats`, so a bare initialized market
+		// exercises exactly the same path a mainnet market would.
+		for (const marketIndex of batchMarketIndexes) {
+			await velocityClient.initializePerpMarket(
+				marketIndex,
+				solUsd,
+				new BN(1000),
+				new BN(1000),
+				new BN(60 * 60)
+			);
+		}
+
 		await velocityClient.deposit(
 			new BN(10 * 10 ** 6),
 			0,
@@ -250,6 +270,52 @@ describe('compute units', () => {
 		);
 		acceptedMmOraclePrice = nextPrice;
 		acceptedMmOracleSequenceId = nextSequenceId;
+		return txSig;
+	}
+
+	/**
+	 * Sends an `update_mm_oracle_batch_native` covering the first `count` batch
+	 * markets, and asserts every entry was actually accepted on chain.
+	 *
+	 * The assertion is the point. A silently-skipped batch still lands, still
+	 * consumes CU, and is *cheaper* than the real path, so without it a
+	 * regression that stops the writes landing (a raised
+	 * `MM_ORACLE_MIN_SLOT_GAP`, a transposed price/sequence-id in the payload,
+	 * a market-index mismatch) would make this bench report a better number
+	 * rather than fail.
+	 */
+	async function sendAcceptedMmOracleBatch(count: number): Promise<string> {
+		await advancePastMmOracleRateLimit();
+		batchMmOraclePrice = batchMmOraclePrice.addn(1);
+		batchMmOracleSequenceId = batchMmOracleSequenceId.addn(1);
+		const marketIndexes = batchMarketIndexes.slice(0, count);
+
+		const txSig = await velocityClient.updateMmOracleBatchNative(
+			marketIndexes.map((marketIndex) => ({
+				marketIndex,
+				oraclePrice: batchMmOraclePrice,
+				oracleSequenceId: batchMmOracleSequenceId,
+			})),
+			// Generous limit: this measures consumption, not the budget.
+			{ computeUnits: 50_000, computeUnitsPrice: 0 }
+		);
+
+		await velocityClient.fetchAccounts();
+		for (const marketIndex of marketIndexes) {
+			const stats =
+				velocityClient.getPerpMarketAccountOrThrow(marketIndex).marketStats;
+			assert.strictEqual(
+				stats.mmOracleSequenceId.toString(),
+				batchMmOracleSequenceId.toString(),
+				`market ${marketIndex} did not accept the batch write`
+			);
+			assert.strictEqual(
+				stats.mmOraclePrice.toString(),
+				batchMmOraclePrice.toString(),
+				`market ${marketIndex} kept a stale price`
+			);
+		}
+
 		return txSig;
 	}
 
@@ -329,13 +395,116 @@ describe('compute units', () => {
 			}
 		);
 
+		// Warm-up: markets 2-5 start with `mm_oracle_price == 0`, which takes the
+		// bootstrap branch and skips the step-cap arithmetic entirely. Without
+		// this every measured row would contain some markets on the cheap path
+		// (and progressively fewer as n grows), so the slope would be measuring
+		// bootstrap-vs-steady-state rather than the true marginal cost. Not
+		// measured.
+		await sendAcceptedMmOracleBatch(batchMarketIndexes.length);
+
+		// Batch handler at 1, 2 and 4 markets. The n=1 row is the important
+		// control: it isolates the batch framing overhead against the
+		// single-market handler, and the slope between the rows is the true
+		// marginal per-market cost that the fixed prologue is being amortised
+		// over.
+		const mmBatchOne = await runBench(
+			'update_mm_oracle_batch_native',
+			'success write, 1 market',
+			async () => getNativeInstructionComputeUnits(await sendAcceptedMmOracleBatch(1))
+		);
+		const mmBatchTwo = await runBench(
+			'update_mm_oracle_batch_native',
+			'success write, 2 markets',
+			async () => getNativeInstructionComputeUnits(await sendAcceptedMmOracleBatch(2))
+		);
+		const mmBatchFour = await runBench(
+			'update_mm_oracle_batch_native',
+			'success write, 4 markets',
+			async () => getNativeInstructionComputeUnits(await sendAcceptedMmOracleBatch(4))
+		);
+
+		// Every entry rejected. Cheaper than the all-accepted row despite paying
+		// for the reject-mask `msg!`, because it skips all four writes.
+		const mmBatchAllRejected = await runBench(
+			'update_mm_oracle_batch_native',
+			'all rejected, 4 markets',
+			async () => {
+				await advancePastMmOracleRateLimit();
+				const txSig = await velocityClient.updateMmOracleBatchNative(
+					batchMarketIndexes.map((marketIndex) => ({
+						marketIndex,
+						oraclePrice: batchMmOraclePrice,
+						oracleSequenceId: batchMmOracleSequenceId,
+					})),
+					{ computeUnits: 50_000, computeUnitsPrice: 0 }
+				);
+				return await getNativeInstructionComputeUnits(txSig);
+			}
+		);
+
+		// The actual worst case, and the row the SDK's default compute budget is
+		// fitted to: a partially-rejected batch pays for n-1 writes AND the
+		// reject-mask log, so it costs more than either all-accepted (no log) or
+		// all-rejected (no writes). Set up by cranking one market on its own and
+		// then batching immediately, leaving that market inside
+		// MM_ORACLE_MIN_SLOT_GAP while the rest clear it.
+		const mmBatchPartial = await runBench(
+			'update_mm_oracle_batch_native',
+			'3 of 4 accepted, 4 markets',
+			async () => {
+				await advancePastMmOracleRateLimit();
+				batchMmOraclePrice = batchMmOraclePrice.addn(1);
+				batchMmOracleSequenceId = batchMmOracleSequenceId.addn(1);
+				await velocityClient.updateMmOracleNative(
+					batchMarketIndexes[0],
+					batchMmOraclePrice,
+					batchMmOracleSequenceId
+				);
+
+				// Deliberately no slot advance: market[0] is now rate-limited.
+				batchMmOraclePrice = batchMmOraclePrice.addn(1);
+				batchMmOracleSequenceId = batchMmOracleSequenceId.addn(1);
+				const txSig = await velocityClient.updateMmOracleBatchNative(
+					batchMarketIndexes.map((marketIndex) => ({
+						marketIndex,
+						oraclePrice: batchMmOraclePrice,
+						oracleSequenceId: batchMmOracleSequenceId,
+					})),
+					{ computeUnits: 50_000, computeUnitsPrice: 0 }
+				);
+				return await getNativeInstructionComputeUnits(txSig);
+			}
+		);
+
 		printComputeUnitTable('Fast paths', [
 			mmSuccess,
 			mmStaleSequence,
 			mmMinSlotGap,
 			mmStepCap,
+			mmBatchOne,
+			mmBatchTwo,
+			mmBatchFour,
+			mmBatchAllRejected,
+			mmBatchPartial,
 			ammSpread,
 		]);
+
+		// Four separate single-market transactions versus one batch of four.
+		// This is the number the change exists for; assert the direction so a
+		// regression that erases the saving fails the bench instead of quietly
+		// landing.
+		const fourSingles = mmSuccess.measurement.cu * 4;
+		assert(
+			mmBatchFour.measurement.cu < fourSingles,
+			`batch of 4 (${mmBatchFour.measurement.cu} CU) must beat 4 singles (${fourSingles} CU)`
+		);
+		console.log(
+			`4 markets: ${fourSingles} CU as separate instructions vs ` +
+				`${mmBatchFour.measurement.cu} CU batched ` +
+				`(${(fourSingles / mmBatchFour.measurement.cu).toFixed(2)}x)`
+		);
+		console.log('');
 
 		assertOptionalMax(
 			'mm_oracle_success',
@@ -361,6 +530,16 @@ describe('compute units', () => {
 			'amm_spread_adjustment_success',
 			ammSpread.measurement,
 			'NATIVE_CU_MAX_AMM_SPREAD'
+		);
+		assertOptionalMax(
+			'mm_oracle_batch_four_markets',
+			mmBatchFour.measurement,
+			'NATIVE_CU_MAX_MM_BATCH_FOUR'
+		);
+		assertOptionalMax(
+			'mm_oracle_batch_partial_four_markets',
+			mmBatchPartial.measurement,
+			'NATIVE_CU_MAX_MM_BATCH_PARTIAL'
 		);
 	});
 

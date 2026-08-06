@@ -502,28 +502,34 @@ impl<'a> RevenueShareEscrowZeroCopyMut<'a> {
         Err(ErrorCode::RevenueShareEscrowOrdersAccountFull)
     }
 
-    /// Marks any [`RevenueShareOrder`]s as Complete if there is no longer a corresponding
-    /// open order in the user's account. This is used to lazily reconcile state when
-    /// in place_order and settle_pnl instead of requiring explicit updates on cancels.
     /// True when any **builder** row for `sub_account_id` is still outstanding, i.e.
     /// `open && !completed`. Only a `Completed` row is payable by the sweep, so an
     /// outstanding one would be stranded if the subaccount id were retired
     /// (OtterSec #128). Referral rows are keyed by market rather than order id and are
     /// not tied to a subaccount, so they are not counted here.
-    pub fn has_outstanding_orders_for_sub_account(&self, sub_account_id: u16) -> bool {
+    ///
+    /// A row that cannot be read propagates its error rather than being skipped: this
+    /// guards a one-way state change (retiring a subaccount id), so an unreadable row
+    /// must abort the deletion, not read as "nothing outstanding".
+    pub fn has_outstanding_orders_for_sub_account(
+        &self,
+        sub_account_id: u16,
+    ) -> VelocityResult<bool> {
         for i in 0..self.orders_len() {
-            if let Ok(order) = self.get_order(i) {
-                if order.is_referral_order() || order.sub_account_id != sub_account_id {
-                    continue;
-                }
-                if order.is_open() && !order.is_completed() {
-                    return true;
-                }
+            let order = self.get_order(i)?;
+            if order.is_referral_order() || order.sub_account_id != sub_account_id {
+                continue;
+            }
+            if order.is_open() && !order.is_completed() {
+                return Ok(true);
             }
         }
-        false
+        Ok(false)
     }
 
+    /// Marks any [`RevenueShareOrder`]s as Complete if there is no longer a corresponding
+    /// open order in the user's account. This is used to lazily reconcile state when
+    /// in place_order and settle_pnl instead of requiring explicit updates on cancels.
     pub fn revoke_completed_orders(&mut self, user: &User) -> VelocityResult<()> {
         for i in 0..self.orders_len() {
             if let Ok(rev_share_order) = self.get_order_mut(i) {
@@ -884,11 +890,11 @@ mod delete_user_orphan_tests {
             };
             assert_eq!(escrow.orders_len(), 1);
             assert!(
-                escrow.has_outstanding_orders_for_sub_account(3),
+                escrow.has_outstanding_orders_for_sub_account(3).unwrap(),
                 "an open fee-bearing row must block retiring its subaccount id"
             );
             assert!(
-                !escrow.has_outstanding_orders_for_sub_account(4),
+                !escrow.has_outstanding_orders_for_sub_account(4).unwrap(),
                 "a sibling subaccount must be unaffected"
             );
         }
@@ -906,7 +912,7 @@ mod delete_user_orphan_tests {
                 data: RefMut::map(data.borrow_mut(), |v| v.as_mut_slice()),
             };
             assert!(
-                !escrow.has_outstanding_orders_for_sub_account(3),
+                !escrow.has_outstanding_orders_for_sub_account(3).unwrap(),
                 "a Completed row is sweepable post-deletion and must not block"
             );
         }
@@ -926,7 +932,7 @@ mod delete_user_orphan_tests {
                 fixed: fixed.borrow_mut(),
                 data: RefMut::map(data.borrow_mut(), |v| v.as_mut_slice()),
             };
-            assert!(!escrow.has_outstanding_orders_for_sub_account(3));
+            assert!(!escrow.has_outstanding_orders_for_sub_account(3).unwrap());
         }
 
         // Empty escrow: nothing outstanding.
@@ -938,7 +944,7 @@ mod delete_user_orphan_tests {
                 data: RefMut::map(data.borrow_mut(), |v| v.as_mut_slice()),
             };
             assert_eq!(escrow.orders_len(), 0);
-            assert!(!escrow.has_outstanding_orders_for_sub_account(0));
+            assert!(!escrow.has_outstanding_orders_for_sub_account(0).unwrap());
         }
     }
 }

@@ -5521,6 +5521,10 @@ export class VelocityClient {
 	 * Deposits collateral from a token account directly into an isolated perp position's own segregated
 	 * balance (as opposed to `deposit`, which credits the sub-account's general/cross balance). The
 	 * position's quote spot market is derived from `perpMarketIndex`'s `quoteSpotMarketIndex`.
+	 *
+	 * This credits the same spot market vault as `deposit`, so the market's daily deposit cap applies.
+	 * A deposit that takes the market's resulting deposits above `calculateMaxDepositTokenAmount`
+	 * reverts with `DailyDepositLimit` (6364). Use `checkDepositLimits` to test the market first.
 	 * @param amount - Amount to deposit, in the position's quote spot market's token precision.
 	 * @param perpMarketIndex - Perp market index of the isolated position to fund.
 	 * @param userTokenAccount - Source token account for the deposit.
@@ -5768,6 +5772,17 @@ export class VelocityClient {
 	 * draws into unrealized (unsettled) PnL. Note the clamp is a build-time estimate: if the settle
 	 * realizes less than the claimable PnL (e.g. the market's PnL pool is short), the withdraw can still
 	 * fail on-chain with `InsufficientCollateral`.
+	 *
+	 * The clamp bounds the request by the position's own balance only. The on-chain handler also applies
+	 * the spot market's withdraw circuit breaker to this path, at market level and without the
+	 * small-depositor exception (an isolated position carries its own collateral, so the carve-out for a
+	 * small honest cross depositor does not apply). A withdrawal that would take the market's resulting
+	 * deposits below `minDepositAmount` from `calculateWithdrawLimit` therefore reverts with
+	 * `DailyWithdrawLimit` (6128), whatever the position holds. Read `withdrawLimit` from
+	 * `calculateWithdrawLimit` for the market's remaining room. The same handler applies the market's
+	 * withdraw status and pause gates, so it reverts with `MarketWithdrawPaused` (6149) unless the spot
+	 * market status is `active`, `reduceOnly` or `settlement` and the `Withdraw` operation is unpaused.
+	 * A wound-down market in `settlement` therefore stays exitable.
 	 * @param amount - Amount to withdraw, in the position's quote spot market's token precision. Values
 	 * exceeding the withdrawable balance are clamped to it (i.e. pass a huge value to withdraw all).
 	 * @param perpMarketIndex - Perp market index of the isolated position to withdraw from.

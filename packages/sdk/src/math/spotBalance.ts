@@ -620,7 +620,19 @@ export function calculateBorrowRate(
  * `calculate_accumulated_interest`. This is a point-in-time estimate for display purposes only —
  * the actual on-chain update (`update_spot_market_cumulative_interest`) re-derives the rate from
  * utilization at settlement time (same as this function calling `calculateInterestRate(bank)` with
- * no delta), and only runs at all if `deposit_interest > 0 && borrow_interest > 1`. Borrow interest
+ * no delta), and only runs at all if `deposit_interest > 0 && borrow_interest > 1`.
+ *
+ * Note the program also advances `lastInterestTs` **without** accruing for intervals in which no
+ * interest is owed — while the market's `UpdateCumulativeInterest` op (or the exchange-wide funding
+ * pause) is set, and while utilization is zero. So a projection from `bank.lastInterestTs` never
+ * spans a paused or zero-borrow window; those intervals are dropped on chain rather than billed
+ * later to whatever balances exist at the time (findings #115, #117). Conversely, an interval whose
+ * *configured* carveout (`insuranceFund.ifFeeFactor` / `protocolFeeFactor`) would convert to less
+ * than one token is **deferred**: the program commits nothing and leaves `lastInterestTs` in place
+ * until the span is long enough to pay the cut, rather than dropping it (finding #127). So a
+ * projection can legitimately span a long window on a market with a configured carveout even though
+ * the accrual has been cranked repeatedly; the amounts here are what *would* be committed if the
+ * carveout clears at `now`. Borrow interest
  * is always rounded up by 1 (added unconditionally), matching the program's lender-favoring
  * rounding, and is credited to `cumulativeBorrowInterest` in full. **`depositInterest` here is the
  * gross pre-carveout amount** — on-chain, `insuranceFund.ifFeeFactor` and `protocolFeeFactor`
@@ -628,6 +640,12 @@ export function calculateBorrowRate(
  * respectively) and only the remainder is what actually gets added to `cumulativeDepositInterest`;
  * this function does not replicate that split, so it overstates the deposit-side increment
  * whenever either factor is non-zero.
+ *
+ * `depositInterest` is subject to the program's conservation clamp: it is scaled down if the tokens
+ * it would credit to `depositBalance` exceed the tokens `borrowInterest` charges `borrowBalance`.
+ * The two are equal by construction (the deposit rate is the borrow rate scaled by utilization),
+ * but utilization is derived from rounded token amounts and sampled once for the whole interval, so
+ * a long projection at a high rate can otherwise overstate the deposit side by whole tokens.
  *
  * @param {SpotMarketAccount} bank - The spot market account
  * @param {BN} now - The timestamp (unix seconds) to project interest up to
@@ -657,10 +675,26 @@ export function calculateInterestAccumulated(
 		.div(ONE_YEAR)
 		.div(SPOT_MARKET_RATE_PRECISION)
 		.add(ONE);
-	const depositInterest = bank.cumulativeDepositInterest
+	let depositInterest = bank.cumulativeDepositInterest
 		.mul(modifiedDepositRate)
 		.div(ONE_YEAR)
 		.div(SPOT_MARKET_RATE_PRECISION);
+
+	// conservation clamp, mirroring `calculate_accumulated_interest`: the deposit side of an
+	// interval is never credited more tokens than the borrow side is charged for it
+	const precisionDecrease = TEN.pow(new BN(19 - bank.decimals));
+	const depositTokenGain = bank.depositBalance
+		.mul(depositInterest)
+		.div(precisionDecrease);
+	const borrowTokenGain = bank.borrowBalance
+		.mul(borrowInterest)
+		.div(precisionDecrease);
+
+	if (depositTokenGain.gt(borrowTokenGain)) {
+		depositInterest = depositInterest
+			.mul(borrowTokenGain)
+			.div(depositTokenGain);
+	}
 
 	return { borrowInterest, depositInterest };
 }
@@ -747,12 +781,20 @@ export function calculateTokenUtilizationLimits(
  * `borrowLimit` is additionally zeroed for `assetTier === 'protected'` markets, and both limits
  * are clamped by `maxTokenBorrowsFraction` of `maxTokenDeposits` when that cap is configured.
  *
+ * `exceptionWithdrawLimit` is the market-level budget for the small-depositor exception in
+ * `check_withdraw_limits`. The program lets accounts that pass
+ * `check_user_exception_to_withdraw_limits` take the market one `withdrawGuardThreshold` below
+ * the breaker floor, and no further. That budget is shared by every eligible account, so a
+ * client must not treat per-account eligibility as a promise of a full exit. It is always at
+ * least `withdrawLimit`.
+ *
  * @param {SpotMarketAccount} spotMarket - The spot market account
  * @param {BN} now - The timestamp (unix seconds) to project the live TWAP up to
- * @return {{ borrowLimit: BN; withdrawLimit: BN; minDepositAmount: BN; maxBorrowAmount: BN;
- *   currentDepositAmount: BN; currentBorrowAmount: BN }} All values scaled by the market's token
- *   decimals. `withdrawLimit`/`borrowLimit` are floored at zero (a market already past its
- *   min-deposit/max-borrow bound reports zero remaining room rather than negative)
+ * @return {{ borrowLimit: BN; withdrawLimit: BN; exceptionWithdrawLimit: BN; minDepositAmount: BN;
+ *   maxBorrowAmount: BN; currentDepositAmount: BN; currentBorrowAmount: BN }} All values scaled by
+ *   the market's token decimals. `withdrawLimit`/`borrowLimit`/`exceptionWithdrawLimit` are floored
+ *   at zero (a market already past its min-deposit/max-borrow bound reports zero remaining room
+ *   rather than negative)
  */
 export function calculateWithdrawLimit(
 	spotMarket: SpotMarketAccount,
@@ -760,6 +802,7 @@ export function calculateWithdrawLimit(
 ): {
 	borrowLimit: BN;
 	withdrawLimit: BN;
+	exceptionWithdrawLimit: BN;
 	minDepositAmount: BN;
 	maxBorrowAmount: BN;
 	currentDepositAmount: BN;
@@ -856,6 +899,28 @@ export function calculateWithdrawLimit(
 		ZERO
 	);
 
+	// Mirror of `exception_floor` in the program's `check_withdraw_limits`.
+	// A small depositor may withdraw past the breaker floor, but the whole
+	// eligible cohort shares one `withdrawGuardThreshold` of extra room. This is
+	// the market-level budget for that carve-out, so it belongs here and not in
+	// the per-account eligibility test (`User.canBypassWithdrawLimits`).
+	//
+	// `exceptionWithdrawLimit` is never below `withdrawLimit`, because
+	// `exceptionFloor` is never above `minDepositTokens`. An eligible account
+	// therefore never loses room it already had.
+	//
+	// The size of the relaxation is one `withdrawGuardThreshold`. It does not
+	// depend on `withdrawCircuitBreakerBps`. That field moves the breaker floor
+	// and this exception floor by the same amount.
+	const exceptionFloor = BN.max(
+		minDepositTokens.sub(spotMarket.withdrawGuardThreshold),
+		ZERO
+	);
+	const exceptionWithdrawLimit = BN.max(
+		marketDepositTokenAmount.sub(exceptionFloor),
+		ZERO
+	);
+
 	let borrowLimit = maxBorrowTokens.sub(marketBorrowTokenAmount);
 
 	borrowLimit = BN.min(
@@ -884,6 +949,7 @@ export function calculateWithdrawLimit(
 	return {
 		borrowLimit,
 		withdrawLimit,
+		exceptionWithdrawLimit,
 		maxBorrowAmount: maxBorrowTokens,
 		minDepositAmount: minDepositTokens,
 		currentDepositAmount: marketDepositTokenAmount,

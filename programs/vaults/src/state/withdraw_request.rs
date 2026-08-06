@@ -44,6 +44,22 @@ impl WithdrawRequest {
     pub fn calculate_shares_lost(&self, vault: &Vault, vault_equity: u64) -> VaultResult<u128> {
         let n_shares = self.shares;
 
+        // A pending request covering the *entire* share supply forfeits nothing: the
+        // redeem-period forfeiture accrues to the depositors who stay, and here there are
+        // none. This has to be decided BEFORE the conservation guard below, because the
+        // restake leg prices `self.value` against a post-removal pool of
+        // `total_shares - n_shares == 0` shares, so `new_n_shares` floors to 0 and the guard
+        // rejects the cancel outright — permanently, since re-requesting and depositing are
+        // both blocked while a request is pending. That left a 100% depositor no exit but
+        // `withdraw` at the stale frozen value, forfeiting every subsequent gain to
+        // synthesized manager shares (finding #126, a regression introduced by the #93
+        // guard). `cancel_withdraw_request`'s `user_owns_entire_vault` check stays: it covers
+        // the wider case of owning 100% while requesting only part of it, where the math
+        // below still computes a (self-directed) forfeiture.
+        if n_shares >= vault.total_shares {
+            return Ok(0);
+        }
+
         let amount = depositor_shares_to_vault_amount(n_shares, vault.total_shares, vault_equity)?;
 
         let vault_shares_lost = if amount > self.value {
@@ -174,6 +190,25 @@ mod tests {
             req.calculate_shares_lost(&vault, vault_equity).is_err(),
             "cancel that would burn the entire claim must revert"
         );
+    }
+
+    /// OtterSec #126: the #93 guard above must not fire for a depositor whose pending
+    /// request covers 100% of `total_shares`. There the post-removal pool has zero shares,
+    /// so `new_n_shares` floors to 0 for a structural reason rather than a rounding one, and
+    /// rejecting the cancel stranded the depositor: re-request and deposit are both blocked
+    /// while a request is pending, leaving only a `withdraw` at the stale frozen value.
+    #[test]
+    fn calculate_shares_lost_sole_depositor_full_request_can_cancel() {
+        let mut vault = Vault::default();
+        vault.total_shares = 100;
+        let req = WithdrawRequest {
+            shares: 100, // the entire share supply
+            value: 100,  // frozen at request time
+            ts: 0,
+        };
+        // Equity rose during the redeem period, so `amount > value` and the forfeiture
+        // branch is reached. A sole depositor has nobody to forfeit to.
+        assert_eq!(req.calculate_shares_lost(&vault, 110).unwrap(), 0);
     }
 
     /// Sanity: an ordinary cancel with no equity gain forfeits nothing.

@@ -648,10 +648,15 @@ mod update_perp_auction_params {
             .update_perp_auction_params(&perp_market, oracle_price, false)
             .unwrap();
 
-        assert_eq!(order_params_after.auction_start_price, Some(79_750_000));
+        // The start offset is clamped to the tier auction-width band (OtterSec #146). The market is
+        // the default HighlySpeculative tier, so the bound is oracle_twap / 5 = 20% = 29_000_000.
+        // The raw fast-TWAP offset here is 79_750_000, or 55% above oracle, because the fixture puts
+        // the mark TWAP 50-60% above the oracle. Clamping moves the start toward oracle, which is
+        // less aggressive for the taker; the end offset is unchanged.
+        assert_eq!(order_params_after.auction_start_price, Some(29_000_000));
         assert_eq!(order_params_after.auction_end_price, Some(90_092_988));
         // duration floor paces the requested spread (0.69% -> 42), not the
-        // sanitized spread (7.1% -> clamped 180)
+        // sanitized spread (42% -> clamped 180)
         assert_eq!(order_params_after.auction_duration, Some(42));
     }
 
@@ -2234,6 +2239,9 @@ mod get_close_perp_params {
             1,
         )
         .unwrap();
+        // Both start offsets are far inside the tier A band. The market is tier A with an oracle TWAP
+        // of 52_240_981_581, so the OtterSec #146 clamp sits at 2% = 1_044_819_631. The real basis
+        // here is under 0.1% of price, so the clamp does not bind.
         assert_eq!(long_start, 18863011); // legacy: 25635886 ($25 above)
         assert_eq!(long_end, 113427779); // legacy: 115193672
 
@@ -2265,6 +2273,160 @@ mod get_close_perp_params {
         let order = get_order(&params, slot);
 
         validate_order(&order, &perp_market, Some(oracle_price), slot).unwrap();
+    }
+}
+
+/// OtterSec #146: the baseline auction start offset is clamped to the tier auction-width band.
+///
+/// Each test pairs an in-band case with an out-of-band case built the same way, so a passing
+/// assertion pins the clamp and not some unrelated bound. The in-band case must return the raw
+/// offset unchanged.
+mod get_perp_baseline_start_price_offset {
+    use crate::{
+        state::{
+            oracle::HistoricalOracleData,
+            perp_market::{ContractTier, MarketStats, PerpMarket, AMM},
+        },
+        OrderParams, PositionDirection, PRICE_PRECISION_I64, PRICE_PRECISION_U64,
+        QUOTE_PRECISION_U64,
+    };
+
+    const ORACLE_TWAP: i64 = 100 * PRICE_PRECISION_I64;
+
+    /// Market on the fast-TWAP-only path, the path the crank can move.
+    ///
+    /// `last_mark_price_twap_5min` is set to `ORACLE_TWAP + mark_5min_premium`, and the bid/ask TWAPs
+    /// sit at oracle. That makes the fast and slow offsets diverge by more than 50bps of the 5min
+    /// TWAP, so `get_perp_baseline_start_price_offset` returns the fast offset alone.
+    fn market_with_mark_5min_premium(
+        contract_tier: ContractTier,
+        mark_5min_premium: i64,
+    ) -> PerpMarket {
+        PerpMarket {
+            contract_tier,
+            market_stats: MarketStats {
+                last_bid_price_twap: ORACLE_TWAP as u64,
+                last_ask_price_twap: ORACLE_TWAP as u64,
+                last_mark_price_twap_5min: (ORACLE_TWAP + mark_5min_premium) as u64,
+                volume_24h: 1_000_000 * QUOTE_PRECISION_U64,
+                historical_oracle_data: HistoricalOracleData {
+                    last_oracle_price: ORACLE_TWAP,
+                    last_oracle_price_twap: ORACLE_TWAP,
+                    last_oracle_price_twap_5min: ORACLE_TWAP,
+                    ..HistoricalOracleData::default()
+                },
+                ..MarketStats::default()
+            },
+            amm: AMM::default(),
+            ..PerpMarket::default()
+        }
+    }
+
+    /// Tier A allows a 2% auction width, so a 1% premium passes through and a 10% premium is cut to
+    /// 2%.
+    #[test]
+    fn clamps_a_tier_long_offset_and_leaves_an_in_band_one_alone() {
+        let in_band = market_with_mark_5min_premium(ContractTier::A, PRICE_PRECISION_I64);
+        let offset =
+            OrderParams::get_perp_baseline_start_price_offset(&in_band, PositionDirection::Long)
+                .unwrap();
+        assert_eq!(offset, PRICE_PRECISION_I64); // 1%, the raw fast offset
+
+        let out_of_band = market_with_mark_5min_premium(ContractTier::A, 10 * PRICE_PRECISION_I64);
+        let offset = OrderParams::get_perp_baseline_start_price_offset(
+            &out_of_band,
+            PositionDirection::Long,
+        )
+        .unwrap();
+        assert_eq!(offset, 2 * PRICE_PRECISION_I64); // 2% = ORACLE_TWAP / 50
+    }
+
+    /// The bound is symmetric. A negative premium is a mark TWAP below oracle, which pushes the short
+    /// side of the band.
+    #[test]
+    fn clamps_the_short_side_symmetrically() {
+        let in_band = market_with_mark_5min_premium(ContractTier::A, -PRICE_PRECISION_I64);
+        let offset =
+            OrderParams::get_perp_baseline_start_price_offset(&in_band, PositionDirection::Short)
+                .unwrap();
+        assert_eq!(offset, -PRICE_PRECISION_I64);
+
+        let out_of_band = market_with_mark_5min_premium(ContractTier::A, -10 * PRICE_PRECISION_I64);
+        let offset = OrderParams::get_perp_baseline_start_price_offset(
+            &out_of_band,
+            PositionDirection::Short,
+        )
+        .unwrap();
+        assert_eq!(offset, -2 * PRICE_PRECISION_I64);
+    }
+
+    /// The bound is tier-aware. The same 10% premium that tier A cuts to 2% is in band for
+    /// HighlySpeculative, which allows 20%.
+    #[test]
+    fn riskier_tiers_get_a_wider_bound() {
+        let market = market_with_mark_5min_premium(
+            ContractTier::HighlySpeculative,
+            10 * PRICE_PRECISION_I64,
+        );
+        let offset =
+            OrderParams::get_perp_baseline_start_price_offset(&market, PositionDirection::Long)
+                .unwrap();
+        assert_eq!(offset, 10 * PRICE_PRECISION_I64);
+
+        let market = market_with_mark_5min_premium(
+            ContractTier::HighlySpeculative,
+            30 * PRICE_PRECISION_I64,
+        );
+        let offset =
+            OrderParams::get_perp_baseline_start_price_offset(&market, PositionDirection::Long)
+                .unwrap();
+        assert_eq!(offset, 20 * PRICE_PRECISION_I64); // 20% = ORACLE_TWAP / 5
+    }
+
+    /// The low-volume fallback path divides a mark TWAP, not the oracle TWAP, so it also needs the
+    /// clamp. `volume_24h = 0` selects it, and tier A then uses `last_bid_price_twap / 500`.
+    #[test]
+    fn clamps_the_low_volume_fallback_path() {
+        let mut in_band = market_with_mark_5min_premium(ContractTier::A, 0);
+        in_band.market_stats.volume_24h = 0;
+        in_band.market_stats.last_bid_price_twap = 500 * PRICE_PRECISION_U64;
+        let offset =
+            OrderParams::get_perp_baseline_start_price_offset(&in_band, PositionDirection::Long)
+                .unwrap();
+        assert_eq!(offset, PRICE_PRECISION_I64); // 500 / 500 = 1% of oracle, in band
+
+        let mut out_of_band = market_with_mark_5min_premium(ContractTier::A, 0);
+        out_of_band.market_stats.volume_24h = 0;
+        out_of_band.market_stats.last_bid_price_twap = 2000 * PRICE_PRECISION_U64;
+        let offset = OrderParams::get_perp_baseline_start_price_offset(
+            &out_of_band,
+            PositionDirection::Long,
+        )
+        .unwrap();
+        assert_eq!(offset, 2 * PRICE_PRECISION_I64); // raw 4%, cut to 2%
+    }
+
+    /// The end offset derives from the start offset with a `min`/`max` against it, so clamping the
+    /// start keeps the long band ordered as start <= end.
+    #[test]
+    fn clamped_start_stays_ordered_against_the_end_offset() {
+        let market = market_with_mark_5min_premium(ContractTier::A, 10 * PRICE_PRECISION_I64);
+        let (start, end) = OrderParams::get_perp_baseline_start_end_price_offset(
+            &market,
+            PositionDirection::Long,
+            1,
+        )
+        .unwrap();
+        assert_eq!(start, 2 * PRICE_PRECISION_I64);
+        assert!(end >= start);
+
+        let (start, end) = OrderParams::get_perp_baseline_start_end_price_offset(
+            &market,
+            PositionDirection::Short,
+            1,
+        )
+        .unwrap();
+        assert!(end <= start);
     }
 }
 

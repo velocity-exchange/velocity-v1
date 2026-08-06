@@ -184,6 +184,20 @@ pub fn update_spot_market_cumulative_interest(
         borrow_interest,
     } = calculate_accumulated_interest(spot_market, now)?;
 
+    // This interval has exactly three possible outcomes, and only two of them appear as
+    // branches below. Naming all three here because the third is the absence of action:
+    //
+    //   COMMIT — bump both indexes, pay both carveouts, stamp the clock.
+    //   DROP   — nobody owes anything for this interval (paused above, or zero utilization),
+    //            so stamp the clock without accruing. The interval leaves the ledger.
+    //   DEFER  — something IS owed but cannot be paid in full yet (the split rounds to
+    //            nothing, or a configured carveout would floor to zero). Fall through both
+    //            branches, touching nothing: the clock stays put so the same interval is
+    //            retried later against a longer span.
+    //
+    // DROP and DEFER are the load-bearing distinction. Dropping an interval that is owed
+    // forgives interest (the shape of #127); deferring an interval that is not owed leaves it
+    // on the clock to be billed retroactively to whoever holds debt later (#115, #117).
     if deposit_interest > 0 && borrow_interest > 1 {
         // Explicit lending-gain carveouts (replaces the old single `total_factor`
         // skim). Two independent cuts taken off the deposit-interest gain:
@@ -206,16 +220,28 @@ pub fn update_spot_market_cumulative_interest(
         // deposit_balance — crediting the first pool grows deposit_balance,
         // and converting the second cut against the grown balance would
         // skew it above its stated factor (order-dependence)
-        let if_token_amount = get_interest_token_amount(
-            spot_market.deposit_balance,
-            spot_market,
-            deposit_interest_for_if,
-        )?;
-        let protocol_token_amount = get_interest_token_amount(
-            spot_market.deposit_balance,
-            spot_market,
-            deposit_interest_for_protocol,
-        )?;
+        //
+        // An unconfigured cut is structurally zero, so skip its conversion rather than
+        // multiplying and dividing to reach 0. Most markets run with both factors at zero and
+        // this function is cranked by nearly every spot-touching instruction.
+        let if_token_amount = if spot_market.insurance_fund.if_fee_factor == 0 {
+            0
+        } else {
+            get_interest_token_amount(
+                spot_market.deposit_balance,
+                spot_market,
+                deposit_interest_for_if,
+            )?
+        };
+        let protocol_token_amount = if spot_market.protocol_fee_factor == 0 {
+            0
+        } else {
+            get_interest_token_amount(
+                spot_market.deposit_balance,
+                spot_market,
+                deposit_interest_for_protocol,
+            )?
+        };
 
         // A configured carveout must actually reach its pool before the interval is committed.
         //
@@ -285,10 +311,19 @@ pub fn update_spot_market_cumulative_interest(
                 max_borrow_rate: spot_market.max_borrow_rate,
             });
         }
-    } else if calculate_spot_market_utilization(spot_market)? == 0 {
+    } else if spot_market.borrow_balance == 0
+        || calculate_spot_market_utilization(spot_market)? == 0
+    {
         // Nothing is borrowed, so no interest is owed by anyone for this interval — the same
         // condition on which `calculate_accumulated_interest` returns zero. Stamp the clock
         // so the idle span leaves the ledger.
+        //
+        // `borrow_balance == 0` is checked first purely to avoid the work: it is the case that
+        // actually occurs, and it settles the question with one comparison instead of two
+        // `get_token_amount` conversions and a division that `calculate_accumulated_interest`
+        // already performed a few lines above. The utilization arm is kept because zero
+        // utilization is the exact condition that function returns zero on, and it also covers
+        // a borrow so small relative to deposits that the ratio floors to zero.
         //
         // Left un-stamped it stayed on the clock for the whole zero-borrow epoch, and the
         // first accrual after a borrow appeared billed that entire span at the newly non-zero

@@ -278,8 +278,8 @@ pub fn handle_request_remove_insurance_fund_stake<'c: 'info, 'info>(
     Ok(())
 }
 
-pub fn handle_cancel_request_remove_insurance_fund_stake(
-    ctx: Context<CancelRequestRemoveInsuranceFundStake>,
+pub fn handle_cancel_request_remove_insurance_fund_stake<'c: 'info, 'info>(
+    ctx: Context<'info, CancelRequestRemoveInsuranceFundStake<'info>>,
     market_index: u16,
 ) -> Result<()> {
     let clock = Clock::get()?;
@@ -287,6 +287,10 @@ pub fn handle_cancel_request_remove_insurance_fund_stake(
     let insurance_fund_stake = &mut load_mut!(ctx.accounts.insurance_fund_stake)?;
     let user_stats = &mut load_mut!(ctx.accounts.user_stats)?;
     let spot_market = &mut load_mut!(ctx.accounts.spot_market)?;
+    let state = ctx.accounts.state.load()?;
+
+    let remaining_accounts_iter = &mut ctx.remaining_accounts.iter().peekable();
+    let mint = get_token_mint(remaining_accounts_iter)?;
 
     validate!(
         insurance_fund_stake.market_index == market_index,
@@ -299,6 +303,58 @@ pub fn handle_cancel_request_remove_insurance_fund_stake(
         ErrorCode::NoIFWithdrawRequestInProgress,
         "No withdraw request in progress"
     )?;
+
+    // Settle any already-due revenue into the IF vault BEFORE the cancel prices the
+    // forfeiture, mirroring the add and request-remove paths (OtterSec #141).
+    //
+    // `cancel_request_remove_insurance_fund_stake` implements the anti-free-option rule:
+    // it withdraws at the frozen `last_withdraw_request_value` and restakes at the live
+    // vault price, so any appreciation during the escrow window is forfeited to the
+    // stakers who stayed. Pricing that restake against a *pre-settle* vault understates
+    // the live value, so the cancel burns no shares (or too few) and the canceller keeps
+    // revenue the rule assigns to the remaining stakers. A staker could simply order
+    // their signed cancel ahead of an already-due signerless settle to take it.
+    //
+    // Settling here rather than gating the cancel is deliberate: #34 exists precisely so
+    // a pending request can always be cancelled, and refusing the cancel until someone
+    // else cranks the settle would reintroduce a cancel-blocking condition. Revenue
+    // accruing *after* this point is still forfeited by the freeze — that is the intended
+    // escrow tradeoff, not this bug.
+    {
+        if spot_market.has_transfer_hook() {
+            controller::insurance::attempt_settle_revenue_to_insurance_fund(
+                &ctx.accounts.spot_market_vault,
+                &ctx.accounts.insurance_fund_vault,
+                spot_market,
+                now,
+                &ctx.accounts.token_program,
+                &ctx.accounts.velocity_signer,
+                &state,
+                &mint,
+                Some(&mut remaining_accounts_iter.clone()),
+            )?;
+        } else {
+            controller::insurance::attempt_settle_revenue_to_insurance_fund(
+                &ctx.accounts.spot_market_vault,
+                &ctx.accounts.insurance_fund_vault,
+                spot_market,
+                now,
+                &ctx.accounts.token_program,
+                &ctx.accounts.velocity_signer,
+                &state,
+                &mint,
+                None,
+            )?;
+        };
+
+        // reload the vault balances so they're up-to-date
+        ctx.accounts.spot_market_vault.reload()?;
+        ctx.accounts.insurance_fund_vault.reload()?;
+        math::spot_withdraw::validate_spot_market_vault_amount(
+            spot_market,
+            ctx.accounts.spot_market_vault.amount,
+        )?;
+    }
 
     controller::insurance::cancel_request_remove_insurance_fund_stake(
         ctx.accounts.insurance_fund_vault.amount,
@@ -506,6 +562,7 @@ pub struct RequestRemoveInsuranceFundStake<'info> {
 #[derive(Accounts)]
 #[instruction(market_index: u16,)]
 pub struct CancelRequestRemoveInsuranceFundStake<'info> {
+    pub state: AccountLoader<'info, State>,
     #[account(
         mut,
         seeds = [b"spot_market", market_index.to_le_bytes().as_ref()],
@@ -523,12 +580,26 @@ pub struct CancelRequestRemoveInsuranceFundStake<'info> {
     )]
     pub user_stats: AccountLoader<'info, UserStats>,
     pub authority: Signer<'info>,
+    // OtterSec #141: cancel must price against a settled IF vault, so it needs the
+    // same settle plumbing `request_remove` gained in #31.
+    #[account(
+        mut,
+        seeds = [b"spot_market_vault".as_ref(), market_index.to_le_bytes().as_ref()],
+        bump,
+    )]
+    pub spot_market_vault: Box<InterfaceAccount<'info, TokenAccount>>,
     #[account(
         mut,
         seeds = [b"insurance_fund_vault".as_ref(), market_index.to_le_bytes().as_ref()],
         bump,
     )]
     pub insurance_fund_vault: Box<InterfaceAccount<'info, TokenAccount>>,
+    #[account(
+        constraint = state.load()?.signer.eq(&velocity_signer.key())
+    )]
+    /// CHECK: forced velocity_signer
+    pub velocity_signer: UncheckedAccount<'info>,
+    pub token_program: Interface<'info, TokenInterface>,
 }
 
 #[derive(Accounts)]

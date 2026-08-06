@@ -781,12 +781,20 @@ export function calculateTokenUtilizationLimits(
  * `borrowLimit` is additionally zeroed for `assetTier === 'protected'` markets, and both limits
  * are clamped by `maxTokenBorrowsFraction` of `maxTokenDeposits` when that cap is configured.
  *
+ * `exceptionWithdrawLimit` is the market-level budget for the small-depositor exception in
+ * `check_withdraw_limits`. The program lets accounts that pass
+ * `check_user_exception_to_withdraw_limits` take the market one `withdrawGuardThreshold` below
+ * the breaker floor, and no further. That budget is shared by every eligible account, so a
+ * client must not treat per-account eligibility as a promise of a full exit. It is always at
+ * least `withdrawLimit`.
+ *
  * @param {SpotMarketAccount} spotMarket - The spot market account
  * @param {BN} now - The timestamp (unix seconds) to project the live TWAP up to
- * @return {{ borrowLimit: BN; withdrawLimit: BN; minDepositAmount: BN; maxBorrowAmount: BN;
- *   currentDepositAmount: BN; currentBorrowAmount: BN }} All values scaled by the market's token
- *   decimals. `withdrawLimit`/`borrowLimit` are floored at zero (a market already past its
- *   min-deposit/max-borrow bound reports zero remaining room rather than negative)
+ * @return {{ borrowLimit: BN; withdrawLimit: BN; exceptionWithdrawLimit: BN; minDepositAmount: BN;
+ *   maxBorrowAmount: BN; currentDepositAmount: BN; currentBorrowAmount: BN }} All values scaled by
+ *   the market's token decimals. `withdrawLimit`/`borrowLimit`/`exceptionWithdrawLimit` are floored
+ *   at zero (a market already past its min-deposit/max-borrow bound reports zero remaining room
+ *   rather than negative)
  */
 export function calculateWithdrawLimit(
 	spotMarket: SpotMarketAccount,
@@ -794,6 +802,7 @@ export function calculateWithdrawLimit(
 ): {
 	borrowLimit: BN;
 	withdrawLimit: BN;
+	exceptionWithdrawLimit: BN;
 	minDepositAmount: BN;
 	maxBorrowAmount: BN;
 	currentDepositAmount: BN;
@@ -890,6 +899,28 @@ export function calculateWithdrawLimit(
 		ZERO
 	);
 
+	// Mirror of `exception_floor` in the program's `check_withdraw_limits`.
+	// A small depositor may withdraw past the breaker floor, but the whole
+	// eligible cohort shares one `withdrawGuardThreshold` of extra room. This is
+	// the market-level budget for that carve-out, so it belongs here and not in
+	// the per-account eligibility test (`User.canBypassWithdrawLimits`).
+	//
+	// `exceptionWithdrawLimit` is never below `withdrawLimit`, because
+	// `exceptionFloor` is never above `minDepositTokens`. An eligible account
+	// therefore never loses room it already had.
+	//
+	// The size of the relaxation is one `withdrawGuardThreshold`. It does not
+	// depend on `withdrawCircuitBreakerBps`. That field moves the breaker floor
+	// and this exception floor by the same amount.
+	const exceptionFloor = BN.max(
+		minDepositTokens.sub(spotMarket.withdrawGuardThreshold),
+		ZERO
+	);
+	const exceptionWithdrawLimit = BN.max(
+		marketDepositTokenAmount.sub(exceptionFloor),
+		ZERO
+	);
+
 	let borrowLimit = maxBorrowTokens.sub(marketBorrowTokenAmount);
 
 	borrowLimit = BN.min(
@@ -918,6 +949,7 @@ export function calculateWithdrawLimit(
 	return {
 		borrowLimit,
 		withdrawLimit,
+		exceptionWithdrawLimit,
 		maxBorrowAmount: maxBorrowTokens,
 		minDepositAmount: minDepositTokens,
 		currentDepositAmount: marketDepositTokenAmount,

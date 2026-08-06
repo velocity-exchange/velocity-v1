@@ -42,6 +42,7 @@ import {
 	TransferFeeAndPnlPoolDirection,
 	MarketType,
 	SpotMarketAccount,
+	UserAccount,
 } from './types';
 import { DEFAULT_MARKET_NAME, encodeName } from './userName';
 import { BN } from './isomorphic/anchor';
@@ -54,6 +55,7 @@ import {
 	getInsuranceFundVaultPublicKey,
 	getPrelaunchOraclePublicKey,
 	getUserStatsAccountPublicKey,
+	getUserAccountPublicKeySync,
 	getPythLazerOraclePublicKey,
 	getTokenProgramForSpotMarket,
 	getLpPoolPublicKey,
@@ -164,7 +166,7 @@ export class AdminClient extends VelocityClient {
 	 * @param activeStatus - If `true`, market is `Active` immediately; otherwise `Initialized` (trading disabled until a later status update). Requires cold admin when `true`. Default `true`.
 	 * @param assetTier - Collateral tier gating cross-margin usability. Default `AssetTier.COLLATERAL`.
 	 * @param scaleInitialAssetWeightStart - Deposit-token-amount threshold, QUOTE_PRECISION (1e6) equivalent notional, above which `initialAssetWeight` scales down. Default 0 (disabled).
-	 * @param withdrawGuardThreshold - Token-amount threshold, market's native decimals, above which large single withdraws/borrows are blocked. Default 0.
+	 * @param withdrawGuardThreshold - Token-amount level, market's native decimals, *below* which the withdraw guards stop binding. Resulting deposits are never floored above `depositTokenTwap - withdrawGuardThreshold`, and borrows are always permitted up to this amount. It also sizes the small-depositor exception to the withdraw circuit breaker: an account qualifies below a tenth of it, and the whole eligible cohort shares one of it below the breaker floor. Raising it loosens the guards. Capped on chain at `MAX_WITHDRAW_GUARD_THRESHOLD_NOTIONAL` ($10k) of oracle notional. Default 0 (guards always bind, no exception).
 	 * @param orderTickSize - Minimum price increment for spot orders, PRICE_PRECISION (1e6). Default 1.
 	 * @param orderStepSize - Minimum base size increment for spot orders, market's native decimals. Also seeds `minOrderSize`. Default 1.
 	 * @param ifTotalFactor - Insurance fund fee share of the total spot fee, IF_FACTOR_PRECISION (1e6). Default 0.
@@ -2851,8 +2853,12 @@ export class AdminClient extends VelocityClient {
 	}
 
 	/**
-	 * Sets a spot market's withdraw guard threshold — the token-amount cap above which a
-	 * single withdraw/borrow is blocked. Requires warm admin (`check_warm`, on the
+	 * Sets a spot market's withdraw guard threshold — the token-amount level *below* which the
+	 * withdraw guards stop binding. It relaxes the min-deposit floor by up to its own size,
+	 * always permits borrows up to its own size, and sizes the small-depositor exception to the
+	 * withdraw circuit breaker (eligibility below a tenth of it, and one of it as the shared
+	 * market-level budget below the breaker floor). Raising it loosens the guards; `0` disables
+	 * the carve-out entirely. Requires warm admin (`check_warm`, on the
 	 * `AdminUpdateSpotMarketWithdrawGuardThreshold` context). On-chain the notional is priced
 	 * with the max of the live oracle price and the 5-minute oracle TWAP (`StrictOraclePrice`),
 	 * so a momentarily-manipulated-down oracle can't let an oversized threshold through;
@@ -7358,6 +7364,7 @@ export class AdminClient extends VelocityClient {
 				inputMint: inMarket.mint,
 				outputMint: outMarket.mint,
 				amount,
+				userPublicKey: this.provider.wallet.publicKey,
 				slippageBps,
 				swapMode,
 				onlyDirectRoutes,
@@ -8202,15 +8209,27 @@ export class AdminClient extends VelocityClient {
 	 * `tripEquityFloorBreaker` keeper instruction, unfreezing all of the
 	 * authority's subaccounts. Requires warm admin (`check_warm`); intended to
 	 * be called after a human has reviewed why the breaker fired.
+	 *
+	 * The clear is self-verifying onchain: the instruction carries every live
+	 * subaccount of the authority (fetched here, count pinned onchain by
+	 * `UserStats.numberOfSubAccounts`) plus their markets and oracles, and
+	 * reverts with `InvalidEquityBreakerReset` unless every floored subaccount
+	 * clears its floor + buffer at execution time. To resume a maker whose
+	 * equity does not clear the floors anyway, lower the floors first with
+	 * `updateUserEquityFloor`.
 	 * @param userStatsPublicKey - `UserStats` PDA of the authority to unfreeze.
 	 * @param txParams - Optional transaction-building overrides.
 	 * @returns Transaction signature.
 	 */
 	public async resetEquityFloorBreaker(
 		userStatsPublicKey: PublicKey,
-		txParams?: TxParams
+		txParams?: TxParams,
+		userAccounts?: UserAccount[]
 	): Promise<TransactionSignature> {
-		const ix = await this.getResetEquityFloorBreakerIx(userStatsPublicKey);
+		const ix = await this.getResetEquityFloorBreakerIx(
+			userStatsPublicKey,
+			userAccounts
+		);
 		const tx = await this.buildTransaction(ix, txParams);
 		const { txSig } = await this.sendTransaction(tx, [], this.opts);
 		return txSig;
@@ -8219,11 +8238,37 @@ export class AdminClient extends VelocityClient {
 	/**
 	 * Builds the `resetEquityFloorBreaker` instruction without sending it. See
 	 * `resetEquityFloorBreaker`.
+	 * @param userAccounts - The authority's live subaccounts; fetched via
+	 * `getUserAccountsForAuthority` when omitted (pass them on connections
+	 * without `getProgramAccounts` support).
 	 * @returns The unsigned `resetEquityFloorBreaker` instruction.
 	 */
 	public async getResetEquityFloorBreakerIx(
-		userStatsPublicKey: PublicKey
+		userStatsPublicKey: PublicKey,
+		userAccounts?: UserAccount[]
 	): Promise<TransactionInstruction> {
+		if (!userAccounts) {
+			const userStats = await (this.program.account as any).userStats.fetch(
+				userStatsPublicKey
+			);
+			userAccounts = await this.getUserAccountsForAuthority(
+				userStats.authority
+			);
+		}
+
+		// subaccounts first (the program consumes user accounts off the front
+		// of remaining accounts by discriminator), then their markets/oracles
+		const remainingAccounts = userAccounts.map((userAccount) => ({
+			pubkey: getUserAccountPublicKeySync(
+				this.program.programId,
+				userAccount.authority,
+				userAccount.subAccountId
+			),
+			isWritable: false,
+			isSigner: false,
+		}));
+		remainingAccounts.push(...this.getRemainingAccounts({ userAccounts }));
+
 		return this.program.instruction.resetEquityFloorBreaker({
 			accounts: {
 				admin: this.useHotWalletAdmin
@@ -8232,6 +8277,7 @@ export class AdminClient extends VelocityClient {
 				state: await this.getStatePublicKey(),
 				userStats: userStatsPublicKey,
 			},
+			remainingAccounts,
 		});
 	}
 

@@ -11,7 +11,10 @@ use {
             },
             funding::calculate_funding_payment,
             oracle::{is_oracle_valid_for_action, LogMode, VelocityAction},
-            position::calculate_base_asset_value_and_pnl_with_oracle_price,
+            position::{
+                calculate_base_asset_value_and_pnl_with_expiry_price,
+                calculate_base_asset_value_and_pnl_with_oracle_price,
+            },
             safe_math::SafeMath,
             spot_balance::{get_strict_token_value, get_token_value},
         },
@@ -129,8 +132,14 @@ pub fn calculate_perp_position_value_and_pnl(
         market_position,
     )?;
 
-    let (base_asset_value, unrealized_pnl) =
-        calculate_base_asset_value_and_pnl_with_oracle_price(market_position, valuation_price)?;
+    // #133: a committed `expiry_price` may legitimately be negative, and the live-oracle
+    // helper clamps a non-positive price to zero. Use the expiry-price variant in
+    // Settlement so margin sees the same signed loss `settle_expired_position` will book.
+    let (base_asset_value, unrealized_pnl) = if market.status == MarketStatus::Settlement {
+        calculate_base_asset_value_and_pnl_with_expiry_price(market_position, valuation_price)?
+    } else {
+        calculate_base_asset_value_and_pnl_with_oracle_price(market_position, valuation_price)?
+    };
 
     let total_unrealized_pnl = unrealized_pnl.safe_add(unrealized_funding.cast()?)?;
 
@@ -1050,8 +1059,12 @@ pub fn calculate_user_equity(
             market_position,
         )?;
 
-        let (_, unrealized_pnl) =
-            calculate_base_asset_value_and_pnl_with_oracle_price(market_position, valuation_price)?;
+        // #133: same as above — Settlement values against a possibly-negative expiry price.
+        let (_, unrealized_pnl) = if market.status == MarketStatus::Settlement {
+            calculate_base_asset_value_and_pnl_with_expiry_price(market_position, valuation_price)?
+        } else {
+            calculate_base_asset_value_and_pnl_with_oracle_price(market_position, valuation_price)?
+        };
 
         let pnl = unrealized_pnl.safe_add(unrealized_funding.cast()?)?;
 
@@ -1313,10 +1326,21 @@ pub fn calculate_user_equity_bounds(
         let quote_count = if quote_price_a == quote_price_b { 1 } else { 2 };
 
         for valuation_price in &valuation_prices[..valuation_count] {
-            let (_, unrealized_pnl) = calculate_base_asset_value_and_pnl_with_oracle_price(
-                market_position,
-                *valuation_price,
-            )?;
+            // #133: a settled market is valued at its committed `expiry_price`, which may
+            // legitimately be negative. The live-oracle helper clamps a non-positive price
+            // to zero, which would hide a long's loss from both bounds and let a gate
+            // authorize against equity the position does not have.
+            let (_, unrealized_pnl) = if settled {
+                calculate_base_asset_value_and_pnl_with_expiry_price(
+                    market_position,
+                    *valuation_price,
+                )?
+            } else {
+                calculate_base_asset_value_and_pnl_with_oracle_price(
+                    market_position,
+                    *valuation_price,
+                )?
+            };
 
             let pnl = unrealized_pnl.safe_add(unrealized_funding.cast()?)?;
 

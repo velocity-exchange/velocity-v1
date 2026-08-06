@@ -759,8 +759,8 @@ pub mod velocity {
         handle_request_remove_insurance_fund_stake(ctx, market_index, amount)
     }
 
-    pub fn cancel_request_remove_insurance_fund_stake(
-        ctx: Context<CancelRequestRemoveInsuranceFundStake>,
+    pub fn cancel_request_remove_insurance_fund_stake<'c: 'info, 'info>(
+        ctx: Context<'info, CancelRequestRemoveInsuranceFundStake<'info>>,
         market_index: u16,
     ) -> Result<()> {
         handle_cancel_request_remove_insurance_fund_stake(ctx, market_index)

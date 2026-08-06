@@ -413,12 +413,6 @@ pub fn handle_initialize_revenue_share_escrow<'c: 'info, 'info>(
     ctx: Context<'info, InitializeRevenueShareEscrow<'info>>,
     num_orders: u16,
 ) -> Result<()> {
-    let escrow = &mut ctx.accounts.escrow;
-    escrow.authority = ctx.accounts.authority.key();
-    escrow
-        .orders
-        .resize_with(num_orders as usize, RevenueShareOrder::default);
-
     let mut user_stats = ctx.accounts.user_stats.load_mut()?;
 
     // `escrow.referrer` is snapshotted here and never written again, while
@@ -431,11 +425,20 @@ pub fn handle_initialize_revenue_share_escrow<'c: 'info, 'info>(
     // (nothing, not even the permissionless resize, can rewrite the field).
     // Requiring a created subaccount puts the escrow strictly after the point where
     // the referrer becomes immutable.
+    //
+    // Checked before the escrow is written or resized: it is a precondition on state
+    // this handler does not own, so there is no reason to size the orders vec first.
     validate!(
         user_stats.number_of_sub_accounts_created > 0,
         ErrorCode::UserNotFound,
         "revenue share escrow requires the authority's first user to exist, otherwise it snapshots a defaulted referrer"
     )?;
+
+    let escrow = &mut ctx.accounts.escrow;
+    escrow.authority = ctx.accounts.authority.key();
+    escrow
+        .orders
+        .resize_with(num_orders as usize, RevenueShareOrder::default);
 
     escrow.referrer = user_stats.referrer;
     user_stats.update_builder_referral_status();
@@ -1009,6 +1012,9 @@ pub fn handle_transfer_deposit_by_delegate<'c: 'info, 'info>(
 
         // Cure eligibility must not be decided off an invalid price, matching
         // the validity the trip and the reset require of the same metric.
+        // Deliberately a blanket reject rather than the bounded metric the
+        // floor gates use: this is a standalone instruction (no innocent
+        // third party to abort), and failing frozen is the right direction.
         validate!(
             to_user_oracles_valid,
             ErrorCode::InvalidOracle,
@@ -1040,11 +1046,24 @@ pub fn handle_transfer_deposit_by_delegate<'c: 'info, 'info>(
         // a subaccount inside the buffer band (at/above floor) may still
         // rebalance floor away. Measured as net equity, matching the breaker
         // trip threshold.
-        let (from_user_net_equity, _) = calculate_user_equity(
+        let (from_user_net_equity, from_user_oracles_valid) = calculate_user_equity(
             from_user,
             &perp_market_map,
             &spot_market_map,
             &mut oracle_map,
+        )?;
+
+        // Defusal eligibility must not be decided off an invalid price. The
+        // counterpart `trip_equity_floor_breaker` requires valid oracles, so
+        // without this check a stale-high price lets this guard pass in the
+        // same slot the trip reverts. The floor transfer would then drop the
+        // subaccount to `equity_floor = 0`, after which `is_below_equity_floor`
+        // short-circuits to false until an admin sets a new floor. The oracle
+        // therefore only has to be bad for the slot this transfer lands in.
+        validate!(
+            from_user_oracles_valid,
+            ErrorCode::InvalidOracle,
+            "cannot verify equity floor transfer with an invalid oracle"
         )?;
 
         validate!(
@@ -1076,8 +1095,17 @@ pub fn handle_transfer_deposit_by_delegate<'c: 'info, 'info>(
     )?;
 
     if equity_floor_delta > 0 {
-        let (to_user_net_equity, _) =
+        let (to_user_net_equity, to_user_oracles_valid) =
             calculate_user_equity(to_user, &perp_market_map, &spot_market_map, &mut oracle_map)?;
+
+        // The new floor must be backed by equity that is actually measurable.
+        // A stale-high price would otherwise let a floor land on a subaccount
+        // that cannot back it.
+        validate!(
+            to_user_oracles_valid,
+            ErrorCode::InvalidOracle,
+            "cannot verify equity floor transfer with an invalid oracle"
+        )?;
 
         validate!(
             !to_user.is_below_buffered_equity_floor(to_user_net_equity),
@@ -2196,11 +2224,12 @@ pub fn handle_transfer_perp_position<'c: 'info, 'info>(
         &spot_market_map,
         &mut oracle_map,
     )? {
+        // The floor restricts the from side here, so take the lower bound.
         validate!(
-            !from_user.is_below_buffered_equity_floor(from_user_net_equity),
+            !from_user.is_below_buffered_equity_floor(from_user_net_equity.lower),
             ErrorCode::EquityBelowFloor,
             "from user net equity {} below equity floor {} + buffer {}",
-            from_user_net_equity,
+            from_user_net_equity.lower,
             from_user.equity_floor,
             from_user.equity_floor_buffer
         )?;
@@ -2233,11 +2262,12 @@ pub fn handle_transfer_perp_position<'c: 'info, 'info>(
         &spot_market_map,
         &mut oracle_map,
     )? {
+        // The floor restricts the to side here, so take the lower bound.
         validate!(
-            !to_user.is_below_buffered_equity_floor(to_user_net_equity),
+            !to_user.is_below_buffered_equity_floor(to_user_net_equity.lower),
             ErrorCode::EquityBelowFloor,
             "to user net equity {} below equity floor {} + buffer {}",
-            to_user_net_equity,
+            to_user_net_equity.lower,
             to_user.equity_floor,
             to_user.equity_floor_buffer
         )?;

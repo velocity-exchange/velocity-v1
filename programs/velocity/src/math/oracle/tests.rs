@@ -152,3 +152,72 @@ fn calculate_oracle_valid() {
     assert!(oracle_status.mark_too_divergent);
     assert!(oracle_status.oracle_validity == OracleValidity::TooUncertain);
 }
+
+/// `oracle_slot_delay_override` is the max oracle delay, in slots, that
+/// immediate (JIT / auction-skipping) AMM fills tolerate.
+///
+/// The negative case is the one that mattered. It used to clamp to
+/// `max(override, 0)`, i.e. a threshold of zero, requiring the price to have
+/// been written in this very slot. For an MM-oracle-sourced price that is
+/// unsatisfiable by construction, because the program refuses MM-oracle writes
+/// closer together than `MM_ORACLE_MIN_SLOT_GAP` slots. Any market left at the
+/// init default of `-1` therefore failed this gate on roughly half of all slots
+/// regardless of how hard it was cranked.
+#[test]
+fn immediate_staleness_threshold_by_override() {
+    let guard_rails = ValidityGuardRails {
+        slots_before_stale_for_amm: 10,
+        slots_before_stale_for_margin: 120,
+        confidence_interval_max_size: 20_000,
+        too_volatile_ratio: 5,
+    };
+
+    let is_valid = |delay: i64, immediate_override: i8| -> bool {
+        let oracle_price_data = OraclePriceData {
+            price: (100 * PRICE_PRECISION) as i64,
+            confidence: 1,
+            delay,
+            has_sufficient_number_of_data_points: true,
+            sequence_id: None,
+        };
+        let validity = oracle_validity(
+            MarketType::Perp,
+            0,
+            (100 * PRICE_PRECISION) as i64,
+            &oracle_price_data,
+            &guard_rails,
+            1,
+            &OracleSource::PythLazer,
+            LogMode::ExchangeOracle,
+            immediate_override,
+            0,
+        )
+        .unwrap();
+        matches!(validity, OracleValidity::Valid)
+    };
+
+    // Unset resolves to MM_ORACLE_MIN_SLOT_GAP, the tightest window the crank
+    // can actually satisfy, rather than to zero.
+    let min_gap = MM_ORACLE_MIN_SLOT_GAP as i64;
+    for delay in 0..=min_gap {
+        assert!(
+            is_valid(delay, -1),
+            "delay {delay} should be Valid when unset"
+        );
+    }
+    assert!(
+        !is_valid(min_gap + 1, -1),
+        "unset must not tolerate more than MM_ORACLE_MIN_SLOT_GAP"
+    );
+
+    // An explicit positive threshold still wins in both directions, tighter or
+    // looser than the default.
+    assert!(is_valid(1, 1));
+    assert!(!is_valid(2, 1));
+    assert!(is_valid(5, 5));
+    assert!(!is_valid(6, 5));
+
+    // Zero remains the explicit "no immediate AMM fills on this market"
+    // sentinel: never Valid, not even same-slot.
+    assert!(!is_valid(0, 0));
+}

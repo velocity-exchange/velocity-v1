@@ -21540,7 +21540,12 @@ export type Velocity = {
           {
             "name": "oracleSlotDelayOverride",
             "docs": [
-              "override for the per-fill slot delay required from the oracle (default -1 = use state default)"
+              "Max oracle delay, in slots, tolerated by immediate (JIT / auction-skipping)",
+              "AMM fills. Positive is an explicit threshold. `0` disables immediate AMM",
+              "fills entirely. Negative (the init default, `-1`) means unset, which",
+              "resolves to `MM_ORACLE_MIN_SLOT_GAP`: the tightest window an MM-oracle",
+              "crank can actually satisfy, since the program refuses MM-oracle writes",
+              "closer together than that. See `math::oracle::oracle_validity`."
             ],
             "type": "i8"
           },

@@ -3509,6 +3509,13 @@ pub fn handle_update_mm_oracle_native(accounts: &[AccountInfo], data: &[u8]) -> 
     //   [0] perp_market (mut), [1] signer, [2] clock sysvar, [3] state.
     // State byte offsets are `STATE_*_OFFSET` above
     // (guarded by `state/traits/tests.rs::native_instruction_offsets`).
+    // Every index below is bounds-checked before use. This handler runs before
+    // Anchor, so a malformed instruction arrives verbatim: a short account list
+    // or a short payload used to panic, which aborts the transaction with no
+    // identifiable error and burns the whole compute budget getting there.
+    require!(accounts.len() >= 4, ErrorCode::InvalidNativeInstructionData);
+    require!(data.len() >= 16, ErrorCode::InvalidNativeInstructionData);
+
     crate::auth::require_native_account(
         &accounts[3],
         State::DISCRIMINATOR,
@@ -3521,22 +3528,27 @@ pub fn handle_update_mm_oracle_native(accounts: &[AccountInfo], data: &[u8]) -> 
     )?;
 
     {
-        let state = accounts[3].data.borrow();
-        // Kill switch: admin can disable this ix via feature_bit_flags. Panic
-        // (aborts the tx) to match the prior behavior.
-        assert!(
-            state[STATE_FEATURE_BIT_FLAGS_OFFSET] & 1 > 0,
-            "mm oracle update disabled by admin state"
+        let state = accounts[3].try_borrow_data()?;
+        // Kill switch: admin can disable this ix via feature_bit_flags. Returns
+        // a typed error rather than panicking, so the reason is identifiable by
+        // code instead of arriving as "Program failed to complete".
+        let feature_bit_flags = *state
+            .get(STATE_FEATURE_BIT_FLAGS_OFFSET)
+            .ok_or(ErrorCode::InvalidNativeStateAccount)?;
+        require!(
+            feature_bit_flags & (FeatureBitFlags::MmOracleUpdate as u8) > 0,
+            ErrorCode::MmOracleUpdateDisabled
         );
 
         #[cfg(not(feature = "anchor-test"))]
         {
             let signer_account = &accounts[1];
-            let hot_key = anchor_lang::prelude::Pubkey::new_from_array(
-                state[STATE_HOT_MM_ORACLE_CRANK_OFFSET..STATE_HOT_MM_ORACLE_CRANK_OFFSET + 32]
-                    .try_into()
-                    .unwrap(),
-            );
+            let hot_key_bytes: [u8; 32] = state
+                .get(STATE_HOT_MM_ORACLE_CRANK_OFFSET..STATE_HOT_MM_ORACLE_CRANK_OFFSET + 32)
+                .ok_or(ErrorCode::InvalidNativeStateAccount)?
+                .try_into()
+                .map_err(|_| ErrorCode::InvalidNativeStateAccount)?;
+            let hot_key = anchor_lang::prelude::Pubkey::new_from_array(hot_key_bytes);
             require!(
                 signer_account.is_signer && *signer_account.key == hot_key,
                 ErrorCode::Unauthorized
@@ -3549,9 +3561,11 @@ pub fn handle_update_mm_oracle_native(accounts: &[AccountInfo], data: &[u8]) -> 
         return Err(ErrorCode::DefaultError.into());
     }
 
-    let mut perp_market_data = accounts[0].data.borrow_mut();
-    let perp_market: &mut PerpMarket =
-        bytemuck::from_bytes_mut(&mut perp_market_data[8..8 + std::mem::size_of::<PerpMarket>()]);
+    let mut perp_market_data = accounts[0].try_borrow_mut_data()?;
+    let perp_market_bytes = perp_market_data
+        .get_mut(8..8 + std::mem::size_of::<PerpMarket>())
+        .ok_or(ErrorCode::InvalidNativePerpMarketAccount)?;
+    let perp_market: &mut PerpMarket = bytemuck::from_bytes_mut(perp_market_bytes);
     // Sequence-id check uses only seq fields. Defer the rest.
     let incoming_sequence_id = u64::from_le_bytes(data[8..16].try_into().unwrap());
     if incoming_sequence_id <= perp_market.market_stats.mm_oracle_sequence_id {
@@ -3566,8 +3580,16 @@ pub fn handle_update_mm_oracle_native(accounts: &[AccountInfo], data: &[u8]) -> 
         solana_program::sysvar::clock::ID,
         ErrorCode::DefaultError
     );
-    let clock_data = accounts[2].data.borrow();
-    let current_slot = u64::from_le_bytes(clock_data[0..8].try_into().unwrap());
+    let current_slot = {
+        let clock_data = accounts[2].try_borrow_data()?;
+        u64::from_le_bytes(
+            clock_data
+                .get(0..8)
+                .ok_or(ErrorCode::DefaultError)?
+                .try_into()
+                .map_err(|_| ErrorCode::DefaultError)?,
+        )
+    };
     let perp_market_slot = perp_market.market_stats.mm_oracle_slot;
 
     if current_slot <= perp_market_slot {
@@ -3589,19 +3611,42 @@ pub fn handle_update_mm_oracle_native(accounts: &[AccountInfo], data: &[u8]) -> 
     }
 
     // Step cap vs last accepted price. Bootstrap when prev == 0.
+    //
+    // A step beyond the cap is CLAMPED to the cap, not rejected. Rejecting
+    // enforced the same per-write rate limit but could not recover from a move
+    // larger than the cap: the stored price never advanced, so the next update
+    // was still beyond the cap against the same stale value, and so was the one
+    // after it. The oracle stayed frozen at its pre-move price indefinitely,
+    // recoverable only by an admin calling `zero_mm_oracle_fields`, while the
+    // crank kept paying for writes that did nothing.
+    //
+    // Clamping enforces the identical invariant — at most one cap-width of
+    // movement per accepted write, and writes are already rate-limited to one
+    // per `MM_ORACLE_MIN_SLOT_GAP` slots — so the maximum drift rate is
+    // unchanged and no new capability is granted: a caller could always walk
+    // the price at the cap rate by sending cap-sized steps. What changes is
+    // that the price now converges over a few writes instead of never.
     let perp_market_price = perp_market.market_stats.mm_oracle_price;
-    let incoming_price = i64::from_le_bytes(data[0..8].try_into().unwrap());
+    let mut incoming_price = i64::from_le_bytes(data[0..8].try_into().unwrap());
     if perp_market_price != 0 {
-        let prev_abs = (perp_market_price as i128).abs();
-        let diff_abs = ((incoming_price as i128) - (perp_market_price as i128)).abs();
-        // Cross-multiply form of (diff_abs / prev_abs) > MAX_STEP / PCT
-        if diff_abs * PERCENTAGE_PRECISION_I128 > MM_ORACLE_MAX_STEP_PCT_PRECISION * prev_abs {
+        let prev = perp_market_price as i128;
+        // Floored at 1 so a price small enough for the cap to round to zero
+        // still makes progress rather than reintroducing the freeze.
+        let max_step = MM_ORACLE_MAX_STEP_PCT_PRECISION
+            .saturating_mul(prev.abs())
+            .saturating_div(PERCENTAGE_PRECISION_I128)
+            .max(1);
+        let diff = (incoming_price as i128).saturating_sub(prev);
+        if diff.abs() > max_step {
+            // Between `prev` and `incoming_price`, so always i64-representable.
+            let clamped = prev.saturating_add(max_step.saturating_mul(diff.signum()));
             msg!(
-                "mm oracle reject: step too large, incoming={} prev={}",
+                "mm oracle step clamped: incoming={} prev={} written={}",
                 incoming_price,
-                perp_market_price
+                perp_market_price,
+                clamped
             );
-            return Ok(());
+            incoming_price = clamped.cast::<i64>()?;
         }
     }
 
@@ -3699,7 +3744,11 @@ const MM_ORACLE_BATCH_ENTRY_LEN: usize = 18;
 /// - sequence id not strictly greater than the stored one
 /// - current slot not strictly greater than the stored slot
 /// - slot gap below `MM_ORACLE_MIN_SLOT_GAP`
-/// - step larger than `MM_ORACLE_MAX_STEP_PCT_PRECISION` versus the stored price
+///
+/// A step beyond `MM_ORACLE_MAX_STEP_PCT_PRECISION` is neither a hard error nor
+/// a skip: it is clamped to the cap and written, matching opcode 0, so a feed
+/// gap larger than the cap converges over a few writes instead of freezing the
+/// oracle (see `apply_mm_oracle_update`).
 ///
 /// A single `msg!` carrying the rejected-market bitmask is emitted only when at
 /// least one market was skipped, so the happy path pays nothing for logging.
@@ -3736,19 +3785,13 @@ const MM_ORACLE_BATCH_ENTRY_LEN: usize = 18;
 /// - **Payload carries a market index** per entry; opcode 0's does not.
 /// - **Non-positive price** is skipped here; opcode 0 returns `Err` and only for
 ///   exact zero.
-/// - **Kill switch** returns `MmOracleUpdateDisabled`; opcode 0 `assert!`s, i.e.
-///   panics.
 /// - **Market writability** is checked here; opcode 0 leaves it to the runtime.
 /// - **The clock sysvar is always validated**, before the loop. Opcode 0 checks
 ///   it only after its sequence-id early-out, so an opcode-0 call with a stale
 ///   sequence id never validates the clock account at all.
 /// - **Clock mismatch** yields `InvalidNativeInstructionData`, not `DefaultError`.
-/// - **The kill-switch bit** is read through `FeatureBitFlags::MmOracleUpdate`
-///   rather than a hardcoded `& 1`.
-/// - **Payload length, account count, and every slice and borrow are checked.**
-///   Opcode 0 has several reachable panic paths (short account list, short
-///   payload, short state or clock data, `borrow_mut` aliasing) that this
-///   handler returns typed errors for instead. Worth backporting separately.
+/// - **A clamped step is not logged** per market; opcode 0 logs each clamp.
+///   The batch logs only the reject-mask `msg!` described above.
 pub fn handle_update_mm_oracle_batch_native(accounts: &[AccountInfo], data: &[u8]) -> Result<()> {
     let rejected_mask = update_mm_oracle_batch(accounts, data)?;
 
@@ -3799,9 +3842,7 @@ fn update_mm_oracle_batch(accounts: &[AccountInfo], data: &[u8]) -> Result<u64> 
     {
         let state = state_account.try_borrow_data()?;
 
-        // Kill switch. Unlike opcode 0 (which `assert!`s for historical
-        // reasons) this returns a typed error, so the failure is identifiable
-        // by code instead of arriving as a panic.
+        // Kill switch. Typed error so the failure is identifiable by code.
         let feature_bit_flags = *state
             .get(STATE_FEATURE_BIT_FLAGS_OFFSET)
             .ok_or(ErrorCode::InvalidNativeStateAccount)?;
@@ -3932,9 +3973,8 @@ fn apply_mm_oracle_update(
     let stats = &mut perp_market.market_stats;
 
     // Non-positive prices are skipped outright. `oracle_validity` classifies
-    // them `NonPositive` on read, so storing one buys nothing, and a stored
-    // negative price would make the step cap below unsatisfiable from either
-    // direction, which is a permanent stall. Opcode 0 rejects only exact zero.
+    // them `NonPositive` on read, so storing one buys nothing. Opcode 0 rejects
+    // only exact zero, and with a hard error.
     if incoming_price <= 0 {
         return Ok(false);
     }
@@ -3952,15 +3992,25 @@ fn apply_mm_oracle_update(
         return Ok(false);
     }
 
-    // Step cap versus the last accepted price. Bootstrap when the stored price
-    // is still zero.
+    // Step cap versus the last accepted price, mirroring opcode 0: a step
+    // beyond the cap is clamped to the cap rather than skipped, so a feed gap
+    // larger than the cap converges over a few writes instead of freezing the
+    // oracle at its pre-gap price. Floored at one price unit so a price small
+    // enough for the cap to round to zero still makes progress. Bootstrap when
+    // the stored price is still zero. Unlike opcode 0 the clamp is not logged
+    // per market; the batch logs only the reject mask.
+    let mut incoming_price = incoming_price;
     if stats.mm_oracle_price != 0 {
-        let prev_abs = (stats.mm_oracle_price as i128).abs();
-        let diff_abs = ((incoming_price as i128) - (stats.mm_oracle_price as i128)).abs();
-        // Cross-multiplied form of (diff_abs / prev_abs) > MAX_STEP / PCT.
-        // Both operands are bounded by i64::MAX * 1e6, far inside i128.
-        if diff_abs * PERCENTAGE_PRECISION_I128 > MM_ORACLE_MAX_STEP_PCT_PRECISION * prev_abs {
-            return Ok(false);
+        let prev = stats.mm_oracle_price as i128;
+        let max_step = MM_ORACLE_MAX_STEP_PCT_PRECISION
+            .saturating_mul(prev.abs())
+            .saturating_div(PERCENTAGE_PRECISION_I128)
+            .max(1);
+        let diff = (incoming_price as i128).saturating_sub(prev);
+        if diff.abs() > max_step {
+            // Between `prev` and `incoming_price`, so always i64-representable.
+            let clamped = prev.saturating_add(max_step.saturating_mul(diff.signum()));
+            incoming_price = clamped.cast::<i64>()?;
         }
     }
 
@@ -5180,6 +5230,230 @@ mod native_auth_tests {
         let err = handle_update_mm_oracle_native(&accounts, &mm_payload()).unwrap_err();
         assert_eq!(err, ErrorCode::Unauthorized.into());
     }
+
+    // malformed input must error, not panic
+
+    /// The handler runs before Anchor, so a malformed instruction reaches it
+    /// verbatim. Short account lists and short payloads used to panic on the
+    /// indexing, which aborts the transaction with no identifiable error.
+    #[test]
+    fn mm_oracle_native_rejects_malformed_shape_without_panicking() {
+        let hot_key = Pubkey::new_unique();
+        let mut state = State::default();
+        state.hot_mm_oracle_crank = hot_key;
+        state.feature_bit_flags = FeatureBitFlags::MmOracleUpdate as u8;
+        create_anchor_account_info!(state, State, state_info);
+
+        let mut perp_market = PerpMarket::default();
+        create_anchor_account_info!(perp_market, PerpMarket, perp_market_info);
+
+        let mut clock_lamports = 0u64;
+        let mut clock_data = [0u8; 8];
+        let clock_owner = Pubkey::new_unique();
+        let clock_key = Pubkey::new_unique();
+        let clock_info = AccountInfo::new(
+            &clock_key,
+            false,
+            false,
+            &mut clock_lamports,
+            &mut clock_data,
+            &clock_owner,
+            false,
+        );
+
+        let mut sig_lamports = 0u64;
+        let mut sig_data: [u8; 0] = [];
+        let sig_owner = Pubkey::new_unique();
+        let signer = signer_info(&hot_key, true, &mut sig_lamports, &mut sig_data, &sig_owner);
+
+        let accounts = [perp_market_info, signer, clock_info, state_info];
+
+        // Too few accounts. Zero of them, so nothing can be indexed at all.
+        let err = handle_update_mm_oracle_native(&[], &mm_payload()).unwrap_err();
+        assert_eq!(err, ErrorCode::InvalidNativeInstructionData.into());
+
+        // Three accounts where four are required: the state slot is `accounts[3]`.
+        let err = handle_update_mm_oracle_native(&accounts[..3], &mm_payload()).unwrap_err();
+        assert_eq!(err, ErrorCode::InvalidNativeInstructionData.into());
+
+        // Payload shorter than the 16 bytes the handler slices.
+        for len in 0..16usize {
+            let err = handle_update_mm_oracle_native(&accounts, &mm_payload()[..len]).unwrap_err();
+            assert_eq!(
+                err,
+                ErrorCode::InvalidNativeInstructionData.into(),
+                "payload of {len} bytes did not return a clean error"
+            );
+        }
+    }
+
+    #[test]
+    fn mm_oracle_native_kill_switch_returns_typed_error() {
+        // Previously an `assert!`, i.e. a panic surfacing as "Program failed to
+        // complete" with no way to tell it from any other abort.
+        let hot_key = Pubkey::new_unique();
+        let mut state = State::default();
+        state.hot_mm_oracle_crank = hot_key;
+        state.feature_bit_flags = 0; // MmOracleUpdate clear
+        create_anchor_account_info!(state, State, state_info);
+
+        let mut perp_market = PerpMarket::default();
+        create_anchor_account_info!(perp_market, PerpMarket, perp_market_info);
+
+        let mut clock_lamports = 0u64;
+        let mut clock_data = [0u8; 8];
+        let clock_owner = Pubkey::new_unique();
+        let clock_key = Pubkey::new_unique();
+        let clock_info = AccountInfo::new(
+            &clock_key,
+            false,
+            false,
+            &mut clock_lamports,
+            &mut clock_data,
+            &clock_owner,
+            false,
+        );
+
+        let mut sig_lamports = 0u64;
+        let mut sig_data: [u8; 0] = [];
+        let sig_owner = Pubkey::new_unique();
+        let signer = signer_info(&hot_key, true, &mut sig_lamports, &mut sig_data, &sig_owner);
+
+        let accounts = [perp_market_info, signer, clock_info, state_info];
+        let err = handle_update_mm_oracle_native(&accounts, &mm_payload()).unwrap_err();
+        assert_eq!(err, ErrorCode::MmOracleUpdateDisabled.into());
+    }
+
+    // step cap clamps instead of freezing
+
+    /// Drives the handler repeatedly against a fixed target price and returns
+    /// the stored price after each accepted write.
+    fn walk_price(start: i64, target: i64, writes: usize) -> Vec<i64> {
+        let hot_key = Pubkey::new_unique();
+        let mut state = State::default();
+        state.hot_mm_oracle_crank = hot_key;
+        state.feature_bit_flags = FeatureBitFlags::MmOracleUpdate as u8;
+        create_anchor_account_info!(state, State, state_info);
+
+        let mut perp_market = PerpMarket::default();
+        perp_market.market_stats.mm_oracle_price = start;
+        perp_market.market_stats.mm_oracle_slot = 0;
+        perp_market.market_stats.mm_oracle_sequence_id = 0;
+        create_anchor_account_info!(perp_market, PerpMarket, perp_market_info);
+
+        let clock_key = solana_program::sysvar::clock::ID;
+        let mut clock_lamports = 0u64;
+        let mut clock_data = [0u8; 8];
+        let clock_owner = Pubkey::new_unique();
+        let clock_info = AccountInfo::new(
+            &clock_key,
+            false,
+            false,
+            &mut clock_lamports,
+            &mut clock_data,
+            &clock_owner,
+            false,
+        );
+
+        let mut sig_lamports = 0u64;
+        let mut sig_data: [u8; 0] = [];
+        let sig_owner = Pubkey::new_unique();
+        let signer = signer_info(&hot_key, true, &mut sig_lamports, &mut sig_data, &sig_owner);
+
+        let accounts = [
+            perp_market_info.clone(),
+            signer,
+            clock_info.clone(),
+            state_info,
+        ];
+
+        let mut observed = Vec::with_capacity(writes);
+        for i in 0..writes {
+            // Advance the clock past MM_ORACLE_MIN_SLOT_GAP for each write.
+            let slot = ((i as u64) + 1) * (MM_ORACLE_MIN_SLOT_GAP + 1);
+            clock_info.data.borrow_mut()[0..8].copy_from_slice(&slot.to_le_bytes());
+
+            let mut payload = [0u8; 16];
+            payload[0..8].copy_from_slice(&target.to_le_bytes());
+            payload[8..16].copy_from_slice(&((i as u64) + 1).to_le_bytes());
+            handle_update_mm_oracle_native(&accounts, &payload).unwrap();
+
+            let data = perp_market_info.try_borrow_data().unwrap();
+            let market: &PerpMarket =
+                bytemuck::from_bytes(&data[8..8 + std::mem::size_of::<PerpMarket>()]);
+            observed.push(market.market_stats.mm_oracle_price);
+        }
+        observed
+    }
+
+    /// A move beyond the cap is written at the cap and keeps closing the gap.
+    /// Rejecting it, as the handler used to, left the stored price where it was,
+    /// so the next update was still beyond the cap against the same stale value
+    /// and the oracle never recovered.
+    #[test]
+    fn mm_oracle_native_clamps_and_converges_upward() {
+        let start = 1_000_000i64;
+        let target = start * 105 / 100; // 5% away, cap is 1%
+
+        let observed = walk_price(start, target, 6);
+
+        assert_eq!(observed[0], 1_010_000, "first write must land at the cap");
+        // Monotonic toward the target, and strictly moving until it arrives.
+        for pair in observed.windows(2) {
+            assert!(pair[1] >= pair[0], "price moved backwards: {observed:?}");
+            assert!(
+                pair[0] == target || pair[1] > pair[0],
+                "price stalled before reaching the target: {observed:?}"
+            );
+        }
+        assert_eq!(
+            *observed.last().unwrap(),
+            target,
+            "must converge on the target: {observed:?}"
+        );
+        assert!(
+            observed.iter().all(|p| *p <= target),
+            "must never overshoot: {observed:?}"
+        );
+    }
+
+    /// The cap is symmetric, so the same must hold downward.
+    #[test]
+    fn mm_oracle_native_clamps_and_converges_downward() {
+        let start = 1_000_000i64;
+        let target = start * 95 / 100;
+
+        let observed = walk_price(start, target, 6);
+
+        assert_eq!(observed[0], 990_000, "first write must land at the cap");
+        for pair in observed.windows(2) {
+            assert!(pair[1] <= pair[0], "price moved backwards: {observed:?}");
+            assert!(
+                pair[0] == target || pair[1] < pair[0],
+                "price stalled before reaching the target: {observed:?}"
+            );
+        }
+        assert_eq!(*observed.last().unwrap(), target);
+        assert!(observed.iter().all(|p| *p >= target));
+    }
+
+    /// A move inside the cap is written verbatim, unchanged from before.
+    #[test]
+    fn mm_oracle_native_leaves_in_range_steps_alone() {
+        let start = 1_000_000i64;
+        let target = start + 5_000; // 0.5%, inside the 1% cap
+        assert_eq!(walk_price(start, target, 1)[0], target);
+    }
+
+    /// The cap is a percentage, so integer division rounds it to zero for very
+    /// small prices. Floored at one unit so those markets still make progress
+    /// rather than reintroducing the freeze this fix removes.
+    #[test]
+    fn mm_oracle_native_makes_progress_at_prices_below_the_cap_resolution() {
+        // 1% of 50 rounds to 0.
+        let observed = walk_price(50, 60, 3);
+        assert_eq!(observed, vec![51, 52, 53], "must advance by at least one");
+    }
 }
 
 #[cfg(test)]
@@ -5910,10 +6184,11 @@ mod native_batch_tests {
         assert_eq!(read_stats(&future_slot_info), (BASE_PRICE, SLOT + 10, 5));
     }
 
-    /// The step cap is symmetric (`diff_abs`), and its comparison is strict, so
-    /// a move of exactly 1% is accepted and anything beyond is not.
+    /// The step cap is symmetric, a move of exactly 1% is written verbatim, and
+    /// a move beyond the cap is clamped to the cap rather than skipped, so it
+    /// counts as accepted in the reject mask.
     #[test]
-    fn batch_step_cap_is_symmetric_and_boundary_is_inclusive() {
+    fn batch_step_cap_is_symmetric_and_clamps_beyond_the_cap() {
         let hot_key = Pubkey::new_unique();
         valid_prologue!(hot_key, SLOT, state_info, clock_info, signer);
 
@@ -5921,11 +6196,13 @@ mod native_batch_tests {
         market_account!(0, (BASE_PRICE, SLOT - 10, 5), down_over_info);
         market_account!(1, (BASE_PRICE, SLOT - 10, 5), down_at_cap_info);
         market_account!(2, (BASE_PRICE, SLOT - 10, 5), up_at_cap_info);
+        market_account!(3, (BASE_PRICE, SLOT - 10, 5), up_over_info);
 
         let payload = batch_payload(&[
-            (0, BASE_PRICE - 10_001, 6),
+            (0, BASE_PRICE - 50_000, 6),
             (1, BASE_PRICE - 10_000, 6),
             (2, BASE_PRICE + 10_000, 6),
+            (3, BASE_PRICE + 50_000, 6),
         ]);
         let accounts = [
             signer,
@@ -5934,25 +6211,35 @@ mod native_batch_tests {
             down_over_info.clone(),
             down_at_cap_info.clone(),
             up_at_cap_info.clone(),
+            up_over_info.clone(),
         ];
 
         assert_eq!(
             update_mm_oracle_batch(&accounts, &payload).unwrap(),
-            0b001,
-            "only the move beyond the cap may be rejected"
+            0,
+            "a clamped write is accepted, not rejected"
         );
-        assert_eq!(read_stats(&down_over_info), (BASE_PRICE, SLOT - 10, 5));
+        assert_eq!(
+            read_stats(&down_over_info),
+            (BASE_PRICE - 10_000, SLOT, 6),
+            "beyond-cap move must be clamped to the cap"
+        );
         assert_eq!(
             read_stats(&down_at_cap_info),
             (BASE_PRICE - 10_000, SLOT, 6)
         );
         assert_eq!(read_stats(&up_at_cap_info), (BASE_PRICE + 10_000, SLOT, 6));
+        assert_eq!(
+            read_stats(&up_over_info),
+            (BASE_PRICE + 10_000, SLOT, 6),
+            "beyond-cap move must be clamped to the cap"
+        );
     }
 
     #[test]
     fn batch_skips_negative_price() {
-        // A negative price stored during bootstrap would make the step cap
-        // unsatisfiable in both directions afterwards, a permanent stall.
+        // `oracle_validity` classifies a stored non-positive price as
+        // `NonPositive` on read, so storing one buys nothing.
         let hot_key = Pubkey::new_unique();
         valid_prologue!(hot_key, SLOT, state_info, clock_info, signer);
         market_account!(0, (0, 0, 0), market_info); // bootstrap: stored price 0
@@ -6107,11 +6394,11 @@ mod native_batch_tests {
                 (BASE_PRICE, SLOT, 5),
             ),
             (
-                "rejects a step above the cap",
+                "clamps a step above the cap and consumes the sequence id",
                 (BASE_PRICE, SLOT - 10, 5),
                 BASE_PRICE + 20_000,
                 6,
-                (BASE_PRICE, SLOT - 10, 5),
+                (BASE_PRICE + 10_000, SLOT, 6),
             ),
         ];
 

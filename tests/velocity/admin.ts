@@ -455,7 +455,8 @@ describe('admin', () => {
 			assert.fail('Should have thrown');
 		} catch (e) {
 			console.log(e.message);
-			assert(e.message.includes('Program failed to complete'));
+			// Typed error (MmOracleUpdateDisabled) rather than the old panic.
+			assert(e.message.includes('custom program error'));
 		}
 
 		// Re-enable and update
@@ -471,28 +472,57 @@ describe('admin', () => {
 		assert(perpMarket.marketStats.mmOracleSequenceId.eq(oracleTS.addn(1)));
 	});
 
-	it('mm oracle step cap rejects too large jump', async () => {
+	it('mm oracle step cap clamps a too-large jump and converges', async () => {
+		// Each send advances the bankrun slot by one; a second advance clears the
+		// program's MM_ORACLE_MIN_SLOT_GAP of 2 so the write reaches the step cap
+		// instead of being skipped by the rate limit.
+		const advancePastRateLimit = () =>
+			bankrunContextWrapper.connection.updateSlotAndClock();
+
 		await velocityClient.fetchAccounts();
 		const before = velocityClient.getPerpMarketAccount(0);
 		const baselinePrice = before.marketStats.mmOraclePrice;
 		const baselineSeqId = before.marketStats.mmOracleSequenceId;
 
-		// 5% jump from the last accepted price exceeds the 1% step cap.
+		// 5% jump from the last accepted price exceeds the 1% step cap. The
+		// write is clamped to the cap rather than rejected: rejecting left the
+		// stored price where it was, so every subsequent update was still beyond
+		// the cap against the same stale value and the oracle froze permanently.
 		const tooLargePrice = baselinePrice.muln(105).divn(100);
 		const freshSeqId = baselineSeqId.addn(1000);
+		const expectedFirstStep = baselinePrice.muln(101).divn(100);
 
-		// Silent no-op: the tx itself succeeds but state must be unchanged.
+		await advancePastRateLimit();
 		await velocityClient.updateMmOracleNative(0, tooLargePrice, freshSeqId);
 		await velocityClient.fetchAccounts();
 
 		const after = velocityClient.getPerpMarketAccount(0);
 		assert(
-			after.marketStats.mmOraclePrice.eq(baselinePrice),
-			'mm oracle price should be unchanged after step-cap reject'
+			after.marketStats.mmOraclePrice.eq(expectedFirstStep),
+			`expected clamp to ${expectedFirstStep.toString()}, got ${after.marketStats.mmOraclePrice.toString()}`
 		);
 		assert(
-			after.marketStats.mmOracleSequenceId.eq(baselineSeqId),
-			'mm oracle sequence id should be unchanged after step-cap reject'
+			after.marketStats.mmOracleSequenceId.eq(freshSeqId),
+			'sequence id should advance: the update was consumed, not dropped'
+		);
+
+		// And it keeps closing the gap. Resending the same target walks another
+		// cap-width, where the old behaviour would have stalled forever.
+		let current = after.marketStats.mmOraclePrice;
+		let seqId = freshSeqId;
+		for (let i = 0; i < 5 && !current.eq(tooLargePrice); i++) {
+			seqId = seqId.addn(1);
+			await advancePastRateLimit();
+			await velocityClient.updateMmOracleNative(0, tooLargePrice, seqId);
+			await velocityClient.fetchAccounts();
+			const next =
+				velocityClient.getPerpMarketAccount(0).marketStats.mmOraclePrice;
+			assert(next.gt(current), 'price must keep moving toward the target');
+			current = next;
+		}
+		assert(
+			current.eq(tooLargePrice),
+			`should have converged on ${tooLargePrice.toString()}, got ${current.toString()}`
 		);
 	});
 

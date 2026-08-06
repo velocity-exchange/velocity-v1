@@ -370,14 +370,20 @@ describe('compute units', () => {
 
 		const mmStepCap = await runBench(
 			'update_mm_oracle_native',
-			'step cap noop',
+			'step cap clamp',
 			async () => {
 				await advancePastMmOracleRateLimit();
+				// 5% jump, beyond the 1% cap, so the write is clamped to the cap
+				// rather than dropped. Track what actually landed so later benches
+				// keep sending accepted updates.
+				const nextSequenceId = acceptedMmOracleSequenceId.addn(1);
 				const txSig = await velocityClient.updateMmOracleNative(
 					0,
 					acceptedMmOraclePrice.muln(105).divn(100),
-					acceptedMmOracleSequenceId.addn(1)
+					nextSequenceId
 				);
+				acceptedMmOraclePrice = acceptedMmOraclePrice.muln(101).divn(100);
+				acceptedMmOracleSequenceId = nextSequenceId;
 				return await getNativeInstructionComputeUnits(txSig);
 			}
 		);
@@ -525,7 +531,7 @@ describe('compute units', () => {
 			'NATIVE_CU_MAX_MM_MIN_SLOT_GAP'
 		);
 		assertOptionalMax(
-			'mm_oracle_step_cap_noop',
+			'mm_oracle_step_cap_clamp',
 			mmStepCap.measurement,
 			'NATIVE_CU_MAX_MM_STEP_CAP'
 		);

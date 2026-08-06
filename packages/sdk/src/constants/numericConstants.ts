@@ -27,6 +27,15 @@ export const MAX_LEVERAGE_ORDER_SIZE = new BN('18446744073709551615');
 export const PERCENTAGE_PRECISION_EXP = new BN(6);
 /** 1e6; precision for percentage/fraction fields (e.g. AMM concentration coefficient, funding ramp slope, LP pool volatility). */
 export const PERCENTAGE_PRECISION = new BN(10).pow(PERCENTAGE_PRECISION_EXP);
+
+/**
+ * Minimum slots the program requires between two accepted MM-oracle writes
+ * (`MM_ORACLE_MIN_SLOT_GAP` in `math/constants.rs`). Also the immediate-fill
+ * staleness threshold a perp market falls back to when
+ * `oracleSlotDelayOverride` is unset, since a tighter threshold than this is
+ * unsatisfiable for an MM-oracle-sourced price.
+ */
+export const MM_ORACLE_MIN_SLOT_GAP = new BN(2);
 /** Alias of `PERCENTAGE_PRECISION` (1e6) for the AMM's `concentrationCoef` field. */
 export const CONCENTRATION_PRECISION = PERCENTAGE_PRECISION;
 

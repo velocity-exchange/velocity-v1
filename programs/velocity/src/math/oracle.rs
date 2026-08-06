@@ -3,7 +3,9 @@ use {
         error::{ErrorCode, VelocityResult},
         math::{
             casting::Cast,
-            constants::{BID_ASK_SPREAD_PRECISION, PERCENTAGE_PRECISION_U64},
+            constants::{
+                BID_ASK_SPREAD_PRECISION, MM_ORACLE_MIN_SLOT_GAP, PERCENTAGE_PRECISION_U64,
+            },
             safe_math::SafeMath,
         },
         state::{
@@ -364,10 +366,32 @@ pub fn oracle_validity(
         .confidence_interval_max_size
         .safe_mul(max_confidence_interval_multiplier)?);
 
-    let is_stale_for_amm_immediate = if slots_before_stale_for_amm_immdiate_override != 0 {
-        oracle_delay.gt(&slots_before_stale_for_amm_immdiate_override.max(0).cast()?)
-    } else {
+    // Immediate (JIT / auction-skipping) AMM fills.
+    //
+    // Three cases, and the negative one is the fix. `0` is the explicit "never
+    // allow immediate AMM fills on this market" sentinel. A positive value is an
+    // explicit admin threshold and is used as-is.
+    //
+    // A negative value means unset. It previously clamped to `max(override, 0)`,
+    // i.e. a threshold of zero, requiring the price to have been written in this
+    // exact slot. That is unsatisfiable for the MM oracle by construction: the
+    // program refuses any MM-oracle write closer than `MM_ORACLE_MIN_SLOT_GAP`
+    // slots to the previous one, so an MM-oracle-sourced price is at best zero
+    // slots old on alternating slots and can never be fresher than that on the
+    // rest. A market left at the init default therefore could not pass this gate
+    // on roughly half of all slots no matter how aggressively it was cranked,
+    // which is not a tunable tradeoff but an arithmetic contradiction between
+    // two independent constants.
+    //
+    // Unset now means the tightest window the crank can actually satisfy. An
+    // explicit override still wins in both directions, so this only changes
+    // markets that never had one set.
+    let is_stale_for_amm_immediate = if slots_before_stale_for_amm_immdiate_override == 0 {
         true
+    } else if slots_before_stale_for_amm_immdiate_override < 0 {
+        oracle_delay.gt(&MM_ORACLE_MIN_SLOT_GAP.cast::<i64>()?)
+    } else {
+        oracle_delay.gt(&slots_before_stale_for_amm_immdiate_override.cast()?)
     };
 
     let is_stale_for_amm_low_risk = if oracle_low_risk_slot_delay_override != 0 {

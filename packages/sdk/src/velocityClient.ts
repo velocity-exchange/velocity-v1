@@ -13169,9 +13169,11 @@ export class VelocityClient {
 	 * them all.
 	 *
 	 * Per-market rate-limit and sanity rejections (non-positive price, non-advancing sequence id,
-	 * slot gap below the program floor, step above the 1% cap) skip that market and leave the rest of
-	 * the batch intact. Structural problems (an account that is not a perp market, a non-writable
-	 * market, malformed data) fail the whole instruction, since those can only be builder bugs.
+	 * slot gap below the program floor) skip that market and leave the rest of the batch intact. A
+	 * price more than 1% from the last accepted one is clamped to the cap and written, matching
+	 * `updateMmOracleNative`. Structural problems (an account that is not a perp market, a
+	 * non-writable market, malformed data) fail the whole instruction, since those can only be
+	 * builder bugs.
 	 *
 	 * @param updates - One entry per market. Order is preserved and must match the account order,
 	 * which this builder handles. Each entry's market index is also written into the payload and

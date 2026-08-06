@@ -13,6 +13,7 @@ import { OraclePriceData } from '../oracles/types';
 import {
 	BID_ASK_SPREAD_PRECISION,
 	MARGIN_PRECISION,
+	MM_ORACLE_MIN_SLOT_GAP,
 	ONE,
 	ZERO,
 	FIVE_MINUTE,
@@ -125,10 +126,17 @@ export function getOracleValidity(
 
 	const oracleDelay = slot.sub(oraclePriceData.slot).sub(oracleStalenessBuffer);
 
+	// Mirrors `math::oracle::oracle_validity`. `0` is the explicit "never allow
+	// immediate AMM fills" sentinel. A negative override means unset, and
+	// resolves to MM_ORACLE_MIN_SLOT_GAP rather than to zero: the program will
+	// not accept MM-oracle writes closer together than that, so a tighter
+	// threshold could never be satisfied by an MM-oracle-sourced price.
 	let isStaleForAmmImmediate = true;
-	if (market.oracleSlotDelayOverride != 0) {
+	if (market.oracleSlotDelayOverride < 0) {
+		isStaleForAmmImmediate = oracleDelay.gt(MM_ORACLE_MIN_SLOT_GAP);
+	} else if (market.oracleSlotDelayOverride != 0) {
 		isStaleForAmmImmediate = oracleDelay.gt(
-			BN.max(new BN(market.oracleSlotDelayOverride), ZERO)
+			new BN(market.oracleSlotDelayOverride)
 		);
 	}
 

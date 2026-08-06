@@ -4426,11 +4426,15 @@ export class User {
 	 * Combines three caps: the market-wide withdraw/borrow guard
 	 * (`calculateWithdrawLimit`, a rolling-window rate limit on the spot
 	 * market), the user's own deposit balance, and how much their free
-	 * collateral supports withdrawing/borrowing. If `canBypassWithdrawLimits`
-	 * returns `canBypass: true` (see that method), the market-wide withdraw
-	 * limit floor is raised to the user's full deposit amount — letting a
-	 * small, healthy, always-net-positive depositor withdraw in full even if
-	 * the market-wide guard would otherwise throttle them.
+	 * collateral supports withdrawing/borrowing.
+	 *
+	 * If `canBypassWithdrawLimits` returns `canBypass: true` (see that method),
+	 * the market-wide withdraw limit is raised for this user. It is raised to the
+	 * user's full deposit amount, but never past `exceptionWithdrawLimit`. That
+	 * second bound is the market-level budget the program applies to the whole
+	 * eligible cohort. A small, healthy, always-net-positive depositor therefore
+	 * withdraws in full while the market-wide guard throttles larger movements,
+	 * unless other eligible accounts already spent the budget.
 	 * @param marketIndex
 	 * @param reduceOnly If true, caps the result so the withdrawal cannot open a borrow (never exceeds the user's current deposit). If false/omitted, may return an amount larger than the deposit, up to the user's max allowed new liability.
 	 * @returns withdrawalLimit : Precision is the token precision for the chosen SpotMarket
@@ -4441,10 +4445,8 @@ export class User {
 			this.velocityClient.getSpotMarketAccountOrThrow(marketIndex);
 
 		// eslint-disable-next-line prefer-const
-		let { borrowLimit, withdrawLimit } = calculateWithdrawLimit(
-			spotMarket,
-			nowTs
-		);
+		let { borrowLimit, withdrawLimit, exceptionWithdrawLimit } =
+			calculateWithdrawLimit(spotMarket, nowTs);
 
 		// the withdraw path enforces the equity floor on post-withdraw net
 		// equity, so equity above the floor caps free collateral here
@@ -4473,7 +4475,19 @@ export class User {
 		const { canBypass, depositAmount: userDepositAmount } =
 			this.canBypassWithdrawLimits(marketIndex);
 		if (canBypass) {
-			withdrawLimit = BN.max(withdrawLimit, userDepositAmount);
+			// `canBypass` only makes the account eligible. The program bounds the
+			// exception at market level in `check_withdraw_limits`: the eligible
+			// cohort can take the market one `withdrawGuardThreshold` below the
+			// breaker floor and no further. Cap the raised limit by the room that
+			// is left, or this method promises an amount that reverts on chain
+			// with `DailyWithdrawLimit`.
+			//
+			// `exceptionWithdrawLimit` is never below `withdrawLimit`, so an
+			// eligible account never loses room it already had.
+			withdrawLimit = BN.max(
+				withdrawLimit,
+				BN.min(userDepositAmount, exceptionWithdrawLimit)
+			);
 		}
 
 		const assetWeight = calculateAssetWeight(
@@ -4546,9 +4560,12 @@ export class User {
 	 *   - Their current deposit amount is below `maxDepositAmount`, i.e. 10% of
 	 *     the spot market's `withdrawGuardThreshold`.
 	 *
-	 * This lets a small, well-behaved depositor withdraw their own funds in
-	 * full even while the market-wide withdraw guard is actively throttling
-	 * larger movements. Used by `getWithdrawalLimit`.
+	 * This mirrors `check_user_exception_to_withdraw_limits` in the program. It
+	 * is an eligibility test only. `canBypass: true` does not mean the withdrawal
+	 * succeeds on chain. The program also applies a market-level budget: every
+	 * eligible account shares one `withdrawGuardThreshold` of room below the
+	 * breaker floor. Read `exceptionWithdrawLimit` from `calculateWithdrawLimit`
+	 * for that budget, or call `getWithdrawalLimit`, which applies both bounds.
 	 * @param marketIndex
 	 * @returns `canBypass`; `netDeposits` (lifetime `totalDeposits - totalWithdraws`, QUOTE_PRECISION, 1e6); `depositAmount` and `maxDepositAmount`, both in the spot market's own token decimals.
 	 */

@@ -719,10 +719,50 @@ impl OrderParams {
         Ok(sanitized)
     }
 
+    /// Widest distance from the oracle TWAP that a baseline auction start offset may sit
+    /// (OtterSec #146).
+    ///
+    /// Reuses the tier band of `PerpMarket::get_auction_end_min_max_divisors`, which returns
+    /// `(min_divisor, max_divisor)` for the auction END buffer. A larger divisor gives a smaller
+    /// price, so `oracle_twap / max_divisor` is the widest auction the tier allows: 2% for tier A,
+    /// 5% for B and C, 10% for Speculative, 20% for HighlySpeculative and Isolated. An auction that
+    /// STARTS further from oracle than the widest auction the tier permits is nonsense, so that same
+    /// number bounds the start offset.
+    ///
+    /// The bound is symmetric. A start offset is signed and can point either way, and the manipulated
+    /// input can push it either way.
+    ///
+    /// A zero oracle TWAP gives a zero bound, so the offset collapses to zero. The END buffer clamp
+    /// already degenerates the same way on such a market.
+    fn get_perp_baseline_max_price_offset(perp_market: &PerpMarket) -> VelocityResult<i64> {
+        let oracle_twap = perp_market
+            .market_stats
+            .historical_oracle_data
+            .last_oracle_price_twap
+            .unsigned_abs();
+        let (_, max_divisor) = perp_market.get_auction_end_min_max_divisors()?;
+
+        oracle_twap.safe_div(max_divisor)?.cast::<i64>()
+    }
+
+    /// Baseline auction start offset from the oracle price for a perp auction, per side.
+    ///
+    /// The result is clamped symmetrically to `get_perp_baseline_max_price_offset`. Both inputs are
+    /// TWAPs a caller can influence: `update_perp_bid_ask_twap` samples the book from
+    /// caller-supplied `User` accounts, and past 50bps of fast/slow divergence this function uses
+    /// `last_mark_price_twap_5min` alone. These offsets set the auction band for a THIRD PARTY's
+    /// forced close, so a moved TWAP prices a stranger's exit. `BID_ASK_TWAP_MIN_QUOTE_REST_SLOTS`
+    /// raises the cost of moving those TWAPs; this clamp bounds the damage if one still moves.
+    ///
+    /// The sibling `get_perp_baseline_start_end_price_offset` clamps its END buffer to the same tier
+    /// band, and derives the end offset with a `min`/`max` against the start offset, so clamping the
+    /// start cannot invert start and end.
     pub fn get_perp_baseline_start_price_offset(
         perp_market: &PerpMarket,
         direction: PositionDirection,
     ) -> VelocityResult<i64> {
+        let max_price_offset = OrderParams::get_perp_baseline_max_price_offset(perp_market)?;
+
         if perp_market
             .market_stats
             .historical_oracle_data
@@ -742,14 +782,18 @@ impl OrderParams {
                 100
             };
 
-            return Ok(match direction {
+            let uncertain_start_price_offset = match direction {
                 PositionDirection::Long => {
                     perp_market.market_stats.last_bid_price_twap.cast::<i64>()? / price_divisor
                 }
                 PositionDirection::Short => {
                     -(perp_market.market_stats.last_ask_price_twap.cast::<i64>()? / price_divisor)
                 }
-            });
+            };
+
+            // This branch divides a mark TWAP, not the oracle TWAP, so a mark far from oracle can
+            // leave the tier band. Clamp it too.
+            return Ok(uncertain_start_price_offset.clamp(-max_price_offset, max_price_offset));
         }
 
         // price offsets baselines for perp market auctions
@@ -808,7 +852,7 @@ impl OrderParams {
             baseline_start_price_offset_fast
         };
 
-        Ok(baseline_start_price_offset)
+        Ok(baseline_start_price_offset.clamp(-max_price_offset, max_price_offset))
     }
 
     pub fn get_perp_baseline_start_end_price_offset(

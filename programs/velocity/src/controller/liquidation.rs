@@ -615,15 +615,16 @@ pub fn liquidate_perp(
 
     // The liquidation adds exposure to the liquidator like a risk-increasing
     // fill; the liquidator subaccount must clear its own buffered equity floor
-    // to take it on.
+    // to take it on. The floor restricts the liquidator here, so take the lower
+    // bound.
     if let Some(liquidator_net_equity) =
         calculate_net_equity_for_floor(liquidator, perp_market_map, spot_market_map, oracle_map)?
     {
         validate!(
-            !liquidator.is_below_buffered_equity_floor(liquidator_net_equity),
+            !liquidator.is_below_buffered_equity_floor(liquidator_net_equity.lower),
             ErrorCode::EquityBelowFloor,
             "liquidator net equity {} below equity floor {} + buffer {}",
-            liquidator_net_equity,
+            liquidator_net_equity.lower,
             liquidator.equity_floor,
             liquidator.equity_floor_buffer
         )?;
@@ -1861,15 +1862,16 @@ pub fn liquidate_spot(
 
     // The liquidation adds exposure to the liquidator like a risk-increasing
     // fill; the liquidator subaccount must clear its own buffered equity floor
-    // to take it on.
+    // to take it on. The floor restricts the liquidator here, so take the lower
+    // bound.
     if let Some(liquidator_net_equity) =
         calculate_net_equity_for_floor(liquidator, perp_market_map, spot_market_map, oracle_map)?
     {
         validate!(
-            !liquidator.is_below_buffered_equity_floor(liquidator_net_equity),
+            !liquidator.is_below_buffered_equity_floor(liquidator_net_equity.lower),
             ErrorCode::EquityBelowFloor,
             "liquidator net equity {} below equity floor {} + buffer {}",
-            liquidator_net_equity,
+            liquidator_net_equity.lower,
             liquidator.equity_floor,
             liquidator.equity_floor_buffer
         )?;
@@ -3094,15 +3096,16 @@ pub fn liquidate_borrow_for_perp_pnl(
 
     // The liquidation adds exposure to the liquidator like a risk-increasing
     // fill; the liquidator subaccount must clear its own buffered equity floor
-    // to take it on.
+    // to take it on. The floor restricts the liquidator here, so take the lower
+    // bound.
     if let Some(liquidator_net_equity) =
         calculate_net_equity_for_floor(liquidator, perp_market_map, spot_market_map, oracle_map)?
     {
         validate!(
-            !liquidator.is_below_buffered_equity_floor(liquidator_net_equity),
+            !liquidator.is_below_buffered_equity_floor(liquidator_net_equity.lower),
             ErrorCode::EquityBelowFloor,
             "liquidator net equity {} below equity floor {} + buffer {}",
-            liquidator_net_equity,
+            liquidator_net_equity.lower,
             liquidator.equity_floor,
             liquidator.equity_floor_buffer
         )?;
@@ -3656,15 +3659,16 @@ pub fn liquidate_perp_pnl_for_deposit(
 
     // The liquidation adds exposure to the liquidator like a risk-increasing
     // fill; the liquidator subaccount must clear its own buffered equity floor
-    // to take it on.
+    // to take it on. The floor restricts the liquidator here, so take the lower
+    // bound.
     if let Some(liquidator_net_equity) =
         calculate_net_equity_for_floor(liquidator, perp_market_map, spot_market_map, oracle_map)?
     {
         validate!(
-            !liquidator.is_below_buffered_equity_floor(liquidator_net_equity),
+            !liquidator.is_below_buffered_equity_floor(liquidator_net_equity.lower),
             ErrorCode::EquityBelowFloor,
             "liquidator net equity {} below equity floor {} + buffer {}",
-            liquidator_net_equity,
+            liquidator_net_equity.lower,
             liquidator.equity_floor,
             liquidator.equity_floor_buffer
         )?;

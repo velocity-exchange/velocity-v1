@@ -27,6 +27,7 @@ use {
         load, load_mut,
         math::{
             self,
+            bankruptcy::perp_markets_with_forfeitable_claims,
             casting::Cast,
             constants::{
                 BID_ASK_TWAP_MAX_ORACLE_DIVERGENCE_PERCENT, BID_ASK_TWAP_MIN_QUOTE_REST_SLOTS,
@@ -2256,6 +2257,13 @@ pub fn handle_resolve_perp_bankruptcy<'c: 'info, 'info>(
     let liquidator = &mut load_mut!(ctx.accounts.liquidator)?;
     let state = ctx.accounts.state.load()?;
 
+    // OtterSec #145: the resolver forfeits unfundable claims to their own markets' insurance
+    // tranches, so every market holding such a claim is written to, not just `market_index`.
+    // Declaring them here makes a caller that passes one read-only fail at load with
+    // `MarketWrongMutability` instead of deep inside the resolver.
+    let mut writable_perp_markets = vec![market_index];
+    writable_perp_markets.extend(perp_markets_with_forfeitable_claims(user));
+
     let remaining_accounts_iter = &mut ctx.remaining_accounts.iter().peekable();
     let AccountMaps {
         perp_market_map,
@@ -2263,7 +2271,7 @@ pub fn handle_resolve_perp_bankruptcy<'c: 'info, 'info>(
         mut oracle_map,
     } = load_maps(
         remaining_accounts_iter,
-        &get_writable_perp_market_set(market_index),
+        &get_writable_perp_market_set_from_vec(&writable_perp_markets),
         &get_writable_spot_market_set(quote_spot_market_index),
         clock.slot,
         Some(state.oracle_guard_rails),
@@ -2399,7 +2407,9 @@ pub fn handle_resolve_spot_bankruptcy<'c: 'info, 'info>(
         mut oracle_map,
     } = load_maps(
         remaining_accounts_iter,
-        &MarketSet::new(),
+        // OtterSec #145: this resolver also winds up unfundable perp claims, so the markets holding
+        // them are written to even though the bankruptcy being resolved is a spot borrow.
+        &get_writable_perp_market_set_from_vec(&perp_markets_with_forfeitable_claims(user)),
         &get_writable_spot_market_set(market_index),
         clock.slot,
         Some(state.oracle_guard_rails),

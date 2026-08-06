@@ -12317,6 +12317,19 @@ export class VelocityClient {
 			marketIndex
 		);
 
+		// The cancel now settles any already-due revenue into the IF vault before pricing
+		// the forfeiture (OtterSec #141), so it needs the same accounts and transfer-hook
+		// remaining accounts as `requestRemoveInsuranceFundStake`.
+		const remainingAccounts: AccountMeta[] = [];
+		this.addTokenMintToRemainingAccounts(spotMarketAccount, remainingAccounts);
+		if (this.isTransferHook(spotMarketAccount)) {
+			await this.addExtraAccountMetasToRemainingAccounts(
+				spotMarketAccount.mint,
+				remainingAccounts
+			);
+		}
+
+		const tokenProgram = this.getTokenProgramForSpotMarket(spotMarketAccount);
 		const ix = await (
 			this.program.instruction as any
 		).cancelRequestRemoveInsuranceFundStake(marketIndex, {
@@ -12329,8 +12342,12 @@ export class VelocityClient {
 					this.wallet.publicKey // only allow payer to request remove own insurance fund stake account
 				),
 				authority: this.wallet.publicKey,
+				spotMarketVault: spotMarketAccount.vault,
 				insuranceFundVault: spotMarketAccount.insuranceFund.vault,
+				velocitySigner: this.getSignerPublicKey(),
+				tokenProgram,
 			},
+			remainingAccounts,
 		});
 
 		const tx = await this.buildTransaction(ix, txParams);

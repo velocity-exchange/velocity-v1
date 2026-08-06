@@ -627,6 +627,7 @@ export function registerUser(parent: Command): void {
 			let totalEquity = new BN(0);
 			let totalFloor = new BN(0);
 			let totalBuffer = new BN(0);
+			const slot = new BN(await client.connection.getSlot());
 			for (
 				let subId = 0;
 				subId < userStats.numberOfSubAccountsCreated;
@@ -645,9 +646,7 @@ export function registerUser(parent: Command): void {
 				//
 				// Read the lower bound, the same side the gates read, so an invalid
 				// oracle cannot report an account as clear of a floor it is under.
-				const { lower: equity, allOraclesValid } = u.getNetUsdValueBounds(
-					new BN(await client.connection.getSlot())
-				);
+				const { lower: equity, allOraclesValid } = u.getNetUsdValueBounds(slot);
 				const floor = account.equityFloor;
 				const buffer = account.equityFloorBuffer;
 				totalEquity = totalEquity.add(equity);

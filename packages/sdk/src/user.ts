@@ -2405,7 +2405,8 @@ export class User {
 				continue;
 			}
 
-			if (perpPosition.isolatedPositionScaledBalance?.gt(ZERO)) {
+			// Keyed off the position flag, matching the program's `is_isolated()`.
+			if (this.isPerpPositionIsolated(perpPosition)) {
 				const isolatedTokenAmount = getTokenAmount(
 					perpPosition.isolatedPositionScaledBalance,
 					quoteSpotMarket,

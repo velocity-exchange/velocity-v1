@@ -411,17 +411,20 @@ describe('compute units', () => {
 		const mmBatchOne = await runBench(
 			'update_mm_oracle_batch_native',
 			'success write, 1 market',
-			async () => getNativeInstructionComputeUnits(await sendAcceptedMmOracleBatch(1))
+			async () =>
+				getNativeInstructionComputeUnits(await sendAcceptedMmOracleBatch(1))
 		);
 		const mmBatchTwo = await runBench(
 			'update_mm_oracle_batch_native',
 			'success write, 2 markets',
-			async () => getNativeInstructionComputeUnits(await sendAcceptedMmOracleBatch(2))
+			async () =>
+				getNativeInstructionComputeUnits(await sendAcceptedMmOracleBatch(2))
 		);
 		const mmBatchFour = await runBench(
 			'update_mm_oracle_batch_native',
 			'success write, 4 markets',
-			async () => getNativeInstructionComputeUnits(await sendAcceptedMmOracleBatch(4))
+			async () =>
+				getNativeInstructionComputeUnits(await sendAcceptedMmOracleBatch(4))
 		);
 
 		// Every entry rejected. Cheaper than the all-accepted row despite paying

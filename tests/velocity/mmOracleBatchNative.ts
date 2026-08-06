@@ -201,8 +201,7 @@ describe('mm oracle batch native', () => {
 			},
 		]);
 		// Accounts are [signer, clock, state, market0, market1].
-		ix.keys[3].pubkey =
-			velocityClient.getPerpMarketAccountOrThrow(2).pubkey;
+		ix.keys[3].pubkey = velocityClient.getPerpMarketAccountOrThrow(2).pubkey;
 
 		const before = [0, 1, 2].map((i) =>
 			statsFor(i).mmOracleSequenceId.toString()
@@ -224,7 +223,9 @@ describe('mm oracle batch native', () => {
 		}
 
 		await velocityClient.fetchAccounts();
-		const after = [0, 1, 2].map((i) => statsFor(i).mmOracleSequenceId.toString());
+		const after = [0, 1, 2].map((i) =>
+			statsFor(i).mmOracleSequenceId.toString()
+		);
 		assert.deepStrictEqual(
 			after,
 			before,
@@ -270,9 +271,10 @@ describe('mm oracle batch native', () => {
 			oracleSequenceId: sequenceId,
 		};
 
-		const cases: [string, Parameters<
-			typeof velocityClient.getUpdateMmOracleBatchNativeIx
-		>[0]][] = [
+		const cases: [
+			string,
+			Parameters<typeof velocityClient.getUpdateMmOracleBatchNativeIx>[0],
+		][] = [
 			['empty batch', []],
 			[
 				'duplicate market index',

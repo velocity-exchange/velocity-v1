@@ -627,6 +627,7 @@ export function registerUser(parent: Command): void {
 			let totalEquity = new BN(0);
 			let totalFloor = new BN(0);
 			let totalBuffer = new BN(0);
+			const slot = new BN(await client.connection.getSlot());
 			for (
 				let subId = 0;
 				subId < userStats.numberOfSubAccountsCreated;
@@ -638,7 +639,14 @@ export function registerUser(parent: Command): void {
 				}
 				const u = client.getUser(subId, authority);
 				const account = u.getUserAccountOrThrow();
-				const equity = u.getTotalCollateral('Initial', true);
+				// `getEquityFloorLevel` takes NET equity, which is what every onchain
+				// floor gate compares. `getTotalCollateral` is the margin numerator: it
+				// never subtracts spot borrows and it applies asset weights, so it
+				// reported a different quantity than the gate it was describing.
+				//
+				// Read the lower bound, the same side the gates read, so an invalid
+				// oracle cannot report an account as clear of a floor it is under.
+				const { lower: equity, allOraclesValid } = u.getNetUsdValueBounds(slot);
 				const floor = account.equityFloor;
 				const buffer = account.equityFloorBuffer;
 				totalEquity = totalEquity.add(equity);
@@ -650,7 +658,9 @@ export function registerUser(parent: Command): void {
 						floor
 					)}  buffer ${fmtQuote(buffer)}  headroom ${fmtQuote(
 						equity.sub(floor).sub(buffer)
-					)}  [${level}]`
+					)}  [${level}]${
+						allOraclesValid ? '' : '  (stale oracle: equity is a lower bound)'
+					}`
 				);
 			}
 			console.log(

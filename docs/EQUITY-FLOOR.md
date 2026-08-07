@@ -31,17 +31,28 @@ change the floor and buffer; what the delegate controls is how the floor is spli
 (see [Moving funds between subaccounts](#moving-funds-between-subaccounts)).
 
 When an oracle a position depends on is invalid (stale, too volatile, too uncertain), the checks
-stop trusting its live price. Instead of one exact equity the program computes a two-sided bound,
-pricing each unpriceable position at both its live price and its 5-minute TWAP: every gate that
-restricts the subaccount (withdrawals, risk-increasing fills, transfers, trigger cancels,
-liquidator admission) compares the worst-case value, so a bad price can never make an account look
-healthier than it provably is, and the force-cancel path compares the best-case value plus requires
-full validity, so a bad price can never make an account look breached to a keeper. When every
-oracle is valid the bound collapses to the exact equity and behavior is unchanged. The standalone
-lifecycle instructions stay strict rather than bounded: the trip, the reset, cure transfers, and
-floor-moving transfers all reject with `InvalidOracle` while any relevant oracle is invalid, and
-resume when the feed recovers. A market in settlement is valued at its expiry price, so its oracle
-is exempt from all of these validity requirements.
+stop trusting the equity value entirely and fail closed in the direction of the decision being
+made. A value derived from an invalid price is not bounded by anything: the live price and its own
+5-minute TWAP can share the same stale value, so no stored price can bracket the true one. Every
+gate that authorizes an action (withdrawals, risk-increasing placement and fills, transfers out,
+trigger-order activation, liquidator admission) rejects with `InvalidOracle` while any oracle the
+subaccount's positions depend on is invalid, and with `EquityBelowFloor` when a fully valid value
+sits below `floor + buffer`; a bad price can never authorize an action through the floor. The
+force-cancel path fails closed the other way: being below the raw floor counts as grounds only
+when every oracle is valid and the trusted value sits below it, so a bad price can never make an
+account look breached to a keeper. The standalone lifecycle instructions apply the same rule: the
+trip, the reset, cure transfers, and floor-moving transfers all reject with `InvalidOracle` while
+any relevant oracle is invalid, and resume when the feed recovers. A market in settlement is
+valued at its expiry price, so its oracle is exempt from all of these validity requirements.
+
+The lazy breaker trip shares the trip's validity requirement: it never arms off an invalid price,
+and because it must not fail its host instruction it silently skips instead of rejecting. During
+an oracle outage a subaccount below its raw floor therefore stays untripped until the feed
+recovers, at which point the next touch (or the permissionless trip) arms the breaker. The exposure
+in that window is limited: the fail-closed gates reject everything risk-increasing while any oracle
+is invalid, and DLOB match fills carry their own oracle-validity rule (`FillOrderMatch`), so a
+non-positive, too-volatile or too-uncertain oracle blocks match execution the same way the AMM's
+fill gates block AMM execution.
 
 ## What it enforces day to day
 

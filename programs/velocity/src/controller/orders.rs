@@ -1268,6 +1268,16 @@ pub fn fill_perp_order(
         None
     };
 
+    // DLOB matches execute at maker limit prices with no auction protection,
+    // so they carry their own validity rule: a NonPositive, TooVolatile or
+    // TooUncertain oracle blocks match fills the same way the AMM's fill
+    // gates already block AMM fills. `OracleOrderPrice` above is weaker (it
+    // only decides whether oracle-relative limit prices resolve), so without
+    // this a match could execute while every other consumer of the oracle
+    // refuses it.
+    let match_fills_allowed =
+        is_oracle_valid_for_action(safe_oracle_validity, Some(VelocityAction::FillOrderMatch))?;
+
     let is_filler_taker = user_key == filler_key;
     let is_filler_maker = makers_and_referrer.0.contains_key(&filler_key);
     let (mut filler, mut filler_stats) = if !is_filler_maker && !is_filler_taker {
@@ -1289,7 +1299,7 @@ pub fn fill_perp_order(
         (None, None)
     };
 
-    let maker_orders_info = get_maker_orders_info(
+    let mut maker_orders_info = get_maker_orders_info(
         perp_market_map,
         spot_market_map,
         oracle_map,
@@ -1304,6 +1314,17 @@ pub fn fill_perp_order(
         now,
         slot,
     )?;
+
+    // Runs after `get_maker_orders_info` so its expired-maker-order cleanup
+    // still happens; only the matching itself is withheld. AMM fills keep
+    // their own gates.
+    if !match_fills_allowed && !maker_orders_info.is_empty() {
+        msg!(
+            "Perp market = {} oracle not valid for match fills",
+            market_index
+        );
+        maker_orders_info.clear();
+    }
 
     let oracle_too_divergent_with_twap_5min = is_oracle_too_divergent_with_twap_5min(
         oracle_price,
@@ -2131,25 +2152,19 @@ fn fulfill_perp_order(
         }
 
         if !user_order_position_decreasing {
-            let taker_breaker_tripped = user_stats.is_equity_breaker_tripped();
-            let taker_net_equity =
-                calculate_net_equity_for_floor(user, perp_market_map, spot_market_map, oracle_map)?;
+            validate!(
+                !user_stats.is_equity_breaker_tripped(),
+                ErrorCode::EquityBelowFloor,
+                "taker equity breaker is tripped"
+            )?;
 
-            // The floor restricts the taker here, so take the lower bound. An
-            // invalid oracle cannot then price the taker up through the floor
-            // and buy a risk-increasing fill.
-            if taker_breaker_tripped
-                || taker_net_equity
-                    .is_some_and(|net_equity| user.is_below_buffered_equity_floor(net_equity.lower))
+            // A risk-increasing fill must prove the taker clears its buffered
+            // floor: an invalid oracle cannot price the taker up through the
+            // floor and buy the fill.
+            if let Some(taker_net_equity) =
+                calculate_net_equity_for_floor(user, perp_market_map, spot_market_map, oracle_map)?
             {
-                msg!(
-                    "taker net equity {:?} below equity floor {} + buffer {} (breaker tripped: {})",
-                    taker_net_equity.map(|net_equity| net_equity.lower),
-                    user.equity_floor,
-                    user.equity_floor_buffer,
-                    taker_breaker_tripped
-                );
-                return Err(ErrorCode::EquityBelowFloor);
+                taker_net_equity.validate_clears_buffered_floor(user)?;
             }
         } else {
             // A reducing fill is exempt from the buffered-floor gate and may
@@ -2245,32 +2260,29 @@ fn fulfill_perp_order(
         }
 
         if maker_risk_increasing {
-            let maker_net_equity = calculate_net_equity_for_floor(
+            validate!(
+                !maker_breaker_tripped,
+                ErrorCode::EquityBelowFloor,
+                "maker ({}) equity breaker is tripped",
+                maker_key
+            )?;
+
+            // A risk-increasing maker fill must prove the maker clears its
+            // buffered floor, the same fail-closed rule as the taker gate.
+            // This aborts the whole fill (the maker's leg already executed),
+            // so a floored maker with any invalid oracle costs the taker the
+            // transaction; that is the price of not authorizing exposure off
+            // a price that cannot be trusted.
+            if let Some(maker_net_equity) = calculate_net_equity_for_floor(
                 &maker,
                 perp_market_map,
                 spot_market_map,
                 oracle_map,
-            )?;
-
-            // The floor restricts the maker here, so take the lower bound. A
-            // bound is used rather than an oracle-validity rejection because
-            // this path runs inside `fulfill_perp_order`, whose caller
-            // `?`-propagates. Rejecting a floored maker over one lagging
-            // oracle would abort an unrelated taker's fill.
-            if maker_breaker_tripped
-                || maker_net_equity.is_some_and(|net_equity| {
-                    maker.is_below_buffered_equity_floor(net_equity.lower)
-                })
-            {
-                msg!(
-                    "maker ({}) net equity {:?} below equity floor {} + buffer {} (breaker tripped: {})",
-                    maker_key,
-                    maker_net_equity.map(|net_equity| net_equity.lower),
-                    maker.equity_floor,
-                    maker.equity_floor_buffer,
-                    maker_breaker_tripped
-                );
-                return Err(ErrorCode::EquityBelowFloor);
+            )? {
+                if let Err(err) = maker_net_equity.validate_clears_buffered_floor(&maker) {
+                    msg!("maker ({}) failed the equity floor gate", maker_key);
+                    return Err(err);
+                }
             }
         } else if maker.equity_floor > 0 {
             // A reducing maker fill is exempt from the buffered-floor gate
@@ -3786,12 +3798,11 @@ pub fn trigger_order(
             calculate_net_equity_for_floor(user, perp_market_map, spot_market_map, oracle_map)?;
 
         // The floor restricts the user here: it cancels a risk-increasing
-        // order that the subaccount may not carry. Take the lower bound so an
-        // invalid oracle cannot price the subaccount up through the floor and
-        // keep the order alive.
+        // order that the subaccount may not carry. Fail closed, so an invalid
+        // oracle cannot price the subaccount up through the floor and keep
+        // the order alive.
         if !margin_calc.meets_margin_requirement()
-            || net_equity
-                .is_some_and(|net_equity| user.is_below_buffered_equity_floor(net_equity.lower))
+            || net_equity.is_some_and(|net_equity| !net_equity.clears_buffered_floor(user))
             || user_stats.is_equity_breaker_tripped()
         {
             cancel_order(
@@ -3962,18 +3973,15 @@ pub fn force_cancel_orders(
         MarginContext::standard(MarginRequirementType::Initial),
     )?;
 
-    // Here "below floor" authorizes a keeper against the user, so it must fail
-    // closed in the other direction from the gates above. Two guards do that.
-    // Take the upper bound, so a bad price cannot push the subaccount down
-    // through the floor and manufacture authorization. Also require every
-    // oracle to be valid before the floor counts as grounds at all. Under
-    // oracle degradation the keeper falls back to the margin arm, which keeps
+    // Here "below floor" authorizes a keeper against the user, so it fails
+    // closed in the other direction from the gates above: the floor counts as
+    // grounds only when every oracle is valid and the trusted value sits below
+    // it, so a bad price cannot manufacture authorization. Under oracle
+    // degradation the keeper falls back to the margin arm, which keeps
     // force-cancel available on a margin-breached account.
     let below_equity_floor =
         calculate_net_equity_for_floor(user, perp_market_map, spot_market_map, oracle_map)?
-            .is_some_and(|net_equity| {
-                net_equity.all_oracles_valid && user.is_below_equity_floor(net_equity.upper)
-            });
+            .is_some_and(|net_equity| net_equity.proves_below_floor(user));
     let meets_initial_margin_requirement = margin_calc.meets_margin_requirement();
 
     validate!(

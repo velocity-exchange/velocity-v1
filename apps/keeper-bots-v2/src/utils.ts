@@ -874,20 +874,31 @@ export function fillCorrelationSuffix(nodes: Array<NodeToFill>): string {
  * Keys are serialized alphabetically to match serde_json's BTreeMap ordering on
  * the rust side, and `undefined` values are dropped so an unknown dimension is
  * an absent column rather than a `null` one.
+ *
+ * Never throws. Callers include the tx confirmation loop, where an exception
+ * escaping into the surrounding `try` would abort the whole confirmation batch.
  */
 export function logWideEvent(
 	event: string,
 	fields: Record<string, unknown>
 ): void {
-	const payload: Record<string, unknown> = {};
-	const keys = Object.keys(fields).concat('event').sort();
-	for (const key of keys) {
-		const value = key === 'event' ? event : fields[key];
-		if (value !== undefined) {
-			payload[key] = value;
+	try {
+		const payload: Record<string, unknown> = {};
+		const keys = Object.keys(fields).concat('event').sort();
+		for (const key of keys) {
+			const value = key === 'event' ? event : fields[key];
+			if (value !== undefined) {
+				payload[key] = value;
+			}
 		}
+		logger.info(JSON.stringify(payload));
+	} catch (e) {
+		logger.error(
+			`logWideEvent failed for event ${event}: ${
+				e instanceof Error ? e.message : e
+			}`
+		);
 	}
-	logger.info(JSON.stringify(payload));
 }
 
 export function getTransactionAccountMetas(

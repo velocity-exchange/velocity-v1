@@ -49,6 +49,7 @@ import {
 } from '@solana/spl-token';
 import {
 	BASE_PRECISION,
+	PerpOperation,
 	BN,
 	BulkAccountLoader,
 	getClobCrankConditionsPublicKey,
@@ -1594,6 +1595,160 @@ describe('e2e localnet: programs + publisher + redis', function () {
 			protocolBefore.data.subarray(0, 4384),
 			'protocol user settled the cross legs'
 		);
+	});
+
+	// A migrated taker remainder is the one order on the book nobody is allowed
+	// to take while a counterparty crosses it, so the improvement between the
+	// two prices cannot be won by landing a transaction at the activation slot.
+	// This is the path that hands that improvement to the taker instead, and the
+	// assertions below are about where the money went: the taker's all-in cost
+	// must beat the price it was resting at, and it must not beat the
+	// counterparty's price, which is the band the design promises.
+	it('hands a crossed taker remainder the counterparty price, cranked by relay', async function () {
+		this.timeout(120_000);
+
+		// The curve is in every fill's baseline and is deep at the ~100 oracle,
+		// so a limit long at 104 crosses it and fills there — a remainder only
+		// exists when the taker's bound is tighter than the curve. Pausing the
+		// curve's fills is what makes a remainder reachable at a price that
+		// leaves a counterparty room to improve on it; without this the order
+		// fills from the curve and every assertion below passes while testing
+		// nothing.
+		await admin.updatePerpMarketPausedOperations(
+			0,
+			PerpOperation.AMM_FILL | PerpOperation.AMM_IMMEDIATE_FILL
+		);
+
+		try {
+			// Park the midpoint 5% wide of a 100 mid. Every price below is chosen to
+			// sit inside that spread so the midpoint neither fills the remainder at
+			// placement (its ask is 105) nor crosses the counterparty ask (its bid
+			// is 95) — the sole cross on the book is the pair this crank owns, which
+			// is what makes the poll below unambiguous.
+			await setMidpointLevels(usd(100), [
+				{ offsetPpm: 50_000, size: UNIT.muln(2) },
+			]);
+
+			// Preconditions, asserted rather than assumed: earlier specs leave
+			// orders behind, and a stale ask under 104 would fill the order instead
+			// of resting it — which would still pass a naive "remainder is gone"
+			// poll while testing nothing.
+			const before = await readClob();
+			assert.isTrue(
+				before.bestAskPrice === undefined || before.bestAskPrice.gt(usd(104)),
+				'a leftover ask below 104 would fill the taker instead of resting it'
+			);
+
+			await taker.fetchAccounts();
+			const takerBase0 = taker.getUser().getPerpPosition(0)!.baseAssetAmount;
+			const takerQuote0 = taker.getUser().getPerpPosition(0)!.quoteAssetAmount;
+			const relayPaid0 = await relayPayoutBalance();
+			await crosser.fetchAccounts();
+			const crosserBase0 = crosser
+				.getUser()
+				.getPerpPosition(0)!.baseAssetAmount;
+
+			// 104 rests above every leftover bid, so it is the book's best bid and
+			// the pair the crank's scan reaches first.
+			const ix = await taker.getPlaceAndTakePerpOrderIx(
+				getLimitOrderParams({
+					marketIndex: 0,
+					direction: PositionDirection.LONG,
+					baseAssetAmount: UNIT,
+					price: usd(104),
+				}),
+				undefined,
+				undefined,
+				undefined,
+				undefined,
+				undefined,
+				undefined,
+				{
+					quoter: clobEntry,
+					clobMarket: clobBook.publicKey,
+					clobProgram: CLOB_ID,
+					quoterSigner,
+					crankConditions: conditions,
+				}
+			);
+			await taker.sendTransaction(new Transaction().add(ix));
+
+			const rested = await readClob();
+			assert.equal(rested.bestBidPrice!.toString(), usd(104).toString());
+
+			// The counterparty: an ordinary maker ask 3.00 better than the price the
+			// remainder is resting at.
+			await placeClobOrder(
+				crosser,
+				crosserKp,
+				PositionDirection.SHORT,
+				usd(101),
+				UNIT
+			);
+
+			await pollUntil(
+				'the taker remainder to resolve off the book',
+				60_000,
+				async () => {
+					const book = await readClob();
+					const gone =
+						book.bestBidPrice === undefined || book.bestBidPrice.lt(usd(104));
+					return gone ? true : undefined;
+				}
+			);
+
+			// Where the improvement landed. Fees are inside `quoteAssetAmount`, so
+			// this is the all-in cost, not the headline fill price.
+			await taker.fetchAccounts();
+			const dBase = taker
+				.getUser()
+				.getPerpPosition(0)!
+				.baseAssetAmount.sub(takerBase0);
+			const dQuote = taker
+				.getUser()
+				.getPerpPosition(0)!
+				.quoteAssetAmount.sub(takerQuote0);
+			assert.equal(dBase.toString(), UNIT.toString(), 'taker bought its unit');
+			const allInPrice = dQuote.neg().mul(BASE_PRECISION).div(dBase);
+			assert.isTrue(
+				allInPrice.lt(usd(104)),
+				`all-in cost ${allInPrice} must beat the 104 it rested at`
+			);
+			assert.isTrue(
+				allInPrice.gte(usd(101)),
+				`all-in cost ${allInPrice} cannot beat the counterparty's 101`
+			);
+
+			// The counterparty sold its unit — as a delta, since it carries a long
+			// from the cross-match spec that this sale happens to flatten.
+			await crosser.fetchAccounts();
+			assert.equal(
+				crosser
+					.getUser()
+					.getPerpPosition(0)!
+					.baseAssetAmount.sub(crosserBase0)
+					.toString(),
+				UNIT.neg().toString(),
+				'counterparty sold its unit'
+			);
+
+			// Relay's keeper — not this test, and not the publisher — is who cranked
+			// it, which is the only evidence that discovery reached this crank.
+			assert.isAbove(
+				await relayPayoutBalance(),
+				relayPaid0,
+				'relay paid its keeper for the crank'
+			);
+		} finally {
+			// Put the curve and the 10bps spline back even when an assertion above
+			// throws: the specs below inherit both, and one pins a published price
+			// derived from those levels, so leaving them changed turns one failure
+			// here into four unrelated ones.
+			await admin.updatePerpMarketPausedOperations(0, 0);
+			await setMidpointLevels(usd(100), [
+				{ offsetPpm: 1000, size: UNIT.muln(2) },
+			]);
+		}
 	});
 
 	it('a mid write repositions the published spline', async function () {

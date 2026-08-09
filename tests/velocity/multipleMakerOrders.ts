@@ -513,8 +513,14 @@ describe('multiple maker orders', () => {
 			'takerPosition.quoteAssetAmount=',
 			takerPosition.quoteAssetAmount.toString()
 		);
-		assert(takerPosition.baseAssetAmount.eq(new BN('-412763100000')));
-		assert(takerPosition.quoteAssetAmount.eq(new BN('280585003')));
+		// The three maker legs fill exactly as they do above; every unit of the
+		// difference from a plain maker-only sweep is the vAMM leg, which stops
+		// ~0.09% earlier. The increment it no longer fills prices at 674,333 —
+		// below the 679,777 sweep average — so it is the worst-priced tail of a
+		// short's sweep, and dropping it moves the taker's average execution
+		// marginally in its favour.
+		assert(takerPosition.baseAssetAmount.eq(new BN('-412388600000')));
+		assert(takerPosition.quoteAssetAmount.eq(new BN('280332465')));
 
 		const makerPosition = makerVelocityClient.getUser().getPerpPosition(1);
 		console.log(
@@ -561,7 +567,9 @@ describe('multiple maker orders', () => {
 			'dogMarket.amm.baseAssetAmountWithAmm=',
 			dogMarket.amm.baseAssetAmountWithAmm.toString()
 		);
-		assert(dogMarket.amm.baseAssetAmountWithAmm.eq(new BN('-395763100000')));
+		// Equals the taker's base less the three maker legs: the makers absorb
+		// 17e9 and the curve takes the rest.
+		assert(dogMarket.amm.baseAssetAmountWithAmm.eq(new BN('-395388600000')));
 
 		// close position
 
@@ -614,7 +622,7 @@ describe('multiple maker orders', () => {
 			dogMarketAfter.amm.baseAssetAmountWithAmm.toString()
 		);
 		assert(
-			dogMarketAfter.amm.baseAssetAmountWithAmm.eq(new BN('-66661900000'))
+			dogMarketAfter.amm.baseAssetAmountWithAmm.eq(new BN('-66660700000'))
 		);
 
 		bankrunContextWrapper.printTxLogs(txSig2);

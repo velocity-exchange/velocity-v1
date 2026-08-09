@@ -353,3 +353,87 @@ fn the_user_set_refuses_to_truncate() {
         Err(ErrorCode::TooManyQuoterWireUsers)
     );
 }
+
+/// The response velocity decodes is produced by a program that does not share
+/// this declaration — the CLOB and the midpoint each write the bytes
+/// themselves. `quoter-spec` is the one place that layout is written down, so
+/// velocity's borsh derive has to agree with it byte for byte or the two
+/// programs are describing different wires while both passing their own tests.
+#[test]
+fn execute_response_matches_the_quoter_spec_encoding() {
+    let authority = Pubkey::new_unique();
+    let other = Pubkey::new_unique();
+
+    let local = ExecuteResponseV0 {
+        balance_changes: vec![
+            UserBalanceChange {
+                user: ClobUserRefV0 {
+                    authority,
+                    sub_account_id: 3,
+                },
+                base_size: 1_000_000_000,
+                quote_size: 101_000_000,
+                completed_order_ids: vec![9, 10],
+            },
+            UserBalanceChange {
+                user: ClobUserRefV0 {
+                    authority: other,
+                    sub_account_id: 0,
+                },
+                base_size: 5,
+                quote_size: 6,
+                completed_order_ids: vec![],
+            },
+        ],
+        cancelled: vec![CancelledRemainderV0 {
+            user: ClobUserRefV0 {
+                authority,
+                sub_account_id: 1,
+            },
+            order_id: 42,
+            base_asset_amount: 17,
+        }],
+    };
+
+    let spec = quoter_spec::ExecuteResponseV0 {
+        balance_changes: vec![
+            quoter_spec::UserBalanceChange {
+                user: quoter_spec::UserRefV0 {
+                    authority: authority.to_bytes(),
+                    sub_account_id: 3,
+                },
+                base_size: 1_000_000_000,
+                quote_size: 101_000_000,
+                completed_order_ids: vec![9, 10],
+            },
+            quoter_spec::UserBalanceChange {
+                user: quoter_spec::UserRefV0 {
+                    authority: other.to_bytes(),
+                    sub_account_id: 0,
+                },
+                base_size: 5,
+                quote_size: 6,
+                completed_order_ids: vec![],
+            },
+        ],
+        cancelled: vec![quoter_spec::CancelledRemainderV0 {
+            user: quoter_spec::UserRefV0 {
+                authority: authority.to_bytes(),
+                sub_account_id: 1,
+            },
+            order_id: 42,
+            base_asset_amount: 17,
+        }],
+    };
+
+    let mut from_spec = Vec::new();
+    spec.encode(&mut from_spec);
+    let mut from_borsh = Vec::new();
+    local.serialize(&mut from_borsh).unwrap();
+    assert_eq!(from_borsh, from_spec);
+
+    // And the direction that actually runs on chain: bytes a quoter wrote to
+    // the spec decode into velocity's type unchanged.
+    let round_tripped = ExecuteResponseV0::deserialize(&mut from_spec.as_slice()).unwrap();
+    assert_eq!(round_tripped, local);
+}

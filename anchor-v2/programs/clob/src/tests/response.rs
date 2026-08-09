@@ -603,3 +603,81 @@ fn writer_inserts_shift_the_tail() {
     assert_eq!(writer.len(), 28);
     assert_eq!(&book.response[20..28], &[0; 8]);
 }
+
+/// The tests above pin the streamed bytes against *this program's* schema.
+/// This pins that schema against `quoter-spec`, which is where the layout is
+/// declared for every program on the wire — velocity decodes to it, and the
+/// midpoint writes to it. Without this link each program can stay
+/// self-consistent while describing a different wire from the one its
+/// counterparty reads.
+#[test]
+fn the_declared_schema_is_the_quoter_spec_layout() {
+    let authority = [7u8; 32];
+    let other = [8u8; 32];
+
+    let local = encode_execute(
+        vec![
+            UserBalanceChange {
+                user: UserRefV0 {
+                    authority: authority.into(),
+                    sub_account_id: 3,
+                },
+                base_size: 1_000_000_000,
+                quote_size: 101_000_000,
+                completed_order_ids: vec![9, 10],
+            },
+            UserBalanceChange {
+                user: UserRefV0 {
+                    authority: other.into(),
+                    sub_account_id: 0,
+                },
+                base_size: 5,
+                quote_size: 6,
+                completed_order_ids: vec![],
+            },
+        ],
+        vec![CancelledRemainderV0 {
+            user: UserRefV0 {
+                authority: authority.into(),
+                sub_account_id: 1,
+            },
+            order_id: 42,
+            base_asset_amount: 17,
+        }],
+    );
+
+    let mut from_spec = Vec::new();
+    quoter_spec::ExecuteResponseV0 {
+        balance_changes: vec![
+            quoter_spec::UserBalanceChange {
+                user: quoter_spec::UserRefV0 {
+                    authority,
+                    sub_account_id: 3,
+                },
+                base_size: 1_000_000_000,
+                quote_size: 101_000_000,
+                completed_order_ids: vec![9, 10],
+            },
+            quoter_spec::UserBalanceChange {
+                user: quoter_spec::UserRefV0 {
+                    authority: other,
+                    sub_account_id: 0,
+                },
+                base_size: 5,
+                quote_size: 6,
+                completed_order_ids: vec![],
+            },
+        ],
+        cancelled: vec![quoter_spec::CancelledRemainderV0 {
+            user: quoter_spec::UserRefV0 {
+                authority,
+                sub_account_id: 1,
+            },
+            order_id: 42,
+            base_asset_amount: 17,
+        }],
+    }
+    .encode(&mut from_spec);
+
+    assert_eq!(local, from_spec);
+}

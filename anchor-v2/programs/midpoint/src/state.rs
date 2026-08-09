@@ -899,6 +899,35 @@ mod tests {
         bytes
     }
 
+    /// The tests here pin the written bytes against *this program's* schema.
+    /// This pins that schema against `quoter-spec`, the one declaration of the
+    /// layout every program on the wire shares — velocity decodes to it and
+    /// the CLOB writes to it. The midpoint always emits exactly one change and
+    /// never completes an order, so the empty vecs it always sends are part of
+    /// what has to match.
+    #[test]
+    fn the_wire_struct_is_the_quoter_spec_layout() {
+        let quoter = quoter(&[], &[]);
+        let local = reference_execute(&quoter, Some((1_000_000_000, 101_000_000)));
+
+        let mut from_spec = Vec::new();
+        quoter_spec::ExecuteResponseV0 {
+            balance_changes: vec![quoter_spec::UserBalanceChange {
+                user: quoter_spec::UserRefV0 {
+                    authority: quoter.user_ref().authority.to_bytes(),
+                    sub_account_id: quoter.user_ref().sub_account_id,
+                },
+                base_size: 1_000_000_000,
+                quote_size: 101_000_000,
+                completed_order_ids: Vec::new(),
+            }],
+            cancelled: Vec::new(),
+        }
+        .encode(&mut from_spec);
+
+        assert_eq!(local, from_spec);
+    }
+
     fn written(quoter: &MidpointQuoterV0, pointer: ResponsePointerV0) -> Vec<u8> {
         assert_eq!(pointer.offset as usize, RESPONSE_OFFSET);
         quoter.response[..pointer.len as usize].to_vec()

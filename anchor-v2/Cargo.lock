@@ -708,6 +708,7 @@ dependencies = [
  "anchor-v2-testing",
  "bytemuck",
  "litesvm",
+ "quoter-spec",
  "solana-account",
  "solana-clock",
  "solana-pubkey 3.0.0",
@@ -1601,6 +1602,7 @@ dependencies = [
  "anchor-v2-testing",
  "bytemuck",
  "litesvm",
+ "quoter-spec",
  "serde_json",
  "solana-account",
  "solana-clock",
@@ -1882,6 +1884,10 @@ checksum = "1fbf4db142a473a8d80c26bbf18454ed458bf8d26c8219c331daecfdbd079001"
 dependencies = [
  "proc-macro2",
 ]
+
+[[package]]
+name = "quoter-spec"
+version = "0.1.0"
 
 [[package]]
 name = "r-efi"

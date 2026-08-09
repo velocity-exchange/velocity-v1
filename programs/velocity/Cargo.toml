@@ -64,6 +64,10 @@ bytes = { version = "1.2.0", optional = true }
 pyth = { path = "../pyth", features = ["no-entrypoint"], optional = true }
 
 [dev-dependencies]
+# Test-only: the conformance check that velocity's borsh derive is the layout
+# `quoter-spec` declares. Not a runtime dependency — nothing in the program
+# reads it, and it must not reach the on-chain binary.
+quoter-spec = { path = "../../crates/quoter-spec" }
 bytes = "1.2.0"
 pyth = { path = "../pyth", features = ["no-entrypoint"]}
 base64 = "0.13.0"

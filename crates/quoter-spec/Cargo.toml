@@ -1,0 +1,16 @@
+[package]
+name = "quoter-spec"
+description = "Wire format for velocity's quoter interface: the contract between the router and any program registered as a quoter"
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0"
+repository = "https://github.com/velocity-exchange/velocity-v1/crates/quoter-spec/"
+
+# No dependencies, deliberately. This crate is compiled into three programs
+# that do not share a dependency tree: velocity (anchor 1.0, borsh, solana
+# Pubkey) and the CLOB and midpoint (anchor v2, wincode, pinocchio Address).
+# The CLOB in particular has no borsh dependency at all — it hand-writes the
+# bytes — so pulling a serialization framework in here would force one on a
+# program that deliberately avoids it. The encoding is written out by hand
+# below instead. Nothing may be added to this section.
+[dependencies]

@@ -242,6 +242,15 @@ describe('equity floor swap', () => {
 	});
 
 	it('risk-increasing swap stays frozen while tripped', async () => {
+		// The swap below opens a borrow, which the margin-trading gate rejects
+		// before the equity floor is ever consulted. Enabling margin trading is
+		// what lets the swap reach the floor, so this asserts the floor rather
+		// than an unrelated gate that happens to reject the same transaction.
+		await takerVelocityClient.updateUserMarginTradingEnabled([
+			{ marginTradingEnabled: true, subAccountId: 0 },
+		]);
+		await takerVelocityClient.fetchAccounts();
+
 		// sol -> usdc would open a new sol borrow: not a strict reducer
 		const amountIn = new BN(LAMPORTS_PER_SOL).div(new BN(10));
 		const { beginSwapIx, endSwapIx } = await takerVelocityClient.getSwapIx({

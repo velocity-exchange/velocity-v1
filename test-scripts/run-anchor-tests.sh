@@ -78,6 +78,7 @@ test_files=(
   scaleOrders.ts
   admin.ts
   accountExtension.ts
+  equityFloorSwap.ts
   assetTier.ts
   cancelAllOrders.ts
   curve.ts

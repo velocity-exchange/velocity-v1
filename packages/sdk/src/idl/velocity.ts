@@ -2463,59 +2463,6 @@ export type Velocity = {
       "args": []
     },
     {
-      "name": "forceWipeAccountsDevnet",
-      "docs": [
-        "Devnet-only escape hatch: cleans up accounts stranded by a layout-breaking",
-        "program upgrade (or by a partial re-init). For each account passed via",
-        "`remaining_accounts`:",
-        "- velocity-owned PDA → drain lamports (runtime GCs at end of tx)",
-        "- token-program owned vault (velocity_signer close-authority) → CPI",
-        "`close_account`, rent refunded to admin",
-        "Admin gate reads State's first pubkey field at raw offset 8..40 so it",
-        "works regardless of the State layout currently on chain. `velocity_signer_nonce`",
-        "must match `State.signer_nonce`; mismatch fails the token CPI signature.",
-        "Stripped from mainnet builds via `mainnet-beta`."
-      ],
-      "discriminator": [
-        105,
-        74,
-        87,
-        6,
-        166,
-        227,
-        138,
-        215
-      ],
-      "accounts": [
-        {
-          "name": "admin",
-          "writable": true,
-          "signer": true
-        },
-        {
-          "name": "state",
-          "docs": [
-            "(cold-)admin pubkey at offset 8..40."
-          ]
-        },
-        {
-          "name": "velocitySigner",
-          "docs": [
-            "at CPI time when closing token vaults; ignored otherwise."
-          ]
-        },
-        {
-          "name": "tokenProgram"
-        }
-      ],
-      "args": [
-        {
-          "name": "velocitySignerNonce",
-          "type": "u8"
-        }
-      ]
-    },
-    {
       "name": "initialize",
       "discriminator": [
         175,
@@ -11214,6 +11161,38 @@ export type Velocity = {
       ]
     },
     {
+      "name": "updatePerpMarketTakerFeeAddon",
+      "discriminator": [
+        53,
+        22,
+        191,
+        15,
+        62,
+        150,
+        36,
+        203
+      ],
+      "accounts": [
+        {
+          "name": "admin",
+          "signer": true
+        },
+        {
+          "name": "state"
+        },
+        {
+          "name": "perpMarket",
+          "writable": true
+        }
+      ],
+      "args": [
+        {
+          "name": "takerFeeAddonTenthBps",
+          "type": "i16"
+        }
+      ]
+    },
+    {
       "name": "updatePerpMarketUnrealizedAssetWeight",
       "discriminator": [
         135,
@@ -11342,6 +11321,35 @@ export type Velocity = {
               "name": "prelaunchOracleParams"
             }
           }
+        }
+      ]
+    },
+    {
+      "name": "updatePromoFeeTier",
+      "discriminator": [
+        104,
+        57,
+        241,
+        162,
+        69,
+        198,
+        5,
+        175
+      ],
+      "accounts": [
+        {
+          "name": "admin",
+          "signer": true
+        },
+        {
+          "name": "state",
+          "writable": true
+        }
+      ],
+      "args": [
+        {
+          "name": "promoFeeTier",
+          "type": "u8"
         }
       ]
     },
@@ -21186,11 +21194,25 @@ export type Velocity = {
             "type": "u32"
           },
           {
+            "name": "takerFeeAddonTenthBps",
+            "docs": [
+              "Additive per-market taker-fee add-on in tenth-bps (10 = 1bp), signed.",
+              "Applied on top of the tier fee before `fee_adjustment` scales the sum:",
+              "`taker_fee = max(0, tier_fee + add-on) * (1 +/- fee_adjustment%)`.",
+              "Positive = surcharge (e.g. toxic-flow markets), negative = promo",
+              "discount. Taker fee only; the maker rebate and the post-only path see",
+              "`fee_adjustment` alone. Occupies 2 bytes of the former 4-byte",
+              "`_padding_buffer` (same offset/alignment on all targets), so existing",
+              "accounts read 0 = no add-on until the admin sets it."
+            ],
+            "type": "i16"
+          },
+          {
             "name": "paddingBuffer",
             "type": {
               "array": [
                 "u8",
-                4
+                2
               ]
             }
           },
@@ -23904,11 +23926,23 @@ export type Velocity = {
             "type": "pubkey"
           },
           {
+            "name": "promoFeeTier",
+            "docs": [
+              "Promotional fee-tier floor applied to every account: the effective",
+              "perp fee tier is `max(volume tier, promo_fee_tier)` (clamped to the",
+              "configured tier count), so nobody is downgraded by it. 0 = no-op",
+              "(disabled), also what pre-upgrade accounts read from former padding.",
+              "Reset to 0 and every account is back on its volume tier at its next",
+              "fill; no per-user state."
+            ],
+            "type": "u8"
+          },
+          {
             "name": "padding",
             "type": {
               "array": [
                 "u8",
-                239
+                238
               ]
             }
           }

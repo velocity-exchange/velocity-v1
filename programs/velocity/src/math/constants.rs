@@ -165,6 +165,10 @@ pub const FEE_PERCENTAGE_DENOMINATOR: u32 = 100;
 /// builder-fee rail can't move collateral-significant value a taker couldn't
 /// withdraw under initial margin (OtterSec #83). 1000 = 1% (100 bps). TUNABLE.
 pub const MAX_BUILDER_FEE_TENTH_BPS: u16 = 1000;
+/// Ceiling on the magnitude of `PerpMarket.taker_fee_addon_tenth_bps`, in
+/// tenth-bps (100 = 10bps). Keeps the per-market additive fee add-on within
+/// the same order of magnitude as the tier fees it adjusts. TUNABLE.
+pub const MAX_TAKER_FEE_ADDON_TENTH_BPS: u16 = 100;
 pub const OPEN_ORDER_MARGIN_REQUIREMENT: u128 = QUOTE_PRECISION / 100;
 /// Max oracle-value loss a strictly reducing `end_swap` may realize while the
 /// account is under equity-floor protection (floor set or breaker tripped):

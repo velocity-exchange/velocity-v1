@@ -143,14 +143,11 @@ export function registerShow(parent: Command): void {
 			const state = client.getStateAccount();
 
 			// Breakpoints mirror determine_perp_fee_tier (math/fees.rs) /
-			// User.getUserFeeTier: taker's rolling 30-day volume picks tiers 0-5.
+			// User.getUserFeeTier: taker's rolling 30-day volume picks tiers 0-2.
 			const perpTierLabels = [
-				'30d vol <  $2M ',
-				'30d vol >= $2M ',
-				'30d vol >= $10M',
-				'30d vol >= $20M',
+				'30d vol <  $5M ',
+				'30d vol >= $5M ',
 				'30d vol >= $80M',
-				'30d vol >= $200M',
 			];
 			console.log('trading fees — perp (per fill, tier by taker 30d volume):');
 			perpTierLabels.forEach((label, i) => {
@@ -167,6 +164,11 @@ export function registerShow(parent: Command): void {
 				`${state.perpFeeStructure.ifFeeNumerator}%,`,
 				'protocol = residual'
 			);
+			if (state.promoFeeTier > 0) {
+				console.log(
+					`  PROMO ACTIVE: every account gets at least tier ${state.promoFeeTier}`
+				);
+			}
 
 			console.log('\ntrading fees — spot (per fill, all users pay tier 0):');
 			console.log(`  ${describeFeeTier(state.spotFeeStructure.feeTiers[0])}`);
@@ -181,7 +183,8 @@ export function registerShow(parent: Command): void {
 			for (const market of perpMarkets) {
 				console.log(
 					`  [${market.marketIndex}] ${decodeName(market.name)}:`,
-					`fee adjustment ${describeFeeAdjustment(market.feeAdjustment)} |`,
+					`fee adjustment ${describeFeeAdjustment(market.feeAdjustment)},`,
+					`taker addon ${market.takerFeeAddonTenthBps / 10}bps |`,
 					`liquidation: liquidator ${pct1e6(market.liquidatorFee)},`,
 					`if ${pct1e6(market.ifLiquidationFee)},`,
 					`protocol ${pct1e6(market.protocolLiquidationFee)}`

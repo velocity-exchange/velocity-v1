@@ -4327,20 +4327,25 @@ export class User {
 			);
 
 			const volumeThresholds = [
-				new BN(2_000_000).mul(QUOTE_PRECISION),
-				new BN(10_000_000).mul(QUOTE_PRECISION),
-				new BN(20_000_000).mul(QUOTE_PRECISION),
+				new BN(5_000_000).mul(QUOTE_PRECISION),
 				new BN(80_000_000).mul(QUOTE_PRECISION),
-				new BN(200_000_000).mul(QUOTE_PRECISION),
 			];
 
-			let feeTierIndex = 5;
+			let feeTierIndex = volumeThresholds.length;
 			for (let i = 0; i < volumeThresholds.length; i++) {
 				if (total30dVolume.lt(volumeThresholds[i])) {
 					feeTierIndex = i;
 					break;
 				}
 			}
+
+			// promo tier floor: everyone gets at least `state.promoFeeTier`
+			// while it is set (0 = disabled/no-op), mirroring
+			// `determine_perp_fee_tier`
+			feeTierIndex = Math.max(
+				feeTierIndex,
+				Math.min(state.promoFeeTier, volumeThresholds.length)
+			);
 
 			return state.perpFeeStructure.feeTiers[feeTierIndex];
 		}

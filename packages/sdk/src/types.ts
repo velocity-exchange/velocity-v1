@@ -1103,6 +1103,8 @@ export type StateAccount = {
 	lpPoolFeatureBitFlags: number;
 	/** bitmask, see `SolvencyStatus` */
 	solvencyStatus: number;
+	/** promotional fee-tier floor for every account: effective perp tier = max(volume tier, promoFeeTier); 0 = disabled */
+	promoFeeTier: number;
 };
 
 /** Decoded mirror of the on-chain `PerpMarket` zero-copy account. */
@@ -1141,6 +1143,8 @@ export type PerpMarketAccount = {
 	ifLiquidationFee: number;
 	/** LIQUIDATOR_FEE_PRECISION (1e6); protocol's cut of a liquidation, taken from the liquidatee */
 	protocolLiquidationFee: number;
+	/** signed tenth-bps (10 = 1bp); additive per-market taker-fee add-on, applied to the tier fee before `feeAdjustment` scales the sum and floored at zero. Taker only */
+	takerFeeAddonTenthBps: number;
 	/** QUOTE_PRECISION (1e6); pnl-pool retention buffer the fee-sweep leaves untouched above `max(net_user_pnl, 0)` */
 	feePoolBufferTarget: BN;
 	/** PERCENTAGE_PRECISION (1e6 = 100%); fraction of OI notional (at the oracle TWAP) the sweep leaves behind in `feeLedger.pendingIfFee` as a standing bankruptcy first-loss tranche; 0 disables */

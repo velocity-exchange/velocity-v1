@@ -247,4 +247,60 @@ export function registerFees(parent: Command): void {
 			}
 		}
 	);
+
+	withGlobalOptions(
+		fees
+			.command('set-taker-addon <market> <tenthBps>')
+			.description(
+				"Set a perp market's additive taker-fee add-on in tenth-bps (15 = +1.5bp surcharge, -10 = -1bp discount, 0 = none), applied to the tier fee before feeAdjustment and floored at zero. Range -100..100. Warm admin."
+			)
+	).action(async (market: string, tenthBps: string, _flags, cmd: Command) => {
+		const opts = readGlobalOpts(cmd);
+		const provider = buildProvider(opts);
+		const client = await buildAdminClient(opts);
+		try {
+			const ix = await client.getUpdatePerpMarketTakerFeeAddonIx(
+				Number.parseInt(market, 10),
+				Number.parseInt(tenthBps, 10)
+			);
+			const result = await sendOrPropose(
+				provider,
+				[ix],
+				opts.multisig ? new PublicKey(opts.multisig) : undefined,
+				'velocity-admin fees set-taker-addon'
+			);
+			reportDispatch(
+				`perp market ${market} taker fee addon = ${tenthBps} tenth-bps`,
+				result
+			);
+		} finally {
+			await client.unsubscribe();
+		}
+	});
+
+	withGlobalOptions(
+		fees
+			.command('set-promo-tier <tier>')
+			.description(
+				'Set the promotional fee-tier floor: every account gets at least this perp fee tier while set (accounts already above keep their tier). 0 disables; accounts revert to volume tiers on their next fill. Warm admin.'
+			)
+	).action(async (tier: string, _flags, cmd: Command) => {
+		const opts = readGlobalOpts(cmd);
+		const provider = buildProvider(opts);
+		const client = await buildAdminClient(opts);
+		try {
+			const ix = await client.getUpdatePromoFeeTierIx(
+				Number.parseInt(tier, 10)
+			);
+			const result = await sendOrPropose(
+				provider,
+				[ix],
+				opts.multisig ? new PublicKey(opts.multisig) : undefined,
+				'velocity-admin fees set-promo-tier'
+			);
+			reportDispatch(`promo fee tier = ${tier}`, result);
+		} finally {
+			await client.unsubscribe();
+		}
+	});
 }

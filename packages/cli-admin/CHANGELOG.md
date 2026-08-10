@@ -1,5 +1,12 @@
 # @velocity-exchange/admin-cli
 
+## 0.10.2
+
+### Patch Changes
+
+- Updated dependencies [[`872edd6`](https://github.com/velocity-exchange/velocity-v1/commit/872edd66c5d94a01d6c694a06b03c4ed20c2054c)]:
+  - @velocity-exchange/sdk@0.13.0
+
 ## 0.10.1
 
 ### Patch Changes

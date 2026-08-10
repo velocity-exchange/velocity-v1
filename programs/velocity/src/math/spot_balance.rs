@@ -180,6 +180,41 @@ pub fn calculate_accumulated_interest(
         .safe_div(ONE_YEAR)?
         .safe_div(SPOT_RATE_PRECISION)?;
 
+    // Conservation clamp: the deposit side of an interval must never be credited more tokens
+    // than the borrow side is charged for it.
+    //
+    // The two are equal by construction — the deposit rate is the borrow rate scaled by
+    // `utilization = borrow_tokens / deposit_tokens`, so
+    // `deposit_tokens * rate * utilization == borrow_tokens * rate`. But `utilization` is
+    // computed from *rounded* token amounts (the borrow side rounds up, `get_token_amount`)
+    // and is sampled once at the start of the interval, then applied across the whole span.
+    // That sub-token overstatement is multiplied by the interval's rate factor
+    // (`modified_borrow_rate / ONE_YEAR / SPOT_RATE_PRECISION`), so on a long interval at a
+    // high rate it grows into whole tokens of deposit credit that no borrower ever paid —
+    // depositor claims backed by nothing in the vault.
+    //
+    // Left unclamped this is the wrong direction to be wrong in, and the #127 carveout
+    // deferral below makes intervals *longer*, so the two changes travel together. Measured on
+    // the `check_fee_collection` fixture (a $1 market at a 2000% optimal rate): a year settled
+    // in two cranks over-credited depositors by 5 tokens against the borrowers' charge. One
+    // crank and three-or-more cranks both land on the safe side, which is why this only shows
+    // up at particular interval lengths rather than monotonically.
+    //
+    // Scaled proportionally rather than saturated to the borrow charge so the credit stays a
+    // faithful (just capped) share of what was actually paid.
+    let deposit_token_amount_gain =
+        get_interest_token_amount(spot_market.deposit_balance, spot_market, deposit_interest)?;
+    let borrow_token_amount_gain =
+        get_interest_token_amount(spot_market.borrow_balance, spot_market, borrow_interest)?;
+
+    let deposit_interest = if deposit_token_amount_gain > borrow_token_amount_gain {
+        deposit_interest
+            .safe_mul(borrow_token_amount_gain)?
+            .safe_div(deposit_token_amount_gain)?
+    } else {
+        deposit_interest
+    };
+
     Ok(InterestAccumulated {
         borrow_interest,
         deposit_interest,

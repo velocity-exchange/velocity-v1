@@ -96,6 +96,15 @@ cargo-build-sbf --tools-version v1.54 --force-tools-install
 
 Run that once; subsequent `anchor build` invocations will use the new toolchain. Check with `cargo-build-sbf --version`.
 
+**Symptom: `could not execute process .../1.89.0-sbpf-solana-v1.52/bin/rustc (never executed)`** during an SBF build.
+The platform-tools payload is present under `~/.cache/solana/<version>/` but its rustup toolchain link is missing, and `cargo-build-sbf` picks its own default version rather than whichever one you last installed — so having v1.54 linked does not help when it wants v1.52. Link the version it is asking for:
+
+```bash
+rustup toolchain link 1.89.0-sbpf-solana-v1.52 ~/.cache/solana/v1.52/platform-tools/rust
+```
+
+Substitute the version from the error path. This is machine-level state, not repo state, so it recurs on any fresh worktree or new machine until linked.
+
 **Symptom: program panics with `Access violation in unknown section at address 0x80 of size 8`** (or similar address) at runtime, on instructions that touch types you didn't change.
 This is almost always **stale SBF build artifacts** after a Cargo.lock dep change. SBF caches compiled `.rlib`s under `target/sbpf-solana-solana/`, and the cache key doesn't catch every dep-resolution change — the resulting `.so` loads but reads/writes wrong offsets. Whenever Cargo.lock dep versions change (e.g. after `cargo update`, or after switching branches with different lockfiles), do:
 

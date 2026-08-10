@@ -1,5 +1,11 @@
 # @velocity-exchange/sdk
 
+## 0.13.0
+
+### Minor Changes
+
+- [#356](https://github.com/velocity-exchange/velocity-v1/pull/356) [`872edd6`](https://github.com/velocity-exchange/velocity-v1/commit/872edd66c5d94a01d6c694a06b03c4ed20c2054c) Thanks [@ChesterSim](https://github.com/ChesterSim)! - JupiterClient: opt-in support for Jupiter Swap API v2 (`GET /swap/v2/build`) via `apiVersion: 'v2'` — one HTTP round trip for quote + instructions instead of `/quote` then `POST /swap` plus a transaction deserialization. v2 quotes are wallet-bound, so `getQuote` requires `userPublicKey` and rejects the quote if it is later swapped by a different wallet; `autoSlippage` is not supported on v2 (the API silently ignores it and returns zero slippage tolerance) and throws, directing callers to `apiVersion: 'v1'`. `swapMode: 'ExactOut'` likewise throws — `/swap/v2/build` is ExactIn-only and reinterprets an ExactOut amount as the input. `onlyDirectRoutes: true` also throws: `/swap/v2/build` has no direct-only routing control and silently ignores the parameter, still returning multi-hop routes. `getSwapTransaction` gains an optional `computeUnitLimit`, since v2 returns a compute unit price but no limit. `UnifiedSwapClient` accepts a matching `jupiterApiVersion` option. The former v1-only `JupiterClient.getSwap` is removed — use `getSwapTransaction` (standalone tx) or `getRouteInstructions` (route for velocity's begin/end swap bracket); under v1, `getSwapTransaction` still posts to `/swap`. The default remains `'v1'`, so nothing changes unless you opt in or were calling `getSwap` directly.
+
 ## 0.12.0
 
 ### Minor Changes

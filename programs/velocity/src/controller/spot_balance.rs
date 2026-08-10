@@ -13,8 +13,9 @@ use {
             },
             safe_math::SafeMath,
             spot_balance::{
-                calculate_accumulated_interest, calculate_utilization, get_interest_token_amount,
-                get_spot_balance, get_token_amount, InterestAccumulated,
+                calculate_accumulated_interest, calculate_spot_market_utilization,
+                calculate_utilization, get_interest_token_amount, get_spot_balance,
+                get_token_amount, InterestAccumulated,
             },
             stats::{calculate_new_twap, calculate_weighted_average},
         },
@@ -134,6 +135,23 @@ pub fn update_spot_market_twap_stats(
     Ok(())
 }
 
+/// Stamp `last_interest_ts` forward to `now` **without** accruing anything.
+///
+/// Used for intervals in which no interest is charged to anyone. This is load-bearing, not
+/// bookkeeping: `calculate_accumulated_interest` bills the entire `now - last_interest_ts`
+/// span at whatever rate prevails when it finally runs, so an interval left un-stamped is
+/// billed retroactively to whoever happens to hold debt later (findings #115, #117).
+///
+/// Never moves the stamp backwards — `now` can trail the stored value (the accrual is also
+/// driven from user instructions, whose `now` comes from their own `Clock`).
+fn stamp_interest_ts_without_accrual(spot_market: &mut SpotMarket, now: i64) -> VelocityResult {
+    if now.cast::<u64>()? > spot_market.last_interest_ts {
+        spot_market.last_interest_ts = now.cast()?;
+    }
+
+    Ok(())
+}
+
 pub fn update_spot_market_cumulative_interest(
     spot_market: &mut SpotMarket,
     oracle_price_data: Option<&OraclePriceData>,
@@ -146,8 +164,17 @@ pub fn update_spot_market_cumulative_interest(
     // threaded in from callers because the global flag lives on `State`, which
     // this controller does not load. TWAP stats still advance so oracle EMAs
     // stay fresh, mirroring the dedicated `update_spot_market_cumulative_interest`
-    // crank; on resume the next accrual covers the full elapsed interval.
+    // crank.
+    //
+    // The clock is stamped forward as the pause is observed, so the paused interval is
+    // dropped rather than deferred. Previously it was left in place and the first accrual
+    // after resume applied the whole paused span to whatever balances existed at that
+    // moment: a deposit made just before the unpause collected interest for time it was not
+    // deposited, and a borrow opened during the pause was charged for time it did not exist
+    // (finding #115). A pause means interest does not accrue for that window — not that it
+    // accrues and is billed later to a different set of balances.
     if funding_paused || spot_market.is_operation_paused(SpotOperation::UpdateCumulativeInterest) {
+        stamp_interest_ts_without_accrual(spot_market, now)?;
         update_spot_market_twap_stats(spot_market, oracle_price_data, now)?;
         return Ok(());
     }
@@ -157,6 +184,20 @@ pub fn update_spot_market_cumulative_interest(
         borrow_interest,
     } = calculate_accumulated_interest(spot_market, now)?;
 
+    // This interval has exactly three possible outcomes, and only two of them appear as
+    // branches below. Naming all three here because the third is the absence of action:
+    //
+    //   COMMIT — bump both indexes, pay both carveouts, stamp the clock.
+    //   DROP   — nobody owes anything for this interval (paused above, or zero utilization),
+    //            so stamp the clock without accruing. The interval leaves the ledger.
+    //   DEFER  — something IS owed but cannot be paid in full yet (the split rounds to
+    //            nothing, or a configured carveout would floor to zero). Fall through both
+    //            branches, touching nothing: the clock stays put so the same interval is
+    //            retried later against a longer span.
+    //
+    // DROP and DEFER are the load-bearing distinction. Dropping an interval that is owed
+    // forgives interest (the shape of #127); deferring an interval that is not owed leaves it
+    // on the clock to be billed retroactively to whoever holds debt later (#115, #117).
     if deposit_interest > 0 && borrow_interest > 1 {
         // Explicit lending-gain carveouts (replaces the old single `total_factor`
         // skim). Two independent cuts taken off the deposit-interest gain:
@@ -175,7 +216,60 @@ pub fn update_spot_market_cumulative_interest(
             .safe_sub(deposit_interest_for_if)?
             .safe_sub(deposit_interest_for_protocol)?;
 
-        if deposit_interest_for_lenders > 0 {
+        // convert both carveouts to tokens against the SAME pre-credit
+        // deposit_balance — crediting the first pool grows deposit_balance,
+        // and converting the second cut against the grown balance would
+        // skew it above its stated factor (order-dependence)
+        //
+        // An unconfigured cut is structurally zero, so skip its conversion rather than
+        // multiplying and dividing to reach 0. Most markets run with both factors at zero and
+        // this function is cranked by nearly every spot-touching instruction.
+        let if_token_amount = if spot_market.insurance_fund.if_fee_factor == 0 {
+            0
+        } else {
+            get_interest_token_amount(
+                spot_market.deposit_balance,
+                spot_market,
+                deposit_interest_for_if,
+            )?
+        };
+        let protocol_token_amount = if spot_market.protocol_fee_factor == 0 {
+            0
+        } else {
+            get_interest_token_amount(
+                spot_market.deposit_balance,
+                spot_market,
+                deposit_interest_for_protocol,
+            )?
+        };
+
+        // A configured carveout must actually reach its pool before the interval is committed.
+        //
+        // The cuts are withheld from lenders in *index* terms (`deposit_interest_for_lenders`
+        // is net of both), but only reach `revenue_pool` / `protocol_fee_pool` if they convert
+        // to at least one token: `deposit_balance * cut / 10^(19 - decimals)`. When a cut
+        // converted to zero the value was withheld from lenders and credited to nobody — it
+        // became unattributed slack in the vault — and `last_interest_ts` advanced anyway, so
+        // the interval could never be retried. Cranking this (permissionless) accrual at short
+        // enough intervals kept every cut under one token indefinitely, permanently forfeiting
+        // the insurance fund's and the protocol's entire share of lending yield (finding #127).
+        //
+        // Deferring is safe from liveness: the cut grows linearly with the un-stamped interval
+        // and the clock only advances on commit, so frequent cranking cannot hold the interval
+        // short — every configured cut eventually clears a token. The tradeoff is that accrual
+        // lands in coarser steps on very small markets (on a $1M market at a 0.1% factor a cut
+        // clears a token in ~16s; on a dust-sized market it can defer for hours). This is the
+        // mirror image of the #117 treatment: an interval nobody owes anything for is stamped
+        // and dropped, an interval that *is* owed is deferred until it can be paid in full.
+        //
+        // Exempt `deposit_balance == 0`, the one case where the conversion is structurally zero
+        // regardless of how long the interval grows — deferring there would never converge and
+        // would leave borrowers uncharged forever.
+        let carveouts_payable = spot_market.deposit_balance == 0
+            || ((spot_market.insurance_fund.if_fee_factor == 0 || if_token_amount > 0)
+                && (spot_market.protocol_fee_factor == 0 || protocol_token_amount > 0));
+
+        if deposit_interest_for_lenders > 0 && carveouts_payable {
             spot_market.cumulative_deposit_interest = spot_market
                 .cumulative_deposit_interest
                 .safe_add(deposit_interest_for_lenders)?;
@@ -184,21 +278,6 @@ pub fn update_spot_market_cumulative_interest(
                 .cumulative_borrow_interest
                 .safe_add(borrow_interest)?;
             spot_market.last_interest_ts = now.cast()?;
-
-            // convert both carveouts to tokens against the SAME pre-credit
-            // deposit_balance — crediting the first pool grows deposit_balance,
-            // and converting the second cut against the grown balance would
-            // skew it above its stated factor (order-dependence)
-            let if_token_amount = get_interest_token_amount(
-                spot_market.deposit_balance,
-                spot_market,
-                deposit_interest_for_if,
-            )?;
-            let protocol_token_amount = get_interest_token_amount(
-                spot_market.deposit_balance,
-                spot_market,
-                deposit_interest_for_protocol,
-            )?;
 
             // IF cut -> revenue_pool (settles to IF vault for stakers)
             if if_token_amount > 0 {
@@ -232,6 +311,34 @@ pub fn update_spot_market_cumulative_interest(
                 max_borrow_rate: spot_market.max_borrow_rate,
             });
         }
+    } else if spot_market.borrow_balance == 0
+        || calculate_spot_market_utilization(spot_market)? == 0
+    {
+        // Nothing is borrowed, so no interest is owed by anyone for this interval — the same
+        // condition on which `calculate_accumulated_interest` returns zero. Stamp the clock
+        // so the idle span leaves the ledger.
+        //
+        // `borrow_balance == 0` is checked first purely to avoid the work: it is the case that
+        // actually occurs, and it settles the question with one comparison instead of two
+        // `get_token_amount` conversions and a division that `calculate_accumulated_interest`
+        // already performed a few lines above. The utilization arm is kept because zero
+        // utilization is the exact condition that function returns zero on, and it also covers
+        // a borrow so small relative to deposits that the ratio floors to zero.
+        //
+        // Left un-stamped it stayed on the clock for the whole zero-borrow epoch, and the
+        // first accrual after a borrow appeared billed that entire span at the newly non-zero
+        // rate. Any lender could farm it: deposit into an idle market, wait for the first
+        // borrower, crank the accrual, and collect interest the fresh debt never owed
+        // (finding #117). Every borrow-creating path cranks this function *before* touching
+        // balances, so the stamp is always current at the instant debt appears and a new
+        // borrow can only ever be charged from its own creation.
+        //
+        // Deliberately narrow: only the genuinely-nothing-owed case stamps. When utilization
+        // is non-zero but the interval is too short for the split (or for a configured
+        // carveout, see above) to clear a unit, the clock is left alone so the accrual is
+        // deferred, not forgiven — stamping there would let frequent cranking zero out
+        // borrowers' interest, which is the shape of #127.
+        stamp_interest_ts_without_accrual(spot_market, now)?;
     }
 
     update_spot_market_twap_stats(spot_market, oracle_price_data, now)?;

@@ -285,6 +285,62 @@ describe('referrer', () => {
 		assert(revShare.totalReferrerRewards.toNumber() === 0);
 	});
 
+	it('cannot initialize a RevenueShareEscrow before the authority has a user', async () => {
+		// escrow.referrer is snapshotted once at init and never rewritten, and
+		// UserStats.referrer is only ever set when the first sub-account is created.
+		// An escrow created in between would therefore freeze a defaulted referrer
+		// forever, suppressing that authority's referral rewards with no way to
+		// repair the field. Anyone can pay for anyone's escrow — the authority does
+		// not sign — so the window has to be closed on chain.
+		const strandedKeyPair = await createFundedKeyPair(bankrunContextWrapper);
+		const strandedClient = new TestClient({
+			connection: bankrunContextWrapper.connection.toConnection(),
+			wallet: new Wallet(strandedKeyPair),
+			programID: chProgram.programId,
+			opts: {
+				commitment: 'confirmed',
+			},
+			activeSubAccountId: 0,
+			perpMarketIndexes: [0],
+			spotMarketIndexes: [0],
+			subAccountIds: [],
+			oracleInfos: [
+				{
+					publicKey: solOracle,
+					source: OracleSource.PYTH_LAZER,
+				},
+			],
+			userStats: true,
+			accountSubscription: {
+				type: 'polling',
+				accountLoader: bulkAccountLoader,
+			},
+		});
+		await strandedClient.subscribe();
+
+		// UserStats exists, no sub-account yet: exactly the state the escrow refuses.
+		const statsTx = await strandedClient.buildTransaction([
+			await strandedClient.getInitializeUserStatsIx(),
+		]);
+		await strandedClient.sendTransaction(statsTx);
+
+		try {
+			// A third party paying for the escrow is what made this griefable.
+			await referrerVelocityClient.initializeRevenueShareEscrow(
+				strandedKeyPair.publicKey,
+				3
+			);
+			assert(false, 'escrow init should have failed with no user created');
+		} catch (e) {
+			assert(
+				e.message.includes('0x185a'), // UserNotFound
+				`expected UserNotFound (0x185a), got ${e.message}`
+			);
+		}
+
+		await strandedClient.unsubscribe();
+	});
+
 	it('referee can initialize a RevenueShareEscrow', async () => {
 		// The referee already has its referrer set on UserStats (from the
 		// 'initialize with referrer' test), so initializing the escrow stamps

@@ -82,7 +82,7 @@
 		"lint:fix": "eslint . --ext ts --fix --format=compact",
 		"example:restingLimitMaker": "ts-node market_making_examples/restingLimitMaker/index.ts",
 		"example:jitMaker": "ts-node market_making_examples/jitMaker/index.ts",
-		"test": "mocha -r ts-node/register ./src/**/*.test.ts",
+		"test": "mocha -r ts-node/register './src/**/*.test.ts'",
 		"typecheck": "tsc --noEmit"
 	},
 	"engines": {

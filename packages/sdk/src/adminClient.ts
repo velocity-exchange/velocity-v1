@@ -166,7 +166,7 @@ export class AdminClient extends VelocityClient {
 	 * @param activeStatus - If `true`, market is `Active` immediately; otherwise `Initialized` (trading disabled until a later status update). Requires cold admin when `true`. Default `true`.
 	 * @param assetTier - Collateral tier gating cross-margin usability. Default `AssetTier.COLLATERAL`.
 	 * @param scaleInitialAssetWeightStart - Deposit-token-amount threshold, QUOTE_PRECISION (1e6) equivalent notional, above which `initialAssetWeight` scales down. Default 0 (disabled).
-	 * @param withdrawGuardThreshold - Token-amount threshold, market's native decimals, above which large single withdraws/borrows are blocked. Default 0.
+	 * @param withdrawGuardThreshold - Token-amount level, market's native decimals, *below* which the withdraw guards stop binding. Resulting deposits are never floored above `depositTokenTwap - withdrawGuardThreshold`, and borrows are always permitted up to this amount. It also sizes the small-depositor exception to the withdraw circuit breaker: an account qualifies below a tenth of it, and the whole eligible cohort shares one of it below the breaker floor. Raising it loosens the guards. Capped on chain at `MAX_WITHDRAW_GUARD_THRESHOLD_NOTIONAL` ($10k) of oracle notional. Default 0 (guards always bind, no exception).
 	 * @param orderTickSize - Minimum price increment for spot orders, PRICE_PRECISION (1e6). Default 1.
 	 * @param orderStepSize - Minimum base size increment for spot orders, market's native decimals. Also seeds `minOrderSize`. Default 1.
 	 * @param ifTotalFactor - Insurance fund fee share of the total spot fee, IF_FACTOR_PRECISION (1e6). Default 0.
@@ -2853,8 +2853,12 @@ export class AdminClient extends VelocityClient {
 	}
 
 	/**
-	 * Sets a spot market's withdraw guard threshold — the token-amount cap above which a
-	 * single withdraw/borrow is blocked. Requires warm admin (`check_warm`, on the
+	 * Sets a spot market's withdraw guard threshold — the token-amount level *below* which the
+	 * withdraw guards stop binding. It relaxes the min-deposit floor by up to its own size,
+	 * always permits borrows up to its own size, and sizes the small-depositor exception to the
+	 * withdraw circuit breaker (eligibility below a tenth of it, and one of it as the shared
+	 * market-level budget below the breaker floor). Raising it loosens the guards; `0` disables
+	 * the carve-out entirely. Requires warm admin (`check_warm`, on the
 	 * `AdminUpdateSpotMarketWithdrawGuardThreshold` context). On-chain the notional is priced
 	 * with the max of the live oracle price and the 5-minute oracle TWAP (`StrictOraclePrice`),
 	 * so a momentarily-manipulated-down oracle can't let an oversized threshold through;

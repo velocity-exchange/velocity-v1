@@ -1508,6 +1508,11 @@ dependencies = [
 [[package]]
 name = "quoter-spec"
 version = "0.1.0"
+dependencies = [
+ "anchor-lang",
+ "solana-address 2.6.0",
+ "wincode",
+]
 
 [[package]]
 name = "r-efi"

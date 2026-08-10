@@ -13,17 +13,19 @@
 //! between them. The failure is silent and lands on a value transfer: a
 //! misread `base_size` moves the wrong amount of a user's collateral.
 //!
-//! One declaration lives here. Each program converts to its own domain types
-//! at the boundary, and each checks its encoder against [`encode`] /
-//! [`decode`], so a divergence fails a test instead of a fill.
+//! One declaration lives here and all three programs use it. The reference
+//! codec below stays because the v2 programs do not serialize these structs —
+//! they write the bytes incrementally — so each is held to the layout by a
+//! conformance test, and a divergence fails a test instead of a fill.
 //!
-//! # Addresses are `[u8; 32]`
+//! # The address type is shared, not restated
 //!
-//! The three programs do not agree on a key type: velocity has solana's
-//! `Pubkey`, the v2 programs have pinocchio's `Address`. Naming either one
-//! here would drag that program's dependency tree into the other two. The
-//! wire has always been 32 bytes; this crate says so, and each side converts.
-//! (`relay-spec` takes the same position for the same reason.)
+//! Velocity names it `Pubkey`, the v2 programs name it `Address`, and it is one
+//! struct: solana-pubkey re-exports `Address as Pubkey`, and solana-address 1.x
+//! is a shim over 2.x, so both trees land on the same `solana_address::Address`.
+//! That is why these types can be the declaration each program uses instead of
+//! a shape each one restates — a `Pubkey` satisfies these fields with no
+//! conversion.
 //!
 //! # The encoding is borsh, written out by hand
 //!
@@ -39,13 +41,33 @@
 //! many elements. No padding, no alignment, no discriminator — the caller
 //! owns framing.
 
+// Named `Pubkey` deliberately. It is `solana_address::Address` either way — but
+// anchor's IDL derive recognizes the address type by the *token* in the field,
+// not by the type it resolves to, so a field spelled `Address` makes
+// `anchor idl build` try to generate an IDL type for it and fail. Velocity is
+// the only consumer that runs that build, and this is the spelling it needs.
+use solana_address::Address as Pubkey;
+
+/// Every method below is `#[inline]` because these types cross a crate
+/// boundary into the CLOB's per-fill loop, and without the hint the calls stop
+/// being inlined there: `execute` over 50 orders measures 44,015 CU without it
+/// against 42,870 with it.
+///
 /// The user a balance change applies to, in the derivable form velocity
 /// resolves against its loaded users.
 ///
 /// 34 bytes: 32-byte authority, then a little-endian `u16` sub-account id.
+#[cfg_attr(
+    feature = "anchor-derive",
+    derive(anchor_lang::AnchorSerialize, anchor_lang::AnchorDeserialize)
+)]
+#[cfg_attr(
+    feature = "wincode-derive",
+    derive(wincode::SchemaRead, wincode::SchemaWrite)
+)]
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
 pub struct UserRefV0 {
-    pub authority: [u8; 32],
+    pub authority: Pubkey,
     pub sub_account_id: u16,
 }
 
@@ -53,17 +75,29 @@ impl UserRefV0 {
     pub const SIZE: usize = 34;
 
     pub const ZERO: Self = Self {
-        authority: [0u8; 32],
+        authority: Pubkey::new_from_array([0u8; 32]),
         sub_account_id: 0,
     };
 
+    /// The borsh encoding as a fixed array, for comparing against and writing
+    /// into a response region without a heap round-trip.
+    #[inline]
+    pub fn to_bytes(self) -> [u8; Self::SIZE] {
+        let mut bytes = [0u8; Self::SIZE];
+        bytes[..32].copy_from_slice(self.authority.as_array());
+        bytes[32..].copy_from_slice(&self.sub_account_id.to_le_bytes());
+        bytes
+    }
+
+    #[inline]
     pub fn encode(&self, out: &mut Vec<u8>) {
-        out.extend_from_slice(&self.authority);
+        out.extend_from_slice(self.authority.as_array());
         out.extend_from_slice(&self.sub_account_id.to_le_bytes());
     }
 
+    #[inline]
     pub fn decode(input: &[u8]) -> Result<(Self, usize), SpecError> {
-        let authority = take_array::<32>(input, 0)?;
+        let authority = Pubkey::new_from_array(take_array::<32>(input, 0)?);
         let sub_account_id = u16::from_le_bytes(take_array::<2>(input, 32)?);
         Ok((
             Self {
@@ -81,6 +115,14 @@ impl UserRefV0 {
 /// subtracted from this user when the taker went long (the taker takes base
 /// from them) and added when the taker went short. `quote_size` moves the
 /// opposite way.
+#[cfg_attr(
+    feature = "anchor-derive",
+    derive(anchor_lang::AnchorSerialize, anchor_lang::AnchorDeserialize)
+)]
+#[cfg_attr(
+    feature = "wincode-derive",
+    derive(wincode::SchemaRead, wincode::SchemaWrite)
+)]
 #[derive(Clone, PartialEq, Eq, Debug, Default)]
 pub struct UserBalanceChange {
     pub user: UserRefV0,
@@ -94,6 +136,7 @@ pub struct UserBalanceChange {
 }
 
 impl UserBalanceChange {
+    #[inline]
     pub fn encode(&self, out: &mut Vec<u8>) {
         self.user.encode(out);
         out.extend_from_slice(&self.base_size.to_le_bytes());
@@ -101,6 +144,7 @@ impl UserBalanceChange {
         encode_u64_vec(&self.completed_order_ids, out);
     }
 
+    #[inline]
     pub fn decode(input: &[u8]) -> Result<(Self, usize), SpecError> {
         let (user, mut off) = UserRefV0::decode(input)?;
         let base_size = u64::from_le_bytes(take_array::<8>(input, off)?);
@@ -126,6 +170,14 @@ impl UserBalanceChange {
 /// one was culled because what was left of it fell under the market's minimum.
 /// Both unwind the maker's aggregates, but only this one carries a size to
 /// release.
+#[cfg_attr(
+    feature = "anchor-derive",
+    derive(anchor_lang::AnchorSerialize, anchor_lang::AnchorDeserialize)
+)]
+#[cfg_attr(
+    feature = "wincode-derive",
+    derive(wincode::SchemaRead, wincode::SchemaWrite)
+)]
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
 pub struct CancelledRemainderV0 {
     pub user: UserRefV0,
@@ -136,12 +188,14 @@ pub struct CancelledRemainderV0 {
 impl CancelledRemainderV0 {
     pub const SIZE: usize = UserRefV0::SIZE + 16;
 
+    #[inline]
     pub fn encode(&self, out: &mut Vec<u8>) {
         self.user.encode(out);
         out.extend_from_slice(&self.order_id.to_le_bytes());
         out.extend_from_slice(&self.base_asset_amount.to_le_bytes());
     }
 
+    #[inline]
     pub fn decode(input: &[u8]) -> Result<(Self, usize), SpecError> {
         let (user, mut off) = UserRefV0::decode(input)?;
         let order_id = u64::from_le_bytes(take_array::<8>(input, off)?);
@@ -160,6 +214,14 @@ impl CancelledRemainderV0 {
 
 /// What `execute_v0` returns: every balance change the fill produced, and
 /// every sub-min remainder it removed on the way.
+#[cfg_attr(
+    feature = "anchor-derive",
+    derive(anchor_lang::AnchorSerialize, anchor_lang::AnchorDeserialize)
+)]
+#[cfg_attr(
+    feature = "wincode-derive",
+    derive(wincode::SchemaRead, wincode::SchemaWrite)
+)]
 #[derive(Clone, PartialEq, Eq, Debug, Default)]
 pub struct ExecuteResponseV0 {
     pub balance_changes: Vec<UserBalanceChange>,
@@ -167,6 +229,7 @@ pub struct ExecuteResponseV0 {
 }
 
 impl ExecuteResponseV0 {
+    #[inline]
     pub fn encode(&self, out: &mut Vec<u8>) {
         out.extend_from_slice(&(self.balance_changes.len() as u32).to_le_bytes());
         for change in &self.balance_changes {
@@ -181,6 +244,7 @@ impl ExecuteResponseV0 {
     /// Decode a whole response, returning it with the number of bytes read.
     /// Trailing bytes are the caller's business — velocity's response region
     /// is a fixed window that is not fully written.
+    #[inline]
     pub fn decode(input: &[u8]) -> Result<(Self, usize), SpecError> {
         let mut off = 0usize;
         let count = u32::from_le_bytes(take_array::<4>(input, off)?) as usize;
@@ -261,7 +325,7 @@ mod tests {
             balance_changes: vec![
                 UserBalanceChange {
                     user: UserRefV0 {
-                        authority: [7u8; 32],
+                        authority: Pubkey::new_from_array([7u8; 32]),
                         sub_account_id: 3,
                     },
                     base_size: 1_000_000_000,
@@ -270,7 +334,7 @@ mod tests {
                 },
                 UserBalanceChange {
                     user: UserRefV0 {
-                        authority: [8u8; 32],
+                        authority: Pubkey::new_from_array([8u8; 32]),
                         sub_account_id: 0,
                     },
                     base_size: 5,
@@ -280,7 +344,7 @@ mod tests {
             ],
             cancelled: vec![CancelledRemainderV0 {
                 user: UserRefV0 {
-                    authority: [9u8; 32],
+                    authority: Pubkey::new_from_array([9u8; 32]),
                     sub_account_id: 1,
                 },
                 order_id: 42,
@@ -314,7 +378,7 @@ mod tests {
     fn layout_is_pinned() {
         let change = UserBalanceChange {
             user: UserRefV0 {
-                authority: [1u8; 32],
+                authority: Pubkey::new_from_array([1u8; 32]),
                 sub_account_id: 0x0201,
             },
             base_size: 0x0807_0605_0403_0201,

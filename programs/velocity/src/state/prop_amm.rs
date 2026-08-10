@@ -224,21 +224,15 @@ impl Direction {
 /// data the reader can't load). Velocity resolves refs against its loaded
 /// users by field match, never by PDA derivation, so the hot path pays
 /// nothing for this.
-#[derive(Clone, Copy, AnchorSerialize, AnchorDeserialize, PartialEq, Eq, Debug, Default)]
-pub struct ClobUserRefV0 {
-    pub authority: Pubkey,
-    pub sub_account_id: u16,
-}
-
-impl ClobUserRefV0 {
-    pub const ZERO: Self = Self {
-        authority: Pubkey::new_from_array([0u8; 32]),
-        sub_account_id: 0,
-    };
-}
+///
+/// Declared by `quoter-spec`, which every program on this wire compiles
+/// against; `Pubkey` and the v2 programs' `Address` are the same type, so the
+/// declaration needs no per-program restatement. The alias keeps velocity's
+/// name for it.
+pub type ClobUserRefV0 = quoter_spec::UserRefV0;
 
 /// Borsh width of a [`ClobUserRefV0`].
-pub const CLOB_USER_REF_BYTES: usize = 34;
+pub const CLOB_USER_REF_BYTES: usize = quoter_spec::UserRefV0::SIZE;
 const_assert_eq!(std::mem::size_of::<ClobUserRefV0>(), CLOB_USER_REF_BYTES);
 
 /// Capacity of [`QuoterUserSetV0`].
@@ -438,15 +432,6 @@ impl AnchorSerialize for ExecuteArgsV0<'_> {
     }
 }
 
-#[derive(Clone, AnchorSerialize, AnchorDeserialize, PartialEq, Eq, Debug)]
-pub struct ExecuteResponseV0 {
-    pub balance_changes: Vec<UserBalanceChange>,
-    /// Sub-min remainders the quoter removed with this fill; velocity
-    /// decrements the maker's open-order aggregates (that maker was just
-    /// filled, so their `User` is loaded).
-    pub cancelled: Vec<CancelledRemainderV0>,
-}
-
 /// One order a CLOB removed as a sub-min remainder of a fill.
 ///
 /// **`base_asset_amount` and the completed-order ids beside it are taken on
@@ -473,12 +458,8 @@ pub struct ExecuteResponseV0 {
 /// is what would turn this into a real exposure. At that point these amounts
 /// must be checked against `clob_resting_prefix`, read before execute
 /// consumes the nodes, and the same check owed to the removal cranks.
-#[derive(Clone, Copy, AnchorSerialize, AnchorDeserialize, PartialEq, Eq, Debug)]
-pub struct CancelledRemainderV0 {
-    pub user: ClobUserRefV0,
-    pub order_id: u64,
-    pub base_asset_amount: u64,
-}
+pub use quoter_spec::CancelledRemainderV0;
+pub use quoter_spec::ExecuteResponseV0;
 
 /// The CLOB's book side, as encoded on its wire (borsh enum tag).
 #[derive(Clone, Copy, AnchorSerialize, AnchorDeserialize, PartialEq, Eq, Debug)]
@@ -1212,26 +1193,7 @@ impl ExternalQuoterExecutor for NoExternalQuoters {
     }
 }
 
-#[derive(Clone, AnchorSerialize, AnchorDeserialize, PartialEq, Eq, Debug)]
-pub struct UserBalanceChange {
-    /// The user the change applies to, in derivable form; velocity resolves
-    /// it against its loaded users.
-    pub user: ClobUserRefV0,
-    /// Will be subtracted if direction was long (taker is taking base from
-    /// this user). Will be added if direction was short (taker is adding base
-    /// to this user).
-    pub base_size: u64,
-    /// Will be added if direction was long (taker is paying quote to this
-    /// user). Will be subtracted if direction was short (taker is taking
-    /// quote from this user).
-    pub quote_size: u64,
-    /// Resting orders of this user the fill fully consumed (and the quoter
-    /// removed), by id. Velocity decrements the user's open-order count by
-    /// the length and releases any placed trigger slot shadowing one of
-    /// these ids; sub-min culls ride the separate `cancelled` vec because
-    /// their remainders also need unwinding.
-    pub completed_order_ids: Vec<u64>,
-}
+pub use quoter_spec::UserBalanceChange;
 
 impl QuoterV0 {
     /// This entry really is the CLOB serving `market_index`, and `book` is one

@@ -100,18 +100,7 @@ pub struct CancelAllOutcomeV0 {
 /// A velocity user in its derivable form — see the CLOB's `UserRefV0` for
 /// why identity is stored as `(authority, sub_account_id)` rather than the
 /// `User` account key.
-#[derive(Clone, Copy, PartialEq, Eq, Debug, wincode::SchemaRead, wincode::SchemaWrite)]
-pub struct UserRefV0 {
-    pub authority: Address,
-    pub sub_account_id: u16,
-}
-
-impl UserRefV0 {
-    pub const ZERO: Self = Self {
-        authority: ZERO_ADDRESS,
-        sub_account_id: 0,
-    };
-}
+pub use quoter_spec::UserRefV0;
 
 /// Capacity of [`UserSetV0`] — see the CLOB's `USER_SET_CAPACITY` for where
 /// the number comes from. Every program on the quoter wire must agree on it.
@@ -161,6 +150,10 @@ pub struct PriceLevel {
     pub size: u64,
 }
 
+/// Sub-min cancelled remainder — wire compatibility with the quoter
+/// interface; the midpoint never emits one (spline intent has no orders to
+/// cancel, a dusty level is simply not quoted).
+pub use quoter_spec::CancelledRemainderV0;
 /// One user's share of an executed fill. Mirrors velocity's quoter-interface
 /// `UserBalanceChange`; the midpoint always has exactly one (the quoted
 /// user) and never completes orders (the ladder has none).
@@ -168,23 +161,7 @@ pub struct PriceLevel {
 /// This is the wire *definition* — the program writes the same bytes field by
 /// field (see [`MidpointQuoterV0::write_execute_response`]) rather than
 /// building one of these, and a unit test pins the two encodings equal.
-#[derive(Clone, PartialEq, Eq, Debug, wincode::SchemaRead, wincode::SchemaWrite)]
-pub struct UserBalanceChange {
-    pub user: UserRefV0,
-    pub base_size: u64,
-    pub quote_size: u64,
-    pub completed_order_ids: Vec<u64>,
-}
-
-/// Sub-min cancelled remainder — wire compatibility with the quoter
-/// interface; the midpoint never emits one (spline intent has no orders to
-/// cancel, a dusty level is simply not quoted).
-#[derive(Clone, Copy, PartialEq, Eq, Debug, wincode::SchemaRead, wincode::SchemaWrite)]
-pub struct CancelledRemainderV0 {
-    pub user: UserRefV0,
-    pub order_id: u64,
-    pub base_asset_amount: u64,
-}
+pub use quoter_spec::UserBalanceChange;
 
 /// Where in the quoter account the borsh response was written. Returned via
 /// return data by `quote_v0`/`execute_v0`.
@@ -202,11 +179,7 @@ pub struct QuoteResponseV0 {
     pub levels: Vec<PriceLevel>,
 }
 
-#[derive(Clone, wincode::SchemaRead, wincode::SchemaWrite)]
-pub struct ExecuteResponseV0 {
-    pub balance_changes: Vec<UserBalanceChange>,
-    pub cancelled: Vec<CancelledRemainderV0>,
-}
+pub use quoter_spec::ExecuteResponseV0;
 
 /// One rung of the spline: standing intent `size` at `mid ± offset`, with
 /// `filled` tracking what executes have consumed since the side was written.
@@ -899,24 +872,20 @@ mod tests {
         bytes
     }
 
-    /// The tests here pin the written bytes against *this program's* schema.
-    /// This pins that schema against `quoter-spec`, the one declaration of the
-    /// layout every program on the wire shares — velocity decodes to it and
-    /// the CLOB writes to it. The midpoint always emits exactly one change and
-    /// never completes an order, so the empty vecs it always sends are part of
-    /// what has to match.
+    /// The tests here pin the written bytes against wincode's encoding of the
+    /// wire structs, which are now `quoter-spec`'s own — so this pins wincode's
+    /// derive against the spec's reference codec. The midpoint always emits
+    /// exactly one change and never completes an order, so the empty vecs it
+    /// always sends are part of what has to match.
     #[test]
-    fn the_wire_struct_is_the_quoter_spec_layout() {
+    fn wincode_matches_the_reference_codec() {
         let quoter = quoter(&[], &[]);
-        let local = reference_execute(&quoter, Some((1_000_000_000, 101_000_000)));
+        let from_wincode = reference_execute(&quoter, Some((1_000_000_000, 101_000_000)));
 
         let mut from_spec = Vec::new();
-        quoter_spec::ExecuteResponseV0 {
-            balance_changes: vec![quoter_spec::UserBalanceChange {
-                user: quoter_spec::UserRefV0 {
-                    authority: quoter.user_ref().authority.to_bytes(),
-                    sub_account_id: quoter.user_ref().sub_account_id,
-                },
+        ExecuteResponseV0 {
+            balance_changes: vec![UserBalanceChange {
+                user: quoter.user_ref(),
                 base_size: 1_000_000_000,
                 quote_size: 101_000_000,
                 completed_order_ids: Vec::new(),
@@ -925,7 +894,7 @@ mod tests {
         }
         .encode(&mut from_spec);
 
-        assert_eq!(local, from_spec);
+        assert_eq!(from_wincode, from_spec);
     }
 
     fn written(quoter: &MidpointQuoterV0, pointer: ResponsePointerV0) -> Vec<u8> {

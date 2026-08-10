@@ -2232,6 +2232,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "quoter-spec"
+version = "0.1.0"
+dependencies = [
+ "anchor-lang",
+ "solana-address 2.7.0",
+]
+
+[[package]]
 name = "r-efi"
 version = "5.3.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4666,6 +4674,7 @@ dependencies = [
  "num-traits",
  "pyth-client",
  "pyth_lazer",
+ "quoter-spec",
  "relay-anchor",
  "relay-spec",
  "solana-program",

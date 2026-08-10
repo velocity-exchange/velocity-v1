@@ -34,7 +34,7 @@ pub const COUNT_BYTES: usize = core::mem::size_of::<u32>();
 /// Borsh width of a [`UserRefV0`]: 32-byte authority + u16 sub-account. The
 /// response encoder compares and writes users in this form, so the constant
 /// is the single definition of that width.
-pub const USER_REF_BYTES: usize = core::mem::size_of::<Address>() + core::mem::size_of::<u16>();
+pub const USER_REF_BYTES: usize = quoter_spec::UserRefV0::SIZE;
 
 /// Borsh width of a [`PriceLevel`].
 pub const PRICE_LEVEL_BYTES: usize = 2 * core::mem::size_of::<u64>();
@@ -371,27 +371,7 @@ pub struct OrderRefV0 {
 /// user-derived account from the node alone, where a stored `User` key is a
 /// dead end (its authority lives inside account data the reader can't
 /// load).
-#[derive(Clone, Copy, PartialEq, Eq, Debug, wincode::SchemaRead, wincode::SchemaWrite)]
-pub struct UserRefV0 {
-    pub authority: Address,
-    pub sub_account_id: u16,
-}
-
-impl UserRefV0 {
-    pub const ZERO: Self = Self {
-        authority: ZERO_ADDRESS,
-        sub_account_id: 0,
-    };
-
-    /// The user's borsh encoding, for comparing against and writing into the
-    /// response region without a heap round-trip.
-    pub fn to_bytes(self) -> [u8; USER_REF_BYTES] {
-        let mut bytes = [0u8; USER_REF_BYTES];
-        bytes[..32].copy_from_slice(&self.authority.to_bytes());
-        bytes[32..].copy_from_slice(&self.sub_account_id.to_le_bytes());
-        bytes
-    }
-}
+pub use quoter_spec::UserRefV0;
 
 /// Capacity of [`UserSetV0`]. Mirrors velocity's `MAX_QUOTER_WIRE_USERS`,
 /// which is derived from the account-lock budget of the transaction that
@@ -464,18 +444,7 @@ pub struct PriceLevel {
 /// (see [`crate::response`]) rather than serializing this struct — the type
 /// remains the schema of record for that layout, and the response unit
 /// tests pin the two against each other.
-#[derive(Clone, PartialEq, Eq, Debug, wincode::SchemaRead, wincode::SchemaWrite)]
-pub struct UserBalanceChange {
-    pub user: UserRefV0,
-    pub base_size: u64,
-    pub quote_size: u64,
-    /// Orders of this user fully consumed (and removed) by the fill, by id.
-    /// The caller decrements the user's open-order count by the length, and
-    /// the ids let it release per-order state it keeps against the book (a
-    /// placed trigger slot). Sub-min culls ride the separate `cancelled` vec
-    /// because their remainders also need unwinding.
-    pub completed_order_ids: Vec<u64>,
-}
+pub use quoter_spec::UserBalanceChange;
 
 /// Where in the market account the borsh response was written. Returned via
 /// return data by `quote_v0`/`execute_v0`.
@@ -491,13 +460,7 @@ pub struct QuoteResponseV0 {
     pub levels: Vec<PriceLevel>,
 }
 
-#[derive(Clone, wincode::SchemaRead, wincode::SchemaWrite)]
-pub struct ExecuteResponseV0 {
-    pub balance_changes: Vec<UserBalanceChange>,
-    /// Sub-min remainders removed by this execute (see
-    /// [`CancelledRemainderV0`]).
-    pub cancelled: Vec<CancelledRemainderV0>,
-}
+pub use quoter_spec::ExecuteResponseV0;
 
 /// Which sides a `cancel_all_v0` withdraws. Named sides rather than a pair of
 /// bools so the wire cannot express "neither", which is a maker believing
@@ -617,12 +580,7 @@ pub struct RemovedOrderV0 {
 /// A sub-`min_order_size` remainder culled during execute, on the wire so
 /// velocity decrements the maker's aggregates (the maker was just filled,
 /// so their `User` is always in the loaded set).
-#[derive(Clone, Copy, PartialEq, Eq, Debug, wincode::SchemaRead, wincode::SchemaWrite)]
-pub struct CancelledRemainderV0 {
-    pub user: UserRefV0,
-    pub order_id: u64,
-    pub base_asset_amount: u64,
-}
+pub use quoter_spec::CancelledRemainderV0;
 
 /// `activation_slot` is computed by the instruction handler: placement slot
 /// plus the default delay, or a chosen delay clamped to

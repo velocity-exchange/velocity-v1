@@ -22,12 +22,14 @@ anchor-lang-v2 = { git = "https://github.com/otter-sec/anchor.git", rev = "4fbe6
 bytemuck = { version = "1", features = ["derive", "min_const_generics"] }
 static_assertions = "1.1.0"
 wincode = { version = "0.5", features = ["derive"] }
+# Declares the quoter wire types this program writes. `wincode-derive` gives
+# them the same derives the rest of this program's wire structs use, and adds
+# no borsh dependency.
+quoter-spec = { path = "../../../crates/quoter-spec", features = [
+    "wincode-derive",
+] }
 
 [dev-dependencies]
-# Test-only: the conformance check that this program's hand-written response
-# bytes are the layout `quoter-spec` declares. Deliberately not a runtime
-# dependency — the writer stays hand-rolled and the SBF binary is unchanged.
-quoter-spec = { path = "../../../crates/quoter-spec" }
 # `testing` adds the stack-backed AccountBuffer the src/tests/ unit tests
 # build a real ClobMarketV0 over. Dev-only: with resolver 2 the feature is
 # not enabled for the SBF build of the program itself.

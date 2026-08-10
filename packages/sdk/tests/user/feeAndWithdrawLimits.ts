@@ -7,6 +7,7 @@ import {
 	ReferrerStatus,
 	UserStatsAccount,
 	SPOT_MARKET_BALANCE_PRECISION,
+	QUOTE_PRECISION,
 } from '../../src';
 import { assert } from '../../src/assert/assert';
 import { mockPerpMarkets, mockSpotMarkets } from '../dlob/helpers';
@@ -238,16 +239,47 @@ describe('User fee calculation', () => {
 	});
 });
 
+// Shipped quote-market (USDT, index 0) config from
+// deploy-scripts/params/relaunch-spot-markets.json.
+// The guard threshold is capped on chain at $10k of notional by
+// MAX_WITHDRAW_GUARD_THRESHOLD_NOTIONAL, so 9_500 USDT is near the ceiling. The
+// per-account eligibility allowance is a tenth of it, 950 USDT.
+const GUARD_THRESHOLD = new BN(9_500).mul(QUOTE_PRECISION);
+// A 500_000 USDT market. The default 2500 bps breaker floors deposits at
+// 375_000 USDT, so the market cannot fall below that without an exception.
+const DEPOSIT_TWAP = new BN(500_000).mul(QUOTE_PRECISION);
+const BREAKER_FLOOR = new BN(375_000).mul(QUOTE_PRECISION);
+// 6 decimals and cumulative interest at precision, so this is the token amount
+// to scaled balance ratio.
+const BALANCE_PER_TOKEN = SPOT_MARKET_BALANCE_PRECISION.div(QUOTE_PRECISION);
+
 describe('User canBypassWithdrawLimits', () => {
-	async function makeWithdrawMockUser(cumulativeDeposits: BN): Promise<User> {
+	/**
+	 * Builds a 100 USDT depositor in a market whose withdraw circuit breaker is
+	 * already at its floor. `marketDepositTokens` is the market's current deposit
+	 * token amount, which sets how much of the shared exception budget is left.
+	 */
+	async function makeWithdrawMockUser(
+		cumulativeDeposits: BN,
+		marketDepositTokens: BN = BREAKER_FLOOR
+	): Promise<User> {
 		const myMockPerpMarkets = _.cloneDeep(mockPerpMarkets);
 		const myMockSpotMarkets = _.cloneDeep(mockSpotMarkets);
 		const myMockUserAccount = _.cloneDeep(baseMockUserAccount);
 
-		// generous withdraw guard threshold so canBypass isn't gated on deposit size
-		myMockSpotMarkets[0].withdrawGuardThreshold = new BN(100_000).mul(
-			SPOT_MARKET_BALANCE_PRECISION
-		);
+		// The realistic shipped threshold. The user's 100 USDT deposit is under
+		// the 950 USDT per-account allowance, so canBypass still fires.
+		myMockSpotMarkets[0].withdrawGuardThreshold = GUARD_THRESHOLD;
+		myMockSpotMarkets[0].depositTokenTwap = DEPOSIT_TWAP;
+		myMockSpotMarkets[0].depositBalance =
+			marketDepositTokens.mul(BALANCE_PER_TOKEN);
+		myMockSpotMarkets[0].borrowBalance = ZERO;
+		myMockSpotMarkets[0].withdrawCircuitBreakerBps = 2_500;
+		// The SDK projects a live TWAP from lastTwapTs to now. A fresh timestamp
+		// makes the projected TWAP equal the stored one, so the breaker floor is
+		// the stored TWAP's floor. A stale timestamp would collapse the projected
+		// TWAP onto the current deposit amount and the breaker would never bind.
+		myMockSpotMarkets[0].lastTwapTs = new BN(Math.floor(Date.now() / 1000));
 
 		myMockUserAccount.totalDeposits = new BN(1000).mul(
 			SPOT_MARKET_BALANCE_PRECISION
@@ -270,8 +302,12 @@ describe('User canBypassWithdrawLimits', () => {
 
 	it('can bypass when net deposits and cumulative deposits are both non-negative', async () => {
 		const user = await makeWithdrawMockUser(new BN(100));
-		const { canBypass } = user.canBypassWithdrawLimits(0);
+		const { canBypass, depositAmount, maxDepositAmount } =
+			user.canBypassWithdrawLimits(0);
 		assert(canBypass, 'expected canBypass to be true');
+		// 100 USDT held against a 950 USDT allowance.
+		assert(depositAmount.eq(new BN(100).mul(QUOTE_PRECISION)));
+		assert(maxDepositAmount.eq(new BN(950).mul(QUOTE_PRECISION)));
 	});
 
 	it('cannot bypass when cumulative deposits on the position are negative', async () => {
@@ -281,5 +317,64 @@ describe('User canBypassWithdrawLimits', () => {
 			!canBypass,
 			'expected canBypass to be false with negative cumulativeDeposits'
 		);
+	});
+
+	it('bypasses the breaker in full while the shared exception budget is untouched', async () => {
+		// The market sits on the breaker floor, so the full 9_500 USDT budget is
+		// available. The 100 USDT depositor exits in full.
+		const user = await makeWithdrawMockUser(new BN(100));
+		const { canBypass, depositAmount } = user.canBypassWithdrawLimits(0);
+		assert(canBypass);
+
+		const limit = user.getWithdrawalLimit(0, true);
+		assert(
+			limit.eq(depositAmount),
+			`expected full exit of ${depositAmount.toString()}, got ${limit.toString()}`
+		);
+	});
+
+	it('caps the bypass at the room left in the shared exception budget', async () => {
+		// Other eligible accounts already took 9_450 USDT of the 9_500 USDT
+		// budget. Only about 50 USDT is left, so the 100 USDT depositor cannot
+		// exit in full even though it is still eligible.
+		const spent = new BN(9_450).mul(QUOTE_PRECISION);
+		const user = await makeWithdrawMockUser(
+			new BN(100),
+			BREAKER_FLOOR.sub(spent)
+		);
+		const { canBypass, depositAmount } = user.canBypassWithdrawLimits(0);
+		assert(canBypass, 'the account is still eligible');
+
+		const limit = user.getWithdrawalLimit(0, true);
+		assert(
+			limit.lt(depositAmount),
+			`expected less than the ${depositAmount.toString()} deposit, got ${limit.toString()}`
+		);
+		// About 50 USDT. The live TWAP projection can drift by a second between
+		// building the fixture and reading the limit, which moves the floor by
+		// about 1.5 USDT, so allow a small band.
+		const expected = new BN(50).mul(QUOTE_PRECISION);
+		const tolerance = new BN(3).mul(QUOTE_PRECISION);
+		assert(
+			limit.sub(expected).abs().lte(tolerance),
+			`expected about ${expected.toString()}, got ${limit.toString()}`
+		);
+	});
+
+	it('grants nothing once the shared exception budget is spent', async () => {
+		// The cohort already took 9_600 USDT, more than one guard threshold below
+		// the breaker floor. The budget is gone. `canBypass` is still true, which
+		// is exactly why it must not be read as a promise of a successful
+		// withdrawal: on chain this account would revert with DailyWithdrawLimit.
+		const spent = new BN(9_600).mul(QUOTE_PRECISION);
+		const user = await makeWithdrawMockUser(
+			new BN(100),
+			BREAKER_FLOOR.sub(spent)
+		);
+		const { canBypass } = user.canBypassWithdrawLimits(0);
+		assert(canBypass, 'the account is still eligible');
+
+		const limit = user.getWithdrawalLimit(0, true);
+		assert(limit.eq(ZERO), `expected 0, got ${limit.toString()}`);
 	});
 });

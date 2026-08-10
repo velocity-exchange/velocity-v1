@@ -909,12 +909,18 @@ fn check_fee_collection() {
     assert_eq!(spot_market.borrow_balance, 125000001);
     assert_eq!(spot_market.utilization_twap, 0);
 
+    // This is a $1 market with `if_fee_factor = 1000`, so the IF's 0.1% cut of 100 seconds of
+    // lending gain converts to zero tokens. The whole interval is therefore deferred — clock
+    // unmoved, nothing added to either cumulative index — rather than committed with the cut
+    // silently dropped (finding #127). Same for the 7500-second crank below; the cut only
+    // clears a token once the un-stamped span reaches hours, which is what the third crank
+    // settles. TWAP stats still advance on every call.
     update_spot_market_cumulative_interest(&mut spot_market, None, now + 100, false).unwrap();
 
     assert_eq!(spot_market.revenue_pool.scaled_balance, 0);
-    assert_eq!(spot_market.cumulative_deposit_interest, 10000019799);
-    assert_eq!(spot_market.cumulative_borrow_interest, 10000158551);
-    assert_eq!(spot_market.last_interest_ts, 100);
+    assert_eq!(spot_market.cumulative_deposit_interest, 10000000000);
+    assert_eq!(spot_market.cumulative_borrow_interest, 10000000000);
+    assert_eq!(spot_market.last_interest_ts, 0);
     assert_eq!(spot_market.last_twap_ts, 100);
     assert_eq!(spot_market.utilization_twap, 143);
 
@@ -937,18 +943,18 @@ fn check_fee_collection() {
     )
     .unwrap();
 
-    assert_eq!(deposit_tokens_1, 1000001);
-    assert_eq!(borrow_tokens_1, 125002);
+    assert_eq!(deposit_tokens_1, 1000000);
+    assert_eq!(borrow_tokens_1, 125001);
     assert_eq!(if_tokens_1, 0);
 
     update_spot_market_cumulative_interest(&mut spot_market, None, now + 7500, false).unwrap();
 
-    assert_eq!(spot_market.last_interest_ts, 7500);
+    assert_eq!(spot_market.last_interest_ts, 0);
     assert_eq!(spot_market.last_twap_ts, 7500);
-    assert_eq!(spot_market.utilization_twap, 10846);
+    assert_eq!(spot_market.utilization_twap, 10835);
 
-    assert_eq!(spot_market.cumulative_deposit_interest, 10001484937);
-    assert_eq!(spot_market.cumulative_borrow_interest, 10011891454);
+    assert_eq!(spot_market.cumulative_deposit_interest, 10000000000);
+    assert_eq!(spot_market.cumulative_borrow_interest, 10000000000);
     assert_eq!(spot_market.revenue_pool.scaled_balance, 0);
 
     let deposit_tokens_2 = get_token_amount(
@@ -970,8 +976,8 @@ fn check_fee_collection() {
     )
     .unwrap();
 
-    assert_eq!(deposit_tokens_2, 1000148);
-    assert_eq!(borrow_tokens_2, 125149);
+    assert_eq!(deposit_tokens_2, 1000000);
+    assert_eq!(borrow_tokens_2, 125001);
     assert_eq!(if_tokens_2, 0);
 
     //assert >=0
@@ -990,9 +996,9 @@ fn check_fee_collection() {
 
     now = now + 750 + (60 * 60 * 24 * 365);
 
-    assert_eq!(spot_market.cumulative_deposit_interest, 16257818378);
-    assert_eq!(spot_market.cumulative_borrow_interest, 60112684636);
-    assert_eq!(spot_market.revenue_pool.scaled_balance, 385045);
+    assert_eq!(spot_market.cumulative_deposit_interest, 16243948443);
+    assert_eq!(spot_market.cumulative_borrow_interest, 60001589127);
+    assert_eq!(spot_market.revenue_pool.scaled_balance, 384758);
 
     let deposit_tokens_3 = get_token_amount(
         spot_market.deposit_balance,
@@ -1013,23 +1019,23 @@ fn check_fee_collection() {
     )
     .unwrap();
 
-    assert_eq!(deposit_tokens_3, 1626407);
-    assert_eq!(borrow_tokens_3, 751409);
-    assert_eq!(if_tokens_3, 2315);
+    assert_eq!(deposit_tokens_3, 1625019);
+    assert_eq!(borrow_tokens_3, 750020);
+    assert_eq!(if_tokens_3, 2309);
 
-    assert_eq!((borrow_tokens_3 - borrow_tokens_2), 626260);
-    assert_eq!((deposit_tokens_3 - deposit_tokens_2), 626259);
-    assert_eq!(deposit_tokens_3 - borrow_tokens_3, 874998);
+    assert_eq!((borrow_tokens_3 - borrow_tokens_2), 625019);
+    assert_eq!((deposit_tokens_3 - deposit_tokens_2), 625019);
+    assert_eq!(deposit_tokens_3 - borrow_tokens_3, 874999);
 
     // assert >= 0
     assert_eq!(
         (borrow_tokens_3 - borrow_tokens_2) - (deposit_tokens_3 - deposit_tokens_2),
-        1
+        0
     );
 
     // settle IF pool to 100% utilization boundary
-    assert_eq!(spot_market.revenue_pool.scaled_balance, 385045);
-    assert_eq!(spot_market.utilization_twap, 462004);
+    assert_eq!(spot_market.revenue_pool.scaled_balance, 384758);
+    assert_eq!(spot_market.utilization_twap, 461544);
     spot_market.insurance_fund.revenue_settle_period = 1;
 
     let settle_amount = settle_revenue_to_insurance_fund(
@@ -1042,14 +1048,14 @@ fn check_fee_collection() {
     )
     .unwrap();
 
-    assert_eq!(settle_amount, 626);
+    assert_eq!(settle_amount, 624);
     assert_eq!(spot_market.insurance_fund.user_shares, 0);
     // no-staker bootstrap: total_shares is seeded 1:1 with the IF vault balance
     // (protocol-owned backstop, share price ~1) so the first staker isn't griefed.
-    assert_eq!(spot_market.insurance_fund.total_shares, 2941);
-    assert_eq!(if_tokens_3 - (settle_amount as u128), 1689);
+    assert_eq!(spot_market.insurance_fund.total_shares, 2933);
+    assert_eq!(if_tokens_3 - (settle_amount as u128), 1685);
     assert_eq!(spot_market.revenue_pool.scaled_balance, 0);
-    assert_eq!(spot_market.utilization_twap, 462005);
+    assert_eq!(spot_market.utilization_twap, 461545);
 
     let deposit_tokens_4 = get_token_amount(
         spot_market.deposit_balance,
@@ -1070,22 +1076,22 @@ fn check_fee_collection() {
     )
     .unwrap();
 
-    assert_eq!(spot_market.borrow_token_twap, 751409);
-    assert_eq!(spot_market.deposit_token_twap, 1626407);
+    assert_eq!(spot_market.borrow_token_twap, 750020);
+    assert_eq!(spot_market.deposit_token_twap, 1625019);
     assert_eq!(
         spot_market.borrow_token_twap * (SPOT_UTILIZATION_PRECISION as u64)
             / spot_market.deposit_token_twap,
-        462005
+        461545
     ); // 46.2%
 
-    assert_eq!(spot_market.utilization_twap, 462005); // 46.2%
+    assert_eq!(spot_market.utilization_twap, 461545); // 46.2%
     assert_eq!(
         borrow_tokens_4 * SPOT_UTILIZATION_PRECISION / deposit_tokens_4,
-        462191
+        461722
     ); // 46.2%
     assert_eq!(SPOT_UTILIZATION_PRECISION, 1000000); // 100%
 
-    assert_eq!(deposit_tokens_4 - borrow_tokens_4, 874373);
+    assert_eq!(deposit_tokens_4 - borrow_tokens_4, 874374);
     assert_eq!(if_tokens_4, 0);
 
     // one more day later, twap update
@@ -1118,18 +1124,18 @@ fn check_fee_collection() {
 
     assert_eq!(deposit_tokens_5 - borrow_tokens_5, 874373);
 
-    assert_eq!(spot_market.borrow_token_twap, 789495);
-    assert_eq!(spot_market.deposit_token_twap, 1663868);
+    assert_eq!(spot_market.borrow_token_twap, 787996);
+    assert_eq!(spot_market.deposit_token_twap, 1662369);
 
     assert_eq!(
         spot_market.borrow_token_twap * (SPOT_UTILIZATION_PRECISION as u64)
             / spot_market.deposit_token_twap,
-        474493
+        474019
     ); // 47.4%
-    assert_eq!(spot_market.utilization_twap, 474493); // 47.4%
+    assert_eq!(spot_market.utilization_twap, 474019); // 47.4%
     assert_eq!(
         borrow_tokens_5 * SPOT_UTILIZATION_PRECISION / deposit_tokens_5,
-        474494
+        474020
     ); // 47.4%
     assert_eq!(SPOT_UTILIZATION_PRECISION, 1000000); // 100%
 
@@ -1155,11 +1161,16 @@ fn check_fee_collection() {
     )
     .unwrap();
 
-    assert_eq!(deposit_tokens_6 - borrow_tokens_6, 874176);
-    assert_eq!(deposit_tokens_6, 2249289191);
-    assert_eq!(borrow_tokens_6, 2248415015);
-    assert_eq!(spot_market.deposit_token_twap, 2249289190);
-    assert_eq!(spot_market.borrow_token_twap, 2248415014);
+    // The deposit-minus-borrow gap barely moves across a 150-year single crank (874373 -> 874372).
+    // Before the conservation clamp in `calculate_accumulated_interest` it eroded by ~200 tokens
+    // over this one call: utilization is sampled once from rounded token amounts and applied
+    // across the whole span, so the sub-token overstatement got multiplied by the interval's
+    // rate factor into whole tokens of deposit credit no borrower paid for.
+    assert_eq!(deposit_tokens_6 - borrow_tokens_6, 874372);
+    assert_eq!(deposit_tokens_6, 2242779388);
+    assert_eq!(borrow_tokens_6, 2241905016);
+    assert_eq!(spot_market.deposit_token_twap, 2242779387);
+    assert_eq!(spot_market.borrow_token_twap, 2241905015);
 }
 
 #[test]
@@ -2169,6 +2180,334 @@ fn lending_interest_carveout_three_way_split() {
     // both pools are Deposit-type subsets counted inside deposit_balance:
     // the combined corruption tripwire must accept the post-accrual state
     crate::math::spot_withdraw::validate_spot_balances(&spot_market).unwrap();
+}
+
+/// A market shaped like `lending_interest_carveout_three_way_split`'s, sized so a one-hour
+/// accrual comfortably clears every rounding floor. Used by the two `last_interest_ts`
+/// regression tests below; `borrow_balance` is set per-case.
+fn interest_test_market() -> SpotMarket {
+    SpotMarket {
+        market_index: 0,
+        oracle_source: OracleSource::QuoteAsset,
+        cumulative_deposit_interest: SPOT_CUMULATIVE_INTEREST_PRECISION,
+        cumulative_borrow_interest: SPOT_CUMULATIVE_INTEREST_PRECISION,
+        decimals: 6,
+        initial_asset_weight: SPOT_WEIGHT_PRECISION,
+        maintenance_asset_weight: SPOT_WEIGHT_PRECISION,
+        deposit_balance: 1000 * SPOT_BALANCE_PRECISION,
+        borrow_balance: 0,
+        deposit_token_twap: 1000 * QUOTE_PRECISION_U64,
+        optimal_utilization: SPOT_UTILIZATION_PRECISION_U32 / 2,
+        optimal_borrow_rate: SPOT_RATE_PRECISION_U32 / 10, // 10% APR at optimal
+        max_borrow_rate: SPOT_RATE_PRECISION_U32,
+        status: MarketStatus::Active,
+        ..SpotMarket::default()
+    }
+}
+
+/// finding #117: a zero-borrow epoch must not stay on `last_interest_ts`. While utilization is
+/// zero no interest is owed, but the interval was left on the clock, so the first accrual after
+/// a borrow appeared billed that whole epoch at the newly non-zero rate. Any lender could farm
+/// it: deposit into an idle market, wait for the first borrower, crank, collect.
+#[test]
+fn idle_zero_utilization_epoch_is_not_billed_to_the_first_borrower() {
+    const THIRTY_DAYS: i64 = 60 * 60 * 24 * 30;
+    const ONE_HOUR_SECS: i64 = 3600;
+
+    let base = interest_test_market();
+
+    // 30 days pass with deposits but no borrows.
+    let mut idled = base;
+    update_spot_market_cumulative_interest(&mut idled, None, THIRTY_DAYS, false).unwrap();
+
+    // Nothing accrued (nothing was owed) ...
+    assert_eq!(
+        idled.cumulative_borrow_interest,
+        SPOT_CUMULATIVE_INTEREST_PRECISION
+    );
+    assert_eq!(
+        idled.cumulative_deposit_interest,
+        SPOT_CUMULATIVE_INTEREST_PRECISION
+    );
+    // ... and the idle span is off the clock, so it can never be billed later.
+    assert_eq!(idled.last_interest_ts, THIRTY_DAYS as u64);
+
+    // The first borrow appears, then one hour of interest accrues.
+    idled.borrow_balance = 500 * SPOT_BALANCE_PRECISION;
+    update_spot_market_cumulative_interest(&mut idled, None, THIRTY_DAYS + ONE_HOUR_SECS, false)
+        .unwrap();
+    let billed_after_idle = idled
+        .cumulative_borrow_interest
+        .safe_sub(SPOT_CUMULATIVE_INTEREST_PRECISION)
+        .unwrap();
+
+    // Control: identical balances, the same one hour, no preceding idle epoch.
+    let mut control = base;
+    control.borrow_balance = 500 * SPOT_BALANCE_PRECISION;
+    update_spot_market_cumulative_interest(&mut control, None, ONE_HOUR_SECS, false).unwrap();
+    let billed_one_hour = control
+        .cumulative_borrow_interest
+        .safe_sub(SPOT_CUMULATIVE_INTEREST_PRECISION)
+        .unwrap();
+
+    assert!(billed_one_hour > 0, "control accrued no borrow interest");
+    assert_eq!(
+        billed_after_idle, billed_one_hour,
+        "the 30-day idle epoch was billed to the first borrower"
+    );
+}
+
+/// finding #115: while interest updates are paused, deposits and withdrawals stay callable, so
+/// leaving the paused span on `last_interest_ts` meant the first accrual after resume applied
+/// the entire window to whatever balances existed at that moment — a deposit made just before
+/// the unpause earned interest for time it was not deposited. A pause stops accrual for the
+/// window; it does not defer it onto a different set of balances.
+#[test]
+fn paused_interest_interval_is_dropped_not_deferred() {
+    const ONE_DAY: i64 = 60 * 60 * 24;
+    const ONE_HOUR_SECS: i64 = 3600;
+
+    let mut base = interest_test_market();
+    base.borrow_balance = 500 * SPOT_BALANCE_PRECISION;
+
+    // Baseline: what one hour of interest costs on these balances.
+    let mut control = base;
+    update_spot_market_cumulative_interest(&mut control, None, ONE_HOUR_SECS, false).unwrap();
+    let billed_one_hour = control
+        .cumulative_borrow_interest
+        .safe_sub(SPOT_CUMULATIVE_INTEREST_PRECISION)
+        .unwrap();
+    assert!(billed_one_hour > 0, "control accrued no borrow interest");
+
+    // Exchange-wide funding pause, observed across a day, then an hour of live accrual.
+    let mut globally_paused = base;
+    update_spot_market_cumulative_interest(&mut globally_paused, None, ONE_DAY, true).unwrap();
+    assert_eq!(
+        globally_paused.cumulative_borrow_interest, SPOT_CUMULATIVE_INTEREST_PRECISION,
+        "interest accrued while paused"
+    );
+    assert_eq!(globally_paused.last_interest_ts, ONE_DAY as u64);
+
+    update_spot_market_cumulative_interest(
+        &mut globally_paused,
+        None,
+        ONE_DAY + ONE_HOUR_SECS,
+        false,
+    )
+    .unwrap();
+    assert_eq!(
+        globally_paused
+            .cumulative_borrow_interest
+            .safe_sub(SPOT_CUMULATIVE_INTEREST_PRECISION)
+            .unwrap(),
+        billed_one_hour,
+        "the paused day was billed after resume"
+    );
+
+    // Same via the market-scoped operation bit rather than the global flag.
+    let mut op_paused = base;
+    op_paused.paused_operations = SpotOperation::UpdateCumulativeInterest as u8;
+    update_spot_market_cumulative_interest(&mut op_paused, None, ONE_DAY, false).unwrap();
+    assert_eq!(
+        op_paused.cumulative_borrow_interest, SPOT_CUMULATIVE_INTEREST_PRECISION,
+        "interest accrued while the market's op bit was paused"
+    );
+    assert_eq!(op_paused.last_interest_ts, ONE_DAY as u64);
+
+    op_paused.paused_operations = 0;
+    update_spot_market_cumulative_interest(&mut op_paused, None, ONE_DAY + ONE_HOUR_SECS, false)
+        .unwrap();
+    assert_eq!(
+        op_paused
+            .cumulative_borrow_interest
+            .safe_sub(SPOT_CUMULATIVE_INTEREST_PRECISION)
+            .unwrap(),
+        billed_one_hour,
+        "the op-bit-paused day was billed after resume"
+    );
+}
+
+/// A $1M, 6-decimal market at 50% utilization on a realistic curve (80% kink, 10% APR at the
+/// kink, 100% ceiling). At that rate a 0.1% carveout of the lending gain needs ~101 seconds of
+/// accrual before it converts to a whole token.
+fn carveout_test_market(if_fee_factor: u32, protocol_fee_factor: u32) -> SpotMarket {
+    SpotMarket {
+        market_index: 0,
+        oracle_source: OracleSource::QuoteAsset,
+        cumulative_deposit_interest: SPOT_CUMULATIVE_INTEREST_PRECISION,
+        cumulative_borrow_interest: SPOT_CUMULATIVE_INTEREST_PRECISION,
+        decimals: 6,
+        deposit_balance: SPOT_BALANCE_PRECISION * 1_000_000,
+        borrow_balance: SPOT_BALANCE_PRECISION * 500_000,
+        optimal_utilization: SPOT_UTILIZATION_PRECISION_U32 * 80 / 100,
+        optimal_borrow_rate: SPOT_RATE_PRECISION_U32 / 10,
+        max_borrow_rate: SPOT_RATE_PRECISION_U32,
+        protocol_fee_factor,
+        insurance_fund: InsuranceFund {
+            if_fee_factor,
+            ..InsuranceFund::default()
+        },
+        status: MarketStatus::Active,
+        ..SpotMarket::default()
+    }
+}
+
+#[test]
+fn if_carveout_under_one_token_defers_instead_of_being_dropped() {
+    let mut market = carveout_test_market(1000, 0);
+
+    // Crank once a second for a minute. Lenders' share clears a unit every time, so before the
+    // payability guard each of these committed and advanced the clock while the IF's cut floored
+    // to zero tokens — the value was withheld from lenders and credited to nobody, and the
+    // interval could never be retried. Any caller could hold every cut under a token forever
+    // just by cranking this permissionless accrual often enough (finding #127).
+    for i in 1..=60_i64 {
+        update_spot_market_cumulative_interest(&mut market, None, i, false).unwrap();
+    }
+
+    assert_eq!(market.last_interest_ts, 0);
+    assert_eq!(
+        market.cumulative_deposit_interest,
+        SPOT_CUMULATIVE_INTEREST_PRECISION
+    );
+    assert_eq!(
+        market.cumulative_borrow_interest,
+        SPOT_CUMULATIVE_INTEREST_PRECISION
+    );
+    assert_eq!(market.revenue_pool.scaled_balance, 0);
+
+    // Deferral converges: the cut grows with the un-stamped span and the clock only moves on
+    // commit, so cranking frequently cannot keep the interval short.
+    update_spot_market_cumulative_interest(&mut market, None, 200, false).unwrap();
+
+    assert_eq!(market.last_interest_ts, 200);
+    assert!(market.revenue_pool.scaled_balance > 0);
+
+    // Nothing was lost to the 60 intervening cranks: the outcome is identical to a market that
+    // sat idle and settled the same 200-second span in one call.
+    let mut control = carveout_test_market(1000, 0);
+    update_spot_market_cumulative_interest(&mut control, None, 200, false).unwrap();
+
+    assert_eq!(
+        market.revenue_pool.scaled_balance,
+        control.revenue_pool.scaled_balance
+    );
+    assert_eq!(
+        market.cumulative_deposit_interest,
+        control.cumulative_deposit_interest
+    );
+    assert_eq!(
+        market.cumulative_borrow_interest,
+        control.cumulative_borrow_interest
+    );
+}
+
+#[test]
+fn protocol_carveout_under_one_token_also_defers() {
+    let mut market = carveout_test_market(0, 1000);
+
+    for i in 1..=60_i64 {
+        update_spot_market_cumulative_interest(&mut market, None, i, false).unwrap();
+    }
+
+    assert_eq!(market.last_interest_ts, 0);
+    assert_eq!(market.protocol_fee_pool.scaled_balance, 0);
+    assert_eq!(
+        market.cumulative_deposit_interest,
+        SPOT_CUMULATIVE_INTEREST_PRECISION
+    );
+
+    update_spot_market_cumulative_interest(&mut market, None, 200, false).unwrap();
+
+    assert_eq!(market.last_interest_ts, 200);
+    assert!(market.protocol_fee_pool.scaled_balance > 0);
+}
+
+#[test]
+fn unconfigured_carveout_does_not_defer() {
+    // With both factors zero there is no cut to pay, so the accrual commits on the same
+    // one-second intervals the tests above defer on. The guard only gates *configured*
+    // carveouts — it must not make an ordinary market's accrual coarser.
+    let mut market = carveout_test_market(0, 0);
+
+    update_spot_market_cumulative_interest(&mut market, None, 1, false).unwrap();
+
+    assert_eq!(market.last_interest_ts, 1);
+    assert!(market.cumulative_borrow_interest > SPOT_CUMULATIVE_INTEREST_PRECISION);
+    assert!(market.cumulative_deposit_interest > SPOT_CUMULATIVE_INTEREST_PRECISION);
+}
+
+#[test]
+fn zero_deposit_balance_still_accrues_with_a_configured_carveout() {
+    // `deposit_balance == 0` is the one case where the carveout conversion is structurally zero
+    // no matter how long the interval grows, so deferring would never converge and borrowers
+    // would go uncharged forever. Exempted.
+    let mut market = carveout_test_market(1000, 1000);
+    market.deposit_balance = 0;
+
+    update_spot_market_cumulative_interest(&mut market, None, 1, false).unwrap();
+
+    assert_eq!(market.last_interest_ts, 1);
+    assert!(market.cumulative_borrow_interest > SPOT_CUMULATIVE_INTEREST_PRECISION);
+    assert_eq!(market.revenue_pool.scaled_balance, 0);
+    assert_eq!(market.protocol_fee_pool.scaled_balance, 0);
+}
+
+#[test]
+fn deposit_credit_never_exceeds_borrow_charge() {
+    // The `check_fee_collection` regime — a $1 market at a 2000% optimal rate — with the
+    // carveouts off, so this isolates the conservation clamp from the #127 deferral. Utilization
+    // is sampled once at the start of an interval from rounded token amounts and applied across
+    // the whole span; multiplied by a long interval's rate factor, that sub-token overstatement
+    // used to credit depositors whole tokens no borrower was charged for. Settling a year in two
+    // cranks left depositors up 5 tokens on the borrowers' charge.
+    let year = 60 * 60 * 24 * 365_i64;
+
+    for cranks in [1_i64, 2, 3, 4, 12] {
+        let mut market = SpotMarket {
+            market_index: 0,
+            oracle_source: OracleSource::QuoteAsset,
+            cumulative_deposit_interest: SPOT_CUMULATIVE_INTEREST_PRECISION,
+            cumulative_borrow_interest: SPOT_CUMULATIVE_INTEREST_PRECISION,
+            decimals: 6,
+            deposit_balance: SPOT_BALANCE_PRECISION,
+            borrow_balance: SPOT_BALANCE_PRECISION / 8,
+            optimal_utilization: SPOT_UTILIZATION_PRECISION_U32 / 2,
+            optimal_borrow_rate: SPOT_RATE_PRECISION_U32 * 20,
+            max_borrow_rate: SPOT_RATE_PRECISION_U32 * 50,
+            status: MarketStatus::Active,
+            ..SpotMarket::default()
+        };
+
+        let deposits_before =
+            get_token_amount(market.deposit_balance, &market, &SpotBalanceType::Deposit).unwrap();
+        let borrows_before =
+            get_token_amount(market.borrow_balance, &market, &SpotBalanceType::Borrow).unwrap();
+
+        for i in 1..=cranks {
+            update_spot_market_cumulative_interest(&mut market, None, year * i / cranks, false)
+                .unwrap();
+        }
+
+        let deposit_gain =
+            get_token_amount(market.deposit_balance, &market, &SpotBalanceType::Deposit)
+                .unwrap()
+                .safe_sub(deposits_before)
+                .unwrap();
+        let borrow_gain =
+            get_token_amount(market.borrow_balance, &market, &SpotBalanceType::Borrow)
+                .unwrap()
+                .safe_sub(borrows_before)
+                .unwrap();
+
+        assert!(
+            borrow_gain >= deposit_gain,
+            "cranks={}: depositors gained {} against a {} borrow charge",
+            cranks,
+            deposit_gain,
+            borrow_gain
+        );
+    }
 }
 
 /// OtterSec #110 / #111 — the swap-backed spot lanes must not advance the very

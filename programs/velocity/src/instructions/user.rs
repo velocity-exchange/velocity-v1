@@ -434,6 +434,23 @@ pub fn handle_initialize_revenue_share_escrow<'c: 'info, 'info>(
         "revenue share escrow requires the authority's first user to exist, otherwise it snapshots a defaulted referrer"
     )?;
 
+    // An escrow with no order slots cannot hold a builder or referral row, so
+    // `find_or_create_referral_index` and `add_builder_order` both fail to claim one and every
+    // fee, discount and reward computation silently falls back to its no-revenue-share value.
+    // `authority` is an `UncheckedAccount` here and only `payer` signs, so a third party can
+    // create any user's escrow PDA; at zero capacity that suppresses their rewards until someone
+    // notices and calls the (permissionless) resize (finding #114).
+    //
+    // Enforced at init rather than in `RevenueShareEscrow::validate`, which `resize` and
+    // `change_approved_builder` also run: an escrow already sitting at zero capacity on chain
+    // must stay able to resize its way out, and blocking its builder edits would be a new
+    // liveness problem rather than a fix.
+    validate!(
+        num_orders > 0,
+        ErrorCode::DefaultError,
+        "revenue share escrow must be initialized with at least one order slot"
+    )?;
+
     let escrow = &mut ctx.accounts.escrow;
     escrow.authority = ctx.accounts.authority.key();
     escrow

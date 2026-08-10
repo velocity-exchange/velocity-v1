@@ -1197,10 +1197,33 @@ impl PerpMarket {
         ))
     }
 
-    /// Whether the oracle was valid at the last AMM update AND the AMM was
-    /// updated in the current slot.
-    pub fn is_recent_oracle_valid(&self, current_slot: u64) -> VelocityResult<bool> {
-        Ok(self.market_stats.last_oracle_valid && self.amm.is_fresh_at(current_slot))
+    /// Whether `oracle_price_data` is the same sample (price, confidence) the
+    /// last oracle-stat update stamped into `historical_oracle_data`. An
+    /// oracle write landing after the AMM update within the same slot
+    /// replaces the account's price and confidence without touching
+    /// `last_oracle_valid`, so a cached validity verdict must not be applied
+    /// to a sample it never covered. A rewrite that leaves price and
+    /// confidence unchanged can only reduce delay, which cannot make the
+    /// sample less valid.
+    pub fn is_validated_oracle_sample(&self, oracle_price_data: &OraclePriceData) -> bool {
+        let historical = &self.market_stats.historical_oracle_data;
+        oracle_price_data.price == historical.last_oracle_price
+            && oracle_price_data.confidence == historical.last_oracle_conf
+    }
+
+    /// Whether the oracle was valid at the last AMM update, the AMM was
+    /// updated in the current slot, AND `oracle_price_data` is the sample
+    /// that update validated. Slot freshness alone is not a substitute for
+    /// current validity: a second oracle write in the same slot can replace
+    /// the sample after the AMM update.
+    pub fn is_recent_oracle_valid(
+        &self,
+        current_slot: u64,
+        oracle_price_data: &OraclePriceData,
+    ) -> VelocityResult<bool> {
+        Ok(self.market_stats.last_oracle_valid
+            && self.amm.is_fresh_at(current_slot)
+            && self.is_validated_oracle_sample(oracle_price_data))
     }
 
     #[inline(always)]
@@ -2134,6 +2157,12 @@ impl MarketStats {
             self.last_oracle_normalised_price = capped_oracle_update_price;
             self.historical_oracle_data.last_oracle_price =
                 mm_oracle_price_data.get_exchange_oracle_price_data().price;
+            // (price, conf) identify the validated sample; consumers of the
+            // cached `last_oracle_valid` verdict compare against these to
+            // detect a same-slot oracle rewrite after the AMM update.
+            self.historical_oracle_data.last_oracle_conf = mm_oracle_price_data
+                .get_exchange_oracle_price_data()
+                .confidence;
 
             let prev_oracle_twap = self.historical_oracle_data.last_oracle_price_twap;
             let prev_oracle_twap_5min = self.historical_oracle_data.last_oracle_price_twap_5min;

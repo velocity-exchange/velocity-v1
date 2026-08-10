@@ -327,6 +327,21 @@ pub trait VaultDepositorBase {
             "Requested n_shares = 0"
         )?;
 
+        // #138: move cost basis by the value of the shares actually transferred, not by
+        // the caller's raw request.
+        //
+        // For `WithdrawUnit::Token`, `get_withdraw_value_and_shares` returns
+        // `withdraw_value = withdraw_amount` verbatim while flooring `n_shares` out of it.
+        // Crediting the recipient with the un-floored request therefore hands them more
+        // cost basis than the shares they received are worth, which shelters that much
+        // future profit from the manager and protocol performance fees — and symmetrically
+        // over-debits the sender. The `Shares` and `SharesPercent` units already derive
+        // their value *from* `n_shares`, so re-deriving here simply makes all three units
+        // agree.
+        let transferred_value: u64 =
+            depositor_shares_to_vault_amount(n_shares, vault.total_shares, vault_equity)?
+                .min(vault_equity);
+
         let from_vault_shares_before: u128 = self.checked_vault_shares(vault)?;
         let to_vault_shares_before: u128 = to.checked_vault_shares(vault)?;
         let total_vault_shares_before = vault.total_shares;
@@ -339,8 +354,11 @@ pub trait VaultDepositorBase {
         self.decrease_vault_shares(n_shares, vault)?;
         to.increase_vault_shares(n_shares, vault)?;
 
-        self.set_net_deposits(self.get_net_deposits().safe_sub(withdraw_value.cast()?)?);
-        to.set_net_deposits(to.get_net_deposits().safe_add(withdraw_value.cast()?)?);
+        self.set_net_deposits(
+            self.get_net_deposits()
+                .safe_sub(transferred_value.cast()?)?,
+        );
+        to.set_net_deposits(to.get_net_deposits().safe_add(transferred_value.cast()?)?);
 
         let from_depositor_shares_after = self.checked_vault_shares(vault)?;
         let to_depositor_shares_after = to.checked_vault_shares(vault)?;
@@ -359,7 +377,7 @@ pub trait VaultDepositorBase {
             to_vault_depositor: to.get_pubkey(),
 
             shares: n_shares,
-            value: withdraw_value,
+            value: transferred_value,
             from_depositor_shares_before,
             from_depositor_shares_after,
             to_depositor_shares_before,

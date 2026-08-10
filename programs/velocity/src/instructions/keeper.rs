@@ -2164,6 +2164,8 @@ pub fn handle_resolve_perp_pnl_deficit<'c: 'info, 'info>(
         let spot_market = &mut spot_market_map.get_ref_mut(&spot_market_index)?;
         let perp_market = &mut perp_market_map.get_ref_mut(&perp_market_index)?;
 
+        let oracle_price_data = *oracle_map.get_price_data(&perp_market.oracle_id())?;
+
         if perp_market.amm.is_curve_update_enabled() {
             validate!(
                 perp_market.market_stats.last_oracle_valid,
@@ -2176,6 +2178,15 @@ pub fn handle_resolve_perp_pnl_deficit<'c: 'info, 'info>(
                 ErrorCode::AMMNotUpdatedInSameSlot,
                 "AMM must be updated in a prior instruction within same slot"
             )?;
+
+            // The cached verdict only covers the sample the AMM update
+            // validated; a later oracle write in the same slot replaces the
+            // sample without touching `last_oracle_valid`.
+            validate!(
+                perp_market.is_validated_oracle_sample(&oracle_price_data),
+                ErrorCode::InvalidOracle,
+                "Oracle rewritten after same-slot AMM update; sample no longer matches the validated one"
+            )?;
         }
 
         validate!(
@@ -2184,7 +2195,7 @@ pub fn handle_resolve_perp_pnl_deficit<'c: 'info, 'info>(
             "Market is in settlement mode",
         )?;
 
-        let oracle_price = oracle_map.get_price_data(&perp_market.oracle_id())?.price;
+        let oracle_price = oracle_price_data.price;
         controller::orders::validate_market_within_price_band(perp_market, &state, oracle_price)?;
 
         controller::insurance::resolve_perp_pnl_deficit(
@@ -2926,12 +2937,14 @@ pub fn handle_sweep_perp_market_fees(
     let reserve_price = if perp_market.status == MarketStatus::Settlement {
         perp_market.expiry_price
     } else {
-        let oracle_price = oracle_map.get_price_data(&perp_market.oracle_id())?.price;
+        let oracle_price_data = *oracle_map.get_price_data(&perp_market.oracle_id())?;
+        let oracle_price = oracle_price_data.price;
 
         controller::orders::validate_market_within_price_band(perp_market, &state, oracle_price)?;
 
         if perp_market.amm.is_curve_update_enabled() {
-            let healthy_oracle = perp_market.is_recent_oracle_valid(oracle_map.slot)?;
+            let healthy_oracle =
+                perp_market.is_recent_oracle_valid(oracle_map.slot, &oracle_price_data)?;
 
             if !healthy_oracle {
                 let (_, oracle_validity) = oracle_map.get_price_data_and_validity(
@@ -2968,6 +2981,18 @@ pub fn handle_sweep_perp_market_fees(
                         perp_market.amm.last_update_slot(),
                         perp_market.market_stats.last_oracle_valid
                     )?;
+
+                    // Both cached attestations hold, so `healthy_oracle` is
+                    // false because the oracle account was rewritten after
+                    // the same-slot AMM update. The cached verdict does not
+                    // cover the sample being consumed; reject on its current
+                    // validity.
+                    msg!(
+                        "Market={} oracle rewritten after same-slot AMM update; current sample is invalid ({})",
+                        perp_market_index,
+                        oracle_validity
+                    );
+                    return Err(oracle_validity.get_error_code().into());
                 }
             }
         }

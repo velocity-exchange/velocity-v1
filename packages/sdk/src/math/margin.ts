@@ -396,3 +396,55 @@ export function getEquityFloorLevel(
 	}
 	return 'healthy';
 }
+
+/**
+ * Two-sided bounds on net equity plus the oracle-validity verdict, mirroring
+ * the program's `UserEquityBounds`. `lower` values unpriceable assets low and
+ * liabilities high (what the account provably is worth); `upper` is the
+ * mirror (what cannot be ruled out). When every oracle is valid both equal
+ * the exact net equity. When a position has no positive candidate price at
+ * all the bounds saturate to `I128_MIN`/`I128_MAX`. All values
+ * QUOTE_PRECISION.
+ */
+export type NetUsdValueBounds = {
+	lower: BN;
+	upper: BN;
+	allOraclesValid: boolean;
+};
+
+/** `i128::MIN` / `i128::MAX` sentinels for saturated equity bounds. */
+export const I128_MIN = new BN(2).pow(new BN(127)).neg();
+export const I128_MAX = new BN(2).pow(new BN(127)).subn(1);
+
+/**
+ * The two prices that bound an unpriceable position, mirroring the program's
+ * `bound_prices`: a valid oracle collapses onto the live price; an invalid
+ * one pairs the live price with the 5-minute TWAP, dropping non-positive
+ * candidates; no positive candidate at all returns `null`, which the caller
+ * turns into saturated bounds. Never throws.
+ * @param price Live oracle price (PRICE_PRECISION).
+ * @param twap5Min The market's `lastOraclePriceTwap5Min` (PRICE_PRECISION).
+ * @param oracleValid Whether the oracle passed the `MarginCalc` validity checks.
+ * @returns `[low, high]` price pair, or `null` when unpriceable.
+ */
+export function boundPrices(
+	price: BN,
+	twap5Min: BN,
+	oracleValid: boolean
+): [BN, BN] | null {
+	if (oracleValid) {
+		return [price, price];
+	}
+	const pricePositive = price.gt(ZERO);
+	const twapPositive = twap5Min.gt(ZERO);
+	if (pricePositive && twapPositive) {
+		return [BN.min(price, twap5Min), BN.max(price, twap5Min)];
+	}
+	if (twapPositive) {
+		return [twap5Min, twap5Min];
+	}
+	if (pricePositive) {
+		return [price, price];
+	}
+	return null;
+}

@@ -63,6 +63,7 @@ test_files=(
   equityFloor.ts
   equityFloorSwap.ts
   equityFloorLazyTrip.ts
+  equityFloorOracle.ts
   velocityClient.ts
   insuranceFundStake.ts
   isolatedPositionVelocityClient.ts

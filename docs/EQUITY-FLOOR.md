@@ -30,6 +30,19 @@ floor is `700_000_000_000`. A floor of `0` disables both checks. Only Velocity's
 change the floor and buffer; what the delegate controls is how the floor is split across subaccounts
 (see [Moving funds between subaccounts](#moving-funds-between-subaccounts)).
 
+When an oracle a position depends on is invalid (stale, too volatile, too uncertain), the checks
+stop trusting its live price. Instead of one exact equity the program computes a two-sided bound,
+pricing each unpriceable position at both its live price and its 5-minute TWAP: every gate that
+restricts the subaccount (withdrawals, risk-increasing fills, transfers, trigger cancels,
+liquidator admission) compares the worst-case value, so a bad price can never make an account look
+healthier than it provably is, and the force-cancel path compares the best-case value plus requires
+full validity, so a bad price can never make an account look breached to a keeper. When every
+oracle is valid the bound collapses to the exact equity and behavior is unchanged. The standalone
+lifecycle instructions stay strict rather than bounded: the trip, the reset, cure transfers, and
+floor-moving transfers all reject with `InvalidOracle` while any relevant oracle is invalid, and
+resume when the feed recovers. A market in settlement is valued at its expiry price, so its oracle
+is exempt from all of these validity requirements.
+
 ## What it enforces day to day
 
 While a subaccount's equity is at or above `floor + buffer`, the checks have no effect. They only

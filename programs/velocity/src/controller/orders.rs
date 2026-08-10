@@ -4037,7 +4037,7 @@ fn fulfill_perp_order_router_pass(
 /// response itself declares: every order the change consumed outright, plus
 /// at most one it left a remainder on. Bounds the integer rounding a merged
 /// record can carry (see `math::router::validate_change_notional`).
-fn merged_orders(change: &crate::state::prop_amm::UserBalanceChange) -> VelocityResult<u64> {
+fn merged_orders(change: &crate::state::prop_amm::UserBalanceChangeV0) -> VelocityResult<u64> {
     change.completed_order_ids.len().cast::<u64>()?.safe_add(1)
 }
 
@@ -4747,7 +4747,7 @@ struct CounterpartyLeg<'a> {
     /// The book's balance change, when the book is what filled it — whose
     /// retired order ids the settlement unwinds. `None` for a cancelled
     /// counterparty, which had no fill on the book to report.
-    change: Option<&'a crate::state::prop_amm::UserBalanceChange>,
+    change: Option<&'a crate::state::prop_amm::UserBalanceChangeV0>,
 }
 
 impl TakerOriginCounterparty {
@@ -4758,7 +4758,7 @@ impl TakerOriginCounterparty {
             // anyone else — or splitting across orders — is not the cross that
             // was priced.
             Self::Executed { response, .. } => {
-                let changes: Vec<&crate::state::prop_amm::UserBalanceChange> = response
+                let changes: Vec<&crate::state::prop_amm::UserBalanceChangeV0> = response
                     .balance_changes
                     .iter()
                     .filter(|change| change.base_size > 0)

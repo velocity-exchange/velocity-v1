@@ -76,7 +76,18 @@ use {
 /// so `initialize` must thread the free list before the book is usable.
 pub const NIL: u32 = u32::MAX;
 
-/// Field offsets inside a `UserBalanceChange` record as written into the
+/// Two conditions that must agree: either both hold or neither does.
+///
+/// Most of the book's structural invariants have this shape — an empty side
+/// has a `NIL` best link *and* a zero count, and either one alone is a
+/// corrupt book. Written directly the condition becomes `(a == b) == (c == d)`,
+/// which reads as a typo for `&&` rather than as a claim about equivalence.
+#[inline(always)]
+const fn both_or_neither(a: bool, b: bool) -> bool {
+    a == b
+}
+
+/// Field offsets inside a `UserBalanceChangeV0` record as written into the
 /// response region: `[user 34][base u64][quote u64][id count u32][ids…]`. The
 /// widths themselves live in [`crate::state`], which derives the config
 /// ceilings from them.
@@ -385,6 +396,10 @@ impl ClobBook for ClobMarketV0 {
             ClobError::InvalidOrderParams
         );
         require!(
+            placed_slot <= activation_slot,
+            ClobError::InvalidOrderParams
+        );
+        require!(
             base_asset_amount >= self.min_order_size,
             ClobError::OrderTooSmall
         );
@@ -456,11 +471,11 @@ impl ClobBook for ClobMarketV0 {
             ClobError::BookInvariantViolated
         );
         require!(
-            (prev == NIL) == (self.best(side) == index),
+            both_or_neither(prev == NIL, self.best(side) == index),
             ClobError::BookInvariantViolated
         );
         require!(
-            (next == NIL) == (self.worst(side) == index),
+            both_or_neither(next == NIL, self.worst(side) == index),
             ClobError::BookInvariantViolated
         );
         if prev != NIL {
@@ -943,7 +958,7 @@ impl ClobBook for ClobMarketV0 {
             ClobError::BookInvariantViolated
         );
         require!(
-            (self.free_count == 0) == (self.free_head == NIL),
+            both_or_neither(self.free_count == 0, self.free_head == NIL),
             ClobError::BookInvariantViolated
         );
         if self.free_head != NIL {
@@ -958,14 +973,15 @@ impl ClobBook for ClobMarketV0 {
             let count = self.node_count(side);
             let (best, worst) = (self.best(side), self.worst(side));
             require!(
-                (count == 0) == (best == NIL) && (count == 0) == (worst == NIL),
+                both_or_neither(count == 0, best == NIL)
+                    && both_or_neither(count == 0, worst == NIL),
                 ClobError::BookInvariantViolated
             );
             if count == 0 {
                 return Ok(());
             }
             require!(
-                (count == 1) == (best == worst),
+                both_or_neither(count == 1, best == worst),
                 ClobError::BookInvariantViolated
             );
             let head = self.read_node(best)?;

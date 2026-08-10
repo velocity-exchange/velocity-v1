@@ -1193,7 +1193,7 @@ impl ExternalQuoterExecutor for NoExternalQuoters {
     }
 }
 
-pub use quoter_spec::UserBalanceChange;
+pub use quoter_spec::UserBalanceChangeV0;
 
 impl QuoterV0 {
     /// This entry really is the CLOB serving `market_index`, and `book` is one

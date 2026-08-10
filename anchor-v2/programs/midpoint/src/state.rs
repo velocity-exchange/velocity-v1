@@ -155,13 +155,13 @@ pub struct PriceLevel {
 /// cancel, a dusty level is simply not quoted).
 pub use quoter_spec::CancelledRemainderV0;
 /// One user's share of an executed fill. Mirrors velocity's quoter-interface
-/// `UserBalanceChange`; the midpoint always has exactly one (the quoted
+/// `UserBalanceChangeV0`; the midpoint always has exactly one (the quoted
 /// user) and never completes orders (the ladder has none).
 ///
 /// This is the wire *definition* — the program writes the same bytes field by
 /// field (see [`MidpointQuoterV0::write_execute_response`]) rather than
 /// building one of these, and a unit test pins the two encodings equal.
-pub use quoter_spec::UserBalanceChange;
+pub use quoter_spec::UserBalanceChangeV0;
 
 /// Where in the quoter account the borsh response was written. Returned via
 /// return data by `quote_v0`/`execute_v0`.
@@ -171,7 +171,7 @@ pub struct ResponsePointerV0 {
     pub len: u32,
 }
 
-/// Wire definition of the quote response. See [`UserBalanceChange`] on why
+/// Wire definition of the quote response. See [`UserBalanceChangeV0`] on why
 /// the program does not construct one.
 #[derive(Clone, wincode::SchemaRead, wincode::SchemaWrite)]
 pub struct QuoteResponseV0 {
@@ -851,7 +851,7 @@ mod tests {
 
     fn reference_execute(quoter: &MidpointQuoterV0, change: Option<(u64, u64)>) -> Vec<u8> {
         let balance_changes = change
-            .map(|(base_size, quote_size)| UserBalanceChange {
+            .map(|(base_size, quote_size)| UserBalanceChangeV0 {
                 user: quoter.user_ref(),
                 base_size,
                 quote_size,
@@ -884,7 +884,7 @@ mod tests {
 
         let mut from_spec = Vec::new();
         ExecuteResponseV0 {
-            balance_changes: vec![UserBalanceChange {
+            balance_changes: vec![UserBalanceChangeV0 {
                 user: quoter.user_ref(),
                 base_size: 1_000_000_000,
                 quote_size: 101_000_000,

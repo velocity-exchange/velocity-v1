@@ -124,7 +124,7 @@ impl UserRefV0 {
     derive(wincode::SchemaRead, wincode::SchemaWrite)
 )]
 #[derive(Clone, PartialEq, Eq, Debug, Default)]
-pub struct UserBalanceChange {
+pub struct UserBalanceChangeV0 {
     pub user: UserRefV0,
     pub base_size: u64,
     pub quote_size: u64,
@@ -135,7 +135,7 @@ pub struct UserBalanceChange {
     pub completed_order_ids: Vec<u64>,
 }
 
-impl UserBalanceChange {
+impl UserBalanceChangeV0 {
     #[inline]
     pub fn encode(&self, out: &mut Vec<u8>) {
         self.user.encode(out);
@@ -224,7 +224,7 @@ impl CancelledRemainderV0 {
 )]
 #[derive(Clone, PartialEq, Eq, Debug, Default)]
 pub struct ExecuteResponseV0 {
-    pub balance_changes: Vec<UserBalanceChange>,
+    pub balance_changes: Vec<UserBalanceChangeV0>,
     pub cancelled: Vec<CancelledRemainderV0>,
 }
 
@@ -251,7 +251,7 @@ impl ExecuteResponseV0 {
         off += 4;
         let mut balance_changes = Vec::with_capacity(count.min(MAX_PREALLOC));
         for _ in 0..count {
-            let (change, used) = UserBalanceChange::decode(rest(input, off)?)?;
+            let (change, used) = UserBalanceChangeV0::decode(rest(input, off)?)?;
             balance_changes.push(change);
             off += used;
         }
@@ -323,7 +323,7 @@ mod tests {
     fn sample() -> ExecuteResponseV0 {
         ExecuteResponseV0 {
             balance_changes: vec![
-                UserBalanceChange {
+                UserBalanceChangeV0 {
                     user: UserRefV0 {
                         authority: Pubkey::new_from_array([7u8; 32]),
                         sub_account_id: 3,
@@ -332,7 +332,7 @@ mod tests {
                     quote_size: 101_000_000,
                     completed_order_ids: vec![9, 10],
                 },
-                UserBalanceChange {
+                UserBalanceChangeV0 {
                     user: UserRefV0 {
                         authority: Pubkey::new_from_array([8u8; 32]),
                         sub_account_id: 0,
@@ -376,7 +376,7 @@ mod tests {
     /// here fails rather than silently redefining the wire.
     #[test]
     fn layout_is_pinned() {
-        let change = UserBalanceChange {
+        let change = UserBalanceChangeV0 {
             user: UserRefV0 {
                 authority: Pubkey::new_from_array([1u8; 32]),
                 sub_account_id: 0x0201,

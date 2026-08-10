@@ -251,7 +251,7 @@ aimed at a crossed remainder is a separate hole, still open.
 - `RemovedOrderV0::taker_origin`, so `cancel_order_v0`/`evict_worst_v0`/`remove_expired_v0` report
   the flag. That is the only place the CLOB reports it, and it is enough: R4 keeps a taker-origin
   cross out of `execute_v0` entirely, so both sides of a cross velocity settles leave the book
-  through a removal. The shared quoter-interface types (`UserBalanceChange`,
+  through a removal. The shared quoter-interface types (`UserBalanceChangeV0`,
   `CancelledRemainderV0`) are untouched — every quoter emits those, and only the CLOB can ever
   have an order to mark.
 - R4's gate as `book::TakerOriginGate`, read by both `quote_v0` and `execute_v0`, which skip a

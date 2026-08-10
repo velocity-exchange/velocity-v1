@@ -15,7 +15,7 @@ use {
         state::{
             CancelledRemainderV0, ClobMarketV0, Direction, ExecuteResponseV0, MarketConfigV0,
             PriceLevel, QuoteResponseV0, RemovedOrderV0, ResponsePointerV0, Side,
-            UserBalanceChange, UserRefV0, UserSetV0, CANCELLED_BYTES, CHANGE_MIN_BYTES,
+            UserBalanceChangeV0, UserRefV0, UserSetV0, CANCELLED_BYTES, CHANGE_MIN_BYTES,
             COUNT_BYTES, EXECUTE_FILLS_CEILING, EXECUTE_USERS_CEILING, ORDER_ID_BYTES,
             PRICE_LEVEL_BYTES, QUOTE_LEVELS_CEILING, REMOVED_ORDER_BYTES, RESPONSE_BUFFER_BYTES,
             RESPONSE_OFFSET, USER_REF_BYTES, USER_SET_BYTES, USER_SET_CAPACITY,
@@ -42,7 +42,7 @@ pub(super) fn encode_quote(levels: Vec<PriceLevel>) -> Vec<u8> {
 }
 
 fn encode_execute(
-    balance_changes: Vec<UserBalanceChange>,
+    balance_changes: Vec<UserBalanceChangeV0>,
     cancelled: Vec<CancelledRemainderV0>,
 ) -> Vec<u8> {
     encode(&ExecuteResponseV0 {
@@ -142,13 +142,13 @@ fn execute_streams_balance_changes_merged_by_user() {
         streamed(&book, outcome.response),
         encode_execute(
             vec![
-                UserBalanceChange {
+                UserBalanceChangeV0 {
                     user: maker_a,
                     base_size: 10,
                     quote_size: 100 * 5 + 102 * 5,
                     completed_order_ids: vec![first.order_id, last.order_id],
                 },
-                UserBalanceChange {
+                UserBalanceChangeV0 {
                     user: maker_b,
                     base_size: 5,
                     quote_size: 101 * 5,
@@ -191,7 +191,7 @@ fn execute_streams_a_sub_min_cull_alongside_the_fill() {
     assert_eq!(
         streamed(&book, outcome.response),
         encode_execute(
-            vec![UserBalanceChange {
+            vec![UserBalanceChangeV0 {
                 user: maker,
                 base_size: 15,
                 quote_size: 1500,
@@ -224,7 +224,7 @@ fn execute_stops_at_the_user_cap() {
     assert_eq!(
         streamed(&book, outcome.response),
         encode_execute(
-            vec![UserBalanceChange {
+            vec![UserBalanceChangeV0 {
                 user: maker_a,
                 base_size: 5,
                 quote_size: 500,
@@ -280,7 +280,7 @@ fn wire_widths_match_the_response_types() {
         })[REMOVED_ORDER_BYTES - 2..],
         [Side::Bid.to_u8(), 0]
     );
-    let change = |ids: Vec<u64>| UserBalanceChange {
+    let change = |ids: Vec<u64>| UserBalanceChangeV0 {
         user,
         base_size: 1,
         quote_size: 2,
@@ -328,7 +328,7 @@ fn execute_totals_the_floor_of_the_whole_sweeps_notional() {
     assert_eq!(
         streamed(&book, outcome.response),
         encode_execute(
-            vec![UserBalanceChange {
+            vec![UserBalanceChangeV0 {
                 user: maker,
                 base_size: 12,
                 quote_size: 3,
@@ -353,7 +353,7 @@ fn execute_totals_the_floor_of_the_whole_sweeps_notional() {
     assert_eq!(
         streamed(&book, outcome.response),
         encode_execute(
-            vec![UserBalanceChange {
+            vec![UserBalanceChangeV0 {
                 user: maker,
                 base_size: 8,
                 quote_size: 5,
@@ -435,7 +435,7 @@ fn a_market_at_the_execute_ceilings_streams_a_full_width_response() {
             .iter()
             .zip(orders.iter())
             .enumerate()
-            .map(|(i, (maker, order))| UserBalanceChange {
+            .map(|(i, (maker, order))| UserBalanceChangeV0 {
                 user: *maker,
                 base_size: 1,
                 quote_size: 100 + i as u64,
@@ -615,7 +615,7 @@ fn wincode_matches_the_reference_codec() {
     let other = anchor_lang_v2::prelude::Address::new_from_array([8u8; 32]);
 
     let changes = vec![
-        UserBalanceChange {
+        UserBalanceChangeV0 {
             user: UserRefV0 {
                 authority,
                 sub_account_id: 3,
@@ -624,7 +624,7 @@ fn wincode_matches_the_reference_codec() {
             quote_size: 101_000_000,
             completed_order_ids: vec![9, 10],
         },
-        UserBalanceChange {
+        UserBalanceChangeV0 {
             user: UserRefV0 {
                 authority: other,
                 sub_account_id: 0,

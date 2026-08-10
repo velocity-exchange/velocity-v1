@@ -325,7 +325,7 @@ pub mod amm_jit {
     fn router_pass_settles_external_clob_fills_against_loaded_makers() {
         use crate::state::prop_amm::{
             Direction, ExecuteResponseV0, ExternalQuoterExecutor, PriceLevel, QuoterType,
-            UserBalanceChange,
+            UserBalanceChangeV0,
         };
 
         struct MockClobExecutor {
@@ -363,7 +363,7 @@ pub mod amm_jit {
                 let quote_size =
                     ((size as u128) * (self.price as u128) / BASE_PRECISION_U64 as u128) as u64;
                 Ok(ExecuteResponseV0 {
-                    balance_changes: vec![UserBalanceChange {
+                    balance_changes: vec![UserBalanceChangeV0 {
                         user: self.user_ref,
                         base_size: size,
                         quote_size,
@@ -653,7 +653,7 @@ pub mod amm_jit {
     fn router_pass_rejects_an_external_quoter_naming_another_sources_maker() {
         use crate::state::prop_amm::{
             ClobRestingOrderV0, ClobUserRefV0, Direction, ExecuteResponseV0,
-            ExternalQuoterExecutor, PriceLevel, QuoterSubjects, QuoterType, UserBalanceChange,
+            ExternalQuoterExecutor, PriceLevel, QuoterSubjects, QuoterType, UserBalanceChangeV0,
         };
 
         /// Its book rests `resting`; its response names `names`.
@@ -691,7 +691,7 @@ pub mod amm_jit {
                 let quote_size =
                     ((size as u128) * (self.price as u128) / BASE_PRECISION_U64 as u128) as u64;
                 Ok(ExecuteResponseV0 {
-                    balance_changes: vec![UserBalanceChange {
+                    balance_changes: vec![UserBalanceChangeV0 {
                         user: self.names,
                         base_size: size,
                         quote_size,
@@ -945,7 +945,7 @@ pub mod amm_jit {
     fn router_pass_clamps_custom_book_to_the_quoter_users_margin() {
         use crate::state::prop_amm::{
             Direction, ExecuteResponseV0, ExternalQuoterExecutor, PriceLevel, QuoterType,
-            UserBalanceChange,
+            UserBalanceChangeV0,
         };
 
         struct MockCustomExecutor {
@@ -979,7 +979,7 @@ pub mod amm_jit {
                 let quote_size =
                     ((size as u128) * (self.price as u128) / BASE_PRECISION_U64 as u128) as u64;
                 Ok(ExecuteResponseV0 {
-                    balance_changes: vec![UserBalanceChange {
+                    balance_changes: vec![UserBalanceChangeV0 {
                         user: self.user_ref,
                         base_size: size,
                         quote_size,

@@ -42,7 +42,7 @@ pub const PRICE_LEVEL_BYTES: usize = 2 * core::mem::size_of::<u64>();
 /// Borsh width of one `completed_order_ids` entry.
 pub const ORDER_ID_BYTES: usize = core::mem::size_of::<u64>();
 
-/// Borsh width of a [`UserBalanceChange`] that completed no orders — the
+/// Borsh width of a [`UserBalanceChangeV0`] that completed no orders — the
 /// narrowest a balance-change record can be, and the width a full response of
 /// them is derived from.
 pub const CHANGE_MIN_BYTES: usize = USER_REF_BYTES + 2 * core::mem::size_of::<u64>() + COUNT_BYTES;
@@ -438,13 +438,13 @@ pub struct PriceLevel {
 }
 
 /// One user's share of an executed fill. Mirrors velocity's quoter-interface
-/// `UserBalanceChange`.
+/// `UserBalanceChangeV0`.
 ///
 /// `execute` writes this encoding into the response region field by field
 /// (see [`crate::response`]) rather than serializing this struct — the type
 /// remains the schema of record for that layout, and the response unit
 /// tests pin the two against each other.
-pub use quoter_spec::UserBalanceChange;
+pub use quoter_spec::UserBalanceChangeV0;
 
 /// Where in the market account the borsh response was written. Returned via
 /// return data by `quote_v0`/`execute_v0`.

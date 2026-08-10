@@ -364,7 +364,7 @@ fn the_reference_codec_matches_borsh() {
     let authority = Pubkey::new_unique();
     let response = ExecuteResponseV0 {
         balance_changes: vec![
-            UserBalanceChange {
+            UserBalanceChangeV0 {
                 user: ClobUserRefV0 {
                     authority,
                     sub_account_id: 3,
@@ -373,7 +373,7 @@ fn the_reference_codec_matches_borsh() {
                 quote_size: 101_000_000,
                 completed_order_ids: vec![9, 10],
             },
-            UserBalanceChange {
+            UserBalanceChangeV0 {
                 user: ClobUserRefV0 {
                     authority: Pubkey::new_unique(),
                     sub_account_id: 0,

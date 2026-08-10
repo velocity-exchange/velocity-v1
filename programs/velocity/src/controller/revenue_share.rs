@@ -18,6 +18,9 @@ use {
     anchor_lang::prelude::*,
 };
 
+#[cfg(test)]
+mod tests;
+
 /// Runs through the user's RevenueShareEscrow account and sweeps any accrued fees to the corresponding
 /// builders and referrer.
 ///

@@ -858,6 +858,49 @@ export function fillCorrelationSuffix(nodes: Array<NodeToFill>): string {
 	return ' takers: ' + JSON.stringify(takers);
 }
 
+/**
+ * Emits one "wide event": a single log line whose whole message is one JSON
+ * object, `{"event":"<name>", ...}`, with snake_case keys.
+ *
+ * This is the TypeScript counterpart of keep-rs's `tx_event` wide events
+ * (`emit_tx_event` / `emit_cross_decision_event` in `rust/keep-rs/src/filler.rs`).
+ * Both bots' payloads are read by the Order Trace Grafana dashboard
+ * (infrastructure-v3 `grafana/src/authored/order-history.ts`), which line-filters
+ * on `"event":"<name>"`, extracts the JSON with `| regexp "(?P<payload>\{.*\})"`
+ * and parses it into table columns. That extraction spans the FIRST `{` to the
+ * LAST `}` on the line, so the message must be the JSON and nothing else — the
+ * winston prefix (`[<ts>] <level>: `) contributes no braces.
+ *
+ * Keys are serialized alphabetically to match serde_json's BTreeMap ordering on
+ * the rust side, and `undefined` values are dropped so an unknown dimension is
+ * an absent column rather than a `null` one.
+ *
+ * Never throws. Callers include the tx confirmation loop, where an exception
+ * escaping into the surrounding `try` would abort the whole confirmation batch.
+ */
+export function logWideEvent(
+	event: string,
+	fields: Record<string, unknown>
+): void {
+	try {
+		const payload: Record<string, unknown> = {};
+		const keys = Object.keys(fields).concat('event').sort();
+		for (const key of keys) {
+			const value = key === 'event' ? event : fields[key];
+			if (value !== undefined) {
+				payload[key] = value;
+			}
+		}
+		logger.info(JSON.stringify(payload));
+	} catch (e) {
+		logger.error(
+			`logWideEvent failed for event ${event}: ${
+				e instanceof Error ? e.message : e
+			}`
+		);
+	}
+}
+
 export function getTransactionAccountMetas(
 	tx: VersionedTransaction,
 	lutAccounts: Array<AddressLookupTableAccount>

@@ -1,0 +1,5 @@
+---
+'@velocity-exchange/sdk': minor
+---
+
+Bound the small-depositor exception to the spot withdraw circuit breaker at market level (OtterSec #150). Onchain, `check_withdraw_limits` now treats the per-account bypass predicate as an eligibility filter only: the whole eligible cohort shares one `withdrawGuardThreshold` of room below the breaker floor, so splitting a deposit across subaccounts no longer multiplies the bypass. `calculateWithdrawLimit` returns a new `exceptionWithdrawLimit` (that shared budget, always at least `withdrawLimit`), and `User.getWithdrawalLimit` caps the bypass by it. Previously `getWithdrawalLimit` raised the limit to the user's full deposit whenever `canBypassWithdrawLimits` returned true, which over-predicted a withdrawal that reverts onchain with `DailyWithdrawLimit`. `canBypassWithdrawLimits` is unchanged but is now documented as eligibility only, not a promise of a successful withdrawal. `AdminClient.initializeSpotMarket` and `updateWithdrawGuardThreshold` doc comments for `withdrawGuardThreshold` are corrected: it is the level _below_ which the withdraw guards stop binding, not a cap above which withdraws are blocked.

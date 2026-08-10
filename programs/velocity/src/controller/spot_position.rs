@@ -4,7 +4,8 @@ use crate::{
     math::{
         casting::Cast,
         safe_math::SafeMath,
-        spot_withdraw::{check_deposit_limits, check_withdraw_limits},
+        spot_balance::get_token_amount,
+        spot_withdraw::{check_withdraw_limits, validate_deposit_cap_after_increase},
     },
     math_error, msg, safe_decrement, safe_increment,
     state::{
@@ -116,6 +117,12 @@ pub fn update_spot_balances_and_cumulative_deposits_with_limits(
 ) -> VelocityResult {
     let spot_position_index = user.force_get_spot_position_index(spot_market.market_index)?;
 
+    let deposit_token_amount_before = get_token_amount(
+        spot_market.deposit_balance,
+        spot_market,
+        &SpotBalanceType::Deposit,
+    )?;
+
     update_spot_balances_and_cumulative_deposits(
         token_amount,
         update_direction,
@@ -136,18 +143,16 @@ pub fn update_spot_balances_and_cumulative_deposits_with_limits(
         user.authority
     )?;
 
-    // Enforce the daily deposit cap on the shared credit path so every
-    // deposit-crediting caller (transfer_pools, end_swap, transfers) is bound,
-    // not just the direct `deposit` instruction. No-op when the market has no
-    // cap configured (`max_deposit_bps_per_day == 0`) and on withdraw-direction
-    // updates (deposits don't grow), so it only bites a real over-cap deposit.
-    validate!(
-        check_deposit_limits(spot_market)?,
-        ErrorCode::DailyDepositLimit,
-        "Spot Market {} has hit daily deposit limit (deposits exceed {} bps above 24h twap)",
-        spot_market.market_index,
-        spot_market.max_deposit_bps_per_day
-    )?;
+    // Enforce the daily deposit cap on the shared credit path so every deposit-crediting caller
+    // (transfer_pools, transfers) is bound, not just the direct `deposit` instruction. No-op when
+    // the market has no cap configured (`max_deposit_bps_per_day == 0`).
+    //
+    // Gated on the market's deposit level having actually risen. This predicate is a market-wide
+    // level check, and validating it unconditionally here made an over-cap market reject every
+    // caller of this path — withdrawals and repayments included, though those lower the level and
+    // are what brings a market back under its cap. Liquidation bypasses this path, so the block
+    // was one-sided (finding #118).
+    validate_deposit_cap_after_increase(spot_market, deposit_token_amount_before)?;
 
     validate!(
         matches!(

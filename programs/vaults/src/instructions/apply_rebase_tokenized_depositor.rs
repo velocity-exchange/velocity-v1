@@ -32,10 +32,12 @@ pub fn apply_rebase_tokenized_depositor<'info>(
     let vault_equity =
         vault.calculate_equity(&user, &perp_market_map, &spot_market_map, &mut oracle_map)?;
 
+    // #122: the guarded variant. This instruction carries no signer, so it must not
+    // be able to floor the shared backing for a live token supply to zero.
     ctx.accounts
         .tokenized_vault_depositor
         .load_mut()?
-        .apply_rebase(&mut vault, &mut vp, vault_equity)?;
+        .apply_rebase_public(&mut vault, &mut vp, vault_equity)?;
 
     Ok(())
 }

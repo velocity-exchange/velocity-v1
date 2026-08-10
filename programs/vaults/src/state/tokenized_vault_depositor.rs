@@ -154,6 +154,51 @@ impl TokenizedVaultDepositor {
         }
     }
 
+    /// Permissionless lazy rebase for the signerless
+    /// `apply_rebase_tokenized_depositor` instruction.
+    ///
+    /// #122 — the tokenized analogue of #106. These `vault_shares` are the *shared*
+    /// backing for the entire tokenized SPL supply, and the base rebase floors them
+    /// by integer division. `ApplyRebaseTokenizedDepositor` carries no signer at all,
+    /// so any caller could commit the lazy rebase at a moment when the divisor floors
+    /// that backing to zero while the mint's supply is still live. Every holder then
+    /// computes zero redeemable shares and `redeem_tokens` aborts *before* burning,
+    /// so the tokens are permanently unredeemable — and unlike a paper loss this does
+    /// not heal when the portfolio recovers, because the backing shares are gone.
+    ///
+    /// So refuse to let a third party destroy that backing. As with #106 the owner
+    /// side is unaffected: the signed lifecycle actions still rebase through the
+    /// unguarded path, which makes a refusal recoverable where a floored backing is
+    /// not.
+    ///
+    /// Deliberately calls `VaultDepositorBase::apply_rebase` rather than the inherent
+    /// `apply_rebase` above, to keep this path byte-for-byte what it was before the
+    /// guard. Method resolution already sent the instruction to the trait method (the
+    /// inherent one is private to this module), so the signerless path has never
+    /// refreshed the `last_vault_shares` checkpoint that the signed paths maintain.
+    /// That asymmetry looks wrong, but it is a separate concern from #122 and is not
+    /// silently changed here.
+    pub fn apply_rebase_public(
+        &mut self,
+        vault: &mut Vault,
+        vault_protocol: &mut Option<RefMut<VaultProtocol>>,
+        vault_equity: u64,
+    ) -> Result<Option<u128>> {
+        let vault_shares_before = self.get_vault_shares();
+
+        let rebase_divisor =
+            VaultDepositorBase::apply_rebase(self, vault, vault_protocol, vault_equity)?;
+
+        validate!(
+            !(vault_shares_before > 0 && self.get_vault_shares() == 0),
+            ErrorCode::InvalidVaultRebase,
+            "public rebase would floor the tokenized depositor's backing shares to zero \
+             and strand the live token supply; rebase via a signed action instead"
+        )?;
+
+        Ok(rebase_divisor)
+    }
+
     #[allow(clippy::too_many_arguments)]
     pub fn tokenize_shares(
         self: &mut TokenizedVaultDepositor,
@@ -728,5 +773,80 @@ mod tests {
             returned_vp.is_some(),
             "redeem_tokens must return the provider for the instruction to keep alive"
         );
+    }
+    /// OtterSec #122: the signerless `apply_rebase_tokenized_depositor` must not floor
+    /// the shared backing for a live token supply to zero. Mirrors the #106 guard on
+    /// `VaultDepositor::apply_rebase_public`.
+    #[test]
+    fn test_tokenized_apply_rebase_public_rejects_flooring_backing_to_zero() {
+        let now = 1000;
+
+        // Tiny backing: the divisor floors it to zero, which would leave every token
+        // holder computing zero redeemable shares with `redeem_tokens` aborting before
+        // it burns. Must be rejected.
+        {
+            let mut vault = Vault::default();
+            let mut vp = None;
+            vault.total_shares = 200_000_000;
+            vault.user_shares = 200_000_000;
+            let tvd = &mut TokenizedVaultDepositor::new(
+                Pubkey::default(),
+                Pubkey::default(),
+                Pubkey::default(),
+                0,
+                0,
+                now,
+            );
+            tvd.set_vault_shares(10);
+            let vault_equity: u64 = 2; // divisor 1e7 -> 10 shares floor to 0
+            let res = tvd.apply_rebase_public(&mut vault, &mut vp, vault_equity);
+            assert!(
+                res.is_err(),
+                "public rebase must reject flooring live token backing to zero"
+            );
+            // Confirmed the unguarded path really does floor it, i.e. the guard is
+            // what prevents this rather than the arithmetic being harmless.
+            let mut vault2 = Vault::default();
+            let mut vp2 = None;
+            vault2.total_shares = 200_000_000;
+            vault2.user_shares = 200_000_000;
+            let tvd2 = &mut TokenizedVaultDepositor::new(
+                Pubkey::default(),
+                Pubkey::default(),
+                Pubkey::default(),
+                0,
+                0,
+                now,
+            );
+            tvd2.set_vault_shares(10);
+            VaultDepositorBase::apply_rebase(tvd2, &mut vault2, &mut vp2, vault_equity).unwrap();
+            assert_eq!(
+                tvd2.get_vault_shares(),
+                0,
+                "fixture must actually floor to zero to reproduce #122"
+            );
+        }
+
+        // Backing large enough to survive the divisor: unaffected.
+        {
+            let mut vault = Vault::default();
+            let mut vp = None;
+            vault.total_shares = 200_000_000;
+            vault.user_shares = 200_000_000;
+            let tvd = &mut TokenizedVaultDepositor::new(
+                Pubkey::default(),
+                Pubkey::default(),
+                Pubkey::default(),
+                0,
+                0,
+                now,
+            );
+            tvd.set_vault_shares(100_000_000);
+            let vault_equity: u64 = 2; // divisor 1e7 -> 1e8 shares -> 10 (nonzero)
+            let res = tvd.apply_rebase_public(&mut vault, &mut vp, vault_equity);
+            assert!(res.is_ok(), "public rebase should succeed: {:?}", res.err());
+            assert_eq!(tvd.get_vault_shares_base(), vault.shares_base);
+            assert!(tvd.get_vault_shares() > 0);
+        }
     }
 }

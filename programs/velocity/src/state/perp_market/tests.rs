@@ -656,3 +656,70 @@ mod amm_can_fill_order_tests {
         assert!(!can_fill);
     }
 }
+
+/// OtterSec #149 — the liquidation guard must fire only in the window where a perp
+/// market has passed `expiry_ts` but has no committed settlement price yet.
+///
+/// Every ordinary user path already refuses past expiry via `is_in_settlement(now)`, but
+/// direct permissionless liquidation did not, so it kept valuing and transferring the
+/// position at the *live* oracle until a warm admin flipped the status to `Settlement`.
+///
+/// The guard deliberately does **not** reuse `is_in_settlement`: that is also true once
+/// the status *is* `Settlement`/`Delisted`, by which point `expiry_price` is committed and
+/// liquidating during the wind-down is a legitimate way to resolve bad debt. This pins the
+/// distinction, which an existing delisting test caught when the first attempt over-blocked.
+mod expired_awaiting_settlement {
+    use crate::state::{market_status::MarketStatus, perp_market::PerpMarket};
+
+    /// Mirrors the predicate used in `liquidate_perp` / `liquidate_perp_with_fill`.
+    fn expired_awaiting_settlement(market: &PerpMarket, now: i64) -> bool {
+        market.expiry_ts != 0
+            && now >= market.expiry_ts
+            && !matches!(
+                market.status,
+                MarketStatus::Settlement | MarketStatus::Delisted
+            )
+    }
+
+    fn market(status: MarketStatus, expiry_ts: i64) -> PerpMarket {
+        PerpMarket {
+            status,
+            expiry_ts,
+            ..PerpMarket::default()
+        }
+    }
+
+    #[test]
+    fn blocks_only_the_expired_but_unsettled_window() {
+        let expiry = 1_000_i64;
+
+        // Active and not yet expired: liquidation proceeds as normal.
+        let m = market(MarketStatus::Active, expiry);
+        assert!(!expired_awaiting_settlement(&m, expiry - 1));
+
+        // Expired, status not yet flipped: THIS is the window #149 describes. No expiry
+        // price exists, so a live-oracle liquidation must be refused.
+        assert!(expired_awaiting_settlement(&m, expiry));
+        assert!(expired_awaiting_settlement(&m, expiry + 10_000));
+
+        // Status flipped: `expiry_price` is committed, so wind-down liquidation is allowed
+        // again. Reusing `is_in_settlement` here would have wrongly kept blocking.
+        for status in [MarketStatus::Settlement, MarketStatus::Delisted] {
+            let m = market(status, expiry);
+            assert!(
+                !expired_awaiting_settlement(&m, expiry + 10_000),
+                "{:?} must not be blocked — the expiry price is committed",
+                status
+            );
+            assert!(
+                m.is_in_settlement(expiry + 10_000),
+                "sanity: is_in_settlement IS true here, which is why it was the wrong \
+                 predicate to gate on"
+            );
+        }
+
+        // A perpetual market (expiry_ts == 0) is never affected.
+        let perpetual = market(MarketStatus::Active, 0);
+        assert!(!expired_awaiting_settlement(&perpetual, i64::MAX));
+    }
+}

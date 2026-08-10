@@ -413,13 +413,33 @@ pub fn handle_initialize_revenue_share_escrow<'c: 'info, 'info>(
     ctx: Context<'info, InitializeRevenueShareEscrow<'info>>,
     num_orders: u16,
 ) -> Result<()> {
+    let mut user_stats = ctx.accounts.user_stats.load_mut()?;
+
+    // `escrow.referrer` is snapshotted here and never written again, while
+    // `user_stats.referrer` is only ever set by the first `initialize_user` — so the
+    // snapshot is correct if and only if that call has already happened. `authority`
+    // is unchecked and only `payer` signs, so without this gate any third party could
+    // create another authority's escrow in the window between `initialize_user_stats`
+    // and its first `initialize_user`, freezing a defaulted referrer into the escrow
+    // and permanently suppressing that user's referral rewards and referee discount
+    // (nothing, not even the permissionless resize, can rewrite the field).
+    // Requiring a created subaccount puts the escrow strictly after the point where
+    // the referrer becomes immutable.
+    //
+    // Checked before the escrow is written or resized: it is a precondition on state
+    // this handler does not own, so there is no reason to size the orders vec first.
+    validate!(
+        user_stats.number_of_sub_accounts_created > 0,
+        ErrorCode::UserNotFound,
+        "revenue share escrow requires the authority's first user to exist, otherwise it snapshots a defaulted referrer"
+    )?;
+
     let escrow = &mut ctx.accounts.escrow;
     escrow.authority = ctx.accounts.authority.key();
     escrow
         .orders
         .resize_with(num_orders as usize, RevenueShareOrder::default);
 
-    let mut user_stats = ctx.accounts.user_stats.load_mut()?;
     escrow.referrer = user_stats.referrer;
     user_stats.update_builder_referral_status();
 
@@ -581,6 +601,17 @@ pub fn handle_deposit<'c: 'info, 'info>(
 
     let is_borrow_before = user.spot_positions[position_index].is_borrow();
 
+    // Snapshot the market's deposit level so the daily cap below can be gated on real growth.
+    // This instruction also repays borrows (see `DepositExplanation::RepayBorrow`), and a
+    // repayment reduces `borrow_balance` while leaving `deposit_balance` untouched, so it must
+    // not be throttled by a level predicate — that is the exit lock finding #118 removed from
+    // the shared credit path.
+    let deposit_token_amount_before = math::spot_balance::get_token_amount(
+        spot_market.deposit_balance,
+        &spot_market,
+        &SpotBalanceType::Deposit,
+    )?;
+
     let force_reduce_only = spot_market.is_reduce_only();
 
     // if reduce only, have to compare ix amount to current borrow amount
@@ -714,12 +745,13 @@ pub fn handle_deposit<'c: 'info, 'info>(
 
     spot_market.validate_max_token_deposits_and_borrows(false)?;
 
-    validate!(
-        math::spot_withdraw::check_deposit_limits(spot_market)?,
-        ErrorCode::DailyDepositLimit,
-        "Spot Market {} has hit daily deposit limit (deposits exceed {} above 24h twap, precision 1e6)",
-        spot_market.market_index,
-        spot_market.max_deposit_bps_per_day
+    // Gated on real growth for the same reason as the shared credit path (finding #118): the cap
+    // is a market-wide *level* predicate, so validating it unconditionally here blocked a
+    // borrow repayment through this instruction whenever the market already sat above its cap —
+    // one of the actions that brings the level back down, and one a liquidatable user needs.
+    math::spot_withdraw::validate_deposit_cap_after_increase(
+        spot_market,
+        deposit_token_amount_before,
     )?;
 
     Ok(())
@@ -4340,6 +4372,12 @@ pub fn handle_end_swap<'c: 'info, 'info>(
         .force_get_spot_position_mut(out_market_index)?
         .get_signed_token_amount(&out_spot_market)?;
 
+    let out_deposit_token_amount_before = math::spot_balance::get_token_amount(
+        out_spot_market.deposit_balance,
+        &out_spot_market,
+        &SpotBalanceType::Deposit,
+    )?;
+
     update_spot_balances_and_cumulative_deposits(
         amount_out_after_fee.cast()?,
         &SpotBalanceType::Deposit,
@@ -4359,6 +4397,18 @@ pub fn handle_end_swap<'c: 'info, 'info>(
         &SpotBalanceType::Deposit,
         &mut out_spot_market,
         false,
+    )?;
+
+    // The swap's out leg credits deposits through the plain balance update rather than the shared
+    // `_with_limits` path, so before this the daily deposit cap did not apply to it at all: a
+    // swapper could lift a market's deposit level arbitrarily far above its cap, and (until the
+    // growth gate above) thereby lock every other user out of withdrawing or repaying in that
+    // market while liquidation stayed live against them (finding #118). Capped here, after the
+    // revenue-pool fee credit so the whole out-side increase is accounted, and gated on real
+    // growth so a swap that merely repays an existing borrow is never rejected.
+    math::spot_withdraw::validate_deposit_cap_after_increase(
+        &out_spot_market,
+        out_deposit_token_amount_before,
     )?;
 
     let out_position_is_reduced = out_token_amount_before < 0

@@ -93,6 +93,44 @@ pub fn check_deposit_limits(spot_market: &SpotMarket) -> VelocityResult<bool> {
     Ok(deposit_token_amount <= max_deposit_token)
 }
 
+/// Enforce the daily deposit cap across a state transition, but only when the market's deposit
+/// level actually **grew**.
+///
+/// `check_deposit_limits` is a level predicate over the whole market ("are total deposits within
+/// the cap?"), so validating it unconditionally turns a deposit *rate limit* into a market-wide
+/// lock: once the level sits above the cap for any reason, every caller of the shared credit path
+/// reverts with `DailyDepositLimit` — including withdrawals and borrow repayments, which lower or
+/// leave the deposit level untouched and are precisely the actions that bring a market back under
+/// its cap. Liquidation does not route through that path, so the lock is one-sided: users cannot
+/// exit or repay while they remain liquidatable (finding #118).
+///
+/// Gating on growth keeps the cap throttling exactly the operations it is meant to throttle. Pass
+/// the market's deposit token amount from before the balance update.
+pub fn validate_deposit_cap_after_increase(
+    spot_market: &SpotMarket,
+    deposit_token_amount_before: u128,
+) -> VelocityResult {
+    let deposit_token_amount_after = get_token_amount(
+        spot_market.deposit_balance,
+        spot_market,
+        &SpotBalanceType::Deposit,
+    )?;
+
+    if deposit_token_amount_after <= deposit_token_amount_before {
+        return Ok(());
+    }
+
+    validate!(
+        check_deposit_limits(spot_market)?,
+        ErrorCode::DailyDepositLimit,
+        "Spot Market {} has hit daily deposit limit (deposits exceed {} bps above 24h twap)",
+        spot_market.market_index,
+        spot_market.max_deposit_bps_per_day
+    )?;
+
+    Ok(())
+}
+
 pub fn calculate_max_borrow_token_amount(
     deposit_token_amount: u128,
     deposit_token_twap: u128,

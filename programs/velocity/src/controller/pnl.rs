@@ -97,7 +97,8 @@ pub fn settle_pnl(
 
     let mut market = perp_market_map.get_ref_mut(&market_index)?;
 
-    let oracle_price = oracle_map.get_price_data(&market.oracle_id())?.price;
+    let oracle_price_data = *oracle_map.get_price_data(&market.oracle_id())?;
+    let oracle_price = oracle_price_data.price;
 
     validate_market_within_price_band(&market, state, oracle_price)?;
 
@@ -148,7 +149,8 @@ pub fn settle_pnl(
     let mut perp_market = perp_market_map.get_ref_mut(&market_index)?;
 
     if perp_market.amm.is_curve_update_enabled() {
-        let healthy_oracle = perp_market.is_recent_oracle_valid(oracle_map.slot)?;
+        let healthy_oracle =
+            perp_market.is_recent_oracle_valid(oracle_map.slot, &oracle_price_data)?;
 
         if !healthy_oracle {
             let (_, oracle_validity) = oracle_map.get_price_data_and_validity(
@@ -187,6 +189,17 @@ pub fn settle_pnl(
                     );
                     return mode.result(ErrorCode::AMMNotUpdatedInSameSlot, market_index, &msg);
                 }
+
+                // Both cached attestations hold, so the only reason
+                // `healthy_oracle` is false is a sample mismatch: the oracle
+                // account was rewritten after the AMM update within this
+                // slot. The cached verdict does not cover the sample being
+                // consumed; reject on its current validity.
+                let msg = format!(
+                    "Market={} oracle rewritten after same-slot AMM update; current sample is invalid ({})",
+                    market_index, oracle_validity
+                );
+                return mode.result(oracle_validity.get_error_code(), market_index, &msg);
             }
 
             // #70: SettlePnl deliberately admits StaleForMargin / InsufficientDataPoints — a

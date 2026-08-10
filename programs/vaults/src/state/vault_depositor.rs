@@ -1952,4 +1952,100 @@ mod vault_v1_tests {
         assert_eq!(vd1.get_vault_shares_base(), vault.shares_base);
         assert_eq!(vd2.get_vault_shares_base(), vault.shares_base);
     }
+    /// OtterSec #138 — a Token-unit share transfer must move cost basis by the value of
+    /// the shares actually transferred, not by the caller's raw token request.
+    ///
+    /// `get_withdraw_value_and_shares` returns `withdraw_value = withdraw_amount` verbatim
+    /// for `WithdrawUnit::Token` while *flooring* `n_shares` out of it. Crediting the
+    /// recipient with the un-floored request handed them more basis than their new shares
+    /// were worth, sheltering that much future profit from the manager/protocol performance
+    /// fees — and symmetrically over-debiting the sender. `Shares`/`SharesPercent` already
+    /// derived value from `n_shares`, so the fix makes all three units agree.
+    #[test]
+    fn test_token_unit_transfer_moves_basis_by_transferred_shares() {
+        use {
+            crate::state::VaultDepositorBase,
+            velocity::math::insurance::if_shares_to_vault_amount as depositor_shares_to_vault_amount,
+        };
+        let now = 0;
+        let mut vault = Vault::default();
+        let vp = RefCell::new(VaultProtocol::default());
+
+        let vd1 = &mut VaultDepositor::new(
+            Pubkey::default(),
+            Pubkey::new_unique(),
+            Pubkey::new_unique(),
+            now,
+        );
+        let vd2 = &mut VaultDepositor::new(
+            Pubkey::default(),
+            Pubkey::new_unique(),
+            Pubkey::new_unique(),
+            now,
+        );
+
+        let vault_equity: u64 = 100 * QUOTE_PRECISION_U64;
+        vd1.deposit(
+            vault_equity,
+            vault_equity,
+            &mut vault,
+            &mut Some(vp.borrow_mut()),
+            &mut None,
+            now,
+            0,
+        )
+        .unwrap();
+
+        // Make the share price > 1 so a token request floors to fewer shares than it
+        // nominally buys: 3x equity against the same share supply.
+        let vault_equity = 300 * QUOTE_PRECISION_U64;
+
+        // A request that cannot divide evenly into shares at this price.
+        let request: u64 = 7;
+
+        let from_basis_before = vd1.get_net_deposits();
+        let to_basis_before = vd2.get_net_deposits();
+
+        vd1.transfer_shares(
+            vd2,
+            &mut vault,
+            &mut Some(vp.borrow_mut()),
+            &mut None,
+            request,
+            WithdrawUnit::Token,
+            vault_equity,
+            now,
+            0,
+        )
+        .unwrap();
+
+        let shares_moved = vd2.get_vault_shares();
+        assert!(shares_moved > 0, "fixture must move some shares");
+
+        // The value the shares are actually worth, floored the same way the transfer floors.
+        let expected =
+            depositor_shares_to_vault_amount(shares_moved, vault.total_shares, vault_equity)
+                .unwrap()
+                .min(vault_equity);
+
+        let to_basis_delta = vd2.get_net_deposits() - to_basis_before;
+        let from_basis_delta = from_basis_before - vd1.get_net_deposits();
+
+        assert_eq!(
+            to_basis_delta, expected as i64,
+            "recipient basis must match the value of the shares received, not the raw \
+             {} token request",
+            request
+        );
+        assert_eq!(
+            from_basis_delta, expected as i64,
+            "sender basis must be debited by the same amount (conservation)"
+        );
+        assert!(
+            to_basis_delta < request as i64,
+            "fixture must actually floor, else it does not reproduce #138 ({} !< {})",
+            to_basis_delta,
+            request
+        );
+    }
 }

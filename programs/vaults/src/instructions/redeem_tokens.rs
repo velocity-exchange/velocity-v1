@@ -108,6 +108,18 @@ pub fn redeem_tokens<'info>(
     // last_vault_shares to the post-transfer balance so future tokenize_shares still works.
     tokenized_vault_depositor.checkpoint_vault_shares();
 
+    // #140: if that emptied the pool of shares and tokens, its cost basis is now orphaned with nobody
+    // behind it. Above value it is a free loss shelter for the next tokenizer; below value it is an
+    // unearned fee liability for them. Clear it.
+    //
+    // Test `tokens_to_burn == total_supply_before` rather than reading the post-burn supply: the
+    // depositor is dropped before `ctx.burn(...)` runs. The two are equivalent, given the
+    // `supply_delta == tokens_to_burn` assertion this instruction already makes.
+    if tokenized_vault_depositor.get_vault_shares() == 0 && tokens_to_burn == total_supply_before {
+        msg!("tokenized depositor emptied; clearing orphaned cost basis");
+        tokenized_vault_depositor.reset_orphaned_cost_basis();
+    }
+
     let manager_shares_after = vault.get_manager_shares(&mut vp)?;
     let protocol_shares_after = vault.get_protocol_shares(&mut vp);
     let total_shares_after = vault_depositor

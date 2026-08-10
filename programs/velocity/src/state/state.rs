@@ -282,6 +282,10 @@ impl State {
         (self.feature_bit_flags & (FeatureBitFlags::BuilderCodes as u8)) > 0
     }
 
+    pub fn vamm_maker_rebate_enabled(&self) -> bool {
+        (self.feature_bit_flags & (FeatureBitFlags::VammMakerRebate as u8)) > 0
+    }
+
     pub fn allow_settle_lp_pool(&self) -> bool {
         (self.lp_pool_feature_bit_flags & (LpPoolFeatureBitFlags::SettleLpPool as u8)) > 0
     }
@@ -396,6 +400,7 @@ pub enum FeatureBitFlags {
     MmOracleUpdate = 0b00000001,
     MedianTriggerPrice = 0b00000010,
     BuilderCodes = 0b00000100,
+    VammMakerRebate = 0b00001000,
 }
 
 #[derive(Clone, Copy, PartialEq, Debug, Eq)]

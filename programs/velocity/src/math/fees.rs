@@ -66,13 +66,15 @@ pub struct FillFees {
     pub protocol_fee: u64,
     /// Insurance fund's cut of the trade-fee remainder -> `revenue_pool`.
     pub if_fee: u64,
-    /// AMM's fee provision: its cut of the trade-fee remainder. Booked into
-    /// the AMM's ledger at fill, tokenized into `amm.fee_pool` by the sweep,
-    /// and clawable in bankruptcy (tracked via `amm_protocol_fees_received` /
-    /// `pending_amm_provision`).
+    /// AMM's fee provision: its cut of the trade-fee remainder, plus (when
+    /// the vamm-maker-rebate feature is enabled) the maker rebate the AMM
+    /// earns for making the fill. Booked into the AMM's ledger at fill,
+    /// tokenized into `amm.fee_pool` by the sweep, and clawable in bankruptcy
+    /// (tracked via `amm_protocol_fees_received` / `pending_amm_provision`).
     pub amm_fee: u64,
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn calculate_fee_for_fulfillment_with_amm(
     user_stats: &UserStats,
     quote_asset_amount: u64,
@@ -85,6 +87,7 @@ pub fn calculate_fee_for_fulfillment_with_amm(
     is_post_only: bool,
     fee_adjustment: i16,
     builder_fee_bps: Option<u16>,
+    vamm_maker_rebate: bool,
 ) -> VelocityResult<FillFees> {
     let fee_tier = determine_user_fee_tier(user_stats, fee_structure, &MarketType::Perp)?;
 
@@ -162,8 +165,23 @@ pub fn calculate_fee_for_fulfillment_with_amm(
         // books ONLY its own cut + its spread surplus; the protocol / IF
         // carveouts accrue as pending counters and are materialized out of
         // the pnl pool by `sweep_market_fees` — they never transit the AMM.
-        let remainder = fee.safe_sub(filler_reward)?.safe_sub(referrer_reward)?;
+        let mut remainder = fee.safe_sub(filler_reward)?.safe_sub(referrer_reward)?;
+
+        // when enabled, the AMM earns the maker rebate for making this fill.
+        // Carved off the remainder before the three-way split (like the
+        // user-maker rebate) and folded into `amm_fee`, so it rides the
+        // existing AMM ledger / pending-provision plumbing. Clamped to the
+        // remainder: fee-structure numerators are admin-mutable, so the
+        // rebate is not guaranteed to fit.
+        let amm_rebate = if vamm_maker_rebate {
+            calculate_maker_rebate(quote_asset_amount, &fee_tier, fee_adjustment)?.min(remainder)
+        } else {
+            0
+        };
+        remainder = remainder.safe_sub(amm_rebate)?;
+
         let (amm_fee, if_fee, protocol_fee) = split_fee_remainder(remainder, fee_structure)?;
+        let amm_fee = amm_fee.safe_add(amm_rebate)?;
 
         let fee_to_market = amm_fee
             .cast::<i64>()?

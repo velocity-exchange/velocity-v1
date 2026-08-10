@@ -1407,6 +1407,7 @@ pub fn fill_perp_order(
         fill_mode,
         oracle_stale_for_margin,
         rev_share_escrow,
+        state.vamm_maker_rebate_enabled(),
     )?;
 
     if base_asset_amount != 0 {
@@ -1852,6 +1853,7 @@ fn fulfill_perp_order(
     fill_mode: FillMode,
     oracle_stale_for_margin: bool,
     rev_share_escrow: &mut Option<&mut RevenueShareEscrowZeroCopyMut>,
+    vamm_maker_rebate: bool,
 ) -> VelocityResult<(u64, u64)> {
     let market_index = user.orders[user_order_index].market_index;
 
@@ -1988,6 +1990,7 @@ fn fulfill_perp_order(
                     fill_mode.is_liquidation(),
                     amm_jit_allowed,
                     rev_share_escrow,
+                    vamm_maker_rebate,
                 )?;
                 (fill_base, fill_quote)
             }
@@ -2028,6 +2031,7 @@ fn fulfill_perp_order(
                     fill_mode.is_liquidation(),
                     amm_jit_allowed,
                     rev_share_escrow,
+                    vamm_maker_rebate,
                 )?;
 
                 if maker_fill_base != 0 {
@@ -2486,6 +2490,7 @@ fn settle_amm_house_fill(
     oracle_map: &mut OracleMap,
     now: i64,
     slot: u64,
+    vamm_maker_rebate: bool,
 ) -> VelocityResult<(u64, u64)> {
     // For sole-AMM steps with a post_only taker, override the
     // fill's quote at the order's limit price (the taker, acting
@@ -2542,6 +2547,7 @@ fn settle_amm_house_fill(
         order_post_only,
         market.fee_adjustment,
         builder_order_fee_bps,
+        vamm_maker_rebate,
     )?;
     let builder_fee = builder_fee_option.unwrap_or(0);
 
@@ -3100,6 +3106,7 @@ pub fn fulfill_perp_order_step(
     // AMM JIT in the Match branch. Excludes auction-timing gates.
     amm_jit_allowed: bool,
     rev_share_escrow: &mut Option<&mut RevenueShareEscrowZeroCopyMut>,
+    vamm_maker_rebate: bool,
 ) -> VelocityResult<(u64, u64, u64)> {
     // ---- 1. Capture taker order fields. ----
     let market_index = market.market_index;
@@ -3447,6 +3454,7 @@ pub fn fulfill_perp_order_step(
                     oracle_map,
                     now,
                     slot,
+                    vamm_maker_rebate,
                 )?;
                 total_base_filled = total_base_filled.safe_add(base_filled)?;
                 total_quote_filled = total_quote_filled.safe_add(quote_filled)?;

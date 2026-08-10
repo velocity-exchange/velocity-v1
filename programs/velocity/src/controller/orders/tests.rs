@@ -204,6 +204,7 @@ pub mod fulfill_order_with_maker_order {
             // Legacy match path always allowed AMM JIT participation.
             true,
             rev_share_escrow,
+            false,
         );
         // Restore caller's `maker_stats` so the test can keep using it after.
         *maker_stats = maker_stats_opt;
@@ -3161,6 +3162,7 @@ pub mod fulfill_order {
             FillMode::Fill,
             false,
             &mut None,
+            false,
         )
         .unwrap();
 
@@ -3364,6 +3366,7 @@ pub mod fulfill_order {
             FillMode::Fill,
             false,
             &mut None,
+            false,
         )
         .unwrap();
 
@@ -3527,6 +3530,7 @@ pub mod fulfill_order {
             FillMode::Fill,
             false,
             &mut None,
+            false,
         )
         .unwrap();
 
@@ -3685,6 +3689,7 @@ pub mod fulfill_order {
             FillMode::Fill,
             false,
             &mut None,
+            false,
         )
         .unwrap();
 
@@ -3898,6 +3903,7 @@ pub mod fulfill_order {
             FillMode::Fill,
             false,
             &mut None,
+            false,
         )
         .unwrap();
 
@@ -4102,6 +4108,7 @@ pub mod fulfill_order {
             FillMode::Fill,
             false,
             &mut None,
+            false,
         )
         .unwrap();
 
@@ -4321,6 +4328,7 @@ pub mod fulfill_order {
             FillMode::Fill,
             false,
             &mut None,
+            false,
         )
         .unwrap();
 
@@ -4504,6 +4512,7 @@ pub mod fulfill_order {
             FillMode::Fill,
             false,
             &mut None,
+            false,
         )
         .unwrap();
 
@@ -4719,6 +4728,7 @@ pub mod fulfill_order {
             FillMode::Fill,
             false,
             &mut None,
+            false,
         );
 
         assert!(result.is_ok());
@@ -4920,6 +4930,7 @@ pub mod fulfill_order {
             FillMode::Fill,
             false,
             &mut None,
+            false,
         );
 
         assert_eq!(result, Err(ErrorCode::InsufficientCollateral));
@@ -5074,6 +5085,7 @@ pub mod fulfill_order {
             FillMode::Fill,
             false,
             &mut None,
+            false,
         )
         .unwrap();
 
@@ -5258,6 +5270,7 @@ pub mod fulfill_order {
             FillMode::Fill,
             false,
             &mut None,
+            false,
         )
         .unwrap();
 
@@ -5612,6 +5625,7 @@ pub mod fulfill_order {
     //         false,
     //         true,
     //         &mut None,
+    //         false    false,
     //         false)
     //     .unwrap();
     //
@@ -5859,6 +5873,7 @@ pub mod fulfill_order {
             FillMode::Fill,
             false,
             &mut None,
+            false,
         )
         .unwrap();
 
@@ -6120,6 +6135,7 @@ pub mod fulfill_order {
             FillMode::Fill,
             false,
             &mut None,
+            false,
         )
         .unwrap();
 
@@ -6328,6 +6344,7 @@ pub mod fulfill_order {
             FillMode::Fill,
             false,
             &mut None,
+            false,
         )
         .unwrap();
 
@@ -6504,6 +6521,7 @@ pub mod fulfill_order {
             FillMode::Fill,
             false,
             &mut None,
+            false,
         )
         .unwrap();
 

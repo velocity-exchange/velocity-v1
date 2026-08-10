@@ -705,11 +705,14 @@ impl User {
             if let Some(net_equity) =
                 calculate_net_equity_for_floor(self, perp_market_map, spot_market_map, oracle_map)?
             {
+                // The floor restricts the user here, so take the lower bound.
+                // A stale-high price must not buy a withdrawal through the
+                // floor.
                 validate!(
-                    !self.is_below_buffered_equity_floor(net_equity),
+                    !self.is_below_buffered_equity_floor(net_equity.lower),
                     ErrorCode::EquityBelowFloor,
                     "net equity {} below equity floor {} + buffer {}",
-                    net_equity,
+                    net_equity.lower,
                     self.equity_floor,
                     self.equity_floor_buffer
                 )?;
@@ -759,11 +762,13 @@ impl User {
         if let Some(net_equity) =
             calculate_net_equity_for_floor(self, perp_market_map, spot_market_map, oracle_map)?
         {
+            // The floor restricts the user here, so take the lower bound. A
+            // stale-high price must not buy a withdrawal through the floor.
             validate!(
-                !self.is_below_buffered_equity_floor(net_equity),
+                !self.is_below_buffered_equity_floor(net_equity.lower),
                 ErrorCode::EquityBelowFloor,
                 "net equity {} below equity floor {} + buffer {}",
-                net_equity,
+                net_equity.lower,
                 self.equity_floor,
                 self.equity_floor_buffer
             )?;
@@ -816,14 +821,21 @@ impl User {
             calculation
         )?;
 
-        validate!(
-            !self.is_below_buffered_equity_floor(calculation.total_collateral),
-            ErrorCode::EquityBelowFloor,
-            "total collateral {} below equity floor {} + buffer {}",
-            calculation.total_collateral,
-            self.equity_floor,
-            self.equity_floor_buffer
-        )?;
+        // Measured as net equity, matching every other floor gate. The margin
+        // numerator never subtracts borrows, so it passes where net equity
+        // fails. The floor restricts the user here, so take the lower bound.
+        if let Some(net_equity) =
+            calculate_net_equity_for_floor(self, perp_market_map, spot_market_map, oracle_map)?
+        {
+            validate!(
+                !self.is_below_buffered_equity_floor(net_equity.lower),
+                ErrorCode::EquityBelowFloor,
+                "net equity {} below equity floor {} + buffer {}",
+                net_equity.lower,
+                self.equity_floor,
+                self.equity_floor_buffer
+            )?;
+        }
 
         Ok(true)
     }

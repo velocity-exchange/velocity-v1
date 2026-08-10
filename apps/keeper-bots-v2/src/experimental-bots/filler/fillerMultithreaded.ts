@@ -19,6 +19,8 @@ import {
 	MakerInfo,
 	MarketType,
 	NodeToFill,
+	OrderActionRecord,
+	parseLogs,
 	PerpMarkets,
 	PriorityFeeSubscriber,
 	QUOTE_PRECISION,
@@ -45,7 +47,7 @@ import {
 	VersionedTransaction,
 } from '@solana/web3.js';
 import { logger } from '../../logger';
-import { getErrorCode } from '../../error';
+import { getErrorCode, getErrorCodeFromSimError } from '../../error';
 import { selectMakers } from '../../makerSelection';
 import {
 	NodeToFillWithBuffer,
@@ -62,6 +64,7 @@ import {
 	// getStaleOracleMarketIndexes,
 	handleSimResultError,
 	logMessageForNodeToFill,
+	logWideEvent,
 	simulateAndGetTxWithCUs,
 	SimulateAndGetTxWithCUsResponse,
 	sleepMs,
@@ -158,6 +161,22 @@ const FILL_ATTEMPT_COUNTS_MAX = 10_000;
 // silently-dropped place+fill is retried while the order is still valid and
 // still emitted by the DLOB builder.
 const SIGNED_MSG_FILL_IN_FLIGHT_TTL_MS = 15_000;
+// Wide-event de-duplication. The DLOB builder re-emits a still-fillable order
+// every ~200ms, so a `fill_decision` per evaluation would be ~5/s/order of pure
+// noise. Each (order, skip reason) pair is therefore wide-logged only the FIRST
+// time it occurs; `sent` is exempt (it is already capped by
+// MAX_FILL_ATTEMPTS_PER_ORDER and each one has a distinct fill_id / tx event to
+// correlate with). The TTL outlives an auction so a decision can't re-emit for
+// an order that is still live.
+const FILL_DECISION_DEDUPE_TTL_MS = 2 * 60 * 1000;
+const FILL_DECISION_DEDUPE_MAX = 20_000;
+// `skip_no_cross` is exempted from once-per-order de-duplication and re-sampled
+// per bucket of this many slots instead. Whether a node crosses is the one
+// verdict that evolves as the Dutch auction ramps, and collapsing a ~30s auction
+// (~75 slots) to a single row would throw away exactly the signal the board is
+// read for. ~10 slots gives a handful of samples per order rather than ~150.
+const NO_CROSS_RESAMPLE_SLOTS = 10;
+
 const THROTTLED_NODE_SIZE_TO_PRUNE = 10; // Size of throttled nodes to get to before pruning the map
 export const MAX_MAKERS_PER_FILL = 6; // max number of unique makers to include per fill
 const MAX_ACCOUNTS_PER_TX = 64; // solana limit, track https://github.com/solana-labs/solana/issues/27241
@@ -202,6 +221,60 @@ type DLOBBuilderWithProcess = {
 	ready: boolean;
 	marketIndexes: number[];
 };
+
+/** What was carried alongside a tx signature awaiting confirmation. */
+type PendingTxSigRecord = {
+	ts: number;
+	nodeFilled: Array<NodeToFillWithBuffer>;
+	fillTxId: number;
+	txType: TxType;
+	// Carried so the terminal `tx` wide event can report send->confirm latency
+	// in slots and CU headroom the way keep-rs does.
+	sentSlot?: number;
+	cuLimit?: number;
+	fillType?: FillType;
+};
+
+/** `fill_type` on a `tx` wide event: how the fill tx was assembled. */
+type FillType = 'single' | 'multiMakerFill';
+
+/**
+ * `status` on a `tx` wide event. The first four are reported by the chain once
+ * the tx landed; the rest are the bot's own account of why it never did.
+ */
+type TxEventStatus =
+	| 'ok'
+	| 'partial'
+	| 'no_fills'
+	| 'failed'
+	| 'sim_failed'
+	| 'sim_rpc_error'
+	| 'build_error'
+	| 'send_error'
+	| 'expired'
+	| 'skip_no_sol';
+
+/** The statuses above that the chain itself reported, which supersede the rest. */
+const LANDED_TX_STATUSES: ReadonlySet<string> = new Set<TxEventStatus>([
+	'ok',
+	'partial',
+	'no_fills',
+	'failed',
+]);
+
+/** `action` on a `fill_decision` wide event: attempt, or the gate that skipped. */
+type FillDecisionAction =
+	| 'sent'
+	| 'skip_vamm_node'
+	| 'skip_have_filled'
+	| 'skip_filling'
+	| 'skip_throttled'
+	| 'skip_expired_limit'
+	| 'skip_no_cross'
+	| 'skip_max_attempts'
+	| 'skip_signed_msg_placed'
+	| 'skip_signed_msg_in_flight'
+	| 'skip_attempt_interval';
 
 export class FillerMultithreaded {
 	private name: string;
@@ -252,6 +325,22 @@ export class FillerMultithreaded {
 		ttl: SIGNED_MSG_FILL_IN_FLIGHT_TTL_MS,
 		ttlResolution: 1000,
 	});
+	// Skip reasons already wide-logged for an order, keyed
+	// `${getNodeToFillSignature(node)}:${action}`. See
+	// FILL_DECISION_DEDUPE_TTL_MS.
+	private emittedFillDecisions = new LRUCache<string, true>({
+		max: FILL_DECISION_DEDUPE_MAX,
+		ttl: FILL_DECISION_DEDUPE_TTL_MS,
+		ttlResolution: 1000,
+	});
+	// Terminal `tx` wide events already emitted, keyed by signature (or by
+	// fill id for the pre-send statuses that have no signature yet), valued by
+	// the status that was emitted. See emitTxEvent.
+	private emittedTxEvents = new LRUCache<string, TxEventStatus>({
+		max: FILL_DECISION_DEDUPE_MAX,
+		ttl: FILL_DECISION_DEDUPE_TTL_MS,
+		ttlResolution: 1000,
+	});
 	private fillAttemptSlotInterval: number;
 	private blockhashSubscriber: BlockhashSubscriber;
 	private priorityFeeSubscriber: PriorityFeeSubscriber;
@@ -267,15 +356,7 @@ export class FillerMultithreaded {
 	private intervalIds: NodeJS.Timeout[] = [];
 
 	protected txConfirmationConnection: Connection;
-	protected pendingTxSigsToconfirm: LRUCache<
-		string,
-		{
-			ts: number;
-			nodeFilled: Array<NodeToFillWithBuffer>;
-			fillTxId: number;
-			txType: TxType;
-		}
-	>;
+	protected pendingTxSigsToconfirm: LRUCache<string, PendingTxSigRecord>;
 	protected expiredNodesSet: LRUCache<string, boolean>;
 	protected confirmLoopRunning = false;
 	protected confirmLoopRateLimitTs =
@@ -442,17 +523,17 @@ export class FillerMultithreaded {
 			)}`
 		);
 
-		this.pendingTxSigsToconfirm = new LRUCache<
-			string,
-			{
-				ts: number;
-				nodeFilled: Array<NodeToFillWithBuffer>;
-				fillTxId: number;
-				txType: TxType;
-			}
-		>({
+		this.pendingTxSigsToconfirm = new LRUCache<string, PendingTxSigRecord>({
 			max: 10_000,
-			ttl: TX_TIMEOUT_THRESHOLD_MS,
+			// Deliberately longer than TX_TIMEOUT_THRESHOLD_MS. Giving up on a tx
+			// is the confirm loop's decision (`txAge > TX_TIMEOUT_THRESHOLD_MS`),
+			// and it can only make it while the entry is still visible — lru-cache
+			// omits stale entries from `entries()`, so a TTL equal to the threshold
+			// hides every entry the instant it becomes eligible and the tx is
+			// silently dropped instead of reported `expired`. The loop deletes the
+			// entry itself on that poll; this TTL is only a backstop for sigs the
+			// loop never gets to.
+			ttl: TX_TIMEOUT_THRESHOLD_MS * 2,
 			ttlResolution: 1000,
 			disposeAfter: this.recordEvictedTxSig.bind(this),
 		});
@@ -1144,6 +1225,9 @@ export class FillerMultithreaded {
 					const nodeFilled = txConfirmationInfo[1].nodeFilled;
 					const txType = txConfirmationInfo[1].txType;
 					const fillTxId = txConfirmationInfo[1].fillTxId;
+					const sentSlot = txConfirmationInfo[1].sentSlot;
+					const cuLimit = txConfirmationInfo[1].cuLimit;
+					const fillType = txConfirmationInfo[1].fillType;
 					if (txResp === null) {
 						logger.info(
 							`Tx not found, (fillTxId: ${fillTxId}) (txType: ${txType}): ${txSig}, tx age: ${
@@ -1152,6 +1236,22 @@ export class FillerMultithreaded {
 						);
 						if (Math.abs(txAge) > TX_TIMEOUT_THRESHOLD_MS) {
 							this.pendingTxSigsToconfirm.delete(txSig);
+							// Only the give-up poll is terminal — the earlier "not found"
+							// polls are the tx still being in flight, and wide-logging them
+							// would emit one event per 5s confirm tick per tx.
+							if (txType === 'fill') {
+								this.emitTxEvent({
+									nodes: nodeFilled,
+									fillTxId,
+									status: 'expired',
+									fillType,
+									sig: txSig,
+									sentSlot,
+									cuLimit,
+									actualFills: 0,
+									error: `not confirmed within ${TX_TIMEOUT_THRESHOLD_MS} ms`,
+								});
+							}
 						}
 					} else {
 						logger.info(
@@ -1204,6 +1304,42 @@ export class FillerMultithreaded {
 									),
 								});
 							}
+							// Terminal outcome for a landed fill tx. `no_fills` is the
+							// interesting one: the tx landed Ok but the fill ix produced
+							// no base — the same distinction keep-rs draws. Counted from
+							// the tx's own fill records, not from `result.filledNodes`,
+							// which counts completed instructions rather than fills.
+							const actualFills = this.countFilledTakerOrders(
+								txResp.meta?.logMessages
+							);
+							let status: TxEventStatus;
+							if (!landedOk) {
+								status = 'failed';
+							} else if (actualFills === 0) {
+								status = 'no_fills';
+							} else if (actualFills < nodeFilled.length) {
+								status = 'partial';
+							} else {
+								status = 'ok';
+							}
+							this.emitTxEvent({
+								nodes: nodeFilled,
+								fillTxId,
+								status,
+								fillType,
+								sig: txSig,
+								sentSlot,
+								confirmedSlot: txResp.slot,
+								actualFills,
+								cuLimit,
+								cuConsumed: txResp.meta?.computeUnitsConsumed,
+								feeLamports: txResp.meta?.fee,
+								error: landedOk ? undefined : JSON.stringify(txResp.meta?.err),
+								errorCode: landedOk
+									? undefined
+									: getErrorCodeFromSimError(txResp.meta?.err ?? null) ??
+									  undefined,
+							});
 						} else {
 							this.landedTxsCounter?.add(1, {
 								type: txType,
@@ -1492,6 +1628,193 @@ export class FillerMultithreaded {
 		}
 	}
 
+	/**
+	 * The order-identity fields every wide event this bot emits carries.
+	 *
+	 * `order_id` vs `synthetic_order_id`: a signed-msg (swift) order has no
+	 * on-chain order id until its place+fill lands, so the DLOB builder gives the
+	 * synthetic node `orderId = convertUuidToNumber(uuid)` (swiftOrderSubscriber)
+	 * — a real id and a synthetic id are therefore never both known for the same
+	 * node. Emitting them under different keys keeps a synthetic id from being
+	 * read as an on-chain one; once the order is placed it fills through its
+	 * on-chain node, which reports `order_id` normally.
+	 *
+	 * `uuid` is recovered from the cached swift payload and is therefore present
+	 * only on the synthetic node — the on-chain node the order fills through
+	 * afterwards does not carry it. It identifies the swift order to the board,
+	 * it does NOT join the two id spaces; nothing here can, because the on-chain
+	 * id is not known until the place+fill lands.
+	 */
+	private wideEventOrderRef(nodeToFill: NodeToFillWithBuffer): {
+		market?: number;
+		taker?: string;
+		order_id?: number;
+		synthetic_order_id?: number;
+		uuid?: string;
+		intent: string;
+	} {
+		const order = nodeToFill.node.order;
+		const isSignedMsg = nodeToFill.node.isSignedMsg === true;
+		const orderId = order?.orderId;
+		const cachedUuid =
+			isSignedMsg && orderId !== undefined
+				? this.signedMsgOrderMessages.get(orderId)?.['uuid']
+				: undefined;
+		return {
+			market: order?.marketIndex,
+			taker: nodeToFill.node.userAccount?.toString(),
+			order_id: isSignedMsg ? undefined : orderId,
+			synthetic_order_id: isSignedMsg ? orderId : undefined,
+			uuid: typeof cachedUuid === 'string' ? cachedUuid : undefined,
+			intent: isSignedMsg ? 'signed_msg_fill' : 'fill',
+		};
+	}
+
+	/**
+	 * Wide event for the attempt-or-skip verdict on a fillable node — this bot's
+	 * analogue of keep-rs's `cross_decision`. Named `fill_decision` rather than
+	 * `cross_decision` because the TS filler does not do the vAMM-vs-makers
+	 * routing that event describes: the crossing math happens upstream in the
+	 * DLOB builder's `findNodesToFill`, and what is decided here is whether an
+	 * already-crossing node is worth a tx (throttles, cooldowns, attempt budget,
+	 * the signed-msg once-only guard). Field names match keep-rs wherever the
+	 * concept is the same.
+	 *
+	 * Skips are emitted once per (order, reason), except `skip_no_cross` which is
+	 * re-sampled every NO_CROSS_RESAMPLE_SLOTS so the verdict's evolution across
+	 * the auction survives. `sent` is emitted per attempt.
+	 *
+	 * `action` here is what the bot decided, not what the network did — `sent`
+	 * is emitted when the attempt is launched, before the tx is built, simulated
+	 * or sent, so it reads as "attempted". Its outcome is the `tx` event.
+	 */
+	private emitFillDecision(
+		nodeToFill: NodeToFillWithBuffer,
+		action: FillDecisionAction,
+		gates: {
+			has_vamm_cross?: boolean;
+			oracle_delay?: number;
+			attempt?: number;
+			post_only?: boolean;
+		} = {}
+	) {
+		const slot = this.slotSubscriber.getSlot();
+		if (action !== 'sent') {
+			const bucket =
+				action === 'skip_no_cross'
+					? `:${Math.floor(slot / NO_CROSS_RESAMPLE_SLOTS)}`
+					: '';
+			const dedupeKey = `${getNodeToFillSignature(
+				nodeToFill
+			)}:${action}${bucket}`;
+			if (this.emittedFillDecisions.has(dedupeKey)) {
+				return;
+			}
+			this.emittedFillDecisions.set(dedupeKey, true);
+		}
+		try {
+			logWideEvent('fill_decision', {
+				...this.wideEventOrderRef(nodeToFill),
+				slot,
+				action,
+				n_makers: nodeToFill.makerNodes.length,
+				...gates,
+			});
+		} catch (e) {
+			logger.error(
+				`${logPrefix} emitFillDecision failed: ${
+					e instanceof Error ? e.message : e
+				}`
+			);
+		}
+	}
+
+	/**
+	 * Wide event for a terminal transaction outcome — the TS counterpart of
+	 * keep-rs's `emit_tx_event`. One event per taker node in the tx, so a bundled
+	 * tx still yields a row per order.
+	 *
+	 * `error_code` is the raw Anchor `Custom` number, never a decoded name: the
+	 * Order Trace dashboard owns that mapping.
+	 *
+	 * De-duplication, so one attempt does not produce a run of terminal rows:
+	 *
+	 * - Once a signature exists, it is keyed by signature. The first status wins,
+	 *   with one exception: a status the chain reported (`ok` / `partial` /
+	 *   `no_fills` / `failed`) supersedes an earlier client-side one. A send that
+	 *   rejects locally can still land — an RPC timeout is the common case — and
+	 *   reporting that fill as `send_error` forever would be wrong. So a
+	 *   signature yields at most two rows, and the landed one is authoritative.
+	 *   Nothing supersedes a landed status, so a failed send cannot later also be
+	 *   reported `expired`.
+	 * - Before a signature exists (`sim_failed`, `sim_rpc_error`, `build_error`,
+	 *   `skip_no_sol`), it is keyed by `(fill id, status)`. `buildTxWithMakerInfos`
+	 *   is retried as the maker set is halved, so without this one fill id would
+	 *   emit a terminal row per retry.
+	 */
+	private emitTxEvent(params: {
+		nodes: Array<NodeToFillWithBuffer>;
+		/** Absent when the attempt failed before a fill id was allocated. */
+		fillTxId?: number;
+		status: TxEventStatus;
+		fillType?: FillType;
+		sig?: string;
+		sentSlot?: number;
+		confirmedSlot?: number;
+		actualFills?: number;
+		cuLimit?: number;
+		cuConsumed?: number;
+		feeLamports?: number;
+		error?: string;
+		errorCode?: number;
+	}) {
+		const dedupeKey =
+			params.sig !== undefined
+				? `sig:${params.sig}`
+				: params.fillTxId !== undefined
+				? `fill:${params.fillTxId}:${params.status}`
+				: undefined;
+		if (dedupeKey !== undefined) {
+			const emitted = this.emittedTxEvents.get(dedupeKey);
+			if (
+				emitted !== undefined &&
+				(LANDED_TX_STATUSES.has(emitted) ||
+					!LANDED_TX_STATUSES.has(params.status))
+			) {
+				return;
+			}
+			this.emittedTxEvents.set(dedupeKey, params.status);
+		}
+		try {
+			for (const node of params.nodes) {
+				logWideEvent('tx', {
+					...this.wideEventOrderRef(node),
+					fill_id: params.fillTxId,
+					fill_type: params.fillType,
+					sig: params.sig,
+					status: params.status,
+					sent_slot: params.sentSlot,
+					confirmed_slot: params.confirmedSlot,
+					latency_slots:
+						params.sentSlot !== undefined && params.confirmedSlot !== undefined
+							? Math.max(params.confirmedSlot - params.sentSlot, 0)
+							: undefined,
+					expected_fills: params.nodes.length,
+					actual_fills: params.actualFills,
+					cu_limit: params.cuLimit,
+					cu_consumed: params.cuConsumed,
+					fee_lamports: params.feeLamports,
+					error: params.error,
+					error_code: params.errorCode,
+				});
+			}
+		} catch (e) {
+			logger.error(
+				`${logPrefix} emitTxEvent failed: ${e instanceof Error ? e.message : e}`
+			);
+		}
+	}
+
 	protected filterFillableNodes(nodeToFill: NodeToFillWithBuffer): boolean {
 		if (!nodeToFill.node.order) {
 			return false;
@@ -1501,6 +1824,7 @@ export class FillerMultithreaded {
 			logger.warn(
 				`filtered out a vAMM node on market ${nodeToFill.node.order.marketIndex} for user ${nodeToFill.node.userAccount}-${nodeToFill.node.order.orderId}`
 			);
+			this.emitFillDecision(nodeToFill, 'skip_vamm_node');
 			return false;
 		}
 
@@ -1508,6 +1832,7 @@ export class FillerMultithreaded {
 			logger.warn(
 				`filtered out filled node on market ${nodeToFill.node.order.marketIndex} for user ${nodeToFill.node.userAccount}-${nodeToFill.node.order.orderId}`
 			);
+			this.emitFillDecision(nodeToFill, 'skip_have_filled');
 			return false;
 		}
 
@@ -1518,23 +1843,32 @@ export class FillerMultithreaded {
 				this.fillingNodes.get(nodeToFillSignature) || 0;
 			if (timeStartedToFillNode + FILL_ORDER_THROTTLE_BACKOFF > now) {
 				// still cooling down on this node, filter it out
+				this.emitFillDecision(nodeToFill, 'skip_filling');
 				return false;
 			}
 		}
 
 		// check if taker node is throttled
 		if (this.isDLOBNodeThrottled(nodeToFill.node)) {
+			this.emitFillDecision(nodeToFill, 'skip_throttled');
 			return false;
 		}
 
 		const marketIndex = nodeToFill.node.order.marketIndex;
 		const mmOraclePriceData =
 			this.velocityClient.getMMOracleDataForPerpMarket(marketIndex);
+		const currentSlot = this.slotSubscriber.getSlot();
+		// keep-rs reports the oracle's own `delay`; the TS filler's equivalent is
+		// how far the mm-oracle price it is about to gate on lags the current slot.
+		const oracleDelay = currentSlot - mmOraclePriceData.slot.toNumber();
 
 		if (isOrderExpired(nodeToFill.node.order, Date.now() / 1000, true)) {
 			if (isOneOfVariant(nodeToFill.node.order.orderType, ['limit'])) {
 				// do not try to fill (expire) limit orders b/c they will auto expire when filled against
 				// or the user places a new order
+				this.emitFillDecision(nodeToFill, 'skip_expired_limit', {
+					oracle_delay: oracleDelay,
+				});
 				return false;
 			}
 			return true;
@@ -1542,19 +1876,26 @@ export class FillerMultithreaded {
 
 		if (
 			nodeToFill.makerNodes.length === 0 &&
-			isVariant(nodeToFill.node.order.marketType, 'perp') &&
-			!isFillableByVAMM(
+			isVariant(nodeToFill.node.order.marketType, 'perp')
+		) {
+			const hasVammCross = isFillableByVAMM(
 				nodeToFill.node.order,
 				this.velocityClient.getPerpMarketAccount(
 					nodeToFill.node.order.marketIndex
 				)!,
 				mmOraclePriceData,
-				this.slotSubscriber.getSlot(),
+				currentSlot,
 				Date.now() / 1000,
 				this.velocityClient.getStateAccount()
-			)
-		) {
-			return false;
+			);
+			if (!hasVammCross) {
+				this.emitFillDecision(nodeToFill, 'skip_no_cross', {
+					has_vamm_cross: false,
+					oracle_delay: oracleDelay,
+					post_only: nodeToFill.node.order.postOnly,
+				});
+				return false;
+			}
 		}
 
 		return true;
@@ -1598,6 +1939,9 @@ export class FillerMultithreaded {
 						node.node.userAccount
 					}, order ${node.node.order?.orderId.toString()}), skipping`
 				);
+				this.emitFillDecision(node, 'skip_max_attempts', {
+					attempt: attempts,
+				});
 				continue;
 			}
 
@@ -1606,10 +1950,12 @@ export class FillerMultithreaded {
 				// place+fill is in flight, and skip forever once it has landed
 				// (the order is placed and its on-chain node carries any remaining
 				// base through the auction).
-				if (
-					this.placedSignedMsgOrders.has(sig) ||
-					this.signedMsgFillsInFlight.has(sig)
-				) {
+				if (this.placedSignedMsgOrders.has(sig)) {
+					this.emitFillDecision(node, 'skip_signed_msg_placed');
+					continue;
+				}
+				if (this.signedMsgFillsInFlight.has(sig)) {
+					this.emitFillDecision(node, 'skip_signed_msg_in_flight');
 					continue;
 				}
 			} else if (
@@ -1618,6 +1964,9 @@ export class FillerMultithreaded {
 			) {
 				// Pace non-signed re-attempts to at most once per
 				// fillAttemptSlotInterval slots.
+				this.emitFillDecision(node, 'skip_attempt_interval', {
+					attempt: attempts,
+				});
 				continue;
 			}
 
@@ -1632,11 +1981,27 @@ export class FillerMultithreaded {
 			if (node.node.isSignedMsg) {
 				this.signedMsgFillsInFlight.set(sig, true);
 			}
-			if (node.makerNodes.length > 1) {
-				this.tryFillMultiMakerPerpNodes(node);
-			} else {
-				this.tryFillPerpNode(node);
-			}
+			this.emitFillDecision(node, 'sent', { attempt: attempts + 1 });
+			const attempt =
+				node.makerNodes.length > 1
+					? this.tryFillMultiMakerPerpNodes(node)
+					: this.tryFillPerpNode(node);
+			// Neither call is awaited, so a throw while gathering fill info or
+			// building the tx would otherwise leave the `sent` decision above with
+			// no terminal `tx` row on the board. No fill id exists on this path —
+			// the throw may predate its allocation.
+			attempt.catch((e) => {
+				logger.error(
+					`${logPrefix} fill attempt threw before sending${fillCorrelationSuffix(
+						[node]
+					)}: ${e instanceof Error ? e.stack ?? e.message : e}`
+				);
+				this.emitTxEvent({
+					nodes: [node],
+					status: 'build_error',
+					error: e instanceof Error ? e.message : `${e}`,
+				});
+			});
 		}
 	}
 
@@ -1854,6 +2219,13 @@ export class FillerMultithreaded {
 							[nodeToFill]
 						)}: ${error}`
 					);
+					this.emitTxEvent({
+						nodes: [nodeToFill],
+						fillTxId,
+						status: 'sim_rpc_error',
+						fillType: 'multiMakerFill',
+						error: `${error}`,
+					});
 					return;
 				}
 				if (simResult.simError) {
@@ -1939,6 +2311,15 @@ export class FillerMultithreaded {
 						.map((m) => `  ${m.data.maker.toBase58()}: ${m.slot}`)
 						.join('\n')}`
 				);
+				this.emitTxEvent({
+					nodes: [nodeToFill],
+					fillTxId,
+					status: 'sim_failed',
+					fillType: 'multiMakerFill',
+					cuLimit: simResult!.cuEstimate,
+					error: JSON.stringify(simResult!.simError),
+					errorCode: getErrorCodeFromSimError(simResult!.simError) ?? undefined,
+				});
 				try {
 					if (
 						(simResult.simError as any)['InstructionError'] &&
@@ -1963,12 +2344,21 @@ export class FillerMultithreaded {
 						fillTxId,
 						[nodeToFill],
 						simResult!.tx,
-						buildForBundle
+						buildForBundle,
+						simResult!.cuEstimate,
+						'multiMakerFill'
 					);
 				} else {
 					logger.info(
 						`Not enough SOL to fill, skipping executeFillablePerpNodesForMarket`
 					);
+					this.emitTxEvent({
+						nodes: [nodeToFill],
+						fillTxId,
+						status: 'skip_no_sol',
+						fillType: 'multiMakerFill',
+						cuLimit: simResult!.cuEstimate,
+					});
 				}
 			}
 		} catch (e) {
@@ -1979,6 +2369,15 @@ export class FillerMultithreaded {
 					)}: ${e.stack ? e.stack : e.message}`
 				);
 			}
+			// Swallowed here, so this is the only chance to close out the `sent`
+			// decision with a terminal row.
+			this.emitTxEvent({
+				nodes: [nodeToFill],
+				fillTxId,
+				status: 'build_error',
+				fillType: 'multiMakerFill',
+				error: e instanceof Error ? e.message : `${e}`,
+			});
 		}
 		return true;
 	}
@@ -2157,6 +2556,13 @@ export class FillerMultithreaded {
 					[nodeToFill]
 				)}: ${error}`
 			);
+			this.emitTxEvent({
+				nodes: [nodeToFill],
+				fillTxId,
+				status: 'sim_rpc_error',
+				fillType: 'single',
+				error: `${error}`,
+			});
 			return;
 		}
 
@@ -2180,18 +2586,36 @@ export class FillerMultithreaded {
 					simResult.simTxLogs ? simResult.simTxLogs.join('\n') : 'none'
 				}`
 			);
+			this.emitTxEvent({
+				nodes: [nodeToFill],
+				fillTxId,
+				status: 'sim_failed',
+				fillType: 'single',
+				cuLimit: simResult.cuEstimate,
+				error: JSON.stringify(simResult.simError),
+				errorCode: getErrorCodeFromSimError(simResult.simError) ?? undefined,
+			});
 		} else {
 			if (this.hasEnoughSolToFill) {
 				this.sendFillTxAndParseLogs(
 					fillTxId,
 					[nodeToFill],
 					simResult.tx,
-					buildForBundle
+					buildForBundle,
+					simResult.cuEstimate,
+					'single'
 				);
 			} else {
 				logger.info(
 					`Not enough SOL to fill, skipping executeFillablePerpNodesForMarket`
 				);
+				this.emitTxEvent({
+					nodes: [nodeToFill],
+					fillTxId,
+					status: 'skip_no_sol',
+					fillType: 'single',
+					cuLimit: simResult.cuEstimate,
+				});
 			}
 		}
 	}
@@ -2200,7 +2624,9 @@ export class FillerMultithreaded {
 		fillTxId: number,
 		nodesSent: Array<NodeToFillWithBuffer>,
 		tx: VersionedTransaction,
-		buildForBundle: boolean
+		buildForBundle: boolean,
+		cuLimit?: number,
+		fillType?: FillType
 	) {
 		let txResp: Promise<TxSigAndSlot> | undefined = undefined;
 		let estTxSize: number | undefined = undefined;
@@ -2208,9 +2634,9 @@ export class FillerMultithreaded {
 		let writeAccs = 0;
 		const accountMetas: any[] = [];
 		const txStart = Date.now();
+		const sentSlot = this.slotSubscriber.getSlot();
 		// @ts-ignore;
 		tx.sign([this.velocityClient.wallet.payer]);
-		const txSig = bs58.encode(tx.signatures[0]);
 
 		if (buildForBundle) {
 			await this.sendTxThroughJito(tx, fillTxId, nodesSent);
@@ -2242,7 +2668,22 @@ export class FillerMultithreaded {
 			);
 		}
 
-		this.registerTxSigToConfirm(txSig, Date.now(), nodesSent, fillTxId, 'fill');
+		// Read the signature only now: the jito path rewrites recentBlockhash and
+		// re-signs, so a signature taken before the branch is the one that was
+		// never sent — it would be confirmed against forever and reported under a
+		// `sig` no explorer can find.
+		const txSig = bs58.encode(tx.signatures[0]);
+
+		this.registerTxSigToConfirm(
+			txSig,
+			Date.now(),
+			nodesSent,
+			fillTxId,
+			'fill',
+			sentSlot,
+			cuLimit,
+			fillType
+		);
 
 		if (txResp) {
 			txResp
@@ -2273,6 +2714,18 @@ export class FillerMultithreaded {
 							this.signedMsgFillsInFlight.delete(getNodeToFillSignature(node));
 						}
 					}
+
+					this.emitTxEvent({
+						nodes: nodesSent,
+						fillTxId,
+						status: 'send_error',
+						fillType,
+						sig: txSig,
+						sentSlot,
+						cuLimit,
+						error: simError.message,
+						errorCode: getErrorCode(e),
+					});
 
 					if (e.message.includes('too large:')) {
 						logger.error(
@@ -2670,13 +3123,19 @@ export class FillerMultithreaded {
 		now: number,
 		nodeFilled: Array<NodeToFillWithBuffer>,
 		fillTxId: number,
-		txType: TxType
+		txType: TxType,
+		sentSlot?: number,
+		cuLimit?: number,
+		fillType?: FillType
 	) {
 		this.pendingTxSigsToconfirm.set(txSig, {
 			ts: now,
 			nodeFilled,
 			fillTxId,
 			txType,
+			sentSlot,
+			cuLimit,
+			fillType,
 		});
 		const user = this.velocityClient.getUser(this.subaccount);
 		this.sentTxsCounter?.add(1, {
@@ -2689,11 +3148,74 @@ export class FillerMultithreaded {
 	}
 
 	/**
+	 * How many distinct taker orders actually received base in a landed tx.
+	 *
+	 * This is what `actual_fills` on the `tx` wide event reports, and it is NOT
+	 * what `handleTransactionLogs` counts: that counts velocity instructions that
+	 * completed without an error log, so a place+fill scores 2 for one order and
+	 * a fill instruction that matched no base still scores 1. Counting decoded
+	 * `OrderActionRecord` fills instead is what keep-rs does, and it is what makes
+	 * `no_fills` and `partial` mean anything.
+	 *
+	 * De-duplicated by taker order id because a multi-maker fill emits one record
+	 * per (taker, maker) match, while the caller compares against a count of
+	 * taker nodes. Records with no taker order id (a maker-side or vAMM-only
+	 * record) are counted once each, since they cannot be attributed to a taker.
+	 */
+	protected countFilledTakerOrders(logs: string[] | null | undefined): number {
+		if (!logs) {
+			return 0;
+		}
+		try {
+			const takerOrders = new Set<number>();
+			let unattributed = 0;
+			// The IDL-typed VelocityProgram does not structurally satisfy anchor's
+			// generic Program; parseLogs only uses its event coder.
+			const program = this.velocityClient.program as unknown as Parameters<
+				typeof parseLogs
+			>[0];
+			for (const event of parseLogs(
+				program,
+				logs,
+				this.velocityClient.program.programId.toBase58()
+			)) {
+				if (event.name !== 'OrderActionRecord') {
+					continue;
+				}
+				const record = event.data as OrderActionRecord;
+				if (!isVariant(record.action, 'fill')) {
+					continue;
+				}
+				if (
+					record.baseAssetAmountFilled === null ||
+					record.baseAssetAmountFilled.isZero()
+				) {
+					continue;
+				}
+				if (record.takerOrderId === null) {
+					unattributed++;
+				} else {
+					takerOrders.add(record.takerOrderId);
+				}
+			}
+			return takerOrders.size + unattributed;
+		} catch (e) {
+			logger.error(
+				`${logPrefix} failed to count fills from tx logs: ${
+					e instanceof Error ? e.message : e
+				}`
+			);
+			return 0;
+		}
+	}
+
+	/**
 	 * Iterates through a tx's logs and handles it appropriately (e.g. throttling users, updating metrics, etc.)
 	 *
 	 * @param nodesFilled nodes that we sent a transaction to fill
 	 * @param logs logs from tx.meta.logMessages or this.clearingHouse.program._events._eventParser.parseLogs
-	 * @returns number of nodes successfully filled, and whether the tx exceeded CUs
+	 * @returns number of instructions that completed without an error log (NOT a
+	 * fill count — see countFilledTakerOrders), and whether the tx exceeded CUs
 	 */
 	protected async handleTransactionLogs(
 		nodesFilled: Array<NodeToFill>,

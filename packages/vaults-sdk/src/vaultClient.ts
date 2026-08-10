@@ -3199,6 +3199,13 @@ export class VaultClient {
 				vault: vault,
 				manager: vaultAccount.manager,
 				velocityUserStats: vaultAccount.userStats,
+				// The cancel now settles already-due revenue into the IF vault before
+				// pricing the forfeiture (OtterSec #141), so it carries the same accounts as
+				// requestRemove. velocitySpotMarketVault is a PDA and auto-resolves from its
+				// seeds.
+				velocityState: await this.velocityClient.getStatePublicKey(),
+				velocitySigner: this.velocityClient.getStateAccount().signer,
+				tokenProgram: TOKEN_PROGRAM_ID,
 			})
 			.instruction();
 	}

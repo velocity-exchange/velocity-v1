@@ -756,8 +756,55 @@ export type Vaults = {
 					writable: true;
 				},
 				{
+					name: 'velocitySpotMarketVault';
+					writable: true;
+					pda: {
+						seeds: [
+							{
+								kind: 'const';
+								value: [
+									115,
+									112,
+									111,
+									116,
+									95,
+									109,
+									97,
+									114,
+									107,
+									101,
+									116,
+									95,
+									118,
+									97,
+									117,
+									108,
+									116,
+								];
+							},
+							{
+								kind: 'arg';
+								path: 'marketIndex';
+							},
+						];
+						program: {
+							kind: 'account';
+							path: 'velocityProgram';
+						};
+					};
+				},
+				{
+					name: 'velocityState';
+				},
+				{
+					name: 'velocitySigner';
+				},
+				{
 					name: 'velocityProgram';
 					address: 'vELoC1audYbSYVRXn1vPaV8Axoa9oU6BYmNGZZBDZ1P';
+				},
+				{
+					name: 'tokenProgram';
 				},
 			];
 			args: [

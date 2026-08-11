@@ -18,7 +18,7 @@ use {
     crate::{
         error::ClobError,
         state::{
-            ClobMarketV0, ResponsePointerV0, COUNT_BYTES, RESPONSE_BUFFER_BYTES, RESPONSE_OFFSET,
+            ClobMarketV0, ResponsePointerV0, RESPONSE_BUFFER_BYTES, RESPONSE_LEN_BYTES, RESPONSE_OFFSET,
         },
     },
     anchor_lang_v2::prelude::*,
@@ -70,10 +70,10 @@ impl ResponseWriter {
         self.append(book, &value.to_le_bytes())
     }
 
-    /// Reserve a sequence count, returning the offset to backpatch once the
-    /// element count is known.
+    /// Reserve a sequence length, returning the offset to backpatch once the
+    /// element count is known. The width is wincode's, not a choice made here.
     pub fn reserve_count(&mut self, book: &mut ClobMarketV0) -> Result<usize> {
-        self.append(book, &0u32.to_le_bytes())
+        self.append(book, &quoter_spec::len_prefix(0))
     }
 
     /// Backpatch a count reserved by [`Self::reserve_count`].
@@ -81,16 +81,16 @@ impl ResponseWriter {
         &mut self,
         book: &mut ClobMarketV0,
         offset: usize,
-        count: u32,
+        count: usize,
     ) -> Result<()> {
-        self.written_mut(book, offset, COUNT_BYTES)?
-            .copy_from_slice(&count.to_le_bytes());
+        self.written_mut(book, offset, RESPONSE_LEN_BYTES)?
+            .copy_from_slice(&quoter_spec::len_prefix(count));
         Ok(())
     }
 
-    pub fn read_count(&self, book: &ClobMarketV0, offset: usize) -> Result<u32> {
-        let bytes = self.written(book, offset, COUNT_BYTES)?;
-        Ok(u32::from_le_bytes(
+    pub fn read_count(&self, book: &ClobMarketV0, offset: usize) -> Result<u64> {
+        let bytes = self.written(book, offset, RESPONSE_LEN_BYTES)?;
+        Ok(u64::from_le_bytes(
             bytes.try_into().map_err(|_| ClobError::MathError)?,
         ))
     }

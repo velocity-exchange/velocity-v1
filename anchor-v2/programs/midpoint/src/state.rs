@@ -144,11 +144,8 @@ impl UserSetV0 {
     }
 }
 
-#[derive(Clone, Copy, PartialEq, Eq, Debug, wincode::SchemaRead, wincode::SchemaWrite)]
-pub struct PriceLevel {
-    pub price: u64,
-    pub size: u64,
-}
+/// Declared by `quoter-spec`; the alias keeps this program's name for it.
+pub type PriceLevel = quoter_spec::PriceLevelV0;
 
 /// Sub-min cancelled remainder — wire compatibility with the quoter
 /// interface; the midpoint never emits one (spline intent has no orders to
@@ -171,13 +168,7 @@ pub struct ResponsePointerV0 {
     pub len: u32,
 }
 
-/// Wire definition of the quote response. See [`UserBalanceChangeV0`] on why
-/// the program does not construct one.
-#[derive(Clone, wincode::SchemaRead, wincode::SchemaWrite)]
-pub struct QuoteResponseV0 {
-    /// Levels the quoter will fill at, best price first.
-    pub levels: Vec<PriceLevel>,
-}
+pub use quoter_spec::QuoteResponseV0;
 
 pub use quoter_spec::ExecuteResponseV0;
 
@@ -707,8 +698,8 @@ impl MidpointQuoterV0 {
 
         let mut cursor = Cursor::new(&mut response[..]);
         // Length prefix, backfilled once the walk knows the count.
-        write_wire(&mut cursor, &0u32)?;
-        let mut quoted_levels: u32 = 0;
+        write_wire(&mut cursor, &quoter_spec::len_prefix(0))?;
+        let mut quoted_levels: usize = 0;
         let mut wanted = size;
         for level in side {
             if wanted == 0 {
@@ -733,7 +724,8 @@ impl MidpointQuoterV0 {
             wanted -= quoted;
         }
         let len = cursor.position();
-        response[..4].copy_from_slice(&quoted_levels.to_le_bytes());
+        response[..quoter_spec::LEN_BYTES]
+            .copy_from_slice(&quoter_spec::len_prefix(quoted_levels as usize));
         Ok(response_pointer(len))
     }
 
@@ -745,21 +737,22 @@ impl MidpointQuoterV0 {
         change: Option<(u64, u64)>,
     ) -> Result<ResponsePointerV0> {
         let user = self.user_ref();
-        let response = &mut self.response;
-        let mut cursor = Cursor::new(&mut response[..]);
-        match change {
-            None => write_wire(&mut cursor, &0u32)?,
-            Some((base_size, quote_size)) => {
-                write_wire(&mut cursor, &1u32)?;
-                write_wire(&mut cursor, &user)?;
-                write_wire(&mut cursor, &base_size)?;
-                write_wire(&mut cursor, &quote_size)?;
-                // completed_order_ids: the ladder has no orders to complete.
-                write_wire(&mut cursor, &0u32)?;
-            }
-        }
-        // cancelled: standing intent has no remainders to cancel.
-        write_wire(&mut cursor, &0u32)?;
+        // At most one change, and never a cancelled remainder or a completed
+        // order: standing intent has no resting orders to consume or cull.
+        let change = change.map(|(base_size, quote_size)| UserBalanceChangeV0 {
+            base_size,
+            quote_size,
+            user,
+            _pad: [0; 6],
+        });
+        let response = ExecuteResponseV0 {
+            changes: change.as_slice(),
+            cancelled: &[],
+            completed: &[],
+        };
+        let mut cursor = Cursor::new(&mut self.response[..]);
+        wincode::serialize_into(&mut cursor, &response)
+            .map_err(|_| MidpointError::ResponseTooLarge)?;
         Ok(response_pointer(cursor.position()))
     }
 }
@@ -843,58 +836,44 @@ mod tests {
             });
             wanted -= quoted;
         }
-        let mut bytes = Vec::new();
-        wincode::config::serialize_into(&mut bytes, &QuoteResponseV0 { levels }, BORSH_CONFIG)
-            .unwrap();
-        bytes
+        wincode::serialize(&QuoteResponseV0 { levels: &levels }).unwrap()
     }
 
     fn reference_execute(quoter: &MidpointQuoterV0, change: Option<(u64, u64)>) -> Vec<u8> {
-        let balance_changes = change
-            .map(|(base_size, quote_size)| UserBalanceChangeV0 {
-                user: quoter.user_ref(),
-                base_size,
-                quote_size,
-                completed_order_ids: Vec::new(),
-            })
-            .into_iter()
-            .collect();
-        let mut bytes = Vec::new();
-        wincode::config::serialize_into(
-            &mut bytes,
-            &ExecuteResponseV0 {
-                balance_changes,
-                cancelled: Vec::new(),
-            },
-            BORSH_CONFIG,
-        )
-        .unwrap();
-        bytes
+        let change = change.map(|(base_size, quote_size)| UserBalanceChangeV0 {
+            base_size,
+            quote_size,
+            user: quoter.user_ref(),
+            _pad: [0; 6],
+        });
+        wincode::serialize(&ExecuteResponseV0 {
+            changes: change.as_slice(),
+            cancelled: &[],
+            completed: &[],
+        })
+        .unwrap()
     }
 
-    /// The tests here pin the written bytes against wincode's encoding of the
-    /// wire structs, which are now `quoter-spec`'s own — so this pins wincode's
-    /// derive against the spec's reference codec. The midpoint always emits
-    /// exactly one change and never completes an order, so the empty vecs it
-    /// always sends are part of what has to match.
+    /// What the writer put in the account has to read back as the response it
+    /// meant to send. Velocity does exactly this parse, so a framing mistake
+    /// here is a fill that cannot be decoded rather than one that settles
+    /// wrong.
     #[test]
-    fn wincode_matches_the_reference_codec() {
-        let quoter = quoter(&[], &[]);
-        let from_wincode = reference_execute(&quoter, Some((1_000_000_000, 101_000_000)));
+    fn the_written_response_parses_back() {
+        let mut quoter = quoter(&[], &[]);
+        let pointer = quoter
+            .write_execute_response(Some((1_000_000_000, 101_000_000)))
+            .unwrap();
+        let bytes = written(&quoter, pointer);
+        let response = ExecuteResponseV0::parse(&bytes).unwrap();
 
-        let mut from_spec = Vec::new();
-        ExecuteResponseV0 {
-            balance_changes: vec![UserBalanceChangeV0 {
-                user: quoter.user_ref(),
-                base_size: 1_000_000_000,
-                quote_size: 101_000_000,
-                completed_order_ids: Vec::new(),
-            }],
-            cancelled: Vec::new(),
-        }
-        .encode(&mut from_spec);
-
-        assert_eq!(from_wincode, from_spec);
+        assert_eq!(response.changes.len(), 1);
+        assert_eq!(response.changes[0].base_size, 1_000_000_000);
+        assert_eq!(response.changes[0].quote_size, 101_000_000);
+        assert_eq!(response.changes[0].user, quoter.user_ref());
+        // Standing intent has no resting orders to cull or consume.
+        assert!(response.cancelled.is_empty());
+        assert!(response.completed.is_empty());
     }
 
     fn written(quoter: &MidpointQuoterV0, pointer: ResponsePointerV0) -> Vec<u8> {
@@ -927,12 +906,12 @@ mod tests {
         let closed = quoter
             .write_quote_response(Direction::Long, UNIT, 0, false)
             .unwrap();
-        assert_eq!(written(&quoter, closed), 0u32.to_le_bytes().to_vec());
+        assert_eq!(written(&quoter, closed), quoter_spec::len_prefix(0).to_vec());
         // A stale mid is the same silence, even with the gate open.
         let stale = quoter
             .write_quote_response(Direction::Long, UNIT, 10_000, true)
             .unwrap();
-        assert_eq!(written(&quoter, stale), 0u32.to_le_bytes().to_vec());
+        assert_eq!(written(&quoter, stale), quoter_spec::len_prefix(0).to_vec());
     }
 
     #[test]
@@ -952,20 +931,15 @@ mod tests {
             .write_quote_response(Direction::Long, UNIT + UNIT / 2, 0, true)
             .unwrap();
         let bytes = written(&quoter, pointer);
-        assert_eq!(u32::from_le_bytes(bytes[..4].try_into().unwrap()), 2);
-        assert_eq!(
-            u64::from_le_bytes(bytes[4..12].try_into().unwrap()),
-            100_100_000
-        );
-        assert_eq!(u64::from_le_bytes(bytes[12..20].try_into().unwrap()), UNIT);
-        assert_eq!(
-            u64::from_le_bytes(bytes[20..28].try_into().unwrap()),
-            100_300_000
-        );
-        assert_eq!(
-            u64::from_le_bytes(bytes[28..36].try_into().unwrap()),
-            UNIT / 2
-        );
+        let response = QuoteResponseV0::parse(&bytes).unwrap();
+
+        // The taker's size runs out inside the second rung, so it is quoted
+        // for the remainder rather than its full standing size.
+        assert_eq!(response.levels.len(), 2);
+        assert_eq!(response.levels[0].price, 100_100_000);
+        assert_eq!(response.levels[0].size, UNIT);
+        assert_eq!(response.levels[1].price, 100_300_000);
+        assert_eq!(response.levels[1].size, UNIT / 2);
     }
 
     #[test]
@@ -977,7 +951,10 @@ mod tests {
         let pointer = quoter
             .write_quote_response(Direction::Long, u64::MAX, 0, true)
             .unwrap();
-        assert_eq!(pointer.len as usize, 4 + MAX_SPLINE_LEVELS * 16);
+        assert_eq!(
+            pointer.len as usize,
+            quoter_spec::LEN_BYTES + MAX_SPLINE_LEVELS * quoter_spec::PRICE_LEVEL_BYTES
+        );
         assert!(pointer.len as usize <= RESPONSE_BUFFER_BYTES);
     }
 

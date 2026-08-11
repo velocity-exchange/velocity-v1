@@ -14,7 +14,7 @@ repository = "https://github.com/velocity-exchange/velocity-v1/crates/quoter-spe
 # below can be the declaration both sides use rather than a shape they restate.
 # `copy` is not optional: these are small value types that every caller moves
 # by copy, and `Address` gates its `Copy` impl behind that feature.
-solana-address = { version = "2", features = ["copy"] }
+solana-address = { version = "2", features = ["copy", "wincode"] }
 
 # Serialization is per-consumer, because the two halves of the wire do not agree
 # on a framework: velocity decodes the response with borsh, and the v2 programs
@@ -29,10 +29,9 @@ solana-address = { version = "2", features = ["copy"] }
 # serialization, so the derive and the IDL support are separate features — and
 # the v2 programs enable neither, so no anchor code reaches them.
 anchor-lang = { version = "1.0.2", optional = true }
-wincode = { version = "0.5", features = ["derive"], optional = true }
+wincode = { version = "0.5", features = ["derive"] }
 
 [features]
 default = []
 anchor-derive = ["dep:anchor-lang", "solana-address/borsh"]
 idl-build = ["anchor-derive", "anchor-lang/idl-build"]
-wincode-derive = ["dep:wincode", "solana-address/wincode"]

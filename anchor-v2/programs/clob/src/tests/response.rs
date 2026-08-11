@@ -13,10 +13,11 @@ use {
         error::ClobError,
         response::ResponseWriter,
         state::{
-            CancelledRemainderV0, ClobMarketV0, Direction, ExecuteResponseV0, MarketConfigV0,
+            CancelledRemainderV0, ClobMarketV0, CompletedOrderV0, Direction, ExecuteResponseV0,
+            MarketConfigV0,
             PriceLevel, QuoteResponseV0, RemovedOrderV0, ResponsePointerV0, Side,
             UserBalanceChangeV0, UserRefV0, UserSetV0, CANCELLED_BYTES, CHANGE_MIN_BYTES,
-            COUNT_BYTES, EXECUTE_FILLS_CEILING, EXECUTE_USERS_CEILING, ORDER_ID_BYTES,
+            COUNT_BYTES, EXECUTE_FILLS_CEILING, EXECUTE_USERS_CEILING, ORDER_ID_BYTES, RESPONSE_LEN_BYTES,
             PRICE_LEVEL_BYTES, QUOTE_LEVELS_CEILING, REMOVED_ORDER_BYTES, RESPONSE_BUFFER_BYTES,
             RESPONSE_OFFSET, USER_REF_BYTES, USER_SET_BYTES, USER_SET_CAPACITY,
         },
@@ -37,18 +38,49 @@ where
     bytes
 }
 
-pub(super) fn encode_quote(levels: Vec<PriceLevel>) -> Vec<u8> {
-    encode(&QuoteResponseV0 { levels })
+pub(super) fn encode_quote(levels: &[PriceLevel]) -> Vec<u8> {
+    wincode::serialize(&QuoteResponseV0 { levels }).unwrap()
 }
 
 fn encode_execute(
-    balance_changes: Vec<UserBalanceChangeV0>,
-    cancelled: Vec<CancelledRemainderV0>,
+    changes: &[UserBalanceChangeV0],
+    cancelled: &[CancelledRemainderV0],
+    completed: &[CompletedOrderV0],
 ) -> Vec<u8> {
-    encode(&ExecuteResponseV0 {
-        balance_changes,
+    wincode::serialize(&ExecuteResponseV0 {
+        changes,
         cancelled,
+        completed,
     })
+    .unwrap()
+}
+
+/// A change record with no completed orders attached — the ids ride their own
+/// section now, so the tests name them separately.
+fn change(user: UserRefV0, base_size: u64, quote_size: u64) -> UserBalanceChangeV0 {
+    UserBalanceChangeV0 {
+        base_size,
+        quote_size,
+        user,
+        _pad: [0; 6],
+    }
+}
+
+fn cull(user: UserRefV0, order_id: u64, base_asset_amount: u64) -> CancelledRemainderV0 {
+    CancelledRemainderV0 {
+        order_id,
+        base_asset_amount,
+        user,
+        _pad: [0; 6],
+    }
+}
+
+fn done(change_index: u32, order_id: u64) -> CompletedOrderV0 {
+    CompletedOrderV0 {
+        order_id,
+        change_index,
+        _pad: 0,
+    }
 }
 
 /// The bytes the returned pointer designates.
@@ -70,7 +102,7 @@ fn quote_streams_the_borsh_encoding_of_its_levels() {
     let pointer = book.quote(Direction::Long, 100, &[], None, 0, 0).unwrap();
     assert_eq!(
         streamed(&book, pointer),
-        encode_quote(vec![
+        encode_quote(&[
             PriceLevel {
                 price: 100,
                 size: 12
@@ -86,13 +118,13 @@ fn quote_streams_the_borsh_encoding_of_its_levels() {
     let pointer = book.quote(Direction::Long, 6, &[], None, 0, 0).unwrap();
     assert_eq!(
         streamed(&book, pointer),
-        encode_quote(vec![PriceLevel {
+        encode_quote(&[PriceLevel {
             price: 100,
             size: 6
         }])
     );
     let pointer = book.quote(Direction::Short, 10, &[], None, 0, 0).unwrap();
-    assert_eq!(streamed(&book, pointer), encode_quote(vec![]));
+    assert_eq!(streamed(&book, pointer), encode_quote(&[]));
 }
 
 #[test]
@@ -113,7 +145,7 @@ fn quote_stops_at_the_level_cap() {
         .unwrap();
     assert_eq!(
         streamed(&book, pointer),
-        encode_quote(vec![
+        encode_quote(&[
             PriceLevel {
                 price: 100,
                 size: 1
@@ -133,29 +165,26 @@ fn execute_streams_balance_changes_merged_by_user() {
     let (maker_a, maker_b) = (user(0xA), user(0xB));
     let first = place(&mut book, Side::Ask, 100, 5, maker_a);
     let middle = place(&mut book, Side::Ask, 101, 5, maker_b);
-    // A's second fill completes after B's record is already written, so the
-    // id has to be spliced into an earlier record.
+    // A's second fill completes after B's record is already written. The id
+    // names A's change and rides the trailing section, so nothing between them
+    // moves.
     let last = place(&mut book, Side::Ask, 102, 5, maker_a);
 
     let outcome = book.execute(Direction::Long, 15, &[], None, 0, 0).unwrap();
     assert_eq!(
         streamed(&book, outcome.response),
         encode_execute(
-            vec![
-                UserBalanceChangeV0 {
-                    user: maker_a,
-                    base_size: 10,
-                    quote_size: 100 * 5 + 102 * 5,
-                    completed_order_ids: vec![first.order_id, last.order_id],
-                },
-                UserBalanceChangeV0 {
-                    user: maker_b,
-                    base_size: 5,
-                    quote_size: 101 * 5,
-                    completed_order_ids: vec![middle.order_id],
-                },
+            &[
+                change(maker_a, 10, 100 * 5 + 102 * 5),
+                change(maker_b, 5, 101 * 5),
             ],
-            vec![]
+            &[],
+            // Fill order, each naming the change it belongs to.
+            &[
+                done(0, first.order_id),
+                done(1, middle.order_id),
+                done(0, last.order_id),
+            ],
         )
     );
     assert_eq!(book.node_count(Side::Ask), 0);
@@ -191,17 +220,9 @@ fn execute_streams_a_sub_min_cull_alongside_the_fill() {
     assert_eq!(
         streamed(&book, outcome.response),
         encode_execute(
-            vec![UserBalanceChangeV0 {
-                user: maker,
-                base_size: 15,
-                quote_size: 1500,
-                completed_order_ids: vec![],
-            }],
-            vec![CancelledRemainderV0 {
-                user: maker,
-                order_id: order.order_id,
-                base_asset_amount: 5,
-            }]
+            &[change(maker, 15, 1500)],
+            &[cull(maker, order.order_id, 5)],
+            &[],
         )
     );
     assert_eq!(outcome.cancelled_order_id, Some(order.order_id));
@@ -224,13 +245,9 @@ fn execute_stops_at_the_user_cap() {
     assert_eq!(
         streamed(&book, outcome.response),
         encode_execute(
-            vec![UserBalanceChangeV0 {
-                user: maker_a,
-                base_size: 5,
-                quote_size: 500,
-                completed_order_ids: vec![first.order_id],
-            }],
-            vec![]
+            &[change(maker_a, 5, 500)],
+            &[],
+            &[done(0, first.order_id)],
         )
     );
     // B's order is untouched — a second user would need a second record.
@@ -249,12 +266,7 @@ fn wire_widths_match_the_response_types() {
         PRICE_LEVEL_BYTES
     );
     assert_eq!(
-        encode(&CancelledRemainderV0 {
-            user,
-            order_id: 1,
-            base_asset_amount: 2,
-        })
-        .len(),
+        encode(&cull(user, 1, 2)).len(),
         CANCELLED_BYTES
     );
     // Return data rather than response bytes, but velocity reads it by offset,
@@ -280,22 +292,15 @@ fn wire_widths_match_the_response_types() {
         })[REMOVED_ORDER_BYTES - 2..],
         [Side::Bid.to_u8(), 0]
     );
-    let change = |ids: Vec<u64>| UserBalanceChangeV0 {
-        user,
-        base_size: 1,
-        quote_size: 2,
-        completed_order_ids: ids,
-    };
-    // A record with no completed ids is the narrowest one, and each id it
-    // does carry adds exactly one stride.
-    assert_eq!(encode(&change(vec![])).len(), CHANGE_MIN_BYTES);
-    assert_eq!(
-        encode(&change(vec![1, 2, 3])).len(),
-        CHANGE_MIN_BYTES + 3 * ORDER_ID_BYTES
-    );
-    // Sequence counts: an empty vec is the count alone.
-    assert_eq!(encode_quote(vec![]).len(), COUNT_BYTES);
-    assert_eq!(encode_execute(vec![], vec![]).len(), 2 * COUNT_BYTES);
+    // Every record is one fixed stride: a change carries no ids, so it cannot
+    // grow, and a consumed order is its own record in the trailing section.
+    assert_eq!(encode(&change(user, 1, 2)).len(), CHANGE_MIN_BYTES);
+    assert_eq!(encode(&done(0, 1)).len(), quoter_spec::COMPLETED_BYTES);
+    assert_eq!(encode(&cull(user, 1, 2)).len(), CANCELLED_BYTES);
+    // An empty section is its length prefix alone, and an empty execute
+    // response is three of them.
+    assert_eq!(encode_quote(&[]).len(), RESPONSE_LEN_BYTES);
+    assert_eq!(encode_execute(&[], &[], &[]).len(), 3 * RESPONSE_LEN_BYTES);
 }
 
 /// A sweep's total quote must be the floor of the whole sweep's notional, not
@@ -328,13 +333,9 @@ fn execute_totals_the_floor_of_the_whole_sweeps_notional() {
     assert_eq!(
         streamed(&book, outcome.response),
         encode_execute(
-            vec![UserBalanceChangeV0 {
-                user: maker,
-                base_size: 12,
-                quote_size: 3,
-                completed_order_ids: vec![1, 2, 3],
-            }],
-            vec![]
+            &[change(maker, 12, 3)],
+            &[],
+            &[done(0, 1), done(0, 2), done(0, 3)],
         )
     );
 
@@ -353,13 +354,9 @@ fn execute_totals_the_floor_of_the_whole_sweeps_notional() {
     assert_eq!(
         streamed(&book, outcome.response),
         encode_execute(
-            vec![UserBalanceChangeV0 {
-                user: maker,
-                base_size: 8,
-                quote_size: 5,
-                completed_order_ids: vec![1, 2],
-            }],
-            vec![]
+            &[change(maker, 8, 5)],
+            &[],
+            &[done(0, 1), done(0, 2)],
         )
     );
 }
@@ -430,27 +427,25 @@ fn a_market_at_the_execute_ceilings_streams_a_full_width_response() {
     let outcome = book
         .execute(Direction::Long, fills as u64, &[], None, 0, 0)
         .unwrap();
-    let expected = encode_execute(
-        makers
-            .iter()
-            .zip(orders.iter())
-            .enumerate()
-            .map(|(i, (maker, order))| UserBalanceChangeV0 {
-                user: *maker,
-                base_size: 1,
-                quote_size: 100 + i as u64,
-                completed_order_ids: vec![order.order_id],
-            })
-            .collect(),
-        vec![],
-    );
+    let changes: Vec<_> = makers
+        .iter()
+        .enumerate()
+        .map(|(i, maker)| change(*maker, 1, 100 + i as u64))
+        .collect();
+    let completed: Vec<_> = orders
+        .iter()
+        .enumerate()
+        .map(|(i, order)| done(i as u32, order.order_id))
+        .collect();
+    let expected = encode_execute(&changes, &[], &completed);
     assert_eq!(streamed(&book, outcome.response), expected);
     assert_eq!(outcome.fills.len(), fills);
     assert_eq!(book.node_count(Side::Ask), 0);
 
     // The widest response the encoder can produce, and it fits with room to
     // spare — `ResponseTooLarge` is unreachable at the configured ceilings.
-    let widest = 2 * COUNT_BYTES + fills * (CHANGE_MIN_BYTES + ORDER_ID_BYTES);
+    let widest =
+        3 * RESPONSE_LEN_BYTES + fills * (CHANGE_MIN_BYTES + quoter_spec::COMPLETED_BYTES);
     assert_eq!(outcome.response.len as usize, widest);
     assert!(
         widest <= RESPONSE_BUFFER_BYTES,
@@ -513,7 +508,7 @@ fn quote_accepts_the_orders_a_healthy_book_produces() {
     let pointer = book.quote(Direction::Short, 15, &[], None, 0, 0).unwrap();
     assert_eq!(
         streamed(&book, pointer),
-        encode_quote(vec![
+        encode_quote(&[
             PriceLevel {
                 price: 100,
                 size: 10
@@ -604,51 +599,39 @@ fn writer_inserts_shift_the_tail() {
     assert_eq!(&book.response[20..28], &[0; 8]);
 }
 
-/// The tests above pin the streamed bytes against wincode's encoding of the
-/// wire structs. Those structs are now `quoter-spec`'s own, so this pins
-/// wincode's derive against the spec's reference codec — the same codec
-/// velocity's borsh derive is pinned to. Together the three make the streamed
-/// bytes and velocity's decode provably the same layout.
+/// The tests above compare the streamed bytes against wincode's encoding of
+/// the same records. This one closes the loop the other way: what `execute`
+/// wrote into the account has to read back through the spec's own parser,
+/// which is the call velocity makes. A framing mistake here is a fill that
+/// cannot be decoded rather than one that settles wrong.
 #[test]
-fn wincode_matches_the_reference_codec() {
-    let authority = anchor_lang_v2::prelude::Address::new_from_array([7u8; 32]);
-    let other = anchor_lang_v2::prelude::Address::new_from_array([8u8; 32]);
+fn the_streamed_response_parses_back() {
+    let market = TestMarket::new(16);
+    let mut book = market.book();
+    let (maker_a, maker_b) = (user(0xA), user(0xB));
+    let first = place(&mut book, Side::Ask, 100, 5, maker_a);
+    let middle = place(&mut book, Side::Ask, 101, 5, maker_b);
+    let last = place(&mut book, Side::Ask, 102, 5, maker_a);
 
-    let changes = vec![
-        UserBalanceChangeV0 {
-            user: UserRefV0 {
-                authority,
-                sub_account_id: 3,
-            },
-            base_size: 1_000_000_000,
-            quote_size: 101_000_000,
-            completed_order_ids: vec![9, 10],
-        },
-        UserBalanceChangeV0 {
-            user: UserRefV0 {
-                authority: other,
-                sub_account_id: 0,
-            },
-            base_size: 5,
-            quote_size: 6,
-            completed_order_ids: vec![],
-        },
-    ];
-    let cancelled = vec![CancelledRemainderV0 {
-        user: UserRefV0 {
-            authority,
-            sub_account_id: 1,
-        },
-        order_id: 42,
-        base_asset_amount: 17,
-    }];
+    let outcome = book.execute(Direction::Long, 15, &[], None, 0, 0).unwrap();
+    let bytes = streamed(&book, outcome.response);
+    let response = ExecuteResponseV0::parse(&bytes).unwrap();
 
-    let from_wincode = encode_execute(changes.clone(), cancelled.clone());
-    let mut from_spec = Vec::new();
-    ExecuteResponseV0 {
-        balance_changes: changes,
-        cancelled,
-    }
-    .encode(&mut from_spec);
-    assert_eq!(from_wincode, from_spec);
+    assert_eq!(response.changes.len(), 2);
+    assert_eq!(response.changes[0].user, maker_a);
+    assert_eq!(response.changes[0].base_size, 10);
+    assert_eq!(response.changes[1].user, maker_b);
+    assert_eq!(response.changes[1].base_size, 5);
+
+    // Each consumed order resolves back to the change that owns it, which is
+    // the whole point of naming the change from the id.
+    assert_eq!(
+        response.completed_for(0).collect::<Vec<_>>(),
+        vec![first.order_id, last.order_id]
+    );
+    assert_eq!(
+        response.completed_for(1).collect::<Vec<_>>(),
+        vec![middle.order_id]
+    );
+    assert!(response.cancelled.is_empty());
 }

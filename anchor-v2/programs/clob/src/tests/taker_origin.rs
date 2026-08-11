@@ -101,7 +101,7 @@ fn a_crossed_taker_remainder_is_passed_over() {
     assert!(outcome.fills.is_empty());
     assert_eq!(
         quoted(&mut book, Direction::Short, u64::MAX, 0),
-        encode_quote(vec![])
+        encode_quote(&[])
     );
     // And it is still resting, untouched, waiting for its counterparty.
     assert_eq!(book.node_count(Side::Bid), 1);
@@ -134,7 +134,7 @@ fn a_crossed_remainder_does_not_shadow_the_depth_behind_it() {
 
     assert_eq!(
         quoted(&mut book, Direction::Short, u64::MAX, 0),
-        encode_quote(vec![PriceLevel { price: 98, size: 7 }])
+        encode_quote(&[PriceLevel { price: 98, size: 7 }])
     );
     let outcome = book.execute(Direction::Short, 7, &[], None, 0, 0).unwrap();
     assert_eq!(outcome.fills.len(), 1);
@@ -188,7 +188,7 @@ fn an_uncrossed_taker_remainder_is_quotable_and_takeable() {
 
     assert_eq!(
         quoted(&mut book, Direction::Short, u64::MAX, 0),
-        encode_quote(vec![PriceLevel {
+        encode_quote(&[PriceLevel {
             price: 101,
             size: 5
         }])
@@ -203,7 +203,7 @@ fn an_uncrossed_taker_remainder_is_quotable_and_takeable() {
     place_taker_origin(&mut book, Side::Bid, 101, 5, taker);
     assert_eq!(
         quoted(&mut book, Direction::Short, u64::MAX, 0),
-        encode_quote(vec![PriceLevel {
+        encode_quote(&[PriceLevel {
             price: 101,
             size: 5
         }])
@@ -288,7 +288,7 @@ fn the_cross_resolution_path_still_works() {
     // stands — this is the leg velocity runs, and the price the pair settles at.
     assert_eq!(
         quoted(&mut book, Direction::Long, u64::MAX, 0),
-        encode_quote(vec![PriceLevel { price: 99, size: 5 }])
+        encode_quote(&[PriceLevel { price: 99, size: 5 }])
     );
     let outcome = book.execute(Direction::Long, 5, &[], None, 0, 0).unwrap();
     assert_eq!(outcome.fills.len(), 1);
@@ -381,7 +381,7 @@ fn quote_and_execute_skip_the_same_order() {
     // it are both published, because execute really can deliver them.
     assert_eq!(
         quoted(&mut book, Direction::Long, u64::MAX, 0),
-        encode_quote(vec![
+        encode_quote(&[
             PriceLevel { price: 99, size: 5 },
             PriceLevel {
                 price: 102,
@@ -401,7 +401,7 @@ fn quote_and_execute_skip_the_same_order() {
     // The crossing bid is ordinary depth for a taker going the other way.
     assert_eq!(
         quoted(&mut book, Direction::Short, u64::MAX, 0),
-        encode_quote(vec![PriceLevel {
+        encode_quote(&[PriceLevel {
             price: 101,
             size: 5
         }])
@@ -423,7 +423,7 @@ fn the_same_book_quotes_that_depth_once_the_cross_is_gone() {
 
     assert_eq!(
         quoted(&mut book, Direction::Long, u64::MAX, 0),
-        encode_quote(vec![
+        encode_quote(&[
             PriceLevel { price: 99, size: 5 },
             PriceLevel {
                 price: 102,
@@ -435,7 +435,7 @@ fn the_same_book_quotes_that_depth_once_the_cross_is_gone() {
     book.cancel(crosser, crossing_bid).unwrap();
     assert_eq!(
         quoted(&mut book, Direction::Long, u64::MAX, 0),
-        encode_quote(vec![
+        encode_quote(&[
             PriceLevel { price: 99, size: 5 },
             PriceLevel {
                 price: 100,
@@ -472,7 +472,7 @@ fn quote_follows_the_counterpartys_activation_slot() {
 
     assert_eq!(
         quoted(&mut book, Direction::Short, u64::MAX, 9),
-        encode_quote(vec![
+        encode_quote(&[
             PriceLevel {
                 price: 101,
                 size: 5
@@ -482,6 +482,6 @@ fn quote_follows_the_counterpartys_activation_slot() {
     );
     assert_eq!(
         quoted(&mut book, Direction::Short, u64::MAX, 10),
-        encode_quote(vec![PriceLevel { price: 98, size: 5 }])
+        encode_quote(&[PriceLevel { price: 98, size: 5 }])
     );
 }

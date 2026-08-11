@@ -23,11 +23,10 @@ bytemuck = { version = "1", features = ["derive", "min_const_generics"] }
 static_assertions = "1.1.0"
 wincode = { version = "0.5", features = ["derive"] }
 # Declares the quoter wire types this program writes. `wincode-derive` gives
-# them the same derives the rest of this program's wire structs use, and adds
-# no borsh dependency.
-quoter-spec = { path = "../../../crates/quoter-spec", features = [
-    "wincode-derive",
-] }
+# them the same derives the rest of this program's wire structs use. No borsh
+# reaches this binary: the spec's anchor derives are behind a feature only
+# velocity turns on.
+quoter-spec = { path = "../../../crates/quoter-spec" }
 
 [dev-dependencies]
 # `testing` adds the stack-backed AccountBuffer the src/tests/ unit tests

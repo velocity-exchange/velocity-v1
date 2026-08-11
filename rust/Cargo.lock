@@ -4461,6 +4461,7 @@ version = "0.1.0"
 dependencies = [
  "anchor-lang",
  "solana-address 2.6.1",
+ "wincode",
 ]
 
 [[package]]

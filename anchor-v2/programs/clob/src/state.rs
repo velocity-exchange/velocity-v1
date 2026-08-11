@@ -31,13 +31,19 @@ pub const RESPONSE_BUFFER_BYTES: usize = 8192;
 /// Byte width of a borsh sequence count (a `Vec`'s length prefix).
 pub const COUNT_BYTES: usize = core::mem::size_of::<u32>();
 
+/// Width of a sequence length in the *response region*, which is wincode's
+/// framing rather than borsh's. Distinct from [`COUNT_BYTES`]: that one is the
+/// borsh count the event records carry, and widening it here silently changed
+/// an emitted event before the two were separated.
+pub const RESPONSE_LEN_BYTES: usize = quoter_spec::LEN_BYTES;
+
 /// Borsh width of a [`UserRefV0`]: 32-byte authority + u16 sub-account. The
 /// response encoder compares and writes users in this form, so the constant
 /// is the single definition of that width.
 pub const USER_REF_BYTES: usize = quoter_spec::UserRefV0::SIZE;
 
 /// Borsh width of a [`PriceLevel`].
-pub const PRICE_LEVEL_BYTES: usize = 2 * core::mem::size_of::<u64>();
+pub const PRICE_LEVEL_BYTES: usize = quoter_spec::PRICE_LEVEL_BYTES;
 
 /// Borsh width of one `completed_order_ids` entry.
 pub const ORDER_ID_BYTES: usize = core::mem::size_of::<u64>();
@@ -45,10 +51,10 @@ pub const ORDER_ID_BYTES: usize = core::mem::size_of::<u64>();
 /// Borsh width of a [`UserBalanceChangeV0`] that completed no orders — the
 /// narrowest a balance-change record can be, and the width a full response of
 /// them is derived from.
-pub const CHANGE_MIN_BYTES: usize = USER_REF_BYTES + 2 * core::mem::size_of::<u64>() + COUNT_BYTES;
+pub const CHANGE_MIN_BYTES: usize = quoter_spec::CHANGE_BYTES;
 
 /// Borsh width of a [`CancelledRemainderV0`].
-pub const CANCELLED_BYTES: usize = USER_REF_BYTES + 2 * core::mem::size_of::<u64>();
+pub const CANCELLED_BYTES: usize = quoter_spec::CANCELLED_BYTES;
 
 /// Borsh width of a [`RemovedOrderV0`] — the return data of
 /// `cancel_order_v0`/`evict_worst_v0`/`remove_expired_v0`. Not used to size
@@ -64,7 +70,7 @@ pub const REMOVED_ORDER_BYTES: usize = USER_REF_BYTES + 3 * core::mem::size_of::
 /// Ceiling on `max_quote_levels`: a [`QuoteResponseV0`] is a count followed
 /// by that many [`PriceLevel`]s.
 pub const QUOTE_LEVELS_CEILING: u16 =
-    ((RESPONSE_BUFFER_BYTES - COUNT_BYTES) / PRICE_LEVEL_BYTES) as u16;
+    ((RESPONSE_BUFFER_BYTES - RESPONSE_LEN_BYTES) / PRICE_LEVEL_BYTES) as u16;
 
 pub const EXECUTE_FILLS_CEILING: u16 = 128;
 
@@ -85,7 +91,7 @@ pub const CANCEL_ALL_ORDERS_CEILING: u16 = 128;
 /// configured *at* this ceiling unable to overrun the response region,
 /// whatever the book holds.
 pub const EXECUTE_USERS_CEILING: u16 = ((RESPONSE_BUFFER_BYTES
-    - 2 * COUNT_BYTES
+    - 2 * RESPONSE_LEN_BYTES
     - CANCELLED_BYTES
     - EXECUTE_FILLS_CEILING as usize * ORDER_ID_BYTES)
     / CHANGE_MIN_BYTES) as u16;
@@ -94,10 +100,11 @@ pub const EXECUTE_USERS_CEILING: u16 = ((RESPONSE_BUFFER_BYTES
 // region, so `ResponseTooLarge` is unreachable for a market whose config the
 // init/update checks accepted.
 const_assert!(
-    COUNT_BYTES + QUOTE_LEVELS_CEILING as usize * PRICE_LEVEL_BYTES <= RESPONSE_BUFFER_BYTES
+    RESPONSE_LEN_BYTES + QUOTE_LEVELS_CEILING as usize * PRICE_LEVEL_BYTES
+        <= RESPONSE_BUFFER_BYTES
 );
 const_assert!(
-    2 * COUNT_BYTES
+    2 * RESPONSE_LEN_BYTES
         + CANCELLED_BYTES
         + EXECUTE_FILLS_CEILING as usize * ORDER_ID_BYTES
         + EXECUTE_USERS_CEILING as usize * CHANGE_MIN_BYTES
@@ -431,11 +438,8 @@ impl UserSetV0 {
     }
 }
 
-#[derive(Clone, Copy, PartialEq, Eq, Debug, wincode::SchemaRead, wincode::SchemaWrite)]
-pub struct PriceLevel {
-    pub price: u64,
-    pub size: u64,
-}
+/// Declared by `quoter-spec`; the alias keeps this program's name for it.
+pub type PriceLevel = quoter_spec::PriceLevelV0;
 
 /// One user's share of an executed fill. Mirrors velocity's quoter-interface
 /// `UserBalanceChangeV0`.
@@ -454,11 +458,7 @@ pub struct ResponsePointerV0 {
     pub len: u32,
 }
 
-#[derive(Clone, wincode::SchemaRead, wincode::SchemaWrite)]
-pub struct QuoteResponseV0 {
-    /// Levels the quoter will fill at, best price first.
-    pub levels: Vec<PriceLevel>,
-}
+pub use quoter_spec::QuoteResponseV0;
 
 pub use quoter_spec::ExecuteResponseV0;
 
@@ -581,6 +581,7 @@ pub struct RemovedOrderV0 {
 /// velocity decrements the maker's aggregates (the maker was just filled,
 /// so their `User` is always in the loaded set).
 pub use quoter_spec::CancelledRemainderV0;
+pub use quoter_spec::CompletedOrderV0;
 
 /// `activation_slot` is computed by the instruction handler: placement slot
 /// plus the default delay, or a chosen delay clamped to

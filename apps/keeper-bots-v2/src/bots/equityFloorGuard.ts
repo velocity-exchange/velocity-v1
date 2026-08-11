@@ -95,6 +95,8 @@ export class EquityFloorGuardBot implements Bot {
 	private trackedUsers = new Map<string, TrackedUserState>();
 	/** authorities whose breaker this bot already attempted to trip */
 	private trippedAuthorities = new Set<string>();
+	/** Authorities whose trip is currently blocked by an invalid oracle; webhook debounce. */
+	private oracleBlockedAuthorities = new Set<string>();
 
 	// metrics
 	private metricsPort?: number;
@@ -397,13 +399,17 @@ export class EquityFloorGuardBot implements Bot {
 		user: User,
 		authorityKey: string
 	): Promise<void> {
-		if (this.trippedAuthorities.has(authorityKey)) {
+		// dry run never sets the onchain flag, so the cache alone debounces it
+		if (this.dryRun && this.trippedAuthorities.has(authorityKey)) {
 			return;
 		}
 
 		const userAccount = user.getUserAccountOrThrow();
 
-		// skip if already tripped on chain (by us earlier or anyone else)
+		// skip if already tripped on chain (by us earlier or anyone else). The
+		// cache is only trusted while the onchain flag backs it: a warm-admin
+		// reset clears the flag, the entry is evicted, and a later breach
+		// trips again instead of being skipped until the bot restarts.
 		try {
 			const stats = await (
 				this.velocityClient.program.account as any
@@ -417,6 +423,7 @@ export class EquityFloorGuardBot implements Bot {
 				this.trippedAuthorities.add(authorityKey);
 				return;
 			}
+			this.trippedAuthorities.delete(authorityKey);
 		} catch (e) {
 			logger.error(`${this.name}: failed to fetch user stats: ${e}`);
 			return;
@@ -457,10 +464,30 @@ export class EquityFloorGuardBot implements Bot {
 			});
 
 			if (simResult.simError !== null) {
+				const simErrorText = JSON.stringify(simResult.simError);
+				// InvalidOracle (6035 / 0x1793) is not "not breached": the
+				// account is below its floor but the trip cannot prove it
+				// until the oracle recovers. During an oracle outage this is
+				// exactly the state worth alerting on, so it must not drown
+				// in generic sim-error noise.
+				if (
+					simErrorText.includes('"Custom":6035') ||
+					simErrorText.includes('0x1793')
+				) {
+					const message =
+						`${this.name}: trip for ${authorityKey} blocked by invalid oracle; ` +
+						`account is breached but unprovable until the feed recovers, retrying`;
+					logger.warn(message);
+					// webhook once per outage, not once per cycle
+					if (!this.oracleBlockedAuthorities.has(authorityKey)) {
+						this.oracleBlockedAuthorities.add(authorityKey);
+						await webhookMessage(message);
+					}
+					return;
+				}
+				this.oracleBlockedAuthorities.delete(authorityKey);
 				logger.error(
-					`${this.name}: trip sim error for ${authorityKey}: ${JSON.stringify(
-						simResult.simError
-					)}`
+					`${this.name}: trip sim error for ${authorityKey}: ${simErrorText}`
 				);
 				return;
 			}
@@ -472,6 +499,7 @@ export class EquityFloorGuardBot implements Bot {
 					this.velocityClient.opts
 				);
 			this.trippedAuthorities.add(authorityKey);
+			this.oracleBlockedAuthorities.delete(authorityKey);
 			this.tripConfirmedCounter?.add(1, { authority: authorityKey });
 			const message = `${this.name}: breaker tripped for ${authorityKey}: https://solscan.io/tx/${txSig}`;
 			logger.info(message);

@@ -1,0 +1,6 @@
+---
+'@velocity-exchange/sdk': minor
+'@velocity-exchange/admin-cli': patch
+---
+
+Harden the equity breaker recovery path. Cure transfers: `transferDepositByDelegate` with a zero floor delta into a subaccount below its buffered floor now passes onchain while the breaker is tripped, so a breach can be topped up from internal surplus instead of requiring fresh deposits; `EquityFloorManager` gains `planCureTransfers()` and `cureBreaches()` (plus the pure `planCureMoves`) to plan and submit those transfers, deepest breach first, without drawing any donor below its own buffered floor. Self-verifying reset: `resetEquityFloorBreaker` now carries every live subaccount of the authority (count pinned by `UserStats.numberOfSubAccounts`) plus their markets and oracles, and reverts with the new `InvalidEquityBreakerReset` (6368) unless every floored subaccount clears its floor + buffer at execution time, so a stale approval fails instead of unfreezing a breached authority; `AdminClient.resetEquityFloorBreaker`/`getResetEquityFloorBreakerIx` build the account set automatically, with an optional `userAccounts` override for connections without `getProgramAccounts`. Neither path clears the flag automatically; the admin reset remains the only unfreeze.

@@ -27,10 +27,11 @@ use {
         load, load_mut,
         math::{
             self,
+            bankruptcy::perp_markets_with_forfeitable_claims,
             casting::Cast,
             constants::{
-                BID_ASK_TWAP_MAX_ORACLE_DIVERGENCE_PERCENT, QUOTE_PRECISION_I128,
-                QUOTE_PRECISION_U64, QUOTE_SPOT_MARKET_INDEX,
+                BID_ASK_TWAP_MAX_ORACLE_DIVERGENCE_PERCENT, BID_ASK_TWAP_MIN_QUOTE_REST_SLOTS,
+                QUOTE_PRECISION_I128, QUOTE_PRECISION_U64, QUOTE_SPOT_MARKET_INDEX,
             },
             margin::{calculate_user_equity, meets_settle_pnl_maintenance_margin_requirement},
             oracle::{is_oracle_valid_for_action, VelocityAction},
@@ -227,6 +228,11 @@ pub fn handle_trigger_order<'c: 'info, 'info>(
 
     let (writeable_perp_markets, writeable_spot_markets) = (MarketSet::new(), MarketSet::new());
 
+    let state = ctx.accounts.state.load()?;
+
+    // Load the map under the live State guard rails so every oracle-validity
+    // decision on this path, including the lazy breaker trip on the cancel
+    // branch, uses the same policy as the permissionless trip.
     let AccountMaps {
         perp_market_map,
         spot_market_map,
@@ -236,12 +242,12 @@ pub fn handle_trigger_order<'c: 'info, 'info>(
         &writeable_perp_markets,
         &writeable_spot_markets,
         Clock::get()?.slot,
-        None,
+        Some(state.oracle_guard_rails),
     )?;
 
     controller::orders::trigger_order(
         order_id,
-        &*ctx.accounts.state.load()?,
+        &state,
         &ctx.accounts.user,
         &ctx.accounts.user_stats,
         &spot_market_map,
@@ -260,6 +266,13 @@ pub fn handle_trigger_order<'c: 'info, 'info>(
 pub fn handle_force_cancel_orders<'c: 'info, 'info>(
     ctx: Context<'info, ForceCancelOrder>,
 ) -> Result<()> {
+    let state = ctx.accounts.state.load()?;
+
+    // Load the map under the live State guard rails. The equity-floor arm of
+    // force-cancel requires an oracle-validity verdict, so this handler must
+    // apply the same validity policy as `withdraw` and the permissionless trip.
+    // Without the guard rails the same account gets a different floor verdict
+    // here than everywhere else.
     let AccountMaps {
         perp_market_map,
         spot_market_map,
@@ -269,11 +282,11 @@ pub fn handle_force_cancel_orders<'c: 'info, 'info>(
         &MarketSet::new(),
         &get_writable_spot_market_set(QUOTE_SPOT_MARKET_INDEX),
         Clock::get()?.slot,
-        None,
+        Some(state.oracle_guard_rails),
     )?;
 
     controller::orders::force_cancel_orders(
-        &*ctx.accounts.state.load()?,
+        &state,
         &ctx.accounts.user,
         &spot_market_map,
         &perp_market_map,
@@ -2137,6 +2150,8 @@ pub fn handle_resolve_perp_pnl_deficit<'c: 'info, 'info>(
         let spot_market = &mut spot_market_map.get_ref_mut(&spot_market_index)?;
         let perp_market = &mut perp_market_map.get_ref_mut(&perp_market_index)?;
 
+        let oracle_price_data = *oracle_map.get_price_data(&perp_market.oracle_id())?;
+
         if perp_market.amm.is_curve_update_enabled() {
             validate!(
                 perp_market.market_stats.last_oracle_valid,
@@ -2149,6 +2164,15 @@ pub fn handle_resolve_perp_pnl_deficit<'c: 'info, 'info>(
                 ErrorCode::AMMNotUpdatedInSameSlot,
                 "AMM must be updated in a prior instruction within same slot"
             )?;
+
+            // The cached verdict only covers the sample the AMM update
+            // validated; a later oracle write in the same slot replaces the
+            // sample without touching `last_oracle_valid`.
+            validate!(
+                perp_market.is_validated_oracle_sample(&oracle_price_data),
+                ErrorCode::InvalidOracle,
+                "Oracle rewritten after same-slot AMM update; sample no longer matches the validated one"
+            )?;
         }
 
         validate!(
@@ -2157,7 +2181,7 @@ pub fn handle_resolve_perp_pnl_deficit<'c: 'info, 'info>(
             "Market is in settlement mode",
         )?;
 
-        let oracle_price = oracle_map.get_price_data(&perp_market.oracle_id())?.price;
+        let oracle_price = oracle_price_data.price;
         controller::orders::validate_market_within_price_band(perp_market, &state, oracle_price)?;
 
         controller::insurance::resolve_perp_pnl_deficit(
@@ -2244,6 +2268,13 @@ pub fn handle_resolve_perp_bankruptcy<'c: 'info, 'info>(
     let liquidator = &mut load_mut!(ctx.accounts.liquidator)?;
     let state = ctx.accounts.state.load()?;
 
+    // OtterSec #145: the resolver forfeits unfundable claims to their own markets' insurance
+    // tranches, so every market holding such a claim is written to, not just `market_index`.
+    // Declaring them here makes a caller that passes one read-only fail at load with
+    // `MarketWrongMutability` instead of deep inside the resolver.
+    let mut writable_perp_markets = vec![market_index];
+    writable_perp_markets.extend(perp_markets_with_forfeitable_claims(user));
+
     let remaining_accounts_iter = &mut ctx.remaining_accounts.iter().peekable();
     let AccountMaps {
         perp_market_map,
@@ -2251,7 +2282,7 @@ pub fn handle_resolve_perp_bankruptcy<'c: 'info, 'info>(
         mut oracle_map,
     } = load_maps(
         remaining_accounts_iter,
-        &get_writable_perp_market_set(market_index),
+        &get_writable_perp_market_set_from_vec(&writable_perp_markets),
         &get_writable_spot_market_set(quote_spot_market_index),
         clock.slot,
         Some(state.oracle_guard_rails),
@@ -2387,7 +2418,9 @@ pub fn handle_resolve_spot_bankruptcy<'c: 'info, 'info>(
         mut oracle_map,
     } = load_maps(
         remaining_accounts_iter,
-        &MarketSet::new(),
+        // OtterSec #145: this resolver also winds up unfundable perp claims, so the markets holding
+        // them are written to even though the bankruptcy being resolved is a spot borrow.
+        &get_writable_perp_market_set_from_vec(&perp_markets_with_forfeitable_claims(user)),
         &get_writable_spot_market_set(market_index),
         clock.slot,
         Some(state.oracle_guard_rails),
@@ -2646,8 +2679,14 @@ pub fn handle_update_perp_bid_ask_twap<'c: 'info, 'info>(
 
     let depth = perp_market.get_market_depth_for_funding_rate()?;
 
-    let (bids, asks) =
-        find_bids_and_asks_from_users(perp_market, oracle_price_data, &makers, slot, now)?;
+    let (bids, asks) = find_bids_and_asks_from_users(
+        perp_market,
+        oracle_price_data,
+        &makers,
+        slot,
+        now,
+        BID_ASK_TWAP_MIN_QUOTE_REST_SLOTS,
+    )?;
     let (bids, asks) = filter_bids_asks_by_oracle_divergence(
         bids,
         asks,
@@ -2868,12 +2907,14 @@ pub fn handle_sweep_perp_market_fees(
     let reserve_price = if perp_market.status == MarketStatus::Settlement {
         perp_market.expiry_price
     } else {
-        let oracle_price = oracle_map.get_price_data(&perp_market.oracle_id())?.price;
+        let oracle_price_data = *oracle_map.get_price_data(&perp_market.oracle_id())?;
+        let oracle_price = oracle_price_data.price;
 
         controller::orders::validate_market_within_price_band(perp_market, &state, oracle_price)?;
 
         if perp_market.amm.is_curve_update_enabled() {
-            let healthy_oracle = perp_market.is_recent_oracle_valid(oracle_map.slot)?;
+            let healthy_oracle =
+                perp_market.is_recent_oracle_valid(oracle_map.slot, &oracle_price_data)?;
 
             if !healthy_oracle {
                 let (_, oracle_validity) = oracle_map.get_price_data_and_validity(
@@ -2910,6 +2951,18 @@ pub fn handle_sweep_perp_market_fees(
                         perp_market.amm.last_update_slot(),
                         perp_market.market_stats.last_oracle_valid
                     )?;
+
+                    // Both cached attestations hold, so `healthy_oracle` is
+                    // false because the oracle account was rewritten after
+                    // the same-slot AMM update. The cached verdict does not
+                    // cover the sample being consumed; reject on its current
+                    // validity.
+                    msg!(
+                        "Market={} oracle rewritten after same-slot AMM update; current sample is invalid ({})",
+                        perp_market_index,
+                        oracle_validity
+                    );
+                    return Err(oracle_validity.get_error_code().into());
                 }
             }
         }
@@ -3130,8 +3183,17 @@ pub fn handle_force_delete_user<'c: 'info, 'info>(
 
     // check the user equity
 
-    let (user_equity, _) =
+    let (user_equity, all_oracles_valid) =
         calculate_user_equity(user, &perp_market_map, &spot_market_map, &mut oracle_map)?;
+
+    // Deletion sends the user's remaining deposits to the keeper's own token
+    // account, so this must fail closed. A stale-low price understates the
+    // equity and makes a funded account look like dust.
+    validate!(
+        all_oracles_valid,
+        ErrorCode::InvalidOracle,
+        "cannot force delete user with an invalid oracle"
+    )?;
 
     let max_equity = QUOTE_PRECISION_I128 / 20;
     validate!(
@@ -3453,6 +3515,7 @@ pub struct TriggerOrder<'info> {
     #[account(mut)]
     pub user: AccountLoader<'info, User>,
     #[account(
+        mut,
         constraint = is_stats_for_user(&user, &user_stats)?
     )]
     pub user_stats: AccountLoader<'info, UserStats>,

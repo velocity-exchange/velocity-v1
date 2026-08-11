@@ -326,9 +326,32 @@ fn calculate_optimal_peg_and_budget_2_test() {
     // test amm update
     assert_eq!(market.amm.last_update_slot, 0);
     let c = _update_amm(&mut market, &mm_oracle_price_data, &state, 1, 1337).unwrap();
-    assert!(market.is_recent_oracle_valid(1337).unwrap());
-    assert!(!market.is_recent_oracle_valid(1338).unwrap());
-    assert!(!market.is_recent_oracle_valid(1336).unwrap());
+    assert!(market
+        .is_recent_oracle_valid(1337, &oracle_price_data)
+        .unwrap());
+    assert!(!market
+        .is_recent_oracle_valid(1338, &oracle_price_data)
+        .unwrap());
+    assert!(!market
+        .is_recent_oracle_valid(1336, &oracle_price_data)
+        .unwrap());
+
+    // a same-slot oracle rewrite (changed price or confidence) invalidates
+    // the cached verdict even though the AMM is still slot-fresh
+    let rewritten_conf = OraclePriceData {
+        confidence: oracle_price_data.confidence + 1,
+        ..oracle_price_data
+    };
+    assert!(!market
+        .is_recent_oracle_valid(1337, &rewritten_conf)
+        .unwrap());
+    let rewritten_price = OraclePriceData {
+        price: oracle_price_data.price + 1,
+        ..oracle_price_data
+    };
+    assert!(!market
+        .is_recent_oracle_valid(1337, &rewritten_price)
+        .unwrap());
 
     assert_eq!(c, 442);
     assert_eq!(market.amm.last_update_slot, 1337);

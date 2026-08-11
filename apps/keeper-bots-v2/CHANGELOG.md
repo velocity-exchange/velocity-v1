@@ -1,5 +1,13 @@
 # @velocity-exchange/keeper-bots-v2
 
+## 0.2.11
+
+### Patch Changes
+
+- Updated dependencies [[`872edd6`](https://github.com/velocity-exchange/velocity-v1/commit/872edd66c5d94a01d6c694a06b03c4ed20c2054c)]:
+  - @velocity-exchange/sdk@0.13.0
+  - @velocity-exchange/jit-proxy@0.3.8
+
 ## 0.2.10
 
 ### Patch Changes

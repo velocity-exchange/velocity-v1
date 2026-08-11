@@ -1,0 +1,5 @@
+---
+'@velocity-exchange/sdk': patch
+---
+
+The isolated-position instructions now respect the per-market gates that the cross-margin paths already applied. `withdrawFromIsolatedPerpPosition` reverts with `MarketWithdrawPaused` (6149) unless the spot market status is `active`, `reduceOnly` or `settlement` and the `Withdraw` operation is unpaused, so a market closed for withdrawals is closed on every route. A market in `settlement` stays exitable, matching the cross-margin path, so no isolated collateral is trapped. `depositIntoIsolatedPerpPosition` reverts with `DailyDepositLimit` (6364) when the deposit takes the market above its daily deposit cap, so the cap can no longer be stepped around. JSDoc on both client methods records the new revert codes; use `calculateWithdrawLimit` and `checkDepositLimits` to test a market before building either instruction. The isolated-position instructions are behind the `isolated-position` program feature, which is not in the mainnet default feature set.

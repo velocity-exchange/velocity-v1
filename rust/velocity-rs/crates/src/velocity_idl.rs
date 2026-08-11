@@ -7613,11 +7613,15 @@ pub mod accounts {
     #[repr(C)]
     #[derive(Copy, Clone, Default, AnchorSerialize, AnchorDeserialize, Serialize, Deserialize)]
     pub struct CancelRequestRemoveInsuranceFundStake {
+        pub state: Pubkey,
         pub spot_market: Pubkey,
         pub insurance_fund_stake: Pubkey,
         pub user_stats: Pubkey,
         pub authority: Pubkey,
+        pub spot_market_vault: Pubkey,
         pub insurance_fund_vault: Pubkey,
+        pub velocity_signer: Pubkey,
+        pub token_program: Pubkey,
     }
     #[automatically_derived]
     impl anchor_lang::Discriminator for CancelRequestRemoveInsuranceFundStake {
@@ -7635,6 +7639,11 @@ pub mod accounts {
     impl ToAccountMetas for CancelRequestRemoveInsuranceFundStake {
         fn to_account_metas(&self) -> Vec<AccountMeta> {
             vec![
+                AccountMeta {
+                    pubkey: self.state,
+                    is_signer: false,
+                    is_writable: false,
+                },
                 AccountMeta {
                     pubkey: self.spot_market,
                     is_signer: false,
@@ -7656,9 +7665,24 @@ pub mod accounts {
                     is_writable: false,
                 },
                 AccountMeta {
+                    pubkey: self.spot_market_vault,
+                    is_signer: false,
+                    is_writable: true,
+                },
+                AccountMeta {
                     pubkey: self.insurance_fund_vault,
                     is_signer: false,
                     is_writable: true,
+                },
+                AccountMeta {
+                    pubkey: self.velocity_signer,
+                    is_signer: false,
+                    is_writable: false,
+                },
+                AccountMeta {
+                    pubkey: self.token_program,
+                    is_signer: false,
+                    is_writable: false,
                 },
             ]
         }
@@ -15870,7 +15894,7 @@ pub mod accounts {
                 AccountMeta {
                     pubkey: self.user_stats,
                     is_signer: false,
-                    is_writable: false,
+                    is_writable: true,
                 },
             ]
         }
@@ -26144,6 +26168,8 @@ pub mod errors {
         CannotModifyBuilderOrder,
         #[msg("Invalid account extension")]
         InvalidAccountExtension,
+        #[msg("Invalid equity breaker reset")]
+        InvalidEquityBreakerReset,
     }
 }
 pub mod events {

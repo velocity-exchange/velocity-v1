@@ -169,8 +169,10 @@ pub const OPEN_ORDER_MARGIN_REQUIREMENT: u128 = QUOTE_PRECISION / 100;
 /// Max oracle-value loss a strictly reducing `end_swap` may realize while the
 /// account is under equity-floor protection (floor set or breaker tripped):
 /// the swap's output value must be at least the input value minus this many
-/// bps at live oracle prices. Bounds how much value a "reducing" swap can
-/// leak through a bad route while the account is frozen. 100 = 1%. TUNABLE.
+/// bps, with the in leg valued at the strict max and the out leg at the
+/// strict min of live oracle price and 5min twap. Bounds how much value a
+/// "reducing" swap can leak through a bad route while the account is frozen.
+/// 100 = 1%. TUNABLE.
 pub const EQUITY_FLOOR_SWAP_MAX_VALUE_LOSS_BPS: u128 = 100;
 pub const FEE_ADJUSTMENT_MAX: u64 = 100;
 pub const FEE_ADJUSTMENT_MAX_I16: i16 = FEE_ADJUSTMENT_MAX as i16;
@@ -206,6 +208,23 @@ pub const MAX_BID_ASK_INVENTORY_SKEW_FACTOR: u64 = 10 * BID_ASK_SPREAD_PRECISION
 /// Maximum percent divergence from oracle price for bids/asks to be included in mark TWAP calculation.
 /// Bids more than this % below oracle and asks more than this % above oracle are filtered out.
 pub const BID_ASK_TWAP_MAX_ORACLE_DIVERGENCE_PERCENT: u64 = 15;
+
+/// Minimum number of slots a DLOB quote must rest on-chain before it can move the bid/ask/mark TWAP
+/// (OtterSec #146).
+///
+/// `update_perp_bid_ask_twap` samples the book from caller-supplied `User` accounts, and nothing else
+/// in the program checks how long an order has existed. A post-only limit order, or any order with
+/// `auction_duration == 0`, counts as resting in the slot it was placed. The crank's caller could
+/// therefore place a self-crossed pair of quotes, crank, and cancel, all in one transaction. That moves
+/// the mark TWAP that `get_perp_baseline_start_price_offset` uses to set a THIRD PARTY's forced-close
+/// auction band, at no risk of a fill.
+///
+/// The value comes from `min_auction_duration = 20`, which `place_perp_order` forces onto every
+/// triggered stop-loss auction (`controller/orders.rs`). A quote must rest at least as long as the
+/// auction it can move, so a third party could have taken it first. 24 slots is that 20 plus a slack
+/// leader window, about 9.6s at 400ms. It stays below the 150-slot `SafeTriggerOrder` horizon and the
+/// 256-slot `Order::posted_slot_tail` modulus.
+pub const BID_ASK_TWAP_MIN_QUOTE_REST_SLOTS: u64 = 24;
 
 pub const MAX_POSITIVE_UPNL_FOR_INITIAL_MARGIN: i128 = 100 * QUOTE_PRECISION_I128; // max upnl for initial margin calc
 pub const DEFAULT_MAX_TWAP_UPDATE_PRICE_BAND_DENOMINATOR: i64 = 3; // '3' here means clamp new data point to 33% (1/3) divergence from current twap (if twap > 0)

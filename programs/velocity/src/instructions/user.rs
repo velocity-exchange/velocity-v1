@@ -413,13 +413,50 @@ pub fn handle_initialize_revenue_share_escrow<'c: 'info, 'info>(
     ctx: Context<'info, InitializeRevenueShareEscrow<'info>>,
     num_orders: u16,
 ) -> Result<()> {
+    let mut user_stats = ctx.accounts.user_stats.load_mut()?;
+
+    // `escrow.referrer` is snapshotted here and never written again, while
+    // `user_stats.referrer` is only ever set by the first `initialize_user` — so the
+    // snapshot is correct if and only if that call has already happened. `authority`
+    // is unchecked and only `payer` signs, so without this gate any third party could
+    // create another authority's escrow in the window between `initialize_user_stats`
+    // and its first `initialize_user`, freezing a defaulted referrer into the escrow
+    // and permanently suppressing that user's referral rewards and referee discount
+    // (nothing, not even the permissionless resize, can rewrite the field).
+    // Requiring a created subaccount puts the escrow strictly after the point where
+    // the referrer becomes immutable.
+    //
+    // Checked before the escrow is written or resized: it is a precondition on state
+    // this handler does not own, so there is no reason to size the orders vec first.
+    validate!(
+        user_stats.number_of_sub_accounts_created > 0,
+        ErrorCode::UserNotFound,
+        "revenue share escrow requires the authority's first user to exist, otherwise it snapshots a defaulted referrer"
+    )?;
+
+    // An escrow with no order slots cannot hold a builder or referral row, so
+    // `find_or_create_referral_index` and `add_builder_order` both fail to claim one and every
+    // fee, discount and reward computation silently falls back to its no-revenue-share value.
+    // `authority` is an `UncheckedAccount` here and only `payer` signs, so a third party can
+    // create any user's escrow PDA; at zero capacity that suppresses their rewards until someone
+    // notices and calls the (permissionless) resize (finding #114).
+    //
+    // Enforced at init rather than in `RevenueShareEscrow::validate`, which `resize` and
+    // `change_approved_builder` also run: an escrow already sitting at zero capacity on chain
+    // must stay able to resize its way out, and blocking its builder edits would be a new
+    // liveness problem rather than a fix.
+    validate!(
+        num_orders > 0,
+        ErrorCode::DefaultError,
+        "revenue share escrow must be initialized with at least one order slot"
+    )?;
+
     let escrow = &mut ctx.accounts.escrow;
     escrow.authority = ctx.accounts.authority.key();
     escrow
         .orders
         .resize_with(num_orders as usize, RevenueShareOrder::default);
 
-    let mut user_stats = ctx.accounts.user_stats.load_mut()?;
     escrow.referrer = user_stats.referrer;
     user_stats.update_builder_referral_status();
 
@@ -581,6 +618,17 @@ pub fn handle_deposit<'c: 'info, 'info>(
 
     let is_borrow_before = user.spot_positions[position_index].is_borrow();
 
+    // Snapshot the market's deposit level so the daily cap below can be gated on real growth.
+    // This instruction also repays borrows (see `DepositExplanation::RepayBorrow`), and a
+    // repayment reduces `borrow_balance` while leaving `deposit_balance` untouched, so it must
+    // not be throttled by a level predicate — that is the exit lock finding #118 removed from
+    // the shared credit path.
+    let deposit_token_amount_before = math::spot_balance::get_token_amount(
+        spot_market.deposit_balance,
+        &spot_market,
+        &SpotBalanceType::Deposit,
+    )?;
+
     let force_reduce_only = spot_market.is_reduce_only();
 
     // if reduce only, have to compare ix amount to current borrow amount
@@ -714,12 +762,13 @@ pub fn handle_deposit<'c: 'info, 'info>(
 
     spot_market.validate_max_token_deposits_and_borrows(false)?;
 
-    validate!(
-        math::spot_withdraw::check_deposit_limits(spot_market)?,
-        ErrorCode::DailyDepositLimit,
-        "Spot Market {} has hit daily deposit limit (deposits exceed {} above 24h twap, precision 1e6)",
-        spot_market.market_index,
-        spot_market.max_deposit_bps_per_day
+    // Gated on real growth for the same reason as the shared credit path (finding #118): the cap
+    // is a market-wide *level* predicate, so validating it unconditionally here blocked a
+    // borrow repayment through this instruction whenever the market already sat above its cap —
+    // one of the actions that brings the level back down, and one a liquidatable user needs.
+    math::spot_withdraw::validate_deposit_cap_after_increase(
+        spot_market,
+        deposit_token_amount_before,
     )?;
 
     Ok(())
@@ -955,12 +1004,6 @@ pub fn handle_transfer_deposit_by_delegate<'c: 'info, 'info>(
         "delegate transfer not allowed"
     )?;
 
-    validate!(
-        !user_stats.is_equity_breaker_tripped(),
-        ErrorCode::EquityBelowFloor,
-        "equity floor breaker is tripped for this authority"
-    )?;
-
     let AccountMaps {
         perp_market_map,
         spot_market_map,
@@ -972,6 +1015,47 @@ pub fn handle_transfer_deposit_by_delegate<'c: 'info, 'info>(
         clock.slot,
         Some(state.oracle_guard_rails),
     )?;
+
+    // While the equity breaker is tripped, the only delegate transfer allowed
+    // is one that shrinks an existing breach: funds only (no floor movement)
+    // into a subaccount below its buffered floor. The debited side is still
+    // gated at its own floor + buffer by the withdraw margin check inside
+    // `transfer_spot_deposit`, so a cure cannot create a new breach, and once
+    // the credited side clears its buffered floor this path closes again. The
+    // transfer never clears the flag; only the admin reset does.
+    if user_stats.is_equity_breaker_tripped() {
+        validate!(
+            equity_floor_delta == 0,
+            ErrorCode::EquityBelowFloor,
+            "equity floor breaker is tripped for this authority; floor cannot move"
+        )?;
+
+        validate!(
+            to_user.equity_floor > 0,
+            ErrorCode::EquityBelowFloor,
+            "equity floor breaker is tripped for this authority; transfers must cure a floored subaccount"
+        )?;
+
+        let (to_user_net_equity, to_user_oracles_valid) =
+            calculate_user_equity(to_user, &perp_market_map, &spot_market_map, &mut oracle_map)?;
+
+        // Cure eligibility must not be decided off an invalid price, matching
+        // the validity the trip and the reset require of the same metric.
+        // Deliberately a blanket reject rather than the bounded metric the
+        // floor gates use: this is a standalone instruction (no innocent
+        // third party to abort), and failing frozen is the right direction.
+        validate!(
+            to_user_oracles_valid,
+            ErrorCode::InvalidOracle,
+            "cannot verify cure transfer with an invalid oracle"
+        )?;
+
+        validate!(
+            to_user.is_below_buffered_equity_floor(to_user_net_equity),
+            ErrorCode::EquityBelowFloor,
+            "equity floor breaker is tripped for this authority; transfers must cure a subaccount below its buffered equity floor"
+        )?;
+    }
 
     // Carry equity floor along with the funds so the sum of floors across the
     // authority's subaccounts is preserved. The from side is validated against
@@ -991,11 +1075,24 @@ pub fn handle_transfer_deposit_by_delegate<'c: 'info, 'info>(
         // a subaccount inside the buffer band (at/above floor) may still
         // rebalance floor away. Measured as net equity, matching the breaker
         // trip threshold.
-        let (from_user_net_equity, _) = calculate_user_equity(
+        let (from_user_net_equity, from_user_oracles_valid) = calculate_user_equity(
             from_user,
             &perp_market_map,
             &spot_market_map,
             &mut oracle_map,
+        )?;
+
+        // Defusal eligibility must not be decided off an invalid price. The
+        // counterpart `trip_equity_floor_breaker` requires valid oracles, so
+        // without this check a stale-high price lets this guard pass in the
+        // same slot the trip reverts. The floor transfer would then drop the
+        // subaccount to `equity_floor = 0`, after which `is_below_equity_floor`
+        // short-circuits to false until an admin sets a new floor. The oracle
+        // therefore only has to be bad for the slot this transfer lands in.
+        validate!(
+            from_user_oracles_valid,
+            ErrorCode::InvalidOracle,
+            "cannot verify equity floor transfer with an invalid oracle"
         )?;
 
         validate!(
@@ -1027,8 +1124,17 @@ pub fn handle_transfer_deposit_by_delegate<'c: 'info, 'info>(
     )?;
 
     if equity_floor_delta > 0 {
-        let (to_user_net_equity, _) =
+        let (to_user_net_equity, to_user_oracles_valid) =
             calculate_user_equity(to_user, &perp_market_map, &spot_market_map, &mut oracle_map)?;
+
+        // The new floor must be backed by equity that is actually measurable.
+        // A stale-high price would otherwise let a floor land on a subaccount
+        // that cannot back it.
+        validate!(
+            to_user_oracles_valid,
+            ErrorCode::InvalidOracle,
+            "cannot verify equity floor transfer with an invalid oracle"
+        )?;
 
         validate!(
             !to_user.is_below_buffered_equity_floor(to_user_net_equity),
@@ -2147,11 +2253,12 @@ pub fn handle_transfer_perp_position<'c: 'info, 'info>(
         &spot_market_map,
         &mut oracle_map,
     )? {
+        // The floor restricts the from side here, so take the lower bound.
         validate!(
-            !from_user.is_below_buffered_equity_floor(from_user_net_equity),
+            !from_user.is_below_buffered_equity_floor(from_user_net_equity.lower),
             ErrorCode::EquityBelowFloor,
             "from user net equity {} below equity floor {} + buffer {}",
-            from_user_net_equity,
+            from_user_net_equity.lower,
             from_user.equity_floor,
             from_user.equity_floor_buffer
         )?;
@@ -2184,11 +2291,12 @@ pub fn handle_transfer_perp_position<'c: 'info, 'info>(
         &spot_market_map,
         &mut oracle_map,
     )? {
+        // The floor restricts the to side here, so take the lower bound.
         validate!(
-            !to_user.is_below_buffered_equity_floor(to_user_net_equity),
+            !to_user.is_below_buffered_equity_floor(to_user_net_equity.lower),
             ErrorCode::EquityBelowFloor,
             "to user net equity {} below equity floor {} + buffer {}",
-            to_user_net_equity,
+            to_user_net_equity.lower,
             to_user.equity_floor,
             to_user.equity_floor_buffer
         )?;
@@ -4033,7 +4141,16 @@ pub fn handle_end_swap<'c: 'info, 'info>(
         "the in_spot_market must have a flash loan amount set"
     )?;
 
-    let in_oracle_data = oracle_map.get_price_data(&in_spot_market.oracle_id())?;
+    let (in_oracle_data, in_oracle_validity) = oracle_map.get_price_data_and_validity(
+        MarketType::Spot,
+        in_spot_market.market_index,
+        &in_spot_market.oracle_id(),
+        in_spot_market.historical_oracle_data.last_oracle_price_twap,
+        in_spot_market.get_max_confidence_interval_multiplier()?,
+        -1,
+        0,
+        Some(LogMode::Margin),
+    )?;
     let in_oracle_price = in_oracle_data.price;
 
     let mut out_spot_market = spot_market_map.get_ref_mut(&out_market_index)?;
@@ -4045,7 +4162,18 @@ pub fn handle_end_swap<'c: 'info, 'info>(
         out_market_index
     )?;
 
-    let out_oracle_data = oracle_map.get_price_data(&out_spot_market.oracle_id())?;
+    let (out_oracle_data, out_oracle_validity) = oracle_map.get_price_data_and_validity(
+        MarketType::Spot,
+        out_spot_market.market_index,
+        &out_spot_market.oracle_id(),
+        out_spot_market
+            .historical_oracle_data
+            .last_oracle_price_twap,
+        out_spot_market.get_max_confidence_interval_multiplier()?,
+        -1,
+        0,
+        Some(LogMode::Margin),
+    )?;
     let out_oracle_price = out_oracle_data.price;
 
     let in_vault = &mut ctx.accounts.in_spot_market_vault;
@@ -4222,6 +4350,12 @@ pub fn handle_end_swap<'c: 'info, 'info>(
         .force_get_spot_position_mut(out_market_index)?
         .get_signed_token_amount(&out_spot_market)?;
 
+    let out_deposit_token_amount_before = math::spot_balance::get_token_amount(
+        out_spot_market.deposit_balance,
+        &out_spot_market,
+        &SpotBalanceType::Deposit,
+    )?;
+
     update_spot_balances_and_cumulative_deposits(
         amount_out_after_fee.cast()?,
         &SpotBalanceType::Deposit,
@@ -4241,6 +4375,18 @@ pub fn handle_end_swap<'c: 'info, 'info>(
         &SpotBalanceType::Deposit,
         &mut out_spot_market,
         false,
+    )?;
+
+    // The swap's out leg credits deposits through the plain balance update rather than the shared
+    // `_with_limits` path, so before this the daily deposit cap did not apply to it at all: a
+    // swapper could lift a market's deposit level arbitrarily far above its cap, and (until the
+    // growth gate above) thereby lock every other user out of withdrawing or repaying in that
+    // market while liquidation stayed live against them (finding #118). Capped here, after the
+    // revenue-pool fee credit so the whole out-side increase is accounted, and gated on real
+    // growth so a swap that merely repays an existing borrow is never rejected.
+    math::spot_withdraw::validate_deposit_cap_after_increase(
+        &out_spot_market,
+        out_deposit_token_amount_before,
     )?;
 
     let out_position_is_reduced = out_token_amount_before < 0
@@ -4288,15 +4434,52 @@ pub fn handle_end_swap<'c: 'info, 'info>(
         )?;
     }
 
-    // While under floor protection, bound the exempted swap's value loss at
-    // oracle so a "reducing" swap cannot leak value through a bad route.
+    // While under floor protection, bound the exempted swap's value loss so a
+    // "reducing" swap cannot leak value through a bad route. The bound is the
+    // exemption's only safety, so both legs must have valid oracles, and the
+    // bound values the leg given up at the strict max and the leg received at
+    // the strict min of live price and 5min twap, so a stale sample cannot
+    // flatter the exchange rate.
     if strictly_reducing && (user_stats.is_equity_breaker_tripped() || user.equity_floor > 0) {
-        let in_value =
-            get_token_value(amount_in.cast()?, in_spot_market.decimals, in_oracle_price)?;
+        validate!(
+            is_oracle_valid_for_action(in_oracle_validity, Some(VelocityAction::MarginCalc))?,
+            ErrorCode::InvalidOracle,
+            "in oracle invalid for swap under equity floor protection"
+        )?;
+
+        validate!(
+            is_oracle_valid_for_action(out_oracle_validity, Some(VelocityAction::MarginCalc))?,
+            ErrorCode::InvalidOracle,
+            "out oracle invalid for swap under equity floor protection"
+        )?;
+
+        let in_strict_price = StrictOraclePrice::new(
+            in_oracle_price,
+            in_spot_market
+                .historical_oracle_data
+                .last_oracle_price_twap_5min,
+            true,
+        );
+        in_strict_price.validate()?;
+
+        let out_strict_price = StrictOraclePrice::new(
+            out_oracle_price,
+            out_spot_market
+                .historical_oracle_data
+                .last_oracle_price_twap_5min,
+            true,
+        );
+        out_strict_price.validate()?;
+
+        let in_value = get_token_value(
+            amount_in.cast()?,
+            in_spot_market.decimals,
+            in_strict_price.max(),
+        )?;
         let out_value = get_token_value(
             amount_out.cast()?,
             out_spot_market.decimals,
-            out_oracle_price,
+            out_strict_price.min(),
         )?;
 
         let min_out_value = in_value
@@ -4361,6 +4544,19 @@ pub fn handle_end_swap<'c: 'info, 'info>(
         margin_type,
         strictly_reducing,
     )?;
+
+    // The exempt swap skips the buffered-floor gate and may legally end below
+    // the raw floor; arm the breaker inline instead of waiting for the
+    // permissionless trip.
+    if strictly_reducing {
+        controller::equity_floor::try_lazy_equity_breaker_trip(
+            &user,
+            &mut user_stats,
+            &perp_market_map,
+            &spot_market_map,
+            &mut oracle_map,
+        )?;
+    }
 
     user.update_last_active_slot(slot);
 

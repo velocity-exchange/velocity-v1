@@ -171,3 +171,45 @@ pub fn if_shares_lost_test() {
         true
     );
 }
+
+#[test]
+pub fn if_shares_lost_sole_staker_full_request_test() {
+    // finding #108: a staker whose pending request covers the entire fund must keep their
+    // position on cancel. The withdraw-and-restake forfeiture accrues to the *remaining*
+    // stakers, and a sole staker has none, so nothing is forfeited. Before the guard the
+    // restake leg divided into a zero-share pool, returned 0 new shares, and the cancel path
+    // burned every share (stake, user_shares and total_shares) while the vault kept the tokens.
+    let spot_market = SpotMarket {
+        insurance_fund: InsuranceFund {
+            unstaking_period: 0,
+            total_shares: 100 * QUOTE_PRECISION,
+            user_shares: 100 * QUOTE_PRECISION,
+            ..InsuranceFund::default()
+        },
+        ..SpotMarket::default()
+    };
+
+    let mut if_stake = InsuranceFundStake::new(Pubkey::default(), 0, 0);
+    if_stake
+        .update_if_shares(100 * QUOTE_PRECISION, &spot_market)
+        .unwrap();
+    if_stake.last_withdraw_request_shares = 100 * QUOTE_PRECISION;
+    if_stake.last_withdraw_request_value = (100 * QUOTE_PRECISION) as u64;
+
+    // revenue settled into the vault during the escrow window (the fund appreciated 10%), so
+    // `amount > last_withdraw_request_value` and the forfeiture branch is reached.
+    let if_balance = (110 * QUOTE_PRECISION) as u64;
+
+    let lost_shares = calculate_if_shares_lost(&if_stake, &spot_market, if_balance).unwrap();
+    assert_eq!(lost_shares, 0);
+
+    // a staker who is merely large (but not sole) still forfeits the escrow-window gain:
+    // the guard is scoped to the degenerate zero-remainder case, not to big positions.
+    let mut spot_market_with_others = spot_market;
+    spot_market_with_others.insurance_fund.total_shares = 200 * QUOTE_PRECISION;
+    spot_market_with_others.insurance_fund.user_shares = 200 * QUOTE_PRECISION;
+    let if_balance = (220 * QUOTE_PRECISION) as u64;
+    let lost_shares =
+        calculate_if_shares_lost(&if_stake, &spot_market_with_others, if_balance).unwrap();
+    assert!(lost_shares > 0);
+}

@@ -112,6 +112,39 @@ const jupiterSwapTransaction = (): string => {
 	);
 };
 
+/**
+ * The same route as a `/swap/v2/build` body: instructions raw rather than
+ * compiled into a transaction, split across the fields v2 returns them in.
+ */
+const jupiterBuildBody = () => {
+	const asApiInstruction = ({
+		programId,
+		keys,
+		data,
+	}: (typeof ROUTE)[number]) => ({
+		programId: programId.toString(),
+		accounts: keys.map((pubkey) => ({
+			pubkey: pubkey.toString(),
+			isSigner: pubkey.equals(USER),
+			isWritable: true,
+		})),
+		data: Buffer.from(data).toString('base64'),
+	});
+
+	return {
+		...jupiterQuoteBody,
+		otherAmountThreshold: AMOUNT_OUT,
+		priceImpactPct: '0',
+		computeBudgetInstructions: [asApiInstruction(ROUTE[0])],
+		setupInstructions: [asApiInstruction(ROUTE[1]), asApiInstruction(ROUTE[2])],
+		swapInstruction: asApiInstruction(ROUTE[3]),
+		cleanupInstruction: null,
+		otherInstructions: [],
+		tipInstruction: null,
+		addressesByLookupTableAddress: {},
+	};
+};
+
 /** Titan's msgpack quote reply carrying the same route. */
 const titanQuoteBuffer = (): ArrayBuffer => {
 	const encoded = encode({
@@ -154,6 +187,7 @@ const titanQuoteBuffer = (): ArrayBuffer => {
 describe('SwapProvider parity', () => {
 	let connection: sinon.SinonStubbedInstance<Connection>;
 	let jupiter: JupiterClient;
+	let jupiterV2: JupiterClient;
 	let titan: TitanClient;
 	let providers: Array<{ name: string; provider: SwapProvider }>;
 
@@ -161,7 +195,10 @@ describe('SwapProvider parity', () => {
 		connection = sinon.createStubInstance(Connection);
 
 		sinon.stub(nodeFetch, 'default').callsFake(async (url: unknown) => {
-			const body = String(url).includes('/quote')
+			const path = String(url);
+			const body = path.includes('/v2/build')
+				? jupiterBuildBody()
+				: path.includes('/quote')
 				? jupiterQuoteBody
 				: { swapTransaction: jupiterSwapTransaction() };
 
@@ -180,13 +217,18 @@ describe('SwapProvider parity', () => {
 		jupiter = new JupiterClient({
 			connection: connection as unknown as Connection,
 		});
+		jupiterV2 = new JupiterClient({
+			connection: connection as unknown as Connection,
+			apiVersion: 'v2',
+		});
 		titan = new TitanClient({
 			connection: connection as unknown as Connection,
 			authToken: '',
 		});
 
 		providers = [
-			{ name: 'jupiter', provider: jupiter },
+			{ name: 'jupiter-v1', provider: jupiter },
+			{ name: 'jupiter-v2', provider: jupiterV2 },
 			{ name: 'titan', provider: titan },
 		];
 	});
@@ -204,8 +246,21 @@ describe('SwapProvider parity', () => {
 			slippageBps: SLIPPAGE_BPS,
 		});
 
-	it('normalizes the same quote fields from either provider', async () => {
-		const [jupiterQuote, titanQuote] = await Promise.all(
+	/** Asserts every provider produced the same thing, naming the odd one out. */
+	const expectAgreement = <T>(results: T[]) => {
+		const [first, ...rest] = results;
+
+		rest.forEach((result, index) =>
+			expect(result, `${providers[index + 1].name} differs`).to.deep.equal(
+				first
+			)
+		);
+
+		return first;
+	};
+
+	it('normalizes the same quote fields from every provider', async () => {
+		const quotes = await Promise.all(
 			providers.map(({ provider }) => quoteFor(provider))
 		);
 
@@ -218,13 +273,13 @@ describe('SwapProvider parity', () => {
 			slippageBps: quote.slippageBps,
 		});
 
-		expect(normalized(jupiterQuote)).to.deep.equal(normalized(titanQuote));
+		expectAgreement(quotes.map(normalized));
 	});
 
-	it('strips the same setup and keeps the same hops from either provider', async () => {
+	it('strips the same setup and keeps the same hops from every provider', async () => {
 		// The filter used to be duplicated per client and had already drifted;
 		// this fails if either copy is reintroduced or diverges again.
-		const [fromJupiter, fromTitan] = await Promise.all(
+		const filtered = await Promise.all(
 			providers.map(async ({ provider }) => {
 				const quote = await quoteFor(provider);
 				const { instructions } = await provider.getRouteInstructions({
@@ -235,14 +290,13 @@ describe('SwapProvider parity', () => {
 			})
 		);
 
-		expect(fromJupiter).to.deep.equal(fromTitan);
-		expect(fromJupiter.map((ix) => ix.programId)).to.deep.equal([
+		expect(expectAgreement(filtered).map((ix) => ix.programId)).to.deep.equal([
 			ATA_PROGRAM.toString(),
 			AMM_PROGRAM.toString(),
 		]);
 	});
 
-	it('builds the same standalone transaction, setup included, from either provider', async () => {
+	it('builds the same standalone transaction, setup included, from every provider', async () => {
 		// Unlike getRouteInstructions, nothing is stripped — the caller signs and
 		// sends this transaction itself, so it needs the provider's own setup.
 		connection.getLatestBlockhash.resolves({
@@ -250,7 +304,7 @@ describe('SwapProvider parity', () => {
 			lastValidBlockHeight: 1,
 		});
 
-		const [fromJupiter, fromTitan] = await Promise.all(
+		const built = await Promise.all(
 			providers.map(async ({ provider }) => {
 				const quote = await quoteFor(provider);
 				const transaction = await provider.getSwapTransaction({
@@ -268,8 +322,7 @@ describe('SwapProvider parity', () => {
 			})
 		);
 
-		expect(fromJupiter).to.deep.equal(fromTitan);
-		expect(fromJupiter.map((ix) => ix.programId)).to.deep.equal(
+		expect(expectAgreement(built).map((ix) => ix.programId)).to.deep.equal(
 			ROUTE.map((ix) => ix.programId.toString())
 		);
 	});
@@ -292,21 +345,43 @@ describe('SwapProvider parity', () => {
 		expect(body.quoteResponse).to.not.have.property('providerRoute');
 	});
 
-	(['jupiter', 'titan'] as const).forEach((name) => {
-		it(`${name} rejects a quote from the other provider`, async () => {
-			const provider: SwapProvider = name === 'jupiter' ? jupiter : titan;
-			const other: SwapProvider = name === 'jupiter' ? titan : jupiter;
+	it('builds at the quoted slippage on jupiter v2, in one request', async () => {
+		// v2 has no second request to re-state slippage on: the build the quote
+		// carries was priced at what /build was asked for.
+		const quote = await quoteFor(jupiterV2);
+		await jupiterV2.getRouteInstructions({ quote, userPublicKey: USER });
 
-			const foreign = await quoteFor(other);
+		const calls = (nodeFetch.default as sinon.SinonStub).getCalls();
+		expect(calls).to.have.length(1);
+		expect(String(calls[0].args[0])).to.contain(`slippageBps=${SLIPPAGE_BPS}`);
+		expect(quote.slippageBps).to.equal(SLIPPAGE_BPS);
+	});
+
+	(['jupiter-v1', 'jupiter-v2', 'titan'] as const).forEach((name) => {
+		const clientFor = (): SwapProvider =>
+			name === 'jupiter-v1'
+				? jupiter
+				: name === 'jupiter-v2'
+				? jupiterV2
+				: titan;
+		/** A quote the client under test must refuse: from the other vendor. */
+		const otherVendor = (): SwapProvider =>
+			name === 'titan' ? jupiter : titan;
+		const vendor = name === 'titan' ? 'titan' : 'jupiter';
+
+		it(`${name} rejects a quote from the other provider`, async () => {
+			const provider = clientFor();
+
+			const foreign = await quoteFor(otherVendor());
 			const err = await captureError(
 				provider.getRouteInstructions({ quote: foreign, userPublicKey: USER })
 			);
 
-			expect(err.message).to.contain(name);
+			expect(err.message).to.contain(vendor);
 		});
 
 		it(`${name} rejects a quote whose pair was rewritten after quoting`, async () => {
-			const provider: SwapProvider = name === 'jupiter' ? jupiter : titan;
+			const provider = clientFor();
 
 			// The route is untouched, so it still swaps the pair it was quoted for
 			// — but every guard that reads the quote's own mints (velocity's spot
@@ -325,7 +400,7 @@ describe('SwapProvider parity', () => {
 		});
 
 		it(`${name} rejects a quote whose size was rewritten after quoting`, async () => {
-			const provider: SwapProvider = name === 'jupiter' ? jupiter : titan;
+			const provider = clientFor();
 
 			// `beginSwap` is funded from the quote's `inAmount`, so a rewritten one
 			// releases an amount the route was never priced to consume.
@@ -343,7 +418,7 @@ describe('SwapProvider parity', () => {
 		});
 
 		it(`${name} rejects a quote with no route payload`, async () => {
-			const provider: SwapProvider = name === 'jupiter' ? jupiter : titan;
+			const provider = clientFor();
 
 			const bare = { ...(await quoteFor(provider)) } as Record<string, unknown>;
 			delete bare.providerRoute;
@@ -359,16 +434,21 @@ describe('SwapProvider parity', () => {
 		});
 	});
 
-	it('titan rejects a route quoted for a different wallet', async () => {
-		// Only Titan binds a route to a wallet, because only Titan resolves the
-		// user's token accounts at quote time. Jupiter builds per-wallet at swap
-		// time, so its quote is wallet-independent by construction.
-		const quote = await quoteFor(titan);
-		const err = await captureError(
-			titan.getRouteInstructions({ quote, userPublicKey: OTHER_WALLET })
-		);
+	// Wallet-bound providers: Titan resolves the user's token accounts at quote
+	// time, and Jupiter v2 builds the route for a named `taker`. Jupiter v1 quotes
+	// are wallet-independent by construction — it builds per-wallet at swap time —
+	// so it has nothing to bind and is deliberately absent here.
+	(['jupiter-v2', 'titan'] as const).forEach((name) => {
+		it(`${name} rejects a route quoted for a different wallet`, async () => {
+			const provider: SwapProvider = name === 'titan' ? titan : jupiterV2;
 
-		expect(err.message).to.contain(USER.toString());
-		expect(err.message).to.contain(OTHER_WALLET.toString());
+			const quote = await quoteFor(provider);
+			const err = await captureError(
+				provider.getRouteInstructions({ quote, userPublicKey: OTHER_WALLET })
+			);
+
+			expect(err.message).to.contain(USER.toString());
+			expect(err.message).to.contain(OTHER_WALLET.toString());
+		});
 	});
 });

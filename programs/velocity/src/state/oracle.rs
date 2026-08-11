@@ -279,6 +279,12 @@ pub struct MMOraclePriceData {
     mm_exchange_diff_bps: u128,
     exchange_oracle_price_data: OraclePriceData,
     safe_oracle_price_data: OraclePriceData,
+    /// Whether `safe_oracle_price_data` carries the MM oracle price (true) or
+    /// fell back to the exchange oracle (false). The unset-default resolution
+    /// of the immediate-fill staleness threshold depends on it: only an
+    /// MM-oracle-sourced price is structurally unable to be fresher than
+    /// `MM_ORACLE_MIN_SLOT_GAP`.
+    safe_price_is_mm_sourced: bool,
 }
 
 impl MMOraclePriceData {
@@ -311,7 +317,7 @@ impl MMOraclePriceData {
             mm_oracle_delay > oracle_price_data.delay
         };
 
-        let safe_oracle_price_data = if exchange_oracle_is_more_recent
+        let (safe_oracle_price_data, safe_price_is_mm_sourced) = if exchange_oracle_is_more_recent
             || mm_oracle_price == 0i64
             || !is_oracle_valid_for_action(
                 mm_oracle_validity,
@@ -320,20 +326,23 @@ impl MMOraclePriceData {
             || price_diff_bps > MM_EXCHANGE_FALLBACK_THRESHOLD
         // 1% price difference
         {
-            oracle_price_data
+            (oracle_price_data, false)
         } else {
             let mm_oracle_diff_premium = mm_oracle_price.abs_diff(oracle_price_data.price);
             let adjusted_confidence = oracle_price_data
                 .confidence
                 .safe_add(mm_oracle_diff_premium)?;
 
-            OraclePriceData {
-                price: mm_oracle_price,
-                confidence: adjusted_confidence,
-                delay: mm_oracle_delay,
-                has_sufficient_number_of_data_points: true,
-                sequence_id: Some(mm_oracle_sequence_id),
-            }
+            (
+                OraclePriceData {
+                    price: mm_oracle_price,
+                    confidence: adjusted_confidence,
+                    delay: mm_oracle_delay,
+                    has_sufficient_number_of_data_points: true,
+                    sequence_id: Some(mm_oracle_sequence_id),
+                },
+                true,
+            )
         };
 
         Ok(MMOraclePriceData {
@@ -343,6 +352,7 @@ impl MMOraclePriceData {
             mm_exchange_diff_bps: price_diff_bps,
             exchange_oracle_price_data: oracle_price_data,
             safe_oracle_price_data,
+            safe_price_is_mm_sourced,
             mm_oracle_sequence_id,
         })
     }
@@ -361,6 +371,10 @@ impl MMOraclePriceData {
 
     pub fn get_safe_oracle_price_data(&self) -> OraclePriceData {
         self.safe_oracle_price_data
+    }
+
+    pub fn is_safe_price_mm_sourced(&self) -> bool {
+        self.safe_price_is_mm_sourced
     }
 
     pub fn get_exchange_oracle_price_data(&self) -> OraclePriceData {

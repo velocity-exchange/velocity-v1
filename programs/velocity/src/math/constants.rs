@@ -270,3 +270,10 @@ pub const INTEREST_RATE_SEGMENT_AND_WEIGHTS: &[(u128, u128)] = &[
 // MM ORACLE
 pub const MM_ORACLE_MIN_SLOT_GAP: u64 = 2; // min slots between accepted writes
 pub const MM_ORACLE_MAX_STEP_PCT_PRECISION: i128 = PERCENTAGE_PRECISION_I128 / 100; // 1%
+/// Max slots between an MM oracle update's source observation slot (carried in
+/// the payload) and the slot it lands. The stored `mm_oracle_slot` is the
+/// landing slot, so without this bound a signed update landing late (recent
+/// blockhash allows ~150 slots) would make an old observation read as fresh.
+/// A skipped write costs nothing: by the time an update is this late the crank
+/// has newer data to send.
+pub const MM_ORACLE_MAX_SOURCE_AGE_SLOTS: u64 = 10;

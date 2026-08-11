@@ -32,10 +32,19 @@ export const PERCENTAGE_PRECISION = new BN(10).pow(PERCENTAGE_PRECISION_EXP);
  * Minimum slots the program requires between two accepted MM-oracle writes
  * (`MM_ORACLE_MIN_SLOT_GAP` in `math/constants.rs`). Also the immediate-fill
  * staleness threshold a perp market falls back to when
- * `oracleSlotDelayOverride` is unset, since a tighter threshold than this is
- * unsatisfiable for an MM-oracle-sourced price.
+ * `oracleSlotDelayOverride` is unset and the price is MM-oracle-sourced,
+ * since a tighter threshold than this is unsatisfiable for such a price
+ * (an exchange-sourced price keeps the strict zero threshold when unset).
  */
 export const MM_ORACLE_MIN_SLOT_GAP = new BN(2);
+/**
+ * Max slots the program tolerates between an MM-oracle update's source
+ * observation slot (carried in the payload) and the slot it lands
+ * (`MM_ORACLE_MAX_SOURCE_AGE_SLOTS` in `math/constants.rs`). An update landing
+ * later than this is skipped, since the stored `mmOracleSlot` is the landing
+ * slot and a late-landing update would make an old observation read as fresh.
+ */
+export const MM_ORACLE_MAX_SOURCE_AGE_SLOTS = new BN(10);
 /** Alias of `PERCENTAGE_PRECISION` (1e6) for the AMM's `concentrationCoef` field. */
 export const CONCENTRATION_PRECISION = PERCENTAGE_PRECISION;
 

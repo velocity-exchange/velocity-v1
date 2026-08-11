@@ -303,6 +303,7 @@ pub fn get_oracle_status(
         &market.oracle_source,
         LogMode::None,
         slot_delay_override,
+        false, // exchange-oracle price, never MM-sourced
         slot_delay_override,
     )?;
     let oracle_reserve_price_spread_pct = market
@@ -341,6 +342,7 @@ pub fn oracle_validity(
     oracle_source: &OracleSource,
     log_mode: LogMode,
     slots_before_stale_for_amm_immdiate_override: i8,
+    immediate_price_is_mm_sourced: bool,
     oracle_low_risk_slot_delay_override: i8,
 ) -> VelocityResult<OracleValidity> {
     let OraclePriceData {
@@ -368,28 +370,40 @@ pub fn oracle_validity(
 
     // Immediate (JIT / auction-skipping) AMM fills.
     //
-    // Three cases, and the negative one is the fix. `0` is the explicit "never
-    // allow immediate AMM fills on this market" sentinel. A positive value is an
-    // explicit admin threshold and is used as-is.
+    // Three cases. `0` is the explicit "never allow immediate AMM fills on this
+    // market" sentinel. A positive value is an explicit admin threshold and is
+    // used as-is.
     //
-    // A negative value means unset. It previously clamped to `max(override, 0)`,
-    // i.e. a threshold of zero, requiring the price to have been written in this
-    // exact slot. That is unsatisfiable for the MM oracle by construction: the
-    // program refuses any MM-oracle write closer than `MM_ORACLE_MIN_SLOT_GAP`
-    // slots to the previous one, so an MM-oracle-sourced price is at best zero
-    // slots old on alternating slots and can never be fresher than that on the
-    // rest. A market left at the init default therefore could not pass this gate
-    // on roughly half of all slots no matter how aggressively it was cranked,
-    // which is not a tunable tradeoff but an arithmetic contradiction between
-    // two independent constants.
+    // A negative value means unset, and what it resolves to depends on where
+    // the price being classified came from. It previously clamped to
+    // `max(override, 0)`, i.e. a threshold of zero, requiring the price to have
+    // been written in this exact slot. That is unsatisfiable for an MM-oracle-
+    // sourced price by construction: the program refuses any MM-oracle write
+    // closer than `MM_ORACLE_MIN_SLOT_GAP` slots to the previous one, so such a
+    // price is at best zero slots old on alternating slots and can never be
+    // fresher than that on the rest. A market left at the init default
+    // therefore could not pass this gate on roughly half of all slots no matter
+    // how aggressively it was cranked — an arithmetic contradiction between two
+    // independent constants, so unset resolves to `MM_ORACLE_MIN_SLOT_GAP` for
+    // an MM-sourced price: the tightest window the crank can actually satisfy.
     //
-    // Unset now means the tightest window the crank can actually satisfy. An
-    // explicit override still wins in both directions, so this only changes
-    // markets that never had one set.
+    // An exchange-oracle price has no such floor — it can be same-slot fresh
+    // every slot — so unset keeps the strict zero threshold there. Widening it
+    // too would tolerate extra staleness on immediate fills exactly when the
+    // safe-price path has fallen back to the exchange oracle (MM oracle stale
+    // or diverged), which is when latency arbitrage against the vAMM pays most.
+    //
+    // An explicit override still wins in both directions on both paths, so this
+    // only affects markets that never had one set.
     let is_stale_for_amm_immediate = if slots_before_stale_for_amm_immdiate_override == 0 {
         true
     } else if slots_before_stale_for_amm_immdiate_override < 0 {
-        oracle_delay.gt(&MM_ORACLE_MIN_SLOT_GAP.cast::<i64>()?)
+        let unset_threshold: i64 = if immediate_price_is_mm_sourced {
+            MM_ORACLE_MIN_SLOT_GAP.cast::<i64>()?
+        } else {
+            0
+        };
+        oracle_delay.gt(&unset_threshold)
     } else {
         oracle_delay.gt(&slots_before_stale_for_amm_immdiate_override.cast()?)
     };

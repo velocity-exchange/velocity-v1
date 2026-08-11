@@ -422,8 +422,15 @@ describe('admin', () => {
 		// stay well under the 1% step cap enforced by the native handler.
 		const oraclePrice = new BN(100_000_000);
 		const oracleTS = new BN(Date.now());
+		const sourceSlot = async () =>
+			new BN((await bankrunContextWrapper.connection.getSlot()).toString());
 		await velocityClient.updateFeatureBitFlagsMMOracle(true);
-		await velocityClient.updateMmOracleNative(0, oraclePrice, oracleTS);
+		await velocityClient.updateMmOracleNative(
+			0,
+			oraclePrice,
+			oracleTS,
+			await sourceSlot()
+		);
 		await velocityClient.fetchAccounts();
 
 		let perpMarket = velocityClient.getPerpMarketAccount(0);
@@ -436,22 +443,70 @@ describe('admin', () => {
 		assert(perpMarket.marketStats.mmOracleSequenceId.eq(oracleTS));
 
 		// Doesnt change if id doesnt increase
-		await velocityClient.updateMmOracleNative(0, oraclePrice.addn(1), oracleTS);
+		await velocityClient.updateMmOracleNative(
+			0,
+			oraclePrice.addn(1),
+			oracleTS,
+			await sourceSlot()
+		);
 		assert(perpMarket.marketStats.mmOraclePrice.eq(oraclePrice));
 
-		// Errors if we try and update it with price of zero
+		// The builder rejects a zero price before it reaches the chain (the
+		// program hard-errors on any non-positive price).
 		try {
-			await velocityClient.updateMmOracleNative(0, new BN(0), oracleTS);
+			await velocityClient.updateMmOracleNative(
+				0,
+				new BN(0),
+				oracleTS,
+				await sourceSlot()
+			);
 			assert.fail('Should have thrown');
 		} catch (e) {
 			console.log(e.message);
-			assert(e.message.includes('custom program error'));
+			assert(e.message.includes('non-positive price'));
 		}
+
+		// So does a negative price, which BN's little-endian serialization
+		// would otherwise silently send as its magnitude.
+		try {
+			await velocityClient.updateMmOracleNative(
+				0,
+				new BN(-1),
+				oracleTS,
+				await sourceSlot()
+			);
+			assert.fail('Should have thrown');
+		} catch (e) {
+			assert(e.message.includes('non-positive price'));
+		}
+
+		// Skipped (not an error) when the source slot is too old: the update
+		// landed later than MM_ORACLE_MAX_SOURCE_AGE_SLOTS after observation.
+		await bankrunContextWrapper.connection.updateSlotAndClock();
+		await bankrunContextWrapper.connection.updateSlotAndClock();
+		const staleSource = (await sourceSlot()).subn(11);
+		await velocityClient.updateMmOracleNative(
+			0,
+			oraclePrice.addn(5),
+			oracleTS.addn(5),
+			staleSource
+		);
+		await velocityClient.fetchAccounts();
+		perpMarket = velocityClient.getPerpMarketAccount(0);
+		assert(
+			perpMarket.marketStats.mmOracleSequenceId.eq(oracleTS),
+			'stale-source update must be skipped'
+		);
 
 		// Doesnt update if we flip the admin switch
 		await velocityClient.updateFeatureBitFlagsMMOracle(false);
 		try {
-			await velocityClient.updateMmOracleNative(0, oraclePrice, oracleTS);
+			await velocityClient.updateMmOracleNative(
+				0,
+				oraclePrice,
+				oracleTS,
+				await sourceSlot()
+			);
 			assert.fail('Should have thrown');
 		} catch (e) {
 			console.log(e.message);
@@ -464,7 +519,8 @@ describe('admin', () => {
 		await velocityClient.updateMmOracleNative(
 			0,
 			oraclePrice.addn(2),
-			oracleTS.addn(1)
+			oracleTS.addn(1),
+			await sourceSlot()
 		);
 		await velocityClient.fetchAccounts();
 		perpMarket = velocityClient.getPerpMarketAccount(0);
@@ -492,8 +548,15 @@ describe('admin', () => {
 		const freshSeqId = baselineSeqId.addn(1000);
 		const expectedFirstStep = baselinePrice.muln(101).divn(100);
 
+		const sourceSlot = async () =>
+			new BN((await bankrunContextWrapper.connection.getSlot()).toString());
 		await advancePastRateLimit();
-		await velocityClient.updateMmOracleNative(0, tooLargePrice, freshSeqId);
+		await velocityClient.updateMmOracleNative(
+			0,
+			tooLargePrice,
+			freshSeqId,
+			await sourceSlot()
+		);
 		await velocityClient.fetchAccounts();
 
 		const after = velocityClient.getPerpMarketAccount(0);
@@ -513,7 +576,12 @@ describe('admin', () => {
 		for (let i = 0; i < 5 && !current.eq(tooLargePrice); i++) {
 			seqId = seqId.addn(1);
 			await advancePastRateLimit();
-			await velocityClient.updateMmOracleNative(0, tooLargePrice, seqId);
+			await velocityClient.updateMmOracleNative(
+				0,
+				tooLargePrice,
+				seqId,
+				await sourceSlot()
+			);
 			await velocityClient.fetchAccounts();
 			const next =
 				velocityClient.getPerpMarketAccount(0).marketStats.mmOraclePrice;

@@ -133,6 +133,7 @@ pub fn update_amm_test() {
         &market.oracle_source,
         LogMode::ExchangeOracle,
         state.oracle_guard_rails.validity.slots_before_stale_for_amm as i8,
+        false, // exchange-oracle price, never MM-sourced
         state.oracle_guard_rails.validity.slots_before_stale_for_amm as i8,
     )
     .unwrap()
@@ -402,6 +403,7 @@ pub fn update_amm_test_bad_oracle() {
         &market.oracle_source,
         LogMode::None,
         0,
+        false, // exchange-oracle price, never MM-sourced
         0,
     )
     .unwrap()

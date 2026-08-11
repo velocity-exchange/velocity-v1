@@ -90,6 +90,10 @@ export function getMaxConfidenceIntervalMultiplier(
  * @param oracleGuardRails Protocol-wide validity thresholds (`state.oracleGuardRails`).
  * @param slot Current slot, used to compute oracle delay.
  * @param oracleStalenessBuffer Extra slots subtracted from the raw oracle delay before staleness checks (default 5) to absorb normal reporting lag.
+ * @param isMmSourcedPrice Whether `oraclePriceData` carries an MM-oracle-sourced price. Only
+ * affects the unset (`oracleSlotDelayOverride < 0`) immediate-fill threshold, which resolves to
+ * `MM_ORACLE_MIN_SLOT_GAP` for an MM-sourced price and to zero for an exchange-sourced one,
+ * mirroring `oracle_validity`'s `immediate_price_is_mm_sourced`.
  * @returns The most severe `OracleValidity` classification that applies.
  */
 export function getOracleValidity(
@@ -97,7 +101,8 @@ export function getOracleValidity(
 	oraclePriceData: OraclePriceData,
 	oracleGuardRails: OracleGuardRails,
 	slot: BN,
-	oracleStalenessBuffer = FIVE
+	oracleStalenessBuffer = FIVE,
+	isMmSourcedPrice = false
 ): OracleValidity {
 	const isNonPositive = oraclePriceData.price.lte(ZERO);
 	const isTooVolatile = BN.max(
@@ -127,13 +132,16 @@ export function getOracleValidity(
 	const oracleDelay = slot.sub(oraclePriceData.slot).sub(oracleStalenessBuffer);
 
 	// Mirrors `math::oracle::oracle_validity`. `0` is the explicit "never allow
-	// immediate AMM fills" sentinel. A negative override means unset, and
-	// resolves to MM_ORACLE_MIN_SLOT_GAP rather than to zero: the program will
-	// not accept MM-oracle writes closer together than that, so a tighter
-	// threshold could never be satisfied by an MM-oracle-sourced price.
+	// immediate AMM fills" sentinel. A negative override means unset, and its
+	// resolution is source-aware: MM_ORACLE_MIN_SLOT_GAP for an MM-oracle-sourced
+	// price (the program will not accept MM-oracle writes closer together than
+	// that, so a tighter threshold could never be satisfied) and the strict zero
+	// threshold for an exchange-sourced price, which can be same-slot fresh.
 	let isStaleForAmmImmediate = true;
 	if (market.oracleSlotDelayOverride < 0) {
-		isStaleForAmmImmediate = oracleDelay.gt(MM_ORACLE_MIN_SLOT_GAP);
+		isStaleForAmmImmediate = oracleDelay.gt(
+			isMmSourcedPrice ? MM_ORACLE_MIN_SLOT_GAP : ZERO
+		);
 	} else if (market.oracleSlotDelayOverride != 0) {
 		isStaleForAmmImmediate = oracleDelay.gt(
 			new BN(market.oracleSlotDelayOverride)

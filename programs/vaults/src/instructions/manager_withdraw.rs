@@ -1,7 +1,7 @@
 use {
     crate::{
         constraints::{is_manager_for_vault, is_user_for_vault, is_user_stats_for_vault},
-        declare_vault_seeds,
+        declare_vault_seeds, refresh_velocity_spot_market,
         state::{FeeUpdateProvider, FeeUpdateStatus, Vault, VaultProtocolProvider},
         token_cpi::TokenTransferCPI,
         velocity_cpi::WithdrawCPI,
@@ -13,11 +13,20 @@ use {
         cpi::accounts::Withdraw as VelocityWithdraw,
         instructions::optional_accounts::AccountMaps,
         program::Velocity,
-        state::user::{User, UserStats},
+        state::{
+            spot_market::SpotMarket,
+            user::{User, UserStats},
+        },
     },
 };
 
 pub fn manager_withdraw<'info>(ctx: Context<'info, ManagerWithdraw<'info>>) -> Result<()> {
+    // Advance the denomination market's `cumulative_deposit_interest` BEFORE any
+    // account is borrowed and before NAV is snapshotted (OtterSec #136/#137).
+    // Must precede `load_mut`/`load_maps`: `invoke` rejects a CPI whose writable
+    // accounts still have live borrows, and the maps must read post-refresh data.
+    refresh_velocity_spot_market!(ctx);
+
     let clock = &Clock::get()?;
     let mut vault = ctx.accounts.vault.load_mut()?;
     let now = clock.unix_timestamp;
@@ -109,6 +118,19 @@ pub struct ManagerWithdraw<'info> {
     pub user_token_account: Box<Account<'info, TokenAccount>>,
     pub velocity_program: Program<'info, Velocity>,
     pub token_program: Program<'info, Token>,
+    /// The vault's denomination spot market, refreshed by CPI before NAV is
+    /// snapshotted (OtterSec #136/#137). Writable because velocity advances its
+    /// `cumulative_deposit_interest`.
+    #[account(
+        mut,
+        seeds = [b"spot_market".as_ref(), vault.load()?.spot_market_index.to_le_bytes().as_ref()],
+        bump,
+        seeds::program = velocity_program.key(),
+    )]
+    pub velocity_spot_market: AccountLoader<'info, SpotMarket>,
+    /// CHECK: must be `velocity_spot_market.oracle`; enforced by velocity's
+    /// `valid_oracle_for_spot_market` access control on the refresh CPI.
+    pub velocity_oracle: AccountInfo<'info>,
 }
 
 impl<'info> WithdrawCPI for Context<'info, ManagerWithdraw<'info>> {

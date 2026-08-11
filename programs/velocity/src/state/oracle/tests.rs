@@ -145,6 +145,7 @@ fn use_mm_oracle() {
             mm_oracle_sequence_id: 1756262481,
             historical_oracle_data: HistoricalOracleData::default_with_current_oracle(
                 oracle_price_data,
+                0,
             ),
             ..MarketStats::default()
         },
@@ -242,6 +243,7 @@ fn mm_oracle_confidence() {
             mm_oracle_sequence_id: 1,
             historical_oracle_data: HistoricalOracleData::default_with_current_oracle(
                 oracle_price_data,
+                0,
             ),
             ..MarketStats::default()
         },

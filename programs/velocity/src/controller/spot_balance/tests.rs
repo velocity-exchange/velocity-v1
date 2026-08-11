@@ -2510,6 +2510,106 @@ fn deposit_credit_never_exceeds_borrow_charge() {
     }
 }
 
+/// OtterSec #121 — spot market init must stamp `last_oracle_price_twap_ts`, or the
+/// market's first asset/liability price band collapses.
+///
+/// `HistoricalOracleData::default_with_current_oracle` had that one assignment
+/// commented out, so a freshly initialized spot market carried
+/// `last_oracle_price_twap_ts == 0`. On the first refresh `since_last = now - 0`
+/// dwarfs the TWAP period, `from_start` saturates, and the TWAP is replaced by the
+/// live price *outright* — after which both `StrictOraclePrice` bounds (`min` /
+/// `max` of current vs the 5-min TWAP) sit on the same number and the first
+/// price-banded operation is unguarded in both directions.
+#[test]
+fn spot_market_init_stamps_oracle_twap_ts_so_the_first_price_band_survives() {
+    use crate::{
+        math::stats::calculate_new_twap,
+        state::oracle::{OraclePriceData, StrictOraclePrice},
+    };
+
+    let launch_price = 100 * PRICE_PRECISION_I64;
+    let live_price = 130 * PRICE_PRECISION_I64;
+    let now = 1_700_000_000_i64;
+
+    let launch_oracle = OraclePriceData {
+        price: launch_price,
+        confidence: 0,
+        delay: 0,
+        has_sufficient_number_of_data_points: true,
+        sequence_id: None,
+    };
+
+    // The fix: the initializer stamps the timestamp.
+    let at_launch = HistoricalOracleData::default_with_current_oracle(launch_oracle, now);
+    assert_eq!(
+        at_launch.last_oracle_price_twap_ts, now,
+        "spot market init must stamp last_oracle_price_twap_ts"
+    );
+
+    // What the missing stamp did, shown directly: from a zero timestamp one EMA step
+    // returns the live price, however far it has moved from the stored TWAP. Up to
+    // `calculate_weighted_average`'s ±1 rounding bias, that leaves a band 1 wide
+    // against a true 30,000,000 spread — a collapse for every practical purpose.
+    let collapsed =
+        calculate_new_twap(live_price, now, launch_price, 0, FIVE_MINUTE as i64).unwrap();
+    let collapsed_band = StrictOraclePrice::new(live_price, collapsed, true);
+    assert!(
+        (live_price - collapsed).abs() <= 1,
+        "a zero timestamp must effectively replace the TWAP with the live price \
+         ({} vs {})",
+        collapsed,
+        live_price
+    );
+    assert!(
+        collapsed_band.max() - collapsed_band.min() <= 1,
+        "the collapsed TWAP must leave a ~zero-width band, got {}",
+        collapsed_band.max() - collapsed_band.min()
+    );
+
+    // With the stamp, the same refresh weights a real elapsed interval: the TWAP
+    // moves only partway toward the live price and the band keeps real width.
+    let mut market = SpotMarket {
+        market_index: 1,
+        oracle_source: OracleSource::PythLazer,
+        cumulative_deposit_interest: SPOT_CUMULATIVE_INTEREST_PRECISION,
+        cumulative_borrow_interest: SPOT_CUMULATIVE_INTEREST_PRECISION,
+        decimals: 6,
+        initial_asset_weight: SPOT_WEIGHT_PRECISION,
+        maintenance_asset_weight: SPOT_WEIGHT_PRECISION,
+        deposit_balance: 1_000 * SPOT_BALANCE_PRECISION,
+        status: MarketStatus::Active,
+        historical_oracle_data: at_launch,
+        ..SpotMarket::default()
+    };
+
+    let live_oracle = OraclePriceData {
+        price: live_price,
+        confidence: 0,
+        delay: 0,
+        has_sufficient_number_of_data_points: true,
+        sequence_id: None,
+    };
+    update_spot_market_twap_stats(&mut market, Some(&live_oracle), now + 60).unwrap();
+
+    let twap = market.historical_oracle_data.last_oracle_price_twap_5min;
+    assert!(
+        twap > launch_price && twap < live_price,
+        "the first refresh should move the TWAP partway ({} not in ({}, {}))",
+        twap,
+        launch_price,
+        live_price
+    );
+
+    let band = StrictOraclePrice::new(live_price, twap, true);
+    assert_eq!(band.min(), twap);
+    assert_eq!(band.max(), live_price);
+    assert!(
+        band.max() - band.min() > 20 * PRICE_PRECISION_I64,
+        "the band must keep real width against a 30,000,000 move, got {}",
+        band.max() - band.min()
+    );
+}
+
 /// OtterSec #110 / #111 — the swap-backed spot lanes must not advance the very
 /// oracle TWAP they then gate on.
 ///

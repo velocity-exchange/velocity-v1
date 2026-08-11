@@ -81,6 +81,7 @@ export ANCHOR_WALLET=~/.config/solana/id.json
 test_files=(
   managerUpdate.test.ts
   depositMax.test.ts
+  navInterestRefresh.test.ts
   feeUpdate.test.ts
   sharesExamples.test.ts
   transferVaultDepositorShares.test.ts

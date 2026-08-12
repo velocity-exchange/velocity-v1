@@ -586,9 +586,25 @@ pub fn transfer_spot_balance_to_revenue_pool(
     Ok(())
 }
 
-/// Returns the computed [`OracleValidity`] so callers can apply stricter, action-specific
-/// handling (e.g. liquidation pricing collateral protectively when the oracle is
-/// margin-invalid). The quote spot market skips validity checks and reports `Valid`.
+/// Outcome of [`update_spot_market_and_check_validity`], carrying both the verdict and the
+/// TWAP the verdict was reached against.
+#[derive(Clone, Copy, Debug)]
+pub struct SpotMarketOracleRefresh {
+    /// Computed validity, so callers can apply stricter, action-specific handling (e.g.
+    /// liquidation pricing collateral protectively when the oracle is margin-invalid). The
+    /// quote spot market skips validity checks and reports `Valid`.
+    pub validity: OracleValidity,
+    /// 5-minute oracle TWAP as of before the refresh below advanced it. Callers that bound a
+    /// price against this TWAP must use this snapshot, not the field, for the same reason the
+    /// verdict itself is computed first (OtterSec #109-#112, #134).
+    pub pre_refresh_twap_5min: i64,
+}
+
+/// Judges the oracle against the TWAPs as they stand on entry, then advances them. An
+/// instruction must not relax a gate that reads a value it just moved: the refresh drags both
+/// oracle TWAPs toward the live price, so reading them afterwards lets a too-volatile or
+/// depressed oracle normalize away the very check meant to stop it. Liquidation legitimately
+/// advances these TWAPs and does gate on them, so the refresh stays and moves after the gate.
 pub fn update_spot_market_and_check_validity(
     spot_market: &mut SpotMarket,
     oracle_price_data: &OraclePriceData,
@@ -596,7 +612,42 @@ pub fn update_spot_market_and_check_validity(
     now: i64,
     action: Option<VelocityAction>,
     funding_paused: bool,
-) -> VelocityResult<OracleValidity> {
+) -> VelocityResult<SpotMarketOracleRefresh> {
+    // 1 hour EMA
+    let risk_ema_price = spot_market.historical_oracle_data.last_oracle_price_twap;
+    let pre_refresh_twap_5min = spot_market
+        .historical_oracle_data
+        .last_oracle_price_twap_5min;
+
+    let validity = if spot_market.market_index == QUOTE_SPOT_MARKET_INDEX {
+        OracleValidity::Valid
+    } else {
+        let validity = oracle_validity(
+            MarketType::Spot,
+            spot_market.market_index,
+            risk_ema_price,
+            oracle_price_data,
+            validity_guard_rails,
+            spot_market.get_max_confidence_interval_multiplier()?,
+            &spot_market.oracle_source,
+            LogMode::ExchangeOracle,
+            -1,
+            0,
+        )?;
+
+        validate!(
+            is_oracle_valid_for_action(validity, action)?,
+            ErrorCode::InvalidOracle,
+            "Invalid Oracle ({:?} vs ema={:?}) for spot market index={} and action={:?}",
+            oracle_price_data,
+            risk_ema_price,
+            spot_market.market_index,
+            action
+        )?;
+
+        validity
+    };
+
     // update spot market EMAs with new/current data
     update_spot_market_cumulative_interest(
         spot_market,
@@ -605,37 +656,10 @@ pub fn update_spot_market_and_check_validity(
         funding_paused,
     )?;
 
-    if spot_market.market_index == QUOTE_SPOT_MARKET_INDEX {
-        return Ok(OracleValidity::Valid);
-    }
-
-    // 1 hour EMA
-    let risk_ema_price = spot_market.historical_oracle_data.last_oracle_price_twap;
-
-    let oracle_validity = oracle_validity(
-        MarketType::Spot,
-        spot_market.market_index,
-        risk_ema_price,
-        oracle_price_data,
-        validity_guard_rails,
-        spot_market.get_max_confidence_interval_multiplier()?,
-        &spot_market.oracle_source,
-        LogMode::ExchangeOracle,
-        -1,
-        0,
-    )?;
-
-    validate!(
-        is_oracle_valid_for_action(oracle_validity, action)?,
-        ErrorCode::InvalidOracle,
-        "Invalid Oracle ({:?} vs ema={:?}) for spot market index={} and action={:?}",
-        oracle_price_data,
-        risk_ema_price,
-        spot_market.market_index,
-        action
-    )?;
-
-    Ok(oracle_validity)
+    Ok(SpotMarketOracleRefresh {
+        validity,
+        pre_refresh_twap_5min,
+    })
 }
 
 fn increase_spot_balance(

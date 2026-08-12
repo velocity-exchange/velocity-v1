@@ -1435,7 +1435,7 @@ pub fn liquidate_spot(
         let (asset_price_data, validity_guard_rails) =
             oracle_map.get_price_data_and_guard_rails(&asset_market.oracle_id())?;
 
-        let asset_oracle_validity = update_spot_market_and_check_validity(
+        let asset_refresh = update_spot_market_and_check_validity(
             &mut asset_market,
             asset_price_data,
             validity_guard_rails,
@@ -1464,18 +1464,17 @@ pub fn liquidate_spot(
         // a margin-invalid (stale/uncertain) deposit oracle may make the account
         // liquidatable, but must not let its collateral be seized at a depressed
         // price: size the transfer at a user-protective price instead
-        let asset_price =
-            if is_oracle_valid_for_action(asset_oracle_validity, Some(VelocityAction::MarginCalc))?
-            {
-                asset_price_data.price
-            } else {
-                calculate_user_protective_asset_price(
-                    asset_price_data,
-                    asset_market
-                        .historical_oracle_data
-                        .last_oracle_price_twap_5min,
-                )?
-            };
+        let asset_price = if is_oracle_valid_for_action(
+            asset_refresh.validity,
+            Some(VelocityAction::MarginCalc),
+        )? {
+            asset_price_data.price
+        } else {
+            calculate_user_protective_asset_price(
+                asset_price_data,
+                asset_refresh.pre_refresh_twap_5min,
+            )?
+        };
 
         (
             token_amount,
@@ -1506,7 +1505,7 @@ pub fn liquidate_spot(
         let (liability_price_data, validity_guard_rails) =
             oracle_map.get_price_data_and_guard_rails(&liability_market.oracle_id())?;
 
-        let liability_oracle_validity = update_spot_market_and_check_validity(
+        let liability_refresh = update_spot_market_and_check_validity(
             &mut liability_market,
             liability_price_data,
             validity_guard_rails,
@@ -1536,16 +1535,14 @@ pub fn liquidate_spot(
         // margin-invalid (stale/uncertain) borrow oracle must not overvalue the debt
         // being repaid and cheapen the collateral received for it
         let liability_price = if is_oracle_valid_for_action(
-            liability_oracle_validity,
+            liability_refresh.validity,
             Some(VelocityAction::MarginCalc),
         )? {
             liability_price_data.price
         } else {
             calculate_user_protective_liability_price(
                 liability_price_data,
-                liability_market
-                    .historical_oracle_data
-                    .last_oracle_price_twap_5min,
+                liability_refresh.pre_refresh_twap_5min,
             )?
         };
 
@@ -2052,7 +2049,7 @@ pub fn liquidate_spot_with_swap_begin(
         let (asset_price_data, validity_guard_rails) =
             oracle_map.get_price_data_and_guard_rails(&asset_market.oracle_id())?;
 
-        let asset_oracle_validity = update_spot_market_and_check_validity(
+        let asset_refresh = update_spot_market_and_check_validity(
             &mut asset_market,
             asset_price_data,
             validity_guard_rails,
@@ -2081,18 +2078,17 @@ pub fn liquidate_spot_with_swap_begin(
         // a margin-invalid (stale/uncertain) deposit oracle may make the account
         // liquidatable, but must not let its collateral be swapped away at a
         // depressed price: cap the swap at a user-protective price instead
-        let asset_price =
-            if is_oracle_valid_for_action(asset_oracle_validity, Some(VelocityAction::MarginCalc))?
-            {
-                asset_price_data.price
-            } else {
-                calculate_user_protective_asset_price(
-                    asset_price_data,
-                    asset_market
-                        .historical_oracle_data
-                        .last_oracle_price_twap_5min,
-                )?
-            };
+        let asset_price = if is_oracle_valid_for_action(
+            asset_refresh.validity,
+            Some(VelocityAction::MarginCalc),
+        )? {
+            asset_price_data.price
+        } else {
+            calculate_user_protective_asset_price(
+                asset_price_data,
+                asset_refresh.pre_refresh_twap_5min,
+            )?
+        };
 
         (
             token_amount,
@@ -2119,7 +2115,7 @@ pub fn liquidate_spot_with_swap_begin(
         let (liability_price_data, validity_guard_rails) =
             oracle_map.get_price_data_and_guard_rails(&liability_market.oracle_id())?;
 
-        let liability_oracle_validity = update_spot_market_and_check_validity(
+        let liability_refresh = update_spot_market_and_check_validity(
             &mut liability_market,
             liability_price_data,
             validity_guard_rails,
@@ -2149,16 +2145,14 @@ pub fn liquidate_spot_with_swap_begin(
         // margin-invalid (stale/uncertain) borrow oracle must not overvalue the debt
         // being repaid and inflate the collateral allowed to be swapped for it
         let liability_price = if is_oracle_valid_for_action(
-            liability_oracle_validity,
+            liability_refresh.validity,
             Some(VelocityAction::MarginCalc),
         )? {
             liability_price_data.price
         } else {
             calculate_user_protective_liability_price(
                 liability_price_data,
-                liability_market
-                    .historical_oracle_data
-                    .last_oracle_price_twap_5min,
+                liability_refresh.pre_refresh_twap_5min,
             )?
         };
 
@@ -2861,7 +2855,7 @@ pub fn liquidate_borrow_for_perp_pnl(
         let (liability_price_data, validity_guard_rails) =
             oracle_map.get_price_data_and_guard_rails(&liability_market.oracle_id())?;
 
-        let liability_oracle_validity = update_spot_market_and_check_validity(
+        let liability_refresh = update_spot_market_and_check_validity(
             &mut liability_market,
             liability_price_data,
             validity_guard_rails,
@@ -2891,16 +2885,14 @@ pub fn liquidate_borrow_for_perp_pnl(
         // margin-invalid (stale/uncertain) borrow oracle must not overvalue the debt
         // being taken over and cheapen the pnl received for it
         let liability_price = if is_oracle_valid_for_action(
-            liability_oracle_validity,
+            liability_refresh.validity,
             Some(VelocityAction::MarginCalc),
         )? {
             liability_price_data.price
         } else {
             calculate_user_protective_liability_price(
                 liability_price_data,
-                liability_market
-                    .historical_oracle_data
-                    .last_oracle_price_twap_5min,
+                liability_refresh.pre_refresh_twap_5min,
             )?
         };
 
@@ -3336,7 +3328,7 @@ pub fn liquidate_perp_pnl_for_deposit(
         let (asset_price_data, validity_guard_rails) =
             oracle_map.get_price_data_and_guard_rails(&asset_market.oracle_id())?;
 
-        let asset_oracle_validity = update_spot_market_and_check_validity(
+        let asset_refresh = update_spot_market_and_check_validity(
             &mut asset_market,
             asset_price_data,
             validity_guard_rails,
@@ -3348,18 +3340,17 @@ pub fn liquidate_perp_pnl_for_deposit(
         // a margin-invalid (stale/uncertain) deposit oracle may make the account
         // liquidatable, but must not let its collateral be seized at a depressed
         // price: size the transfer at a user-protective price instead
-        let token_price =
-            if is_oracle_valid_for_action(asset_oracle_validity, Some(VelocityAction::MarginCalc))?
-            {
-                asset_price_data.price
-            } else {
-                calculate_user_protective_asset_price(
-                    asset_price_data,
-                    asset_market
-                        .historical_oracle_data
-                        .last_oracle_price_twap_5min,
-                )?
-            };
+        let token_price = if is_oracle_valid_for_action(
+            asset_refresh.validity,
+            Some(VelocityAction::MarginCalc),
+        )? {
+            asset_price_data.price
+        } else {
+            calculate_user_protective_asset_price(
+                asset_price_data,
+                asset_refresh.pre_refresh_twap_5min,
+            )?
+        };
 
         let token_amount = liquidation_mode.get_spot_token_amount(user, &asset_market)?;
 

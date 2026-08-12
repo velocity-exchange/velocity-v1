@@ -5956,6 +5956,177 @@ pub mod liquidate_borrow_for_perp_pnl {
     }
 
     #[test]
+    pub fn stale_for_margin_liability_oracle_prices_at_pre_refresh_twap() {
+        // Same setup as the test above, with one change: the clock has advanced past the
+        // 5-minute window since the market's last oracle-TWAP stamp, so this instruction's
+        // own refresh materially moves `last_oracle_price_twap_5min`. The protective price
+        // must still be the pre-refresh $100, not the refreshed value the stale $110 pulls
+        // it toward. `last_interest_ts` is stamped at `now` so no interest accrues over the
+        // elapsed span and the transfer numbers stay comparable to that test.
+        let now = 600_i64;
+        let slot = 200_u64;
+
+        let mut sol_oracle_price = get_pyth_price(110, 6);
+        let sol_oracle_price_key =
+            Pubkey::from_str("J83w4HKfqxwcq3BEMMkPFSppX3gqekLyLJBexebFVkix").unwrap();
+        create_anchor_account_info!(
+            sol_oracle_price,
+            &sol_oracle_price_key,
+            PythLazerOracle,
+            oracle_account_info
+        );
+        let mut oracle_map = OracleMap::load_one(&oracle_account_info, slot, None).unwrap();
+
+        let mut market = PerpMarket {
+            amm: AMM {
+                base_asset_reserve: 100 * AMM_RESERVE_PRECISION,
+                quote_asset_reserve: 100 * AMM_RESERVE_PRECISION,
+                sqrt_k: 100 * AMM_RESERVE_PRECISION,
+                peg_multiplier: 100 * PEG_PRECISION,
+                max_slippage_ratio: 50,
+                max_fill_reserve_fraction: 100,
+                base_asset_amount_with_amm: BASE_PRECISION_I128,
+                ..AMM::default()
+            },
+            margin_ratio_initial: 1000,
+            margin_ratio_maintenance: 500,
+            unrealized_pnl_initial_asset_weight: 9000,
+            unrealized_pnl_maintenance_asset_weight: 10000,
+            number_of_users_with_base: 1,
+            status: MarketStatus::Initialized,
+            liquidator_fee: LIQUIDATION_FEE_PRECISION / 100,
+            order_step_size: 10000000,
+            quote_asset_amount: 150 * QUOTE_PRECISION_I128,
+            oracle: sol_oracle_price_key,
+            oracle_source: crate::state::oracle::OracleSource::PythLazer,
+            ..PerpMarket::default()
+        };
+        create_anchor_account_info!(market, PerpMarket, market_account_info);
+        let market_map = PerpMarketMap::load_one(&market_account_info, true).unwrap();
+
+        let mut usdc_market = SpotMarket {
+            market_index: 0,
+            oracle_source: OracleSource::QuoteAsset,
+            cumulative_deposit_interest: SPOT_CUMULATIVE_INTEREST_PRECISION,
+            decimals: 6,
+            initial_asset_weight: SPOT_WEIGHT_PRECISION,
+            maintenance_asset_weight: SPOT_WEIGHT_PRECISION,
+            deposit_balance: 200 * SPOT_BALANCE_PRECISION,
+            liquidator_fee: 0,
+            last_interest_ts: now as u64,
+            historical_oracle_data: HistoricalOracleData {
+                last_oracle_price_twap: QUOTE_PRECISION_I64,
+                last_oracle_price_twap_5min: QUOTE_PRECISION_I64,
+                ..HistoricalOracleData::default()
+            },
+            ..SpotMarket::default()
+        };
+        create_anchor_account_info!(usdc_market, SpotMarket, usdc_spot_market_account_info);
+        let mut sol_market = SpotMarket {
+            market_index: 1,
+            oracle_source: crate::state::oracle::OracleSource::PythLazer,
+            oracle: sol_oracle_price_key,
+            cumulative_deposit_interest: SPOT_CUMULATIVE_INTEREST_PRECISION,
+            cumulative_borrow_interest: SPOT_CUMULATIVE_INTEREST_PRECISION,
+            decimals: 6,
+            initial_asset_weight: 8 * SPOT_WEIGHT_PRECISION / 10,
+            maintenance_asset_weight: 9 * SPOT_WEIGHT_PRECISION / 10,
+            initial_liability_weight: 12 * SPOT_WEIGHT_PRECISION / 10,
+            maintenance_liability_weight: 11 * SPOT_WEIGHT_PRECISION / 10,
+            deposit_balance: SPOT_BALANCE_PRECISION,
+            borrow_balance: SPOT_BALANCE_PRECISION,
+            liquidator_fee: LIQUIDATION_FEE_PRECISION / 1000,
+            last_interest_ts: now as u64,
+            historical_oracle_data: HistoricalOracleData {
+                last_oracle_price_twap: 100 * QUOTE_PRECISION_I64,
+                last_oracle_price_twap_5min: 100 * QUOTE_PRECISION_I64,
+                ..HistoricalOracleData::default()
+            },
+            ..SpotMarket::default()
+        };
+        create_anchor_account_info!(sol_market, SpotMarket, sol_spot_market_account_info);
+        let spot_market_account_infos = Vec::from([
+            &usdc_spot_market_account_info,
+            &sol_spot_market_account_info,
+        ]);
+        let spot_market_map =
+            SpotMarketMap::load_multiple(spot_market_account_infos, true).unwrap();
+
+        let mut spot_positions = [SpotPosition::default(); 8];
+        spot_positions[0] = SpotPosition {
+            market_index: 1,
+            balance_type: SpotBalanceType::Borrow,
+            scaled_balance: SPOT_BALANCE_PRECISION_U64,
+            ..SpotPosition::default()
+        };
+        let mut user = User {
+            orders: [Order::default(); 32],
+            perp_positions: get_positions(PerpPosition {
+                market_index: 0,
+                quote_asset_amount: 100 * QUOTE_PRECISION_I64,
+                ..PerpPosition::default()
+            }),
+            spot_positions,
+            ..User::default()
+        };
+
+        let mut liquidator = User {
+            spot_positions: get_spot_positions(SpotPosition {
+                market_index: 0,
+                balance_type: SpotBalanceType::Deposit,
+                scaled_balance: 100 * SPOT_BALANCE_PRECISION_U64,
+                ..SpotPosition::default()
+            }),
+            ..User::default()
+        };
+
+        let user_key = Pubkey::default();
+        let liquidator_key = Pubkey::default();
+
+        liquidate_borrow_for_perp_pnl(
+            0,
+            1,
+            8 * 10_u128.pow(5), // .8
+            None,
+            &mut user,
+            &user_key,
+            &mut liquidator,
+            &liquidator_key,
+            &market_map,
+            &spot_market_map,
+            &mut oracle_map,
+            now,
+            slot,
+            10,
+            PERCENTAGE_PRECISION,
+            150,
+            false,
+        )
+        .unwrap();
+
+        // Control: this instruction's own refresh did drag the stored 5min TWAP nearly all
+        // the way to the stale $110, so pricing off the field would have handed over close
+        // to the stale-price amount. If this trips, the fixture no longer reproduces it.
+        let refreshed_twap_5min = spot_market_map
+            .get_ref(&1)
+            .unwrap()
+            .historical_oracle_data
+            .last_oracle_price_twap_5min;
+        assert!(
+            refreshed_twap_5min > 109 * QUOTE_PRECISION_I64,
+            "expected the refresh to normalize the 5min TWAP onto the stale price, got {}",
+            refreshed_twap_5min
+        );
+
+        // Fixed: identical to the test above — 0.8 sol of borrow still costs 80.880880 pnl
+        // at the protective $100, not ~88.9 at the normalized TWAP.
+        assert_eq!(user.spot_positions[0].scaled_balance, 199999999);
+        assert_eq!(user.perp_positions[0].quote_asset_amount, 19119120);
+        assert_eq!(liquidator.spot_positions[1].scaled_balance, 800000001);
+        assert_eq!(liquidator.perp_positions[0].quote_asset_amount, 80880880);
+    }
+
+    #[test]
     pub fn successful_liquidation_liability_transfer_to_cover_margin_shortage() {
         let now = 0_i64;
         let slot = 0_u64;

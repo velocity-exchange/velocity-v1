@@ -51,7 +51,6 @@ use {
         vlp::amm::{quoter::AmmQuoter, router_adapter::vamm_quote_levels, AMM},
     },
     anchor_lang::prelude::*,
-    std::collections::BTreeMap,
 };
 
 #[derive(Accounts)]
@@ -108,9 +107,9 @@ pub fn handle_quote_router<'c: 'info, 'info>(
         "quoter_count {} exceeds the quoter section",
         quoter_count
     )?;
-    let account_map: BTreeMap<Pubkey, AccountInfo<'info>> = leftover[quoter_count..]
+    let accounts: Vec<AccountInfo<'info>> = leftover[quoter_count..]
         .iter()
-        .map(|info| (*info.key, (*info).clone()))
+        .map(|info| (*info).clone())
         .collect();
     let quoters: Vec<AccountLoader<QuoterV0>> = leftover[..quoter_count]
         .iter()
@@ -159,7 +158,7 @@ pub fn handle_quote_router<'c: 'info, 'info>(
                     },
                     &quoter_signer,
                     quoter_signer_nonce,
-                    &account_map,
+                    &accounts,
                 )
                 .map_err(|e| {
                     msg!("quoter {} quote failed: {}", loader.key(), e);
@@ -226,7 +225,10 @@ pub fn handle_quote_router<'c: 'info, 'info>(
             if size == 0 {
                 continue;
             }
-            let levels = [PriceLevel { price, size }];
+            let levels = [PriceLevel {
+                price: price.into(),
+                size: size.into(),
+            }];
             buffer.push(
                 QuotedSourceKind::DlobOrder,
                 *maker_key,
@@ -358,7 +360,7 @@ fn truncate_to(levels: &mut Vec<PriceLevel>, cap: u64) -> bool {
     levels.retain_mut(|level| {
         let take = level.size.min(remaining);
         remaining -= take;
-        level.size = take;
+        level.size = take.into();
         take > 0
     });
     true

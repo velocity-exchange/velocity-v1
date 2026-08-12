@@ -229,7 +229,10 @@ pub fn vamm_quote_levels(
             break;
         }
         bound = Some(price);
-        levels.push(PriceLevel { price, size });
+        levels.push(PriceLevel {
+            price: price.into(),
+            size: size.into(),
+        });
         previous = cumulative;
         previous_notional = notional;
     }

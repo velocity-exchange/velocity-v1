@@ -405,7 +405,7 @@ pub fn handle_trigger_clob_order<'c: 'info, 'info>(
             user.orders[order_index].max_ts,
             crate::state::prop_amm::ClobUserRefV0 {
                 authority: user.authority,
-                sub_account_id: user.sub_account_id,
+                sub_account_id: user.sub_account_id.into(),
             },
         )
     };

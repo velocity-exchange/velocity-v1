@@ -201,7 +201,7 @@ pub fn handle_modify_clob_order<'c: 'info, 'info>(
         let user = crate::load!(ctx.accounts.user)?;
         ClobUserRefV0 {
             authority: user.authority,
-            sub_account_id: user.sub_account_id,
+            sub_account_id: user.sub_account_id.into(),
         }
     };
 

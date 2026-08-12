@@ -168,9 +168,7 @@ pub struct ResponsePointerV0 {
     pub len: u32,
 }
 
-pub use quoter_spec::QuoteResponseV0;
-
-pub use quoter_spec::ExecuteResponseV0;
+pub use quoter_spec::{ExecuteResponseV0, QuoteResponseV0};
 
 /// One rung of the spline: standing intent `size` at `mid ± offset`, with
 /// `filled` tracking what executes have consumed since the side was written.
@@ -906,7 +904,10 @@ mod tests {
         let closed = quoter
             .write_quote_response(Direction::Long, UNIT, 0, false)
             .unwrap();
-        assert_eq!(written(&quoter, closed), quoter_spec::len_prefix(0).to_vec());
+        assert_eq!(
+            written(&quoter, closed),
+            quoter_spec::len_prefix(0).to_vec()
+        );
         // A stale mid is the same silence, even with the gate open.
         let stale = quoter
             .write_quote_response(Direction::Long, UNIT, 10_000, true)

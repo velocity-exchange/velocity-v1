@@ -52,6 +52,10 @@
 //! the type it resolves to, and velocity is the consumer that runs
 //! `anchor idl build`.
 
+// Re-exported so a consumer can write a response without taking its own
+// wincode dependency — the framing is this crate's to define, so the encoder
+// is too.
+pub use wincode;
 use {
     solana_address::Address as Pubkey,
     wincode::{SchemaRead, SchemaWrite},
@@ -224,6 +228,11 @@ impl<'a> ExecuteResponseV0<'a> {
             .iter()
             .filter(move |entry| entry.change_index as usize == change_index)
             .map(|entry| entry.order_id)
+    }
+
+    /// How many orders the fill consumed for `change_index`.
+    pub fn completed_count(&self, change_index: usize) -> usize {
+        self.completed_for(change_index).count()
     }
 
     pub fn is_empty(&self) -> bool {

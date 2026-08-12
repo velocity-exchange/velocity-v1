@@ -15,6 +15,37 @@ use {
     anchor_lang::prelude::Pubkey,
 };
 
+/// A response account a mock can hand back, holding the bytes a real
+/// quoter would have written.
+///
+/// Leaks: the account has to outlive the executor that names it, and a
+/// unit test's process ends before that matters. Production never takes
+/// this path — there the bytes are already in the quoter's account.
+fn response_account(
+    changes: &[crate::state::prop_amm::UserBalanceChangeV0],
+    completed: &[crate::state::prop_amm::CompletedOrderV0],
+) -> crate::state::prop_amm::ResponseLocationV0<'static> {
+    let bytes = quoter_spec::wincode::serialize(&quoter_spec::ExecuteResponseV0 {
+        changes,
+        cancelled: &[],
+        completed,
+    })
+    .unwrap();
+    let len = bytes.len();
+    let data: &'static mut [u8] = Box::leak(bytes.into_boxed_slice());
+    let key: &'static anchor_lang::prelude::Pubkey =
+        Box::leak(Box::new(anchor_lang::prelude::Pubkey::new_unique()));
+    let owner: &'static anchor_lang::prelude::Pubkey = Box::leak(Box::new(crate::ID));
+    let lamports: &'static mut u64 = Box::leak(Box::new(0u64));
+    crate::state::prop_amm::ResponseLocationV0 {
+        account: anchor_lang::prelude::AccountInfo::new(
+            key, false, true, lamports, data, owner, false,
+        ),
+        start: 0,
+        end: len,
+    }
+}
+
 fn get_fee_structure() -> FeeStructure {
     let mut fee_tiers = [FeeTier::default(); 10];
     fee_tiers[0] = FeeTier {
@@ -324,8 +355,8 @@ pub mod amm_jit {
     #[test]
     fn router_pass_settles_external_clob_fills_against_loaded_makers() {
         use crate::state::prop_amm::{
-            Direction, ExecuteResponseV0, ExternalQuoterExecutor, PriceLevel, QuoterType,
-            UserBalanceChangeV0,
+            CompletedOrderV0, Direction, ExecuteResponseV0, ExternalQuoterExecutor, PriceLevel,
+            QuoterType, UserBalanceChangeV0,
         };
 
         struct MockClobExecutor {
@@ -333,7 +364,7 @@ pub mod amm_jit {
             user_ref: crate::state::prop_amm::ClobUserRefV0,
             price: u64,
         }
-        impl ExternalQuoterExecutor for MockClobExecutor {
+        impl ExternalQuoterExecutor<'static> for MockClobExecutor {
             fn quoter_type(&self, _index: usize) -> QuoterType {
                 QuoterType::Clob
             }
@@ -359,18 +390,23 @@ pub mod amm_jit {
                 _index: usize,
                 _direction: Direction,
                 size: u64,
-            ) -> crate::error::VelocityResult<ExecuteResponseV0> {
+            ) -> crate::error::VelocityResult<crate::state::prop_amm::ResponseLocationV0<'static>>
+            {
                 let quote_size =
                     ((size as u128) * (self.price as u128) / BASE_PRECISION_U64 as u128) as u64;
-                Ok(ExecuteResponseV0 {
-                    balance_changes: vec![UserBalanceChangeV0 {
-                        user: self.user_ref,
+                Ok(response_account(
+                    &[UserBalanceChangeV0 {
                         base_size: size,
                         quote_size,
-                        completed_order_ids: vec![1],
+                        user: self.user_ref,
+                        _pad: [0; 6],
                     }],
-                    cancelled: vec![],
-                })
+                    &[CompletedOrderV0 {
+                        order_id: 1,
+                        change_index: 0,
+                        _pad: 0,
+                    }],
+                ))
             }
         }
 
@@ -663,7 +699,7 @@ pub mod amm_jit {
             names: ClobUserRefV0,
             price: u64,
         }
-        impl ExternalQuoterExecutor for HostileClobExecutor {
+        impl ExternalQuoterExecutor<'static> for HostileClobExecutor {
             fn quoter_type(&self, _index: usize) -> QuoterType {
                 QuoterType::Clob
             }
@@ -687,18 +723,19 @@ pub mod amm_jit {
                 _index: usize,
                 _direction: Direction,
                 size: u64,
-            ) -> crate::error::VelocityResult<ExecuteResponseV0> {
+            ) -> crate::error::VelocityResult<crate::state::prop_amm::ResponseLocationV0<'static>>
+            {
                 let quote_size =
                     ((size as u128) * (self.price as u128) / BASE_PRECISION_U64 as u128) as u64;
-                Ok(ExecuteResponseV0 {
-                    balance_changes: vec![UserBalanceChangeV0 {
-                        user: self.names,
+                Ok(response_account(
+                    &[UserBalanceChangeV0 {
                         base_size: size,
                         quote_size,
-                        completed_order_ids: vec![],
+                        user: self.names,
+                        _pad: [0; 6],
                     }],
-                    cancelled: vec![],
-                })
+                    &[],
+                ))
             }
         }
 
@@ -944,8 +981,8 @@ pub mod amm_jit {
     #[test]
     fn router_pass_clamps_custom_book_to_the_quoter_users_margin() {
         use crate::state::prop_amm::{
-            Direction, ExecuteResponseV0, ExternalQuoterExecutor, PriceLevel, QuoterType,
-            UserBalanceChangeV0,
+            CompletedOrderV0, Direction, ExecuteResponseV0, ExternalQuoterExecutor, PriceLevel,
+            QuoterType, UserBalanceChangeV0,
         };
 
         struct MockCustomExecutor {
@@ -954,7 +991,7 @@ pub mod amm_jit {
             price: u64,
             requested: u64,
         }
-        impl ExternalQuoterExecutor for MockCustomExecutor {
+        impl ExternalQuoterExecutor<'static> for MockCustomExecutor {
             fn quoter_type(&self, _index: usize) -> QuoterType {
                 QuoterType::Custom
             }
@@ -974,19 +1011,20 @@ pub mod amm_jit {
                 _index: usize,
                 _direction: Direction,
                 size: u64,
-            ) -> crate::error::VelocityResult<ExecuteResponseV0> {
+            ) -> crate::error::VelocityResult<crate::state::prop_amm::ResponseLocationV0<'static>>
+            {
                 self.requested = size;
                 let quote_size =
                     ((size as u128) * (self.price as u128) / BASE_PRECISION_U64 as u128) as u64;
-                Ok(ExecuteResponseV0 {
-                    balance_changes: vec![UserBalanceChangeV0 {
-                        user: self.user_ref,
+                Ok(response_account(
+                    &[UserBalanceChangeV0 {
                         base_size: size,
                         quote_size,
-                        completed_order_ids: vec![],
+                        user: self.user_ref,
+                        _pad: [0; 6],
                     }],
-                    cancelled: vec![],
-                })
+                    &[],
+                ))
             }
         }
 

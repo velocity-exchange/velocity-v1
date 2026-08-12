@@ -26,6 +26,7 @@ use crate::{
 /// Levels processed per book; anything past this is ignored.
 pub const MAX_LEVELS_PER_BOOK: usize = 128;
 
+#[derive(Clone, Copy, Default)]
 pub struct QuoterBook<'a> {
     /// Routing tier at a shared price: lower fills first, pro rata within.
     pub priority: u8,
@@ -37,18 +38,29 @@ pub struct QuoterBook<'a> {
 /// Router-mode inputs the fill entrypoint threads into the fill controller:
 /// the external quoter books it already quoted via CPI, and the execute leg
 /// for allocations that land on them. Books and executor share indexing.
-pub struct RouterFillInputs<'a, 'b> {
+/// `'info` is the account lifetime the executor's responses are read out of —
+/// distinct from the books' `'b`, which borrows from the quoting section.
+pub struct RouterFillInputs<'a, 'b, 'info> {
     pub books: &'a [QuoterBook<'b>],
-    pub executor: &'a mut dyn crate::state::prop_amm::ExternalQuoterExecutor,
+    pub executor: &'a mut dyn crate::state::prop_amm::ExternalQuoterExecutor<'info>,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct QuoterAllocation {
     /// Base size routed to this quoter, to be passed to its execute leg.
     pub base: u64,
-    /// Quote notional at the quoted levels — execute's returned balance
-    /// changes must be at-or-better than this per unit.
+    /// Quote notional at the quoted levels, rounded taker-conservatively per
+    /// level. What the router prices the taker's own fill at.
     pub quote: u64,
+    /// `Σ price · base` over the levels this allocation was cut from, before
+    /// the single division into quote units — the exact number the quoter owes
+    /// for filling it.
+    ///
+    /// Accrued here, while the split is already walking the ladder, so nothing
+    /// downstream has to read the levels again: the execute leg is held to this
+    /// scalar rather than to a slice that only exists until the quoter's next
+    /// CPI overwrites the buffer it came from.
+    pub scaled_quote: u128,
 }
 
 /// One book's sanitized read cursor.
@@ -133,6 +145,9 @@ fn take(
     allocation.quote = allocation
         .quote
         .safe_add(quote_notional(direction, price, amount)?)?;
+    allocation.scaled_quote = allocation
+        .scaled_quote
+        .safe_add((price as u128).safe_mul(amount as u128)?)?;
     Ok(())
 }
 
@@ -422,18 +437,22 @@ fn notional_within(lo: u128, hi: u128, quote: u64, slack: u64) -> VelocityResult
 /// therefore carry the remainder forward across them rather than truncate
 /// each one; per-fill truncation drifts below this bound by up to a unit per
 /// fill, and that dust comes out of its makers.
-pub fn validate_executed_notional(
-    prefix: &QuotedPrefix,
-    base: u64,
+pub fn validate_allocated_notional(
+    allocation: &QuoterAllocation,
     quote: u64,
 ) -> VelocityResult<bool> {
-    let at_best = (prefix.best_price as u128).safe_mul(base as u128)?;
-    notional_within(
-        at_best.min(prefix.scaled_quote),
-        at_best.max(prefix.scaled_quote),
-        quote,
-        0,
-    )
+    Ok(quote as u128 == allocation.scaled_quote.safe_div(BASE_PRECISION)?)
+}
+
+pub fn validate_executed_notional(prefix: &QuotedPrefix, quote: u64) -> VelocityResult<bool> {
+    // Exact, not a band. Quoting and executing happen in one transaction and a
+    // quoter's book cannot change between them, so the ladder determines the
+    // notional of any prefix of itself — walking it is arithmetic on a
+    // schedule, not a guess at someone else's matching. The single division
+    // from price x base into quote units is the only rounding, and it is the
+    // same one the quoter's own encoder must carry (see `quote_size` in the
+    // CLOB's execute, which differences running floors for exactly this).
+    Ok(quote as u128 == prefix.scaled_quote.safe_div(BASE_PRECISION)?)
 }
 
 /// The same price band applied to one balance change: every unit of it must
@@ -654,22 +673,23 @@ mod tests {
         let levels = [level(100 * PRICE, B), level(100 * PRICE, B)];
         let prefix = quoted_prefix(&levels, 1, 2 * B).unwrap();
         assert_eq!(prefix.best_price, prefix.worst_price);
-        assert!(validate_executed_notional(&prefix, 2 * B, 200 * PRICE).unwrap());
-        assert!(!validate_executed_notional(&prefix, 2 * B, 200 * PRICE + 2).unwrap());
+        assert!(validate_executed_notional(&prefix, 200 * PRICE).unwrap());
+        assert!(!validate_executed_notional(&prefix, 200 * PRICE + 2).unwrap());
     }
 
-    /// One quote unit of terminal rounding, whichever way the quoter's own
-    /// division went, and no more.
+    /// The single terminal division rounds down, and nothing either side of it
+    /// is admitted: a quoter that rounds the other way owes a different number
+    /// than the ladder it published.
     #[test]
-    fn the_prefix_notional_admits_exactly_one_rounding() {
+    fn the_prefix_notional_rounds_down_exactly() {
         // 3 base units at a price that doesn't divide evenly: exact notional
         // is 1.5 quote units.
         let levels = [level(PRICE / 2, 3)];
         let prefix = quoted_prefix(&levels, 1, 3).unwrap();
         assert_eq!(prefix.scaled_quote, (PRICE as u128 / 2) * 3);
-        assert!(validate_executed_notional(&prefix, 3, 1).unwrap());
-        assert!(validate_executed_notional(&prefix, 3, 2).unwrap());
-        assert!(!validate_executed_notional(&prefix, 3, 3).unwrap());
+        assert!(validate_executed_notional(&prefix, 1).unwrap());
+        assert!(!validate_executed_notional(&prefix, 2).unwrap());
+        assert!(!validate_executed_notional(&prefix, 3).unwrap());
     }
 
     // ---- Execute against quote: the binding rule. ----
@@ -689,35 +709,38 @@ mod tests {
         // Full allocation: both levels, 202 quote for 2 base units.
         let full = quoted_prefix(&levels, 1, 2 * B).unwrap();
         assert_eq!(full.scaled_quote, 202u128 * PRICE as u128 * B as u128);
-        assert!(validate_executed_notional(&full, 2 * B, 202 * PRICE).unwrap());
-        assert!(!validate_executed_notional(&full, 2 * B, 202 * PRICE + 2).unwrap());
+        assert!(validate_executed_notional(&full, 202 * PRICE).unwrap());
+        assert!(!validate_executed_notional(&full, 202 * PRICE + 2).unwrap());
 
         // Half filled: only the 100 level was reached, so 100 is the bar —
         // the 101 average over the whole allocation is not available.
         let half = quoted_prefix(&levels, 1, B).unwrap();
         assert_eq!(half.best_price, 100 * PRICE);
         assert_eq!(half.worst_price, 100 * PRICE);
-        assert!(validate_executed_notional(&half, B, 100 * PRICE).unwrap());
-        assert!(!validate_executed_notional(&half, B, 101 * PRICE).unwrap());
+        assert!(validate_executed_notional(&half, 100 * PRICE).unwrap());
+        assert!(!validate_executed_notional(&half, 101 * PRICE).unwrap());
     }
 
     #[test]
     fn charging_worse_than_quoted_is_rejected_in_both_directions() {
+        // 2 base units off a 100/102 ladder is 202, and only 202.
         let asks = ladder();
         let long = quoted_prefix(&asks, 1, 2 * B).unwrap();
-        // A long taker pays quote: more than quoted is theft from the taker.
-        assert!(!validate_executed_notional(&long, 2 * B, 203 * PRICE).unwrap());
-        // Less than every unit at the best price is theft from the makers.
-        assert!(!validate_executed_notional(&long, 2 * B, 199 * PRICE).unwrap());
-        assert!(validate_executed_notional(&long, 2 * B, 201 * PRICE).unwrap());
+        assert!(validate_executed_notional(&long, 202 * PRICE).unwrap());
+        // More than quoted is theft from the taker.
+        assert!(!validate_executed_notional(&long, 203 * PRICE).unwrap());
+        // Less is theft from the makers — including a number that used to sit
+        // inside the old price band, which is the point of checking exactly.
+        assert!(!validate_executed_notional(&long, 201 * PRICE).unwrap());
+        assert!(!validate_executed_notional(&long, 199 * PRICE).unwrap());
 
-        // A short taker receives quote, so the bounds swap sides.
+        // A short taker receives quote; the ladder pins it just as tightly.
         let bids = [level(100 * PRICE, B), level(98 * PRICE, B)];
         let short = quoted_prefix(&bids, 1, 2 * B).unwrap();
         assert_eq!(short.scaled_quote, 198u128 * PRICE as u128 * B as u128);
-        assert!(!validate_executed_notional(&short, 2 * B, 197 * PRICE).unwrap());
-        assert!(!validate_executed_notional(&short, 2 * B, 201 * PRICE).unwrap());
-        assert!(validate_executed_notional(&short, 2 * B, 199 * PRICE).unwrap());
+        assert!(validate_executed_notional(&short, 198 * PRICE).unwrap());
+        assert!(!validate_executed_notional(&short, 197 * PRICE).unwrap());
+        assert!(!validate_executed_notional(&short, 199 * PRICE).unwrap());
     }
 
     /// Nothing a quoter returns may exceed what the router allocated to it.

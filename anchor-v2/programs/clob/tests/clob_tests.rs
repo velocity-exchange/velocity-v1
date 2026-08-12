@@ -226,37 +226,31 @@ fn read_response(ctx: &Ctx, meta: &TransactionMetadata) -> Vec<u8> {
 
 /// QuoteResponseV0 { levels: Vec<PriceLevel { price: u64, size: u64 }> }
 fn parse_levels(b: &[u8]) -> Vec<(u64, u64)> {
-    let count = parse_u32(b) as usize;
-    (0..count)
-        .map(|i| {
-            let off = 4 + i * 16;
-            (parse_u64(&b[off..]), parse_u64(&b[off + 8..]))
-        })
+    clob::state::QuoteResponseV0::parse(b)
+        .expect("quote response")
+        .levels
+        .iter()
+        .map(|level| (level.price, level.size))
         .collect()
 }
 
-/// ExecuteResponseV0 { balance_changes: Vec<UserBalanceChange> } — entries
-/// are (user: UserRefV0 {authority: 32, sub: u16}, base_size: u64,
-/// quote_size: u64, completed_order_ids: Vec<u64>), so variable-length.
-/// Returns the authority as the identity (tests place with sub 0).
+/// The execute response, read through the layout's own parser rather than a
+/// second hand-rolled walk of it. Returns `(authority, base, quote, consumed
+/// order ids)` per change; tests place with sub-account 0.
 fn parse_balance_changes(b: &[u8]) -> Vec<([u8; 32], u64, u64, Vec<u64>)> {
-    let count = parse_u32(b) as usize;
-    let mut off = 4;
-    (0..count)
-        .map(|_| {
-            let authority = b[off..off + 32].try_into().unwrap();
-            assert_eq!(
-                u16::from_le_bytes(b[off + 32..off + 34].try_into().unwrap()),
-                0
-            );
-            let base = parse_u64(&b[off + 34..]);
-            let quote = parse_u64(&b[off + 42..]);
-            let ids = parse_u32(&b[off + 50..]) as usize;
-            let completed = (0..ids)
-                .map(|i| parse_u64(&b[off + 54 + i * 8..]))
-                .collect();
-            off += 54 + ids * 8;
-            (authority, base, quote, completed)
+    let response = clob::state::ExecuteResponseV0::parse(b).expect("execute response");
+    response
+        .changes
+        .iter()
+        .enumerate()
+        .map(|(i, change)| {
+            assert_eq!(change.user.sub_account_id, 0);
+            (
+                *change.user.authority.as_array(),
+                change.base_size,
+                change.quote_size,
+                response.completed_for(i).collect(),
+            )
         })
         .collect()
 }
@@ -403,24 +397,17 @@ fn parse_removed(b: &[u8]) -> ([u8; 32], u64, u64, u64, u8, bool) {
     )
 }
 
-/// Trailing `cancelled` vec of ExecuteResponseV0 — entries are
-/// (user: UserRefV0, order_id, base_asset_amount). Walks past the
-/// variable-length balance changes first.
+/// The response's sub-min culls, through the layout's own parser.
 fn parse_cancelled(b: &[u8]) -> Vec<([u8; 32], u64, u64)> {
-    let n = parse_u32(b) as usize;
-    let mut off = 4;
-    for _ in 0..n {
-        let ids = parse_u32(&b[off + 50..]) as usize;
-        off += 54 + ids * 8;
-    }
-    let m = parse_u32(&b[off..]) as usize;
-    (0..m)
-        .map(|i| {
-            let o = off + 4 + i * 50;
+    let response = clob::state::ExecuteResponseV0::parse(b).expect("execute response");
+    response
+        .cancelled
+        .iter()
+        .map(|cull| {
             (
-                b[o..o + 32].try_into().unwrap(),
-                parse_u64(&b[o + 34..]),
-                parse_u64(&b[o + 42..]),
+                *cull.user.authority.as_array(),
+                cull.order_id,
+                cull.base_asset_amount,
             )
         })
         .collect()
@@ -1724,7 +1711,10 @@ fn cu_benchmark_quote_with_a_taker_origin_head() {
         market: addr(ctx.market),
     });
     let meta = send(&mut ctx, ix).unwrap();
-    assert_eq!(parse_levels(&read_response(&ctx, &meta)).len(), 128);
+    // 64, not the 128 orders resting: the ladder stops at this market's
+    // `max_execute_fills`, because a quote may only promise what one execute
+    // can deliver.
+    assert_eq!(parse_levels(&read_response(&ctx, &meta)).len(), 64);
     println!(
         "CU — quote(full side, uncrossed taker-origin at head): {}",
         meta.compute_units_consumed

@@ -20,7 +20,14 @@ pub const ZERO_ADDRESS: Address = Address::new_from_array([0u8; 32]);
 /// Response region size. Responses live in the header (quoter interface:
 /// return data carries only a [`ResponsePointerV0`]), so payload size is not
 /// bound by the 1024-byte return-data cap.
-pub const RESPONSE_BUFFER_BYTES: usize = 8192;
+pub const RESPONSE_BUFFER_BYTES: usize = {
+    let widest = 3 * RESPONSE_LEN_BYTES
+        + EXECUTE_FILLS_CEILING as usize * (CHANGE_MIN_BYTES + quoter_spec::COMPLETED_BYTES)
+        + CANCELLED_BYTES;
+    // The region must start on an 8-byte step for its records to be read in
+    // place, and it sits at the end of the header, so its size carries that.
+    widest.next_multiple_of(quoter_spec::LEN_BYTES)
+};
 
 // Borsh widths of the response wire types. Each is built from the field
 // types of the struct it measures, and
@@ -72,7 +79,15 @@ pub const REMOVED_ORDER_BYTES: usize = USER_REF_BYTES + 3 * core::mem::size_of::
 pub const QUOTE_LEVELS_CEILING: u16 =
     ((RESPONSE_BUFFER_BYTES - RESPONSE_LEN_BYTES) / PRICE_LEVEL_BYTES) as u16;
 
-pub const EXECUTE_FILLS_CEILING: u16 = 128;
+/// Orders one `execute_v0` may consume.
+///
+/// Held where the response region stays near its original size rather than
+/// raised to fit the widest response: the market account rides every CPI, and
+/// the runtime charges compute per byte of it, so ~1 KB of extra region put
+/// `crank_cross_match` — which CPIs this book twice — over the 200k
+/// per-instruction budget. Trading 15 fills off one execute is cheaper than
+/// paying for the region on every crank.
+pub const EXECUTE_FILLS_CEILING: u16 = 113;
 
 /// Hard cap on the orders one `cancel_all_v0` removes. Bounds three things at
 /// once: the removal work in a single call, the id list the cancel record logs
@@ -100,8 +115,7 @@ pub const EXECUTE_USERS_CEILING: u16 = ((RESPONSE_BUFFER_BYTES
 // region, so `ResponseTooLarge` is unreachable for a market whose config the
 // init/update checks accepted.
 const_assert!(
-    RESPONSE_LEN_BYTES + QUOTE_LEVELS_CEILING as usize * PRICE_LEVEL_BYTES
-        <= RESPONSE_BUFFER_BYTES
+    RESPONSE_LEN_BYTES + QUOTE_LEVELS_CEILING as usize * PRICE_LEVEL_BYTES <= RESPONSE_BUFFER_BYTES
 );
 const_assert!(
     2 * RESPONSE_LEN_BYTES
@@ -275,7 +289,12 @@ pub struct ClobHeaderV0 {
     pub response: [u8; RESPONSE_BUFFER_BYTES],
 }
 
-const_assert_eq!(core::mem::size_of::<ClobHeaderV0>(), 8480);
+// Pinned because velocity mirrors these offsets by hand to read the book, and
+// the e2e harness copies them again — a header that changes size without those
+// following reads live orders as zeros.
+const_assert_eq!(core::mem::size_of::<ClobHeaderV0>(), 8504);
+const_assert_eq!(RESPONSE_BUFFER_BYTES, 8216);
+const_assert_eq!(ORDERS_OFFSET, 8520);
 
 /// The market account: header + order-node tail, capacity from data length.
 pub type ClobMarketV0 = Slab<ClobHeaderV0, OrderNodeV0>;
@@ -458,9 +477,7 @@ pub struct ResponsePointerV0 {
     pub len: u32,
 }
 
-pub use quoter_spec::QuoteResponseV0;
-
-pub use quoter_spec::ExecuteResponseV0;
+pub use quoter_spec::{ExecuteResponseV0, QuoteResponseV0};
 
 /// Which sides a `cancel_all_v0` withdraws. Named sides rather than a pair of
 /// bools so the wire cannot express "neither", which is a maker believing

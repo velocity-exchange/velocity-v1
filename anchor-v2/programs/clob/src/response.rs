@@ -18,7 +18,8 @@ use {
     crate::{
         error::ClobError,
         state::{
-            ClobMarketV0, ResponsePointerV0, RESPONSE_BUFFER_BYTES, RESPONSE_LEN_BYTES, RESPONSE_OFFSET,
+            ClobMarketV0, ResponsePointerV0, RESPONSE_BUFFER_BYTES, RESPONSE_LEN_BYTES,
+            RESPONSE_OFFSET,
         },
     },
     anchor_lang_v2::prelude::*,

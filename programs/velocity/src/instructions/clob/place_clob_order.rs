@@ -181,7 +181,7 @@ pub fn handle_place_clob_order<'c: 'info, 'info>(
         let user = crate::load!(ctx.accounts.user)?;
         crate::state::prop_amm::ClobUserRefV0 {
             authority: user.authority,
-            sub_account_id: user.sub_account_id,
+            sub_account_id: user.sub_account_id.into(),
         }
     };
     // The CLOB returns the new order's ref; it stays the transaction's return
@@ -372,7 +372,7 @@ pub fn try_place_remainder_on_clob<'info>(
         user.update_last_active_slot(clock.slot);
         crate::state::prop_amm::ClobUserRefV0 {
             authority: user.authority,
-            sub_account_id: user.sub_account_id,
+            sub_account_id: user.sub_account_id.into(),
         }
     };
 

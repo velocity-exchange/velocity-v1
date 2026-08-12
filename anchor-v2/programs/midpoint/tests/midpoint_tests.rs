@@ -260,39 +260,41 @@ fn read_response(ctx: &Ctx, meta: &TransactionMetadata) -> Vec<u8> {
     account.data[offset..offset + len].to_vec()
 }
 
-/// QuoteResponseV0 { levels: Vec<PriceLevel { price: u64, size: u64 }> }
+/// The quote response, through the layout's own parser rather than a second
+/// hand-rolled walk of it.
 fn parse_levels(b: &[u8]) -> Vec<(u64, u64)> {
-    let count = parse_u32(b) as usize;
-    (0..count)
-        .map(|i| {
-            let off = 4 + i * 16;
-            (parse_u64(&b[off..]), parse_u64(&b[off + 8..]))
-        })
+    midpoint::state::QuoteResponseV0::parse(b)
+        .expect("quote response")
+        .levels
+        .iter()
+        .map(|level| (level.price, level.size))
         .collect()
 }
 
-/// ExecuteResponseV0 { balance_changes, cancelled } with at most one change
-/// and no completed ids: (user authority, base, quote) per change.
+/// The execute response: `(user authority, base, quote)` per change. The
+/// midpoint never completes an order and never culls a remainder, and both are
+/// asserted here rather than assumed.
 fn parse_execute(b: &[u8]) -> Vec<([u8; 32], u64, u64)> {
-    let count = parse_u32(b) as usize;
-    let mut off = 4;
-    let changes: Vec<_> = (0..count)
-        .map(|_| {
-            let authority: [u8; 32] = b[off..off + 32].try_into().unwrap();
-            let base = parse_u64(&b[off + 34..]);
-            let quote = parse_u64(&b[off + 42..]);
-            let completed = parse_u32(&b[off + 50..]) as usize;
-            assert_eq!(completed, 0, "midpoint never completes orders");
-            off += 32 + 2 + 8 + 8 + 4;
-            (authority, base, quote)
-        })
-        .collect();
-    assert_eq!(
-        parse_u32(&b[off..]),
-        0,
-        "midpoint never cancels a remainder"
+    let response = midpoint::state::ExecuteResponseV0::parse(b).expect("execute response");
+    assert!(
+        response.completed.is_empty(),
+        "midpoint never completes orders"
     );
-    changes
+    assert!(
+        response.cancelled.is_empty(),
+        "midpoint never culls remainders"
+    );
+    response
+        .changes
+        .iter()
+        .map(|change| {
+            (
+                *change.user.authority.as_array(),
+                change.base_size,
+                change.quote_size,
+            )
+        })
+        .collect()
 }
 
 fn set_mid_ix(ctx: &Ctx, mid: u64, sequence: u64) -> Instruction {

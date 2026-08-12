@@ -4,6 +4,6 @@
 pub mod cpi_executor;
 pub mod initialize_router_quote_buffer;
 pub mod quote_router;
-pub mod quoter_section;
+pub mod quoted_route;
 
-pub use {cpi_executor::*, initialize_router_quote_buffer::*, quote_router::*, quoter_section::*};
+pub use {cpi_executor::*, initialize_router_quote_buffer::*, quote_router::*, quoted_route::*};

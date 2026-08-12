@@ -3405,7 +3405,7 @@ fn fulfill_perp_order_router_pass(
                     remaining -= size;
                     Some(PriceLevel {
                         price: level.price,
-                        size,
+                        size: size.into(),
                     })
                 })
                 .collect();
@@ -3515,8 +3515,8 @@ fn fulfill_perp_order_router_pass(
         .iter()
         .map(|maker| {
             [PriceLevel {
-                price: maker.price,
-                size: maker.unfilled,
+                price: maker.price.into(),
+                size: maker.unfilled.into(),
             }]
         })
         .collect();
@@ -3809,7 +3809,7 @@ fn fulfill_perp_order_router_pass(
     let user_ref_index = makers_and_referrer.user_ref_index()?;
     let taker_ref = crate::state::prop_amm::ClobUserRefV0 {
         authority: taker.authority,
-        sub_account_id: taker.sub_account_id,
+        sub_account_id: taker.sub_account_id.into(),
     };
     let resolve_user = |user: &crate::state::prop_amm::ClobUserRefV0| -> VelocityResult<Pubkey> {
         user_ref_index
@@ -3831,14 +3831,23 @@ fn fulfill_perp_order_router_pass(
         // Before the CPI: a book-backed quoter's permitted subjects live in
         // the state its execute is about to consume.
         let subjects = router.executor.subjects(i, direction, allocation.base)?;
-        let response = router.executor.execute(i, direction, allocation.base)?;
+        // The guard lives here, for exactly as long as this leg reads the
+        // response — so the records below borrow out of the quoter's account
+        // instead of being copied onto velocity's heap.
+        // Priced before the CPI: execute overwrites the very buffer the ladder
+        // was read from, and step 1 because the book fills whole orders
+        // best-first — the same walk, so the totals agree exactly.
+        let quoted = crate::math::router::quoted_prefix(books[i].levels, 1, allocation.base)?;
+        let located = router.executor.execute(i, direction, allocation.base)?;
+        let data = located.borrow()?;
+        let response = located.execute_response(&data)?;
         // CLOB orders are margin-reserved through velocity at placement, so
         // their fills/culls unwind open-order aggregates; Custom PropAMM
         // depth is never reserved, so there is nothing to unwind.
         let maker_aggregates_tracked =
             router.executor.quoter_type(i) == crate::state::prop_amm::QuoterType::Clob;
 
-        let (ext_base, ext_quote) = response.balance_changes.iter().try_fold(
+        let (ext_base, ext_quote) = response.changes.iter().try_fold(
             (0u64, 0u64),
             |(base, quote), change| -> VelocityResult<(u64, u64)> {
                 Ok((
@@ -3850,30 +3859,31 @@ fn fulfill_perp_order_router_pass(
         if ext_base == 0 {
             continue;
         }
+        // A quote is what its quoter can deliver — the CLOB spends execute's
+        // own fill and user budget while it walks — so the allocation cut from
+        // that ladder is fillable in full. Anything else is the quoter
+        // contradicting its own quote.
         validate!(
-            ext_base <= allocation.base,
+            ext_base == allocation.base,
             ErrorCode::QuoterOverfilled,
-            "router external quoter {} overfilled: {} > {}",
+            "router external quoter {} filled {} of the {} it quoted",
             i,
             ext_base,
             allocation.base
         )?;
-        // The levels this quoter's allocation was cut from — the same slice
-        // the split walked, so the prefix priced here is the one it routed.
-        let quoted =
-            crate::math::router::quoted_prefix(books[i].levels, order_step_size, ext_base)?;
+        // Held to the number the split accrued off the ladder, so the ladder
+        // itself is dead the moment routing ends.
         validate!(
-            crate::math::router::validate_executed_notional(&quoted, ext_base, ext_quote)?,
+            crate::math::router::validate_allocated_notional(allocation, ext_quote)?,
             ErrorCode::QuoterFillOffQuote,
-            "router external quoter {} filled {}/{} outside its quote for that size ({}..{})",
+            "router external quoter {} filled {}/{} off its quote of {}",
             i,
             ext_quote,
             ext_base,
-            quoted.best_price,
-            quoted.worst_price
+            allocation.scaled_quote
         )?;
 
-        for change in &response.balance_changes {
+        for (change_index, change) in response.changes.iter().enumerate() {
             if change.base_size == 0 {
                 continue;
             }
@@ -3890,7 +3900,7 @@ fn fulfill_perp_order_router_pass(
                     &quoted,
                     change.base_size,
                     change.quote_size,
-                    merged_orders(change)?,
+                    merged_orders(response.completed_count(change_index))?,
                 )?,
                 ErrorCode::QuoterFillOffQuote,
                 "router external quoter {} priced user {} outside its quoted band",
@@ -3950,14 +3960,14 @@ fn fulfill_perp_order_router_pass(
                 let position = &mut maker.perp_positions[maker_position_index];
                 position.open_orders = position
                     .open_orders
-                    .saturating_sub(change.completed_order_ids.len().cast()?);
-                for clob_order_id in &change.completed_order_ids {
+                    .saturating_sub(response.completed_count(change_index).cast()?);
+                for clob_order_id in response.completed_for(change_index) {
                     maker.decrement_open_orders(false);
                     // A fully-consumed order may be a placed trigger's live
                     // half; the shadow slot frees with it.
                     maker.release_placed_trigger_slot(
                         market_index,
-                        *clob_order_id,
+                        clob_order_id,
                         OrderStatus::Filled,
                     );
                 }
@@ -3969,7 +3979,7 @@ fn fulfill_perp_order_router_pass(
         // so they are loaded). A cull releases a margin reservation, so it is
         // held to the same subject rule as a balance change.
         if maker_aggregates_tracked {
-            for cancelled in &response.cancelled {
+            for cancelled in response.cancelled {
                 let maker_key = resolve_user(&cancelled.user)?;
                 validate!(
                     subjects.permits(&cancelled.user, &maker_key, &taker_ref),
@@ -4037,8 +4047,8 @@ fn fulfill_perp_order_router_pass(
 /// response itself declares: every order the change consumed outright, plus
 /// at most one it left a remainder on. Bounds the integer rounding a merged
 /// record can carry (see `math::router::validate_change_notional`).
-fn merged_orders(change: &crate::state::prop_amm::UserBalanceChangeV0) -> VelocityResult<u64> {
-    change.completed_order_ids.len().cast::<u64>()?.safe_add(1)
+fn merged_orders(consumed: usize) -> VelocityResult<u64> {
+    consumed.cast::<u64>()?.safe_add(1)
 }
 
 pub fn update_order_after_fill(
@@ -4251,7 +4261,7 @@ pub fn cross_match(
     }
     let taker_ref = crate::state::prop_amm::ClobUserRefV0 {
         authority: taker.authority,
-        sub_account_id: taker.sub_account_id,
+        sub_account_id: taker.sub_account_id.into(),
     };
     let user_ref_index = makers_and_referrer.user_ref_index()?;
     let resolve_user = |user: &crate::state::prop_amm::ClobUserRefV0| -> VelocityResult<Pubkey> {
@@ -4366,12 +4376,14 @@ pub fn cross_match(
         // is the entry's single consenting `user` plus the surplus check that
         // bound the leg.
         let subjects = executor.subjects(book_index, cpi_direction, leg_size)?;
-        let response = executor.execute(book_index, cpi_direction, leg_size)?;
+        let located = executor.execute(book_index, cpi_direction, leg_size)?;
+        let data = located.borrow()?;
+        let response = located.execute_response(&data)?;
         let maker_aggregates_tracked =
             executor.quoter_type(book_index) == crate::state::prop_amm::QuoterType::Clob;
         let maker_direction = taker_direction.opposite();
 
-        let (leg_base, leg_quote) = response.balance_changes.iter().try_fold(
+        let (leg_base, leg_quote) = response.changes.iter().try_fold(
             (0u64, 0u64),
             |(base, quote), change| -> VelocityResult<(u64, u64)> {
                 Ok((
@@ -4390,7 +4402,7 @@ pub fn cross_match(
         };
         if let Some(quoted) = quoted.as_ref() {
             validate!(
-                crate::math::router::validate_executed_notional(quoted, leg_base, leg_quote)?,
+                crate::math::router::validate_executed_notional(&quoted, leg_quote)?,
                 ErrorCode::QuoterFillOffQuote,
                 "cross leg {} filled {}/{} outside the book it swept ({}..{})",
                 leg,
@@ -4402,7 +4414,7 @@ pub fn cross_match(
         }
 
         let mut market = perp_market_map.get_ref_mut(&market_index)?;
-        for change in &response.balance_changes {
+        for (change_index, change) in response.changes.iter().enumerate() {
             if change.base_size == 0 {
                 continue;
             }
@@ -4421,7 +4433,7 @@ pub fn cross_match(
                         quoted,
                         change.base_size,
                         change.quote_size,
-                        merged_orders(change)?,
+                        merged_orders(response.completed_count(change_index))?,
                     )?,
                     ErrorCode::QuoterFillOffQuote,
                     "cross leg {} priced user {} outside the book it swept",
@@ -4474,19 +4486,19 @@ pub fn cross_match(
                 let position = &mut maker.perp_positions[maker_position_index];
                 position.open_orders = position
                     .open_orders
-                    .saturating_sub(change.completed_order_ids.len().cast()?);
-                for clob_order_id in &change.completed_order_ids {
+                    .saturating_sub(response.completed_count(change_index).cast()?);
+                for clob_order_id in response.completed_for(change_index) {
                     maker.decrement_open_orders(false);
                     maker.release_placed_trigger_slot(
                         market_index,
-                        *clob_order_id,
+                        clob_order_id,
                         OrderStatus::Filled,
                     );
                 }
             }
         }
         if maker_aggregates_tracked {
-            for cancelled in &response.cancelled {
+            for cancelled in response.cancelled {
                 let maker_key = resolve_user(&cancelled.user)?;
                 validate!(
                     subjects.permits(&cancelled.user, &maker_key, &taker_ref),
@@ -4726,7 +4738,15 @@ pub enum TakerOriginCounterparty {
     /// before the CPI — the quote the response is held to — and the response's
     /// retired order ids are what unwind the maker's open-order slots.
     Executed {
-        response: crate::state::prop_amm::ExecuteResponseV0,
+        /// The counterparty's fill. Exactly one, by construction: the crank
+        /// sizes the match at the counterparty's own remaining size, so a
+        /// response naming anyone else — or splitting across orders — is not
+        /// the cross that was priced.
+        change: crate::state::prop_amm::UserBalanceChangeV0,
+        /// The counterparty's order, when the fill took it whole.
+        consumed: Option<u64>,
+        /// The sub-min remainder the book culled with it, if any.
+        cancelled: Option<crate::state::prop_amm::CancelledRemainderV0>,
         subjects: crate::state::prop_amm::QuoterSubjects,
     },
     /// Cancelled off the book by the crank, and settled at its own price for
@@ -4751,32 +4771,62 @@ struct CounterpartyLeg<'a> {
 }
 
 impl TakerOriginCounterparty {
+    /// Read the bounded cross out of a quoter's response.
+    ///
+    /// Copies rather than borrows, and can afford to: the whole of what a
+    /// resolved cross carries is one fill, at most one consumed order and at
+    /// most one cull — three fixed-width records on the stack. Validating
+    /// those bounds here is also the check that the response describes *this*
+    /// cross rather than some larger fill.
+    pub(crate) fn executed(
+        response: &crate::state::prop_amm::ExecuteResponseV0<'_>,
+        subjects: crate::state::prop_amm::QuoterSubjects,
+    ) -> VelocityResult<Self> {
+        let mut filled = response
+            .changes
+            .iter()
+            .filter(|change| change.base_size > 0);
+        let change = *filled.next().ok_or_else(|| {
+            msg!("taker-origin cross expects one counterparty fill, got none");
+            ErrorCode::InvalidQuoterResponse
+        })?;
+        validate!(
+            filled.next().is_none(),
+            ErrorCode::InvalidQuoterResponse,
+            "taker-origin cross expects one counterparty fill, got several"
+        )?;
+        let mut consumed = response.completed_for(0);
+        let first = consumed.next();
+        validate!(
+            consumed.next().is_none(),
+            ErrorCode::InvalidQuoterResponse,
+            "taker-origin cross cannot consume more than the counterparty's order"
+        )?;
+        validate!(
+            response.cancelled.len() <= 1,
+            ErrorCode::InvalidQuoterResponse,
+            "taker-origin cross cannot cull more than one remainder"
+        )?;
+        Ok(Self::Executed {
+            change,
+            consumed: first,
+            cancelled: response.cancelled.first().copied(),
+            subjects,
+        })
+    }
+
     fn leg(&self) -> VelocityResult<CounterpartyLeg<'_>> {
         match self {
             // One counterparty, one balance change: the crank sizes the match
             // at the counterparty's own remaining size, so a response naming
             // anyone else — or splitting across orders — is not the cross that
             // was priced.
-            Self::Executed { response, .. } => {
-                let changes: Vec<&crate::state::prop_amm::UserBalanceChangeV0> = response
-                    .balance_changes
-                    .iter()
-                    .filter(|change| change.base_size > 0)
-                    .collect();
-                validate!(
-                    changes.len() == 1,
-                    ErrorCode::InvalidQuoterResponse,
-                    "taker-origin cross expects one counterparty fill, got {}",
-                    changes.len()
-                )?;
-                let change = changes[0];
-                Ok(CounterpartyLeg {
-                    user: change.user,
-                    base_asset_amount: change.base_size,
-                    quote_asset_amount: change.quote_size,
-                    change: Some(change),
-                })
-            }
+            Self::Executed { change, .. } => Ok(CounterpartyLeg {
+                user: change.user,
+                base_asset_amount: change.base_size,
+                quote_asset_amount: change.quote_size,
+                change: Some(change),
+            }),
             Self::Cancelled {
                 removed,
                 base_asset_amount,
@@ -4866,7 +4916,7 @@ pub fn settle_taker_origin_cross(
         let taker = load!(taker_loader)?;
         crate::state::prop_amm::ClobUserRefV0 {
             authority: taker.authority,
-            sub_account_id: taker.sub_account_id,
+            sub_account_id: taker.sub_account_id.into(),
         }
     };
     let maker_key = *makers_and_referrer
@@ -4898,11 +4948,7 @@ pub fn settle_taker_origin_cross(
         })?;
         let quoted = crate::math::router::quoted_prefix(&levels, 1, leg.base_asset_amount)?;
         validate!(
-            crate::math::router::validate_executed_notional(
-                &quoted,
-                leg.base_asset_amount,
-                leg.quote_asset_amount
-            )?,
+            crate::math::router::validate_executed_notional(&quoted, leg.quote_asset_amount)?,
             ErrorCode::QuoterFillOffQuote,
             "counterparty filled {}/{} outside the book it rested on ({}..{})",
             leg.quote_asset_amount,
@@ -5020,18 +5066,24 @@ pub fn settle_taker_origin_cross(
     // orders the fill consumed outright, and a sub-min remainder the book
     // culled with it. A cancelled counterparty has neither — its order left
     // the book whole, and the caller settles its slot and its leftover.
-    if let (Some(change), TakerOriginCounterparty::Executed { response, .. }) =
-        (leg.change, counterparty)
+    if let (
+        Some(change),
+        TakerOriginCounterparty::Executed {
+            consumed,
+            cancelled,
+            ..
+        },
+    ) = (leg.change, counterparty)
     {
         maker.perp_positions[maker_position_index].open_orders = maker.perp_positions
             [maker_position_index]
             .open_orders
-            .saturating_sub(change.completed_order_ids.len().cast()?);
-        for clob_order_id in &change.completed_order_ids {
+            .saturating_sub(consumed.is_some().into());
+        if let Some(clob_order_id) = *consumed {
             maker.decrement_open_orders(false);
-            maker.release_placed_trigger_slot(market_index, *clob_order_id, OrderStatus::Filled);
+            maker.release_placed_trigger_slot(market_index, clob_order_id, OrderStatus::Filled);
         }
-        for cancelled in &response.cancelled {
+        for cancelled in cancelled.iter() {
             validate!(
                 cancelled.user == change.user,
                 ErrorCode::QuoterSubjectNotPermitted,

@@ -107,7 +107,7 @@ pub fn handle_cancel_all_clob_orders(
         let user = crate::load!(ctx.accounts.user)?;
         ClobUserRefV0 {
             authority: user.authority,
-            sub_account_id: user.sub_account_id,
+            sub_account_id: user.sub_account_id.into(),
         }
     };
     let removed = clob.cancel_all(ClobCancelAllArgsV0 {

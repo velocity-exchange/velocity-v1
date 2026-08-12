@@ -29,7 +29,7 @@ use {
             constraints::*,
             optional_accounts::{load_maps, AccountMaps},
             relay_harness::resolve_into,
-            router::cpi_executor::CpiQuoterExecutor,
+            router::{cpi_executor::CpiQuoterExecutor, quoted_route::QuotedEntry},
         },
         load, msg,
         state::{
@@ -44,7 +44,6 @@ use {
         validate,
     },
     anchor_lang::{prelude::*, Discriminator},
-    std::collections::BTreeMap,
 };
 
 #[cfg(test)]
@@ -107,28 +106,21 @@ pub fn handle_crank_cross_match<'c: 'info, 'info>(
     let (makers_and_referrer, makers_and_referrer_stats) =
         load_user_maps(remaining_accounts_iter, true)?;
 
-    // Quoter section: registry entries plus the union of their registered
-    // CPI accounts, same shape as the router fill's.
+    // The account tail: registry entries plus the union of their registered CPI
+    // accounts, same shape as the router fill's. This crank does not quote, so
+    // each entry carries no levels.
     let leftover: Vec<&AccountInfo<'info>> = remaining_accounts_iter.collect();
-    let account_map: BTreeMap<Pubkey, AccountInfo<'info>> = leftover
-        .iter()
-        .map(|info| (*info.key, (*info).clone()))
-        .collect();
-    let quoters: Vec<AccountLoader<QuoterV0>> = leftover
-        .iter()
-        .filter(|info| {
-            info.owner == &crate::ID
-                && info
-                    .try_borrow_data()
-                    .is_ok_and(|data| data.get(..8) == Some(QuoterV0::DISCRIMINATOR))
-        })
-        .map(|info| AccountLoader::try_from(info))
-        .collect::<Result<_>>()?;
-
-    let mut types: Vec<QuoterType> = Vec::with_capacity(quoters.len());
-    let mut quoter_users: Vec<Pubkey> = Vec::with_capacity(quoters.len());
-    let mut response_accounts: Vec<Pubkey> = Vec::with_capacity(quoters.len());
-    for loader in &quoters {
+    let accounts: Vec<AccountInfo<'info>> = leftover.iter().map(|info| (*info).clone()).collect();
+    let mut quoted: Vec<QuotedEntry<'info>> = Vec::with_capacity(leftover.len());
+    for info in &leftover {
+        let is_entry = info.owner == &crate::ID
+            && info
+                .try_borrow_data()
+                .is_ok_and(|data| data.get(..8) == Some(QuoterV0::DISCRIMINATOR));
+        if !is_entry {
+            continue;
+        }
+        let loader = AccountLoader::<QuoterV0>::try_from(*info)?;
         let quoter = loader.load()?;
         validate!(
             quoter.market == market_index,
@@ -143,26 +135,38 @@ pub fn handle_crank_cross_match<'c: 'info, 'info>(
             ErrorCode::DefaultError,
             "the vAMM reprices continuously and cannot rest crossed"
         )?;
-        types.push(quoter.quoter_type);
-        quoter_users.push(quoter.user);
-        response_accounts.push(quoter.response_account);
+        let (quoter_type, user, response_account, priority) = (
+            quoter.quoter_type,
+            quoter.user,
+            quoter.response_account,
+            quoter.priority,
+        );
+        drop(quoter);
+        quoted.push(QuotedEntry {
+            entry: loader,
+            quoter_type,
+            user,
+            response_account,
+            priority,
+            levels: Vec::new(),
+        });
     }
     let buy_index = buy_quoter_index as usize;
     let sell_index = sell_quoter_index as usize;
     validate!(
-        buy_index < quoters.len() && sell_index < quoters.len(),
+        buy_index < quoted.len() && sell_index < quoted.len(),
         ErrorCode::DefaultError,
         "cross leg index out of range: {} / {} of {}",
         buy_index,
         sell_index,
-        quoters.len()
+        quoted.len()
     )?;
 
     let taker_ref = {
         let taker = load!(ctx.accounts.taker)?;
         crate::state::prop_amm::ClobUserRefV0 {
             authority: taker.authority,
-            sub_account_id: taker.sub_account_id,
+            sub_account_id: taker.sub_account_id.into(),
         }
     };
     let users = crate::state::prop_amm::quoter_wire_users(
@@ -172,21 +176,18 @@ pub fn handle_crank_cross_match<'c: 'info, 'info>(
             .map(
                 |(authority, sub_account_id)| crate::state::prop_amm::ClobUserRefV0 {
                     authority,
-                    sub_account_id,
+                    sub_account_id: sub_account_id.into(),
                 },
             ),
     )?;
     let (quoter_signer, quoter_signer_nonce) = crate::signer::find_quoter_signer();
     let mut executor = CpiQuoterExecutor {
-        quoters: &quoters,
-        types,
-        quoter_users,
-        response_accounts,
+        quoted: &quoted,
         market_index,
-        account_map: &account_map,
+        accounts: &accounts,
         quoter_signer,
         quoter_signer_nonce,
-        users,
+        users: &users,
         taker: taker_ref,
         slot: clock.slot,
         now: clock.unix_timestamp,
@@ -205,13 +206,11 @@ pub fn handle_crank_cross_match<'c: 'info, 'info>(
     // Refusing rather than skipping, because the caller has a correct
     // instruction to send instead: `crank_taker_origin_cross` resolves this
     // book and pays the taker the difference.
-    for quoter in quoters
+    for clob in quoted
         .iter()
-        .zip(&executor.types)
-        .filter_map(|(loader, kind)| (*kind == QuoterType::Clob).then_some(loader))
+        .filter(|quoted| quoted.quoter_type == QuoterType::Clob)
     {
-        let book = account_map
-            .get(&quoter.load()?.response_account)
+        let book = crate::state::prop_amm::find_account(&accounts, &clob.response_account)
             .ok_or_else(|| error!(ErrorCode::DefaultError))?;
         let data = book.try_borrow_data()?;
         validate!(
@@ -247,16 +246,14 @@ pub fn handle_crank_cross_match<'c: 'info, 'info>(
     // Repair the wake hints from the post-match book when a leg was the
     // CLOB (a matched activation is exactly when the activation hint fires;
     // this is what sends it forward to the next pending slot).
-    let clob_book = quoters
+    let clob_book = quoted
         .iter()
-        .zip(&executor.types)
-        .find(|(_, quoter_type)| **quoter_type == QuoterType::Clob)
-        .map(|(loader, _)| loader.load().map(|quoter| quoter.response_account))
-        .transpose()?;
+        .find(|quoted| quoted.quoter_type == QuoterType::Clob)
+        .map(|quoted| quoted.response_account);
     let payment = {
         let mut conditions = crate::load_mut!(ctx.accounts.crank_conditions)?;
         if let Some(book_key) = clob_book {
-            if let Some(book) = account_map.get(&book_key) {
+            if let Some(book) = crate::state::prop_amm::find_account(&accounts, &book_key) {
                 let (min_expiry, min_activation) =
                     crate::state::prop_amm::clob_hint_scan(&book.try_borrow_data()?, clock.slot);
                 conditions.repair_expiry(min_expiry)?;
@@ -531,10 +528,12 @@ pub fn handle_resolve_crank_cross_match_quoter<'info>(
             return Ok(None);
         }
         let (quoter_signer, quoter_signer_nonce) = crate::signer::find_quoter_signer();
-        let account_map: BTreeMap<Pubkey, AccountInfo<'info>> = ctx
+        // The resolver's own tail, searched rather than indexed: it is a
+        // handful of accounts and this reads a few of them.
+        let accounts: Vec<AccountInfo<'info>> = ctx
             .remaining_accounts
             .iter()
-            .map(|info| (*info.key, info.clone()))
+            .map(|info| info.clone())
             .collect();
 
         // Quote both sides. An empty user set is discovery mode
@@ -552,7 +551,7 @@ pub fn handle_resolve_crank_cross_match_quoter<'info>(
                 },
                 &quoter_signer,
                 quoter_signer_nonce,
-                &account_map,
+                &accounts,
             )
         };
         let quoter_asks = sanitize_levels(quote(crate::state::prop_amm::Direction::Long)?, true);
@@ -562,7 +561,7 @@ pub fn handle_resolve_crank_cross_match_quoter<'info>(
             let user = crate::load!(ctx.accounts.user)?;
             crate::state::prop_amm::ClobUserRefV0 {
                 authority: user.authority,
-                sub_account_id: user.sub_account_id,
+                sub_account_id: user.sub_account_id.into(),
             }
         };
 
@@ -628,7 +627,7 @@ pub fn handle_resolve_crank_cross_match_quoter<'info>(
             .maker_refs(staged.iter().copied())
             .account(clob_quoter, false)
             .account(ctx.accounts.quoter.key(), false);
-        let mut union: BTreeMap<Pubkey, bool> = BTreeMap::new();
+        let mut union: std::collections::BTreeMap<Pubkey, bool> = Default::default();
         *union.entry(ctx.accounts.clob_market.key()).or_default() |= true;
         union.entry(quoter_signer).or_default();
         union.entry(clob_program).or_default();

@@ -14,7 +14,14 @@ repository = "https://github.com/velocity-exchange/velocity-v1/crates/quoter-spe
 # below can be the declaration both sides use rather than a shape they restate.
 # `copy` is not optional: these are small value types that every caller moves
 # by copy, and `Address` gates its `Copy` impl behind that feature.
-solana-address = { version = "2", features = ["copy", "wincode"] }
+# Held to 2.6, not just `2`: the records below derive wincode against
+# `Address`'s own impls, and which wincode those target moves with this minor —
+# 2.6 targets 0.5, 2.7 targets 0.6. A workspace that resolved 2.7 while this
+# crate is on 0.5 gets two unrelated `SchemaRead` traits and a wall of
+# unsatisfied bounds; integration-tests hit exactly that. anchor-lang-v2 is
+# pinned to a rev on 0.5, so 2.6 is what all three workspaces can agree on.
+# Move this and the wincode dependency together, or neither.
+solana-address = { version = "~2.6", features = ["copy", "wincode"] }
 
 # Serialization is per-consumer, because the two halves of the wire do not agree
 # on a framework: velocity decodes the response with borsh, and the v2 programs

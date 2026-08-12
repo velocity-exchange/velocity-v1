@@ -62,9 +62,8 @@ use {
         response::ResponseWriter,
         state::{
             CancelAllOutcome, CancelSidesV0, CancelledRemainderV0, ClobHeaderV0, ClobMarketV0,
-            CompletedOrderV0,
-            Direction, ExecuteOutcome, MarketConfigV0, OrderBitFlag, OrderNodeV0, OrderRefV0,
-            PlaceOrderParams, RemovedOrder, ResponsePointerV0, Side, UserRefV0,
+            CompletedOrderV0, Direction, ExecuteOutcome, MarketConfigV0, OrderBitFlag, OrderNodeV0,
+            OrderRefV0, PlaceOrderParams, RemovedOrder, ResponsePointerV0, Side, UserRefV0,
             CANCEL_ALL_ORDERS_CEILING, CHANGE_MIN_BYTES, EXECUTE_FILLS_CEILING,
             EXECUTE_USERS_CEILING, ORDER_ID_BYTES, QUOTE_LEVELS_CEILING, USER_REF_BYTES,
             ZERO_ADDRESS,
@@ -668,10 +667,27 @@ impl ClobBook for ClobMarketV0 {
     ) -> Result<ResponsePointerV0> {
         let side = direction.book_side();
         let max_levels = self.max_quote_levels.min(QUOTE_LEVELS_CEILING) as usize;
+        // A quote promises what `execute` can deliver, so it spends `execute`'s
+        // budget as it walks — not just its own level cap. The two are counted
+        // in different units: a level aggregates however many orders sit at one
+        // price, so a ladder capped only on levels can stand on more orders
+        // than one execute is allowed to touch. Quoting depth execute would
+        // then decline is a quote that lied, and the caller cannot tell.
+        let max_fills = self.max_execute_fills.min(EXECUTE_FILLS_CEILING) as usize;
+        let max_users = self.max_execute_users.min(EXECUTE_USERS_CEILING) as usize;
+        // The other half of that budget is `execute`'s distinct-user cap. Every
+        // fill belongs to the caller's set, so a restricted quote cannot exceed
+        // it as long as the set itself fits — refuse a wider set rather than
+        // quote depth that cannot settle. An unrestricted (discovery) quote has
+        // no set to bound it and is advisory, not a promise to fill.
+        require!(users.len() <= max_users, ClobError::StaleUserSet);
         let grace_slots = self.unknown_user_grace_slots;
         let mut writer = ResponseWriter::new();
         let count_offset = writer.reserve_count(self)?;
         let mut levels = 0usize;
+        // Orders promised so far, against `execute`'s budget rather than this
+        // walk's own.
+        let mut fills = 0usize;
         // The level being accumulated, written out only once the price
         // changes (or the walk ends) — orders at one price are contiguous, so
         // a level costs one 16-byte append however many orders it holds.
@@ -683,6 +699,11 @@ impl ClobBook for ClobMarketV0 {
         let mut gate = TakerOriginGate::new(side, slot, now);
 
         walk_side(self, side, |book, _, node| {
+            // Mirrors `execute`'s own stop, in the same place in the walk, so
+            // the ladder ends exactly where the fill would.
+            if remaining == 0 || fills == max_fills {
+                return Ok(Walk::Stop);
+            }
             // Both halves of "pass over this order": the intrinsic and
             // caller-relative reasons, then the crossed-remainder gate.
             if !is_matchable(node, users, taker, grace_slots, slot, now)?
@@ -691,6 +712,7 @@ impl ClobBook for ClobMarketV0 {
                 return Ok(Walk::Continue);
             }
             let take = remaining.min(node.base_asset_amount);
+            fills += 1;
             match open {
                 Some((price, aggregate)) if price == node.price => {
                     open = Some((
@@ -772,7 +794,10 @@ impl ClobBook for ClobMarketV0 {
         // user), so this is the one collection execute still builds.
         let mut fills: Vec<FillSlimV0> = Vec::with_capacity(max_fills);
         let mut cancelled: Option<CancelledRemainderV0> = None;
-        let mut completed: Vec<CompletedOrderV0> = Vec::new();
+        // Bounded by the same thing `fills` is — a fill consumes at most one
+        // order — so it reserves the same, rather than doubling its way up
+        // beside a sibling that does not.
+        let mut completed: Vec<CompletedOrderV0> = Vec::with_capacity(max_fills);
         let mut removals = 0u32;
         let mut remaining = size;
         // Price of the last order consumed, for the best-first check in
@@ -1276,7 +1301,10 @@ fn find_change_record(
 ) -> Result<Option<usize>> {
     for i in 0..count {
         let offset = start
-            .checked_add(i.checked_mul(CHANGE_MIN_BYTES).ok_or(ClobError::MathError)?)
+            .checked_add(
+                i.checked_mul(CHANGE_MIN_BYTES)
+                    .ok_or(ClobError::MathError)?,
+            )
             .ok_or(ClobError::ResponseTooLarge)?;
         if writer.matches(book, offset + CHANGE_USER, user_key)? {
             return Ok(Some(offset));

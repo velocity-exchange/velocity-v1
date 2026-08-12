@@ -18,7 +18,7 @@ use {
         program::{get_return_data, invoke_signed},
     },
     static_assertions::const_assert_eq,
-    std::{collections::BTreeMap, convert::TryInto},
+    std::convert::TryInto,
 };
 
 #[cfg(test)]
@@ -272,6 +272,17 @@ pub struct QuoterUserSetV0 {
 /// Upper bound on a quote/execute CPI's instruction data: discriminator,
 /// direction, size, the fixed-width user set, and an optional taker ref.
 /// Reserved in one shot so no intermediate buffer is leaked.
+/// Upper bound on a CLOB CPI's instruction data: discriminator plus the widest
+/// args on that interface, which is `place` — a side, two `u64`s, an optional
+/// delay, a timestamp, a user ref and the taker-origin flag.
+///
+/// Reserved in one shot for the same reason [`QUOTER_CPI_DATA_CAPACITY`] is: a
+/// `Vec` that starts at the discriminator and doubles into place leaks every
+/// intermediate buffer, and velocity's bump allocator never reclaims. This path
+/// runs on every order placed on the book and every removal crank, so it is the
+/// busier of the two.
+pub const CLOB_CPI_DATA_CAPACITY: usize = 8 + 1 + 8 + 8 + 5 + 8 + CLOB_USER_REF_BYTES + 1;
+
 pub const QUOTER_CPI_DATA_CAPACITY: usize =
     8 + 1 + 8 + QUOTER_USER_SET_BYTES + 1 + CLOB_USER_REF_BYTES;
 
@@ -380,17 +391,12 @@ pub struct QuoteArgsV0<'a> {
     pub taker: Option<ClobUserRefV0>,
 }
 
-#[derive(Clone, AnchorSerialize, AnchorDeserialize, PartialEq, Eq, Debug)]
-pub struct QuoteResponseV0 {
-    /// Levels the quoter will fill at, best price first.
-    pub levels: Vec<PriceLevel>,
-}
+/// The quote response, read in place for the same reason
+/// [`ExecuteResponseV0`] is.
+pub use quoter_spec::QuoteResponseV0;
 
-#[derive(Clone, Copy, AnchorSerialize, AnchorDeserialize, PartialEq, Eq, Debug)]
-pub struct PriceLevel {
-    pub price: u64,
-    pub size: u64,
-}
+/// Declared by `quoter-spec`; the alias keeps velocity's name for it.
+pub type PriceLevel = quoter_spec::PriceLevelV0;
 
 /// Returned via return data by `quote_v0`/`execute_v0`: where in the quoter's
 /// `response_account` the borsh response was written.
@@ -459,6 +465,13 @@ impl AnchorSerialize for ExecuteArgsV0<'_> {
 /// must be checked against `clob_resting_prefix`, read before execute
 /// consumes the nodes, and the same check owed to the removal cranks.
 pub use quoter_spec::CancelledRemainderV0;
+pub use quoter_spec::CompletedOrderV0;
+/// The execute response, read in place out of the quoter's account.
+///
+/// Borrows rather than owns: velocity's heap is 32 KB and never reclaims, and
+/// one fill CPIs every registered quoter, so copying the records out would
+/// spend heap per quoter per fill that nothing gives back. The caller holds
+/// the account guard (see [`ResponseLocationV0`]) for as long as it reads.
 pub use quoter_spec::ExecuteResponseV0;
 
 /// The CLOB's book side, as encoded on its wire (borsh enum tag).
@@ -769,7 +782,8 @@ impl<'a, 'info> ClobMarket<'a, 'info> {
         args: &A,
         what: &str,
     ) -> Result<R> {
-        let mut data = discriminator.to_vec();
+        let mut data = Vec::with_capacity(CLOB_CPI_DATA_CAPACITY);
+        data.extend_from_slice(discriminator);
         args.serialize(&mut data).map_err(|_| {
             msg!("failed to serialize clob {} args", what);
             ErrorCode::DefaultError
@@ -852,11 +866,11 @@ pub const CLOB_EVICT_THRESHOLD_OFFSET: usize = 156;
 /// `ClobHeaderV0.market_index`.
 pub const CLOB_MARKET_INDEX_OFFSET: usize = 160;
 /// Start of the `OrderNodeV0` arena: `[disc][header][len: u32]` padded to the
-/// node's 8-byte alignment. The CLOB const-asserts its header at 8480, and
-/// this must move with it — reading the arena at a stale offset silently
-/// misparses every node, which reads as an empty or nonsense book rather
-/// than as an error.
-pub const CLOB_ORDERS_OFFSET: usize = 8496;
+/// node's 8-byte alignment. The CLOB const-asserts its header at 8504 and its
+/// own `ORDERS_OFFSET` at this number, and this must move with them — reading
+/// the arena at a stale offset silently misparses every node, which reads as
+/// an empty or nonsense book rather than as an error.
+pub const CLOB_ORDERS_OFFSET: usize = 8520;
 /// `size_of::<OrderNodeV0>()`.
 pub const CLOB_NODE_LEN: usize = 96;
 /// The CLOB's list terminator.
@@ -902,7 +916,7 @@ impl ClobNodeView {
     pub fn user_ref(&self) -> ClobUserRefV0 {
         ClobUserRefV0 {
             authority: self.authority,
-            sub_account_id: self.sub_account_id,
+            sub_account_id: self.sub_account_id.into(),
         }
     }
 }
@@ -991,6 +1005,10 @@ pub struct ClobRestingOrderV0 {
     pub base_asset_amount: u64,
 }
 
+/// First-allocation size for a resting-prefix read. Not a cap — a deeper sweep
+/// still grows past it.
+const CLOB_RESTING_PREFIX_RESERVE: usize = 16;
+
 /// The best-first run of orders on `side` that a taker of `size` would sweep,
 /// read straight off the book's bytes.
 ///
@@ -1019,7 +1037,13 @@ pub fn clob_resting_prefix(
         ClobSide::Bid => CLOB_BEST_BID_OFFSET,
         ClobSide::Ask => CLOB_BEST_ASK_OFFSET,
     };
-    let mut prefix = Vec::new();
+    // Reserved for a typical sweep rather than the deepest one. Starting empty
+    // means a deep prefix doubles its way up and leaks every intermediate on a
+    // heap that never reclaims; reserving the fill ceiling instead would spend
+    // ~6 KB of a 32 KB heap per quoter for a case that rarely happens. A
+    // handful of orders is the common sweep, and this covers it in one
+    // allocation.
+    let mut prefix = Vec::with_capacity(CLOB_RESTING_PREFIX_RESERVE);
     let mut index = match read_clob_u32(data, head_offset) {
         Some(index) => index,
         None => return prefix,
@@ -1112,8 +1136,8 @@ impl QuoterSubjects {
                 resting
                     .iter()
                     .map(|order| PriceLevel {
-                        price: order.price,
-                        size: order.base_asset_amount,
+                        price: order.price.into(),
+                        size: order.base_asset_amount.into(),
                     })
                     .collect(),
             ),
@@ -1126,7 +1150,77 @@ impl QuoterSubjects {
 /// itself, so the entrypoint (which holds the `AccountInfo`s) supplies this.
 /// `index` addresses the same book order the caller quoted into
 /// `RouterFillInputs::books`.
-pub trait ExternalQuoterExecutor {
+/// Find one of the fill's tail accounts by key.
+///
+/// A scan, not a map: the tail is a couple of dozen accounts and one fill looks
+/// up a handful per quoter CPI, so building an index costs more than searching
+/// — and a `BTreeMap` costs it in allocations on a 32 KB heap that never
+/// reclaims.
+pub fn find_account<'a, 'info>(
+    accounts: &'a [AccountInfo<'info>],
+    key: &Pubkey,
+) -> Option<&'a AccountInfo<'info>> {
+    accounts.iter().find(|info| info.key == key)
+}
+
+/// Where a quoter left its response, handed back so the *caller* creates the
+/// account borrow.
+///
+/// The response is read in place out of the quoter's account, and the borrow
+/// guard cannot outlive the function that takes it — so the executor validates
+/// the pointer and returns its location, and the fill that consumes the
+/// response holds the guard for exactly as long as it reads. Returning the
+/// records instead would mean copying them onto a 32 KB heap that never
+/// reclaims, once per quoter per fill.
+pub struct ResponseLocationV0<'info> {
+    pub account: AccountInfo<'info>,
+    pub start: usize,
+    pub end: usize,
+}
+
+impl<'info> ResponseLocationV0<'info> {
+    /// Borrow the response account. The guard lives in the caller's scope,
+    /// which is what makes the borrowed view below sound.
+    pub fn borrow(&self) -> crate::error::VelocityResult<std::cell::Ref<'_, &'_ mut [u8]>> {
+        self.account.try_borrow_data().map_err(|_| {
+            msg!("prop amm response account is already borrowed");
+            ErrorCode::DefaultError
+        })
+    }
+
+    /// Read the execute response in place out of a guard taken by
+    /// [`Self::borrow`].
+    pub fn execute_response<'a>(
+        &self,
+        data: &'a [u8],
+    ) -> crate::error::VelocityResult<ExecuteResponseV0<'a>> {
+        let bytes = data.get(self.start..self.end).ok_or_else(|| {
+            msg!("prop amm response pointer out of bounds");
+            ErrorCode::DefaultError
+        })?;
+        ExecuteResponseV0::parse(bytes).map_err(|_| {
+            msg!("prop amm quoter returned an undecodable execute response");
+            ErrorCode::DefaultError
+        })
+    }
+
+    /// Read the quote response in place.
+    pub fn quote_response<'a>(
+        &self,
+        data: &'a [u8],
+    ) -> crate::error::VelocityResult<QuoteResponseV0<'a>> {
+        let bytes = data.get(self.start..self.end).ok_or_else(|| {
+            msg!("prop amm response pointer out of bounds");
+            ErrorCode::DefaultError
+        })?;
+        QuoteResponseV0::parse(bytes).map_err(|_| {
+            msg!("prop amm quoter returned an undecodable quote response");
+            ErrorCode::DefaultError
+        })
+    }
+}
+
+pub trait ExternalQuoterExecutor<'info> {
     /// Registry type of quoter `index` — decides whether its fills carry
     /// velocity-side resting-order aggregates to unwind (CLOB orders are
     /// margin-reserved at placement; Custom PropAMM depth is not).
@@ -1156,7 +1250,7 @@ pub trait ExternalQuoterExecutor {
         index: usize,
         direction: Direction,
         size: u64,
-    ) -> crate::error::VelocityResult<ExecuteResponseV0>;
+    ) -> crate::error::VelocityResult<ResponseLocationV0<'info>>;
 }
 
 /// Executor for a router fill carrying no external quoter accounts: quoting
@@ -1164,7 +1258,7 @@ pub trait ExternalQuoterExecutor {
 /// executing one is an error, not a silent skip.
 pub struct NoExternalQuoters;
 
-impl ExternalQuoterExecutor for NoExternalQuoters {
+impl<'info> ExternalQuoterExecutor<'info> for NoExternalQuoters {
     fn quoter_type(&self, _index: usize) -> QuoterType {
         QuoterType::Custom
     }
@@ -1187,7 +1281,7 @@ impl ExternalQuoterExecutor for NoExternalQuoters {
         _index: usize,
         _direction: Direction,
         _size: u64,
-    ) -> crate::error::VelocityResult<ExecuteResponseV0> {
+    ) -> crate::error::VelocityResult<ResponseLocationV0<'info>> {
         msg!("router fill has no external quoter accounts to execute against");
         Err(ErrorCode::DefaultError)
     }
@@ -1260,20 +1354,25 @@ impl QuoterV0 {
         args: QuoteArgsV0<'_>,
         quoter_signer: &Pubkey,
         quoter_signer_nonce: u8,
-        account_map: &BTreeMap<Pubkey, AccountInfo<'info>>,
+        accounts: &[AccountInfo<'info>],
     ) -> Result<Vec<PriceLevel>> {
         self.gate_for_market(market_index)?;
-        let response: QuoteResponseV0 = self.invoke_quoter(
+        let located = self.invoke_quoter(
             &self.quote_v0_discriminator,
             &self.quote_accounts,
             self.quote_accounts_count,
             &args,
             quoter_signer,
             quoter_signer_nonce,
-            account_map,
+            accounts,
         )?;
-        crate::math::router::validate_quoted_levels(args.direction, &response.levels)?;
-        Ok(response.levels)
+        let data = located.borrow()?;
+        let response = located.quote_response(&data)?;
+        crate::math::router::validate_quoted_levels(args.direction, response.levels)?;
+        // The one copy that earns itself: the quoted ladder is what every
+        // later allocation and price check is held to, so it outlives this
+        // borrow by the whole fill.
+        Ok(response.levels.to_vec())
     }
 
     /// CPI `execute_v0` on the quoter program: commit a fill and return the
@@ -1286,8 +1385,8 @@ impl QuoterV0 {
         args: ExecuteArgsV0<'_>,
         quoter_signer: &Pubkey,
         quoter_signer_nonce: u8,
-        account_map: &BTreeMap<Pubkey, AccountInfo<'info>>,
-    ) -> Result<ExecuteResponseV0> {
+        accounts: &[AccountInfo<'info>],
+    ) -> Result<ResponseLocationV0<'info>> {
         self.gate_for_market(market_index)?;
         self.invoke_quoter(
             &self.execute_v0_discriminator,
@@ -1296,14 +1395,14 @@ impl QuoterV0 {
             &args,
             quoter_signer,
             quoter_signer_nonce,
-            account_map,
+            accounts,
         )
     }
 
     /// Shared CPI leg: forward the registered accounts, send
     /// `discriminator ++ borsh(args)`, and decode the borsh response from the
     /// quoter's response account at the pointer returned via return data.
-    fn invoke_quoter<'info, A: AnchorSerialize, R: AnchorDeserialize>(
+    fn invoke_quoter<'info, A: AnchorSerialize>(
         &self,
         discriminator: &[u8; 8],
         registered: &[AmmAccountMeta],
@@ -1311,8 +1410,8 @@ impl QuoterV0 {
         args: &A,
         quoter_signer: &Pubkey,
         quoter_signer_nonce: u8,
-        account_map: &BTreeMap<Pubkey, AccountInfo<'info>>,
-    ) -> Result<R> {
+        accounts: &[AccountInfo<'info>],
+    ) -> Result<ResponseLocationV0<'info>> {
         validate!(
             (count as usize) <= registered.len(),
             ErrorCode::DefaultError,
@@ -1324,14 +1423,14 @@ impl QuoterV0 {
 
         let mut account_infos = Vec::with_capacity(account_metas.len() + 1);
         for meta in &account_metas {
-            let info = account_map.get(&meta.pubkey).ok_or_else(|| {
+            let info = find_account(accounts, &meta.pubkey).ok_or_else(|| {
                 msg!("prop amm account {} missing from account map", meta.pubkey);
                 ErrorCode::DefaultError
             })?;
             account_infos.push(info.clone());
         }
         // CPI needs the callee program's account info too.
-        let program_info = account_map.get(&self.program_id).ok_or_else(|| {
+        let program_info = find_account(accounts, &self.program_id).ok_or_else(|| {
             msg!("quoter program account missing from account map");
             ErrorCode::DefaultError
         })?;
@@ -1380,7 +1479,7 @@ impl QuoterV0 {
                 ErrorCode::DefaultError
             })?;
 
-        let response_info = account_map.get(&self.response_account).ok_or_else(|| {
+        let response_info = find_account(accounts, &self.response_account).ok_or_else(|| {
             msg!("prop amm response account missing from account map");
             ErrorCode::DefaultError
         })?;
@@ -1403,12 +1502,11 @@ impl QuoterV0 {
             "prop amm response pointer out of bounds"
         )?;
 
-        // `deserialize` (not `try_from_slice`) so trailing bytes are
-        // tolerated — lets a quoter append response fields without breaking
-        // older velocity builds.
-        R::deserialize(&mut &data[start..end]).map_err(|_| {
-            msg!("prop amm quoter returned undecodable response");
-            ErrorCode::DefaultError.into()
+        drop(data);
+        Ok(ResponseLocationV0 {
+            account: response_info.clone(),
+            start,
+            end,
         })
     }
 }

@@ -3172,7 +3172,11 @@ pub fn place_and_take_perp_order<'c: 'info, 'info>(
     // (that is the keeper path's problem, and the signed route's). v0's
     // account list is frozen, so it keeps the vAMM + passed-DLOB-makers fill.
     let (base_asset_amount_filled, _) = if clob.is_some() {
-        let leftover: Vec<&AccountInfo<'info>> = remaining_accounts_iter.collect();
+        // The tail as a subslice rather than a collected list: what the sections
+        // above consumed is the difference in the iterator's remaining length, and
+        // borrowing from there costs nothing where cloning every account did.
+        let tail_from = remaining_accounts.len() - remaining_accounts_iter.len();
+        let tail = &remaining_accounts[tail_from..];
         let (direction, unfilled, taker_ref) = {
             let user = load!(user_loader)?;
             let order = user
@@ -3190,7 +3194,7 @@ pub fn place_and_take_perp_order<'c: 'info, 'info>(
                 order.get_base_asset_amount_unfilled(position_base)?,
                 crate::state::prop_amm::ClobUserRefV0 {
                     authority: user.authority,
-                    sub_account_id: user.sub_account_id,
+                    sub_account_id: user.sub_account_id.into(),
                 },
             )
         };
@@ -3203,7 +3207,7 @@ pub fn place_and_take_perp_order<'c: 'info, 'info>(
                 makers_and_referrer.user_ref_index()?.into_keys().map(
                     |(authority, sub_account_id)| crate::state::prop_amm::ClobUserRefV0 {
                         authority,
-                        sub_account_id,
+                        sub_account_id: sub_account_id.into(),
                     },
                 ),
             )?,
@@ -3211,10 +3215,12 @@ pub fn place_and_take_perp_order<'c: 'info, 'info>(
             quoter_signer,
             quoter_signer_nonce,
         };
-        let section = crate::instructions::QuoterSection::quote(&leftover, &inputs)?;
-        section.require_baseline(perp_market_map.get_ref(&params.market_index)?.clob_quoter)?;
-        let book_refs = section.book_refs();
-        let mut executor = section.executor(&inputs, clock.slot, clock.unix_timestamp);
+        let route = crate::instructions::QuotedRoute::assemble(tail, &inputs)?;
+        route.require_baseline(perp_market_map.get_ref(&params.market_index)?.clob_quoter)?;
+        let mut book_storage =
+            [crate::math::router::QuoterBook::default(); crate::instructions::MAX_ROUTE_QUOTERS];
+        let book_refs = route.books(&mut book_storage);
+        let mut executor = route.executor(&inputs, clock.slot, clock.unix_timestamp);
         let mut router_inputs = crate::math::router::RouterFillInputs {
             books: &book_refs,
             executor: &mut executor,

@@ -194,7 +194,7 @@ pub fn handle_force_cancel_clob_orders<'c: 'info, 'info>(
 
         let user_ref = ClobUserRefV0 {
             authority: user.authority,
-            sub_account_id: user.sub_account_id,
+            sub_account_id: user.sub_account_id.into(),
         };
 
         // Read each hinted node off the book: a hint that no longer holds a

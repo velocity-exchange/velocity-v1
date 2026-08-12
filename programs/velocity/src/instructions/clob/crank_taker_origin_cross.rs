@@ -379,7 +379,7 @@ pub fn handle_crank_taker_origin_cross<'c: 'info, 'info>(
         let taker = load!(ctx.accounts.taker)?;
         ClobUserRefV0 {
             authority: taker.authority,
-            sub_account_id: taker.sub_account_id,
+            sub_account_id: taker.sub_account_id.into(),
         }
     };
     validate!(
@@ -460,15 +460,12 @@ pub fn handle_crank_taker_origin_cross<'c: 'info, 'info>(
             // The execute leg's account list is the registry's, resolved
             // against the accounts this instruction already names — the book,
             // the CPI signer, and the program.
-            let mut account_map = std::collections::BTreeMap::new();
-            for info in [
+            let accounts = [
                 ctx.accounts.clob_market.to_account_info(),
                 ctx.accounts.quoter_signer.to_account_info(),
                 ctx.accounts.clob_program.to_account_info(),
-            ] {
-                account_map.insert(info.key(), info);
-            }
-            let response = quoter.execute(
+            ];
+            let located = quoter.execute(
                 market_index,
                 ExecuteArgsV0 {
                     direction,
@@ -478,9 +475,13 @@ pub fn handle_crank_taker_origin_cross<'c: 'info, 'info>(
                 },
                 &ctx.accounts.quoter_signer.key(),
                 ctx.bumps.quoter_signer,
-                &account_map,
+                &accounts,
             )?;
-            TakerOriginCounterparty::Executed { response, subjects }
+            // The guard ends with this arm: what the cross needs is copied
+            // out of the response, and it is three fixed-width records.
+            let data = located.borrow()?;
+            let response = located.execute_response(&data)?;
+            TakerOriginCounterparty::executed(&response, subjects)?
         }
         // A second taker remainder: cancel it too. It cannot be consumed —
         // `execute_v0` skips a crossed taker-origin order and would fill past

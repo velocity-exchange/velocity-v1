@@ -354,52 +354,68 @@ fn the_user_set_refuses_to_truncate() {
     );
 }
 
-/// Velocity decodes the response with borsh; the v2 programs write the same
-/// bytes by hand and are held to `quoter-spec`'s reference codec. Both codecs
-/// therefore describe one layout, and this pins them equal — if the reference
-/// codec drifted from borsh, the CLOB's conformance test would still pass while
-/// the bytes it writes stopped decoding here.
+/// Velocity reads a response the quoters write, and neither side shares the
+/// other's code — the CLOB streams the bytes itself. This pins velocity's
+/// reader against the layout's own writer: what `quoter-spec` serializes is
+/// what velocity reads back, field for field.
 #[test]
-fn the_reference_codec_matches_borsh() {
+fn the_reader_agrees_with_the_specs_writer() {
     let authority = Pubkey::new_unique();
-    let response = ExecuteResponseV0 {
-        balance_changes: vec![
-            UserBalanceChangeV0 {
-                user: ClobUserRefV0 {
-                    authority,
-                    sub_account_id: 3,
-                },
-                base_size: 1_000_000_000,
-                quote_size: 101_000_000,
-                completed_order_ids: vec![9, 10],
-            },
-            UserBalanceChangeV0 {
-                user: ClobUserRefV0 {
-                    authority: Pubkey::new_unique(),
-                    sub_account_id: 0,
-                },
-                base_size: 5,
-                quote_size: 6,
-                completed_order_ids: vec![],
-            },
-        ],
-        cancelled: vec![CancelledRemainderV0 {
+    let other = Pubkey::new_unique();
+    let changes = [
+        quoter_spec::UserBalanceChangeV0 {
+            base_size: 1_000_000_000,
+            quote_size: 101_000_000,
             user: ClobUserRefV0 {
                 authority,
-                sub_account_id: 1,
+                sub_account_id: 3,
             },
-            order_id: 42,
-            base_asset_amount: 17,
-        }],
-    };
+            _pad: [0; 6],
+        },
+        quoter_spec::UserBalanceChangeV0 {
+            base_size: 5,
+            quote_size: 6,
+            user: ClobUserRefV0 {
+                authority: other,
+                sub_account_id: 0,
+            },
+            _pad: [0; 6],
+        },
+    ];
+    let cancelled = [CancelledRemainderV0 {
+        order_id: 42,
+        base_asset_amount: 17,
+        user: ClobUserRefV0 {
+            authority,
+            sub_account_id: 1,
+        },
+        _pad: [0; 6],
+    }];
+    let completed = [
+        CompletedOrderV0 {
+            order_id: 9,
+            change_index: 0,
+            _pad: 0,
+        },
+        CompletedOrderV0 {
+            order_id: 10,
+            change_index: 1,
+            _pad: 0,
+        },
+    ];
 
-    let mut from_borsh = Vec::new();
-    response.serialize(&mut from_borsh).unwrap();
-    let mut from_spec = Vec::new();
-    response.encode(&mut from_spec);
-    assert_eq!(from_borsh, from_spec);
+    let bytes = quoter_spec::wincode::serialize(&quoter_spec::ExecuteResponseV0 {
+        changes: &changes,
+        cancelled: &cancelled,
+        completed: &completed,
+    })
+    .unwrap();
 
-    // And what actually runs on chain: bytes a quoter wrote decode back.
-    let round_tripped = ExecuteResponseV0::deserialize(&mut from_spec.as_slice()).unwrap();
-    assert_eq!(round_tripped, response);
+    let response = ExecuteResponseV0::parse(&bytes).unwrap();
+    assert_eq!(response.changes, changes.as_slice());
+    assert_eq!(response.cancelled, cancelled.as_slice());
+    // Each consumed order resolves back to the change that named it.
+    assert_eq!(response.completed_for(0).collect::<Vec<_>>(), vec![9]);
+    assert_eq!(response.completed_for(1).collect::<Vec<_>>(), vec![10]);
+    assert_eq!(response.completed_count(0), 1);
 }

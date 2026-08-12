@@ -14,12 +14,11 @@ use {
         response::ResponseWriter,
         state::{
             CancelledRemainderV0, ClobMarketV0, CompletedOrderV0, Direction, ExecuteResponseV0,
-            MarketConfigV0,
-            PriceLevel, QuoteResponseV0, RemovedOrderV0, ResponsePointerV0, Side,
+            MarketConfigV0, PriceLevel, QuoteResponseV0, RemovedOrderV0, ResponsePointerV0, Side,
             UserBalanceChangeV0, UserRefV0, UserSetV0, CANCELLED_BYTES, CHANGE_MIN_BYTES,
-            COUNT_BYTES, EXECUTE_FILLS_CEILING, EXECUTE_USERS_CEILING, ORDER_ID_BYTES, RESPONSE_LEN_BYTES,
+            COUNT_BYTES, EXECUTE_FILLS_CEILING, EXECUTE_USERS_CEILING, ORDER_ID_BYTES,
             PRICE_LEVEL_BYTES, QUOTE_LEVELS_CEILING, REMOVED_ORDER_BYTES, RESPONSE_BUFFER_BYTES,
-            RESPONSE_OFFSET, USER_REF_BYTES, USER_SET_BYTES, USER_SET_CAPACITY,
+            RESPONSE_LEN_BYTES, RESPONSE_OFFSET, USER_REF_BYTES, USER_SET_BYTES, USER_SET_CAPACITY,
         },
     },
 };
@@ -244,11 +243,7 @@ fn execute_stops_at_the_user_cap() {
     let outcome = book.execute(Direction::Long, 10, &[], None, 0, 0).unwrap();
     assert_eq!(
         streamed(&book, outcome.response),
-        encode_execute(
-            &[change(maker_a, 5, 500)],
-            &[],
-            &[done(0, first.order_id)],
-        )
+        encode_execute(&[change(maker_a, 5, 500)], &[], &[done(0, first.order_id)],)
     );
     // B's order is untouched — a second user would need a second record.
     assert_eq!(book.node_count(Side::Ask), 1);
@@ -265,10 +260,7 @@ fn wire_widths_match_the_response_types() {
         encode(&PriceLevel { price: 1, size: 2 }).len(),
         PRICE_LEVEL_BYTES
     );
-    assert_eq!(
-        encode(&cull(user, 1, 2)).len(),
-        CANCELLED_BYTES
-    );
+    assert_eq!(encode(&cull(user, 1, 2)).len(), CANCELLED_BYTES);
     // Return data rather than response bytes, but velocity reads it by offset,
     // so the width and the position of the trailing flag are both pinned.
     let removed = RemovedOrderV0 {
@@ -353,11 +345,7 @@ fn execute_totals_the_floor_of_the_whole_sweeps_notional() {
     let outcome = book.execute(Direction::Long, 8, &[], None, 0, 0).unwrap();
     assert_eq!(
         streamed(&book, outcome.response),
-        encode_execute(
-            &[change(maker, 8, 5)],
-            &[],
-            &[done(0, 1), done(0, 2)],
-        )
+        encode_execute(&[change(maker, 8, 5)], &[], &[done(0, 1), done(0, 2)],)
     );
 }
 
@@ -444,8 +432,7 @@ fn a_market_at_the_execute_ceilings_streams_a_full_width_response() {
 
     // The widest response the encoder can produce, and it fits with room to
     // spare — `ResponseTooLarge` is unreachable at the configured ceilings.
-    let widest =
-        3 * RESPONSE_LEN_BYTES + fills * (CHANGE_MIN_BYTES + quoter_spec::COMPLETED_BYTES);
+    let widest = 3 * RESPONSE_LEN_BYTES + fills * (CHANGE_MIN_BYTES + quoter_spec::COMPLETED_BYTES);
     assert_eq!(outcome.response.len as usize, widest);
     assert!(
         widest <= RESPONSE_BUFFER_BYTES,
@@ -634,4 +621,43 @@ fn the_streamed_response_parses_back() {
         vec![middle.order_id]
     );
     assert!(response.cancelled.is_empty());
+}
+
+/// A quote is a promise `execute` has to keep, so the two must be able to
+/// deliver the same depth. They spend budgets in different units — a level
+/// aggregates however many orders sit at one price, while a fill is one order —
+/// so a ladder capped only on levels can stand on more orders than one execute
+/// is allowed to touch. Before `quote` counted fills, this book quoted five
+/// orders' worth in a single level and `execute` delivered three.
+#[test]
+fn a_quote_promises_no_more_depth_than_execute_can_deliver() {
+    let config = MarketConfigV0 {
+        max_execute_fills: 3,
+        ..test_config()
+    };
+    let market = TestMarket::new_with(16, config);
+    let mut book = market.book();
+    let maker = user(0xA);
+    // Five orders at one price: one level, five fills.
+    for _ in 0..5 {
+        place(&mut book, Side::Ask, 100, 1, maker);
+    }
+
+    let pointer = book.quote(Direction::Long, 100, &[], None, 0, 0).unwrap();
+    let quote_bytes = streamed(&book, pointer);
+    let quoted = QuoteResponseV0::parse(&quote_bytes).unwrap();
+    let promised: u64 = quoted.levels.iter().map(|level| level.size).sum();
+    assert_eq!(promised, 3, "the ladder stops at execute's fill budget");
+
+    // And the promise holds: executing the whole quoted size fills all of it.
+    let outcome = book
+        .execute(Direction::Long, promised, &[], None, 0, 0)
+        .unwrap();
+    let execute_bytes = streamed(&book, outcome.response);
+    let executed = ExecuteResponseV0::parse(&execute_bytes).unwrap();
+    let filled: u64 = executed.changes.iter().map(|change| change.base_size).sum();
+    assert_eq!(
+        filled, promised,
+        "execute delivered exactly what was quoted"
+    );
 }

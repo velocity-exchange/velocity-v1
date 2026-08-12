@@ -1242,6 +1242,23 @@ pub fn fill_perp_order(
                 &mm_oracle_price_data,
                 &state.oracle_guard_rails.validity,
             )?;
+
+        // Snapshot the 5-minute oracle TWAP *before* the refresh below advances
+        // it. This fill's own band checks — `is_oracle_too_divergent_with_twap_5min`
+        // and `validate_fill_price_within_price_bands` — both measure against this
+        // value, and the refresh pulls it toward the live oracle price. Reading it
+        // afterwards let a currently-divergent oracle normalize itself inside the
+        // same instruction and clear the very checks meant to stop the fill
+        // (OtterSec #112).
+        //
+        // Unlike the funding crank (#109), the refresh itself stays: a fill is one
+        // of the paths that legitimately advances the TWAPs, and it does not gate
+        // on them, so snapshotting the reader is the whole fix.
+        oracle_twap_5min = market
+            .market_stats
+            .historical_oracle_data
+            .last_oracle_price_twap_5min;
+
         market.update_oracle_derived_stats(
             &mm_oracle_price_data,
             amm_refresh_validity,
@@ -1251,10 +1268,6 @@ pub fn fill_perp_order(
 
         reserve_price_before = market.amm.reserve_price()?;
         oracle_price = mm_oracle_price_data.get_price();
-        oracle_twap_5min = market
-            .market_stats
-            .historical_oracle_data
-            .last_oracle_price_twap_5min;
     }
 
     // allow oracle price to be used to calculate limit price if it's valid or stale for amm

@@ -39,12 +39,16 @@ export const PERCENTAGE_PRECISION = new BN(10).pow(PERCENTAGE_PRECISION_EXP);
 export const MM_ORACLE_MIN_SLOT_GAP = new BN(2);
 /**
  * Max slots the program tolerates between an MM-oracle update's source
- * observation slot (carried in the payload) and the slot it lands
- * (`MM_ORACLE_MAX_SOURCE_AGE_SLOTS` in `math/constants.rs`). An update landing
- * later than this is skipped, since the stored `mmOracleSlot` is the landing
- * slot and a late-landing update would make an old observation read as fresh.
+ * observation slot (carried in the payload) and the slot it lands, enforced
+ * symmetrically in both directions (`MM_ORACLE_MAX_SOURCE_AGE_SLOTS` in
+ * `math/constants.rs`). An update landing later than this is skipped, since
+ * the stored `mmOracleSlot` is the landing slot and a late-landing update
+ * would make an old observation read as fresh; a source slot further ahead
+ * than this is skipped as a wrong-unit/wrong-scale caller bug. Pinned at or
+ * below `MM_ORACLE_MIN_SLOT_GAP` by a program-side assert, since the
+ * landing-slot stamp understates observation age by up to this bound.
  */
-export const MM_ORACLE_MAX_SOURCE_AGE_SLOTS = new BN(10);
+export const MM_ORACLE_MAX_SOURCE_AGE_SLOTS = new BN(2);
 /** Alias of `PERCENTAGE_PRECISION` (1e6) for the AMM's `concentrationCoef` field. */
 export const CONCENTRATION_PRECISION = PERCENTAGE_PRECISION;
 

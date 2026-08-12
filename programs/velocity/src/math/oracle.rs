@@ -393,6 +393,12 @@ pub fn oracle_validity(
     // safe-price path has fallen back to the exchange oracle (MM oracle stale
     // or diverged), which is when latency arbitrage against the vAMM pays most.
     //
+    // Note `oracle_delay` for an MM price measures from the *landing* slot, and
+    // the write path accepts observations up to `MM_ORACLE_MAX_SOURCE_AGE_SLOTS`
+    // older than their landing, so the true observation age this gate admits is
+    // up to the sum of the two. A `const_assert!` in `math/constants.rs` pins
+    // that bound to at most `MM_ORACLE_MIN_SLOT_GAP`, i.e. twice the gap.
+    //
     // An explicit override still wins in both directions on both paths, so this
     // only affects markets that never had one set.
     let is_stale_for_amm_immediate = if slots_before_stale_for_amm_immdiate_override == 0 {

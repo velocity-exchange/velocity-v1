@@ -234,8 +234,9 @@ account bytes** at hardcoded offsets:
 
 Opcode 0 and opcode 2 read the `State` auth fields through the shared
 `STATE_FEATURE_BIT_FLAGS_OFFSET` / `STATE_HOT_MM_ORACLE_CRANK_OFFSET` constants in
-`instructions/admin.rs`, so the two cannot desync from each other; both still have to be kept in
-step with the layout, which is what the offset tests below are for.
+`instructions/admin.rs`, and opcode 1 through `STATE_HOT_AMM_SPREAD_ADJUST_OFFSET` in
+`vlp/amm/admin.rs`, so handlers cannot desync from each other; the constants still have to be kept
+in step with the layout, which is what the offset tests below are for.
 
 ### Two different encoding models — two different offset calculation methods
 

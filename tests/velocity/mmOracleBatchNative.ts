@@ -216,8 +216,8 @@ describe('mm oracle batch native', () => {
 				oracleSourceSlot: observedAt,
 			},
 		]);
-		// Accounts are [signer, clock, state, market0, market1].
-		ix.keys[3].pubkey = velocityClient.getPerpMarketAccountOrThrow(2).pubkey;
+		// Accounts are [signer, state, market0, market1].
+		ix.keys[2].pubkey = velocityClient.getPerpMarketAccountOrThrow(2).pubkey;
 
 		const before = [0, 1, 2].map((i) =>
 			statsFor(i).mmOracleSequenceId.toString()
@@ -286,14 +286,14 @@ describe('mm oracle batch native', () => {
 		// observed more than MM_ORACLE_MAX_SOURCE_AGE_SLOTS before it lands is
 		// skipped (transaction still succeeds), so a late-landing transaction
 		// cannot make an old observation read as fresh.
-		while ((await bankrunContextWrapper.connection.getSlot()) < 12n) {
+		while ((await bankrunContextWrapper.connection.getSlot()) < 5n) {
 			await advancePastRateLimit();
 		}
 		await advancePastRateLimit();
 		sequenceId = sequenceId.addn(1);
 
 		const before = statsFor(2).mmOracleSequenceId.toString();
-		const staleSource = (await sourceSlot()).subn(11); // one past the 10-slot bound
+		const staleSource = (await sourceSlot()).subn(3); // one past the 2-slot bound
 
 		await velocityClient.updateMmOracleBatchNative([
 			{

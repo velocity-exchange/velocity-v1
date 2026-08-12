@@ -95,8 +95,10 @@ export type MmOracleBatchUpdate = {
 	oracleSequenceId: BN;
 	/**
 	 * Slot the price was observed at. The program skips the entry when the
-	 * landing slot is more than `MM_ORACLE_MAX_SOURCE_AGE_SLOTS` past this, so a
-	 * late-landing transaction cannot make an old observation read as fresh.
+	 * landing slot is more than `MM_ORACLE_MAX_SOURCE_AGE_SLOTS` away from this
+	 * in either direction: behind, so a late-landing transaction cannot make an
+	 * old observation read as fresh; ahead, so a wrong-unit value cannot
+	 * silently disable the check.
 	 */
 	oracleSourceSlot: BN;
 };
@@ -112,18 +114,18 @@ export const MM_ORACLE_BATCH_MAX_MARKETS = 64;
 const MM_ORACLE_BATCH_ENTRY_LEN = 26;
 
 // Default compute budget for `updateMmOracleBatchNative`. `bun run bench:native-cu`
-// decomposes the handler into: a ~1272 CU fixed authentication prologue, ~514 CU
-// per accepted market, ~458 CU per skipped market, and ~452 CU for the reject-mask
+// decomposes the handler into: a ~1109 CU fixed authentication prologue, ~518 CU
+// per accepted market, ~460 CU per skipped market, and ~453 CU for the reject-mask
 // log, which is emitted at most once and only when something was skipped. The
 // prologue being charged once instead of once per market is the whole reason
 // batching pays.
 //
-// The worst case is a *partially* rejected batch (~1668 + 514n): it pays for the
-// writes and the log. All-accepted is cheaper (no log, 3328 CU at 4 markets) and
-// all-rejected is cheaper still (no writes, 3557 CU), so neither bounds the
-// budget. Measured 4-market figures: 3328 accepted, 3557 rejected, 3724 mixed.
+// The worst case is a *partially* rejected batch (~1504 + 518n): it pays for the
+// writes and the log. All-accepted is cheaper (no log, 3181 CU at 4 markets) and
+// all-rejected is cheaper still (no writes, 3402 CU), so neither bounds the
+// budget. Measured 4-market figures: 3181 accepted, 3402 rejected, 3576 mixed.
 //
-// Rounded up from the mixed case for ~26% headroom, which also covers the
+// Rounded up from the mixed case for ~31% headroom, which also covers the
 // ComputeBudget instructions' own 150 CU and the hot-key compare the bench build
 // compiles out. Priority fee is charged on the requested limit rather than on
 // consumption, so a cranker at production cadence should pass its own measured
@@ -170,7 +172,6 @@ import {
 	PublicKey,
 	Signer,
 	SystemProgram,
-	SYSVAR_CLOCK_PUBKEY,
 	SYSVAR_INSTRUCTIONS_PUBKEY,
 	SYSVAR_RENT_PUBKEY,
 	Transaction,
@@ -13128,7 +13129,7 @@ export class VelocityClient {
 	 * @param oracleSequenceId - Monotonically increasing sequence id for this update, used for
 	 * recency comparisons against the primary oracle.
 	 * @param oracleSourceSlot - Slot the price was observed at; the program skips the update when
-	 * it lands more than `MM_ORACLE_MAX_SOURCE_AGE_SLOTS` past this.
+	 * it lands more than `MM_ORACLE_MAX_SOURCE_AGE_SLOTS` from this in either direction.
 	 * @returns The transaction signature.
 	 */
 	public async updateMmOracleNative(
@@ -13155,7 +13156,8 @@ export class VelocityClient {
 
 	/**
 	 * Builds the `updateMmOracleNative` instruction. See `updateMmOracleNative` for semantics. Hand-
-	 * assembles the instruction (perp market, signer, clock sysvar, state) rather than going through
+	 * assembles the instruction (perp market, signer, state; the program reads the slot via the
+	 * Clock sysvar syscall so no clock account is passed) rather than going through
 	 * `this.program.instruction`, since this targets the native (non-Anchor) entrypoint.
 	 * @param marketIndex - Perp market index whose MM oracle to update.
 	 * @param oraclePrice - New MM oracle price, PRICE_PRECISION (1e6). Must be positive: the program
@@ -13163,7 +13165,7 @@ export class VelocityClient {
 	 * BN's little-endian encoding would silently drop the sign.
 	 * @param oracleSequenceId - Monotonically increasing sequence id for this update.
 	 * @param oracleSourceSlot - Slot the price was observed at; the program skips the update when
-	 * it lands more than `MM_ORACLE_MAX_SOURCE_AGE_SLOTS` past this.
+	 * it lands more than `MM_ORACLE_MAX_SOURCE_AGE_SLOTS` from this in either direction.
 	 * @returns The instruction.
 	 */
 	public async getUpdateMmOracleNativeIx(
@@ -13200,11 +13202,6 @@ export class VelocityClient {
 					isSigner: true,
 				},
 				{
-					pubkey: SYSVAR_CLOCK_PUBKEY,
-					isWritable: false,
-					isSigner: false,
-				},
-				{
 					pubkey: await this.getStatePublicKey(),
 					isWritable: false,
 					isSigner: false,
@@ -13218,13 +13215,14 @@ export class VelocityClient {
 	 * Updates the MM oracle for several perp markets in one native instruction (dispatch opcode 2).
 	 *
 	 * Equivalent to calling `updateMmOracleNative` once per market, but the authentication prologue
-	 * (state validation, kill-switch, hot-key compare, clock sysvar check) is paid once for the whole
+	 * (state validation, kill-switch, hot-key compare) is paid once for the whole
 	 * batch, and one transaction covers every market so a single signature fee is amortised across
 	 * them all.
 	 *
 	 * Per-market rate-limit and sanity rejections (non-positive price, non-advancing sequence id,
-	 * slot gap below the program floor, source slot older than
-	 * `MM_ORACLE_MAX_SOURCE_AGE_SLOTS`) skip that market and leave the rest of the batch intact. A
+	 * slot gap below the program floor, source slot more than
+	 * `MM_ORACLE_MAX_SOURCE_AGE_SLOTS` from the landing slot in either direction) skip that market
+	 * and leave the rest of the batch intact. A
 	 * price more than 1% from the last accepted one is clamped to the cap and written, matching
 	 * `updateMmOracleNative`. Structural problems (an account that is not a perp market, a
 	 * non-writable market, malformed data) fail the whole instruction, since those can only be
@@ -13297,11 +13295,6 @@ export class VelocityClient {
 					pubkey: this.wallet.publicKey,
 					isWritable: false,
 					isSigner: true,
-				},
-				{
-					pubkey: SYSVAR_CLOCK_PUBKEY,
-					isWritable: false,
-					isSigner: false,
 				},
 				{
 					pubkey: await this.getStatePublicKey(),

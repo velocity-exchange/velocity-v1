@@ -14,9 +14,14 @@ MM oracle freshness fixes, mirroring the program:
 
 - `updateMmOracleNative` / `getUpdateMmOracleNativeIx` take a new required `oracleSourceSlot`
   parameter (breaking): the slot the price was observed at, which the program now requires in the
-  payload and checks against the landing slot (`MM_ORACLE_MAX_SOURCE_AGE_SLOTS`, exported), so a
-  late-landing update cannot make an old observation read as fresh. The builder also validates its
-  inputs (positive price fitting `i64`, `u64` sequence id and source slot); the program now
-  hard-errors on any non-positive price, not just exact zero.
+  payload and checks against the landing slot symmetrically in both directions
+  (`MM_ORACLE_MAX_SOURCE_AGE_SLOTS`, exported), so a late-landing update cannot make an old
+  observation read as fresh and a wrong-unit value cannot silently disable the check. The builder
+  also validates its inputs (positive price fitting `i64`, `u64` sequence id and source slot); the
+  program now hard-errors on any non-positive price, not just exact zero.
+
+- The native MM-oracle instructions no longer take a clock sysvar account (the program reads the
+  slot via syscall), so the builders emit one account fewer per transaction: `updateMmOracleNative`
+  passes `[market, signer, state]` and the batch passes `[signer, state, ...markets]`.
 
 - Exports the `MM_ORACLE_MIN_SLOT_GAP` and `MM_ORACLE_MAX_SOURCE_AGE_SLOTS` constants.

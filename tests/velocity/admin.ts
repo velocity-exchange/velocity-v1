@@ -484,7 +484,7 @@ describe('admin', () => {
 		// landed later than MM_ORACLE_MAX_SOURCE_AGE_SLOTS after observation.
 		await bankrunContextWrapper.connection.updateSlotAndClock();
 		await bankrunContextWrapper.connection.updateSlotAndClock();
-		const staleSource = (await sourceSlot()).subn(11);
+		const staleSource = (await sourceSlot()).subn(3);
 		await velocityClient.updateMmOracleNative(
 			0,
 			oraclePrice.addn(5),

@@ -982,6 +982,13 @@ export function calculateMaxDepositTokenAmount(
  * Mirror of the program's `check_deposit_limits`. Returns true if the market's
  * current deposit level is within the daily deposit cap (always true when the
  * cap is disabled).
+ *
+ * This is a market-wide *level* predicate, not a prediction that a given action will succeed. The
+ * program enforces it only on operations that actually raise the market's deposit level
+ * (`validate_deposit_cap_after_increase`), so a `false` here does **not** mean withdrawals,
+ * repayments or borrow-reducing swaps will revert — those are never blocked by the cap. Use it to
+ * predict `DailyDepositLimit` on deposit-increasing flows (deposit, transfer in, a swap whose out
+ * leg grows a deposit) only.
  */
 export function checkDepositLimits(spotMarket: SpotMarketAccount): boolean {
 	if (spotMarket.maxDepositBpsPerDay === 0) {

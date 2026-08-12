@@ -194,6 +194,7 @@ fn calculate_expiry_price_long_imbalance_with_loss_test() {
         oracle_price_data.price,
         0,
         market.quote_asset_amount,
+        market.net_unsettled_funding_pnl,
         market.order_step_size,
     )
     .unwrap();
@@ -212,6 +213,7 @@ fn calculate_expiry_price_long_imbalance_with_loss_test() {
         oracle_price_data.price,
         111_111_110, // $111
         market.quote_asset_amount,
+        market.net_unsettled_funding_pnl,
         market.order_step_size,
     )
     .unwrap();
@@ -223,6 +225,7 @@ fn calculate_expiry_price_long_imbalance_with_loss_test() {
         oracle_price_data.price,
         1_111_111_110, // $1,111
         market.quote_asset_amount,
+        market.net_unsettled_funding_pnl,
         market.order_step_size,
     )
     .unwrap();
@@ -234,6 +237,7 @@ fn calculate_expiry_price_long_imbalance_with_loss_test() {
         oracle_price_data.price,
         (111_111_110 * QUOTE_PRECISION) as i128,
         market.quote_asset_amount,
+        market.net_unsettled_funding_pnl,
         market.order_step_size,
     )
     .unwrap();
@@ -291,6 +295,7 @@ fn calculate_expiry_price_long_imbalance_test() {
         oracle_price_data.price,
         0,
         market.quote_asset_amount,
+        market.net_unsettled_funding_pnl,
         market.order_step_size,
     )
     .unwrap();
@@ -309,6 +314,7 @@ fn calculate_expiry_price_long_imbalance_test() {
         oracle_price_data.price,
         111_111_110, // $111
         market.quote_asset_amount,
+        market.net_unsettled_funding_pnl,
         market.order_step_size,
     )
     .unwrap();
@@ -320,6 +326,7 @@ fn calculate_expiry_price_long_imbalance_test() {
         oracle_price_data.price,
         1_111_111_110, // $1,111
         market.quote_asset_amount,
+        market.net_unsettled_funding_pnl,
         market.order_step_size,
     )
     .unwrap();
@@ -331,6 +338,7 @@ fn calculate_expiry_price_long_imbalance_test() {
         oracle_price_data.price,
         (111_111_110 * QUOTE_PRECISION) as i128,
         market.quote_asset_amount,
+        market.net_unsettled_funding_pnl,
         market.order_step_size,
     )
     .unwrap();
@@ -374,13 +382,19 @@ fn calculate_expiry_price_test() {
     };
 
     let mut expiry_price =
-        calculate_expiry_price(&amm, oracle_price_data.price, 0, 0, order_step_size).unwrap();
+        calculate_expiry_price(&amm, oracle_price_data.price, 0, 0, 0, order_step_size).unwrap();
 
     assert_eq!(expiry_price, oracle_price_data.price);
 
-    expiry_price =
-        calculate_expiry_price(&amm, oracle_price_data.price, 111111110, 0, order_step_size)
-            .unwrap();
+    expiry_price = calculate_expiry_price(
+        &amm,
+        oracle_price_data.price,
+        111111110,
+        0,
+        0,
+        order_step_size,
+    )
+    .unwrap();
 
     assert_eq!(expiry_price, oracle_price_data.price);
 
@@ -428,6 +442,7 @@ fn calculate_expiry_price_test() {
         oracle_price_data.price,
         0,
         market.quote_asset_amount,
+        market.net_unsettled_funding_pnl,
         market.order_step_size,
     )
     .unwrap();
@@ -446,6 +461,7 @@ fn calculate_expiry_price_test() {
         oracle_price_data.price,
         111_111_110, // $111
         market.quote_asset_amount,
+        market.net_unsettled_funding_pnl,
         market.order_step_size,
     )
     .unwrap();
@@ -458,6 +474,7 @@ fn calculate_expiry_price_test() {
         oracle_price_data.price,
         1_111_111_110, // $1,111
         market.quote_asset_amount,
+        market.net_unsettled_funding_pnl,
         market.order_step_size,
     )
     .unwrap();
@@ -470,6 +487,7 @@ fn calculate_expiry_price_test() {
         oracle_price_data.price,
         (111111110 * QUOTE_PRECISION) as i128,
         market.quote_asset_amount,
+        market.net_unsettled_funding_pnl,
         market.order_step_size,
     )
     .unwrap();

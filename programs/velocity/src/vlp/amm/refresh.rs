@@ -504,23 +504,58 @@ pub fn settle_expired_market(
         target_expiry_price
     )?;
 
+    // Price against the PnL pool ONLY — read after the transfer above, so it
+    // already includes `fee_pool_transfer`.
+    //
+    // The whole fee pool used to be added in here, but only
+    // `min(total_fee_minus_distributions, fee_pool)` is ever moved into the PnL
+    // pool, and expired-position settlement pays exclusively out of the PnL pool
+    // (`update_pnl_pool_and_user_balance` caps there and reverts
+    // `InsufficientPerpPnlPool`). Whenever `tfmd < fee_pool` the un-moved
+    // remainder inflated the expiry price by value no claim could ever draw on,
+    // so the tail of the winners reverted and the market could never finish
+    // winding down (OtterSec #116).
+    //
+    // Deliberately NOT fixed by moving the entire fee pool instead: the fee pool
+    // can hold more than the AMM's own accounted equity (`tfmd`), and that excess
+    // is protocol/IF fee revenue awaiting the sweep, not AMM surplus payable to
+    // perp winners. Whatever is left is routed to the revenue pool by
+    // `settle_expired_market_pools_to_revenue_pool` at delisting, as before.
+    //
+    // The pool is then read net of `pending_revenue_share` (OtterSec #147). That
+    // counter is a booked third-party liability, not AMM surplus: the taker's quote
+    // was debited at fill and a matching builder/referrer payable recorded, so the
+    // pool holds those tokens while they are owed elsewhere. `sweep_market_fees`
+    // reserves the counter ahead of every fee drain and
+    // `calculate_perp_market_amm_summary_stats` subtracts it; the expiry solver was
+    // the one consumer pricing against the gross pool. Reserving it here is what
+    // lets the payable survive wind-down at all —
+    // `settle_expired_market_pools_to_revenue_pool` validates that base amounts and
+    // net user cost basis are zero but never that the revenue share is paid, so
+    // once winners drain the pool the accrued builder fee is unrecoverable: the
+    // tokens leave for the revenue pool and the escrow rows stay outstanding.
+    //
+    // `pending_protocol_fee` / `pending_if_fee` are deliberately NOT reserved. They
+    // are the protocol's own revenue and sit junior to user claims by design:
+    // `sweep_market_fees` reserves `max(net_user_pnl, 0)` — valued at
+    // `expiry_price` while the market is in Settlement — ahead of both drains, so a
+    // short pool pays winners first and the carveouts take the loss. Reserving them
+    // here would invert that ladder and pay protocol revenue ahead of expiring
+    // traders.
+    //
+    // Saturating: a corrupt counter larger than the pool must floor the backing at
+    // zero rather than solve against a negative balance.
     let pnl_pool_token_amount = get_token_amount(
         market.pnl_pool.scaled_balance,
         spot_market,
         market.pnl_pool.balance_type(),
     )?;
-
-    let fee_pool_token_amount = get_token_amount(
-        market.amm.fee_pool.scaled_balance,
-        spot_market,
-        market.amm.fee_pool.balance_type(),
-    )?;
-
     let total_excess_balance: i128 = pnl_pool_token_amount
-        .safe_add(fee_pool_token_amount)?
+        .saturating_sub(market.pending_revenue_share.cast()?)
         .cast()?;
 
     crate::dlog!(market.market_index);
+    crate::dlog!(market.pending_revenue_share);
     crate::dlog!(total_excess_balance);
 
     let expiry_price = amm::calculate_expiry_price(
@@ -528,6 +563,9 @@ pub fn settle_expired_market(
         target_expiry_price,
         total_excess_balance,
         market.quote_asset_amount,
+        // Folded into the cost basis: `settle_expired_position` settles funding
+        // into each user's quote before paying them (OtterSec #125).
+        market.net_unsettled_funding_pnl,
         market.order_step_size,
     )?;
 

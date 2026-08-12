@@ -26,6 +26,14 @@ ENV TURBO_TELEMETRY_DISABLED=1 \
 COPY package.json bun.lock bunfig.toml turbo.json ./
 COPY packages/ ./packages/
 COPY apps/ ./apps/
+# node-hid (via @ledgerhq/hw-transport-node-hid) falls back to a source build
+# when its prebuilt-binary download fails (flaky on CI); the oven/bun image has
+# no toolchain for that. Install what the fallback needs so a failed fetch
+# cannot fail the image build.
+RUN apt-get update -qq \
+    && apt-get install -y -qq --no-install-recommends \
+    python3 make g++ libusb-1.0-0-dev libudev-dev \
+    && rm -rf /var/lib/apt/lists/*
 # Frozen: install exactly what the committed lockfile pins, never re-resolve.
 RUN bun install --frozen-lockfile
 ARG APP_SCOPE

@@ -21,6 +21,8 @@ pub fn add_insurance_fund_stake<'info>(
     amount: u64,
 ) -> Result<()> {
     ctx.token_transfer(amount)?;
+    // velocity stakes only the portion of `amount` that prices to whole IF shares; any
+    // remainder stays in the vault's own IF token account, available to the next add.
     ctx.velocity_add_insurance_fund_stake(market_index, amount)?;
     Ok(())
 }

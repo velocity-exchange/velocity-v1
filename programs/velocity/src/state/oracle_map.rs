@@ -144,6 +144,7 @@ impl<'a> OracleMap<'a> {
                     &oracle_id.1,
                     log_mode,
                     slots_before_stale_for_amm_override,
+                    false, // exchange-oracle price, never MM-sourced
                     oracle_low_risk_slot_delay_override_override,
                 )?;
                 self.validity.insert(validity_key, oracle_validity);
@@ -175,6 +176,7 @@ impl<'a> OracleMap<'a> {
             &oracle_id.1,
             log_mode,
             slots_before_stale_for_amm_override,
+            false, // exchange-oracle price, never MM-sourced
             oracle_low_risk_slot_delay_override_override,
         )?;
         self.validity.insert(validity_key, oracle_validity);

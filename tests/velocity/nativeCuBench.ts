@@ -186,7 +186,8 @@ describe('compute units', () => {
 		await velocityClient.updateMmOracleNative(
 			0,
 			acceptedMmOraclePrice,
-			acceptedMmOracleSequenceId
+			acceptedMmOracleSequenceId,
+			new BN((await bankrunContextWrapper.connection.getSlot()).toString())
 		);
 
 		// Fill-bench market: real AMM depth, oracle/MM-oracle/curve aligned at 1,
@@ -207,7 +208,8 @@ describe('compute units', () => {
 		await velocityClient.updateMmOracleNative(
 			fillMarketIndex,
 			fillMmOraclePrice,
-			fillMmOracleSequenceId
+			fillMmOracleSequenceId,
+			new BN((await bankrunContextWrapper.connection.getSlot()).toString())
 		);
 		// Batch-bench markets. No AMM depth or curve work needed: the batch
 		// handler only touches `market_stats`, so a bare initialized market
@@ -243,6 +245,14 @@ describe('compute units', () => {
 		await bankrunContextWrapper.connection.updateSlotAndClock();
 	}
 
+	/** Current bankrun slot as the source-observation slot, so the program's
+	 * `MM_ORACLE_MAX_SOURCE_AGE_SLOTS` freshness gate never skips a write. */
+	async function sourceSlot(): Promise<BN> {
+		return new BN(
+			(await bankrunContextWrapper.connection.getSlot()).toString()
+		);
+	}
+
 	async function getNativeInstructionComputeUnits(
 		txSig: string
 	): Promise<number> {
@@ -266,7 +276,8 @@ describe('compute units', () => {
 		const txSig = await velocityClient.updateMmOracleNative(
 			0,
 			nextPrice,
-			nextSequenceId
+			nextSequenceId,
+			await sourceSlot()
 		);
 		acceptedMmOraclePrice = nextPrice;
 		acceptedMmOracleSequenceId = nextSequenceId;
@@ -290,11 +301,13 @@ describe('compute units', () => {
 		batchMmOracleSequenceId = batchMmOracleSequenceId.addn(1);
 		const marketIndexes = batchMarketIndexes.slice(0, count);
 
+		const observedAt = await sourceSlot();
 		const txSig = await velocityClient.updateMmOracleBatchNative(
 			marketIndexes.map((marketIndex) => ({
 				marketIndex,
 				oraclePrice: batchMmOraclePrice,
 				oracleSequenceId: batchMmOracleSequenceId,
+				oracleSourceSlot: observedAt,
 			})),
 			// Generous limit: this measures consumption, not the budget.
 			{ computeUnits: 50_000, computeUnitsPrice: 0 }
@@ -348,7 +361,8 @@ describe('compute units', () => {
 				const txSig = await velocityClient.updateMmOracleNative(
 					0,
 					acceptedMmOraclePrice.addn(1),
-					acceptedMmOracleSequenceId
+					acceptedMmOracleSequenceId,
+					await sourceSlot()
 				);
 				return await getNativeInstructionComputeUnits(txSig);
 			}
@@ -362,7 +376,8 @@ describe('compute units', () => {
 				const txSig = await velocityClient.updateMmOracleNative(
 					0,
 					acceptedMmOraclePrice.addn(1),
-					acceptedMmOracleSequenceId.addn(1)
+					acceptedMmOracleSequenceId.addn(1),
+					await sourceSlot()
 				);
 				return await getNativeInstructionComputeUnits(txSig);
 			}
@@ -370,14 +385,21 @@ describe('compute units', () => {
 
 		const mmStepCap = await runBench(
 			'update_mm_oracle_native',
-			'step cap noop',
+			'step cap clamp',
 			async () => {
 				await advancePastMmOracleRateLimit();
+				// 5% jump, beyond the 1% cap, so the write is clamped to the cap
+				// rather than dropped. Track what actually landed so later benches
+				// keep sending accepted updates.
+				const nextSequenceId = acceptedMmOracleSequenceId.addn(1);
 				const txSig = await velocityClient.updateMmOracleNative(
 					0,
 					acceptedMmOraclePrice.muln(105).divn(100),
-					acceptedMmOracleSequenceId.addn(1)
+					nextSequenceId,
+					await sourceSlot()
 				);
+				acceptedMmOraclePrice = acceptedMmOraclePrice.muln(101).divn(100);
+				acceptedMmOracleSequenceId = nextSequenceId;
 				return await getNativeInstructionComputeUnits(txSig);
 			}
 		);
@@ -434,11 +456,13 @@ describe('compute units', () => {
 			'all rejected, 4 markets',
 			async () => {
 				await advancePastMmOracleRateLimit();
+				const observedAt = await sourceSlot();
 				const txSig = await velocityClient.updateMmOracleBatchNative(
 					batchMarketIndexes.map((marketIndex) => ({
 						marketIndex,
 						oraclePrice: batchMmOraclePrice,
 						oracleSequenceId: batchMmOracleSequenceId,
+						oracleSourceSlot: observedAt,
 					})),
 					{ computeUnits: 50_000, computeUnitsPrice: 0 }
 				);
@@ -462,17 +486,20 @@ describe('compute units', () => {
 				await velocityClient.updateMmOracleNative(
 					batchMarketIndexes[0],
 					batchMmOraclePrice,
-					batchMmOracleSequenceId
+					batchMmOracleSequenceId,
+					await sourceSlot()
 				);
 
 				// Deliberately no slot advance: market[0] is now rate-limited.
 				batchMmOraclePrice = batchMmOraclePrice.addn(1);
 				batchMmOracleSequenceId = batchMmOracleSequenceId.addn(1);
+				const observedAt = await sourceSlot();
 				const txSig = await velocityClient.updateMmOracleBatchNative(
 					batchMarketIndexes.map((marketIndex) => ({
 						marketIndex,
 						oraclePrice: batchMmOraclePrice,
 						oracleSequenceId: batchMmOracleSequenceId,
+						oracleSourceSlot: observedAt,
 					})),
 					{ computeUnits: 50_000, computeUnitsPrice: 0 }
 				);
@@ -525,7 +552,7 @@ describe('compute units', () => {
 			'NATIVE_CU_MAX_MM_MIN_SLOT_GAP'
 		);
 		assertOptionalMax(
-			'mm_oracle_step_cap_noop',
+			'mm_oracle_step_cap_clamp',
 			mmStepCap.measurement,
 			'NATIVE_CU_MAX_MM_STEP_CAP'
 		);
@@ -580,7 +607,8 @@ describe('compute units', () => {
 			await velocityClient.updateMmOracleNative(
 				fillMarketIndex,
 				fillMmOraclePrice,
-				fillMmOracleSequenceId
+				fillMmOracleSequenceId,
+				await sourceSlot()
 			);
 			await velocityClient.fetchAccounts();
 

@@ -424,7 +424,13 @@ pub struct PerpMarket {
     pub market_config: u8,
     /// the oracle provider information. used to decode/scale the oracle public key
     pub oracle_source: OracleSource,
-    /// override for the per-fill slot delay required from the oracle (default -1 = use state default)
+    /// Max oracle delay, in slots, tolerated by immediate (JIT / auction-skipping)
+    /// AMM fills. Positive is an explicit threshold. `0` disables immediate AMM
+    /// fills entirely. Negative (the init default, `-1`) means unset, which
+    /// resolves by price source: `MM_ORACLE_MIN_SLOT_GAP` for an MM-oracle-sourced
+    /// price (the tightest window the crank can satisfy, since the program refuses
+    /// MM-oracle writes closer together than that) and `0` for an exchange-oracle
+    /// price, which can be same-slot fresh. See `math::oracle::oracle_validity`.
     pub oracle_slot_delay_override: i8,
     /// the override for the state.min_perp_auction_duration
     /// 0 is no override, -1 is disable speed bump, 1-100 is literal speed bump
@@ -1169,6 +1175,7 @@ impl PerpMarket {
                 &self.oracle_source,
                 LogMode::MMOracle,
                 self.oracle_slot_delay_override,
+                true, // classifying the MM oracle price itself
                 self.oracle_low_risk_slot_delay_override,
             )?
         };

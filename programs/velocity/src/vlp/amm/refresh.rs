@@ -230,6 +230,7 @@ pub fn compute_amm_refresh_validity_with_guard_rails(
         &market.oracle_source,
         oracle::LogMode::SafeMMOracle,
         market.oracle_slot_delay_override,
+        mm_oracle_price_data.is_safe_price_mm_sourced(),
         market.oracle_low_risk_slot_delay_override,
     )?;
     Ok(Some(validity))
@@ -365,6 +366,7 @@ pub fn update_amm_and_check_validity(
         &market.oracle_source,
         LogMode::SafeMMOracle,
         market.oracle_slot_delay_override,
+        mm_oracle_price_data.is_safe_price_mm_sourced(),
         market.oracle_low_risk_slot_delay_override,
     )?;
 

@@ -46,6 +46,14 @@ describe('mm oracle batch native', () => {
 		return velocityClient.getPerpMarketAccountOrThrow(marketIndex).marketStats;
 	}
 
+	/** Current bankrun slot as the source-observation slot, so the program's
+	 * `MM_ORACLE_MAX_SOURCE_AGE_SLOTS` freshness gate never skips a write. */
+	async function sourceSlot(): Promise<BN> {
+		return new BN(
+			(await bankrunContextWrapper.connection.getSlot()).toString()
+		);
+	}
+
 	before(async () => {
 		const context = await startAnchor('', [], []);
 		bankrunContextWrapper = new BankrunContextWrapper(context as any);
@@ -116,11 +124,13 @@ describe('mm oracle batch native', () => {
 		const priceFor = (marketIndex: number) =>
 			BASE_PRICE.addn(1_000 * (marketIndex + 1));
 
+		const observedAt = await sourceSlot();
 		await velocityClient.updateMmOracleBatchNative(
 			marketIndexes.map((marketIndex) => ({
 				marketIndex,
 				oraclePrice: priceFor(marketIndex),
 				oracleSequenceId: sequenceId,
+				oracleSourceSlot: observedAt,
 			}))
 		);
 		await velocityClient.fetchAccounts();
@@ -149,18 +159,21 @@ describe('mm oracle batch native', () => {
 		await velocityClient.updateMmOracleNative(
 			0,
 			BASE_PRICE.addn(500),
-			sequenceId
+			sequenceId,
+			await sourceSlot()
 		);
 		await velocityClient.fetchAccounts();
 		const skippedBefore = statsFor(0);
 
 		// Deliberately no advancePastRateLimit() here.
 		sequenceId = sequenceId.addn(1);
+		const observedAt = await sourceSlot();
 		await velocityClient.updateMmOracleBatchNative(
 			marketIndexes.map((marketIndex) => ({
 				marketIndex,
 				oraclePrice: BASE_PRICE.addn(2_000),
 				oracleSequenceId: sequenceId,
+				oracleSourceSlot: observedAt,
 			}))
 		);
 		await velocityClient.fetchAccounts();
@@ -188,20 +201,23 @@ describe('mm oracle batch native', () => {
 		await advancePastRateLimit();
 		sequenceId = sequenceId.addn(1);
 
+		const observedAt = await sourceSlot();
 		const ix = await velocityClient.getUpdateMmOracleBatchNativeIx([
 			{
 				marketIndex: 0,
 				oraclePrice: BASE_PRICE.addn(3_000),
 				oracleSequenceId: sequenceId,
+				oracleSourceSlot: observedAt,
 			},
 			{
 				marketIndex: 1,
 				oraclePrice: BASE_PRICE.addn(3_000),
 				oracleSequenceId: sequenceId,
+				oracleSourceSlot: observedAt,
 			},
 		]);
-		// Accounts are [signer, clock, state, market0, market1].
-		ix.keys[3].pubkey = velocityClient.getPerpMarketAccountOrThrow(2).pubkey;
+		// Accounts are [signer, state, market0, market1].
+		ix.keys[2].pubkey = velocityClient.getPerpMarketAccountOrThrow(2).pubkey;
 
 		const before = [0, 1, 2].map((i) =>
 			statsFor(i).mmOracleSequenceId.toString()
@@ -245,6 +261,7 @@ describe('mm oracle batch native', () => {
 					marketIndex: 1,
 					oraclePrice: BASE_PRICE.addn(4_000),
 					oracleSequenceId: sequenceId,
+					oracleSourceSlot: await sourceSlot(),
 				},
 			]);
 			assert.fail('Should have thrown');
@@ -264,11 +281,43 @@ describe('mm oracle batch native', () => {
 		await velocityClient.updateFeatureBitFlagsMMOracle(true);
 	});
 
+	it('skips an update whose source slot is too old', async () => {
+		// The wire-level check for the payload's source-slot field: an update
+		// observed more than MM_ORACLE_MAX_SOURCE_AGE_SLOTS before it lands is
+		// skipped (transaction still succeeds), so a late-landing transaction
+		// cannot make an old observation read as fresh.
+		while ((await bankrunContextWrapper.connection.getSlot()) < 5n) {
+			await advancePastRateLimit();
+		}
+		await advancePastRateLimit();
+		sequenceId = sequenceId.addn(1);
+
+		const before = statsFor(2).mmOracleSequenceId.toString();
+		const staleSource = (await sourceSlot()).subn(3); // one past the 2-slot bound
+
+		await velocityClient.updateMmOracleBatchNative([
+			{
+				marketIndex: 2,
+				oraclePrice: BASE_PRICE.addn(5_000),
+				oracleSequenceId: sequenceId,
+				oracleSourceSlot: staleSource,
+			},
+		]);
+		await velocityClient.fetchAccounts();
+
+		assert.strictEqual(
+			statsFor(2).mmOracleSequenceId.toString(),
+			before,
+			'stale-source update must be skipped'
+		);
+	});
+
 	it('rejects malformed input in the builder before it reaches the chain', async () => {
 		const valid = {
 			marketIndex: 0,
 			oraclePrice: BASE_PRICE,
 			oracleSequenceId: sequenceId,
+			oracleSourceSlot: await sourceSlot(),
 		};
 
 		const cases: [
@@ -284,6 +333,16 @@ describe('mm oracle batch native', () => {
 			// BN's little-endian serialization drops the sign, so without this
 			// guard a negative price reaches the program as its magnitude.
 			['negative price', [{ ...valid, oraclePrice: BASE_PRICE.neg() }]],
+			// A positive value above i64::MAX serializes into 8 bytes but is
+			// parsed on chain as a negative i64.
+			[
+				'price above i64::MAX',
+				[{ ...valid, oraclePrice: new BN(2).pow(new BN(63)) }],
+			],
+			[
+				'source slot above u64::MAX',
+				[{ ...valid, oracleSourceSlot: new BN(2).pow(new BN(64)) }],
+			],
 		];
 
 		for (const [label, updates] of cases) {

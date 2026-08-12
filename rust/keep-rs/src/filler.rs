@@ -1926,16 +1926,20 @@ fn vamm_can_fill_taker(
 
 /// MM-oracle staleness for the *immediate* (JIT) AMM-fill leg, mirroring the program's
 /// `is_stale_for_amm_immediate` (`math/oracle.rs`) with the per-market
-/// `oracle_slot_delay_override`: `override != 0 => delay > override.max(0)`; `override == 0`
-/// disables the immediate leg entirely (always stale). Delay is measured against the *MM*
-/// oracle slot (`market_stats.mm_oracle_slot`) at the expected landing slot, since that — not
-/// the exchange oracle — is what the JIT leg validates.
+/// `oracle_slot_delay_override`: a positive override is used as-is; `override == 0` disables
+/// the immediate leg entirely (always stale); negative means unset and resolves to
+/// `MM_ORACLE_MIN_SLOT_GAP` for an MM-sourced price (the program refuses MM-oracle writes
+/// closer together than that, so a tighter threshold is unsatisfiable). Delay is measured
+/// against the *MM* oracle slot (`market_stats.mm_oracle_slot`) at the expected landing slot,
+/// since that — not the exchange oracle — is what the JIT leg validates.
 fn mm_oracle_stale_for_amm_immediate(perp_market: &PerpMarket, landing_slot: u64) -> bool {
     let mm_oracle_delay =
         (landing_slot as i64).saturating_sub(perp_market.market_stats.mm_oracle_slot as i64);
     let override_ = perp_market.oracle_slot_delay_override;
-    if override_ != 0 {
-        mm_oracle_delay > override_.max(0) as i64
+    if override_ > 0 {
+        mm_oracle_delay > override_ as i64
+    } else if override_ < 0 {
+        mm_oracle_delay > velocity_rs::program::math::constants::MM_ORACLE_MIN_SLOT_GAP as i64
     } else {
         true
     }

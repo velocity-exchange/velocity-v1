@@ -21,9 +21,10 @@ use {
                 FEE_POOL_TO_REVENUE_POOL_THRESHOLD, IF_FACTOR_PRECISION, INSURANCE_A_MAX,
                 INSURANCE_B_MAX, INSURANCE_C_MAX, INSURANCE_SPECULATIVE_MAX,
                 LIQUIDATION_FEE_PRECISION, MAX_CONCENTRATION_COEFFICIENT,
-                MM_ORACLE_MAX_STEP_PCT_PRECISION, MM_ORACLE_MIN_SLOT_GAP, PERCENTAGE_PRECISION,
-                PERCENTAGE_PRECISION_I128, PERCENTAGE_PRECISION_I64, PERCENTAGE_PRECISION_U32,
-                QUOTE_PRECISION_I64, QUOTE_SPOT_MARKET_INDEX, SPOT_BALANCE_PRECISION,
+                MM_ORACLE_MAX_SOURCE_AGE_SLOTS, MM_ORACLE_MAX_STEP_PCT_PRECISION,
+                MM_ORACLE_MIN_SLOT_GAP, PERCENTAGE_PRECISION, PERCENTAGE_PRECISION_I128,
+                PERCENTAGE_PRECISION_I64, PERCENTAGE_PRECISION_U32, QUOTE_PRECISION_I64,
+                QUOTE_SPOT_MARKET_INDEX, SPOT_BALANCE_PRECISION,
                 SPOT_CUMULATIVE_INTEREST_PRECISION, SPOT_IMF_PRECISION, SPOT_WEIGHT_PRECISION,
                 THIRTEEN_DAY, TWENTY_FOUR_HOUR,
             },
@@ -3503,14 +3504,39 @@ const STATE_FEATURE_BIT_FLAGS_OFFSET: usize = 1374;
 const STATE_HOT_MM_ORACLE_CRANK_OFFSET: usize = 360;
 
 pub fn handle_update_mm_oracle_native(accounts: &[AccountInfo], data: &[u8]) -> Result<()> {
-    // Pre-Anchor native dispatch: re-establish the ownership + discriminator
-    // guarantees Anchor would provide (see `crate::auth::require_native_account`)
-    // before trusting any byte. Accounts:
-    //   [0] perp_market (mut), [1] signer, [2] clock sysvar, [3] state.
-    // State byte offsets are `STATE_*_OFFSET` above
-    // (guarded by `state/traits/tests.rs::native_instruction_offsets`).
+    // Slot comes from the Clock sysvar syscall: no clock account, nothing for
+    // a caller to forge, one account fewer per transaction.
+    update_mm_oracle(accounts, data, Clock::get()?.slot)
+}
+
+/// Body of `handle_update_mm_oracle_native` (native dispatch opcode 0), split
+/// from the syscall so tests can drive the slot directly.
+///
+/// Pre-Anchor native dispatch: re-establishes the ownership + discriminator
+/// guarantees Anchor would provide (see `crate::auth::require_native_account`)
+/// before trusting any byte. Accounts:
+///   `[0]` perp_market (mut), `[1]` signer, `[2]` state.
+/// Payload: `i64 price | u64 sequence_id | u64 source_slot` (all LE, 24 bytes).
+/// State byte offsets are `STATE_*_OFFSET` above
+/// (guarded by `state/traits/tests.rs::native_instruction_offsets`).
+///
+/// Every index is bounds-checked before use: this runs before Anchor, so a
+/// malformed instruction arrives verbatim, and a short account list or payload
+/// used to panic, which aborts the transaction with no identifiable error and
+/// burns the whole compute budget getting there.
+///
+/// After authentication the per-market gating is `apply_mm_oracle_update`, the
+/// same core the batch handler (opcode 2) runs. The differences are all in this
+/// prologue: a non-positive price is a hard `Err` here (the batch skips the
+/// entry, since a hard error there would destroy every other market's write),
+/// there is no market index in the payload to cross-check, and skips are logged
+/// per reason where the batch logs one reject mask.
+fn update_mm_oracle(accounts: &[AccountInfo], data: &[u8], current_slot: u64) -> Result<()> {
+    require!(accounts.len() >= 3, ErrorCode::InvalidNativeInstructionData);
+    require!(data.len() >= 24, ErrorCode::InvalidNativeInstructionData);
+
     crate::auth::require_native_account(
-        &accounts[3],
+        &accounts[2],
         State::DISCRIMINATOR,
         ErrorCode::InvalidNativeStateAccount,
     )?;
@@ -3521,22 +3547,27 @@ pub fn handle_update_mm_oracle_native(accounts: &[AccountInfo], data: &[u8]) -> 
     )?;
 
     {
-        let state = accounts[3].data.borrow();
-        // Kill switch: admin can disable this ix via feature_bit_flags. Panic
-        // (aborts the tx) to match the prior behavior.
-        assert!(
-            state[STATE_FEATURE_BIT_FLAGS_OFFSET] & 1 > 0,
-            "mm oracle update disabled by admin state"
+        let state = accounts[2].try_borrow_data()?;
+        // Kill switch: admin can disable this ix via feature_bit_flags. Returns
+        // a typed error rather than panicking, so the reason is identifiable by
+        // code instead of arriving as "Program failed to complete".
+        let feature_bit_flags = *state
+            .get(STATE_FEATURE_BIT_FLAGS_OFFSET)
+            .ok_or(ErrorCode::InvalidNativeStateAccount)?;
+        require!(
+            feature_bit_flags & (FeatureBitFlags::MmOracleUpdate as u8) > 0,
+            ErrorCode::MmOracleUpdateDisabled
         );
 
         #[cfg(not(feature = "anchor-test"))]
         {
             let signer_account = &accounts[1];
-            let hot_key = anchor_lang::prelude::Pubkey::new_from_array(
-                state[STATE_HOT_MM_ORACLE_CRANK_OFFSET..STATE_HOT_MM_ORACLE_CRANK_OFFSET + 32]
-                    .try_into()
-                    .unwrap(),
-            );
+            let hot_key_bytes: [u8; 32] = state
+                .get(STATE_HOT_MM_ORACLE_CRANK_OFFSET..STATE_HOT_MM_ORACLE_CRANK_OFFSET + 32)
+                .ok_or(ErrorCode::InvalidNativeStateAccount)?
+                .try_into()
+                .map_err(|_| ErrorCode::InvalidNativeStateAccount)?;
+            let hot_key = anchor_lang::prelude::Pubkey::new_from_array(hot_key_bytes);
             require!(
                 signer_account.is_signer && *signer_account.key == hot_key,
                 ErrorCode::Unauthorized
@@ -3544,70 +3575,70 @@ pub fn handle_update_mm_oracle_native(accounts: &[AccountInfo], data: &[u8]) -> 
         }
     }
 
-    if data[0..8] == [0u8; 8] {
-        msg!("MM oracle price is zero, not updating");
+    // Non-positive prices are a hard error. Rejecting only exact zero left a
+    // hole once the step cap clamped instead of skipping: a negative target was
+    // clamped against the stored price and *written* (e.g. -1 against 1,000,000
+    // landed as 990,000, consuming the sequence id), and repeated negatives
+    // could walk the price to zero, resetting the bootstrap path and with it
+    // the step cap.
+    let incoming_price = i64::from_le_bytes(data[0..8].try_into().unwrap());
+    if incoming_price <= 0 {
+        msg!("MM oracle price is non-positive, not updating");
         return Err(ErrorCode::DefaultError.into());
     }
-
-    let mut perp_market_data = accounts[0].data.borrow_mut();
-    let perp_market: &mut PerpMarket =
-        bytemuck::from_bytes_mut(&mut perp_market_data[8..8 + std::mem::size_of::<PerpMarket>()]);
-    // Sequence-id check uses only seq fields. Defer the rest.
     let incoming_sequence_id = u64::from_le_bytes(data[8..16].try_into().unwrap());
-    if incoming_sequence_id <= perp_market.market_stats.mm_oracle_sequence_id {
-        return Ok(());
-    }
+    let source_slot = u64::from_le_bytes(data[16..24].try_into().unwrap());
 
-    // Slot comes from the passed Clock sysvar account, which we require to be the
-    // real sysvar — an attacker-supplied account could carry an arbitrary slot
-    // and defeat the staleness / slot-gap rate limits below.
-    require_keys_eq!(
-        *accounts[2].key,
-        solana_program::sysvar::clock::ID,
-        ErrorCode::DefaultError
-    );
-    let clock_data = accounts[2].data.borrow();
-    let current_slot = u64::from_le_bytes(clock_data[0..8].try_into().unwrap());
-    let perp_market_slot = perp_market.market_stats.mm_oracle_slot;
-
-    if current_slot <= perp_market_slot {
-        msg!(
-            "mm oracle reject: stale slot {} <= {}",
-            current_slot,
-            perp_market_slot
-        );
-        return Ok(());
-    }
-    let slot_gap = current_slot - perp_market_slot;
-    if slot_gap < MM_ORACLE_MIN_SLOT_GAP {
-        msg!(
-            "mm oracle reject: re-crank gap {} < {}",
-            slot_gap,
-            MM_ORACLE_MIN_SLOT_GAP
-        );
-        return Ok(());
-    }
-
-    // Step cap vs last accepted price. Bootstrap when prev == 0.
-    let perp_market_price = perp_market.market_stats.mm_oracle_price;
-    let incoming_price = i64::from_le_bytes(data[0..8].try_into().unwrap());
-    if perp_market_price != 0 {
-        let prev_abs = (perp_market_price as i128).abs();
-        let diff_abs = ((incoming_price as i128) - (perp_market_price as i128)).abs();
-        // Cross-multiply form of (diff_abs / prev_abs) > MAX_STEP / PCT
-        if diff_abs * PERCENTAGE_PRECISION_I128 > MM_ORACLE_MAX_STEP_PCT_PRECISION * prev_abs {
+    match apply_mm_oracle_update(
+        &accounts[0],
+        None,
+        current_slot,
+        incoming_price,
+        incoming_sequence_id,
+        source_slot,
+    )? {
+        MmOracleUpdateOutcome::Written { price } => {
+            if price != incoming_price {
+                msg!(
+                    "mm oracle step clamped: incoming={} written={}",
+                    incoming_price,
+                    price
+                );
+            }
+        }
+        // Stale sequence id is the crank's ordinary redundant-send case and
+        // stays silent, matching the pre-batch handler. The rest are logged
+        // with their values; the batch logs a mask instead.
+        MmOracleUpdateOutcome::Skipped(MmOracleSkipReason::StaleSequenceId) => {}
+        MmOracleUpdateOutcome::Skipped(MmOracleSkipReason::SlotNotAdvanced { stored_slot }) => {
             msg!(
-                "mm oracle reject: step too large, incoming={} prev={}",
-                incoming_price,
-                perp_market_price
+                "mm oracle reject: stale slot {} <= {}",
+                current_slot,
+                stored_slot
             );
-            return Ok(());
+        }
+        MmOracleUpdateOutcome::Skipped(MmOracleSkipReason::RecrankGapTooSmall { gap }) => {
+            msg!(
+                "mm oracle reject: re-crank gap {} < {}",
+                gap,
+                MM_ORACLE_MIN_SLOT_GAP
+            );
+        }
+        MmOracleUpdateOutcome::Skipped(MmOracleSkipReason::SourceSlotOutOfRange {
+            source_slot,
+        }) => {
+            msg!(
+                "mm oracle reject: source slot {} out of range at slot {}",
+                source_slot,
+                current_slot
+            );
+        }
+        // Unreachable behind the hard error above; kept exhaustive so a new
+        // skip reason cannot be silently swallowed here.
+        MmOracleUpdateOutcome::Skipped(MmOracleSkipReason::NonPositivePrice) => {
+            msg!("MM oracle price is non-positive, not updating");
         }
     }
-
-    perp_market.market_stats.mm_oracle_slot = current_slot;
-    perp_market.market_stats.mm_oracle_price = incoming_price;
-    perp_market.market_stats.mm_oracle_sequence_id = incoming_sequence_id;
 
     Ok(())
 }
@@ -3623,24 +3654,24 @@ const MM_ORACLE_BATCH_MAX_MARKETS: usize = 64;
 static_assertions::const_assert!(MM_ORACLE_BATCH_MAX_MARKETS <= u64::BITS as usize);
 
 /// Fixed (non-market) accounts at the head of the batch account list.
-const MM_ORACLE_BATCH_FIXED_ACCOUNTS: usize = 3;
+const MM_ORACLE_BATCH_FIXED_ACCOUNTS: usize = 2;
 
 /// Bytes per market entry in the batch payload: `u16` market index + `i64` price
-/// + `u64` sequence id.
-const MM_ORACLE_BATCH_ENTRY_LEN: usize = 18;
+/// + `u64` sequence id + `u64` source slot.
+const MM_ORACLE_BATCH_ENTRY_LEN: usize = 26;
 
 /// Writes the MM oracle price for many perp markets in one native instruction
 /// (dispatch opcode 2).
 ///
 /// Semantically identical to `handle_update_mm_oracle_native` applied once per
 /// market, but the authentication prologue (state validation, kill switch, hot
-/// key compare, clock sysvar check) is paid once for the whole batch instead of
+/// key compare) is paid once for the whole batch instead of
 /// once per market.
 ///
-/// `bun run bench:native-cu` measures the result as almost exactly linear:
-/// 1874 CU at one market, 2476 at two, 3680 at four, i.e. a ~1272 CU fixed
-/// prologue plus ~602 CU per market. Four markets cost 3680 CU here against
-/// 7188 CU as four separate instructions. Compute is the smaller half of the
+/// `bun run bench:native-cu` measures the result as exactly linear:
+/// 1627 CU at one market, 2145 at two, 3181 at four, i.e. a ~1109 CU fixed
+/// prologue plus ~518 CU per market. Four markets cost 3181 CU here against
+/// 6320 CU as four separate instructions. Compute is the smaller half of the
 /// saving: the per-signature transaction fee is flat and independent of how
 /// much the instruction does, so collapsing N transactions into one is what
 /// dominates for a caller cranking on a fixed slot interval.
@@ -3648,21 +3679,27 @@ const MM_ORACLE_BATCH_ENTRY_LEN: usize = 18;
 /// # Accounts
 ///
 /// - `[0]` signer, must equal `State::hot_mm_oracle_crank`
-/// - `[1]` clock sysvar, address-checked
-/// - `[2]` state, owner + discriminator checked
-/// - `[3..3+n]` perp markets, writable, owner + discriminator checked, order
+/// - `[1]` state, owner + discriminator checked
+/// - `[2..2+n]` perp markets, writable, owner + discriminator checked, order
 ///   matches the payload
 ///
-/// Accounts beyond `3 + n` are ignored.
+/// Accounts beyond `2 + n` are ignored. The slot comes from the Clock sysvar
+/// syscall, so no clock account is passed and none can be forged.
 ///
 /// # Payload (after the 5-byte native prefix)
 ///
 /// ```text
 /// byte 0        u8   n           number of market entries, 1..=64
-/// bytes 1..     n x  { u16 market_index_le (2B), i64 price_le (8B), u64 sequence_id_le (8B) }
+/// bytes 1..     n x  { u16 market_index_le (2B), i64 price_le (8B),
+///                      u64 sequence_id_le (8B), u64 source_slot_le (8B) }
 /// ```
 ///
-/// Entry `i` applies to account `3 + i`, and the entry's `market_index` must
+/// `source_slot` is the slot the crank observed the price at. It is not
+/// stored; it only bounds how late a signed update may land (see
+/// `MM_ORACLE_MAX_SOURCE_AGE_SLOTS`), since `mm_oracle_slot` is stamped with
+/// the landing slot and would otherwise make an old observation read as fresh.
+///
+/// Entry `i` applies to account `2 + i`, and the entry's `market_index` must
 /// equal that market's own `market_index`. The redundancy is deliberate: without
 /// it the entry-to-market binding would be purely positional, so a single
 /// off-by-one in a caller's account list would silently write one market's price
@@ -3687,7 +3724,6 @@ const MM_ORACLE_BATCH_ENTRY_LEN: usize = 18;
 /// - state account not owned by this program / wrong discriminator
 /// - kill switch off (`FeatureBitFlags::MmOracleUpdate` clear)
 /// - signer is not the configured hot key
-/// - clock account is not the real sysvar
 /// - any market account fails owner + discriminator, or is not writable
 /// - any market's own `market_index` disagrees with its payload entry
 ///
@@ -3699,12 +3735,21 @@ const MM_ORACLE_BATCH_ENTRY_LEN: usize = 18;
 /// - sequence id not strictly greater than the stored one
 /// - current slot not strictly greater than the stored slot
 /// - slot gap below `MM_ORACLE_MIN_SLOT_GAP`
-/// - step larger than `MM_ORACLE_MAX_STEP_PCT_PRECISION` versus the stored price
+/// - source slot more than `MM_ORACLE_MAX_SOURCE_AGE_SLOTS` away from the
+///   current slot in either direction (landed too late to be fresh, or a
+///   source stamp too far ahead to be a plausible landing-slot estimate)
 ///
-/// A single `msg!` carrying the rejected-market bitmask is emitted only when at
-/// least one market was skipped, so the happy path pays nothing for logging.
-/// Formatted logging measured ~700 CU on the single-market handler's reject
-/// paths, which is why it is not emitted per market.
+/// A step beyond `MM_ORACLE_MAX_STEP_PCT_PRECISION` is neither a hard error nor
+/// a skip: it is clamped to the cap and written, matching opcode 0, so a feed
+/// gap larger than the cap converges over a few writes instead of freezing the
+/// oracle (see `apply_mm_oracle_update`). Clamped entries are reported in their
+/// own bitmask so a crank feeding diverging prices can see its writes are being
+/// altered.
+///
+/// One `msg!` per non-zero bitmask (rejected, clamped) is emitted, so the happy
+/// path pays nothing for logging. Formatted logging measured ~700 CU on the
+/// single-market handler's reject paths, which is why it is not emitted per
+/// market.
 ///
 /// # Blast radius of the batch size
 ///
@@ -3720,53 +3765,52 @@ const MM_ORACLE_BATCH_ENTRY_LEN: usize = 18;
 ///
 /// # Relationship to opcode 0
 ///
-/// The per-market gating is intentionally duplicated rather than shared with
-/// `handle_update_mm_oracle_native`, so that introducing this instruction cannot
-/// change the behaviour of the live one. `native_batch_tests::batch_matches_
-/// single_market_handler` pins the two implementations to the same accept and
-/// reject decisions for the gating conditions they share.
-///
-/// Everything below is a deliberate difference, not an oversight:
+/// The per-market gating is `apply_mm_oracle_update`, shared with opcode 0, so
+/// the two handlers cannot drift apart. `native_batch_tests::
+/// batch_matches_single_market_handler` pins them to the same accept and reject
+/// decisions at the wire level. The deliberate differences are all in the
+/// wrappers:
 ///
 /// - **Account order is not a superset of opcode 0's.** Opcode 0 is
-///   `[market, signer, clock, state]`; this is `[signer, clock, state, markets..]`,
-///   because the variable-length region has to sit last. Both confusions fail
-///   closed (opcode-0 order here yields `Unauthorized`; this order into opcode 0
+///   `[market, signer, state]`; this is `[signer, state, markets..]`, because
+///   the variable-length region has to sit last. Both confusions fail closed
+///   (opcode-0 order here yields `Unauthorized`; this order into opcode 0
 ///   yields `InvalidNativeStateAccount`).
-/// - **Payload carries a market index** per entry; opcode 0's does not.
-/// - **Non-positive price** is skipped here; opcode 0 returns `Err` and only for
-///   exact zero.
-/// - **Kill switch** returns `MmOracleUpdateDisabled`; opcode 0 `assert!`s, i.e.
-///   panics.
+/// - **Payload carries a market index** per entry, cross-checked against the
+///   account; opcode 0's does not.
+/// - **Non-positive price** is skipped here; opcode 0 returns `Err` (in a batch
+///   that would destroy every other market's write).
 /// - **Market writability** is checked here; opcode 0 leaves it to the runtime.
-/// - **The clock sysvar is always validated**, before the loop. Opcode 0 checks
-///   it only after its sequence-id early-out, so an opcode-0 call with a stale
-///   sequence id never validates the clock account at all.
-/// - **Clock mismatch** yields `InvalidNativeInstructionData`, not `DefaultError`.
-/// - **The kill-switch bit** is read through `FeatureBitFlags::MmOracleUpdate`
-///   rather than a hardcoded `& 1`.
-/// - **Payload length, account count, and every slice and borrow are checked.**
-///   Opcode 0 has several reachable panic paths (short account list, short
-///   payload, short state or clock data, `borrow_mut` aliasing) that this
-///   handler returns typed errors for instead. Worth backporting separately.
+/// - **Skips and clamps are reported as bitmasks** here; opcode 0 logs each
+///   with its values.
 pub fn handle_update_mm_oracle_batch_native(accounts: &[AccountInfo], data: &[u8]) -> Result<()> {
-    let rejected_mask = update_mm_oracle_batch(accounts, data)?;
+    // Slot comes from the Clock sysvar syscall: no clock account, nothing for
+    // a caller to forge, one more market fits the transaction.
+    let (rejected_mask, clamped_mask) = update_mm_oracle_batch(accounts, data, Clock::get()?.slot)?;
 
-    // One log for the whole batch, and only when something was skipped, so the
-    // happy path pays nothing for logging. Formatted `msg!` measured ~700 CU on
-    // the single-market handler's reject paths, which is why this is not
-    // emitted per market.
+    // One log per non-zero mask, so the happy path pays nothing for logging.
+    // Formatted `msg!` measured ~700 CU on the single-market handler's reject
+    // paths, which is why this is not emitted per market.
     if rejected_mask != 0 {
         msg!("mm oracle batch: rejected mask {:#x}", rejected_mask);
+    }
+    if clamped_mask != 0 {
+        msg!("mm oracle batch: clamped mask {:#x}", clamped_mask);
     }
 
     Ok(())
 }
 
-/// Body of `handle_update_mm_oracle_batch_native`, split out so tests can assert
-/// the exact rejected-entry bitmask rather than inferring it from market state.
-/// Returns a mask whose bit `i` is set when entry `i` was skipped.
-fn update_mm_oracle_batch(accounts: &[AccountInfo], data: &[u8]) -> Result<u64> {
+/// Body of `handle_update_mm_oracle_batch_native`, split from the syscall so
+/// tests can drive the slot directly and assert the exact bitmasks rather than
+/// inferring them from market state. Returns `(rejected_mask, clamped_mask)`:
+/// bit `i` of the first is set when entry `i` was skipped, bit `i` of the
+/// second when entry `i` landed but its price was clamped to the step cap.
+fn update_mm_oracle_batch(
+    accounts: &[AccountInfo],
+    data: &[u8],
+    current_slot: u64,
+) -> Result<(u64, u64)> {
     // Payload framing. Validate before indexing anything. Opcode 0 slices its
     // payload without a length check and panics on malformed input; a handler
     // whose loop bound is caller-supplied must not repeat that.
@@ -3787,8 +3831,7 @@ fn update_mm_oracle_batch(accounts: &[AccountInfo], data: &[u8]) -> Result<u64> 
     );
 
     // Fixed prologue, paid once for the whole batch.
-    let clock_account = &accounts[1];
-    let state_account = &accounts[2];
+    let state_account = &accounts[1];
 
     crate::auth::require_native_account(
         state_account,
@@ -3799,9 +3842,7 @@ fn update_mm_oracle_batch(accounts: &[AccountInfo], data: &[u8]) -> Result<u64> 
     {
         let state = state_account.try_borrow_data()?;
 
-        // Kill switch. Unlike opcode 0 (which `assert!`s for historical
-        // reasons) this returns a typed error, so the failure is identifiable
-        // by code instead of arriving as a panic.
+        // Kill switch. Typed error so the failure is identifiable by code.
         let feature_bit_flags = *state
             .get(STATE_FEATURE_BIT_FLAGS_OFFSET)
             .ok_or(ErrorCode::InvalidNativeStateAccount)?;
@@ -3827,26 +3868,8 @@ fn update_mm_oracle_batch(accounts: &[AccountInfo], data: &[u8]) -> Result<u64> 
         }
     }
 
-    // Slot comes from the passed Clock sysvar account, which we require to be
-    // the real sysvar. An attacker-supplied account could carry an arbitrary
-    // slot and defeat the staleness / slot-gap rate limits below.
-    require_keys_eq!(
-        *clock_account.key,
-        solana_program::sysvar::clock::ID,
-        ErrorCode::InvalidNativeInstructionData
-    );
-    let current_slot = {
-        let clock_data = clock_account.try_borrow_data()?;
-        u64::from_le_bytes(
-            clock_data
-                .get(0..8)
-                .ok_or(ErrorCode::InvalidNativeInstructionData)?
-                .try_into()
-                .map_err(|_| ErrorCode::InvalidNativeInstructionData)?,
-        )
-    };
-
     let mut rejected_mask: u64 = 0;
+    let mut clamped_mask: u64 = 0;
 
     for i in 0..n {
         let market_account = &accounts[MM_ORACLE_BATCH_FIXED_ACCOUNTS + i];
@@ -3871,30 +3894,75 @@ fn update_mm_oracle_batch(accounts: &[AccountInfo], data: &[u8]) -> Result<u64> 
         let incoming_price = i64::from_le_bytes(data[entry + 2..entry + 10].try_into().unwrap());
         let incoming_sequence_id =
             u64::from_le_bytes(data[entry + 10..entry + 18].try_into().unwrap());
+        let source_slot = u64::from_le_bytes(data[entry + 18..entry + 26].try_into().unwrap());
 
-        let written = apply_mm_oracle_update(
+        // `i < n <= MM_ORACLE_BATCH_MAX_MARKETS`, which `const_assert!`s to at
+        // most `u64::BITS`, so the shifts are in range.
+        match apply_mm_oracle_update(
             market_account,
-            market_index,
+            Some(market_index),
             current_slot,
             incoming_price,
             incoming_sequence_id,
-        )?;
-
-        if !written {
-            // `i < n <= MM_ORACLE_BATCH_MAX_MARKETS`, which `const_assert!`s to
-            // at most `u64::BITS`, so the shift is in range.
-            rejected_mask |= 1u64 << i;
+            source_slot,
+        )? {
+            MmOracleUpdateOutcome::Written { price } => {
+                if price != incoming_price {
+                    clamped_mask |= 1u64 << i;
+                }
+            }
+            MmOracleUpdateOutcome::Skipped(_) => {
+                rejected_mask |= 1u64 << i;
+            }
         }
     }
 
-    Ok(rejected_mask)
+    Ok((rejected_mask, clamped_mask))
 }
 
-/// Applies one MM oracle entry to an already-authenticated perp market account.
+/// Why one per-market update was skipped. Carried in
+/// [`MmOracleUpdateOutcome::Skipped`]: the batch handler folds it into the
+/// reject bitmask, opcode 0 logs it with its values.
+enum MmOracleSkipReason {
+    /// `oracle_validity` classifies a stored non-positive price as
+    /// `NonPositive` on read, so storing one buys nothing. Opcode 0 pre-checks
+    /// this with a hard error, so it only reaches a mask in the batch.
+    NonPositivePrice,
+    /// Sequence id not strictly greater than the stored one — the crank's
+    /// ordinary redundant-send case.
+    StaleSequenceId,
+    /// Current slot not strictly greater than the stored slot.
+    SlotNotAdvanced { stored_slot: u64 },
+    /// Fewer than `MM_ORACLE_MIN_SLOT_GAP` slots since the last accepted write.
+    RecrankGapTooSmall { gap: u64 },
+    /// Source slot more than `MM_ORACLE_MAX_SOURCE_AGE_SLOTS` from the current
+    /// slot in either direction.
+    SourceSlotOutOfRange { source_slot: u64 },
+}
+
+/// Result of one per-market update attempt. `Written::price` is the price that
+/// actually landed, which differs from the incoming price when the step cap
+/// clamped it — callers use that to log (opcode 0) or set the clamped bitmask
+/// (batch).
+enum MmOracleUpdateOutcome {
+    Written { price: i64 },
+    Skipped(MmOracleSkipReason),
+}
+
+/// Applies one MM oracle update to an already-authenticated perp market
+/// account. The single copy of the per-market gating, shared by opcode 0
+/// (`update_mm_oracle`) and the batch handler (opcode 2), so the two cannot
+/// drift apart.
 ///
-/// Returns `Ok(true)` when the write landed and `Ok(false)` when the entry was
-/// skipped by a rate limit or sanity bound. Skips are per-market and never abort
-/// the batch, see `handle_update_mm_oracle_batch_native`'s failure model.
+/// Returns [`MmOracleUpdateOutcome::Written`] with the price that landed (which
+/// the step cap may have clamped) or [`MmOracleUpdateOutcome::Skipped`] with
+/// the reason. Skips never abort a batch, see
+/// `handle_update_mm_oracle_batch_native`'s failure model.
+///
+/// `expected_market_index` is `Some` for batch entries, whose payload names the
+/// market it expects at each account position; a mismatch is a hard error, not
+/// a skip, because it means the account list and payload are misaligned.
+/// Opcode 0's payload carries no index and passes `None`.
 ///
 /// # Safety contract
 ///
@@ -3909,58 +3977,82 @@ fn update_mm_oracle_batch(accounts: &[AccountInfo], data: &[u8]) -> Result<u64> 
 /// `mm_oracle_slot` to `current_slot`.
 fn apply_mm_oracle_update(
     market_account: &AccountInfo,
-    expected_market_index: u16,
+    expected_market_index: Option<u16>,
     current_slot: u64,
     incoming_price: i64,
     incoming_sequence_id: u64,
-) -> Result<bool> {
+    source_slot: u64,
+) -> Result<MmOracleUpdateOutcome> {
+    use {MmOracleSkipReason as Skip, MmOracleUpdateOutcome as Outcome};
+
     let mut market_data = market_account.try_borrow_mut_data()?;
     let market_bytes = market_data
         .get_mut(8..8 + std::mem::size_of::<PerpMarket>())
         .ok_or(ErrorCode::InvalidNativePerpMarketAccount)?;
     let perp_market: &mut PerpMarket = bytemuck::from_bytes_mut(market_bytes);
 
-    // Structural, so it runs before any skip condition: the caller told us which
-    // market this entry is for, and the account it paired with the entry must
+    // Structural, so it runs before any skip condition: when the caller told us
+    // which market this entry is for, the account it paired with the entry must
     // agree. A mismatch means the account list and the payload are misaligned,
     // which is a caller bug and must not be silently absorbed.
-    require!(
-        perp_market.market_index == expected_market_index,
-        ErrorCode::InvalidNativePerpMarketAccount
-    );
+    if let Some(expected) = expected_market_index {
+        require!(
+            perp_market.market_index == expected,
+            ErrorCode::InvalidNativePerpMarketAccount
+        );
+    }
 
     let stats = &mut perp_market.market_stats;
 
-    // Non-positive prices are skipped outright. `oracle_validity` classifies
-    // them `NonPositive` on read, so storing one buys nothing, and a stored
-    // negative price would make the step cap below unsatisfiable from either
-    // direction, which is a permanent stall. Opcode 0 rejects only exact zero.
     if incoming_price <= 0 {
-        return Ok(false);
+        return Ok(Outcome::Skipped(Skip::NonPositivePrice));
     }
 
     if incoming_sequence_id <= stats.mm_oracle_sequence_id {
-        return Ok(false);
+        return Ok(Outcome::Skipped(Skip::StaleSequenceId));
     }
 
     // Ordered before the subtraction below so the slot gap cannot underflow.
     if current_slot <= stats.mm_oracle_slot {
-        return Ok(false);
+        return Ok(Outcome::Skipped(Skip::SlotNotAdvanced {
+            stored_slot: stats.mm_oracle_slot,
+        }));
     }
 
-    if current_slot - stats.mm_oracle_slot < MM_ORACLE_MIN_SLOT_GAP {
-        return Ok(false);
+    let gap = current_slot - stats.mm_oracle_slot;
+    if gap < MM_ORACLE_MIN_SLOT_GAP {
+        return Ok(Outcome::Skipped(Skip::RecrankGapTooSmall { gap }));
     }
 
-    // Step cap versus the last accepted price. Bootstrap when the stored price
-    // is still zero.
+    // Source-observation freshness, symmetric around the landing slot.
+    // `mm_oracle_slot` is stamped with the landing slot, so a late-landing
+    // signed update would otherwise make an old observation read as fresh.
+    // The bound applies in both directions: a source slot far in the future is
+    // a caller bug (a wrong-unit value, e.g. a millisecond timestamp, would
+    // otherwise disable this gate permanently and silently), while a small
+    // forward allowance still lets a crank estimate its landing slot.
+    if current_slot.abs_diff(source_slot) > MM_ORACLE_MAX_SOURCE_AGE_SLOTS {
+        return Ok(Outcome::Skipped(Skip::SourceSlotOutOfRange { source_slot }));
+    }
+
+    // Step cap versus the last accepted price: a step beyond the cap is clamped
+    // to the cap rather than skipped, so a feed gap larger than the cap
+    // converges over a few writes instead of freezing the oracle at its pre-gap
+    // price. Floored at one price unit so a price small enough for the cap to
+    // round to zero still makes progress. Bootstrap when the stored price is
+    // still zero.
+    let mut incoming_price = incoming_price;
     if stats.mm_oracle_price != 0 {
-        let prev_abs = (stats.mm_oracle_price as i128).abs();
-        let diff_abs = ((incoming_price as i128) - (stats.mm_oracle_price as i128)).abs();
-        // Cross-multiplied form of (diff_abs / prev_abs) > MAX_STEP / PCT.
-        // Both operands are bounded by i64::MAX * 1e6, far inside i128.
-        if diff_abs * PERCENTAGE_PRECISION_I128 > MM_ORACLE_MAX_STEP_PCT_PRECISION * prev_abs {
-            return Ok(false);
+        let prev = stats.mm_oracle_price as i128;
+        let max_step = MM_ORACLE_MAX_STEP_PCT_PRECISION
+            .saturating_mul(prev.abs())
+            .saturating_div(PERCENTAGE_PRECISION_I128)
+            .max(1);
+        let diff = (incoming_price as i128).saturating_sub(prev);
+        if diff.abs() > max_step {
+            // Between `prev` and `incoming_price`, so always i64-representable.
+            let clamped = prev.saturating_add(max_step.saturating_mul(diff.signum()));
+            incoming_price = clamped.cast::<i64>()?;
         }
     }
 
@@ -3968,7 +4060,9 @@ fn apply_mm_oracle_update(
     stats.mm_oracle_price = incoming_price;
     stats.mm_oracle_sequence_id = incoming_sequence_id;
 
-    Ok(true)
+    Ok(Outcome::Written {
+        price: incoming_price,
+    })
 }
 
 pub fn handle_update_feature_bit_flags_mm_oracle(
@@ -5027,12 +5121,14 @@ mod native_auth_tests {
         anchor_lang::prelude::{AccountInfo, Pubkey},
     };
 
-    // mm-oracle payload: 8-byte price + 8-byte sequence id (both non-zero so the
-    // happy path would proceed past the early-out checks).
-    fn mm_payload() -> [u8; 16] {
-        let mut d = [0u8; 16];
+    // mm-oracle payload: 8-byte price + 8-byte sequence id + 8-byte source slot
+    // (price and sequence non-zero, source slot matching the slot the tests
+    // drive, so the happy path would proceed past every early-out check).
+    fn mm_payload() -> [u8; 24] {
+        let mut d = [0u8; 24];
         d[0..8].copy_from_slice(&100_i64.to_le_bytes());
         d[8..16].copy_from_slice(&1_u64.to_le_bytes());
+        d[16..24].copy_from_slice(&100_u64.to_le_bytes());
         d
     }
 
@@ -5071,20 +5167,6 @@ mod native_auth_tests {
         let mut perp_market = PerpMarket::default();
         create_anchor_account_info!(perp_market, PerpMarket, perp_market_info);
 
-        let mut clock_lamports = 0u64;
-        let mut clock_data = [0u8; 8];
-        let clock_owner = Pubkey::new_unique();
-        let clock_key = Pubkey::new_unique();
-        let clock_info = AccountInfo::new(
-            &clock_key,
-            false,
-            false,
-            &mut clock_lamports,
-            &mut clock_data,
-            &clock_owner,
-            false,
-        );
-
         let mut sig_lamports = 0u64;
         let mut sig_data: [u8; 0] = [];
         let sig_owner = Pubkey::new_unique();
@@ -5096,8 +5178,8 @@ mod native_auth_tests {
             &sig_owner,
         );
 
-        let accounts = [perp_market_info, signer, clock_info, forged_state];
-        let err = handle_update_mm_oracle_native(&accounts, &mm_payload()).unwrap_err();
+        let accounts = [perp_market_info, signer, forged_state];
+        let err = update_mm_oracle(&accounts, &mm_payload(), 100).unwrap_err();
         assert_eq!(err, ErrorCode::InvalidNativeStateAccount.into());
     }
 
@@ -5114,27 +5196,13 @@ mod native_auth_tests {
         let mut not_a_market = State::default();
         create_anchor_account_info!(not_a_market, State, not_a_market_info);
 
-        let mut clock_lamports = 0u64;
-        let mut clock_data = [0u8; 8];
-        let clock_owner = Pubkey::new_unique();
-        let clock_key = Pubkey::new_unique();
-        let clock_info = AccountInfo::new(
-            &clock_key,
-            false,
-            false,
-            &mut clock_lamports,
-            &mut clock_data,
-            &clock_owner,
-            false,
-        );
-
         let mut sig_lamports = 0u64;
         let mut sig_data: [u8; 0] = [];
         let sig_owner = Pubkey::new_unique();
         let signer = signer_info(&hot_key, true, &mut sig_lamports, &mut sig_data, &sig_owner);
 
-        let accounts = [not_a_market_info, signer, clock_info, state_info];
-        let err = handle_update_mm_oracle_native(&accounts, &mm_payload()).unwrap_err();
+        let accounts = [not_a_market_info, signer, state_info];
+        let err = update_mm_oracle(&accounts, &mm_payload(), 100).unwrap_err();
         assert_eq!(err, ErrorCode::InvalidNativePerpMarketAccount.into());
     }
 
@@ -5150,20 +5218,6 @@ mod native_auth_tests {
         let mut perp_market = PerpMarket::default();
         create_anchor_account_info!(perp_market, PerpMarket, perp_market_info);
 
-        let mut clock_lamports = 0u64;
-        let mut clock_data = [0u8; 8];
-        let clock_owner = Pubkey::new_unique();
-        let clock_key = Pubkey::new_unique();
-        let clock_info = AccountInfo::new(
-            &clock_key,
-            false,
-            false,
-            &mut clock_lamports,
-            &mut clock_data,
-            &clock_owner,
-            false,
-        );
-
         let attacker = Pubkey::new_unique();
         let mut sig_lamports = 0u64;
         let mut sig_data: [u8; 0] = [];
@@ -5176,9 +5230,244 @@ mod native_auth_tests {
             &sig_owner,
         );
 
-        let accounts = [perp_market_info, signer, clock_info, state_info];
-        let err = handle_update_mm_oracle_native(&accounts, &mm_payload()).unwrap_err();
+        let accounts = [perp_market_info, signer, state_info];
+        let err = update_mm_oracle(&accounts, &mm_payload(), 100).unwrap_err();
         assert_eq!(err, ErrorCode::Unauthorized.into());
+    }
+
+    // malformed input must error, not panic
+
+    /// The handler runs before Anchor, so a malformed instruction reaches it
+    /// verbatim. Short account lists and short payloads used to panic on the
+    /// indexing, which aborts the transaction with no identifiable error.
+    #[test]
+    fn mm_oracle_native_rejects_malformed_shape_without_panicking() {
+        let hot_key = Pubkey::new_unique();
+        let mut state = State::default();
+        state.hot_mm_oracle_crank = hot_key;
+        state.feature_bit_flags = FeatureBitFlags::MmOracleUpdate as u8;
+        create_anchor_account_info!(state, State, state_info);
+
+        let mut perp_market = PerpMarket::default();
+        create_anchor_account_info!(perp_market, PerpMarket, perp_market_info);
+
+        let mut sig_lamports = 0u64;
+        let mut sig_data: [u8; 0] = [];
+        let sig_owner = Pubkey::new_unique();
+        let signer = signer_info(&hot_key, true, &mut sig_lamports, &mut sig_data, &sig_owner);
+
+        let accounts = [perp_market_info, signer, state_info];
+
+        // Too few accounts. Zero of them, so nothing can be indexed at all.
+        let err = update_mm_oracle(&[], &mm_payload(), 100).unwrap_err();
+        assert_eq!(err, ErrorCode::InvalidNativeInstructionData.into());
+
+        // Two accounts where three are required: the state slot is `accounts[2]`.
+        let err = update_mm_oracle(&accounts[..2], &mm_payload(), 100).unwrap_err();
+        assert_eq!(err, ErrorCode::InvalidNativeInstructionData.into());
+
+        // Payload shorter than the 24 bytes the handler slices.
+        for len in 0..24usize {
+            let err = update_mm_oracle(&accounts, &mm_payload()[..len], 100).unwrap_err();
+            assert_eq!(
+                err,
+                ErrorCode::InvalidNativeInstructionData.into(),
+                "payload of {len} bytes did not return a clean error"
+            );
+        }
+    }
+
+    #[test]
+    fn mm_oracle_native_kill_switch_returns_typed_error() {
+        // Previously an `assert!`, i.e. a panic surfacing as "Program failed to
+        // complete" with no way to tell it from any other abort.
+        let hot_key = Pubkey::new_unique();
+        let mut state = State::default();
+        state.hot_mm_oracle_crank = hot_key;
+        state.feature_bit_flags = 0; // MmOracleUpdate clear
+        create_anchor_account_info!(state, State, state_info);
+
+        let mut perp_market = PerpMarket::default();
+        create_anchor_account_info!(perp_market, PerpMarket, perp_market_info);
+
+        let mut sig_lamports = 0u64;
+        let mut sig_data: [u8; 0] = [];
+        let sig_owner = Pubkey::new_unique();
+        let signer = signer_info(&hot_key, true, &mut sig_lamports, &mut sig_data, &sig_owner);
+
+        let accounts = [perp_market_info, signer, state_info];
+        let err = update_mm_oracle(&accounts, &mm_payload(), 100).unwrap_err();
+        assert_eq!(err, ErrorCode::MmOracleUpdateDisabled.into());
+    }
+
+    // step cap clamps instead of freezing
+
+    /// Drives the handler repeatedly against a fixed target price and returns
+    /// the stored price after each accepted write.
+    fn walk_price(start: i64, target: i64, writes: usize) -> Vec<i64> {
+        let hot_key = Pubkey::new_unique();
+        let mut state = State::default();
+        state.hot_mm_oracle_crank = hot_key;
+        state.feature_bit_flags = FeatureBitFlags::MmOracleUpdate as u8;
+        create_anchor_account_info!(state, State, state_info);
+
+        let mut perp_market = PerpMarket::default();
+        perp_market.market_stats.mm_oracle_price = start;
+        perp_market.market_stats.mm_oracle_slot = 0;
+        perp_market.market_stats.mm_oracle_sequence_id = 0;
+        create_anchor_account_info!(perp_market, PerpMarket, perp_market_info);
+
+        let mut sig_lamports = 0u64;
+        let mut sig_data: [u8; 0] = [];
+        let sig_owner = Pubkey::new_unique();
+        let signer = signer_info(&hot_key, true, &mut sig_lamports, &mut sig_data, &sig_owner);
+
+        let accounts = [perp_market_info.clone(), signer, state_info];
+
+        let mut observed = Vec::with_capacity(writes);
+        for i in 0..writes {
+            // Advance the slot past MM_ORACLE_MIN_SLOT_GAP for each write.
+            let slot = ((i as u64) + 1) * (MM_ORACLE_MIN_SLOT_GAP + 1);
+
+            let mut payload = [0u8; 24];
+            payload[0..8].copy_from_slice(&target.to_le_bytes());
+            payload[8..16].copy_from_slice(&((i as u64) + 1).to_le_bytes());
+            payload[16..24].copy_from_slice(&slot.to_le_bytes()); // fresh source
+            update_mm_oracle(&accounts, &payload, slot).unwrap();
+
+            let data = perp_market_info.try_borrow_data().unwrap();
+            let market: &PerpMarket =
+                bytemuck::from_bytes(&data[8..8 + std::mem::size_of::<PerpMarket>()]);
+            observed.push(market.market_stats.mm_oracle_price);
+        }
+        observed
+    }
+
+    /// A move beyond the cap is written at the cap and keeps closing the gap.
+    /// Rejecting it, as the handler used to, left the stored price where it was,
+    /// so the next update was still beyond the cap against the same stale value
+    /// and the oracle never recovered.
+    #[test]
+    fn mm_oracle_native_clamps_and_converges_upward() {
+        let start = 1_000_000i64;
+        let target = start * 105 / 100; // 5% away, cap is 1%
+
+        let observed = walk_price(start, target, 6);
+
+        assert_eq!(observed[0], 1_010_000, "first write must land at the cap");
+        // Monotonic toward the target, and strictly moving until it arrives.
+        for pair in observed.windows(2) {
+            assert!(pair[1] >= pair[0], "price moved backwards: {observed:?}");
+            assert!(
+                pair[0] == target || pair[1] > pair[0],
+                "price stalled before reaching the target: {observed:?}"
+            );
+        }
+        assert_eq!(
+            *observed.last().unwrap(),
+            target,
+            "must converge on the target: {observed:?}"
+        );
+        assert!(
+            observed.iter().all(|p| *p <= target),
+            "must never overshoot: {observed:?}"
+        );
+    }
+
+    /// The cap is symmetric, so the same must hold downward.
+    #[test]
+    fn mm_oracle_native_clamps_and_converges_downward() {
+        let start = 1_000_000i64;
+        let target = start * 95 / 100;
+
+        let observed = walk_price(start, target, 6);
+
+        assert_eq!(observed[0], 990_000, "first write must land at the cap");
+        for pair in observed.windows(2) {
+            assert!(pair[1] <= pair[0], "price moved backwards: {observed:?}");
+            assert!(
+                pair[0] == target || pair[1] < pair[0],
+                "price stalled before reaching the target: {observed:?}"
+            );
+        }
+        assert_eq!(*observed.last().unwrap(), target);
+        assert!(observed.iter().all(|p| *p >= target));
+    }
+
+    /// A move inside the cap is written verbatim, unchanged from before.
+    #[test]
+    fn mm_oracle_native_leaves_in_range_steps_alone() {
+        let start = 1_000_000i64;
+        let target = start + 5_000; // 0.5%, inside the 1% cap
+        assert_eq!(walk_price(start, target, 1)[0], target);
+    }
+
+    /// The cap is a percentage, so integer division rounds it to zero for very
+    /// small prices. Floored at one unit so those markets still make progress
+    /// rather than reintroducing the freeze this fix removes.
+    #[test]
+    fn mm_oracle_native_makes_progress_at_prices_below_the_cap_resolution() {
+        // 1% of 50 rounds to 0.
+        let observed = walk_price(50, 60, 3);
+        assert_eq!(observed, vec![51, 52, 53], "must advance by at least one");
+    }
+
+    /// Any non-positive price is a hard error, not just exact zero. Rejecting
+    /// only zero left a hole once the step cap clamped instead of skipping: a
+    /// negative target was clamped against the stored price and written (e.g.
+    /// -1 against 1,000,000 landed as 990,000, consuming the sequence id), and
+    /// repeated negatives could walk the price to zero, resetting the bootstrap
+    /// path and with it the step cap. At bootstrap (stored price 0) a negative
+    /// was written verbatim.
+    #[test]
+    fn mm_oracle_native_rejects_non_positive_price() {
+        // (stored price, incoming price)
+        let cases: [(i64, i64); 5] = [
+            (1_000_000, 0),
+            (1_000_000, -1),
+            (1_000_000, -1_000_000),
+            (0, -1), // bootstrap: previously written verbatim
+            (0, i64::MIN),
+        ];
+
+        for (stored, incoming) in cases {
+            let hot_key = Pubkey::new_unique();
+            let mut state = State::default();
+            state.hot_mm_oracle_crank = hot_key;
+            state.feature_bit_flags = FeatureBitFlags::MmOracleUpdate as u8;
+            create_anchor_account_info!(state, State, state_info);
+
+            let mut perp_market = PerpMarket::default();
+            perp_market.market_stats.mm_oracle_price = stored;
+            create_anchor_account_info!(perp_market, PerpMarket, perp_market_info);
+
+            let mut sig_lamports = 0u64;
+            let mut sig_data: [u8; 0] = [];
+            let sig_owner = Pubkey::new_unique();
+            let signer = signer_info(&hot_key, true, &mut sig_lamports, &mut sig_data, &sig_owner);
+
+            let mut payload = [0u8; 24];
+            payload[0..8].copy_from_slice(&incoming.to_le_bytes());
+            payload[8..16].copy_from_slice(&1u64.to_le_bytes());
+            payload[16..24].copy_from_slice(&100u64.to_le_bytes());
+
+            let accounts = [perp_market_info.clone(), signer, state_info];
+            let err = update_mm_oracle(&accounts, &payload, 100).unwrap_err();
+            assert_eq!(
+                err,
+                ErrorCode::DefaultError.into(),
+                "price {incoming} against stored {stored} must be a hard error"
+            );
+
+            let data = perp_market_info.try_borrow_data().unwrap();
+            let market: &PerpMarket =
+                bytemuck::from_bytes(&data[8..8 + std::mem::size_of::<PerpMarket>()]);
+            assert_eq!(
+                market.market_stats.mm_oracle_price, stored,
+                "stored price must be untouched"
+            );
+            assert_eq!(market.market_stats.mm_oracle_sequence_id, 0);
+        }
     }
 }
 
@@ -5193,7 +5482,8 @@ mod native_batch_tests {
     //!    any of the findings that motivated `auth::require_native_account`
     //!    (forged state account, blind `bytemuck` cast of an untyped account,
     //!    signer bypass), plus the framing checks that only a variable-length
-    //!    handler needs.
+    //!    handler needs. There is no clock to forge: the slot comes from the
+    //!    Clock sysvar syscall, and tests drive it via the split handler bodies.
     //! 2. Functional tests pinning every accept and skip decision, asserted on
     //!    the returned reject bitmask as well as on written state.
     //! 3. An equivalence test against `handle_update_mm_oracle_native` so the two
@@ -5223,29 +5513,17 @@ mod native_batch_tests {
     /// passes.
     const SLOT: u64 = 100;
 
-    /// Binds a valid prologue for the batch handler: a program-owned `State` with
-    /// the kill switch on and `$hot` as the MM-oracle crank key, the real clock
-    /// sysvar reporting `$slot`, and `$hot` as a signing account.
+    /// Binds a valid prologue for the batch handler: a program-owned `State`
+    /// with the kill switch on and `$hot` as the MM-oracle crank key, and
+    /// `$hot` as a signing account. The slot is passed straight to the split
+    /// handler bodies; there is no clock account since the handlers read the
+    /// Clock sysvar via syscall.
     macro_rules! valid_prologue {
-        ($hot:ident, $slot:expr, $state:ident, $clock:ident, $signer:ident) => {
+        ($hot:ident, $state:ident, $signer:ident) => {
             let mut state_struct = State::default();
             state_struct.hot_mm_oracle_crank = $hot;
             state_struct.feature_bit_flags = FeatureBitFlags::MmOracleUpdate as u8;
             create_anchor_account_info!(state_struct, State, $state);
-
-            let clock_key = solana_program::sysvar::clock::ID;
-            let mut clock_lamports = 0u64;
-            let mut clock_data = ($slot as u64).to_le_bytes();
-            let clock_owner = Pubkey::new_unique();
-            let $clock = AccountInfo::new(
-                &clock_key,
-                false,
-                false,
-                &mut clock_lamports,
-                &mut clock_data,
-                &clock_owner,
-                false,
-            );
 
             let mut sig_lamports = 0u64;
             let mut sig_data: [u8; 0] = [];
@@ -5272,26 +5550,45 @@ mod native_batch_tests {
         };
     }
 
-    /// Batch payload: count byte then `(market_index, price, sequence_id)` per
-    /// entry, little-endian, matching `MM_ORACLE_BATCH_ENTRY_LEN`.
-    fn batch_payload(entries: &[(u16, i64, u64)]) -> Vec<u8> {
+    /// Batch payload: count byte then `(market_index, price, sequence_id,
+    /// source_slot)` per entry, little-endian, matching
+    /// `MM_ORACLE_BATCH_ENTRY_LEN`.
+    fn batch_payload_with_source(entries: &[(u16, i64, u64, u64)]) -> Vec<u8> {
         let mut data = Vec::with_capacity(1 + entries.len() * MM_ORACLE_BATCH_ENTRY_LEN);
         data.push(entries.len() as u8);
-        for (market_index, price, sequence_id) in entries {
+        for (market_index, price, sequence_id, source_slot) in entries {
             data.extend_from_slice(&market_index.to_le_bytes());
             data.extend_from_slice(&price.to_le_bytes());
             data.extend_from_slice(&sequence_id.to_le_bytes());
+            data.extend_from_slice(&source_slot.to_le_bytes());
         }
         data
     }
 
-    /// Payload for the single-market handler (opcode 0): price then sequence id,
-    /// no count byte and no market index.
-    fn single_payload(price: i64, sequence_id: u64) -> [u8; 16] {
-        let mut data = [0u8; 16];
+    /// `batch_payload_with_source` with every entry's source slot pinned to
+    /// `SLOT`, i.e. observed in the landing slot, so the source-age gate is
+    /// never the accidental reason a test passes.
+    fn batch_payload(entries: &[(u16, i64, u64)]) -> Vec<u8> {
+        let with_source: Vec<(u16, i64, u64, u64)> = entries
+            .iter()
+            .map(|&(market_index, price, sequence_id)| (market_index, price, sequence_id, SLOT))
+            .collect();
+        batch_payload_with_source(&with_source)
+    }
+
+    /// Payload for the single-market handler (opcode 0): price, sequence id,
+    /// source slot; no count byte and no market index.
+    fn single_payload_with_source(price: i64, sequence_id: u64, source_slot: u64) -> [u8; 24] {
+        let mut data = [0u8; 24];
         data[0..8].copy_from_slice(&price.to_le_bytes());
         data[8..16].copy_from_slice(&sequence_id.to_le_bytes());
+        data[16..24].copy_from_slice(&source_slot.to_le_bytes());
         data
+    }
+
+    /// `single_payload_with_source` with the source slot pinned to `SLOT`.
+    fn single_payload(price: i64, sequence_id: u64) -> [u8; 24] {
+        single_payload_with_source(price, sequence_id, SLOT)
     }
 
     fn read_stats(info: &AccountInfo) -> MmStats {
@@ -5352,7 +5649,7 @@ mod native_batch_tests {
         ];
 
         for (label, data) in cases {
-            let err = handle_update_mm_oracle_batch_native(&[], &data).unwrap_err();
+            let err = update_mm_oracle_batch(&[], &data, SLOT).unwrap_err();
             assert_eq!(
                 err,
                 ErrorCode::InvalidNativeInstructionData.into(),
@@ -5364,13 +5661,13 @@ mod native_batch_tests {
     #[test]
     fn batch_rejects_too_few_accounts_for_declared_count() {
         let hot_key = Pubkey::new_unique();
-        valid_prologue!(hot_key, SLOT, state_info, clock_info, signer);
+        valid_prologue!(hot_key, state_info, signer);
         market_account!(0, (0, 0, 0), market_info);
 
         // Declares two markets, supplies one.
         let payload = batch_payload(&[(0, BASE_PRICE, 1), (1, BASE_PRICE, 2)]);
-        let accounts = [signer, clock_info, state_info, market_info];
-        let err = handle_update_mm_oracle_batch_native(&accounts, &payload).unwrap_err();
+        let accounts = [signer, state_info, market_info];
+        let err = update_mm_oracle_batch(&accounts, &payload, SLOT).unwrap_err();
         assert_eq!(err, ErrorCode::InvalidNativeInstructionData.into());
     }
 
@@ -5400,20 +5697,6 @@ mod native_batch_tests {
 
         market_account!(0, (0, 0, 0), market_info);
 
-        let clock_key = solana_program::sysvar::clock::ID;
-        let mut clock_lamports = 0u64;
-        let mut clock_data = SLOT.to_le_bytes();
-        let clock_owner = Pubkey::new_unique();
-        let clock_info = AccountInfo::new(
-            &clock_key,
-            false,
-            false,
-            &mut clock_lamports,
-            &mut clock_data,
-            &clock_owner,
-            false,
-        );
-
         let mut sig_lamports = 0u64;
         let mut sig_data: [u8; 0] = [];
         let sig_owner = Pubkey::new_unique();
@@ -5427,10 +5710,9 @@ mod native_batch_tests {
             false,
         );
 
-        let accounts = [signer, clock_info, forged_state, market_info];
-        let err =
-            handle_update_mm_oracle_batch_native(&accounts, &batch_payload(&[(0, BASE_PRICE, 1)]))
-                .unwrap_err();
+        let accounts = [signer, forged_state, market_info];
+        let err = update_mm_oracle_batch(&accounts, &batch_payload(&[(0, BASE_PRICE, 1)]), SLOT)
+            .unwrap_err();
         assert_eq!(err, ErrorCode::InvalidNativeStateAccount.into());
     }
 
@@ -5442,20 +5724,6 @@ mod native_batch_tests {
         let hot_key = Pubkey::new_unique();
         market_account!(0, (0, 0, 0), not_a_state_info);
         market_account!(0, (0, 0, 0), market_info);
-
-        let clock_key = solana_program::sysvar::clock::ID;
-        let mut clock_lamports = 0u64;
-        let mut clock_data = SLOT.to_le_bytes();
-        let clock_owner = Pubkey::new_unique();
-        let clock_info = AccountInfo::new(
-            &clock_key,
-            false,
-            false,
-            &mut clock_lamports,
-            &mut clock_data,
-            &clock_owner,
-            false,
-        );
 
         let mut sig_lamports = 0u64;
         let mut sig_data: [u8; 0] = [];
@@ -5470,10 +5738,9 @@ mod native_batch_tests {
             false,
         );
 
-        let accounts = [signer, clock_info, not_a_state_info, market_info];
-        let err =
-            handle_update_mm_oracle_batch_native(&accounts, &batch_payload(&[(0, BASE_PRICE, 1)]))
-                .unwrap_err();
+        let accounts = [signer, not_a_state_info, market_info];
+        let err = update_mm_oracle_batch(&accounts, &batch_payload(&[(0, BASE_PRICE, 1)]), SLOT)
+            .unwrap_err();
         assert_eq!(err, ErrorCode::InvalidNativeStateAccount.into());
     }
 
@@ -5482,15 +5749,14 @@ mod native_batch_tests {
         // Genuine state, but a second State account sits in the market region.
         // Without the discriminator check this would be `bytemuck`-cast blindly.
         let hot_key = Pubkey::new_unique();
-        valid_prologue!(hot_key, SLOT, state_info, clock_info, signer);
+        valid_prologue!(hot_key, state_info, signer);
 
         let mut not_a_market = State::default();
         create_anchor_account_info!(not_a_market, State, not_a_market_info);
 
-        let accounts = [signer, clock_info, state_info, not_a_market_info];
-        let err =
-            handle_update_mm_oracle_batch_native(&accounts, &batch_payload(&[(0, BASE_PRICE, 1)]))
-                .unwrap_err();
+        let accounts = [signer, state_info, not_a_market_info];
+        let err = update_mm_oracle_batch(&accounts, &batch_payload(&[(0, BASE_PRICE, 1)]), SLOT)
+            .unwrap_err();
         assert_eq!(err, ErrorCode::InvalidNativePerpMarketAccount.into());
     }
 
@@ -5500,7 +5766,7 @@ mod native_batch_tests {
         // owner arm of require_native_account on the market side. Anyone can
         // create an account with arbitrary bytes under a program they control.
         let hot_key = Pubkey::new_unique();
-        valid_prologue!(hot_key, SLOT, state_info, clock_info, signer);
+        valid_prologue!(hot_key, state_info, signer);
 
         let mut market_struct = market_with(0, (0, 0, 0));
         let mut market_bytes = get_anchor_account_bytes(&mut market_struct);
@@ -5517,10 +5783,9 @@ mod native_batch_tests {
             false,
         );
 
-        let accounts = [signer, clock_info, state_info, foreign_market];
-        let err =
-            handle_update_mm_oracle_batch_native(&accounts, &batch_payload(&[(0, BASE_PRICE, 1)]))
-                .unwrap_err();
+        let accounts = [signer, state_info, foreign_market];
+        let err = update_mm_oracle_batch(&accounts, &batch_payload(&[(0, BASE_PRICE, 1)]), SLOT)
+            .unwrap_err();
         assert_eq!(err, ErrorCode::InvalidNativePerpMarketAccount.into());
     }
 
@@ -5529,7 +5794,7 @@ mod native_batch_tests {
         // Program-owned and correctly discriminated, but too short to hold a
         // PerpMarket. Opcode 0 panics on this input; the batch must not.
         let hot_key = Pubkey::new_unique();
-        valid_prologue!(hot_key, SLOT, state_info, clock_info, signer);
+        valid_prologue!(hot_key, state_info, signer);
 
         let mut truncated = [0u8; 64];
         truncated[..8].copy_from_slice(PerpMarket::DISCRIMINATOR);
@@ -5546,10 +5811,9 @@ mod native_batch_tests {
             false,
         );
 
-        let accounts = [signer, clock_info, state_info, truncated_market];
-        let err =
-            handle_update_mm_oracle_batch_native(&accounts, &batch_payload(&[(0, BASE_PRICE, 1)]))
-                .unwrap_err();
+        let accounts = [signer, state_info, truncated_market];
+        let err = update_mm_oracle_batch(&accounts, &batch_payload(&[(0, BASE_PRICE, 1)]), SLOT)
+            .unwrap_err();
         assert_eq!(err, ErrorCode::InvalidNativePerpMarketAccount.into());
     }
 
@@ -5558,21 +5822,15 @@ mod native_batch_tests {
     #[test]
     fn batch_authenticates_every_market_not_just_the_first() {
         let hot_key = Pubkey::new_unique();
-        valid_prologue!(hot_key, SLOT, state_info, clock_info, signer);
+        valid_prologue!(hot_key, state_info, signer);
         market_account!(0, (0, 0, 0), market_info);
 
         let mut not_a_market = State::default();
         create_anchor_account_info!(not_a_market, State, not_a_market_info);
 
         let payload = batch_payload(&[(0, BASE_PRICE, 1), (1, BASE_PRICE, 2)]);
-        let accounts = [
-            signer,
-            clock_info,
-            state_info,
-            market_info,
-            not_a_market_info,
-        ];
-        let err = handle_update_mm_oracle_batch_native(&accounts, &payload).unwrap_err();
+        let accounts = [signer, state_info, market_info, not_a_market_info];
+        let err = update_mm_oracle_batch(&accounts, &payload, SLOT).unwrap_err();
         assert_eq!(err, ErrorCode::InvalidNativePerpMarketAccount.into());
     }
 
@@ -5584,21 +5842,15 @@ mod native_batch_tests {
     #[test]
     fn batch_is_not_internally_transactional() {
         let hot_key = Pubkey::new_unique();
-        valid_prologue!(hot_key, SLOT, state_info, clock_info, signer);
+        valid_prologue!(hot_key, state_info, signer);
         market_account!(0, (0, 0, 0), market_info);
 
         let mut not_a_market = State::default();
         create_anchor_account_info!(not_a_market, State, not_a_market_info);
 
         let payload = batch_payload(&[(0, BASE_PRICE, 1), (1, BASE_PRICE, 2)]);
-        let accounts = [
-            signer,
-            clock_info,
-            state_info,
-            market_info.clone(),
-            not_a_market_info,
-        ];
-        assert!(handle_update_mm_oracle_batch_native(&accounts, &payload).is_err());
+        let accounts = [signer, state_info, market_info.clone(), not_a_market_info];
+        assert!(update_mm_oracle_batch(&accounts, &payload, SLOT).is_err());
         assert_eq!(
             read_stats(&market_info),
             (BASE_PRICE, SLOT, 1),
@@ -5613,12 +5865,12 @@ mod native_batch_tests {
         // is for. Without the market-index field this would silently write one
         // market's price onto another.
         let hot_key = Pubkey::new_unique();
-        valid_prologue!(hot_key, SLOT, state_info, clock_info, signer);
+        valid_prologue!(hot_key, state_info, signer);
         market_account!(7, (0, 0, 0), market_info);
 
         let payload = batch_payload(&[(3, BASE_PRICE, 1)]); // account says 7
-        let accounts = [signer, clock_info, state_info, market_info.clone()];
-        let err = handle_update_mm_oracle_batch_native(&accounts, &payload).unwrap_err();
+        let accounts = [signer, state_info, market_info.clone()];
+        let err = update_mm_oracle_batch(&accounts, &payload, SLOT).unwrap_err();
         assert_eq!(err, ErrorCode::InvalidNativePerpMarketAccount.into());
         assert_eq!(
             read_stats(&market_info),
@@ -5630,7 +5882,7 @@ mod native_batch_tests {
     #[test]
     fn batch_rejects_read_only_market() {
         let hot_key = Pubkey::new_unique();
-        valid_prologue!(hot_key, SLOT, state_info, clock_info, signer);
+        valid_prologue!(hot_key, state_info, signer);
 
         let mut market_struct = market_with(0, (0, 0, 0));
         let mut market_bytes = get_anchor_account_bytes(&mut market_struct);
@@ -5647,57 +5899,10 @@ mod native_batch_tests {
             false,
         );
 
-        let accounts = [signer, clock_info, state_info, read_only_market];
-        let err =
-            handle_update_mm_oracle_batch_native(&accounts, &batch_payload(&[(0, BASE_PRICE, 1)]))
-                .unwrap_err();
+        let accounts = [signer, state_info, read_only_market];
+        let err = update_mm_oracle_batch(&accounts, &batch_payload(&[(0, BASE_PRICE, 1)]), SLOT)
+            .unwrap_err();
         assert_eq!(err, ErrorCode::InvalidNativePerpMarketAccount.into());
-    }
-
-    #[test]
-    fn batch_rejects_forged_clock() {
-        // A caller-supplied "clock" carrying an arbitrary slot would defeat both
-        // the staleness check and the slot-gap rate limit.
-        let hot_key = Pubkey::new_unique();
-        let mut state_struct = State::default();
-        state_struct.hot_mm_oracle_crank = hot_key;
-        state_struct.feature_bit_flags = FeatureBitFlags::MmOracleUpdate as u8;
-        create_anchor_account_info!(state_struct, State, state_info);
-
-        market_account!(0, (0, 0, 0), market_info);
-
-        let clock_key = Pubkey::new_unique(); // not the sysvar
-        let mut clock_lamports = 0u64;
-        let mut clock_data = u64::MAX.to_le_bytes();
-        let clock_owner = Pubkey::new_unique();
-        let clock_info = AccountInfo::new(
-            &clock_key,
-            false,
-            false,
-            &mut clock_lamports,
-            &mut clock_data,
-            &clock_owner,
-            false,
-        );
-
-        let mut sig_lamports = 0u64;
-        let mut sig_data: [u8; 0] = [];
-        let sig_owner = Pubkey::new_unique();
-        let signer = AccountInfo::new(
-            &hot_key,
-            true,
-            false,
-            &mut sig_lamports,
-            &mut sig_data,
-            &sig_owner,
-            false,
-        );
-
-        let accounts = [signer, clock_info, state_info, market_info];
-        let err =
-            handle_update_mm_oracle_batch_native(&accounts, &batch_payload(&[(0, BASE_PRICE, 1)]))
-                .unwrap_err();
-        assert_eq!(err, ErrorCode::InvalidNativeInstructionData.into());
     }
 
     #[test]
@@ -5713,20 +5918,6 @@ mod native_batch_tests {
 
             market_account!(0, (0, 0, 0), market_info);
 
-            let clock_key = solana_program::sysvar::clock::ID;
-            let mut clock_lamports = 0u64;
-            let mut clock_data = SLOT.to_le_bytes();
-            let clock_owner = Pubkey::new_unique();
-            let clock_info = AccountInfo::new(
-                &clock_key,
-                false,
-                false,
-                &mut clock_lamports,
-                &mut clock_data,
-                &clock_owner,
-                false,
-            );
-
             let signer_key = if wrong_key { attacker } else { hot_key };
             let mut sig_lamports = 0u64;
             let mut sig_data: [u8; 0] = [];
@@ -5741,12 +5932,10 @@ mod native_batch_tests {
                 false,
             );
 
-            let accounts = [signer, clock_info, state_info, market_info];
-            let err = handle_update_mm_oracle_batch_native(
-                &accounts,
-                &batch_payload(&[(0, BASE_PRICE, 1)]),
-            )
-            .unwrap_err();
+            let accounts = [signer, state_info, market_info];
+            let err =
+                update_mm_oracle_batch(&accounts, &batch_payload(&[(0, BASE_PRICE, 1)]), SLOT)
+                    .unwrap_err();
             assert_eq!(err, ErrorCode::Unauthorized.into());
         }
     }
@@ -5761,20 +5950,6 @@ mod native_batch_tests {
 
         market_account!(0, (0, 0, 0), market_info);
 
-        let clock_key = solana_program::sysvar::clock::ID;
-        let mut clock_lamports = 0u64;
-        let mut clock_data = SLOT.to_le_bytes();
-        let clock_owner = Pubkey::new_unique();
-        let clock_info = AccountInfo::new(
-            &clock_key,
-            false,
-            false,
-            &mut clock_lamports,
-            &mut clock_data,
-            &clock_owner,
-            false,
-        );
-
         let mut sig_lamports = 0u64;
         let mut sig_data: [u8; 0] = [];
         let sig_owner = Pubkey::new_unique();
@@ -5788,10 +5963,9 @@ mod native_batch_tests {
             false,
         );
 
-        let accounts = [signer, clock_info, state_info, market_info.clone()];
-        let err =
-            handle_update_mm_oracle_batch_native(&accounts, &batch_payload(&[(0, BASE_PRICE, 1)]))
-                .unwrap_err();
+        let accounts = [signer, state_info, market_info.clone()];
+        let err = update_mm_oracle_batch(&accounts, &batch_payload(&[(0, BASE_PRICE, 1)]), SLOT)
+            .unwrap_err();
         assert_eq!(err, ErrorCode::MmOracleUpdateDisabled.into());
         assert_eq!(
             read_stats(&market_info),
@@ -5810,7 +5984,7 @@ mod native_batch_tests {
     #[test]
     fn batch_skips_bad_entries_and_still_writes_the_good_one() {
         let hot_key = Pubkey::new_unique();
-        valid_prologue!(hot_key, SLOT, state_info, clock_info, signer);
+        valid_prologue!(hot_key, state_info, signer);
 
         // 0: cranked one slot ago, below MM_ORACLE_MIN_SLOT_GAP.
         market_account!(0, (BASE_PRICE, SLOT - 1, 5), rate_limited_info);
@@ -5829,7 +6003,6 @@ mod native_batch_tests {
         ]);
         let accounts = [
             signer,
-            clock_info,
             state_info,
             rate_limited_info.clone(),
             healthy_info.clone(),
@@ -5837,7 +6010,7 @@ mod native_batch_tests {
             stale_sequence_info.clone(),
         ];
 
-        let mask = update_mm_oracle_batch(&accounts, &payload).unwrap();
+        let (mask, _) = update_mm_oracle_batch(&accounts, &payload, SLOT).unwrap();
         assert_eq!(mask, 0b1101, "entries 0, 2 and 3 must be reported rejected");
 
         assert_eq!(
@@ -5865,20 +6038,17 @@ mod native_batch_tests {
     #[test]
     fn batch_reports_empty_mask_when_everything_lands() {
         let hot_key = Pubkey::new_unique();
-        valid_prologue!(hot_key, SLOT, state_info, clock_info, signer);
+        valid_prologue!(hot_key, state_info, signer);
         market_account!(0, (BASE_PRICE, SLOT - 10, 5), a_info);
         market_account!(1, (BASE_PRICE, SLOT - 10, 5), b_info);
 
         let payload = batch_payload(&[(0, BASE_PRICE + 1, 6), (1, BASE_PRICE + 2, 6)]);
-        let accounts = [
-            signer,
-            clock_info,
-            state_info,
-            a_info.clone(),
-            b_info.clone(),
-        ];
+        let accounts = [signer, state_info, a_info.clone(), b_info.clone()];
 
-        assert_eq!(update_mm_oracle_batch(&accounts, &payload).unwrap(), 0);
+        assert_eq!(
+            update_mm_oracle_batch(&accounts, &payload, SLOT).unwrap(),
+            (0, 0)
+        );
         assert_eq!(read_stats(&a_info), (BASE_PRICE + 1, SLOT, 6));
         assert_eq!(read_stats(&b_info), (BASE_PRICE + 2, SLOT, 6));
     }
@@ -5889,20 +6059,22 @@ mod native_batch_tests {
     #[test]
     fn batch_skips_strictly_regressing_sequence_id_and_slot() {
         let hot_key = Pubkey::new_unique();
-        valid_prologue!(hot_key, SLOT, state_info, clock_info, signer);
+        valid_prologue!(hot_key, state_info, signer);
         market_account!(0, (BASE_PRICE, SLOT - 10, 50), older_sequence_info);
         market_account!(1, (BASE_PRICE, SLOT + 10, 5), future_slot_info);
 
         let payload = batch_payload(&[(0, BASE_PRICE + 1, 6), (1, BASE_PRICE + 1, 6)]);
         let accounts = [
             signer,
-            clock_info,
             state_info,
             older_sequence_info.clone(),
             future_slot_info.clone(),
         ];
 
-        assert_eq!(update_mm_oracle_batch(&accounts, &payload).unwrap(), 0b11);
+        assert_eq!(
+            update_mm_oracle_batch(&accounts, &payload, SLOT).unwrap(),
+            (0b11, 0)
+        );
         assert_eq!(
             read_stats(&older_sequence_info),
             (BASE_PRICE, SLOT - 10, 50)
@@ -5910,56 +6082,70 @@ mod native_batch_tests {
         assert_eq!(read_stats(&future_slot_info), (BASE_PRICE, SLOT + 10, 5));
     }
 
-    /// The step cap is symmetric (`diff_abs`), and its comparison is strict, so
-    /// a move of exactly 1% is accepted and anything beyond is not.
+    /// The step cap is symmetric, a move of exactly 1% is written verbatim, and
+    /// a move beyond the cap is clamped to the cap rather than skipped, so it
+    /// counts as accepted in the reject mask.
     #[test]
-    fn batch_step_cap_is_symmetric_and_boundary_is_inclusive() {
+    fn batch_step_cap_is_symmetric_and_clamps_beyond_the_cap() {
         let hot_key = Pubkey::new_unique();
-        valid_prologue!(hot_key, SLOT, state_info, clock_info, signer);
+        valid_prologue!(hot_key, state_info, signer);
 
         // BASE_PRICE is 1_000_000, so exactly 1% is 10_000.
         market_account!(0, (BASE_PRICE, SLOT - 10, 5), down_over_info);
         market_account!(1, (BASE_PRICE, SLOT - 10, 5), down_at_cap_info);
         market_account!(2, (BASE_PRICE, SLOT - 10, 5), up_at_cap_info);
+        market_account!(3, (BASE_PRICE, SLOT - 10, 5), up_over_info);
 
         let payload = batch_payload(&[
-            (0, BASE_PRICE - 10_001, 6),
+            (0, BASE_PRICE - 50_000, 6),
             (1, BASE_PRICE - 10_000, 6),
             (2, BASE_PRICE + 10_000, 6),
+            (3, BASE_PRICE + 50_000, 6),
         ]);
         let accounts = [
             signer,
-            clock_info,
             state_info,
             down_over_info.clone(),
             down_at_cap_info.clone(),
             up_at_cap_info.clone(),
+            up_over_info.clone(),
         ];
 
         assert_eq!(
-            update_mm_oracle_batch(&accounts, &payload).unwrap(),
-            0b001,
-            "only the move beyond the cap may be rejected"
+            update_mm_oracle_batch(&accounts, &payload, SLOT).unwrap(),
+            (0, 0b1001),
+            "a clamped write is accepted (empty reject mask) and reported in \
+             the clamped mask"
         );
-        assert_eq!(read_stats(&down_over_info), (BASE_PRICE, SLOT - 10, 5));
+        assert_eq!(
+            read_stats(&down_over_info),
+            (BASE_PRICE - 10_000, SLOT, 6),
+            "beyond-cap move must be clamped to the cap"
+        );
         assert_eq!(
             read_stats(&down_at_cap_info),
             (BASE_PRICE - 10_000, SLOT, 6)
         );
         assert_eq!(read_stats(&up_at_cap_info), (BASE_PRICE + 10_000, SLOT, 6));
+        assert_eq!(
+            read_stats(&up_over_info),
+            (BASE_PRICE + 10_000, SLOT, 6),
+            "beyond-cap move must be clamped to the cap"
+        );
     }
 
     #[test]
     fn batch_skips_negative_price() {
-        // A negative price stored during bootstrap would make the step cap
-        // unsatisfiable in both directions afterwards, a permanent stall.
+        // `oracle_validity` classifies a stored non-positive price as
+        // `NonPositive` on read, so storing one buys nothing.
         let hot_key = Pubkey::new_unique();
-        valid_prologue!(hot_key, SLOT, state_info, clock_info, signer);
+        valid_prologue!(hot_key, state_info, signer);
         market_account!(0, (0, 0, 0), market_info); // bootstrap: stored price 0
 
-        let accounts = [signer, clock_info, state_info, market_info.clone()];
-        let mask =
-            update_mm_oracle_batch(&accounts, &batch_payload(&[(0, -BASE_PRICE, 1)])).unwrap();
+        let accounts = [signer, state_info, market_info.clone()];
+        let (mask, _) =
+            update_mm_oracle_batch(&accounts, &batch_payload(&[(0, -BASE_PRICE, 1)]), SLOT)
+                .unwrap();
         assert_eq!(mask, 0b1);
         assert_eq!(read_stats(&market_info), (0, 0, 0));
     }
@@ -5971,7 +6157,7 @@ mod native_batch_tests {
     #[test]
     fn batch_tolerates_duplicate_market_accounts_at_max_size() {
         let hot_key = Pubkey::new_unique();
-        valid_prologue!(hot_key, SLOT, state_info, clock_info, signer);
+        valid_prologue!(hot_key, state_info, signer);
         market_account!(0, (BASE_PRICE, SLOT - 10, 5), market_info);
 
         // Every entry targets the same market with a strictly increasing
@@ -5981,13 +6167,13 @@ mod native_batch_tests {
             .collect();
         let payload = batch_payload(&entries);
 
-        let mut accounts = vec![signer, clock_info, state_info];
+        let mut accounts = vec![signer, state_info];
         accounts.extend(std::iter::repeat_n(
             market_info.clone(),
             MM_ORACLE_BATCH_MAX_MARKETS,
         ));
 
-        let mask = update_mm_oracle_batch(&accounts, &payload).unwrap();
+        let (mask, _) = update_mm_oracle_batch(&accounts, &payload, SLOT).unwrap();
         assert_eq!(
             mask, !1u64,
             "only the first entry for a duplicated market may land"
@@ -5998,7 +6184,7 @@ mod native_batch_tests {
     #[test]
     fn batch_ignores_trailing_accounts() {
         let hot_key = Pubkey::new_unique();
-        valid_prologue!(hot_key, SLOT, state_info, clock_info, signer);
+        valid_prologue!(hot_key, state_info, signer);
         market_account!(0, (BASE_PRICE, SLOT - 10, 5), market_a_info);
         // Declared count is 1, so this must never be touched even though it is a
         // perfectly valid perp market sitting in the account list.
@@ -6006,13 +6192,11 @@ mod native_batch_tests {
 
         let accounts = [
             signer,
-            clock_info,
             state_info,
             market_a_info.clone(),
             market_b_info.clone(),
         ];
-        handle_update_mm_oracle_batch_native(&accounts, &batch_payload(&[(0, BASE_PRICE + 1, 6)]))
-            .unwrap();
+        update_mm_oracle_batch(&accounts, &batch_payload(&[(0, BASE_PRICE + 1, 6)]), SLOT).unwrap();
 
         assert_eq!(read_stats(&market_a_info), (BASE_PRICE + 1, SLOT, 6));
         assert_eq!(
@@ -6024,35 +6208,63 @@ mod native_batch_tests {
 
     // equivalence with the single-market handler
 
-    fn run_single(initial: MmStats, price: i64, sequence_id: u64) -> MmStats {
+    fn run_single_with_source(
+        initial: MmStats,
+        price: i64,
+        sequence_id: u64,
+        source_slot: u64,
+    ) -> MmStats {
         let hot_key = Pubkey::new_unique();
-        valid_prologue!(hot_key, SLOT, state_info, clock_info, signer);
+        valid_prologue!(hot_key, state_info, signer);
         market_account!(0, initial, market_info);
 
-        // Opcode 0 takes [market, signer, clock, state].
-        let accounts = [market_info.clone(), signer, clock_info, state_info];
-        handle_update_mm_oracle_native(&accounts, &single_payload(price, sequence_id)).unwrap();
+        // Opcode 0 takes [market, signer, state].
+        let accounts = [market_info.clone(), signer, state_info];
+        update_mm_oracle(
+            &accounts,
+            &single_payload_with_source(price, sequence_id, source_slot),
+            SLOT,
+        )
+        .unwrap();
+        read_stats(&market_info)
+    }
+
+    fn run_single(initial: MmStats, price: i64, sequence_id: u64) -> MmStats {
+        run_single_with_source(initial, price, sequence_id, SLOT)
+    }
+
+    fn run_batch_with_source(
+        initial: MmStats,
+        price: i64,
+        sequence_id: u64,
+        source_slot: u64,
+    ) -> MmStats {
+        let hot_key = Pubkey::new_unique();
+        valid_prologue!(hot_key, state_info, signer);
+        market_account!(0, initial, market_info);
+
+        let accounts = [signer, state_info, market_info.clone()];
+        update_mm_oracle_batch(
+            &accounts,
+            &batch_payload_with_source(&[(0, price, sequence_id, source_slot)]),
+            SLOT,
+        )
+        .unwrap();
         read_stats(&market_info)
     }
 
     fn run_batch(initial: MmStats, price: i64, sequence_id: u64) -> MmStats {
-        let hot_key = Pubkey::new_unique();
-        valid_prologue!(hot_key, SLOT, state_info, clock_info, signer);
-        market_account!(0, initial, market_info);
-
-        let accounts = [signer, clock_info, state_info, market_info.clone()];
-        handle_update_mm_oracle_batch_native(&accounts, &batch_payload(&[(0, price, sequence_id)]))
-            .unwrap();
-        read_stats(&market_info)
+        run_batch_with_source(initial, price, sequence_id, SLOT)
     }
 
-    /// Pins opcode 2 to opcode 0. The gating logic is duplicated so that adding
-    /// the batch handler cannot change the live single-market one; this test is
-    /// what stops the two copies drifting. Zero and negative prices are excluded
-    /// because their divergence is deliberate and is asserted separately below.
+    /// Pins opcode 2 to opcode 0 at the wire level. The per-market gating is
+    /// shared (`apply_mm_oracle_update`), so this now guards the wrappers: the
+    /// payload parsing, the prologue differences, and any future divergence.
+    /// Zero and negative prices are excluded because their divergence is
+    /// deliberate and is asserted separately below.
     ///
-    /// Each case also asserts the expected result outright, so a bug copied into
-    /// both handlers cannot pass by agreeing with itself.
+    /// Each case also asserts the expected result outright, so a bug in the
+    /// shared core cannot pass by agreeing with itself.
     #[test]
     fn batch_matches_single_market_handler() {
         // (label, initial, price, sequence_id, expected)
@@ -6107,11 +6319,11 @@ mod native_batch_tests {
                 (BASE_PRICE, SLOT, 5),
             ),
             (
-                "rejects a step above the cap",
+                "clamps a step above the cap and consumes the sequence id",
                 (BASE_PRICE, SLOT - 10, 5),
                 BASE_PRICE + 20_000,
                 6,
-                (BASE_PRICE, SLOT - 10, 5),
+                (BASE_PRICE + 10_000, SLOT, 6),
             ),
         ];
 
@@ -6124,22 +6336,94 @@ mod native_batch_tests {
     }
 
     /// The one documented behavioural divergence: opcode 0 returns `Err` on a
-    /// zero price, which in a batch would destroy every other market's write, so
-    /// opcode 2 skips it instead (and extends the rule to negative prices).
+    /// non-positive price, which in a batch would destroy every other market's
+    /// write, so opcode 2 skips it instead. Both reject; only the failure mode
+    /// differs.
     #[test]
-    fn zero_price_divergence_is_deliberate() {
+    fn non_positive_price_divergence_is_deliberate() {
         let initial = (BASE_PRICE, SLOT - 10, 5);
 
-        // Batch: skipped, call succeeds, market untouched.
-        assert_eq!(run_batch(initial, 0, 6), initial);
+        for price in [0i64, -1, -BASE_PRICE] {
+            // Batch: skipped, call succeeds, market untouched.
+            assert_eq!(run_batch(initial, price, 6), initial);
 
-        // Single: hard error.
+            // Single: hard error, market untouched.
+            let hot_key = Pubkey::new_unique();
+            valid_prologue!(hot_key, state_info, signer);
+            market_account!(0, initial, market_info);
+
+            let accounts = [market_info.clone(), signer, state_info];
+            assert!(
+                update_mm_oracle(&accounts, &single_payload(price, 6), SLOT).is_err(),
+                "price {price} must be a hard error on opcode 0"
+            );
+            assert_eq!(read_stats(&market_info), initial);
+        }
+    }
+
+    /// Source-observation freshness on both handlers, symmetric around the
+    /// landing slot: an update whose source slot is more than
+    /// `MM_ORACLE_MAX_SOURCE_AGE_SLOTS` away in either direction is skipped —
+    /// behind means it landed too late to be fresh, ahead means a wrong-unit
+    /// or wrong-scale source value that must not silently disable the gate.
+    /// Exactly at the bound lands on both sides, so a crank may still estimate
+    /// its landing slot.
+    #[test]
+    fn stale_source_slot_is_skipped_by_both_handlers() {
+        let initial = (BASE_PRICE, SLOT - 10, 5);
+        let written = (BASE_PRICE + 1_000, SLOT, 6);
+
+        // (label, source_slot, expected)
+        let cases: [(&str, u64, MmStats); 5] = [
+            (
+                "one slot beyond the bound is skipped",
+                SLOT - MM_ORACLE_MAX_SOURCE_AGE_SLOTS - 1,
+                initial,
+            ),
+            (
+                "exactly at the bound lands",
+                SLOT - MM_ORACLE_MAX_SOURCE_AGE_SLOTS,
+                written,
+            ),
+            (
+                "a landing-slot estimate at the forward bound lands",
+                SLOT + MM_ORACLE_MAX_SOURCE_AGE_SLOTS,
+                written,
+            ),
+            (
+                "one slot beyond the forward bound is skipped",
+                SLOT + MM_ORACLE_MAX_SOURCE_AGE_SLOTS + 1,
+                initial,
+            ),
+            (
+                "a wrong-unit source value is skipped, not accepted",
+                1_700_000_000_000, // a millisecond timestamp
+                initial,
+            ),
+        ];
+
+        for (label, source_slot, expected) in cases {
+            let single = run_single_with_source(initial, BASE_PRICE + 1_000, 6, source_slot);
+            let batch = run_batch_with_source(initial, BASE_PRICE + 1_000, 6, source_slot);
+            assert_eq!(single, expected, "single handler wrong: {label}");
+            assert_eq!(batch, expected, "batch handler wrong: {label}");
+        }
+
+        // The skip is reported in the batch reject mask.
         let hot_key = Pubkey::new_unique();
-        valid_prologue!(hot_key, SLOT, state_info, clock_info, signer);
+        valid_prologue!(hot_key, state_info, signer);
         market_account!(0, initial, market_info);
-
-        let accounts = [market_info, signer, clock_info, state_info];
-        assert!(handle_update_mm_oracle_native(&accounts, &single_payload(0, 6)).is_err());
+        let accounts = [signer, state_info, market_info.clone()];
+        let stale = SLOT - MM_ORACLE_MAX_SOURCE_AGE_SLOTS - 1;
+        let (mask, clamped) = update_mm_oracle_batch(
+            &accounts,
+            &batch_payload_with_source(&[(0, BASE_PRICE + 1_000, 6, stale)]),
+            SLOT,
+        )
+        .unwrap();
+        assert_eq!(mask, 0b1);
+        assert_eq!(clamped, 0);
+        assert_eq!(read_stats(&market_info), initial);
     }
 }
 

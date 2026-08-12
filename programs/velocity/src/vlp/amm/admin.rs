@@ -1219,6 +1219,13 @@ pub fn handle_update_perp_market_funding_bias_sensitivity(
     Ok(())
 }
 
+/// Byte offset of `State::hot_amm_spread_adjust` (32 bytes) from the start of
+/// the account data (including the 8-byte Anchor discriminator). Guarded by
+/// `state/traits/tests.rs::native_instruction_offsets`. Only read outside
+/// `anchor-test`, which compiles the signer check out.
+#[cfg_attr(feature = "anchor-test", allow(dead_code))]
+const STATE_HOT_AMM_SPREAD_ADJUST_OFFSET: usize = 392;
+
 pub fn handle_update_amm_spread_adjustment_native(
     accounts: &[AccountInfo],
     data: &[u8],
@@ -1226,8 +1233,16 @@ pub fn handle_update_amm_spread_adjustment_native(
     // Pre-Anchor native dispatch: re-establish the ownership + discriminator
     // guarantees Anchor would provide (see `crate::auth::require_native_account`)
     // before trusting any byte. Accounts: [0] perp_market (mut), [1] signer,
-    // [2] state. hot_amm_spread_adjust lives at State bytes 392..424 (guarded by
-    // `state/traits/tests.rs::native_instruction_offsets`).
+    // [2] state. Payload: i8 spread adjustment (1 byte).
+    //
+    // Every index below is bounds-checked before use: this runs before Anchor,
+    // so a malformed instruction arrives verbatim, and a short account list or
+    // an empty payload used to panic — before the hot-key check, so any caller
+    // could reach it — aborting with no identifiable error after burning the
+    // whole compute budget.
+    require!(accounts.len() >= 3, ErrorCode::InvalidNativeInstructionData);
+    require!(!data.is_empty(), ErrorCode::InvalidNativeInstructionData);
+
     crate::auth::require_native_account(
         &accounts[2],
         State::DISCRIMINATOR,
@@ -1241,18 +1256,25 @@ pub fn handle_update_amm_spread_adjustment_native(
 
     #[cfg(not(feature = "anchor-test"))]
     {
-        let state = accounts[2].data.borrow();
+        let state = accounts[2].try_borrow_data()?;
         let signer_account = &accounts[1];
-        let hot_key = Pubkey::new_from_array(state[392..424].try_into().unwrap());
+        let hot_key_bytes: [u8; 32] = state
+            .get(STATE_HOT_AMM_SPREAD_ADJUST_OFFSET..STATE_HOT_AMM_SPREAD_ADJUST_OFFSET + 32)
+            .ok_or(ErrorCode::InvalidNativeStateAccount)?
+            .try_into()
+            .map_err(|_| ErrorCode::InvalidNativeStateAccount)?;
+        let hot_key = Pubkey::new_from_array(hot_key_bytes);
         require!(
             signer_account.is_signer && *signer_account.key == hot_key,
             ErrorCode::Unauthorized
         );
     }
 
-    let mut perp_market_data = accounts[0].data.borrow_mut();
-    let perp_market: &mut PerpMarket =
-        bytemuck::from_bytes_mut(&mut perp_market_data[8..8 + std::mem::size_of::<PerpMarket>()]);
+    let mut perp_market_data = accounts[0].try_borrow_mut_data()?;
+    let perp_market_bytes = perp_market_data
+        .get_mut(8..8 + std::mem::size_of::<PerpMarket>())
+        .ok_or(ErrorCode::InvalidNativePerpMarketAccount)?;
+    let perp_market: &mut PerpMarket = bytemuck::from_bytes_mut(perp_market_bytes);
     perp_market.amm.amm_spread_adjustment = data[0] as i8;
 
     Ok(())
@@ -1671,6 +1693,73 @@ mod native_auth_tests {
         let accounts = [perp_market_info, signer, state_info];
         let err = handle_update_amm_spread_adjustment_native(&accounts, &[7i8 as u8]).unwrap_err();
         assert_eq!(err, ErrorCode::Unauthorized.into());
+    }
+
+    /// The handler runs before Anchor, so a malformed instruction reaches it
+    /// verbatim. A short account list or an empty payload used to panic on the
+    /// indexing — before the hot-key check, so any caller could reach it —
+    /// which aborts the transaction with no identifiable error.
+    #[test]
+    fn spread_native_rejects_malformed_shape_without_panicking() {
+        let hot_key = Pubkey::new_unique();
+        let mut state = State::default();
+        state.hot_amm_spread_adjust = hot_key;
+        create_anchor_account_info!(state, State, state_info);
+
+        let mut perp_market = PerpMarket::default();
+        create_anchor_account_info!(perp_market, PerpMarket, perp_market_info);
+
+        let mut sig_lamports = 0u64;
+        let mut sig_data: [u8; 0] = [];
+        let sig_owner = Pubkey::new_unique();
+        let signer = signer_info(&hot_key, true, &mut sig_lamports, &mut sig_data, &sig_owner);
+
+        let accounts = [perp_market_info, signer, state_info];
+
+        // Too few accounts: none at all, then two where three are required.
+        let err = handle_update_amm_spread_adjustment_native(&[], &[7i8 as u8]).unwrap_err();
+        assert_eq!(err, ErrorCode::InvalidNativeInstructionData.into());
+        let err =
+            handle_update_amm_spread_adjustment_native(&accounts[..2], &[7i8 as u8]).unwrap_err();
+        assert_eq!(err, ErrorCode::InvalidNativeInstructionData.into());
+
+        // Empty payload: `data[0]` used to panic here.
+        let err = handle_update_amm_spread_adjustment_native(&accounts, &[]).unwrap_err();
+        assert_eq!(err, ErrorCode::InvalidNativeInstructionData.into());
+    }
+
+    /// Program-owned and correctly discriminated, but too short to hold a
+    /// PerpMarket: the unchecked slice used to panic in the bytemuck cast.
+    #[test]
+    fn spread_native_rejects_truncated_market_account() {
+        let hot_key = Pubkey::new_unique();
+        let mut state = State::default();
+        state.hot_amm_spread_adjust = hot_key;
+        create_anchor_account_info!(state, State, state_info);
+
+        let mut truncated = [0u8; 64];
+        truncated[..8].copy_from_slice(PerpMarket::DISCRIMINATOR);
+        let market_key = Pubkey::new_unique();
+        let mut market_lamports = 0u64;
+        let market_owner = crate::ID;
+        let truncated_market = AccountInfo::new(
+            &market_key,
+            false,
+            true,
+            &mut market_lamports,
+            &mut truncated,
+            &market_owner,
+            false,
+        );
+
+        let mut sig_lamports = 0u64;
+        let mut sig_data: [u8; 0] = [];
+        let sig_owner = Pubkey::new_unique();
+        let signer = signer_info(&hot_key, true, &mut sig_lamports, &mut sig_data, &sig_owner);
+
+        let accounts = [truncated_market, signer, state_info];
+        let err = handle_update_amm_spread_adjustment_native(&accounts, &[7i8 as u8]).unwrap_err();
+        assert_eq!(err, ErrorCode::InvalidNativePerpMarketAccount.into());
     }
 
     #[test]

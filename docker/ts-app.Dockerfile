@@ -32,7 +32,7 @@ COPY apps/ ./apps/
 # cannot fail the image build.
 RUN apt-get update -qq \
     && apt-get install -y -qq --no-install-recommends \
-    python3 make g++ libusb-1.0-0-dev libudev-dev \
+    python3 make g++ pkg-config libusb-1.0-0-dev libudev-dev \
     && rm -rf /var/lib/apt/lists/*
 # Frozen: install exactly what the committed lockfile pins, never re-resolve.
 RUN bun install --frozen-lockfile

@@ -124,7 +124,7 @@ pub fn handle_update_pyth_lazer_oracle<'c: 'info, 'info>(
         // downstream staleness, an authentic-but-old message would otherwise read as slot-fresh.
         let now = Clock::get()?.unix_timestamp;
         let next_timestamp_secs = next_timestamp.unwrap().safe_div(1_000_000)?.cast::<i64>()?;
-        if now.safe_sub(next_timestamp_secs)? > PYTH_LAZER_MAX_STALENESS_SECONDS {
+        if now.saturating_sub(next_timestamp_secs) > PYTH_LAZER_MAX_STALENESS_SECONDS {
             msg!(
                 "Skipping lazer price update. message ts {}s is older than {}s (now {}s)",
                 next_timestamp_secs,
